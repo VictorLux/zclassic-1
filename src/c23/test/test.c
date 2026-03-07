@@ -70,6 +70,7 @@
 #include "net/net.h"
 #include "validation/txmempool.h"
 #include "policy/fees.h"
+#include "json/json.h"
 
 static int test_tip_count = 0;
 static int test_tip_height = 0;
@@ -3412,6 +3413,127 @@ int main(void)
         ok = ok && policy_is_pri_data_point(&est, &zero_fee, 1e12);
 
         block_policy_estimator_free(&est);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("json null/bool/int/str... ");
+    {
+        struct json_value v;
+        json_init(&v);
+        bool ok = json_is_null(&v);
+
+        json_set_bool(&v, true);
+        ok = ok && json_get_bool(&v);
+
+        json_set_int(&v, 42);
+        ok = ok && json_get_int(&v) == 42;
+
+        json_set_str(&v, "hello");
+        ok = ok && strcmp(json_get_str(&v), "hello") == 0;
+
+        json_set_real(&v, 3.14);
+        ok = ok && json_get_real(&v) > 3.13 && json_get_real(&v) < 3.15;
+
+        json_free(&v);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("json object write... ");
+    {
+        struct json_value obj;
+        json_init(&obj);
+        json_set_object(&obj);
+        json_push_kv_str(&obj, "method", "getinfo");
+        json_push_kv_int(&obj, "id", 1);
+
+        char buf[256];
+        json_write(&obj, buf, sizeof(buf));
+        bool ok = strstr(buf, "\"method\":\"getinfo\"") != NULL;
+        ok = ok && strstr(buf, "\"id\":1") != NULL;
+
+        json_free(&obj);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("json array write... ");
+    {
+        struct json_value arr;
+        json_init(&arr);
+        json_set_array(&arr);
+        struct json_value v;
+        json_init(&v);
+        json_set_int(&v, 10);
+        json_push_back(&arr, &v);
+        json_set_int(&v, 20);
+        json_push_back(&arr, &v);
+        json_free(&v);
+
+        char buf[64];
+        json_write(&arr, buf, sizeof(buf));
+        bool ok = strcmp(buf, "[10,20]") == 0;
+
+        json_free(&arr);
+        if (ok) printf("OK\n"); else { printf("FAIL (got: %s)\n", buf); failures++; }
+    }
+
+    printf("json read object... ");
+    {
+        const char *input = "{\"name\":\"zcl\",\"port\":8233,\"active\":true}";
+        struct json_value v;
+        bool ok = json_read(&v, input, strlen(input));
+        ok = ok && v.type == JSON_OBJ;
+        ok = ok && json_size(&v) == 3;
+
+        const struct json_value *name = json_get(&v, "name");
+        ok = ok && name && strcmp(json_get_str(name), "zcl") == 0;
+
+        const struct json_value *port = json_get(&v, "port");
+        ok = ok && port && json_get_int(port) == 8233;
+
+        const struct json_value *active = json_get(&v, "active");
+        ok = ok && active && json_get_bool(active);
+
+        json_free(&v);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("json read array... ");
+    {
+        const char *input = "[1,\"two\",null,false]";
+        struct json_value v;
+        bool ok = json_read(&v, input, strlen(input));
+        ok = ok && v.type == JSON_ARR;
+        ok = ok && json_size(&v) == 4;
+        ok = ok && json_get_int(json_at(&v, 0)) == 1;
+        ok = ok && strcmp(json_get_str(json_at(&v, 1)), "two") == 0;
+        ok = ok && json_is_null(json_at(&v, 2));
+        ok = ok && !json_get_bool(json_at(&v, 3));
+
+        json_free(&v);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("json roundtrip... ");
+    {
+        struct json_value obj;
+        json_init(&obj);
+        json_set_object(&obj);
+        json_push_kv_str(&obj, "result", "ok");
+        json_push_kv_int(&obj, "code", 200);
+
+        char buf[256];
+        size_t n = json_write(&obj, buf, sizeof(buf));
+
+        struct json_value parsed;
+        bool ok = json_read(&parsed, buf, n);
+        ok = ok && parsed.type == JSON_OBJ;
+        const struct json_value *r = json_get(&parsed, "result");
+        ok = ok && r && strcmp(json_get_str(r), "ok") == 0;
+        const struct json_value *c = json_get(&parsed, "code");
+        ok = ok && c && json_get_int(c) == 200;
+
+        json_free(&obj);
+        json_free(&parsed);
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
