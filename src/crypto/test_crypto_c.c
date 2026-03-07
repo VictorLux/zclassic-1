@@ -34,6 +34,7 @@
 #include "pow_c.h"
 #include "checkpoints_c.h"
 #include "pubkey_c.h"
+#include "key_c.h"
 
 static int check_hex(const unsigned char *data, size_t len, const char *expected)
 {
@@ -732,6 +733,7 @@ int main(void)
         }
     }
 
+    ecc_start();
     printf("pubkey init/validate... ");
     {
         ecc_verify_init();
@@ -789,6 +791,68 @@ int main(void)
             failures++;
         }
         ecc_verify_destroy();
+    }
+
+    printf("key generate + sign + verify... ");
+    {
+        ecc_verify_init();
+        struct privkey k;
+        privkey_make_new(&k, true);
+        struct pubkey pk;
+        privkey_get_pubkey(&k, &pk);
+
+        struct uint256 hash;
+        memset(hash.data, 0x42, 32);
+
+        unsigned char sig[SIGNATURE_SIZE];
+        size_t siglen = SIGNATURE_SIZE;
+        bool signed_ok = privkey_sign(&k, &hash, sig, &siglen);
+        bool verified = pubkey_verify(&pk, &hash, sig, siglen);
+
+        if (signed_ok && verified)
+            printf("OK\n");
+        else {
+            printf("FAIL (signed=%d, verified=%d)\n", signed_ok, verified);
+            failures++;
+        }
+    }
+
+    printf("key sign_compact + recover... ");
+    {
+        struct privkey k;
+        privkey_make_new(&k, true);
+        struct pubkey pk;
+        privkey_get_pubkey(&k, &pk);
+
+        struct uint256 hash;
+        memset(hash.data, 0xAB, 32);
+
+        unsigned char csig[COMPACT_SIGNATURE_SIZE];
+        bool signed_ok = privkey_sign_compact(&k, &hash, csig);
+
+        struct pubkey recovered;
+        bool recovered_ok = pubkey_recover_compact(&recovered, &hash, csig);
+
+        if (signed_ok && recovered_ok &&
+            recovered.size == pk.size &&
+            memcmp(recovered.vch, pk.vch, pk.size) == 0)
+            printf("OK\n");
+        else {
+            printf("FAIL\n");
+            failures++;
+        }
+    }
+
+    printf("ecc_init_sanity_check... ");
+    {
+        if (ecc_init_sanity_check())
+            printf("OK\n");
+        else {
+            printf("FAIL\n");
+            failures++;
+        }
+        ecc_verify_destroy();
+        ecc_stop();
     }
 
     printf("\n%s (%d failures)\n", failures ? "SOME TESTS FAILED" : "ALL TESTS PASSED", failures);
