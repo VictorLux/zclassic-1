@@ -6858,6 +6858,252 @@ int main(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    printf("bls12_381 fp_sqrt... ");
+    {
+        /* sqrt(4) = 2 or q-2 */
+        uint8_t four_bytes[48] = {0}; four_bytes[47] = 4;
+        struct fp four_val;
+        fp_from_bytes(&four_val, four_bytes);
+        struct fp root;
+        bool ok = fp_sqrt(&root, &four_val);
+        /* Verify root^2 == 4 */
+        struct fp check;
+        fp_sq(&check, &root);
+        ok = ok && fp_eq(&check, &four_val);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("bls12_381 g1_double generator... ");
+    {
+        /* Load the G1 generator and double it */
+        struct g1_point gen;
+        extern const struct fp G1_GEN_X, G1_GEN_Y;
+        gen.x = G1_GEN_X;
+        gen.y = G1_GEN_Y;
+        fp_one(&gen.z);
+
+        struct g1_point dbl;
+        g1_double(&dbl, &gen);
+
+        /* Verify it's on the curve: Y^2*Z = X^3 + 4*Z^3 (in Jacobian) */
+        /* Just check it's not identity */
+        bool ok = !g1_is_identity(&dbl);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("bls12_381 g1_add generator+generator... ");
+    {
+        struct g1_point gen;
+        extern const struct fp G1_GEN_X, G1_GEN_Y;
+        gen.x = G1_GEN_X;
+        gen.y = G1_GEN_Y;
+        fp_one(&gen.z);
+
+        struct g1_point dbl, sum;
+        g1_double(&dbl, &gen);
+        g1_add(&sum, &gen, &gen);
+
+        /* Double and add should give same affine point */
+        struct fp dbl_ax, dbl_ay, sum_ax, sum_ay;
+        g1_to_affine(&dbl_ax, &dbl_ay, &dbl);
+        g1_to_affine(&sum_ax, &sum_ay, &sum);
+
+        bool ok = fp_eq(&dbl_ax, &sum_ax) && fp_eq(&dbl_ay, &sum_ay);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("bls12_381 g1_from_compressed generator... ");
+    {
+        /* Compressed G1 generator from zcash test vectors */
+        /* The generator in compressed form: highest bit set for compressed,
+         * bit 5 set for largest y. The x-coordinate bytes are the standard generator. */
+        struct g1_point gen;
+        extern const struct fp G1_GEN_X, G1_GEN_Y;
+        gen.x = G1_GEN_X;
+        gen.y = G1_GEN_Y;
+        fp_one(&gen.z);
+
+        /* Serialize x to bytes, set compression flags */
+        uint8_t compressed[48];
+        fp_to_bytes(compressed, &gen.x);
+        compressed[0] |= 0x80; /* compressed flag */
+        if (fp_lexicographically_largest(&gen.y))
+            compressed[0] |= 0x20;
+
+        /* Decompress */
+        struct g1_point p;
+        bool ok = g1_from_compressed(&p, compressed);
+
+        /* Should match original */
+        struct fp px, py;
+        g1_to_affine(&px, &py, &p);
+        ok = ok && fp_eq(&px, &gen.x) && fp_eq(&py, &gen.y);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("bls12_381 fp6_mul identity... ");
+    {
+        struct fp6 a, one, product;
+        fp6_one(&one);
+        /* a = ((2, 3), (4, 5), (6, 7)) in Fp2 components */
+        uint8_t b2[48] = {0}; b2[47] = 2;
+        uint8_t b3[48] = {0}; b3[47] = 3;
+        uint8_t b4[48] = {0}; b4[47] = 4;
+        uint8_t b5[48] = {0}; b5[47] = 5;
+        uint8_t b6[48] = {0}; b6[47] = 6;
+        uint8_t b7[48] = {0}; b7[47] = 7;
+        fp_from_bytes(&a.c0.c0, b2);
+        fp_from_bytes(&a.c0.c1, b3);
+        fp_from_bytes(&a.c1.c0, b4);
+        fp_from_bytes(&a.c1.c1, b5);
+        fp_from_bytes(&a.c2.c0, b6);
+        fp_from_bytes(&a.c2.c1, b7);
+        fp6_mul(&product, &a, &one);
+        bool ok = fp2_eq(&product.c0, &a.c0) &&
+                  fp2_eq(&product.c1, &a.c1) &&
+                  fp2_eq(&product.c2, &a.c2);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("bls12_381 fp6_inv roundtrip... ");
+    {
+        struct fp6 a, ainv, product, one;
+        fp6_one(&one);
+        uint8_t b2[48] = {0}; b2[47] = 2;
+        uint8_t b3[48] = {0}; b3[47] = 3;
+        uint8_t b4[48] = {0}; b4[47] = 4;
+        uint8_t b5[48] = {0}; b5[47] = 5;
+        uint8_t b6[48] = {0}; b6[47] = 6;
+        uint8_t b7[48] = {0}; b7[47] = 7;
+        fp_from_bytes(&a.c0.c0, b2);
+        fp_from_bytes(&a.c0.c1, b3);
+        fp_from_bytes(&a.c1.c0, b4);
+        fp_from_bytes(&a.c1.c1, b5);
+        fp_from_bytes(&a.c2.c0, b6);
+        fp_from_bytes(&a.c2.c1, b7);
+        fp6_inv(&ainv, &a);
+        fp6_mul(&product, &a, &ainv);
+        bool ok = fp2_eq(&product.c0, &one.c0) &&
+                  fp2_eq(&product.c1, &one.c1) &&
+                  fp2_eq(&product.c2, &one.c2);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("bls12_381 fp12_mul identity... ");
+    {
+        struct fp12 a, one, product;
+        fp12_one(&one);
+        /* Build a non-trivial fp12 */
+        uint8_t vals[12][48];
+        for (int i = 0; i < 12; i++) {
+            memset(vals[i], 0, 48);
+            vals[i][47] = (uint8_t)(i + 2);
+        }
+        fp_from_bytes(&a.c0.c0.c0, vals[0]);
+        fp_from_bytes(&a.c0.c0.c1, vals[1]);
+        fp_from_bytes(&a.c0.c1.c0, vals[2]);
+        fp_from_bytes(&a.c0.c1.c1, vals[3]);
+        fp_from_bytes(&a.c0.c2.c0, vals[4]);
+        fp_from_bytes(&a.c0.c2.c1, vals[5]);
+        fp_from_bytes(&a.c1.c0.c0, vals[6]);
+        fp_from_bytes(&a.c1.c0.c1, vals[7]);
+        fp_from_bytes(&a.c1.c1.c0, vals[8]);
+        fp_from_bytes(&a.c1.c1.c1, vals[9]);
+        fp_from_bytes(&a.c1.c2.c0, vals[10]);
+        fp_from_bytes(&a.c1.c2.c1, vals[11]);
+        fp12_mul(&product, &a, &one);
+        bool ok = fp6_is_zero(&product.c1) ? false : true; /* just check non-trivial */
+        /* Better: a * 1 == a */
+        struct fp12 diff;
+        fp12_sub(&diff, &product, &a);
+        ok = fp12_is_zero(&diff);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("bls12_381 fp12_inv roundtrip... ");
+    {
+        struct fp12 a, ainv, product;
+        uint8_t vals[12][48];
+        for (int i = 0; i < 12; i++) {
+            memset(vals[i], 0, 48);
+            vals[i][47] = (uint8_t)(i + 2);
+        }
+        fp_from_bytes(&a.c0.c0.c0, vals[0]);
+        fp_from_bytes(&a.c0.c0.c1, vals[1]);
+        fp_from_bytes(&a.c0.c1.c0, vals[2]);
+        fp_from_bytes(&a.c0.c1.c1, vals[3]);
+        fp_from_bytes(&a.c0.c2.c0, vals[4]);
+        fp_from_bytes(&a.c0.c2.c1, vals[5]);
+        fp_from_bytes(&a.c1.c0.c0, vals[6]);
+        fp_from_bytes(&a.c1.c0.c1, vals[7]);
+        fp_from_bytes(&a.c1.c1.c0, vals[8]);
+        fp_from_bytes(&a.c1.c1.c1, vals[9]);
+        fp_from_bytes(&a.c1.c2.c0, vals[10]);
+        fp_from_bytes(&a.c1.c2.c1, vals[11]);
+        fp12_inv(&ainv, &a);
+        fp12_mul(&product, &a, &ainv);
+        struct fp12 one;
+        fp12_one(&one);
+        struct fp12 diff;
+        fp12_sub(&diff, &product, &one);
+        bool ok = fp12_is_zero(&diff);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("bls12_381 pairing bilinearity e(2P,Q)==e(P,Q)^2... ");
+    {
+        /* Use the G1 generator */
+        struct g1_point gen;
+        extern const struct fp G1_GEN_X, G1_GEN_Y;
+        gen.x = G1_GEN_X;
+        gen.y = G1_GEN_Y;
+        fp_one(&gen.z);
+
+        /* 2*G1 */
+        struct g1_point gen2;
+        g1_double(&gen2, &gen);
+
+        /* Use the G2 generator */
+        struct g2_point g2gen;
+        g2gen.x.c0 = (struct fp){{0xf5f28fa202940a10ULL, 0xb3f5fb2687b4961aULL,
+                                   0xa1a893b53e2ae580ULL, 0x9894999d1a3caee9ULL,
+                                   0x6f67b7631863366bULL, 0x058191924350bcd7ULL}};
+        g2gen.x.c1 = (struct fp){{0xa5a9c0759e23f606ULL, 0xaaa0c59dbccd60c3ULL,
+                                   0x3bb17e18e2867806ULL, 0x1b1ab6cc8541b367ULL,
+                                   0xc2b6ed0ef2158547ULL, 0x11922a097360edf3ULL}};
+        g2gen.y.c0 = (struct fp){{0x4c730af860494c4aULL, 0x597cfa1f5e369c5aULL,
+                                   0xe7e6856caa0a635aULL, 0xbbefb5e96e0d495fULL,
+                                   0x07d3a975f0ef25a2ULL, 0x0083fd8e7e80dae5ULL}};
+        g2gen.y.c1 = (struct fp){{0xadc0fc92df64b05dULL, 0x18aa270a2b1461dcULL,
+                                   0x86adac6a3be4eba0ULL, 0x79495c4ec93da33aULL,
+                                   0xe7175850a43ccaedULL, 0x0b2bc2a163de1bf2ULL}};
+        fp2_one(&g2gen.z);
+
+        /* e(2P, Q) */
+        struct fp12 lhs;
+        bls12_381_pairing(&lhs, &gen2, &g2gen);
+
+        /* e(P, Q)^2 */
+        struct fp12 pq;
+        bls12_381_pairing(&pq, &gen, &g2gen);
+        struct fp12 rhs;
+        fp12_sq(&rhs, &pq);
+
+        struct fp12 diff;
+        fp12_sub(&diff, &lhs, &rhs);
+        bool ok = fp12_is_zero(&diff);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     printf("\n%s (%d failures)\n", failures ? "SOME TESTS FAILED" : "ALL TESTS PASSED", failures);
     return failures ? 1 : 0;
 }
