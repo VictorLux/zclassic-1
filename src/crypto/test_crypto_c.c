@@ -843,6 +843,26 @@ int main(void)
         }
     }
 
+    printf("block_index_get_ancestor... ");
+    {
+        struct block_index blocks[5];
+        for (int i = 0; i < 5; i++) {
+            block_index_init(&blocks[i]);
+            blocks[i].nHeight = i;
+            blocks[i].pprev = i > 0 ? &blocks[i - 1] : NULL;
+        }
+        for (int i = 0; i < 5; i++)
+            block_index_build_skip(&blocks[i]);
+
+        struct block_index *anc = block_index_get_ancestor(&blocks[4], 1);
+        if (anc == &blocks[1])
+            printf("OK\n");
+        else {
+            printf("FAIL\n");
+            failures++;
+        }
+    }
+
     printf("ecc_init_sanity_check... ");
     {
         if (ecc_init_sanity_check())

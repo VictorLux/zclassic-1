@@ -132,4 +132,7 @@ static inline bool block_index_is_valid(const struct block_index *bi,
     return (bi->nStatus & BLOCK_VALID_MASK) >= (unsigned int)up_to;
 }
 
+struct block_index *block_index_get_ancestor(struct block_index *bi, int height);
+void block_index_build_skip(struct block_index *bi);
+
 #endif

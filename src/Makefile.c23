@@ -33,7 +33,8 @@ CORE_SRCS = \
 	pow_c.c \
 	checkpoints_c.c \
 	pubkey_c.c \
-	key_c.c
+	key_c.c \
+	chain_c.c
 
 ALL_SRCS = $(CRYPTO_SRCS) $(CORE_SRCS)
 ALL_OBJS = $(ALL_SRCS:.c=.o)
