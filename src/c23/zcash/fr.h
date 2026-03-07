@@ -58,4 +58,18 @@ void jub_get_x(struct fr *r, const struct jub_point *p);
 /* Get the y-coordinate as Fr element */
 void jub_get_y(struct fr *r, const struct jub_point *p);
 
+/* Jubjub scalar field Fs (group order of Jubjub curve).
+ * s = 0x0e7db4ea6533afa906673b0101343b00a6682093ccc81082d0970e5ed6f72cb7
+ * Used for Pedersen hash scalar accumulation. */
+struct fs {
+    uint64_t d[4]; /* little-endian limbs, NOT Montgomery form */
+};
+
+void fs_zero(struct fs *r);
+void fs_one(struct fs *r);
+void fs_add(struct fs *r, const struct fs *a, const struct fs *b);
+void fs_neg(struct fs *r, const struct fs *a);
+bool fs_is_zero(const struct fs *a);
+void fs_to_bytes(uint8_t s[32], const struct fs *a);
+
 #endif

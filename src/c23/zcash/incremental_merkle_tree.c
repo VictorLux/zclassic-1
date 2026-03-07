@@ -6,6 +6,7 @@
  * Incremental Merkle tree — pure C23 implementation. */
 
 #include "zcash/incremental_merkle_tree.h"
+#include "zcash/pedersen_hash.h"
 #include "crypto/sha256.h"
 #include <assert.h>
 #include <string.h>
@@ -52,11 +53,23 @@ void sprout_tree_init(struct incremental_merkle_tree *t)
               sha256_compress_combine, sha256_compress_uncommitted);
 }
 
+static void pedersen_combine(const struct uint256 *a,
+                              const struct uint256 *b,
+                              size_t depth,
+                              struct uint256 *out)
+{
+    pedersen_merkle_hash(depth, a->data, b->data, out->data);
+}
+
+static void pedersen_uncommitted(struct uint256 *out)
+{
+    sapling_uncommitted(out->data);
+}
+
 void sapling_tree_init(struct incremental_merkle_tree *t)
 {
-    /* Sapling uses PedersenHash — will be wired up when Pedersen is implemented.
-     * For now initialize with NULL combine/uncommitted. */
-    tree_init(t, SAPLING_INCREMENTAL_MERKLE_TREE_DEPTH, NULL, NULL);
+    tree_init(t, SAPLING_INCREMENTAL_MERKLE_TREE_DEPTH,
+              pedersen_combine, pedersen_uncommitted);
 }
 
 /* Compute empty root at given depth by repeatedly combining uncommitted values */

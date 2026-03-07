@@ -564,4 +564,52 @@ void jub_get_y(struct fr *r, const struct jub_point *p)
     fr_mul(r, &p->y, &z_inv);
 }
 
+/* --- Jubjub scalar field Fs --- */
+/* s = 0x0e7db4ea6533afa906673b0101343b00a6682093ccc81082d0970e5ed6f72cb7 */
+static const uint64_t FS_S[4] = {
+    0xd0970e5ed6f72cb7ULL, 0xa6682093ccc81082ULL,
+    0x06673b0101343b00ULL, 0x0e7db4ea6533afa9ULL
+};
+
+void fs_zero(struct fs *r) { memset(r->d, 0, 32); }
+
+void fs_one(struct fs *r) { memset(r->d, 0, 32); r->d[0] = 1; }
+
+bool fs_is_zero(const struct fs *a)
+{
+    return a->d[0] == 0 && a->d[1] == 0 && a->d[2] == 0 && a->d[3] == 0;
+}
+
+void fs_add(struct fs *r, const struct fs *a, const struct fs *b)
+{
+    unsigned __int128 carry = 0;
+    uint64_t tmp[4];
+    for (int i = 0; i < 4; i++) {
+        unsigned __int128 sum = (unsigned __int128)a->d[i] + b->d[i] + carry;
+        tmp[i] = (uint64_t)sum;
+        carry = sum >> 64;
+    }
+    if (carry || fr_gte(tmp, FS_S)) {
+        fr_sub_noborrow(r->d, tmp, FS_S);
+    } else {
+        memcpy(r->d, tmp, 32);
+    }
+}
+
+void fs_neg(struct fs *r, const struct fs *a)
+{
+    if (fs_is_zero(a)) {
+        fs_zero(r);
+    } else {
+        fr_sub_noborrow(r->d, FS_S, a->d);
+    }
+}
+
+void fs_to_bytes(uint8_t s[32], const struct fs *a)
+{
+    for (int i = 0; i < 4; i++)
+        for (int j = 0; j < 8; j++)
+            s[i * 8 + j] = (uint8_t)(a->d[i] >> (j * 8));
+}
+
 #pragma GCC diagnostic pop

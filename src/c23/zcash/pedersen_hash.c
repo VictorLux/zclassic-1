@@ -76,26 +76,11 @@ void pedersen_merkle_hash(size_t depth,
 
     int bit_pos = 0;
     for (int seg = 0; seg < PEDERSEN_NUM_GENERATORS && bit_pos < nbits; seg++) {
-        /* Compute scalar for this segment using the Rust algorithm:
-         * For each 3-bit chunk (a_bit, b_bit, c_bit):
-         *   tmp = cur; if a: tmp += cur; cur *= 2; if b: tmp += cur; if c: negate
-         *   acc += tmp; if not last: cur *= 8
-         * Then scalar_mul(generator, acc) */
-
-        /* We compute acc as Fr element (doing arithmetic in Fr is equivalent
-         * to doing it in Fs since they're isomorphic for our purposes) */
-        struct fr acc, cur, tmp, two;
-        fr_zero(&acc);
-        fr_one(&cur);
-
-        /* Precompute 2 in Fr */
-        uint8_t two_bytes[32] = {2};
-        fr_from_bytes(&two, two_bytes);
-
-        /* Precompute 8 in Fr */
-        struct fr eight;
-        uint8_t eight_bytes[32] = {8};
-        fr_from_bytes(&eight, eight_bytes);
+        /* Accumulate scalar in Fs (Jubjub scalar field order), NOT Fr.
+         * The Rust code uses E::Fs for this accumulation. */
+        struct fs acc, cur, tmp;
+        fs_zero(&acc);
+        fs_one(&cur);
 
         bool encountered = false;
         for (int chunk = 0; chunk < PEDERSEN_CHUNKS_PER_GENERATOR; chunk++) {
@@ -109,27 +94,30 @@ void pedersen_merkle_hash(size_t depth,
             /* tmp = cur */
             tmp = cur;
             /* if a: tmp += cur (so tmp = 2*cur) */
-            if (a_bit) fr_add(&tmp, &tmp, &cur);
+            if (a_bit) fs_add(&tmp, &tmp, &cur);
             /* cur *= 2 */
-            fr_mul(&cur, &cur, &two);
+            fs_add(&cur, &cur, &cur);
             /* if b: tmp += cur */
-            if (b_bit) fr_add(&tmp, &tmp, &cur);
+            if (b_bit) fs_add(&tmp, &tmp, &cur);
             /* if c: negate */
-            if (c_bit) fr_neg(&tmp, &tmp);
+            if (c_bit) fs_neg(&tmp, &tmp);
             /* acc += tmp */
-            fr_add(&acc, &acc, &tmp);
+            fs_add(&acc, &acc, &tmp);
 
-            /* If not last chunk in segment, cur *= 8 */
-            if (chunk < PEDERSEN_CHUNKS_PER_GENERATOR - 1)
-                fr_mul(&cur, &cur, &eight);
+            /* Between chunks (not last): cur *= 8 (three doublings) */
+            if (chunk < PEDERSEN_CHUNKS_PER_GENERATOR - 1) {
+                fs_add(&cur, &cur, &cur);
+                fs_add(&cur, &cur, &cur);
+                fs_add(&cur, &cur, &cur);
+            }
         }
 
         if (!encountered) break;
 
         /* Scalar multiply generator by acc */
-        if (!fr_is_zero(&acc)) {
+        if (!fs_is_zero(&acc)) {
             uint8_t scalar_bytes[32];
-            fr_to_bytes(scalar_bytes, &acc);
+            fs_to_bytes(scalar_bytes, &acc);
 
             struct jub_point scaled;
             jub_scalar_mul(&scaled, &cached_generators[seg], scalar_bytes);
