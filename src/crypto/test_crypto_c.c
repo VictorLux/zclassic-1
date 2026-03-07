@@ -53,6 +53,7 @@
 #include "consensus/validation_c.h"
 #include "key_io_c.h"
 #include "chainparams_c.h"
+#include "subsidy_c.h"
 
 static int check_hex(const unsigned char *data, size_t len, const char *expected)
 {
@@ -1860,6 +1861,46 @@ int main(void)
                 printf("OK\n");
             else { printf("FAIL\n"); failures++; }
         } else { printf("FAIL (encode)\n"); failures++; }
+    }
+
+    printf("get_block_subsidy slow start... ");
+    {
+        chain_params_select(CHAIN_MAIN);
+        const struct chain_params *p = chain_params_get();
+        int64_t s0 = get_block_subsidy(0, &p->consensus);
+        int64_t s1 = get_block_subsidy(1, &p->consensus);
+        if (s0 == 0 && s1 == 1250000000)
+            printf("OK\n");
+        else { printf("FAIL (s0=%" PRId64 " s1=%" PRId64 ")\n", s0, s1); failures++; }
+    }
+
+    printf("get_block_subsidy full reward... ");
+    {
+        const struct chain_params *p = chain_params_get();
+        int64_t s = get_block_subsidy(10, &p->consensus);
+        if (s == 1250000000)
+            printf("OK\n");
+        else { printf("FAIL (%" PRId64 ")\n", s); failures++; }
+    }
+
+    printf("get_block_subsidy pre-buttercup... ");
+    {
+        const struct chain_params *p = chain_params_get();
+        int64_t s = get_block_subsidy(706999, &p->consensus);
+        /* halvings = (706999 - 1) / 840000 = 0, subsidy = 12.5 ZCL */
+        if (s == 1250000000)
+            printf("OK\n");
+        else { printf("FAIL (%" PRId64 ")\n", s); failures++; }
+    }
+
+    printf("get_block_subsidy buttercup... ");
+    {
+        const struct chain_params *p = chain_params_get();
+        /* At buttercup: halvings = 0 + 3 = 3, subsidy/2 >> 3 = 78125000 */
+        int64_t s = get_block_subsidy(707001, &p->consensus);
+        if (s == 78125000)
+            printf("OK\n");
+        else { printf("FAIL (%" PRId64 ")\n", s); failures++; }
     }
 
     printf("ecc_init_sanity_check... ");
