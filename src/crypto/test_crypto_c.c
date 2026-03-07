@@ -3,6 +3,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <inttypes.h>
 #include "crypto/sha256.h"
 #include "crypto/sha512.h"
 #include "crypto/sha1.h"
@@ -38,6 +39,7 @@
 #include "script/script_c.h"
 #include "compressor_c.h"
 #include "script/standard_c.h"
+#include "primitives/transaction_c.h"
 
 static int check_hex(const unsigned char *data, size_t len, const char *expected)
 {
@@ -1025,6 +1027,64 @@ int main(void)
         if (non_zero)
             printf("OK\n");
         else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("outpoint init/null... ");
+    {
+        struct outpoint op;
+        outpoint_set_null(&op);
+        if (outpoint_is_null(&op))
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("tx_out init/null... ");
+    {
+        struct tx_out out;
+        tx_out_set_null(&out);
+        if (tx_out_is_null(&out) && out.value == -1)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("transaction alloc/free... ");
+    {
+        struct transaction tx;
+        transaction_init(&tx);
+        if (transaction_alloc(&tx, 2, 3) && tx.num_vin == 2 && tx.num_vout == 3 &&
+            outpoint_is_null(&tx.vin[0].prevout) && tx_out_is_null(&tx.vout[0])) {
+            transaction_free(&tx);
+            if (tx.vin == NULL && tx.vout == NULL)
+                printf("OK\n");
+            else { printf("FAIL\n"); failures++; }
+        } else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("transaction_get_value_out... ");
+    {
+        struct transaction tx;
+        transaction_init(&tx);
+        transaction_alloc(&tx, 0, 2);
+        tx.vout[0].value = 50 * COIN;
+        tx.vout[1].value = 25 * COIN;
+        int64_t total = transaction_get_value_out(&tx);
+        if (total == 75 * COIN)
+            printf("OK (%" PRId64 ")\n", total);
+        else { printf("FAIL (%" PRId64 ")\n", total); failures++; }
+        transaction_free(&tx);
+    }
+
+    printf("transaction_is_coinbase... ");
+    {
+        struct transaction tx;
+        transaction_init(&tx);
+        transaction_alloc(&tx, 1, 1);
+        /* vin[0] prevout is null by default → coinbase */
+        tx.vout[0].value = 10 * COIN;
+        if (transaction_is_coinbase(&tx))
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+        transaction_free(&tx);
     }
 
     printf("ecc_init_sanity_check... ");
