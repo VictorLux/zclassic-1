@@ -35,6 +35,7 @@
 #include "checkpoints_c.h"
 #include "pubkey_c.h"
 #include "key_c.h"
+#include "script/script_c.h"
 
 static int check_hex(const unsigned char *data, size_t len, const char *expected)
 {
@@ -837,6 +838,37 @@ int main(void)
             recovered.size == pk.size &&
             memcmp(recovered.vch, pk.vch, pk.size) == 0)
             printf("OK\n");
+        else {
+            printf("FAIL\n");
+            failures++;
+        }
+    }
+
+    printf("script opcodes... ");
+    {
+        if (strcmp(script_get_op_name(OP_DUP), "OP_DUP") == 0 &&
+            strcmp(script_get_op_name(OP_CHECKSIG), "OP_CHECKSIG") == 0 &&
+            strcmp(script_get_op_name(OP_HASH160), "OP_HASH160") == 0) {
+            printf("OK\n");
+        } else {
+            printf("FAIL\n");
+            failures++;
+        }
+    }
+
+    printf("script P2PKH... ");
+    {
+        struct script s;
+        script_init(&s);
+        script_push_op(&s, OP_DUP);
+        script_push_op(&s, OP_HASH160);
+        unsigned char hash[20];
+        memset(hash, 0xab, 20);
+        script_push_data(&s, hash, 20);
+        script_push_op(&s, OP_EQUALVERIFY);
+        script_push_op(&s, OP_CHECKSIG);
+        if (script_is_p2pkh(&s) && s.size == 25)
+            printf("OK (size=%zu)\n", s.size);
         else {
             printf("FAIL\n");
             failures++;
