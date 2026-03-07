@@ -59,6 +59,7 @@
 #include "tx_verifier_c.h"
 #include "sigops_c.h"
 #include "contextual_check_tx_c.h"
+#include "undo_c.h"
 
 static int check_hex(const unsigned char *data, size_t len, const char *expected)
 {
@@ -2306,6 +2307,86 @@ int main(void)
         if (is_expired_tx(&tx, 500) && !is_expired_tx(&tx, 499) && !is_expired_tx(&tx, 0))
             printf("OK\n");
         else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("tx_in_undo serialize/deserialize roundtrip... ");
+    {
+        struct tx_in_undo u;
+        tx_in_undo_init(&u);
+        u.coinbase = true;
+        u.height = 12345;
+        u.version = 2;
+        u.txout.value = 50 * COIN;
+        /* P2PKH script */
+        u.txout.script_pub_key.data[0] = OP_DUP;
+        u.txout.script_pub_key.data[1] = OP_HASH160;
+        u.txout.script_pub_key.data[2] = 20;
+        memset(u.txout.script_pub_key.data + 3, 0xAB, 20);
+        u.txout.script_pub_key.data[23] = OP_EQUALVERIFY;
+        u.txout.script_pub_key.data[24] = OP_CHECKSIG;
+        u.txout.script_pub_key.size = 25;
+
+        struct byte_stream s;
+        stream_init(&s, 256);
+        tx_in_undo_serialize(&u, &s);
+
+        struct byte_stream r;
+        stream_init_from_data(&r, s.data, s.size);
+        struct tx_in_undo u2;
+        tx_in_undo_init(&u2);
+        tx_in_undo_deserialize(&u2, &r);
+
+        if (u2.coinbase == true && u2.height == 12345 && u2.version == 2 &&
+            u2.txout.value == 50 * COIN &&
+            u2.txout.script_pub_key.size == 25 &&
+            u2.txout.script_pub_key.data[0] == OP_DUP &&
+            memcmp(u2.txout.script_pub_key.data + 3, u.txout.script_pub_key.data + 3, 20) == 0)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+        stream_free(&s);
+    }
+
+    printf("block_undo serialize/deserialize roundtrip... ");
+    {
+        struct block_undo bu;
+        block_undo_init(&bu);
+        block_undo_alloc(&bu, 1);
+        tx_undo_alloc(&bu.vtxundo[0], 2);
+        bu.vtxundo[0].vprevout[0].coinbase = false;
+        bu.vtxundo[0].vprevout[0].height = 100;
+        bu.vtxundo[0].vprevout[0].version = 1;
+        bu.vtxundo[0].vprevout[0].txout.value = COIN;
+        bu.vtxundo[0].vprevout[0].txout.script_pub_key.data[0] = OP_RETURN;
+        bu.vtxundo[0].vprevout[0].txout.script_pub_key.size = 1;
+        bu.vtxundo[0].vprevout[1].coinbase = true;
+        bu.vtxundo[0].vprevout[1].height = 50;
+        bu.vtxundo[0].vprevout[1].version = 1;
+        bu.vtxundo[0].vprevout[1].txout.value = 2 * COIN;
+        bu.vtxundo[0].vprevout[1].txout.script_pub_key.data[0] = OP_TRUE;
+        bu.vtxundo[0].vprevout[1].txout.script_pub_key.size = 1;
+        memset(bu.old_sprout_tree_root.data, 0xCC, 32);
+
+        struct byte_stream s;
+        stream_init(&s, 512);
+        block_undo_serialize(&bu, &s);
+
+        struct byte_stream r;
+        stream_init_from_data(&r, s.data, s.size);
+        struct block_undo bu2;
+        block_undo_init(&bu2);
+        block_undo_deserialize(&bu2, &r);
+
+        if (bu2.num_txundo == 1 &&
+            bu2.vtxundo[0].num_prevout == 2 &&
+            bu2.vtxundo[0].vprevout[0].height == 100 &&
+            bu2.vtxundo[0].vprevout[1].coinbase == true &&
+            bu2.vtxundo[0].vprevout[1].txout.value == 2 * COIN &&
+            bu2.old_sprout_tree_root.data[0] == 0xCC)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+        block_undo_free(&bu);
+        block_undo_free(&bu2);
+        stream_free(&s);
     }
 
     printf("ecc_init_sanity_check... ");
