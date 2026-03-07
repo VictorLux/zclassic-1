@@ -69,7 +69,8 @@ RPC_SRCS = \
 	rpc/async_rpc_operation.c rpc/async_rpc_queue.c
 
 STORAGE_SRCS = \
-	storage/dbwrapper.c storage/txdb.c storage/disk_block_io.c
+	storage/dbwrapper.c storage/txdb.c storage/disk_block_io.c \
+	storage/coins_db.c
 
 POLICY_SRCS = \
 	policy/fees.c

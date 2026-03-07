@@ -85,6 +85,7 @@
 #include "validation/main_logic.h"
 #include "validation/checkqueue.h"
 #include "coins/coins_view.h"
+#include "storage/coins_db.h"
 
 static int test_tip_count = 0;
 static int test_tip_height = 0;
@@ -4306,6 +4307,45 @@ int main(void)
             printf("OK\n");
         else { printf("FAIL\n"); failures++; }
         coins_view_cache_free(&cache);
+    }
+
+    printf("coins_view_db write/read... ");
+    {
+        struct coins_view_db cvdb;
+        if (coins_view_db_open(&cvdb, "/tmp/test_coins_db", 1 << 20, false, true)) {
+            struct uint256 txid;
+            memset(txid.data, 0xab, 32);
+
+            struct coins_map cm;
+            coins_map_init(&cm);
+            struct coins_cache_entry *e = coins_map_insert(&cm, &txid);
+            coins_alloc(&e->coins, 1);
+            e->coins.is_coinbase = true;
+            e->coins.height = 1000;
+            e->coins.version = 1;
+            e->coins.vout[0].value = 50 * COIN;
+            e->flags = COINS_CACHE_DIRTY;
+
+            struct uint256 best;
+            memset(best.data, 0xcc, 32);
+            bool ok = coins_view_db_batch_write(&cvdb, &cm, &best);
+            coins_map_free(&cm);
+
+            if (ok) {
+                bool have = coins_view_db_have_coins(&cvdb, &txid);
+                struct uint256 read_best;
+                bool got_best = coins_view_db_get_best_block(&cvdb, &read_best);
+                if (have && got_best && uint256_cmp(&best, &read_best) == 0)
+                    printf("OK\n");
+                else { printf("FAIL (read)\n"); failures++; }
+            } else {
+                printf("FAIL (write)\n");
+                failures++;
+            }
+            coins_view_db_close(&cvdb);
+        } else {
+            printf("SKIP (open failed)\n");
+        }
     }
 
     printf("block serialize/deserialize roundtrip... ");
