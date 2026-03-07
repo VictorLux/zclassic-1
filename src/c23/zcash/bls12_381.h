@@ -102,6 +102,7 @@ void g1_neg(struct g1_point *r, const struct g1_point *p);
 void g1_add(struct g1_point *r, const struct g1_point *a, const struct g1_point *b);
 void g1_double(struct g1_point *r, const struct g1_point *a);
 bool g1_from_compressed(struct g1_point *p, const uint8_t in[48]);
+bool g1_from_uncompressed(struct g1_point *p, const uint8_t in[96]);
 void g1_to_affine(struct fp *ax, struct fp *ay, const struct g1_point *p);
 void g1_scalar_mul(struct g1_point *r, const struct g1_point *p, const uint64_t scalar[4]);
 
@@ -116,6 +117,7 @@ void g2_neg(struct g2_point *r, const struct g2_point *p);
 void g2_add(struct g2_point *r, const struct g2_point *a, const struct g2_point *b);
 void g2_double(struct g2_point *r, const struct g2_point *a);
 bool g2_from_compressed(struct g2_point *p, const uint8_t in[96]);
+bool g2_from_uncompressed(struct g2_point *p, const uint8_t in[192]);
 void g2_to_affine(struct fp2 *ax, struct fp2 *ay, const struct g2_point *p);
 
 /* Optimal Ate pairing */
@@ -157,5 +159,14 @@ bool groth16_verify(const struct groth16_vk *vk,
 /* Pack bytes into Fr scalars (253 bits per scalar, little-endian bit ordering) */
 void multipack_bytes_to_fr(uint64_t (*out)[4], size_t *n_out,
                            const uint8_t *bytes, size_t n_bytes);
+
+/* Read Groth16 verifying key from bellman Parameters file.
+ * Reads the VK portion only (skips proving key).
+ * Format: uncompressed G1 (96 bytes) and G2 (192 bytes) points.
+ * Caller must free vk->ic when done. */
+bool groth16_vk_read(struct groth16_vk *vk, const uint8_t *data, size_t len);
+
+/* Read just the VerifyingKey from raw bytes (standalone VK, not wrapped in Parameters) */
+bool groth16_vk_read_raw(struct groth16_vk *vk, const uint8_t *data, size_t len);
 
 #endif

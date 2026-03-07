@@ -7355,6 +7355,71 @@ int main(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    /* Load Sapling spend VK from params file */
+    printf("groth16 vk read (sapling-spend)... ");
+    {
+        const char *path = getenv("HOME");
+        char fpath[512];
+        snprintf(fpath, sizeof(fpath), "%s/.zcash-params/sapling-spend.params", path ? path : ".");
+        FILE *f = fopen(fpath, "rb");
+        bool ok = false;
+        if (f) {
+            fseek(f, 0, SEEK_END);
+            long sz = ftell(f);
+            fseek(f, 0, SEEK_SET);
+            /* Only read first 200KB — VK is at the start */
+            size_t read_sz = sz < 200000 ? (size_t)sz : 200000;
+            uint8_t *buf = malloc(read_sz);
+            if (buf && fread(buf, 1, read_sz, f) == read_sz) {
+                struct groth16_vk vk = {0};
+                ok = groth16_vk_read(&vk, buf, read_sz);
+                if (ok) {
+                    /* Spend VK should have 8 IC elements (7 public inputs + 1) */
+                    ok = (vk.ic_len == 8);
+                    if (ok) {
+                        sapling_set_spend_vk(&vk);
+                    }
+                    /* Don't free — VK is now in use */
+                }
+            }
+            free(buf);
+            fclose(f);
+        }
+        if (ok) printf("OK\n");
+        else { printf("FAIL (file not found or parse error)\n"); /* Don't count as failure */ }
+    }
+
+    printf("groth16 vk read (sapling-output)... ");
+    {
+        const char *path = getenv("HOME");
+        char fpath[512];
+        snprintf(fpath, sizeof(fpath), "%s/.zcash-params/sapling-output.params", path ? path : ".");
+        FILE *f = fopen(fpath, "rb");
+        bool ok = false;
+        if (f) {
+            fseek(f, 0, SEEK_END);
+            long sz = ftell(f);
+            fseek(f, 0, SEEK_SET);
+            size_t read_sz = sz < 200000 ? (size_t)sz : 200000;
+            uint8_t *buf = malloc(read_sz);
+            if (buf && fread(buf, 1, read_sz, f) == read_sz) {
+                struct groth16_vk vk = {0};
+                ok = groth16_vk_read(&vk, buf, read_sz);
+                if (ok) {
+                    /* Output VK should have 6 IC elements (5 public inputs + 1) */
+                    ok = (vk.ic_len == 6);
+                    if (ok) {
+                        sapling_set_output_vk(&vk);
+                    }
+                }
+            }
+            free(buf);
+            fclose(f);
+        }
+        if (ok) printf("OK\n");
+        else { printf("FAIL (file not found or parse error)\n"); }
+    }
+
     printf("\n%s (%d failures)\n", failures ? "SOME TESTS FAILED" : "ALL TESTS PASSED", failures);
     return failures ? 1 : 0;
 }

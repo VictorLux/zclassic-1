@@ -6,6 +6,7 @@
 
 #include "zcash/bls12_381.h"
 #include <string.h>
+#include <stdlib.h>
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wpedantic"
@@ -1112,6 +1113,40 @@ bool g1_from_compressed(struct g1_point *p, const uint8_t in[48])
     return true;
 }
 
+bool g1_from_uncompressed(struct g1_point *p, const uint8_t in[96])
+{
+    uint8_t copy[96];
+    memcpy(copy, in, 96);
+
+    bool compressed = (copy[0] >> 7) & 1;
+    bool infinity = (copy[0] >> 6) & 1;
+    copy[0] &= 0x1f;
+
+    if (compressed) return false;
+
+    if (infinity) {
+        g1_identity(p);
+        return true;
+    }
+
+    struct fp x, y;
+    if (!fp_from_bytes(&x, copy)) return false;
+    if (!fp_from_bytes(&y, copy + 48)) return false;
+
+    /* Verify on curve: y^2 == x^3 + 4 */
+    struct fp lhs, rhs;
+    fp_sq(&lhs, &y);
+    fp_sq(&rhs, &x);
+    fp_mul(&rhs, &rhs, &x);
+    fp_add(&rhs, &rhs, &G1_B);
+    if (!fp_eq(&lhs, &rhs)) return false;
+
+    p->x = x;
+    p->y = y;
+    fp_one(&p->z);
+    return true;
+}
+
 /* ===== G2 point operations (Jacobian, y^2 = x^3 + 4(u+1)) ===== */
 
 /* B coefficient for G2 = 4*(1+u) in Montgomery form */
@@ -1273,6 +1308,43 @@ bool g2_from_compressed(struct g2_point *p, const uint8_t in[96])
     bool y_largest = fp2_lexicographically_largest(&y);
     if (y_largest != greatest)
         y = negy;
+
+    p->x = x;
+    p->y = y;
+    fp2_one(&p->z);
+    return true;
+}
+
+bool g2_from_uncompressed(struct g2_point *p, const uint8_t in[192])
+{
+    uint8_t copy[192];
+    memcpy(copy, in, 192);
+
+    bool compressed = (copy[0] >> 7) & 1;
+    bool infinity = (copy[0] >> 6) & 1;
+    copy[0] &= 0x1f;
+
+    if (compressed) return false;
+
+    if (infinity) {
+        g2_identity(p);
+        return true;
+    }
+
+    /* Fp2 x: c1 first 48 bytes, c0 next 48 */
+    struct fp2 x, y;
+    if (!fp_from_bytes(&x.c1, copy)) return false;
+    if (!fp_from_bytes(&x.c0, copy + 48)) return false;
+    if (!fp_from_bytes(&y.c1, copy + 96)) return false;
+    if (!fp_from_bytes(&y.c0, copy + 144)) return false;
+
+    /* Verify: y^2 == x^3 + 4(1+u) */
+    struct fp2 lhs, rhs;
+    fp2_sq(&lhs, &y);
+    fp2_sq(&rhs, &x);
+    fp2_mul(&rhs, &rhs, &x);
+    fp2_add(&rhs, &rhs, &G2_B);
+    if (!fp2_eq(&lhs, &rhs)) return false;
 
     p->x = x;
     p->y = y;
@@ -1739,6 +1811,77 @@ bool groth16_verify(const struct groth16_vk *vk,
     g1_neg(&pts[3], &vk->alpha_g1);
 
     return bls12_381_multi_pairing_check(pts, qts, 4);
+}
+
+/* ===== VK reader (bellman format) ===== */
+
+static bool read_g1_uncompressed(struct g1_point *p, const uint8_t **data, size_t *remaining)
+{
+    if (*remaining < 96) return false;
+    if (!g1_from_uncompressed(p, *data)) return false;
+    *data += 96;
+    *remaining -= 96;
+    return true;
+}
+
+static bool read_g2_uncompressed(struct g2_point *p, const uint8_t **data, size_t *remaining)
+{
+    if (*remaining < 192) return false;
+    if (!g2_from_uncompressed(p, *data)) return false;
+    *data += 192;
+    *remaining -= 192;
+    return true;
+}
+
+static uint32_t read_be32(const uint8_t **data, size_t *remaining)
+{
+    uint32_t v = ((uint32_t)(*data)[0] << 24) | ((uint32_t)(*data)[1] << 16) |
+                 ((uint32_t)(*data)[2] << 8) | (*data)[3];
+    *data += 4;
+    *remaining -= 4;
+    return v;
+}
+
+bool groth16_vk_read_raw(struct groth16_vk *vk, const uint8_t *data, size_t len)
+{
+    /* VK format: alpha_g1(96) beta_g1(96) beta_g2(192) gamma_g2(192)
+     *            delta_g1(96) delta_g2(192) ic_len(4) ic[](96 each)
+     * Minimum: 96+96+192+192+96+192+4 = 868 bytes */
+    if (len < 868) return false;
+
+    struct g1_point beta_g1, delta_g1;
+    if (!read_g1_uncompressed(&vk->alpha_g1, &data, &len)) return false;
+    if (!read_g1_uncompressed(&beta_g1, &data, &len)) return false;  /* beta_g1 unused */
+    if (!read_g2_uncompressed(&vk->beta_g2, &data, &len)) return false;
+    if (!read_g2_uncompressed(&vk->gamma_g2, &data, &len)) return false;
+    if (!read_g1_uncompressed(&delta_g1, &data, &len)) return false;  /* delta_g1 unused */
+    if (!read_g2_uncompressed(&vk->delta_g2, &data, &len)) return false;
+
+    if (len < 4) return false;
+    uint32_t ic_len = read_be32(&data, &len);
+    if (ic_len > 1000000) return false;  /* sanity check */
+    if (len < (size_t)ic_len * 96) return false;
+
+    vk->ic = malloc(ic_len * sizeof(struct g1_point));
+    if (!vk->ic) return false;
+    vk->ic_len = ic_len;
+
+    for (uint32_t i = 0; i < ic_len; i++) {
+        if (!read_g1_uncompressed(&vk->ic[i], &data, &len)) {
+            free(vk->ic);
+            vk->ic = NULL;
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool groth16_vk_read(struct groth16_vk *vk, const uint8_t *data, size_t len)
+{
+    /* Parameters file starts with VK, then proving key arrays.
+     * We only need the VK portion. */
+    return groth16_vk_read_raw(vk, data, len);
 }
 
 #pragma GCC diagnostic pop
