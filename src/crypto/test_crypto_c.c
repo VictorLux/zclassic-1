@@ -55,6 +55,7 @@
 #include "chainparams_c.h"
 #include "subsidy_c.h"
 #include "sighash_c.h"
+#include "check_transaction_c.h"
 
 static int check_hex(const unsigned char *data, size_t len, const char *expected)
 {
@@ -1995,6 +1996,112 @@ int main(void)
         if (memcmp(r1.data, r2.data, 32) == 0 && !uint256_is_null(&r1))
             printf("OK\n");
         else { printf("FAIL (cache mismatch)\n"); failures++; }
+        transaction_free(&tx);
+    }
+
+    printf("check_transaction valid... ");
+    {
+        struct transaction tx;
+        transaction_init(&tx);
+        transaction_alloc(&tx, 1, 1);
+        tx.version = 1;
+        tx.overwintered = false;
+        memset(tx.vin[0].prevout.hash.data, 0x11, 32);
+        tx.vin[0].prevout.n = 0;
+        tx.vin[0].sequence = 0xffffffff;
+        tx.vin[0].script_sig.data[0] = 0x01;
+        tx.vin[0].script_sig.data[1] = 0x01;
+        tx.vin[0].script_sig.size = 2;
+        tx.vout[0].value = 50 * COIN;
+        tx.vout[0].script_pub_key.data[0] = OP_DUP;
+        tx.vout[0].script_pub_key.size = 1;
+
+        struct validation_state state;
+        validation_state_init(&state);
+        if (check_transaction(&tx, &state))
+            printf("OK\n");
+        else { printf("FAIL (%s)\n", state.reject_reason); failures++; }
+        transaction_free(&tx);
+    }
+
+    printf("check_transaction negative output... ");
+    {
+        struct transaction tx;
+        transaction_init(&tx);
+        transaction_alloc(&tx, 1, 1);
+        tx.version = 1;
+        memset(tx.vin[0].prevout.hash.data, 0x11, 32);
+        tx.vin[0].prevout.n = 0;
+        tx.vin[0].script_sig.size = 2;
+        tx.vout[0].value = -1;
+
+        struct validation_state state;
+        validation_state_init(&state);
+        if (!check_transaction(&tx, &state) &&
+            strcmp(state.reject_reason, "bad-txns-vout-negative") == 0)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+        transaction_free(&tx);
+    }
+
+    printf("check_transaction empty vin... ");
+    {
+        struct transaction tx;
+        transaction_init(&tx);
+        transaction_alloc(&tx, 0, 1);
+        tx.version = 1;
+        tx.vout[0].value = COIN;
+
+        struct validation_state state;
+        validation_state_init(&state);
+        if (!check_transaction(&tx, &state) &&
+            strcmp(state.reject_reason, "bad-txns-vin-empty") == 0)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+        transaction_free(&tx);
+    }
+
+    printf("check_transaction duplicate inputs... ");
+    {
+        struct transaction tx;
+        transaction_init(&tx);
+        transaction_alloc(&tx, 2, 1);
+        tx.version = 1;
+        memset(tx.vin[0].prevout.hash.data, 0x22, 32);
+        tx.vin[0].prevout.n = 0;
+        tx.vin[0].script_sig.size = 2;
+        memcpy(&tx.vin[1].prevout, &tx.vin[0].prevout, sizeof(struct outpoint));
+        tx.vin[1].script_sig.size = 2;
+        tx.vout[0].value = COIN;
+
+        struct validation_state state;
+        validation_state_init(&state);
+        if (!check_transaction(&tx, &state) &&
+            strcmp(state.reject_reason, "bad-txns-inputs-duplicate") == 0)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+        transaction_free(&tx);
+    }
+
+    printf("check_transaction overwinter version... ");
+    {
+        struct transaction tx;
+        transaction_init(&tx);
+        transaction_alloc(&tx, 1, 1);
+        tx.version = SAPLING_TX_VERSION;
+        tx.overwintered = true;
+        tx.version_group_id = SAPLING_VERSION_GROUP_ID;
+        tx.expiry_height = 1000;
+        memset(tx.vin[0].prevout.hash.data, 0x33, 32);
+        tx.vin[0].prevout.n = 0;
+        tx.vin[0].script_sig.size = 2;
+        tx.vout[0].value = COIN;
+
+        struct validation_state state;
+        validation_state_init(&state);
+        if (check_transaction(&tx, &state))
+            printf("OK\n");
+        else { printf("FAIL (%s)\n", state.reject_reason); failures++; }
         transaction_free(&tx);
     }
 
