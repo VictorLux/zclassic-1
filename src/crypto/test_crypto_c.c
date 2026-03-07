@@ -46,6 +46,8 @@
 #include "coins_c.h"
 #include "serialize_c.h"
 #include "primitives/block_c.h"
+#include "script/sigencoding_c.h"
+#include "support/pagelocker_c.h"
 
 static int check_hex(const unsigned char *data, size_t len, const char *expected)
 {
@@ -1443,6 +1445,83 @@ int main(void)
             printf("OK\n");
         else { printf("FAIL\n"); failures++; }
         transaction_free(&tx);
+    }
+
+    printf("sigencoding valid DER... ");
+    {
+        unsigned char sig[70];
+        sig[0] = 0x30; sig[1] = 68;
+        sig[2] = 0x02; sig[3] = 32;
+        memset(&sig[4], 0x01, 32);
+        sig[36] = 0x02; sig[37] = 32;
+        memset(&sig[38], 0x01, 32);
+        ScriptError err = SCRIPT_ERR_OK;
+        bool ok = check_data_signature_encoding(sig, 70, 0, &err);
+        if (ok && err == SCRIPT_ERR_OK)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("sigencoding invalid DER... ");
+    {
+        unsigned char sig[] = {0x30, 0x01, 0x00};
+        ScriptError err = SCRIPT_ERR_OK;
+        bool ok = check_data_signature_encoding(sig, 3, 0, &err);
+        if (!ok && err == SCRIPT_ERR_SIG_DER)
+            printf("OK\n");
+        else { printf("FAIL (ok=%d, err=%d)\n", ok, err); failures++; }
+    }
+
+    printf("sigencoding empty sig... ");
+    {
+        ScriptError err = SCRIPT_ERR_OK;
+        if (check_data_signature_encoding(NULL, 0, 0, &err) &&
+            check_transaction_signature_encoding(NULL, 0, 0, &err))
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("check_pubkey_encoding... ");
+    {
+        unsigned char compressed[33] = {0x02};
+        unsigned char uncompressed[65] = {0x04};
+        unsigned char bad[10] = {0x05};
+        ScriptError err;
+        if (check_pubkey_encoding(compressed, 33, SCRIPT_VERIFY_STRICTENC, &err) &&
+            check_pubkey_encoding(uncompressed, 65, SCRIPT_VERIFY_STRICTENC, &err) &&
+            !check_pubkey_encoding(bad, 10, SCRIPT_VERIFY_STRICTENC, &err))
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("pagelocker lock/unlock... ");
+    {
+        struct locked_page_manager m;
+        locked_page_manager_init(&m);
+        unsigned char buf[64];
+        locked_page_manager_lock_range(&m, buf, sizeof(buf));
+        int count = locked_page_manager_get_count(&m);
+        locked_page_manager_unlock_range(&m, buf, sizeof(buf));
+        int count2 = locked_page_manager_get_count(&m);
+        if (count >= 1 && count2 == 0)
+            printf("OK (locked=%d, unlocked=%d)\n", count, count2);
+        else { printf("FAIL (locked=%d, unlocked=%d)\n", count, count2); failures++; }
+        locked_page_manager_destroy(&m);
+    }
+
+    printf("lock_object/unlock_object... ");
+    {
+        unsigned char secret[32];
+        memset(secret, 0xAA, 32);
+        lock_object(secret, sizeof(secret));
+        unlock_object(secret, sizeof(secret));
+        bool zeroed = true;
+        for (int i = 0; i < 32; i++) {
+            if (secret[i] != 0) { zeroed = false; break; }
+        }
+        if (zeroed)
+            printf("OK (memory cleansed)\n");
+        else { printf("FAIL\n"); failures++; }
     }
 
     printf("ecc_init_sanity_check... ");
