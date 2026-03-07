@@ -71,6 +71,7 @@
 #include "validation/txmempool.h"
 #include "policy/fees.h"
 #include "json/json.h"
+#include "rpc/server.h"
 
 static int test_tip_count = 0;
 static int test_tip_height = 0;
@@ -3534,6 +3535,77 @@ int main(void)
 
         json_free(&obj);
         json_free(&parsed);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("json_rpc_request... ");
+    {
+        struct json_value params, id;
+        json_init(&params);
+        json_set_array(&params);
+        json_init(&id);
+        json_set_int(&id, 1);
+
+        char buf[512];
+        json_rpc_request("getinfo", &params, &id, buf, sizeof(buf));
+        bool ok = strstr(buf, "\"method\":\"getinfo\"") != NULL;
+        ok = ok && strstr(buf, "\"id\":1") != NULL;
+
+        json_free(&params);
+        json_free(&id);
+        if (ok) printf("OK\n"); else { printf("FAIL (got: %s)\n", buf); failures++; }
+    }
+
+    printf("json_rpc_error... ");
+    {
+        struct json_value err;
+        json_rpc_error(&err, RPC_METHOD_NOT_FOUND, "Method not found");
+        const struct json_value *code = json_get(&err, "code");
+        const struct json_value *msg = json_get(&err, "message");
+        bool ok = code && json_get_int(code) == RPC_METHOD_NOT_FOUND;
+        ok = ok && msg && strcmp(json_get_str(msg), "Method not found") == 0;
+        json_free(&err);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("rpc_table init/append/find... ");
+    {
+        struct rpc_table t;
+        rpc_table_init(&t);
+        struct rpc_command cmd = { "control", "test_cmd", NULL, true };
+        bool ok = rpc_table_append(&t, &cmd);
+        ok = ok && rpc_table_find(&t, "test_cmd") != NULL;
+        ok = ok && rpc_table_find(&t, "nonexistent") == NULL;
+        ok = ok && !rpc_table_append(&t, &cmd);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("rpc warmup state... ");
+    {
+        set_rpc_warmup_status("Loading blocks...");
+        char status[256];
+        bool ok = rpc_is_in_warmup(status, sizeof(status));
+        ok = ok && strcmp(status, "Loading blocks...") == 0;
+        set_rpc_warmup_finished();
+        ok = ok && !rpc_is_in_warmup(NULL, 0);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("value_from_amount... ");
+    {
+        struct json_value v;
+        value_from_amount(123456789LL, &v);
+        bool ok = v.type == JSON_STR;
+        ok = ok && strcmp(json_get_str(&v), "1.23456789") == 0;
+        json_free(&v);
+
+        value_from_amount(-50000000LL, &v);
+        ok = ok && strcmp(json_get_str(&v), "-0.50000000") == 0;
+        json_free(&v);
+
+        value_from_amount(0, &v);
+        ok = ok && strcmp(json_get_str(&v), "0.00000000") == 0;
+        json_free(&v);
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
