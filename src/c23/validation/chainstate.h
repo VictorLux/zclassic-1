@@ -1,0 +1,113 @@
+/* Copyright (c) 2009-2010 Satoshi Nakamoto
+ * Copyright (c) 2009-2014 The Bitcoin Core developers
+ * Copyright 2026 Rhett Creighton - Apache License 2.0
+ * Distributed under the MIT software license, see the accompanying
+ * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
+
+#ifndef ZCL_VALIDATION_CHAINSTATE_H
+#define ZCL_VALIDATION_CHAINSTATE_H
+
+#include "chain/chain.h"
+#include "core/uint256.h"
+#include "util/sync.h"
+#include <stdbool.h>
+#include <stdint.h>
+
+#define MAX_BLOCK_MAP_SIZE 2000000
+#define MAX_CHAIN_HEIGHT 2000000
+
+struct block_file_info {
+    unsigned int nBlocks;
+    unsigned int nSize;
+    unsigned int nUndoSize;
+    unsigned int nHeightFirst;
+    unsigned int nHeightLast;
+    uint64_t nTimeFirst;
+    uint64_t nTimeLast;
+};
+
+static inline void block_file_info_init(struct block_file_info *fi)
+{
+    memset(fi, 0, sizeof(*fi));
+}
+
+static inline void block_file_info_add_block(struct block_file_info *fi,
+                                              unsigned int height,
+                                              uint64_t block_time)
+{
+    if (fi->nBlocks == 0 || fi->nHeightFirst > height)
+        fi->nHeightFirst = height;
+    if (fi->nBlocks == 0 || fi->nTimeFirst > block_time)
+        fi->nTimeFirst = block_time;
+    fi->nBlocks++;
+    if (height > fi->nHeightLast)
+        fi->nHeightLast = height;
+    if (block_time > fi->nTimeLast)
+        fi->nTimeLast = block_time;
+}
+
+struct disk_tx_pos {
+    struct disk_block_pos block_pos;
+    unsigned int nTxOffset;
+};
+
+static inline void disk_tx_pos_init(struct disk_tx_pos *p)
+{
+    disk_block_pos_init(&p->block_pos);
+    p->nTxOffset = 0;
+}
+
+struct block_map_entry {
+    struct uint256 hash;
+    struct block_index *index;
+};
+
+struct block_map {
+    struct block_map_entry *entries;
+    size_t size;
+    size_t capacity;
+};
+
+void block_map_init(struct block_map *m);
+void block_map_free(struct block_map *m);
+struct block_index *block_map_find(const struct block_map *m,
+                                    const struct uint256 *hash);
+bool block_map_insert(struct block_map *m, const struct uint256 *hash,
+                      struct block_index *index);
+size_t block_map_count(const struct block_map *m);
+
+struct active_chain {
+    struct block_index **chain;
+    int height;
+    int capacity;
+};
+
+void active_chain_init(struct active_chain *c);
+void active_chain_free(struct active_chain *c);
+struct block_index *active_chain_tip(const struct active_chain *c);
+struct block_index *active_chain_at(const struct active_chain *c, int height);
+bool active_chain_contains(const struct active_chain *c,
+                           const struct block_index *bi);
+bool active_chain_set_tip(struct active_chain *c, struct block_index *bi);
+int active_chain_height(const struct active_chain *c);
+
+struct chainstate {
+    zcl_mutex_t cs_main;
+    struct block_map map_block_index;
+    struct active_chain chain_active;
+    struct block_index *pindex_best_header;
+    bool f_tx_index;
+    bool f_reindex;
+    bool f_importing;
+    bool f_have_pruned;
+    bool f_prune_mode;
+    uint64_t n_prune_target;
+};
+
+void chainstate_init(struct chainstate *cs);
+void chainstate_free(struct chainstate *cs);
+
+struct block_index *chainstate_insert_block_index(struct chainstate *cs,
+                                                   const struct uint256 *hash);
+
+#endif

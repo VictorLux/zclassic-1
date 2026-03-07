@@ -77,6 +77,8 @@
 #include "core/core_io.h"
 #include "rpc/async_rpc_operation.h"
 #include "rpc/async_rpc_queue.h"
+#include "validation/chainstate.h"
+#include "storage/txdb.h"
 
 static int test_tip_count = 0;
 static int test_tip_height = 0;
@@ -3969,6 +3971,137 @@ int main(void)
         }
         async_op_free(&op);
         async_queue_free(&q);
+    }
+
+    printf("block_map insert/find... ");
+    {
+        struct block_map bm;
+        block_map_init(&bm);
+        struct uint256 h1, h2;
+        uint256_set_null(&h1);
+        h1.data[0] = 1;
+        uint256_set_null(&h2);
+        h2.data[0] = 2;
+
+        struct block_index *bi1 = calloc(1, sizeof(struct block_index));
+        block_index_init(bi1);
+        bi1->nHeight = 100;
+
+        struct block_index *bi2 = calloc(1, sizeof(struct block_index));
+        block_index_init(bi2);
+        bi2->nHeight = 200;
+
+        block_map_insert(&bm, &h1, bi1);
+        block_map_insert(&bm, &h2, bi2);
+
+        struct block_index *found = block_map_find(&bm, &h1);
+        if (found && found->nHeight == 100 && block_map_count(&bm) == 2)
+            printf("OK\n");
+        else {
+            printf("FAIL\n");
+            failures++;
+        }
+        block_map_free(&bm);
+    }
+
+    printf("active_chain set_tip... ");
+    {
+        struct block_index b0, b1, b2;
+        block_index_init(&b0);
+        block_index_init(&b1);
+        block_index_init(&b2);
+        b0.nHeight = 0;
+        b0.pprev = NULL;
+        b1.nHeight = 1;
+        b1.pprev = &b0;
+        b2.nHeight = 2;
+        b2.pprev = &b1;
+
+        struct active_chain ac;
+        active_chain_init(&ac);
+        active_chain_set_tip(&ac, &b2);
+
+        if (active_chain_tip(&ac) == &b2 &&
+            active_chain_at(&ac, 0) == &b0 &&
+            active_chain_at(&ac, 1) == &b1 &&
+            active_chain_height(&ac) == 2 &&
+            active_chain_contains(&ac, &b1))
+            printf("OK\n");
+        else {
+            printf("FAIL\n");
+            failures++;
+        }
+        active_chain_free(&ac);
+    }
+
+    printf("chainstate init/insert... ");
+    {
+        struct chainstate cs;
+        chainstate_init(&cs);
+        struct uint256 h;
+        uint256_set_null(&h);
+        h.data[0] = 0xab;
+        struct block_index *bi = chainstate_insert_block_index(&cs, &h);
+        struct block_index *bi2 = chainstate_insert_block_index(&cs, &h);
+        if (bi && bi == bi2 && block_map_count(&cs.map_block_index) == 1)
+            printf("OK\n");
+        else {
+            printf("FAIL\n");
+            failures++;
+        }
+        chainstate_free(&cs);
+    }
+
+    printf("block_tree_db flags... ");
+    {
+        struct block_tree_db btdb;
+        if (block_tree_db_open(&btdb, "/tmp/test_btdb", 1 << 20, false, true)) {
+            bool val = false;
+            block_tree_db_write_flag(&btdb, "txindex", true);
+            block_tree_db_read_flag(&btdb, "txindex", &val);
+            if (val) {
+                block_tree_db_write_flag(&btdb, "txindex", false);
+                block_tree_db_read_flag(&btdb, "txindex", &val);
+                if (!val)
+                    printf("OK\n");
+                else {
+                    printf("FAIL (clear)\n");
+                    failures++;
+                }
+            } else {
+                printf("FAIL (read)\n");
+                failures++;
+            }
+            block_tree_db_close(&btdb);
+        } else {
+            printf("SKIP (open failed)\n");
+        }
+    }
+
+    printf("block_tree_db reindex... ");
+    {
+        struct block_tree_db btdb;
+        if (block_tree_db_open(&btdb, "/tmp/test_btdb2", 1 << 20, false, true)) {
+            bool val = false;
+            block_tree_db_write_reindexing(&btdb, true);
+            block_tree_db_read_reindexing(&btdb, &val);
+            if (val) {
+                block_tree_db_write_reindexing(&btdb, false);
+                block_tree_db_read_reindexing(&btdb, &val);
+                if (!val)
+                    printf("OK\n");
+                else {
+                    printf("FAIL (clear)\n");
+                    failures++;
+                }
+            } else {
+                printf("FAIL\n");
+                failures++;
+            }
+            block_tree_db_close(&btdb);
+        } else {
+            printf("SKIP (open failed)\n");
+        }
     }
 
     printf("\n%s (%d failures)\n", failures ? "SOME TESTS FAILED" : "ALL TESTS PASSED", failures);

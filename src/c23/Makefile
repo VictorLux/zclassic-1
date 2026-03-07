@@ -44,7 +44,8 @@ KEYS_SRCS = \
 VALIDATION_SRCS = \
 	validation/check_transaction.c validation/contextual_check_tx.c \
 	validation/sigops.c validation/sighash.c validation/tx_verifier.c \
-	validation/validationinterface.c validation/txmempool.c
+	validation/validationinterface.c validation/txmempool.c \
+	validation/chainstate.c
 
 SUPPORT_SRCS = \
 	support/cleanse.c support/pagelocker.c
@@ -68,7 +69,7 @@ RPC_SRCS = \
 	rpc/async_rpc_operation.c rpc/async_rpc_queue.c
 
 STORAGE_SRCS = \
-	storage/dbwrapper.c
+	storage/dbwrapper.c storage/txdb.c
 
 POLICY_SRCS = \
 	policy/fees.c
