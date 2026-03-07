@@ -16,6 +16,8 @@
 #include "base58.h"
 #include "bech32.h"
 #include "arith_uint256.h"
+#include "random.h"
+#include "utiltime.h"
 
 static int check_hex(const unsigned char *data, size_t len, const char *expected)
 {
@@ -264,6 +266,56 @@ int main(void)
             printf("OK\n");
         else {
             printf("FAIL: %s\n", hex);
+            failures++;
+        }
+    }
+
+    printf("random bytes... ");
+    {
+        unsigned char buf[32];
+        memset(buf, 0, 32);
+        GetRandBytes(buf, 32);
+        int nonzero = 0;
+        for (int i = 0; i < 32; i++)
+            if (buf[i] != 0) nonzero++;
+        if (nonzero > 0)
+            printf("OK (%d non-zero bytes)\n", nonzero);
+        else {
+            printf("FAIL: all zeros\n");
+            failures++;
+        }
+    }
+
+    printf("GetRand... ");
+    {
+        uint64_t r = GetRand(100);
+        if (r < 100)
+            printf("OK (%llu)\n", (unsigned long long)r);
+        else {
+            printf("FAIL: %llu >= 100\n", (unsigned long long)r);
+            failures++;
+        }
+    }
+
+    printf("GetTime... ");
+    {
+        int64_t t = GetTime();
+        if (t > 1700000000)
+            printf("OK (%lld)\n", (long long)t);
+        else {
+            printf("FAIL: %lld\n", (long long)t);
+            failures++;
+        }
+    }
+
+    printf("DateTimeStrFormat... ");
+    {
+        char buf[64];
+        DateTimeStrFormat(buf, sizeof(buf), "%Y-%m-%d", 0);
+        if (strcmp(buf, "1970-01-01") == 0)
+            printf("OK\n");
+        else {
+            printf("FAIL: %s\n", buf);
             failures++;
         }
     }
