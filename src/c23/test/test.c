@@ -97,6 +97,7 @@
 #include "validation/check_block.h"
 #include "zcash/address.h"
 #include "zcash/note.h"
+#include "crypto/chacha20poly1305.h"
 
 static int test_tip_count = 0;
 static int test_tip_height = 0;
@@ -5533,6 +5534,120 @@ int main(void)
             if (esk.ovk.data[i] != 0) ovk_nonzero = true;
         }
         ok = ask_nonzero && nsk_nonzero && ovk_nonzero;
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* --- ChaCha20 block (RFC 7539 test vector 2.3.2) --- */
+    printf("chacha20_block RFC 7539... ");
+    {
+        uint8_t key[32] = {
+            0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,
+            0x08,0x09,0x0a,0x0b,0x0c,0x0d,0x0e,0x0f,
+            0x10,0x11,0x12,0x13,0x14,0x15,0x16,0x17,
+            0x18,0x19,0x1a,0x1b,0x1c,0x1d,0x1e,0x1f
+        };
+        uint8_t nonce[12] = {0x00,0x00,0x00,0x09,0x00,0x00,0x00,0x4a,
+                              0x00,0x00,0x00,0x00};
+        uint8_t out[64];
+        chacha20_block(key, 1, nonce, out);
+
+        /* First 4 bytes of expected output: 10 f1 e7 e4 */
+        bool ok = (out[0] == 0x10 && out[1] == 0xf1 &&
+                   out[2] == 0xe7 && out[3] == 0xe4);
+        /* Last 4 bytes (LE of 0x4e3c50a2): a2 50 3c 4e */
+        ok = ok && (out[60] == 0xa2 && out[61] == 0x50 &&
+                    out[62] == 0x3c && out[63] == 0x4e);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* --- Poly1305 MAC (RFC 7539 test vector 2.5.2) --- */
+    printf("poly1305_mac RFC 7539... ");
+    {
+        uint8_t key[32] = {
+            0x85,0xd6,0xbe,0x78,0x57,0x55,0x6d,0x33,
+            0x7f,0x44,0x52,0xfe,0x42,0xd5,0x06,0xa8,
+            0x01,0x03,0x80,0x8a,0xfb,0x0d,0xb2,0xfd,
+            0x4a,0xbf,0xf6,0xaf,0x41,0x49,0xf5,0x1b
+        };
+        const char *msg = "Cryptographic Forum Research Group";
+        uint8_t tag[16];
+        poly1305_mac((const uint8_t *)msg, strlen(msg), key, tag);
+
+        uint8_t expected[16] = {
+            0xa8,0x06,0x1d,0xc1,0x30,0x51,0x36,0xc6,
+            0xc2,0x2b,0x8b,0xaf,0x0c,0x01,0x27,0xa9
+        };
+
+        if (memcmp(tag, expected, 16) == 0) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* --- ChaCha20-Poly1305 AEAD roundtrip --- */
+    printf("chacha20poly1305 encrypt/decrypt roundtrip... ");
+    {
+        uint8_t key[32];
+        memset(key, 0x42, 32);
+        uint8_t nonce[12] = {0};
+        const char *plaintext = "Hello, shielded world!";
+        size_t plen = strlen(plaintext);
+        uint8_t ciphertext[64];
+        uint8_t decrypted[64];
+
+        bool ok = chacha20poly1305_encrypt(
+            (const uint8_t *)plaintext, plen, NULL, 0, nonce, key, ciphertext);
+
+        ok = ok && chacha20poly1305_decrypt(
+            ciphertext, plen + 16, NULL, 0, nonce, key, decrypted);
+
+        ok = ok && (memcmp(decrypted, plaintext, plen) == 0);
+
+        /* Tamper with ciphertext — should fail */
+        ciphertext[0] ^= 1;
+        bool tamper_ok = chacha20poly1305_decrypt(
+            ciphertext, plen + 16, NULL, 0, nonce, key, decrypted);
+        ok = ok && !tamper_ok;
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* --- ChaCha20-Poly1305 with AAD --- */
+    printf("chacha20poly1305 with AAD... ");
+    {
+        uint8_t key[32];
+        memset(key, 0x55, 32);
+        uint8_t nonce[12] = {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+                              0x00,0x00,0x00,0x01};
+        const char *plaintext = "test message";
+        const char *aad = "additional data";
+        size_t plen = strlen(plaintext);
+        size_t aad_len = strlen(aad);
+        uint8_t ciphertext[64];
+        uint8_t decrypted[64];
+
+        bool ok = chacha20poly1305_encrypt(
+            (const uint8_t *)plaintext, plen,
+            (const uint8_t *)aad, aad_len,
+            nonce, key, ciphertext);
+
+        ok = ok && chacha20poly1305_decrypt(
+            ciphertext, plen + 16,
+            (const uint8_t *)aad, aad_len,
+            nonce, key, decrypted);
+
+        ok = ok && (memcmp(decrypted, plaintext, plen) == 0);
+
+        /* Wrong AAD should fail */
+        const char *wrong_aad = "wrong data";
+        bool wrong_ok = chacha20poly1305_decrypt(
+            ciphertext, plen + 16,
+            (const uint8_t *)wrong_aad, strlen(wrong_aad),
+            nonce, key, decrypted);
+        ok = ok && !wrong_ok;
 
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }

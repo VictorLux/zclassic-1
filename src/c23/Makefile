@@ -9,7 +9,8 @@ LIBS = -L../secp256k1/.libs -lsecp256k1 -L../leveldb -lleveldb -lstdc++ -lm
 CRYPTO_SRCS = \
 	crypto/sha256.c crypto/sha512.c crypto/sha1.c \
 	crypto/ripemd160.c crypto/hmac_sha256.c crypto/hmac_sha512.c \
-	crypto/sha3.c crypto/blake2b.c crypto/equihash.c
+	crypto/sha3.c crypto/blake2b.c crypto/equihash.c \
+	crypto/chacha20poly1305.c
 
 CORE_SRCS = \
 	core/uint256.c core/arith_uint256.c core/hash.c core/amount.c \
