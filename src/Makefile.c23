@@ -60,7 +60,8 @@ CORE_SRCS = \
 	netbase_c.c \
 	merkleblock_c.c \
 	script/zcashconsensus_c.c \
-	validationinterface_c.c
+	validationinterface_c.c \
+	addrman_c.c
 
 ALL_SRCS = $(CRYPTO_SRCS) $(CORE_SRCS)
 ALL_OBJS = $(ALL_SRCS:.c=.o)

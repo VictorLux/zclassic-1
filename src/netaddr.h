@@ -113,6 +113,36 @@ static inline void net_addr_set_ipv4(struct net_addr *a, const unsigned char ip4
     a->has_torv3 = false;
 }
 
+static inline unsigned char net_addr_get_byte(const struct net_addr *a, int n)
+{
+    return a->ip[15 - n];
+}
+
+bool net_addr_is_rfc1918(const struct net_addr *a);
+bool net_addr_is_rfc2544(const struct net_addr *a);
+bool net_addr_is_rfc3927(const struct net_addr *a);
+bool net_addr_is_rfc6598(const struct net_addr *a);
+bool net_addr_is_rfc5737(const struct net_addr *a);
+bool net_addr_is_rfc3849(const struct net_addr *a);
+bool net_addr_is_rfc3964(const struct net_addr *a);
+bool net_addr_is_rfc6052(const struct net_addr *a);
+bool net_addr_is_rfc4380(const struct net_addr *a);
+bool net_addr_is_rfc4862(const struct net_addr *a);
+bool net_addr_is_rfc4193(const struct net_addr *a);
+bool net_addr_is_rfc6145(const struct net_addr *a);
+bool net_addr_is_rfc4843(const struct net_addr *a);
+bool net_addr_is_local(const struct net_addr *a);
+bool net_addr_is_routable(const struct net_addr *a);
+
+#define NET_ADDR_GROUP_MAX 5
+
+size_t net_addr_get_group(const struct net_addr *a, unsigned char *out,
+                          size_t out_size);
+
+#define NET_SERVICE_KEY_SIZE 18
+
+void net_service_get_key(const struct net_service *s, unsigned char out[18]);
+
 int net_addr_to_string(const struct net_addr *a, char *out, size_t out_size);
 int net_service_to_string(const struct net_service *s, char *out, size_t out_size);
 

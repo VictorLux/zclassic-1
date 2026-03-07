@@ -66,6 +66,7 @@
 #include "merkleblock_c.h"
 #include "script/zcashconsensus_c.h"
 #include "validationinterface_c.h"
+#include "addrman_c.h"
 
 static int test_tip_count = 0;
 static int test_tip_height = 0;
@@ -2562,6 +2563,57 @@ int main(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    printf("net_addr RFC classification... ");
+    {
+        struct net_addr a;
+        net_addr_init(&a);
+
+        unsigned char priv10[] = {10, 0, 0, 1};
+        net_addr_set_ipv4(&a, priv10);
+        bool ok = net_addr_is_rfc1918(&a);
+
+        unsigned char pub8[] = {8, 8, 8, 8};
+        net_addr_set_ipv4(&a, pub8);
+        ok = ok && !net_addr_is_rfc1918(&a);
+        ok = ok && net_addr_is_routable(&a);
+
+        unsigned char local127[] = {127, 0, 0, 1};
+        net_addr_set_ipv4(&a, local127);
+        ok = ok && net_addr_is_local(&a);
+        ok = ok && !net_addr_is_routable(&a);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("net_addr_get_group ipv4... ");
+    {
+        struct net_addr a;
+        net_addr_init(&a);
+        unsigned char ip[] = {1, 2, 3, 4};
+        net_addr_set_ipv4(&a, ip);
+        unsigned char group[NET_ADDR_GROUP_MAX];
+        size_t glen = net_addr_get_group(&a, group, sizeof(group));
+        bool ok = glen == 3 && group[0] == NET_IPV4 &&
+                  group[1] == 1 && group[2] == 2;
+        if (ok) printf("OK\n");
+        else { printf("FAIL (len=%zu g0=%d g1=%d g2=%d)\n", glen, group[0], group[1], group[2]); failures++; }
+    }
+
+    printf("net_service_get_key... ");
+    {
+        struct net_service s;
+        net_service_init(&s);
+        unsigned char ip[] = {192, 168, 1, 1};
+        net_addr_set_ipv4(&s.addr, ip);
+        s.port = 8233;
+        unsigned char key[18];
+        net_service_get_key(&s, key);
+        bool ok = key[16] == (8233 >> 8) && key[17] == (8233 & 0xFF);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     printf("merkle_tree serialize/deserialize roundtrip... ");
     {
         struct uint256 txids[4];
@@ -2735,6 +2787,103 @@ int main(void)
 
         validation_unregister_all(&vs);
         ok = ok && (vs.num_listeners == 0);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("addrman init/add/size... ");
+    {
+        struct addr_man am;
+        addrman_init(&am);
+        bool ok = addrman_size(&am) == 0;
+
+        struct net_address addr;
+        net_address_init(&addr);
+        unsigned char ip1[] = {8, 8, 8, 8};
+        net_addr_set_ipv4(&addr.svc.addr, ip1);
+        addr.svc.port = 8233;
+        addr.nTime = (uint32_t)GetTime();
+
+        struct net_addr source;
+        net_addr_init(&source);
+        unsigned char src_ip[] = {1, 2, 3, 4};
+        net_addr_set_ipv4(&source, src_ip);
+
+        bool added = addrman_add(&am, &addr, &source, 0);
+        ok = ok && added;
+        ok = ok && addrman_size(&am) == 1;
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL (added=%d size=%zu)\n", added, addrman_size(&am)); failures++; }
+        addrman_free(&am);
+    }
+
+    printf("addrman select... ");
+    {
+        struct addr_man am;
+        addrman_init(&am);
+
+        for (int i = 0; i < 10; i++) {
+            struct net_address addr;
+            net_address_init(&addr);
+            unsigned char ip[] = {50 + (unsigned char)i, 100, 0, 1};
+            net_addr_set_ipv4(&addr.svc.addr, ip);
+            addr.svc.port = 8233;
+            addr.nTime = (uint32_t)GetTime();
+
+            struct net_addr source;
+            net_addr_init(&source);
+            unsigned char src_ip[] = {60, 2, 3, (unsigned char)(i + 1)};
+            net_addr_set_ipv4(&source, src_ip);
+
+            addrman_add(&am, &addr, &source, 0);
+        }
+
+        bool ok = addrman_size(&am) == 10;
+        struct addr_info result;
+        bool selected = addrman_select(&am, true, &result);
+        ok = ok && selected;
+        ok = ok && result.addr.svc.port == 8233;
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL (size=%zu sel=%d)\n", addrman_size(&am), selected); failures++; }
+        addrman_free(&am);
+    }
+
+    printf("addr_info bucket computation... ");
+    {
+        struct addr_info info;
+        memset(&info, 0, sizeof(info));
+        unsigned char ip[] = {192, 168, 1, 1};
+        net_addr_set_ipv4(&info.addr.svc.addr, ip);
+        info.addr.svc.port = 8233;
+
+        struct uint256 key;
+        memset(key.data, 0x42, 32);
+
+        int tried_bucket = addr_info_get_tried_bucket(&info, &key);
+        int new_bucket = addr_info_get_new_bucket(&info, &key, &info.addr.svc.addr);
+        int pos = addr_info_get_bucket_position(&info, &key, true, new_bucket);
+
+        bool ok = tried_bucket >= 0 && tried_bucket < ADDRMAN_TRIED_BUCKET_COUNT;
+        ok = ok && new_bucket >= 0 && new_bucket < ADDRMAN_NEW_BUCKET_COUNT;
+        ok = ok && pos >= 0 && pos < ADDRMAN_BUCKET_SIZE;
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL (tb=%d nb=%d pos=%d)\n", tried_bucket, new_bucket, pos); failures++; }
+    }
+
+    printf("addr_info_is_terrible... ");
+    {
+        struct addr_info info;
+        memset(&info, 0, sizeof(info));
+        info.addr.nTime = 0;
+        bool ok = addr_info_is_terrible(&info, GetTime());
+
+        info.addr.nTime = (uint32_t)GetTime();
+        info.last_try = GetTime();
+        ok = ok && !addr_info_is_terrible(&info, GetTime());
 
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
