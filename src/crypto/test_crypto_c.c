@@ -54,6 +54,7 @@
 #include "key_io_c.h"
 #include "chainparams_c.h"
 #include "subsidy_c.h"
+#include "sighash_c.h"
 
 static int check_hex(const unsigned char *data, size_t len, const char *expected)
 {
@@ -1901,6 +1902,100 @@ int main(void)
         if (s == 78125000)
             printf("OK\n");
         else { printf("FAIL (%" PRId64 ")\n", s); failures++; }
+    }
+
+    printf("signature_hash sprout... ");
+    {
+        struct transaction tx;
+        transaction_init(&tx);
+        transaction_alloc(&tx, 1, 1);
+        tx.version = 1;
+        tx.overwintered = false;
+        tx.vin[0].sequence = 0xffffffff;
+        memset(tx.vin[0].prevout.hash.data, 0x11, 32);
+        tx.vin[0].prevout.n = 0;
+        tx.vout[0].value = 100000000;
+        tx.vout[0].script_pub_key.data[0] = OP_DUP;
+        tx.vout[0].script_pub_key.size = 1;
+        tx.lock_time = 0;
+
+        struct script sc;
+        sc.data[0] = OP_DUP;
+        sc.size = 1;
+
+        struct sighash_type ht = sighash_type_default();
+        struct uint256 result;
+        bool ok = signature_hash(&sc, &tx, 0, ht, 0, 0, NULL, &result);
+        if (ok && !uint256_is_null(&result))
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+        transaction_free(&tx);
+    }
+
+    printf("signature_hash sapling... ");
+    {
+        struct transaction tx;
+        transaction_init(&tx);
+        transaction_alloc(&tx, 1, 1);
+        tx.version = SAPLING_TX_VERSION;
+        tx.overwintered = true;
+        tx.version_group_id = SAPLING_VERSION_GROUP_ID;
+        tx.vin[0].sequence = 0xffffffff;
+        memset(tx.vin[0].prevout.hash.data, 0x22, 32);
+        tx.vin[0].prevout.n = 0;
+        tx.vout[0].value = 50000000;
+        tx.vout[0].script_pub_key.data[0] = OP_DUP;
+        tx.vout[0].script_pub_key.size = 1;
+        tx.lock_time = 0;
+        tx.expiry_height = 500000;
+        tx.value_balance = 0;
+
+        struct script sc;
+        sc.data[0] = OP_DUP;
+        sc.size = 1;
+
+        struct sighash_type ht = sighash_type_default();
+        struct uint256 result;
+        uint32_t branch_id = 0x76b809bb; /* Sapling branch ID */
+        bool ok = signature_hash(&sc, &tx, 0, ht, 50000000, branch_id, NULL, &result);
+        if (ok && !uint256_is_null(&result))
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+        transaction_free(&tx);
+    }
+
+    printf("precomputed_tx_data... ");
+    {
+        struct transaction tx;
+        transaction_init(&tx);
+        transaction_alloc(&tx, 2, 1);
+        tx.version = SAPLING_TX_VERSION;
+        tx.overwintered = true;
+        tx.version_group_id = SAPLING_VERSION_GROUP_ID;
+        for (int i = 0; i < 2; i++) {
+            tx.vin[i].sequence = 0xffffffff;
+            memset(tx.vin[i].prevout.hash.data, (unsigned char)(0x10 + i), 32);
+            tx.vin[i].prevout.n = (uint32_t)i;
+        }
+        tx.vout[0].value = 100000000;
+        tx.vout[0].script_pub_key.size = 0;
+
+        struct precomputed_tx_data cache;
+        precompute_tx_data(&tx, &cache);
+
+        struct script sc;
+        sc.size = 0;
+        struct sighash_type ht = sighash_type_default();
+        uint32_t branch_id = 0x76b809bb;
+
+        struct uint256 r1, r2;
+        signature_hash(&sc, &tx, 0, ht, 100000000, branch_id, NULL, &r1);
+        signature_hash(&sc, &tx, 0, ht, 100000000, branch_id, &cache, &r2);
+
+        if (memcmp(r1.data, r2.data, 32) == 0 && !uint256_is_null(&r1))
+            printf("OK\n");
+        else { printf("FAIL (cache mismatch)\n"); failures++; }
+        transaction_free(&tx);
     }
 
     printf("ecc_init_sanity_check... ");
