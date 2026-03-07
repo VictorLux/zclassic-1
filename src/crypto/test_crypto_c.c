@@ -36,6 +36,7 @@
 #include "pubkey_c.h"
 #include "key_c.h"
 #include "script/script_c.h"
+#include "compressor_c.h"
 
 static int check_hex(const unsigned char *data, size_t len, const char *expected)
 {
@@ -873,6 +874,43 @@ int main(void)
             printf("FAIL\n");
             failures++;
         }
+    }
+
+    printf("compress_amount roundtrip... ");
+    {
+        uint64_t values[] = {0, 1, 100000000, 50000000, 2100000000000000ULL};
+        bool ok = true;
+        for (int i = 0; i < 5; i++) {
+            uint64_t c = compress_amount(values[i]);
+            uint64_t d = decompress_amount(c);
+            if (d != values[i]) { ok = false; break; }
+        }
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("script_compress P2PKH... ");
+    {
+        struct script s;
+        script_init(&s);
+        script_push_op(&s, OP_DUP);
+        script_push_op(&s, OP_HASH160);
+        unsigned char hash20[20];
+        memset(hash20, 0xAB, 20);
+        script_push_data(&s, hash20, 20);
+        script_push_op(&s, OP_EQUALVERIFY);
+        script_push_op(&s, OP_CHECKSIG);
+
+        unsigned char out[33];
+        size_t out_len = 0;
+        if (script_compress(&s, out, &out_len) && out_len == 21 &&
+            out[0] == 0x00 && memcmp(out + 1, hash20, 20) == 0) {
+            struct script decoded;
+            script_decompress(&decoded, 0x00, out + 1, 20);
+            if (decoded.size == 25 && script_is_p2pkh(&decoded))
+                printf("OK\n");
+            else { printf("FAIL (decompress)\n"); failures++; }
+        } else { printf("FAIL (compress)\n"); failures++; }
     }
 
     printf("block_index_get_ancestor... ");

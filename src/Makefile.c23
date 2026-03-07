@@ -35,7 +35,8 @@ CORE_SRCS = \
 	pubkey_c.c \
 	key_c.c \
 	chain_c.c \
-	script/script_c.c
+	script/script_c.c \
+	compressor_c.c
 
 ALL_SRCS = $(CRYPTO_SRCS) $(CORE_SRCS)
 ALL_OBJS = $(ALL_SRCS:.c=.o)
