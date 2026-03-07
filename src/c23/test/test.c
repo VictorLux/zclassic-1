@@ -92,6 +92,7 @@
 #include "zcash/zcash.h"
 #include "zcash/jubjub.h"
 #include "zcash/prf.h"
+#include "zcash/incremental_merkle_tree.h"
 #include "chain/equihash.h"
 #include "validation/check_block.h"
 
@@ -4977,6 +4978,98 @@ int main(void)
             printf("OK\n");
         else {
             printf("FAIL (all zeros)\n");
+            failures++;
+        }
+    }
+
+    printf("sprout_tree empty root... ");
+    {
+        struct incremental_merkle_tree t;
+        sprout_tree_init(&t);
+        struct uint256 root;
+        incremental_tree_root(&t, &root);
+        struct uint256 empty_root;
+        incremental_tree_empty_root(&t, &empty_root);
+        if (uint256_cmp(&root, &empty_root) == 0)
+            printf("OK\n");
+        else {
+            printf("FAIL\n");
+            failures++;
+        }
+    }
+
+    printf("sprout_tree append and root changes... ");
+    {
+        struct incremental_merkle_tree t;
+        sprout_tree_init(&t);
+        struct uint256 root_empty;
+        incremental_tree_root(&t, &root_empty);
+
+        struct uint256 leaf;
+        memset(leaf.data, 0xab, 32);
+        incremental_tree_append(&t, &leaf);
+        struct uint256 root1;
+        incremental_tree_root(&t, &root1);
+
+        /* Root should change after appending */
+        if (uint256_cmp(&root1, &root_empty) != 0 &&
+            incremental_tree_size(&t) == 1)
+            printf("OK\n");
+        else {
+            printf("FAIL\n");
+            failures++;
+        }
+    }
+
+    printf("sprout_tree append two leaves... ");
+    {
+        struct incremental_merkle_tree t;
+        sprout_tree_init(&t);
+
+        struct uint256 leaf1, leaf2;
+        memset(leaf1.data, 0x01, 32);
+        memset(leaf2.data, 0x02, 32);
+        incremental_tree_append(&t, &leaf1);
+        struct uint256 root1;
+        incremental_tree_root(&t, &root1);
+
+        incremental_tree_append(&t, &leaf2);
+        struct uint256 root2;
+        incremental_tree_root(&t, &root2);
+
+        if (uint256_cmp(&root1, &root2) != 0 &&
+            incremental_tree_size(&t) == 2)
+            printf("OK\n");
+        else {
+            printf("FAIL\n");
+            failures++;
+        }
+    }
+
+    printf("sprout_tree append three leaves... ");
+    {
+        struct incremental_merkle_tree t;
+        sprout_tree_init(&t);
+
+        struct uint256 leaf;
+        for (int i = 0; i < 3; i++) {
+            memset(leaf.data, (unsigned char)(i + 1), 32);
+            incremental_tree_append(&t, &leaf);
+        }
+        if (incremental_tree_size(&t) == 3) {
+            struct uint256 root;
+            incremental_tree_root(&t, &root);
+            bool nonzero = false;
+            for (int i = 0; i < 32; i++)
+                if (root.data[i] != 0) nonzero = true;
+            if (nonzero)
+                printf("OK (size=3)\n");
+            else {
+                printf("FAIL (zero root)\n");
+                failures++;
+            }
+        } else {
+            printf("FAIL (size=%zu)\n", incremental_tree_size(&t));
             failures++;
         }
     }
