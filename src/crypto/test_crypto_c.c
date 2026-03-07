@@ -25,6 +25,9 @@
 #include "clientversion.h"
 #include "chainparamsbase.h"
 #include "util.h"
+#include "ui_interface.h"
+#include "noui.h"
+#include "deprecation.h"
 
 static int check_hex(const unsigned char *data, size_t len, const char *expected)
 {
@@ -547,6 +550,25 @@ int main(void)
             printf("FAIL: main\n");
             failures++;
         }
+    }
+
+    printf("noui_connect... ");
+    {
+        noui_connect();
+        if (uiInterface.ThreadSafeMessageBox != NULL &&
+            uiInterface.InitMessage != NULL)
+            printf("OK\n");
+        else {
+            printf("FAIL\n");
+            failures++;
+        }
+    }
+
+    printf("deprecation... ");
+    {
+        /* Should not crash with very high height */
+        EnforceNodeDeprecation(1, false, false);
+        printf("OK\n");
     }
 
     printf("ConvertBits 8->5... ");

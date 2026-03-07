@@ -21,7 +21,10 @@ CORE_SRCS = \
 	utilstrencodings.c \
 	clientversion.c \
 	chainparamsbase.c \
-	util.c
+	util.c \
+	ui_interface.c \
+	noui.c \
+	deprecation.c
 
 ALL_SRCS = $(CRYPTO_SRCS) $(CORE_SRCS)
 ALL_OBJS = $(ALL_SRCS:.c=.o)
