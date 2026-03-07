@@ -37,6 +37,7 @@
 #include "key_c.h"
 #include "script/script_c.h"
 #include "compressor_c.h"
+#include "script/standard_c.h"
 
 static int check_hex(const unsigned char *data, size_t len, const char *expected)
 {
@@ -931,6 +932,99 @@ int main(void)
             printf("FAIL\n");
             failures++;
         }
+    }
+
+    printf("script_solver P2PKH... ");
+    {
+        struct key_id kid;
+        uint160_set_null(&kid.id);
+        unsigned char kbytes[20] = {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20};
+        memcpy(kid.id.data, kbytes, 20);
+        struct script s;
+        script_for_p2pkh(&s, &kid);
+        enum txnouttype type;
+        unsigned char solutions[20][65];
+        size_t solution_sizes[20];
+        size_t num_solutions;
+        if (script_solver(&s, &type, solutions, solution_sizes, &num_solutions) &&
+            type == TX_PUBKEYHASH && num_solutions == 1 && solution_sizes[0] == 20 &&
+            solutions[0][0] == 1 && solutions[0][19] == 20)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("script_solver P2SH... ");
+    {
+        struct script_id sid;
+        unsigned char sbytes[20] = {0xaa,0xbb,0xcc,0xdd,0xee,0xff,0,0,0,0,0,0,0,0,0,0,0,0,0,0x11};
+        memcpy(sid.hash.data, sbytes, 20);
+        struct script s;
+        script_for_p2sh(&s, &sid);
+        enum txnouttype type;
+        unsigned char solutions[20][65];
+        size_t solution_sizes[20];
+        size_t num_solutions;
+        if (script_solver(&s, &type, solutions, solution_sizes, &num_solutions) &&
+            type == TX_SCRIPTHASH && num_solutions == 1 && solution_sizes[0] == 20 &&
+            solutions[0][0] == 0xaa && solutions[0][19] == 0x11)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("script_extract_destination P2PKH... ");
+    {
+        struct key_id kid;
+        unsigned char kbytes[20] = {10,20,30,40,50,60,70,80,90,100,110,120,130,140,150,160,170,180,190,200};
+        memcpy(kid.id.data, kbytes, 20);
+        struct script s;
+        script_for_p2pkh(&s, &kid);
+        struct tx_destination dest;
+        if (script_extract_destination(&s, &dest) && dest.type == DEST_KEY_ID &&
+            memcmp(dest.id.key.id.data, kid.id.data, 20) == 0)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("script_for_destination roundtrip... ");
+    {
+        struct key_id kid;
+        unsigned char kbytes[20] = {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20};
+        memcpy(kid.id.data, kbytes, 20);
+        struct tx_destination dest = { .type = DEST_KEY_ID };
+        memcpy(dest.id.key.id.data, kid.id.data, 20);
+        struct script s;
+        script_for_destination(&s, &dest);
+        struct tx_destination dest2;
+        if (script_extract_destination(&s, &dest2) && dest2.type == DEST_KEY_ID &&
+            memcmp(dest2.id.key.id.data, kid.id.data, 20) == 0)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("get_txn_output_type... ");
+    {
+        if (strcmp(get_txn_output_type(TX_PUBKEYHASH), "pubkeyhash") == 0 &&
+            strcmp(get_txn_output_type(TX_SCRIPTHASH), "scripthash") == 0 &&
+            strcmp(get_txn_output_type(TX_NULL_DATA), "nulldata") == 0)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("script_id_from_script... ");
+    {
+        struct script s;
+        struct key_id kid;
+        memset(&kid, 0, sizeof(kid));
+        script_for_p2pkh(&s, &kid);
+        struct script_id sid;
+        script_id_from_script(&sid, &s);
+        bool non_zero = false;
+        for (int i = 0; i < 20; i++) {
+            if (sid.hash.data[i] != 0) { non_zero = true; break; }
+        }
+        if (non_zero)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
     }
 
     printf("ecc_init_sanity_check... ");
