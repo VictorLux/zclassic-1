@@ -89,6 +89,9 @@
 #include "validation/update_coins.h"
 #include "storage/block_index_db.h"
 #include "crypto/equihash.h"
+#include "zcash/zcash.h"
+#include "zcash/jubjub.h"
+#include "zcash/prf.h"
 #include "chain/equihash.h"
 #include "validation/check_block.h"
 
@@ -4856,6 +4859,124 @@ int main(void)
             printf("OK\n");
         else {
             printf("FAIL\n");
+            failures++;
+        }
+    }
+
+    printf("jubjub_to_scalar zero... ");
+    {
+        unsigned char input[64];
+        memset(input, 0, 64);
+        unsigned char result[32];
+        jubjub_to_scalar(input, result);
+        /* 0 mod r = 0 */
+        unsigned char zero[32] = {0};
+        if (memcmp(result, zero, 32) == 0)
+            printf("OK\n");
+        else {
+            printf("FAIL\n");
+            failures++;
+        }
+    }
+
+    printf("jubjub_to_scalar small value... ");
+    {
+        unsigned char input[64];
+        memset(input, 0, 64);
+        input[0] = 42;
+        unsigned char result[32];
+        jubjub_to_scalar(input, result);
+        /* 42 < r, so result should be 42 */
+        if (result[0] == 42) {
+            bool all_zero = true;
+            for (int i = 1; i < 32; i++)
+                if (result[i] != 0) all_zero = false;
+            if (all_zero)
+                printf("OK\n");
+            else {
+                printf("FAIL (non-zero upper bytes)\n");
+                failures++;
+            }
+        } else {
+            printf("FAIL (result[0]=%u)\n", result[0]);
+            failures++;
+        }
+    }
+
+    printf("jubjub_to_scalar reduction... ");
+    {
+        /* Input = r itself (256-bit, padded to 512) should give 0 */
+        unsigned char input[64];
+        memset(input, 0, 64);
+        /* r in LE bytes */
+        static const unsigned char r_bytes[32] = {
+            0xb7, 0x2c, 0xf7, 0xd6, 0x5e, 0x0e, 0x97, 0xd0,
+            0x82, 0x10, 0xc8, 0xcc, 0x93, 0x20, 0x68, 0xa6,
+            0x00, 0x3b, 0x34, 0x01, 0x01, 0x3b, 0x67, 0x06,
+            0xa9, 0xaf, 0x33, 0x65, 0xea, 0xb4, 0x7d, 0x0e
+        };
+        memcpy(input, r_bytes, 32);
+        unsigned char result[32];
+        jubjub_to_scalar(input, result);
+        unsigned char zero[32] = {0};
+        if (memcmp(result, zero, 32) == 0)
+            printf("OK\n");
+        else {
+            printf("FAIL\n");
+            failures++;
+        }
+    }
+
+    printf("prf_expand (Sapling blake2b)... ");
+    {
+        struct uint256 sk;
+        memset(sk.data, 0x42, 32);
+        unsigned char out[64];
+        prf_expand(&sk, 0, out);
+        /* Just check it's not all zeros */
+        bool nonzero = false;
+        for (int i = 0; i < 64; i++)
+            if (out[i] != 0) nonzero = true;
+        if (nonzero)
+            printf("OK\n");
+        else {
+            printf("FAIL (all zeros)\n");
+            failures++;
+        }
+    }
+
+    printf("prf_ask/prf_nsk/prf_ovk... ");
+    {
+        struct uint256 sk;
+        memset(sk.data, 0x01, 32);
+        struct uint256 ask, nsk, ovk;
+        prf_ask(&sk, &ask);
+        prf_nsk(&sk, &nsk);
+        prf_ovk(&sk, &ovk);
+        /* ask, nsk should be reduced scalars (different from each other) */
+        /* ovk should be first 32 bytes of PRF_expand(sk, 2) */
+        if (memcmp(ask.data, nsk.data, 32) != 0 &&
+            memcmp(ask.data, ovk.data, 32) != 0)
+            printf("OK\n");
+        else {
+            printf("FAIL (outputs not distinct)\n");
+            failures++;
+        }
+    }
+
+    printf("prf_addr_a_pk (Sprout)... ");
+    {
+        unsigned char a_sk[32];
+        memset(a_sk, 0x55, 32);
+        struct uint256 a_pk;
+        prf_addr_a_pk(a_sk, &a_pk);
+        bool nonzero = false;
+        for (int i = 0; i < 32; i++)
+            if (a_pk.data[i] != 0) nonzero = true;
+        if (nonzero)
+            printf("OK\n");
+        else {
+            printf("FAIL (all zeros)\n");
             failures++;
         }
     }
