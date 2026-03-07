@@ -20,6 +20,7 @@
 #include "utiltime.h"
 #include "consensus/params.h"
 #include "consensus/upgrades.h"
+#include "utilmoneystr.h"
 
 static int check_hex(const unsigned char *data, size_t len, const char *expected)
 {
@@ -342,6 +343,29 @@ int main(void)
             printf("OK\n");
         else {
             printf("FAIL\n");
+            failures++;
+        }
+    }
+
+    printf("FormatMoney... ");
+    {
+        char buf[64];
+        FormatMoney(100000000, buf, sizeof(buf));
+        if (strcmp(buf, "1.0") == 0)
+            printf("OK\n");
+        else {
+            printf("FAIL: %s\n", buf);
+            failures++;
+        }
+    }
+
+    printf("ParseMoney... ");
+    {
+        CAmount val = 0;
+        if (ParseMoney("1.5", &val) && val == 150000000)
+            printf("OK\n");
+        else {
+            printf("FAIL: %lld\n", (long long)val);
             failures++;
         }
     }
