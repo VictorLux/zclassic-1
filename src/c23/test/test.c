@@ -7058,6 +7058,52 @@ int main(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    printf("bls12_381 g1_scalar_mul 3*G... ");
+    {
+        extern const struct fp G1_GEN_X, G1_GEN_Y;
+        struct g1_point gen;
+        gen.x = G1_GEN_X;
+        gen.y = G1_GEN_Y;
+        fp_one(&gen.z);
+
+        /* 3*G via scalar mul */
+        uint64_t three[4] = {3, 0, 0, 0};
+        struct g1_point scalar_result;
+        g1_scalar_mul(&scalar_result, &gen, three);
+
+        /* 3*G via add: G + G + G */
+        struct g1_point two_g, three_g;
+        g1_double(&two_g, &gen);
+        g1_add(&three_g, &two_g, &gen);
+
+        struct fp sx, sy, tx, ty;
+        g1_to_affine(&sx, &sy, &scalar_result);
+        g1_to_affine(&tx, &ty, &three_g);
+
+        bool ok = fp_eq(&sx, &tx) && fp_eq(&sy, &ty);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("bls12_381 multipack nullifier... ");
+    {
+        /* Pack 32 bytes of zeros */
+        uint8_t nullifier[32] = {0};
+        nullifier[0] = 0x42; /* some test value */
+        uint64_t scalars[2][4];
+        size_t n_scalars;
+        multipack_bytes_to_fr(scalars, &n_scalars, nullifier, 32);
+        /* 256 bits / 253 = 2 scalars */
+        bool ok = (n_scalars == 2);
+        /* First scalar should have bits of 0x42 = 0b01000010 */
+        /* In LE bit order: bit0=0, bit1=1, bit2=0, bit3=0, bit4=0, bit5=0, bit6=1, bit7=0 */
+        /* So scalar = 2^1 + 2^6 = 2 + 64 = 66 */
+        ok = ok && (scalars[0][0] == 66) && (scalars[0][1] == 0) &&
+             (scalars[0][2] == 0) && (scalars[0][3] == 0);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     printf("bls12_381 pairing bilinearity e(2P,Q)==e(P,Q)^2... ");
     {
         /* Use the G1 generator */

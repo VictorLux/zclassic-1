@@ -1634,35 +1634,111 @@ bool bls12_381_multi_pairing_check(const struct g1_point *a_pts, const struct g2
             fp_eq(&acc.c0.c0.c0, &one.c0.c0.c0) && fp_is_zero(&acc.c0.c0.c1));
 }
 
-/* Groth16 verification */
+/* G1 scalar multiplication: r = scalar * p (double-and-add, 256 bits) */
+void g1_scalar_mul(struct g1_point *r, const struct g1_point *p, const uint64_t scalar[4])
+{
+    struct g1_point result;
+    g1_identity(&result);
+    struct g1_point base = *p;
+
+    for (int i = 0; i < 4; i++) {
+        for (int bit = 0; bit < 64; bit++) {
+            if ((scalar[i] >> bit) & 1)
+                g1_add(&result, &result, &base);
+            g1_double(&base, &base);
+        }
+    }
+    *r = result;
+}
+
+/* Groth16 proof deserialization: A (G1, 48B) + B (G2, 96B) + C (G1, 48B) = 192B */
+bool groth16_proof_read(struct groth16_proof *proof, const uint8_t data[192])
+{
+    if (!g1_from_compressed(&proof->a, data)) return false;
+    if (!g2_from_compressed(&proof->b, data + 48)) return false;
+    if (!g1_from_compressed(&proof->c, data + 144)) return false;
+    return true;
+}
+
+/* Multipack: pack bytes into Fr scalars (253 bits per scalar, LE bit order) */
+void multipack_bytes_to_fr(uint64_t (*out)[4], size_t *n_out,
+                           const uint8_t *bytes, size_t n_bytes)
+{
+    size_t n_bits = n_bytes * 8;
+    size_t n_scalars = (n_bits + 252) / 253; /* Fr::CAPACITY = 253 */
+
+    for (size_t s = 0; s < n_scalars; s++) {
+        memset(out[s], 0, 32);
+        /* Accumulate bits: cur += bit * 2^i */
+        /* We accumulate using Fr add/double */
+        uint64_t cur[4] = {0, 0, 0, 0};
+        uint64_t coeff[4] = {1, 0, 0, 0}; /* = 1 in raw form */
+
+        size_t bit_start = s * 253;
+        size_t bit_end = bit_start + 253;
+        if (bit_end > n_bits) bit_end = n_bits;
+
+        for (size_t b = bit_start; b < bit_end; b++) {
+            size_t byte_idx = b / 8;
+            int bit_idx = b % 8;
+            bool bit_val = (bytes[byte_idx] >> bit_idx) & 1;
+
+            if (bit_val) {
+                /* cur += coeff (simple 256-bit add, no modular reduction needed
+                 * since we only accumulate 253 bits) */
+                unsigned __int128 carry = 0;
+                for (int i = 0; i < 4; i++) {
+                    unsigned __int128 sum = (unsigned __int128)cur[i] + coeff[i] + carry;
+                    cur[i] = (uint64_t)sum;
+                    carry = sum >> 64;
+                }
+            }
+            /* coeff *= 2 */
+            uint64_t carry2 = 0;
+            for (int i = 0; i < 4; i++) {
+                uint64_t new_carry = coeff[i] >> 63;
+                coeff[i] = (coeff[i] << 1) | carry2;
+                carry2 = new_carry;
+            }
+        }
+        memcpy(out[s], cur, 32);
+    }
+    *n_out = n_scalars;
+}
+
+/* Groth16 verification:
+ * e(A, B) == e(alpha, beta) * e(vk_x, gamma) * e(C, delta)
+ * Rearranged: e(A, B) * e(vk_x, -gamma) * e(C, -delta) == e(alpha, beta) */
 bool groth16_verify(const struct groth16_vk *vk,
                     const struct groth16_proof *proof,
-                    const uint8_t *public_inputs,
+                    const uint64_t (*public_inputs)[4],
                     size_t n_inputs)
 {
-    (void)public_inputs;
-    (void)n_inputs;
+    if (n_inputs + 1 != vk->ic_len)
+        return false;
 
-    /* e(A, B) == e(alpha, beta) * e(vk_x, gamma) * e(C, delta)
-     * Equivalently: e(A, B) * e(-vk_x, gamma) * e(-C, delta) * e(-alpha, beta) == 1
-     *
-     * For now, simplified: just verify the pairing equation holds.
-     * Full implementation needs vk_x = sum(ic[i] * input[i]).
-     */
+    /* Compute vk_x = IC[0] + sum(IC[i+1] * input[i]) */
+    struct g1_point vk_x = vk->ic[0];
 
-    /* TODO: compute vk_x from public inputs and IC */
-    /* For now, just check e(A, B) * e(-alpha, beta) * e(-C, delta) == 1 */
+    for (size_t i = 0; i < n_inputs; i++) {
+        struct g1_point term;
+        g1_scalar_mul(&term, &vk->ic[i + 1], public_inputs[i]);
+        g1_add(&vk_x, &vk_x, &term);
+    }
 
-    struct g1_point neg_alpha;
-    g1_neg(&neg_alpha, &vk->alpha_g1);
+    /* Negate gamma and delta for the pairing check */
+    struct g2_point neg_gamma, neg_delta;
+    g2_neg(&neg_gamma, &vk->gamma_g2);
+    g2_neg(&neg_delta, &vk->delta_g2);
 
-    struct g1_point neg_c;
-    g1_neg(&neg_c, &proof->c);
+    /* Check: e(A, B) * e(vk_x, -gamma) * e(C, -delta) == e(alpha, beta) */
+    struct g1_point pts[4] = { proof->a, vk_x, proof->c, vk->alpha_g1 };
+    struct g2_point qts[4] = { proof->b, neg_gamma, neg_delta, vk->beta_g2 };
 
-    struct g1_point pts[3] = { proof->a, neg_alpha, neg_c };
-    struct g2_point qts[3] = { proof->b, vk->beta_g2, vk->delta_g2 };
+    /* For the RHS, we negate alpha so: e(-alpha, beta) goes on the LHS */
+    g1_neg(&pts[3], &vk->alpha_g1);
 
-    return bls12_381_multi_pairing_check(pts, qts, 3);
+    return bls12_381_multi_pairing_check(pts, qts, 4);
 }
 
 #pragma GCC diagnostic pop

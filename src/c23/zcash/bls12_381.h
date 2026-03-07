@@ -103,6 +103,7 @@ void g1_add(struct g1_point *r, const struct g1_point *a, const struct g1_point 
 void g1_double(struct g1_point *r, const struct g1_point *a);
 bool g1_from_compressed(struct g1_point *p, const uint8_t in[48]);
 void g1_to_affine(struct fp *ax, struct fp *ay, const struct g1_point *p);
+void g1_scalar_mul(struct g1_point *r, const struct g1_point *p, const uint64_t scalar[4]);
 
 /* G2: y^2 = x^3 + 4(u+1) over Fp2 (Jacobian coordinates) */
 struct g2_point {
@@ -143,9 +144,18 @@ struct groth16_vk {
     size_t ic_len;
 };
 
+bool groth16_proof_read(struct groth16_proof *proof, const uint8_t data[192]);
+
+/* Verify: e(A, B) == e(alpha, beta) * e(vk_x, gamma) * e(C, delta)
+ * public_inputs: array of Fr scalars (4 x uint64_t each, little-endian limbs)
+ * n_inputs: number of public inputs (must equal vk->ic_len - 1) */
 bool groth16_verify(const struct groth16_vk *vk,
                     const struct groth16_proof *proof,
-                    const uint8_t *public_inputs,
+                    const uint64_t (*public_inputs)[4],
                     size_t n_inputs);
+
+/* Pack bytes into Fr scalars (253 bits per scalar, little-endian bit ordering) */
+void multipack_bytes_to_fr(uint64_t (*out)[4], size_t *n_out,
+                           const uint8_t *bytes, size_t n_bytes);
 
 #endif
