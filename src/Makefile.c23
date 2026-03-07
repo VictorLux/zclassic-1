@@ -2,7 +2,7 @@
 # Copyright 2026 Rhett Creighton - Apache License 2.0
 
 CC = cc
-CFLAGS = -std=c23 -Wall -Wextra -Werror -pedantic -I.
+CFLAGS = -std=c23 -Wall -Wextra -Werror -pedantic -I. -D_POSIX_C_SOURCE=200809L
 LDFLAGS = -pthread
 
 CRYPTO_SRCS = \
@@ -25,7 +25,8 @@ CORE_SRCS = \
 	ui_interface.c \
 	noui.c \
 	deprecation.c \
-	sync.c
+	sync.c \
+	timedata.c
 
 ALL_SRCS = $(CRYPTO_SRCS) $(CORE_SRCS)
 ALL_OBJS = $(ALL_SRCS:.c=.o)

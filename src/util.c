@@ -1,6 +1,3 @@
-#ifndef _WIN32
-#define _POSIX_C_SOURCE 200112L
-#endif
 /* Copyright (c) 2009-2010 Satoshi Nakamoto
  * Copyright (c) 2009-2014 The Bitcoin Core developers
  * Copyright 2026 Rhett Creighton - Apache License 2.0

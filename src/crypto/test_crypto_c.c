@@ -28,6 +28,7 @@
 #include "ui_interface.h"
 #include "noui.h"
 #include "deprecation.h"
+#include "timedata.h"
 
 static int check_hex(const unsigned char *data, size_t len, const char *expected)
 {
@@ -569,6 +570,17 @@ int main(void)
         /* Should not crash with very high height */
         EnforceNodeDeprecation(1, false, false);
         printf("OK\n");
+    }
+
+    printf("GetAdjustedTime... ");
+    {
+        int64_t t = GetAdjustedTime();
+        if (t > 1700000000)
+            printf("OK (%lld)\n", (long long)t);
+        else {
+            printf("FAIL: %lld\n", (long long)t);
+            failures++;
+        }
     }
 
     printf("ConvertBits 8->5... ");
