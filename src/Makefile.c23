@@ -1,0 +1,41 @@
+# Pure C23 build for converted ZClassic modules
+# Copyright 2026 Rhett Creighton - Apache License 2.0
+
+CC = cc
+CFLAGS = -std=c23 -Wall -Wextra -Werror -pedantic -I.
+LDFLAGS = -pthread
+
+CRYPTO_SRCS = \
+	crypto/sha256.c crypto/sha512.c crypto/sha1.c \
+	crypto/ripemd160.c crypto/hmac_sha256.c crypto/hmac_sha512.c \
+	crypto/sha3.c crypto/blake2b.c
+
+CORE_SRCS = \
+	uint256.c arith_uint256.c hash.c amount.c \
+	base58.c bech32.c utilmoneystr.c \
+	random.c utiltime.c \
+	support/cleanse.c \
+	consensus/params.c consensus/upgrades.c \
+	script/script_error.c \
+	scheduler.c
+
+ALL_SRCS = $(CRYPTO_SRCS) $(CORE_SRCS)
+ALL_OBJS = $(ALL_SRCS:.c=.o)
+
+TEST_SRC = crypto/test_crypto_c.c
+
+.PHONY: all test clean
+
+all: test_crypto
+
+test_crypto: $(TEST_SRC) $(ALL_SRCS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
+
+test: test_crypto
+	./test_crypto
+
+%.o: %.c
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+clean:
+	rm -f test_crypto $(ALL_OBJS)
