@@ -33,6 +33,7 @@
 #include "protocol_c.h"
 #include "pow_c.h"
 #include "checkpoints_c.h"
+#include "pubkey_c.h"
 
 static int check_hex(const unsigned char *data, size_t len, const char *expected)
 {
@@ -729,6 +730,65 @@ int main(void)
             printf("FAIL (blocks=%d, progress=%.2f)\n", est, prog);
             failures++;
         }
+    }
+
+    printf("pubkey init/validate... ");
+    {
+        ecc_verify_init();
+        struct pubkey pk;
+        pubkey_init(&pk);
+        if (!pubkey_is_valid(&pk))
+            printf("OK (empty key is invalid)\n");
+        else {
+            printf("FAIL\n");
+            failures++;
+        }
+    }
+
+    printf("pubkey_get_id... ");
+    {
+        /* Compressed pubkey: 02 + 32 bytes */
+        unsigned char data[33];
+        memset(data, 0, 33);
+        data[0] = 0x02;
+        data[1] = 0x79; data[2] = 0xBE; data[3] = 0x66; data[4] = 0x7E;
+        struct pubkey pk;
+        pubkey_set(&pk, data, 33);
+        struct key_id kid = pubkey_get_id(&pk);
+        if (!uint160_is_null(&kid.id))
+            printf("OK\n");
+        else {
+            printf("FAIL\n");
+            failures++;
+        }
+    }
+
+    printf("ext_pubkey encode/decode... ");
+    {
+        struct ext_pubkey epk;
+        memset(&epk, 0, sizeof(epk));
+        epk.nDepth = 3;
+        epk.nChild = 42;
+        unsigned char data[33];
+        memset(data, 0, 33);
+        data[0] = 0x02;
+        data[1] = 0x01;
+        pubkey_set(&epk.pubkey, data, 33);
+
+        unsigned char code[BIP32_EXTKEY_SIZE];
+        ext_pubkey_encode(&epk, code);
+
+        struct ext_pubkey decoded;
+        ext_pubkey_decode(&decoded, code);
+
+        if (decoded.nDepth == 3 && decoded.nChild == 42 &&
+            decoded.pubkey.size == 33)
+            printf("OK\n");
+        else {
+            printf("FAIL\n");
+            failures++;
+        }
+        ecc_verify_destroy();
     }
 
     printf("\n%s (%d failures)\n", failures ? "SOME TESTS FAILED" : "ALL TESTS PASSED", failures);

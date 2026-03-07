@@ -2,8 +2,9 @@
 # Copyright 2026 Rhett Creighton - Apache License 2.0
 
 CC = cc
-CFLAGS = -std=c23 -Wall -Wextra -Werror -pedantic -I. -D_POSIX_C_SOURCE=200809L
+CFLAGS = -std=c23 -Wall -Wextra -Werror -pedantic -I. -D_POSIX_C_SOURCE=200809L -Isecp256k1/include
 LDFLAGS = -pthread
+LIBS = -Lsecp256k1/.libs -lsecp256k1
 
 CRYPTO_SRCS = \
 	crypto/sha256.c crypto/sha512.c crypto/sha1.c \
@@ -30,7 +31,8 @@ CORE_SRCS = \
 	netaddr.c \
 	protocol_c.c \
 	pow_c.c \
-	checkpoints_c.c
+	checkpoints_c.c \
+	pubkey_c.c
 
 ALL_SRCS = $(CRYPTO_SRCS) $(CORE_SRCS)
 ALL_OBJS = $(ALL_SRCS:.c=.o)
@@ -42,7 +44,7 @@ TEST_SRC = crypto/test_crypto_c.c
 all: test_crypto
 
 test_crypto: $(TEST_SRC) $(ALL_SRCS)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LIBS)
 
 test: test_crypto
 	./test_crypto
