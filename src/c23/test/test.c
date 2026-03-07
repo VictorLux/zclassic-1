@@ -86,6 +86,7 @@
 #include "validation/checkqueue.h"
 #include "coins/coins_view.h"
 #include "storage/coins_db.h"
+#include "validation/update_coins.h"
 
 static int test_tip_count = 0;
 static int test_tip_height = 0;
@@ -4346,6 +4347,40 @@ int main(void)
         } else {
             printf("SKIP (open failed)\n");
         }
+    }
+
+    printf("update_coins... ");
+    {
+        struct coins_view null_view = { NULL, NULL };
+        struct coins_view_cache cache;
+        coins_view_cache_init(&cache, &null_view);
+
+        struct transaction coinbase_tx;
+        transaction_init(&coinbase_tx);
+        transaction_alloc(&coinbase_tx, 1, 2);
+        outpoint_set_null(&coinbase_tx.vin[0].prevout);
+        coinbase_tx.vin[0].sequence = 0xffffffff;
+        coinbase_tx.vout[0].value = 10 * COIN;
+        coinbase_tx.vout[1].value = 2 * COIN;
+        transaction_compute_hash(&coinbase_tx);
+
+        update_coins(&coinbase_tx, &cache, 1);
+
+        bool have = coins_view_cache_have_coins(&cache, &coinbase_tx.hash);
+        if (have) {
+            struct tx_in tin;
+            tx_in_init(&tin);
+            tin.prevout.hash = coinbase_tx.hash;
+            tin.prevout.n = 0;
+            const struct tx_out *out =
+                coins_view_cache_get_output_for(&cache, &tin);
+            if (out && out->value == 10 * COIN)
+                printf("OK\n");
+            else { printf("FAIL (output)\n"); failures++; }
+        } else { printf("FAIL (have)\n"); failures++; }
+
+        transaction_free(&coinbase_tx);
+        coins_view_cache_free(&cache);
     }
 
     printf("block serialize/deserialize roundtrip... ");

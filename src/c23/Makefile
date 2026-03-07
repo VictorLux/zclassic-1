@@ -45,7 +45,8 @@ VALIDATION_SRCS = \
 	validation/check_transaction.c validation/contextual_check_tx.c \
 	validation/sigops.c validation/sighash.c validation/tx_verifier.c \
 	validation/validationinterface.c validation/txmempool.c \
-	validation/chainstate.c validation/checkqueue.c
+	validation/chainstate.c validation/checkqueue.c \
+	validation/update_coins.c
 
 SUPPORT_SRCS = \
 	support/cleanse.c support/pagelocker.c
