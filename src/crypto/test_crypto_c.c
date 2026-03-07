@@ -13,6 +13,8 @@
 #include "crypto/blake2b.h"
 #include "uint256.h"
 #include "hash.h"
+#include "base58.h"
+#include "bech32.h"
 
 static int check_hex(const unsigned char *data, size_t len, const char *expected)
 {
@@ -102,6 +104,94 @@ int main(void)
     } else {
         printf("FAIL: %s\n", hexbuf);
         failures++;
+    }
+
+    printf("base58 encode... ");
+    {
+        const unsigned char data[] = { 0x00, 0x01, 0x02, 0x03 };
+        char b58[64];
+        size_t b58_len;
+        base58_encode(data, 4, b58, sizeof(b58), &b58_len);
+        if (strcmp(b58, "1Ldp") == 0)
+            printf("OK\n");
+        else {
+            printf("FAIL: %s\n", b58);
+            failures++;
+        }
+    }
+
+    printf("base58 decode... ");
+    {
+        unsigned char out[64];
+        size_t out_len;
+        if (base58_decode("1Ldp", out, sizeof(out), &out_len) &&
+            out_len == 4 && out[0] == 0x00 && out[1] == 0x01 && out[2] == 0x02 && out[3] == 0x03)
+            printf("OK\n");
+        else {
+            printf("FAIL\n");
+            failures++;
+        }
+    }
+
+    printf("base58check roundtrip... ");
+    {
+        const unsigned char payload[] = { 0x00, 0x14, 0x01, 0x02, 0x03 };
+        char encoded[128];
+        size_t enc_len;
+        base58check_encode(payload, 5, encoded, sizeof(encoded), &enc_len);
+        unsigned char decoded[128];
+        size_t dec_len;
+        if (base58check_decode(encoded, decoded, sizeof(decoded), &dec_len) &&
+            dec_len == 5 && memcmp(decoded, payload, 5) == 0)
+            printf("OK\n");
+        else {
+            printf("FAIL\n");
+            failures++;
+        }
+    }
+
+    printf("bech32 encode... ");
+    {
+        uint8_t values[] = { 0, 14, 20, 15, 7, 13, 26, 0, 25, 18, 6, 11, 13, 8, 21, 4, 20, 3, 17, 2, 29, 3, 12, 29, 3, 4, 15, 24, 20, 6, 14, 30, 22 };
+        char out[128];
+        if (bech32_encode(out, sizeof(out), "bc", values, 33) && strlen(out) > 0)
+            printf("OK (%s)\n", out);
+        else {
+            printf("FAIL\n");
+            failures++;
+        }
+    }
+
+    printf("bech32 decode... ");
+    {
+        char hrp[16];
+        uint8_t data[128];
+        size_t data_len;
+        if (bech32_decode(hrp, sizeof(hrp), data, sizeof(data), &data_len, "a12uel5l") &&
+            strcmp(hrp, "a") == 0 && data_len == 0)
+            printf("OK\n");
+        else {
+            printf("FAIL\n");
+            failures++;
+        }
+    }
+
+    printf("bech32 roundtrip... ");
+    {
+        uint8_t values[] = { 1, 2, 3, 4, 5 };
+        char encoded[128];
+        bech32_encode(encoded, sizeof(encoded), "test", values, 5);
+        char hrp[16];
+        uint8_t decoded[128];
+        size_t dec_len;
+        if (bech32_decode(hrp, sizeof(hrp), decoded, sizeof(decoded), &dec_len, encoded) &&
+            strcmp(hrp, "test") == 0 && dec_len == 5 &&
+            memcmp(decoded, values, 5) == 0)
+            printf("OK\n");
+        else {
+            printf("FAIL\n");
+            failures++;
+        }
     }
 
     printf("\n%s (%d failures)\n", failures ? "SOME TESTS FAILED" : "ALL TESTS PASSED", failures);
