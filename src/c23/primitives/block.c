@@ -5,6 +5,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "primitives/block.h"
+#include "primitives/transaction.h"
 #include "core/hash.h"
 #include "core/serialize.h"
 #include <stdlib.h>
@@ -51,6 +52,37 @@ bool block_header_deserialize(struct block_header *h, struct byte_stream *s)
         if (!stream_read_bytes(s, h->nSolution, h->nSolutionSize)) return false;
     }
     return true;
+}
+
+bool block_serialize(const struct block *b, struct byte_stream *s)
+{
+    if (!block_header_serialize(&b->header, s)) return false;
+    if (!stream_write_compact_size(s, b->num_vtx)) return false;
+    for (size_t i = 0; i < b->num_vtx; i++) {
+        if (!transaction_serialize(&b->vtx[i], s)) return false;
+    }
+    return true;
+}
+
+bool block_deserialize(struct block *b, struct byte_stream *s)
+{
+    if (!block_header_deserialize(&b->header, s)) return false;
+    uint64_t count;
+    if (!stream_read_compact_size(s, &count)) return false;
+    if (count > MAX_BLOCK_TRANSACTIONS) return false;
+    b->num_vtx = (size_t)count;
+    b->vtx = calloc(b->num_vtx, sizeof(struct transaction));
+    if (!b->vtx && b->num_vtx > 0) return false;
+    for (size_t i = 0; i < b->num_vtx; i++) {
+        transaction_init(&b->vtx[i]);
+        if (!transaction_deserialize(&b->vtx[i], s)) return false;
+    }
+    return true;
+}
+
+void block_get_hash(const struct block *b, struct uint256 *out)
+{
+    block_header_get_hash(&b->header, out);
 }
 
 bool block_locator_serialize(const struct block_locator *loc,

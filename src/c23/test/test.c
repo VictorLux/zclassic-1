@@ -4104,6 +4104,58 @@ int main(void)
         }
     }
 
+    printf("block serialize/deserialize roundtrip... ");
+    {
+        struct block b;
+        block_init(&b);
+        b.header.nVersion = 4;
+        b.header.nTime = 1234567890;
+        b.header.nBits = 0x1d00ffff;
+        memset(b.header.hashPrevBlock.data, 0xaa, 32);
+        memset(b.header.hashMerkleRoot.data, 0xbb, 32);
+        b.num_vtx = 1;
+        b.vtx = calloc(1, sizeof(struct transaction));
+        transaction_init(&b.vtx[0]);
+        transaction_alloc(&b.vtx[0], 1, 1);
+        b.vtx[0].vin[0].sequence = 0xffffffff;
+        b.vtx[0].vout[0].value = 50 * 100000000LL;
+
+        struct byte_stream s;
+        stream_init(&s, 512);
+        bool ok = block_serialize(&b, &s);
+        if (ok) {
+            struct block b2;
+            block_init(&b2);
+            struct byte_stream s2;
+            stream_init_from_data(&s2, s.data, s.size);
+            ok = block_deserialize(&b2, &s2);
+            if (ok && b2.num_vtx == 1 &&
+                b2.header.nTime == 1234567890 &&
+                b2.header.nBits == 0x1d00ffff &&
+                b2.vtx[0].vout[0].value == 50 * 100000000LL) {
+                struct uint256 h1, h2;
+                block_get_hash(&b, &h1);
+                block_get_hash(&b2, &h2);
+                if (uint256_cmp(&h1, &h2) == 0)
+                    printf("OK\n");
+                else {
+                    printf("FAIL (hash mismatch)\n");
+                    failures++;
+                }
+            } else {
+                printf("FAIL (deserialize)\n");
+                failures++;
+            }
+            block_free(&b2);
+            stream_free(&s2);
+        } else {
+            printf("FAIL (serialize)\n");
+            failures++;
+        }
+        stream_free(&s);
+        block_free(&b);
+    }
+
     printf("\n%s (%d failures)\n", failures ? "SOME TESTS FAILED" : "ALL TESTS PASSED", failures);
     return failures ? 1 : 0;
 }

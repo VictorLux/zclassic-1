@@ -8,6 +8,7 @@
 #define ZCL_PRIMITIVES_BLOCK_H
 
 #include "core/uint256.h"
+#include "primitives/transaction.h"
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -74,5 +75,36 @@ bool block_locator_serialize(const struct block_locator *loc,
                              struct byte_stream *s);
 bool block_locator_deserialize(struct block_locator *loc,
                                struct byte_stream *s);
+
+#define MAX_BLOCK_SIZE 2000000
+#define MAX_BLOCK_TRANSACTIONS 50000
+
+struct block {
+    struct block_header header;
+    struct transaction *vtx;
+    size_t num_vtx;
+};
+
+static inline void block_init(struct block *b)
+{
+    block_header_init(&b->header);
+    b->vtx = NULL;
+    b->num_vtx = 0;
+}
+
+static inline void block_free(struct block *b)
+{
+    if (b->vtx) {
+        for (size_t i = 0; i < b->num_vtx; i++)
+            transaction_free(&b->vtx[i]);
+        free(b->vtx);
+        b->vtx = NULL;
+    }
+    b->num_vtx = 0;
+}
+
+bool block_serialize(const struct block *b, struct byte_stream *s);
+bool block_deserialize(struct block *b, struct byte_stream *s);
+void block_get_hash(const struct block *b, struct uint256 *out);
 
 #endif
