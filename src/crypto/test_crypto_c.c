@@ -15,6 +15,7 @@
 #include "hash.h"
 #include "base58.h"
 #include "bech32.h"
+#include "arith_uint256.h"
 
 static int check_hex(const unsigned char *data, size_t len, const char *expected)
 {
@@ -190,6 +191,79 @@ int main(void)
             printf("OK\n");
         else {
             printf("FAIL\n");
+            failures++;
+        }
+    }
+
+    printf("arith_uint256 compact roundtrip... ");
+    {
+        struct arith_uint256 target;
+        bool neg, ovf;
+        arith_uint256_set_compact(&target, 0x1d00ffff, &neg, &ovf);
+        uint32_t compact = arith_uint256_get_compact(&target, false);
+        if (compact == 0x1d00ffff && !neg && !ovf)
+            printf("OK\n");
+        else {
+            printf("FAIL: compact=0x%08x neg=%d ovf=%d\n", compact, neg, ovf);
+            failures++;
+        }
+    }
+
+    printf("arith_uint256 arithmetic... ");
+    {
+        struct arith_uint256 a, b, r;
+        arith_uint256_set_u64(&a, 0xFFFFFFFF);
+        arith_uint256_set_u64(&b, 2);
+        arith_uint256_mul_u32(&r, &a, 2);
+        if (arith_uint256_get_low64(&r) == 0x1FFFFFFFE)
+            printf("OK\n");
+        else {
+            printf("FAIL: got 0x%llx\n", (unsigned long long)arith_uint256_get_low64(&r));
+            failures++;
+        }
+    }
+
+    printf("arith_uint256 shift... ");
+    {
+        struct arith_uint256 a, r;
+        arith_uint256_set_u64(&a, 1);
+        arith_uint256_shl(&r, &a, 64);
+        if (r.pn[2] == 1 && r.pn[0] == 0 && r.pn[1] == 0)
+            printf("OK\n");
+        else {
+            printf("FAIL\n");
+            failures++;
+        }
+    }
+
+    printf("arith_uint256 division... ");
+    {
+        struct arith_uint256 a, b, r;
+        arith_uint256_set_u64(&a, 100);
+        arith_uint256_set_u64(&b, 7);
+        arith_uint256_div(&r, &a, &b);
+        if (arith_uint256_get_low64(&r) == 14)
+            printf("OK\n");
+        else {
+            printf("FAIL: got %llu\n", (unsigned long long)arith_uint256_get_low64(&r));
+            failures++;
+        }
+    }
+
+    printf("arith_uint256 <-> uint256 conversion... ");
+    {
+        struct uint256 u;
+        uint256_set_hex(&u, "00000000000000000000000000000000000000000000000000000000deadbeef");
+        struct arith_uint256 a;
+        uint256_to_arith(&a, &u);
+        struct uint256 u2;
+        arith_to_uint256(&u2, &a);
+        char hex[65];
+        uint256_get_hex(&u2, hex);
+        if (strcmp(hex, "00000000000000000000000000000000000000000000000000000000deadbeef") == 0)
+            printf("OK\n");
+        else {
+            printf("FAIL: %s\n", hex);
             failures++;
         }
     }
