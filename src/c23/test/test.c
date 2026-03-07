@@ -69,6 +69,7 @@
 #include "net/addrman.h"
 #include "net/net.h"
 #include "validation/txmempool.h"
+#include "policy/fees.h"
 
 static int test_tip_count = 0;
 static int test_tip_height = 0;
@@ -3321,6 +3322,96 @@ int main(void)
 
         mempool_entry_free(&entry);
         transaction_free(&tx);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("tx_confirm_stats init/setup/find_bucket... ");
+    {
+        struct tx_confirm_stats s;
+        tx_confirm_stats_init(&s);
+        double bkts[] = {10.0, 100.0, 1000.0, 10000.0};
+        tx_confirm_stats_setup(&s, bkts, 4, 10, 0.998);
+
+        bool ok = s.num_buckets == 5;
+        ok = ok && s.max_confirms == 10;
+
+        ok = ok && tx_confirm_stats_find_bucket(&s, 5.0) == 0;
+        ok = ok && tx_confirm_stats_find_bucket(&s, 10.0) == 0;
+        ok = ok && tx_confirm_stats_find_bucket(&s, 50.0) == 1;
+        ok = ok && tx_confirm_stats_find_bucket(&s, 5000.0) == 3;
+        ok = ok && tx_confirm_stats_find_bucket(&s, 99999.0) == 4;
+
+        tx_confirm_stats_free(&s);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("tx_confirm_stats record/update... ");
+    {
+        struct tx_confirm_stats s;
+        tx_confirm_stats_init(&s);
+        double bkts[] = {100.0, 1000.0, 10000.0};
+        tx_confirm_stats_setup(&s, bkts, 3, 5, 0.998);
+
+        tx_confirm_stats_clear_current(&s, 1);
+        tx_confirm_stats_record(&s, 1, 500.0);
+        tx_confirm_stats_record(&s, 2, 500.0);
+        tx_confirm_stats_update_averages(&s);
+
+        bool ok = s.tx_ct_avg[1] > 0;
+        ok = ok && s.avg[1] > 0;
+
+        tx_confirm_stats_free(&s);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("block_policy_estimator init/free... ");
+    {
+        struct fee_rate min_fee;
+        min_fee.satoshis_per_k = 1000;
+        struct block_policy_estimator est;
+        block_policy_estimator_init(&est, &min_fee);
+
+        bool ok = est.best_seen_height == 0;
+        ok = ok && est.fee_stats.num_buckets > 0;
+        ok = ok && est.pri_stats.num_buckets > 0;
+        ok = ok && est.min_tracked_fee.satoshis_per_k >= 10;
+
+        block_policy_estimator_free(&est);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("block_policy_estimator estimate_fee empty... ");
+    {
+        struct fee_rate min_fee;
+        min_fee.satoshis_per_k = 1000;
+        struct block_policy_estimator est;
+        block_policy_estimator_init(&est, &min_fee);
+
+        struct fee_rate r = policy_estimate_fee(&est, 2);
+        bool ok = r.satoshis_per_k == 0;
+        double p = policy_estimate_priority(&est, 2);
+        ok = ok && p == -1;
+
+        block_policy_estimator_free(&est);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("policy is_fee/pri_data_point... ");
+    {
+        struct fee_rate min_fee;
+        min_fee.satoshis_per_k = 1000;
+        struct block_policy_estimator est;
+        block_policy_estimator_init(&est, &min_fee);
+
+        struct fee_rate high_fee;
+        high_fee.satoshis_per_k = 50000;
+        bool ok = policy_is_fee_data_point(&est, &high_fee, 0.0);
+
+        struct fee_rate zero_fee;
+        zero_fee.satoshis_per_k = 0;
+        ok = ok && policy_is_pri_data_point(&est, &zero_fee, 1e12);
+
+        block_policy_estimator_free(&est);
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 

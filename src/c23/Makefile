@@ -60,10 +60,13 @@ UTIL_SRCS = \
 	util/deprecation.c util/clientversion.c \
 	util/ui_interface.c util/noui.c
 
+POLICY_SRCS = \
+	policy/fees.c
+
 ALL_SRCS = $(CRYPTO_SRCS) $(CORE_SRCS) $(ENCODING_SRCS) $(SCRIPT_SRCS) \
 	$(CONSENSUS_SRCS) $(PRIMITIVES_SRCS) $(NET_SRCS) $(CHAIN_SRCS) \
 	$(KEYS_SRCS) $(VALIDATION_SRCS) $(SUPPORT_SRCS) $(BLOOM_SRCS) \
-	$(COINS_SRCS) $(UTIL_SRCS)
+	$(COINS_SRCS) $(UTIL_SRCS) $(POLICY_SRCS)
 
 ALL_OBJS = $(ALL_SRCS:.c=.o)
 
