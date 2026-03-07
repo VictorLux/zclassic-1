@@ -10,6 +10,7 @@
 #include "uint256.h"
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define BLOCK_HEADER_SIZE (4 + 32 + 32 + 32 + 4 + 4 + 32)
@@ -48,5 +49,30 @@ struct byte_stream;
 bool block_header_serialize(const struct block_header *h, struct byte_stream *s);
 bool block_header_deserialize(struct block_header *h, struct byte_stream *s);
 void block_header_get_hash(const struct block_header *h, struct uint256 *out);
+
+#define MAX_LOCATOR_HASHES 64
+
+struct block_locator {
+    struct uint256 *vhave;
+    size_t num_hashes;
+};
+
+static inline void block_locator_init(struct block_locator *loc)
+{
+    loc->vhave = NULL;
+    loc->num_hashes = 0;
+}
+
+static inline void block_locator_free(struct block_locator *loc)
+{
+    free(loc->vhave);
+    loc->vhave = NULL;
+    loc->num_hashes = 0;
+}
+
+bool block_locator_serialize(const struct block_locator *loc,
+                             struct byte_stream *s);
+bool block_locator_deserialize(struct block_locator *loc,
+                               struct byte_stream *s);
 
 #endif

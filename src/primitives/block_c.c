@@ -7,6 +7,7 @@
 #include "primitives/block_c.h"
 #include "hash.h"
 #include "serialize_c.h"
+#include <stdlib.h>
 
 bool block_header_serialize(const struct block_header *h, struct byte_stream *s)
 {
@@ -48,6 +49,36 @@ bool block_header_deserialize(struct block_header *h, struct byte_stream *s)
     h->nSolutionSize = (size_t)sol_size;
     if (h->nSolutionSize > 0) {
         if (!stream_read_bytes(s, h->nSolution, h->nSolutionSize)) return false;
+    }
+    return true;
+}
+
+bool block_locator_serialize(const struct block_locator *loc,
+                             struct byte_stream *s)
+{
+    /* CBlockLocator serializes nVersion (unused) + vector<uint256> */
+    if (!stream_write_i32_le(s, 0)) return false; /* nVersion placeholder */
+    if (!stream_write_compact_size(s, loc->num_hashes)) return false;
+    for (size_t i = 0; i < loc->num_hashes; i++) {
+        if (!stream_write_bytes(s, loc->vhave[i].data, 32)) return false;
+    }
+    return true;
+}
+
+bool block_locator_deserialize(struct block_locator *loc,
+                               struct byte_stream *s)
+{
+    int32_t nVersion;
+    if (!stream_read_i32_le(s, &nVersion)) return false;
+    (void)nVersion;
+    uint64_t count;
+    if (!stream_read_compact_size(s, &count)) return false;
+    if (count > MAX_LOCATOR_HASHES) return false;
+    loc->num_hashes = (size_t)count;
+    loc->vhave = calloc(loc->num_hashes, sizeof(struct uint256));
+    if (!loc->vhave && loc->num_hashes > 0) return false;
+    for (size_t i = 0; i < loc->num_hashes; i++) {
+        if (!stream_read_bytes(s, loc->vhave[i].data, 32)) return false;
     }
     return true;
 }

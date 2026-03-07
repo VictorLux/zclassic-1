@@ -67,4 +67,16 @@ const char *inv_item_get_command(const struct inv_item *inv);
 int inv_item_to_string(const struct inv_item *inv, char *out, size_t out_size);
 bool inv_item_less(const struct inv_item *a, const struct inv_item *b);
 
+#define CADDR_TIME_VERSION 31402
+
+struct byte_stream;
+
+bool net_address_serialize(const struct net_address *a, struct byte_stream *s,
+                           bool include_time);
+bool net_address_deserialize(struct net_address *a, struct byte_stream *s,
+                             bool include_time);
+
+bool inv_item_serialize(const struct inv_item *inv, struct byte_stream *s);
+bool inv_item_deserialize(struct inv_item *inv, struct byte_stream *s);
+
 #endif

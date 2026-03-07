@@ -2389,6 +2389,77 @@ int main(void)
         stream_free(&s);
     }
 
+    printf("net_address serialize/deserialize roundtrip... ");
+    {
+        struct net_address a;
+        net_address_init(&a);
+        a.nServices = NODE_NETWORK | NODE_BLOOM;
+        a.nTime = 1700000000;
+        a.svc.addr.ip[12] = 192; a.svc.addr.ip[13] = 168;
+        a.svc.addr.ip[14] = 1; a.svc.addr.ip[15] = 1;
+        a.svc.port = 8233;
+        struct byte_stream s;
+        stream_init(&s, 64);
+        net_address_serialize(&a, &s, true);
+        struct byte_stream r;
+        stream_init_from_data(&r, s.data, s.size);
+        struct net_address a2;
+        net_address_init(&a2);
+        net_address_deserialize(&a2, &r, true);
+        if (a2.nTime == 1700000000 &&
+            a2.nServices == (NODE_NETWORK | NODE_BLOOM) &&
+            a2.svc.addr.ip[12] == 192 && a2.svc.port == 8233)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+        stream_free(&s);
+    }
+
+    printf("inv_item serialize/deserialize roundtrip... ");
+    {
+        struct inv_item inv;
+        struct uint256 h;
+        memset(h.data, 0xAA, 32);
+        inv_item_init_typed(&inv, MSG_TX, &h);
+        struct byte_stream s;
+        stream_init(&s, 64);
+        inv_item_serialize(&inv, &s);
+        struct byte_stream r;
+        stream_init_from_data(&r, s.data, s.size);
+        struct inv_item inv2;
+        inv_item_deserialize(&inv2, &r);
+        if (inv2.type == MSG_TX && inv2.hash.data[0] == 0xAA)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+        stream_free(&s);
+    }
+
+    printf("block_locator serialize/deserialize roundtrip... ");
+    {
+        struct block_locator loc;
+        block_locator_init(&loc);
+        loc.num_hashes = 3;
+        loc.vhave = calloc(3, sizeof(struct uint256));
+        memset(loc.vhave[0].data, 0x11, 32);
+        memset(loc.vhave[1].data, 0x22, 32);
+        memset(loc.vhave[2].data, 0x33, 32);
+        struct byte_stream s;
+        stream_init(&s, 128);
+        block_locator_serialize(&loc, &s);
+        struct byte_stream r;
+        stream_init_from_data(&r, s.data, s.size);
+        struct block_locator loc2;
+        block_locator_init(&loc2);
+        block_locator_deserialize(&loc2, &r);
+        if (loc2.num_hashes == 3 &&
+            loc2.vhave[0].data[0] == 0x11 &&
+            loc2.vhave[2].data[0] == 0x33)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+        block_locator_free(&loc);
+        block_locator_free(&loc2);
+        stream_free(&s);
+    }
+
     printf("ecc_init_sanity_check... ");
     {
         if (ecc_init_sanity_check())

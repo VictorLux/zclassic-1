@@ -5,6 +5,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "protocol_c.h"
+#include "serialize_c.h"
 #include "util.h"
 #include <string.h>
 #include <stdio.h>
@@ -127,4 +128,45 @@ bool inv_item_less(const struct inv_item *a, const struct inv_item *b)
     if (a->type != b->type)
         return a->type < b->type;
     return uint256_cmp(&a->hash, &b->hash) < 0;
+}
+
+bool net_address_serialize(const struct net_address *a, struct byte_stream *s,
+                           bool include_time)
+{
+    if (include_time) {
+        if (!stream_write_u32_le(s, a->nTime)) return false;
+    }
+    if (!stream_write_u64_le(s, a->nServices)) return false;
+    if (!stream_write_bytes(s, a->svc.addr.ip, 16)) return false;
+    uint16_t port_be = (uint16_t)((a->svc.port >> 8) | (a->svc.port << 8));
+    if (!stream_write_bytes(s, (const unsigned char *)&port_be, 2)) return false;
+    return true;
+}
+
+bool net_address_deserialize(struct net_address *a, struct byte_stream *s,
+                             bool include_time)
+{
+    if (include_time) {
+        if (!stream_read_u32_le(s, &a->nTime)) return false;
+    }
+    if (!stream_read_u64_le(s, &a->nServices)) return false;
+    if (!stream_read_bytes(s, a->svc.addr.ip, 16)) return false;
+    uint16_t port_be;
+    if (!stream_read_bytes(s, (unsigned char *)&port_be, 2)) return false;
+    a->svc.port = (uint16_t)((port_be >> 8) | (port_be << 8));
+    return true;
+}
+
+bool inv_item_serialize(const struct inv_item *inv, struct byte_stream *s)
+{
+    if (!stream_write_u32_le(s, (uint32_t)inv->type)) return false;
+    return stream_write_bytes(s, inv->hash.data, 32);
+}
+
+bool inv_item_deserialize(struct inv_item *inv, struct byte_stream *s)
+{
+    uint32_t t;
+    if (!stream_read_u32_le(s, &t)) return false;
+    inv->type = (int)t;
+    return stream_read_bytes(s, inv->hash.data, 32);
 }
