@@ -1,265 +1,95 @@
-// Copyright (c) 2009-2010 Satoshi Nakamoto
-// Copyright (c) 2009-2014 The Bitcoin Core developers
-// Distributed under the MIT software license, see the accompanying
-// file COPYING or http://www.opensource.org/licenses/mit-license.php.
+/* Copyright (c) 2009-2010 Satoshi Nakamoto
+ * Copyright (c) 2009-2014 The Bitcoin Core developers
+ * Copyright 2026 Rhett Creighton - Apache License 2.0
+ * Distributed under the MIT software license, see the accompanying
+ * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
-/**
- * Server/client environment: argument handling, config file parsing,
- * logging, thread wrappers, startup time
- */
 #ifndef BITCOIN_UTIL_H
 #define BITCOIN_UTIL_H
 
-#if defined(HAVE_CONFIG_H)
-#include "config/bitcoin-config.h"
-#endif
-
-#include "compat.h"
-#include "tinyformat.h"
-#include "utiltime.h"
-
-#include <atomic>
-#include <exception>
-#include <map>
+#include <stdbool.h>
 #include <stdint.h>
-#include <string>
-#include <vector>
+#include <stdio.h>
 
-#include <boost/filesystem/path.hpp>
-#include <boost/signals2/signal.hpp>
-#include <boost/thread/exceptions.hpp>
+#define DEFAULT_LOGTIMEMICROS  false
+#define DEFAULT_LOGIPS         false
+#define DEFAULT_LOGTIMESTAMPS  true
 
-// Application startup time (used for uptime calculation)
-int64_t GetStartupTime();
+#define MAX_ARGS   512
+#define MAX_ARG_LEN 1024
 
-static const bool DEFAULT_LOGTIMEMICROS = false;
-static const bool DEFAULT_LOGIPS        = false;
-static const bool DEFAULT_LOGTIMESTAMPS = true;
-
-/** Signals for translation. */
-class CTranslationInterface
-{
-public:
-    /** Translate a message to the native language of the user. */
-    boost::signals2::signal<std::string (const char* psz)> Translate;
+struct arg_entry {
+    char key[MAX_ARG_LEN];
+    char value[MAX_ARG_LEN];
 };
 
-extern std::map<std::string, std::string> mapArgs;
-extern std::map<std::string, std::vector<std::string> > mapMultiArgs;
+extern struct arg_entry g_args[MAX_ARGS];
+extern int g_nargs;
+
 extern bool fDebug;
 extern bool fPrintToConsole;
 extern bool fPrintToDebugLog;
 extern bool fServer;
-extern std::string strMiscWarning;
 extern bool fLogTimestamps;
 extern bool fLogIPs;
-extern std::atomic<bool> fReopenDebugLog;
-extern CTranslationInterface translationInterface;
 
-[[noreturn]] extern void new_handler_terminate();
+int64_t GetStartupTime(void);
 
-/**
- * Translation function: Call Translate signal on UI interface, which returns a boost::optional result.
- * If no translation slot is registered, nothing is returned, and simply return the input.
- */
-inline std::string _(const char* psz)
-{
-    boost::optional<std::string> rv = translationInterface.Translate(psz);
-    return rv ? (*rv) : psz;
-}
+void ParseParameters(int argc, const char *const argv[]);
+const char *GetArg(const char *arg, const char *default_val);
+int64_t GetArgInt(const char *arg, int64_t default_val);
+bool GetBoolArg(const char *arg, bool default_val);
+bool SoftSetArg(const char *arg, const char *value);
+bool SoftSetBoolArg(const char *arg, bool value);
 
-void SetupEnvironment();
-bool SetupNetworking();
+bool LogAcceptCategory(const char *category);
+int LogPrintStr(const char *str);
 
-/** Return true if log accepts specified category */
-bool LogAcceptCategory(const char* category);
-/** Send a string to the log output */
-int LogPrintStr(const std::string &str);
+void GetDefaultDataDir(char *out, size_t out_size);
+void GetDataDir(bool fNetSpecific, char *out, size_t out_size);
+void ClearDatadirCache(void);
 
-#define LogPrintf(...) LogPrint(NULL, __VA_ARGS__)
-
-/**
- * When we switch to C++11, this can be switched to variadic templates instead
- * of this macro-based construction (see tinyformat.h).
- */
-#define MAKE_ERROR_AND_LOG_FUNC(n)                                        \
-    /**   Print to debug.log if -debug=category switch is given OR category is NULL. */ \
-    template<TINYFORMAT_ARGTYPES(n)>                                          \
-    static inline int LogPrint(const char* category, const char* format, TINYFORMAT_VARARGS(n))  \
-    {                                                                         \
-        if(!LogAcceptCategory(category)) return 0;                            \
-        return LogPrintStr(tfm::format(format, TINYFORMAT_PASSARGS(n))); \
-    }                                                                         \
-    /**   Log error and return false */                                        \
-    template<TINYFORMAT_ARGTYPES(n)>                                          \
-    static inline bool error(const char* format, TINYFORMAT_VARARGS(n))                     \
-    {                                                                         \
-        LogPrintStr("ERROR: " + tfm::format(format, TINYFORMAT_PASSARGS(n)) + "\n"); \
-        return false;                                                         \
-    }
-
-TINYFORMAT_FOREACH_ARGNUM(MAKE_ERROR_AND_LOG_FUNC)
-
-/**
- * Zero-arg versions of logging and error, these are not covered by
- * TINYFORMAT_FOREACH_ARGNUM
- */
-static inline int LogPrint(const char* category, const char* format)
-{
-    if(!LogAcceptCategory(category)) return 0;
-    return LogPrintStr(format);
-}
-static inline bool error(const char* format)
-{
-    LogPrintStr(std::string("ERROR: ") + format + "\n");
-    return false;
-}
-
-const boost::filesystem::path &ZC_GetParamsDir();
-
-void PrintExceptionContinue(const std::exception *pex, const char* pszThread);
-void ParseParameters(int argc, const char*const argv[]);
+void OpenDebugLog(void);
+void ShrinkDebugFile(void);
 void FileCommit(FILE *fileout);
 bool TruncateFile(FILE *file, unsigned int length);
 int RaiseFileDescriptorLimit(int nMinFD);
 void AllocateFileRange(FILE *file, unsigned int offset, unsigned int length);
-bool RenameOver(boost::filesystem::path src, boost::filesystem::path dest);
-bool TryCreateDirectory(const boost::filesystem::path& p);
-boost::filesystem::path GetDefaultDataDir();
-const boost::filesystem::path &GetDataDir(bool fNetSpecific = true);
-void ClearDatadirCache();
-boost::filesystem::path GetConfigFile();
-#ifndef WIN32
-boost::filesystem::path GetPidFile();
-void CreatePidFile(const boost::filesystem::path &path, pid_t pid);
-#endif
-class missing_zcash_conf : public std::runtime_error {
-public:
-    missing_zcash_conf() : std::runtime_error("Missing zclassic.conf") { }
-};
-void ReadConfigFile(std::map<std::string, std::string>& mapSettingsRet, std::map<std::string, std::vector<std::string> >& mapMultiSettingsRet);
-#ifdef WIN32
-boost::filesystem::path GetSpecialFolderPath(int nFolder, bool fCreate = true);
-#endif
-boost::filesystem::path GetTempPath();
-void OpenDebugLog();
-void ShrinkDebugFile();
-void runCommand(const std::string& strCommand);
-const boost::filesystem::path GetExportDir();
 
-/** Returns privacy notice (for -version, -help and metrics screen) */
-std::string PrivacyInfo();
+bool RenameOver(const char *src, const char *dest);
+bool TryCreateDirectory(const char *path);
 
-/** Returns licensing information (for -version) */
-std::string LicenseInfo();
+void SetupEnvironment(void);
+bool SetupNetworking(void);
+void RenameThread(const char *name);
+int GetNumCores(void);
 
-inline bool IsSwitchChar(char c)
+void HelpMessageGroup(const char *message, char *out, size_t out_size);
+void HelpMessageOpt(const char *option, const char *message, char *out, size_t out_size);
+
+static inline bool IsSwitchChar(char c)
 {
-#ifdef WIN32
+#ifdef _WIN32
     return c == '-' || c == '/';
 #else
     return c == '-';
 #endif
 }
 
-/**
- * Return string argument or default value
- *
- * @param strArg Argument to get (e.g. "-foo")
- * @param default (e.g. "1")
- * @return command-line argument or default value
- */
-std::string GetArg(const std::string& strArg, const std::string& strDefault);
+#define LogPrintf(...) do { \
+    if (LogAcceptCategory(NULL)) { \
+        char _logbuf[4096]; \
+        snprintf(_logbuf, sizeof(_logbuf), __VA_ARGS__); \
+        LogPrintStr(_logbuf); \
+    } \
+} while(0)
 
-/**
- * Return integer argument or default value
- *
- * @param strArg Argument to get (e.g. "-foo")
- * @param default (e.g. 1)
- * @return command-line argument (0 if invalid number) or default value
- */
-int64_t GetArg(const std::string& strArg, int64_t nDefault);
+#define LogPrint(category, ...) do { \
+    if (LogAcceptCategory(category)) { \
+        char _logbuf[4096]; \
+        snprintf(_logbuf, sizeof(_logbuf), __VA_ARGS__); \
+        LogPrintStr(_logbuf); \
+    } \
+} while(0)
 
-/**
- * Return boolean argument or default value
- *
- * @param strArg Argument to get (e.g. "-foo")
- * @param default (true or false)
- * @return command-line argument or default value
- */
-bool GetBoolArg(const std::string& strArg, bool fDefault);
-
-/**
- * Set an argument if it doesn't already have a value
- *
- * @param strArg Argument to set (e.g. "-foo")
- * @param strValue Value (e.g. "1")
- * @return true if argument gets set, false if it already had a value
- */
-bool SoftSetArg(const std::string& strArg, const std::string& strValue);
-
-/**
- * Set a boolean argument if it doesn't already have a value
- *
- * @param strArg Argument to set (e.g. "-foo")
- * @param fValue Value (e.g. false)
- * @return true if argument gets set, false if it already had a value
- */
-bool SoftSetBoolArg(const std::string& strArg, bool fValue);
-
-/**
- * Format a string to be used as group of options in help messages
- *
- * @param message Group name (e.g. "RPC server options:")
- * @return the formatted string
- */
-std::string HelpMessageGroup(const std::string& message);
-
-/**
- * Format a string to be used as option description in help messages
- *
- * @param option Option message (e.g. "-rpcuser=<user>")
- * @param message Option description (e.g. "Username for JSON-RPC connections")
- * @return the formatted string
- */
-std::string HelpMessageOpt(const std::string& option, const std::string& message);
-
-/**
- * Return the number of physical cores available on the current system.
- * @note This does not count virtual cores, such as those provided by HyperThreading
- * when boost is newer than 1.56.
- */
-int GetNumCores();
-
-void SetThreadPriority(int nPriority);
-void RenameThread(const char* name);
-
-/**
- * .. and a wrapper that just calls func once
- */
-template <typename Callable> void TraceThread(const char* name,  Callable func)
-{
-    std::string s = strprintf("zcl-%s", name);
-    RenameThread(s.c_str());
-    try
-    {
-        LogPrintf("%s thread start\n", name);
-        func();
-        LogPrintf("%s thread exit\n", name);
-    }
-    catch (const boost::thread_interrupted&)
-    {
-        LogPrintf("%s thread interrupt\n", name);
-        throw;
-    }
-    catch (const std::exception& e) {
-        PrintExceptionContinue(&e, name);
-        throw;
-    }
-    catch (...) {
-        PrintExceptionContinue(NULL, name);
-        throw;
-    }
-}
-
-#endif // BITCOIN_UTIL_H
+#endif

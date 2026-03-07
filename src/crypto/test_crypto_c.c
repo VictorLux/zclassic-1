@@ -24,13 +24,7 @@
 #include "utilstrencodings.h"
 #include "clientversion.h"
 #include "chainparamsbase.h"
-
-/* Stub for chainparamsbase.c linking */
-bool GetBoolArg(const char *arg, bool default_val)
-{
-    (void)arg;
-    return default_val;
-}
+#include "util.h"
 
 static int check_hex(const unsigned char *data, size_t len, const char *expected)
 {
@@ -506,6 +500,32 @@ int main(void)
             printf("OK\n");
         else {
             printf("FAIL: %s\n", CLIENT_NAME);
+            failures++;
+        }
+    }
+
+    printf("ParseParameters... ");
+    {
+        const char *argv[] = { "test", "-foo=bar", "-debug", "-baz=42" };
+        ParseParameters(4, argv);
+        if (strcmp(GetArg("-foo", ""), "bar") == 0 &&
+            GetBoolArg("-debug", false) == true &&
+            GetArgInt("-baz", 0) == 42 &&
+            strcmp(GetArg("-noexist", "default"), "default") == 0)
+            printf("OK\n");
+        else {
+            printf("FAIL\n");
+            failures++;
+        }
+    }
+
+    printf("GetNumCores... ");
+    {
+        int n = GetNumCores();
+        if (n >= 1)
+            printf("OK (%d)\n", n);
+        else {
+            printf("FAIL: %d\n", n);
             failures++;
         }
     }

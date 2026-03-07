@@ -8,6 +8,7 @@
 #include <assert.h>
 #include <stddef.h>
 
+/* GetBoolArg is defined in util.c */
 extern bool GetBoolArg(const char *arg, bool default_val);
 
 static struct base_chain_params mainParams = { 8023, "" };
