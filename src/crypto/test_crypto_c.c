@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <inttypes.h>
+#include <sys/time.h>
 #include "crypto/sha256.h"
 #include "crypto/sha512.h"
 #include "crypto/sha1.h"
@@ -61,6 +62,7 @@
 #include "contextual_check_tx_c.h"
 #include "undo_c.h"
 #include "p2p_message_c.h"
+#include "netbase_c.h"
 
 static int check_hex(const unsigned char *data, size_t len, const char *expected)
 {
@@ -2498,6 +2500,53 @@ int main(void)
             printf("OK\n");
         else { printf("FAIL\n"); failures++; }
         stream_free(&s);
+    }
+
+    printf("split_host_port... ");
+    {
+        char host[128];
+        int port = 8233;
+        split_host_port("192.168.1.1:9033", host, sizeof(host), &port);
+        if (strcmp(host, "192.168.1.1") == 0 && port == 9033)
+            printf("OK\n");
+        else { printf("FAIL (host=%s port=%d)\n", host, port); failures++; }
+    }
+
+    printf("split_host_port ipv6... ");
+    {
+        char host[128];
+        int port = 8233;
+        split_host_port("[::1]:9033", host, sizeof(host), &port);
+        if (strcmp(host, "::1") == 0 && port == 9033)
+            printf("OK\n");
+        else { printf("FAIL (host=%s port=%d)\n", host, port); failures++; }
+    }
+
+    printf("lookup_host numeric ipv4... ");
+    {
+        struct net_addr addrs[4];
+        size_t n = 0;
+        bool ok = lookup_host("127.0.0.1", addrs, 4, &n, false);
+        if (ok && n == 1 && addrs[0].ip[12] == 127 && addrs[0].ip[15] == 1)
+            printf("OK\n");
+        else { printf("FAIL (ok=%d n=%zu)\n", ok, n); failures++; }
+    }
+
+    printf("lookup_numeric... ");
+    {
+        struct net_service svc;
+        bool ok = lookup_numeric("10.0.0.1:8233", &svc, 0);
+        if (ok && svc.addr.ip[12] == 10 && svc.port == 8233)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("millis_to_timeval... ");
+    {
+        struct timeval tv = millis_to_timeval(5500);
+        if (tv.tv_sec == 5 && tv.tv_usec == 500000)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
     }
 
     printf("ecc_init_sanity_check... ");

@@ -56,7 +56,8 @@ CORE_SRCS = \
 	tx_verifier_c.c \
 	sigops_c.c \
 	contextual_check_tx_c.c \
-	p2p_message_c.c
+	p2p_message_c.c \
+	netbase_c.c
 
 ALL_SRCS = $(CRYPTO_SRCS) $(CORE_SRCS)
 ALL_OBJS = $(ALL_SRCS:.c=.o)
