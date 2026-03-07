@@ -6,9 +6,15 @@
 #include "zcash/sapling.h"
 #include "zcash/pedersen_hash.h"
 #include "zcash/jubjub.h"
+#include "zcash/bls12_381.h"
 #include "crypto/blake2s.h"
 #include "crypto/blake2b.h"
 #include <string.h>
+#include <stdlib.h>
+
+/* Global verifying keys — set by sapling_init_vk() at startup */
+static struct groth16_vk *sapling_spend_vk = NULL;
+static struct groth16_vk *sapling_output_vk = NULL;
 
 /* URS: first 64 bytes of BLAKE2s input for group_hash (rigidity constant) */
 static const uint8_t GH_FIRST_BLOCK[] =
@@ -390,6 +396,46 @@ void sapling_verification_ctx_init(struct sapling_verification_ctx *ctx)
     jub_identity(&ctx->bvk);
 }
 
+/* Extract Jubjub point affine (x, y) as raw Fr limbs (4 x uint64_t each).
+ * Jubjub base field = BLS12-381 Fr, so coordinates are Fr elements. */
+static void jub_to_affine_raw(uint64_t out_x[4], uint64_t out_y[4],
+                                const struct jub_point *p)
+{
+    struct fr z_inv;
+    fr_inv(&z_inv, &p->z);
+    struct fr x_aff, y_aff;
+    fr_mul(&x_aff, &p->x, &z_inv);
+    fr_mul(&y_aff, &p->y, &z_inv);
+
+    /* Convert from Montgomery to raw via fr_to_bytes then re-read as limbs */
+    uint8_t buf[32];
+    fr_to_bytes(buf, &x_aff);
+    for (int i = 0; i < 4; i++) {
+        out_x[i] = 0;
+        for (int j = 0; j < 8; j++)
+            out_x[i] |= (uint64_t)buf[i * 8 + j] << (8 * j);
+    }
+    fr_to_bytes(buf, &y_aff);
+    for (int i = 0; i < 4; i++) {
+        out_y[i] = 0;
+        for (int j = 0; j < 8; j++)
+            out_y[i] |= (uint64_t)buf[i * 8 + j] << (8 * j);
+    }
+}
+
+/* Read 32 LE bytes as raw Fr limbs */
+static void bytes_le_to_fr_raw(uint64_t out[4], const uint8_t bytes[32])
+{
+    for (int i = 0; i < 4; i++) {
+        out[i] = 0;
+        for (int j = 0; j < 8; j++)
+            out[i] |= (uint64_t)bytes[i * 8 + j] << (8 * j);
+    }
+}
+
+void sapling_set_spend_vk(struct groth16_vk *vk) { sapling_spend_vk = vk; }
+void sapling_set_output_vk(struct groth16_vk *vk) { sapling_output_vk = vk; }
+
 bool sapling_check_spend(struct sapling_verification_ctx *ctx,
                           const uint8_t cv[32],
                           const uint8_t anchor[32],
@@ -400,7 +446,6 @@ bool sapling_check_spend(struct sapling_verification_ctx *ctx,
                           const uint8_t sighash[32])
 {
     ensure_fixed_generators();
-    (void)anchor; (void)nullifier; (void)zkproof; /* Groth16 verification TODO */
 
     /* Deserialize cv */
     struct jub_point cv_point;
@@ -428,7 +473,31 @@ bool sapling_check_spend(struct sapling_verification_ctx *ctx,
                            GEN_SPENDING_KEY))
         return false;
 
-    /* TODO: Groth16 proof verification */
+    /* Groth16 proof verification (7 public inputs) */
+    if (sapling_spend_vk) {
+        struct groth16_proof proof;
+        if (!groth16_proof_read(&proof, zkproof))
+            return false;
+
+        /* Public inputs: rk.x, rk.y, cv.x, cv.y, anchor, nullifier_pack[0..1] */
+        uint64_t public_input[7][4];
+
+        struct jub_point rk_point;
+        if (!jub_from_bytes(&rk_point, rk))
+            return false;
+        jub_to_affine_raw(public_input[0], public_input[1], &rk_point);
+        jub_to_affine_raw(public_input[2], public_input[3], &cv_point);
+        bytes_le_to_fr_raw(public_input[4], anchor);
+
+        /* Nullifier: bytes_to_bits_le → compute_multipacking (2 Fr scalars) */
+        size_t n_packed;
+        multipack_bytes_to_fr((uint64_t (*)[4])&public_input[5], &n_packed,
+                               nullifier, 32);
+
+        if (!groth16_verify(sapling_spend_vk, &proof, public_input, 7))
+            return false;
+    }
+
     return true;
 }
 
@@ -438,8 +507,6 @@ bool sapling_check_output(struct sapling_verification_ctx *ctx,
                            const uint8_t epk[32],
                            const uint8_t zkproof[192])
 {
-    (void)cm; (void)epk; (void)zkproof; /* Groth16 verification TODO */
-
     /* Deserialize cv */
     struct jub_point cv_point;
     if (!jub_from_bytes(&cv_point, cv))
@@ -454,7 +521,32 @@ bool sapling_check_output(struct sapling_verification_ctx *ctx,
     jub_neg(&neg_cv, &cv_point);
     jub_add(&ctx->bvk, &ctx->bvk, &neg_cv);
 
-    /* TODO: Groth16 proof verification */
+    /* Small order check on epk */
+    if (is_small_order(epk))
+        return false;
+
+    /* Groth16 proof verification (5 public inputs) */
+    if (sapling_output_vk) {
+        struct groth16_proof proof;
+        if (!groth16_proof_read(&proof, zkproof))
+            return false;
+
+        /* Public inputs: cv.x, cv.y, epk.x, epk.y, cm */
+        uint64_t public_input[5][4];
+
+        jub_to_affine_raw(public_input[0], public_input[1], &cv_point);
+
+        struct jub_point epk_point;
+        if (!jub_from_bytes(&epk_point, epk))
+            return false;
+        jub_to_affine_raw(public_input[2], public_input[3], &epk_point);
+
+        bytes_le_to_fr_raw(public_input[4], cm);
+
+        if (!groth16_verify(sapling_output_vk, &proof, public_input, 5))
+            return false;
+    }
+
     return true;
 }
 

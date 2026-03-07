@@ -70,7 +70,12 @@ struct sapling_verification_ctx {
 
 void sapling_verification_ctx_init(struct sapling_verification_ctx *ctx);
 
-/* Check spend: accumulate cv, verify spend_auth_sig. Groth16 proof TODO. */
+/* Set global verifying keys (call at init before verification) */
+struct groth16_vk;
+void sapling_set_spend_vk(struct groth16_vk *vk);
+void sapling_set_output_vk(struct groth16_vk *vk);
+
+/* Check spend: accumulate cv, verify spend_auth_sig, verify Groth16 proof */
 bool sapling_check_spend(struct sapling_verification_ctx *ctx,
                           const uint8_t cv[32],
                           const uint8_t anchor[32],
