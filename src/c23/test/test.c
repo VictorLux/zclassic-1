@@ -101,6 +101,8 @@
 #include "crypto/curve25519.h"
 #include "zcash/note_encryption.h"
 #include "zcash/fr.h"
+#include "crypto/blake2s.h"
+#include "zcash/pedersen_hash.h"
 
 static int test_tip_count = 0;
 static int test_tip_height = 0;
@@ -6111,6 +6113,29 @@ int main(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    /* --- BLAKE2s basic --- */
+    printf("BLAKE2s-256(\"\")... ");
+    {
+        uint8_t hash[32];
+        blake2s(hash, 32, "", 0);
+        /* BLAKE2s-256("") = 69217a3079908094e11121d042354a7c1f55b6482ca1a51e1b250dfd1ed0eef9 */
+        uint8_t expected[32] = {
+            0x69,0x21,0x7a,0x30,0x79,0x90,0x80,0x94,
+            0xe1,0x11,0x21,0xd0,0x42,0x35,0x4a,0x7c,
+            0x1f,0x55,0xb6,0x48,0x2c,0xa1,0xa5,0x1e,
+            0x1b,0x25,0x0d,0xfd,0x1e,0xd0,0xee,0xf9
+        };
+        bool ok = (memcmp(hash, expected, 32) == 0);
+        if (ok) printf("OK\n");
+        else {
+            printf("FAIL\n");
+            printf("  got: ");
+            for (int i = 0; i < 32; i++) printf("%02x", hash[i]);
+            printf("\n");
+            failures++;
+        }
+    }
+
     /* --- Fr field basic arithmetic --- */
     printf("fr_add/sub/mul identity... ");
     {
@@ -6306,6 +6331,56 @@ int main(void)
             printf("\n");
             failures++;
         }
+    }
+
+    /* --- PedersenHash Merkle test vector --- */
+    printf("pedersen_merkle_hash depth=25... ");
+    {
+        /* uint256S parses big-endian hex → internal LE storage.
+         * a = 0x87a086ae...05, stored as LE bytes */
+        uint8_t a[32] = {
+            0x05,0x65,0x53,0x16,0xa0,0x7e,0x6e,0xc8,
+            0xc9,0x76,0x9a,0xf5,0x4e,0xf9,0x8b,0x30,
+            0x66,0x7b,0xfb,0x63,0x02,0xb3,0x29,0x87,
+            0xd5,0x52,0x22,0x7d,0xae,0x86,0xa0,0x87
+        };
+        uint8_t b[32] = {
+            0x06,0x04,0x13,0x57,0xde,0x59,0xba,0x64,
+            0x95,0x9d,0x1b,0x60,0xf9,0x3d,0xe2,0x4d,
+            0xfe,0x5e,0xa1,0xe2,0x6e,0xd9,0xe8,0xa7,
+            0x3d,0x35,0xb2,0x25,0xa1,0x84,0x5b,0xa7
+        };
+        uint8_t expected[32] = {
+            0x61,0xa5,0x0a,0x55,0x40,0xb4,0x94,0x4d,
+            0xa2,0x7c,0xbd,0x9b,0x3d,0x6e,0xc3,0x92,
+            0x34,0xba,0x22,0x9d,0x2c,0x46,0x1f,0x4d,
+            0x71,0x9b,0xc1,0x36,0x57,0x3b,0xf4,0x5b
+        };
+        uint8_t result[32];
+        pedersen_merkle_hash(25, a, b, result);
+
+        bool ok = (memcmp(result, expected, 32) == 0);
+        if (ok) printf("OK\n");
+        else {
+            printf("FAIL\n");
+            printf("  got: ");
+            for (int i = 0; i < 32; i++) printf("%02x", result[i]);
+            printf("\n  exp: ");
+            for (int i = 0; i < 32; i++) printf("%02x", expected[i]);
+            printf("\n");
+            failures++;
+        }
+    }
+
+    /* --- Sapling uncommitted value --- */
+    printf("sapling_uncommitted... ");
+    {
+        uint8_t val[32];
+        sapling_uncommitted(val);
+        bool ok = (val[0] == 1);
+        for (int i = 1; i < 32; i++) ok = ok && (val[i] == 0);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
     }
 
     printf("\n%s (%d failures)\n", failures ? "SOME TESTS FAILED" : "ALL TESTS PASSED", failures);
