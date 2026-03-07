@@ -48,7 +48,8 @@ CORE_SRCS = \
 	script/interpreter_c.c \
 	script/sigcache_c.c \
 	key_io_c.c \
-	support/pagelocker_c.c
+	support/pagelocker_c.c \
+	chainparams_c.c
 
 ALL_SRCS = $(CRYPTO_SRCS) $(CORE_SRCS)
 ALL_OBJS = $(ALL_SRCS:.c=.o)

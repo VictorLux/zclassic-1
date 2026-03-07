@@ -52,6 +52,7 @@
 #include "script/sigcache_c.h"
 #include "consensus/validation_c.h"
 #include "key_io_c.h"
+#include "chainparams_c.h"
 
 static int check_hex(const unsigned char *data, size_t len, const char *expected)
 {
@@ -1798,6 +1799,67 @@ int main(void)
         if (!decode_destination("1invalidaddress", pubkey_pfx, 2, script_pfx, 2, &dest))
             printf("OK\n");
         else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("chainparams mainnet... ");
+    {
+        chain_params_select(CHAIN_MAIN);
+        const struct chain_params *p = chain_params_get();
+        size_t pfx_len;
+        const unsigned char *pfx = chain_params_base58_prefix(p, B58_PUBKEY_ADDRESS, &pfx_len);
+        if (pfx_len == 2 && pfx[0] == 0x1C && pfx[1] == 0xB8 &&
+            p->nDefaultPort == 8033 &&
+            p->consensus.vUpgrades[UPGRADE_BUTTERCUP].nActivationHeight == 707000 &&
+            strcmp(p->strCurrencyUnits, "ZCL") == 0 &&
+            p->nFoundersRewardAddresses == 48)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("chainparams testnet... ");
+    {
+        chain_params_select(CHAIN_TESTNET);
+        const struct chain_params *p = chain_params_get();
+        size_t pfx_len;
+        const unsigned char *pfx = chain_params_base58_prefix(p, B58_PUBKEY_ADDRESS, &pfx_len);
+        if (pfx_len == 2 && pfx[0] == 0x1D && pfx[1] == 0x25 &&
+            p->nDefaultPort == 18033 &&
+            strcmp(p->strCurrencyUnits, "ZCT") == 0)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("chainparams regtest... ");
+    {
+        chain_params_select(CHAIN_REGTEST);
+        const struct chain_params *p = chain_params_get();
+        if (p->nEquihashN == 48 && p->nEquihashK == 5 &&
+            p->fMineBlocksOnDemand == true &&
+            p->fMiningRequiresPeers == false &&
+            strcmp(p->strNetworkID, "regtest") == 0)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("chainparams address roundtrip via params... ");
+    {
+        chain_params_select(CHAIN_MAIN);
+        const struct chain_params *p = chain_params_get();
+        size_t pk_len, sc_len;
+        const unsigned char *pk_pfx = chain_params_base58_prefix(p, B58_PUBKEY_ADDRESS, &pk_len);
+        const unsigned char *sc_pfx = chain_params_base58_prefix(p, B58_SCRIPT_ADDRESS, &sc_len);
+        struct tx_destination dest;
+        dest.type = DEST_KEY_ID;
+        memset(dest.id.key.id.data, 0x42, 20);
+        char addr[64];
+        if (encode_destination(&dest, pk_pfx, pk_len, sc_pfx, sc_len, addr, sizeof(addr))) {
+            struct tx_destination decoded;
+            if (decode_destination(addr, pk_pfx, pk_len, sc_pfx, sc_len, &decoded) &&
+                decoded.type == DEST_KEY_ID &&
+                memcmp(decoded.id.key.id.data, dest.id.key.id.data, 20) == 0)
+                printf("OK\n");
+            else { printf("FAIL\n"); failures++; }
+        } else { printf("FAIL (encode)\n"); failures++; }
     }
 
     printf("ecc_init_sanity_check... ");
