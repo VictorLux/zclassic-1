@@ -87,6 +87,7 @@
 #include "coins/coins_view.h"
 #include "storage/coins_db.h"
 #include "validation/update_coins.h"
+#include "storage/block_index_db.h"
 
 static int test_tip_count = 0;
 static int test_tip_height = 0;
@@ -4381,6 +4382,47 @@ int main(void)
 
         transaction_free(&coinbase_tx);
         coins_view_cache_free(&cache);
+    }
+
+    printf("disk_block_index roundtrip... ");
+    {
+        struct disk_block_index dbi;
+        disk_block_index_init(&dbi);
+        dbi.nHeight = 42000;
+        dbi.nStatus = BLOCK_HAVE_DATA | BLOCK_VALID_SCRIPTS;
+        dbi.nTx = 5;
+        dbi.nFile = 3;
+        dbi.nDataPos = 12345;
+        dbi.nVersion = 4;
+        dbi.nTime = 1700000000;
+        dbi.nBits = 0x1d00ffff;
+        memset(dbi.hashPrev.data, 0x11, 32);
+        memset(dbi.hashMerkleRoot.data, 0x22, 32);
+
+        struct byte_stream s;
+        stream_init(&s, 512);
+        bool ok = disk_block_index_serialize(&dbi, &s);
+        if (ok) {
+            struct disk_block_index dbi2;
+            disk_block_index_init(&dbi2);
+            struct byte_stream s2;
+            stream_init_from_data(&s2, s.data, s.size);
+            ok = disk_block_index_deserialize(&dbi2, &s2);
+            if (ok && dbi2.nHeight == 42000 &&
+                dbi2.nTx == 5 && dbi2.nFile == 3 &&
+                dbi2.nDataPos == 12345 &&
+                dbi2.nVersion == 4 &&
+                dbi2.nTime == 1700000000) {
+                struct uint256 h1, h2;
+                disk_block_index_get_hash(&dbi, &h1);
+                disk_block_index_get_hash(&dbi2, &h2);
+                if (uint256_cmp(&h1, &h2) == 0)
+                    printf("OK\n");
+                else { printf("FAIL (hash)\n"); failures++; }
+            } else { printf("FAIL (deser)\n"); failures++; }
+            stream_free(&s2);
+        } else { printf("FAIL (ser)\n"); failures++; }
+        stream_free(&s);
     }
 
     printf("block serialize/deserialize roundtrip... ");

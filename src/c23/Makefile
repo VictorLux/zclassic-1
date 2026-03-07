@@ -71,7 +71,7 @@ RPC_SRCS = \
 
 STORAGE_SRCS = \
 	storage/dbwrapper.c storage/txdb.c storage/disk_block_io.c \
-	storage/coins_db.c
+	storage/coins_db.c storage/block_index_db.c
 
 POLICY_SRCS = \
 	policy/fees.c
