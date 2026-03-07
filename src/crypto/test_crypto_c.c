@@ -49,6 +49,7 @@
 #include "script/sigencoding_c.h"
 #include "support/pagelocker_c.h"
 #include "script/interpreter_c.h"
+#include "script/sigcache_c.h"
 
 static int check_hex(const unsigned char *data, size_t len, const char *expected)
 {
@@ -1660,6 +1661,28 @@ int main(void)
                 printf("OK\n");
             else { printf("FAIL (value=%" PRId64 ")\n", sn.value); failures++; }
         } else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("sigcache set/get/erase... ");
+    {
+        struct sig_cache cache;
+        sig_cache_init(&cache);
+        struct uint256 hash;
+        memset(hash.data, 0x42, 32);
+        unsigned char sig[] = {0x30, 0x06, 0x02, 0x01, 0x01, 0x02, 0x01, 0x01};
+        unsigned char pk[] = {0x02, 0x01};
+        struct uint256 entry;
+        sig_cache_compute_entry(&cache, &entry, &hash, sig, 8, pk, 2);
+        if (!sig_cache_get(&cache, &entry)) {
+            sig_cache_set(&cache, &entry);
+            if (sig_cache_get(&cache, &entry)) {
+                sig_cache_erase(&cache, &entry);
+                if (!sig_cache_get(&cache, &entry))
+                    printf("OK\n");
+                else { printf("FAIL (erase)\n"); failures++; }
+            } else { printf("FAIL (get after set)\n"); failures++; }
+        } else { printf("FAIL (false positive)\n"); failures++; }
+        sig_cache_destroy(&cache);
     }
 
     printf("pagelocker lock/unlock... ");
