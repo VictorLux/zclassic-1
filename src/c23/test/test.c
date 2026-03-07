@@ -72,6 +72,7 @@
 #include "policy/fees.h"
 #include "json/json.h"
 #include "rpc/server.h"
+#include "rpc/client.h"
 #include "storage/dbwrapper.h"
 
 static int test_tip_count = 0;
@@ -3682,6 +3683,24 @@ int main(void)
             db_iter_free(&it);
             db_wrapper_close(&db);
         }
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("rpc_convert_values... ");
+    {
+        const char *params[] = { "1000", "abc123" };
+        struct json_value result;
+        bool ok = rpc_convert_values("getblockhash", params, 2, &result);
+        ok = ok && result.type == JSON_ARR && json_size(&result) == 2;
+        ok = ok && json_get_int(json_at(&result, 0)) == 1000;
+        ok = ok && strcmp(json_get_str(json_at(&result, 1)), "abc123") == 0;
+        json_free(&result);
+
+        ok = ok && rpc_should_convert_param("estimatefee", 0);
+        ok = ok && !rpc_should_convert_param("estimatefee", 1);
+        ok = ok && rpc_should_convert_param("sendtoaddress", 1);
+        ok = ok && !rpc_should_convert_param("sendtoaddress", 0);
+
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 

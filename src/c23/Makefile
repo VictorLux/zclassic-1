@@ -64,7 +64,7 @@ JSON_SRCS = \
 	json/json.c
 
 RPC_SRCS = \
-	rpc/protocol.c rpc/server.c
+	rpc/protocol.c rpc/server.c rpc/client.c
 
 STORAGE_SRCS = \
 	storage/dbwrapper.c
