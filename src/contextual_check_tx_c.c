@@ -9,7 +9,7 @@
 #include "consensus/upgrades.h"
 #include "serialize_c.h"
 
-static size_t transaction_serialize_size(const struct transaction *tx)
+static size_t transaction_wire_size(const struct transaction *tx)
 {
     struct byte_stream s;
     stream_init(&s, 1024);
@@ -122,7 +122,7 @@ bool contextual_check_transaction(const struct transaction *tx,
     }
 
     if (!saplingActive) {
-        if (transaction_serialize_size(tx) > MAX_TX_SIZE_BEFORE_SAPLING) {
+        if (transaction_wire_size(tx) > MAX_TX_SIZE_BEFORE_SAPLING) {
             return validation_state_dos(state, 100, false, REJECT_INVALID,
                                         "bad-txns-oversize", false, NULL);
         }

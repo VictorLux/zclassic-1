@@ -140,27 +140,82 @@ void transaction_compute_hash(struct transaction *tx)
 {
     struct byte_stream s;
     stream_init(&s, 512);
-
-    uint32_t header = (uint32_t)tx->version;
-    if (tx->overwintered) header |= (1u << 31);
-    stream_write_u32_le(&s, header);
-
-    if (tx->overwintered)
-        stream_write_u32_le(&s, tx->version_group_id);
-
-    stream_write_compact_size(&s, tx->num_vin);
-    for (size_t i = 0; i < tx->num_vin; i++)
-        tx_in_serialize(&tx->vin[i], &s);
-
-    stream_write_compact_size(&s, tx->num_vout);
-    for (size_t i = 0; i < tx->num_vout; i++)
-        tx_out_serialize(&tx->vout[i], &s);
-
-    stream_write_u32_le(&s, tx->lock_time);
-
-    if (tx->overwintered)
-        stream_write_u32_le(&s, tx->expiry_height);
-
+    transaction_serialize(tx, &s);
     hash256(s.data, s.size, tx->hash.data);
     stream_free(&s);
+}
+
+bool transaction_serialize(const struct transaction *tx, struct byte_stream *s)
+{
+    uint32_t header = (uint32_t)tx->version;
+    if (tx->overwintered) header |= (1u << 31);
+    if (!stream_write_u32_le(s, header)) return false;
+
+    if (tx->overwintered)
+        if (!stream_write_u32_le(s, tx->version_group_id)) return false;
+
+    if (!stream_write_compact_size(s, tx->num_vin)) return false;
+    for (size_t i = 0; i < tx->num_vin; i++)
+        if (!tx_in_serialize(&tx->vin[i], s)) return false;
+
+    if (!stream_write_compact_size(s, tx->num_vout)) return false;
+    for (size_t i = 0; i < tx->num_vout; i++)
+        if (!tx_out_serialize(&tx->vout[i], s)) return false;
+
+    if (!stream_write_u32_le(s, tx->lock_time)) return false;
+
+    if (tx->overwintered)
+        if (!stream_write_u32_le(s, tx->expiry_height)) return false;
+
+    return true;
+}
+
+bool transaction_deserialize(struct transaction *tx, struct byte_stream *s)
+{
+    uint32_t header;
+    if (!stream_read_u32_le(s, &header)) return false;
+    tx->overwintered = (header >> 31) != 0;
+    tx->version = (int32_t)(header & 0x7FFFFFFF);
+
+    if (tx->overwintered) {
+        if (!stream_read_u32_le(s, &tx->version_group_id)) return false;
+    }
+
+    uint64_t num_vin;
+    if (!stream_read_compact_size(s, &num_vin)) return false;
+    if (num_vin > MAX_TX_INPUTS) return false;
+    if (!transaction_alloc(tx, (size_t)num_vin, 0)) return false;
+
+    for (size_t i = 0; i < tx->num_vin; i++)
+        if (!tx_in_deserialize(&tx->vin[i], s)) return false;
+
+    uint64_t num_vout;
+    if (!stream_read_compact_size(s, &num_vout)) return false;
+    if (num_vout > MAX_TX_OUTPUTS) return false;
+    tx->vout = calloc((size_t)num_vout, sizeof(struct tx_out));
+    if (num_vout > 0 && !tx->vout) return false;
+    tx->num_vout = (size_t)num_vout;
+    for (size_t i = 0; i < tx->num_vout; i++) {
+        tx_out_set_null(&tx->vout[i]);
+        if (!tx_out_deserialize(&tx->vout[i], s)) return false;
+    }
+
+    if (!stream_read_u32_le(s, &tx->lock_time)) return false;
+
+    if (tx->overwintered) {
+        if (!stream_read_u32_le(s, &tx->expiry_height)) return false;
+    }
+
+    transaction_compute_hash(tx);
+    return true;
+}
+
+size_t transaction_serialize_size(const struct transaction *tx)
+{
+    struct byte_stream s;
+    stream_init(&s, 512);
+    transaction_serialize(tx, &s);
+    size_t result = s.size;
+    stream_free(&s);
+    return result;
 }

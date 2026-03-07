@@ -116,4 +116,8 @@ bool tx_out_serialize(const struct tx_out *out, struct byte_stream *s);
 bool tx_out_deserialize(struct tx_out *out, struct byte_stream *s);
 void transaction_compute_hash(struct transaction *tx);
 
+bool transaction_serialize(const struct transaction *tx, struct byte_stream *s);
+bool transaction_deserialize(struct transaction *tx, struct byte_stream *s);
+size_t transaction_serialize_size(const struct transaction *tx);
+
 #endif

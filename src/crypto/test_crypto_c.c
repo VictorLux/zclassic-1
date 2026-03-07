@@ -63,6 +63,19 @@
 #include "undo_c.h"
 #include "p2p_message_c.h"
 #include "netbase_c.h"
+#include "merkleblock_c.h"
+#include "script/zcashconsensus_c.h"
+#include "validationinterface_c.h"
+
+static int test_tip_count = 0;
+static int test_tip_height = 0;
+
+static void test_updated_block_tip(void *ctx, int height)
+{
+    (void)ctx;
+    test_tip_count++;
+    test_tip_height = height;
+}
 
 static int check_hex(const unsigned char *data, size_t len, const char *expected)
 {
@@ -2546,6 +2559,184 @@ int main(void)
         struct timeval tv = millis_to_timeval(5500);
         if (tv.tv_sec == 5 && tv.tv_usec == 500000)
             printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("merkle_tree serialize/deserialize roundtrip... ");
+    {
+        struct uint256 txids[4];
+        bool match[4] = {false, true, false, true};
+        for (int i = 0; i < 4; i++)
+            memset(txids[i].data, i + 1, 32);
+
+        struct partial_merkle_tree tree;
+        merkle_tree_init(&tree);
+        merkle_tree_build(&tree, txids, 4, match, 4);
+
+        struct byte_stream ws;
+        stream_init(&ws, 256);
+        bool ok = merkle_tree_serialize(&tree, &ws);
+
+        struct partial_merkle_tree tree2;
+        merkle_tree_init(&tree2);
+        struct byte_stream rs;
+        stream_init_from_data(&rs, ws.data, ws.size);
+        ok = ok && merkle_tree_deserialize(&tree2, &rs);
+
+        ok = ok && tree2.num_transactions == tree.num_transactions;
+        ok = ok && tree2.num_hashes == tree.num_hashes;
+        for (size_t i = 0; i < tree.num_hashes && ok; i++)
+            ok = ok && uint256_cmp(&tree.hashes[i], &tree2.hashes[i]) == 0;
+
+        struct uint256 matched1[4], matched2[4], root1, root2;
+        size_t nm1 = 0, nm2 = 0;
+        merkle_tree_extract(&tree, matched1, &nm1, &root1);
+        merkle_tree_extract(&tree2, matched2, &nm2, &root2);
+        ok = ok && nm1 == nm2 && uint256_cmp(&root1, &root2) == 0;
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+
+        merkle_tree_free(&tree);
+        merkle_tree_free(&tree2);
+        stream_free(&ws);
+        stream_free(&rs);
+    }
+
+    printf("merkle_block serialize/deserialize roundtrip... ");
+    {
+        struct merkle_block mb;
+        merkle_block_init(&mb);
+        mb.header.nVersion = 4;
+        mb.header.nBits = 0x1d00ffff;
+        mb.header.nTime = 1231006505;
+        memset(mb.header.hashPrevBlock.data, 0xAA, 32);
+
+        struct uint256 txids[2];
+        bool match[2] = {true, false};
+        memset(txids[0].data, 0x11, 32);
+        memset(txids[1].data, 0x22, 32);
+        merkle_tree_build(&mb.txn, txids, 2, match, 2);
+
+        struct byte_stream ws;
+        stream_init(&ws, 2048);
+        bool ok = merkle_block_serialize(&mb, &ws);
+
+        struct merkle_block mb2;
+        merkle_block_init(&mb2);
+        struct byte_stream rs;
+        stream_init_from_data(&rs, ws.data, ws.size);
+        ok = ok && merkle_block_deserialize(&mb2, &rs);
+
+        ok = ok && mb2.header.nVersion == 4;
+        ok = ok && mb2.header.nBits == 0x1d00ffff;
+        ok = ok && mb2.txn.num_transactions == 2;
+        ok = ok && mb2.txn.num_hashes == mb.txn.num_hashes;
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+
+        merkle_block_free(&mb);
+        merkle_block_free(&mb2);
+        stream_free(&ws);
+        stream_free(&rs);
+    }
+
+    printf("transaction serialize/deserialize roundtrip... ");
+    {
+        struct transaction tx;
+        transaction_init(&tx);
+        transaction_alloc(&tx, 1, 1);
+        memset(tx.vin[0].prevout.hash.data, 0xAB, 32);
+        tx.vin[0].prevout.n = 0;
+        tx.vin[0].sequence = 0xFFFFFFFF;
+        tx.vout[0].value = 50 * 100000000LL;
+        tx.lock_time = 0;
+        transaction_compute_hash(&tx);
+        struct uint256 orig_hash = tx.hash;
+
+        struct byte_stream ws;
+        stream_init(&ws, 512);
+        bool ok = transaction_serialize(&tx, &ws);
+
+        struct transaction tx2;
+        transaction_init(&tx2);
+        struct byte_stream rs;
+        stream_init_from_data(&rs, ws.data, ws.size);
+        ok = ok && transaction_deserialize(&tx2, &rs);
+
+        ok = ok && tx2.num_vin == 1 && tx2.num_vout == 1;
+        ok = ok && tx2.vout[0].value == 50 * 100000000LL;
+        ok = ok && uint256_cmp(&tx2.hash, &orig_hash) == 0;
+
+        size_t sz = transaction_serialize_size(&tx);
+        ok = ok && sz == ws.size;
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+
+        transaction_free(&tx);
+        transaction_free(&tx2);
+        stream_free(&ws);
+        stream_free(&rs);
+    }
+
+    printf("zcl_consensus_version... ");
+    {
+        if (zcl_consensus_version() == ZCASHCONSENSUS_API_VER)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("validation_signals register/dispatch... ");
+    {
+        test_tip_count = 0;
+        test_tip_height = 0;
+
+        struct validation_signals vs;
+        validation_signals_init(&vs);
+
+        struct validation_callbacks cb;
+        memset(&cb, 0, sizeof(cb));
+        cb.ctx = NULL;
+        cb.updated_block_tip = test_updated_block_tip;
+
+        validation_register(&vs, &cb);
+        signal_updated_block_tip(&vs, 42);
+
+        bool ok = (test_tip_count == 1 && test_tip_height == 42);
+
+        signal_updated_block_tip(&vs, 100);
+        ok = ok && test_tip_count == 2 && test_tip_height == 100;
+
+        validation_unregister(&vs, NULL);
+        signal_updated_block_tip(&vs, 200);
+        ok = ok && test_tip_count == 2;
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("validation_signals unregister_all... ");
+    {
+        struct validation_signals vs;
+        validation_signals_init(&vs);
+
+        struct validation_callbacks cb1, cb2;
+        memset(&cb1, 0, sizeof(cb1));
+        memset(&cb2, 0, sizeof(cb2));
+        int ctx1 = 0, ctx2 = 0;
+        cb1.ctx = &ctx1;
+        cb2.ctx = &ctx2;
+
+        validation_register(&vs, &cb1);
+        validation_register(&vs, &cb2);
+        bool ok = (vs.num_listeners == 2);
+
+        validation_unregister_all(&vs);
+        ok = ok && (vs.num_listeners == 0);
+
+        if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
 

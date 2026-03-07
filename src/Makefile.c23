@@ -57,7 +57,10 @@ CORE_SRCS = \
 	sigops_c.c \
 	contextual_check_tx_c.c \
 	p2p_message_c.c \
-	netbase_c.c
+	netbase_c.c \
+	merkleblock_c.c \
+	script/zcashconsensus_c.c \
+	validationinterface_c.c
 
 ALL_SRCS = $(CRYPTO_SRCS) $(CORE_SRCS)
 ALL_OBJS = $(ALL_SRCS:.c=.o)
