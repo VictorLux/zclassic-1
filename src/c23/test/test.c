@@ -5079,6 +5079,169 @@ int main(void)
         }
     }
 
+    /* --- Sprout tree serialization roundtrip --- */
+    printf("sprout_tree serialize/deserialize roundtrip... ");
+    {
+        struct incremental_merkle_tree t;
+        sprout_tree_init(&t);
+
+        struct uint256 leaf1, leaf2, leaf3;
+        memset(leaf1.data, 0x11, 32);
+        memset(leaf2.data, 0x22, 32);
+        memset(leaf3.data, 0x33, 32);
+        incremental_tree_append(&t, &leaf1);
+        incremental_tree_append(&t, &leaf2);
+        incremental_tree_append(&t, &leaf3);
+
+        struct uint256 root1;
+        incremental_tree_root(&t, &root1);
+
+        struct byte_stream bs;
+        stream_init(&bs, 256);
+        bool ok = incremental_tree_serialize(&t, &bs);
+
+        struct incremental_merkle_tree t2;
+        sprout_tree_init(&t2);
+        struct byte_stream bs2;
+        stream_init_from_data(&bs2, bs.data, bs.size);
+        ok = ok && incremental_tree_deserialize(&t2, &bs2);
+
+        struct uint256 root2;
+        incremental_tree_root(&t2, &root2);
+        ok = ok && (memcmp(root1.data, root2.data, 32) == 0);
+        ok = ok && (incremental_tree_size(&t) == incremental_tree_size(&t2));
+
+        if (ok) printf("OK (size=%zu bytes)\n", bs.size);
+        else { printf("FAIL\n"); failures++; }
+
+        stream_free(&bs);
+        stream_free(&bs2);
+    }
+
+    /* --- Tree deserialization validation --- */
+    printf("sprout_tree deserialize validation... ");
+    {
+        /* right present but left absent — must fail */
+        uint8_t bad[] = {
+            0x00,       /* left absent */
+            0x01,       /* right present */
+            0x55,0xb8,0x52,0x78,0x1b,0x99,0x95,0xa4,
+            0x4c,0x93,0x9b,0x64,0xe4,0x41,0xae,0x27,
+            0x24,0xb9,0x6f,0x99,0xc8,0xf4,0xfb,0x9a,
+            0x14,0x1c,0xfc,0x98,0x42,0xc4,0xb0,0xe3,
+            0x00  /* parents empty */
+        };
+        struct incremental_merkle_tree t;
+        sprout_tree_init(&t);
+        struct byte_stream bs;
+        stream_init_from_data(&bs, bad, sizeof(bad));
+        bool ok = !incremental_tree_deserialize(&t, &bs);
+
+        if (ok) printf("OK (rejected invalid)\n");
+        else { printf("FAIL\n"); failures++; }
+        stream_free(&bs);
+    }
+
+    /* --- Empty tree serialization --- */
+    printf("sprout_tree empty serialize/deserialize... ");
+    {
+        struct incremental_merkle_tree t;
+        sprout_tree_init(&t);
+
+        struct byte_stream bs;
+        stream_init(&bs, 64);
+        bool ok = incremental_tree_serialize(&t, &bs);
+        ok = ok && (bs.size == 3); /* 0x00, 0x00, 0x00 */
+
+        struct incremental_merkle_tree t2;
+        sprout_tree_init(&t2);
+        struct byte_stream bs2;
+        stream_init_from_data(&bs2, bs.data, bs.size);
+        ok = ok && incremental_tree_deserialize(&t2, &bs2);
+
+        /* Empty tree has empty root */
+        struct uint256 root1, root2;
+        incremental_tree_root(&t, &root1);
+        incremental_tree_root(&t2, &root2);
+        ok = ok && (memcmp(root1.data, root2.data, 32) == 0);
+
+        if (ok) printf("OK (%zu bytes)\n", bs.size);
+        else { printf("FAIL\n"); failures++; }
+
+        stream_free(&bs);
+        stream_free(&bs2);
+    }
+
+    /* --- Witness basic test --- */
+    printf("incremental_witness basic... ");
+    {
+        struct incremental_merkle_tree t;
+        sprout_tree_init(&t);
+
+        struct uint256 leaf1, leaf2;
+        memset(leaf1.data, 0x11, 32);
+        memset(leaf2.data, 0x22, 32);
+        incremental_tree_append(&t, &leaf1);
+
+        struct incremental_witness w;
+        incremental_witness_init(&w, &t);
+
+        /* Append another leaf via witness */
+        incremental_tree_append(&t, &leaf2);
+        incremental_witness_append(&w, &leaf2);
+
+        /* Witness root should match tree root */
+        struct uint256 tree_root, witness_root;
+        incremental_tree_root(&t, &tree_root);
+        incremental_witness_root(&w, &witness_root);
+
+        bool ok = (memcmp(tree_root.data, witness_root.data, 32) == 0);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* --- Witness serialization roundtrip --- */
+    printf("incremental_witness serialize roundtrip... ");
+    {
+        struct incremental_merkle_tree t;
+        sprout_tree_init(&t);
+
+        struct uint256 leaf1;
+        memset(leaf1.data, 0x11, 32);
+        incremental_tree_append(&t, &leaf1);
+
+        struct incremental_witness w;
+        incremental_witness_init(&w, &t);
+
+        struct uint256 leaf2;
+        memset(leaf2.data, 0x22, 32);
+        incremental_witness_append(&w, &leaf2);
+
+        struct byte_stream bs;
+        stream_init(&bs, 512);
+        bool ok = incremental_witness_serialize(&w, &bs);
+
+        struct incremental_witness w2;
+        struct byte_stream bs2;
+        stream_init_from_data(&bs2, bs.data, bs.size);
+        ok = ok && incremental_witness_deserialize(&w2, &bs2,
+                     INCREMENTAL_MERKLE_TREE_DEPTH,
+                     sha256_compress_combine,
+                     sha256_compress_uncommitted);
+
+        struct uint256 root1, root2;
+        incremental_witness_root(&w, &root1);
+        incremental_witness_root(&w2, &root2);
+        ok = ok && (memcmp(root1.data, root2.data, 32) == 0);
+
+        if (ok) printf("OK (%zu bytes)\n", bs.size);
+        else { printf("FAIL\n"); failures++; }
+
+        stream_free(&bs);
+        stream_free(&bs2);
+    }
+
     /* --- Sapling v4 transaction roundtrip with shielded data --- */
     printf("sapling v4 tx roundtrip (spend+output+joinsplit)... ");
     {

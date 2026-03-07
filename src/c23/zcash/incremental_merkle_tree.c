@@ -201,3 +201,252 @@ bool incremental_tree_is_complete(const struct incremental_merkle_tree *t)
     }
     return true;
 }
+
+/* Wire format: optional<hash> left, optional<hash> right, vector<optional<hash>> parents */
+bool incremental_tree_serialize(const struct incremental_merkle_tree *t,
+                                 struct byte_stream *s)
+{
+    /* left: discriminant + hash */
+    if (!stream_write_u8(s, t->has_left ? 1 : 0)) return false;
+    if (t->has_left && !stream_write(s, t->left.data, 32)) return false;
+
+    /* right: discriminant + hash */
+    if (!stream_write_u8(s, t->has_right ? 1 : 0)) return false;
+    if (t->has_right && !stream_write(s, t->right.data, 32)) return false;
+
+    /* parents: compact_size + array of optional<hash> */
+    if (!stream_write_compact_size(s, t->num_parents)) return false;
+    for (size_t i = 0; i < t->num_parents; i++) {
+        if (!stream_write_u8(s, t->has_parent[i] ? 1 : 0)) return false;
+        if (t->has_parent[i] && !stream_write(s, t->parents[i].data, 32))
+            return false;
+    }
+    return true;
+}
+
+static bool wfcheck(const struct incremental_merkle_tree *t)
+{
+    if (t->num_parents >= t->depth) return false;
+    if (t->num_parents > 0 && !t->has_parent[t->num_parents - 1]) return false;
+    if (!t->has_left && t->has_right) return false;
+    if (!t->has_left && t->num_parents > 0) return false;
+    return true;
+}
+
+bool incremental_tree_deserialize(struct incremental_merkle_tree *t,
+                                   struct byte_stream *s)
+{
+    uint8_t disc;
+
+    /* left */
+    if (!stream_read(s, &disc, 1)) return false;
+    t->has_left = (disc != 0);
+    if (t->has_left) {
+        if (!stream_read(s, t->left.data, 32)) return false;
+    } else {
+        memset(&t->left, 0, sizeof(struct uint256));
+    }
+
+    /* right */
+    if (!stream_read(s, &disc, 1)) return false;
+    t->has_right = (disc != 0);
+    if (t->has_right) {
+        if (!stream_read(s, t->right.data, 32)) return false;
+    } else {
+        memset(&t->right, 0, sizeof(struct uint256));
+    }
+
+    /* parents */
+    uint64_t num;
+    if (!stream_read_compact_size(s, &num)) return false;
+    if (num > MAX_TREE_DEPTH) return false;
+    t->num_parents = (size_t)num;
+    memset(t->has_parent, 0, sizeof(t->has_parent));
+    memset(t->parents, 0, sizeof(t->parents));
+    for (size_t i = 0; i < t->num_parents; i++) {
+        if (!stream_read(s, &disc, 1)) return false;
+        t->has_parent[i] = (disc != 0);
+        if (t->has_parent[i]) {
+            if (!stream_read(s, t->parents[i].data, 32)) return false;
+        }
+    }
+
+    return wfcheck(t);
+}
+
+/* --- Incremental Witness --- */
+
+static size_t next_depth(const struct incremental_merkle_tree *t, size_t skip)
+{
+    size_t d = 0;
+    size_t s = skip;
+    if (!t->has_right) {
+        if (s == 0) return 0;
+        s--;
+    }
+    for (size_t i = 0; i < t->num_parents; i++) {
+        if (!t->has_parent[i]) {
+            if (s == 0) return d + 1;
+            s--;
+        }
+        d++;
+    }
+    /* Above all existing parents */
+    return d + 1 + s;
+}
+
+void incremental_witness_init(struct incremental_witness *w,
+                               const struct incremental_merkle_tree *tree)
+{
+    w->tree = *tree;
+    w->num_filled = 0;
+    w->has_cursor = false;
+    w->cursor_depth = next_depth(tree, 0);
+}
+
+void incremental_witness_append(struct incremental_witness *w,
+                                 const struct uint256 *obj)
+{
+    if (w->has_cursor) {
+        incremental_tree_append(&w->cursor, obj);
+        if (incremental_tree_is_complete(&w->cursor)) {
+            struct uint256 root;
+            incremental_tree_root(&w->cursor, &root);
+            w->filled[w->num_filled++] = root;
+            w->has_cursor = false;
+            w->cursor_depth = next_depth(&w->tree, w->num_filled);
+        }
+    } else {
+        w->cursor_depth = next_depth(&w->tree, w->num_filled);
+        if (w->cursor_depth == 0) {
+            w->filled[w->num_filled++] = *obj;
+            w->cursor_depth = next_depth(&w->tree, w->num_filled);
+        } else {
+            /* Initialize cursor subtree at cursor_depth */
+            tree_init(&w->cursor, w->cursor_depth,
+                      w->tree.combine, w->tree.uncommitted);
+            incremental_tree_append(&w->cursor, obj);
+            w->has_cursor = true;
+        }
+    }
+}
+
+void incremental_witness_root(const struct incremental_witness *w,
+                               struct uint256 *out)
+{
+    /* Partial fill: combine tree's root computation with filled + cursor */
+    const struct incremental_merkle_tree *t = &w->tree;
+
+    struct uint256 combine_left;
+    if (t->has_left) {
+        combine_left = t->left;
+    } else {
+        t->uncommitted(&combine_left);
+    }
+
+    struct uint256 combine_right;
+    if (t->has_right) {
+        combine_right = t->right;
+    } else {
+        /* Use first filled or uncommitted */
+        if (w->num_filled > 0 || w->has_cursor) {
+            size_t fi = 0;
+            if (fi < w->num_filled) {
+                combine_right = w->filled[fi];
+                fi++;
+            } else {
+                t->uncommitted(&combine_right);
+            }
+        } else {
+            t->uncommitted(&combine_right);
+        }
+    }
+
+    struct uint256 root;
+    t->combine(&combine_left, &combine_right, 0, &root);
+
+    size_t d = 1;
+    size_t filled_idx = t->has_right ? 0 : (w->num_filled > 0 ? 1 : 0);
+
+    for (size_t i = 0; i < t->num_parents || d < t->depth; i++) {
+        struct uint256 next_val;
+        if (i < t->num_parents && t->has_parent[i]) {
+            t->combine(&t->parents[i], &root, d, &next_val);
+        } else {
+            struct uint256 filler;
+            if (filled_idx < w->num_filled) {
+                filler = w->filled[filled_idx++];
+            } else if (w->has_cursor && filled_idx == w->num_filled) {
+                incremental_tree_root(&w->cursor, &filler);
+                filled_idx++;
+            } else {
+                empty_root_at_depth(t, d, &filler);
+            }
+            t->combine(&root, &filler, d, &next_val);
+        }
+        root = next_val;
+        d++;
+        if (d >= t->depth) break;
+    }
+
+    *out = root;
+}
+
+bool incremental_witness_serialize(const struct incremental_witness *w,
+                                    struct byte_stream *s)
+{
+    if (!incremental_tree_serialize(&w->tree, s)) return false;
+
+    /* filled: vector<hash> */
+    if (!stream_write_compact_size(s, w->num_filled)) return false;
+    for (size_t i = 0; i < w->num_filled; i++) {
+        if (!stream_write(s, w->filled[i].data, 32)) return false;
+    }
+
+    /* cursor: optional<tree> */
+    if (!stream_write_u8(s, w->has_cursor ? 1 : 0)) return false;
+    if (w->has_cursor) {
+        if (!incremental_tree_serialize(&w->cursor, s)) return false;
+    }
+
+    return true;
+}
+
+bool incremental_witness_deserialize(struct incremental_witness *w,
+                                      struct byte_stream *s,
+                                      size_t depth,
+                                      void (*combine)(const struct uint256 *,
+                                                      const struct uint256 *,
+                                                      size_t, struct uint256 *),
+                                      void (*uncommitted)(struct uint256 *))
+{
+    /* Initialize function pointers first */
+    w->tree.depth = depth;
+    w->tree.combine = combine;
+    w->tree.uncommitted = uncommitted;
+
+    if (!incremental_tree_deserialize(&w->tree, s)) return false;
+
+    /* filled */
+    uint64_t num;
+    if (!stream_read_compact_size(s, &num)) return false;
+    if (num > MAX_TREE_DEPTH) return false;
+    w->num_filled = (size_t)num;
+    for (size_t i = 0; i < w->num_filled; i++) {
+        if (!stream_read(s, w->filled[i].data, 32)) return false;
+    }
+
+    /* cursor */
+    uint8_t disc;
+    if (!stream_read(s, &disc, 1)) return false;
+    w->has_cursor = (disc != 0);
+    if (w->has_cursor) {
+        w->cursor.depth = depth;
+        w->cursor.combine = combine;
+        w->cursor.uncommitted = uncommitted;
+        if (!incremental_tree_deserialize(&w->cursor, s)) return false;
+    }
+
+    w->cursor_depth = next_depth(&w->tree, w->num_filled);
+    return true;
+}

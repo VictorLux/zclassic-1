@@ -9,6 +9,7 @@
 #define ZCL_ZCASH_INCREMENTAL_MERKLE_TREE_H
 
 #include "core/uint256.h"
+#include "core/serialize.h"
 #include "zcash/zcash.h"
 #include <stdbool.h>
 #include <stddef.h>
@@ -56,5 +57,40 @@ bool incremental_tree_is_complete(const struct incremental_merkle_tree *t);
 
 void incremental_tree_empty_root(const struct incremental_merkle_tree *t,
                                   struct uint256 *out);
+
+/* Serialization (wire-compatible with C++ boost::optional encoding) */
+bool incremental_tree_serialize(const struct incremental_merkle_tree *t,
+                                 struct byte_stream *s);
+bool incremental_tree_deserialize(struct incremental_merkle_tree *t,
+                                   struct byte_stream *s);
+
+/* Incremental witness — tracks a path to a specific leaf */
+struct incremental_witness {
+    struct incremental_merkle_tree tree;
+    struct uint256 filled[MAX_TREE_DEPTH];
+    size_t num_filled;
+    bool has_cursor;
+    struct incremental_merkle_tree cursor;
+    size_t cursor_depth;
+};
+
+void incremental_witness_init(struct incremental_witness *w,
+                               const struct incremental_merkle_tree *tree);
+
+void incremental_witness_append(struct incremental_witness *w,
+                                 const struct uint256 *obj);
+
+void incremental_witness_root(const struct incremental_witness *w,
+                               struct uint256 *out);
+
+bool incremental_witness_serialize(const struct incremental_witness *w,
+                                    struct byte_stream *s);
+bool incremental_witness_deserialize(struct incremental_witness *w,
+                                      struct byte_stream *s,
+                                      size_t depth,
+                                      void (*combine)(const struct uint256 *,
+                                                      const struct uint256 *,
+                                                      size_t, struct uint256 *),
+                                      void (*uncommitted)(struct uint256 *));
 
 #endif
