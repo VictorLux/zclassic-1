@@ -26,7 +26,9 @@ CORE_SRCS = \
 	noui.c \
 	deprecation.c \
 	sync.c \
-	timedata.c
+	timedata.c \
+	netaddr.c \
+	protocol_c.c
 
 ALL_SRCS = $(CRYPTO_SRCS) $(CORE_SRCS)
 ALL_OBJS = $(ALL_SRCS:.c=.o)

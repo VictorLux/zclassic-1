@@ -29,6 +29,8 @@
 #include "noui.h"
 #include "deprecation.h"
 #include "timedata.h"
+#include "netaddr.h"
+#include "protocol_c.h"
 
 static int check_hex(const unsigned char *data, size_t len, const char *expected)
 {
@@ -591,6 +593,72 @@ int main(void)
         if (ConvertBits(8, 5, true, in, 2, out, sizeof(out), &out_len) &&
             out_len == 4 && out[0] == 0x1f && out[1] == 0x1c && out[2] == 0x00 && out[3] == 0x00)
             printf("OK\n");
+        else {
+            printf("FAIL\n");
+            failures++;
+        }
+    }
+
+    printf("net_addr IPv4... ");
+    {
+        struct net_addr a;
+        net_addr_init(&a);
+        unsigned char ip4[] = {192, 168, 1, 1};
+        net_addr_set_ipv4(&a, ip4);
+        char str[64];
+        net_addr_to_string(&a, str, sizeof(str));
+        if (net_addr_is_ipv4(&a) && strcmp(str, "192.168.1.1") == 0)
+            printf("OK (%s)\n", str);
+        else {
+            printf("FAIL: %s\n", str);
+            failures++;
+        }
+    }
+
+    printf("net_service to_string... ");
+    {
+        struct net_service s;
+        net_service_init(&s);
+        unsigned char ip4[] = {10, 0, 0, 1};
+        net_addr_set_ipv4(&s.addr, ip4);
+        s.port = 8233;
+        char str[64];
+        net_service_to_string(&s, str, sizeof(str));
+        if (strcmp(str, "10.0.0.1:8233") == 0)
+            printf("OK (%s)\n", str);
+        else {
+            printf("FAIL: %s\n", str);
+            failures++;
+        }
+    }
+
+    printf("msg_header... ");
+    {
+        unsigned char start[4] = {0x24, 0xe9, 0x27, 0x64};
+        struct msg_header h;
+        msg_header_init_full(&h, start, "version", 100);
+        char cmd[COMMAND_SIZE + 1];
+        msg_header_get_command(&h, cmd, sizeof(cmd));
+        if (strcmp(cmd, "version") == 0 && h.nMessageSize == 100 &&
+            msg_header_is_valid(&h, start))
+            printf("OK (%s)\n", cmd);
+        else {
+            printf("FAIL: %s\n", cmd);
+            failures++;
+        }
+    }
+
+    printf("inv_item... ");
+    {
+        struct uint256 hash;
+        memset(hash.data, 0xab, 32);
+        struct inv_item inv;
+        inv_item_init_typed(&inv, MSG_TX, &hash);
+        char str[128];
+        inv_item_to_string(&inv, str, sizeof(str));
+        if (inv_item_is_known_type(&inv) &&
+            strcmp(inv_item_get_command(&inv), "tx") == 0)
+            printf("OK (%s)\n", inv_item_get_command(&inv));
         else {
             printf("FAIL\n");
             failures++;
