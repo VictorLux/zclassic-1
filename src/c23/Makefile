@@ -81,6 +81,9 @@ STORAGE_SRCS = \
 POLICY_SRCS = \
 	policy/fees.c
 
+MINING_SRCS = \
+	mining/miner.c
+
 ZCASH_SRCS = \
 	zcash/jubjub.c zcash/prf.c zcash/incremental_merkle_tree.c \
 	zcash/address.c zcash/note.c zcash/note_encryption.c \
@@ -91,7 +94,7 @@ ALL_SRCS = $(CRYPTO_SRCS) $(CORE_SRCS) $(ENCODING_SRCS) $(SCRIPT_SRCS) \
 	$(CONSENSUS_SRCS) $(PRIMITIVES_SRCS) $(NET_SRCS) $(CHAIN_SRCS) \
 	$(KEYS_SRCS) $(VALIDATION_SRCS) $(SUPPORT_SRCS) $(BLOOM_SRCS) \
 	$(COINS_SRCS) $(UTIL_SRCS) $(POLICY_SRCS) $(JSON_SRCS) $(RPC_SRCS) \
-	$(STORAGE_SRCS) $(ZCASH_SRCS)
+	$(STORAGE_SRCS) $(MINING_SRCS) $(ZCASH_SRCS)
 
 ALL_OBJS = $(ALL_SRCS:.c=.o)
 
