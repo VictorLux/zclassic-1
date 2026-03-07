@@ -4,7 +4,7 @@
 CC = cc
 CFLAGS = -std=c23 -Wall -Wextra -Werror -pedantic -I. -D_POSIX_C_SOURCE=200809L -Isecp256k1/include
 LDFLAGS = -pthread
-LIBS = -Lsecp256k1/.libs -lsecp256k1
+LIBS = -Lsecp256k1/.libs -lsecp256k1 -lm
 
 CRYPTO_SRCS = \
 	crypto/sha256.c crypto/sha512.c crypto/sha1.c \
@@ -38,7 +38,8 @@ CORE_SRCS = \
 	script/script_c.c \
 	compressor_c.c \
 	script/standard_c.c \
-	primitives/transaction_c.c
+	primitives/transaction_c.c \
+	bloom_c.c
 
 ALL_SRCS = $(CRYPTO_SRCS) $(CORE_SRCS)
 ALL_OBJS = $(ALL_SRCS:.c=.o)

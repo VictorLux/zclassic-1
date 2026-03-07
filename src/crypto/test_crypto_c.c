@@ -40,6 +40,7 @@
 #include "compressor_c.h"
 #include "script/standard_c.h"
 #include "primitives/transaction_c.h"
+#include "bloom_c.h"
 
 static int check_hex(const unsigned char *data, size_t len, const char *expected)
 {
@@ -1085,6 +1086,57 @@ int main(void)
             printf("OK\n");
         else { printf("FAIL\n"); failures++; }
         transaction_free(&tx);
+    }
+
+    printf("bloom_filter insert/contains... ");
+    {
+        struct bloom_filter bf;
+        bloom_filter_init(&bf, 10, 0.000001, 2147483649U, BLOOM_UPDATE_ALL);
+        unsigned char data1[] = {0x99, 0x10, 0x8a, 0xd8};
+        unsigned char data2[] = {0x19, 0x10, 0x8a, 0xd8};
+        unsigned char data3[] = {0xab, 0xcd, 0xef, 0x01};
+        bloom_filter_insert(&bf, data1, 4);
+        bloom_filter_insert(&bf, data2, 4);
+        if (bloom_filter_contains(&bf, data1, 4) &&
+            bloom_filter_contains(&bf, data2, 4) &&
+            !bloom_filter_contains(&bf, data3, 4))
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+        bloom_filter_free(&bf);
+    }
+
+    printf("bloom_filter uint256... ");
+    {
+        struct bloom_filter bf;
+        bloom_filter_init(&bf, 10, 0.000001, 0, BLOOM_UPDATE_NONE);
+        struct uint256 h;
+        uint256_set_null(&h);
+        h.data[0] = 0xDE;
+        h.data[31] = 0xAD;
+        bloom_filter_insert_uint256(&bf, &h);
+        if (bloom_filter_contains_uint256(&bf, &h)) {
+            struct uint256 h2;
+            uint256_set_null(&h2);
+            h2.data[0] = 0xFF;
+            if (!bloom_filter_contains_uint256(&bf, &h2))
+                printf("OK\n");
+            else { printf("FAIL (false positive)\n"); failures++; }
+        } else { printf("FAIL\n"); failures++; }
+        bloom_filter_free(&bf);
+    }
+
+    printf("rolling_bloom insert/contains... ");
+    {
+        struct rolling_bloom_filter rbf;
+        rolling_bloom_init(&rbf, 10, 0.000001);
+        unsigned char data1[] = {1, 2, 3, 4};
+        unsigned char data2[] = {5, 6, 7, 8};
+        rolling_bloom_insert(&rbf, data1, 4);
+        if (rolling_bloom_contains(&rbf, data1, 4) &&
+            !rolling_bloom_contains(&rbf, data2, 4))
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+        rolling_bloom_free(&rbf);
     }
 
     printf("ecc_init_sanity_check... ");
