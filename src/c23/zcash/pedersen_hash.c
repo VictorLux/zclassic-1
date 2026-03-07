@@ -42,42 +42,16 @@ static void ensure_generators(void)
 }
 
 
-void pedersen_merkle_hash(size_t depth,
-                           const uint8_t a[32],
-                           const uint8_t b[32],
-                           uint8_t result[32])
+/* Core Pedersen hash over pre-assembled bits (personalization already included) */
+void pedersen_hash_bits(const uint8_t *bits, int nbits,
+                         struct jub_point *result_pt)
 {
     ensure_generators();
-
-    /* Extract bits: 6 personalization + 255 from a + 255 from b = 516 bits */
-    uint8_t bits[516];
-    int nbits = 0;
-
-    /* Personalization: depth as 6 LE bits */
-    for (int i = 0; i < 6; i++)
-        bits[nbits++] = (depth >> i) & 1;
-
-    /* a: 255 bits, LE (bit 0 of byte 0 first) */
-    for (int i = 0; i < 255; i++) {
-        int byte_idx = i / 8;
-        int bit_idx = i % 8;
-        bits[nbits++] = (a[byte_idx] >> bit_idx) & 1;
-    }
-
-    /* b: 255 bits, LE */
-    for (int i = 0; i < 255; i++) {
-        int byte_idx = i / 8;
-        int bit_idx = i % 8;
-        bits[nbits++] = (b[byte_idx] >> bit_idx) & 1;
-    }
-
-    struct jub_point result_pt;
-    jub_identity(&result_pt);
+    jub_identity(result_pt);
 
     int bit_pos = 0;
     for (int seg = 0; seg < PEDERSEN_NUM_GENERATORS && bit_pos < nbits; seg++) {
-        /* Accumulate scalar in Fs (Jubjub scalar field order), NOT Fr.
-         * The Rust code uses E::Fs for this accumulation. */
+        /* Accumulate scalar in Fs (Jubjub scalar field order), NOT Fr. */
         struct fs acc, cur, tmp;
         fs_zero(&acc);
         fs_one(&cur);
@@ -91,20 +65,13 @@ void pedersen_merkle_hash(size_t depth,
             uint8_t b_bit = (bit_pos < nbits) ? bits[bit_pos++] : 0;
             uint8_t c_bit = (bit_pos < nbits) ? bits[bit_pos++] : 0;
 
-            /* tmp = cur */
             tmp = cur;
-            /* if a: tmp += cur (so tmp = 2*cur) */
             if (a_bit) fs_add(&tmp, &tmp, &cur);
-            /* cur *= 2 */
             fs_add(&cur, &cur, &cur);
-            /* if b: tmp += cur */
             if (b_bit) fs_add(&tmp, &tmp, &cur);
-            /* if c: negate */
             if (c_bit) fs_neg(&tmp, &tmp);
-            /* acc += tmp */
             fs_add(&acc, &acc, &tmp);
 
-            /* Between chunks (not last): cur *= 8 (three doublings) */
             if (chunk < PEDERSEN_CHUNKS_PER_GENERATOR - 1) {
                 fs_add(&cur, &cur, &cur);
                 fs_add(&cur, &cur, &cur);
@@ -114,18 +81,41 @@ void pedersen_merkle_hash(size_t depth,
 
         if (!encountered) break;
 
-        /* Scalar multiply generator by acc */
         if (!fs_is_zero(&acc)) {
             uint8_t scalar_bytes[32];
             fs_to_bytes(scalar_bytes, &acc);
 
             struct jub_point scaled;
             jub_scalar_mul(&scaled, &cached_generators[seg], scalar_bytes);
-            jub_add(&result_pt, &result_pt, &scaled);
+            jub_add(result_pt, result_pt, &scaled);
         }
     }
+}
 
-    /* Extract x-coordinate */
+void pedersen_merkle_hash(size_t depth,
+                           const uint8_t a[32],
+                           const uint8_t b[32],
+                           uint8_t result[32])
+{
+    /* Extract bits: 6 personalization + 255 from a + 255 from b = 516 bits */
+    uint8_t bits[516];
+    int nbits = 0;
+
+    /* Personalization: depth as 6 LE bits */
+    for (int i = 0; i < 6; i++)
+        bits[nbits++] = (depth >> i) & 1;
+
+    /* a: 255 bits, LE (bit 0 of byte 0 first) */
+    for (int i = 0; i < 255; i++)
+        bits[nbits++] = (a[i / 8] >> (i % 8)) & 1;
+
+    /* b: 255 bits, LE */
+    for (int i = 0; i < 255; i++)
+        bits[nbits++] = (b[i / 8] >> (i % 8)) & 1;
+
+    struct jub_point result_pt;
+    pedersen_hash_bits(bits, nbits, &result_pt);
+
     struct fr x_coord;
     jub_get_x(&x_coord, &result_pt);
     fr_to_bytes(result, &x_coord);

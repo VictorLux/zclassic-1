@@ -103,6 +103,7 @@
 #include "zcash/fr.h"
 #include "crypto/blake2s.h"
 #include "zcash/pedersen_hash.h"
+#include "zcash/sapling.h"
 
 static int test_tip_count = 0;
 static int test_tip_height = 0;
@@ -6525,6 +6526,162 @@ int main(void)
         for (int i = 1; i < 32; i++) ok = ok && (val[i] == 0);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
+    }
+
+    /* --- Sapling group_hash (via ask_to_ak which uses SpendingKeyGenerator) --- */
+    printf("sapling group_hash via ask_to_ak... ");
+    {
+        /* Identity scalar should give the generator point itself (well, 1*G = G) */
+        uint8_t one[32] = {1};
+        uint8_t ak[32];
+        sapling_ask_to_ak(one, ak);
+        /* ak should be non-zero (a valid point) */
+        bool ok = false;
+        for (int i = 0; i < 32; i++) if (ak[i] != 0) { ok = true; break; }
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* --- Sapling check_diversifier --- */
+    printf("sapling check_diversifier... ");
+    {
+        uint8_t div1[11] = {0xf1,0x9d,0x9b,0x79,0x7e,0x39,0xf3,0x37,0x44,0x58,0x39};
+        bool ok1 = sapling_check_diversifier(div1);
+        if (ok1) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* --- Sapling CRH^ivk --- */
+    printf("sapling crh_ivk... ");
+    {
+        /* Use all-zero ak and nk to verify BLAKE2s("Zcashivk", 0..0) with top 5 bits dropped */
+        uint8_t ak[32] = {0}, nk[32] = {0}, ivk[32];
+        sapling_crh_ivk(ak, nk, ivk);
+        /* Top 5 bits should be zero */
+        bool ok = ((ivk[31] & 0xf8) == 0);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* --- Sapling full key derivation chain (test vector from zcash-test-vectors) --- */
+    printf("sapling key derivation chain... ");
+    {
+        /* sk = 0x00...00 */
+        struct uint256 sk;
+        memset(sk.data, 0, 32);
+
+        /* Derive ask, nsk, ovk */
+        struct uint256 ask, nsk, ovk;
+        prf_ask(&sk, &ask);
+        prf_nsk(&sk, &nsk);
+        prf_ovk(&sk, &ovk);
+
+        /* Derive ak = ask * SpendingKeyGenerator */
+        uint8_t ak[32], nk_bytes[32];
+        sapling_ask_to_ak(ask.data, ak);
+        sapling_nsk_to_nk(nsk.data, nk_bytes);
+
+        /* Derive ivk */
+        uint8_t ivk[32];
+        sapling_crh_ivk(ak, nk_bytes, ivk);
+
+        /* Derive pk_d from ivk and diversifier */
+        uint8_t diversifier[11] = {0xf1,0x9d,0x9b,0x79,0x7e,0x39,0xf3,0x37,0x44,0x58,0x39};
+        uint8_t pk_d[32];
+        bool ok = sapling_ivk_to_pkd(ivk, diversifier, pk_d);
+
+        uint8_t expected_pk_d[32] = {
+            0xdb,0x4c,0xd2,0xb0,0xaa,0xc4,0xf7,0xeb,0x8c,0xa1,0x31,0xf1,0x65,0x67,
+            0xc4,0x45,0xa9,0x55,0x51,0x26,0xd3,0xc2,0x9f,0x14,0xe3,0xd7,0x76,0xe8,
+            0x41,0xae,0x74,0x15
+        };
+        ok = ok && (memcmp(pk_d, expected_pk_d, 32) == 0);
+
+        if (ok) printf("OK\n");
+        else {
+            printf("FAIL\n");
+            printf("  pk_d: "); for(int i=0;i<32;i++)printf("%02x",pk_d[i]); printf("\n");
+            printf("  exp:  "); for(int i=0;i<32;i++)printf("%02x",expected_pk_d[i]); printf("\n");
+            failures++;
+        }
+    }
+
+    /* --- Sapling note commitment --- */
+    printf("sapling compute_cm... ");
+    {
+        uint8_t diversifier[11] = {0xf1,0x9d,0x9b,0x79,0x7e,0x39,0xf3,0x37,0x44,0x58,0x39};
+        uint8_t pk_d[32] = {
+            0xdb,0x4c,0xd2,0xb0,0xaa,0xc4,0xf7,0xeb,0x8c,0xa1,0x31,0xf1,0x65,0x67,
+            0xc4,0x45,0xa9,0x55,0x51,0x26,0xd3,0xc2,0x9f,0x14,0xe3,0xd7,0x76,0xe8,
+            0x41,0xae,0x74,0x15
+        };
+        uint64_t value = 0;
+        uint8_t rcm[32] = {
+            0x39,0x17,0x6d,0xac,0x39,0xac,0xe4,0x98,0x0e,0xcc,0x8d,0x77,0x8e,0x89,
+            0x86,0x02,0x55,0xec,0x36,0x15,0x06,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+            0x00,0x00,0x00,0x00
+        };
+        uint8_t cm[32];
+        bool ok = sapling_compute_cm(diversifier, pk_d, value, rcm, cm);
+
+        uint8_t expected_cm[32] = {
+            0xcb,0x3c,0xf9,0x15,0x32,0x70,0xd5,0x7e,0xb9,0x14,0xc6,0xc2,0xbc,0xc0,
+            0x18,0x50,0xc9,0xfe,0xd4,0x4f,0xce,0x08,0x06,0x27,0x8f,0x08,0x3e,0xf2,
+            0xdd,0x07,0x64,0x39
+        };
+        ok = ok && (memcmp(cm, expected_cm, 32) == 0);
+
+        if (ok) printf("OK\n");
+        else {
+            printf("FAIL\n");
+            printf("  cm:  "); for(int i=0;i<32;i++)printf("%02x",cm[i]); printf("\n");
+            printf("  exp: "); for(int i=0;i<32;i++)printf("%02x",expected_cm[i]); printf("\n");
+            failures++;
+        }
+    }
+
+    /* --- Sapling nullifier --- */
+    printf("sapling compute_nf... ");
+    {
+        struct uint256 sk;
+        memset(sk.data, 0, 32);
+        struct uint256 ask, nsk;
+        prf_ask(&sk, &ask);
+        prf_nsk(&sk, &nsk);
+
+        uint8_t ak[32], nk_bytes[32];
+        sapling_ask_to_ak(ask.data, ak);
+        sapling_nsk_to_nk(nsk.data, nk_bytes);
+
+        uint8_t diversifier[11] = {0xf1,0x9d,0x9b,0x79,0x7e,0x39,0xf3,0x37,0x44,0x58,0x39};
+        uint8_t pk_d[32] = {
+            0xdb,0x4c,0xd2,0xb0,0xaa,0xc4,0xf7,0xeb,0x8c,0xa1,0x31,0xf1,0x65,0x67,
+            0xc4,0x45,0xa9,0x55,0x51,0x26,0xd3,0xc2,0x9f,0x14,0xe3,0xd7,0x76,0xe8,
+            0x41,0xae,0x74,0x15
+        };
+        uint8_t rcm[32] = {
+            0x39,0x17,0x6d,0xac,0x39,0xac,0xe4,0x98,0x0e,0xcc,0x8d,0x77,0x8e,0x89,
+            0x86,0x02,0x55,0xec,0x36,0x15,0x06,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+            0x00,0x00,0x00,0x00
+        };
+
+        uint8_t nf[32];
+        bool ok = sapling_compute_nf(diversifier, pk_d, 0, rcm, ak, nk_bytes, 0, nf);
+
+        uint8_t expected_nf[32] = {
+            0x44,0xfa,0xd6,0x56,0x4f,0xfd,0xec,0x9f,0xa1,0x9c,0x43,0xa2,0x8f,0x86,
+            0x1d,0x5e,0xbf,0x60,0x23,0x46,0x00,0x7d,0xe7,0x62,0x67,0xd9,0x75,0x27,
+            0x47,0xab,0x40,0x63
+        };
+        ok = ok && (memcmp(nf, expected_nf, 32) == 0);
+
+        if (ok) printf("OK\n");
+        else {
+            printf("FAIL\n");
+            printf("  nf:  "); for(int i=0;i<32;i++)printf("%02x",nf[i]); printf("\n");
+            printf("  exp: "); for(int i=0;i<32;i++)printf("%02x",expected_nf[i]); printf("\n");
+            failures++;
+        }
     }
 
     printf("\n%s (%d failures)\n", failures ? "SOME TESTS FAILED" : "ALL TESTS PASSED", failures);

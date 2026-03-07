@@ -82,7 +82,7 @@ POLICY_SRCS = \
 ZCASH_SRCS = \
 	zcash/jubjub.c zcash/prf.c zcash/incremental_merkle_tree.c \
 	zcash/address.c zcash/note.c zcash/note_encryption.c \
-	zcash/fr.c zcash/pedersen_hash.c
+	zcash/fr.c zcash/pedersen_hash.c zcash/sapling.c
 
 ALL_SRCS = $(CRYPTO_SRCS) $(CORE_SRCS) $(ENCODING_SRCS) $(SCRIPT_SRCS) \
 	$(CONSENSUS_SRCS) $(PRIMITIVES_SRCS) $(NET_SRCS) $(CHAIN_SRCS) \
