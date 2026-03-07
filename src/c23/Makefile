@@ -10,7 +10,8 @@ CRYPTO_SRCS = \
 	crypto/sha256.c crypto/sha512.c crypto/sha1.c \
 	crypto/ripemd160.c crypto/hmac_sha256.c crypto/hmac_sha512.c \
 	crypto/sha3.c crypto/blake2b.c crypto/equihash.c \
-	crypto/chacha20poly1305.c crypto/curve25519.c crypto/blake2s.c
+	crypto/chacha20poly1305.c crypto/curve25519.c crypto/blake2s.c \
+	crypto/aes256.c
 
 CORE_SRCS = \
 	core/uint256.c core/arith_uint256.c core/hash.c core/amount.c \
@@ -82,7 +83,8 @@ POLICY_SRCS = \
 ZCASH_SRCS = \
 	zcash/jubjub.c zcash/prf.c zcash/incremental_merkle_tree.c \
 	zcash/address.c zcash/note.c zcash/note_encryption.c \
-	zcash/fr.c zcash/pedersen_hash.c zcash/sapling.c zcash/bls12_381.c
+	zcash/fr.c zcash/pedersen_hash.c zcash/sapling.c zcash/bls12_381.c \
+	zcash/ff1.c zcash/zip32.c
 
 ALL_SRCS = $(CRYPTO_SRCS) $(CORE_SRCS) $(ENCODING_SRCS) $(SCRIPT_SRCS) \
 	$(CONSENSUS_SRCS) $(PRIMITIVES_SRCS) $(NET_SRCS) $(CHAIN_SRCS) \

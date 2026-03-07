@@ -74,4 +74,7 @@ void fs_to_bytes(uint8_t s[32], const struct fs *a);
 bool fs_from_bytes(struct fs *r, const uint8_t s[32]);
 void fs_mul(struct fs *r, const struct fs *a, const struct fs *b);
 
+/* Reduce 64-byte LE to uniform Fs element (for ZIP 32 key derivation) */
+void fs_to_uniform(struct fs *r, const uint8_t digest[64]);
+
 #endif

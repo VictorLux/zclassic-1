@@ -107,6 +107,9 @@
 #include "zcash/jubjub.h"
 #include "zcash/bls12_381.h"
 #include "crypto/blake2b.h"
+#include "crypto/aes256.h"
+#include "zcash/ff1.h"
+#include "zcash/zip32.h"
 
 static int test_tip_count = 0;
 static int test_tip_height = 0;
@@ -7146,6 +7149,208 @@ int main(void)
         struct fp12 diff;
         fp12_sub(&diff, &lhs, &rhs);
         bool ok = fp12_is_zero(&diff);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* AES-256 test (NIST FIPS 197 test vector) */
+    printf("aes256 encrypt... ");
+    {
+        const uint8_t key[32] = {
+            0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,
+            0x08,0x09,0x0a,0x0b,0x0c,0x0d,0x0e,0x0f,
+            0x10,0x11,0x12,0x13,0x14,0x15,0x16,0x17,
+            0x18,0x19,0x1a,0x1b,0x1c,0x1d,0x1e,0x1f
+        };
+        const uint8_t pt[16] = {
+            0x00,0x11,0x22,0x33,0x44,0x55,0x66,0x77,
+            0x88,0x99,0xaa,0xbb,0xcc,0xdd,0xee,0xff
+        };
+        const uint8_t expected[16] = {
+            0x8e,0xa2,0xb7,0xca,0x51,0x67,0x45,0xbf,
+            0xea,0xfc,0x49,0x90,0x4b,0x49,0x60,0x89
+        };
+        struct aes256_ctx ctx;
+        aes256_init(&ctx, key);
+        uint8_t ct[16];
+        aes256_encrypt(&ctx, pt, ct);
+        bool ok = memcmp(ct, expected, 16) == 0;
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ZIP 32 master key derivation (test vector from zcash-test-vectors) */
+    printf("zip32 master key... ");
+    {
+        uint8_t seed[32];
+        for (int i = 0; i < 32; i++) seed[i] = (uint8_t)i;
+
+        struct zip32_xsk m;
+        zip32_xsk_master(&m, seed, 32);
+
+        bool ok = (m.depth == 0) && (m.parent_fvk_tag == 0) && (m.child_index == 0);
+
+        /* uint256S stores LE: reverse the hex byte-by-byte.
+         * chaincode: uint256S("8e661820750d557e8b34733ebf7ecdfdf31c6d27724fb47aa372bf034b7c94d0") */
+        const uint8_t expected_cc[32] = {
+            0xd0,0x94,0x7c,0x4b,0x03,0xbf,0x72,0xa3,
+            0x7a,0xb4,0x4f,0x72,0x27,0x6d,0x1c,0xf3,
+            0xfd,0xcd,0x7e,0xbf,0x3e,0x73,0x34,0x8b,
+            0x7e,0x55,0x0d,0x75,0x20,0x18,0x66,0x8e
+        };
+        ok = ok && memcmp(m.chain_code, expected_cc, 32) == 0;
+
+        /* ask: uint256S("06257454c907f6510ba1c1830ebf60657760a8869ee968a2b93260d3930cc0b6") */
+        const uint8_t expected_ask[32] = {
+            0xb6,0xc0,0x0c,0x93,0xd3,0x60,0x32,0xb9,
+            0xa2,0x68,0xe9,0x9e,0x86,0xa8,0x60,0x77,
+            0x65,0x60,0xbf,0x0e,0x83,0xc1,0xa1,0x0b,
+            0x51,0xf6,0x07,0xc9,0x54,0x74,0x25,0x06
+        };
+        ok = ok && memcmp(m.expsk.ask, expected_ask, 32) == 0;
+
+        /* nsk: uint256S("06ea21888a749fd38eb443d20a030abd2e6e997f5db4f984bd1f2f3be8ed0482") */
+        const uint8_t expected_nsk[32] = {
+            0x82,0x04,0xed,0xe8,0x3b,0x2f,0x1f,0xbd,
+            0x84,0xf9,0xb4,0x5d,0x7f,0x99,0x6e,0x2e,
+            0xbd,0x0a,0x03,0x0a,0xd2,0x43,0xb4,0x8e,
+            0xd3,0x9f,0x74,0x8a,0x88,0x21,0xea,0x06
+        };
+        ok = ok && memcmp(m.expsk.nsk, expected_nsk, 32) == 0;
+
+        /* ovk: uint256S("21fb4adfa42183848306ffb27719f27d76cf9bb81d023c93d4b9230389845839") */
+        const uint8_t expected_ovk[32] = {
+            0x39,0x58,0x84,0x89,0x03,0x23,0xb9,0xd4,
+            0x93,0x3c,0x02,0x1d,0xb8,0x9b,0xcf,0x76,
+            0x7d,0xf2,0x19,0x77,0xb2,0xff,0x06,0x83,
+            0x84,0x83,0x21,0xa4,0xdf,0x4a,0xfb,0x21
+        };
+        ok = ok && memcmp(m.expsk.ovk, expected_ovk, 32) == 0;
+
+        /* dk: uint256S("72a196f93e8abc0935280ea2a96fa57d6024c9913e0f9fb3af96775bb77cc177") */
+        const uint8_t expected_dk[32] = {
+            0x77,0xc1,0x7c,0xb7,0x5b,0x77,0x96,0xaf,
+            0xb3,0x9f,0x0f,0x3e,0x91,0xc9,0x24,0x60,
+            0x7d,0xa5,0x6f,0xa9,0xa2,0x0e,0x28,0x35,
+            0x09,0xbc,0x8a,0x3e,0xf9,0x96,0xa1,0x72
+        };
+        ok = ok && memcmp(m.dk, expected_dk, 32) == 0;
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ZIP 32 child derivation m/1 */
+    printf("zip32 derive m/1... ");
+    {
+        uint8_t seed[32];
+        for (int i = 0; i < 32; i++) seed[i] = (uint8_t)i;
+
+        struct zip32_xsk m, m1;
+        zip32_xsk_master(&m, seed, 32);
+        zip32_xsk_derive(&m1, &m, 1);
+
+        bool ok = (m1.depth == 1) && (m1.child_index == 1);
+
+        /* parentFVKTag = 0x3a71c214 */
+        ok = ok && (m1.parent_fvk_tag == 0x3a71c214u);
+
+        /* chaincode: uint256S("e6bcda05678a43fad229334ef0b795a590e7c50590baf0d9b9031a690c114701") */
+        const uint8_t exp_cc[32] = {
+            0x01,0x47,0x11,0x0c,0x69,0x1a,0x03,0xb9,
+            0xd9,0xf0,0xba,0x90,0x05,0xc5,0xe7,0x90,
+            0xa5,0x95,0xb7,0xf0,0x4e,0x33,0x29,0xd2,
+            0xfa,0x43,0x8a,0x67,0x05,0xda,0xbc,0xe6
+        };
+        ok = ok && memcmp(m1.chain_code, exp_cc, 32) == 0;
+
+        /* ask: uint256S("0c357a2655b4b8d761794095df5cb402d3ba4a428cf6a88e7c2816a597c12b28") */
+        const uint8_t exp_ask[32] = {
+            0x28,0x2b,0xc1,0x97,0xa5,0x16,0x28,0x7c,
+            0x8e,0xa8,0xf6,0x8c,0x42,0x4a,0xba,0xd3,
+            0x02,0xb4,0x5c,0xdf,0x95,0x40,0x79,0x61,
+            0xd7,0xb8,0xb4,0x55,0x26,0x7a,0x35,0x0c
+        };
+        ok = ok && memcmp(m1.expsk.ask, exp_ask, 32) == 0;
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ZIP 32 default diversifier */
+    printf("zip32 default diversifier... ");
+    {
+        uint8_t seed[32];
+        for (int i = 0; i < 32; i++) seed[i] = (uint8_t)i;
+
+        struct zip32_xsk m;
+        zip32_xsk_master(&m, seed, 32);
+
+        struct zip32_xfvk xfvk;
+        zip32_xsk_to_xfvk(&xfvk, &m);
+
+        uint8_t diversifier[11], pk_d[32];
+        bool ok = zip32_xfvk_address(&xfvk, diversifier, pk_d);
+
+        /* Expected diversifier: d8 62 1b 98 1c f3 00 e9 d4 cc 89 */
+        const uint8_t exp_d[11] = {0xd8,0x62,0x1b,0x98,0x1c,0xf3,0x00,0xe9,0xd4,0xcc,0x89};
+        ok = ok && memcmp(diversifier, exp_d, 11) == 0;
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ZIP 32 hardened child m/1/2h */
+    printf("zip32 derive m/1/2h... ");
+    {
+        uint8_t seed[32];
+        for (int i = 0; i < 32; i++) seed[i] = (uint8_t)i;
+
+        struct zip32_xsk m, m1, m12h;
+        zip32_xsk_master(&m, seed, 32);
+        zip32_xsk_derive(&m1, &m, 1);
+        zip32_xsk_derive(&m12h, &m1, 2 | ZIP32_HARDENED_KEY_LIMIT);
+
+        bool ok = (m12h.depth == 2);
+        ok = ok && (m12h.parent_fvk_tag == 0x079e99dbu);
+        ok = ok && (m12h.child_index == (2 | ZIP32_HARDENED_KEY_LIMIT));
+
+        /* ask = 0dc6e4fe846bda925c82e632980434e17b51dac81fc4821fa71334ee3c11e88b → LE */
+        const uint8_t exp_ask[32] = {
+            0x8b,0xe8,0x11,0x3c,0xee,0x34,0x13,0xa7,
+            0x1f,0x82,0xc4,0x1f,0xc8,0xda,0x51,0x7b,
+            0xe1,0x34,0x04,0x98,0x32,0xe6,0x82,0x5c,
+            0x92,0xda,0x6b,0x84,0xfe,0xe4,0xc6,0x0d
+        };
+        ok = ok && memcmp(m12h.expsk.ask, exp_ask, 32) == 0;
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ZIP 32 XFVK non-hardened derivation */
+    printf("zip32 xfvk derive... ");
+    {
+        uint8_t seed[32];
+        for (int i = 0; i < 32; i++) seed[i] = (uint8_t)i;
+
+        struct zip32_xsk m, m1, m12h;
+        zip32_xsk_master(&m, seed, 32);
+        zip32_xsk_derive(&m1, &m, 1);
+        zip32_xsk_derive(&m12h, &m1, 2 | ZIP32_HARDENED_KEY_LIMIT);
+
+        struct zip32_xfvk xfvk, xfvk3;
+        zip32_xsk_to_xfvk(&xfvk, &m12h);
+
+        /* Hardened should fail */
+        bool ok = !zip32_xfvk_derive(&xfvk3, &xfvk, 3 | ZIP32_HARDENED_KEY_LIMIT);
+
+        /* Non-hardened should succeed */
+        ok = ok && zip32_xfvk_derive(&xfvk3, &xfvk, 3);
+        ok = ok && (xfvk3.depth == 3);
+        ok = ok && (xfvk3.parent_fvk_tag == 0x7583c148u);
+        ok = ok && (xfvk3.child_index == 3);
+
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }

@@ -676,4 +676,34 @@ void fs_mul(struct fs *r, const struct fs *a, const struct fs *b)
     fs_mont_mul(r->d, a_mont, b->d);
 }
 
+void fs_to_uniform(struct fs *r, const uint8_t digest[64])
+{
+    /* Interpret 64 LE bytes as 512-bit integer, reduce mod s.
+     * Same as Rust's to_uniform: one.mul_bits(BitIterator(repr))
+     * = double-and-add from MSB to LSB. */
+    uint64_t repr[8];
+    for (int i = 0; i < 8; i++) {
+        repr[i] = 0;
+        for (int j = 0; j < 8; j++)
+            repr[i] |= (uint64_t)digest[i * 8 + j] << (j * 8);
+    }
+
+    struct fs res, one, tmp;
+    fs_zero(&res);
+    fs_one(&one);
+
+    for (int word = 7; word >= 0; word--) {
+        for (int bit = 63; bit >= 0; bit--) {
+            fs_add(&tmp, &res, &res);
+            res = tmp;
+            if ((repr[word] >> bit) & 1) {
+                fs_add(&tmp, &res, &one);
+                res = tmp;
+            }
+        }
+    }
+
+    *r = res;
+}
+
 #pragma GCC diagnostic pop
