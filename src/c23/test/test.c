@@ -72,6 +72,7 @@
 #include "policy/fees.h"
 #include "json/json.h"
 #include "rpc/server.h"
+#include "storage/dbwrapper.h"
 
 static int test_tip_count = 0;
 static int test_tip_height = 0;
@@ -3606,6 +3607,81 @@ int main(void)
         value_from_amount(0, &v);
         ok = ok && strcmp(json_get_str(&v), "0.00000000") == 0;
         json_free(&v);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("dbwrapper open/write/read/close... ");
+    {
+        struct db_wrapper db;
+        bool ok = db_wrapper_open(&db, "/tmp/zcl_test_db", 1024 * 1024,
+                                  false, true);
+        if (ok) {
+            ok = ok && db_is_empty(&db);
+
+            ok = ok && db_write(&db, "key1", 4, "value1", 6, false);
+            ok = ok && !db_is_empty(&db);
+            ok = ok && db_exists(&db, "key1", 4);
+            ok = ok && !db_exists(&db, "key2", 4);
+
+            char *val = NULL;
+            size_t vallen = 0;
+            ok = ok && db_read(&db, "key1", 4, &val, &vallen);
+            ok = ok && vallen == 6 && memcmp(val, "value1", 6) == 0;
+            free(val);
+
+            ok = ok && db_erase(&db, "key1", 4, false);
+            ok = ok && !db_exists(&db, "key1", 4);
+
+            db_wrapper_close(&db);
+        }
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("dbwrapper batch... ");
+    {
+        struct db_wrapper db;
+        bool ok = db_wrapper_open(&db, "/tmp/zcl_test_db2", 1024 * 1024,
+                                  false, true);
+        if (ok) {
+            struct db_batch batch;
+            db_batch_init(&batch);
+            db_batch_put(&batch, "a", 1, "1", 1);
+            db_batch_put(&batch, "b", 1, "2", 1);
+            db_batch_put(&batch, "c", 1, "3", 1);
+            ok = ok && db_write_batch(&db, &batch, false);
+            db_batch_free(&batch);
+
+            ok = ok && db_exists(&db, "a", 1);
+            ok = ok && db_exists(&db, "b", 1);
+            ok = ok && db_exists(&db, "c", 1);
+
+            db_wrapper_close(&db);
+        }
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("dbwrapper iterator... ");
+    {
+        struct db_wrapper db;
+        bool ok = db_wrapper_open(&db, "/tmp/zcl_test_db3", 1024 * 1024,
+                                  false, true);
+        if (ok) {
+            db_write(&db, "x", 1, "10", 2, false);
+            db_write(&db, "y", 1, "20", 2, false);
+            db_write(&db, "z", 1, "30", 2, false);
+
+            struct db_iterator it;
+            db_iter_init(&it, &db);
+            db_iter_seek_to_first(&it);
+            int count = 0;
+            while (db_iter_valid(&it)) {
+                count++;
+                db_iter_next(&it);
+            }
+            ok = ok && count == 3;
+            db_iter_free(&it);
+            db_wrapper_close(&db);
+        }
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 

@@ -2,9 +2,9 @@
 # Copyright 2026 Rhett Creighton - Apache License 2.0
 
 CC = cc
-CFLAGS = -std=c23 -Wall -Wextra -Werror -pedantic -I. -D_POSIX_C_SOURCE=200809L -I../secp256k1/include
+CFLAGS = -std=c23 -Wall -Wextra -Werror -pedantic -I. -D_POSIX_C_SOURCE=200809L -I../secp256k1/include -I../leveldb/include
 LDFLAGS = -pthread
-LIBS = -L../secp256k1/.libs -lsecp256k1 -lm
+LIBS = -L../secp256k1/.libs -lsecp256k1 -L../leveldb -lleveldb -lstdc++ -lm
 
 CRYPTO_SRCS = \
 	crypto/sha256.c crypto/sha512.c crypto/sha1.c \
@@ -66,13 +66,17 @@ JSON_SRCS = \
 RPC_SRCS = \
 	rpc/protocol.c rpc/server.c
 
+STORAGE_SRCS = \
+	storage/dbwrapper.c
+
 POLICY_SRCS = \
 	policy/fees.c
 
 ALL_SRCS = $(CRYPTO_SRCS) $(CORE_SRCS) $(ENCODING_SRCS) $(SCRIPT_SRCS) \
 	$(CONSENSUS_SRCS) $(PRIMITIVES_SRCS) $(NET_SRCS) $(CHAIN_SRCS) \
 	$(KEYS_SRCS) $(VALIDATION_SRCS) $(SUPPORT_SRCS) $(BLOOM_SRCS) \
-	$(COINS_SRCS) $(UTIL_SRCS) $(POLICY_SRCS) $(JSON_SRCS) $(RPC_SRCS)
+	$(COINS_SRCS) $(UTIL_SRCS) $(POLICY_SRCS) $(JSON_SRCS) $(RPC_SRCS) \
+	$(STORAGE_SRCS)
 
 ALL_OBJS = $(ALL_SRCS:.c=.o)
 
