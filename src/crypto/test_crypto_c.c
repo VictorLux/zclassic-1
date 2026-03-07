@@ -41,6 +41,7 @@
 #include "script/standard_c.h"
 #include "primitives/transaction_c.h"
 #include "bloom_c.h"
+#include "merkle_c.h"
 
 static int check_hex(const unsigned char *data, size_t len, const char *expected)
 {
@@ -1137,6 +1138,54 @@ int main(void)
             printf("OK\n");
         else { printf("FAIL\n"); failures++; }
         rolling_bloom_free(&rbf);
+    }
+
+    printf("compute_merkle_root 1 tx... ");
+    {
+        struct uint256 tx;
+        memset(tx.data, 0xAA, 32);
+        struct uint256 root = compute_merkle_root(&tx, 1);
+        if (uint256_cmp(&root, &tx) == 0)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("compute_merkle_root 2 txs... ");
+    {
+        struct uint256 txids[2];
+        memset(txids[0].data, 0x11, 32);
+        memset(txids[1].data, 0x22, 32);
+        struct uint256 root = compute_merkle_root(txids, 2);
+        struct uint256 expected;
+        merkle_hash_pair(&txids[0], &txids[1], &expected);
+        if (uint256_cmp(&root, &expected) == 0)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("partial_merkle_tree build/extract... ");
+    {
+        struct uint256 txids[4];
+        for (int i = 0; i < 4; i++)
+            memset(txids[i].data, (unsigned char)(i + 1), 32);
+        bool match[4] = {false, true, false, false};
+
+        struct partial_merkle_tree t;
+        merkle_tree_init(&t);
+        if (merkle_tree_build(&t, txids, 4, match, 4)) {
+            struct uint256 matched[4];
+            size_t num_matched;
+            struct uint256 root;
+            if (merkle_tree_extract(&t, matched, &num_matched, &root) &&
+                num_matched == 1 &&
+                uint256_cmp(&matched[0], &txids[1]) == 0) {
+                struct uint256 full_root = compute_merkle_root(txids, 4);
+                if (uint256_cmp(&root, &full_root) == 0)
+                    printf("OK\n");
+                else { printf("FAIL (root mismatch)\n"); failures++; }
+            } else { printf("FAIL (extract)\n"); failures++; }
+        } else { printf("FAIL (build)\n"); failures++; }
+        merkle_tree_free(&t);
     }
 
     printf("ecc_init_sanity_check... ");
