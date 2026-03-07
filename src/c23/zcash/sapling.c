@@ -9,6 +9,7 @@
 #include "zcash/bls12_381.h"
 #include "crypto/blake2s.h"
 #include "crypto/blake2b.h"
+#include "core/random.h"
 #include <string.h>
 #include <stdlib.h>
 
@@ -435,6 +436,15 @@ static void bytes_le_to_fr_raw(uint64_t out[4], const uint8_t bytes[32])
 
 void sapling_set_spend_vk(struct groth16_vk *vk) { sapling_spend_vk = vk; }
 void sapling_set_output_vk(struct groth16_vk *vk) { sapling_output_vk = vk; }
+
+void sapling_generate_r(uint8_t result[32])
+{
+    uint8_t buf[64];
+    GetRandBytes(buf, 64);
+    struct fs r;
+    fs_to_uniform(&r, buf);
+    fs_to_bytes(result, &r);
+}
 
 bool sapling_check_spend(struct sapling_verification_ctx *ctx,
                           const uint8_t cv[32],

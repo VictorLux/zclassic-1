@@ -55,6 +55,9 @@ bool sapling_compute_nf(const uint8_t diversifier[11], const uint8_t pk_d[32],
                          const uint8_t ak[32], const uint8_t nk[32],
                          uint64_t position, uint8_t nf[32]);
 
+/* Generate a random Fs scalar (for commitment/note randomness) */
+void sapling_generate_r(uint8_t result[32]);
+
 /* RedJubjub signature verification.
  * generator_idx: 5 for SpendingKey (spend_auth_sig), 4 for ValueCommitmentRandomness (binding_sig) */
 bool redjubjub_verify(const uint8_t vk_bytes[32],
