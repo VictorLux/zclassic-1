@@ -1,63 +1,29 @@
-// Copyright (c) 2014 The Bitcoin Core developers
-// Distributed under the MIT software license, see the accompanying
-// file COPYING or http://www.opensource.org/licenses/mit-license.php.
+/* Copyright (c) 2014 The Bitcoin Core developers
+ * Copyright 2026 Rhett Creighton - Apache License 2.0
+ * Distributed under the MIT software license, see the accompanying
+ * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #ifndef BITCOIN_CHAINPARAMSBASE_H
 #define BITCOIN_CHAINPARAMSBASE_H
 
-#include <string>
-#include <vector>
+#include <stdbool.h>
 
-/**
- * CBaseChainParams defines the base parameters (shared between bitcoin-cli and bitcoind)
- * of a given instance of the Bitcoin system.
- */
-class CBaseChainParams
-{
-public:
-    enum Network {
-        MAIN,
-        TESTNET,
-        REGTEST,
-
-        MAX_NETWORK_TYPES
-    };
-
-    const std::string& DataDir() const { return strDataDir; }
-    int RPCPort() const { return nRPCPort; }
-
-protected:
-    CBaseChainParams() {}
-
-    int nRPCPort = 0;
-    std::string strDataDir;
+enum chain_network {
+    CHAIN_MAIN,
+    CHAIN_TESTNET,
+    CHAIN_REGTEST,
+    CHAIN_MAX_NETWORK_TYPES
 };
 
-/**
- * Return the currently selected parameters. This won't change after app
- * startup, except for unit tests.
- */
-const CBaseChainParams& BaseParams();
+struct base_chain_params {
+    int nRPCPort;
+    const char *strDataDir;
+};
 
-/** Sets the params returned by Params() to those for the given network. */
-void SelectBaseParams(CBaseChainParams::Network network);
+const struct base_chain_params *BaseParams(void);
+void SelectBaseParams(enum chain_network network);
+enum chain_network NetworkIdFromCommandLine(void);
+bool SelectBaseParamsFromCommandLine(void);
+bool AreBaseParamsConfigured(void);
 
-/**
- * Looks for -regtest or -testnet and returns the appropriate Network ID.
- * Returns MAX_NETWORK_TYPES if an invalid combination is given.
- */
-CBaseChainParams::Network NetworkIdFromCommandLine();
-
-/**
- * Calls NetworkIdFromCommandLine() and then calls SelectParams as appropriate.
- * Returns false if an invalid combination is given.
- */
-bool SelectBaseParamsFromCommandLine();
-
-/**
- * Return true if SelectBaseParamsFromCommandLine() has been called to select
- * a network.
- */
-bool AreBaseParamsConfigured();
-
-#endif // BITCOIN_CHAINPARAMSBASE_H
+#endif

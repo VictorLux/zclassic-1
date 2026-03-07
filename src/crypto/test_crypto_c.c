@@ -23,6 +23,14 @@
 #include "utilmoneystr.h"
 #include "utilstrencodings.h"
 #include "clientversion.h"
+#include "chainparamsbase.h"
+
+/* Stub for chainparamsbase.c linking */
+bool GetBoolArg(const char *arg, bool default_val)
+{
+    (void)arg;
+    return default_val;
+}
 
 static int check_hex(const unsigned char *data, size_t len, const char *expected)
 {
@@ -498,6 +506,25 @@ int main(void)
             printf("OK\n");
         else {
             printf("FAIL: %s\n", CLIENT_NAME);
+            failures++;
+        }
+    }
+
+    printf("chainparamsbase... ");
+    {
+        SelectBaseParams(CHAIN_MAIN);
+        const struct base_chain_params *p = BaseParams();
+        if (p->nRPCPort == 8023 && AreBaseParamsConfigured()) {
+            SelectBaseParams(CHAIN_TESTNET);
+            p = BaseParams();
+            if (p->nRPCPort == 18023 && strcmp(p->strDataDir, "testnet3") == 0)
+                printf("OK\n");
+            else {
+                printf("FAIL: testnet\n");
+                failures++;
+            }
+        } else {
+            printf("FAIL: main\n");
             failures++;
         }
     }
