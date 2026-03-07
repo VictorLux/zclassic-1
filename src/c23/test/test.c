@@ -99,6 +99,7 @@
 #include "zcash/note.h"
 #include "crypto/chacha20poly1305.h"
 #include "crypto/curve25519.h"
+#include "zcash/note_encryption.h"
 
 static int test_tip_count = 0;
 static int test_tip_height = 0;
@@ -5724,6 +5725,226 @@ int main(void)
             printf("FAIL\n");
             failures++;
         }
+    }
+
+    /* --- Sprout KDF --- */
+    printf("sprout_kdf BLAKE2b personalization... ");
+    {
+        uint8_t hsig[32], dhsecret[32], epk[32], pk_enc[32], key[32];
+        memset(hsig, 0x01, 32);
+        memset(dhsecret, 0x02, 32);
+        memset(epk, 0x03, 32);
+        memset(pk_enc, 0x04, 32);
+
+        bool ok = sprout_kdf(key, hsig, dhsecret, epk, pk_enc, 0);
+        /* Key should be non-zero and deterministic */
+        uint8_t zero[32] = {0};
+        ok = ok && (memcmp(key, zero, 32) != 0);
+
+        /* Same inputs produce same output */
+        uint8_t key2[32];
+        sprout_kdf(key2, hsig, dhsecret, epk, pk_enc, 0);
+        ok = ok && (memcmp(key, key2, 32) == 0);
+
+        /* Different nonce produces different key */
+        uint8_t key3[32];
+        sprout_kdf(key3, hsig, dhsecret, epk, pk_enc, 1);
+        ok = ok && (memcmp(key, key3, 32) != 0);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* --- Sapling KDF --- */
+    printf("sapling_kdf BLAKE2b personalization... ");
+    {
+        uint8_t dhsecret[32], epk[32], key[32];
+        memset(dhsecret, 0xAA, 32);
+        memset(epk, 0xBB, 32);
+
+        bool ok = sapling_kdf(key, dhsecret, epk);
+        uint8_t zero[32] = {0};
+        ok = ok && (memcmp(key, zero, 32) != 0);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* --- Sapling PRF_ock --- */
+    printf("sapling_prf_ock... ");
+    {
+        uint8_t ovk[32], cv[32], cm[32], epk[32], key[32];
+        memset(ovk, 0x11, 32);
+        memset(cv, 0x22, 32);
+        memset(cm, 0x33, 32);
+        memset(epk, 0x44, 32);
+
+        bool ok = sapling_prf_ock(key, ovk, cv, cm, epk);
+        uint8_t zero[32] = {0};
+        ok = ok && (memcmp(key, zero, 32) != 0);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* --- Sprout note encrypt/decrypt roundtrip --- */
+    printf("sprout_note_encrypt/decrypt roundtrip... ");
+    {
+        /* Generate recipient key pair */
+        uint8_t sk_enc[32] = {
+            0x77,0x07,0x6d,0x0a,0x73,0x18,0xa5,0x7d,
+            0x3c,0x16,0xc1,0x72,0x51,0xb2,0x66,0x45,
+            0xdf,0x4c,0x2f,0x87,0xeb,0xc0,0x99,0x2a,
+            0xb1,0x77,0xfb,0xa5,0x1d,0xb9,0x2c,0x2a
+        };
+        /* Clamp for Curve25519 */
+        sk_enc[0] &= 248;
+        sk_enc[31] &= 127;
+        sk_enc[31] |= 64;
+
+        uint8_t pk_enc[32];
+        curve25519_scalarmult_base(pk_enc, sk_enc);
+
+        /* Ephemeral key for sender */
+        uint8_t esk[32] = {
+            0x5d,0xab,0x08,0x7e,0x62,0x4a,0x8a,0x4b,
+            0x79,0xe1,0x7f,0x8b,0x83,0x80,0x0e,0xe6,
+            0x6f,0x3b,0xb1,0x29,0x26,0x18,0xb6,0xfd,
+            0x1c,0x2f,0x8b,0x27,0xff,0x88,0xe0,0xeb
+        };
+
+        struct sprout_note_encryption ctx;
+        sprout_note_encryption_init_with_esk(&ctx, esk);
+
+        uint8_t hsig[32];
+        memset(hsig, 0xAB, 32);
+
+        /* Create plaintext (585 bytes) */
+        uint8_t plaintext[ZC_NOTEPLAINTEXT_SIZE];
+        memset(plaintext, 0, sizeof(plaintext));
+        plaintext[0] = 0x00; /* leading byte */
+        /* value = 1000000 LE */
+        uint64_t val = 1000000;
+        memcpy(plaintext + 1, &val, 8);
+        memset(plaintext + 9, 0xCC, 32);  /* rho */
+        memset(plaintext + 41, 0xDD, 32); /* r */
+        memcpy(plaintext + 73, "Hello ZClassic!", 15); /* memo */
+
+        uint8_t ciphertext[ZC_NOTEPLAINTEXT_SIZE + NOTEENCRYPTION_AUTH_BYTES];
+        bool ok = sprout_note_encrypt(&ctx, hsig, pk_enc,
+                                       plaintext, ZC_NOTEPLAINTEXT_SIZE,
+                                       ciphertext);
+
+        /* Decrypt */
+        uint8_t decrypted[ZC_NOTEPLAINTEXT_SIZE];
+        ok = ok && sprout_note_decrypt(sk_enc, ctx.epk, hsig, pk_enc, 0,
+                                        ciphertext,
+                                        ZC_NOTEPLAINTEXT_SIZE + NOTEENCRYPTION_AUTH_BYTES,
+                                        decrypted);
+
+        ok = ok && (memcmp(plaintext, decrypted, ZC_NOTEPLAINTEXT_SIZE) == 0);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* --- Sprout note encrypt tamper detection --- */
+    printf("sprout_note_encrypt tamper detection... ");
+    {
+        uint8_t sk_enc[32];
+        memset(sk_enc, 0x42, 32);
+        sk_enc[0] &= 248; sk_enc[31] &= 127; sk_enc[31] |= 64;
+        uint8_t pk_enc[32];
+        curve25519_scalarmult_base(pk_enc, sk_enc);
+
+        uint8_t esk[32];
+        memset(esk, 0x55, 32);
+        struct sprout_note_encryption ctx;
+        sprout_note_encryption_init_with_esk(&ctx, esk);
+
+        uint8_t hsig[32];
+        memset(hsig, 0x77, 32);
+
+        uint8_t plaintext[ZC_NOTEPLAINTEXT_SIZE];
+        memset(plaintext, 0xEE, sizeof(plaintext));
+
+        uint8_t ciphertext[ZC_NOTEPLAINTEXT_SIZE + NOTEENCRYPTION_AUTH_BYTES];
+        sprout_note_encrypt(&ctx, hsig, pk_enc,
+                             plaintext, ZC_NOTEPLAINTEXT_SIZE, ciphertext);
+
+        /* Tamper with ciphertext */
+        ciphertext[100] ^= 0xFF;
+
+        uint8_t decrypted[ZC_NOTEPLAINTEXT_SIZE];
+        bool ok = !sprout_note_decrypt(sk_enc, ctx.epk, hsig, pk_enc, 0,
+                                        ciphertext,
+                                        ZC_NOTEPLAINTEXT_SIZE + NOTEENCRYPTION_AUTH_BYTES,
+                                        decrypted);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* --- Sapling note encrypt/decrypt --- */
+    printf("sapling_note_encrypt/decrypt roundtrip... ");
+    {
+        uint8_t key[32];
+        memset(key, 0x99, 32);
+
+        uint8_t plaintext[ZC_SAPLING_ENCPLAINTEXT_SIZE];
+        memset(plaintext, 0, sizeof(plaintext));
+        plaintext[0] = 0x01; /* Sapling leading byte */
+        memset(plaintext + 1, 0xAA, 11); /* diversifier */
+        uint64_t val = 5000000;
+        memcpy(plaintext + 12, &val, 8);
+        memset(plaintext + 20, 0xBB, 32); /* rcm */
+        memcpy(plaintext + 52, "Sapling memo", 12);
+
+        uint8_t ciphertext[ZC_SAPLING_ENCCIPHERTEXT_SIZE];
+        bool ok = sapling_note_encrypt(key, plaintext,
+                                        ZC_SAPLING_ENCPLAINTEXT_SIZE,
+                                        ciphertext);
+
+        uint8_t decrypted[ZC_SAPLING_ENCPLAINTEXT_SIZE];
+        ok = ok && sapling_note_decrypt(key, ciphertext,
+                                         ZC_SAPLING_ENCCIPHERTEXT_SIZE,
+                                         decrypted);
+        ok = ok && (memcmp(plaintext, decrypted, ZC_SAPLING_ENCPLAINTEXT_SIZE) == 0);
+
+        if (ok) printf("OK (%zu bytes)\n", (size_t)ZC_SAPLING_ENCCIPHERTEXT_SIZE);
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* --- Sapling outgoing ciphertext encrypt/decrypt --- */
+    printf("sapling_out_encrypt/decrypt roundtrip... ");
+    {
+        uint8_t ovk[32], cv[32], cm[32], epk[32];
+        memset(ovk, 0x11, 32);
+        memset(cv, 0x22, 32);
+        memset(cm, 0x33, 32);
+        memset(epk, 0x44, 32);
+
+        uint8_t key[32];
+        sapling_prf_ock(key, ovk, cv, cm, epk);
+
+        /* Outgoing plaintext: pk_d(32) + esk(32) = 64 bytes */
+        uint8_t plaintext[ZC_SAPLING_OUTPLAINTEXT_SIZE];
+        memset(plaintext, 0xAA, 32);      /* pk_d */
+        memset(plaintext + 32, 0xBB, 32); /* esk */
+
+        uint8_t ciphertext[ZC_SAPLING_OUTCIPHERTEXT_SIZE];
+        bool ok = sapling_out_encrypt(key, plaintext,
+                                       ZC_SAPLING_OUTPLAINTEXT_SIZE,
+                                       ciphertext);
+
+        uint8_t decrypted[ZC_SAPLING_OUTPLAINTEXT_SIZE];
+        ok = ok && sapling_out_decrypt(key, ciphertext,
+                                        ZC_SAPLING_OUTCIPHERTEXT_SIZE,
+                                        decrypted);
+        ok = ok && (memcmp(plaintext, decrypted, ZC_SAPLING_OUTPLAINTEXT_SIZE) == 0);
+
+        if (ok) printf("OK (%zu bytes)\n", (size_t)ZC_SAPLING_OUTCIPHERTEXT_SIZE);
+        else { printf("FAIL\n"); failures++; }
     }
 
     printf("\n%s (%d failures)\n", failures ? "SOME TESTS FAILED" : "ALL TESTS PASSED", failures);
