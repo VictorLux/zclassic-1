@@ -36,7 +36,8 @@ NET_SRCS = \
 
 CHAIN_SRCS = \
 	chain/chain.c chain/pow.c chain/checkpoints.c \
-	chain/chainparams.c chain/chainparamsbase.c chain/subsidy.c
+	chain/chainparams.c chain/chainparamsbase.c chain/subsidy.c \
+	chain/equihash.c
 
 KEYS_SRCS = \
 	keys/pubkey.c keys/key.c keys/key_io.c
@@ -44,6 +45,7 @@ KEYS_SRCS = \
 VALIDATION_SRCS = \
 	validation/check_transaction.c validation/contextual_check_tx.c \
 	validation/sigops.c validation/sighash.c validation/tx_verifier.c \
+	validation/check_block.c \
 	validation/validationinterface.c validation/txmempool.c \
 	validation/chainstate.c validation/checkqueue.c \
 	validation/update_coins.c

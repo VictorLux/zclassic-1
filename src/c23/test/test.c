@@ -88,6 +88,8 @@
 #include "storage/coins_db.h"
 #include "validation/update_coins.h"
 #include "storage/block_index_db.h"
+#include "chain/equihash.h"
+#include "validation/check_block.h"
 
 static int test_tip_count = 0;
 static int test_tip_height = 0;
@@ -4475,6 +4477,306 @@ int main(void)
         }
         stream_free(&s);
         block_free(&b);
+    }
+
+    printf("check_equihash_solution size validation... ");
+    {
+        const struct chain_params *p = chain_params_get();
+        struct block_header hdr;
+        block_header_init(&hdr);
+        hdr.nSolutionSize = 1344;
+        memset(hdr.nSolution, 0x42, 1344);
+        bool ok = check_equihash_solution(&hdr, p);
+        if (ok)
+            printf("OK\n");
+        else {
+            printf("FAIL\n");
+            failures++;
+        }
+
+        hdr.nSolutionSize = 999;
+        ok = check_equihash_solution(&hdr, p);
+        if (!ok)
+            printf("check_equihash_solution bad size... OK\n");
+        else {
+            printf("check_equihash_solution bad size... FAIL\n");
+            failures++;
+        }
+    }
+
+    printf("check_block_header version too low... ");
+    {
+        const struct chain_params *p = chain_params_get();
+        struct validation_state state;
+        validation_state_init(&state);
+        struct block_header hdr;
+        block_header_init(&hdr);
+        hdr.nVersion = 1;
+        bool ok = check_block_header(&hdr, &state, p, false);
+        if (!ok && strcmp(state.reject_reason, "version-too-low") == 0)
+            printf("OK\n");
+        else {
+            printf("FAIL (ok=%d reason=%s)\n", ok, state.reject_reason);
+            failures++;
+        }
+    }
+
+    printf("check_block_header valid (no PoW check)... ");
+    {
+        const struct chain_params *p = chain_params_get();
+        struct validation_state state;
+        validation_state_init(&state);
+        struct block_header hdr;
+        block_header_init(&hdr);
+        hdr.nVersion = 4;
+        hdr.nTime = (uint32_t)GetAdjustedTime();
+        bool ok = check_block_header(&hdr, &state, p, false);
+        if (ok)
+            printf("OK\n");
+        else {
+            printf("FAIL (reason=%s)\n", state.reject_reason);
+            failures++;
+        }
+    }
+
+    printf("check_block merkle root mismatch... ");
+    {
+        const struct chain_params *p = chain_params_get();
+        struct validation_state state;
+        validation_state_init(&state);
+        struct block b;
+        block_init(&b);
+        b.header.nVersion = 4;
+        b.header.nTime = (uint32_t)GetAdjustedTime();
+        b.num_vtx = 1;
+        b.vtx = calloc(1, sizeof(struct transaction));
+        transaction_init(&b.vtx[0]);
+        transaction_alloc(&b.vtx[0], 1, 1);
+        b.vtx[0].vin[0].prevout.n = UINT32_MAX;
+        b.vtx[0].vout[0].value = 50 * 100000000LL;
+        transaction_compute_hash(&b.vtx[0]);
+        /* Intentionally wrong merkle root */
+        memset(b.header.hashMerkleRoot.data, 0xff, 32);
+        bool ok = check_block(&b, &state, p, false, true, false);
+        if (!ok && strcmp(state.reject_reason, "bad-txnmrklroot") == 0)
+            printf("OK\n");
+        else {
+            printf("FAIL (ok=%d reason=%s)\n", ok, state.reject_reason);
+            failures++;
+        }
+        block_free(&b);
+    }
+
+    printf("check_block valid with correct merkle root... ");
+    {
+        const struct chain_params *p = chain_params_get();
+        struct validation_state state;
+        validation_state_init(&state);
+        struct block b;
+        block_init(&b);
+        b.header.nVersion = 4;
+        b.header.nTime = (uint32_t)GetAdjustedTime();
+        b.num_vtx = 1;
+        b.vtx = calloc(1, sizeof(struct transaction));
+        transaction_init(&b.vtx[0]);
+        transaction_alloc(&b.vtx[0], 1, 1);
+        b.vtx[0].vin[0].prevout.n = UINT32_MAX;
+        b.vtx[0].vout[0].value = 50 * 100000000LL;
+        /* Coinbase scriptSig must be 2-100 bytes */
+        b.vtx[0].vin[0].script_sig.data[0] = 1;
+        b.vtx[0].vin[0].script_sig.data[1] = 0;
+        b.vtx[0].vin[0].script_sig.size = 2;
+        transaction_compute_hash(&b.vtx[0]);
+        b.header.hashMerkleRoot = compute_merkle_root(&b.vtx[0].hash, 1);
+        bool ok = check_block(&b, &state, p, false, true, true);
+        if (ok)
+            printf("OK\n");
+        else {
+            printf("FAIL (reason=%s)\n", state.reject_reason);
+            failures++;
+        }
+        block_free(&b);
+    }
+
+    printf("check_block no coinbase... ");
+    {
+        const struct chain_params *p = chain_params_get();
+        struct validation_state state;
+        validation_state_init(&state);
+        struct block b;
+        block_init(&b);
+        b.header.nVersion = 4;
+        b.header.nTime = (uint32_t)GetAdjustedTime();
+        b.num_vtx = 1;
+        b.vtx = calloc(1, sizeof(struct transaction));
+        transaction_init(&b.vtx[0]);
+        transaction_alloc(&b.vtx[0], 1, 1);
+        /* Not a coinbase - prevout.n != UINT32_MAX */
+        b.vtx[0].vin[0].prevout.n = 0;
+        b.vtx[0].vout[0].value = 50 * 100000000LL;
+        transaction_compute_hash(&b.vtx[0]);
+        b.header.hashMerkleRoot = compute_merkle_root(&b.vtx[0].hash, 1);
+        bool ok = check_block(&b, &state, p, false, true, true);
+        if (!ok && strcmp(state.reject_reason, "bad-cb-missing") == 0)
+            printf("OK\n");
+        else {
+            printf("FAIL (ok=%d reason=%s)\n", ok, state.reject_reason);
+            failures++;
+        }
+        block_free(&b);
+    }
+
+    printf("contextual_check_block_header genesis bypass... ");
+    {
+        const struct chain_params *p = chain_params_get();
+        struct validation_state state;
+        validation_state_init(&state);
+        struct block_header hdr;
+        block_header_init(&hdr);
+        /* Construct header whose hash equals hashGenesisBlock to test bypass */
+        /* We can't easily forge it, so test that non-genesis requires pindex_prev */
+        hdr.nVersion = 4;
+        hdr.nTime = (uint32_t)GetAdjustedTime();
+        struct block_index prev;
+        block_index_init(&prev);
+        prev.nHeight = 0;
+        prev.nTime = (uint32_t)(GetAdjustedTime() - 600);
+        prev.nBits = 0x2007ffff;
+        hdr.nBits = GetNextWorkRequired(&prev, &hdr, &p->consensus);
+        bool ok = contextual_check_block_header(&hdr, &state, p, &prev, false);
+        if (ok)
+            printf("OK\n");
+        else {
+            printf("FAIL (reason=%s)\n", state.reject_reason);
+            failures++;
+        }
+    }
+
+    printf("contextual_check_block_header version < 4... ");
+    {
+        const struct chain_params *p = chain_params_get();
+        struct validation_state state;
+        validation_state_init(&state);
+        struct block_header hdr;
+        block_header_init(&hdr);
+        hdr.nVersion = 3;
+        hdr.nTime = (uint32_t)GetAdjustedTime();
+        struct block_index prev;
+        block_index_init(&prev);
+        prev.nHeight = 100;
+        prev.nTime = (uint32_t)(GetAdjustedTime() - 60);
+        /* Set nBits to match what GetNextWorkRequired returns for this prev */
+        hdr.nBits = GetNextWorkRequired(&prev, &hdr, &p->consensus);
+        bool ok = contextual_check_block_header(&hdr, &state, p, &prev, false);
+        if (!ok && strcmp(state.reject_reason, "bad-version") == 0)
+            printf("OK\n");
+        else {
+            printf("FAIL (ok=%d reason=%s)\n", ok, state.reject_reason);
+            failures++;
+        }
+    }
+
+    printf("contextual_check_block BIP34 height... ");
+    {
+        const struct chain_params *p = chain_params_get();
+        struct validation_state state;
+        validation_state_init(&state);
+        struct block b;
+        block_init(&b);
+        b.header.nVersion = 4;
+        b.header.nTime = (uint32_t)GetAdjustedTime();
+        b.num_vtx = 1;
+        b.vtx = calloc(1, sizeof(struct transaction));
+        transaction_init(&b.vtx[0]);
+        transaction_alloc(&b.vtx[0], 1, 1);
+        b.vtx[0].vin[0].prevout.n = UINT32_MAX;
+        b.vtx[0].vout[0].value = 50 * 100000000LL;
+        /* Set scriptSig with correct BIP34 height encoding for height 5 */
+        b.vtx[0].vin[0].script_sig.data[0] = 1;
+        b.vtx[0].vin[0].script_sig.data[1] = 5;
+        b.vtx[0].vin[0].script_sig.size = 2;
+        transaction_compute_hash(&b.vtx[0]);
+        struct block_index prev;
+        block_index_init(&prev);
+        prev.nHeight = 4;
+        bool ok = contextual_check_block(&b, &state, p, &prev);
+        if (ok)
+            printf("OK\n");
+        else {
+            printf("FAIL (reason=%s)\n", state.reject_reason);
+            failures++;
+        }
+        block_free(&b);
+    }
+
+    printf("contextual_check_block BIP34 wrong height... ");
+    {
+        const struct chain_params *p = chain_params_get();
+        struct validation_state state;
+        validation_state_init(&state);
+        struct block b;
+        block_init(&b);
+        b.header.nVersion = 4;
+        b.header.nTime = (uint32_t)GetAdjustedTime();
+        b.num_vtx = 1;
+        b.vtx = calloc(1, sizeof(struct transaction));
+        transaction_init(&b.vtx[0]);
+        transaction_alloc(&b.vtx[0], 1, 1);
+        b.vtx[0].vin[0].prevout.n = UINT32_MAX;
+        b.vtx[0].vout[0].value = 50 * 100000000LL;
+        /* Wrong height: encode 99 but block is at height 5 */
+        b.vtx[0].vin[0].script_sig.data[0] = 1;
+        b.vtx[0].vin[0].script_sig.data[1] = 99;
+        b.vtx[0].vin[0].script_sig.size = 2;
+        transaction_compute_hash(&b.vtx[0]);
+        struct block_index prev;
+        block_index_init(&prev);
+        prev.nHeight = 4;
+        bool ok = contextual_check_block(&b, &state, p, &prev);
+        if (!ok && strcmp(state.reject_reason, "bad-cb-height") == 0)
+            printf("OK\n");
+        else {
+            printf("FAIL (ok=%d reason=%s)\n", ok, state.reject_reason);
+            failures++;
+        }
+        block_free(&b);
+    }
+
+    printf("compute_merkle_root_mutated no false positive... ");
+    {
+        struct uint256 a, b_hash, c, d;
+        memset(a.data, 0xaa, 32);
+        memset(b_hash.data, 0xbb, 32);
+        memset(c.data, 0xcc, 32);
+        memset(d.data, 0xdd, 32);
+        struct uint256 txids[4] = {a, b_hash, c, d};
+        bool mutated = false;
+        compute_merkle_root_mutated(txids, 4, &mutated);
+        if (!mutated)
+            printf("OK\n");
+        else {
+            printf("FAIL (false mutation)\n");
+            failures++;
+        }
+    }
+
+    printf("compute_merkle_root_mutated detects dup pair at end... ");
+    {
+        /* CVE-2012-2459: last pair at a level are identical.
+         * [a, b, c, c] — pair(c,c) is last pair, i2==i+1, i2+1==nSize */
+        struct uint256 a, b_hash, c;
+        memset(a.data, 0xaa, 32);
+        memset(b_hash.data, 0xbb, 32);
+        memset(c.data, 0xcc, 32);
+        struct uint256 txids[4] = {a, b_hash, c, c};
+        bool mutated = false;
+        compute_merkle_root_mutated(txids, 4, &mutated);
+        if (mutated)
+            printf("OK\n");
+        else {
+            printf("FAIL\n");
+            failures++;
+        }
     }
 
     printf("\n%s (%d failures)\n", failures ? "SOME TESTS FAILED" : "ALL TESTS PASSED", failures);

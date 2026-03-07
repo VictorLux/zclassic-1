@@ -221,6 +221,14 @@ bool merkle_tree_extract(struct partial_merkle_tree *t,
 
 struct uint256 compute_merkle_root(const struct uint256 *txids, size_t count)
 {
+    bool unused;
+    return compute_merkle_root_mutated(txids, count, &unused);
+}
+
+struct uint256 compute_merkle_root_mutated(const struct uint256 *txids,
+                                           size_t count, bool *mutated)
+{
+    *mutated = false;
     struct uint256 zero;
     uint256_set_null(&zero);
     if (count == 0) return zero;
@@ -233,10 +241,13 @@ struct uint256 compute_merkle_root(const struct uint256 *txids, size_t count)
 
     while (level_size > 1) {
         size_t next_size = (level_size + 1) / 2;
-        for (size_t i = 0; i < next_size; i++) {
-            size_t left_idx = i * 2;
-            size_t right_idx = left_idx + 1 < level_size ? left_idx + 1 : left_idx;
-            merkle_hash_pair(&level[left_idx], &level[right_idx], &level[i]);
+        for (size_t i = 0; i < level_size; i += 2) {
+            size_t i2 = (i + 1 < level_size) ? i + 1 : level_size - 1;
+            if (i2 == i + 1 && i2 + 1 == level_size &&
+                uint256_eq(&level[i], &level[i2])) {
+                *mutated = true;
+            }
+            merkle_hash_pair(&level[i], &level[i2], &level[i / 2]);
         }
         level_size = next_size;
     }

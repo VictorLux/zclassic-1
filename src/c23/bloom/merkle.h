@@ -39,5 +39,7 @@ void merkle_hash_pair(const struct uint256 *left, const struct uint256 *right,
                       struct uint256 *out);
 
 struct uint256 compute_merkle_root(const struct uint256 *txids, size_t count);
+struct uint256 compute_merkle_root_mutated(const struct uint256 *txids,
+                                           size_t count, bool *mutated);
 
 #endif
