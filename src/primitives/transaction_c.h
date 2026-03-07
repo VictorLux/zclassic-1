@@ -106,4 +106,14 @@ bool transaction_alloc(struct transaction *tx, size_t num_vin, size_t num_vout);
 int64_t transaction_get_value_out(const struct transaction *tx);
 void outpoint_to_string(const struct outpoint *op, char *buf, size_t buflen);
 
+struct byte_stream;
+
+bool outpoint_serialize(const struct outpoint *op, struct byte_stream *s);
+bool outpoint_deserialize(struct outpoint *op, struct byte_stream *s);
+bool tx_in_serialize(const struct tx_in *in, struct byte_stream *s);
+bool tx_in_deserialize(struct tx_in *in, struct byte_stream *s);
+bool tx_out_serialize(const struct tx_out *out, struct byte_stream *s);
+bool tx_out_deserialize(struct tx_out *out, struct byte_stream *s);
+void transaction_compute_hash(struct transaction *tx);
+
 #endif

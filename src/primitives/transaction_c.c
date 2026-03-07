@@ -6,6 +6,7 @@
 
 #include "primitives/transaction_c.h"
 #include "hash.h"
+#include "serialize_c.h"
 #include <stdlib.h>
 #include <stdio.h>
 
@@ -75,4 +76,91 @@ void outpoint_to_string(const struct outpoint *op, char *buf, size_t buflen)
     char hex[65];
     uint256_get_hex(&op->hash, hex);
     snprintf(buf, buflen, "%s:%u", hex, op->n);
+}
+
+bool outpoint_serialize(const struct outpoint *op, struct byte_stream *s)
+{
+    return stream_write_bytes(s, op->hash.data, 32) &&
+           stream_write_u32_le(s, op->n);
+}
+
+bool outpoint_deserialize(struct outpoint *op, struct byte_stream *s)
+{
+    return stream_read_bytes(s, op->hash.data, 32) &&
+           stream_read_u32_le(s, &op->n);
+}
+
+bool tx_in_serialize(const struct tx_in *in, struct byte_stream *s)
+{
+    if (!outpoint_serialize(&in->prevout, s)) return false;
+    if (!stream_write_compact_size(s, in->script_sig.size)) return false;
+    if (in->script_sig.size > 0 &&
+        !stream_write_bytes(s, in->script_sig.data, in->script_sig.size))
+        return false;
+    return stream_write_u32_le(s, in->sequence);
+}
+
+bool tx_in_deserialize(struct tx_in *in, struct byte_stream *s)
+{
+    if (!outpoint_deserialize(&in->prevout, s)) return false;
+    uint64_t script_len;
+    if (!stream_read_compact_size(s, &script_len)) return false;
+    if (script_len > MAX_SCRIPT_SIZE) return false;
+    in->script_sig.size = (size_t)script_len;
+    if (in->script_sig.size > 0 &&
+        !stream_read_bytes(s, in->script_sig.data, in->script_sig.size))
+        return false;
+    return stream_read_u32_le(s, &in->sequence);
+}
+
+bool tx_out_serialize(const struct tx_out *out, struct byte_stream *s)
+{
+    if (!stream_write_i64_le(s, out->value)) return false;
+    if (!stream_write_compact_size(s, out->script_pub_key.size)) return false;
+    if (out->script_pub_key.size > 0)
+        return stream_write_bytes(s, out->script_pub_key.data,
+                                  out->script_pub_key.size);
+    return true;
+}
+
+bool tx_out_deserialize(struct tx_out *out, struct byte_stream *s)
+{
+    if (!stream_read_i64_le(s, &out->value)) return false;
+    uint64_t script_len;
+    if (!stream_read_compact_size(s, &script_len)) return false;
+    if (script_len > MAX_SCRIPT_SIZE) return false;
+    out->script_pub_key.size = (size_t)script_len;
+    if (out->script_pub_key.size > 0)
+        return stream_read_bytes(s, out->script_pub_key.data,
+                                 out->script_pub_key.size);
+    return true;
+}
+
+void transaction_compute_hash(struct transaction *tx)
+{
+    struct byte_stream s;
+    stream_init(&s, 512);
+
+    uint32_t header = (uint32_t)tx->version;
+    if (tx->overwintered) header |= (1u << 31);
+    stream_write_u32_le(&s, header);
+
+    if (tx->overwintered)
+        stream_write_u32_le(&s, tx->version_group_id);
+
+    stream_write_compact_size(&s, tx->num_vin);
+    for (size_t i = 0; i < tx->num_vin; i++)
+        tx_in_serialize(&tx->vin[i], &s);
+
+    stream_write_compact_size(&s, tx->num_vout);
+    for (size_t i = 0; i < tx->num_vout; i++)
+        tx_out_serialize(&tx->vout[i], &s);
+
+    stream_write_u32_le(&s, tx->lock_time);
+
+    if (tx->overwintered)
+        stream_write_u32_le(&s, tx->expiry_height);
+
+    hash256(s.data, s.size, tx->hash.data);
+    stream_free(&s);
 }

@@ -1368,6 +1368,83 @@ int main(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    printf("outpoint serialize/deserialize... ");
+    {
+        struct outpoint op = { .n = 42 };
+        memset(op.hash.data, 0xAB, 32);
+        struct byte_stream s;
+        stream_init(&s, 64);
+        outpoint_serialize(&op, &s);
+        s.read_pos = 0;
+        struct outpoint op2;
+        outpoint_deserialize(&op2, &s);
+        if (op2.n == 42 && memcmp(op2.hash.data, op.hash.data, 32) == 0)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+        stream_free(&s);
+    }
+
+    printf("tx_in serialize/deserialize... ");
+    {
+        struct tx_in in;
+        tx_in_init(&in);
+        memset(in.prevout.hash.data, 0xCC, 32);
+        in.prevout.n = 7;
+        in.sequence = 0xFFFFFFFE;
+        in.script_sig.data[0] = 0x01;
+        in.script_sig.data[1] = 0x02;
+        in.script_sig.size = 2;
+        struct byte_stream s;
+        stream_init(&s, 128);
+        tx_in_serialize(&in, &s);
+        s.read_pos = 0;
+        struct tx_in in2;
+        tx_in_init(&in2);
+        tx_in_deserialize(&in2, &s);
+        if (in2.prevout.n == 7 && in2.sequence == 0xFFFFFFFE &&
+            in2.script_sig.size == 2 &&
+            in2.script_sig.data[0] == 0x01 && in2.script_sig.data[1] == 0x02)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+        stream_free(&s);
+    }
+
+    printf("tx_out serialize/deserialize... ");
+    {
+        struct tx_out out;
+        out.value = 100000000;
+        out.script_pub_key.size = 3;
+        out.script_pub_key.data[0] = OP_DUP;
+        out.script_pub_key.data[1] = OP_HASH160;
+        out.script_pub_key.data[2] = OP_CHECKSIG;
+        struct byte_stream s;
+        stream_init(&s, 128);
+        tx_out_serialize(&out, &s);
+        s.read_pos = 0;
+        struct tx_out out2;
+        tx_out_set_null(&out2);
+        tx_out_deserialize(&out2, &s);
+        if (out2.value == 100000000 && out2.script_pub_key.size == 3 &&
+            out2.script_pub_key.data[0] == OP_DUP)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+        stream_free(&s);
+    }
+
+    printf("transaction_compute_hash... ");
+    {
+        struct transaction tx;
+        transaction_init(&tx);
+        transaction_alloc(&tx, 1, 1);
+        tx.version = 1;
+        tx.vout[0].value = 50 * COIN;
+        transaction_compute_hash(&tx);
+        if (!uint256_is_null(&tx.hash))
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+        transaction_free(&tx);
+    }
+
     printf("ecc_init_sanity_check... ");
     {
         if (ecc_init_sanity_check())
