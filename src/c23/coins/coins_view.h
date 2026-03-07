@@ -123,4 +123,16 @@ bool coins_view_cache_flush(struct coins_view_cache *c);
 const struct tx_out *coins_view_cache_get_output_for(
     struct coins_view_cache *c, const struct tx_in *in);
 
+/* Check that all transparent inputs of tx are available in the view */
+bool coins_view_cache_have_inputs(struct coins_view_cache *c,
+                                   const struct transaction *tx);
+
+/* Sum the values of all transparent inputs of tx */
+int64_t coins_view_cache_get_value_in(struct coins_view_cache *c,
+                                       const struct transaction *tx);
+
+/* Check that JoinSplit anchors exist (shielded requirements) */
+bool coins_view_cache_have_joinsplit_requirements(
+    struct coins_view_cache *c, const struct transaction *tx);
+
 #endif

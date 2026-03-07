@@ -50,7 +50,7 @@ VALIDATION_SRCS = \
 	validation/check_block.c \
 	validation/validationinterface.c validation/txmempool.c \
 	validation/chainstate.c validation/checkqueue.c \
-	validation/update_coins.c
+	validation/update_coins.c validation/connect_block.c
 
 SUPPORT_SRCS = \
 	support/cleanse.c support/pagelocker.c

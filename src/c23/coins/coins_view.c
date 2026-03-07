@@ -160,9 +160,68 @@ const struct tx_out *coins_view_cache_get_output_for(
 {
     struct coins_cache_entry *entry =
         coins_map_find(&c->cache_coins, &in->prevout.hash);
-    if (!entry)
-        return NULL;
+    if (!entry) {
+        /* Try fetching from backing store */
+        struct coins coins;
+        coins_init(&coins);
+        if (!coins_view_get_coins(&c->base, &in->prevout.hash, &coins)) {
+            coins_free(&coins);
+            return NULL;
+        }
+        struct coins_cache_entry *new_entry =
+            coins_map_insert(&c->cache_coins, &in->prevout.hash);
+        new_entry->coins = coins;
+        new_entry->flags = 0;
+        entry = new_entry;
+    }
     if (in->prevout.n >= entry->coins.num_vout)
         return NULL;
+    if (tx_out_is_null(&entry->coins.vout[in->prevout.n]))
+        return NULL;
     return &entry->coins.vout[in->prevout.n];
+}
+
+bool coins_view_cache_have_inputs(struct coins_view_cache *c,
+                                   const struct transaction *tx)
+{
+    if (transaction_is_coinbase(tx))
+        return true;
+    for (size_t i = 0; i < tx->num_vin; i++) {
+        const struct tx_out *out = coins_view_cache_get_output_for(c, &tx->vin[i]);
+        if (!out)
+            return false;
+    }
+    return true;
+}
+
+int64_t coins_view_cache_get_value_in(struct coins_view_cache *c,
+                                       const struct transaction *tx)
+{
+    if (transaction_is_coinbase(tx))
+        return 0;
+    int64_t value = 0;
+    for (size_t i = 0; i < tx->num_vin; i++) {
+        const struct tx_out *out = coins_view_cache_get_output_for(c, &tx->vin[i]);
+        if (out)
+            value += out->value;
+    }
+    /* Add Sapling value balance (positive = inputs to transparent pool) */
+    if (tx->value_balance >= 0)
+        value += tx->value_balance;
+    /* Add JoinSplit vpub_new (moves from shielded to transparent) */
+    for (size_t i = 0; i < tx->num_joinsplit; i++)
+        value += tx->v_joinsplit[i].vpub_new;
+    return value;
+}
+
+bool coins_view_cache_have_joinsplit_requirements(
+    struct coins_view_cache *c, const struct transaction *tx)
+{
+    /* For now, JoinSplit anchor validation requires the incremental merkle
+     * tree infrastructure in the coins view. This is a placeholder that
+     * returns true — full anchor checking will be implemented when the
+     * merkle tree is integrated into the coins view. */
+    (void)c;
+    (void)tx;
+    return true;
 }
