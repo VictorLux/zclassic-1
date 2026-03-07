@@ -48,6 +48,7 @@
 #include "primitives/block_c.h"
 #include "script/sigencoding_c.h"
 #include "support/pagelocker_c.h"
+#include "script/interpreter_c.h"
 
 static int check_hex(const unsigned char *data, size_t len, const char *expected)
 {
@@ -1552,6 +1553,113 @@ int main(void)
             !check_pubkey_encoding(bad, 10, SCRIPT_VERIFY_STRICTENC, &err))
             printf("OK\n");
         else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("eval_script OP_TRUE... ");
+    {
+        struct script s;
+        script_init(&s);
+        script_push_op(&s, OP_TRUE);
+        struct script_stack stk;
+        stack_init(&stk);
+        ScriptError err;
+        bool ok = eval_script(&stk, &s, 0, NULL, 0, &err);
+        if (ok && stk.count == 1 && cast_to_bool(stack_top(&stk, -1)))
+            printf("OK\n");
+        else { printf("FAIL (ok=%d, count=%zu)\n", ok, stk.count); failures++; }
+    }
+
+    printf("eval_script OP_ADD... ");
+    {
+        struct script s;
+        script_init(&s);
+        script_push_op(&s, OP_2);
+        script_push_op(&s, OP_3);
+        script_push_op(&s, OP_ADD);
+        struct script_stack stk;
+        stack_init(&stk);
+        ScriptError err;
+        bool ok = eval_script(&stk, &s, 0, NULL, 0, &err);
+        if (ok && stk.count == 1) {
+            struct script_num sn;
+            script_num_from_bytes(&sn, stack_top(&stk, -1)->data,
+                                  stack_top(&stk, -1)->size, false, 4);
+            if (sn.value == 5)
+                printf("OK\n");
+            else { printf("FAIL (value=%" PRId64 ")\n", sn.value); failures++; }
+        } else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("eval_script OP_EQUAL... ");
+    {
+        struct script s;
+        script_init(&s);
+        script_push_op(&s, OP_5);
+        script_push_op(&s, OP_5);
+        script_push_op(&s, OP_EQUAL);
+        struct script_stack stk;
+        stack_init(&stk);
+        ScriptError err;
+        bool ok = eval_script(&stk, &s, 0, NULL, 0, &err);
+        if (ok && stk.count == 1 && cast_to_bool(stack_top(&stk, -1)))
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("eval_script OP_DUP OP_HASH160... ");
+    {
+        struct script s;
+        script_init(&s);
+        unsigned char data[] = {0x01, 0x02, 0x03};
+        script_push_data(&s, data, 3);
+        script_push_op(&s, OP_DUP);
+        script_push_op(&s, OP_HASH160);
+        struct script_stack stk;
+        stack_init(&stk);
+        ScriptError err;
+        bool ok = eval_script(&stk, &s, 0, NULL, 0, &err);
+        if (ok && stk.count == 2 && stack_top(&stk, -1)->size == 20)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("verify_script P2PKH (no checker)... ");
+    {
+        struct key_id kid;
+        memset(&kid, 0xAB, sizeof(kid));
+        struct script spk;
+        script_for_p2pkh(&spk, &kid);
+        struct script ss;
+        script_init(&ss);
+        ScriptError err;
+        bool ok = verify_script(&ss, &spk, 0, NULL, 0, &err);
+        if (!ok)
+            printf("OK (correctly fails without sig)\n");
+        else { printf("FAIL (should have failed)\n"); failures++; }
+    }
+
+    printf("eval_script OP_IF/OP_ELSE/OP_ENDIF... ");
+    {
+        struct script s;
+        script_init(&s);
+        script_push_op(&s, OP_1);
+        script_push_op(&s, OP_IF);
+        script_push_op(&s, OP_2);
+        script_push_op(&s, OP_ELSE);
+        script_push_op(&s, OP_3);
+        script_push_op(&s, OP_ENDIF);
+        struct script_stack stk;
+        stack_init(&stk);
+        ScriptError err;
+        bool ok = eval_script(&stk, &s, 0, NULL, 0, &err);
+        if (ok && stk.count == 1) {
+            struct script_num sn;
+            script_num_from_bytes(&sn, stack_top(&stk, -1)->data,
+                                  stack_top(&stk, -1)->size, false, 4);
+            if (sn.value == 2)
+                printf("OK\n");
+            else { printf("FAIL (value=%" PRId64 ")\n", sn.value); failures++; }
+        } else { printf("FAIL\n"); failures++; }
     }
 
     printf("pagelocker lock/unlock... ");
