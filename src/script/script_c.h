@@ -263,5 +263,16 @@ static inline int script_num_get_int(const struct script_num *sn)
 
 const char *script_get_op_name(enum opcodetype opcode);
 
+uint32_t script_get_sig_op_count(const struct script *s, uint32_t flags,
+                                  bool accurate);
+
+static inline bool script_is_pay_to_script_hash(const struct script *s)
+{
+    return s->size == 23 &&
+           s->data[0] == OP_HASH160 &&
+           s->data[1] == 0x14 &&
+           s->data[22] == OP_EQUAL;
+}
+
 #endif
 

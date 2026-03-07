@@ -84,3 +84,42 @@ const char *script_get_op_name(enum opcodetype opcode)
     default: return "OP_UNKNOWN";
     }
 }
+
+uint32_t script_get_sig_op_count(const struct script *s, uint32_t flags,
+                                  bool accurate)
+{
+    uint32_t n = 0;
+    size_t pc = 0;
+    enum opcodetype last_opcode = OP_INVALIDOPCODE;
+
+    while (pc < s->size) {
+        enum opcodetype opcode;
+        unsigned char data[MAX_SCRIPT_ELEMENT_SIZE];
+        size_t data_len;
+        if (!script_get_op(s, &pc, &opcode, data, &data_len))
+            break;
+
+        switch (opcode) {
+        case OP_CHECKSIG:
+        case OP_CHECKSIGVERIFY:
+            n++;
+            break;
+        case OP_CHECKDATASIG:
+        case OP_CHECKDATASIGVERIFY:
+            if (flags & (1U << 11)) /* SCRIPT_VERIFY_CHECKDATASIG_SIGOPS */
+                n++;
+            break;
+        case OP_CHECKMULTISIG:
+        case OP_CHECKMULTISIGVERIFY:
+            if (accurate && last_opcode >= OP_1 && last_opcode <= OP_16)
+                n += (uint32_t)(last_opcode - (OP_1 - 1));
+            else
+                n += 20;
+            break;
+        default:
+            break;
+        }
+        last_opcode = opcode;
+    }
+    return n;
+}

@@ -57,6 +57,7 @@
 #include "sighash_c.h"
 #include "check_transaction_c.h"
 #include "tx_verifier_c.h"
+#include "sigops_c.h"
 
 static int check_hex(const unsigned char *data, size_t len, const char *expected)
 {
@@ -2160,6 +2161,65 @@ int main(void)
             printf("OK\n");
         else { printf("FAIL\n"); failures++; }
         transaction_free(&tx);
+    }
+
+    printf("script_get_sig_op_count... ");
+    {
+        struct script s;
+        s.data[0] = OP_CHECKSIG;
+        s.data[1] = OP_CHECKSIG;
+        s.data[2] = OP_CHECKMULTISIG;
+        s.size = 3;
+        uint32_t n = script_get_sig_op_count(&s, 0, false);
+        /* 2 CHECKSIG + 20 CHECKMULTISIG (inaccurate) = 22 */
+        if (n == 22)
+            printf("OK\n");
+        else { printf("FAIL (%u)\n", n); failures++; }
+    }
+
+    printf("script_get_sig_op_count accurate... ");
+    {
+        struct script s;
+        s.data[0] = OP_2;
+        s.data[1] = OP_CHECKMULTISIG;
+        s.size = 2;
+        uint32_t n = script_get_sig_op_count(&s, 0, true);
+        /* OP_2 then CHECKMULTISIG → 2 keys */
+        if (n == 2)
+            printf("OK\n");
+        else { printf("FAIL (%u)\n", n); failures++; }
+    }
+
+    printf("get_legacy_sig_op_count... ");
+    {
+        struct transaction tx;
+        transaction_init(&tx);
+        transaction_alloc(&tx, 1, 1);
+        tx.version = 1;
+        memset(tx.vin[0].prevout.hash.data, 0x11, 32);
+        tx.vin[0].prevout.n = 0;
+        tx.vin[0].script_sig.size = 0;
+        tx.vout[0].value = COIN;
+        tx.vout[0].script_pub_key.data[0] = OP_CHECKSIG;
+        tx.vout[0].script_pub_key.size = 1;
+        uint64_t ops = get_legacy_sig_op_count(&tx, 0);
+        if (ops == 1)
+            printf("OK\n");
+        else { printf("FAIL (%" PRIu64 ")\n", ops); failures++; }
+        transaction_free(&tx);
+    }
+
+    printf("script_is_pay_to_script_hash... ");
+    {
+        struct script s;
+        s.data[0] = OP_HASH160;
+        s.data[1] = 0x14;
+        memset(s.data + 2, 0xAA, 20);
+        s.data[22] = OP_EQUAL;
+        s.size = 23;
+        if (script_is_pay_to_script_hash(&s))
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
     }
 
     printf("ecc_init_sanity_check... ");

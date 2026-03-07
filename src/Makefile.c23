@@ -53,7 +53,8 @@ CORE_SRCS = \
 	subsidy_c.c \
 	sighash_c.c \
 	check_transaction_c.c \
-	tx_verifier_c.c
+	tx_verifier_c.c \
+	sigops_c.c
 
 ALL_SRCS = $(CRYPTO_SRCS) $(CORE_SRCS)
 ALL_OBJS = $(ALL_SRCS:.c=.o)
