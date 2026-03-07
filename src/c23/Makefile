@@ -79,7 +79,8 @@ POLICY_SRCS = \
 	policy/fees.c
 
 ZCASH_SRCS = \
-	zcash/jubjub.c zcash/prf.c zcash/incremental_merkle_tree.c
+	zcash/jubjub.c zcash/prf.c zcash/incremental_merkle_tree.c \
+	zcash/address.c zcash/note.c
 
 ALL_SRCS = $(CRYPTO_SRCS) $(CORE_SRCS) $(ENCODING_SRCS) $(SCRIPT_SRCS) \
 	$(CONSENSUS_SRCS) $(PRIMITIVES_SRCS) $(NET_SRCS) $(CHAIN_SRCS) \

@@ -95,6 +95,8 @@
 #include "zcash/incremental_merkle_tree.h"
 #include "chain/equihash.h"
 #include "validation/check_block.h"
+#include "zcash/address.h"
+#include "zcash/note.h"
 
 static int test_tip_count = 0;
 static int test_tip_height = 0;
@@ -5381,6 +5383,159 @@ int main(void)
 
         transaction_free(&src);
         transaction_free(&dst);
+    }
+
+    /* --- sprout_note_cm --- */
+    printf("sprout_note_cm... ");
+    {
+        struct sprout_note note;
+        memset(note.a_pk.data, 0x01, 32);
+        note.value = 100000;
+        memset(note.rho.data, 0x02, 32);
+        memset(note.r.data, 0x03, 32);
+
+        struct uint256 cm;
+        sprout_note_cm(&note, &cm);
+
+        bool nonzero = false;
+        for (int i = 0; i < 32; i++)
+            if (cm.data[i] != 0) nonzero = true;
+
+        if (nonzero) printf("OK\n");
+        else { printf("FAIL (zero cm)\n"); failures++; }
+    }
+
+    /* --- sprout_note_plaintext roundtrip --- */
+    printf("sprout_note_plaintext roundtrip... ");
+    {
+        struct sprout_note_plaintext np;
+        np.value = 42000;
+        memset(np.rho.data, 0xaa, 32);
+        memset(np.r.data, 0xbb, 32);
+        memset(np.memo, 0xf6, ZC_MEMO_SIZE);
+
+        struct byte_stream bs;
+        stream_init(&bs, 1024);
+        bool ok = sprout_note_plaintext_serialize(&np, &bs);
+        ok = ok && (bs.size == 1 + 8 + 32 + 32 + ZC_MEMO_SIZE);
+
+        struct sprout_note_plaintext np2;
+        struct byte_stream bs2;
+        stream_init_from_data(&bs2, bs.data, bs.size);
+        ok = ok && sprout_note_plaintext_deserialize(&np2, &bs2);
+        ok = ok && (np2.value == 42000);
+        ok = ok && (np2.rho.data[0] == 0xaa);
+        ok = ok && (np2.r.data[0] == 0xbb);
+        ok = ok && (np2.memo[0] == 0xf6);
+
+        if (ok) printf("OK (size=%zu)\n", bs.size);
+        else { printf("FAIL\n"); failures++; }
+
+        stream_free(&bs);
+        stream_free(&bs2);
+    }
+
+    /* --- sapling_note_plaintext roundtrip --- */
+    printf("sapling_note_plaintext roundtrip... ");
+    {
+        struct sapling_note_plaintext np;
+        memset(np.d, 0x12, ZC_DIVERSIFIER_SIZE);
+        np.value = 99000;
+        memset(np.rcm.data, 0xcc, 32);
+        memset(np.memo, 0xf6, ZC_MEMO_SIZE);
+
+        struct byte_stream bs;
+        stream_init(&bs, 1024);
+        bool ok = sapling_note_plaintext_serialize(&np, &bs);
+        ok = ok && (bs.size == 1 + ZC_DIVERSIFIER_SIZE + 8 + 32 + ZC_MEMO_SIZE);
+
+        struct sapling_note_plaintext np2;
+        struct byte_stream bs2;
+        stream_init_from_data(&bs2, bs.data, bs.size);
+        ok = ok && sapling_note_plaintext_deserialize(&np2, &bs2);
+        ok = ok && (np2.value == 99000);
+        ok = ok && (np2.d[0] == 0x12);
+        ok = ok && (np2.rcm.data[0] == 0xcc);
+
+        if (ok) printf("OK (size=%zu)\n", bs.size);
+        else { printf("FAIL\n"); failures++; }
+
+        stream_free(&bs);
+        stream_free(&bs2);
+    }
+
+    /* --- sprout address serialization roundtrip --- */
+    printf("sprout_payment_address roundtrip... ");
+    {
+        struct sprout_payment_address addr;
+        memset(addr.a_pk.data, 0x11, 32);
+        memset(addr.pk_enc.data, 0x22, 32);
+
+        struct byte_stream bs;
+        stream_init(&bs, 128);
+        bool ok = sprout_payment_address_serialize(&addr, &bs);
+        ok = ok && (bs.size == 64);
+
+        struct sprout_payment_address addr2;
+        struct byte_stream bs2;
+        stream_init_from_data(&bs2, bs.data, bs.size);
+        ok = ok && sprout_payment_address_deserialize(&addr2, &bs2);
+        ok = ok && (addr2.a_pk.data[0] == 0x11);
+        ok = ok && (addr2.pk_enc.data[0] == 0x22);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+
+        stream_free(&bs);
+        stream_free(&bs2);
+    }
+
+    /* --- sapling address serialization roundtrip --- */
+    printf("sapling_payment_address roundtrip... ");
+    {
+        struct sapling_payment_address addr;
+        memset(addr.d, 0x33, ZC_DIVERSIFIER_SIZE);
+        memset(addr.pk_d.data, 0x44, 32);
+
+        struct byte_stream bs;
+        stream_init(&bs, 128);
+        bool ok = sapling_payment_address_serialize(&addr, &bs);
+        ok = ok && (bs.size == ZC_DIVERSIFIER_SIZE + 32);
+
+        struct sapling_payment_address addr2;
+        struct byte_stream bs2;
+        stream_init_from_data(&bs2, bs.data, bs.size);
+        ok = ok && sapling_payment_address_deserialize(&addr2, &bs2);
+        ok = ok && (addr2.d[0] == 0x33);
+        ok = ok && (addr2.pk_d.data[0] == 0x44);
+
+        if (ok) printf("OK (size=%zu)\n", bs.size);
+        else { printf("FAIL\n"); failures++; }
+
+        stream_free(&bs);
+        stream_free(&bs2);
+    }
+
+    /* --- sapling_spending_key_to_expanded --- */
+    printf("sapling_spending_key_to_expanded... ");
+    {
+        struct sapling_spending_key sk;
+        memset(sk.sk.data, 0x01, 32);
+
+        struct sapling_expanded_spending_key esk;
+        sapling_spending_key_to_expanded(&sk, &esk);
+
+        bool ok = true;
+        bool ask_nonzero = false, nsk_nonzero = false, ovk_nonzero = false;
+        for (int i = 0; i < 32; i++) {
+            if (esk.ask.data[i] != 0) ask_nonzero = true;
+            if (esk.nsk.data[i] != 0) nsk_nonzero = true;
+            if (esk.ovk.data[i] != 0) ovk_nonzero = true;
+        }
+        ok = ask_nonzero && nsk_nonzero && ovk_nonzero;
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
     }
 
     printf("\n%s (%d failures)\n", failures ? "SOME TESTS FAILED" : "ALL TESTS PASSED", failures);
