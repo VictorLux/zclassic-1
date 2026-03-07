@@ -100,6 +100,7 @@
 #include "crypto/chacha20poly1305.h"
 #include "crypto/curve25519.h"
 #include "zcash/note_encryption.h"
+#include "zcash/fr.h"
 
 static int test_tip_count = 0;
 static int test_tip_height = 0;
@@ -6108,6 +6109,203 @@ int main(void)
 
         if (ok) printf("OK (%zu bytes)\n", (size_t)ZC_SAPLING_OUTCIPHERTEXT_SIZE);
         else { printf("FAIL\n"); failures++; }
+    }
+
+    /* --- Fr field basic arithmetic --- */
+    printf("fr_add/sub/mul identity... ");
+    {
+        struct fr a, b, c;
+        fr_one(&a);
+        fr_one(&b);
+        fr_add(&c, &a, &b);
+
+        /* 1 + 1 should give 2 */
+        uint8_t c_bytes[32];
+        fr_to_bytes(c_bytes, &c);
+        bool ok = (c_bytes[0] == 2);
+        for (int i = 1; i < 32; i++) ok = ok && (c_bytes[i] == 0);
+
+        /* 2 - 1 should give 1 */
+        struct fr d;
+        fr_sub(&d, &c, &a);
+        uint8_t d_bytes[32];
+        fr_to_bytes(d_bytes, &d);
+        ok = ok && (d_bytes[0] == 1);
+        for (int i = 1; i < 32; i++) ok = ok && (d_bytes[i] == 0);
+
+        /* 1 * 1 = 1 */
+        fr_mul(&d, &a, &b);
+        fr_to_bytes(d_bytes, &d);
+        ok = ok && (d_bytes[0] == 1);
+        for (int i = 1; i < 32; i++) ok = ok && (d_bytes[i] == 0);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* --- Fr from_bytes/to_bytes roundtrip --- */
+    printf("fr_from_bytes/to_bytes roundtrip... ");
+    {
+        uint8_t input[32] = {
+            0x42, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        struct fr a;
+        fr_from_bytes(&a, input);
+        uint8_t output[32];
+        fr_to_bytes(output, &a);
+        bool ok = (memcmp(input, output, 32) == 0);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* --- Fr multiplication --- */
+    printf("fr_mul 7*7=49... ");
+    {
+        uint8_t seven[32] = {7};
+        struct fr a;
+        fr_from_bytes(&a, seven);
+        struct fr b;
+        fr_mul(&b, &a, &a);
+        uint8_t result[32];
+        fr_to_bytes(result, &b);
+        bool ok = (result[0] == 49);
+        for (int i = 1; i < 32; i++) ok = ok && (result[i] == 0);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* --- Fr inversion --- */
+    printf("fr_inv (a * a^-1 = 1)... ");
+    {
+        uint8_t val[32] = {42};
+        struct fr a, a_inv, prod;
+        fr_from_bytes(&a, val);
+        fr_inv(&a_inv, &a);
+        fr_mul(&prod, &a, &a_inv);
+        uint8_t result[32];
+        fr_to_bytes(result, &prod);
+        bool ok = (result[0] == 1);
+        for (int i = 1; i < 32; i++) ok = ok && (result[i] == 0);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* --- Jubjub point identity --- */
+    printf("jub_identity is identity... ");
+    {
+        struct jub_point id;
+        jub_identity(&id);
+        bool ok = jub_is_identity(&id);
+
+        /* Adding identity to identity gives identity */
+        struct jub_point sum;
+        jub_add(&sum, &id, &id);
+        ok = ok && jub_is_identity(&sum);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* --- Jubjub point doubling identity --- */
+    printf("jub_double identity... ");
+    {
+        struct jub_point id, doubled;
+        jub_identity(&id);
+        jub_double(&doubled, &id);
+        bool ok = jub_is_identity(&doubled);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* --- Jubjub point from_bytes/to_bytes roundtrip --- */
+    printf("jub_from_bytes/to_bytes roundtrip... ");
+    {
+        /* Point (x, 3) on Jubjub curve, x even parity */
+        uint8_t compressed[32] = {
+            0x03,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+            0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+            0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+            0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
+        };
+        struct jub_point pt;
+        bool ok = jub_from_bytes(&pt, compressed);
+
+        /* Verify x-coordinate */
+        uint8_t x_expected[32] = {
+            0x6a,0xe7,0x7f,0x11,0x5f,0x68,0x35,0x2a,
+            0x05,0x38,0xff,0x9c,0x2c,0x9a,0x1c,0x47,
+            0x4a,0x61,0x36,0x36,0xc2,0x29,0x28,0x1c,
+            0x17,0xe5,0x05,0xda,0x4f,0x41,0x18,0x02
+        };
+        struct fr x_val;
+        jub_get_x(&x_val, &pt);
+        uint8_t x_bytes[32];
+        fr_to_bytes(x_bytes, &x_val);
+        ok = ok && (memcmp(x_bytes, x_expected, 32) == 0);
+
+        /* Roundtrip */
+        uint8_t recompressed[32];
+        jub_to_bytes(recompressed, &pt);
+        ok = ok && (memcmp(compressed, recompressed, 32) == 0);
+
+        if (ok) printf("OK\n");
+        else {
+            printf("FAIL\n");
+            if (!ok) {
+                printf("  x_bytes: ");
+                for (int i = 0; i < 32; i++) printf("%02x", x_bytes[i]);
+                printf("\n  expected: ");
+                for (int i = 0; i < 32; i++) printf("%02x", x_expected[i]);
+                printf("\n");
+            }
+            failures++;
+        }
+    }
+
+    /* --- Jubjub point doubling --- */
+    printf("jub_double known point... ");
+    {
+        uint8_t compressed[32] = {
+            0x03,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+            0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+            0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+            0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
+        };
+        struct jub_point pt;
+        jub_from_bytes(&pt, compressed);
+
+        struct jub_point doubled;
+        jub_double(&doubled, &pt);
+
+        uint8_t result[32];
+        jub_to_bytes(result, &doubled);
+
+        uint8_t expected[32] = {
+            0xc1,0x77,0x73,0x52,0xcd,0x4f,0xf3,0xe1,
+            0xce,0xf4,0x86,0x2f,0xbe,0x4b,0x45,0x40,
+            0x11,0xc5,0x27,0x10,0xe0,0xe3,0xa7,0x1c,
+            0x79,0xf9,0xc0,0x7f,0x49,0xd7,0x91,0x56
+        };
+
+        bool ok = (memcmp(result, expected, 32) == 0);
+
+        if (ok) printf("OK\n");
+        else {
+            printf("FAIL\n");
+            printf("  got: ");
+            for (int i = 0; i < 32; i++) printf("%02x", result[i]);
+            printf("\n  exp: ");
+            for (int i = 0; i < 32; i++) printf("%02x", expected[i]);
+            printf("\n");
+            failures++;
+        }
     }
 
     printf("\n%s (%d failures)\n", failures ? "SOME TESTS FAILED" : "ALL TESTS PASSED", failures);
