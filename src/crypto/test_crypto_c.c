@@ -31,6 +31,7 @@
 #include "timedata.h"
 #include "netaddr.h"
 #include "protocol_c.h"
+#include "pow_c.h"
 
 static int check_hex(const unsigned char *data, size_t len, const char *expected)
 {
@@ -659,6 +660,43 @@ int main(void)
         if (inv_item_is_known_type(&inv) &&
             strcmp(inv_item_get_command(&inv), "tx") == 0)
             printf("OK (%s)\n", inv_item_get_command(&inv));
+        else {
+            printf("FAIL\n");
+            failures++;
+        }
+    }
+
+    printf("CheckProofOfWork... ");
+    {
+        struct consensus_params cp;
+        memset(&cp, 0, sizeof(cp));
+        /* Set powLimit to all 0xff (easiest possible) */
+        memset(cp.powLimit.data, 0xff, 32);
+
+        /* A hash of all zeros should always pass the easiest target */
+        struct uint256 hash;
+        uint256_set_null(&hash);
+        uint32_t nBits = 0x2100ffff; /* very high target */
+        struct arith_uint256 target;
+        arith_uint256_set_compact(&target, nBits, NULL, NULL);
+        uint32_t easy_bits = arith_uint256_get_compact(&target, false);
+
+        if (CheckProofOfWork(hash, easy_bits, &cp))
+            printf("OK\n");
+        else {
+            printf("FAIL\n");
+            failures++;
+        }
+    }
+
+    printf("GetBlockProof... ");
+    {
+        struct block_index bi;
+        block_index_init(&bi);
+        bi.nBits = 0x1d00ffff; /* standard Bitcoin difficulty 1 */
+        struct arith_uint256 proof = GetBlockProof(&bi);
+        if (!arith_uint256_is_zero(&proof))
+            printf("OK\n");
         else {
             printf("FAIL\n");
             failures++;
