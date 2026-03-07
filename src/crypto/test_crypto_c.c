@@ -42,6 +42,8 @@
 #include "primitives/transaction_c.h"
 #include "bloom_c.h"
 #include "merkle_c.h"
+#include "script/sighashtype_c.h"
+#include "coins_c.h"
 
 static int check_hex(const unsigned char *data, size_t len, const char *expected)
 {
@@ -1186,6 +1188,65 @@ int main(void)
             } else { printf("FAIL (extract)\n"); failures++; }
         } else { printf("FAIL (build)\n"); failures++; }
         merkle_tree_free(&t);
+    }
+
+    printf("sighash_type... ");
+    {
+        struct sighash_type s = sighash_type_default();
+        if (s.raw == SIGHASH_ALL &&
+            sighash_get_base_type(s) == BASE_SIGHASH_ALL &&
+            sighash_is_defined(s) &&
+            !sighash_has_anyone_can_pay(s)) {
+            struct sighash_type s2 = sighash_with_anyone_can_pay(s, true);
+            if (sighash_has_anyone_can_pay(s2) && s2.raw == (SIGHASH_ALL | SIGHASH_ANYONECANPAY))
+                printf("OK\n");
+            else { printf("FAIL\n"); failures++; }
+        } else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("coins init/alloc/spend... ");
+    {
+        struct coins c;
+        coins_init(&c);
+        coins_alloc(&c, 3);
+        c.vout[0].value = 50 * COIN;
+        c.vout[1].value = 25 * COIN;
+        c.vout[2].value = 10 * COIN;
+        c.is_coinbase = true;
+        c.height = 100;
+        if (coins_is_available(&c, 0) && coins_is_available(&c, 1) &&
+            !coins_is_pruned(&c)) {
+            coins_spend(&c, 1);
+            if (!coins_is_available(&c, 1) && coins_is_available(&c, 0)) {
+                coins_spend(&c, 0);
+                coins_spend(&c, 2);
+                if (coins_is_pruned(&c))
+                    printf("OK\n");
+                else { printf("FAIL (not pruned)\n"); failures++; }
+            } else { printf("FAIL (spend)\n"); failures++; }
+        } else { printf("FAIL (init)\n"); failures++; }
+        coins_free(&c);
+    }
+
+    printf("coins_from_transaction... ");
+    {
+        struct transaction tx;
+        transaction_init(&tx);
+        transaction_alloc(&tx, 1, 2);
+        tx.vout[0].value = 100 * COIN;
+        tx.vout[1].value = 50 * COIN;
+        tx.version = 1;
+
+        struct coins c;
+        coins_init(&c);
+        coins_from_transaction(&c, &tx, 500);
+        if (c.height == 500 && c.version == 1 &&
+            c.is_coinbase && c.num_vout == 2 &&
+            c.vout[0].value == 100 * COIN)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+        coins_free(&c);
+        transaction_free(&tx);
     }
 
     printf("ecc_init_sanity_check... ");
