@@ -54,7 +54,7 @@ BLOOM_SRCS = \
 	bloom/bloom.c bloom/merkle.c bloom/merkleblock.c
 
 COINS_SRCS = \
-	coins/coins.c coins/compressor.c
+	coins/coins.c coins/compressor.c coins/coins_view.c
 
 UTIL_SRCS = \
 	util/util.c util/scheduler.c util/sync.c util/timedata.c \

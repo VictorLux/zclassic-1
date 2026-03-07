@@ -84,6 +84,7 @@
 #include "validation/main_state.h"
 #include "validation/main_logic.h"
 #include "validation/checkqueue.h"
+#include "coins/coins_view.h"
 
 static int test_tip_count = 0;
 static int test_tip_height = 0;
@@ -4274,6 +4275,37 @@ int main(void)
             failures++;
         }
         check_queue_free(&cq);
+    }
+
+    printf("coins_view_cache... ");
+    {
+        struct coins_view null_view = { NULL, NULL };
+        struct coins_view_cache cache;
+        coins_view_cache_init(&cache, &null_view);
+
+        struct uint256 txid;
+        memset(txid.data, 0x42, 32);
+
+        struct coins_cache_entry *entry =
+            coins_view_cache_modify_new(&cache, &txid);
+        coins_alloc(&entry->coins, 2);
+        entry->coins.is_coinbase = false;
+        entry->coins.height = 100;
+        entry->coins.version = 1;
+        entry->coins.vout[0].value = 50 * COIN;
+        entry->coins.vout[1].value = 25 * COIN;
+
+        bool have = coins_view_cache_have_coins(&cache, &txid);
+        const struct tx_out *out = NULL;
+        struct tx_in tin;
+        tx_in_init(&tin);
+        tin.prevout.hash = txid;
+        tin.prevout.n = 0;
+        out = coins_view_cache_get_output_for(&cache, &tin);
+        if (have && out && out->value == 50 * COIN)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+        coins_view_cache_free(&cache);
     }
 
     printf("block serialize/deserialize roundtrip... ");
