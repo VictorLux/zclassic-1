@@ -67,6 +67,7 @@
 #include "script/zcashconsensus_c.h"
 #include "validation/validationinterface_c.h"
 #include "net/addrman_c.h"
+#include "net/net_c.h"
 
 static int test_tip_count = 0;
 static int test_tip_height = 0;
@@ -2887,6 +2888,165 @@ int main(void)
 
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("net_manager init/free... ");
+    {
+        struct net_manager nm;
+        net_manager_init(&nm);
+        memcpy(nm.message_start, "\xfa\x1a\xf9\xbf", 4);
+        nm.default_port = 8233;
+        bool ok = (nm.max_connections == DEFAULT_MAX_PEER_CONNECTIONS);
+        ok = ok && (nm.discover == true);
+        ok = ok && (nm.listen == true);
+        ok = ok && (nm.num_nodes == 0);
+        net_manager_free(&nm);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("net_message framing... ");
+    {
+        unsigned char msgstart[4] = {0xfa, 0x1a, 0xf9, 0xbf};
+        struct net_message msg;
+        net_message_init(&msg, msgstart);
+
+        struct msg_header hdr;
+        msg_header_init_full(&hdr, msgstart, "ping", 8);
+        unsigned char payload[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+
+        uint8_t wire[MSG_HEADER_SIZE + 8];
+        memcpy(wire, &hdr, MSG_HEADER_SIZE);
+        memcpy(wire + MSG_HEADER_SIZE, payload, 8);
+
+        int r1 = net_message_read_header(&msg, (const char *)wire, MSG_HEADER_SIZE);
+        bool ok = (r1 == MSG_HEADER_SIZE);
+        ok = ok && msg.in_data;
+        ok = ok && (msg.hdr.nMessageSize == 8);
+
+        int r2 = net_message_read_data(&msg, (const char *)payload, 8);
+        ok = ok && (r2 == 8);
+        ok = ok && net_message_complete(&msg);
+        ok = ok && (memcmp(msg.recv_data, payload, 8) == 0);
+
+        net_message_free(&msg);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("p2p_node create/free... ");
+    {
+        struct net_manager nm;
+        net_manager_init(&nm);
+        memcpy(nm.message_start, "\xfa\x1a\xf9\xbf", 4);
+
+        struct net_address addr;
+        net_address_init(&addr);
+        unsigned char ip4[4] = {50, 0, 0, 1};
+        net_addr_set_ipv4(&addr.svc.addr, ip4);
+        addr.svc.port = 8233;
+
+        struct p2p_node *node = p2p_node_create(&nm, ZCL_INVALID_SOCKET,
+                                                 &addr, "test-peer", false);
+        bool ok = (node != NULL);
+        ok = ok && (node->id == 0);
+        ok = ok && (node->inbound == false);
+        ok = ok && (node->disconnect == false);
+        ok = ok && (node->version == 0);
+        ok = ok && (strcmp(node->addr_name, "test-peer") == 0);
+
+        p2p_node_free(node);
+        net_manager_free(&nm);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("ban management... ");
+    {
+        struct net_manager nm;
+        net_manager_init(&nm);
+
+        struct net_addr addr;
+        net_addr_init(&addr);
+        unsigned char ip4[4] = {50, 0, 0, 1};
+        net_addr_set_ipv4(&addr, ip4);
+
+        bool ok = !is_banned(&nm, &addr);
+        ban_addr(&nm, &addr, 3600, false);
+        ok = ok && is_banned(&nm, &addr);
+        ok = ok && unban_addr(&nm, &addr);
+        ok = ok && !is_banned(&nm, &addr);
+
+        ban_addr(&nm, &addr, 3600, false);
+        clear_banned(&nm);
+        ok = ok && !is_banned(&nm, &addr);
+
+        net_manager_free(&nm);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("local address management... ");
+    {
+        struct net_manager nm;
+        net_manager_init(&nm);
+
+        struct net_service svc;
+        net_service_init(&svc);
+        unsigned char ip4[4] = {50, 0, 0, 1};
+        net_addr_set_ipv4(&svc.addr, ip4);
+        svc.port = 8233;
+
+        bool ok = !is_local(&nm, &svc);
+        ok = ok && add_local(&nm, &svc, LOCAL_BIND);
+        ok = ok && is_local(&nm, &svc);
+        ok = ok && remove_local(&nm, &svc);
+        ok = ok && !is_local(&nm, &svc);
+
+        net_manager_free(&nm);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("set_limited/is_reachable... ");
+    {
+        struct net_manager nm;
+        net_manager_init(&nm);
+
+        bool ok = is_reachable_net(&nm, NET_IPV4);
+        set_limited(&nm, NET_IPV4, true);
+        ok = ok && !is_reachable_net(&nm, NET_IPV4);
+        set_limited(&nm, NET_IPV4, false);
+        ok = ok && is_reachable_net(&nm, NET_IPV4);
+
+        net_manager_free(&nm);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("node_stats copy... ");
+    {
+        struct net_manager nm;
+        net_manager_init(&nm);
+        memcpy(nm.message_start, "\xfa\x1a\xf9\xbf", 4);
+
+        struct net_address addr;
+        net_address_init(&addr);
+        unsigned char ip4[4] = {50, 0, 0, 1};
+        net_addr_set_ipv4(&addr.svc.addr, ip4);
+        addr.svc.port = 8233;
+
+        struct p2p_node *node = p2p_node_create(&nm, ZCL_INVALID_SOCKET,
+                                                 &addr, "stats-test", true);
+        node->version = 170002;
+        snprintf(node->clean_sub_ver, sizeof(node->clean_sub_ver),
+                 "/ZClassic:1.0.0/");
+
+        struct node_stats stats;
+        p2p_node_copy_stats(node, &stats);
+
+        bool ok = (stats.nodeid == 0);
+        ok = ok && (stats.version == 170002);
+        ok = ok && (stats.inbound == true);
+        ok = ok && (strcmp(stats.clean_sub_ver, "/ZClassic:1.0.0/") == 0);
+
+        p2p_node_free(node);
+        net_manager_free(&nm);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
     printf("ecc_init_sanity_check... ");
