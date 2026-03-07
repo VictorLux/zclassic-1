@@ -32,6 +32,7 @@
 #include "netaddr.h"
 #include "protocol_c.h"
 #include "pow_c.h"
+#include "checkpoints_c.h"
 
 static int check_hex(const unsigned char *data, size_t len, const char *expected)
 {
@@ -699,6 +700,33 @@ int main(void)
             printf("OK\n");
         else {
             printf("FAIL\n");
+            failures++;
+        }
+    }
+
+    printf("checkpoints... ");
+    {
+        struct checkpoint_entry entries[] = {
+            {0, {{0}}},
+            {100000, {{0}}},
+        };
+        struct checkpoint_data cd = {
+            .entries = entries,
+            .nEntries = 2,
+            .nTimeLastCheckpoint = 1500000000,
+            .nTransactionsLastCheckpoint = 200000,
+            .fTransactionsPerDay = 1000.0,
+        };
+        int est = checkpoints_get_total_blocks_estimate(&cd);
+        struct block_index bi;
+        block_index_init(&bi);
+        bi.nChainTx = 100000;
+        bi.nTime = 1500000000;
+        double prog = checkpoints_guess_verification_progress(&cd, &bi, true);
+        if (est == 100000 && prog > 0.0 && prog < 1.0)
+            printf("OK (blocks=%d, progress=%.2f)\n", est, prog);
+        else {
+            printf("FAIL (blocks=%d, progress=%.2f)\n", est, prog);
             failures++;
         }
     }
