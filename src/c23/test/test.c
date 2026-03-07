@@ -105,6 +105,7 @@
 #include "zcash/pedersen_hash.h"
 #include "zcash/sapling.h"
 #include "zcash/jubjub.h"
+#include "zcash/bls12_381.h"
 #include "crypto/blake2b.h"
 
 static int test_tip_count = 0;
@@ -6758,6 +6759,103 @@ int main(void)
 
         if (ok && !bad_ok) printf("OK\n");
         else { printf("FAIL (valid=%d, tampered=%d)\n", ok, bad_ok); failures++; }
+    }
+
+    /* --- BLS12-381 Fp field --- */
+    printf("bls12_381 fp_add/sub identity... ");
+    {
+        struct fp a, b, c;
+        fp_one(&a);
+        fp_zero(&b);
+        fp_add(&c, &a, &b);
+        bool ok = fp_eq(&c, &a);
+        fp_sub(&c, &a, &a);
+        ok = ok && fp_is_zero(&c);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("bls12_381 fp_mul identity... ");
+    {
+        struct fp a, one, c;
+        fp_one(&one);
+        /* a = 7: load from big-endian bytes */
+        uint8_t seven_be[48] = {0};
+        seven_be[47] = 7;
+        fp_from_bytes(&a, seven_be);
+        fp_mul(&c, &a, &one);
+        bool ok = fp_eq(&c, &a);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("bls12_381 fp from/to bytes roundtrip... ");
+    {
+        uint8_t input[48] = {0};
+        input[47] = 42;
+        struct fp a;
+        fp_from_bytes(&a, input);
+        uint8_t output[48];
+        fp_to_bytes(output, &a);
+        bool ok = (memcmp(input, output, 48) == 0);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("bls12_381 fp_mul 7*7=49... ");
+    {
+        uint8_t seven_be[48] = {0};
+        seven_be[47] = 7;
+        struct fp a, b;
+        fp_from_bytes(&a, seven_be);
+        fp_mul(&b, &a, &a);
+        uint8_t result[48];
+        fp_to_bytes(result, &b);
+        bool ok = (result[47] == 49);
+        for (int i = 0; i < 47; i++) ok = ok && (result[i] == 0);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("bls12_381 fp_inv (a * a^-1 = 1)... ");
+    {
+        uint8_t val[48] = {0};
+        val[47] = 13;
+        struct fp a, ainv, product, one;
+        fp_from_bytes(&a, val);
+        fp_inv(&ainv, &a);
+        fp_mul(&product, &a, &ainv);
+        fp_one(&one);
+        bool ok = fp_eq(&product, &one);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("bls12_381 fp2_mul basic... ");
+    {
+        struct fp2 a, b, c;
+        fp2_one(&a);
+        fp2_one(&b);
+        fp2_mul(&c, &a, &b);
+        bool ok = fp2_eq(&c, &a); /* 1 * 1 = 1 */
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("bls12_381 fp2_inv roundtrip... ");
+    {
+        struct fp2 a, ainv, product, one;
+        fp2_one(&one);
+        /* a = (3 + 4u) */
+        uint8_t three[48] = {0}; three[47] = 3;
+        uint8_t four[48] = {0}; four[47] = 4;
+        fp_from_bytes(&a.c0, three);
+        fp_from_bytes(&a.c1, four);
+        fp2_inv(&ainv, &a);
+        fp2_mul(&product, &a, &ainv);
+        bool ok = fp2_eq(&product, &one);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
     }
 
     printf("\n%s (%d failures)\n", failures ? "SOME TESTS FAILED" : "ALL TESTS PASSED", failures);
