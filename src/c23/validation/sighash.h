@@ -26,6 +26,9 @@ struct precomputed_tx_data {
     struct uint256 hash_prevouts;
     struct uint256 hash_sequence;
     struct uint256 hash_outputs;
+    struct uint256 hash_joinsplits;
+    struct uint256 hash_shielded_spends;
+    struct uint256 hash_shielded_outputs;
 };
 
 void precompute_tx_data(const struct transaction *tx,

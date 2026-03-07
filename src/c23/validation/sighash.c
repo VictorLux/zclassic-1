@@ -16,6 +16,12 @@ static const unsigned char SEQUENCE_PERSONAL[16] =
     {'Z','c','a','s','h','S','e','q','u','e','n','c','H','a','s','h'};
 static const unsigned char OUTPUTS_PERSONAL[16] =
     {'Z','c','a','s','h','O','u','t','p','u','t','s','H','a','s','h'};
+static const unsigned char JOINSPLITS_PERSONAL[16] =
+    {'Z','c','a','s','h','J','S','p','l','i','t','s','H','a','s','h'};
+static const unsigned char SHIELDED_SPENDS_PERSONAL[16] =
+    {'Z','c','a','s','h','S','S','p','e','n','d','s','H','a','s','h'};
+static const unsigned char SHIELDED_OUTPUTS_PERSONAL[16] =
+    {'Z','c','a','s','h','S','O','u','t','p','u','t','H','a','s','h'};
 
 static void blake2b_hash_personal(const unsigned char *data, size_t len,
                                    const unsigned char personal[16],
@@ -57,12 +63,82 @@ static void get_outputs_hash(const struct transaction *tx, struct uint256 *out)
     stream_free(&s);
 }
 
+static void get_joinsplits_hash(const struct transaction *tx, struct uint256 *out)
+{
+    struct blake2b_ctx ctx;
+    blake2b_init_salt_personal(&ctx, 32, NULL, 0, NULL, JOINSPLITS_PERSONAL);
+    for (size_t i = 0; i < tx->num_joinsplit; i++) {
+        const struct js_description *js = &tx->v_joinsplit[i];
+        blake2b_update(&ctx, &js->vpub_old, 8);
+        blake2b_update(&ctx, &js->vpub_new, 8);
+        blake2b_update(&ctx, js->anchor.data, 32);
+        for (int j = 0; j < ZC_NUM_JS_INPUTS; j++)
+            blake2b_update(&ctx, js->nullifiers[j].data, 32);
+        for (int j = 0; j < ZC_NUM_JS_OUTPUTS; j++)
+            blake2b_update(&ctx, js->commitments[j].data, 32);
+        blake2b_update(&ctx, js->ephemeral_key.data, 32);
+        blake2b_update(&ctx, js->random_seed.data, 32);
+        for (int j = 0; j < ZC_NUM_JS_INPUTS; j++)
+            blake2b_update(&ctx, js->macs[j].data, 32);
+        size_t proof_size = js->use_groth ? GROTH_PROOF_SIZE : PHGR_PROOF_SIZE;
+        blake2b_update(&ctx, js->proof, proof_size);
+        for (int j = 0; j < ZC_NUM_JS_OUTPUTS; j++)
+            blake2b_update(&ctx, js->ciphertexts[j], ZC_SPROUT_CIPHERTEXT_SIZE);
+    }
+    blake2b_update(&ctx, tx->joinsplit_pubkey.data, 32);
+    blake2b_final(&ctx, out->data, 32);
+}
+
+static void get_shielded_spends_hash(const struct transaction *tx, struct uint256 *out)
+{
+    struct blake2b_ctx ctx;
+    blake2b_init_salt_personal(&ctx, 32, NULL, 0, NULL, SHIELDED_SPENDS_PERSONAL);
+    for (size_t i = 0; i < tx->num_shielded_spend; i++) {
+        const struct spend_description *sd = &tx->v_shielded_spend[i];
+        blake2b_update(&ctx, sd->cv.data, 32);
+        blake2b_update(&ctx, sd->anchor.data, 32);
+        blake2b_update(&ctx, sd->nullifier.data, 32);
+        blake2b_update(&ctx, sd->rk.data, 32);
+        blake2b_update(&ctx, sd->zkproof, GROTH_PROOF_SIZE);
+        /* Note: spendAuthSig is NOT included in sighash */
+    }
+    blake2b_final(&ctx, out->data, 32);
+}
+
+static void get_shielded_outputs_hash(const struct transaction *tx, struct uint256 *out)
+{
+    struct blake2b_ctx ctx;
+    blake2b_init_salt_personal(&ctx, 32, NULL, 0, NULL, SHIELDED_OUTPUTS_PERSONAL);
+    for (size_t i = 0; i < tx->num_shielded_output; i++) {
+        const struct output_description *od = &tx->v_shielded_output[i];
+        blake2b_update(&ctx, od->cv.data, 32);
+        blake2b_update(&ctx, od->cm.data, 32);
+        blake2b_update(&ctx, od->ephemeral_key.data, 32);
+        blake2b_update(&ctx, od->enc_ciphertext, ZC_SAPLING_ENCCIPHERTEXT_SIZE);
+        blake2b_update(&ctx, od->out_ciphertext, ZC_SAPLING_OUTCIPHERTEXT_SIZE);
+        blake2b_update(&ctx, od->zkproof, GROTH_PROOF_SIZE);
+    }
+    blake2b_final(&ctx, out->data, 32);
+}
+
 void precompute_tx_data(const struct transaction *tx,
                         struct precomputed_tx_data *out)
 {
     get_prevout_hash(tx, &out->hash_prevouts);
     get_sequence_hash(tx, &out->hash_sequence);
     get_outputs_hash(tx, &out->hash_outputs);
+    if (tx->num_joinsplit > 0)
+        get_joinsplits_hash(tx, &out->hash_joinsplits);
+    else
+        uint256_set_null(&out->hash_joinsplits);
+    if (tx->num_shielded_spend > 0)
+        get_shielded_spends_hash(tx, &out->hash_shielded_spends);
+    else
+        uint256_set_null(&out->hash_shielded_spends);
+    if (tx->num_shielded_output > 0)
+        get_shielded_outputs_hash(tx, &out->hash_shielded_outputs);
+    else
+        uint256_set_null(&out->hash_shielded_outputs);
 }
 
 enum sig_version signature_hash_version(const struct transaction *tx)
@@ -147,14 +223,44 @@ static bool sighash_overwinter_sapling(
     blake2b_update(&ctx, hash_sequence.data, 32);
     blake2b_update(&ctx, hash_outputs.data, 32);
 
-    /* JoinSplits hash — null for transparent-only transactions */
-    blake2b_update(&ctx, null_hash.data, 32);
+    /* JoinSplits hash */
+    {
+        struct uint256 hash_joinsplits;
+        if (tx->num_joinsplit > 0) {
+            if (cache)
+                hash_joinsplits = cache->hash_joinsplits;
+            else
+                get_joinsplits_hash(tx, &hash_joinsplits);
+        } else {
+            uint256_set_null(&hash_joinsplits);
+        }
+        blake2b_update(&ctx, hash_joinsplits.data, 32);
+    }
 
     if (sigversion == SIGVERSION_SAPLING) {
-        /* ShieldedSpends hash — null for transparent-only */
-        blake2b_update(&ctx, null_hash.data, 32);
-        /* ShieldedOutputs hash — null for transparent-only */
-        blake2b_update(&ctx, null_hash.data, 32);
+        /* ShieldedSpends hash */
+        struct uint256 hash_shielded_spends;
+        if (tx->num_shielded_spend > 0) {
+            if (cache)
+                hash_shielded_spends = cache->hash_shielded_spends;
+            else
+                get_shielded_spends_hash(tx, &hash_shielded_spends);
+        } else {
+            uint256_set_null(&hash_shielded_spends);
+        }
+        blake2b_update(&ctx, hash_shielded_spends.data, 32);
+
+        /* ShieldedOutputs hash */
+        struct uint256 hash_shielded_outputs;
+        if (tx->num_shielded_output > 0) {
+            if (cache)
+                hash_shielded_outputs = cache->hash_shielded_outputs;
+            else
+                get_shielded_outputs_hash(tx, &hash_shielded_outputs);
+        } else {
+            uint256_set_null(&hash_shielded_outputs);
+        }
+        blake2b_update(&ctx, hash_shielded_outputs.data, 32);
     }
 
     blake2b_update(&ctx, &tx->lock_time, 4);

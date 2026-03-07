@@ -156,9 +156,15 @@ bool groth16_verify(const struct groth16_vk *vk,
                     const uint64_t (*public_inputs)[4],
                     size_t n_inputs);
 
-/* Pack bytes into Fr scalars (253 bits per scalar, little-endian bit ordering) */
+/* Pack bytes into Fr scalars (253 bits per scalar, little-endian bit ordering).
+ * Use for Sapling nullifier packing. */
 void multipack_bytes_to_fr(uint64_t (*out)[4], size_t *n_out,
                            const uint8_t *bytes, size_t n_bytes);
+
+/* Pack bytes into Fr scalars (253 bits per scalar, big-endian bit ordering).
+ * Use for Sprout public input packing. */
+void multipack_bytes_to_fr_be(uint64_t (*out)[4], size_t *n_out,
+                               const uint8_t *bytes, size_t n_bytes);
 
 /* Read Groth16 verifying key from bellman Parameters file.
  * Reads the VK portion only (skips proving key).

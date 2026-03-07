@@ -572,6 +572,9 @@ bool sapling_final_check(struct sapling_verification_ctx *ctx,
     if (value_balance == 0) {
         jub_identity(&value_pt);
     } else {
+        /* Rust uses checked_abs() which fails for INT64_MIN */
+        if (value_balance == INT64_MIN)
+            return false;
         uint64_t abs_val;
         bool negate;
         if (value_balance > 0) {

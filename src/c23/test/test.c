@@ -110,6 +110,9 @@
 #include "crypto/aes256.h"
 #include "zcash/ff1.h"
 #include "zcash/zip32.h"
+#include "zcash/sprout.h"
+#include "zcash/params_init.h"
+#include "crypto/ed25519.h"
 
 static int test_tip_count = 0;
 static int test_tip_height = 0;
@@ -7418,6 +7421,106 @@ int main(void)
         }
         if (ok) printf("OK\n");
         else { printf("FAIL (file not found or parse error)\n"); }
+    }
+
+    /* RFC 8032 Test Vector 1: empty message */
+    printf("ed25519 verify (RFC 8032 test 1)... ");
+    {
+        /* Public key */
+        const uint8_t pk[32] = {
+            0xd7, 0x5a, 0x98, 0x01, 0x82, 0xb1, 0x0a, 0xb7,
+            0xd5, 0x4b, 0xfe, 0xd3, 0xc9, 0x64, 0x07, 0x3a,
+            0x0e, 0xe1, 0x72, 0xf3, 0xda, 0xa6, 0x23, 0x25,
+            0xaf, 0x02, 0x1a, 0x68, 0xf7, 0x07, 0x51, 0x1a
+        };
+        /* Signature (R || S) */
+        const uint8_t sig[64] = {
+            0xe5, 0x56, 0x43, 0x00, 0xc3, 0x60, 0xac, 0x72,
+            0x90, 0x86, 0xe2, 0xcc, 0x80, 0x6e, 0x82, 0x8a,
+            0x84, 0x87, 0x7f, 0x1e, 0xb8, 0xe5, 0xd9, 0x74,
+            0xd8, 0x73, 0xe0, 0x65, 0x22, 0x49, 0x01, 0x55,
+            0x5f, 0xb8, 0x82, 0x15, 0x90, 0xa3, 0x3b, 0xac,
+            0xc6, 0x1e, 0x39, 0x70, 0x1c, 0xf9, 0xb4, 0x6b,
+            0xd2, 0x5b, 0xf5, 0xf0, 0x59, 0x5b, 0xbe, 0x24,
+            0x65, 0x51, 0x41, 0x43, 0x8e, 0x7a, 0x10, 0x0b
+        };
+        /* Empty message */
+        bool ok = ed25519_verify(sig, (const uint8_t *)"", 0, pk);
+        if (!ok) { printf("FAIL (valid sig rejected)\n"); failures++; }
+        else {
+            /* Tamper with signature — should fail */
+            uint8_t bad_sig[64];
+            memcpy(bad_sig, sig, 64);
+            bad_sig[0] ^= 1;
+            bool bad = ed25519_verify(bad_sig, (const uint8_t *)"", 0, pk);
+            if (bad) { printf("FAIL (tampered sig accepted)\n"); failures++; }
+            else printf("OK\n");
+        }
+    }
+
+    printf("ed25519 verify (RFC 8032 test 2)... ");
+    {
+        const uint8_t pk2[32] = {
+            0x3d, 0x40, 0x17, 0xc3, 0xe8, 0x43, 0x89, 0x5a,
+            0x92, 0xb7, 0x0a, 0xa7, 0x4d, 0x1b, 0x7e, 0xbc,
+            0x9c, 0x98, 0x2c, 0xcf, 0x2e, 0xc4, 0x96, 0x8c,
+            0xc0, 0xcd, 0x55, 0xf1, 0x2a, 0xf4, 0x66, 0x0c
+        };
+        const uint8_t sig2[64] = {
+            0x92, 0xa0, 0x09, 0xa9, 0xf0, 0xd4, 0xca, 0xb8,
+            0x72, 0x0e, 0x82, 0x0b, 0x5f, 0x64, 0x25, 0x40,
+            0xa2, 0xb2, 0x7b, 0x54, 0x16, 0x50, 0x3f, 0x8f,
+            0xb3, 0x76, 0x22, 0x23, 0xeb, 0xdb, 0x69, 0xda,
+            0x08, 0x5a, 0xc1, 0xe4, 0x3e, 0x15, 0x99, 0x6e,
+            0x45, 0x8f, 0x36, 0x13, 0xd0, 0xf1, 0x1d, 0x8c,
+            0x38, 0x7b, 0x2e, 0xae, 0xb4, 0x30, 0x2a, 0xee,
+            0xb0, 0x0d, 0x29, 0x16, 0x12, 0xbb, 0x0c, 0x00
+        };
+        const uint8_t msg[1] = {0x72};
+        bool ok = ed25519_verify(sig2, msg, 1, pk2);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("groth16 vk read (sprout-groth16)... ");
+    {
+        const char *path = getenv("HOME");
+        char fpath[512];
+        snprintf(fpath, sizeof(fpath), "%s/.zcash-params/sprout-groth16.params", path ? path : ".");
+        FILE *f = fopen(fpath, "rb");
+        bool ok = false;
+        if (f) {
+            fseek(f, 0, SEEK_END);
+            long sz = ftell(f);
+            fseek(f, 0, SEEK_SET);
+            size_t read_sz = sz < 200000 ? (size_t)sz : 200000;
+            uint8_t *buf = malloc(read_sz);
+            if (buf && fread(buf, 1, read_sz, f) == read_sz) {
+                struct groth16_vk vk = {0};
+                ok = groth16_vk_read(&vk, buf, read_sz);
+                if (ok) {
+                    /* Sprout Groth16 VK: 272 bytes input -> ceil(2176/253) = 9 scalars -> ic_len = 10 */
+                    ok = (vk.ic_len == 10);
+                    if (ok) {
+                        sprout_set_vk(&vk);
+                    }
+                }
+            }
+            free(buf);
+            fclose(f);
+        }
+        if (ok) printf("OK\n");
+        else { printf("FAIL (file not found or parse error)\n"); }
+    }
+
+    printf("zcash_init_params... ");
+    {
+        const char *home = getenv("HOME");
+        char params_dir[512];
+        snprintf(params_dir, sizeof(params_dir), "%s/.zcash-params", home ? home : ".");
+        bool ok = zcash_init_params(params_dir);
+        if (ok) printf("OK\n");
+        else { printf("FAIL (params not found)\n"); }
     }
 
     printf("\n%s (%d failures)\n", failures ? "SOME TESTS FAILED" : "ALL TESTS PASSED", failures);

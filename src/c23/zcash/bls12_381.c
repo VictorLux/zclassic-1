@@ -1778,6 +1778,48 @@ void multipack_bytes_to_fr(uint64_t (*out)[4], size_t *n_out,
     *n_out = n_scalars;
 }
 
+/* Multipack: pack bytes into Fr scalars (253 bits per scalar, BE bit order).
+ * Sprout uses MSB-first bit ordering (bytes_to_bits in Rust). */
+void multipack_bytes_to_fr_be(uint64_t (*out)[4], size_t *n_out,
+                               const uint8_t *bytes, size_t n_bytes)
+{
+    size_t n_bits = n_bytes * 8;
+    size_t n_scalars = (n_bits + 252) / 253;
+
+    for (size_t s = 0; s < n_scalars; s++) {
+        uint64_t cur[4] = {0, 0, 0, 0};
+        uint64_t coeff[4] = {1, 0, 0, 0};
+
+        size_t bit_start = s * 253;
+        size_t bit_end = bit_start + 253;
+        if (bit_end > n_bits) bit_end = n_bits;
+
+        for (size_t b = bit_start; b < bit_end; b++) {
+            /* BE bit order: bit b maps to byte b/8, bit (7 - b%8) */
+            size_t byte_idx = b / 8;
+            int bit_idx = 7 - (int)(b % 8);
+            bool bit_val = (bytes[byte_idx] >> bit_idx) & 1;
+
+            if (bit_val) {
+                unsigned __int128 carry = 0;
+                for (int i = 0; i < 4; i++) {
+                    unsigned __int128 sum = (unsigned __int128)cur[i] + coeff[i] + carry;
+                    cur[i] = (uint64_t)sum;
+                    carry = sum >> 64;
+                }
+            }
+            uint64_t carry2 = 0;
+            for (int i = 0; i < 4; i++) {
+                uint64_t new_carry = coeff[i] >> 63;
+                coeff[i] = (coeff[i] << 1) | carry2;
+                carry2 = new_carry;
+            }
+        }
+        memcpy(out[s], cur, 32);
+    }
+    *n_out = n_scalars;
+}
+
 /* Groth16 verification:
  * e(A, B) == e(alpha, beta) * e(vk_x, gamma) * e(C, delta)
  * Rearranged: e(A, B) * e(vk_x, -gamma) * e(C, -delta) == e(alpha, beta) */
