@@ -56,6 +56,7 @@
 #include "subsidy_c.h"
 #include "sighash_c.h"
 #include "check_transaction_c.h"
+#include "tx_verifier_c.h"
 
 static int check_hex(const unsigned char *data, size_t len, const char *expected)
 {
@@ -2102,6 +2103,62 @@ int main(void)
         if (check_transaction(&tx, &state))
             printf("OK\n");
         else { printf("FAIL (%s)\n", state.reject_reason); failures++; }
+        transaction_free(&tx);
+    }
+
+    printf("tx_sig_checker create... ");
+    {
+        struct transaction tx;
+        transaction_init(&tx);
+        transaction_alloc(&tx, 1, 1);
+        tx.version = SAPLING_TX_VERSION;
+        tx.overwintered = true;
+        tx.version_group_id = SAPLING_VERSION_GROUP_ID;
+        tx.vin[0].sequence = 0xffffffff;
+        memset(tx.vin[0].prevout.hash.data, 0x11, 32);
+        tx.vin[0].prevout.n = 0;
+        tx.vout[0].value = 50 * COIN;
+        tx.vout[0].script_pub_key.size = 0;
+
+        struct tx_sig_checker tsc;
+        tx_sig_checker_init(&tsc, &tx, 0, 50 * COIN, 0x76b809bb, NULL);
+        struct sig_checker checker = tx_make_sig_checker(&tsc);
+
+        if (checker.check_sig != NULL &&
+            checker.check_lock_time != NULL &&
+            checker.verify_signature != NULL &&
+            checker.ctx == &tsc)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+        transaction_free(&tx);
+    }
+
+    printf("tx_sig_checker bad sig... ");
+    {
+        struct transaction tx;
+        transaction_init(&tx);
+        transaction_alloc(&tx, 1, 1);
+        tx.version = SAPLING_TX_VERSION;
+        tx.overwintered = true;
+        tx.version_group_id = SAPLING_VERSION_GROUP_ID;
+        tx.vin[0].sequence = 0xffffffff;
+        memset(tx.vin[0].prevout.hash.data, 0x11, 32);
+        tx.vin[0].prevout.n = 0;
+        tx.vout[0].value = COIN;
+        tx.vout[0].script_pub_key.size = 0;
+
+        struct tx_sig_checker tsc;
+        tx_sig_checker_init(&tsc, &tx, 0, COIN, 0x76b809bb, NULL);
+
+        struct script sc;
+        sc.size = 0;
+        unsigned char fake_sig[] = {0x30, 0x06, 0x02, 0x01, 0x01, 0x02, 0x01, 0x01, 0x01};
+        unsigned char fake_pk[] = {0x04};
+        /* Should fail: invalid pubkey */
+        if (!tx_sig_checker_check_sig(&tsc, fake_sig, sizeof(fake_sig),
+                                       fake_pk, 1, &sc))
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
         transaction_free(&tx);
     }
 
