@@ -24,7 +24,8 @@ CORE_SRCS = \
 	util.c \
 	ui_interface.c \
 	noui.c \
-	deprecation.c
+	deprecation.c \
+	sync.c
 
 ALL_SRCS = $(CRYPTO_SRCS) $(CORE_SRCS)
 ALL_OBJS = $(ALL_SRCS:.c=.o)
