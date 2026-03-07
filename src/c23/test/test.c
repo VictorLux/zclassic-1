@@ -81,6 +81,8 @@
 #include "validation/main_constants.h"
 #include "storage/txdb.h"
 #include "storage/disk_block_io.h"
+#include "validation/main_state.h"
+#include "validation/main_logic.h"
 
 static int test_tip_count = 0;
 static int test_tip_height = 0;
@@ -4211,6 +4213,35 @@ int main(void)
         block_free(&b);
         snprintf(cmd, sizeof(cmd), "rm -rf %s", tmpdir);
         (void)system(cmd);
+    }
+
+    printf("main_state init/free... ");
+    {
+        struct main_state ms;
+        main_state_init(&ms);
+        if (ms.pindex_best_header == NULL &&
+            ms.nScriptCheckThreads == 0 &&
+            !atomic_load(&ms.fImporting) &&
+            !atomic_load(&ms.fReindex) &&
+            ms.fCheckpointsEnabled &&
+            ms.nMaxTipAge == DEFAULT_MAX_TIP_AGE) {
+            printf("OK\n");
+        } else {
+            printf("FAIL\n");
+            failures++;
+        }
+        main_state_free(&ms);
+    }
+
+    printf("is_initial_block_download... ");
+    {
+        struct main_state ms;
+        main_state_init(&ms);
+        bool ibd = is_initial_block_download(&ms);
+        if (ibd)
+            printf("OK (in IBD with no tip)\n");
+        else { printf("FAIL\n"); failures++; }
+        main_state_free(&ms);
     }
 
     printf("block serialize/deserialize roundtrip... ");
