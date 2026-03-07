@@ -58,6 +58,7 @@
 #include "check_transaction_c.h"
 #include "tx_verifier_c.h"
 #include "sigops_c.h"
+#include "contextual_check_tx_c.h"
 
 static int check_hex(const unsigned char *data, size_t len, const char *expected)
 {
@@ -2218,6 +2219,91 @@ int main(void)
         s.data[22] = OP_EQUAL;
         s.size = 23;
         if (script_is_pay_to_script_hash(&s))
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("contextual_check_tx sprout rejects overwinter... ");
+    {
+        const struct consensus_params *p = &chain_params_get()->consensus;
+        struct transaction tx;
+        transaction_init(&tx);
+        transaction_alloc(&tx, 1, 1);
+        tx.overwintered = true;
+        tx.version = OVERWINTER_TX_VERSION;
+        tx.version_group_id = OVERWINTER_VERSION_GROUP_ID;
+        memset(tx.vin[0].prevout.hash.data, 0x11, 32);
+        tx.vin[0].prevout.n = 0;
+        tx.vin[0].script_sig.size = 0;
+        tx.vout[0].value = COIN;
+        tx.vout[0].script_pub_key.size = 0;
+        struct validation_state state;
+        validation_state_init(&state);
+        /* height 1 is Sprout on mainnet */
+        bool ok = contextual_check_transaction(&tx, &state, p, 1, 100);
+        if (!ok && strcmp(state.reject_reason, "tx-overwinter-not-active") == 0)
+            printf("OK\n");
+        else { printf("FAIL (ok=%d reason=%s)\n", ok, state.reject_reason); failures++; }
+        transaction_free(&tx);
+    }
+
+    printf("contextual_check_tx sapling valid... ");
+    {
+        const struct consensus_params *p = &chain_params_get()->consensus;
+        int sapHeight = p->vUpgrades[UPGRADE_SAPLING].nActivationHeight;
+        struct transaction tx;
+        transaction_init(&tx);
+        transaction_alloc(&tx, 1, 1);
+        tx.overwintered = true;
+        tx.version = SAPLING_TX_VERSION;
+        tx.version_group_id = SAPLING_VERSION_GROUP_ID;
+        tx.expiry_height = (uint32_t)(sapHeight + 100);
+        memset(tx.vin[0].prevout.hash.data, 0x11, 32);
+        tx.vin[0].prevout.n = 0;
+        tx.vin[0].script_sig.size = 0;
+        tx.vout[0].value = COIN;
+        tx.vout[0].script_pub_key.size = 0;
+        struct validation_state state;
+        validation_state_init(&state);
+        bool ok = contextual_check_transaction(&tx, &state, p, sapHeight, 100);
+        if (ok)
+            printf("OK\n");
+        else { printf("FAIL (reason=%s)\n", state.reject_reason); failures++; }
+        transaction_free(&tx);
+    }
+
+    printf("contextual_check_tx expired... ");
+    {
+        const struct consensus_params *p = &chain_params_get()->consensus;
+        int sapHeight = p->vUpgrades[UPGRADE_SAPLING].nActivationHeight;
+        struct transaction tx;
+        transaction_init(&tx);
+        transaction_alloc(&tx, 1, 1);
+        tx.overwintered = true;
+        tx.version = SAPLING_TX_VERSION;
+        tx.version_group_id = SAPLING_VERSION_GROUP_ID;
+        tx.expiry_height = (uint32_t)sapHeight;
+        memset(tx.vin[0].prevout.hash.data, 0x11, 32);
+        tx.vin[0].prevout.n = 0;
+        tx.vin[0].script_sig.size = 0;
+        tx.vout[0].value = COIN;
+        tx.vout[0].script_pub_key.size = 0;
+        struct validation_state state;
+        validation_state_init(&state);
+        bool ok = contextual_check_transaction(&tx, &state, p, sapHeight, 100);
+        if (!ok && strcmp(state.reject_reason, "tx-overwinter-expired") == 0)
+            printf("OK\n");
+        else { printf("FAIL (ok=%d reason=%s)\n", ok, state.reject_reason); failures++; }
+        transaction_free(&tx);
+    }
+
+    printf("is_expired_tx... ");
+    {
+        struct transaction tx;
+        transaction_init(&tx);
+        tx.overwintered = true;
+        tx.expiry_height = 500;
+        if (is_expired_tx(&tx, 500) && !is_expired_tx(&tx, 499) && !is_expired_tx(&tx, 0))
             printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
