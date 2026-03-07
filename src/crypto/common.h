@@ -1,126 +1,115 @@
-// Copyright (c) 2014 The Bitcoin Core developers
-// Distributed under the MIT software license, see the accompanying
-// file COPYING or http://www.opensource.org/licenses/mit-license.php.
+/* Copyright (c) 2014 The Bitcoin Core developers
+ * Copyright 2026 Rhett Creighton - Apache License 2.0
+ * Distributed under the MIT software license, see the accompanying
+ * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #ifndef BITCOIN_CRYPTO_COMMON_H
 #define BITCOIN_CRYPTO_COMMON_H
-
-#if defined(HAVE_CONFIG_H)
-#include "bitcoin-config.h"
-#endif
 
 #include <stdint.h>
 #include <assert.h>
 #include <string.h>
 
-#include "sodium.h"
-#include "compat/endian.h"
-
 #if defined(NDEBUG)
 # error "Zclassic cannot be compiled without assertions."
 #endif
 
-uint16_t static inline ReadLE16(const unsigned char* ptr)
+static inline uint16_t bswap16(uint16_t x)
+{
+    return (uint16_t)((x >> 8) | (x << 8));
+}
+
+static inline uint32_t bswap32(uint32_t x)
+{
+    return ((x >> 24) & 0x000000FFu) |
+           ((x >>  8) & 0x0000FF00u) |
+           ((x <<  8) & 0x00FF0000u) |
+           ((x << 24) & 0xFF000000u);
+}
+
+static inline uint64_t bswap64(uint64_t x)
+{
+    return ((x >> 56) & 0x00000000000000FFull) |
+           ((x >> 40) & 0x000000000000FF00ull) |
+           ((x >> 24) & 0x0000000000FF0000ull) |
+           ((x >>  8) & 0x00000000FF000000ull) |
+           ((x <<  8) & 0x000000FF00000000ull) |
+           ((x << 24) & 0x0000FF0000000000ull) |
+           ((x << 40) & 0x00FF000000000000ull) |
+           ((x << 56) & 0xFF00000000000000ull);
+}
+
+/* Endianness detection at compile time.
+ * If none detected, assumes little-endian (x86/ARM default). */
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+#define CRYPTO_BIG_ENDIAN 1
+#else
+#define CRYPTO_BIG_ENDIAN 0
+#endif
+
+static inline uint16_t ReadLE16(const unsigned char *ptr)
 {
     uint16_t x;
-    memcpy((char*)&x, ptr, 2);
-    return le16toh(x);
+    memcpy(&x, ptr, 2);
+    return CRYPTO_BIG_ENDIAN ? bswap16(x) : x;
 }
 
-uint32_t static inline ReadLE32(const unsigned char* ptr)
+static inline uint32_t ReadLE32(const unsigned char *ptr)
 {
     uint32_t x;
-    memcpy((char*)&x, ptr, 4);
-    return le32toh(x);
+    memcpy(&x, ptr, 4);
+    return CRYPTO_BIG_ENDIAN ? bswap32(x) : x;
 }
 
-uint64_t static inline ReadLE64(const unsigned char* ptr)
+static inline uint64_t ReadLE64(const unsigned char *ptr)
 {
     uint64_t x;
-    memcpy((char*)&x, ptr, 8);
-    return le64toh(x);
+    memcpy(&x, ptr, 8);
+    return CRYPTO_BIG_ENDIAN ? bswap64(x) : x;
 }
 
-void static inline WriteLE16(unsigned char* ptr, uint16_t x)
+static inline void WriteLE16(unsigned char *ptr, uint16_t x)
 {
-    uint16_t v = htole16(x);
-    memcpy(ptr, (char*)&v, 2);
+    uint16_t v = CRYPTO_BIG_ENDIAN ? bswap16(x) : x;
+    memcpy(ptr, &v, 2);
 }
 
-void static inline WriteLE32(unsigned char* ptr, uint32_t x)
+static inline void WriteLE32(unsigned char *ptr, uint32_t x)
 {
-    uint32_t v = htole32(x);
-    memcpy(ptr, (char*)&v, 4);
+    uint32_t v = CRYPTO_BIG_ENDIAN ? bswap32(x) : x;
+    memcpy(ptr, &v, 4);
 }
 
-void static inline WriteLE64(unsigned char* ptr, uint64_t x)
+static inline void WriteLE64(unsigned char *ptr, uint64_t x)
 {
-    uint64_t v = htole64(x);
-    memcpy(ptr, (char*)&v, 8);
+    uint64_t v = CRYPTO_BIG_ENDIAN ? bswap64(x) : x;
+    memcpy(ptr, &v, 8);
 }
 
-uint32_t static inline ReadBE32(const unsigned char* ptr)
+static inline uint32_t ReadBE32(const unsigned char *ptr)
 {
     uint32_t x;
-    memcpy((char*)&x, ptr, 4);
-    return be32toh(x);
+    memcpy(&x, ptr, 4);
+    return CRYPTO_BIG_ENDIAN ? x : bswap32(x);
 }
 
-uint64_t static inline ReadBE64(const unsigned char* ptr)
+static inline uint64_t ReadBE64(const unsigned char *ptr)
 {
     uint64_t x;
-    memcpy((char*)&x, ptr, 8);
-    return be64toh(x);
+    memcpy(&x, ptr, 8);
+    return CRYPTO_BIG_ENDIAN ? x : bswap64(x);
 }
 
-void static inline WriteBE32(unsigned char* ptr, uint32_t x)
+static inline void WriteBE32(unsigned char *ptr, uint32_t x)
 {
-    uint32_t v = htobe32(x);
-    memcpy(ptr, (char*)&v, 4);
+    uint32_t v = CRYPTO_BIG_ENDIAN ? x : bswap32(x);
+    memcpy(ptr, &v, 4);
 }
 
-void static inline WriteBE64(unsigned char* ptr, uint64_t x)
+static inline void WriteBE64(unsigned char *ptr, uint64_t x)
 {
-    uint64_t v = htobe64(x);
-    memcpy(ptr, (char*)&v, 8);
+    uint64_t v = CRYPTO_BIG_ENDIAN ? x : bswap64(x);
+    memcpy(ptr, &v, 8);
 }
 
-int inline init_and_check_sodium()
-{
-    if (sodium_init() == -1) {
-        return -1;
-    }
-
-    // What follows is a runtime test that ensures the version of libsodium
-    // we're linked against checks that signatures are canonical (s < L).
-    const unsigned char message[1] = { 0 };
-
-    unsigned char pk[crypto_sign_PUBLICKEYBYTES];
-    unsigned char sk[crypto_sign_SECRETKEYBYTES];
-    unsigned char sig[crypto_sign_BYTES];
-
-    crypto_sign_keypair(pk, sk);
-    crypto_sign_detached(sig, NULL, message, sizeof(message), sk);
-
-    assert(crypto_sign_verify_detached(sig, message, sizeof(message), pk) == 0);
-
-    // Copied from libsodium/crypto_sign/ed25519/ref10/open.c
-    static const unsigned char L[32] =
-      { 0xed, 0xd3, 0xf5, 0x5c, 0x1a, 0x63, 0x12, 0x58,
-        0xd6, 0x9c, 0xf7, 0xa2, 0xde, 0xf9, 0xde, 0x14,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10 };
-
-    // Add L to S, which starts at sig[32].
-    unsigned int s = 0;
-    for (size_t i = 0; i < 32; i++) {
-        s = sig[32 + i] + L[i] + (s >> 8);
-        sig[32 + i] = s & 0xff;
-    }
-
-    assert(crypto_sign_verify_detached(sig, message, sizeof(message), pk) != 0);
-
-    return 0;
-}
-
-#endif // BITCOIN_CRYPTO_COMMON_H
+#endif
