@@ -5,12 +5,24 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "random.h"
+#include <string.h>
+
+#ifdef _WIN32
+#include <windows.h>
+#include <bcrypt.h>
+#pragma comment(lib, "bcrypt.lib")
+#else
 #include <fcntl.h>
 #include <unistd.h>
-#include <string.h>
+#endif
 
 void GetRandBytes(unsigned char *buf, size_t num)
 {
+#ifdef _WIN32
+    NTSTATUS status = BCryptGenRandom(NULL, buf, (ULONG)num, BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+    if (status != 0)
+        memset(buf, 0, num);
+#else
     int fd = open("/dev/urandom", O_RDONLY);
     if (fd < 0) {
         memset(buf, 0, num);
@@ -23,6 +35,7 @@ void GetRandBytes(unsigned char *buf, size_t num)
         got += (size_t)r;
     }
     close(fd);
+#endif
 }
 
 uint64_t GetRand(uint64_t nMax)

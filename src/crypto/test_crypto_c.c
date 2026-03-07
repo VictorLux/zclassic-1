@@ -21,6 +21,8 @@
 #include "consensus/params.h"
 #include "consensus/upgrades.h"
 #include "utilmoneystr.h"
+#include "utilstrencodings.h"
+#include "clientversion.h"
 
 static int check_hex(const unsigned char *data, size_t len, const char *expected)
 {
@@ -366,6 +368,150 @@ int main(void)
             printf("OK\n");
         else {
             printf("FAIL: %lld\n", (long long)val);
+            failures++;
+        }
+    }
+
+    printf("IsHex... ");
+    {
+        if (IsHex("deadbeef") && !IsHex("deadbee") && !IsHex("xyz"))
+            printf("OK\n");
+        else {
+            printf("FAIL\n");
+            failures++;
+        }
+    }
+
+    printf("ParseHex... ");
+    {
+        unsigned char out[32];
+        size_t n = ParseHex("deadbeef", out, sizeof(out));
+        if (n == 4 && out[0] == 0xde && out[1] == 0xad && out[2] == 0xbe && out[3] == 0xef)
+            printf("OK\n");
+        else {
+            printf("FAIL\n");
+            failures++;
+        }
+    }
+
+    printf("HexStr... ");
+    {
+        unsigned char data[] = { 0xde, 0xad, 0xbe, 0xef };
+        char hexout[64];
+        HexStr(data, 4, false, hexout, sizeof(hexout));
+        if (strcmp(hexout, "deadbeef") == 0)
+            printf("OK\n");
+        else {
+            printf("FAIL: %s\n", hexout);
+            failures++;
+        }
+    }
+
+    printf("EncodeBase64... ");
+    {
+        char b64[64];
+        EncodeBase64((const unsigned char *)"Hello", 5, b64, sizeof(b64));
+        if (strcmp(b64, "SGVsbG8=") == 0)
+            printf("OK\n");
+        else {
+            printf("FAIL: %s\n", b64);
+            failures++;
+        }
+    }
+
+    printf("DecodeBase64... ");
+    {
+        unsigned char out[64];
+        bool invalid = false;
+        size_t n = DecodeBase64("SGVsbG8=", out, sizeof(out), &invalid);
+        if (!invalid && n == 5 && memcmp(out, "Hello", 5) == 0)
+            printf("OK\n");
+        else {
+            printf("FAIL\n");
+            failures++;
+        }
+    }
+
+    printf("EncodeBase32... ");
+    {
+        char b32[64];
+        EncodeBase32((const unsigned char *)"Hello", 5, b32, sizeof(b32));
+        if (strcmp(b32, "jbswy3dp") == 0)
+            printf("OK\n");
+        else {
+            printf("FAIL: %s\n", b32);
+            failures++;
+        }
+    }
+
+    printf("ParseInt32... ");
+    {
+        int32_t val = 0;
+        if (ParseInt32("12345", &val) && val == 12345 &&
+            !ParseInt32("", &val) && !ParseInt32(" 1", &val))
+            printf("OK\n");
+        else {
+            printf("FAIL\n");
+            failures++;
+        }
+    }
+
+    printf("ParseFixedPoint... ");
+    {
+        int64_t amount = 0;
+        if (ParseFixedPoint("1.5", 8, &amount) && amount == 150000000LL &&
+            ParseFixedPoint("-0.5", 8, &amount) && amount == -50000000LL)
+            printf("OK\n");
+        else {
+            printf("FAIL: %lld\n", (long long)amount);
+            failures++;
+        }
+    }
+
+    printf("SanitizeString... ");
+    {
+        char out[64];
+        SanitizeString("hello<world>&test", SAFE_CHARS_DEFAULT, out, sizeof(out));
+        if (strcmp(out, "helloworldtest") == 0)
+            printf("OK\n");
+        else {
+            printf("FAIL: %s\n", out);
+            failures++;
+        }
+    }
+
+    printf("FormatVersion... ");
+    {
+        char ver[64];
+        FormatVersion(CLIENT_VERSION, ver, sizeof(ver));
+        if (strstr(ver, "2.1.1") != NULL)
+            printf("OK (%s)\n", ver);
+        else {
+            printf("FAIL: %s\n", ver);
+            failures++;
+        }
+    }
+
+    printf("CLIENT_NAME... ");
+    {
+        if (strcmp(CLIENT_NAME, "MagicBean") == 0)
+            printf("OK\n");
+        else {
+            printf("FAIL: %s\n", CLIENT_NAME);
+            failures++;
+        }
+    }
+
+    printf("ConvertBits 8->5... ");
+    {
+        unsigned char in[] = { 0xff, 0x00 };
+        unsigned char out[8];
+        size_t out_len = 0;
+        if (ConvertBits(8, 5, true, in, 2, out, sizeof(out), &out_len) &&
+            out_len == 4 && out[0] == 0x1f && out[1] == 0x1c && out[2] == 0x00 && out[3] == 0x00)
+            printf("OK\n");
+        else {
+            printf("FAIL\n");
             failures++;
         }
     }

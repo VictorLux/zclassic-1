@@ -17,7 +17,9 @@ CORE_SRCS = \
 	support/cleanse.c \
 	consensus/params.c consensus/upgrades.c \
 	script/script_error.c \
-	scheduler.c
+	scheduler.c \
+	utilstrencodings.c \
+	clientversion.c
 
 ALL_SRCS = $(CRYPTO_SRCS) $(CORE_SRCS)
 ALL_OBJS = $(ALL_SRCS:.c=.o)
