@@ -43,4 +43,10 @@ static inline int64_t block_header_get_time(const struct block_header *h)
     return (int64_t)h->nTime;
 }
 
+struct byte_stream;
+
+bool block_header_serialize(const struct block_header *h, struct byte_stream *s);
+bool block_header_deserialize(struct block_header *h, struct byte_stream *s);
+void block_header_get_hash(const struct block_header *h, struct uint256 *out);
+
 #endif

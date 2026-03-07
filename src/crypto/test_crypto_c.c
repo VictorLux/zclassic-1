@@ -45,6 +45,7 @@
 #include "script/sighashtype_c.h"
 #include "coins_c.h"
 #include "serialize_c.h"
+#include "primitives/block_c.h"
 
 static int check_hex(const unsigned char *data, size_t len, const char *expected)
 {
@@ -1321,6 +1322,48 @@ int main(void)
         stream_read_u32_le(&s, &v1);
         stream_read_u32_le(&s, &v2);
         if (v1 == 0x04030201 && v2 == 0x08070605 && stream_remaining(&s) == 0)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("block_header serialize/deserialize roundtrip... ");
+    {
+        struct block_header h;
+        block_header_init(&h);
+        h.nVersion = 4;
+        h.nTime = 1234567890;
+        h.nBits = 0x1d00ffff;
+        memset(h.hashPrevBlock.data, 0xAA, 32);
+        memset(h.hashMerkleRoot.data, 0xBB, 32);
+
+        struct byte_stream s;
+        stream_init(&s, 256);
+        block_header_serialize(&h, &s);
+
+        struct block_header h2;
+        block_header_init(&h2);
+        s.read_pos = 0;
+        block_header_deserialize(&h2, &s);
+
+        if (h2.nVersion == 4 && h2.nTime == 1234567890 &&
+            h2.nBits == 0x1d00ffff &&
+            uint256_cmp(&h2.hashPrevBlock, &h.hashPrevBlock) == 0 &&
+            uint256_cmp(&h2.hashMerkleRoot, &h.hashMerkleRoot) == 0)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+        stream_free(&s);
+    }
+
+    printf("block_header_get_hash... ");
+    {
+        struct block_header h;
+        block_header_init(&h);
+        h.nTime = 1000;
+        h.nBits = 0x207fffff;
+        struct uint256 hash;
+        block_header_get_hash(&h, &hash);
+        /* Just verify it produces a non-zero hash */
+        if (!uint256_is_null(&hash))
             printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
