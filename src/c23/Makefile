@@ -13,7 +13,7 @@ CRYPTO_SRCS = \
 
 CORE_SRCS = \
 	core/uint256.c core/arith_uint256.c core/hash.c core/amount.c \
-	core/serialize.c core/random.c core/utiltime.c
+	core/serialize.c core/random.c core/utiltime.c core/core_io.c
 
 ENCODING_SRCS = \
 	encoding/base58.c encoding/bech32.c \
@@ -64,7 +64,8 @@ JSON_SRCS = \
 	json/json.c
 
 RPC_SRCS = \
-	rpc/protocol.c rpc/server.c rpc/client.c
+	rpc/protocol.c rpc/server.c rpc/client.c \
+	rpc/async_rpc_operation.c rpc/async_rpc_queue.c
 
 STORAGE_SRCS = \
 	storage/dbwrapper.c

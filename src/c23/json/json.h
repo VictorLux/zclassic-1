@@ -50,6 +50,7 @@ bool json_push_kv_int(struct json_value *obj, const char *key, int64_t i);
 bool json_push_kv_real(struct json_value *obj, const char *key, double d);
 bool json_push_kv_bool(struct json_value *obj, const char *key, bool b);
 
+void json_copy(struct json_value *dst, const struct json_value *src);
 size_t json_size(const struct json_value *v);
 bool json_empty(const struct json_value *v);
 

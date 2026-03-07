@@ -95,7 +95,7 @@ static bool json_grow(struct json_value *v)
     return true;
 }
 
-static void json_copy(struct json_value *dst, const struct json_value *src)
+void json_copy(struct json_value *dst, const struct json_value *src)
 {
     json_init(dst);
     dst->type = src->type;

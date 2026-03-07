@@ -74,6 +74,9 @@
 #include "rpc/server.h"
 #include "rpc/client.h"
 #include "storage/dbwrapper.h"
+#include "core/core_io.h"
+#include "rpc/async_rpc_operation.h"
+#include "rpc/async_rpc_queue.h"
 
 static int test_tip_count = 0;
 static int test_tip_height = 0;
@@ -3714,6 +3717,258 @@ int main(void)
         }
         ecc_verify_destroy();
         ecc_stop();
+    }
+
+    printf("parse_script... ");
+    {
+        struct script s;
+        bool ok = parse_script("OP_DUP OP_HASH160 OP_EQUAL", &s);
+        if (ok && s.size == 3 &&
+            s.data[0] == OP_DUP &&
+            s.data[1] == OP_HASH160 &&
+            s.data[2] == OP_EQUAL)
+            printf("OK\n");
+        else {
+            printf("FAIL\n");
+            failures++;
+        }
+    }
+
+    printf("parse_script number... ");
+    {
+        struct script s;
+        bool ok = parse_script("1 2 OP_ADD", &s);
+        if (ok && s.size >= 3)
+            printf("OK\n");
+        else {
+            printf("FAIL\n");
+            failures++;
+        }
+    }
+
+    printf("parse_script shorthand... ");
+    {
+        struct script s;
+        bool ok = parse_script("DUP HASH160 EQUAL", &s);
+        if (ok && s.size == 3 &&
+            s.data[0] == OP_DUP &&
+            s.data[1] == OP_HASH160 &&
+            s.data[2] == OP_EQUAL)
+            printf("OK\n");
+        else {
+            printf("FAIL\n");
+            failures++;
+        }
+    }
+
+    printf("script_to_asm_str... ");
+    {
+        struct script s;
+        script_init(&s);
+        script_push_op(&s, OP_DUP);
+        script_push_op(&s, OP_HASH160);
+        unsigned char hash[20] = {0};
+        script_push_data(&s, hash, 20);
+        script_push_op(&s, OP_EQUALVERIFY);
+        script_push_op(&s, OP_CHECKSIG);
+        char asm_str[256];
+        script_to_asm_str(&s, false, asm_str, sizeof(asm_str));
+        if (strstr(asm_str, "OP_DUP") && strstr(asm_str, "OP_HASH160") &&
+            strstr(asm_str, "OP_CHECKSIG"))
+            printf("OK (%s)\n", asm_str);
+        else {
+            printf("FAIL (%s)\n", asm_str);
+            failures++;
+        }
+    }
+
+    printf("decode_hex_tx roundtrip... ");
+    {
+        struct transaction tx;
+        transaction_init(&tx);
+        transaction_alloc(&tx, 1, 1);
+        tx.version = 1;
+        tx.lock_time = 0;
+        tx.vin[0].sequence = 0xffffffff;
+        outpoint_set_null(&tx.vin[0].prevout);
+        tx.vin[0].script_sig.size = 0;
+        tx.vout[0].value = 5000000000LL;
+        tx.vout[0].script_pub_key.size = 0;
+        transaction_compute_hash(&tx);
+
+        char hex[2048];
+        encode_hex_tx(&tx, hex, sizeof(hex));
+
+        struct transaction tx2;
+        transaction_init(&tx2);
+        bool ok = decode_hex_tx(&tx2, hex);
+        if (ok && tx2.version == 1 && tx2.num_vin == 1 && tx2.num_vout == 1 &&
+            tx2.vout[0].value == 5000000000LL)
+            printf("OK\n");
+        else {
+            printf("FAIL\n");
+            failures++;
+        }
+        transaction_free(&tx);
+        transaction_free(&tx2);
+    }
+
+    printf("parse_hash_str... ");
+    {
+        struct uint256 h;
+        bool ok = parse_hash_str(
+            "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f",
+            &h);
+        char hex[65];
+        uint256_get_hex(&h, hex);
+        if (ok && strcmp(hex, "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f") == 0)
+            printf("OK\n");
+        else {
+            printf("FAIL (%s)\n", hex);
+            failures++;
+        }
+    }
+
+    printf("tx_to_json... ");
+    {
+        struct transaction tx;
+        transaction_init(&tx);
+        transaction_alloc(&tx, 1, 1);
+        tx.version = 1;
+        tx.lock_time = 0;
+        tx.vin[0].sequence = 0xffffffff;
+        outpoint_set_null(&tx.vin[0].prevout);
+        tx.vin[0].script_sig.size = 0;
+        tx.vout[0].value = 5000000000LL;
+        tx.vout[0].script_pub_key.size = 0;
+        transaction_compute_hash(&tx);
+
+        struct json_value entry;
+        struct uint256 null_hash;
+        uint256_set_null(&null_hash);
+        tx_to_json(&tx, &null_hash, &entry);
+
+        if (entry.type == JSON_OBJ && entry.num_children > 0) {
+            const struct json_value *v = json_get(&entry, "version");
+            if (v && v->type == JSON_INT && v->val.i == 1)
+                printf("OK\n");
+            else {
+                printf("FAIL (version)\n");
+                failures++;
+            }
+        } else {
+            printf("FAIL (not obj)\n");
+            failures++;
+        }
+        json_free(&entry);
+        transaction_free(&tx);
+    }
+
+    printf("async_op init/state... ");
+    {
+        struct async_rpc_operation op;
+        async_op_init(&op);
+        if (async_op_is_ready(&op) &&
+            strncmp(op.id, "opid-", 5) == 0 &&
+            strcmp(async_op_state_str(ASYNC_OP_READY), "queued") == 0)
+            printf("OK (%s)\n", op.id);
+        else {
+            printf("FAIL\n");
+            failures++;
+        }
+        async_op_free(&op);
+    }
+
+    printf("async_op execute/result... ");
+    {
+        struct async_rpc_operation op;
+        async_op_init(&op);
+        async_op_default_main(&op);
+        if (async_op_is_success(&op)) {
+            struct json_value res;
+            async_op_get_result_json(&op, &res);
+            if (res.type == JSON_STR)
+                printf("OK\n");
+            else {
+                printf("FAIL (result type=%d)\n", res.type);
+                failures++;
+            }
+            json_free(&res);
+        } else {
+            printf("FAIL (state=%s)\n", async_op_state_str(async_op_get_state(&op)));
+            failures++;
+        }
+        async_op_free(&op);
+    }
+
+    printf("async_op error... ");
+    {
+        struct async_rpc_operation op;
+        async_op_init(&op);
+        async_op_set_error(&op, 42, "test error");
+        async_op_set_state(&op, ASYNC_OP_FAILED);
+        struct json_value err;
+        async_op_get_error_json(&op, &err);
+        if (err.type == JSON_OBJ) {
+            const struct json_value *code = json_get(&err, "code");
+            if (code && code->type == JSON_INT && code->val.i == 42)
+                printf("OK\n");
+            else {
+                printf("FAIL (code)\n");
+                failures++;
+            }
+        } else {
+            printf("FAIL (not obj)\n");
+            failures++;
+        }
+        json_free(&err);
+        async_op_free(&op);
+    }
+
+    printf("async_op status_json... ");
+    {
+        struct async_rpc_operation op;
+        async_op_init(&op);
+        struct json_value status;
+        async_op_get_status_json(&op, &status);
+        const struct json_value *id_val = json_get(&status, "id");
+        const struct json_value *st_val = json_get(&status, "status");
+        if (id_val && id_val->type == JSON_STR &&
+            st_val && st_val->type == JSON_STR &&
+            strcmp(st_val->val.s, "queued") == 0)
+            printf("OK\n");
+        else {
+            printf("FAIL\n");
+            failures++;
+        }
+        json_free(&status);
+        async_op_free(&op);
+    }
+
+    printf("async_queue add/execute... ");
+    {
+        struct async_rpc_queue q;
+        async_queue_init(&q);
+
+        struct async_rpc_operation op;
+        async_op_init(&op);
+        char saved_id[ASYNC_OP_ID_SIZE];
+        memcpy(saved_id, op.id, ASYNC_OP_ID_SIZE);
+
+        async_queue_add_op(&q, &op);
+        async_queue_add_worker(&q);
+
+        async_queue_finish_and_wait(&q);
+
+        if (async_op_is_success(&op))
+            printf("OK\n");
+        else {
+            printf("FAIL (state=%s)\n",
+                async_op_state_str(async_op_get_state(&op)));
+            failures++;
+        }
+        async_op_free(&op);
+        async_queue_free(&q);
     }
 
     printf("\n%s (%d failures)\n", failures ? "SOME TESTS FAILED" : "ALL TESTS PASSED", failures);
