@@ -1447,6 +1447,66 @@ int main(void)
         transaction_free(&tx);
     }
 
+    printf("script_num roundtrip... ");
+    {
+        int64_t values[] = {0, 1, -1, 127, -128, 255, -255, 32767, -32768,
+                            2147483647LL, -2147483647LL};
+        bool ok = true;
+        for (int i = 0; i < 11; i++) {
+            struct script_num sn = script_num_from_int(values[i]);
+            unsigned char buf[8];
+            size_t len = script_num_serialize(&sn, buf, sizeof(buf));
+            struct script_num sn2;
+            if (!script_num_from_bytes(&sn2, buf, len, true, 8) ||
+                sn2.value != values[i]) {
+                ok = false; break;
+            }
+        }
+        if (ok)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("script_get_op... ");
+    {
+        struct script s;
+        script_init(&s);
+        script_push_op(&s, OP_DUP);
+        unsigned char payload[] = {0xAA, 0xBB};
+        script_push_data(&s, payload, 2);
+        script_push_op(&s, OP_CHECKSIG);
+
+        size_t pc = 0;
+        enum opcodetype op;
+        unsigned char data[520];
+        size_t datalen;
+        bool ok = true;
+        ok &= script_get_op(&s, &pc, &op, data, &datalen);
+        ok &= (op == OP_DUP && datalen == 0);
+        ok &= script_get_op(&s, &pc, &op, data, &datalen);
+        ok &= (datalen == 2 && data[0] == 0xAA && data[1] == 0xBB);
+        ok &= script_get_op(&s, &pc, &op, data, &datalen);
+        ok &= (op == OP_CHECKSIG);
+        ok &= (pc == s.size);
+        if (ok)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("script_is_push_only... ");
+    {
+        struct script s;
+        script_init(&s);
+        unsigned char data[] = {1, 2, 3};
+        script_push_data(&s, data, 3);
+        if (script_is_push_only(&s)) {
+            script_push_op(&s, OP_CHECKSIG);
+            if (!script_is_push_only(&s))
+                printf("OK\n");
+            else { printf("FAIL (non-push passed)\n"); failures++; }
+        } else { printf("FAIL (push-only failed)\n"); failures++; }
+    }
+
     printf("sigencoding valid DER... ");
     {
         unsigned char sig[70];
