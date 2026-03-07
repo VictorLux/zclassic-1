@@ -1,11 +1,13 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Sapling key operations — pure C23 implementation.
- * group_hash derivation, key generation, commitment, nullifier. */
+ * group_hash, key derivation, commitment, nullifier, RedJubjub, verification context. */
 
 #include "zcash/sapling.h"
 #include "zcash/pedersen_hash.h"
+#include "zcash/jubjub.h"
 #include "crypto/blake2s.h"
+#include "crypto/blake2b.h"
 #include <string.h>
 
 /* URS: first 64 bytes of BLAKE2s input for group_hash (rigidity constant) */
@@ -299,4 +301,209 @@ bool sapling_compute_nf(const uint8_t diversifier[11], const uint8_t pk_d[32],
     blake2s_update(&ctx, rho_bytes, 32);
     blake2s_final(&ctx, nf, 32);
     return true;
+}
+
+/* --- RedJubjub signature verification --- */
+
+/* H* = BLAKE2b-512("Zcash_RedJubjubH", a || b) → reduce to Fs via to_uniform */
+static void h_star(const uint8_t *a, size_t a_len,
+                    const uint8_t *b, size_t b_len,
+                    uint8_t scalar[32])
+{
+    static const uint8_t personal[16] = {'Z','c','a','s','h','_','R','e','d','J','u','b','j','u','b','H'};
+    uint8_t digest[64];
+    struct blake2b_ctx ctx;
+    blake2b_init_salt_personal(&ctx, 64, NULL, 0, NULL, personal);
+    blake2b_update(&ctx, a, a_len);
+    blake2b_update(&ctx, b, b_len);
+    blake2b_final(&ctx, digest, 64);
+    jubjub_to_scalar(digest, scalar);
+}
+
+/* Check if point has small order: [8]*p == identity */
+static bool is_small_order(const uint8_t point_bytes[32])
+{
+    struct jub_point p;
+    if (!jub_from_bytes(&p, point_bytes))
+        return true;
+    struct jub_point cofactored;
+    jub_mul_by_cofactor(&cofactored, &p);
+    return jub_is_identity(&cofactored);
+}
+
+bool redjubjub_verify(const uint8_t vk_bytes[32],
+                       const uint8_t msg[64],
+                       const uint8_t sig_rbar[32],
+                       const uint8_t sig_sbar[32],
+                       int generator_idx)
+{
+    ensure_fixed_generators();
+
+    /* Deserialize vk */
+    struct jub_point vk;
+    if (!jub_from_bytes(&vk, vk_bytes))
+        return false;
+
+    /* Deserialize R */
+    struct jub_point R;
+    if (!jub_from_bytes(&R, sig_rbar))
+        return false;
+
+    /* c = H*(Rbar || msg) */
+    uint8_t c_scalar[32];
+    h_star(sig_rbar, 32, msg, 64, c_scalar);
+
+    /* S as scalar bytes */
+    /* Check S < Fs order (optional, Rust checks via from_repr) */
+
+    /* Verify: [8] * (R + c*vk - S*G) == 0
+     * Equivalently: [8] * (-S*G + R + c*vk) == 0 */
+
+    /* c * vk */
+    struct jub_point c_vk;
+    jub_scalar_mul(&c_vk, &vk, c_scalar);
+
+    /* S * G */
+    struct jub_point s_g;
+    jub_scalar_mul(&s_g, &fixed_generators[generator_idx], sig_sbar);
+
+    /* -S*G */
+    struct jub_point neg_s_g;
+    jub_neg(&neg_s_g, &s_g);
+
+    /* R + c*vk + (-S*G) */
+    struct jub_point sum;
+    jub_add(&sum, &R, &c_vk);
+    jub_add(&sum, &sum, &neg_s_g);
+
+    /* [8] * sum */
+    struct jub_point result;
+    jub_mul_by_cofactor(&result, &sum);
+
+    return jub_is_identity(&result);
+}
+
+/* --- Sapling verification context --- */
+
+void sapling_verification_ctx_init(struct sapling_verification_ctx *ctx)
+{
+    jub_identity(&ctx->bvk);
+}
+
+bool sapling_check_spend(struct sapling_verification_ctx *ctx,
+                          const uint8_t cv[32],
+                          const uint8_t anchor[32],
+                          const uint8_t nullifier[32],
+                          const uint8_t rk[32],
+                          const uint8_t zkproof[192],
+                          const uint8_t spend_auth_sig[64],
+                          const uint8_t sighash[32])
+{
+    ensure_fixed_generators();
+    (void)anchor; (void)nullifier; (void)zkproof; /* Groth16 verification TODO */
+
+    /* Deserialize cv */
+    struct jub_point cv_point;
+    if (!jub_from_bytes(&cv_point, cv))
+        return false;
+
+    /* Small order check */
+    if (is_small_order(cv))
+        return false;
+
+    /* Accumulate cv into bvk */
+    jub_add(&ctx->bvk, &ctx->bvk, &cv_point);
+
+    /* Small order check on rk */
+    if (is_small_order(rk))
+        return false;
+
+    /* Verify spend_auth_sig: msg = rk || sighash */
+    uint8_t data_to_sign[64];
+    memcpy(data_to_sign, rk, 32);
+    memcpy(data_to_sign + 32, sighash, 32);
+
+    if (!redjubjub_verify(rk, data_to_sign,
+                           spend_auth_sig, spend_auth_sig + 32,
+                           GEN_SPENDING_KEY))
+        return false;
+
+    /* TODO: Groth16 proof verification */
+    return true;
+}
+
+bool sapling_check_output(struct sapling_verification_ctx *ctx,
+                           const uint8_t cv[32],
+                           const uint8_t cm[32],
+                           const uint8_t epk[32],
+                           const uint8_t zkproof[192])
+{
+    (void)cm; (void)epk; (void)zkproof; /* Groth16 verification TODO */
+
+    /* Deserialize cv */
+    struct jub_point cv_point;
+    if (!jub_from_bytes(&cv_point, cv))
+        return false;
+
+    /* Small order check */
+    if (is_small_order(cv))
+        return false;
+
+    /* Subtract cv from bvk (outputs are negative) */
+    struct jub_point neg_cv;
+    jub_neg(&neg_cv, &cv_point);
+    jub_add(&ctx->bvk, &ctx->bvk, &neg_cv);
+
+    /* TODO: Groth16 proof verification */
+    return true;
+}
+
+bool sapling_final_check(struct sapling_verification_ctx *ctx,
+                          int64_t value_balance,
+                          const uint8_t binding_sig[64],
+                          const uint8_t sighash[32])
+{
+    ensure_fixed_generators();
+
+    /* Compute value balance point: value_balance * ValueCommitmentValue */
+    struct jub_point value_pt;
+    if (value_balance == 0) {
+        jub_identity(&value_pt);
+    } else {
+        uint64_t abs_val;
+        bool negate;
+        if (value_balance > 0) {
+            abs_val = (uint64_t)value_balance;
+            negate = false;
+        } else {
+            abs_val = (uint64_t)(-value_balance);
+            negate = true;
+        }
+        uint8_t scalar[32] = {0};
+        for (int i = 0; i < 8; i++)
+            scalar[i] = (uint8_t)(abs_val >> (i * 8));
+
+        jub_scalar_mul(&value_pt, &fixed_generators[GEN_VALUE_COMMITMENT_VALUE], scalar);
+        if (negate)
+            jub_neg(&value_pt, &value_pt);
+    }
+
+    /* bvk = bvk - value_balance */
+    struct jub_point neg_value_pt;
+    jub_neg(&neg_value_pt, &value_pt);
+    struct jub_point final_bvk;
+    jub_add(&final_bvk, &ctx->bvk, &neg_value_pt);
+
+    /* Compute msg = bvk_compressed || sighash */
+    uint8_t bvk_bytes[32];
+    jub_to_bytes(bvk_bytes, &final_bvk);
+
+    uint8_t data_to_sign[64];
+    memcpy(data_to_sign, bvk_bytes, 32);
+    memcpy(data_to_sign + 32, sighash, 32);
+
+    /* Verify binding sig with ValueCommitmentRandomness generator */
+    return redjubjub_verify(bvk_bytes, data_to_sign,
+                             binding_sig, binding_sig + 32,
+                             GEN_VALUE_COMMITMENT_RANDOMNESS);
 }

@@ -104,6 +104,8 @@
 #include "crypto/blake2s.h"
 #include "zcash/pedersen_hash.h"
 #include "zcash/sapling.h"
+#include "zcash/jubjub.h"
+#include "crypto/blake2b.h"
 
 static int test_tip_count = 0;
 static int test_tip_height = 0;
@@ -6682,6 +6684,80 @@ int main(void)
             printf("  exp: "); for(int i=0;i<32;i++)printf("%02x",expected_nf[i]); printf("\n");
             failures++;
         }
+    }
+
+    /* --- RedJubjub sign/verify roundtrip --- */
+    printf("redjubjub sign/verify roundtrip... ");
+    {
+        /* Use ask (derived from sk=0) as private key */
+        struct uint256 sk_val;
+        memset(sk_val.data, 0, 32);
+        struct uint256 ask_val;
+        prf_ask(&sk_val, &ask_val);
+
+        /* ak = ask * SpendingKeyGenerator (public key) */
+        uint8_t ak[32];
+        sapling_ask_to_ak(ask_val.data, ak);
+
+        /* Message to sign */
+        uint8_t msg[64];
+        memset(msg, 0x42, 64);
+
+        /* Sign: R = r * G, S = r + H*(Rbar || msg) * ask mod Fs */
+        /* Use deterministic r for reproducibility */
+        struct fs r_scalar, ask_fs;
+        fs_from_bytes(&ask_fs, ask_val.data);
+        fs_zero(&r_scalar);
+        r_scalar.d[0] = 7;
+
+        /* R = r * SpendingKeyGenerator */
+        uint8_t r_bytes[32];
+        fs_to_bytes(r_bytes, &r_scalar);
+        uint8_t rbar[32];
+        {
+            uint8_t one_scalar[32] = {1};
+            uint8_t G_bytes[32];
+            sapling_ask_to_ak(one_scalar, G_bytes);
+            struct jub_point G_pt;
+            jub_from_bytes(&G_pt, G_bytes);
+            struct jub_point R_pt;
+            jub_scalar_mul(&R_pt, &G_pt, r_bytes);
+            jub_to_bytes(rbar, &R_pt);
+        }
+
+        /* c = H*(Rbar || msg) via BLAKE2b-512 → to_scalar */
+        uint8_t c_bytes[32];
+        {
+            uint8_t personal[16] = {'Z','c','a','s','h','_','R','e','d','J','u','b','j','u','b','H'};
+            uint8_t digest[64];
+            struct blake2b_ctx bctx;
+            blake2b_init_salt_personal(&bctx, 64, NULL, 0, NULL, personal);
+            blake2b_update(&bctx, rbar, 32);
+            blake2b_update(&bctx, msg, 64);
+            blake2b_final(&bctx, digest, 64);
+            jubjub_to_scalar(digest, c_bytes);
+        }
+
+        /* S = r + c * ask mod Fs */
+        struct fs c_fs, product, sbar_fs;
+        fs_from_bytes(&c_fs, c_bytes);
+        fs_mul(&product, &c_fs, &ask_fs);
+        fs_add(&sbar_fs, &r_scalar, &product);
+
+        uint8_t sbar[32];
+        fs_to_bytes(sbar, &sbar_fs);
+
+        /* Verify the signature */
+        bool ok = redjubjub_verify(ak, msg, rbar, sbar, 5);
+
+        /* Also verify bad signature is rejected */
+        uint8_t bad_sbar[32];
+        memcpy(bad_sbar, sbar, 32);
+        bad_sbar[0] ^= 1;
+        bool bad_ok = redjubjub_verify(ak, msg, rbar, bad_sbar, 5);
+
+        if (ok && !bad_ok) printf("OK\n");
+        else { printf("FAIL (valid=%d, tampered=%d)\n", ok, bad_ok); failures++; }
     }
 
     printf("\n%s (%d failures)\n", failures ? "SOME TESTS FAILED" : "ALL TESTS PASSED", failures);

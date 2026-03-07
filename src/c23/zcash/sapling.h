@@ -55,4 +55,42 @@ bool sapling_compute_nf(const uint8_t diversifier[11], const uint8_t pk_d[32],
                          const uint8_t ak[32], const uint8_t nk[32],
                          uint64_t position, uint8_t nf[32]);
 
+/* RedJubjub signature verification.
+ * generator_idx: 5 for SpendingKey (spend_auth_sig), 4 for ValueCommitmentRandomness (binding_sig) */
+bool redjubjub_verify(const uint8_t vk_bytes[32],
+                       const uint8_t msg[64],
+                       const uint8_t sig_rbar[32],
+                       const uint8_t sig_sbar[32],
+                       int generator_idx);
+
+/* Sapling verification context (accumulates value commitments for balance check) */
+struct sapling_verification_ctx {
+    struct jub_point bvk; /* accumulated value commitment balance */
+};
+
+void sapling_verification_ctx_init(struct sapling_verification_ctx *ctx);
+
+/* Check spend: accumulate cv, verify spend_auth_sig. Groth16 proof TODO. */
+bool sapling_check_spend(struct sapling_verification_ctx *ctx,
+                          const uint8_t cv[32],
+                          const uint8_t anchor[32],
+                          const uint8_t nullifier[32],
+                          const uint8_t rk[32],
+                          const uint8_t zkproof[192],
+                          const uint8_t spend_auth_sig[64],
+                          const uint8_t sighash[32]);
+
+/* Check output: accumulate -cv. Groth16 proof TODO. */
+bool sapling_check_output(struct sapling_verification_ctx *ctx,
+                           const uint8_t cv[32],
+                           const uint8_t cm[32],
+                           const uint8_t epk[32],
+                           const uint8_t zkproof[192]);
+
+/* Final check: verify binding signature matches value balance */
+bool sapling_final_check(struct sapling_verification_ctx *ctx,
+                          int64_t value_balance,
+                          const uint8_t binding_sig[64],
+                          const uint8_t sighash[32]);
+
 #endif

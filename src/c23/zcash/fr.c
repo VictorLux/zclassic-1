@@ -612,4 +612,68 @@ void fs_to_bytes(uint8_t s[32], const struct fs *a)
             s[i * 8 + j] = (uint8_t)(a->d[i] >> (j * 8));
 }
 
+bool fs_from_bytes(struct fs *r, const uint8_t s[32])
+{
+    for (int i = 0; i < 4; i++) {
+        r->d[i] = 0;
+        for (int j = 0; j < 8; j++)
+            r->d[i] |= (uint64_t)s[i * 8 + j] << (j * 8);
+    }
+    return !fr_gte(r->d, FS_S);
+}
+
+/* Montgomery multiplication for Fs field */
+static const uint64_t FS_INV = 0x1ba3a358ef788ef9ULL;
+static const uint64_t FS_R2[4] = {
+    0x67719aa495e57731ULL, 0x51b0cef09ce3fc26ULL,
+    0x69dab7fac026e9a5ULL, 0x04f6547b8d127688ULL
+};
+
+static void fs_mont_mul(uint64_t r[4], const uint64_t a[4], const uint64_t b[4])
+{
+    uint64_t t[5] = {0};
+    for (int i = 0; i < 4; i++) {
+        unsigned __int128 carry = 0;
+        for (int j = 0; j < 4; j++) {
+            unsigned __int128 prod = (unsigned __int128)a[j] * b[i] + t[j] + carry;
+            t[j] = (uint64_t)prod;
+            carry = prod >> 64;
+        }
+        t[4] = (uint64_t)carry;
+
+        uint64_t m = t[0] * FS_INV;
+        carry = 0;
+        unsigned __int128 prod0 = (unsigned __int128)m * FS_S[0] + t[0];
+        carry = prod0 >> 64;
+        for (int j = 1; j < 4; j++) {
+            unsigned __int128 prod = (unsigned __int128)m * FS_S[j] + t[j] + carry;
+            t[j - 1] = (uint64_t)prod;
+            carry = prod >> 64;
+        }
+        unsigned __int128 sum = (unsigned __int128)t[4] + carry;
+        t[3] = (uint64_t)sum;
+        t[4] = (uint64_t)(sum >> 64);
+    }
+    if (t[4] || fr_gte(t, FS_S))
+        fr_sub_noborrow(r, t, FS_S);
+    else
+        memcpy(r, t, 32);
+}
+
+void fs_mul(struct fs *r, const struct fs *a, const struct fs *b)
+{
+    /* Convert a and b to Montgomery form, multiply, convert back.
+     * Or: compute a*b*R^{-1} by converting both to Montgomery first.
+     * Actually, since a and b are raw (not Montgomery), we need:
+     * result = a * b mod s
+     * = mont_mul(mont_mul(a, R2), b)  [convert a to Montgomery, then mul by b]
+     * But that gives a*R * b * R^{-1} = a*b. Wait, no.
+     * mont_mul(a, R2) = a * R^2 * R^{-1} = a * R = a in Montgomery form
+     * mont_mul(a_mont, b) = a*R * b * R^{-1} = a * b
+     * So the result is a*b in raw form. */
+    uint64_t a_mont[4];
+    fs_mont_mul(a_mont, a->d, FS_R2);
+    fs_mont_mul(r->d, a_mont, b->d);
+}
+
 #pragma GCC diagnostic pop

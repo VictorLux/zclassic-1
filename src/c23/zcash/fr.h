@@ -71,5 +71,7 @@ void fs_add(struct fs *r, const struct fs *a, const struct fs *b);
 void fs_neg(struct fs *r, const struct fs *a);
 bool fs_is_zero(const struct fs *a);
 void fs_to_bytes(uint8_t s[32], const struct fs *a);
+bool fs_from_bytes(struct fs *r, const uint8_t s[32]);
+void fs_mul(struct fs *r, const struct fs *a, const struct fs *b);
 
 #endif
