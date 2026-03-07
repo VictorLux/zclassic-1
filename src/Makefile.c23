@@ -47,6 +47,7 @@ CORE_SRCS = \
 	script/sigencoding_c.c \
 	script/interpreter_c.c \
 	script/sigcache_c.c \
+	key_io_c.c \
 	support/pagelocker_c.c
 
 ALL_SRCS = $(CRYPTO_SRCS) $(CORE_SRCS)

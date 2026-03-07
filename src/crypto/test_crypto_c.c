@@ -51,6 +51,7 @@
 #include "script/interpreter_c.h"
 #include "script/sigcache_c.h"
 #include "consensus/validation_c.h"
+#include "key_io_c.h"
 
 static int check_hex(const unsigned char *data, size_t len, const char *expected)
 {
@@ -1729,6 +1730,73 @@ int main(void)
         }
         if (zeroed)
             printf("OK (memory cleansed)\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("encode_destination pubkey... ");
+    {
+        const unsigned char pubkey_pfx[] = {0x1C, 0xB8};
+        const unsigned char script_pfx[] = {0x1C, 0xBD};
+        struct tx_destination dest;
+        dest.type = DEST_KEY_ID;
+        memset(dest.id.key.id.data, 0x01, 20);
+        char addr[64];
+        if (encode_destination(&dest, pubkey_pfx, 2, script_pfx, 2, addr, sizeof(addr)) &&
+            strlen(addr) > 20) {
+            struct tx_destination decoded;
+            if (decode_destination(addr, pubkey_pfx, 2, script_pfx, 2, &decoded) &&
+                decoded.type == DEST_KEY_ID &&
+                memcmp(decoded.id.key.id.data, dest.id.key.id.data, 20) == 0)
+                printf("OK\n");
+            else { printf("FAIL (decode mismatch)\n"); failures++; }
+        } else { printf("FAIL (encode)\n"); failures++; }
+    }
+
+    printf("encode_destination script... ");
+    {
+        const unsigned char pubkey_pfx[] = {0x1C, 0xB8};
+        const unsigned char script_pfx[] = {0x1C, 0xBD};
+        struct tx_destination dest;
+        dest.type = DEST_SCRIPT_ID;
+        memset(dest.id.script.hash.data, 0xAB, 20);
+        char addr[64];
+        if (encode_destination(&dest, pubkey_pfx, 2, script_pfx, 2, addr, sizeof(addr))) {
+            struct tx_destination decoded;
+            if (decode_destination(addr, pubkey_pfx, 2, script_pfx, 2, &decoded) &&
+                decoded.type == DEST_SCRIPT_ID &&
+                memcmp(decoded.id.script.hash.data, dest.id.script.hash.data, 20) == 0)
+                printf("OK\n");
+            else { printf("FAIL (decode mismatch)\n"); failures++; }
+        } else { printf("FAIL (encode)\n"); failures++; }
+    }
+
+    printf("encode/decode_secret roundtrip... ");
+    {
+        const unsigned char secret_pfx[] = {0x80};
+        struct privkey key;
+        privkey_init(&key);
+        memset(key.vch, 0x42, 32);
+        key.fValid = true;
+        key.fCompressed = true;
+        char wif[64];
+        if (encode_secret(&key, secret_pfx, 1, wif, sizeof(wif))) {
+            struct privkey decoded;
+            if (decode_secret(wif, secret_pfx, 1, &decoded) &&
+                decoded.fCompressed == true &&
+                memcmp(decoded.vch, key.vch, 32) == 0)
+                printf("OK\n");
+            else { printf("FAIL (decode mismatch)\n"); failures++; }
+        } else { printf("FAIL (encode)\n"); failures++; }
+    }
+
+    printf("decode_destination invalid... ");
+    {
+        const unsigned char pubkey_pfx[] = {0x1C, 0xB8};
+        const unsigned char script_pfx[] = {0x1C, 0xBD};
+        struct tx_destination dest;
+        dest.type = DEST_KEY_ID;
+        if (!decode_destination("1invalidaddress", pubkey_pfx, 2, script_pfx, 2, &dest))
+            printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
 
