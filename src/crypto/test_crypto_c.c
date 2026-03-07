@@ -50,6 +50,7 @@
 #include "support/pagelocker_c.h"
 #include "script/interpreter_c.h"
 #include "script/sigcache_c.h"
+#include "consensus/validation_c.h"
 
 static int check_hex(const unsigned char *data, size_t len, const char *expected)
 {
@@ -1661,6 +1662,22 @@ int main(void)
                 printf("OK\n");
             else { printf("FAIL (value=%" PRId64 ")\n", sn.value); failures++; }
         } else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("validation_state... ");
+    {
+        struct validation_state vs;
+        validation_state_init(&vs);
+        if (validation_state_is_valid(&vs)) {
+            validation_state_dos(&vs, 10, false, REJECT_INVALID,
+                                 "bad-txns", false, NULL);
+            int dos = 0;
+            if (validation_state_is_invalid(&vs) &&
+                validation_state_get_dos(&vs, &dos) && dos == 10 &&
+                strcmp(vs.reject_reason, "bad-txns") == 0)
+                printf("OK\n");
+            else { printf("FAIL\n"); failures++; }
+        } else { printf("FAIL (init)\n"); failures++; }
     }
 
     printf("sigcache set/get/erase... ");
