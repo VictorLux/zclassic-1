@@ -13,47 +13,47 @@ CRYPTO_SRCS = \
 
 CORE_SRCS = \
 	core/uint256.c core/arith_uint256.c core/hash.c core/amount.c \
-	core/serialize_c.c core/random.c core/utiltime.c
+	core/serialize.c core/random.c core/utiltime.c
 
 ENCODING_SRCS = \
 	encoding/base58.c encoding/bech32.c \
 	encoding/utilstrencodings.c encoding/utilmoneystr.c
 
 SCRIPT_SRCS = \
-	script/script_error.c script/script_c.c script/standard_c.c \
-	script/sigencoding_c.c script/interpreter_c.c script/sigcache_c.c \
-	script/zcashconsensus_c.c
+	script/script_error.c script/script.c script/standard.c \
+	script/sigencoding.c script/interpreter.c script/sigcache.c \
+	script/zcashconsensus.c
 
 CONSENSUS_SRCS = \
 	consensus/params.c consensus/upgrades.c
 
 PRIMITIVES_SRCS = \
-	primitives/transaction_c.c primitives/block_c.c
+	primitives/transaction.c primitives/block.c
 
 NET_SRCS = \
-	net/netaddr.c net/netbase_c.c net/protocol_c.c \
-	net/p2p_message_c.c net/addrman_c.c net/net_c.c
+	net/netaddr.c net/netbase.c net/protocol.c \
+	net/p2p_message.c net/addrman.c net/net.c
 
 CHAIN_SRCS = \
-	chain/chain_c.c chain/pow_c.c chain/checkpoints_c.c \
-	chain/chainparams_c.c chain/chainparamsbase.c chain/subsidy_c.c
+	chain/chain.c chain/pow.c chain/checkpoints.c \
+	chain/chainparams.c chain/chainparamsbase.c chain/subsidy.c
 
 KEYS_SRCS = \
-	keys/pubkey_c.c keys/key_c.c keys/key_io_c.c
+	keys/pubkey.c keys/key.c keys/key_io.c
 
 VALIDATION_SRCS = \
-	validation/check_transaction_c.c validation/contextual_check_tx_c.c \
-	validation/sigops_c.c validation/sighash_c.c validation/tx_verifier_c.c \
-	validation/validationinterface_c.c
+	validation/check_transaction.c validation/contextual_check_tx.c \
+	validation/sigops.c validation/sighash.c validation/tx_verifier.c \
+	validation/validationinterface.c
 
 SUPPORT_SRCS = \
-	support/cleanse.c support/pagelocker_c.c
+	support/cleanse.c support/pagelocker.c
 
 BLOOM_SRCS = \
-	bloom/bloom_c.c bloom/merkle_c.c bloom/merkleblock_c.c
+	bloom/bloom.c bloom/merkle.c bloom/merkleblock.c
 
 COINS_SRCS = \
-	coins/coins_c.c coins/compressor_c.c
+	coins/coins.c coins/compressor.c
 
 UTIL_SRCS = \
 	util/util.c util/scheduler.c util/sync.c util/timedata.c \
