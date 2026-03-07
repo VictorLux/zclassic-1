@@ -41,7 +41,8 @@ CORE_SRCS = \
 	primitives/transaction_c.c \
 	bloom_c.c \
 	merkle_c.c \
-	coins_c.c
+	coins_c.c \
+	serialize_c.c
 
 ALL_SRCS = $(CRYPTO_SRCS) $(CORE_SRCS)
 ALL_OBJS = $(ALL_SRCS:.c=.o)

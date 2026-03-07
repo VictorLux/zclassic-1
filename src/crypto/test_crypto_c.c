@@ -44,6 +44,7 @@
 #include "merkle_c.h"
 #include "script/sighashtype_c.h"
 #include "coins_c.h"
+#include "serialize_c.h"
 
 static int check_hex(const unsigned char *data, size_t len, const char *expected)
 {
@@ -1247,6 +1248,81 @@ int main(void)
         else { printf("FAIL\n"); failures++; }
         coins_free(&c);
         transaction_free(&tx);
+    }
+
+    printf("stream write/read u32... ");
+    {
+        struct byte_stream s;
+        stream_init(&s, 64);
+        stream_write_u32_le(&s, 0xDEADBEEF);
+        stream_write_u32_le(&s, 0x12345678);
+        s.read_pos = 0;
+        uint32_t v1, v2;
+        stream_read_u32_le(&s, &v1);
+        stream_read_u32_le(&s, &v2);
+        if (v1 == 0xDEADBEEF && v2 == 0x12345678 && s.size == 8)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+        stream_free(&s);
+    }
+
+    printf("stream compact_size roundtrip... ");
+    {
+        struct byte_stream s;
+        stream_init(&s, 64);
+        stream_write_compact_size(&s, 0);
+        stream_write_compact_size(&s, 252);
+        stream_write_compact_size(&s, 253);
+        stream_write_compact_size(&s, 0x10000);
+        stream_write_compact_size(&s, 0x100000000ULL);
+        s.read_pos = 0;
+        uint64_t v;
+        bool ok = true;
+        stream_read_compact_size(&s, &v); ok &= (v == 0);
+        stream_read_compact_size(&s, &v); ok &= (v == 252);
+        stream_read_compact_size(&s, &v); ok &= (v == 253);
+        stream_read_compact_size(&s, &v); ok &= (v == 0x10000);
+        stream_read_compact_size(&s, &v); ok &= (v == 0x100000000ULL);
+        if (ok && !s.error)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+        stream_free(&s);
+    }
+
+    printf("stream varint roundtrip... ");
+    {
+        struct byte_stream s;
+        stream_init(&s, 64);
+        stream_write_varint(&s, 0);
+        stream_write_varint(&s, 127);
+        stream_write_varint(&s, 128);
+        stream_write_varint(&s, 0xFFFF);
+        stream_write_varint(&s, 0xFFFFFFFFULL);
+        s.read_pos = 0;
+        uint64_t v;
+        bool ok = true;
+        stream_read_varint(&s, &v); ok &= (v == 0);
+        stream_read_varint(&s, &v); ok &= (v == 127);
+        stream_read_varint(&s, &v); ok &= (v == 128);
+        stream_read_varint(&s, &v); ok &= (v == 0xFFFF);
+        stream_read_varint(&s, &v); ok &= (v == 0xFFFFFFFFULL);
+        if (ok && !s.error)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+        stream_free(&s);
+    }
+
+    printf("stream from_data read-only... ");
+    {
+        unsigned char data[] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08};
+        struct byte_stream s;
+        stream_init_from_data(&s, data, sizeof(data));
+        uint32_t v1, v2;
+        stream_read_u32_le(&s, &v1);
+        stream_read_u32_le(&s, &v2);
+        if (v1 == 0x04030201 && v2 == 0x08070605 && stream_remaining(&s) == 0)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
     }
 
     printf("ecc_init_sanity_check... ");
