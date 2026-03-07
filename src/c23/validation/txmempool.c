@@ -5,7 +5,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "validation/txmempool.h"
-#include "validation/check_transaction.h"
+#include "validation/contextual_check_tx.h"
 #include "core/serialize.h"
 #include <stdlib.h>
 #include <string.h>
@@ -231,7 +231,7 @@ bool tx_mempool_add_unchecked(struct tx_mempool *pool,
 
     for (size_t i = 0; i < e->tx.num_vin; i++) {
         struct outpoint op;
-        op.hash = e->tx.vin[i].prev_hash;
+        op.hash = e->tx.vin[i].prevout.hash;
         op.n = e->tx.vin[i].prevout.n;
         struct inpoint ip = { idx, (uint32_t)i };
         outpoint_insert(pool->next_tx, pool->next_tx_cap, &op, &ip);
@@ -275,7 +275,7 @@ static void remove_entry_at(struct tx_mempool *pool, size_t idx)
 
     for (size_t i = 0; i < e->tx.num_vin; i++) {
         struct outpoint op;
-        op.hash = e->tx.vin[i].prev_hash;
+        op.hash = e->tx.vin[i].prevout.hash;
         op.n = e->tx.vin[i].prevout.n;
         outpoint_remove(pool->next_tx, pool->next_tx_cap, &op);
     }
@@ -293,7 +293,7 @@ static void remove_entry_at(struct tx_mempool *pool, size_t idx)
         struct mempool_entry *moved = &pool->entries[idx];
         for (size_t i = 0; i < moved->tx.num_vin; i++) {
             struct outpoint op;
-            op.hash = moved->tx.vin[i].prev_hash;
+            op.hash = moved->tx.vin[i].prevout.hash;
             op.n = moved->tx.vin[i].prevout.n;
             struct outpoint_map_entry *found =
                 outpoint_find(pool->next_tx, pool->next_tx_cap, &op);
@@ -317,7 +317,7 @@ void tx_mempool_remove_expired(struct tx_mempool *pool,
 {
     zcl_mutex_lock(&pool->cs);
     for (size_t i = 0; i < pool->num_entries; ) {
-        if (is_expired_tx(&pool->entries[i].tx, block_height)) {
+        if (is_expired_tx(&pool->entries[i].tx, (int)block_height)) {
             remove_entry_at(pool, i);
         } else {
             i++;
