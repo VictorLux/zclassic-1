@@ -5074,6 +5074,315 @@ int main(void)
         }
     }
 
+    /* --- Sapling v4 transaction roundtrip with shielded data --- */
+    printf("sapling v4 tx roundtrip (spend+output+joinsplit)... ");
+    {
+        struct transaction tx;
+        transaction_init(&tx);
+        tx.overwintered = true;
+        tx.version = SAPLING_TX_VERSION;
+        tx.version_group_id = SAPLING_VERSION_GROUP_ID;
+        tx.lock_time = 500000;
+        tx.expiry_height = 500100;
+        tx.value_balance = 10000;
+
+        transaction_alloc(&tx, 1, 1);
+        tx.vin[0].sequence = 0xfffffffe;
+        memset(tx.vin[0].prevout.hash.data, 0xab, 32);
+        tx.vin[0].prevout.n = 0;
+        tx.vin[0].script_sig.data[0] = 0x00;
+        tx.vin[0].script_sig.size = 1;
+        tx.vout[0].value = 50000;
+        tx.vout[0].script_pub_key.data[0] = 0x76;
+        tx.vout[0].script_pub_key.data[1] = 0xa9;
+        tx.vout[0].script_pub_key.size = 2;
+
+        tx.v_shielded_spend = calloc(1, sizeof(struct spend_description));
+        tx.num_shielded_spend = 1;
+        memset(tx.v_shielded_spend[0].cv.data, 0x11, 32);
+        memset(tx.v_shielded_spend[0].anchor.data, 0x22, 32);
+        memset(tx.v_shielded_spend[0].nullifier.data, 0x33, 32);
+        memset(tx.v_shielded_spend[0].rk.data, 0x44, 32);
+        memset(tx.v_shielded_spend[0].zkproof, 0x55, GROTH_PROOF_SIZE);
+        memset(tx.v_shielded_spend[0].spend_auth_sig, 0x66, 64);
+
+        tx.v_shielded_output = calloc(1, sizeof(struct output_description));
+        tx.num_shielded_output = 1;
+        memset(tx.v_shielded_output[0].cv.data, 0x77, 32);
+        memset(tx.v_shielded_output[0].cm.data, 0x88, 32);
+        memset(tx.v_shielded_output[0].ephemeral_key.data, 0x99, 32);
+        memset(tx.v_shielded_output[0].enc_ciphertext, 0xaa, ZC_SAPLING_ENCCIPHERTEXT_SIZE);
+        memset(tx.v_shielded_output[0].out_ciphertext, 0xbb, ZC_SAPLING_OUTCIPHERTEXT_SIZE);
+        memset(tx.v_shielded_output[0].zkproof, 0xcc, GROTH_PROOF_SIZE);
+
+        tx.v_joinsplit = calloc(1, sizeof(struct js_description));
+        tx.num_joinsplit = 1;
+        tx.v_joinsplit[0].vpub_old = 1000;
+        tx.v_joinsplit[0].vpub_new = 2000;
+        memset(tx.v_joinsplit[0].anchor.data, 0xdd, 32);
+        tx.v_joinsplit[0].use_groth = true;
+        memset(tx.v_joinsplit[0].proof, 0xee, GROTH_PROOF_SIZE);
+        for (int i = 0; i < ZC_NUM_JS_INPUTS; i++)
+            memset(tx.v_joinsplit[0].nullifiers[i].data, 0x10 + i, 32);
+        for (int i = 0; i < ZC_NUM_JS_OUTPUTS; i++)
+            memset(tx.v_joinsplit[0].commitments[i].data, 0x20 + i, 32);
+        memset(tx.v_joinsplit[0].ephemeral_key.data, 0x30, 32);
+        memset(tx.v_joinsplit[0].random_seed.data, 0x40, 32);
+        for (int i = 0; i < ZC_NUM_JS_INPUTS; i++)
+            memset(tx.v_joinsplit[0].macs[i].data, 0x50 + i, 32);
+        for (int i = 0; i < ZC_NUM_JS_OUTPUTS; i++)
+            memset(tx.v_joinsplit[0].ciphertexts[i], 0x60 + i, ZC_SPROUT_CIPHERTEXT_SIZE);
+
+        memset(tx.joinsplit_pubkey.data, 0xf1, 32);
+        memset(tx.joinsplit_sig, 0xf2, 64);
+        memset(tx.binding_sig, 0xf3, 64);
+
+        struct byte_stream bs;
+        stream_init(&bs, 8192);
+        bool ok = transaction_serialize(&tx, &bs);
+
+        struct transaction tx2;
+        struct byte_stream bs2;
+        stream_init_from_data(&bs2, bs.data, bs.size);
+        ok = ok && transaction_deserialize(&tx2, &bs2);
+        ok = ok && (bs2.read_pos == bs.size);
+
+        ok = ok && tx2.overwintered == true;
+        ok = ok && tx2.version == SAPLING_TX_VERSION;
+        ok = ok && tx2.version_group_id == SAPLING_VERSION_GROUP_ID;
+        ok = ok && tx2.lock_time == 500000;
+        ok = ok && tx2.expiry_height == 500100;
+        ok = ok && tx2.value_balance == 10000;
+        ok = ok && tx2.num_vin == 1;
+        ok = ok && tx2.num_vout == 1;
+
+        ok = ok && tx2.num_shielded_spend == 1;
+        ok = ok && tx2.v_shielded_spend[0].cv.data[0] == 0x11;
+        ok = ok && tx2.v_shielded_spend[0].anchor.data[0] == 0x22;
+        ok = ok && tx2.v_shielded_spend[0].nullifier.data[0] == 0x33;
+        ok = ok && tx2.v_shielded_spend[0].rk.data[0] == 0x44;
+        ok = ok && tx2.v_shielded_spend[0].zkproof[0] == 0x55;
+        ok = ok && tx2.v_shielded_spend[0].spend_auth_sig[0] == 0x66;
+
+        ok = ok && tx2.num_shielded_output == 1;
+        ok = ok && tx2.v_shielded_output[0].cv.data[0] == 0x77;
+        ok = ok && tx2.v_shielded_output[0].cm.data[0] == 0x88;
+        ok = ok && tx2.v_shielded_output[0].ephemeral_key.data[0] == 0x99;
+        ok = ok && tx2.v_shielded_output[0].enc_ciphertext[0] == 0xaa;
+        ok = ok && tx2.v_shielded_output[0].out_ciphertext[0] == 0xbb;
+        ok = ok && tx2.v_shielded_output[0].zkproof[0] == 0xcc;
+
+        ok = ok && tx2.num_joinsplit == 1;
+        ok = ok && tx2.v_joinsplit[0].vpub_old == 1000;
+        ok = ok && tx2.v_joinsplit[0].vpub_new == 2000;
+        ok = ok && tx2.v_joinsplit[0].anchor.data[0] == 0xdd;
+        ok = ok && tx2.v_joinsplit[0].use_groth == true;
+        ok = ok && tx2.v_joinsplit[0].proof[0] == 0xee;
+        ok = ok && tx2.v_joinsplit[0].nullifiers[0].data[0] == 0x10;
+        ok = ok && tx2.v_joinsplit[0].commitments[0].data[0] == 0x20;
+        ok = ok && tx2.v_joinsplit[0].ciphertexts[0][0] == 0x60;
+
+        ok = ok && tx2.joinsplit_pubkey.data[0] == 0xf1;
+        ok = ok && tx2.joinsplit_sig[0] == 0xf2;
+        ok = ok && tx2.binding_sig[0] == 0xf3;
+
+        struct byte_stream bs3;
+        stream_init(&bs3, 8192);
+        ok = ok && transaction_serialize(&tx2, &bs3);
+        ok = ok && (bs3.size == bs.size);
+        ok = ok && (memcmp(bs3.data, bs.data, bs.size) == 0);
+
+        if (ok) printf("OK (size=%zu)\n", bs.size);
+        else { printf("FAIL\n"); failures++; }
+
+        transaction_free(&tx);
+        transaction_free(&tx2);
+        stream_free(&bs);
+        stream_free(&bs2);
+        stream_free(&bs3);
+    }
+
+    /* --- Overwinter v3 transaction roundtrip --- */
+    printf("overwinter v3 tx roundtrip... ");
+    {
+        struct transaction tx;
+        transaction_init(&tx);
+        tx.overwintered = true;
+        tx.version = OVERWINTER_TX_VERSION;
+        tx.version_group_id = OVERWINTER_VERSION_GROUP_ID;
+        tx.lock_time = 400000;
+        tx.expiry_height = 400100;
+        transaction_alloc(&tx, 1, 1);
+        tx.vin[0].sequence = 0xffffffff;
+        tx.vin[0].script_sig.size = 0;
+        tx.vout[0].value = 100000;
+        tx.vout[0].script_pub_key.data[0] = 0x51;
+        tx.vout[0].script_pub_key.size = 1;
+
+        struct byte_stream bs;
+        stream_init(&bs, 512);
+        bool ok = transaction_serialize(&tx, &bs);
+
+        struct transaction tx2;
+        struct byte_stream bs2;
+        stream_init_from_data(&bs2, bs.data, bs.size);
+        ok = ok && transaction_deserialize(&tx2, &bs2);
+        ok = ok && (bs2.read_pos == bs.size);
+        ok = ok && tx2.overwintered == true;
+        ok = ok && tx2.version == OVERWINTER_TX_VERSION;
+        ok = ok && tx2.version_group_id == OVERWINTER_VERSION_GROUP_ID;
+        ok = ok && tx2.expiry_height == 400100;
+        ok = ok && tx2.num_shielded_spend == 0;
+        ok = ok && tx2.num_shielded_output == 0;
+        ok = ok && tx2.num_joinsplit == 0;
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+
+        transaction_free(&tx);
+        transaction_free(&tx2);
+        stream_free(&bs);
+        stream_free(&bs2);
+    }
+
+    /* --- Sapling v4 tx with only shielded outputs (no spends, no joinsplits) --- */
+    printf("sapling v4 tx shielded output only... ");
+    {
+        struct transaction tx;
+        transaction_init(&tx);
+        tx.overwintered = true;
+        tx.version = SAPLING_TX_VERSION;
+        tx.version_group_id = SAPLING_VERSION_GROUP_ID;
+        tx.lock_time = 0;
+        tx.expiry_height = 0;
+        transaction_alloc(&tx, 0, 0);
+
+        tx.v_shielded_output = calloc(2, sizeof(struct output_description));
+        tx.num_shielded_output = 2;
+        for (int i = 0; i < 2; i++) {
+            memset(tx.v_shielded_output[i].cv.data, 0x10 + i, 32);
+            memset(tx.v_shielded_output[i].cm.data, 0x20 + i, 32);
+            memset(tx.v_shielded_output[i].ephemeral_key.data, 0x30 + i, 32);
+            memset(tx.v_shielded_output[i].enc_ciphertext, 0x40 + i, ZC_SAPLING_ENCCIPHERTEXT_SIZE);
+            memset(tx.v_shielded_output[i].out_ciphertext, 0x50 + i, ZC_SAPLING_OUTCIPHERTEXT_SIZE);
+            memset(tx.v_shielded_output[i].zkproof, 0x60 + i, GROTH_PROOF_SIZE);
+        }
+        memset(tx.binding_sig, 0xfe, 64);
+
+        struct byte_stream bs;
+        stream_init(&bs, 8192);
+        bool ok = transaction_serialize(&tx, &bs);
+
+        struct transaction tx2;
+        struct byte_stream bs2;
+        stream_init_from_data(&bs2, bs.data, bs.size);
+        ok = ok && transaction_deserialize(&tx2, &bs2);
+        ok = ok && (bs2.read_pos == bs.size);
+        ok = ok && tx2.num_shielded_output == 2;
+        ok = ok && tx2.num_shielded_spend == 0;
+        ok = ok && tx2.v_shielded_output[1].cv.data[0] == 0x11;
+        ok = ok && tx2.binding_sig[0] == 0xfe;
+
+        struct byte_stream bs3;
+        stream_init(&bs3, 8192);
+        ok = ok && transaction_serialize(&tx2, &bs3);
+        ok = ok && (bs3.size == bs.size);
+        ok = ok && (memcmp(bs3.data, bs.data, bs.size) == 0);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+
+        transaction_free(&tx);
+        transaction_free(&tx2);
+        stream_free(&bs);
+        stream_free(&bs2);
+        stream_free(&bs3);
+    }
+
+    /* --- transaction_get_value_out with shielded --- */
+    printf("transaction_get_value_out with shielded... ");
+    {
+        struct transaction tx;
+        transaction_init(&tx);
+        tx.overwintered = true;
+        tx.version = SAPLING_TX_VERSION;
+        tx.version_group_id = SAPLING_VERSION_GROUP_ID;
+        transaction_alloc(&tx, 0, 1);
+        tx.vout[0].value = 50000;
+        tx.value_balance = -10000;
+
+        tx.v_joinsplit = calloc(1, sizeof(struct js_description));
+        tx.num_joinsplit = 1;
+        tx.v_joinsplit[0].vpub_old = 5000;
+
+        int64_t val = transaction_get_value_out(&tx);
+        bool ok = (val == 50000 + 10000 + 5000);
+
+        if (ok) printf("OK (%ld)\n", (long)val);
+        else { printf("FAIL (got %ld)\n", (long)val); failures++; }
+
+        transaction_free(&tx);
+    }
+
+    /* --- transaction_get_shielded_value_in --- */
+    printf("transaction_get_shielded_value_in... ");
+    {
+        struct transaction tx;
+        transaction_init(&tx);
+        tx.value_balance = 20000;
+        tx.v_joinsplit = calloc(1, sizeof(struct js_description));
+        tx.num_joinsplit = 1;
+        tx.v_joinsplit[0].vpub_new = 3000;
+
+        int64_t val = transaction_get_shielded_value_in(&tx);
+        bool ok = (val == 23000);
+
+        if (ok) printf("OK (%ld)\n", (long)val);
+        else { printf("FAIL (got %ld)\n", (long)val); failures++; }
+
+        transaction_free(&tx);
+    }
+
+    /* --- transaction_copy with shielded data --- */
+    printf("transaction_copy with shielded data... ");
+    {
+        struct transaction src;
+        transaction_init(&src);
+        src.overwintered = true;
+        src.version = SAPLING_TX_VERSION;
+        src.version_group_id = SAPLING_VERSION_GROUP_ID;
+        transaction_alloc(&src, 0, 0);
+
+        src.v_shielded_spend = calloc(1, sizeof(struct spend_description));
+        src.num_shielded_spend = 1;
+        memset(src.v_shielded_spend[0].cv.data, 0xab, 32);
+
+        src.v_shielded_output = calloc(1, sizeof(struct output_description));
+        src.num_shielded_output = 1;
+        memset(src.v_shielded_output[0].cm.data, 0xcd, 32);
+
+        src.v_joinsplit = calloc(1, sizeof(struct js_description));
+        src.num_joinsplit = 1;
+        src.v_joinsplit[0].vpub_old = 42;
+        memset(src.joinsplit_pubkey.data, 0xef, 32);
+
+        struct transaction dst;
+        bool ok = transaction_copy(&dst, &src);
+        ok = ok && dst.num_shielded_spend == 1;
+        ok = ok && dst.v_shielded_spend[0].cv.data[0] == 0xab;
+        ok = ok && dst.num_shielded_output == 1;
+        ok = ok && dst.v_shielded_output[0].cm.data[0] == 0xcd;
+        ok = ok && dst.num_joinsplit == 1;
+        ok = ok && dst.v_joinsplit[0].vpub_old == 42;
+        ok = ok && dst.joinsplit_pubkey.data[0] == 0xef;
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+
+        transaction_free(&src);
+        transaction_free(&dst);
+    }
+
     printf("\n%s (%d failures)\n", failures ? "SOME TESTS FAILED" : "ALL TESTS PASSED", failures);
     return failures ? 1 : 0;
 }
