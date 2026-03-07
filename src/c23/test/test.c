@@ -83,6 +83,7 @@
 #include "storage/disk_block_io.h"
 #include "validation/main_state.h"
 #include "validation/main_logic.h"
+#include "validation/checkqueue.h"
 
 static int test_tip_count = 0;
 static int test_tip_height = 0;
@@ -4242,6 +4243,37 @@ int main(void)
             printf("OK (in IBD with no tip)\n");
         else { printf("FAIL\n"); failures++; }
         main_state_free(&ms);
+    }
+
+    printf("checkqueue single-threaded... ");
+    {
+        struct check_queue cq;
+        check_queue_init(&cq, 128, sizeof(int), NULL);
+        bool idle = check_queue_is_idle(&cq);
+        if (idle) {
+            /* Add items that always pass */
+            int *item1 = malloc(sizeof(int));
+            *item1 = 42;
+            int *item2 = malloc(sizeof(int));
+            *item2 = 99;
+            void *items[2] = { item1, item2 };
+            /* Set a real check function */
+            cq.check = NULL;
+            /* Manual check: just verify the queue mechanics */
+            check_queue_add(&cq, items, 2);
+            if (cq.nTodo == 2 && cq.queue_size == 2)
+                printf("OK\n");
+            else { printf("FAIL (add)\n"); failures++; }
+            /* Clean up items from queue */
+            for (size_t i = 0; i < cq.queue_size; i++)
+                free(cq.queue[i]);
+            cq.queue_size = 0;
+            cq.nTodo = 0;
+        } else {
+            printf("FAIL (idle)\n");
+            failures++;
+        }
+        check_queue_free(&cq);
     }
 
     printf("block serialize/deserialize roundtrip... ");
