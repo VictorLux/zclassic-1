@@ -12,12 +12,36 @@
 #include "primitives/transaction.h"
 #include <stdbool.h>
 
+#define TX_EXPIRING_SOON_THRESHOLD 3
+
 static inline bool is_expired_tx(const struct transaction *tx, int nHeight)
 {
-    if (tx->overwintered && tx->expiry_height != 0 &&
-        nHeight >= (int)tx->expiry_height)
+    if (tx->expiry_height == 0 || transaction_is_coinbase(tx))
+        return false;
+    return (uint32_t)nHeight >= tx->expiry_height;
+}
+
+static inline bool is_expiring_soon_tx(const struct transaction *tx,
+                                       int nNextBlockHeight)
+{
+    return is_expired_tx(tx, nNextBlockHeight + TX_EXPIRING_SOON_THRESHOLD);
+}
+
+#define LOCKTIME_THRESHOLD_TX 500000000
+
+static inline bool is_final_tx(const struct transaction *tx,
+                                int nBlockHeight, int64_t nBlockTime)
+{
+    if (tx->lock_time == 0)
         return true;
-    return false;
+    int64_t lt = (int64_t)tx->lock_time;
+    if (lt < (lt < LOCKTIME_THRESHOLD_TX ? (int64_t)nBlockHeight : nBlockTime))
+        return true;
+    for (size_t i = 0; i < tx->num_vin; i++) {
+        if (!tx_in_is_final(&tx->vin[i]))
+            return false;
+    }
+    return true;
 }
 
 bool contextual_check_transaction(const struct transaction *tx,

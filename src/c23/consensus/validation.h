@@ -9,6 +9,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 #define REJECT_MALFORMED        0x01
@@ -113,6 +114,22 @@ static inline bool validation_state_get_dos(const struct validation_state *s,
         return true;
     }
     return false;
+}
+
+static inline void format_state_message(const struct validation_state *s,
+                                        char *buf, size_t buflen)
+{
+    if (buflen == 0) return;
+    const char *reason = s->reject_reason;
+    const char *debug = s->debug_message;
+    if (reason[0] == '\0') {
+        buf[0] = '\0';
+        return;
+    }
+    if (debug[0] != '\0')
+        snprintf(buf, buflen, "%s, %s", reason, debug);
+    else
+        snprintf(buf, buflen, "%s", reason);
 }
 
 #endif

@@ -78,7 +78,9 @@
 #include "rpc/async_rpc_operation.h"
 #include "rpc/async_rpc_queue.h"
 #include "validation/chainstate.h"
+#include "validation/main_constants.h"
 #include "storage/txdb.h"
+#include "storage/disk_block_io.h"
 
 static int test_tip_count = 0;
 static int test_tip_height = 0;
@@ -4102,6 +4104,113 @@ int main(void)
         } else {
             printf("SKIP (open failed)\n");
         }
+    }
+
+    printf("is_final_tx... ");
+    {
+        struct transaction tx;
+        transaction_init(&tx);
+        tx.lock_time = 0;
+        bool ok = is_final_tx(&tx, 100, 1000000);
+        if (!ok) { printf("FAIL (locktime 0)\n"); failures++; }
+        else {
+            tx.lock_time = 50;
+            ok = is_final_tx(&tx, 100, 1000000);
+            if (!ok) { printf("FAIL (height final)\n"); failures++; }
+            else {
+                transaction_alloc(&tx, 1, 1);
+                tx.vin[0].sequence = 0;
+                tx.lock_time = 500000001;
+                ok = is_final_tx(&tx, 100, 500000000);
+                if (ok) { printf("FAIL (time not final)\n"); failures++; }
+                else {
+                    ok = is_final_tx(&tx, 100, 500000002);
+                    if (ok) printf("OK\n");
+                    else { printf("FAIL (time final)\n"); failures++; }
+                }
+                transaction_free(&tx);
+            }
+        }
+    }
+
+    printf("is_expiring_soon_tx... ");
+    {
+        struct transaction tx;
+        transaction_init(&tx);
+        tx.overwintered = true;
+        tx.expiry_height = 100;
+        if (is_expiring_soon_tx(&tx, 98) && !is_expiring_soon_tx(&tx, 96))
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("format_state_message... ");
+    {
+        struct validation_state st;
+        validation_state_init(&st);
+        validation_state_dos(&st, 10, false, REJECT_INVALID, "bad-txns", false, "details");
+        char buf[256];
+        format_state_message(&st, buf, sizeof(buf));
+        if (strstr(buf, "bad-txns") && strstr(buf, "details"))
+            printf("OK\n");
+        else { printf("FAIL (%s)\n", buf); failures++; }
+    }
+
+    printf("main_constants... ");
+    {
+        if (MAX_BLOCK_SIZE == 2000000 &&
+            COINBASE_MATURITY == 100 &&
+            MAX_BLOCK_SIGOPS == 20000 &&
+            MAX_HEADERS_RESULTS == 160 &&
+            TX_EXPIRING_SOON_THRESHOLD == 3 &&
+            MIN_BLOCKS_TO_KEEP == 288)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("disk_block_io write/read roundtrip... ");
+    {
+        const char *tmpdir = "/tmp/test_disk_block_io";
+        char cmd[256];
+        snprintf(cmd, sizeof(cmd), "rm -rf %s && mkdir -p %s/blocks", tmpdir, tmpdir);
+        (void)system(cmd);
+
+        struct block b;
+        block_init(&b);
+        b.header.nVersion = 4;
+        b.header.nTime = 9999;
+        b.header.nBits = 0x1d00ffff;
+        b.num_vtx = 1;
+        b.vtx = calloc(1, sizeof(struct transaction));
+        transaction_init(&b.vtx[0]);
+        transaction_alloc(&b.vtx[0], 1, 1);
+        b.vtx[0].vin[0].sequence = 0xffffffff;
+        b.vtx[0].vout[0].value = 10 * COIN;
+
+        struct disk_block_pos pos;
+        pos.nFile = 0;
+        pos.nPos = 0;
+        unsigned char msg_start[4] = {0x24, 0xe9, 0x27, 0x64};
+        bool ok = write_block_to_disk(&b, &pos, tmpdir, msg_start);
+        if (ok) {
+            struct block b2;
+            ok = read_block_from_disk(&b2, &pos, tmpdir);
+            if (ok && b2.header.nTime == 9999 &&
+                b2.num_vtx == 1 &&
+                b2.vtx[0].vout[0].value == 10 * COIN) {
+                printf("OK\n");
+                block_free(&b2);
+            } else {
+                printf("FAIL (read)\n");
+                failures++;
+            }
+        } else {
+            printf("FAIL (write)\n");
+            failures++;
+        }
+        block_free(&b);
+        snprintf(cmd, sizeof(cmd), "rm -rf %s", tmpdir);
+        (void)system(cmd);
     }
 
     printf("block serialize/deserialize roundtrip... ");
