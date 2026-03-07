@@ -60,6 +60,7 @@
 #include "sigops_c.h"
 #include "contextual_check_tx_c.h"
 #include "undo_c.h"
+#include "p2p_message_c.h"
 
 static int check_hex(const unsigned char *data, size_t len, const char *expected)
 {
@@ -2457,6 +2458,45 @@ int main(void)
         else { printf("FAIL\n"); failures++; }
         block_locator_free(&loc);
         block_locator_free(&loc2);
+        stream_free(&s);
+    }
+
+    printf("version_message serialize/deserialize roundtrip... ");
+    {
+        struct version_message v;
+        version_message_init(&v);
+        v.protocol_version = 170009;
+        v.services = NODE_NETWORK;
+        v.timestamp = 1700000000;
+        v.addr_recv.nServices = NODE_NETWORK;
+        v.addr_recv.svc.port = 8233;
+        v.addr_from.nServices = NODE_NETWORK;
+        v.addr_from.svc.port = 8233;
+        v.nonce = 0xDEADBEEFCAFEBABEULL;
+        snprintf(v.sub_version, MAX_SUBVER_LENGTH, "/ZClassic:2.1.1-3/");
+        v.start_height = 500000;
+        v.relay = true;
+
+        struct byte_stream s;
+        stream_init(&s, 256);
+        version_message_serialize(&v, &s);
+
+        struct byte_stream r;
+        stream_init_from_data(&r, s.data, s.size);
+        struct version_message v2;
+        version_message_init(&v2);
+        version_message_deserialize(&v2, &r);
+
+        if (v2.protocol_version == 170009 &&
+            v2.services == NODE_NETWORK &&
+            v2.timestamp == 1700000000 &&
+            v2.nonce == 0xDEADBEEFCAFEBABEULL &&
+            strcmp(v2.sub_version, "/ZClassic:2.1.1-3/") == 0 &&
+            v2.start_height == 500000 &&
+            v2.relay == true &&
+            v2.addr_recv.svc.port == 8233)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
         stream_free(&s);
     }
 
