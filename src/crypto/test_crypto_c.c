@@ -18,6 +18,8 @@
 #include "arith_uint256.h"
 #include "random.h"
 #include "utiltime.h"
+#include "consensus/params.h"
+#include "consensus/upgrades.h"
 
 static int check_hex(const unsigned char *data, size_t len, const char *expected)
 {
@@ -316,6 +318,30 @@ int main(void)
             printf("OK\n");
         else {
             printf("FAIL: %s\n", buf);
+            failures++;
+        }
+    }
+
+    printf("consensus upgrade state... ");
+    {
+        struct consensus_params params;
+        memset(&params, 0, sizeof(params));
+        params.vUpgrades[BASE_SPROUT].nActivationHeight = NETWORK_UPGRADE_ALWAYS_ACTIVE;
+        params.vUpgrades[UPGRADE_OVERWINTER].nActivationHeight = 100;
+        params.vUpgrades[UPGRADE_SAPLING].nActivationHeight = 200;
+        params.vUpgrades[UPGRADE_TESTDUMMY].nActivationHeight = NETWORK_UPGRADE_NO_ACTIVATION;
+        params.vUpgrades[UPGRADE_BUBBLES].nActivationHeight = NETWORK_UPGRADE_NO_ACTIVATION;
+        params.vUpgrades[UPGRADE_DIFFADJ].nActivationHeight = NETWORK_UPGRADE_NO_ACTIVATION;
+        params.vUpgrades[UPGRADE_BUTTERCUP].nActivationHeight = NETWORK_UPGRADE_NO_ACTIVATION;
+
+        if (consensus_upgrade_state(50, &params, UPGRADE_OVERWINTER) == UPGRADE_PENDING &&
+            consensus_upgrade_state(100, &params, UPGRADE_OVERWINTER) == UPGRADE_ACTIVE &&
+            consensus_upgrade_state(50, &params, UPGRADE_TESTDUMMY) == UPGRADE_DISABLED &&
+            consensus_current_epoch(150, &params) == UPGRADE_OVERWINTER &&
+            consensus_current_epoch(250, &params) == UPGRADE_SAPLING)
+            printf("OK\n");
+        else {
+            printf("FAIL\n");
             failures++;
         }
     }

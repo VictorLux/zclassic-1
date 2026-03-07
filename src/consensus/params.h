@@ -1,138 +1,80 @@
-// Copyright (c) 2009-2010 Satoshi Nakamoto
-// Copyright (c) 2009-2014 The Bitcoin Core developers
-// Distributed under the MIT software license, see the accompanying
-// file COPYING or http://www.opensource.org/licenses/mit-license.php.
+/* Copyright (c) 2009-2010 Satoshi Nakamoto
+ * Copyright (c) 2009-2014 The Bitcoin Core developers
+ * Copyright 2026 Rhett Creighton - Apache License 2.0
+ * Distributed under the MIT software license, see the accompanying
+ * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #ifndef BITCOIN_CONSENSUS_PARAMS_H
 #define BITCOIN_CONSENSUS_PARAMS_H
 
 #include "uint256.h"
+#include <stdbool.h>
+#include <stdint.h>
 
-#include <boost/optional.hpp>
-
-namespace Consensus {
-
-/**
- * Index into Params.vUpgrades and NetworkUpgradeInfo
- *
- * Being array indices, these MUST be numbered consecutively.
- *
- * The order of these indices MUST match the order of the upgrades on-chain, as
- * several functions depend on the enum being sorted.
- */
-enum UpgradeIndex : uint32_t {
-    // Sprout must be first
-    BASE_SPROUT,
+enum upgrade_index {
+    BASE_SPROUT = 0,
     UPGRADE_TESTDUMMY,
     UPGRADE_OVERWINTER,
     UPGRADE_SAPLING,
     UPGRADE_BUBBLES,
     UPGRADE_DIFFADJ,
     UPGRADE_BUTTERCUP,
-    // NOTE: Also add new upgrades to NetworkUpgradeInfo in upgrades.cpp
     MAX_NETWORK_UPGRADES
 };
 
-struct NetworkUpgrade {
-    /**
-     * The first protocol version which will understand the new consensus rules
-     */
+#define NETWORK_UPGRADE_ALWAYS_ACTIVE 0
+#define NETWORK_UPGRADE_NO_ACTIVATION (-1)
+
+struct network_upgrade {
     int nProtocolVersion;
-
-    /**
-     * Height of the first block for which the new consensus rules will be active
-     */
     int nActivationHeight;
-
-    /**
-     * Special value for nActivationHeight indicating that the upgrade is always active.
-     * This is useful for testing, as it means tests don't need to deal with the activation
-     * process (namely, faking a chain of somewhat-arbitrary length).
-     *
-     * New blockchains that want to enable upgrade rules from the beginning can also use
-     * this value. However, additional care must be taken to ensure the genesis block
-     * satisfies the enabled rules.
-     */
-    static constexpr int ALWAYS_ACTIVE = 0;
-
-    /**
-     * Special value for nActivationHeight indicating that the upgrade will never activate.
-     * This is useful when adding upgrade code that has a testnet activation height, but
-     * should remain disabled on mainnet.
-     */
-    static constexpr int NO_ACTIVATION_HEIGHT = -1;
 };
 
-static const unsigned int PRE_BUTTERCUP_POW_TARGET_SPACING = 150;
-static const unsigned int POST_BUTTERCUP_POW_TARGET_SPACING = 75;
-static_assert(POST_BUTTERCUP_POW_TARGET_SPACING < PRE_BUTTERCUP_POW_TARGET_SPACING, "Buttercup target spacing must be less than pre-Buttercup target spacing.");
-static const unsigned int PRE_BUTTERCUP_HALVING_INTERVAL = 840000;
-static const unsigned int PRE_BUTTERCUP_REGTEST_HALVING_INTERVAL = 150;
-static const int BUTTERCUP_POW_TARGET_SPACING_RATIO = PRE_BUTTERCUP_POW_TARGET_SPACING / POST_BUTTERCUP_POW_TARGET_SPACING;
-static_assert(BUTTERCUP_POW_TARGET_SPACING_RATIO * POST_BUTTERCUP_POW_TARGET_SPACING == PRE_BUTTERCUP_POW_TARGET_SPACING, "Invalid BUTTERCUP_POW_TARGET_SPACING_RATIO");
-static const unsigned int POST_BUTTERCUP_HALVING_INTERVAL = PRE_BUTTERCUP_HALVING_INTERVAL * BUTTERCUP_POW_TARGET_SPACING_RATIO;
-static const unsigned int POST_BUTTERCUP_REGTEST_HALVING_INTERVAL = PRE_BUTTERCUP_REGTEST_HALVING_INTERVAL * BUTTERCUP_POW_TARGET_SPACING_RATIO;
+#define PRE_BUTTERCUP_POW_TARGET_SPACING 150
+#define POST_BUTTERCUP_POW_TARGET_SPACING 75
+#define PRE_BUTTERCUP_HALVING_INTERVAL 840000
+#define PRE_BUTTERCUP_REGTEST_HALVING_INTERVAL 150
+#define BUTTERCUP_POW_TARGET_SPACING_RATIO (PRE_BUTTERCUP_POW_TARGET_SPACING / POST_BUTTERCUP_POW_TARGET_SPACING)
+#define POST_BUTTERCUP_HALVING_INTERVAL (PRE_BUTTERCUP_HALVING_INTERVAL * BUTTERCUP_POW_TARGET_SPACING_RATIO)
+#define POST_BUTTERCUP_REGTEST_HALVING_INTERVAL (PRE_BUTTERCUP_REGTEST_HALVING_INTERVAL * BUTTERCUP_POW_TARGET_SPACING_RATIO)
 
-/**
- * Parameters that influence chain consensus.
- */
-struct Params {
-    /**
-     * Returns true if the given network upgrade is active as of the given block
-     * height. Caller must check that the height is >= 0 (and handle unknown
-     * heights).
-     */
-    bool NetworkUpgradeActive(int nHeight, Consensus::UpgradeIndex idx) const;
-
-    uint256 hashGenesisBlock;
-
+struct consensus_params {
+    struct uint256 hashGenesisBlock;
     bool fCoinbaseMustBeProtected;
-
-    /** Needs to evenly divide MAX_SUBSIDY to avoid rounding errors. */
     int nSubsidySlowStartInterval;
-    /**
-     * Shift based on a linear ramp for slow start:
-     *
-     * MAX_SUBSIDY*(t_s/2 + t_r) = MAX_SUBSIDY*t_h  Coin balance
-     *              t_s   + t_r  = t_h + t_c        Block balance
-     *
-     * t_s = nSubsidySlowStartInterval
-     * t_r = number of blocks between end of slow start and first halving
-     * t_h = nPreButtercupSubsidyHalvingInterval
-     * t_c = SubsidySlowStartShift()
-     */
-    int SubsidySlowStartShift() const { return nSubsidySlowStartInterval / 2; }
     int nPreButtercupSubsidyHalvingInterval;
     int nPostButtercupSubsidyHalvingInterval;
-
-    int Halving(int nHeight) const;
-
-    int GetLastFoundersRewardBlockHeight() const {
-        return nPreButtercupSubsidyHalvingInterval + SubsidySlowStartShift() - 1;
-    }
-    /** Used to check majorities for block version upgrade */
     int nMajorityEnforceBlockUpgrade;
     int nMajorityRejectBlockOutdated;
     int nMajorityWindow;
-    NetworkUpgrade vUpgrades[MAX_NETWORK_UPGRADES];
-    /** Proof of work parameters */
-    uint256 powLimit;
-    boost::optional<uint32_t> nPowAllowMinDifficultyBlocksAfterHeight;
-    bool    scaleDifficultyAtUpgradeFork;
+    struct network_upgrade vUpgrades[MAX_NETWORK_UPGRADES];
+    struct uint256 powLimit;
+    int32_t nPowAllowMinDifficultyBlocksAfterHeight; /* -1 = disabled */
+    bool nPowAllowMinDifficultyEnabled;
+    bool scaleDifficultyAtUpgradeFork;
     int64_t nPowAveragingWindow;
     int64_t nPowMaxAdjustDown;
     int64_t nPowMaxAdjustUp;
     int64_t nPreButtercupPowTargetSpacing;
     int64_t nPostButtercupPowTargetSpacing;
-
-    int64_t PoWTargetSpacing(int nHeight) const;
-
-    int64_t AveragingWindowTimespan(int nHeight) const;
-    int64_t MinActualTimespan(int nHeight) const;
-    int64_t MaxActualTimespan(int nHeight) const;
-    
-    uint256 nMinimumChainWork;
+    struct uint256 nMinimumChainWork;
 };
-} // namespace Consensus
 
-#endif // BITCOIN_CONSENSUS_PARAMS_H
+static inline int consensus_subsidy_slow_start_shift(const struct consensus_params *p)
+{
+    return p->nSubsidySlowStartInterval / 2;
+}
+
+bool consensus_network_upgrade_active(const struct consensus_params *params, int nHeight, enum upgrade_index idx);
+int consensus_halving(const struct consensus_params *params, int nHeight);
+int64_t consensus_pow_target_spacing(const struct consensus_params *params, int nHeight);
+int64_t consensus_averaging_window_timespan(const struct consensus_params *params, int nHeight);
+int64_t consensus_min_actual_timespan(const struct consensus_params *params, int nHeight);
+int64_t consensus_max_actual_timespan(const struct consensus_params *params, int nHeight);
+
+static inline int consensus_last_founders_reward_height(const struct consensus_params *p)
+{
+    return p->nPreButtercupSubsidyHalvingInterval + consensus_subsidy_slow_start_shift(p) - 1;
+}
+
+#endif
