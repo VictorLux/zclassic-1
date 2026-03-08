@@ -183,6 +183,8 @@ struct p2p_node {
     int64_t ping_usec_time;
     int64_t min_ping_usec_time;
     bool ping_queued;
+    bool prefer_headers;
+    bool send_compact;
 };
 
 struct node_signals {

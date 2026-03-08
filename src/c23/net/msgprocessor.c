@@ -440,11 +440,15 @@ static bool process_getdata(struct msg_processor *mp, struct p2p_node *node,
         return false;
     }
 
+    struct inv_item not_found[64];
+    size_t not_found_count = 0;
+
     for (uint64_t i = 0; i < count; i++) {
         struct inv_item inv;
         if (!inv_item_deserialize(&inv, s))
             return false;
 
+        bool sent = false;
         if (inv.type == MSG_BLOCK) {
             struct block_index *bi = block_map_find(
                 &mp->main_state->map_block_index, &inv.hash);
@@ -460,6 +464,7 @@ static bool process_getdata(struct msg_processor *mp, struct p2p_node *node,
                     p2p_node_write_message_data(node, blk_data.data,
                                                 blk_data.size);
                     p2p_node_end_message(node);
+                    sent = true;
                 }
                 stream_free(&blk_data);
                 block_free(&blk);
@@ -477,10 +482,30 @@ static bool process_getdata(struct msg_processor *mp, struct p2p_node *node,
                 p2p_node_write_message_data(node, tx_data.data, tx_data.size);
                 p2p_node_end_message(node);
                 stream_free(&tx_data);
+                sent = true;
             }
             transaction_free(&tx);
         }
+
+        if (!sent && not_found_count < 64)
+            not_found[not_found_count++] = inv;
     }
+
+    /* Send notfound for items we couldn't serve */
+    if (not_found_count > 0) {
+        struct byte_stream nf;
+        stream_init(&nf, not_found_count * 36 + 8);
+        stream_write_compact_size(&nf, not_found_count);
+        for (size_t i = 0; i < not_found_count; i++)
+            inv_item_serialize(&not_found[i], &nf);
+
+        p2p_node_begin_message(node, "notfound",
+                               mp->params->pchMessageStart);
+        p2p_node_write_message_data(node, nf.data, nf.size);
+        p2p_node_end_message(node);
+        stream_free(&nf);
+    }
+
     return true;
 }
 
@@ -636,6 +661,51 @@ static bool process_mempool(struct msg_processor *mp, struct p2p_node *node)
     return true;
 }
 
+static bool process_sendheaders(struct p2p_node *node)
+{
+    node->prefer_headers = true;
+    return true;
+}
+
+static bool process_reject(struct p2p_node *node, struct byte_stream *s)
+{
+    (void)node;
+    uint64_t msg_len;
+    if (!stream_read_compact_size(s, &msg_len))
+        return true;
+    char msg_type[32] = {0};
+    if (msg_len > 0 && msg_len < sizeof(msg_type))
+        stream_read_bytes(s, (unsigned char *)msg_type, msg_len);
+    uint8_t code = 0;
+    stream_read_u8(s, &code);
+    (void)code;
+    (void)msg_type;
+    return true;
+}
+
+static bool process_feefilter(struct p2p_node *node, struct byte_stream *s)
+{
+    uint64_t fee_rate = 0;
+    stream_read_u64_le(s, &fee_rate);
+    (void)fee_rate;
+    (void)node;
+    return true;
+}
+
+static bool process_notfound(struct p2p_node *node, struct byte_stream *s)
+{
+    (void)node;
+    uint64_t count;
+    if (!stream_read_compact_size(s, &count))
+        return false;
+    for (uint64_t i = 0; i < count; i++) {
+        struct inv_item inv;
+        if (!inv_item_deserialize(&inv, s))
+            return false;
+    }
+    return true;
+}
+
 bool msg_process_messages(void *ctx, struct p2p_node *node)
 {
     struct msg_processor *mp = (struct msg_processor *)ctx;
@@ -698,6 +768,14 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
             ok = process_getaddr(mp, node);
         } else if (strcmp(cmd, "mempool") == 0) {
             ok = process_mempool(mp, node);
+        } else if (strcmp(cmd, "sendheaders") == 0) {
+            ok = process_sendheaders(node);
+        } else if (strcmp(cmd, "reject") == 0) {
+            ok = process_reject(node, &s);
+        } else if (strcmp(cmd, "feefilter") == 0) {
+            ok = process_feefilter(node, &s);
+        } else if (strcmp(cmd, "notfound") == 0) {
+            ok = process_notfound(node, &s);
         }
 
         stream_free(&s);
