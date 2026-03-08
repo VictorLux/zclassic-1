@@ -799,6 +799,17 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
             continue;
         }
 
+        /* Verify message checksum (first 4 bytes of double-SHA256) */
+        struct uint256 msg_hash;
+        hash256(msg.recv_data, msg.data_pos, msg_hash.data);
+        unsigned int expected;
+        memcpy(&expected, msg_hash.data, 4);
+        if (expected != msg.hdr.nChecksum) {
+            printf("Peer %s: checksum mismatch\n", node->addr_name);
+            net_message_free(&msg);
+            continue;
+        }
+
         char cmd[COMMAND_SIZE + 1];
         msg_header_get_command(&msg.hdr, cmd, sizeof(cmd));
 
