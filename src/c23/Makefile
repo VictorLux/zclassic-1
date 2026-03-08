@@ -34,7 +34,7 @@ PRIMITIVES_SRCS = \
 
 NET_SRCS = \
 	net/netaddr.c net/netbase.c net/protocol.c \
-	net/p2p_message.c net/addrman.c net/net.c
+	net/p2p_message.c net/addrman.c net/net.c net/msgprocessor.c
 
 CHAIN_SRCS = \
 	chain/chain.c chain/pow.c chain/checkpoints.c \

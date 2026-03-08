@@ -15,6 +15,7 @@
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 #include "validation/process_block.h"
+#include "net/msgprocessor.h"
 #include "zcash/params_init.h"
 #include <stdatomic.h>
 #include <stdio.h>
@@ -28,6 +29,7 @@ static struct block_tree_db g_block_tree;
 static bool g_block_tree_open = false;
 static struct tx_mempool g_mempool;
 static struct rpc_table g_rpc_table;
+static struct msg_processor g_msg_processor;
 static _Atomic bool g_running = false;
 
 void app_context_defaults(struct app_context *ctx)
@@ -146,6 +148,10 @@ bool app_init(struct app_context *ctx)
 
     /* Initialize mempool */
     tx_mempool_init(&g_mempool, 1000);
+
+    /* Initialize message processor */
+    msg_processor_init(&g_msg_processor, &g_state, &g_mempool,
+                       &g_coins_tip, params, ctx->datadir);
 
     /* Initialize RPC */
     rpc_table_init(&g_rpc_table);
