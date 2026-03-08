@@ -5,6 +5,8 @@
 #include "rpc/httpserver.h"
 #include "json/json.h"
 #include "rpc/protocol.h"
+#include "core/random.h"
+#include "encoding/utilstrencodings.h"
 #include <arpa/inet.h>
 #include <errno.h>
 #include <netinet/in.h>
@@ -21,6 +23,54 @@ static pthread_t g_listen_thread;
 static volatile bool g_running = false;
 static char g_rpc_user[128];
 static char g_rpc_password[128];
+static char g_cookie_file[1024];
+static bool g_auth_required = false;
+
+static const char base64_chars[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+static size_t base64_decode(const char *in, size_t inlen,
+                             unsigned char *out, size_t outmax)
+{
+    unsigned char table[256];
+    memset(table, 64, sizeof(table));
+    for (int i = 0; i < 64; i++)
+        table[(unsigned char)base64_chars[i]] = (unsigned char)i;
+
+    size_t olen = 0;
+    uint32_t buf = 0;
+    int bits = 0;
+    for (size_t i = 0; i < inlen && olen < outmax; i++) {
+        unsigned char c = table[(unsigned char)in[i]];
+        if (c == 64) continue;
+        buf = (buf << 6) | c;
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out[olen++] = (unsigned char)(buf >> bits);
+        }
+    }
+    return olen;
+}
+
+static bool check_auth(const char *auth_header)
+{
+    if (!g_auth_required) return true;
+    if (!auth_header) return false;
+
+    while (*auth_header == ' ') auth_header++;
+    if (strncmp(auth_header, "Basic ", 6) != 0) return false;
+    const char *b64 = auth_header + 6;
+    while (*b64 == ' ') b64++;
+
+    unsigned char decoded[512];
+    size_t dlen = base64_decode(b64, strlen(b64), decoded, sizeof(decoded) - 1);
+    decoded[dlen] = '\0';
+
+    char expected[256];
+    snprintf(expected, sizeof(expected), "%s:%s", g_rpc_user, g_rpc_password);
+    return strcmp((const char *)decoded, expected) == 0;
+}
 
 static bool read_line(int fd, char *buf, size_t buflen)
 {
@@ -87,11 +137,21 @@ static void handle_client(int client_fd)
     }
 
     size_t content_length = 0;
+    char auth_value[512] = {0};
     while (read_line(client_fd, line, sizeof(line))) {
         if (line[0] == '\0') break;
         if (strncmp(line, "Content-Length:", 15) == 0 ||
             strncmp(line, "content-length:", 15) == 0)
             content_length = (size_t)atol(line + 15);
+        if (strncmp(line, "Authorization:", 14) == 0 ||
+            strncmp(line, "authorization:", 14) == 0)
+            snprintf(auth_value, sizeof(auth_value), "%s", line + 14);
+    }
+
+    if (!check_auth(auth_value[0] ? auth_value : NULL)) {
+        const char *msg = "Unauthorized";
+        send_response(client_fd, 401, "Unauthorized", msg, strlen(msg));
+        goto done;
     }
 
     if (content_length == 0 || content_length > 10 * 1024 * 1024)
@@ -178,13 +238,32 @@ static void *listen_thread_fn(void *arg)
 }
 
 bool rpc_http_start(const struct rpc_table *table, uint16_t port,
-                     const char *rpc_user, const char *rpc_password)
+                     const char *rpc_user, const char *rpc_password,
+                     const char *datadir)
 {
     g_table = table;
-    if (rpc_user)
+    if (rpc_user && rpc_password) {
         snprintf(g_rpc_user, sizeof(g_rpc_user), "%s", rpc_user);
-    if (rpc_password)
         snprintf(g_rpc_password, sizeof(g_rpc_password), "%s", rpc_password);
+        g_auth_required = true;
+    } else if (datadir) {
+        snprintf(g_rpc_user, sizeof(g_rpc_user), "__cookie__");
+        uint64_t r1 = GetRand(UINT64_MAX);
+        uint64_t r2 = GetRand(UINT64_MAX);
+        snprintf(g_rpc_password, sizeof(g_rpc_password),
+                 "%016llx%016llx",
+                 (unsigned long long)r1, (unsigned long long)r2);
+        g_auth_required = true;
+
+        snprintf(g_cookie_file, sizeof(g_cookie_file),
+                 "%s/.cookie", datadir);
+        FILE *f = fopen(g_cookie_file, "w");
+        if (f) {
+            fprintf(f, "%s:%s", g_rpc_user, g_rpc_password);
+            fclose(f);
+            printf("RPC cookie written to %s\n", g_cookie_file);
+        }
+    }
 
     g_listen_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (g_listen_fd < 0) {
@@ -238,6 +317,11 @@ void rpc_http_stop(void)
         g_listen_fd = -1;
     }
     pthread_join(g_listen_thread, NULL);
+
+    if (g_cookie_file[0]) {
+        unlink(g_cookie_file);
+        g_cookie_file[0] = '\0';
+    }
     printf("RPC server stopped.\n");
 }
 

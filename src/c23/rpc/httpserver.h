@@ -10,7 +10,8 @@
 #include <stdint.h>
 
 bool rpc_http_start(const struct rpc_table *table, uint16_t port,
-                     const char *rpc_user, const char *rpc_password);
+                     const char *rpc_user, const char *rpc_password,
+                     const char *datadir);
 void rpc_http_stop(void);
 bool rpc_http_is_running(void);
 
