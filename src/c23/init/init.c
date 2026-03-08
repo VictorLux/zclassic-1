@@ -9,6 +9,8 @@
 #include "coins/coins_view.h"
 #include "consensus/validation.h"
 #include "rpc/blockchain.h"
+#include "rpc/mining_rpc.h"
+#include "rpc/rawtransaction.h"
 #include "rpc/server.h"
 #include "storage/block_index_db.h"
 #include "storage/coins_db.h"
@@ -157,6 +159,12 @@ bool app_init(struct app_context *ctx)
     rpc_table_init(&g_rpc_table);
     rpc_blockchain_set_state(&g_state, &g_mempool, ctx->datadir);
     register_blockchain_rpc_commands(&g_rpc_table);
+
+    rpc_rawtx_set_state(&g_state, &g_mempool, &g_coins_tip, ctx->datadir);
+    register_rawtransaction_rpc_commands(&g_rpc_table);
+
+    rpc_mining_set_state(&g_state, &g_mempool, &g_coins_tip, ctx->datadir);
+    register_mining_rpc_commands(&g_rpc_table);
 
     atomic_store(&g_running, true);
     printf("ZClassic C23 node initialized.\n");
