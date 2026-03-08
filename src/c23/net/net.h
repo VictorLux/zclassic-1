@@ -185,6 +185,7 @@ struct p2p_node {
     bool ping_queued;
     bool prefer_headers;
     bool send_compact;
+    bool sync_started;
 };
 
 struct node_signals {

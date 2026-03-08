@@ -791,12 +791,76 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
     return true;
 }
 
+static void build_block_locator(struct block_locator *loc,
+                                 const struct active_chain *chain)
+{
+    int height = active_chain_height(chain);
+    int step = 1;
+    size_t count = 0;
+
+    /* Count entries needed */
+    int h = height;
+    while (h >= 0) {
+        count++;
+        if (h == 0) break;
+        h -= step;
+        if (h < 0) h = 0;
+        if (count >= 10) step *= 2;
+    }
+
+    loc->vhave = calloc(count, sizeof(struct uint256));
+    if (!loc->vhave) { loc->num_hashes = 0; return; }
+    loc->num_hashes = count;
+
+    h = height;
+    step = 1;
+    size_t idx = 0;
+    while (h >= 0 && idx < count) {
+        struct block_index *bi = active_chain_at(chain, h);
+        if (bi && bi->phashBlock)
+            loc->vhave[idx] = *bi->phashBlock;
+        idx++;
+        if (h == 0) break;
+        h -= step;
+        if (h < 0) h = 0;
+        if (idx >= 10) step *= 2;
+    }
+}
+
+static void push_getheaders(struct msg_processor *mp, struct p2p_node *node)
+{
+    struct block_locator loc;
+    block_locator_init(&loc);
+    build_block_locator(&loc, &mp->main_state->chain_active);
+
+    struct byte_stream s;
+    stream_init(&s, 512);
+    stream_write_u32_le(&s, (uint32_t)PROTOCOL_VERSION);
+    block_locator_serialize(&loc, &s);
+    /* hash_stop = zero (get as many as possible) */
+    struct uint256 zero;
+    uint256_set_null(&zero);
+    stream_write_bytes(&s, zero.data, 32);
+
+    p2p_node_begin_message(node, "getheaders", mp->params->pchMessageStart);
+    p2p_node_write_message_data(node, s.data, s.size);
+    p2p_node_end_message(node);
+    stream_free(&s);
+    block_locator_free(&loc);
+}
+
 bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
 {
     struct msg_processor *mp = (struct msg_processor *)ctx;
 
     if (!node->successfully_connected)
         return true;
+
+    /* Initiate sync with this peer if not done yet */
+    if (!node->sync_started && !node->inbound) {
+        node->sync_started = true;
+        push_getheaders(mp, node);
+    }
 
     /* Send ping */
     int64_t now = (int64_t)time(NULL);
