@@ -9,6 +9,8 @@
 #include "coins/coins_view.h"
 #include "consensus/validation.h"
 #include "rpc/blockchain.h"
+#include "rpc/misc.h"
+#include "rpc/net_rpc.h"
 #include "rpc/httpserver.h"
 #include "rpc/mining_rpc.h"
 #include "rpc/rawtransaction.h"
@@ -166,6 +168,10 @@ bool app_init(struct app_context *ctx)
 
     rpc_mining_set_state(&g_state, &g_mempool, &g_coins_tip, ctx->datadir);
     register_mining_rpc_commands(&g_rpc_table);
+
+    rpc_misc_set_state(&g_state);
+    register_misc_rpc_commands(&g_rpc_table);
+    register_net_rpc_commands(&g_rpc_table);
 
     /* Start RPC HTTP server */
     set_rpc_warmup_finished();
