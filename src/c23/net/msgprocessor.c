@@ -14,6 +14,7 @@
 #include "consensus/validation.h"
 #include "validation/check_transaction.h"
 #include "validation/process_block.h"
+#include "storage/disk_block_io.h"
 #include "util/timedata.h"
 #include <stdio.h>
 #include <string.h>
@@ -456,17 +457,19 @@ static bool process_getdata(struct msg_processor *mp, struct p2p_node *node,
                 struct block blk;
                 block_init(&blk);
 
-                struct byte_stream blk_data;
-                stream_init(&blk_data, 1024 * 1024);
-                if (block_serialize(&blk, &blk_data)) {
-                    p2p_node_begin_message(node, "block",
-                                           mp->params->pchMessageStart);
-                    p2p_node_write_message_data(node, blk_data.data,
-                                                blk_data.size);
-                    p2p_node_end_message(node);
-                    sent = true;
+                if (read_block_from_disk_index(&blk, bi, mp->datadir)) {
+                    struct byte_stream blk_data;
+                    stream_init(&blk_data, 1024 * 1024);
+                    if (block_serialize(&blk, &blk_data)) {
+                        p2p_node_begin_message(node, "block",
+                                               mp->params->pchMessageStart);
+                        p2p_node_write_message_data(node, blk_data.data,
+                                                    blk_data.size);
+                        p2p_node_end_message(node);
+                        sent = true;
+                    }
+                    stream_free(&blk_data);
                 }
-                stream_free(&blk_data);
                 block_free(&blk);
             }
         } else if (inv.type == MSG_TX) {
