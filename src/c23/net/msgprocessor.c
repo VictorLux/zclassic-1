@@ -27,13 +27,15 @@ void msg_processor_init(struct msg_processor *mp,
                          struct tx_mempool *mempool,
                          struct coins_view_cache *coins_tip,
                          const struct chain_params *params,
-                         const char *datadir)
+                         const char *datadir,
+                         struct net_manager *net_mgr)
 {
     mp->main_state = ms;
     mp->mempool = mempool;
     mp->coins_tip = coins_tip;
     mp->params = params;
     mp->datadir = datadir;
+    mp->net_mgr = net_mgr;
 }
 
 int msg_get_height(void *ctx)
@@ -114,6 +116,13 @@ static bool process_version(struct msg_processor *mp, struct p2p_node *node,
 
     node->successfully_connected = true;
 
+    /* Ask outbound peers for their address list */
+    if (!node->inbound && !node->get_addr) {
+        p2p_node_begin_message(node, "getaddr", mp->params->pchMessageStart);
+        p2p_node_end_message(node);
+        node->get_addr = true;
+    }
+
     printf("Peer %s: version=%d subver=%s height=%d\n",
            node->addr_name, node->version, node->sub_ver,
            node->starting_height);
@@ -169,7 +178,8 @@ static bool process_pong(struct p2p_node *node, struct byte_stream *s)
     return true;
 }
 
-static bool process_addr(struct p2p_node *node, struct byte_stream *s)
+static bool process_addr(struct msg_processor *mp, struct p2p_node *node,
+                          struct byte_stream *s)
 {
     uint64_t count;
     if (!stream_read_compact_size(s, &count))
@@ -182,11 +192,18 @@ static bool process_addr(struct p2p_node *node, struct byte_stream *s)
         return false;
     }
 
+    struct net_addr source;
+    net_addr_init(&source);
+    memcpy(source.ip, node->addr.svc.addr.ip, 16);
+
     for (uint64_t i = 0; i < count; i++) {
         struct net_address addr;
         net_address_init(&addr);
         if (!net_address_deserialize(&addr, s, true))
             return false;
+
+        if (mp->net_mgr)
+            addrman_add(&mp->net_mgr->addrman, &addr, &source, 0);
     }
     return true;
 }
@@ -675,8 +692,29 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
 
 static bool process_getaddr(struct msg_processor *mp, struct p2p_node *node)
 {
-    (void)mp;
+    if (node->sent_addr)
+        return true;
     node->sent_addr = true;
+
+    if (!mp->net_mgr)
+        return true;
+
+    struct net_address addrs[MAX_ADDR_TO_SEND];
+    size_t num = addrman_get_addr(&mp->net_mgr->addrman, addrs,
+                                   MAX_ADDR_TO_SEND);
+
+    if (num > 0) {
+        struct byte_stream addr_msg;
+        stream_init(&addr_msg, num * 30 + 8);
+        stream_write_compact_size(&addr_msg, (uint64_t)num);
+        for (size_t i = 0; i < num; i++)
+            net_address_serialize(&addrs[i], &addr_msg, true);
+
+        p2p_node_begin_message(node, "addr", mp->params->pchMessageStart);
+        p2p_node_write_message_data(node, addr_msg.data, addr_msg.size);
+        p2p_node_end_message(node);
+        stream_free(&addr_msg);
+    }
     return true;
 }
 
@@ -782,7 +820,7 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
         } else if (strcmp(cmd, "pong") == 0) {
             ok = process_pong(node, &s);
         } else if (strcmp(cmd, "addr") == 0) {
-            ok = process_addr(node, &s);
+            ok = process_addr(mp, node, &s);
         } else if (strcmp(cmd, "inv") == 0) {
             ok = process_inv(mp, node, &s);
         } else if (strcmp(cmd, "getdata") == 0) {

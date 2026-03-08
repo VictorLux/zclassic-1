@@ -20,6 +20,7 @@ struct msg_processor {
     struct coins_view_cache *coins_tip;
     const struct chain_params *params;
     const char *datadir;
+    struct net_manager *net_mgr;
 };
 
 void msg_processor_init(struct msg_processor *mp,
@@ -27,7 +28,8 @@ void msg_processor_init(struct msg_processor *mp,
                          struct tx_mempool *mempool,
                          struct coins_view_cache *coins_tip,
                          const struct chain_params *params,
-                         const char *datadir);
+                         const char *datadir,
+                         struct net_manager *net_mgr);
 
 bool msg_process_messages(void *ctx, struct p2p_node *node);
 bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle);

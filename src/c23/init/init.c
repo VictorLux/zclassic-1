@@ -189,7 +189,8 @@ bool app_init(struct app_context *ctx)
 
     /* Initialize message processor */
     msg_processor_init(&g_msg_processor, &g_state, &g_mempool,
-                       &g_coins_tip, params, ctx->datadir);
+                       &g_coins_tip, params, ctx->datadir,
+                       &g_connman.manager);
 
     /* Initialize P2P connection manager */
     struct node_signals signals = {
