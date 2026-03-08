@@ -19,6 +19,8 @@ struct app_context {
     int gen_threads;
     const char *miner_address;
     int rpc_port;
+    int p2p_port;
+    bool listen;
     bool tx_index;
     bool checkpoints_enabled;
 };

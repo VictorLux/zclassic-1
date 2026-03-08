@@ -17,8 +17,11 @@
 #include "script/script.h"
 #include "validation/chainstate.h"
 #include "validation/process_block.h"
+#include "chain/subsidy.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 static struct main_state *g_ms = NULL;
 static struct tx_mempool *g_mp = NULL;
@@ -191,12 +194,145 @@ static bool rpc_submitblock(const struct json_value *params, bool help,
     return true;
 }
 
+static bool rpc_getblocktemplate(const struct json_value *params, bool help,
+                                  struct json_value *result)
+{
+    (void)params;
+    if (help) {
+        json_set_str(result,
+            "getblocktemplate ( \"jsonrequestobject\" )\n"
+            "Returns data needed to construct a block to work on.");
+        return true;
+    }
+
+    const struct chain_params *cp = chain_params_get();
+    struct block_index *tip = active_chain_tip(&g_ms->chain_active);
+    if (!tip) {
+        json_set_str(result, "No tip available");
+        return false;
+    }
+
+    struct script coinbase_script;
+    coinbase_script.size = 0;
+
+    struct block_template *tmpl = create_new_block(
+        &coinbase_script, g_ms, g_coins, g_mp, cp);
+    if (!tmpl) {
+        json_set_str(result, "Could not create block template");
+        return false;
+    }
+
+    json_set_object(result);
+
+    json_push_kv_int(result, "version", tmpl->block.header.nVersion);
+
+    char prev_hex[65];
+    uint256_get_hex(&tmpl->block.header.hashPrevBlock, prev_hex);
+    json_push_kv_str(result, "previousblockhash", prev_hex);
+
+    /* Transactions (skip coinbase at index 0) */
+    struct json_value txs;
+    json_set_array(&txs);
+    for (size_t i = 1; i < tmpl->block.num_vtx; i++) {
+        struct json_value txobj;
+        json_set_object(&txobj);
+
+        char *hex = malloc(2 * 1024 * 1024);
+        if (hex) {
+            size_t hlen = encode_hex_tx(&tmpl->block.vtx[i], hex,
+                                        2 * 1024 * 1024);
+            hex[hlen] = '\0';
+            json_push_kv_str(&txobj, "data", hex);
+            free(hex);
+        }
+
+        transaction_compute_hash(&tmpl->block.vtx[i]);
+        char txid[65];
+        uint256_get_hex(&tmpl->block.vtx[i].hash, txid);
+        json_push_kv_str(&txobj, "hash", txid);
+
+        if (tmpl->tx_fees)
+            json_push_kv_int(&txobj, "fee", tmpl->tx_fees[i]);
+        if (tmpl->tx_sig_ops)
+            json_push_kv_int(&txobj, "sigops",
+                             (int64_t)tmpl->tx_sig_ops[i]);
+
+        json_push_back(&txs, &txobj);
+        json_free(&txobj);
+    }
+    json_push_kv(result, "transactions", &txs);
+    json_free(&txs);
+
+    /* Coinbase */
+    struct json_value coinbase_obj;
+    json_set_object(&coinbase_obj);
+    char *cb_hex = malloc(2 * 1024 * 1024);
+    if (cb_hex && tmpl->block.num_vtx > 0) {
+        size_t hlen = encode_hex_tx(&tmpl->block.vtx[0], cb_hex,
+                                    2 * 1024 * 1024);
+        cb_hex[hlen] = '\0';
+        json_push_kv_str(&coinbase_obj, "data", cb_hex);
+    }
+    free(cb_hex);
+    json_push_kv(result, "coinbasetxn", &coinbase_obj);
+    json_free(&coinbase_obj);
+
+    /* Target and bits */
+    char bits_str[16];
+    snprintf(bits_str, sizeof(bits_str), "%08x", tmpl->block.header.nBits);
+    json_push_kv_str(result, "bits", bits_str);
+
+    json_push_kv_int(result, "height", tip->nHeight + 1);
+    json_push_kv_int(result, "curtime", (int64_t)tmpl->block.header.nTime);
+    json_push_kv_int(result, "mintime",
+                     block_index_get_median_time_past(tip) + 1);
+    json_push_kv_int(result, "sizelimit", MAX_BLOCK_SIZE);
+    json_push_kv_int(result, "sigoplimit", 20000);
+
+    char finalsapling[65];
+    uint256_get_hex(&tmpl->block.header.hashFinalSaplingRoot, finalsapling);
+    json_push_kv_str(result, "finalsaplingroothash", finalsapling);
+
+    block_template_free(tmpl);
+    free(tmpl);
+    return true;
+}
+
+static bool rpc_getblocksubsidy(const struct json_value *params, bool help,
+                                  struct json_value *result)
+{
+    if (help || json_size(params) > 1) {
+        json_set_str(result,
+            "getblocksubsidy height\n"
+            "Returns block subsidy reward of block at given height.");
+        return true;
+    }
+
+    const struct chain_params *cp = chain_params_get();
+    int height;
+    if (json_size(params) >= 1)
+        height = (int)json_get_int(json_at(params, 0));
+    else {
+        struct block_index *tip = active_chain_tip(&g_ms->chain_active);
+        height = tip ? tip->nHeight : 0;
+    }
+
+    int64_t subsidy = get_block_subsidy(height, &cp->consensus);
+
+    json_set_object(result);
+    json_push_kv_real(result, "miner", (double)subsidy / 100000000.0);
+
+    return true;
+}
+
 void register_mining_rpc_commands(struct rpc_table *t)
 {
     struct rpc_command cmds[] = {
-        { "mining", "getmininginfo", rpc_getmininginfo, true },
-        { "mining", "generate",      rpc_generate,      true },
-        { "mining", "submitblock",   rpc_submitblock,    true },
+        { "mining", "getmininginfo",     rpc_getmininginfo,    true },
+        { "mining", "generate",          rpc_generate,         true },
+        { "mining", "submitblock",       rpc_submitblock,      true },
+        { "mining", "getblocktemplate",  rpc_getblocktemplate, true },
+        { "mining", "getblocksubsidy",   rpc_getblocksubsidy,  true },
     };
 
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++)

@@ -45,6 +45,8 @@ void app_context_defaults(struct app_context *ctx)
     ctx->datadir = NULL;
     ctx->params_dir = NULL;
     ctx->rpc_port = 8232;
+    ctx->p2p_port = 8233;
+    ctx->listen = false;
     ctx->checkpoints_enabled = true;
 }
 
@@ -170,6 +172,15 @@ bool app_init(struct app_context *ctx)
         .ctx = &g_msg_processor,
     };
     connman_init(&g_connman, params, &signals);
+
+    if (ctx->listen) {
+        struct net_service bind_addr;
+        memset(&bind_addr, 0, sizeof(bind_addr));
+        bind_addr.port = (uint16_t)ctx->p2p_port;
+        bind_listen_port(&g_connman.manager, &bind_addr, false);
+        printf("P2P listening on port %d\n", ctx->p2p_port);
+    }
+
     connman_start(&g_connman);
 
     /* Initialize RPC */

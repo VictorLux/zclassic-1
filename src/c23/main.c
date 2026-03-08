@@ -26,6 +26,10 @@ static void print_usage(const char *prog)
     printf("  -regtest            Use regtest\n");
     printf("  -txindex            Enable transaction index\n");
     printf("  -gen                Enable mining\n");
+    printf("  -port=<port>        P2P listen port (default: 8233)\n");
+    printf("  -rpcport=<port>     RPC listen port (default: 8232)\n");
+    printf("  -listen             Accept incoming P2P connections\n");
+    printf("  -addnode=<ip>       Add a peer to connect to\n");
     printf("  -help               Show this help\n");
 }
 
@@ -64,6 +68,12 @@ int main(int argc, char **argv)
             ctx.tx_index = true;
         } else if (strcmp(argv[i], "-gen") == 0) {
             ctx.gen = true;
+        } else if (strncmp(argv[i], "-port=", 6) == 0) {
+            ctx.p2p_port = atoi(argv[i] + 6);
+        } else if (strncmp(argv[i], "-rpcport=", 9) == 0) {
+            ctx.rpc_port = atoi(argv[i] + 9);
+        } else if (strcmp(argv[i], "-listen") == 0) {
+            ctx.listen = true;
         } else if (strcmp(argv[i], "-help") == 0 ||
                    strcmp(argv[i], "--help") == 0) {
             print_usage(argv[0]);
