@@ -27,6 +27,7 @@
 #include "script/standard.h"
 #include "rpc/wallet_rpc.h"
 #include "wallet/wallet.h"
+#include "wallet/wallet_db.h"
 #include "zcash/params_init.h"
 #include <stdatomic.h>
 #include <stdio.h>
@@ -44,6 +45,7 @@ static struct msg_processor g_msg_processor;
 static struct connman g_connman;
 static struct wallet g_wallet;
 static struct gen_context g_gen;
+static struct wallet_db g_wallet_db;
 static _Atomic bool g_running = false;
 
 void app_context_defaults(struct app_context *ctx)
@@ -167,8 +169,21 @@ bool app_init(struct app_context *ctx)
 
     /* Initialize wallet */
     wallet_init(&g_wallet);
-    wallet_top_up_key_pool(&g_wallet, DEFAULT_KEYPOOL_SIZE);
-    printf("Wallet initialized with %zu keys.\n", g_wallet.keystore.num_keys);
+
+    char wallet_path[1024];
+    snprintf(wallet_path, sizeof(wallet_path), "%s/wallet", ctx->datadir);
+    if (wallet_db_open(&g_wallet_db, wallet_path)) {
+        wallet_db_read_keys(&g_wallet_db, &g_wallet);
+        wallet_db_read_txs(&g_wallet_db, &g_wallet);
+        printf("Wallet loaded: %zu keys, %zu txs.\n",
+               g_wallet.keystore.num_keys, g_wallet.num_wallet_tx);
+    } else {
+        printf("New wallet created.\n");
+    }
+
+    if (g_wallet.keystore.num_keys == 0)
+        wallet_top_up_key_pool(&g_wallet, DEFAULT_KEYPOOL_SIZE);
+    printf("Wallet has %zu keys.\n", g_wallet.keystore.num_keys);
 
     /* Initialize message processor */
     msg_processor_init(&g_msg_processor, &g_state, &g_mempool,
@@ -269,6 +284,10 @@ void app_shutdown(void)
         g_block_tree_open = false;
     }
 
+    if (g_wallet_db.open) {
+        wallet_db_flush(&g_wallet_db, &g_wallet);
+        wallet_db_close(&g_wallet_db);
+    }
     wallet_free(&g_wallet);
     tx_mempool_free(&g_mempool);
     main_state_free(&g_state);

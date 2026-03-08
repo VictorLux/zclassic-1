@@ -88,7 +88,7 @@ MINING_SRCS = \
 	mining/miner.c mining/gen.c
 
 WALLET_SRCS = \
-	wallet/keystore.c wallet/wallet.c
+	wallet/keystore.c wallet/wallet.c wallet/wallet_db.c
 
 INIT_SRCS = \
 	init/init.c
