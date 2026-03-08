@@ -20,6 +20,7 @@
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 #include "validation/process_block.h"
+#include "net/connman.h"
 #include "net/msgprocessor.h"
 #include "zcash/params_init.h"
 #include <stdatomic.h>
@@ -35,6 +36,7 @@ static bool g_block_tree_open = false;
 static struct tx_mempool g_mempool;
 static struct rpc_table g_rpc_table;
 static struct msg_processor g_msg_processor;
+static struct connman g_connman;
 static _Atomic bool g_running = false;
 
 void app_context_defaults(struct app_context *ctx)
@@ -158,6 +160,18 @@ bool app_init(struct app_context *ctx)
     msg_processor_init(&g_msg_processor, &g_state, &g_mempool,
                        &g_coins_tip, params, ctx->datadir);
 
+    /* Initialize P2P connection manager */
+    struct node_signals signals = {
+        .get_height = msg_get_height,
+        .process_messages = msg_process_messages,
+        .send_messages = msg_send_messages,
+        .initialize_node = NULL,
+        .finalize_node = NULL,
+        .ctx = &g_msg_processor,
+    };
+    connman_init(&g_connman, params, &signals);
+    connman_start(&g_connman);
+
     /* Initialize RPC */
     rpc_table_init(&g_rpc_table);
     rpc_blockchain_set_state(&g_state, &g_mempool, ctx->datadir);
@@ -189,6 +203,8 @@ void app_shutdown(void)
     printf("Shutting down...\n");
 
     rpc_http_stop();
+    connman_stop(&g_connman);
+    connman_free(&g_connman);
 
     coins_view_cache_flush(&g_coins_tip);
     coins_view_cache_free(&g_coins_tip);
