@@ -919,8 +919,12 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
 {
     struct msg_processor *mp = (struct msg_processor *)ctx;
 
-    if (!node->successfully_connected)
+    /* Outbound nodes: send version to initiate handshake */
+    if (!node->successfully_connected) {
+        if (!node->inbound && node->send_bytes == 0)
+            push_version(mp, node);
         return true;
+    }
 
     /* Initiate sync with this peer if not done yet */
     if (!node->sync_started && !node->inbound) {
