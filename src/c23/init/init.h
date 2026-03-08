@@ -20,6 +20,8 @@ struct app_context {
     const char *miner_address;
     int rpc_port;
     int p2p_port;
+    const char *rpc_user;
+    const char *rpc_password;
     bool listen;
     bool tx_index;
     bool checkpoints_enabled;

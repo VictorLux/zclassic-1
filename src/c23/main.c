@@ -74,6 +74,10 @@ int main(int argc, char **argv)
             ctx.p2p_port = atoi(argv[i] + 6);
         } else if (strncmp(argv[i], "-rpcport=", 9) == 0) {
             ctx.rpc_port = atoi(argv[i] + 9);
+        } else if (strncmp(argv[i], "-rpcuser=", 9) == 0) {
+            ctx.rpc_user = argv[i] + 9;
+        } else if (strncmp(argv[i], "-rpcpassword=", 13) == 0) {
+            ctx.rpc_password = argv[i] + 13;
         } else if (strcmp(argv[i], "-listen") == 0) {
             ctx.listen = true;
         } else if (strncmp(argv[i], "-addnode=", 9) == 0) {

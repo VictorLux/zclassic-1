@@ -237,7 +237,7 @@ bool app_init(struct app_context *ctx)
     /* Start RPC HTTP server */
     set_rpc_warmup_finished();
     rpc_http_start(&g_rpc_table, (uint16_t)ctx->rpc_port,
-                    NULL, NULL, ctx->datadir);
+                    ctx->rpc_user, ctx->rpc_password, ctx->datadir);
 
     /* Start miner if -gen */
     if (ctx->gen) {
