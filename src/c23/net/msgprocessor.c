@@ -865,9 +865,7 @@ static void push_getheaders(struct msg_processor *mp, struct p2p_node *node)
 
     struct byte_stream s;
     stream_init(&s, 512);
-    stream_write_u32_le(&s, (uint32_t)PROTOCOL_VERSION);
     block_locator_serialize(&loc, &s);
-    /* hash_stop = zero (get as many as possible) */
     struct uint256 zero;
     uint256_set_null(&zero);
     stream_write_bytes(&s, zero.data, 32);
