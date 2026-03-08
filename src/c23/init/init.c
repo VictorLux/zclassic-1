@@ -223,6 +223,7 @@ bool app_init(struct app_context *ctx)
 
     rpc_misc_set_state(&g_state);
     register_misc_rpc_commands(&g_rpc_table);
+    rpc_net_set_connman(&g_connman);
     register_net_rpc_commands(&g_rpc_table);
 
     rpc_wallet_set_state(&g_wallet);

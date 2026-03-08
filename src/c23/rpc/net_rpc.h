@@ -7,6 +7,9 @@
 
 #include "rpc/server.h"
 
+struct connman;
+
+void rpc_net_set_connman(struct connman *cm);
 void register_net_rpc_commands(struct rpc_table *t);
 
 #endif
