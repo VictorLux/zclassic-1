@@ -26,6 +26,8 @@ static void print_usage(const char *prog)
     printf("  -regtest            Use regtest\n");
     printf("  -txindex            Enable transaction index\n");
     printf("  -gen                Enable mining\n");
+    printf("  -genproclimit=<n>   Mining threads (default: 1)\n");
+    printf("  -mineraddress=<addr> Miner payout address\n");
     printf("  -port=<port>        P2P listen port (default: 8233)\n");
     printf("  -rpcport=<port>     RPC listen port (default: 8232)\n");
     printf("  -listen             Accept incoming P2P connections\n");
@@ -74,6 +76,12 @@ int main(int argc, char **argv)
             ctx.rpc_port = atoi(argv[i] + 9);
         } else if (strcmp(argv[i], "-listen") == 0) {
             ctx.listen = true;
+        } else if (strncmp(argv[i], "-addnode=", 9) == 0) {
+            /* handled after init */
+        } else if (strncmp(argv[i], "-mineraddress=", 14) == 0) {
+            ctx.miner_address = argv[i] + 14;
+        } else if (strncmp(argv[i], "-genproclimit=", 14) == 0) {
+            ctx.gen_threads = atoi(argv[i] + 14);
         } else if (strcmp(argv[i], "-help") == 0 ||
                    strcmp(argv[i], "--help") == 0) {
             print_usage(argv[0]);
@@ -90,6 +98,15 @@ int main(int argc, char **argv)
     if (!app_init(&ctx)) {
         fprintf(stderr, "Initialization failed.\n");
         return 1;
+    }
+
+    /* Process -addnode after init */
+    for (int i = 1; i < argc; i++) {
+        if (strncmp(argv[i], "-addnode=", 9) == 0) {
+            const char *node = argv[i] + 9;
+            app_add_node(node, 0);
+            printf("Added node: %s\n", node);
+        }
     }
 
     /* Main loop */

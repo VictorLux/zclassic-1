@@ -22,6 +22,9 @@
 #include "validation/process_block.h"
 #include "net/connman.h"
 #include "net/msgprocessor.h"
+#include "keys/key_io.h"
+#include "mining/gen.h"
+#include "script/standard.h"
 #include "rpc/wallet_rpc.h"
 #include "wallet/wallet.h"
 #include "zcash/params_init.h"
@@ -40,6 +43,7 @@ static struct rpc_table g_rpc_table;
 static struct msg_processor g_msg_processor;
 static struct connman g_connman;
 static struct wallet g_wallet;
+static struct gen_context g_gen;
 static _Atomic bool g_running = false;
 
 void app_context_defaults(struct app_context *ctx)
@@ -213,6 +217,31 @@ bool app_init(struct app_context *ctx)
     set_rpc_warmup_finished();
     rpc_http_start(&g_rpc_table, (uint16_t)ctx->rpc_port, NULL, NULL);
 
+    /* Start miner if -gen */
+    if (ctx->gen) {
+        g_gen.ms = &g_state;
+        g_gen.coins_tip = &g_coins_tip;
+        g_gen.mempool = &g_mempool;
+        g_gen.params = params;
+        g_gen.datadir = ctx->datadir;
+        g_gen.num_threads = ctx->gen_threads > 0 ? ctx->gen_threads : 1;
+        g_gen.coinbase_script.size = 0;
+
+        if (ctx->miner_address) {
+            size_t pk_pfx_len, sc_pfx_len;
+            const unsigned char *pk_pfx = chain_params_base58_prefix(
+                params, B58_PUBKEY_ADDRESS, &pk_pfx_len);
+            const unsigned char *sc_pfx = chain_params_base58_prefix(
+                params, B58_SCRIPT_ADDRESS, &sc_pfx_len);
+            struct tx_destination dest;
+            if (decode_destination(ctx->miner_address, pk_pfx, pk_pfx_len,
+                                   sc_pfx, sc_pfx_len, &dest))
+                script_for_destination(&g_gen.coinbase_script, &dest);
+        }
+
+        gen_start(&g_gen);
+    }
+
     atomic_store(&g_running, true);
     printf("ZClassic C23 node initialized.\n");
     return true;
@@ -223,6 +252,9 @@ void app_shutdown(void)
     atomic_store(&g_running, false);
 
     printf("Shutting down...\n");
+
+    if (g_gen.running)
+        gen_stop(&g_gen);
 
     rpc_http_stop();
     connman_stop(&g_connman);
@@ -248,4 +280,11 @@ void app_shutdown(void)
 bool app_is_running(void)
 {
     return atomic_load(&g_running);
+}
+
+void app_add_node(const char *host, int port)
+{
+    connman_add_seed_node(&g_connman, host,
+                           port > 0 ? (uint16_t)port
+                                    : g_connman.manager.default_port);
 }

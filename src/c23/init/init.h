@@ -31,5 +31,6 @@ bool app_init(struct app_context *ctx);
 void app_shutdown(void);
 
 bool app_is_running(void);
+void app_add_node(const char *host, int port);
 
 #endif

@@ -85,7 +85,7 @@ POLICY_SRCS = \
 	policy/fees.c
 
 MINING_SRCS = \
-	mining/miner.c
+	mining/miner.c mining/gen.c
 
 WALLET_SRCS = \
 	wallet/keystore.c wallet/wallet.c
