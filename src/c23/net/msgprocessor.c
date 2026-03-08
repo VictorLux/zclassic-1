@@ -286,57 +286,21 @@ static bool process_getheaders(struct msg_processor *mp, struct p2p_node *node,
     }
     block_locator_free(&locator);
 
-    struct byte_stream headers;
-    stream_init(&headers, 4096);
-
+    /* Count headers to send */
     int count = 0;
-    int max_headers = 2000;
     struct block_index *iter = pindex ?
         active_chain_at(chain, pindex->nHeight + 1) :
         active_chain_at(chain, 0);
 
-    uint64_t placeholder_count = 0;
-    size_t count_pos = headers.size;
-    stream_write_compact_size(&headers, placeholder_count);
-
-    while (iter && count < max_headers) {
-        struct block_header hdr;
-        block_header_init(&hdr);
-        hdr.nVersion = iter->nVersion;
-        hdr.hashPrevBlock = iter->pprev ? *iter->pprev->phashBlock :
-                            (struct uint256){0};
-        hdr.hashMerkleRoot = iter->hashMerkleRoot;
-        hdr.hashFinalSaplingRoot = iter->hashFinalSaplingRoot;
-        hdr.nTime = iter->nTime;
-        hdr.nBits = iter->nBits;
-        hdr.nNonce = iter->nNonce;
-        memcpy(hdr.nSolution, iter->nSolution, iter->nSolutionSize);
-        hdr.nSolutionSize = iter->nSolutionSize;
-
-        block_header_serialize(&hdr, &headers);
-        stream_write_compact_size(&headers, 0);
+    while (iter && count < 2000) {
         count++;
-
         if (!uint256_is_null(&hash_stop) && iter->phashBlock &&
             uint256_eq(iter->phashBlock, &hash_stop))
             break;
-
         iter = active_chain_at(chain, iter->nHeight + 1);
     }
 
-    /* Patch the count at the beginning */
-    struct byte_stream patched;
-    stream_init(&patched, headers.size + 8);
-    stream_write_compact_size(&patched, (uint64_t)count);
-    stream_write(&patched, headers.data + count_pos +
-                 (headers.size > 252 ? 3 : 1), /* skip old compact_size */
-                 headers.size - count_pos -
-                 (headers.size > 252 ? 3 : 1));
-
-    /* Actually, rewrite cleanly */
-    stream_free(&patched);
-    stream_free(&headers);
-
+    struct byte_stream headers;
     stream_init(&headers, 4096);
     stream_write_compact_size(&headers, (uint64_t)count);
 
