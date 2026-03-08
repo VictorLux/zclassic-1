@@ -46,6 +46,7 @@ static struct connman g_connman;
 static struct wallet g_wallet;
 static struct gen_context g_gen;
 static struct wallet_db g_wallet_db;
+static const char *g_datadir = NULL;
 static _Atomic bool g_running = false;
 
 void app_context_defaults(struct app_context *ctx)
@@ -102,6 +103,7 @@ bool app_init(struct app_context *ctx)
         chain_params_select(CHAIN_MAIN);
 
     const struct chain_params *params = chain_params_get();
+    g_datadir = ctx->datadir;
 
     main_state_init(&g_state);
     g_state.fTxIndex = ctx->tx_index;
@@ -200,6 +202,9 @@ bool app_init(struct app_context *ctx)
     };
     connman_init(&g_connman, params, &signals);
 
+    /* Load saved peer addresses */
+    addr_db_read(&g_connman.manager, ctx->datadir);
+
     if (ctx->listen) {
         struct net_service bind_addr;
         memset(&bind_addr, 0, sizeof(bind_addr));
@@ -274,6 +279,10 @@ void app_shutdown(void)
         gen_stop(&g_gen);
 
     rpc_http_stop();
+
+    /* Save peer addresses */
+    addr_db_write(&g_connman.manager, g_datadir);
+
     connman_stop(&g_connman);
     connman_free(&g_connman);
 
