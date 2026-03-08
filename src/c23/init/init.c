@@ -22,6 +22,8 @@
 #include "validation/process_block.h"
 #include "net/connman.h"
 #include "net/msgprocessor.h"
+#include "rpc/wallet_rpc.h"
+#include "wallet/wallet.h"
 #include "zcash/params_init.h"
 #include <stdatomic.h>
 #include <stdio.h>
@@ -37,6 +39,7 @@ static struct tx_mempool g_mempool;
 static struct rpc_table g_rpc_table;
 static struct msg_processor g_msg_processor;
 static struct connman g_connman;
+static struct wallet g_wallet;
 static _Atomic bool g_running = false;
 
 void app_context_defaults(struct app_context *ctx)
@@ -158,6 +161,11 @@ bool app_init(struct app_context *ctx)
     /* Initialize mempool */
     tx_mempool_init(&g_mempool, 1000);
 
+    /* Initialize wallet */
+    wallet_init(&g_wallet);
+    wallet_top_up_key_pool(&g_wallet, DEFAULT_KEYPOOL_SIZE);
+    printf("Wallet initialized with %zu keys.\n", g_wallet.keystore.num_keys);
+
     /* Initialize message processor */
     msg_processor_init(&g_msg_processor, &g_state, &g_mempool,
                        &g_coins_tip, params, ctx->datadir);
@@ -198,6 +206,9 @@ bool app_init(struct app_context *ctx)
     register_misc_rpc_commands(&g_rpc_table);
     register_net_rpc_commands(&g_rpc_table);
 
+    rpc_wallet_set_state(&g_wallet);
+    register_wallet_rpc_commands(&g_rpc_table);
+
     /* Start RPC HTTP server */
     set_rpc_warmup_finished();
     rpc_http_start(&g_rpc_table, (uint16_t)ctx->rpc_port, NULL, NULL);
@@ -226,6 +237,7 @@ void app_shutdown(void)
         g_block_tree_open = false;
     }
 
+    wallet_free(&g_wallet);
     tx_mempool_free(&g_mempool);
     main_state_free(&g_state);
     zcash_free_params();

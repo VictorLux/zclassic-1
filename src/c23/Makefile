@@ -75,7 +75,7 @@ RPC_SRCS = \
 	rpc/protocol.c rpc/server.c rpc/client.c \
 	rpc/async_rpc_operation.c rpc/async_rpc_queue.c \
 	rpc/blockchain.c rpc/rawtransaction.c rpc/mining_rpc.c \
-	rpc/net_rpc.c rpc/misc.c rpc/httpserver.c
+	rpc/net_rpc.c rpc/misc.c rpc/httpserver.c rpc/wallet_rpc.c
 
 STORAGE_SRCS = \
 	storage/dbwrapper.c storage/txdb.c storage/disk_block_io.c \
@@ -88,7 +88,7 @@ MINING_SRCS = \
 	mining/miner.c
 
 WALLET_SRCS = \
-	wallet/keystore.c
+	wallet/keystore.c wallet/wallet.c
 
 INIT_SRCS = \
 	init/init.c
