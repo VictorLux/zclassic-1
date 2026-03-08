@@ -9,6 +9,7 @@
 #include "coins/coins_view.h"
 #include "consensus/validation.h"
 #include "rpc/blockchain.h"
+#include "rpc/httpserver.h"
 #include "rpc/mining_rpc.h"
 #include "rpc/rawtransaction.h"
 #include "rpc/server.h"
@@ -166,6 +167,10 @@ bool app_init(struct app_context *ctx)
     rpc_mining_set_state(&g_state, &g_mempool, &g_coins_tip, ctx->datadir);
     register_mining_rpc_commands(&g_rpc_table);
 
+    /* Start RPC HTTP server */
+    set_rpc_warmup_finished();
+    rpc_http_start(&g_rpc_table, (uint16_t)ctx->rpc_port, NULL, NULL);
+
     atomic_store(&g_running, true);
     printf("ZClassic C23 node initialized.\n");
     return true;
@@ -176,6 +181,8 @@ void app_shutdown(void)
     atomic_store(&g_running, false);
 
     printf("Shutting down...\n");
+
+    rpc_http_stop();
 
     coins_view_cache_flush(&g_coins_tip);
     coins_view_cache_free(&g_coins_tip);
