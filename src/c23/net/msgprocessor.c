@@ -20,6 +20,8 @@
 #include <string.h>
 #include <time.h>
 
+static void push_getheaders(struct msg_processor *mp, struct p2p_node *node);
+
 void msg_processor_init(struct msg_processor *mp,
                          struct main_state *ms,
                          struct tx_mempool *mempool,
@@ -624,6 +626,10 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
         return false;
     }
 
+    struct uint256 last_hash;
+    uint256_set_null(&last_hash);
+    size_t accepted = 0;
+
     for (uint64_t i = 0; i < count; i++) {
         struct block_header hdr;
         block_header_init(&hdr);
@@ -636,9 +642,69 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
 
         struct validation_state state;
         validation_state_init(&state);
-        accept_block_header(&hdr, &state, mp->main_state,
-                            mp->params, NULL);
+        struct block_index *pindex = NULL;
+        if (accept_block_header(&hdr, &state, mp->main_state,
+                                mp->params, &pindex)) {
+            accepted++;
+            if (pindex && pindex->phashBlock)
+                last_hash = *pindex->phashBlock;
+        }
     }
+
+    if (accepted > 0)
+        printf("Peer %s: accepted %zu headers\n", node->addr_name, accepted);
+
+    /* Request blocks for headers we accepted but don't have data for */
+    if (accepted > 0) {
+        struct block_index *tip = active_chain_tip(&mp->main_state->chain_active);
+        int our_height = tip ? tip->nHeight : 0;
+
+        struct block_index *bi = block_map_find(
+            &mp->main_state->map_block_index, &last_hash);
+        if (bi && bi->nHeight > our_height) {
+            /* Request blocks via getdata */
+            struct byte_stream getdata_msg;
+            stream_init(&getdata_msg, 4096);
+            uint64_t block_count = 0;
+
+            struct block_index *walk = bi;
+            struct uint256 request_hashes[128];
+            size_t num_requests = 0;
+
+            while (walk && walk->nHeight > our_height &&
+                   num_requests < 128) {
+                if (!(walk->nStatus & BLOCK_HAVE_DATA))
+                    request_hashes[num_requests++] = *walk->phashBlock;
+                walk = walk->pprev;
+            }
+
+            /* Send in forward order */
+            for (size_t i = num_requests; i > 0; i--) {
+                struct inv_item inv;
+                inv_item_init_typed(&inv, MSG_BLOCK, &request_hashes[i - 1]);
+                inv_item_serialize(&inv, &getdata_msg);
+                block_count++;
+            }
+
+            if (block_count > 0) {
+                struct byte_stream msg;
+                stream_init(&msg, getdata_msg.size + 8);
+                stream_write_compact_size(&msg, block_count);
+                stream_write(&msg, getdata_msg.data, getdata_msg.size);
+
+                p2p_node_begin_message(node, "getdata",
+                                       mp->params->pchMessageStart);
+                p2p_node_write_message_data(node, msg.data, msg.size);
+                p2p_node_end_message(node);
+                stream_free(&msg);
+            }
+            stream_free(&getdata_msg);
+        }
+    }
+
+    /* If we got 2000 headers (max batch), ask for more */
+    if (count == 2000)
+        push_getheaders(mp, node);
 
     return true;
 }
