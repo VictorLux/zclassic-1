@@ -72,7 +72,8 @@ JSON_SRCS = \
 
 RPC_SRCS = \
 	rpc/protocol.c rpc/server.c rpc/client.c \
-	rpc/async_rpc_operation.c rpc/async_rpc_queue.c
+	rpc/async_rpc_operation.c rpc/async_rpc_queue.c \
+	rpc/blockchain.c
 
 STORAGE_SRCS = \
 	storage/dbwrapper.c storage/txdb.c storage/disk_block_io.c \
