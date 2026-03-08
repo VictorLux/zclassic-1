@@ -5,6 +5,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "chain/chainparams.h"
+#include "consensus/upgrades.h"
 #include "encoding/utilstrencodings.h"
 #include <assert.h>
 #include <string.h>
@@ -486,4 +487,18 @@ const unsigned char *chain_params_base58_prefix(const struct chain_params *p,
 {
     *len_out = p->base58PrefixLengths[type];
     return p->base58Prefixes[type];
+}
+
+unsigned int chain_params_equihash_n(const struct chain_params *p, int height)
+{
+    int epoch = consensus_current_epoch(height, &p->consensus);
+    unsigned int n = EquihashUpgradeInfo[epoch].N;
+    return (n == EQUIHASH_DEFAULT_PARAMS) ? p->nEquihashN : n;
+}
+
+unsigned int chain_params_equihash_k(const struct chain_params *p, int height)
+{
+    int epoch = consensus_current_epoch(height, &p->consensus);
+    unsigned int k = EquihashUpgradeInfo[epoch].K;
+    return (k == EQUIHASH_DEFAULT_PARAMS) ? p->nEquihashK : k;
 }

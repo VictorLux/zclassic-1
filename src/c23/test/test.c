@@ -89,6 +89,7 @@
 #include "validation/update_coins.h"
 #include "storage/block_index_db.h"
 #include "crypto/equihash.h"
+#include "crypto/equihash_solver.h"
 #include "zcash/zcash.h"
 #include "zcash/jubjub.h"
 #include "zcash/prf.h"
@@ -4604,6 +4605,56 @@ int main(void)
         else {
             printf("check_equihash_solution bad size... FAIL\n");
             failures++;
+        }
+    }
+
+    printf("equihash solver (192,7) finds valid solution... ");
+    {
+        struct equihash_params ep;
+        equihash_params_init(&ep, 192, 7);
+        struct blake2b_ctx base_state;
+        equihash_initialise_state(&ep, &base_state);
+
+        unsigned char header_data[140];
+        memset(header_data, 0, sizeof(header_data));
+        header_data[0] = 0x04;
+        blake2b_update(&base_state, header_data, sizeof(header_data));
+
+        unsigned char nonce[32];
+        memset(nonce, 0x42, sizeof(nonce));
+        struct blake2b_ctx curr = base_state;
+        blake2b_update(&curr, nonce, sizeof(nonce));
+
+        struct eh_solver *solver = eh_solver_new();
+        if (solver) {
+            eh_solver_set_state(solver, &curr);
+            uint32_t nsols = eh_solver_run(solver);
+            bool found_valid = false;
+            for (uint32_t i = 0; i < nsols; i++) {
+                unsigned char sol_bytes[EH_SOL_BYTES];
+                size_t sol_len = eh_get_minimal_from_indices(
+                    solver->sols[i], EH_PROOFSIZE,
+                    ep.collision_bit_length, sol_bytes, sizeof(sol_bytes));
+                if (sol_len == EH_SOL_BYTES) {
+                    bool valid = equihash_is_valid_solution(
+                        &ep, &curr, sol_bytes, sol_len);
+                    if (valid) {
+                        found_valid = true;
+                        break;
+                    }
+                }
+            }
+            if (found_valid)
+                printf("OK (found %u solutions)\n", nsols);
+            else if (nsols > 0) {
+                printf("FAIL (found %u solutions but none valid)\n", nsols);
+                failures++;
+            } else {
+                printf("SKIP (no solutions for this nonce)\n");
+            }
+            eh_solver_free(solver);
+        } else {
+            printf("SKIP (insufficient memory)\n");
         }
     }
 

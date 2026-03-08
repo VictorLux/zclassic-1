@@ -10,6 +10,7 @@ CRYPTO_SRCS = \
 	crypto/sha256.c crypto/sha512.c crypto/sha1.c \
 	crypto/ripemd160.c crypto/hmac_sha256.c crypto/hmac_sha512.c \
 	crypto/sha3.c crypto/blake2b.c crypto/equihash.c \
+	crypto/equihash_solver.c \
 	crypto/chacha20poly1305.c crypto/curve25519.c crypto/blake2s.c \
 	crypto/aes256.c crypto/ed25519.c
 

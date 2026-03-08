@@ -96,4 +96,7 @@ const unsigned char *chain_params_base58_prefix(const struct chain_params *p,
                                                  enum base58_type type,
                                                  size_t *len_out);
 
+unsigned int chain_params_equihash_n(const struct chain_params *p, int height);
+unsigned int chain_params_equihash_k(const struct chain_params *p, int height);
+
 #endif
