@@ -1031,7 +1031,7 @@ static bool rpc_z_sendmany(const struct json_value *params, bool help,
     int64_t fee = g_wallet->default_fee;
     struct coin_entry available[4096];
     size_t num_available = 0;
-    wallet_available_coins(g_wallet, available, &num_available, 4096, true, false);
+    wallet_available_coins(g_wallet, available, &num_available, 4096, false, false);
 
     /* Filter to coins matching the from address */
     struct coin_entry filtered[4096];

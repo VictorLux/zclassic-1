@@ -8100,6 +8100,502 @@ int main(void)
         }
     }
 
+    /* --- ZIP32 m/1/2h full field verification against C++ reference vectors --- */
+    printf("zip32 m/1/2h full fields (chaincode,ask,nsk,ovk,dk)... ");
+    {
+        uint8_t seed[32];
+        for (int i = 0; i < 32; i++) seed[i] = (uint8_t)i;
+
+        struct zip32_xsk m, m1, m12h;
+        zip32_xsk_master(&m, seed, 32);
+        zip32_xsk_derive(&m1, &m, 1);
+        zip32_xsk_derive(&m12h, &m1, 2 | ZIP32_HARDENED_KEY_LIMIT);
+
+        /* chaincode: 35d4a883737742ca41a4baa92323bdb3c93dcb3b462a26b039971bedf415ce97 (LE) */
+        const uint8_t exp_cc[32] = {
+            0x97,0xce,0x15,0xf4,0xed,0x1b,0x97,0x39,
+            0xb0,0x26,0x2a,0x46,0x3b,0xcb,0x3d,0xc9,
+            0xb3,0xbd,0x23,0x23,0xa9,0xba,0xa4,0x41,
+            0xca,0x42,0x77,0x73,0x83,0xa8,0xd4,0x35
+        };
+        /* nsk: 0c99a63a275c1c66734761cfb9c62fe9bd1b953f579123d3d0e769c59d057837 (LE) */
+        const uint8_t exp_nsk[32] = {
+            0x37,0x78,0x05,0x9d,0xc5,0x69,0xe7,0xd0,
+            0xd3,0x23,0x91,0x57,0x3f,0x95,0x1b,0xbd,
+            0xe9,0x2f,0xc6,0xb9,0xcf,0x61,0x47,0x73,
+            0x66,0x1c,0x5c,0x27,0x3a,0xa6,0x99,0x0c
+        };
+        /* ovk: bc1328fc5eb693e18875c5149d06953b11d39447ebd6e38c023c22962e1881cf (LE) */
+        const uint8_t exp_ovk[32] = {
+            0xcf,0x81,0x18,0x2e,0x96,0x22,0x3c,0x02,
+            0x8c,0xe3,0xd6,0xeb,0x47,0x94,0xd3,0x11,
+            0x3b,0x95,0x06,0x9d,0x14,0xc5,0x75,0x88,
+            0xe1,0x93,0xb6,0x5e,0xfc,0x28,0x13,0xbc
+        };
+        /* dk: 377bb062dce7e0dcd8a0054d0ca4b4d1481b3710bfa1df12ca46ff9e9fa1eda3 (LE) */
+        const uint8_t exp_dk[32] = {
+            0xa3,0xed,0xa1,0x9f,0x9e,0xff,0x46,0xca,
+            0x12,0xdf,0xa1,0xbf,0x10,0x37,0x1b,0x48,
+            0xd1,0xb4,0xa4,0x0c,0x4d,0x05,0xa0,0xd8,
+            0xdc,0xe0,0xe7,0xdc,0x62,0xb0,0x7b,0x37
+        };
+
+        bool ok = memcmp(m12h.chain_code, exp_cc, 32) == 0;
+        ok = ok && memcmp(m12h.expsk.nsk, exp_nsk, 32) == 0;
+        ok = ok && memcmp(m12h.expsk.ovk, exp_ovk, 32) == 0;
+        ok = ok && memcmp(m12h.dk, exp_dk, 32) == 0;
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* --- ZIP32 XFVK m/1/2h full verification (ak,nk,ovk from FVK) --- */
+    printf("zip32 xfvk m/1/2h full fields (ak,nk,ovk)... ");
+    {
+        uint8_t seed[32];
+        for (int i = 0; i < 32; i++) seed[i] = (uint8_t)i;
+
+        struct zip32_xsk m, m1, m12h;
+        zip32_xsk_master(&m, seed, 32);
+        zip32_xsk_derive(&m1, &m, 1);
+        zip32_xsk_derive(&m12h, &m1, 2 | ZIP32_HARDENED_KEY_LIMIT);
+
+        struct zip32_xfvk xfvk;
+        zip32_xsk_to_xfvk(&xfvk, &m12h);
+
+        /* ak: 4138cffdf7200e52d4e9f4384481b4a4c4d070493a5e401e4ffa850f5a92c5a6 (LE) */
+        const uint8_t exp_ak[32] = {
+            0xa6,0xc5,0x92,0x5a,0x0f,0x85,0xfa,0x4f,
+            0x1e,0x40,0x5e,0x3a,0x49,0x70,0xd0,0xc4,
+            0xa4,0xb4,0x81,0x44,0x38,0xf4,0xe9,0xd4,
+            0x52,0x0e,0x20,0xf7,0xfd,0xcf,0x38,0x41
+        };
+        /* nk: 11eee22577304f660cc036bc84b3fc88d1ec50ae8a4d657beb6b211659304e30 (LE) */
+        const uint8_t exp_nk[32] = {
+            0x30,0x4e,0x30,0x59,0x16,0x21,0x6b,0xeb,
+            0x7b,0x65,0x4d,0x8a,0xae,0x50,0xec,0xd1,
+            0x88,0xfc,0xb3,0x84,0xbc,0x36,0xc0,0x0c,
+            0x66,0x4f,0x30,0x77,0x25,0xe2,0xee,0x11
+        };
+
+        bool ok = memcmp(xfvk.fvk.ak, exp_ak, 32) == 0;
+        ok = ok && memcmp(xfvk.fvk.nk, exp_nk, 32) == 0;
+
+        /* default diversifier: e8 d0 37 93 cd d2 ba cc 9c 70 41 */
+        uint8_t diversifier[11], pk_d[32];
+        ok = ok && zip32_xfvk_address(&xfvk, diversifier, pk_d);
+        const uint8_t exp_d[11] = {0xe8,0xd0,0x37,0x93,0xcd,0xd2,0xba,0xcc,0x9c,0x70,0x41};
+        ok = ok && memcmp(diversifier, exp_d, 11) == 0;
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* --- ZIP32 XFVK non-hardened derive m/1/2h/v/3 full verification --- */
+    printf("zip32 xfvk derive m/1/2h/v/3 full fields... ");
+    {
+        uint8_t seed[32];
+        for (int i = 0; i < 32; i++) seed[i] = (uint8_t)i;
+
+        struct zip32_xsk m, m1, m12h;
+        zip32_xsk_master(&m, seed, 32);
+        zip32_xsk_derive(&m1, &m, 1);
+        zip32_xsk_derive(&m12h, &m1, 2 | ZIP32_HARDENED_KEY_LIMIT);
+
+        struct zip32_xfvk xfvk, xfvk3;
+        zip32_xsk_to_xfvk(&xfvk, &m12h);
+        bool ok = zip32_xfvk_derive(&xfvk3, &xfvk, 3);
+        ok = ok && (xfvk3.depth == 3);
+        ok = ok && (xfvk3.parent_fvk_tag == 0x7583c148u);
+
+        /* chaincode: e8e7d6a74a5a1c05be41baec7998d91f7b3603a4c0af495b0d43ba81cf7b938d (LE) */
+        const uint8_t exp_cc[32] = {
+            0x8d,0x93,0x7b,0xcf,0x81,0xba,0x43,0x0d,
+            0x5b,0x49,0xaf,0xc0,0xa4,0x03,0x36,0x7b,
+            0x1f,0xd9,0x98,0x79,0xec,0xba,0x41,0xbe,
+            0x05,0x1c,0x5a,0x4a,0xa7,0xd6,0xe7,0xe8
+        };
+        /* ak: a3a697bdda9d648d32a97553de4754b2fac866d726d3f2c436259c507bc585b1 (LE) */
+        const uint8_t exp_ak[32] = {
+            0xb1,0x85,0xc5,0x7b,0x50,0x9c,0x25,0x36,
+            0xc4,0xf2,0xd3,0x26,0xd7,0x66,0xc8,0xfa,
+            0xb2,0x54,0x47,0xde,0x53,0x75,0xa9,0x32,
+            0x8d,0x64,0x9d,0xda,0xbd,0x97,0xa6,0xa3
+        };
+        /* nk: 4f66c0814b769963f3bf1bc001270b50edabb27de042fc8a5607d2029e0488db (LE) */
+        const uint8_t exp_nk[32] = {
+            0xdb,0x88,0x04,0x9e,0x02,0xd2,0x07,0x56,
+            0x8a,0xfc,0x42,0xe0,0x7d,0xb2,0xab,0xed,
+            0x50,0x0b,0x27,0x01,0xc0,0x1b,0xbf,0xf3,
+            0x63,0x99,0x76,0x4b,0x81,0xc0,0x66,0x4f
+        };
+        /* ovk: f61a699934dc78441324ef628b4b4721611571e8ee3bd591eb3d4b1cfae0b969 (LE) */
+        const uint8_t exp_ovk[32] = {
+            0x69,0xb9,0xe0,0xfa,0x1c,0x4b,0x3d,0xeb,
+            0x91,0xd5,0x3b,0xee,0xe8,0x71,0x15,0x61,
+            0x21,0x47,0x4b,0x8b,0x62,0xef,0x24,0x13,
+            0x44,0x78,0xdc,0x34,0x99,0x69,0x1a,0xf6
+        };
+        /* dk: 6ee53b1261f2c9c0f7359ab236f87b52a0f1b0ce43305cdad92ebb63c350cbbe (LE) */
+        const uint8_t exp_dk[32] = {
+            0xbe,0xcb,0x50,0xc3,0x63,0xbb,0x2e,0xd9,
+            0xda,0x5c,0x30,0x43,0xce,0xb0,0xf1,0xa0,
+            0x52,0x7b,0xf8,0x36,0xb2,0x9a,0x35,0xf7,
+            0xc0,0xc9,0xf2,0x61,0x12,0x3b,0xe5,0x6e
+        };
+
+        ok = ok && memcmp(xfvk3.chain_code, exp_cc, 32) == 0;
+        ok = ok && memcmp(xfvk3.fvk.ak, exp_ak, 32) == 0;
+        ok = ok && memcmp(xfvk3.fvk.nk, exp_nk, 32) == 0;
+        ok = ok && memcmp(xfvk3.fvk.ovk, exp_ovk, 32) == 0;
+        ok = ok && memcmp(xfvk3.dk, exp_dk, 32) == 0;
+
+        /* default diversifier: 03 0f fb 26 3a 93 9e 23 0e 96 dd */
+        uint8_t diversifier[11], pk_d[32];
+        ok = ok && zip32_xfvk_address(&xfvk3, diversifier, pk_d);
+        const uint8_t exp_d[11] = {0x03,0x0f,0xfb,0x26,0x3a,0x93,0x9e,0x23,0x0e,0x96,0xdd};
+        ok = ok && memcmp(diversifier, exp_d, 11) == 0;
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* --- Sapling note encryption full end-to-end with ivk decryption --- */
+    printf("Sapling note encryption full e2e (encrypt→KDF→decrypt→verify cm)... ");
+    {
+        /* Use sk=0 keys from test vector 1 */
+        uint8_t sk[32] = {0};
+        struct zip32_xsk xsk;
+        zip32_xsk_master(&xsk, sk, 32);
+        struct zip32_xfvk xfvk;
+        zip32_xsk_to_xfvk(&xfvk, &xsk);
+
+        uint8_t diversifier[11], pk_d[32];
+        zip32_xfvk_address(&xfvk, diversifier, pk_d);
+
+        uint8_t ivk[32];
+        sapling_crh_ivk(xfvk.fvk.ak, xfvk.fvk.nk, ivk);
+
+        /* Generate note with known value and random rcm */
+        uint64_t value = 39393;
+        uint8_t rcm[32];
+        sapling_generate_r(rcm);
+
+        /* Compute expected cm */
+        uint8_t cm[32];
+        bool cm_ok = sapling_compute_cm(diversifier, pk_d, value, rcm, cm);
+
+        /* Build note plaintext: 01 || d(11) || value(8 LE) || rcm(32) || memo(512) */
+        uint8_t plaintext[564];
+        plaintext[0] = 0x01;
+        memcpy(plaintext + 1, diversifier, 11);
+        for (int i = 0; i < 8; i++) plaintext[12+i] = (uint8_t)((value >> (8*i)) & 0xff);
+        memcpy(plaintext + 20, rcm, 32);
+        /* Fill memo with sequential bytes like C++ test */
+        for (int i = 0; i < 512; i++) plaintext[52+i] = (uint8_t)(i & 0xff);
+
+        /* Generate esk and epk */
+        uint8_t esk[32];
+        sapling_generate_r(esk);
+        uint8_t epk[32];
+        sapling_ka_derivepublic(diversifier, esk, epk);
+
+        /* KDF: DH(esk, pk_d) → shared secret → key */
+        uint8_t dhsecret[32];
+        sapling_ka_agree(pk_d, esk, dhsecret);
+        uint8_t enc_key[32];
+        sapling_kdf(enc_key, dhsecret, epk);
+
+        /* Encrypt */
+        uint8_t ciphertext[580];
+        sapling_note_encrypt(enc_key, plaintext, 564, ciphertext);
+
+        /* Now decrypt using ivk */
+        uint8_t dh_ivk[32];
+        sapling_ka_agree(epk, ivk, dh_ivk);
+        uint8_t dec_key[32];
+        sapling_kdf(dec_key, dh_ivk, epk);
+
+        uint8_t decrypted[564];
+        bool dec_ok = sapling_note_decrypt(dec_key, ciphertext, 580, decrypted);
+
+        /* Verify plaintext matches */
+        bool pt_match = dec_ok && memcmp(decrypted, plaintext, 564) == 0;
+
+        /* Verify cm from decrypted note */
+        uint8_t dec_d[11];
+        memcpy(dec_d, decrypted + 1, 11);
+        uint64_t dec_v = 0;
+        for (int i = 0; i < 8; i++) dec_v |= ((uint64_t)decrypted[12+i]) << (8*i);
+        uint8_t dec_rcm[32];
+        memcpy(dec_rcm, decrypted + 20, 32);
+
+        uint8_t recomputed_cm[32];
+        bool cm2_ok = sapling_compute_cm(dec_d, pk_d, dec_v, dec_rcm, recomputed_cm);
+        bool cm_match = cm2_ok && memcmp(cm, recomputed_cm, 32) == 0;
+
+        if (cm_ok && pt_match && cm_match)
+            printf("OK\n");
+        else {
+            printf("FAIL (cm_ok=%d dec_ok=%d pt_match=%d cm_match=%d)\n",
+                   cm_ok, dec_ok, pt_match, cm_match);
+            failures++;
+        }
+    }
+
+    /* --- Sapling outgoing ciphertext encrypt/decrypt with ovk --- */
+    printf("Sapling out_ciphertext encrypt/decrypt with ovk... ");
+    {
+        uint8_t sk[32] = {0};
+        struct zip32_xsk xsk;
+        zip32_xsk_master(&xsk, sk, 32);
+        struct zip32_xfvk xfvk;
+        zip32_xsk_to_xfvk(&xfvk, &xsk);
+        uint8_t ovk[32];
+        memcpy(ovk, xfvk.fvk.ovk, 32);
+
+        /* Random cv, cm, epk */
+        uint8_t cv[32], cm_rand[32], epk[32];
+        GetRandBytes(cv, 32);
+        GetRandBytes(cm_rand, 32);
+        GetRandBytes(epk, 32);
+
+        /* Outgoing plaintext: pk_d(32) || esk(32) */
+        uint8_t out_pt[64];
+        GetRandBytes(out_pt, 64);
+
+        /* Derive ock = PRF_ock(ovk, cv, cm, epk) */
+        uint8_t ock[32];
+        sapling_prf_ock(ock, ovk, cv, cm_rand, epk);
+
+        /* Encrypt */
+        uint8_t out_ct[80];
+        sapling_out_encrypt(ock, out_pt, 64, out_ct);
+
+        /* Decrypt with same ock */
+        uint8_t dec_out_pt[64];
+        bool ok = sapling_out_decrypt(ock, out_ct, 80, dec_out_pt);
+        ok = ok && memcmp(out_pt, dec_out_pt, 64) == 0;
+
+        /* Decrypt with wrong key should fail */
+        uint8_t wrong_ock[32];
+        GetRandBytes(wrong_ock, 32);
+        uint8_t wrong_pt[64];
+        bool wrong_ok = sapling_out_decrypt(wrong_ock, out_ct, 80, wrong_pt);
+        ok = ok && !wrong_ok;
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* --- Sapling note encryption wrong ivk rejection --- */
+    printf("Sapling note encryption wrong ivk rejected... ");
+    {
+        uint8_t sk[32] = {0};
+        struct zip32_xsk xsk;
+        zip32_xsk_master(&xsk, sk, 32);
+        struct zip32_xfvk xfvk;
+        zip32_xsk_to_xfvk(&xfvk, &xsk);
+
+        uint8_t diversifier[11], pk_d[32];
+        zip32_xfvk_address(&xfvk, diversifier, pk_d);
+
+        uint8_t ivk[32];
+        sapling_crh_ivk(xfvk.fvk.ak, xfvk.fvk.nk, ivk);
+
+        /* Build minimal plaintext */
+        uint8_t plaintext[564] = {0x01};
+        memcpy(plaintext + 1, diversifier, 11);
+
+        /* Encrypt with real key */
+        uint8_t esk[32];
+        sapling_generate_r(esk);
+        uint8_t epk[32];
+        sapling_ka_derivepublic(diversifier, esk, epk);
+
+        uint8_t dhsecret[32];
+        sapling_ka_agree(pk_d, esk, dhsecret);
+        uint8_t enc_key[32];
+        sapling_kdf(enc_key, dhsecret, epk);
+
+        uint8_t ciphertext[580];
+        sapling_note_encrypt(enc_key, plaintext, 564, ciphertext);
+
+        /* Try to decrypt with wrong ivk (all zeros) */
+        uint8_t wrong_ivk[32] = {1};
+        uint8_t dh_wrong[32];
+        sapling_ka_agree(epk, wrong_ivk, dh_wrong);
+        uint8_t dec_key_wrong[32];
+        sapling_kdf(dec_key_wrong, dh_wrong, epk);
+
+        uint8_t decrypted[564];
+        bool wrong_dec = sapling_note_decrypt(dec_key_wrong, ciphertext, 580, decrypted);
+        /* AEAD should reject (Poly1305 tag mismatch) */
+        bool ok = !wrong_dec;
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL (wrong ivk decrypted successfully!)\n"); failures++; }
+    }
+
+    /* --- Sapling value commitment additivity (cv1 + cv2 = cv_sum) --- */
+    printf("Sapling value commitment additivity... ");
+    {
+        uint8_t rcv1[32], rcv2[32];
+        sapling_generate_r(rcv1);
+        sapling_generate_r(rcv2);
+
+        uint64_t v1 = 50000, v2 = 30000;
+        uint8_t cv1[32], cv2[32];
+        sapling_value_commit(v1, rcv1, cv1);
+        sapling_value_commit(v2, rcv2, cv2);
+
+        /* cv_sum should equal value_commit(v1+v2, rcv1+rcv2) */
+        struct fs r1, r2, r_sum;
+        fs_from_bytes(&r1, rcv1);
+        fs_from_bytes(&r2, rcv2);
+        fs_add(&r_sum, &r1, &r2);
+        uint8_t rcv_sum[32];
+        fs_to_bytes(rcv_sum, &r_sum);
+
+        uint8_t cv_sum_direct[32];
+        sapling_value_commit(v1 + v2, rcv_sum, cv_sum_direct);
+
+        /* Also compute cv1 + cv2 as points */
+        struct jub_point p1, p2, p_sum;
+        jub_from_bytes(&p1, cv1);
+        jub_from_bytes(&p2, cv2);
+        jub_add(&p_sum, &p1, &p2);
+        uint8_t cv_sum_points[32];
+        jub_to_bytes(cv_sum_points, &p_sum);
+
+        bool ok = memcmp(cv_sum_direct, cv_sum_points, 32) == 0;
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* --- Sapling ka_agree commutativity (esk*pk_d == ivk*epk after cofactor) --- */
+    printf("Sapling ka_agree commutativity... ");
+    {
+        uint8_t sk[32] = {0};
+        struct zip32_xsk xsk;
+        zip32_xsk_master(&xsk, sk, 32);
+        struct zip32_xfvk xfvk;
+        zip32_xsk_to_xfvk(&xfvk, &xsk);
+
+        uint8_t diversifier[11], pk_d[32];
+        zip32_xfvk_address(&xfvk, diversifier, pk_d);
+
+        uint8_t ivk[32];
+        sapling_crh_ivk(xfvk.fvk.ak, xfvk.fvk.nk, ivk);
+
+        uint8_t esk[32];
+        sapling_generate_r(esk);
+        uint8_t epk[32];
+        sapling_ka_derivepublic(diversifier, esk, epk);
+
+        /* Sender side: esk * pk_d */
+        uint8_t shared_sender[32];
+        sapling_ka_agree(pk_d, esk, shared_sender);
+
+        /* Receiver side: ivk * epk */
+        uint8_t shared_receiver[32];
+        sapling_ka_agree(epk, ivk, shared_receiver);
+
+        bool ok = memcmp(shared_sender, shared_receiver, 32) == 0;
+        if (ok) printf("OK\n");
+        else {
+            printf("FAIL\n");
+            printf("  sender:   "); for(int i=0;i<32;i++)printf("%02x",shared_sender[i]); printf("\n");
+            printf("  receiver: "); for(int i=0;i<32;i++)printf("%02x",shared_receiver[i]); printf("\n");
+            failures++;
+        }
+    }
+
+    /* --- RedJubjub sign/verify with multiple messages --- */
+    printf("RedJubjub sign/verify 10 random messages... ");
+    {
+        uint8_t sk[32] = {0};
+        struct zip32_xsk xsk;
+        zip32_xsk_master(&xsk, sk, 32);
+
+        bool ok = true;
+        for (int i = 0; i < 10 && ok; i++) {
+            uint8_t msg[64];
+            GetRandBytes(msg, 64);
+            uint8_t sig[64];
+            ok = redjubjub_sign(xsk.expsk.ask, msg, sig, 5);
+            if (ok) {
+                uint8_t ak[32];
+                sapling_ask_to_ak(xsk.expsk.ask, ak);
+                ok = redjubjub_verify(ak, msg, sig, sig + 32, 5);
+            }
+        }
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* --- Sapling binding sig with multiple spend+output --- */
+    printf("Sapling binding sig 2 spends + 3 outputs... ");
+    {
+        /* 2 spends of 50000 each, 3 outputs of 30000 each + 10000 fee */
+        uint8_t rcv_s1[32], rcv_s2[32], rcv_o1[32], rcv_o2[32], rcv_o3[32];
+        sapling_generate_r(rcv_s1);
+        sapling_generate_r(rcv_s2);
+        sapling_generate_r(rcv_o1);
+        sapling_generate_r(rcv_o2);
+        sapling_generate_r(rcv_o3);
+
+        uint8_t cv_s1[32], cv_s2[32], cv_o1[32], cv_o2[32], cv_o3[32];
+        sapling_value_commit(50000, rcv_s1, cv_s1);
+        sapling_value_commit(50000, rcv_s2, cv_s2);
+        sapling_value_commit(30000, rcv_o1, cv_o1);
+        sapling_value_commit(30000, rcv_o2, cv_o2);
+        sapling_value_commit(30000, rcv_o3, cv_o3);
+
+        /* bsk = sum(rcv_spends) - sum(rcv_outputs) */
+        struct fs bsk_fs;
+        struct fs r, neg_r;
+        fs_from_bytes(&bsk_fs, rcv_s1);
+        fs_from_bytes(&r, rcv_s2);
+        fs_add(&bsk_fs, &bsk_fs, &r);
+        fs_from_bytes(&r, rcv_o1);
+        fs_neg(&neg_r, &r); fs_add(&bsk_fs, &bsk_fs, &neg_r);
+        fs_from_bytes(&r, rcv_o2);
+        fs_neg(&neg_r, &r); fs_add(&bsk_fs, &bsk_fs, &neg_r);
+        fs_from_bytes(&r, rcv_o3);
+        fs_neg(&neg_r, &r); fs_add(&bsk_fs, &bsk_fs, &neg_r);
+
+        uint8_t bsk[32];
+        fs_to_bytes(bsk, &bsk_fs);
+
+        uint8_t sighash[32];
+        GetRandBytes(sighash, 32);
+
+        uint8_t binding_sig[64];
+        bool sig_ok = sapling_create_binding_sig(bsk, sighash, binding_sig);
+
+        /* Build verification context */
+        struct sapling_verification_ctx ctx;
+        sapling_verification_ctx_init(&ctx);
+
+        /* Add spends (positive cv) */
+        struct jub_point pt;
+        jub_from_bytes(&pt, cv_s1); jub_add(&ctx.bvk, &ctx.bvk, &pt);
+        jub_from_bytes(&pt, cv_s2); jub_add(&ctx.bvk, &ctx.bvk, &pt);
+
+        /* Subtract outputs (negative cv) */
+        struct jub_point neg;
+        jub_from_bytes(&pt, cv_o1); jub_neg(&neg, &pt); jub_add(&ctx.bvk, &ctx.bvk, &neg);
+        jub_from_bytes(&pt, cv_o2); jub_neg(&neg, &pt); jub_add(&ctx.bvk, &ctx.bvk, &neg);
+        jub_from_bytes(&pt, cv_o3); jub_neg(&neg, &pt); jub_add(&ctx.bvk, &ctx.bvk, &neg);
+
+        /* value_balance = 100000 - 90000 = 10000 (fee goes transparent) */
+        bool final_ok = sapling_final_check(&ctx, 10000, binding_sig, sighash);
+
+        if (sig_ok && final_ok) printf("OK\n");
+        else { printf("FAIL (sig_ok=%d final_ok=%d)\n", sig_ok, final_ok); failures++; }
+    }
+
     printf("\n%s (%d failures)\n", failures ? "SOME TESTS FAILED" : "ALL TESTS PASSED", failures);
     return failures ? 1 : 0;
 }
