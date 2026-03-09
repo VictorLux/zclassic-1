@@ -5,11 +5,13 @@
 
 #include "zcash/sapling.h"
 #include "zcash/pedersen_hash.h"
+#include "zcash/note_encryption.h"
 #include "zcash/jubjub.h"
 #include "zcash/bls12_381.h"
 #include "crypto/blake2s.h"
 #include "crypto/blake2b.h"
 #include "core/random.h"
+#include "support/cleanse.h"
 #include <string.h>
 #include <stdlib.h>
 
@@ -611,4 +613,208 @@ bool sapling_final_check(struct sapling_verification_ctx *ctx,
     return redjubjub_verify(bvk_bytes, data_to_sign,
                              binding_sig, binding_sig + 32,
                              GEN_VALUE_COMMITMENT_RANDOMNESS);
+}
+
+/* --- RedJubjub signing --- */
+
+bool redjubjub_sign(const uint8_t sk[32],
+                     const uint8_t msg[64],
+                     uint8_t sig_out[64],
+                     int generator_idx)
+{
+    ensure_fixed_generators();
+
+    /* T = random 80 bytes */
+    uint8_t T[80];
+    GetRandBytes(T, sizeof(T));
+
+    /* r = H*(T || vk || msg) where vk = sk * G */
+    struct jub_point vk_point;
+    jub_scalar_mul(&vk_point, &fixed_generators[generator_idx], sk);
+    uint8_t vk_bytes[32];
+    jub_to_bytes(vk_bytes, &vk_point);
+
+    /* r = to_scalar(BLAKE2b-512("Zcash_RedJubjubH", T || vk_bytes || msg)) */
+    static const uint8_t personal[16] = {'Z','c','a','s','h','_','R','e','d','J','u','b','j','u','b','H'};
+    uint8_t digest[64];
+    struct blake2b_ctx bctx;
+    blake2b_init_salt_personal(&bctx, 64, NULL, 0, NULL, personal);
+    blake2b_update(&bctx, T, sizeof(T));
+    blake2b_update(&bctx, vk_bytes, 32);
+    blake2b_update(&bctx, msg, 64);
+    blake2b_final(&bctx, digest, 64);
+
+    uint8_t r_scalar[32];
+    jubjub_to_scalar(digest, r_scalar);
+
+    /* R = r * G */
+    struct jub_point R_point;
+    jub_scalar_mul(&R_point, &fixed_generators[generator_idx], r_scalar);
+    uint8_t Rbar[32];
+    jub_to_bytes(Rbar, &R_point);
+
+    /* c = H*(Rbar || msg) */
+    uint8_t c_scalar[32];
+    h_star(Rbar, 32, msg, 64, c_scalar);
+
+    /* S = r + c * sk (mod Fs) */
+    struct fs r_fs, c_fs, sk_fs, product, S_fs;
+    fs_from_bytes(&r_fs, r_scalar);
+    fs_from_bytes(&c_fs, c_scalar);
+    fs_from_bytes(&sk_fs, sk);
+    fs_mul(&product, &c_fs, &sk_fs);
+    fs_add(&S_fs, &r_fs, &product);
+
+    uint8_t Sbar[32];
+    fs_to_bytes(Sbar, &S_fs);
+
+    memcpy(sig_out, Rbar, 32);
+    memcpy(sig_out + 32, Sbar, 32);
+
+    /* Cleanse secret intermediates */
+    memset(T, 0, sizeof(T));
+    memset(r_scalar, 0, 32);
+    memset(c_scalar, 0, 32);
+    memset(&r_fs, 0, sizeof(r_fs));
+    memset(&c_fs, 0, sizeof(c_fs));
+    memset(&sk_fs, 0, sizeof(sk_fs));
+    memset(&product, 0, sizeof(product));
+    memset(&S_fs, 0, sizeof(S_fs));
+
+    return true;
+}
+
+/* --- Value commitment --- */
+
+bool sapling_value_commit(uint64_t value, const uint8_t rcv[32],
+                           uint8_t cv_out[32])
+{
+    ensure_fixed_generators();
+
+    /* cv = value * G_v + rcv * G_rcv */
+    uint8_t val_scalar[32] = {0};
+    for (int i = 0; i < 8; i++)
+        val_scalar[i] = (uint8_t)(value >> (i * 8));
+
+    struct jub_point val_pt, rcv_pt, cv_pt;
+    jub_scalar_mul(&val_pt, &fixed_generators[GEN_VALUE_COMMITMENT_VALUE], val_scalar);
+    jub_scalar_mul(&rcv_pt, &fixed_generators[GEN_VALUE_COMMITMENT_RANDOMNESS], rcv);
+    jub_add(&cv_pt, &val_pt, &rcv_pt);
+    jub_to_bytes(cv_out, &cv_pt);
+    return true;
+}
+
+/* --- Build output description --- */
+
+bool sapling_build_output_description(
+    const uint8_t ovk[32],
+    const uint8_t to_d[11], const uint8_t to_pk_d[32],
+    uint64_t value, const uint8_t memo[512],
+    uint8_t od_cv[32], uint8_t od_cm[32], uint8_t od_epk[32],
+    uint8_t od_enc[580], uint8_t od_out[80], uint8_t od_proof[192],
+    uint8_t rcv_out[32])
+{
+    /* Generate random scalars */
+    uint8_t rcm[32], rcv[32], esk[32];
+    sapling_generate_r(rcm);
+    sapling_generate_r(rcv);
+    sapling_generate_r(esk);
+
+    /* Compute note commitment: cm */
+    if (!sapling_compute_cm(to_d, to_pk_d, value, rcm, od_cm))
+        return false;
+
+    /* Compute value commitment: cv = value*G_v + rcv*G_rcv */
+    if (!sapling_value_commit(value, rcv, od_cv))
+        return false;
+
+    /* Compute ephemeral public key: epk = esk * g_d(diversifier) */
+    if (!sapling_ka_derivepublic(to_d, esk, od_epk))
+        return false;
+
+    /* Encrypt note for recipient */
+    /* 1. DH agreement: dhsecret = esk * pk_d */
+    uint8_t dhsecret[32];
+    if (!sapling_ka_agree(to_pk_d, esk, dhsecret))
+        return false;
+
+    /* 2. KDF: key = BLAKE2b("Zcash_SaplingKDF", dhsecret || epk) */
+    uint8_t enc_key[32];
+    if (!sapling_kdf(enc_key, dhsecret, od_epk))
+        return false;
+
+    /* 3. Build note plaintext: d(11) + value(8) + rcm(32) + memo(512) = 563 bytes
+     * With leading byte 0x01 (Sapling) = 564 bytes */
+    uint8_t plaintext[564];
+    plaintext[0] = 0x01; /* Sapling note type */
+    memcpy(plaintext + 1, to_d, 11);
+    for (int i = 0; i < 8; i++)
+        plaintext[12 + i] = (uint8_t)(value >> (i * 8));
+    memcpy(plaintext + 20, rcm, 32);
+    if (memo)
+        memcpy(plaintext + 52, memo, 512);
+    else
+        memset(plaintext + 52, 0xF6, 512);
+
+    /* 4. Encrypt: enc_ciphertext = AEAD(key, plaintext) → 580 bytes */
+    if (!sapling_note_encrypt(enc_key, plaintext, 564, od_enc))
+        return false;
+
+    /* Encrypt outgoing plaintext (for sender recovery via ovk) */
+    /* 1. Outgoing plaintext: pk_d(32) + esk(32) = 64 bytes */
+    uint8_t out_plaintext[64];
+    memcpy(out_plaintext, to_pk_d, 32);
+    memcpy(out_plaintext + 32, esk, 32);
+
+    /* 2. OCK: ock = PRF(ovk || cv || cm || epk) */
+    uint8_t ock[32];
+    if (!sapling_prf_ock(ock, ovk, od_cv, od_cm, od_epk))
+        return false;
+
+    /* 3. Encrypt outgoing: out_ciphertext = AEAD(ock, out_plaintext) → 80 bytes */
+    if (!sapling_out_encrypt(ock, out_plaintext, 64, od_out))
+        return false;
+
+    /* Groth16 proof placeholder — zeros for now.
+     * Full proof generation requires complete FFT + Pippenger MSM. */
+    memset(od_proof, 0, 192);
+
+    /* Return rcv for binding signature accumulation */
+    if (rcv_out)
+        memcpy(rcv_out, rcv, 32);
+
+    /* Cleanse secrets */
+    memset(plaintext, 0, 564);
+    memset(rcm, 0, 32);
+    memset(rcv, 0, 32);
+    memset(esk, 0, 32);
+    memset(dhsecret, 0, 32);
+    memset(enc_key, 0, 32);
+    memset(out_plaintext, 0, 64);
+    memset(ock, 0, 32);
+
+    return true;
+}
+
+/* --- Binding signature generation --- */
+
+bool sapling_create_binding_sig(const uint8_t bsk[32],
+                                 const uint8_t sighash[32],
+                                 uint8_t binding_sig_out[64])
+{
+    ensure_fixed_generators();
+
+    /* bvk = bsk * G_rcv (ValueCommitmentRandomness generator) */
+    struct jub_point bvk_point;
+    jub_scalar_mul(&bvk_point, &fixed_generators[GEN_VALUE_COMMITMENT_RANDOMNESS], bsk);
+    uint8_t bvk_bytes[32];
+    jub_to_bytes(bvk_bytes, &bvk_point);
+
+    /* msg = bvk || sighash */
+    uint8_t msg[64];
+    memcpy(msg, bvk_bytes, 32);
+    memcpy(msg + 32, sighash, 32);
+
+    return redjubjub_sign(bsk, msg, binding_sig_out,
+                           GEN_VALUE_COMMITMENT_RANDOMNESS);
 }

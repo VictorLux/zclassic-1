@@ -32,6 +32,7 @@ static void print_usage(const char *prog)
     printf("  -rpcport=<port>     RPC listen port (default: 8232)\n");
     printf("  -listen             Accept incoming P2P connections\n");
     printf("  -addnode=<ip>       Add a peer to connect to\n");
+    printf("  -showmetrics=<0|1>  Show metrics screen (default: 1)\n");
     printf("  -help               Show this help\n");
 }
 
@@ -55,6 +56,8 @@ int main(int argc, char **argv)
     }
     ctx.datadir = default_datadir;
     ctx.params_dir = default_paramsdir;
+
+    bool show_metrics = true;
 
     /* Parse arguments */
     for (int i = 1; i < argc; i++) {
@@ -86,6 +89,8 @@ int main(int argc, char **argv)
             ctx.miner_address = argv[i] + 14;
         } else if (strncmp(argv[i], "-genproclimit=", 14) == 0) {
             ctx.gen_threads = atoi(argv[i] + 14);
+        } else if (strncmp(argv[i], "-showmetrics=", 13) == 0) {
+            show_metrics = atoi(argv[i] + 13) != 0;
         } else if (strcmp(argv[i], "-help") == 0 ||
                    strcmp(argv[i], "--help") == 0) {
             print_usage(argv[0]);
@@ -93,8 +98,9 @@ int main(int argc, char **argv)
         }
     }
 
-    printf("ZClassic C23 Full Node\n");
-    printf("Data directory: %s\n", ctx.datadir);
+    /* Ensure stdout is line-buffered for logging */
+    setvbuf(stdout, NULL, _IOLBF, 0);
+    setvbuf(stderr, NULL, _IOLBF, 0);
 
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
@@ -109,14 +115,20 @@ int main(int argc, char **argv)
         if (strncmp(argv[i], "-addnode=", 9) == 0) {
             const char *node = argv[i] + 9;
             app_add_node(node, 0);
-            printf("Added node: %s\n", node);
         }
     }
+
+    /* Start metrics display */
+    if (show_metrics)
+        app_start_metrics(ctx.gen);
 
     /* Main loop */
     while (!g_shutdown_requested && app_is_running()) {
         sleep(1);
     }
+
+    if (show_metrics)
+        app_stop_metrics();
 
     app_shutdown();
     return 0;

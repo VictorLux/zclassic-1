@@ -15,12 +15,16 @@
 #include "validation/check_transaction.h"
 #include "validation/process_block.h"
 #include "storage/disk_block_io.h"
+#include "wallet/wallet.h"
 #include "util/timedata.h"
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
 
 static void push_getheaders(struct msg_processor *mp, struct p2p_node *node);
+static void push_getheaders_from(struct msg_processor *mp,
+                                  struct p2p_node *node,
+                                  struct block_index *from);
 
 void msg_processor_init(struct msg_processor *mp,
                          struct main_state *ms,
@@ -327,8 +331,10 @@ static bool process_getheaders(struct msg_processor *mp, struct p2p_node *node,
         struct block_header hdr;
         block_header_init(&hdr);
         hdr.nVersion = iter->nVersion;
-        hdr.hashPrevBlock = iter->pprev ? *iter->pprev->phashBlock :
-                            (struct uint256){0};
+        if (iter->pprev && iter->pprev->phashBlock)
+            hdr.hashPrevBlock = *iter->pprev->phashBlock;
+        else
+            memset(&hdr.hashPrevBlock, 0, sizeof(hdr.hashPrevBlock));
         hdr.hashMerkleRoot = iter->hashMerkleRoot;
         hdr.hashFinalSaplingRoot = iter->hashFinalSaplingRoot;
         hdr.nTime = iter->nTime;
@@ -341,6 +347,10 @@ static bool process_getheaders(struct msg_processor *mp, struct p2p_node *node,
         stream_write_compact_size(&headers, 0);
         iter = active_chain_at(chain, iter->nHeight + 1);
     }
+
+    printf("Responding to getheaders from %s with %d headers (from %d)\n",
+           node->addr_name, count,
+           pindex ? pindex->nHeight + 1 : 0);
 
     p2p_node_begin_message(node, "headers", mp->params->pchMessageStart);
     p2p_node_write_message_data(node, headers.data, headers.size);
@@ -379,12 +389,19 @@ static bool process_inv(struct msg_processor *mp, struct p2p_node *node,
         if (inv.type == MSG_BLOCK) {
             struct block_index *bi = block_map_find(
                 &mp->main_state->map_block_index, &inv.hash);
-            if (!bi) {
-                inv_item_serialize(&inv, &getdata);
-                request_count++;
-            }
             struct block_index *tip = active_chain_tip(
                 &mp->main_state->chain_active);
+            /* Only request blocks via inv if we're close to the tip;
+             * during IBD, rely on headers-first sync. */
+            bool in_ibd = !tip || (node->starting_height > 0 &&
+                          tip->nHeight < node->starting_height - 1000);
+            if (!bi && !in_ibd) {
+                inv_item_serialize(&inv, &getdata);
+                request_count++;
+            } else if (!bi && in_ibd) {
+                /* Ask for headers instead */
+                push_getheaders_from(mp, node, tip);
+            }
             if (tip && bi && active_chain_contains(
                     &mp->main_state->chain_active, bi)) {
                 node->hash_continue = inv.hash;
@@ -589,6 +606,10 @@ static bool process_tx_msg(struct msg_processor *mp, struct p2p_node *node,
         char hex[65];
         uint256_get_hex(&hash, hex);
         printf("Peer %s: accepted tx %s to mempool\n", node->addr_name, hex);
+
+        extern struct wallet *g_active_wallet;
+        if (g_active_wallet)
+            wallet_sync_transaction(g_active_wallet, &tx, NULL);
     }
 
     transaction_free(&tx);
@@ -602,6 +623,9 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
     if (!stream_read_compact_size(s, &count))
         return false;
 
+    printf("Peer %s: received headers message with %llu headers\n",
+           node->addr_name, (unsigned long long)count);
+
     if (count > 2000) {
         node->disconnect = true;
         return false;
@@ -609,6 +633,7 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
 
     struct uint256 last_hash;
     uint256_set_null(&last_hash);
+    struct block_index *pindex_last = NULL;
     size_t accepted = 0;
 
     for (uint64_t i = 0; i < count; i++) {
@@ -627,13 +652,24 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
         if (accept_block_header(&hdr, &state, mp->main_state,
                                 mp->params, &pindex)) {
             accepted++;
+            pindex_last = pindex;
             if (pindex && pindex->phashBlock)
                 last_hash = *pindex->phashBlock;
+        } else if (i < 3) {
+            char hex[65];
+            struct uint256 hh;
+            block_header_get_hash(&hdr, &hh);
+            uint256_get_hex(&hh, hex);
+            printf("  header[%llu] REJECTED hash=%s reason=%s\n",
+                   (unsigned long long)i, hex,
+                   state.reject_reason[0] ? state.reject_reason : "unknown");
         }
     }
 
     if (accepted > 0)
-        printf("Peer %s: accepted %zu headers\n", node->addr_name, accepted);
+        printf("Peer %s: accepted %zu headers (tip height %d)\n",
+               node->addr_name, accepted,
+               pindex_last ? pindex_last->nHeight : -1);
 
     /* Request blocks for headers we accepted but don't have data for */
     if (accepted > 0) {
@@ -643,7 +679,6 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
         struct block_index *bi = block_map_find(
             &mp->main_state->map_block_index, &last_hash);
         if (bi && bi->nHeight > our_height) {
-            /* Request blocks via getdata */
             struct byte_stream getdata_msg;
             stream_init(&getdata_msg, 4096);
             uint64_t block_count = 0;
@@ -654,12 +689,11 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
 
             while (walk && walk->nHeight > our_height &&
                    num_requests < 128) {
-                if (!(walk->nStatus & BLOCK_HAVE_DATA))
+                if (!(walk->nStatus & BLOCK_HAVE_DATA) && walk->phashBlock)
                     request_hashes[num_requests++] = *walk->phashBlock;
                 walk = walk->pprev;
             }
 
-            /* Send in forward order */
             for (size_t i = num_requests; i > 0; i--) {
                 struct inv_item inv;
                 inv_item_init_typed(&inv, MSG_BLOCK, &request_hashes[i - 1]);
@@ -683,9 +717,9 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
         }
     }
 
-    /* If we got 2000 headers (max batch), ask for more */
-    if (count == 2000)
-        push_getheaders(mp, node);
+    /* Request more headers if we accepted any */
+    if (accepted > 0 && pindex_last)
+        push_getheaders_from(mp, node, pindex_last);
 
     return true;
 }
@@ -783,7 +817,8 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
 
     while (node->recv_msg_count > 0) {
         zcl_mutex_lock(&node->cs_recv);
-        if (node->recv_msg_count == 0) {
+        if (node->recv_msg_count == 0 ||
+            !net_message_complete(&node->recv_msgs[0])) {
             zcl_mutex_unlock(&node->cs_recv);
             break;
         }
@@ -794,24 +829,26 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
         node->recv_msg_count--;
         zcl_mutex_unlock(&node->cs_recv);
 
-        if (!net_message_complete(&msg)) {
-            net_message_free(&msg);
-            continue;
-        }
-
         /* Verify message checksum (first 4 bytes of double-SHA256) */
         struct uint256 msg_hash;
         hash256(msg.recv_data, msg.data_pos, msg_hash.data);
         unsigned int expected;
         memcpy(&expected, msg_hash.data, 4);
         if (expected != msg.hdr.nChecksum) {
-            printf("Peer %s: checksum mismatch\n", node->addr_name);
+            char ccmd[COMMAND_SIZE + 1];
+            msg_header_get_command(&msg.hdr, ccmd, sizeof(ccmd));
+            printf("Peer %s: checksum mismatch on '%s' (size=%u exp=%08x got=%08x)\n",
+                   node->addr_name, ccmd, msg.hdr.nMessageSize,
+                   expected, msg.hdr.nChecksum);
             net_message_free(&msg);
             continue;
         }
 
         char cmd[COMMAND_SIZE + 1];
         msg_header_get_command(&msg.hdr, cmd, sizeof(cmd));
+
+        printf("[%s] recv '%s' (%u bytes)\n", node->addr_name, cmd,
+               msg.hdr.nMessageSize);
 
         struct byte_stream s;
         stream_init_from_data(&s, msg.recv_data, msg.data_pos);
@@ -906,11 +943,56 @@ static void build_block_locator(struct block_locator *loc,
     }
 }
 
-static void push_getheaders(struct msg_processor *mp, struct p2p_node *node)
+static void build_block_locator_from_index(struct block_locator *loc,
+                                            struct block_index *pindex)
+{
+    int step = 1;
+    size_t count = 0;
+    struct block_index *p = pindex;
+    while (p) {
+        count++;
+        int next_h = p->nHeight - step;
+        if (next_h < 0) { if (p->nHeight > 0) count++; break; }
+        while (p && p->nHeight > next_h) p = p->pprev;
+        if (count > 10) step *= 2;
+    }
+
+    loc->vhave = calloc(count, sizeof(struct uint256));
+    if (!loc->vhave) { loc->num_hashes = 0; return; }
+    loc->num_hashes = count;
+
+    p = pindex;
+    step = 1;
+    size_t idx = 0;
+    while (p && idx < count) {
+        if (p->phashBlock)
+            loc->vhave[idx] = *p->phashBlock;
+        idx++;
+        int next_h = p->nHeight - step;
+        if (next_h < 0) {
+            /* Add genesis */
+            while (p->pprev) p = p->pprev;
+            if (idx < count && p->phashBlock)
+                loc->vhave[idx++] = *p->phashBlock;
+            break;
+        }
+        while (p && p->nHeight > next_h) p = p->pprev;
+        if (idx > 10) step *= 2;
+    }
+    loc->num_hashes = idx;
+}
+
+static void push_getheaders_from(struct msg_processor *mp,
+                                  struct p2p_node *node,
+                                  struct block_index *from)
 {
     struct block_locator loc;
     block_locator_init(&loc);
-    build_block_locator(&loc, &mp->main_state->chain_active);
+
+    if (from)
+        build_block_locator_from_index(&loc, from);
+    else
+        build_block_locator(&loc, &mp->main_state->chain_active);
 
     struct byte_stream s;
     stream_init(&s, 512);
@@ -924,6 +1006,11 @@ static void push_getheaders(struct msg_processor *mp, struct p2p_node *node)
     p2p_node_end_message(node);
     stream_free(&s);
     block_locator_free(&loc);
+}
+
+static void push_getheaders(struct msg_processor *mp, struct p2p_node *node)
+{
+    push_getheaders_from(mp, node, NULL);
 }
 
 bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
@@ -940,6 +1027,15 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
     /* Initiate sync with this peer if not done yet */
     if (!node->sync_started && !node->inbound) {
         node->sync_started = true;
+        struct block_index *tip = active_chain_tip(&mp->main_state->chain_active);
+        if (tip && tip->phashBlock) {
+            char hex[65];
+            uint256_get_hex(tip->phashBlock, hex);
+            printf("Sending getheaders to %s (locator tip: height=%d hash=%s)\n",
+                   node->addr_name, tip->nHeight, hex);
+        } else {
+            printf("Sending getheaders to %s (no tip!)\n", node->addr_name);
+        }
         push_getheaders(mp, node);
     }
 

@@ -26,7 +26,10 @@ struct coins_cache_entry *coins_map_insert(struct coins_map *m,
 
     if (m->size >= m->capacity) {
         size_t new_cap = m->capacity == 0 ? 64 : m->capacity * 2;
-        m->entries = realloc(m->entries, new_cap * sizeof(struct coins_map_entry));
+        struct coins_map_entry *ne = realloc(m->entries,
+            new_cap * sizeof(struct coins_map_entry));
+        if (!ne) return NULL;
+        m->entries = ne;
         m->capacity = new_cap;
     }
 
@@ -76,7 +79,7 @@ bool coins_view_cache_get_coins(struct coins_view_cache *c,
     if (entry) {
         if (coins_is_pruned(&entry->coins))
             return false;
-        *out = entry->coins;
+        coins_copy(out, &entry->coins);
         return true;
     }
 
@@ -88,7 +91,7 @@ bool coins_view_cache_get_coins(struct coins_view_cache *c,
         new_entry->coins = fetched;
         if (coins_is_pruned(&new_entry->coins))
             return false;
-        *out = new_entry->coins;
+        coins_copy(out, &new_entry->coins);
         return true;
     }
     return false;
@@ -142,6 +145,68 @@ struct coins_cache_entry *coins_view_cache_modify_new(struct coins_view_cache *c
     struct coins_cache_entry *entry = coins_map_insert(&c->cache_coins, txid);
     entry->flags |= COINS_CACHE_DIRTY | COINS_CACHE_FRESH;
     return entry;
+}
+
+/* vtable for using a coins_view_cache as a backing store */
+static bool cvc_get_coins(void *self, const struct uint256 *txid,
+                           struct coins *coins)
+{
+    return coins_view_cache_get_coins((struct coins_view_cache *)self,
+                                      txid, coins);
+}
+
+static bool cvc_have_coins(void *self, const struct uint256 *txid)
+{
+    return coins_view_cache_have_coins((struct coins_view_cache *)self, txid);
+}
+
+static bool cvc_get_best_block(void *self, struct uint256 *hash)
+{
+    coins_view_cache_get_best_block((struct coins_view_cache *)self, hash);
+    return true;
+}
+
+static bool cvc_batch_write(void *self, struct coins_map *map_coins,
+                             const struct uint256 *hash_block)
+{
+    struct coins_view_cache *parent = (struct coins_view_cache *)self;
+
+    for (size_t i = 0; i < map_coins->size; i++) {
+        struct coins_map_entry *e = &map_coins->entries[i];
+        if (e->entry.flags & COINS_CACHE_DIRTY) {
+            struct coins_cache_entry *dest =
+                coins_map_insert(&parent->cache_coins, &e->txid);
+            if (coins_is_pruned(&e->entry.coins)) {
+                coins_free(&dest->coins);
+                coins_init(&dest->coins);
+            } else {
+                coins_free(&dest->coins);
+                dest->coins = e->entry.coins;
+                coins_init(&e->entry.coins);
+            }
+            dest->flags |= COINS_CACHE_DIRTY;
+        }
+    }
+
+    if (!uint256_is_null(hash_block))
+        parent->hash_block = *hash_block;
+
+    return true;
+}
+
+static struct coins_view_vtable g_cache_vtable = {
+    .get_coins = cvc_get_coins,
+    .have_coins = cvc_have_coins,
+    .get_best_block = cvc_get_best_block,
+    .batch_write = cvc_batch_write,
+    .get_stats = NULL,
+};
+
+void coins_view_cache_as_view(struct coins_view *out,
+                               struct coins_view_cache *cache)
+{
+    out->vtable = &g_cache_vtable;
+    out->impl = cache;
 }
 
 bool coins_view_cache_flush(struct coins_view_cache *c)

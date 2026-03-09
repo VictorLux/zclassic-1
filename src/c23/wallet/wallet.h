@@ -8,6 +8,7 @@
 #define ZCL_WALLET_WALLET_H
 
 #include "wallet/keystore.h"
+#include "wallet/sapling_keys.h"
 #include "primitives/transaction.h"
 #include "chain/chain.h"
 #include "core/amount.h"
@@ -87,6 +88,8 @@ struct wallet {
 
     struct block_index *best_block;
     int best_block_height;
+
+    struct sapling_keystore sapling_keys;
 };
 
 void wallet_init(struct wallet *w);
@@ -131,6 +134,14 @@ bool wallet_create_transaction(struct wallet *w,
                                 int64_t *fee_out,
                                 const char **error);
 
+bool wallet_create_transaction_multi(struct wallet *w,
+                                      const struct tx_destination *dests,
+                                      const int64_t *values,
+                                      size_t num_outputs,
+                                      struct wallet_tx *wtx_out,
+                                      int64_t *fee_out,
+                                      const char **error);
+
 bool wallet_commit_transaction(struct wallet *w, struct wallet_tx *wtx,
                                 struct tx_mempool *mempool);
 
@@ -140,6 +151,12 @@ void wallet_sync_transaction(struct wallet *w, const struct transaction *tx,
 bool wallet_import_key(struct wallet *w, const struct privkey *key);
 bool wallet_dump_key(const struct wallet *w, const struct key_id *keyid,
                       struct privkey *key_out);
+
+struct active_chain;
+int wallet_scan_block(struct wallet *w, const struct block_index *pindex,
+                      const char *datadir);
+int wallet_rescan(struct wallet *w, const struct active_chain *chain,
+                  int start_height, int stop_height, const char *datadir);
 
 int wallet_tx_get_depth_in_main_chain(const struct wallet *w,
                                         const struct wallet_tx *wtx);

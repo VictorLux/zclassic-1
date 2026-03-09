@@ -7,10 +7,13 @@
 #include "validation/check_transaction.h"
 #include "core/amount.h"
 #include "consensus/consensus.h"
+#include "metrics/metrics.h"
 
 bool check_transaction(const struct transaction *tx,
                        struct validation_state *state)
 {
+    if (!transaction_is_coinbase(tx))
+        metrics_increment_tx_validated();
     if (!tx->overwintered && tx->version < SPROUT_MIN_TX_VERSION) {
         return validation_state_dos(state, 100, false, REJECT_INVALID,
                                     "bad-txns-version-too-low", false, NULL);

@@ -74,6 +74,24 @@ bool coins_is_pruned(const struct coins *c)
     return true;
 }
 
+void coins_copy(struct coins *dst, const struct coins *src)
+{
+    dst->is_coinbase = src->is_coinbase;
+    dst->height = src->height;
+    dst->version = src->version;
+    dst->num_vout = src->num_vout;
+    if (src->num_vout > 0 && src->vout) {
+        dst->vout = malloc(src->num_vout * sizeof(struct tx_out));
+        if (dst->vout)
+            memcpy(dst->vout, src->vout, src->num_vout * sizeof(struct tx_out));
+        else
+            dst->num_vout = 0;
+    } else {
+        dst->vout = NULL;
+        dst->num_vout = 0;
+    }
+}
+
 void coins_cleanup(struct coins *c)
 {
     while (c->num_vout > 0 && tx_out_is_null(&c->vout[c->num_vout - 1]))

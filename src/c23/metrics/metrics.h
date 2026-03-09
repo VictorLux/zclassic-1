@@ -1,0 +1,48 @@
+/* Copyright (c) 2016 The Zcash developers
+ * Copyright 2026 Rhett Creighton - Apache License 2.0
+ * Distributed under the MIT software license, see the accompanying
+ * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
+
+#ifndef ZCL_METRICS_H
+#define ZCL_METRICS_H
+
+#include <stdbool.h>
+#include <stdatomic.h>
+#include <stdint.h>
+
+struct main_state;
+struct connman;
+struct chain_params;
+
+extern _Atomic uint64_t g_transactions_validated;
+extern _Atomic uint64_t g_eh_solver_runs;
+extern _Atomic uint64_t g_solution_target_checks;
+
+struct metrics_context {
+    struct main_state *ms;
+    struct connman *cm;
+    const struct chain_params *params;
+    bool mining;
+    _Atomic bool running;
+};
+
+void metrics_print_art(void);
+void metrics_start(struct metrics_context *ctx);
+void metrics_stop(struct metrics_context *ctx);
+
+static inline void metrics_increment_tx_validated(void)
+{
+    atomic_fetch_add(&g_transactions_validated, 1);
+}
+
+static inline void metrics_increment_eh_solver_runs(void)
+{
+    atomic_fetch_add(&g_eh_solver_runs, 1);
+}
+
+static inline void metrics_increment_solution_checks(void)
+{
+    atomic_fetch_add(&g_solution_target_checks, 1);
+}
+
+#endif

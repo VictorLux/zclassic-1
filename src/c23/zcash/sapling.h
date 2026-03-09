@@ -66,6 +66,46 @@ bool redjubjub_verify(const uint8_t vk_bytes[32],
                        const uint8_t sig_sbar[32],
                        int generator_idx);
 
+/* RedJubjub signing.
+ * sk: secret key scalar (32 bytes)
+ * msg: message to sign (64 bytes)
+ * sig_out: output signature (64 bytes: rbar || sbar)
+ * generator_idx: 5 for SpendAuth, 4 for ValueCommitment */
+bool redjubjub_sign(const uint8_t sk[32],
+                     const uint8_t msg[64],
+                     uint8_t sig_out[64],
+                     int generator_idx);
+
+/* Compute value commitment: cv = value * G_v + rcv * G_rcv
+ * rcv: randomness scalar (32 bytes, must be a valid Fs)
+ * cv_out: compressed Jubjub point (32 bytes) */
+bool sapling_value_commit(uint64_t value, const uint8_t rcv[32],
+                           uint8_t cv_out[32]);
+
+/* Build a complete Sapling OutputDescription.
+ * ovk: outgoing viewing key for sender recovery (32 bytes)
+ * to_d, to_pk_d: recipient diversifier and pk_d
+ * value: amount in zatoshi
+ * memo: optional memo (512 bytes), NULL for default (0xF6 padding)
+ * od_cv, od_cm, od_epk, od_enc, od_out, od_proof: output fields
+ * rcv_out: if non-NULL, receives the rcv scalar (for binding sig)
+ * Returns false on failure. */
+bool sapling_build_output_description(
+    const uint8_t ovk[32],
+    const uint8_t to_d[11], const uint8_t to_pk_d[32],
+    uint64_t value, const uint8_t memo[512],
+    uint8_t od_cv[32], uint8_t od_cm[32], uint8_t od_epk[32],
+    uint8_t od_enc[580], uint8_t od_out[80], uint8_t od_proof[192],
+    uint8_t rcv_out[32]);
+
+/* Create binding signature for Sapling transaction.
+ * bsk: total binding secret key (sum of rcv for spends, negated for outputs)
+ * sighash: transaction sighash (32 bytes)
+ * binding_sig_out: output signature (64 bytes) */
+bool sapling_create_binding_sig(const uint8_t bsk[32],
+                                 const uint8_t sighash[32],
+                                 uint8_t binding_sig_out[64]);
+
 /* Sapling verification context (accumulates value commitments for balance check) */
 struct sapling_verification_ctx {
     struct jub_point bvk; /* accumulated value commitment balance */

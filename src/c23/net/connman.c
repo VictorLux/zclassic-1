@@ -14,9 +14,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 #include <sys/select.h>
+#include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
+#include "core/utiltime.h"
 
 static pthread_t g_thread_dns_seed;
 static pthread_t g_thread_socket;
@@ -177,18 +180,44 @@ static void *thread_socket_handler(void *arg)
             if (fd < 0) continue;
 
             if (FD_ISSET(fd, &readfds)) {
-                char buf[8192];
-                ssize_t n = read(fd, buf, sizeof(buf));
+                zcl_mutex_lock(&node->cs_recv);
+                char buf[0x10000];
+                ssize_t n = recv(fd, buf, sizeof(buf), MSG_DONTWAIT);
                 if (n > 0) {
-                    p2p_node_receive_bytes(node, buf, (unsigned int)n,
-                                           cm->manager.message_start);
-                } else {
+                    if (!p2p_node_receive_bytes(node, buf, (unsigned int)n,
+                                                cm->manager.message_start)) {
+                        printf("Peer %s: receive parse error (%zd bytes) "
+                               "first8: %02x%02x%02x%02x %02x%02x%02x%02x\n",
+                               node->addr_name, n,
+                               (unsigned char)buf[0], (unsigned char)buf[1],
+                               (unsigned char)buf[2], (unsigned char)buf[3],
+                               n>4?(unsigned char)buf[4]:0,
+                               n>5?(unsigned char)buf[5]:0,
+                               n>6?(unsigned char)buf[6]:0,
+                               n>7?(unsigned char)buf[7]:0);
+                        node->disconnect = true;
+                    }
+                    node->last_recv = GetTime();
+                    node->recv_bytes += (uint64_t)n;
+                } else if (n == 0) {
+                    printf("Peer %s: connection closed by remote\n",
+                           node->addr_name);
                     node->disconnect = true;
+                } else {
+                    int err = errno;
+                    if (err != EAGAIN && err != EWOULDBLOCK && err != EINTR) {
+                        printf("Peer %s: recv error %d (%s)\n",
+                               node->addr_name, err, strerror(err));
+                        node->disconnect = true;
+                    }
                 }
+                zcl_mutex_unlock(&node->cs_recv);
             }
 
             if (FD_ISSET(fd, &writefds)) {
+                zcl_mutex_lock(&node->cs_send);
                 socket_send_data(node);
+                zcl_mutex_unlock(&node->cs_send);
             }
         }
         zcl_mutex_unlock(&cm->manager.cs_nodes);
@@ -197,6 +226,10 @@ static void *thread_socket_handler(void *arg)
         zcl_mutex_lock(&cm->manager.cs_nodes);
         for (size_t i = 0; i < cm->manager.num_nodes; ) {
             if (cm->manager.nodes[i]->disconnect) {
+                printf("Disconnecting %s (send_q=%zu recv_q=%zu)\n",
+                       cm->manager.nodes[i]->addr_name,
+                       cm->manager.nodes[i]->send_size,
+                       cm->manager.nodes[i]->recv_msg_count);
                 p2p_node_close_socket(cm->manager.nodes[i]);
                 p2p_node_release(cm->manager.nodes[i]);
                 cm->manager.nodes[i] =
@@ -294,6 +327,21 @@ void connman_free(struct connman *cm)
     if (cm->started)
         connman_stop(cm);
     net_manager_free(&cm->manager);
+}
+
+void connman_relay_transaction(struct connman *cm,
+                                const struct uint256 *txid)
+{
+    struct inv_item inv;
+    inv_item_init_typed(&inv, MSG_TX, txid);
+
+    zcl_mutex_lock(&cm->manager.cs_nodes);
+    for (size_t i = 0; i < cm->manager.num_nodes; i++) {
+        struct p2p_node *node = cm->manager.nodes[i];
+        if (node->successfully_connected && !node->disconnect)
+            p2p_node_push_inventory(node, &inv);
+    }
+    zcl_mutex_unlock(&cm->manager.cs_nodes);
 }
 
 void connman_add_seed_node(struct connman *cm, const char *host,

@@ -6,6 +6,7 @@
 
 #include "validation/check_block.h"
 #include "bloom/merkle.h"
+#include "chain/chainparams.h"
 #include "chain/equihash.h"
 #include "chain/pow.h"
 #include "validation/check_transaction.h"
@@ -127,8 +128,8 @@ bool contextual_check_block_header(const struct block_header *header,
 
     size_t sol_size = header->nSolutionSize;
     if (sol_size > 0) {
-        unsigned int n = params->nEquihashN;
-        unsigned int k = params->nEquihashK;
+        unsigned int n = chain_params_equihash_n(params, nHeight);
+        unsigned int k = chain_params_equihash_k(params, nHeight);
         size_t expected = (size_t)((pow(2, k) * ((n / (k + 1)) + 1)) / 8);
         if (sol_size != expected)
             return validation_state_dos(state, 100, false, REJECT_INVALID,
@@ -148,12 +149,13 @@ bool contextual_check_block_header(const struct block_header *header,
 
     if (checkpoints_enabled) {
         const struct checkpoint_data *cpdata = &params->checkpointData;
-        if (cpdata->nEntries > 0) {
-            int last_cp_height =
-                cpdata->entries[cpdata->nEntries - 1].height;
-            if (nHeight < last_cp_height)
-                return validation_state_dos(state, 100, false, REJECT_CHECKPOINT,
-                    "bad-fork-prior-to-checkpoint", false, NULL);
+        for (int i = 0; i < cpdata->nEntries; i++) {
+            if (nHeight == cpdata->entries[i].height) {
+                if (uint256_cmp(&hash, &cpdata->entries[i].hash) != 0)
+                    return validation_state_dos(state, 100, false,
+                        REJECT_CHECKPOINT, "bad-fork-at-checkpoint",
+                        false, NULL);
+            }
         }
     }
 
@@ -173,31 +175,33 @@ static bool bip34_check_coinbase_height(const struct transaction *coinbase,
     const struct script *sig = &coinbase->vin[0].script_sig;
     if (nHeight <= 0)
         return true;
+    if (sig->size == 0)
+        return false;
 
-    unsigned char expect[5];
-    size_t expect_len;
-    if (nHeight <= 0xff) {
-        expect[0] = 1;
-        expect[1] = (unsigned char)nHeight;
-        expect_len = 2;
-    } else if (nHeight <= 0xffff) {
-        expect[0] = 2;
-        expect[1] = (unsigned char)(nHeight & 0xff);
-        expect[2] = (unsigned char)((nHeight >> 8) & 0xff);
-        expect_len = 3;
-    } else if (nHeight <= 0xffffff) {
-        expect[0] = 3;
-        expect[1] = (unsigned char)(nHeight & 0xff);
-        expect[2] = (unsigned char)((nHeight >> 8) & 0xff);
-        expect[3] = (unsigned char)((nHeight >> 16) & 0xff);
-        expect_len = 4;
-    } else {
-        expect[0] = 4;
-        expect[1] = (unsigned char)(nHeight & 0xff);
-        expect[2] = (unsigned char)((nHeight >> 8) & 0xff);
-        expect[3] = (unsigned char)((nHeight >> 16) & 0xff);
-        expect[4] = (unsigned char)((nHeight >> 24) & 0xff);
-        expect_len = 5;
+    /* Early blocks (height 1-16) may use OP_N (0x51-0x60) encoding */
+    if (nHeight >= 1 && nHeight <= 16) {
+        unsigned char op_n = 0x50 + (unsigned char)nHeight;
+        if (sig->data[0] == op_n)
+            return true;
+    }
+
+    /* Encode height as CScriptNum: minimal signed little-endian with length prefix.
+     * Values with high bit set need an extra 0x00 sign byte. */
+    unsigned char expect[6];
+    size_t expect_len = 0;
+    {
+        int h = nHeight;
+        unsigned char num[4];
+        size_t num_len = 0;
+        while (h > 0) {
+            num[num_len++] = (unsigned char)(h & 0xff);
+            h >>= 8;
+        }
+        if (num_len > 0 && (num[num_len - 1] & 0x80))
+            num[num_len++] = 0x00;
+        expect[0] = (unsigned char)num_len;
+        memcpy(expect + 1, num, num_len);
+        expect_len = 1 + num_len;
     }
 
     if (sig->size < expect_len)

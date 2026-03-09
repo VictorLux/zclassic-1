@@ -48,9 +48,10 @@ bool json_request_parse(struct json_request *req,
         return false;
 
     const struct json_value *vid = json_get(val_request, "id");
-    if (vid)
-        json_free(&req->id), json_init(&req->id),
-        req->id.type = vid->type, req->id.val = vid->val;
+    if (vid) {
+        json_free(&req->id);
+        json_copy(&req->id, vid);
+    }
 
     const struct json_value *vm = json_get(val_request, "method");
     if (!vm || vm->type != JSON_STR)

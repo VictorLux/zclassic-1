@@ -8,6 +8,7 @@
 #include "mining/miner.h"
 #include "script/script.h"
 #include <stdbool.h>
+#include <stdatomic.h>
 
 struct gen_context {
     struct main_state *ms;
@@ -17,7 +18,7 @@ struct gen_context {
     const char *datadir;
     struct script coinbase_script;
     int num_threads;
-    volatile bool running;
+    _Atomic bool running;
 };
 
 void gen_start(struct gen_context *ctx);

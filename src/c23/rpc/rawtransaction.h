@@ -10,10 +10,12 @@
 #include "validation/main_state.h"
 #include "validation/txmempool.h"
 #include "coins/coins_view.h"
+#include "wallet/keystore.h"
 
 void rpc_rawtx_set_state(struct main_state *ms, struct tx_mempool *mp,
                           struct coins_view_cache *coins_tip,
                           const char *datadir);
+void rpc_rawtx_set_keystore(struct basic_keystore *ks);
 
 void register_rawtransaction_rpc_commands(struct rpc_table *t);
 

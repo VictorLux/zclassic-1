@@ -34,5 +34,7 @@ void app_shutdown(void);
 
 bool app_is_running(void);
 void app_add_node(const char *host, int port);
+void app_start_metrics(bool mining);
+void app_stop_metrics(void);
 
 #endif

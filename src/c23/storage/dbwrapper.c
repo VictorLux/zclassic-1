@@ -6,6 +6,7 @@
 #include "storage/dbwrapper.h"
 #include "util/util.h"
 #include <leveldb/c.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -23,8 +24,19 @@ bool db_wrapper_open(struct db_wrapper *w, const char *path,
         if (err) { leveldb_free(err); }
     }
 
-    if (!memory)
-        mkdir(path, 0755);
+    if (!memory) {
+        /* Create parent directories recursively */
+        char tmp[1024];
+        snprintf(tmp, sizeof(tmp), "%s", path);
+        for (char *p = tmp + 1; *p; p++) {
+            if (*p == '/') {
+                *p = '\0';
+                mkdir(tmp, 0755);
+                *p = '/';
+            }
+        }
+        mkdir(tmp, 0755);
+    }
 
     w->options = leveldb_options_create();
     leveldb_options_set_create_if_missing(w->options, 1);
@@ -47,6 +59,7 @@ bool db_wrapper_open(struct db_wrapper *w, const char *path,
     char *err = NULL;
     w->db = leveldb_open(w->options, path, &err);
     if (err) {
+        printf("LevelDB open failure at %s: %s\n", path, err);
         LogPrintf("LevelDB open failure: %s\n", err);
         leveldb_free(err);
         db_wrapper_close(w);
@@ -62,6 +75,70 @@ bool db_wrapper_open(struct db_wrapper *w, const char *path,
     w->write_options = leveldb_writeoptions_create();
     w->sync_options = leveldb_writeoptions_create();
     leveldb_writeoptions_set_sync(w->sync_options, 1);
+
+    /* Read obfuscation key (Bitcoin Core stores it with CDataStream serialization:
+     * key = compact_size(14) + "\0obfuscate_key" = 0x0e + 0x00 + "obfuscate_key"
+     * value = compact_size(8) + 8 random bytes */
+    w->obfuscate_key_len = 0;
+    memset(w->obfuscate_key, 0, sizeof(w->obfuscate_key));
+    {
+        /* The key in the DB: 0x0e (compact size = 14) followed by
+         * the 14-byte string "\x00obfuscate_key" */
+        char obf_db_key[16];
+        obf_db_key[0] = 0x0e;  /* compact_size(14) */
+        obf_db_key[1] = 0x00;  /* first byte of the key string */
+        memcpy(obf_db_key + 2, "obfuscate_key", 13);
+        size_t obf_keylen = 15;
+
+        char *err2 = NULL;
+        size_t vlen = 0;
+        char *val = leveldb_get(w->db, w->read_options,
+                                obf_db_key, obf_keylen, &vlen, &err2);
+        if (err2) {
+            leveldb_free(err2);
+            val = NULL;
+        }
+
+        if (!val) {
+            /* Try alternate key format: just "\0obfuscate_key" (14 bytes) */
+            obf_db_key[0] = 0x00;
+            memcpy(obf_db_key + 1, "obfuscate_key", 13);
+            obf_keylen = 14;
+            err2 = NULL;
+            val = leveldb_get(w->db, w->read_options,
+                              obf_db_key, obf_keylen, &vlen, &err2);
+            if (err2) { leveldb_free(err2); val = NULL; }
+        }
+
+        if (val && vlen > 0) {
+            printf("DB obfuscate_key raw value (%zu bytes):", vlen);
+            for (size_t i = 0; i < vlen && i < 16; i++)
+                printf(" %02x", (unsigned char)val[i]);
+            printf("\n");
+
+            /* Value format: compact_size(n) + n bytes of key */
+            uint8_t klen = (uint8_t)val[0];
+            if (klen > 0 && klen <= 32 && (size_t)(klen + 1) <= vlen) {
+                memcpy(w->obfuscate_key, val + 1, klen);
+                w->obfuscate_key_len = klen;
+                printf("DB obfuscation key (%zu bytes):", w->obfuscate_key_len);
+                for (size_t i = 0; i < w->obfuscate_key_len; i++)
+                    printf(" %02x", w->obfuscate_key[i]);
+                printf("\n");
+            } else if (vlen <= 32) {
+                /* Maybe value is the raw key without length prefix */
+                memcpy(w->obfuscate_key, val, vlen);
+                w->obfuscate_key_len = vlen;
+                printf("DB obfuscation key (raw, %zu bytes):", w->obfuscate_key_len);
+                for (size_t i = 0; i < w->obfuscate_key_len; i++)
+                    printf(" %02x", w->obfuscate_key[i]);
+                printf("\n");
+            }
+        } else {
+            printf("DB: no obfuscation key found\n");
+        }
+        if (val) leveldb_free(val);
+    }
 
     return true;
 }
@@ -89,6 +166,10 @@ bool db_read(struct db_wrapper *w, const char *key, size_t keylen,
         LogPrintf("LevelDB read failure: %s\n", err);
         leveldb_free(err);
         return false;
+    }
+    if (*val && w->obfuscate_key_len > 0) {
+        for (size_t i = 0; i < *vallen; i++)
+            (*val)[i] ^= (char)w->obfuscate_key[i % w->obfuscate_key_len];
     }
     return *val != NULL;
 }

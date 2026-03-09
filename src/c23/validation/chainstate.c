@@ -8,21 +8,31 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* --- Block Map --- */
+/* --- Block Map (open-addressing hash table) --- */
+
+static uint64_t block_map_hash(const struct uint256 *h)
+{
+    uint64_t v;
+    memcpy(&v, h->data, 8);
+    return v;
+}
+
+static bool block_map_grow(struct block_map *m);
 
 void block_map_init(struct block_map *m)
 {
-    m->entries = NULL;
+    m->buckets = NULL;
     m->size = 0;
     m->capacity = 0;
 }
 
 void block_map_free(struct block_map *m)
 {
-    for (size_t i = 0; i < m->size; i++)
-        free(m->entries[i].index);
-    free(m->entries);
-    m->entries = NULL;
+    for (size_t i = 0; i < m->capacity; i++)
+        if (m->buckets[i].occupied)
+            free(m->buckets[i].index);
+    free(m->buckets);
+    m->buckets = NULL;
     m->size = 0;
     m->capacity = 0;
 }
@@ -30,34 +40,104 @@ void block_map_free(struct block_map *m)
 struct block_index *block_map_find(const struct block_map *m,
                                     const struct uint256 *hash)
 {
-    for (size_t i = 0; i < m->size; i++)
-        if (uint256_eq(&m->entries[i].hash, hash))
-            return m->entries[i].index;
+    if (m->capacity == 0) return NULL;
+    uint64_t h = block_map_hash(hash);
+    size_t idx = h & (m->capacity - 1);
+    for (size_t i = 0; i < m->capacity; i++) {
+        size_t slot = (idx + i) & (m->capacity - 1);
+        if (!m->buckets[slot].occupied)
+            return NULL;
+        if (uint256_eq(&m->buckets[slot].hash, hash))
+            return m->buckets[slot].index;
+    }
     return NULL;
+}
+
+static bool block_map_insert_internal(struct block_map *m,
+                                       const struct uint256 *hash,
+                                       struct block_index *index)
+{
+    uint64_t h = block_map_hash(hash);
+    size_t idx = h & (m->capacity - 1);
+    for (size_t i = 0; i < m->capacity; i++) {
+        size_t slot = (idx + i) & (m->capacity - 1);
+        if (!m->buckets[slot].occupied) {
+            m->buckets[slot].hash = *hash;
+            m->buckets[slot].index = index;
+            m->buckets[slot].occupied = true;
+            return true;
+        }
+        if (uint256_eq(&m->buckets[slot].hash, hash))
+            return false;
+    }
+    return false;
+}
+
+static bool block_map_grow(struct block_map *m)
+{
+    size_t new_cap = m->capacity ? m->capacity * 2 : 4096;
+    struct block_map_entry *old = m->buckets;
+    size_t old_cap = m->capacity;
+
+    m->buckets = calloc(new_cap, sizeof(struct block_map_entry));
+    if (!m->buckets) { m->buckets = old; return false; }
+    m->capacity = new_cap;
+
+    for (size_t i = 0; i < old_cap; i++) {
+        if (old[i].occupied)
+            block_map_insert_internal(m, &old[i].hash, old[i].index);
+    }
+    free(old);
+    return true;
 }
 
 bool block_map_insert(struct block_map *m, const struct uint256 *hash,
                       struct block_index *index)
 {
-    if (block_map_find(m, hash))
-        return false;
-    if (m->size >= m->capacity) {
-        size_t new_cap = m->capacity ? m->capacity * 2 : 256;
-        struct block_map_entry *ne = realloc(m->entries,
-            new_cap * sizeof(struct block_map_entry));
-        if (!ne) return false;
-        m->entries = ne;
-        m->capacity = new_cap;
+    if (m->size * 4 >= m->capacity * 3) {
+        if (!block_map_grow(m))
+            return false;
     }
-    m->entries[m->size].hash = *hash;
-    m->entries[m->size].index = index;
+    if (!block_map_insert_internal(m, hash, index))
+        return false;
     m->size++;
     return true;
+}
+
+const struct uint256 *block_map_find_hash(const struct block_map *m,
+                                           const struct uint256 *hash)
+{
+    if (m->capacity == 0) return NULL;
+    uint64_t h = block_map_hash(hash);
+    size_t idx = h & (m->capacity - 1);
+    for (size_t i = 0; i < m->capacity; i++) {
+        size_t slot = (idx + i) & (m->capacity - 1);
+        if (!m->buckets[slot].occupied)
+            return NULL;
+        if (uint256_eq(&m->buckets[slot].hash, hash))
+            return &m->buckets[slot].hash;
+    }
+    return NULL;
 }
 
 size_t block_map_count(const struct block_map *m)
 {
     return m->size;
+}
+
+bool block_map_next(const struct block_map *m, size_t *iter,
+                    const struct uint256 **hash_out,
+                    struct block_index **index_out)
+{
+    while (*iter < m->capacity) {
+        size_t i = (*iter)++;
+        if (m->buckets[i].occupied) {
+            if (hash_out) *hash_out = &m->buckets[i].hash;
+            if (index_out) *index_out = m->buckets[i].index;
+            return true;
+        }
+    }
+    return false;
 }
 
 /* --- Active Chain --- */
@@ -166,5 +246,6 @@ struct block_index *chainstate_insert_block_index(struct chainstate *cs,
     if (!bi) return NULL;
     block_index_init(bi);
     block_map_insert(&cs->map_block_index, hash, bi);
+    bi->phashBlock = block_map_find_hash(&cs->map_block_index, hash);
     return bi;
 }

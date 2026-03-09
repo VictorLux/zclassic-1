@@ -10,6 +10,7 @@
 #include "storage/dbwrapper.h"
 #include "validation/chainstate.h"
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #define DEFAULT_DB_CACHE_MB 450
@@ -37,6 +38,11 @@ bool block_tree_db_read_reindexing(struct block_tree_db *btdb, bool *reindexing)
 bool block_tree_db_read_tx_index(struct block_tree_db *btdb,
                                   const struct uint256 *txid,
                                   struct disk_tx_pos *pos);
+
+bool block_tree_db_write_tx_index(struct block_tree_db *btdb,
+                                   const struct uint256 *txids,
+                                   const struct disk_tx_pos *positions,
+                                   size_t count);
 
 bool block_tree_db_write_flag(struct block_tree_db *btdb,
                                const char *name, bool value);

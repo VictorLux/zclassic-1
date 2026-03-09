@@ -23,6 +23,8 @@ struct db_wrapper {
     void *sync_options;
     void *filter_policy;
     void *cache;
+    uint8_t obfuscate_key[32];
+    size_t obfuscate_key_len;
 };
 
 struct db_batch {

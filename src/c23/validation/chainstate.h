@@ -60,10 +60,11 @@ static inline void disk_tx_pos_init(struct disk_tx_pos *p)
 struct block_map_entry {
     struct uint256 hash;
     struct block_index *index;
+    bool occupied;
 };
 
 struct block_map {
-    struct block_map_entry *entries;
+    struct block_map_entry *buckets;
     size_t size;
     size_t capacity;
 };
@@ -72,9 +73,16 @@ void block_map_init(struct block_map *m);
 void block_map_free(struct block_map *m);
 struct block_index *block_map_find(const struct block_map *m,
                                     const struct uint256 *hash);
+const struct uint256 *block_map_find_hash(const struct block_map *m,
+                                           const struct uint256 *hash);
 bool block_map_insert(struct block_map *m, const struct uint256 *hash,
                       struct block_index *index);
 size_t block_map_count(const struct block_map *m);
+
+/* Iteration: call with *iter=0, returns false when done */
+bool block_map_next(const struct block_map *m, size_t *iter,
+                    const struct uint256 **hash_out,
+                    struct block_index **index_out);
 
 struct active_chain {
     struct block_index **chain;

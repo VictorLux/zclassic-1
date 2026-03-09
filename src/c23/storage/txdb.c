@@ -144,6 +144,23 @@ bool block_tree_db_read_tx_index(struct block_tree_db *btdb,
     return true;
 }
 
+bool block_tree_db_write_tx_index(struct block_tree_db *btdb,
+                                   const struct uint256 *txids,
+                                   const struct disk_tx_pos *positions,
+                                   size_t count)
+{
+    for (size_t i = 0; i < count; i++) {
+        char key[64];
+        size_t keylen;
+        make_key_char_hash(key, &keylen, DB_TXINDEX, &txids[i]);
+        if (!db_write(&btdb->db, key, keylen,
+                      (const char *)&positions[i], sizeof(struct disk_tx_pos),
+                      false))
+            return false;
+    }
+    return true;
+}
+
 bool block_tree_db_write_flag(struct block_tree_db *btdb,
                                const char *name, bool value)
 {

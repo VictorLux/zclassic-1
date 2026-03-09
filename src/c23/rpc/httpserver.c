@@ -67,7 +67,7 @@ static bool check_auth(const char *auth_header)
     size_t dlen = base64_decode(b64, strlen(b64), decoded, sizeof(decoded) - 1);
     decoded[dlen] = '\0';
 
-    char expected[256];
+    char expected[512];
     snprintf(expected, sizeof(expected), "%s:%s", g_rpc_user, g_rpc_password);
     return strcmp((const char *)decoded, expected) == 0;
 }

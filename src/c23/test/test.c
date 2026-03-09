@@ -7762,6 +7762,344 @@ int main(void)
         else { printf("FAIL (params not found)\n"); }
     }
 
+    /* --- Sapling crypto tests --- */
+
+    printf("RedJubjub sign/verify round-trip (spend auth)... ");
+    {
+        /* Generate a random spending key */
+        uint8_t ask[32];
+        sapling_generate_r(ask);
+
+        /* Derive ak = ask * SpendingKeyGenerator (public API) */
+        uint8_t ak[32];
+        sapling_ask_to_ak(ask, ak);
+
+        /* Create a random message */
+        uint8_t msg[64];
+        GetRandBytes(msg, 64);
+
+        /* Sign with ask using SpendingKey generator (idx=5) */
+        uint8_t sig[64];
+        bool sign_ok = redjubjub_sign(ask, msg, sig, 5);
+
+        /* Verify with ak */
+        bool verify_ok = redjubjub_verify(ak, msg, sig, sig + 32, 5);
+        if (sign_ok && verify_ok) printf("OK\n");
+        else { printf("FAIL (sign=%d verify=%d)\n", sign_ok, verify_ok); failures++; }
+    }
+
+    printf("RedJubjub binding sig round-trip... ");
+    {
+        /* Test binding signature using the public API */
+        uint8_t bsk[32];
+        sapling_generate_r(bsk);
+
+        uint8_t sighash[32];
+        GetRandBytes(sighash, 32);
+
+        uint8_t binding_sig[64];
+        bool sign_ok = sapling_create_binding_sig(bsk, sighash, binding_sig);
+
+        /* Verify: create a verification context with value_balance = 0
+         * and manually add bsk*G_rcv as the balance. The binding sig
+         * should verify because sapling_final_check expects bvk = sum(cv_spends) - sum(cv_outputs).
+         * With value_balance=0 and bvk matching bsk*G_rcv, it should pass. */
+        /* Instead, just use a value commitment that corresponds to bsk */
+        uint8_t cv[32];
+        sapling_value_commit(0, bsk, cv);
+
+        struct sapling_verification_ctx vctx;
+        sapling_verification_ctx_init(&vctx);
+        /* Accumulate: bvk += cv (as a "spend" cv) */
+        struct jub_point cv_pt;
+        jub_from_bytes(&cv_pt, cv);
+        jub_add(&vctx.bvk, &vctx.bvk, &cv_pt);
+
+        bool verify_ok = sapling_final_check(&vctx, 0, binding_sig, sighash);
+        if (sign_ok && verify_ok) printf("OK\n");
+        else { printf("FAIL (sign=%d verify=%d)\n", sign_ok, verify_ok); failures++; }
+    }
+
+    printf("Sapling value commitment... ");
+    {
+        uint8_t rcv[32];
+        sapling_generate_r(rcv);
+        uint8_t cv[32];
+        bool ok = sapling_value_commit(100000000ULL, rcv, cv);
+        /* cv should be a valid compressed Jubjub point (non-zero) */
+        bool nonzero = false;
+        for (int i = 0; i < 32; i++) {
+            if (cv[i] != 0) { nonzero = true; break; }
+        }
+        /* Verify it decompresses */
+        struct jub_point pt;
+        bool decomp = jub_from_bytes(&pt, cv);
+        if (ok && nonzero && decomp) printf("OK\n");
+        else { printf("FAIL (ok=%d nonzero=%d decomp=%d)\n", ok, nonzero, decomp); failures++; }
+    }
+
+    printf("Sapling output description build... ");
+    {
+        /* Generate a Sapling address */
+        uint8_t diversifier[11] = {0};
+        /* Find a valid diversifier */
+        for (int i = 0; i < 256; i++) {
+            diversifier[0] = (uint8_t)i;
+            if (sapling_check_diversifier(diversifier))
+                break;
+        }
+        /* Generate ivk and pk_d */
+        uint8_t ask[32], nsk[32], ovk[32];
+        sapling_generate_r(ask);
+        sapling_generate_r(nsk);
+        sapling_generate_r(ovk);
+        uint8_t ak[32], nk[32], ivk[32], pk_d[32];
+        sapling_ask_to_ak(ask, ak);
+        sapling_nsk_to_nk(nsk, nk);
+        sapling_crh_ivk(ak, nk, ivk);
+        bool pk_ok = sapling_ivk_to_pkd(ivk, diversifier, pk_d);
+
+        if (!pk_ok) {
+            printf("FAIL (pkd derivation)\n");
+            failures++;
+        } else {
+            uint8_t memo[512];
+            memset(memo, 0, sizeof(memo));
+            memcpy(memo, "Hello from C23 ZClassic!", 24);
+
+            uint8_t cv[32], cm[32], epk[32];
+            uint8_t enc[580], out[80], proof[192];
+            uint8_t rcv[32];
+            bool ok = sapling_build_output_description(
+                ovk, diversifier, pk_d, 10000, memo,
+                cv, cm, epk, enc, out, proof, rcv);
+
+            /* Verify outputs are valid */
+            struct jub_point cv_pt, epk_pt;
+            bool cv_ok = jub_from_bytes(&cv_pt, cv);
+            bool epk_ok = jub_from_bytes(&epk_pt, epk);
+            /* cm is an Fr element (x-coordinate), not a compressed point.
+             * Check it's nonzero. */
+            bool cm_nonzero = false;
+            for (int i = 0; i < 32; i++) {
+                if (cm[i] != 0) { cm_nonzero = true; break; }
+            }
+
+            if (ok && cv_ok && cm_nonzero && epk_ok)
+                printf("OK\n");
+            else {
+                printf("FAIL (build=%d cv=%d cm=%d epk=%d)\n",
+                       ok, cv_ok, cm_nonzero, epk_ok);
+                failures++;
+            }
+        }
+    }
+
+    printf("Sapling note encrypt/decrypt round-trip... ");
+    {
+        /* Generate keys */
+        uint8_t ask[32], nsk[32], ovk[32];
+        sapling_generate_r(ask);
+        sapling_generate_r(nsk);
+        sapling_generate_r(ovk);
+        uint8_t ak[32], nk[32], ivk[32];
+        sapling_ask_to_ak(ask, ak);
+        sapling_nsk_to_nk(nsk, nk);
+        sapling_crh_ivk(ak, nk, ivk);
+
+        uint8_t diversifier[11] = {0};
+        for (int i = 0; i < 256; i++) {
+            diversifier[0] = (uint8_t)i;
+            if (sapling_check_diversifier(diversifier))
+                break;
+        }
+        uint8_t pk_d[32];
+        sapling_ivk_to_pkd(ivk, diversifier, pk_d);
+
+        /* Build output */
+        uint8_t memo[512];
+        memset(memo, 0, sizeof(memo));
+        memcpy(memo, "Test memo 123", 13);
+
+        uint8_t cv[32], cm[32], epk[32];
+        uint8_t enc[580], out_ct[80], proof[192], rcv[32];
+        bool built = sapling_build_output_description(
+            ovk, diversifier, pk_d, 50000, memo,
+            cv, cm, epk, enc, out_ct, proof, rcv);
+
+        /* Decrypt with ivk: first compute shared secret */
+        uint8_t dhsecret[32];
+        bool dh_ok = sapling_ka_agree(epk, ivk, dhsecret);
+        uint8_t dec_key[32];
+        bool kdf_ok = sapling_kdf(dec_key, dhsecret, epk);
+
+        uint8_t plaintext[564];
+        bool dec_ok = sapling_note_decrypt(dec_key, enc, 580, plaintext);
+
+        /* Check decrypted values */
+        bool type_ok = (plaintext[0] == 0x01); /* Sapling */
+        bool div_ok = (memcmp(plaintext + 1, diversifier, 11) == 0);
+        uint64_t dec_value = 0;
+        for (int i = 0; i < 8; i++)
+            dec_value |= ((uint64_t)plaintext[12 + i]) << (i * 8);
+        bool val_ok = (dec_value == 50000);
+        bool memo_ok = (memcmp(plaintext + 52, "Test memo 123", 13) == 0);
+
+        if (built && dh_ok && kdf_ok && dec_ok && type_ok && div_ok && val_ok && memo_ok)
+            printf("OK\n");
+        else {
+            printf("FAIL (built=%d dh=%d kdf=%d dec=%d type=%d div=%d val=%d memo=%d)\n",
+                   built, dh_ok, kdf_ok, dec_ok, type_ok, div_ok, val_ok, memo_ok);
+            failures++;
+        }
+    }
+
+    printf("Sapling value commitment deterministic... ");
+    {
+        /* Use test vector: known rcv, known value → recompute cv, verify consistency */
+        uint8_t rcv[32];
+        test_hex_to_bytes_rev("39176dac39ace4980ecc8d778e89860255ec3615060000000000000000000000",
+                              rcv, 32);
+        uint64_t value = 100000; /* 0.001 ZCL */
+        uint8_t cv[32];
+        bool ok = sapling_value_commit(value, rcv, cv);
+        struct jub_point cv_pt;
+        bool decomp = jub_from_bytes(&cv_pt, cv);
+        /* Deterministic: same inputs → same output */
+        uint8_t cv2[32];
+        bool ok2 = sapling_value_commit(value, rcv, cv2);
+        bool match = (memcmp(cv, cv2, 32) == 0);
+        bool not_id = !jub_is_identity(&cv_pt);
+        if (ok && ok2 && decomp && match && not_id)
+            printf("OK\n");
+        else {
+            printf("FAIL (ok=%d ok2=%d decomp=%d match=%d not_id=%d)\n",
+                   ok, ok2, decomp, match, not_id);
+            failures++;
+        }
+    }
+
+    printf("Sapling group_hash generator derivation consistency... ");
+    {
+        /* Verify that ask→ak matches test vector 1 (already tested above in key
+         * components, but this verifies the SpendingKey generator is correct) */
+        uint8_t ask[32], expected_ak[32], computed_ak[32];
+        test_hex_to_bytes_rev(
+            "06880e0df04583674f05d25dcf1119cf18f84420407823aa47a53e474aa14885",
+            ask, 32);
+        test_hex_to_bytes_rev(
+            "2016f18efa0efd770776328095bad71f793a5d8c58c298303e27e10f38ec44f3",
+            expected_ak, 32);
+        sapling_ask_to_ak(ask, computed_ak);
+        if (memcmp(computed_ak, expected_ak, 32) == 0)
+            printf("OK\n");
+        else {
+            printf("FAIL (ak mismatch)\n");
+            for (int i = 0; i < 32; i++) printf("%02x", computed_ak[i]);
+            printf("\n");
+            failures++;
+        }
+    }
+
+    printf("Sapling cm independent recomputation... ");
+    {
+        /* Build output, then recompute cm from the decrypted note and verify match */
+        uint8_t ask[32], nsk[32], ovk[32];
+        sapling_generate_r(ask);
+        sapling_generate_r(nsk);
+        sapling_generate_r(ovk);
+        uint8_t ak[32], nk[32], ivk[32];
+        sapling_ask_to_ak(ask, ak);
+        sapling_nsk_to_nk(nsk, nk);
+        sapling_crh_ivk(ak, nk, ivk);
+
+        uint8_t diversifier[11] = {0};
+        for (int i = 0; i < 256; i++) {
+            diversifier[0] = (uint8_t)i;
+            if (sapling_check_diversifier(diversifier))
+                break;
+        }
+        uint8_t pk_d[32];
+        sapling_ivk_to_pkd(ivk, diversifier, pk_d);
+
+        uint8_t cv[32], cm[32], epk[32];
+        uint8_t enc[580], out_ct[80], proof[192], rcv[32];
+        bool built = sapling_build_output_description(
+            ovk, diversifier, pk_d, 75000, NULL,
+            cv, cm, epk, enc, out_ct, proof, rcv);
+
+        /* Decrypt to get rcm */
+        uint8_t dhsecret[32];
+        sapling_ka_agree(epk, ivk, dhsecret);
+        uint8_t dec_key[32];
+        sapling_kdf(dec_key, dhsecret, epk);
+        uint8_t plaintext[564];
+        sapling_note_decrypt(dec_key, enc, 580, plaintext);
+
+        /* Extract rcm from decrypted plaintext */
+        uint8_t rcm[32];
+        memcpy(rcm, plaintext + 20, 32);
+
+        /* Recompute cm from extracted values */
+        uint8_t cm_recomputed[32];
+        bool cm_ok = sapling_compute_cm(diversifier, pk_d, 75000, rcm, cm_recomputed);
+        bool cm_match = (memcmp(cm, cm_recomputed, 32) == 0);
+
+        if (built && cm_ok && cm_match)
+            printf("OK\n");
+        else {
+            printf("FAIL (built=%d cm_ok=%d cm_match=%d)\n", built, cm_ok, cm_match);
+            failures++;
+        }
+    }
+
+    printf("Sapling binding sig end-to-end with value balance... ");
+    {
+        /* Simulate: 1 output of 10000 zatoshi, value_balance = -10000 (shielding) */
+        uint8_t rcv[32];
+        sapling_generate_r(rcv);
+
+        /* Build cv for the output */
+        uint8_t cv[32];
+        sapling_value_commit(10000, rcv, cv);
+
+        /* bsk = -rcv (negate for output) */
+        struct fs rcv_fs, neg_rcv_fs;
+        fs_from_bytes(&rcv_fs, rcv);
+        fs_neg(&neg_rcv_fs, &rcv_fs);
+        uint8_t bsk[32];
+        fs_to_bytes(bsk, &neg_rcv_fs);
+
+        /* Create sighash */
+        uint8_t sighash[32];
+        GetRandBytes(sighash, 32);
+
+        /* Create binding signature */
+        uint8_t binding_sig[64];
+        bool sig_ok = sapling_create_binding_sig(bsk, sighash, binding_sig);
+
+        /* Verify via verification context */
+        struct sapling_verification_ctx ctx;
+        sapling_verification_ctx_init(&ctx);
+
+        /* Accumulate the output cv (subtracted from bvk) */
+        struct jub_point cv_pt;
+        jub_from_bytes(&cv_pt, cv);
+        struct jub_point neg_cv;
+        jub_neg(&neg_cv, &cv_pt);
+        jub_add(&ctx.bvk, &ctx.bvk, &neg_cv);
+
+        /* Final check with value_balance = -10000 */
+        bool final_ok = sapling_final_check(&ctx, -10000, binding_sig, sighash);
+
+        if (sig_ok && final_ok)
+            printf("OK\n");
+        else {
+            printf("FAIL (sig_ok=%d final_ok=%d)\n", sig_ok, final_ok);
+            failures++;
+        }
+    }
+
     printf("\n%s (%d failures)\n", failures ? "SOME TESTS FAILED" : "ALL TESTS PASSED", failures);
     return failures ? 1 : 0;
 }

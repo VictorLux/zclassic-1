@@ -3,6 +3,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "mining/gen.h"
+#include "metrics/metrics.h"
 #include "chain/equihash.h"
 #include "chain/pow.h"
 #include "core/random.h"
@@ -59,6 +60,7 @@ static bool try_solve_equihash(struct block *blk,
 
             eh_solver_set_state(solver, &curr);
             uint32_t nsols = eh_solver_run(solver);
+            metrics_increment_eh_solver_runs();
 
             for (uint32_t i = 0; i < nsols; i++) {
                 /* Convert indices to minimal/compressed solution */

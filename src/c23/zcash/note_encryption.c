@@ -121,8 +121,11 @@ bool sprout_note_encrypt(struct sprout_note_encryption *ctx,
 
     ctx->nonce++;
 
-    return chacha20poly1305_encrypt(plaintext, plen, NULL, 0,
-                                     zero_nonce, key, ciphertext);
+    bool ok = chacha20poly1305_encrypt(plaintext, plen, NULL, 0,
+                                        zero_nonce, key, ciphertext);
+    memset(dhsecret, 0, 32);
+    memset(key, 0, 32);
+    return ok;
 }
 
 bool sprout_note_decrypt(const uint8_t sk_enc[32],
@@ -137,11 +140,16 @@ bool sprout_note_decrypt(const uint8_t sk_enc[32],
     curve25519_scalarmult(dhsecret, sk_enc, epk);
 
     uint8_t key[32];
-    if (!sprout_kdf(key, hsig, dhsecret, epk, pk_enc, nonce))
+    if (!sprout_kdf(key, hsig, dhsecret, epk, pk_enc, nonce)) {
+        memset(dhsecret, 0, 32);
         return false;
+    }
 
-    return chacha20poly1305_decrypt(ciphertext, clen, NULL, 0,
-                                    zero_nonce, key, plaintext);
+    bool ok = chacha20poly1305_decrypt(ciphertext, clen, NULL, 0,
+                                        zero_nonce, key, plaintext);
+    memset(dhsecret, 0, 32);
+    memset(key, 0, 32);
+    return ok;
 }
 
 bool sapling_note_encrypt(const uint8_t key[32],

@@ -278,7 +278,7 @@ static bool sighash_overwinter_sapling(
         blake2b_update(&ctx, &tx->vin[nIn].prevout.n, 4);
 
         /* Script code as varint-length-prefixed bytes */
-        unsigned char varbuf[5];
+        unsigned char varbuf[9];
         size_t varlen = 0;
         if (script_code->size < 0xfd) {
             varbuf[0] = (unsigned char)script_code->size;
@@ -288,6 +288,11 @@ static bool sighash_overwinter_sapling(
             uint16_t s16 = (uint16_t)script_code->size;
             memcpy(varbuf + 1, &s16, 2);
             varlen = 3;
+        } else if (script_code->size <= 0xffffffff) {
+            varbuf[0] = 0xfe;
+            uint32_t s32 = (uint32_t)script_code->size;
+            memcpy(varbuf + 1, &s32, 4);
+            varlen = 5;
         }
         blake2b_update(&ctx, varbuf, varlen);
         blake2b_update(&ctx, script_code->data, script_code->size);
@@ -350,8 +355,7 @@ static bool sighash_sprout(
     for (unsigned int i = 0; i < n_outputs; i++) {
         if (sighash_get_base_type(hash_type) == BASE_SIGHASH_SINGLE && i != nIn) {
             /* Null output */
-            int64_t neg1 = -1;
-            stream_write_bytes(&s, (const unsigned char *)&neg1, 8);
+            stream_write_i64_le(&s, -1);
             stream_write_compact_size(&s, 0);
         } else {
             tx_out_serialize(&tx->vout[i], &s);
@@ -359,6 +363,15 @@ static bool sighash_sprout(
     }
 
     stream_write_u32_le(&s, tx->lock_time);
+
+    /* Include JoinSplit data (required for Sprout JoinSplit signature) */
+    if (tx->num_joinsplit > 0) {
+        stream_write_compact_size(&s, tx->num_joinsplit);
+        for (size_t i = 0; i < tx->num_joinsplit; i++)
+            js_description_serialize(&tx->v_joinsplit[i], &s);
+        stream_write_bytes(&s, tx->joinsplit_pubkey.data, 32);
+    }
+
     stream_write_u32_le(&s, hash_type.raw);
 
     /* Double SHA-256 */

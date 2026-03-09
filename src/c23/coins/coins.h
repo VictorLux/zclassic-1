@@ -25,6 +25,7 @@ struct coins {
 
 void coins_init(struct coins *c);
 void coins_free(struct coins *c);
+void coins_copy(struct coins *dst, const struct coins *src);
 bool coins_alloc(struct coins *c, size_t num_outputs);
 void coins_from_transaction(struct coins *c, const struct transaction *tx, int height);
 bool coins_spend(struct coins *c, uint32_t pos);

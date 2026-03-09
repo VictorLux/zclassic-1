@@ -72,6 +72,7 @@ struct net_message {
     bool in_data;
     uint8_t hdr_buf[MSG_HEADER_SIZE];
     struct msg_header hdr;
+    unsigned char expected_msgstart[MESSAGE_START_SIZE];
     unsigned int hdr_pos;
     uint8_t *recv_data;
     size_t recv_alloc;

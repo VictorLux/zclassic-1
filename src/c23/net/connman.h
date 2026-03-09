@@ -30,4 +30,7 @@ void connman_open_connection(struct connman *cm,
 
 size_t connman_get_node_count(const struct connman *cm);
 
+void connman_relay_transaction(struct connman *cm,
+                                const struct uint256 *txid);
+
 #endif

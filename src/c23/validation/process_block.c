@@ -13,8 +13,79 @@
 #include "consensus/upgrades.h"
 #include "coins/undo.h"
 #include "core/serialize.h"
+#include "storage/disk_block_io.h"
+#include "storage/txdb.h"
+#include "core/serialize.h"
+#include "wallet/wallet.h"
+#include "core/utiltime.h"
+#include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <sys/stat.h>
+
+#include "validation/main_constants.h"
+static int g_last_block_file = -1;
+static unsigned int g_last_block_file_size = 0;
+
+/* Periodic coins cache flushing to prevent UTXO corruption on crash.
+ * Mirrors the C++ FlushStateToDisk() logic. */
+#define COINS_FLUSH_INTERVAL_SECS 3600   /* flush to LevelDB every hour */
+#define COINS_FLUSH_MAX_ENTRIES  500000  /* flush if cache exceeds this many entries */
+
+static int64_t g_last_coins_flush = 0;
+
+static bool flush_coins_if_needed(struct coins_view_cache *coins_tip,
+                                  bool force)
+{
+    int64_t now = GetTime();
+    if (g_last_coins_flush == 0)
+        g_last_coins_flush = now;
+
+    bool time_flush = (now - g_last_coins_flush) > COINS_FLUSH_INTERVAL_SECS;
+    bool size_flush = coins_tip->cache_coins.size > COINS_FLUSH_MAX_ENTRIES;
+
+    if (!force && !time_flush && !size_flush)
+        return true;
+
+    bool ok = coins_view_cache_flush(coins_tip);
+    if (ok) {
+        g_last_coins_flush = now;
+        printf("flush_coins: wrote %s (entries flushed, cache cleared)\n",
+               force ? "forced" : time_flush ? "periodic" : "cache-full");
+    } else {
+        printf("flush_coins: FAILED to flush coins cache to disk\n");
+    }
+    return ok;
+}
+
+static bool find_block_pos(struct disk_block_pos *pos, unsigned int block_size,
+                            const char *datadir)
+{
+    if (g_last_block_file < 0) {
+        /* Scan existing block files to find the last one */
+        g_last_block_file = 0;
+        for (int i = 0; i < 99999; i++) {
+            char path[512];
+            struct disk_block_pos probe = { .nFile = i, .nPos = 0 };
+            get_block_pos_filename(path, sizeof(path), datadir, &probe, "blk");
+            struct stat st;
+            if (stat(path, &st) != 0)
+                break;
+            g_last_block_file = i;
+            g_last_block_file_size = (unsigned int)st.st_size;
+        }
+    }
+
+    /* Move to next file if current one is too large */
+    if (g_last_block_file_size + block_size + 8 > MAX_BLOCKFILE_SIZE) {
+        g_last_block_file++;
+        g_last_block_file_size = 0;
+    }
+
+    pos->nFile = g_last_block_file;
+    pos->nPos = g_last_block_file_size;
+    return true;
+}
 
 static struct block_index *add_to_block_index(struct main_state *ms,
                                                const struct block_header *header)
@@ -44,13 +115,10 @@ static struct block_index *add_to_block_index(struct main_state *ms,
     /* phashBlock points into the block_map_entry's hash storage */
     struct block_index *found = block_map_find(&ms->map_block_index, &hash);
     if (found) {
-        /* The block_map stores the hash — point to it */
-        for (size_t i = 0; i < ms->map_block_index.size; i++) {
-            if (uint256_cmp(&ms->map_block_index.entries[i].hash, &hash) == 0) {
-                found->phashBlock = &ms->map_block_index.entries[i].hash;
-                break;
-            }
-        }
+        const struct uint256 *stored = block_map_find_hash(
+            &ms->map_block_index, &hash);
+        if (stored)
+            found->phashBlock = stored;
     }
 
     /* Link to previous block */
@@ -72,16 +140,27 @@ static struct block_index *add_to_block_index(struct main_state *ms,
     return pindex;
 }
 
+static bool chain_has_all_data(struct block_index *pindex,
+                               struct block_index *tip)
+{
+    while (pindex && pindex != tip) {
+        if (!(pindex->nStatus & BLOCK_HAVE_DATA))
+            return false;
+        pindex = pindex->pprev;
+    }
+    return true;
+}
+
 static struct block_index *find_most_work_chain(struct main_state *ms)
 {
     struct block_index *best = active_chain_tip(&ms->chain_active);
 
-    for (size_t i = 0; i < ms->map_block_index.size; i++) {
-        struct block_index *pindex = ms->map_block_index.entries[i].index;
+    size_t iter = 0;
+    struct block_index *pindex;
+    while (block_map_next(&ms->map_block_index, &iter, NULL, &pindex)) {
         if (!pindex)
             continue;
 
-        /* Must have data and not be invalid */
         if (!(pindex->nStatus & BLOCK_HAVE_DATA))
             continue;
         if (pindex->nStatus & BLOCK_FAILED_MASK)
@@ -93,7 +172,8 @@ static struct block_index *find_most_work_chain(struct main_state *ms)
 
         if (!best || arith_uint256_compare(&pindex->nChainWork,
                                             &best->nChainWork) > 0) {
-            best = pindex;
+            if (chain_has_all_data(pindex, best))
+                best = pindex;
         }
     }
 
@@ -104,6 +184,15 @@ static void update_tip(struct main_state *ms, struct block_index *pindex_new)
 {
     active_chain_set_tip(&ms->chain_active, pindex_new);
     ms->pindex_best_header = pindex_new;
+
+    char hex[65];
+    if (pindex_new->phashBlock)
+        uint256_get_hex(pindex_new->phashBlock, hex);
+    else
+        snprintf(hex, sizeof(hex), "(null)");
+    printf("UpdateTip: new best=%s  height=%d  tx=%u  date=%lld\n",
+           hex, pindex_new->nHeight, pindex_new->nTx,
+           (long long)pindex_new->nTime);
 }
 
 bool accept_block_header(const struct block_header *header,
@@ -148,6 +237,10 @@ bool accept_block_header(const struct block_header *header,
     pindex = add_to_block_index(ms, header);
     if (!pindex)
         return validation_state_error(state, "add-to-block-index-failed");
+
+    if ((pindex->nStatus & BLOCK_VALID_MASK) < BLOCK_VALID_TREE)
+        pindex->nStatus = (pindex->nStatus & ~BLOCK_VALID_MASK) |
+                           BLOCK_VALID_TREE;
 
     if (ppindex)
         *ppindex = pindex;
@@ -198,14 +291,39 @@ bool accept_block(struct block *block,
     }
 
     /* Write block to disk */
+    struct byte_stream blk_stream;
+    stream_init(&blk_stream, 4096);
+    if (!block_serialize(block, &blk_stream)) {
+        stream_free(&blk_stream);
+        return validation_state_error(state, "failed-to-serialize-block");
+    }
+
     struct disk_block_pos block_pos;
     disk_block_pos_init(&block_pos);
+    if (!find_block_pos(&block_pos, (unsigned int)blk_stream.size, datadir)) {
+        stream_free(&blk_stream);
+        return validation_state_error(state, "failed-to-find-block-pos");
+    }
+    stream_free(&blk_stream);
+
     if (!write_block_to_disk(block, &block_pos, datadir,
                              params->pchMessageStart))
         return validation_state_error(state, "failed-to-write-block");
 
-    /* Mark block as having data */
+    /* Update file size tracker: pos->nPos now points past magic+size header,
+     * so total = nPos + block_data_size */
+    {
+        char path[512];
+        get_block_pos_filename(path, sizeof(path), datadir, &block_pos, "blk");
+        struct stat st;
+        if (stat(path, &st) == 0)
+            g_last_block_file_size = (unsigned int)st.st_size;
+    }
+
+    /* Mark block as having data and valid transactions */
     pindex->nStatus |= BLOCK_HAVE_DATA;
+    pindex->nStatus = (pindex->nStatus & ~BLOCK_VALID_MASK) |
+                       BLOCK_VALID_TRANSACTIONS;
     pindex->nFile = block_pos.nFile;
     pindex->nDataPos = block_pos.nPos;
     pindex->nTx = (unsigned int)block->num_vtx;
@@ -228,6 +346,8 @@ bool connect_tip(struct validation_state *state,
 
     if (!pblock) {
         if (!read_block_from_disk_index(&local_block, pindex_new, datadir)) {
+            printf("connect_tip: failed to read block at height %d\n",
+                   pindex_new->nHeight);
             block_free(&local_block);
             return validation_state_error(state, "failed-to-read-block");
         }
@@ -238,12 +358,14 @@ bool connect_tip(struct validation_state *state,
     {
         struct coins_view_cache view;
         struct coins_view backing;
-        backing.vtable = NULL;
-        backing.impl = coins_tip;
+        coins_view_cache_as_view(&backing, coins_tip);
         coins_view_cache_init(&view, &backing);
 
         bool rv = connect_block(pblock, state, pindex_new, &view, params, false);
         if (!rv) {
+            printf("connect_tip: connect_block failed at height %d: %s\n",
+                   pindex_new->nHeight,
+                   state->reject_reason[0] ? state->reject_reason : "unknown");
             if (validation_state_is_invalid(state)) {
                 pindex_new->nStatus |= BLOCK_FAILED_VALID;
             }
@@ -261,6 +383,49 @@ bool connect_tip(struct validation_state *state,
     update_tip(ms, pindex_new);
     pindex_new->nStatus = (pindex_new->nStatus & ~BLOCK_VALID_MASK) |
                            BLOCK_VALID_SCRIPTS;
+
+    /* Write transaction index if enabled */
+    extern struct block_tree_db *g_active_block_tree;
+    if (g_active_block_tree && ms->fTxIndex && pblock->num_vtx > 0) {
+        struct uint256 *txids = malloc(pblock->num_vtx * sizeof(struct uint256));
+        struct disk_tx_pos *positions = malloc(
+            pblock->num_vtx * sizeof(struct disk_tx_pos));
+        if (txids && positions) {
+            size_t header_size = BLOCK_HEADER_SIZE +
+                compact_size_sizeof(pblock->header.nSolutionSize) +
+                pblock->header.nSolutionSize;
+            unsigned int offset = (unsigned int)(header_size +
+                compact_size_sizeof(pblock->num_vtx));
+
+            for (size_t i = 0; i < pblock->num_vtx; i++) {
+                txids[i] = pblock->vtx[i].hash;
+                positions[i].block_pos.nFile = pindex_new->nFile;
+                positions[i].block_pos.nPos = pindex_new->nDataPos;
+                positions[i].nTxOffset = offset;
+
+                struct byte_stream ts;
+                stream_init(&ts, 1024);
+                transaction_serialize(&pblock->vtx[i], &ts);
+                offset += (unsigned int)ts.size;
+                stream_free(&ts);
+            }
+            block_tree_db_write_tx_index(g_active_block_tree,
+                                          txids, positions, pblock->num_vtx);
+        }
+        free(txids);
+        free(positions);
+    }
+
+    /* Notify wallet of transactions in the connected block */
+    extern struct wallet *g_active_wallet;
+    if (g_active_wallet) {
+        for (size_t i = 0; i < pblock->num_vtx; i++)
+            wallet_sync_transaction(g_active_wallet, &pblock->vtx[i],
+                                    pindex_new);
+    }
+
+    /* Periodically flush coins cache to LevelDB to prevent UTXO corruption */
+    flush_coins_if_needed(coins_tip, false);
 
     if (pblock == &local_block)
         block_free(&local_block);
@@ -310,8 +475,7 @@ bool disconnect_tip(struct validation_state *state,
     {
         struct coins_view_cache view;
         struct coins_view backing;
-        backing.vtable = NULL;
-        backing.impl = coins_tip;
+        coins_view_cache_as_view(&backing, coins_tip);
         coins_view_cache_init(&view, &backing);
 
         if (!disconnect_block(&block, state, pindex_delete, &view, &blockundo)) {
@@ -345,8 +509,14 @@ bool activate_best_chain(struct validation_state *state,
         pindex_most_work = find_most_work_chain(ms);
 
         struct block_index *tip = active_chain_tip(&ms->chain_active);
-        if (!pindex_most_work || pindex_most_work == tip)
+        if (!pindex_most_work || pindex_most_work == tip) {
+            if (!pindex_most_work)
+                printf("activate_best_chain: no most-work chain found\n");
             return true;
+        }
+        printf("activate_best_chain: tip=%d most_work=%d\n",
+               tip ? tip->nHeight : -1,
+               pindex_most_work->nHeight);
 
         /* Check reorg length */
         if (tip) {
@@ -418,17 +588,26 @@ bool process_new_block(struct validation_state *state,
                        const char *datadir)
 {
     bool checked = check_block(pblock, state, params, true, true, true);
-    if (!checked)
+    if (!checked) {
+        printf("process_new_block: check_block failed: %s\n",
+               state->reject_reason[0] ? state->reject_reason : "unknown");
         return false;
+    }
 
     struct block_index *pindex = NULL;
     bool requested = force_processing;
 
-    if (!accept_block(pblock, state, ms, params, &pindex, requested, datadir))
+    if (!accept_block(pblock, state, ms, params, &pindex, requested, datadir)) {
+        printf("process_new_block: accept_block failed: %s\n",
+               state->reject_reason[0] ? state->reject_reason : "unknown");
         return false;
+    }
 
-    if (!activate_best_chain(state, ms, coins_tip, params, pblock, datadir))
+    if (!activate_best_chain(state, ms, coins_tip, params, pblock, datadir)) {
+        printf("process_new_block: activate_best_chain failed: %s\n",
+               state->reject_reason[0] ? state->reject_reason : "unknown");
         return false;
+    }
 
     return true;
 }
@@ -441,8 +620,7 @@ bool test_block_validity(struct validation_state *state,
 {
     struct coins_view_cache view;
     struct coins_view backing;
-    backing.vtable = NULL;
-    backing.impl = coins_tip;
+    coins_view_cache_as_view(&backing, coins_tip);
     coins_view_cache_init(&view, &backing);
 
     struct block_index index_dummy;

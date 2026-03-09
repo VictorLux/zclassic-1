@@ -7,7 +7,11 @@
 
 #include "storage/dbwrapper.h"
 #include "wallet/wallet.h"
+#include "wallet/sapling_keys.h"
+#include "script/script.h"
+#include "core/uint256.h"
 #include <stdbool.h>
+#include <stdint.h>
 
 struct wallet_db {
     struct db_wrapper db;
@@ -27,6 +31,22 @@ bool wallet_db_read_txs(struct wallet_db *wdb, struct wallet *w);
 bool wallet_db_write_best_block(struct wallet_db *wdb,
                                   const struct uint256 *hash);
 bool wallet_db_read_best_block(struct wallet_db *wdb, struct uint256 *hash);
+
+bool wallet_db_write_scan_height(struct wallet_db *wdb, int height);
+bool wallet_db_read_scan_height(struct wallet_db *wdb, int *height);
+
+bool wallet_db_write_sapling_seed(struct wallet_db *wdb,
+                                    const uint8_t seed[32]);
+bool wallet_db_read_sapling_seed(struct wallet_db *wdb, uint8_t seed[32]);
+bool wallet_db_write_sapling_key(struct wallet_db *wdb,
+                                   uint32_t child_index,
+                                   const struct sapling_key_entry *entry);
+bool wallet_db_read_sapling_keys(struct wallet_db *wdb, struct wallet *w);
+
+bool wallet_db_write_script(struct wallet_db *wdb,
+                              const struct uint160 *script_id,
+                              const struct script *redeem_script);
+bool wallet_db_read_scripts(struct wallet_db *wdb, struct wallet *w);
 
 bool wallet_db_flush(struct wallet_db *wdb, struct wallet *w);
 

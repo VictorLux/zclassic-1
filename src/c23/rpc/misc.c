@@ -4,19 +4,29 @@
 
 #include "rpc/misc.h"
 #include "chain/chainparams.h"
+#include "encoding/utilstrencodings.h"
 #include "json/json.h"
 #include "keys/key_io.h"
 #include "net/version.h"
 #include "util/clientversion.h"
 #include "validation/chainstate.h"
+#include "wallet/keystore.h"
+#include "wallet/wallet.h"
+#include "wallet/sapling_keys.h"
 #include <stdlib.h>
 #include <string.h>
 
 static struct main_state *g_ms = NULL;
+static struct wallet *g_misc_wallet = NULL;
 
 void rpc_misc_set_state(struct main_state *ms)
 {
     g_ms = ms;
+}
+
+void rpc_misc_set_wallet(struct wallet *w)
+{
+    g_misc_wallet = w;
 }
 
 static bool rpc_getinfo(const struct json_value *params, bool help,
@@ -53,10 +63,9 @@ static bool rpc_validateaddress(const struct json_value *params, bool help,
 {
     if (help || json_size(params) != 1) {
         json_set_str(result,
-            "validateaddress \"zcashaddress\"\n"
-            "Return information about the given address.\n"
-            "Arguments:\n"
-            "1. \"address\" (string, required) The address to validate");
+            "validateaddress \"address\"\n"
+            "Return information about the given ZClassic address.\n"
+            "Works for transparent (t1/t3) and shielded (zs1) addresses.");
         return true;
     }
 
@@ -69,6 +78,34 @@ static bool rpc_validateaddress(const struct json_value *params, bool help,
     const char *addr = json_get_str(addr_val);
     const struct chain_params *cp = chain_params_get();
 
+    json_set_object(result);
+    json_push_kv_str(result, "address", addr);
+
+    /* Try Sapling z-address (zs1...) */
+    uint8_t diversifier[11];
+    uint8_t pk_d[32];
+    if (sapling_decode_payment_address(addr, diversifier, pk_d)) {
+        json_push_kv_bool(result, "isvalid", true);
+        json_push_kv_str(result, "type", "sapling");
+
+        if (g_misc_wallet) {
+            bool is_mine = false;
+            for (size_t i = 0; i < g_misc_wallet->sapling_keys.num_keys; i++) {
+                struct sapling_key_entry *e =
+                    &g_misc_wallet->sapling_keys.keys[i];
+                if (e->used &&
+                    memcmp(e->diversifier, diversifier, 11) == 0 &&
+                    memcmp(e->pk_d, pk_d, 32) == 0) {
+                    is_mine = true;
+                    break;
+                }
+            }
+            json_push_kv_bool(result, "ismine", is_mine);
+        }
+        return true;
+    }
+
+    /* Try transparent address (t1/t3) */
     size_t pk_len, sc_len;
     const unsigned char *pk_pfx = chain_params_base58_prefix(
         cp, B58_PUBKEY_ADDRESS, &pk_len);
@@ -79,15 +116,40 @@ static bool rpc_validateaddress(const struct json_value *params, bool help,
     bool valid = decode_destination(addr, pk_pfx, pk_len,
                                      sc_pfx, sc_len, &dest);
 
-    json_set_object(result);
     json_push_kv_bool(result, "isvalid", valid);
-    json_push_kv_str(result, "address", addr);
+    if (!valid)
+        return true;
 
-    if (valid) {
-        if (dest.type == DEST_KEY_ID)
-            json_push_kv_str(result, "scriptPubKey", "pubkeyhash");
-        else if (dest.type == DEST_SCRIPT_ID)
-            json_push_kv_str(result, "scriptPubKey", "scripthash");
+    if (dest.type == DEST_KEY_ID) {
+        json_push_kv_str(result, "type", "pubkeyhash");
+        json_push_kv_bool(result, "isscript", false);
+
+        if (g_misc_wallet) {
+            bool is_mine = keystore_have_key(&g_misc_wallet->keystore,
+                                               &dest.id.key);
+            json_push_kv_bool(result, "ismine", is_mine);
+
+            if (is_mine) {
+                struct pubkey pk;
+                if (keystore_get_pubkey(&g_misc_wallet->keystore,
+                                         &dest.id.key, &pk)) {
+                    char pk_hex[PUBLIC_KEY_SIZE * 2 + 1];
+                    HexStr(pk.vch, pk.size, false, pk_hex, sizeof(pk_hex));
+                    json_push_kv_str(result, "pubkey", pk_hex);
+                    json_push_kv_bool(result, "iscompressed",
+                                      pk.size == COMPRESSED_PUBLIC_KEY_SIZE);
+                }
+            }
+        }
+    } else if (dest.type == DEST_SCRIPT_ID) {
+        json_push_kv_str(result, "type", "scripthash");
+        json_push_kv_bool(result, "isscript", true);
+
+        if (g_misc_wallet) {
+            bool have = keystore_have_cscript(&g_misc_wallet->keystore,
+                                                &dest.id.script.hash);
+            json_push_kv_bool(result, "ismine", have);
+        }
     }
 
     return true;

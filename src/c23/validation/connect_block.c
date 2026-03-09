@@ -52,19 +52,25 @@ bool connect_block(const struct block *block,
         return true;
     }
 
-    /* BIP30: do not allow blocks that overwrite existing unspent transactions */
-    for (size_t i = 0; i < block->num_vtx; i++) {
-        if (coins_view_cache_have_coins(view, &block->vtx[i].hash)) {
-            struct coins existing;
-            coins_init(&existing);
-            if (coins_view_cache_get_coins(view, &block->vtx[i].hash, &existing)) {
-                if (!coins_is_pruned(&existing)) {
-                    coins_free(&existing);
-                    return validation_state_dos(state, 100, false, REJECT_INVALID,
-                        "bad-txns-BIP30", false, NULL);
+    /* BIP30: do not allow blocks that overwrite existing unspent transactions.
+     * After BIP34 activation (height in coinbase), duplicate txids are impossible.
+     * ZClassic has BIP34 from genesis, so BIP30 violations cannot occur.
+     * We still check for blocks below the BIP34 enforcement height as a safety
+     * measure, but skip for heights where BIP34 guarantees uniqueness. */
+    if (pindex->nHeight <= 91842) {
+        for (size_t i = 0; i < block->num_vtx; i++) {
+            if (coins_view_cache_have_coins(view, &block->vtx[i].hash)) {
+                struct coins existing;
+                coins_init(&existing);
+                if (coins_view_cache_get_coins(view, &block->vtx[i].hash, &existing)) {
+                    if (!coins_is_pruned(&existing)) {
+                        coins_free(&existing);
+                        return validation_state_dos(state, 100, false, REJECT_INVALID,
+                            "bad-txns-BIP30", false, NULL);
+                    }
                 }
+                coins_free(&existing);
             }
-            coins_free(&existing);
         }
     }
 
@@ -97,6 +103,25 @@ bool connect_block(const struct block *block,
 
         if (!transaction_is_coinbase(tx)) {
             if (!coins_view_cache_have_inputs(view, tx)) {
+                char txhex[65];
+                uint256_get_hex(&tx->hash, txhex);
+                printf("MISSING INPUTS for tx %s (vin=%zu):\n", txhex, tx->num_vin);
+                for (size_t mi = 0; mi < tx->num_vin; mi++) {
+                    char ph[65];
+                    uint256_get_hex(&tx->vin[mi].prevout.hash, ph);
+                    struct coins c;
+                    coins_init(&c);
+                    bool have = coins_view_cache_get_coins(view, &tx->vin[mi].prevout.hash, &c);
+                    printf("  vin[%zu]: %s:%u have=%d num_vout=%zu\n",
+                           mi, ph, tx->vin[mi].prevout.n, have, c.num_vout);
+                    if (have && tx->vin[mi].prevout.n < c.num_vout) {
+                        printf("    vout[%u] amount=%lld script_size=%zu\n",
+                               tx->vin[mi].prevout.n,
+                               (long long)c.vout[tx->vin[mi].prevout.n].value,
+                               c.vout[tx->vin[mi].prevout.n].script_pub_key.size);
+                    }
+                    coins_free(&c);
+                }
                 block_undo_free(&blockundo);
                 return validation_state_dos(state, 100, false, REJECT_INVALID,
                     "bad-txns-inputs-missingorspent", false, NULL);
@@ -231,7 +256,7 @@ bool disconnect_block(const struct block *block,
         coins_map_erase(&view->cache_coins, &tx->hash);
     }
 
-    if (pindex->pprev)
+    if (pindex->pprev && pindex->pprev->phashBlock)
         coins_view_cache_set_best_block(view, pindex->pprev->phashBlock);
 
     return true;

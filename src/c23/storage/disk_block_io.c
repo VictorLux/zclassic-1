@@ -151,8 +151,11 @@ bool read_block_from_disk_index(struct block *b,
         pos.nPos = pindex->nDataPos;
     }
 
-    if (!read_block_from_disk(b, &pos, datadir))
+    if (!read_block_from_disk(b, &pos, datadir)) {
+        printf("read_block_from_disk_index: FAILED height=%d nFile=%d nDataPos=%u nStatus=0x%x\n",
+               pindex->nHeight, pindex->nFile, pindex->nDataPos, pindex->nStatus);
         return false;
+    }
 
     struct uint256 block_hash;
     block_get_hash(b, &block_hash);

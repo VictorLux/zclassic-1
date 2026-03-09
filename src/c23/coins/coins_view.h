@@ -104,6 +104,8 @@ struct coins_view_cache {
 
 void coins_view_cache_init(struct coins_view_cache *c, struct coins_view *backing);
 void coins_view_cache_free(struct coins_view_cache *c);
+void coins_view_cache_as_view(struct coins_view *out,
+                               struct coins_view_cache *cache);
 
 bool coins_view_cache_get_coins(struct coins_view_cache *c,
                                 const struct uint256 *txid,

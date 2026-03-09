@@ -53,6 +53,14 @@ bool stream_read_i64_le(struct byte_stream *s, int64_t *v);
 bool stream_write_compact_size(struct byte_stream *s, uint64_t size);
 bool stream_read_compact_size(struct byte_stream *s, uint64_t *size);
 
+static inline size_t compact_size_sizeof(uint64_t n)
+{
+    if (n < 253)         return 1;
+    else if (n <= 0xffff) return 3;
+    else if (n <= 0xffffffffULL) return 5;
+    else                  return 9;
+}
+
 bool stream_write_varint(struct byte_stream *s, uint64_t n);
 bool stream_read_varint(struct byte_stream *s, uint64_t *n);
 

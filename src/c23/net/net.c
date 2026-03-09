@@ -45,6 +45,7 @@ void net_message_init(struct net_message *msg,
     msg->recv_data = NULL;
     msg->recv_alloc = 0;
     msg->time_usec = 0;
+    memcpy(msg->expected_msgstart, msgstart, MESSAGE_START_SIZE);
     msg_header_init(&msg->hdr, msgstart);
 }
 
@@ -76,6 +77,11 @@ int net_message_read_header(struct net_message *msg,
 
     memcpy(&msg->hdr, msg->hdr_buf, MSG_HEADER_SIZE);
 
+    /* Validate message start magic and size */
+    if (memcmp(msg->hdr.pchMessageStart, msg->expected_msgstart,
+               MESSAGE_START_SIZE) != 0)
+        return -1;
+
     if (msg->hdr.nMessageSize > MAX_SIZE)
         return -1;
 
@@ -92,10 +98,6 @@ int net_message_read_data(struct net_message *msg,
     size_t needed = msg->data_pos + copy;
     if (msg->recv_alloc < needed) {
         size_t alloc = msg->hdr.nMessageSize;
-        if (alloc < needed + 256 * 1024)
-            alloc = needed + 256 * 1024;
-        if (alloc > msg->hdr.nMessageSize)
-            alloc = msg->hdr.nMessageSize;
         uint8_t *tmp = realloc(msg->recv_data, alloc);
         if (!tmp) return -1;
         msg->recv_data = tmp;
@@ -245,6 +247,8 @@ bool p2p_node_receive_bytes(struct p2p_node *node, const char *data,
                              unsigned int nbytes,
                              const unsigned char msgstart[MESSAGE_START_SIZE])
 {
+    unsigned int orig_nbytes = nbytes;
+    int msg_idx = 0;
     while (nbytes > 0) {
         if (node->recv_msg_count == 0 ||
             net_message_complete(&node->recv_msgs[node->recv_msg_count - 1])) {
@@ -267,16 +271,40 @@ bool p2p_node_receive_bytes(struct p2p_node *node, const char *data,
         else
             handled = net_message_read_data(msg, data, nbytes);
 
-        if (handled < 0) return false;
-
-        if (msg->in_data && msg->hdr.nMessageSize > MAX_PROTOCOL_MESSAGE_LENGTH)
+        if (handled < 0) {
+            printf("  PARSE FAIL at msg_idx=%d offset=%u/%u in_data=%d "
+                   "hdr_pos=%u data_pos=%u nMessageSize=%u "
+                   "next4: %02x%02x%02x%02x\n",
+                   msg_idx, orig_nbytes - nbytes, orig_nbytes,
+                   msg->in_data, msg->hdr_pos, msg->data_pos,
+                   msg->hdr.nMessageSize,
+                   (unsigned char)data[0],
+                   nbytes>1?(unsigned char)data[1]:0,
+                   nbytes>2?(unsigned char)data[2]:0,
+                   nbytes>3?(unsigned char)data[3]:0);
             return false;
+        }
+
+        if (msg->in_data && msg->hdr.nMessageSize > MAX_PROTOCOL_MESSAGE_LENGTH) {
+            char dcmd[COMMAND_SIZE + 1];
+            msg_header_get_command(&msg->hdr, dcmd, sizeof(dcmd));
+            printf("Dropped oversized '%s' message: %u bytes > %u\n",
+                   dcmd, msg->hdr.nMessageSize, MAX_PROTOCOL_MESSAGE_LENGTH);
+            return false;
+        }
 
         data += handled;
         nbytes -= (unsigned int)handled;
+        msg_idx++;
 
-        if (net_message_complete(msg))
+        if (net_message_complete(msg)) {
+            char dcmd[COMMAND_SIZE + 1];
+            msg_header_get_command(&msg->hdr, dcmd, sizeof(dcmd));
+            printf("  completed msg '%s' size=%u at offset=%u/%u\n",
+                   dcmd, msg->hdr.nMessageSize,
+                   orig_nbytes - nbytes, orig_nbytes);
             msg->time_usec = GetTimeMicros();
+        }
     }
     return true;
 }
@@ -434,7 +462,7 @@ bool p2p_node_end_message(struct p2p_node *node)
     }
 
     size_t total = tls_msg_stream.size;
-    if (total == 0) {
+    if (total == 0 || tls_msg_stream.error) {
         stream_free(&tls_msg_stream);
         tls_msg_active = false;
         zcl_mutex_unlock(&node->cs_send);
@@ -1100,8 +1128,11 @@ void net_socket_handler_step(struct net_manager *nm)
                                           MSG_DONTWAIT);
                     if (nrecv > 0) {
                         if (!p2p_node_receive_bytes(node, buf, (unsigned int)nrecv,
-                                                     nm->message_start))
+                                                     nm->message_start)) {
+                            printf("Message parse error from %s (recv %zd bytes)\n",
+                                   node->addr_name, nrecv);
                             p2p_node_close_socket(node);
+                        }
                         node->last_recv = GetTime();
                         node->recv_bytes += (uint64_t)nrecv;
                     } else if (nrecv == 0) {

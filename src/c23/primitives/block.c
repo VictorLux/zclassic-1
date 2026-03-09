@@ -88,8 +88,8 @@ void block_get_hash(const struct block *b, struct uint256 *out)
 bool block_locator_serialize(const struct block_locator *loc,
                              struct byte_stream *s)
 {
-    /* CBlockLocator serializes nVersion (unused) + vector<uint256> */
-    if (!stream_write_i32_le(s, 0)) return false; /* nVersion placeholder */
+    /* CBlockLocator serializes nVersion + vector<uint256> */
+    if (!stream_write_i32_le(s, 170011)) return false;
     if (!stream_write_compact_size(s, loc->num_hashes)) return false;
     for (size_t i = 0; i < loc->num_hashes; i++) {
         if (!stream_write_bytes(s, loc->vhave[i].data, 32)) return false;

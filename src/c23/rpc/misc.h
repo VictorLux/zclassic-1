@@ -8,7 +8,10 @@
 #include "rpc/server.h"
 #include "validation/main_state.h"
 
+struct wallet;
+
 void rpc_misc_set_state(struct main_state *ms);
+void rpc_misc_set_wallet(struct wallet *w);
 void register_misc_rpc_commands(struct rpc_table *t);
 
 #endif

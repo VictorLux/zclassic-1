@@ -7,6 +7,7 @@
 #include "storage/coins_db.h"
 #include "coins/undo.h"
 #include "core/serialize.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -87,28 +88,56 @@ bool coins_view_db_get_coins(struct coins_view_db *cvdb,
     stream_init_from_data(&s, (unsigned char *)val, vallen);
 
     uint64_t nVersion = 0;
-    stream_read_varint(&s, &nVersion);
+    if (!stream_read_varint(&s, &nVersion)) {
+        stream_free(&s); free(val); return false;
+    }
     out->version = (int)nVersion;
 
     uint64_t nCode = 0;
-    stream_read_varint(&s, &nCode);
+    if (!stream_read_varint(&s, &nCode)) {
+        stream_free(&s); free(val); return false;
+    }
     out->is_coinbase = (nCode & 1) != 0;
     bool vout0_present = (nCode & 2) != 0;
     bool vout1_present = (nCode & 4) != 0;
-    unsigned int nMaskCode = (unsigned int)(nCode / 8) + ((!vout0_present && !vout1_present) ? 0 : 1);
+    unsigned int nMaskCode = (unsigned int)(nCode / 8) +
+        ((vout0_present || vout1_present) ? 0 : 1);
 
-    size_t num_outputs = 2;
-    if (nMaskCode > 0)
-        num_outputs += nMaskCode * 8;
-    coins_alloc(out, num_outputs);
+    if (nMaskCode > 10000) {
+        stream_free(&s); free(val); return false;
+    }
 
-    if (vout0_present)
-        compressed_txout_deserialize(&out->vout[0], &s);
-    if (vout1_present)
-        compressed_txout_deserialize(&out->vout[1], &s);
+    /* Build availability vector: vAvail[0..1] from flags, rest from mask bytes */
+    size_t num_avail = 2;
+    bool avail_stack[256];
+    avail_stack[0] = vout0_present;
+    avail_stack[1] = vout1_present;
+
+    unsigned int mask_remaining = nMaskCode;
+    while (mask_remaining > 0) {
+        unsigned char ch = 0;
+        if (!stream_read_bytes(&s, &ch, 1)) {
+            stream_free(&s); free(val); return false;
+        }
+        for (unsigned int p = 0; p < 8 && num_avail < 256; p++)
+            avail_stack[num_avail++] = (ch & (1 << p)) != 0;
+        if (ch != 0)
+            mask_remaining--;
+    }
+
+    coins_alloc(out, num_avail);
+    for (size_t i = 0; i < num_avail; i++) {
+        if (avail_stack[i]) {
+            if (!compressed_txout_deserialize(&out->vout[i], &s)) {
+                stream_free(&s); free(val); return false;
+            }
+        }
+    }
 
     uint64_t h = 0;
-    stream_read_varint(&s, &h);
+    if (!stream_read_varint(&s, &h)) {
+        stream_free(&s); free(val); return false;
+    }
     out->height = (int)h;
 
     stream_free(&s);
@@ -161,24 +190,44 @@ bool coins_view_db_batch_write(struct coins_view_db *cvdb,
             } else {
                 struct byte_stream s;
                 stream_init(&s, 256);
+                const struct coins *cc = &e->entry.coins;
 
-                stream_write_varint(&s, (uint64_t)e->entry.coins.version);
+                stream_write_varint(&s, (uint64_t)cc->version);
 
-                bool vout0 = e->entry.coins.num_vout > 0 &&
-                             !tx_out_is_null(&e->entry.coins.vout[0]);
-                bool vout1 = e->entry.coins.num_vout > 1 &&
-                             !tx_out_is_null(&e->entry.coins.vout[1]);
-                uint64_t nCode = (e->entry.coins.is_coinbase ? 1 : 0) |
-                                 (vout0 ? 2 : 0) |
-                                 (vout1 ? 4 : 0);
+                bool vout0 = cc->num_vout > 0 && !tx_out_is_null(&cc->vout[0]);
+                bool vout1 = cc->num_vout > 1 && !tx_out_is_null(&cc->vout[1]);
+
+                /* Compute mask size and code per C++ CCoins::CalcMaskSize */
+                unsigned int nMaskSize = 0;
+                for (size_t vi = 2; vi < cc->num_vout; vi++) {
+                    if (!tx_out_is_null(&cc->vout[vi]))
+                        nMaskSize = (unsigned int)((vi - 2) / 8) + 1;
+                }
+
+                uint64_t nCode = 8 * (nMaskSize - ((vout0 || vout1) ? 0 : 1))
+                                 + (cc->is_coinbase ? 1 : 0)
+                                 + (vout0 ? 2 : 0)
+                                 + (vout1 ? 4 : 0);
                 stream_write_varint(&s, nCode);
 
-                if (vout0)
-                    compressed_txout_serialize(&e->entry.coins.vout[0], &s);
-                if (vout1)
-                    compressed_txout_serialize(&e->entry.coins.vout[1], &s);
+                /* Write spentness bitmask */
+                for (unsigned int mi = 0; mi < nMaskSize; mi++) {
+                    unsigned char ch = 0;
+                    for (unsigned int p = 0; p < 8; p++) {
+                        size_t idx = 2 + mi * 8 + p;
+                        if (idx < cc->num_vout && !tx_out_is_null(&cc->vout[idx]))
+                            ch |= (1 << p);
+                    }
+                    stream_write_bytes(&s, &ch, 1);
+                }
 
-                stream_write_varint(&s, (uint64_t)e->entry.coins.height);
+                /* Write available outputs */
+                for (size_t vi = 0; vi < cc->num_vout; vi++) {
+                    if (!tx_out_is_null(&cc->vout[vi]))
+                        compressed_txout_serialize(&cc->vout[vi], &s);
+                }
+
+                stream_write_varint(&s, (uint64_t)cc->height);
 
                 db_batch_put(&batch, key, keylen, (char *)s.data, s.size);
                 stream_free(&s);

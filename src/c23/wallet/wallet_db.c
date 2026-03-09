@@ -13,6 +13,10 @@
 #define PREFIX_KEY    "key"
 #define PREFIX_TX     "tx"
 #define PREFIX_BEST   "bestblock"
+#define PREFIX_SCANH  "scanheight"
+#define PREFIX_ZSEED  "zseed"
+#define PREFIX_ZKEY   "zkey"
+#define PREFIX_CSCRIPT "cscript"
 
 static void make_key_record(const struct key_id *kid,
                              char *buf, size_t *len)
@@ -221,6 +225,213 @@ bool wallet_db_read_best_block(struct wallet_db *wdb, struct uint256 *hash)
     return true;
 }
 
+bool wallet_db_write_scan_height(struct wallet_db *wdb, int height)
+{
+    if (!wdb->open) return false;
+    int32_t h = (int32_t)height;
+    return db_write(&wdb->db, PREFIX_SCANH, 10,
+                    (const char *)&h, 4, true);
+}
+
+bool wallet_db_read_scan_height(struct wallet_db *wdb, int *height)
+{
+    if (!wdb->open) return false;
+    char *val = NULL;
+    size_t vlen = 0;
+    if (!db_read(&wdb->db, PREFIX_SCANH, 10, &val, &vlen))
+        return false;
+    if (vlen != 4) {
+        free(val);
+        return false;
+    }
+    int32_t h;
+    memcpy(&h, val, 4);
+    *height = h;
+    free(val);
+    return true;
+}
+
+bool wallet_db_write_sapling_seed(struct wallet_db *wdb,
+                                    const uint8_t seed[32])
+{
+    if (!wdb->open) return false;
+    bool ok = db_write(&wdb->db, PREFIX_ZSEED, 5,
+                       (const char *)seed, 32, true);
+    return ok;
+}
+
+bool wallet_db_read_sapling_seed(struct wallet_db *wdb, uint8_t seed[32])
+{
+    if (!wdb->open) return false;
+    char *val = NULL;
+    size_t vlen = 0;
+    if (!db_read(&wdb->db, PREFIX_ZSEED, 5, &val, &vlen))
+        return false;
+    if (vlen != 32) {
+        free(val);
+        return false;
+    }
+    memcpy(seed, val, 32);
+    free(val);
+    return true;
+}
+
+static void make_zkey_record(uint32_t child_index, char *buf, size_t *len)
+{
+    memcpy(buf, PREFIX_ZKEY, 4);
+    memcpy(buf + 4, &child_index, 4);
+    *len = 8;
+}
+
+bool wallet_db_write_sapling_key(struct wallet_db *wdb,
+                                   uint32_t child_index,
+                                   const struct sapling_key_entry *entry)
+{
+    if (!wdb->open) return false;
+
+    char dbkey[16];
+    size_t dbkey_len;
+    make_zkey_record(child_index, dbkey, &dbkey_len);
+
+    /* Serialize: xsk(raw) + diversifier(11) + pk_d(32) + ivk(32) */
+    unsigned char val[sizeof(struct zip32_xsk) + 11 + 32 + 32];
+    size_t vlen = 0;
+    memcpy(val + vlen, &entry->xsk, sizeof(struct zip32_xsk));
+    vlen += sizeof(struct zip32_xsk);
+    memcpy(val + vlen, entry->diversifier, 11);
+    vlen += 11;
+    memcpy(val + vlen, entry->pk_d, 32);
+    vlen += 32;
+    memcpy(val + vlen, entry->ivk, 32);
+    vlen += 32;
+
+    bool ok = db_write(&wdb->db, dbkey, dbkey_len,
+                       (const char *)val, vlen, true);
+    memory_cleanse(val, sizeof(struct zip32_xsk));
+    return ok;
+}
+
+bool wallet_db_read_sapling_keys(struct wallet_db *wdb, struct wallet *w)
+{
+    if (!wdb->open) return false;
+
+    /* Read seed first */
+    uint8_t seed[32];
+    if (wallet_db_read_sapling_seed(wdb, seed)) {
+        sapling_keystore_set_seed(&w->sapling_keys, seed);
+        memory_cleanse(seed, 32);
+    }
+
+    struct db_iterator it;
+    db_iter_init(&it, &wdb->db);
+    db_iter_seek(&it, PREFIX_ZKEY, 4);
+
+    size_t expected_vlen = sizeof(struct zip32_xsk) + 11 + 32 + 32;
+
+    while (db_iter_valid(&it)) {
+        size_t klen = 0;
+        const char *k = db_iter_key(&it, &klen);
+        if (klen < 4 || memcmp(k, PREFIX_ZKEY, 4) != 0)
+            break;
+
+        uint32_t child_index = 0;
+        if (klen >= 8)
+            memcpy(&child_index, k + 4, 4);
+
+        size_t vlen = 0;
+        const char *v = db_iter_value(&it, &vlen);
+        if (vlen < expected_vlen) {
+            db_iter_next(&it);
+            continue;
+        }
+
+        const unsigned char *vp = (const unsigned char *)v;
+        struct sapling_keystore *sks = &w->sapling_keys;
+
+        if (sks->num_keys < MAX_SAPLING_KEYS) {
+            struct sapling_key_entry *entry = &sks->keys[sks->num_keys];
+            size_t off = 0;
+            memcpy(&entry->xsk, vp + off, sizeof(struct zip32_xsk));
+            off += sizeof(struct zip32_xsk);
+            memcpy(entry->diversifier, vp + off, 11);
+            off += 11;
+            memcpy(entry->pk_d, vp + off, 32);
+            off += 32;
+            memcpy(entry->ivk, vp + off, 32);
+
+            zip32_xsk_to_xfvk(&entry->xfvk, &entry->xsk);
+            entry->child_index = child_index;
+            entry->used = true;
+            sks->num_keys++;
+
+            if (child_index >= sks->next_child_index)
+                sks->next_child_index = child_index + 1;
+        }
+
+        db_iter_next(&it);
+    }
+
+    db_iter_free(&it);
+    return true;
+}
+
+static void make_script_record(const struct uint160 *script_id,
+                                char *buf, size_t *len)
+{
+    memcpy(buf, PREFIX_CSCRIPT, 7);
+    memcpy(buf + 7, script_id->data, 20);
+    *len = 27;
+}
+
+bool wallet_db_write_script(struct wallet_db *wdb,
+                              const struct uint160 *script_id,
+                              const struct script *redeem_script)
+{
+    if (!wdb->open) return false;
+
+    char dbkey[32];
+    size_t dbkey_len;
+    make_script_record(script_id, dbkey, &dbkey_len);
+
+    return db_write(&wdb->db, dbkey, dbkey_len,
+                    (const char *)redeem_script->data,
+                    redeem_script->size, true);
+}
+
+bool wallet_db_read_scripts(struct wallet_db *wdb, struct wallet *w)
+{
+    if (!wdb->open) return false;
+
+    struct db_iterator it;
+    db_iter_init(&it, &wdb->db);
+    db_iter_seek(&it, PREFIX_CSCRIPT, 7);
+
+    while (db_iter_valid(&it)) {
+        size_t klen = 0;
+        const char *k = db_iter_key(&it, &klen);
+        if (klen < 7 || memcmp(k, PREFIX_CSCRIPT, 7) != 0)
+            break;
+
+        size_t vlen = 0;
+        const char *v = db_iter_value(&it, &vlen);
+        if (vlen == 0 || vlen > MAX_SCRIPT_SIZE) {
+            db_iter_next(&it);
+            continue;
+        }
+
+        struct script s;
+        script_init(&s);
+        memcpy(s.data, v, vlen);
+        s.size = vlen;
+        keystore_add_cscript(&w->keystore, &s);
+
+        db_iter_next(&it);
+    }
+
+    db_iter_free(&it);
+    return true;
+}
+
 bool wallet_db_flush(struct wallet_db *wdb, struct wallet *w)
 {
     if (!wdb->open) return false;
@@ -241,6 +452,26 @@ bool wallet_db_flush(struct wallet_db *wdb, struct wallet *w)
         if (!w->map_wallet[i].used) continue;
         wallet_db_write_tx(wdb, &w->map_wallet[i]);
     }
+
+    /* Write Sapling seed and keys */
+    struct sapling_keystore *sks = &w->sapling_keys;
+    if (sks->has_seed)
+        wallet_db_write_sapling_seed(wdb, sks->seed);
+    for (size_t i = 0; i < sks->num_keys; i++) {
+        if (sks->keys[i].used)
+            wallet_db_write_sapling_key(wdb, sks->keys[i].child_index,
+                                          &sks->keys[i]);
+    }
+
+    /* Write redeem scripts */
+    for (size_t i = 0; i < w->keystore.num_scripts; i++) {
+        if (w->keystore.scripts[i].used)
+            wallet_db_write_script(wdb, &w->keystore.scripts[i].script_id,
+                                     &w->keystore.scripts[i].redeem_script);
+    }
+
+    /* Write scan height */
+    wallet_db_write_scan_height(wdb, w->best_block_height);
     zcl_mutex_unlock(&w->cs);
 
     return true;

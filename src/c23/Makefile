@@ -85,11 +85,14 @@ STORAGE_SRCS = \
 POLICY_SRCS = \
 	policy/fees.c
 
+METRICS_SRCS = \
+	metrics/metrics.c
+
 MINING_SRCS = \
 	mining/miner.c mining/gen.c
 
 WALLET_SRCS = \
-	wallet/keystore.c wallet/wallet.c wallet/wallet_db.c
+	wallet/keystore.c wallet/wallet.c wallet/wallet_db.c wallet/sapling_keys.c
 
 INIT_SRCS = \
 	init/init.c
@@ -98,13 +101,15 @@ ZCASH_SRCS = \
 	zcash/jubjub.c zcash/prf.c zcash/incremental_merkle_tree.c \
 	zcash/address.c zcash/note.c zcash/note_encryption.c \
 	zcash/fr.c zcash/pedersen_hash.c zcash/sapling.c zcash/bls12_381.c \
-	zcash/ff1.c zcash/zip32.c zcash/sprout.c zcash/params_init.c
+	zcash/ff1.c zcash/zip32.c zcash/sprout.c zcash/params_init.c \
+	zcash/groth16_prover.c zcash/circuit_gadgets.c zcash/sapling_circuit.c
 
 ALL_SRCS = $(CRYPTO_SRCS) $(CORE_SRCS) $(ENCODING_SRCS) $(SCRIPT_SRCS) \
 	$(CONSENSUS_SRCS) $(PRIMITIVES_SRCS) $(NET_SRCS) $(CHAIN_SRCS) \
 	$(KEYS_SRCS) $(VALIDATION_SRCS) $(SUPPORT_SRCS) $(BLOOM_SRCS) \
 	$(COINS_SRCS) $(UTIL_SRCS) $(POLICY_SRCS) $(JSON_SRCS) $(RPC_SRCS) \
-	$(STORAGE_SRCS) $(MINING_SRCS) $(WALLET_SRCS) $(INIT_SRCS) $(ZCASH_SRCS)
+	$(STORAGE_SRCS) $(METRICS_SRCS) $(MINING_SRCS) $(WALLET_SRCS) \
+	$(INIT_SRCS) $(ZCASH_SRCS)
 
 ALL_OBJS = $(ALL_SRCS:.c=.o)
 

@@ -9,8 +9,15 @@
 #include "rpc/server.h"
 
 struct wallet;
+struct main_state;
+struct wallet_db;
+struct tx_mempool;
+struct connman;
 
-void rpc_wallet_set_state(struct wallet *w);
+void rpc_wallet_set_state(struct wallet *w, struct main_state *ms,
+                          const char *datadir, struct wallet_db *wdb,
+                          struct tx_mempool *mempool,
+                          struct connman *connman);
 void register_wallet_rpc_commands(struct rpc_table *t);
 
 #endif

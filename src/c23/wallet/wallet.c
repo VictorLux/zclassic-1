@@ -11,9 +11,13 @@
 #include "core/utiltime.h"
 #include "keys/key_io.h"
 #include "script/standard.h"
+#include "storage/disk_block_io.h"
 #include "support/cleanse.h"
+#include "validation/chainstate.h"
 #include "validation/txmempool.h"
 #include "validation/check_transaction.h"
+#include "validation/sighash.h"
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -34,6 +38,7 @@ void wallet_init(struct wallet *w)
     w->min_fee = 1000;
     w->spend_zero_conf_change = true;
     w->best_block = NULL;
+    sapling_keystore_init(&w->sapling_keys);
     w->best_block_height = 0;
 }
 
@@ -544,8 +549,195 @@ bool wallet_create_transaction(struct wallet *w,
         struct pubkey spk;
         privkey_get_pubkey(&skey, &spk);
 
+        uint32_t branch_id = consensus_current_epoch_branch_id(
+            height + 1, &cp->consensus);
+        struct sighash_type ht;
+        ht.raw = SIGHASH_ALL;
+        struct precomputed_tx_data txdata;
+        precompute_tx_data(&wtx_out->tx, &txdata);
+
         struct uint256 sighash;
-        uint256_set_null(&sighash);
+        if (!signature_hash(&prev_out->script_pub_key, &wtx_out->tx,
+                            (unsigned int)i, ht, prev_out->value,
+                            branch_id, &txdata, &sighash)) {
+            memory_cleanse(skey.vch, 32);
+            zcl_mutex_unlock(&w->cs);
+            transaction_free(&wtx_out->tx);
+            *error = "Sighash computation failed";
+            return false;
+        }
+
+        unsigned char sig[SIGNATURE_SIZE + 1];
+        size_t siglen = 0;
+        if (!privkey_sign(&skey, &sighash, sig, &siglen)) {
+            memory_cleanse(skey.vch, 32);
+            zcl_mutex_unlock(&w->cs);
+            transaction_free(&wtx_out->tx);
+            *error = "Signing failed";
+            return false;
+        }
+        sig[siglen++] = 0x01;
+
+        struct script *ss = &wtx_out->tx.vin[i].script_sig;
+        ss->size = 0;
+        ss->data[ss->size++] = (unsigned char)siglen;
+        memcpy(&ss->data[ss->size], sig, siglen);
+        ss->size += siglen;
+        ss->data[ss->size++] = (unsigned char)spk.size;
+        memcpy(&ss->data[ss->size], spk.vch, spk.size);
+        ss->size += spk.size;
+
+        memory_cleanse(skey.vch, 32);
+    }
+    zcl_mutex_unlock(&w->cs);
+
+    transaction_compute_hash(&wtx_out->tx);
+    wtx_out->time_received = GetTime();
+    wtx_out->from_me = true;
+    wtx_out->used = true;
+
+    if (fee_out)
+        *fee_out = fee;
+
+    return true;
+}
+
+bool wallet_create_transaction_multi(struct wallet *w,
+                                      const struct tx_destination *dests,
+                                      const int64_t *values,
+                                      size_t num_outputs,
+                                      struct wallet_tx *wtx_out,
+                                      int64_t *fee_out,
+                                      const char **error)
+{
+    if (num_outputs == 0 || num_outputs > 256) {
+        *error = "Invalid number of outputs";
+        return false;
+    }
+
+    int64_t total_value = 0;
+    for (size_t i = 0; i < num_outputs; i++) {
+        if (values[i] <= 0) {
+            *error = "Invalid amount";
+            return false;
+        }
+        total_value += values[i];
+    }
+
+    const struct chain_params *cp = chain_params_get();
+    int64_t fee = w->default_fee;
+
+    struct coin_entry available[4096];
+    size_t num_available = 0;
+    wallet_available_coins(w, available, &num_available, 4096, true, false);
+
+    struct coin_entry selected[4096];
+    size_t num_selected = 0;
+    int64_t selected_value = 0;
+
+    if (!wallet_select_coins(w, available, num_available, total_value + fee,
+                             selected, &num_selected, 4096, &selected_value)) {
+        *error = "Insufficient funds";
+        return false;
+    }
+
+    memset(wtx_out, 0, sizeof(*wtx_out));
+    transaction_init(&wtx_out->tx);
+
+    int height = w->best_block_height;
+    int epoch = consensus_current_epoch(height, &cp->consensus);
+
+    if (epoch >= UPGRADE_SAPLING) {
+        wtx_out->tx.overwintered = true;
+        wtx_out->tx.version = SAPLING_TX_VERSION;
+        wtx_out->tx.version_group_id = SAPLING_VERSION_GROUP_ID;
+        wtx_out->tx.expiry_height = (uint32_t)(height + 20);
+    } else if (epoch >= UPGRADE_OVERWINTER) {
+        wtx_out->tx.overwintered = true;
+        wtx_out->tx.version = OVERWINTER_TX_VERSION;
+        wtx_out->tx.version_group_id = OVERWINTER_VERSION_GROUP_ID;
+        wtx_out->tx.expiry_height = (uint32_t)(height + 20);
+    }
+
+    bool need_change = selected_value > total_value + fee;
+    size_t total_outputs = num_outputs + (need_change ? 1 : 0);
+
+    if (!transaction_alloc(&wtx_out->tx, num_selected, total_outputs)) {
+        *error = "Transaction allocation failed";
+        return false;
+    }
+
+    for (size_t i = 0; i < num_outputs; i++) {
+        struct script dest_script;
+        script_for_destination(&dest_script, &dests[i]);
+        wtx_out->tx.vout[i].value = values[i];
+        wtx_out->tx.vout[i].script_pub_key = dest_script;
+    }
+
+    if (need_change) {
+        int64_t change = selected_value - total_value - fee;
+        struct pubkey change_pk;
+        if (!wallet_get_key_from_pool(w, &change_pk)) {
+            transaction_free(&wtx_out->tx);
+            *error = "Cannot get change address";
+            return false;
+        }
+        struct key_id change_kid = pubkey_get_id(&change_pk);
+        struct tx_destination change_dest;
+        change_dest.type = DEST_KEY_ID;
+        change_dest.id.key = change_kid;
+        struct script change_script;
+        script_for_destination(&change_script, &change_dest);
+        wtx_out->tx.vout[num_outputs].value = change;
+        wtx_out->tx.vout[num_outputs].script_pub_key = change_script;
+    }
+
+    for (size_t i = 0; i < num_selected; i++) {
+        wtx_out->tx.vin[i].prevout.hash = selected[i].wtx->tx.hash;
+        wtx_out->tx.vin[i].prevout.n = selected[i].i;
+        wtx_out->tx.vin[i].sequence = UINT32_MAX - 1;
+    }
+
+    zcl_mutex_lock(&w->cs);
+    for (size_t i = 0; i < num_selected; i++) {
+        struct privkey skey;
+        const struct tx_out *prev_out =
+            &selected[i].wtx->tx.vout[selected[i].i];
+        struct tx_destination prev_dest;
+        if (!script_extract_destination(&prev_out->script_pub_key, &prev_dest)) {
+            zcl_mutex_unlock(&w->cs);
+            transaction_free(&wtx_out->tx);
+            *error = "Cannot determine input destination";
+            return false;
+        }
+
+        if (!keystore_get_key(&w->keystore, &prev_dest.id.key, &skey)) {
+            zcl_mutex_unlock(&w->cs);
+            transaction_free(&wtx_out->tx);
+            *error = "Private key not available";
+            return false;
+        }
+
+        struct pubkey spk;
+        privkey_get_pubkey(&skey, &spk);
+
+        uint32_t branch_id = consensus_current_epoch_branch_id(
+            height + 1, &cp->consensus);
+        struct sighash_type ht;
+        ht.raw = SIGHASH_ALL;
+        struct precomputed_tx_data txdata;
+        precompute_tx_data(&wtx_out->tx, &txdata);
+
+        struct uint256 sighash;
+        if (!signature_hash(&prev_out->script_pub_key, &wtx_out->tx,
+                            (unsigned int)i, ht, prev_out->value,
+                            branch_id, &txdata, &sighash)) {
+            memory_cleanse(skey.vch, 32);
+            zcl_mutex_unlock(&w->cs);
+            transaction_free(&wtx_out->tx);
+            *error = "Sighash computation failed";
+            return false;
+        }
 
         unsigned char sig[SIGNATURE_SIZE + 1];
         size_t siglen = 0;
@@ -651,7 +843,8 @@ void wallet_sync_transaction(struct wallet *w, const struct transaction *tx,
     if (pindex) {
         if (pindex->phashBlock)
             wtx.hash_block = *pindex->phashBlock;
-        wtx.confirms = w->best_block_height - pindex->nHeight + 1;
+        int depth = w->best_block_height - pindex->nHeight + 1;
+        wtx.confirms = depth > 0 ? depth : 1;
     }
 
     for (size_t i = 0; i < tx->num_vin; i++) {
@@ -705,4 +898,74 @@ int wallet_tx_get_blocks_to_maturity(const struct wallet_tx *wtx)
         return 0;
     int maturity = 100 - wtx->confirms;
     return maturity > 0 ? maturity : 0;
+}
+
+int wallet_scan_block(struct wallet *w, const struct block_index *pindex,
+                      const char *datadir)
+{
+    if (!pindex || !(pindex->nStatus & BLOCK_HAVE_DATA))
+        return 0;
+
+    struct block b;
+    block_init(&b);
+    if (!read_block_from_disk_index(&b, pindex, datadir)) {
+        block_free(&b);
+        return 0;
+    }
+
+    int found = 0;
+    for (size_t i = 0; i < b.num_vtx; i++) {
+        wallet_sync_transaction(w, &b.vtx[i], pindex);
+        for (size_t j = 0; j < b.vtx[i].num_vout; j++) {
+            if (wallet_is_mine(w, &b.vtx[i].vout[j]))
+                found++;
+        }
+    }
+
+    block_free(&b);
+    return found;
+}
+
+int wallet_rescan(struct wallet *w, const struct active_chain *chain,
+                  int start_height, int stop_height, const char *datadir)
+{
+    int tip = active_chain_height(chain);
+    if (stop_height < 0 || stop_height > tip)
+        stop_height = tip;
+    if (start_height < 0)
+        start_height = 0;
+    if (start_height > stop_height)
+        return 0;
+
+    printf("Rescanning blocks %d to %d...\n", start_height, stop_height);
+    int64_t t_start = GetTime();
+    int total_found = 0;
+    int last_log = start_height;
+
+    for (int h = start_height; h <= stop_height; h++) {
+        struct block_index *pindex = active_chain_at(chain, h);
+        if (!pindex)
+            continue;
+
+        total_found += wallet_scan_block(w, pindex, datadir);
+
+        if (h - last_log >= 10000) {
+            printf("  rescan progress: height %d / %d (%.1f%%)\n",
+                   h, stop_height,
+                   100.0 * (h - start_height) / (stop_height - start_height + 1));
+            last_log = h;
+        }
+    }
+
+    struct block_index *final_tip = active_chain_at(chain, stop_height);
+    if (final_tip) {
+        w->best_block = final_tip;
+        w->best_block_height = stop_height;
+    }
+
+    int64_t elapsed = GetTime() - t_start;
+    printf("Rescan complete: %d blocks scanned in %"PRId64"s, %d wallet outputs found.\n",
+           stop_height - start_height + 1, elapsed, total_found);
+
+    return total_found;
 }
