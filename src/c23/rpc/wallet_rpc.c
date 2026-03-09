@@ -14,10 +14,15 @@
 #include "script/standard.h"
 #include "support/cleanse.h"
 #include "core/utiltime.h"
+#include "core/random.h"
 #include "validation/main_state.h"
+#include "validation/sighash.h"
 #include "validation/txmempool.h"
 #include "wallet/wallet_db.h"
 #include "net/connman.h"
+#include "zcash/sapling.h"
+#include "zcash/fr.h"
+#include "consensus/upgrades.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -911,6 +916,442 @@ static bool rpc_addmultisigaddress(const struct json_value *params, bool help,
     return true;
 }
 
+/* z_sendmany: send from transparent address to one or more Sapling/transparent recipients */
+static bool rpc_z_sendmany(const struct json_value *params, bool help,
+                             struct json_value *result)
+{
+    if (help || json_size(params) < 2) {
+        json_set_str(result,
+            "z_sendmany \"fromaddress\" [{\"address\":\"...\",\"amount\":...,\"memo\":\"...\"},...]\n"
+            "\nSend from a transparent or shielded address to multiple recipients.\n"
+            "Currently supports transparent → Sapling (shielding) and transparent → transparent.\n");
+        return true;
+    }
+
+    if (!g_wallet) {
+        json_set_str(result, "Wallet not available");
+        return false;
+    }
+
+    const char *from_addr = json_get_str(json_at(params, 0));
+    const struct json_value *recipients = json_at(params, 1);
+    if (!from_addr || !recipients || recipients->type != JSON_ARR || json_size(recipients) == 0) {
+        json_set_str(result, "Invalid parameters");
+        return false;
+    }
+
+    /* Check if from address is transparent (t1/t3) or shielded (zs1) */
+    bool from_is_shielded = (strncmp(from_addr, "zs1", 3) == 0);
+    if (from_is_shielded) {
+        json_set_str(result, "Shielded spends not yet implemented (need Groth16 prover)");
+        return false;
+    }
+
+    /* Verify we own the from address */
+    const struct chain_params *cp = chain_params_get();
+    size_t pk_pfx_len, sc_pfx_len;
+    const unsigned char *pk_pfx = chain_params_base58_prefix(cp, B58_PUBKEY_ADDRESS, &pk_pfx_len);
+    const unsigned char *sc_pfx = chain_params_base58_prefix(cp, B58_SCRIPT_ADDRESS, &sc_pfx_len);
+
+    struct tx_destination from_dest;
+    if (!decode_destination(from_addr, pk_pfx, pk_pfx_len, sc_pfx, sc_pfx_len, &from_dest)) {
+        json_set_str(result, "Invalid from address");
+        return false;
+    }
+
+    /* Parse recipients */
+    size_t num_recip = json_size(recipients);
+    if (num_recip > 50) {
+        json_set_str(result, "Too many recipients");
+        return false;
+    }
+
+    /* Separate into transparent and shielded outputs */
+    struct tx_destination t_dests[50];
+    int64_t t_amounts[50];
+    size_t num_t_out = 0;
+
+    uint8_t z_diversifiers[50][11];
+    uint8_t z_pk_ds[50][32];
+    int64_t z_amounts[50];
+    uint8_t z_memos[50][512];
+    bool z_has_memo[50];
+    size_t num_z_out = 0;
+    int64_t total_amount = 0;
+
+    for (size_t i = 0; i < num_recip; i++) {
+        const struct json_value *r = json_at(recipients, i);
+        if (!r || r->type != JSON_OBJ) {
+            json_set_str(result, "Invalid recipient");
+            return false;
+        }
+        const char *addr = json_get_str(json_get(r, "address"));
+        double amt = json_get_real(json_get(r, "amount"));
+        int64_t amount = (int64_t)(amt * 100000000.0 + 0.5);
+        if (!addr || amount <= 0) {
+            json_set_str(result, "Invalid recipient address or amount");
+            return false;
+        }
+        total_amount += amount;
+
+        if (strncmp(addr, "zs1", 3) == 0) {
+            /* Sapling shielded output */
+            if (!sapling_decode_payment_address(addr,
+                    z_diversifiers[num_z_out], z_pk_ds[num_z_out])) {
+                json_set_str(result, "Invalid Sapling address");
+                return false;
+            }
+            z_amounts[num_z_out] = amount;
+            /* Parse memo if present */
+            const struct json_value *memo_val = json_get(r, "memo");
+            if (memo_val && json_get_str(memo_val)) {
+                const char *memo_str = json_get_str(memo_val);
+                size_t memo_len = strlen(memo_str);
+                if (memo_len > 512) memo_len = 512;
+                memset(z_memos[num_z_out], 0xF6, 512);
+                memcpy(z_memos[num_z_out], memo_str, memo_len);
+                z_has_memo[num_z_out] = true;
+            } else {
+                z_has_memo[num_z_out] = false;
+            }
+            num_z_out++;
+        } else {
+            /* Transparent output */
+            if (!decode_destination(addr, pk_pfx, pk_pfx_len,
+                                     sc_pfx, sc_pfx_len, &t_dests[num_t_out])) {
+                json_set_str(result, "Invalid transparent address");
+                return false;
+            }
+            t_amounts[num_t_out] = amount;
+            num_t_out++;
+        }
+    }
+
+    /* Select coins — filter to only UTXOs from the specified from address */
+    int64_t fee = g_wallet->default_fee;
+    struct coin_entry available[4096];
+    size_t num_available = 0;
+    wallet_available_coins(g_wallet, available, &num_available, 4096, true, false);
+
+    /* Filter to coins matching the from address */
+    struct coin_entry filtered[4096];
+    size_t num_filtered = 0;
+    for (size_t i = 0; i < num_available; i++) {
+        const struct tx_out *out = &available[i].wtx->tx.vout[available[i].i];
+        struct tx_destination coin_dest;
+        if (!script_extract_destination(&out->script_pub_key, &coin_dest))
+            continue;
+        /* Check if this coin's address matches from_dest */
+        bool match = false;
+        if (coin_dest.type == from_dest.type) {
+            if (coin_dest.type == DEST_KEY_ID)
+                match = (memcmp(coin_dest.id.key.id.data, from_dest.id.key.id.data, 20) == 0);
+            else if (coin_dest.type == DEST_SCRIPT_ID)
+                match = (memcmp(coin_dest.id.script.hash.data, from_dest.id.script.hash.data, 20) == 0);
+        }
+        if (match)
+            filtered[num_filtered++] = available[i];
+    }
+
+    struct coin_entry selected[4096];
+    size_t num_selected = 0;
+    int64_t selected_value = 0;
+
+    if (!wallet_select_coins(g_wallet, filtered, num_filtered,
+                              total_amount + fee, selected, &num_selected,
+                              4096, &selected_value)) {
+        json_set_str(result, "Insufficient funds from specified address");
+        return false;
+    }
+
+    /* Build transaction */
+    struct wallet_tx wtx;
+    memset(&wtx, 0, sizeof(wtx));
+    transaction_init(&wtx.tx);
+
+    int height = g_wallet->best_block_height;
+    wtx.tx.overwintered = true;
+    wtx.tx.version = SAPLING_TX_VERSION;
+    wtx.tx.version_group_id = SAPLING_VERSION_GROUP_ID;
+    wtx.tx.expiry_height = (uint32_t)(height + 20);
+
+    /* Transparent outputs: recipients + change */
+    int64_t change = selected_value - total_amount - fee;
+    size_t total_t_out = num_t_out + (change > 0 ? 1 : 0);
+
+    if (!transaction_alloc(&wtx.tx, num_selected, total_t_out)) {
+        json_set_str(result, "Transaction allocation failed");
+        return false;
+    }
+
+    /* Fill transparent outputs */
+    for (size_t i = 0; i < num_t_out; i++) {
+        struct script dest_script;
+        script_for_destination(&dest_script, &t_dests[i]);
+        wtx.tx.vout[i].value = t_amounts[i];
+        wtx.tx.vout[i].script_pub_key = dest_script;
+    }
+
+    /* Change output */
+    if (change > 0) {
+        struct pubkey change_pk;
+        if (!wallet_get_key_from_pool(g_wallet, &change_pk)) {
+            transaction_free(&wtx.tx);
+            json_set_str(result, "Cannot get change address");
+            return false;
+        }
+        struct key_id change_kid = pubkey_get_id(&change_pk);
+        struct tx_destination change_dest;
+        change_dest.type = DEST_KEY_ID;
+        change_dest.id.key = change_kid;
+        struct script change_script;
+        script_for_destination(&change_script, &change_dest);
+        wtx.tx.vout[num_t_out].value = change;
+        wtx.tx.vout[num_t_out].script_pub_key = change_script;
+    }
+
+    /* value_balance = -(sum of shielded outputs) for shielding (negative = transparent→shielded) */
+    int64_t shielded_total = 0;
+    for (size_t i = 0; i < num_z_out; i++)
+        shielded_total += z_amounts[i];
+    wtx.tx.value_balance = -shielded_total;
+
+    /* Build Sapling output descriptions */
+    if (num_z_out > 0) {
+        wtx.tx.v_shielded_output = calloc(num_z_out, sizeof(struct output_description));
+        if (!wtx.tx.v_shielded_output) {
+            transaction_free(&wtx.tx);
+            json_set_str(result, "Allocation failed");
+            return false;
+        }
+        wtx.tx.num_shielded_output = num_z_out;
+
+        /* Get OVK from sapling keystore */
+        uint8_t ovk[32];
+        if (g_wallet->sapling_keys.num_keys > 0)
+            memcpy(ovk, g_wallet->sapling_keys.keys[0].xfvk.fvk.ovk, 32);
+        else
+            GetRandBytes(ovk, 32);
+
+        /* Accumulate bsk for binding signature */
+        struct fs bsk_fs;
+        fs_zero(&bsk_fs);
+
+        for (size_t i = 0; i < num_z_out; i++) {
+            struct output_description *od = &wtx.tx.v_shielded_output[i];
+            uint8_t rcv[32];
+
+            if (!sapling_build_output_description(
+                    ovk, z_diversifiers[i], z_pk_ds[i],
+                    (uint64_t)z_amounts[i],
+                    z_has_memo[i] ? z_memos[i] : NULL,
+                    od->cv.data, od->cm.data, od->ephemeral_key.data,
+                    od->enc_ciphertext, od->out_ciphertext, od->zkproof,
+                    rcv)) {
+                transaction_free(&wtx.tx);
+                json_set_str(result, "Failed to build Sapling output");
+                return false;
+            }
+
+            /* bsk -= rcv (outputs subtract from binding key) */
+            struct fs rcv_fs;
+            fs_from_bytes(&rcv_fs, rcv);
+            struct fs neg_rcv;
+            fs_neg(&neg_rcv, &rcv_fs);
+            struct fs new_bsk;
+            fs_add(&new_bsk, &bsk_fs, &neg_rcv);
+            bsk_fs = new_bsk;
+            memset(rcv, 0, 32);
+        }
+
+        /* Fill transparent inputs first (needed for sighash) */
+        for (size_t i = 0; i < num_selected; i++) {
+            wtx.tx.vin[i].prevout.hash = selected[i].wtx->tx.hash;
+            wtx.tx.vin[i].prevout.n = selected[i].i;
+            wtx.tx.vin[i].sequence = UINT32_MAX - 1;
+        }
+
+        /* Sign transparent inputs */
+        zcl_mutex_lock(&g_wallet->cs);
+        for (size_t i = 0; i < num_selected; i++) {
+            struct privkey skey;
+            const struct tx_out *prev_out = &selected[i].wtx->tx.vout[selected[i].i];
+            struct tx_destination prev_dest;
+            if (!script_extract_destination(&prev_out->script_pub_key, &prev_dest)) {
+                zcl_mutex_unlock(&g_wallet->cs);
+                transaction_free(&wtx.tx);
+                json_set_str(result, "Cannot determine input destination");
+                return false;
+            }
+            if (!keystore_get_key(&g_wallet->keystore, &prev_dest.id.key, &skey)) {
+                zcl_mutex_unlock(&g_wallet->cs);
+                transaction_free(&wtx.tx);
+                json_set_str(result, "Private key not available");
+                return false;
+            }
+
+            struct pubkey spk;
+            privkey_get_pubkey(&skey, &spk);
+
+            uint32_t branch_id = consensus_current_epoch_branch_id(height + 1, &cp->consensus);
+            struct sighash_type ht;
+            ht.raw = SIGHASH_ALL;
+            struct precomputed_tx_data txdata;
+            precompute_tx_data(&wtx.tx, &txdata);
+
+            struct uint256 sighash;
+            if (!signature_hash(&prev_out->script_pub_key, &wtx.tx,
+                                (unsigned int)i, ht, prev_out->value,
+                                branch_id, &txdata, &sighash)) {
+                memory_cleanse(skey.vch, 32);
+                zcl_mutex_unlock(&g_wallet->cs);
+                transaction_free(&wtx.tx);
+                json_set_str(result, "Sighash computation failed");
+                return false;
+            }
+
+            unsigned char sig[SIGNATURE_SIZE + 1];
+            size_t siglen = 0;
+            if (!privkey_sign(&skey, &sighash, sig, &siglen)) {
+                memory_cleanse(skey.vch, 32);
+                zcl_mutex_unlock(&g_wallet->cs);
+                transaction_free(&wtx.tx);
+                json_set_str(result, "Signing failed");
+                return false;
+            }
+            sig[siglen++] = 0x01;
+
+            struct script *ss = &wtx.tx.vin[i].script_sig;
+            ss->size = 0;
+            ss->data[ss->size++] = (unsigned char)siglen;
+            memcpy(&ss->data[ss->size], sig, siglen);
+            ss->size += siglen;
+            ss->data[ss->size++] = (unsigned char)spk.size;
+            memcpy(&ss->data[ss->size], spk.vch, spk.size);
+            ss->size += spk.size;
+
+            memory_cleanse(skey.vch, 32);
+        }
+        zcl_mutex_unlock(&g_wallet->cs);
+
+        /* Compute binding signature */
+        /* sighash for binding sig = BLAKE2b("ZcashTxHash_", ...) over the whole tx */
+        transaction_compute_hash(&wtx.tx);
+
+        /* For the binding sig, we need the "sighash" which is the txid hash.
+         * In Zcash, the sighash for binding sig uses SIGHASH_ALL with no script. */
+        uint32_t branch_id = consensus_current_epoch_branch_id(height + 1, &cp->consensus);
+        struct sighash_type ht;
+        ht.raw = SIGHASH_ALL;
+        struct precomputed_tx_data txdata;
+        precompute_tx_data(&wtx.tx, &txdata);
+
+        /* Compute sighash with empty script for binding sig */
+        struct script empty_script;
+        empty_script.size = 0;
+        struct uint256 binding_sighash;
+        signature_hash(&empty_script, &wtx.tx, NOT_AN_INPUT, ht, 0,
+                       branch_id, &txdata, &binding_sighash);
+
+        uint8_t bsk_bytes[32];
+        fs_to_bytes(bsk_bytes, &bsk_fs);
+
+        if (!sapling_create_binding_sig(bsk_bytes, binding_sighash.data,
+                                         wtx.tx.binding_sig)) {
+            memset(bsk_bytes, 0, 32);
+            transaction_free(&wtx.tx);
+            json_set_str(result, "Binding signature failed");
+            return false;
+        }
+        memset(bsk_bytes, 0, 32);
+        memset(&bsk_fs, 0, sizeof(bsk_fs));
+    } else {
+        /* No shielded outputs — just transparent */
+        for (size_t i = 0; i < num_selected; i++) {
+            wtx.tx.vin[i].prevout.hash = selected[i].wtx->tx.hash;
+            wtx.tx.vin[i].prevout.n = selected[i].i;
+            wtx.tx.vin[i].sequence = UINT32_MAX - 1;
+        }
+
+        zcl_mutex_lock(&g_wallet->cs);
+        for (size_t i = 0; i < num_selected; i++) {
+            struct privkey skey;
+            const struct tx_out *prev_out = &selected[i].wtx->tx.vout[selected[i].i];
+            struct tx_destination prev_dest;
+            if (!script_extract_destination(&prev_out->script_pub_key, &prev_dest)) {
+                zcl_mutex_unlock(&g_wallet->cs);
+                transaction_free(&wtx.tx);
+                json_set_str(result, "Cannot determine input destination");
+                return false;
+            }
+            if (!keystore_get_key(&g_wallet->keystore, &prev_dest.id.key, &skey)) {
+                zcl_mutex_unlock(&g_wallet->cs);
+                transaction_free(&wtx.tx);
+                json_set_str(result, "Private key not available");
+                return false;
+            }
+
+            struct pubkey spk;
+            privkey_get_pubkey(&skey, &spk);
+            uint32_t branch_id = consensus_current_epoch_branch_id(height + 1, &cp->consensus);
+            struct sighash_type ht;
+            ht.raw = SIGHASH_ALL;
+            struct precomputed_tx_data txdata;
+            precompute_tx_data(&wtx.tx, &txdata);
+
+            struct uint256 sighash;
+            signature_hash(&prev_out->script_pub_key, &wtx.tx,
+                           (unsigned int)i, ht, prev_out->value,
+                           branch_id, &txdata, &sighash);
+
+            unsigned char sig[SIGNATURE_SIZE + 1];
+            size_t siglen = 0;
+            if (!privkey_sign(&skey, &sighash, sig, &siglen)) {
+                memory_cleanse(skey.vch, 32);
+                zcl_mutex_unlock(&g_wallet->cs);
+                transaction_free(&wtx.tx);
+                json_set_str(result, "Signing failed");
+                return false;
+            }
+            sig[siglen++] = 0x01;
+
+            struct script *ss = &wtx.tx.vin[i].script_sig;
+            ss->size = 0;
+            ss->data[ss->size++] = (unsigned char)siglen;
+            memcpy(&ss->data[ss->size], sig, siglen);
+            ss->size += siglen;
+            ss->data[ss->size++] = (unsigned char)spk.size;
+            memcpy(&ss->data[ss->size], spk.vch, spk.size);
+            ss->size += spk.size;
+
+            memory_cleanse(skey.vch, 32);
+        }
+        zcl_mutex_unlock(&g_wallet->cs);
+    }
+
+    transaction_compute_hash(&wtx.tx);
+    wtx.time_received = GetTime();
+    wtx.from_me = true;
+    wtx.used = true;
+
+    if (!wallet_commit_transaction(g_wallet, &wtx, g_mempool)) {
+        json_set_str(result, "Error committing transaction");
+        transaction_free(&wtx.tx);
+        return false;
+    }
+
+    if (g_connman_ptr)
+        connman_relay_transaction(g_connman_ptr, &wtx.tx.hash);
+
+    if (g_wallet_db)
+        wallet_db_flush(g_wallet_db, g_wallet);
+
+    char txid[65];
+    uint256_get_hex(&wtx.tx.hash, txid);
+    json_set_str(result, txid);
+    return true;
+}
+
 void register_wallet_rpc_commands(struct rpc_table *t)
 {
     struct rpc_command cmds[] = {
@@ -930,6 +1371,7 @@ void register_wallet_rpc_commands(struct rpc_table *t)
         { "wallet", "createmultisig",      rpc_createmultisig,       false },
         { "wallet", "z_getnewaddress",     rpc_z_getnewaddress,      false },
         { "wallet", "z_listaddresses",     rpc_z_listaddresses,      false },
+        { "wallet", "z_sendmany",          rpc_z_sendmany,           false },
         { "wallet", "addmultisigaddress", rpc_addmultisigaddress,   false },
     };
 
