@@ -17,6 +17,8 @@
 #include "validation/txmempool.h"
 #include "validation/check_transaction.h"
 #include "validation/sighash.h"
+#include "zcash/note_encryption.h"
+#include "zcash/sapling.h"
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -40,6 +42,9 @@ void wallet_init(struct wallet *w)
     w->best_block = NULL;
     sapling_keystore_init(&w->sapling_keys);
     w->best_block_height = 0;
+    w->sapling_notes = NULL;
+    w->num_sapling_notes = 0;
+    w->sapling_notes_cap = 0;
 }
 
 void wallet_free(struct wallet *w)
@@ -51,6 +56,10 @@ void wallet_free(struct wallet *w)
         }
     }
     w->num_wallet_tx = 0;
+    free(w->sapling_notes);
+    w->sapling_notes = NULL;
+    w->num_sapling_notes = 0;
+    w->sapling_notes_cap = 0;
     keystore_free(&w->keystore);
     zcl_mutex_destroy(&w->cs);
 }
@@ -920,6 +929,17 @@ int wallet_scan_block(struct wallet *w, const struct block_index *pindex,
             if (wallet_is_mine(w, &b.vtx[i].vout[j]))
                 found++;
         }
+        /* Trial-decrypt Sapling outputs */
+        if (b.vtx[i].num_shielded_output > 0 && w->sapling_keys.num_keys > 0) {
+            struct uint256 txid;
+            transaction_compute_hash((struct transaction *)&b.vtx[i]);
+            txid = b.vtx[i].hash;
+            int z_found = wallet_try_sapling_decrypt(w, &b.vtx[i], &txid);
+            found += z_found;
+        }
+        /* Mark spent nullifiers */
+        if (b.vtx[i].num_shielded_spend > 0)
+            wallet_mark_sapling_nullifiers_spent(w, &b.vtx[i]);
     }
 
     block_free(&b);
@@ -968,4 +988,159 @@ int wallet_rescan(struct wallet *w, const struct active_chain *chain,
            stop_height - start_height + 1, elapsed, total_found);
 
     return total_found;
+}
+
+/* --- Sapling trial decryption --- */
+
+static bool wallet_add_sapling_note(struct wallet *w,
+                                     const struct sapling_received_note *note)
+{
+    /* Check for duplicate */
+    for (size_t i = 0; i < w->num_sapling_notes; i++) {
+        if (uint256_eq(&w->sapling_notes[i].txid, &note->txid) &&
+            w->sapling_notes[i].output_index == note->output_index)
+            return false;
+    }
+
+    if (w->num_sapling_notes >= w->sapling_notes_cap) {
+        size_t new_cap = w->sapling_notes_cap == 0 ? 64 : w->sapling_notes_cap * 2;
+        struct sapling_received_note *new_buf = realloc(
+            w->sapling_notes, new_cap * sizeof(*new_buf));
+        if (!new_buf)
+            return false;
+        w->sapling_notes = new_buf;
+        w->sapling_notes_cap = new_cap;
+    }
+    w->sapling_notes[w->num_sapling_notes] = *note;
+    w->sapling_notes[w->num_sapling_notes].used = true;
+    w->num_sapling_notes++;
+    return true;
+}
+
+int wallet_try_sapling_decrypt(struct wallet *w,
+                                const struct transaction *tx,
+                                const struct uint256 *txid)
+{
+    int found = 0;
+
+    for (size_t oi = 0; oi < tx->num_shielded_output; oi++) {
+        const struct output_description *od = &tx->v_shielded_output[oi];
+
+        for (size_t ki = 0; ki < w->sapling_keys.num_keys; ki++) {
+            const struct sapling_key_entry *ke = &w->sapling_keys.keys[ki];
+            if (!ke->used)
+                continue;
+
+            /* Key agreement: dhsecret = [ivk] * epk */
+            uint8_t dhsecret[32];
+            if (!sapling_ka_agree(od->ephemeral_key.data, ke->ivk, dhsecret))
+                continue;
+
+            /* KDF */
+            uint8_t dec_key[32];
+            if (!sapling_kdf(dec_key, dhsecret, od->ephemeral_key.data)) {
+                memory_cleanse(dhsecret, 32);
+                continue;
+            }
+            memory_cleanse(dhsecret, 32);
+
+            /* Try decrypt */
+            uint8_t plaintext[ZC_SAPLING_ENCPLAINTEXT_SIZE];
+            if (!sapling_note_decrypt(dec_key, od->enc_ciphertext,
+                                       ZC_SAPLING_ENCCIPHERTEXT_SIZE,
+                                       plaintext)) {
+                memory_cleanse(dec_key, 32);
+                continue;
+            }
+            memory_cleanse(dec_key, 32);
+
+            /* Parse plaintext: leadbyte(1) || d(11) || v(8) || rcm(32) || memo(512) */
+            if (plaintext[0] != 0x01)
+                continue;
+
+            uint8_t d[11];
+            memcpy(d, plaintext + 1, 11);
+            uint64_t value = 0;
+            for (int b = 0; b < 8; b++)
+                value |= ((uint64_t)plaintext[12 + b]) << (8 * b);
+            uint8_t rcm[32];
+            memcpy(rcm, plaintext + 20, 32);
+
+            /* Derive pk_d from ivk and decrypted diversifier to verify */
+            uint8_t pk_d[32];
+            if (!sapling_ivk_to_pkd(ke->ivk, d, pk_d))
+                continue;
+
+            /* Recompute cm and verify against output_description.cm */
+            uint8_t cm[32];
+            if (!sapling_compute_cm(d, pk_d, value, rcm, cm))
+                continue;
+
+            if (memcmp(cm, od->cm.data, 32) != 0)
+                continue;
+
+            /* Compute nullifier for spend detection */
+            uint8_t ak[32], nk[32];
+            sapling_ask_to_ak(ke->xsk.expsk.ask, ak);
+            sapling_nsk_to_nk(ke->xsk.expsk.nsk, nk);
+
+            struct sapling_received_note note = {0};
+            note.txid = *txid;
+            note.output_index = (uint32_t)oi;
+            memcpy(note.diversifier, d, 11);
+            memcpy(note.pk_d, pk_d, 32);
+            note.value = value;
+            memcpy(note.rcm, rcm, 32);
+            memcpy(note.memo, plaintext + 52, 512);
+            memcpy(note.ivk, ke->ivk, 32);
+            memcpy(note.cm, cm, 32);
+
+            /* nullifier needs note position (merkle tree index) — use 0 for now */
+            sapling_compute_nf(d, pk_d, value, rcm, ak, nk, 0, note.nf);
+
+            note.spent = false;
+
+            if (wallet_add_sapling_note(w, &note))
+                found++;
+
+            memory_cleanse(plaintext, sizeof(plaintext));
+            break; /* This ivk matched, move to next output */
+        }
+    }
+    return found;
+}
+
+bool wallet_sapling_nullifier_is_spent(const struct wallet *w,
+                                        const uint8_t nf[32])
+{
+    for (size_t i = 0; i < w->num_sapling_notes; i++) {
+        if (w->sapling_notes[i].used && w->sapling_notes[i].spent &&
+            memcmp(w->sapling_notes[i].nf, nf, 32) == 0)
+            return true;
+    }
+    return false;
+}
+
+void wallet_mark_sapling_nullifiers_spent(struct wallet *w,
+                                           const struct transaction *tx)
+{
+    for (size_t si = 0; si < tx->num_shielded_spend; si++) {
+        const uint8_t *nf = tx->v_shielded_spend[si].nullifier.data;
+        for (size_t ni = 0; ni < w->num_sapling_notes; ni++) {
+            if (w->sapling_notes[ni].used && !w->sapling_notes[ni].spent &&
+                memcmp(w->sapling_notes[ni].nf, nf, 32) == 0) {
+                w->sapling_notes[ni].spent = true;
+            }
+        }
+    }
+}
+
+int64_t wallet_get_sapling_balance(const struct wallet *w)
+{
+    int64_t balance = 0;
+    for (size_t i = 0; i < w->num_sapling_notes; i++) {
+        if (w->sapling_notes[i].used && !w->sapling_notes[i].spent)
+            balance += (int64_t)w->sapling_notes[i].value;
+    }
+    return balance;
 }

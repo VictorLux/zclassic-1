@@ -916,6 +916,148 @@ static bool rpc_addmultisigaddress(const struct json_value *params, bool help,
     return true;
 }
 
+/* z_getbalance: get balance for a transparent or Sapling address */
+static bool rpc_z_getbalance(const struct json_value *params, bool help,
+                              struct json_value *result)
+{
+    if (help || json_size(params) < 1) {
+        json_set_str(result,
+            "z_getbalance \"address\" ( minconf )\n"
+            "\nReturns the balance for a taddr or zaddr.\n");
+        return true;
+    }
+
+    const char *addr_str = json_get_str(json_at(params, 0));
+    if (!addr_str) {
+        json_set_str(result, "Missing address parameter");
+        return false;
+    }
+
+    int minconf = 1;
+    if (json_size(params) > 1)
+        minconf = (int)json_param_int(json_at(params, 1));
+
+    /* Check if Sapling address */
+    uint8_t z_d[11], z_pkd[32];
+    if (sapling_decode_payment_address(addr_str, z_d, z_pkd)) {
+        int64_t balance = 0;
+        for (size_t i = 0; i < g_wallet->num_sapling_notes; i++) {
+            const struct sapling_received_note *n = &g_wallet->sapling_notes[i];
+            if (!n->used || n->spent)
+                continue;
+            if (memcmp(n->diversifier, z_d, 11) == 0 &&
+                memcmp(n->pk_d, z_pkd, 32) == 0) {
+                if (n->confirms >= minconf)
+                    balance += (int64_t)n->value;
+            }
+        }
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%.8f", (double)balance / 100000000.0);
+        json_set_str(result, buf);
+        return true;
+    }
+
+    /* Transparent address — sum UTXOs */
+    struct tx_destination dest;
+    const struct chain_params *cp = chain_params_get();
+    size_t pk_pfx_len, sc_pfx_len;
+    const unsigned char *pk_pfx = chain_params_base58_prefix(
+        cp, B58_PUBKEY_ADDRESS, &pk_pfx_len);
+    const unsigned char *sc_pfx = chain_params_base58_prefix(
+        cp, B58_SCRIPT_ADDRESS, &sc_pfx_len);
+    if (!decode_destination(addr_str, pk_pfx, pk_pfx_len,
+                             sc_pfx, sc_pfx_len, &dest)) {
+        json_set_str(result, "Invalid address");
+        return false;
+    }
+
+    int64_t balance = 0;
+    struct coin_entry coins[4096];
+    size_t num_coins = 0;
+    wallet_available_coins(g_wallet, coins, &num_coins, 4096,
+                            minconf > 0, false);
+
+    struct script addr_script;
+    addr_script.size = 0;
+    script_for_destination(&addr_script, &dest);
+
+    for (size_t i = 0; i < num_coins; i++) {
+        const struct tx_out *out = &coins[i].wtx->tx.vout[coins[i].i];
+        if (out->script_pub_key.size == addr_script.size &&
+            memcmp(out->script_pub_key.data, addr_script.data,
+                   addr_script.size) == 0) {
+            if (coins[i].depth >= minconf)
+                balance += out->value;
+        }
+    }
+
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%.8f", (double)balance / 100000000.0);
+    json_set_str(result, buf);
+    return true;
+}
+
+/* z_listunspent: list unspent Sapling notes */
+static bool rpc_z_listunspent(const struct json_value *params, bool help,
+                               struct json_value *result)
+{
+    if (help) {
+        json_set_str(result,
+            "z_listunspent ( minconf maxconf )\n"
+            "\nReturns list of unspent shielded notes.\n");
+        return true;
+    }
+
+    int minconf = 0;
+    if (json_size(params) > 0)
+        minconf = (int)json_param_int(json_at(params, 0));
+
+    json_set_array(result);
+    for (size_t i = 0; i < g_wallet->num_sapling_notes; i++) {
+        const struct sapling_received_note *n = &g_wallet->sapling_notes[i];
+        if (!n->used || n->spent)
+            continue;
+        if (n->confirms < minconf)
+            continue;
+
+        struct json_value entry;
+        json_set_object(&entry);
+
+        char txid_hex[65];
+        uint256_get_hex(&n->txid, txid_hex);
+        json_push_kv_str(&entry, "txid", txid_hex);
+        json_push_kv_int(&entry, "outindex", n->output_index);
+
+        /* Encode address */
+        char z_addr[128];
+        sapling_encode_payment_address(n->diversifier, n->pk_d,
+                                        "zs", z_addr, sizeof(z_addr));
+        json_push_kv_str(&entry, "address", z_addr);
+
+        char amount_buf[32];
+        snprintf(amount_buf, sizeof(amount_buf), "%.8f",
+                 (double)n->value / 100000000.0);
+        json_push_kv_str(&entry, "amount", amount_buf);
+
+        /* Memo (show if non-default) */
+        bool has_memo = false;
+        for (int j = 0; j < 512 && !has_memo; j++) {
+            if (n->memo[j] != 0xf6 && n->memo[j] != 0x00)
+                has_memo = true;
+        }
+        if (has_memo) {
+            char memo_hex[1025];
+            for (int j = 0; j < 512; j++)
+                snprintf(memo_hex + j * 2, 3, "%02x", n->memo[j]);
+            json_push_kv_str(&entry, "memo", memo_hex);
+        }
+
+        json_push_kv_int(&entry, "confirmations", n->confirms);
+        json_push_back(result, &entry);
+    }
+    return true;
+}
+
 /* z_sendmany: send from transparent address to one or more Sapling/transparent recipients */
 static bool rpc_z_sendmany(const struct json_value *params, bool help,
                              struct json_value *result)
@@ -1372,6 +1514,8 @@ void register_wallet_rpc_commands(struct rpc_table *t)
         { "wallet", "z_getnewaddress",     rpc_z_getnewaddress,      false },
         { "wallet", "z_listaddresses",     rpc_z_listaddresses,      false },
         { "wallet", "z_sendmany",          rpc_z_sendmany,           false },
+        { "wallet", "z_getbalance",        rpc_z_getbalance,         false },
+        { "wallet", "z_listunspent",       rpc_z_listunspent,        false },
         { "wallet", "addmultisigaddress", rpc_addmultisigaddress,   false },
     };
 

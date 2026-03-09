@@ -56,6 +56,24 @@ struct wallet_tx {
     bool used;
 };
 
+struct sapling_received_note {
+    struct uint256 txid;
+    uint32_t output_index;
+    uint8_t diversifier[11];
+    uint8_t pk_d[32];
+    uint64_t value;
+    uint8_t rcm[32];
+    uint8_t memo[512];
+    uint8_t ivk[32];       /* which ivk decrypted this note */
+    uint8_t cm[32];        /* note commitment (for merkle tree) */
+    uint8_t nf[32];        /* nullifier (to detect spends) */
+    int confirms;
+    bool spent;
+    bool used;
+};
+
+#define MAX_SAPLING_NOTES 16384
+
 struct coin_entry {
     const struct wallet_tx *wtx;
     unsigned int i;
@@ -90,6 +108,10 @@ struct wallet {
     int best_block_height;
 
     struct sapling_keystore sapling_keys;
+
+    struct sapling_received_note *sapling_notes;
+    size_t num_sapling_notes;
+    size_t sapling_notes_cap;
 };
 
 void wallet_init(struct wallet *w);
@@ -161,5 +183,16 @@ int wallet_rescan(struct wallet *w, const struct active_chain *chain,
 int wallet_tx_get_depth_in_main_chain(const struct wallet *w,
                                         const struct wallet_tx *wtx);
 int wallet_tx_get_blocks_to_maturity(const struct wallet_tx *wtx);
+
+/* Sapling note trial decryption and balance */
+struct output_description;
+int wallet_try_sapling_decrypt(struct wallet *w,
+                                const struct transaction *tx,
+                                const struct uint256 *txid);
+bool wallet_sapling_nullifier_is_spent(const struct wallet *w,
+                                        const uint8_t nf[32]);
+void wallet_mark_sapling_nullifiers_spent(struct wallet *w,
+                                           const struct transaction *tx);
+int64_t wallet_get_sapling_balance(const struct wallet *w);
 
 #endif
