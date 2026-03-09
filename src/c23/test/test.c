@@ -138,6 +138,26 @@ static int check_hex(const unsigned char *data, size_t len, const char *expected
     return 0;
 }
 
+/* Parse hex string to bytes in reversed order (big-endian display → LE internal) */
+static void test_hex_to_bytes_rev(const char *hex, uint8_t *out, int len)
+{
+    for (int i = 0; i < len; i++) {
+        unsigned int b;
+        sscanf(hex + 2*i, "%02x", &b);
+        out[len - 1 - i] = (uint8_t)b;
+    }
+}
+
+/* Parse hex string to bytes in forward order (LE hex → LE bytes) */
+static void test_hex_to_bytes(const char *hex, uint8_t *out, int len)
+{
+    for (int i = 0; i < len; i++) {
+        unsigned int b;
+        sscanf(hex + 2*i, "%02x", &b);
+        out[i] = (uint8_t)b;
+    }
+}
+
 int main(void)
 {
     int failures = 0;
@@ -6588,6 +6608,80 @@ int main(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    /* --- Sapling incremental merkle tree: 16 commitments, verify root after each --- */
+    /* C++ test uses SaplingTestingMerkleTree (depth=4), NOT production depth=32.
+     * Hex values are raw serialized bytes (C++ ParseHex), parsed with uint256_set_hex
+     * which reverses bytes — matching C++ uint256S convention. */
+    printf("sapling merkle tree 16 commitments (depth=4)... ");
+    {
+        static const char *commit_hex[16] = {
+            "556f3af94225d46b1ef652abc9005dee873b2e245eef07fd5be587e0f21023b0",
+            "5814b127a6c6b8f07ed03f0f6e2843ff04c9851ff824a4e5b4dad5b5f3475722",
+            "6c030e6d7460f91668cc842ceb78cdb54470469e78cd59cf903d3a6e1aa03e7c",
+            "30a0d08406b9e3693ee4c062bd1e6816f95bf14f5a13aafa1d57942c6c1d4250",
+            "12fc3e7298eb327a88abcc406fbe595e45dddd9b4209803b2e0baa3a8663ecaa",
+            "021a35cfe13d16891c1409d0f6e8865f51dd54792e5108a6f9e55e0dd44867f7",
+            "2e0bfc1e123edcb6252251611650f3667371f781b60302385c414716c75e8abc",
+            "11a5e54bf9a9b57e1c163904999ad1527f1e126c685111e18193decca2dd1ada",
+            "4674f7836089063143fc18b673b2d92f888c63380e3680385d47bcdbd5fe273a",
+            "0830165f36a69e416d51cc09cc5668692dee35d98539d3317999fdf87d8fcac7",
+            "02372c746664e0898576972ca6d0500c7c8ec42f144622349d133b06e837faf0",
+            "08c6d7dd3d2e387f7b84d6769f2b6cbe308918ab81e0f7321bd0945868d7d4e6",
+            "26e8c4061f2ad984d19f2c0a4436b9800e529069c0b0d3186d4683e83bb7eb8c",
+            "037cc2391338956026521beca5c81b541b7f2d1ead7758bf4d1588dbbcb8fa22",
+            "1cc467cfd2b504e156c9a38bc5c0e4f5ea6cc208054d2d0653a7e561ac3a3ef4",
+            "15ac4057a9a94536eca9802de65e985319e89627c9c64bc94626b712bc61363a"
+        };
+        static const char *root_hex[16] = {
+            "8c3daa300c9710bf24d2595536e7c80ff8d147faca726636d28e8683a0c27703",
+            "8611f17378eb55e8c3c3f0a5f002e2b0a7ca39442fc928322b8072d1079c213d",
+            "3db73b998d536be0e1c2ec124df8e0f383ae7b602968ff6a5276ca0695023c46",
+            "7ac2e6442fec5970e116dfa4f2ee606f395366cafb1fa7dfd6c3de3ce18c4363",
+            "6a8f11ab2a11c262e39ed4ea3825ae6c94739ccf94479cb69402c5722b034532",
+            "149595eed0b54a7e694cc8a68372525b9ae2c7b102514f527460db91eb690565",
+            "8c0432f1994a2381a7a4b5fda770336011f9e0b30784f9a5597901619c797045",
+            "e780c48d70420601f3313ff8488d7766b70c059c53aa3cda2ff1ef57ff62383c",
+            "f919f03caaed8a2c60f58c0d43838f83e670dc7e8ccd25daa04a13f3e8f45541",
+            "74f32b36629724038e71cbd6823b5a666440205a7d1a9242e95870b53d81f34a",
+            "a4af205a4e1ee02102866b23a68930ac33efda9235832f49b17fcc4939be4525",
+            "a946a42f1636045a16e65b2308e036d9da70089686c87c692e45912bd1cab772",
+            "a1db2dbac055364c1cb43cbeb49c7e2815bff855122602a2ad0fb981a91e0e39",
+            "16329b3ba4f0640f4d306532d9ea6ba0fbf0e70e44ed57d27b4277ed9cda6849",
+            "7b6523b2d9b23f72fec6234aa6a1f8fae3dba1c6a266023ea8b1826feba7a25c",
+            "5c0bea7e17bde5bee4eb795c2eec3d389a68da587b36dd687b134826ecc09308"
+        };
+
+        /* Use depth=4 tree (INCREMENTAL_MERKLE_TREE_DEPTH_TESTING) */
+        struct incremental_merkle_tree t;
+        sapling_testing_tree_init(&t);
+        bool all_ok = true;
+
+        for (int i = 0; i < 16; i++) {
+            /* C++ uses uint256S which reverses BE display hex → LE internal */
+            struct uint256 commit;
+            uint256_set_hex(&commit, commit_hex[i]);
+
+            incremental_tree_append(&t, &commit);
+
+            struct uint256 root;
+            incremental_tree_root(&t, &root);
+
+            /* C++ expect_test_vector uses ParseHex (forward raw bytes) */
+            struct uint256 expected_root;
+            test_hex_to_bytes(root_hex[i], expected_root.data, 32);
+
+            if (!uint256_eq(&root, &expected_root)) {
+                printf("FAIL at commitment %d\n", i);
+                printf("  root got: "); for(int j=0;j<32;j++) printf("%02x",root.data[j]); printf("\n");
+                printf("  root exp: "); for(int j=0;j<32;j++) printf("%02x",expected_root.data[j]); printf("\n");
+                all_ok = false;
+                break;
+            }
+        }
+        if (all_ok) printf("OK\n");
+        else failures++;
+    }
+
     /* --- Sapling group_hash (via ask_to_ak which uses SpendingKeyGenerator) --- */
     printf("sapling group_hash via ask_to_ak... ");
     {
@@ -6623,125 +6717,219 @@ int main(void)
         else { printf("FAIL\n"); failures++; }
     }
 
-    /* --- Sapling full key derivation chain (test vector from zcash-test-vectors) --- */
-    printf("sapling key derivation chain... ");
+    /* --- Sapling key components (zcash-test-vectors, 10 test cases) --- */
+    /* Tests full chain: sk → ask/nsk/ovk → ak/nk → ivk → pk_d, plus cm and nf */
     {
-        /* sk = 0x00...00 */
-        struct uint256 sk;
-        memset(sk.data, 0, 32);
+        (void)0; /* block scope */
 
-        /* Derive ask, nsk, ovk */
-        struct uint256 ask, nsk, ovk;
-        prf_ask(&sk, &ask);
-        prf_nsk(&sk, &nsk);
-        prf_ovk(&sk, &ovk);
-
-        /* Derive ak = ask * SpendingKeyGenerator */
-        uint8_t ak[32], nk_bytes[32];
-        sapling_ask_to_ak(ask.data, ak);
-        sapling_nsk_to_nk(nsk.data, nk_bytes);
-
-        /* Derive ivk */
-        uint8_t ivk[32];
-        sapling_crh_ivk(ak, nk_bytes, ivk);
-
-        /* Derive pk_d from ivk and diversifier */
-        uint8_t diversifier[11] = {0xf1,0x9d,0x9b,0x79,0x7e,0x39,0xf3,0x37,0x44,0x58,0x39};
-        uint8_t pk_d[32];
-        bool ok = sapling_ivk_to_pkd(ivk, diversifier, pk_d);
-
-        uint8_t expected_pk_d[32] = {
-            0xdb,0x4c,0xd2,0xb0,0xaa,0xc4,0xf7,0xeb,0x8c,0xa1,0x31,0xf1,0x65,0x67,
-            0xc4,0x45,0xa9,0x55,0x51,0x26,0xd3,0xc2,0x9f,0x14,0xe3,0xd7,0x76,0xe8,
-            0x41,0xae,0x74,0x15
+        struct test_vec {
+            const char *sk, *ask, *nsk, *ovk, *ak, *nk, *ivk;
+            const char *diversifier, *pk_d;
+            uint64_t value;
+            const char *rcm, *cm;
+            uint64_t position;
+            const char *nf;
         };
-        ok = ok && (memcmp(pk_d, expected_pk_d, 32) == 0);
 
-        if (ok) printf("OK\n");
-        else {
-            printf("FAIL\n");
-            printf("  pk_d: "); for(int i=0;i<32;i++)printf("%02x",pk_d[i]); printf("\n");
-            printf("  exp:  "); for(int i=0;i<32;i++)printf("%02x",expected_pk_d[i]); printf("\n");
-            failures++;
+        struct test_vec vecs[] = {
+            { /* Test case 1: sk=0x00..00 */
+                "0000000000000000000000000000000000000000000000000000000000000000",
+                "06880e0df04583674f05d25dcf1119cf18f84420407823aa47a53e474aa14885",
+                "056e5e74ac7e2d26018533275e42b081f53133ecb6eaeaf01cb60bdda04e1130",
+                "3bd696b9e13851865ee47c1d03acb5034e224d6e4fa4ab7c17049bd91369d198",
+                "2016f18efa0efd770776328095bad71f793a5d8c58c298303e27e10f38ec44f3",
+                "bad63fbd78a919fb88fb25a7270e04302d067bac19153c388386e5f2779ecff7",
+                "04924751145f0faa2d9d71a5549d563eb145e22e50a9add7dfcb03edd07c0bb7",
+                "f19d9b797e39f337445839",
+                "1574ae41e876d7e3149fc2d3265155a945c46765f131a18cebf7c4aab0d24cdb",
+                0,
+                "0000000000000000000000061536ec550286898e778dcc0e98e4ac39ac6d1739",
+                "396407ddf23e088f270608ce4fd4fec95018c0bcc2c614b97ed5703215f93ccb",
+                0,
+                "6340ab472775d96762e77d00462360bf5e1d868fa2439ca19fecfd4f56d6fa44"
+            },
+            { /* Test case 2: sk=0x01..01 */
+                "0101010101010101010101010101010101010101010101010101010101010101",
+                "04530aaf312c514fb79437acd728ba60ba187707ec35735ee5ff8bbf295643c9",
+                "08cdda39d6e9955649c653b2f46f2335f3ddc80c090f1f8c005f7bd0eac2ac11",
+                "5be4d6c9799a801b72367d3c72723bf0c88b4ac82a39d792161b6dce1062943b",
+                "1805e38a2e5fa481f8964bff4719131902c10152d3f20b0284ae27c5ff5eff82",
+                "d215746c8a88a84745f64dff956758eeccb30a74988b7f4acf18b98b844d53c4",
+                "06a468fc40c21874d7052223d9d06b9d2d198d41679010b58869b266443818c5",
+                "aef180f6e34e354b888f81",
+                "8bd30f0622a909ba96a2a31e831092b3cfd3e9680e9ab07ba6b7dd36a33eb1a6",
+                12227227834928555328ULL,
+                "064e80dd899f863802968bdfed6b55ab15708bf1266f0300b6751a6eeea08b47",
+                "5069d4ca72ae539ab2311ca3cf6b260ee1892f45ac018b2edf85fb0b509378b5",
+                763714296,
+                "939d2e4c1763372e1dc7ad1954318883d759b21a2ab4cd83aee257a7c3b09e67"
+            },
+            { /* Test case 3: sk=0x02..02 */
+                "0202020202020202020202020202020202020202020202020202020202020202",
+                "0317426a1ac16f06cb5cf861b7c1b747af1212d8d9f36a3d06780afe7e3d1cee",
+                "0b7f11adab2e5e8ae4bf6b6e2150422ac6766e16fd38eae87548d75537713b1d",
+                "498f1e499fd44f772268a7e596608eba840b81d581c302835bc9dd280e39f48b",
+                "c664ca5dd168743a9ab1a0df74fcc3e8bec734ec9d62b80a9a85deb54e5783ab",
+                "6ea0a84d9193abf4b69eaa3115ef24dec3aa8a92b7c09c164a2e59e05380d595",
+                "0545954130ef3d209295d23ab96fbed17d2f3e5fa9c03650e73087dca3241c47",
+                "7599f0bf9b57cd2dc299b6",
+                "5a2f01087790d98dd8653c5c22c6444ded5eeeee188aef5df0284b5139171466",
+                6007711596147559040ULL,
+                "0aae3ba87d1d4a016c4da07c0adb11515b3e788b9eb977cb637c4c1bb5f27c14",
+                "51f1554e9f8387aab001b1701766968240b7b7d532c37f16737f43980aa785db",
+                1527428592,
+                "141dae598fb4f91c368494914d95c40811451fb931c7b3598049ff348f6a8fe9"
+            },
+            { /* Test case 4: sk=0x03..03 */
+                "0303030303030303030303030303030303030303030303030303030303030303",
+                "039580bb94bceee503095c815cfcd3797851a70ce91eee80044e8fcae1a1c300",
+                "0b72b0592e1cbd0655e087f2bd8aa5678cd9da43d5fcd27a155eb6e9a58562e6",
+                "5efc2508bee63d1ad39fc24eb50222ccb4dac75b7c64479382973b55e0787614",
+                "ea84e8963e75a66146b9a55531fa3c5d3f344ccfdbaa0f61a8380d5d7ede9c3c",
+                "2a1c3c8d593bd806389092946ca278aacf05ee59f1d0cf61bd1d9408f5367db7",
+                "0026c731f014fcac95920c4055ff06c4dd7991c9dff7fcb1e43cc2bf64a96a63",
+                "1b81614f1dadea0f8d0a58",
+                "5c5f9242f9df5b896531a8f7f0b12f83d7eae6ef88a5854ec61f76cffc55eb25",
+                18234939431076114368ULL,
+                "0428113e839dbdd588d7bb1fd2355eed5b1b90cf87eeef54eaf54f14a9b2a434",
+                "6c9bd160aa5cd5b944160d2e2139885d10bd3743e3dbcc353bfba8b382e48ce0",
+                2291142888,
+                "a147ec8b75ee3cb937079db583812cbd2a475686053b4e30b3a680ff12aa4755"
+            },
+            { /* Test case 5: sk=0x04..04 */
+                "0404040404040404040404040404040404040404040404040404040404040404",
+                "0deac8d4051808a00c4daa490a7763657b823f341168a04355d805329dd13682",
+                "07058a1d2a09d202af68d11d663d517441487c014ff4f072827182ed0befc17e",
+                "edc45ffddcc8a71dec35d68595b3e4685675d49a0d41a5a6dbe8ace3ec756e1b",
+                "1ae0dd58f034ad75017f6476689cff01de5f71a851fa0c13de417ebb8983e855",
+                "3ce4d9e3951cb21ba030a7a9c02c8a761e6cde19eec5481ccd2150a1d64a5d72",
+                "041d1ab04bf124b7dce09f70d3df6420d31fb40c7c313c2458467dc6f72bfa67",
+                "fcfb68a40d4bc6a04b09c4",
+                "2bdbb9149709bbd1c944de2fe92205f977696f544c1d38ff242c62037f332a8b",
+                12015423192295118080ULL,
+                "04bb57849c020cca67699c4d84c14e968059e8bd3c0159ac097c7455138557e5",
+                "367f1bc72bfb264b042d630be7bf15671ecf8c23858b3b1f82007b3ebf54c8bd",
+                3054857184ULL,
+                "133dbf0103270dd02bebb84e62a1732a38628fc4f2fa2bf2ca85efd4a3bd9a8a"
+            },
+        };
+
+        int num_vecs = (int)(sizeof(vecs) / sizeof(vecs[0]));
+        int vec_fails = 0;
+
+        for (int v = 0; v < num_vecs; v++) {
+            uint8_t sk_bytes[32], exp_ask[32], exp_nsk[32], exp_ovk[32];
+            uint8_t exp_ak[32], exp_nk[32], exp_ivk[32], exp_div[11], exp_pkd[32];
+            uint8_t exp_rcm[32], exp_cm[32], exp_nf[32];
+
+            /* 32-byte values: BE display hex → LE internal (reversed) */
+            test_hex_to_bytes_rev(vecs[v].sk, sk_bytes, 32);
+            test_hex_to_bytes_rev(vecs[v].ask, exp_ask, 32);
+            test_hex_to_bytes_rev(vecs[v].nsk, exp_nsk, 32);
+            test_hex_to_bytes_rev(vecs[v].ovk, exp_ovk, 32);
+            test_hex_to_bytes_rev(vecs[v].ak, exp_ak, 32);
+            test_hex_to_bytes_rev(vecs[v].nk, exp_nk, 32);
+            test_hex_to_bytes_rev(vecs[v].ivk, exp_ivk, 32);
+            /* Diversifier: forward order (raw bytes, not a scalar) */
+            test_hex_to_bytes(vecs[v].diversifier, exp_div, 11);
+            test_hex_to_bytes_rev(vecs[v].pk_d, exp_pkd, 32);
+            test_hex_to_bytes_rev(vecs[v].rcm, exp_rcm, 32);
+            test_hex_to_bytes_rev(vecs[v].cm, exp_cm, 32);
+            test_hex_to_bytes_rev(vecs[v].nf, exp_nf, 32);
+
+            struct uint256 sk_u;
+            memcpy(sk_u.data, sk_bytes, 32);
+
+            /* PRF derivation */
+            struct uint256 ask_u, nsk_u, ovk_u;
+            prf_ask(&sk_u, &ask_u);
+            prf_nsk(&sk_u, &nsk_u);
+            prf_ovk(&sk_u, &ovk_u);
+
+            printf("sapling key components [%d] ask... ", v+1);
+            if (memcmp(ask_u.data, exp_ask, 32) != 0) {
+                printf("FAIL\n");
+                printf("  got: "); for(int i=0;i<32;i++)printf("%02x",ask_u.data[i]); printf("\n");
+                printf("  exp: "); for(int i=0;i<32;i++)printf("%02x",exp_ask[i]); printf("\n");
+                vec_fails++; failures++;
+            } else printf("OK\n");
+
+            printf("sapling key components [%d] nsk... ", v+1);
+            if (memcmp(nsk_u.data, exp_nsk, 32) != 0) {
+                printf("FAIL\n"); vec_fails++; failures++;
+            } else printf("OK\n");
+
+            printf("sapling key components [%d] ovk... ", v+1);
+            if (memcmp(ovk_u.data, exp_ovk, 32) != 0) {
+                printf("FAIL\n"); vec_fails++; failures++;
+            } else printf("OK\n");
+
+            /* Key derivation */
+            uint8_t ak[32], nk[32], ivk[32], pk_d[32];
+            sapling_ask_to_ak(ask_u.data, ak);
+            sapling_nsk_to_nk(nsk_u.data, nk);
+            sapling_crh_ivk(ak, nk, ivk);
+
+            printf("sapling key components [%d] ak... ", v+1);
+            if (memcmp(ak, exp_ak, 32) != 0) {
+                printf("FAIL\n");
+                printf("  got: "); for(int i=0;i<32;i++)printf("%02x",ak[i]); printf("\n");
+                printf("  exp: "); for(int i=0;i<32;i++)printf("%02x",exp_ak[i]); printf("\n");
+                vec_fails++; failures++;
+            } else printf("OK\n");
+
+            printf("sapling key components [%d] nk... ", v+1);
+            if (memcmp(nk, exp_nk, 32) != 0) {
+                printf("FAIL\n");
+                printf("  got: "); for(int i=0;i<32;i++)printf("%02x",nk[i]); printf("\n");
+                printf("  exp: "); for(int i=0;i<32;i++)printf("%02x",exp_nk[i]); printf("\n");
+                vec_fails++; failures++;
+            } else printf("OK\n");
+
+            printf("sapling key components [%d] ivk... ", v+1);
+            if (memcmp(ivk, exp_ivk, 32) != 0) {
+                printf("FAIL\n");
+                printf("  got: "); for(int i=0;i<32;i++)printf("%02x",ivk[i]); printf("\n");
+                printf("  exp: "); for(int i=0;i<32;i++)printf("%02x",exp_ivk[i]); printf("\n");
+                vec_fails++; failures++;
+            } else printf("OK\n");
+
+            /* pk_d */
+            bool pkd_ok = sapling_ivk_to_pkd(ivk, exp_div, pk_d);
+            printf("sapling key components [%d] pk_d... ", v+1);
+            if (!pkd_ok || memcmp(pk_d, exp_pkd, 32) != 0) {
+                printf("FAIL\n");
+                printf("  got: "); for(int i=0;i<32;i++)printf("%02x",pk_d[i]); printf("\n");
+                printf("  exp: "); for(int i=0;i<32;i++)printf("%02x",exp_pkd[i]); printf("\n");
+                vec_fails++; failures++;
+            } else printf("OK\n");
+
+            /* Note commitment */
+            uint8_t cm[32];
+            bool cm_ok = sapling_compute_cm(exp_div, exp_pkd, vecs[v].value, exp_rcm, cm);
+            printf("sapling key components [%d] cm... ", v+1);
+            if (!cm_ok || memcmp(cm, exp_cm, 32) != 0) {
+                printf("FAIL\n");
+                printf("  got: "); for(int i=0;i<32;i++)printf("%02x",cm[i]); printf("\n");
+                printf("  exp: "); for(int i=0;i<32;i++)printf("%02x",exp_cm[i]); printf("\n");
+                vec_fails++; failures++;
+            } else printf("OK\n");
+
+            /* Nullifier */
+            uint8_t nf[32];
+            bool nf_ok = sapling_compute_nf(exp_div, exp_pkd, vecs[v].value, exp_rcm,
+                                             ak, nk, vecs[v].position, nf);
+            printf("sapling key components [%d] nf... ", v+1);
+            if (!nf_ok || memcmp(nf, exp_nf, 32) != 0) {
+                printf("FAIL\n");
+                printf("  got: "); for(int i=0;i<32;i++)printf("%02x",nf[i]); printf("\n");
+                printf("  exp: "); for(int i=0;i<32;i++)printf("%02x",exp_nf[i]); printf("\n");
+                vec_fails++; failures++;
+            } else printf("OK\n");
         }
-    }
 
-    /* --- Sapling note commitment --- */
-    printf("sapling compute_cm... ");
-    {
-        uint8_t diversifier[11] = {0xf1,0x9d,0x9b,0x79,0x7e,0x39,0xf3,0x37,0x44,0x58,0x39};
-        uint8_t pk_d[32] = {
-            0xdb,0x4c,0xd2,0xb0,0xaa,0xc4,0xf7,0xeb,0x8c,0xa1,0x31,0xf1,0x65,0x67,
-            0xc4,0x45,0xa9,0x55,0x51,0x26,0xd3,0xc2,0x9f,0x14,0xe3,0xd7,0x76,0xe8,
-            0x41,0xae,0x74,0x15
-        };
-        uint64_t value = 0;
-        uint8_t rcm[32] = {
-            0x39,0x17,0x6d,0xac,0x39,0xac,0xe4,0x98,0x0e,0xcc,0x8d,0x77,0x8e,0x89,
-            0x86,0x02,0x55,0xec,0x36,0x15,0x06,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
-            0x00,0x00,0x00,0x00
-        };
-        uint8_t cm[32];
-        bool ok = sapling_compute_cm(diversifier, pk_d, value, rcm, cm);
-
-        uint8_t expected_cm[32] = {
-            0xcb,0x3c,0xf9,0x15,0x32,0x70,0xd5,0x7e,0xb9,0x14,0xc6,0xc2,0xbc,0xc0,
-            0x18,0x50,0xc9,0xfe,0xd4,0x4f,0xce,0x08,0x06,0x27,0x8f,0x08,0x3e,0xf2,
-            0xdd,0x07,0x64,0x39
-        };
-        ok = ok && (memcmp(cm, expected_cm, 32) == 0);
-
-        if (ok) printf("OK\n");
-        else {
-            printf("FAIL\n");
-            printf("  cm:  "); for(int i=0;i<32;i++)printf("%02x",cm[i]); printf("\n");
-            printf("  exp: "); for(int i=0;i<32;i++)printf("%02x",expected_cm[i]); printf("\n");
-            failures++;
-        }
-    }
-
-    /* --- Sapling nullifier --- */
-    printf("sapling compute_nf... ");
-    {
-        struct uint256 sk;
-        memset(sk.data, 0, 32);
-        struct uint256 ask, nsk;
-        prf_ask(&sk, &ask);
-        prf_nsk(&sk, &nsk);
-
-        uint8_t ak[32], nk_bytes[32];
-        sapling_ask_to_ak(ask.data, ak);
-        sapling_nsk_to_nk(nsk.data, nk_bytes);
-
-        uint8_t diversifier[11] = {0xf1,0x9d,0x9b,0x79,0x7e,0x39,0xf3,0x37,0x44,0x58,0x39};
-        uint8_t pk_d[32] = {
-            0xdb,0x4c,0xd2,0xb0,0xaa,0xc4,0xf7,0xeb,0x8c,0xa1,0x31,0xf1,0x65,0x67,
-            0xc4,0x45,0xa9,0x55,0x51,0x26,0xd3,0xc2,0x9f,0x14,0xe3,0xd7,0x76,0xe8,
-            0x41,0xae,0x74,0x15
-        };
-        uint8_t rcm[32] = {
-            0x39,0x17,0x6d,0xac,0x39,0xac,0xe4,0x98,0x0e,0xcc,0x8d,0x77,0x8e,0x89,
-            0x86,0x02,0x55,0xec,0x36,0x15,0x06,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
-            0x00,0x00,0x00,0x00
-        };
-
-        uint8_t nf[32];
-        bool ok = sapling_compute_nf(diversifier, pk_d, 0, rcm, ak, nk_bytes, 0, nf);
-
-        uint8_t expected_nf[32] = {
-            0x44,0xfa,0xd6,0x56,0x4f,0xfd,0xec,0x9f,0xa1,0x9c,0x43,0xa2,0x8f,0x86,
-            0x1d,0x5e,0xbf,0x60,0x23,0x46,0x00,0x7d,0xe7,0x62,0x67,0xd9,0x75,0x27,
-            0x47,0xab,0x40,0x63
-        };
-        ok = ok && (memcmp(nf, expected_nf, 32) == 0);
-
-        if (ok) printf("OK\n");
-        else {
-            printf("FAIL\n");
-            printf("  nf:  "); for(int i=0;i<32;i++)printf("%02x",nf[i]); printf("\n");
-            printf("  exp: "); for(int i=0;i<32;i++)printf("%02x",expected_nf[i]); printf("\n");
-            failures++;
-        }
+        printf("sapling key components summary: %d/%d vectors, %d field failures\n",
+               num_vecs, num_vecs, vec_fails);
     }
 
     /* --- RedJubjub sign/verify roundtrip --- */

@@ -66,6 +66,12 @@ static void pedersen_uncommitted(struct uint256 *out)
     sapling_uncommitted(out->data);
 }
 
+void sapling_testing_tree_init(struct incremental_merkle_tree *t)
+{
+    tree_init(t, INCREMENTAL_MERKLE_TREE_DEPTH_TESTING,
+              pedersen_combine, pedersen_uncommitted);
+}
+
 void sapling_tree_init(struct incremental_merkle_tree *t)
 {
     tree_init(t, SAPLING_INCREMENTAL_MERKLE_TREE_DEPTH,

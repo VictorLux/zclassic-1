@@ -44,6 +44,7 @@ struct incremental_merkle_tree {
 
 void sprout_tree_init(struct incremental_merkle_tree *t);
 void sapling_tree_init(struct incremental_merkle_tree *t);
+void sapling_testing_tree_init(struct incremental_merkle_tree *t);
 
 void incremental_tree_append(struct incremental_merkle_tree *t,
                               const struct uint256 *obj);
