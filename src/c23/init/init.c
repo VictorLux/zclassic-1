@@ -449,11 +449,20 @@ bool app_init(struct app_context *ctx)
     addr_db_read(&g_connman.manager, ctx->datadir);
 
     if (ctx->listen) {
-        struct net_service bind_addr;
-        memset(&bind_addr, 0, sizeof(bind_addr));
-        bind_addr.port = (uint16_t)ctx->p2p_port;
-        bind_listen_port(&g_connman.manager, &bind_addr, false);
-        printf("P2P listening on port %d\n", ctx->p2p_port);
+        /* Bind IPv4 0.0.0.0 */
+        struct net_service bind4;
+        net_service_init(&bind4);
+        unsigned char any4[4] = {0, 0, 0, 0};
+        net_addr_set_ipv4(&bind4.addr, any4);
+        bind4.port = (uint16_t)ctx->p2p_port;
+        if (bind_listen_port(&g_connman.manager, &bind4, false))
+            printf("P2P listening on 0.0.0.0:%d\n", ctx->p2p_port);
+        /* Bind IPv6 [::] */
+        struct net_service bind6;
+        net_service_init(&bind6);
+        bind6.port = (uint16_t)ctx->p2p_port;
+        if (bind_listen_port(&g_connman.manager, &bind6, false))
+            printf("P2P listening on [::]:%d\n", ctx->p2p_port);
     }
 
     connman_start(&g_connman);

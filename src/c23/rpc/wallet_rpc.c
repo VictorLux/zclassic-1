@@ -403,20 +403,8 @@ static bool rpc_listunspent(const struct json_value *params, bool help,
         if (coins[i].depth < min_conf || coins[i].depth > max_conf)
             continue;
 
-        /* Verify against actual UTXO set if available */
-        if (g_coins_tip) {
-            struct coins entry_check;
-            coins_init(&entry_check);
-            bool found = coins_view_cache_get_coins(g_coins_tip,
-                    &coins[i].wtx->tx.hash, &entry_check);
-            if (!found || !coins_is_available(&entry_check, coins[i].i)) {
-                wallet_mark_outpoint_spent(g_wallet,
-                    &coins[i].wtx->tx.hash, coins[i].i);
-                coins_free(&entry_check);
-                continue;
-            }
-            coins_free(&entry_check);
-        }
+        /* Skip UTXO set cross-check — wallet tracks spent state.
+         * Avoids concurrent access to g_coins_tip from RPC thread. */
 
         struct json_value entry;
         json_set_object(&entry);
