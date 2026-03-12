@@ -124,6 +124,7 @@
 #include "db/model_wallet_tx.h"
 #include "db/model_mempool.h"
 #include "db/model_peer.h"
+#include "net/connman.h"
 
 static int test_tip_count = 0;
 static int test_tip_height = 0;
@@ -11019,6 +11020,919 @@ int main(void)
         secure_channel_destroy(&alice);
         secure_channel_destroy(&bob);
 
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ===== NETWORKING TESTS ===== */
+
+    /* net_addr: IPv4 init and classification */
+    {
+        printf("net_addr: IPv4 init and classify... ");
+        struct net_addr a;
+        net_addr_init(&a);
+        unsigned char ip4[4] = {192, 168, 1, 100};
+        net_addr_set_ipv4(&a, ip4);
+        bool ok = net_addr_is_ipv4(&a);
+        ok = ok && !net_addr_is_ipv6(&a);
+        ok = ok && !net_addr_is_tor(&a);
+        ok = ok && (net_addr_get_network(&a) == NET_IPV4);
+        ok = ok && net_addr_is_valid(&a);
+        ok = ok && (net_addr_get_byte(&a, 0) == 100);
+        ok = ok && (net_addr_get_byte(&a, 1) == 1);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* net_addr: IPv6 classification */
+    {
+        printf("net_addr: IPv6 classify... ");
+        struct net_addr a;
+        net_addr_init(&a);
+        a.ip[0] = 0x20; a.ip[1] = 0x01;
+        a.ip[2] = 0x0d; a.ip[3] = 0x00;
+        a.ip[15] = 0x01;
+        bool ok = !net_addr_is_ipv4(&a);
+        ok = ok && net_addr_is_ipv6(&a);
+        ok = ok && (net_addr_get_network(&a) == NET_IPV6);
+        ok = ok && net_addr_is_valid(&a);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* net_addr: null address invalid */
+    {
+        printf("net_addr: null address is invalid... ");
+        struct net_addr a;
+        net_addr_init(&a);
+        bool ok = !net_addr_is_valid(&a);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* net_addr: RFC 3849 documentation address invalid */
+    {
+        printf("net_addr: RFC3849 doc address invalid... ");
+        struct net_addr a;
+        net_addr_init(&a);
+        a.ip[0] = 0x20; a.ip[1] = 0x01;
+        a.ip[2] = 0x0d; a.ip[3] = 0xb8;
+        a.ip[15] = 0x01;
+        bool ok = !net_addr_is_valid(&a);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* net_addr: equality */
+    {
+        printf("net_addr: equality... ");
+        struct net_addr a, b;
+        net_addr_init(&a);
+        net_addr_init(&b);
+        unsigned char ip4[4] = {10, 0, 0, 1};
+        net_addr_set_ipv4(&a, ip4);
+        net_addr_set_ipv4(&b, ip4);
+        bool ok = net_addr_eq(&a, &b);
+        unsigned char ip4b[4] = {10, 0, 0, 2};
+        net_addr_set_ipv4(&b, ip4b);
+        ok = ok && !net_addr_eq(&a, &b);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* net_addr: Tor address */
+    {
+        printf("net_addr: Tor address... ");
+        struct net_addr a;
+        net_addr_init(&a);
+        a.has_torv3 = true;
+        memset(a.torv3, 0xAB, TORV3_ADDR_SIZE);
+        bool ok = net_addr_is_tor(&a);
+        ok = ok && !net_addr_is_ipv4(&a);
+        ok = ok && (net_addr_get_network(&a) == NET_ONION);
+        ok = ok && net_addr_is_valid(&a);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* net_addr: RFC1918 private ranges */
+    {
+        printf("net_addr: RFC1918 private... ");
+        struct net_addr a;
+        net_addr_init(&a);
+        unsigned char ip4[4] = {10, 0, 0, 1};
+        net_addr_set_ipv4(&a, ip4);
+        bool ok = net_addr_is_rfc1918(&a);
+        ok = ok && !net_addr_is_routable(&a);
+        unsigned char ip4b[4] = {172, 16, 5, 1};
+        net_addr_set_ipv4(&a, ip4b);
+        ok = ok && net_addr_is_rfc1918(&a);
+        unsigned char ip4c[4] = {192, 168, 0, 1};
+        net_addr_set_ipv4(&a, ip4c);
+        ok = ok && net_addr_is_rfc1918(&a);
+        unsigned char ip4d[4] = {8, 8, 8, 8};
+        net_addr_set_ipv4(&a, ip4d);
+        ok = ok && !net_addr_is_rfc1918(&a);
+        ok = ok && net_addr_is_routable(&a);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* net_addr: get_group deterministic */
+    {
+        printf("net_addr: address group... ");
+        struct net_addr a, b;
+        net_addr_init(&a);
+        net_addr_init(&b);
+        unsigned char ip4[4] = {8, 8, 8, 8};
+        net_addr_set_ipv4(&a, ip4);
+        unsigned char ip4b[4] = {8, 8, 4, 4};
+        net_addr_set_ipv4(&b, ip4b);
+        unsigned char ga[NET_ADDR_GROUP_MAX], gb[NET_ADDR_GROUP_MAX];
+        size_t la = net_addr_get_group(&a, ga, sizeof(ga));
+        size_t lb = net_addr_get_group(&b, gb, sizeof(gb));
+        bool ok = (la > 0 && lb > 0);
+        /* Same /16 prefix → same group */
+        ok = ok && (la == lb) && (memcmp(ga, gb, la) == 0);
+        /* Different /16 → different group */
+        unsigned char ip4c[4] = {1, 2, 3, 4};
+        net_addr_set_ipv4(&b, ip4c);
+        lb = net_addr_get_group(&b, gb, sizeof(gb));
+        ok = ok && (memcmp(ga, gb, (la < lb ? la : lb)) != 0 || la != lb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* net_service: init and equality */
+    {
+        printf("net_service: init and equality... ");
+        struct net_service a, b;
+        net_service_init(&a);
+        net_service_init(&b);
+        unsigned char ip4[4] = {127, 0, 0, 1};
+        net_addr_set_ipv4(&a.addr, ip4);
+        a.port = 8033;
+        net_addr_set_ipv4(&b.addr, ip4);
+        b.port = 8033;
+        bool ok = net_service_eq(&a, &b);
+        b.port = 18033;
+        ok = ok && !net_service_eq(&a, &b);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* net_service: to_string */
+    {
+        printf("net_service: to_string... ");
+        struct net_service s;
+        net_service_init(&s);
+        unsigned char ip4[4] = {192, 168, 1, 1};
+        net_addr_set_ipv4(&s.addr, ip4);
+        s.port = 8033;
+        char buf[64];
+        int n = net_service_to_string(&s, buf, sizeof(buf));
+        bool ok = (n > 0);
+        ok = ok && (strstr(buf, "192.168.1.1") != NULL);
+        ok = ok && (strstr(buf, "8033") != NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* net_addr: to_string */
+    {
+        printf("net_addr: to_string... ");
+        struct net_addr a;
+        net_addr_init(&a);
+        unsigned char ip4[4] = {10, 20, 30, 40};
+        net_addr_set_ipv4(&a, ip4);
+        char buf[64];
+        int n = net_addr_to_string(&a, buf, sizeof(buf));
+        bool ok = (n > 0);
+        ok = ok && (strcmp(buf, "10.20.30.40") == 0);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* msg_header: init and validate */
+    {
+        printf("msg_header: init and validate... ");
+        unsigned char magic[MESSAGE_START_SIZE] = {0x24, 0xe9, 0x27, 0x64};
+        struct msg_header h;
+        msg_header_init_full(&h, magic, "ping", 8);
+        bool ok = msg_header_is_valid(&h, magic);
+        /* Wrong magic must fail */
+        unsigned char bad_magic[MESSAGE_START_SIZE] = {0xFF, 0xFF, 0xFF, 0xFF};
+        ok = ok && !msg_header_is_valid(&h, bad_magic);
+        /* Default init has invalid size (-1) so should fail validation */
+        struct msg_header h2;
+        msg_header_init(&h2, magic);
+        ok = ok && !msg_header_is_valid(&h2, magic);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* msg_header: full init with command */
+    {
+        printf("msg_header: command get/set... ");
+        unsigned char magic[MESSAGE_START_SIZE] = {0x24, 0xe9, 0x27, 0x64};
+        struct msg_header h;
+        msg_header_init_full(&h, magic, "version", 100);
+        bool ok = msg_header_is_valid(&h, magic);
+        ok = ok && (h.nMessageSize == 100);
+        char cmd[COMMAND_SIZE + 1];
+        msg_header_get_command(&h, cmd, sizeof(cmd));
+        ok = ok && (strcmp(cmd, "version") == 0);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* inv_item: init, types, string */
+    {
+        printf("inv_item: init and types... ");
+        struct inv_item inv;
+        inv_item_init(&inv);
+        bool ok = (inv.type == 0);
+        ok = ok && uint256_is_null(&inv.hash);
+
+        struct uint256 h;
+        uint256_set_null(&h);
+        h.data[0] = 0xAB;
+        inv_item_init_typed(&inv, MSG_TX, &h);
+        ok = ok && (inv.type == MSG_TX);
+        ok = ok && inv_item_is_known_type(&inv);
+        ok = ok && (strcmp(inv_item_get_command(&inv), "tx") == 0);
+
+        inv_item_init_typed(&inv, MSG_BLOCK, &h);
+        ok = ok && (strcmp(inv_item_get_command(&inv), "block") == 0);
+        ok = ok && inv_item_is_known_type(&inv);
+
+        char str[128];
+        inv_item_to_string(&inv, str, sizeof(str));
+        ok = ok && (strlen(str) > 0);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* inv_item: init by name */
+    {
+        printf("inv_item: init by name... ");
+        struct uint256 h;
+        uint256_set_null(&h);
+        h.data[31] = 0x42;
+        struct inv_item inv;
+        bool ok = (inv_item_init_by_name(&inv, "tx", &h) == 0);
+        ok = ok && (inv.type == MSG_TX);
+        ok = ok && (inv_item_init_by_name(&inv, "block", &h) == 0);
+        ok = ok && (inv.type == MSG_BLOCK);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* inv_item: serialization roundtrip */
+    {
+        printf("inv_item: serialize roundtrip... ");
+        struct uint256 h;
+        uint256_set_null(&h);
+        for (int i = 0; i < 32; i++) h.data[i] = (uint8_t)i;
+        struct inv_item inv;
+        inv_item_init_typed(&inv, MSG_TX, &h);
+
+        struct byte_stream s;
+        stream_init(&s, 128);
+        bool ok = inv_item_serialize(&inv, &s);
+
+        struct byte_stream r;
+        stream_init_from_data(&r, s.data, s.size);
+        struct inv_item inv2;
+        ok = ok && inv_item_deserialize(&inv2, &r);
+        ok = ok && (inv2.type == MSG_TX);
+        ok = ok && uint256_eq(&inv2.hash, &h);
+        stream_free(&s);
+        stream_free(&r);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* net_address: serialization roundtrip */
+    {
+        printf("net_address: serialize roundtrip... ");
+        struct net_address addr;
+        net_address_init(&addr);
+        unsigned char ip4[4] = {8, 8, 8, 8};
+        net_addr_set_ipv4(&addr.svc.addr, ip4);
+        addr.svc.port = 8033;
+        addr.nServices = NODE_NETWORK;
+        addr.nTime = 1700000000;
+
+        struct byte_stream s;
+        stream_init(&s, 128);
+        bool ok = net_address_serialize(&addr, &s, true);
+
+        struct byte_stream r;
+        stream_init_from_data(&r, s.data, s.size);
+        struct net_address addr2;
+        net_address_init(&addr2);
+        ok = ok && net_address_deserialize(&addr2, &r, true);
+        ok = ok && net_addr_eq(&addr.svc.addr, &addr2.svc.addr);
+        ok = ok && (addr2.svc.port == 8033);
+        ok = ok && (addr2.nServices == NODE_NETWORK);
+        ok = ok && (addr2.nTime == 1700000000);
+        stream_free(&s);
+        stream_free(&r);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* net_message: header read with valid magic */
+    {
+        printf("net_message: read header... ");
+        unsigned char magic[MESSAGE_START_SIZE] = {0x24, 0xe9, 0x27, 0x64};
+        struct net_message msg;
+        net_message_init(&msg, magic);
+
+        struct msg_header fake_hdr;
+        msg_header_init_full(&fake_hdr, magic, "ping", 8);
+        int n = net_message_read_header(&msg, (const char *)&fake_hdr,
+                                         MSG_HEADER_SIZE);
+        bool ok = (n == MSG_HEADER_SIZE);
+        ok = ok && msg.in_data;
+        ok = ok && (msg.hdr.nMessageSize == 8);
+        char cmd[COMMAND_SIZE + 1];
+        msg_header_get_command(&msg.hdr, cmd, sizeof(cmd));
+        ok = ok && (strcmp(cmd, "ping") == 0);
+        net_message_free(&msg);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* net_message: reject bad magic */
+    {
+        printf("net_message: reject bad magic... ");
+        unsigned char magic[MESSAGE_START_SIZE] = {0x24, 0xe9, 0x27, 0x64};
+        unsigned char bad[MESSAGE_START_SIZE] = {0xFF, 0xFF, 0xFF, 0xFF};
+        struct net_message msg;
+        net_message_init(&msg, magic);
+
+        struct msg_header fake_hdr;
+        msg_header_init_full(&fake_hdr, bad, "ping", 8);
+        int n = net_message_read_header(&msg, (const char *)&fake_hdr,
+                                         MSG_HEADER_SIZE);
+        bool ok = (n == -1);
+        ok = ok && !msg.in_data;
+        net_message_free(&msg);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* net_message: read data and complete */
+    {
+        printf("net_message: read data + complete... ");
+        unsigned char magic[MESSAGE_START_SIZE] = {0x24, 0xe9, 0x27, 0x64};
+        struct net_message msg;
+        net_message_init(&msg, magic);
+
+        struct msg_header fake_hdr;
+        msg_header_init_full(&fake_hdr, magic, "ping", 8);
+        net_message_read_header(&msg, (const char *)&fake_hdr, MSG_HEADER_SIZE);
+        bool ok = msg.in_data && !net_message_complete(&msg);
+
+        uint8_t payload[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+        int n = net_message_read_data(&msg, (const char *)payload, 8);
+        ok = ok && (n == 8);
+        ok = ok && net_message_complete(&msg);
+        ok = ok && (msg.data_pos == 8);
+        ok = ok && (memcmp(msg.recv_data, payload, 8) == 0);
+        net_message_free(&msg);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* net_message: partial header read */
+    {
+        printf("net_message: partial header read... ");
+        unsigned char magic[MESSAGE_START_SIZE] = {0x24, 0xe9, 0x27, 0x64};
+        struct net_message msg;
+        net_message_init(&msg, magic);
+
+        struct msg_header fake_hdr;
+        msg_header_init_full(&fake_hdr, magic, "verack", 0);
+        const char *raw = (const char *)&fake_hdr;
+        /* Feed half, then the rest */
+        int n1 = net_message_read_header(&msg, raw, 10);
+        bool ok = (n1 == 10);
+        ok = ok && !msg.in_data;
+        int n2 = net_message_read_header(&msg, raw + 10, MSG_HEADER_SIZE - 10);
+        ok = ok && ((unsigned)(n1 + n2) == MSG_HEADER_SIZE);
+        ok = ok && msg.in_data;
+        ok = ok && net_message_complete(&msg); /* size=0 → immediately complete */
+        net_message_free(&msg);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* version_message: serialize/deserialize roundtrip */
+    {
+        printf("version_message: serialize roundtrip... ");
+        struct version_message vm;
+        version_message_init(&vm);
+        vm.protocol_version = 170002;
+        vm.services = NODE_NETWORK;
+        vm.timestamp = 1700000000;
+        vm.nonce = 0xDEADBEEFCAFEBABE;
+        snprintf(vm.sub_version, sizeof(vm.sub_version),
+                 "/ZClassic-C23:1.0.0/");
+        vm.start_height = 3040000;
+        vm.relay = true;
+
+        unsigned char ip4_recv[4] = {192, 168, 1, 1};
+        net_addr_set_ipv4(&vm.addr_recv.svc.addr, ip4_recv);
+        vm.addr_recv.svc.port = 8033;
+
+        struct byte_stream s;
+        stream_init(&s, 256);
+        bool ok = version_message_serialize(&vm, &s);
+
+        struct byte_stream r;
+        stream_init_from_data(&r, s.data, s.size);
+        struct version_message vm2;
+        version_message_init(&vm2);
+        ok = ok && version_message_deserialize(&vm2, &r);
+        ok = ok && (vm2.protocol_version == 170002);
+        ok = ok && (vm2.services == NODE_NETWORK);
+        ok = ok && (vm2.timestamp == 1700000000);
+        ok = ok && (vm2.nonce == 0xDEADBEEFCAFEBABE);
+        ok = ok && (strcmp(vm2.sub_version, "/ZClassic-C23:1.0.0/") == 0);
+        ok = ok && (vm2.start_height == 3040000);
+        ok = ok && vm2.relay;
+        stream_free(&s);
+        stream_free(&r);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* addrman: init, add, size, select */
+    {
+        printf("addrman: add and select... ");
+        struct addr_man am;
+        addrman_init(&am);
+        bool ok = (addrman_size(&am) == 0);
+
+        struct net_address addr;
+        net_address_init(&addr);
+        unsigned char ip4[4] = {8, 8, 8, 8};
+        net_addr_set_ipv4(&addr.svc.addr, ip4);
+        addr.svc.port = 8033;
+        addr.nServices = NODE_NETWORK;
+
+        struct net_addr src;
+        net_addr_init(&src);
+        unsigned char src_ip[4] = {1, 2, 3, 4};
+        net_addr_set_ipv4(&src, src_ip);
+
+        ok = ok && addrman_add(&am, &addr, &src, 0);
+        ok = ok && (addrman_size(&am) == 1);
+
+        /* Select should return the address we added */
+        struct addr_info info;
+        memset(&info, 0, sizeof(info));
+        ok = ok && addrman_select(&am, false, &info);
+        ok = ok && (info.addr.svc.port == 8033);
+        ok = ok && net_addr_eq(&info.addr.svc.addr, &addr.svc.addr);
+
+        addrman_free(&am);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* addrman: multiple addresses */
+    {
+        printf("addrman: multiple addresses... ");
+        struct addr_man am;
+        addrman_init(&am);
+
+        struct net_addr src;
+        net_addr_init(&src);
+        unsigned char src_ip[4] = {1, 1, 1, 1};
+        net_addr_set_ipv4(&src, src_ip);
+
+        for (int i = 0; i < 10; i++) {
+            struct net_address addr;
+            net_address_init(&addr);
+            unsigned char ip4[4] = {(unsigned char)(50 + i), 0, 0, 1};
+            net_addr_set_ipv4(&addr.svc.addr, ip4);
+            addr.svc.port = 8033;
+            addr.nServices = NODE_NETWORK;
+            addr.nTime = (uint32_t)(GetTime() - 3600);
+            addrman_add(&am, &addr, &src, 0);
+        }
+        bool ok = (addrman_size(&am) == 10);
+
+        /* Select should work repeatedly */
+        struct addr_info info;
+        memset(&info, 0, sizeof(info));
+        ok = ok && addrman_select(&am, false, &info);
+        ok = ok && (info.addr.svc.port == 8033);
+
+        /* Duplicate add should not increase count */
+        struct net_address dup;
+        net_address_init(&dup);
+        unsigned char dup_ip[4] = {50, 0, 0, 1};
+        net_addr_set_ipv4(&dup.svc.addr, dup_ip);
+        dup.svc.port = 8033;
+        dup.nServices = NODE_NETWORK;
+        dup.nTime = (uint32_t)(GetTime() - 3600);
+        addrman_add(&am, &dup, &src, 0);
+        ok = ok && (addrman_size(&am) == 10);
+
+        addrman_free(&am);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* addrman: serialize/deserialize roundtrip */
+    {
+        printf("addrman: serialize roundtrip... ");
+        struct addr_man am;
+        addrman_init(&am);
+
+        struct net_addr src;
+        net_addr_init(&src);
+        unsigned char src_ip[4] = {5, 5, 5, 5};
+        net_addr_set_ipv4(&src, src_ip);
+
+        for (int i = 0; i < 5; i++) {
+            struct net_address addr;
+            net_address_init(&addr);
+            unsigned char ip4[4] = {(unsigned char)(70 + i), 1, 2, 3};
+            net_addr_set_ipv4(&addr.svc.addr, ip4);
+            addr.svc.port = 8033;
+            addr.nServices = NODE_NETWORK;
+            addrman_add(&am, &addr, &src, 0);
+        }
+
+        struct byte_stream s;
+        stream_init(&s, 4096);
+        bool ok = addrman_serialize(&am, &s);
+
+        struct addr_man am2;
+        addrman_init(&am2);
+        struct byte_stream r;
+        stream_init_from_data(&r, s.data, s.size);
+        ok = ok && addrman_deserialize(&am2, &r);
+        ok = ok && (addrman_size(&am2) == addrman_size(&am));
+
+        stream_free(&s);
+        stream_free(&r);
+        addrman_free(&am);
+        addrman_free(&am2);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* net_manager: init, ban, unban, clear */
+    {
+        printf("net_manager: ban/unban/clear... ");
+        struct net_manager nm;
+        net_manager_init(&nm);
+
+        struct net_addr a;
+        net_addr_init(&a);
+        unsigned char ip4[4] = {1, 2, 3, 4};
+        net_addr_set_ipv4(&a, ip4);
+
+        bool ok = !is_banned(&nm, &a);
+        ban_addr(&nm, &a, 3600, false);
+        ok = ok && is_banned(&nm, &a);
+
+        /* Different address not banned */
+        struct net_addr b;
+        net_addr_init(&b);
+        unsigned char ip4b[4] = {5, 6, 7, 8};
+        net_addr_set_ipv4(&b, ip4b);
+        ok = ok && !is_banned(&nm, &b);
+
+        /* Unban first address */
+        ok = ok && unban_addr(&nm, &a);
+        ok = ok && !is_banned(&nm, &a);
+
+        /* Ban two, clear all */
+        ban_addr(&nm, &a, 3600, false);
+        ban_addr(&nm, &b, 3600, false);
+        ok = ok && is_banned(&nm, &a);
+        ok = ok && is_banned(&nm, &b);
+        clear_banned(&nm);
+        ok = ok && !is_banned(&nm, &a);
+        ok = ok && !is_banned(&nm, &b);
+
+        net_manager_free(&nm);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* net_manager: init defaults */
+    {
+        printf("net_manager: init defaults... ");
+        struct net_manager nm;
+        net_manager_init(&nm);
+        bool ok = nm.discover;
+        ok = ok && nm.listen;
+        ok = ok && (nm.local_services == NODE_NETWORK);
+        ok = ok && (nm.max_connections == DEFAULT_MAX_PEER_CONNECTIONS);
+        ok = ok && !nm.stop_requested;
+        ok = ok && (nm.num_nodes == 0);
+        ok = ok && (nm.num_banned == 0);
+        ok = ok && (nm.num_listen_sockets == 0);
+        net_manager_free(&nm);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* p2p_node: create and free lifecycle */
+    {
+        printf("p2p_node: create and free... ");
+        struct net_manager nm;
+        net_manager_init(&nm);
+        memset(nm.message_start, 0x24, MESSAGE_START_SIZE);
+
+        struct net_address addr;
+        net_address_init(&addr);
+        unsigned char ip4[4] = {127, 0, 0, 1};
+        net_addr_set_ipv4(&addr.svc.addr, ip4);
+        addr.svc.port = 8033;
+
+        struct p2p_node *node = p2p_node_create(&nm, ZCL_INVALID_SOCKET,
+                                                  &addr, "test-peer", true);
+        bool ok = (node != NULL);
+        ok = ok && node->inbound;
+        ok = ok && (node->socket == ZCL_INVALID_SOCKET);
+        ok = ok && (node->id == 0);
+        ok = ok && (node->recv_version == INIT_PROTO_VERSION);
+        ok = ok && (strcmp(node->addr_name, "test-peer") == 0);
+        ok = ok && (node->starting_height == -1);
+        ok = ok && !node->disconnect;
+        ok = ok && !node->successfully_connected;
+
+        /* Verify addr was copied */
+        ok = ok && (node->addr.svc.port == 8033);
+        ok = ok && net_addr_eq(&node->addr.svc.addr, &addr.svc.addr);
+
+        p2p_node_free(node);
+
+        /* Second node gets id=1 */
+        struct p2p_node *node2 = p2p_node_create(&nm, ZCL_INVALID_SOCKET,
+                                                   &addr, NULL, false);
+        ok = ok && (node2 != NULL);
+        ok = ok && (node2->id == 1);
+        ok = ok && !node2->inbound;
+        /* NULL name → auto-generated from IP */
+        ok = ok && (strlen(node2->addr_name) > 0);
+        p2p_node_free(node2);
+
+        net_manager_free(&nm);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* p2p_node: receive bytes parses message */
+    {
+        printf("p2p_node: receive_bytes parses message... ");
+        struct net_manager nm;
+        net_manager_init(&nm);
+        unsigned char magic[MESSAGE_START_SIZE] = {0x24, 0xe9, 0x27, 0x64};
+        memcpy(nm.message_start, magic, MESSAGE_START_SIZE);
+
+        struct net_address addr;
+        net_address_init(&addr);
+        unsigned char ip4[4] = {127, 0, 0, 1};
+        net_addr_set_ipv4(&addr.svc.addr, ip4);
+        addr.svc.port = 8033;
+
+        struct p2p_node *node = p2p_node_create(&nm, ZCL_INVALID_SOCKET,
+                                                  &addr, "test", true);
+        bool ok = (node != NULL);
+
+        /* Build a verack message (empty payload) */
+        struct msg_header hdr;
+        msg_header_init_full(&hdr, magic, "verack", 0);
+        /* Compute checksum for empty payload: SHA256d("") truncated to 4 bytes */
+        uint8_t empty_hash[32];
+        { struct sha256_ctx ctx; sha256_init(&ctx);
+          sha256_write(&ctx, (const unsigned char *)"", 0);
+          sha256_finalize(&ctx, empty_hash); }
+        uint8_t dbl_hash[32];
+        { struct sha256_ctx ctx; sha256_init(&ctx);
+          sha256_write(&ctx, empty_hash, 32);
+          sha256_finalize(&ctx, dbl_hash); }
+        memcpy(&hdr.nChecksum, dbl_hash, 4);
+
+        ok = ok && p2p_node_receive_bytes(node, (const char *)&hdr,
+                                            MSG_HEADER_SIZE, magic);
+        ok = ok && (node->recv_msg_count == 1);
+        ok = ok && net_message_complete(&node->recv_msgs[0]);
+
+        char cmd[COMMAND_SIZE + 1];
+        msg_header_get_command(&node->recv_msgs[0].hdr, cmd, sizeof(cmd));
+        ok = ok && (strcmp(cmd, "verack") == 0);
+
+        p2p_node_free(node);
+        net_manager_free(&nm);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* p2p_node: inventory tracking */
+    {
+        printf("p2p_node: inventory known + push... ");
+        struct net_manager nm;
+        net_manager_init(&nm);
+        memset(nm.message_start, 0x24, MESSAGE_START_SIZE);
+
+        struct net_address addr;
+        net_address_init(&addr);
+        unsigned char ip4[4] = {127, 0, 0, 1};
+        net_addr_set_ipv4(&addr.svc.addr, ip4);
+
+        struct p2p_node *node = p2p_node_create(&nm, ZCL_INVALID_SOCKET,
+                                                  &addr, "test", false);
+        bool ok = (node != NULL);
+        ok = ok && (node->inventory_known_count == 0);
+        ok = ok && (node->inventory_to_send_count == 0);
+
+        struct uint256 h;
+        uint256_set_null(&h);
+        h.data[0] = 0x42;
+        struct inv_item inv;
+        inv_item_init_typed(&inv, MSG_TX, &h);
+
+        /* push_inventory adds to send queue */
+        p2p_node_push_inventory(node, &inv);
+        ok = ok && (node->inventory_to_send_count == 1);
+
+        /* add_inventory_known marks it as known */
+        p2p_node_add_inventory_known(node, &inv);
+        ok = ok && (node->inventory_known_count == 1);
+
+        /* Pushing same hash again should not add duplicate */
+        size_t before = node->inventory_to_send_count;
+        p2p_node_push_inventory(node, &inv);
+        ok = ok && (node->inventory_to_send_count == before);
+
+        p2p_node_free(node);
+        net_manager_free(&nm);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* p2p_node: address tracking */
+    {
+        printf("p2p_node: push_address... ");
+        struct net_manager nm;
+        net_manager_init(&nm);
+        memset(nm.message_start, 0x24, MESSAGE_START_SIZE);
+
+        struct net_address addr;
+        net_address_init(&addr);
+        unsigned char ip4[4] = {127, 0, 0, 1};
+        net_addr_set_ipv4(&addr.svc.addr, ip4);
+
+        struct p2p_node *node = p2p_node_create(&nm, ZCL_INVALID_SOCKET,
+                                                  &addr, "test", false);
+        bool ok = (node != NULL);
+        ok = ok && (node->addr_to_send_count == 0);
+
+        /* Push a routable address */
+        struct net_address a2;
+        net_address_init(&a2);
+        unsigned char routable[4] = {8, 8, 8, 8};
+        net_addr_set_ipv4(&a2.svc.addr, routable);
+        a2.svc.port = 8033;
+        p2p_node_push_address(node, &a2);
+        ok = ok && (node->addr_to_send_count == 1);
+
+        /* Insert into addr_known bloom, then second push should be filtered */
+        unsigned char key[NET_SERVICE_KEY_SIZE];
+        net_service_get_key(&a2.svc, key);
+        rolling_bloom_insert(&node->addr_known, key, NET_SERVICE_KEY_SIZE);
+        p2p_node_push_address(node, &a2);
+        ok = ok && (node->addr_to_send_count == 1);
+
+        /* Invalid address should be rejected */
+        struct net_address invalid;
+        net_address_init(&invalid); /* all zeros = invalid */
+        p2p_node_push_address(node, &invalid);
+        ok = ok && (node->addr_to_send_count == 1);
+
+        p2p_node_free(node);
+        net_manager_free(&nm);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* p2p_node: ref counting */
+    {
+        printf("p2p_node: ref counting... ");
+        struct net_manager nm;
+        net_manager_init(&nm);
+        memset(nm.message_start, 0x24, MESSAGE_START_SIZE);
+
+        struct net_address addr;
+        net_address_init(&addr);
+        unsigned char ip4[4] = {127, 0, 0, 1};
+        net_addr_set_ipv4(&addr.svc.addr, ip4);
+
+        struct p2p_node *node = p2p_node_create(&nm, ZCL_INVALID_SOCKET,
+                                                  &addr, "test", false);
+        bool ok = (node != NULL);
+        ok = ok && (p2p_node_get_ref(node) == 0);
+        p2p_node_add_ref(node);
+        ok = ok && (p2p_node_get_ref(node) == 1);
+        p2p_node_add_ref(node);
+        ok = ok && (p2p_node_get_ref(node) == 2);
+        p2p_node_release(node);
+        ok = ok && (p2p_node_get_ref(node) == 1);
+
+        p2p_node_free(node);
+        net_manager_free(&nm);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* p2p_node: free NULL is safe */
+    {
+        printf("p2p_node: free NULL safe... ");
+        p2p_node_free(NULL);
+        printf("OK\n");
+    }
+
+    /* net_message: oversized message rejected */
+    {
+        printf("net_message: reject oversized... ");
+        unsigned char magic[MESSAGE_START_SIZE] = {0x24, 0xe9, 0x27, 0x64};
+        struct net_message msg;
+        net_message_init(&msg, magic);
+
+        struct msg_header fake_hdr;
+        msg_header_init_full(&fake_hdr, magic, "block", MAX_SIZE + 1);
+        int n = net_message_read_header(&msg, (const char *)&fake_hdr,
+                                         MSG_HEADER_SIZE);
+        bool ok = (n == -1); /* Should reject oversized */
+        net_message_free(&msg);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* connman: init and free without start */
+    {
+        printf("connman: init/free lifecycle... ");
+        chain_params_select(CHAIN_MAIN);
+        const struct chain_params *params = chain_params_get();
+        struct connman cm;
+        struct node_signals sigs;
+        memset(&sigs, 0, sizeof(sigs));
+        bool ok = connman_init(&cm, params, &sigs);
+        ok = ok && !cm.started;
+        ok = ok && (cm.num_deferred_free == 0);
+        ok = ok && (cm.manager.default_port == params->nDefaultPort);
+        ok = ok && (memcmp(cm.manager.message_start, params->pchMessageStart,
+                           MESSAGE_START_SIZE) == 0);
+        char *sv = cm.manager.sub_version;
+        ok = ok && (strstr(sv, "ZClassic") != NULL);
+        connman_free(&cm);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* connman: node count */
+    {
+        printf("connman: node_count starts at 0... ");
+        const struct chain_params *params = chain_params_get();
+        struct connman cm;
+        struct node_signals sigs;
+        memset(&sigs, 0, sizeof(sigs));
+        connman_init(&cm, params, &sigs);
+        bool ok = (connman_get_node_count(&cm) == 0);
+        connman_free(&cm);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* inv_item: less comparison */
+    {
+        printf("inv_item: less comparison... ");
+        struct uint256 h1, h2;
+        uint256_set_null(&h1);
+        uint256_set_null(&h2);
+        h1.data[0] = 0x01;
+        h2.data[0] = 0x02;
+        struct inv_item a, b;
+        inv_item_init_typed(&a, MSG_TX, &h1);
+        inv_item_init_typed(&b, MSG_TX, &h2);
+        bool ok = inv_item_less(&a, &b);
+        ok = ok && !inv_item_less(&b, &a);
+        ok = ok && !inv_item_less(&a, &a);
+        /* Different types: MSG_TX < MSG_BLOCK */
+        inv_item_init_typed(&b, MSG_BLOCK, &h1);
+        ok = ok && inv_item_less(&a, &b);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
