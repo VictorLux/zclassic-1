@@ -116,4 +116,33 @@ void gadget_nullifier(struct constraint_system *cs,
                       size_t rho_x, size_t rho_y,
                       size_t *nf_x, size_t *nf_y);
 
+/* ── Edwards Double ────────────────────────────────────────────── */
+void gadget_edwards_double(struct constraint_system *cs,
+                            size_t x1, size_t y1,
+                            size_t *x3, size_t *y3);
+
+/* ── Point On-Curve Check ──────────────────────────────────────── */
+void gadget_point_interpret(struct constraint_system *cs, size_t x, size_t y);
+
+/* ── Assert Not Small Order ────────────────────────────────────── */
+void gadget_assert_not_small_order(struct constraint_system *cs,
+                                     size_t x, size_t y);
+
+/* ── Conditionally Select Point ────────────────────────────────── */
+void gadget_conditionally_select_point(struct constraint_system *cs,
+                                         size_t cond, size_t px, size_t py,
+                                         size_t *rx, size_t *ry);
+
+/* ── Variable-Base Scalar Multiplication ───────────────────────── */
+void gadget_variable_base_mul(struct constraint_system *cs,
+                                size_t base_x, size_t base_y,
+                                const size_t *scalar_bits, size_t n_bits,
+                                size_t *out_x, size_t *out_y);
+
+/* ── Point Inputize ────────────────────────────────────────────── */
+void gadget_point_inputize(struct constraint_system *cs, size_t x, size_t y);
+
+/* ── Scalar Inputize ───────────────────────────────────────────── */
+void gadget_scalar_inputize(struct constraint_system *cs, size_t var);
+
 #endif

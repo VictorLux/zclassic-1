@@ -15,6 +15,8 @@ struct connman {
     struct net_manager manager;
     const struct chain_params *params;
     bool started;
+    struct p2p_node *deferred_free[64];
+    size_t num_deferred_free;
 };
 
 bool connman_init(struct connman *cm, const struct chain_params *params,

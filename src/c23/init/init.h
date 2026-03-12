@@ -25,6 +25,8 @@ struct app_context {
     bool listen;
     bool tx_index;
     bool checkpoints_enabled;
+    const char *import_legacy_dir;
+    bool sapling_scan;
 };
 
 void app_context_defaults(struct app_context *ctx);

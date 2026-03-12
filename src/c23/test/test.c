@@ -12,6 +12,7 @@
 #include "crypto/hmac_sha256.h"
 #include "crypto/hmac_sha512.h"
 #include "crypto/sha3.h"
+#include "net/secure_channel.h"
 #include "crypto/blake2b.h"
 #include "core/uint256.h"
 #include "core/hash.h"
@@ -114,6 +115,15 @@
 #include "zcash/sprout.h"
 #include "zcash/params_init.h"
 #include "crypto/ed25519.h"
+#include "wallet/wallet.h"
+#include "db/db.h"
+#include "db/model_block.h"
+#include "db/model_tx.h"
+#include "db/model_utxo.h"
+#include "db/model_wallet_key.h"
+#include "db/model_wallet_tx.h"
+#include "db/model_mempool.h"
+#include "db/model_peer.h"
 
 static int test_tip_count = 0;
 static int test_tip_height = 0;
@@ -156,6 +166,47 @@ static void test_hex_to_bytes(const char *hex, uint8_t *out, int len)
         sscanf(hex + 2*i, "%02x", &b);
         out[i] = (uint8_t)b;
     }
+}
+
+/* ── AR test callbacks (must be file-scope for ISO C23) ──────── */
+
+static bool ar_test_reject_zero(void *record, void *ctx) {
+    (void)ctx;
+    struct db_block *b = record;
+    return b->height > 0;
+}
+
+static int ar_test_save_count = 0;
+static void ar_test_count_saves(void *record, void *ctx) {
+    (void)record; (void)ctx;
+    ar_test_save_count++;
+}
+
+static bool ar_test_prevent_delete(void *record, void *ctx) {
+    (void)record; (void)ctx;
+    return false;
+}
+
+static bool ar_test_reject_always(void *record, void *ctx) {
+    (void)record; (void)ctx;
+    return false;
+}
+
+static bool ar_test_handler(const void *params, bool help, void *result) {
+    (void)params; (void)help; (void)result;
+    return true;
+}
+
+static bool ar_test_auth_passed = true;
+static bool ar_test_auth_filter(const char *method, void *ctx) {
+    (void)method; (void)ctx;
+    return ar_test_auth_passed;
+}
+
+static bool ar_test_route_reject = false;
+static bool ar_test_per_route_filter(const char *method, void *ctx) {
+    (void)method; (void)ctx;
+    return !ar_test_route_reject;
 }
 
 int main(void)
@@ -9068,6 +9119,1908 @@ int main(void)
 
         if (ok && not_zero && valid) printf("OK\n");
         else { printf("FAIL (ok=%d nonzero=%d valid=%d)\n", ok, not_zero, valid); failures++; }
+    }
+
+    /* ---- Wallet spent-outpoint index ---- */
+    printf("Wallet spent-set: mark, query, no false positives... ");
+    {
+        struct wallet *wp = calloc(1, sizeof(struct wallet));
+        wallet_init(wp);
+        struct wallet *w = wp;  /* shorthand */
+
+        struct uint256 txid1, txid2;
+        memset(&txid1, 0, sizeof(txid1));
+        memset(&txid2, 0, sizeof(txid2));
+        txid1.data[0] = 0xAA;
+        txid2.data[0] = 0xBB;
+
+        /* Nothing spent yet */
+        bool ok = !wallet_is_outpoint_spent(w, &txid1, 0);
+        ok = ok && !wallet_is_outpoint_spent(w, &txid1, 1);
+        ok = ok && !wallet_is_outpoint_spent(w, &txid2, 0);
+
+        /* Mark txid1:0 as spent */
+        wallet_mark_outpoint_spent(w, &txid1, 0);
+        ok = ok && wallet_is_outpoint_spent(w, &txid1, 0);
+        ok = ok && !wallet_is_outpoint_spent(w, &txid1, 1);
+        ok = ok && !wallet_is_outpoint_spent(w, &txid2, 0);
+        ok = ok && (w->num_spent == 1);
+
+        /* Mark txid1:1 and txid2:0 */
+        wallet_mark_outpoint_spent(w, &txid1, 1);
+        wallet_mark_outpoint_spent(w, &txid2, 0);
+        ok = ok && wallet_is_outpoint_spent(w, &txid1, 0);
+        ok = ok && wallet_is_outpoint_spent(w, &txid1, 1);
+        ok = ok && wallet_is_outpoint_spent(w, &txid2, 0);
+        ok = ok && !wallet_is_outpoint_spent(w, &txid2, 1);
+        ok = ok && (w->num_spent == 3);
+
+        /* Double-mark is idempotent */
+        wallet_mark_outpoint_spent(w, &txid1, 0);
+        ok = ok && (w->num_spent == 3);
+
+        /* Stress: mark 1000 outpoints, verify all found */
+        for (uint32_t i = 0; i < 1000; i++) {
+            struct uint256 tid;
+            memset(&tid, 0, sizeof(tid));
+            memcpy(tid.data, &i, sizeof(i));
+            wallet_mark_outpoint_spent(w, &tid, i);
+        }
+        for (uint32_t i = 0; i < 1000; i++) {
+            struct uint256 tid;
+            memset(&tid, 0, sizeof(tid));
+            memcpy(tid.data, &i, sizeof(i));
+            if (!wallet_is_outpoint_spent(w, &tid, i)) { ok = false; break; }
+        }
+
+        wallet_free(w);
+        free(wp);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* Sapling extended spending key encode/decode roundtrip */
+    {
+        printf("Sapling xsk encode/decode roundtrip... ");
+        bool ok = true;
+
+        struct sapling_keystore sks;
+        sapling_keystore_init(&sks);
+
+        uint8_t seed[32];
+        memset(seed, 0x42, 32);
+        sapling_keystore_set_seed(&sks, seed);
+
+        uint8_t d[11], pk_d[32];
+        ok = ok && sapling_keystore_new_address(&sks, d, pk_d);
+
+        const struct sapling_key_entry *ke = &sks.keys[0];
+        char encoded[512];
+        ok = ok && sapling_encode_extended_spending_key(
+            &ke->xsk, "secret-extended-key-main", encoded, sizeof(encoded));
+
+        ok = ok && (strncmp(encoded, "secret-extended-key-main1", 25) == 0);
+
+        struct zip32_xsk decoded;
+        ok = ok && sapling_decode_extended_spending_key(encoded, &decoded);
+
+        ok = ok && (decoded.depth == ke->xsk.depth);
+        ok = ok && (decoded.parent_fvk_tag == ke->xsk.parent_fvk_tag);
+        ok = ok && (decoded.child_index == ke->xsk.child_index);
+        ok = ok && (memcmp(decoded.chain_code, ke->xsk.chain_code, 32) == 0);
+        ok = ok && (memcmp(decoded.expsk.ask, ke->xsk.expsk.ask, 32) == 0);
+        ok = ok && (memcmp(decoded.expsk.nsk, ke->xsk.expsk.nsk, 32) == 0);
+        ok = ok && (memcmp(decoded.expsk.ovk, ke->xsk.expsk.ovk, 32) == 0);
+        ok = ok && (memcmp(decoded.dk, ke->xsk.dk, 32) == 0);
+
+        sapling_keystore_free(&sks);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* Sapling xfvk encode/decode roundtrip */
+    {
+        printf("Sapling xfvk encode/decode roundtrip... ");
+        bool ok = true;
+
+        struct sapling_keystore sks;
+        sapling_keystore_init(&sks);
+
+        uint8_t seed[32];
+        memset(seed, 0xAB, 32);
+        sapling_keystore_set_seed(&sks, seed);
+
+        uint8_t d[11], pk_d[32];
+        ok = ok && sapling_keystore_new_address(&sks, d, pk_d);
+
+        const struct sapling_key_entry *ke = &sks.keys[0];
+        char encoded[512];
+        ok = ok && sapling_encode_extended_full_viewing_key(
+            &ke->xfvk, "zviews", encoded, sizeof(encoded));
+
+        ok = ok && (strncmp(encoded, "zviews1", 7) == 0);
+
+        struct zip32_xfvk decoded;
+        ok = ok && sapling_decode_extended_full_viewing_key(encoded, &decoded);
+
+        ok = ok && (decoded.depth == ke->xfvk.depth);
+        ok = ok && (memcmp(decoded.fvk.ak, ke->xfvk.fvk.ak, 32) == 0);
+        ok = ok && (memcmp(decoded.fvk.nk, ke->xfvk.fvk.nk, 32) == 0);
+        ok = ok && (memcmp(decoded.fvk.ovk, ke->xfvk.fvk.ovk, 32) == 0);
+        ok = ok && (memcmp(decoded.dk, ke->xfvk.dk, 32) == 0);
+
+        sapling_keystore_free(&sks);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* Sapling import xsk into keystore */
+    {
+        printf("Sapling import xsk into keystore... ");
+        bool ok = true;
+
+        /* Generate key in keystore A */
+        struct sapling_keystore sks_a;
+        sapling_keystore_init(&sks_a);
+        uint8_t seed[32];
+        memset(seed, 0x99, 32);
+        sapling_keystore_set_seed(&sks_a, seed);
+        uint8_t d[11], pk_d[32];
+        ok = ok && sapling_keystore_new_address(&sks_a, d, pk_d);
+
+        /* Export and import into keystore B */
+        struct sapling_keystore sks_b;
+        sapling_keystore_init(&sks_b);
+
+        ok = ok && sapling_keystore_import_xsk(&sks_b, &sks_a.keys[0].xsk);
+        ok = ok && (sks_b.num_keys == 1);
+
+        /* Verify imported key produces same IVK */
+        ok = ok && (memcmp(sks_b.keys[0].ivk, sks_a.keys[0].ivk, 32) == 0);
+        /* Verify same payment address */
+        ok = ok && (memcmp(sks_b.keys[0].diversifier, d, 11) == 0);
+        ok = ok && (memcmp(sks_b.keys[0].pk_d, pk_d, 32) == 0);
+
+        /* Duplicate import should fail */
+        ok = ok && !sapling_keystore_import_xsk(&sks_b, &sks_a.keys[0].xsk);
+        ok = ok && (sks_b.num_keys == 1);
+
+        sapling_keystore_free(&sks_a);
+        sapling_keystore_free(&sks_b);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* Sapling find key by address */
+    {
+        printf("Sapling find key by address... ");
+        bool ok = true;
+
+        struct sapling_keystore sks;
+        sapling_keystore_init(&sks);
+        uint8_t seed[32];
+        memset(seed, 0x77, 32);
+        sapling_keystore_set_seed(&sks, seed);
+
+        uint8_t d1[11], pk1[32], d2[11], pk2[32];
+        ok = ok && sapling_keystore_new_address(&sks, d1, pk1);
+        ok = ok && sapling_keystore_new_address(&sks, d2, pk2);
+
+        const struct sapling_key_entry *found1 =
+            sapling_keystore_find_by_address(&sks, d1, pk1);
+        const struct sapling_key_entry *found2 =
+            sapling_keystore_find_by_address(&sks, d2, pk2);
+        ok = ok && (found1 != NULL);
+        ok = ok && (found2 != NULL);
+        ok = ok && (found1 != found2);
+        ok = ok && (memcmp(found1->ivk, sks.keys[0].ivk, 32) == 0);
+        ok = ok && (memcmp(found2->ivk, sks.keys[1].ivk, 32) == 0);
+
+        /* Non-existent address */
+        uint8_t fake_d[11] = {0};
+        uint8_t fake_pk[32] = {0};
+        ok = ok && (sapling_keystore_find_by_address(&sks, fake_d, fake_pk) == NULL);
+
+        sapling_keystore_free(&sks);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* Sapling full export→import→address roundtrip via bech32 */
+    {
+        printf("Sapling full export/import bech32 roundtrip... ");
+        bool ok = true;
+
+        struct sapling_keystore sks;
+        sapling_keystore_init(&sks);
+        uint8_t seed[32];
+        memset(seed, 0x55, 32);
+        sapling_keystore_set_seed(&sks, seed);
+
+        uint8_t d_orig[11], pk_orig[32];
+        ok = ok && sapling_keystore_new_address(&sks, d_orig, pk_orig);
+
+        /* Encode payment address */
+        char zaddr[128];
+        ok = ok && sapling_encode_payment_address(d_orig, pk_orig, "zs", zaddr, sizeof(zaddr));
+
+        /* Encode spending key */
+        char xsk_str[512];
+        ok = ok && sapling_encode_extended_spending_key(
+            &sks.keys[0].xsk, "secret-extended-key-main", xsk_str, sizeof(xsk_str));
+
+        /* Import into fresh keystore */
+        struct sapling_keystore sks2;
+        sapling_keystore_init(&sks2);
+
+        struct zip32_xsk imported_xsk;
+        ok = ok && sapling_decode_extended_spending_key(xsk_str, &imported_xsk);
+        ok = ok && sapling_keystore_import_xsk(&sks2, &imported_xsk);
+
+        /* Verify address matches */
+        char zaddr2[128];
+        ok = ok && sapling_encode_payment_address(
+            sks2.keys[0].diversifier, sks2.keys[0].pk_d, "zs", zaddr2, sizeof(zaddr2));
+        ok = ok && (strcmp(zaddr, zaddr2) == 0);
+
+        sapling_keystore_free(&sks);
+        sapling_keystore_free(&sks2);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* Amount formatting: integer-only, no floating-point rounding */
+    {
+        printf("Amount formatting precision... ");
+        bool ok = true;
+        char buf[32];
+
+        /* Test format_amount logic (same as wallet_rpc.c) */
+        struct { int64_t sat; const char *expected; } amt_tests[] = {
+            { 0,                    "0.00000000" },
+            { 1,                    "0.00000001" },
+            { 100000000,            "1.00000000" },
+            { 99900000,             "0.99900000" },    /* 1 ZCL minus 0.001 fee */
+            { 99990000,             "0.99990000" },    /* 1 ZCL minus 0.0001 fee */
+            { 12345678,             "0.12345678" },
+            { 2100000000000000LL,   "21000000.00000000" },
+            { -50000000,            "-0.50000000" },
+            { 10000000,             "0.10000000" },    /* common FP rounding victim */
+            { 99999999,             "0.99999999" },
+            { 100000001,            "1.00000001" },
+        };
+        for (size_t i = 0; i < sizeof(amt_tests)/sizeof(amt_tests[0]); i++) {
+            int64_t sat = amt_tests[i].sat;
+            bool neg = sat < 0;
+            int64_t abs_val = neg ? -sat : sat;
+            snprintf(buf, sizeof(buf), "%s%lld.%08lld",
+                     neg ? "-" : "",
+                     (long long)(abs_val / 100000000),
+                     (long long)(abs_val % 100000000));
+            if (strcmp(buf, amt_tests[i].expected) != 0) {
+                printf("FAIL at %lld: got '%s' expected '%s'\n",
+                       (long long)sat, buf, amt_tests[i].expected);
+                ok = false;
+                break;
+            }
+        }
+
+        if (ok) printf("OK\n");
+        else { failures++; }
+    }
+
+    /* ================================================================ */
+    /* SQLite ActiveRecord database tests                               */
+    /* ================================================================ */
+
+    /* DB open/close and schema creation */
+    {
+        printf("SQLite DB open/close... ");
+        struct node_db ndb;
+        bool ok = node_db_open(&ndb, ":memory:");
+        if (ok) {
+            int ver = node_db_schema_version(&ndb);
+            ok = ok && (ver == 1);
+            node_db_close(&ndb);
+        }
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* DB state key-value store */
+    {
+        printf("SQLite state set/get... ");
+        struct node_db ndb;
+        bool ok = node_db_open(&ndb, ":memory:");
+        int64_t val = 0;
+        ok = ok && node_db_state_set_int(&ndb, "tip_height", 3034538);
+        ok = ok && node_db_state_get_int(&ndb, "tip_height", &val);
+        ok = ok && (val == 3034538);
+
+        uint8_t blob[32] = {0xde, 0xad, 0xbe, 0xef};
+        ok = ok && node_db_state_set(&ndb, "best_hash", blob, 32);
+        uint8_t got[32];
+        size_t got_len = 0;
+        ok = ok && node_db_state_get(&ndb, "best_hash", got, 32, &got_len);
+        ok = ok && (got_len == 32) && (got[0] == 0xde);
+        node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* DB block CRUD */
+    {
+        printf("SQLite block save/find... ");
+        struct node_db ndb;
+        bool ok = node_db_open(&ndb, ":memory:");
+
+        struct db_block blk;
+        memset(&blk, 0, sizeof(blk));
+        memset(blk.hash, 0xAA, 32);
+        blk.height = 100;
+        memset(blk.prev_hash, 0xBB, 32);
+        blk.version = 4;
+        memset(blk.merkle_root, 0xCC, 32);
+        blk.time = 1700000000;
+        blk.bits = 0x1d00ffff;
+        memset(blk.nonce, 0xDD, 32);
+        uint8_t sol[] = {0x01, 0x02, 0x03};
+        blk.solution = sol;
+        blk.solution_len = 3;
+        memset(blk.chain_work, 0xEE, 32);
+        blk.status = 5;
+        blk.file_num = 1;
+        blk.data_pos = 8192;
+        blk.num_tx = 42;
+
+        ok = ok && db_block_save(&ndb, &blk);
+        ok = ok && (db_block_count(&ndb) == 1);
+        ok = ok && (db_block_max_height(&ndb) == 100);
+
+        struct db_block found;
+        ok = ok && db_block_find_by_hash(&ndb, blk.hash, &found);
+        ok = ok && (found.height == 100);
+        ok = ok && (found.num_tx == 42);
+        ok = ok && (found.file_num == 1);
+
+        ok = ok && db_block_find_by_height(&ndb, 100, &found);
+        ok = ok && (memcmp(found.hash, blk.hash, 32) == 0);
+
+        ok = ok && db_block_delete(&ndb, blk.hash);
+        ok = ok && (db_block_count(&ndb) == 0);
+
+        node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* DB transaction index CRUD */
+    {
+        printf("SQLite tx index save/find... ");
+        struct node_db ndb;
+        bool ok = node_db_open(&ndb, ":memory:");
+
+        struct db_tx_index tx;
+        memset(&tx, 0, sizeof(tx));
+        memset(tx.txid, 0x11, 32);
+        memset(tx.block_hash, 0x22, 32);
+        tx.block_height = 500;
+        tx.tx_index = 3;
+        tx.file_num = 2;
+        tx.file_pos = 16384;
+        tx.is_coinbase = true;
+
+        ok = ok && db_tx_save(&ndb, &tx);
+
+        struct db_tx_index found;
+        ok = ok && db_tx_find(&ndb, tx.txid, &found);
+        ok = ok && (found.block_height == 500);
+        ok = ok && (found.tx_index == 3);
+        ok = ok && found.is_coinbase;
+
+        ok = ok && db_tx_delete(&ndb, tx.txid);
+        ok = ok && !db_tx_find(&ndb, tx.txid, &found);
+
+        node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* DB UTXO CRUD and balance */
+    {
+        printf("SQLite UTXO save/find/balance... ");
+        struct node_db ndb;
+        bool ok = node_db_open(&ndb, ":memory:");
+
+        uint8_t script[] = {0x76, 0xa9, 0x14};
+        uint8_t addr[20];
+        memset(addr, 0x42, 20);
+
+        struct db_utxo u1 = {
+            .vout = 0, .value = 50000000,
+            .script = script, .script_len = 3,
+            .script_type = SCRIPT_P2PKH,
+            .has_address = true, .height = 100,
+            .is_coinbase = false
+        };
+        memset(u1.txid, 0xAA, 32);
+        memcpy(u1.address_hash, addr, 20);
+
+        struct db_utxo u2 = {
+            .vout = 1, .value = 30000000,
+            .script = script, .script_len = 3,
+            .script_type = SCRIPT_P2PKH,
+            .has_address = true, .height = 101,
+            .is_coinbase = false
+        };
+        memset(u2.txid, 0xBB, 32);
+        memcpy(u2.address_hash, addr, 20);
+
+        ok = ok && db_utxo_save(&ndb, &u1);
+        ok = ok && db_utxo_save(&ndb, &u2);
+        ok = ok && (db_utxo_count(&ndb) == 2);
+        ok = ok && db_utxo_exists(&ndb, u1.txid, 0);
+        ok = ok && !db_utxo_exists(&ndb, u1.txid, 1);
+
+        int64_t bal = db_utxo_balance_for_address(&ndb, addr);
+        ok = ok && (bal == 80000000);
+
+        ok = ok && db_utxo_delete(&ndb, u1.txid, 0);
+        ok = ok && (db_utxo_count(&ndb) == 1);
+        bal = db_utxo_balance_for_address(&ndb, addr);
+        ok = ok && (bal == 30000000);
+
+        node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* DB wallet key CRUD */
+    {
+        printf("SQLite wallet key save/find... ");
+        struct node_db ndb;
+        bool ok = node_db_open(&ndb, ":memory:");
+
+        struct db_wallet_key k;
+        memset(&k, 0, sizeof(k));
+        memset(k.pubkey_hash, 0x11, 20);
+        memset(k.pubkey, 0x02, 33);
+        k.pubkey_len = 33;
+        memset(k.privkey, 0xFF, 32);
+        k.compressed = true;
+        k.created_at = 1700000000;
+
+        ok = ok && db_wallet_key_save(&ndb, &k);
+        ok = ok && db_wallet_key_exists(&ndb, k.pubkey_hash);
+        ok = ok && (db_wallet_key_count(&ndb) == 1);
+
+        struct db_wallet_key found;
+        ok = ok && db_wallet_key_find(&ndb, k.pubkey_hash, &found);
+        ok = ok && found.compressed;
+        ok = ok && (found.pubkey_len == 33);
+        ok = ok && (memcmp(found.privkey, k.privkey, 32) == 0);
+
+        node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* DB wallet transaction paging */
+    {
+        printf("SQLite wallet tx list/find... ");
+        struct node_db ndb;
+        bool ok = node_db_open(&ndb, ":memory:");
+
+        uint8_t raw1[] = {0x01};
+        uint8_t raw2[] = {0x02, 0x03};
+        uint8_t raw3[] = {0x04, 0x05, 0x06};
+
+        struct db_wallet_tx t1;
+        memset(&t1, 0, sizeof(t1));
+        memset(t1.txid, 0xA1, 32);
+        t1.raw_tx = raw1;
+        t1.raw_tx_len = sizeof(raw1);
+        t1.time_received = 100;
+
+        struct db_wallet_tx t2;
+        memset(&t2, 0, sizeof(t2));
+        memset(t2.txid, 0xB2, 32);
+        t2.raw_tx = raw2;
+        t2.raw_tx_len = sizeof(raw2);
+        memset(t2.block_hash, 0x22, 32);
+        t2.has_block = true;
+        t2.block_height = 10;
+        t2.time_received = 300;
+        t2.from_me = true;
+        t2.fee = 1234;
+
+        struct db_wallet_tx t3;
+        memset(&t3, 0, sizeof(t3));
+        memset(t3.txid, 0xC3, 32);
+        t3.raw_tx = raw3;
+        t3.raw_tx_len = sizeof(raw3);
+        t3.time_received = 200;
+
+        ok = ok && db_wallet_tx_save(&ndb, &t1);
+        ok = ok && db_wallet_tx_save(&ndb, &t2);
+        ok = ok && db_wallet_tx_save(&ndb, &t3);
+        ok = ok && (db_wallet_tx_count(&ndb) == 3);
+
+        struct db_wallet_tx rows[2];
+        memset(rows, 0, sizeof(rows));
+        int n = db_wallet_tx_list(&ndb, rows, 2, 0);
+        ok = ok && (n == 2);
+        ok = ok && (rows[0].time_received == 300);
+        ok = ok && (rows[1].time_received == 200);
+        ok = ok && rows[0].from_me;
+        ok = ok && (rows[0].fee == 1234);
+        ok = ok && rows[0].has_block;
+        ok = ok && (rows[0].block_height == 10);
+        db_wallet_tx_free(&rows[0]);
+        db_wallet_tx_free(&rows[1]);
+
+        memset(rows, 0, sizeof(rows));
+        n = db_wallet_tx_list(&ndb, rows, 1, 2);
+        ok = ok && (n == 1);
+        ok = ok && (rows[0].time_received == 100);
+        db_wallet_tx_free(&rows[0]);
+
+        struct db_wallet_tx found;
+        ok = ok && db_wallet_tx_find(&ndb, t2.txid, &found);
+        ok = ok && found.from_me;
+        ok = ok && (found.fee == 1234);
+        ok = ok && found.has_block;
+        ok = ok && (memcmp(found.block_hash, t2.block_hash, 32) == 0);
+        db_wallet_tx_free(&found);
+
+        node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* DB wallet UTXO and balance */
+    {
+        printf("SQLite wallet UTXO balance/spend... ");
+        struct node_db ndb;
+        bool ok = node_db_open(&ndb, ":memory:");
+
+        uint8_t script[] = {0x76, 0xa9};
+        struct db_wallet_utxo u1;
+        memset(&u1, 0, sizeof(u1));
+        memset(u1.txid, 0xAA, 32);
+        u1.vout = 0;
+        u1.value = 100000000;
+        memset(u1.address_hash, 0x42, 20);
+        u1.script = script;
+        u1.script_len = 2;
+        u1.height = 500;
+
+        struct db_wallet_utxo u2;
+        memset(&u2, 0, sizeof(u2));
+        memset(u2.txid, 0xBB, 32);
+        u2.vout = 0;
+        u2.value = 50000000;
+        memcpy(u2.address_hash, u1.address_hash, 20);
+        u2.script = script;
+        u2.script_len = 2;
+        u2.height = 501;
+
+        ok = ok && db_wallet_utxo_save(&ndb, &u1);
+        ok = ok && db_wallet_utxo_save(&ndb, &u2);
+
+        int64_t bal = db_wallet_utxo_balance(&ndb);
+        ok = ok && (bal == 150000000);
+
+        /* Spend one UTXO */
+        uint8_t spending_tx[32];
+        memset(spending_tx, 0xCC, 32);
+        ok = ok && db_wallet_utxo_mark_spent(&ndb, u1.txid, 0,
+                                              spending_tx, 0);
+
+        bal = db_wallet_utxo_balance(&ndb);
+        ok = ok && (bal == 50000000);
+
+        /* List unspent */
+        struct db_wallet_utxo unspent[10];
+        int n = db_wallet_utxo_list_unspent(&ndb, unspent, 10);
+        ok = ok && (n == 1);
+        ok = ok && (unspent[0].value == 50000000);
+
+        node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* DB Sapling note balance */
+    {
+        printf("SQLite Sapling note save/balance... ");
+        struct node_db ndb;
+        bool ok = node_db_open(&ndb, ":memory:");
+
+        struct db_sapling_note n1;
+        memset(&n1, 0, sizeof(n1));
+        memset(n1.txid, 0xAA, 32);
+        n1.output_index = 0;
+        n1.value = 200000000;
+        memset(n1.rcm, 0x11, 32);
+        memset(n1.ivk, 0x22, 32);
+        memset(n1.diversifier, 0x33, 11);
+        memset(n1.pk_d, 0x44, 32);
+        memset(n1.cm, 0x55, 32);
+        memset(n1.nullifier, 0x66, 32);
+        n1.block_height = 1000;
+
+        ok = ok && db_sapling_note_save(&ndb, &n1);
+
+        int64_t bal = db_sapling_note_balance(&ndb);
+        ok = ok && (bal == 200000000);
+
+        bal = db_sapling_note_balance_for_ivk(&ndb, n1.ivk);
+        ok = ok && (bal == 200000000);
+
+        /* Mark spent via nullifier */
+        uint8_t spent_by[32];
+        memset(spent_by, 0x77, 32);
+        ok = ok && db_sapling_note_mark_spent(&ndb, n1.nullifier, spent_by);
+
+        bal = db_sapling_note_balance(&ndb);
+        ok = ok && (bal == 0);
+
+        node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* DB mempool persistence */
+    {
+        printf("SQLite mempool save/find/clear... ");
+        struct node_db ndb;
+        bool ok = node_db_open(&ndb, ":memory:");
+
+        uint8_t raw[] = {0x01, 0x00, 0x00, 0x00};
+        struct db_mempool_entry e;
+        memset(&e, 0, sizeof(e));
+        memset(e.txid, 0xAA, 32);
+        e.raw_tx = raw;
+        e.raw_tx_len = 4;
+        e.fee = 10000;
+        e.size = 250;
+        e.time_added = 1700000000;
+        e.height_added = 500;
+
+        ok = ok && db_mempool_save(&ndb, &e);
+        ok = ok && (db_mempool_count(&ndb) == 1);
+
+        /* Add a spend record */
+        uint8_t spent_txid[32];
+        memset(spent_txid, 0xBB, 32);
+        ok = ok && db_mempool_add_spend(&ndb, e.txid, spent_txid, 0);
+        ok = ok && db_mempool_is_spent(&ndb, spent_txid, 0);
+        ok = ok && !db_mempool_is_spent(&ndb, spent_txid, 1);
+
+        ok = ok && db_mempool_clear(&ndb);
+        ok = ok && (db_mempool_count(&ndb) == 0);
+
+        node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* DB peer storage */
+    {
+        printf("SQLite peer save/find/recent... ");
+        struct node_db ndb;
+        bool ok = node_db_open(&ndb, ":memory:");
+
+        struct db_peer p;
+        memset(&p, 0, sizeof(p));
+        p.ip[10] = 0xFF; p.ip[11] = 0xFF;
+        p.ip[12] = 127; p.ip[13] = 0; p.ip[14] = 0; p.ip[15] = 1;
+        p.port = 8033;
+        p.services = 1;
+        p.last_seen = 1700000000;
+
+        ok = ok && db_peer_save(&ndb, &p);
+        ok = ok && (db_peer_count(&ndb) == 1);
+
+        struct db_peer found;
+        ok = ok && db_peer_find_by_addr(&ndb, p.ip, p.port, &found);
+        ok = ok && (found.port == 8033);
+        ok = ok && (found.services == 1);
+
+        ok = ok && db_peer_mark_tried(&ndb, p.ip, p.port);
+        ok = ok && db_peer_find_by_addr(&ndb, p.ip, p.port, &found);
+        ok = ok && (found.attempts == 1);
+
+        ok = ok && db_peer_mark_seen(&ndb, p.ip, p.port, 1700000100);
+        ok = ok && db_peer_find_by_addr(&ndb, p.ip, p.port, &found);
+        ok = ok && (found.attempts == 0);
+        ok = ok && (found.last_seen == 1700000100);
+
+        struct db_peer recent[10];
+        int n = db_peer_recent(&ndb, recent, 10);
+        ok = ok && (n == 1);
+
+        node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* DB transaction batching */
+    {
+        printf("SQLite batch insert with begin/commit... ");
+        struct node_db ndb;
+        bool ok = node_db_open(&ndb, ":memory:");
+
+        ok = ok && node_db_begin(&ndb);
+        for (int i = 0; i < 100; i++) {
+            struct db_tx_index tx;
+            memset(&tx, 0, sizeof(tx));
+            memset(tx.txid, 0x11, 32);
+            tx.txid[0] = (uint8_t)((i >> 8) + 1);
+            tx.txid[1] = (uint8_t)((i & 0xFF) + 1);
+            memset(tx.block_hash, 0x22, 32);
+            tx.block_height = i;
+            tx.tx_index = 0;
+            tx.file_num = 0;
+            tx.file_pos = i * 1000;
+            ok = ok && db_tx_save(&ndb, &tx);
+        }
+        ok = ok && node_db_commit(&ndb);
+
+        /* Verify all 100 were inserted */
+        struct db_tx_index found;
+        uint8_t lookup[32];
+        memset(lookup, 0x11, 32);
+        lookup[0] = 1;
+        lookup[1] = 51; /* i=50 → (50>>8)+1=1, (50&0xFF)+1=51 */
+        ok = ok && db_tx_find(&ndb, lookup, &found);
+        ok = ok && (found.block_height == 50);
+
+        node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* DB sapling key CRUD */
+    {
+        printf("SQLite Sapling key save/find... ");
+        struct node_db ndb;
+        bool ok = node_db_open(&ndb, ":memory:");
+
+        struct db_sapling_key k;
+        memset(&k, 0, sizeof(k));
+        memset(k.ivk, 0x11, 32);
+        memset(k.xsk, 0x22, 169);
+        memset(k.xfvk, 0x33, 169);
+        memset(k.diversifier, 0x44, 11);
+        memset(k.pk_d, 0x55, 32);
+        k.child_index = 0;
+        snprintf(k.address, sizeof(k.address), "zs1testaddr");
+
+        ok = ok && db_sapling_key_save(&ndb, &k);
+        ok = ok && (db_sapling_key_count(&ndb) == 1);
+
+        struct db_sapling_key found;
+        ok = ok && db_sapling_key_find_by_ivk(&ndb, k.ivk, &found);
+        ok = ok && (found.child_index == 0);
+        ok = ok && (strcmp(found.address, "zs1testaddr") == 0);
+
+        ok = ok && db_sapling_key_find_by_address(&ndb, "zs1testaddr", &found);
+        ok = ok && (memcmp(found.ivk, k.ivk, 32) == 0);
+
+        node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* DB wallet seed singleton */
+    {
+        printf("SQLite wallet seed save/load... ");
+        struct node_db ndb;
+        bool ok = node_db_open(&ndb, ":memory:");
+
+        uint8_t seed[32];
+        memset(seed, 0xAB, 32);
+        ok = ok && db_wallet_seed_save(&ndb, seed, 5);
+
+        uint8_t loaded[32];
+        uint32_t next = 0;
+        ok = ok && db_wallet_seed_load(&ndb, loaded, &next);
+        ok = ok && (memcmp(loaded, seed, 32) == 0);
+        ok = ok && (next == 5);
+
+        /* Update */
+        ok = ok && db_wallet_seed_save(&ndb, seed, 10);
+        ok = ok && db_wallet_seed_load(&ndb, loaded, &next);
+        ok = ok && (next == 10);
+
+        node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ================================================================ */
+    /* ActiveRecord callbacks, validations, relationships, router       */
+    /* ================================================================ */
+
+    /* AR validation — block model */
+    {
+        printf("AR validation: block... ");
+        struct ar_errors errs;
+        struct db_block blk;
+        memset(&blk, 0, sizeof(blk));
+
+        /* Empty block should fail validation (hash, prev_hash, merkle_root blank) */
+        bool ok = !db_block_validate(&blk, &errs);
+        ok = ok && ar_errors_any(&errs);
+        ok = ok && (errs.count >= 3); /* hash, prev_hash, merkle_root, time, bits */
+
+        /* Valid block should pass */
+        memset(blk.hash, 0xAA, 32);
+        memset(blk.prev_hash, 0xBB, 32);
+        memset(blk.merkle_root, 0xCC, 32);
+        blk.height = 100;
+        blk.time = 1700000000;
+        blk.bits = 0x1d00ffff;
+        blk.status = 3;
+        ok = ok && db_block_validate(&blk, &errs);
+        ok = ok && !ar_errors_any(&errs);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* AR validation — tx model */
+    {
+        printf("AR validation: tx... ");
+        struct ar_errors errs;
+        struct db_tx_index tx;
+        memset(&tx, 0, sizeof(tx));
+
+        bool ok = !db_tx_validate(&tx, &errs);
+        ok = ok && (errs.count >= 2); /* txid, block_hash blank */
+
+        memset(tx.txid, 0x11, 32);
+        memset(tx.block_hash, 0x22, 32);
+        tx.block_height = 100;
+        ok = ok && db_tx_validate(&tx, &errs);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* AR validation — utxo model */
+    {
+        printf("AR validation: utxo... ");
+        struct ar_errors errs;
+        struct db_utxo u;
+        memset(&u, 0, sizeof(u));
+
+        bool ok = !db_utxo_validate(&u, &errs);
+        ok = ok && ar_errors_any(&errs);
+
+        memset(u.txid, 0x33, 32);
+        u.value = 50000;
+        u.height = 100;
+        ok = ok && db_utxo_validate(&u, &errs);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* AR validation — wallet key model */
+    {
+        printf("AR validation: wallet key... ");
+        struct ar_errors errs;
+        struct db_wallet_key k;
+        memset(&k, 0, sizeof(k));
+
+        bool ok = !db_wallet_key_validate(&k, &errs);
+        ok = ok && (errs.count >= 3); /* pubkey_hash, pubkey, privkey blank */
+
+        memset(k.pubkey_hash, 0x44, 20);
+        memset(k.pubkey, 0x55, 33);
+        k.pubkey_len = 33;
+        memset(k.privkey, 0x66, 32);
+        ok = ok && db_wallet_key_validate(&k, &errs);
+
+        /* Bad pubkey_len */
+        k.pubkey_len = 10;
+        ok = ok && !db_wallet_key_validate(&k, &errs);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* AR validation — peer model */
+    {
+        printf("AR validation: peer... ");
+        struct ar_errors errs;
+        struct db_peer p;
+        memset(&p, 0, sizeof(p));
+
+        bool ok = !db_peer_validate(&p, &errs);
+
+        memset(p.ip, 0x77, 16);
+        p.port = 8033;
+        ok = ok && db_peer_validate(&p, &errs);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* AR validation — mempool model */
+    {
+        printf("AR validation: mempool... ");
+        struct ar_errors errs;
+        struct db_mempool_entry e;
+        memset(&e, 0, sizeof(e));
+
+        bool ok = !db_mempool_validate(&e, &errs);
+
+        memset(e.txid, 0x88, 32);
+        e.size = 225;
+        ok = ok && db_mempool_validate(&e, &errs);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* AR before_save callback — halt save */
+    {
+        printf("AR before_save callback (halt)... ");
+        struct node_db ndb;
+        bool ok = node_db_open(&ndb, ":memory:");
+
+        /* Register a before_save that rejects blocks at height 0 */
+        struct ar_callbacks *cbs = db_block_callbacks();
+        ar_callbacks_init(cbs); /* Reset */
+
+        ar_register_before_save(cbs, ar_test_reject_zero);
+
+        uint8_t sol[] = {0x01};
+        struct db_block blk;
+        memset(&blk, 0, sizeof(blk));
+        memset(blk.hash, 0xAA, 32);
+        memset(blk.prev_hash, 0xBB, 32);
+        memset(blk.merkle_root, 0xCC, 32);
+        blk.time = 1700000000;
+        blk.bits = 0x1d00ffff;
+        blk.status = 3;
+        blk.solution = sol;
+        blk.solution_len = 1;
+
+        /* height 0 → should be rejected by callback */
+        blk.height = 0;
+        ok = ok && !db_block_save(&ndb, &blk);
+
+        /* height 1 → should succeed */
+        blk.height = 1;
+        ok = ok && db_block_save(&ndb, &blk);
+        ok = ok && (db_block_count(&ndb) == 1);
+
+        ar_callbacks_init(cbs); /* Clean up */
+        node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* AR after_save callback — counter */
+    {
+        printf("AR after_save callback (counter)... ");
+        struct node_db ndb;
+        bool ok = node_db_open(&ndb, ":memory:");
+
+        ar_test_save_count = 0;
+
+        struct ar_callbacks *cbs = db_block_callbacks();
+        ar_callbacks_init(cbs);
+        ar_register_after_save(cbs, ar_test_count_saves);
+
+        uint8_t sol[] = {0x01};
+        struct db_block blk;
+        memset(&blk, 0, sizeof(blk));
+        memset(blk.prev_hash, 0xBB, 32);
+        memset(blk.merkle_root, 0xCC, 32);
+        blk.time = 1700000000;
+        blk.bits = 0x1d00ffff;
+        blk.status = 3;
+        blk.solution = sol;
+        blk.solution_len = 1;
+
+        for (int i = 0; i < 5; i++) {
+            memset(blk.hash, i + 1, 32);
+            blk.height = i + 1;
+            ok = ok && db_block_save(&ndb, &blk);
+        }
+        ok = ok && (ar_test_save_count == 5);
+        ok = ok && (db_block_count(&ndb) == 5);
+
+        ar_callbacks_init(cbs);
+        node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* AR before_destroy callback */
+    {
+        printf("AR before_destroy callback... ");
+        struct node_db ndb;
+        bool ok = node_db_open(&ndb, ":memory:");
+
+        struct ar_callbacks *cbs = db_block_callbacks();
+        ar_callbacks_init(cbs);
+        ar_register_before_destroy(cbs, ar_test_prevent_delete);
+
+        uint8_t sol[] = {0x01};
+        struct db_block blk;
+        memset(&blk, 0, sizeof(blk));
+        memset(blk.hash, 0xDD, 32);
+        memset(blk.prev_hash, 0xBB, 32);
+        memset(blk.merkle_root, 0xCC, 32);
+        blk.height = 42;
+        blk.time = 1700000000;
+        blk.bits = 0x1d00ffff;
+        blk.status = 3;
+        blk.solution = sol;
+        blk.solution_len = 1;
+        ok = ok && db_block_save(&ndb, &blk);
+        ok = ok && (db_block_count(&ndb) == 1);
+
+        /* Delete should be prevented */
+        ok = ok && !db_block_delete(&ndb, blk.hash);
+        ok = ok && (db_block_count(&ndb) == 1);
+
+        ar_callbacks_init(cbs);
+        node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* AR error messages accumulation */
+    {
+        printf("AR error messages... ");
+        struct ar_errors errs;
+        ar_errors_clear(&errs);
+
+        bool ok = !ar_errors_any(&errs);
+        ar_errors_add(&errs, "height", "must be positive");
+        ar_errors_add(&errs, "hash", "can't be blank");
+        ar_errors_add(&errs, "time", "can't be zero");
+        ok = ok && ar_errors_any(&errs);
+        ok = ok && (errs.count == 3);
+
+        char buf[1024];
+        ar_errors_full_messages(&errs, buf, sizeof(buf));
+        ok = ok && (strstr(buf, "height") != NULL);
+        ok = ok && (strstr(buf, "hash") != NULL);
+        ok = ok && (strstr(buf, "time") != NULL);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* Block → Transaction relationship (has_many) */
+    {
+        printf("AR relationship: block has_many transactions... ");
+        struct node_db ndb;
+        bool ok = node_db_open(&ndb, ":memory:");
+
+        /* Reset block callbacks */
+        struct ar_callbacks *cbs = db_block_callbacks();
+        ar_callbacks_init(cbs);
+
+        /* Save a block */
+        uint8_t sol[] = {0x01};
+        struct db_block blk;
+        memset(&blk, 0, sizeof(blk));
+        memset(blk.hash, 0xAA, 32);
+        memset(blk.prev_hash, 0xBB, 32);
+        memset(blk.merkle_root, 0xCC, 32);
+        blk.height = 100;
+        blk.time = 1700000000;
+        blk.bits = 0x1d00ffff;
+        blk.status = 3;
+        blk.solution = sol;
+        blk.solution_len = 1;
+        blk.num_tx = 3;
+        ok = ok && db_block_save(&ndb, &blk);
+
+        /* Save 3 transactions belonging to this block */
+        for (int i = 0; i < 3; i++) {
+            struct db_tx_index tx;
+            memset(&tx, 0, sizeof(tx));
+            memset(tx.txid, 0x10 + i, 32);
+            memcpy(tx.block_hash, blk.hash, 32);
+            tx.block_height = 100;
+            tx.tx_index = i;
+            tx.file_num = 1;
+            tx.file_pos = 1000 + i * 200;
+            tx.is_coinbase = (i == 0);
+            ok = ok && db_tx_save(&ndb, &tx);
+        }
+
+        /* Query relationship: block.transactions */
+        struct db_tx_index txs[10];
+        int count = db_block_transactions(&ndb, blk.hash, txs, 10);
+        ok = ok && (count == 3);
+        ok = ok && (txs[0].tx_index == 0);
+        ok = ok && txs[0].is_coinbase;
+        ok = ok && (txs[2].tx_index == 2);
+
+        node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* Transaction → Block relationship (belongs_to) */
+    {
+        printf("AR relationship: tx belongs_to block... ");
+        struct node_db ndb;
+        bool ok = node_db_open(&ndb, ":memory:");
+        struct ar_callbacks *cbs = db_block_callbacks();
+        ar_callbacks_init(cbs);
+
+        /* Save a block */
+        uint8_t sol[] = {0x01};
+        struct db_block blk;
+        memset(&blk, 0, sizeof(blk));
+        memset(blk.hash, 0xDD, 32);
+        memset(blk.prev_hash, 0xEE, 32);
+        memset(blk.merkle_root, 0xFF, 32);
+        blk.height = 200;
+        blk.time = 1700000000;
+        blk.bits = 0x1d00ffff;
+        blk.status = 3;
+        blk.solution = sol;
+        blk.solution_len = 1;
+        ok = ok && db_block_save(&ndb, &blk);
+
+        /* Save a transaction */
+        struct db_tx_index tx;
+        memset(&tx, 0, sizeof(tx));
+        memset(tx.txid, 0x20, 32);
+        memcpy(tx.block_hash, blk.hash, 32);
+        tx.block_height = 200;
+        tx.tx_index = 0;
+        ok = ok && db_tx_save(&ndb, &tx);
+
+        /* Query relationship: tx.block */
+        struct db_block found;
+        ok = ok && db_tx_block(&ndb, &tx, &found);
+        ok = ok && (found.height == 200);
+        ok = ok && (memcmp(found.hash, blk.hash, 32) == 0);
+
+        node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* Block → prev/next relationship */
+    {
+        printf("AR relationship: block prev/next... ");
+        struct node_db ndb;
+        bool ok = node_db_open(&ndb, ":memory:");
+        struct ar_callbacks *cbs = db_block_callbacks();
+        ar_callbacks_init(cbs);
+
+        /* Save two blocks in sequence */
+        uint8_t sol[] = {0x01};
+        struct db_block blk1, blk2;
+        memset(&blk1, 0, sizeof(blk1));
+        memset(blk1.hash, 0x01, 32);
+        memset(blk1.prev_hash, 0xFF, 32);
+        memset(blk1.merkle_root, 0xAA, 32);
+        blk1.height = 1; blk1.time = 1700000000;
+        blk1.bits = 0x1d00ffff; blk1.status = 3;
+        blk1.solution = sol; blk1.solution_len = 1;
+        ok = ok && db_block_save(&ndb, &blk1);
+
+        memset(&blk2, 0, sizeof(blk2));
+        memset(blk2.hash, 0x02, 32);
+        memcpy(blk2.prev_hash, blk1.hash, 32);
+        memset(blk2.merkle_root, 0xBB, 32);
+        blk2.height = 2; blk2.time = 1700000100;
+        blk2.bits = 0x1d00ffff; blk2.status = 3;
+        blk2.solution = sol; blk2.solution_len = 1;
+        ok = ok && db_block_save(&ndb, &blk2);
+
+        /* blk2.prev should be blk1 */
+        struct db_block prev;
+        ok = ok && db_block_prev(&ndb, &blk2, &prev);
+        ok = ok && (prev.height == 1);
+
+        /* blk1.next should be blk2 */
+        struct db_block next;
+        ok = ok && db_block_next(&ndb, &blk1, &next);
+        ok = ok && (next.height == 2);
+
+        node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* UTXO → Transaction relationship (belongs_to) */
+    {
+        printf("AR relationship: utxo belongs_to tx... ");
+        struct node_db ndb;
+        bool ok = node_db_open(&ndb, ":memory:");
+        struct ar_callbacks *cbsu = db_utxo_callbacks();
+        ar_callbacks_init(cbsu);
+
+        /* Save a tx index entry */
+        struct db_tx_index tx;
+        memset(&tx, 0, sizeof(tx));
+        memset(tx.txid, 0x30, 32);
+        memset(tx.block_hash, 0x31, 32);
+        tx.block_height = 300;
+        ok = ok && db_tx_save(&ndb, &tx);
+
+        /* Save a UTXO referencing that tx */
+        uint8_t script[] = {0x76, 0xa9, 0x14}; /* P2PKH prefix */
+        struct db_utxo u;
+        memset(&u, 0, sizeof(u));
+        memcpy(u.txid, tx.txid, 32);
+        u.vout = 0;
+        u.value = 100000;
+        u.script = script;
+        u.script_len = sizeof(script);
+        u.height = 300;
+        ok = ok && db_utxo_save(&ndb, &u);
+
+        /* Query relationship: utxo.transaction */
+        struct db_tx_index found_tx;
+        ok = ok && db_utxo_transaction(&ndb, &u, &found_tx);
+        ok = ok && (found_tx.block_height == 300);
+
+        node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* WalletKey → WalletUTXOs relationship (has_many) */
+    {
+        printf("AR relationship: wallet_key has_many utxos... ");
+        struct node_db ndb;
+        bool ok = node_db_open(&ndb, ":memory:");
+
+        /* Save a wallet key */
+        struct db_wallet_key k;
+        memset(&k, 0, sizeof(k));
+        memset(k.pubkey_hash, 0x40, 20);
+        memset(k.pubkey, 0x41, 33);
+        k.pubkey_len = 33;
+        memset(k.privkey, 0x42, 32);
+        k.compressed = true;
+        k.created_at = 1700000000;
+        ok = ok && db_wallet_key_save(&ndb, &k);
+
+        /* Save 2 wallet UTXOs for this key */
+        uint8_t script[] = {0x76, 0xa9};
+        for (int i = 0; i < 2; i++) {
+            struct db_wallet_utxo u;
+            memset(&u, 0, sizeof(u));
+            memset(u.txid, 0x50 + i, 32);
+            u.vout = 0;
+            u.value = 10000 * (i + 1);
+            memcpy(u.address_hash, k.pubkey_hash, 20);
+            u.script = script;
+            u.script_len = sizeof(script);
+            u.height = 400 + i;
+            ok = ok && db_wallet_utxo_save(&ndb, &u);
+        }
+
+        /* Query relationship: key.utxos */
+        struct db_wallet_utxo utxos[10];
+        int count = db_wallet_key_utxos(&ndb, k.pubkey_hash, utxos, 10);
+        ok = ok && (count == 2);
+        /* Ordered by value DESC */
+        ok = ok && (utxos[0].value == 20000);
+        ok = ok && (utxos[1].value == 10000);
+
+        /* WalletUTXO belongs_to key */
+        struct db_wallet_key found_key;
+        ok = ok && db_wallet_utxo_key(&ndb, &utxos[0], &found_key);
+        ok = ok && (memcmp(found_key.pubkey_hash, k.pubkey_hash, 20) == 0);
+
+        node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* AR Router — route dispatch and filters */
+    {
+        printf("AR router: dispatch and filters... ");
+        struct ar_router router;
+        ar_router_init(&router);
+
+        bool ok = ar_router_add_route(&router, "getbalance", "wallet",
+                                        ar_test_handler);
+        ok = ok && ar_router_add_route(&router, "getinfo", "misc",
+                                        ar_test_handler);
+        ok = ok && (router.num_routes == 2);
+
+        /* Find route */
+        const struct ar_route *r = ar_router_find(&router, "getbalance");
+        ok = ok && (r != NULL);
+        ok = ok && (strcmp(r->category, "wallet") == 0);
+
+        /* Nonexistent route */
+        ok = ok && (ar_router_find(&router, "nosuchmethod") == NULL);
+
+        /* Dispatch succeeds */
+        ok = ok && ar_router_dispatch(&router, "getbalance",
+                                       NULL, false, NULL, NULL);
+
+        /* Add global filter */
+        ar_router_add_filter(&router, ar_test_auth_filter);
+
+        /* Dispatch with filter passing */
+        ar_test_auth_passed = true;
+        ok = ok && ar_router_dispatch(&router, "getinfo",
+                                       NULL, false, NULL, NULL);
+
+        /* Dispatch with filter failing */
+        ar_test_auth_passed = false;
+        ok = ok && !ar_router_dispatch(&router, "getinfo",
+                                        NULL, false, NULL, NULL);
+
+        /* Per-route filter */
+        ar_test_auth_passed = true;
+        ar_route_add_filter(&router, "getbalance", ar_test_per_route_filter);
+
+        ar_test_route_reject = false;
+        ok = ok && ar_router_dispatch(&router, "getbalance",
+                                       NULL, false, NULL, NULL);
+
+        ar_test_route_reject = true;
+        ok = ok && !ar_router_dispatch(&router, "getbalance",
+                                        NULL, false, NULL, NULL);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* AR wallet_tx validation */
+    {
+        printf("AR validation: wallet_tx... ");
+        struct ar_errors errs;
+        struct db_wallet_tx t;
+        memset(&t, 0, sizeof(t));
+
+        bool ok = !db_wallet_tx_validate(&t, &errs);
+        ok = ok && ar_errors_any(&errs);
+
+        memset(t.txid, 0x99, 32);
+        t.time_received = 1700000000;
+        ok = ok && db_wallet_tx_validate(&t, &errs);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* AR validation: wallet_utxo */
+    {
+        printf("AR validation: wallet_utxo... ");
+        struct ar_errors errs;
+        struct db_wallet_utxo u;
+        memset(&u, 0, sizeof(u));
+
+        bool ok = !db_wallet_utxo_validate(&u, &errs);
+        ok = ok && ar_errors_any(&errs);
+
+        memset(u.txid, 0xAA, 32);
+        u.value = 50000;
+        u.height = 100;
+        ok = ok && db_wallet_utxo_validate(&u, &errs);
+
+        /* Negative value fails */
+        u.value = -1;
+        ok = ok && !db_wallet_utxo_validate(&u, &errs);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* AR validation: sapling_note */
+    {
+        printf("AR validation: sapling_note... ");
+        struct ar_errors errs;
+        struct db_sapling_note n;
+        memset(&n, 0, sizeof(n));
+
+        bool ok = !db_sapling_note_validate(&n, &errs);
+        ok = ok && ar_errors_any(&errs);
+
+        memset(n.txid, 0xBB, 32);
+        memset(n.ivk, 0xCC, 32);
+        memset(n.nullifier, 0xDD, 32);
+        n.value = 100000;
+        ok = ok && db_sapling_note_validate(&n, &errs);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* AR save rejects invalid wallet_utxo */
+    {
+        printf("AR save rejects invalid wallet_utxo... ");
+        struct node_db ndb;
+        bool ok = node_db_open(&ndb, ":memory:");
+        struct ar_callbacks *cbs = db_wallet_utxo_callbacks();
+        ar_callbacks_init(cbs);
+
+        uint8_t dummy_script[] = {0x76, 0xa9};
+        struct db_wallet_utxo u;
+        memset(&u, 0, sizeof(u));
+        /* txid is zero → invalid */
+        u.value = 50000;
+        u.height = 100;
+        u.script = dummy_script;
+        u.script_len = sizeof(dummy_script);
+        ok = ok && !db_wallet_utxo_save(&ndb, &u);
+
+        /* Valid save */
+        memset(u.txid, 0xAA, 32);
+        memset(u.address_hash, 0xBB, 20);
+        ok = ok && db_wallet_utxo_save(&ndb, &u);
+
+        int64_t bal = db_wallet_utxo_balance(&ndb);
+        ok = ok && (bal == 50000);
+
+        node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* AR save rejects invalid sapling_note */
+    {
+        printf("AR save rejects invalid sapling_note... ");
+        struct node_db ndb;
+        bool ok = node_db_open(&ndb, ":memory:");
+        struct ar_callbacks *cbs = db_sapling_note_callbacks();
+        ar_callbacks_init(cbs);
+
+        struct db_sapling_note n;
+        memset(&n, 0, sizeof(n));
+        /* All zeros → invalid (txid, ivk, nullifier blank) */
+        ok = ok && !db_sapling_note_save(&ndb, &n);
+
+        /* Valid save */
+        memset(n.txid, 0xAA, 32);
+        memset(n.ivk, 0xBB, 32);
+        memset(n.nullifier, 0xCC, 32);
+        memset(n.diversifier, 0xDD, 11);
+        memset(n.pk_d, 0xEE, 32);
+        memset(n.cm, 0xFF, 32);
+        memset(n.rcm, 0x11, 32);
+        n.value = 200000;
+        n.block_height = 500;
+        ok = ok && db_sapling_note_save(&ndb, &n);
+
+        int64_t bal = db_sapling_note_balance(&ndb);
+        ok = ok && (bal == 200000);
+
+        node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* AR cascading delete: block → transactions */
+    {
+        printf("AR cascading delete: block -> transactions... ");
+        struct node_db ndb;
+        bool ok = node_db_open(&ndb, ":memory:");
+        struct ar_callbacks *cbs = db_block_callbacks();
+        ar_callbacks_init(cbs);
+
+        uint8_t sol[] = {0x01};
+        struct db_block blk;
+        memset(&blk, 0, sizeof(blk));
+        memset(blk.hash, 0xAA, 32);
+        memset(blk.prev_hash, 0xBB, 32);
+        memset(blk.merkle_root, 0xCC, 32);
+        blk.height = 100;
+        blk.time = 1700000000;
+        blk.bits = 0x1d00ffff;
+        blk.status = 3;
+        blk.solution = sol;
+        blk.solution_len = 1;
+        ok = ok && db_block_save(&ndb, &blk);
+
+        /* Add 3 transactions referencing this block */
+        for (int i = 0; i < 3; i++) {
+            struct db_tx_index tx;
+            memset(&tx, 0, sizeof(tx));
+            memset(tx.txid, 0x10 + i, 32);
+            memcpy(tx.block_hash, blk.hash, 32);
+            tx.block_height = 100;
+            tx.tx_index = i;
+            ok = ok && db_tx_save(&ndb, &tx);
+        }
+
+        struct db_tx_index txs[10];
+        int count = db_block_transactions(&ndb, blk.hash, txs, 10);
+        ok = ok && (count == 3);
+
+        /* Delete block → cascades to transactions */
+        ok = ok && db_block_delete(&ndb, blk.hash);
+        ok = ok && (db_block_count(&ndb) == 0);
+
+        /* Transactions should be gone */
+        count = db_block_transactions(&ndb, blk.hash, txs, 10);
+        ok = ok && (count == 0);
+
+        node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* AR cascading delete: wallet_tx → wallet_utxos */
+    {
+        printf("AR cascading delete: wallet_tx -> wallet_utxos... ");
+        struct node_db ndb;
+        bool ok = node_db_open(&ndb, ":memory:");
+        struct ar_callbacks *cbs_wtx = db_wallet_tx_callbacks();
+        ar_callbacks_init(cbs_wtx);
+        struct ar_callbacks *cbs_utxo = db_wallet_utxo_callbacks();
+        ar_callbacks_init(cbs_utxo);
+
+        uint8_t txid[32];
+        memset(txid, 0xAA, 32);
+        uint8_t raw[] = {0x01, 0x00};
+
+        struct db_wallet_tx t;
+        memset(&t, 0, sizeof(t));
+        memcpy(t.txid, txid, 32);
+        t.raw_tx = raw;
+        t.raw_tx_len = 2;
+        t.time_received = 1700000000;
+        ok = ok && db_wallet_tx_save(&ndb, &t);
+
+        /* Add 2 UTXOs for this tx */
+        uint8_t sc2[] = {0x76, 0xa9};
+        for (int i = 0; i < 2; i++) {
+            struct db_wallet_utxo u;
+            memset(&u, 0, sizeof(u));
+            memcpy(u.txid, txid, 32);
+            u.vout = (uint32_t)i;
+            u.value = 25000 * (i + 1);
+            u.height = 100;
+            memset(u.address_hash, 0xBB, 20);
+            u.script = sc2;
+            u.script_len = sizeof(sc2);
+            ok = ok && db_wallet_utxo_save(&ndb, &u);
+        }
+
+        int64_t bal = db_wallet_utxo_balance(&ndb);
+        ok = ok && (bal == 75000);
+
+        /* Delete wallet_tx → cascades to UTXOs */
+        ok = ok && db_wallet_tx_delete(&ndb, txid);
+        ok = ok && (db_wallet_tx_count(&ndb) == 0);
+
+        /* UTXOs should be gone */
+        bal = db_wallet_utxo_balance(&ndb);
+        ok = ok && (bal == 0);
+
+        node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* AR has_many: wallet_tx → wallet_utxos */
+    {
+        printf("AR has_many: wallet_tx -> wallet_utxos... ");
+        struct node_db ndb;
+        bool ok = node_db_open(&ndb, ":memory:");
+        struct ar_callbacks *cbs = db_wallet_utxo_callbacks();
+        ar_callbacks_init(cbs);
+
+        uint8_t txid1[32], txid2[32];
+        memset(txid1, 0xAA, 32);
+        memset(txid2, 0xBB, 32);
+        uint8_t sc3[] = {0x76, 0xa9};
+
+        /* 3 UTXOs for tx1, 1 for tx2 */
+        for (int i = 0; i < 3; i++) {
+            struct db_wallet_utxo u;
+            memset(&u, 0, sizeof(u));
+            memcpy(u.txid, txid1, 32);
+            u.vout = (uint32_t)i;
+            u.value = 10000;
+            u.height = 100;
+            memset(u.address_hash, 0xCC, 20);
+            u.script = sc3;
+            u.script_len = sizeof(sc3);
+            ok = ok && db_wallet_utxo_save(&ndb, &u);
+        }
+        {
+            struct db_wallet_utxo u;
+            memset(&u, 0, sizeof(u));
+            memcpy(u.txid, txid2, 32);
+            u.vout = 0;
+            u.value = 50000;
+            u.height = 200;
+            memset(u.address_hash, 0xDD, 20);
+            u.script = sc3;
+            u.script_len = sizeof(sc3);
+            ok = ok && db_wallet_utxo_save(&ndb, &u);
+        }
+
+        struct db_wallet_utxo utxos[10];
+        int count = db_wallet_tx_utxos(&ndb, txid1, utxos, 10);
+        ok = ok && (count == 3);
+        ok = ok && (utxos[0].vout == 0);
+        ok = ok && (utxos[1].vout == 1);
+        ok = ok && (utxos[2].vout == 2);
+
+        count = db_wallet_tx_utxos(&ndb, txid2, utxos, 10);
+        ok = ok && (count == 1);
+        ok = ok && (utxos[0].value == 50000);
+
+        node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* AR has_many: wallet_tx → sapling_notes */
+    {
+        printf("AR has_many: wallet_tx -> sapling_notes... ");
+        struct node_db ndb;
+        bool ok = node_db_open(&ndb, ":memory:");
+        struct ar_callbacks *cbs = db_sapling_note_callbacks();
+        ar_callbacks_init(cbs);
+
+        uint8_t txid[32];
+        memset(txid, 0xAA, 32);
+
+        for (int i = 0; i < 2; i++) {
+            struct db_sapling_note n;
+            memset(&n, 0, sizeof(n));
+            memcpy(n.txid, txid, 32);
+            n.output_index = (uint32_t)i;
+            n.value = 100000 * (i + 1);
+            memset(n.ivk, 0xBB, 32);
+            memset(n.nullifier, 0xCC + i, 32);
+            memset(n.diversifier, 0xDD, 11);
+            memset(n.pk_d, 0xEE, 32);
+            memset(n.cm, 0xFF, 32);
+            memset(n.rcm, 0x11, 32);
+            n.block_height = 500;
+            ok = ok && db_sapling_note_save(&ndb, &n);
+        }
+
+        struct db_sapling_note notes[10];
+        int count = db_wallet_tx_notes(&ndb, txid, notes, 10);
+        ok = ok && (count == 2);
+        ok = ok && (notes[0].output_index == 0);
+        ok = ok && (notes[0].value == 100000);
+        ok = ok && (notes[1].output_index == 1);
+        ok = ok && (notes[1].value == 200000);
+
+        node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* AR before_save callback on wallet_utxo */
+    {
+        printf("AR before_save callback on wallet_utxo... ");
+        struct node_db ndb;
+        bool ok = node_db_open(&ndb, ":memory:");
+        struct ar_callbacks *cbs = db_wallet_utxo_callbacks();
+        ar_callbacks_init(cbs);
+
+        /* Register callback that always rejects */
+        ar_register_before_save(cbs, ar_test_reject_always);
+
+        uint8_t sc4[] = {0x76, 0xa9};
+        struct db_wallet_utxo u;
+        memset(&u, 0, sizeof(u));
+        memset(u.txid, 0xAA, 32);
+        memset(u.address_hash, 0xBB, 20);
+        u.height = 100;
+        u.script = sc4;
+        u.script_len = sizeof(sc4);
+        u.value = 50000;
+        /* Should be rejected by before_save callback */
+        ok = ok && !db_wallet_utxo_save(&ndb, &u);
+
+        /* Remove callback, save should succeed */
+        ar_callbacks_init(cbs);
+        ok = ok && db_wallet_utxo_save(&ndb, &u);
+
+        int64_t bal = db_wallet_utxo_balance(&ndb);
+        ok = ok && (bal == 50000);
+
+        node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* AR after_save callback fires */
+    {
+        printf("AR after_save callback fires... ");
+        struct node_db ndb;
+        bool ok = node_db_open(&ndb, ":memory:");
+
+        ar_test_save_count = 0;
+
+        struct ar_callbacks *cbs = db_wallet_utxo_callbacks();
+        ar_callbacks_init(cbs);
+        ar_register_after_save(cbs, ar_test_count_saves);
+
+        uint8_t sc5[] = {0x76, 0xa9};
+        struct db_wallet_utxo u;
+        memset(&u, 0, sizeof(u));
+        memset(u.txid, 0xAA, 32);
+        memset(u.address_hash, 0xBB, 20);
+        u.script = sc5;
+        u.script_len = sizeof(sc5);
+        u.value = 10000;
+        u.height = 100;
+
+        ok = ok && db_wallet_utxo_save(&ndb, &u);
+        u.vout = 1;
+        ok = ok && db_wallet_utxo_save(&ndb, &u);
+
+        ok = ok && (ar_test_save_count == 2);
+        ok = ok && (db_wallet_utxo_balance(&ndb) == 20000);
+
+        ar_callbacks_init(cbs);
+        node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* AR before_destroy callback halts delete */
+    {
+        printf("AR before_destroy callback on wallet_tx... ");
+        struct node_db ndb;
+        bool ok = node_db_open(&ndb, ":memory:");
+        struct ar_callbacks *cbs = db_wallet_tx_callbacks();
+        ar_callbacks_init(cbs);
+
+        uint8_t txid[32];
+        memset(txid, 0xAA, 32);
+        uint8_t raw[] = {0x01};
+
+        struct db_wallet_tx t;
+        memset(&t, 0, sizeof(t));
+        memcpy(t.txid, txid, 32);
+        t.raw_tx = raw;
+        t.raw_tx_len = 1;
+        t.time_received = 1700000000;
+        ok = ok && db_wallet_tx_save(&ndb, &t);
+        ok = ok && (db_wallet_tx_count(&ndb) == 1);
+
+        /* Register callback that always rejects destroy */
+        ar_register_before_destroy(cbs, ar_test_reject_always);
+        ok = ok && !db_wallet_tx_delete(&ndb, txid);
+        ok = ok && (db_wallet_tx_count(&ndb) == 1); /* Still there */
+
+        ar_callbacks_init(cbs);
+        ok = ok && db_wallet_tx_delete(&ndb, txid);
+        ok = ok && (db_wallet_tx_count(&ndb) == 0);
+
+        node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* SHA3-512 test (NIST FIPS 202 — empty string) */
+    {
+        printf("SHA3-512 empty string... ");
+        unsigned char out[64];
+        sha3_512((const unsigned char *)"", 0, out);
+        /* NIST: SHA3-512("") = a69f73cca23a9ac5c8b567dc185a756e
+         *   97c982164fe25859e0d1dcc1475c80a6
+         *   15b2123af1f5f94c11e3e9402c3ac558
+         *   f500199d95b6d3e301758586281dcd26 */
+        static const unsigned char expect[64] = {
+            0xa6,0x9f,0x73,0xcc,0xa2,0x3a,0x9a,0xc5,
+            0xc8,0xb5,0x67,0xdc,0x18,0x5a,0x75,0x6e,
+            0x97,0xc9,0x82,0x16,0x4f,0xe2,0x58,0x59,
+            0xe0,0xd1,0xdc,0xc1,0x47,0x5c,0x80,0xa6,
+            0x15,0xb2,0x12,0x3a,0xf1,0xf5,0xf9,0x4c,
+            0x11,0xe3,0xe9,0x40,0x2c,0x3a,0xc5,0x58,
+            0xf5,0x00,0x19,0x9d,0x95,0xb6,0xd3,0xe3,
+            0x01,0x75,0x85,0x86,0x28,0x1d,0xcd,0x26
+        };
+        bool ok = (memcmp(out, expect, 64) == 0);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* SHA3-512 test ("abc") */
+    {
+        printf("SHA3-512 'abc'... ");
+        unsigned char out[64];
+        sha3_512((const unsigned char *)"abc", 3, out);
+        /* NIST: SHA3-512("abc") = b751850b1a57168a
+         *   5693cd924b6b096e08f621827444f70d
+         *   884f5d0240d2712e10e116e9192af3c9
+         *   1a7ec57647e3934057340b4cf408d5a5
+         *   6592f8274eec53f0 */
+        static const unsigned char expect[64] = {
+            0xb7,0x51,0x85,0x0b,0x1a,0x57,0x16,0x8a,
+            0x56,0x93,0xcd,0x92,0x4b,0x6b,0x09,0x6e,
+            0x08,0xf6,0x21,0x82,0x74,0x44,0xf7,0x0d,
+            0x88,0x4f,0x5d,0x02,0x40,0xd2,0x71,0x2e,
+            0x10,0xe1,0x16,0xe9,0x19,0x2a,0xf3,0xc9,
+            0x1a,0x7e,0xc5,0x76,0x47,0xe3,0x93,0x40,
+            0x57,0x34,0x0b,0x4c,0xf4,0x08,0xd5,0xa5,
+            0x65,0x92,0xf8,0x27,0x4e,0xec,0x53,0xf0
+        };
+        bool ok = (memcmp(out, expect, 64) == 0);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* HMAC-SHA3-512 basic test */
+    {
+        printf("HMAC-SHA3-512... ");
+        unsigned char mac[64];
+        hmac_sha3_512((const unsigned char *)"key", 3,
+                      (const unsigned char *)"message", 7, mac);
+        /* Verify it produces deterministic 64-byte output */
+        unsigned char mac2[64];
+        hmac_sha3_512((const unsigned char *)"key", 3,
+                      (const unsigned char *)"message", 7, mac2);
+        bool ok = (memcmp(mac, mac2, 64) == 0);
+        /* Different key must produce different output */
+        unsigned char mac3[64];
+        hmac_sha3_512((const unsigned char *)"key2", 4,
+                      (const unsigned char *)"message", 7, mac3);
+        ok = ok && (memcmp(mac, mac3, 64) != 0);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* Secure channel: Curve25519 + SHA3-512 + ChaCha20-Poly1305 roundtrip */
+    {
+        printf("Secure channel key exchange + encrypt/decrypt... ");
+        struct secure_channel alice, bob;
+
+        bool ok = secure_channel_init(&alice);
+        ok = ok && secure_channel_init(&bob);
+
+        /* Exchange public keys and establish shared secret */
+        ok = ok && secure_channel_establish(&alice, bob.local_pubkey);
+        ok = ok && secure_channel_establish(&bob, alice.local_pubkey);
+
+        /* Both sides must derive the same encryption key */
+        ok = ok && (memcmp(alice.enc_key, bob.enc_key, 32) == 0);
+
+        /* Encrypt a message from Alice to Bob */
+        const char *msg = "ZClassic C23 secure channel test";
+        size_t msg_len = strlen(msg);
+        uint8_t encrypted[256];
+        size_t enc_len = 0;
+        ok = ok && secure_channel_encrypt(&alice, (const uint8_t *)msg,
+                                           msg_len, encrypted, &enc_len);
+        ok = ok && (enc_len == msg_len + 80); /* 64 HMAC + 16 tag */
+
+        /* Decrypt on Bob's side */
+        uint8_t decrypted[256];
+        size_t dec_len = 0;
+        ok = ok && secure_channel_decrypt(&bob, encrypted, enc_len,
+                                           decrypted, &dec_len);
+        ok = ok && (dec_len == msg_len);
+        ok = ok && (memcmp(decrypted, msg, msg_len) == 0);
+
+        /* Tampered ciphertext must fail */
+        encrypted[70] ^= 0x01;
+        ok = ok && !secure_channel_decrypt(&bob, encrypted, enc_len,
+                                            decrypted, &dec_len);
+
+        secure_channel_destroy(&alice);
+        secure_channel_destroy(&bob);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
     }
 
     printf("\n%s (%d failures)\n", failures ? "SOME TESTS FAILED" : "ALL TESTS PASSED", failures);

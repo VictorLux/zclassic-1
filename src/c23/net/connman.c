@@ -155,21 +155,12 @@ static void *thread_socket_handler(void *arg)
         int nsel = select(maxfd + 1, &readfds, &writefds, NULL, &tv);
         if (nsel <= 0) continue;
 
-        /* Accept new connections */
+        /* Accept new connections via net.c accept_connection() */
         for (size_t i = 0; i < cm->manager.num_listen_sockets; i++) {
             int lfd = (int)cm->manager.listen_sockets[i].socket;
-            if (FD_ISSET(lfd, &readfds)) {
-                struct sockaddr_storage saddr;
-                socklen_t slen = sizeof(saddr);
-                int newfd = accept(lfd, (struct sockaddr *)&saddr, &slen);
-                if (newfd >= 0) {
-                    struct net_address addr;
-                    net_address_init(&addr);
-                    addr.svc.port = (uint16_t)cm->params->nDefaultPort;
-                    p2p_node_create(&cm->manager, (zcl_socket_t)newfd,
-                                    &addr, "inbound", true);
-                }
-            }
+            if (FD_ISSET(lfd, &readfds))
+                accept_connection(&cm->manager,
+                                  &cm->manager.listen_sockets[i]);
         }
 
         /* Read/write on connected nodes */
@@ -179,37 +170,29 @@ static void *thread_socket_handler(void *arg)
             int fd = (int)node->socket;
             if (fd < 0) continue;
 
-            if (FD_ISSET(fd, &readfds)) {
+            if (FD_ISSET(fd, &readfds) && !node->disconnect) {
                 zcl_mutex_lock(&node->cs_recv);
                 char buf[0x10000];
                 ssize_t n = recv(fd, buf, sizeof(buf), MSG_DONTWAIT);
                 if (n > 0) {
                     if (!p2p_node_receive_bytes(node, buf, (unsigned int)n,
                                                 cm->manager.message_start)) {
-                        printf("Peer %s: receive parse error (%zd bytes) "
-                               "first8: %02x%02x%02x%02x %02x%02x%02x%02x\n",
-                               node->addr_name, n,
-                               (unsigned char)buf[0], (unsigned char)buf[1],
-                               (unsigned char)buf[2], (unsigned char)buf[3],
-                               n>4?(unsigned char)buf[4]:0,
-                               n>5?(unsigned char)buf[5]:0,
-                               n>6?(unsigned char)buf[6]:0,
-                               n>7?(unsigned char)buf[7]:0);
                         node->disconnect = true;
                     }
                     node->last_recv = GetTime();
                     node->recv_bytes += (uint64_t)n;
                 } else if (n == 0) {
-                    printf("Peer %s: connection closed by remote\n",
-                           node->addr_name);
                     node->disconnect = true;
                 } else {
                     int err = errno;
-                    if (err != EAGAIN && err != EWOULDBLOCK && err != EINTR) {
-                        printf("Peer %s: recv error %d (%s)\n",
-                               node->addr_name, err, strerror(err));
+                    if (err != EAGAIN && err != EWOULDBLOCK && err != EINTR)
                         node->disconnect = true;
-                    }
+                }
+                /* If disconnecting, clean up messages while holding lock */
+                if (node->disconnect) {
+                    for (size_t mi = 0; mi < node->recv_msg_count; mi++)
+                        net_message_free(&node->recv_msgs[mi]);
+                    node->recv_msg_count = 0;
                 }
                 zcl_mutex_unlock(&node->cs_recv);
             }
@@ -222,19 +205,43 @@ static void *thread_socket_handler(void *arg)
         }
         zcl_mutex_unlock(&cm->manager.cs_nodes);
 
-        /* Disconnect flagged nodes */
+        /* Free deferred nodes from previous cycle */
         zcl_mutex_lock(&cm->manager.cs_nodes);
+        for (size_t i = 0; i < cm->num_deferred_free; i++)
+            p2p_node_free(cm->deferred_free[i]);
+        cm->num_deferred_free = 0;
+
+        /* Disconnect flagged nodes — defer free to next cycle */
         for (size_t i = 0; i < cm->manager.num_nodes; ) {
             if (cm->manager.nodes[i]->disconnect) {
-                printf("Disconnecting %s (send_q=%zu recv_q=%zu)\n",
-                       cm->manager.nodes[i]->addr_name,
-                       cm->manager.nodes[i]->send_size,
-                       cm->manager.nodes[i]->recv_msg_count);
-                p2p_node_close_socket(cm->manager.nodes[i]);
-                p2p_node_release(cm->manager.nodes[i]);
+                struct p2p_node *node = cm->manager.nodes[i];
+                p2p_node_close_socket(node);
+
+                /* Clean send queue while holding cs_nodes */
+                zcl_mutex_lock(&node->cs_send);
+                while (node->send_head) {
+                    struct send_segment *seg = node->send_head;
+                    node->send_head = seg->next;
+                    free(seg->data);
+                    free(seg);
+                }
+                node->send_size = 0;
+                zcl_mutex_unlock(&node->cs_send);
+
+                /* Clean recv messages */
+                zcl_mutex_lock(&node->cs_recv);
+                for (size_t mi = 0; mi < node->recv_msg_count; mi++)
+                    net_message_free(&node->recv_msgs[mi]);
+                node->recv_msg_count = 0;
+                zcl_mutex_unlock(&node->cs_recv);
+
                 cm->manager.nodes[i] =
                     cm->manager.nodes[cm->manager.num_nodes - 1];
                 cm->manager.num_nodes--;
+                if (cm->num_deferred_free < 64)
+                    cm->deferred_free[cm->num_deferred_free++] = node;
+                else
+                    p2p_node_free(node);
             } else {
                 i++;
             }
@@ -254,6 +261,7 @@ static void *thread_message_handler(void *arg)
         zcl_mutex_lock(&cm->manager.cs_nodes);
         for (size_t i = 0; i < cm->manager.num_nodes; i++) {
             struct p2p_node *node = cm->manager.nodes[i];
+            if (node->disconnect) continue;
 
             if (node->recv_msg_count > 0 &&
                 cm->manager.signals.process_messages) {
@@ -262,7 +270,7 @@ static void *thread_message_handler(void *arg)
                 did_work = true;
             }
 
-            if (cm->manager.signals.send_messages) {
+            if (!node->disconnect && cm->manager.signals.send_messages) {
                 bool trickle = (GetRand(cm->manager.num_nodes) == 0);
                 cm->manager.signals.send_messages(
                     cm->manager.signals.ctx, node, trickle);
@@ -282,6 +290,7 @@ bool connman_init(struct connman *cm, const struct chain_params *params,
     net_manager_init(&cm->manager);
     cm->params = params;
     cm->started = false;
+    cm->num_deferred_free = 0;
     cm->manager.signals = *signals;
 
     memcpy(cm->manager.message_start, params->pchMessageStart,

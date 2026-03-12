@@ -33,6 +33,7 @@ static void print_usage(const char *prog)
     printf("  -listen             Accept incoming P2P connections\n");
     printf("  -addnode=<ip>       Add a peer to connect to\n");
     printf("  -showmetrics=<0|1>  Show metrics screen (default: 1)\n");
+    printf("  -importlegacy=<dir> Import wallet from legacy data dir, then exit\n");
     printf("  -help               Show this help\n");
 }
 
@@ -89,6 +90,10 @@ int main(int argc, char **argv)
             ctx.miner_address = argv[i] + 14;
         } else if (strncmp(argv[i], "-genproclimit=", 14) == 0) {
             ctx.gen_threads = atoi(argv[i] + 14);
+        } else if (strncmp(argv[i], "-importlegacy=", 14) == 0) {
+            ctx.import_legacy_dir = argv[i] + 14;
+        } else if (strcmp(argv[i], "-saplingscan") == 0) {
+            ctx.sapling_scan = true;
         } else if (strncmp(argv[i], "-showmetrics=", 13) == 0) {
             show_metrics = atoi(argv[i] + 13) != 0;
         } else if (strcmp(argv[i], "-help") == 0 ||
@@ -106,6 +111,8 @@ int main(int argc, char **argv)
     signal(SIGTERM, signal_handler);
 
     if (!app_init(&ctx)) {
+        if (ctx.import_legacy_dir)
+            return 0; /* -importlegacy exits after import */
         fprintf(stderr, "Initialization failed.\n");
         return 1;
     }

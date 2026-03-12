@@ -34,6 +34,8 @@
 #include "zcash/params_init.h"
 #include "metrics/metrics.h"
 #include "chain/pow.h"
+#include "db/node_db_sync.h"
+#include "db/legacy_import.h"
 #include <netdb.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -56,6 +58,8 @@ static struct wallet g_wallet;
 struct wallet *g_active_wallet = NULL;
 static struct gen_context g_gen;
 static struct wallet_db g_wallet_db;
+static struct node_db g_node_db;
+struct node_db *g_active_node_db = NULL;
 static const char *g_datadir = NULL;
 static _Atomic bool g_running = false;
 static struct metrics_context g_metrics;
@@ -217,6 +221,63 @@ bool app_init(struct app_context *ctx)
         printf("Verification keys loaded.\n");
     }
 
+    /* Initialize wallet (before block index — needed for -importlegacy) */
+    wallet_init(&g_wallet);
+
+    char wallet_path[1024];
+    snprintf(wallet_path, sizeof(wallet_path), "%s/wallet", ctx->datadir);
+    if (wallet_db_open(&g_wallet_db, wallet_path)) {
+        wallet_db_read_keys(&g_wallet_db, &g_wallet);
+        wallet_db_read_txs(&g_wallet_db, &g_wallet);
+        wallet_rebuild_spent_set(&g_wallet);
+        wallet_db_read_sapling_keys(&g_wallet_db, &g_wallet);
+        wallet_db_read_scripts(&g_wallet_db, &g_wallet);
+        int saved_height = 0;
+        if (wallet_db_read_scan_height(&g_wallet_db, &saved_height))
+            g_wallet.best_block_height = saved_height;
+        printf("Wallet loaded: %zu keys, %zu sapling keys, %zu scripts, "
+               "%zu txs, scan height %d.\n",
+               g_wallet.keystore.num_keys,
+               g_wallet.sapling_keys.num_keys,
+               g_wallet.keystore.num_scripts,
+               g_wallet.num_wallet_tx,
+               g_wallet.best_block_height);
+    } else {
+        printf("New wallet created.\n");
+    }
+
+    if (g_wallet.keystore.num_keys == 0)
+        wallet_top_up_key_pool(&g_wallet, DEFAULT_KEYPOOL_SIZE);
+    printf("Wallet has %zu keys.\n", g_wallet.keystore.num_keys);
+    g_active_wallet = &g_wallet;
+
+    /* Open SQLite node database */
+    if (node_db_sync_init(&g_node_db, ctx->datadir)) {
+        g_active_node_db = &g_node_db;
+        int db_tip = node_db_sync_get_tip_height(&g_node_db);
+        if (db_tip >= 0)
+            printf("SQLite tip: height=%d\n", db_tip);
+    } else {
+        fprintf(stderr, "Warning: SQLite database unavailable\n");
+    }
+
+    /* Fast path: -importlegacy imports wallet data from legacy block files
+     * and exits. No block index, no P2P, no RPC needed. */
+    if (ctx->import_legacy_dir) {
+        if (!g_active_node_db) {
+            fprintf(stderr, "Error: SQLite database required for import\n");
+            return false;
+        }
+        int result = legacy_import(ctx->import_legacy_dir,
+                                    g_active_node_db, &g_wallet,
+                                    ctx->sapling_scan);
+        if (result >= 0)
+            printf("Import complete: %d wallet transactions found.\n", result);
+        else
+            fprintf(stderr, "Import failed.\n");
+        return false; /* triggers exit in main() */
+    }
+
     /* Open block index database */
     char blocktree_path[1024];
     snprintf(blocktree_path, sizeof(blocktree_path), "%s/blocks/index",
@@ -248,6 +309,7 @@ bool app_init(struct app_context *ctx)
     printf("Block index loaded: %zu entries\n", g_state.map_block_index.size);
 
     /* Restore chain tip from coins DB best block hash */
+    bool skip_activate = false;
     if (g_state.map_block_index.size > 1) {
         struct uint256 best_hash;
         coins_view_cache_get_best_block(&g_coins_tip, &best_hash);
@@ -262,8 +324,30 @@ bool app_init(struct app_context *ctx)
             } else {
                 char hex[65];
                 uint256_get_hex(&best_hash, hex);
-                fprintf(stderr, "WARNING: coins DB best block %s not in index\n",
-                        hex);
+                printf("Coins DB best block %s not in index.\n", hex);
+                /* The chainstate is ahead of the block index. Find the
+                 * highest block in the index that is at or below the
+                 * chainstate height. Walk down from the most-work block. */
+                struct block_index *fallback = NULL;
+                size_t fi = 0;
+                struct block_index *fp;
+                while (block_map_next(&g_state.map_block_index, &fi,
+                                       NULL, &fp)) {
+                    if (fp && (fp->nStatus & BLOCK_HAVE_DATA) &&
+                        fp->nChainTx > 0 &&
+                        (!fallback || arith_uint256_compare(
+                            &fp->nChainWork, &fallback->nChainWork) > 0))
+                        fallback = fp;
+                }
+                if (fallback) {
+                    /* Set this as tip but DON'T re-connect blocks.
+                     * The chainstate is valid for a height >= fallback. */
+                    active_chain_set_tip(&g_state.chain_active, fallback);
+                    g_state.pindex_best_header = fallback;
+                    printf("Fallback chain tip: height=%d\n",
+                           fallback->nHeight);
+                    skip_activate = true;
+                }
             }
         }
         /* Find the best header (most chain work) */
@@ -281,11 +365,13 @@ bool app_init(struct app_context *ctx)
     }
 
     /* Activate best chain (connects any new blocks beyond saved tip) */
-    struct validation_state vs;
-    validation_state_init(&vs);
-    if (!activate_best_chain(&vs, &g_state, &g_coins_tip, params, NULL,
-                             ctx->datadir)) {
-        fprintf(stderr, "Warning: Failed to activate best chain\n");
+    if (!skip_activate) {
+        struct validation_state vs;
+        validation_state_init(&vs);
+        if (!activate_best_chain(&vs, &g_state, &g_coins_tip, params, NULL,
+                                 ctx->datadir)) {
+            fprintf(stderr, "Warning: Failed to activate best chain\n");
+        }
     }
 
     struct block_index *tip = active_chain_tip(&g_state.chain_active);
@@ -300,34 +386,9 @@ bool app_init(struct app_context *ctx)
     /* Initialize mempool */
     tx_mempool_init(&g_mempool, 1000);
 
-    /* Initialize wallet */
-    wallet_init(&g_wallet);
-
-    char wallet_path[1024];
-    snprintf(wallet_path, sizeof(wallet_path), "%s/wallet", ctx->datadir);
-    if (wallet_db_open(&g_wallet_db, wallet_path)) {
-        wallet_db_read_keys(&g_wallet_db, &g_wallet);
-        wallet_db_read_txs(&g_wallet_db, &g_wallet);
-        wallet_db_read_sapling_keys(&g_wallet_db, &g_wallet);
-        wallet_db_read_scripts(&g_wallet_db, &g_wallet);
-        int saved_height = 0;
-        if (wallet_db_read_scan_height(&g_wallet_db, &saved_height))
-            g_wallet.best_block_height = saved_height;
-        printf("Wallet loaded: %zu keys, %zu sapling keys, %zu scripts, "
-               "%zu txs, scan height %d.\n",
-               g_wallet.keystore.num_keys,
-               g_wallet.sapling_keys.num_keys,
-               g_wallet.keystore.num_scripts,
-               g_wallet.num_wallet_tx,
-               g_wallet.best_block_height);
-    } else {
-        printf("New wallet created.\n");
-    }
-
-    if (g_wallet.keystore.num_keys == 0)
-        wallet_top_up_key_pool(&g_wallet, DEFAULT_KEYPOOL_SIZE);
-    printf("Wallet has %zu keys.\n", g_wallet.keystore.num_keys);
-    g_active_wallet = &g_wallet;
+    /* Load persisted mempool from SQLite */
+    if (g_active_node_db)
+        node_db_sync_mempool_load(g_active_node_db, &g_mempool);
 
     /* Rescan blockchain for wallet transactions if wallet is behind chain tip.
      * Uses time_first_key with 2-hour safety margin to skip irrelevant blocks.
@@ -360,6 +421,13 @@ bool app_init(struct app_context *ctx)
             }
         }
     }
+
+    /* Verify wallet UTXOs against actual UTXO set */
+    wallet_verify_utxos(&g_wallet, &g_coins_tip);
+
+    /* Sync wallet keys to SQLite */
+    if (g_active_node_db)
+        node_db_sync_wallet_keys(g_active_node_db, &g_wallet);
 
     /* Initialize message processor */
     msg_processor_init(&g_msg_processor, &g_state, &g_mempool,
@@ -410,6 +478,8 @@ bool app_init(struct app_context *ctx)
 
     rpc_wallet_set_state(&g_wallet, &g_state, ctx->datadir, &g_wallet_db,
                          &g_mempool, &g_connman);
+    rpc_wallet_set_coins_tip(&g_coins_tip);
+    rpc_wallet_set_node_db(g_active_node_db);
     register_wallet_rpc_commands(&g_rpc_table);
 
     /* Start RPC HTTP server */
@@ -444,6 +514,25 @@ bool app_init(struct app_context *ctx)
 
     atomic_store(&g_running, true);
     printf("ZClassic C23 node initialized.\n");
+
+    /* Run SQLite catchup in background thread */
+    if (g_active_node_db) {
+        static pthread_t catchup_thread;
+        static struct {
+            struct node_db *ndb;
+            const struct active_chain *chain;
+            const struct wallet *w;
+            const char *datadir;
+        } catchup_args;
+        catchup_args.ndb = g_active_node_db;
+        catchup_args.chain = &g_state.chain_active;
+        catchup_args.w = &g_wallet;
+        catchup_args.datadir = ctx->datadir;
+        pthread_create(&catchup_thread, NULL, (void *(*)(void *))
+            node_db_sync_catchup_thread, &catchup_args);
+        pthread_detach(catchup_thread);
+    }
+
     return true;
 }
 
@@ -477,6 +566,11 @@ void app_shutdown(void)
         wallet_db_flush(&g_wallet_db, &g_wallet);
         wallet_db_close(&g_wallet_db);
     }
+    if (g_node_db.open) {
+        node_db_sync_mempool_save(&g_node_db, &g_mempool);
+        node_db_close(&g_node_db);
+    }
+    g_active_node_db = NULL;
     wallet_free(&g_wallet);
     tx_mempool_free(&g_mempool);
     main_state_free(&g_state);

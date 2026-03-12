@@ -12,6 +12,7 @@
 #include "keys/key_io.h"
 #include "script/standard.h"
 #include "storage/disk_block_io.h"
+#include "core/serialize.h"
 #include "support/cleanse.h"
 #include "validation/chainstate.h"
 #include "validation/txmempool.h"
@@ -19,10 +20,57 @@
 #include "validation/sighash.h"
 #include "zcash/note_encryption.h"
 #include "zcash/sapling.h"
+#include "coins/coins.h"
+#include "coins/coins_view.h"
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+static size_t wallet_find_slot(const struct wallet *w, const struct uint256 *hash);
+
+static uint32_t spent_hash(const struct uint256 *txid, uint32_t vout)
+{
+    uint32_t h = 0;
+    for (int i = 0; i < 8; i++)
+        h ^= ((const uint32_t *)txid->data)[i];
+    h ^= vout * 2654435761u;
+    return h % SPENT_SET_BUCKETS;
+}
+
+void wallet_mark_outpoint_spent(struct wallet *w,
+                                 const struct uint256 *txid, uint32_t vout)
+{
+    uint32_t idx = spent_hash(txid, vout);
+    for (uint32_t i = 0; i < SPENT_SET_BUCKETS; i++) {
+        uint32_t slot = (idx + i) % SPENT_SET_BUCKETS;
+        if (!w->spent_set[slot].occupied) {
+            w->spent_set[slot].txid = *txid;
+            w->spent_set[slot].vout = vout;
+            w->spent_set[slot].occupied = true;
+            w->num_spent++;
+            return;
+        }
+        if (uint256_eq(&w->spent_set[slot].txid, txid) &&
+            w->spent_set[slot].vout == vout)
+            return;
+    }
+}
+
+bool wallet_is_outpoint_spent(const struct wallet *w,
+                               const struct uint256 *txid, uint32_t vout)
+{
+    uint32_t idx = spent_hash(txid, vout);
+    for (uint32_t i = 0; i < SPENT_SET_BUCKETS; i++) {
+        uint32_t slot = (idx + i) % SPENT_SET_BUCKETS;
+        if (!w->spent_set[slot].occupied)
+            return false;
+        if (uint256_eq(&w->spent_set[slot].txid, txid) &&
+            w->spent_set[slot].vout == vout)
+            return true;
+    }
+    return false;
+}
 
 void wallet_init(struct wallet *w)
 {
@@ -45,6 +93,63 @@ void wallet_init(struct wallet *w)
     w->sapling_notes = NULL;
     w->num_sapling_notes = 0;
     w->sapling_notes_cap = 0;
+    memset(w->spent_set, 0, sizeof(w->spent_set));
+    w->num_spent = 0;
+}
+
+void wallet_rebuild_spent_set(struct wallet *w)
+{
+    memset(w->spent_set, 0, sizeof(w->spent_set));
+    w->num_spent = 0;
+
+    for (size_t i = 0; i < MAX_WALLET_TX; i++) {
+        if (!w->map_wallet[i].used)
+            continue;
+        const struct transaction *tx = &w->map_wallet[i].tx;
+        for (size_t j = 0; j < tx->num_vin; j++) {
+            const struct uint256 *prev_hash = &tx->vin[j].prevout.hash;
+            uint32_t n = tx->vin[j].prevout.n;
+            size_t idx = wallet_find_slot(w, prev_hash);
+            if (idx < MAX_WALLET_TX) {
+                const struct wallet_tx *prev = &w->map_wallet[idx];
+                if (n < prev->tx.num_vout &&
+                    wallet_is_mine(w, &prev->tx.vout[n]))
+                    wallet_mark_outpoint_spent(w, prev_hash, n);
+            }
+        }
+    }
+    printf("Wallet spent set rebuilt: %zu spent outpoints\n", w->num_spent);
+}
+
+void wallet_verify_utxos(struct wallet *w, struct coins_view_cache *coins_tip)
+{
+    if (!coins_tip) return;
+
+    size_t verified = 0, pruned = 0;
+    for (size_t i = 0; i < MAX_WALLET_TX; i++) {
+        if (!w->map_wallet[i].used)
+            continue;
+        const struct wallet_tx *wtx = &w->map_wallet[i];
+        for (size_t j = 0; j < wtx->tx.num_vout; j++) {
+            if (!wallet_is_mine(w, &wtx->tx.vout[j]))
+                continue;
+            if (wallet_is_outpoint_spent(w, &wtx->tx.hash, (uint32_t)j))
+                continue;
+
+            struct coins c;
+            coins_init(&c);
+            bool found = coins_view_cache_get_coins(coins_tip,
+                    &wtx->tx.hash, &c);
+            if (!found || !coins_is_available(&c, (unsigned int)j)) {
+                wallet_mark_outpoint_spent(w, &wtx->tx.hash, (uint32_t)j);
+                pruned++;
+            }
+            coins_free(&c);
+            verified++;
+        }
+    }
+    printf("Wallet UTXO verification: %zu checked, %zu pruned (spent on-chain)\n",
+           verified, pruned);
 }
 
 void wallet_free(struct wallet *w)
@@ -316,22 +421,9 @@ int64_t wallet_get_balance(const struct wallet *w)
             continue;
 
         for (size_t j = 0; j < wtx->tx.num_vout; j++) {
-            if (wallet_is_mine(w, &wtx->tx.vout[j])) {
-                bool spent = false;
-                for (size_t k = 0; k < MAX_WALLET_TX && !spent; k++) {
-                    if (!w->map_wallet[k].used) continue;
-                    const struct transaction *stx = &w->map_wallet[k].tx;
-                    for (size_t m = 0; m < stx->num_vin; m++) {
-                        if (uint256_eq(&stx->vin[m].prevout.hash, &wtx->tx.hash) &&
-                            stx->vin[m].prevout.n == (uint32_t)j) {
-                            spent = true;
-                            break;
-                        }
-                    }
-                }
-                if (!spent)
-                    balance += wtx->tx.vout[j].value;
-            }
+            if (wallet_is_mine(w, &wtx->tx.vout[j]) &&
+                !wallet_is_outpoint_spent(w, &wtx->tx.hash, (uint32_t)j))
+                balance += wtx->tx.vout[j].value;
         }
     }
     zcl_mutex_unlock((zcl_mutex_t *)&w->cs);
@@ -349,7 +441,8 @@ int64_t wallet_get_unconfirmed_balance(const struct wallet *w)
         if (wtx->confirms != 0)
             continue;
         for (size_t j = 0; j < wtx->tx.num_vout; j++) {
-            if (wallet_is_mine(w, &wtx->tx.vout[j]))
+            if (wallet_is_mine(w, &wtx->tx.vout[j]) &&
+                !wallet_is_outpoint_spent(w, &wtx->tx.hash, (uint32_t)j))
                 balance += wtx->tx.vout[j].value;
         }
     }
@@ -404,19 +497,7 @@ void wallet_available_coins(const struct wallet *w,
             if (!wallet_is_mine(w, out))
                 continue;
 
-            bool spent = false;
-            for (size_t k = 0; k < MAX_WALLET_TX && !spent; k++) {
-                if (!w->map_wallet[k].used) continue;
-                const struct transaction *stx = &w->map_wallet[k].tx;
-                for (size_t m = 0; m < stx->num_vin; m++) {
-                    if (uint256_eq(&stx->vin[m].prevout.hash, &wtx->tx.hash) &&
-                        stx->vin[m].prevout.n == (uint32_t)j) {
-                        spent = true;
-                        break;
-                    }
-                }
-            }
-            if (spent)
+            if (wallet_is_outpoint_spent(w, &wtx->tx.hash, (uint32_t)j))
                 continue;
 
             coins_out[*num_coins].wtx = wtx;
@@ -789,6 +870,10 @@ bool wallet_commit_transaction(struct wallet *w, struct wallet_tx *wtx,
     if (!wallet_add_to_wallet(w, wtx))
         return false;
 
+    for (size_t i = 0; i < wtx->tx.num_vin; i++)
+        wallet_mark_outpoint_spent(w, &wtx->tx.vin[i].prevout.hash,
+                                    wtx->tx.vin[i].prevout.n);
+
     struct validation_state vs;
     validation_state_init(&vs);
 
@@ -854,12 +939,21 @@ void wallet_sync_transaction(struct wallet *w, const struct transaction *tx,
             wtx.hash_block = *pindex->phashBlock;
         int depth = w->best_block_height - pindex->nHeight + 1;
         wtx.confirms = depth > 0 ? depth : 1;
+        if (dominated && depth <= 0)
+            printf("  [wallet] tx at height %d, best=%d, depth=%d, confirms=%d\n",
+                   pindex->nHeight, w->best_block_height, depth, wtx.confirms);
     }
 
     for (size_t i = 0; i < tx->num_vin; i++) {
         size_t idx = wallet_find_slot(w, &tx->vin[i].prevout.hash);
-        if (idx < MAX_WALLET_TX)
+        if (idx < MAX_WALLET_TX) {
             wtx.from_me = true;
+            uint32_t n = tx->vin[i].prevout.n;
+            const struct wallet_tx *prev = &w->map_wallet[idx];
+            if (n < prev->tx.num_vout &&
+                wallet_is_mine(w, &prev->tx.vout[n]))
+                wallet_mark_outpoint_spent(w, &tx->vin[i].prevout.hash, n);
+        }
     }
 
     size_t existing = wallet_find_slot(w, &tx->hash);
@@ -962,6 +1056,10 @@ int wallet_rescan(struct wallet *w, const struct active_chain *chain,
     int total_found = 0;
     int last_log = start_height;
 
+    /* Set best_block_height to stop_height before scanning so that
+     * wallet_sync_transaction computes correct confirmation depth. */
+    w->best_block_height = stop_height;
+
     for (int h = start_height; h <= stop_height; h++) {
         struct block_index *pindex = active_chain_at(chain, h);
         if (!pindex)
@@ -986,6 +1084,131 @@ int wallet_rescan(struct wallet *w, const struct active_chain *chain,
     int64_t elapsed = GetTime() - t_start;
     printf("Rescan complete: %d blocks scanned in %"PRId64"s, %d wallet outputs found.\n",
            stop_height - start_height + 1, elapsed, total_found);
+
+    return total_found;
+}
+
+/* Scan raw block files for wallet transactions — no index needed */
+static void wallet_process_block_for_spent(struct wallet *w,
+                                             const struct block *b)
+{
+    for (size_t i = 0; i < b->num_vtx; i++) {
+        const struct transaction *tx = &b->vtx[i];
+
+        /* Check if any input spends a wallet output we own */
+        for (size_t j = 0; j < tx->num_vin; j++) {
+            size_t idx = wallet_find_slot(w, &tx->vin[j].prevout.hash);
+            if (idx < MAX_WALLET_TX) {
+                const struct wallet_tx *prev = &w->map_wallet[idx];
+                uint32_t n = tx->vin[j].prevout.n;
+                if (n < prev->tx.num_vout &&
+                    wallet_is_mine(w, &prev->tx.vout[n]))
+                    wallet_mark_outpoint_spent(w, &tx->vin[j].prevout.hash, n);
+            }
+        }
+
+        /* Check if any output pays to our wallet */
+        bool dominated = false;
+        for (size_t j = 0; j < tx->num_vout; j++) {
+            if (wallet_is_mine(w, &tx->vout[j])) {
+                dominated = true;
+                break;
+            }
+        }
+
+        if (dominated) {
+            /* Add to wallet with at least 1 confirm since it's in a block */
+            struct uint256 txhash;
+            transaction_compute_hash((struct transaction *)tx);
+            txhash = tx->hash;
+            size_t existing = wallet_find_slot(w, &txhash);
+            if (existing < MAX_WALLET_TX) {
+                if (w->map_wallet[existing].confirms < 1)
+                    w->map_wallet[existing].confirms = 1;
+            } else {
+                wallet_sync_transaction(w, tx, NULL);
+                existing = wallet_find_slot(w, &txhash);
+                if (existing < MAX_WALLET_TX)
+                    w->map_wallet[existing].confirms = 1;
+            }
+        }
+    }
+}
+
+int wallet_scan_blockfiles(struct wallet *w, const char *datadir)
+{
+    printf("Scanning block files for wallet transactions...\n");
+    int64_t t_start = GetTime();
+    int total_found = 0;
+    int blocks_scanned = 0;
+
+    const struct chain_params *cp = chain_params_get();
+    const unsigned char *magic = cp->pchMessageStart;
+
+    for (int file_num = 0; file_num < 9999; file_num++) {
+        char path[512];
+        snprintf(path, sizeof(path), "%s/blocks/blk%05d.dat",
+                 datadir, file_num);
+
+        FILE *f = fopen(path, "rb");
+        if (!f) break;
+
+        /* Get file size */
+        fseek(f, 0, SEEK_END);
+        long file_size = ftell(f);
+        fseek(f, 0, SEEK_SET);
+
+        unsigned char *buf = malloc((size_t)file_size);
+        if (!buf) { fclose(f); break; }
+
+        size_t nread = fread(buf, 1, (size_t)file_size, f);
+        fclose(f);
+
+        /* Parse blocks from the file */
+        size_t pos = 0;
+        while (pos + 8 < nread) {
+            /* Find magic bytes */
+            if (memcmp(buf + pos, magic, 4) != 0) {
+                pos++;
+                continue;
+            }
+            pos += 4;
+
+            uint32_t block_size;
+            memcpy(&block_size, buf + pos, 4);
+            pos += 4;
+
+            if (block_size == 0 || pos + block_size > nread)
+                break;
+
+            struct byte_stream bs;
+            stream_init_from_data(&bs, buf + pos, block_size);
+            struct block b;
+            block_init(&b);
+            if (block_deserialize(&b, &bs)) {
+                blocks_scanned++;
+                wallet_process_block_for_spent(w, &b);
+                for (size_t i = 0; i < b.num_vtx; i++) {
+                    for (size_t j = 0; j < b.vtx[i].num_vout; j++) {
+                        if (wallet_is_mine(w, &b.vtx[i].vout[j]))
+                            total_found++;
+                    }
+                }
+            }
+            block_free(&b);
+            pos += block_size;
+        }
+
+        free(buf);
+
+        if (file_num % 10 == 0)
+            printf("  scanned blk%05d.dat (%d blocks so far)\n",
+                   file_num, blocks_scanned);
+    }
+
+    int64_t elapsed = GetTime() - t_start;
+    printf("Block file scan: %d blocks in %"PRId64"s, %d wallet outputs, %zu spent outpoints.\n",
+           blocks_scanned, elapsed, total_found, w->num_spent);
 
     return total_found;
 }

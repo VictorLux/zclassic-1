@@ -13,11 +13,15 @@ struct main_state;
 struct wallet_db;
 struct tx_mempool;
 struct connman;
+struct node_db;
+struct coins_view_cache;
 
 void rpc_wallet_set_state(struct wallet *w, struct main_state *ms,
                           const char *datadir, struct wallet_db *wdb,
                           struct tx_mempool *mempool,
                           struct connman *connman);
+void rpc_wallet_set_coins_tip(struct coins_view_cache *tip);
+void rpc_wallet_set_node_db(struct node_db *ndb);
 void register_wallet_rpc_commands(struct rpc_table *t);
 
 #endif

@@ -14,6 +14,7 @@
 #include "consensus/validation.h"
 #include "validation/check_transaction.h"
 #include "validation/process_block.h"
+#include "db/node_db_sync.h"
 #include "storage/disk_block_io.h"
 #include "wallet/wallet.h"
 #include "util/timedata.h"
@@ -608,8 +609,13 @@ static bool process_tx_msg(struct msg_processor *mp, struct p2p_node *node,
         printf("Peer %s: accepted tx %s to mempool\n", node->addr_name, hex);
 
         extern struct wallet *g_active_wallet;
-        if (g_active_wallet)
+        if (g_active_wallet) {
             wallet_sync_transaction(g_active_wallet, &tx, NULL);
+            extern struct node_db *g_active_node_db;
+            if (g_active_node_db)
+                node_db_sync_wallet_tx(g_active_node_db, &tx,
+                                       g_active_wallet, 0);
+        }
     }
 
     transaction_free(&tx);
@@ -815,7 +821,7 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
 {
     struct msg_processor *mp = (struct msg_processor *)ctx;
 
-    while (node->recv_msg_count > 0) {
+    while (node->recv_msg_count > 0 && !node->disconnect) {
         zcl_mutex_lock(&node->cs_recv);
         if (node->recv_msg_count == 0 ||
             !net_message_complete(&node->recv_msgs[0])) {
@@ -862,7 +868,10 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
         } else if (node->version == 0) {
             printf("Peer %s: received %s before version\n",
                    node->addr_name, cmd);
-            ok = false;
+            node->disconnect = true;
+            stream_free(&s);
+            net_message_free(&msg);
+            break;
         } else if (strcmp(cmd, "ping") == 0) {
             ok = process_ping(mp, node, &s);
         } else if (strcmp(cmd, "pong") == 0) {

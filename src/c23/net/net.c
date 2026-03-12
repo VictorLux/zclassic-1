@@ -181,27 +181,41 @@ struct p2p_node *p2p_node_create(struct net_manager *nm, zcl_socket_t sock,
 
 void p2p_node_free(struct p2p_node *node)
 {
+    if (!node) return;
+
     close_socket(&node->socket);
 
+    zcl_mutex_lock(&node->cs_send);
     while (node->send_head) {
         struct send_segment *seg = node->send_head;
         node->send_head = seg->next;
         send_segment_free(seg);
     }
+    zcl_mutex_unlock(&node->cs_send);
 
+    zcl_mutex_lock(&node->cs_recv);
     for (size_t i = 0; i < node->recv_msg_count; i++)
         net_message_free(&node->recv_msgs[i]);
+    node->recv_msg_count = 0;
     free(node->recv_msgs);
+    node->recv_msgs = NULL;
+    zcl_mutex_unlock(&node->cs_recv);
 
     free(node->addr_to_send);
+    node->addr_to_send = NULL;
     free(node->inventory_to_send);
+    node->inventory_to_send = NULL;
     free(node->inventory_known_hashes);
+    node->inventory_known_hashes = NULL;
     free(node->askfor_set);
+    node->askfor_set = NULL;
     free(node->askfor_map);
+    node->askfor_map = NULL;
 
     if (node->pfilter) {
         bloom_filter_free(node->pfilter);
         free(node->pfilter);
+        node->pfilter = NULL;
     }
 
     rolling_bloom_free(&node->addr_known);
@@ -234,13 +248,6 @@ void p2p_node_close_socket(struct p2p_node *node)
     node->disconnect = true;
     if (node->socket != ZCL_INVALID_SOCKET)
         close_socket(&node->socket);
-
-    if (zcl_mutex_trylock(&node->cs_recv)) {
-        for (size_t i = 0; i < node->recv_msg_count; i++)
-            net_message_free(&node->recv_msgs[i]);
-        node->recv_msg_count = 0;
-        zcl_mutex_unlock(&node->cs_recv);
-    }
 }
 
 bool p2p_node_receive_bytes(struct p2p_node *node, const char *data,

@@ -61,4 +61,36 @@ bool sapling_keystore_have_spending_key(const struct sapling_keystore *sks,
 const struct sapling_key_entry *sapling_keystore_find_by_ivk(
     const struct sapling_keystore *sks, const uint8_t ivk[32]);
 
+const struct sapling_key_entry *sapling_keystore_find_by_address(
+    const struct sapling_keystore *sks,
+    const uint8_t diversifier[ZC_DIVERSIFIER_SIZE],
+    const uint8_t pk_d[32]);
+
+/* Import a fully-derived extended spending key into the keystore.
+ * Returns false if the key is already present or keystore is full. */
+bool sapling_keystore_import_xsk(struct sapling_keystore *sks,
+                                  const struct zip32_xsk *xsk);
+
+/* Encode/decode extended spending key as bech32 (secret-extended-key-main).
+ * xsk_bytes is 169 bytes: depth(1) parentFVKTag(4,LE) childIndex(4,LE)
+ * chaincode(32) ask(32) nsk(32) ovk(32) dk(32). */
+#define ZIP32_XSK_SERIALIZED_SIZE 169
+
+bool sapling_encode_extended_spending_key(const struct zip32_xsk *xsk,
+                                           const char *hrp,
+                                           char *out, size_t out_size);
+
+bool sapling_decode_extended_spending_key(const char *str,
+                                           struct zip32_xsk *xsk_out);
+
+/* Encode/decode extended full viewing key as bech32 (zviews). */
+#define ZIP32_XFVK_SERIALIZED_SIZE 169
+
+bool sapling_encode_extended_full_viewing_key(const struct zip32_xfvk *xfvk,
+                                               const char *hrp,
+                                               char *out, size_t out_size);
+
+bool sapling_decode_extended_full_viewing_key(const char *str,
+                                               struct zip32_xfvk *xfvk_out);
+
 #endif

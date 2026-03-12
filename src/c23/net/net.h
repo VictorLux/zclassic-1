@@ -304,6 +304,7 @@ struct p2p_node *connect_node(struct net_manager *nm,
                                struct net_address *addr_connect,
                                const char *dest);
 
+bool accept_connection(struct net_manager *nm, const struct listen_socket *ls);
 bool is_banned(struct net_manager *nm, const struct net_addr *addr);
 void ban_addr(struct net_manager *nm, const struct net_addr *addr,
               int64_t ban_offset, bool since_epoch);

@@ -263,34 +263,35 @@ bool sapling_spend_synthesize(struct constraint_system *cs,
 
 /* ── Output Circuit Synthesis ───────────────────────────────────── */
 
+/* Matching Zcash sapling-crypto Output::synthesize exactly:
+ * 7827 constraints, 6 inputs (ONE + cv.x + cv.y + epk.x + epk.y + cm).
+ *
+ * Steps:
+ *   1. expose_value_commitment: value_bits→fixed_base_mul(G_v) +
+ *      rcv_bits→fixed_base_mul(G_rcv) + add → inputize cv
+ *   2. witness g_d + on_curve + not_small_order + repr (256 bits)
+ *   3. esk_bits → g_d.mul(esk) → inputize epk
+ *   4. pk_d witness: y_bits(255) + x_sign_bit(1) = 256 bits
+ *   5. pedersen_hash(NoteCommitment, value_bits||g_d_repr||pk_d_repr)
+ *   6. rcm_bits→fixed_base_mul(G_rcm) + add → cm.x inputize */
+
 bool sapling_output_synthesize(struct constraint_system *cs,
                                 const struct sapling_output_witness *wit,
                                 const struct sapling_output_inputs *pub)
 {
-    /* === Public Inputs (indices 1..5) === */
+    (void)pub; /* Public inputs are computed in-circuit, not passed in */
 
-    /* cv (value commitment) */
-    struct fr cv_x, cv_y;
-    if (!point_to_xy(&cv_x, &cv_y, pub->cv))
-        return false;
-    cs_alloc_input(cs, &cv_x);  /* input 1: cv.x */
-    cs_alloc_input(cs, &cv_y);  /* input 2: cv.y */
+    /* note_contents accumulates boolean variable indices:
+     * value(64) + g_d_repr(256) + pk_d_repr(256) = 576 bits */
+    size_t *note_contents = malloc(576 * sizeof(size_t));
+    if (!note_contents) return false;
+    size_t nc_idx = 0;
 
-    /* epk (ephemeral public key) */
-    struct fr epk_x, epk_y;
-    if (!point_to_xy(&epk_x, &epk_y, pub->epk))
-        return false;
-    cs_alloc_input(cs, &epk_x); /* input 3: epk.x */
-    cs_alloc_input(cs, &epk_y); /* input 4: epk.y */
+    /* ════════════════════════════════════════════════════════
+     * Step 1: Value Commitment — expose_value_commitment()
+     * ════════════════════════════════════════════════════════ */
 
-    /* cm (note commitment) */
-    struct fr cm_fr;
-    bytes_to_fr(&cm_fr, pub->cm);
-    cs_alloc_input(cs, &cm_fr);  /* input 5: cm */
-
-    /* === Private Witness === */
-
-    /* Value */
+    /* 1a. Booleanize value (64 bits) */
     struct fr value_fr;
     {
         uint8_t vbytes[32] = {0};
@@ -298,77 +299,179 @@ bool sapling_output_synthesize(struct constraint_system *cs,
             vbytes[i] = (uint8_t)(wit->value >> (i * 8));
         bytes_to_fr(&value_fr, vbytes);
     }
-    size_t value_var = cs_alloc_aux(cs, &value_fr);
+    size_t value_bits[64];
+    gadget_unpack_bits(cs, value_bits, 64, &value_fr);
 
-    /* Diversifier */
-    struct fr div_fr;
+    /* Store value bits into note_contents */
+    for (size_t i = 0; i < 64; i++)
+        note_contents[nc_idx++] = value_bits[i];
+
+    /* 1b. fixed_base_mul(G_v, value_bits) → value_point */
+    struct fr gv_x, gv_y;
     {
-        uint8_t div_bytes[32] = {0};
-        memcpy(div_bytes, wit->diversifier, 11);
-        bytes_to_fr(&div_fr, div_bytes);
+        struct jub_point gv;
+        const uint8_t pers[8] = {'Z','c','a','s','h','_','c','v'};
+        const uint8_t tag[1] = {'v'};
+        group_hash(&gv, tag, 1, pers);
+        jub_get_x(&gv_x, &gv);
+        jub_get_y(&gv_y, &gv);
     }
-    cs_alloc_aux(cs, &div_fr);
+    size_t val_pt_x, val_pt_y;
+    gadget_fixed_base_mul(cs, value_bits, 64, &gv_x, &gv_y,
+                           &val_pt_x, &val_pt_y);
 
-    /* pk_d */
-    struct fr pkd_x, pkd_y;
-    if (!point_to_xy(&pkd_x, &pkd_y, wit->pk_d))
-        return false;
-    cs_alloc_aux(cs, &pkd_x);
-    cs_alloc_aux(cs, &pkd_y);
-
-    /* rcm */
-    struct fr rcm_fr;
-    bytes_to_fr(&rcm_fr, wit->rcm);
-    cs_alloc_aux(cs, &rcm_fr);
-
-    /* esk */
-    struct fr esk_fr;
-    bytes_to_fr(&esk_fr, wit->esk);
-    cs_alloc_aux(cs, &esk_fr);
-
-    /* rcv */
+    /* 1c. Booleanize rcv (252 bits — Fs::CAPACITY) */
     struct fr rcv_fr;
     bytes_to_fr(&rcv_fr, wit->rcv);
-    cs_alloc_aux(cs, &rcv_fr);
+    size_t rcv_bits[252];
+    gadget_unpack_bits(cs, rcv_bits, 252, &rcv_fr);
 
-    /* === Constraints === */
-
-    /* 1. Value range check: value is 64-bit unsigned */
+    /* 1d. fixed_base_mul(G_rcv, rcv_bits) → rcv_point */
+    struct fr grcv_x, grcv_y;
     {
-        size_t value_bits[64];
-        gadget_unpack_bits(cs, value_bits, 64, &value_fr);
-        (void)value_bits;
+        struct jub_point grcv;
+        const uint8_t pers[8] = {'Z','c','a','s','h','_','c','v'};
+        const uint8_t tag[1] = {'r'};
+        group_hash(&grcv, tag, 1, pers);
+        jub_get_x(&grcv_x, &grcv);
+        jub_get_y(&grcv_y, &grcv);
+    }
+    size_t rcv_pt_x, rcv_pt_y;
+    gadget_fixed_base_mul(cs, rcv_bits, 252, &grcv_x, &grcv_y,
+                           &rcv_pt_x, &rcv_pt_y);
+
+    /* 1e. cv = value_point + rcv_point */
+    size_t cv_x, cv_y;
+    gadget_edwards_add(cs, val_pt_x, val_pt_y, rcv_pt_x, rcv_pt_y,
+                        &cv_x, &cv_y);
+
+    /* 1f. Inputize cv (public inputs 1,2: cv.x, cv.y) */
+    gadget_point_inputize(cs, cv_x, cv_y);
+
+    /* ════════════════════════════════════════════════════════
+     * Step 2: Witness g_d, verify not small order, compute repr
+     * ════════════════════════════════════════════════════════ */
+
+    /* Compute g_d from diversifier outside circuit */
+    struct jub_point gd_point;
+    sapling_diversifier_to_gd(&gd_point, wit->diversifier);
+    struct fr gd_x_val, gd_y_val;
+    jub_get_x(&gd_x_val, &gd_point);
+    jub_get_y(&gd_y_val, &gd_point);
+
+    /* Witness g_d as (x, y) with on-curve check */
+    size_t gd_x = cs_alloc_aux(cs, &gd_x_val);
+    size_t gd_y = cs_alloc_aux(cs, &gd_y_val);
+    gadget_point_interpret(cs, gd_x, gd_y);
+
+    /* Assert g_d is not small order */
+    gadget_assert_not_small_order(cs, gd_x, gd_y);
+
+    /* Compute repr of g_d: y_bits(255) + x_sign_bit(1) = 256 bits */
+    {
+        /* Unpack x into bits to get the sign bit (LSB of x) */
+        size_t gd_x_bits[256];
+        gadget_unpack_bits(cs, gd_x_bits, 256, &gd_x_val);
+
+        /* Unpack y into bits */
+        size_t gd_y_bits[256];
+        gadget_unpack_bits(cs, gd_y_bits, 256, &gd_y_val);
+
+        /* repr = y_bits(first 255) + x_bit0 */
+        for (size_t i = 0; i < 255; i++)
+            note_contents[nc_idx++] = gd_y_bits[i];
+        note_contents[nc_idx++] = gd_x_bits[0]; /* x sign bit */
     }
 
-    /* 2. Compute g_d = GroupHash("Zcash_gd", diversifier)
-     * and verify epk = esk * g_d */
-    /* (These are computed outside and verified via public input matching) */
+    /* ════════════════════════════════════════════════════════
+     * Step 3: epk = esk * g_d → inputize
+     * ════════════════════════════════════════════════════════ */
 
-    /* 3. Note commitment: cm = PedersenHash(note) + rcm * G_rcm */
-    uint8_t cm_computed[32];
-    compute_note_commitment(cm_computed, wit->value, wit->diversifier,
-                             wit->pk_d, wit->rcm);
-    struct fr cm_check;
-    bytes_to_fr(&cm_check, cm_computed);
-    size_t cm_check_var = cs_alloc_aux(cs, &cm_check);
+    /* Booleanize esk (252 bits) */
+    struct fr esk_fr;
+    bytes_to_fr(&esk_fr, wit->esk);
+    size_t esk_bits[252];
+    gadget_unpack_bits(cs, esk_bits, 252, &esk_fr);
 
-    /* Constrain computed cm equals public cm */
+    /* Variable-base scalar mul: epk = g_d * esk */
+    size_t epk_x, epk_y;
+    gadget_variable_base_mul(cs, gd_x, gd_y, esk_bits, 252,
+                              &epk_x, &epk_y);
+
+    /* Inputize epk (public inputs 3,4: epk.x, epk.y) */
+    gadget_point_inputize(cs, epk_x, epk_y);
+
+    /* ════════════════════════════════════════════════════════
+     * Step 4: pk_d witness — 256 bits for note contents
+     * ════════════════════════════════════════════════════════ */
+
     {
-        struct linear_combination la, lb, lc;
-        struct fr one_val;
-        fr_one(&one_val);
+        /* pk_d is witnessable as any 256 bits (no constraints).
+         * Representation: y_bits(255) + x_sign_bit(1) */
+        struct jub_point pkd_point;
+        jub_from_bytes(&pkd_point, wit->pk_d);
+        struct fr pkd_x_val, pkd_y_val;
+        jub_get_x(&pkd_x_val, &pkd_point);
+        jub_get_y(&pkd_y_val, &pkd_point);
 
-        lc_init(&la);
-        lc_add_term(&la, cm_check_var, &one_val);
-        lc_init(&lb);
-        lc_add_term(&lb, 0, &one_val); /* CS_ONE */
-        lc_init(&lc);
-        lc_add_term(&lc, 5, &one_val); /* input 5 = cm */
-        cs_enforce(cs, &la, &lb, &lc);
-        lc_free(&la); lc_free(&lb); lc_free(&lc);
+        /* Unpack y into boolean vars */
+        size_t pkd_y_bits[256];
+        gadget_unpack_bits(cs, pkd_y_bits, 256, &pkd_y_val);
+
+        /* Get x sign bit */
+        uint8_t pkd_x_bytes[32];
+        fr_to_bytes(pkd_x_bytes, &pkd_x_val);
+        bool x_is_odd = pkd_x_bytes[0] & 1;
+        size_t pkd_x_sign = gadget_alloc_boolean(cs, x_is_odd);
+
+        /* repr = y_bits(first 255) + x_sign_bit */
+        for (size_t i = 0; i < 255; i++)
+            note_contents[nc_idx++] = pkd_y_bits[i];
+        note_contents[nc_idx++] = pkd_x_sign;
     }
 
-    (void)value_var;
+    /* ════════════════════════════════════════════════════════
+     * Step 5: Note commitment via Pedersen hash
+     * ════════════════════════════════════════════════════════ */
+
+    /* note_contents should now have 64+256+256 = 576 bits */
+    size_t cm_hash_x, cm_hash_y;
+    gadget_pedersen_hash(cs, note_contents, 576,
+                          "Zcash_PH", &cm_hash_x, &cm_hash_y);
+
+    /* ════════════════════════════════════════════════════════
+     * Step 6: Randomize note commitment: cm = hash + rcm*G_rcm
+     * ════════════════════════════════════════════════════════ */
+
+    /* Booleanize rcm (252 bits) */
+    struct fr rcm_fr;
+    bytes_to_fr(&rcm_fr, wit->rcm);
+    size_t rcm_bits[252];
+    gadget_unpack_bits(cs, rcm_bits, 252, &rcm_fr);
+
+    /* fixed_base_mul(G_rcm, rcm_bits) */
+    struct fr grcm_x, grcm_y;
+    {
+        struct jub_point grcm;
+        const uint8_t pers[8] = {'Z','c','a','s','h','_','P','H'};
+        const uint8_t tag[1] = {'r'};
+        group_hash(&grcm, tag, 1, pers);
+        jub_get_x(&grcm_x, &grcm);
+        jub_get_y(&grcm_y, &grcm);
+    }
+    size_t rcm_pt_x, rcm_pt_y;
+    gadget_fixed_base_mul(cs, rcm_bits, 252, &grcm_x, &grcm_y,
+                           &rcm_pt_x, &rcm_pt_y);
+
+    /* cm = hash_point + rcm_point */
+    size_t cm_x, cm_y;
+    gadget_edwards_add(cs, cm_hash_x, cm_hash_y, rcm_pt_x, rcm_pt_y,
+                        &cm_x, &cm_y);
+
+    /* Inputize cm.x only (public input 5) */
+    gadget_scalar_inputize(cs, cm_x);
+
+    free(note_contents);
 
     printf("Output circuit synthesized: %zu vars, %zu constraints, "
            "%zu inputs\n", cs->num_vars, cs->num_constraints,
@@ -390,31 +493,38 @@ bool sapling_output_synthesize(struct constraint_system *cs,
 
 static bool serialize_proof(uint8_t out[192], const struct groth16_proof *proof)
 {
-    /* Convert G1 point A to affine and compress */
+    /* BLS12-381 compressed point format:
+     * bit 7 (0x80) = compressed flag (always set)
+     * bit 6 (0x40) = infinity flag
+     * bit 5 (0x20) = y-coordinate sign (set if y is lexicographically largest) */
+
+    /* G1 point A (48 bytes compressed) */
     struct fp ax, ay;
     g1_to_affine(&ax, &ay, &proof->a);
     fp_to_bytes(out, &ax);
-    /* Set flag bit for y coordinate */
+    out[0] &= 0x1F;
+    out[0] |= 0x80;
     if (fp_lexicographically_largest(&ay))
-        out[0] |= 0x80;
-    out[0] |= 0x80; /* compressed flag */
+        out[0] |= 0x20;
 
-    /* Convert G2 point B */
+    /* G2 point B (96 bytes compressed: c1 || c0) */
     struct fp2 bx, by;
     g2_to_affine(&bx, &by, &proof->b);
     fp_to_bytes(out + 48, &bx.c1);
     fp_to_bytes(out + 48 + 48, &bx.c0);
-    if (fp2_lexicographically_largest(&by))
-        out[48] |= 0x80;
+    out[48] &= 0x1F;
     out[48] |= 0x80;
+    if (fp2_lexicographically_largest(&by))
+        out[48] |= 0x20;
 
-    /* Convert G1 point C */
+    /* G1 point C (48 bytes compressed) */
     struct fp cx, cy;
     g1_to_affine(&cx, &cy, &proof->c);
     fp_to_bytes(out + 144, &cx);
-    if (fp_lexicographically_largest(&cy))
-        out[144] |= 0x80;
+    out[144] &= 0x1F;
     out[144] |= 0x80;
+    if (fp_lexicographically_largest(&cy))
+        out[144] |= 0x20;
 
     return true;
 }

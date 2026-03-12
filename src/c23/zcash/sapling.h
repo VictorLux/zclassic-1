@@ -98,6 +98,18 @@ bool sapling_build_output_description(
     uint8_t od_enc[580], uint8_t od_out[80], uint8_t od_proof[192],
     uint8_t rcv_out[32]);
 
+/* Build output description using librustzcash proving context.
+ * proving_ctx: opaque proving context from librustzcash_sapling_proving_ctx_init
+ * This produces cv and zkproof via librustzcash (matching the reference circuit).
+ * cm, epk, and encryption are computed by our C23 code. */
+bool sapling_build_output_with_ctx(
+    void *proving_ctx,
+    const uint8_t ovk[32],
+    const uint8_t to_d[11], const uint8_t to_pk_d[32],
+    uint64_t value, const uint8_t memo[512],
+    uint8_t od_cv[32], uint8_t od_cm[32], uint8_t od_epk[32],
+    uint8_t od_enc[580], uint8_t od_out[80], uint8_t od_proof[192]);
+
 /* Create binding signature for Sapling transaction.
  * bsk: total binding secret key (sum of rcv for spends, negated for outputs)
  * sighash: transaction sighash (32 bytes)

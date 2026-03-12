@@ -1,0 +1,47 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ * Distributed under the MIT software license, see the accompanying
+ * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
+
+#ifndef ZCL_DB_MODEL_TX_H
+#define ZCL_DB_MODEL_TX_H
+
+#include "db/db.h"
+#include "db/activerecord.h"
+#include <stdbool.h>
+#include <stdint.h>
+
+struct db_tx_index {
+    uint8_t txid[32];
+    uint8_t block_hash[32];
+    int block_height;
+    int tx_index;
+    int file_num;
+    int file_pos;
+    bool is_coinbase;
+};
+
+/* Callbacks and validation */
+struct ar_callbacks *db_tx_callbacks(void);
+bool db_tx_validate(const struct db_tx_index *t, struct ar_errors *errors);
+
+bool db_tx_save(struct node_db *ndb, const struct db_tx_index *t);
+bool db_tx_find(struct node_db *ndb, const uint8_t txid[32],
+                struct db_tx_index *out);
+bool db_tx_delete(struct node_db *ndb, const uint8_t txid[32]);
+
+/* Batch insert for block connect. Call within begin/commit. */
+bool db_tx_save_batch(struct node_db *ndb, const struct db_tx_index *txs,
+                      size_t count);
+
+/* Find all txids in a block. Returns count, fills out array up to max. */
+int db_tx_find_by_block(struct node_db *ndb, const uint8_t block_hash[32],
+                        struct db_tx_index *out, size_t max);
+
+/* ── Relationships ─────────────────────────────────────────────── */
+
+/* belongs_to :block — find the block this tx is in */
+struct db_block;
+bool db_tx_block(struct node_db *ndb, const struct db_tx_index *t,
+                 struct db_block *out);
+
+#endif

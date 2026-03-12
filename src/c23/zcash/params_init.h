@@ -7,12 +7,18 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 /* Load all Sapling and Sprout Groth16 verification keys.
  * Reads sapling-spend.params, sapling-output.params, and sprout-groth16.params
  * from the given directory path. Sets global VKs for verification.
  * Returns false if any file cannot be read or parsed. */
 bool zcash_init_params(const char *params_dir);
+
+/* Get raw proving key data for Sapling output/spend proofs.
+ * Returns pointer to mmap'd file data. NULL if not loaded. */
+const uint8_t *zcash_get_output_pk(size_t *len);
+const uint8_t *zcash_get_spend_pk(size_t *len);
 
 /* Free all loaded verification keys. */
 void zcash_free_params(void);

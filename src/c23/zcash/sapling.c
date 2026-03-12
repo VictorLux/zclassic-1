@@ -4,6 +4,8 @@
  * group_hash, key derivation, commitment, nullifier, RedJubjub, verification context. */
 
 #include "zcash/sapling.h"
+#include "zcash/sapling_circuit.h"
+#include "zcash/params_init.h"
 #include "zcash/pedersen_hash.h"
 #include "zcash/note_encryption.h"
 #include "zcash/jubjub.h"
@@ -775,9 +777,37 @@ bool sapling_build_output_description(
     if (!sapling_out_encrypt(ock, out_plaintext, 64, od_out))
         return false;
 
-    /* Groth16 proof placeholder — zeros for now.
-     * Full proof generation requires complete FFT + Pippenger MSM. */
-    memset(od_proof, 0, 192);
+    /* Generate Groth16 output proof */
+    {
+        size_t pk_len = 0;
+        const uint8_t *pk_data = zcash_get_output_pk(&pk_len);
+        if (pk_data && pk_len > 0) {
+            struct sapling_output_witness wit;
+            memset(&wit, 0, sizeof(wit));
+            wit.value = value;
+            memcpy(wit.diversifier, to_d, 11);
+            memcpy(wit.pk_d, to_pk_d, 32);
+            memcpy(wit.rcm, rcm, 32);
+            memcpy(wit.esk, esk, 32);
+            memcpy(wit.rcv, rcv, 32);
+
+            struct sapling_output_inputs pub;
+            memcpy(pub.cv, od_cv, 32);
+            memcpy(pub.epk, od_epk, 32);
+            memcpy(pub.cm, od_cm, 32);
+
+            if (!sapling_create_output_proof(pk_data, pk_len, &wit, &pub, od_proof)) {
+                memset(plaintext, 0, 564);
+                memset(rcm, 0, 32);
+                memset(rcv, 0, 32);
+                memset(esk, 0, 32);
+                return false;
+            }
+            memory_cleanse(&wit, sizeof(wit));
+        } else {
+            memset(od_proof, 0, 192);
+        }
+    }
 
     /* Return rcv for binding signature accumulation */
     if (rcv_out)
@@ -787,6 +817,115 @@ bool sapling_build_output_description(
     memset(plaintext, 0, 564);
     memset(rcm, 0, 32);
     memset(rcv, 0, 32);
+    memset(esk, 0, 32);
+    memset(dhsecret, 0, 32);
+    memset(enc_key, 0, 32);
+    memset(out_plaintext, 0, 64);
+    memset(ock, 0, 32);
+
+    return true;
+}
+
+/* --- librustzcash-backed output description builder --- */
+
+bool sapling_build_output_with_ctx(
+    void *proving_ctx,
+    const uint8_t ovk[32],
+    const uint8_t to_d[11], const uint8_t to_pk_d[32],
+    uint64_t value, const uint8_t memo[512],
+    uint8_t od_cv[32], uint8_t od_cm[32], uint8_t od_epk[32],
+    uint8_t od_enc[580], uint8_t od_out[80], uint8_t od_proof[192])
+{
+    /* Generate random scalars */
+    uint8_t rcm[32], esk[32];
+    sapling_generate_r(rcm);
+    sapling_generate_r(esk);
+
+    /* Use librustzcash to generate cv and zkproof (with internal rcv) */
+    extern bool librustzcash_sapling_output_proof(
+        void *ctx, const unsigned char *esk, const unsigned char *diversifier,
+        const unsigned char *pk_d, const unsigned char *rcm,
+        const uint64_t value, unsigned char *cv, unsigned char *zkproof);
+
+    if (!librustzcash_sapling_output_proof(proving_ctx, esk, to_d, to_pk_d,
+                                            rcm, value, od_cv, od_proof)) {
+        memset(rcm, 0, 32);
+        memset(esk, 0, 32);
+        return false;
+    }
+
+    /* Compute note commitment: cm (our C23 implementation) */
+    if (!sapling_compute_cm(to_d, to_pk_d, value, rcm, od_cm)) {
+        memset(rcm, 0, 32);
+        memset(esk, 0, 32);
+        return false;
+    }
+
+    /* Compute ephemeral public key: epk = esk * g_d(diversifier) */
+    if (!sapling_ka_derivepublic(to_d, esk, od_epk)) {
+        memset(rcm, 0, 32);
+        memset(esk, 0, 32);
+        return false;
+    }
+
+    /* Encrypt note for recipient */
+    uint8_t dhsecret[32];
+    if (!sapling_ka_agree(to_pk_d, esk, dhsecret)) {
+        memset(rcm, 0, 32);
+        memset(esk, 0, 32);
+        return false;
+    }
+
+    uint8_t enc_key[32];
+    if (!sapling_kdf(enc_key, dhsecret, od_epk)) {
+        memset(rcm, 0, 32);
+        memset(esk, 0, 32);
+        memset(dhsecret, 0, 32);
+        return false;
+    }
+
+    /* Build note plaintext */
+    uint8_t plaintext[564];
+    plaintext[0] = 0x01;
+    memcpy(plaintext + 1, to_d, 11);
+    for (int i = 0; i < 8; i++)
+        plaintext[12 + i] = (uint8_t)(value >> (i * 8));
+    memcpy(plaintext + 20, rcm, 32);
+    if (memo)
+        memcpy(plaintext + 52, memo, 512);
+    else
+        memset(plaintext + 52, 0xF6, 512);
+
+    if (!sapling_note_encrypt(enc_key, plaintext, 564, od_enc)) {
+        memset(rcm, 0, 32);
+        memset(esk, 0, 32);
+        memset(plaintext, 0, 564);
+        return false;
+    }
+
+    /* Encrypt outgoing plaintext */
+    uint8_t out_plaintext[64];
+    memcpy(out_plaintext, to_pk_d, 32);
+    memcpy(out_plaintext + 32, esk, 32);
+
+    uint8_t ock[32];
+    if (!sapling_prf_ock(ock, ovk, od_cv, od_cm, od_epk)) {
+        memset(rcm, 0, 32);
+        memset(esk, 0, 32);
+        memset(plaintext, 0, 564);
+        return false;
+    }
+
+    if (!sapling_out_encrypt(ock, out_plaintext, 64, od_out)) {
+        memset(rcm, 0, 32);
+        memset(esk, 0, 32);
+        memset(plaintext, 0, 564);
+        return false;
+    }
+
+    /* Cleanse secrets */
+    memset(plaintext, 0, 564);
+    memset(rcm, 0, 32);
     memset(esk, 0, 32);
     memset(dhsecret, 0, 32);
     memset(enc_key, 0, 32);

@@ -612,19 +612,36 @@ bool groth16_prove(const struct groth16_pk *pk,
         lc_evaluate(&c_eval[i], &cs->constraints[i].c, cs->witness);
     }
 
-    /* ── Step 2: Compute h(x) via FFT ── */
-    /* h(x) = (a(x) * b(x) - c(x)) / z_H(x)
-     * where z_H(x) = x^domain - 1 is the vanishing polynomial.
-     *
-     * We evaluate on a coset (multiply by generator) so z_H ≠ 0,
-     * then divide pointwise, then IFFT back. */
+    /* ── Step 2: Compute h(x) = (a(x)*b(x) - c(x)) / z_H(x) via coset FFT ── */
 
-    /* FFT a, b, c to evaluation form on coset */
+    /* Coset generator g = Fr::multiplicative_generator = 7 in bellman.
+     * Multiply coefficients by g^i to shift evaluation to coset {g*ω^i}.
+     * z_H(g*ω^i) = (g*ω^i)^domain - 1 = g^domain - 1 ≠ 0 on the coset. */
+    struct fr g_coset;
+    {
+        uint8_t g_bytes[32] = {0};
+        g_bytes[0] = 7; /* Fr multiplicative generator = 7 (little-endian) */
+        fr_from_bytes(&g_coset, g_bytes);
+    }
+
+    /* Apply coset shift: coeff[i] *= g^i */
+    {
+        struct fr g_pow;
+        fr_one(&g_pow);
+        for (size_t i = 0; i < domain; i++) {
+            fr_mul(&a_eval[i], &a_eval[i], &g_pow);
+            fr_mul(&b_eval[i], &b_eval[i], &g_pow);
+            fr_mul(&c_eval[i], &c_eval[i], &g_pow);
+            fr_mul(&g_pow, &g_pow, &g_coset);
+        }
+    }
+
+    /* FFT → evaluations at coset points g*ω^i */
     fr_fft(a_eval, domain, false);
     fr_fft(b_eval, domain, false);
     fr_fft(c_eval, domain, false);
 
-    /* Compute h(x) = a(x)*b(x) - c(x) in evaluation form */
+    /* Compute (a*b - c) pointwise on coset */
     struct fr *h_eval = calloc(domain, sizeof(struct fr));
     if (!h_eval) {
         free(a_eval); free(b_eval); free(c_eval);
@@ -637,12 +654,33 @@ bool groth16_prove(const struct groth16_pk *pk,
         fr_sub(&h_eval[i], &ab, &c_eval[i]);
     }
 
-    /* Divide by z_H in evaluation form:
-     * z_H(omega^i) = omega^(i*domain) - 1 = 1 - 1 = 0 on the domain!
-     * So we need to use a COSET evaluation instead.
-     * For now, use the standard approach: IFFT h, then the coefficients
-     * give us what we need for the H query MSM. */
+    /* Divide by z_H on coset: z_H(g*ω^i) = g^domain - 1 (constant) */
+    {
+        struct fr z_h_coset;
+        fr_pow_u64(&z_h_coset, &g_coset, (uint64_t)domain);
+        struct fr one_val;
+        fr_one(&one_val);
+        fr_sub(&z_h_coset, &z_h_coset, &one_val);
+        struct fr z_h_inv;
+        fr_inv(&z_h_inv, &z_h_coset);
+        for (size_t i = 0; i < domain; i++)
+            fr_mul(&h_eval[i], &h_eval[i], &z_h_inv);
+    }
+
+    /* IFFT back to coefficient form */
     fr_fft(h_eval, domain, true);
+
+    /* Undo coset shift: coeff[i] *= g^{-i} */
+    {
+        struct fr g_inv;
+        fr_inv(&g_inv, &g_coset);
+        struct fr g_inv_pow;
+        fr_one(&g_inv_pow);
+        for (size_t i = 0; i < domain; i++) {
+            fr_mul(&h_eval[i], &h_eval[i], &g_inv_pow);
+            fr_mul(&g_inv_pow, &g_inv_pow, &g_inv);
+        }
+    }
 
     free(a_eval);
     free(b_eval);

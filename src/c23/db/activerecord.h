@@ -1,0 +1,331 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * ActiveRecord-style ORM base for C23.
+ *
+ * Pattern:
+ *   struct db_block blk = {.height = 100, ...};
+ *   if (!db_block_save(&ndb, &blk))
+ *       printf("Error: %s\n", ndb.last_error);
+ *
+ * CRUD convention for every model:
+ *   _save()         — INSERT OR REPLACE (create/update)
+ *   _find()         — SELECT by primary key
+ *   _find_by_*()    — SELECT by indexed column
+ *   _delete()       — DELETE by primary key
+ *   _count()        — SELECT COUNT(*)
+ *   _each()         — iterate all rows via callback
+ *   _where_*()      — filtered queries return arrays
+ *
+ * Lifecycle:
+ *   validate → before_save → SQL INSERT/UPDATE → after_save
+ *   before_destroy → SQL DELETE → after_destroy
+ *
+ * Relationships:
+ *   db_block_transactions()  — Block has_many Transactions
+ *   db_tx_block()            — Transaction belongs_to Block
+ *   db_utxo_transaction()    — UTXO belongs_to Transaction
+ *   db_wallet_utxo_key()     — WalletUTXO belongs_to WalletKey
+ *   db_sapling_note_key()    — SaplingNote belongs_to SaplingKey
+ */
+
+#ifndef ZCL_DB_ACTIVERECORD_H
+#define ZCL_DB_ACTIVERECORD_H
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <string.h>
+#include <stdio.h>
+
+/* Maximum error message length */
+#define AR_ERROR_MAX 256
+
+/* Maximum callbacks per model per hook */
+#define AR_MAX_CALLBACKS 4
+
+/* Validation result — accumulates errors like ActiveModel::Errors */
+struct ar_errors {
+    char messages[8][AR_ERROR_MAX];
+    int count;
+};
+
+static inline void ar_errors_clear(struct ar_errors *e)
+{
+    e->count = 0;
+}
+
+static inline void ar_errors_add(struct ar_errors *e, const char *field,
+                                  const char *msg)
+{
+    if (e->count >= 8) return;
+    snprintf(e->messages[e->count], AR_ERROR_MAX, "%s %s", field, msg);
+    e->count++;
+}
+
+static inline bool ar_errors_any(const struct ar_errors *e)
+{
+    return e->count > 0;
+}
+
+static inline const char *ar_errors_full(const struct ar_errors *e)
+{
+    return e->count > 0 ? e->messages[0] : "";
+}
+
+/* All error messages joined by "; " */
+static inline void ar_errors_full_messages(const struct ar_errors *e,
+                                            char *buf, size_t buflen)
+{
+    if (e->count == 0) { buf[0] = '\0'; return; }
+    buf[0] = '\0';
+    size_t off = 0;
+    for (int i = 0; i < e->count && off < buflen - 1; i++) {
+        if (i > 0) {
+            int n = snprintf(buf + off, buflen - off, "; ");
+            off += (size_t)n;
+        }
+        int n = snprintf(buf + off, buflen - off, "%s", e->messages[i]);
+        off += (size_t)n;
+    }
+}
+
+/* Validation macros — use in validate_* functions */
+
+#define validates_presence_of(errors, record, field) do { \
+    static const uint8_t _zero[sizeof((record)->field)] = {0}; \
+    if (memcmp(&(record)->field, _zero, sizeof((record)->field)) == 0) \
+        ar_errors_add(errors, #field, "can't be blank"); \
+} while (0)
+
+#define validates_range(errors, record, field, min_val, max_val) do { \
+    if ((record)->field < (min_val) || (record)->field > (max_val)) \
+        ar_errors_add(errors, #field, "is out of range"); \
+} while (0)
+
+#define validates_positive(errors, record, field) do { \
+    if ((record)->field <= 0) \
+        ar_errors_add(errors, #field, "must be positive"); \
+} while (0)
+
+#define validates_blob_size(errors, data, len, expected, name) do { \
+    if ((len) != (expected)) \
+        ar_errors_add(errors, name, "has wrong size"); \
+} while (0)
+
+#define validates_non_negative(errors, record, field) do { \
+    if ((record)->field < 0) \
+        ar_errors_add(errors, #field, "must be non-negative"); \
+} while (0)
+
+#define validates_length_of(errors, record, field, min_len, max_len) do { \
+    if ((record)->field < (min_len) || (record)->field > (max_len)) \
+        ar_errors_add(errors, #field, "has wrong length"); \
+} while (0)
+
+#define validates_inclusion_of(errors, record, field, vals, nvals) do { \
+    bool _found = false; \
+    for (size_t _i = 0; _i < (nvals); _i++) \
+        if ((record)->field == (vals)[_i]) { _found = true; break; } \
+    if (!_found) \
+        ar_errors_add(errors, #field, "is not included in the list"); \
+} while (0)
+
+/* ── Callback System ───────────────────────────────────────────── */
+
+/* Callback signature: returns false to halt the operation.
+ * before_save returning false prevents the save.
+ * before_destroy returning false prevents the delete. */
+typedef bool (*ar_before_cb)(void *record, void *ctx);
+typedef void (*ar_after_cb)(void *record, void *ctx);
+
+/* Per-model callback registry.
+ * Each model type that wants callbacks declares a static instance. */
+struct ar_callbacks {
+    ar_before_cb before_save[AR_MAX_CALLBACKS];
+    ar_after_cb  after_save[AR_MAX_CALLBACKS];
+    ar_before_cb before_destroy[AR_MAX_CALLBACKS];
+    ar_after_cb  after_destroy[AR_MAX_CALLBACKS];
+    int n_before_save;
+    int n_after_save;
+    int n_before_destroy;
+    int n_after_destroy;
+    void *ctx;
+};
+
+static inline void ar_callbacks_init(struct ar_callbacks *cb)
+{
+    memset(cb, 0, sizeof(*cb));
+}
+
+static inline void ar_callbacks_set_ctx(struct ar_callbacks *cb, void *ctx)
+{
+    cb->ctx = ctx;
+}
+
+static inline bool ar_register_before_save(struct ar_callbacks *cb,
+                                            ar_before_cb fn)
+{
+    if (cb->n_before_save >= AR_MAX_CALLBACKS) return false;
+    cb->before_save[cb->n_before_save++] = fn;
+    return true;
+}
+
+static inline bool ar_register_after_save(struct ar_callbacks *cb,
+                                           ar_after_cb fn)
+{
+    if (cb->n_after_save >= AR_MAX_CALLBACKS) return false;
+    cb->after_save[cb->n_after_save++] = fn;
+    return true;
+}
+
+static inline bool ar_register_before_destroy(struct ar_callbacks *cb,
+                                               ar_before_cb fn)
+{
+    if (cb->n_before_destroy >= AR_MAX_CALLBACKS) return false;
+    cb->before_destroy[cb->n_before_destroy++] = fn;
+    return true;
+}
+
+static inline bool ar_register_after_destroy(struct ar_callbacks *cb,
+                                              ar_after_cb fn)
+{
+    if (cb->n_after_destroy >= AR_MAX_CALLBACKS) return false;
+    cb->after_destroy[cb->n_after_destroy++] = fn;
+    return true;
+}
+
+/* Run callbacks — return false if any before_ callback returns false */
+static inline bool ar_run_before_save(struct ar_callbacks *cb, void *record)
+{
+    for (int i = 0; i < cb->n_before_save; i++)
+        if (!cb->before_save[i](record, cb->ctx)) return false;
+    return true;
+}
+
+static inline void ar_run_after_save(struct ar_callbacks *cb, void *record)
+{
+    for (int i = 0; i < cb->n_after_save; i++)
+        cb->after_save[i](record, cb->ctx);
+}
+
+static inline bool ar_run_before_destroy(struct ar_callbacks *cb, void *record)
+{
+    for (int i = 0; i < cb->n_before_destroy; i++)
+        if (!cb->before_destroy[i](record, cb->ctx)) return false;
+    return true;
+}
+
+static inline void ar_run_after_destroy(struct ar_callbacks *cb, void *record)
+{
+    for (int i = 0; i < cb->n_after_destroy; i++)
+        cb->after_destroy[i](record, cb->ctx);
+}
+
+/* ── Relationship Macros ───────────────────────────────────────── */
+
+/* These document model relationships. Actual query functions are
+ * declared in the respective model headers. */
+
+/* has_many: parent model has multiple child records.
+ * Convention: db_<parent>_<children>(ndb, pk, *out, max) → count */
+
+/* belongs_to: child model references a parent by foreign key.
+ * Convention: db_<child>_<parent>(ndb, fk, *out) → bool */
+
+/* ── Router ────────────────────────────────────────────────────── */
+
+/* RPC route with before_action filters.
+ * A route maps method name → handler, with optional filters. */
+#define AR_MAX_FILTERS 4
+
+struct ar_route;
+
+typedef bool (*ar_filter_fn)(const char *method, void *ctx);
+
+struct ar_route {
+    const char *method;
+    const char *category;
+    bool (*handler)(const void *params, bool help, void *result);
+    ar_filter_fn before_filters[AR_MAX_FILTERS];
+    int n_filters;
+};
+
+struct ar_router {
+    struct ar_route routes[256];
+    size_t num_routes;
+    ar_filter_fn global_filters[AR_MAX_FILTERS];
+    int n_global_filters;
+};
+
+static inline void ar_router_init(struct ar_router *r)
+{
+    memset(r, 0, sizeof(*r));
+}
+
+static inline bool ar_router_add_filter(struct ar_router *r,
+                                          ar_filter_fn fn)
+{
+    if (r->n_global_filters >= AR_MAX_FILTERS) return false;
+    r->global_filters[r->n_global_filters++] = fn;
+    return true;
+}
+
+static inline bool ar_router_add_route(struct ar_router *r,
+                                        const char *method,
+                                        const char *category,
+                                        bool (*handler)(const void *, bool, void *))
+{
+    if (r->num_routes >= 256) return false;
+    struct ar_route *route = &r->routes[r->num_routes++];
+    route->method = method;
+    route->category = category;
+    route->handler = handler;
+    route->n_filters = 0;
+    return true;
+}
+
+static inline bool ar_route_add_filter(struct ar_router *r,
+                                        const char *method,
+                                        ar_filter_fn fn)
+{
+    for (size_t i = 0; i < r->num_routes; i++) {
+        if (strcmp(r->routes[i].method, method) == 0) {
+            struct ar_route *route = &r->routes[i];
+            if (route->n_filters >= AR_MAX_FILTERS) return false;
+            route->before_filters[route->n_filters++] = fn;
+            return true;
+        }
+    }
+    return false;
+}
+
+static inline const struct ar_route *ar_router_find(const struct ar_router *r,
+                                                      const char *method)
+{
+    for (size_t i = 0; i < r->num_routes; i++)
+        if (strcmp(r->routes[i].method, method) == 0)
+            return &r->routes[i];
+    return NULL;
+}
+
+/* Dispatch: run global filters → route filters → handler */
+static inline bool ar_router_dispatch(struct ar_router *r,
+                                       const char *method,
+                                       const void *params,
+                                       bool help,
+                                       void *result,
+                                       void *filter_ctx)
+{
+    const struct ar_route *route = ar_router_find(r, method);
+    if (!route) return false;
+
+    for (int i = 0; i < r->n_global_filters; i++)
+        if (!r->global_filters[i](method, filter_ctx)) return false;
+
+    for (int i = 0; i < route->n_filters; i++)
+        if (!route->before_filters[i](method, filter_ctx)) return false;
+
+    return route->handler(params, help, result);
+}
+
+#endif

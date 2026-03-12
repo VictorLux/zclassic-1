@@ -15,9 +15,11 @@
 #include "core/serialize.h"
 #include "storage/disk_block_io.h"
 #include "storage/txdb.h"
+#include "storage/block_index_db.h"
 #include "core/serialize.h"
 #include "wallet/wallet.h"
 #include "core/utiltime.h"
+#include "db/node_db_sync.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -384,8 +386,32 @@ bool connect_tip(struct validation_state *state,
     pindex_new->nStatus = (pindex_new->nStatus & ~BLOCK_VALID_MASK) |
                            BLOCK_VALID_SCRIPTS;
 
-    /* Write transaction index if enabled */
+    /* Persist block_index entry to LevelDB */
     extern struct block_tree_db *g_active_block_tree;
+    if (g_active_block_tree) {
+        struct disk_block_index dbi;
+        disk_block_index_init(&dbi);
+        if (pindex_new->pprev && pindex_new->pprev->phashBlock)
+            dbi.hashPrev = *pindex_new->pprev->phashBlock;
+        dbi.nHeight = pindex_new->nHeight;
+        dbi.nStatus = pindex_new->nStatus;
+        dbi.nTx = pindex_new->nTx;
+        dbi.nFile = pindex_new->nFile;
+        dbi.nDataPos = pindex_new->nDataPos;
+        dbi.nUndoPos = pindex_new->nUndoPos;
+        dbi.nCachedBranchId = pindex_new->nCachedBranchId;
+        dbi.nVersion = pindex_new->nVersion;
+        dbi.hashMerkleRoot = pindex_new->hashMerkleRoot;
+        dbi.hashFinalSaplingRoot = pindex_new->hashFinalSaplingRoot;
+        dbi.nTime = pindex_new->nTime;
+        dbi.nBits = pindex_new->nBits;
+        dbi.nNonce = pindex_new->nNonce;
+        memcpy(dbi.nSolution, pindex_new->nSolution, pindex_new->nSolutionSize);
+        dbi.nSolutionSize = pindex_new->nSolutionSize;
+        block_tree_db_write_block_index(g_active_block_tree, &dbi);
+    }
+
+    /* Write transaction index if enabled */
     if (g_active_block_tree && ms->fTxIndex && pblock->num_vtx > 0) {
         struct uint256 *txids = malloc(pblock->num_vtx * sizeof(struct uint256));
         struct disk_tx_pos *positions = malloc(
@@ -422,6 +448,20 @@ bool connect_tip(struct validation_state *state,
         for (size_t i = 0; i < pblock->num_vtx; i++)
             wallet_sync_transaction(g_active_wallet, &pblock->vtx[i],
                                     pindex_new);
+    }
+
+    /* Sync block to SQLite database */
+    {
+        extern struct node_db *g_active_node_db;
+        if (g_active_node_db) {
+            node_db_sync_connect_block(g_active_node_db, pblock, pindex_new);
+            if (g_active_wallet) {
+                for (size_t i = 0; i < pblock->num_vtx; i++)
+                    node_db_sync_wallet_tx(g_active_node_db,
+                        &pblock->vtx[i], g_active_wallet,
+                        pindex_new->nHeight);
+            }
+        }
     }
 
     /* Periodically flush coins cache to LevelDB to prevent UTXO corruption */
@@ -489,6 +529,14 @@ bool disconnect_tip(struct validation_state *state,
         coins_view_cache_free(&view);
     }
 
+    /* Sync disconnect to SQLite */
+    {
+        extern struct node_db *g_active_node_db;
+        if (g_active_node_db)
+            node_db_sync_disconnect_block(g_active_node_db,
+                                          &block, pindex_delete);
+    }
+
     update_tip(ms, pindex_delete->pprev);
 
     block_free(&block);
@@ -542,22 +590,29 @@ bool activate_best_chain(struct validation_state *state,
             }
         }
 
-        /* Connect blocks from fork to most-work tip */
-        /* Build path from most_work back to current tip */
-        struct block_index *connect_path[2048];
-        int path_len = 0;
-        struct block_index *iter = pindex_most_work;
+        /* Connect blocks from fork to most-work tip.
+         * Count total depth, then allocate dynamically. */
         struct block_index *current_tip = active_chain_tip(&ms->chain_active);
-        while (iter && iter != current_tip && path_len < 2048) {
-            connect_path[path_len++] = iter;
-            iter = iter->pprev;
-        }
+        int total_depth = 0;
+        for (struct block_index *w = pindex_most_work;
+             w && w != current_tip; w = w->pprev)
+            total_depth++;
+
+        struct block_index **connect_path = malloc(
+            (size_t)total_depth * sizeof(struct block_index *));
+        if (!connect_path)
+            return false;
+
+        int path_len = 0;
+        for (struct block_index *w = pindex_most_work;
+             w && w != current_tip && path_len < total_depth;
+             w = w->pprev)
+            connect_path[path_len++] = w;
 
         /* Connect in forward order (reverse of path) */
         for (int i = path_len - 1; i >= 0; i--) {
             struct block *use_block = NULL;
             if (pblock && i == 0) {
-                /* Use provided block for the final (most-work) tip */
                 struct uint256 block_hash;
                 block_header_get_hash(&pblock->header, &block_hash);
                 if (connect_path[0]->phashBlock &&
@@ -570,9 +625,11 @@ bool activate_best_chain(struct validation_state *state,
                 if (validation_state_is_invalid(state)) {
                     validation_state_init(state);
                 }
+                free(connect_path);
                 return false;
             }
         }
+        free(connect_path);
 
     } while (pindex_most_work != active_chain_tip(&ms->chain_active));
 

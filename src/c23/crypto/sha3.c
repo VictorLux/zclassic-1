@@ -147,3 +147,105 @@ void sha3_256_reset(struct sha3_256_ctx *ctx)
 {
     sha3_256_init(ctx);
 }
+
+/* SHA3-512: rate = 576 bits (9 uint64s), capacity = 1024, output = 64 bytes */
+
+void sha3_512_init(struct sha3_512_ctx *ctx)
+{
+    ctx->bufsize = 0;
+    ctx->pos = 0;
+    memset(ctx->state, 0, sizeof(ctx->state));
+}
+
+void sha3_512_write(struct sha3_512_ctx *ctx, const unsigned char *data, size_t len)
+{
+    if (ctx->bufsize && ctx->bufsize + len >= sizeof(ctx->buffer)) {
+        memcpy(ctx->buffer + ctx->bufsize, data, sizeof(ctx->buffer) - ctx->bufsize);
+        data += sizeof(ctx->buffer) - ctx->bufsize;
+        len -= sizeof(ctx->buffer) - ctx->bufsize;
+        ctx->state[ctx->pos++] ^= ReadLE64(ctx->buffer);
+        ctx->bufsize = 0;
+        if (ctx->pos == SHA3_512_RATE_BUFFERS) {
+            keccakf(ctx->state);
+            ctx->pos = 0;
+        }
+    }
+    while (len >= sizeof(ctx->buffer)) {
+        ctx->state[ctx->pos++] ^= ReadLE64(data);
+        data += 8;
+        len -= 8;
+        if (ctx->pos == SHA3_512_RATE_BUFFERS) {
+            keccakf(ctx->state);
+            ctx->pos = 0;
+        }
+    }
+    if (len) {
+        memcpy(ctx->buffer + ctx->bufsize, data, len);
+        ctx->bufsize += len;
+    }
+}
+
+void sha3_512_finalize(struct sha3_512_ctx *ctx, unsigned char output[64])
+{
+    memset(ctx->buffer + ctx->bufsize, 0, sizeof(ctx->buffer) - ctx->bufsize);
+    ctx->buffer[ctx->bufsize] ^= 0x06;
+    ctx->state[ctx->pos] ^= ReadLE64(ctx->buffer);
+    ctx->state[SHA3_512_RATE_BUFFERS - 1] ^= 0x8000000000000000ull;
+    keccakf(ctx->state);
+    for (unsigned i = 0; i < 8; ++i)
+        WriteLE64(output + 8 * i, ctx->state[i]);
+}
+
+void sha3_512_reset(struct sha3_512_ctx *ctx)
+{
+    sha3_512_init(ctx);
+}
+
+void sha3_512(const unsigned char *data, size_t len, unsigned char output[64])
+{
+    struct sha3_512_ctx ctx;
+    sha3_512_init(&ctx);
+    sha3_512_write(&ctx, data, len);
+    sha3_512_finalize(&ctx, output);
+}
+
+void hmac_sha3_512(const unsigned char *key, size_t key_len,
+                   const unsigned char *data, size_t data_len,
+                   unsigned char output[64])
+{
+    unsigned char k_pad[SHA3_512_RATE_BITS / 8];
+    unsigned char key_hash[64];
+
+    /* Keys longer than block size are hashed first */
+    if (key_len > sizeof(k_pad)) {
+        sha3_512(key, key_len, key_hash);
+        key = key_hash;
+        key_len = 64;
+    }
+
+    /* Inner hash: SHA3-512(k_ipad || data) */
+    memset(k_pad, 0x36, sizeof(k_pad));
+    for (size_t i = 0; i < key_len; i++)
+        k_pad[i] ^= key[i];
+
+    struct sha3_512_ctx ctx;
+    sha3_512_init(&ctx);
+    sha3_512_write(&ctx, k_pad, sizeof(k_pad));
+    sha3_512_write(&ctx, data, data_len);
+    unsigned char inner[64];
+    sha3_512_finalize(&ctx, inner);
+
+    /* Outer hash: SHA3-512(k_opad || inner) */
+    memset(k_pad, 0x5c, sizeof(k_pad));
+    for (size_t i = 0; i < key_len; i++)
+        k_pad[i] ^= key[i];
+
+    sha3_512_init(&ctx);
+    sha3_512_write(&ctx, k_pad, sizeof(k_pad));
+    sha3_512_write(&ctx, inner, 64);
+    sha3_512_finalize(&ctx, output);
+
+    memset(inner, 0, 64);
+    memset(k_pad, 0, sizeof(k_pad));
+    memset(key_hash, 0, sizeof(key_hash));
+}

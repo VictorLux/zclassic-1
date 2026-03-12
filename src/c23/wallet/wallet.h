@@ -73,6 +73,13 @@ struct sapling_received_note {
 };
 
 #define MAX_SAPLING_NOTES 16384
+#define SPENT_SET_BUCKETS 8192
+
+struct spent_outpoint {
+    struct uint256 txid;
+    uint32_t vout;
+    bool occupied;
+};
 
 struct coin_entry {
     const struct wallet_tx *wtx;
@@ -112,9 +119,15 @@ struct wallet {
     struct sapling_received_note *sapling_notes;
     size_t num_sapling_notes;
     size_t sapling_notes_cap;
+
+    struct spent_outpoint spent_set[SPENT_SET_BUCKETS];
+    size_t num_spent;
 };
 
 void wallet_init(struct wallet *w);
+void wallet_rebuild_spent_set(struct wallet *w);
+struct coins_view_cache;
+void wallet_verify_utxos(struct wallet *w, struct coins_view_cache *coins_tip);
 void wallet_free(struct wallet *w);
 
 bool wallet_generate_new_key(struct wallet *w, struct pubkey *pk_out);
@@ -179,10 +192,17 @@ int wallet_scan_block(struct wallet *w, const struct block_index *pindex,
                       const char *datadir);
 int wallet_rescan(struct wallet *w, const struct active_chain *chain,
                   int start_height, int stop_height, const char *datadir);
+int wallet_scan_blockfiles(struct wallet *w, const char *datadir);
 
 int wallet_tx_get_depth_in_main_chain(const struct wallet *w,
                                         const struct wallet_tx *wtx);
 int wallet_tx_get_blocks_to_maturity(const struct wallet_tx *wtx);
+
+/* Spent outpoint tracking */
+void wallet_mark_outpoint_spent(struct wallet *w,
+                                 const struct uint256 *txid, uint32_t vout);
+bool wallet_is_outpoint_spent(const struct wallet *w,
+                               const struct uint256 *txid, uint32_t vout);
 
 /* Sapling note trial decryption and balance */
 struct output_description;

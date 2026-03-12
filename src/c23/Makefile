@@ -4,7 +4,10 @@
 CC = cc
 CFLAGS = -std=c23 -Wall -Wextra -Werror -pedantic -I. -D_POSIX_C_SOURCE=200809L -I../secp256k1/include -I../leveldb/include
 LDFLAGS = -pthread
-LIBS = -L../secp256k1/.libs -lsecp256k1 -L../leveldb -lleveldb -lstdc++ -lm
+RUSTZCASH_DIR = ../../depends/x86_64-unknown-linux-gnu
+LIBS = -L../secp256k1/.libs -lsecp256k1 -L../leveldb -lleveldb \
+	-L$(RUSTZCASH_DIR)/lib -lrustzcash \
+	-lstdc++ -lm -lsqlite3 -ldl -lpthread
 
 CRYPTO_SRCS = \
 	crypto/sha256.c crypto/sha512.c crypto/sha1.c \
@@ -36,7 +39,7 @@ PRIMITIVES_SRCS = \
 NET_SRCS = \
 	net/netaddr.c net/netbase.c net/protocol.c \
 	net/p2p_message.c net/addrman.c net/net.c net/msgprocessor.c \
-	net/connman.c
+	net/connman.c net/secure_channel.c
 
 CHAIN_SRCS = \
 	chain/chain.c chain/pow.c chain/checkpoints.c \
@@ -97,6 +100,12 @@ WALLET_SRCS = \
 INIT_SRCS = \
 	init/init.c
 
+DB_SRCS = \
+	db/db.c db/model_block.c db/model_tx.c db/model_utxo.c \
+	db/model_wallet_key.c db/model_wallet_tx.c \
+	db/model_mempool.c db/model_peer.c db/node_db_sync.c \
+	db/wallet_scan.c db/legacy_import.c
+
 ZCASH_SRCS = \
 	zcash/jubjub.c zcash/prf.c zcash/incremental_merkle_tree.c \
 	zcash/address.c zcash/note.c zcash/note_encryption.c \
@@ -109,7 +118,7 @@ ALL_SRCS = $(CRYPTO_SRCS) $(CORE_SRCS) $(ENCODING_SRCS) $(SCRIPT_SRCS) \
 	$(KEYS_SRCS) $(VALIDATION_SRCS) $(SUPPORT_SRCS) $(BLOOM_SRCS) \
 	$(COINS_SRCS) $(UTIL_SRCS) $(POLICY_SRCS) $(JSON_SRCS) $(RPC_SRCS) \
 	$(STORAGE_SRCS) $(METRICS_SRCS) $(MINING_SRCS) $(WALLET_SRCS) \
-	$(INIT_SRCS) $(ZCASH_SRCS)
+	$(INIT_SRCS) $(DB_SRCS) $(ZCASH_SRCS)
 
 ALL_OBJS = $(ALL_SRCS:.c=.o)
 
