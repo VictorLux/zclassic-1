@@ -95,6 +95,19 @@ make zcld    # build node
 make test    # run tests (488 tests)
 ```
 
+## Module Structure
+C23 source uses qedc module layout under `modules/`:
+```
+modules/<name>/include/<name>/*.h   (public headers)
+modules/<name>/src/*.c              (source files)
+modules/<name>/module.cfg           (module metadata)
+```
+25 modules: bloom, chain, coins, consensus, core, crypto, db, encoding, init,
+json, keys, metrics, mining, net, policy, primitives, rpc, script, storage,
+support, util, validation, wallet, zcash, test.
+
+Include paths use `-Imodules/<name>/include` so `#include "crypto/sha256.h"` works unchanged.
+
 ## Running Both Nodes
 ```bash
 # C++ node (default ports)
