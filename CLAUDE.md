@@ -91,8 +91,8 @@ Test all 38 RPC commands against both nodes, compare outputs.
 
 ## Build
 ```bash
-cd src/c23 && make zcld    # build node
-cd src/c23 && make test     # run tests
+make zcld    # build node
+make test    # run tests (488 tests)
 ```
 
 ## Running Both Nodes
@@ -100,9 +100,10 @@ cd src/c23 && make test     # run tests
 # C++ node (default ports)
 ./src/zclassicd -showmetrics=0
 
-# C23 node (alternate ports, connects to C++ node)
-cd src/c23 && ./zcld -datadir=/home/bob/.zclassic-c23 \
-  -port=18033 -rpcport=18232 -addnode=127.0.0.1:8033 -showmetrics=0
+# C23 node (alternate ports, connects to C++ node, accepts inbound)
+./zcld -datadir=/home/bob/.zclassic-c23 \
+  -port=18033 -rpcport=18232 -rpcuser=c23user -rpcpassword=c23pass \
+  -addnode=127.0.0.1:8033 -listen -showmetrics=0
 ```
 
 ## RPC Testing
