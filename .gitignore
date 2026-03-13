@@ -5,31 +5,9 @@
 *.a
 *.log
 
-# Vendor libraries (pre-built, not tracked)
+# Vendor (pre-built libs and C++ reference — not tracked)
 vendor/lib/
-
-# Legacy C++ codebase (build dependency only)
-src/
-depends/
-contrib/
-share/
-qa/
-doc/
-zcutil/
-build-aux/
-autom4te.cache/
-
-# Autotools generated
-Makefile.in
-Makefile.am
-aclocal.m4
-config.log
-config.status
-configure
-configure.ac
-libtool
-libzcashconsensus.pc
-libzcashconsensus.pc.in
+vendor/zclassic-ref/
 
 # Editor / OS
 .DS_Store

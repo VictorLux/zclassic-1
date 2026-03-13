@@ -1,0 +1,1158 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ * Distributed under the MIT software license, see the accompanying
+ * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
+
+#include "controllers/sync_controller.h"
+#include "models/wallet_key.h"
+#include "primitives/block.h"
+#include "primitives/transaction.h"
+#include "chain/chain.h"
+#include "wallet/wallet.h"
+#include "wallet/keystore.h"
+#include "wallet/sapling_keys.h"
+#include "keys/key.h"
+#include "core/hash.h"
+#include "core/serialize.h"
+#include "script/standard.h"
+#include "storage/disk_block_io.h"
+#include "storage/dbwrapper.h"
+#include "storage/coins_db.h"
+#include "coins/undo.h"
+#include "validation/chainstate.h"
+#include "validation/txmempool.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+
+bool node_db_sync_init(struct node_db *ndb, const char *datadir)
+{
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/node.db", datadir);
+    if (!node_db_open(ndb, path)) {
+        fprintf(stderr, "node_db_sync: failed to open %s\n", path);
+        return false;
+    }
+    printf("SQLite database opened: %s (schema v%d)\n",
+           path, node_db_schema_version(ndb));
+    return true;
+}
+
+/* Extract the 20-byte address hash from a scriptPubKey.
+ * Returns script type and fills addr_hash if applicable. */
+static enum script_type classify_script(const uint8_t *script,
+                                        size_t script_len,
+                                        uint8_t addr_hash[20],
+                                        bool *has_addr)
+{
+    *has_addr = false;
+
+    /* P2PKH: OP_DUP OP_HASH160 <20> <hash> OP_EQUALVERIFY OP_CHECKSIG */
+    if (script_len == 25 &&
+        script[0] == 0x76 && script[1] == 0xa9 &&
+        script[2] == 0x14 &&
+        script[23] == 0x88 && script[24] == 0xac) {
+        memcpy(addr_hash, script + 3, 20);
+        *has_addr = true;
+        return SCRIPT_P2PKH;
+    }
+
+    /* P2SH: OP_HASH160 <20> <hash> OP_EQUAL */
+    if (script_len == 23 &&
+        script[0] == 0xa9 && script[1] == 0x14 &&
+        script[22] == 0x87) {
+        memcpy(addr_hash, script + 2, 20);
+        *has_addr = true;
+        return SCRIPT_P2SH;
+    }
+
+    /* OP_RETURN */
+    if (script_len > 0 && script[0] == 0x6a)
+        return SCRIPT_OP_RETURN;
+
+    return SCRIPT_OTHER;
+}
+
+/* Serialize a transaction to raw bytes. Caller must free. */
+static uint8_t *serialize_tx(const struct transaction *tx,
+                             size_t *out_len)
+{
+    struct byte_stream s;
+    stream_init(&s, 512);
+    transaction_serialize(tx, &s);
+    *out_len = s.size;
+    return s.data;
+}
+
+bool node_db_sync_connect_block(struct node_db *ndb,
+                                const struct block *blk,
+                                const struct block_index *pindex)
+{
+    if (!ndb->open) return false;
+
+    node_db_begin(ndb);
+
+    /* 1. Index the block header */
+    struct db_block db_blk;
+    memset(&db_blk, 0, sizeof(db_blk));
+    memcpy(db_blk.hash, pindex->phashBlock->data, 32);
+    db_blk.height = pindex->nHeight;
+    if (pindex->pprev)
+        memcpy(db_blk.prev_hash,
+               pindex->pprev->phashBlock->data, 32);
+    db_blk.version = blk->header.nVersion;
+    memcpy(db_blk.merkle_root,
+           blk->header.hashMerkleRoot.data, 32);
+    db_blk.time = blk->header.nTime;
+    db_blk.bits = blk->header.nBits;
+    memcpy(db_blk.nonce, blk->header.nNonce.data, 32);
+    db_blk.solution = (uint8_t *)blk->header.nSolution;
+    db_blk.solution_len = blk->header.nSolutionSize;
+    memcpy(db_blk.chain_work, pindex->nChainWork.pn, 32);
+    db_blk.status = pindex->nStatus;
+    db_blk.file_num = pindex->nFile;
+    db_blk.data_pos = (int)pindex->nDataPos;
+    db_blk.num_tx = (int)blk->num_vtx;
+
+    if (!db_block_save(ndb, &db_blk)) {
+        node_db_rollback(ndb);
+        return false;
+    }
+
+    /* 2. Index each transaction and update UTXOs */
+    for (size_t i = 0; i < blk->num_vtx; i++) {
+        const struct transaction *tx = &blk->vtx[i];
+
+        /* Index the transaction */
+        struct db_tx_index db_tx;
+        memset(&db_tx, 0, sizeof(db_tx));
+        memcpy(db_tx.txid, tx->hash.data, 32);
+        memcpy(db_tx.block_hash,
+               pindex->phashBlock->data, 32);
+        db_tx.block_height = pindex->nHeight;
+        db_tx.tx_index = (int)i;
+        db_tx.file_num = pindex->nFile;
+        db_tx.file_pos = (int)pindex->nDataPos;
+        db_tx.is_coinbase = (i == 0);
+
+        if (!db_tx_save(ndb, &db_tx)) {
+            node_db_rollback(ndb);
+            return false;
+        }
+
+        /* Spend inputs (delete consumed UTXOs) */
+        if (i > 0) { /* skip coinbase — no inputs */
+            for (size_t j = 0; j < tx->num_vin; j++) {
+                db_utxo_delete(ndb,
+                    tx->vin[j].prevout.hash.data,
+                    tx->vin[j].prevout.n);
+            }
+        }
+
+        /* Create output UTXOs */
+        for (size_t j = 0; j < tx->num_vout; j++) {
+            if (tx->vout[j].value == 0 &&
+                tx->vout[j].script_pub_key.size > 0 &&
+                tx->vout[j].script_pub_key.data[0] == 0x6a)
+                continue; /* skip OP_RETURN */
+
+            struct db_utxo u;
+            memset(&u, 0, sizeof(u));
+            memcpy(u.txid, tx->hash.data, 32);
+            u.vout = (uint32_t)j;
+            u.value = tx->vout[j].value;
+            u.script = (uint8_t *)tx->vout[j].script_pub_key.data;
+            u.script_len = tx->vout[j].script_pub_key.size;
+            u.script_type = classify_script(
+                u.script, u.script_len,
+                u.address_hash, &u.has_address);
+            u.height = pindex->nHeight;
+            u.is_coinbase = (i == 0);
+
+            db_utxo_save(ndb, &u);
+        }
+
+        /* Track Sapling nullifiers (spends) */
+        for (size_t j = 0; j < tx->num_shielded_spend; j++) {
+            sqlite3_stmt *ns = ndb->stmt_nullifier_insert;
+            sqlite3_reset(ns);
+            sqlite3_bind_blob(ns, 1,
+                tx->v_shielded_spend[j].nullifier.data,
+                32, SQLITE_STATIC);
+            sqlite3_step(ns);
+        }
+    }
+
+    /* 3. Update chain tip in state table */
+    node_db_sync_set_tip(ndb,
+        pindex->phashBlock->data, pindex->nHeight);
+
+    node_db_commit(ndb);
+    return true;
+}
+
+bool node_db_sync_disconnect_block(struct node_db *ndb,
+                                   const struct block *blk,
+                                   const struct block_index *pindex)
+{
+    if (!ndb->open) return false;
+
+    node_db_begin(ndb);
+
+    /* Remove transactions in reverse order */
+    for (size_t i = blk->num_vtx; i > 0; i--) {
+        const struct transaction *tx = &blk->vtx[i - 1];
+
+        /* Remove output UTXOs created by this tx */
+        for (size_t j = 0; j < tx->num_vout; j++)
+            db_utxo_delete(ndb, tx->hash.data, (uint32_t)j);
+
+        /* Remove tx index entry */
+        db_tx_delete(ndb, tx->hash.data);
+
+        /* Remove Sapling nullifiers */
+        for (size_t j = 0; j < tx->num_shielded_spend; j++) {
+            sqlite3_stmt *s = NULL;
+            sqlite3_prepare_v2(ndb->db,
+                "DELETE FROM sapling_nullifiers"
+                " WHERE nullifier=?",
+                -1, &s, NULL);
+            sqlite3_bind_blob(s, 1,
+                tx->v_shielded_spend[j].nullifier.data,
+                32, SQLITE_STATIC);
+            sqlite3_step(s);
+            sqlite3_finalize(s);
+        }
+
+        /* Note: restoring spent UTXOs requires undo data.
+         * The full UTXO restore happens via the coins_view_cache
+         * path. SQLite will be repopulated on reconnect. */
+    }
+
+    /* Remove block */
+    db_block_delete(ndb, pindex->phashBlock->data);
+
+    /* Update tip to previous block */
+    if (pindex->pprev) {
+        node_db_sync_set_tip(ndb,
+            pindex->pprev->phashBlock->data,
+            pindex->pprev->nHeight);
+    }
+
+    node_db_commit(ndb);
+    return true;
+}
+
+bool node_db_sync_wallet_tx(struct node_db *ndb,
+                            const struct transaction *tx,
+                            const struct wallet *w,
+                            int block_height)
+{
+    if (!ndb->open) return false;
+
+    bool is_ours = false;
+    bool from_me = false;
+    int64_t debit = 0;
+
+    /* Track outputs that belong to us */
+    for (size_t i = 0; i < tx->num_vout; i++) {
+        const struct tx_out *out = &tx->vout[i];
+        uint8_t addr_hash[20];
+        bool has_addr = false;
+        enum script_type stype = classify_script(
+            out->script_pub_key.data,
+            out->script_pub_key.size,
+            addr_hash, &has_addr);
+
+        if (!has_addr) continue;
+
+        /* Check ownership: P2PKH checks keys, P2SH checks scripts */
+        bool owned = false;
+        struct key_id kid;
+        memcpy(kid.id.data, addr_hash, 20);
+        if (stype == SCRIPT_P2PKH)
+            owned = keystore_have_key(&w->keystore, &kid);
+        else if (stype == SCRIPT_P2SH) {
+            struct uint160 sh;
+            memcpy(sh.data, addr_hash, 20);
+            owned = keystore_have_cscript(&w->keystore, &sh);
+        }
+        if (!owned) continue;
+
+        is_ours = true;
+
+        struct db_wallet_utxo wu;
+        memset(&wu, 0, sizeof(wu));
+        memcpy(wu.txid, tx->hash.data, 32);
+        wu.vout = (uint32_t)i;
+        wu.value = out->value;
+        memcpy(wu.address_hash, addr_hash, 20);
+        wu.script = (uint8_t *)out->script_pub_key.data;
+        wu.script_len = out->script_pub_key.size;
+        wu.height = block_height;
+        wu.is_coinbase = (tx->num_vin == 1 &&
+            tx->vin[0].prevout.n == 0xFFFFFFFF);
+
+        db_wallet_utxo_save(ndb, &wu);
+    }
+
+    /* Mark inputs that spend our UTXOs */
+    for (size_t i = 0; i < tx->num_vin; i++) {
+        struct db_wallet_utxo spent;
+        if (db_wallet_utxo_find(ndb,
+                tx->vin[i].prevout.hash.data,
+                tx->vin[i].prevout.n,
+                &spent)) {
+            debit += spent.value;
+            from_me = true;
+            free(spent.script);
+        }
+
+        if (db_wallet_utxo_mark_spent(ndb,
+                tx->vin[i].prevout.hash.data,
+                tx->vin[i].prevout.n,
+                tx->hash.data, (int)i))
+            is_ours = true;
+    }
+
+    /* Only save the full tx if it involves our wallet */
+    if (is_ours) {
+        size_t raw_len = 0;
+        uint8_t *raw = serialize_tx(tx, &raw_len);
+        if (raw) {
+            struct db_wallet_tx wtx;
+            memset(&wtx, 0, sizeof(wtx));
+            memcpy(wtx.txid, tx->hash.data, 32);
+            wtx.raw_tx = raw;
+            wtx.raw_tx_len = raw_len;
+            wtx.has_block = (block_height > 0);
+            wtx.block_height = block_height;
+            if (wtx.has_block) {
+                struct db_block blk;
+                if (db_block_find_by_height(ndb, block_height, &blk)) {
+                    memcpy(wtx.block_hash, blk.hash, 32);
+                    wtx.time_received = (int64_t)blk.time;
+                } else {
+                    wtx.time_received = (int64_t)time(NULL);
+                }
+            } else {
+                wtx.time_received = (int64_t)time(NULL);
+            }
+            wtx.from_me = from_me;
+            if (from_me) {
+                int64_t value_out = transaction_get_value_out(tx);
+                wtx.fee = debit > value_out ? (debit - value_out) : 0;
+            }
+            db_wallet_tx_save(ndb, &wtx);
+            free(raw);
+        }
+    }
+
+    return is_ours;
+}
+
+bool node_db_sync_mempool_add(struct node_db *ndb,
+                              const struct transaction *tx,
+                              int64_t fee, int height)
+{
+    if (!ndb->open) return false;
+
+    size_t raw_len = 0;
+    uint8_t *raw = serialize_tx(tx, &raw_len);
+    if (!raw) return false;
+
+    struct db_mempool_entry e;
+    memset(&e, 0, sizeof(e));
+    memcpy(e.txid, tx->hash.data, 32);
+    e.raw_tx = raw;
+    e.raw_tx_len = raw_len;
+    e.fee = fee;
+    e.size = (int)raw_len;
+    e.time_added = (int64_t)time(NULL);
+    e.height_added = height;
+    e.spends_coinbase = false;
+
+    bool ok = db_mempool_save(ndb, &e);
+
+    /* Track outpoint spends for conflict detection */
+    for (size_t i = 0; i < tx->num_vin; i++) {
+        db_mempool_add_spend(ndb, tx->hash.data,
+            tx->vin[i].prevout.hash.data,
+            tx->vin[i].prevout.n);
+    }
+
+    free(raw);
+    return ok;
+}
+
+bool node_db_sync_mempool_remove(struct node_db *ndb,
+                                 const uint8_t txid[32])
+{
+    return db_mempool_delete(ndb, txid);
+}
+
+bool node_db_sync_sapling_note(struct node_db *ndb,
+                               const uint8_t txid[32],
+                               uint32_t output_index,
+                               int64_t value,
+                               const uint8_t rcm[32],
+                               const uint8_t memo[512],
+                               size_t memo_len,
+                               const uint8_t ivk[32],
+                               const uint8_t diversifier[11],
+                               const uint8_t pk_d[32],
+                               const uint8_t cm[32],
+                               const uint8_t nullifier[32],
+                               int block_height)
+{
+    struct db_sapling_note n;
+    memset(&n, 0, sizeof(n));
+    memcpy(n.txid, txid, 32);
+    n.output_index = output_index;
+    n.value = value;
+    memcpy(n.rcm, rcm, 32);
+    if (memo && memo_len > 0) {
+        size_t ml = memo_len < 512 ? memo_len : 512;
+        memcpy(n.memo, memo, ml);
+        n.memo_len = ml;
+    }
+    memcpy(n.ivk, ivk, 32);
+    memcpy(n.diversifier, diversifier, 11);
+    memcpy(n.pk_d, pk_d, 32);
+    memcpy(n.cm, cm, 32);
+    memcpy(n.nullifier, nullifier, 32);
+    n.block_height = block_height;
+    return db_sapling_note_save(ndb, &n);
+}
+
+bool node_db_sync_sapling_spend(struct node_db *ndb,
+                                const uint8_t nullifier[32],
+                                const uint8_t spending_txid[32])
+{
+    /* Add to global nullifier set */
+    sqlite3_stmt *s = ndb->stmt_nullifier_insert;
+    sqlite3_reset(s);
+    sqlite3_bind_blob(s, 1, nullifier, 32, SQLITE_STATIC);
+    sqlite3_step(s);
+
+    /* Mark wallet note as spent */
+    return db_sapling_note_mark_spent(ndb, nullifier,
+                                      spending_txid);
+}
+
+bool node_db_sync_peer(struct node_db *ndb,
+                       const uint8_t ip[16], uint16_t port,
+                       uint64_t services, int64_t last_seen)
+{
+    struct db_peer p;
+    memset(&p, 0, sizeof(p));
+    memcpy(p.ip, ip, 16);
+    p.port = port;
+    p.services = services;
+    p.last_seen = last_seen;
+    return db_peer_save(ndb, &p);
+}
+
+int node_db_sync_get_tip_height(struct node_db *ndb)
+{
+    int64_t h = -1;
+    node_db_state_get_int(ndb, "tip_height", &h);
+    return (int)h;
+}
+
+bool node_db_sync_set_tip(struct node_db *ndb,
+                          const uint8_t hash[32], int height)
+{
+    node_db_state_set(ndb, "tip_hash", hash, 32);
+    return node_db_state_set_int(ndb, "tip_height",
+                                 (int64_t)height);
+}
+
+/* Lean index: block header + txid index only.
+ * No UTXO tracking, no nullifiers, no solution blob.
+ * ~5x fewer SQLite ops than sync_block_inner. */
+static bool sync_block_lean(struct node_db *ndb,
+                            const struct block *blk,
+                            const struct block_index *pindex)
+{
+    struct db_block db_blk;
+    memset(&db_blk, 0, sizeof(db_blk));
+    memcpy(db_blk.hash, pindex->phashBlock->data, 32);
+    db_blk.height = pindex->nHeight;
+    if (pindex->pprev)
+        memcpy(db_blk.prev_hash,
+               pindex->pprev->phashBlock->data, 32);
+    db_blk.version = blk->header.nVersion;
+    memcpy(db_blk.merkle_root,
+           blk->header.hashMerkleRoot.data, 32);
+    db_blk.time = blk->header.nTime;
+    db_blk.bits = blk->header.nBits;
+    memcpy(db_blk.nonce, blk->header.nNonce.data, 32);
+    db_blk.solution = (uint8_t *)blk->header.nSolution;
+    db_blk.solution_len = blk->header.nSolutionSize;
+    memcpy(db_blk.chain_work, pindex->nChainWork.pn, 32);
+    db_blk.status = pindex->nStatus;
+    db_blk.file_num = pindex->nFile;
+    db_blk.data_pos = (int)pindex->nDataPos;
+    db_blk.num_tx = (int)blk->num_vtx;
+
+    if (!db_block_save(ndb, &db_blk))
+        return false;
+
+    for (size_t i = 0; i < blk->num_vtx; i++) {
+        const struct transaction *tx = &blk->vtx[i];
+
+        struct db_tx_index db_tx;
+        memset(&db_tx, 0, sizeof(db_tx));
+        memcpy(db_tx.txid, tx->hash.data, 32);
+        memcpy(db_tx.block_hash, pindex->phashBlock->data, 32);
+        db_tx.block_height = pindex->nHeight;
+        db_tx.tx_index = (int)i;
+        db_tx.file_num = pindex->nFile;
+        db_tx.file_pos = (int)pindex->nDataPos;
+        db_tx.is_coinbase = (i == 0);
+        db_tx_save(ndb, &db_tx);
+    }
+
+    return true;
+}
+
+/* Drop non-essential indexes for fast bulk loading. */
+static void drop_bulk_indexes(struct node_db *ndb)
+{
+    const char *drops[] = {
+        "DROP INDEX IF EXISTS idx_blocks_prev",
+        "DROP INDEX IF EXISTS idx_blocks_chainwork",
+        "DROP INDEX IF EXISTS idx_tx_block",
+        "DROP INDEX IF EXISTS idx_tx_height",
+        "DROP INDEX IF EXISTS idx_utxo_address",
+        "DROP INDEX IF EXISTS idx_utxo_value",
+        "DROP INDEX IF EXISTS idx_utxo_height",
+        "DROP INDEX IF EXISTS idx_wtx_height",
+        "DROP INDEX IF EXISTS idx_wtx_time",
+        "DROP INDEX IF EXISTS idx_wutxo_unspent",
+        "DROP INDEX IF EXISTS idx_wutxo_spent",
+        "DROP INDEX IF EXISTS idx_snote_unspent",
+        "DROP INDEX IF EXISTS idx_snote_nullifier",
+        NULL
+    };
+    for (int i = 0; drops[i]; i++)
+        sqlite3_exec(ndb->db, drops[i], NULL, NULL, NULL);
+}
+
+/* Rebuild indexes after bulk loading. */
+static void rebuild_indexes(struct node_db *ndb)
+{
+    const char *creates[] = {
+        "CREATE INDEX IF NOT EXISTS idx_blocks_prev"
+        " ON blocks(prev_hash)",
+        "CREATE INDEX IF NOT EXISTS idx_blocks_chainwork"
+        " ON blocks(chain_work DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_tx_block"
+        " ON transactions(block_hash)",
+        "CREATE INDEX IF NOT EXISTS idx_tx_height"
+        " ON transactions(block_height)",
+        "CREATE INDEX IF NOT EXISTS idx_utxo_address"
+        " ON utxos(address_hash) WHERE address_hash IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS idx_utxo_value"
+        " ON utxos(value DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_utxo_height"
+        " ON utxos(height)",
+        "CREATE INDEX IF NOT EXISTS idx_wtx_height"
+        " ON wallet_transactions(block_height)",
+        "CREATE INDEX IF NOT EXISTS idx_wtx_time"
+        " ON wallet_transactions(time_received DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_wutxo_unspent"
+        " ON wallet_utxos(address_hash) WHERE spent_txid IS NULL",
+        "CREATE INDEX IF NOT EXISTS idx_wutxo_spent"
+        " ON wallet_utxos(spent_txid) WHERE spent_txid IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS idx_snote_unspent"
+        " ON wallet_sapling_notes(ivk) WHERE spent_txid IS NULL",
+        "CREATE INDEX IF NOT EXISTS idx_snote_nullifier"
+        " ON wallet_sapling_notes(nullifier)",
+        NULL
+    };
+    printf("SQLite: rebuilding indexes...\n");
+    fflush(stdout);
+    for (int i = 0; creates[i]; i++)
+        sqlite3_exec(ndb->db, creates[i], NULL, NULL, NULL);
+    printf("SQLite: indexes rebuilt\n");
+    fflush(stdout);
+}
+
+/* Helper: mmap a block file, returning mapped data or NULL. */
+static uint8_t *mmap_block_file(const char *datadir, int file_num,
+                                size_t *out_size)
+{
+    char path[512];
+    snprintf(path, sizeof(path), "%s/blocks/blk%05d.dat",
+             datadir, file_num);
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return NULL;
+    struct stat fst;
+    if (fstat(fd, &fst) != 0) { close(fd); return NULL; }
+    uint8_t *data = mmap(NULL, (size_t)fst.st_size,
+                         PROT_READ, MAP_PRIVATE, fd, 0);
+    close(fd);
+    if (data == MAP_FAILED) return NULL;
+    *out_size = (size_t)fst.st_size;
+    posix_madvise(data, *out_size, POSIX_MADV_SEQUENTIAL);
+    return data;
+}
+
+int node_db_sync_catchup(struct node_db *ndb,
+                         const struct active_chain *chain,
+                         const struct wallet *w,
+                         const char *datadir)
+{
+    if (!ndb->open) return -1;
+
+    int db_tip = node_db_sync_get_tip_height(ndb);
+    int chain_tip = active_chain_height(chain);
+
+    if (db_tip >= chain_tip)
+        return 0;
+
+    int start = db_tip + 1;
+    if (start < 0) start = 0;
+    int total = chain_tip - start + 1;
+
+    int wallet_keys = 0;
+    if (w) {
+        for (size_t i = 0; i < w->keystore.num_keys; i++)
+            if (w->keystore.keys[i].used) wallet_keys++;
+    }
+    printf("SQLite catchup: %d blocks (%d..%d), lean index + wallet scan"
+           " (%d keys)\n", total, start, chain_tip, wallet_keys);
+    fflush(stdout);
+
+    /* Turbo mode: disable fsync, drop indexes, enlarge cache. */
+    bool bulk_mode = (total > 50000);
+    if (bulk_mode) {
+        sqlite3_exec(ndb->db, "PRAGMA synchronous=OFF", NULL, NULL, NULL);
+        sqlite3_exec(ndb->db, "PRAGMA cache_size=-524288", NULL, NULL, NULL);
+        sqlite3_exec(ndb->db, "PRAGMA wal_autocheckpoint=0",
+                     NULL, NULL, NULL);
+        sqlite3_busy_timeout(ndb->db, 10000);
+        drop_bulk_indexes(ndb);
+    }
+
+    /* Verify connection works before starting */
+    if (!node_db_begin(ndb)) {
+        fprintf(stderr, "catchup: BEGIN failed — aborting\n");
+        return -1;
+    }
+    node_db_commit(ndb);
+
+    int indexed = 0;
+    int wallet_hits = 0;
+    int batch_size = 100000;
+    int64_t t_start = (int64_t)time(NULL);
+
+    /* mmap cache */
+    int cached_file = -1;
+    uint8_t *cached_data = NULL;
+    size_t cached_size = 0;
+
+    node_db_begin(ndb);
+
+    for (int h = start; h <= chain_tip; h++) {
+        const struct block_index *pindex = active_chain_at(chain, h);
+        if (!pindex) continue;
+        if (!(pindex->nStatus & BLOCK_HAVE_DATA)) continue;
+
+        /* mmap new file if needed */
+        if (pindex->nFile != cached_file) {
+            if (cached_data) munmap(cached_data, cached_size);
+            cached_data = mmap_block_file(datadir, pindex->nFile,
+                                          &cached_size);
+            cached_file = cached_data ? pindex->nFile : -1;
+            if (!cached_data) continue;
+        }
+
+        if (pindex->nDataPos >= cached_size) continue;
+
+        struct block blk;
+        block_init(&blk);
+
+        size_t remaining = cached_size - pindex->nDataPos;
+        struct byte_stream s;
+        stream_init_from_data(&s, cached_data + pindex->nDataPos,
+                              remaining);
+        if (!block_deserialize(&blk, &s)) {
+            block_free(&blk);
+            continue;
+        }
+
+        /* Lean index: block header + txid index */
+        if (!sync_block_lean(ndb, &blk, pindex) && indexed == 0) {
+            fprintf(stderr, "catchup: first lean insert failed! "
+                    "sqlite error: %s\n",
+                    sqlite3_errmsg(ndb->db));
+        }
+
+        /* Wallet scan: check every block for our transactions */
+        if (w) {
+            for (size_t i = 0; i < blk.num_vtx; i++) {
+                if (node_db_sync_wallet_tx(ndb, &blk.vtx[i], w, h))
+                    wallet_hits++;
+            }
+        }
+
+        block_free(&blk);
+        indexed++;
+
+        if (indexed % batch_size == 0) {
+            node_db_sync_set_tip(ndb,
+                pindex->phashBlock->data, h);
+            node_db_commit(ndb);
+            int64_t elapsed = (int64_t)time(NULL) - t_start;
+            int rate = elapsed > 0 ? indexed / (int)elapsed : 0;
+            printf("SQLite: %d/%d blocks (height %d, %d blk/s, %d wallet txs)\n",
+                   indexed, total, h, rate, wallet_hits);
+            fflush(stdout);
+            node_db_begin(ndb);
+        }
+    }
+
+    if (cached_data) munmap(cached_data, cached_size);
+
+    /* Final commit */
+    {
+        const struct block_index *tip = active_chain_at(chain, chain_tip);
+        if (tip)
+            node_db_sync_set_tip(ndb,
+                tip->phashBlock->data, chain_tip);
+    }
+    node_db_commit(ndb);
+
+    /* Restore safe pragmas and rebuild indexes */
+    if (bulk_mode) {
+        rebuild_indexes(ndb);
+        sqlite3_exec(ndb->db, "PRAGMA synchronous=NORMAL", NULL, NULL, NULL);
+        sqlite3_exec(ndb->db, "PRAGMA cache_size=-65536", NULL, NULL, NULL);
+        sqlite3_exec(ndb->db, "PRAGMA wal_autocheckpoint=1000",
+                     NULL, NULL, NULL);
+        sqlite3_wal_checkpoint_v2(ndb->db, NULL,
+            SQLITE_CHECKPOINT_TRUNCATE, NULL, NULL);
+    }
+
+    int64_t elapsed = (int64_t)time(NULL) - t_start;
+    printf("SQLite catchup complete: %d blocks in %llds (%d blk/s)\n",
+           indexed, (long long)elapsed,
+           elapsed > 0 ? indexed / (int)elapsed : indexed);
+    fflush(stdout);
+    return indexed;
+}
+
+struct catchup_args {
+    struct node_db *ndb;
+    const struct active_chain *chain;
+    const struct wallet *w;
+    const char *datadir;
+};
+
+/* sync_wallet_inmemory removed: it passed height=0 for all wallet
+ * transactions, causing INSERT OR REPLACE to overwrite correct heights
+ * and clear spent_txid on already-spent UTXOs. The catchup block scan
+ * already processes wallet transactions with correct heights. */
+
+void *node_db_sync_catchup_thread(void *arg)
+{
+    struct catchup_args *a = (struct catchup_args *)arg;
+
+    /* Open a dedicated SQLite connection for the catchup thread.
+     * Sharing the main ndb connection with the RPC thread causes
+     * silent write failures due to WAL locking contention. */
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/node.db", a->datadir);
+
+    struct node_db catchup_db;
+    if (!node_db_open(&catchup_db, path)) {
+        fprintf(stderr, "catchup: failed to open dedicated connection\n");
+        return NULL;
+    }
+
+    node_db_sync_catchup(&catchup_db, a->chain, a->w, a->datadir);
+
+    node_db_close(&catchup_db);
+    return NULL;
+}
+
+int node_db_sync_wallet_keys(struct node_db *ndb,
+                             const struct wallet *w)
+{
+    if (!ndb->open || !w) return 0;
+
+    /* Skip if counts already match */
+    int existing_tkeys = db_wallet_key_count(ndb);
+    int existing_zkeys = db_sapling_key_count(ndb);
+    int wallet_tkeys = 0;
+    for (size_t i = 0; i < w->keystore.num_keys; i++)
+        if (w->keystore.keys[i].used) wallet_tkeys++;
+    int wallet_zkeys = 0;
+    for (size_t i = 0; i < w->sapling_keys.num_keys; i++)
+        if (w->sapling_keys.keys[i].used) wallet_zkeys++;
+
+    if (existing_tkeys >= wallet_tkeys &&
+        existing_zkeys >= wallet_zkeys)
+        return 0;
+
+    int count = 0;
+    node_db_begin(ndb);
+
+    /* Sync transparent keys */
+    for (size_t i = 0; i < w->keystore.num_keys; i++) {
+        const struct key_entry *ke = &w->keystore.keys[i];
+        if (!ke->used) continue;
+        if (!ke->key.fValid) continue;
+
+        if (db_wallet_key_exists(ndb, ke->keyid.id.data))
+            continue;
+
+        struct pubkey pk;
+        if (!privkey_get_pubkey(&ke->key, &pk))
+            continue;
+
+        struct db_wallet_key dbk;
+        memset(&dbk, 0, sizeof(dbk));
+        memcpy(dbk.pubkey_hash, ke->keyid.id.data, 20);
+        memcpy(dbk.pubkey, pk.vch, pk.size);
+        dbk.pubkey_len = pk.size;
+        memcpy(dbk.privkey, ke->key.vch, 32);
+        dbk.compressed = ke->key.fCompressed;
+        dbk.created_at = (int64_t)time(NULL);
+
+        if (db_wallet_key_save(ndb, &dbk))
+            count++;
+    }
+
+    /* Sync Sapling keys */
+    for (size_t i = 0; i < w->sapling_keys.num_keys; i++) {
+        const struct sapling_key_entry *sk = &w->sapling_keys.keys[i];
+        if (!sk->used) continue;
+
+        if (db_sapling_key_find_by_ivk(ndb, sk->ivk, NULL))
+            continue;
+
+        struct db_sapling_key dbsk;
+        memset(&dbsk, 0, sizeof(dbsk));
+        memcpy(dbsk.ivk, sk->ivk, 32);
+        memcpy(dbsk.xsk, &sk->xsk, sizeof(dbsk.xsk));
+        memcpy(dbsk.xfvk, &sk->xfvk, sizeof(dbsk.xfvk));
+        memcpy(dbsk.diversifier, sk->diversifier, 11);
+        memcpy(dbsk.pk_d, sk->pk_d, 32);
+        dbsk.child_index = sk->child_index;
+
+        if (db_sapling_key_save(ndb, &dbsk))
+            count++;
+    }
+
+    node_db_commit(ndb);
+    if (count > 0)
+        printf("SQLite: synced %d wallet keys\n", count);
+    return count;
+}
+
+int node_db_sync_mempool_save(struct node_db *ndb,
+                              const struct tx_mempool *mempool)
+{
+    if (!ndb->open || !mempool) return 0;
+
+    int count = 0;
+    node_db_begin(ndb);
+
+    for (size_t i = 0; i < mempool->num_entries; i++) {
+        const struct mempool_entry *me = &mempool->entries[i];
+
+        size_t raw_len = 0;
+        uint8_t *raw = serialize_tx(&me->tx, &raw_len);
+        if (!raw) continue;
+
+        struct db_mempool_entry e;
+        memset(&e, 0, sizeof(e));
+        memcpy(e.txid, me->tx.hash.data, 32);
+        e.raw_tx = raw;
+        e.raw_tx_len = raw_len;
+        e.fee = me->fee;
+        e.size = (int)raw_len;
+        e.time_added = me->time;
+        e.height_added = (int)me->height;
+        e.spends_coinbase = me->spends_coinbase;
+
+        if (db_mempool_save(ndb, &e))
+            count++;
+        free(raw);
+    }
+
+    node_db_commit(ndb);
+    if (count > 0)
+        printf("SQLite: saved %d mempool transactions\n", count);
+    return count;
+}
+
+struct mempool_load_ctx {
+    struct tx_mempool *pool;
+    int loaded;
+};
+
+static void mempool_load_cb(const struct db_mempool_entry *e, void *ctx)
+{
+    struct mempool_load_ctx *lc = (struct mempool_load_ctx *)ctx;
+
+    struct transaction tx;
+    transaction_init(&tx);
+
+    struct byte_stream s;
+    stream_init_from_data(&s, e->raw_tx, e->raw_tx_len);
+    if (!transaction_deserialize(&tx, &s)) {
+        transaction_free(&tx);
+        return;
+    }
+    transaction_compute_hash(&tx);
+
+    struct mempool_entry me;
+    mempool_entry_init(&me, &tx, e->fee, e->time_added,
+                       0.0, (unsigned int)e->height_added,
+                       true, e->spends_coinbase, 0);
+
+    if (tx_mempool_add_unchecked(lc->pool, &tx.hash, &me))
+        lc->loaded++;
+
+    transaction_free(&tx);
+}
+
+int node_db_sync_mempool_load(struct node_db *ndb,
+                              struct tx_mempool *mempool)
+{
+    if (!ndb->open || !mempool) return 0;
+
+    struct mempool_load_ctx ctx = { .pool = mempool, .loaded = 0 };
+    db_mempool_each(ndb, mempool_load_cb, &ctx);
+
+    if (ctx.loaded > 0)
+        printf("SQLite: loaded %d mempool transactions\n", ctx.loaded);
+
+    /* Clear persisted mempool after loading */
+    db_mempool_clear(ndb);
+
+    return ctx.loaded;
+}
+
+int node_db_sync_import_utxos(struct node_db *ndb,
+                               struct coins_view_db *cvdb)
+{
+    if (!ndb->open || !cvdb) return -1;
+
+    printf("UTXO import: iterating chainstate LevelDB...\n");
+    fflush(stdout);
+
+    int64_t t_start = (int64_t)time(NULL);
+
+    /* Turbo mode for bulk insert */
+    sqlite3_exec(ndb->db, "PRAGMA synchronous=OFF", NULL, NULL, NULL);
+    sqlite3_exec(ndb->db, "PRAGMA cache_size=-524288", NULL, NULL, NULL);
+    sqlite3_exec(ndb->db, "PRAGMA wal_autocheckpoint=0", NULL, NULL, NULL);
+    sqlite3_busy_timeout(ndb->db, 10000);
+
+    /* Drop UTXO indexes for fast bulk load */
+    sqlite3_exec(ndb->db, "DROP INDEX IF EXISTS idx_utxo_address",
+                 NULL, NULL, NULL);
+    sqlite3_exec(ndb->db, "DROP INDEX IF EXISTS idx_utxo_value",
+                 NULL, NULL, NULL);
+    sqlite3_exec(ndb->db, "DROP INDEX IF EXISTS idx_utxo_height",
+                 NULL, NULL, NULL);
+
+    /* Clear existing UTXOs */
+    sqlite3_exec(ndb->db, "DELETE FROM utxos", NULL, NULL, NULL);
+
+    struct db_iterator it;
+    db_iter_init(&it, &cvdb->db);
+
+    /* Seek to first coins entry (prefix 'c' + 32 null bytes) */
+    char seek_key[33];
+    seek_key[0] = 'c';
+    memset(seek_key + 1, 0, 32);
+    db_iter_seek(&it, seek_key, 33);
+
+    int imported = 0;
+    int txids_seen = 0;
+    node_db_begin(ndb);
+
+    while (db_iter_valid(&it)) {
+        size_t key_len;
+        const char *key_data = db_iter_key(&it, &key_len);
+
+        if (key_len < 1 || key_data[0] != 'c')
+            break;
+        if (key_len < 33) {
+            db_iter_next(&it);
+            continue;
+        }
+
+        /* Extract txid from key bytes 1..32 */
+        uint8_t txid[32];
+        memcpy(txid, key_data + 1, 32);
+
+        /* Decode coins from value */
+        size_t val_len;
+        const char *val_data = db_iter_value(&it, &val_len);
+
+        struct byte_stream s;
+        stream_init_from_data(&s, (unsigned char *)val_data, val_len);
+
+        uint64_t nVersion = 0;
+        if (!stream_read_varint(&s, &nVersion)) {
+            stream_free(&s);
+            db_iter_next(&it);
+            continue;
+        }
+
+        uint64_t nCode = 0;
+        if (!stream_read_varint(&s, &nCode)) {
+            stream_free(&s);
+            db_iter_next(&it);
+            continue;
+        }
+        bool is_coinbase = (nCode & 1) != 0;
+        bool vout0_present = (nCode & 2) != 0;
+        bool vout1_present = (nCode & 4) != 0;
+        unsigned int nMaskCode = (unsigned int)(nCode / 8) +
+            ((vout0_present || vout1_present) ? 0 : 1);
+
+        if (nMaskCode > 10000) {
+            stream_free(&s);
+            db_iter_next(&it);
+            continue;
+        }
+
+        /* Build availability vector */
+        size_t num_avail = 2;
+        bool avail[256];
+        avail[0] = vout0_present;
+        avail[1] = vout1_present;
+
+        unsigned int mask_remaining = nMaskCode;
+        while (mask_remaining > 0) {
+            unsigned char ch = 0;
+            if (!stream_read_bytes(&s, &ch, 1)) break;
+            for (unsigned int p = 0; p < 8 && num_avail < 256; p++)
+                avail[num_avail++] = (ch & (1 << p)) != 0;
+            if (ch != 0) mask_remaining--;
+        }
+
+        /* Read each available output and insert into SQLite */
+        for (size_t vi = 0; vi < num_avail; vi++) {
+            if (!avail[vi]) continue;
+
+            struct tx_out txout;
+            tx_out_set_null(&txout);
+            if (!compressed_txout_deserialize(&txout, &s))
+                break;
+
+            struct db_utxo u;
+            memset(&u, 0, sizeof(u));
+            memcpy(u.txid, txid, 32);
+            u.vout = (uint32_t)vi;
+            u.value = txout.value;
+            u.script = txout.script_pub_key.data;
+            u.script_len = txout.script_pub_key.size;
+            u.is_coinbase = is_coinbase;
+
+            /* Classify script for address index */
+            u.has_address = false;
+            if (u.script_len == 25 &&
+                u.script[0] == 0x76 && u.script[1] == 0xa9 &&
+                u.script[2] == 0x14 &&
+                u.script[23] == 0x88 && u.script[24] == 0xac) {
+                memcpy(u.address_hash, u.script + 3, 20);
+                u.has_address = true;
+                u.script_type = SCRIPT_P2PKH;
+            } else if (u.script_len == 23 &&
+                       u.script[0] == 0xa9 && u.script[1] == 0x14 &&
+                       u.script[22] == 0x87) {
+                memcpy(u.address_hash, u.script + 2, 20);
+                u.has_address = true;
+                u.script_type = SCRIPT_P2SH;
+            } else if (u.script_len > 0 && u.script[0] == 0x6a) {
+                u.script_type = SCRIPT_OP_RETURN;
+            } else {
+                u.script_type = SCRIPT_OTHER;
+            }
+
+            db_utxo_save(ndb, &u);
+            imported++;
+        }
+
+        /* Read height */
+        uint64_t height = 0;
+        stream_read_varint(&s, &height);
+        /* Height is stored per-txid, not per-output — update the
+         * last batch of outputs we just inserted. We set it via
+         * a lightweight UPDATE since db_utxo_save uses INSERT OR REPLACE. */
+        if (imported > 0) {
+            sqlite3_stmt *upd = NULL;
+            sqlite3_prepare_v2(ndb->db,
+                "UPDATE utxos SET height=? WHERE txid=?",
+                -1, &upd, NULL);
+            sqlite3_bind_int(upd, 1, (int)height);
+            sqlite3_bind_blob(upd, 2, txid, 32, SQLITE_STATIC);
+            sqlite3_step(upd);
+            sqlite3_finalize(upd);
+        }
+
+        stream_free(&s);
+        txids_seen++;
+
+        if (txids_seen % 100000 == 0) {
+            node_db_commit(ndb);
+            int64_t elapsed = (int64_t)time(NULL) - t_start;
+            int rate = elapsed > 0 ? txids_seen / (int)elapsed : 0;
+            printf("UTXO import: %d txids, %d outputs (%d txid/s)\n",
+                   txids_seen, imported, rate);
+            fflush(stdout);
+            node_db_begin(ndb);
+        }
+
+        db_iter_next(&it);
+    }
+
+    db_iter_free(&it);
+
+    node_db_commit(ndb);
+
+    /* Rebuild UTXO indexes */
+    printf("UTXO import: rebuilding indexes...\n");
+    fflush(stdout);
+    sqlite3_exec(ndb->db,
+        "CREATE INDEX IF NOT EXISTS idx_utxo_address"
+        " ON utxos(address_hash) WHERE address_hash IS NOT NULL",
+        NULL, NULL, NULL);
+    sqlite3_exec(ndb->db,
+        "CREATE INDEX IF NOT EXISTS idx_utxo_value"
+        " ON utxos(value DESC)",
+        NULL, NULL, NULL);
+    sqlite3_exec(ndb->db,
+        "CREATE INDEX IF NOT EXISTS idx_utxo_height"
+        " ON utxos(height)",
+        NULL, NULL, NULL);
+
+    /* Restore safe pragmas */
+    sqlite3_exec(ndb->db, "PRAGMA synchronous=NORMAL", NULL, NULL, NULL);
+    sqlite3_exec(ndb->db, "PRAGMA cache_size=-65536", NULL, NULL, NULL);
+    sqlite3_exec(ndb->db, "PRAGMA wal_autocheckpoint=1000",
+                 NULL, NULL, NULL);
+    sqlite3_wal_checkpoint_v2(ndb->db, NULL,
+        SQLITE_CHECKPOINT_TRUNCATE, NULL, NULL);
+
+    int64_t elapsed = (int64_t)time(NULL) - t_start;
+    printf("UTXO import complete: %d outputs from %d txids in %llds\n",
+           imported, txids_seen, (long long)elapsed);
+    fflush(stdout);
+
+    return imported;
+}

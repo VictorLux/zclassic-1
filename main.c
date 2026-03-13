@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * ZClassic full node — pure C23 implementation. */
 
-#include "init/init.h"
+#include "config/boot.h"
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -34,6 +34,8 @@ static void print_usage(const char *prog)
     printf("  -addnode=<ip>       Add a peer to connect to\n");
     printf("  -showmetrics=<0|1>  Show metrics screen (default: 1)\n");
     printf("  -importlegacy=<dir> Import wallet from legacy data dir, then exit\n");
+    printf("  -fastsync=<dir>     Fast sync from legacy C++ data dir, then run\n");
+    printf("  -snapshot=<dir>     Snapshot + parallel import from legacy data dir\n");
     printf("  -help               Show this help\n");
 }
 
@@ -92,6 +94,10 @@ int main(int argc, char **argv)
             ctx.gen_threads = atoi(argv[i] + 14);
         } else if (strncmp(argv[i], "-importlegacy=", 14) == 0) {
             ctx.import_legacy_dir = argv[i] + 14;
+        } else if (strncmp(argv[i], "-fastsync=", 10) == 0) {
+            ctx.fastsync_dir = argv[i] + 10;
+        } else if (strncmp(argv[i], "-snapshot=", 10) == 0) {
+            ctx.snapshot_dir = argv[i] + 10;
         } else if (strcmp(argv[i], "-saplingscan") == 0) {
             ctx.sapling_scan = true;
         } else if (strncmp(argv[i], "-showmetrics=", 13) == 0) {
