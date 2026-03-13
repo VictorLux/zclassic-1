@@ -88,6 +88,28 @@ bool db_wallet_key_find(struct node_db *ndb, const uint8_t pubkey_hash[20],
     return true;
 }
 
+bool db_wallet_key_delete(struct node_db *ndb, const uint8_t pubkey_hash[20])
+{
+    if (!ndb->open) return false;
+
+    struct ar_callbacks *cbs = db_wallet_key_callbacks();
+    struct db_wallet_key k;
+    memset(&k, 0, sizeof(k));
+    memcpy(k.pubkey_hash, pubkey_hash, 20);
+    if (!ar_run_before_destroy(cbs, &k)) return false;
+
+    sqlite3_stmt *s = NULL;
+    sqlite3_prepare_v2(ndb->db,
+        "DELETE FROM wallet_keys WHERE pubkey_hash=?", -1, &s, NULL);
+    sqlite3_bind_blob(s, 1, pubkey_hash, 20, SQLITE_STATIC);
+    int rc = sqlite3_step(s);
+    sqlite3_finalize(s);
+
+    bool ok = rc == SQLITE_DONE;
+    if (ok) ar_run_after_destroy(cbs, &k);
+    return ok;
+}
+
 bool db_wallet_key_exists(struct node_db *ndb, const uint8_t pubkey_hash[20])
 {
     if (!ndb->open) return false;

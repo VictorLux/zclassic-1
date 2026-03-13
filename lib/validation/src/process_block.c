@@ -583,11 +583,8 @@ bool activate_best_chain(struct validation_state *state,
         pindex_most_work = find_most_work_chain(ms);
 
         struct block_index *tip = active_chain_tip(&ms->chain_active);
-        if (!pindex_most_work || pindex_most_work == tip) {
-            if (!pindex_most_work)
-                printf("activate_best_chain: no most-work chain found\n");
+        if (!pindex_most_work || pindex_most_work == tip)
             return true;
-        }
         printf("activate_best_chain: tip=%d most_work=%d\n",
                tip ? tip->nHeight : -1,
                pindex_most_work->nHeight);

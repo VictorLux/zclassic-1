@@ -121,11 +121,37 @@ bool contextual_check_transaction(const struct transaction *tx,
         }
     }
 
-    /* Verify Sapling shielded spends and outputs
-     * TODO: Sapling spend/output verification is temporarily skipped.
-     * RedJubjub or Groth16 verification has a bug — needs debugging.
-     * The C++ node validates these proofs via librustzcash. */
-    (void)data_to_be_signed;
+    /* Verify Sapling shielded spends and outputs */
+    if (tx->num_shielded_spend > 0 || tx->num_shielded_output > 0) {
+        struct sapling_verification_ctx sctx;
+        sapling_verification_ctx_init(&sctx);
+
+        for (size_t i = 0; i < tx->num_shielded_spend; i++) {
+            const struct spend_description *sd = &tx->v_shielded_spend[i];
+            if (!sapling_check_spend(&sctx, sd->cv.data, sd->anchor.data,
+                                      sd->nullifier.data, sd->rk.data,
+                                      sd->zkproof, sd->spend_auth_sig,
+                                      data_to_be_signed.data)) {
+                return validation_state_dos(state, 100, false, REJECT_INVALID,
+                    "bad-txns-sapling-spend-description-invalid", false, NULL);
+            }
+        }
+
+        for (size_t i = 0; i < tx->num_shielded_output; i++) {
+            const struct output_description *od = &tx->v_shielded_output[i];
+            if (!sapling_check_output(&sctx, od->cv.data, od->cm.data,
+                                       od->ephemeral_key.data, od->zkproof)) {
+                return validation_state_dos(state, 100, false, REJECT_INVALID,
+                    "bad-txns-sapling-output-description-invalid", false, NULL);
+            }
+        }
+
+        if (!sapling_final_check(&sctx, tx->value_balance,
+                                   tx->binding_sig, data_to_be_signed.data)) {
+            return validation_state_dos(state, 100, false, REJECT_INVALID,
+                "bad-txns-sapling-binding-sig-invalid", false, NULL);
+        }
+    }
 
     /* Verify Sprout JoinSplit proofs (Groth16) */
     for (size_t i = 0; i < tx->num_joinsplit; i++) {

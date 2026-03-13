@@ -343,7 +343,7 @@ static bool is_small_order(const uint8_t point_bytes[32])
 }
 
 bool redjubjub_verify(const uint8_t vk_bytes[32],
-                       const uint8_t msg[64],
+                       const uint8_t *msg, size_t msg_len,
                        const uint8_t sig_rbar[32],
                        const uint8_t sig_sbar[32],
                        int generator_idx)
@@ -362,7 +362,7 @@ bool redjubjub_verify(const uint8_t vk_bytes[32],
 
     /* c = H*(Rbar || msg) */
     uint8_t c_scalar[32];
-    h_star(sig_rbar, 32, msg, 64, c_scalar);
+    h_star(sig_rbar, 32, msg, msg_len, c_scalar);
 
     /* S as scalar bytes */
     /* Check S < Fs order (optional, Rust checks via from_repr) */
@@ -477,12 +477,8 @@ bool sapling_check_spend(struct sapling_verification_ctx *ctx,
     if (is_small_order(rk))
         return false;
 
-    /* Verify spend_auth_sig: msg = rk || sighash */
-    uint8_t data_to_sign[64];
-    memcpy(data_to_sign, rk, 32);
-    memcpy(data_to_sign + 32, sighash, 32);
-
-    if (!redjubjub_verify(rk, data_to_sign,
+    /* Verify spend_auth_sig over sighash with rk as verification key */
+    if (!redjubjub_verify(rk, sighash, 32,
                            spend_auth_sig, spend_auth_sig + 32,
                            GEN_SPENDING_KEY))
         return false;
@@ -603,16 +599,11 @@ bool sapling_final_check(struct sapling_verification_ctx *ctx,
     struct jub_point final_bvk;
     jub_add(&final_bvk, &ctx->bvk, &neg_value_pt);
 
-    /* Compute msg = bvk_compressed || sighash */
+    /* Verify binding sig: vk = bvk, msg = sighash */
     uint8_t bvk_bytes[32];
     jub_to_bytes(bvk_bytes, &final_bvk);
 
-    uint8_t data_to_sign[64];
-    memcpy(data_to_sign, bvk_bytes, 32);
-    memcpy(data_to_sign + 32, sighash, 32);
-
-    /* Verify binding sig with ValueCommitmentRandomness generator */
-    return redjubjub_verify(bvk_bytes, data_to_sign,
+    return redjubjub_verify(bvk_bytes, sighash, 32,
                              binding_sig, binding_sig + 32,
                              GEN_VALUE_COMMITMENT_RANDOMNESS);
 }
@@ -620,7 +611,7 @@ bool sapling_final_check(struct sapling_verification_ctx *ctx,
 /* --- RedJubjub signing --- */
 
 bool redjubjub_sign(const uint8_t sk[32],
-                     const uint8_t msg[64],
+                     const uint8_t *msg, size_t msg_len,
                      uint8_t sig_out[64],
                      int generator_idx)
 {
@@ -643,7 +634,7 @@ bool redjubjub_sign(const uint8_t sk[32],
     blake2b_init_salt_personal(&bctx, 64, NULL, 0, NULL, personal);
     blake2b_update(&bctx, T, sizeof(T));
     blake2b_update(&bctx, vk_bytes, 32);
-    blake2b_update(&bctx, msg, 64);
+    blake2b_update(&bctx, msg, msg_len);
     blake2b_final(&bctx, digest, 64);
 
     uint8_t r_scalar[32];
@@ -657,7 +648,7 @@ bool redjubjub_sign(const uint8_t sk[32],
 
     /* c = H*(Rbar || msg) */
     uint8_t c_scalar[32];
-    h_star(Rbar, 32, msg, 64, c_scalar);
+    h_star(Rbar, 32, msg, msg_len, c_scalar);
 
     /* S = r + c * sk (mod Fs) */
     struct fs r_fs, c_fs, sk_fs, product, S_fs;
@@ -943,17 +934,7 @@ bool sapling_create_binding_sig(const uint8_t bsk[32],
 {
     ensure_fixed_generators();
 
-    /* bvk = bsk * G_rcv (ValueCommitmentRandomness generator) */
-    struct jub_point bvk_point;
-    jub_scalar_mul(&bvk_point, &fixed_generators[GEN_VALUE_COMMITMENT_RANDOMNESS], bsk);
-    uint8_t bvk_bytes[32];
-    jub_to_bytes(bvk_bytes, &bvk_point);
-
-    /* msg = bvk || sighash */
-    uint8_t msg[64];
-    memcpy(msg, bvk_bytes, 32);
-    memcpy(msg + 32, sighash, 32);
-
-    return redjubjub_sign(bsk, msg, binding_sig_out,
+    /* Sign sighash with bsk using ValueCommitmentRandomness generator */
+    return redjubjub_sign(bsk, sighash, 32, binding_sig_out,
                            GEN_VALUE_COMMITMENT_RANDOMNESS);
 }

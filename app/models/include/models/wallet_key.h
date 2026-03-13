@@ -27,6 +27,7 @@ bool db_wallet_key_validate(const struct db_wallet_key *k,
 bool db_wallet_key_save(struct node_db *ndb, const struct db_wallet_key *k);
 bool db_wallet_key_find(struct node_db *ndb, const uint8_t pubkey_hash[20],
                         struct db_wallet_key *out);
+bool db_wallet_key_delete(struct node_db *ndb, const uint8_t pubkey_hash[20]);
 bool db_wallet_key_exists(struct node_db *ndb, const uint8_t pubkey_hash[20]);
 int db_wallet_key_count(struct node_db *ndb);
 

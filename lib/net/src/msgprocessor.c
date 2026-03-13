@@ -677,7 +677,9 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                node->addr_name, accepted,
                pindex_last ? pindex_last->nHeight : -1);
 
-    /* Request blocks for headers we accepted but don't have data for */
+    /* Request blocks for headers we accepted but don't have data for.
+     * Walk backward to collect all needed blocks, then request in
+     * forward order (oldest first) so chain_has_all_data succeeds. */
     if (accepted > 0) {
         struct block_index *tip = active_chain_tip(&mp->main_state->chain_active);
         int our_height = tip ? tip->nHeight : 0;
@@ -685,41 +687,56 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
         struct block_index *bi = block_map_find(
             &mp->main_state->map_block_index, &last_hash);
         if (bi && bi->nHeight > our_height) {
-            struct byte_stream getdata_msg;
-            stream_init(&getdata_msg, 4096);
-            uint64_t block_count = 0;
-
+            /* Count how many blocks we need */
+            size_t total_needed = 0;
             struct block_index *walk = bi;
-            struct uint256 request_hashes[128];
-            size_t num_requests = 0;
-
-            while (walk && walk->nHeight > our_height &&
-                   num_requests < 128) {
+            while (walk && walk->nHeight > our_height) {
                 if (!(walk->nStatus & BLOCK_HAVE_DATA) && walk->phashBlock)
-                    request_hashes[num_requests++] = *walk->phashBlock;
+                    total_needed++;
                 walk = walk->pprev;
             }
 
-            for (size_t i = num_requests; i > 0; i--) {
-                struct inv_item inv;
-                inv_item_init_typed(&inv, MSG_BLOCK, &request_hashes[i - 1]);
-                inv_item_serialize(&inv, &getdata_msg);
-                block_count++;
-            }
+            /* Allocate and collect hashes (backward, then reverse) */
+            size_t max_batch = total_needed < 512 ? total_needed : 512;
+            struct uint256 *request_hashes = malloc(
+                max_batch * sizeof(struct uint256));
+            if (request_hashes) {
+                size_t num_requests = 0;
+                walk = bi;
+                while (walk && walk->nHeight > our_height &&
+                       num_requests < max_batch) {
+                    if (!(walk->nStatus & BLOCK_HAVE_DATA) && walk->phashBlock)
+                        request_hashes[num_requests++] = *walk->phashBlock;
+                    walk = walk->pprev;
+                }
 
-            if (block_count > 0) {
-                struct byte_stream msg;
-                stream_init(&msg, getdata_msg.size + 8);
-                stream_write_compact_size(&msg, block_count);
-                stream_write(&msg, getdata_msg.data, getdata_msg.size);
+                if (num_requests > 0) {
+                    struct byte_stream getdata_msg;
+                    stream_init(&getdata_msg, num_requests * 36 + 8);
+                    uint64_t block_count = 0;
 
-                p2p_node_begin_message(node, "getdata",
-                                       mp->params->pchMessageStart);
-                p2p_node_write_message_data(node, msg.data, msg.size);
-                p2p_node_end_message(node);
-                stream_free(&msg);
+                    for (size_t i = num_requests; i > 0; i--) {
+                        struct inv_item inv;
+                        inv_item_init_typed(&inv, MSG_BLOCK,
+                                            &request_hashes[i - 1]);
+                        inv_item_serialize(&inv, &getdata_msg);
+                        block_count++;
+                    }
+
+                    struct byte_stream msg;
+                    stream_init(&msg, getdata_msg.size + 8);
+                    stream_write_compact_size(&msg, block_count);
+                    stream_write(&msg, getdata_msg.data, getdata_msg.size);
+
+                    p2p_node_begin_message(node, "getdata",
+                                           mp->params->pchMessageStart);
+                    p2p_node_write_message_data(node, msg.data, msg.size);
+                    p2p_node_end_message(node);
+                    stream_free(&msg);
+                    stream_free(&getdata_msg);
+                }
+                free(request_hashes);
             }
-            stream_free(&getdata_msg);
         }
     }
 

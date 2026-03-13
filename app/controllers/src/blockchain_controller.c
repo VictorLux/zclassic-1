@@ -4,6 +4,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "controllers/blockchain_controller.h"
+#include "controllers/strong_params.h"
 #include "chain/chain.h"
 #include "chain/chainparams.h"
 #include "chain/pow.h"
@@ -51,10 +52,7 @@ static bool rpc_getblockcount(const struct json_value *params, bool help,
                                struct json_value *result)
 {
     (void)params;
-    if (help) {
-        json_set_str(result, "getblockcount\nReturns the number of blocks.");
-        return true;
-    }
+    RPC_HELP(help, result, "getblockcount\nReturns the number of blocks.");
     if (!g_main_state) {
         json_set_str(result, "Not initialized");
         return false;
@@ -67,10 +65,7 @@ static bool rpc_getbestblockhash(const struct json_value *params, bool help,
                                   struct json_value *result)
 {
     (void)params;
-    if (help) {
-        json_set_str(result, "getbestblockhash\nReturns the hash of the best block.");
-        return true;
-    }
+    RPC_HELP(help, result, "getbestblockhash\nReturns the hash of the best block.");
     if (!g_main_state) {
         json_set_str(result, "Not initialized");
         return false;
@@ -90,10 +85,7 @@ static bool rpc_getdifficulty(const struct json_value *params, bool help,
                                struct json_value *result)
 {
     (void)params;
-    if (help) {
-        json_set_str(result, "getdifficulty\nReturns proof-of-work difficulty.");
-        return true;
-    }
+    RPC_HELP(help, result, "getdifficulty\nReturns proof-of-work difficulty.");
     if (!g_main_state) {
         json_set_str(result, "Not initialized");
         return false;
@@ -106,15 +98,20 @@ static bool rpc_getdifficulty(const struct json_value *params, bool help,
 static bool rpc_getblockhash(const struct json_value *params, bool help,
                               struct json_value *result)
 {
-    if (help || json_size(params) != 1) {
-        json_set_str(result, "getblockhash height\nReturns hash of block at height.");
-        return help;
+    RPC_HELP(help, result, "getblockhash height\nReturns hash of block at height.");
+
+    struct rpc_params p;
+    rpc_params_init(&p, params);
+    rpc_params_expect(&p, 1, 1);
+    int height = (int)rpc_require_int(&p, 0, "height");
+    if (rpc_params_invalid(&p)) {
+        rpc_params_error(&p, result);
+        return false;
     }
     if (!g_main_state) {
         json_set_str(result, "Not initialized");
         return false;
     }
-    int height = (int)json_get_int(json_at(params, 0));
     struct block_index *bi = active_chain_at(&g_main_state->chain_active, height);
     if (!bi || !bi->phashBlock) {
         json_set_str(result, "Block height out of range");
@@ -161,16 +158,21 @@ static void block_header_to_json(const struct block_index *bi,
 static bool rpc_getblockheader(const struct json_value *params, bool help,
                                 struct json_value *result)
 {
-    if (help || json_size(params) < 1) {
-        json_set_str(result, "getblockheader \"hash\" ( verbose )\nReturns block header.");
-        return help;
+    RPC_HELP(help, result,
+             "getblockheader \"hash\" ( verbose )\nReturns block header.");
+
+    struct rpc_params p;
+    rpc_params_init(&p, params);
+    rpc_params_expect(&p, 1, 2);
+    const char *hash_str = rpc_require_str(&p, 0, "hash");
+    if (rpc_params_invalid(&p)) {
+        rpc_params_error(&p, result);
+        return false;
     }
     if (!g_main_state) {
         json_set_str(result, "Not initialized");
         return false;
     }
-
-    const char *hash_str = json_get_str(json_at(params, 0));
     struct uint256 hash;
     uint256_set_hex(&hash, hash_str);
 
@@ -187,16 +189,21 @@ static bool rpc_getblockheader(const struct json_value *params, bool help,
 static bool rpc_getblock(const struct json_value *params, bool help,
                           struct json_value *result)
 {
-    if (help || json_size(params) < 1) {
-        json_set_str(result, "getblock \"hash\" ( verbose )\nReturns block data.");
-        return help;
+    RPC_HELP(help, result,
+             "getblock \"hash\" ( verbose )\nReturns block data.");
+
+    struct rpc_params p;
+    rpc_params_init(&p, params);
+    rpc_params_expect(&p, 1, 2);
+    const char *hash_str = rpc_require_str(&p, 0, "hash");
+    if (rpc_params_invalid(&p)) {
+        rpc_params_error(&p, result);
+        return false;
     }
     if (!g_main_state) {
         json_set_str(result, "Not initialized");
         return false;
     }
-
-    const char *hash_str = json_get_str(json_at(params, 0));
     struct uint256 hash;
     uint256_set_hex(&hash, hash_str);
 
@@ -218,10 +225,7 @@ static bool rpc_getblockchaininfo(const struct json_value *params, bool help,
                                    struct json_value *result)
 {
     (void)params;
-    if (help) {
-        json_set_str(result, "getblockchaininfo\nReturns blockchain state info.");
-        return true;
-    }
+    RPC_HELP(help, result, "getblockchaininfo\nReturns blockchain state info.");
     if (!g_main_state) {
         json_set_str(result, "Not initialized");
         return false;
@@ -258,10 +262,7 @@ static bool rpc_getmempoolinfo(const struct json_value *params, bool help,
                                 struct json_value *result)
 {
     (void)params;
-    if (help) {
-        json_set_str(result, "getmempoolinfo\nReturns mempool state.");
-        return true;
-    }
+    RPC_HELP(help, result, "getmempoolinfo\nReturns mempool state.");
 
     json_set_object(result);
     json_push_kv_int(result, "size",

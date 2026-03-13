@@ -1,0 +1,106 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0 */
+
+#include "models/chain_snapshot.h"
+#include <stdio.h>
+#include <string.h>
+
+bool chain_snapshot_validate(struct chain_snapshot *snap)
+{
+    snap->src_valid = false;
+    memset(&snap->blocks, 0, sizeof(snap->blocks));
+    memset(&snap->index, 0, sizeof(snap->index));
+    memset(&snap->chainstate, 0, sizeof(snap->chainstate));
+
+    if (!snap->src_dir || !snap->dst_dir)
+        return false;
+
+    /* Build owned path buffers */
+    snprintf(snap->blocks_src, sizeof(snap->blocks_src),
+             "%s/blocks", snap->src_dir);
+    snprintf(snap->blocks_dst, sizeof(snap->blocks_dst),
+             "%s/blocks", snap->dst_dir);
+    snprintf(snap->index_src, sizeof(snap->index_src),
+             "%s/blocks/index", snap->src_dir);
+    snprintf(snap->index_dst, sizeof(snap->index_dst),
+             "%s/blocks/index", snap->dst_dir);
+    snprintf(snap->cs_src, sizeof(snap->cs_src),
+             "%s/chainstate", snap->src_dir);
+    snprintf(snap->cs_dst, sizeof(snap->cs_dst),
+             "%s/chainstate", snap->dst_dir);
+
+    /* Wire child models to owned buffers */
+    snap->blocks.src_dir = snap->blocks_src;
+    snap->blocks.dst_dir = snap->blocks_dst;
+    snap->index.src_dir = snap->index_src;
+    snap->index.dst_dir = snap->index_dst;
+    snap->chainstate.src_dir = snap->cs_src;
+    snap->chainstate.dst_dir = snap->cs_dst;
+
+    /* ── Validate BlockData ── */
+    struct ar_errors errors;
+    if (!block_data_validate(&snap->blocks, &errors)) {
+        char msg[512];
+        ar_errors_full_messages(&errors, msg, sizeof(msg));
+        printf("chain_snapshot: block_data invalid: %s\n", msg);
+        return false;
+    }
+
+    /* ── Validate BlockIndexStore (optional) ── */
+    snap->src_has_index = block_index_store_validate(&snap->index, &errors);
+
+    /* ── Validate ChainstateStore ── */
+    if (!chainstate_store_validate(&snap->chainstate, &errors)) {
+        char msg[512];
+        ar_errors_full_messages(&errors, msg, sizeof(msg));
+        printf("chain_snapshot: chainstate invalid: %s\n", msg);
+        return false;
+    }
+
+    /* Populate legacy accessors */
+    snap->src_block_files = snap->blocks.num_blk_files;
+    snap->src_blocks_bytes = snap->blocks.blk_bytes + snap->blocks.rev_bytes;
+    snap->src_chainstate_bytes = snap->chainstate.total_bytes;
+    snap->src_valid = true;
+
+    printf("chain_snapshot: validated %d block files (%.1f GB), "
+           "chainstate %.0f MB, index=%s\n",
+           snap->src_block_files,
+           (double)snap->src_blocks_bytes / (1024.0 * 1024.0 * 1024.0),
+           (double)snap->src_chainstate_bytes / (1024.0 * 1024.0),
+           snap->src_has_index ? "yes" : "no");
+    return true;
+}
+
+bool chain_snapshot_save(struct chain_snapshot *snap)
+{
+    if (!snap->src_valid)
+        return false;
+
+    snap->copy_blocks_ok = block_data_save(&snap->blocks);
+    snap->copy_index_ok = snap->src_has_index
+                        ? block_index_store_save(&snap->index) : false;
+    snap->copy_chainstate_ok = chainstate_store_save(&snap->chainstate);
+    snap->files_copied = snap->src_block_files;
+
+    printf("chain_snapshot: copy complete. blocks=%s index=%s chainstate=%s\n",
+           snap->copy_blocks_ok ? "ok" : "FAIL",
+           snap->copy_index_ok ? "ok" : "FAIL",
+           snap->copy_chainstate_ok ? "ok" : "FAIL");
+    return snap->copy_blocks_ok && snap->copy_chainstate_ok;
+}
+
+void chain_snapshot_summary(const struct chain_snapshot *snap,
+                             char *out, size_t out_size)
+{
+    snprintf(out, out_size,
+             "src=%s valid=%s blocks=%d(%.1fGB) chainstate=%.0fMB "
+             "copy: blocks=%s index=%s chainstate=%s",
+             snap->src_dir,
+             snap->src_valid ? "yes" : "no",
+             snap->src_block_files,
+             (double)snap->src_blocks_bytes / (1024.0 * 1024.0 * 1024.0),
+             (double)snap->src_chainstate_bytes / (1024.0 * 1024.0),
+             snap->copy_blocks_ok ? "ok" : "fail",
+             snap->copy_index_ok ? "ok" : "fail",
+             snap->copy_chainstate_ok ? "ok" : "fail");
+}

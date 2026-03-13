@@ -77,10 +77,28 @@ int64_t db_wallet_utxo_balance(struct node_db *ndb);
 int db_wallet_utxo_list_unspent(struct node_db *ndb,
                                 struct db_wallet_utxo *out, size_t max);
 
+/* List all wallet UTXOs (spent + unspent). Returns count. */
+int db_wallet_utxo_list_all(struct node_db *ndb,
+                            struct db_wallet_utxo *out, size_t max);
+
 /* Coin selection: unspent, non-coinbase (or mature coinbase). */
 int db_wallet_utxo_select_coins(struct node_db *ndb, int64_t target,
                                 int current_height,
                                 struct db_wallet_utxo *out, size_t max);
+
+/* Delete a single wallet UTXO by outpoint. */
+bool db_wallet_utxo_delete(struct node_db *ndb,
+                            const uint8_t txid[32], uint32_t vout);
+
+/* Count wallet UTXOs for a given txid. */
+int db_wallet_utxo_count_for_tx(struct node_db *ndb,
+                                 const uint8_t txid[32]);
+
+/* Delete all wallet UTXOs. */
+bool db_wallet_utxo_delete_all(struct node_db *ndb);
+
+/* Delete all wallet transactions. */
+bool db_wallet_tx_delete_all(struct node_db *ndb);
 
 /* Sapling notes */
 struct db_sapling_note {

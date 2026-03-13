@@ -379,6 +379,41 @@ int db_wallet_utxo_list_unspent(struct node_db *ndb,
     return count;
 }
 
+int db_wallet_utxo_list_all(struct node_db *ndb,
+                            struct db_wallet_utxo *out, size_t max)
+{
+    if (!ndb->open) return 0;
+    sqlite3_stmt *s = NULL;
+    sqlite3_prepare_v2(ndb->db,
+        "SELECT txid,vout,value,address_hash,script,height,is_coinbase,"
+        "spent_txid,spent_vin"
+        " FROM wallet_utxos ORDER BY height ASC",
+        -1, &s, NULL);
+    int count = 0;
+    while (sqlite3_step(s) == SQLITE_ROW && (size_t)count < max) {
+        memset(&out[count], 0, sizeof(out[count]));
+        const void *t = sqlite3_column_blob(s, 0);
+        if (t) memcpy(out[count].txid, t, 32);
+        out[count].vout = (uint32_t)sqlite3_column_int(s, 1);
+        out[count].value = sqlite3_column_int64(s, 2);
+        const void *ah = sqlite3_column_blob(s, 3);
+        if (ah) memcpy(out[count].address_hash, ah, 20);
+        out[count].script_len = (size_t)sqlite3_column_bytes(s, 4);
+        out[count].script = NULL;
+        out[count].height = sqlite3_column_int(s, 5);
+        out[count].is_coinbase = sqlite3_column_int(s, 6) != 0;
+        const void *st = sqlite3_column_blob(s, 7);
+        if (st) {
+            memcpy(out[count].spent_txid, st, 32);
+            out[count].spent_vin = sqlite3_column_int(s, 8);
+            out[count].is_spent = true;
+        }
+        count++;
+    }
+    sqlite3_finalize(s);
+    return count;
+}
+
 int db_wallet_utxo_select_coins(struct node_db *ndb, int64_t target,
                                 int current_height,
                                 struct db_wallet_utxo *out, size_t max)
@@ -414,6 +449,49 @@ int db_wallet_utxo_select_coins(struct node_db *ndb, int64_t target,
     }
     sqlite3_finalize(s);
     return count;
+}
+
+bool db_wallet_utxo_delete(struct node_db *ndb,
+                            const uint8_t txid[32], uint32_t vout)
+{
+    if (!ndb->open) return false;
+    sqlite3_stmt *s = NULL;
+    sqlite3_prepare_v2(ndb->db,
+        "DELETE FROM wallet_utxos WHERE txid=? AND vout=?",
+        -1, &s, NULL);
+    sqlite3_bind_blob(s, 1, txid, 32, SQLITE_STATIC);
+    sqlite3_bind_int(s, 2, (int)vout);
+    int rc = sqlite3_step(s);
+    sqlite3_finalize(s);
+    return rc == SQLITE_DONE && sqlite3_changes(ndb->db) > 0;
+}
+
+int db_wallet_utxo_count_for_tx(struct node_db *ndb,
+                                 const uint8_t txid[32])
+{
+    if (!ndb->open) return 0;
+    sqlite3_stmt *s = NULL;
+    sqlite3_prepare_v2(ndb->db,
+        "SELECT COUNT(*) FROM wallet_utxos WHERE txid=?",
+        -1, &s, NULL);
+    sqlite3_bind_blob(s, 1, txid, 32, SQLITE_STATIC);
+    int c = 0;
+    if (sqlite3_step(s) == SQLITE_ROW)
+        c = sqlite3_column_int(s, 0);
+    sqlite3_finalize(s);
+    return c;
+}
+
+bool db_wallet_utxo_delete_all(struct node_db *ndb)
+{
+    if (!ndb->open) return false;
+    return node_db_exec(ndb, "DELETE FROM wallet_utxos");
+}
+
+bool db_wallet_tx_delete_all(struct node_db *ndb)
+{
+    if (!ndb->open) return false;
+    return node_db_exec(ndb, "DELETE FROM wallet_transactions");
 }
 
 /* Sapling notes */

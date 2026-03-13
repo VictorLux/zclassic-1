@@ -56,4 +56,10 @@ bool node_db_state_get_int(struct node_db *ndb, const char *key, int64_t *val);
 /* Schema version for future migrations. */
 int node_db_schema_version(struct node_db *ndb);
 
+/* Rails-style migration runner.
+ * Runs all pending migrations from db/migrate/ directory.
+ * Tracks applied migrations in schema_migrations table.
+ * Returns number of migrations applied, or -1 on error. */
+int node_db_migrate(struct node_db *ndb, const char *datadir);
+
 #endif

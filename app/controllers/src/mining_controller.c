@@ -4,6 +4,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "controllers/mining_controller.h"
+#include "controllers/strong_params.h"
 #include "chain/chain.h"
 #include "chain/chainparams.h"
 #include "chain/pow.h"
@@ -42,12 +43,9 @@ static bool rpc_getmininginfo(const struct json_value *params, bool help,
                                 struct json_value *result)
 {
     (void)params;
-    if (help) {
-        json_set_str(result,
-            "getmininginfo\n"
-            "Returns mining-related information.");
-        return true;
-    }
+    RPC_HELP(help, result,
+        "getmininginfo\n"
+        "Returns mining-related information.");
 
     const struct chain_params *cp = chain_params_get();
     struct block_index *tip = active_chain_tip(&g_ms->chain_active);
@@ -77,16 +75,19 @@ static bool rpc_getmininginfo(const struct json_value *params, bool help,
 static bool rpc_generate(const struct json_value *params, bool help,
                           struct json_value *result)
 {
-    if (help || json_size(params) < 1) {
-        json_set_str(result,
-            "generate numblocks\n"
-            "Mine blocks immediately (regtest only).\n"
-            "Arguments:\n"
-            "1. numblocks (numeric, required) How many blocks to generate");
-        return true;
-    }
+    RPC_HELP(help, result,
+        "generate numblocks\n"
+        "Mine blocks immediately (regtest only).\n"
+        "Arguments:\n"
+        "1. numblocks (numeric, required) How many blocks to generate");
 
-    int64_t num_blocks = json_get_int(json_at(params, 0));
+    struct rpc_params p;
+    rpc_params_init(&p, params);
+    int64_t num_blocks = rpc_require_int(&p, 0, "numblocks");
+    if (rpc_params_invalid(&p)) {
+        rpc_params_error(&p, result);
+        return false;
+    }
     if (num_blocks <= 0 || num_blocks > 1000) {
         json_set_str(result, "Invalid number of blocks");
         return false;
@@ -129,22 +130,19 @@ static bool rpc_generate(const struct json_value *params, bool help,
 static bool rpc_submitblock(const struct json_value *params, bool help,
                               struct json_value *result)
 {
-    if (help || json_size(params) < 1) {
-        json_set_str(result,
-            "submitblock \"hexdata\"\n"
-            "Attempts to submit new block to network.\n"
-            "Arguments:\n"
-            "1. \"hexdata\" (string, required) The hex-encoded block data");
-        return true;
-    }
+    RPC_HELP(help, result,
+        "submitblock \"hexdata\"\n"
+        "Attempts to submit new block to network.\n"
+        "Arguments:\n"
+        "1. \"hexdata\" (string, required) The hex-encoded block data");
 
-    const struct json_value *hex_val = json_at(params, 0);
-    if (!hex_val || hex_val->type != JSON_STR) {
-        json_set_str(result, "Invalid hex data");
+    struct rpc_params p;
+    rpc_params_init(&p, params);
+    const char *hex = rpc_require_str(&p, 0, "hexdata");
+    if (rpc_params_invalid(&p)) {
+        rpc_params_error(&p, result);
         return false;
     }
-
-    const char *hex = json_get_str(hex_val);
     size_t hex_len = strlen(hex);
     size_t bin_len = hex_len / 2;
     unsigned char *bin = malloc(bin_len);
@@ -198,12 +196,9 @@ static bool rpc_getblocktemplate(const struct json_value *params, bool help,
                                   struct json_value *result)
 {
     (void)params;
-    if (help) {
-        json_set_str(result,
-            "getblocktemplate ( \"jsonrequestobject\" )\n"
-            "Returns data needed to construct a block to work on.");
-        return true;
-    }
+    RPC_HELP(help, result,
+        "getblocktemplate ( \"jsonrequestobject\" )\n"
+        "Returns data needed to construct a block to work on.");
 
     const struct chain_params *cp = chain_params_get();
     struct block_index *tip = active_chain_tip(&g_ms->chain_active);
@@ -301,21 +296,23 @@ static bool rpc_getblocktemplate(const struct json_value *params, bool help,
 static bool rpc_getblocksubsidy(const struct json_value *params, bool help,
                                   struct json_value *result)
 {
-    if (help || json_size(params) > 1) {
-        json_set_str(result,
-            "getblocksubsidy height\n"
-            "Returns block subsidy reward of block at given height.");
-        return true;
+    RPC_HELP(help, result,
+        "getblocksubsidy height\n"
+        "Returns block subsidy reward of block at given height.");
+
+    struct block_index *tip = active_chain_tip(&g_ms->chain_active);
+    int default_height = tip ? tip->nHeight : 0;
+
+    struct rpc_params p;
+    rpc_params_init(&p, params);
+    rpc_params_expect(&p, 0, 1);
+    int height = (int)rpc_permit_int(&p, 0, "height", default_height);
+    if (rpc_params_invalid(&p)) {
+        rpc_params_error(&p, result);
+        return false;
     }
 
     const struct chain_params *cp = chain_params_get();
-    int height;
-    if (json_size(params) >= 1)
-        height = (int)json_get_int(json_at(params, 0));
-    else {
-        struct block_index *tip = active_chain_tip(&g_ms->chain_active);
-        height = tip ? tip->nHeight : 0;
-    }
 
     int64_t subsidy = get_block_subsidy(height, &cp->consensus);
 

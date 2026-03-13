@@ -257,6 +257,7 @@ bool app_init(struct app_context *ctx)
     /* Open SQLite node database */
     if (node_db_sync_init(&g_node_db, ctx->datadir)) {
         g_active_node_db = &g_node_db;
+        node_db_migrate(&g_node_db, ctx->datadir);
         int db_tip = node_db_sync_get_tip_height(&g_node_db);
         if (db_tip >= 0)
             printf("SQLite tip: height=%d\n", db_tip);
@@ -527,7 +528,6 @@ bool app_init(struct app_context *ctx)
         }
     }
 
-    /* Verify wallet UTXOs against actual UTXO set */
     wallet_verify_utxos(&g_wallet, &g_coins_tip);
 
     /* Sync wallet keys to SQLite */

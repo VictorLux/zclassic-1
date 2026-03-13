@@ -3,6 +3,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "controllers/network_controller.h"
+#include "controllers/strong_params.h"
 #include "json/json.h"
 #include "net/connman.h"
 #include "net/version.h"
@@ -20,13 +21,10 @@ static bool rpc_getnetworkinfo(const struct json_value *params, bool help,
                                  struct json_value *result)
 {
     (void)params;
-    if (help) {
-        json_set_str(result,
-            "getnetworkinfo\n"
-            "Returns an object containing various state info "
-            "regarding P2P networking.");
-        return true;
-    }
+    RPC_HELP(help, result,
+        "getnetworkinfo\n"
+        "Returns an object containing various state info "
+        "regarding P2P networking.");
 
     json_set_object(result);
     json_push_kv_int(result, "version", CLIENT_VERSION);
@@ -55,12 +53,9 @@ static bool rpc_getpeerinfo(const struct json_value *params, bool help,
                               struct json_value *result)
 {
     (void)params;
-    if (help) {
-        json_set_str(result,
-            "getpeerinfo\n"
-            "Returns data about each connected network node.");
-        return true;
-    }
+    RPC_HELP(help, result,
+        "getpeerinfo\n"
+        "Returns data about each connected network node.");
 
     json_set_array(result);
     if (!g_cm) return true;
@@ -99,12 +94,9 @@ static bool rpc_getconnectioncount(const struct json_value *params, bool help,
                                      struct json_value *result)
 {
     (void)params;
-    if (help) {
-        json_set_str(result,
-            "getconnectioncount\n"
-            "Returns the number of connections to other nodes.");
-        return true;
-    }
+    RPC_HELP(help, result,
+        "getconnectioncount\n"
+        "Returns the number of connections to other nodes.");
 
     size_t conns = g_cm ? connman_get_node_count(g_cm) : 0;
     json_set_int(result, (int64_t)conns);
@@ -115,12 +107,9 @@ static bool rpc_ping_rpc(const struct json_value *params, bool help,
                            struct json_value *result)
 {
     (void)params;
-    if (help) {
-        json_set_str(result,
-            "ping\n"
-            "Requests that a ping be sent to all other nodes.");
-        return true;
-    }
+    RPC_HELP(help, result,
+        "ping\n"
+        "Requests that a ping be sent to all other nodes.");
 
     if (g_cm) {
         zcl_mutex_lock(&g_cm->manager.cs_nodes);
@@ -136,15 +125,16 @@ static bool rpc_ping_rpc(const struct json_value *params, bool help,
 static bool rpc_addnode(const struct json_value *params, bool help,
                          struct json_value *result)
 {
-    if (help || json_size(params) < 2) {
-        json_set_str(result,
-            "addnode \"node\" \"add|remove|onetry\"\n"
-            "Attempts to add or remove a node from the addnode list.");
-        return true;
-    }
+    RPC_HELP(help, result,
+        "addnode \"node\" \"add|remove|onetry\"\n"
+        "Attempts to add or remove a node from the addnode list.");
 
-    const char *node_str = json_get_str(json_at(params, 0));
-    const char *cmd = json_get_str(json_at(params, 1));
+    struct rpc_params p;
+    rpc_params_init(&p, params);
+    rpc_params_expect(&p, 2, 2);
+    const char *node_str = rpc_require_str(&p, 0, "node");
+    const char *cmd = rpc_require_str(&p, 1, "command");
+    if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); return false; }
 
     if (!g_cm) {
         json_set_str(result, "P2P not initialized");

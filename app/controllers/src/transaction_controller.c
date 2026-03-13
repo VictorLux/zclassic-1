@@ -4,6 +4,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "controllers/transaction_controller.h"
+#include "controllers/strong_params.h"
 #include "chain/chainparams.h"
 #include "consensus/upgrades.h"
 #include "consensus/validation.h"
@@ -53,33 +54,25 @@ void rpc_rawtx_set_keystore(struct basic_keystore *ks)
 static bool rpc_getrawtransaction(const struct json_value *params, bool help,
                                    struct json_value *result)
 {
-    if (help || json_size(params) < 1) {
-        json_set_str(result,
-            "getrawtransaction \"txid\" ( verbose )\n"
-            "Return the raw transaction data.\n"
-            "Arguments:\n"
-            "1. \"txid\"    (string, required) The transaction id\n"
-            "2. verbose   (numeric, optional, default=0) "
-            "If 0, return hex; if 1, return JSON object");
-        return true;
-    }
+    RPC_HELP(help, result,
+        "getrawtransaction \"txid\" ( verbose )\n"
+        "Return the raw transaction data.\n"
+        "Arguments:\n"
+        "1. \"txid\"    (string, required) The transaction id\n"
+        "2. verbose   (numeric, optional, default=0) "
+        "If 0, return hex; if 1, return JSON object");
 
-    const struct json_value *txid_val = json_at(params, 0);
-    if (!txid_val || txid_val->type != JSON_STR) {
-        json_set_str(result, "Invalid txid");
-        return false;
-    }
+    struct rpc_params p;
+    rpc_params_init(&p, params);
+    rpc_params_expect(&p, 1, 2);
+    const char *txid_str = rpc_require_str(&p, 0, "txid");
+    int verbose = (int)rpc_permit_int(&p, 1, "verbose", 0);
+    if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); return false; }
 
     struct uint256 hash;
-    if (!parse_hash_str(json_get_str(txid_val), &hash)) {
+    if (!parse_hash_str(txid_str, &hash)) {
         json_set_str(result, "Invalid txid format");
         return false;
-    }
-
-    int verbose = 0;
-    if (json_size(params) >= 2) {
-        const struct json_value *v = json_at(params, 1);
-        if (v) verbose = (int)json_get_int(v);
     }
 
     struct transaction tx;
@@ -184,24 +177,21 @@ static bool rpc_getrawtransaction(const struct json_value *params, bool help,
 static bool rpc_decoderawtransaction(const struct json_value *params, bool help,
                                       struct json_value *result)
 {
-    if (help || json_size(params) != 1) {
-        json_set_str(result,
-            "decoderawtransaction \"hexstring\"\n"
-            "Return a JSON object representing the serialized transaction.\n"
-            "Arguments:\n"
-            "1. \"hexstring\" (string, required) The transaction hex string");
-        return true;
-    }
+    RPC_HELP(help, result,
+        "decoderawtransaction \"hexstring\"\n"
+        "Return a JSON object representing the serialized transaction.\n"
+        "Arguments:\n"
+        "1. \"hexstring\" (string, required) The transaction hex string");
 
-    const struct json_value *hex_val = json_at(params, 0);
-    if (!hex_val || hex_val->type != JSON_STR) {
-        json_set_str(result, "Invalid hex string");
-        return false;
-    }
+    struct rpc_params p;
+    rpc_params_init(&p, params);
+    rpc_params_expect(&p, 1, 1);
+    const char *hex_str = rpc_require_str(&p, 0, "hexstring");
+    if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); return false; }
 
     struct transaction tx;
     transaction_init(&tx);
-    if (!decode_hex_tx(&tx, json_get_str(hex_val))) {
+    if (!decode_hex_tx(&tx, hex_str)) {
         transaction_free(&tx);
         json_set_str(result, "TX decode failed");
         return false;
@@ -217,25 +207,22 @@ static bool rpc_decoderawtransaction(const struct json_value *params, bool help,
 static bool rpc_sendrawtransaction(const struct json_value *params, bool help,
                                     struct json_value *result)
 {
-    if (help || json_size(params) < 1) {
-        json_set_str(result,
-            "sendrawtransaction \"hexstring\" ( allowhighfees )\n"
-            "Submits raw transaction to local node and network.\n"
-            "Arguments:\n"
-            "1. \"hexstring\" (string, required) The hex string of the raw tx\n"
-            "2. allowhighfees (boolean, optional, default=false)");
-        return true;
-    }
+    RPC_HELP(help, result,
+        "sendrawtransaction \"hexstring\" ( allowhighfees )\n"
+        "Submits raw transaction to local node and network.\n"
+        "Arguments:\n"
+        "1. \"hexstring\" (string, required) The hex string of the raw tx\n"
+        "2. allowhighfees (boolean, optional, default=false)");
 
-    const struct json_value *hex_val = json_at(params, 0);
-    if (!hex_val || hex_val->type != JSON_STR) {
-        json_set_str(result, "Invalid hex string");
-        return false;
-    }
+    struct rpc_params p;
+    rpc_params_init(&p, params);
+    rpc_params_expect(&p, 1, 2);
+    const char *hex_str = rpc_require_str(&p, 0, "hexstring");
+    if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); return false; }
 
     struct transaction tx;
     transaction_init(&tx);
-    if (!decode_hex_tx(&tx, json_get_str(hex_val))) {
+    if (!decode_hex_tx(&tx, hex_str)) {
         transaction_free(&tx);
         json_set_str(result, "TX decode failed");
         return false;
@@ -292,15 +279,17 @@ static bool rpc_sendrawtransaction(const struct json_value *params, bool help,
 static bool rpc_createrawtransaction(const struct json_value *params, bool help,
                                       struct json_value *result)
 {
-    if (help || json_size(params) < 2) {
-        json_set_str(result,
-            "createrawtransaction [{\"txid\":\"id\",\"vout\":n},...] "
-            "{\"address\":amount,...}\n"
-            "Create a transaction spending the given inputs.\n"
-            "Arguments:\n"
-            "1. \"inputs\"  (array, required) JSON array of inputs\n"
-            "2. \"outputs\" (object, required) JSON object of outputs");
-        return true;
+    RPC_HELP(help, result,
+        "createrawtransaction [{\"txid\":\"id\",\"vout\":n},...] "
+        "{\"address\":amount,...}\n"
+        "Create a transaction spending the given inputs.\n"
+        "Arguments:\n"
+        "1. \"inputs\"  (array, required) JSON array of inputs\n"
+        "2. \"outputs\" (object, required) JSON object of outputs");
+
+    if (json_size(params) < 2) {
+        json_set_str(result, "Missing required parameters: inputs and outputs");
+        return false;
     }
 
     const struct json_value *inputs = json_at(params, 0);
@@ -544,29 +533,26 @@ static bool sign_one_input(struct transaction *tx, unsigned int idx,
 static bool rpc_signrawtransaction(const struct json_value *params, bool help,
                                     struct json_value *result)
 {
-    if (help || json_size(params) < 1) {
-        json_set_str(result,
-            "signrawtransaction \"hexstring\" "
-            "( [{\"txid\":\"id\",\"vout\":n,\"scriptPubKey\":\"hex\","
-            "\"amount\":n},...] [\"privatekey\",...] sighashtype )\n"
-            "Sign inputs for raw transaction.\n"
-            "Arguments:\n"
-            "1. \"hexstring\"   (string, required) The transaction hex\n"
-            "2. \"prevtxs\"     (array, optional) Previous outputs being spent\n"
-            "3. \"privkeys\"    (array, optional) Private keys for signing\n"
-            "4. \"sighashtype\" (string, optional, default=ALL)");
-        return true;
-    }
+    RPC_HELP(help, result,
+        "signrawtransaction \"hexstring\" "
+        "( [{\"txid\":\"id\",\"vout\":n,\"scriptPubKey\":\"hex\","
+        "\"amount\":n},...] [\"privatekey\",...] sighashtype )\n"
+        "Sign inputs for raw transaction.\n"
+        "Arguments:\n"
+        "1. \"hexstring\"   (string, required) The transaction hex\n"
+        "2. \"prevtxs\"     (array, optional) Previous outputs being spent\n"
+        "3. \"privkeys\"    (array, optional) Private keys for signing\n"
+        "4. \"sighashtype\" (string, optional, default=ALL)");
 
-    const struct json_value *hex_val = json_at(params, 0);
-    if (!hex_val || hex_val->type != JSON_STR) {
-        json_set_str(result, "Invalid hex string");
-        return false;
-    }
+    struct rpc_params p;
+    rpc_params_init(&p, params);
+    rpc_params_expect(&p, 1, 4);
+    const char *hex_str = rpc_require_str(&p, 0, "hexstring");
+    if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); return false; }
 
     struct transaction tx;
     transaction_init(&tx);
-    if (!decode_hex_tx(&tx, json_get_str(hex_val))) {
+    if (!decode_hex_tx(&tx, hex_str)) {
         transaction_free(&tx);
         json_set_str(result, "TX decode failed");
         return false;

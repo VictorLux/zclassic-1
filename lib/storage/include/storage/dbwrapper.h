@@ -42,6 +42,8 @@ struct db_iterator {
 bool db_wrapper_open(struct db_wrapper *w, const char *path,
                      size_t cache_size, bool memory, bool wipe);
 void db_wrapper_close(struct db_wrapper *w);
+bool db_wrapper_repair(const char *path);
+size_t db_wrapper_count(struct db_wrapper *w);
 
 bool db_read(struct db_wrapper *w, const char *key, size_t keylen,
              char **val, size_t *vallen);

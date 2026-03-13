@@ -59,20 +59,21 @@ bool sapling_compute_nf(const uint8_t diversifier[11], const uint8_t pk_d[32],
 void sapling_generate_r(uint8_t result[32]);
 
 /* RedJubjub signature verification.
+ * msg/msg_len: message bytes (32 for sighash in spend_auth/binding)
  * generator_idx: 5 for SpendingKey (spend_auth_sig), 4 for ValueCommitmentRandomness (binding_sig) */
 bool redjubjub_verify(const uint8_t vk_bytes[32],
-                       const uint8_t msg[64],
+                       const uint8_t *msg, size_t msg_len,
                        const uint8_t sig_rbar[32],
                        const uint8_t sig_sbar[32],
                        int generator_idx);
 
 /* RedJubjub signing.
  * sk: secret key scalar (32 bytes)
- * msg: message to sign (64 bytes)
+ * msg/msg_len: message to sign
  * sig_out: output signature (64 bytes: rbar || sbar)
  * generator_idx: 5 for SpendAuth, 4 for ValueCommitment */
 bool redjubjub_sign(const uint8_t sk[32],
-                     const uint8_t msg[64],
+                     const uint8_t *msg, size_t msg_len,
                      uint8_t sig_out[64],
                      int generator_idx);
 

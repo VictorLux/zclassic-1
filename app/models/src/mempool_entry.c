@@ -89,6 +89,13 @@ bool db_mempool_find(struct node_db *ndb, const uint8_t txid[32],
 bool db_mempool_delete(struct node_db *ndb, const uint8_t txid[32])
 {
     if (!ndb->open) return false;
+
+    struct ar_callbacks *cbs = db_mempool_callbacks();
+    struct db_mempool_entry e;
+    memset(&e, 0, sizeof(e));
+    memcpy(e.txid, txid, 32);
+    if (!ar_run_before_destroy(cbs, &e)) return false;
+
     db_mempool_remove_spends(ndb, txid);
     sqlite3_stmt *s = NULL;
     sqlite3_prepare_v2(ndb->db,
@@ -96,7 +103,10 @@ bool db_mempool_delete(struct node_db *ndb, const uint8_t txid[32])
     sqlite3_bind_blob(s, 1, txid, 32, SQLITE_STATIC);
     int rc = sqlite3_step(s);
     sqlite3_finalize(s);
-    return rc == SQLITE_DONE;
+
+    bool ok = rc == SQLITE_DONE;
+    if (ok) ar_run_after_destroy(cbs, &e);
+    return ok;
 }
 
 int db_mempool_count(struct node_db *ndb)

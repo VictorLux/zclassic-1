@@ -201,6 +201,8 @@ int wallet_tx_get_blocks_to_maturity(const struct wallet_tx *wtx);
 /* Spent outpoint tracking */
 void wallet_mark_outpoint_spent(struct wallet *w,
                                  const struct uint256 *txid, uint32_t vout);
+void wallet_unmark_outpoint_spent(struct wallet *w,
+                                   const struct uint256 *txid, uint32_t vout);
 bool wallet_is_outpoint_spent(const struct wallet *w,
                                const struct uint256 *txid, uint32_t vout);
 

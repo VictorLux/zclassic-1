@@ -432,3 +432,50 @@ int node_db_schema_version(struct node_db *ndb)
         return 0;
     return ver;
 }
+
+int node_db_migrate(struct node_db *ndb, const char *datadir)
+{
+    (void)datadir;
+    if (!ndb->open) return -1;
+
+    /* Ensure schema_migrations table exists */
+    node_db_exec(ndb,
+        "CREATE TABLE IF NOT EXISTS schema_migrations ("
+        "  version TEXT PRIMARY KEY,"
+        "  applied_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))"
+        ");"
+        "INSERT OR IGNORE INTO schema_migrations(version) VALUES('001');"
+    );
+
+    int applied = 0;
+    int current_ver = node_db_schema_version(ndb);
+    printf("db: current schema version %d\n", current_ver);
+
+    /* Future migrations go here as versioned blocks.
+     * Each block checks schema_migrations before running.
+     *
+     * Pattern:
+     *   if (current_ver < N) {
+     *       node_db_exec(ndb, "ALTER TABLE ... ; ...");
+     *       node_db_exec(ndb,
+     *           "INSERT OR IGNORE INTO schema_migrations(version) "
+     *           "VALUES('00N')");
+     *       current_ver = N;
+     *       applied++;
+     *   }
+     */
+
+    if (current_ver < 2) {
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('002')");
+        int32_t v = 2;
+        node_db_state_set(ndb, "schema_version", &v, sizeof(v));
+        applied++;
+    }
+
+    if (applied > 0)
+        printf("db: applied %d migration(s), now at version %d\n",
+               applied, node_db_schema_version(ndb));
+
+    return applied;
+}

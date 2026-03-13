@@ -3,6 +3,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "controllers/misc_controller.h"
+#include "controllers/strong_params.h"
 #include "chain/chainparams.h"
 #include "encoding/utilstrencodings.h"
 #include "json/json.h"
@@ -33,12 +34,9 @@ static bool rpc_getinfo(const struct json_value *params, bool help,
                           struct json_value *result)
 {
     (void)params;
-    if (help) {
-        json_set_str(result,
-            "getinfo\n"
-            "Returns an object containing various state info.");
-        return true;
-    }
+    RPC_HELP(help, result,
+        "getinfo\n"
+        "Returns an object containing various state info.");
 
     json_set_object(result);
     json_push_kv_int(result, "version", CLIENT_VERSION);
@@ -61,21 +59,16 @@ static bool rpc_getinfo(const struct json_value *params, bool help,
 static bool rpc_validateaddress(const struct json_value *params, bool help,
                                   struct json_value *result)
 {
-    if (help || json_size(params) != 1) {
-        json_set_str(result,
-            "validateaddress \"address\"\n"
-            "Return information about the given ZClassic address.\n"
-            "Works for transparent (t1/t3) and shielded (zs1) addresses.");
-        return true;
-    }
+    RPC_HELP(help, result,
+        "validateaddress \"address\"\n"
+        "Return information about the given ZClassic address.\n"
+        "Works for transparent (t1/t3) and shielded (zs1) addresses.");
 
-    const struct json_value *addr_val = json_at(params, 0);
-    if (!addr_val || addr_val->type != JSON_STR) {
-        json_set_str(result, "Invalid address");
-        return false;
-    }
-
-    const char *addr = json_get_str(addr_val);
+    struct rpc_params p;
+    rpc_params_init(&p, params);
+    rpc_params_expect(&p, 1, 1);
+    const char *addr = rpc_require_str(&p, 0, "address");
+    if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); return false; }
     const struct chain_params *cp = chain_params_get();
 
     json_set_object(result);
@@ -159,12 +152,9 @@ static bool rpc_stop(const struct json_value *params, bool help,
                        struct json_value *result)
 {
     (void)params;
-    if (help) {
-        json_set_str(result,
-            "stop\n"
-            "Stop ZClassic server.");
-        return true;
-    }
+    RPC_HELP(help, result,
+        "stop\n"
+        "Stop ZClassic server.");
 
     json_set_str(result, "ZClassic server stopping");
     exit(0);

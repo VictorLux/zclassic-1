@@ -97,6 +97,14 @@ bool db_peer_find_by_addr(struct node_db *ndb,
 bool db_peer_delete(struct node_db *ndb, const uint8_t ip[16], uint16_t port)
 {
     if (!ndb->open) return false;
+
+    struct ar_callbacks *cbs = db_peer_callbacks();
+    struct db_peer p;
+    memset(&p, 0, sizeof(p));
+    memcpy(p.ip, ip, 16);
+    p.port = port;
+    if (!ar_run_before_destroy(cbs, &p)) return false;
+
     sqlite3_stmt *s = NULL;
     sqlite3_prepare_v2(ndb->db,
         "DELETE FROM peers WHERE ip=? AND port=?", -1, &s, NULL);
@@ -104,7 +112,10 @@ bool db_peer_delete(struct node_db *ndb, const uint8_t ip[16], uint16_t port)
     sqlite3_bind_int(s, 2, port);
     int rc = sqlite3_step(s);
     sqlite3_finalize(s);
-    return rc == SQLITE_DONE;
+
+    bool ok = rc == SQLITE_DONE;
+    if (ok) ar_run_after_destroy(cbs, &p);
+    return ok;
 }
 
 int db_peer_count(struct node_db *ndb)

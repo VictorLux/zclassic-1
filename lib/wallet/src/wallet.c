@@ -57,6 +57,44 @@ void wallet_mark_outpoint_spent(struct wallet *w,
     }
 }
 
+void wallet_unmark_outpoint_spent(struct wallet *w,
+                                   const struct uint256 *txid, uint32_t vout)
+{
+    uint32_t idx = spent_hash(txid, vout);
+    for (uint32_t i = 0; i < SPENT_SET_BUCKETS; i++) {
+        uint32_t slot = (idx + i) % SPENT_SET_BUCKETS;
+        if (!w->spent_set[slot].occupied)
+            return;
+        if (uint256_eq(&w->spent_set[slot].txid, txid) &&
+            w->spent_set[slot].vout == vout) {
+            w->spent_set[slot].occupied = false;
+            w->num_spent--;
+            /* Rehash displaced entries in the linear-probe chain */
+            uint32_t hole = slot;
+            for (uint32_t j = 1; j < SPENT_SET_BUCKETS; j++) {
+                uint32_t next = (slot + j) % SPENT_SET_BUCKETS;
+                if (!w->spent_set[next].occupied)
+                    break;
+                uint32_t natural = spent_hash(&w->spent_set[next].txid,
+                                               w->spent_set[next].vout);
+                /* If the entry at 'next' would hash to or before 'hole'
+                 * (wrapping around), move it to fill the hole. */
+                bool needs_move;
+                if (hole <= next)
+                    needs_move = (natural <= hole || natural > next);
+                else
+                    needs_move = (natural <= hole && natural > next);
+                if (needs_move) {
+                    w->spent_set[hole] = w->spent_set[next];
+                    w->spent_set[next].occupied = false;
+                    hole = next;
+                }
+            }
+            return;
+        }
+    }
+}
+
 bool wallet_is_outpoint_spent(const struct wallet *w,
                                const struct uint256 *txid, uint32_t vout)
 {
@@ -542,11 +580,26 @@ void wallet_available_coins(const struct wallet *w,
             if (wallet_is_outpoint_spent(w, &wtx->tx.hash, (uint32_t)j))
                 continue;
 
+            /* Check actual key availability for spending */
+            bool can_spend = false;
+            struct tx_destination coin_dest;
+            if (script_extract_destination(&out->script_pub_key, &coin_dest)) {
+                if (coin_dest.type == DEST_KEY_ID) {
+                    struct privkey test_key;
+                    can_spend = keystore_get_key(&w->keystore,
+                        &coin_dest.id.key, &test_key);
+                    if (can_spend)
+                        memory_cleanse(test_key.vch, 32);
+                }
+                /* P2SH: spendable only if we have the redeem script
+                 * AND the underlying keys — for now, skip P2SH */
+            }
+
             coins_out[*num_coins].wtx = wtx;
             coins_out[*num_coins].i = (unsigned int)j;
             coins_out[*num_coins].depth = wtx->confirms;
-            coins_out[*num_coins].spendable = true;
-            coins_out[*num_coins].solvable = true;
+            coins_out[*num_coins].spendable = can_spend;
+            coins_out[*num_coins].solvable = can_spend;
             (*num_coins)++;
         }
     }
