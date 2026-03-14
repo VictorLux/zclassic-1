@@ -78,6 +78,7 @@ int main(int argc, char **argv)
             ctx.gen = true;
         } else if (strncmp(argv[i], "-port=", 6) == 0) {
             ctx.p2p_port = atoi(argv[i] + 6);
+            ctx.listen = true; /* -port implies -listen */
         } else if (strncmp(argv[i], "-rpcport=", 9) == 0) {
             ctx.rpc_port = atoi(argv[i] + 9);
         } else if (strncmp(argv[i], "-rpcuser=", 9) == 0) {

@@ -6,16 +6,24 @@
 #include "models/wallet_tx.h"
 #include "support/cleanse.h"
 #include <string.h>
+#include <stdlib.h>
+#include <time.h>
 
 /* ── Callbacks ─────────────────────────────────────────────────── */
 
-static struct ar_callbacks wkey_cbs;
-static bool wkey_cbs_init;
+static struct ar_callbacks wkey_cbs, skey_cbs;
+static bool wkey_cbs_init, skey_cbs_init;
 
 struct ar_callbacks *db_wallet_key_callbacks(void)
 {
     if (!wkey_cbs_init) { ar_callbacks_init(&wkey_cbs); wkey_cbs_init = true; }
     return &wkey_cbs;
+}
+
+struct ar_callbacks *db_sapling_key_callbacks(void)
+{
+    if (!skey_cbs_init) { ar_callbacks_init(&skey_cbs); skey_cbs_init = true; }
+    return &skey_cbs;
 }
 
 /* ── Validation ────────────────────────────────────────────────── */
@@ -27,8 +35,11 @@ bool db_wallet_key_validate(const struct db_wallet_key *k,
     validates_presence_of(errors, k, pubkey_hash);
     validates_presence_of(errors, k, pubkey);
     validates_presence_of(errors, k, privkey);
-    if (k->pubkey_len != 33 && k->pubkey_len != 65)
-        ar_errors_add(errors, "pubkey_len", "must be 33 or 65");
+    if (k->pubkey_len != 33)
+        ar_errors_add(errors, "pubkey_len", "must be 33 (compressed)");
+    if (k->pubkey_len == 33 && !k->compressed)
+        ar_errors_add(errors, "compressed", "must be true for 33-byte pubkey");
+    validates_non_negative(errors, k, created_at);
     return !ar_errors_any(errors);
 }
 
@@ -37,6 +48,9 @@ bool db_wallet_key_validate(const struct db_wallet_key *k,
 bool db_wallet_key_save(struct node_db *ndb, const struct db_wallet_key *k)
 {
     if (!ndb->open) return false;
+    /* Auto-timestamp if caller didn't set created_at */
+    if (k->created_at == 0)
+        ((struct db_wallet_key *)k)->created_at = (int64_t)time(NULL);
     struct ar_errors errors;
     if (!db_wallet_key_validate(k, &errors)) return false;
     if (!ar_run_before_save(&wkey_cbs, (void *)k)) return false;
@@ -170,9 +184,26 @@ int db_wallet_key_each(struct node_db *ndb, wallet_key_cb cb, void *ctx)
 
 /* Sapling keys */
 
+bool db_sapling_key_validate(const struct db_sapling_key *k,
+                              struct ar_errors *errors)
+{
+    ar_errors_clear(errors);
+    validates_presence_of(errors, k, ivk);
+    validates_presence_of(errors, k, xsk);
+    validates_presence_of(errors, k, xfvk);
+    validates_presence_of(errors, k, diversifier);
+    validates_presence_of(errors, k, pk_d);
+    if (k->address[0] == '\0')
+        ar_errors_add(errors, "address", "can't be blank");
+    return !ar_errors_any(errors);
+}
+
 bool db_sapling_key_save(struct node_db *ndb, const struct db_sapling_key *k)
 {
     if (!ndb->open) return false;
+    struct ar_errors errors;
+    if (!db_sapling_key_validate(k, &errors)) return false;
+    if (!ar_run_before_save(&skey_cbs, (void *)k)) return false;
     sqlite3_stmt *s = NULL;
     sqlite3_prepare_v2(ndb->db,
         "INSERT OR REPLACE INTO wallet_sapling_keys"
@@ -188,7 +219,40 @@ bool db_sapling_key_save(struct node_db *ndb, const struct db_sapling_key *k)
     sqlite3_bind_text(s, 7, k->address, -1, SQLITE_STATIC);
     int rc = sqlite3_step(s);
     sqlite3_finalize(s);
-    return rc == SQLITE_DONE;
+    bool ok = rc == SQLITE_DONE;
+    if (ok) ar_run_after_save(&skey_cbs, (void *)k);
+    return ok;
+}
+
+/* Read sapling_key columns: ivk,xsk,xfvk,diversifier,pk_d,child_index,address
+ * starting at column offset `col`. */
+static void db_sapling_key_read_row(sqlite3_stmt *s, int col,
+                                     struct db_sapling_key *out)
+{
+    memset(out, 0, sizeof(*out));
+    const void *ivk = sqlite3_column_blob(s, col);
+    if (ivk) memcpy(out->ivk, ivk, 32);
+    col++;
+    const void *xsk = sqlite3_column_blob(s, col);
+    if (xsk) memcpy(out->xsk, xsk, 169);
+    col++;
+    const void *xfvk = sqlite3_column_blob(s, col);
+    if (xfvk) memcpy(out->xfvk, xfvk, 169);
+    col++;
+    const void *div = sqlite3_column_blob(s, col);
+    if (div) memcpy(out->diversifier, div, 11);
+    col++;
+    const void *pkd = sqlite3_column_blob(s, col);
+    if (pkd) memcpy(out->pk_d, pkd, 32);
+    col++;
+    out->child_index = (uint32_t)sqlite3_column_int(s, col++);
+    const char *addr = (const char *)sqlite3_column_text(s, col);
+    if (addr) {
+        size_t len = strlen(addr);
+        if (len >= sizeof(out->address)) len = sizeof(out->address) - 1;
+        memcpy(out->address, addr, len);
+        out->address[len] = '\0';
+    }
 }
 
 bool db_sapling_key_find_by_ivk(struct node_db *ndb, const uint8_t ivk[32],
@@ -197,7 +261,7 @@ bool db_sapling_key_find_by_ivk(struct node_db *ndb, const uint8_t ivk[32],
     if (!ndb->open) return false;
     sqlite3_stmt *s = NULL;
     sqlite3_prepare_v2(ndb->db,
-        "SELECT xsk,xfvk,diversifier,pk_d,child_index,address"
+        "SELECT ivk,xsk,xfvk,diversifier,pk_d,child_index,address"
         " FROM wallet_sapling_keys WHERE ivk=?",
         -1, &s, NULL);
     if (!s) return false;
@@ -210,24 +274,7 @@ bool db_sapling_key_find_by_ivk(struct node_db *ndb, const uint8_t ivk[32],
         sqlite3_finalize(s);
         return true;
     }
-    memset(out, 0, sizeof(*out));
-    memcpy(out->ivk, ivk, 32);
-    const void *xsk = sqlite3_column_blob(s, 0);
-    if (xsk) memcpy(out->xsk, xsk, 169);
-    const void *xfvk = sqlite3_column_blob(s, 1);
-    if (xfvk) memcpy(out->xfvk, xfvk, 169);
-    const void *div = sqlite3_column_blob(s, 2);
-    if (div) memcpy(out->diversifier, div, 11);
-    const void *pkd = sqlite3_column_blob(s, 3);
-    if (pkd) memcpy(out->pk_d, pkd, 32);
-    out->child_index = (uint32_t)sqlite3_column_int(s, 4);
-    const char *addr = (const char *)sqlite3_column_text(s, 5);
-    if (addr) {
-        size_t len = strlen(addr);
-        if (len >= sizeof(out->address)) len = sizeof(out->address) - 1;
-        memcpy(out->address, addr, len);
-        out->address[len] = '\0';
-    }
+    db_sapling_key_read_row(s, 0, out);
     sqlite3_finalize(s);
     return true;
 }
@@ -238,7 +285,7 @@ bool db_sapling_key_find_by_address(struct node_db *ndb, const char *address,
     if (!ndb->open) return false;
     sqlite3_stmt *s = NULL;
     sqlite3_prepare_v2(ndb->db,
-        "SELECT ivk,xsk,xfvk,diversifier,pk_d,child_index"
+        "SELECT ivk,xsk,xfvk,diversifier,pk_d,child_index,address"
         " FROM wallet_sapling_keys WHERE address=?",
         -1, &s, NULL);
     sqlite3_bind_text(s, 1, address, -1, SQLITE_STATIC);
@@ -246,22 +293,7 @@ bool db_sapling_key_find_by_address(struct node_db *ndb, const char *address,
         sqlite3_finalize(s);
         return false;
     }
-    memset(out, 0, sizeof(*out));
-    const void *ivk = sqlite3_column_blob(s, 0);
-    if (ivk) memcpy(out->ivk, ivk, 32);
-    const void *xsk = sqlite3_column_blob(s, 1);
-    if (xsk) memcpy(out->xsk, xsk, 169);
-    const void *xfvk = sqlite3_column_blob(s, 2);
-    if (xfvk) memcpy(out->xfvk, xfvk, 169);
-    const void *div = sqlite3_column_blob(s, 3);
-    if (div) memcpy(out->diversifier, div, 11);
-    const void *pkd = sqlite3_column_blob(s, 4);
-    if (pkd) memcpy(out->pk_d, pkd, 32);
-    out->child_index = (uint32_t)sqlite3_column_int(s, 5);
-    size_t alen = strlen(address);
-    if (alen >= sizeof(out->address)) alen = sizeof(out->address) - 1;
-    memcpy(out->address, address, alen);
-    out->address[alen] = '\0';
+    db_sapling_key_read_row(s, 0, out);
     sqlite3_finalize(s);
     return true;
 }
@@ -290,25 +322,7 @@ int db_sapling_key_each(struct node_db *ndb, sapling_key_cb cb, void *ctx)
     int count = 0;
     while (sqlite3_step(s) == SQLITE_ROW) {
         struct db_sapling_key k;
-        memset(&k, 0, sizeof(k));
-        const void *ivk = sqlite3_column_blob(s, 0);
-        if (ivk) memcpy(k.ivk, ivk, 32);
-        const void *xsk = sqlite3_column_blob(s, 1);
-        if (xsk) memcpy(k.xsk, xsk, 169);
-        const void *xfvk = sqlite3_column_blob(s, 2);
-        if (xfvk) memcpy(k.xfvk, xfvk, 169);
-        const void *div = sqlite3_column_blob(s, 3);
-        if (div) memcpy(k.diversifier, div, 11);
-        const void *pkd = sqlite3_column_blob(s, 4);
-        if (pkd) memcpy(k.pk_d, pkd, 32);
-        k.child_index = (uint32_t)sqlite3_column_int(s, 5);
-        const char *addr = (const char *)sqlite3_column_text(s, 6);
-        if (addr) {
-            size_t len = strlen(addr);
-            if (len >= sizeof(k.address)) len = sizeof(k.address) - 1;
-            memcpy(k.address, addr, len);
-            k.address[len] = '\0';
-        }
+        db_sapling_key_read_row(s, 0, &k);
         cb(&k, ctx);
         count++;
     }
@@ -322,6 +336,8 @@ bool db_wallet_seed_save(struct node_db *ndb, const uint8_t seed[32],
                          uint32_t next_child)
 {
     if (!ndb->open) return false;
+    static const uint8_t zero[32] = {0};
+    if (memcmp(seed, zero, 32) == 0) return false;
     sqlite3_stmt *s = NULL;
     sqlite3_prepare_v2(ndb->db,
         "INSERT OR REPLACE INTO wallet_seed(id,seed,next_child)"
@@ -358,6 +374,9 @@ bool db_wallet_seed_load(struct node_db *ndb, uint8_t seed[32],
 bool db_wallet_script_save(struct node_db *ndb, const struct db_wallet_script *sc)
 {
     if (!ndb->open) return false;
+    static const uint8_t zero[20] = {0};
+    if (memcmp(sc->script_hash, zero, 20) == 0) return false;
+    if (!sc->redeem_script || sc->script_len == 0) return false;
     sqlite3_stmt *s = NULL;
     sqlite3_prepare_v2(ndb->db,
         "INSERT OR REPLACE INTO wallet_scripts(script_hash,redeem_script)"
@@ -387,7 +406,12 @@ bool db_wallet_script_find(struct node_db *ndb, const uint8_t script_hash[20],
     memset(out, 0, sizeof(*out));
     memcpy(out->script_hash, script_hash, 20);
     out->script_len = (size_t)sqlite3_column_bytes(s, 0);
-    out->redeem_script = NULL; /* Caller copies from column if needed */
+    const void *rs = sqlite3_column_blob(s, 0);
+    if (rs && out->script_len > 0) {
+        out->redeem_script = malloc(out->script_len);
+        if (out->redeem_script)
+            memcpy(out->redeem_script, rs, out->script_len);
+    }
     sqlite3_finalize(s);
     return true;
 }
@@ -406,8 +430,14 @@ int db_wallet_script_each(struct node_db *ndb, wallet_script_cb cb, void *ctx)
         const void *sh = sqlite3_column_blob(s, 0);
         if (sh) memcpy(sc.script_hash, sh, 20);
         sc.script_len = (size_t)sqlite3_column_bytes(s, 1);
-        sc.redeem_script = NULL; /* Transient pointer — would need malloc */
+        const void *rs = sqlite3_column_blob(s, 1);
+        if (rs && sc.script_len > 0) {
+            sc.redeem_script = malloc(sc.script_len);
+            if (sc.redeem_script)
+                memcpy(sc.redeem_script, rs, sc.script_len);
+        }
         cb(&sc, ctx);
+        free(sc.redeem_script);
         count++;
     }
     sqlite3_finalize(s);

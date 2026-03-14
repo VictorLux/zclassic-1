@@ -2,6 +2,7 @@
 
 #include "models/utxo.h"
 #include "models/tx_index.h"
+#include <stdint.h>
 #include <string.h>
 
 /* ── Callbacks ─────────────────────────────────────────────────── */
@@ -26,6 +27,19 @@ bool db_utxo_validate(const struct db_utxo *u, struct ar_errors *errors)
     validates_presence_of(errors, u, txid);
     validates_non_negative(errors, u, value);
     validates_non_negative(errors, u, height);
+    if (u->script_len > (size_t)INT32_MAX)
+        ar_errors_add(errors, "script_len", "exceeds max size");
+    static const enum script_type valid_types[] = {
+        SCRIPT_P2PKH, SCRIPT_P2SH, SCRIPT_OP_RETURN,
+        SCRIPT_MULTISIG, SCRIPT_OTHER
+    };
+    validates_inclusion_of(errors, u, script_type, valid_types, 5);
+    if (u->has_address) {
+        static const uint8_t z[20] = {0};
+        if (memcmp(u->address_hash, z, 20) == 0)
+            ar_errors_add(errors, "address_hash",
+                          "can't be blank when has_address");
+    }
     return !ar_errors_any(errors);
 }
 

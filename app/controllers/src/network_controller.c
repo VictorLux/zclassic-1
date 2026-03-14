@@ -9,6 +9,8 @@
 #include "net/version.h"
 #include "util/clientversion.h"
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 static struct connman *g_cm = NULL;
 
@@ -34,14 +36,14 @@ static bool rpc_getnetworkinfo(const struct json_value *params, bool help,
     size_t conns = g_cm ? connman_get_node_count(g_cm) : 0;
     json_push_kv_int(result, "connections", (int64_t)conns);
 
-    struct json_value networks;
+    struct json_value networks = {0};
     json_set_array(&networks);
     json_push_kv(result, "networks", &networks);
     json_free(&networks);
 
     json_push_kv_real(result, "relayfee", 0.00000100);
 
-    struct json_value localaddrs;
+    struct json_value localaddrs = {0};
     json_set_array(&localaddrs);
     json_push_kv(result, "localaddresses", &localaddrs);
     json_free(&localaddrs);
@@ -63,7 +65,7 @@ static bool rpc_getpeerinfo(const struct json_value *params, bool help,
     zcl_mutex_lock(&g_cm->manager.cs_nodes);
     for (size_t i = 0; i < g_cm->manager.num_nodes; i++) {
         struct p2p_node *node = g_cm->manager.nodes[i];
-        struct json_value entry;
+        struct json_value entry = {0};
         json_set_object(&entry);
 
         json_push_kv_int(&entry, "id", (int64_t)node->id);
@@ -142,8 +144,19 @@ static bool rpc_addnode(const struct json_value *params, bool help,
     }
 
     if (strcmp(cmd, "onetry") == 0 || strcmp(cmd, "add") == 0) {
-        connman_add_seed_node(g_cm, node_str,
-                               g_cm->manager.default_port);
+        /* Parse host:port — split on last colon */
+        char host[256];
+        uint16_t port = g_cm->manager.default_port;
+        strncpy(host, node_str, sizeof(host) - 1);
+        host[sizeof(host) - 1] = '\0';
+        char *colon = strrchr(host, ':');
+        if (colon && colon != host) {
+            *colon = '\0';
+            int p_val = atoi(colon + 1);
+            if (p_val > 0 && p_val <= 65535)
+                port = (uint16_t)p_val;
+        }
+        connman_add_seed_node(g_cm, host, port);
         json_set_null(result);
         return true;
     }

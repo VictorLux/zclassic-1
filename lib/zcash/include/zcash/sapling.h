@@ -119,6 +119,20 @@ bool sapling_create_binding_sig(const uint8_t bsk[32],
                                  const uint8_t sighash[32],
                                  uint8_t binding_sig_out[64]);
 
+/* Build a Sapling spend description using librustzcash proving context.
+ * Generates spend proof, cv, rk, nullifier.
+ * Returns ar (randomness for spend_auth_sig) in ar_out for later signing. */
+bool sapling_build_spend_with_ctx(
+    void *proving_ctx,
+    const uint8_t ask[32], const uint8_t nsk[32],
+    const uint8_t diversifier[11], const uint8_t pk_d[32],
+    const uint8_t rcm[32], uint64_t value, uint64_t position,
+    const uint8_t anchor[32],
+    const uint8_t *witness_path, size_t witness_len,
+    uint8_t sd_cv[32], uint8_t sd_nullifier[32],
+    uint8_t sd_rk[32], uint8_t sd_zkproof[192],
+    uint8_t ar_out[32]);
+
 /* Sapling verification context (accumulates value commitments for balance check) */
 struct sapling_verification_ctx {
     struct jub_point bvk; /* accumulated value commitment balance */

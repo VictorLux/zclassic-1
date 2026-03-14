@@ -116,6 +116,9 @@ struct db_sapling_note {
     int block_height;
     uint8_t spent_txid[32];
     bool is_spent;
+    uint8_t *witness_data;
+    size_t witness_data_len;
+    int witness_height;
 };
 
 bool db_sapling_note_validate(const struct db_sapling_note *n,
@@ -133,6 +136,21 @@ int64_t db_sapling_note_balance_for_ivk(struct node_db *ndb,
 /* List unspent notes. Returns count. */
 int db_sapling_note_list_unspent(struct node_db *ndb,
                                  struct db_sapling_note *out, size_t max);
+
+/* List unspent notes for a specific ivk. Returns count. */
+int db_sapling_note_list_unspent_for_ivk(struct node_db *ndb,
+                                          const uint8_t ivk[32],
+                                          struct db_sapling_note *out, size_t max);
+
+/* Save/load witness data for a Sapling note */
+bool db_sapling_note_save_witness(struct node_db *ndb,
+                                   const uint8_t txid[32], uint32_t output_index,
+                                   const uint8_t *witness_blob, size_t blob_len,
+                                   int height);
+bool db_sapling_note_load_witness(struct node_db *ndb,
+                                   const uint8_t txid[32], uint32_t output_index,
+                                   uint8_t **witness_blob_out, size_t *blob_len_out,
+                                   int *height_out);
 
 /* ── Relationships ─────────────────────────────────────────────── */
 

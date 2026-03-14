@@ -4,6 +4,7 @@
 
 #include "controllers/sync_controller.h"
 #include "models/wallet_key.h"
+#include "models/wallet_tx.h"
 #include "primitives/block.h"
 #include "primitives/transaction.h"
 #include "chain/chain.h"
@@ -20,6 +21,10 @@
 #include "coins/undo.h"
 #include "validation/chainstate.h"
 #include "validation/txmempool.h"
+#include "zcash/incremental_merkle_tree.h"
+#include "zcash/sapling.h"
+#include "zcash/note_encryption.h"
+#include "support/cleanse.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -187,7 +192,50 @@ bool node_db_sync_connect_block(struct node_db *ndb,
         }
     }
 
-    /* 3. Update chain tip in state table */
+    /* 3. Update Sapling commitment tree */
+    {
+        struct incremental_merkle_tree tree;
+        sapling_tree_init(&tree);
+
+        /* Load current tree from node_state */
+        uint8_t tree_buf[8192];
+        size_t tree_len = 0;
+        if (node_db_state_get(ndb, "sapling_tree", tree_buf, sizeof(tree_buf), &tree_len)
+            && tree_len > 0) {
+            struct byte_stream ts;
+            stream_init_from_data(&ts, tree_buf, tree_len);
+            sapling_tree_init(&tree);
+            incremental_tree_deserialize(&tree, &ts);
+        }
+
+        /* Append all Sapling output commitments */
+        for (size_t i = 0; i < blk->num_vtx; i++) {
+            const struct transaction *tx = &blk->vtx[i];
+            for (size_t j = 0; j < tx->num_shielded_output; j++) {
+                incremental_tree_append(&tree, &tx->v_shielded_output[j].cm);
+            }
+        }
+
+        /* Serialize and store tree state for this block (for disconnect) */
+        struct byte_stream ts;
+        stream_init(&ts, 4096);
+        incremental_tree_serialize(&tree, &ts);
+
+        sqlite3_stmt *upd = NULL;
+        sqlite3_prepare_v2(ndb->db,
+            "UPDATE blocks SET sapling_tree_data=? WHERE hash=?",
+            -1, &upd, NULL);
+        sqlite3_bind_blob(upd, 1, ts.data, (int)ts.size, SQLITE_STATIC);
+        sqlite3_bind_blob(upd, 2, pindex->phashBlock->data, 32, SQLITE_STATIC);
+        sqlite3_step(upd);
+        sqlite3_finalize(upd);
+
+        /* Save current tree to node_state */
+        node_db_state_set(ndb, "sapling_tree", ts.data, ts.size);
+        stream_free(&ts);
+    }
+
+    /* 4. Update chain tip in state table */
     node_db_sync_set_tip(ndb,
         pindex->phashBlock->data, pindex->nHeight);
 
@@ -231,6 +279,31 @@ bool node_db_sync_disconnect_block(struct node_db *ndb,
         /* Note: restoring spent UTXOs requires undo data.
          * The full UTXO restore happens via the coins_view_cache
          * path. SQLite will be repopulated on reconnect. */
+    }
+
+    /* Restore Sapling tree from previous block */
+    if (pindex->pprev) {
+        sqlite3_stmt *tq = NULL;
+        sqlite3_prepare_v2(ndb->db,
+            "SELECT sapling_tree_data FROM blocks WHERE hash=?",
+            -1, &tq, NULL);
+        sqlite3_bind_blob(tq, 1, pindex->pprev->phashBlock->data, 32, SQLITE_STATIC);
+        if (sqlite3_step(tq) == SQLITE_ROW) {
+            int tlen = sqlite3_column_bytes(tq, 0);
+            const void *tdata = sqlite3_column_blob(tq, 0);
+            if (tdata && tlen > 0)
+                node_db_state_set(ndb, "sapling_tree", tdata, (size_t)tlen);
+        }
+        sqlite3_finalize(tq);
+    } else {
+        /* No previous block — reset to empty tree */
+        struct incremental_merkle_tree empty;
+        sapling_tree_init(&empty);
+        struct byte_stream es;
+        stream_init(&es, 256);
+        incremental_tree_serialize(&empty, &es);
+        node_db_state_set(ndb, "sapling_tree", es.data, es.size);
+        stream_free(&es);
     }
 
     /* Remove block */
@@ -604,6 +677,85 @@ static uint8_t *mmap_block_file(const char *datadir, int file_num,
     return data;
 }
 
+/* Try-decrypt Sapling outputs in a transaction and save to SQLite.
+ * Returns number of notes found. */
+static int catchup_try_sapling_decrypt(struct node_db *ndb,
+                                        const struct transaction *tx,
+                                        const struct wallet *w,
+                                        int height)
+{
+    if (tx->num_shielded_output == 0 || w->sapling_keys.num_keys == 0)
+        return 0;
+
+    int found = 0;
+    struct uint256 txid;
+    {
+        struct transaction *mtx = (struct transaction *)tx;
+        transaction_compute_hash(mtx);
+        txid = mtx->hash;
+    }
+
+    for (size_t oi = 0; oi < tx->num_shielded_output; oi++) {
+        const struct output_description *od = &tx->v_shielded_output[oi];
+
+        for (size_t ki = 0; ki < w->sapling_keys.num_keys; ki++) {
+            const struct sapling_key_entry *ke = &w->sapling_keys.keys[ki];
+            if (!ke->used) continue;
+
+            uint8_t dhsecret[32];
+            if (!sapling_ka_agree(od->ephemeral_key.data, ke->ivk, dhsecret))
+                continue;
+
+            uint8_t dec_key[32];
+            if (!sapling_kdf(dec_key, dhsecret, od->ephemeral_key.data)) {
+                memory_cleanse(dhsecret, 32);
+                continue;
+            }
+            memory_cleanse(dhsecret, 32);
+
+            uint8_t plaintext[564];
+            if (!sapling_note_decrypt(dec_key, od->enc_ciphertext, 580,
+                                       plaintext)) {
+                memory_cleanse(dec_key, 32);
+                continue;
+            }
+            memory_cleanse(dec_key, 32);
+
+            if (plaintext[0] != 0x01) continue;
+
+            uint8_t d[11];
+            memcpy(d, plaintext + 1, 11);
+            uint64_t value = 0;
+            for (int b = 0; b < 8; b++)
+                value |= ((uint64_t)plaintext[12 + b]) << (8 * b);
+            uint8_t rcm[32];
+            memcpy(rcm, plaintext + 20, 32);
+
+            uint8_t pk_d[32];
+            if (!sapling_ivk_to_pkd(ke->ivk, d, pk_d)) continue;
+
+            uint8_t cm[32];
+            if (!sapling_compute_cm(d, pk_d, value, rcm, cm)) continue;
+            if (memcmp(cm, od->cm.data, 32) != 0) continue;
+
+            uint8_t ak[32], nk[32];
+            sapling_ask_to_ak(ke->xsk.expsk.ask, ak);
+            sapling_nsk_to_nk(ke->xsk.expsk.nsk, nk);
+
+            uint8_t nf[32];
+            sapling_compute_nf(d, pk_d, value, rcm, ak, nk, 0, nf);
+
+            node_db_sync_sapling_note(ndb, txid.data, (uint32_t)oi,
+                (int64_t)value, rcm, plaintext + 52, 512,
+                ke->ivk, d, pk_d, cm, nf, height);
+            found++;
+            memory_cleanse(plaintext, sizeof(plaintext));
+            break;
+        }
+    }
+    return found;
+}
+
 int node_db_sync_catchup(struct node_db *ndb,
                          const struct active_chain *chain,
                          const struct wallet *w,
@@ -658,6 +810,21 @@ int node_db_sync_catchup(struct node_db *ndb,
     uint8_t *cached_data = NULL;
     size_t cached_size = 0;
 
+    /* Initialize Sapling commitment tree for catchup */
+    struct incremental_merkle_tree sapling_tree;
+    sapling_tree_init(&sapling_tree);
+    {
+        uint8_t tree_buf[8192];
+        size_t tree_len = 0;
+        if (node_db_state_get(ndb, "sapling_tree", tree_buf, sizeof(tree_buf), &tree_len)
+            && tree_len > 0) {
+            struct byte_stream ts;
+            stream_init_from_data(&ts, tree_buf, tree_len);
+            sapling_tree_init(&sapling_tree);
+            incremental_tree_deserialize(&sapling_tree, &ts);
+        }
+    }
+
     node_db_begin(ndb);
 
     for (int h = start; h <= chain_tip; h++) {
@@ -700,6 +867,24 @@ int node_db_sync_catchup(struct node_db *ndb,
             for (size_t i = 0; i < blk.num_vtx; i++) {
                 if (node_db_sync_wallet_tx(ndb, &blk.vtx[i], w, h))
                     wallet_hits++;
+                /* Try-decrypt Sapling shielded outputs */
+                catchup_try_sapling_decrypt(ndb, &blk.vtx[i], w, h);
+                /* Mark spent nullifiers */
+                for (size_t si = 0; si < blk.vtx[i].num_shielded_spend; si++) {
+                    struct transaction *mtx = (struct transaction *)&blk.vtx[i];
+                    transaction_compute_hash(mtx);
+                    node_db_sync_sapling_spend(ndb,
+                        blk.vtx[i].v_shielded_spend[si].nullifier.data,
+                        mtx->hash.data);
+                }
+            }
+        }
+
+        /* Append Sapling output commitments to tree */
+        for (size_t i = 0; i < blk.num_vtx; i++) {
+            const struct transaction *tx = &blk.vtx[i];
+            for (size_t j = 0; j < tx->num_shielded_output; j++) {
+                incremental_tree_append(&sapling_tree, &tx->v_shielded_output[j].cm);
             }
         }
 
@@ -707,6 +892,14 @@ int node_db_sync_catchup(struct node_db *ndb,
         indexed++;
 
         if (indexed % batch_size == 0) {
+            /* Save Sapling tree state at batch boundary */
+            {
+                struct byte_stream ts;
+                stream_init(&ts, 4096);
+                incremental_tree_serialize(&sapling_tree, &ts);
+                node_db_state_set(ndb, "sapling_tree", ts.data, ts.size);
+                stream_free(&ts);
+            }
             node_db_sync_set_tip(ndb,
                 pindex->phashBlock->data, h);
             node_db_commit(ndb);
@@ -720,6 +913,15 @@ int node_db_sync_catchup(struct node_db *ndb,
     }
 
     if (cached_data) munmap(cached_data, cached_size);
+
+    /* Save final Sapling tree state */
+    {
+        struct byte_stream ts;
+        stream_init(&ts, 4096);
+        incremental_tree_serialize(&sapling_tree, &ts);
+        node_db_state_set(ndb, "sapling_tree", ts.data, ts.size);
+        stream_free(&ts);
+    }
 
     /* Final commit */
     {

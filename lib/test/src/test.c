@@ -7028,7 +7028,7 @@ int main(void)
             jub_to_bytes(rbar, &R_pt);
         }
 
-        /* c = H*(Rbar || msg) via BLAKE2b-512 → to_scalar */
+        /* c = H*(Rbar || vk_bytes || msg) via BLAKE2b-512 → to_scalar (Zcash §5.4.7) */
         uint8_t c_bytes[32];
         {
             uint8_t personal[16] = {'Z','c','a','s','h','_','R','e','d','J','u','b','j','u','b','H'};
@@ -7036,6 +7036,7 @@ int main(void)
             struct blake2b_ctx bctx;
             blake2b_init_salt_personal(&bctx, 64, NULL, 0, NULL, personal);
             blake2b_update(&bctx, rbar, 32);
+            blake2b_update(&bctx, ak, 32);
             blake2b_update(&bctx, msg, 64);
             blake2b_final(&bctx, digest, 64);
             jubjub_to_scalar(digest, c_bytes);
@@ -11065,7 +11066,21 @@ int main(void)
         memset(u.txid, 0x33, 32);
         u.value = 50000;
         u.height = 100;
+        u.script_type = SCRIPT_P2PKH;
         ok = ok && db_utxo_validate(&u, &errs);
+
+        /* Bad script_type */
+        u.script_type = (enum script_type)99;
+        ok = ok && !db_utxo_validate(&u, &errs);
+        u.script_type = SCRIPT_P2PKH;
+
+        /* has_address with blank address_hash */
+        u.has_address = true;
+        memset(u.address_hash, 0, 20);
+        ok = ok && !db_utxo_validate(&u, &errs);
+        memset(u.address_hash, 0xAA, 20);
+        ok = ok && db_utxo_validate(&u, &errs);
+        u.has_address = false;
 
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
@@ -11084,6 +11099,7 @@ int main(void)
         memset(k.pubkey_hash, 0x44, 20);
         memset(k.pubkey, 0x55, 33);
         k.pubkey_len = 33;
+        k.compressed = true;
         memset(k.privkey, 0x66, 32);
         ok = ok && db_wallet_key_validate(&k, &errs);
 
@@ -11123,7 +11139,115 @@ int main(void)
 
         memset(e.txid, 0x88, 32);
         e.size = 225;
+        e.time_added = 1700000000;
         ok = ok && db_mempool_validate(&e, &errs);
+
+        /* time_added=0 should fail */
+        e.time_added = 0;
+        ok = ok && !db_mempool_validate(&e, &errs);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* AR validation — wallet tx */
+    {
+        printf("AR validation: wallet tx... ");
+        struct ar_errors errs;
+        struct db_wallet_tx t;
+        memset(&t, 0, sizeof(t));
+
+        bool ok = !db_wallet_tx_validate(&t, &errs);
+        ok = ok && (errs.count >= 2); /* txid blank, time_received */
+
+        memset(t.txid, 0x11, 32);
+        t.time_received = 1700000000;
+        ok = ok && db_wallet_tx_validate(&t, &errs);
+
+        /* Negative block_height with has_block should fail */
+        t.has_block = true;
+        memset(t.block_hash, 0xAA, 32);
+        t.block_height = -1;
+        ok = ok && !db_wallet_tx_validate(&t, &errs);
+
+        t.block_height = 100;
+        ok = ok && db_wallet_tx_validate(&t, &errs);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* AR validation — wallet utxo */
+    {
+        printf("AR validation: wallet utxo... ");
+        struct ar_errors errs;
+        struct db_wallet_utxo u;
+        memset(&u, 0, sizeof(u));
+
+        bool ok = !db_wallet_utxo_validate(&u, &errs);
+
+        memset(u.txid, 0x22, 32);
+        u.value = 100000;
+        u.height = 500;
+        ok = ok && db_wallet_utxo_validate(&u, &errs);
+
+        /* Negative value should fail */
+        u.value = -1;
+        ok = ok && !db_wallet_utxo_validate(&u, &errs);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* AR validation — sapling note */
+    {
+        printf("AR validation: sapling note... ");
+        struct ar_errors errs;
+        struct db_sapling_note n;
+        memset(&n, 0, sizeof(n));
+
+        bool ok = !db_sapling_note_validate(&n, &errs);
+        ok = ok && (errs.count >= 7); /* txid, ivk, nullifier, cm, pk_d, diversifier, rcm */
+
+        memset(n.txid, 0x33, 32);
+        memset(n.ivk, 0x44, 32);
+        memset(n.nullifier, 0x55, 32);
+        memset(n.cm, 0x66, 32);
+        memset(n.pk_d, 0x77, 32);
+        memset(n.diversifier, 0x88, 11);
+        memset(n.rcm, 0x99, 32);
+        n.value = 50000;
+        ok = ok && db_sapling_note_validate(&n, &errs);
+
+        /* Negative value should fail */
+        n.value = -1;
+        ok = ok && !db_sapling_note_validate(&n, &errs);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* AR validation — sapling key */
+    {
+        printf("AR validation: sapling key... ");
+        struct ar_errors errs;
+        struct db_sapling_key sk;
+        memset(&sk, 0, sizeof(sk));
+
+        bool ok = !db_sapling_key_validate(&sk, &errs);
+        ok = ok && (errs.count >= 6); /* ivk, xsk, xfvk, diversifier, pk_d, address */
+
+        memset(sk.ivk, 0x11, 32);
+        memset(sk.xsk, 0x55, 169);
+        memset(sk.xfvk, 0x22, 169);
+        memset(sk.diversifier, 0x33, 11);
+        memset(sk.pk_d, 0x44, 32);
+        snprintf(sk.address, sizeof(sk.address), "zs1test");
+        ok = ok && db_sapling_key_validate(&sk, &errs);
+
+        /* Blank address should fail */
+        sk.address[0] = '\0';
+        ok = ok && !db_sapling_key_validate(&sk, &errs);
 
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
@@ -11598,6 +11722,10 @@ int main(void)
         memset(n.txid, 0xBB, 32);
         memset(n.ivk, 0xCC, 32);
         memset(n.nullifier, 0xDD, 32);
+        memset(n.cm, 0xEE, 32);
+        memset(n.pk_d, 0xAA, 32);
+        memset(n.diversifier, 0x11, 11);
+        memset(n.rcm, 0x22, 32);
         n.value = 100000;
         ok = ok && db_sapling_note_validate(&n, &errs);
 
@@ -11663,6 +11791,106 @@ int main(void)
 
         int64_t bal = db_sapling_note_balance(&ndb);
         ok = ok && (bal == 200000);
+
+        node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* AR validation: sapling_key */
+    {
+        printf("AR validation: sapling_key... ");
+        struct ar_errors errs;
+        struct db_sapling_key k;
+        memset(&k, 0, sizeof(k));
+
+        bool ok = !db_sapling_key_validate(&k, &errs);
+        ok = ok && errs.count >= 6; /* ivk, xsk, xfvk, diversifier, pk_d, address */
+
+        memset(k.ivk, 0xAA, 32);
+        memset(k.xsk, 0x11, 169);
+        memset(k.xfvk, 0xBB, 169);
+        memset(k.diversifier, 0xCC, 11);
+        memset(k.pk_d, 0xDD, 32);
+        snprintf(k.address, sizeof(k.address), "zs1test");
+        ok = ok && db_sapling_key_validate(&k, &errs);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* AR save rejects invalid sapling_key */
+    {
+        printf("AR save rejects invalid sapling_key... ");
+        struct node_db ndb;
+        bool ok = node_db_open(&ndb, ":memory:");
+        struct ar_callbacks *cbs = db_sapling_key_callbacks();
+        ar_callbacks_init(cbs);
+
+        struct db_sapling_key k;
+        memset(&k, 0, sizeof(k));
+        ok = ok && !db_sapling_key_save(&ndb, &k);
+
+        memset(k.ivk, 0xAA, 32);
+        memset(k.xsk, 0x11, 169);
+        memset(k.xfvk, 0xBB, 169);
+        memset(k.diversifier, 0xCC, 11);
+        memset(k.pk_d, 0xDD, 32);
+        snprintf(k.address, sizeof(k.address), "zs1test");
+        ok = ok && db_sapling_key_save(&ndb, &k);
+        ok = ok && (db_sapling_key_count(&ndb) == 1);
+
+        node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* AR validation: wallet_seed rejects zero seed */
+    {
+        printf("AR validation: wallet_seed rejects zero... ");
+        struct node_db ndb;
+        bool ok = node_db_open(&ndb, ":memory:");
+
+        uint8_t zero_seed[32] = {0};
+        ok = ok && !db_wallet_seed_save(&ndb, zero_seed, 0);
+
+        uint8_t real_seed[32];
+        memset(real_seed, 0x42, 32);
+        ok = ok && db_wallet_seed_save(&ndb, real_seed, 0);
+
+        uint8_t loaded[32];
+        uint32_t next = 99;
+        ok = ok && db_wallet_seed_load(&ndb, loaded, &next);
+        ok = ok && (memcmp(loaded, real_seed, 32) == 0);
+        ok = ok && (next == 0);
+
+        node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* AR validation: wallet_script rejects empty */
+    {
+        printf("AR validation: wallet_script rejects empty... ");
+        struct node_db ndb;
+        bool ok = node_db_open(&ndb, ":memory:");
+
+        struct db_wallet_script sc;
+        memset(&sc, 0, sizeof(sc));
+        ok = ok && !db_wallet_script_save(&ndb, &sc);
+
+        memset(sc.script_hash, 0xAA, 20);
+        ok = ok && !db_wallet_script_save(&ndb, &sc);
+
+        uint8_t rs[] = {0x52, 0x21};
+        sc.redeem_script = rs;
+        sc.script_len = sizeof(rs);
+        ok = ok && db_wallet_script_save(&ndb, &sc);
+
+        struct db_wallet_script found;
+        ok = ok && db_wallet_script_find(&ndb, sc.script_hash, &found);
+        ok = ok && (found.script_len == 2);
+        free(found.redeem_script);
 
         node_db_close(&ndb);
         if (ok) printf("OK\n");
@@ -12326,6 +12554,7 @@ int main(void)
 
         memset(e.txid, 0xFF, 32);
         e.size = 200;
+        e.time_added = 1700000000;
         struct ar_errors errs;
         ok = ok && db_mempool_validate(&e, &errs);
         ok = ok && !ar_errors_any(&errs);
@@ -13529,6 +13758,202 @@ int main(void)
         ar_errors_full_messages(&e, buf, sizeof(buf));
         ok = ok && strstr(buf, "field1") != NULL;
         ok = ok && strstr(buf, "field2") != NULL;
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ── Sapling tree tracking tests ────────────────────────────── */
+
+    /* Sapling tree: append + root matches empty for 0 elements */
+    {
+        printf("sapling_tree: empty root... ");
+        struct incremental_merkle_tree tree;
+        sapling_tree_init(&tree);
+        struct uint256 root, empty_root;
+        incremental_tree_root(&tree, &root);
+        incremental_tree_empty_root(&tree, &empty_root);
+        bool ok = uint256_eq(&root, &empty_root);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* Sapling tree: append changes root */
+    {
+        printf("sapling_tree: append changes root... ");
+        struct incremental_merkle_tree tree;
+        sapling_tree_init(&tree);
+        struct uint256 root1;
+        incremental_tree_root(&tree, &root1);
+        struct uint256 cm;
+        memset(cm.data, 0x42, 32);
+        cm.data[31] = 0; /* must be valid field element */
+        incremental_tree_append(&tree, &cm);
+        struct uint256 root2;
+        incremental_tree_root(&tree, &root2);
+        bool ok = !uint256_eq(&root1, &root2);
+        ok = ok && (incremental_tree_size(&tree) == 1);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* Sapling tree: serialize + deserialize roundtrip */
+    {
+        printf("sapling_tree: serialize/deserialize roundtrip... ");
+        struct incremental_merkle_tree tree;
+        sapling_tree_init(&tree);
+        struct uint256 cm;
+        memset(cm.data, 0x01, 32);
+        cm.data[31] = 0;
+        incremental_tree_append(&tree, &cm);
+        memset(cm.data, 0x02, 32);
+        cm.data[31] = 0;
+        incremental_tree_append(&tree, &cm);
+        memset(cm.data, 0x03, 32);
+        cm.data[31] = 0;
+        incremental_tree_append(&tree, &cm);
+
+        struct byte_stream s;
+        stream_init(&s, 1024);
+        bool ok = incremental_tree_serialize(&tree, &s);
+
+        struct incremental_merkle_tree tree2;
+        sapling_tree_init(&tree2);
+        struct byte_stream s2;
+        stream_init_from_data(&s2, s.data, s.size);
+        ok = ok && incremental_tree_deserialize(&tree2, &s2);
+
+        struct uint256 r1, r2;
+        incremental_tree_root(&tree, &r1);
+        incremental_tree_root(&tree2, &r2);
+        ok = ok && uint256_eq(&r1, &r2);
+        ok = ok && (incremental_tree_size(&tree2) == 3);
+        stream_free(&s);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* Sapling witness: init + append + root matches tree */
+    {
+        printf("sapling_witness: root matches tree... ");
+        struct incremental_merkle_tree tree;
+        sapling_tree_init(&tree);
+
+        struct uint256 cm1, cm2, cm3;
+        memset(cm1.data, 0x11, 32); cm1.data[31] = 0;
+        memset(cm2.data, 0x22, 32); cm2.data[31] = 0;
+        memset(cm3.data, 0x33, 32); cm3.data[31] = 0;
+
+        incremental_tree_append(&tree, &cm1);
+        incremental_tree_append(&tree, &cm2);
+
+        /* Create witness at cm2 */
+        struct incremental_witness witness;
+        incremental_witness_init(&witness, &tree);
+
+        /* Append cm3 to both tree and witness */
+        incremental_tree_append(&tree, &cm3);
+        incremental_witness_append(&witness, &cm3);
+
+        /* Roots should match */
+        struct uint256 tree_root, wit_root;
+        incremental_tree_root(&tree, &tree_root);
+        incremental_witness_root(&witness, &wit_root);
+
+        bool ok = uint256_eq(&tree_root, &wit_root);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* Sapling witness: serialize/deserialize roundtrip */
+    {
+        printf("sapling_witness: serialize/deserialize roundtrip... ");
+        struct incremental_merkle_tree tree;
+        sapling_tree_init(&tree);
+
+        struct uint256 cm;
+        memset(cm.data, 0xAA, 32); cm.data[31] = 0;
+        incremental_tree_append(&tree, &cm);
+
+        struct incremental_witness w;
+        incremental_witness_init(&w, &tree);
+
+        memset(cm.data, 0xBB, 32); cm.data[31] = 0;
+        incremental_witness_append(&w, &cm);
+
+        struct byte_stream s;
+        stream_init(&s, 2048);
+        bool ok = incremental_witness_serialize(&w, &s);
+
+        struct incremental_witness w2;
+        struct byte_stream s2;
+        stream_init_from_data(&s2, s.data, s.size);
+        ok = ok && incremental_witness_deserialize(&w2, &s2,
+            SAPLING_INCREMENTAL_MERKLE_TREE_DEPTH,
+            tree.combine, tree.uncommitted);
+
+        struct uint256 r1, r2;
+        incremental_witness_root(&w, &r1);
+        incremental_witness_root(&w2, &r2);
+        ok = ok && uint256_eq(&r1, &r2);
+
+        stream_free(&s);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* Sapling witness: merkle path extraction */
+    {
+        printf("sapling_witness: merkle path extraction... ");
+        struct incremental_merkle_tree tree;
+        sapling_tree_init(&tree);
+
+        struct uint256 cm;
+        memset(cm.data, 0x55, 32); cm.data[31] = 0;
+        incremental_tree_append(&tree, &cm);
+
+        struct incremental_witness w;
+        incremental_witness_init(&w, &tree);
+
+        /* Append more commitments */
+        memset(cm.data, 0x66, 32); cm.data[31] = 0;
+        incremental_tree_append(&tree, &cm);
+        incremental_witness_append(&w, &cm);
+
+        memset(cm.data, 0x77, 32); cm.data[31] = 0;
+        incremental_tree_append(&tree, &cm);
+        incremental_witness_append(&w, &cm);
+
+        uint8_t path[1 + 32 * 33];
+        size_t path_len = 0;
+        bool ok = incremental_witness_merkle_path(&w, path, &path_len);
+
+        /* Path should be: 1 byte depth (32) + 32 × (32 + 1) = 1057 bytes */
+        ok = ok && (path_len == 1 + 32 * 33);
+        ok = ok && (path[0] == 32); /* depth */
+
+        /* Witness root should still match tree */
+        struct uint256 wr, tr;
+        incremental_witness_root(&w, &wr);
+        incremental_tree_root(&tree, &tr);
+        ok = ok && uint256_eq(&wr, &tr);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* Sapling tree: multiple appends + size */
+    {
+        printf("sapling_tree: size after multiple appends... ");
+        struct incremental_merkle_tree tree;
+        sapling_tree_init(&tree);
+        struct uint256 cm;
+        bool ok = (incremental_tree_size(&tree) == 0);
+        for (int i = 0; i < 10; i++) {
+            memset(cm.data, (uint8_t)i, 32);
+            cm.data[31] = 0;
+            incremental_tree_append(&tree, &cm);
+        }
+        ok = ok && (incremental_tree_size(&tree) == 10);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }

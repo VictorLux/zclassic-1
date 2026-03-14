@@ -23,6 +23,8 @@
 #include "net/connman.h"
 #include "zcash/sapling.h"
 #include "zcash/fr.h"
+#include "zcash/incremental_merkle_tree.h"
+#include "zcash/librustzcash.h"
 #include "consensus/upgrades.h"
 #include "models/database.h"
 #include "models/block.h"
@@ -43,6 +45,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/mman.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <time.h>
 
 /* Integer-only amount formatting — no floating-point rounding.
  * Always produces exactly 8 decimal places (e.g. "0.99990000"). */
@@ -180,7 +186,7 @@ static void append_one_entry(struct json_value *result,
                              int64_t amount, int64_t fee,
                              int confirmations, int64_t time_received)
 {
-    struct json_value entry;
+    struct json_value entry = {0};
     json_init(&entry);
     json_set_object(&entry);
     json_push_kv_str(&entry, "txid", txid);
@@ -421,7 +427,7 @@ static bool rpc_listunspent(const struct json_value *params, bool help,
         /* Skip UTXO set cross-check — wallet tracks spent state.
          * Avoids concurrent access to g_coins_tip from RPC thread. */
 
-        struct json_value entry;
+        struct json_value entry = {0};
         json_init(&entry);
         json_set_object(&entry);
 
@@ -953,7 +959,7 @@ static bool rpc_z_listaddresses(const struct json_value *params, bool help,
                 g_wallet->sapling_keys.keys[i].pk_d,
                 cp->bech32HRPs[BECH32_SAPLING_PAYMENT_ADDRESS],
                 addr, sizeof(addr))) {
-            struct json_value s;
+            struct json_value s = {0};
             json_init(&s);
             json_set_str(&s, addr);
             json_push_back(result, &s);
@@ -1232,15 +1238,25 @@ static bool rpc_z_getbalance(const struct json_value *params, bool help,
     uint8_t z_d[11], z_pkd[32];
     if (sapling_decode_payment_address(addr_str, z_d, z_pkd)) {
         int64_t balance = 0;
+        bool found_in_memory = false;
         for (size_t i = 0; i < g_wallet->num_sapling_notes; i++) {
             const struct sapling_received_note *n = &g_wallet->sapling_notes[i];
             if (!n->used || n->spent)
                 continue;
             if (memcmp(n->diversifier, z_d, 11) == 0 &&
                 memcmp(n->pk_d, z_pkd, 32) == 0) {
-                if (n->confirms >= minconf)
+                if (n->confirms >= minconf) {
                     balance += (int64_t)n->value;
+                    found_in_memory = true;
+                }
             }
+        }
+        /* Fall back to SQLite if no in-memory notes */
+        if (!found_in_memory && g_node_db) {
+            const struct sapling_key_entry *ske =
+                sapling_keystore_find_by_address(&g_wallet->sapling_keys, z_d, z_pkd);
+            if (ske)
+                balance = db_sapling_note_balance_for_ivk(g_node_db, ske->ivk);
         }
         char buf[32];
         format_amount(balance, buf, sizeof(buf));
@@ -1304,47 +1320,51 @@ static bool rpc_z_listunspent(const struct json_value *params, bool help,
     ENSURE_WALLET(result);
 
     json_set_array(result);
-    for (size_t i = 0; i < g_wallet->num_sapling_notes; i++) {
-        const struct sapling_received_note *n = &g_wallet->sapling_notes[i];
-        if (!n->used || n->spent)
-            continue;
-        if (n->confirms < minconf)
-            continue;
 
-        struct json_value entry;
-        json_init(&entry);
-        json_set_object(&entry);
-
-        char txid_hex[65];
-        uint256_get_hex(&n->txid, txid_hex);
-        json_push_kv_str(&entry, "txid", txid_hex);
-        json_push_kv_int(&entry, "outindex", n->output_index);
-
-        /* Encode address */
-        char z_addr[128];
-        sapling_encode_payment_address(n->diversifier, n->pk_d,
-                                        "zs", z_addr, sizeof(z_addr));
-        json_push_kv_str(&entry, "address", z_addr);
-
-        char amount_buf[32];
-        format_amount((int64_t)n->value, amount_buf, sizeof(amount_buf));
-        json_push_kv_str(&entry, "amount", amount_buf);
-
-        /* Memo (show if non-default) */
-        bool has_memo = false;
-        for (int j = 0; j < 512 && !has_memo; j++) {
-            if (n->memo[j] != 0xf6 && n->memo[j] != 0x00)
-                has_memo = true;
+    /* Always read from SQLite (authoritative source for shielded notes) */
+    if (g_node_db) {
+        struct db_sapling_note db_notes[256];
+        int count = db_sapling_note_list_unspent(g_node_db, db_notes, 256);
+        int chain_h = g_wallet->best_block_height;
+        if (chain_h == 0 && g_main_state)
+            chain_h = active_chain_height(&g_main_state->chain_active);
+        if (chain_h == 0 && g_node_db && g_node_db->open) {
+            sqlite3_stmt *hs = NULL;
+            sqlite3_prepare_v2(g_node_db->db,
+                "SELECT MAX(height) FROM blocks", -1, &hs, NULL);
+            if (hs && sqlite3_step(hs) == SQLITE_ROW)
+                chain_h = sqlite3_column_int(hs, 0);
+            if (hs) sqlite3_finalize(hs);
         }
-        if (has_memo) {
-            char memo_hex[1025];
-            for (int j = 0; j < 512; j++)
-                snprintf(memo_hex + j * 2, 3, "%02x", n->memo[j]);
-            json_push_kv_str(&entry, "memo", memo_hex);
-        }
+        for (int i = 0; i < count; i++) {
+            struct db_sapling_note *n = &db_notes[i];
+            int confirms = chain_h - n->block_height + 1;
+            if (confirms < minconf)
+                continue;
 
-        json_push_kv_int(&entry, "confirmations", n->confirms);
-        json_push_back(result, &entry);
+            struct json_value entry = {0};
+            json_init(&entry);
+            json_set_object(&entry);
+
+            char txid_hex[65];
+            for (int j = 0; j < 32; j++)
+                snprintf(txid_hex + j * 2, 3, "%02x", n->txid[31 - j]);
+            json_push_kv_str(&entry, "txid", txid_hex);
+            json_push_kv_int(&entry, "outindex", n->output_index);
+
+            char z_addr[128];
+            sapling_encode_payment_address(n->diversifier, n->pk_d,
+                                            "zs", z_addr, sizeof(z_addr));
+            json_push_kv_str(&entry, "address", z_addr);
+
+            char amount_buf[32];
+            format_amount(n->value, amount_buf, sizeof(amount_buf));
+            json_push_kv_str(&entry, "amount", amount_buf);
+
+            json_push_kv_int(&entry, "confirmations", (int64_t)confirms);
+            json_push_kv_int(&entry, "block_height", (int64_t)n->block_height);
+            json_push_back(result, &entry);
+        }
     }
     return true;
 }
@@ -1356,7 +1376,7 @@ static bool rpc_z_sendmany(const struct json_value *params, bool help,
     RPC_HELP(help, result,
         "z_sendmany \"fromaddress\" [{\"address\":\"...\",\"amount\":...,\"memo\":\"...\"},...]\n"
         "\nSend from a transparent or shielded address to multiple recipients.\n"
-        "Currently supports transparent → Sapling (shielding) and transparent → transparent.\n");
+        "Supports t→t, t→z, z→z, and z→t transactions.\n");
 
     if (json_size(params) < 2) {
         json_set_str(result, "Expected at least 2 parameter(s)");
@@ -1374,10 +1394,6 @@ static bool rpc_z_sendmany(const struct json_value *params, bool help,
 
     /* Check if from address is transparent (t1/t3) or shielded (zs1) */
     bool from_is_shielded = (strncmp(from_addr, "zs1", 3) == 0);
-    if (from_is_shielded) {
-        json_set_str(result, "Shielded spends not yet implemented (need Groth16 prover)");
-        return false;
-    }
 
     /* Verify we own the from address */
     const struct chain_params *cp = chain_params_get();
@@ -1385,8 +1401,25 @@ static bool rpc_z_sendmany(const struct json_value *params, bool help,
     const unsigned char *pk_pfx = chain_params_base58_prefix(cp, B58_PUBKEY_ADDRESS, &pk_pfx_len);
     const unsigned char *sc_pfx = chain_params_base58_prefix(cp, B58_SCRIPT_ADDRESS, &sc_pfx_len);
 
+    /* For shielded from: decode the z-address, find key, validate ownership */
+    uint8_t from_z_diversifier[11];
+    uint8_t from_z_pk_d[32];
+    const struct sapling_key_entry *from_z_key = NULL;
+
     struct tx_destination from_dest;
-    if (!decode_destination(from_addr, pk_pfx, pk_pfx_len, sc_pfx, sc_pfx_len, &from_dest)) {
+    if (from_is_shielded) {
+        if (!sapling_decode_payment_address(from_addr, from_z_diversifier, from_z_pk_d)) {
+            json_set_str(result, "Invalid shielded from address");
+            return false;
+        }
+        from_z_key = sapling_keystore_find_by_address(
+            &g_wallet->sapling_keys, from_z_diversifier, from_z_pk_d);
+        if (!from_z_key) {
+            json_set_str(result, "Shielded from address not in wallet");
+            return false;
+        }
+        memset(&from_dest, 0, sizeof(from_dest));
+    } else if (!decode_destination(from_addr, pk_pfx, pk_pfx_len, sc_pfx, sc_pfx_len, &from_dest)) {
         json_set_str(result, "Invalid from address");
         return false;
     }
@@ -1457,6 +1490,379 @@ static bool rpc_z_sendmany(const struct json_value *params, bool help,
             num_t_out++;
         }
     }
+
+    /* ── Shielded spend path (z→z, z→t) ──────────────────────────── */
+    if (from_is_shielded) {
+        int64_t fee = g_wallet->default_fee;
+
+        /* Select unspent notes for the from z-address */
+        struct db_sapling_note notes[256];
+        int num_notes = db_sapling_note_list_unspent_for_ivk(
+            g_node_db, from_z_key->ivk, notes, 256);
+        if (num_notes <= 0) {
+            json_set_str(result, "No unspent shielded notes for this address");
+            return false;
+        }
+
+        /* Coin selection: pick notes until we have enough */
+        struct db_sapling_note selected_notes[256];
+        size_t num_sel_notes = 0;
+        int64_t notes_total = 0;
+        for (int i = 0; i < num_notes; i++) {
+            selected_notes[num_sel_notes++] = notes[i];
+            notes_total += notes[i].value;
+            if (notes_total >= total_amount + fee) break;
+        }
+        if (notes_total < total_amount + fee) {
+            json_set_str(result, "Insufficient shielded funds");
+            return false;
+        }
+
+        /* Load the current Sapling tree anchor */
+        uint8_t tree_buf[8192];
+        size_t tree_len = 0;
+        struct incremental_merkle_tree current_tree;
+        sapling_tree_init(&current_tree);
+        if (!node_db_state_get(g_node_db, "sapling_tree",
+                                tree_buf, sizeof(tree_buf), &tree_len)
+            || tree_len == 0) {
+            json_set_str(result, "Sapling tree not available (node not synced)");
+            return false;
+        }
+        {
+            struct byte_stream ts;
+            stream_init_from_data(&ts, tree_buf, tree_len);
+            incremental_tree_deserialize(&current_tree, &ts);
+        }
+        uint8_t anchor[32];
+        {
+            struct uint256 anchor_u;
+            incremental_tree_root(&current_tree, &anchor_u);
+            memcpy(anchor, anchor_u.data, 32);
+        }
+
+        /* Load witnesses for selected notes and advance to current tip */
+        struct incremental_witness *witnesses = calloc(num_sel_notes,
+            sizeof(struct incremental_witness));
+        if (!witnesses) {
+            json_set_str(result, "Out of memory allocating witnesses");
+            return false;
+        }
+        int witness_height = 0;
+        for (size_t i = 0; i < num_sel_notes; i++) {
+            uint8_t *wblob = NULL;
+            size_t wlen = 0;
+            int wheight = 0;
+            if (!db_sapling_note_load_witness(g_node_db,
+                    selected_notes[i].txid, selected_notes[i].output_index,
+                    &wblob, &wlen, &wheight) || !wblob) {
+                free(witnesses);
+                json_set_str(result, "Witness not available for note "
+                    "(run rescanwitnesses first)");
+                return false;
+            }
+            if (i == 0) witness_height = wheight;
+            struct byte_stream ws;
+            stream_init_from_data(&ws, wblob, wlen);
+            if (!incremental_witness_deserialize(&witnesses[i], &ws,
+                    SAPLING_INCREMENTAL_MERKLE_TREE_DEPTH,
+                    current_tree.combine, current_tree.uncommitted)) {
+                free(wblob);
+                free(witnesses);
+                json_set_str(result, "Failed to deserialize witness");
+                return false;
+            }
+            free(wblob);
+        }
+
+        /* Advance tree and witnesses from witness_height to chain tip.
+         * Sapling outputs in blocks since the witness was saved must
+         * be appended to both the tree and each witness. */
+        int chain_height = g_wallet->best_block_height;
+        if (g_main_state) {
+            int active_h = active_chain_height(&g_main_state->chain_active);
+            if (active_h > chain_height)
+                chain_height = active_h;
+        }
+        if (witness_height < chain_height && g_main_state) {
+            int cached_file = -1;
+            uint8_t *cached_data = NULL;
+            size_t cached_size = 0;
+
+            for (int bh = witness_height + 1; bh <= chain_height; bh++) {
+                const struct block_index *pi =
+                    active_chain_at(&g_main_state->chain_active, bh);
+                if (!pi || !(pi->nStatus & BLOCK_HAVE_DATA)) continue;
+
+                if (pi->nFile != cached_file) {
+                    if (cached_data) munmap(cached_data, cached_size);
+                    char fpath[512];
+                    snprintf(fpath, sizeof(fpath), "%s/blocks/blk%05d.dat",
+                             g_datadir, pi->nFile);
+                    int fd = open(fpath, O_RDONLY);
+                    if (fd < 0) { cached_data = NULL; cached_file = -1; continue; }
+                    struct stat fst;
+                    if (fstat(fd, &fst) != 0) { close(fd); continue; }
+                    cached_size = (size_t)fst.st_size;
+                    cached_data = mmap(NULL, cached_size,
+                                       PROT_READ, MAP_PRIVATE, fd, 0);
+                    close(fd);
+                    if (cached_data == MAP_FAILED) {
+                        cached_data = NULL; cached_file = -1; continue;
+                    }
+                    cached_file = pi->nFile;
+                }
+                if (!cached_data || pi->nDataPos >= cached_size) continue;
+
+                struct block blk;
+                block_init(&blk);
+                struct byte_stream bs;
+                stream_init_from_data(&bs, cached_data + pi->nDataPos,
+                                      cached_size - pi->nDataPos);
+                if (!block_deserialize(&blk, &bs)) {
+                    block_free(&blk);
+                    continue;
+                }
+
+                for (size_t ti = 0; ti < blk.num_vtx; ti++) {
+                    const struct transaction *btx = &blk.vtx[ti];
+                    for (size_t oi = 0; oi < btx->num_shielded_output; oi++) {
+                        incremental_tree_append(&current_tree,
+                            &btx->v_shielded_output[oi].cm);
+                        for (size_t ni = 0; ni < num_sel_notes; ni++)
+                            incremental_witness_append(&witnesses[ni],
+                                &btx->v_shielded_output[oi].cm);
+                    }
+                }
+                block_free(&blk);
+            }
+            if (cached_data) munmap(cached_data, cached_size);
+
+            /* Recompute anchor from advanced tree */
+            struct uint256 anchor_u;
+            incremental_tree_root(&current_tree, &anchor_u);
+            memcpy(anchor, anchor_u.data, 32);
+        }
+
+        /* Verify witness roots match the anchor (tree root) */
+        for (size_t i = 0; i < num_sel_notes; i++) {
+            struct uint256 wroot;
+            incremental_witness_root(&witnesses[i], &wroot);
+            if (memcmp(wroot.data, anchor, 32) != 0) {
+                free(witnesses);
+                json_set_str(result, "Witness root does not match "
+                    "anchor (run rescanwitnesses)");
+                return false;
+            }
+        }
+
+        /* Build transaction */
+        struct wallet_tx wtx;
+        memset(&wtx, 0, sizeof(wtx));
+        transaction_init(&wtx.tx);
+
+        int height = g_wallet->best_block_height;
+        wtx.tx.overwintered = true;
+        wtx.tx.version = SAPLING_TX_VERSION;
+        wtx.tx.version_group_id = SAPLING_VERSION_GROUP_ID;
+        wtx.tx.expiry_height = (uint32_t)(height + 20);
+
+        /* Allocate transparent outputs if any */
+        size_t total_t_out_shielded = num_t_out;
+        if (total_t_out_shielded > 0 || num_z_out > 0) {
+            if (!transaction_alloc(&wtx.tx, 0, total_t_out_shielded)) {
+                free(witnesses);
+                json_set_str(result, "Transaction allocation failed");
+                return false;
+            }
+        }
+
+        /* Fill transparent outputs (for z→t) */
+        for (size_t i = 0; i < num_t_out; i++) {
+            struct script dest_script;
+            script_for_destination(&dest_script, &t_dests[i]);
+            wtx.tx.vout[i].value = t_amounts[i];
+            wtx.tx.vout[i].script_pub_key = dest_script;
+        }
+
+        /* Init proving context */
+        void *proving_ctx = librustzcash_sapling_proving_ctx_init();
+        if (!proving_ctx) {
+            free(witnesses);
+            transaction_free(&wtx.tx);
+            json_set_str(result, "Failed to init proving context");
+            return false;
+        }
+
+        /* Build spend descriptions */
+        wtx.tx.v_shielded_spend = calloc(num_sel_notes, sizeof(struct spend_description));
+        wtx.tx.num_shielded_spend = num_sel_notes;
+
+        uint8_t spend_ars[256][32]; /* ar values for spend_auth_sig */
+
+        const char *spend_err = NULL;
+
+        for (size_t i = 0; i < num_sel_notes; i++) {
+            struct spend_description *sd = &wtx.tx.v_shielded_spend[i];
+
+            uint8_t witness_path[1 + 32 * 33];
+            size_t witness_path_len = 0;
+            if (!incremental_witness_merkle_path(&witnesses[i],
+                    witness_path, &witness_path_len)) {
+                spend_err = "Failed to extract Merkle path";
+                break;
+            }
+
+            uint64_t position = incremental_tree_size(&witnesses[i].tree) - 1;
+
+            if (!sapling_build_spend_with_ctx(
+                    proving_ctx,
+                    from_z_key->xsk.expsk.ask,
+                    from_z_key->xsk.expsk.nsk,
+                    selected_notes[i].diversifier,
+                    selected_notes[i].pk_d,
+                    selected_notes[i].rcm,
+                    (uint64_t)selected_notes[i].value,
+                    position,
+                    anchor,
+                    witness_path, witness_path_len,
+                    sd->cv.data, sd->nullifier.data,
+                    sd->rk.data, sd->zkproof,
+                    spend_ars[i])) {
+                spend_err = "Failed to build spend proof (anchor mismatch?)";
+                break;
+            }
+
+            memcpy(sd->anchor.data, anchor, 32);
+        }
+
+        if (spend_err) goto shielded_cleanup;
+
+        /* Build shielded output descriptions */
+        int64_t shielded_change = notes_total - total_amount - fee;
+        size_t total_z_outs = num_z_out + (shielded_change > 0 ? 1 : 0);
+
+        if (total_z_outs > 0) {
+            wtx.tx.v_shielded_output = calloc(total_z_outs,
+                sizeof(struct output_description));
+            wtx.tx.num_shielded_output = total_z_outs;
+
+            uint8_t ovk[32];
+            memcpy(ovk, from_z_key->xfvk.fvk.ovk, 32);
+
+            for (size_t i = 0; i < num_z_out && !spend_err; i++) {
+                struct output_description *od = &wtx.tx.v_shielded_output[i];
+                if (!sapling_build_output_with_ctx(
+                        proving_ctx, ovk,
+                        z_diversifiers[i], z_pk_ds[i],
+                        (uint64_t)z_amounts[i],
+                        z_has_memo[i] ? z_memos[i] : NULL,
+                        od->cv.data, od->cm.data, od->ephemeral_key.data,
+                        od->enc_ciphertext, od->out_ciphertext, od->zkproof))
+                    spend_err = "Failed to build Sapling output";
+            }
+
+            if (!spend_err && shielded_change > 0) {
+                struct output_description *od =
+                    &wtx.tx.v_shielded_output[num_z_out];
+                if (!sapling_build_output_with_ctx(
+                        proving_ctx, ovk,
+                        from_z_key->diversifier, from_z_key->pk_d,
+                        (uint64_t)shielded_change, NULL,
+                        od->cv.data, od->cm.data, od->ephemeral_key.data,
+                        od->enc_ciphertext, od->out_ciphertext, od->zkproof))
+                    spend_err = "Failed to build change output";
+            }
+        }
+
+        if (spend_err) goto shielded_cleanup;
+
+        /* Set value_balance = sum(spend) - sum(output) */
+        {
+            int64_t spend_total = 0;
+            for (size_t i = 0; i < num_sel_notes; i++)
+                spend_total += selected_notes[i].value;
+            int64_t output_total = 0;
+            for (size_t i = 0; i < num_z_out; i++)
+                output_total += z_amounts[i];
+            if (shielded_change > 0)
+                output_total += shielded_change;
+            wtx.tx.value_balance = spend_total - output_total;
+        }
+
+        /* Compute sighash for spend_auth_sig and binding_sig */
+        transaction_compute_hash(&wtx.tx);
+
+        {
+            uint32_t branch_id = consensus_current_epoch_branch_id(
+                height + 1, &cp->consensus);
+            struct sighash_type ht;
+            ht.raw = SIGHASH_ALL;
+            struct precomputed_tx_data txdata;
+            precompute_tx_data(&wtx.tx, &txdata);
+
+            struct script empty_script;
+            empty_script.size = 0;
+            struct uint256 sighash;
+            signature_hash(&empty_script, &wtx.tx, NOT_AN_INPUT, ht, 0,
+                           branch_id, &txdata, &sighash);
+
+            for (size_t i = 0; i < num_sel_notes && !spend_err; i++) {
+                uint8_t rsk[32];
+                struct fr ask_fr, ar_fr, rsk_fr;
+                fr_from_bytes(&ask_fr, from_z_key->xsk.expsk.ask);
+                fr_from_bytes(&ar_fr, spend_ars[i]);
+                fr_add(&rsk_fr, &ask_fr, &ar_fr);
+                fr_to_bytes(rsk, &rsk_fr);
+                memory_cleanse(&ask_fr, sizeof(ask_fr));
+                memory_cleanse(&ar_fr, sizeof(ar_fr));
+                memory_cleanse(&rsk_fr, sizeof(rsk_fr));
+
+                if (!redjubjub_sign(rsk, sighash.data, 32,
+                                    wtx.tx.v_shielded_spend[i].spend_auth_sig,
+                                    5 /* GEN_SPENDING_KEY */))
+                    spend_err = "Spend auth signature failed";
+                memory_cleanse(rsk, 32);
+            }
+
+            if (!spend_err &&
+                !librustzcash_sapling_binding_sig(proving_ctx,
+                    wtx.tx.value_balance, sighash.data, wtx.tx.binding_sig))
+                spend_err = "Binding signature failed";
+        }
+
+shielded_cleanup:
+        librustzcash_sapling_proving_ctx_free(proving_ctx);
+        memory_cleanse(spend_ars, sizeof(spend_ars));
+
+        if (spend_err) {
+            free(witnesses);
+            transaction_free(&wtx.tx);
+            json_set_str(result, spend_err);
+            return false;
+        }
+
+        free(witnesses);
+
+        /* Broadcast */
+        transaction_compute_hash(&wtx.tx);
+
+        if (g_mempool) {
+            struct mempool_entry me;
+            mempool_entry_init(&me, &wtx.tx, fee, (int64_t)time(NULL),
+                               0.0, (unsigned int)height, true, false, 0);
+            tx_mempool_add_unchecked(g_mempool, &wtx.tx.hash, &me);
+        }
+
+        char txid_hex[65];
+        uint256_get_hex(&wtx.tx.hash, txid_hex);
+        json_set_str(result, txid_hex);
+
+        transaction_free(&wtx.tx);
+        return true;
+    }
+
+    /* ── Transparent spend path (t→t, t→z) ─────────────────────── */
 
     /* Select coins — filter to only UTXOs from the specified from address */
     int64_t fee = g_wallet->default_fee;
@@ -1847,13 +2253,10 @@ static bool rpc_z_gettotalbalance(const struct json_value *params, bool help,
             t_balance += coins[i].wtx->tx.vout[coins[i].i].value;
     }
 
-    /* Shielded balance */
+    /* Shielded balance: always from SQLite (authoritative source) */
     int64_t z_balance = 0;
-    for (size_t i = 0; i < g_wallet->num_sapling_notes; i++) {
-        const struct sapling_received_note *n = &g_wallet->sapling_notes[i];
-        if (n->used && !n->spent && n->confirms >= minconf)
-            z_balance += (int64_t)n->value;
-    }
+    if (g_node_db)
+        z_balance = db_sapling_note_balance(g_node_db);
 
     int64_t total = t_balance + z_balance;
 
@@ -1900,7 +2303,7 @@ static bool rpc_z_listreceivedbyaddress(const struct json_value *params,
         if (n->confirms < minconf)
             continue;
 
-        struct json_value entry;
+        struct json_value entry = {0};
         json_init(&entry);
         json_set_object(&entry);
 
@@ -2291,7 +2694,7 @@ static bool rpc_getwalletaccounting(const struct json_value *params,
     int64_t total_to_shielded = 0;   /* transparent → shielded pool */
     int64_t total_from_shielded = 0; /* shielded pool → transparent */
 
-    struct json_value tx_list;
+    struct json_value tx_list = {0};
     json_init(&tx_list);
     json_set_array(&tx_list);
 
@@ -2397,7 +2800,7 @@ static bool rpc_getwalletaccounting(const struct json_value *params,
         total_to_shielded += to_shielded;
         total_from_shielded += from_shielded;
 
-        struct json_value entry;
+        struct json_value entry = {0};
         json_init(&entry);
         json_set_object(&entry);
         json_push_kv_str(&entry, "txid", txid);
@@ -2448,7 +2851,7 @@ static bool rpc_getwalletaccounting(const struct json_value *params,
         }
 
         /* Output details */
-        struct json_value details;
+        struct json_value details = {0};
         json_init(&details);
         json_set_array(&details);
         for (size_t j = 0; j < tx->num_vout; j++) {
@@ -2461,7 +2864,7 @@ static bool rpc_getwalletaccounting(const struct json_value *params,
                 encode_destination(&dest, pk_pfx, pk_pfx_len,
                                    sc_pfx, sc_pfx_len, addr, sizeof(addr));
 
-            struct json_value d;
+            struct json_value d = {0};
             json_init(&d);
             json_set_object(&d);
             json_push_kv_int(&d, "vout", (int64_t)j);
@@ -2615,7 +3018,7 @@ static bool rpc_removestalletxs(const struct json_value *params,
     /* Phase 1: Find unconfirmed txs whose inputs are spent on-chain */
     int removed = 0;
     int64_t recovered = 0;
-    struct json_value removed_list;
+    struct json_value removed_list = {0};
     json_init(&removed_list);
     json_set_array(&removed_list);
 
@@ -2661,7 +3064,7 @@ static bool rpc_removestalletxs(const struct json_value *params,
         char txid[65];
         uint256_get_hex(&wtx->tx.hash, txid);
 
-        struct json_value entry;
+        struct json_value entry = {0};
         json_init(&entry);
         json_set_object(&entry);
         json_push_kv_str(&entry, "txid", txid);
@@ -2750,9 +3153,9 @@ static bool rpc_walletaudit(const struct json_value *params, bool help,
     int verified_count = 0;
     int phantom_count = 0;
 
-    struct json_value verified_utxos;
+    struct json_value verified_utxos = {0};
     json_set_array(&verified_utxos);
-    struct json_value phantom_utxos;
+    struct json_value phantom_utxos = {0};
     json_set_array(&phantom_utxos);
 
     /* Per-address verified balance tracking */
@@ -2795,7 +3198,7 @@ static bool rpc_walletaudit(const struct json_value *params, bool help,
         char txid[65];
         uint256_get_hex(&wtx->tx.hash, txid);
 
-        struct json_value entry;
+        struct json_value entry = {0};
         json_set_object(&entry);
         json_push_kv_str(&entry, "txid", txid);
         json_push_kv_int(&entry, "vout", vout_n);
@@ -2856,20 +3259,18 @@ static bool rpc_walletaudit(const struct json_value *params, bool help,
         }
     }
 
-    /* Phase 2: Shielded notes */
+    /* Phase 2: Shielded notes (always from SQLite) */
     int64_t z_balance = 0;
     int z_unspent = 0;
-    for (size_t i = 0; i < g_wallet->num_sapling_notes; i++) {
-        const struct sapling_received_note *n = &g_wallet->sapling_notes[i];
-        if (n->used && !n->spent) {
-            z_balance += (int64_t)n->value;
-            z_unspent++;
-        }
+    if (g_node_db && g_node_db->open) {
+        z_balance = db_sapling_note_balance(g_node_db);
+        struct db_sapling_note db_notes[256];
+        z_unspent = db_sapling_note_list_unspent(g_node_db, db_notes, 256);
     }
 
     /* Phase 3: Build summary */
     char s[32];
-    struct json_value summary;
+    struct json_value summary = {0};
     json_set_object(&summary);
 
     format_amount(verified_balance, s, sizeof(s));
@@ -2907,10 +3308,10 @@ static bool rpc_walletaudit(const struct json_value *params, bool help,
     json_free(&summary);
 
     /* Per-address breakdown */
-    struct json_value addr_list;
+    struct json_value addr_list = {0};
     json_set_array(&addr_list);
     for (size_t i = 0; i < num_addrs; i++) {
-        struct json_value a;
+        struct json_value a = {0};
         json_set_object(&a);
         json_push_kv_str(&a, "address", addr_bal[i].address);
         format_amount(addr_bal[i].verified, s, sizeof(s));
@@ -2987,7 +3388,7 @@ static bool rpc_getchaincoins(const struct json_value *params, bool help,
     json_push_kv_bool(result, "is_coinbase", chain_coins.is_coinbase);
     json_push_kv_int(result, "height", chain_coins.height);
 
-    struct json_value outputs;
+    struct json_value outputs = {0};
     json_set_array(&outputs);
     int64_t total_available = 0;
     int avail_count = 0;
@@ -3010,7 +3411,7 @@ static bool rpc_getchaincoins(const struct json_value *params, bool help,
         if (g_wallet && available)
             in_wallet_flag = wallet_is_mine(g_wallet, &chain_coins.vout[i]);
 
-        struct json_value entry;
+        struct json_value entry = {0};
         wallet_view_chain_coin(&entry, (uint32_t)i, val, available,
                                addr[0] ? addr : NULL, in_wallet_flag);
         json_push_back(&outputs, &entry);
@@ -3181,7 +3582,7 @@ static void key_balance_cb(const struct db_wallet_key *key, void *ctx)
     encode_destination(&dest, kc->pk_pfx, kc->pk_pfx_len,
                        kc->sc_pfx, kc->sc_pfx_len, addr, sizeof(addr));
 
-    struct json_value entry;
+    struct json_value entry = {0};
     wallet_view_key_entry(&entry, key, addr, unspent, balance);
     json_push_back(kc->arr, &entry);
     json_free(&entry);
@@ -3219,7 +3620,7 @@ static bool rpc_listwalletkeys(const struct json_value *params, bool help,
     json_set_object(result);
 
     /* Transparent keys */
-    struct json_value keys_arr;
+    struct json_value keys_arr = {0};
     json_set_array(&keys_arr);
 
     struct key_balance_ctx kctx = {
@@ -3239,7 +3640,7 @@ static bool rpc_listwalletkeys(const struct json_value *params, bool help,
     json_free(&keys_arr);
 
     /* Sapling keys */
-    struct json_value z_keys;
+    struct json_value z_keys = {0};
     json_set_array(&z_keys);
     int64_t z_total = 0;
 
@@ -3251,7 +3652,7 @@ static bool rpc_listwalletkeys(const struct json_value *params, bool help,
         if (g_node_db && g_node_db->open)
             z_bal = db_sapling_note_balance_for_ivk(g_node_db, sk->ivk);
 
-        struct json_value zentry;
+        struct json_value zentry = {0};
         json_set_object(&zentry);
 
         char zaddr[128];
@@ -3273,7 +3674,7 @@ static bool rpc_listwalletkeys(const struct json_value *params, bool help,
     json_free(&z_keys);
 
     /* Summary */
-    struct json_value summary;
+    struct json_value summary = {0};
     json_set_object(&summary);
     json_push_kv_int(&summary, "transparent_key_count", kctx.total_keys);
     char amt[32];
@@ -3335,7 +3736,7 @@ static bool rpc_listwallettxdetail(const struct json_value *params, bool help,
             continue;
         }
 
-        struct json_value entry;
+        struct json_value entry = {0};
         json_set_object(&entry);
 
         char txid_hex[65];
@@ -3348,11 +3749,11 @@ static bool rpc_listwallettxdetail(const struct json_value *params, bool help,
         json_push_kv_bool(&entry, "from_me", rows[i].from_me);
 
         /* Outputs */
-        struct json_value vouts;
+        struct json_value vouts = {0};
         json_set_array(&vouts);
         int64_t credit = 0;
         for (size_t j = 0; j < tx.num_vout; j++) {
-            struct json_value vo;
+            struct json_value vo = {0};
             json_set_object(&vo);
             json_push_kv_int(&vo, "n", (int64_t)j);
 
@@ -3383,11 +3784,11 @@ static bool rpc_listwallettxdetail(const struct json_value *params, bool help,
         json_free(&vouts);
 
         /* Inputs */
-        struct json_value vins;
+        struct json_value vins = {0};
         json_set_array(&vins);
         int64_t debit = 0;
         for (size_t j = 0; j < tx.num_vin; j++) {
-            struct json_value vi;
+            struct json_value vi = {0};
             json_set_object(&vi);
 
             char prev_txid[65];
@@ -3424,7 +3825,7 @@ static bool rpc_listwallettxdetail(const struct json_value *params, bool help,
 
         /* Shielded components */
         if (tx.num_shielded_spend > 0 || tx.num_shielded_output > 0) {
-            struct json_value shielded;
+            struct json_value shielded = {0};
             json_set_object(&shielded);
             json_push_kv_int(&shielded, "spends",
                              (int64_t)tx.num_shielded_spend);
@@ -3506,7 +3907,7 @@ static bool rpc_getbalanceflow(const struct json_value *params, bool help,
 
     json_set_object(result);
 
-    struct json_value flows;
+    struct json_value flows = {0};
     json_set_array(&flows);
 
     int64_t running_balance = 0;
@@ -3572,7 +3973,7 @@ static bool rpc_getbalanceflow(const struct json_value *params, bool help,
             total_sent += (debit - credit);
         total_fees += fee;
 
-        struct json_value entry;
+        struct json_value entry = {0};
         wallet_view_flow_entry(&entry, txid_hex, category,
                                net, fee,
                                txs[i].block_height, running_balance);
@@ -3588,7 +3989,7 @@ static bool rpc_getbalanceflow(const struct json_value *params, bool help,
     json_free(&flows);
 
     /* Summary */
-    struct json_value summary;
+    struct json_value summary = {0};
     json_set_object(&summary);
     json_push_kv_int(&summary, "transaction_count", flow_count);
 
@@ -3675,7 +4076,7 @@ static bool rpc_reconcilewalletutxos(const struct json_value *params,
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
     };
 
-    struct json_value details;
+    struct json_value details = {0};
     json_set_array(&details);
 
     for (int i = 0; i < count; i++) {
@@ -3712,7 +4113,7 @@ static bool rpc_reconcilewalletutxos(const struct json_value *params,
             snprintf(txid_hex + (31 - b) * 2, 3, "%02x",
                      unspent[i].txid[b]);
 
-        struct json_value entry;
+        struct json_value entry = {0};
         json_set_object(&entry);
         json_push_kv_str(&entry, "txid", txid_hex);
         json_push_kv_int(&entry, "vout", unspent[i].vout);
@@ -3968,7 +4369,7 @@ static bool rpc_fastsync(const struct json_value *params, bool help,
 
     bool repaired = db_wrapper_repair(wallet_path);
 
-    struct json_value phase1;
+    struct json_value phase1 = {0};
     json_set_object(&phase1);
     json_push_kv_bool(&phase1, "repair_success", repaired);
 
@@ -4000,7 +4401,7 @@ static bool rpc_fastsync(const struct json_value *params, bool help,
     snap.dst_dir = g_datadir;
 
     if (!chain_snapshot_validate(&snap)) {
-        struct json_value err;
+        struct json_value err = {0};
         json_set_object(&err);
         json_push_kv_str(&err, "error", "Source validation failed");
         json_push_kv_str(&err, "src_dir", legacy_dir);
@@ -4014,7 +4415,7 @@ static bool rpc_fastsync(const struct json_value *params, bool help,
     /* ── Phase 3: Rebuild wallet state ── */
     wallet_rebuild_spent_set(g_wallet);
 
-    struct json_value phase3;
+    struct json_value phase3 = {0};
     json_set_object(&phase3);
     json_push_kv_int(&phase3, "total_keys", (int64_t)g_wallet->keystore.num_keys);
     json_push_kv_int(&phase3, "total_txs", (int64_t)g_wallet->num_wallet_tx);
@@ -4134,7 +4535,7 @@ static bool rpc_coinanalysis(const struct json_value *params, bool help,
      * that aren't in our tracked UTXO set */
     int untracked_count = 0;
     int64_t untracked_balance = 0;
-    struct json_value untracked_arr;
+    struct json_value untracked_arr = {0};
     json_set_array(&untracked_arr);
 
     /* Iterate all wallet transactions (from in-memory wallet) */
@@ -4191,7 +4592,7 @@ static bool rpc_coinanalysis(const struct json_value *params, bool help,
                 char txid_hex[65];
                 uint256_get_hex(&wtx->tx.hash, txid_hex);
 
-                struct json_value entry;
+                struct json_value entry = {0};
                 json_set_object(&entry);
                 json_push_kv_str(&entry, "txid", txid_hex);
                 json_push_kv_int(&entry, "vout", (int64_t)vi);
@@ -4208,6 +4609,96 @@ static bool rpc_coinanalysis(const struct json_value *params, bool help,
         }
     }
 
+    /* Shielded analysis — all notes (spent and unspent) */
+    int64_t z_balance = 0;
+    int z_unspent = 0;
+    int z_spent = 0;
+    int64_t z_total_received = 0;
+    struct json_value z_arr = {0};
+    json_set_array(&z_arr);
+
+    /* Query all sapling notes from SQLite (both spent and unspent) */
+    sqlite3_stmt *z_stmt = NULL;
+    sqlite3_prepare_v2(g_node_db->db,
+        "SELECT txid, output_index, value, block_height, spent_txid,"
+        " diversifier, pk_d, witness_height"
+        " FROM wallet_sapling_notes ORDER BY block_height",
+        -1, &z_stmt, NULL);
+    while (z_stmt && sqlite3_step(z_stmt) == SQLITE_ROW) {
+        const uint8_t *ntxid = sqlite3_column_blob(z_stmt, 0);
+        int nidx = sqlite3_column_int(z_stmt, 1);
+        int64_t nval = sqlite3_column_int64(z_stmt, 2);
+        int nheight = sqlite3_column_int(z_stmt, 3);
+        const uint8_t *spent_by = sqlite3_column_blob(z_stmt, 4);
+        int spent_len = sqlite3_column_bytes(z_stmt, 4);
+        const uint8_t *ndiv = sqlite3_column_blob(z_stmt, 5);
+        const uint8_t *npkd = sqlite3_column_blob(z_stmt, 6);
+        int wheight = sqlite3_column_int(z_stmt, 7);
+
+        bool is_spent = (spent_by && spent_len == 32);
+        z_total_received += nval;
+        if (!is_spent) {
+            z_balance += nval;
+            z_unspent++;
+        } else {
+            z_spent++;
+        }
+
+        struct json_value ze = {0};
+        json_set_object(&ze);
+
+        char txid_hex[65];
+        if (ntxid) {
+            for (int j = 0; j < 32; j++)
+                snprintf(txid_hex + j * 2, 3, "%02x", ntxid[31 - j]);
+        } else {
+            txid_hex[0] = '\0';
+        }
+        json_push_kv_str(&ze, "txid", txid_hex);
+        json_push_kv_int(&ze, "output_index", nidx);
+
+        char z_addr[128];
+        if (ndiv && npkd)
+            sapling_encode_payment_address(ndiv, npkd,
+                                            "zs", z_addr, sizeof(z_addr));
+        else
+            z_addr[0] = '\0';
+        json_push_kv_str(&ze, "address", z_addr);
+
+        char zamt[32];
+        format_amount(nval, zamt, sizeof(zamt));
+        json_push_kv_str(&ze, "amount", zamt);
+        json_push_kv_int(&ze, "block_height", nheight);
+        json_push_kv_str(&ze, "status", is_spent ? "spent" : "unspent");
+
+        if (is_spent) {
+            char spent_hex[65];
+            for (int j = 0; j < 32; j++)
+                snprintf(spent_hex + j * 2, 3, "%02x", spent_by[31 - j]);
+            json_push_kv_str(&ze, "spent_by", spent_hex);
+        }
+
+        if (wheight > 0)
+            json_push_kv_int(&ze, "witness_height", wheight);
+
+        json_push_back(&z_arr, &ze);
+        json_free(&ze);
+    }
+    if (z_stmt) sqlite3_finalize(z_stmt);
+
+    /* Fee accounting from wallet transactions */
+    int64_t total_fees = 0;
+    int tx_count = 0;
+    sqlite3_stmt *fee_stmt = NULL;
+    sqlite3_prepare_v2(g_node_db->db,
+        "SELECT fee FROM wallet_transactions WHERE from_me = 1 AND fee > 0",
+        -1, &fee_stmt, NULL);
+    while (fee_stmt && sqlite3_step(fee_stmt) == SQLITE_ROW) {
+        total_fees += sqlite3_column_int64(fee_stmt, 0);
+        tx_count++;
+    }
+    if (fee_stmt) sqlite3_finalize(fee_stmt);
+
     /* Summary */
     char amt[32];
     json_push_kv_int(result, "tracked_utxos", tracked_count);
@@ -4216,10 +4707,26 @@ static bool rpc_coinanalysis(const struct json_value *params, bool help,
     json_push_kv_int(result, "untracked_utxos", untracked_count);
     format_amount(untracked_balance, amt, sizeof(amt));
     json_push_kv_str(result, "untracked_balance", amt);
-    format_amount(tracked_balance + untracked_balance, amt, sizeof(amt));
+
+    json_push_kv_int(result, "shielded_unspent", z_unspent);
+    json_push_kv_int(result, "shielded_spent", z_spent);
+    format_amount(z_balance, amt, sizeof(amt));
+    json_push_kv_str(result, "shielded_balance", amt);
+    format_amount(z_total_received, amt, sizeof(amt));
+    json_push_kv_str(result, "shielded_total_received", amt);
+
+    int64_t grand_total = tracked_balance + untracked_balance + z_balance;
+    format_amount(grand_total, amt, sizeof(amt));
     json_push_kv_str(result, "total_balance", amt);
+
+    format_amount(total_fees, amt, sizeof(amt));
+    json_push_kv_str(result, "total_fees_paid", amt);
+    json_push_kv_int(result, "fee_paying_txns", tx_count);
+
     json_push_kv(result, "untracked", &untracked_arr);
     json_free(&untracked_arr);
+    json_push_kv(result, "shielded_notes_detail", &z_arr);
+    json_free(&z_arr);
 
     return true;
 }
@@ -4318,6 +4825,210 @@ static bool rpc_rescanwallet(const struct json_value *params, bool help,
     return true;
 }
 
+/* ── rescanwitnesses ─────────────────────────────────────────── */
+
+static bool rpc_rescanwitnesses(const struct json_value *params, bool help,
+                                  struct json_value *result)
+{
+    (void)params;
+    RPC_HELP(help, result,
+        "rescanwitnesses\n"
+        "Rebuild Sapling Merkle witnesses for all unspent shielded notes.\n"
+        "Required before spending z→z or z→t. Replays the commitment tree\n"
+        "from the Sapling activation height to tip.");
+
+    ENSURE_WALLET(result);
+    if (!g_main_state) {
+        json_set_str(result, "Main state not available");
+        return false;
+    }
+    if (!g_node_db || !g_node_db->open) {
+        json_set_str(result, "Node database not available");
+        return false;
+    }
+    if (!g_datadir) {
+        json_set_str(result, "Data directory not configured");
+        return false;
+    }
+
+    /* Load all unspent notes that need witnesses */
+    struct db_sapling_note notes[256];
+    int n_notes = db_sapling_note_list_unspent(g_node_db, notes, 256);
+    if (n_notes == 0) {
+        json_set_object(result);
+        json_push_kv_int(result, "notes_updated", 0);
+        json_push_kv_str(result, "status", "no unspent notes");
+        return true;
+    }
+
+    printf("rescanwitnesses: building witnesses for %d notes...\n", n_notes);
+    fflush(stdout);
+
+    int chain_tip = active_chain_height(&g_main_state->chain_active);
+    int sapling_start = 476969; /* Sapling activation on ZClassic mainnet */
+
+    /* Initialize empty tree and per-note witness state */
+    struct incremental_merkle_tree tree;
+    sapling_tree_init(&tree);
+
+    struct incremental_witness *witnesses = calloc((size_t)n_notes,
+        sizeof(struct incremental_witness));
+    bool *witness_active = calloc((size_t)n_notes, sizeof(bool));
+    int witnesses_built = 0;
+
+    /* mmap cache */
+    int cached_file = -1;
+    uint8_t *cached_data = NULL;
+    size_t cached_size = 0;
+
+    int64_t t_start = (int64_t)time(NULL);
+    int blocks_scanned = 0;
+
+    for (int h = sapling_start; h <= chain_tip; h++) {
+        const struct block_index *pindex =
+            active_chain_at(&g_main_state->chain_active, h);
+        if (!pindex) continue;
+        if (!(pindex->nStatus & BLOCK_HAVE_DATA)) continue;
+
+        /* mmap block file */
+        if (pindex->nFile != cached_file) {
+            if (cached_data) munmap(cached_data, cached_size);
+            char path[512];
+            snprintf(path, sizeof(path), "%s/blocks/blk%05d.dat",
+                     g_datadir, pindex->nFile);
+            int fd = open(path, O_RDONLY);
+            if (fd < 0) { cached_data = NULL; cached_file = -1; continue; }
+            struct stat fst;
+            if (fstat(fd, &fst) != 0) { close(fd); continue; }
+            cached_size = (size_t)fst.st_size;
+            cached_data = mmap(NULL, cached_size,
+                               PROT_READ, MAP_PRIVATE, fd, 0);
+            close(fd);
+            if (cached_data == MAP_FAILED) {
+                cached_data = NULL; cached_file = -1; continue;
+            }
+            cached_file = pindex->nFile;
+        }
+        if (!cached_data || pindex->nDataPos >= cached_size) continue;
+
+        struct block blk;
+        block_init(&blk);
+        struct byte_stream bs;
+        stream_init_from_data(&bs, cached_data + pindex->nDataPos,
+                              cached_size - pindex->nDataPos);
+        if (!block_deserialize(&blk, &bs)) {
+            block_free(&blk);
+            continue;
+        }
+
+        /* Process each Sapling output commitment */
+        for (size_t ti = 0; ti < blk.num_vtx; ti++) {
+            const struct transaction *tx = &blk.vtx[ti];
+            for (size_t oi = 0; oi < tx->num_shielded_output; oi++) {
+                const struct uint256 *cm =
+                    &tx->v_shielded_output[oi].cm;
+
+                /* Advance all active witnesses */
+                for (int ni = 0; ni < n_notes; ni++) {
+                    if (witness_active[ni])
+                        incremental_witness_append(&witnesses[ni], cm);
+                }
+
+                /* Append to tree */
+                incremental_tree_append(&tree, cm);
+
+                /* Check if this cm matches any note's commitment */
+                for (int ni = 0; ni < n_notes; ni++) {
+                    if (witness_active[ni]) continue;
+                    if (memcmp(cm->data, notes[ni].cm, 32) == 0) {
+                        /* Init witness from tree state (tree already
+                         * contains this cm) */
+                        incremental_witness_init(&witnesses[ni], &tree);
+                        witness_active[ni] = true;
+                        witnesses_built++;
+                    }
+                }
+            }
+        }
+
+        /* Verify tree root against block header every 100k blocks
+         * and on the last block */
+        if (blocks_scanned % 100000 == 0 || h == chain_tip) {
+            struct uint256 tree_root;
+            incremental_tree_root(&tree, &tree_root);
+            if (memcmp(tree_root.data,
+                       blk.header.hashFinalSaplingRoot.data, 32) != 0) {
+                char tr[65], hr[65];
+                for (int j = 0; j < 32; j++) {
+                    snprintf(tr + j*2, 3, "%02x", tree_root.data[31-j]);
+                    snprintf(hr + j*2, 3, "%02x",
+                             blk.header.hashFinalSaplingRoot.data[31-j]);
+                }
+                printf("rescanwitnesses: ROOT MISMATCH at height %d\n"
+                       "  tree:   %s\n  header: %s\n", h, tr, hr);
+                fflush(stdout);
+            }
+        }
+
+        block_free(&blk);
+        blocks_scanned++;
+
+        if (blocks_scanned % 100000 == 0) {
+            int64_t elapsed = (int64_t)time(NULL) - t_start;
+            printf("rescanwitnesses: %d blocks (height %d), "
+                   "%d/%d witnesses built, %llds\n",
+                   blocks_scanned, h, witnesses_built, n_notes,
+                   (long long)elapsed);
+            fflush(stdout);
+        }
+    }
+
+    if (cached_data) munmap(cached_data, cached_size);
+
+    /* Save the authoritative tree state to node_state.
+     * This replaces any incomplete tree from catchup. */
+    {
+        struct byte_stream ts;
+        stream_init(&ts, 4096);
+        incremental_tree_serialize(&tree, &ts);
+        node_db_state_set(g_node_db, "sapling_tree", ts.data, ts.size);
+        stream_free(&ts);
+    }
+
+    /* Serialize and save witnesses */
+    int saved = 0;
+    for (int ni = 0; ni < n_notes; ni++) {
+        if (!witness_active[ni]) continue;
+
+        struct byte_stream ws;
+        stream_init(&ws, 4096);
+        if (incremental_witness_serialize(&witnesses[ni], &ws)) {
+            db_sapling_note_save_witness(g_node_db,
+                notes[ni].txid, notes[ni].output_index,
+                ws.data, ws.size, chain_tip);
+            saved++;
+        }
+        stream_free(&ws);
+    }
+
+    free(witnesses);
+    free(witness_active);
+
+    int64_t elapsed = (int64_t)time(NULL) - t_start;
+    printf("rescanwitnesses: done in %llds — %d/%d witnesses built, "
+           "%d saved\n",
+           (long long)elapsed, witnesses_built, n_notes, saved);
+    fflush(stdout);
+
+    json_set_object(result);
+    json_push_kv_int(result, "blocks_scanned", blocks_scanned);
+    json_push_kv_int(result, "notes_total", n_notes);
+    json_push_kv_int(result, "witnesses_built", witnesses_built);
+    json_push_kv_int(result, "witnesses_saved", saved);
+    json_push_kv_int(result, "elapsed_seconds", elapsed);
+    return true;
+}
+
 /* ── diagnoseutxos ───────────────────────────────────────────── */
 
 static bool rpc_diagnoseutxos(const struct json_value *params, bool help,
@@ -4348,7 +5059,7 @@ static bool rpc_diagnoseutxos(const struct json_value *params, bool help,
     int can_spend = 0, cannot_spend = 0;
     int64_t spendable_balance = 0, locked_balance = 0;
 
-    struct json_value utxo_list;
+    struct json_value utxo_list = {0};
     json_set_array(&utxo_list);
 
     for (size_t i = 0; i < num_coins; i++) {
@@ -4356,7 +5067,7 @@ static bool rpc_diagnoseutxos(const struct json_value *params, bool help,
         uint32_t vout_n = coins[i].i;
         const struct tx_out *out = &wtx->tx.vout[vout_n];
 
-        struct json_value entry;
+        struct json_value entry = {0};
         json_set_object(&entry);
 
         char txid[65];
@@ -4454,7 +5165,7 @@ static bool rpc_diagnoseutxos(const struct json_value *params, bool help,
     }
 
     /* Summary */
-    struct json_value summary;
+    struct json_value summary = {0};
     json_set_object(&summary);
     json_push_kv_int(&summary, "total_utxos", (int64_t)num_coins);
     json_push_kv_int(&summary, "spendable", can_spend);
@@ -4524,6 +5235,7 @@ void register_wallet_rpc_commands(struct rpc_table *t)
         { "wallet", "diagnoseutxos", rpc_diagnoseutxos, false },
         { "wallet", "coinanalysis", rpc_coinanalysis, false },
         { "wallet", "rescanwallet", rpc_rescanwallet, false },
+        { "wallet", "rescanwitnesses", rpc_rescanwitnesses, false },
         { "wallet", "fastsync", rpc_fastsync, false },
     };
 

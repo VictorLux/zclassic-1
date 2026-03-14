@@ -7,7 +7,7 @@ Wire-compatible, RPC-compatible, wallet-compatible, transaction-compatible.
 ## Build
 ```bash
 make zcld    # build node
-make test    # run tests (488 tests)
+make test    # run tests (569 tests)
 ```
 
 ## Project Structure (Rails-style MVC)
@@ -94,15 +94,17 @@ JSON response serializers for each model type.
 23 library modules. Include paths: `#include "crypto/sha256.h"` works via `-Ilib/<name>/include`.
 
 ## Current Status
-- **Tests**: ALL TESTS PASSED (0 failures)
+- **Tests**: 569 ALL TESTS PASSED (0 failures)
 - **C++ node** (`zclassicd`): P2P 8033, RPC 8232, data at `~/.zclassic`
 - **C23 node** (`zcld`): P2P 18033, RPC 18232, data at `~/.zclassic-c23`
+- **Sapling spends**: z→z and z→t implemented via `z_sendmany` (commitment tree tracking, witness maintenance, Merkle path extraction, spend proof construction)
 
 ## Known Issues
 1. Sapling verification: 5 blocks failed `bad-txns-sapling-spend-description-invalid`
 2. LevelDB MANIFEST corruption on DB open
 3. JoinSplit anchor validation: placeholder returns true
 4. UTXO cache inconsistency at height 3034539
+5. Sapling witness persistence: witnesses need rescan after node restart (not yet maintained incrementally during connect_block)
 
 ## Quality Bar
 Q = Clarity × Reliability × Performance × TestCoverage × UserImpact

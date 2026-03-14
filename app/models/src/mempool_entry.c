@@ -5,6 +5,7 @@
 #include "models/mempool_entry.h"
 #include <string.h>
 #include <stdlib.h>
+#include <time.h>
 
 /* ── Callbacks ─────────────────────────────────────────────────── */
 
@@ -27,12 +28,28 @@ bool db_mempool_validate(const struct db_mempool_entry *e,
     validates_presence_of(errors, e, txid);
     if (e->size <= 0)
         ar_errors_add(errors, "size", "must be positive");
+    if (e->size > 2000000)
+        ar_errors_add(errors, "size", "exceeds MAX_BLOCK_SIZE");
+    if (e->raw_tx && e->raw_tx_len == 0)
+        ar_errors_add(errors, "raw_tx_len", "must be positive when raw_tx present");
+    if (e->raw_tx_len > (size_t)INT32_MAX)
+        ar_errors_add(errors, "raw_tx_len", "exceeds max size");
+    if (e->fee < 0)
+        ar_errors_add(errors, "fee", "must be non-negative");
+    if (e->time_added <= 0)
+        ar_errors_add(errors, "time_added", "must be positive");
+    validates_non_negative(errors, e, height_added);
     return !ar_errors_any(errors);
 }
 
 bool db_mempool_save(struct node_db *ndb, const struct db_mempool_entry *e)
 {
     if (!ndb->open) return false;
+    /* Auto-timestamp if caller didn't set time_added */
+    if (e->time_added == 0)
+        ((struct db_mempool_entry *)e)->time_added = (int64_t)time(NULL);
+    struct ar_errors errors;
+    if (!db_mempool_validate(e, &errors)) return false;
     if (!ar_run_before_save(&mempool_cbs, (void *)e)) return false;
     sqlite3_stmt *s = NULL;
     sqlite3_prepare_v2(ndb->db,

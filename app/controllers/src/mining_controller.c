@@ -114,7 +114,7 @@ static bool rpc_generate(const struct json_value *params, bool help,
             block_get_hash(&tmpl->block, &hash);
             char hex[65];
             uint256_get_hex(&hash, hex);
-            struct json_value v;
+            struct json_value v = {0};
             json_set_str(&v, hex);
             json_push_back(result, &v);
             json_free(&v);
@@ -226,10 +226,10 @@ static bool rpc_getblocktemplate(const struct json_value *params, bool help,
     json_push_kv_str(result, "previousblockhash", prev_hex);
 
     /* Transactions (skip coinbase at index 0) */
-    struct json_value txs;
+    struct json_value txs = {0};
     json_set_array(&txs);
     for (size_t i = 1; i < tmpl->block.num_vtx; i++) {
-        struct json_value txobj;
+        struct json_value txobj = {0};
         json_set_object(&txobj);
 
         char *hex = malloc(2 * 1024 * 1024);
@@ -259,7 +259,7 @@ static bool rpc_getblocktemplate(const struct json_value *params, bool help,
     json_free(&txs);
 
     /* Coinbase */
-    struct json_value coinbase_obj;
+    struct json_value coinbase_obj = {0};
     json_set_object(&coinbase_obj);
     char *cb_hex = malloc(2 * 1024 * 1024);
     if (cb_hex && tmpl->block.num_vtx > 0) {

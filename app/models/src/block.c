@@ -33,6 +33,12 @@ bool db_block_validate(const struct db_block *b, struct ar_errors *errors)
         ar_errors_add(errors, "time", "can't be zero");
     if (b->bits == 0)
         ar_errors_add(errors, "bits", "can't be zero");
+    validates_non_negative(errors, b, num_tx);
+    validates_non_negative(errors, b, file_num);
+    validates_non_negative(errors, b, data_pos);
+    validates_non_negative(errors, b, undo_pos);
+    if (b->solution_len > (size_t)INT32_MAX)
+        ar_errors_add(errors, "solution_len", "exceeds max size");
     return !ar_errors_any(errors);
 }
 

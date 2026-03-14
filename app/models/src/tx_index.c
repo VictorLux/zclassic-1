@@ -27,6 +27,8 @@ bool db_tx_validate(const struct db_tx_index *t, struct ar_errors *errors)
     validates_presence_of(errors, t, block_hash);
     validates_non_negative(errors, t, block_height);
     validates_non_negative(errors, t, tx_index);
+    validates_non_negative(errors, t, file_num);
+    validates_non_negative(errors, t, file_pos);
     return !ar_errors_any(errors);
 }
 

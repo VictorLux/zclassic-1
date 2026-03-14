@@ -654,7 +654,7 @@ static bool rpc_signrawtransaction(const struct json_value *params, bool help,
         tip_height + 1, &chain_params_get()->consensus);
 
     bool all_complete = true;
-    struct json_value errors;
+    struct json_value errors = {0};
     json_set_array(&errors);
 
     for (unsigned int i = 0; i < tx.num_vin; i++) {
@@ -699,7 +699,7 @@ static bool rpc_signrawtransaction(const struct json_value *params, bool help,
         }
 
         if (!prev_script) {
-            struct json_value err;
+            struct json_value err = {0};
             json_set_object(&err);
             json_push_kv_int(&err, "vout", (int64_t)i);
             json_push_kv_str(&err, "error", "Input not found or already spent");
@@ -711,7 +711,7 @@ static bool rpc_signrawtransaction(const struct json_value *params, bool help,
 
         if (!sign_one_input(&tx, i, prev_script, prev_amount,
                             branch_id, &temp_ks)) {
-            struct json_value err;
+            struct json_value err = {0};
             json_set_object(&err);
             json_push_kv_int(&err, "vout", (int64_t)i);
             json_push_kv_str(&err, "error", "Unable to sign input");

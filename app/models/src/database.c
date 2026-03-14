@@ -470,6 +470,23 @@ int node_db_migrate(struct node_db *ndb, const char *datadir)
             "INSERT OR IGNORE INTO schema_migrations(version) VALUES('002')");
         int32_t v = 2;
         node_db_state_set(ndb, "schema_version", &v, sizeof(v));
+        current_ver = 2;
+        applied++;
+    }
+
+    if (current_ver < 3) {
+        /* Add Sapling commitment tree tracking columns */
+        node_db_exec(ndb,
+            "ALTER TABLE blocks ADD COLUMN sapling_tree_data BLOB");
+        node_db_exec(ndb,
+            "ALTER TABLE wallet_sapling_notes ADD COLUMN witness_data BLOB");
+        node_db_exec(ndb,
+            "ALTER TABLE wallet_sapling_notes ADD COLUMN witness_height INTEGER DEFAULT 0");
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('003')");
+        int32_t v = 3;
+        node_db_state_set(ndb, "schema_version", &v, sizeof(v));
+        current_ver = 3;
         applied++;
     }
 

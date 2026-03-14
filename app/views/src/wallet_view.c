@@ -253,7 +253,7 @@ void wallet_view_fastsync(struct json_value *out,
 {
     json_set_object(out);
 
-    struct json_value src_info;
+    struct json_value src_info = {0};
     json_set_object(&src_info);
     json_push_kv_str(&src_info, "directory",
                      snap->src_dir ? snap->src_dir : "");
@@ -268,7 +268,7 @@ void wallet_view_fastsync(struct json_value *out,
     json_push_kv(out, "source", &src_info);
     json_free(&src_info);
 
-    struct json_value copy_info;
+    struct json_value copy_info = {0};
     json_set_object(&copy_info);
     json_push_kv_bool(&copy_info, "blocks", snap->copy_blocks_ok);
     json_push_kv_bool(&copy_info, "index", snap->copy_index_ok);
@@ -276,7 +276,7 @@ void wallet_view_fastsync(struct json_value *out,
     json_push_kv(out, "copy_status", &copy_info);
     json_free(&copy_info);
 
-    struct json_value wallet_info;
+    struct json_value wallet_info = {0};
     json_set_object(&wallet_info);
     json_push_kv_int(&wallet_info, "keys_recovered", keys_recovered);
     json_push_kv_int(&wallet_info, "keys_total", keys_total);

@@ -21,6 +21,7 @@ struct db_wallet_key {
 
 /* Callbacks and validation */
 struct ar_callbacks *db_wallet_key_callbacks(void);
+struct ar_callbacks *db_sapling_key_callbacks(void);
 bool db_wallet_key_validate(const struct db_wallet_key *k,
                             struct ar_errors *errors);
 
@@ -46,6 +47,8 @@ struct db_sapling_key {
     char address[128];
 };
 
+bool db_sapling_key_validate(const struct db_sapling_key *k,
+                              struct ar_errors *errors);
 bool db_sapling_key_save(struct node_db *ndb, const struct db_sapling_key *k);
 bool db_sapling_key_find_by_ivk(struct node_db *ndb, const uint8_t ivk[32],
                                 struct db_sapling_key *out);

@@ -4,6 +4,7 @@
 
 #include "models/peer.h"
 #include <string.h>
+#include <time.h>
 
 /* ── Callbacks ─────────────────────────────────────────────────── */
 
@@ -25,12 +26,26 @@ bool db_peer_validate(const struct db_peer *p, struct ar_errors *errors)
     validates_presence_of(errors, p, ip);
     if (p->port == 0)
         ar_errors_add(errors, "port", "can't be zero");
+    if (p->attempts < 0)
+        ar_errors_add(errors, "attempts", "must be non-negative");
+    if (p->attempts > 10000)
+        ar_errors_add(errors, "attempts", "exceeds reasonable limit");
+    if (p->has_source) {
+        static const uint8_t z[16] = {0};
+        if (memcmp(p->source, z, 16) == 0)
+            ar_errors_add(errors, "source", "can't be blank when has_source");
+    }
     return !ar_errors_any(errors);
 }
 
 bool db_peer_save(struct node_db *ndb, const struct db_peer *p)
 {
     if (!ndb->open) return false;
+    /* Auto-timestamp if caller didn't set last_seen */
+    if (p->last_seen == 0)
+        ((struct db_peer *)p)->last_seen = (int64_t)time(NULL);
+    struct ar_errors errors;
+    if (!db_peer_validate(p, &errors)) return false;
     if (!ar_run_before_save(&peer_cbs, (void *)p)) return false;
     sqlite3_stmt *s = NULL;
     sqlite3_prepare_v2(ndb->db,

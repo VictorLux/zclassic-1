@@ -13,6 +13,21 @@
 #include "zcash/sprout.h"
 #include "core/serialize.h"
 
+/* librustzcash Sapling verification FFI */
+extern void *librustzcash_sapling_verification_ctx_init(void);
+extern void librustzcash_sapling_verification_ctx_free(void *ctx);
+extern bool librustzcash_sapling_check_spend(
+    void *ctx, const uint8_t *cv, const uint8_t *anchor,
+    const uint8_t *nullifier, const uint8_t *rk,
+    const uint8_t *zkproof, const uint8_t *spend_auth_sig,
+    const uint8_t *sighash_value);
+extern bool librustzcash_sapling_check_output(
+    void *ctx, const uint8_t *cv, const uint8_t *cm,
+    const uint8_t *epk, const uint8_t *zkproof);
+extern bool librustzcash_sapling_final_check(
+    void *ctx, int64_t value_balance,
+    const uint8_t *binding_sig, const uint8_t *sighash_value);
+
 bool contextual_check_transaction(const struct transaction *tx,
                                    struct validation_state *state,
                                    const struct consensus_params *params,
@@ -121,17 +136,18 @@ bool contextual_check_transaction(const struct transaction *tx,
         }
     }
 
-    /* Verify Sapling shielded spends and outputs */
+    /* Verify Sapling shielded spends and outputs via librustzcash */
     if (tx->num_shielded_spend > 0 || tx->num_shielded_output > 0) {
-        struct sapling_verification_ctx sctx;
-        sapling_verification_ctx_init(&sctx);
+        void *sctx = librustzcash_sapling_verification_ctx_init();
 
         for (size_t i = 0; i < tx->num_shielded_spend; i++) {
             const struct spend_description *sd = &tx->v_shielded_spend[i];
-            if (!sapling_check_spend(&sctx, sd->cv.data, sd->anchor.data,
-                                      sd->nullifier.data, sd->rk.data,
-                                      sd->zkproof, sd->spend_auth_sig,
-                                      data_to_be_signed.data)) {
+            if (!librustzcash_sapling_check_spend(
+                    sctx, sd->cv.data, sd->anchor.data,
+                    sd->nullifier.data, sd->rk.data,
+                    sd->zkproof, sd->spend_auth_sig,
+                    data_to_be_signed.data)) {
+                librustzcash_sapling_verification_ctx_free(sctx);
                 return validation_state_dos(state, 100, false, REJECT_INVALID,
                     "bad-txns-sapling-spend-description-invalid", false, NULL);
             }
@@ -139,18 +155,24 @@ bool contextual_check_transaction(const struct transaction *tx,
 
         for (size_t i = 0; i < tx->num_shielded_output; i++) {
             const struct output_description *od = &tx->v_shielded_output[i];
-            if (!sapling_check_output(&sctx, od->cv.data, od->cm.data,
-                                       od->ephemeral_key.data, od->zkproof)) {
+            if (!librustzcash_sapling_check_output(
+                    sctx, od->cv.data, od->cm.data,
+                    od->ephemeral_key.data, od->zkproof)) {
+                librustzcash_sapling_verification_ctx_free(sctx);
                 return validation_state_dos(state, 100, false, REJECT_INVALID,
                     "bad-txns-sapling-output-description-invalid", false, NULL);
             }
         }
 
-        if (!sapling_final_check(&sctx, tx->value_balance,
-                                   tx->binding_sig, data_to_be_signed.data)) {
+        if (!librustzcash_sapling_final_check(
+                sctx, tx->value_balance,
+                tx->binding_sig, data_to_be_signed.data)) {
+            librustzcash_sapling_verification_ctx_free(sctx);
             return validation_state_dos(state, 100, false, REJECT_INVALID,
                 "bad-txns-sapling-binding-sig-invalid", false, NULL);
         }
+
+        librustzcash_sapling_verification_ctx_free(sctx);
     }
 
     /* Verify Sprout JoinSplit proofs (Groth16) */

@@ -94,4 +94,11 @@ bool incremental_witness_deserialize(struct incremental_witness *w,
                                                       size_t, struct uint256 *),
                                       void (*uncommitted)(struct uint256 *));
 
+/* Extract Merkle authentication path from witness in librustzcash format.
+ * Output: compact_size(depth) || depth × (32-byte sibling || 1-byte position_bit)
+ * path_out must have space for at least 1 + depth*33 bytes.
+ * Returns true on success. */
+bool incremental_witness_merkle_path(const struct incremental_witness *w,
+                                      uint8_t *path_out, size_t *path_len);
+
 #endif

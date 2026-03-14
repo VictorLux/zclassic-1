@@ -250,7 +250,7 @@ static bool rpc_getblockchaininfo(const struct json_value *params, bool help,
     json_push_kv_real(result, "verificationprogress", 1.0);
 
     /* Upgrades */
-    struct json_value upgrades;
+    struct json_value upgrades = {0};
     json_set_object(&upgrades);
     json_push_kv(result, "upgrades", &upgrades);
     json_free(&upgrades);

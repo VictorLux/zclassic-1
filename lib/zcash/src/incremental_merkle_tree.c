@@ -431,6 +431,88 @@ bool incremental_witness_serialize(const struct incremental_witness *w,
     return true;
 }
 
+bool incremental_witness_merkle_path(const struct incremental_witness *w,
+                                      uint8_t *path_out, size_t *path_len)
+{
+    const struct incremental_merkle_tree *t = &w->tree;
+    size_t depth = t->depth;
+
+    /* Compute leaf position = tree_size - 1 */
+    size_t tree_sz = incremental_tree_size(t);
+    if (tree_sz == 0) return false;
+    uint64_t position = tree_sz - 1;
+
+    /* Build the authentication path by collecting siblings at each level.
+     * Walk the same structure as incremental_witness_root but collect
+     * the "other side" at each combination step. */
+
+    struct uint256 auth_path[MAX_TREE_DEPTH];
+    uint8_t path_bits[MAX_TREE_DEPTH]; /* 0 = leaf is left child, 1 = right child */
+    size_t num_levels = 0;
+
+    /* Level 0: left/right of the tree base */
+    (void)position;
+    size_t filled_idx = 0;
+
+    if (t->has_right) {
+        /* Leaf was left child at level 0 → sibling is right */
+        auth_path[0] = t->right;
+        path_bits[0] = 0; /* leaf on left side */
+    } else {
+        /* Leaf is the right child → sibling is left */
+        if (t->has_left) {
+            auth_path[0] = t->left;
+            path_bits[0] = 1;
+        } else {
+            t->uncommitted(&auth_path[0]);
+            path_bits[0] = 0;
+        }
+    }
+    num_levels = 1;
+
+    /* Levels 1..depth-1: walk parents + filled + cursor */
+    for (size_t i = 0; i < depth - 1 && num_levels < depth; i++) {
+        size_t level = i; /* parent index */
+        if (level < t->num_parents && t->has_parent[level]) {
+            /* Parent exists → we came from the right side, sibling is parent */
+            auth_path[num_levels] = t->parents[level];
+            path_bits[num_levels] = 1;
+        } else {
+            /* No parent → get from filled or cursor or empty */
+            if (filled_idx < w->num_filled) {
+                auth_path[num_levels] = w->filled[filled_idx++];
+            } else if (w->has_cursor && filled_idx == w->num_filled) {
+                incremental_tree_root(&w->cursor, &auth_path[num_levels]);
+                filled_idx++;
+            } else {
+                empty_root_at_depth(t, num_levels, &auth_path[num_levels]);
+            }
+            path_bits[num_levels] = 0;
+        }
+        num_levels++;
+    }
+
+    /* Pad remaining levels with empty roots */
+    while (num_levels < depth) {
+        empty_root_at_depth(t, num_levels, &auth_path[num_levels]);
+        path_bits[num_levels] = 0;
+        num_levels++;
+    }
+
+    /* Serialize in librustzcash format:
+     * compact_size(depth) || depth × (32-byte sibling || 1-byte position_bit) */
+    size_t off = 0;
+    /* compact_size for depth (always fits in 1 byte for depth <= 32) */
+    path_out[off++] = (uint8_t)depth;
+    for (size_t i = 0; i < depth; i++) {
+        memcpy(path_out + off, auth_path[i].data, 32);
+        off += 32;
+        path_out[off++] = path_bits[i];
+    }
+    *path_len = off;
+    return true;
+}
+
 bool incremental_witness_deserialize(struct incremental_witness *w,
                                       struct byte_stream *s,
                                       size_t depth,

@@ -319,6 +319,7 @@ bool sapling_compute_nf(const uint8_t diversifier[11], const uint8_t pk_d[32],
 /* H* = BLAKE2b-512("Zcash_RedJubjubH", a || b) → reduce to Fs via to_uniform */
 static void h_star(const uint8_t *a, size_t a_len,
                     const uint8_t *b, size_t b_len,
+                    const uint8_t *c, size_t c_len,
                     uint8_t scalar[32])
 {
     static const uint8_t personal[16] = {'Z','c','a','s','h','_','R','e','d','J','u','b','j','u','b','H'};
@@ -327,6 +328,8 @@ static void h_star(const uint8_t *a, size_t a_len,
     blake2b_init_salt_personal(&ctx, 64, NULL, 0, NULL, personal);
     blake2b_update(&ctx, a, a_len);
     blake2b_update(&ctx, b, b_len);
+    if (c && c_len > 0)
+        blake2b_update(&ctx, c, c_len);
     blake2b_final(&ctx, digest, 64);
     jubjub_to_scalar(digest, scalar);
 }
@@ -360,9 +363,9 @@ bool redjubjub_verify(const uint8_t vk_bytes[32],
     if (!jub_from_bytes(&R, sig_rbar))
         return false;
 
-    /* c = H*(Rbar || msg) */
+    /* c = H*(Rbar || vk_bytes || msg) per Zcash spec §5.4.7 */
     uint8_t c_scalar[32];
-    h_star(sig_rbar, 32, msg, msg_len, c_scalar);
+    h_star(sig_rbar, 32, vk_bytes, 32, msg, msg_len, c_scalar);
 
     /* S as scalar bytes */
     /* Check S < Fs order (optional, Rust checks via from_repr) */
@@ -646,9 +649,9 @@ bool redjubjub_sign(const uint8_t sk[32],
     uint8_t Rbar[32];
     jub_to_bytes(Rbar, &R_point);
 
-    /* c = H*(Rbar || msg) */
+    /* c = H*(Rbar || vk_bytes || msg) per Zcash spec §5.4.7 */
     uint8_t c_scalar[32];
-    h_star(Rbar, 32, msg, msg_len, c_scalar);
+    h_star(Rbar, 32, vk_bytes, 32, msg, msg_len, c_scalar);
 
     /* S = r + c * sk (mod Fs) */
     struct fs r_fs, c_fs, sk_fs, product, S_fs;
@@ -813,6 +816,50 @@ bool sapling_build_output_description(
     memset(enc_key, 0, 32);
     memset(out_plaintext, 0, 64);
     memset(ock, 0, 32);
+
+    return true;
+}
+
+/* --- librustzcash-backed spend description builder --- */
+
+bool sapling_build_spend_with_ctx(
+    void *proving_ctx,
+    const uint8_t ask[32], const uint8_t nsk[32],
+    const uint8_t diversifier[11], const uint8_t pk_d[32],
+    const uint8_t rcm[32], uint64_t value, uint64_t position,
+    const uint8_t anchor[32],
+    const uint8_t *witness_path, size_t witness_len __attribute__((unused)),
+    uint8_t sd_cv[32], uint8_t sd_nullifier[32],
+    uint8_t sd_rk[32], uint8_t sd_zkproof[192],
+    uint8_t ar_out[32])
+{
+    /* Generate randomness ar for re-randomized verification key */
+    sapling_generate_r(ar_out);
+
+    /* Derive ak and nk from ask and nsk */
+    uint8_t ak[32], nk[32];
+    sapling_ask_to_ak(ask, ak);
+    sapling_nsk_to_nk(nsk, nk);
+
+    /* Compute nullifier */
+    if (!sapling_compute_nf(diversifier, pk_d, value, rcm,
+                             ak, nk, position, sd_nullifier))
+        return false;
+
+    /* Call librustzcash for spend proof (cv, rk, zkproof) */
+    extern bool librustzcash_sapling_spend_proof(
+        void *ctx, const unsigned char *ak, const unsigned char *nsk,
+        const unsigned char *diversifier, const unsigned char *rcm,
+        const unsigned char *ar, const uint64_t value,
+        const unsigned char *anchor, const unsigned char *witness,
+        unsigned char *cv, unsigned char *rk, unsigned char *zkproof);
+
+    if (!librustzcash_sapling_spend_proof(
+            proving_ctx, ak, nsk, diversifier, rcm, ar_out,
+            value, anchor, witness_path, sd_cv, sd_rk, sd_zkproof)) {
+        memset(ar_out, 0, 32);
+        return false;
+    }
 
     return true;
 }

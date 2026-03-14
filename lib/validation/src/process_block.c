@@ -445,6 +445,7 @@ bool connect_tip(struct validation_state *state,
 
     /* Notify wallet of transactions in the connected block */
     extern struct wallet *g_active_wallet;
+    extern struct node_db *g_active_node_db;
     if (g_active_wallet) {
         for (size_t i = 0; i < pblock->num_vtx; i++) {
             wallet_sync_transaction(g_active_wallet, &pblock->vtx[i],
@@ -455,8 +456,25 @@ bool connect_tip(struct validation_state *state,
                 struct transaction *tx =
                     (struct transaction *)&pblock->vtx[i];
                 transaction_compute_hash(tx);
+                size_t notes_before = g_active_wallet->num_sapling_notes;
                 wallet_try_sapling_decrypt(g_active_wallet, tx,
                                            &tx->hash);
+                /* Persist newly discovered notes to SQLite */
+                if (g_active_node_db &&
+                    g_active_wallet->num_sapling_notes > notes_before) {
+                    for (size_t ni = notes_before;
+                         ni < g_active_wallet->num_sapling_notes; ni++) {
+                        struct sapling_received_note *note =
+                            &g_active_wallet->sapling_notes[ni];
+                        node_db_sync_sapling_note(g_active_node_db,
+                            note->txid.data, note->output_index,
+                            (int64_t)note->value, note->rcm,
+                            note->memo, 512, note->ivk,
+                            note->diversifier, note->pk_d,
+                            note->cm, note->nf,
+                            pindex_new->nHeight);
+                    }
+                }
             }
             /* Mark spent nullifiers */
             if (pblock->vtx[i].num_shielded_spend > 0)
@@ -478,7 +496,6 @@ bool connect_tip(struct validation_state *state,
 
     /* Sync block to SQLite database */
     {
-        extern struct node_db *g_active_node_db;
         if (g_active_node_db) {
             node_db_sync_connect_block(g_active_node_db, pblock, pindex_new);
             if (g_active_wallet) {
