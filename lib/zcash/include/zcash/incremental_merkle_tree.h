@@ -65,10 +65,13 @@ bool incremental_tree_serialize(const struct incremental_merkle_tree *t,
 bool incremental_tree_deserialize(struct incremental_merkle_tree *t,
                                    struct byte_stream *s);
 
-/* Incremental witness — tracks a path to a specific leaf */
+/* Incremental witness — tracks a path to a specific leaf.
+ * filled[] stores roots of completed subtrees in the authentication path.
+ * For a depth-32 tree, max fills = 32. Use 64 for safety margin. */
+#define MAX_WITNESS_FILLS 64
 struct incremental_witness {
     struct incremental_merkle_tree tree;
-    struct uint256 filled[MAX_TREE_DEPTH];
+    struct uint256 filled[MAX_WITNESS_FILLS];
     size_t num_filled;
     bool has_cursor;
     struct incremental_merkle_tree cursor;

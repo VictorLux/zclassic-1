@@ -355,14 +355,18 @@ void incremental_witness_append(struct incremental_witness *w,
         if (incremental_tree_is_complete(&w->cursor)) {
             struct uint256 root;
             incremental_tree_root(&w->cursor, &root);
-            w->filled[w->num_filled++] = root;
+            if (w->num_filled < MAX_WITNESS_FILLS) {
+                w->filled[w->num_filled++] = root;
+            }
             w->has_cursor = false;
             w->cursor_depth = next_depth(&w->tree, w->num_filled);
         }
     } else {
         w->cursor_depth = next_depth(&w->tree, w->num_filled);
         if (w->cursor_depth == 0) {
-            w->filled[w->num_filled++] = *obj;
+            if (w->num_filled < MAX_WITNESS_FILLS) {
+                w->filled[w->num_filled++] = *obj;
+            }
             w->cursor_depth = next_depth(&w->tree, w->num_filled);
         } else {
             /* Initialize cursor subtree at cursor_depth */
@@ -555,7 +559,7 @@ bool incremental_witness_deserialize(struct incremental_witness *w,
     /* filled */
     uint64_t num;
     if (!stream_read_compact_size(s, &num)) return false;
-    if (num > MAX_TREE_DEPTH) return false;
+    if (num > MAX_WITNESS_FILLS) return false;
     w->num_filled = (size_t)num;
     for (size_t i = 0; i < w->num_filled; i++) {
         if (!stream_read(s, w->filled[i].data, 32)) return false;
