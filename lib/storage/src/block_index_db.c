@@ -175,8 +175,8 @@ bool block_tree_db_load_block_index_guts(struct block_tree_db *btdb,
 
         if (!disk_block_index_deserialize(&dbi, &s)) {
             stream_free(&s);
-            db_iter_free(&it);
-            return false;
+            db_iter_next(&it);
+            continue;
         }
         stream_free(&s);
 
@@ -191,8 +191,8 @@ bool block_tree_db_load_block_index_guts(struct block_tree_db *btdb,
 
         struct block_index *pindex = insert_fn(ctx, &block_hash);
         if (!pindex) {
-            db_iter_free(&it);
-            return false;
+            db_iter_next(&it);
+            continue;
         }
 
         struct uint256 prev_hash = dbi.hashPrev;

@@ -12,7 +12,7 @@ const struct nu_info NetworkUpgradeInfo[MAX_NETWORK_UPGRADES] = {
     { 0x5ba81b19, "Overwinter",  "See https://z.cash/upgrade/overwinter.html for details." },
     { 0x76b809bb, "Sapling",     "See https://z.cash/upgrade/sapling.html for details." },
     { 0x821a451c, "Bubbles",     "See ZClassic for details." },
-    { 0x821a451c, "Bubbly",      "See ZClassic for details." },
+    { 0x930b540d, "Bubbly",      "See ZClassic for details." },
     { 0x930b540d, "Buttercup",   "See ZClassic for details." },
 };
 

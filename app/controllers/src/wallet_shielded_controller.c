@@ -13,6 +13,7 @@
 #include "encoding/utilstrencodings.h"
 #include "json/json.h"
 #include "keys/key_io.h"
+#include "zcash/fast_scan.h"
 #include "script/standard.h"
 #include "support/cleanse.h"
 #include "core/utiltime.h"
@@ -454,24 +455,90 @@ static bool rpc_z_sendmany(const struct json_value *params, bool help,
             return false;
         }
 
-        /* Get anchor from chain tip block header (authoritative source).
-         * The node_state sapling_tree can be corrupted by connect_block
-         * overwriting rescanwitnesses' correct tree, so we use the
-         * block header hashFinalSaplingRoot which is validated on accept. */
+        /* Compute anchor from our own Sapling tree state.
+         * Load the rescan-authoritative tree, advance it to chain tip,
+         * and use its root as the anchor. This avoids depending on the
+         * block header's hashFinalSaplingRoot which may not match our tree. */
         uint8_t anchor[32];
         int chain_height = 0;
-        if (g_main_state) {
-            chain_height = active_chain_height(&g_main_state->chain_active);
-            const struct block_index *tip =
-                active_chain_tip(&g_main_state->chain_active);
-            if (!tip) {
-                json_set_str(result, "Chain tip not available");
-                return false;
-            }
-            memcpy(anchor, tip->hashFinalSaplingRoot.data, 32);
-        } else {
+        if (!g_main_state) {
             json_set_str(result, "Chain state not available");
             return false;
+        }
+        chain_height = active_chain_height(&g_main_state->chain_active);
+
+        /* Load tree from rescan key (authoritative, not overwritten by connect_block) */
+        struct incremental_merkle_tree spend_tree;
+        sapling_tree_init(&spend_tree);
+        {
+            uint8_t tbuf[2048];
+            size_t tlen = 0;
+            if (g_node_db && node_db_state_get(g_node_db, "sapling_tree_rescan",
+                    tbuf, sizeof(tbuf), &tlen) && tlen > 0) {
+                struct byte_stream ts;
+                stream_init_from_data(&ts, tbuf, tlen);
+                incremental_tree_deserialize(&spend_tree, &ts);
+            }
+        }
+
+        /* Get rescan height */
+        int rescan_height = 0;
+        {
+            uint8_t hbuf[32];
+            size_t hlen = 0;
+            if (g_node_db && node_db_state_get(g_node_db, "sapling_tree_rescan_height",
+                    hbuf, sizeof(hbuf), &hlen) && hlen > 0) {
+                hbuf[hlen] = 0;
+                rescan_height = atoi((char *)hbuf);
+            }
+        }
+
+        /* Advance tree from rescan_height to chain_height */
+        if (rescan_height > 0 && rescan_height < chain_height) {
+            int cached_file = -1;
+            uint8_t *cached_data = NULL;
+            size_t cached_size = 0;
+            for (int bh = rescan_height + 1; bh <= chain_height; bh++) {
+                const struct block_index *pi =
+                    active_chain_at(&g_main_state->chain_active, bh);
+                if (!pi || !(pi->nStatus & BLOCK_HAVE_DATA)) continue;
+                if (pi->nFile != cached_file) {
+                    if (cached_data) munmap(cached_data, cached_size);
+                    char fpath[512];
+                    snprintf(fpath, sizeof(fpath), "%s/blocks/blk%05d.dat",
+                             g_datadir, pi->nFile);
+                    int fd = open(fpath, O_RDONLY);
+                    if (fd < 0) { cached_data = NULL; cached_file = -1; continue; }
+                    struct stat fst;
+                    if (fstat(fd, &fst) != 0) { close(fd); continue; }
+                    cached_size = (size_t)fst.st_size;
+                    cached_data = mmap(NULL, cached_size,
+                                       PROT_READ, MAP_PRIVATE, fd, 0);
+                    close(fd);
+                    if (cached_data == MAP_FAILED) {
+                        cached_data = NULL; cached_file = -1; continue;
+                    }
+                    cached_file = pi->nFile;
+                }
+                if (!cached_data || pi->nDataPos >= cached_size) continue;
+                uint8_t adv_cms[4096][32];
+                int n = fast_scan_sapling_commitments(
+                    cached_data + pi->nDataPos,
+                    cached_size - pi->nDataPos, adv_cms, 4096);
+                for (int ci = 0; ci < n; ci++) {
+                    struct uint256 cm;
+                    memcpy(cm.data, adv_cms[ci], 32);
+                    incremental_tree_append(&spend_tree, &cm);
+                }
+            }
+            if (cached_data) munmap(cached_data, cached_size);
+        }
+
+        /* Use OUR tree root as the anchor */
+        {
+            struct uint256 tree_root;
+            incremental_tree_root(&spend_tree, &tree_root);
+            memcpy(anchor, tree_root.data, 32);
         }
         if (chain_height == 0) {
             int wh = g_wallet->best_block_height;
@@ -551,25 +618,18 @@ static bool rpc_z_sendmany(const struct json_value *params, bool help,
                 }
                 if (!cached_data || pi->nDataPos >= cached_size) continue;
 
-                struct block blk;
-                block_init(&blk);
-                struct byte_stream bs;
-                stream_init_from_data(&bs, cached_data + pi->nDataPos,
-                                      cached_size - pi->nDataPos);
-                if (!block_deserialize(&blk, &bs)) {
-                    block_free(&blk);
-                    continue;
+                /* Fast-scan for Sapling commitments (avoids slow block_deserialize) */
+                uint8_t adv_cms[4096][32];
+                int adv_n = fast_scan_sapling_commitments(
+                    cached_data + pi->nDataPos,
+                    cached_size - pi->nDataPos,
+                    adv_cms, 4096);
+                for (int ci = 0; ci < adv_n; ci++) {
+                    struct uint256 adv_cm;
+                    memcpy(adv_cm.data, adv_cms[ci], 32);
+                    for (size_t ni = 0; ni < num_sel_notes; ni++)
+                        incremental_witness_append(&witnesses[ni], &adv_cm);
                 }
-
-                for (size_t ti = 0; ti < blk.num_vtx; ti++) {
-                    const struct transaction *btx = &blk.vtx[ti];
-                    for (size_t oi = 0; oi < btx->num_shielded_output; oi++) {
-                        for (size_t ni = 0; ni < num_sel_notes; ni++)
-                            incremental_witness_append(&witnesses[ni],
-                                &btx->v_shielded_output[oi].cm);
-                    }
-                }
-                block_free(&blk);
             }
             if (cached_data) munmap(cached_data, cached_size);
         }

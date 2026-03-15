@@ -113,6 +113,10 @@ static void coins_map_rehash(struct coins_map *m, size_t new_num_buckets)
     size_t old_num = m->num_buckets;
 
     m->buckets = calloc(new_num_buckets, sizeof(struct coins_map_entry));
+    if (!m->buckets) {
+        m->buckets = old;
+        return;
+    }
     m->num_buckets = new_num_buckets;
     m->size = 0;
 

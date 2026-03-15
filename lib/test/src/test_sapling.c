@@ -5255,9 +5255,210 @@ int test_sapling(void)
         if (!ok) failures++;
     }
 
+    printf("Sapling tree root after first real commitment (block 476977)... ");
+    {
+        struct incremental_merkle_tree t;
+        sapling_tree_init(&t);
+        struct uint256 cm;
+        uint256_set_hex(&cm,
+            "5a8d47a74b48efce5841a43ddaccdc75253a4ccda847d67ada8309dcf01d3943");
+        incremental_tree_append(&t, &cm);
+        struct uint256 root;
+        incremental_tree_root(&t, &root);
+        char hex[65];
+        uint256_get_hex(&root, hex);
+        bool ok = (strcmp(hex,
+            "4fa518c5b25bb460710ba5e42d83b549100193abb5a895a20717dfeaf96116d4") == 0);
+        if (!ok) printf("FAIL (got %s)\n", hex);
+        else printf("OK\n");
+        if (!ok) failures++;
+    }
+
+    printf("Sapling witness root matches tree root... ");
+    {
+        struct incremental_merkle_tree t;
+        sapling_tree_init(&t);
+        struct uint256 cm;
+        uint256_set_hex(&cm,
+            "5a8d47a74b48efce5841a43ddaccdc75253a4ccda847d67ada8309dcf01d3943");
+        incremental_tree_append(&t, &cm);
+        struct incremental_witness w;
+        incremental_witness_init(&w, &t);
+        struct uint256 w_root, t_root;
+        incremental_witness_root(&w, &w_root);
+        incremental_tree_root(&t, &t_root);
+        bool ok = (memcmp(w_root.data, t_root.data, 32) == 0);
+        if (!ok) {
+            char h1[65], h2[65];
+            uint256_get_hex(&w_root, h1); uint256_get_hex(&t_root, h2);
+            printf("FAIL\n  witness: %s\n  tree:    %s\n", h1, h2);
+        } else printf("OK\n");
+        if (!ok) failures++;
+    }
+
+    printf("Sapling witness advances correctly with new commitment... ");
+    {
+        struct incremental_merkle_tree t;
+        sapling_tree_init(&t);
+        struct uint256 cm1, cm2;
+        uint256_set_hex(&cm1, "5a8d47a74b48efce5841a43ddaccdc75253a4ccda847d67ada8309dcf01d3943");
+        uint256_set_hex(&cm2, "1111111111111111111111111111111111111111111111111111111111111111");
+        incremental_tree_append(&t, &cm1);
+        struct incremental_witness w;
+        incremental_witness_init(&w, &t);
+        incremental_tree_append(&t, &cm2);
+        incremental_witness_append(&w, &cm2);
+        struct uint256 w_root, t_root;
+        incremental_witness_root(&w, &w_root);
+        incremental_tree_root(&t, &t_root);
+        bool ok = (memcmp(w_root.data, t_root.data, 32) == 0);
+        if (!ok) {
+            char h1[65], h2[65];
+            uint256_get_hex(&w_root, h1); uint256_get_hex(&t_root, h2);
+            printf("FAIL\n  witness: %s\n  tree:    %s\n", h1, h2);
+        } else printf("OK\n");
+        if (!ok) failures++;
+    }
+
     /* ================================================================ */
     /* sapling_generate_r tests                                         */
     /* ================================================================ */
+
+    printf("Sapling tree size after 10000 appends... ");
+    {
+        struct incremental_merkle_tree t;
+        sapling_tree_init(&t);
+        struct uint256 cm;
+        memset(cm.data, 0x42, 32);
+        for (int i = 0; i < 10000; i++) {
+            cm.data[0] = (unsigned char)(i & 0xff);
+            cm.data[1] = (unsigned char)((i >> 8) & 0xff);
+            incremental_tree_append(&t, &cm);
+        }
+        size_t sz = incremental_tree_size(&t);
+        /* 10000 in binary = 10011100010000, so parents should reflect this */
+        struct byte_stream ts;
+        stream_init(&ts, 2048);
+        incremental_tree_serialize(&t, &ts);
+        bool ok = (sz == 10000 && ts.size > 200);
+        if (!ok) printf("FAIL (size=%zu, serial=%zu bytes)\n", sz, ts.size);
+        else printf("OK (size=%zu, serial=%zu bytes)\n", sz, ts.size);
+        stream_free(&ts);
+        if (!ok) failures++;
+    }
+
+    printf("Sapling witness root matches tree root at scale (10000 elements)... ");
+    {
+        struct incremental_merkle_tree t;
+        sapling_tree_init(&t);
+        struct uint256 cm;
+        memset(cm.data, 0x42, 32);
+        /* Append 9999 elements */
+        for (int i = 0; i < 9999; i++) {
+            cm.data[0] = (unsigned char)(i & 0xff);
+            cm.data[1] = (unsigned char)((i >> 8) & 0xff);
+            incremental_tree_append(&t, &cm);
+        }
+        /* Append 10000th and create witness */
+        cm.data[0] = (unsigned char)(9999 & 0xff);
+        cm.data[1] = (unsigned char)((9999 >> 8) & 0xff);
+        incremental_tree_append(&t, &cm);
+        struct incremental_witness w;
+        incremental_witness_init(&w, &t);
+        struct uint256 wr, tr;
+        incremental_witness_root(&w, &wr);
+        incremental_tree_root(&t, &tr);
+        bool ok = (memcmp(wr.data, tr.data, 32) == 0);
+        if (!ok) {
+            char h1[65], h2[65];
+            uint256_get_hex(&wr, h1); uint256_get_hex(&tr, h2);
+            printf("FAIL\n  witness: %s\n  tree:    %s\n", h1, h2);
+        } else printf("OK\n");
+        if (!ok) failures++;
+    }
+
+    printf("Sapling witness serialize/deserialize preserves root (10K)... ");
+    {
+        struct incremental_merkle_tree t;
+        sapling_tree_init(&t);
+        struct uint256 cm;
+        memset(cm.data, 0x42, 32);
+        for (int i = 0; i < 10000; i++) {
+            cm.data[0] = (unsigned char)(i & 0xff);
+            cm.data[1] = (unsigned char)((i >> 8) & 0xff);
+            incremental_tree_append(&t, &cm);
+        }
+        struct incremental_witness w;
+        incremental_witness_init(&w, &t);
+
+        /* Serialize */
+        struct byte_stream ws;
+        stream_init(&ws, 8192);
+        incremental_witness_serialize(&w, &ws);
+
+        /* Deserialize */
+        struct incremental_witness w2;
+        struct byte_stream rs;
+        stream_init_from_data(&rs, ws.data, ws.size);
+        bool deser_ok = incremental_witness_deserialize(&w2, &rs,
+            SAPLING_INCREMENTAL_MERKLE_TREE_DEPTH,
+            t.combine, t.uncommitted);
+
+        /* Compare roots */
+        struct uint256 r1, r2;
+        incremental_witness_root(&w, &r1);
+        incremental_witness_root(&w2, &r2);
+
+        bool ok = deser_ok && (memcmp(r1.data, r2.data, 32) == 0);
+        if (!ok) {
+            char h1[65], h2[65];
+            uint256_get_hex(&r1, h1); uint256_get_hex(&r2, h2);
+            printf("FAIL (deser=%d)\n  original: %s\n  roundtrip: %s\n", deser_ok, h1, h2);
+        } else {
+            printf("OK (%zu bytes serialized)\n", ws.size);
+        }
+        stream_free(&ws);
+        if (!ok) failures++;
+    }
+
+    printf("Sapling witness root after advancement at scale (1000+100)... ");
+    {
+        struct incremental_merkle_tree t;
+        sapling_tree_init(&t);
+        struct uint256 cm;
+        memset(cm.data, 0x42, 32);
+        /* Build tree with 1000 elements, witness at element 500 */
+        struct incremental_witness w;
+        bool w_init = false;
+        for (int i = 0; i < 1000; i++) {
+            cm.data[0] = (unsigned char)(i & 0xff);
+            cm.data[1] = (unsigned char)((i >> 8) & 0xff);
+            if (w_init)
+                incremental_witness_append(&w, &cm);
+            incremental_tree_append(&t, &cm);
+            if (i == 499) {
+                incremental_witness_init(&w, &t);
+                w_init = true;
+            }
+        }
+        /* Advance both tree and witness by 100 more elements */
+        for (int i = 1000; i < 1100; i++) {
+            cm.data[0] = (unsigned char)(i & 0xff);
+            cm.data[1] = (unsigned char)((i >> 8) & 0xff);
+            incremental_witness_append(&w, &cm);
+            incremental_tree_append(&t, &cm);
+        }
+        struct uint256 wr, tr;
+        incremental_witness_root(&w, &wr);
+        incremental_tree_root(&t, &tr);
+        bool ok = (memcmp(wr.data, tr.data, 32) == 0);
+        if (!ok) {
+            char h1[65], h2[65];
+            uint256_get_hex(&wr, h1); uint256_get_hex(&tr, h2);
+            printf("FAIL\n  witness: %s\n  tree:    %s\n", h1, h2);
+        } else printf("OK\n");
+        if (!ok) failures++;
+    }
 
     printf("sapling_generate_r produces valid non-zero scalars... ");
     {

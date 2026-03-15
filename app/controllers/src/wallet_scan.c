@@ -62,6 +62,7 @@ static void aht_insert(struct addr_ht *t, const uint8_t hash[20])
     for (struct addr_entry *e = t->buckets[b]; e; e = e->next)
         if (memcmp(e->hash, hash, 20) == 0) return;
     struct addr_entry *e = malloc(sizeof(*e));
+    if (!e) return;
     memcpy(e->hash, hash, 20);
     e->next = t->buckets[b];
     t->buckets[b] = e;

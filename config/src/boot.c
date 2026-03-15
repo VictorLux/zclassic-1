@@ -663,9 +663,16 @@ bool app_init(struct app_context *ctx)
                 printf("Wallet scan height is 0 with %d blocks. "
                        "Use rescanblockchain RPC for targeted rescan.\n",
                        tip_height);
-            } else {
+            } else if (tip_height - scan_from < 50000) {
+                /* Small rescan: do it now */
                 wallet_rescan(&g_wallet, &g_state.chain_active,
                               scan_from, tip_height, ctx->datadir);
+            } else {
+                /* Large rescan: defer to avoid blocking startup.
+                 * Use rescanblockchain RPC to trigger manually. */
+                printf("Wallet needs rescan from %d to %d (%d blocks). "
+                       "Deferring — use rescanblockchain RPC.\n",
+                       scan_from, tip_height, tip_height - scan_from);
             }
         }
     }

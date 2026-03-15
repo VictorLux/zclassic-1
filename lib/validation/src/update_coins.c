@@ -15,10 +15,12 @@ void update_coins_with_undo(const struct transaction *tx,
                             int nHeight)
 {
     if (!transaction_is_coinbase(tx)) {
-        tx_undo_alloc(txundo, tx->num_vin);
+        if (!tx_undo_alloc(txundo, tx->num_vin))
+            return;
         for (size_t i = 0; i < tx->num_vin; i++) {
             struct coins_cache_entry *entry =
                 coins_view_cache_modify(inputs, &tx->vin[i].prevout.hash);
+            if (!entry) return;
             unsigned int nPos = tx->vin[i].prevout.n;
 
             assert(nPos < entry->coins.num_vout &&
@@ -37,6 +39,7 @@ void update_coins_with_undo(const struct transaction *tx,
 
     struct coins_cache_entry *new_entry =
         coins_view_cache_modify_new(inputs, &tx->hash);
+    if (!new_entry) return;
     coins_from_transaction(&new_entry->coins, tx, nHeight);
 }
 

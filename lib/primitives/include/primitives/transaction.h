@@ -111,8 +111,8 @@ struct js_description {
     unsigned char ciphertexts[ZC_NUM_JS_OUTPUTS][ZC_SPROUT_CIPHERTEXT_SIZE];
 };
 
-#define MAX_TX_INPUTS 4096
-#define MAX_TX_OUTPUTS 4096
+#define MAX_TX_INPUTS 65536
+#define MAX_TX_OUTPUTS 65536
 #define MAX_SHIELDED_SPENDS 4096
 #define MAX_SHIELDED_OUTPUTS 4096
 #define MAX_JOINSPLITS 4096

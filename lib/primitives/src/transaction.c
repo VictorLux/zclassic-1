@@ -61,6 +61,8 @@ bool transaction_alloc(struct transaction *tx, size_t num_vin, size_t num_vout)
     tx->vin = calloc(num_vin, sizeof(struct tx_in));
     tx->vout = calloc(num_vout, sizeof(struct tx_out));
     if ((num_vin && !tx->vin) || (num_vout && !tx->vout)) {
+        fprintf(stderr, "transaction_alloc FAILED: vin=%zu (need %zu MB) vout=%zu\n",
+                num_vin, num_vin * sizeof(struct tx_in) / (1024*1024), num_vout);
         free(tx->vin);
         free(tx->vout);
         tx->vin = NULL;

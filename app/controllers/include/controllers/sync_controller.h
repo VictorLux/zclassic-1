@@ -32,6 +32,10 @@ struct wallet;
 /* Initialize the sync layer. Opens SQLite at datadir/node.db. */
 bool node_db_sync_init(struct node_db *ndb, const char *datadir);
 
+/* Global flag: set to true while rescanwitnesses is running.
+ * Prevents connect_block from overwriting the Sapling tree. */
+extern _Atomic bool g_sapling_rescan_active;
+
 /* Called after a block is successfully connected to the active chain.
  * Indexes the block header, all transactions, and updates the UTXO set.
  * Runs inside a SQLite transaction for atomicity. */

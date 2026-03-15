@@ -33,6 +33,9 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <stdatomic.h>
+
+_Atomic bool g_sapling_rescan_active = false;
 
 bool node_db_sync_init(struct node_db *ndb, const char *datadir)
 {
@@ -192,7 +195,9 @@ bool node_db_sync_connect_block(struct node_db *ndb,
         }
     }
 
-    /* 3. Update Sapling commitment tree */
+    /* 3. Update Sapling commitment tree
+     * Skip if rescanwitnesses is active — it manages the tree itself. */
+    if (atomic_load(&g_sapling_rescan_active)) goto skip_sapling;
     {
         struct incremental_merkle_tree tree;
         sapling_tree_init(&tree);
@@ -329,6 +334,7 @@ bool node_db_sync_connect_block(struct node_db *ndb,
         }
     }
 
+skip_sapling:
     /* 4. Update chain tip in state table */
     node_db_sync_set_tip(ndb,
         pindex->phashBlock->data, pindex->nHeight);
@@ -768,6 +774,7 @@ static uint8_t *mmap_block_file(const char *datadir, int file_num,
     if (data == MAP_FAILED) return NULL;
     *out_size = (size_t)fst.st_size;
     posix_madvise(data, *out_size, POSIX_MADV_SEQUENTIAL);
+    posix_madvise(data, *out_size, POSIX_MADV_WILLNEED);
     return data;
 }
 

@@ -34,7 +34,7 @@ struct block_index *block_index_get_ancestor(struct block_index *bi, int height)
             walk = walk->pskip;
             h = skip_h;
         } else {
-            assert(walk->pprev);
+            if (!walk->pprev) return NULL;
             walk = walk->pprev;
             h--;
         }

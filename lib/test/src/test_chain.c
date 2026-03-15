@@ -1070,5 +1070,238 @@ int test_chain(void)
         }
     }
 
+    /* ── Consensus upgrade activation tests ─────────────────── */
+
+    printf("Upgrade activation: Sprout always active... ");
+    {
+        chain_params_select(CHAIN_MAIN);
+        const struct chain_params *p = chain_params_get();
+        if (consensus_network_upgrade_active(&p->consensus, 0, BASE_SPROUT) &&
+            consensus_network_upgrade_active(&p->consensus, 1000000, BASE_SPROUT))
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("Upgrade activation: Overwinter at 476969... ");
+    {
+        const struct chain_params *p = chain_params_get();
+        if (!consensus_network_upgrade_active(&p->consensus, 476968, UPGRADE_OVERWINTER) &&
+            consensus_network_upgrade_active(&p->consensus, 476969, UPGRADE_OVERWINTER))
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("Upgrade activation: Sapling at 476969... ");
+    {
+        const struct chain_params *p = chain_params_get();
+        if (!consensus_network_upgrade_active(&p->consensus, 476968, UPGRADE_SAPLING) &&
+            consensus_network_upgrade_active(&p->consensus, 476969, UPGRADE_SAPLING))
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("Upgrade activation: Bubbles at 585318... ");
+    {
+        const struct chain_params *p = chain_params_get();
+        if (!consensus_network_upgrade_active(&p->consensus, 585317, UPGRADE_BUBBLES) &&
+            consensus_network_upgrade_active(&p->consensus, 585318, UPGRADE_BUBBLES))
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("Upgrade activation: DIFFADJ at 585322... ");
+    {
+        const struct chain_params *p = chain_params_get();
+        if (!consensus_network_upgrade_active(&p->consensus, 585321, UPGRADE_DIFFADJ) &&
+            consensus_network_upgrade_active(&p->consensus, 585322, UPGRADE_DIFFADJ))
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("Upgrade activation: Buttercup at 707000... ");
+    {
+        const struct chain_params *p = chain_params_get();
+        if (!consensus_network_upgrade_active(&p->consensus, 706999, UPGRADE_BUTTERCUP) &&
+            consensus_network_upgrade_active(&p->consensus, 707000, UPGRADE_BUTTERCUP))
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("Branch ID: Sprout epoch... ");
+    {
+        const struct chain_params *p = chain_params_get();
+        uint32_t bid = consensus_current_epoch_branch_id(100, &p->consensus);
+        if (bid == 0)
+            printf("OK\n");
+        else { printf("FAIL (got 0x%08x)\n", bid); failures++; }
+    }
+
+    printf("Branch ID: Sapling epoch... ");
+    {
+        const struct chain_params *p = chain_params_get();
+        uint32_t bid = consensus_current_epoch_branch_id(500000, &p->consensus);
+        if (bid == 0x76b809bb)
+            printf("OK\n");
+        else { printf("FAIL (got 0x%08x)\n", bid); failures++; }
+    }
+
+    printf("Branch ID: Bubbles epoch... ");
+    {
+        const struct chain_params *p = chain_params_get();
+        uint32_t bid = consensus_current_epoch_branch_id(585320, &p->consensus);
+        if (bid == 0x821a451c)
+            printf("OK\n");
+        else { printf("FAIL (got 0x%08x)\n", bid); failures++; }
+    }
+
+    printf("Branch ID: DIFFADJ epoch (must be 0x930b540d)... ");
+    {
+        const struct chain_params *p = chain_params_get();
+        uint32_t bid = consensus_current_epoch_branch_id(600000, &p->consensus);
+        if (bid == 0x930b540d)
+            printf("OK\n");
+        else { printf("FAIL (got 0x%08x, expected 0x930b540d)\n", bid); failures++; }
+    }
+
+    printf("Branch ID: Buttercup epoch... ");
+    {
+        const struct chain_params *p = chain_params_get();
+        uint32_t bid = consensus_current_epoch_branch_id(800000, &p->consensus);
+        if (bid == 0x930b540d)
+            printf("OK\n");
+        else { printf("FAIL (got 0x%08x)\n", bid); failures++; }
+    }
+
+    printf("Subsidy: genesis block... ");
+    {
+        const struct chain_params *p = chain_params_get();
+        int64_t sub = get_block_subsidy(0, &p->consensus);
+        if (sub == 0)
+            printf("OK\n");
+        else { printf("FAIL (got %lld)\n", (long long)sub); failures++; }
+    }
+
+    printf("Subsidy: block 1 (slow start, second half)... ");
+    {
+        const struct chain_params *p = chain_params_get();
+        int64_t sub = get_block_subsidy(1, &p->consensus);
+        /* nSubsidySlowStartInterval=2, height 1 is in second half:
+         * 1250000000 / 2 * (1+1) = 1250000000 */
+        if (sub == 1250000000)
+            printf("OK\n");
+        else { printf("FAIL (got %lld)\n", (long long)sub); failures++; }
+    }
+
+    printf("Subsidy: block 2 (full subsidy)... ");
+    {
+        const struct chain_params *p = chain_params_get();
+        int64_t sub = get_block_subsidy(2, &p->consensus);
+        if (sub == 1250000000) /* 12.5 ZCL */
+            printf("OK\n");
+        else { printf("FAIL (got %lld)\n", (long long)sub); failures++; }
+    }
+
+    printf("Subsidy: block 500000 (no halving yet)... ");
+    {
+        const struct chain_params *p = chain_params_get();
+        int64_t sub = get_block_subsidy(500000, &p->consensus);
+        if (sub == 1250000000)
+            printf("OK\n");
+        else { printf("FAIL (got %lld)\n", (long long)sub); failures++; }
+    }
+
+    printf("Subsidy: at Buttercup (707000, triple halving + /2)... ");
+    {
+        const struct chain_params *p = chain_params_get();
+        int64_t sub = get_block_subsidy(707000, &p->consensus);
+        /* (12.5 / 2) >> 3 = 6.25 >> 3 = 0.78125 ZCL = 78125000 sat */
+        if (sub == 78125000)
+            printf("OK\n");
+        else { printf("FAIL (got %lld, expected 78125000)\n", (long long)sub); failures++; }
+    }
+
+    printf("Halving: pre-Buttercup count... ");
+    {
+        const struct chain_params *p = chain_params_get();
+        int h = consensus_halving(&p->consensus, 500000);
+        if (h == 0)
+            printf("OK\n");
+        else { printf("FAIL (got %d)\n", h); failures++; }
+    }
+
+    printf("Halving: post-Buttercup returns 3... ");
+    {
+        const struct chain_params *p = chain_params_get();
+        int h = consensus_halving(&p->consensus, 707000);
+        if (h == 3)
+            printf("OK\n");
+        else { printf("FAIL (got %d)\n", h); failures++; }
+    }
+
+    printf("PoW target spacing: pre-Buttercup 150s... ");
+    {
+        const struct chain_params *p = chain_params_get();
+        int64_t sp = consensus_pow_target_spacing(&p->consensus, 706999);
+        if (sp == 150)
+            printf("OK\n");
+        else { printf("FAIL (got %lld)\n", (long long)sp); failures++; }
+    }
+
+    printf("PoW target spacing: post-Buttercup 75s... ");
+    {
+        const struct chain_params *p = chain_params_get();
+        int64_t sp = consensus_pow_target_spacing(&p->consensus, 707000);
+        if (sp == 75)
+            printf("OK\n");
+        else { printf("FAIL (got %lld)\n", (long long)sp); failures++; }
+    }
+
+    printf("Equihash params: pre-Bubbles N=200 K=9... ");
+    {
+        const struct chain_params *p = chain_params_get();
+        unsigned int n = chain_params_equihash_n(p, 585317);
+        unsigned int k = chain_params_equihash_k(p, 585317);
+        if (n == 200 && k == 9)
+            printf("OK\n");
+        else { printf("FAIL (got N=%u K=%u)\n", n, k); failures++; }
+    }
+
+    printf("Equihash params: post-Bubbles N=192 K=7... ");
+    {
+        const struct chain_params *p = chain_params_get();
+        unsigned int n = chain_params_equihash_n(p, 585318);
+        unsigned int k = chain_params_equihash_k(p, 585318);
+        if (n == 192 && k == 7)
+            printf("OK\n");
+        else { printf("FAIL (got N=%u K=%u)\n", n, k); failures++; }
+    }
+
+    printf("Founders reward last height... ");
+    {
+        const struct chain_params *p = chain_params_get();
+        int last = consensus_last_founders_reward_height(&p->consensus);
+        if (last == 840000)
+            printf("OK\n");
+        else { printf("FAIL (got %d)\n", last); failures++; }
+    }
+
+    printf("Averaging window timespan: pre-Buttercup... ");
+    {
+        const struct chain_params *p = chain_params_get();
+        int64_t ts = consensus_averaging_window_timespan(&p->consensus, 500000);
+        if (ts == 17 * 150)
+            printf("OK\n");
+        else { printf("FAIL (got %lld)\n", (long long)ts); failures++; }
+    }
+
+    printf("Averaging window timespan: post-Buttercup... ");
+    {
+        const struct chain_params *p = chain_params_get();
+        int64_t ts = consensus_averaging_window_timespan(&p->consensus, 707000);
+        if (ts == 17 * 75)
+            printf("OK\n");
+        else { printf("FAIL (got %lld)\n", (long long)ts); failures++; }
+    }
+
     return failures;
 }
