@@ -196,8 +196,11 @@ bool node_db_sync_connect_block(struct node_db *ndb,
     }
 
     /* 3. Update Sapling commitment tree
-     * Skip if rescanwitnesses is active — it manages the tree itself. */
-    if (atomic_load(&g_sapling_rescan_active)) goto skip_sapling;
+     * DISABLED: The sync_controller's tree diverges from the block headers
+     * because it was initialized from a stale node_state blob after fast sync.
+     * Until the tree is correctly initialized (via rescanwitnesses), skip all
+     * Sapling tree and witness updates to avoid corrupting witness data. */
+    goto skip_sapling;
     {
         struct incremental_merkle_tree tree;
         sapling_tree_init(&tree);

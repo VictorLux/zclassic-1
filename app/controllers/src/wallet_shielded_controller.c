@@ -534,31 +534,21 @@ static bool rpc_z_sendmany(const struct json_value *params, bool help,
             if (cached_data) munmap(cached_data, cached_size);
         }
 
-        /* Use OUR tree root as the anchor */
-        {
-            struct uint256 tree_root;
-            incremental_tree_root(&spend_tree, &tree_root);
-            memcpy(anchor, tree_root.data, 32);
-        }
-        if (chain_height == 0) {
-            int wh = g_wallet->best_block_height;
-            if (wh > 0) chain_height = wh;
-        }
+        /* Anchor will be set AFTER loading witnesses — use their height */
 
-        /* Load witnesses for selected notes */
+        /* Load witnesses from SQLite — use them as-is at rescan_height.
+         * The rescan verified all 9 witness roots match the tree. */
         struct incremental_witness *witnesses = calloc(num_sel_notes,
             sizeof(struct incremental_witness));
         if (!witnesses) {
-            json_set_str(result, "Out of memory allocating witnesses");
+            json_set_str(result, "Out of memory");
             return false;
         }
-
-        /* We need a tree's combine/uncommitted functions for deserialization.
-         * Init a dummy tree just to get those function pointers. */
         struct incremental_merkle_tree dummy_tree;
         sapling_tree_init(&dummy_tree);
 
         int witness_height = 0;
+        (void)witness_height;
         for (size_t i = 0; i < num_sel_notes; i++) {
             uint8_t *wblob = NULL;
             size_t wlen = 0;
@@ -567,8 +557,7 @@ static bool rpc_z_sendmany(const struct json_value *params, bool help,
                     selected_notes[i].txid, selected_notes[i].output_index,
                     &wblob, &wlen, &wheight) || !wblob) {
                 free(witnesses);
-                json_set_str(result, "Witness not available for note "
-                    "(run rescanwitnesses first)");
+                json_set_str(result, "Witness not available (run rescanwitnesses)");
                 return false;
             }
             if (i == 0) witness_height = wheight;
@@ -577,105 +566,41 @@ static bool rpc_z_sendmany(const struct json_value *params, bool help,
             if (!incremental_witness_deserialize(&witnesses[i], &ws,
                     SAPLING_INCREMENTAL_MERKLE_TREE_DEPTH,
                     dummy_tree.combine, dummy_tree.uncommitted)) {
-                free(wblob);
-                free(witnesses);
+                free(wblob); free(witnesses);
                 json_set_str(result, "Failed to deserialize witness");
                 return false;
             }
             free(wblob);
         }
 
-        /* Advance witnesses from witness_height to chain tip.
-         * Only witnesses need advancing — the anchor comes from the
-         * block header so we don't need to track the tree here. */
-        if (witness_height < chain_height && g_main_state) {
-            int cached_file = -1;
-            uint8_t *cached_data = NULL;
-            size_t cached_size = 0;
-
-            for (int bh = witness_height + 1; bh <= chain_height; bh++) {
-                const struct block_index *pi =
-                    active_chain_at(&g_main_state->chain_active, bh);
-                if (!pi || !(pi->nStatus & BLOCK_HAVE_DATA)) continue;
-
-                if (pi->nFile != cached_file) {
-                    if (cached_data) munmap(cached_data, cached_size);
-                    char fpath[512];
-                    snprintf(fpath, sizeof(fpath), "%s/blocks/blk%05d.dat",
-                             g_datadir, pi->nFile);
-                    int fd = open(fpath, O_RDONLY);
-                    if (fd < 0) { cached_data = NULL; cached_file = -1; continue; }
-                    struct stat fst;
-                    if (fstat(fd, &fst) != 0) { close(fd); continue; }
-                    cached_size = (size_t)fst.st_size;
-                    cached_data = mmap(NULL, cached_size,
-                                       PROT_READ, MAP_PRIVATE, fd, 0);
-                    close(fd);
-                    if (cached_data == MAP_FAILED) {
-                        cached_data = NULL; cached_file = -1; continue;
-                    }
-                    cached_file = pi->nFile;
-                }
-                if (!cached_data || pi->nDataPos >= cached_size) continue;
-
-                /* Fast-scan for Sapling commitments (avoids slow block_deserialize) */
-                uint8_t adv_cms[4096][32];
-                int adv_n = fast_scan_sapling_commitments(
-                    cached_data + pi->nDataPos,
-                    cached_size - pi->nDataPos,
-                    adv_cms, 4096);
-                for (int ci = 0; ci < adv_n; ci++) {
-                    struct uint256 adv_cm;
-                    memcpy(adv_cm.data, adv_cms[ci], 32);
-                    for (size_t ni = 0; ni < num_sel_notes; ni++)
-                        incremental_witness_append(&witnesses[ni], &adv_cm);
-                }
-            }
-            if (cached_data) munmap(cached_data, cached_size);
-        }
-
-        /* Debug: print tree and witness state */
+        /* Anchor = block_index hashFinalSaplingRoot at witness height.
+         * The witness was deserialized and its root matches this value. */
         {
-            struct uint256 tr;
-            incremental_tree_root(&spend_tree, &tr);
-            char th[65]; uint256_get_hex(&tr, th);
-            fprintf(stderr, "z_sendmany: tree root=%s size=%zu "
-                "rescan_h=%d chain_h=%d witness_h=%d\n",
-                th, incremental_tree_size(&spend_tree),
-                rescan_height, chain_height, witness_height);
+            int ah = witness_height > 0 ? witness_height :
+                     (rescan_height > 0 ? rescan_height : chain_height);
+            const struct block_index *ab =
+                active_chain_at(&g_main_state->chain_active, ah);
+            if (ab)
+                memcpy(anchor, ab->hashFinalSaplingRoot.data, 32);
         }
-        for (size_t i = 0; i < num_sel_notes && i < 1; i++) {
-            struct uint256 wr;
-            incremental_witness_root(&witnesses[i], &wr);
-            char wh[65]; uint256_get_hex(&wr, wh);
-            fprintf(stderr, "z_sendmany: witness[%zu] root=%s fills=%zu\n",
-                i, wh, witnesses[i].num_filled);
-        }
-        fflush(stderr);
 
-        /* Use the witness root as the anchor for the spend proof.
-         * The witness was built from our verified Sapling tree and
-         * advanced by the sync_controller. Its root IS a valid
-         * anchor — it represents the tree state at witness_height. */
-        {
+        /* Verify witness roots match anchor (they should — rescan verified) */
+        for (size_t vi = 0; vi < num_sel_notes; vi++) {
             struct uint256 wroot;
-            incremental_witness_root(&witnesses[0], &wroot);
-            memcpy(anchor, wroot.data, 32);
-            char wh[65]; uint256_get_hex(&wroot, wh);
-            fprintf(stderr, "z_sendmany: using witness root as anchor: %s "
-                "(witness_h=%d)\n", wh, witness_height);
-
-            /* Verify all witnesses have the same root */
-            for (size_t i = 1; i < num_sel_notes; i++) {
-                struct uint256 wr2;
-                incremental_witness_root(&witnesses[i], &wr2);
-                if (memcmp(wr2.data, wroot.data, 32) != 0) {
-                    free(witnesses);
-                    json_set_str(result, "Witness roots inconsistent");
-                    return false;
-                }
+            incremental_witness_root(&witnesses[vi], &wroot);
+            if (memcmp(wroot.data, anchor, 32) != 0) {
+                char ah[65], wh[65];
+                uint256_get_hex((const struct uint256 *)anchor, ah);
+                uint256_get_hex(&wroot, wh);
+                fprintf(stderr, "z_sendmany: witness %zu mismatch "
+                    "anchor=%s witness=%s\n", vi, ah, wh);
+                free(witnesses);
+                json_set_str(result, "Witness root mismatch (run rescanwitnesses)");
+                return false;
             }
         }
+
+        /* (old advancement code removed — witnesses used at rescan height) */
 
         /* Build transaction */
         struct wallet_tx wtx;

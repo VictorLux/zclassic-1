@@ -2506,6 +2506,29 @@ static bool rpc_rescanwitnesses(const struct json_value *params, bool help,
 
     if (cached_data) munmap(cached_data, cached_size);
 
+    /* Verify witness roots match tree root BEFORE saving */
+    {
+        struct uint256 tree_root;
+        incremental_tree_root(&tree, &tree_root);
+        char tr_hex[65]; uint256_get_hex(&tree_root, tr_hex);
+        for (int ni = 0; ni < n_notes; ni++) {
+            if (!witness_active[ni]) continue;
+            struct uint256 wr;
+            incremental_witness_root(&witnesses[ni], &wr);
+            char wr_hex[65]; uint256_get_hex(&wr, wr_hex);
+            if (memcmp(wr.data, tree_root.data, 32) != 0) {
+                printf("rescanwitnesses: WITNESS ROOT MISMATCH for note %d!\n"
+                    "  tree root:    %s (size=%zu)\n"
+                    "  witness root: %s (fills=%zu)\n",
+                    ni, tr_hex, incremental_tree_size(&tree),
+                    wr_hex, witnesses[ni].num_filled);
+            } else {
+                printf("rescanwitnesses: note %d witness root MATCHES tree ✓\n", ni);
+            }
+        }
+        fflush(stdout);
+    }
+
     /* Save the authoritative tree state to node_state.
      * This replaces any incomplete tree from catchup.
      * Tree is saved at safe_tip height — subsequent connect_block
@@ -2542,7 +2565,7 @@ static bool rpc_rescanwitnesses(const struct json_value *params, bool help,
         if (incremental_witness_serialize(&witnesses[ni], &ws)) {
             db_sapling_note_save_witness(g_node_db,
                 notes[ni].txid, notes[ni].output_index,
-                ws.data, ws.size, chain_tip);
+                ws.data, ws.size, safe_tip);
             saved++;
         }
         stream_free(&ws);
