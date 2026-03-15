@@ -37,6 +37,10 @@
 #include "controllers/sync_controller.h"
 #include "controllers/legacy_import.h"
 #include "controllers/snapshot_controller.h"
+#include "validation/update_coins.h"
+#include "validation/connect_block.h"
+#include "storage/disk_block_io.h"
+#include "storage/dbwrapper.h"
 #include <netdb.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -45,6 +49,8 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <sys/stat.h>
+#include <time.h>
+#include <malloc.h>
 
 static struct main_state g_state;
 static struct coins_view_db g_coins_db;
@@ -191,6 +197,121 @@ static bool load_block_index(struct main_state *ms,
 
     free(sorted);
     return true;
+}
+
+static bool reindex_chainstate(struct main_state *ms,
+                                struct coins_view_db *cvdb,
+                                struct coins_view_cache *cvtip,
+                                const char *datadir)
+{
+    int tip_height = active_chain_height(&ms->chain_active);
+    if (tip_height < 0) {
+        fprintf(stderr, "reindex-chainstate: no active chain\n");
+        return false;
+    }
+
+    printf("reindex-chainstate: rebuilding UTXO set (%d blocks)...\n",
+           tip_height + 1);
+    fflush(stdout);
+
+    /* Reduce mmap threshold to prevent heap fragmentation.
+     * Each tx_out is ~10KB due to script[10000]. Coins with 4+ vouts
+     * allocate >= 40KB. Using mmap for these larger allocations ensures
+     * freed pages return to OS. Combined with malloc_trim after each
+     * flush, this keeps RSS stable at ~6GB. */
+    mallopt(M_MMAP_THRESHOLD, 32768);
+
+    /* Flush and free the in-memory cache */
+    coins_view_cache_flush(cvtip);
+    coins_view_cache_free(cvtip);
+
+    /* Close and reopen coins DB with wipe=true */
+    coins_view_db_close(cvdb);
+
+    char coins_path[1024];
+    snprintf(coins_path, sizeof(coins_path), "%s/chainstate", datadir);
+    if (!coins_view_db_open(cvdb, coins_path, 450 << 20, false, true)) {
+        fprintf(stderr, "reindex-chainstate: failed to reopen coins DB\n");
+        return false;
+    }
+
+    /* Reinitialize coins cache */
+    coins_view_cache_init(cvtip, &cvdb->view);
+
+    const struct chain_params *cparams = chain_params_get();
+    int64_t t_start = (int64_t)time(NULL);
+    int errors = 0;
+
+    for (int h = 0; h <= tip_height; h++) {
+        struct block_index *pindex = active_chain_at(
+            &ms->chain_active, h);
+        if (!pindex) {
+            printf("reindex-chainstate: missing block_index at height %d\n", h);
+            errors++;
+            continue;
+        }
+
+        struct block blk;
+        if (!read_block_from_disk_index(&blk, pindex, datadir)) {
+            printf("reindex-chainstate: failed to read block at height %d\n", h);
+            errors++;
+            continue;
+        }
+
+        /* Connect through a nested cache so failed blocks are discarded
+         * atomically. Without this, a block that fails partway through
+         * connect_block leaves partial UTXO updates in the cache. */
+        struct validation_state state;
+        validation_state_init(&state);
+        {
+            struct coins_view_cache view;
+            struct coins_view backing;
+            coins_view_cache_as_view(&backing, cvtip);
+            coins_view_cache_init(&view, &backing);
+
+            if (!connect_block(&blk, &state, pindex, &view, cparams, false)) {
+                printf("reindex-chainstate: connect_block failed at height %d: %s\n",
+                       h, state.reject_reason);
+                errors++;
+                coins_view_cache_free(&view);
+            } else {
+                coins_view_cache_flush(&view);
+                coins_view_cache_free(&view);
+            }
+        }
+
+        block_free(&blk);
+
+        /* Flush every 100 blocks or when cache exceeds 20K entries.
+         * Each tx_out is ~10KB due to fixed script buffer, so 20K entries
+         * uses ~400MB. Flushing at 100-block intervals keeps RSS under 200MB
+         * for typical block sizes. */
+        bool need_flush = (h % 100 == 0) ||
+                          (cvtip->cache_coins.size > 20000);
+        if (need_flush) {
+            coins_view_cache_flush(cvtip);
+            malloc_trim(0);
+            if (h % 1000 == 0) {
+                int64_t elapsed = (int64_t)time(NULL) - t_start;
+                double rate = elapsed > 0 ? (double)h / (double)elapsed : 0;
+                int eta = rate > 0 ? (int)((tip_height - h) / rate) : 0;
+                printf("  height %d/%d (%.0f blk/s, ETA %dm%ds, cache %zu)\n",
+                       h, tip_height, rate, eta / 60, eta % 60,
+                       cvtip->cache_coins.size);
+                fflush(stdout);
+            }
+        }
+    }
+
+    /* Final flush */
+    coins_view_cache_flush(cvtip);
+
+    int64_t elapsed = (int64_t)time(NULL) - t_start;
+    printf("reindex-chainstate: complete in %lldm%llds (%d errors)\n",
+           (long long)(elapsed / 60), (long long)(elapsed % 60), errors);
+    fflush(stdout);
+
+    return errors == 0;
 }
 
 bool app_init(struct app_context *ctx)
@@ -387,7 +508,33 @@ bool app_init(struct app_context *ctx)
 
     /* Restore chain tip from coins DB best block hash */
     bool skip_activate = false;
-    if (g_state.map_block_index.size > 1) {
+
+    /* For -reindex-chainstate: set chain tip from block index (highest-work
+     * block with data), skip coins DB restore and activate_best_chain. */
+    if (ctx->reindex_chainstate) {
+        struct block_index *best = NULL;
+        size_t fi = 0;
+        struct block_index *fp;
+        while (block_map_next(&g_state.map_block_index, &fi, NULL, &fp)) {
+            if (fp && (fp->nStatus & BLOCK_HAVE_DATA) &&
+                fp->nChainTx > 0 &&
+                (!best || arith_uint256_compare(
+                    &fp->nChainWork, &best->nChainWork) > 0))
+                best = fp;
+        }
+        if (best) {
+            active_chain_set_tip(&g_state.chain_active, best);
+            g_state.pindex_best_header = best;
+            printf("Chain tip from block index: height=%d\n", best->nHeight);
+        }
+        skip_activate = true;
+
+        /* Run reindex before anything else touches the coins DB */
+        if (!reindex_chainstate(&g_state, &g_coins_db, &g_coins_tip,
+                                 ctx->datadir)) {
+            fprintf(stderr, "Warning: Chainstate reindex had errors\n");
+        }
+    } else if (g_state.map_block_index.size > 1) {
         struct uint256 best_hash;
         coins_view_cache_get_best_block(&g_coins_tip, &best_hash);
         if (!uint256_is_null(&best_hash)) {
@@ -402,9 +549,6 @@ bool app_init(struct app_context *ctx)
                 char hex[65];
                 uint256_get_hex(&best_hash, hex);
                 printf("Coins DB best block %s not in index.\n", hex);
-                /* The chainstate is ahead of the block index. Find the
-                 * highest block in the index that is at or below the
-                 * chainstate height. Walk down from the most-work block. */
                 struct block_index *fallback = NULL;
                 size_t fi = 0;
                 struct block_index *fp;
@@ -427,8 +571,7 @@ bool app_init(struct app_context *ctx)
         }
 
         /* If coins DB had no best block (null hash), fall back to the
-         * highest-work block with data in the index. This happens during
-         * -fastsync when the copied chainstate can't be read correctly. */
+         * highest-work block with data in the index. */
         if (uint256_is_null(&best_hash) ||
             active_chain_tip(&g_state.chain_active) == NULL) {
             struct block_index *fallback = NULL;
@@ -466,8 +609,7 @@ bool app_init(struct app_context *ctx)
     }
 
     /* Activate best chain (connects any new blocks beyond saved tip).
-     * Skip for -fastsync — we trust the imported chainstate and just
-     * need to set the tip from the block index. */
+     * Skip for -fastsync and -reindex-chainstate. */
     if (ctx->fastsync_dir)
         skip_activate = true;
     if (!skip_activate) {
@@ -575,6 +717,7 @@ bool app_init(struct app_context *ctx)
     /* Initialize RPC */
     rpc_table_init(&g_rpc_table);
     rpc_blockchain_set_state(&g_state, &g_mempool, ctx->datadir);
+    rpc_blockchain_set_coins_db(&g_coins_db, &g_coins_tip);
     register_blockchain_rpc_commands(&g_rpc_table);
 
     rpc_rawtx_set_state(&g_state, &g_mempool, &g_coins_tip, ctx->datadir);

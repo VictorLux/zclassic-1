@@ -29,6 +29,7 @@ struct app_context {
     bool sapling_scan;
     const char *fastsync_dir;
     const char *snapshot_dir;
+    bool reindex_chainstate;
 };
 
 void app_context_defaults(struct app_context *ctx);

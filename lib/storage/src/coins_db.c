@@ -109,7 +109,7 @@ bool coins_view_db_get_coins(struct coins_view_db *cvdb,
 
     /* Build availability vector: vAvail[0..1] from flags, rest from mask bytes */
     size_t num_avail = 2;
-    bool avail_stack[256];
+    bool avail_stack[4096];
     avail_stack[0] = vout0_present;
     avail_stack[1] = vout1_present;
 
@@ -119,7 +119,7 @@ bool coins_view_db_get_coins(struct coins_view_db *cvdb,
         if (!stream_read_bytes(&s, &ch, 1)) {
             stream_free(&s); free(val); return false;
         }
-        for (unsigned int p = 0; p < 8 && num_avail < 256; p++)
+        for (unsigned int p = 0; p < 8 && num_avail < 4096; p++)
             avail_stack[num_avail++] = (ch & (1 << p)) != 0;
         if (ch != 0)
             mask_remaining--;
@@ -178,16 +178,18 @@ bool coins_view_db_batch_write(struct coins_view_db *cvdb,
     struct db_batch batch;
     db_batch_init(&batch);
 
-    for (size_t i = 0; i < map_coins->size; i++) {
-        struct coins_map_entry *e = &map_coins->entries[i];
-        if (e->entry.flags & COINS_CACHE_DIRTY) {
-            char key[64];
-            size_t keylen;
-            make_coins_key(key, &keylen, &e->txid);
+    for (size_t i = 0; i < map_coins->num_buckets; i++) {
+        struct coins_map_entry *e = &map_coins->buckets[i];
+        if (!e->occupied || !(e->entry.flags & COINS_CACHE_DIRTY))
+            continue;
 
-            if (coins_is_pruned(&e->entry.coins)) {
-                db_batch_delete(&batch, key, keylen);
-            } else {
+        char key[64];
+        size_t keylen;
+        make_coins_key(key, &keylen, &e->txid);
+
+        if (coins_is_pruned(&e->entry.coins)) {
+            db_batch_delete(&batch, key, keylen);
+        } else {
                 struct byte_stream s;
                 stream_init(&s, 256);
                 const struct coins *cc = &e->entry.coins;
@@ -197,14 +199,31 @@ bool coins_view_db_batch_write(struct coins_view_db *cvdb,
                 bool vout0 = cc->num_vout > 0 && !tx_out_is_null(&cc->vout[0]);
                 bool vout1 = cc->num_vout > 1 && !tx_out_is_null(&cc->vout[1]);
 
-                /* Compute mask size and code per C++ CCoins::CalcMaskSize */
+                /* Compute mask per C++ CCoins::CalcMaskSize:
+                 * nMaskSize = total bytes up to last non-zero byte
+                 * nMaskCode = count of non-zero bytes (used in nCode) */
                 unsigned int nMaskSize = 0;
+                unsigned int nMaskCode = 0;
                 for (size_t vi = 2; vi < cc->num_vout; vi++) {
-                    if (!tx_out_is_null(&cc->vout[vi]))
-                        nMaskSize = (unsigned int)((vi - 2) / 8) + 1;
+                    if (!tx_out_is_null(&cc->vout[vi])) {
+                        unsigned int byte_pos = (unsigned int)((vi - 2) / 8) + 1;
+                        if (byte_pos > nMaskSize)
+                            nMaskSize = byte_pos;
+                    }
+                }
+                /* Count non-zero mask bytes */
+                for (unsigned int mi = 0; mi < nMaskSize; mi++) {
+                    unsigned char ch = 0;
+                    for (unsigned int p = 0; p < 8; p++) {
+                        size_t idx = 2 + mi * 8 + p;
+                        if (idx < cc->num_vout && !tx_out_is_null(&cc->vout[idx]))
+                            ch |= (1 << p);
+                    }
+                    if (ch != 0)
+                        nMaskCode++;
                 }
 
-                uint64_t nCode = 8 * (nMaskSize - ((vout0 || vout1) ? 0 : 1))
+                uint64_t nCode = 8 * (nMaskCode - ((vout0 || vout1) ? 0 : 1))
                                  + (cc->is_coinbase ? 1 : 0)
                                  + (vout0 ? 2 : 0)
                                  + (vout1 ? 4 : 0);
@@ -232,7 +251,6 @@ bool coins_view_db_batch_write(struct coins_view_db *cvdb,
                 db_batch_put(&batch, key, keylen, (char *)s.data, s.size);
                 stream_free(&s);
             }
-        }
     }
 
     if (!uint256_is_null(hash_block)) {

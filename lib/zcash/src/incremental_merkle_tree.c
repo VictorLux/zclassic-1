@@ -78,10 +78,34 @@ void sapling_tree_init(struct incremental_merkle_tree *t)
               pedersen_combine, pedersen_uncommitted);
 }
 
-/* Compute empty root at given depth by repeatedly combining uncommitted values */
+/* Cached empty roots for Sapling Pedersen tree (depth 0..32).
+ * Computed once on first use, reused for all subsequent calls. */
+static struct uint256 s_sapling_empty_roots[MAX_TREE_DEPTH + 1];
+static bool s_sapling_empty_roots_cached = false;
+
+static void ensure_sapling_empty_roots(void (*combine)(const struct uint256 *,
+                                                        const struct uint256 *,
+                                                        size_t, struct uint256 *),
+                                        void (*uncommitted)(struct uint256 *))
+{
+    if (s_sapling_empty_roots_cached)
+        return;
+    uncommitted(&s_sapling_empty_roots[0]);
+    for (size_t d = 0; d < MAX_TREE_DEPTH; d++)
+        combine(&s_sapling_empty_roots[d], &s_sapling_empty_roots[d],
+                d, &s_sapling_empty_roots[d + 1]);
+    s_sapling_empty_roots_cached = true;
+}
+
+/* Compute empty root at given depth. Uses cache for Pedersen trees. */
 static void empty_root_at_depth(const struct incremental_merkle_tree *t,
                                  size_t depth, struct uint256 *out)
 {
+    if (t->combine == pedersen_combine) {
+        ensure_sapling_empty_roots(t->combine, t->uncommitted);
+        *out = s_sapling_empty_roots[depth];
+        return;
+    }
     struct uint256 current;
     t->uncommitted(&current);
     for (size_t d = 0; d < depth; d++) {

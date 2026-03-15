@@ -7,12 +7,25 @@
 #include "coins/coins_view.h"
 #include <string.h>
 
+#define COINS_MAP_INITIAL_BUCKETS 4096
+#define COINS_MAP_LOAD_FACTOR_NUM 3
+#define COINS_MAP_LOAD_FACTOR_DEN 4
+
+static void coins_map_rehash(struct coins_map *m, size_t new_num_buckets);
+
 struct coins_cache_entry *coins_map_find(struct coins_map *m,
                                           const struct uint256 *txid)
 {
-    for (size_t i = 0; i < m->size; i++) {
-        if (uint256_cmp(&m->entries[i].txid, txid) == 0)
-            return &m->entries[i].entry;
+    if (m->num_buckets == 0)
+        return NULL;
+    uint64_t h = coins_map_hash(txid);
+    size_t idx = (size_t)(h % m->num_buckets);
+    for (size_t i = 0; i < m->num_buckets; i++) {
+        size_t slot = (idx + i) % m->num_buckets;
+        if (!m->buckets[slot].occupied)
+            return NULL;
+        if (uint256_cmp(&m->buckets[slot].txid, txid) == 0)
+            return &m->buckets[slot].entry;
     }
     return NULL;
 }
@@ -20,33 +33,69 @@ struct coins_cache_entry *coins_map_find(struct coins_map *m,
 struct coins_cache_entry *coins_map_insert(struct coins_map *m,
                                             const struct uint256 *txid)
 {
-    struct coins_cache_entry *existing = coins_map_find(m, txid);
-    if (existing)
-        return existing;
-
-    if (m->size >= m->capacity) {
-        size_t new_cap = m->capacity == 0 ? 64 : m->capacity * 2;
-        struct coins_map_entry *ne = realloc(m->entries,
-            new_cap * sizeof(struct coins_map_entry));
-        if (!ne) return NULL;
-        m->entries = ne;
-        m->capacity = new_cap;
+    if (m->num_buckets > 0) {
+        struct coins_cache_entry *existing = coins_map_find(m, txid);
+        if (existing)
+            return existing;
     }
 
-    struct coins_map_entry *e = &m->entries[m->size++];
-    e->txid = *txid;
-    coins_init(&e->entry.coins);
-    e->entry.flags = 0;
-    return &e->entry;
+    if (m->num_buckets == 0 ||
+        m->size * COINS_MAP_LOAD_FACTOR_DEN >=
+            m->num_buckets * COINS_MAP_LOAD_FACTOR_NUM) {
+        size_t new_cap = m->num_buckets == 0
+            ? COINS_MAP_INITIAL_BUCKETS : m->num_buckets * 2;
+        coins_map_rehash(m, new_cap);
+    }
+
+    uint64_t h = coins_map_hash(txid);
+    size_t idx = (size_t)(h % m->num_buckets);
+    for (size_t i = 0; i < m->num_buckets; i++) {
+        size_t slot = (idx + i) % m->num_buckets;
+        if (!m->buckets[slot].occupied) {
+            m->buckets[slot].txid = *txid;
+            coins_init(&m->buckets[slot].entry.coins);
+            m->buckets[slot].entry.flags = 0;
+            m->buckets[slot].occupied = true;
+            m->size++;
+            return &m->buckets[slot].entry;
+        }
+    }
+    return NULL;
 }
 
 bool coins_map_erase(struct coins_map *m, const struct uint256 *txid)
 {
-    for (size_t i = 0; i < m->size; i++) {
-        if (uint256_cmp(&m->entries[i].txid, txid) == 0) {
-            coins_free(&m->entries[i].entry.coins);
-            m->entries[i] = m->entries[m->size - 1];
+    if (m->num_buckets == 0)
+        return false;
+    uint64_t h = coins_map_hash(txid);
+    size_t idx = (size_t)(h % m->num_buckets);
+    for (size_t i = 0; i < m->num_buckets; i++) {
+        size_t slot = (idx + i) % m->num_buckets;
+        if (!m->buckets[slot].occupied)
+            return false;
+        if (uint256_cmp(&m->buckets[slot].txid, txid) == 0) {
+            coins_free(&m->buckets[slot].entry.coins);
+            m->buckets[slot].occupied = false;
             m->size--;
+            /* Rehash subsequent entries to fill the gap */
+            size_t next = (slot + 1) % m->num_buckets;
+            while (m->buckets[next].occupied) {
+                struct coins_map_entry tmp = m->buckets[next];
+                m->buckets[next].occupied = false;
+                m->size--;
+                /* Re-insert */
+                uint64_t rh = coins_map_hash(&tmp.txid);
+                size_t ri = (size_t)(rh % m->num_buckets);
+                for (size_t j = 0; j < m->num_buckets; j++) {
+                    size_t rs = (ri + j) % m->num_buckets;
+                    if (!m->buckets[rs].occupied) {
+                        m->buckets[rs] = tmp;
+                        m->size++;
+                        break;
+                    }
+                }
+                next = (next + 1) % m->num_buckets;
+            }
             return true;
         }
     }
@@ -56,6 +105,34 @@ bool coins_map_erase(struct coins_map *m, const struct uint256 *txid)
 size_t coins_map_count(const struct coins_map *m)
 {
     return m->size;
+}
+
+static void coins_map_rehash(struct coins_map *m, size_t new_num_buckets)
+{
+    struct coins_map_entry *old = m->buckets;
+    size_t old_num = m->num_buckets;
+
+    m->buckets = calloc(new_num_buckets, sizeof(struct coins_map_entry));
+    m->num_buckets = new_num_buckets;
+    m->size = 0;
+
+    if (old) {
+        for (size_t i = 0; i < old_num; i++) {
+            if (old[i].occupied) {
+                uint64_t h = coins_map_hash(&old[i].txid);
+                size_t idx = (size_t)(h % new_num_buckets);
+                for (size_t j = 0; j < new_num_buckets; j++) {
+                    size_t slot = (idx + j) % new_num_buckets;
+                    if (!m->buckets[slot].occupied) {
+                        m->buckets[slot] = old[i];
+                        m->size++;
+                        break;
+                    }
+                }
+            }
+        }
+        free(old);
+    }
 }
 
 void coins_view_cache_init(struct coins_view_cache *c, struct coins_view *backing)
@@ -147,7 +224,6 @@ struct coins_cache_entry *coins_view_cache_modify_new(struct coins_view_cache *c
     return entry;
 }
 
-/* vtable for using a coins_view_cache as a backing store */
 static bool cvc_get_coins(void *self, const struct uint256 *txid,
                            struct coins *coins)
 {
@@ -171,8 +247,10 @@ static bool cvc_batch_write(void *self, struct coins_map *map_coins,
 {
     struct coins_view_cache *parent = (struct coins_view_cache *)self;
 
-    for (size_t i = 0; i < map_coins->size; i++) {
-        struct coins_map_entry *e = &map_coins->entries[i];
+    for (size_t i = 0; i < map_coins->num_buckets; i++) {
+        struct coins_map_entry *e = &map_coins->buckets[i];
+        if (!e->occupied)
+            continue;
         if (e->entry.flags & COINS_CACHE_DIRTY) {
             struct coins_cache_entry *dest =
                 coins_map_insert(&parent->cache_coins, &e->txid);
@@ -226,7 +304,6 @@ const struct tx_out *coins_view_cache_get_output_for(
     struct coins_cache_entry *entry =
         coins_map_find(&c->cache_coins, &in->prevout.hash);
     if (!entry) {
-        /* Try fetching from backing store */
         struct coins coins;
         coins_init(&coins);
         if (!coins_view_get_coins(&c->base, &in->prevout.hash, &coins)) {
@@ -270,10 +347,8 @@ int64_t coins_view_cache_get_value_in(struct coins_view_cache *c,
         if (out)
             value += out->value;
     }
-    /* Add Sapling value balance (positive = inputs to transparent pool) */
     if (tx->value_balance >= 0)
         value += tx->value_balance;
-    /* Add JoinSplit vpub_new (moves from shielded to transparent) */
     for (size_t i = 0; i < tx->num_joinsplit; i++)
         value += tx->v_joinsplit[i].vpub_new;
     return value;
@@ -282,10 +357,6 @@ int64_t coins_view_cache_get_value_in(struct coins_view_cache *c,
 bool coins_view_cache_have_joinsplit_requirements(
     struct coins_view_cache *c, const struct transaction *tx)
 {
-    /* For now, JoinSplit anchor validation requires the incremental merkle
-     * tree infrastructure in the coins view. This is a placeholder that
-     * returns true — full anchor checking will be implemented when the
-     * merkle tree is integrated into the coins view. */
     (void)c;
     (void)tx;
     return true;

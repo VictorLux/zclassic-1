@@ -339,14 +339,28 @@ void jub_double(struct jub_point *r, const struct jub_point *a)
 
 void jub_scalar_mul(struct jub_point *r, const struct jub_point *p, const uint8_t scalar[32])
 {
+    /* 4-bit windowed scalar multiplication.
+     * Precompute table[0..15] = i*P, then process 4 bits at a time. */
+    struct jub_point table[16];
+    jub_identity(&table[0]);
+    table[1] = *p;
+    for (int i = 2; i < 16; i++)
+        jub_add(&table[i], &table[i - 1], p);
+
     struct jub_point acc;
     jub_identity(&acc);
-    struct jub_point base = *p;
 
-    for (int i = 0; i < 256; i++) {
-        if ((scalar[i / 8] >> (i % 8)) & 1)
-            jub_add(&acc, &acc, &base);
-        jub_double(&base, &base);
+    /* Process from most significant nibble down */
+    for (int i = 63; i >= 0; i--) {
+        /* Double 4 times */
+        jub_double(&acc, &acc);
+        jub_double(&acc, &acc);
+        jub_double(&acc, &acc);
+        jub_double(&acc, &acc);
+
+        int nibble = (scalar[i / 2] >> ((i & 1) * 4)) & 0xF;
+        if (nibble)
+            jub_add(&acc, &acc, &table[nibble]);
     }
     *r = acc;
 }

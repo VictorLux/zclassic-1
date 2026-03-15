@@ -116,7 +116,24 @@ bool read_block_from_disk(struct block *b, const struct disk_block_pos *pos,
     if (!file)
         return false;
 
-    size_t bufsize = 4 * 1024 * 1024;
+    /* Read block size from the 4-byte header preceding block data.
+     * Block file format: [magic(4)][size(4)][block_data(size)]
+     * open_block_file seeks to nPos which points to block_data start. */
+    size_t bufsize = 0;
+    long cur = ftell(file);
+    if (cur >= 4) {
+        if (fseek(file, cur - 4, SEEK_SET) == 0) {
+            uint32_t block_size = 0;
+            if (fread(&block_size, 4, 1, file) == 1 &&
+                block_size > 0 && block_size < 64 * 1024 * 1024) {
+                bufsize = block_size;
+            }
+        }
+    }
+
+    if (bufsize == 0)
+        bufsize = 32 * 1024 * 1024;
+
     unsigned char *buf = malloc(bufsize);
     if (!buf) {
         fclose(file);
@@ -151,11 +168,8 @@ bool read_block_from_disk_index(struct block *b,
         pos.nPos = pindex->nDataPos;
     }
 
-    if (!read_block_from_disk(b, &pos, datadir)) {
-        printf("read_block_from_disk_index: FAILED height=%d nFile=%d nDataPos=%u nStatus=0x%x\n",
-               pindex->nHeight, pindex->nFile, pindex->nDataPos, pindex->nStatus);
+    if (!read_block_from_disk(b, &pos, datadir))
         return false;
-    }
 
     struct uint256 block_hash;
     block_get_hash(b, &block_hash);

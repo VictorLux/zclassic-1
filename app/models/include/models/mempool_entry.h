@@ -29,6 +29,9 @@ bool db_mempool_validate(const struct db_mempool_entry *e,
 bool db_mempool_save(struct node_db *ndb, const struct db_mempool_entry *e);
 bool db_mempool_find(struct node_db *ndb, const uint8_t txid[32],
                      struct db_mempool_entry *out);
+/* Free malloc'd fields (raw_tx) after db_mempool_find(). */
+void db_mempool_entry_free(struct db_mempool_entry *e);
+
 bool db_mempool_delete(struct node_db *ndb, const uint8_t txid[32]);
 int db_mempool_count(struct node_db *ndb);
 int64_t db_mempool_total_size(struct node_db *ndb);

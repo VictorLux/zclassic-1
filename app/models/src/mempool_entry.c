@@ -103,6 +103,14 @@ bool db_mempool_find(struct node_db *ndb, const uint8_t txid[32],
     return true;
 }
 
+void db_mempool_entry_free(struct db_mempool_entry *e)
+{
+    if (!e) return;
+    free(e->raw_tx);
+    e->raw_tx = NULL;
+    e->raw_tx_len = 0;
+}
+
 bool db_mempool_delete(struct node_db *ndb, const uint8_t txid[32])
 {
     if (!ndb->open) return false;
@@ -217,7 +225,8 @@ int db_mempool_each(struct node_db *ndb, mempool_entry_cb cb, void *ctx)
         struct db_mempool_entry e;
         memset(&e, 0, sizeof(e));
         const void *t = sqlite3_column_blob(s, 0);
-        if (t) memcpy(e.txid, t, 32);
+        if (t && sqlite3_column_bytes(s, 0) >= 32)
+            memcpy(e.txid, t, 32);
         e.raw_tx_len = (size_t)sqlite3_column_bytes(s, 1);
         const void *rt = sqlite3_column_blob(s, 1);
         if (rt && e.raw_tx_len > 0) {

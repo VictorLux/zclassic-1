@@ -41,6 +41,9 @@ bool db_utxo_find(struct node_db *ndb, const uint8_t txid[32], uint32_t vout,
 bool db_utxo_exists(struct node_db *ndb, const uint8_t txid[32], uint32_t vout);
 bool db_utxo_delete(struct node_db *ndb, const uint8_t txid[32], uint32_t vout);
 
+/* Free malloc'd fields (script) after db_utxo_find(). */
+void db_utxo_free(struct db_utxo *u);
+
 /* Sum all UTXO values for an address hash. */
 int64_t db_utxo_balance_for_address(struct node_db *ndb,
                                      const uint8_t address_hash[20]);

@@ -208,11 +208,62 @@ bool node_db_sync_connect_block(struct node_db *ndb,
             incremental_tree_deserialize(&tree, &ts);
         }
 
-        /* Append all Sapling output commitments */
+        /* Load unspent notes that may need initial witnesses */
+        struct db_sapling_note wnotes_for_init[64];
+        int nw_init = db_sapling_note_list_unspent(ndb, wnotes_for_init, 64);
+
+        /* Append all Sapling output commitments and create initial
+         * witnesses for any wallet notes whose cm matches. */
+        bool has_sapling_outputs = false;
         for (size_t i = 0; i < blk->num_vtx; i++) {
             const struct transaction *tx = &blk->vtx[i];
             for (size_t j = 0; j < tx->num_shielded_output; j++) {
                 incremental_tree_append(&tree, &tx->v_shielded_output[j].cm);
+                has_sapling_outputs = true;
+
+                /* Check if this commitment belongs to a wallet note
+                 * that doesn't have a witness yet. Create initial
+                 * witness at the tree state that includes this cm. */
+                for (int wi = 0; wi < nw_init; wi++) {
+                    if (memcmp(wnotes_for_init[wi].cm,
+                               tx->v_shielded_output[j].cm.data, 32) != 0)
+                        continue;
+                    uint8_t *wblob = NULL;
+                    size_t wlen = 0;
+                    int wheight = 0;
+                    bool has_witness = db_sapling_note_load_witness(ndb,
+                        wnotes_for_init[wi].txid,
+                        wnotes_for_init[wi].output_index,
+                        &wblob, &wlen, &wheight);
+                    if (has_witness && wblob) {
+                        free(wblob);
+                        break;
+                    }
+                    /* Create initial witness from current tree state */
+                    struct incremental_witness iw;
+                    incremental_witness_init(&iw, &tree);
+                    struct byte_stream iwout;
+                    stream_init(&iwout, 2048);
+                    incremental_witness_serialize(&iw, &iwout);
+                    db_sapling_note_save_witness(ndb,
+                        wnotes_for_init[wi].txid,
+                        wnotes_for_init[wi].output_index,
+                        iwout.data, iwout.size, pindex->nHeight);
+                    stream_free(&iwout);
+                    break;
+                }
+            }
+        }
+
+        /* Verify tree root matches block header (correctness check) */
+        {
+            struct uint256 tree_root;
+            incremental_tree_root(&tree, &tree_root);
+            if (memcmp(tree_root.data,
+                       blk->header.hashFinalSaplingRoot.data, 32) != 0) {
+                fprintf(stderr, "connect_block: Sapling tree root MISMATCH "
+                    "at height %d (tree_size=%zu)\n",
+                    pindex->nHeight, incremental_tree_size(&tree));
             }
         }
 
@@ -233,6 +284,49 @@ bool node_db_sync_connect_block(struct node_db *ndb,
         /* Save current tree to node_state */
         node_db_state_set(ndb, "sapling_tree", ts.data, ts.size);
         stream_free(&ts);
+
+        /* 3b. Advance witnesses for all unspent wallet notes */
+        if (has_sapling_outputs) {
+            struct db_sapling_note wnotes[256];
+            int nw = db_sapling_note_list_unspent(ndb, wnotes, 256);
+            for (int wi = 0; wi < nw; wi++) {
+                uint8_t *wblob = NULL;
+                size_t wlen = 0;
+                int wheight = 0;
+                if (!db_sapling_note_load_witness(ndb,
+                        wnotes[wi].txid, wnotes[wi].output_index,
+                        &wblob, &wlen, &wheight) || !wblob)
+                    continue;
+
+                struct incremental_witness w;
+                struct byte_stream ws;
+                stream_init_from_data(&ws, wblob, wlen);
+                if (!incremental_witness_deserialize(&w, &ws,
+                        SAPLING_INCREMENTAL_MERKLE_TREE_DEPTH,
+                        tree.combine, tree.uncommitted)) {
+                    free(wblob);
+                    continue;
+                }
+                free(wblob);
+
+                /* Append all new commitments from this block */
+                for (size_t ci = 0; ci < blk->num_vtx; ci++) {
+                    const struct transaction *ctx = &blk->vtx[ci];
+                    for (size_t cj = 0; cj < ctx->num_shielded_output; cj++)
+                        incremental_witness_append(&w,
+                            &ctx->v_shielded_output[cj].cm);
+                }
+
+                /* Serialize and save updated witness */
+                struct byte_stream wout;
+                stream_init(&wout, 2048);
+                incremental_witness_serialize(&w, &wout);
+                db_sapling_note_save_witness(ndb,
+                    wnotes[wi].txid, wnotes[wi].output_index,
+                    wout.data, wout.size, pindex->nHeight);
+                stream_free(&wout);
+            }
+        }
     }
 
     /* 4. Update chain tip in state table */
@@ -862,14 +956,12 @@ int node_db_sync_catchup(struct node_db *ndb,
                     sqlite3_errmsg(ndb->db));
         }
 
-        /* Wallet scan: check every block for our transactions */
+        /* Wallet scan */
         if (w) {
             for (size_t i = 0; i < blk.num_vtx; i++) {
                 if (node_db_sync_wallet_tx(ndb, &blk.vtx[i], w, h))
                     wallet_hits++;
-                /* Try-decrypt Sapling shielded outputs */
                 catchup_try_sapling_decrypt(ndb, &blk.vtx[i], w, h);
-                /* Mark spent nullifiers */
                 for (size_t si = 0; si < blk.vtx[i].num_shielded_spend; si++) {
                     struct transaction *mtx = (struct transaction *)&blk.vtx[i];
                     transaction_compute_hash(mtx);
@@ -880,12 +972,12 @@ int node_db_sync_catchup(struct node_db *ndb,
             }
         }
 
-        /* Append Sapling output commitments to tree */
+        /* Append Sapling commitments to tree (bulk — no witness work) */
         for (size_t i = 0; i < blk.num_vtx; i++) {
             const struct transaction *tx = &blk.vtx[i];
-            for (size_t j = 0; j < tx->num_shielded_output; j++) {
-                incremental_tree_append(&sapling_tree, &tx->v_shielded_output[j].cm);
-            }
+            for (size_t j = 0; j < tx->num_shielded_output; j++)
+                incremental_tree_append(&sapling_tree,
+                    &tx->v_shielded_output[j].cm);
         }
 
         block_free(&blk);

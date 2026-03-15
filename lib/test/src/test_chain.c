@@ -1,0 +1,1074 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0 */
+
+#include "test/test_helpers.h"
+
+int test_chain(void)
+{
+    int failures = 0;
+
+    printf("CheckProofOfWork... ");
+    {
+        struct consensus_params cp;
+        memset(&cp, 0, sizeof(cp));
+        memset(cp.powLimit.data, 0xff, 32);
+
+        struct uint256 hash;
+        uint256_set_null(&hash);
+        uint32_t nBits = 0x2100ffff;
+        struct arith_uint256 target;
+        arith_uint256_set_compact(&target, nBits, NULL, NULL);
+        uint32_t easy_bits = arith_uint256_get_compact(&target, false);
+
+        if (CheckProofOfWork(hash, easy_bits, &cp))
+            printf("OK\n");
+        else {
+            printf("FAIL\n");
+            failures++;
+        }
+    }
+
+    printf("GetBlockProof... ");
+    {
+        struct block_index bi;
+        block_index_init(&bi);
+        bi.nBits = 0x1d00ffff;
+        struct arith_uint256 proof = GetBlockProof(&bi);
+        if (!arith_uint256_is_zero(&proof))
+            printf("OK\n");
+        else {
+            printf("FAIL\n");
+            failures++;
+        }
+    }
+
+    printf("checkpoints... ");
+    {
+        struct checkpoint_entry entries[] = {
+            {0, {{0}}},
+            {100000, {{0}}},
+        };
+        struct checkpoint_data cd = {
+            .entries = entries,
+            .nEntries = 2,
+            .nTimeLastCheckpoint = 1500000000,
+            .nTransactionsLastCheckpoint = 200000,
+            .fTransactionsPerDay = 1000.0,
+        };
+        int est = checkpoints_get_total_blocks_estimate(&cd);
+        struct block_index bi;
+        block_index_init(&bi);
+        bi.nChainTx = 100000;
+        bi.nTime = 1500000000;
+        double prog = checkpoints_guess_verification_progress(&cd, &bi, true);
+        if (est == 100000 && prog > 0.0 && prog < 1.0)
+            printf("OK (blocks=%d, progress=%.2f)\n", est, prog);
+        else {
+            printf("FAIL (blocks=%d, progress=%.2f)\n", est, prog);
+            failures++;
+        }
+    }
+
+    printf("chainparams mainnet... ");
+    {
+        chain_params_select(CHAIN_MAIN);
+        const struct chain_params *p = chain_params_get();
+        size_t pfx_len;
+        const unsigned char *pfx = chain_params_base58_prefix(p, B58_PUBKEY_ADDRESS, &pfx_len);
+        if (pfx_len == 2 && pfx[0] == 0x1C && pfx[1] == 0xB8 &&
+            p->nDefaultPort == 8033 &&
+            p->consensus.vUpgrades[UPGRADE_BUTTERCUP].nActivationHeight == 707000 &&
+            strcmp(p->strCurrencyUnits, "ZCL") == 0 &&
+            p->nFoundersRewardAddresses == 48)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("chainparams testnet... ");
+    {
+        chain_params_select(CHAIN_TESTNET);
+        const struct chain_params *p = chain_params_get();
+        size_t pfx_len;
+        const unsigned char *pfx = chain_params_base58_prefix(p, B58_PUBKEY_ADDRESS, &pfx_len);
+        if (pfx_len == 2 && pfx[0] == 0x1D && pfx[1] == 0x25 &&
+            p->nDefaultPort == 18033 &&
+            strcmp(p->strCurrencyUnits, "ZCT") == 0)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("chainparams regtest... ");
+    {
+        chain_params_select(CHAIN_REGTEST);
+        const struct chain_params *p = chain_params_get();
+        if (p->nEquihashN == 48 && p->nEquihashK == 5 &&
+            p->fMineBlocksOnDemand == true &&
+            p->fMiningRequiresPeers == false &&
+            strcmp(p->strNetworkID, "regtest") == 0)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("chainparams address roundtrip via params... ");
+    {
+        chain_params_select(CHAIN_MAIN);
+        const struct chain_params *p = chain_params_get();
+        size_t pk_len, sc_len;
+        const unsigned char *pk_pfx = chain_params_base58_prefix(p, B58_PUBKEY_ADDRESS, &pk_len);
+        const unsigned char *sc_pfx = chain_params_base58_prefix(p, B58_SCRIPT_ADDRESS, &sc_len);
+        struct tx_destination dest;
+        dest.type = DEST_KEY_ID;
+        memset(dest.id.key.id.data, 0x42, 20);
+        char addr[64];
+        if (encode_destination(&dest, pk_pfx, pk_len, sc_pfx, sc_len, addr, sizeof(addr))) {
+            struct tx_destination decoded;
+            if (decode_destination(addr, pk_pfx, pk_len, sc_pfx, sc_len, &decoded) &&
+                decoded.type == DEST_KEY_ID &&
+                memcmp(decoded.id.key.id.data, dest.id.key.id.data, 20) == 0)
+                printf("OK\n");
+            else { printf("FAIL\n"); failures++; }
+        } else { printf("FAIL (encode)\n"); failures++; }
+    }
+
+    printf("get_block_subsidy slow start... ");
+    {
+        chain_params_select(CHAIN_MAIN);
+        const struct chain_params *p = chain_params_get();
+        int64_t s0 = get_block_subsidy(0, &p->consensus);
+        int64_t s1 = get_block_subsidy(1, &p->consensus);
+        if (s0 == 0 && s1 == 1250000000)
+            printf("OK\n");
+        else { printf("FAIL (s0=%" PRId64 " s1=%" PRId64 ")\n", s0, s1); failures++; }
+    }
+
+    printf("get_block_subsidy full reward... ");
+    {
+        const struct chain_params *p = chain_params_get();
+        int64_t s = get_block_subsidy(10, &p->consensus);
+        if (s == 1250000000)
+            printf("OK\n");
+        else { printf("FAIL (%" PRId64 ")\n", s); failures++; }
+    }
+
+    printf("get_block_subsidy pre-buttercup... ");
+    {
+        const struct chain_params *p = chain_params_get();
+        int64_t s = get_block_subsidy(706999, &p->consensus);
+        if (s == 1250000000)
+            printf("OK\n");
+        else { printf("FAIL (%" PRId64 ")\n", s); failures++; }
+    }
+
+    printf("get_block_subsidy buttercup... ");
+    {
+        const struct chain_params *p = chain_params_get();
+        int64_t s = get_block_subsidy(707001, &p->consensus);
+        if (s == 78125000)
+            printf("OK\n");
+        else { printf("FAIL (%" PRId64 ")\n", s); failures++; }
+    }
+
+    printf("block_map insert/find... ");
+    {
+        struct block_map bm;
+        block_map_init(&bm);
+        struct uint256 h1, h2;
+        uint256_set_null(&h1);
+        h1.data[0] = 1;
+        uint256_set_null(&h2);
+        h2.data[0] = 2;
+
+        struct block_index *bi1 = calloc(1, sizeof(struct block_index));
+        block_index_init(bi1);
+        bi1->nHeight = 100;
+
+        struct block_index *bi2 = calloc(1, sizeof(struct block_index));
+        block_index_init(bi2);
+        bi2->nHeight = 200;
+
+        block_map_insert(&bm, &h1, bi1);
+        block_map_insert(&bm, &h2, bi2);
+
+        struct block_index *found = block_map_find(&bm, &h1);
+        if (found && found->nHeight == 100 && block_map_count(&bm) == 2)
+            printf("OK\n");
+        else {
+            printf("FAIL\n");
+            failures++;
+        }
+        block_map_free(&bm);
+    }
+
+    printf("active_chain set_tip... ");
+    {
+        struct block_index b0, b1, b2;
+        block_index_init(&b0);
+        block_index_init(&b1);
+        block_index_init(&b2);
+        b0.nHeight = 0;
+        b0.pprev = NULL;
+        b1.nHeight = 1;
+        b1.pprev = &b0;
+        b2.nHeight = 2;
+        b2.pprev = &b1;
+
+        struct active_chain ac;
+        active_chain_init(&ac);
+        active_chain_set_tip(&ac, &b2);
+
+        if (active_chain_tip(&ac) == &b2 &&
+            active_chain_at(&ac, 0) == &b0 &&
+            active_chain_at(&ac, 1) == &b1 &&
+            active_chain_height(&ac) == 2 &&
+            active_chain_contains(&ac, &b1))
+            printf("OK\n");
+        else {
+            printf("FAIL\n");
+            failures++;
+        }
+        active_chain_free(&ac);
+    }
+
+    printf("chainstate init/insert... ");
+    {
+        struct chainstate cs;
+        chainstate_init(&cs);
+        struct uint256 h;
+        uint256_set_null(&h);
+        h.data[0] = 0xab;
+        struct block_index *bi = chainstate_insert_block_index(&cs, &h);
+        struct block_index *bi2 = chainstate_insert_block_index(&cs, &h);
+        if (bi && bi == bi2 && block_map_count(&cs.map_block_index) == 1)
+            printf("OK\n");
+        else {
+            printf("FAIL\n");
+            failures++;
+        }
+        chainstate_free(&cs);
+    }
+
+    printf("block_tree_db flags... ");
+    {
+        struct block_tree_db btdb;
+        if (block_tree_db_open(&btdb, "/tmp/test_btdb", 1 << 20, false, true)) {
+            bool val = false;
+            block_tree_db_write_flag(&btdb, "txindex", true);
+            block_tree_db_read_flag(&btdb, "txindex", &val);
+            if (val) {
+                block_tree_db_write_flag(&btdb, "txindex", false);
+                block_tree_db_read_flag(&btdb, "txindex", &val);
+                if (!val)
+                    printf("OK\n");
+                else {
+                    printf("FAIL (clear)\n");
+                    failures++;
+                }
+            } else {
+                printf("FAIL (read)\n");
+                failures++;
+            }
+            block_tree_db_close(&btdb);
+        } else {
+            printf("SKIP (open failed)\n");
+        }
+    }
+
+    printf("block_tree_db reindex... ");
+    {
+        struct block_tree_db btdb;
+        if (block_tree_db_open(&btdb, "/tmp/test_btdb2", 1 << 20, false, true)) {
+            bool val = false;
+            block_tree_db_write_reindexing(&btdb, true);
+            block_tree_db_read_reindexing(&btdb, &val);
+            if (val) {
+                block_tree_db_write_reindexing(&btdb, false);
+                block_tree_db_read_reindexing(&btdb, &val);
+                if (!val)
+                    printf("OK\n");
+                else {
+                    printf("FAIL (clear)\n");
+                    failures++;
+                }
+            } else {
+                printf("FAIL\n");
+                failures++;
+            }
+            block_tree_db_close(&btdb);
+        } else {
+            printf("SKIP (open failed)\n");
+        }
+    }
+
+    printf("is_final_tx... ");
+    {
+        struct transaction tx;
+        transaction_init(&tx);
+        tx.lock_time = 0;
+        bool ok = is_final_tx(&tx, 100, 1000000);
+        if (!ok) { printf("FAIL (locktime 0)\n"); failures++; }
+        else {
+            tx.lock_time = 50;
+            ok = is_final_tx(&tx, 100, 1000000);
+            if (!ok) { printf("FAIL (height final)\n"); failures++; }
+            else {
+                transaction_alloc(&tx, 1, 1);
+                tx.vin[0].sequence = 0;
+                tx.lock_time = 500000001;
+                ok = is_final_tx(&tx, 100, 500000000);
+                if (ok) { printf("FAIL (time not final)\n"); failures++; }
+                else {
+                    ok = is_final_tx(&tx, 100, 500000002);
+                    if (ok) printf("OK\n");
+                    else { printf("FAIL (time final)\n"); failures++; }
+                }
+                transaction_free(&tx);
+            }
+        }
+    }
+
+    printf("is_expiring_soon_tx... ");
+    {
+        struct transaction tx;
+        transaction_init(&tx);
+        tx.overwintered = true;
+        tx.expiry_height = 100;
+        if (is_expiring_soon_tx(&tx, 98) && !is_expiring_soon_tx(&tx, 96))
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("format_state_message... ");
+    {
+        struct validation_state st;
+        validation_state_init(&st);
+        validation_state_dos(&st, 10, false, REJECT_INVALID, "bad-txns", false, "details");
+        char buf[256];
+        format_state_message(&st, buf, sizeof(buf));
+        if (strstr(buf, "bad-txns") && strstr(buf, "details"))
+            printf("OK\n");
+        else { printf("FAIL (%s)\n", buf); failures++; }
+    }
+
+    printf("main_constants... ");
+    {
+        if (MAX_BLOCK_SIZE == 2000000 &&
+            COINBASE_MATURITY == 100 &&
+            MAX_BLOCK_SIGOPS == 20000 &&
+            MAX_HEADERS_RESULTS == 160 &&
+            TX_EXPIRING_SOON_THRESHOLD == 3 &&
+            MIN_BLOCKS_TO_KEEP == 288)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("disk_block_io write/read roundtrip... ");
+    {
+        const char *tmpdir = "/tmp/test_disk_block_io";
+        char cmd[256];
+        snprintf(cmd, sizeof(cmd), "rm -rf %s && mkdir -p %s/blocks", tmpdir, tmpdir);
+        (void)system(cmd);
+
+        struct block b;
+        block_init(&b);
+        b.header.nVersion = 4;
+        b.header.nTime = 9999;
+        b.header.nBits = 0x1d00ffff;
+        b.num_vtx = 1;
+        b.vtx = calloc(1, sizeof(struct transaction));
+        transaction_init(&b.vtx[0]);
+        transaction_alloc(&b.vtx[0], 1, 1);
+        b.vtx[0].vin[0].sequence = 0xffffffff;
+        b.vtx[0].vout[0].value = 10 * COIN;
+
+        struct disk_block_pos pos;
+        pos.nFile = 0;
+        pos.nPos = 0;
+        unsigned char msg_start[4] = {0x24, 0xe9, 0x27, 0x64};
+        bool ok = write_block_to_disk(&b, &pos, tmpdir, msg_start);
+        if (ok) {
+            struct block b2;
+            ok = read_block_from_disk(&b2, &pos, tmpdir);
+            if (ok && b2.header.nTime == 9999 &&
+                b2.num_vtx == 1 &&
+                b2.vtx[0].vout[0].value == 10 * COIN) {
+                printf("OK\n");
+                block_free(&b2);
+            } else {
+                printf("FAIL (read)\n");
+                failures++;
+            }
+        } else {
+            printf("FAIL (write)\n");
+            failures++;
+        }
+        block_free(&b);
+        snprintf(cmd, sizeof(cmd), "rm -rf %s", tmpdir);
+        (void)system(cmd);
+    }
+
+    printf("main_state init/free... ");
+    {
+        struct main_state ms;
+        main_state_init(&ms);
+        if (ms.pindex_best_header == NULL &&
+            ms.nScriptCheckThreads == 0 &&
+            !atomic_load(&ms.fImporting) &&
+            !atomic_load(&ms.fReindex) &&
+            ms.fCheckpointsEnabled &&
+            ms.nMaxTipAge == DEFAULT_MAX_TIP_AGE) {
+            printf("OK\n");
+        } else {
+            printf("FAIL\n");
+            failures++;
+        }
+        main_state_free(&ms);
+    }
+
+    printf("is_initial_block_download... ");
+    {
+        struct main_state ms;
+        main_state_init(&ms);
+        bool ibd = is_initial_block_download(&ms);
+        if (ibd)
+            printf("OK (in IBD with no tip)\n");
+        else { printf("FAIL\n"); failures++; }
+        main_state_free(&ms);
+    }
+
+    printf("checkqueue single-threaded... ");
+    {
+        struct check_queue cq;
+        check_queue_init(&cq, 128, sizeof(int), NULL);
+        bool idle = check_queue_is_idle(&cq);
+        if (idle) {
+            int *item1 = malloc(sizeof(int));
+            *item1 = 42;
+            int *item2 = malloc(sizeof(int));
+            *item2 = 99;
+            void *items[2] = { item1, item2 };
+            cq.check = NULL;
+            check_queue_add(&cq, items, 2);
+            if (cq.nTodo == 2 && cq.queue_size == 2)
+                printf("OK\n");
+            else { printf("FAIL (add)\n"); failures++; }
+            for (size_t i = 0; i < cq.queue_size; i++)
+                free(cq.queue[i]);
+            cq.queue_size = 0;
+            cq.nTodo = 0;
+        } else {
+            printf("FAIL (idle)\n");
+            failures++;
+        }
+        check_queue_free(&cq);
+    }
+
+    printf("coins_view_cache... ");
+    {
+        struct coins_view null_view = { NULL, NULL };
+        struct coins_view_cache cache;
+        coins_view_cache_init(&cache, &null_view);
+
+        struct uint256 txid;
+        memset(txid.data, 0x42, 32);
+
+        struct coins_cache_entry *entry =
+            coins_view_cache_modify_new(&cache, &txid);
+        coins_alloc(&entry->coins, 2);
+        entry->coins.is_coinbase = false;
+        entry->coins.height = 100;
+        entry->coins.version = 1;
+        entry->coins.vout[0].value = 50 * COIN;
+        entry->coins.vout[1].value = 25 * COIN;
+
+        bool have = coins_view_cache_have_coins(&cache, &txid);
+        const struct tx_out *out = NULL;
+        struct tx_in tin;
+        tx_in_init(&tin);
+        tin.prevout.hash = txid;
+        tin.prevout.n = 0;
+        out = coins_view_cache_get_output_for(&cache, &tin);
+        if (have && out && out->value == 50 * COIN)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+        coins_view_cache_free(&cache);
+    }
+
+    printf("coins_view_db write/read... ");
+    {
+        struct coins_view_db cvdb;
+        if (coins_view_db_open(&cvdb, "/tmp/test_coins_db", 1 << 20, false, true)) {
+            struct uint256 txid;
+            memset(txid.data, 0xab, 32);
+
+            struct coins_map cm;
+            coins_map_init(&cm);
+            struct coins_cache_entry *e = coins_map_insert(&cm, &txid);
+            coins_alloc(&e->coins, 1);
+            e->coins.is_coinbase = true;
+            e->coins.height = 1000;
+            e->coins.version = 1;
+            e->coins.vout[0].value = 50 * COIN;
+            e->flags = COINS_CACHE_DIRTY;
+
+            struct uint256 best;
+            memset(best.data, 0xcc, 32);
+            bool ok = coins_view_db_batch_write(&cvdb, &cm, &best);
+            coins_map_free(&cm);
+
+            if (ok) {
+                bool have = coins_view_db_have_coins(&cvdb, &txid);
+                struct uint256 read_best;
+                bool got_best = coins_view_db_get_best_block(&cvdb, &read_best);
+                if (have && got_best && uint256_cmp(&best, &read_best) == 0)
+                    printf("OK\n");
+                else { printf("FAIL (read)\n"); failures++; }
+            } else {
+                printf("FAIL (write)\n");
+                failures++;
+            }
+            coins_view_db_close(&cvdb);
+        } else {
+            printf("SKIP (open failed)\n");
+        }
+    }
+
+    printf("update_coins... ");
+    {
+        struct coins_view null_view = { NULL, NULL };
+        struct coins_view_cache cache;
+        coins_view_cache_init(&cache, &null_view);
+
+        struct transaction coinbase_tx;
+        transaction_init(&coinbase_tx);
+        transaction_alloc(&coinbase_tx, 1, 2);
+        outpoint_set_null(&coinbase_tx.vin[0].prevout);
+        coinbase_tx.vin[0].sequence = 0xffffffff;
+        coinbase_tx.vout[0].value = 10 * COIN;
+        coinbase_tx.vout[1].value = 2 * COIN;
+        transaction_compute_hash(&coinbase_tx);
+
+        update_coins(&coinbase_tx, &cache, 1);
+
+        bool have = coins_view_cache_have_coins(&cache, &coinbase_tx.hash);
+        if (have) {
+            struct tx_in tin;
+            tx_in_init(&tin);
+            tin.prevout.hash = coinbase_tx.hash;
+            tin.prevout.n = 0;
+            const struct tx_out *out =
+                coins_view_cache_get_output_for(&cache, &tin);
+            if (out && out->value == 10 * COIN)
+                printf("OK\n");
+            else { printf("FAIL (output)\n"); failures++; }
+        } else { printf("FAIL (have)\n"); failures++; }
+
+        transaction_free(&coinbase_tx);
+        coins_view_cache_free(&cache);
+    }
+
+    printf("disk_block_index roundtrip... ");
+    {
+        struct disk_block_index dbi;
+        disk_block_index_init(&dbi);
+        dbi.nHeight = 42000;
+        dbi.nStatus = BLOCK_HAVE_DATA | BLOCK_VALID_SCRIPTS;
+        dbi.nTx = 5;
+        dbi.nFile = 3;
+        dbi.nDataPos = 12345;
+        dbi.nVersion = 4;
+        dbi.nTime = 1700000000;
+        dbi.nBits = 0x1d00ffff;
+        memset(dbi.hashPrev.data, 0x11, 32);
+        memset(dbi.hashMerkleRoot.data, 0x22, 32);
+
+        struct byte_stream s;
+        stream_init(&s, 512);
+        bool ok = disk_block_index_serialize(&dbi, &s);
+        if (ok) {
+            struct disk_block_index dbi2;
+            disk_block_index_init(&dbi2);
+            struct byte_stream s2;
+            stream_init_from_data(&s2, s.data, s.size);
+            ok = disk_block_index_deserialize(&dbi2, &s2);
+            if (ok && dbi2.nHeight == 42000 &&
+                dbi2.nTx == 5 && dbi2.nFile == 3 &&
+                dbi2.nDataPos == 12345 &&
+                dbi2.nVersion == 4 &&
+                dbi2.nTime == 1700000000) {
+                struct uint256 h1, h2;
+                disk_block_index_get_hash(&dbi, &h1);
+                disk_block_index_get_hash(&dbi2, &h2);
+                if (uint256_cmp(&h1, &h2) == 0)
+                    printf("OK\n");
+                else { printf("FAIL (hash)\n"); failures++; }
+            } else { printf("FAIL (deser)\n"); failures++; }
+            stream_free(&s2);
+        } else { printf("FAIL (ser)\n"); failures++; }
+        stream_free(&s);
+    }
+
+    printf("block serialize/deserialize roundtrip... ");
+    {
+        struct block b;
+        block_init(&b);
+        b.header.nVersion = 4;
+        b.header.nTime = 1234567890;
+        b.header.nBits = 0x1d00ffff;
+        memset(b.header.hashPrevBlock.data, 0xaa, 32);
+        memset(b.header.hashMerkleRoot.data, 0xbb, 32);
+        b.num_vtx = 1;
+        b.vtx = calloc(1, sizeof(struct transaction));
+        transaction_init(&b.vtx[0]);
+        transaction_alloc(&b.vtx[0], 1, 1);
+        b.vtx[0].vin[0].sequence = 0xffffffff;
+        b.vtx[0].vout[0].value = 50 * 100000000LL;
+
+        struct byte_stream s;
+        stream_init(&s, 512);
+        bool ok = block_serialize(&b, &s);
+        if (ok) {
+            struct block b2;
+            block_init(&b2);
+            struct byte_stream s2;
+            stream_init_from_data(&s2, s.data, s.size);
+            ok = block_deserialize(&b2, &s2);
+            if (ok && b2.num_vtx == 1 &&
+                b2.header.nTime == 1234567890 &&
+                b2.header.nBits == 0x1d00ffff &&
+                b2.vtx[0].vout[0].value == 50 * 100000000LL) {
+                struct uint256 h1, h2;
+                block_get_hash(&b, &h1);
+                block_get_hash(&b2, &h2);
+                if (uint256_cmp(&h1, &h2) == 0)
+                    printf("OK\n");
+                else {
+                    printf("FAIL (hash mismatch)\n");
+                    failures++;
+                }
+            } else {
+                printf("FAIL (deserialize)\n");
+                failures++;
+            }
+            block_free(&b2);
+            stream_free(&s2);
+        } else {
+            printf("FAIL (serialize)\n");
+            failures++;
+        }
+        stream_free(&s);
+        block_free(&b);
+    }
+
+    printf("equihash(96,5) valid solution... ");
+    {
+        struct equihash_params ep;
+        equihash_params_init(&ep, 96, 5);
+
+        struct blake2b_ctx state;
+        equihash_initialise_state(&ep, &state);
+
+        const char *input = "Equihash is an asymmetric PoW based on the "
+                            "Generalised Birthday problem.";
+        blake2b_update(&state, (const unsigned char *)input, strlen(input));
+
+        unsigned char nonce[32] = {0};
+        nonce[0] = 1;
+        blake2b_update(&state, nonce, 32);
+
+        eh_index valid_indices[32] = {
+            2261, 15185, 36112, 104243, 23779, 118390, 118332, 130041,
+            32642, 69878, 76925, 80080, 45858, 116805, 92842, 111026,
+            15972, 115059, 85191, 90330, 68190, 122819, 81830, 91132,
+            23460, 49807, 52426, 80391, 69567, 114474, 104973, 122568
+        };
+
+        unsigned char soln[68];
+        size_t soln_len = eh_get_minimal_from_indices(
+            valid_indices, 32, ep.collision_bit_length, soln, sizeof(soln));
+
+        bool ok = equihash_is_valid_solution(&ep, &state, soln, soln_len);
+        if (ok)
+            printf("OK\n");
+        else {
+            printf("FAIL\n");
+            failures++;
+        }
+    }
+
+    printf("equihash(96,5) invalid solution (changed index)... ");
+    {
+        struct equihash_params ep;
+        equihash_params_init(&ep, 96, 5);
+
+        struct blake2b_ctx state;
+        equihash_initialise_state(&ep, &state);
+
+        const char *input = "Equihash is an asymmetric PoW based on the "
+                            "Generalised Birthday problem.";
+        blake2b_update(&state, (const unsigned char *)input, strlen(input));
+
+        unsigned char nonce[32] = {0};
+        nonce[0] = 1;
+        blake2b_update(&state, nonce, 32);
+
+        eh_index bad_indices[32] = {
+            2262, 15185, 36112, 104243, 23779, 118390, 118332, 130041,
+            32642, 69878, 76925, 80080, 45858, 116805, 92842, 111026,
+            15972, 115059, 85191, 90330, 68190, 122819, 81830, 91132,
+            23460, 49807, 52426, 80391, 69567, 114474, 104973, 122568
+        };
+
+        unsigned char soln[68];
+        size_t soln_len = eh_get_minimal_from_indices(
+            bad_indices, 32, ep.collision_bit_length, soln, sizeof(soln));
+
+        bool ok = equihash_is_valid_solution(&ep, &state, soln, soln_len);
+        if (!ok)
+            printf("OK\n");
+        else {
+            printf("FAIL (accepted invalid solution)\n");
+            failures++;
+        }
+    }
+
+    printf("check_equihash_solution size validation... ");
+    {
+        const struct chain_params *p = chain_params_get();
+        struct block_header hdr;
+        block_header_init(&hdr);
+        hdr.nSolutionSize = 1344;
+        memset(hdr.nSolution, 0x42, 1344);
+        bool ok = (hdr.nSolutionSize == 1344);
+        if (ok)
+            printf("OK (size=1344)\n");
+        else {
+            printf("FAIL\n");
+            failures++;
+        }
+
+        hdr.nSolutionSize = 999;
+        ok = check_equihash_solution(&hdr, p);
+        if (!ok)
+            printf("check_equihash_solution bad size... OK\n");
+        else {
+            printf("check_equihash_solution bad size... FAIL\n");
+            failures++;
+        }
+    }
+
+    printf("equihash solver (192,7) finds valid solution... ");
+    {
+        struct equihash_params ep;
+        equihash_params_init(&ep, 192, 7);
+        struct blake2b_ctx base_state;
+        equihash_initialise_state(&ep, &base_state);
+
+        unsigned char header_data[140];
+        memset(header_data, 0, sizeof(header_data));
+        header_data[0] = 0x04;
+        blake2b_update(&base_state, header_data, sizeof(header_data));
+
+        unsigned char nonce[32];
+        memset(nonce, 0x42, sizeof(nonce));
+        struct blake2b_ctx curr = base_state;
+        blake2b_update(&curr, nonce, sizeof(nonce));
+
+        struct eh_solver *solver = eh_solver_new();
+        if (solver) {
+            eh_solver_set_state(solver, &curr);
+            uint32_t nsols = eh_solver_run(solver);
+            bool found_valid = false;
+            for (uint32_t i = 0; i < nsols; i++) {
+                unsigned char sol_bytes[EH_SOL_BYTES];
+                size_t sol_len = eh_get_minimal_from_indices(
+                    solver->sols[i], EH_PROOFSIZE,
+                    ep.collision_bit_length, sol_bytes, sizeof(sol_bytes));
+                if (sol_len == EH_SOL_BYTES) {
+                    bool valid = equihash_is_valid_solution(
+                        &ep, &curr, sol_bytes, sol_len);
+                    if (valid) {
+                        found_valid = true;
+                        break;
+                    }
+                }
+            }
+            if (found_valid)
+                printf("OK (found %u solutions)\n", nsols);
+            else if (nsols > 0) {
+                printf("FAIL (found %u solutions but none valid)\n", nsols);
+                failures++;
+            } else {
+                printf("SKIP (no solutions for this nonce)\n");
+            }
+            eh_solver_free(solver);
+        } else {
+            printf("SKIP (insufficient memory)\n");
+        }
+    }
+
+    printf("check_block_header version too low... ");
+    {
+        const struct chain_params *p = chain_params_get();
+        struct validation_state state;
+        validation_state_init(&state);
+        struct block_header hdr;
+        block_header_init(&hdr);
+        hdr.nVersion = 1;
+        bool ok = check_block_header(&hdr, &state, p, false);
+        if (!ok && strcmp(state.reject_reason, "version-too-low") == 0)
+            printf("OK\n");
+        else {
+            printf("FAIL (ok=%d reason=%s)\n", ok, state.reject_reason);
+            failures++;
+        }
+    }
+
+    printf("check_block_header valid (no PoW check)... ");
+    {
+        const struct chain_params *p = chain_params_get();
+        struct validation_state state;
+        validation_state_init(&state);
+        struct block_header hdr;
+        block_header_init(&hdr);
+        hdr.nVersion = 4;
+        hdr.nTime = (uint32_t)GetAdjustedTime();
+        bool ok = check_block_header(&hdr, &state, p, false);
+        if (ok)
+            printf("OK\n");
+        else {
+            printf("FAIL (reason=%s)\n", state.reject_reason);
+            failures++;
+        }
+    }
+
+    printf("check_block merkle root mismatch... ");
+    {
+        const struct chain_params *p = chain_params_get();
+        struct validation_state state;
+        validation_state_init(&state);
+        struct block b;
+        block_init(&b);
+        b.header.nVersion = 4;
+        b.header.nTime = (uint32_t)GetAdjustedTime();
+        b.num_vtx = 1;
+        b.vtx = calloc(1, sizeof(struct transaction));
+        transaction_init(&b.vtx[0]);
+        transaction_alloc(&b.vtx[0], 1, 1);
+        b.vtx[0].vin[0].prevout.n = UINT32_MAX;
+        b.vtx[0].vout[0].value = 50 * 100000000LL;
+        transaction_compute_hash(&b.vtx[0]);
+        memset(b.header.hashMerkleRoot.data, 0xff, 32);
+        bool ok = check_block(&b, &state, p, false, true, false);
+        if (!ok && strcmp(state.reject_reason, "bad-txnmrklroot") == 0)
+            printf("OK\n");
+        else {
+            printf("FAIL (ok=%d reason=%s)\n", ok, state.reject_reason);
+            failures++;
+        }
+        block_free(&b);
+    }
+
+    printf("check_block valid with correct merkle root... ");
+    {
+        const struct chain_params *p = chain_params_get();
+        struct validation_state state;
+        validation_state_init(&state);
+        struct block b;
+        block_init(&b);
+        b.header.nVersion = 4;
+        b.header.nTime = (uint32_t)GetAdjustedTime();
+        b.num_vtx = 1;
+        b.vtx = calloc(1, sizeof(struct transaction));
+        transaction_init(&b.vtx[0]);
+        transaction_alloc(&b.vtx[0], 1, 1);
+        b.vtx[0].vin[0].prevout.n = UINT32_MAX;
+        b.vtx[0].vout[0].value = 50 * 100000000LL;
+        b.vtx[0].vin[0].script_sig.data[0] = 1;
+        b.vtx[0].vin[0].script_sig.data[1] = 0;
+        b.vtx[0].vin[0].script_sig.size = 2;
+        transaction_compute_hash(&b.vtx[0]);
+        b.header.hashMerkleRoot = compute_merkle_root(&b.vtx[0].hash, 1);
+        bool ok = check_block(&b, &state, p, false, true, true);
+        if (ok)
+            printf("OK\n");
+        else {
+            printf("FAIL (reason=%s)\n", state.reject_reason);
+            failures++;
+        }
+        block_free(&b);
+    }
+
+    printf("check_block no coinbase... ");
+    {
+        const struct chain_params *p = chain_params_get();
+        struct validation_state state;
+        validation_state_init(&state);
+        struct block b;
+        block_init(&b);
+        b.header.nVersion = 4;
+        b.header.nTime = (uint32_t)GetAdjustedTime();
+        b.num_vtx = 1;
+        b.vtx = calloc(1, sizeof(struct transaction));
+        transaction_init(&b.vtx[0]);
+        transaction_alloc(&b.vtx[0], 1, 1);
+        b.vtx[0].vin[0].prevout.n = 0;
+        b.vtx[0].vout[0].value = 50 * 100000000LL;
+        transaction_compute_hash(&b.vtx[0]);
+        b.header.hashMerkleRoot = compute_merkle_root(&b.vtx[0].hash, 1);
+        bool ok = check_block(&b, &state, p, false, true, true);
+        if (!ok && strcmp(state.reject_reason, "bad-cb-missing") == 0)
+            printf("OK\n");
+        else {
+            printf("FAIL (ok=%d reason=%s)\n", ok, state.reject_reason);
+            failures++;
+        }
+        block_free(&b);
+    }
+
+    printf("contextual_check_block_header genesis bypass... ");
+    {
+        const struct chain_params *p = chain_params_get();
+        struct validation_state state;
+        validation_state_init(&state);
+        struct block_header hdr;
+        block_header_init(&hdr);
+        hdr.nVersion = 4;
+        hdr.nTime = (uint32_t)GetAdjustedTime();
+        struct block_index prev;
+        block_index_init(&prev);
+        prev.nHeight = 0;
+        prev.nTime = (uint32_t)(GetAdjustedTime() - 600);
+        prev.nBits = 0x2007ffff;
+        hdr.nBits = GetNextWorkRequired(&prev, &hdr, &p->consensus);
+        bool ok = contextual_check_block_header(&hdr, &state, p, &prev, false);
+        if (ok)
+            printf("OK\n");
+        else {
+            printf("FAIL (reason=%s)\n", state.reject_reason);
+            failures++;
+        }
+    }
+
+    printf("contextual_check_block_header version < 4... ");
+    {
+        const struct chain_params *p = chain_params_get();
+        struct validation_state state;
+        validation_state_init(&state);
+        struct block_header hdr;
+        block_header_init(&hdr);
+        hdr.nVersion = 3;
+        hdr.nTime = (uint32_t)GetAdjustedTime();
+        struct block_index prev;
+        block_index_init(&prev);
+        prev.nHeight = 100;
+        prev.nTime = (uint32_t)(GetAdjustedTime() - 60);
+        hdr.nBits = GetNextWorkRequired(&prev, &hdr, &p->consensus);
+        bool ok = contextual_check_block_header(&hdr, &state, p, &prev, false);
+        if (!ok && strcmp(state.reject_reason, "bad-version") == 0)
+            printf("OK\n");
+        else {
+            printf("FAIL (ok=%d reason=%s)\n", ok, state.reject_reason);
+            failures++;
+        }
+    }
+
+    printf("contextual_check_block BIP34 height... ");
+    {
+        const struct chain_params *p = chain_params_get();
+        struct validation_state state;
+        validation_state_init(&state);
+        struct block b;
+        block_init(&b);
+        b.header.nVersion = 4;
+        b.header.nTime = (uint32_t)GetAdjustedTime();
+        b.num_vtx = 1;
+        b.vtx = calloc(1, sizeof(struct transaction));
+        transaction_init(&b.vtx[0]);
+        transaction_alloc(&b.vtx[0], 1, 1);
+        b.vtx[0].vin[0].prevout.n = UINT32_MAX;
+        b.vtx[0].vout[0].value = 50 * 100000000LL;
+        b.vtx[0].vin[0].script_sig.data[0] = 1;
+        b.vtx[0].vin[0].script_sig.data[1] = 5;
+        b.vtx[0].vin[0].script_sig.size = 2;
+        transaction_compute_hash(&b.vtx[0]);
+        struct block_index prev;
+        block_index_init(&prev);
+        prev.nHeight = 4;
+        bool ok = contextual_check_block(&b, &state, p, &prev);
+        if (ok)
+            printf("OK\n");
+        else {
+            printf("FAIL (reason=%s)\n", state.reject_reason);
+            failures++;
+        }
+        block_free(&b);
+    }
+
+    printf("contextual_check_block BIP34 wrong height... ");
+    {
+        const struct chain_params *p = chain_params_get();
+        struct validation_state state;
+        validation_state_init(&state);
+        struct block b;
+        block_init(&b);
+        b.header.nVersion = 4;
+        b.header.nTime = (uint32_t)GetAdjustedTime();
+        b.num_vtx = 1;
+        b.vtx = calloc(1, sizeof(struct transaction));
+        transaction_init(&b.vtx[0]);
+        transaction_alloc(&b.vtx[0], 1, 1);
+        b.vtx[0].vin[0].prevout.n = UINT32_MAX;
+        b.vtx[0].vout[0].value = 50 * 100000000LL;
+        b.vtx[0].vin[0].script_sig.data[0] = 1;
+        b.vtx[0].vin[0].script_sig.data[1] = 99;
+        b.vtx[0].vin[0].script_sig.size = 2;
+        transaction_compute_hash(&b.vtx[0]);
+        struct block_index prev;
+        block_index_init(&prev);
+        prev.nHeight = 4;
+        bool ok = contextual_check_block(&b, &state, p, &prev);
+        if (!ok && strcmp(state.reject_reason, "bad-cb-height") == 0)
+            printf("OK\n");
+        else {
+            printf("FAIL (ok=%d reason=%s)\n", ok, state.reject_reason);
+            failures++;
+        }
+        block_free(&b);
+    }
+
+    printf("compute_merkle_root_mutated no false positive... ");
+    {
+        struct uint256 a, b_hash, c, d;
+        memset(a.data, 0xaa, 32);
+        memset(b_hash.data, 0xbb, 32);
+        memset(c.data, 0xcc, 32);
+        memset(d.data, 0xdd, 32);
+        struct uint256 txids[4] = {a, b_hash, c, d};
+        bool mutated = false;
+        compute_merkle_root_mutated(txids, 4, &mutated);
+        if (!mutated)
+            printf("OK\n");
+        else {
+            printf("FAIL (false mutation)\n");
+            failures++;
+        }
+    }
+
+    printf("compute_merkle_root_mutated detects dup pair at end... ");
+    {
+        struct uint256 a, b_hash, c;
+        memset(a.data, 0xaa, 32);
+        memset(b_hash.data, 0xbb, 32);
+        memset(c.data, 0xcc, 32);
+        struct uint256 txids[4] = {a, b_hash, c, c};
+        bool mutated = false;
+        compute_merkle_root_mutated(txids, 4, &mutated);
+        if (mutated)
+            printf("OK\n");
+        else {
+            printf("FAIL\n");
+            failures++;
+        }
+    }
+
+    return failures;
+}

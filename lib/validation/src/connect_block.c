@@ -103,25 +103,6 @@ bool connect_block(const struct block *block,
 
         if (!transaction_is_coinbase(tx)) {
             if (!coins_view_cache_have_inputs(view, tx)) {
-                char txhex[65];
-                uint256_get_hex(&tx->hash, txhex);
-                printf("MISSING INPUTS for tx %s (vin=%zu):\n", txhex, tx->num_vin);
-                for (size_t mi = 0; mi < tx->num_vin; mi++) {
-                    char ph[65];
-                    uint256_get_hex(&tx->vin[mi].prevout.hash, ph);
-                    struct coins c;
-                    coins_init(&c);
-                    bool have = coins_view_cache_get_coins(view, &tx->vin[mi].prevout.hash, &c);
-                    printf("  vin[%zu]: %s:%u have=%d num_vout=%zu\n",
-                           mi, ph, tx->vin[mi].prevout.n, have, c.num_vout);
-                    if (have && tx->vin[mi].prevout.n < c.num_vout) {
-                        printf("    vout[%u] amount=%lld script_size=%zu\n",
-                               tx->vin[mi].prevout.n,
-                               (long long)c.vout[tx->vin[mi].prevout.n].value,
-                               c.vout[tx->vin[mi].prevout.n].script_pub_key.size);
-                    }
-                    coins_free(&c);
-                }
                 block_undo_free(&blockundo);
                 return validation_state_dos(state, 100, false, REJECT_INVALID,
                     "bad-txns-inputs-missingorspent", false, NULL);

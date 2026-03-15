@@ -36,6 +36,7 @@ static void print_usage(const char *prog)
     printf("  -importlegacy=<dir> Import wallet from legacy data dir, then exit\n");
     printf("  -fastsync=<dir>     Fast sync from legacy C++ data dir, then run\n");
     printf("  -snapshot=<dir>     Snapshot + parallel import from legacy data dir\n");
+    printf("  -reindex-chainstate Rebuild UTXO set from block data\n");
     printf("  -help               Show this help\n");
 }
 
@@ -101,6 +102,8 @@ int main(int argc, char **argv)
             ctx.snapshot_dir = argv[i] + 10;
         } else if (strcmp(argv[i], "-saplingscan") == 0) {
             ctx.sapling_scan = true;
+        } else if (strcmp(argv[i], "-reindex-chainstate") == 0) {
+            ctx.reindex_chainstate = true;
         } else if (strncmp(argv[i], "-showmetrics=", 13) == 0) {
             show_metrics = atoi(argv[i] + 13) != 0;
         } else if (strcmp(argv[i], "-help") == 0 ||

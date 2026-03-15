@@ -94,6 +94,9 @@ bool db_wallet_utxo_delete(struct node_db *ndb,
 int db_wallet_utxo_count_for_tx(struct node_db *ndb,
                                  const uint8_t txid[32]);
 
+/* Free malloc'd fields (script) after db_wallet_utxo_find(). */
+void db_wallet_utxo_free(struct db_wallet_utxo *u);
+
 /* Delete all wallet UTXOs. */
 bool db_wallet_utxo_delete_all(struct node_db *ndb);
 
@@ -142,6 +145,10 @@ int db_sapling_note_list_unspent_for_ivk(struct node_db *ndb,
                                           const uint8_t ivk[32],
                                           struct db_sapling_note *out, size_t max);
 
+/* List all notes (spent + unspent). Returns count. */
+int db_sapling_note_list_all(struct node_db *ndb,
+                              struct db_sapling_note *out, size_t max);
+
 /* Save/load witness data for a Sapling note */
 bool db_sapling_note_save_witness(struct node_db *ndb,
                                    const uint8_t txid[32], uint32_t output_index,
@@ -151,6 +158,9 @@ bool db_sapling_note_load_witness(struct node_db *ndb,
                                    const uint8_t txid[32], uint32_t output_index,
                                    uint8_t **witness_blob_out, size_t *blob_len_out,
                                    int *height_out);
+
+/* Free malloc'd fields (witness_data) after loading a sapling note. */
+void db_sapling_note_free(struct db_sapling_note *n);
 
 /* ── Relationships ─────────────────────────────────────────────── */
 

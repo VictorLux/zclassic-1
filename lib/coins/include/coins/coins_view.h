@@ -19,34 +19,42 @@ struct coins_cache_entry {
     unsigned char flags;
 };
 
-#define COINS_MAP_BUCKET_COUNT 1024
-
 struct coins_map_entry {
     struct uint256 txid;
     struct coins_cache_entry entry;
+    bool occupied;
 };
 
 struct coins_map {
-    struct coins_map_entry *entries;
+    struct coins_map_entry *buckets;
+    size_t num_buckets;
     size_t size;
-    size_t capacity;
 };
+
+static inline uint64_t coins_map_hash(const struct uint256 *txid)
+{
+    uint64_t h;
+    memcpy(&h, txid->data, 8);
+    return h;
+}
 
 static inline void coins_map_init(struct coins_map *m)
 {
-    m->entries = NULL;
+    m->buckets = NULL;
+    m->num_buckets = 0;
     m->size = 0;
-    m->capacity = 0;
 }
 
 static inline void coins_map_free(struct coins_map *m)
 {
-    for (size_t i = 0; i < m->size; i++)
-        coins_free(&m->entries[i].entry.coins);
-    free(m->entries);
-    m->entries = NULL;
+    for (size_t i = 0; i < m->num_buckets; i++) {
+        if (m->buckets[i].occupied)
+            coins_free(&m->buckets[i].entry.coins);
+    }
+    free(m->buckets);
+    m->buckets = NULL;
+    m->num_buckets = 0;
     m->size = 0;
-    m->capacity = 0;
 }
 
 struct coins_cache_entry *coins_map_find(struct coins_map *m,
@@ -125,15 +133,12 @@ bool coins_view_cache_flush(struct coins_view_cache *c);
 const struct tx_out *coins_view_cache_get_output_for(
     struct coins_view_cache *c, const struct tx_in *in);
 
-/* Check that all transparent inputs of tx are available in the view */
 bool coins_view_cache_have_inputs(struct coins_view_cache *c,
                                    const struct transaction *tx);
 
-/* Sum the values of all transparent inputs of tx */
 int64_t coins_view_cache_get_value_in(struct coins_view_cache *c,
                                        const struct transaction *tx);
 
-/* Check that JoinSplit anchors exist (shielded requirements) */
 bool coins_view_cache_have_joinsplit_requirements(
     struct coins_view_cache *c, const struct transaction *tx);
 

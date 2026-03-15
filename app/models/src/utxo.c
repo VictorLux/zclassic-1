@@ -3,6 +3,7 @@
 #include "models/utxo.h"
 #include "models/tx_index.h"
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* ── Callbacks ─────────────────────────────────────────────────── */
@@ -26,9 +27,13 @@ bool db_utxo_validate(const struct db_utxo *u, struct ar_errors *errors)
     ar_errors_clear(errors);
     validates_presence_of(errors, u, txid);
     validates_non_negative(errors, u, value);
+    if (u->value > 2100000000000000LL)
+        ar_errors_add(errors, "value", "exceeds MAX_MONEY");
     validates_non_negative(errors, u, height);
-    if (u->script_len > (size_t)INT32_MAX)
-        ar_errors_add(errors, "script_len", "exceeds max size");
+    if (u->script_len > 10000)
+        ar_errors_add(errors, "script_len", "exceeds max script size");
+    if (u->script_len > 0 && !u->script)
+        ar_errors_add(errors, "script", "null pointer with nonzero length");
     static const enum script_type valid_types[] = {
         SCRIPT_P2PKH, SCRIPT_P2SH, SCRIPT_OP_RETURN,
         SCRIPT_MULTISIG, SCRIPT_OTHER
@@ -88,7 +93,14 @@ bool db_utxo_find(struct node_db *ndb, const uint8_t txid[32], uint32_t vout,
     out->vout = vout;
     out->value = sqlite3_column_int64(s, 0);
     out->script_len = (size_t)sqlite3_column_bytes(s, 1);
-    out->script = NULL;
+    const void *sc = sqlite3_column_blob(s, 1);
+    if (sc && out->script_len > 0) {
+        out->script = malloc(out->script_len);
+        if (out->script)
+            memcpy(out->script, sc, out->script_len);
+    } else {
+        out->script = NULL;
+    }
     out->script_type = (enum script_type)sqlite3_column_int(s, 2);
     const void *ah = sqlite3_column_blob(s, 3);
     if (ah && sqlite3_column_bytes(s, 3) >= 20) {
@@ -164,7 +176,8 @@ int db_utxo_list_for_address(struct node_db *ndb,
     while (sqlite3_step(s) == SQLITE_ROW && (size_t)count < max) {
         memset(&out[count], 0, sizeof(out[count]));
         const void *t = sqlite3_column_blob(s, 0);
-        if (t) memcpy(out[count].txid, t, 32);
+        if (t && sqlite3_column_bytes(s, 0) >= 32)
+            memcpy(out[count].txid, t, 32);
         out[count].vout = (uint32_t)sqlite3_column_int(s, 1);
         out[count].value = sqlite3_column_int64(s, 2);
         out[count].script_type = (enum script_type)sqlite3_column_int(s, 3);
@@ -188,6 +201,14 @@ int64_t db_utxo_count(struct node_db *ndb)
         c = sqlite3_column_int64(s, 0);
     sqlite3_finalize(s);
     return c;
+}
+
+void db_utxo_free(struct db_utxo *u)
+{
+    if (!u) return;
+    free(u->script);
+    u->script = NULL;
+    u->script_len = 0;
 }
 
 /* ── Relationships ─────────────────────────────────────────────── */

@@ -10,8 +10,12 @@
 #include "validation/main_state.h"
 #include "validation/txmempool.h"
 
+struct coins_view_db;
+struct coins_view_cache;
 void rpc_blockchain_set_state(struct main_state *ms, struct tx_mempool *mp,
                                const char *datadir);
+void rpc_blockchain_set_coins_db(struct coins_view_db *cvdb,
+                                  struct coins_view_cache *coins_tip);
 void register_blockchain_rpc_commands(struct rpc_table *t);
 
 #endif

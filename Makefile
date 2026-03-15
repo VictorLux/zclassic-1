@@ -22,21 +22,25 @@ LIB_SRCS = $(foreach m,$(LIB_MODULES),$(wildcard lib/$(m)/src/*.c))
 ALL_SRCS = $(APP_SRCS) $(CONFIG_SRCS) $(LIB_SRCS)
 ALL_OBJS = $(ALL_SRCS:.c=.o)
 
-CFLAGS = -std=c23 -Wall -Wextra -Werror -pedantic \
+CFLAGS = -std=c23 -O3 -march=native -flto -Wall -Wextra -Werror -pedantic \
+	-Wno-stringop-overflow \
 	$(APP_INCLUDES) $(CONFIG_INCLUDES) $(LIB_INCLUDES) \
+	-Ilib/test/include \
 	-D_POSIX_C_SOURCE=200809L -Ivendor/include
-LDFLAGS = -pthread
+LDFLAGS = -pthread -flto
 LIBS = -Lvendor/lib -lsecp256k1 -lleveldb -lrustzcash \
 	-lstdc++ -lm -lsqlite3 -ldl -lpthread
 
 .PHONY: all test clean
 
-all: test_zcl zcld
+all: test_zcl zclassic23
 
-test_zcl: lib/test/src/test.c $(ALL_SRCS)
+TEST_SRCS = $(wildcard lib/test/src/*.c)
+
+test_zcl: $(TEST_SRCS) $(ALL_SRCS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LIBS)
 
-zcld: main.c $(ALL_SRCS)
+zclassic23: main.c $(ALL_SRCS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LIBS)
 
 test: test_zcl
@@ -46,4 +50,4 @@ test: test_zcl
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 clean:
-	rm -f test_zcl zcld $(ALL_OBJS)
+	rm -f test_zcl zclassic23 $(ALL_OBJS)

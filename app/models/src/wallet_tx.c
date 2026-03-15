@@ -98,15 +98,24 @@ static void db_wallet_utxo_read_row(sqlite3_stmt *s, int col,
 {
     memset(out, 0, sizeof(*out));
     const void *t = sqlite3_column_blob(s, col);
-    if (t) memcpy(out->txid, t, 32);
+    if (t && sqlite3_column_bytes(s, col) >= 32)
+        memcpy(out->txid, t, 32);
     col++;
     out->vout = (uint32_t)sqlite3_column_int(s, col++);
     out->value = sqlite3_column_int64(s, col++);
     const void *ah = sqlite3_column_blob(s, col);
-    if (ah) memcpy(out->address_hash, ah, 20);
+    if (ah && sqlite3_column_bytes(s, col) >= 20)
+        memcpy(out->address_hash, ah, 20);
     col++;
     out->script_len = (size_t)sqlite3_column_bytes(s, col);
-    out->script = NULL;
+    const void *sc = sqlite3_column_blob(s, col);
+    if (sc && out->script_len > 0) {
+        out->script = malloc(out->script_len);
+        if (out->script)
+            memcpy(out->script, sc, out->script_len);
+    } else {
+        out->script = NULL;
+    }
     col++;
     out->height = sqlite3_column_int(s, col++);
     out->is_coinbase = sqlite3_column_int(s, col++) != 0;
@@ -119,12 +128,14 @@ static void db_sapling_note_read_row(sqlite3_stmt *s, int col,
 {
     memset(out, 0, sizeof(*out));
     const void *t = sqlite3_column_blob(s, col);
-    if (t) memcpy(out->txid, t, 32);
+    if (t && sqlite3_column_bytes(s, col) >= 32)
+        memcpy(out->txid, t, 32);
     col++;
     out->output_index = (uint32_t)sqlite3_column_int(s, col++);
     out->value = sqlite3_column_int64(s, col++);
     const void *rcm = sqlite3_column_blob(s, col);
-    if (rcm) memcpy(out->rcm, rcm, 32);
+    if (rcm && sqlite3_column_bytes(s, col) >= 32)
+        memcpy(out->rcm, rcm, 32);
     col++;
     int memo_len = sqlite3_column_bytes(s, col);
     const void *memo = sqlite3_column_blob(s, col);
@@ -135,19 +146,24 @@ static void db_sapling_note_read_row(sqlite3_stmt *s, int col,
     }
     col++;
     const void *ivk = sqlite3_column_blob(s, col);
-    if (ivk) memcpy(out->ivk, ivk, 32);
+    if (ivk && sqlite3_column_bytes(s, col) >= 32)
+        memcpy(out->ivk, ivk, 32);
     col++;
     const void *div = sqlite3_column_blob(s, col);
-    if (div) memcpy(out->diversifier, div, 11);
+    if (div && sqlite3_column_bytes(s, col) >= 11)
+        memcpy(out->diversifier, div, 11);
     col++;
     const void *pkd = sqlite3_column_blob(s, col);
-    if (pkd) memcpy(out->pk_d, pkd, 32);
+    if (pkd && sqlite3_column_bytes(s, col) >= 32)
+        memcpy(out->pk_d, pkd, 32);
     col++;
     const void *cm = sqlite3_column_blob(s, col);
-    if (cm) memcpy(out->cm, cm, 32);
+    if (cm && sqlite3_column_bytes(s, col) >= 32)
+        memcpy(out->cm, cm, 32);
     col++;
     const void *nf = sqlite3_column_blob(s, col);
-    if (nf) memcpy(out->nullifier, nf, 32);
+    if (nf && sqlite3_column_bytes(s, col) >= 32)
+        memcpy(out->nullifier, nf, 32);
     col++;
     if (sqlite3_column_type(s, col) != SQLITE_NULL)
         out->block_height = sqlite3_column_int(s, col);
@@ -159,11 +175,15 @@ bool db_wallet_utxo_validate(const struct db_wallet_utxo *u,
     ar_errors_clear(errors);
     validates_presence_of(errors, u, txid);
     validates_non_negative(errors, u, value);
+    if (u->value > 2100000000000000LL)
+        ar_errors_add(errors, "value", "exceeds MAX_MONEY");
     validates_non_negative(errors, u, height);
     if (u->script && u->script_len == 0)
         ar_errors_add(errors, "script_len", "must be positive when script present");
-    if (u->script_len > (size_t)INT32_MAX)
-        ar_errors_add(errors, "script_len", "exceeds max size");
+    if (u->script_len > 10000)
+        ar_errors_add(errors, "script_len", "exceeds max script size");
+    if (u->script_len > 0 && !u->script)
+        ar_errors_add(errors, "script", "null pointer with nonzero length");
     if (u->is_spent) {
         static const uint8_t z[32] = {0};
         if (memcmp(u->spent_txid, z, 32) == 0)
@@ -178,6 +198,8 @@ bool db_sapling_note_validate(const struct db_sapling_note *n,
     ar_errors_clear(errors);
     validates_presence_of(errors, n, txid);
     validates_non_negative(errors, n, value);
+    if (n->value > 2100000000000000LL)
+        ar_errors_add(errors, "value", "exceeds MAX_MONEY");
     validates_presence_of(errors, n, ivk);
     validates_presence_of(errors, n, nullifier);
     validates_presence_of(errors, n, cm);
@@ -299,6 +321,22 @@ void db_wallet_tx_free(struct db_wallet_tx *t)
     t->raw_tx_len = 0;
 }
 
+void db_wallet_utxo_free(struct db_wallet_utxo *u)
+{
+    if (!u) return;
+    free(u->script);
+    u->script = NULL;
+    u->script_len = 0;
+}
+
+void db_sapling_note_free(struct db_sapling_note *n)
+{
+    if (!n) return;
+    free(n->witness_data);
+    n->witness_data = NULL;
+    n->witness_data_len = 0;
+}
+
 int db_wallet_tx_recent(struct node_db *ndb, struct db_wallet_tx *out,
                         size_t max)
 {
@@ -341,7 +379,8 @@ int db_wallet_tx_at_height(struct node_db *ndb, int height,
     while (sqlite3_step(s) == SQLITE_ROW && (size_t)count < max) {
         memset(&out[count], 0, sizeof(out[count]));
         const void *t = sqlite3_column_blob(s, 0);
-        if (t) memcpy(out[count].txid, t, 32);
+        if (t && sqlite3_column_bytes(s, 0) >= 32)
+            memcpy(out[count].txid, t, 32);
         out[count].raw_tx_len = (size_t)sqlite3_column_bytes(s, 1);
         const void *rt = sqlite3_column_blob(s, 1);
         if (rt && out[count].raw_tx_len > 0) {
@@ -421,9 +460,17 @@ bool db_wallet_utxo_find(struct node_db *ndb,
     out->vout = vout;
     out->value = sqlite3_column_int64(s, 0);
     const void *ah = sqlite3_column_blob(s, 1);
-    if (ah) memcpy(out->address_hash, ah, 20);
+    if (ah && sqlite3_column_bytes(s, 1) >= 20)
+        memcpy(out->address_hash, ah, 20);
     out->script_len = (size_t)sqlite3_column_bytes(s, 2);
-    out->script = NULL;
+    const void *sc2 = sqlite3_column_blob(s, 2);
+    if (sc2 && out->script_len > 0) {
+        out->script = malloc(out->script_len);
+        if (out->script)
+            memcpy(out->script, sc2, out->script_len);
+    } else {
+        out->script = NULL;
+    }
     out->height = sqlite3_column_int(s, 3);
     const void *st = sqlite3_column_blob(s, 4);
     if (st && sqlite3_column_bytes(s, 4) >= 32) {
@@ -716,6 +763,30 @@ int db_sapling_note_list_unspent_for_ivk(struct node_db *ndb,
     return count;
 }
 
+int db_sapling_note_list_all(struct node_db *ndb,
+                              struct db_sapling_note *out, size_t max)
+{
+    if (!ndb->open) return 0;
+    sqlite3_stmt *s = NULL;
+    sqlite3_prepare_v2(ndb->db,
+        "SELECT txid,output_index,value,rcm,memo,ivk,diversifier,pk_d,"
+        "cm,nullifier,block_height,spent_txid"
+        " FROM wallet_sapling_notes ORDER BY block_height DESC",
+        -1, &s, NULL);
+    int count = 0;
+    while (sqlite3_step(s) == SQLITE_ROW && (size_t)count < max) {
+        db_sapling_note_read_row(s, 0, &out[count]);
+        const void *st = sqlite3_column_blob(s, 11);
+        if (st && sqlite3_column_bytes(s, 11) >= 32) {
+            memcpy(out[count].spent_txid, st, 32);
+            out[count].is_spent = true;
+        }
+        count++;
+    }
+    sqlite3_finalize(s);
+    return count;
+}
+
 bool db_sapling_note_save_witness(struct node_db *ndb,
                                    const uint8_t txid[32], uint32_t output_index,
                                    const uint8_t *witness_blob, size_t blob_len,
@@ -793,9 +864,17 @@ int db_wallet_tx_utxos(struct node_db *ndb, const uint8_t txid[32],
         out[count].vout = (uint32_t)sqlite3_column_int(s, 0);
         out[count].value = sqlite3_column_int64(s, 1);
         const void *ah = sqlite3_column_blob(s, 2);
-        if (ah) memcpy(out[count].address_hash, ah, 20);
+        if (ah && sqlite3_column_bytes(s, 2) >= 20)
+            memcpy(out[count].address_hash, ah, 20);
         out[count].script_len = (size_t)sqlite3_column_bytes(s, 3);
-        out[count].script = NULL;
+        const void *sc3 = sqlite3_column_blob(s, 3);
+        if (sc3 && out[count].script_len > 0) {
+            out[count].script = malloc(out[count].script_len);
+            if (out[count].script)
+                memcpy(out[count].script, sc3, out[count].script_len);
+        } else {
+            out[count].script = NULL;
+        }
         out[count].height = sqlite3_column_int(s, 4);
         out[count].is_coinbase = sqlite3_column_int(s, 5) != 0;
         const void *st = sqlite3_column_blob(s, 6);

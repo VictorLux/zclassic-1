@@ -8,6 +8,8 @@
 #include "net/connman.h"
 #include "net/version.h"
 #include "util/clientversion.h"
+#include <arpa/inet.h>
+#include <netdb.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -157,6 +159,31 @@ static bool rpc_addnode(const struct json_value *params, bool help,
                 port = (uint16_t)p_val;
         }
         connman_add_seed_node(g_cm, host, port);
+
+        /* Direct connect — don't rely on addrman random selection */
+        struct net_address addr;
+        net_address_init(&addr);
+        addr.svc.port = port;
+        struct addrinfo hints;
+        memset(&hints, 0, sizeof(hints));
+        hints.ai_family = AF_UNSPEC;
+        hints.ai_socktype = SOCK_STREAM;
+        struct addrinfo *res = NULL;
+        if (getaddrinfo(host, NULL, &hints, &res) == 0 && res) {
+            if (res->ai_family == AF_INET) {
+                struct sockaddr_in *s4 = (struct sockaddr_in *)res->ai_addr;
+                memset(addr.svc.addr.ip, 0, 10);
+                addr.svc.addr.ip[10] = 0xff;
+                addr.svc.addr.ip[11] = 0xff;
+                memcpy(addr.svc.addr.ip + 12, &s4->sin_addr, 4);
+            } else if (res->ai_family == AF_INET6) {
+                struct sockaddr_in6 *s6 = (struct sockaddr_in6 *)res->ai_addr;
+                memcpy(addr.svc.addr.ip, &s6->sin6_addr, 16);
+            }
+            freeaddrinfo(res);
+            connman_open_connection(g_cm, &addr);
+        }
+
         json_set_null(result);
         return true;
     }
