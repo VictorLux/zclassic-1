@@ -42,5 +42,4 @@ BODY="$BODY}"
 RESULT=$(curl -s -u "$COOKIE" "http://127.0.0.1:$PORT/" \
     -H "Content-Type: application/json" -d "$BODY")
 
-# Pretty print if python3 available, otherwise raw
-echo "$RESULT" | python3 -m json.tool 2>/dev/null || echo "$RESULT"
+echo "$RESULT"

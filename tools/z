@@ -78,16 +78,7 @@ notes)
     ;;
 
 addrs)
-    rpc listunspent 0 | python3 -c "
-import json,sys
-d=json.load(sys.stdin)
-seen={}
-for u in d:
-    a=u['address']
-    seen[a]=seen.get(a,0)+float(u['amount'])
-for a,v in seen.items():
-    print(f'{a} {v:.8f}')
-" 2>/dev/null || rpc listunspent 0
+    rpc listunspent 0
     ;;
 
 zaddrs)
