@@ -55,3 +55,6 @@ test: test_zcl
 
 clean:
 	rm -f test_zcl zclassic23 zclassic-cli $(ALL_OBJS)
+
+hodl_chart: tools/hodl_chart.c lib/util/src/png_writer.c lib/util/src/bitmap_font.c
+	$(CC) -std=c23 -O2 -Wall -Wextra -Wno-pedantic -Ilib/util/include -o $@ $^ -lm

@@ -107,6 +107,12 @@ verify)
     rpc verifychainroots "$2" "$3"
     ;;
 
+hodl)
+    CHARTBIN="$(dirname "$0")/../hodl_chart"
+    [ -x "$CHARTBIN" ] || { echo "Run: make hodl_chart" >&2; exit 1; }
+    "$CHARTBIN"
+    ;;
+
 # ── SEND: Transactions ──────────────────────────────────────────
 send)
     rpc sendtoaddress "$2" "$3"
