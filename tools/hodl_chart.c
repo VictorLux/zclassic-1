@@ -67,8 +67,8 @@ static void text(int x, int y, const char *s, int scale, uint8_t r, uint8_t g, u
 int main(void)
 {
     /* Get real data from node */
-    FILE *fp = popen("./zclassic-cli hodltimeseries 2>/dev/null", "r");
-    if (!fp) fp = popen("zclassic-cli hodltimeseries 2>/dev/null", "r");
+    FILE *fp = popen("./zclassic-cli hodltimeseries 9 2>/dev/null", "r");
+    if (!fp) fp = popen("zclassic-cli hodltimeseries 9 2>/dev/null", "r");
     if (!fp) { fprintf(stderr, "Cannot get data\n"); return 1; }
     char buf[65536];
     size_t n = fread(buf, 1, sizeof(buf)-1, fp);
@@ -100,11 +100,11 @@ int main(void)
         if (pcts[i] < y_min) y_min = pcts[i];
         if (pcts[i] > y_max) y_max = pcts[i];
     }
-    double y_lo = floor((y_min - 2) / 5) * 5;
-    double y_hi = ceil((y_max + 2) / 5) * 5;
+    double y_lo = floor(y_min / 10) * 10;
+    double y_hi = ceil(y_max / 10) * 10;
     if (y_lo < 0) y_lo = 0;
     if (y_hi > 100) y_hi = 100;
-    if (y_hi - y_lo < 15) y_hi = y_lo + 15;
+    if (y_hi - y_lo < 20) y_hi = y_lo + 20;
 
     int64_t t_min = times[0], t_max = times[npts-1];
     double t_range = (double)(t_max - t_min);
@@ -125,12 +125,13 @@ int main(void)
 
     char subtitle[128];
     snprintf(subtitle, sizeof(subtitle),
-             "Currently %.1f%% of %.0f ZCL  |  4-Year Trend from UTXO Set",
+             "Currently %.1f%% of %.0f ZCL  |  Full History from UTXO Set",
              pcts[npts-1], supplies[npts-1]);
     text(IMG_W/2 - 230, 44, subtitle, 2, 110, 110, 110);
 
     /* Y gridlines + labels */
-    for (double v = y_lo; v <= y_hi + 0.1; v += 5) {
+    double ystep = (y_hi - y_lo > 50) ? 10 : 5;
+    for (double v = y_lo; v <= y_hi + 0.1; v += ystep) {
         int y = PAD_T + (int)(CHART_H * (1.0 - (v - y_lo) / (y_hi - y_lo)));
         for (int x = PAD_L; x <= PAD_L + CHART_W; x++)
             px(x, y, 225, 222, 218);

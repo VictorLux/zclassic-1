@@ -622,10 +622,12 @@ static bool rpc_hodltimeseries(const struct json_value *params, bool help,
 {
     (void)params;
     RPC_HELP(help, result,
-        "hodltimeseries\n"
+        "hodltimeseries [years]\n"
         "Compute 1-year HODL wave time series from UTXO set.\n"
-        "Returns monthly data points over the past 4 years.\n"
-        "Each point: {height, time, pct, supply_zcl}");
+        "Returns monthly data points. Default 9 years (full history).\n"
+        "Each point: {height, time, pct, supply_zcl}\n"
+        "\nArguments:\n"
+        "1. years  (int, optional, default=9)\n");
 
     if (!g_coins_db || !g_main_state) {
         json_set_str(result, "Chain/coins not available");
@@ -711,17 +713,29 @@ static bool rpc_hodltimeseries(const struct json_value *params, bool help,
      * and scale by ratio of known total supply. */
     (void)total_utxos;
 
-    /* Sample points: monthly over 4 years = 48 points */
-    #define NSAMPLES 48
-    int64_t four_yr_secs = (int64_t)(4 * 365.25 * 86400);
+    /* Parse optional years parameter */
+    struct rpc_params rp;
+    rpc_params_init(&rp, params);
+    int years = (int)rpc_permit_int(&rp, 0, "years", 9);
+    if (years < 1) years = 1;
+    if (years > 10) years = 10;
+
+    /* Sample points: monthly over N years */
+    int nsamples = years * 12;
+    if (nsamples > 120) nsamples = 120;
+    int64_t range_secs = (int64_t)(years * 365.25 * 86400);
     int64_t one_yr_secs = (int64_t)(365.25 * 86400);
 
     json_set_array(result);
 
-    for (int s = 0; s < NSAMPLES; s++) {
-        /* Sample time: 4 years ago → now */
-        int64_t sample_time = tip_time - four_yr_secs +
-                              (four_yr_secs * s) / (NSAMPLES - 1);
+    for (int s = 0; s < nsamples; s++) {
+        int64_t sample_time = tip_time - range_secs +
+                              (range_secs * s) / (nsamples - 1);
+
+        /* Skip if before chain genesis + 1 year (need 1yr of data) */
+        int64_t genesis_time = 1478403829;
+        if (sample_time < genesis_time + one_yr_secs)
+            continue;
 
         /* Convert sample_time to height */
         int sample_h;
