@@ -1051,19 +1051,29 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
         return true;
     }
 
-    /* Initiate sync with this peer if not done yet */
-    if (!node->sync_started && !node->inbound) {
-        node->sync_started = true;
-        struct block_index *tip = active_chain_tip(&mp->main_state->chain_active);
-        if (tip && tip->phashBlock) {
-            char hex[65];
-            uint256_get_hex(tip->phashBlock, hex);
-            printf("Sending getheaders to %s (locator tip: height=%d hash=%s)\n",
-                   node->addr_name, tip->nHeight, hex);
-        } else {
-            printf("Sending getheaders to %s (no tip!)\n", node->addr_name);
+    /* Initiate sync, and periodically re-request if behind. */
+    {
+        bool should_sync = false;
+        if (!node->sync_started && !node->inbound) {
+            node->sync_started = true;
+            should_sync = true;
         }
-        push_getheaders(mp, node);
+        /* Re-request headers every 30s if peer is ahead of us */
+        int64_t now_send = (int64_t)time(NULL);
+        if (node->sync_started && !node->inbound &&
+            node->starting_height > msg_get_height(mp) &&
+            now_send - node->last_getheaders_time > 30) {
+            should_sync = true;
+            node->last_getheaders_time = now_send;
+        }
+        if (should_sync) {
+            struct block_index *tip = active_chain_tip(&mp->main_state->chain_active);
+            if (tip && tip->phashBlock) {
+                printf("Sending getheaders to %s (our height=%d, peer=%d)\n",
+                       node->addr_name, tip->nHeight, node->starting_height);
+            }
+            push_getheaders(mp, node);
+        }
     }
 
     /* Send ping */

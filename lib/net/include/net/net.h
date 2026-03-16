@@ -187,6 +187,7 @@ struct p2p_node {
     bool prefer_headers;
     bool send_compact;
     bool sync_started;
+    int64_t last_getheaders_time;
 };
 
 struct node_signals {
