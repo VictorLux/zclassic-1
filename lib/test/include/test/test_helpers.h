@@ -155,5 +155,8 @@ int test_rpc(void);
 int test_transaction(void);
 int test_net(void);
 int test_activerecord(void);
+int test_zcash_crypto(void);
+int test_merkle_tree(void);
+int test_validation(void);
 
 #endif /* TEST_HELPERS_H */

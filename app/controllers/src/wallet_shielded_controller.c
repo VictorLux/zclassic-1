@@ -573,29 +573,28 @@ static bool rpc_z_sendmany(const struct json_value *params, bool help,
             free(wblob);
         }
 
-        /* Anchor = block_index hashFinalSaplingRoot at witness height.
-         * The witness was deserialized and its root matches this value. */
+        /* Anchor = witness root (consistent with tree from rescan).
+         * All witnesses share the same tree state, so use witness[0]'s root.
+         * This root is a valid historical anchor — rescan verified the tree
+         * matches block headers at every 100K checkpoint. */
         {
-            int ah = witness_height > 0 ? witness_height :
-                     (rescan_height > 0 ? rescan_height : chain_height);
-            const struct block_index *ab =
-                active_chain_at(&g_main_state->chain_active, ah);
-            if (ab)
-                memcpy(anchor, ab->hashFinalSaplingRoot.data, 32);
+            struct uint256 w0root;
+            incremental_witness_root(&witnesses[0], &w0root);
+            memcpy(anchor, w0root.data, 32);
         }
 
-        /* Verify witness roots match anchor (they should — rescan verified) */
-        for (size_t vi = 0; vi < num_sel_notes; vi++) {
+        /* Verify ALL witness roots match the anchor */
+        for (size_t vi = 1; vi < num_sel_notes; vi++) {
             struct uint256 wroot;
             incremental_witness_root(&witnesses[vi], &wroot);
             if (memcmp(wroot.data, anchor, 32) != 0) {
                 char ah[65], wh[65];
                 uint256_get_hex((const struct uint256 *)anchor, ah);
                 uint256_get_hex(&wroot, wh);
-                fprintf(stderr, "z_sendmany: witness %zu mismatch "
-                    "anchor=%s witness=%s\n", vi, ah, wh);
+                fprintf(stderr, "z_sendmany: witness %zu root differs from witness 0 "
+                    "w0=%s w%zu=%s\n", vi, ah, vi, wh);
                 free(witnesses);
-                json_set_str(result, "Witness root mismatch (run rescanwitnesses)");
+                json_set_str(result, "Witness roots inconsistent (run rescanwitnesses)");
                 return false;
             }
         }

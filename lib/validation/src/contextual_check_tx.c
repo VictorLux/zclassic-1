@@ -13,20 +13,7 @@
 #include "zcash/sprout.h"
 #include "core/serialize.h"
 
-/* librustzcash Sapling verification FFI */
-extern void *librustzcash_sapling_verification_ctx_init(void);
-extern void librustzcash_sapling_verification_ctx_free(void *ctx);
-extern bool librustzcash_sapling_check_spend(
-    void *ctx, const uint8_t *cv, const uint8_t *anchor,
-    const uint8_t *nullifier, const uint8_t *rk,
-    const uint8_t *zkproof, const uint8_t *spend_auth_sig,
-    const uint8_t *sighash_value);
-extern bool librustzcash_sapling_check_output(
-    void *ctx, const uint8_t *cv, const uint8_t *cm,
-    const uint8_t *epk, const uint8_t *zkproof);
-extern bool librustzcash_sapling_final_check(
-    void *ctx, int64_t value_balance,
-    const uint8_t *binding_sig, const uint8_t *sighash_value);
+#include "zcash/librustzcash.h"
 
 bool contextual_check_transaction(const struct transaction *tx,
                                    struct validation_state *state,

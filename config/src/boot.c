@@ -12,6 +12,7 @@
 #include "storage/coins_db.h"
 #include "consensus/validation.h"
 #include "controllers/blockchain_controller.h"
+#include "controllers/chain_inspect_controller.h"
 #include "controllers/misc_controller.h"
 #include "controllers/network_controller.h"
 #include "rpc/httpserver.h"
@@ -726,6 +727,10 @@ bool app_init(struct app_context *ctx)
     rpc_blockchain_set_state(&g_state, &g_mempool, ctx->datadir);
     rpc_blockchain_set_coins_db(&g_coins_db, &g_coins_tip);
     register_blockchain_rpc_commands(&g_rpc_table);
+
+    rpc_chain_inspect_set_state(&g_state, ctx->datadir,
+                                 &g_coins_db, &g_coins_tip, g_active_node_db);
+    register_chain_inspect_rpc_commands(&g_rpc_table);
 
     rpc_rawtx_set_state(&g_state, &g_mempool, &g_coins_tip, ctx->datadir);
     rpc_rawtx_set_keystore(&g_wallet.keystore);

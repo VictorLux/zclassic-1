@@ -826,7 +826,7 @@ bool db_sapling_note_load_witness(struct node_db *ndb,
     }
     int wlen = sqlite3_column_bytes(s, 0);
     const void *wdata = sqlite3_column_blob(s, 0);
-    if (!wdata || wlen <= 0) {
+    if (!wdata || wlen <= 0 || wlen > 8192) {
         sqlite3_finalize(s);
         return false;
     }

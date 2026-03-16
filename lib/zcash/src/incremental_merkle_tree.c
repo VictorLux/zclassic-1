@@ -577,5 +577,14 @@ bool incremental_witness_deserialize(struct incremental_witness *w,
     }
 
     w->cursor_depth = next_depth(&w->tree, w->num_filled);
+
+    /* cursor.depth must match cursor_depth, NOT full tree depth.
+     * The cursor is a subtree at a specific level — its root computation
+     * pads empty hashes up to cursor.depth. Using the full tree depth (32)
+     * instead of cursor_depth produces a wrong root with 27+ extra levels. */
+    if (w->has_cursor) {
+        w->cursor.depth = w->cursor_depth;
+    }
+
     return true;
 }

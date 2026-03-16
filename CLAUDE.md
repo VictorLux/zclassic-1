@@ -7,7 +7,7 @@ Wire-compatible, RPC-compatible, wallet-compatible, transaction-compatible.
 ## Build
 ```bash
 make zclassic23    # build node
-make test          # run tests (564 tests)
+make test          # run tests (609 tests)
 ```
 
 ## Project Structure (Rails-style MVC)
@@ -78,13 +78,15 @@ ActiveRecord pattern with SQLite. Each model has CRUD operations, validations, a
 Handle RPC requests and bridge validation pipeline to models.
 - `wallet_controller` — getnewaddress, getbalance, sendtoaddress, listunspent, multisig (916 lines)
 - `wallet_shielded_controller` — z_sendmany, z_getbalance, z_listunspent, z_exportkey (1636 lines)
-- `wallet_diagnostic_controller` — walletaudit, rescanwitnesses, coinanalysis, traceutxo (2759 lines)
+- `wallet_diagnostic_controller` — walletaudit, traceutxo, diagnoseutxos, walletledger (2393 lines)
+- `wallet_rescan_controller` — rescanwitnesses, rescanwallet, fastsync, coinanalysis (871 lines)
 - `wallet_helpers` — Shared wallet state + amount formatting utilities (229 lines)
 - `blockchain_controller` — getblockcount, getblock, getblockhash, ...
 - `transaction_controller` — getrawtransaction, sendrawtransaction, ...
 - `mining_controller` — getmininginfo, getblocktemplate, submitblock
 - `network_controller` — getpeerinfo, getconnectioncount, addnode
 - `misc_controller` — getinfo, validateaddress, stop
+- `chain_inspect_controller` — chainview, chainstats, gettxdetail, saplingtreeinfo, scancommitments, verifychainroots (629 lines)
 - `sync_controller` — Bridges validation events to SQLite (connect/disconnect block)
 
 ### Views (`app/views/`) — Planned
@@ -97,7 +99,7 @@ JSON response serializers for each model type.
 23 library modules. Include paths: `#include "crypto/sha256.h"` works via `-Ilib/<name>/include`.
 
 ## Current Status
-- **Tests**: 564 ALL TESTS PASSED (0 failures)
+- **Tests**: 609 ALL TESTS PASSED (0 failures)
 - **C++ node** (`zclassicd`): P2P 8033, RPC 8232, data at `~/.zclassic`
 - **C23 node** (`zclassic23`): P2P 18033, RPC 18232, data at `~/.zclassic-c23`
 - **Sapling spends**: z→z and z→t implemented via `z_sendmany` (commitment tree tracking, witness maintenance, Merkle path extraction, spend proof construction)
@@ -107,6 +109,7 @@ JSON response serializers for each model type.
 2. LevelDB MANIFEST corruption on DB open
 3. JoinSplit anchor validation: placeholder returns true
 4. Sapling witness persistence: witnesses need rescan after node restart (not yet maintained incrementally during connect_block)
+5. **FIXED**: Witness cursor depth bug — `incremental_witness_deserialize` set `cursor.depth` to full tree depth (32) instead of `cursor_depth`, causing wrong root after serialization roundtrip
 
 ## Quality Bar
 Q = Clarity × Reliability × Performance × TestCoverage × UserImpact

@@ -24,6 +24,9 @@ int main(void)
     failures += test_sqlite();
     failures += test_activerecord();
     failures += test_sapling();
+    failures += test_zcash_crypto();
+    failures += test_merkle_tree();
+    failures += test_validation();
 
     ecc_verify_destroy();
     ecc_stop();

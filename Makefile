@@ -28,7 +28,7 @@ CFLAGS = -std=c23 -O3 -march=native -flto -Wall -Wextra -Werror -pedantic \
 	-Ilib/test/include \
 	-D_POSIX_C_SOURCE=200809L -Ivendor/include
 LDFLAGS = -pthread -flto
-LIBS = -Lvendor/lib -lsecp256k1 -lleveldb -lrustzcash \
+LIBS = -Lvendor/lib -lsecp256k1 -lleveldb \
 	-lstdc++ -lm -lsqlite3 -ldl -lpthread
 
 .PHONY: all test clean

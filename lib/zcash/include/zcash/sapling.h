@@ -30,6 +30,10 @@ void sapling_ask_to_ak(const uint8_t ask[32], uint8_t ak[32]);
 /* nsk → nk: nk = nsk * ProofGenerationKey */
 void sapling_nsk_to_nk(const uint8_t nsk[32], uint8_t nk[32]);
 
+/* rk = ak + ar * SpendAuthSig.G (re-randomized verification key) */
+bool sapling_compute_rk(const uint8_t ak[32], const uint8_t ar[32],
+                          uint8_t rk[32]);
+
 /* CRH^ivk(ak, nk) = BLAKE2s("Zcashivk", ak || nk) with top 5 bits dropped */
 void sapling_crh_ivk(const uint8_t ak[32], const uint8_t nk[32], uint8_t ivk[32]);
 

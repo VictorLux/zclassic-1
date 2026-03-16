@@ -16,6 +16,13 @@
 #   zcl status            Node sync status
 #   zcl hodlwave          UTXO age distribution
 #   zcl audit             Wallet audit
+#   zcl view HEIGHT [N]   View N block headers at HEIGHT
+#   zcl stats [S] [E]     Chain statistics (optional range)
+#   zcl txdetail TXID     UTXO detail for transaction
+#   zcl tree              Sapling commitment tree state
+#   zcl scan S E          Scan blocks for Sapling commitments
+#   zcl verify S E        Verify Sapling tree against block headers
+#   zcl rpc METHOD [ARGS] Raw RPC call
 #   zcl help              Show this help
 
 set -e
@@ -580,6 +587,21 @@ case "${1:-help}" in
     timeline)  cmd_timeline "$2" ;;
     wavechart) cmd_wavechart ;;
     audit)     cmd_audit ;;
+    # Chain introspection
+    view)      rpc chainview "$2, ${3:-1}" | python3 -m json.tool ;;
+    stats)
+        if [ -n "$2" ] && [ -n "$3" ]; then
+            rpc chainstats "$2, $3" | python3 -m json.tool
+        elif [ -n "$2" ]; then
+            rpc chainstats "$2" | python3 -m json.tool
+        else
+            rpc chainstats | python3 -m json.tool
+        fi ;;
+    txdetail)  rpc gettxdetail "\"$2\"" | python3 -m json.tool ;;
+    tree)      rpc saplingtreeinfo | python3 -m json.tool ;;
+    scan)      rpc scancommitments "$2, $3" | python3 -m json.tool ;;
+    verify)    rpc verifychainroots "$2, $3" | python3 -m json.tool ;;
+    rpc)       shift; rpc "$@" | python3 -m json.tool ;;
     help|--help|-h) cmd_help ;;
     *)
         echo "Unknown command: $1"

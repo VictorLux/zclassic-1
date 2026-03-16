@@ -7,6 +7,7 @@
 #include "controllers/wallet_helpers.h"
 #include "controllers/wallet_shielded_controller.h"
 #include "controllers/wallet_diagnostic_controller.h"
+#include "controllers/wallet_rescan_controller.h"
 #include "controllers/strong_params.h"
 #include "wallet/wallet.h"
 #include "chain/chainparams.h"
@@ -972,4 +973,5 @@ void register_wallet_rpc_commands(struct rpc_table *t)
     /* Register shielded and diagnostic sub-controllers */
     register_wallet_shielded_rpc_commands(t);
     register_wallet_diagnostic_rpc_commands(t);
+    register_wallet_rescan_rpc_commands(t);
 }

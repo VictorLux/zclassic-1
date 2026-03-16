@@ -137,6 +137,20 @@ void sapling_nsk_to_nk(const uint8_t nsk[32], uint8_t nk[32])
     jub_to_bytes(nk, &result);
 }
 
+bool sapling_compute_rk(const uint8_t ak[32], const uint8_t ar[32],
+                          uint8_t rk[32])
+{
+    ensure_fixed_generators();
+    struct jub_point ak_pt;
+    if (!jub_from_bytes(&ak_pt, ak)) return false;
+    struct jub_point ar_G;
+    jub_scalar_mul(&ar_G, &fixed_generators[GEN_SPENDING_KEY], ar);
+    struct jub_point rk_pt;
+    jub_add(&rk_pt, &ak_pt, &ar_G);
+    jub_to_bytes(rk, &rk_pt);
+    return true;
+}
+
 void sapling_crh_ivk(const uint8_t ak[32], const uint8_t nk[32], uint8_t ivk[32])
 {
     struct blake2s_ctx ctx;
