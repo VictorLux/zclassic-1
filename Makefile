@@ -33,7 +33,8 @@ LIBS = -Lvendor/lib -lsecp256k1 -lleveldb \
 
 .PHONY: all test clean
 
-all: test_zcl zclassic23
+CLI_SRCS = lib/rpc/src/client.c lib/json/src/json.c
+all: test_zcl zclassic23 zclassic-cli
 
 TEST_SRCS = $(wildcard lib/test/src/*.c)
 
@@ -43,6 +44,9 @@ test_zcl: $(TEST_SRCS) $(ALL_SRCS)
 zclassic23: main.c $(ALL_SRCS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LIBS)
 
+zclassic-cli: cli.c $(CLI_SRCS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
+
 test: test_zcl
 	./test_zcl
 
@@ -50,4 +54,4 @@ test: test_zcl
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 clean:
-	rm -f test_zcl zclassic23 $(ALL_OBJS)
+	rm -f test_zcl zclassic23 zclassic-cli $(ALL_OBJS)
