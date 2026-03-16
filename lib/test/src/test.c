@@ -26,6 +26,7 @@ int main(void)
     failures += test_sapling();
     failures += test_sapling_crypto();
     failures += test_merkle_tree();
+    failures += test_slp();
     failures += test_validation();
 
     ecc_verify_destroy();
