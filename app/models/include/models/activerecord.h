@@ -130,6 +130,50 @@ static inline void ar_errors_full_messages(const struct ar_errors *e,
         ar_errors_add(errors, #field, "is not included in the list"); \
 } while (0)
 
+/* ── DRY Macros ────────────────────────────────────────────────── */
+
+/* Define a model's callback registry with lazy init.
+ * Usage: DEFINE_MODEL_CALLBACKS(utxo) generates db_utxo_callbacks(). */
+#define DEFINE_MODEL_CALLBACKS(model) \
+    static struct ar_callbacks model##_cbs; \
+    static bool model##_cbs_init = false; \
+    struct ar_callbacks *db_##model##_callbacks(void) { \
+        if (!model##_cbs_init) { \
+            ar_callbacks_init(&model##_cbs); \
+            model##_cbs_init = true; \
+        } \
+        return &model##_cbs; \
+    }
+
+/* Safe malloc with NULL check — returns false from enclosing function. */
+#define AR_MALLOC_OR_FAIL(ptr, size) do { \
+    (ptr) = malloc(size); \
+    if (!(ptr)) return false; \
+} while (0)
+
+/* Safe blob read from SQLite with size validation. */
+#define AR_READ_BLOB(stmt, col, dest, expected_len) do { \
+    int _blen = sqlite3_column_bytes(stmt, col); \
+    const void *_bdata = sqlite3_column_blob(stmt, col); \
+    if (_bdata && _blen >= (int)(expected_len)) \
+        memcpy(dest, _bdata, expected_len); \
+    else \
+        memset(dest, 0, expected_len); \
+} while (0)
+
+/* Safe string read from SQLite. */
+#define AR_READ_STR(stmt, col, dest, max_len) do { \
+    const char *_s = (const char *)sqlite3_column_text(stmt, col); \
+    if (_s) { \
+        size_t _l = strlen(_s); \
+        if (_l >= (max_len)) _l = (max_len) - 1; \
+        memcpy(dest, _s, _l); \
+        (dest)[_l] = 0; \
+    } else { \
+        (dest)[0] = 0; \
+    } \
+} while (0)
+
 /* ── Callback System ───────────────────────────────────────────── */
 
 /* Callback signature: returns false to halt the operation.

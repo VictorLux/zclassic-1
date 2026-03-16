@@ -68,6 +68,7 @@ static void db_wallet_tx_read_row(sqlite3_stmt *s, int col,
     const void *rt = sqlite3_column_blob(s, col++);
     if (rt && out->raw_tx_len > 0) {
         out->raw_tx = malloc(out->raw_tx_len);
+        if (!out->raw_tx) { out->raw_tx_len = 0; return; }
         if (out->raw_tx)
             memcpy(out->raw_tx, rt, out->raw_tx_len);
     }
