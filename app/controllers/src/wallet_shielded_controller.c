@@ -753,15 +753,18 @@ static bool rpc_z_sendmany(const struct json_value *params, bool help,
                            branch_id, &txdata, &sighash);
 
             for (size_t i = 0; i < num_sel_notes && !spend_err; i++) {
+                /* rsk = ask + ar in Jubjub scalar field (Fs, NOT Fr).
+                 * ask and ar are Fs scalars — using Fr addition would
+                 * produce a wrong result since Fr.p != Fs.p. */
                 uint8_t rsk[32];
-                struct fr ask_fr, ar_fr, rsk_fr;
-                fr_from_bytes(&ask_fr, from_z_key->xsk.expsk.ask);
-                fr_from_bytes(&ar_fr, spend_ars[i]);
-                fr_add(&rsk_fr, &ask_fr, &ar_fr);
-                fr_to_bytes(rsk, &rsk_fr);
-                memory_cleanse(&ask_fr, sizeof(ask_fr));
-                memory_cleanse(&ar_fr, sizeof(ar_fr));
-                memory_cleanse(&rsk_fr, sizeof(rsk_fr));
+                struct fs ask_fs, ar_fs, rsk_fs;
+                fs_from_bytes(&ask_fs, from_z_key->xsk.expsk.ask);
+                fs_from_bytes(&ar_fs, spend_ars[i]);
+                fs_add(&rsk_fs, &ask_fs, &ar_fs);
+                fs_to_bytes(rsk, &rsk_fs);
+                memory_cleanse(&ask_fs, sizeof(ask_fs));
+                memory_cleanse(&ar_fs, sizeof(ar_fs));
+                memory_cleanse(&rsk_fs, sizeof(rsk_fs));
 
                 if (!redjubjub_sign(rsk, sighash.data, 32,
                                     wtx.tx.v_shielded_spend[i].spend_auth_sig,
