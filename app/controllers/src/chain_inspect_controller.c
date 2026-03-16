@@ -613,6 +613,174 @@ next:
     return true;
 }
 
+/* hodltimeseries
+ * Scan all UTXOs, bin by creation height, compute 1yr HODL %
+ * at monthly sample points over the past 4 years.
+ * Returns array of {height, time, pct_1yr_hodl, supply_zcl}. */
+static bool rpc_hodltimeseries(const struct json_value *params, bool help,
+                                 struct json_value *result)
+{
+    (void)params;
+    RPC_HELP(help, result,
+        "hodltimeseries\n"
+        "Compute 1-year HODL wave time series from UTXO set.\n"
+        "Returns monthly data points over the past 4 years.\n"
+        "Each point: {height, time, pct, supply_zcl}");
+
+    if (!g_coins_db || !g_main_state) {
+        json_set_str(result, "Chain/coins not available");
+        return false;
+    }
+
+    if (g_coins_tip)
+        coins_view_cache_flush(g_coins_tip);
+
+    int tip = active_chain_height(&g_main_state->chain_active);
+
+    /* Block timing model */
+    #define BC_HEIGHT 707000
+    #define PRE_SP 150
+    #define POST_SP 75
+
+    /* Get tip time from block index */
+    const struct block_index *tip_bi =
+        active_chain_at(&g_main_state->chain_active, tip);
+    int64_t tip_time = tip_bi ? (int64_t)tip_bi->nTime : (int64_t)time(NULL);
+
+    /* Height → approximate time */
+    #define HEIGHT_TO_TIME(h) ( \
+        ((h) < BC_HEIGHT) \
+            ? tip_time - (int64_t)(BC_HEIGHT - (h)) * PRE_SP \
+              - (int64_t)(tip - BC_HEIGHT) * POST_SP \
+            : tip_time - (int64_t)(tip - (h)) * POST_SP)
+
+    /* Bin UTXOs by creation height in 1000-block bins.
+     * Max bins: tip/1000 + 1 ≈ 3050 */
+    #define BIN_SIZE 1000
+    int nbins = tip / BIN_SIZE + 2;
+    int64_t *bin_value = calloc((size_t)nbins, sizeof(int64_t));
+    if (!bin_value) { json_set_str(result, "OOM"); return false; }
+
+    int64_t total_value = 0;
+    int64_t total_utxos = 0;
+
+    /* Scan all UTXOs */
+    struct db_iterator it;
+    db_iter_init(&it, &g_coins_db->db);
+    char prefix = 'c';
+    db_iter_seek(&it, &prefix, 1);
+
+    while (db_iter_valid(&it)) {
+        size_t keylen = 0;
+        const char *key = db_iter_key(&it, &keylen);
+        if (!key || keylen != 33 || key[0] != 'c') break;
+
+        struct uint256 txid;
+        memcpy(txid.data, key + 1, 32);
+
+        struct coins c;
+        coins_init(&c);
+        if (coins_view_db_get_coins(g_coins_db, &txid, &c)) {
+            int h = c.height;
+            if (h >= 0 && h <= tip) {
+                int bin = h / BIN_SIZE;
+                for (size_t i = 0; i < c.num_vout; i++) {
+                    if (!tx_out_is_null(&c.vout[i])) {
+                        bin_value[bin] += c.vout[i].value;
+                        total_value += c.vout[i].value;
+                        total_utxos++;
+                    }
+                }
+            }
+        }
+        coins_free(&c);
+        db_iter_next(&it);
+    }
+    db_iter_free(&it);
+
+    /* Compute cumulative: cum[b] = sum of bin_value[0..b] (value created at or before bin b) */
+    int64_t *cum = calloc((size_t)nbins, sizeof(int64_t));
+    if (!cum) { free(bin_value); json_set_str(result, "OOM"); return false; }
+    cum[0] = bin_value[0];
+    for (int b = 1; b < nbins; b++)
+        cum[b] = cum[b - 1] + bin_value[b];
+
+    /* Subsidy model: approximate supply at each height.
+     * ZCL: 10 ZCL/block first 20000, then 12.5 halving every 840000.
+     * For simplicity: use cumulative bin values for surviving UTXOs,
+     * and scale by ratio of known total supply. */
+    (void)total_utxos;
+
+    /* Sample points: monthly over 4 years = 48 points */
+    #define NSAMPLES 48
+    int64_t four_yr_secs = (int64_t)(4 * 365.25 * 86400);
+    int64_t one_yr_secs = (int64_t)(365.25 * 86400);
+
+    json_set_array(result);
+
+    for (int s = 0; s < NSAMPLES; s++) {
+        /* Sample time: 4 years ago → now */
+        int64_t sample_time = tip_time - four_yr_secs +
+                              (four_yr_secs * s) / (NSAMPLES - 1);
+
+        /* Convert sample_time to height */
+        int sample_h;
+        if (sample_time >= HEIGHT_TO_TIME(BC_HEIGHT))
+            sample_h = BC_HEIGHT + (int)((sample_time - HEIGHT_TO_TIME(BC_HEIGHT)) / POST_SP);
+        else
+            sample_h = (int)((sample_time - HEIGHT_TO_TIME(0)) / PRE_SP);
+        if (sample_h < 0) sample_h = 0;
+        if (sample_h > tip) sample_h = tip;
+
+        /* 1 year before sample in heights */
+        int64_t one_yr_time = sample_time - one_yr_secs;
+        int oneyear_h;
+        if (one_yr_time >= HEIGHT_TO_TIME(BC_HEIGHT))
+            oneyear_h = BC_HEIGHT + (int)((one_yr_time - HEIGHT_TO_TIME(BC_HEIGHT)) / POST_SP);
+        else
+            oneyear_h = (int)((one_yr_time - HEIGHT_TO_TIME(0)) / PRE_SP);
+        if (oneyear_h < 0) oneyear_h = 0;
+
+        /* Value of surviving UTXOs created at or before oneyear_h */
+        int bin_cutoff = oneyear_h / BIN_SIZE;
+        if (bin_cutoff >= nbins) bin_cutoff = nbins - 1;
+        int64_t old_value = cum[bin_cutoff];
+
+        /* Value of surviving UTXOs created at or before sample_h */
+        int bin_sample = sample_h / BIN_SIZE;
+        if (bin_sample >= nbins) bin_sample = nbins - 1;
+        int64_t total_at_sample = cum[bin_sample];
+
+        /* HODL % = old_value / total_at_sample */
+        double pct = 0;
+        if (total_at_sample > 0)
+            pct = (double)old_value / (double)total_at_sample * 100.0;
+        if (pct > 100) pct = 100;
+
+        struct json_value pt = {0};
+        json_set_object(&pt);
+        json_push_kv_int(&pt, "height", sample_h);
+        json_push_kv_int(&pt, "time", sample_time);
+
+        char pct_str[16];
+        snprintf(pct_str, sizeof(pct_str), "%.1f", pct);
+        json_push_kv_str(&pt, "pct", pct_str);
+
+        char supply_str[32];
+        snprintf(supply_str, sizeof(supply_str), "%.0f",
+                 (double)total_at_sample / 1e8);
+        json_push_kv_str(&pt, "supply_zcl", supply_str);
+
+        json_push_back(result, &pt);
+        json_free(&pt);
+    }
+
+    free(bin_value);
+    free(cum);
+
+    return true;
+}
+
 void register_chain_inspect_rpc_commands(struct rpc_table *t)
 {
     struct rpc_command cmds[] = {
@@ -622,6 +790,7 @@ void register_chain_inspect_rpc_commands(struct rpc_table *t)
         { "blockchain", "saplingtreeinfo",    rpc_saplingtreeinfo,    true },
         { "blockchain", "scancommitments",    rpc_scancommitments,    true },
         { "blockchain", "verifychainroots",   rpc_verifychainroots,   false },
+        { "blockchain", "hodltimeseries",    rpc_hodltimeseries,     true },
     };
 
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++)
