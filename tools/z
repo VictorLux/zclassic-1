@@ -1,0 +1,203 @@
+#!/bin/bash
+# Copyright 2026 Rhett Creighton - Apache License 2.0
+# z — LLM-optimized CRUD interface for zclassic23 node.
+#
+# Designed for AI/LLM tool calls: minimal input, clean output.
+# CRUD pattern: z <resource> [action] [params...]
+#
+# RESOURCES:
+#   z block <height>              Read block at height
+#   z block <height> <count>      Read N blocks
+#   z blocks                      Chain tip height
+#   z tx <txid>                   Read transaction UTXO detail
+#   z balance                     Read all balances
+#   z utxos                       List unspent transparent
+#   z notes                       List unspent shielded
+#   z addrs                       List all addresses
+#   z zaddrs                      List shielded addresses
+#   z mempool                     Mempool status
+#   z peers                       Connected peers
+#   z chain                       Chain summary stats
+#   z tree                        Sapling tree state
+#   z scan <start> <end>          Scan for commitments
+#
+# SEND:
+#   z send <addr> <amount>        Send transparent
+#   z zsend <from> <to> <amount>  Send shielded
+#   z shield <from> <to> <amount> Shield (t→z)
+#
+# RAW:
+#   z rpc <method> [args...]      Raw RPC call
+
+set -e
+CLI="$(dirname "$0")/../zclassic-cli"
+[ -x "$CLI" ] || CLI="./zclassic-cli"
+[ -x "$CLI" ] || { echo "zclassic-cli not found" >&2; exit 1; }
+
+rpc() { "$CLI" "$@" 2>/dev/null; }
+
+case "${1:-help}" in
+
+# ── READ: Chain ──────────────────────────────────────────────────
+blocks|height|tip)
+    rpc getblockcount
+    ;;
+
+block)
+    if [ -z "$3" ]; then
+        rpc chainview "$2" 1
+    else
+        rpc chainview "$2" "$3"
+    fi
+    ;;
+
+chain|stats)
+    rpc chainstats ${2:+"$2"} ${3:+"$3"}
+    ;;
+
+# ── READ: Transactions ──────────────────────────────────────────
+tx)
+    rpc gettxdetail "$2"
+    ;;
+
+mempool)
+    rpc getmempoolinfo
+    ;;
+
+# ── READ: Wallet ────────────────────────────────────────────────
+balance|bal)
+    rpc z_gettotalbalance 0
+    ;;
+
+utxos)
+    rpc listunspent ${2:-0}
+    ;;
+
+notes)
+    rpc z_listunspent
+    ;;
+
+addrs)
+    rpc listunspent 0 | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+seen={}
+for u in d:
+    a=u['address']
+    seen[a]=seen.get(a,0)+float(u['amount'])
+for a,v in seen.items():
+    print(f'{a} {v:.8f}')
+" 2>/dev/null || rpc listunspent 0
+    ;;
+
+zaddrs)
+    rpc z_listaddresses
+    ;;
+
+# ── READ: Network ───────────────────────────────────────────────
+peers)
+    rpc getpeerinfo
+    ;;
+
+info)
+    rpc getinfo
+    ;;
+
+# ── READ: Sapling ───────────────────────────────────────────────
+tree)
+    rpc saplingtreeinfo
+    ;;
+
+scan)
+    rpc scancommitments "$2" "$3"
+    ;;
+
+verify)
+    rpc verifychainroots "$2" "$3"
+    ;;
+
+# ── SEND: Transactions ──────────────────────────────────────────
+send)
+    rpc sendtoaddress "$2" "$3"
+    ;;
+
+zsend)
+    # zsend <from_zaddr> <to_zaddr> <amount>
+    rpc z_sendmany "$2" "[{\"address\":\"$3\",\"amount\":$4}]"
+    ;;
+
+shield)
+    # shield <from_taddr> <to_zaddr> <amount>
+    rpc z_sendmany "$2" "[{\"address\":\"$3\",\"amount\":$4}]" 0
+    ;;
+
+unshield)
+    # unshield <from_zaddr> <to_taddr> <amount>
+    rpc z_sendmany "$2" "[{\"address\":\"$3\",\"amount\":$4}]"
+    ;;
+
+# ── CREATE: Addresses ───────────────────────────────────────────
+newaddr)
+    rpc getnewaddress
+    ;;
+
+newzaddr)
+    rpc z_getnewaddress
+    ;;
+
+multisig)
+    # multisig <nrequired> <key1> <key2> ...
+    N="$2"; shift 2
+    KEYS=$(printf '"%s",' "$@" | sed 's/,$//')
+    rpc createmultisig "$N" "[$KEYS]"
+    ;;
+
+# ── RAW RPC ─────────────────────────────────────────────────────
+rpc)
+    shift
+    rpc "$@"
+    ;;
+
+# ── HELP ─────────────────────────────────────────────────────────
+help|--help|-h)
+    cat <<'HELP'
+z — LLM-optimized CRUD interface for zclassic23
+
+READ:
+  z blocks              Chain height
+  z block 100           Block at height 100
+  z block 100 5         5 blocks from height 100
+  z chain               Full chain statistics
+  z tx <txid>           Transaction UTXO detail
+  z balance             All balances (transparent + shielded)
+  z utxos               Transparent unspent outputs
+  z notes               Shielded unspent notes
+  z addrs               Transparent addresses with balances
+  z zaddrs              Shielded addresses
+  z mempool             Mempool status
+  z peers               Connected peers
+  z tree                Sapling commitment tree state
+  z scan 476969 486969  Scan blocks for commitments
+  z info                Node info
+
+SEND:
+  z send <taddr> <amt>                  Transparent send
+  z zsend <zfrom> <zto> <amt>           Shielded send (z→z)
+  z shield <tfrom> <zto> <amt>          Shield funds (t→z)
+  z unshield <zfrom> <tto> <amt>        Unshield funds (z→t)
+
+CREATE:
+  z newaddr             New transparent address
+  z newzaddr            New shielded address
+  z multisig 2 pk1 pk2  Create multisig
+
+RAW:
+  z rpc <method> [args...]  Direct RPC call
+HELP
+    ;;
+
+*)
+    echo "Unknown: $1 (try: z help)" >&2
+    exit 1
+    ;;
+esac
