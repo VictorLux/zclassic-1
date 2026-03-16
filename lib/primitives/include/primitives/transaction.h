@@ -10,7 +10,7 @@
 #include "core/amount.h"
 #include "script/script.h"
 #include "core/uint256.h"
-#include "zcash/zcash.h"
+#include "sapling/constants.h"
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>

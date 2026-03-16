@@ -5,7 +5,7 @@
 #ifndef ZCL_WALLET_SAPLING_KEYS_H
 #define ZCL_WALLET_SAPLING_KEYS_H
 
-#include "zcash/zip32.h"
+#include "sapling/zip32.h"
 #include "util/sync.h"
 #include <stdbool.h>
 #include <stddef.h>

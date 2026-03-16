@@ -32,7 +32,7 @@
 #include "controllers/wallet_controller.h"
 #include "wallet/wallet.h"
 #include "wallet/wallet_db.h"
-#include "zcash/params_init.h"
+#include "sapling/params_init.h"
 #include "metrics/metrics.h"
 #include "chain/pow.h"
 #include "controllers/sync_controller.h"
@@ -338,7 +338,7 @@ bool app_init(struct app_context *ctx)
     if (ctx->params_dir) {
         printf("Loading verification keys...\n");
         fflush(stdout);
-        if (!zcash_init_params(ctx->params_dir)) {
+        if (!sapling_init_params(ctx->params_dir)) {
             fprintf(stderr, "Error: Failed to load verification keys from %s\n",
                     ctx->params_dir);
             return false;
@@ -858,7 +858,7 @@ void app_shutdown(void)
     wallet_free(&g_wallet);
     tx_mempool_free(&g_mempool);
     main_state_free(&g_state);
-    zcash_free_params();
+    sapling_free_params();
 
     ecc_verify_destroy();
     ecc_stop();

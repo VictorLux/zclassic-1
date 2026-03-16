@@ -9,11 +9,11 @@
 #include "consensus/upgrades.h"
 #include "validation/sighash.h"
 #include "crypto/ed25519.h"
-#include "zcash/sapling.h"
-#include "zcash/sprout.h"
+#include "sapling/sapling.h"
+#include "sapling/sprout.h"
 #include "core/serialize.h"
 
-#include "zcash/librustzcash.h"
+#include "sapling/sapling_prover.h"
 
 bool contextual_check_transaction(const struct transaction *tx,
                                    struct validation_state *state,
@@ -123,18 +123,18 @@ bool contextual_check_transaction(const struct transaction *tx,
         }
     }
 
-    /* Verify Sapling shielded spends and outputs via librustzcash */
+    /* Verify Sapling shielded spends and outputs via native C23 prover */
     if (tx->num_shielded_spend > 0 || tx->num_shielded_output > 0) {
-        void *sctx = librustzcash_sapling_verification_ctx_init();
+        void *sctx = zclassic_sapling_verification_ctx_init();
 
         for (size_t i = 0; i < tx->num_shielded_spend; i++) {
             const struct spend_description *sd = &tx->v_shielded_spend[i];
-            if (!librustzcash_sapling_check_spend(
+            if (!zclassic_sapling_check_spend(
                     sctx, sd->cv.data, sd->anchor.data,
                     sd->nullifier.data, sd->rk.data,
                     sd->zkproof, sd->spend_auth_sig,
                     data_to_be_signed.data)) {
-                librustzcash_sapling_verification_ctx_free(sctx);
+                zclassic_sapling_verification_ctx_free(sctx);
                 return validation_state_dos(state, 100, false, REJECT_INVALID,
                     "bad-txns-sapling-spend-description-invalid", false, NULL);
             }
@@ -142,24 +142,24 @@ bool contextual_check_transaction(const struct transaction *tx,
 
         for (size_t i = 0; i < tx->num_shielded_output; i++) {
             const struct output_description *od = &tx->v_shielded_output[i];
-            if (!librustzcash_sapling_check_output(
+            if (!zclassic_sapling_check_output(
                     sctx, od->cv.data, od->cm.data,
                     od->ephemeral_key.data, od->zkproof)) {
-                librustzcash_sapling_verification_ctx_free(sctx);
+                zclassic_sapling_verification_ctx_free(sctx);
                 return validation_state_dos(state, 100, false, REJECT_INVALID,
                     "bad-txns-sapling-output-description-invalid", false, NULL);
             }
         }
 
-        if (!librustzcash_sapling_final_check(
+        if (!zclassic_sapling_final_check(
                 sctx, tx->value_balance,
                 tx->binding_sig, data_to_be_signed.data)) {
-            librustzcash_sapling_verification_ctx_free(sctx);
+            zclassic_sapling_verification_ctx_free(sctx);
             return validation_state_dos(state, 100, false, REJECT_INVALID,
                 "bad-txns-sapling-binding-sig-invalid", false, NULL);
         }
 
-        librustzcash_sapling_verification_ctx_free(sctx);
+        zclassic_sapling_verification_ctx_free(sctx);
     }
 
     /* Verify Sprout JoinSplit proofs (Groth16) */

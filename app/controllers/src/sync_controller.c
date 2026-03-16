@@ -21,9 +21,9 @@
 #include "coins/undo.h"
 #include "validation/chainstate.h"
 #include "validation/txmempool.h"
-#include "zcash/incremental_merkle_tree.h"
-#include "zcash/sapling.h"
-#include "zcash/note_encryption.h"
+#include "sapling/incremental_merkle_tree.h"
+#include "sapling/sapling.h"
+#include "sapling/note_encryption.h"
 #include "support/cleanse.h"
 #include <stdio.h>
 #include <stdlib.h>

@@ -6,7 +6,7 @@
 #include "core/random.h"
 #include "encoding/bech32.h"
 #include "encoding/utilstrencodings.h"
-#include "zcash/sapling.h"
+#include "sapling/sapling.h"
 #include "support/cleanse.h"
 #include <string.h>
 #include <stdio.h>

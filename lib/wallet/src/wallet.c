@@ -18,8 +18,8 @@
 #include "validation/txmempool.h"
 #include "validation/check_transaction.h"
 #include "validation/sighash.h"
-#include "zcash/note_encryption.h"
-#include "zcash/sapling.h"
+#include "sapling/note_encryption.h"
+#include "sapling/sapling.h"
 #include "coins/coins.h"
 #include "coins/coins_view.h"
 #include <inttypes.h>

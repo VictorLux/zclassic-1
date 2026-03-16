@@ -13,7 +13,7 @@
 #include "encoding/utilstrencodings.h"
 #include "json/json.h"
 #include "keys/key_io.h"
-#include "zcash/fast_scan.h"
+#include "sapling/fast_scan.h"
 #include "script/standard.h"
 #include "support/cleanse.h"
 #include "core/utiltime.h"
@@ -24,10 +24,10 @@
 #include "validation/txmempool.h"
 #include "wallet/wallet_db.h"
 #include "net/connman.h"
-#include "zcash/sapling.h"
-#include "zcash/fr.h"
-#include "zcash/incremental_merkle_tree.h"
-#include "zcash/librustzcash.h"
+#include "sapling/sapling.h"
+#include "sapling/fr.h"
+#include "sapling/incremental_merkle_tree.h"
+#include "sapling/sapling_prover.h"
 #include "consensus/upgrades.h"
 #include "models/database.h"
 #include "models/block.h"
@@ -631,7 +631,7 @@ static bool rpc_z_sendmany(const struct json_value *params, bool help,
         }
 
         /* Init proving context */
-        void *proving_ctx = librustzcash_sapling_proving_ctx_init();
+        void *proving_ctx = zclassic_sapling_proving_ctx_init();
         if (!proving_ctx) {
             free(witnesses);
             transaction_free(&wtx.tx);
@@ -771,13 +771,13 @@ static bool rpc_z_sendmany(const struct json_value *params, bool help,
             }
 
             if (!spend_err &&
-                !librustzcash_sapling_binding_sig(proving_ctx,
+                !zclassic_sapling_binding_sig(proving_ctx,
                     wtx.tx.value_balance, sighash.data, wtx.tx.binding_sig))
                 spend_err = "Binding signature failed";
         }
 
 shielded_cleanup:
-        librustzcash_sapling_proving_ctx_free(proving_ctx);
+        zclassic_sapling_proving_ctx_free(proving_ctx);
         memory_cleanse(spend_ars, sizeof(spend_ars));
 
         if (spend_err) {
@@ -931,14 +931,14 @@ shielded_cleanup:
         else
             GetRandBytes(ovk, 32);
 
-        /* Use librustzcash proving context for output proofs + binding sig */
-        extern void *librustzcash_sapling_proving_ctx_init(void);
-        extern bool librustzcash_sapling_binding_sig(
+        /* Use Sapling proving context for output proofs + binding sig */
+        extern void *zclassic_sapling_proving_ctx_init(void);
+        extern bool zclassic_sapling_binding_sig(
             const void *ctx, int64_t valueBalance,
             const unsigned char *sighash, unsigned char *result_out);
-        extern void librustzcash_sapling_proving_ctx_free(void *);
+        extern void zclassic_sapling_proving_ctx_free(void *);
 
-        void *proving_ctx = librustzcash_sapling_proving_ctx_init();
+        void *proving_ctx = zclassic_sapling_proving_ctx_init();
         if (!proving_ctx) {
             transaction_free(&wtx.tx);
             json_set_str(result, "Failed to init proving context");
@@ -955,7 +955,7 @@ shielded_cleanup:
                     z_has_memo[i] ? z_memos[i] : NULL,
                     od->cv.data, od->cm.data, od->ephemeral_key.data,
                     od->enc_ciphertext, od->out_ciphertext, od->zkproof)) {
-                librustzcash_sapling_proving_ctx_free(proving_ctx);
+                zclassic_sapling_proving_ctx_free(proving_ctx);
                 transaction_free(&wtx.tx);
                 json_set_str(result, "Failed to build Sapling output");
                 return false;
@@ -1049,7 +1049,7 @@ shielded_cleanup:
         }
         zcl_mutex_unlock(&g_wallet->cs);
 
-        /* Compute binding signature using librustzcash proving context */
+        /* Compute binding signature using Sapling proving context */
         transaction_compute_hash(&wtx.tx);
 
         uint32_t branch_id = consensus_current_epoch_branch_id(height + 1, &cp->consensus);
@@ -1064,16 +1064,16 @@ shielded_cleanup:
         signature_hash(&empty_script, &wtx.tx, NOT_AN_INPUT, ht, 0,
                        branch_id, &txdata, &binding_sighash);
 
-        if (!librustzcash_sapling_binding_sig(proving_ctx,
+        if (!zclassic_sapling_binding_sig(proving_ctx,
                                                wtx.tx.value_balance,
                                                binding_sighash.data,
                                                wtx.tx.binding_sig)) {
-            librustzcash_sapling_proving_ctx_free(proving_ctx);
+            zclassic_sapling_proving_ctx_free(proving_ctx);
             transaction_free(&wtx.tx);
             json_set_str(result, "Binding signature failed");
             return false;
         }
-        librustzcash_sapling_proving_ctx_free(proving_ctx);
+        zclassic_sapling_proving_ctx_free(proving_ctx);
     } else {
         /* No shielded outputs — just transparent */
         for (size_t i = 0; i < num_selected; i++) {

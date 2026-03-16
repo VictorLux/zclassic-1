@@ -1561,7 +1561,7 @@ int test_sapling(void)
         struct uint256 root;
         incremental_tree_empty_root(&t, &root);
 
-        /* Known Sapling empty root (depth 32) from zcash test:
+        /* Known Sapling empty root (depth 32) from reference test:
          * uint256S("3e49b5f954aa9d3545bc6c37744661eea48d7c34e3000d82b7f0010c30f4c2fb")
          * which is big-endian hex → LE internal bytes */
         uint8_t expected[32] = {
@@ -1771,7 +1771,7 @@ int test_sapling(void)
         else { printf("FAIL\n"); failures++; }
     }
 
-    /* --- Sapling key components (zcash-test-vectors, 10 test cases) --- */
+    /* --- Sapling key components (reference test vectors, 10 test cases) --- */
     /* Tests full chain: sk → ask/nsk/ovk → ak/nk → ivk → pk_d, plus cm and nf */
     {
         (void)0; /* block scope */
@@ -2476,7 +2476,7 @@ int test_sapling(void)
         else { printf("FAIL\n"); failures++; }
     }
 
-    /* ZIP 32 master key derivation (test vector from zcash-test-vectors) */
+    /* ZIP 32 master key derivation (test vector from reference test vectors) */
     printf("zip32 master key... ");
     {
         uint8_t seed[32];
@@ -2807,12 +2807,12 @@ int test_sapling(void)
         else { printf("FAIL (file not found or parse error)\n"); }
     }
 
-    printf("zcash_init_params... ");
+    printf("sapling_init_params... ");
     {
         const char *home = getenv("HOME");
         char params_dir[512];
         snprintf(params_dir, sizeof(params_dir), "%s/.zcash-params", home ? home : ".");
-        bool ok = zcash_init_params(params_dir);
+        bool ok = sapling_init_params(params_dir);
         if (ok) printf("OK\n");
         else { printf("FAIL (params not found)\n"); }
     }

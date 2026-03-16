@@ -22,8 +22,8 @@
 #include "storage/disk_block_io.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
-#include "zcash/incremental_merkle_tree.h"
-#include "zcash/fast_scan.h"
+#include "sapling/incremental_merkle_tree.h"
+#include "sapling/fast_scan.h"
 #include "models/database.h"
 #include <stdint.h>
 #include <string.h>
