@@ -28,6 +28,8 @@ int main(void)
     failures += test_merkle_tree();
     failures += test_slp();
     failures += test_models();
+    failures += test_core();
+    failures += test_json();
     failures += test_validation();
 
     ecc_verify_destroy();
