@@ -332,13 +332,25 @@ int main(int argc, char *argv[])
 {
     gtk_init(&argc, &argv);
 
-    /* Configure WebKit to use Tor SOCKS proxy */
+    /* Configure Tor SOCKS proxy only if Tor is running */
     WebKitWebContext *ctx = webkit_web_context_get_default();
-    WebKitNetworkProxySettings *proxy =
-        webkit_network_proxy_settings_new(SOCKS_PROXY, NULL);
-    webkit_web_context_set_network_proxy_settings(
-        ctx, WEBKIT_NETWORK_PROXY_MODE_CUSTOM, proxy);
-    webkit_network_proxy_settings_free(proxy);
+    {
+        int test_fd = socket(AF_INET, SOCK_STREAM, 0);
+        struct sockaddr_in ta = {.sin_family=AF_INET, .sin_port=htons(19050)};
+        inet_pton(AF_INET, "127.0.0.1", &ta.sin_addr);
+        bool tor_up = (connect(test_fd, (struct sockaddr*)&ta, sizeof(ta)) == 0);
+        close(test_fd);
+        if (tor_up) {
+            WebKitNetworkProxySettings *proxy =
+                webkit_network_proxy_settings_new(SOCKS_PROXY, NULL);
+            webkit_web_context_set_network_proxy_settings(
+                ctx, WEBKIT_NETWORK_PROXY_MODE_CUSTOM, proxy);
+            webkit_network_proxy_settings_free(proxy);
+            printf("Tor SOCKS proxy active at %s\n", SOCKS_PROXY);
+        } else {
+            printf("Tor not running — .onion browsing disabled, local content only\n");
+        }
+    }
 
     /* Disable all caches and tracking for privacy */
     WebKitWebsiteDataManager *data_mgr =
