@@ -1097,6 +1097,12 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
 static void build_block_locator(struct block_locator *loc,
                                  const struct active_chain *chain)
 {
+    if (!chain || active_chain_height(chain) < 0) {
+        loc->vhave = NULL;
+        loc->num_hashes = 0;
+        return;
+    }
+
     struct uint256 tmp[64];
     size_t idx = 0;
     int h = active_chain_height(chain);
@@ -1106,12 +1112,15 @@ static void build_block_locator(struct block_locator *loc,
         struct block_index *bi = active_chain_at(chain, h);
         if (bi && bi->phashBlock)
             tmp[idx++] = *bi->phashBlock;
+        else
+            break; /* chain array has gaps — stop here */
         if (h == 0) break;
         h -= step;
         if (h < 0) h = 0;
         if (idx >= 10) step *= 2;
     }
 
+    if (idx == 0) { loc->vhave = NULL; loc->num_hashes = 0; return; }
     loc->vhave = calloc(idx, sizeof(struct uint256));
     if (!loc->vhave) { loc->num_hashes = 0; return; }
     memcpy(loc->vhave, tmp, idx * sizeof(struct uint256));
@@ -1160,8 +1169,13 @@ static void push_getheaders_from(struct msg_processor *mp,
     else
         build_block_locator(&loc, &mp->main_state->chain_active);
 
-    /* Ensure genesis hash is always at the end of the locator.
-     * Peers need at least one known hash to respond. */
+    /* If locator is empty, skip — chain not ready */
+    if (loc.num_hashes == 0) {
+        block_locator_free(&loc);
+        return;
+    }
+
+    /* Ensure genesis hash is always at the end of the locator. */
     bool has_genesis = false;
     for (size_t i = 0; i < loc.num_hashes; i++) {
         if (uint256_eq(&loc.vhave[i], &mp->params->consensus.hashGenesisBlock)) {
