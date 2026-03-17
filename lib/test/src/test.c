@@ -13,6 +13,7 @@ int main(void)
     ecc_verify_init();
 
     failures += test_load_balancer();
+    failures += test_game();
     failures += test_crypto();
     failures += test_encoding();
     failures += test_chain();
