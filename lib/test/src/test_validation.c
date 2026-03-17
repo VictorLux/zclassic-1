@@ -2,6 +2,7 @@
  * Validation pipeline tests: check_transaction, check_block, consensus rules. */
 
 #include "test/test_helpers.h"
+#include "validation/connect_block.h"
 
 /* From consensus/consensus.h - avoid re-include due to triple MAX_BLOCK_SIZE definitions */
 #ifndef TX_EXPIRY_HEIGHT_THRESHOLD
@@ -709,6 +710,9 @@ int test_validation(void)
         tx.num_joinsplit = 1;
         tx.v_joinsplit = calloc(1, sizeof(struct js_description));
         tx.v_joinsplit[0].vpub_new = 100;
+        /* Set distinct nullifiers to avoid duplicate nullifier rejection */
+        memset(tx.v_joinsplit[0].nullifiers[0].data, 0x11, 32);
+        memset(tx.v_joinsplit[0].nullifiers[1].data, 0x22, 32);
 
         struct validation_state vs;
         validation_state_init(&vs);
@@ -783,6 +787,243 @@ int test_validation(void)
         bool ok = !is_expired_tx(&tx, 999999);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ================================================================
+     * check_block tests
+     * ================================================================ */
+
+    printf("check_block: rejects block with no transactions... ");
+    {
+        struct block blk;
+        block_init(&blk);
+        blk.header.nVersion = 4;
+        blk.num_vtx = 0;
+        blk.vtx = NULL;
+        struct validation_state vs;
+        validation_state_init(&vs);
+        bool ok = !check_block(&blk, &vs, mainparams, false, false, true);
+        if (ok && strstr(vs.reject_reason, "blk-length"))
+            printf("OK\n");
+        else { printf("FAIL (%s)\n", vs.reject_reason); failures++; }
+    }
+
+    printf("check_block: rejects block with multiple coinbases... ");
+    {
+        struct block blk;
+        block_init(&blk);
+        blk.header.nVersion = 4;
+        blk.num_vtx = 2;
+        blk.vtx = calloc(2, sizeof(struct transaction));
+        /* tx[0]: coinbase */
+        transaction_init(&blk.vtx[0]);
+        blk.vtx[0].version = 1;
+        blk.vtx[0].num_vin = 1;
+        blk.vtx[0].vin = calloc(1, sizeof(struct tx_in));
+        memset(blk.vtx[0].vin[0].prevout.hash.data, 0, 32);
+        blk.vtx[0].vin[0].prevout.n = 0xFFFFFFFF;
+        uint8_t cb_sig[] = {0x03, 0x01, 0x00, 0x00};
+        script_set(&blk.vtx[0].vin[0].script_sig, cb_sig, 4);
+        blk.vtx[0].num_vout = 1;
+        blk.vtx[0].vout = calloc(1, sizeof(struct tx_out));
+        blk.vtx[0].vout[0].value = 1000;
+        uint8_t cb_pk[] = {0x00};
+        script_set(&blk.vtx[0].vout[0].script_pub_key, cb_pk, 1);
+        /* tx[1]: also a coinbase (invalid) */
+        transaction_init(&blk.vtx[1]);
+        blk.vtx[1].version = 1;
+        blk.vtx[1].num_vin = 1;
+        blk.vtx[1].vin = calloc(1, sizeof(struct tx_in));
+        memset(blk.vtx[1].vin[0].prevout.hash.data, 0, 32);
+        blk.vtx[1].vin[0].prevout.n = 0xFFFFFFFF;
+        uint8_t cb2_sig[] = {0x03, 0x02, 0x00, 0x00};
+        script_set(&blk.vtx[1].vin[0].script_sig, cb2_sig, 4);
+        blk.vtx[1].num_vout = 1;
+        blk.vtx[1].vout = calloc(1, sizeof(struct tx_out));
+        blk.vtx[1].vout[0].value = 500;
+        uint8_t cb2_pk[] = {0x00};
+        script_set(&blk.vtx[1].vout[0].script_pub_key, cb2_pk, 1);
+
+        struct validation_state vs;
+        validation_state_init(&vs);
+        bool ok = !check_block(&blk, &vs, mainparams, false, false, true);
+        for (size_t i = 0; i < blk.num_vtx; i++) {
+            free(blk.vtx[i].vin);
+            free(blk.vtx[i].vout);
+        }
+        free(blk.vtx);
+        if (ok && strstr(vs.reject_reason, "cb-multiple"))
+            printf("OK\n");
+        else { printf("FAIL (%s)\n", vs.reject_reason); failures++; }
+    }
+
+    printf("check_block: rejects block without coinbase first... ");
+    {
+        struct block blk;
+        block_init(&blk);
+        blk.header.nVersion = 4;
+        blk.num_vtx = 1;
+        blk.vtx = calloc(1, sizeof(struct transaction));
+        /* tx[0]: not a coinbase */
+        transaction_init(&blk.vtx[0]);
+        blk.vtx[0].version = 1;
+        blk.vtx[0].num_vin = 1;
+        blk.vtx[0].vin = calloc(1, sizeof(struct tx_in));
+        memset(blk.vtx[0].vin[0].prevout.hash.data, 0xAA, 32);
+        blk.vtx[0].vin[0].prevout.n = 0;
+        uint8_t noncb_sig[] = {0x00, 0x00};
+        script_set(&blk.vtx[0].vin[0].script_sig, noncb_sig, 2);
+        blk.vtx[0].num_vout = 1;
+        blk.vtx[0].vout = calloc(1, sizeof(struct tx_out));
+        blk.vtx[0].vout[0].value = 100;
+        uint8_t noncb_pk[] = {0x00};
+        script_set(&blk.vtx[0].vout[0].script_pub_key, noncb_pk, 1);
+
+        struct validation_state vs;
+        validation_state_init(&vs);
+        bool ok = !check_block(&blk, &vs, mainparams, false, false, true);
+        free(blk.vtx[0].vin);
+        free(blk.vtx[0].vout);
+        free(blk.vtx);
+        if (ok && strstr(vs.reject_reason, "cb-missing"))
+            printf("OK\n");
+        else { printf("FAIL (%s)\n", vs.reject_reason); failures++; }
+    }
+
+    printf("check_block: accepts valid single-coinbase block... ");
+    {
+        struct block blk;
+        block_init(&blk);
+        blk.header.nVersion = 4;
+        blk.num_vtx = 1;
+        blk.vtx = calloc(1, sizeof(struct transaction));
+        transaction_init(&blk.vtx[0]);
+        blk.vtx[0].version = 1;
+        blk.vtx[0].num_vin = 1;
+        blk.vtx[0].vin = calloc(1, sizeof(struct tx_in));
+        memset(blk.vtx[0].vin[0].prevout.hash.data, 0, 32);
+        blk.vtx[0].vin[0].prevout.n = 0xFFFFFFFF;
+        uint8_t valid_cb[] = {0x03, 0x01, 0x00, 0x00};
+        script_set(&blk.vtx[0].vin[0].script_sig, valid_cb, 4);
+        blk.vtx[0].num_vout = 1;
+        blk.vtx[0].vout = calloc(1, sizeof(struct tx_out));
+        blk.vtx[0].vout[0].value = 1000000000LL;
+        uint8_t valid_pk[] = {0x76, 0xa9, 0x14};
+        script_set(&blk.vtx[0].vout[0].script_pub_key, valid_pk, 3);
+
+        struct validation_state vs;
+        validation_state_init(&vs);
+        /* skip PoW, merkle, but check size/structure */
+        bool ok = check_block(&blk, &vs, mainparams, false, false, true);
+        free(blk.vtx[0].vin);
+        free(blk.vtx[0].vout);
+        free(blk.vtx);
+        if (ok) printf("OK\n");
+        else { printf("FAIL (%s)\n", vs.reject_reason); failures++; }
+    }
+
+    printf("check_block_header: rejects version too low... ");
+    {
+        struct block_header hdr;
+        block_header_init(&hdr);
+        hdr.nVersion = 0; /* below MIN_BLOCK_VERSION */
+        struct validation_state vs;
+        validation_state_init(&vs);
+        bool ok = !check_block_header(&hdr, &vs, mainparams, false);
+        if (ok && strstr(vs.reject_reason, "version-too-low"))
+            printf("OK\n");
+        else { printf("FAIL (%s)\n", vs.reject_reason); failures++; }
+    }
+
+    /* ================================================================
+     * is_final_tx tests
+     * ================================================================ */
+    printf("is_final_tx: zero locktime always final... ");
+    {
+        struct transaction tx;
+        memset(&tx, 0, sizeof(tx));
+        tx.lock_time = 0;
+        bool ok = is_final_tx(&tx, 1000, 1700000000LL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("is_final_tx: height-based locktime not final... ");
+    {
+        struct transaction tx;
+        memset(&tx, 0, sizeof(tx));
+        tx.lock_time = 1000; /* block height lock */
+        tx.num_vin = 1;
+        tx.vin = calloc(1, sizeof(struct tx_in));
+        tx.vin[0].sequence = 0; /* not final */
+        bool ok = !is_final_tx(&tx, 999, 0); /* height < locktime */
+        free(tx.vin);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("is_final_tx: height-based locktime is final when height >= lock... ");
+    {
+        struct transaction tx;
+        memset(&tx, 0, sizeof(tx));
+        tx.lock_time = 1000;
+        bool ok = is_final_tx(&tx, 1000, 0);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("is_final_tx: all inputs final overrides locktime... ");
+    {
+        struct transaction tx;
+        memset(&tx, 0, sizeof(tx));
+        tx.lock_time = 999999;
+        tx.num_vin = 2;
+        tx.vin = calloc(2, sizeof(struct tx_in));
+        tx.vin[0].sequence = UINT32_MAX; /* final */
+        tx.vin[1].sequence = UINT32_MAX; /* final */
+        bool ok = is_final_tx(&tx, 1, 0);
+        free(tx.vin);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ================================================================
+     * disconnect_block: undo count mismatch
+     * ================================================================ */
+    printf("disconnect_block: rejects undo count mismatch... ");
+    {
+        struct block blk;
+        block_init(&blk);
+        blk.num_vtx = 3; /* coinbase + 2 txs = 2 tx_undos needed */
+        blk.vtx = calloc(3, sizeof(struct transaction));
+        for (int i = 0; i < 3; i++) transaction_init(&blk.vtx[i]);
+
+        struct block_undo bu;
+        block_undo_init(&bu);
+        bu.num_txundo = 0; /* wrong: should be 2 */
+
+        struct validation_state vs;
+        validation_state_init(&vs);
+        struct block_index bi;
+        memset(&bi, 0, sizeof(bi));
+        struct coins_view_cache cvc;
+        memset(&cvc, 0, sizeof(cvc));
+
+        bool ok = !disconnect_block(&blk, &vs, &bi, &cvc, &bu);
+        for (int i = 0; i < 3; i++) transaction_free(&blk.vtx[i]);
+        free(blk.vtx);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ================================================================
+     * connect_block: sigops limit
+     * ================================================================ */
+    printf("MAX_BLOCK_SIGOPS = 20000... ");
+    {
+        bool ok = (MAX_BLOCK_SIGOPS == 20000);
+        if (ok) printf("OK\n");
+        else { printf("FAIL (%d)\n", MAX_BLOCK_SIGOPS); failures++; }
     }
 
     return failures;

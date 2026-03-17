@@ -23,6 +23,7 @@ int main(void)
     failures += test_rpc();
     failures += test_sqlite();
     failures += test_activerecord();
+    failures += test_validation();
     failures += test_sapling();
     failures += test_sapling_crypto();
     failures += test_merkle_tree();
@@ -30,7 +31,6 @@ int main(void)
     failures += test_models();
     failures += test_core();
     failures += test_json();
-    failures += test_validation();
     failures += test_wallet();
     failures += test_primitives();
     failures += test_bloom();
