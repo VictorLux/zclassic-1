@@ -330,12 +330,12 @@ static bool rpc_createrawtransaction(const struct json_value *params, bool help,
         tx.overwintered = true;
         tx.version = SAPLING_TX_VERSION;
         tx.version_group_id = SAPLING_VERSION_GROUP_ID;
-        tx.expiry_height = (uint32_t)(tip_height + 40);
+        tx.expiry_height = (uint32_t)(tip_height + 500);
     } else if (epoch >= (int)UPGRADE_OVERWINTER) {
         tx.overwintered = true;
         tx.version = OVERWINTER_TX_VERSION;
         tx.version_group_id = OVERWINTER_VERSION_GROUP_ID;
-        tx.expiry_height = (uint32_t)(tip_height + 40);
+        tx.expiry_height = (uint32_t)(tip_height + 500);
     } else {
         tx.version = 1;
     }
