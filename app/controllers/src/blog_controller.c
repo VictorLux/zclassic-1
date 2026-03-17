@@ -4,11 +4,14 @@
 
 #include "controllers/blog_controller.h"
 #include "sapling/slp.h"
+#include "primitives/transaction.h"
 #include "core/uint256.h"
+#include "core/serialize.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sqlite3.h>
 
 /* ── Static file server ─────────────────────────────────────── */
 
@@ -151,14 +154,114 @@ size_t blog_build_node_announce(uint8_t *out, size_t out_len,
     return slp_len + 1 + hlen;
 }
 
+/* Helper: parse a Bitcoin script PUSH data field */
+static const uint8_t *read_push_field(const uint8_t *p, const uint8_t *end,
+                                       const uint8_t **data, size_t *len)
+{
+    if (p >= end) return NULL;
+    uint8_t opcode = *p++;
+    if (opcode >= 0x01 && opcode <= 0x4b) {
+        *len = opcode;
+    } else if (opcode == 0x4c) {
+        if (p >= end) return NULL;
+        *len = *p++;
+    } else if (opcode == 0x4d) {
+        if (p + 2 > end) return NULL;
+        *len = (size_t)p[0] | ((size_t)p[1] << 8);
+        p += 2;
+    } else {
+        return NULL;
+    }
+    if (p + *len > end) return NULL;
+    *data = p;
+    return p + *len;
+}
+
 int blog_discover_onion_peers(const char *datadir,
                                struct onion_peer *out, size_t max)
 {
-    (void)datadir;
-    /* TODO: scan block chain for ZCL23NODES SEND txs,
-     * parse .onion hostnames from OP_RETURN data after SLP fields.
-     * For now, return 0 (no peers discovered). */
-    if (out && max > 0)
-        memset(out, 0, sizeof(out[0]));
-    return 0;
+    if (!datadir || !out || max == 0) return 0;
+
+    char db_path[1024];
+    snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
+
+    sqlite3 *db = NULL;
+    if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK)
+        return 0;
+
+    /* Scan transactions for OP_RETURN outputs with SLP SEND + .onion data.
+     * Query the wallet_transactions table which has raw serialized tx data. */
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(db,
+        "SELECT raw_tx, block_height FROM wallet_transactions "
+        "WHERE raw_tx IS NOT NULL ORDER BY block_height DESC LIMIT 50000",
+        -1, &stmt, NULL);
+    if (rc != SQLITE_OK) { sqlite3_close(db); return 0; }
+
+    int found = 0;
+    while (sqlite3_step(stmt) == SQLITE_ROW && found < (int)max) {
+        const void *raw = sqlite3_column_blob(stmt, 0);
+        int raw_len = sqlite3_column_bytes(stmt, 0);
+        int height = sqlite3_column_int(stmt, 1);
+        if (!raw || raw_len < 10) continue;
+
+        /* Deserialize transaction */
+        struct transaction tx;
+        transaction_init(&tx);
+        struct byte_stream bs;
+        stream_init_from_data(&bs, (const uint8_t *)raw, (size_t)raw_len);
+        if (!transaction_deserialize(&tx, &bs)) {
+            transaction_free(&tx);
+            continue;
+        }
+
+        /* Check vout[0] for OP_RETURN with SLP */
+        if (tx.num_vout < 1 || tx.vout[0].script_pub_key.size < 10 ||
+            tx.vout[0].script_pub_key.data[0] != 0x6a) {
+            transaction_free(&tx);
+            continue;
+        }
+
+        struct slp_message msg;
+        if (!slp_parse(tx.vout[0].script_pub_key.data,
+                       tx.vout[0].script_pub_key.size, &msg) ||
+            msg.type != SLP_TX_SEND) {
+            transaction_free(&tx);
+            continue;
+        }
+
+        /* Skip SLP fields to find .onion hostname after them */
+        const uint8_t *p = tx.vout[0].script_pub_key.data + 1; /* skip OP_RETURN */
+        const uint8_t *end = tx.vout[0].script_pub_key.data +
+                              tx.vout[0].script_pub_key.size;
+        const uint8_t *data;
+        size_t len;
+
+        /* Skip: lokad_id, token_type, "SEND", token_id */
+        for (int i = 0; i < 4 && p; i++)
+            p = read_push_field(p, end, &data, &len);
+        /* Skip output quantities */
+        for (int i = 0; i < 19 && p; i++) {
+            const uint8_t *saved = p;
+            p = read_push_field(p, end, &data, &len);
+            if (!p || len != 8) { p = saved; break; }
+        }
+
+        /* Remaining data: [1 byte length][hostname] */
+        if (p && p < end) {
+            size_t hlen = (size_t)*p++;
+            if (hlen > 0 && hlen < 63 && p + hlen <= end &&
+                hlen > 6 && memcmp(p + hlen - 6, ".onion", 6) == 0) {
+                memcpy(out[found].hostname, p, hlen);
+                out[found].hostname[hlen] = '\0';
+                out[found].height = height;
+                found++;
+            }
+        }
+        transaction_free(&tx);
+    }
+
+    sqlite3_finalize(stmt);
+    sqlite3_close(db);
+    return found;
 }
