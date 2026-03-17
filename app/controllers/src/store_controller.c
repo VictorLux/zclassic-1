@@ -24,6 +24,38 @@ static void store_ensure_schema(sqlite3 *db)
         "active INTEGER NOT NULL DEFAULT 1"
         ")", NULL, NULL, NULL);
 
+    /* Seed demo product if empty */
+    sqlite3_stmt *cnt = NULL;
+    sqlite3_prepare_v2(db, "SELECT count(*) FROM products", -1, &cnt, NULL);
+    if (sqlite3_step(cnt) == SQLITE_ROW && sqlite3_column_int(cnt, 0) == 0) {
+        sqlite3_exec(db,
+            "INSERT INTO products (name, description, price_zatoshi, "
+            "token_id, tokens_per_purchase) VALUES "
+            "('ZCL23 Access Token', "
+            "'1 token grants access to premium .onion services on the "
+            "ZClassic23 network. Tokens are ZSLP tokens on the ZClassic "
+            "blockchain.', "
+            "1000000, 'ZCL23ACCESS', 10)",
+            NULL, NULL, NULL);
+        sqlite3_exec(db,
+            "INSERT INTO products (name, description, price_zatoshi, "
+            "token_id, tokens_per_purchase) VALUES "
+            "('VPN Credit (1 month)', "
+            "'Route traffic through the ZClassic23 onion network. "
+            "1 month of encrypted relay service.', "
+            "5000000, 'ZCL23VPN', 1)",
+            NULL, NULL, NULL);
+        sqlite3_exec(db,
+            "INSERT INTO products (name, description, price_zatoshi, "
+            "token_id, tokens_per_purchase) VALUES "
+            "('Storage (1 GB)', "
+            "'Encrypted storage on the ZClassic23 distributed network. "
+            "Data replicated across multiple .onion nodes.', "
+            "2000000, 'ZCL23STORE', 1)",
+            NULL, NULL, NULL);
+    }
+    sqlite3_finalize(cnt);
+
     sqlite3_exec(db,
         "CREATE TABLE IF NOT EXISTS orders ("
         "id INTEGER PRIMARY KEY AUTOINCREMENT,"

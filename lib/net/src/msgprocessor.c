@@ -6,6 +6,7 @@
 
 #include "net/msgprocessor.h"
 #include "net/fast_sync.h"
+#include "net/p2p_game.h"
 #include "net/version.h"
 #include "net/p2p_message.h"
 #include "core/hash.h"
@@ -22,6 +23,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include <sys/time.h>
 
 static void push_getheaders(struct msg_processor *mp, struct p2p_node *node);
 static void push_getheaders_from(struct msg_processor *mp,
@@ -1088,6 +1090,66 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                    node->addr_name,
                    (unsigned long long)node->zsync_offset);
             node->zsync_receiving = false;
+            fflush(stdout);
+        } else if (strcmp(cmd, MSG_GAME) == 0) {
+            /* P2P game message */
+            uint8_t game_type = 0, position = 0;
+            struct ttt_state peer_state;
+            memset(&peer_state, 0, sizeof(peer_state));
+            enum game_action action = game_deserialize(
+                s.data + s.read_pos, s.size - s.read_pos,
+                &game_type, &position, &peer_state);
+
+            switch (action) {
+            case GAME_INVITE:
+                printf("Peer %s: game invite (type=%d)\n",
+                       node->addr_name, game_type);
+                /* Auto-accept for now */
+                {
+                    uint8_t resp[8];
+                    size_t rn = game_serialize_accept(resp, sizeof(resp), 2);
+                    p2p_node_begin_message(node, MSG_GAME,
+                                            mp->params->pchMessageStart);
+                    p2p_node_write_message_data(node, resp, rn);
+                    p2p_node_end_message(node);
+                    printf("Peer %s: auto-accepted game as O\n",
+                           node->addr_name);
+                }
+                break;
+            case GAME_ACCEPT:
+                printf("Peer %s: game accepted\n", node->addr_name);
+                break;
+            case GAME_MOVE:
+                printf("Peer %s: game move position=%d\n",
+                       node->addr_name, position);
+                /* Measure latency from timestamp in message */
+                if (s.size - s.read_pos >= 11) {
+                    int64_t send_ts = 0;
+                    memcpy(&send_ts, s.data + s.read_pos + 3, 8);
+                    struct timeval tv;
+                    gettimeofday(&tv, NULL);
+                    int64_t now_us = (int64_t)tv.tv_sec * 1000000 + tv.tv_usec;
+                    int64_t latency = now_us - send_ts;
+                    if (latency > 0 && latency < 60000000)
+                        printf("Peer %s: P2P latency = %lld us (%.1f ms)\n",
+                               node->addr_name, (long long)latency,
+                               (double)latency / 1000.0);
+                }
+                break;
+            case GAME_STATE:
+                {
+                    char board[256];
+                    ttt_render(&peer_state, board, sizeof(board));
+                    printf("Peer %s: game state\n%s\n",
+                           node->addr_name, board);
+                }
+                break;
+            case GAME_RESULT:
+                printf("Peer %s: game result\n", node->addr_name);
+                break;
+            default:
+                break;
+            }
             fflush(stdout);
         }
 
