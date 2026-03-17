@@ -5,6 +5,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "net/msgprocessor.h"
+#include "net/fast_sync.h"
 #include "net/version.h"
 #include "net/p2p_message.h"
 #include "core/hash.h"
@@ -54,7 +55,7 @@ static void push_version(struct msg_processor *mp, struct p2p_node *node)
     struct version_message ver;
     version_message_init(&ver);
     ver.protocol_version = PROTOCOL_VERSION;
-    ver.services = NODE_NETWORK;
+    ver.services = NODE_NETWORK | NODE_ZCL23;
     ver.timestamp = (int64_t)time(NULL);
     ver.addr_recv = node->addr;
     ver.nonce = GetRand(UINT64_MAX);
@@ -133,9 +134,51 @@ static bool process_version(struct msg_processor *mp, struct p2p_node *node,
         node->get_addr = true;
     }
 
-    printf("Peer %s: version=%d subver=%s height=%d\n",
+    printf("Peer %s: version=%d subver=%s height=%d%s\n",
            node->addr_name, node->version, node->sub_ver,
-           node->starting_height);
+           node->starting_height,
+           peer_supports_fast_sync(node->services) ? " [ZCL23]" : "");
+
+    /* If peer supports zclassic23 fast sync and is ahead of us,
+     * send a snapshot offer so they can request our UTXO set,
+     * or request theirs if they're ahead. */
+    if (peer_supports_fast_sync(node->services) && !node->inbound) {
+        int our_height = active_chain_height(&mp->main_state->chain_active);
+        if (node->starting_height > our_height + 100) {
+            /* Peer is significantly ahead — request their snapshot */
+            printf("Peer %s: requesting fast sync (peer=%d, us=%d)\n",
+                   node->addr_name, node->starting_height, our_height);
+            p2p_node_begin_message(node, MSG_SNAPSHOT_REQ,
+                                    mp->params->pchMessageStart);
+            struct byte_stream req;
+            stream_init(&req, 8);
+            stream_write_i32_le(&req, our_height);
+            p2p_node_write_message_data(node, req.data, req.size);
+            p2p_node_end_message(node);
+            stream_free(&req);
+        } else if (our_height > node->starting_height + 100) {
+            /* We're ahead — offer our snapshot */
+            struct snapshot_offer offer;
+            if (fast_sync_build_offer(mp->datadir, &offer)) {
+                printf("Peer %s: offering snapshot (h=%d, %llu UTXOs)\n",
+                       node->addr_name, offer.height,
+                       (unsigned long long)offer.num_utxos);
+                p2p_node_begin_message(node, MSG_SNAPSHOT_OFFER,
+                                        mp->params->pchMessageStart);
+                struct byte_stream os;
+                stream_init(&os, 80);
+                stream_write_i32_le(&os, offer.height);
+                stream_write_bytes(&os, offer.block_hash, 32);
+                stream_write_bytes(&os, offer.utxo_root, 32);
+                stream_write_u64_le(&os, offer.num_utxos);
+                stream_write_u64_le(&os, offer.total_bytes);
+                p2p_node_write_message_data(node, os.data, os.size);
+                p2p_node_end_message(node);
+                stream_free(&os);
+            }
+        }
+    }
+
     return true;
 }
 
@@ -927,6 +970,60 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
             ok = process_feefilter(node, &s);
         } else if (strcmp(cmd, "notfound") == 0) {
             ok = process_notfound(node, &s);
+        } else if (strcmp(cmd, MSG_SNAPSHOT_OFFER) == 0) {
+            /* Peer offers a UTXO snapshot — parse and decide */
+            int32_t h; uint8_t bh[32], ur[32]; uint64_t nu, tb;
+            if (stream_read_i32_le(&s, &h) &&
+                stream_read_bytes(&s, bh, 32) &&
+                stream_read_bytes(&s, ur, 32) &&
+                stream_read_u64_le(&s, &nu) &&
+                stream_read_u64_le(&s, &tb)) {
+                int our_h = active_chain_height(&mp->main_state->chain_active);
+                printf("Peer %s: snapshot offer h=%d utxos=%llu (%lluMB)\n",
+                       node->addr_name, h, (unsigned long long)nu,
+                       (unsigned long long)(tb / (1024*1024)));
+                if (h > our_h + 100) {
+                    /* Accept — request the snapshot */
+                    p2p_node_begin_message(node, MSG_SNAPSHOT_REQ,
+                                            mp->params->pchMessageStart);
+                    struct byte_stream rq;
+                    stream_init(&rq, 4);
+                    stream_write_i32_le(&rq, our_h);
+                    p2p_node_write_message_data(node, rq.data, rq.size);
+                    p2p_node_end_message(node);
+                    stream_free(&rq);
+                }
+            }
+        } else if (strcmp(cmd, MSG_SNAPSHOT_REQ) == 0) {
+            /* Peer requests our UTXO snapshot — serve it inline */
+            int32_t from_h = 0;
+            stream_read_i32_le(&s, &from_h);
+            printf("Peer %s: serving snapshot from h=%d\n",
+                   node->addr_name, from_h);
+
+            struct snapshot_offer offer;
+            if (fast_sync_build_offer(mp->datadir, &offer)) {
+                /* Send offer first */
+                p2p_node_begin_message(node, MSG_SNAPSHOT_OFFER,
+                                        mp->params->pchMessageStart);
+                struct byte_stream os;
+                stream_init(&os, 80);
+                stream_write_i32_le(&os, offer.height);
+                stream_write_bytes(&os, offer.block_hash, 32);
+                stream_write_bytes(&os, offer.utxo_root, 32);
+                stream_write_u64_le(&os, offer.num_utxos);
+                stream_write_u64_le(&os, offer.total_bytes);
+                p2p_node_write_message_data(node, os.data, os.size);
+                p2p_node_end_message(node);
+                stream_free(&os);
+                printf("Peer %s: snapshot offer sent (%llu UTXOs)\n",
+                       node->addr_name, (unsigned long long)offer.num_utxos);
+            }
+        } else if (strcmp(cmd, MSG_SNAPSHOT_DATA) == 0) {
+            /* Receive UTXO chunk from peer */
+            printf("Peer %s: received snapshot chunk (%zu bytes)\n",
+                   node->addr_name, s.size);
+            /* TODO: deserialize and apply chunk */
         }
 
         stream_free(&s);
