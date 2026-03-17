@@ -28,6 +28,11 @@ static void push_getheaders_from(struct msg_processor *mp,
                                   struct p2p_node *node,
                                   struct block_index *from);
 
+/* Cached snapshot offer — pre-computed at startup, not in message handler */
+struct snapshot_offer g_cached_offer;
+bool g_cached_offer_valid = false;
+static struct fast_sync_rate_limiter g_rate_limiter = {0};
+
 void msg_processor_init(struct msg_processor *mp,
                          struct main_state *ms,
                          struct tx_mempool *mempool,
@@ -139,45 +144,12 @@ static bool process_version(struct msg_processor *mp, struct p2p_node *node,
            node->starting_height,
            peer_supports_fast_sync(node->services) ? " [ZCL23]" : "");
 
-    /* If peer supports zclassic23 fast sync and is ahead of us,
-     * send a snapshot offer so they can request our UTXO set,
-     * or request theirs if they're ahead. */
-    if (peer_supports_fast_sync(node->services) && !node->inbound) {
-        int our_height = active_chain_height(&mp->main_state->chain_active);
-        if (node->starting_height > our_height + 100) {
-            /* Peer is significantly ahead — request their snapshot */
-            printf("Peer %s: requesting fast sync (peer=%d, us=%d)\n",
-                   node->addr_name, node->starting_height, our_height);
-            p2p_node_begin_message(node, MSG_SNAPSHOT_REQ,
-                                    mp->params->pchMessageStart);
-            struct byte_stream req;
-            stream_init(&req, 8);
-            stream_write_i32_le(&req, our_height);
-            p2p_node_write_message_data(node, req.data, req.size);
-            p2p_node_end_message(node);
-            stream_free(&req);
-        } else if (our_height > node->starting_height + 100) {
-            /* We're ahead — offer our snapshot */
-            struct snapshot_offer offer;
-            if (fast_sync_build_offer(mp->datadir, &offer)) {
-                printf("Peer %s: offering snapshot (h=%d, %llu UTXOs)\n",
-                       node->addr_name, offer.height,
-                       (unsigned long long)offer.num_utxos);
-                p2p_node_begin_message(node, MSG_SNAPSHOT_OFFER,
-                                        mp->params->pchMessageStart);
-                struct byte_stream os;
-                stream_init(&os, 80);
-                stream_write_i32_le(&os, offer.height);
-                stream_write_bytes(&os, offer.block_hash, 32);
-                stream_write_bytes(&os, offer.utxo_root, 32);
-                stream_write_u64_le(&os, offer.num_utxos);
-                stream_write_u64_le(&os, offer.total_bytes);
-                p2p_node_write_message_data(node, os.data, os.size);
-                p2p_node_end_message(node);
-                stream_free(&os);
-            }
-        }
-    }
+    /* Detect zclassic23 peers — log it, but don't block the
+     * message handler with SQLite queries. Fast sync negotiation
+     * happens in msg_send_messages() which runs periodically. */
+    if (peer_supports_fast_sync(node->services))
+        printf("Peer %s: supports zclassic23 fast sync [ZCL23]\n",
+               node->addr_name);
 
     return true;
 }
@@ -995,29 +967,33 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                 }
             }
         } else if (strcmp(cmd, MSG_SNAPSHOT_REQ) == 0) {
-            /* Peer requests our UTXO snapshot — serve it inline */
+            /* Peer requests our UTXO snapshot */
             int32_t from_h = 0;
             stream_read_i32_le(&s, &from_h);
-            printf("Peer %s: serving snapshot from h=%d\n",
-                   node->addr_name, from_h);
 
-            struct snapshot_offer offer;
-            if (fast_sync_build_offer(mp->datadir, &offer)) {
-                /* Send offer first */
+            /* Rate limit check */
+            if (!fast_sync_rate_check(&g_rate_limiter, node->addr.svc.addr.ip)) {
+                printf("Peer %s: rate limited, rejecting snapshot request\n",
+                       node->addr_name);
+            } else if (g_cached_offer_valid) {
+                /* Send cached offer */
+                printf("Peer %s: serving snapshot (h=%d, %llu UTXOs)\n",
+                       node->addr_name, g_cached_offer.height,
+                       (unsigned long long)g_cached_offer.num_utxos);
                 p2p_node_begin_message(node, MSG_SNAPSHOT_OFFER,
                                         mp->params->pchMessageStart);
                 struct byte_stream os;
                 stream_init(&os, 80);
-                stream_write_i32_le(&os, offer.height);
-                stream_write_bytes(&os, offer.block_hash, 32);
-                stream_write_bytes(&os, offer.utxo_root, 32);
-                stream_write_u64_le(&os, offer.num_utxos);
-                stream_write_u64_le(&os, offer.total_bytes);
+                stream_write_i32_le(&os, g_cached_offer.height);
+                stream_write_bytes(&os, g_cached_offer.block_hash, 32);
+                stream_write_bytes(&os, g_cached_offer.utxo_root, 32);
+                stream_write_u64_le(&os, g_cached_offer.num_utxos);
+                stream_write_u64_le(&os, g_cached_offer.total_bytes);
                 p2p_node_write_message_data(node, os.data, os.size);
                 p2p_node_end_message(node);
                 stream_free(&os);
-                printf("Peer %s: snapshot offer sent (%llu UTXOs)\n",
-                       node->addr_name, (unsigned long long)offer.num_utxos);
+            } else {
+                printf("Peer %s: snapshot not ready yet\n", node->addr_name);
             }
         } else if (strcmp(cmd, MSG_SNAPSHOT_DATA) == 0) {
             /* Receive UTXO chunk from peer */

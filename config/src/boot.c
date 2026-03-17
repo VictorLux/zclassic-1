@@ -43,6 +43,7 @@
 #include "storage/disk_block_io.h"
 #include "storage/dbwrapper.h"
 #include "net/tor_integration.h"
+#include "net/fast_sync.h"
 #include <netdb.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -100,6 +101,28 @@ static void *load_params_thread(void *arg)
 }
 
 static int cmp_height(const void *a, const void *b);
+
+/* Background thread: build fast sync snapshot offer */
+static void *build_snapshot_offer_thread(void *arg)
+{
+    const char *datadir = (const char *)arg;
+    printf("Building fast sync snapshot offer...\n");
+    fflush(stdout);
+
+    extern struct snapshot_offer g_cached_offer;
+    extern bool g_cached_offer_valid;
+
+    if (fast_sync_build_offer(datadir, &g_cached_offer)) {
+        g_cached_offer_valid = true;
+        printf("Fast sync ready: h=%d, %llu UTXOs\n",
+               g_cached_offer.height,
+               (unsigned long long)g_cached_offer.num_utxos);
+    } else {
+        printf("Fast sync: no snapshot available yet\n");
+    }
+    fflush(stdout);
+    return NULL;
+}
 
 /* ── Flat block_index file: mmap for instant restart ──────── */
 
@@ -1024,6 +1047,16 @@ bool app_init(struct app_context *ctx)
     rpc_wallet_set_coins_tip(&g_coins_tip);
     rpc_wallet_set_node_db(g_active_node_db);
     register_wallet_rpc_commands(&g_rpc_table);
+
+    /* Pre-compute fast sync snapshot offer in background */
+    {
+        static char s_offer_datadir[1024];
+        snprintf(s_offer_datadir, sizeof(s_offer_datadir), "%s", ctx->datadir);
+        static pthread_t offer_thread;
+        pthread_create(&offer_thread, NULL, build_snapshot_offer_thread,
+                        s_offer_datadir);
+        pthread_detach(offer_thread);
+    }
 
     /* Start RPC HTTP server (clearnet: auth RPC only, no blog) */
     set_rpc_warmup_finished();
