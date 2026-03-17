@@ -188,6 +188,13 @@ struct p2p_node {
     bool send_compact;
     bool sync_started;
     int64_t last_getheaders_time;
+
+    /* zclassic23 fast sync state */
+    bool zsync_serving;       /* true if we're streaming UTXOs to this peer */
+    bool zsync_receiving;     /* true if we're receiving UTXOs from this peer */
+    uint64_t zsync_offset;    /* current UTXO offset in SQLite query */
+    uint64_t zsync_total;     /* total UTXOs to send */
+    uint64_t zsync_sent;      /* chunks sent so far */
 };
 
 struct node_signals {

@@ -954,8 +954,13 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                 printf("Peer %s: snapshot offer h=%d utxos=%llu (%lluMB)\n",
                        node->addr_name, h, (unsigned long long)nu,
                        (unsigned long long)(tb / (1024*1024)));
-                if (h > our_h + 100) {
-                    /* Accept — request the snapshot */
+                if (h > our_h + 100 && !node->zsync_receiving) {
+                    /* Accept — request the snapshot data */
+                    printf("Peer %s: accepting snapshot offer (h=%d, %llu UTXOs)\n",
+                           node->addr_name, h, (unsigned long long)nu);
+                    node->zsync_receiving = true;
+                    node->zsync_offset = 0;
+                    /* Send zsnapreq to trigger chunk streaming */
                     p2p_node_begin_message(node, MSG_SNAPSHOT_REQ,
                                             mp->params->pchMessageStart);
                     struct byte_stream rq;
@@ -964,6 +969,7 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                     p2p_node_write_message_data(node, rq.data, rq.size);
                     p2p_node_end_message(node);
                     stream_free(&rq);
+                    fflush(stdout);
                 }
             }
         } else if (strcmp(cmd, MSG_SNAPSHOT_REQ) == 0) {
@@ -976,7 +982,11 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                 printf("Peer %s: rate limited, rejecting snapshot request\n",
                        node->addr_name);
             } else if (g_cached_offer_valid) {
-                /* Send cached offer */
+                /* Send cached offer and start serving chunks */
+                node->zsync_serving = true;
+                node->zsync_offset = 0;
+                node->zsync_sent = 0;
+                node->zsync_total = g_cached_offer.num_utxos;
                 printf("Peer %s: serving snapshot (h=%d, %llu UTXOs)\n",
                        node->addr_name, g_cached_offer.height,
                        (unsigned long long)g_cached_offer.num_utxos);
@@ -996,10 +1006,64 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                 printf("Peer %s: snapshot not ready yet\n", node->addr_name);
             }
         } else if (strcmp(cmd, MSG_SNAPSHOT_DATA) == 0) {
-            /* Receive UTXO chunk from peer */
-            printf("Peer %s: received snapshot chunk (%zu bytes)\n",
-                   node->addr_name, s.size);
-            /* TODO: deserialize and apply chunk */
+            /* Receive UTXO chunk — deserialize and apply */
+            uint32_t entries = 0;
+            if (!stream_read_u32_le(&s, &entries) || entries > 1000) {
+                printf("Peer %s: bad snapshot chunk\n", node->addr_name);
+            } else {
+                char db_path[1024];
+                snprintf(db_path, sizeof(db_path), "%s/node.db", mp->datadir);
+                sqlite3 *db = NULL;
+                if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READWRITE,
+                                     NULL) == SQLITE_OK) {
+                    sqlite3_exec(db, "BEGIN", NULL, NULL, NULL);
+                    sqlite3_stmt *ins = NULL;
+                    sqlite3_prepare_v2(db,
+                        "INSERT OR IGNORE INTO utxos "
+                        "(txid,vout,value,script,script_type,height) "
+                        "VALUES(?,?,?,?,0,?)", -1, &ins, NULL);
+
+                    for (uint32_t i = 0; i < entries; i++) {
+                        uint8_t txid[32];
+                        int32_t vout, height;
+                        int64_t value;
+                        uint64_t slen;
+                        if (!stream_read_bytes(&s, txid, 32)) break;
+                        if (!stream_read_i32_le(&s, &vout)) break;
+                        if (!stream_read_i64_le(&s, &value)) break;
+                        if (!stream_read_i32_le(&s, &height)) break;
+                        if (!stream_read_compact_size(&s, &slen)) break;
+                        uint8_t script[10000];
+                        if (slen > sizeof(script)) break;
+                        if (slen > 0 && !stream_read_bytes(&s, script, (size_t)slen))
+                            break;
+
+                        sqlite3_reset(ins);
+                        sqlite3_bind_blob(ins, 1, txid, 32, SQLITE_STATIC);
+                        sqlite3_bind_int(ins, 2, vout);
+                        sqlite3_bind_int64(ins, 3, value);
+                        sqlite3_bind_blob(ins, 4, script, (int)slen,
+                                           SQLITE_STATIC);
+                        sqlite3_bind_int(ins, 5, height);
+                        sqlite3_step(ins);
+                    }
+                    sqlite3_finalize(ins);
+                    sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
+                    sqlite3_close(db);
+
+                    node->zsync_offset += entries;
+                    if (node->zsync_offset % 50000 < entries)
+                        printf("Peer %s: received %llu UTXOs\n",
+                               node->addr_name,
+                               (unsigned long long)node->zsync_offset);
+                }
+            }
+        } else if (strcmp(cmd, MSG_SNAPSHOT_END) == 0) {
+            printf("Peer %s: snapshot transfer complete (%llu UTXOs)\n",
+                   node->addr_name,
+                   (unsigned long long)node->zsync_offset);
+            node->zsync_receiving = false;
+            fflush(stdout);
         }
 
         stream_free(&s);
@@ -1168,6 +1232,91 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
         p2p_node_write_message_data(node, ping.data, ping.size);
         p2p_node_end_message(node);
         stream_free(&ping);
+    }
+
+    /* Stream fast sync UTXO chunks if serving this peer */
+    if (node->zsync_serving && g_cached_offer_valid) {
+        /* Send up to 10 chunks per tick (non-blocking) */
+        char db_path[1024];
+        snprintf(db_path, sizeof(db_path), "%s/node.db", mp->datadir);
+        sqlite3 *db = NULL;
+        if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) == SQLITE_OK) {
+            sqlite3_stmt *sel = NULL;
+            sqlite3_prepare_v2(db,
+                "SELECT txid, vout, value, script, height "
+                "FROM utxos ORDER BY txid, vout "
+                "LIMIT 500 OFFSET ?", -1, &sel, NULL);
+
+            for (int batch = 0; batch < 10; batch++) {
+                sqlite3_reset(sel);
+                sqlite3_bind_int64(sel, 1, (int64_t)node->zsync_offset);
+
+                struct byte_stream chunk;
+                stream_init(&chunk, 32768);
+                uint32_t entries = 0;
+                /* Reserve space for entry count */
+                stream_write_u32_le(&chunk, 0);
+
+                while (sqlite3_step(sel) == SQLITE_ROW && entries < 500) {
+                    const void *txid = sqlite3_column_blob(sel, 0);
+                    int32_t vout = sqlite3_column_int(sel, 1);
+                    int64_t value = sqlite3_column_int64(sel, 2);
+                    const void *script = sqlite3_column_blob(sel, 3);
+                    int slen = sqlite3_column_bytes(sel, 3);
+                    int32_t height = sqlite3_column_int(sel, 4);
+
+                    if (txid) stream_write_bytes(&chunk, txid, 32);
+                    else { uint8_t z[32] = {0}; stream_write_bytes(&chunk, z, 32); }
+                    stream_write_i32_le(&chunk, vout);
+                    stream_write_i64_le(&chunk, value);
+                    stream_write_i32_le(&chunk, height);
+                    if (slen > 10000) slen = 10000;
+                    stream_write_compact_size(&chunk, (uint64_t)slen);
+                    if (script && slen > 0)
+                        stream_write_bytes(&chunk, script, (size_t)slen);
+                    entries++;
+                }
+
+                if (entries == 0) {
+                    /* Done — send end marker */
+                    stream_free(&chunk);
+                    p2p_node_begin_message(node, MSG_SNAPSHOT_END,
+                                            mp->params->pchMessageStart);
+                    p2p_node_end_message(node);
+                    node->zsync_serving = false;
+                    printf("Peer %s: snapshot complete (%llu UTXOs sent)\n",
+                           node->addr_name,
+                           (unsigned long long)node->zsync_offset);
+                    fflush(stdout);
+                    break;
+                }
+
+                /* Patch entry count at offset 0 */
+                chunk.data[0] = (uint8_t)(entries & 0xFF);
+                chunk.data[1] = (uint8_t)((entries >> 8) & 0xFF);
+                chunk.data[2] = (uint8_t)((entries >> 16) & 0xFF);
+                chunk.data[3] = (uint8_t)((entries >> 24) & 0xFF);
+
+                p2p_node_begin_message(node, MSG_SNAPSHOT_DATA,
+                                        mp->params->pchMessageStart);
+                p2p_node_write_message_data(node, chunk.data, chunk.size);
+                p2p_node_end_message(node);
+                stream_free(&chunk);
+
+                node->zsync_offset += entries;
+                node->zsync_sent++;
+
+                if (node->zsync_sent % 100 == 0) {
+                    printf("Peer %s: sent %llu/%llu UTXOs\n",
+                           node->addr_name,
+                           (unsigned long long)node->zsync_offset,
+                           (unsigned long long)g_cached_offer.num_utxos);
+                    fflush(stdout);
+                }
+            }
+            sqlite3_finalize(sel);
+            sqlite3_close(db);
+        }
     }
 
     /* Send inventory on trickle */
