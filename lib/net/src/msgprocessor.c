@@ -70,6 +70,11 @@ static void push_version(struct msg_processor *mp, struct p2p_node *node)
     p2p_node_begin_message(node, "version", mp->params->pchMessageStart);
     p2p_node_write_message_data(node, s.data, s.size);
     p2p_node_end_message(node);
+
+    printf("Sent version to %s: proto=%d h=%d subver=%s size=%zu\n",
+           node->addr_name, ver.protocol_version, ver.start_height,
+           ver.sub_version, s.size);
+    fflush(stdout);
     stream_free(&s);
 }
 
@@ -992,8 +997,8 @@ static void build_block_locator_from_index(struct block_locator *loc,
     step = 1;
     size_t idx = 0;
     while (p && idx < count) {
-        if (p->phashBlock)
-            loc->vhave[idx] = *p->phashBlock;
+        if (!p->phashBlock) break;
+        loc->vhave[idx] = *p->phashBlock;
         idx++;
         int next_h = p->nHeight - step;
         if (next_h < 0) {
@@ -1013,6 +1018,8 @@ static void push_getheaders_from(struct msg_processor *mp,
                                   struct p2p_node *node,
                                   struct block_index *from)
 {
+    if (from && !from->phashBlock) return; /* guard stale pointer */
+
     struct block_locator loc;
     block_locator_init(&loc);
 
