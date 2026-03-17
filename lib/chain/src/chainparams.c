@@ -93,7 +93,35 @@ static void init_main_params(void)
 
     p->vSeeds[0] = (struct dns_seed){ "zclnet.net", "dnsseed.zclnet.net" };
     p->vSeeds[1] = (struct dns_seed){ "zslp.org", "dnsseed.zslp.org" };
-    p->nSeeds = 2;
+    p->vSeeds[2] = (struct dns_seed){ "zclassic.org", "mainnet.zclassic.org" };
+    p->nSeeds = 3;
+
+    /* Hardcoded seed nodes — known-good as of 2026-03 */
+    p->nFixedSeeds = 0;
+    static const uint8_t fixed_ip4[][4] = {
+        { 74, 50, 74,102},  /* rhett.dev */
+        {205,209,104,118},  /* MagicBean */
+        {140,174,189,  3},  /* MagicBean */
+        {157,173,195,203},  /* MagicBean */
+        { 85,239,232, 93},  /* MagicBean */
+    };
+    for (size_t i = 0; i < sizeof(fixed_ip4)/sizeof(fixed_ip4[0]); i++) {
+        struct seed_spec6 *s = &p->vFixedSeeds[p->nFixedSeeds];
+        memset(s, 0, sizeof(*s));
+        s->addr[10] = 0xFF;
+        s->addr[11] = 0xFF;
+        memcpy(s->addr + 12, fixed_ip4[i], 4);
+        s->port = 8033;
+        p->nFixedSeeds++;
+        /* Also add zclassic23 port for each */
+        s = &p->vFixedSeeds[p->nFixedSeeds];
+        memset(s, 0, sizeof(*s));
+        s->addr[10] = 0xFF;
+        s->addr[11] = 0xFF;
+        memcpy(s->addr + 12, fixed_ip4[i], 4);
+        s->port = 18033;
+        p->nFixedSeeds++;
+    }
 
     /* t1 addresses */
     p->base58Prefixes[B58_PUBKEY_ADDRESS][0] = 0x1C;

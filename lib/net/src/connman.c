@@ -76,12 +76,44 @@ static void dns_seed_resolve(struct connman *cm)
     }
 }
 
+static void seed_from_fixed(struct connman *cm)
+{
+    const struct chain_params *p = cm->params;
+    for (size_t i = 0; i < p->nFixedSeeds && !g_stop; i++) {
+        struct net_address addr;
+        net_address_init(&addr);
+        memcpy(addr.svc.addr.ip, p->vFixedSeeds[i].addr, 16);
+        addr.svc.port = p->vFixedSeeds[i].port;
+        addr.nServices = NODE_NETWORK;
+        struct net_addr src;
+        net_addr_init(&src);
+        addrman_add(&cm->manager.addrman, &addr, &src, 0);
+    }
+    if (p->nFixedSeeds > 0)
+        printf("Added %zu hardcoded seed nodes\n", p->nFixedSeeds);
+}
+
 static void *thread_dns_seed(void *arg)
 {
     struct connman *cm = (struct connman *)arg;
-    sleep(11);
+
+    /* Add fixed seeds immediately — don't wait */
+    seed_from_fixed(cm);
+
+    /* DNS seeds after 3 seconds (not 11) */
+    sleep(3);
     if (!g_stop)
         dns_seed_resolve(cm);
+
+    /* If still no peers after 15s, retry DNS + try fixed seeds again */
+    sleep(12);
+    if (!g_stop && cm->manager.num_nodes == 0) {
+        printf("No peers found, retrying DNS seeds...\n");
+        fflush(stdout);
+        dns_seed_resolve(cm);
+        seed_from_fixed(cm);
+    }
+
     return NULL;
 }
 
@@ -90,11 +122,7 @@ static void *thread_open_connections(void *arg)
     struct connman *cm = (struct connman *)arg;
 
     while (!g_stop) {
-        sleep(1);
-
-        if (cm->manager.num_nodes >= (size_t)cm->manager.max_connections)
-            continue;
-
+        /* Aggressive: try up to 3 connections per second when we have few peers */
         size_t outbound = 0;
         zcl_mutex_lock(&cm->manager.cs_nodes);
         for (size_t i = 0; i < cm->manager.num_nodes; i++) {
@@ -103,15 +131,26 @@ static void *thread_open_connections(void *arg)
         }
         zcl_mutex_unlock(&cm->manager.cs_nodes);
 
-        if (outbound >= MAX_OUTBOUND_CONNECTIONS)
+        if (outbound >= MAX_OUTBOUND_CONNECTIONS ||
+            cm->manager.num_nodes >= (size_t)cm->manager.max_connections) {
+            sleep(1);
             continue;
+        }
 
-        struct addr_info info;
-        memset(&info, 0, sizeof(info));
-        if (!addrman_select(&cm->manager.addrman, false, &info))
-            continue;
+        /* Try multiple peers per tick when we have zero connections */
+        int attempts = (outbound == 0) ? 5 : 1;
+        for (int a = 0; a < attempts && !g_stop; a++) {
+            struct addr_info info;
+            memset(&info, 0, sizeof(info));
+            if (addrman_select(&cm->manager.addrman, false, &info))
+                connect_node(&cm->manager, &info.addr, NULL);
+        }
 
-        connect_node(&cm->manager, &info.addr, NULL);
+        /* Sleep less when desperate for peers */
+        if (outbound == 0)
+            usleep(200000); /* 200ms */
+        else
+            sleep(1);
     }
     return NULL;
 }
