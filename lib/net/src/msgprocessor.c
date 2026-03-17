@@ -62,7 +62,10 @@ static void push_version(struct msg_processor *mp, struct p2p_node *node)
     struct version_message ver;
     version_message_init(&ver);
     ver.protocol_version = PROTOCOL_VERSION;
-    ver.services = NODE_NETWORK | NODE_ZCL23;
+    /* Advertise NODE_NETWORK only to legacy peers.
+     * NODE_ZCL23 is communicated via subversion string instead,
+     * to avoid compatibility issues with strict service bit filters. */
+    ver.services = NODE_NETWORK;
     ver.timestamp = (int64_t)time(NULL);
     ver.addr_recv = node->addr;
     ver.nonce = GetRand(UINT64_MAX);
@@ -146,12 +149,15 @@ static bool process_version(struct msg_processor *mp, struct p2p_node *node,
            node->starting_height,
            peer_supports_fast_sync(node->services) ? " [ZCL23]" : "");
 
-    /* Detect zclassic23 peers — log it, but don't block the
-     * message handler with SQLite queries. Fast sync negotiation
-     * happens in msg_send_messages() which runs periodically. */
-    if (peer_supports_fast_sync(node->services))
+    /* Detect zclassic23 peers via subversion string.
+     * Service bit detection is secondary — some peers filter unknown bits. */
+    bool is_zcl23 = peer_supports_fast_sync(node->services) ||
+                    strstr(node->sub_ver, "ZClassic-C23") != NULL;
+    if (is_zcl23) {
+        node->services |= NODE_ZCL23; /* mark for fast sync */
         printf("Peer %s: supports zclassic23 fast sync [ZCL23]\n",
                node->addr_name);
+    }
 
     return true;
 }

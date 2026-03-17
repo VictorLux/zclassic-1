@@ -671,8 +671,13 @@ struct p2p_node *connect_node(struct net_manager *nm,
 
     zcl_socket_t sock;
 
-    if (!connect_socket_directly(&addr_connect->svc, &sock, DEFAULT_CONNECT_TIMEOUT))
+    if (!connect_socket_directly(&addr_connect->svc, &sock, DEFAULT_CONNECT_TIMEOUT)) {
+        char addr_str[64];
+        net_service_to_string(&addr_connect->svc, addr_str, sizeof(addr_str));
+        printf("connect_node: failed to connect to %s\n", addr_str);
+        fflush(stdout);
         return NULL;
+    }
 
     struct p2p_node *node = p2p_node_create(nm, sock, addr_connect,
                                              dest ? dest : "", false);
@@ -687,6 +692,11 @@ struct p2p_node *connect_node(struct net_manager *nm,
     zcl_mutex_unlock(&nm->cs_nodes);
 
     node->time_connected = GetTime();
+
+    char addr_str[64];
+    net_service_to_string(&addr_connect->svc, addr_str, sizeof(addr_str));
+    printf("Connected to %s\n", addr_str);
+    fflush(stdout);
     return node;
 }
 
