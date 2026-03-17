@@ -1,28 +1,23 @@
 # Build artifacts
-/zcld
-/test_zcl
+zclassic23
+test_zcl
+zcl-rpc
+zcl-browser
+zclassic-cli
 *.o
-*.a
-*.log
 
-# Vendor (pre-built libs and C++ reference — not tracked)
+# Vendor (built from source, not tracked)
 vendor/lib/
 vendor/zclassic-ref/
+vendor/sqlite3.c
+vendor/tor/libtor.a
+
+# Tools (binary output)
+tools/hodl_chart
+tools/hodl_1yr_chart
 
 # Editor / OS
 .DS_Store
-.vscode
-.*.swp
-*.*~*
-*.bak
-*.orig
-*.rej
-
-# Misc
-*.tar.gz
-*.deb
-*.exe
-*.dmg
-.nfs*
-*.pyc
-vendor/lib/libtor.a
+.vscode/
+*.swp
+*~

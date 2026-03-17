@@ -1,90 +1,88 @@
-ZClassic 2.1.2
+# ZClassic23
 
-## Getting Started
+Pure C23 full node + decentralized web platform for ZClassic.
 
-### Building from Source
-
-For comprehensive build instructions, troubleshooting, and advanced options, see [BUILD.md](BUILD.md).
-
-#### Quick Start (Ubuntu/Debian)
+## Build
 
 ```bash
-# Clone the repository
-git clone https://github.com/ZclassicCommunity/zclassic.git
-cd zclassic
-
-# Install dependencies
-./zcutil/install-deps.sh
-
-# Build ZClassic
-./zcutil/build.sh -j$(nproc)
+git clone https://github.com/RhettCreighton/zclassic-c.git
+cd zclassic-c
+make zclassic23
 ```
 
-The compiled binaries will be in the `src/` directory.
+One command. Zero system dependencies beyond libc. 26MB binary.
 
-#### First Run - Fast Sync
-
-On first run, `zclassicd` will automatically:
-- Download ZCash cryptographic parameters (~1.6 GB)
-- Download initial blockchain state from Arweave (~8.8 GB)
-- Create a default configuration file
-
-This fast-sync feature saves hours compared to syncing from genesis.
-
-### Running ZClassic
+## Run
 
 ```bash
-# Start the daemon (uses ~/.zclassic as data directory)
-./src/zclassicd
-
-# Use custom data directory and ports
-./src/zclassicd -datadir=/path/to/datadir -port=8033 -rpcport=8023
+./zclassic23                              # start node
+./zclassic23 -tor                         # start with .onion service
+./zclassic23 -addnode=127.0.0.1:8033      # connect to local zclassicd
 ```
 
-#### Configuration
+Data directory: `~/.zclassic-c23/`
 
-You can create a configuration file `zclassic.conf` in `~/.zclassic` to customize settings:
+## What Is This?
+
+ZClassic23 is a complete rewrite of zclassicd in pure C23. It is:
+
+- **A full ZClassic node** — bug-for-bug compatible with legacy zclassicd (MagicBean). Syncs headers, validates blocks, relays transactions, serves peers on the ZClassic P2P network.
+
+- **A fast sync server** — new zclassic23 nodes transfer the entire UTXO set (~1.6M entries) in about 60 seconds via the `NODE_ZCL23` protocol extension.
+
+- **A Tor hidden service** — Tor is compiled into the binary. With `-tor`, the node creates a `.onion` address and serves web pages directly over Tor circuits. No ports exposed.
+
+- **A decentralized web platform** — MVC framework (models/controllers/views in C23) for building database-backed web apps served over `.onion`.
+
+- **A peer discovery engine** — ZSLP tokens on the ZClassic blockchain store `.onion` addresses. The blockchain is the DNS.
+
+## Architecture
 
 ```
-txindex=1
-gen=0
-rpcuser=yourusername
-rpcpassword=yourpassword
+zclassic23 binary (26MB, statically linked)
+├── Full node         P2P port 8033/18033, RPC port 18232
+├── Tor (embedded)    .onion hosting via dynhost, no ports
+├── MVC framework     Models (SQLite), Controllers (C23), Views (HTML)
+├── Fast sync         UTXO snapshot transfer between zclassic23 nodes
+├── ZSLP registry     On-chain .onion peer discovery
+└── Browser           zcl-browser (GTK WebKit, Tor-only)
 ```
-## What is ZClassic?
 
-<p align="center">
-<img width="669" alt="image" src="https://github.com/user-attachments/assets/20d00ef7-13f9-4811-8973-2c5d4b288eee" />
-</p>
+### Dual Protocol Mode
 
-[ZClassic](https://zclassic.org/) is an implementation of the "Zerocash" protocol.
-Based on Bitcoin's code, it intends to offer a far higher standard of privacy
-through a sophisticated zero-knowledge proving scheme that preserves
-confidentiality of transaction metadata. Technical details are available
-in our [Protocol Specification](https://github.com/zcash/zips/raw/master/protocol/protocol.pdf).
+| Mode | Port | Peers | Features |
+|------|------|-------|----------|
+| Legacy zclassicd | 8033 | MagicBean, zclassicd | Standard P2P, same consensus |
+| zclassic23 | 18033 | Other zclassic23 nodes | Fast sync, .onion, ZSLP |
 
-This software is the ZClassic client. It downloads and stores the entire history
-of ZClassic transactions; depending on the speed of your computer and network
-connection, the synchronization process could take a day or more once the
-blockchain has reached a significant size.
+Both modes run simultaneously. Legacy peers see a normal zclassicd node.
 
-#### :lock: Security Warnings
+### Project Structure (MVC)
 
-See important security warnings on the
-[Security Information page](https://z.cash/support/security/).
+```
+app/models/          SQLite persistence (ActiveRecord pattern)
+app/controllers/     RPC handlers, sync bridge, blog, onion service
+app/views/           JSON/HTML serializers
+config/              Boot, shutdown, global state
+lib/                 25 library modules (crypto, net, chain, wallet, ...)
+vendor/              Static libraries (secp256k1, leveldb, sqlite3, tor)
+tools/               zcl-browser, zcl-rpc, zcl CLI
+```
 
-**ZClassic is experimental and a work-in-progress.** Use at your own risk.
+## Tools
 
-#### :ledger: Deprecation Policy
+```bash
+make zcl-rpc         # CLI RPC client
+make zcl-browser     # GTK Tor-only browser
+make test            # run 685+ tests
+```
 
-This release is considered deprecated 16 weeks after the release day. There
-is an automatic deprecation shutdown feature which will halt the node some
-time after this 16 week time period. The automatic feature is based on block
-height.
+## Network
 
-
-Currently only Linux is officially supported.
+- **Mainnet P2P**: 8033 (legacy) / 18033 (zclassic23)
+- **Mainnet RPC**: 18232
+- **First .onion seed**: `zc23kenfdqqkgamthif3m7lbbdsyrotsl2dlw35qrh3iuzopozmpjnad.onion`
 
 ## License
 
-For license information see the file [COPYING](COPYING).
+Copyright 2026 Rhett Creighton — Apache License 2.0
