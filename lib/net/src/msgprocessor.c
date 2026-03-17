@@ -142,6 +142,9 @@ static bool process_version(struct msg_processor *mp, struct p2p_node *node,
         node->get_addr = true;
     }
 
+    /* Note: don't send sendheaders here — zclassicd sends headers
+     * proactively after seeing our height is behind theirs. */
+
     printf("Peer %s: version=%d subver=%s height=%d%s\n",
            node->addr_name, node->version, node->sub_ver,
            node->starting_height,
@@ -1109,13 +1112,9 @@ static void build_block_locator(struct block_locator *loc,
 
     struct uint256 tmp[64];
     size_t idx = 0;
-    int h = active_chain_height(chain);
     int step = 1;
 
-    /* Walk chain tip downward, collecting block hashes for locator.
-     * Use chain tip as starting point and walk pprev — this is safer
-     * than active_chain_at() which can have stale array entries. */
-    struct block_index *tip = (h >= 0 && chain->chain) ? chain->chain[h] : NULL;
+    struct block_index *tip = active_chain_tip(chain);
     struct block_index *bi = tip;
     while (bi && bi->phashBlock && idx < 63) {
         tmp[idx++] = *bi->phashBlock;
@@ -1133,6 +1132,10 @@ static void build_block_locator(struct block_locator *loc,
     }
 
     if (idx == 0) { loc->vhave = NULL; loc->num_hashes = 0; return; }
+    if (tip)
+        printf("Locator: %zu hashes, tip h=%d, last h=%d\n",
+               idx, tip->nHeight, bi ? bi->nHeight : -1);
+    fflush(stdout);
     loc->vhave = calloc(idx, sizeof(struct uint256));
     if (!loc->vhave) { loc->num_hashes = 0; return; }
     memcpy(loc->vhave, tmp, idx * sizeof(struct uint256));

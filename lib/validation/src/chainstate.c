@@ -159,7 +159,7 @@ void active_chain_free(struct active_chain *c)
 
 struct block_index *active_chain_tip(const struct active_chain *c)
 {
-    if (c->height < 0) return NULL;
+    if (!c || !c->chain || c->height < 0) return NULL;
     return c->chain[c->height];
 }
 
