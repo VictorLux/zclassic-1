@@ -23,7 +23,7 @@ ALL_SRCS = $(APP_SRCS) $(CONFIG_SRCS) $(LIB_SRCS)
 ALL_OBJS = $(ALL_SRCS:.c=.o)
 
 CFLAGS = -std=c23 -O3 -march=native -flto -Wall -Wextra -Werror -pedantic \
-	-Wno-stringop-overflow \
+	-Wno-stringop-overflow -Wno-unused-result \
 	$(APP_INCLUDES) $(CONFIG_INCLUDES) $(LIB_INCLUDES) \
 	-Ilib/test/include \
 	-D_POSIX_C_SOURCE=200809L -Ivendor/include

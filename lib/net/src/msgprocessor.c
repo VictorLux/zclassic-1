@@ -28,9 +28,11 @@ static void push_getheaders_from(struct msg_processor *mp,
                                   struct p2p_node *node,
                                   struct block_index *from);
 
-/* Cached snapshot offer — pre-computed at startup, not in message handler */
+/* Cached snapshot offer — pre-computed at startup, not in message handler.
+ * g_cached_offer_valid uses _Atomic to avoid data race between the
+ * background build thread (boot.c) and the P2P message handler. */
 struct snapshot_offer g_cached_offer;
-bool g_cached_offer_valid = false;
+_Atomic bool g_cached_offer_valid = false;
 static struct fast_sync_rate_limiter g_rate_limiter = {0};
 
 void msg_processor_init(struct msg_processor *mp,

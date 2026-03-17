@@ -133,7 +133,7 @@ static bool read_onion_from_log(const char *datadir)
                         g_onion_address[len] = '\0';
                         if (!strstr(g_onion_address, ".onion")) {
                             size_t alen = strlen(g_onion_address);
-                            if (alen + 7 < sizeof(g_onion_address))
+                            if (alen + 7 <= sizeof(g_onion_address) - 1)
                                 memcpy(g_onion_address + alen, ".onion", 7);
                         }
                         fclose(f);

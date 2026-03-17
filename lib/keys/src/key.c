@@ -110,7 +110,7 @@ bool privkey_derive(const struct privkey *k, struct privkey *child,
     }
     memcpy(cc_child->data, out + 32, 32);
     memcpy(child->vch, k->vch, 32);
-    bool ret = secp256k1_ec_privkey_tweak_add(secp256k1_ctx_sign,
+    bool ret = secp256k1_ec_seckey_tweak_add(secp256k1_ctx_sign,
                                                child->vch, out);
     child->fCompressed = true;
     child->fValid = ret;

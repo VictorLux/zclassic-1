@@ -106,6 +106,7 @@ static void init_main_params(void)
         { 85,239,232, 93},  /* MagicBean */
     };
     for (size_t i = 0; i < sizeof(fixed_ip4)/sizeof(fixed_ip4[0]); i++) {
+        if (p->nFixedSeeds + 2 > MAX_FIXED_SEEDS) break;
         struct seed_spec6 *s = &p->vFixedSeeds[p->nFixedSeeds];
         memset(s, 0, sizeof(*s));
         s->addr[10] = 0xFF;

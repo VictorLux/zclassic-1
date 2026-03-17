@@ -111,7 +111,7 @@ static void *build_snapshot_offer_thread(void *arg)
     fflush(stdout);
 
     extern struct snapshot_offer g_cached_offer;
-    extern bool g_cached_offer_valid;
+    extern _Atomic bool g_cached_offer_valid;
 
     if (fast_sync_build_offer(datadir, &g_cached_offer)) {
         g_cached_offer_valid = true;

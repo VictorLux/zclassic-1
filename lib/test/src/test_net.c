@@ -4,6 +4,7 @@
 #include "primitives/transaction.h"
 #include "chain/chainparams.h"
 #include "net/version.h"
+#include "net/fast_sync.h"
 
 static int test_tip_count = 0;
 static int test_tip_height = 0;
@@ -1627,6 +1628,127 @@ int test_net(void)
         memcpy(&checksum, hash, 4);
         bool ok = (checksum != 0);
         if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ================================================================
+     * Fast sync: PoW solve + verify round-trip
+     * ================================================================ */
+    printf("fast_sync: PoW solve and verify... ");
+    {
+        uint8_t peer_id[32];
+        GetRandBytes(peer_id, 32);
+        struct fast_sync_pow pow;
+        memset(&pow, 0, sizeof(pow));
+        bool solved = fast_sync_solve_pow(peer_id, &pow);
+        bool verified = solved && fast_sync_verify_pow(&pow);
+        if (verified) printf("OK (nonce=%llu)\n", (unsigned long long)pow.nonce);
+        else { printf("FAIL (solved=%d)\n", solved); failures++; }
+    }
+
+    printf("fast_sync: PoW rejects bad nonce... ");
+    {
+        uint8_t peer_id[32];
+        GetRandBytes(peer_id, 32);
+        struct fast_sync_pow pow;
+        memset(&pow, 0, sizeof(pow));
+        fast_sync_solve_pow(peer_id, &pow);
+        pow.nonce++; /* corrupt the nonce */
+        bool ok = !fast_sync_verify_pow(&pow);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("fast_sync: PoW rejects expired timestamp... ");
+    {
+        uint8_t peer_id[32];
+        GetRandBytes(peer_id, 32);
+        struct fast_sync_pow pow;
+        memset(&pow, 0, sizeof(pow));
+        fast_sync_solve_pow(peer_id, &pow);
+        pow.timestamp -= 600; /* 10 minutes ago, beyond 5min window */
+        bool ok = !fast_sync_verify_pow(&pow);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("fast_sync: PoW rejects NULL... ");
+    {
+        bool ok = !fast_sync_verify_pow(NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ================================================================
+     * Fast sync: rate limiter
+     * ================================================================ */
+    printf("fast_sync: rate limiter allows first request... ");
+    {
+        struct fast_sync_rate_limiter rl;
+        memset(&rl, 0, sizeof(rl));
+        uint8_t ip[16] = {0,0,0,0,0,0,0,0,0,0,0xFF,0xFF,10,0,0,1};
+        bool ok = fast_sync_rate_check(&rl, ip);
+        if (ok && rl.num_entries == 1) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("fast_sync: rate limiter tracks separate IPs... ");
+    {
+        struct fast_sync_rate_limiter rl;
+        memset(&rl, 0, sizeof(rl));
+        uint8_t ip1[16] = {0,0,0,0,0,0,0,0,0,0,0xFF,0xFF,10,0,0,1};
+        uint8_t ip2[16] = {0,0,0,0,0,0,0,0,0,0,0xFF,0xFF,10,0,0,2};
+        fast_sync_rate_check(&rl, ip1);
+        fast_sync_rate_check(&rl, ip2);
+        bool ok = (rl.num_entries == 2);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("fast_sync: rate limiter blocks after max chunks... ");
+    {
+        struct fast_sync_rate_limiter rl;
+        memset(&rl, 0, sizeof(rl));
+        uint8_t ip[16] = {0,0,0,0,0,0,0,0,0,0,0xFF,0xFF,10,0,0,1};
+        bool all_ok = true;
+        for (int i = 0; i < FAST_SYNC_MAX_CHUNKS_PER_HOUR; i++) {
+            if (!fast_sync_rate_check(&rl, ip)) { all_ok = false; break; }
+        }
+        /* Next one should be blocked */
+        bool blocked = !fast_sync_rate_check(&rl, ip);
+        if (all_ok && blocked) printf("OK (blocked after %d)\n", FAST_SYNC_MAX_CHUNKS_PER_HOUR);
+        else { printf("FAIL (ok=%d blocked=%d)\n", all_ok, blocked); failures++; }
+    }
+
+    /* ================================================================
+     * Fast sync: peer_supports_fast_sync
+     * ================================================================ */
+    printf("fast_sync: peer_supports_fast_sync... ");
+    {
+        bool has = peer_supports_fast_sync(NODE_ZCL23 | 1);
+        bool not_has = !peer_supports_fast_sync(1);
+        bool zero = !peer_supports_fast_sync(0);
+        if (has && not_has && zero) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ================================================================
+     * Chainparams: fixed seeds within bounds
+     * ================================================================ */
+    printf("chainparams: fixed seeds within MAX_FIXED_SEEDS... ");
+    {
+        const struct chain_params *cp = chain_params_get();
+        bool ok = (cp->nFixedSeeds > 0 && cp->nFixedSeeds <= MAX_FIXED_SEEDS);
+        if (ok) printf("OK (%d seeds)\n", (int)cp->nFixedSeeds);
+        else { printf("FAIL (%d)\n", (int)cp->nFixedSeeds); failures++; }
+    }
+
+    printf("chainparams: onion seeds present... ");
+    {
+        const struct chain_params *cp = chain_params_get();
+        bool ok = (cp->nOnionSeeds > 0 &&
+                   strstr(cp->onionSeeds[0], ".onion") != NULL);
+        if (ok) printf("OK (%s)\n", cp->onionSeeds[0]);
         else { printf("FAIL\n"); failures++; }
     }
 

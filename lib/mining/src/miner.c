@@ -142,7 +142,7 @@ struct block_template *create_new_block(const struct script *coinbase_script,
 
     coinbase->num_vin = 1;
     coinbase->vin = calloc(1, sizeof(struct tx_in));
-    if (!coinbase->vin) return false;
+    if (!coinbase->vin) return NULL;
     tx_in_init(&coinbase->vin[0]);
     uint256_set_null(&coinbase->vin[0].prevout.hash);
     coinbase->vin[0].prevout.n = 0xffffffff;
@@ -157,7 +157,7 @@ struct block_template *create_new_block(const struct script *coinbase_script,
 
     coinbase->num_vout = 1;
     coinbase->vout = calloc(1, sizeof(struct tx_out));
-    if (!coinbase->vout) return false;
+    if (!coinbase->vout) return NULL;
     tx_out_set_null(&coinbase->vout[0]);
     coinbase->vout[0].script_pub_key = *coinbase_script;
     coinbase->vout[0].value = get_block_subsidy(height, &params->consensus) +
@@ -178,7 +178,7 @@ struct block_template *create_new_block(const struct script *coinbase_script,
     bt->tx_fees[0] = -total_fees;
 
     /* Fill in header */
-    if (!pindex_prev->phashBlock) return false;
+    if (!pindex_prev->phashBlock) return NULL;
     bt->block.header.hashPrevBlock = *pindex_prev->phashBlock;
     bt->block.header.nTime = (uint32_t)GetAdjustedTime();
     bt->block.header.nBits = GetNextWorkRequired(pindex_prev,
