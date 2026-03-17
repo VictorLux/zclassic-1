@@ -12,6 +12,7 @@ int main(void)
     ecc_start();
     ecc_verify_init();
 
+    failures += test_load_balancer();
     failures += test_crypto();
     failures += test_encoding();
     failures += test_chain();
@@ -36,7 +37,6 @@ int main(void)
     failures += test_bloom();
     failures += test_coins();
     failures += test_tor();
-    failures += test_load_balancer();
 
     ecc_verify_destroy();
     ecc_stop();
