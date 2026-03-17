@@ -242,6 +242,9 @@ static bool rpc_sendrawtransaction(const struct json_value *params, bool help,
     struct uint256 hash = tx.hash;
 
     if (g_mp && tx_mempool_exists(g_mp, &hash)) {
+        /* Already in mempool — re-relay to peers */
+        if (g_connman)
+            connman_relay_transaction(g_connman, &hash);
         char hex[65];
         uint256_get_hex(&hash, hex);
         json_set_str(result, hex);
