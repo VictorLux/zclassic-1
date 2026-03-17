@@ -169,4 +169,46 @@ int test_bloom(void);
 int test_coins(void);
 int test_tor(void);
 
+/* ── DRY test macros ─────────────────────────────────────── */
+
+/* Run a named test. Usage:
+ *   TEST("my test name") {
+ *       bool ok = (1 + 1 == 2);
+ *       ASSERT(ok);
+ *   }
+ * Automatically prints name, OK/FAIL, tracks failure count.
+ * Requires `int failures = 0;` in scope. */
+
+#define TEST(name) \
+    for (int _t_once = (printf("%s... ", name), 1); _t_once; _t_once = 0)
+
+#define ASSERT(cond) do { \
+    if (!(cond)) { printf("FAIL (%s)\n", #cond); failures++; goto _test_next; } \
+} while(0)
+
+#define ASSERT_EQ(a, b) do { \
+    if ((a) != (b)) { printf("FAIL (%s != %s)\n", #a, #b); failures++; goto _test_next; } \
+} while(0)
+
+#define ASSERT_STR_EQ(a, b) do { \
+    if (strcmp((a), (b)) != 0) { printf("FAIL (\"%s\" != \"%s\")\n", (a), (b)); failures++; goto _test_next; } \
+} while(0)
+
+#define PASS() do { printf("OK\n"); } while(0)
+
+/* Block-scoped test with automatic PASS at end and goto label.
+ * Usage:
+ *   TEST_CASE("name") {
+ *       ASSERT(condition);
+ *       // if we reach here, test passed
+ *   } TEST_END */
+#define TEST_CASE(name) \
+    printf("%s... ", name); \
+    {
+
+#define TEST_END \
+        printf("OK\n"); \
+    } \
+    if (0) { _test_next: ; }
+
 #endif /* TEST_HELPERS_H */

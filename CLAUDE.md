@@ -1,8 +1,19 @@
-# ZClassic C23 Full Node
+# ZClassic23 — A New Internet
+
+## Vision
+ZClassic23 is not just a cryptocurrency node. It is a decentralized internet platform.
+
+Every zclassic23 node is simultaneously:
+- A **full ZClassic node** (bug-for-bug compatible with legacy zclassicd)
+- A **Tor hidden service** hosting web applications (.onion, no ports exposed)
+- A **peer discovery engine** using ZSLP tokens on-chain (blockchain = DNS)
+- A **fast sync server** transferring UTXO snapshots to new nodes in ~60 seconds
+- An **MVC application platform** for building database-backed web apps in pure C23
+
+One binary. Pure C23. Tor built in. No cloud. No DNS. No central servers.
 
 ## Mission
-Make `zclassic23` (pure C23) a drop-in replacement for `zclassicd` (C++).
-Wire-compatible, RPC-compatible, wallet-compatible, transaction-compatible.
+Drop-in replacement for `zclassicd` in legacy mode. New internet platform in zclassic23 mode.
 
 ## Build
 ```bash
@@ -98,18 +109,48 @@ JSON response serializers for each model type.
 ### Lib (`lib/`)
 23 library modules. Include paths: `#include "crypto/sha256.h"` works via `-Ilib/<name>/include`.
 
-## Current Status
-- **Tests**: 609 ALL TESTS PASSED (0 failures)
-- **C++ node** (`zclassicd`): P2P 8033, RPC 8232, data at `~/.zclassic`
-- **C23 node** (`zclassic23`): P2P 18033, RPC 18232, data at `~/.zclassic-c23`
-- **Sapling spends**: z→z and z→t implemented via `z_sendmany` (commitment tree tracking, witness maintenance, Merkle path extraction, spend proof construction)
+## Dual Protocol Mode
+| Mode | Port | Compatible With | Features |
+|------|------|----------------|----------|
+| **Legacy zclassicd** | 8033 | MagicBean, zclassicd | Bug-for-bug P2P, same consensus rules |
+| **zclassic23** | 18033 | Other zclassic23 nodes | Fast sync, .onion hosting, ZSLP discovery |
 
-## Known Issues
-1. Sapling verification: 5 blocks failed `bad-txns-sapling-spend-description-invalid`
-2. LevelDB MANIFEST corruption on DB open
-3. JoinSplit anchor validation: placeholder returns true
-4. Sapling witness persistence: witnesses need rescan after node restart (not yet maintained incrementally during connect_block)
-5. **FIXED**: Witness cursor depth bug — `incremental_witness_deserialize` set `cursor.depth` to full tree depth (32) instead of `cursor_depth`, causing wrong root after serialization roundtrip
+Peers detect zclassic23 mode via `NODE_ZCL23` service bit (1<<10) in version handshake.
+Legacy peers ignore the bit. Both modes run simultaneously.
+
+## Current Status
+- **Fast sync**: 1,598,612 UTXOs transferred between 2 live nodes in 60s
+- **Tor**: Linked into binary (vendor/tor, our fork). dynhost handles .onion directly.
+- **First .onion**: `zc23kenfdqqkgamthif3m7lbbdsyrotsl2dlw35qrh3iuzopozmpjnad.onion` (rhett.dev)
+- **Browser**: `zcl-browser` — GTK WebKit, Tor-only, .onion directory
+- **ZSLP registry**: ZCL23NODES token for on-chain peer discovery
+- **Wallet**: 0.98 ZCL consolidated at `t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn`
+- **Witnesses**: Incremental maintenance in connect_block + bulk_blocks
+- **Startup**: 4.3s warm restart (flat block_index mmap)
+
+## Architecture
+
+### The Pipeline
+```
+New node starts
+  → Hardcoded .onion seeds (no DNS needed)
+  → Connects via Tor to seed node
+  → NODE_ZCL23 detected → fast sync triggered
+  → 1.6M UTXOs transferred in ~60s
+  → Node becomes full legacy zclassicd peer (port 8033)
+  → Node publishes its own .onion via ZSLP token
+  → Other new nodes discover it from blockchain
+  → Cycle repeats — network grows organically
+```
+
+### Clearnet vs Tor
+| Transport | Serves | Defense |
+|-----------|--------|---------|
+| Clearnet P2P (8033/18033) | Legacy ZCL + fast sync only | PoW + IP rate limit |
+| Clearnet RPC (18232) | Authenticated JSON-RPC only | Cookie/password auth |
+| Tor .onion | Blog, web apps, search, directory | Tor anonymity |
+
+No blog over clearnet. No web content over clearnet. Clearnet = blockchain data only.
 
 ## Quality Bar
 Q = Clarity × Reliability × Performance × TestCoverage × UserImpact
