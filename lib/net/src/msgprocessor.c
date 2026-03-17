@@ -1018,7 +1018,7 @@ static void push_getheaders_from(struct msg_processor *mp,
                                   struct p2p_node *node,
                                   struct block_index *from)
 {
-    if (from && !from->phashBlock) return; /* guard stale pointer */
+    if (from && !from->phashBlock) return;
 
     struct block_locator loc;
     block_locator_init(&loc);
@@ -1027,6 +1027,25 @@ static void push_getheaders_from(struct msg_processor *mp,
         build_block_locator_from_index(&loc, from);
     else
         build_block_locator(&loc, &mp->main_state->chain_active);
+
+    /* Ensure genesis hash is always at the end of the locator.
+     * Peers need at least one known hash to respond. */
+    bool has_genesis = false;
+    for (size_t i = 0; i < loc.num_hashes; i++) {
+        if (uint256_eq(&loc.vhave[i], &mp->params->consensus.hashGenesisBlock)) {
+            has_genesis = true;
+            break;
+        }
+    }
+    if (!has_genesis && loc.num_hashes > 0) {
+        struct uint256 *new_vhave = realloc(loc.vhave,
+            (loc.num_hashes + 1) * sizeof(struct uint256));
+        if (new_vhave) {
+            loc.vhave = new_vhave;
+            loc.vhave[loc.num_hashes] = mp->params->consensus.hashGenesisBlock;
+            loc.num_hashes++;
+        }
+    }
 
     struct byte_stream s;
     stream_init(&s, 512);
