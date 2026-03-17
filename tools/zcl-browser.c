@@ -325,7 +325,7 @@ static void on_home_clicked(GtkWidget *btn, gpointer data)
 {
     (void)btn; (void)data;
     char *hp = build_homepage();
-    webkit_web_view_load_html(g_webview, hp, "about:zcl23");
+    webkit_web_view_load_html(g_webview, hp, NULL);
 }
 
 int main(int argc, char *argv[])
@@ -397,10 +397,10 @@ int main(int argc, char *argv[])
         fprintf(stderr, "Error: only .onion addresses allowed\n");
         /* Show homepage */
         char *homepage = build_homepage();
-        webkit_web_view_load_html(g_webview, homepage, "about:zcl23");
+        webkit_web_view_load_html(g_webview, homepage, NULL);
     } else {
         char *homepage = build_homepage();
-        webkit_web_view_load_html(g_webview, homepage, "about:zcl23");
+        webkit_web_view_load_html(g_webview, homepage, NULL);
     }
 
     /* Fix home button */
