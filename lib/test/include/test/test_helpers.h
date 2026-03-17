@@ -168,6 +168,7 @@ int test_primitives(void);
 int test_bloom(void);
 int test_coins(void);
 int test_tor(void);
+int test_load_balancer(void);
 
 /* ── DRY test macros ─────────────────────────────────────── */
 

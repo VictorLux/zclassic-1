@@ -52,7 +52,7 @@ all: test_zcl zclassic23 zclassic-cli
 TEST_SRCS = $(wildcard lib/test/src/*.c)
 
 test_zcl: $(TEST_SRCS) $(ALL_SRCS)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LIBS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(TOR_LIBS) $(LIBS)
 
 zclassic23: main.c $(ALL_SRCS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(TOR_LIBS) $(LIBS)

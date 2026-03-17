@@ -36,6 +36,7 @@ int main(void)
     failures += test_bloom();
     failures += test_coins();
     failures += test_tor();
+    failures += test_load_balancer();
 
     ecc_verify_destroy();
     ecc_stop();
