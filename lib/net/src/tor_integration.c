@@ -22,8 +22,9 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-/* Path to dynhost-enabled Tor binary (from submodule) */
-#define TOR_BINARY_DEFAULT "vendor/tor/src/app/tor"
+/* Tor binary — try custom dynhost build first, fall back to system tor */
+#define TOR_BINARY_CUSTOM "vendor/tor/src/app/tor"
+#define TOR_BINARY_SYSTEM "/usr/bin/tor"
 
 /* SOCKS port (for outbound Tor connections to discover .onion peers) */
 #define TOR_SOCKS_PORT 19050
@@ -47,12 +48,19 @@ void tor_integration_set_handler(tor_request_handler_fn handler, void *ctx)
     g_request_handler_ctx = ctx;
 }
 
-/* Write torrc for dynhost. No HiddenServicePort — dynhost handles
- * .onion connections directly inside Tor, no port forwarding. */
+static uint16_t g_p2p_port = 18033;
+static bool g_has_dynhost = false;
+
+/* Write torrc — standard Tor creates hidden service for P2P,
+ * dynhost Tor handles connections directly. */
 static bool write_torrc(const char *datadir)
 {
     char torrc_path[1024];
     snprintf(torrc_path, sizeof(torrc_path), "%s/torrc", datadir);
+
+    char hs_dir[1024];
+    snprintf(hs_dir, sizeof(hs_dir), "%s/tor_data/zcl_hidden_service", datadir);
+    mkdir(hs_dir, 0700);
 
     FILE *f = fopen(torrc_path, "w");
     if (!f) return false;
@@ -60,12 +68,46 @@ static bool write_torrc(const char *datadir)
     fprintf(f,
         "SocksPort %d\n"
         "DataDirectory %s/tor_data\n"
-        "Log notice file %s/tor.log\n"
-        "Log notice stdout\n",
+        "Log notice file %s/tor.log\n",
         TOR_SOCKS_PORT, datadir, datadir);
+
+    if (!g_has_dynhost) {
+        /* Standard Tor: hidden service forwards to our P2P port */
+        fprintf(f,
+            "HiddenServiceDir %s\n"
+            "HiddenServicePort %d 127.0.0.1:%d\n",
+            hs_dir, g_p2p_port, g_p2p_port);
+    }
 
     fclose(f);
     return true;
+}
+
+/* Read .onion from hidden service hostname file */
+static bool read_onion_from_hs(const char *datadir)
+{
+    char path[1024];
+    snprintf(path, sizeof(path),
+             "%s/tor_data/zcl_hidden_service/hostname", datadir);
+    for (int attempt = 0; attempt < 120; attempt++) {
+        FILE *f = fopen(path, "r");
+        if (f) {
+            char line[128];
+            if (fgets(line, sizeof(line), f)) {
+                char *end = line;
+                while (*end && *end != '\n' && *end != '\r') end++;
+                *end = '\0';
+                if (strstr(line, ".onion")) {
+                    snprintf(g_onion_address, sizeof(g_onion_address), "%s", line);
+                    fclose(f);
+                    return true;
+                }
+            }
+            fclose(f);
+        }
+        sleep(1);
+    }
+    return false;
 }
 
 /* Parse .onion address from Tor's log */
@@ -127,9 +169,19 @@ static void *tor_monitor_thread(void *arg)
     printf("Tor dynhost started (pid %d), waiting for .onion...\n", g_tor_pid);
     fflush(stdout);
 
-    if (read_onion_from_log(g_tor_datadir)) {
+    /* Try both methods to find .onion address */
+    bool found = false;
+    if (g_has_dynhost)
+        found = read_onion_from_log(g_tor_datadir);
+    if (!found)
+        found = read_onion_from_hs(g_tor_datadir);
+    if (!found)
+        found = read_onion_from_log(g_tor_datadir);
+
+    if (found) {
         atomic_store(&g_tor_ready, true);
-        printf("Tor hidden service: http://%s/\n", g_onion_address);
+        printf("Tor .onion address: %s (port %d)\n",
+               g_onion_address, g_p2p_port);
         fflush(stdout);
     } else {
         fprintf(stderr, "tor: timed out waiting for .onion address\n");
@@ -145,17 +197,25 @@ static void *tor_monitor_thread(void *arg)
 
 bool tor_integration_start(const char *datadir, uint16_t p2p_port)
 {
-    (void)p2p_port;
-
     if (atomic_load(&g_tor_running))
         return true;
 
+    g_p2p_port = p2p_port;
     snprintf(g_tor_datadir, sizeof(g_tor_datadir), "%s", datadir);
-    snprintf(g_tor_binary, sizeof(g_tor_binary), "%s", TOR_BINARY_DEFAULT);
     g_onion_address[0] = '\0';
 
-    if (access(g_tor_binary, X_OK) != 0) {
-        fprintf(stderr, "tor: binary not found at %s\n", g_tor_binary);
+    /* Find best Tor binary: custom dynhost first, then system */
+    if (access(TOR_BINARY_CUSTOM, X_OK) == 0) {
+        snprintf(g_tor_binary, sizeof(g_tor_binary), "%s", TOR_BINARY_CUSTOM);
+        g_has_dynhost = true;
+        printf("Tor: using dynhost binary (%s)\n", g_tor_binary);
+    } else if (access(TOR_BINARY_SYSTEM, X_OK) == 0) {
+        snprintf(g_tor_binary, sizeof(g_tor_binary), "%s", TOR_BINARY_SYSTEM);
+        g_has_dynhost = false;
+        printf("Tor: using system binary (%s)\n", g_tor_binary);
+    } else {
+        fprintf(stderr, "tor: no binary found (tried %s, %s)\n",
+                TOR_BINARY_CUSTOM, TOR_BINARY_SYSTEM);
         return false;
     }
 
