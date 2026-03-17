@@ -18,6 +18,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+#include <unistd.h>
+#include <sys/time.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 #define SOCKS_PROXY "socks5://127.0.0.1:19050"
 #define MAX_BOOKMARKS 64
@@ -212,7 +217,25 @@ static char *build_homepage(void)
     return html;
 }
 
-/* Query local node RPC for live data */
+/* Base64 encode for HTTP Basic auth */
+static size_t b64_encode(const char *in, size_t inlen, char *out, size_t outmax)
+{
+    static const char t[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    size_t oi = 0;
+    for (size_t i = 0; i < inlen && oi + 4 < outmax; i += 3) {
+        unsigned int n = ((unsigned char)in[i]) << 16;
+        if (i+1 < inlen) n |= ((unsigned char)in[i+1]) << 8;
+        if (i+2 < inlen) n |= ((unsigned char)in[i+2]);
+        out[oi++] = t[(n>>18)&63];
+        out[oi++] = t[(n>>12)&63];
+        out[oi++] = (i+1 < inlen) ? t[(n>>6)&63] : '=';
+        out[oi++] = (i+2 < inlen) ? t[n&63] : '=';
+    }
+    out[oi] = '\0';
+    return oi;
+}
+
+/* Pure C23 RPC client — no curl, no popen */
 static char *rpc_query(const char *method)
 {
     static char result[65536];
@@ -221,28 +244,74 @@ static char *rpc_query(const char *method)
     const char *home = getenv("HOME");
     if (!home) return result;
 
-    char cookie_path[512];
-    snprintf(cookie_path, sizeof(cookie_path),
-             "%s/.zclassic-c23/.cookie", home);
+    /* Read cookie */
+    char cookie_path[512], cookie[256] = "";
+    snprintf(cookie_path, sizeof(cookie_path), "%s/.zclassic-c23/.cookie", home);
     FILE *cf = fopen(cookie_path, "r");
-    if (!cf) return result;
-    char cookie[256];
-    if (!fgets(cookie, sizeof(cookie), cf)) { fclose(cf); return result; }
-    fclose(cf);
-    char *nl = strchr(cookie, '\n'); if (nl) *nl = '\0';
+    if (cf) {
+        if (fgets(cookie, sizeof(cookie), cf)) {
+            char *nl = strchr(cookie, '\n'); if (nl) *nl = '\0';
+        }
+        fclose(cf);
+    }
+    /* Fall back to conf */
+    if (!cookie[0]) {
+        char conf_path[512];
+        snprintf(conf_path, sizeof(conf_path), "%s/.zclassic-c23/zclassic.conf", home);
+        FILE *f = fopen(conf_path, "r");
+        if (f) {
+            char user[128]="", pass[128]="", line[256];
+            while (fgets(line, sizeof(line), f)) {
+                if (strncmp(line,"rpcuser=",8)==0) { snprintf(user,sizeof(user),"%s",line+8); char *n=strchr(user,'\n'); if(n)*n='\0'; }
+                if (strncmp(line,"rpcpassword=",12)==0) { snprintf(pass,sizeof(pass),"%s",line+12); char *n=strchr(pass,'\n'); if(n)*n='\0'; }
+            }
+            fclose(f);
+            if (user[0] && pass[0]) snprintf(cookie, sizeof(cookie), "%s:%s", user, pass);
+        }
+    }
+    if (!cookie[0]) return result;
 
-    char cmd[1024];
-    snprintf(cmd, sizeof(cmd),
-        "curl -s --max-time 3 --user '%s' "
-        "-d '{\"jsonrpc\":\"1.0\",\"method\":\"%s\",\"params\":[],\"id\":1}' "
-        "-H 'content-type:text/plain;' http://127.0.0.1:18232/ 2>/dev/null",
-        cookie, method);
+    /* Connect */
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return result;
+    struct timeval tv = {.tv_sec=3}; setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    struct sockaddr_in addr = {.sin_family=AF_INET, .sin_port=htons(18232)};
+    inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+    if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) { close(fd); return result; }
 
-    FILE *p = popen(cmd, "r");
-    if (!p) return result;
-    size_t n = fread(result, 1, sizeof(result) - 1, p);
-    result[n] = '\0';
-    pclose(p);
+    /* Build request */
+    char body[512];
+    int blen = snprintf(body, sizeof(body),
+        "{\"jsonrpc\":\"1.0\",\"method\":\"%s\",\"params\":[],\"id\":1}", method);
+    char auth64[512];
+    b64_encode(cookie, strlen(cookie), auth64, sizeof(auth64));
+    char req[2048];
+    int rlen = snprintf(req, sizeof(req),
+        "POST / HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+        "Authorization: Basic %s\r\n"
+        "Content-Type: text/plain\r\nContent-Length: %d\r\n"
+        "Connection: close\r\n\r\n%s", auth64, blen, body);
+    write(fd, req, (size_t)rlen);
+
+    /* Read response */
+    size_t total = 0;
+    char buf[65536];
+    while (total < sizeof(buf) - 1) {
+        ssize_t n = read(fd, buf + total, sizeof(buf) - 1 - total);
+        if (n <= 0) break;
+        total += (size_t)n;
+    }
+    buf[total] = '\0';
+    close(fd);
+
+    /* Skip HTTP headers */
+    char *body_start = strstr(buf, "\r\n\r\n");
+    if (body_start) {
+        body_start += 4;
+        snprintf(result, sizeof(result), "%s", body_start);
+    } else {
+        snprintf(result, sizeof(result), "%s", buf);
+    }
     return result;
 }
 
