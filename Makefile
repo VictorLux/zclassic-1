@@ -32,11 +32,12 @@ TOR_LIBS = vendor/tor/libtor.a \
 	vendor/tor/src/ext/ed25519/donna/libed25519_donna.a \
 	vendor/tor/src/ext/ed25519/ref10/libed25519_ref10.a \
 	vendor/tor/src/ext/keccak-tiny/libkeccak-tiny.a
-# Tor rebuilt with: --disable-lzma --disable-zstd --disable-systemd --disable-seccomp
-# Only requires: libevent, libssl, libcrypto, libz (standard on all systems)
+# All dependencies bundled in vendor/lib as static archives.
+# Zero system library requirements beyond libc.
 LIBS = -Lvendor/lib -lsecp256k1 -lleveldb \
 	-lstdc++ -lm -lsqlite3 -ldl -lpthread \
-	-levent -lssl -lcrypto -lz -lcap \
+	-levent -levent_openssl -levent_pthreads \
+	-lssl -lcrypto -lz \
 	-Wl,--allow-multiple-definition
 
 .PHONY: all test clean
