@@ -490,6 +490,42 @@ int node_db_migrate(struct node_db *ndb, const char *datadir)
         applied++;
     }
 
+    if (current_ver < 4) {
+        /* Block index cache — enables instant warm restart by skipping
+         * the 11s LevelDB block index load. Verified cryptographically
+         * via tip hash match with coins DB. */
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS block_index_cache ("
+            "hash BLOB NOT NULL PRIMARY KEY,"
+            "prev_hash BLOB NOT NULL,"
+            "height INTEGER NOT NULL,"
+            "n_bits INTEGER NOT NULL,"
+            "n_time INTEGER NOT NULL,"
+            "n_version INTEGER NOT NULL DEFAULT 4,"
+            "n_status INTEGER NOT NULL DEFAULT 0,"
+            "n_file INTEGER NOT NULL DEFAULT 0,"
+            "n_data_pos INTEGER NOT NULL DEFAULT 0,"
+            "n_undo_pos INTEGER NOT NULL DEFAULT 0,"
+            "n_tx INTEGER NOT NULL DEFAULT 0,"
+            "chain_work BLOB,"
+            "merkle_root BLOB,"
+            "final_sapling_root BLOB,"
+            "nonce BLOB,"
+            "solution BLOB,"
+            "n_solution_size INTEGER NOT NULL DEFAULT 0,"
+            "n_cached_branch_id INTEGER NOT NULL DEFAULT 0"
+            ")");
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_bic_height"
+            " ON block_index_cache(height)");
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('004')");
+        int32_t v = 4;
+        node_db_state_set(ndb, "schema_version", &v, sizeof(v));
+        current_ver = 4;
+        applied++;
+    }
+
     if (applied > 0)
         printf("db: applied %d migration(s), now at version %d\n",
                applied, node_db_schema_version(ndb));

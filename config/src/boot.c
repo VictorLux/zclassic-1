@@ -54,6 +54,7 @@
 #include <time.h>
 #include <pthread.h>
 #include <malloc.h>
+#include <sqlite3.h>
 
 static struct main_state g_state;
 static struct coins_view_db g_coins_db;
@@ -93,6 +94,61 @@ static void *load_params_thread(void *arg)
     printf("Verification keys loaded.\n");
     fflush(stdout);
     return NULL;
+}
+
+/* Save the most recent N block_index entries to SQLite for fast restart.
+ * Only stores enough for difficulty validation (17 window + 11 median + reorg buffer). */
+static void save_block_index_recent(struct node_db *ndb, struct main_state *ms)
+{
+    if (!ndb || !ndb->open) return;
+    struct block_index *tip = active_chain_tip(&ms->chain_active);
+    if (!tip) return;
+
+    int64_t t0 = (int64_t)time(NULL);
+    sqlite3_exec(ndb->db, "DELETE FROM block_index_cache", NULL, NULL, NULL);
+    sqlite3_exec(ndb->db, "BEGIN", NULL, NULL, NULL);
+
+    sqlite3_stmt *ins = NULL;
+    sqlite3_prepare_v2(ndb->db,
+        "INSERT INTO block_index_cache "
+        "(hash,prev_hash,height,n_bits,n_time,n_version,n_status,"
+        "n_file,n_data_pos,n_undo_pos,n_tx,chain_work,n_cached_branch_id) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        -1, &ins, NULL);
+
+    /* Walk back 200 blocks from tip */
+    const struct block_index *p = tip;
+    int count = 0;
+    while (p && count < 200) {
+        sqlite3_reset(ins);
+        sqlite3_bind_blob(ins, 1, p->phashBlock->data, 32, SQLITE_STATIC);
+        {
+            static const unsigned char zero32[32] = {0};
+            const unsigned char *prev = (p->pprev && p->pprev->phashBlock)
+                ? p->pprev->phashBlock->data : zero32;
+            sqlite3_bind_blob(ins, 2, prev, 32, SQLITE_STATIC);
+        }
+        sqlite3_bind_int(ins, 3, p->nHeight);
+        sqlite3_bind_int(ins, 4, (int)p->nBits);
+        sqlite3_bind_int(ins, 5, (int)p->nTime);
+        sqlite3_bind_int(ins, 6, p->nVersion);
+        sqlite3_bind_int(ins, 7, (int)p->nStatus);
+        sqlite3_bind_int(ins, 8, p->nFile);
+        sqlite3_bind_int(ins, 9, (int)p->nDataPos);
+        sqlite3_bind_int(ins, 10, (int)p->nUndoPos);
+        sqlite3_bind_int(ins, 11, (int)p->nTx);
+        sqlite3_bind_blob(ins, 12, p->nChainWork.pn, 32, SQLITE_STATIC);
+        sqlite3_bind_int(ins, 13, (int)p->nCachedBranchId);
+        sqlite3_step(ins);
+        p = p->pprev;
+        count++;
+    }
+    sqlite3_finalize(ins);
+    sqlite3_exec(ndb->db, "COMMIT", NULL, NULL, NULL);
+
+    printf("Block index: cached %d recent entries (%.0fms)\n",
+           count, difftime(time(NULL), t0) * 1000);
+    fflush(stdout);
 }
 
 void app_context_defaults(struct app_context *ctx)
@@ -533,16 +589,22 @@ bool app_init(struct app_context *ctx)
     (void)sqlite_tip_height;
     (void)coins_best_hash;
 
-    if (!fast_restart) {
-        /* Full block index load (slow path — 3M entries from LevelDB) */
+    /* Full block index load from LevelDB */
+    {
         int64_t t_idx_start = (int64_t)time(NULL);
         printf("Loading block index...\n");
+        fflush(stdout);
         if (!load_block_index(&g_state, params)) {
             fprintf(stderr, "Warning: Failed to load block index\n");
         }
         int64_t t_idx_elapsed = (int64_t)time(NULL) - t_idx_start;
         printf("Block index loaded: %zu entries in %llds\n",
                g_state.map_block_index.size, (long long)t_idx_elapsed);
+        fflush(stdout);
+
+        /* Save recent blocks to SQLite for future fast validation */
+        if (g_active_node_db && g_state.map_block_index.size > 1000)
+            save_block_index_recent(&g_node_db, &g_state);
     }
 
     /* Restore chain tip from coins DB best block hash */
