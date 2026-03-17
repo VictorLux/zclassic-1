@@ -344,13 +344,21 @@ void connman_relay_transaction(struct connman *cm,
     struct inv_item inv;
     inv_item_init_typed(&inv, MSG_TX, txid);
 
+    int relayed = 0;
     zcl_mutex_lock(&cm->manager.cs_nodes);
     for (size_t i = 0; i < cm->manager.num_nodes; i++) {
         struct p2p_node *node = cm->manager.nodes[i];
-        if (node->successfully_connected && !node->disconnect)
+        if (node->successfully_connected && !node->disconnect) {
             p2p_node_push_inventory(node, &inv);
+            relayed++;
+        }
     }
     zcl_mutex_unlock(&cm->manager.cs_nodes);
+
+    char hex[65];
+    uint256_get_hex(txid, hex);
+    printf("Relay tx %s to %d peers\n", hex, relayed);
+    fflush(stdout);
 }
 
 void connman_add_seed_node(struct connman *cm, const char *host,

@@ -16,6 +16,8 @@ void rpc_rawtx_set_state(struct main_state *ms, struct tx_mempool *mp,
                           struct coins_view_cache *coins_tip,
                           const char *datadir);
 void rpc_rawtx_set_keystore(struct basic_keystore *ks);
+struct connman;
+void rpc_rawtx_set_connman(struct connman *cm);
 
 void register_rawtransaction_rpc_commands(struct rpc_table *t);
 

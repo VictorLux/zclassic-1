@@ -26,6 +26,7 @@
 #include "coins/coins_view.h"
 #include "models/database.h"
 #include "models/utxo.h"
+#include "net/connman.h"
 #include "wallet/keystore.h"
 #include "support/cleanse.h"
 #include <stdio.h>
@@ -37,6 +38,7 @@ static struct tx_mempool *g_mp = NULL;
 static struct coins_view_cache *g_coins_tip = NULL;
 static const char *g_datadir = NULL;
 static struct basic_keystore *g_keystore = NULL;
+static struct connman *g_connman = NULL;
 extern struct node_db *g_node_db;
 
 void rpc_rawtx_set_state(struct main_state *ms, struct tx_mempool *mp,
@@ -52,6 +54,11 @@ void rpc_rawtx_set_state(struct main_state *ms, struct tx_mempool *mp,
 void rpc_rawtx_set_keystore(struct basic_keystore *ks)
 {
     g_keystore = ks;
+}
+
+void rpc_rawtx_set_connman(struct connman *cm)
+{
+    g_connman = cm;
 }
 
 static bool rpc_getrawtransaction(const struct json_value *params, bool help,
@@ -271,6 +278,10 @@ static bool rpc_sendrawtransaction(const struct json_value *params, bool help,
             return false;
         }
     }
+
+    /* Relay to peers */
+    if (g_connman)
+        connman_relay_transaction(g_connman, &hash);
 
     char hex[65];
     uint256_get_hex(&hash, hex);

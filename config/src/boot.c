@@ -775,6 +775,7 @@ bool app_init(struct app_context *ctx)
 
     rpc_rawtx_set_state(&g_state, &g_mempool, &g_coins_tip, ctx->datadir);
     rpc_rawtx_set_keystore(&g_wallet.keystore);
+    rpc_rawtx_set_connman(&g_connman);
     register_rawtransaction_rpc_commands(&g_rpc_table);
 
     rpc_mining_set_state(&g_state, &g_mempool, &g_coins_tip, ctx->datadir);
