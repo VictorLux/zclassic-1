@@ -197,17 +197,32 @@ int main(int argc, char *argv[]) {
     /* Tor proxy: only if running */
     WebKitWebContext *ctx = webkit_web_context_get_default();
     {
+        /* Try our Tor port (19050) first, then standard Tor (9050) */
         int tfd = socket(AF_INET,SOCK_STREAM,0);
         struct sockaddr_in ta={.sin_family=AF_INET,.sin_port=htons(19050)};
         inet_pton(AF_INET,"127.0.0.1",&ta.sin_addr);
-        if (connect(tfd,(struct sockaddr*)&ta,sizeof(ta))==0) {
+        bool tor_found = (connect(tfd,(struct sockaddr*)&ta,sizeof(ta))==0);
+        close(tfd);
+        int tor_port = 19050;
+        if (!tor_found) {
+            tfd = socket(AF_INET,SOCK_STREAM,0);
+            ta.sin_port = htons(9050);
+            tor_found = (connect(tfd,(struct sockaddr*)&ta,sizeof(ta))==0);
+            close(tfd);
+            tor_port = 9050;
+        }
+        if (tor_found) {
+            char proxy_url[64];
+            snprintf(proxy_url, sizeof(proxy_url), "socks5://127.0.0.1:%d", tor_port);
             WebKitNetworkProxySettings *px =
-                webkit_network_proxy_settings_new("socks5://127.0.0.1:19050",NULL);
+                webkit_network_proxy_settings_new(proxy_url, NULL);
             webkit_web_context_set_network_proxy_settings(ctx,
                 WEBKIT_NETWORK_PROXY_MODE_CUSTOM, px);
             webkit_network_proxy_settings_free(px);
+            printf("Tor SOCKS proxy on port %d\n", tor_port);
+        } else {
+            printf("No Tor — install tor and start it to browse .onion\n");
         }
-        close(tfd);
     }
 
     GtkWidget *win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
