@@ -5,6 +5,7 @@
 #include "chain/chainparams.h"
 #include "net/version.h"
 #include "net/fast_sync.h"
+#include "net/onion_service.h"
 
 static int test_tip_count = 0;
 static int test_tip_height = 0;
@@ -1749,6 +1750,70 @@ int test_net(void)
         bool ok = (cp->nOnionSeeds > 0 &&
                    strstr(cp->onionSeeds[0], ".onion") != NULL);
         if (ok) printf("OK (%s)\n", cp->onionSeeds[0]);
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ================================================================
+     * Onion service: XSS prevention in search
+     * ================================================================ */
+    printf("onion_service: search escapes HTML in query... ");
+    {
+        uint8_t buf[8192];
+        size_t len = onion_service_handle_request(
+            "GET", "/search?q=<script>alert(1)</script>",
+            NULL, 0, buf, sizeof(buf));
+        buf[len < sizeof(buf) ? len : sizeof(buf) - 1] = '\0';
+        /* Must NOT contain raw <script> tag */
+        bool has_raw_script = (strstr((char *)buf, "<script>") != NULL);
+        /* Must contain escaped version */
+        bool has_escaped = (strstr((char *)buf, "&lt;script&gt;") != NULL);
+        if (!has_raw_script && has_escaped) printf("OK\n");
+        else { printf("FAIL (raw=%d escaped=%d)\n", has_raw_script, has_escaped); failures++; }
+    }
+
+    printf("onion_service: landing page returns valid HTML... ");
+    {
+        uint8_t buf[16384];
+        size_t len = onion_service_handle_request(
+            "GET", "/", NULL, 0, buf, sizeof(buf));
+        buf[len < sizeof(buf) ? len : sizeof(buf) - 1] = '\0';
+        bool has_header = (strstr((char *)buf, "HTTP/1.1 200") != NULL);
+        bool has_html = (strstr((char *)buf, "</html>") != NULL);
+        bool has_title = (strstr((char *)buf, "ZClassic23") != NULL);
+        if (has_header && has_html && has_title) printf("OK (%zu bytes)\n", len);
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("onion_service: 404 for unknown path... ");
+    {
+        uint8_t buf[4096];
+        size_t len = onion_service_handle_request(
+            "GET", "/nonexistent", NULL, 0, buf, sizeof(buf));
+        buf[len < sizeof(buf) ? len : sizeof(buf) - 1] = '\0';
+        bool ok = (strstr((char *)buf, "404") != NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("onion_service: search with empty query... ");
+    {
+        uint8_t buf[8192];
+        size_t len = onion_service_handle_request(
+            "GET", "/search", NULL, 0, buf, sizeof(buf));
+        buf[len < sizeof(buf) ? len : sizeof(buf) - 1] = '\0';
+        bool ok = (len > 0 && strstr((char *)buf, "200 OK") != NULL);
+        if (ok) printf("OK (%zu bytes)\n", len);
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("onion_service: NULL path defaults to landing... ");
+    {
+        uint8_t buf[16384];
+        size_t len = onion_service_handle_request(
+            "GET", NULL, NULL, 0, buf, sizeof(buf));
+        buf[len < sizeof(buf) ? len : sizeof(buf) - 1] = '\0';
+        bool ok = (len > 0 && strstr((char *)buf, "ZClassic23 Network") != NULL);
+        if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
 

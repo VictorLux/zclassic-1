@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -142,11 +143,11 @@ static void handle_client(int client_fd)
     char auth_value[512] = {0};
     while (read_line(client_fd, line, sizeof(line))) {
         if (line[0] == '\0') break;
-        if (strncmp(line, "Content-Length:", 15) == 0 ||
-            strncmp(line, "content-length:", 15) == 0)
-            content_length = (size_t)atol(line + 15);
-        if (strncmp(line, "Authorization:", 14) == 0 ||
-            strncmp(line, "authorization:", 14) == 0)
+        if (strncasecmp(line, "Content-Length:", 15) == 0) {
+            long v = atol(line + 15);
+            content_length = v > 0 ? (size_t)v : 0;
+        }
+        if (strncasecmp(line, "Authorization:", 14) == 0)
             snprintf(auth_value, sizeof(auth_value), "%s", line + 14);
     }
 

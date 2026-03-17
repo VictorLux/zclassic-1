@@ -13,6 +13,24 @@
 static char g_onion_address[128] = "";
 static const char *g_datadir = NULL;
 
+/* HTML-escape a string to prevent XSS. Writes at most max-1 bytes + null. */
+static size_t html_escape(char *dst, size_t max, const char *src)
+{
+    size_t w = 0;
+    for (size_t i = 0; src[i] && w + 6 < max; i++) {
+        switch (src[i]) {
+        case '<':  w += (size_t)snprintf(dst + w, max - w, "&lt;"); break;
+        case '>':  w += (size_t)snprintf(dst + w, max - w, "&gt;"); break;
+        case '&':  w += (size_t)snprintf(dst + w, max - w, "&amp;"); break;
+        case '"':  w += (size_t)snprintf(dst + w, max - w, "&quot;"); break;
+        case '\'': w += (size_t)snprintf(dst + w, max - w, "&#39;"); break;
+        default:   dst[w++] = src[i]; break;
+        }
+    }
+    dst[w] = '\0';
+    return w;
+}
+
 /* ── Landing page: directory of all .onion sites ──────────── */
 
 static size_t serve_landing_page(uint8_t *response, size_t max)
@@ -23,7 +41,8 @@ static size_t serve_landing_page(uint8_t *response, size_t max)
     if (g_datadir)
         num_peers = blog_discover_onion_peers(g_datadir, peers, 64);
 
-    int off = snprintf((char *)response, max,
+    size_t off = 0;
+    int n = snprintf((char *)response, max,
         "HTTP/1.1 200 OK\r\n"
         "Content-Type: text/html; charset=utf-8\r\n"
         "Connection: close\r\n\r\n"
@@ -51,25 +70,28 @@ static size_t serve_landing_page(uint8_t *response, size_t max)
         "<input type='text' name='q' placeholder='Search .onion sites...' autofocus>"
         "</form>"
         "<h2>Directory</h2>");
+    if (n > 0) off = (size_t)n;
 
     if (num_peers == 0) {
-        off += snprintf((char *)response + off, max - (size_t)off,
+        n = snprintf((char *)response + off, max - off,
             "<div class='site'>"
             "<a href='http://%s/'>This node</a>"
             "<div class='desc'>Your local ZClassic23 node</div></div>",
             g_onion_address[0] ? g_onion_address : "localhost");
+        if (n > 0) off += (size_t)n;
     }
 
-    for (int i = 0; i < num_peers && (size_t)off < max - 256; i++) {
-        off += snprintf((char *)response + off, max - (size_t)off,
+    for (int i = 0; i < num_peers && off + 256 < max; i++) {
+        n = snprintf((char *)response + off, max - off,
             "<div class='site'>"
             "<a href='http://%s/'>%s</a>"
             "<div class='desc'>Discovered at height %d</div></div>",
             peers[i].hostname, peers[i].hostname, peers[i].height);
+        if (n > 0) off += (size_t)n;
     }
 
     /* Always show the seed node */
-    off += snprintf((char *)response + off, max - (size_t)off,
+    n = snprintf((char *)response + off, max - off,
         "<div class='site'>"
         "<a href='http://zc23kenfdqqkgamthif3m7lbbdsyrotsl2dlw35qrh3iuzopozmpjnad.onion/'>"
         "zc23kenf...jnad.onion</a>"
@@ -81,8 +103,9 @@ static size_t serve_landing_page(uint8_t *response, size_t max)
         "Register it on-chain via ZSLP for others to discover.</div></div>"
         "<footer>Powered by ZClassic23 — pure C23 full node + Tor</footer>"
         "</body></html>");
+    if (n > 0) off += (size_t)n;
 
-    return (size_t)off;
+    return off;
 }
 
 /* ── Search handler ───────────────────────────────────────── */
@@ -94,7 +117,12 @@ static size_t serve_search(const char *query, uint8_t *response, size_t max)
     if (g_datadir)
         num_peers = blog_discover_onion_peers(g_datadir, peers, 64);
 
-    int off = snprintf((char *)response, max,
+    /* HTML-escape the query to prevent XSS */
+    char safe_query[512];
+    html_escape(safe_query, sizeof(safe_query), query ? query : "");
+
+    size_t off = 0;
+    int n = snprintf((char *)response, max,
         "HTTP/1.1 200 OK\r\n"
         "Content-Type: text/html; charset=utf-8\r\n"
         "Connection: close\r\n\r\n"
@@ -108,25 +136,30 @@ static size_t serve_search(const char *query, uint8_t *response, size_t max)
         "</style></head><body>"
         "<h1><a href='/' style='text-decoration:none'>ZClassic23</a> / Search</h1>"
         "<p>Results for: <b>%s</b></p>",
-        query ? query : "", query ? query : "");
+        safe_query, safe_query);
+    if (n > 0) off = (size_t)n;
 
     int found = 0;
-    for (int i = 0; i < num_peers && (size_t)off < max - 256; i++) {
+    for (int i = 0; i < num_peers && off + 256 < max; i++) {
         if (query && query[0] &&
             !strstr(peers[i].hostname, query))
             continue;
-        off += snprintf((char *)response + off, max - (size_t)off,
+        n = snprintf((char *)response + off, max - off,
             "<div class='site'><a href='http://%s/'>%s</a></div>",
             peers[i].hostname, peers[i].hostname);
+        if (n > 0) off += (size_t)n;
         found++;
     }
 
-    if (found == 0)
-        off += snprintf((char *)response + off, max - (size_t)off,
+    if (found == 0) {
+        n = snprintf((char *)response + off, max - off,
             "<p style='color:#666'>No results.</p>");
+        if (n > 0) off += (size_t)n;
+    }
 
-    snprintf((char *)response + off, max - (size_t)off, "</body></html>");
-    return strlen((char *)response);
+    n = snprintf((char *)response + off, max - off, "</body></html>");
+    if (n > 0) off += (size_t)n;
+    return off;
 }
 
 /* ── Main request handler ─────────────────────────────────── */
