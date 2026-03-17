@@ -25,3 +25,4 @@ vendor/zclassic-ref/
 *.dmg
 .nfs*
 *.pyc
+vendor/lib/libtor.a
