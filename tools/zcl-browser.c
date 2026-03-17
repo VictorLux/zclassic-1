@@ -125,6 +125,8 @@ static gboolean on_close(GtkWidget *w, GdkEvent *e, gpointer d)
     return TRUE;
 }
 
+static char *rpc_query(const char *method);
+
 /* Build the homepage: list of discovered .onion services */
 static char *build_homepage(void)
 {
@@ -146,11 +148,48 @@ static char *build_homepage(void)
         "<p>Tor-only browser. All traffic over .onion circuits.</p>"
         "<h2>Discovered Services</h2>");
 
+    /* Show live node status */
+    off += snprintf(html + off, sizeof(html) - (size_t)off,
+        "<h2>Local Node</h2>");
+
+    char *info = rpc_query("getinfo");
+    char *peers_json = rpc_query("getpeerinfo");
+    char *balance = rpc_query("z_gettotalbalance");
+
+    if (info[0]) {
+        off += snprintf(html + off, sizeof(html) - (size_t)off,
+            "<div class='node'>"
+            "<pre style='font-size:12px;overflow:auto;'>%s</pre></div>", info);
+    } else {
+        off += snprintf(html + off, sizeof(html) - (size_t)off,
+            "<div class='node'><p class='empty'>Node not running. "
+            "Start with: ./zclassic23</p></div>");
+    }
+
+    if (balance[0]) {
+        off += snprintf(html + off, sizeof(html) - (size_t)off,
+            "<h2>Wallet</h2>"
+            "<div class='node'><pre style='font-size:12px;'>%s</pre></div>",
+            balance);
+    }
+
+    /* Show connected peers */
+    if (peers_json[0]) {
+        off += snprintf(html + off, sizeof(html) - (size_t)off,
+            "<h2>Connected Peers</h2>"
+            "<div class='node'><pre style='font-size:11px;overflow:auto;max-height:300px;'>"
+            "%s</pre></div>", peers_json);
+    }
+
+    /* Show discovered .onion services */
+    off += snprintf(html + off, sizeof(html) - (size_t)off,
+        "<h2>Discovered .onion Services</h2>");
+
     if (g_num_bookmarks == 0) {
         off += snprintf(html + off, sizeof(html) - (size_t)off,
             "<p class='empty'>No .onion services discovered yet.</p>"
-            "<p class='empty'>Services are published on-chain via "
-            "ZSLP ZCL23NODES tokens.</p>");
+            "<p class='empty'>Waiting for ZSLP ZCL23NODES tokens on-chain "
+            "and Tor to be running.</p>");
     } else {
         for (int i = 0; i < g_num_bookmarks; i++) {
             off += snprintf(html + off, sizeof(html) - (size_t)off,
@@ -164,28 +203,53 @@ static char *build_homepage(void)
     }
 
     snprintf(html + off, sizeof(html) - (size_t)off,
-        "<h2>Manual Navigation</h2>"
-        "<p>Enter a .onion address in the URL bar above.</p>"
-        "</body></html>");
+        "<h2>Navigate</h2>"
+        "<p>Enter any .onion address in the URL bar above.</p>"
+        "<p style='color:#444;font-size:11px;'>All traffic routed through "
+        "Tor SOCKS5 at %s</p>"
+        "</body></html>", SOCKS_PROXY);
 
     return html;
 }
 
-/* Load .onion peers from zclassic23 chain scan */
+/* Query local node RPC for live data */
+static char *rpc_query(const char *method)
+{
+    static char result[65536];
+    result[0] = '\0';
+
+    const char *home = getenv("HOME");
+    if (!home) return result;
+
+    char cookie_path[512];
+    snprintf(cookie_path, sizeof(cookie_path),
+             "%s/.zclassic-c23/.cookie", home);
+    FILE *cf = fopen(cookie_path, "r");
+    if (!cf) return result;
+    char cookie[256];
+    if (!fgets(cookie, sizeof(cookie), cf)) { fclose(cf); return result; }
+    fclose(cf);
+    char *nl = strchr(cookie, '\n'); if (nl) *nl = '\0';
+
+    char cmd[1024];
+    snprintf(cmd, sizeof(cmd),
+        "curl -s --max-time 3 --user '%s' "
+        "-d '{\"jsonrpc\":\"1.0\",\"method\":\"%s\",\"params\":[],\"id\":1}' "
+        "-H 'content-type:text/plain;' http://127.0.0.1:18232/ 2>/dev/null",
+        cookie, method);
+
+    FILE *p = popen(cmd, "r");
+    if (!p) return result;
+    size_t n = fread(result, 1, sizeof(result) - 1, p);
+    result[n] = '\0';
+    pclose(p);
+    return result;
+}
+
 static void load_bookmarks_from_chain(void)
 {
-    /* Read from the node's SQLite database via the same code path
-     * as blog_discover_onion_peers(). For now, check a known file. */
-    const char *home = getenv("HOME");
-    if (!home) return;
-
-    char db_path[512];
-    snprintf(db_path, sizeof(db_path), "%s/.zclassic-c23/node.db", home);
-
-    /* We'd need sqlite3 linked — for now just show the homepage.
-     * The real implementation calls blog_discover_onion_peers() which
-     * is linked into the zclassic23 binary, not this standalone tool. */
-    (void)db_path;
+    /* Query local node for peer info to show connected peers */
+    /* Bookmarks will be populated once ZSLP onion tokens are published */
 }
 
 static void on_home_clicked(GtkWidget *btn, gpointer data)
