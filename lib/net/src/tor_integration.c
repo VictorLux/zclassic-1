@@ -11,15 +11,12 @@
  * dynhost_register_handler() to route requests to blog_serve(). */
 
 #include "net/tor_integration.h"
-#include <errno.h>
 #include <pthread.h>
-#include <signal.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <sys/wait.h>
 #include <unistd.h>
 
 /* Tor binary — try custom dynhost build first, fall back to system tor */
@@ -29,7 +26,6 @@
 /* SOCKS port (for outbound Tor connections to discover .onion peers) */
 #define TOR_SOCKS_PORT 19050
 
-static pid_t g_tor_pid = -1;
 static pthread_t g_tor_thread;
 static _Atomic bool g_tor_running = false;
 static _Atomic bool g_tor_ready = false;
@@ -148,28 +144,50 @@ static bool read_onion_from_log(const char *datadir)
     return false;
 }
 
-static void *tor_monitor_thread(void *arg)
+static void *tor_onion_monitor(void *arg);
+
+/* Tor embedding API — declared in vendor/tor/src/feature/api/tor_api.h */
+typedef struct tor_main_configuration_t tor_main_configuration_t;
+extern tor_main_configuration_t *tor_main_configuration_new(void);
+extern int tor_main_configuration_set_command_line(
+    tor_main_configuration_t *cfg, int argc, char *argv[]);
+extern void tor_main_configuration_free(tor_main_configuration_t *cfg);
+extern int tor_run_main(const tor_main_configuration_t *);
+
+static void *tor_embedded_thread(void *arg)
 {
     (void)arg;
     char torrc_path[1024];
     snprintf(torrc_path, sizeof(torrc_path), "%s/torrc", g_tor_datadir);
 
-    g_tor_pid = fork();
-    if (g_tor_pid == 0) {
-        execlp(g_tor_binary, "tor", "-f", torrc_path, (char *)NULL);
-        fprintf(stderr, "tor: exec failed: %s\n", strerror(errno));
-        _exit(127);
-    }
-    if (g_tor_pid < 0) {
-        fprintf(stderr, "tor: fork failed: %s\n", strerror(errno));
-        atomic_store(&g_tor_running, false);
-        return NULL;
-    }
-
-    printf("Tor dynhost started (pid %d), waiting for .onion...\n", g_tor_pid);
+    printf("Starting embedded Tor (dynhost=%s)...\n",
+           g_has_dynhost ? "yes" : "no");
     fflush(stdout);
 
-    /* Try both methods to find .onion address */
+    /* Start .onion address monitor in parallel */
+    static pthread_t onion_thread;
+    pthread_create(&onion_thread, NULL, tor_onion_monitor, NULL);
+    pthread_detach(onion_thread);
+
+    /* Use the Tor embedding API */
+    tor_main_configuration_t *cfg = tor_main_configuration_new();
+    char *argv[] = {"tor", "-f", torrc_path};
+    tor_main_configuration_set_command_line(cfg, 3, argv);
+
+    /* This blocks until Tor exits */
+    int result = tor_run_main(cfg);
+
+    tor_main_configuration_free(cfg);
+    atomic_store(&g_tor_running, false);
+    atomic_store(&g_tor_ready, false);
+    printf("Tor exited with code %d\n", result);
+    return NULL;
+}
+
+/* Monitor thread: watches for .onion address to appear */
+static void *tor_onion_monitor(void *arg)
+{
+    (void)arg;
     bool found = false;
     if (g_has_dynhost)
         found = read_onion_from_log(g_tor_datadir);
@@ -186,12 +204,6 @@ static void *tor_monitor_thread(void *arg)
     } else {
         fprintf(stderr, "tor: timed out waiting for .onion address\n");
     }
-
-    int status;
-    waitpid(g_tor_pid, &status, 0);
-    atomic_store(&g_tor_running, false);
-    atomic_store(&g_tor_ready, false);
-    g_tor_pid = -1;
     return NULL;
 }
 
@@ -230,7 +242,7 @@ bool tor_integration_start(const char *datadir, uint16_t p2p_port)
 
     atomic_store(&g_tor_running, true);
 
-    if (pthread_create(&g_tor_thread, NULL, tor_monitor_thread, NULL) != 0) {
+    if (pthread_create(&g_tor_thread, NULL, tor_embedded_thread, NULL) != 0) {
         atomic_store(&g_tor_running, false);
         return false;
     }
@@ -240,12 +252,8 @@ bool tor_integration_start(const char *datadir, uint16_t p2p_port)
 
 void tor_integration_stop(void)
 {
-    if (g_tor_pid > 0) {
-        kill(g_tor_pid, SIGINT);
-        int status;
-        waitpid(g_tor_pid, &status, 0);
-        g_tor_pid = -1;
-    }
+    /* Tor runs embedded in a thread — it will exit when the process exits.
+     * For clean shutdown, Tor's event loop needs a signal. */
     atomic_store(&g_tor_running, false);
     atomic_store(&g_tor_ready, false);
 }
