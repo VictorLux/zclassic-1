@@ -77,6 +77,11 @@ struct chain_params {
     struct seed_spec6 vFixedSeeds[MAX_FIXED_SEEDS];
     size_t nFixedSeeds;
 
+    /* Tor .onion seed nodes — bootstrap without DNS */
+    char onionSeeds[MAX_FIXED_SEEDS][68]; /* v3 .onion = 62 chars + port */
+    uint16_t onionSeedPorts[MAX_FIXED_SEEDS];
+    size_t nOnionSeeds;
+
     bool fMiningRequiresPeers;
     bool fDefaultConsistencyChecks;
     bool fRequireStandard;

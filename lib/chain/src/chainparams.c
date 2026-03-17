@@ -123,6 +123,12 @@ static void init_main_params(void)
         p->nFixedSeeds++;
     }
 
+    /* Tor .onion seed nodes — will be populated from ZSLP chain scan
+     * and from hardcoded bootstrap .onion addresses.
+     * These are the last-resort peers when DNS and clearnet seeds fail.
+     * TODO: populate once Tor services are running on known nodes */
+    p->nOnionSeeds = 0;
+
     /* t1 addresses */
     p->base58Prefixes[B58_PUBKEY_ADDRESS][0] = 0x1C;
     p->base58Prefixes[B58_PUBKEY_ADDRESS][1] = 0xB8;

@@ -6,6 +6,7 @@
 
 #define _DEFAULT_SOURCE
 #include "net/connman.h"
+#include "controllers/blog_controller.h"
 #include "core/random.h"
 #include "net/netbase.h"
 #include "net/version.h"
@@ -105,13 +106,45 @@ static void *thread_dns_seed(void *arg)
     if (!g_stop)
         dns_seed_resolve(cm);
 
-    /* If still no peers after 15s, retry DNS + try fixed seeds again */
+    /* ZSLP chain scan — discover .onion peers from on-chain token data.
+     * This is the Tor-native peer discovery: no DNS, no clearnet. */
+    if (!g_stop) {
+        extern const char *g_blog_datadir;
+        if (g_blog_datadir) {
+            struct onion_peer peers[64];
+            int found = blog_discover_onion_peers(g_blog_datadir, peers, 64);
+            if (found > 0) {
+                printf("ZSLP chain scan: discovered %d .onion peers\n", found);
+                for (int i = 0; i < found; i++)
+                    printf("  .onion peer: %s (h=%d)\n",
+                           peers[i].hostname, peers[i].height);
+                fflush(stdout);
+            }
+            /* TODO: connect to discovered .onion peers via Tor SOCKS
+             * or direct dynhost connection */
+        }
+    }
+
+    /* If still no peers after 15s, retry everything */
     sleep(12);
     if (!g_stop && cm->manager.num_nodes == 0) {
-        printf("No peers found, retrying DNS seeds...\n");
+        printf("No peers found, retrying all discovery methods...\n");
         fflush(stdout);
-        dns_seed_resolve(cm);
         seed_from_fixed(cm);
+        dns_seed_resolve(cm);
+    }
+
+    /* Periodic rediscovery every 5 minutes */
+    while (!g_stop) {
+        sleep(300);
+        if (g_stop) break;
+        if (cm->manager.num_nodes < 3) {
+            printf("Low peer count (%zu), running peer discovery...\n",
+                   cm->manager.num_nodes);
+            fflush(stdout);
+            seed_from_fixed(cm);
+            dns_seed_resolve(cm);
+        }
     }
 
     return NULL;

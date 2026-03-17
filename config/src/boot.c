@@ -78,6 +78,7 @@ static struct node_db g_node_db;
 struct node_db *g_active_node_db = NULL;
 struct tx_mempool *g_active_mempool = NULL;
 static const char *g_datadir = NULL;
+const char *g_blog_datadir = NULL; /* used by connman for ZSLP peer discovery */
 static _Atomic bool g_running = false;
 static struct metrics_context g_metrics;
 
@@ -587,6 +588,7 @@ bool app_init(struct app_context *ctx)
 
     const struct chain_params *params = chain_params_get();
     g_datadir = ctx->datadir;
+    g_blog_datadir = ctx->datadir;
 
     ecc_start();
     ecc_verify_init();
