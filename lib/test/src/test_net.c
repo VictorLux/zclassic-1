@@ -1,6 +1,9 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "test/test_helpers.h"
+#include "primitives/transaction.h"
+#include "chain/chainparams.h"
+#include "net/version.h"
 
 static int test_tip_count = 0;
 static int test_tip_height = 0;
@@ -1507,6 +1510,122 @@ int test_net(void)
         /* Different types: MSG_TX < MSG_BLOCK */
         inv_item_init_typed(&b, MSG_BLOCK, &h1);
         ok = ok && inv_item_less(&a, &b);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ── Wire compatibility: overwintered tx format ────────── */
+    printf("tx overwintered v4 wire format... ");
+    {
+        struct transaction tx;
+        transaction_init(&tx);
+        tx.overwintered = true;
+        tx.version = SAPLING_TX_VERSION;
+        tx.version_group_id = SAPLING_VERSION_GROUP_ID;
+        tx.expiry_height = 3046100;
+
+        struct byte_stream s;
+        stream_init(&s, 256);
+        transaction_serialize(&tx, &s);
+        /* Version bytes: 04 00 00 80 (LE, bit 31 set) */
+        bool ok = (s.size >= 4 && s.data[0] == 0x04 && s.data[3] == 0x80);
+
+        struct transaction tx2;
+        transaction_init(&tx2);
+        struct byte_stream r;
+        stream_init_from_data(&r, s.data, s.size);
+        ok = ok && transaction_deserialize(&tx2, &r);
+        ok = ok && tx2.overwintered;
+        ok = ok && (tx2.version == SAPLING_TX_VERSION);
+        ok = ok && (tx2.version_group_id == SAPLING_VERSION_GROUP_ID);
+        ok = ok && (tx2.expiry_height == 3046100);
+        stream_free(&s);
+        transaction_free(&tx);
+        transaction_free(&tx2);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("tx non-overwintered v4 lacks flag... ");
+    {
+        struct transaction tx;
+        transaction_init(&tx);
+        tx.overwintered = false;
+        tx.version = 4;
+
+        struct byte_stream s;
+        stream_init(&s, 256);
+        transaction_serialize(&tx, &s);
+        bool ok = (s.size >= 4 && s.data[3] != 0x80);
+        stream_free(&s);
+        transaction_free(&tx);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("compact_size encoding... ");
+    {
+        struct byte_stream s;
+        stream_init(&s, 32);
+        stream_write_compact_size(&s, 100);
+        bool ok = (s.size == 1 && s.data[0] == 100);
+        s.size = 0;
+        stream_write_compact_size(&s, 253);
+        ok = ok && (s.size == 3);
+        s.size = 0;
+        stream_write_compact_size(&s, 65536);
+        ok = ok && (s.size == 5);
+        stream_free(&s);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("protocol version = 170011... ");
+    {
+        bool ok = (PROTOCOL_VERSION == 170011);
+        ok = ok && (MIN_PEER_PROTO_VERSION <= 170002);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("mainnet magic bytes... ");
+    {
+        chain_params_select(CHAIN_MAIN);
+        const struct chain_params *p = chain_params_get();
+        unsigned char expected[4] = {0x24, 0xe9, 0x27, 0x64};
+        bool ok = (memcmp(p->pchMessageStart, expected, 4) == 0);
+        ok = ok && (p->nDefaultPort == 8033);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("version message wire size (empty subver = 86)... ");
+    {
+        struct version_message v;
+        version_message_init(&v);
+        v.protocol_version = 170011;
+        v.services = NODE_NETWORK;
+        struct byte_stream s;
+        stream_init(&s, 256);
+        version_message_serialize(&v, &s);
+        bool ok = (s.size == 86);
+        /* Verify proto bytes at offset 0 */
+        uint32_t proto = (uint32_t)s.data[0] | ((uint32_t)s.data[1] << 8) |
+                         ((uint32_t)s.data[2] << 16) | ((uint32_t)s.data[3] << 24);
+        ok = ok && (proto == 170011);
+        stream_free(&s);
+        if (ok) printf("OK\n");
+        else { printf("FAIL (size=%zu)\n", s.size); failures++; }
+    }
+
+    printf("SHA256d checksum (first 4 bytes)... ");
+    {
+        uint8_t payload[] = "test";
+        uint8_t hash[32];
+        hash256(payload, 4, hash);
+        uint32_t checksum;
+        memcpy(&checksum, hash, 4);
+        bool ok = (checksum != 0);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
