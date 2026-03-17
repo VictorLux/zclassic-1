@@ -269,16 +269,11 @@ bool require_tokens(const char *customer_addr, const char *token_id, uint64_t am
 
 | Traditional Web | ZClassic23 |
 |----------------|------------|
-| Rent a server | Run a binary |
-| Register a domain | .onion is free, instant |
-| Get SSL certificate | Tor encrypts end-to-end |
-| Set up payment processing | Shielded ZCL built in |
-| KYC/AML compliance | Permissionless |
-| 3% payment processor fee | 0.0001 ZCL tx fee |
-| Server can be seized | .onion can't be found |
-| DNS can be poisoned | No DNS |
-| DDOS vulnerable | Tor + PoW rate limiting |
-| Requires bank account | Requires electricity |
+| Server + domain + TLS | Single binary, .onion auto-generated |
+| External payment API | Native shielded transactions |
+| Database + app server | SQLite + MVC in one process |
+| DNS resolution | On-chain ZSLP lookup |
+| Load balancer appliance | On-chain replica discovery |
 
 ## License
 
