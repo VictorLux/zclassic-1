@@ -28,8 +28,13 @@ CFLAGS = -std=c23 -O3 -march=native -flto -Wall -Wextra -Werror -pedantic \
 	-Ilib/test/include \
 	-D_POSIX_C_SOURCE=200809L -Ivendor/include
 LDFLAGS = -pthread -flto
+TOR_LIBS = vendor/tor/libtor.a \
+	vendor/tor/src/ext/ed25519/donna/libed25519_donna.a \
+	vendor/tor/src/ext/ed25519/ref10/libed25519_ref10.a \
+	vendor/tor/src/ext/keccak-tiny/libkeccak-tiny.a
 LIBS = -Lvendor/lib -lsecp256k1 -lleveldb \
-	-lstdc++ -lm -lsqlite3 -ldl -lpthread
+	-lstdc++ -lm -lsqlite3 -ldl -lpthread \
+	-levent -lssl -lcrypto -lz
 
 .PHONY: all test clean
 
@@ -42,7 +47,7 @@ test_zcl: $(TEST_SRCS) $(ALL_SRCS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LIBS)
 
 zclassic23: main.c $(ALL_SRCS)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LIBS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(TOR_LIBS) $(LIBS)
 
 zclassic-cli: cli.c $(CLI_SRCS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
