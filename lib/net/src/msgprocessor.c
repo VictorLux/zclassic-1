@@ -1039,75 +1039,52 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
 static void build_block_locator(struct block_locator *loc,
                                  const struct active_chain *chain)
 {
-    int height = active_chain_height(chain);
-    int step = 1;
-    size_t count = 0;
-
-    /* Count entries needed */
-    int h = height;
-    while (h >= 0) {
-        count++;
-        if (h == 0) break;
-        h -= step;
-        if (h < 0) h = 0;
-        if (count >= 10) step *= 2;
-    }
-
-    loc->vhave = calloc(count, sizeof(struct uint256));
-    if (!loc->vhave) { loc->num_hashes = 0; return; }
-    loc->num_hashes = count;
-
-    h = height;
-    step = 1;
+    struct uint256 tmp[64];
     size_t idx = 0;
-    while (h >= 0 && idx < count) {
+    int h = active_chain_height(chain);
+    int step = 1;
+
+    while (h >= 0 && idx < 63) {
         struct block_index *bi = active_chain_at(chain, h);
         if (bi && bi->phashBlock)
-            loc->vhave[idx] = *bi->phashBlock;
-        idx++;
+            tmp[idx++] = *bi->phashBlock;
         if (h == 0) break;
         h -= step;
         if (h < 0) h = 0;
         if (idx >= 10) step *= 2;
     }
+
+    loc->vhave = calloc(idx, sizeof(struct uint256));
+    if (!loc->vhave) { loc->num_hashes = 0; return; }
+    memcpy(loc->vhave, tmp, idx * sizeof(struct uint256));
+    loc->num_hashes = idx;
 }
 
 static void build_block_locator_from_index(struct block_locator *loc,
                                             struct block_index *pindex)
 {
-    int step = 1;
-    size_t count = 0;
-    struct block_index *p = pindex;
-    while (p) {
-        count++;
-        int next_h = p->nHeight - step;
-        if (next_h < 0) { if (p->nHeight > 0) count++; break; }
-        while (p && p->nHeight > next_h) p = p->pprev;
-        if (count > 10) step *= 2;
-    }
-
-    loc->vhave = calloc(count, sizeof(struct uint256));
-    if (!loc->vhave) { loc->num_hashes = 0; return; }
-    loc->num_hashes = count;
-
-    p = pindex;
-    step = 1;
+    /* Collect hashes into a temporary array, then allocate */
+    struct uint256 tmp[64];
     size_t idx = 0;
-    while (p && idx < count) {
-        if (!p->phashBlock) break;
-        loc->vhave[idx] = *p->phashBlock;
-        idx++;
-        int next_h = p->nHeight - step;
-        if (next_h < 0) {
-            /* Add genesis */
-            while (p->pprev) p = p->pprev;
-            if (idx < count && p->phashBlock)
-                loc->vhave[idx++] = *p->phashBlock;
-            break;
+    int step = 1;
+    struct block_index *p = pindex;
+
+    while (p && p->phashBlock && idx < 63) {
+        tmp[idx++] = *p->phashBlock;
+        if (p->nHeight <= 0) break;
+        int target = p->nHeight - step;
+        if (target < 0) target = 0;
+        while (p && p->nHeight > target) {
+            if (!p->pprev) break;
+            p = p->pprev;
         }
-        while (p && p->nHeight > next_h) p = p->pprev;
+        if (!p || !p->phashBlock) break;
         if (idx > 10) step *= 2;
     }
+
+    loc->vhave = calloc(idx, sizeof(struct uint256));
+    if (!loc->vhave) { loc->num_hashes = 0; return; }
+    memcpy(loc->vhave, tmp, idx * sizeof(struct uint256));
     loc->num_hashes = idx;
 }
 
