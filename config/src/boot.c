@@ -103,6 +103,19 @@ static void *load_params_thread(void *arg)
 
 static int cmp_height(const void *a, const void *b);
 
+/* Adapter: bridges tor_request_handler_fn to onion_service_handle_request */
+extern size_t onion_service_handle_request(const char *, const char *,
+    const uint8_t *, size_t, uint8_t *, size_t);
+
+static size_t onion_request_adapter(const char *path,
+    const uint8_t *req_data, size_t req_len,
+    uint8_t *resp, size_t resp_max, void *ctx)
+{
+    (void)ctx;
+    return onion_service_handle_request("GET", path,
+        req_data, req_len, resp, resp_max);
+}
+
 /* Background thread: build fast sync snapshot offer */
 static void *build_snapshot_offer_thread(void *arg)
 {
@@ -1090,9 +1103,15 @@ bool app_init(struct app_context *ctx)
         gen_start(&g_gen);
     }
 
-    /* Start Tor hidden service if -tor flag set */
+    /* Start embedded Tor with .onion hosting if -tor flag set */
     if (ctx->tor) {
-        printf("Starting Tor dynhost...\n");
+        /* Initialize onion service handler before Tor starts */
+        extern const char *onion_service_start(const char *);
+        onion_service_start(ctx->datadir);
+
+        tor_integration_set_handler(onion_request_adapter, NULL);
+
+        printf("Starting embedded Tor...\n");
         fflush(stdout);
         if (!tor_integration_start(ctx->datadir, (uint16_t)ctx->p2p_port))
             fprintf(stderr, "Warning: Tor failed to start\n");
