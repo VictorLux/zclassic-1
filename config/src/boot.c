@@ -1025,11 +1025,7 @@ bool app_init(struct app_context *ctx)
     rpc_wallet_set_node_db(g_active_node_db);
     register_wallet_rpc_commands(&g_rpc_table);
 
-    /* Start RPC HTTP server (also serves blog via GET) */
-    {
-        extern const char *g_blog_datadir;
-        g_blog_datadir = ctx->datadir;
-    }
+    /* Start RPC HTTP server (clearnet: auth RPC only, no blog) */
     set_rpc_warmup_finished();
     rpc_http_start(&g_rpc_table, (uint16_t)ctx->rpc_port,
                     ctx->rpc_user, ctx->rpc_password, ctx->datadir);

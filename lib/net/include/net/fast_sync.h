@@ -32,6 +32,44 @@
 #define MSG_SNAPSHOT_DATA    "zsnapdata"
 #define MSG_SNAPSHOT_END     "zsnapend"
 
+/* ── Rate limiting + PoW defense ─────────────────────────── */
+
+/* Difficulty for snapshot request PoW (number of leading zero bits).
+ * 20 bits ≈ ~1M hashes ≈ ~0.5s on modern CPU. Prevents spam. */
+#define FAST_SYNC_POW_BITS 20
+
+/* Max snapshot chunks per IP per hour */
+#define FAST_SYNC_MAX_CHUNKS_PER_HOUR 5000
+
+/* PoW challenge: client must find nonce such that
+ * SHA256(peer_id || timestamp || nonce) has FAST_SYNC_POW_BITS leading zeros.
+ * This is included in the zsnapreq message. */
+struct fast_sync_pow {
+    uint8_t  peer_id[32];   /* SHA256 of requester's IP or node ID */
+    int64_t  timestamp;     /* unix timestamp (must be within 5 min) */
+    uint64_t nonce;         /* PoW solution */
+};
+
+/* Verify a PoW proof. Returns true if valid. */
+bool fast_sync_verify_pow(const struct fast_sync_pow *pow);
+
+/* Solve a PoW challenge (blocking, ~0.5s). */
+bool fast_sync_solve_pow(const uint8_t peer_id[32], struct fast_sync_pow *pow);
+
+/* Rate limiter state (per node, tracks IPs) */
+struct fast_sync_rate_limiter {
+    struct {
+        uint8_t ip[16];
+        int64_t window_start;
+        uint32_t chunks_sent;
+    } entries[256];
+    size_t num_entries;
+};
+
+/* Check if an IP is rate-limited. Returns true if OK to serve. */
+bool fast_sync_rate_check(struct fast_sync_rate_limiter *rl,
+                           const uint8_t ip[16]);
+
 /* UTXO snapshot chunk: batch of UTXOs for transfer */
 struct utxo_chunk {
     uint32_t num_entries;

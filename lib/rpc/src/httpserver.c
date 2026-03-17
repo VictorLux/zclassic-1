@@ -25,7 +25,6 @@ static char g_rpc_user[128];
 static char g_rpc_password[128];
 static char g_cookie_file[1024];
 static bool g_auth_required = false;
-const char *g_blog_datadir = NULL;
 
 static const char base64_chars[] =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -131,33 +130,8 @@ static void handle_client(int client_fd)
     if (sscanf(line, "%15s %255s", method, path) != 2)
         goto done;
 
-    /* Serve blog for GET requests (no auth required) */
-    if (strcmp(method, "GET") == 0) {
-        extern const char *g_blog_datadir;
-        if (g_blog_datadir) {
-            char *buf = malloc(1024 * 1024); /* 1MB max */
-            if (buf) {
-                size_t n = 0;
-                /* Import blog_serve at link time */
-                extern size_t blog_serve(const char *, const char *,
-                                          char *, size_t);
-                n = blog_serve(g_blog_datadir, path, buf, 1024 * 1024);
-                if (n > 0)
-                    (void)write(client_fd, buf, n);
-                else {
-                    const char *msg = "<h1>404 Not Found</h1>";
-                    send_response(client_fd, 404, "Not Found",
-                                  msg, strlen(msg));
-                }
-                free(buf);
-            }
-        } else {
-            const char *msg = "Blog not configured";
-            send_response(client_fd, 404, "Not Found", msg, strlen(msg));
-        }
-        goto done;
-    }
-
+    /* No blog over clearnet. Blog is Tor-only via dynhost.
+     * Clearnet serves ONLY authenticated RPC (POST). */
     if (strcmp(method, "POST") != 0) {
         const char *msg = "Method not allowed";
         send_response(client_fd, 405, "Method Not Allowed", msg, strlen(msg));

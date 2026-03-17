@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <sqlite3.h>
 
 bool fast_sync_build_offer(const char *datadir,
@@ -170,6 +171,95 @@ bool fast_sync_serve_snapshot(const char *datadir,
     free(chunk);
     sqlite3_finalize(s);
     sqlite3_close(db);
+    return true;
+}
+
+/* ── PoW defense ─────────────────────────────────────────── */
+
+bool fast_sync_verify_pow(const struct fast_sync_pow *pow)
+{
+    if (!pow) return false;
+
+    /* Timestamp must be within 5 minutes */
+    int64_t now = (int64_t)time(NULL);
+    if (pow->timestamp < now - 300 || pow->timestamp > now + 60)
+        return false;
+
+    /* SHA256(peer_id || timestamp || nonce) must have leading zeros */
+    struct sha256_ctx ctx;
+    sha256_init(&ctx);
+    sha256_write(&ctx, pow->peer_id, 32);
+    sha256_write(&ctx, (const unsigned char *)&pow->timestamp, 8);
+    sha256_write(&ctx, (const unsigned char *)&pow->nonce, 8);
+    unsigned char hash[32];
+    sha256_finalize(&ctx, hash);
+
+    /* Check leading zero bits */
+    int bits = FAST_SYNC_POW_BITS;
+    for (int i = 0; i < bits / 8; i++)
+        if (hash[i] != 0) return false;
+    if (bits % 8 > 0) {
+        uint8_t mask = (uint8_t)(0xFF << (8 - bits % 8));
+        if (hash[bits / 8] & mask) return false;
+    }
+    return true;
+}
+
+bool fast_sync_solve_pow(const uint8_t peer_id[32], struct fast_sync_pow *pow)
+{
+    if (!pow) return false;
+    memcpy(pow->peer_id, peer_id, 32);
+    pow->timestamp = (int64_t)time(NULL);
+    pow->nonce = 0;
+
+    while (pow->nonce < UINT64_MAX) {
+        if (fast_sync_verify_pow(pow))
+            return true;
+        pow->nonce++;
+    }
+    return false;
+}
+
+/* ── Rate limiting ───────────────────────────────────────── */
+
+bool fast_sync_rate_check(struct fast_sync_rate_limiter *rl,
+                           const uint8_t ip[16])
+{
+    int64_t now = (int64_t)time(NULL);
+
+    /* Find or create entry for this IP */
+    for (size_t i = 0; i < rl->num_entries; i++) {
+        if (memcmp(rl->entries[i].ip, ip, 16) == 0) {
+            /* Reset window if >1 hour old */
+            if (now - rl->entries[i].window_start > 3600) {
+                rl->entries[i].window_start = now;
+                rl->entries[i].chunks_sent = 0;
+            }
+            if (rl->entries[i].chunks_sent >= FAST_SYNC_MAX_CHUNKS_PER_HOUR)
+                return false;
+            rl->entries[i].chunks_sent++;
+            return true;
+        }
+    }
+
+    /* New IP */
+    if (rl->num_entries < 256) {
+        size_t idx = rl->num_entries++;
+        memcpy(rl->entries[idx].ip, ip, 16);
+        rl->entries[idx].window_start = now;
+        rl->entries[idx].chunks_sent = 1;
+        return true;
+    }
+
+    /* Table full — evict oldest */
+    size_t oldest = 0;
+    for (size_t i = 1; i < rl->num_entries; i++) {
+        if (rl->entries[i].window_start < rl->entries[oldest].window_start)
+            oldest = i;
+    }
+    memcpy(rl->entries[oldest].ip, ip, 16);
+    rl->entries[oldest].window_start = now;
+    rl->entries[oldest].chunks_sent = 1;
     return true;
 }
 
