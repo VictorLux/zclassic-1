@@ -28,16 +28,17 @@ CFLAGS = -std=c23 -O3 -march=native -flto -Wall -Wextra -Werror -pedantic \
 	-Ilib/test/include \
 	-D_POSIX_C_SOURCE=200809L -Ivendor/include
 LDFLAGS = -pthread -flto
-TOR_LIBS = vendor/tor/libtor.a \
+# Use vendor/tor/libtor.a when Tor is built from source.
+# Falls back to stub for builds without Tor.
+TOR_LIBS = $(wildcard vendor/tor/libtor.a \
 	vendor/tor/src/ext/ed25519/donna/libed25519_donna.a \
 	vendor/tor/src/ext/ed25519/ref10/libed25519_ref10.a \
-	vendor/tor/src/ext/keccak-tiny/libkeccak-tiny.a
+	vendor/tor/src/ext/keccak-tiny/libkeccak-tiny.a)
 # All dependencies bundled in vendor/lib as static archives.
 # Zero system library requirements beyond libc.
 LIBS = -Lvendor/lib -lsecp256k1 -lleveldb \
 	-lstdc++ -lm -lsqlite3 -ldl -lpthread \
-	-levent -levent_openssl -levent_pthreads \
-	-lssl -lcrypto -lz \
+	-ltor_stub \
 	-Wl,--allow-multiple-definition
 
 .PHONY: all test clean

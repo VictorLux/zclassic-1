@@ -52,9 +52,20 @@ static bool stream_grow(struct byte_stream *s, size_t needed)
         s->error = true;
         return false;
     }
+    /* Guard against size_t overflow in s->size + needed */
+    if (needed > SIZE_MAX - s->size) {
+        s->error = true;
+        return false;
+    }
+    size_t target = s->size + needed;
     size_t new_cap = s->capacity ? s->capacity : 64;
-    while (new_cap < s->size + needed)
+    while (new_cap < target) {
+        if (new_cap > SIZE_MAX / 2) {
+            new_cap = target; /* cap at exact needed, no further doubling */
+            break;
+        }
         new_cap *= 2;
+    }
     unsigned char *p = realloc(s->data, new_cap);
     if (!p) {
         s->error = true;
@@ -203,6 +214,9 @@ bool stream_read_compact_size(struct byte_stream *s, uint64_t *size)
     } else {
         if (!stream_read_u64_le(s, size)) return false;
     }
+    /* Note: non-canonical encodings (e.g. 0xfd for values < 253) are
+     * accepted for backwards compatibility with the Bitcoin wire protocol.
+     * The C++ reference node also accepts them. */
     return true;
 }
 

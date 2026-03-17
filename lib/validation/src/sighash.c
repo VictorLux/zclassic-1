@@ -288,11 +288,16 @@ static bool sighash_overwinter_sapling(
             uint16_t s16 = (uint16_t)script_code->size;
             memcpy(varbuf + 1, &s16, 2);
             varlen = 3;
-        } else if (script_code->size <= 0xffffffff) {
+        } else if (script_code->size <= 0xffffffffUL) {
             varbuf[0] = 0xfe;
             uint32_t s32 = (uint32_t)script_code->size;
             memcpy(varbuf + 1, &s32, 4);
             varlen = 5;
+        } else {
+            varbuf[0] = 0xff;
+            uint64_t s64 = (uint64_t)script_code->size;
+            memcpy(varbuf + 1, &s64, 8);
+            varlen = 9;
         }
         blake2b_update(&ctx, varbuf, varlen);
         blake2b_update(&ctx, script_code->data, script_code->size);

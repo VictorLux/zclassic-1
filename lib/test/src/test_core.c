@@ -148,5 +148,136 @@ int test_core(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    /* ================================================================
+     * compact_size: canonical encoding roundtrip
+     * ================================================================ */
+    printf("compact_size: small value roundtrip... ");
+    {
+        struct byte_stream ws;
+        stream_init(&ws, 64);
+        stream_write_compact_size(&ws, 42);
+        struct byte_stream rs;
+        stream_init_from_data(&rs, ws.data, ws.size);
+        uint64_t val = 0;
+        bool ok = stream_read_compact_size(&rs, &val) && val == 42;
+        stream_free(&ws);
+        if (ok) printf("OK\n");
+        else { printf("FAIL (val=%llu)\n", (unsigned long long)val); failures++; }
+    }
+
+    printf("compact_size: 16-bit value roundtrip... ");
+    {
+        struct byte_stream ws;
+        stream_init(&ws, 64);
+        stream_write_compact_size(&ws, 1000);
+        struct byte_stream rs;
+        stream_init_from_data(&rs, ws.data, ws.size);
+        uint64_t val = 0;
+        bool ok = stream_read_compact_size(&rs, &val) && val == 1000;
+        stream_free(&ws);
+        if (ok) printf("OK\n");
+        else { printf("FAIL (val=%llu)\n", (unsigned long long)val); failures++; }
+    }
+
+    printf("compact_size: 32-bit value roundtrip... ");
+    {
+        struct byte_stream ws;
+        stream_init(&ws, 64);
+        stream_write_compact_size(&ws, 100000);
+        struct byte_stream rs;
+        stream_init_from_data(&rs, ws.data, ws.size);
+        uint64_t val = 0;
+        bool ok = stream_read_compact_size(&rs, &val) && val == 100000;
+        stream_free(&ws);
+        if (ok) printf("OK\n");
+        else { printf("FAIL (val=%llu)\n", (unsigned long long)val); failures++; }
+    }
+
+    printf("compact_size: accepts non-canonical encoding (wire compat)... ");
+    {
+        /* Non-canonical: value 50 encoded as 3-byte (marker=253).
+         * Bitcoin wire protocol accepts these for backwards compatibility. */
+        uint8_t nc[] = {0xfd, 50, 0};
+        struct byte_stream rs;
+        stream_init_from_data(&rs, nc, sizeof(nc));
+        uint64_t val = 0;
+        bool ok = stream_read_compact_size(&rs, &val) && val == 50;
+        if (ok) printf("OK\n");
+        else { printf("FAIL (val=%llu)\n", (unsigned long long)val); failures++; }
+    }
+
+    printf("compact_size: 64-bit value roundtrip... ");
+    {
+        struct byte_stream ws;
+        stream_init(&ws, 64);
+        stream_write_compact_size(&ws, 0x200000000ULL);
+        struct byte_stream rs;
+        stream_init_from_data(&rs, ws.data, ws.size);
+        uint64_t val = 0;
+        bool ok = stream_read_compact_size(&rs, &val) && val == 0x200000000ULL;
+        stream_free(&ws);
+        if (ok) printf("OK\n");
+        else { printf("FAIL (val=%llu)\n", (unsigned long long)val); failures++; }
+    }
+
+    printf("compact_size: boundary value 253 roundtrip... ");
+    {
+        struct byte_stream ws;
+        stream_init(&ws, 64);
+        stream_write_compact_size(&ws, 253);
+        struct byte_stream rs;
+        stream_init_from_data(&rs, ws.data, ws.size);
+        uint64_t val = 0;
+        bool ok = stream_read_compact_size(&rs, &val) && val == 253;
+        stream_free(&ws);
+        if (ok) printf("OK\n");
+        else { printf("FAIL (val=%llu)\n", (unsigned long long)val); failures++; }
+    }
+
+    /* ================================================================
+     * stream_grow: overflow protection
+     * ================================================================ */
+    printf("stream_grow: handles large allocation gracefully... ");
+    {
+        struct byte_stream ws;
+        stream_init(&ws, 8);
+        /* Write enough to trigger growth */
+        uint8_t buf[256];
+        memset(buf, 0xAA, sizeof(buf));
+        bool ok = stream_write(&ws, buf, sizeof(buf));
+        ok = ok && (ws.size == 256) && (ws.capacity >= 256);
+        stream_free(&ws);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("stream_write: rejects write to read-only stream... ");
+    {
+        uint8_t data[] = {1, 2, 3};
+        struct byte_stream rs;
+        stream_init_from_data(&rs, data, sizeof(data));
+        uint8_t extra[] = {4};
+        bool ok = !stream_write(&rs, extra, 1); /* should fail - read-only */
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ================================================================
+     * varint roundtrip
+     * ================================================================ */
+    printf("varint: roundtrip large value... ");
+    {
+        struct byte_stream ws;
+        stream_init(&ws, 64);
+        stream_write_varint(&ws, 0xDEADBEEFULL);
+        struct byte_stream rs;
+        stream_init_from_data(&rs, ws.data, ws.size);
+        uint64_t val = 0;
+        bool ok = stream_read_varint(&rs, &val) && val == 0xDEADBEEFULL;
+        stream_free(&ws);
+        if (ok) printf("OK\n");
+        else { printf("FAIL (val=0x%llx)\n", (unsigned long long)val); failures++; }
+    }
+
     return failures;
 }
