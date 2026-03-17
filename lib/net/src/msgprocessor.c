@@ -1112,15 +1112,23 @@ static void build_block_locator(struct block_locator *loc,
     int h = active_chain_height(chain);
     int step = 1;
 
-    while (h >= 0 && idx < 63) {
-        struct block_index *bi = active_chain_at(chain, h);
-        if (bi && bi->phashBlock)
-            tmp[idx++] = *bi->phashBlock;
+    /* Walk chain tip downward, collecting block hashes for locator.
+     * Use chain tip as starting point and walk pprev — this is safer
+     * than active_chain_at() which can have stale array entries. */
+    struct block_index *tip = (h >= 0 && chain->chain) ? chain->chain[h] : NULL;
+    struct block_index *bi = tip;
+    while (bi && bi->phashBlock && idx < 63) {
+        tmp[idx++] = *bi->phashBlock;
+        if (bi->nHeight <= 0) break;
+        int target = bi->nHeight - step;
+        if (target < 0) target = 0;
+        /* Walk pprev to target height */
+        while (bi->pprev && bi->pprev->nHeight > target)
+            bi = bi->pprev;
+        if (bi->pprev)
+            bi = bi->pprev;
         else
-            break; /* chain array has gaps — stop here */
-        if (h == 0) break;
-        h -= step;
-        if (h < 0) h = 0;
+            break;
         if (idx >= 10) step *= 2;
     }
 

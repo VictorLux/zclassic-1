@@ -165,7 +165,7 @@ struct block_index *active_chain_tip(const struct active_chain *c)
 
 struct block_index *active_chain_at(const struct active_chain *c, int height)
 {
-    if (height < 0 || height > c->height) return NULL;
+    if (!c || !c->chain || height < 0 || height > c->height) return NULL;
     return c->chain[height];
 }
 
@@ -207,6 +207,7 @@ bool active_chain_set_tip(struct active_chain *c, struct block_index *bi)
 
 int active_chain_height(const struct active_chain *c)
 {
+    if (!c) return -1;
     return c->height;
 }
 

@@ -984,6 +984,43 @@ bool app_init(struct app_context *ctx)
 
     wallet_verify_utxos(&g_wallet, &g_coins_tip);
 
+    /* Rebuild wallet_utxos from ground truth:
+     * global UTXO set × wallet_keys = authoritative balance.
+     * This ensures getbalance is always correct, even after
+     * fast sync, import, or stale data. */
+    if (g_active_node_db && g_active_node_db->open) {
+        int64_t t0 = (int64_t)time(NULL);
+        sqlite3_exec(g_active_node_db->db,
+            "DELETE FROM wallet_utxos", NULL, NULL, NULL);
+        sqlite3_exec(g_active_node_db->db,
+            "INSERT INTO wallet_utxos "
+            "(txid, vout, value, address_hash, script, height, is_coinbase) "
+            "SELECT u.txid, u.vout, u.value, u.address_hash, u.script, "
+            "u.height, u.is_coinbase "
+            "FROM utxos u INNER JOIN wallet_keys wk "
+            "ON u.address_hash = wk.pubkey_hash",
+            NULL, NULL, NULL);
+        int64_t bal = 0;
+        sqlite3_stmt *s = NULL;
+        sqlite3_prepare_v2(g_active_node_db->db,
+            "SELECT COALESCE(sum(value),0) FROM wallet_utxos "
+            "WHERE spent_txid IS NULL", -1, &s, NULL);
+        if (sqlite3_step(s) == SQLITE_ROW)
+            bal = sqlite3_column_int64(s, 0);
+        sqlite3_finalize(s);
+        int cnt = 0;
+        sqlite3_prepare_v2(g_active_node_db->db,
+            "SELECT count(*) FROM wallet_utxos WHERE spent_txid IS NULL",
+            -1, &s, NULL);
+        if (sqlite3_step(s) == SQLITE_ROW)
+            cnt = sqlite3_column_int(s, 0);
+        sqlite3_finalize(s);
+        printf("Wallet: %.8f ZCL (%d UTXOs, %lldms)\n",
+               (double)bal / 1e8, cnt,
+               (long long)((int64_t)time(NULL) - t0) * 1000);
+        fflush(stdout);
+    }
+
     /* Sync wallet keys to SQLite */
     if (g_active_node_db)
         node_db_sync_wallet_keys(g_active_node_db, &g_wallet);

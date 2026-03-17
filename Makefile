@@ -36,9 +36,12 @@ TOR_LIBS = $(wildcard vendor/tor/libtor.a \
 	vendor/tor/src/ext/keccak-tiny/libkeccak-tiny.a)
 # All dependencies bundled in vendor/lib as static archives.
 # Zero system library requirements beyond libc.
+# When Tor is built: link libtor.a + system ssl/event/z
+# When Tor is not built: tor_integration.c stubs handle it gracefully
 LIBS = -Lvendor/lib -lsecp256k1 -lleveldb \
 	-lstdc++ -lm -lsqlite3 -ldl -lpthread \
-	-ltor_stub \
+	-levent -levent_openssl -levent_pthreads \
+	-lssl -lcrypto -lz \
 	-Wl,--allow-multiple-definition
 
 .PHONY: all test clean
