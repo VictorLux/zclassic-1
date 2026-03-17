@@ -283,6 +283,31 @@ static void *thread_socket_handler(void *arg)
             p2p_node_free(cm->deferred_free[i]);
         cm->num_deferred_free = 0;
 
+        /* Timeout: disconnect nodes with no activity for 120s */
+        {
+            int64_t now_check = GetTime();
+            for (size_t i = 0; i < cm->manager.num_nodes; i++) {
+                struct p2p_node *n = cm->manager.nodes[i];
+                if (n->disconnect) continue;
+                /* No recv for 120s and version handshake done */
+                if (n->successfully_connected &&
+                    n->last_recv > 0 &&
+                    now_check - n->last_recv > 120) {
+                    printf("Peer %s: timeout (no data for %llds)\n",
+                           n->addr_name,
+                           (long long)(now_check - n->last_recv));
+                    fflush(stdout);
+                    n->disconnect = true;
+                }
+                /* Version handshake timeout: 30s */
+                if (!n->successfully_connected &&
+                    n->time_connected > 0 &&
+                    now_check - n->time_connected > 30) {
+                    n->disconnect = true;
+                }
+            }
+        }
+
         /* Disconnect flagged nodes — defer free to next cycle */
         for (size_t i = 0; i < cm->manager.num_nodes; ) {
             if (cm->manager.nodes[i]->disconnect) {

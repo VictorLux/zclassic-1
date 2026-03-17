@@ -1006,10 +1006,13 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                 printf("Peer %s: snapshot not ready yet\n", node->addr_name);
             }
         } else if (strcmp(cmd, MSG_SNAPSHOT_DATA) == 0) {
-            /* Receive UTXO chunk — deserialize and apply */
+            /* Receive UTXO chunk — validate and apply */
             uint32_t entries = 0;
-            if (!stream_read_u32_le(&s, &entries) || entries > 1000) {
-                printf("Peer %s: bad snapshot chunk\n", node->addr_name);
+            if (!stream_read_u32_le(&s, &entries) || entries > 1000 ||
+                entries == 0 || !node->zsync_receiving) {
+                printf("Peer %s: bad snapshot chunk (entries=%u, receiving=%d)\n",
+                       node->addr_name, entries, node->zsync_receiving);
+                node->disconnect = true;
             } else {
                 char db_path[1024];
                 snprintf(db_path, sizeof(db_path), "%s/node.db", mp->datadir);
@@ -1023,6 +1026,7 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                         "(txid,vout,value,script,script_type,height) "
                         "VALUES(?,?,?,?,0,?)", -1, &ins, NULL);
 
+                    uint32_t applied = 0;
                     for (uint32_t i = 0; i < entries; i++) {
                         uint8_t txid[32];
                         int32_t vout, height;
@@ -1033,8 +1037,19 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                         if (!stream_read_i64_le(&s, &value)) break;
                         if (!stream_read_i32_le(&s, &height)) break;
                         if (!stream_read_compact_size(&s, &slen)) break;
+
+                        /* Validate UTXO data */
+                        if (vout < 0 || value < 0 || value > 2100000000000000LL ||
+                            height < 0 || slen > 10000) {
+                            printf("Peer %s: invalid UTXO in chunk "
+                                   "(vout=%d val=%lld h=%d slen=%llu)\n",
+                                   node->addr_name, vout, (long long)value,
+                                   height, (unsigned long long)slen);
+                            node->disconnect = true;
+                            break;
+                        }
+
                         uint8_t script[10000];
-                        if (slen > sizeof(script)) break;
                         if (slen > 0 && !stream_read_bytes(&s, script, (size_t)slen))
                             break;
 
@@ -1046,12 +1061,13 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                                            SQLITE_STATIC);
                         sqlite3_bind_int(ins, 5, height);
                         sqlite3_step(ins);
+                        applied++;
                     }
                     sqlite3_finalize(ins);
                     sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
                     sqlite3_close(db);
 
-                    node->zsync_offset += entries;
+                    node->zsync_offset += applied;
                     if (node->zsync_offset % 50000 < entries)
                         printf("Peer %s: received %llu UTXOs\n",
                                node->addr_name,
@@ -1189,6 +1205,33 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
         if (!node->inbound && node->send_bytes == 0)
             push_version(mp, node);
         return true;
+    }
+
+    /* Offer fast sync to ZCL23 peers that are behind us */
+    if (peer_supports_fast_sync(node->services) &&
+        !node->zsync_serving && !node->zsync_receiving &&
+        node->zsync_sent == 0 && /* only offer once */
+        g_cached_offer_valid) {
+        int our_h = msg_get_height(mp);
+        if (our_h > node->starting_height + 100 &&
+            node->starting_height >= 0) {
+            node->zsync_sent = UINT64_MAX; /* mark: offered */
+            printf("Peer %s: offering snapshot (us=%d, peer=%d)\n",
+                   node->addr_name, our_h, node->starting_height);
+            p2p_node_begin_message(node, MSG_SNAPSHOT_OFFER,
+                                    mp->params->pchMessageStart);
+            struct byte_stream os;
+            stream_init(&os, 80);
+            stream_write_i32_le(&os, g_cached_offer.height);
+            stream_write_bytes(&os, g_cached_offer.block_hash, 32);
+            stream_write_bytes(&os, g_cached_offer.utxo_root, 32);
+            stream_write_u64_le(&os, g_cached_offer.num_utxos);
+            stream_write_u64_le(&os, g_cached_offer.total_bytes);
+            p2p_node_write_message_data(node, os.data, os.size);
+            p2p_node_end_message(node);
+            stream_free(&os);
+            fflush(stdout);
+        }
     }
 
     /* Initiate sync, and periodically re-request if behind. */
