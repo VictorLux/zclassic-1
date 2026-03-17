@@ -96,6 +96,126 @@ static uint8_t *serialize_tx(const struct transaction *tx,
     return s.data;
 }
 
+/* Advance Sapling commitment tree and all wallet witnesses for one block.
+ * Creates initial witnesses for wallet notes whose cm appears in this block.
+ * Saves updated tree and witnesses to SQLite. */
+static void advance_wallet_witnesses(struct node_db *ndb,
+                                     const struct block *blk,
+                                     struct incremental_merkle_tree *tree,
+                                     int height)
+{
+    /* Load unspent notes that may need initial witnesses */
+    struct db_sapling_note wnotes[256];
+    int nw = db_sapling_note_list_unspent(ndb, wnotes, 256);
+
+    /* Track which notes already have witnesses (for initial witness creation) */
+    bool has_witness[256];
+    for (int i = 0; i < nw; i++) {
+        uint8_t *wblob = NULL;
+        size_t wlen = 0;
+        int wh = 0;
+        has_witness[i] = db_sapling_note_load_witness(ndb,
+            wnotes[i].txid, wnotes[i].output_index,
+            &wblob, &wlen, &wh) && wblob;
+        if (wblob) free(wblob);
+    }
+
+    /* Deserialize existing witnesses for advancement */
+    struct incremental_witness *witnesses = NULL;
+    int num_with_witness = 0;
+    int *witness_idx = NULL; /* maps witness array → wnotes index */
+    if (nw > 0) {
+        witnesses = calloc((size_t)nw, sizeof(struct incremental_witness));
+        witness_idx = calloc((size_t)nw, sizeof(int));
+        for (int i = 0; i < nw; i++) {
+            if (!has_witness[i]) continue;
+            uint8_t *wblob = NULL;
+            size_t wlen = 0;
+            int wh = 0;
+            if (!db_sapling_note_load_witness(ndb,
+                    wnotes[i].txid, wnotes[i].output_index,
+                    &wblob, &wlen, &wh) || !wblob)
+                continue;
+            struct byte_stream ws;
+            stream_init_from_data(&ws, wblob, wlen);
+            if (incremental_witness_deserialize(&witnesses[num_with_witness],
+                    &ws, SAPLING_INCREMENTAL_MERKLE_TREE_DEPTH,
+                    tree->combine, tree->uncommitted)) {
+                witness_idx[num_with_witness] = i;
+                num_with_witness++;
+            }
+            free(wblob);
+        }
+    }
+
+    /* Append each Sapling output commitment */
+    bool has_sapling_outputs = false;
+    for (size_t i = 0; i < blk->num_vtx; i++) {
+        const struct transaction *tx = &blk->vtx[i];
+        for (size_t j = 0; j < tx->num_shielded_output; j++) {
+            const struct uint256 *cm = &tx->v_shielded_output[j].cm;
+
+            /* Advance all existing witnesses */
+            for (int wi = 0; wi < num_with_witness; wi++)
+                incremental_witness_append(&witnesses[wi], cm);
+
+            /* Append to tree */
+            incremental_tree_append(tree, cm);
+            has_sapling_outputs = true;
+
+            /* Check if cm matches a wallet note without a witness */
+            for (int wi = 0; wi < nw; wi++) {
+                if (has_witness[wi]) continue;
+                if (memcmp(wnotes[wi].cm, cm->data, 32) != 0) continue;
+                /* Create initial witness from current tree state */
+                struct incremental_witness iw;
+                incremental_witness_init(&iw, tree);
+                struct byte_stream iwout;
+                stream_init(&iwout, 2048);
+                incremental_witness_serialize(&iw, &iwout);
+                db_sapling_note_save_witness(ndb,
+                    wnotes[wi].txid, wnotes[wi].output_index,
+                    iwout.data, iwout.size, height);
+                stream_free(&iwout);
+                has_witness[wi] = true;
+                /* Add to witness advancement array for subsequent cms */
+                if (witnesses) {
+                    witnesses[num_with_witness] = iw;
+                    witness_idx[num_with_witness] = wi;
+                    num_with_witness++;
+                }
+                break;
+            }
+        }
+    }
+
+    /* Save all advanced witnesses */
+    if (has_sapling_outputs) {
+        for (int wi = 0; wi < num_with_witness; wi++) {
+            struct byte_stream wout;
+            stream_init(&wout, 2048);
+            incremental_witness_serialize(&witnesses[wi], &wout);
+            int idx = witness_idx[wi];
+            db_sapling_note_save_witness(ndb,
+                wnotes[idx].txid, wnotes[idx].output_index,
+                wout.data, wout.size, height);
+            stream_free(&wout);
+        }
+    }
+
+    /* Save tree to node_state */
+    {
+        struct byte_stream ts;
+        stream_init(&ts, 4096);
+        incremental_tree_serialize(tree, &ts);
+        node_db_state_set(ndb, "sapling_tree", ts.data, ts.size);
+        stream_free(&ts);
+    }
+
+    free(witnesses);
+    free(witness_idx);
+}
+
 bool node_db_sync_connect_block(struct node_db *ndb,
                                 const struct block *blk,
                                 const struct block_index *pindex)
@@ -195,17 +315,10 @@ bool node_db_sync_connect_block(struct node_db *ndb,
         }
     }
 
-    /* 3. Update Sapling commitment tree
-     * DISABLED: The sync_controller's tree diverges from the block headers
-     * because it was initialized from a stale node_state blob after fast sync.
-     * Until the tree is correctly initialized (via rescanwitnesses), skip all
-     * Sapling tree and witness updates to avoid corrupting witness data. */
-    goto skip_sapling;
+    /* 3. Update Sapling commitment tree + maintain wallet witnesses */
     {
         struct incremental_merkle_tree tree;
         sapling_tree_init(&tree);
-
-        /* Load current tree from node_state */
         uint8_t tree_buf[8192];
         size_t tree_len = 0;
         if (node_db_state_get(ndb, "sapling_tree", tree_buf, sizeof(tree_buf), &tree_len)
@@ -216,70 +329,22 @@ bool node_db_sync_connect_block(struct node_db *ndb,
             incremental_tree_deserialize(&tree, &ts);
         }
 
-        /* Load unspent notes that may need initial witnesses */
-        struct db_sapling_note wnotes_for_init[64];
-        int nw_init = db_sapling_note_list_unspent(ndb, wnotes_for_init, 64);
+        advance_wallet_witnesses(ndb, blk, &tree, pindex->nHeight);
 
-        /* Append all Sapling output commitments and create initial
-         * witnesses for any wallet notes whose cm matches. */
-        bool has_sapling_outputs = false;
-        for (size_t i = 0; i < blk->num_vtx; i++) {
-            const struct transaction *tx = &blk->vtx[i];
-            for (size_t j = 0; j < tx->num_shielded_output; j++) {
-                incremental_tree_append(&tree, &tx->v_shielded_output[j].cm);
-                has_sapling_outputs = true;
-
-                /* Check if this commitment belongs to a wallet note
-                 * that doesn't have a witness yet. Create initial
-                 * witness at the tree state that includes this cm. */
-                for (int wi = 0; wi < nw_init; wi++) {
-                    if (memcmp(wnotes_for_init[wi].cm,
-                               tx->v_shielded_output[j].cm.data, 32) != 0)
-                        continue;
-                    uint8_t *wblob = NULL;
-                    size_t wlen = 0;
-                    int wheight = 0;
-                    bool has_witness = db_sapling_note_load_witness(ndb,
-                        wnotes_for_init[wi].txid,
-                        wnotes_for_init[wi].output_index,
-                        &wblob, &wlen, &wheight);
-                    if (has_witness && wblob) {
-                        free(wblob);
-                        break;
-                    }
-                    /* Create initial witness from current tree state */
-                    struct incremental_witness iw;
-                    incremental_witness_init(&iw, &tree);
-                    struct byte_stream iwout;
-                    stream_init(&iwout, 2048);
-                    incremental_witness_serialize(&iw, &iwout);
-                    db_sapling_note_save_witness(ndb,
-                        wnotes_for_init[wi].txid,
-                        wnotes_for_init[wi].output_index,
-                        iwout.data, iwout.size, pindex->nHeight);
-                    stream_free(&iwout);
-                    break;
-                }
-            }
+        /* Verify tree root matches block header */
+        struct uint256 tree_root;
+        incremental_tree_root(&tree, &tree_root);
+        if (memcmp(tree_root.data,
+                   blk->header.hashFinalSaplingRoot.data, 32) != 0) {
+            fprintf(stderr, "connect_block: Sapling tree root MISMATCH "
+                "at height %d (tree_size=%zu)\n",
+                pindex->nHeight, incremental_tree_size(&tree));
         }
 
-        /* Verify tree root matches block header (correctness check) */
-        {
-            struct uint256 tree_root;
-            incremental_tree_root(&tree, &tree_root);
-            if (memcmp(tree_root.data,
-                       blk->header.hashFinalSaplingRoot.data, 32) != 0) {
-                fprintf(stderr, "connect_block: Sapling tree root MISMATCH "
-                    "at height %d (tree_size=%zu)\n",
-                    pindex->nHeight, incremental_tree_size(&tree));
-            }
-        }
-
-        /* Serialize and store tree state for this block (for disconnect) */
+        /* Store tree state per-block for disconnect */
         struct byte_stream ts;
         stream_init(&ts, 4096);
         incremental_tree_serialize(&tree, &ts);
-
         sqlite3_stmt *upd = NULL;
         sqlite3_prepare_v2(ndb->db,
             "UPDATE blocks SET sapling_tree_data=? WHERE hash=?",
@@ -288,56 +353,9 @@ bool node_db_sync_connect_block(struct node_db *ndb,
         sqlite3_bind_blob(upd, 2, pindex->phashBlock->data, 32, SQLITE_STATIC);
         sqlite3_step(upd);
         sqlite3_finalize(upd);
-
-        /* Save current tree to node_state */
-        node_db_state_set(ndb, "sapling_tree", ts.data, ts.size);
         stream_free(&ts);
-
-        /* 3b. Advance witnesses for all unspent wallet notes */
-        if (has_sapling_outputs) {
-            struct db_sapling_note wnotes[256];
-            int nw = db_sapling_note_list_unspent(ndb, wnotes, 256);
-            for (int wi = 0; wi < nw; wi++) {
-                uint8_t *wblob = NULL;
-                size_t wlen = 0;
-                int wheight = 0;
-                if (!db_sapling_note_load_witness(ndb,
-                        wnotes[wi].txid, wnotes[wi].output_index,
-                        &wblob, &wlen, &wheight) || !wblob)
-                    continue;
-
-                struct incremental_witness w;
-                struct byte_stream ws;
-                stream_init_from_data(&ws, wblob, wlen);
-                if (!incremental_witness_deserialize(&w, &ws,
-                        SAPLING_INCREMENTAL_MERKLE_TREE_DEPTH,
-                        tree.combine, tree.uncommitted)) {
-                    free(wblob);
-                    continue;
-                }
-                free(wblob);
-
-                /* Append all new commitments from this block */
-                for (size_t ci = 0; ci < blk->num_vtx; ci++) {
-                    const struct transaction *ctx = &blk->vtx[ci];
-                    for (size_t cj = 0; cj < ctx->num_shielded_output; cj++)
-                        incremental_witness_append(&w,
-                            &ctx->v_shielded_output[cj].cm);
-                }
-
-                /* Serialize and save updated witness */
-                struct byte_stream wout;
-                stream_init(&wout, 2048);
-                incremental_witness_serialize(&w, &wout);
-                db_sapling_note_save_witness(ndb,
-                    wnotes[wi].txid, wnotes[wi].output_index,
-                    wout.data, wout.size, pindex->nHeight);
-                stream_free(&wout);
-            }
-        }
     }
 
-skip_sapling:
     /* 4. Update chain tip in state table */
     node_db_sync_set_tip(ndb,
         pindex->phashBlock->data, pindex->nHeight);
@@ -638,6 +656,14 @@ int node_db_sync_get_tip_height(struct node_db *ndb)
     int64_t h = -1;
     node_db_state_get_int(ndb, "tip_height", &h);
     return (int)h;
+}
+
+bool node_db_sync_get_tip_hash(struct node_db *ndb, uint8_t hash_out[32])
+{
+    size_t len = 0;
+    if (!node_db_state_get(ndb, "tip_hash", hash_out, 32, &len))
+        return false;
+    return len == 32;
 }
 
 bool node_db_sync_set_tip(struct node_db *ndb,
@@ -982,26 +1008,13 @@ int node_db_sync_catchup(struct node_db *ndb,
             }
         }
 
-        /* Append Sapling commitments to tree (bulk — no witness work) */
-        for (size_t i = 0; i < blk.num_vtx; i++) {
-            const struct transaction *tx = &blk.vtx[i];
-            for (size_t j = 0; j < tx->num_shielded_output; j++)
-                incremental_tree_append(&sapling_tree,
-                    &tx->v_shielded_output[j].cm);
-        }
+        /* Advance Sapling tree + wallet witnesses */
+        advance_wallet_witnesses(ndb, &blk, &sapling_tree, h);
 
         block_free(&blk);
         indexed++;
 
         if (indexed % batch_size == 0) {
-            /* Save Sapling tree state at batch boundary */
-            {
-                struct byte_stream ts;
-                stream_init(&ts, 4096);
-                incremental_tree_serialize(&sapling_tree, &ts);
-                node_db_state_set(ndb, "sapling_tree", ts.data, ts.size);
-                stream_free(&ts);
-            }
             node_db_sync_set_tip(ndb,
                 pindex->phashBlock->data, h);
             node_db_commit(ndb);
@@ -1015,15 +1028,6 @@ int node_db_sync_catchup(struct node_db *ndb,
     }
 
     if (cached_data) munmap(cached_data, cached_size);
-
-    /* Save final Sapling tree state */
-    {
-        struct byte_stream ts;
-        stream_init(&ts, 4096);
-        incremental_tree_serialize(&sapling_tree, &ts);
-        node_db_state_set(ndb, "sapling_tree", ts.data, ts.size);
-        stream_free(&ts);
-    }
 
     /* Final commit */
     {

@@ -136,6 +136,7 @@
 #include "models/chainstate_store.h"
 #include "models/chain_snapshot.h"
 #include "net/connman.h"
+#include "net/tor_integration.h"
 
 /* Shared helper functions */
 int check_hex(const unsigned char *data, size_t len, const char *expected);
@@ -162,5 +163,10 @@ int test_models(void);
 int test_core(void);
 int test_json(void);
 int test_validation(void);
+int test_wallet(void);
+int test_primitives(void);
+int test_bloom(void);
+int test_coins(void);
+int test_tor(void);
 
 #endif /* TEST_HELPERS_H */

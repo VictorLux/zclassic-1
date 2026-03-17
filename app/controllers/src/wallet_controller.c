@@ -21,7 +21,9 @@
 #include "validation/txmempool.h"
 #include "wallet/wallet_db.h"
 #include "net/connman.h"
+#include "core/hash.h"
 #include "models/database.h"
+#include "models/utxo.h"
 #include "models/wallet_tx.h"
 #include "controllers/sync_controller.h"
 #include "controllers/wallet_scan.h"
@@ -174,8 +176,17 @@ static bool rpc_listunspent(const struct json_value *params, bool help,
         struct db_wallet_utxo utxos[4096];
         int n = db_wallet_utxo_list_unspent(g_node_db, utxos, 4096);
         for (int i = 0; i < n; i++) {
-            int confs = (utxos[i].height > 0)
-                ? tip - utxos[i].height + 1 : 0;
+            int h = utxos[i].height;
+            /* Fix height=0: look up real height from global UTXO index */
+            if (h <= 0) {
+                struct db_utxo global;
+                if (db_utxo_find(g_node_db, utxos[i].txid,
+                                  utxos[i].vout, &global)) {
+                    h = global.height;
+                    db_utxo_free(&global);
+                }
+            }
+            int confs = (h > 0) ? tip - h + 1 : 0;
             if (confs < min_conf || confs > max_conf)
                 continue;
             if (utxos[i].is_coinbase && confs < 100)
@@ -388,20 +399,16 @@ static bool rpc_dumpprivkey(const struct json_value *params, bool help,
 static bool rpc_importprivkey(const struct json_value *params, bool help,
                                 struct json_value *result)
 {
-    RPC_HELP(help, result, "importprivkey \"privkey\" ( \"label\" rescan start_height )\n"
-        "\nAdds a private key to your wallet.\n"
+    RPC_HELP(help, result, "importprivkey \"privkey\" ( \"label\" )\n"
+        "\nAdds a private key and instantly indexes UTXOs from SQLite.\n"
         "\nArguments:\n"
         "1. \"privkey\"     (string, required) The private key (WIF format)\n"
-        "2. \"label\"       (string, optional) An optional label\n"
-        "3. rescan          (boolean, optional, default=true) Rescan the blockchain\n"
-        "4. start_height    (numeric, optional) Block height to start rescan\n");
+        "2. \"label\"       (string, optional) An optional label\n");
 
     struct rpc_params p;
     rpc_params_init(&p, params);
-    rpc_params_expect(&p, 1, 4);
+    rpc_params_expect(&p, 1, 2);
     const char *wif = rpc_require_str(&p, 0, "privkey");
-    bool rescan = rpc_permit_bool(&p, 2, "rescan", true);
-    int start_height = (int)rpc_permit_int(&p, 3, "start_height", 0);
     if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); return false; }
 
     ENSURE_WALLET(result);
@@ -427,17 +434,50 @@ static bool rpc_importprivkey(const struct json_value *params, bool help,
         g_wallet->time_first_key = GetTime();
 
     /* Persist key to wallet DB */
-    if (g_wallet_db) {
-        struct pubkey pk;
-        if (privkey_get_pubkey(&key, &pk))
-            wallet_db_write_key(g_wallet_db, &pk, &key);
+    struct pubkey pk;
+    if (!privkey_get_pubkey(&key, &pk)) {
+        memory_cleanse(key.vch, 32);
+        json_set_str(result, "Failed to derive public key");
+        return false;
     }
+    if (g_wallet_db)
+        wallet_db_write_key(g_wallet_db, &pk, &key);
 
     memory_cleanse(key.vch, 32);
 
-    if (rescan && g_main_state) {
-        wallet_rescan(g_wallet, &g_main_state->chain_active,
-                      start_height, -1, g_datadir);
+    /* Instant UTXO index lookup — no rescan needed.
+     * Hash160(pubkey) → query utxos table → copy to wallet_utxos. */
+    uint8_t addr_hash[20];
+    hash160(pk.vch, pk.size, addr_hash);
+
+    if (g_node_db) {
+        struct db_utxo utxos[512];
+        int found = db_utxo_list_for_address(g_node_db, addr_hash,
+                                              utxos, 512);
+        for (int i = 0; i < found; i++) {
+            struct db_utxo full;
+            if (!db_utxo_find(g_node_db, utxos[i].txid, utxos[i].vout,
+                              &full))
+                continue;
+
+            struct db_wallet_utxo wu;
+            memset(&wu, 0, sizeof(wu));
+            memcpy(wu.txid, full.txid, 32);
+            wu.vout = full.vout;
+            wu.value = full.value;
+            memcpy(wu.address_hash, addr_hash, 20);
+            wu.script = full.script;
+            wu.script_len = full.script_len;
+            wu.height = full.height;
+            wu.is_coinbase = full.is_coinbase;
+
+            db_wallet_utxo_save(g_node_db, &wu);
+            db_utxo_free(&full);
+        }
+
+        int64_t bal = db_utxo_balance_for_address(g_node_db, addr_hash);
+        printf("importprivkey: %d UTXOs, balance %.8f ZCL (instant)\n",
+               found, (double)bal / 1e8);
     }
 
     json_set_null(result);

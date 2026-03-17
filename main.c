@@ -219,6 +219,7 @@ static void print_usage(const char *prog)
     printf("  -addnode=<ip>       Add peer\n");
     printf("  -gen                Enable mining\n");
     printf("  -txindex            Transaction index\n");
+    printf("  -tor                Start Tor hidden service (dynhost blog)\n");
     printf("  -help               This help\n\n");
     printf("RPC examples:\n");
     printf("  %s getblockcount\n", prog);
@@ -289,6 +290,7 @@ int main(int argc, char **argv)
         else if (strcmp(argv[i], "-saplingscan") == 0) ctx.sapling_scan = true;
         else if (strcmp(argv[i], "-reindex-chainstate") == 0) ctx.reindex_chainstate = true;
         else if (strncmp(argv[i], "-showmetrics=", 13) == 0) show_metrics = atoi(argv[i]+13) != 0;
+        else if (strcmp(argv[i], "-tor") == 0) ctx.tor = true;
         else if (strcmp(argv[i], "-help") == 0 || strcmp(argv[i], "--help") == 0) {
             print_usage(argv[0]); return 0;
         }

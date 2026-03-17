@@ -96,6 +96,7 @@ bool node_db_sync_peer(struct node_db *ndb,
 /* Load persisted state on startup:
  * Returns the chain tip height stored in SQLite, or -1. */
 int node_db_sync_get_tip_height(struct node_db *ndb);
+bool node_db_sync_get_tip_hash(struct node_db *ndb, uint8_t hash_out[32]);
 
 /* Store the current chain tip. */
 bool node_db_sync_set_tip(struct node_db *ndb,

@@ -24,6 +24,8 @@
 #include "validation/main_state.h"
 #include "validation/sighash.h"
 #include "coins/coins_view.h"
+#include "models/database.h"
+#include "models/utxo.h"
 #include "wallet/keystore.h"
 #include "support/cleanse.h"
 #include <stdio.h>
@@ -35,6 +37,7 @@ static struct tx_mempool *g_mp = NULL;
 static struct coins_view_cache *g_coins_tip = NULL;
 static const char *g_datadir = NULL;
 static struct basic_keystore *g_keystore = NULL;
+extern struct node_db *g_node_db;
 
 void rpc_rawtx_set_state(struct main_state *ms, struct tx_mempool *mp,
                           struct coins_view_cache *coins_tip,
@@ -558,27 +561,13 @@ static bool rpc_signrawtransaction(const struct json_value *params, bool help,
         return false;
     }
 
-    /* Build a temporary keystore: start from wallet keys, add any extras */
-    struct basic_keystore temp_ks;
-    keystore_init(&temp_ks);
+    /* Use wallet keystore directly — no copy needed.
+     * Extra keys from param 3 are added to the wallet keystore. */
+    struct basic_keystore *sign_ks = g_keystore;
 
-    /* Copy wallet keys if available */
-    if (g_keystore) {
-        for (size_t i = 0; i < g_keystore->num_keys; i++) {
-            if (g_keystore->keys[i].used)
-                keystore_add_key(&temp_ks, &g_keystore->keys[i].key);
-        }
-        for (size_t i = 0; i < g_keystore->num_scripts; i++) {
-            if (g_keystore->scripts[i].used)
-                keystore_add_cscript(&temp_ks,
-                                     &g_keystore->scripts[i].redeem_script);
-        }
-    }
-
-    /* Parse extra private keys from param 3 */
     if (json_size(params) >= 3) {
         const struct json_value *privkeys = json_at(params, 2);
-        if (privkeys && privkeys->type == JSON_ARR) {
+        if (privkeys && privkeys->type == JSON_ARR && sign_ks) {
             const struct chain_params *cp = chain_params_get();
             size_t sec_pfx_len;
             const unsigned char *sec_pfx = chain_params_base58_prefix(
@@ -588,7 +577,7 @@ static bool rpc_signrawtransaction(const struct json_value *params, bool help,
                 if (!kv || kv->type != JSON_STR) continue;
                 struct privkey pk;
                 if (decode_secret(json_get_str(kv), sec_pfx, sec_pfx_len, &pk))
-                    keystore_add_key(&temp_ks, &pk);
+                    keystore_add_key(sign_ks, &pk);
                 memory_cleanse(pk.vch, 32);
             }
         }
@@ -640,7 +629,7 @@ static bool rpc_signrawtransaction(const struct json_value *params, bool help,
                     size_t rs_len = strlen(rs_hex) / 2;
                     ParseHex(rs_hex, redeem.data, rs_len);
                     redeem.size = rs_len;
-                    keystore_add_cscript(&temp_ks, &redeem);
+                    keystore_add_cscript(sign_ks, &redeem);
                 }
 
                 num_prevouts++;
@@ -657,6 +646,10 @@ static bool rpc_signrawtransaction(const struct json_value *params, bool help,
     struct json_value errors = {0};
     json_set_array(&errors);
 
+    fprintf(stderr, "signrawtx: %zu inputs, g_node_db=%p, g_coins_tip=%p, g_keystore=%p\n",
+            tx.num_vin, (void*)g_node_db, (void*)g_coins_tip, (void*)g_keystore);
+    fflush(stderr);
+
     for (unsigned int i = 0; i < tx.num_vin; i++) {
         const struct script *prev_script = NULL;
         int64_t prev_amount = 0;
@@ -672,7 +665,27 @@ static bool rpc_signrawtransaction(const struct json_value *params, bool help,
             }
         }
 
-        /* Try coins DB if not in prevouts */
+        /* Try SQLite UTXO index first (instant) */
+        if (!prev_script && g_node_db && g_node_db->open) {
+            struct db_utxo u;
+            if (db_utxo_find(g_node_db, tx.vin[i].prevout.hash.data,
+                             tx.vin[i].prevout.n, &u) && num_prevouts < 256) {
+                prevouts[num_prevouts].txid = tx.vin[i].prevout.hash;
+                prevouts[num_prevouts].vout = tx.vin[i].prevout.n;
+                prevouts[num_prevouts].script_pub_key.size = u.script_len;
+                if (u.script_len <= MAX_SCRIPT_SIZE)
+                    memcpy(prevouts[num_prevouts].script_pub_key.data,
+                           u.script, u.script_len);
+                prevouts[num_prevouts].amount = u.value;
+                prevouts[num_prevouts].valid = true;
+                prev_script = &prevouts[num_prevouts].script_pub_key;
+                prev_amount = prevouts[num_prevouts].amount;
+                num_prevouts++;
+                db_utxo_free(&u);
+            }
+        }
+
+        /* Fall back to coins DB (LevelDB) */
         if (!prev_script && g_coins_tip) {
             struct coins entry;
             coins_init(&entry);
@@ -680,7 +693,6 @@ static bool rpc_signrawtransaction(const struct json_value *params, bool help,
                     &tx.vin[i].prevout.hash, &entry)) {
                 if (tx.vin[i].prevout.n < entry.num_vout &&
                     !tx_out_is_null(&entry.vout[tx.vin[i].prevout.n])) {
-                    /* Store in prevouts array */
                     if (num_prevouts < 256) {
                         prevouts[num_prevouts].txid = tx.vin[i].prevout.hash;
                         prevouts[num_prevouts].vout = tx.vin[i].prevout.n;
@@ -709,8 +721,12 @@ static bool rpc_signrawtransaction(const struct json_value *params, bool help,
             continue;
         }
 
+        fprintf(stderr, "signrawtx: signing input %u, script_len=%zu, amount=%lld\n",
+                i, prev_script ? prev_script->size : 0, (long long)prev_amount);
+        fflush(stderr);
+
         if (!sign_one_input(&tx, i, prev_script, prev_amount,
-                            branch_id, &temp_ks)) {
+                            branch_id, sign_ks)) {
             struct json_value err = {0};
             json_set_object(&err);
             json_push_kv_int(&err, "vout", (int64_t)i);
@@ -736,7 +752,6 @@ static bool rpc_signrawtransaction(const struct json_value *params, bool help,
         json_push_kv(result, "errors", &errors);
 
     json_free(&errors);
-    keystore_free(&temp_ks);
     transaction_free(&tx);
     return true;
 }

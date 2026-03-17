@@ -31,6 +31,11 @@ int main(void)
     failures += test_core();
     failures += test_json();
     failures += test_validation();
+    failures += test_wallet();
+    failures += test_primitives();
+    failures += test_bloom();
+    failures += test_coins();
+    failures += test_tor();
 
     ecc_verify_destroy();
     ecc_stop();

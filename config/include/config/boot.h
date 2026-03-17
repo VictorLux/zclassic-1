@@ -30,6 +30,7 @@ struct app_context {
     const char *fastsync_dir;
     const char *snapshot_dir;
     bool reindex_chainstate;
+    bool tor;
 };
 
 void app_context_defaults(struct app_context *ctx);

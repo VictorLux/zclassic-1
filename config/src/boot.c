@@ -42,6 +42,7 @@
 #include "validation/connect_block.h"
 #include "storage/disk_block_io.h"
 #include "storage/dbwrapper.h"
+#include "net/tor_integration.h"
 #include <netdb.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -51,6 +52,7 @@
 #include <netinet/in.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <pthread.h>
 #include <malloc.h>
 
 static struct main_state g_state;
@@ -73,6 +75,25 @@ struct tx_mempool *g_active_mempool = NULL;
 static const char *g_datadir = NULL;
 static _Atomic bool g_running = false;
 static struct metrics_context g_metrics;
+
+/* Background ZK param loading */
+static char g_params_dir_buf[1024];
+static pthread_t g_params_thread;
+static _Atomic bool g_params_loaded = false;
+
+static void *load_params_thread(void *arg)
+{
+    (void)arg;
+    printf("Loading verification keys (background)...\n");
+    fflush(stdout);
+    if (sapling_init_params(g_params_dir_buf))
+        atomic_store(&g_params_loaded, true);
+    else
+        fprintf(stderr, "Warning: Failed to load ZK params\n");
+    printf("Verification keys loaded.\n");
+    fflush(stdout);
+    return NULL;
+}
 
 void app_context_defaults(struct app_context *ctx)
 {
@@ -334,16 +355,11 @@ bool app_init(struct app_context *ctx)
     g_state.fTxIndex = ctx->tx_index;
     g_state.fCheckpointsEnabled = ctx->checkpoints_enabled;
 
-    /* Load ZK verification keys */
+    /* Defer ZK key loading to background thread — not needed for RPC startup.
+     * Keys load in parallel while block index + wallet initialize. */
     if (ctx->params_dir) {
-        printf("Loading verification keys...\n");
-        fflush(stdout);
-        if (!sapling_init_params(ctx->params_dir)) {
-            fprintf(stderr, "Error: Failed to load verification keys from %s\n",
-                    ctx->params_dir);
-            return false;
-        }
-        printf("Verification keys loaded.\n");
+        snprintf(g_params_dir_buf, sizeof(g_params_dir_buf), "%s", ctx->params_dir);
+        pthread_create(&g_params_thread, NULL, load_params_thread, NULL);
     }
 
     /* Initialize wallet (before block index — needed for -importlegacy) */
@@ -500,18 +516,43 @@ bool app_init(struct app_context *ctx)
 
     coins_view_cache_init(&g_coins_tip, &g_coins_db.view);
 
-    /* Load block index from disk */
-    printf("Loading block index...\n");
-    if (!load_block_index(&g_state, params)) {
-        fprintf(stderr, "Warning: Failed to load block index\n");
+    /* Fast warm-restart check: verify SQLite tip matches coins DB tip.
+     * If they match, skip the slow block index load (3M LevelDB reads)
+     * and restore chain state from SQLite + coins DB directly. */
+    bool skip_activate = false;
+    bool fast_restart = false;
+    int sqlite_tip_height = g_active_node_db ?
+        node_db_sync_get_tip_height(&g_node_db) : -1;
+
+    struct uint256 coins_best_hash;
+    coins_view_cache_get_best_block(&g_coins_tip, &coins_best_hash);
+
+    if (!ctx->reindex_chainstate && sqlite_tip_height > 0 &&
+        !uint256_is_null(&coins_best_hash) && g_active_node_db) {
+        /* Check if SQLite tip hash matches coins DB tip hash */
+        uint8_t sqlite_tip_hash[32];
+        if (node_db_sync_get_tip_hash(&g_node_db, sqlite_tip_hash) &&
+            memcmp(sqlite_tip_hash, coins_best_hash.data, 32) == 0) {
+            printf("Fast restart: SQLite tip=%d matches coins DB (skipping block index)\n",
+                   sqlite_tip_height);
+            fflush(stdout);
+            fast_restart = true;
+        }
     }
-    printf("Block index loaded: %zu entries\n", g_state.map_block_index.size);
+
+    if (!fast_restart) {
+        /* Full block index load (slow path — 3M entries from LevelDB) */
+        int64_t t_idx_start = (int64_t)time(NULL);
+        printf("Loading block index...\n");
+        if (!load_block_index(&g_state, params)) {
+            fprintf(stderr, "Warning: Failed to load block index\n");
+        }
+        int64_t t_idx_elapsed = (int64_t)time(NULL) - t_idx_start;
+        printf("Block index loaded: %zu entries in %llds\n",
+               g_state.map_block_index.size, (long long)t_idx_elapsed);
+    }
 
     /* Restore chain tip from coins DB best block hash */
-    bool skip_activate = false;
-
-    /* For -reindex-chainstate: set chain tip from block index (highest-work
-     * block with data), skip coins DB restore and activate_best_chain. */
     if (ctx->reindex_chainstate) {
         struct block_index *best = NULL;
         size_t fi = 0;
@@ -530,14 +571,26 @@ bool app_init(struct app_context *ctx)
         }
         skip_activate = true;
 
-        /* Run reindex before anything else touches the coins DB */
         if (!reindex_chainstate(&g_state, &g_coins_db, &g_coins_tip,
                                  ctx->datadir)) {
             fprintf(stderr, "Warning: Chainstate reindex had errors\n");
         }
+    } else if (fast_restart) {
+        /* Fast path: create minimal chain tip from SQLite data.
+         * We don't have the full block_index tree, but we know the tip. */
+        struct block_index *tip = chainstate_insert_block_index(
+            (struct chainstate *)&g_state, &coins_best_hash);
+        if (tip) {
+            tip->nHeight = sqlite_tip_height;
+            tip->nStatus = BLOCK_VALID_TRANSACTIONS | BLOCK_HAVE_DATA;
+            tip->nChainTx = 1;
+            active_chain_set_tip(&g_state.chain_active, tip);
+            g_state.pindex_best_header = tip;
+            printf("Chain tip: height=%d (fast restart)\n", sqlite_tip_height);
+        }
+        skip_activate = true;
     } else if (g_state.map_block_index.size > 1) {
-        struct uint256 best_hash;
-        coins_view_cache_get_best_block(&g_coins_tip, &best_hash);
+        struct uint256 best_hash = coins_best_hash;
         if (!uint256_is_null(&best_hash)) {
             struct block_index *best = block_map_find(
                 &g_state.map_block_index, &best_hash);
@@ -720,6 +773,13 @@ bool app_init(struct app_context *ctx)
             printf("P2P listening on [::]:%d\n", ctx->p2p_port);
     }
 
+    /* Wait for ZK params before P2P (needed for block verification) */
+    if (ctx->params_dir) {
+        pthread_join(g_params_thread, NULL);
+        if (!atomic_load(&g_params_loaded))
+            fprintf(stderr, "Warning: ZK params not loaded\n");
+    }
+
     connman_start(&g_connman);
 
     /* Initialize RPC */
@@ -781,6 +841,14 @@ bool app_init(struct app_context *ctx)
         gen_start(&g_gen);
     }
 
+    /* Start Tor hidden service if -tor flag set */
+    if (ctx->tor) {
+        printf("Starting Tor dynhost...\n");
+        fflush(stdout);
+        if (!tor_integration_start(ctx->datadir, (uint16_t)ctx->p2p_port))
+            fprintf(stderr, "Warning: Tor failed to start\n");
+    }
+
     atomic_store(&g_running, true);
     printf("ZClassic C23 node initialized.\n");
 
@@ -825,6 +893,8 @@ void app_shutdown(void)
     atomic_store(&g_running, false);
 
     printf("Shutting down...\n");
+
+    tor_integration_stop();
 
     if (g_gen.running)
         gen_stop(&g_gen);
