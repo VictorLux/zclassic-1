@@ -62,10 +62,8 @@ static void push_version(struct msg_processor *mp, struct p2p_node *node)
     struct version_message ver;
     version_message_init(&ver);
     ver.protocol_version = PROTOCOL_VERSION;
-    /* Advertise NODE_NETWORK only to legacy peers.
-     * NODE_ZCL23 is communicated via subversion string instead,
-     * to avoid compatibility issues with strict service bit filters. */
-    ver.services = NODE_NETWORK;
+    /* Match zclassicd services exactly: NODE_NETWORK | NODE_BLOOM */
+    ver.services = NODE_NETWORK | NODE_BLOOM;
     ver.timestamp = (int64_t)time(NULL);
     ver.addr_recv = node->addr;
     ver.nonce = GetRand(UINT64_MAX);
