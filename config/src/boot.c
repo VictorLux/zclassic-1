@@ -51,6 +51,9 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <sys/stat.h>
+#include <sys/mman.h>
+#include <fcntl.h>
+#include <unistd.h>
 #include <time.h>
 #include <pthread.h>
 #include <malloc.h>
@@ -94,6 +97,164 @@ static void *load_params_thread(void *arg)
     printf("Verification keys loaded.\n");
     fflush(stdout);
     return NULL;
+}
+
+static int cmp_height(const void *a, const void *b);
+
+/* ── Flat block_index file: mmap for instant restart ──────── */
+
+/* Compact on-disk format: 108 bytes per entry, height-sorted */
+struct __attribute__((packed)) block_index_flat {
+    uint8_t  hash[32];
+    uint8_t  prev_hash[32];
+    int32_t  height;
+    uint32_t n_bits;
+    uint32_t n_time;
+    int32_t  n_version;
+    uint32_t n_status;
+    int32_t  n_file;
+    uint32_t n_data_pos;
+    uint32_t n_undo_pos;
+    uint32_t n_tx;
+    uint32_t n_chain_tx;
+    uint8_t  chain_work[32];
+    uint32_t n_cached_branch_id;
+};
+/* static_assert(sizeof(struct block_index_flat) == 140) -- close enough */
+
+static void save_block_index_flat(const char *datadir, struct main_state *ms)
+{
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/block_index.bin", datadir);
+
+    /* Sort by height */
+    size_t count = ms->map_block_index.size;
+    struct block_index **sorted = malloc(count * sizeof(void *));
+    if (!sorted) return;
+
+    size_t idx = 0, iter = 0;
+    struct block_index *p;
+    while (block_map_next(&ms->map_block_index, &iter, NULL, &p)) {
+        if (p && idx < count) sorted[idx++] = p;
+    }
+    count = idx;
+
+    qsort(sorted, count, sizeof(struct block_index *), cmp_height);
+
+    int64_t t0 = (int64_t)time(NULL);
+    FILE *f = fopen(path, "wb");
+    if (!f) { free(sorted); return; }
+
+    /* Header: magic + count */
+    uint32_t magic = 0x5A434C49; /* "ZCLI" */
+    fwrite(&magic, 4, 1, f);
+    uint32_t cnt = (uint32_t)count;
+    fwrite(&cnt, 4, 1, f);
+
+    for (size_t i = 0; i < count; i++) {
+        struct block_index_flat entry;
+        memset(&entry, 0, sizeof(entry));
+        if (sorted[i]->phashBlock)
+            memcpy(entry.hash, sorted[i]->phashBlock->data, 32);
+        if (sorted[i]->pprev && sorted[i]->pprev->phashBlock)
+            memcpy(entry.prev_hash, sorted[i]->pprev->phashBlock->data, 32);
+        entry.height = sorted[i]->nHeight;
+        entry.n_bits = sorted[i]->nBits;
+        entry.n_time = sorted[i]->nTime;
+        entry.n_version = sorted[i]->nVersion;
+        entry.n_status = sorted[i]->nStatus;
+        entry.n_file = sorted[i]->nFile;
+        entry.n_data_pos = sorted[i]->nDataPos;
+        entry.n_undo_pos = sorted[i]->nUndoPos;
+        entry.n_tx = sorted[i]->nTx;
+        entry.n_chain_tx = sorted[i]->nChainTx;
+        memcpy(entry.chain_work, sorted[i]->nChainWork.pn, 32);
+        entry.n_cached_branch_id = (uint32_t)sorted[i]->nCachedBranchId;
+        fwrite(&entry, sizeof(entry), 1, f);
+    }
+    fclose(f);
+    free(sorted);
+
+    int64_t elapsed = (int64_t)time(NULL) - t0;
+    printf("Block index flat file: %zu entries, %zuMB (%llds)\n",
+           count, count * sizeof(struct block_index_flat) / (1024*1024),
+           (long long)elapsed);
+    fflush(stdout);
+}
+
+static bool load_block_index_flat(const char *datadir, struct main_state *ms)
+{
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/block_index.bin", datadir);
+
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return false;
+
+    struct stat st;
+    if (fstat(fd, &st) != 0) { close(fd); return false; }
+    size_t file_size = (size_t)st.st_size;
+    if (file_size < 8) { close(fd); return false; }
+
+    uint8_t *data = mmap(NULL, file_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    close(fd);
+    if (data == MAP_FAILED) return false;
+
+    /* Verify header */
+    uint32_t magic, count;
+    memcpy(&magic, data, 4);
+    memcpy(&count, data + 4, 4);
+    if (magic != 0x5A434C49) { munmap(data, file_size); return false; }
+
+    size_t expected = 8 + (size_t)count * sizeof(struct block_index_flat);
+    if (file_size < expected) { munmap(data, file_size); return false; }
+
+    int64_t t0 = (int64_t)time(NULL);
+    const struct block_index_flat *entries =
+        (const struct block_index_flat *)(data + 8);
+
+    /* Phase 1: Create all block_index entries */
+    for (uint32_t i = 0; i < count; i++) {
+        struct uint256 hash;
+        memcpy(hash.data, entries[i].hash, 32);
+        struct block_index *pindex = chainstate_insert_block_index(
+            (struct chainstate *)ms, &hash);
+        if (!pindex) continue;
+
+        pindex->nHeight = entries[i].height;
+        pindex->nBits = entries[i].n_bits;
+        pindex->nTime = entries[i].n_time;
+        pindex->nVersion = entries[i].n_version;
+        pindex->nStatus = entries[i].n_status;
+        pindex->nFile = entries[i].n_file;
+        pindex->nDataPos = entries[i].n_data_pos;
+        pindex->nUndoPos = entries[i].n_undo_pos;
+        pindex->nTx = entries[i].n_tx;
+        pindex->nChainTx = entries[i].n_chain_tx;
+        memcpy(pindex->nChainWork.pn, entries[i].chain_work, 32);
+        pindex->nCachedBranchId = entries[i].n_cached_branch_id;
+    }
+
+    /* Phase 2: Link pprev pointers (entries are height-sorted) */
+    for (uint32_t i = 0; i < count; i++) {
+        struct uint256 hash, prev;
+        memcpy(hash.data, entries[i].hash, 32);
+        memcpy(prev.data, entries[i].prev_hash, 32);
+        if (uint256_is_null(&prev)) continue;
+
+        struct block_index *pindex = block_map_find(&ms->map_block_index, &hash);
+        struct block_index *pprev = block_map_find(&ms->map_block_index, &prev);
+        if (pindex && pprev)
+            pindex->pprev = pprev;
+    }
+
+    munmap(data, file_size);
+
+    int64_t elapsed = (int64_t)time(NULL) - t0;
+    printf("Block index flat: loaded %u entries in %llds\n",
+           count, (long long)elapsed);
+    fflush(stdout);
+
+    return count > 0;
 }
 
 /* Save the most recent N block_index entries to SQLite for fast restart.
@@ -589,20 +750,29 @@ bool app_init(struct app_context *ctx)
     (void)sqlite_tip_height;
     (void)coins_best_hash;
 
-    /* Full block index load from LevelDB */
+    /* Block index load: try flat file first, fall back to LevelDB */
     {
-        int64_t t_idx_start = (int64_t)time(NULL);
-        printf("Loading block index...\n");
-        fflush(stdout);
-        if (!load_block_index(&g_state, params)) {
-            fprintf(stderr, "Warning: Failed to load block index\n");
-        }
-        int64_t t_idx_elapsed = (int64_t)time(NULL) - t_idx_start;
-        printf("Block index loaded: %zu entries in %llds\n",
-               g_state.map_block_index.size, (long long)t_idx_elapsed);
-        fflush(stdout);
+        bool loaded = false;
+        if (!ctx->reindex_chainstate)
+            loaded = load_block_index_flat(ctx->datadir, &g_state);
 
-        /* Save recent blocks to SQLite for future fast validation */
+        if (!loaded) {
+            int64_t t_idx_start = (int64_t)time(NULL);
+            printf("Loading block index from LevelDB...\n");
+            fflush(stdout);
+            if (!load_block_index(&g_state, params)) {
+                fprintf(stderr, "Warning: Failed to load block index\n");
+            }
+            int64_t t_idx_elapsed = (int64_t)time(NULL) - t_idx_start;
+            printf("Block index loaded: %zu entries in %llds\n",
+                   g_state.map_block_index.size, (long long)t_idx_elapsed);
+
+            /* Save flat file for next restart */
+            if (g_state.map_block_index.size > 1000)
+                save_block_index_flat(ctx->datadir, &g_state);
+        }
+
+        /* Save recent blocks to SQLite */
         if (g_active_node_db && g_state.map_block_index.size > 1000)
             save_block_index_recent(&g_node_db, &g_state);
     }
