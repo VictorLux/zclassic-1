@@ -1213,8 +1213,9 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
         node->zsync_sent == 0 && /* only offer once */
         g_cached_offer_valid) {
         int our_h = msg_get_height(mp);
-        if (our_h > node->starting_height + 100 &&
-            node->starting_height >= 0) {
+        if (our_h > 100 &&
+            (node->starting_height < 0 ||
+             our_h > node->starting_height + 100)) {
             node->zsync_sent = UINT64_MAX; /* mark: offered */
             printf("Peer %s: offering snapshot (us=%d, peer=%d)\n",
                    node->addr_name, our_h, node->starting_height);
