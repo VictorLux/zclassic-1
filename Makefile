@@ -50,6 +50,9 @@ zclassic-cli: cli.c $(CLI_SRCS)
 zcl-rpc: tools/zcl-rpc.c
 	$(CC) -std=c23 -O2 -Wall -o $@ $<
 
+zcl-browser: tools/zcl-browser.c
+	$(CC) -std=c23 -O2 -x c $$(pkg-config --cflags webkit2gtk-4.1) -o $@ $< $$(pkg-config --libs webkit2gtk-4.1)
+
 zcl-blog: tools/zcl-blog
 	$(CC) -std=c23 -O2 -x c $$(pkg-config --cflags webkit2gtk-4.1) -o $@ $< $$(pkg-config --libs webkit2gtk-4.1)
 
