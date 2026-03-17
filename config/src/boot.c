@@ -527,18 +527,11 @@ bool app_init(struct app_context *ctx)
     struct uint256 coins_best_hash;
     coins_view_cache_get_best_block(&g_coins_tip, &coins_best_hash);
 
-    if (!ctx->reindex_chainstate && sqlite_tip_height > 0 &&
-        !uint256_is_null(&coins_best_hash) && g_active_node_db) {
-        /* Check if SQLite tip hash matches coins DB tip hash */
-        uint8_t sqlite_tip_hash[32];
-        if (node_db_sync_get_tip_hash(&g_node_db, sqlite_tip_hash) &&
-            memcmp(sqlite_tip_hash, coins_best_hash.data, 32) == 0) {
-            printf("Fast restart: SQLite tip=%d matches coins DB (skipping block index)\n",
-                   sqlite_tip_height);
-            fflush(stdout);
-            fast_restart = true;
-        }
-    }
+    /* Fast restart disabled: block_index is needed for difficulty
+     * validation (GetNextWorkRequired walks 17 ancestors).
+     * TODO: cache block_index in SQLite for instant restart. */
+    (void)sqlite_tip_height;
+    (void)coins_best_hash;
 
     if (!fast_restart) {
         /* Full block index load (slow path — 3M entries from LevelDB) */
@@ -576,21 +569,9 @@ bool app_init(struct app_context *ctx)
             fprintf(stderr, "Warning: Chainstate reindex had errors\n");
         }
     } else if (fast_restart) {
-        /* Fast path: create minimal chain tip from SQLite data.
-         * We don't have the full block_index tree, but we know the tip. */
-        struct block_index *tip = chainstate_insert_block_index(
-            (struct chainstate *)&g_state, &coins_best_hash);
-        if (tip) {
-            tip->nHeight = sqlite_tip_height;
-            tip->nStatus = BLOCK_VALID_TRANSACTIONS | BLOCK_HAVE_DATA;
-            tip->nChainTx = 1;
-            active_chain_set_tip(&g_state.chain_active, tip);
-            g_state.pindex_best_header = tip;
-            printf("Chain tip: height=%d (fast restart)\n", sqlite_tip_height);
-        }
-        skip_activate = true;
     } else if (g_state.map_block_index.size > 1) {
-        struct uint256 best_hash = coins_best_hash;
+        struct uint256 best_hash;
+        coins_view_cache_get_best_block(&g_coins_tip, &best_hash);
         if (!uint256_is_null(&best_hash)) {
             struct block_index *best = block_map_find(
                 &g_state.map_block_index, &best_hash);

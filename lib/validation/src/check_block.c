@@ -137,10 +137,19 @@ bool contextual_check_block_header(const struct block_header *header,
                                         false, NULL);
     }
 
-    if (header->nBits != GetNextWorkRequired(pindex_prev, header,
-                                             &params->consensus))
-        return validation_state_dos(state, 100, false, REJECT_INVALID,
-                                    "bad-diffbits", false, NULL);
+    {
+        unsigned int expected_bits = GetNextWorkRequired(pindex_prev, header,
+                                                         &params->consensus);
+        if (header->nBits != expected_bits) {
+            printf("bad-diffbits at height %d: header=0x%08x "
+                   "expected=0x%08x prev_height=%d prev_bits=0x%08x\n",
+                   nHeight, header->nBits, expected_bits,
+                   pindex_prev->nHeight, pindex_prev->nBits);
+            fflush(stdout);
+            return validation_state_dos(state, 100, false, REJECT_INVALID,
+                                        "bad-diffbits", false, NULL);
+        }
+    }
 
     if (block_header_get_time(header) <=
         block_index_get_median_time_past(pindex_prev))
