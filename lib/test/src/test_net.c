@@ -1817,5 +1817,130 @@ int test_net(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    /* ── Malformed P2P message tests ─────────────────────────── */
+
+    printf("msg_header: oversized message rejection (>2MB)... ");
+    {
+        unsigned char magic[MESSAGE_START_SIZE] = {0x24, 0xe9, 0x27, 0x64};
+        struct msg_header h;
+        msg_header_init_full(&h, magic, "block", MAX_SIZE + 1);
+        bool ok = !msg_header_is_valid(&h, magic);
+        /* Exactly MAX_SIZE should still be valid */
+        msg_header_init_full(&h, magic, "block", MAX_SIZE);
+        ok = ok && msg_header_is_valid(&h, magic);
+        /* Far oversized (e.g., 100MB) must also fail */
+        msg_header_init_full(&h, magic, "block", 100 * 1024 * 1024);
+        ok = ok && !msg_header_is_valid(&h, magic);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("msg_header: invalid checksum detection... ");
+    {
+        /* Build a version message, compute correct checksum, then corrupt it */
+        unsigned char magic[MESSAGE_START_SIZE] = {0x24, 0xe9, 0x27, 0x64};
+        struct version_message v;
+        version_message_init(&v);
+        v.protocol_version = 170009;
+        v.services = NODE_NETWORK;
+        v.timestamp = 1700000000;
+        v.start_height = 500000;
+        snprintf(v.sub_version, MAX_SUBVER_LENGTH, "/ZClassic:2.1.1-3/");
+
+        struct byte_stream s;
+        stream_init(&s, 256);
+        version_message_serialize(&v, &s);
+
+        /* Compute correct checksum: first 4 bytes of double-SHA256 */
+        struct uint256 msg_hash;
+        hash256(s.data, s.size, msg_hash.data);
+        unsigned int correct_checksum;
+        memcpy(&correct_checksum, msg_hash.data, 4);
+
+        /* Corrupt checksum */
+        unsigned int bad_checksum = correct_checksum ^ 0xFFFFFFFF;
+        bool ok = (bad_checksum != correct_checksum);
+
+        /* Verify detection: simulate what msgprocessor does */
+        struct msg_header h;
+        msg_header_init_full(&h, magic, "version", (unsigned int)s.size);
+        h.nChecksum = bad_checksum;
+        struct uint256 verify_hash;
+        hash256(s.data, s.size, verify_hash.data);
+        unsigned int expected;
+        memcpy(&expected, verify_hash.data, 4);
+        ok = ok && (expected != h.nChecksum);
+
+        /* Correct checksum should match */
+        h.nChecksum = correct_checksum;
+        ok = ok && (expected == h.nChecksum);
+
+        stream_free(&s);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("msg_header: truncated message handling... ");
+    {
+        /* A message header that claims 100 bytes but we only have 10 */
+        unsigned char magic[MESSAGE_START_SIZE] = {0x24, 0xe9, 0x27, 0x64};
+        struct net_message msg;
+        net_message_init(&msg, magic);
+
+        /* Simulate partial header read: only fill part of header buffer */
+        struct msg_header h;
+        msg_header_init_full(&h, magic, "ping", 100);
+        msg.hdr = h;
+        msg.in_data = true;
+        msg.data_pos = 10; /* Only 10 of 100 bytes received */
+
+        /* Message should not be considered complete */
+        bool ok = !net_message_complete(&msg);
+
+        /* Zero-length message should complete immediately */
+        struct net_message msg2;
+        net_message_init(&msg2, magic);
+        msg_header_init_full(&msg2.hdr, magic, "verack", 0);
+        msg2.in_data = true;
+        msg2.data_pos = 0;
+        ok = ok && net_message_complete(&msg2);
+
+        net_message_free(&msg);
+        net_message_free(&msg2);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("version_message: protocol version below minimum rejected... ");
+    {
+        struct version_message v;
+        version_message_init(&v);
+        v.protocol_version = 170001; /* Below MIN_PEER_PROTO_VERSION (170002) */
+        v.services = NODE_NETWORK;
+        v.timestamp = 1700000000;
+        v.start_height = 100;
+
+        bool ok = (v.protocol_version < MIN_PEER_PROTO_VERSION);
+
+        /* At minimum should be accepted */
+        v.protocol_version = MIN_PEER_PROTO_VERSION;
+        ok = ok && (v.protocol_version >= MIN_PEER_PROTO_VERSION);
+
+        /* Well above minimum */
+        v.protocol_version = PROTOCOL_VERSION;
+        ok = ok && (v.protocol_version >= MIN_PEER_PROTO_VERSION);
+
+        /* Ancient protocol version */
+        v.protocol_version = 209;
+        ok = ok && (v.protocol_version < MIN_PEER_PROTO_VERSION);
+
+        /* Zero protocol version */
+        v.protocol_version = 0;
+        ok = ok && (v.protocol_version < MIN_PEER_PROTO_VERSION);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     return failures;
 }

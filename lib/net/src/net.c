@@ -747,6 +747,27 @@ void ban_addr(struct net_manager *nm, const struct net_addr *addr,
     zcl_mutex_unlock(&nm->cs_banned);
 }
 
+void peer_misbehaving(struct net_manager *nm, struct p2p_node *node,
+                      int howmuch, const char *reason)
+{
+    if (!nm || !node || howmuch <= 0) return;
+
+    node->misbehavior += howmuch;
+    printf("Misbehaving: %s (%d -> %d) %s\n",
+           node->addr_name, node->misbehavior - howmuch,
+           node->misbehavior, reason ? reason : "");
+    fflush(stdout);
+
+    if (node->misbehavior >= 100) {
+        printf("Banning %s (score=%d): %s\n",
+               node->addr_name, node->misbehavior,
+               reason ? reason : "threshold reached");
+        fflush(stdout);
+        ban_addr(nm, &node->addr.svc.addr, 24 * 60 * 60, false);
+        node->disconnect = true;
+    }
+}
+
 bool unban_addr(struct net_manager *nm, const struct net_addr *addr)
 {
     zcl_mutex_lock(&nm->cs_banned);

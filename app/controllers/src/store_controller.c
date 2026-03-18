@@ -17,6 +17,24 @@ static size_t serve_gated_content(sqlite3 *db, const char *customer_addr,
                                    const char *datadir,
                                    uint8_t *resp, size_t max);
 
+/* Escape HTML special characters to prevent XSS */
+static size_t html_escape(char *dst, size_t max, const char *src)
+{
+    size_t w = 0;
+    for (size_t i = 0; src[i] && w + 6 < max; i++) {
+        switch (src[i]) {
+        case '<':  w += (size_t)snprintf(dst + w, max - w, "&lt;"); break;
+        case '>':  w += (size_t)snprintf(dst + w, max - w, "&gt;"); break;
+        case '&':  w += (size_t)snprintf(dst + w, max - w, "&amp;"); break;
+        case '"':  w += (size_t)snprintf(dst + w, max - w, "&quot;"); break;
+        case '\'': w += (size_t)snprintf(dst + w, max - w, "&#39;"); break;
+        default:   dst[w++] = src[i]; break;
+        }
+    }
+    dst[w] = '\0';
+    return w;
+}
+
 /* Ensure store tables exist */
 static void store_ensure_schema(sqlite3 *db)
 {
@@ -124,11 +142,15 @@ static size_t serve_product_list(sqlite3 *db, uint8_t *resp, size_t max)
         "WHERE active=1 ORDER BY id", -1, &s, NULL);
 
     int count = 0;
-    while (sqlite3_step(s) == SQLITE_ROW && off + 512 < max) {
+    while (sqlite3_step(s) == SQLITE_ROW && off + 1024 < max) {
         int64_t id = sqlite3_column_int64(s, 0);
         const char *name = (const char *)sqlite3_column_text(s, 1);
         const char *desc = (const char *)sqlite3_column_text(s, 2);
         int64_t price = sqlite3_column_int64(s, 3);
+
+        char safe_name[256], safe_desc[512];
+        html_escape(safe_name, sizeof(safe_name), name ? name : "?");
+        html_escape(safe_desc, sizeof(safe_desc), desc ? desc : "");
 
         n = snprintf((char *)resp + off, max - off,
             "<div class='product'>"
@@ -137,8 +159,8 @@ static size_t serve_product_list(sqlite3 *db, uint8_t *resp, size_t max)
             "<div class='price'>%.8f ZCL</div>"
             "<a href='/store/product/%lld' class='btn'>View</a>"
             "</div>",
-            (long long)id, name ? name : "?",
-            desc ? desc : "",
+            (long long)id, safe_name,
+            safe_desc,
             (double)price / 1e8,
             (long long)id);
         if (n > 0) off += (size_t)n;
@@ -182,7 +204,12 @@ static size_t serve_product_detail(sqlite3 *db, int64_t product_id,
     const char *token = (const char *)sqlite3_column_text(s, 3);
     int64_t tokens = sqlite3_column_int64(s, 4);
 
-    int n = html_header((char *)resp, max, name ? name : "Product");
+    char safe_name[256], safe_desc[512], safe_token[128];
+    html_escape(safe_name, sizeof(safe_name), name ? name : "?");
+    html_escape(safe_desc, sizeof(safe_desc), desc ? desc : "");
+    html_escape(safe_token, sizeof(safe_token), token ? token : "TOKENS");
+
+    int n = html_header((char *)resp, max, safe_name);
     if (n > 0) off = (size_t)n;
 
     n = snprintf((char *)resp + off, max - off,
@@ -200,11 +227,11 @@ static size_t serve_product_detail(sqlite3 *db, int64_t product_id,
         "</form>"
         "</div>"
         "</body></html>",
-        name ? name : "?",
-        desc ? desc : "",
+        safe_name,
+        safe_desc,
         (double)price / 1e8,
         (long long)tokens,
-        token ? token : "TOKENS",
+        safe_token,
         (long long)product_id);
     if (n > 0) off += (size_t)n;
 
@@ -258,6 +285,11 @@ static size_t serve_create_order(sqlite3 *db, int64_t product_id,
     int n = html_header((char *)resp, max, "Payment");
     if (n > 0) off = (size_t)n;
 
+    char safe_pay[256], safe_cust[256];
+    html_escape(safe_pay, sizeof(safe_pay), payment_addr);
+    html_escape(safe_cust, sizeof(safe_cust),
+                customer_addr ? customer_addr : "(not provided)");
+
     n = snprintf((char *)resp + off, max - off,
         "<h2>Order #%lld</h2>"
         "<div class='product'>"
@@ -269,8 +301,8 @@ static size_t serve_create_order(sqlite3 *db, int64_t product_id,
         "</div></body></html>",
         (long long)order_id,
         (double)price / 1e8,
-        payment_addr,
-        customer_addr ? customer_addr : "(not provided)",
+        safe_pay,
+        safe_cust,
         (long long)order_id);
     if (n > 0) off += (size_t)n;
     return off;
@@ -309,6 +341,13 @@ static size_t serve_order_status(sqlite3 *db, int64_t order_id,
     int n = html_header((char *)resp, max, "Order Status");
     if (n > 0) off = (size_t)n;
 
+    char safe_pay[256], safe_cust[256];
+    char safe_ptxid[256], safe_mtxid[256];
+    html_escape(safe_pay, sizeof(safe_pay), pay_addr ? pay_addr : "?");
+    html_escape(safe_cust, sizeof(safe_cust), cust_addr ? cust_addr : "?");
+    html_escape(safe_ptxid, sizeof(safe_ptxid), pay_txid ? pay_txid : "");
+    html_escape(safe_mtxid, sizeof(safe_mtxid), mint_txid ? mint_txid : "");
+
     n = snprintf((char *)resp + off, max - off,
         "<h2>Order #%lld</h2>"
         "<div class='product'>"
@@ -323,13 +362,13 @@ static size_t serve_order_status(sqlite3 *db, int64_t order_id,
         (long long)order_id,
         status_class, status_text,
         (double)amount / 1e8,
-        pay_addr ? pay_addr : "?",
-        cust_addr ? cust_addr : "?",
+        safe_pay,
+        safe_cust,
         pay_txid ? "<p>Payment: <code>" : "",
-        pay_txid ? pay_txid : "",
+        pay_txid ? safe_ptxid : "",
         pay_txid ? "</code></p>" : "",
         mint_txid ? "<p>Mint: <code>" : "",
-        mint_txid ? mint_txid : "",
+        mint_txid ? safe_mtxid : "",
         mint_txid ? "</code></p>" : "",
         (long long)order_id);
     if (n > 0) off += (size_t)n;
@@ -492,7 +531,6 @@ void store_process_payments(const char *datadir)
             sqlite3_finalize(upd);
 
             /* Mint ZSLP tokens to customer */
-            extern bool zslp_mint(const char *, const char *, const char *, uint64_t);
             zslp_mint(datadir, token_id, cust_addr, (uint64_t)tokens);
 
             printf("Store: order #%lld paid, minted %lld %s → %s\n",
@@ -514,7 +552,6 @@ bool store_check_token_access(const char *datadir,
 {
     if (!datadir || !customer_addr || !token_id) return false;
 
-    extern uint64_t zslp_balance(const char *, const char *, const char *);
     uint64_t balance = zslp_balance(datadir, token_id, customer_addr);
     return balance >= required;
 }
@@ -526,6 +563,12 @@ static size_t serve_gated_content(sqlite3 *db, const char *customer_addr,
                                    uint8_t *resp, size_t max)
 {
     (void)db;
+
+    char safe_token[128], safe_addr[256];
+    html_escape(safe_token, sizeof(safe_token), token_id ? token_id : "");
+    html_escape(safe_addr, sizeof(safe_addr),
+                customer_addr ? customer_addr : "");
+
     if (!store_check_token_access(datadir, customer_addr, token_id, required)) {
         return (size_t)snprintf((char *)resp, max,
             "HTTP/1.1 403 Forbidden\r\n"
@@ -541,7 +584,7 @@ static size_t serve_gated_content(sqlite3 *db, const char *customer_addr,
             "<p>Your balance: %llu</p>"
             "<p><a href='/store' style='color:#00aaff'>Get tokens</a></p>"
             "</body></html>",
-            (unsigned long long)required, token_id,
+            (unsigned long long)required, safe_token,
             (unsigned long long)zslp_balance(datadir, token_id, customer_addr));
     }
 
@@ -563,7 +606,7 @@ static size_t serve_gated_content(sqlite3 *db, const char *customer_addr,
         "<p>Your token balance: %llu %s</p>"
         "<p>You have access to this service.</p>"
         "</div></body></html>",
-        customer_addr,
+        safe_addr,
         (unsigned long long)zslp_balance(datadir, token_id, customer_addr),
-        token_id);
+        safe_token);
 }

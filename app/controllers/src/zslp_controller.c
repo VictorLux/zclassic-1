@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 #include <time.h>
 #include <sqlite3.h>
 
@@ -185,6 +186,25 @@ bool zslp_mint(const char *datadir,
         "CREATE TABLE IF NOT EXISTS zslp_balances ("
         "token_id TEXT, address TEXT, balance INTEGER,"
         "PRIMARY KEY (token_id, address))", NULL, NULL, NULL);
+
+    /* Overflow protection: check existing balance before mint */
+    uint64_t existing = 0;
+    sqlite3_stmt *chk = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT balance FROM zslp_balances WHERE token_id=? AND address=?",
+            -1, &chk, NULL) == SQLITE_OK && chk) {
+        sqlite3_bind_text(chk, 1, token_id_hex, -1, SQLITE_STATIC);
+        sqlite3_bind_text(chk, 2, recipient_addr, -1, SQLITE_STATIC);
+        if (sqlite3_step(chk) == SQLITE_ROW)
+            existing = (uint64_t)sqlite3_column_int64(chk, 0);
+        sqlite3_finalize(chk);
+    }
+    if (amount > (uint64_t)INT64_MAX - existing) {
+        fprintf(stderr, "ZSLP MINT: overflow rejected (%llu + %llu > INT64_MAX)\n",
+                (unsigned long long)existing, (unsigned long long)amount);
+        sqlite3_close(db);
+        return false;
+    }
 
     sqlite3_stmt *s = NULL;
     sqlite3_prepare_v2(db,

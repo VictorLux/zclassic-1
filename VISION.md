@@ -198,13 +198,51 @@ bool require_tokens(const char *customer_addr, const char *token_id, uint64_t am
 }
 ```
 
+## Network Resilience
+
+### Threat Model
+
+| Threat | Attack | Defense |
+|--------|--------|---------|
+| Eclipse | Isolate node from honest peers | Source-group bucketed addrman (256 tried + 1024 new buckets), 16 outbound connections, on-chain .onion peer discovery |
+| Sybil | Flood network with fake nodes | PoW-gated fast sync (20-bit hashcash), peer misbehavior scoring (auto-ban at 100 points) |
+| DoS | Overwhelm node resources | Per-peer scoring, rate limits (5000 chunks/IP/hour), 2MB max message, 125 max connections |
+| Censorship | Block P2P connections | Tor hidden services for all app traffic, on-chain peer discovery, no DNS dependency for apps |
+| MITM | Intercept/modify traffic | All app traffic over Tor, blockchain consensus validates data integrity |
+| Surveillance | Track user activity | Sapling zk-SNARK shielded transactions, Tor anonymity layer, no identity required |
+| Takedown | Shut down servers | Every node is a full replica, on-chain load balancing, no central infrastructure |
+| Supply chain | Compromised binary | Single static binary (26MB), zero runtime dependencies, reproducible build |
+
+### Design Principles
+
+1. **Every node is equal.** No light clients, no supernodes, no hierarchy. Attack surface is uniform.
+2. **Identity is proof-of-work.** No registration, no DNS, no certificates. Your .onion address is your identity.
+3. **Discovery is on-chain.** Peers find each other through ZSLP token announcements on the blockchain. No central directory to seize.
+4. **Privacy is default.** All payments shielded (Sapling zk-SNARKs). All app traffic over Tor. No metadata leakage.
+5. **Resilience scales with adoption.** More operators = more full nodes = more replicas = harder to censor.
+
+### Peer Scoring
+
+Peers earn misbehavior points for protocol violations:
+
+| Violation | Points |
+|-----------|--------|
+| Invalid block header | 100 (instant ban) |
+| Invalid transaction | 10 |
+| Too many addr messages | 20 |
+| Invalid PoW on sync request | 100 (instant ban) |
+| Repeated invalid messages | 25 per occurrence |
+
+At 100 points: 24-hour IP ban, immediate disconnect.
+
 ## Backend Requirements
 
 ### P2P (Clearnet — Blockchain Only)
 - [x] Bug-for-bug zclassicd compatible (NODE_NETWORK | NODE_BLOOM)
 - [x] Fast sync with PoW defense (1.6M UTXOs in 60s)
 - [x] Rate limiting (5000 chunks/IP/hour)
-- [ ] Peer scoring + addr relay
+- [x] Peer misbehavior scoring (auto-ban at threshold)
+- [x] PoW enforcement on snapshot requests
 - [ ] Block + transaction relay validation
 
 ### Tor (All Application Traffic)
@@ -222,6 +260,17 @@ bool require_tokens(const char *customer_addr, const char *token_id, uint64_t am
 - [ ] Load balancer replica announcements
 - [ ] Content version anchoring
 
+### Security Hardening
+- [x] HTML escaping on all DB-sourced values in store views
+- [x] Input validation on customer addresses (alphanumeric only)
+- [x] ZSLP mint overflow protection (INT64_MAX cap)
+- [x] Blog path traversal protection (realpath canonicalization)
+- [x] Peer misbehavior scoring with auto-ban
+- [x] PoW enforcement on snapshot requests
+- [ ] CSRF protection (per-Tor-circuit tokens)
+- [ ] Per-peer bandwidth metering
+- [ ] Subnet-level banning (currently IP-only)
+
 ### Commerce
 - [x] Product model (SQLite, auto-schema)
 - [x] Order model with payment state machine (pending/paid/minted)
@@ -230,9 +279,10 @@ bool require_tokens(const char *customer_addr, const char *token_id, uint64_t am
 - [x] z-address generation per order
 - [x] ZSLP token controller (create/mint/send/balance)
 - [x] Token balance tracking (zslp_balances table)
-- [ ] Payment detection loop (z_listunspent polling)
-- [ ] Auto-mint tokens on payment confirmation
-- [ ] Token-gated route access (before_action check)
+- [x] Token-gated route access (/store/access with before_action check)
+- [x] Payment processor background thread (30s polling)
+- [x] Auto-mint tokens on payment confirmation
+- [ ] Payment detection via z_listunspent (currently wallet_sapling_notes)
 
 ### Load Balancing (10 tests passing)
 - [x] Replica discovery from ZSLP chain scan

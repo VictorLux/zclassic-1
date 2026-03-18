@@ -988,8 +988,23 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
             int32_t from_h = 0;
             stream_read_i32_le(&s, &from_h);
 
+            /* Verify PoW before serving snapshot */
+            struct fast_sync_pow pow;
+            memset(&pow, 0, sizeof(pow));
+            bool has_pow = (s.size - s.read_pos >= sizeof(pow.peer_id) + 8 + 8);
+            if (has_pow) {
+                stream_read_bytes(&s, pow.peer_id, 32);
+                stream_read_i64_le(&s, &pow.timestamp);
+                stream_read_u64_le(&s, &pow.nonce);
+            }
+            if (!has_pow || !fast_sync_verify_pow(&pow)) {
+                printf("Peer %s: snapshot request rejected, invalid PoW\n",
+                       node->addr_name);
+                peer_misbehaving(mp->net_mgr, node, 20,
+                                 "zsnapreq without valid PoW");
             /* Rate limit check */
-            if (!fast_sync_rate_check(&g_rate_limiter, node->addr.svc.addr.ip)) {
+            } else if (!fast_sync_rate_check(&g_rate_limiter,
+                                              node->addr.svc.addr.ip)) {
                 printf("Peer %s: rate limited, rejecting snapshot request\n",
                        node->addr_name);
             } else if (g_cached_offer_valid) {

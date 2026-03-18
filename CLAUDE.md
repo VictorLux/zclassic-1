@@ -6,7 +6,7 @@ A decentralized internet platform. Every node is a full ZClassic node, a Tor hid
 ## Build
 ```bash
 make zclassic23    # 26MB binary, zero system deps
-make test          # 685+ tests
+make test          # 700+ tests
 make zcl-browser   # GTK Tor-only browser
 make zcl-rpc       # CLI RPC client
 ```
@@ -82,6 +82,32 @@ Defense: 20-bit PoW per request, 5000 chunks/IP/hour rate limit.
 | Tor .onion | Blog, web apps, directory | Tor anonymity |
 
 No web content over clearnet. Blog and apps are Tor-only.
+
+## Security
+
+### Peer Scoring
+Per-peer misbehavior counter. Auto-ban at 100 points (24h):
+- Invalid block/tx: 10-100 points depending on severity
+- PoW required for snapshot requests (20-bit hashcash)
+- Rate limit: 5000 fast sync chunks/IP/hour
+
+### Input Sanitization
+- HTML escaping on all DB-sourced values in store/onion views
+- Address validation (alphanumeric) on store POST inputs
+- Blog path traversal protection (realpath canonicalization)
+- ZSLP mint overflow check (INT64_MAX cap)
+- 2MB max P2P message size, compact size bounds checking
+
+### Store Commerce (Tor-only)
+```
+GET  /store              Product listing (3 demo products)
+GET  /store/product/:id  Detail + payment form
+POST /store/buy/:id      Create order → z-address for payment
+GET  /store/order/:id    Payment status (pending/paid/minted)
+GET  /store/access       Token-gated content (addr= token= params)
+```
+Background thread polls pending orders every 30s, auto-mints ZSLP
+tokens when shielded payment confirms.
 
 ## Key Design
 

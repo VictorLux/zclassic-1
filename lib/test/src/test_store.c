@@ -143,9 +143,10 @@ int test_store(void)
     printf("store: zslp_mint credits tokens... ");
     {
         bool ok = zslp_mint(test_datadir, "TESTCOIN", "t1Buyer123", 500);
-        ok = ok && (zslp_balance(test_datadir, "TESTCOIN", "t1Buyer123") == 500);
+        uint64_t bal = zslp_balance(test_datadir, "TESTCOIN", "t1Buyer123");
+        ok = ok && (bal == 500);
         if (ok) printf("OK (balance=500)\n");
-        else { printf("FAIL\n"); failures++; }
+        else { printf("FAIL (balance=%llu)\n", (unsigned long long)bal); failures++; }
     }
 
     printf("store: zslp_mint accumulates... ");
@@ -269,7 +270,10 @@ int test_store(void)
                        (unsigned long long)a, (unsigned long long)b); failures++; }
     }
 
-    cleanup_datadir();
+    if (failures > 0)
+        printf("Store: debug datadir preserved at %s\n", test_datadir);
+    else
+        cleanup_datadir();
 
     printf("Store + ZSLP: %d failures\n", failures);
     return failures;

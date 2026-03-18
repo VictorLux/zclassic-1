@@ -2,6 +2,7 @@
  *
  * Blog controller — static file server + ZSLP node registry. */
 
+#define _XOPEN_SOURCE 700
 #include "controllers/blog_controller.h"
 #include "sapling/slp.h"
 #include "primitives/transaction.h"
@@ -10,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 #include <sys/stat.h>
 #include <sqlite3.h>
 
@@ -34,12 +36,16 @@ static const char *content_type_for(const char *path)
     return "application/octet-stream";
 }
 
-/* Sanitize path: no .., no absolute paths */
+/* Sanitize path: no .., no absolute paths, no control characters */
 static bool safe_path(const char *path)
 {
     if (!path || path[0] == '\0') return false;
     if (strstr(path, "..")) return false;
     if (path[0] == '/' && path[1] == '/') return false;
+    for (size_t i = 0; path[i]; i++) {
+        unsigned char c = (unsigned char)path[i];
+        if (c < 0x20 && c != '\t') return false;  /* reject control chars */
+    }
     return true;
 }
 
@@ -79,6 +85,17 @@ size_t blog_serve(const char *datadir, const char *path,
                              body, strlen(body));
     }
 
+    /* Build canonical blog root for path containment check */
+    char blog_root[1024];
+    snprintf(blog_root, sizeof(blog_root), "%s/blog", datadir);
+    char real_root[PATH_MAX];
+    if (!realpath(blog_root, real_root)) {
+        const char *body = "<h1>404 Not Found</h1>";
+        return http_response(out, out_len, 404, "text/html",
+                             body, strlen(body));
+    }
+    size_t root_len = strlen(real_root);
+
     /* Read file from {datadir}/blog/{rel} */
     char filepath[1024];
     snprintf(filepath, sizeof(filepath), "%s/blog/%s", datadir, rel);
@@ -92,6 +109,17 @@ size_t blog_serve(const char *datadir, const char *path,
     if (!f) {
         const char *body = "<h1>404 Not Found</h1>";
         return http_response(out, out_len, 404, "text/html",
+                             body, strlen(body));
+    }
+
+    /* Verify resolved path stays under blog root */
+    char real_file[PATH_MAX];
+    if (!realpath(filepath, real_file) ||
+        strncmp(real_file, real_root, root_len) != 0 ||
+        (real_file[root_len] != '/' && real_file[root_len] != '\0')) {
+        fclose(f);
+        const char *body = "<h1>403 Forbidden</h1>";
+        return http_response(out, out_len, 403, "text/html",
                              body, strlen(body));
     }
 

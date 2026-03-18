@@ -189,6 +189,8 @@ struct p2p_node {
     bool sync_started;
     int64_t last_getheaders_time;
 
+    int misbehavior;          /* cumulative misbehavior score; banned at 100 */
+
     /* zclassic23 fast sync state */
     bool zsync_serving;       /* true if we're streaming UTXOs to this peer */
     bool zsync_receiving;     /* true if we're receiving UTXOs from this peer */
@@ -316,6 +318,10 @@ bool accept_connection(struct net_manager *nm, const struct listen_socket *ls);
 bool is_banned(struct net_manager *nm, const struct net_addr *addr);
 void ban_addr(struct net_manager *nm, const struct net_addr *addr,
               int64_t ban_offset, bool since_epoch);
+
+/* Increase misbehavior score. Auto-bans at threshold (100). */
+void peer_misbehaving(struct net_manager *nm, struct p2p_node *node,
+                      int howmuch, const char *reason);
 bool unban_addr(struct net_manager *nm, const struct net_addr *addr);
 void clear_banned(struct net_manager *nm);
 
