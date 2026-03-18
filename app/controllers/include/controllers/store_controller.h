@@ -33,4 +33,11 @@ size_t store_handle_request(const char *method, const char *path,
 /* Background: check pending orders for payments, mint tokens. */
 void store_process_payments(const char *datadir);
 
+/* Check if customer has enough ZSLP tokens for a service.
+ * Used as before_action hook on protected routes. */
+bool store_check_token_access(const char *datadir,
+                               const char *customer_addr,
+                               const char *token_id,
+                               uint64_t required);
+
 #endif

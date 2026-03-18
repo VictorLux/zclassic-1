@@ -170,6 +170,7 @@ int test_coins(void);
 int test_tor(void);
 int test_load_balancer(void);
 int test_game(void);
+int test_store(void);
 
 /* ── DRY test macros ─────────────────────────────────────── */
 

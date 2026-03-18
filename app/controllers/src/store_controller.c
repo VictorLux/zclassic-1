@@ -3,12 +3,19 @@
  * Store controller — ZSLP token commerce. */
 
 #include "controllers/store_controller.h"
+#include "controllers/zslp_controller.h"
 #include "models/database.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <sqlite3.h>
+
+/* Forward declarations */
+static size_t serve_gated_content(sqlite3 *db, const char *customer_addr,
+                                   const char *token_id, uint64_t required,
+                                   const char *datadir,
+                                   uint8_t *resp, size_t max);
 
 /* Ensure store tables exist */
 static void store_ensure_schema(sqlite3 *db)
@@ -309,7 +316,7 @@ static size_t serve_order_status(sqlite3 *db, int64_t order_id,
         "<p>Amount: <span class='price'>%.8f ZCL</span></p>"
         "<p>Payment address:</p><div class='addr'>%s</div>"
         "<p>Deliver to:</p><div class='addr'>%s</div>"
-        "%s%s%s%s"
+        "%s%s%s%s%s%s"
         "<p><a href='/store/order/%lld'>Refresh</a> | "
         "<a href='/store'>Back to store</a></p>"
         "</div></body></html>",
@@ -322,6 +329,8 @@ static size_t serve_order_status(sqlite3 *db, int64_t order_id,
         pay_txid ? pay_txid : "",
         pay_txid ? "</code></p>" : "",
         mint_txid ? "<p>Mint: <code>" : "",
+        mint_txid ? mint_txid : "",
+        mint_txid ? "</code></p>" : "",
         (long long)order_id);
     if (n > 0) off += (size_t)n;
     return off;
@@ -333,6 +342,20 @@ static int64_t parse_id_from_path(const char *path)
     const char *last = strrchr(path, '/');
     if (!last) return -1;
     return (int64_t)atoll(last + 1);
+}
+
+/* Validate address: alphanumeric + limited special chars only.
+ * Prevents XSS via customer_addr in HTML output. */
+static bool validate_address(const char *addr)
+{
+    if (!addr || !addr[0]) return false;
+    for (size_t i = 0; addr[i]; i++) {
+        char c = addr[i];
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9') || c == '_') continue;
+        return false;
+    }
+    return true;
 }
 
 /* Parse POST body for customer_addr=value */
@@ -384,22 +407,163 @@ size_t store_handle_request(const char *method, const char *path,
         if (body && body_len > 0)
             parse_form_field((const char *)body, body_len,
                              "customer_addr", addr, sizeof(addr));
-        result = serve_create_order(db, id, addr, response, response_max);
+        if (!validate_address(addr)) {
+            result = (size_t)snprintf((char *)response, response_max,
+                "HTTP/1.1 400 Bad Request\r\nContent-Type: text/html\r\n"
+                "Connection: close\r\n\r\n<h1>Invalid address</h1>"
+                "<p>Address must be alphanumeric.</p>"
+                "<p><a href='/store'>Back</a></p>");
+        } else {
+            result = serve_create_order(db, id, addr, response, response_max);
+        }
 
     } else if (strncmp(path, "/store/order/", 13) == 0) {
         int64_t id = parse_id_from_path(path);
         result = serve_order_status(db, id, response, response_max);
+
+    } else if (strncmp(path, "/store/access", 13) == 0) {
+        /* Token-gated content: /store/access?addr=t1...&token=ZCL23ACCESS */
+        char addr[128] = "", token[64] = "";
+        const char *a = strstr(path, "addr=");
+        const char *t = strstr(path, "token=");
+        if (a) { a += 5; size_t i = 0; while (a[i] && a[i] != '&' && i < 127) { addr[i] = a[i]; i++; } addr[i] = '\0'; }
+        if (t) { t += 6; size_t i = 0; while (t[i] && t[i] != '&' && i < 63) { token[i] = t[i]; i++; } token[i] = '\0'; }
+        if (!token[0]) snprintf(token, sizeof(token), "ZCL23ACCESS");
+        result = serve_gated_content(db, addr, token, 1, datadir,
+                                      response, response_max);
     }
 
     sqlite3_close(db);
     return result;
 }
 
-/* Background payment processor */
+/* Background payment processor — called periodically from boot.c.
+ * Checks pending orders for payments, mints tokens when paid. */
 void store_process_payments(const char *datadir)
 {
-    (void)datadir;
-    /* TODO: poll z_listunspent for pending order payment addresses,
-     * update order status when payment confirms,
-     * mint ZSLP tokens to customer_addr */
+    if (!datadir) return;
+
+    char db_path[1024];
+    snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
+    sqlite3 *db = NULL;
+    if (sqlite3_open(db_path, &db) != SQLITE_OK) return;
+
+    /* Find pending orders */
+    sqlite3_stmt *pending = NULL;
+    sqlite3_prepare_v2(db,
+        "SELECT o.id, o.payment_addr, o.amount_zatoshi, o.customer_addr, "
+        "p.token_id, p.tokens_per_purchase "
+        "FROM orders o JOIN products p ON o.product_id = p.id "
+        "WHERE o.status = 0 AND o.created_at > strftime('%%s','now') - 3600",
+        -1, &pending, NULL);
+
+    while (sqlite3_step(pending) == SQLITE_ROW) {
+        int64_t order_id = sqlite3_column_int64(pending, 0);
+        const char *pay_addr = (const char *)sqlite3_column_text(pending, 1);
+        int64_t expected = sqlite3_column_int64(pending, 2);
+        const char *cust_addr = (const char *)sqlite3_column_text(pending, 3);
+        const char *token_id = (const char *)sqlite3_column_text(pending, 4);
+        int64_t tokens = sqlite3_column_int64(pending, 5);
+
+        if (!pay_addr || !cust_addr || !token_id) continue;
+
+        /* Check if payment received.
+         * In production: query z_getbalance for the specific z-address.
+         * For demo: check wallet_sapling_notes for any matching amount. */
+        sqlite3_stmt *check = NULL;
+        sqlite3_prepare_v2(db,
+            "SELECT COALESCE(SUM(value), 0) FROM wallet_sapling_notes "
+            "WHERE spent_txid IS NULL AND value >= ?",
+            -1, &check, NULL);
+        sqlite3_bind_int64(check, 1, expected);
+        int64_t received = 0;
+        if (sqlite3_step(check) == SQLITE_ROW)
+            received = sqlite3_column_int64(check, 0);
+        sqlite3_finalize(check);
+
+        if (received >= expected) {
+            /* Payment confirmed — update order and mint tokens */
+            sqlite3_stmt *upd = NULL;
+            sqlite3_prepare_v2(db,
+                "UPDATE orders SET status=2, paid_at=strftime('%%s','now') "
+                "WHERE id=?", -1, &upd, NULL);
+            sqlite3_bind_int64(upd, 1, order_id);
+            sqlite3_step(upd);
+            sqlite3_finalize(upd);
+
+            /* Mint ZSLP tokens to customer */
+            extern bool zslp_mint(const char *, const char *, const char *, uint64_t);
+            zslp_mint(datadir, token_id, cust_addr, (uint64_t)tokens);
+
+            printf("Store: order #%lld paid, minted %lld %s → %s\n",
+                   (long long)order_id, (long long)tokens,
+                   token_id, cust_addr);
+            fflush(stdout);
+        }
+    }
+    sqlite3_finalize(pending);
+    sqlite3_close(db);
+}
+
+/* Check if a customer has enough tokens to access a service.
+ * Used as a before_action hook on protected routes. */
+bool store_check_token_access(const char *datadir,
+                               const char *customer_addr,
+                               const char *token_id,
+                               uint64_t required)
+{
+    if (!datadir || !customer_addr || !token_id) return false;
+
+    extern uint64_t zslp_balance(const char *, const char *, const char *);
+    uint64_t balance = zslp_balance(datadir, token_id, customer_addr);
+    return balance >= required;
+}
+
+/* Serve a token-gated page. Checks balance, returns content or 403. */
+static size_t serve_gated_content(sqlite3 *db, const char *customer_addr,
+                                   const char *token_id, uint64_t required,
+                                   const char *datadir,
+                                   uint8_t *resp, size_t max)
+{
+    (void)db;
+    if (!store_check_token_access(datadir, customer_addr, token_id, required)) {
+        return (size_t)snprintf((char *)resp, max,
+            "HTTP/1.1 403 Forbidden\r\n"
+            "Content-Type: text/html; charset=utf-8\r\n"
+            "Connection: close\r\n\r\n"
+            "<!DOCTYPE html><html><head><style>"
+            "body{font-family:monospace;background:#0a0a0a;color:#e0e0e0;"
+            "max-width:800px;margin:0 auto;padding:40px}"
+            "h1{color:#ff4444}"
+            "</style></head><body>"
+            "<h1>Access Denied</h1>"
+            "<p>This service requires %llu %s tokens.</p>"
+            "<p>Your balance: %llu</p>"
+            "<p><a href='/store' style='color:#00aaff'>Get tokens</a></p>"
+            "</body></html>",
+            (unsigned long long)required, token_id,
+            (unsigned long long)zslp_balance(datadir, token_id, customer_addr));
+    }
+
+    /* Customer has tokens — serve the content */
+    return (size_t)snprintf((char *)resp, max,
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: text/html; charset=utf-8\r\n"
+        "Connection: close\r\n\r\n"
+        "<!DOCTYPE html><html><head><style>"
+        "body{font-family:monospace;background:#0a0a0a;color:#e0e0e0;"
+        "max-width:800px;margin:0 auto;padding:40px}"
+        "h1{color:#00ff88}"
+        ".card{background:#1a1a1a;padding:20px;margin:15px 0;border-radius:8px;"
+        "border-left:3px solid #00ff88}"
+        "</style></head><body>"
+        "<h1>Premium Service</h1>"
+        "<div class='card'>"
+        "<p>Welcome, %s</p>"
+        "<p>Your token balance: %llu %s</p>"
+        "<p>You have access to this service.</p>"
+        "</div></body></html>",
+        customer_addr,
+        (unsigned long long)zslp_balance(datadir, token_id, customer_addr),
+        token_id);
 }

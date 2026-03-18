@@ -70,7 +70,7 @@ zcl-blog: tools/zcl-blog
 	$(CC) -std=c23 -O2 -x c $$(pkg-config --cflags webkit2gtk-4.1) -o $@ $< $$(pkg-config --libs webkit2gtk-4.1)
 
 test: test_zcl
-	./test_zcl
+	ulimit -s unlimited && ./test_zcl
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<

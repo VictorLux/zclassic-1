@@ -93,24 +93,20 @@ uint64_t zslp_balance(const char *datadir,
     char db_path[1024];
     snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
     sqlite3 *db = NULL;
-    if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK)
+    if (sqlite3_open(db_path, &db) != SQLITE_OK)
         return 0;
-
-    sqlite3_exec(db,
-        "CREATE TABLE IF NOT EXISTS zslp_balances ("
-        "token_id TEXT, address TEXT, balance INTEGER,"
-        "PRIMARY KEY (token_id, address))", NULL, NULL, NULL);
 
     uint64_t bal = 0;
     sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(db,
-        "SELECT balance FROM zslp_balances WHERE token_id=? AND address=?",
-        -1, &s, NULL);
-    sqlite3_bind_text(s, 1, token_id_hex, -1, SQLITE_STATIC);
-    sqlite3_bind_text(s, 2, addr, -1, SQLITE_STATIC);
-    if (sqlite3_step(s) == SQLITE_ROW)
-        bal = (uint64_t)sqlite3_column_int64(s, 0);
-    sqlite3_finalize(s);
+    if (sqlite3_prepare_v2(db,
+            "SELECT balance FROM zslp_balances WHERE token_id=? AND address=?",
+            -1, &s, NULL) == SQLITE_OK && s) {
+        sqlite3_bind_text(s, 1, token_id_hex, -1, SQLITE_STATIC);
+        sqlite3_bind_text(s, 2, addr, -1, SQLITE_STATIC);
+        if (sqlite3_step(s) == SQLITE_ROW)
+            bal = (uint64_t)sqlite3_column_int64(s, 0);
+        sqlite3_finalize(s);
+    }
     sqlite3_close(db);
     return bal;
 }

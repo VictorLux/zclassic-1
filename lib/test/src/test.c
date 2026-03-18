@@ -37,6 +37,7 @@ int main(void)
     failures += test_primitives();
     failures += test_bloom();
     failures += test_coins();
+    failures += test_store();
     failures += test_tor();
 
     ecc_verify_destroy();
