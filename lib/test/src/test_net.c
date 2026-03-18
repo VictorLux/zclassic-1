@@ -7,6 +7,8 @@
 #include "net/fast_sync.h"
 #include "net/onion_service.h"
 #include "net/msgprocessor.h"
+#include <sqlite3.h>
+#include <unistd.h>
 
 static int test_tip_count = 0;
 static int test_tip_height = 0;
@@ -2198,6 +2200,300 @@ int test_net(void)
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
+
+    /* ── BitTorrent-style parallel chunk sync tests ──────── */
+
+    /* Helper: create a test UTXO database with N entries */
+    #define TEST_SYNC_DIR "test_sync_data"
+    #define TEST_SYNC_DB  TEST_SYNC_DIR "/node.db"
+
+    /* Clean up and create test directory */
+    {
+        (void)remove(TEST_SYNC_DB);
+        (void)rmdir(TEST_SYNC_DIR);
+        mkdir(TEST_SYNC_DIR, 0755);
+    }
+
+    /* Create test database with 100 UTXOs */
+    sqlite3 *test_db = NULL;
+    {
+        int rc = sqlite3_open(TEST_SYNC_DB, &test_db);
+        if (rc != SQLITE_OK) {
+            printf("parallel_sync: SKIP (cannot create test db)\n");
+            goto skip_parallel_tests;
+        }
+
+        sqlite3_exec(test_db,
+            "CREATE TABLE IF NOT EXISTS node_state "
+            "(key TEXT PRIMARY KEY, value BLOB)", NULL, NULL, NULL);
+        sqlite3_exec(test_db,
+            "CREATE TABLE IF NOT EXISTS utxos ("
+            "txid BLOB NOT NULL, vout INTEGER NOT NULL, "
+            "value INTEGER NOT NULL, script BLOB NOT NULL, "
+            "script_type INTEGER NOT NULL DEFAULT 0, "
+            "address_hash BLOB, height INTEGER NOT NULL, "
+            "is_coinbase INTEGER NOT NULL DEFAULT 0, "
+            "PRIMARY KEY (txid, vout))", NULL, NULL, NULL);
+
+        /* Set tip height and hash */
+        int64_t tip_height = 100000;
+        sqlite3_stmt *ins = NULL;
+        sqlite3_prepare_v2(test_db,
+            "INSERT INTO node_state (key, value) VALUES (?, ?)",
+            -1, &ins, NULL);
+        sqlite3_bind_text(ins, 1, "tip_height", -1, SQLITE_STATIC);
+        sqlite3_bind_blob(ins, 2, &tip_height, sizeof(tip_height), SQLITE_STATIC);
+        sqlite3_step(ins);
+        sqlite3_reset(ins);
+
+        uint8_t tip_hash[32];
+        memset(tip_hash, 0xAB, 32);
+        sqlite3_bind_text(ins, 1, "tip_hash", -1, SQLITE_STATIC);
+        sqlite3_bind_blob(ins, 2, tip_hash, 32, SQLITE_STATIC);
+        sqlite3_step(ins);
+        sqlite3_finalize(ins);
+
+        /* Insert 100 test UTXOs with deterministic data */
+        sqlite3_exec(test_db, "BEGIN", NULL, NULL, NULL);
+        sqlite3_prepare_v2(test_db,
+            "INSERT INTO utxos (txid, vout, value, script, height) "
+            "VALUES (?, ?, ?, ?, ?)", -1, &ins, NULL);
+
+        for (int i = 0; i < 100; i++) {
+            uint8_t txid[32];
+            memset(txid, 0, 32);
+            txid[0] = (uint8_t)(i & 0xFF);
+            txid[1] = (uint8_t)((i >> 8) & 0xFF);
+
+            uint8_t script[25];
+            memset(script, 0x76, sizeof(script));
+            script[0] = (uint8_t)i;
+
+            sqlite3_reset(ins);
+            sqlite3_bind_blob(ins, 1, txid, 32, SQLITE_STATIC);
+            sqlite3_bind_int(ins, 2, i % 3);
+            sqlite3_bind_int64(ins, 3, (int64_t)(i + 1) * 100000);
+            sqlite3_bind_blob(ins, 4, script, 25, SQLITE_STATIC);
+            sqlite3_bind_int(ins, 5, 50000 + i);
+            sqlite3_step(ins);
+        }
+        sqlite3_finalize(ins);
+        sqlite3_exec(test_db, "COMMIT", NULL, NULL, NULL);
+    }
+
+    printf("parallel_sync: manifest chunk_count = ceil(100/500)... ");
+    {
+        struct sync_manifest m;
+        memset(&m, 0, sizeof(m));
+        bool ok = fast_sync_build_manifest_db(test_db, &m);
+        /* 100 UTXOs / 500 per chunk = 1 chunk (ceil) */
+        ok = ok && (m.num_chunks == 1);
+        ok = ok && (m.num_utxos == 100);
+        ok = ok && (m.chunk_size == SYNC_CHUNK_SIZE);
+        ok = ok && (m.height == 100000);
+        if (ok) printf("OK (chunks=%u, utxos=%" PRIu64 ")\n",
+                        m.num_chunks, m.num_utxos);
+        else { printf("FAIL (chunks=%u, utxos=%" PRIu64 ", height=%d)\n",
+                        m.num_chunks, m.num_utxos, m.height); failures++; }
+        sync_manifest_free(&m);
+    }
+
+    printf("parallel_sync: chunk hash deterministic... ");
+    {
+        struct utxo_chunk *c = calloc(1, sizeof(struct utxo_chunk));
+        bool ok = fast_sync_serve_chunk_db(test_db, 0, SYNC_CHUNK_SIZE, c);
+
+        uint8_t h1[32], h2[32];
+        fast_sync_chunk_hash(c, h1);
+        fast_sync_chunk_hash(c, h2);
+        ok = ok && (memcmp(h1, h2, 32) == 0);
+
+        /* Non-zero hash */
+        uint8_t zeros[32];
+        memset(zeros, 0, 32);
+        ok = ok && (memcmp(h1, zeros, 32) != 0);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+        free(c);
+    }
+
+    printf("parallel_sync: verify_chunk matches expected hash... ");
+    {
+        struct utxo_chunk *c = calloc(1, sizeof(struct utxo_chunk));
+        fast_sync_serve_chunk_db(test_db, 0, SYNC_CHUNK_SIZE, c);
+
+        uint8_t expected[32];
+        fast_sync_chunk_hash(c, expected);
+        bool ok = fast_sync_verify_chunk(c, expected);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+        free(c);
+    }
+
+    printf("parallel_sync: bad chunk data fails verification... ");
+    {
+        struct utxo_chunk *c = calloc(1, sizeof(struct utxo_chunk));
+        fast_sync_serve_chunk_db(test_db, 0, SYNC_CHUNK_SIZE, c);
+
+        uint8_t expected[32];
+        fast_sync_chunk_hash(c, expected);
+
+        /* Corrupt one entry */
+        c->entries[0].value = 999999999;
+        bool ok = !fast_sync_verify_chunk(c, expected);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+        free(c);
+    }
+
+    printf("parallel_sync: serve_chunk contents match DB... ");
+    {
+        struct utxo_chunk *c = calloc(1, sizeof(struct utxo_chunk));
+        bool ok = fast_sync_serve_chunk_db(test_db, 0, SYNC_CHUNK_SIZE, c);
+        ok = ok && (c->num_entries == 100);
+        ok = ok && (c->chunk_index == 0);
+
+        /* Verify all entries have non-zero values */
+        for (uint32_t i = 0; i < c->num_entries && ok; i++)
+            ok = ok && (c->entries[i].value > 0);
+
+        if (ok) printf("OK (entries=%u)\n", c->num_entries);
+        else { printf("FAIL (entries=%u)\n", c->num_entries); failures++; }
+        free(c);
+    }
+
+    printf("parallel_sync: manifest merkle_root non-zero... ");
+    {
+        struct sync_manifest m;
+        memset(&m, 0, sizeof(m));
+        fast_sync_build_manifest_db(test_db, &m);
+
+        uint8_t zeros[32];
+        memset(zeros, 0, 32);
+        bool ok = (memcmp(m.merkle_root, zeros, 32) != 0);
+        ok = ok && (m.chunk_hashes != NULL);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+        sync_manifest_free(&m);
+    }
+
+    printf("parallel_sync: Merkle root from chunk hashes... ");
+    {
+        /* Build manifest, then independently verify that
+         * the stored merkle_root matches recomputation */
+        struct sync_manifest m;
+        memset(&m, 0, sizeof(m));
+        fast_sync_build_manifest_db(test_db, &m);
+
+        uint8_t recomputed[32];
+        fast_sync_merkle_root(
+            (const uint8_t (*)[32])m.chunk_hashes,
+            m.num_chunks, recomputed);
+
+        bool ok = (memcmp(m.merkle_root, recomputed, 32) == 0);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+        sync_manifest_free(&m);
+    }
+
+    printf("parallel_sync: Merkle proof verifies chunk... ");
+    {
+        /* Use 4 synthetic hashes to test proof verification */
+        uint8_t hashes[4][32];
+        for (int i = 0; i < 4; i++)
+            memset(hashes[i], (uint8_t)(i + 1), 32);
+
+        uint8_t root[32];
+        fast_sync_merkle_root(
+            (const uint8_t (*)[32])hashes, 4, root);
+
+        /* Build and verify proof for each chunk */
+        bool ok = true;
+        for (uint32_t ci = 0; ci < 4; ci++) {
+            uint8_t (*proof)[32] = NULL;
+            uint32_t plen = fast_sync_build_proof(
+                (const uint8_t (*)[32])hashes, 4, ci, &proof);
+
+            ok = ok && fast_sync_verify_chunk_proof(
+                ci, hashes[ci], (const uint8_t (*)[32])proof, plen, root);
+            free(proof);
+        }
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("parallel_sync: bad proof fails verification... ");
+    {
+        uint8_t hashes[4][32];
+        for (int i = 0; i < 4; i++)
+            memset(hashes[i], (uint8_t)(i + 1), 32);
+
+        uint8_t root[32];
+        fast_sync_merkle_root(
+            (const uint8_t (*)[32])hashes, 4, root);
+
+        uint8_t (*proof)[32] = NULL;
+        uint32_t plen = fast_sync_build_proof(
+            (const uint8_t (*)[32])hashes, 4, 0, &proof);
+
+        /* Corrupt the proof */
+        if (plen > 0)
+            proof[0][0] ^= 0xFF;
+
+        bool ok = !fast_sync_verify_chunk_proof(
+            0, hashes[0], (const uint8_t (*)[32])proof, plen, root);
+        free(proof);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("parallel_sync: manifest from file path... ");
+    {
+        struct sync_manifest m;
+        memset(&m, 0, sizeof(m));
+        bool ok = fast_sync_build_manifest(TEST_SYNC_DIR, &m);
+        ok = ok && (m.num_chunks == 1);
+        ok = ok && (m.num_utxos == 100);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+        sync_manifest_free(&m);
+    }
+
+    printf("parallel_sync: serve_chunk from file path... ");
+    {
+        struct utxo_chunk *c = calloc(1, sizeof(struct utxo_chunk));
+        bool ok = fast_sync_serve_chunk(TEST_SYNC_DIR, 0, c);
+        ok = ok && (c->num_entries == 100);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+        free(c);
+    }
+
+    printf("parallel_sync: P2P message type constants... ");
+    {
+        bool ok = (strcmp(MSG_CHUNK_REQ, "zchunkreq") == 0);
+        ok = ok && (strcmp(MSG_CHUNK_DATA, "zchunkdata") == 0);
+        ok = ok && (strcmp(MSG_MANIFEST, "zmanifest") == 0);
+        ok = ok && (SYNC_CHUNK_SIZE == 500);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* Clean up test database */
+    sqlite3_close(test_db);
+    (void)remove(TEST_SYNC_DB);
+    (void)rmdir(TEST_SYNC_DIR);
+
+skip_parallel_tests:
 
     return failures;
 }
