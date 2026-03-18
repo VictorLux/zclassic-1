@@ -5,6 +5,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "net/msgprocessor.h"
+#include "net/addrman.h"
 #include "net/fast_sync.h"
 #include "net/p2p_game.h"
 #include "net/version.h"
@@ -167,9 +168,16 @@ static bool process_version(struct msg_processor *mp, struct p2p_node *node,
 
 static bool process_verack(struct msg_processor *mp, struct p2p_node *node)
 {
-    (void)mp;
     node->recv_version = PROTOCOL_VERSION;
     printf("Peer %s: verack received\n", node->addr_name);
+
+    /* Mark peer as good in addrman — increases selection priority */
+    if (mp->net_mgr) {
+        addrman_good(&mp->net_mgr->addrman, &node->addr.svc,
+                      (int64_t)time(NULL));
+        addrman_connected(&mp->net_mgr->addrman, &node->addr.svc,
+                           (int64_t)time(NULL));
+    }
     return true;
 }
 

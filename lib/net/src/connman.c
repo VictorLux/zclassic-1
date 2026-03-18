@@ -6,6 +6,7 @@
 
 #define _DEFAULT_SOURCE
 #include "net/connman.h"
+#include "net/addrman.h"
 #include "controllers/blog_controller.h"
 #include "core/random.h"
 #include "net/netbase.h"
@@ -211,7 +212,12 @@ static void *thread_open_connections(void *arg)
                     continue;
             }
 
-            connect_node(&cm->manager, &info.addr, NULL);
+            struct p2p_node *node = connect_node(&cm->manager, &info.addr, NULL);
+            if (!node) {
+                /* Record failed attempt — exponential backoff in addrman */
+                addrman_attempt(&cm->manager.addrman, &info.addr.svc,
+                                 (int64_t)time(NULL));
+            }
         }
 
         /* Sleep less when desperate for peers */
