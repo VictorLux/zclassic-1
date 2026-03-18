@@ -53,6 +53,7 @@ const char *zslp_create_token(const char *datadir,
     snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
     sqlite3 *db = NULL;
     if (sqlite3_open(db_path, &db) == SQLITE_OK) {
+        sqlite3_busy_timeout(db, 5000);
         sqlite3_exec(db,
             "CREATE TABLE IF NOT EXISTS zslp_tokens ("
             "token_id TEXT PRIMARY KEY,"
@@ -96,6 +97,7 @@ uint64_t zslp_balance(const char *datadir,
     sqlite3 *db = NULL;
     if (sqlite3_open(db_path, &db) != SQLITE_OK)
         return 0;
+    sqlite3_busy_timeout(db, 5000);
 
     uint64_t bal = 0;
     sqlite3_stmt *s = NULL;
@@ -148,8 +150,9 @@ int64_t zslp_check_payment(const char *datadir,
     char db_path[1024];
     snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
     sqlite3 *db = NULL;
-    if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK)
+    if (sqlite3_open(db_path, &db) != SQLITE_OK)
         return 0;
+    sqlite3_busy_timeout(db, 5000);
 
     int64_t received = 0;
     sqlite3_stmt *s = NULL;
@@ -181,6 +184,7 @@ bool zslp_mint(const char *datadir,
     snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
     sqlite3 *db = NULL;
     if (sqlite3_open(db_path, &db) != SQLITE_OK) return false;
+    sqlite3_busy_timeout(db, 5000); /* wait up to 5s for locks */
 
     sqlite3_exec(db,
         "CREATE TABLE IF NOT EXISTS zslp_balances ("

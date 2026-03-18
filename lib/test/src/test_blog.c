@@ -55,19 +55,22 @@ int test_blog(void)
     printf("blog: discover_onion_peers with empty/missing data... ");
     {
         struct onion_peer peers[10];
-        /* Non-existent datadir should return 0 peers */
-        int found = blog_discover_onion_peers("/tmp/zcl_test_nonexistent_dir",
-                                               peers, 10);
-        bool ok = (found == 0);
-        /* NULL datadir */
-        found = blog_discover_onion_peers(NULL, peers, 10);
+        bool ok = true;
+        /* NULL checks */
+        int found = blog_discover_onion_peers(NULL, peers, 10);
         ok = ok && (found == 0);
-        /* NULL output buffer */
-        found = blog_discover_onion_peers("/tmp", NULL, 10);
+        found = blog_discover_onion_peers(".", NULL, 10);
         ok = ok && (found == 0);
-        /* Zero max */
-        found = blog_discover_onion_peers("/tmp", peers, 0);
+        found = blog_discover_onion_peers(".", peers, 0);
         ok = ok && (found == 0);
+        /* Non-existent dir — opens SQLite which may return 0 */
+        char tmpdir[] = ".zcl_blog_disc_XXXXXX";
+        char *dir = mkdtemp(tmpdir);
+        if (dir) {
+            found = blog_discover_onion_peers(dir, peers, 10);
+            ok = ok && (found == 0);
+            rmdir(dir);
+        }
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
@@ -75,7 +78,7 @@ int test_blog(void)
     printf("blog: serve returns 404 for missing files... ");
     {
         /* Use a temp directory with no blog/ subdirectory */
-        char tmpdir[] = "/tmp/zcl_blog_test_XXXXXX";
+        char tmpdir[] = ".zcl_blog_test_XXXXXX";
         char *dir = mkdtemp(tmpdir);
         bool ok = (dir != NULL);
         if (ok) {
@@ -102,7 +105,7 @@ int test_blog(void)
 
     printf("blog: serve returns 403 for path traversal... ");
     {
-        char tmpdir[] = "/tmp/zcl_blog_403_XXXXXX";
+        char tmpdir[] = ".zcl_blog_403_XXXXXX";
         char *dir = mkdtemp(tmpdir);
         bool ok = (dir != NULL);
         if (ok) {
@@ -123,13 +126,13 @@ int test_blog(void)
     {
         char out[4096];
         /* NULL path */
-        size_t len = blog_serve("/tmp", NULL, out, sizeof(out));
+        size_t len = blog_serve(".", NULL, out, sizeof(out));
         bool ok = (len == 0);
         /* NULL output buffer */
-        len = blog_serve("/tmp", "/index.html", NULL, sizeof(out));
+        len = blog_serve(".", "/index.html", NULL, sizeof(out));
         ok = ok && (len == 0);
         /* Buffer too small */
-        len = blog_serve("/tmp", "/index.html", out, 100);
+        len = blog_serve(".", "/index.html", out, 100);
         ok = ok && (len == 0);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }

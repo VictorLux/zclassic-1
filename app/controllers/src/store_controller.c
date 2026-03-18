@@ -372,6 +372,7 @@ static size_t serve_order_status(sqlite3 *db, int64_t order_id,
         mint_txid ? "</code></p>" : "",
         (long long)order_id);
     if (n > 0) off += (size_t)n;
+    sqlite3_finalize(s);
     return off;
 }
 
@@ -428,6 +429,7 @@ size_t store_handle_request(const char *method, const char *path,
     snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
     sqlite3 *db = NULL;
     if (sqlite3_open(db_path, &db) != SQLITE_OK) return 0;
+    sqlite3_busy_timeout(db, 5000);
     store_ensure_schema(db);
 
     size_t result = 0;
@@ -486,6 +488,7 @@ void store_process_payments(const char *datadir)
     snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
     sqlite3 *db = NULL;
     if (sqlite3_open(db_path, &db) != SQLITE_OK) return;
+    sqlite3_busy_timeout(db, 5000);
 
     /* Find pending orders */
     sqlite3_stmt *pending = NULL;

@@ -10,7 +10,7 @@ static char test_datadir[256];
 
 static void setup_datadir(void)
 {
-    snprintf(test_datadir, sizeof(test_datadir), "/tmp/zcl_test_store_%d",
+    snprintf(test_datadir, sizeof(test_datadir), ".zcl_test_store_%d",
              (int)getpid());
     mkdir(test_datadir, 0755);
 }
