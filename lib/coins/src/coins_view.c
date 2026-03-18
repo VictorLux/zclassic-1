@@ -256,17 +256,18 @@ static bool cvc_batch_write(void *self, struct coins_map *map_coins,
         if (!e->occupied)
             continue;
         if (e->entry.flags & COINS_CACHE_DIRTY) {
-            struct coins_cache_entry *dest =
-                coins_map_insert(&parent->cache_coins, &e->txid);
             if (coins_is_pruned(&e->entry.coins)) {
-                coins_free(&dest->coins);
-                coins_init(&dest->coins);
+                /* Erase pruned entries from parent — don't leave zombies
+                 * that shadow the backing store. C++ erases here too. */
+                coins_map_erase(&parent->cache_coins, &e->txid);
             } else {
+                struct coins_cache_entry *dest =
+                    coins_map_insert(&parent->cache_coins, &e->txid);
                 coins_free(&dest->coins);
                 dest->coins = e->entry.coins;
                 coins_init(&e->entry.coins);
+                dest->flags |= COINS_CACHE_DIRTY;
             }
-            dest->flags |= COINS_CACHE_DIRTY;
         }
     }
 
