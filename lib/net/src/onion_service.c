@@ -9,10 +9,29 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <stdatomic.h>
 #include <sqlite3.h>
 
 static char g_onion_address[128] = "";
 static const char *g_datadir = NULL;
+
+/* Simple global rate limiter: max 100 requests/second */
+static _Atomic int64_t g_request_count = 0;
+static _Atomic int64_t g_rate_window_start = 0;
+#define MAX_REQUESTS_PER_SECOND 100
+
+static bool rate_limit_check(void)
+{
+    int64_t now = (int64_t)time(NULL);
+    int64_t window = atomic_load(&g_rate_window_start);
+    if (now != window) {
+        atomic_store(&g_rate_window_start, now);
+        atomic_store(&g_request_count, 1);
+        return true;
+    }
+    int64_t count = atomic_fetch_add(&g_request_count, 1);
+    return count < MAX_REQUESTS_PER_SECOND;
+}
 
 /* HTML-escape a string to prevent XSS. Writes at most max-1 bytes + null. */
 static size_t html_escape(char *dst, size_t max, const char *src)
@@ -227,6 +246,15 @@ size_t onion_service_handle_request(const char *method,
                                      size_t response_max)
 {
     if (!path) path = "/";
+
+    /* Rate limit: 100 requests/second across all circuits */
+    if (!rate_limit_check()) {
+        return (size_t)snprintf((char *)response, response_max,
+            "HTTP/1.1 429 Too Many Requests\r\n"
+            "Content-Type: text/html\r\nConnection: close\r\n"
+            "Retry-After: 1\r\n\r\n"
+            "<h1>429 Too Many Requests</h1>");
+    }
 
     /* JSON status endpoint */
     if (strcmp(path, "/status") == 0)
