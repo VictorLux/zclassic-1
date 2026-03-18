@@ -191,6 +191,11 @@ struct p2p_node {
 
     int misbehavior;          /* cumulative misbehavior score; banned at 100 */
 
+    /* connection quality metrics */
+    int64_t last_block_time;  /* timestamp of last valid block received */
+    int64_t avg_latency_us;   /* rolling average ping latency in microseconds */
+    int blocks_received;      /* count of valid blocks from this peer */
+
     /* zclassic23 fast sync state */
     bool zsync_serving;       /* true if we're streaming UTXOs to this peer */
     bool zsync_receiving;     /* true if we're receiving UTXOs from this peer */

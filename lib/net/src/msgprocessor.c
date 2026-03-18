@@ -208,6 +208,12 @@ static bool process_pong(struct p2p_node *node, struct byte_stream *s)
             node->ping_usec_time = rtt;
             if (node->min_ping_usec_time == 0 || rtt < node->min_ping_usec_time)
                 node->min_ping_usec_time = rtt;
+            /* Exponential moving average: new = 0.8 * old + 0.2 * sample */
+            if (node->avg_latency_us == 0)
+                node->avg_latency_us = rtt;
+            else
+                node->avg_latency_us =
+                    (node->avg_latency_us * 4 + rtt) / 5;
         }
         node->ping_nonce_sent = 0;
     }
@@ -566,7 +572,10 @@ static bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
     process_new_block(&state, mp->main_state, mp->coins_tip,
                       mp->params, &blk, false, mp->datadir);
 
-    if (!validation_state_is_valid(&state)) {
+    if (validation_state_is_valid(&state)) {
+        node->last_block_time = (int64_t)time(NULL);
+        node->blocks_received++;
+    } else {
         int dos = 0;
         if (validation_state_get_dos(&state, &dos) && dos > 0) {
             printf("Peer %s: invalid block (dos=%d): %s\n",

@@ -11,8 +11,24 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <ctype.h>
 #include <time.h>
 #include <sqlite3.h>
+
+#define ZSLP_MAX_TICKER_LEN  10
+#define ZSLP_MAX_NAME_LEN    64
+#define ZSLP_MAX_DECIMALS    8
+#define ZSLP_MAX_SUPPLY      2100000000000000ULL  /* 21000000 * 1e8 */
+
+/* Validate that str contains only alphanumeric characters [A-Za-z0-9]. */
+static bool is_alphanumeric(const char *str, size_t len)
+{
+    for (size_t i = 0; i < len; i++) {
+        if (!isalnum((unsigned char)str[i]))
+            return false;
+    }
+    return true;
+}
 
 /* ── Token creation (GENESIS) ────────────────────────────── */
 
@@ -23,6 +39,41 @@ const char *zslp_create_token(const char *datadir,
                                uint64_t initial_supply)
 {
     if (!datadir || !ticker || !name) return NULL;
+
+    /* Validate ticker: 1-10 alphanumeric characters */
+    size_t ticker_len = strlen(ticker);
+    if (ticker_len == 0 || ticker_len > ZSLP_MAX_TICKER_LEN) {
+        fprintf(stderr, "zslp: ticker must be 1-%d chars (got %zu)\n",
+                ZSLP_MAX_TICKER_LEN, ticker_len);
+        return NULL;
+    }
+    if (!is_alphanumeric(ticker, ticker_len)) {
+        fprintf(stderr, "zslp: ticker must be alphanumeric\n");
+        return NULL;
+    }
+
+    /* Validate name: 1-64 characters */
+    size_t name_len = strlen(name);
+    if (name_len == 0 || name_len > ZSLP_MAX_NAME_LEN) {
+        fprintf(stderr, "zslp: name must be 1-%d chars (got %zu)\n",
+                ZSLP_MAX_NAME_LEN, name_len);
+        return NULL;
+    }
+
+    /* Validate decimals: 0-8 */
+    if (decimals > ZSLP_MAX_DECIMALS) {
+        fprintf(stderr, "zslp: decimals must be 0-%d (got %d)\n",
+                ZSLP_MAX_DECIMALS, decimals);
+        return NULL;
+    }
+
+    /* Validate initial supply */
+    if (initial_supply > ZSLP_MAX_SUPPLY) {
+        fprintf(stderr, "zslp: initial_supply exceeds max (%llu > %llu)\n",
+                (unsigned long long)initial_supply,
+                (unsigned long long)ZSLP_MAX_SUPPLY);
+        return NULL;
+    }
 
     /* Build the GENESIS OP_RETURN script */
     uint8_t script[256];
@@ -176,6 +227,23 @@ bool zslp_mint(const char *datadir,
 {
     if (!datadir || !token_id_hex || !recipient_addr) return false;
 
+    /* Validate amount */
+    if (amount == 0) {
+        fprintf(stderr, "zslp: mint amount must be > 0\n");
+        return false;
+    }
+
+    /* Validate recipient address: non-empty, alphanumeric */
+    size_t addr_len = strlen(recipient_addr);
+    if (addr_len == 0) {
+        fprintf(stderr, "zslp: recipient address must be non-empty\n");
+        return false;
+    }
+    if (!is_alphanumeric(recipient_addr, addr_len)) {
+        fprintf(stderr, "zslp: recipient address must be alphanumeric\n");
+        return false;
+    }
+
     printf("ZSLP MINT: %llu %s → %s\n",
            (unsigned long long)amount, token_id_hex, recipient_addr);
 
@@ -235,6 +303,25 @@ bool zslp_send(const char *datadir,
                 const char *to_addr,
                 uint64_t amount)
 {
+    if (!datadir || !token_id_hex || !to_addr) return false;
+
+    /* Validate amount */
+    if (amount == 0) {
+        fprintf(stderr, "zslp: send amount must be > 0\n");
+        return false;
+    }
+
+    /* Validate recipient address: non-empty, alphanumeric */
+    size_t addr_len = strlen(to_addr);
+    if (addr_len == 0) {
+        fprintf(stderr, "zslp: send address must be non-empty\n");
+        return false;
+    }
+    if (!is_alphanumeric(to_addr, addr_len)) {
+        fprintf(stderr, "zslp: send address must be alphanumeric\n");
+        return false;
+    }
+
     /* Same as mint for now — debit sender, credit receiver */
     return zslp_mint(datadir, token_id_hex, to_addr, amount);
 }

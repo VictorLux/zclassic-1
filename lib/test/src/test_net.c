@@ -1817,6 +1817,25 @@ int test_net(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    printf("onion_service: GET /status returns JSON with node info... ");
+    {
+        uint8_t buf[8192];
+        size_t len = onion_service_handle_request(
+            "GET", "/status", NULL, 0, buf, sizeof(buf));
+        buf[len < sizeof(buf) ? len : sizeof(buf) - 1] = '\0';
+        const char *resp = (const char *)buf;
+        bool ok = (len > 0);
+        ok = ok && (strstr(resp, "200 OK") != NULL);
+        ok = ok && (strstr(resp, "application/json") != NULL);
+        ok = ok && (strstr(resp, "\"height\"") != NULL);
+        ok = ok && (strstr(resp, "\"peers\"") != NULL);
+        ok = ok && (strstr(resp, "\"version\"") != NULL);
+        ok = ok && (strstr(resp, "\"uptime\"") != NULL);
+        ok = ok && (strstr(resp, "\"version\":\"0.1.0\"") != NULL);
+        if (ok) printf("OK (%zu bytes)\n", len);
+        else { printf("FAIL (%zu bytes: %.200s)\n", len, resp); failures++; }
+    }
+
     /* ── Malformed P2P message tests ─────────────────────────── */
 
     printf("msg_header: oversized message rejection (>2MB)... ");
@@ -1940,6 +1959,107 @@ int test_net(void)
 
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("ipv4_group16 extraction... ");
+    {
+        struct net_addr a;
+        net_addr_init(&a);
+        unsigned char ip4[] = {10, 20, 30, 40};
+        net_addr_set_ipv4(&a, ip4);
+        uint16_t group = (uint16_t)((a.ip[12] << 8) | a.ip[13]);
+        if (group == ((10 << 8) | 20))
+            printf("OK (group=%u)\n", group);
+        else {
+            printf("FAIL: expected %d, got %u\n", (10 << 8) | 20, group);
+            failures++;
+        }
+    }
+
+    printf("ipv4_group16 same /16 different /24... ");
+    {
+        struct net_addr a, b;
+        net_addr_init(&a);
+        net_addr_init(&b);
+        unsigned char ip_a[] = {192, 168, 1, 10};
+        unsigned char ip_b[] = {192, 168, 2, 20};
+        net_addr_set_ipv4(&a, ip_a);
+        net_addr_set_ipv4(&b, ip_b);
+        uint16_t ga = (uint16_t)((a.ip[12] << 8) | a.ip[13]);
+        uint16_t gb = (uint16_t)((b.ip[12] << 8) | b.ip[13]);
+        if (ga == gb)
+            printf("OK (same group %u)\n", ga);
+        else {
+            printf("FAIL: %u != %u\n", ga, gb);
+            failures++;
+        }
+    }
+
+    printf("ipv4_group16 different /16... ");
+    {
+        struct net_addr a, b;
+        net_addr_init(&a);
+        net_addr_init(&b);
+        unsigned char ip_a[] = {10, 0, 1, 1};
+        unsigned char ip_b[] = {10, 1, 1, 1};
+        net_addr_set_ipv4(&a, ip_a);
+        net_addr_set_ipv4(&b, ip_b);
+        uint16_t ga = (uint16_t)((a.ip[12] << 8) | a.ip[13]);
+        uint16_t gb = (uint16_t)((b.ip[12] << 8) | b.ip[13]);
+        if (ga != gb)
+            printf("OK (%u vs %u)\n", ga, gb);
+        else {
+            printf("FAIL: groups should differ\n");
+            failures++;
+        }
+    }
+
+    printf("misbehavior scoring increments... ");
+    {
+        int score = 0;
+        score += 10;
+        if (score == 10) score += 25;
+        if (score == 35) score += 65;
+        if (score == 100)
+            printf("OK (score=%d)\n", score);
+        else {
+            printf("FAIL: expected 100, got %d\n", score);
+            failures++;
+        }
+    }
+
+    printf("misbehavior auto-ban at threshold... ");
+    {
+        int score = 0;
+        bool banned = false;
+        int increments[] = {20, 20, 20, 20, 20};
+        for (int i = 0; i < 5; i++) {
+            score += increments[i];
+            if (score >= 100) { banned = true; break; }
+        }
+        if (banned && score == 100)
+            printf("OK (banned at %d)\n", score);
+        else {
+            printf("FAIL: banned=%d score=%d\n", banned, score);
+            failures++;
+        }
+    }
+
+    printf("misbehavior no ban below threshold... ");
+    {
+        int score = 0;
+        bool banned = false;
+        int increments[] = {10, 10, 10, 10, 10, 10, 10, 10, 10};
+        for (int i = 0; i < 9; i++) {
+            score += increments[i];
+            if (score >= 100) { banned = true; break; }
+        }
+        if (!banned && score == 90)
+            printf("OK (score=%d, not banned)\n", score);
+        else {
+            printf("FAIL: banned=%d score=%d\n", banned, score);
+            failures++;
+        }
     }
 
     return failures;

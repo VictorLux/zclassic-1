@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <sqlite3.h>
 
 static char g_onion_address[128] = "";
 static const char *g_datadir = NULL;
@@ -162,6 +163,60 @@ static size_t serve_search(const char *query, uint8_t *response, size_t max)
     return off;
 }
 
+/* ── Status endpoint (JSON API) ───────────────────────────── */
+
+static time_t g_start_time = 0;
+
+static size_t serve_status(uint8_t *response, size_t max)
+{
+    /* Gather node info */
+    int height = 0;
+    int peers = 0;
+
+    if (g_datadir) {
+        /* Query block height from SQLite */
+        char db_path[1024];
+        snprintf(db_path, sizeof(db_path), "%s/node.db", g_datadir);
+        sqlite3 *db = NULL;
+        if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) == SQLITE_OK) {
+            sqlite3_busy_timeout(db, 1000);
+            sqlite3_stmt *s = NULL;
+            if (sqlite3_prepare_v2(db,
+                    "SELECT MAX(height) FROM blocks", -1, &s, NULL) == SQLITE_OK && s) {
+                if (sqlite3_step(s) == SQLITE_ROW)
+                    height = sqlite3_column_int(s, 0);
+                sqlite3_finalize(s);
+            }
+            s = NULL;
+            if (sqlite3_prepare_v2(db,
+                    "SELECT COUNT(*) FROM peers WHERE last_seen > strftime('%s','now') - 3600",
+                    -1, &s, NULL) == SQLITE_OK && s) {
+                if (sqlite3_step(s) == SQLITE_ROW)
+                    peers = sqlite3_column_int(s, 0);
+                sqlite3_finalize(s);
+            }
+            sqlite3_close(db);
+        }
+    }
+
+    long uptime = 0;
+    if (g_start_time > 0)
+        uptime = (long)(time(NULL) - g_start_time);
+
+    char body[512];
+    int blen = snprintf(body, sizeof(body),
+        "{\"height\":%d,\"peers\":%d,\"version\":\"0.1.0\",\"uptime\":%ld}",
+        height, peers, uptime);
+    if (blen < 0) blen = 0;
+
+    return (size_t)snprintf((char *)response, max,
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: application/json\r\n"
+        "Connection: close\r\n"
+        "Content-Length: %d\r\n\r\n"
+        "%s", blen, body);
+}
+
 /* ── Main request handler ─────────────────────────────────── */
 
 size_t onion_service_handle_request(const char *method,
@@ -172,6 +227,10 @@ size_t onion_service_handle_request(const char *method,
                                      size_t response_max)
 {
     if (!path) path = "/";
+
+    /* JSON status endpoint */
+    if (strcmp(path, "/status") == 0)
+        return serve_status(response, response_max);
 
     /* Landing page / directory */
     if (strcmp(path, "/") == 0)
@@ -212,6 +271,7 @@ size_t onion_service_handle_request(const char *method,
 const char *onion_service_start(const char *datadir)
 {
     g_datadir = datadir;
+    g_start_time = time(NULL);
     /* TODO: when Tor is linked in, call dynhost_init() and register
      * onion_service_handle_request as the handler callback.
      * For now, the handler is available for the HTTP server fallback. */

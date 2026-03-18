@@ -270,6 +270,49 @@ int test_store(void)
                        (unsigned long long)a, (unsigned long long)b); failures++; }
     }
 
+    /* ── ZSLP input validation ────────────────────────────── */
+
+    printf("store: reject ticker > 10 chars... ");
+    {
+        const char *tid = zslp_create_token(test_datadir, "ABCDEFGHIJK",
+                                             "Valid Name", 0, 1000);
+        bool ok = (tid == NULL);
+        if (ok) printf("OK (rejected)\n");
+        else { printf("FAIL (should reject)\n"); failures++; }
+    }
+
+    printf("store: reject empty ticker... ");
+    {
+        const char *tid = zslp_create_token(test_datadir, "",
+                                             "Valid Name", 0, 1000);
+        bool ok = (tid == NULL);
+        if (ok) printf("OK (rejected)\n");
+        else { printf("FAIL (should reject)\n"); failures++; }
+    }
+
+    printf("store: reject decimals > 8... ");
+    {
+        const char *tid = zslp_create_token(test_datadir, "GOOD",
+                                             "Good Token", 9, 1000);
+        bool ok = (tid == NULL);
+        if (ok) printf("OK (rejected)\n");
+        else { printf("FAIL (should reject)\n"); failures++; }
+    }
+
+    printf("store: reject amount=0 mint... ");
+    {
+        bool ok = !zslp_mint(test_datadir, "TESTCOIN", "t1Buyer123", 0);
+        if (ok) printf("OK (rejected)\n");
+        else { printf("FAIL (should reject)\n"); failures++; }
+    }
+
+    printf("store: reject empty recipient address on mint... ");
+    {
+        bool ok = !zslp_mint(test_datadir, "TESTCOIN", "", 100);
+        if (ok) printf("OK (rejected)\n");
+        else { printf("FAIL (should reject)\n"); failures++; }
+    }
+
     if (failures > 0)
         printf("Store: debug datadir preserved at %s\n", test_datadir);
     else

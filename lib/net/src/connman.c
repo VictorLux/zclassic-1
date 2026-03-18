@@ -150,6 +150,29 @@ static void *thread_dns_seed(void *arg)
     return NULL;
 }
 
+/* Extract /16 subnet group from IPv4-mapped address (bytes 12-13).
+ * Returns a 16-bit value representing the first two octets. */
+static uint16_t ipv4_group16(const unsigned char ip[16])
+{
+    return (uint16_t)((ip[12] << 8) | ip[13]);
+}
+
+/* Count outbound peers in the same /16 subnet group. Caller holds cs_nodes. */
+static int count_outbound_in_group(const struct net_manager *nm, uint16_t group)
+{
+    int count = 0;
+    for (size_t i = 0; i < nm->num_nodes; i++) {
+        const struct p2p_node *n = nm->nodes[i];
+        if (n->inbound) continue;
+        if (!net_addr_is_ipv4(&n->addr.svc.addr)) continue;
+        if (ipv4_group16(n->addr.svc.addr.ip) == group)
+            count++;
+    }
+    return count;
+}
+
+#define MAX_OUTBOUND_PER_GROUP16 2
+
 static void *thread_open_connections(void *arg)
 {
     struct connman *cm = (struct connman *)arg;
@@ -175,8 +198,20 @@ static void *thread_open_connections(void *arg)
         for (int a = 0; a < attempts && !g_stop; a++) {
             struct addr_info info;
             memset(&info, 0, sizeof(info));
-            if (addrman_select(&cm->manager.addrman, false, &info))
-                connect_node(&cm->manager, &info.addr, NULL);
+            if (!addrman_select(&cm->manager.addrman, false, &info))
+                continue;
+
+            /* Eclipse attack defense: limit outbound peers per /16 subnet */
+            if (net_addr_is_ipv4(&info.addr.svc.addr)) {
+                uint16_t group = ipv4_group16(info.addr.svc.addr.ip);
+                zcl_mutex_lock(&cm->manager.cs_nodes);
+                int in_group = count_outbound_in_group(&cm->manager, group);
+                zcl_mutex_unlock(&cm->manager.cs_nodes);
+                if (in_group >= MAX_OUTBOUND_PER_GROUP16)
+                    continue;
+            }
+
+            connect_node(&cm->manager, &info.addr, NULL);
         }
 
         /* Sleep less when desperate for peers */
