@@ -20,13 +20,15 @@
 #include <stddef.h>
 
 /* Request handler callback — dynhost calls this directly.
- * path: URL path (e.g., "/", "/blog/post1")
+ * method: HTTP method (GET, POST, etc.)
+ * path: URL path (e.g., "/", "/store/product/1")
  * request_data: raw request body (NULL for GET)
  * request_len: body length
  * response: output buffer (caller allocates)
  * response_max: max response size
  * Returns bytes written to response, or 0 for 404. */
-typedef size_t (*tor_request_handler_fn)(const char *path,
+typedef size_t (*tor_request_handler_fn)(const char *method,
+                                          const char *path,
                                           const uint8_t *request_data,
                                           size_t request_len,
                                           uint8_t *response,

@@ -119,12 +119,12 @@ static void *payment_processor_thread(void *arg)
 extern size_t onion_service_handle_request(const char *, const char *,
     const uint8_t *, size_t, uint8_t *, size_t);
 
-static size_t onion_request_adapter(const char *path,
+static size_t onion_request_adapter(const char *method, const char *path,
     const uint8_t *req_data, size_t req_len,
     uint8_t *resp, size_t resp_max, void *ctx)
 {
     (void)ctx;
-    return onion_service_handle_request("GET", path,
+    return onion_service_handle_request(method, path,
         req_data, req_len, resp, resp_max);
 }
 

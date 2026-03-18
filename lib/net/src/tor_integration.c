@@ -94,6 +94,25 @@ extern int tor_main_configuration_set_command_line(
 extern void tor_main_configuration_free(tor_main_configuration_t *cfg);
 extern int tor_run_main(const tor_main_configuration_t *);
 
+/* Dynhost external handler — routes .onion requests to our code */
+typedef size_t (*dynhost_external_handler_fn)(const char *, const char *,
+    const uint8_t *, size_t, uint8_t *, size_t, void *);
+extern void dynhost_webserver_set_external_handler(
+    dynhost_external_handler_fn handler, void *ctx);
+
+/* Bridge: dynhost calls this → we call the registered handler */
+static size_t dynhost_bridge(const char *method, const char *path,
+                              const uint8_t *body, size_t body_len,
+                              uint8_t *response, size_t response_max,
+                              void *ctx)
+{
+    (void)ctx;
+    if (!g_request_handler) return 0;
+    return g_request_handler(method, path, body, body_len,
+                              response, response_max,
+                              g_request_handler_ctx);
+}
+
 static void *tor_onion_monitor(void *arg);
 
 static void *tor_thread_fn(void *arg)
@@ -153,6 +172,14 @@ bool tor_integration_start(const char *datadir, uint16_t p2p_port)
     if (!write_torrc(datadir)) {
         fprintf(stderr, "Tor: failed to write torrc\n");
         return false;
+    }
+
+    /* Register our handler with Tor's dynhost before starting.
+     * All .onion HTTP requests will route through dynhost_bridge →
+     * g_request_handler → onion_service_handle_request. */
+    if (g_request_handler) {
+        dynhost_webserver_set_external_handler(dynhost_bridge, NULL);
+        printf("Tor: external handler registered for .onion requests\n");
     }
 
     atomic_store(&g_tor_running, true);
