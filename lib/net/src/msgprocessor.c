@@ -38,6 +38,57 @@ struct snapshot_offer g_cached_offer;
 _Atomic bool g_cached_offer_valid = false;
 static struct fast_sync_rate_limiter g_rate_limiter = {0};
 
+/* Ring buffers for duplicate detection of recently seen blocks and txs. */
+#define MAX_RECENT_BLOCKS 128
+#define MAX_RECENT_TXS 4096
+static struct uint256 g_recent_blocks[MAX_RECENT_BLOCKS];
+static int g_recent_block_count = 0;
+static struct uint256 g_recent_txs[MAX_RECENT_TXS];
+static int g_recent_tx_count = 0;
+
+static bool block_already_seen(const struct uint256 *hash) {
+    int limit = g_recent_block_count < MAX_RECENT_BLOCKS
+                ? g_recent_block_count : MAX_RECENT_BLOCKS;
+    for (int i = 0; i < limit; i++) {
+        if (uint256_eq(hash, &g_recent_blocks[i])) return true;
+    }
+    return false;
+}
+
+static void block_mark_seen(const struct uint256 *hash) {
+    g_recent_blocks[g_recent_block_count % MAX_RECENT_BLOCKS] = *hash;
+    g_recent_block_count++;
+}
+
+static bool tx_already_seen(const struct uint256 *hash) {
+    int limit = g_recent_tx_count < MAX_RECENT_TXS
+                ? g_recent_tx_count : MAX_RECENT_TXS;
+    for (int i = 0; i < limit; i++) {
+        if (uint256_eq(hash, &g_recent_txs[i])) return true;
+    }
+    return false;
+}
+
+static void tx_mark_seen(const struct uint256 *hash) {
+    g_recent_txs[g_recent_tx_count % MAX_RECENT_TXS] = *hash;
+    g_recent_tx_count++;
+}
+
+/* Expose internals for unit testing via weak-linked test helpers. */
+bool msgprocessor_test_block_already_seen(const struct uint256 *hash) {
+    return block_already_seen(hash);
+}
+void msgprocessor_test_block_mark_seen(const struct uint256 *hash) {
+    block_mark_seen(hash);
+}
+void msgprocessor_test_reset_recent_blocks(void) {
+    g_recent_block_count = 0;
+    memset(g_recent_blocks, 0, sizeof(g_recent_blocks));
+}
+int msgprocessor_test_get_recent_block_count(void) {
+    return g_recent_block_count;
+}
+
 void msg_processor_init(struct msg_processor *mp,
                          struct main_state *ms,
                          struct tx_mempool *mempool,
@@ -423,6 +474,9 @@ static bool process_inv(struct msg_processor *mp, struct p2p_node *node,
     stream_init(&getdata, 256);
     uint64_t request_count = 0;
 
+    uint64_t skipped_blocks = 0;
+    uint64_t skipped_txs = 0;
+
     for (uint64_t i = 0; i < count; i++) {
         struct inv_item inv;
         if (!inv_item_deserialize(&inv, s)) {
@@ -433,6 +487,10 @@ static bool process_inv(struct msg_processor *mp, struct p2p_node *node,
         p2p_node_add_inventory_known(node, &inv);
 
         if (inv.type == MSG_BLOCK) {
+            if (block_already_seen(&inv.hash)) {
+                skipped_blocks++;
+                continue;
+            }
             struct block_index *bi = block_map_find(
                 &mp->main_state->map_block_index, &inv.hash);
             struct block_index *tip = active_chain_tip(
@@ -453,11 +511,22 @@ static bool process_inv(struct msg_processor *mp, struct p2p_node *node,
                 node->hash_continue = inv.hash;
             }
         } else if (inv.type == MSG_TX) {
+            if (tx_already_seen(&inv.hash)) {
+                skipped_txs++;
+                continue;
+            }
             if (!tx_mempool_exists(mp->mempool, &inv.hash)) {
                 inv_item_serialize(&inv, &getdata);
                 request_count++;
             }
         }
+    }
+
+    if (skipped_blocks > 0 || skipped_txs > 0) {
+        printf("Peer %s: inv dedup skipped %llu blocks, %llu txs\n",
+               node->addr_name,
+               (unsigned long long)skipped_blocks,
+               (unsigned long long)skipped_txs);
     }
 
     if (request_count > 0) {
@@ -571,6 +640,13 @@ static bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
 
     struct uint256 hash;
     block_get_hash(&blk, &hash);
+
+    if (block_already_seen(&hash)) {
+        block_free(&blk);
+        return true;
+    }
+    block_mark_seen(&hash);
+
     char hex[65];
     uint256_get_hex(&hash, hex);
     printf("Peer %s: received block %s\n", node->addr_name, hex);
@@ -647,14 +723,16 @@ static bool process_tx_msg(struct msg_processor *mp, struct p2p_node *node,
     transaction_compute_hash(&tx);
     hash = tx.hash;
 
+    if (tx_already_seen(&hash)) {
+        transaction_free(&tx);
+        return true;
+    }
+    tx_mark_seen(&hash);
+
     if (accept_to_mempool(mp, &tx)) {
         struct inv_item inv;
         inv_item_init_typed(&inv, MSG_TX, &hash);
         p2p_node_add_inventory_known(node, &inv);
-
-        char hex[65];
-        uint256_get_hex(&hash, hex);
-        printf("Peer %s: accepted tx %s to mempool\n", node->addr_name, hex);
 
         extern struct wallet *g_active_wallet;
         if (g_active_wallet) {
@@ -676,9 +754,6 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
     uint64_t count;
     if (!stream_read_compact_size(s, &count))
         return false;
-
-    printf("Peer %s: received headers message with %llu headers\n",
-           node->addr_name, (unsigned long long)count);
 
     if (count > 2000) {
         node->disconnect = true;
@@ -918,9 +993,6 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
 
         char cmd[COMMAND_SIZE + 1];
         msg_header_get_command(&msg.hdr, cmd, sizeof(cmd));
-
-        printf("[%s] recv '%s' (%u bytes)\n", node->addr_name, cmd,
-               msg.hdr.nMessageSize);
 
         struct byte_stream s;
         stream_init_from_data(&s, msg.recv_data, msg.data_pos);

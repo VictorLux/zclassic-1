@@ -35,4 +35,11 @@ bool msg_process_messages(void *ctx, struct p2p_node *node);
 bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle);
 int msg_get_height(void *ctx);
 
+/* Test helpers for block relay deduplication. */
+#include "core/uint256.h"
+bool msgprocessor_test_block_already_seen(const struct uint256 *hash);
+void msgprocessor_test_block_mark_seen(const struct uint256 *hash);
+void msgprocessor_test_reset_recent_blocks(void);
+int msgprocessor_test_get_recent_block_count(void);
+
 #endif

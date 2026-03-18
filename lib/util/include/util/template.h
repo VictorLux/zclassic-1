@@ -21,4 +21,9 @@ size_t template_render(const char *tmpl,
                        const struct template_var *vars, size_t num_vars,
                        char *out, size_t out_max);
 
+/* Escape HTML special characters (< > & " ') to prevent XSS.
+ * Writes at most max-1 bytes + NUL terminator.
+ * Returns bytes written (excluding NUL). */
+size_t html_escape(char *dst, size_t max, const char *src);
+
 #endif /* ZCL_UTIL_TEMPLATE_H */

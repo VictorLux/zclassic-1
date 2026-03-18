@@ -6,6 +6,7 @@
 #include "net/version.h"
 #include "net/fast_sync.h"
 #include "net/onion_service.h"
+#include "net/msgprocessor.h"
 
 static int test_tip_count = 0;
 static int test_tip_height = 0;
@@ -2111,6 +2112,90 @@ int test_net(void)
         ok = ok && (strstr((char *)resp, "429") == NULL);
         ok = ok && (strstr((char *)resp, "200 OK") != NULL);
         if (ok) printf("OK (not rate-limited)\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ===== BLOCK RELAY DEDUPLICATION TESTS ===== */
+
+    printf("block_already_seen: new hash returns false... ");
+    {
+        msgprocessor_test_reset_recent_blocks();
+        struct uint256 hash;
+        memset(hash.data, 0xAA, 32);
+        bool ok = !msgprocessor_test_block_already_seen(&hash);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("block_already_seen: returns true after mark_seen... ");
+    {
+        msgprocessor_test_reset_recent_blocks();
+        struct uint256 hash;
+        memset(hash.data, 0xBB, 32);
+        msgprocessor_test_block_mark_seen(&hash);
+        bool ok = msgprocessor_test_block_already_seen(&hash);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("block_already_seen: distinct hashes are independent... ");
+    {
+        msgprocessor_test_reset_recent_blocks();
+        struct uint256 h1, h2;
+        memset(h1.data, 0x11, 32);
+        memset(h2.data, 0x22, 32);
+        msgprocessor_test_block_mark_seen(&h1);
+        bool ok = msgprocessor_test_block_already_seen(&h1);
+        ok = ok && !msgprocessor_test_block_already_seen(&h2);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("block_already_seen: ring buffer wraps at 128... ");
+    {
+        msgprocessor_test_reset_recent_blocks();
+        struct uint256 first;
+        memset(first.data, 0, 32);
+        first.data[0] = 0xFF;
+        msgprocessor_test_block_mark_seen(&first);
+
+        /* Fill 127 more entries to reach capacity */
+        for (int i = 1; i < 128; i++) {
+            struct uint256 h;
+            memset(h.data, 0, 32);
+            h.data[0] = (uint8_t)i;
+            msgprocessor_test_block_mark_seen(&h);
+        }
+        /* first should still be visible */
+        bool ok = msgprocessor_test_block_already_seen(&first);
+
+        /* Add one more to evict first (slot 0 overwritten) */
+        struct uint256 extra;
+        memset(extra.data, 0, 32);
+        extra.data[0] = 0xFE;
+        extra.data[1] = 0x01;
+        msgprocessor_test_block_mark_seen(&extra);
+
+        /* first should now be evicted */
+        ok = ok && !msgprocessor_test_block_already_seen(&first);
+        /* extra should be found */
+        ok = ok && msgprocessor_test_block_already_seen(&extra);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("block_already_seen: counter increments correctly... ");
+    {
+        msgprocessor_test_reset_recent_blocks();
+        bool ok = (msgprocessor_test_get_recent_block_count() == 0);
+        struct uint256 h;
+        memset(h.data, 0xCC, 32);
+        msgprocessor_test_block_mark_seen(&h);
+        ok = ok && (msgprocessor_test_get_recent_block_count() == 1);
+        msgprocessor_test_block_mark_seen(&h);
+        ok = ok && (msgprocessor_test_get_recent_block_count() == 2);
+        if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
 

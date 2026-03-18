@@ -5,8 +5,9 @@
 #include "util/template.h"
 #include <string.h>
 
-/* Write HTML-escaped value to dst. Returns bytes written. */
-static size_t tmpl_html_escape(char *dst, size_t max, const char *src)
+/* Escape HTML special characters to prevent XSS.
+ * Writes at most max-1 bytes + NUL. Returns bytes written. */
+size_t html_escape(char *dst, size_t max, const char *src)
 {
     size_t w = 0;
     for (size_t i = 0; src[i]; i++) {
@@ -21,14 +22,15 @@ static size_t tmpl_html_escape(char *dst, size_t max, const char *src)
         default: break;
         }
         if (esc) {
-            if (w + elen >= max) return w;
+            if (w + elen >= max) break;
             memcpy(dst + w, esc, elen);
             w += elen;
         } else {
-            if (w + 1 >= max) return w;
+            if (w + 1 >= max) break;
             dst[w++] = src[i];
         }
     }
+    if (max > 0) dst[w] = '\0';
     return w;
 }
 
@@ -93,7 +95,7 @@ size_t template_render(const char *tmpl,
                 const char *val = tmpl_lookup(vars, num_vars,
                                               key_start, key_len);
                 if (val) {
-                    size_t added = tmpl_html_escape(out + w,
+                    size_t added = html_escape(out + w,
                                                     out_max - w, val);
                     w += added;
                 } else {

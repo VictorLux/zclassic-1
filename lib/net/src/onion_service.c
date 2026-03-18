@@ -5,6 +5,7 @@
 
 #include "net/onion_service.h"
 #include "controllers/blog_controller.h"
+#include "util/template.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -32,24 +33,6 @@ static bool rate_limit_check(void)
     }
     int64_t count = atomic_fetch_add(&g_request_count, 1);
     return count < MAX_REQUESTS_PER_SECOND;
-}
-
-/* HTML-escape a string to prevent XSS. Writes at most max-1 bytes + null. */
-static size_t html_escape(char *dst, size_t max, const char *src)
-{
-    size_t w = 0;
-    for (size_t i = 0; src[i] && w + 6 < max; i++) {
-        switch (src[i]) {
-        case '<':  w += (size_t)snprintf(dst + w, max - w, "&lt;"); break;
-        case '>':  w += (size_t)snprintf(dst + w, max - w, "&gt;"); break;
-        case '&':  w += (size_t)snprintf(dst + w, max - w, "&amp;"); break;
-        case '"':  w += (size_t)snprintf(dst + w, max - w, "&quot;"); break;
-        case '\'': w += (size_t)snprintf(dst + w, max - w, "&#39;"); break;
-        default:   dst[w++] = src[i]; break;
-        }
-    }
-    dst[w] = '\0';
-    return w;
 }
 
 /* ── Query node stats from SQLite ─────────────────────────── */

@@ -17,24 +17,6 @@ static size_t serve_gated_content(sqlite3 *db, const char *customer_addr,
                                    const char *datadir,
                                    uint8_t *resp, size_t max);
 
-/* Escape HTML special characters to prevent XSS */
-static size_t html_escape(char *dst, size_t max, const char *src)
-{
-    size_t w = 0;
-    for (size_t i = 0; src[i] && w + 6 < max; i++) {
-        switch (src[i]) {
-        case '<':  w += (size_t)snprintf(dst + w, max - w, "&lt;"); break;
-        case '>':  w += (size_t)snprintf(dst + w, max - w, "&gt;"); break;
-        case '&':  w += (size_t)snprintf(dst + w, max - w, "&amp;"); break;
-        case '"':  w += (size_t)snprintf(dst + w, max - w, "&quot;"); break;
-        case '\'': w += (size_t)snprintf(dst + w, max - w, "&#39;"); break;
-        default:   dst[w++] = src[i]; break;
-        }
-    }
-    dst[w] = '\0';
-    return w;
-}
-
 /* Ensure store tables exist */
 static void store_ensure_schema(sqlite3 *db)
 {
@@ -178,13 +160,13 @@ static size_t store_error_response(const char *status_code,
         status_code, "text/html; charset=utf-8", resp, max);
 }
 
-/* Product card template ({{variables}} are HTML-escaped). */
-static const char product_card_tmpl[] =
+/* Product card template: {{var}} = HTML-escaped, {{{var}}} = raw. */
+static const char PRODUCT_CARD_TEMPLATE[] =
     "<div class='product'>"
-    "<h3><a href='/store/product/{{{id}}}'>{{name}}</a></h3>"
+    "<h3><a href='/store/product/{{id}}'>{{name}}</a></h3>"
     "<p>{{description}}</p>"
-    "<div class='price'>{{{price}}} ZCL</div>"
-    "<a href='/store/product/{{{id}}}' class='btn'>View</a>"
+    "<div class='price'>{{price}} ZCL</div>"
+    "<a href='/store/product/{{id}}' class='btn'>View</a>"
     "</div>";
 
 /* GET /store — list products */
@@ -222,7 +204,7 @@ static size_t serve_product_list(sqlite3 *db, uint8_t *resp, size_t max)
             { "price",       price_str },
         };
 
-        size_t rendered = template_render(product_card_tmpl,
+        size_t rendered = template_render(PRODUCT_CARD_TEMPLATE,
             vars, sizeof(vars) / sizeof(vars[0]),
             body + off, sizeof(body) - off);
         off += rendered;
@@ -308,6 +290,7 @@ static size_t serve_product_detail(sqlite3 *db, int64_t product_id,
 /* POST /store/buy/:id — create order */
 static size_t serve_create_order(sqlite3 *db, int64_t product_id,
                                   const char *customer_addr,
+                                  const char *datadir,
                                   uint8_t *resp, size_t max)
 {
     /* Look up product */
@@ -325,12 +308,14 @@ static size_t serve_create_order(sqlite3 *db, int64_t product_id,
     int64_t price = sqlite3_column_int64(s, 0);
     sqlite3_finalize(s);
 
-    /* Generate a unique z-address for this payment.
-     * In production, call z_getnewaddress via RPC.
-     * For now, use a placeholder. */
+    /* Generate a unique Sapling z-address for this payment. */
     char payment_addr[128];
-    snprintf(payment_addr, sizeof(payment_addr),
-             "zs1_order_%lld_%lld", (long long)product_id, (long long)time(NULL));
+    if (!zslp_generate_payment_address(datadir, payment_addr,
+                                        sizeof(payment_addr))) {
+        snprintf(payment_addr, sizeof(payment_addr),
+                 "zs1_order_%lld_%lld",
+                 (long long)product_id, (long long)time(NULL));
+    }
 
     /* Create order */
     sqlite3_prepare_v2(db,
@@ -528,7 +513,8 @@ size_t store_handle_request(const char *method, const char *path,
             result = store_error_response("400 Bad Request",
                 err_body, strlen(err_body), response, response_max);
         } else {
-            result = serve_create_order(db, id, addr, response, response_max);
+            result = serve_create_order(db, id, addr, datadir,
+                                          response, response_max);
         }
 
     } else if (strncmp(path, "/store/order/", 13) == 0) {
