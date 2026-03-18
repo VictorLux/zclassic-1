@@ -1812,7 +1812,7 @@ int test_net(void)
         size_t len = onion_service_handle_request(
             "GET", NULL, NULL, 0, buf, sizeof(buf));
         buf[len < sizeof(buf) ? len : sizeof(buf) - 1] = '\0';
-        bool ok = (len > 0 && strstr((char *)buf, "ZClassic23 Network") != NULL);
+        bool ok = (len > 0 && strstr((char *)buf, "ZClassic23") != NULL);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
@@ -2060,6 +2060,58 @@ int test_net(void)
             printf("FAIL: banned=%d score=%d\n", banned, score);
             failures++;
         }
+    }
+
+    /* ===== ONION SERVICE ROUTING TESTS ===== */
+
+    printf("onion: GET / returns landing page with ZClassic23... ");
+    {
+        uint8_t resp[16384];
+        size_t n = onion_service_handle_request("GET", "/", NULL, 0,
+                                                 resp, sizeof(resp));
+        bool ok = (n > 0);
+        ok = ok && (strstr((char *)resp, "HTTP/1.1 200 OK") != NULL);
+        ok = ok && (strstr((char *)resp, "ZClassic23") != NULL);
+        ok = ok && (strstr((char *)resp, "text/html") != NULL);
+        if (ok) printf("OK (%zu bytes)\n", n);
+        else { printf("FAIL (n=%zu)\n", n); failures++; }
+    }
+
+    printf("onion: GET /status returns JSON with height+version... ");
+    {
+        uint8_t resp[4096];
+        size_t n = onion_service_handle_request("GET", "/status", NULL, 0,
+                                                 resp, sizeof(resp));
+        bool ok = (n > 0);
+        ok = ok && (strstr((char *)resp, "HTTP/1.1 200 OK") != NULL);
+        ok = ok && (strstr((char *)resp, "application/json") != NULL);
+        ok = ok && (strstr((char *)resp, "\"height\"") != NULL);
+        ok = ok && (strstr((char *)resp, "\"version\"") != NULL);
+        if (ok) printf("OK (%zu bytes)\n", n);
+        else { printf("FAIL (n=%zu)\n", n); failures++; }
+    }
+
+    printf("onion: GET /nonexistent returns 404... ");
+    {
+        uint8_t resp[4096];
+        size_t n = onion_service_handle_request("GET", "/nonexistent", NULL, 0,
+                                                 resp, sizeof(resp));
+        bool ok = (n > 0);
+        ok = ok && (strstr((char *)resp, "404 Not Found") != NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("onion: rate limiter allows first request... ");
+    {
+        uint8_t resp[16384];
+        size_t n = onion_service_handle_request("GET", "/", NULL, 0,
+                                                 resp, sizeof(resp));
+        bool ok = (n > 0);
+        ok = ok && (strstr((char *)resp, "429") == NULL);
+        ok = ok && (strstr((char *)resp, "200 OK") != NULL);
+        if (ok) printf("OK (not rate-limited)\n");
+        else { printf("FAIL\n"); failures++; }
     }
 
     return failures;

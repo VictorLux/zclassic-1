@@ -313,6 +313,129 @@ int test_store(void)
         else { printf("FAIL (should reject)\n"); failures++; }
     }
 
+    /* ── End-to-end purchase flow ────────────────────────────── */
+
+    printf("store: e2e: GET /store lists 3 products... ");
+    {
+        size_t n = store_handle_request("GET", "/store", NULL, 0,
+                                         resp, sizeof(resp), test_datadir);
+        bool ok = (n > 0);
+        ok = ok && (strstr((char *)resp, "200 OK") != NULL);
+        ok = ok && (strstr((char *)resp, "ZCL23 Access Token") != NULL);
+        ok = ok && (strstr((char *)resp, "VPN Credit") != NULL);
+        ok = ok && (strstr((char *)resp, "Storage") != NULL);
+        if (ok) printf("OK (3 products listed)\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("store: e2e: GET /store/product/1 shows price + form... ");
+    {
+        size_t n = store_handle_request("GET", "/store/product/1", NULL, 0,
+                                         resp, sizeof(resp), test_datadir);
+        bool ok = (n > 0);
+        ok = ok && (strstr((char *)resp, "200 OK") != NULL);
+        ok = ok && (strstr((char *)resp, "0.01000000 ZCL") != NULL);
+        ok = ok && (strstr((char *)resp, "customer_addr") != NULL);
+        ok = ok && (strstr((char *)resp, "<form") != NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("store: e2e: POST /store/buy/1 creates order with z-addr... ");
+    {
+        const char *body = "customer_addr=t1Test";
+        size_t n = store_handle_request("POST", "/store/buy/1",
+                                         (const uint8_t *)body, strlen(body),
+                                         resp, sizeof(resp), test_datadir);
+        bool ok = (n > 0);
+        ok = ok && (strstr((char *)resp, "200 OK") != NULL);
+        ok = ok && (strstr((char *)resp, "Order #") != NULL);
+        ok = ok && (strstr((char *)resp, "t1Test") != NULL);
+        ok = ok && (strstr((char *)resp, "zs1_order_") != NULL);
+        if (ok) printf("OK (z-address generated)\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("store: e2e: GET /store/order shows Pending status... ");
+    {
+        /* Order created above; query the latest order */
+        size_t n = store_handle_request("GET", "/store/order/2", NULL, 0,
+                                         resp, sizeof(resp), test_datadir);
+        bool ok = (n > 0);
+        ok = ok && (strstr((char *)resp, "200 OK") != NULL);
+        ok = ok && (strstr((char *)resp, "Pending") != NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("store: e2e: mint ZCL23ACCESS + verify gated access 200... ");
+    {
+        zslp_create_token(test_datadir, "ZCL23ACCESS", "Access Token", 0, 1000);
+        zslp_mint(test_datadir, "ZCL23ACCESS", "t1Test", 10);
+        size_t n = store_handle_request("GET",
+            "/store/access?addr=t1Test&token=ZCL23ACCESS",
+            NULL, 0, resp, sizeof(resp), test_datadir);
+        bool ok = (n > 0);
+        ok = ok && (strstr((char *)resp, "200 OK") != NULL);
+        ok = ok && (strstr((char *)resp, "Premium Service") != NULL);
+        if (ok) printf("OK (access granted)\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ── ZSLP edge cases ─────────────────────────────────────── */
+
+    printf("store: zslp multiple mints accumulate... ");
+    {
+        zslp_create_token(test_datadir, "ACCUM", "Accumulate", 0, 10000);
+        zslp_mint(test_datadir, "ACCUM", "t1Accum", 100);
+        zslp_mint(test_datadir, "ACCUM", "t1Accum", 200);
+        zslp_mint(test_datadir, "ACCUM", "t1Accum", 300);
+        uint64_t bal = zslp_balance(test_datadir, "ACCUM", "t1Accum");
+        bool ok = (bal == 600);
+        if (ok) printf("OK (balance=600)\n");
+        else { printf("FAIL (balance=%llu)\n", (unsigned long long)bal); failures++; }
+    }
+
+    printf("store: zslp separate addresses keep independent balances... ");
+    {
+        zslp_create_token(test_datadir, "SPLIT", "Split Token", 0, 10000);
+        zslp_mint(test_datadir, "SPLIT", "t1Alice", 100);
+        zslp_mint(test_datadir, "SPLIT", "t1Bob", 250);
+        uint64_t a = zslp_balance(test_datadir, "SPLIT", "t1Alice");
+        uint64_t b = zslp_balance(test_datadir, "SPLIT", "t1Bob");
+        bool ok = (a == 100) && (b == 250);
+        if (ok) printf("OK (Alice=100, Bob=250)\n");
+        else { printf("FAIL (Alice=%llu, Bob=%llu)\n",
+                       (unsigned long long)a, (unsigned long long)b); failures++; }
+    }
+
+    printf("store: zslp balance 0 for existing token, missing addr... ");
+    {
+        uint64_t bal = zslp_balance(test_datadir, "SPLIT", "t1Ghost");
+        bool ok = (bal == 0);
+        if (ok) printf("OK\n");
+        else { printf("FAIL (balance=%llu)\n", (unsigned long long)bal); failures++; }
+    }
+
+    printf("store: zslp two tokens with different tickers independent... ");
+    {
+        zslp_create_token(test_datadir, "COIN_X", "Coin X", 2, 5000);
+        zslp_create_token(test_datadir, "COIN_Y", "Coin Y", 4, 9000);
+        zslp_mint(test_datadir, "COIN_X", "t1Holder", 42);
+        zslp_mint(test_datadir, "COIN_Y", "t1Holder", 99);
+        uint64_t x = zslp_balance(test_datadir, "COIN_X", "t1Holder");
+        uint64_t y = zslp_balance(test_datadir, "COIN_Y", "t1Holder");
+        bool ok = (x == 42) && (y == 99);
+        /* Cross-check: minting one doesn't affect the other */
+        zslp_mint(test_datadir, "COIN_X", "t1Holder", 8);
+        x = zslp_balance(test_datadir, "COIN_X", "t1Holder");
+        y = zslp_balance(test_datadir, "COIN_Y", "t1Holder");
+        ok = ok && (x == 50) && (y == 99);
+        if (ok) printf("OK (X=50, Y=99)\n");
+        else { printf("FAIL (X=%llu, Y=%llu)\n",
+                       (unsigned long long)x, (unsigned long long)y); failures++; }
+    }
+
     if (failures > 0)
         printf("Store: debug datadir preserved at %s\n", test_datadir);
     else

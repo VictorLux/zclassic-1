@@ -96,19 +96,29 @@ static void store_ensure_schema(sqlite3 *db)
         ")", NULL, NULL, NULL);
 }
 
-/* HTML helpers */
-static int html_header(char *buf, size_t max, const char *title)
+/* Get the .onion address from the onion service layer (may be NULL). */
+static const char *store_get_onion_address(void)
 {
+    extern const char *onion_service_get_address(void);
+    return onion_service_get_address();
+}
+
+/* HTML body start (no HTTP headers — those are added by store_wrap_response) */
+static int html_body_start(char *buf, size_t max, const char *title)
+{
+    const char *onion = store_get_onion_address();
     return snprintf(buf, max,
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: text/html; charset=utf-8\r\n"
-        "Connection: close\r\n\r\n"
         "<!DOCTYPE html><html><head><meta charset='utf-8'>"
         "<title>%s</title><style>"
         "body{font-family:monospace;background:#0a0a0a;color:#e0e0e0;"
         "max-width:800px;margin:0 auto;padding:20px}"
         "h1{color:#00ff88}h2{color:#00cc66}"
         "a{color:#00aaff;text-decoration:none}"
+        ".header-nav{display:flex;align-items:center;gap:16px;"
+        "border-bottom:1px solid #333;padding-bottom:12px;margin-bottom:16px;"
+        "flex-wrap:wrap}"
+        ".header-nav a{font-size:13px}"
+        ".onion-id{font-size:11px;color:#666;word-break:break-all}"
         ".product{background:#1a1a1a;padding:20px;margin:15px 0;"
         "border-radius:8px;border-left:3px solid #00ff88}"
         ".price{color:#00ff88;font-size:20px;font-weight:bold}"
@@ -120,19 +130,63 @@ static int html_header(char *buf, size_t max, const char *title)
         ".pending{background:#333;color:#ff8800}"
         ".paid{background:#1a3a1a;color:#00ff88}"
         "input{background:#1a1a1a;color:#e0e0e0;border:1px solid #333;"
-        "padding:8px;font-family:monospace;width:100%%;margin:5px 0}"
+        "padding:8px;font-family:monospace;width:100%%;margin:5px 0;"
+        "box-sizing:border-box}"
         "</style></head><body>"
-        "<h1><a href='/store'>ZCL Store</a></h1>", title);
+        "<div class='header-nav'>"
+        "<h1 style='margin:0'><a href='/store'>ZCL Store</a></h1>"
+        "<a href='/'>Home</a>"
+        "<a href='/store'>Products</a>"
+        "%s%s%s"
+        "</div>",
+        title,
+        onion ? "<div class='onion-id'>" : "",
+        onion ? onion : "",
+        onion ? "</div>" : "");
+}
+
+/* Wrap an HTML body with HTTP headers including Content-Length. */
+static size_t store_wrap_response(const char *body, size_t body_len,
+                                   const char *status,
+                                   const char *content_type,
+                                   uint8_t *resp, size_t max)
+{
+    return (size_t)snprintf((char *)resp, max,
+        "HTTP/1.1 %s\r\n"
+        "Content-Type: %s\r\n"
+        "Content-Length: %zu\r\n"
+        "Connection: close\r\n\r\n"
+        "%.*s",
+        status, content_type, body_len,
+        (int)body_len, body);
+}
+
+/* Convenience: wrap a 200 OK HTML response with Content-Length. */
+static size_t store_html_response(const char *body, size_t body_len,
+                                   uint8_t *resp, size_t max)
+{
+    return store_wrap_response(body, body_len,
+        "200 OK", "text/html; charset=utf-8", resp, max);
+}
+
+/* Convenience: wrap an error HTML response with Content-Length. */
+static size_t store_error_response(const char *status_code,
+                                    const char *body, size_t body_len,
+                                    uint8_t *resp, size_t max)
+{
+    return store_wrap_response(body, body_len,
+        status_code, "text/html; charset=utf-8", resp, max);
 }
 
 /* GET /store — list products */
 static size_t serve_product_list(sqlite3 *db, uint8_t *resp, size_t max)
 {
+    char body[16384];
     size_t off = 0;
-    int n = html_header((char *)resp, max, "ZCL Store");
+    int n = html_body_start(body, sizeof(body), "ZCL Store");
     if (n > 0) off = (size_t)n;
 
-    n = snprintf((char *)resp + off, max - off,
+    n = snprintf(body + off, sizeof(body) - off,
         "<h2>Products</h2>");
     if (n > 0) off += (size_t)n;
 
@@ -142,7 +196,7 @@ static size_t serve_product_list(sqlite3 *db, uint8_t *resp, size_t max)
         "WHERE active=1 ORDER BY id", -1, &s, NULL);
 
     int count = 0;
-    while (sqlite3_step(s) == SQLITE_ROW && off + 1024 < max) {
+    while (sqlite3_step(s) == SQLITE_ROW && off + 1024 < sizeof(body)) {
         int64_t id = sqlite3_column_int64(s, 0);
         const char *name = (const char *)sqlite3_column_text(s, 1);
         const char *desc = (const char *)sqlite3_column_text(s, 2);
@@ -152,7 +206,7 @@ static size_t serve_product_list(sqlite3 *db, uint8_t *resp, size_t max)
         html_escape(safe_name, sizeof(safe_name), name ? name : "?");
         html_escape(safe_desc, sizeof(safe_desc), desc ? desc : "");
 
-        n = snprintf((char *)resp + off, max - off,
+        n = snprintf(body + off, sizeof(body) - off,
             "<div class='product'>"
             "<h3><a href='/store/product/%lld'>%s</a></h3>"
             "<p>%s</p>"
@@ -169,22 +223,22 @@ static size_t serve_product_list(sqlite3 *db, uint8_t *resp, size_t max)
     sqlite3_finalize(s);
 
     if (count == 0) {
-        n = snprintf((char *)resp + off, max - off,
+        n = snprintf(body + off, sizeof(body) - off,
             "<p style='color:#666'>No products yet. "
             "Add products to the SQLite database.</p>");
         if (n > 0) off += (size_t)n;
     }
 
-    n = snprintf((char *)resp + off, max - off, "</body></html>");
+    n = snprintf(body + off, sizeof(body) - off, "</body></html>");
     if (n > 0) off += (size_t)n;
-    return off;
+
+    return store_html_response(body, off, resp, max);
 }
 
 /* GET /store/product/:id — product detail */
 static size_t serve_product_detail(sqlite3 *db, int64_t product_id,
                                     uint8_t *resp, size_t max)
 {
-    size_t off = 0;
     sqlite3_stmt *s = NULL;
     sqlite3_prepare_v2(db,
         "SELECT name, description, price_zatoshi, token_id, tokens_per_purchase "
@@ -193,9 +247,10 @@ static size_t serve_product_detail(sqlite3 *db, int64_t product_id,
 
     if (sqlite3_step(s) != SQLITE_ROW) {
         sqlite3_finalize(s);
-        return (size_t)snprintf((char *)resp, max,
-            "HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\n"
-            "Connection: close\r\n\r\n<h1>Product not found</h1>");
+        const char *body = "<h1>Product not found</h1>"
+            "<p><a href='/store'>Back to store</a></p>";
+        return store_error_response("404 Not Found", body, strlen(body),
+                                     resp, max);
     }
 
     const char *name = (const char *)sqlite3_column_text(s, 0);
@@ -209,10 +264,12 @@ static size_t serve_product_detail(sqlite3 *db, int64_t product_id,
     html_escape(safe_desc, sizeof(safe_desc), desc ? desc : "");
     html_escape(safe_token, sizeof(safe_token), token ? token : "TOKENS");
 
-    int n = html_header((char *)resp, max, safe_name);
+    char body[8192];
+    size_t off = 0;
+    int n = html_body_start(body, sizeof(body), safe_name);
     if (n > 0) off = (size_t)n;
 
-    n = snprintf((char *)resp + off, max - off,
+    n = snprintf(body + off, sizeof(body) - off,
         "<div class='product'>"
         "<h2>%s</h2>"
         "<p>%s</p>"
@@ -226,6 +283,7 @@ static size_t serve_product_detail(sqlite3 *db, int64_t product_id,
         "<button type='submit' class='btn'>Generate Payment Address</button>"
         "</form>"
         "</div>"
+        "<p><a href='/store'>&larr; Back to store</a></p>"
         "</body></html>",
         safe_name,
         safe_desc,
@@ -236,7 +294,7 @@ static size_t serve_product_detail(sqlite3 *db, int64_t product_id,
     if (n > 0) off += (size_t)n;
 
     sqlite3_finalize(s);
-    return off;
+    return store_html_response(body, off, resp, max);
 }
 
 /* POST /store/buy/:id — create order */
@@ -281,8 +339,9 @@ static size_t serve_create_order(sqlite3 *db, int64_t product_id,
     sqlite3_finalize(s);
 
     /* Show payment page */
+    char body[8192];
     size_t off = 0;
-    int n = html_header((char *)resp, max, "Payment");
+    int n = html_body_start(body, sizeof(body), "Payment");
     if (n > 0) off = (size_t)n;
 
     char safe_pay[256], safe_cust[256];
@@ -290,7 +349,7 @@ static size_t serve_create_order(sqlite3 *db, int64_t product_id,
     html_escape(safe_cust, sizeof(safe_cust),
                 customer_addr ? customer_addr : "(not provided)");
 
-    n = snprintf((char *)resp + off, max - off,
+    n = snprintf(body + off, sizeof(body) - off,
         "<h2>Order #%lld</h2>"
         "<div class='product'>"
         "<p>Send exactly <span class='price'>%.8f ZCL</span> to:</p>"
@@ -298,14 +357,17 @@ static size_t serve_create_order(sqlite3 *db, int64_t product_id,
         "<p>After payment confirms, tokens will be sent to:</p>"
         "<div class='addr'>%s</div>"
         "<p><a href='/store/order/%lld'>Check payment status</a></p>"
-        "</div></body></html>",
+        "</div>"
+        "<p><a href='/store'>&larr; Back to store</a></p>"
+        "</body></html>",
         (long long)order_id,
         (double)price / 1e8,
         safe_pay,
         safe_cust,
         (long long)order_id);
     if (n > 0) off += (size_t)n;
-    return off;
+
+    return store_html_response(body, off, resp, max);
 }
 
 /* GET /store/order/:id — check status */
@@ -319,9 +381,10 @@ static size_t serve_order_status(sqlite3 *db, int64_t order_id,
     sqlite3_bind_int64(s, 1, order_id);
     if (sqlite3_step(s) != SQLITE_ROW) {
         sqlite3_finalize(s);
-        return (size_t)snprintf((char *)resp, max,
-            "HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\n"
-            "Connection: close\r\n\r\n<h1>Order not found</h1>");
+        const char *body = "<h1>Order not found</h1>"
+            "<p><a href='/store'>Back to store</a></p>";
+        return store_error_response("404 Not Found", body, strlen(body),
+                                     resp, max);
     }
 
     int status = sqlite3_column_int(s, 0);
@@ -337,8 +400,9 @@ static size_t serve_order_status(sqlite3 *db, int64_t order_id,
     const char *status_class = status == 0 ? "pending" :
                                 status >= 1 ? "paid" : "pending";
 
+    char body[8192];
     size_t off = 0;
-    int n = html_header((char *)resp, max, "Order Status");
+    int n = html_body_start(body, sizeof(body), "Order Status");
     if (n > 0) off = (size_t)n;
 
     char safe_pay[256], safe_cust[256];
@@ -348,7 +412,7 @@ static size_t serve_order_status(sqlite3 *db, int64_t order_id,
     html_escape(safe_ptxid, sizeof(safe_ptxid), pay_txid ? pay_txid : "");
     html_escape(safe_mtxid, sizeof(safe_mtxid), mint_txid ? mint_txid : "");
 
-    n = snprintf((char *)resp + off, max - off,
+    n = snprintf(body + off, sizeof(body) - off,
         "<h2>Order #%lld</h2>"
         "<div class='product'>"
         "<div class='status %s'>%s</div>"
@@ -357,7 +421,7 @@ static size_t serve_order_status(sqlite3 *db, int64_t order_id,
         "<p>Deliver to:</p><div class='addr'>%s</div>"
         "%s%s%s%s%s%s"
         "<p><a href='/store/order/%lld'>Refresh</a> | "
-        "<a href='/store'>Back to store</a></p>"
+        "<a href='/store'>&larr; Back to store</a></p>"
         "</div></body></html>",
         (long long)order_id,
         status_class, status_text,
@@ -373,7 +437,8 @@ static size_t serve_order_status(sqlite3 *db, int64_t order_id,
         (long long)order_id);
     if (n > 0) off += (size_t)n;
     sqlite3_finalize(s);
-    return off;
+
+    return store_html_response(body, off, resp, max);
 }
 
 /* Parse URL parameter: extract number after last '/' */
@@ -449,11 +514,11 @@ size_t store_handle_request(const char *method, const char *path,
             parse_form_field((const char *)body, body_len,
                              "customer_addr", addr, sizeof(addr));
         if (!validate_address(addr)) {
-            result = (size_t)snprintf((char *)response, response_max,
-                "HTTP/1.1 400 Bad Request\r\nContent-Type: text/html\r\n"
-                "Connection: close\r\n\r\n<h1>Invalid address</h1>"
+            const char *err_body = "<h1>Invalid address</h1>"
                 "<p>Address must be alphanumeric.</p>"
-                "<p><a href='/store'>Back</a></p>");
+                "<p><a href='/store'>&larr; Back to store</a></p>";
+            result = store_error_response("400 Bad Request",
+                err_body, strlen(err_body), response, response_max);
         } else {
             result = serve_create_order(db, id, addr, response, response_max);
         }
@@ -573,33 +638,33 @@ static size_t serve_gated_content(sqlite3 *db, const char *customer_addr,
                 customer_addr ? customer_addr : "");
 
     if (!store_check_token_access(datadir, customer_addr, token_id, required)) {
-        return (size_t)snprintf((char *)resp, max,
-            "HTTP/1.1 403 Forbidden\r\n"
-            "Content-Type: text/html; charset=utf-8\r\n"
-            "Connection: close\r\n\r\n"
+        char body[2048];
+        int blen = snprintf(body, sizeof(body),
             "<!DOCTYPE html><html><head><style>"
             "body{font-family:monospace;background:#0a0a0a;color:#e0e0e0;"
             "max-width:800px;margin:0 auto;padding:40px}"
-            "h1{color:#ff4444}"
+            "h1{color:#ff4444}a{color:#00aaff;text-decoration:none}"
             "</style></head><body>"
             "<h1>Access Denied</h1>"
             "<p>This service requires %llu %s tokens.</p>"
             "<p>Your balance: %llu</p>"
-            "<p><a href='/store' style='color:#00aaff'>Get tokens</a></p>"
+            "<p><a href='/store'>&larr; Get tokens</a> | "
+            "<a href='/'>Home</a></p>"
             "</body></html>",
             (unsigned long long)required, safe_token,
             (unsigned long long)zslp_balance(datadir, token_id, customer_addr));
+        if (blen < 0) blen = 0;
+        return store_error_response("403 Forbidden",
+            body, (size_t)blen, resp, max);
     }
 
     /* Customer has tokens — serve the content */
-    return (size_t)snprintf((char *)resp, max,
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: text/html; charset=utf-8\r\n"
-        "Connection: close\r\n\r\n"
+    char body[2048];
+    int blen = snprintf(body, sizeof(body),
         "<!DOCTYPE html><html><head><style>"
         "body{font-family:monospace;background:#0a0a0a;color:#e0e0e0;"
         "max-width:800px;margin:0 auto;padding:40px}"
-        "h1{color:#00ff88}"
+        "h1{color:#00ff88}a{color:#00aaff;text-decoration:none}"
         ".card{background:#1a1a1a;padding:20px;margin:15px 0;border-radius:8px;"
         "border-left:3px solid #00ff88}"
         "</style></head><body>"
@@ -608,8 +673,13 @@ static size_t serve_gated_content(sqlite3 *db, const char *customer_addr,
         "<p>Welcome, %s</p>"
         "<p>Your token balance: %llu %s</p>"
         "<p>You have access to this service.</p>"
-        "</div></body></html>",
+        "</div>"
+        "<p><a href='/store'>&larr; Back to store</a> | "
+        "<a href='/'>Home</a></p>"
+        "</body></html>",
         safe_addr,
         (unsigned long long)zslp_balance(datadir, token_id, customer_addr),
         safe_token);
+    if (blen < 0) blen = 0;
+    return store_html_response(body, (size_t)blen, resp, max);
 }

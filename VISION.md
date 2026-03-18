@@ -241,15 +241,18 @@ At 100 points: 24-hour IP ban, immediate disconnect.
 - [x] Bug-for-bug zclassicd compatible (NODE_NETWORK | NODE_BLOOM)
 - [x] Fast sync with PoW defense (1.6M UTXOs in 60s)
 - [x] Rate limiting (5000 chunks/IP/hour)
-- [x] Peer misbehavior scoring (auto-ban at threshold)
+- [x] Peer misbehavior scoring (auto-ban at 100 points, 24h)
 - [x] PoW enforcement on snapshot requests
+- [x] Addrman feedback: failed connections penalized, handshakes promoted
+- [x] Outbound diversity: max 2 peers per /16 subnet
 - [ ] Block + transaction relay validation
 
 ### Tor (All Application Traffic)
 - [x] Embedded in binary (SocksPort 0, no ports)
 - [x] .onion address generation
-- [ ] dynhost → onion_service_handle_request wired
-- [ ] Persistent .onion key
+- [x] dynhost → onion_service_handle_request wired (external handler hook)
+- [x] Onion service rate limiter (100 req/s)
+- [ ] Persistent .onion key (survives restart)
 - [ ] .onion published on-chain via ZSLP
 
 ### On-Chain Registry
