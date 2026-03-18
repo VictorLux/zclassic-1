@@ -103,6 +103,18 @@ static void *load_params_thread(void *arg)
 
 static int cmp_height(const void *a, const void *b);
 
+/* Payment processor background thread */
+extern void store_process_payments(const char *datadir);
+static void *payment_processor_thread(void *arg)
+{
+    const char *datadir = (const char *)arg;
+    while (1) {
+        sleep(30);
+        store_process_payments(datadir);
+    }
+    return NULL;
+}
+
 /* Adapter: bridges tor_request_handler_fn to onion_service_handle_request */
 extern size_t onion_service_handle_request(const char *, const char *,
     const uint8_t *, size_t, uint8_t *, size_t);
@@ -1152,6 +1164,16 @@ bool app_init(struct app_context *ctx)
         fflush(stdout);
         if (!tor_integration_start(ctx->datadir, (uint16_t)ctx->p2p_port))
             fprintf(stderr, "Warning: Tor failed to start\n");
+    }
+
+    /* Start store payment processor (checks every 30s) */
+    {
+        static char s_pay_datadir[1024];
+        snprintf(s_pay_datadir, sizeof(s_pay_datadir), "%s", ctx->datadir);
+        static pthread_t payment_thread;
+        pthread_create(&payment_thread, NULL, payment_processor_thread,
+                        s_pay_datadir);
+        pthread_detach(payment_thread);
     }
 
     atomic_store(&g_running, true);
