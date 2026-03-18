@@ -223,29 +223,43 @@ bool require_tokens(const char *customer_addr, const char *token_id, uint64_t am
 - [ ] Content version anchoring
 
 ### Commerce
-- [ ] Product model (SQLite)
-- [ ] Order model with payment tracking
-- [ ] z-address generation per order (unique per customer)
-- [ ] Payment detection (z_listunspent polling or webhook)
-- [ ] ZSLP token minting on payment confirmation
-- [ ] Token-gated route access
-- [ ] Token balance checking from chain
+- [x] Product model (SQLite, auto-schema)
+- [x] Order model with payment state machine (pending/paid/minted)
+- [x] Store controller: list/detail/buy/status routes
+- [x] Demo products seeded on first access (3 products)
+- [x] z-address generation per order
+- [x] ZSLP token controller (create/mint/send/balance)
+- [x] Token balance tracking (zslp_balances table)
+- [ ] Payment detection loop (z_listunspent polling)
+- [ ] Auto-mint tokens on payment confirmation
+- [ ] Token-gated route access (before_action check)
 
-### Load Balancing
-- [ ] Replica discovery from ZSLP chain scan
-- [ ] Latency probing via Tor circuit
-- [ ] Capacity-aware selection
-- [ ] Failover on connection failure
-- [ ] Content version consistency
-- [ ] Replica announcement (site_announce_replica)
+### Load Balancing (10 tests passing)
+- [x] Replica discovery from ZSLP chain scan
+- [x] Scoring: reachable > latency > capacity > freshness
+- [x] Capacity-aware selection
+- [x] Failover (site_connect_best tries multiple replicas)
+- [x] Content version consistency field
+- [x] Replica announcement (site_announce_replica builds ZSLP script)
+- [ ] Actual Tor circuit probing (currently estimates from block height)
 - [ ] Content sync between replicas
+
+### P2P Gaming / Low-Latency (15 tests passing)
+- [x] Tic-tac-toe engine (move validation, win/draw detection)
+- [x] Wire format: zgame command (invite/accept/move/state/result)
+- [x] Microsecond latency measurement per move
+- [x] Auto-accept game invites
+- [x] Board rendering
+- [ ] ZSLP token staking (winner gets pot)
+- [ ] Game lobby (discover opponents via P2P)
+- [ ] Chess / custom game types
 
 ### MVC Framework
 - [x] Models: SQLite with ActiveRecord pattern
 - [x] Controllers: route handlers with RPC dispatch
-- [x] Views: HTML served from files
+- [x] Views: HTML served from files, inline CSS
+- [x] Form data parsing (POST body → key/value)
 - [ ] HTML template engine ({{variable}} substitution)
-- [ ] Form data parsing (POST body → key/value)
 - [ ] Before/after action hooks
 - [ ] Session state (per-Tor-circuit)
 - [ ] CSRF protection (per-circuit tokens)
