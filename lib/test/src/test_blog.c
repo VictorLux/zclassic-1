@@ -148,5 +148,43 @@ int test_blog(void)
         else { printf("FAIL (len=%zu)\n", len); failures++; }
     }
 
+    printf("blog: auto_announce_onion rejects invalid input... ");
+    {
+        bool ok = !blog_auto_announce_onion(NULL, "test.onion");
+        ok = ok && !blog_auto_announce_onion(".", NULL);
+        ok = ok && !blog_auto_announce_onion(".", "");
+        ok = ok && !blog_auto_announce_onion(".", "no_suffix");
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("blog: auto_announce_onion announces new address... ");
+    {
+        char tmpdir[] = ".zcl_blog_ann_XXXXXX";
+        char *dir = mkdtemp(tmpdir);
+        bool ok = (dir != NULL);
+        if (ok) {
+            const char *addr1 =
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.onion";
+            ok = ok && blog_auto_announce_onion(dir, addr1);
+
+            /* Second call with same address returns false (no re-announce) */
+            ok = ok && !blog_auto_announce_onion(dir, addr1);
+
+            /* Different address announces successfully */
+            const char *addr2 =
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.onion";
+            ok = ok && blog_auto_announce_onion(dir, addr2);
+
+            /* Clean up: remove node.db and tmpdir */
+            char db_path[1024];
+            snprintf(db_path, sizeof(db_path), "%s/node.db", dir);
+            unlink(db_path);
+            rmdir(dir);
+        }
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     return failures;
 }

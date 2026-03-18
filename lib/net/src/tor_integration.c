@@ -28,7 +28,8 @@ void tor_integration_set_handler(tor_request_handler_fn handler, void *ctx)
     g_request_handler_ctx = ctx;
 }
 
-/* Write torrc — SocksPort 0 (no ports). Dynhost handles everything. */
+/* Write torrc — SocksPort 0 (no ports). Dynhost handles everything.
+ * HiddenServiceDir persists the .onion key across restarts. */
 static bool write_torrc(const char *datadir)
 {
     char torrc_path[1024];
@@ -40,20 +41,66 @@ static bool write_torrc(const char *datadir)
     fprintf(f,
         "SocksPort 0\n"
         "DataDirectory %s/tor_data\n"
-        "Log notice file %s/tor.log\n",
-        datadir, datadir);
+        "Log notice file %s/tor.log\n"
+        "HiddenServiceDir %s/tor_data/onion_service\n"
+        "HiddenServicePort 80 127.0.0.1:80\n",
+        datadir, datadir, datadir);
 
     fclose(f);
     return true;
 }
 
-/* Parse .onion address from Tor's dynhost log output */
-static bool read_onion_from_log(const char *datadir)
+/* Read .onion address from persistent hostname file (HiddenServiceDir).
+ * Returns true if address was read successfully. */
+static bool read_onion_from_hostname_file(const char *datadir)
+{
+    char path[1024];
+    snprintf(path, sizeof(path),
+             "%s/tor_data/onion_service/hostname", datadir);
+
+    FILE *f = fopen(path, "r");
+    if (!f) return false;
+
+    char line[128];
+    if (!fgets(line, sizeof(line), f)) {
+        fclose(f);
+        return false;
+    }
+    fclose(f);
+
+    /* Strip trailing whitespace */
+    size_t len = strlen(line);
+    while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r'
+                       || line[len - 1] == ' '))
+        line[--len] = '\0';
+
+    if (len == 0 || len >= sizeof(g_onion_address))
+        return false;
+
+    memcpy(g_onion_address, line, len + 1);
+
+    /* Ensure .onion suffix */
+    if (!strstr(g_onion_address, ".onion")) {
+        size_t alen = strlen(g_onion_address);
+        if (alen + 7 <= sizeof(g_onion_address) - 1)
+            memcpy(g_onion_address + alen, ".onion", 7);
+    }
+    return true;
+}
+
+/* Wait for .onion address: check hostname file first (persistent key),
+ * fall back to parsing Tor log (ephemeral service). */
+static bool read_onion_address(const char *datadir)
 {
     char log_path[1024];
     snprintf(log_path, sizeof(log_path), "%s/tor.log", datadir);
 
     for (int attempt = 0; attempt < 120; attempt++) {
+        /* Persistent key: Tor writes hostname file after bootstrap */
+        if (read_onion_from_hostname_file(datadir))
+            return true;
+
+        /* Fallback: parse ephemeral address from dynhost log */
         FILE *f = fopen(log_path, "r");
         if (f) {
             char line[512];
@@ -145,8 +192,13 @@ static void *tor_thread_fn(void *arg)
 static void *tor_onion_monitor(void *arg)
 {
     (void)arg;
-    if (read_onion_from_log(g_tor_datadir)) {
+    if (read_onion_address(g_tor_datadir)) {
         atomic_store(&g_tor_ready, true);
+
+        /* Propagate address to onion service layer */
+        extern void onion_service_set_address(const char *);
+        onion_service_set_address(g_onion_address);
+
         printf("Tor .onion: %s\n", g_onion_address);
         fflush(stdout);
     } else {
@@ -167,6 +219,8 @@ bool tor_integration_start(const char *datadir, uint16_t p2p_port)
 
     char path[1024];
     snprintf(path, sizeof(path), "%s/tor_data", datadir);
+    mkdir(path, 0700);
+    snprintf(path, sizeof(path), "%s/tor_data/onion_service", datadir);
     mkdir(path, 0700);
 
     if (!write_torrc(datadir)) {

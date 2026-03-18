@@ -4,7 +4,7 @@
 
 #include "controllers/store_controller.h"
 #include "controllers/zslp_controller.h"
-#include "models/database.h"
+#include "util/template.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -178,6 +178,15 @@ static size_t store_error_response(const char *status_code,
         status_code, "text/html; charset=utf-8", resp, max);
 }
 
+/* Product card template ({{variables}} are HTML-escaped). */
+static const char product_card_tmpl[] =
+    "<div class='product'>"
+    "<h3><a href='/store/product/{{{id}}}'>{{name}}</a></h3>"
+    "<p>{{description}}</p>"
+    "<div class='price'>{{{price}}} ZCL</div>"
+    "<a href='/store/product/{{{id}}}' class='btn'>View</a>"
+    "</div>";
+
 /* GET /store — list products */
 static size_t serve_product_list(sqlite3 *db, uint8_t *resp, size_t max)
 {
@@ -202,22 +211,21 @@ static size_t serve_product_list(sqlite3 *db, uint8_t *resp, size_t max)
         const char *desc = (const char *)sqlite3_column_text(s, 2);
         int64_t price = sqlite3_column_int64(s, 3);
 
-        char safe_name[256], safe_desc[512];
-        html_escape(safe_name, sizeof(safe_name), name ? name : "?");
-        html_escape(safe_desc, sizeof(safe_desc), desc ? desc : "");
+        char id_str[32], price_str[32];
+        snprintf(id_str, sizeof(id_str), "%lld", (long long)id);
+        snprintf(price_str, sizeof(price_str), "%.8f", (double)price / 1e8);
 
-        n = snprintf(body + off, sizeof(body) - off,
-            "<div class='product'>"
-            "<h3><a href='/store/product/%lld'>%s</a></h3>"
-            "<p>%s</p>"
-            "<div class='price'>%.8f ZCL</div>"
-            "<a href='/store/product/%lld' class='btn'>View</a>"
-            "</div>",
-            (long long)id, safe_name,
-            safe_desc,
-            (double)price / 1e8,
-            (long long)id);
-        if (n > 0) off += (size_t)n;
+        struct template_var vars[] = {
+            { "id",          id_str },
+            { "name",        name ? name : "?" },
+            { "description", desc ? desc : "" },
+            { "price",       price_str },
+        };
+
+        size_t rendered = template_render(product_card_tmpl,
+            vars, sizeof(vars) / sizeof(vars[0]),
+            body + off, sizeof(body) - off);
+        off += rendered;
         count++;
     }
     sqlite3_finalize(s);
@@ -574,19 +582,35 @@ void store_process_payments(const char *datadir)
 
         if (!pay_addr || !cust_addr || !token_id) continue;
 
-        /* Check if payment received.
-         * In production: query z_getbalance for the specific z-address.
-         * For demo: check wallet_sapling_notes for any matching amount. */
+        /* Check if payment received at the order's z-address.
+         * Primary: match notes by address (works with real z-addresses).
+         * Fallback: match by exact amount (for placeholder z-addresses). */
+        int64_t received = 0;
         sqlite3_stmt *check = NULL;
+
+        /* Primary: per-address query */
         sqlite3_prepare_v2(db,
             "SELECT COALESCE(SUM(value), 0) FROM wallet_sapling_notes "
-            "WHERE spent_txid IS NULL AND value >= ?",
+            "WHERE spent_txid IS NULL AND address = ?",
             -1, &check, NULL);
-        sqlite3_bind_int64(check, 1, expected);
-        int64_t received = 0;
+        sqlite3_bind_text(check, 1, pay_addr, -1, SQLITE_STATIC);
         if (sqlite3_step(check) == SQLITE_ROW)
             received = sqlite3_column_int64(check, 0);
         sqlite3_finalize(check);
+
+        /* Fallback: if no address match and using placeholder z-addrs,
+         * check for an unspent note with the exact expected amount. */
+        if (received < expected) {
+            check = NULL;
+            sqlite3_prepare_v2(db,
+                "SELECT COALESCE(SUM(value), 0) FROM wallet_sapling_notes "
+                "WHERE spent_txid IS NULL AND value = ?",
+                -1, &check, NULL);
+            sqlite3_bind_int64(check, 1, expected);
+            if (sqlite3_step(check) == SQLITE_ROW)
+                received = sqlite3_column_int64(check, 0);
+            sqlite3_finalize(check);
+        }
 
         if (received >= expected) {
             /* Payment confirmed — update order and mint tokens */

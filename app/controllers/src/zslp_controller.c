@@ -5,8 +5,6 @@
 #include "controllers/zslp_controller.h"
 #include "sapling/slp.h"
 #include "core/uint256.h"
-#include "core/serialize.h"
-#include "primitives/transaction.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -181,7 +179,6 @@ bool zslp_generate_payment_address(const char *datadir,
      * a real Sapling diversified address. This requires the wallet
      * to have Sapling keys (which it does — 66 sapling keys loaded). */
 
-    printf("ZSLP: generated payment address %s\n", z_addr_out);
     return true;
 }
 
@@ -193,11 +190,6 @@ int64_t zslp_check_payment(const char *datadir,
 {
     if (!datadir || !z_addr) return 0;
 
-    /* TODO: call z_listunspent and check for notes at z_addr.
-     * For now, check a payments table that gets updated by
-     * the sync_controller when new Sapling notes arrive. */
-    (void)min_amount;
-
     char db_path[1024];
     snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
     sqlite3 *db = NULL;
@@ -207,13 +199,31 @@ int64_t zslp_check_payment(const char *datadir,
 
     int64_t received = 0;
     sqlite3_stmt *s = NULL;
+
+    /* Primary: query notes at the specific z-address */
     sqlite3_prepare_v2(db,
         "SELECT COALESCE(SUM(value), 0) FROM wallet_sapling_notes "
-        "WHERE spent_txid IS NULL", /* check all unspent notes */
+        "WHERE spent_txid IS NULL AND address = ?",
         -1, &s, NULL);
+    sqlite3_bind_text(s, 1, z_addr, -1, SQLITE_STATIC);
     if (sqlite3_step(s) == SQLITE_ROW)
         received = sqlite3_column_int64(s, 0);
     sqlite3_finalize(s);
+
+    /* Fallback: if no address match (placeholder z-addrs),
+     * check for any unspent note meeting the minimum amount. */
+    if (received < min_amount && min_amount > 0) {
+        s = NULL;
+        sqlite3_prepare_v2(db,
+            "SELECT COALESCE(SUM(value), 0) FROM wallet_sapling_notes "
+            "WHERE spent_txid IS NULL AND value = ?",
+            -1, &s, NULL);
+        sqlite3_bind_int64(s, 1, min_amount);
+        if (sqlite3_step(s) == SQLITE_ROW)
+            received = sqlite3_column_int64(s, 0);
+        sqlite3_finalize(s);
+    }
+
     sqlite3_close(db);
     return received;
 }
@@ -243,9 +253,6 @@ bool zslp_mint(const char *datadir,
         fprintf(stderr, "zslp: recipient address must be alphanumeric\n");
         return false;
     }
-
-    printf("ZSLP MINT: %llu %s → %s\n",
-           (unsigned long long)amount, token_id_hex, recipient_addr);
 
     /* Update balance in SQLite */
     char db_path[1024];

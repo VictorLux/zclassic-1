@@ -42,4 +42,9 @@ struct onion_peer {
 int blog_discover_onion_peers(const char *datadir,
                                struct onion_peer *out, size_t max);
 
+/* Auto-announce .onion address on-chain via ZSLP SEND.
+ * Returns true if a new announcement was created.
+ * Returns false if already published or on error. */
+bool blog_auto_announce_onion(const char *datadir, const char *onion_address);
+
 #endif

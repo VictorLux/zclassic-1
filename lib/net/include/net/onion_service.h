@@ -27,6 +27,9 @@ void onion_service_stop(void);
 /* Get the .onion address (NULL if not started). */
 const char *onion_service_get_address(void);
 
+/* Set the .onion address (called by tor_integration after reading key). */
+void onion_service_set_address(const char *address);
+
 /* Handle an incoming request from dynhost.
  * This is the callback registered with Tor's dynhost webserver.
  *

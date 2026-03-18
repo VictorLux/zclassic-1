@@ -1164,6 +1164,14 @@ bool app_init(struct app_context *ctx)
         fflush(stdout);
         if (!tor_integration_start(ctx->datadir, (uint16_t)ctx->p2p_port))
             fprintf(stderr, "Warning: Tor failed to start\n");
+
+        /* Auto-announce .onion address on-chain via ZSLP */
+        const char *onion = tor_integration_get_onion_address();
+        if (onion) {
+            extern bool blog_auto_announce_onion(const char *, const char *);
+            if (blog_auto_announce_onion(ctx->datadir, onion))
+                printf("Published .onion address on-chain: %s\n", onion);
+        }
     }
 
     /* Start store payment processor (checks every 30s) */

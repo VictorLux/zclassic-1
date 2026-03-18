@@ -377,10 +377,6 @@ const char *onion_service_start(const char *datadir)
 {
     g_datadir = datadir;
     g_start_time = time(NULL);
-    /* TODO: when Tor is linked in, call dynhost_init() and register
-     * onion_service_handle_request as the handler callback.
-     * For now, the handler is available for the HTTP server fallback. */
-    printf("Onion service layer initialized (datadir=%s)\n", datadir);
     return g_onion_address[0] ? g_onion_address : NULL;
 }
 
@@ -392,6 +388,15 @@ void onion_service_stop(void)
 const char *onion_service_get_address(void)
 {
     return g_onion_address[0] ? g_onion_address : NULL;
+}
+
+void onion_service_set_address(const char *address)
+{
+    if (address) {
+        snprintf(g_onion_address, sizeof(g_onion_address), "%s", address);
+    } else {
+        g_onion_address[0] = '\0';
+    }
 }
 
 bool onion_service_register_site(const char *title, const char *description)

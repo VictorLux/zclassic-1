@@ -1,9 +1,10 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
- * Store controller + ZSLP token integration tests. */
+ * Store controller + ZSLP token + template engine tests. */
 
 #include "test/test_helpers.h"
 #include "controllers/store_controller.h"
 #include "controllers/zslp_controller.h"
+#include "util/template.h"
 #include <unistd.h>
 
 static char test_datadir[256];
@@ -436,11 +437,123 @@ int test_store(void)
                        (unsigned long long)x, (unsigned long long)y); failures++; }
     }
 
+    /* ── Template engine tests ────────────────────────────────── */
+
+    printf("template: basic variable substitution... ");
+    {
+        char out[256];
+        struct template_var vars[] = {
+            { "name", "Alice" },
+            { "greeting", "Hello" },
+        };
+        size_t n = template_render("{{greeting}}, {{name}}!",
+            vars, 2, out, sizeof(out));
+        bool ok = (n > 0) && (strcmp(out, "Hello, Alice!") == 0);
+        if (ok) printf("OK (%s)\n", out);
+        else { printf("FAIL (%s)\n", out); failures++; }
+    }
+
+    printf("template: HTML escaping of < > & \" '... ");
+    {
+        char out[256];
+        struct template_var vars[] = {
+            { "val", "<b>A&B \"C\" 'D'</b>" },
+        };
+        size_t n = template_render("{{val}}", vars, 1, out, sizeof(out));
+        bool ok = (n > 0);
+        ok = ok && (strstr(out, "&lt;b&gt;") != NULL);
+        ok = ok && (strstr(out, "&amp;") != NULL);
+        ok = ok && (strstr(out, "&quot;") != NULL);
+        ok = ok && (strstr(out, "&#39;") != NULL);
+        ok = ok && (strstr(out, "<b>") == NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL (%s)\n", out); failures++; }
+    }
+
+    printf("template: triple-brace raw output (no escaping)... ");
+    {
+        char out[256];
+        struct template_var vars[] = {
+            { "html", "<b>bold</b>" },
+        };
+        size_t n = template_render("{{{html}}}", vars, 1, out, sizeof(out));
+        bool ok = (n > 0) && (strcmp(out, "<b>bold</b>") == 0);
+        if (ok) printf("OK\n");
+        else { printf("FAIL (%s)\n", out); failures++; }
+    }
+
+    printf("template: missing variable leaves placeholder... ");
+    {
+        char out[256];
+        struct template_var vars[] = {
+            { "exists", "yes" },
+        };
+        size_t n = template_render("{{exists}} {{missing}}",
+            vars, 1, out, sizeof(out));
+        bool ok = (n > 0);
+        ok = ok && (strstr(out, "yes") != NULL);
+        ok = ok && (strstr(out, "{{missing}}") != NULL);
+        if (ok) printf("OK (%s)\n", out);
+        else { printf("FAIL (%s)\n", out); failures++; }
+    }
+
+    printf("template: empty template returns empty... ");
+    {
+        char out[64];
+        size_t n = template_render("", NULL, 0, out, sizeof(out));
+        bool ok = (n == 0) && (out[0] == '\0');
+        if (ok) printf("OK\n");
+        else { printf("FAIL (n=%zu)\n", n); failures++; }
+    }
+
+    printf("template: NULL safety... ");
+    {
+        char out[64];
+        bool ok = true;
+        ok = ok && (template_render(NULL, NULL, 0, out, sizeof(out)) == 0);
+        ok = ok && (template_render("hello", NULL, 0, NULL, 0) == 0);
+        ok = ok && (template_render("hello", NULL, 0, out, 0) == 0);
+        /* NULL vars with non-zero count: no crash, placeholders unchanged */
+        size_t n = template_render("{{x}}", NULL, 0, out, sizeof(out));
+        ok = ok && (n > 0) && (strcmp(out, "{{x}}") == 0);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("template: mixed escaped and raw in same template... ");
+    {
+        char out[512];
+        struct template_var vars[] = {
+            { "safe", "<script>alert(1)</script>" },
+            { "raw", "<div class='x'>" },
+        };
+        size_t n = template_render("{{{raw}}}{{safe}}{{{raw}}}",
+            vars, 2, out, sizeof(out));
+        bool ok = (n > 0);
+        ok = ok && (strstr(out, "<div class='x'>") != NULL);
+        ok = ok && (strstr(out, "&lt;script&gt;") != NULL);
+        ok = ok && (strstr(out, "<script>") == NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL (%s)\n", out); failures++; }
+    }
+
+    printf("template: value with NULL treated as empty string... ");
+    {
+        char out[64];
+        struct template_var vars[] = {
+            { "key", NULL },
+        };
+        size_t n = template_render("[{{key}}]", vars, 1, out, sizeof(out));
+        bool ok = (n > 0) && (strcmp(out, "[]") == 0);
+        if (ok) printf("OK\n");
+        else { printf("FAIL (%s)\n", out); failures++; }
+    }
+
     if (failures > 0)
         printf("Store: debug datadir preserved at %s\n", test_datadir);
     else
         cleanup_datadir();
 
-    printf("Store + ZSLP: %d failures\n", failures);
+    printf("Store + ZSLP + Template: %d failures\n", failures);
     return failures;
 }

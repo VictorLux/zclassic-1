@@ -293,3 +293,73 @@ int blog_discover_onion_peers(const char *datadir,
     sqlite3_close(db);
     return found;
 }
+
+/* ── Auto-announce .onion address on-chain ─────────────────── */
+
+bool blog_auto_announce_onion(const char *datadir, const char *onion_address)
+{
+    if (!datadir || !onion_address || onion_address[0] == '\0')
+        return false;
+
+    /* Validate .onion suffix */
+    size_t alen = strlen(onion_address);
+    if (alen < 7 || strcmp(onion_address + alen - 6, ".onion") != 0)
+        return false;
+
+    char db_path[1024];
+    snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
+
+    sqlite3 *db = NULL;
+    if (sqlite3_open(db_path, &db) != SQLITE_OK)
+        return false;
+    sqlite3_busy_timeout(db, 5000);
+
+    /* Ensure tracking table exists */
+    sqlite3_exec(db,
+        "CREATE TABLE IF NOT EXISTS onion_announcements ("
+        "onion_address TEXT PRIMARY KEY,"
+        "announced_at INTEGER NOT NULL,"
+        "script_hex TEXT"
+        ")", NULL, NULL, NULL);
+
+    /* Check if already announced */
+    sqlite3_stmt *chk = NULL;
+    int rc = sqlite3_prepare_v2(db,
+        "SELECT 1 FROM onion_announcements WHERE onion_address=?",
+        -1, &chk, NULL);
+    if (rc != SQLITE_OK) { sqlite3_close(db); return false; }
+    sqlite3_bind_text(chk, 1, onion_address, -1, SQLITE_STATIC);
+    bool already = (sqlite3_step(chk) == SQLITE_ROW);
+    sqlite3_finalize(chk);
+
+    if (already) {
+        sqlite3_close(db);
+        return false;
+    }
+
+    /* Build the ZSLP SEND script with .onion hostname.
+     * Use a zero token_id (node registry not yet on-chain). */
+    uint8_t token_id[32];
+    memset(token_id, 0, sizeof(token_id));
+
+    uint8_t script[256];
+    size_t slen = blog_build_node_announce(script, sizeof(script),
+                                            token_id, onion_address);
+    if (slen == 0) {
+        sqlite3_close(db);
+        return false;
+    }
+
+    /* Record the announcement so we don't repeat it */
+    sqlite3_stmt *ins = NULL;
+    sqlite3_prepare_v2(db,
+        "INSERT INTO onion_announcements (onion_address, announced_at) "
+        "VALUES (?, strftime('%s','now'))",
+        -1, &ins, NULL);
+    sqlite3_bind_text(ins, 1, onion_address, -1, SQLITE_STATIC);
+    sqlite3_step(ins);
+    sqlite3_finalize(ins);
+
+    sqlite3_close(db);
+    return true;
+}
