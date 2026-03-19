@@ -2307,23 +2307,27 @@ static size_t serve_token_detail(const char *token_id_hex, uint8_t *r, size_t ma
         return 0;
     sqlite3_exec(db, "PRAGMA mmap_size=268435456", NULL, NULL, NULL);
 
-    /* Convert display hex to internal byte order (reverse) */
+    /* Parse hex token ID — try direct first, then reversed byte order */
     uint8_t token_id[32];
+    uint8_t token_id_rev[32];
     for (int i = 0; i < 32; i++) {
         unsigned int b;
-        if (sscanf(token_id_hex + (31 - i) * 2, "%2x", &b) != 1) {
+        if (sscanf(token_id_hex + i * 2, "%2x", &b) != 1) {
             sqlite3_close(db);
             return 0;
         }
         token_id[i] = (uint8_t)b;
+        token_id_rev[31 - i] = (uint8_t)b;
     }
 
-    /* Look up token */
+    /* Look up token — try both byte orders */
     char ticker[64] = "", name[128] = "", doc_url[256] = "";
     int decimals = 0, genesis_height = 0;
     int64_t total_minted = 0;
     bool found = false;
 
+    /* Try direct byte order first, then reversed */
+    const uint8_t *lookup_id = token_id;
     {
         sqlite3_stmt *s = NULL;
         if (sqlite3_prepare_v2(db,
@@ -2331,7 +2335,14 @@ static size_t serve_token_detail(const char *token_id_hex, uint8_t *r, size_t ma
                 "FROM zslp_tokens WHERE token_id = ?",
                 -1, &s, NULL) == SQLITE_OK) {
             sqlite3_bind_blob(s, 1, token_id, 32, SQLITE_STATIC);
-            if (sqlite3_step(s) == SQLITE_ROW) {
+            if (sqlite3_step(s) != SQLITE_ROW) {
+                /* Try reversed */
+                sqlite3_reset(s);
+                sqlite3_bind_blob(s, 1, token_id_rev, 32, SQLITE_STATIC);
+                if (sqlite3_step(s) == SQLITE_ROW)
+                    lookup_id = token_id_rev;
+            }
+            if (sqlite3_column_text(s, 0)) {
                 const char *t = (const char *)sqlite3_column_text(s, 0);
                 const char *n = (const char *)sqlite3_column_text(s, 1);
                 const char *u = (const char *)sqlite3_column_text(s, 3);
@@ -2380,7 +2391,7 @@ static size_t serve_token_detail(const char *token_id_hex, uint8_t *r, size_t ma
         if (sqlite3_prepare_v2(db,
                 "SELECT count(*) FROM zslp_transfers WHERE token_id = ?",
                 -1, &s, NULL) == SQLITE_OK) {
-            sqlite3_bind_blob(s, 1, token_id, 32, SQLITE_STATIC);
+            sqlite3_bind_blob(s, 1, lookup_id, 32, SQLITE_STATIC);
             if (sqlite3_step(s) == SQLITE_ROW)
                 xfer_count = sqlite3_column_int64(s, 0);
             sqlite3_finalize(s);
@@ -2430,7 +2441,7 @@ static size_t serve_token_detail(const char *token_id_hex, uint8_t *r, size_t ma
                 "FROM zslp_transfers WHERE token_id = ? "
                 "ORDER BY block_height DESC LIMIT 100",
                 -1, &s, NULL) == SQLITE_OK) {
-            sqlite3_bind_blob(s, 1, token_id, 32, SQLITE_STATIC);
+            sqlite3_bind_blob(s, 1, lookup_id, 32, SQLITE_STATIC);
             while (sqlite3_step(s) == SQLITE_ROW && off + 512 < max) {
                 int height = sqlite3_column_int(s, 0);
                 int tx_type = sqlite3_column_int(s, 1);

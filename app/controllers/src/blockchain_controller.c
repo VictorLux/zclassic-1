@@ -1797,6 +1797,8 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
     node_db_exec(g_node_db_bc, "DELETE FROM utxos");
     node_db_exec(g_node_db_bc, "DELETE FROM transactions");
     node_db_exec(g_node_db_bc, "DELETE FROM blocks");
+    node_db_exec(g_node_db_bc, "DELETE FROM zslp_tokens");
+    node_db_exec(g_node_db_bc, "DELETE FROM zslp_transfers");
 
     /* ── Pass 1: Scan all blocks, build hash→(file,offset,size) map.
      * Then chain-walk from genesis using prev_hash to assign heights.
@@ -2131,9 +2133,18 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
                             sqlite3_finalize(ts);
                         }
                     }
-                    /* Store transfer records — one per output for SEND */
-                    const uint8_t *tok_id = (slp.type == SLP_TX_GENESIS)
-                        ? tx->hash.data : slp.token_id.data;
+                    /* Store transfer records — one per output for SEND.
+                     * SLP spec encodes token_id as big-endian in OP_RETURN,
+                     * but tx->hash.data is little-endian (internal order).
+                     * Reverse slp.token_id to match internal order. */
+                    uint8_t tok_id_buf[32];
+                    if (slp.type == SLP_TX_GENESIS) {
+                        memcpy(tok_id_buf, tx->hash.data, 32);
+                    } else {
+                        for (int b = 0; b < 32; b++)
+                            tok_id_buf[b] = slp.token_id.data[31 - b];
+                    }
+                    const uint8_t *tok_id = tok_id_buf;
                     int num_records = 1;
                     if (slp.type == SLP_TX_SEND) num_records = slp.num_outputs;
                     if (num_records < 1) num_records = 1;
