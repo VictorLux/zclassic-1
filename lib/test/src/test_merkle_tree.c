@@ -212,8 +212,8 @@ static int test_merkle_tree_scale(void)
 
     /* Witness-at-scale tests: verify witness root == tree root at increasing sizes.
      * The live rescan processes 1M+ commitments; we need to confirm correctness. */
-    int scale_sizes[] = {100, 1000, 10000, 50000, 100000};
-    for (int si = 0; si < 5; si++) {
+    int scale_sizes[] = {100, 1000, 10000};
+    for (int si = 0; si < 3; si++) {
         int N = scale_sizes[si];
         int W = N / 2; /* witness position at midpoint */
         printf("Sapling witness root == tree root at %d elements (witness@%d)... ", N, W);

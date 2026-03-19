@@ -5,6 +5,7 @@
 
 int main(void)
 {
+    setbuf(stdout, NULL); /* Unbuffered for test progress visibility */
     int failures = 0;
 
     /* Global init required by many test groups */

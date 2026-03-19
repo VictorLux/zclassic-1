@@ -755,6 +755,9 @@ int test_chain(void)
         }
     }
 
+    /* Skip equihash solver by default — takes ~20s and 3.25GB RAM.
+     * Run with EQUIHASH_TEST=1 to enable. */
+    if (getenv("EQUIHASH_TEST")) {
     printf("equihash solver (192,7) finds valid solution... ");
     {
         struct equihash_params ep;
@@ -804,6 +807,7 @@ int test_chain(void)
             printf("SKIP (insufficient memory)\n");
         }
     }
+    } /* end EQUIHASH_TEST guard */
 
     printf("check_block_header version too low... ");
     {
