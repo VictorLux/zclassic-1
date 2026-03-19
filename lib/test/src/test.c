@@ -44,6 +44,7 @@ int main(void)
     failures += test_api();
     failures += test_explorer();
     failures += test_mining();
+    failures += test_utxo_commitment();
     failures += test_tor();
 
     ecc_verify_destroy();

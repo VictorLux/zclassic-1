@@ -8,6 +8,7 @@
 #define ZCL_COINS_VIEW_H
 
 #include "coins/coins.h"
+#include "coins/utxo_commitment.h"
 #include "core/uint256.h"
 #include <stdbool.h>
 #include <stdint.h>
@@ -108,6 +109,7 @@ struct coins_view_cache {
     struct coins_map cache_coins;
     struct uint256 hash_block;
     size_t cached_coins_usage;
+    struct utxo_commitment commitment;  /* incremental UTXO set hash */
 };
 
 void coins_view_cache_init(struct coins_view_cache *c, struct coins_view *backing);
