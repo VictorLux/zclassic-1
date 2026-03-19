@@ -168,7 +168,7 @@ static void sha256_transform_shani(uint32_t *state, const unsigned char *data)
 
     /* Rounds 28-31 */
     msg  = _mm_add_epi32(msg3, _mm_set_epi32(
-        (int)0x106AA070, (int)0xF40E3585, (int)0xD6990624, (int)0xD192E819));
+        (int)0x14292967, (int)0x06CA6351, (int)0xD5A79147, (int)0xC6E00BF3));
     state1 = _mm_sha256rnds2_epu32(state1, state0, msg);
     tmp    = _mm_alignr_epi8(msg3, msg2, 4);
     msg0   = _mm_add_epi32(msg0, tmp);
@@ -212,7 +212,7 @@ static void sha256_transform_shani(uint32_t *state, const unsigned char *data)
 
     /* Rounds 44-47 */
     msg  = _mm_add_epi32(msg3, _mm_set_epi32(
-        (int)0x14292967, (int)0x06CA6351, (int)0xD5A79147, (int)0xC6E00BF3));
+        (int)0x106AA070, (int)0xF40E3585, (int)0xD6990624, (int)0xD192E819));
     state1 = _mm_sha256rnds2_epu32(state1, state0, msg);
     tmp    = _mm_alignr_epi8(msg3, msg2, 4);
     msg0   = _mm_add_epi32(msg0, tmp);
@@ -223,7 +223,7 @@ static void sha256_transform_shani(uint32_t *state, const unsigned char *data)
 
     /* Rounds 48-51 */
     msg  = _mm_add_epi32(msg0, _mm_set_epi32(
-        (int)0x4ED8AA4A, (int)0x391C0CB3, (int)0x34B0BCB5, (int)0x2748774C));
+        (int)0x34B0BCB5, (int)0x2748774C, (int)0x1E376C08, (int)0x19A4C116));
     state1 = _mm_sha256rnds2_epu32(state1, state0, msg);
     tmp    = _mm_alignr_epi8(msg0, msg3, 4);
     msg1   = _mm_add_epi32(msg1, tmp);
@@ -234,7 +234,7 @@ static void sha256_transform_shani(uint32_t *state, const unsigned char *data)
 
     /* Rounds 52-55 */
     msg  = _mm_add_epi32(msg1, _mm_set_epi32(
-        (int)0x78A5636F, (int)0x748F82EE, (int)0x682E6FF3, (int)0x5B9CCA4F));
+        (int)0x682E6FF3, (int)0x5B9CCA4F, (int)0x4ED8AA4A, (int)0x391C0CB3));
     state1 = _mm_sha256rnds2_epu32(state1, state0, msg);
     tmp    = _mm_alignr_epi8(msg1, msg0, 4);
     msg2   = _mm_add_epi32(msg2, tmp);
@@ -244,7 +244,7 @@ static void sha256_transform_shani(uint32_t *state, const unsigned char *data)
 
     /* Rounds 56-59 */
     msg  = _mm_add_epi32(msg2, _mm_set_epi32(
-        (int)0xA4506CEB, (int)0x90BEFFFA, (int)0x8CC70208, (int)0x84C87814));
+        (int)0x8CC70208, (int)0x84C87814, (int)0x78A5636F, (int)0x748F82EE));
     state1 = _mm_sha256rnds2_epu32(state1, state0, msg);
     tmp    = _mm_alignr_epi8(msg2, msg1, 4);
     msg3   = _mm_add_epi32(msg3, tmp);
@@ -254,7 +254,7 @@ static void sha256_transform_shani(uint32_t *state, const unsigned char *data)
 
     /* Rounds 60-63 */
     msg  = _mm_add_epi32(msg3, _mm_set_epi32(
-        (int)0xC67178F2, (int)0xBEF9A3F7, (int)0xA4506CEB, (int)0x00000000));
+        (int)0xC67178F2, (int)0xBEF9A3F7, (int)0xA4506CEB, (int)0x90BEFFFA));
     state1 = _mm_sha256rnds2_epu32(state1, state0, msg);
     msg    = _mm_shuffle_epi32(msg, 0x0E);
     state0 = _mm_sha256rnds2_epu32(state0, state1, msg);
