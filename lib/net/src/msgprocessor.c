@@ -1578,8 +1578,15 @@ static void push_getheaders_from(struct msg_processor *mp,
 
     /* If locator is empty, skip — chain not ready */
     if (loc.num_hashes == 0) {
-        block_locator_free(&loc);
-        return;
+        /* Empty chain — send genesis hash so peer knows to start from block 1 */
+        loc.vhave = malloc(sizeof(struct uint256));
+        if (loc.vhave) {
+            loc.vhave[0] = mp->params->consensus.hashGenesisBlock;
+            loc.num_hashes = 1;
+        } else {
+            block_locator_free(&loc);
+            return;
+        }
     }
 
     /* Ensure genesis hash is always at the end of the locator. */
