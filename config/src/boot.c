@@ -150,6 +150,23 @@ static void *build_snapshot_offer_thread(void *arg)
         printf("Fast sync: no snapshot available yet\n");
     }
     fflush(stdout);
+
+    /* Build parallel chunk sync manifest (BitTorrent-style). */
+    extern struct sync_manifest g_cached_manifest;
+    extern _Atomic bool g_cached_manifest_valid;
+
+    printf("Building chunk sync manifest...\n");
+    fflush(stdout);
+    if (fast_sync_build_manifest(datadir, &g_cached_manifest)) {
+        g_cached_manifest_valid = true;
+        printf("Chunk manifest ready: h=%d, %u chunks (%llu UTXOs)\n",
+               g_cached_manifest.height, g_cached_manifest.num_chunks,
+               (unsigned long long)g_cached_manifest.num_utxos);
+    } else {
+        printf("Chunk manifest: not available yet\n");
+    }
+    fflush(stdout);
+
     return NULL;
 }
 
@@ -487,6 +504,145 @@ static bool load_block_index(struct main_state *ms,
     }
 
     free(sorted);
+    return true;
+}
+
+/* ── Fast chainstate rebuild from SQLite UTXOs ─────────────
+ * Instead of replaying 3M blocks (~2 hours), write the 1.6M UTXOs
+ * from SQLite directly to LevelDB (~10 seconds). The UTXO set in
+ * SQLite was populated during the original sync and is authoritative. */
+static bool fast_rebuild_chainstate(struct coins_view_db *cvdb,
+                                      struct coins_view_cache *cvtip,
+                                      const char *datadir)
+{
+    char db_path[1024];
+    snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
+    sqlite3 *db = NULL;
+    if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK)
+        return false;
+
+    /* Count UTXOs */
+    sqlite3_stmt *cnt = NULL;
+    sqlite3_prepare_v2(db, "SELECT count(*) FROM utxos", -1, &cnt, NULL);
+    int64_t total = 0;
+    if (sqlite3_step(cnt) == SQLITE_ROW) total = sqlite3_column_int64(cnt, 0);
+    sqlite3_finalize(cnt);
+
+    if (total == 0) { sqlite3_close(db); return false; }
+
+    printf("fast-rebuild: %lld UTXOs from SQLite → LevelDB...\n",
+           (long long)total);
+    fflush(stdout);
+
+    /* Wipe and reopen coins DB */
+    coins_view_cache_flush(cvtip);
+    coins_view_cache_free(cvtip);
+    coins_view_db_close(cvdb);
+
+    char coins_path[1024];
+    snprintf(coins_path, sizeof(coins_path), "%s/chainstate", datadir);
+    if (!coins_view_db_open(cvdb, coins_path, 450 << 20, false, true)) {
+        sqlite3_close(db);
+        return false;
+    }
+    coins_view_cache_init(cvtip, &cvdb->view);
+
+    /* Stream UTXOs from SQLite into the coins cache */
+    sqlite3_stmt *s = NULL;
+    sqlite3_prepare_v2(db,
+        "SELECT txid, vout, value, script, height, is_coinbase "
+        "FROM utxos ORDER BY txid, vout",
+        -1, &s, NULL);
+
+    int64_t count = 0;
+    int64_t t_start = (int64_t)time(NULL);
+    struct uint256 prev_txid;
+    uint256_set_null(&prev_txid);
+    struct coins_cache_entry *cur_entry = NULL;
+
+    while (sqlite3_step(s) == SQLITE_ROW) {
+        const void *txid_blob = sqlite3_column_blob(s, 0);
+        int vout = sqlite3_column_int(s, 1);
+        int64_t value = sqlite3_column_int64(s, 2);
+        const void *script = sqlite3_column_blob(s, 3);
+        int script_len = sqlite3_column_bytes(s, 3);
+        int height = sqlite3_column_int(s, 4);
+        int is_cb = sqlite3_column_int(s, 5);
+
+        if (!txid_blob || vout < 0) continue;
+
+        struct uint256 txid;
+        memcpy(txid.data, txid_blob, 32);
+
+        /* New txid — flush previous, start new coins entry */
+        if (!uint256_eq(&txid, &prev_txid)) {
+            cur_entry = coins_view_cache_modify_new(cvtip, &txid);
+            if (!cur_entry) continue;
+            cur_entry->coins.height = height;
+            cur_entry->coins.is_coinbase = (is_cb != 0);
+            cur_entry->coins.version = 1;
+            prev_txid = txid;
+        }
+
+        if (!cur_entry) continue;
+
+        /* Ensure vout array is large enough */
+        if ((size_t)vout >= cur_entry->coins.num_vout) {
+            size_t new_size = (size_t)vout + 1;
+            struct tx_out *new_vout = realloc(cur_entry->coins.vout,
+                new_size * sizeof(struct tx_out));
+            if (!new_vout) continue;
+            for (size_t i = cur_entry->coins.num_vout; i < new_size; i++)
+                tx_out_set_null(&new_vout[i]);
+            cur_entry->coins.vout = new_vout;
+            cur_entry->coins.num_vout = new_size;
+        }
+
+        cur_entry->coins.vout[vout].value = value;
+        if (script && script_len > 0 &&
+            (size_t)script_len <= MAX_SCRIPT_SIZE) {
+            memcpy(cur_entry->coins.vout[vout].script_pub_key.data,
+                   script, (size_t)script_len);
+            cur_entry->coins.vout[vout].script_pub_key.size = (size_t)script_len;
+        }
+
+        count++;
+        if (count % 100000 == 0) {
+            int64_t elapsed = (int64_t)time(NULL) - t_start;
+            printf("  %lld / %lld UTXOs (%lld/s)\n",
+                   (long long)count, (long long)total,
+                   elapsed > 0 ? (long long)(count / elapsed) : (long long)count);
+            fflush(stdout);
+        }
+
+        /* Flush cache periodically to avoid memory bloat */
+        if (count % 500000 == 0)
+            coins_view_cache_flush(cvtip);
+    }
+    sqlite3_finalize(s);
+
+    /* Get tip hash from node_state */
+    sqlite3_stmt *th = NULL;
+    sqlite3_prepare_v2(db, "SELECT value FROM node_state WHERE key='tip_hash'",
+                        -1, &th, NULL);
+    struct uint256 tip_hash;
+    uint256_set_null(&tip_hash);
+    if (sqlite3_step(th) == SQLITE_ROW) {
+        const void *h = sqlite3_column_blob(th, 0);
+        if (h && sqlite3_column_bytes(th, 0) >= 32)
+            memcpy(tip_hash.data, h, 32);
+    }
+    sqlite3_finalize(th);
+    sqlite3_close(db);
+
+    /* Final flush with tip hash */
+    coins_view_cache_set_best_block(cvtip, &tip_hash);
+    coins_view_cache_flush(cvtip);
+
+    int64_t elapsed = (int64_t)time(NULL) - t_start;
+    printf("fast-rebuild: done — %lld UTXOs in %llds\n",
+           (long long)count, (long long)elapsed);
+    fflush(stdout);
     return true;
 }
 
@@ -854,9 +1010,14 @@ bool app_init(struct app_context *ctx)
         }
         skip_activate = true;
 
-        if (!reindex_chainstate(&g_state, &g_coins_db, &g_coins_tip,
-                                 ctx->datadir)) {
-            fprintf(stderr, "Warning: Chainstate reindex had errors\n");
+        /* Fast path: rebuild from SQLite UTXOs (~10s vs ~2h) */
+        if (!fast_rebuild_chainstate(&g_coins_db, &g_coins_tip,
+                                      ctx->datadir)) {
+            printf("Fast rebuild unavailable, falling back to full reindex\n");
+            if (!reindex_chainstate(&g_state, &g_coins_db, &g_coins_tip,
+                                     ctx->datadir)) {
+                fprintf(stderr, "Warning: Chainstate reindex had errors\n");
+            }
         }
     } else if (fast_restart) {
     } else if (g_state.map_block_index.size > 1) {
