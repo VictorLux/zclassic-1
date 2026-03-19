@@ -804,22 +804,27 @@ shielded_cleanup:
         wtx.tx.vout[i].script_pub_key = dest_script;
     }
 
-    /* Change output */
+    /* Change output — send back to the FROM address (no keypool needed) */
     if (change > 0) {
         struct pubkey change_pk;
-        if (!wallet_get_key_from_pool(g_wallet, &change_pk)) {
-            transaction_free(&wtx.tx);
-            json_set_str(result, "Cannot get change address");
-            return false;
+        bool got_key = wallet_get_key_from_pool(g_wallet, &change_pk);
+        if (!got_key) {
+            /* Keypool exhausted — use the from_address as change address */
+            struct tx_destination change_dest = from_dest;
+            struct script change_script;
+            script_for_destination(&change_script, &change_dest);
+            wtx.tx.vout[num_t_out].value = change;
+            wtx.tx.vout[num_t_out].script_pub_key = change_script;
+        } else {
+            struct key_id change_kid = pubkey_get_id(&change_pk);
+            struct tx_destination change_dest;
+            change_dest.type = DEST_KEY_ID;
+            change_dest.id.key = change_kid;
+            struct script change_script;
+            script_for_destination(&change_script, &change_dest);
+            wtx.tx.vout[num_t_out].value = change;
+            wtx.tx.vout[num_t_out].script_pub_key = change_script;
         }
-        struct key_id change_kid = pubkey_get_id(&change_pk);
-        struct tx_destination change_dest;
-        change_dest.type = DEST_KEY_ID;
-        change_dest.id.key = change_kid;
-        struct script change_script;
-        script_for_destination(&change_script, &change_dest);
-        wtx.tx.vout[num_t_out].value = change;
-        wtx.tx.vout[num_t_out].script_pub_key = change_script;
     }
 
     /* value_balance = -(sum of shielded outputs) for shielding (negative = transparent→shielded) */
