@@ -203,8 +203,8 @@ static void serve_wallet_dashboard(void) {
 
     /* Query wallet data directly from SQLite */
     int t_keys = 0, z_keys = 0, tx_count = 0, peers = 0;
-    int64_t shielded_bal = 0;
-    int unspent_notes = 0;
+    int64_t shielded_bal = 0, transparent_bal = 0;
+    int unspent_notes = 0, unspent_t_utxos = 0;
     int tip_height = 0;
     char t_addr[64] = "";
 
@@ -229,6 +229,22 @@ static void serve_wallet_dashboard(void) {
         if (sqlite3_step(s) == SQLITE_ROW) {
             unspent_notes = sqlite3_column_int(s, 0);
             shielded_bal = sqlite3_column_int64(s, 1);
+        }
+        sqlite3_finalize(s); s = NULL;
+    }
+
+    /* Transparent balance — match P2PKH scripts (25 bytes, 76a914...88ac)
+     * against wallet_keys.pubkey_hash */
+    if (sqlite3_prepare_v2(db,
+            "SELECT count(*), COALESCE(sum(u.value),0) FROM utxos u "
+            "WHERE length(u.script) = 25 "
+            "AND substr(hex(u.script), 1, 6) = '76A914' "
+            "AND EXISTS (SELECT 1 FROM wallet_keys wk "
+            "WHERE wk.pubkey_hash = substr(u.script, 4, 20))",
+            -1, &s, NULL) == SQLITE_OK) {
+        if (sqlite3_step(s) == SQLITE_ROW) {
+            unspent_t_utxos = sqlite3_column_int(s, 0);
+            transparent_bal = sqlite3_column_int64(s, 1);
         }
         sqlite3_finalize(s); s = NULL;
     }
@@ -291,7 +307,7 @@ static void serve_wallet_dashboard(void) {
         "<p style='color:#666;margin:0 0 16px'>Direct SQLite — no ports, no RPC</p>"
 
         "<div class='stats'>"
-        "<div class='stat'><div class='num'>%.8f</div><div class='lbl'>Shielded ZCL</div></div>"
+        "<div class='stat'><div class='num'>%.8f</div><div class='lbl'>Total ZCL</div></div>"
         "<div class='stat'><div class='num'>%d</div><div class='lbl'>Block Height</div></div>"
         "<div class='stat'><div class='num'>%d</div><div class='lbl'>Peers</div></div>"
         "</div>"
@@ -302,11 +318,16 @@ static void serve_wallet_dashboard(void) {
         "<a href='/store'>Store</a>"
         "</div>"
 
-        "<h2>Wallet</h2>"
+        "<h2>Balances</h2>"
         "<div class='card'>"
-        "<div style='color:#888;font-size:13px'>Shielded Balance</div>"
-        "<div style='font-size:28px;color:#33ff99;font-weight:800'>%.8f ZCL</div>"
-        "<div style='color:#666;font-size:13px;margin-top:4px'>%d unspent notes</div>"
+        "<div style='color:#888;font-size:13px'>Transparent</div>"
+        "<div style='font-size:24px;color:#33ff99;font-weight:800'>%.8f ZCL</div>"
+        "<div style='color:#666;font-size:13px'>%d unspent outputs</div>"
+        "</div>"
+        "<div class='card'>"
+        "<div style='color:#888;font-size:13px'>Shielded (Sapling)</div>"
+        "<div style='font-size:24px;color:#9999ff;font-weight:800'>%.8f ZCL</div>"
+        "<div style='color:#666;font-size:13px'>%d unspent notes</div>"
         "</div>"
 
         "<div class='card'>"
@@ -319,7 +340,8 @@ static void serve_wallet_dashboard(void) {
         "<div style='font-size:18px'>%d wallet transactions</div>"
         "</div>",
 
-        (double)shielded_bal / 1e8, tip_height, peers,
+        (double)(transparent_bal + shielded_bal) / 1e8, tip_height, peers,
+        (double)transparent_bal / 1e8, unspent_t_utxos,
         (double)shielded_bal / 1e8, unspent_notes,
         t_keys, z_keys, tx_count);
 
