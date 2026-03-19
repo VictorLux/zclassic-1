@@ -25,20 +25,40 @@ struct ar_callbacks *db_block_callbacks(void)
 bool db_block_validate(const struct db_block *b, struct ar_errors *errors)
 {
     ar_errors_clear(errors);
+
+    /* Required fields */
     validates_presence_of(errors, b, hash);
     validates_presence_of(errors, b, prev_hash);
     validates_presence_of(errors, b, merkle_root);
+    /* nonce can be all-zero (valid PoW solution) — no presence check */
+
+    /* Range checks */
     validates_non_negative(errors, b, height);
+    if (b->height > 100000000)
+        ar_errors_add(errors, "height", "exceeds 100M (unreasonable)");
     if (b->time == 0)
         ar_errors_add(errors, "time", "can't be zero");
+    if (b->time > 4294967295U)
+        ar_errors_add(errors, "time", "exceeds uint32 max");
     if (b->bits == 0)
         ar_errors_add(errors, "bits", "can't be zero");
+
+    /* Transaction count */
     validates_non_negative(errors, b, num_tx);
+    if (b->num_tx > 100000)
+        ar_errors_add(errors, "num_tx", "exceeds 100K (unreasonable)");
+
+    /* File position */
     validates_non_negative(errors, b, file_num);
     validates_non_negative(errors, b, data_pos);
     validates_non_negative(errors, b, undo_pos);
+
+    /* Equihash solution */
     if (b->solution_len > (size_t)INT32_MAX)
         ar_errors_add(errors, "solution_len", "exceeds max size");
+    if (b->solution_len > 0 && !b->solution)
+        ar_errors_add(errors, "solution", "length set but pointer is null");
+
     return !ar_errors_any(errors);
 }
 
@@ -176,16 +196,19 @@ bool db_block_delete(struct node_db *ndb, const uint8_t hash[32])
 
     /* dependent: :destroy — delete child transactions */
     sqlite3_stmt *dt = NULL;
-    sqlite3_prepare_v2(ndb->db,
-        "DELETE FROM transactions WHERE block_hash=?", -1, &dt, NULL);
-    sqlite3_bind_blob(dt, 1, hash, 32, SQLITE_STATIC);
-    sqlite3_step(dt);
-    sqlite3_finalize(dt);
+    if (sqlite3_prepare_v2(ndb->db,
+            "DELETE FROM transactions WHERE block_hash=?",
+            -1, &dt, NULL) == SQLITE_OK && dt) {
+        sqlite3_bind_blob(dt, 1, hash, 32, SQLITE_STATIC);
+        sqlite3_step(dt);
+        sqlite3_finalize(dt);
+    }
 
     sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(ndb->db,
-        "DELETE FROM blocks WHERE hash=?",
-        -1, &s, NULL);
+    if (sqlite3_prepare_v2(ndb->db,
+            "DELETE FROM blocks WHERE hash=?",
+            -1, &s, NULL) != SQLITE_OK || !s)
+        return false;
     sqlite3_bind_blob(s, 1, hash, 32, SQLITE_STATIC);
     int rc = sqlite3_step(s);
     sqlite3_finalize(s);

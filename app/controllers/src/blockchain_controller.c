@@ -15,6 +15,7 @@
 #include "core/uint256.h"
 #include "core/serialize.h"
 #include "json/json.h"
+#include "models/zslp.h"
 #include "primitives/block.h"
 #include "storage/coins_db.h"
 #include "storage/dbwrapper.h"
@@ -1797,8 +1798,7 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
     node_db_exec(g_node_db_bc, "DELETE FROM utxos");
     node_db_exec(g_node_db_bc, "DELETE FROM transactions");
     node_db_exec(g_node_db_bc, "DELETE FROM blocks");
-    node_db_exec(g_node_db_bc, "DELETE FROM zslp_tokens");
-    node_db_exec(g_node_db_bc, "DELETE FROM zslp_transfers");
+    db_zslp_clear_all(g_node_db_bc);
 
     /* ── Pass 1: Scan all blocks, build hash→(file,offset,size) map.
      * Then chain-walk from genesis using prev_hash to assign heights.
@@ -2114,84 +2114,53 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
                 size_t script_len = tx->vout[0].script_pub_key.size;
                 struct slp_message slp;
                 if (slp_parse(script, script_len, &slp)) {
+                    /* Normalize token_id: SLP OP_RETURN uses big-endian,
+                     * tx->hash.data is little-endian. Reverse for consistency. */
+                    uint8_t tok_id[32];
                     if (slp.type == SLP_TX_GENESIS) {
-                        /* Store token in zslp_tokens table */
-                        sqlite3_stmt *ts = NULL;
-                        if (sqlite3_prepare_v2(g_node_db_bc->db,
-                                "INSERT OR IGNORE INTO zslp_tokens"
-                                "(token_id,ticker,name,decimals,document_url,"
-                                "genesis_height,total_minted) VALUES(?,?,?,?,?,?,?)",
-                                -1, &ts, NULL) == SQLITE_OK) {
-                            sqlite3_bind_blob(ts, 1, tx->hash.data, 32, SQLITE_STATIC);
-                            sqlite3_bind_text(ts, 2, slp.ticker, -1, SQLITE_STATIC);
-                            sqlite3_bind_text(ts, 3, slp.name, -1, SQLITE_STATIC);
-                            sqlite3_bind_int(ts, 4, slp.decimals);
-                            sqlite3_bind_text(ts, 5, slp.document_url, -1, SQLITE_STATIC);
-                            sqlite3_bind_int(ts, 6, h);
-                            sqlite3_bind_int64(ts, 7, (int64_t)slp.initial_quantity);
-                            sqlite3_step(ts);
-                            sqlite3_finalize(ts);
-                        }
-                    }
-                    /* Store transfer records — one per output for SEND.
-                     * SLP spec encodes token_id as big-endian in OP_RETURN,
-                     * but tx->hash.data is little-endian (internal order).
-                     * Reverse slp.token_id to match internal order. */
-                    uint8_t tok_id_buf[32];
-                    if (slp.type == SLP_TX_GENESIS) {
-                        memcpy(tok_id_buf, tx->hash.data, 32);
+                        memcpy(tok_id, tx->hash.data, 32);
                     } else {
                         for (int b = 0; b < 32; b++)
-                            tok_id_buf[b] = slp.token_id.data[31 - b];
+                            tok_id[b] = slp.token_id.data[31 - b];
                     }
-                    const uint8_t *tok_id = tok_id_buf;
-                    int num_records = 1;
-                    if (slp.type == SLP_TX_SEND) num_records = slp.num_outputs;
-                    if (num_records < 1) num_records = 1;
 
-                    for (int q = 0; q < num_records; q++) {
+                    /* Save GENESIS token via model */
+                    if (slp.type == SLP_TX_GENESIS)
+                        db_zslp_token_save(g_node_db_bc, tok_id,
+                            slp.ticker, slp.name, slp.decimals,
+                            slp.document_url, h,
+                            (int64_t)slp.initial_quantity);
+
+                    /* Save transfer records via model */
+                    int num_outputs = (slp.type == SLP_TX_SEND)
+                        ? slp.num_outputs : 1;
+                    if (num_outputs < 1) num_outputs = 1;
+
+                    for (int q = 0; q < num_outputs; q++) {
                         int64_t amount = 0;
                         if (slp.type == SLP_TX_GENESIS)
                             amount = (int64_t)slp.initial_quantity;
                         else if (slp.type == SLP_TX_MINT)
                             amount = (int64_t)slp.additional_quantity;
-                        else if (slp.type == SLP_TX_SEND && q < slp.num_outputs)
+                        else if (q < slp.num_outputs)
                             amount = (int64_t)slp.output_quantities[q];
 
-                        /* Extract recipient address from vout[q+1] if P2PKH */
-                        uint8_t to_addr[20] = {0};
-                        bool has_to = false;
-                        int out_idx = q + 1; /* SLP outputs start at vout 1 */
-                        if (slp.type == SLP_TX_GENESIS) out_idx = 1;
+                        /* Extract P2PKH recipient from vout[q+1] */
+                        uint8_t to_addr[20];
+                        const uint8_t *to = NULL;
+                        int out_idx = (slp.type == SLP_TX_GENESIS) ? 1 : q + 1;
                         if (out_idx < (int)tx->num_vout) {
                             const uint8_t *sd = tx->vout[out_idx].script_pub_key.data;
                             size_t sl = tx->vout[out_idx].script_pub_key.size;
                             if (sl == 25 && sd[0] == 0x76 && sd[1] == 0xa9 &&
                                 sd[2] == 0x14 && sd[23] == 0x88 && sd[24] == 0xac) {
                                 memcpy(to_addr, sd + 3, 20);
-                                has_to = true;
+                                to = to_addr;
                             }
                         }
 
-                        sqlite3_stmt *xs = NULL;
-                        if (sqlite3_prepare_v2(g_node_db_bc->db,
-                                "INSERT OR IGNORE INTO zslp_transfers"
-                                "(txid,block_height,token_id,tx_type,amount,vout,to_addr)"
-                                " VALUES(?,?,?,?,?,?,?)",
-                                -1, &xs, NULL) == SQLITE_OK) {
-                            sqlite3_bind_blob(xs, 1, tx->hash.data, 32, SQLITE_STATIC);
-                            sqlite3_bind_int(xs, 2, h);
-                            sqlite3_bind_blob(xs, 3, tok_id, 32, SQLITE_STATIC);
-                            sqlite3_bind_int(xs, 4, (int)slp.type);
-                            sqlite3_bind_int64(xs, 5, amount);
-                            sqlite3_bind_int(xs, 6, q);
-                            if (has_to)
-                                sqlite3_bind_blob(xs, 7, to_addr, 20, SQLITE_STATIC);
-                            else
-                                sqlite3_bind_null(xs, 7);
-                            sqlite3_step(xs);
-                            sqlite3_finalize(xs);
-                        }
+                        db_zslp_transfer_save(g_node_db_bc, tx->hash.data,
+                            h, tok_id, (int)slp.type, amount, q, to);
                     }
                 }
             }
