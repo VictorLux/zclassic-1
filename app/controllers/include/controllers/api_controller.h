@@ -1,0 +1,32 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * REST API controller — fast, indexed JSON API for the block explorer.
+ * Serves /api routes on the HTTPS server.
+ * Queries local node data (SQLite) with zclassicd RPC fallback + caching. */
+
+#ifndef ZCL_CONTROLLERS_API_H
+#define ZCL_CONTROLLERS_API_H
+
+#include <stdint.h>
+#include <stddef.h>
+
+struct main_state;
+struct tx_mempool;
+struct coins_view_cache;
+struct node_db;
+
+void api_set_state(struct main_state *ms, struct tx_mempool *mp,
+                    struct coins_view_cache *coins_tip,
+                    struct node_db *ndb, const char *datadir);
+
+/* Configure the legacy RPC backend for data we don't have locally */
+void api_set_rpc_backend(const char *rpc_user, const char *rpc_pass,
+                          int rpc_port);
+
+/* Handle an API request. Returns bytes written to response, or 0 if not handled.
+ * Response includes HTTP headers + JSON body. */
+size_t api_handle_request(const char *method, const char *path,
+                           const uint8_t *body, size_t body_len,
+                           uint8_t *response, size_t response_max);
+
+#endif
