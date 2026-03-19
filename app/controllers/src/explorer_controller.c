@@ -5,6 +5,7 @@
  * ZSLP tokens, and address lookups. */
 
 #include "controllers/explorer_controller.h"
+#include "controllers/api_controller.h"
 #include "chain/chain.h"
 #include "chain/chainparams.h"
 #include "chain/subsidy.h"
@@ -2127,9 +2128,7 @@ static size_t g_hodl_cache_len = 0;
 
 static size_t serve_hodl(uint8_t *r, size_t max)
 {
-    if (!g_ndb || !g_ndb->open) return 0;
-
-    /* Return cached version if available */
+    /* Return cached version if available (cache built by background thread) */
     if (g_hodl_cache_len > 0) {
         size_t copy = g_hodl_cache_len < max ? g_hodl_cache_len : max;
         memcpy(r, g_hodl_cache, copy);
@@ -2513,8 +2512,16 @@ size_t explorer_handle_request(const char *method, const char *path,
                                 const uint8_t *body, size_t body_len,
                                 uint8_t *response, size_t response_max)
 {
-    (void)method; (void)body; (void)body_len;
+    (void)body; (void)body_len;
     if (!path || !response) return 0;
+
+    /* Delegate /api/ routes to the REST API controller */
+    if (strncmp(path, "/api/", 5) == 0 || strcmp(path, "/api") == 0) {
+        return api_handle_request(method, path, body, body_len,
+                                   response, response_max);
+    }
+
+    (void)method;
 
     if (strcmp(path, "/explorer/style.css") == 0)
         return serve_css(response, response_max);
