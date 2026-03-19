@@ -373,10 +373,23 @@ static bool rpc_createrawtransaction(const struct json_value *params, bool help,
         tx_out_set_null(&vout);
 
         int64_t amount = 0;
-        if (amt_v->type == JSON_REAL)
-            amount = (int64_t)(json_get_real(amt_v) * 100000000.0);
-        else if (amt_v->type == JSON_INT)
-            amount = json_get_int(amt_v) * 100000000;
+        if (amt_v->type == JSON_REAL) {
+            double d = json_get_real(amt_v);
+            if (d < 0 || d > 21000000.0) {
+                json_set_str(result, "Amount out of range");
+                transaction_free(&tx);
+                return false;
+            }
+            amount = (int64_t)(d * 100000000.0);
+        } else if (amt_v->type == JSON_INT) {
+            int64_t v = json_get_int(amt_v);
+            if (v < 0 || v > 21000000) {
+                json_set_str(result, "Amount out of range");
+                transaction_free(&tx);
+                return false;
+            }
+            amount = v * 100000000;
+        }
         vout.value = amount;
 
         const struct chain_params *cp2 = chain_params_get();
@@ -627,7 +640,9 @@ static bool rpc_signrawtransaction(const struct json_value *params, bool help,
                 prevouts[num_prevouts].vout = (uint32_t)json_get_int(vn);
 
                 const char *spk_hex = json_get_str(spk);
+                if (!spk_hex) continue;
                 size_t spk_len = strlen(spk_hex) / 2;
+                if (spk_len > MAX_SCRIPT_SIZE) spk_len = MAX_SCRIPT_SIZE;
                 unsigned char spk_bytes[MAX_SCRIPT_SIZE];
                 ParseHex(spk_hex, spk_bytes, spk_len);
                 prevouts[num_prevouts].script_pub_key.size = spk_len;
@@ -644,7 +659,9 @@ static bool rpc_signrawtransaction(const struct json_value *params, bool help,
                 if (rs && rs->type == JSON_STR) {
                     struct script redeem;
                     const char *rs_hex = json_get_str(rs);
+                    if (!rs_hex) continue;
                     size_t rs_len = strlen(rs_hex) / 2;
+                    if (rs_len > MAX_SCRIPT_SIZE) rs_len = MAX_SCRIPT_SIZE;
                     ParseHex(rs_hex, redeem.data, rs_len);
                     redeem.size = rs_len;
                     keystore_add_cscript(sign_ks, &redeem);
@@ -663,10 +680,6 @@ static bool rpc_signrawtransaction(const struct json_value *params, bool help,
     bool all_complete = true;
     struct json_value errors = {0};
     json_set_array(&errors);
-
-    fprintf(stderr, "signrawtx: %zu inputs, g_node_db=%p, g_coins_tip=%p, g_keystore=%p\n",
-            tx.num_vin, (void*)g_node_db, (void*)g_coins_tip, (void*)g_keystore);
-    fflush(stderr);
 
     for (unsigned int i = 0; i < tx.num_vin; i++) {
         const struct script *prev_script = NULL;
@@ -739,9 +752,6 @@ static bool rpc_signrawtransaction(const struct json_value *params, bool help,
             continue;
         }
 
-        fprintf(stderr, "signrawtx: signing input %u, script_len=%zu, amount=%lld\n",
-                i, prev_script ? prev_script->size : 0, (long long)prev_amount);
-        fflush(stderr);
 
         if (!sign_one_input(&tx, i, prev_script, prev_amount,
                             branch_id, sign_ks)) {

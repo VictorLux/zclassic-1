@@ -199,9 +199,12 @@ struct p2p_node {
     /* zclassic23 fast sync state */
     bool zsync_serving;       /* true if we're streaming UTXOs to this peer */
     bool zsync_receiving;     /* true if we're receiving UTXOs from this peer */
-    uint64_t zsync_offset;    /* current UTXO offset in SQLite query */
+    uint64_t zsync_offset;    /* total UTXOs sent (for progress logging) */
     uint64_t zsync_total;     /* total UTXOs to send */
     uint64_t zsync_sent;      /* chunks sent so far */
+    uint8_t zsync_cursor_txid[32]; /* keyset cursor: last txid sent */
+    int32_t zsync_cursor_vout;     /* keyset cursor: last vout sent */
+    bool zsync_cursor_valid;       /* true after first batch */
 
     /* Swarm parallel chunk sync state */
     bool swarm_manifest_sent;     /* true if we sent our manifest to this peer */

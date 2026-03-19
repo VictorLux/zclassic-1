@@ -479,10 +479,16 @@ static bool addr_decode(const char *str, struct tx_destination *dest)
     "<footer>ZClassic23 Block Explorer &mdash; Pure C23 &mdash; zclnet.net</footer>" \
     "</body></html>"
 
-/* Append helper: returns new offset, checks bounds */
+/* Append helper: advances offset, checks bounds to prevent overflow.
+ * On truncation, advances to remaining space so buffer fills progressively. */
 #define APPEND(off, buf, max, ...) do { \
-    int _n = snprintf((char *)(buf) + (off), (max) - (off), __VA_ARGS__); \
-    if (_n > 0) (off) += (size_t)_n; \
+    if ((off) < (max)) { \
+        size_t _rem = (max) - (off); \
+        int _n = snprintf((char *)(buf) + (off), _rem, __VA_ARGS__); \
+        if (_n > 0) { \
+            (off) += ((size_t)_n < _rem) ? (size_t)_n : _rem - 1; \
+        } \
+    } \
 } while(0)
 
 /* ── Dashboard (RPC proxy mode) ───────────────────────────── */
@@ -803,12 +809,14 @@ static size_t serve_block(const char *param, uint8_t *r, size_t max)
     }
 
     if (!bi) {
+        char safe_param[256];
+        html_escape(safe_param, sizeof(safe_param), param ? param : "");
         return (size_t)snprintf((char *)r, max,
             "HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n"
             "<!DOCTYPE html><html><head><link rel='stylesheet' href='/explorer/style.css'></head><body>"
             EXPLORER_NAV "<h2>Block Not Found</h2>"
             "<p>No block found for: <code>%s</code></p>"
-            EXPLORER_FOOTER, param);
+            EXPLORER_FOOTER, safe_param);
     }
 
     int height = bi->nHeight;
@@ -1151,12 +1159,14 @@ static size_t serve_tx(const char *param, uint8_t *r, size_t max)
 
     if (!in_mempool && !from_block) {
         block_free(&blk);
+        char safe_param[256];
+        html_escape(safe_param, sizeof(safe_param), param ? param : "");
         return (size_t)snprintf((char *)r, max,
             "HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n"
             "<!DOCTYPE html><html><head><link rel='stylesheet' href='/explorer/style.css'></head><body>"
             EXPLORER_NAV "<h2>Transaction Not Found</h2>"
             "<p>TxID: <code>%s</code></p>"
-            "<p style='color:#666'>Not in mempool or tx index.</p>" EXPLORER_FOOTER, param);
+            "<p style='color:#666'>Not in mempool or tx index.</p>" EXPLORER_FOOTER, safe_param);
     }
 
     size_t off = 0;
