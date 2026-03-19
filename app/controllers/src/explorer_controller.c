@@ -619,11 +619,85 @@ static size_t serve_dashboard_native(uint8_t *r, size_t max)
     return off;
 }
 
+/* ── Dashboard (SQLite-only, no RPC or main_state needed) ── */
+
+static size_t serve_dashboard_sqlite(uint8_t *r, size_t max)
+{
+    if (!g_ndb || !g_ndb->db) return 0;
+    size_t off = 0;
+
+    int tip = native_chain_height();
+
+    APPEND(off, r, max, EXPLORER_HEADER("Dashboard") EXPLORER_NAV);
+    APPEND(off, r, max,
+        "<div class='stats-row'>"
+        "<div class='stat'><div class='num'>%d</div>"
+        "<div class='lbl'>Block Height</div></div>"
+        "</div>", tip);
+
+    /* Latest blocks from SQLite */
+    APPEND(off, r, max,
+        "<h2>Latest Blocks</h2>"
+        "<table><tr><th>Height</th><th>Hash</th><th>Time</th>"
+        "<th>Txs</th></tr>");
+
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(g_ndb->db,
+            "SELECT height, hex(hash), num_tx, time FROM blocks "
+            "ORDER BY height DESC LIMIT 25",
+            -1, &s, NULL) == SQLITE_OK && s) {
+        while (sqlite3_step(s) == SQLITE_ROW && off + 512 < max) {
+            int h = sqlite3_column_int(s, 0);
+            const char *hash = (const char *)sqlite3_column_text(s, 1);
+            int ntx = sqlite3_column_int(s, 2);
+            int64_t blk_time = sqlite3_column_int64(s, 3);
+
+            if (!hash) continue;
+
+            /* Short hash */
+            char short_hash[18];
+            size_t hlen = strlen(hash);
+            if (hlen >= 64)
+                snprintf(short_hash, sizeof(short_hash), "%.8s...%.4s",
+                         hash, hash + 60);
+            else
+                snprintf(short_hash, sizeof(short_hash), "%s", hash);
+
+            /* Time ago */
+            char ago[32];
+            format_time_ago(ago, sizeof(ago), (uint32_t)blk_time);
+            char ts[32];
+            format_time(ts, sizeof(ts), (uint32_t)blk_time);
+
+            /* Lowercase hash for links (SQLite hex() returns uppercase) */
+            char lhash[65] = "";
+            for (size_t i = 0; i < hlen && i < 64; i++)
+                lhash[i] = (hash[i] >= 'A' && hash[i] <= 'F')
+                    ? (char)(hash[i] + 32) : hash[i];
+            lhash[hlen < 64 ? hlen : 64] = '\0';
+
+            APPEND(off, r, max,
+                "<tr><td><a href='/explorer/block/%d'><b>%d</b></a></td>"
+                "<td class='hash'><a href='/explorer/block/%s'>%s</a></td>"
+                "<td>%s<br><small style='color:#666'>%s</small></td>"
+                "<td>%d</td></tr>",
+                h, h, lhash, short_hash, ago, ts, ntx);
+        }
+        sqlite3_finalize(s);
+    }
+
+    APPEND(off, r, max, "</table>" EXPLORER_FOOTER);
+    return off;
+}
+
 static size_t serve_dashboard(uint8_t *r, size_t max)
 {
-    if (use_rpc_proxy())
-        return serve_dashboard_rpc(r, max);
-    return serve_dashboard_native(r, max);
+    /* Priority: native (full node) → SQLite (browser/standalone) → RPC */
+    if (g_ms)
+        return serve_dashboard_native(r, max);
+    if (g_ndb && g_ndb->db)
+        return serve_dashboard_sqlite(r, max);
+    return serve_dashboard_rpc(r, max);
 }
 
 /* ── Block Detail (RPC proxy) ─────────────────────────────── */
