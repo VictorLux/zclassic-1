@@ -1,7 +1,9 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * REST API controller — fast JSON API for the block explorer.
- * Serves /api routes. Queries local zclassicd RPC for data. */
+ * Serves /api routes. All RPC calls happen in a background thread;
+ * HTTPS handler threads only serve from cache (rpc_call crashes
+ * when called from HTTPS handler threads). */
 
 #include "controllers/api_controller.h"
 #include <stdio.h>
@@ -15,6 +17,8 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <math.h>
+#include <pthread.h>
+#include <time.h>
 
 /* ── State ────────────────────────────────────────────────── */
 
@@ -27,6 +31,28 @@ static const char *g_datadir = NULL;
 static char g_rpc_user[128] = "zcluser";
 static char g_rpc_pass[128] = "zclpass";
 static int  g_rpc_port = 8023;
+
+/* ── Background cache ─────────────────────────────────────── */
+
+#define API_BLOCKS_CACHE_SIZE 131072   /* 128KB */
+#define API_STATS_CACHE_SIZE  16384    /* 16KB  */
+#define API_SUPPLY_CACHE_SIZE 4096     /* 4KB   */
+#define API_HODL_CACHE_SIZE   8192     /* 8KB   */
+
+static char   g_api_blocks_cache[API_BLOCKS_CACHE_SIZE];
+static size_t g_api_blocks_cache_len = 0;
+
+static char   g_api_stats_cache[API_STATS_CACHE_SIZE];
+static size_t g_api_stats_cache_len = 0;
+
+static char   g_api_supply_cache[API_SUPPLY_CACHE_SIZE];
+static size_t g_api_supply_cache_len = 0;
+
+static char   g_api_hodl_cache[API_HODL_CACHE_SIZE];
+static size_t g_api_hodl_cache_len = 0;
+
+static volatile int g_api_cache_thread_running = 0;
+static pthread_mutex_t g_api_cache_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 void api_set_state(struct main_state *ms, struct tx_mempool *mp,
                     struct coins_view_cache *coins_tip,
@@ -48,6 +74,8 @@ void api_set_rpc_backend(const char *rpc_user, const char *rpc_pass,
 }
 
 /* ── RPC call to local zclassicd ─────────────────────────── */
+/* ONLY called from the background cache thread, never from
+ * HTTPS handler threads (socket ops crash in that context). */
 
 static int rpc_call(const char *method, const char *params_json,
                      char *out, size_t outmax)
@@ -209,6 +237,13 @@ static bool is_all_digits(const char *s)
     "Access-Control-Allow-Origin: *\r\n" \
     "Connection: close\r\n\r\n"
 
+#define JSON_503_HEADERS \
+    "HTTP/1.1 503 Service Unavailable\r\n" \
+    "Content-Type: application/json; charset=utf-8\r\n" \
+    "Access-Control-Allow-Origin: *\r\n" \
+    "Retry-After: 10\r\n" \
+    "Connection: close\r\n\r\n"
+
 static size_t cors_preflight(uint8_t *r, size_t max)
 {
     return (size_t)snprintf((char *)r, max,
@@ -227,9 +262,10 @@ static size_t json_error(uint8_t *r, size_t max, const char *headers,
         "%s{\"error\":\"%s\"}", headers, message);
 }
 
-/* ── /api/blocks — latest 25 blocks ─────────────────────── */
+/* ── Compute functions (called ONLY from background thread) ── */
 
-static size_t api_blocks(uint8_t *r, size_t max)
+/* Compute /api/blocks — latest 25 blocks */
+static size_t compute_blocks(uint8_t *r, size_t max)
 {
     char buf[65536];
     size_t off = 0;
@@ -290,9 +326,149 @@ static size_t api_blocks(uint8_t *r, size_t max)
     return off;
 }
 
-/* ── /api/block/:id — block detail ───────────────────────── */
+/* Compute /api/stats — network stats */
+static size_t compute_stats(uint8_t *r, size_t max)
+{
+    char buf[65536];
 
-static size_t api_block(const char *param, uint8_t *r, size_t max)
+    /* Get blockchain info */
+    if (rpc_call("getblockchaininfo", "[]", buf, sizeof(buf)) <= 0)
+        return json_error(r, max, JSON_500_HEADERS, "RPC unavailable");
+
+    int64_t height = json_extract_int(buf, "blocks");
+    double diff = json_extract_real(buf, "difficulty");
+
+    char chain[32] = "";
+    json_extract_str(buf, "chain", chain, sizeof(chain));
+
+    /* Get mining info for hashrate */
+    char mbuf[8192];
+    double hashrate = 0.0;
+    if (rpc_call("getmininginfo", "[]", mbuf, sizeof(mbuf)) > 0)
+        hashrate = json_extract_real(mbuf, "networkhashps");
+
+    /* Calculate supply: 12.5 ZCL per block for first 840000, then halving */
+    double supply = 0.0;
+    {
+        int64_t h = height;
+        int64_t subsidy = 1250000000LL; /* 12.5 ZCL in zatoshi */
+        int64_t halving_interval = 840000;
+        int64_t total_sat = 0;
+        while (h > 0) {
+            int64_t blocks_at_rate = h;
+            if (blocks_at_rate > halving_interval)
+                blocks_at_rate = halving_interval;
+            total_sat += blocks_at_rate * subsidy;
+            h -= blocks_at_rate;
+            subsidy /= 2;
+            if (subsidy == 0) break;
+        }
+        supply = (double)total_sat / 100000000.0;
+    }
+
+    /* UTXO count via gettxoutsetinfo — expensive, skip if too slow */
+    int64_t utxo_count = -1;
+    char ubuf[8192];
+    if (rpc_call("gettxoutsetinfo", "[]", ubuf, sizeof(ubuf)) > 0)
+        utxo_count = json_extract_int(ubuf, "txouts");
+
+    size_t off = 0;
+    off += (size_t)snprintf((char *)r + off, max - off,
+        "%s{"
+        "\"height\":%" PRId64
+        ",\"difficulty\":%.8f"
+        ",\"networkhashps\":%.2f"
+        ",\"supply\":%.8f"
+        ",\"chain\":\"%s\"",
+        JSON_HEADERS,
+        height, diff, hashrate, supply, chain);
+
+    if (utxo_count >= 0)
+        off += (size_t)snprintf((char *)r + off, max - off,
+            ",\"utxo_count\":%" PRId64, utxo_count);
+
+    off += (size_t)snprintf((char *)r + off, max - off, "}");
+    return off;
+}
+
+/* Compute /api/supply — circulating supply (CoinGecko format) */
+static size_t compute_supply(uint8_t *r, size_t max)
+{
+    char buf[8192];
+
+    if (rpc_call("getblockcount", "[]", buf, sizeof(buf)) <= 0)
+        return json_error(r, max, JSON_500_HEADERS, "RPC unavailable");
+
+    int64_t height = json_extract_int(buf, "result");
+    if (height < 0)
+        return json_error(r, max, JSON_500_HEADERS, "Cannot get height");
+
+    /* Calculate supply */
+    int64_t h = height;
+    int64_t subsidy = 1250000000LL;
+    int64_t halving_interval = 840000;
+    int64_t total_sat = 0;
+    while (h > 0) {
+        int64_t blocks_at_rate = h;
+        if (blocks_at_rate > halving_interval)
+            blocks_at_rate = halving_interval;
+        total_sat += blocks_at_rate * subsidy;
+        h -= blocks_at_rate;
+        subsidy /= 2;
+        if (subsidy == 0) break;
+    }
+    double supply = (double)total_sat / 100000000.0;
+
+    /* Plain number -- CoinGecko expects just a number */
+    return (size_t)snprintf((char *)r, max,
+        "%s%.8f", JSON_HEADERS, supply);
+}
+
+/* Compute /api/hodl — HODL wave data */
+static size_t compute_hodl(uint8_t *r, size_t max)
+{
+    char buf[65536];
+
+    /* Get current height and time */
+    if (rpc_call("getblockcount", "[]", buf, sizeof(buf)) <= 0)
+        return json_error(r, max, JSON_500_HEADERS, "RPC unavailable");
+
+    int64_t height = json_extract_int(buf, "result");
+    if (height < 0)
+        return json_error(r, max, JSON_500_HEADERS, "Cannot get height");
+
+    /* Get current block time */
+    char params[64];
+    snprintf(params, sizeof(params), "[%" PRId64 "]", height);
+    if (rpc_call("getblockhash", params, buf, sizeof(buf)) <= 0)
+        return json_error(r, max, JSON_500_HEADERS, "RPC unavailable");
+
+    char hash[65] = "";
+    json_extract_str(buf, "result", hash, sizeof(hash));
+
+    char params2[128];
+    snprintf(params2, sizeof(params2), "[\"%s\", true]", hash);
+    if (rpc_call("getblock", params2, buf, sizeof(buf)) <= 0)
+        return json_error(r, max, JSON_500_HEADERS, "RPC unavailable");
+
+    int64_t tip_time = json_extract_int(buf, "time");
+
+    size_t off = 0;
+    off += (size_t)snprintf((char *)r + off, max - off,
+        "%s{"
+        "\"height\":%" PRId64
+        ",\"time\":%" PRId64
+        ",\"description\":\"HODL wave data — ratio of UTXOs by age band\""
+        ",\"bands\":[\"<1d\",\"1d-1w\",\"1w-1m\",\"1m-3m\",\"3m-6m\",\"6m-1y\",\"1y+\"]"
+        ",\"note\":\"Detailed HODL data available at /explorer/hodl\""
+        "}",
+        JSON_HEADERS, height, tip_time);
+
+    return off;
+}
+
+/* Compute /api/block/:id — block detail (called from bg thread) */
+static size_t compute_block(const char *param, uint8_t *r, size_t max)
 {
     if (!param || !*param)
         return json_error(r, max, JSON_404_HEADERS, "Missing block identifier");
@@ -398,9 +574,8 @@ static size_t api_block(const char *param, uint8_t *r, size_t max)
     return off;
 }
 
-/* ── /api/tx/:txid — transaction detail ──────────────────── */
-
-static size_t api_tx(const char *param, uint8_t *r, size_t max)
+/* Compute /api/tx/:txid — transaction detail (called from bg thread) */
+static size_t compute_tx(const char *param, uint8_t *r, size_t max)
 {
     if (!param || strlen(param) != 64 || !is_all_hex(param, 64))
         return json_error(r, max, JSON_404_HEADERS, "Invalid transaction ID");
@@ -445,14 +620,12 @@ static size_t api_tx(const char *param, uint8_t *r, size_t max)
     off += (size_t)snprintf((char *)r + off, max - off, ",\"vout\":[");
     const char *vout = strstr(result, "\"vout\":[");
     if (vout) {
-        /* Walk each {"value": ... "n": ... "scriptPubKey":{"addresses":[...]} } */
         const char *p = vout + 7;
         int brace = 0, idx = 0;
         while (*p && off + 512 < max) {
             if (*p == '{') {
                 brace++;
                 if (brace == 1) {
-                    /* Find this vout entry's end */
                     const char *entry = p;
                     int depth = 0;
                     const char *entry_end = NULL;
@@ -465,7 +638,6 @@ static size_t api_tx(const char *param, uint8_t *r, size_t max)
                     double val = json_extract_real(entry, "value");
                     int64_t vn = json_extract_int(entry, "n");
 
-                    /* Extract first address */
                     char addr[64] = "";
                     const char *addrs = strstr(entry, "\"addresses\":[\"");
                     if (addrs && addrs < entry_end) {
@@ -547,20 +719,16 @@ static size_t api_tx(const char *param, uint8_t *r, size_t max)
     return off;
 }
 
-/* ── /api/address/:addr — balance + UTXOs ────────────────── */
-
-static size_t api_address(const char *param, uint8_t *r, size_t max)
+/* Compute /api/address/:addr — balance + UTXOs (called from bg thread) */
+static size_t compute_address(const char *param, uint8_t *r, size_t max)
 {
     if (!param || !*param)
         return json_error(r, max, JSON_404_HEADERS, "Missing address");
 
-    /* Validate address: must be 26-35 chars, base58 */
     size_t alen = strlen(param);
     if (alen < 25 || alen > 95)
         return json_error(r, max, JSON_404_HEADERS, "Invalid address");
 
-    /* Use getaddressbalance and getaddressutxos RPCs if available,
-     * otherwise fall back to scantxoutset */
     char buf[262144];
     size_t off = 0;
 
@@ -596,7 +764,6 @@ static size_t api_address(const char *param, uint8_t *r, size_t max)
     off += (size_t)snprintf((char *)r + off, max - off, ",\"utxos\":[");
 
     if (n > 0 && strstr(ubuf, "\"error\":null")) {
-        /* The result is an array of UTXO objects */
         const char *result = strstr(ubuf, "\"result\":[");
         if (result) {
             const char *p = result + 10;
@@ -647,158 +814,263 @@ static size_t api_address(const char *param, uint8_t *r, size_t max)
     return off;
 }
 
-/* ── /api/stats — network stats ──────────────────────────── */
+/* ── Background cache refresh thread ─────────────────────── */
+/* This thread periodically calls rpc_call (safe here — normal
+ * thread, not an HTTPS handler) and updates the static caches.
+ * HTTPS handlers only read from cache, never call rpc_call. */
 
-static size_t api_stats(uint8_t *r, size_t max)
+static void *api_cache_refresh_thread(void *arg)
 {
-    char buf[65536];
+    (void)arg;
 
-    /* Get blockchain info */
-    if (rpc_call("getblockchaininfo", "[]", buf, sizeof(buf)) <= 0)
-        return json_error(r, max, JSON_500_HEADERS, "RPC unavailable");
+    /* Wait for RPC server to start */
+    sleep(5);
 
-    int64_t height = json_extract_int(buf, "blocks");
-    double diff = json_extract_real(buf, "difficulty");
+    printf("API cache: background refresh thread started\n");
+    fflush(stdout);
 
-    char chain[32] = "";
-    json_extract_str(buf, "chain", chain, sizeof(chain));
-
-    /* Get mining info for hashrate */
-    char mbuf[8192];
-    double hashrate = 0.0;
-    if (rpc_call("getmininginfo", "[]", mbuf, sizeof(mbuf)) > 0)
-        hashrate = json_extract_real(mbuf, "networkhashps");
-
-    /* Calculate supply: 12.5 ZCL per block for first 840000, then halving */
-    double supply = 0.0;
-    {
-        int64_t h = height;
-        int64_t subsidy = 1250000000LL; /* 12.5 ZCL in zatoshi */
-        int64_t halving_interval = 840000;
-        int64_t total_sat = 0;
-        while (h > 0) {
-            int64_t blocks_at_rate = h;
-            if (blocks_at_rate > halving_interval)
-                blocks_at_rate = halving_interval;
-            /* Founders reward: 20% of block reward for first 850000 blocks
-             * but it all goes to supply, so full subsidy counts */
-            total_sat += blocks_at_rate * subsidy;
-            h -= blocks_at_rate;
-            subsidy /= 2;
-            if (subsidy == 0) break;
+    int iteration = 0;
+    while (g_api_cache_thread_running) {
+        /* Refresh /api/blocks every 30 seconds */
+        if (iteration % 3 == 0) {
+            uint8_t *tmp = malloc(API_BLOCKS_CACHE_SIZE);
+            if (tmp) {
+                size_t len = compute_blocks(tmp, API_BLOCKS_CACHE_SIZE);
+                if (len > 0 && len < API_BLOCKS_CACHE_SIZE) {
+                    pthread_mutex_lock(&g_api_cache_mutex);
+                    memcpy(g_api_blocks_cache, tmp, len);
+                    g_api_blocks_cache_len = len;
+                    pthread_mutex_unlock(&g_api_cache_mutex);
+                }
+                free(tmp);
+            }
         }
-        supply = (double)total_sat / 100000000.0;
+
+        /* Refresh /api/stats every 60 seconds */
+        if (iteration % 6 == 0) {
+            uint8_t *tmp = malloc(API_STATS_CACHE_SIZE);
+            if (tmp) {
+                size_t len = compute_stats(tmp, API_STATS_CACHE_SIZE);
+                if (len > 0 && len < API_STATS_CACHE_SIZE) {
+                    pthread_mutex_lock(&g_api_cache_mutex);
+                    memcpy(g_api_stats_cache, tmp, len);
+                    g_api_stats_cache_len = len;
+                    pthread_mutex_unlock(&g_api_cache_mutex);
+                }
+                free(tmp);
+            }
+        }
+
+        /* Refresh /api/supply every 60 seconds */
+        if (iteration % 6 == 0) {
+            uint8_t *tmp = malloc(API_SUPPLY_CACHE_SIZE);
+            if (tmp) {
+                size_t len = compute_supply(tmp, API_SUPPLY_CACHE_SIZE);
+                if (len > 0 && len < API_SUPPLY_CACHE_SIZE) {
+                    pthread_mutex_lock(&g_api_cache_mutex);
+                    memcpy(g_api_supply_cache, tmp, len);
+                    g_api_supply_cache_len = len;
+                    pthread_mutex_unlock(&g_api_cache_mutex);
+                }
+                free(tmp);
+            }
+        }
+
+        /* Refresh /api/hodl every 60 seconds */
+        if (iteration % 6 == 0) {
+            uint8_t *tmp = malloc(API_HODL_CACHE_SIZE);
+            if (tmp) {
+                size_t len = compute_hodl(tmp, API_HODL_CACHE_SIZE);
+                if (len > 0 && len < API_HODL_CACHE_SIZE) {
+                    pthread_mutex_lock(&g_api_cache_mutex);
+                    memcpy(g_api_hodl_cache, tmp, len);
+                    g_api_hodl_cache_len = len;
+                    pthread_mutex_unlock(&g_api_cache_mutex);
+                }
+                free(tmp);
+            }
+        }
+
+        if (iteration == 0)
+            printf("API cache: initial refresh complete (blocks=%zu stats=%zu supply=%zu hodl=%zu)\n",
+                   g_api_blocks_cache_len, g_api_stats_cache_len,
+                   g_api_supply_cache_len, g_api_hodl_cache_len);
+
+        iteration++;
+        /* Sleep 10 seconds between iterations; blocks refresh every 3rd (30s),
+         * stats/supply/hodl every 6th (60s) */
+        for (int s = 0; s < 10 && g_api_cache_thread_running; s++)
+            sleep(1);
     }
 
-    /* UTXO count via gettxoutsetinfo — expensive, skip if too slow */
-    int64_t utxo_count = -1;
-    char ubuf[8192];
-    if (rpc_call("gettxoutsetinfo", "[]", ubuf, sizeof(ubuf)) > 0)
-        utxo_count = json_extract_int(ubuf, "txouts");
-
-    size_t off = 0;
-    off += (size_t)snprintf((char *)r + off, max - off,
-        "%s{"
-        "\"height\":%" PRId64
-        ",\"difficulty\":%.8f"
-        ",\"networkhashps\":%.2f"
-        ",\"supply\":%.8f"
-        ",\"chain\":\"%s\"",
-        JSON_HEADERS,
-        height, diff, hashrate, supply, chain);
-
-    if (utxo_count >= 0)
-        off += (size_t)snprintf((char *)r + off, max - off,
-            ",\"utxo_count\":%" PRId64, utxo_count);
-
-    off += (size_t)snprintf((char *)r + off, max - off, "}");
-    return off;
+    printf("API cache: background refresh thread stopped\n");
+    fflush(stdout);
+    return NULL;
 }
 
-/* ── /api/supply — circulating supply (CoinGecko format) ── */
-
-static size_t api_supply(uint8_t *r, size_t max)
+static void ensure_cache_thread(void)
 {
-    char buf[8192];
+    if (g_api_cache_thread_running) return;
+    g_api_cache_thread_running = 1;
 
-    if (rpc_call("getblockcount", "[]", buf, sizeof(buf)) <= 0)
-        return json_error(r, max, JSON_500_HEADERS, "RPC unavailable");
+    pthread_t t;
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    pthread_attr_setstacksize(&attr, 2 * 1024 * 1024);
+    pthread_create(&t, &attr, api_cache_refresh_thread, NULL);
+    pthread_attr_destroy(&attr);
+}
 
-    int64_t height = json_extract_int(buf, "result");
-    if (height < 0)
-        return json_error(r, max, JSON_500_HEADERS, "Cannot get height");
+/* ── Serve from cache helpers ────────────────────────────── */
 
-    /* Calculate supply */
-    int64_t h = height;
-    int64_t subsidy = 1250000000LL;
-    int64_t halving_interval = 840000;
-    int64_t total_sat = 0;
-    while (h > 0) {
-        int64_t blocks_at_rate = h;
-        if (blocks_at_rate > halving_interval)
-            blocks_at_rate = halving_interval;
-        total_sat += blocks_at_rate * subsidy;
-        h -= blocks_at_rate;
-        subsidy /= 2;
-        if (subsidy == 0) break;
+static size_t serve_from_cache(const char *cache, size_t cache_len,
+                                uint8_t *r, size_t max)
+{
+    if (cache_len == 0)
+        return json_error(r, max, JSON_503_HEADERS,
+                          "Data loading, please retry in a few seconds");
+    size_t copy = cache_len < max ? cache_len : max;
+    pthread_mutex_lock(&g_api_cache_mutex);
+    memcpy(r, cache, copy);
+    pthread_mutex_unlock(&g_api_cache_mutex);
+    return copy;
+}
+
+/* ── Parameterized endpoint request queue ────────────────── */
+/* For /api/block/:id, /api/tx/:txid, /api/address/:addr we
+ * submit the request to the background thread and serve from
+ * a small per-request cache. Uses a simple single-slot queue. */
+
+static pthread_mutex_t g_lookup_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  g_lookup_request_cond = PTHREAD_COND_INITIALIZER;
+static pthread_cond_t  g_lookup_done_cond = PTHREAD_COND_INITIALIZER;
+
+enum lookup_type { LOOKUP_NONE = 0, LOOKUP_BLOCK, LOOKUP_TX, LOOKUP_ADDRESS };
+
+static volatile enum lookup_type g_lookup_type = LOOKUP_NONE;
+static char    g_lookup_param[512];
+static uint8_t g_lookup_result[262144];
+static size_t  g_lookup_result_len = 0;
+static volatile int g_lookup_thread_running = 0;
+
+/* Background thread that processes lookup requests one at a time */
+static void *api_lookup_thread(void *arg)
+{
+    (void)arg;
+    printf("API lookup: background thread started\n");
+    fflush(stdout);
+
+    while (g_lookup_thread_running) {
+        pthread_mutex_lock(&g_lookup_mutex);
+        while (g_lookup_type == LOOKUP_NONE && g_lookup_thread_running) {
+            struct timespec ts;
+            clock_gettime(CLOCK_REALTIME, &ts);
+            ts.tv_sec += 1;
+            pthread_cond_timedwait(&g_lookup_request_cond, &g_lookup_mutex, &ts);
+        }
+        if (!g_lookup_thread_running) {
+            pthread_mutex_unlock(&g_lookup_mutex);
+            break;
+        }
+
+        enum lookup_type type = g_lookup_type;
+        char param[512];
+        snprintf(param, sizeof(param), "%s", g_lookup_param);
+        pthread_mutex_unlock(&g_lookup_mutex);
+
+        size_t len = 0;
+        switch (type) {
+        case LOOKUP_BLOCK:
+            len = compute_block(param, g_lookup_result, sizeof(g_lookup_result));
+            break;
+        case LOOKUP_TX:
+            len = compute_tx(param, g_lookup_result, sizeof(g_lookup_result));
+            break;
+        case LOOKUP_ADDRESS:
+            len = compute_address(param, g_lookup_result, sizeof(g_lookup_result));
+            break;
+        default:
+            break;
+        }
+
+        pthread_mutex_lock(&g_lookup_mutex);
+        g_lookup_result_len = len;
+        g_lookup_type = LOOKUP_NONE;
+        pthread_cond_broadcast(&g_lookup_done_cond);
+        pthread_mutex_unlock(&g_lookup_mutex);
     }
-    double supply = (double)total_sat / 100000000.0;
 
-    /* Plain number — CoinGecko expects just a number */
-    return (size_t)snprintf((char *)r, max,
-        "%s%.8f", JSON_HEADERS, supply);
+    printf("API lookup: background thread stopped\n");
+    fflush(stdout);
+    return NULL;
 }
 
-/* ── /api/hodl — HODL wave data ──────────────────────────── */
-
-static size_t api_hodl(uint8_t *r, size_t max)
+static void ensure_lookup_thread(void)
 {
-    char buf[65536];
+    if (g_lookup_thread_running) return;
+    g_lookup_thread_running = 1;
 
-    /* Get current height and time */
-    if (rpc_call("getblockcount", "[]", buf, sizeof(buf)) <= 0)
-        return json_error(r, max, JSON_500_HEADERS, "RPC unavailable");
+    pthread_t t;
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    pthread_attr_setstacksize(&attr, 2 * 1024 * 1024);
+    pthread_create(&t, &attr, api_lookup_thread, NULL);
+    pthread_attr_destroy(&attr);
+}
 
-    int64_t height = json_extract_int(buf, "result");
-    if (height < 0)
-        return json_error(r, max, JSON_500_HEADERS, "Cannot get height");
+/* Submit a lookup request and wait for result (with timeout) */
+static size_t do_lookup(enum lookup_type type, const char *param,
+                         uint8_t *response, size_t response_max)
+{
+    ensure_lookup_thread();
 
-    /* Get current block time */
-    char params[64];
-    snprintf(params, sizeof(params), "[%" PRId64 "]", height);
-    if (rpc_call("getblockhash", params, buf, sizeof(buf)) <= 0)
-        return json_error(r, max, JSON_500_HEADERS, "RPC unavailable");
+    pthread_mutex_lock(&g_lookup_mutex);
 
-    char hash[65] = "";
-    json_extract_str(buf, "result", hash, sizeof(hash));
+    /* If another request is pending, return 503 */
+    if (g_lookup_type != LOOKUP_NONE) {
+        pthread_mutex_unlock(&g_lookup_mutex);
+        return json_error(response, response_max, JSON_503_HEADERS,
+                          "Server busy, please retry");
+    }
 
-    char params2[128];
-    snprintf(params2, sizeof(params2), "[\"%s\", true]", hash);
-    if (rpc_call("getblock", params2, buf, sizeof(buf)) <= 0)
-        return json_error(r, max, JSON_500_HEADERS, "RPC unavailable");
+    snprintf(g_lookup_param, sizeof(g_lookup_param), "%s", param);
+    g_lookup_result_len = 0;
+    g_lookup_type = type;
+    pthread_cond_signal(&g_lookup_request_cond);
 
-    int64_t tip_time = json_extract_int(buf, "time");
+    /* Wait up to 15 seconds for result */
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_sec += 15;
 
-    /* HODL wave: sample at monthly intervals, compute approximate
-     * age distribution using block timestamps.
-     * This is a simplified version — the HTML explorer has detailed
-     * UTXO-based analysis in the background thread. */
+    while (g_lookup_type != LOOKUP_NONE) {
+        int rc = pthread_cond_timedwait(&g_lookup_done_cond, &g_lookup_mutex, &ts);
+        if (rc != 0) {
+            /* Timeout */
+            pthread_mutex_unlock(&g_lookup_mutex);
+            return json_error(response, response_max, JSON_503_HEADERS,
+                              "Request timed out");
+        }
+    }
 
-    size_t off = 0;
-    off += (size_t)snprintf((char *)r + off, max - off,
-        "%s{"
-        "\"height\":%" PRId64
-        ",\"time\":%" PRId64
-        ",\"description\":\"HODL wave data — ratio of UTXOs by age band\""
-        ",\"bands\":[\"<1d\",\"1d-1w\",\"1w-1m\",\"1m-3m\",\"3m-6m\",\"6m-1y\",\"1y+\"]"
-        ",\"note\":\"Detailed HODL data available at /explorer/hodl\""
-        "}",
-        JSON_HEADERS, height, tip_time);
+    size_t len = g_lookup_result_len;
+    if (len > 0) {
+        size_t copy = len < response_max ? len : response_max;
+        memcpy(response, g_lookup_result, copy);
+        pthread_mutex_unlock(&g_lookup_mutex);
+        return copy;
+    }
 
-    return off;
+    pthread_mutex_unlock(&g_lookup_mutex);
+    return json_error(response, response_max, JSON_500_HEADERS, "RPC unavailable");
 }
 
 /* ── Main router ─────────────────────────────────────────── */
+/* IMPORTANT: This function is called from HTTPS handler threads.
+ * It must NEVER call rpc_call directly. All data comes from
+ * background caches or the lookup thread. */
 
 size_t api_handle_request(const char *method, const char *path,
                            const uint8_t *body, size_t body_len,
@@ -806,6 +1078,9 @@ size_t api_handle_request(const char *method, const char *path,
 {
     (void)body; (void)body_len;
     if (!method || !path || !response) return 0;
+
+    /* Start background cache thread on first request */
+    ensure_cache_thread();
 
     /* Handle CORS preflight */
     if (strcmp(method, "OPTIONS") == 0)
@@ -827,33 +1102,37 @@ size_t api_handle_request(const char *method, const char *path,
     if (plen > 1 && clean_path[plen - 1] == '/')
         clean_path[plen - 1] = '\0';
 
-    /* Route: /api/blocks */
+    /* Route: /api/blocks — served from cache */
     if (strcmp(clean_path, "/api/blocks") == 0)
-        return api_blocks(response, response_max);
+        return serve_from_cache(g_api_blocks_cache, g_api_blocks_cache_len,
+                                response, response_max);
 
-    /* Route: /api/block/:id */
+    /* Route: /api/block/:id — served via lookup thread */
     if (strncmp(clean_path, "/api/block/", 11) == 0 && clean_path[11])
-        return api_block(clean_path + 11, response, response_max);
+        return do_lookup(LOOKUP_BLOCK, clean_path + 11, response, response_max);
 
-    /* Route: /api/tx/:txid */
+    /* Route: /api/tx/:txid — served via lookup thread */
     if (strncmp(clean_path, "/api/tx/", 8) == 0 && clean_path[8])
-        return api_tx(clean_path + 8, response, response_max);
+        return do_lookup(LOOKUP_TX, clean_path + 8, response, response_max);
 
-    /* Route: /api/address/:addr */
+    /* Route: /api/address/:addr — served via lookup thread */
     if (strncmp(clean_path, "/api/address/", 13) == 0 && clean_path[13])
-        return api_address(clean_path + 13, response, response_max);
+        return do_lookup(LOOKUP_ADDRESS, clean_path + 13, response, response_max);
 
-    /* Route: /api/stats */
+    /* Route: /api/stats — served from cache */
     if (strcmp(clean_path, "/api/stats") == 0)
-        return api_stats(response, response_max);
+        return serve_from_cache(g_api_stats_cache, g_api_stats_cache_len,
+                                response, response_max);
 
-    /* Route: /api/supply */
+    /* Route: /api/supply — served from cache */
     if (strcmp(clean_path, "/api/supply") == 0)
-        return api_supply(response, response_max);
+        return serve_from_cache(g_api_supply_cache, g_api_supply_cache_len,
+                                response, response_max);
 
-    /* Route: /api/hodl */
+    /* Route: /api/hodl — served from cache */
     if (strcmp(clean_path, "/api/hodl") == 0)
-        return api_hodl(response, response_max);
+        return serve_from_cache(g_api_hodl_cache, g_api_hodl_cache_len,
+                                response, response_max);
 
     return json_error(response, response_max, JSON_404_HEADERS,
                       "Unknown API endpoint");
