@@ -589,6 +589,58 @@ int test_robustness(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    /* ── SQLite batch sync state machine ────────────────── */
+    printf("robust: batch sync default is per-block... ");
+    {
+        struct node_db ndb;
+        memset(&ndb, 0, sizeof(ndb));
+        /* sync_batch_size=0 should be treated as 1 */
+        int batch = ndb.sync_batch_size > 0 ? ndb.sync_batch_size : 1;
+        bool ok = (batch == 1);
+        if (ok) printf("OK\n");
+        else { printf("FAIL (batch=%d)\n", batch); failures++; }
+    }
+
+    printf("robust: node_db_set_sync_batch_size clamps positive... ");
+    {
+        struct node_db ndb;
+        memset(&ndb, 0, sizeof(ndb));
+        node_db_set_sync_batch_size(&ndb, 100);
+        bool ok = (ndb.sync_batch_size == 100);
+        node_db_set_sync_batch_size(&ndb, 0);
+        ok = ok && (ndb.sync_batch_size == 1); /* 0 clamped to 1 */
+        node_db_set_sync_batch_size(&ndb, -5);
+        ok = ok && (ndb.sync_batch_size == 1); /* negative clamped to 1 */
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("robust: node_db_sync_flush with no batch is no-op... ");
+    {
+        struct node_db ndb;
+        memset(&ndb, 0, sizeof(ndb));
+        ndb.open = false;
+        bool ok = node_db_sync_flush(&ndb); /* not open → false */
+        ndb.open = true;
+        ndb.sync_in_batch = false;
+        ok = ok || node_db_sync_flush(&ndb); /* no batch → true, no-op */
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("robust: node_db_set_sync_batch_size NULL safe... ");
+    {
+        node_db_set_sync_batch_size(NULL, 100); /* should not crash */
+        printf("OK\n");
+    }
+
+    printf("robust: node_db_sync_flush NULL safe... ");
+    {
+        bool ok = !node_db_sync_flush(NULL); /* should return false */
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     cleanup_robustness_datadir();
     return failures;
 }

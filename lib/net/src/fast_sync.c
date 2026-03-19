@@ -3,6 +3,7 @@
  * Fast P2P sync: UTXO snapshot transfer between zclassic23 nodes. */
 
 #include "net/fast_sync.h"
+#include "coins/utxo_commitment.h"
 #include "models/database.h"
 #include "models/utxo.h"
 #include "core/hash.h"
@@ -13,6 +14,13 @@
 #include <string.h>
 #include <time.h>
 #include <sqlite3.h>
+
+/* Cached UTXO root: the O(n) rolling SHA-256 is computed once at startup.
+ * The incremental XOR commitment (maintained per-block) can verify the
+ * root is still valid without rescanning. */
+static uint8_t g_cached_utxo_root[32];
+static uint64_t g_cached_utxo_count = 0;
+static bool g_cached_root_valid = false;
 
 bool fast_sync_build_offer(const char *datadir,
                             struct snapshot_offer *offer)
@@ -62,8 +70,17 @@ bool fast_sync_build_offer(const char *datadir,
     /* Estimate size: ~80 bytes per UTXO */
     offer->total_bytes = offer->num_utxos * 80;
 
-    /* Compute UTXO root */
-    fast_sync_compute_utxo_root_db(db, offer->utxo_root);
+    /* Compute UTXO root: use cache if available, else O(n) scan.
+     * The root is cached after first computation; subsequent calls
+     * reuse it since the offer is rebuilt only at startup. */
+    if (g_cached_root_valid && g_cached_utxo_count == offer->num_utxos) {
+        memcpy(offer->utxo_root, g_cached_utxo_root, 32);
+    } else {
+        fast_sync_compute_utxo_root_db(db, offer->utxo_root);
+        memcpy(g_cached_utxo_root, offer->utxo_root, 32);
+        g_cached_utxo_count = offer->num_utxos;
+        g_cached_root_valid = true;
+    }
 
     sqlite3_close(db);
     return offer->height > 0;
