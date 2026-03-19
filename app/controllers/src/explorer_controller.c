@@ -1487,7 +1487,7 @@ static size_t serve_address(const char *param, uint8_t *r, size_t max)
 
 static size_t serve_search(const char *query, uint8_t *r, size_t max)
 {
-    if (!g_ms || !query) return 0;
+    if (!query) return 0;
 
     /* Strip leading/trailing whitespace */
     while (*query == ' ') query++;
@@ -1500,33 +1500,44 @@ static size_t serve_search(const char *query, uint8_t *r, size_t max)
 
     if (!qlen) return serve_dashboard(r, max);
 
-    int tip = active_chain_height(&g_ms->chain_active);
-
-    /* Block height? */
+    /* Block height? Always try — serve_block handles RPC fallback */
     if (is_all_digits(q)) {
         int h = atoi(q);
-        if (h >= 0 && h <= tip)
+        if (h >= 0 && h < 100000000)
             return serve_block(q, r, max);
     }
 
-    /* 64-hex: block hash or txid? */
+    /* 64-hex: try as block hash first, then txid */
     if (qlen == 64 && is_all_hex(q, 64)) {
-        /* Try block hash */
-        struct uint256 hash;
-        uint256_set_hex(&hash, q);
-        const struct block_index *bi = (const struct block_index *)block_map_find(
-            &g_ms->map_block_index, &hash);
-        if (bi)
-            return serve_block(q, r, max);
+        /* Try block hash via native index */
+        if (g_ms) {
+            struct uint256 hash;
+            uint256_set_hex(&hash, q);
+            const struct block_index *bi = block_map_find(
+                &g_ms->map_block_index, &hash);
+            if (bi)
+                return serve_block(q, r, max);
+        }
 
-        /* Try txid */
+        /* Try txid via SQLite index */
         if (g_ndb) {
+            struct uint256 hash;
+            uint256_set_hex(&hash, q);
             struct db_tx_index txi;
             if (db_tx_find(g_ndb, hash.data, &txi))
                 return serve_tx(q, r, max);
         }
-        if (g_mp && tx_mempool_exists(g_mp, &hash))
-            return serve_tx(q, r, max);
+
+        /* Try mempool */
+        if (g_mp) {
+            struct uint256 hash;
+            uint256_set_hex(&hash, q);
+            if (tx_mempool_exists(g_mp, &hash))
+                return serve_tx(q, r, max);
+        }
+
+        /* Fallback: try as block hash via RPC (works when chain isn't loaded) */
+        return serve_block(q, r, max);
     }
 
     /* Address? (starts with t1, t3, etc.) */
