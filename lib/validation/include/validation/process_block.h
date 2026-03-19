@@ -65,6 +65,11 @@ bool process_new_block(struct validation_state *state,
 void set_flush_policy(int64_t interval_secs, size_t max_entries,
                       int block_interval);
 
+/* Set the LevelDB handle for UTXO commitment persistence.
+ * Must be called before any blocks are processed. */
+struct coins_view_db;
+void set_coins_db_for_commitment(struct coins_view_db *cvdb);
+
 bool test_block_validity(struct validation_state *state,
                          const struct chain_params *params,
                          struct coins_view_cache *coins_tip,

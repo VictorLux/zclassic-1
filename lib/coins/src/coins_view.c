@@ -145,6 +145,7 @@ void coins_view_cache_init(struct coins_view_cache *c, struct coins_view *backin
     coins_map_init(&c->cache_coins);
     uint256_set_null(&c->hash_block);
     c->cached_coins_usage = 0;
+    utxo_commitment_init(&c->commitment);
 }
 
 void coins_view_cache_free(struct coins_view_cache *c)

@@ -27,8 +27,19 @@
 #include <sys/stat.h>
 
 #include "validation/main_constants.h"
+#include "storage/coins_db.h"
+
 static int g_last_block_file = -1;
 static unsigned int g_last_block_file_size = 0;
+
+/* LevelDB handle for persisting UTXO commitment alongside flushes.
+ * Set by boot.c via set_coins_db_for_commitment(). */
+static struct coins_view_db *g_coins_db_ptr = NULL;
+
+void set_coins_db_for_commitment(struct coins_view_db *cvdb)
+{
+    g_coins_db_ptr = cvdb;
+}
 
 /* ── Flush policy ────────────────────────────────────────────
  * Controls when the in-memory UTXO cache writes to LevelDB.
@@ -80,14 +91,22 @@ static bool flush_coins_if_needed(struct coins_view_cache *coins_tip,
     if (!force && !time_flush && !size_flush && !block_flush)
         return true;
 
+    size_t batched = (size_t)g_blocks_since_flush;
     bool ok = coins_view_cache_flush(coins_tip);
     if (ok) {
         g_last_coins_flush = now;
         g_blocks_since_flush = 0;
+
+        /* Persist UTXO commitment atomically with the flush */
+        if (g_coins_db_ptr) {
+            coins_view_db_write_commitment(g_coins_db_ptr,
+                                            &coins_tip->commitment);
+        }
+
         printf("flush_coins: wrote %s (%zu blocks batched)\n",
                force ? "forced" : time_flush ? "periodic" :
                size_flush ? "cache-full" : "block-interval",
-               (size_t)g_blocks_since_flush);
+               batched);
     } else {
         printf("flush_coins: FAILED to flush coins cache to disk\n");
     }
