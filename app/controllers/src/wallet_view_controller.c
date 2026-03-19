@@ -590,9 +590,8 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
     sqlite3_stmt *s = NULL;
     if (sqlite3_prepare_v2(db,
             "SELECT count(*), COALESCE(sum(u.value),0) FROM utxos u "
-            "WHERE u.address_hash IS NOT NULL "
-            "AND EXISTS (SELECT 1 FROM wallet_keys wk "
-            "WHERE wk.pubkey_hash = u.address_hash)",
+            "WHERE u.address_hash IN "
+            "(SELECT pubkey_hash FROM wallet_keys)",
             -1, &s, NULL) == SQLITE_OK) {
         if (sqlite3_step(s) == SQLITE_ROW) {
             t_utxos = sqlite3_column_int(s, 0);
@@ -645,17 +644,44 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
         "</div>",
         tip, peers, tokens, mempool);
 
-    /* Receive address with visual encoding */
-    APPEND(off, r, max,
-        "<h2>Receive Address</h2>");
-    off = emit_qr_svg(r, max, off, PRIMARY_ADDR, 4);
-    APPEND(off, r, max,
-        "<div class='addr-box'>" PRIMARY_ADDR "</div>"
-        "<div style='text-align:center;color:#666;font-size:12px'>"
-        "Copy Address</div>");
+    /* Privacy shield prompt — make shielding feel powerful */
+    if (transparent > 0) {
+        APPEND(off, r, max,
+            "<div class='card' style='border-left-color:#9966ff;padding:16px;"
+            "background:linear-gradient(135deg,#141414,#1a1a2a)'>"
+            "<div style='display:flex;align-items:center;gap:12px'>"
+            "<div style='font-size:28px'>&#x1f6e1;</div>"
+            "<div>"
+            "<div style='font-size:16px;font-weight:700;color:#bb99ff'>"
+            "Shield Your Funds</div>"
+            "<div style='color:#888;font-size:13px;margin-top:2px'>"
+            "Move %.8f ZCL to a shielded address for full privacy. "
+            "Funds become untraceable after ~6 hours.</div>"
+            "</div>"
+            "<a href='/wallet/send' style='background:#9966ff;color:#fff;"
+            "padding:8px 16px;border-radius:6px;font-weight:700;"
+            "font-size:14px;white-space:nowrap;text-decoration:none'>"
+            "Shield Now</a>"
+            "</div></div>",
+            (double)transparent / 1e8);
+    }
 
-    /* Recent transactions — tx-card timeline */
-    APPEND(off, r, max, "<h2>Recent Transactions</h2>");
+    /* Quick actions */
+    APPEND(off, r, max,
+        "<div class='stats' style='margin:16px 0'>"
+        "<div class='stat' style='cursor:pointer'>"
+        "<a href='/wallet/send' style='color:#33ff99;font-size:18px;"
+        "font-weight:700;text-decoration:none'>Send</a></div>"
+        "<div class='stat' style='cursor:pointer'>"
+        "<a href='/wallet/receive' style='color:#4db8ff;font-size:18px;"
+        "font-weight:700;text-decoration:none'>Receive</a></div>"
+        "<div class='stat' style='cursor:pointer'>"
+        "<a href='/wallet/coins' style='color:#e8e8e8;font-size:18px;"
+        "font-weight:700;text-decoration:none'>Coins</a></div>"
+        "</div>");
+
+    /* Recent transactions */
+    APPEND(off, r, max, "<h2>Recent Activity</h2>");
 
     s = NULL;
     if (sqlite3_prepare_v2(db,
@@ -938,9 +964,8 @@ static size_t serve_coins(uint8_t *r, size_t max) {
     sqlite3_stmt *s = NULL;
     if (sqlite3_prepare_v2(db,
             "SELECT hex(u.txid), u.vout, u.value, u.height FROM utxos u "
-            "WHERE u.address_hash IS NOT NULL "
-            "AND EXISTS (SELECT 1 FROM wallet_keys wk "
-            "WHERE wk.pubkey_hash = u.address_hash) "
+            "WHERE u.address_hash IN "
+            "(SELECT pubkey_hash FROM wallet_keys) "
             "ORDER BY u.value DESC",
             -1, &s, NULL) == SQLITE_OK) {
         while (sqlite3_step(s) == SQLITE_ROW && off + 400 < max) {
