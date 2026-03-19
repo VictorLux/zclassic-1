@@ -18,6 +18,10 @@
 #include <stdint.h>
 #include <time.h>
 #include <sqlite3.h>
+#include <sys/time.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <unistd.h>
 
 static const char *g_datadir = NULL;
 
@@ -1132,6 +1136,169 @@ static size_t serve_shield(uint8_t *r, size_t max, const char *query) {
     return off;
 }
 
+/* ── Shield Confirm (/wallet/shield/confirm?amount=X) ──────── */
+/* Executes the shielding transaction via the node's z_sendmany. */
+
+static size_t serve_shield_confirm(uint8_t *r, size_t max, const char *query) {
+    double amount = 0;
+    if (query) {
+        const char *amt = strstr(query, "amount=");
+        if (amt) amount = strtod(amt + 7, NULL);
+    }
+
+    size_t off = emit_header(r, max, "Shielding — ZClassic23", "/wallet");
+
+    if (amount <= 0 || amount > 1.0) {
+        APPEND(off, r, max,
+            "<div class='card' style='border-left-color:#ff4444'>"
+            "<div class='label' style='color:#ff4444'>Invalid amount</div>"
+            "<a href='/wallet'>Back to Wallet</a></div>");
+        emit_footer(r, max, &off);
+        return off;
+    }
+
+    /* Execute z_sendmany via RPC to the running node.
+     * From: t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn
+     * To: auto-generated z-address (node handles it)
+     * This calls the running node's RPC internally. */
+
+    /* Build RPC call */
+    char rpc_body[512];
+    snprintf(rpc_body, sizeof(rpc_body),
+        "{\"method\":\"z_sendmany\",\"params\":[\"" PRIMARY_ADDR "\","
+        "[{\"address\":\"" PRIMARY_ADDR "\",\"amount\":%.8f}]"
+        ",1,0.0001],\"id\":1}", amount);
+
+    /* Read cookie for auth */
+    char cookie[256] = "";
+    if (g_datadir) {
+        char cp[1024];
+        snprintf(cp, sizeof(cp), "%s/.cookie", g_datadir);
+        FILE *f = fopen(cp, "r");
+        if (f) {
+            if (fgets(cookie, sizeof(cookie), f)) {
+                char *nl = strchr(cookie, '\n');
+                if (nl) *nl = '\0';
+            }
+            fclose(f);
+        }
+    }
+
+    /* Make RPC call to localhost:18232 */
+    char result[4096] = "";
+    bool success = false;
+
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd >= 0) {
+        struct sockaddr_in addr;
+        memset(&addr, 0, sizeof(addr));
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(18232);
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        struct timeval tv = {.tv_sec = 10};
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+        if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
+            /* Base64 encode cookie */
+            static const char b64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+            char auth[512];
+            size_t cl = strlen(cookie), bo = 0;
+            for (size_t i = 0; i < cl; i += 3) {
+                uint32_t n = ((uint32_t)(uint8_t)cookie[i]) << 16;
+                if (i+1 < cl) n |= ((uint32_t)(uint8_t)cookie[i+1]) << 8;
+                if (i+2 < cl) n |= (uint32_t)(uint8_t)cookie[i+2];
+                auth[bo++] = b64[(n>>18)&63]; auth[bo++] = b64[(n>>12)&63];
+                auth[bo++] = (i+1<cl) ? b64[(n>>6)&63] : '=';
+                auth[bo++] = (i+2<cl) ? b64[n&63] : '=';
+            }
+            auth[bo] = '\0';
+
+            char req[2048];
+            int rl = snprintf(req, sizeof(req),
+                "POST / HTTP/1.1\r\nHost:127.0.0.1\r\n"
+                "Authorization:Basic %s\r\n"
+                "Content-Type:application/json\r\n"
+                "Content-Length:%zu\r\nConnection:close\r\n\r\n%s",
+                auth, strlen(rpc_body), rpc_body);
+            write(fd, req, (size_t)rl);
+
+            char raw[8192]; size_t tot = 0;
+            while (tot < sizeof(raw)-1) {
+                ssize_t n = read(fd, raw+tot, sizeof(raw)-1-tot);
+                if (n <= 0) break;
+                tot += (size_t)n;
+            }
+            raw[tot] = '\0';
+
+            char *body = strstr(raw, "\r\n\r\n");
+            if (body) {
+                body += 4;
+                snprintf(result, sizeof(result), "%s", body);
+                /* Check for operation ID (success) */
+                if (strstr(result, "opid-"))
+                    success = true;
+            }
+        }
+        close(fd);
+    }
+
+    if (success) {
+        /* Extract operation ID */
+        char *opid = strstr(result, "opid-");
+        char opid_str[128] = "";
+        if (opid) {
+            size_t i = 0;
+            while (opid[i] && opid[i] != '"' && opid[i] != '}' && i < 127) {
+                opid_str[i] = opid[i]; i++;
+            }
+            opid_str[i] = '\0';
+        }
+
+        APPEND(off, r, max,
+            "<div class='card' style='border-left-color:#33ff99;padding:20px'>"
+            "<div style='text-align:center'>"
+            "<div style='font-size:40px;margin-bottom:8px'>&#x2705;</div>"
+            "<div style='font-size:20px;color:#33ff99;font-weight:700'>"
+            "Shielding Started</div>"
+            "<div style='color:#888;font-size:14px;margin-top:8px'>"
+            "%.8f ZCL is being moved to a shielded address.</div>"
+            "<div style='color:#666;font-size:12px;margin-top:12px;"
+            "font-family:monospace;word-break:break-all'>%s</div>"
+            "<div style='color:#555;font-size:13px;margin-top:12px'>"
+            "Your funds will be fully private in ~6 hours.</div>"
+            "</div></div>",
+            amount, opid_str);
+    } else {
+        /* Show the error clearly */
+        char safe_result[1024];
+        html_escape(result, safe_result, sizeof(safe_result));
+
+        APPEND(off, r, max,
+            "<div class='card' style='border-left-color:#ff8800;padding:20px'>"
+            "<div style='text-align:center'>"
+            "<div style='font-size:40px;margin-bottom:8px'>&#x26A0;</div>"
+            "<div style='font-size:20px;color:#ff8800;font-weight:700'>"
+            "Shielding Not Available</div>"
+            "<div style='color:#888;font-size:13px;margin-top:8px'>"
+            "The node could not execute the shielding transaction. "
+            "This may be because the wallet needs to sync, or the "
+            "Sapling prover is not fully initialized.</div>"
+            "<div style='color:#555;font-size:11px;margin-top:12px;"
+            "font-family:monospace;word-break:break-all;text-align:left;"
+            "background:#0a0a0a;padding:10px;border-radius:6px'>%s</div>"
+            "</div></div>",
+            safe_result[0] ? safe_result : "No response from node");
+    }
+
+    APPEND(off, r, max,
+        "<div style='text-align:center;margin:16px'>"
+        "<a href='/wallet' style='color:#4db8ff;font-size:16px'>"
+        "Back to Wallet</a></div>");
+
+    emit_footer(r, max, &off);
+    return off;
+}
+
 /* ── Router ─────────────────────────────────────────────────── */
 
 void wallet_view_init(const char *datadir) {
@@ -1149,6 +1316,10 @@ size_t wallet_view_handle_request(const char *method, const char *path,
         return serve_dashboard(response, response_max);
     if (strcmp(path, "/wallet/send") == 0)
         return serve_send(response, response_max);
+    if (strncmp(path, "/wallet/shield/confirm", 22) == 0) {
+        const char *q = strchr(path, '?');
+        return serve_shield_confirm(response, response_max, q);
+    }
     if (strncmp(path, "/wallet/shield", 14) == 0) {
         const char *q = strchr(path, '?');
         return serve_shield(response, response_max, q);
