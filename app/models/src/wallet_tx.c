@@ -5,6 +5,8 @@
 #include "models/wallet_tx.h"
 #include "models/block.h"
 #include "models/wallet_key.h"
+#include "wallet/sapling_keys.h"
+#include "chain/chainparams.h"
 #include <string.h>
 #include <stdlib.h>
 #include <time.h>
@@ -168,6 +170,13 @@ static void db_sapling_note_read_row(sqlite3_stmt *s, int col,
     col++;
     if (sqlite3_column_type(s, col) != SQLITE_NULL)
         out->block_height = sqlite3_column_int(s, col);
+
+    /* Derive bech32 z-address from diversifier+pk_d for in-memory use. */
+    const struct chain_params *cp = chain_params_get();
+    if (cp)
+        sapling_encode_payment_address(out->diversifier, out->pk_d,
+            cp->bech32HRPs[BECH32_SAPLING_PAYMENT_ADDRESS],
+            out->address, sizeof(out->address));
 }
 
 bool db_wallet_utxo_validate(const struct db_wallet_utxo *u,
@@ -627,12 +636,23 @@ bool db_sapling_note_save(struct node_db *ndb, const struct db_sapling_note *n)
     struct ar_errors errors;
     if (!db_sapling_note_validate(n, &errors)) return false;
     if (!ar_run_before_save(&snote_cbs, (void *)n)) return false;
+
+    /* Derive bech32 z-address from diversifier+pk_d if not already set. */
+    struct db_sapling_note *mut = (struct db_sapling_note *)n;
+    if (!mut->address[0]) {
+        const struct chain_params *cp = chain_params_get();
+        if (cp)
+            sapling_encode_payment_address(mut->diversifier, mut->pk_d,
+                cp->bech32HRPs[BECH32_SAPLING_PAYMENT_ADDRESS],
+                mut->address, sizeof(mut->address));
+    }
+
     sqlite3_stmt *s = NULL;
     sqlite3_prepare_v2(ndb->db,
         "INSERT OR REPLACE INTO wallet_sapling_notes"
         "(txid,output_index,value,rcm,memo,ivk,diversifier,pk_d,cm,"
-        "nullifier,block_height,spent_txid)"
-        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+        "nullifier,block_height,spent_txid,address)"
+        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
         -1, &s, NULL);
     sqlite3_bind_blob(s, 1, n->txid, 32, SQLITE_STATIC);
     sqlite3_bind_int(s, 2, (int)n->output_index);
@@ -655,6 +675,10 @@ bool db_sapling_note_save(struct node_db *ndb, const struct db_sapling_note *n)
         sqlite3_bind_blob(s, 12, n->spent_txid, 32, SQLITE_STATIC);
     else
         sqlite3_bind_null(s, 12);
+    if (n->address[0])
+        sqlite3_bind_text(s, 13, n->address, -1, SQLITE_STATIC);
+    else
+        sqlite3_bind_null(s, 13);
     int rc = sqlite3_step(s);
     sqlite3_finalize(s);
     bool ok2 = rc == SQLITE_DONE;

@@ -127,6 +127,7 @@ static const char *SCHEMA[] = {
     "pk_d BLOB NOT NULL,cm BLOB NOT NULL,"
     "nullifier BLOB NOT NULL UNIQUE,"
     "block_height INTEGER,spent_txid BLOB,"
+    "address TEXT,"
     "PRIMARY KEY (txid,output_index))",
 
     "CREATE INDEX IF NOT EXISTS idx_snote_unspent"
@@ -134,6 +135,9 @@ static const char *SCHEMA[] = {
 
     "CREATE INDEX IF NOT EXISTS idx_snote_nullifier"
     " ON wallet_sapling_notes(nullifier)",
+
+    "CREATE INDEX IF NOT EXISTS idx_snote_address"
+    " ON wallet_sapling_notes(address) WHERE spent_txid IS NULL",
 
     /* Mempool */
     "CREATE TABLE IF NOT EXISTS mempool ("
@@ -594,6 +598,22 @@ int node_db_migrate(struct node_db *ndb, const char *datadir)
         int32_t v = 5;
         node_db_state_set(ndb, "schema_version", &v, sizeof(v));
         current_ver = 5;
+        applied++;
+    }
+
+    if (current_ver < 6) {
+        /* v6: Add address column to wallet_sapling_notes for per-order
+         * payment matching in the store controller. */
+        node_db_exec(ndb,
+            "ALTER TABLE wallet_sapling_notes ADD COLUMN address TEXT");
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_snote_address"
+            " ON wallet_sapling_notes(address) WHERE spent_txid IS NULL");
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('006')");
+        int32_t v = 6;
+        node_db_state_set(ndb, "schema_version", &v, sizeof(v));
+        current_ver = 6;
         applied++;
     }
 

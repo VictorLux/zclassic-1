@@ -122,6 +122,7 @@ struct db_sapling_note {
     uint8_t *witness_data;
     size_t witness_data_len;
     int witness_height;
+    char address[128]; /* bech32 z-address derived from diversifier+pk_d */
 };
 
 bool db_sapling_note_validate(const struct db_sapling_note *n,

@@ -140,11 +140,13 @@ CREATE TABLE IF NOT EXISTS wallet_sapling_notes (
     nullifier BLOB NOT NULL UNIQUE,
     block_height INTEGER,
     spent_txid BLOB,
+    address TEXT,
     PRIMARY KEY (txid, output_index)
 );
 
 CREATE INDEX IF NOT EXISTS idx_snote_unspent ON wallet_sapling_notes(ivk) WHERE spent_txid IS NULL;
 CREATE INDEX IF NOT EXISTS idx_snote_nullifier ON wallet_sapling_notes(nullifier);
+CREATE INDEX IF NOT EXISTS idx_snote_address ON wallet_sapling_notes(address) WHERE spent_txid IS NULL;
 
 -- Mempool
 CREATE TABLE IF NOT EXISTS mempool (

@@ -37,7 +37,7 @@ TOR_LIBS = $(wildcard vendor/tor/libtor.a \
 # All dependencies bundled in vendor/lib as static archives.
 # Zero system library requirements beyond libc.
 # OpenSSL 3.0 (Apache 2.0), libevent, zlib — all vendored.
-LIBS = -Lvendor/lib -ltor_stub -Lvendor/lib -lsecp256k1 -lleveldb \
+LIBS = -Lvendor/lib -lsecp256k1 -lleveldb \
 	-lstdc++ -lm -lsqlite3 -ldl -lpthread \
 	-levent -levent_openssl -levent_pthreads \
 	-lssl -lcrypto -lz \
@@ -51,7 +51,7 @@ all: test_zcl zclassic23 zclassic-cli
 TEST_SRCS = $(wildcard lib/test/src/*.c)
 
 test_zcl: $(TEST_SRCS) $(ALL_SRCS)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ -Lvendor/lib -ltor_stub $(LIBS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(TOR_LIBS) $(LIBS)
 
 zclassic23: main.c $(ALL_SRCS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(TOR_LIBS) $(LIBS)

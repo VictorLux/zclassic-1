@@ -118,8 +118,8 @@ bool contextual_check_transaction(const struct transaction *tx,
     if (tx->num_joinsplit > 0) {
         if (!ed25519_verify(tx->joinsplit_sig, data_to_be_signed.data, 32,
                             tx->joinsplit_pubkey.data)) {
-            /* TODO: Debug JoinSplit sig verification failure.
-             * Temporarily skip to allow chain sync to proceed. */
+            return validation_state_dos(state, 100, false, REJECT_INVALID,
+                "bad-txns-joinsplit-signature", false, NULL);
         }
     }
 

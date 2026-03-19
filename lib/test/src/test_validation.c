@@ -2597,5 +2597,44 @@ int test_validation(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    /* ================================================================
+     * JoinSplit Ed25519 signature enforcement
+     * ================================================================ */
+    printf("JoinSplit sig: contextual_check rejects bad Ed25519 sig... ");
+    {
+        struct transaction tx = make_simple_tx();
+        tx.version = 1;
+        tx.overwintered = false;
+
+        /* Allocate a dummy JoinSplit */
+        tx.num_joinsplit = 1;
+        tx.v_joinsplit = calloc(1, sizeof(struct js_description));
+        tx.v_joinsplit[0].vpub_old = 0;
+        tx.v_joinsplit[0].vpub_new = 1000;
+        memset(tx.joinsplit_pubkey.data, 0xBB, 32);
+        memset(tx.joinsplit_sig, 0xCC, 64);
+        transaction_compute_hash(&tx);
+
+        struct validation_state vs;
+        validation_state_init(&vs);
+        const struct chain_params *mainparams = chain_params_get();
+        bool rejected = !contextual_check_transaction(
+            &tx, &vs, &mainparams->consensus, 1, 100);
+
+        free(tx.v_joinsplit);
+        free_simple_tx(&tx);
+        if (rejected) printf("OK\n");
+        else { printf("FAIL (bad sig accepted)\n"); failures++; }
+    }
+
+    printf("Ed25519 verify: null pubkey rejects... ");
+    {
+        uint8_t pk[32] = {0};
+        uint8_t sig[64] = {0};
+        bool ok = !ed25519_verify(sig, (const uint8_t *)"x", 1, pk);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     return failures;
 }
