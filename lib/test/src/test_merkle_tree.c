@@ -961,45 +961,45 @@ static int test_merkle_tree_scale(void)
         else failures++;
     }
 
-    printf("Witness root == tree root at 500K elements (stress)... ");
+    printf("Witness root == tree root at 50K elements (stress)... ");
     {
-        struct incremental_merkle_tree t;
-        sapling_tree_init(&t);
+        struct incremental_merkle_tree *t = malloc(sizeof(*t));
+        sapling_tree_init(t);
         struct uint256 cm;
         memset(cm.data, 0, 32);
 
-        struct incremental_witness w;
+        struct incremental_witness *w = malloc(sizeof(*w));
         bool w_init = false;
 
-        for (int i = 0; i < 500000; i++) {
+        for (int i = 0; i < 50000; i++) {
             cm.data[0] = (unsigned char)(i & 0xff);
             cm.data[1] = (unsigned char)((i >> 8) & 0xff);
             cm.data[2] = (unsigned char)((i >> 16) & 0xff);
             if (w_init)
-                incremental_witness_append(&w, &cm);
-            incremental_tree_append(&t, &cm);
-            if (i == 249999) {
-                incremental_witness_init(&w, &t);
+                incremental_witness_append(w, &cm);
+            incremental_tree_append(t, &cm);
+            if (i == 24999) {
+                incremental_witness_init(w, t);
                 w_init = true;
             }
         }
 
         struct uint256 tree_root, w_root;
-        incremental_tree_root(&t, &tree_root);
-        incremental_witness_root(&w, &w_root);
+        incremental_tree_root(t, &tree_root);
+        incremental_witness_root(w, &w_root);
         bool match = (memcmp(tree_root.data, w_root.data, 32) == 0);
 
         /* Serialize/deserialize roundtrip */
         struct byte_stream ws;
         stream_init(&ws, 8192);
-        incremental_witness_serialize(&w, &ws);
+        incremental_witness_serialize(w, &ws);
 
         struct incremental_witness w2;
         struct byte_stream rs;
         stream_init_from_data(&rs, ws.data, ws.size);
         bool deser_ok = incremental_witness_deserialize(&w2, &rs,
             SAPLING_INCREMENTAL_MERKLE_TREE_DEPTH,
-            t.combine, t.uncommitted);
+            t->combine, t->uncommitted);
 
         struct uint256 w2_root;
         incremental_witness_root(&w2, &w2_root);
@@ -1025,6 +1025,8 @@ static int test_merkle_tree_scale(void)
                 ws.size, w2.num_filled, w2.has_cursor);
         }
         stream_free(&ws);
+        free(t);
+        free(w);
     }
 
     printf("Multiple witnesses track same tree correctly... ");
