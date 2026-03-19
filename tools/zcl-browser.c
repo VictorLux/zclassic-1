@@ -42,6 +42,7 @@ extern const char *onion_service_start(const char *datadir);
 static WebKitWebView *g_webview = NULL;
 static GtkWidget *g_url_bar = NULL;
 static GtkWidget *g_status_label = NULL;
+static bool g_loading_internal = false; /* prevent re-entrant serve_path */
 
 /* Response buffer — large enough for explorer pages */
 static uint8_t g_response[1 << 20]; /* 1MB */
@@ -50,17 +51,22 @@ static uint8_t g_response[1 << 20]; /* 1MB */
 
 static void serve_path(const char *path) {
     if (!path || !path[0]) path = "/explorer";
+    printf("serve_path: %s\n", path);
+    fflush(stdout);
 
     /* Try explorer first, then onion service */
     size_t len = 0;
     if (strncmp(path, "/explorer", 9) == 0 || strcmp(path, "/style.css") == 0) {
         len = explorer_handle_request("GET", path, NULL, 0,
                                        g_response, sizeof(g_response));
+        printf("  explorer returned %zu bytes\n", len);
     }
     if (len == 0) {
         len = onion_service_handle_request("GET", path, NULL, 0,
                                             g_response, sizeof(g_response));
+        printf("  onion_service returned %zu bytes\n", len);
     }
+    fflush(stdout);
 
     if (len == 0) {
         const char *err = "<html><body style='background:#0a0a0a;color:#e0e0e0;"
@@ -82,10 +88,10 @@ static void serve_path(const char *path) {
         body = (const char *)g_response; /* no headers, use raw */
     }
 
-    /* Load into WebKit with a base URI so relative links work */
-    char base_uri[128];
-    snprintf(base_uri, sizeof(base_uri), "http://localhost%s", path);
-    webkit_web_view_load_html(g_webview, body, base_uri);
+    /* Load into WebKit — guard against re-entrant calls from decide-policy */
+    g_loading_internal = true;
+    webkit_web_view_load_html(g_webview, body, "about:zcl23");
+    g_loading_internal = false;
 
     /* Update URL bar */
     gtk_entry_set_text(GTK_ENTRY(g_url_bar), path);
@@ -116,6 +122,12 @@ static gboolean on_decide_policy(WebKitWebView *v, WebKitPolicyDecision *dec,
                                    WebKitPolicyDecisionType type, gpointer d) {
     (void)v; (void)d;
 
+    /* Skip policy check for our own load_html calls */
+    if (g_loading_internal) {
+        webkit_policy_decision_use(dec);
+        return TRUE;
+    }
+
     if (type == WEBKIT_POLICY_DECISION_TYPE_NAVIGATION_ACTION) {
         WebKitNavigationPolicyDecision *nav =
             WEBKIT_NAVIGATION_POLICY_DECISION(dec);
@@ -125,7 +137,14 @@ static gboolean on_decide_policy(WebKitWebView *v, WebKitPolicyDecision *dec,
         const char *uri = webkit_uri_request_get_uri(req);
 
         if (uri) {
-            /* Extract path from URI (strip http://localhost) */
+            /* Allow about: and data: schemes */
+            if (strncmp(uri, "about:", 6) == 0 ||
+                strncmp(uri, "data:", 5) == 0) {
+                webkit_policy_decision_use(dec);
+                return TRUE;
+            }
+
+            /* Extract path from URI */
             const char *path = uri;
             const char *after_scheme = strstr(uri, "://");
             if (after_scheme) {
@@ -254,9 +273,8 @@ int main(int argc, char *argv[]) {
     gtk_box_pack_start(GTK_BOX(vbox), g_status_label, FALSE, FALSE, 2);
     gtk_container_add(GTK_CONTAINER(win), vbox);
 
-    /* Initial load: CLI arg or default to explorer */
-    const char *initial = "/explorer";
-    if (argc > 1) initial = argv[1];
+    /* Initial load */
+    const char *initial = (argc > 1) ? argv[1] : "/explorer";
     serve_path(initial);
 
     gtk_widget_show_all(win);
