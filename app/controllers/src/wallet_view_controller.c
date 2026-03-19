@@ -1184,10 +1184,47 @@ static size_t serve_shield_confirm(uint8_t *r, size_t max, const char *query) {
         }
     }
 
-    /* Make RPC call to localhost:18232 */
+    /* Quick check: is the node even running? Try connect with 500ms timeout */
     char result[4096] = "";
     bool success = false;
+    bool node_reachable = false;
 
+    {
+        int probe = socket(AF_INET, SOCK_STREAM, 0);
+        if (probe >= 0) {
+            struct sockaddr_in pa;
+            memset(&pa, 0, sizeof(pa));
+            pa.sin_family = AF_INET;
+            pa.sin_port = htons(18232);
+            pa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+            /* Non-blocking connect check */
+            struct timeval ptv = {.tv_sec = 0, .tv_usec = 500000};
+            setsockopt(probe, SOL_SOCKET, SO_SNDTIMEO, &ptv, sizeof(ptv));
+            if (connect(probe, (struct sockaddr *)&pa, sizeof(pa)) == 0)
+                node_reachable = true;
+            close(probe);
+        }
+    }
+
+    if (!node_reachable) {
+        APPEND(off, r, max,
+            "<div class='card' style='border-left-color:#ff4444;padding:20px'>"
+            "<div style='text-align:center'>"
+            "<div style='font-size:40px;margin-bottom:8px'>&#x274C;</div>"
+            "<div style='font-size:20px;color:#ff4444;font-weight:700'>"
+            "Node Offline</div>"
+            "<div style='color:#888;font-size:13px;margin-top:8px'>"
+            "The ZClassic23 node is not running. Start it with:<br>"
+            "<code style='color:#4db8ff'>./zclassic23 -datadir=~/.zclassic-c23</code></div>"
+            "</div></div>"
+            "<div style='text-align:center;margin:16px'>"
+            "<a href='/wallet' style='color:#4db8ff;font-size:16px'>"
+            "Back to Wallet</a></div>");
+        emit_footer(r, max, &off);
+        return off;
+    }
+
+    /* Node is reachable — make the z_sendmany RPC call */
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd >= 0) {
         struct sockaddr_in addr;
