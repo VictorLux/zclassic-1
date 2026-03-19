@@ -69,6 +69,9 @@ void ttt_check_winner(struct ttt_state *s)
 void ttt_render(const struct ttt_state *s, char *out, size_t max)
 {
     static const char sym[] = ".XO";
+    /* Clamp board/turn values for safety against corrupt state */
+    #define S(i) sym[(s->board[i] <= 2) ? s->board[i] : 0]
+    uint8_t t = (s->turn <= 2) ? s->turn : 1;
     snprintf(out, max,
         " %c | %c | %c \n"
         "---+---+---\n"
@@ -76,10 +79,9 @@ void ttt_render(const struct ttt_state *s, char *out, size_t max)
         "---+---+---\n"
         " %c | %c | %c \n"
         "Turn: %c  Moves: %u  %s",
-        sym[s->board[0]], sym[s->board[1]], sym[s->board[2]],
-        sym[s->board[3]], sym[s->board[4]], sym[s->board[5]],
-        sym[s->board[6]], sym[s->board[7]], sym[s->board[8]],
-        sym[s->turn], s->move_count,
+        S(0), S(1), S(2), S(3), S(4), S(5), S(6), S(7), S(8),
+        sym[t], s->move_count,
+    #undef S
         s->winner == 1 ? "X wins!" :
         s->winner == 2 ? "O wins!" :
         s->winner == 3 ? "Draw!" : "");
@@ -150,15 +152,20 @@ enum game_action game_deserialize(const uint8_t *data, size_t len,
         return GAME_ACCEPT;
 
     case GAME_MOVE:
-        if (len >= 3 && position_out) *position_out = data[2];
+        if (len >= 3 && position_out) *position_out = (data[2] < 9) ? data[2] : 0;
         return GAME_MOVE;
 
     case GAME_STATE:
         if (len >= 14 && state_out) {
             memcpy(state_out->board, data + 2, 9);
-            state_out->turn = data[11];
-            state_out->winner = data[12];
-            state_out->move_count = data[13];
+            /* Validate board values (0=empty, 1=X, 2=O) */
+            for (int vi = 0; vi < 9; vi++) {
+                if (state_out->board[vi] > 2)
+                    state_out->board[vi] = 0;
+            }
+            state_out->turn = (data[11] <= 2) ? data[11] : 1;
+            state_out->winner = (data[12] <= 3) ? data[12] : 0;
+            state_out->move_count = (data[13] <= 9) ? data[13] : 0;
         }
         return GAME_STATE;
 

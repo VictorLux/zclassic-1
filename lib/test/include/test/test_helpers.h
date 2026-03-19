@@ -172,6 +172,7 @@ int test_load_balancer(void);
 int test_game(void);
 int test_store(void);
 int test_blog(void);
+int test_robustness(void);
 
 /* ── DRY test macros ─────────────────────────────────────── */
 

@@ -1311,15 +1311,19 @@ static bool rpc_gethodlwavechart(const struct json_value *params, bool help,
         for (size_t i = 0; i < c.num_vout; i++) {
             if (!tx_out_is_null(&c.vout[i]) && c.vout[i].value > 0) {
                 if (num_utxos >= cap) {
-                    cap *= 2;
-                    utxo_ts = realloc(utxo_ts, cap * sizeof(int64_t));
-                    utxo_val = realloc(utxo_val, cap * sizeof(int64_t));
-                    if (!utxo_ts || !utxo_val) {
-                        free(utxo_ts); free(utxo_val);
+                    size_t new_cap = cap * 2;
+                    int64_t *new_ts = realloc(utxo_ts, new_cap * sizeof(int64_t));
+                    int64_t *new_val = realloc(utxo_val, new_cap * sizeof(int64_t));
+                    if (!new_ts || !new_val) {
+                        free(new_ts ? new_ts : utxo_ts);
+                        free(new_val ? new_val : utxo_val);
                         coins_free(&c); db_iter_free(&it);
                         json_set_str(result, "Out of memory");
                         return false;
                     }
+                    utxo_ts = new_ts;
+                    utxo_val = new_val;
+                    cap = new_cap;
                 }
                 utxo_ts[num_utxos] = ts;
                 utxo_val[num_utxos] = c.vout[i].value;

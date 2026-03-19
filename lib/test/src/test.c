@@ -34,6 +34,7 @@ int main(void)
     failures += test_models();
     failures += test_core();
     failures += test_json();
+    failures += test_robustness();
     failures += test_wallet();
     failures += test_primitives();
     failures += test_bloom();

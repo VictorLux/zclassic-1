@@ -327,7 +327,14 @@ static size_t serve_create_order(sqlite3 *db, int64_t product_id,
     sqlite3_bind_text(s, 3, payment_addr, -1, SQLITE_STATIC);
     sqlite3_bind_int64(s, 4, price);
     sqlite3_bind_int64(s, 5, (int64_t)time(NULL));
-    sqlite3_step(s);
+    int rc = sqlite3_step(s);
+    if (rc != SQLITE_DONE) {
+        printf("store: order INSERT failed: %s\n", sqlite3_errmsg(db));
+        sqlite3_finalize(s);
+        return (size_t)snprintf((char *)resp, max,
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/html\r\n"
+            "Connection: close\r\n\r\n<h1>Order creation failed</h1>");
+    }
     int64_t order_id = sqlite3_last_insert_rowid(db);
     sqlite3_finalize(s);
 
@@ -460,14 +467,16 @@ static bool validate_address(const char *addr)
 static const char *parse_form_field(const char *body, size_t len,
                                      const char *field, char *out, size_t outmax)
 {
-    if (!body || !len) return NULL;
+    if (!body || !len || !field || !out || outmax == 0) return NULL;
     char search[128];
     snprintf(search, sizeof(search), "%s=", field);
     const char *p = strstr(body, search);
     if (!p) return NULL;
     p += strlen(search);
+    /* Compute remaining bytes in body from current position */
+    size_t remaining = len - (size_t)(p - body);
     size_t i = 0;
-    while (i < outmax - 1 && p[i] && p[i] != '&' && p[i] != ' ' && i < len) {
+    while (i < outmax - 1 && i < remaining && p[i] && p[i] != '&' && p[i] != ' ') {
         out[i] = p[i];
         i++;
     }

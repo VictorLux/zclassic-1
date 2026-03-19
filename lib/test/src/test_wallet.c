@@ -5,27 +5,34 @@
 #include "wallet/sapling_keys.h"
 #include "wallet/wallet.h"
 
+/* basic_keystore is ~40MB (4096 script entries * 10KB each).
+ * Must be heap-allocated to avoid stack overflow. */
+
 int test_wallet(void)
 {
     int failures = 0;
 
     printf("keystore_init zeroes state... ");
     {
-        struct basic_keystore ks;
-        keystore_init(&ks);
-        if (ks.num_keys == 0 && ks.num_scripts == 0 && ks.num_watching == 0)
+        struct basic_keystore *ks = calloc(1, sizeof(struct basic_keystore));
+        if (!ks) { printf("FAIL (alloc)\n"); failures++; goto skip_ks; }
+        keystore_init(ks);
+        if (ks->num_keys == 0 && ks->num_scripts == 0 && ks->num_watching == 0)
             printf("OK\n");
         else {
             printf("FAIL\n");
             failures++;
         }
-        keystore_free(&ks);
+        keystore_free(ks);
+        free(ks);
     }
+skip_ks:
 
     printf("keystore_add_key + keystore_have_key... ");
     {
-        struct basic_keystore ks;
-        keystore_init(&ks);
+        struct basic_keystore *ks = calloc(1, sizeof(struct basic_keystore));
+        if (!ks) { printf("FAIL (alloc)\n"); failures++; goto skip_add; }
+        keystore_init(ks);
 
         struct privkey k;
         privkey_make_new(&k, true);
@@ -33,40 +40,46 @@ int test_wallet(void)
         privkey_get_pubkey(&k, &pk);
         struct key_id kid = pubkey_get_id(&pk);
 
-        bool added = keystore_add_key(&ks, &k);
-        bool have = keystore_have_key(&ks, &kid);
+        bool added = keystore_add_key(ks, &k);
+        bool have = keystore_have_key(ks, &kid);
 
-        if (added && have && ks.num_keys == 1)
+        if (added && have && ks->num_keys == 1)
             printf("OK\n");
         else {
             printf("FAIL (added=%d, have=%d, num_keys=%zu)\n",
-                   added, have, ks.num_keys);
+                   added, have, ks->num_keys);
             failures++;
         }
-        keystore_free(&ks);
+        keystore_free(ks);
+        free(ks);
     }
+skip_add:
 
     printf("keystore_have_key returns false for unknown key... ");
     {
-        struct basic_keystore ks;
-        keystore_init(&ks);
+        struct basic_keystore *ks = calloc(1, sizeof(struct basic_keystore));
+        if (!ks) { printf("FAIL (alloc)\n"); failures++; goto skip_unknown; }
+        keystore_init(ks);
 
         struct key_id kid;
         memset(kid.id.data, 0xFF, 20);
 
-        if (!keystore_have_key(&ks, &kid))
+        if (!keystore_have_key(ks, &kid))
             printf("OK\n");
         else {
             printf("FAIL\n");
             failures++;
         }
-        keystore_free(&ks);
+        keystore_free(ks);
+        free(ks);
     }
+skip_unknown:
 
     printf("keystore_get_key retrieves added key... ");
     {
-        struct basic_keystore ks;
-        keystore_init(&ks);
+        struct basic_keystore *ks = calloc(1, sizeof(struct basic_keystore));
+        if (!ks) { printf("FAIL (alloc)\n"); failures++; goto skip_get; }
+        keystore_init(ks);
 
         struct privkey k;
         privkey_make_new(&k, true);
@@ -74,23 +87,26 @@ int test_wallet(void)
         privkey_get_pubkey(&k, &pk);
         struct key_id kid = pubkey_get_id(&pk);
 
-        keystore_add_key(&ks, &k);
+        keystore_add_key(ks, &k);
 
         struct privkey retrieved;
-        bool got = keystore_get_key(&ks, &kid, &retrieved);
+        bool got = keystore_get_key(ks, &kid, &retrieved);
         if (got && memcmp(retrieved.vch, k.vch, 32) == 0)
             printf("OK\n");
         else {
             printf("FAIL\n");
             failures++;
         }
-        keystore_free(&ks);
+        keystore_free(ks);
+        free(ks);
     }
+skip_get:
 
     printf("keystore_get_pubkey retrieves pubkey... ");
     {
-        struct basic_keystore ks;
-        keystore_init(&ks);
+        struct basic_keystore *ks = calloc(1, sizeof(struct basic_keystore));
+        if (!ks) { printf("FAIL (alloc)\n"); failures++; goto skip_pubkey; }
+        keystore_init(ks);
 
         struct privkey k;
         privkey_make_new(&k, true);
@@ -98,10 +114,10 @@ int test_wallet(void)
         privkey_get_pubkey(&k, &pk);
         struct key_id kid = pubkey_get_id(&pk);
 
-        keystore_add_key(&ks, &k);
+        keystore_add_key(ks, &k);
 
         struct pubkey retrieved;
-        bool got = keystore_get_pubkey(&ks, &kid, &retrieved);
+        bool got = keystore_get_pubkey(ks, &kid, &retrieved);
         if (got && retrieved.size == pk.size &&
             memcmp(retrieved.vch, pk.vch, pk.size) == 0)
             printf("OK\n");
@@ -109,12 +125,15 @@ int test_wallet(void)
             printf("FAIL\n");
             failures++;
         }
-        keystore_free(&ks);
+        keystore_free(ks);
+        free(ks);
     }
+skip_pubkey:
 
     printf("wallet_is_mine false for unknown script... ");
     {
         struct wallet *w = calloc(1, sizeof(struct wallet));
+        if (!w) { printf("FAIL (alloc)\n"); failures++; goto skip_mine1; }
         wallet_init(w);
 
         struct tx_out txout;
@@ -133,10 +152,12 @@ int test_wallet(void)
         wallet_free(w);
         free(w);
     }
+skip_mine1:
 
     printf("wallet_is_mine true for own P2PKH output... ");
     {
         struct wallet *w = calloc(1, sizeof(struct wallet));
+        if (!w) { printf("FAIL (alloc)\n"); failures++; goto skip_mine2; }
         wallet_init(w);
 
         struct privkey k;
@@ -166,10 +187,12 @@ int test_wallet(void)
         wallet_free(w);
         free(w);
     }
+skip_mine2:
 
     printf("wallet_get_balance empty wallet returns 0... ");
     {
         struct wallet *w = calloc(1, sizeof(struct wallet));
+        if (!w) { printf("FAIL (alloc)\n"); failures++; goto skip_bal; }
         wallet_init(w);
 
         int64_t balance = wallet_get_balance(w);
@@ -182,10 +205,12 @@ int test_wallet(void)
         wallet_free(w);
         free(w);
     }
+skip_bal:
 
     printf("wallet_get_unconfirmed_balance empty wallet returns 0... ");
     {
         struct wallet *w = calloc(1, sizeof(struct wallet));
+        if (!w) { printf("FAIL (alloc)\n"); failures++; goto skip_ubal; }
         wallet_init(w);
 
         int64_t balance = wallet_get_unconfirmed_balance(w);
@@ -198,6 +223,7 @@ int test_wallet(void)
         wallet_free(w);
         free(w);
     }
+skip_ubal:
 
     printf("sapling_keystore_init zeroes state... ");
     {

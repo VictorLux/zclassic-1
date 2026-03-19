@@ -214,6 +214,18 @@ static bool is_all_digits(const char *s)
     return true;
 }
 
+/* Validate address/param is safe to embed in JSON (alphanumeric only).
+ * Prevents JSON injection via crafted params. */
+static bool is_json_safe_param(const char *s, size_t maxlen)
+{
+    if (!s || !*s) return false;
+    for (size_t i = 0; s[i] && i < maxlen; i++) {
+        char c = s[i];
+        if (!isalnum((unsigned char)c)) return false;
+    }
+    return true;
+}
+
 /* ── HTTP response helpers ───────────────────────────────── */
 
 #define JSON_HEADERS \
@@ -728,6 +740,10 @@ static size_t compute_address(const char *param, uint8_t *r, size_t max)
     size_t alen = strlen(param);
     if (alen < 25 || alen > 95)
         return json_error(r, max, JSON_404_HEADERS, "Invalid address");
+
+    /* Ensure address is safe to embed in JSON/RPC params */
+    if (!is_json_safe_param(param, alen))
+        return json_error(r, max, JSON_404_HEADERS, "Invalid address characters");
 
     char buf[262144];
     size_t off = 0;

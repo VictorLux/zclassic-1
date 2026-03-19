@@ -9,6 +9,8 @@
  * Writes at most max-1 bytes + NUL. Returns bytes written. */
 size_t html_escape(char *dst, size_t max, const char *src)
 {
+    if (!dst || max == 0) return 0;
+    if (!src) { dst[0] = '\0'; return 0; }
     size_t w = 0;
     for (size_t i = 0; src[i]; i++) {
         const char *esc = NULL;

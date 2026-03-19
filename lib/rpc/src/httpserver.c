@@ -144,8 +144,12 @@ static void handle_client(int client_fd)
     while (read_line(client_fd, line, sizeof(line))) {
         if (line[0] == '\0') break;
         if (strncasecmp(line, "Content-Length:", 15) == 0) {
-            long v = atol(line + 15);
-            content_length = v > 0 ? (size_t)v : 0;
+            char *endp = NULL;
+            long v = strtol(line + 15, &endp, 10);
+            if (endp == line + 15 || v < 0 || v > 10 * 1024 * 1024)
+                content_length = 0;
+            else
+                content_length = (size_t)v;
         }
         if (strncasecmp(line, "Authorization:", 14) == 0)
             snprintf(auth_value, sizeof(auth_value), "%s", line + 14);
@@ -157,8 +161,13 @@ static void handle_client(int client_fd)
         goto done;
     }
 
-    if (content_length == 0 || content_length > 10 * 1024 * 1024)
+    if (content_length == 0 || content_length > 10 * 1024 * 1024) {
+        if (content_length > 10 * 1024 * 1024) {
+            const char *msg = "{\"error\":\"Request body too large\"}";
+            send_response(client_fd, 413, "Payload Too Large", msg, strlen(msg));
+        }
         goto done;
+    }
 
     char *body = malloc(content_length + 1);
     if (!body) goto done;
@@ -212,6 +221,9 @@ static void handle_client(int client_fd)
         size_t resp_len = json_write(&response, resp_buf, 4 * 1024 * 1024);
         send_response(client_fd, 200, "OK", resp_buf, resp_len);
         free(resp_buf);
+    } else {
+        const char *oom = "{\"error\":\"Internal error: out of memory\"}";
+        send_response(client_fd, 500, "Internal Server Error", oom, strlen(oom));
     }
 
     json_free(&result);

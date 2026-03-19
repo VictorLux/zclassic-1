@@ -126,6 +126,10 @@ bool contextual_check_transaction(const struct transaction *tx,
     /* Verify Sapling shielded spends and outputs via native C23 prover */
     if (tx->num_shielded_spend > 0 || tx->num_shielded_output > 0) {
         void *sctx = zclassic_sapling_verification_ctx_init();
+        if (!sctx) {
+            return validation_state_dos(state, 100, false, REJECT_INVALID,
+                "sapling-verification-ctx-init-failed", false, NULL);
+        }
 
         for (size_t i = 0; i < tx->num_shielded_spend; i++) {
             const struct spend_description *sd = &tx->v_shielded_spend[i];
