@@ -88,6 +88,14 @@ static bool block_map_grow(struct block_map *m)
             block_map_insert_internal(m, &old[i].hash, old[i].index);
     }
     free(old);
+
+    /* Fix phashBlock pointers: they pointed into old buckets which are now freed.
+     * Re-point each block_index's phashBlock to the new bucket location. */
+    for (size_t i = 0; i < new_cap; i++) {
+        if (m->buckets[i].occupied && m->buckets[i].index)
+            m->buckets[i].index->phashBlock = &m->buckets[i].hash;
+    }
+
     return true;
 }
 
