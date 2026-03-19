@@ -254,7 +254,7 @@ static void format_relative_time(int64_t timestamp, char *out, size_t out_max) {
 /* GF(256) arithmetic for Reed-Solomon over QR's field polynomial
  * x^8 + x^4 + x^3 + x^2 + 1 = 0x11d */
 
-static const int QR_SIZE_V2 = 25;  /* Version 2: 25x25 modules */
+#define QR_N 29
 
 static uint8_t gf_exp_table[256];
 static uint8_t gf_log_table[256];
@@ -287,7 +287,7 @@ static void rs_encode(const uint8_t *data, int data_len,
     gf_init();
 
     /* Build generator polynomial coefficients */
-    uint8_t gen[11];
+    uint8_t gen[16];
     memset(gen, 0, sizeof(gen));
     gen[0] = 1;
     for (int i = 0; i < ecc_len; i++) {
@@ -299,7 +299,7 @@ static void rs_encode(const uint8_t *data, int data_len,
     }
 
     /* Polynomial division */
-    uint8_t rem[11];
+    uint8_t rem[16];
     memset(rem, 0, sizeof(rem));
     for (int i = 0; i < data_len; i++) {
         uint8_t lead = data[i] ^ rem[ecc_len - 1];
@@ -312,16 +312,6 @@ static void rs_encode(const uint8_t *data, int data_len,
 }
 
 /* Alphanumeric mode character map */
-static int qr_alphanum_val(char c) {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'A' && c <= 'Z') return c - 'A' + 10;
-    switch (c) {
-    case ' ': return 36; case '$': return 37; case '%': return 38;
-    case '*': return 39; case '+': return 40; case '-': return 41;
-    case '.': return 42; case '/': return 43; case ':': return 44;
-    default: return -1;
-    }
-}
 
 /* Bit buffer for QR data encoding */
 typedef struct {
@@ -339,38 +329,32 @@ static void bb_append(qr_bitbuf *bb, uint32_t val, int nbits) {
     }
 }
 
-/* Build QR Version 2-L data codewords from alphanumeric string.
- * Version 2-L: 44 total codewords, 34 data, 10 ECC.
- * Data capacity in alphanumeric mode: 47 chars. */
-static int qr_encode_alphanumeric(const char *str, uint8_t *codewords) {
+/* Build QR Version 3-L data codewords using BYTE MODE.
+ * Version 3-L: 70 total codewords, 55 data, 15 ECC.
+ * Byte mode capacity: 53 chars (enough for 34-char t-address).
+ * Byte mode supports ALL characters including lowercase. */
+#define QR_DATA_CW 55
+#define QR_ECC_CW  15
+#define QR_TOTAL_CW (QR_DATA_CW + QR_ECC_CW)
+
+static int qr_encode_bytes(const char *str, uint8_t *codewords) {
     size_t len = strlen(str);
-    if (len > 47) return -1;
+    if (len > 53) return -1;
 
     qr_bitbuf bb;
     memset(&bb, 0, sizeof(bb));
 
-    /* Mode indicator: alphanumeric = 0010 */
-    bb_append(&bb, 0x2, 4);
-    /* Character count: 9 bits for version 2 */
-    bb_append(&bb, (uint32_t)len, 9);
+    /* Mode indicator: byte = 0100 */
+    bb_append(&bb, 0x4, 4);
+    /* Character count: 8 bits for version 3 byte mode */
+    bb_append(&bb, (uint32_t)len, 8);
 
-    /* Encode pairs */
-    size_t i = 0;
-    while (i + 1 < len) {
-        int v1 = qr_alphanum_val(str[i]);
-        int v2 = qr_alphanum_val(str[i + 1]);
-        if (v1 < 0 || v2 < 0) return -1;
-        bb_append(&bb, (uint32_t)(v1 * 45 + v2), 11);
-        i += 2;
-    }
-    if (i < len) {
-        int v = qr_alphanum_val(str[i]);
-        if (v < 0) return -1;
-        bb_append(&bb, (uint32_t)v, 6);
-    }
+    /* Encode each byte directly */
+    for (size_t i = 0; i < len; i++)
+        bb_append(&bb, (uint32_t)(uint8_t)str[i], 8);
 
     /* Terminator (up to 4 bits) */
-    int data_bits = 34 * 8;  /* 272 bits capacity */
+    int data_bits = QR_DATA_CW * 8;
     int pad_bits = data_bits - bb.count;
     if (pad_bits > 4) pad_bits = 4;
     if (pad_bits > 0) bb_append(&bb, 0, pad_bits);
@@ -382,23 +366,23 @@ static int qr_encode_alphanumeric(const char *str, uint8_t *codewords) {
     /* Pad codewords */
     int bytes_filled = bb.count / 8;
     bool toggle = false;
-    while (bytes_filled < 34) {
+    while (bytes_filled < QR_DATA_CW) {
         bb_append(&bb, toggle ? 0x11 : 0xEC, 8);
         bytes_filled++;
         toggle = !toggle;
     }
 
-    memcpy(codewords, bb.bits, 34);
+    memcpy(codewords, bb.bits, QR_DATA_CW);
     return 0;
 }
 
 /* Place modules in the QR matrix (Version 2, 25x25).
  * matrix[row][col]: 0=white, 1=black, 2=reserved (not yet set) */
-static void qr_place_finder(uint8_t m[25][25], int row, int col) {
+static void qr_place_finder(uint8_t m[QR_N][QR_N], int row, int col) {
     for (int dr = -1; dr <= 7; dr++) {
         for (int dc = -1; dc <= 7; dc++) {
             int r = row + dr, c = col + dc;
-            if (r < 0 || r >= 25 || c < 0 || c >= 25) continue;
+            if (r < 0 || r >= QR_N || c < 0 || c >= QR_N) continue;
             bool is_border = (dr == -1 || dr == 7 || dc == -1 || dc == 7);
             bool is_outer  = (dr == 0 || dr == 6 || dc == 0 || dc == 6);
             bool is_inner  = (dr >= 2 && dr <= 4 && dc >= 2 && dc <= 4);
@@ -407,9 +391,9 @@ static void qr_place_finder(uint8_t m[25][25], int row, int col) {
     }
 }
 
-static void qr_place_alignment(uint8_t m[25][25]) {
+static void qr_place_alignment(uint8_t m[QR_N][QR_N]) {
     /* Version 2 alignment pattern at (18,18) */
-    int cr = 18, cc = 18;
+    int cr = 22, cc = 22;
     for (int dr = -2; dr <= 2; dr++) {
         for (int dc = -2; dc <= 2; dc++) {
             bool is_edge = (dr == -2 || dr == 2 || dc == -2 || dc == 2);
@@ -419,15 +403,15 @@ static void qr_place_alignment(uint8_t m[25][25]) {
     }
 }
 
-static void qr_place_timing(uint8_t m[25][25]) {
-    for (int i = 8; i < 25 - 8; i++) {
+static void qr_place_timing(uint8_t m[QR_N][QR_N]) {
+    for (int i = 8; i < QR_N - 8; i++) {
         m[6][i] = (i % 2 == 0) ? 1 : 0;
         m[i][6] = (i % 2 == 0) ? 1 : 0;
     }
 }
 
 /* Place format information (error correction L, mask 0) */
-static void qr_place_format(uint8_t m[25][25]) {
+static void qr_place_format(uint8_t m[QR_N][QR_N]) {
     /* Format string for ECC L, mask 0: 111011111000100 (after masking with 101010000010010) */
     uint16_t fmt = 0x77C4;  /* pre-computed: L + mask 0 */
     /* Horizontal: bits 14..0 placed around top-left finder */
@@ -444,14 +428,14 @@ static void qr_place_format(uint8_t m[25][25]) {
 
     /* Right side of top-left: bits 7-14 at (8, 25-8..25-1) */
     for (int i = 0; i < 7; i++)
-        m[8][25 - 1 - i] = (fmt >> i) & 1;
+        m[8][QR_N - 1 - i] = (fmt >> i) & 1;
 
     /* Bottom side of top-left: bits 7-14 at (25-7..25-1, 8) */
     for (int i = 0; i < 7; i++)
-        m[25 - 7 + i][8] = (fmt >> (6 - i)) & 1;
+        m[QR_N - 7 + i][8] = (fmt >> (6 - i)) & 1;
 
     /* Dark module */
-    m[25 - 8][8] = 1;
+    m[QR_N - 8][8] = 1;
 
     (void)hpos_r; (void)hpos_c;
 }
@@ -460,24 +444,24 @@ static void qr_place_format(uint8_t m[25][25]) {
 static bool qr_is_function(int r, int c) {
     /* Finder + separator: top-left, top-right, bottom-left */
     if (r <= 8 && c <= 8) return true;           /* top-left */
-    if (r <= 8 && c >= 25 - 8) return true;      /* top-right */
-    if (r >= 25 - 8 && c <= 8) return true;       /* bottom-left */
+    if (r <= 8 && c >= QR_N - 8) return true;      /* top-right */
+    if (r >= QR_N - 8 && c <= 8) return true;       /* bottom-left */
     /* Timing */
     if (r == 6 || c == 6) return true;
     /* Alignment at (18,18) */
-    if (r >= 16 && r <= 20 && c >= 16 && c <= 20) return true;
+    if (r >= 20 && r <= 24 && c >= 20 && c <= 24) return true;
     return false;
 }
 
 /* Place data bits in the QR matrix using the standard upward-rightward zigzag */
-static void qr_place_data(uint8_t m[25][25], const uint8_t *bits, int nbits) {
+static void qr_place_data(uint8_t m[QR_N][QR_N], const uint8_t *bits, int nbits) {
     int bit_idx = 0;
     /* Column pairs from right to left, skip column 6 (timing) */
-    for (int right = 25 - 1; right >= 1; right -= 2) {
+    for (int right = QR_N - 1; right >= 1; right -= 2) {
         if (right == 6) right = 5;  /* skip timing column */
-        bool upward = ((25 - 1 - right) / 2) % 2 == 0;
-        for (int cnt = 0; cnt < 25; cnt++) {
-            int row = upward ? (25 - 1 - cnt) : cnt;
+        bool upward = ((QR_N - 1 - right) / 2) % 2 == 0;
+        for (int cnt = 0; cnt < QR_N; cnt++) {
+            int row = upward ? (QR_N - 1 - cnt) : cnt;
             for (int dx = 0; dx <= 1; dx++) {
                 int col = right - dx;
                 if (col < 0) continue;
@@ -494,47 +478,47 @@ static void qr_place_data(uint8_t m[25][25], const uint8_t *bits, int nbits) {
 }
 
 /* Apply mask pattern 0: (row + col) % 2 == 0 */
-static void qr_apply_mask(uint8_t m[25][25]) {
-    for (int r = 0; r < 25; r++)
-        for (int c = 0; c < 25; c++)
+static void qr_apply_mask(uint8_t m[QR_N][QR_N]) {
+    for (int r = 0; r < QR_N; r++)
+        for (int c = 0; c < QR_N; c++)
             if (!qr_is_function(r, c) && ((r + c) % 2 == 0))
                 m[r][c] ^= 1;
 }
 
 static size_t emit_qr_svg(uint8_t *buf, size_t max, size_t off,
                            const char *data, int module_size) {
-    if (!data || strlen(data) == 0 || strlen(data) > 47) return off;
+    if (!data || strlen(data) == 0 || strlen(data) > 53) return off;
 
     /* Encode data to codewords */
-    uint8_t data_cw[34];
-    if (qr_encode_alphanumeric(data, data_cw) != 0) return off;
+    uint8_t data_cw[QR_DATA_CW];
+    if (qr_encode_bytes(data, data_cw) != 0) return off;
 
     /* Reed-Solomon: 10 ECC codewords for Version 2-L */
-    uint8_t ecc_cw[10];
-    rs_encode(data_cw, 34, ecc_cw, 10);
+    uint8_t ecc_cw[QR_ECC_CW];
+    rs_encode(data_cw, QR_DATA_CW, ecc_cw, QR_ECC_CW);
 
     /* Combine data + ECC into bit stream */
-    uint8_t all_cw[44];
-    memcpy(all_cw, data_cw, 34);
-    memcpy(all_cw + 34, ecc_cw, 10);
+    uint8_t all_cw[QR_TOTAL_CW];
+    memcpy(all_cw, data_cw, QR_DATA_CW);
+    memcpy(all_cw + QR_DATA_CW, ecc_cw, QR_ECC_CW);
 
     /* Build the 25x25 matrix */
-    uint8_t m[25][25];
+    uint8_t m[QR_N][QR_N];
     memset(m, 0, sizeof(m));
 
     qr_place_finder(m, 0, 0);       /* top-left */
-    qr_place_finder(m, 0, 25 - 7);  /* top-right */
-    qr_place_finder(m, 25 - 7, 0);  /* bottom-left */
+    qr_place_finder(m, 0, QR_N - 7);  /* top-right */
+    qr_place_finder(m, QR_N - 7, 0);  /* bottom-left */
     qr_place_alignment(m);
     qr_place_timing(m);
     qr_place_format(m);
-    qr_place_data(m, all_cw, 44 * 8);
+    qr_place_data(m, all_cw, QR_TOTAL_CW * 8);
     qr_apply_mask(m);
     qr_place_format(m);  /* re-place format after mask (format is not masked) */
 
     /* Emit SVG with quiet zone of 4 modules */
     int quiet = 4;
-    int total = QR_SIZE_V2 + quiet * 2;
+    int total = QR_N + quiet * 2;
     int px = total * module_size;
 
     APPEND(off, buf, max,
@@ -548,8 +532,8 @@ static size_t emit_qr_svg(uint8_t *buf, size_t max, size_t off,
         "<rect width='%d' height='%d' fill='white'/>", total, total);
 
     /* Dark modules */
-    for (int r = 0; r < QR_SIZE_V2; r++) {
-        for (int c = 0; c < QR_SIZE_V2; c++) {
+    for (int r = 0; r < QR_N; r++) {
+        for (int c = 0; c < QR_N; c++) {
             if (m[r][c] && off + 80 < max) {
                 APPEND(off, buf, max,
                     "<rect x='%d' y='%d' width='1' height='1' fill='black'/>",
