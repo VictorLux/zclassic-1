@@ -96,8 +96,9 @@ static void handle_https_client(SSL *ssl)
         return;
     }
 
-    /* Explorer routes — call the explorer handler */
-    if (strncmp(path, "/explorer", 9) == 0) {
+    /* Explorer + API routes — call the explorer handler (which delegates /api/) */
+    if (strncmp(path, "/explorer", 9) == 0 ||
+        strncmp(path, "/api", 4) == 0) {
         extern size_t explorer_handle_request(const char *, const char *,
             const unsigned char *, size_t, unsigned char *, size_t);
 
