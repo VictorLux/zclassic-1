@@ -617,6 +617,56 @@ int node_db_migrate(struct node_db *ndb, const char *datadir)
         applied++;
     }
 
+    if (current_ver < 7) {
+        /* v7: ZSLP token transfer tracking + OP_RETURN index */
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS zslp_transfers ("
+            "txid BLOB NOT NULL,"
+            "block_height INTEGER NOT NULL,"
+            "token_id BLOB NOT NULL,"
+            "tx_type INTEGER NOT NULL," /* 1=GENESIS, 2=MINT, 3=SEND */
+            "from_addr BLOB,"
+            "to_addr BLOB,"
+            "amount INTEGER NOT NULL DEFAULT 0,"
+            "vout INTEGER NOT NULL DEFAULT 0,"
+            "PRIMARY KEY (txid, vout))");
+
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_zslp_xfer_token"
+            " ON zslp_transfers(token_id)");
+
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_zslp_xfer_height"
+            " ON zslp_transfers(block_height DESC)");
+
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_zslp_xfer_addr"
+            " ON zslp_transfers(to_addr) WHERE to_addr IS NOT NULL");
+
+        /* OP_RETURN index — stores all OP_RETURN output data for scanning */
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS op_returns ("
+            "txid BLOB PRIMARY KEY,"
+            "block_height INTEGER NOT NULL,"
+            "script BLOB NOT NULL,"
+            "is_slp INTEGER NOT NULL DEFAULT 0)");
+
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_opret_height"
+            " ON op_returns(block_height)");
+
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_opret_slp"
+            " ON op_returns(is_slp) WHERE is_slp = 1");
+
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('007')");
+        int32_t v = 7;
+        node_db_state_set(ndb, "schema_version", &v, sizeof(v));
+        current_ver = 7;
+        applied++;
+    }
+
     if (applied > 0)
         printf("db: applied %d migration(s), now at version %d\n",
                applied, node_db_schema_version(ndb));

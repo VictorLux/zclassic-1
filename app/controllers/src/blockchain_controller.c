@@ -26,6 +26,7 @@
 #include "validation/connect_block.h"
 #include "util/png_writer.h"
 #include "storage/block_index_db.h"
+#include "zslp/slp.h"
 #include "models/block.h"
 #include "models/tx_index.h"
 #include "models/utxo.h"
@@ -2100,6 +2101,59 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
                         tx->vin[j].prevout.hash.data,
                         tx->vin[j].prevout.n);
                     utxos_spent++;
+                }
+            }
+
+            /* Index OP_RETURN outputs for ZSLP token tracking */
+            if (tx->num_vout > 0 &&
+                tx->vout[0].script_pub_key.size > 0 &&
+                tx->vout[0].script_pub_key.data[0] == 0x6a) {
+                const uint8_t *script = tx->vout[0].script_pub_key.data;
+                size_t script_len = tx->vout[0].script_pub_key.size;
+                struct slp_message slp;
+                if (slp_parse(script, script_len, &slp)) {
+                    if (slp.type == SLP_TX_GENESIS) {
+                        /* Store token in zslp_tokens table */
+                        sqlite3_stmt *ts = NULL;
+                        if (sqlite3_prepare_v2(g_node_db_bc->db,
+                                "INSERT OR IGNORE INTO zslp_tokens"
+                                "(token_id,ticker,name,decimals,document_url,"
+                                "genesis_height,total_minted) VALUES(?,?,?,?,?,?,?)",
+                                -1, &ts, NULL) == SQLITE_OK) {
+                            sqlite3_bind_blob(ts, 1, tx->hash.data, 32, SQLITE_STATIC);
+                            sqlite3_bind_text(ts, 2, slp.ticker, -1, SQLITE_STATIC);
+                            sqlite3_bind_text(ts, 3, slp.name, -1, SQLITE_STATIC);
+                            sqlite3_bind_int(ts, 4, slp.decimals);
+                            sqlite3_bind_text(ts, 5, slp.document_url, -1, SQLITE_STATIC);
+                            sqlite3_bind_int(ts, 6, h);
+                            sqlite3_bind_int64(ts, 7, (int64_t)slp.initial_quantity);
+                            sqlite3_step(ts);
+                            sqlite3_finalize(ts);
+                        }
+                    }
+                    /* Store transfer record */
+                    sqlite3_stmt *xs = NULL;
+                    if (sqlite3_prepare_v2(g_node_db_bc->db,
+                            "INSERT OR IGNORE INTO zslp_transfers"
+                            "(txid,block_height,token_id,tx_type,amount,vout)"
+                            " VALUES(?,?,?,?,?,?)",
+                            -1, &xs, NULL) == SQLITE_OK) {
+                        const uint8_t *tok_id = (slp.type == SLP_TX_GENESIS)
+                            ? tx->hash.data : slp.token_id.data;
+                        int64_t amount = 0;
+                        if (slp.type == SLP_TX_GENESIS) amount = (int64_t)slp.initial_quantity;
+                        else if (slp.type == SLP_TX_MINT) amount = (int64_t)slp.additional_quantity;
+                        else if (slp.type == SLP_TX_SEND && slp.num_outputs > 0)
+                            amount = (int64_t)slp.output_quantities[0];
+                        sqlite3_bind_blob(xs, 1, tx->hash.data, 32, SQLITE_STATIC);
+                        sqlite3_bind_int(xs, 2, h);
+                        sqlite3_bind_blob(xs, 3, tok_id, 32, SQLITE_STATIC);
+                        sqlite3_bind_int(xs, 4, (int)slp.type);
+                        sqlite3_bind_int64(xs, 5, amount);
+                        sqlite3_bind_int(xs, 6, 0);
+                        sqlite3_step(xs);
+                        sqlite3_finalize(xs);
+                    }
                 }
             }
 

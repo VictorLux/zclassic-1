@@ -3,7 +3,7 @@
  * On-chain load balancer implementation. */
 
 #include "net/load_balancer.h"
-#include "sapling/slp.h"
+#include "zslp/slp.h"
 #include "core/uint256.h"
 #include "core/serialize.h"
 #include "primitives/transaction.h"

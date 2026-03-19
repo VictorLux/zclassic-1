@@ -3,7 +3,7 @@
  * ZSLP token controller — token operations + shielded payments. */
 
 #include "controllers/zslp_controller.h"
-#include "sapling/slp.h"
+#include "zslp/slp.h"
 #include "core/uint256.h"
 #include "wallet/wallet.h"
 #include "chain/chainparams.h"

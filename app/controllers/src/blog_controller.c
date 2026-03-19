@@ -4,7 +4,7 @@
 
 #define _XOPEN_SOURCE 700
 #include "controllers/blog_controller.h"
-#include "sapling/slp.h"
+#include "zslp/slp.h"
 #include "primitives/transaction.h"
 #include "core/uint256.h"
 #include "core/serialize.h"

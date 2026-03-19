@@ -19,7 +19,7 @@
 #include "models/utxo.h"
 #include "primitives/block.h"
 #include "primitives/transaction.h"
-#include "sapling/slp.h"
+#include "zslp/slp.h"
 #include "script/standard.h"
 #include "storage/disk_block_io.h"
 #include "validation/chainstate.h"
