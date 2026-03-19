@@ -29,11 +29,12 @@ CFLAGS = -std=c23 -O3 -march=native -flto -Wall -Wextra -Werror -pedantic \
 	-D_POSIX_C_SOURCE=200809L -Ivendor/include
 LDFLAGS = -pthread -flto
 # Use vendor/tor/libtor.a when Tor is built from source.
-# Falls back to stub for builds without Tor.
-TOR_LIBS = $(wildcard vendor/tor/libtor.a \
+# Tor: use full Tor if built, otherwise fall back to stub.
+TOR_FULL = $(wildcard vendor/tor/libtor.a \
 	vendor/tor/src/ext/ed25519/donna/libed25519_donna.a \
 	vendor/tor/src/ext/ed25519/ref10/libed25519_ref10.a \
 	vendor/tor/src/ext/keccak-tiny/libkeccak-tiny.a)
+TOR_LIBS = $(if $(TOR_FULL),$(TOR_FULL),-Lvendor/lib -ltor_stub)
 # All dependencies bundled in vendor/lib as static archives.
 # Zero system library requirements beyond libc.
 # OpenSSL 3.0 (Apache 2.0), libevent, zlib — all vendored.
