@@ -2149,15 +2149,28 @@ static void *tokens_compute_thread(void *arg)
                     snprintf(supply, sizeof(supply), "%" PRId64, minted);
                 }
 
-                (void)tid_hex; /* token_id available for future detail pages */
+                /* Build linkable token ID (reverse byte order for display) */
+                char tid_link[65] = "";
+                if (tid_hex && strlen(tid_hex) == 64) {
+                    for (int k = 0; k < 32; k++) {
+                        tid_link[k*2] = tid_hex[62-k*2];
+                        tid_link[k*2+1] = tid_hex[63-k*2];
+                    }
+                    tid_link[64] = '\0';
+                    /* lowercase */
+                    for (int k = 0; k < 64; k++)
+                        if (tid_link[k] >= 'A' && tid_link[k] <= 'F')
+                            tid_link[k] += 32;
+                }
 
                 APPEND(off, r, max,
-                    "<tr><td style='color:#ff99ff;font-weight:700;font-size:18px'>%s</td>"
+                    "<tr><td style='font-size:18px'>"
+                    "<a href='/explorer/token/%s' style='color:#ff99ff;font-weight:700'>%s</a></td>"
                     "<td>%s</td>"
                     "<td>%d</td>"
                     "<td class='amount'>%s</td>"
                     "<td><a href='/explorer/block/%d'>%d</a></td></tr>",
-                    safe_ticker[0] ? safe_ticker : "(none)",
+                    tid_link, safe_ticker[0] ? safe_ticker : "(none)",
                     safe_name, dec, supply, height, height);
             }
             sqlite3_finalize(s);
@@ -2276,6 +2289,199 @@ static size_t serve_tokens(uint8_t *r, size_t max)
         "<h1 style='font-size:32px;color:#ff99ff'>Loading Token Data...</h1>"
         "<p style='font-size:18px;color:#888'>Scanning SQLite for ZSLP tokens.</p>"
         "</div>" EXPLORER_FOOTER);
+    return off;
+}
+
+/* ── ZSLP Token Detail Page ────────────────────────────────── */
+
+static size_t serve_token_detail(const char *token_id_hex, uint8_t *r, size_t max)
+{
+    if (!token_id_hex || strlen(token_id_hex) != 64 || !g_datadir)
+        return 0;
+
+    /* Open our own SQLite connection (called from HTTPS thread) */
+    char db_path[1024];
+    snprintf(db_path, sizeof(db_path), "%s/node.db", g_datadir);
+    sqlite3 *db = NULL;
+    if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK)
+        return 0;
+    sqlite3_exec(db, "PRAGMA mmap_size=268435456", NULL, NULL, NULL);
+
+    /* Convert display hex to internal byte order (reverse) */
+    uint8_t token_id[32];
+    for (int i = 0; i < 32; i++) {
+        unsigned int b;
+        if (sscanf(token_id_hex + (31 - i) * 2, "%2x", &b) != 1) {
+            sqlite3_close(db);
+            return 0;
+        }
+        token_id[i] = (uint8_t)b;
+    }
+
+    /* Look up token */
+    char ticker[64] = "", name[128] = "", doc_url[256] = "";
+    int decimals = 0, genesis_height = 0;
+    int64_t total_minted = 0;
+    bool found = false;
+
+    {
+        sqlite3_stmt *s = NULL;
+        if (sqlite3_prepare_v2(db,
+                "SELECT ticker, name, decimals, document_url, genesis_height, total_minted "
+                "FROM zslp_tokens WHERE token_id = ?",
+                -1, &s, NULL) == SQLITE_OK) {
+            sqlite3_bind_blob(s, 1, token_id, 32, SQLITE_STATIC);
+            if (sqlite3_step(s) == SQLITE_ROW) {
+                const char *t = (const char *)sqlite3_column_text(s, 0);
+                const char *n = (const char *)sqlite3_column_text(s, 1);
+                const char *u = (const char *)sqlite3_column_text(s, 3);
+                if (t) snprintf(ticker, sizeof(ticker), "%s", t);
+                if (n) snprintf(name, sizeof(name), "%s", n);
+                if (u) snprintf(doc_url, sizeof(doc_url), "%s", u);
+                decimals = sqlite3_column_int(s, 2);
+                genesis_height = sqlite3_column_int(s, 4);
+                total_minted = sqlite3_column_int64(s, 5);
+                found = true;
+            }
+            sqlite3_finalize(s);
+        }
+    }
+
+    if (!found) {
+        sqlite3_close(db);
+        return (size_t)snprintf((char *)r, max,
+            "HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n"
+            "<!DOCTYPE html><html><head><link rel='stylesheet' href='/explorer/style.css'></head><body>"
+            EXPLORER_NAV "<h2>Token Not Found</h2>"
+            "<p>No ZSLP token with ID: <code>%s</code></p>" EXPLORER_FOOTER,
+            token_id_hex);
+    }
+
+    size_t off = 0;
+    char safe_ticker[128], safe_name[256], safe_url[512];
+    html_escape(safe_ticker, sizeof(safe_ticker), ticker);
+    html_escape(safe_name, sizeof(safe_name), name);
+    html_escape(safe_url, sizeof(safe_url), doc_url);
+
+    char supply[64];
+    if (decimals > 0 && decimals <= 8) {
+        int64_t divisor = 1;
+        for (int d = 0; d < decimals; d++) divisor *= 10;
+        snprintf(supply, sizeof(supply), "%" PRId64 ".%0*" PRId64,
+                 total_minted / divisor, decimals, total_minted % divisor);
+    } else {
+        snprintf(supply, sizeof(supply), "%" PRId64, total_minted);
+    }
+
+    /* Count transfers for this token */
+    int64_t xfer_count = 0;
+    {
+        sqlite3_stmt *s = NULL;
+        if (sqlite3_prepare_v2(db,
+                "SELECT count(*) FROM zslp_transfers WHERE token_id = ?",
+                -1, &s, NULL) == SQLITE_OK) {
+            sqlite3_bind_blob(s, 1, token_id, 32, SQLITE_STATIC);
+            if (sqlite3_step(s) == SQLITE_ROW)
+                xfer_count = sqlite3_column_int64(s, 0);
+            sqlite3_finalize(s);
+        }
+    }
+
+    APPEND(off, r, max, EXPLORER_HEADER("Token") EXPLORER_NAV);
+
+    /* Token header */
+    APPEND(off, r, max,
+        "<h1 style='color:#ff99ff'>%s</h1>"
+        "<h2>%s</h2>"
+        "<div class='card'><div class='grid'>"
+        "<div class='label'>Token ID</div><div class='val hash' style='font-size:13px'>%s</div>"
+        "<div class='label'>Ticker</div><div class='val' style='color:#ff99ff;font-weight:700;font-size:20px'>%s</div>"
+        "<div class='label'>Name</div><div class='val'>%s</div>"
+        "<div class='label'>Decimals</div><div class='val'>%d</div>"
+        "<div class='label'>Total Supply</div><div class='val amount' style='font-size:20px'>%s</div>"
+        "<div class='label'>Genesis Block</div><div class='val'><a href='/explorer/block/%d'>%d</a></div>"
+        "<div class='label'>Genesis TX</div><div class='val hash'><a href='/explorer/tx/%s'>%s</a></div>"
+        "<div class='label'>Transfers</div><div class='val'>%" PRId64 "</div>",
+        safe_ticker[0] ? safe_ticker : "(unnamed)",
+        safe_name[0] ? safe_name : "ZSLP Token",
+        token_id_hex,
+        safe_ticker[0] ? safe_ticker : "(none)",
+        safe_name, decimals, supply,
+        genesis_height, genesis_height,
+        token_id_hex, token_id_hex,
+        xfer_count);
+
+    if (safe_url[0])
+        APPEND(off, r, max,
+            "<div class='label'>Document URL</div><div class='val'>%s</div>",
+            safe_url);
+
+    APPEND(off, r, max, "</div></div>");
+
+    /* Transfer history */
+    APPEND(off, r, max,
+        "<h2>Transfer History (%" PRId64 ")</h2>"
+        "<table><tr><th>Block</th><th>Type</th><th>Amount</th></tr>",
+        xfer_count);
+    {
+        sqlite3_stmt *s = NULL;
+        if (sqlite3_prepare_v2(db,
+                "SELECT block_height, tx_type, amount, hex(txid) "
+                "FROM zslp_transfers WHERE token_id = ? "
+                "ORDER BY block_height DESC LIMIT 100",
+                -1, &s, NULL) == SQLITE_OK) {
+            sqlite3_bind_blob(s, 1, token_id, 32, SQLITE_STATIC);
+            while (sqlite3_step(s) == SQLITE_ROW && off + 512 < max) {
+                int height = sqlite3_column_int(s, 0);
+                int tx_type = sqlite3_column_int(s, 1);
+                int64_t amount = sqlite3_column_int64(s, 2);
+                const char *txid_hex = (const char *)sqlite3_column_text(s, 3);
+
+                const char *type_str = tx_type == 1 ? "GENESIS" :
+                                       tx_type == 2 ? "MINT" :
+                                       tx_type == 3 ? "SEND" : "?";
+                const char *type_class = tx_type == 1 ? "tag-cb" :
+                                         tx_type == 2 ? "tag-shielded" : "tag-slp";
+
+                char amt[64];
+                if (decimals > 0 && decimals <= 8) {
+                    int64_t divisor = 1;
+                    for (int d = 0; d < decimals; d++) divisor *= 10;
+                    snprintf(amt, sizeof(amt), "%" PRId64 ".%0*" PRId64,
+                             amount / divisor, decimals, amount % divisor);
+                } else {
+                    snprintf(amt, sizeof(amt), "%" PRId64, amount);
+                }
+
+                /* Reverse txid for display */
+                char txid_disp[65] = "";
+                if (txid_hex && strlen(txid_hex) == 64) {
+                    for (int k = 0; k < 32; k++) {
+                        txid_disp[k*2] = txid_hex[62-k*2];
+                        txid_disp[k*2+1] = txid_hex[63-k*2];
+                    }
+                    txid_disp[64] = '\0';
+                    for (int k = 0; k < 64; k++)
+                        if (txid_disp[k] >= 'A' && txid_disp[k] <= 'F')
+                            txid_disp[k] += 32;
+                }
+                char short_tx[18];
+                snprintf(short_tx, sizeof(short_tx), "%.8s...%.4s",
+                         txid_disp, txid_disp + 60);
+
+                APPEND(off, r, max,
+                    "<tr><td><a href='/explorer/block/%d'>%d</a></td>"
+                    "<td><span class='tag %s'>%s</span></td>"
+                    "<td class='amount'>%s</td></tr>",
+                    height, height, type_class, type_str, amt);
+            }
+            sqlite3_finalize(s);
+        }
+    }
+    APPEND(off, r, max, "</table>");
+
+    APPEND(off, r, max, EXPLORER_FOOTER);
+    sqlite3_close(db);
     return off;
 }
 
@@ -2714,6 +2920,9 @@ size_t explorer_handle_request(const char *method, const char *path,
 
     if (strcmp(path, "/explorer/tokens") == 0 || strcmp(path, "/explorer/tokens/") == 0)
         return serve_tokens(response, response_max);
+
+    if (strncmp(path, "/explorer/token/", 16) == 0)
+        return serve_token_detail(path + 16, response, response_max);
 
     if (strcmp(path, "/explorer/hodl") == 0 || strcmp(path, "/explorer/hodl/") == 0)
         return serve_hodl(response, response_max);
