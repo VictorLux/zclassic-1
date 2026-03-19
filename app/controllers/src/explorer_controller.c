@@ -360,14 +360,21 @@ static size_t html_escape(char *dst, size_t max, const char *src)
     return w;
 }
 
+/* Zcash/ZClassic difficulty: powLimit / target.
+ * powLimit = 0x07ffff * 256^(0x1f-3), genesis bits = 0x1f07ffff = diff 1. */
+static double difficulty_from_bits(uint32_t bits)
+{
+    if (bits == 0) return 1.0;
+    int exp = (int)((bits >> 24) & 0xff);
+    double target = (double)(bits & 0x00ffffff) * pow(256.0, exp - 3);
+    double pow_limit = (double)0x07ffff * pow(256.0, 0x1f - 3);
+    return (target > 0) ? pow_limit / target : 1.0;
+}
+
 static double get_difficulty(const struct block_index *bi)
 {
     if (!bi) return 1.0;
-    int shift = (int)((bi->nBits >> 24) & 0xff) - 29;
-    double diff = (double)0x0000ffff / (double)(bi->nBits & 0x00ffffff);
-    while (shift < 0) { diff *= 256.0; shift++; }
-    while (shift > 0) { diff /= 256.0; shift--; }
-    return diff;
+    return difficulty_from_bits(bi->nBits);
 }
 
 static void format_time(char *buf, size_t max, uint32_t t)
@@ -1761,9 +1768,16 @@ static void *stats_compute_thread(void *arg)
     size_t max = 262144;
     size_t off = 0;
 
-    /* Use our own RPC connection */
-    char buf[65536];
-    size_t bufsz = sizeof(buf);
+    /* Query all data from our own SQLite — no RPC dependency */
+    char db_path[1024];
+    snprintf(db_path, sizeof(db_path), "%s/node.db", g_datadir);
+    sqlite3 *db = NULL;
+    if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
+        printf("Stats: failed to open SQLite\n"); fflush(stdout);
+        free(r); g_stats_computing = 0; return NULL;
+    }
+    sqlite3_exec(db, "PRAGMA mmap_size=268435456", NULL, NULL, NULL);
+
     int tip = 0;
     double diff = 0;
     int64_t total_supply = 0;
@@ -1771,18 +1785,48 @@ static void *stats_compute_thread(void *arg)
     int64_t mp_count = 0;
     double mp_bytes = 0;
 
-    rpc_call("getblockchaininfo", "[]", buf, bufsz);
-    tip = (int)json_extract_int(buf, "blocks");
-    diff = json_extract_real(buf, "difficulty");
+    /* Tip height + difficulty from latest block */
+    {
+        sqlite3_stmt *s = NULL;
+        if (sqlite3_prepare_v2(db,
+                "SELECT height, bits FROM blocks ORDER BY height DESC LIMIT 1",
+                -1, &s, NULL) == SQLITE_OK && s) {
+            if (sqlite3_step(s) == SQLITE_ROW) {
+                tip = sqlite3_column_int(s, 0);
+                uint32_t bits = (uint32_t)sqlite3_column_int(s, 1);
+                if (bits > 0) {
+                    /* Zcash/ZClassic difficulty: powLimit / target
+                     * powLimit = 0x07ffff * 2^(8*(0x1f-3))
+                     * target = (bits & 0x00ffffff) * 2^(8*((bits>>24)-3)) */
+                    int exp = (int)((bits >> 24) & 0xff);
+                    double target = (double)(bits & 0x00ffffff) * pow(256.0, exp - 3);
+                    double pow_limit = (double)0x07ffff * pow(256.0, 0x1f - 3);
+                    if (target > 0) diff = pow_limit / target;
+                }
+            }
+            sqlite3_finalize(s);
+        }
+    }
 
-    rpc_call("getmempoolinfo", "[]", buf, bufsz);
-    mp_count = json_extract_int(buf, "size");
-    mp_bytes = (double)json_extract_int(buf, "bytes");
+    if (tip <= 0) {
+        printf("Stats: no blocks in SQLite (tip=%d)\n", tip);
+        fflush(stdout);
+        sqlite3_close(db); free(r); g_stats_computing = 0; return NULL;
+    }
 
-    rpc_call("gettxoutsetinfo", "[]", buf, bufsz);
-    utxo_count_val = json_extract_int(buf, "txouts");
-    double supply_dbl = json_extract_real(buf, "total_amount");
-    total_supply = (int64_t)(supply_dbl * 100000000.0);
+    /* Supply + UTXO count */
+    {
+        sqlite3_stmt *s = NULL;
+        if (sqlite3_prepare_v2(db,
+                "SELECT COALESCE(SUM(value),0), count(*) FROM utxos",
+                -1, &s, NULL) == SQLITE_OK && s) {
+            if (sqlite3_step(s) == SQLITE_ROW) {
+                total_supply = sqlite3_column_int64(s, 0);
+                utxo_count_val = sqlite3_column_int64(s, 1);
+            }
+            sqlite3_finalize(s);
+        }
+    }
 
     double hashrate = diff * 8192.0 / 150.0;
     char hr_str[64];
@@ -1882,22 +1926,23 @@ static void *stats_compute_thread(void *arg)
             if (h < 0) h = 0;
             if (h > tip) h = tip;
             all_diff[ri][i] = diff;
-            all_hr[ri][i] = diff * 8192.0 / 150.0; /* raw H/s */
+            all_hr[ri][i] = diff * 8192.0 / 150.0;
 
-            char params[64];
-            snprintf(params, sizeof(params), "[%d]", h);
-            rpc_call("getblockhash", params, buf, bufsz);
-            char hash[65] = "";
-            json_extract_str(buf, "result", hash, sizeof(hash));
-            if (hash[0]) {
-                char p2[128];
-                snprintf(p2, sizeof(p2), "[\"%s\"]", hash);
-                rpc_call("getblock", p2, buf, bufsz);
-                double d = json_extract_real(buf, "difficulty");
-                if (d > 0) {
-                    all_diff[ri][i] = d;
-                    all_hr[ri][i] = d * 8192.0 / 150.0; /* raw H/s */
+            /* Query difficulty (bits) from our SQLite */
+            char sql[256];
+            snprintf(sql, sizeof(sql),
+                "SELECT bits FROM blocks WHERE height=%d LIMIT 1", h);
+            sqlite3_stmt *bs = NULL;
+            if (sqlite3_prepare_v2(db, sql, -1, &bs, NULL) == SQLITE_OK && bs) {
+                if (sqlite3_step(bs) == SQLITE_ROW) {
+                    uint32_t bits = (uint32_t)sqlite3_column_int(bs, 0);
+                    if (bits > 0) {
+                        double d = difficulty_from_bits(bits);
+                        all_diff[ri][i] = d;
+                        all_hr[ri][i] = d * 8192.0 / 150.0;
+                    }
                 }
+                sqlite3_finalize(bs);
             }
             snprintf(all_labels[ri][i], sizeof(all_labels[ri][i]), "%d", h);
         }
@@ -1959,9 +2004,10 @@ static void *stats_compute_thread(void *arg)
         memcpy(g_stats_cache, r, off);
         g_stats_cache_len = off;
     }
+    sqlite3_close(db);
     free(r);
     g_stats_computing = 0;
-    printf("Stats background: cached %zu bytes\n", g_stats_cache_len);
+    printf("Stats background: cached %zu bytes (tip=%d)\n", g_stats_cache_len, tip);
     fflush(stdout);
     return NULL;
 }
