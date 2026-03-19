@@ -222,7 +222,12 @@ bool node_db_sync_connect_block(struct node_db *ndb,
 {
     if (!ndb->open) return false;
 
-    node_db_begin(ndb);
+    /* Batch mode: start transaction if not already in one */
+    if (!ndb->sync_in_batch) {
+        node_db_begin(ndb);
+        ndb->sync_in_batch = true;
+        ndb->sync_pending_blocks = 0;
+    }
 
     /* 1. Index the block header */
     struct db_block db_blk;
@@ -360,7 +365,14 @@ bool node_db_sync_connect_block(struct node_db *ndb,
     node_db_sync_set_tip(ndb,
         pindex->phashBlock->data, pindex->nHeight);
 
-    node_db_commit(ndb);
+    /* Batch mode: commit only when batch_size reached */
+    ndb->sync_pending_blocks++;
+    int batch = ndb->sync_batch_size > 0 ? ndb->sync_batch_size : 1;
+    if (ndb->sync_pending_blocks >= batch) {
+        node_db_commit(ndb);
+        ndb->sync_in_batch = false;
+        ndb->sync_pending_blocks = 0;
+    }
     return true;
 }
 
@@ -369,6 +381,10 @@ bool node_db_sync_disconnect_block(struct node_db *ndb,
                                    const struct block_index *pindex)
 {
     if (!ndb->open) return false;
+
+    /* Flush any pending batch before disconnecting — disconnect needs
+     * accurate SQLite state for UTXO restoration */
+    node_db_sync_flush(ndb);
 
     node_db_begin(ndb);
 

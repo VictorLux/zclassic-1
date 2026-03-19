@@ -390,6 +390,24 @@ bool node_db_rollback(struct node_db *ndb)
     return node_db_exec(ndb, "ROLLBACK");
 }
 
+void node_db_set_sync_batch_size(struct node_db *ndb, int batch_size)
+{
+    if (!ndb) return;
+    ndb->sync_batch_size = batch_size > 0 ? batch_size : 1;
+}
+
+bool node_db_sync_flush(struct node_db *ndb)
+{
+    if (!ndb || !ndb->open) return false;
+    if (ndb->sync_in_batch) {
+        bool ok = node_db_commit(ndb);
+        ndb->sync_in_batch = false;
+        ndb->sync_pending_blocks = 0;
+        return ok;
+    }
+    return true;
+}
+
 bool node_db_state_set(struct node_db *ndb, const char *key,
                        const void *value, size_t len)
 {

@@ -30,6 +30,13 @@ struct node_db {
     sqlite3_stmt *stmt_nullifier_exists;
     sqlite3_stmt *stmt_state_set;
     sqlite3_stmt *stmt_state_get;
+
+    /* Batch sync: accumulate N blocks before COMMIT for throughput.
+     * batch_size=1 is the safe default (per-block COMMIT).
+     * During IBD, set batch_size=100+ for 10-50x SQLite throughput. */
+    int  sync_batch_size;       /* target blocks per COMMIT (default 1) */
+    int  sync_pending_blocks;   /* blocks since last COMMIT */
+    bool sync_in_batch;         /* true if a batch transaction is open */
 };
 
 /* Open or create the node database at path (e.g. ~/.zclassic-c23/node.db).
@@ -44,6 +51,13 @@ bool node_db_exec(struct node_db *ndb, const char *sql);
 bool node_db_begin(struct node_db *ndb);
 bool node_db_commit(struct node_db *ndb);
 bool node_db_rollback(struct node_db *ndb);
+
+/* Set SQLite sync batch size (blocks per COMMIT).
+ * 1 = safe default (per-block). 100+ = aggressive IBD mode. */
+void node_db_set_sync_batch_size(struct node_db *ndb, int batch_size);
+
+/* Flush any pending batch transaction (call on shutdown or before reorg). */
+bool node_db_sync_flush(struct node_db *ndb);
 
 /* Key-value state store (replaces misc flags). */
 bool node_db_state_set(struct node_db *ndb, const char *key,

@@ -59,6 +59,12 @@ bool process_new_block(struct validation_state *state,
                        bool force_processing,
                        const char *datadir);
 
+/* Configure the coins flush policy (short-term → long-term layer bridge).
+ * block_interval=0 disables block-based flushing (default).
+ * During IBD, set block_interval=1000 for aggressive batching. */
+void set_flush_policy(int64_t interval_secs, size_t max_entries,
+                      int block_interval);
+
 bool test_block_validity(struct validation_state *state,
                          const struct chain_params *params,
                          struct coins_view_cache *coins_tip,
