@@ -173,6 +173,9 @@ int test_game(void);
 int test_store(void);
 int test_blog(void);
 int test_robustness(void);
+int test_api(void);
+int test_explorer(void);
+int test_mining(void);
 
 /* ── DRY test macros ─────────────────────────────────────── */
 

@@ -41,6 +41,9 @@ int main(void)
     failures += test_coins();
     failures += test_store();
     failures += test_blog();
+    failures += test_api();
+    failures += test_explorer();
+    failures += test_mining();
     failures += test_tor();
 
     ecc_verify_destroy();

@@ -1096,7 +1096,7 @@ size_t api_handle_request(const char *method, const char *path,
                            uint8_t *response, size_t response_max)
 {
     (void)body; (void)body_len;
-    if (!method || !path || !response) return 0;
+    if (!method || !path || !response || response_max == 0) return 0;
 
     /* Start background cache thread on first request */
     ensure_cache_thread();
