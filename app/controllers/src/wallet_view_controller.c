@@ -644,26 +644,48 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
         "</div>",
         tip, peers, tokens, mempool);
 
-    /* Privacy shield prompt — make shielding feel powerful */
+    /* One-click shielding — no forms, no addresses, just pick an amount.
+     * The wallet handles everything: generates z-addr, builds tx, broadcasts.
+     * User never sees technical details. */
     if (transparent > 0) {
+        double bal = (double)transparent / 1e8;
+        /* Preset amounts: common fractions of balance */
+        double p1 = 0.1, p2 = 0.25, p3 = 0.5;
+        if (p1 > bal - 0.0002) p1 = bal * 0.1;
+        if (p2 > bal - 0.0002) p2 = bal * 0.25;
+        if (p3 > bal - 0.0002) p3 = bal * 0.5;
+
         APPEND(off, r, max,
-            "<div class='card' style='border-left-color:#9966ff;padding:16px;"
+            "<div class='card' style='border-left-color:#9966ff;padding:18px;"
             "background:linear-gradient(135deg,#141414,#1a1a2a)'>"
-            "<div style='display:flex;align-items:center;gap:12px'>"
-            "<div style='font-size:28px'>&#x1f6e1;</div>"
-            "<div>"
-            "<div style='font-size:16px;font-weight:700;color:#bb99ff'>"
-            "Shield Your Funds</div>"
-            "<div style='color:#888;font-size:13px;margin-top:2px'>"
-            "Move %.8f ZCL to a shielded address for full privacy. "
-            "Funds become untraceable after ~6 hours.</div>"
-            "</div>"
-            "<a href='/wallet/send' style='background:#9966ff;color:#fff;"
-            "padding:8px 16px;border-radius:6px;font-weight:700;"
-            "font-size:14px;white-space:nowrap;text-decoration:none'>"
-            "Shield Now</a>"
+            "<div style='font-size:16px;font-weight:700;color:#bb99ff;"
+            "margin-bottom:8px'>Shield Your Funds</div>"
+            "<div style='color:#999;font-size:13px;margin-bottom:12px'>"
+            "Make your ZCL untraceable. Pick an amount — the wallet "
+            "handles everything. Fully private in ~6 hours.</div>"
+            "<div style='display:flex;gap:8px;flex-wrap:wrap'>"
+            "<a href='/wallet/shield?amount=%.4f' "
+            "style='flex:1;min-width:80px;background:#9966ff;color:#fff;"
+            "padding:10px 0;border-radius:6px;font-weight:700;"
+            "font-size:15px;text-align:center;text-decoration:none'>"
+            "%.4f ZCL</a>"
+            "<a href='/wallet/shield?amount=%.4f' "
+            "style='flex:1;min-width:80px;background:#7744dd;color:#fff;"
+            "padding:10px 0;border-radius:6px;font-weight:700;"
+            "font-size:15px;text-align:center;text-decoration:none'>"
+            "%.4f ZCL</a>"
+            "<a href='/wallet/shield?amount=%.4f' "
+            "style='flex:1;min-width:80px;background:#5522bb;color:#fff;"
+            "padding:10px 0;border-radius:6px;font-weight:700;"
+            "font-size:15px;text-align:center;text-decoration:none'>"
+            "%.4f ZCL</a>"
+            "<a href='/wallet/shield?amount=%.8f' "
+            "style='flex:1;min-width:80px;background:#331199;color:#fff;"
+            "padding:10px 0;border-radius:6px;font-weight:700;"
+            "font-size:15px;text-align:center;text-decoration:none'>"
+            "All</a>"
             "</div></div>",
-            (double)transparent / 1e8);
+            p1, p1, p2, p2, p3, p3, bal - 0.0001);
     }
 
     /* Quick actions */
@@ -1038,6 +1060,78 @@ static size_t serve_coins(uint8_t *r, size_t max) {
     return off;
 }
 
+/* ── Shield (/wallet/shield?amount=X) ──────────────────────── */
+/* One-click shielding confirmation page.
+ * The wallet auto-generates a z-address and builds the transaction.
+ * User just confirms the amount. */
+
+static size_t serve_shield(uint8_t *r, size_t max, const char *query) {
+    /* Parse amount from query string */
+    double amount = 0;
+    if (query) {
+        const char *amt = strstr(query, "amount=");
+        if (amt) amount = strtod(amt + 7, NULL);
+    }
+
+    if (amount <= 0 || amount > 1.0) {
+        size_t off = emit_header(r, max, "Shield — ZClassic23", "/wallet");
+        APPEND(off, r, max,
+            "<div class='card' style='border-left-color:#ff4444'>"
+            "<div class='label' style='color:#ff4444'>Invalid Amount</div>"
+            "<div class='sub'>Amount must be between 0 and your balance.</div>"
+            "<a href='/wallet' style='color:#4db8ff'>Back to Wallet</a></div>");
+        emit_footer(r, max, &off);
+        return off;
+    }
+
+    double fee = 0.0001;
+    double total_cost = amount + fee;
+
+    size_t off = emit_header(r, max, "Shield Funds — ZClassic23", "/wallet");
+
+    APPEND(off, r, max,
+        "<div class='card' style='border-left-color:#9966ff;padding:20px;"
+        "background:linear-gradient(135deg,#141414,#1a1a2a)'>"
+        "<div style='text-align:center'>"
+        "<div style='font-size:14px;color:#888;margin-bottom:8px'>"
+        "Shielding</div>"
+        "<div style='font-size:40px;color:#bb99ff;font-weight:800'>"
+        "%.8f ZCL</div>"
+        "<div style='color:#666;font-size:13px;margin-top:8px'>"
+        "Fee: %.4f ZCL &middot; Total: %.8f ZCL</div>"
+        "</div></div>",
+        amount, fee, total_cost);
+
+    APPEND(off, r, max,
+        "<div class='card'>"
+        "<div style='color:#888;font-size:13px;line-height:1.6'>"
+        "<div style='margin-bottom:8px'>"
+        "<span style='color:#33ff99;font-weight:700'>Step 1:</span> "
+        "Your transparent ZCL moves to a shielded address.</div>"
+        "<div style='margin-bottom:8px'>"
+        "<span style='color:#bb99ff;font-weight:700'>Step 2:</span> "
+        "Wait ~6 hours for the timing link to break.</div>"
+        "<div>"
+        "<span style='color:#4db8ff;font-weight:700'>Step 3:</span> "
+        "Your funds are fully private and untraceable.</div>"
+        "</div></div>");
+
+    APPEND(off, r, max,
+        "<div style='display:flex;gap:10px;margin:16px 0'>"
+        "<a href='/wallet' style='flex:1;background:#333;color:#e8e8e8;"
+        "padding:12px;border-radius:6px;text-align:center;"
+        "font-weight:700;text-decoration:none;font-size:16px'>Cancel</a>"
+        "<a href='/wallet/shield/confirm?amount=%.8f' "
+        "style='flex:2;background:#9966ff;color:#fff;"
+        "padding:12px;border-radius:6px;text-align:center;"
+        "font-weight:700;text-decoration:none;font-size:16px'>"
+        "Confirm Shield</a></div>",
+        amount);
+
+    emit_footer(r, max, &off);
+    return off;
+}
+
 /* ── Router ─────────────────────────────────────────────────── */
 
 void wallet_view_init(const char *datadir) {
@@ -1055,6 +1149,10 @@ size_t wallet_view_handle_request(const char *method, const char *path,
         return serve_dashboard(response, response_max);
     if (strcmp(path, "/wallet/send") == 0)
         return serve_send(response, response_max);
+    if (strncmp(path, "/wallet/shield", 14) == 0) {
+        const char *q = strchr(path, '?');
+        return serve_shield(response, response_max, q);
+    }
     if (strcmp(path, "/wallet/receive") == 0)
         return serve_receive(response, response_max);
     if (strcmp(path, "/wallet/history") == 0)
