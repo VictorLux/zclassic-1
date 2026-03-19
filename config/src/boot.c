@@ -44,6 +44,7 @@
 #include "storage/dbwrapper.h"
 #include "net/tor_integration.h"
 #include "net/fast_sync.h"
+#include "net/peer_strategy.h"
 #include <netdb.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -1172,6 +1173,32 @@ bool app_init(struct app_context *ctx)
             if (blog_auto_announce_onion(ctx->datadir, onion))
                 printf("Published .onion address on-chain: %s\n", onion);
         }
+    }
+
+    /* Discover peer reachability (NAT-PMP, UPnP, Tor) */
+    {
+        static struct node_profile g_node_profile;
+        peer_strategy_discover_self(&g_node_profile,
+                                    (uint16_t)ctx->p2p_port);
+
+        const char *cn = g_node_profile.has_public_ip ? "yes" : "no";
+        const char *method = "";
+        if (g_node_profile.nat_pmp_available)
+            method = " (NAT-PMP)";
+        else if (g_node_profile.upnp_available)
+            method = " (UPnP)";
+        const char *tor = g_node_profile.tor_available ? "yes" : "no";
+        printf("Reachability: clearnet=%s%s tor=%s\n", cn, method, tor);
+
+        char addrs[4][68];
+        int n = peer_strategy_get_addresses(&g_node_profile, addrs, 4);
+        if (n > 0) {
+            printf("Addresses:");
+            for (int i = 0; i < n; i++)
+                printf(" %s", addrs[i]);
+            printf("\n");
+        }
+        fflush(stdout);
     }
 
     /* Start store payment processor (checks every 30s) */

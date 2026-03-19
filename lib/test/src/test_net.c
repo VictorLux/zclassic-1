@@ -7,6 +7,7 @@
 #include "net/fast_sync.h"
 #include "net/onion_service.h"
 #include "net/msgprocessor.h"
+#include "net/peer_strategy.h"
 #include <sqlite3.h>
 #include <unistd.h>
 
@@ -2689,6 +2690,114 @@ int test_net(void)
     (void)rmdir(TEST_SYNC_DIR);
 
 skip_parallel_tests:
+
+    /* ── peer_strategy tests ─────────────────────────────── */
+
+    /* node_profile defaults to all false */
+    {
+        printf("peer_strategy: node_profile zero-init... ");
+        struct node_profile p;
+        memset(&p, 0, sizeof(p));
+        bool ok = !p.has_public_ip && !p.nat_pmp_available &&
+                  !p.upnp_available && !p.tor_available &&
+                  p.public_port == 0 && p.onion_address[0] == '\0';
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* peer_strategy_select returns TRANSPORT_TOR for .onion */
+    {
+        printf("peer_strategy: select tor for .onion... ");
+        struct node_profile p;
+        memset(&p, 0, sizeof(p));
+        p.has_public_ip = true;
+        enum peer_transport t = peer_strategy_select(
+            &p, "abc123xyz.onion");
+        bool ok = (t == TRANSPORT_TOR);
+        /* Also with port suffix */
+        enum peer_transport t2 = peer_strategy_select(
+            &p, "zc23kenfdqqkgamthif3m7lbbdsyrotsl2dlw35qrh3iuzopozmpjnad.onion:8033");
+        ok = ok && (t2 == TRANSPORT_TOR);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* peer_strategy_select returns TRANSPORT_CLEARNET for IP */
+    {
+        printf("peer_strategy: select clearnet for IP... ");
+        struct node_profile p;
+        memset(&p, 0, sizeof(p));
+        p.has_public_ip = true;
+        enum peer_transport t = peer_strategy_select(
+            &p, "74.50.74.102:8033");
+        bool ok = (t == TRANSPORT_CLEARNET);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* peer_strategy_select falls back to TOR when no clearnet */
+    {
+        printf("peer_strategy: fallback to tor... ");
+        struct node_profile p;
+        memset(&p, 0, sizeof(p));
+        enum peer_transport t = peer_strategy_select(
+            &p, "205.209.104.118:8033");
+        bool ok = (t == TRANSPORT_TOR);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* peer_strategy_get_addresses returns .onion when tor available */
+    {
+        printf("peer_strategy: get_addresses onion... ");
+        struct node_profile p;
+        memset(&p, 0, sizeof(p));
+        p.tor_available = true;
+        snprintf(p.onion_address, sizeof(p.onion_address),
+                 "zc23kenfdqqkg.onion");
+        char addrs[4][68];
+        int n = peer_strategy_get_addresses(&p, addrs, 4);
+        bool ok = (n == 1) &&
+                  (strstr(addrs[0], ".onion") != NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* peer_strategy_get_addresses returns both when both available */
+    {
+        printf("peer_strategy: get_addresses both... ");
+        struct node_profile p;
+        memset(&p, 0, sizeof(p));
+        p.has_public_ip = true;
+        p.public_ip[0] = 1; p.public_ip[1] = 2;
+        p.public_ip[2] = 3; p.public_ip[3] = 4;
+        p.public_port = 8033;
+        p.tor_available = true;
+        snprintf(p.onion_address, sizeof(p.onion_address),
+                 "test.onion");
+        char addrs[4][68];
+        int n = peer_strategy_get_addresses(&p, addrs, 4);
+        bool ok = (n == 2) &&
+                  (strcmp(addrs[0], "1.2.3.4:8033") == 0) &&
+                  (strcmp(addrs[1], "test.onion") == 0);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* peer_transport_name labels */
+    {
+        printf("peer_strategy: transport names... ");
+        bool ok = (strcmp(peer_transport_name(TRANSPORT_CLEARNET),
+                          "clearnet") == 0) &&
+                  (strcmp(peer_transport_name(TRANSPORT_TOR),
+                          "tor") == 0) &&
+                  (strcmp(peer_transport_name(TRANSPORT_NAT_PMP),
+                          "nat-pmp") == 0) &&
+                  (strcmp(peer_transport_name(TRANSPORT_UPNP),
+                          "upnp") == 0);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
 
     return failures;
 }
