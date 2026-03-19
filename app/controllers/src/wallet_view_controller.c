@@ -25,7 +25,7 @@ static const char *g_datadir = NULL;
 
 /* ── Shared CSS ─────────────────────────────────────────────── */
 
-#define WALLET_CSS \
+#define WALLET_CSS_1 \
     "body{font-family:-apple-system,'Segoe UI',Roboto,monospace;" \
     "background:#0c0c0c;color:#e8e8e8;max-width:960px;margin:0 auto;" \
     "padding:16px 20px;font-size:16px;line-height:1.5}" \
@@ -60,7 +60,9 @@ static const char *g_datadir = NULL;
     "tr:hover{background:#161616}" \
     ".mono{font-family:'SF Mono','Fira Code',monospace;font-size:13px}" \
     ".hash{color:#4db8ff;font-family:'SF Mono',monospace;font-size:13px}" \
-    ".zcl{color:#33ff99;font-weight:700}" \
+    ".zcl{color:#33ff99;font-weight:700}"
+
+#define WALLET_CSS_2 \
     ".addr-box{background:#0a0a0a;padding:12px;border-radius:6px;" \
     "font-family:monospace;font-size:14px;color:#4db8ff;" \
     "word-break:break-all;text-align:center;margin:10px 0;" \
@@ -87,6 +89,17 @@ static const char *g_datadir = NULL;
     ".qr-wrap{text-align:center;margin:16px 0}" \
     ".total-row{font-weight:700;background:#0a1f0a}" \
     ".overflow-x{overflow-x:auto}" \
+    ".tx-card{background:#141414;padding:14px 18px;border-radius:8px;" \
+    "margin:8px 0;border:1px solid #1e1e1e;border-left:3px solid #333}" \
+    ".tx-card:hover{background:#181818}" \
+    ".tx-amount{font-size:22px;font-weight:800;font-family:'SF Mono',monospace}" \
+    ".tx-amount.recv{color:#33ff99}" \
+    ".tx-amount.send{color:#ff6666}" \
+    ".tx-meta{display:flex;gap:12px;align-items:center;flex-wrap:wrap;" \
+    "margin-top:4px;font-size:13px}" \
+    ".tx-time{color:#888}" \
+    ".tx-hash{color:#4db8ff;font-family:'SF Mono',monospace;font-size:12px}" \
+    ".tx-conf{color:#555;font-size:11px}" \
     "footer{text-align:center;color:#333;font-size:11px;margin-top:32px}" \
     "@media(max-width:600px){" \
     ".stat{min-width:100px;padding:10px}" \
@@ -218,40 +231,331 @@ static void format_time(int64_t timestamp, char *out, size_t out_max) {
     strftime(out, out_max, "%Y-%m-%d %H:%M", &tm);
 }
 
-/* ── SVG address visualization ──────────────────────────────── */
+/* ── Relative time formatting ───────────────────────────────── */
 
-static size_t emit_address_svg(uint8_t *buf, size_t max, size_t off,
-                               const char *addr) {
-    if (!addr) return off;
-    size_t alen = strlen(addr);
-    if (alen == 0 || alen > 128) return off;
+static void format_relative_time(int64_t timestamp, char *out, size_t out_max) {
+    if (!out || out_max == 0) return;
+    out[0] = '\0';
+    if (timestamp <= 0) { snprintf(out, out_max, "unknown"); return; }
+    time_t now = time(NULL);
+    int64_t diff = (int64_t)now - timestamp;
+    if (diff < 0) { snprintf(out, out_max, "just now"); return; }
+    if (diff < 60)    { snprintf(out, out_max, "%d second%s ago", (int)diff, diff == 1 ? "" : "s"); return; }
+    if (diff < 3600)  { int m = (int)(diff / 60);  snprintf(out, out_max, "%d minute%s ago", m, m == 1 ? "" : "s"); return; }
+    if (diff < 86400) { int h = (int)(diff / 3600); snprintf(out, out_max, "%d hour%s ago", h, h == 1 ? "" : "s"); return; }
+    if (diff < 2592000)  { int d = (int)(diff / 86400);   snprintf(out, out_max, "%d day%s ago", d, d == 1 ? "" : "s"); return; }
+    if (diff < 31536000) { int mo = (int)(diff / 2592000); snprintf(out, out_max, "%d month%s ago", mo, mo == 1 ? "" : "s"); return; }
+    int y = (int)(diff / 31536000);
+    snprintf(out, out_max, "%d year%s ago", y, y == 1 ? "" : "s");
+}
 
-    int cols = 8;
-    int rows = (int)((alen + (size_t)(cols - 1)) / (size_t)cols);
-    int cell = 12;
-    int svg_w = cols * cell;
-    int svg_h = rows * cell;
+/* ── QR Code Generator (Alphanumeric Mode, Version 2-L) ────── */
+
+/* GF(256) arithmetic for Reed-Solomon over QR's field polynomial
+ * x^8 + x^4 + x^3 + x^2 + 1 = 0x11d */
+
+static const int QR_SIZE_V2 = 25;  /* Version 2: 25x25 modules */
+
+static uint8_t gf_exp_table[256];
+static uint8_t gf_log_table[256];
+static bool    gf_initialized = false;
+
+static void gf_init(void) {
+    if (gf_initialized) return;
+    int v = 1;
+    for (int i = 0; i < 255; i++) {
+        gf_exp_table[i] = (uint8_t)v;
+        gf_log_table[v] = (uint8_t)i;
+        v <<= 1;
+        if (v >= 256) v ^= 0x11d;
+    }
+    gf_exp_table[255] = gf_exp_table[0];
+    gf_initialized = true;
+}
+
+static uint8_t gf_mul(uint8_t a, uint8_t b) {
+    if (a == 0 || b == 0) return 0;
+    return gf_exp_table[(gf_log_table[a] + gf_log_table[b]) % 255];
+}
+
+/* Reed-Solomon: generate ECC codewords.
+ * Version 2-L: 34 data codewords, 10 ECC codewords.
+ * Generator polynomial for 10 ECC codewords:
+ *   product of (x - alpha^i) for i = 0..9 */
+static void rs_encode(const uint8_t *data, int data_len,
+                      uint8_t *ecc, int ecc_len) {
+    gf_init();
+
+    /* Build generator polynomial coefficients */
+    uint8_t gen[11];
+    memset(gen, 0, sizeof(gen));
+    gen[0] = 1;
+    for (int i = 0; i < ecc_len; i++) {
+        uint8_t alpha_i = gf_exp_table[i];
+        for (int j = ecc_len; j >= 1; j--) {
+            gen[j] = gen[j - 1] ^ gf_mul(gen[j], alpha_i);
+        }
+        gen[0] = gf_mul(gen[0], alpha_i);
+    }
+
+    /* Polynomial division */
+    uint8_t rem[11];
+    memset(rem, 0, sizeof(rem));
+    for (int i = 0; i < data_len; i++) {
+        uint8_t lead = data[i] ^ rem[ecc_len - 1];
+        for (int j = ecc_len - 1; j >= 1; j--)
+            rem[j] = rem[j - 1] ^ gf_mul(lead, gen[j]);
+        rem[0] = gf_mul(lead, gen[0]);
+    }
+    for (int i = 0; i < ecc_len; i++)
+        ecc[i] = rem[ecc_len - 1 - i];
+}
+
+/* Alphanumeric mode character map */
+static int qr_alphanum_val(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'A' && c <= 'Z') return c - 'A' + 10;
+    switch (c) {
+    case ' ': return 36; case '$': return 37; case '%': return 38;
+    case '*': return 39; case '+': return 40; case '-': return 41;
+    case '.': return 42; case '/': return 43; case ':': return 44;
+    default: return -1;
+    }
+}
+
+/* Bit buffer for QR data encoding */
+typedef struct {
+    uint8_t bits[256];
+    int     count;
+} qr_bitbuf;
+
+static void bb_append(qr_bitbuf *bb, uint32_t val, int nbits) {
+    for (int i = nbits - 1; i >= 0 && bb->count < (int)sizeof(bb->bits) * 8; i--) {
+        int byte_idx = bb->count / 8;
+        int bit_idx  = 7 - (bb->count % 8);
+        if ((val >> i) & 1)
+            bb->bits[byte_idx] |= (uint8_t)(1 << bit_idx);
+        bb->count++;
+    }
+}
+
+/* Build QR Version 2-L data codewords from alphanumeric string.
+ * Version 2-L: 44 total codewords, 34 data, 10 ECC.
+ * Data capacity in alphanumeric mode: 47 chars. */
+static int qr_encode_alphanumeric(const char *str, uint8_t *codewords) {
+    size_t len = strlen(str);
+    if (len > 47) return -1;
+
+    qr_bitbuf bb;
+    memset(&bb, 0, sizeof(bb));
+
+    /* Mode indicator: alphanumeric = 0010 */
+    bb_append(&bb, 0x2, 4);
+    /* Character count: 9 bits for version 2 */
+    bb_append(&bb, (uint32_t)len, 9);
+
+    /* Encode pairs */
+    size_t i = 0;
+    while (i + 1 < len) {
+        int v1 = qr_alphanum_val(str[i]);
+        int v2 = qr_alphanum_val(str[i + 1]);
+        if (v1 < 0 || v2 < 0) return -1;
+        bb_append(&bb, (uint32_t)(v1 * 45 + v2), 11);
+        i += 2;
+    }
+    if (i < len) {
+        int v = qr_alphanum_val(str[i]);
+        if (v < 0) return -1;
+        bb_append(&bb, (uint32_t)v, 6);
+    }
+
+    /* Terminator (up to 4 bits) */
+    int data_bits = 34 * 8;  /* 272 bits capacity */
+    int pad_bits = data_bits - bb.count;
+    if (pad_bits > 4) pad_bits = 4;
+    if (pad_bits > 0) bb_append(&bb, 0, pad_bits);
+
+    /* Byte-align */
+    if (bb.count % 8 != 0)
+        bb_append(&bb, 0, 8 - (bb.count % 8));
+
+    /* Pad codewords */
+    int bytes_filled = bb.count / 8;
+    bool toggle = false;
+    while (bytes_filled < 34) {
+        bb_append(&bb, toggle ? 0x11 : 0xEC, 8);
+        bytes_filled++;
+        toggle = !toggle;
+    }
+
+    memcpy(codewords, bb.bits, 34);
+    return 0;
+}
+
+/* Place modules in the QR matrix (Version 2, 25x25).
+ * matrix[row][col]: 0=white, 1=black, 2=reserved (not yet set) */
+static void qr_place_finder(uint8_t m[25][25], int row, int col) {
+    for (int dr = -1; dr <= 7; dr++) {
+        for (int dc = -1; dc <= 7; dc++) {
+            int r = row + dr, c = col + dc;
+            if (r < 0 || r >= 25 || c < 0 || c >= 25) continue;
+            bool is_border = (dr == -1 || dr == 7 || dc == -1 || dc == 7);
+            bool is_outer  = (dr == 0 || dr == 6 || dc == 0 || dc == 6);
+            bool is_inner  = (dr >= 2 && dr <= 4 && dc >= 2 && dc <= 4);
+            m[r][c] = (is_border) ? 0 : (is_outer || is_inner) ? 1 : 0;
+        }
+    }
+}
+
+static void qr_place_alignment(uint8_t m[25][25]) {
+    /* Version 2 alignment pattern at (18,18) */
+    int cr = 18, cc = 18;
+    for (int dr = -2; dr <= 2; dr++) {
+        for (int dc = -2; dc <= 2; dc++) {
+            bool is_edge = (dr == -2 || dr == 2 || dc == -2 || dc == 2);
+            bool is_center = (dr == 0 && dc == 0);
+            m[cr + dr][cc + dc] = (is_edge || is_center) ? 1 : 0;
+        }
+    }
+}
+
+static void qr_place_timing(uint8_t m[25][25]) {
+    for (int i = 8; i < 25 - 8; i++) {
+        m[6][i] = (i % 2 == 0) ? 1 : 0;
+        m[i][6] = (i % 2 == 0) ? 1 : 0;
+    }
+}
+
+/* Place format information (error correction L, mask 0) */
+static void qr_place_format(uint8_t m[25][25]) {
+    /* Format string for ECC L, mask 0: 111011111000100 (after masking with 101010000010010) */
+    uint16_t fmt = 0x77C4;  /* pre-computed: L + mask 0 */
+    /* Horizontal: bits 14..0 placed around top-left finder */
+    static const int hpos_r[] = {8,8,8,8,8,8,8,8,8};
+    static const int hpos_c[] = {0,1,2,3,4,5,7,8,24};
+    /* Bits 0-5 at (8, 0-5), bit 6 at (8, 7), bit 7 at (8, 8), bit 8 at (7, 8) */
+    for (int i = 0; i <= 5; i++)
+        m[8][i] = (fmt >> (14 - i)) & 1;
+    m[8][7] = (fmt >> 8) & 1;
+    m[8][8] = (fmt >> 7) & 1;
+    m[7][8] = (fmt >> 6) & 1;
+    for (int i = 0; i <= 4; i++)
+        m[5 - i][8] = (fmt >> (5 - i)) & 1;
+
+    /* Right side of top-left: bits 7-14 at (8, 25-8..25-1) */
+    for (int i = 0; i < 7; i++)
+        m[8][25 - 1 - i] = (fmt >> i) & 1;
+
+    /* Bottom side of top-left: bits 7-14 at (25-7..25-1, 8) */
+    for (int i = 0; i < 7; i++)
+        m[25 - 7 + i][8] = (fmt >> (6 - i)) & 1;
+
+    /* Dark module */
+    m[25 - 8][8] = 1;
+
+    (void)hpos_r; (void)hpos_c;
+}
+
+/* Check if a module is reserved (finder, timing, alignment, format, etc.) */
+static bool qr_is_function(int r, int c) {
+    /* Finder + separator: top-left, top-right, bottom-left */
+    if (r <= 8 && c <= 8) return true;           /* top-left */
+    if (r <= 8 && c >= 25 - 8) return true;      /* top-right */
+    if (r >= 25 - 8 && c <= 8) return true;       /* bottom-left */
+    /* Timing */
+    if (r == 6 || c == 6) return true;
+    /* Alignment at (18,18) */
+    if (r >= 16 && r <= 20 && c >= 16 && c <= 20) return true;
+    return false;
+}
+
+/* Place data bits in the QR matrix using the standard upward-rightward zigzag */
+static void qr_place_data(uint8_t m[25][25], const uint8_t *bits, int nbits) {
+    int bit_idx = 0;
+    /* Column pairs from right to left, skip column 6 (timing) */
+    for (int right = 25 - 1; right >= 1; right -= 2) {
+        if (right == 6) right = 5;  /* skip timing column */
+        bool upward = ((25 - 1 - right) / 2) % 2 == 0;
+        for (int cnt = 0; cnt < 25; cnt++) {
+            int row = upward ? (25 - 1 - cnt) : cnt;
+            for (int dx = 0; dx <= 1; dx++) {
+                int col = right - dx;
+                if (col < 0) continue;
+                if (qr_is_function(row, col)) continue;
+                if (bit_idx < nbits) {
+                    int byte_i = bit_idx / 8;
+                    int bit_i  = 7 - (bit_idx % 8);
+                    m[row][col] = (bits[byte_i] >> bit_i) & 1;
+                }
+                bit_idx++;
+            }
+        }
+    }
+}
+
+/* Apply mask pattern 0: (row + col) % 2 == 0 */
+static void qr_apply_mask(uint8_t m[25][25]) {
+    for (int r = 0; r < 25; r++)
+        for (int c = 0; c < 25; c++)
+            if (!qr_is_function(r, c) && ((r + c) % 2 == 0))
+                m[r][c] ^= 1;
+}
+
+static size_t emit_qr_svg(uint8_t *buf, size_t max, size_t off,
+                           const char *data, int module_size) {
+    if (!data || strlen(data) == 0 || strlen(data) > 47) return off;
+
+    /* Encode data to codewords */
+    uint8_t data_cw[34];
+    if (qr_encode_alphanumeric(data, data_cw) != 0) return off;
+
+    /* Reed-Solomon: 10 ECC codewords for Version 2-L */
+    uint8_t ecc_cw[10];
+    rs_encode(data_cw, 34, ecc_cw, 10);
+
+    /* Combine data + ECC into bit stream */
+    uint8_t all_cw[44];
+    memcpy(all_cw, data_cw, 34);
+    memcpy(all_cw + 34, ecc_cw, 10);
+
+    /* Build the 25x25 matrix */
+    uint8_t m[25][25];
+    memset(m, 0, sizeof(m));
+
+    qr_place_finder(m, 0, 0);       /* top-left */
+    qr_place_finder(m, 0, 25 - 7);  /* top-right */
+    qr_place_finder(m, 25 - 7, 0);  /* bottom-left */
+    qr_place_alignment(m);
+    qr_place_timing(m);
+    qr_place_format(m);
+    qr_place_data(m, all_cw, 44 * 8);
+    qr_apply_mask(m);
+    qr_place_format(m);  /* re-place format after mask (format is not masked) */
+
+    /* Emit SVG with quiet zone of 4 modules */
+    int quiet = 4;
+    int total = QR_SIZE_V2 + quiet * 2;
+    int px = total * module_size;
 
     APPEND(off, buf, max,
         "<div class='qr-wrap'>"
         "<svg xmlns='http://www.w3.org/2000/svg' width='%d' height='%d' "
         "viewBox='0 0 %d %d' style='margin:0 auto;display:block'>",
-        svg_w * 2, svg_h * 2, svg_w, svg_h);
+        px, px, total, total);
 
+    /* White background */
     APPEND(off, buf, max,
-        "<rect width='%d' height='%d' fill='white'/>", svg_w, svg_h);
+        "<rect width='%d' height='%d' fill='white'/>", total, total);
 
-    for (size_t i = 0; i < alen && off + 120 < max; i++) {
-        unsigned char c = (unsigned char)addr[i];
-        int x = (int)(i % (size_t)cols) * cell;
-        int y = (int)(i / (size_t)cols) * cell;
-        int r_val = (c * 37) & 0xFF;
-        int g_val = (c * 73) & 0xFF;
-        int b_val = (c * 113) & 0xFF;
-        if (r_val + g_val + b_val > 500) { r_val /= 2; g_val /= 2; b_val /= 2; }
-        APPEND(off, buf, max,
-            "<rect x='%d' y='%d' width='%d' height='%d' fill='rgb(%d,%d,%d)'/>",
-            x, y, cell, cell, r_val, g_val, b_val);
+    /* Dark modules */
+    for (int r = 0; r < QR_SIZE_V2; r++) {
+        for (int c = 0; c < QR_SIZE_V2; c++) {
+            if (m[r][c] && off + 80 < max) {
+                APPEND(off, buf, max,
+                    "<rect x='%d' y='%d' width='1' height='1' fill='black'/>",
+                    c + quiet, r + quiet);
+            }
+        }
     }
 
     APPEND(off, buf, max, "</svg></div>");
@@ -268,11 +572,14 @@ static size_t emit_header(uint8_t *buf, size_t max, const char *title,
         "Connection: close\r\n\r\n"
         "<!DOCTYPE html><html><head><meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-        "<title>%s</title>"
-        "<style>" WALLET_CSS "</style></head><body>"
-        "<h1>ZClassic23</h1>"
-        "<p class='subtitle'>Direct SQLite — no ports</p>",
+        "<title>%s</title><style>",
         title);
+    APPEND(off, buf, max, WALLET_CSS_1);
+    APPEND(off, buf, max, WALLET_CSS_2);
+    APPEND(off, buf, max,
+        "</style></head><body>"
+        "<h1>ZClassic23</h1>"
+        "<p class='subtitle'>Direct SQLite — no ports</p>");
     off += emit_nav(buf + off, max - off, active_tab);
     return off;
 }
@@ -366,18 +673,14 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
     /* Receive address with visual encoding */
     APPEND(off, r, max,
         "<h2>Receive Address</h2>");
-    off = emit_address_svg(r, max, off, PRIMARY_ADDR);
+    off = emit_qr_svg(r, max, off, PRIMARY_ADDR, 4);
     APPEND(off, r, max,
         "<div class='addr-box'>" PRIMARY_ADDR "</div>"
         "<div style='text-align:center;color:#666;font-size:12px'>"
         "Copy Address</div>");
 
-    /* Recent transactions */
-    APPEND(off, r, max,
-        "<h2>Recent Transactions</h2>"
-        "<div class='overflow-x'>"
-        "<table><tr><th>Date</th><th>Txid</th>"
-        "<th>Amount</th><th>Type</th></tr>");
+    /* Recent transactions — tx-card timeline */
+    APPEND(off, r, max, "<h2>Recent Transactions</h2>");
 
     s = NULL;
     if (sqlite3_prepare_v2(db,
@@ -387,38 +690,46 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
             "LEFT JOIN blocks b ON wt.block_height = b.height "
             "ORDER BY wt.block_height DESC LIMIT 10",
             -1, &s, NULL) == SQLITE_OK) {
-        while (sqlite3_step(s) == SQLITE_ROW && off + 512 < max) {
+        while (sqlite3_step(s) == SQLITE_ROW && off + 600 < max) {
             const char *txid = (const char *)sqlite3_column_text(s, 0);
             int height = sqlite3_column_int(s, 1);
             int64_t btime = sqlite3_column_int64(s, 2);
             int64_t net_val = sqlite3_column_int64(s, 3);
             if (!txid) continue;
 
-            char short_tx[18], lower_tx[65], ts[32];
+            char short_tx[18], lower_tx[65], rel_time[48];
             txid_short(txid, short_tx, sizeof(short_tx));
             txid_lower(txid, lower_tx, sizeof(lower_tx));
-            format_time(btime, ts, sizeof(ts));
+            format_relative_time(btime, rel_time, sizeof(rel_time));
+
+            char esc_short[64], esc_lower[256], esc_rel[96];
+            html_escape(short_tx, esc_short, sizeof(esc_short));
+            html_escape(lower_tx, esc_lower, sizeof(esc_lower));
+            html_escape(rel_time, esc_rel, sizeof(esc_rel));
 
             bool is_recv = (net_val >= 0);
+            int64_t abs_val = is_recv ? net_val : -net_val;
+            int confs = (tip > 0 && height > 0) ? (tip - height + 1) : 0;
+            if (confs < 0) confs = 0;
+
             APPEND(off, r, max,
-                "<tr>"
-                "<td style='color:#888'>%s</td>"
-                "<td><a href='/explorer/tx/%s' class='hash'>%s</a>"
-                " <span style='color:#555;font-size:11px'>h=%d</span></td>"
-                "<td class='zcl'>%s%.8f</td>"
-                "<td><span class='pill %s'>%s</span></td>"
-                "</tr>",
-                ts[0] ? ts : "-",
-                lower_tx, short_tx, height,
+                "<div class='tx-card' style='border-left-color:%s'>"
+                "<div class='tx-amount %s'>%s%.8f ZCL</div>"
+                "<div class='tx-meta'>"
+                "<span class='tx-time'>%s</span>"
+                "<a href='/explorer/tx/%s' class='tx-hash'>%s</a>"
+                "<span class='tx-conf'>%d confirmation%s</span>"
+                "</div></div>",
+                is_recv ? "#33ff99" : "#ff6666",
+                is_recv ? "recv" : "send",
                 is_recv ? "+" : "-",
-                (double)(is_recv ? net_val : -net_val) / 1e8,
-                is_recv ? "pill-recv" : "pill-send",
-                is_recv ? "recv" : "send");
+                (double)abs_val / 1e8,
+                esc_rel,
+                esc_lower, esc_short,
+                confs, confs == 1 ? "" : "s");
         }
         sqlite3_finalize(s);
     }
-
-    APPEND(off, r, max, "</table></div>");
     emit_footer(r, max, &off);
     sqlite3_close(db);
     return off;
@@ -512,7 +823,7 @@ static size_t serve_receive(uint8_t *r, size_t max) {
     APPEND(off, r, max,
         "<div class='card'>"
         "<div class='label'>Your Transparent Address</div>");
-    off = emit_address_svg(r, max, off, PRIMARY_ADDR);
+    off = emit_qr_svg(r, max, off, PRIMARY_ADDR, 4);
     APPEND(off, r, max,
         "<div class='addr-box'>" PRIMARY_ADDR "</div>"
         "<div style='text-align:center;color:#666;font-size:12px'>"
@@ -574,48 +885,62 @@ static size_t serve_history(uint8_t *r, size_t max) {
 
     APPEND(off, r, max,
         "<h2>Transaction History</h2>"
-        "<div class='sub'>%d transaction%s</div>"
-        "<div class='overflow-x'>"
-        "<table><tr><th>Date</th><th>Txid</th>"
-        "<th>Height</th><th>Confirmations</th></tr>",
+        "<div class='sub'>%d transaction%s</div>",
         tx_count, tx_count == 1 ? "" : "s");
 
+    /* Timeline view (tx-cards) */
     sqlite3_stmt *s = NULL;
     if (sqlite3_prepare_v2(db,
-            "SELECT hex(wt.txid), wt.block_height, b.time "
+            "SELECT hex(wt.txid), wt.block_height, b.time, "
+            "wt.net_value "
             "FROM wallet_transactions wt "
             "LEFT JOIN blocks b ON wt.block_height = b.height "
             "ORDER BY wt.block_height DESC LIMIT 100",
             -1, &s, NULL) == SQLITE_OK) {
-        while (sqlite3_step(s) == SQLITE_ROW && off + 512 < max) {
+        while (sqlite3_step(s) == SQLITE_ROW && off + 600 < max) {
             const char *txid = (const char *)sqlite3_column_text(s, 0);
             int h = sqlite3_column_int(s, 1);
             int64_t btime = sqlite3_column_int64(s, 2);
+            int64_t net_val = sqlite3_column_int64(s, 3);
             if (!txid) continue;
 
-            char short_tx[18], lower_tx[65], ts[32];
+            char short_tx[18], lower_tx[65], rel_time[48], ts[32];
             txid_short(txid, short_tx, sizeof(short_tx));
             txid_lower(txid, lower_tx, sizeof(lower_tx));
+            format_relative_time(btime, rel_time, sizeof(rel_time));
             format_time(btime, ts, sizeof(ts));
+
+            char esc_short[64], esc_lower[256], esc_rel[96], esc_ts[64];
+            html_escape(short_tx, esc_short, sizeof(esc_short));
+            html_escape(lower_tx, esc_lower, sizeof(esc_lower));
+            html_escape(rel_time, esc_rel, sizeof(esc_rel));
+            html_escape(ts, esc_ts, sizeof(esc_ts));
 
             int confs = (tip > 0 && h > 0) ? (tip - h + 1) : 0;
             if (confs < 0) confs = 0;
 
+            bool is_recv = (net_val >= 0);
+            int64_t abs_val = is_recv ? net_val : -net_val;
+
             APPEND(off, r, max,
-                "<tr>"
-                "<td style='color:#888'>%s</td>"
-                "<td><a href='/explorer/tx/%s' class='hash'>%s</a></td>"
-                "<td>%d</td>"
-                "<td>%d</td>"
-                "</tr>",
-                ts[0] ? ts : "-",
-                lower_tx, short_tx,
-                h, confs);
+                "<div class='tx-card' style='border-left-color:%s'>"
+                "<div class='tx-amount %s'>%s%.8f ZCL</div>"
+                "<div class='tx-meta'>"
+                "<span class='tx-time' title='%s'>%s</span>"
+                "<a href='/explorer/tx/%s' class='tx-hash'>%s</a>"
+                "<span class='tx-conf'>h=%d &middot; %d conf%s</span>"
+                "</div></div>",
+                is_recv ? "#33ff99" : "#ff6666",
+                is_recv ? "recv" : "send",
+                is_recv ? "+" : "-",
+                (double)abs_val / 1e8,
+                esc_ts,
+                esc_rel,
+                esc_lower, esc_short,
+                h, confs, confs == 1 ? "" : "s");
         }
         sqlite3_finalize(s);
     }
-
-    APPEND(off, r, max, "</table></div>");
     emit_footer(r, max, &off);
     sqlite3_close(db);
     return off;
