@@ -5,6 +5,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "validation/update_coins.h"
+#include "coins/utxo_commitment.h"
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
@@ -26,6 +27,12 @@ void update_coins_with_undo(const struct transaction *tx,
             assert(nPos < entry->coins.num_vout &&
                    !tx_out_is_null(&entry->coins.vout[nPos]));
 
+            /* Remove spent UTXO from commitment before spending */
+            utxo_commitment_remove(&inputs->commitment,
+                                    tx->vin[i].prevout.hash.data, nPos,
+                                    entry->coins.vout[nPos].value,
+                                    entry->coins.height);
+
             txundo->vprevout[i].txout = entry->coins.vout[nPos];
             coins_spend(&entry->coins, nPos);
 
@@ -41,6 +48,16 @@ void update_coins_with_undo(const struct transaction *tx,
         coins_view_cache_modify_new(inputs, &tx->hash);
     if (!new_entry) return;
     coins_from_transaction(&new_entry->coins, tx, nHeight);
+
+    /* Add new UTXOs to commitment */
+    for (size_t vi = 0; vi < new_entry->coins.num_vout; vi++) {
+        if (!tx_out_is_null(&new_entry->coins.vout[vi])) {
+            utxo_commitment_add(&inputs->commitment,
+                                 tx->hash.data, (uint32_t)vi,
+                                 new_entry->coins.vout[vi].value,
+                                 nHeight);
+        }
+    }
 }
 
 void update_coins(const struct transaction *tx,

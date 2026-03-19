@@ -763,6 +763,11 @@ static bool reindex_chainstate(struct main_state *ms,
     /* Reinitialize coins cache */
     coins_view_cache_init(cvtip, &cvdb->view);
 
+    /* IBD mode: aggressive batching for throughput */
+    set_flush_policy(3600, 1000000, 1000);
+    if (g_node_db.open)
+        node_db_set_sync_batch_size(&g_node_db, 100);
+
     const struct chain_params *cparams = chain_params_get();
     int64_t t_start = (int64_t)time(NULL);
     int errors = 0;
@@ -830,6 +835,13 @@ static bool reindex_chainstate(struct main_state *ms,
 
     /* Final flush */
     coins_view_cache_flush(cvtip);
+
+    /* Restore normal mode after reindex */
+    set_flush_policy(3600, 500000, 0);
+    if (g_node_db.open) {
+        node_db_sync_flush(&g_node_db);
+        node_db_set_sync_batch_size(&g_node_db, 1);
+    }
 
     int64_t elapsed = (int64_t)time(NULL) - t_start;
     printf("reindex-chainstate: complete in %lldm%llds (%d errors)\n",
@@ -1024,6 +1036,15 @@ bool app_init(struct app_context *ctx)
     }
 
     coins_view_cache_init(&g_coins_tip, &g_coins_db.view);
+
+    /* Wire UTXO commitment: load from LevelDB and set db pointer for
+     * persistence on flush. This connects the incremental commitment
+     * (updated per-UTXO in update_coins) to its LevelDB backing store. */
+    set_coins_db_for_commitment(&g_coins_db);
+    if (coins_view_db_read_commitment(&g_coins_db, &g_coins_tip.commitment)) {
+        printf("Loaded UTXO commitment from LevelDB (count=%llu)\n",
+               (unsigned long long)g_coins_tip.commitment.count);
+    }
 
     /* Fast warm-restart check: verify SQLite tip matches coins DB tip.
      * If they match, skip the slow block index load (3M LevelDB reads)
@@ -1555,6 +1576,7 @@ void app_shutdown(void)
         wallet_db_close(&g_wallet_db);
     }
     if (g_node_db.open) {
+        node_db_sync_flush(&g_node_db);
         node_db_sync_mempool_save(&g_node_db, &g_mempool);
         node_db_close(&g_node_db);
     }

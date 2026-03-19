@@ -275,6 +275,10 @@ static bool cvc_batch_write(void *self, struct coins_map *map_coins,
     if (!uint256_is_null(hash_block))
         parent->hash_block = *hash_block;
 
+    /* Note: commitment is merged in coins_view_cache_flush below,
+     * not here, since this vtable function doesn't have access to
+     * the child cache struct (only the map). */
+
     return true;
 }
 
@@ -299,8 +303,21 @@ bool coins_view_cache_flush(struct coins_view_cache *c)
         return false;
     bool ok = c->base.vtable->batch_write(c->base.impl, &c->cache_coins,
                                           &c->hash_block);
+
+    /* Merge this cache's commitment delta into the parent cache.
+     * If the parent is a coins_view_cache (child→parent flush), the
+     * commitment accumulates upward. If it's LevelDB (top-level flush),
+     * cvc_batch_write is not used and the commitment is persisted
+     * separately by flush_coins_if_needed in process_block.c. */
+    if (ok && c->base.vtable == &g_cache_vtable) {
+        struct coins_view_cache *parent = (struct coins_view_cache *)c->base.impl;
+        utxo_commitment_merge(&parent->commitment, &c->commitment);
+    }
+
     coins_map_free(&c->cache_coins);
     coins_map_init(&c->cache_coins);
+    /* Reset child commitment after flush (deltas merged into parent) */
+    utxo_commitment_init(&c->commitment);
     return ok;
 }
 
