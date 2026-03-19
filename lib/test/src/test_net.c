@@ -2488,6 +2488,201 @@ int test_net(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    /* ── Swarm coordinator tests ─────────────────────────────── */
+
+    printf("swarm_sync: init with 10 chunks, all NEEDED... ");
+    {
+        /* Build a synthetic manifest with 10 chunks */
+        struct sync_manifest m;
+        memset(&m, 0, sizeof(m));
+        m.height = 100000;
+        m.num_utxos = 5000;
+        m.num_chunks = 10;
+        m.chunk_size = 500;
+        m.chunk_hashes = calloc(10, 32);
+
+        /* Fill chunk hashes with deterministic values */
+        for (uint32_t i = 0; i < 10; i++)
+            memset(m.chunk_hashes[i], (int)(i + 1), 32);
+
+        struct swarm_sync ss;
+        bool ok = swarm_sync_init(&ss, &m, TEST_SYNC_DIR);
+        ok = ok && (ss.manifest.num_chunks == 10);
+        ok = ok && (ss.chunks_complete == 0);
+        ok = ok && (ss.chunks_inflight == 0);
+
+        /* Verify all chunks start as NEEDED */
+        for (uint32_t i = 0; i < 10 && ok; i++)
+            ok = ok && (ss.chunk_states[i] == CHUNK_NEEDED);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+
+        swarm_sync_free(&ss);
+        free(m.chunk_hashes);
+    }
+
+    printf("swarm_sync: assign 3 chunks to different peers... ");
+    {
+        struct sync_manifest m;
+        memset(&m, 0, sizeof(m));
+        m.num_chunks = 10;
+        m.num_utxos = 5000;
+        m.chunk_size = 500;
+        m.chunk_hashes = calloc(10, 32);
+        for (uint32_t i = 0; i < 10; i++)
+            memset(m.chunk_hashes[i], (int)(i + 1), 32);
+
+        struct swarm_sync ss;
+        swarm_sync_init(&ss, &m, TEST_SYNC_DIR);
+
+        int32_t c0 = swarm_sync_assign_chunk(&ss, 100);
+        int32_t c1 = swarm_sync_assign_chunk(&ss, 200);
+        int32_t c2 = swarm_sync_assign_chunk(&ss, 300);
+
+        bool ok = (c0 == 0 && c1 == 1 && c2 == 2);
+        ok = ok && (ss.chunk_states[0] == CHUNK_INFLIGHT);
+        ok = ok && (ss.chunk_states[1] == CHUNK_INFLIGHT);
+        ok = ok && (ss.chunk_states[2] == CHUNK_INFLIGHT);
+        ok = ok && (ss.chunk_peer[0] == 100);
+        ok = ok && (ss.chunk_peer[1] == 200);
+        ok = ok && (ss.chunk_peer[2] == 300);
+        ok = ok && (ss.chunks_inflight == 3);
+        /* Remaining chunks still NEEDED */
+        ok = ok && (ss.chunk_states[3] == CHUNK_NEEDED);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+
+        swarm_sync_free(&ss);
+        free(m.chunk_hashes);
+    }
+
+    printf("swarm_sync: assign returns -1 when all assigned... ");
+    {
+        struct sync_manifest m;
+        memset(&m, 0, sizeof(m));
+        m.num_chunks = 2;
+        m.num_utxos = 1000;
+        m.chunk_size = 500;
+        m.chunk_hashes = calloc(2, 32);
+
+        struct swarm_sync ss;
+        swarm_sync_init(&ss, &m, NULL);
+
+        swarm_sync_assign_chunk(&ss, 1);
+        swarm_sync_assign_chunk(&ss, 2);
+        int32_t c = swarm_sync_assign_chunk(&ss, 3);
+
+        bool ok = (c == -1);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+
+        swarm_sync_free(&ss);
+        free(m.chunk_hashes);
+    }
+
+    printf("swarm_sync: timeout resets stale INFLIGHT to NEEDED... ");
+    {
+        struct sync_manifest m;
+        memset(&m, 0, sizeof(m));
+        m.num_chunks = 3;
+        m.num_utxos = 1500;
+        m.chunk_size = 500;
+        m.chunk_hashes = calloc(3, 32);
+
+        struct swarm_sync ss;
+        swarm_sync_init(&ss, &m, NULL);
+
+        /* Assign all 3 chunks */
+        swarm_sync_assign_chunk(&ss, 10);
+        swarm_sync_assign_chunk(&ss, 20);
+        swarm_sync_assign_chunk(&ss, 30);
+
+        /* Backdate chunk 0 and 1 request times to simulate timeout */
+        ss.chunk_request_time[0] = (int64_t)time(NULL) - 120;
+        ss.chunk_request_time[1] = (int64_t)time(NULL) - 120;
+        /* Chunk 2 stays recent */
+
+        swarm_sync_handle_timeouts(&ss, 60);
+
+        bool ok = (ss.chunk_states[0] == CHUNK_NEEDED);
+        ok = ok && (ss.chunk_states[1] == CHUNK_NEEDED);
+        ok = ok && (ss.chunk_states[2] == CHUNK_INFLIGHT);
+        ok = ok && (ss.chunks_inflight == 1);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+
+        swarm_sync_free(&ss);
+        free(m.chunk_hashes);
+    }
+
+    printf("swarm_sync: progress reports correct percentage... ");
+    {
+        struct sync_manifest m;
+        memset(&m, 0, sizeof(m));
+        m.num_chunks = 4;
+        m.num_utxos = 2000;
+        m.chunk_size = 500;
+        m.chunk_hashes = calloc(4, 32);
+
+        struct swarm_sync ss;
+        swarm_sync_init(&ss, &m, NULL);
+
+        bool ok = (swarm_sync_progress(&ss) == 0);
+
+        /* Manually mark 1 of 4 complete */
+        ss.chunk_states[0] = CHUNK_COMPLETE;
+        ss.chunks_complete = 1;
+        ok = ok && (swarm_sync_progress(&ss) == 25);
+
+        /* Mark 2 of 4 */
+        ss.chunk_states[1] = CHUNK_COMPLETE;
+        ss.chunks_complete = 2;
+        ok = ok && (swarm_sync_progress(&ss) == 50);
+
+        /* Mark all 4 */
+        ss.chunk_states[2] = CHUNK_COMPLETE;
+        ss.chunk_states[3] = CHUNK_COMPLETE;
+        ss.chunks_complete = 4;
+        ok = ok && (swarm_sync_progress(&ss) == 100);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+
+        swarm_sync_free(&ss);
+        free(m.chunk_hashes);
+    }
+
+    printf("swarm_sync: is_complete only when all done... ");
+    {
+        struct sync_manifest m;
+        memset(&m, 0, sizeof(m));
+        m.num_chunks = 3;
+        m.num_utxos = 1500;
+        m.chunk_size = 500;
+        m.chunk_hashes = calloc(3, 32);
+
+        struct swarm_sync ss;
+        swarm_sync_init(&ss, &m, NULL);
+
+        bool ok = !swarm_sync_is_complete(&ss);
+
+        ss.chunks_complete = 2;
+        ok = ok && !swarm_sync_is_complete(&ss);
+
+        ss.chunks_complete = 3;
+        ok = ok && swarm_sync_is_complete(&ss);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+
+        swarm_sync_free(&ss);
+        free(m.chunk_hashes);
+    }
+
     /* Clean up test database */
     sqlite3_close(test_db);
     (void)remove(TEST_SYNC_DB);

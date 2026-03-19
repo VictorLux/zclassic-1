@@ -622,3 +622,136 @@ void sync_manifest_free(struct sync_manifest *m)
         m->chunk_hashes = NULL;
     }
 }
+
+/* ── Swarm coordinator: BitTorrent-style parallel UTXO sync ── */
+
+bool swarm_sync_init(struct swarm_sync *ss, const struct sync_manifest *manifest,
+                      const char *datadir)
+{
+    if (!ss || !manifest || manifest->num_chunks == 0) return false;
+    memset(ss, 0, sizeof(*ss));
+
+    uint32_t n = manifest->num_chunks;
+
+    /* Deep-copy manifest */
+    ss->manifest = *manifest;
+    ss->manifest.chunk_hashes = calloc(n, 32);
+    if (!ss->manifest.chunk_hashes) return false;
+    if (manifest->chunk_hashes)
+        memcpy(ss->manifest.chunk_hashes, manifest->chunk_hashes, (size_t)n * 32);
+
+    ss->chunk_states = calloc(n, sizeof(enum chunk_state));
+    ss->chunk_peer = calloc(n, sizeof(int));
+    ss->chunk_request_time = calloc(n, sizeof(int64_t));
+
+    if (!ss->chunk_states || !ss->chunk_peer || !ss->chunk_request_time) {
+        swarm_sync_free(ss);
+        return false;
+    }
+
+    /* All chunks start as NEEDED (calloc zeroes = CHUNK_NEEDED) */
+    for (uint32_t i = 0; i < n; i++)
+        ss->chunk_peer[i] = -1;
+
+    ss->datadir = datadir;
+    return true;
+}
+
+void swarm_sync_free(struct swarm_sync *ss)
+{
+    if (!ss) return;
+    free(ss->manifest.chunk_hashes);
+    ss->manifest.chunk_hashes = NULL;
+    free(ss->chunk_states);
+    ss->chunk_states = NULL;
+    free(ss->chunk_peer);
+    ss->chunk_peer = NULL;
+    free(ss->chunk_request_time);
+    ss->chunk_request_time = NULL;
+}
+
+int32_t swarm_sync_assign_chunk(struct swarm_sync *ss, int peer_id)
+{
+    if (!ss || !ss->chunk_states) return -1;
+
+    for (uint32_t i = 0; i < ss->manifest.num_chunks; i++) {
+        if (ss->chunk_states[i] == CHUNK_NEEDED) {
+            ss->chunk_states[i] = CHUNK_INFLIGHT;
+            ss->chunk_peer[i] = peer_id;
+            ss->chunk_request_time[i] = (int64_t)time(NULL);
+            ss->chunks_inflight++;
+            return (int32_t)i;
+        }
+    }
+    return -1;
+}
+
+bool swarm_sync_receive_chunk(struct swarm_sync *ss,
+                                const struct utxo_chunk *chunk,
+                                int peer_id)
+{
+    if (!ss || !chunk) return false;
+
+    uint32_t idx = chunk->chunk_index;
+    if (idx >= ss->manifest.num_chunks) return false;
+
+    /* Verify chunk hash against manifest */
+    if (ss->manifest.chunk_hashes) {
+        if (!fast_sync_verify_chunk(chunk, ss->manifest.chunk_hashes[idx])) {
+            ss->chunk_states[idx] = CHUNK_FAILED;
+            ss->chunk_peer[idx] = -1;
+            if (ss->chunks_inflight > 0)
+                ss->chunks_inflight--;
+            ss->chunks_failed++;
+            return false;
+        }
+    }
+
+    /* Apply chunk to database */
+    if (ss->datadir) {
+        if (!fast_sync_apply_chunk(ss->datadir, chunk)) {
+            ss->chunk_states[idx] = CHUNK_FAILED;
+            ss->chunk_peer[idx] = -1;
+            if (ss->chunks_inflight > 0)
+                ss->chunks_inflight--;
+            ss->chunks_failed++;
+            return false;
+        }
+    }
+
+    ss->chunk_states[idx] = CHUNK_COMPLETE;
+    ss->chunk_peer[idx] = peer_id;
+    if (ss->chunks_inflight > 0)
+        ss->chunks_inflight--;
+    ss->chunks_complete++;
+    return true;
+}
+
+bool swarm_sync_is_complete(const struct swarm_sync *ss)
+{
+    if (!ss) return false;
+    return ss->chunks_complete == ss->manifest.num_chunks;
+}
+
+int swarm_sync_progress(const struct swarm_sync *ss)
+{
+    if (!ss || ss->manifest.num_chunks == 0) return 0;
+    return (int)(ss->chunks_complete * 100 / ss->manifest.num_chunks);
+}
+
+void swarm_sync_handle_timeouts(struct swarm_sync *ss, int timeout_secs)
+{
+    if (!ss || !ss->chunk_states) return;
+
+    int64_t now = (int64_t)time(NULL);
+    for (uint32_t i = 0; i < ss->manifest.num_chunks; i++) {
+        if (ss->chunk_states[i] == CHUNK_INFLIGHT &&
+            now - ss->chunk_request_time[i] > timeout_secs) {
+            ss->chunk_states[i] = CHUNK_NEEDED;
+            ss->chunk_peer[i] = -1;
+            ss->chunk_request_time[i] = 0;
+            if (ss->chunks_inflight > 0)
+                ss->chunks_inflight--;
+        }
+    }
+}

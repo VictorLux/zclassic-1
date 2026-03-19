@@ -197,4 +197,50 @@ uint32_t fast_sync_build_proof(const uint8_t (*hashes)[32],
                                 uint32_t chunk_index,
                                 uint8_t (**proof_out)[32]);
 
+/* ── Swarm coordinator: BitTorrent-style parallel UTXO sync ── */
+
+/* Chunk download state */
+enum chunk_state {
+    CHUNK_NEEDED   = 0,  /* Not yet requested */
+    CHUNK_INFLIGHT = 1,  /* Requested from a peer */
+    CHUNK_COMPLETE = 2,  /* Received and verified */
+    CHUNK_FAILED   = 3   /* Verification failed, needs re-request */
+};
+
+/* Swarm sync state — coordinates parallel download from multiple peers */
+struct swarm_sync {
+    struct sync_manifest manifest;
+    enum chunk_state *chunk_states;    /* array[num_chunks] */
+    int *chunk_peer;                   /* which peer has each inflight chunk */
+    int64_t *chunk_request_time;       /* when each chunk was requested (ms) */
+    uint32_t chunks_complete;
+    uint32_t chunks_inflight;
+    uint32_t chunks_failed;
+    const char *datadir;               /* for applying chunks */
+};
+
+/* Initialize swarm sync from a manifest */
+bool swarm_sync_init(struct swarm_sync *ss, const struct sync_manifest *manifest,
+                      const char *datadir);
+
+/* Free swarm state */
+void swarm_sync_free(struct swarm_sync *ss);
+
+/* Assign next needed chunk to a peer. Returns chunk index or -1 if none. */
+int32_t swarm_sync_assign_chunk(struct swarm_sync *ss, int peer_id);
+
+/* Mark a chunk as received and verified. Returns false if bad hash. */
+bool swarm_sync_receive_chunk(struct swarm_sync *ss,
+                                const struct utxo_chunk *chunk,
+                                int peer_id);
+
+/* Check if sync is complete (all chunks verified) */
+bool swarm_sync_is_complete(const struct swarm_sync *ss);
+
+/* Get progress as percentage (0-100) */
+int swarm_sync_progress(const struct swarm_sync *ss);
+
+/* Handle timeout: re-assign inflight chunks older than timeout_ms */
+void swarm_sync_handle_timeouts(struct swarm_sync *ss, int timeout_secs);
+
 #endif
