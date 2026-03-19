@@ -303,6 +303,13 @@ bool ed25519_verify(const uint8_t sig[64],
 {
     gep q;
 
+    /* Reject the identity point (all-zero pubkey) */
+    {
+        uint8_t zero[32] = {0};
+        if (memcmp(pk, zero, 32) == 0)
+            return false;
+    }
+
     /* Decompress -A from public key */
     if (unpackneg(q, pk) != 0)
         return false;
