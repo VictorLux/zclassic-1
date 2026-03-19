@@ -2131,28 +2131,56 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
                             sqlite3_finalize(ts);
                         }
                     }
-                    /* Store transfer record */
-                    sqlite3_stmt *xs = NULL;
-                    if (sqlite3_prepare_v2(g_node_db_bc->db,
-                            "INSERT OR IGNORE INTO zslp_transfers"
-                            "(txid,block_height,token_id,tx_type,amount,vout)"
-                            " VALUES(?,?,?,?,?,?)",
-                            -1, &xs, NULL) == SQLITE_OK) {
-                        const uint8_t *tok_id = (slp.type == SLP_TX_GENESIS)
-                            ? tx->hash.data : slp.token_id.data;
+                    /* Store transfer records — one per output for SEND */
+                    const uint8_t *tok_id = (slp.type == SLP_TX_GENESIS)
+                        ? tx->hash.data : slp.token_id.data;
+                    int num_records = 1;
+                    if (slp.type == SLP_TX_SEND) num_records = slp.num_outputs;
+                    if (num_records < 1) num_records = 1;
+
+                    for (int q = 0; q < num_records; q++) {
                         int64_t amount = 0;
-                        if (slp.type == SLP_TX_GENESIS) amount = (int64_t)slp.initial_quantity;
-                        else if (slp.type == SLP_TX_MINT) amount = (int64_t)slp.additional_quantity;
-                        else if (slp.type == SLP_TX_SEND && slp.num_outputs > 0)
-                            amount = (int64_t)slp.output_quantities[0];
-                        sqlite3_bind_blob(xs, 1, tx->hash.data, 32, SQLITE_STATIC);
-                        sqlite3_bind_int(xs, 2, h);
-                        sqlite3_bind_blob(xs, 3, tok_id, 32, SQLITE_STATIC);
-                        sqlite3_bind_int(xs, 4, (int)slp.type);
-                        sqlite3_bind_int64(xs, 5, amount);
-                        sqlite3_bind_int(xs, 6, 0);
-                        sqlite3_step(xs);
-                        sqlite3_finalize(xs);
+                        if (slp.type == SLP_TX_GENESIS)
+                            amount = (int64_t)slp.initial_quantity;
+                        else if (slp.type == SLP_TX_MINT)
+                            amount = (int64_t)slp.additional_quantity;
+                        else if (slp.type == SLP_TX_SEND && q < slp.num_outputs)
+                            amount = (int64_t)slp.output_quantities[q];
+
+                        /* Extract recipient address from vout[q+1] if P2PKH */
+                        uint8_t to_addr[20] = {0};
+                        bool has_to = false;
+                        int out_idx = q + 1; /* SLP outputs start at vout 1 */
+                        if (slp.type == SLP_TX_GENESIS) out_idx = 1;
+                        if (out_idx < (int)tx->num_vout) {
+                            const uint8_t *sd = tx->vout[out_idx].script_pub_key.data;
+                            size_t sl = tx->vout[out_idx].script_pub_key.size;
+                            if (sl == 25 && sd[0] == 0x76 && sd[1] == 0xa9 &&
+                                sd[2] == 0x14 && sd[23] == 0x88 && sd[24] == 0xac) {
+                                memcpy(to_addr, sd + 3, 20);
+                                has_to = true;
+                            }
+                        }
+
+                        sqlite3_stmt *xs = NULL;
+                        if (sqlite3_prepare_v2(g_node_db_bc->db,
+                                "INSERT OR IGNORE INTO zslp_transfers"
+                                "(txid,block_height,token_id,tx_type,amount,vout,to_addr)"
+                                " VALUES(?,?,?,?,?,?,?)",
+                                -1, &xs, NULL) == SQLITE_OK) {
+                            sqlite3_bind_blob(xs, 1, tx->hash.data, 32, SQLITE_STATIC);
+                            sqlite3_bind_int(xs, 2, h);
+                            sqlite3_bind_blob(xs, 3, tok_id, 32, SQLITE_STATIC);
+                            sqlite3_bind_int(xs, 4, (int)slp.type);
+                            sqlite3_bind_int64(xs, 5, amount);
+                            sqlite3_bind_int(xs, 6, q);
+                            if (has_to)
+                                sqlite3_bind_blob(xs, 7, to_addr, 20, SQLITE_STATIC);
+                            else
+                                sqlite3_bind_null(xs, 7);
+                            sqlite3_step(xs);
+                            sqlite3_finalize(xs);
+                        }
                     }
                 }
             }
