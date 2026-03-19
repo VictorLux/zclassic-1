@@ -43,61 +43,90 @@ extern const char *onion_service_start(const char *datadir);
 static WebKitWebView *g_webview = NULL;
 static GtkWidget *g_url_bar = NULL;
 static GtkWidget *g_status_label = NULL;
-static bool g_loading_internal = false; /* prevent re-entrant serve_path */
+/* No re-entrancy guard needed — zcl:// scheme handler is synchronous */
 
 /* Response buffer — large enough for explorer pages */
 static uint8_t g_response[1 << 20]; /* 1MB */
 
-/* ── Direct in-process request handler ────────────────────── */
+/* ── Custom URI scheme handler: zcl://path ────────────────── */
+/* WebKit calls this for ALL requests (HTML, CSS, images, etc.)
+ * when using the zcl:// scheme. This replaces load_html + decide-policy. */
 
-static void serve_path(const char *path) {
-    if (!path || !path[0]) path = "/explorer";
-    printf("serve_path: %s\n", path);
-    fflush(stdout);
+static void on_uri_scheme_request(WebKitURISchemeRequest *request,
+                                    gpointer user_data)
+{
+    (void)user_data;
+    const char *uri = webkit_uri_scheme_request_get_uri(request);
+    /* URI format: zcl:///path or zcl://host/path */
+    const char *path = "/explorer";
+    if (uri) {
+        const char *after = strstr(uri, "zcl://");
+        if (after) {
+            after += 6; /* skip "zcl://" */
+            const char *slash = strchr(after, '/');
+            if (slash) path = slash;
+        }
+    }
+    printf("zcl:// request: %s\n", path);
 
-    /* Try explorer first, then onion service */
+    /* Call our C handlers directly */
     size_t len = 0;
-    if (strncmp(path, "/explorer", 9) == 0 || strcmp(path, "/style.css") == 0) {
+    if (strncmp(path, "/explorer", 9) == 0 ||
+        strstr(path, "style.css") ||
+        strstr(path, "favicon")) {
         len = explorer_handle_request("GET", path, NULL, 0,
                                        g_response, sizeof(g_response));
-        printf("  explorer returned %zu bytes\n", len);
     }
     if (len == 0) {
         len = onion_service_handle_request("GET", path, NULL, 0,
                                             g_response, sizeof(g_response));
-        printf("  onion_service returned %zu bytes\n", len);
     }
-    fflush(stdout);
 
     if (len == 0) {
-        const char *err = "<html><body style='background:#0a0a0a;color:#e0e0e0;"
-            "font-family:monospace;padding:40px'>"
-            "<h1 style='color:#ff4444'>No Response</h1>"
-            "<p>The node returned no data for this path.</p>"
-            "<p><a href='/explorer' style='color:#00aaff'>Back to Explorer</a></p>"
-            "</body></html>";
-        webkit_web_view_load_html(g_webview, err, "http://localhost");
+        const char *err = "<h1>Not Found</h1>";
+        GInputStream *stream = g_memory_input_stream_new_from_data(
+            g_strdup(err), (gssize)strlen(err), g_free);
+        webkit_uri_scheme_request_finish(request, stream,
+            (gint64)strlen(err), "text/html");
+        g_object_unref(stream);
         return;
     }
 
-    /* The response includes HTTP headers — strip them to get body */
+    /* Strip HTTP headers to get body + detect content type */
     g_response[len < sizeof(g_response) - 1 ? len : sizeof(g_response) - 1] = '\0';
-    const char *body = strstr((char *)g_response, "\r\n\r\n");
-    if (body) {
-        body += 4; /* skip past \r\n\r\n */
-    } else {
-        body = (const char *)g_response; /* no headers, use raw */
+    const char *body = (const char *)g_response;
+    const char *content_type = "text/html";
+    const char *hdr_end = strstr((char *)g_response, "\r\n\r\n");
+    if (hdr_end) {
+        /* Extract Content-Type from headers */
+        const char *ct = strstr((char *)g_response, "Content-Type: ");
+        if (ct && ct < hdr_end) {
+            ct += 14;
+            static char ct_buf[128];
+            size_t i = 0;
+            while (ct[i] && ct[i] != '\r' && ct[i] != '\n' && i < 127)
+                ct_buf[i] = ct[i], i++;
+            ct_buf[i] = '\0';
+            content_type = ct_buf;
+        }
+        body = hdr_end + 4;
     }
 
-    /* Load into WebKit — guard against re-entrant calls from decide-policy */
-    g_loading_internal = true;
-    webkit_web_view_load_html(g_webview, body, NULL);
-    g_loading_internal = false;
+    size_t body_len = strlen(body);
+    GInputStream *stream = g_memory_input_stream_new_from_data(
+        g_strndup(body, body_len), (gssize)body_len, g_free);
+    webkit_uri_scheme_request_finish(request, stream,
+        (gint64)body_len, content_type);
+    g_object_unref(stream);
+}
 
-    /* Update URL bar */
+/* Navigate to a path using the zcl:// scheme */
+static void serve_path(const char *path) {
+    if (!path || !path[0]) path = "/explorer";
+    char uri[512];
+    snprintf(uri, sizeof(uri), "zcl://node%s", path);
+    webkit_web_view_load_uri(g_webview, uri);
     gtk_entry_set_text(GTK_ENTRY(g_url_bar), path);
-    if (g_status_label)
-        gtk_label_set_text(GTK_LABEL(g_status_label), "");
 }
 
 /* ── Navigation callbacks ─────────────────────────────────── */
@@ -107,67 +136,17 @@ static void on_url_activate(GtkEntry *e, gpointer d) {
     const char *text = gtk_entry_get_text(e);
     if (!text || !text[0]) return;
 
-    /* If it starts with /, treat as local path */
     if (text[0] == '/') {
         serve_path(text);
-        return;
+    } else {
+        /* Treat as search query */
+        char path[512];
+        snprintf(path, sizeof(path), "/explorer/search?q=%s", text);
+        serve_path(path);
     }
-    /* If it looks like a search query, redirect to explorer search */
-    char path[512];
-    snprintf(path, sizeof(path), "/explorer/search?q=%s", text);
-    serve_path(path);
 }
 
-/* Intercept ALL navigation — handle in-process instead of network */
-static gboolean on_decide_policy(WebKitWebView *v, WebKitPolicyDecision *dec,
-                                   WebKitPolicyDecisionType type, gpointer d) {
-    (void)v; (void)d;
-
-    /* Skip policy check for our own load_html calls */
-    if (g_loading_internal) {
-        webkit_policy_decision_use(dec);
-        return TRUE;
-    }
-
-    if (type == WEBKIT_POLICY_DECISION_TYPE_NAVIGATION_ACTION) {
-        WebKitNavigationPolicyDecision *nav =
-            WEBKIT_NAVIGATION_POLICY_DECISION(dec);
-        WebKitNavigationAction *action =
-            webkit_navigation_policy_decision_get_navigation_action(nav);
-        WebKitURIRequest *req = webkit_navigation_action_get_request(action);
-        const char *uri = webkit_uri_request_get_uri(req);
-
-        if (uri) {
-            /* Allow about: and data: schemes */
-            if (strncmp(uri, "about:", 6) == 0 ||
-                strncmp(uri, "data:", 5) == 0) {
-                webkit_policy_decision_use(dec);
-                return TRUE;
-            }
-
-            /* Extract path from URI */
-            const char *path = uri;
-            const char *after_scheme = strstr(uri, "://");
-            if (after_scheme) {
-                after_scheme += 3;
-                const char *slash = strchr(after_scheme, '/');
-                if (slash) path = slash;
-                else path = "/explorer";
-            }
-
-            /* Block the WebKit navigation — we handle it ourselves */
-            webkit_policy_decision_ignore(dec);
-
-            /* Serve the path directly */
-            serve_path(path);
-            return TRUE;
-        }
-    }
-
-    /* Allow non-navigation decisions (resources loaded from load_html) */
-    webkit_policy_decision_use(dec);
-    return TRUE;
-}
+/* URL bar update on navigation */
 
 static void on_home(GtkWidget *b, gpointer d) {
     (void)b; (void)d;
@@ -298,10 +277,18 @@ int main(int argc, char *argv[]) {
     gtk_box_pack_start(GTK_BOX(hbox), store_btn, FALSE, FALSE, 2);
     gtk_box_pack_start(GTK_BOX(hbox), g_url_bar, TRUE, TRUE, 4);
 
-    /* WebView — all navigation intercepted */
+    /* Register zcl:// URI scheme so ALL requests (HTML, CSS, images)
+     * go through our in-process handler — no network, no SOCKS. */
+    WebKitWebContext *wctx = webkit_web_context_get_default();
+    webkit_web_context_register_uri_scheme(wctx, "zcl",
+        on_uri_scheme_request, NULL, NULL);
+
+    /* Allow zcl:// to access local resources */
+    WebKitSecurityManager *sec = webkit_web_context_get_security_manager(wctx);
+    webkit_security_manager_register_uri_scheme_as_local(sec, "zcl");
+    webkit_security_manager_register_uri_scheme_as_cors_enabled(sec, "zcl");
+
     g_webview = WEBKIT_WEB_VIEW(webkit_web_view_new());
-    g_signal_connect(g_webview, "decide-policy",
-        G_CALLBACK(on_decide_policy), NULL);
 
     gtk_box_pack_start(GTK_BOX(vbox), hbox, FALSE, FALSE, 2);
     gtk_box_pack_start(GTK_BOX(vbox), GTK_WIDGET(g_webview), TRUE, TRUE, 0);
