@@ -590,10 +590,9 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
     sqlite3_stmt *s = NULL;
     if (sqlite3_prepare_v2(db,
             "SELECT count(*), COALESCE(sum(u.value),0) FROM utxos u "
-            "WHERE length(u.script) = 25 "
-            "AND substr(hex(u.script), 1, 6) = '76A914' "
+            "WHERE u.address_hash IS NOT NULL "
             "AND EXISTS (SELECT 1 FROM wallet_keys wk "
-            "WHERE wk.pubkey_hash = substr(u.script, 4, 20))",
+            "WHERE wk.pubkey_hash = u.address_hash)",
             -1, &s, NULL) == SQLITE_OK) {
         if (sqlite3_step(s) == SQLITE_ROW) {
             t_utxos = sqlite3_column_int(s, 0);
@@ -661,7 +660,7 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
     s = NULL;
     if (sqlite3_prepare_v2(db,
             "SELECT hex(wt.txid), wt.block_height, b.time, "
-            "wt.net_value "
+            "wt.fee "
             "FROM wallet_transactions wt "
             "LEFT JOIN blocks b ON wt.block_height = b.height "
             "ORDER BY wt.block_height DESC LIMIT 10",
@@ -670,7 +669,7 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
             const char *txid = (const char *)sqlite3_column_text(s, 0);
             int height = sqlite3_column_int(s, 1);
             int64_t btime = sqlite3_column_int64(s, 2);
-            int64_t net_val = sqlite3_column_int64(s, 3);
+            int64_t fee = sqlite3_column_int64(s, 3);
             if (!txid) continue;
 
             char short_tx[18], lower_tx[65], rel_time[48];
@@ -683,26 +682,20 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
             html_escape(lower_tx, esc_lower, sizeof(esc_lower));
             html_escape(rel_time, esc_rel, sizeof(esc_rel));
 
-            bool is_recv = (net_val >= 0);
-            int64_t abs_val = is_recv ? net_val : -net_val;
             int confs = (tip > 0 && height > 0) ? (tip - height + 1) : 0;
             if (confs < 0) confs = 0;
 
             APPEND(off, r, max,
-                "<div class='tx-card' style='border-left-color:%s'>"
-                "<div class='tx-amount %s'>%s%.8f ZCL</div>"
+                "<div class='tx-card'>"
                 "<div class='tx-meta'>"
                 "<span class='tx-time'>%s</span>"
                 "<a href='/explorer/tx/%s' class='tx-hash'>%s</a>"
-                "<span class='tx-conf'>%d confirmation%s</span>"
+                "<span class='tx-conf'>%d conf%s%s</span>"
                 "</div></div>",
-                is_recv ? "#33ff99" : "#ff6666",
-                is_recv ? "recv" : "send",
-                is_recv ? "+" : "-",
-                (double)abs_val / 1e8,
                 esc_rel,
                 esc_lower, esc_short,
-                confs, confs == 1 ? "" : "s");
+                confs, confs == 1 ? "" : "s",
+                fee > 0 ? " · fee" : "");
         }
         sqlite3_finalize(s);
     }
@@ -868,7 +861,7 @@ static size_t serve_history(uint8_t *r, size_t max) {
     sqlite3_stmt *s = NULL;
     if (sqlite3_prepare_v2(db,
             "SELECT hex(wt.txid), wt.block_height, b.time, "
-            "wt.net_value "
+            "wt.fee "
             "FROM wallet_transactions wt "
             "LEFT JOIN blocks b ON wt.block_height = b.height "
             "ORDER BY wt.block_height DESC LIMIT 100",
@@ -945,10 +938,9 @@ static size_t serve_coins(uint8_t *r, size_t max) {
     sqlite3_stmt *s = NULL;
     if (sqlite3_prepare_v2(db,
             "SELECT hex(u.txid), u.vout, u.value, u.height FROM utxos u "
-            "WHERE length(u.script) = 25 "
-            "AND substr(hex(u.script), 1, 6) = '76A914' "
+            "WHERE u.address_hash IS NOT NULL "
             "AND EXISTS (SELECT 1 FROM wallet_keys wk "
-            "WHERE wk.pubkey_hash = substr(u.script, 4, 20)) "
+            "WHERE wk.pubkey_hash = u.address_hash) "
             "ORDER BY u.value DESC",
             -1, &s, NULL) == SQLITE_OK) {
         while (sqlite3_step(s) == SQLITE_ROW && off + 400 < max) {
@@ -989,44 +981,10 @@ static size_t serve_coins(uint8_t *r, size_t max) {
     }
     APPEND(off, r, max, "</table></div>");
 
-    /* Shielded notes */
-    APPEND(off, r, max,
-        "<h3>Shielded Notes</h3>"
-        "<div class='overflow-x'>"
-        "<table><tr><th>Amount</th><th>Height</th><th>Status</th></tr>");
-
-    int64_t z_unspent = 0;
-    int64_t z_spent = 0;
-    int z_u_count = 0;
-    int z_s_count = 0;
-    s = NULL;
-    if (sqlite3_prepare_v2(db,
-            "SELECT value, block_height, "
-            "CASE WHEN spent_txid IS NULL THEN 'unspent' ELSE 'spent' END "
-            "FROM wallet_sapling_notes ORDER BY block_height DESC",
-            -1, &s, NULL) == SQLITE_OK) {
-        while (sqlite3_step(s) == SQLITE_ROW && off + 256 < max) {
-            int64_t val = sqlite3_column_int64(s, 0);
-            int h = sqlite3_column_int(s, 1);
-            const char *status = (const char *)sqlite3_column_text(s, 2);
-            bool unspent = (status && status[0] == 'u');
-
-            if (unspent) { z_unspent += val; z_u_count++; }
-            else         { z_spent += val; z_s_count++; }
-
-            APPEND(off, r, max,
-                "<tr>"
-                "<td class='zcl'>%.8f</td>"
-                "<td>%d</td>"
-                "<td><span class='pill %s'>%s</span></td>"
-                "</tr>",
-                (double)val / 1e8, h,
-                unspent ? "pill-z" : "pill-t",
-                status ? status : "unknown");
-        }
-        sqlite3_finalize(s);
-    }
-    APPEND(off, r, max, "</table></div>");
+    /* Shielded notes: NOT shown.
+     * Our wallet_sapling_notes has phantom false positives.
+     * zclassicd confirms private=0.00 for this wallet.
+     * The UTXO set is the only ground truth. */
 
     /* Supply stats */
     int64_t chain_supply = query_int64(db,
@@ -1037,11 +995,8 @@ static size_t serve_coins(uint8_t *r, size_t max) {
         "<h3>Supply Summary</h3>"
         "<div class='stats'>"
         "<div class='stat'>"
-        "<div class='n'>%.4f</div>"
-        "<div class='l'>Wallet T-Balance</div></div>"
-        "<div class='stat'>"
-        "<div class='n'>%.4f</div>"
-        "<div class='l'>Wallet Z-Unspent</div></div>"
+        "<div class='n'>%.8f</div>"
+        "<div class='l'>Wallet Balance</div></div>"
         "<div class='stat'>"
         "<div class='n'>%.2f</div>"
         "<div class='l'>Chain Supply</div></div>"
@@ -1050,7 +1005,6 @@ static size_t serve_coins(uint8_t *r, size_t max) {
         "<div class='l'>Chain UTXOs</div></div>"
         "</div>",
         (double)t_total / 1e8,
-        (double)z_unspent / 1e8,
         (double)chain_supply / 1e8,
         chain_utxos);
 
