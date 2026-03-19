@@ -62,8 +62,8 @@ zclassic-cli: cli.c $(CLI_SRCS)
 zcl-rpc: tools/zcl-rpc.c
 	$(CC) -std=c23 -O2 -Wall -o $@ $<
 
-zcl-browser: tools/zcl-browser.c
-	$(CC) -std=c23 -O2 -Wno-deprecated-declarations -x c $$(pkg-config --cflags webkit2gtk-4.1) -o $@ $< $$(pkg-config --libs webkit2gtk-4.1)
+zcl-browser: tools/zcl-browser.c $(ALL_SRCS)
+	$(CC) $(CFLAGS) -Wno-deprecated-declarations $$(pkg-config --cflags webkit2gtk-4.1) -o $@ $^ $(TOR_LIBS) $(LIBS) $$(pkg-config --libs webkit2gtk-4.1)
 
 zcl-blog: tools/zcl-blog
 	$(CC) -std=c23 -O2 -x c $$(pkg-config --cflags webkit2gtk-4.1) -o $@ $< $$(pkg-config --libs webkit2gtk-4.1)
