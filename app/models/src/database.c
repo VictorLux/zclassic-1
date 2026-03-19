@@ -182,6 +182,12 @@ static bool create_schema(struct node_db *ndb)
         char *err = NULL;
         int rc = sqlite3_exec(ndb->db, SCHEMA[i], NULL, NULL, &err);
         if (rc != SQLITE_OK) {
+            /* Non-fatal for index/alter on pre-existing tables */
+            if (strstr(SCHEMA[i], "CREATE INDEX") ||
+                strstr(SCHEMA[i], "ALTER TABLE")) {
+                sqlite3_free(err);
+                continue;
+            }
             fprintf(stderr, "db: schema[%d] failed: %s\n", i, err);
             sqlite3_free(err);
             return false;
@@ -603,12 +609,15 @@ int node_db_migrate(struct node_db *ndb, const char *datadir)
 
     if (current_ver < 6) {
         /* v6: Add address column to wallet_sapling_notes for per-order
-         * payment matching in the store controller. */
-        node_db_exec(ndb,
-            "ALTER TABLE wallet_sapling_notes ADD COLUMN address TEXT");
-        node_db_exec(ndb,
+         * payment matching. Ignore errors — column may already exist
+         * or table may not exist yet. */
+        sqlite3_exec(ndb->db,
+            "ALTER TABLE wallet_sapling_notes ADD COLUMN address TEXT",
+            NULL, NULL, NULL);
+        sqlite3_exec(ndb->db,
             "CREATE INDEX IF NOT EXISTS idx_snote_address"
-            " ON wallet_sapling_notes(address) WHERE spent_txid IS NULL");
+            " ON wallet_sapling_notes(address) WHERE spent_txid IS NULL",
+            NULL, NULL, NULL);
         node_db_exec(ndb,
             "INSERT OR IGNORE INTO schema_migrations(version) VALUES('006')");
         int32_t v = 6;

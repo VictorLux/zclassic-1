@@ -6,6 +6,8 @@
 
 #include "net/msgprocessor.h"
 #include "net/addrman.h"
+#include "models/peer.h"
+#include "models/database.h"
 #include "net/fast_sync.h"
 #include "net/p2p_game.h"
 #include "net/version.h"
@@ -291,6 +293,32 @@ static bool process_verack(struct msg_processor *mp, struct p2p_node *node)
                       (int64_t)time(NULL));
         addrman_connected(&mp->net_mgr->addrman, &node->addr.svc,
                            (int64_t)time(NULL));
+    }
+
+    /* Save peer to SQLite for explorer/browser visibility */
+    extern struct node_db *g_active_node_db;
+    if (g_active_node_db && g_active_node_db->db) {
+        sqlite3_exec(g_active_node_db->db,
+            "CREATE TABLE IF NOT EXISTS peers ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "ip BLOB NOT NULL,port INTEGER NOT NULL,"
+            "services INTEGER NOT NULL DEFAULT 0,"
+            "last_seen INTEGER NOT NULL,"
+            "last_try INTEGER DEFAULT 0,attempts INTEGER DEFAULT 0,"
+            "source BLOB,UNIQUE(ip,port))",
+            NULL, NULL, NULL);
+        sqlite3_stmt *ins = NULL;
+        sqlite3_prepare_v2(g_active_node_db->db,
+            "INSERT OR REPLACE INTO peers (ip,port,services,last_seen)"
+            " VALUES(?,?,?,?)", -1, &ins, NULL);
+        if (ins) {
+            sqlite3_bind_blob(ins, 1, node->addr.svc.addr.ip, 16, SQLITE_STATIC);
+            sqlite3_bind_int(ins, 2, node->addr.svc.port);
+            sqlite3_bind_int64(ins, 3, (int64_t)node->services);
+            sqlite3_bind_int64(ins, 4, (int64_t)time(NULL));
+            sqlite3_step(ins);
+            sqlite3_finalize(ins);
+        }
     }
     return true;
 }
