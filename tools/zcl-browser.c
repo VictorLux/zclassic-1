@@ -146,7 +146,34 @@ static void on_url_activate(GtkEntry *e, gpointer d) {
     }
 }
 
-/* URL bar update on navigation */
+/* Intercept http:// and https:// navigations → redirect to zcl:// */
+static gboolean on_decide_policy(WebKitWebView *v, WebKitPolicyDecision *dec,
+                                   WebKitPolicyDecisionType type, gpointer d) {
+    (void)v; (void)d;
+    if (type == WEBKIT_POLICY_DECISION_TYPE_NAVIGATION_ACTION) {
+        WebKitNavigationPolicyDecision *nav =
+            WEBKIT_NAVIGATION_POLICY_DECISION(dec);
+        WebKitNavigationAction *action =
+            webkit_navigation_policy_decision_get_navigation_action(nav);
+        WebKitURIRequest *req = webkit_navigation_action_get_request(action);
+        const char *uri = webkit_uri_request_get_uri(req);
+        if (uri && (strncmp(uri, "http://", 7) == 0 ||
+                    strncmp(uri, "https://", 8) == 0)) {
+            /* Extract path from http URL and redirect to zcl:// */
+            const char *after = strstr(uri, "://");
+            if (after) {
+                after += 3;
+                const char *slash = strchr(after, '/');
+                const char *path = slash ? slash : "/explorer";
+                webkit_policy_decision_ignore(dec);
+                serve_path(path);
+                return TRUE;
+            }
+        }
+    }
+    webkit_policy_decision_use(dec);
+    return TRUE;
+}
 
 static void on_home(GtkWidget *b, gpointer d) {
     (void)b; (void)d;
@@ -289,6 +316,10 @@ int main(int argc, char *argv[]) {
     webkit_security_manager_register_uri_scheme_as_cors_enabled(sec, "zcl");
 
     g_webview = WEBKIT_WEB_VIEW(webkit_web_view_new());
+
+    /* Catch http:// links and redirect to zcl:// for in-process serving */
+    g_signal_connect(g_webview, "decide-policy",
+        G_CALLBACK(on_decide_policy), NULL);
 
     gtk_box_pack_start(GTK_BOX(vbox), hbox, FALSE, FALSE, 2);
     gtk_box_pack_start(GTK_BOX(vbox), GTK_WIDGET(g_webview), TRUE, TRUE, 0);
