@@ -22,6 +22,7 @@
 #include "wallet/wallet.h"
 #include "util/timedata.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <sys/time.h>
@@ -37,6 +38,22 @@ static void push_getheaders_from(struct msg_processor *mp,
 struct snapshot_offer g_cached_offer;
 _Atomic bool g_cached_offer_valid = false;
 static struct fast_sync_rate_limiter g_rate_limiter = {0};
+
+/* Cached manifest for parallel chunk sync (built in background at startup). */
+struct sync_manifest g_cached_manifest;
+_Atomic bool g_cached_manifest_valid = false;
+
+/* Global swarm coordinator — manages parallel UTXO chunk download.
+ * Only active when we are syncing from multiple ZCL23 peers. */
+static struct swarm_sync g_swarm __attribute__((used));
+static bool g_swarm_active = false;
+static int64_t g_swarm_last_progress_time = 0;
+
+/* Timeout for inflight chunk requests (30 seconds). */
+#define SWARM_CHUNK_TIMEOUT_SECS 30
+
+/* Progress display interval (5 seconds). */
+#define SWARM_PROGRESS_INTERVAL_SECS 5
 
 /* Ring buffers for duplicate detection of recently seen blocks and txs. */
 #define MAX_RECENT_BLOCKS 128
@@ -109,6 +126,48 @@ int msg_get_height(void *ctx)
 {
     struct msg_processor *mp = (struct msg_processor *)ctx;
     return active_chain_height(&mp->main_state->chain_active);
+}
+
+/* Send our manifest to a ZCL23 peer. Called after version/verack handshake. */
+static void push_manifest(struct msg_processor *mp, struct p2p_node *node)
+{
+    if (!g_cached_manifest_valid || node->swarm_manifest_sent)
+        return;
+
+    struct sync_manifest *m = &g_cached_manifest;
+    struct byte_stream s;
+    stream_init(&s, 80);
+    stream_write_i32_le(&s, m->height);
+    stream_write_bytes(&s, m->block_hash, 32);
+    stream_write_u64_le(&s, m->num_utxos);
+    stream_write_u32_le(&s, m->num_chunks);
+    stream_write_u32_le(&s, m->chunk_size);
+    stream_write_bytes(&s, m->merkle_root, 32);
+
+    p2p_node_begin_message(node, MSG_MANIFEST, mp->params->pchMessageStart);
+    p2p_node_write_message_data(node, s.data, s.size);
+    p2p_node_end_message(node);
+    stream_free(&s);
+
+    node->swarm_manifest_sent = true;
+    printf("Peer %s: sent manifest (h=%d, %u chunks)\n",
+           node->addr_name, m->height, m->num_chunks);
+    fflush(stdout);
+}
+
+/* Send a chunk request to a peer. */
+static void push_chunk_request(struct msg_processor *mp,
+                                struct p2p_node *node,
+                                uint32_t chunk_index)
+{
+    struct byte_stream s;
+    stream_init(&s, 4);
+    stream_write_u32_le(&s, chunk_index);
+
+    p2p_node_begin_message(node, MSG_CHUNK_REQ, mp->params->pchMessageStart);
+    p2p_node_write_message_data(node, s.data, s.size);
+    p2p_node_end_message(node);
+    stream_free(&s);
 }
 
 static void push_version(struct msg_processor *mp, struct p2p_node *node)
@@ -210,8 +269,12 @@ static bool process_version(struct msg_processor *mp, struct p2p_node *node,
                     strstr(node->sub_ver, "ZClassic-C23") != NULL;
     if (is_zcl23) {
         node->services |= NODE_ZCL23; /* mark for fast sync */
+        node->swarm_inflight_chunk = -1;
         printf("Peer %s: supports zclassic23 fast sync [ZCL23]\n",
                node->addr_name);
+
+        /* Exchange manifests — both peers announce what they have. */
+        push_manifest(mp, node);
     }
 
     return true;
@@ -1195,6 +1258,169 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                    (unsigned long long)node->zsync_offset);
             node->zsync_receiving = false;
             fflush(stdout);
+
+        /* ── Parallel chunk sync messages ────────────────────── */
+
+        } else if (strcmp(cmd, MSG_MANIFEST) == 0) {
+            /* Peer sends their manifest — describes available chunks. */
+            int32_t height = 0;
+            uint8_t block_hash[32], merkle_root[32];
+            uint64_t num_utxos = 0;
+            uint32_t num_chunks = 0, chunk_size = 0;
+
+            if (stream_read_i32_le(&s, &height) &&
+                stream_read_bytes(&s, block_hash, 32) &&
+                stream_read_u64_le(&s, &num_utxos) &&
+                stream_read_u32_le(&s, &num_chunks) &&
+                stream_read_u32_le(&s, &chunk_size) &&
+                stream_read_bytes(&s, merkle_root, 32)) {
+
+                node->swarm_manifest_received = true;
+                int our_h = active_chain_height(&mp->main_state->chain_active);
+                printf("Peer %s: manifest h=%d chunks=%u (%llu UTXOs)\n",
+                       node->addr_name, height, num_chunks,
+                       (unsigned long long)num_utxos);
+
+                /* If peer is significantly ahead and we have no active swarm,
+                 * initialize the swarm coordinator from their manifest. */
+                if (height > our_h + 100 && !g_swarm_active &&
+                    num_chunks > 0 && chunk_size > 0) {
+                    struct sync_manifest peer_manifest = {
+                        .height = height,
+                        .num_utxos = num_utxos,
+                        .num_chunks = num_chunks,
+                        .chunk_size = chunk_size,
+                        .chunk_hashes = NULL
+                    };
+                    memcpy(peer_manifest.block_hash, block_hash, 32);
+                    memcpy(peer_manifest.merkle_root, merkle_root, 32);
+
+                    if (swarm_sync_init(&g_swarm, &peer_manifest, mp->datadir)) {
+                        g_swarm_active = true;
+                        g_swarm_last_progress_time = (int64_t)time(NULL);
+                        printf("Swarm sync started: %u chunks from h=%d\n",
+                               num_chunks, height);
+                        fflush(stdout);
+                    }
+                }
+            }
+
+        } else if (strcmp(cmd, MSG_CHUNK_REQ) == 0) {
+            /* Peer requests a specific chunk by index — serve it. */
+            uint32_t chunk_index = 0;
+            if (!stream_read_u32_le(&s, &chunk_index)) {
+                printf("Peer %s: bad zchunkreq\n", node->addr_name);
+            } else if (!g_cached_manifest_valid) {
+                printf("Peer %s: zchunkreq but no manifest ready\n",
+                       node->addr_name);
+            } else if (chunk_index >= g_cached_manifest.num_chunks) {
+                printf("Peer %s: zchunkreq index %u out of range (%u)\n",
+                       node->addr_name, chunk_index,
+                       g_cached_manifest.num_chunks);
+                peer_misbehaving(mp->net_mgr, node, 10,
+                                 "zchunkreq out of range");
+            } else if (!fast_sync_rate_check(&g_rate_limiter,
+                                              node->addr.svc.addr.ip)) {
+                printf("Peer %s: rate limited on chunk request\n",
+                       node->addr_name);
+            } else {
+                struct utxo_chunk *chunk = calloc(1, sizeof(struct utxo_chunk));
+                if (chunk &&
+                    fast_sync_serve_chunk(mp->datadir, chunk_index, chunk)) {
+                    /* Serialize chunk data into message. */
+                    struct byte_stream cs;
+                    stream_init(&cs, 65536);
+                    stream_write_u32_le(&cs, chunk->chunk_index);
+                    stream_write_u32_le(&cs, chunk->num_entries);
+                    for (uint32_t i = 0; i < chunk->num_entries; i++) {
+                        stream_write_bytes(&cs, chunk->entries[i].txid, 32);
+                        stream_write_i32_le(&cs, (int32_t)chunk->entries[i].vout);
+                        stream_write_i64_le(&cs, chunk->entries[i].value);
+                        stream_write_i32_le(&cs, chunk->entries[i].height);
+                        stream_write_u16_le(&cs, chunk->entries[i].script_len);
+                        if (chunk->entries[i].script_len > 0)
+                            stream_write_bytes(&cs, chunk->entries[i].script,
+                                               chunk->entries[i].script_len);
+                    }
+
+                    p2p_node_begin_message(node, MSG_CHUNK_DATA,
+                                            mp->params->pchMessageStart);
+                    p2p_node_write_message_data(node, cs.data, cs.size);
+                    p2p_node_end_message(node);
+                    stream_free(&cs);
+                }
+                free(chunk);
+            }
+
+        } else if (strcmp(cmd, MSG_CHUNK_DATA) == 0) {
+            /* Peer sends chunk data in response to our request. */
+            uint32_t chunk_index = 0, num_entries = 0;
+            if (!stream_read_u32_le(&s, &chunk_index) ||
+                !stream_read_u32_le(&s, &num_entries) ||
+                num_entries > 1000) {
+                printf("Peer %s: bad zchunkdata header\n", node->addr_name);
+                peer_misbehaving(mp->net_mgr, node, 20, "bad zchunkdata");
+            } else if (!g_swarm_active) {
+                printf("Peer %s: zchunkdata but no swarm active\n",
+                       node->addr_name);
+            } else {
+                struct utxo_chunk *chunk = calloc(1, sizeof(struct utxo_chunk));
+                if (chunk) {
+                    chunk->chunk_index = chunk_index;
+                    chunk->num_entries = num_entries;
+                    bool parse_ok = true;
+
+                    for (uint32_t i = 0; i < num_entries && parse_ok; i++) {
+                        if (!stream_read_bytes(&s, chunk->entries[i].txid, 32))
+                            { parse_ok = false; break; }
+                        int32_t vout = 0;
+                        if (!stream_read_i32_le(&s, &vout))
+                            { parse_ok = false; break; }
+                        chunk->entries[i].vout = (uint32_t)vout;
+                        if (!stream_read_i64_le(&s, &chunk->entries[i].value))
+                            { parse_ok = false; break; }
+                        if (!stream_read_i32_le(&s, &chunk->entries[i].height))
+                            { parse_ok = false; break; }
+                        uint16_t slen = 0;
+                        if (!stream_read_u16_le(&s, &slen))
+                            { parse_ok = false; break; }
+                        chunk->entries[i].script_len = slen;
+                        if (slen > 128) slen = 128;
+                        if (slen > 0 &&
+                            !stream_read_bytes(&s, chunk->entries[i].script, slen))
+                            { parse_ok = false; break; }
+                    }
+
+                    if (parse_ok) {
+                        bool verified = swarm_sync_receive_chunk(
+                            &g_swarm, chunk, node->id);
+                        node->swarm_inflight_chunk = -1;
+
+                        if (!verified) {
+                            printf("Peer %s: chunk %u failed verification\n",
+                                   node->addr_name, chunk_index);
+                            peer_misbehaving(mp->net_mgr, node, 50,
+                                             "bad chunk hash");
+                        }
+
+                        if (swarm_sync_is_complete(&g_swarm)) {
+                            printf("Swarm sync complete: %u/%u chunks\n",
+                                   g_swarm.chunks_complete,
+                                   g_swarm.manifest.num_chunks);
+                            swarm_sync_free(&g_swarm);
+                            g_swarm_active = false;
+                            fflush(stdout);
+                        }
+                    } else {
+                        printf("Peer %s: truncated zchunkdata\n",
+                               node->addr_name);
+                        peer_misbehaving(mp->net_mgr, node, 20,
+                                         "truncated zchunkdata");
+                    }
+                    free(chunk);
+                }
+            }
+
         } else if (strcmp(cmd, MSG_GAME) == 0) {
             /* P2P game message */
             uint8_t game_type = 0, position = 0;
@@ -1557,6 +1783,65 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
             }
             sqlite3_finalize(sel);
             sqlite3_close(db);
+        }
+    }
+
+    /* ── Swarm parallel chunk sync coordinator ────────────── */
+    /* For each connected ZCL23 peer with no inflight chunk, assign one
+     * and send a zchunkreq. Also handle timeouts on stale requests. */
+    if (g_swarm_active && peer_supports_fast_sync(node->services) &&
+        node->swarm_manifest_received && node->successfully_connected) {
+
+        /* Handle timeout: if this peer's chunk is stale, re-queue it */
+        if (node->swarm_inflight_chunk >= 0) {
+            int64_t now_sw = (int64_t)time(NULL);
+            if (now_sw - node->swarm_chunk_req_time > SWARM_CHUNK_TIMEOUT_SECS) {
+                uint32_t ci = (uint32_t)node->swarm_inflight_chunk;
+                if (ci < g_swarm.manifest.num_chunks &&
+                    g_swarm.chunk_states[ci] == CHUNK_INFLIGHT) {
+                    g_swarm.chunk_states[ci] = CHUNK_NEEDED;
+                    g_swarm.chunk_peer[ci] = -1;
+                    if (g_swarm.chunks_inflight > 0)
+                        g_swarm.chunks_inflight--;
+                    printf("Peer %s: chunk %u timed out, re-queuing\n",
+                           node->addr_name, ci);
+                }
+                node->swarm_inflight_chunk = -1;
+            }
+        }
+
+        /* If peer has no inflight chunk, assign the next needed one */
+        if (node->swarm_inflight_chunk < 0) {
+            int32_t ci = swarm_sync_assign_chunk(&g_swarm, node->id);
+            if (ci >= 0) {
+                node->swarm_inflight_chunk = ci;
+                node->swarm_chunk_req_time = (int64_t)time(NULL);
+                push_chunk_request(mp, node, (uint32_t)ci);
+            }
+        }
+
+        /* Progress display (rate-limited to every 5 seconds).
+         * Only print from the first peer's tick to avoid duplicates. */
+        int64_t now_prog = (int64_t)time(NULL);
+        if (now_prog - g_swarm_last_progress_time >= SWARM_PROGRESS_INTERVAL_SECS) {
+            g_swarm_last_progress_time = now_prog;
+
+            /* Count serving peers */
+            int serving_peers = 0;
+            if (mp->net_mgr) {
+                for (size_t i = 0; i < mp->net_mgr->num_nodes; i++) {
+                    struct p2p_node *n = mp->net_mgr->nodes[i];
+                    if (n && peer_supports_fast_sync(n->services) &&
+                        n->swarm_manifest_received)
+                        serving_peers++;
+                }
+            }
+
+            printf("Sync: %d%% (%u/%u chunks, %u inflight, %d peers serving)\n",
+                   swarm_sync_progress(&g_swarm),
+                   g_swarm.chunks_complete, g_swarm.manifest.num_chunks,
+                   g_swarm.chunks_inflight, serving_peers);
+            fflush(stdout);
         }
     }
 

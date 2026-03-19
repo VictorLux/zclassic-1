@@ -202,6 +202,12 @@ struct p2p_node {
     uint64_t zsync_offset;    /* current UTXO offset in SQLite query */
     uint64_t zsync_total;     /* total UTXOs to send */
     uint64_t zsync_sent;      /* chunks sent so far */
+
+    /* Swarm parallel chunk sync state */
+    bool swarm_manifest_sent;     /* true if we sent our manifest to this peer */
+    bool swarm_manifest_received; /* true if we received manifest from peer */
+    int32_t swarm_inflight_chunk; /* chunk index assigned to this peer, -1 = none */
+    int64_t swarm_chunk_req_time; /* when chunk was requested (for timeout) */
 };
 
 struct node_signals {
