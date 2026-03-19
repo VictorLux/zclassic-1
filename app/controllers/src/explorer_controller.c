@@ -293,14 +293,36 @@ static double json_extract_real(const char *json, const char *key)
     return strtod(p, NULL);
 }
 
+void explorer_set_rpc(const char *user, const char *pass, int port)
+{
+    if (user) snprintf(g_rpc_user, sizeof(g_rpc_user), "%s", user);
+    if (pass) snprintf(g_rpc_pass, sizeof(g_rpc_pass), "%s", pass);
+    if (port > 0) g_rpc_proxy_port = port;
+}
+
 static int native_chain_height(void)
 {
-    if (!g_ms) return -1;
-    return active_chain_height(&g_ms->chain_active);
+    if (g_ms) return active_chain_height(&g_ms->chain_active);
+    /* Fallback: query SQLite when running without full node (e.g. GTK browser) */
+    if (g_ndb && g_ndb->db) {
+        sqlite3_stmt *s = NULL;
+        int h = -1;
+        if (sqlite3_prepare_v2(g_ndb->db,
+                "SELECT MAX(height) FROM blocks", -1, &s, NULL) == SQLITE_OK && s) {
+            if (sqlite3_step(s) == SQLITE_ROW)
+                h = sqlite3_column_int(s, 0);
+            sqlite3_finalize(s);
+        }
+        return h;
+    }
+    return -1;
 }
 
 static bool use_rpc_proxy(void)
 {
+    /* Use RPC/SQLite proxy when no main_state (standalone browser)
+     * or when chain height is not available */
+    if (!g_ms) return true;
     return native_chain_height() < 1;
 }
 

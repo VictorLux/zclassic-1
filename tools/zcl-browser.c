@@ -38,6 +38,7 @@ extern const char *onion_service_start(const char *datadir);
 #include "chain/chainparams.h"
 #include "keys/key.h"
 #include "keys/pubkey.h"
+#include <sqlite3.h>
 
 static WebKitWebView *g_webview = NULL;
 static GtkWidget *g_url_bar = NULL;
@@ -200,6 +201,9 @@ static void on_forward(GtkWidget *b, gpointer d) {
 int main(int argc, char *argv[]) {
     gtk_init(&argc, &argv);
 
+    setbuf(stdout, NULL);
+    setbuf(stderr, NULL);
+
     /* Initialize crypto + chain params (needed by explorer) */
     chain_params_select(CHAIN_MAIN);
     ecc_start();
@@ -212,14 +216,45 @@ int main(int argc, char *argv[]) {
     if (home) {
         snprintf(s_datadir, sizeof(s_datadir), "%s/.zclassic-c23", home);
 
-        /* Open node.db for block/tx/utxo queries */
+        /* Open node.db for block/tx/utxo queries.
+         * Use node_db_open which runs migrations — if it fails (e.g. schema
+         * mismatch), fall back to raw sqlite3_open for read-only explorer. */
         char db_path[1024];
         snprintf(db_path, sizeof(db_path), "%s/node.db", s_datadir);
-        if (node_db_open(&s_ndb, db_path)) {
+        if (!node_db_open(&s_ndb, db_path)) {
+            /* Migration failed — try raw open for read-only access */
+            if (sqlite3_open_v2(db_path, &s_ndb.db,
+                    SQLITE_OPEN_READWRITE, NULL) == SQLITE_OK) {
+                s_ndb.open = true;
+                sqlite3_busy_timeout(s_ndb.db, 5000);
+                printf("Explorer: opened %s (read-only, skip migrations)\n",
+                       db_path);
+            }
+        }
+        if (s_ndb.open) {
             explorer_set_state(NULL, NULL, NULL, &s_ndb, s_datadir);
-            printf("Explorer: opened %s\n", db_path);
+
+            /* Set RPC credentials from cookie file for explorer proxy */
+            extern void explorer_set_rpc(const char *, const char *, int);
+            char cookie_path[1024], cookie[256] = "";
+            snprintf(cookie_path, sizeof(cookie_path), "%s/.cookie", s_datadir);
+            FILE *cf = fopen(cookie_path, "r");
+            if (cf) {
+                if (fgets(cookie, sizeof(cookie), cf)) {
+                    char *nl = strchr(cookie, '\n');
+                    if (nl) *nl = '\0';
+                    char *colon = strchr(cookie, ':');
+                    if (colon) {
+                        *colon = '\0';
+                        explorer_set_rpc(cookie, colon + 1, 18232);
+                        printf("Explorer: RPC auth from cookie (port 18232)\n");
+                    }
+                }
+                fclose(cf);
+            }
+            printf("Explorer: ready with %s\n", db_path);
         } else {
-            printf("Explorer: could not open %s\n", db_path);
+            printf("Explorer: no database at %s\n", db_path);
         }
 
         onion_service_start(s_datadir);
