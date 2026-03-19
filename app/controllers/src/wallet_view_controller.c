@@ -1195,8 +1195,9 @@ static size_t serve_shield_confirm(uint8_t *r, size_t max, const char *query) {
         addr.sin_family = AF_INET;
         addr.sin_port = htons(18232);
         addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        struct timeval tv = {.tv_sec = 10};
+        struct timeval tv = {.tv_sec = 2};
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
         if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
             /* Base64 encode cookie */
@@ -1278,11 +1279,10 @@ static size_t serve_shield_confirm(uint8_t *r, size_t max, const char *query) {
             "<div style='text-align:center'>"
             "<div style='font-size:40px;margin-bottom:8px'>&#x26A0;</div>"
             "<div style='font-size:20px;color:#ff8800;font-weight:700'>"
-            "Shielding Not Available</div>"
+            "Could Not Shield</div>"
             "<div style='color:#888;font-size:13px;margin-top:8px'>"
-            "The node could not execute the shielding transaction. "
-            "This may be because the wallet needs to sync, or the "
-            "Sapling prover is not fully initialized.</div>"
+            "The node may not be running, or the wallet has no "
+            "spendable funds. Check that zclassic23 is running.</div>"
             "<div style='color:#555;font-size:11px;margin-top:12px;"
             "font-family:monospace;word-break:break-all;text-align:left;"
             "background:#0a0a0a;padding:10px;border-radius:6px'>%s</div>"
