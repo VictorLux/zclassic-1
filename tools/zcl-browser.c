@@ -90,7 +90,7 @@ static void serve_path(const char *path) {
 
     /* Load into WebKit — guard against re-entrant calls from decide-policy */
     g_loading_internal = true;
-    webkit_web_view_load_html(g_webview, body, "about:zcl23");
+    webkit_web_view_load_html(g_webview, body, NULL);
     g_loading_internal = false;
 
     /* Update URL bar */
