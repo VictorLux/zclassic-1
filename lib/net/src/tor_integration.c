@@ -263,3 +263,10 @@ bool tor_integration_is_ready(void)
 {
     return atomic_load(&g_tor_ready);
 }
+
+void tor_integration_set_vanity_prefix(const char *prefix)
+{
+    extern void dynhost_set_vanity_prefix(const char *);
+    if (prefix && prefix[0])
+        dynhost_set_vanity_prefix(prefix);
+}

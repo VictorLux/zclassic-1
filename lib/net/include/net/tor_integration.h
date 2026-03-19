@@ -50,4 +50,9 @@ const char *tor_integration_get_onion_address(void);
 /* Check if Tor is bootstrapped. */
 bool tor_integration_is_ready(void);
 
+/* Set vanity .onion prefix (e.g., "zcl" for zcl...onion).
+ * Must be called before tor_integration_start().
+ * 3 chars ≈ instant, 4 chars ≈ seconds, 5 chars ≈ minutes. */
+void tor_integration_set_vanity_prefix(const char *prefix);
+
 #endif
