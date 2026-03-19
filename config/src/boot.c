@@ -29,6 +29,7 @@
 #include "keys/key_io.h"
 #include "mining/gen.h"
 #include "script/standard.h"
+#include "controllers/explorer_controller.h"
 #include "controllers/wallet_controller.h"
 #include "wallet/wallet.h"
 #include "wallet/wallet_db.h"
@@ -43,6 +44,7 @@
 #include "storage/disk_block_io.h"
 #include "storage/dbwrapper.h"
 #include "net/tor_integration.h"
+#include "net/https_server.h"
 #include "net/fast_sync.h"
 #include "net/peer_strategy.h"
 #include <netdb.h>
@@ -619,6 +621,11 @@ bool app_init(struct app_context *ctx)
     ecc_start();
     ecc_verify_init();
 
+    /* SHA-256 hardware self-test */
+    if (!sha256_selftest())
+        printf("WARNING: SHA-256 SHA-NI self-test FAILED — using portable fallback\n");
+    printf("SHA-256: %s\n", sha256_implementation());
+
     main_state_init(&g_state);
     g_state.fTxIndex = ctx->tx_index;
     g_state.fCheckpointsEnabled = ctx->checkpoints_enabled;
@@ -1087,11 +1094,15 @@ bool app_init(struct app_context *ctx)
     rpc_table_init(&g_rpc_table);
     rpc_blockchain_set_state(&g_state, &g_mempool, ctx->datadir);
     rpc_blockchain_set_coins_db(&g_coins_db, &g_coins_tip);
+    rpc_blockchain_set_node_db(g_active_node_db);
     register_blockchain_rpc_commands(&g_rpc_table);
 
     rpc_chain_inspect_set_state(&g_state, ctx->datadir,
                                  &g_coins_db, &g_coins_tip, g_active_node_db);
     register_chain_inspect_rpc_commands(&g_rpc_table);
+
+    explorer_set_state(&g_state, &g_mempool, &g_coins_tip,
+                        g_active_node_db, ctx->datadir);
 
     rpc_rawtx_set_state(&g_state, &g_mempool, &g_coins_tip, ctx->datadir);
     rpc_rawtx_set_keystore(&g_wallet.keystore);
@@ -1127,6 +1138,21 @@ bool app_init(struct app_context *ctx)
     set_rpc_warmup_finished();
     rpc_http_start(&g_rpc_table, (uint16_t)ctx->rpc_port,
                     ctx->rpc_user, ctx->rpc_password, ctx->datadir);
+
+    /* Start public HTTPS block explorer on port 443 */
+    {
+        char cert_path[1024], key_path[1024];
+        snprintf(cert_path, sizeof(cert_path), "%s/ssl/fullchain.pem",
+                 ctx->datadir);
+        snprintf(key_path, sizeof(key_path), "%s/ssl/privkey.pem",
+                 ctx->datadir);
+        if (access(cert_path, R_OK) == 0 && access(key_path, R_OK) == 0) {
+            https_server_start(cert_path, key_path, "zclnet.net");
+        } else {
+            printf("HTTPS: no cert at %s — block explorer not on clearnet\n",
+                   cert_path);
+        }
+    }
 
     /* Start miner if -gen */
     if (ctx->gen) {

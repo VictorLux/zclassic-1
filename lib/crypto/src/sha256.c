@@ -17,6 +17,13 @@
 
 static int sha_ni_available = -1; /* -1 = not checked, 0 = no, 1 = yes */
 
+/* Forward declarations for self-test in detect_sha_ni */
+static void sha256_transform_portable(uint32_t *s, const unsigned char *chunk);
+#ifdef __SHA__
+__attribute__((target("sha,sse4.1")))
+static void sha256_transform_shani(uint32_t *state, const unsigned char *data);
+#endif
+
 static void detect_sha_ni(void)
 {
     unsigned int eax, ebx, ecx, edx;
@@ -24,8 +31,37 @@ static void detect_sha_ni(void)
         sha_ni_available = 0;
         return;
     }
-    sha_ni_available = 0; /* TODO: enable after SHA-NI validation */
-    (void)ebx; /* SHA bit in EBX[29] — reserved for future use */
+    int hw_capable = (ebx >> 29) & 1;
+    if (!hw_capable) {
+        sha_ni_available = 0;
+        return;
+    }
+
+    /* Hardware SHA-NI detected — validate with self-test before enabling.
+     * This catches implementation bugs and CPU errata. */
+#ifdef __SHA__
+    {
+        const unsigned char test_data[64] = {
+            0x61, 0x62, 0x63, 0x80, 0,0,0,0, 0,0,0,0, 0,0,0,0,
+            0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
+            0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
+            0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,24
+        };
+        uint32_t sp[8] = {0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,
+                          0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19};
+        uint32_t sn[8] = {0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,
+                          0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19};
+        sha256_transform_portable(sp, test_data);
+        sha256_transform_shani(sn, test_data);
+        if (memcmp(sp, sn, 32) == 0) {
+            sha_ni_available = 1;
+        } else {
+            sha_ni_available = 0; /* Implementation mismatch — stay on portable */
+        }
+    }
+#else
+    sha_ni_available = 0;
+#endif
 }
 
 #ifdef __SHA__
@@ -354,6 +390,56 @@ static inline void sha256_transform(uint32_t *s, const unsigned char *chunk)
     }
 #endif
     sha256_transform_portable(s, chunk);
+}
+
+/* Self-test: verify SHA-NI produces identical results to portable.
+ * Called once at startup. Returns true if SHA-NI is safe to use. */
+bool sha256_selftest(void)
+{
+#if (defined(__x86_64__) || defined(__i386__)) && defined(__SHA__)
+    if (sha_ni_available < 0) detect_sha_ni();
+    if (!sha_ni_available) return true; /* no SHA-NI, nothing to test */
+
+    /* Test vector: SHA-256("abc") = ba7816bf... */
+    const unsigned char test_data[64] = {
+        0x61, 0x62, 0x63, 0x80, 0,0,0,0, 0,0,0,0, 0,0,0,0,
+        0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
+        0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
+        0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,24
+    };
+
+    /* Portable result */
+    uint32_t s_port[8] = {
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+        0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
+    };
+    sha256_transform_portable(s_port, test_data);
+
+    /* SHA-NI result */
+    uint32_t s_shani[8] = {
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+        0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
+    };
+    sha256_transform_shani(s_shani, test_data);
+
+    /* Compare */
+    if (memcmp(s_port, s_shani, 32) != 0) {
+        sha_ni_available = 0; /* Disable — results don't match */
+        return false;
+    }
+    return true;
+#else
+    return true;
+#endif
+}
+
+const char *sha256_implementation(void)
+{
+#if (defined(__x86_64__) || defined(__i386__)) && defined(__SHA__)
+    if (sha_ni_available < 0) detect_sha_ni();
+    if (sha_ni_available) return "SHA-NI (hardware)";
+#endif
+    return "portable C";
 }
 
 void sha256_init(struct sha256_ctx *ctx)

@@ -578,5 +578,297 @@ int test_script(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    /* ================================================================
+     * script_solver: P2SH detection
+     * ================================================================ */
+    printf("script_solver: P2SH... ");
+    {
+        struct script s;
+        s.data[0] = OP_HASH160;
+        s.data[1] = 20;
+        memset(s.data + 2, 0xBB, 20);
+        s.data[22] = OP_EQUAL;
+        s.size = 23;
+
+        enum txnouttype type;
+        unsigned char solutions[20][65];
+        size_t solution_sizes[20];
+        size_t num_solutions;
+        bool ok = script_solver(&s, &type, solutions, solution_sizes, &num_solutions);
+        ok = ok && (type == TX_SCRIPTHASH) && (num_solutions == 1) && (solution_sizes[0] == 20);
+        ok = ok && (solutions[0][0] == 0xBB);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("script_solver: OP_RETURN null data... ");
+    {
+        struct script s;
+        s.data[0] = OP_RETURN;
+        s.data[1] = 4; /* push 4 bytes */
+        s.data[2] = 0xDE;
+        s.data[3] = 0xAD;
+        s.data[4] = 0xBE;
+        s.data[5] = 0xEF;
+        s.size = 6;
+
+        enum txnouttype type;
+        unsigned char solutions[20][65];
+        size_t solution_sizes[20];
+        size_t num_solutions;
+        bool ok = script_solver(&s, &type, solutions, solution_sizes, &num_solutions);
+        ok = ok && (type == TX_NULL_DATA);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("script_solver: P2PK compressed... ");
+    {
+        struct script s;
+        s.data[0] = 33; /* push 33 bytes */
+        s.data[1] = 0x02; /* compressed pubkey prefix */
+        memset(s.data + 2, 0xCC, 32);
+        s.data[34] = OP_CHECKSIG;
+        s.size = 35;
+
+        enum txnouttype type;
+        unsigned char solutions[20][65];
+        size_t solution_sizes[20];
+        size_t num_solutions;
+        bool ok = script_solver(&s, &type, solutions, solution_sizes, &num_solutions);
+        ok = ok && (type == TX_PUBKEY) && (num_solutions == 1) && (solution_sizes[0] == 33);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("script_solver: nonstandard... ");
+    {
+        struct script s;
+        s.data[0] = OP_NOP;
+        s.data[1] = OP_NOP;
+        s.size = 2;
+
+        enum txnouttype type;
+        unsigned char solutions[20][65];
+        size_t solution_sizes[20];
+        size_t num_solutions;
+        bool ok = !script_solver(&s, &type, solutions, solution_sizes, &num_solutions);
+        ok = ok && (type == TX_NONSTANDARD);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ================================================================
+     * get_txn_output_type: name strings
+     * ================================================================ */
+    printf("get_txn_output_type: all types... ");
+    {
+        bool ok = (strcmp(get_txn_output_type(TX_NONSTANDARD), "nonstandard") == 0) &&
+                  (strcmp(get_txn_output_type(TX_PUBKEY), "pubkey") == 0) &&
+                  (strcmp(get_txn_output_type(TX_PUBKEYHASH), "pubkeyhash") == 0) &&
+                  (strcmp(get_txn_output_type(TX_SCRIPTHASH), "scripthash") == 0) &&
+                  (strcmp(get_txn_output_type(TX_MULTISIG), "multisig") == 0) &&
+                  (strcmp(get_txn_output_type(TX_NULL_DATA), "nulldata") == 0);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ================================================================
+     * script_for_p2sh: build + roundtrip via solver
+     * ================================================================ */
+    printf("script_for_p2sh: builds valid P2SH... ");
+    {
+        struct script_id sid;
+        memset(sid.hash.data, 0xDD, 20);
+        struct script s;
+        script_for_p2sh(&s, &sid);
+
+        bool ok = (s.size == 23) && (s.data[0] == OP_HASH160) && (s.data[22] == OP_EQUAL);
+
+        enum txnouttype type;
+        unsigned char solutions[20][65];
+        size_t solution_sizes[20];
+        size_t num_solutions;
+        ok = ok && script_solver(&s, &type, solutions, solution_sizes, &num_solutions);
+        ok = ok && (type == TX_SCRIPTHASH);
+        ok = ok && (memcmp(solutions[0], sid.hash.data, 20) == 0);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ================================================================
+     * script_for_p2pkh: build + roundtrip via solver
+     * ================================================================ */
+    printf("script_for_p2pkh: builds valid P2PKH... ");
+    {
+        struct key_id kid;
+        memset(kid.id.data, 0xEE, 20);
+        struct script s;
+        script_for_p2pkh(&s, &kid);
+
+        bool ok = (s.size == 25) && (s.data[0] == OP_DUP) && (s.data[24] == OP_CHECKSIG);
+
+        enum txnouttype type;
+        unsigned char solutions[20][65];
+        size_t solution_sizes[20];
+        size_t num_solutions;
+        ok = ok && script_solver(&s, &type, solutions, solution_sizes, &num_solutions);
+        ok = ok && (type == TX_PUBKEYHASH);
+        ok = ok && (memcmp(solutions[0], kid.id.data, 20) == 0);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ================================================================
+     * script_extract_destination: P2PKH
+     * ================================================================ */
+    printf("script_extract_destination: P2PKH... ");
+    {
+        struct key_id kid;
+        memset(kid.id.data, 0x42, 20);
+        struct script s;
+        script_for_p2pkh(&s, &kid);
+
+        struct tx_destination dest;
+        memset(&dest, 0, sizeof(dest));
+        bool ok = script_extract_destination(&s, &dest);
+        ok = ok && (dest.type == DEST_KEY_ID);
+        ok = ok && (memcmp(dest.id.key.id.data, kid.id.data, 20) == 0);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("script_extract_destination: P2SH... ");
+    {
+        struct script_id sid;
+        memset(sid.hash.data, 0x55, 20);
+        struct script s;
+        script_for_p2sh(&s, &sid);
+
+        struct tx_destination dest;
+        memset(&dest, 0, sizeof(dest));
+        bool ok = script_extract_destination(&s, &dest);
+        ok = ok && (dest.type == DEST_SCRIPT_ID);
+        ok = ok && (memcmp(dest.id.script.hash.data, sid.hash.data, 20) == 0);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("script_extract_destination: nonstandard fails... ");
+    {
+        struct script s;
+        s.data[0] = OP_NOP;
+        s.size = 1;
+
+        struct tx_destination dest;
+        memset(&dest, 0, sizeof(dest));
+        bool ok = !script_extract_destination(&s, &dest);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ================================================================
+     * script_for_destination: roundtrip via extract
+     * ================================================================ */
+    printf("script_for_destination: P2PKH roundtrip... ");
+    {
+        struct tx_destination dest;
+        dest.type = DEST_KEY_ID;
+        memset(dest.id.key.id.data, 0x77, 20);
+        struct script s;
+        script_for_destination(&s, &dest);
+
+        struct tx_destination dest2;
+        memset(&dest2, 0, sizeof(dest2));
+        bool ok = script_extract_destination(&s, &dest2);
+        ok = ok && (dest2.type == DEST_KEY_ID);
+        ok = ok && (memcmp(dest2.id.key.id.data, dest.id.key.id.data, 20) == 0);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("script_for_destination: P2SH roundtrip... ");
+    {
+        struct tx_destination dest;
+        dest.type = DEST_SCRIPT_ID;
+        memset(dest.id.script.hash.data, 0x88, 20);
+        struct script s;
+        script_for_destination(&s, &dest);
+
+        struct tx_destination dest2;
+        memset(&dest2, 0, sizeof(dest2));
+        bool ok = script_extract_destination(&s, &dest2);
+        ok = ok && (dest2.type == DEST_SCRIPT_ID);
+        ok = ok && (memcmp(dest2.id.script.hash.data, dest.id.script.hash.data, 20) == 0);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("script_for_destination: DEST_NONE produces empty... ");
+    {
+        struct tx_destination dest;
+        dest.type = DEST_NONE;
+        struct script s;
+        script_for_destination(&s, &dest);
+        bool ok = (s.size == 0);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ================================================================
+     * tx_destination_is_valid
+     * ================================================================ */
+    printf("tx_destination_is_valid... ");
+    {
+        struct tx_destination d1 = { .type = DEST_KEY_ID };
+        struct tx_destination d2 = { .type = DEST_SCRIPT_ID };
+        struct tx_destination d3 = { .type = DEST_NONE };
+        bool ok = tx_destination_is_valid(&d1) && tx_destination_is_valid(&d2) && !tx_destination_is_valid(&d3);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ================================================================
+     * script_sig_args_expected
+     * ================================================================ */
+    printf("script_sig_args_expected... ");
+    {
+        unsigned char solutions[20][65];
+        size_t solution_sizes[20];
+        bool ok = (script_sig_args_expected(TX_PUBKEY, solutions, solution_sizes, 0) == 1);
+        ok = ok && (script_sig_args_expected(TX_PUBKEYHASH, solutions, solution_sizes, 0) == 2);
+        ok = ok && (script_sig_args_expected(TX_SCRIPTHASH, solutions, solution_sizes, 0) == 1);
+        ok = ok && (script_sig_args_expected(TX_NONSTANDARD, solutions, solution_sizes, 0) == -1);
+        ok = ok && (script_sig_args_expected(TX_NULL_DATA, solutions, solution_sizes, 0) == -1);
+
+        /* Multisig: first solution byte is m */
+        solutions[0][0] = 2;
+        solution_sizes[0] = 1;
+        ok = ok && (script_sig_args_expected(TX_MULTISIG, solutions, solution_sizes, 1) == 3); /* m+1 = 2+1 */
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ================================================================
+     * script_id_from_script
+     * ================================================================ */
+    printf("script_id_from_script: deterministic... ");
+    {
+        struct script s;
+        s.data[0] = OP_DUP;
+        s.data[1] = OP_HASH160;
+        s.size = 2;
+
+        struct script_id id1, id2;
+        script_id_from_script(&id1, &s);
+        script_id_from_script(&id2, &s);
+        bool ok = (memcmp(id1.hash.data, id2.hash.data, 20) == 0);
+        /* hash should be non-zero */
+        uint8_t zeros[20] = {0};
+        ok = ok && (memcmp(id1.hash.data, zeros, 20) != 0);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     return failures;
 }

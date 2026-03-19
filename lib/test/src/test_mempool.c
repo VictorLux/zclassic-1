@@ -370,5 +370,190 @@ int test_mempool(void)
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
+    /* ================================================================
+     * tx_confirm_stats: clear_current resets per-block counters
+     * ================================================================ */
+    printf("tx_confirm_stats clear_current... ");
+    {
+        struct tx_confirm_stats s;
+        tx_confirm_stats_init(&s);
+        double bkts[] = {100.0, 1000.0};
+        tx_confirm_stats_setup(&s, bkts, 2, 5, 0.998);
+
+        /* Add some data then clear */
+        tx_confirm_stats_record(&s, 1, 500.0);
+        tx_confirm_stats_clear_current(&s, 10);
+
+        /* After clear, per-block counters should be zero */
+        bool ok = (s.cur_block_tx_ct[0] == 0) && (s.cur_block_tx_ct[1] == 0);
+        ok = ok && (s.cur_block_val[0] == 0.0) && (s.cur_block_val[1] == 0.0);
+
+        tx_confirm_stats_free(&s);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ================================================================
+     * tx_confirm_stats: new_tx + remove_tx
+     * ================================================================ */
+    printf("tx_confirm_stats new_tx/remove_tx... ");
+    {
+        struct tx_confirm_stats s;
+        tx_confirm_stats_init(&s);
+        double bkts[] = {100.0, 1000.0, 10000.0};
+        tx_confirm_stats_setup(&s, bkts, 3, 10, 0.998);
+
+        unsigned int bi = tx_confirm_stats_new_tx(&s, 5, 500.0);
+        /* bucket 1 (500 >= 100, < 1000) */
+        bool ok = (bi == 1);
+        /* Check unconfirmed count increased */
+        ok = ok && (s.unconf_txs[5 % 10][1] == 1);
+
+        /* Remove it */
+        tx_confirm_stats_remove_tx(&s, 5, 8, bi);
+        ok = ok && (s.unconf_txs[5 % 10][1] == 0);
+
+        tx_confirm_stats_free(&s);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ================================================================
+     * tx_confirm_stats: max_confirms
+     * ================================================================ */
+    printf("tx_confirm_stats max_confirms... ");
+    {
+        struct tx_confirm_stats s;
+        tx_confirm_stats_init(&s);
+        double bkts[] = {100.0};
+        tx_confirm_stats_setup(&s, bkts, 1, 25, 0.998);
+
+        bool ok = (tx_confirm_stats_max_confirms(&s) == 25);
+
+        tx_confirm_stats_free(&s);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ================================================================
+     * tx_confirm_stats: update_averages decays
+     * ================================================================ */
+    printf("tx_confirm_stats update_averages applies decay... ");
+    {
+        struct tx_confirm_stats s;
+        tx_confirm_stats_init(&s);
+        double bkts[] = {100.0, 1000.0};
+        tx_confirm_stats_setup(&s, bkts, 2, 5, 0.5);
+
+        /* Record data, update averages, then update again with empty block */
+        tx_confirm_stats_record(&s, 1, 500.0);
+        tx_confirm_stats_update_averages(&s);
+        double avg_after_first = s.tx_ct_avg[1];
+
+        /* Clear and update again with no new data — decay should reduce */
+        tx_confirm_stats_clear_current(&s, 1);
+        tx_confirm_stats_update_averages(&s);
+        double avg_after_second = s.tx_ct_avg[1];
+
+        bool ok = (avg_after_first > 0) && (avg_after_second < avg_after_first);
+
+        tx_confirm_stats_free(&s);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ================================================================
+     * tx_confirm_stats: estimate_median returns -1 with no data
+     * ================================================================ */
+    printf("tx_confirm_stats estimate_median: -1 with no data... ");
+    {
+        struct tx_confirm_stats s;
+        tx_confirm_stats_init(&s);
+        double bkts[] = {100.0, 1000.0, 10000.0};
+        tx_confirm_stats_setup(&s, bkts, 3, 10, 0.998);
+
+        double m = tx_confirm_stats_estimate_median(&s, 2, 0.1, 0.95, true, 5);
+        bool ok = (m == -1.0);
+
+        tx_confirm_stats_free(&s);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ================================================================
+     * policy_estimate_fee: invalid conf_target
+     * ================================================================ */
+    printf("policy_estimate_fee: invalid targets return zero... ");
+    {
+        struct fee_rate min_fee;
+        min_fee.satoshis_per_k = 1000;
+        struct block_policy_estimator est;
+        block_policy_estimator_init(&est, &min_fee);
+
+        struct fee_rate r0 = policy_estimate_fee(&est, 0);
+        struct fee_rate rn = policy_estimate_fee(&est, -1);
+        struct fee_rate rh = policy_estimate_fee(&est, 999999);
+        bool ok = (r0.satoshis_per_k == 0) && (rn.satoshis_per_k == 0) && (rh.satoshis_per_k == 0);
+
+        block_policy_estimator_free(&est);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ================================================================
+     * policy_estimate_priority: invalid conf_target
+     * ================================================================ */
+    printf("policy_estimate_priority: invalid targets return -1... ");
+    {
+        struct fee_rate min_fee;
+        min_fee.satoshis_per_k = 1000;
+        struct block_policy_estimator est;
+        block_policy_estimator_init(&est, &min_fee);
+
+        double p0 = policy_estimate_priority(&est, 0);
+        double pn = policy_estimate_priority(&est, -1);
+        double ph = policy_estimate_priority(&est, 999999);
+        bool ok = (p0 == -1) && (pn == -1) && (ph == -1);
+
+        block_policy_estimator_free(&est);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ================================================================
+     * policy_process_block: advances best_seen_height
+     * ================================================================ */
+    printf("policy_process_block: advances best_seen_height... ");
+    {
+        struct fee_rate min_fee;
+        min_fee.satoshis_per_k = 1000;
+        struct block_policy_estimator est;
+        block_policy_estimator_init(&est, &min_fee);
+
+        policy_process_block(&est, 100, NULL, 0, true);
+        bool ok = (est.best_seen_height == 100);
+        /* Advancing further works */
+        policy_process_block(&est, 200, NULL, 0, true);
+        ok = ok && (est.best_seen_height == 200);
+        /* Going backwards does not advance */
+        policy_process_block(&est, 150, NULL, 0, true);
+        ok = ok && (est.best_seen_height == 200);
+
+        block_policy_estimator_free(&est);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ================================================================
+     * policy_remove_tx: no-op for unknown hash
+     * ================================================================ */
+    printf("policy_remove_tx: no-op for unknown hash... ");
+    {
+        struct fee_rate min_fee;
+        min_fee.satoshis_per_k = 1000;
+        struct block_policy_estimator est;
+        block_policy_estimator_init(&est, &min_fee);
+
+        struct uint256 h;
+        memset(h.data, 0xFF, 32);
+        policy_remove_tx(&est, &h); /* should not crash */
+        bool ok = true;
+
+        block_policy_estimator_free(&est);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
     return failures;
 }

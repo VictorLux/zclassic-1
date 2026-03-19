@@ -25,10 +25,20 @@
 #include "validation/update_coins.h"
 #include "validation/connect_block.h"
 #include "util/png_writer.h"
+#include "storage/block_index_db.h"
+#include "models/block.h"
+#include "models/tx_index.h"
+#include "models/utxo.h"
+#include "controllers/sync_controller.h"
 #include <stdint.h>
 #include <string.h>
 #include <math.h>
 #include <time.h>
+#include <inttypes.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 static struct main_state *g_main_state = NULL;
 static struct tx_mempool *g_mempool = NULL;
@@ -1720,6 +1730,466 @@ static bool rpc_reindexchainstate(const struct json_value *params, bool help,
     return true;
 }
 
+/* ── indexlegacy: import full chain from zclassicd LevelDB → our SQLite ── */
+
+static struct node_db *g_node_db_bc = NULL;
+
+void rpc_blockchain_set_node_db(struct node_db *ndb) { g_node_db_bc = ndb; }
+
+static bool rpc_indexlegacy(const struct json_value *params, bool help,
+                             struct json_value *result)
+{
+    RPC_HELP(help, result,
+        "indexlegacy ( \"legacy_datadir\" )\n"
+        "\nImport the ENTIRE blockchain from a legacy zclassicd node into SQLite.\n"
+        "Reads LevelDB block index, walks block files, indexes all blocks,\n"
+        "transactions, and UTXOs. The legacy node should be stopped first.\n"
+        "\nArguments:\n"
+        "1. legacy_datadir  (string, optional, default: ~/.zclassic)\n"
+        "\nThis is a heavy operation — may take 30+ minutes for 3M blocks.\n");
+
+    struct rpc_params p;
+    rpc_params_init(&p, params);
+    rpc_params_expect(&p, 0, 1);
+    const char *legacy_dir = rpc_permit_str(&p, 0, "legacy_datadir", NULL);
+    if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); return false; }
+
+    char default_dir[512];
+    if (!legacy_dir || legacy_dir[0] == '\0') {
+        const char *home = getenv("HOME");
+        snprintf(default_dir, sizeof(default_dir),
+                 "%s/.zclassic", home ? home : "/root");
+        legacy_dir = default_dir;
+    }
+
+    if (!g_node_db_bc || !g_node_db_bc->open) {
+        json_set_str(result, "SQLite database not available");
+        return false;
+    }
+
+    printf("indexlegacy: scanning block files from %s/blocks/\n", legacy_dir);
+    fflush(stdout);
+
+    /* Two-pass approach:
+     * Pass 1: Scan all block files, record (height, file, offset, size)
+     * Pass 2: Sort by height, process in order (so spends find UTXOs)
+     *
+     * Supports 100+ years of blocks (~21M blocks). Uses a sparse
+     * height-indexed array that grows dynamically. */
+
+    struct blk_loc {
+        int file;
+        uint32_t offset;
+        uint32_t size;
+    };
+
+    int locs_cap = 4000000; /* initial, grows as needed */
+    struct blk_loc *locs = calloc((size_t)locs_cap, sizeof(struct blk_loc));
+    if (!locs) { json_set_str(result, "Out of memory"); return false; }
+
+    int max_height = -1;
+    int total_found = 0;
+
+    /* Always full re-index — wipe first, then scan everything */
+    printf("indexlegacy: Wiping all chain data for clean re-index...\n");
+    fflush(stdout);
+    node_db_exec(g_node_db_bc, "DELETE FROM utxos");
+    node_db_exec(g_node_db_bc, "DELETE FROM transactions");
+    node_db_exec(g_node_db_bc, "DELETE FROM blocks");
+
+    /* ── Pass 1: Scan all blocks, build hash→(file,offset,size) map.
+     * Then chain-walk from genesis using prev_hash to assign heights.
+     * This works for ALL blocks including pre-BIP34 genesis era. ── */
+    static const uint8_t ZCL_MAGIC[4] = {0x24, 0xe9, 0x27, 0x64};
+    int64_t t_start = (int64_t)time(NULL);
+
+    printf("indexlegacy: Pass 1 — scanning all blocks + building hash chain...\n");
+    fflush(stdout);
+
+    /* Hash→index map: store block hash, prev_hash, file pos for each block */
+    struct raw_blk {
+        uint8_t hash[32];
+        uint8_t prev_hash[32];
+        int file;
+        uint32_t offset;
+        uint32_t size;
+    };
+    int raw_cap = 4000000;
+    struct raw_blk *raw = calloc((size_t)raw_cap, sizeof(struct raw_blk));
+    if (!raw) { free(locs); json_set_str(result, "OOM"); return false; }
+    int raw_count = 0;
+
+    for (int file_num = 0; file_num < 1000; file_num++) {
+        char path[1200];
+        snprintf(path, sizeof(path), "%s/blocks/blk%05d.dat", legacy_dir, file_num);
+
+        struct stat st;
+        if (stat(path, &st) != 0) break;
+
+        int fd = open(path, O_RDONLY);
+        if (fd < 0) continue;
+        size_t fsize = (size_t)st.st_size;
+        uint8_t *data = mmap(NULL, fsize, PROT_READ, MAP_PRIVATE, fd, 0);
+        close(fd);
+        if (data == MAP_FAILED) continue;
+
+        size_t pos = 0;
+        while (pos + 8 < fsize) {
+            if (memcmp(data + pos, ZCL_MAGIC, 4) != 0) { pos++; continue; }
+            uint32_t block_size;
+            memcpy(&block_size, data + pos + 4, 4);
+            if (block_size < 80 || block_size > 8 * 1024 * 1024 ||
+                pos + 8 + block_size > fsize) { pos++; continue; }
+
+            /* Parse just the block header (first ~1487 bytes) to get hash + prev_hash.
+             * We need to deserialize to compute the block hash (double-SHA256 of header). */
+            struct block blk;
+            block_init(&blk);
+            struct byte_stream bs;
+            stream_init_from_data(&bs, data + pos + 8, block_size);
+            bool ok = block_deserialize(&blk, &bs);
+            stream_free(&bs);
+
+            if (ok) {
+                if (raw_count >= raw_cap) {
+                    raw_cap *= 2;
+                    raw = realloc(raw, (size_t)raw_cap * sizeof(struct raw_blk));
+                }
+                struct uint256 bh;
+                block_header_get_hash(&blk.header, &bh);
+                memcpy(raw[raw_count].hash, bh.data, 32);
+                memcpy(raw[raw_count].prev_hash, blk.header.hashPrevBlock.data, 32);
+                raw[raw_count].file = file_num;
+                raw[raw_count].offset = (uint32_t)(pos + 8);
+                raw[raw_count].size = block_size;
+                raw_count++;
+            }
+            block_free(&blk);
+            pos += 8 + block_size;
+        }
+        munmap(data, fsize);
+
+        if (file_num % 10 == 0) {
+            printf("  blk%05d.dat — %d blocks total\n", file_num, raw_count);
+            fflush(stdout);
+        }
+    }
+
+    printf("indexlegacy: Pass 1 found %d raw blocks. Building height chain...\n",
+           raw_count);
+    fflush(stdout);
+
+    /* Build hash→index lookup (simple hash table) */
+    #define HASH_BUCKETS 4194304  /* 4M buckets */
+    struct hash_entry { int idx; int next; };
+    int *hash_heads = malloc((size_t)HASH_BUCKETS * sizeof(int));
+    struct hash_entry *hash_nodes = malloc((size_t)raw_count * sizeof(struct hash_entry));
+    if (!hash_heads || !hash_nodes) {
+        free(raw); free(locs); free(hash_heads); free(hash_nodes);
+        json_set_str(result, "OOM"); return false;
+    }
+    memset(hash_heads, -1, (size_t)HASH_BUCKETS * sizeof(int));
+
+    for (int i = 0; i < raw_count; i++) {
+        uint32_t bucket;
+        memcpy(&bucket, raw[i].hash, 4);
+        bucket %= HASH_BUCKETS;
+        hash_nodes[i].idx = i;
+        hash_nodes[i].next = hash_heads[bucket];
+        hash_heads[bucket] = i;
+    }
+
+    /* Find genesis block (prev_hash = all zeros) */
+    int genesis_idx = -1;
+    uint8_t zero32[32] = {0};
+    for (int i = 0; i < raw_count; i++) {
+        if (memcmp(raw[i].prev_hash, zero32, 32) == 0) {
+            genesis_idx = i;
+            break;
+        }
+    }
+
+    if (genesis_idx < 0) {
+        free(raw); free(locs); free(hash_heads); free(hash_nodes);
+        json_set_str(result, "Genesis block not found");
+        return false;
+    }
+
+    /* Walk the chain from genesis, assigning heights.
+     * For each block, find the next block whose prev_hash matches our hash. */
+    int *height_map = calloc((size_t)raw_count, sizeof(int));
+    for (int i = 0; i < raw_count; i++) height_map[i] = -1;
+    height_map[genesis_idx] = 0;
+
+    /* Build child→parent index (reverse: for each hash, find blocks pointing to it) */
+    /* Actually simpler: walk forward. Start at genesis, find who points to us. */
+    /* Better approach: build prev_hash→index map, then walk from genesis forward */
+    int *prev_heads = malloc((size_t)HASH_BUCKETS * sizeof(int));
+    struct hash_entry *prev_nodes = malloc((size_t)raw_count * sizeof(struct hash_entry));
+    memset(prev_heads, -1, (size_t)HASH_BUCKETS * sizeof(int));
+    for (int i = 0; i < raw_count; i++) {
+        uint32_t bucket;
+        memcpy(&bucket, raw[i].prev_hash, 4);
+        bucket %= HASH_BUCKETS;
+        prev_nodes[i].idx = i;
+        prev_nodes[i].next = prev_heads[bucket];
+        prev_heads[bucket] = i;
+    }
+
+    /* BFS from genesis: find children (blocks whose prev_hash = our hash) */
+    int *queue = malloc((size_t)raw_count * sizeof(int));
+    int q_head = 0, q_tail = 0;
+    queue[q_tail++] = genesis_idx;
+    int assigned = 0;
+
+    while (q_head < q_tail) {
+        int cur = queue[q_head++];
+        int cur_height = height_map[cur];
+
+        /* Store in height→location array */
+        while (cur_height >= locs_cap) {
+            int new_cap = locs_cap * 2;
+            struct blk_loc *tmp = realloc(locs,
+                (size_t)new_cap * sizeof(struct blk_loc));
+            if (!tmp) break;
+            memset(tmp + locs_cap, 0,
+                   (size_t)(new_cap - locs_cap) * sizeof(struct blk_loc));
+            locs = tmp;
+            locs_cap = new_cap;
+        }
+        if (cur_height < locs_cap) {
+            locs[cur_height].file = raw[cur].file;
+            locs[cur_height].offset = raw[cur].offset;
+            locs[cur_height].size = raw[cur].size;
+            if (cur_height > max_height) max_height = cur_height;
+            total_found++;
+        }
+        assigned++;
+
+        /* Find children: blocks whose prev_hash == our hash */
+        uint32_t bucket;
+        memcpy(&bucket, raw[cur].hash, 4);
+        bucket %= HASH_BUCKETS;
+        for (int e = prev_heads[bucket]; e >= 0; e = prev_nodes[e].next) {
+            int child = prev_nodes[e].idx;
+            if (memcmp(raw[child].prev_hash, raw[cur].hash, 32) == 0 &&
+                height_map[child] < 0) {
+                height_map[child] = cur_height + 1;
+                queue[q_tail++] = child;
+            }
+        }
+    }
+
+    free(queue);
+    free(prev_heads);
+    free(prev_nodes);
+    free(hash_heads);
+    free(hash_nodes);
+    free(height_map);
+    free(raw);
+
+    int64_t pass1_time = (int64_t)time(NULL) - t_start;
+    printf("indexlegacy: Pass 1 complete — %d blocks chained, max height %d, "
+           "%d assigned (%" PRId64 "s)\n",
+           raw_count, max_height, assigned, pass1_time);
+    fflush(stdout);
+
+    if (max_height < 0) {
+        free(locs);
+        json_set_str(result, "No blocks found");
+        return false;
+    }
+
+    /* ── Wipe existing UTXO data (stale from out-of-order indexing) ── */
+    /* ── Pass 2: Process blocks in HEIGHT ORDER ── */
+    printf("indexlegacy: Pass 2 — indexing %d blocks in height order...\n",
+           total_found);
+    fflush(stdout);
+
+    int64_t t_pass2 = (int64_t)time(NULL);
+    int blocks_indexed = 0;
+    int txs_indexed = 0;
+    int utxos_created = 0;
+    int utxos_spent = 0;
+    int last_file = -1;
+    uint8_t *mmap_data = NULL;
+    size_t mmap_size = 0;
+
+    node_db_begin(g_node_db_bc);
+
+    for (int h = 0; h <= max_height; h++) {
+        if (locs[h].size == 0) continue; /* no block at this height */
+
+        /* mmap the block file if not already mapped */
+        if (locs[h].file != last_file) {
+            if (mmap_data) munmap(mmap_data, mmap_size);
+            char path[1200];
+            snprintf(path, sizeof(path), "%s/blocks/blk%05d.dat",
+                     legacy_dir, locs[h].file);
+            struct stat st;
+            if (stat(path, &st) != 0) continue;
+            int fd = open(path, O_RDONLY);
+            if (fd < 0) continue;
+            mmap_size = (size_t)st.st_size;
+            mmap_data = mmap(NULL, mmap_size, PROT_READ, MAP_PRIVATE, fd, 0);
+            close(fd);
+            if (mmap_data == MAP_FAILED) { mmap_data = NULL; continue; }
+            last_file = locs[h].file;
+        }
+        if (!mmap_data) continue;
+        if (locs[h].offset + locs[h].size > mmap_size) continue;
+
+        /* Deserialize block */
+        struct block blk;
+        block_init(&blk);
+        struct byte_stream bs;
+        stream_init_from_data(&bs, mmap_data + locs[h].offset, locs[h].size);
+        if (!block_deserialize(&blk, &bs)) {
+            stream_free(&bs);
+            block_free(&blk);
+            continue;
+        }
+        stream_free(&bs);
+
+        /* Compute block hash */
+        struct uint256 block_hash;
+        block_header_get_hash(&blk.header, &block_hash);
+
+        /* Index block */
+        struct db_block db_blk;
+        memset(&db_blk, 0, sizeof(db_blk));
+        memcpy(db_blk.hash, block_hash.data, 32);
+        db_blk.height = h;
+        memcpy(db_blk.merkle_root, blk.header.hashMerkleRoot.data, 32);
+        memcpy(db_blk.sapling_root, blk.header.hashFinalSaplingRoot.data, 32);
+        memcpy(db_blk.nonce, blk.header.nNonce.data, 32);
+        memcpy(db_blk.prev_hash, blk.header.hashPrevBlock.data, 32);
+        db_blk.version = blk.header.nVersion;
+        db_blk.time = blk.header.nTime;
+        db_blk.bits = blk.header.nBits;
+        db_blk.num_tx = (int)blk.num_vtx;
+        db_blk.file_num = locs[h].file;
+        db_blk.data_pos = (int)locs[h].offset;
+        db_blk.solution = blk.header.nSolution;
+        db_blk.solution_len = blk.header.nSolutionSize;
+        db_blk.status = 29; /* BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA */
+
+        db_block_save(g_node_db_bc, &db_blk);
+        blocks_indexed++;
+
+        /* Index transactions + UTXOs */
+        for (size_t i = 0; i < blk.num_vtx; i++) {
+            const struct transaction *tx = &blk.vtx[i];
+
+            struct db_tx_index db_tx;
+            memset(&db_tx, 0, sizeof(db_tx));
+            memcpy(db_tx.txid, tx->hash.data, 32);
+            memcpy(db_tx.block_hash, block_hash.data, 32);
+            db_tx.block_height = h;
+            db_tx.tx_index = (int)i;
+            db_tx.file_num = locs[h].file;
+            db_tx.file_pos = (int)locs[h].offset;
+            db_tx.is_coinbase = (i == 0);
+            db_tx_save(g_node_db_bc, &db_tx);
+            txs_indexed++;
+
+            /* Spend inputs (delete UTXOs) — works because we process in height order */
+            if (i > 0) {
+                for (size_t j = 0; j < tx->num_vin; j++) {
+                    db_utxo_delete(g_node_db_bc,
+                        tx->vin[j].prevout.hash.data,
+                        tx->vin[j].prevout.n);
+                    utxos_spent++;
+                }
+            }
+
+            /* Create output UTXOs */
+            for (size_t j = 0; j < tx->num_vout; j++) {
+                if (tx->vout[j].value == 0 &&
+                    tx->vout[j].script_pub_key.size > 0 &&
+                    tx->vout[j].script_pub_key.data[0] == 0x6a)
+                    continue;
+
+                struct db_utxo u;
+                memset(&u, 0, sizeof(u));
+                memcpy(u.txid, tx->hash.data, 32);
+                u.vout = (uint32_t)j;
+                u.value = tx->vout[j].value;
+                u.script = (uint8_t *)tx->vout[j].script_pub_key.data;
+                u.script_len = tx->vout[j].script_pub_key.size;
+                u.height = h;
+                u.is_coinbase = (i == 0);
+
+                const uint8_t *sd = tx->vout[j].script_pub_key.data;
+                size_t sl = tx->vout[j].script_pub_key.size;
+                if (sl == 25 && sd[0] == 0x76 && sd[1] == 0xa9 &&
+                    sd[2] == 0x14 && sd[23] == 0x88 && sd[24] == 0xac) {
+                    memcpy(u.address_hash, sd + 3, 20);
+                    u.has_address = true;
+                    u.script_type = SCRIPT_P2PKH;
+                } else if (sl == 23 && sd[0] == 0xa9 && sd[1] == 0x14 &&
+                           sd[22] == 0x87) {
+                    memcpy(u.address_hash, sd + 2, 20);
+                    u.has_address = true;
+                    u.script_type = SCRIPT_P2SH;
+                }
+
+                db_utxo_save(g_node_db_bc, &u);
+                utxos_created++;
+            }
+        }
+
+        block_free(&blk);
+
+        if (blocks_indexed % 10000 == 0 && blocks_indexed > 0) {
+            node_db_commit(g_node_db_bc);
+            int64_t elapsed = (int64_t)time(NULL) - t_pass2;
+            double rate = elapsed > 0 ?
+                (double)blocks_indexed / (double)elapsed : 0;
+            int remaining = total_found - blocks_indexed;
+            int eta = rate > 0 ? (int)((double)remaining / rate) : 0;
+            printf("  height %d/%d — %d txs, %d utxos (+%d -%d) "
+                   "(%.0f blk/s, ETA %dm%ds)\n",
+                   h, max_height, txs_indexed, utxos_created - utxos_spent,
+                   utxos_created, utxos_spent,
+                   rate, eta / 60, eta % 60);
+            fflush(stdout);
+            node_db_begin(g_node_db_bc);
+        }
+    }
+
+    if (mmap_data) munmap(mmap_data, mmap_size);
+    node_db_commit(g_node_db_bc);
+
+    /* Update tip */
+    {
+        struct db_block tip_blk;
+        if (db_block_find_by_height(g_node_db_bc, max_height, &tip_blk))
+            node_db_sync_set_tip(g_node_db_bc, tip_blk.hash, max_height);
+    }
+
+    int64_t total_elapsed = (int64_t)time(NULL) - t_start;
+    int net_utxos = utxos_created - utxos_spent;
+    printf("indexlegacy: COMPLETE — %d blocks, %d txs, %d net UTXOs "
+           "(+%d -%d) in %" PRId64 "m%" PRId64 "s\n",
+           blocks_indexed, txs_indexed, net_utxos,
+           utxos_created, utxos_spent,
+           total_elapsed / 60, total_elapsed % 60);
+    fflush(stdout);
+
+    free(locs);
+
+    json_set_object(result);
+    json_push_kv_int(result, "blocks_indexed", blocks_indexed);
+    json_push_kv_int(result, "transactions_indexed", txs_indexed);
+    json_push_kv_int(result, "utxos_net", net_utxos);
+    json_push_kv_int(result, "utxos_created", utxos_created);
+    json_push_kv_int(result, "utxos_spent", utxos_spent);
+    json_push_kv_int(result, "max_height", max_height);
+    json_push_kv_int(result, "elapsed_seconds", total_elapsed);
+    return true;
+}
+
 void register_blockchain_rpc_commands(struct rpc_table *t)
 {
     struct rpc_command cmds[] = {
@@ -1737,6 +2207,7 @@ void register_blockchain_rpc_commands(struct rpc_table *t)
         { "blockchain", "gethodlwavetimeline",  rpc_gethodlwavetimeline,   true },
         { "blockchain", "gethodlwavechart",     rpc_gethodlwavechart,      true },
         { "blockchain", "reindexchainstate",    rpc_reindexchainstate,     false },
+        { "blockchain", "indexlegacy",          rpc_indexlegacy,            false },
     };
 
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++)

@@ -3,6 +3,8 @@
 
 #include "test/test_helpers.h"
 
+static int test_merkle_tree_scale(void);
+
 int test_merkle_tree(void)
 {
     int failures = 0;
@@ -191,6 +193,22 @@ int test_merkle_tree(void)
         stream_free(&ts);
         if (!ok) failures++;
     }
+
+    /* Scale tests split into separate function to avoid stack exhaustion.
+     * Each scale test allocates ~5.6KB of structs on the stack; with many tests
+     * in one function frame the compiler may not reuse stack slots, causing
+     * overflow when subsequent test functions are called. */
+    failures += test_merkle_tree_scale();
+
+    return failures;
+}
+
+/* Split from test_merkle_tree to keep stack usage bounded per call frame.
+ * __attribute__((noinline)) prevents LTO from merging the frames. */
+__attribute__((noinline))
+static int test_merkle_tree_scale(void)
+{
+    int failures = 0;
 
     /* Witness-at-scale tests: verify witness root == tree root at increasing sizes.
      * The live rescan processes 1M+ commitments; we need to confirm correctness. */

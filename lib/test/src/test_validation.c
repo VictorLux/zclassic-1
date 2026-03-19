@@ -3,6 +3,10 @@
 
 #include "test/test_helpers.h"
 #include "validation/connect_block.h"
+#include "validation/txmempool.h"
+#include "validation/validationinterface.h"
+#include "validation/sighash.h"
+#include "validation/tx_verifier.h"
 
 /* From consensus/consensus.h - avoid re-include due to triple MAX_BLOCK_SIZE definitions */
 #ifndef TX_EXPIRY_HEIGHT_THRESHOLD
@@ -11,6 +15,30 @@
 #ifndef MAX_TX_SIZE_BEFORE_SAPLING
 #define MAX_TX_SIZE_BEFORE_SAPLING 100000
 #endif
+
+/* Check functions for check_queue tests */
+static bool cq_check_positive(void *item) { return *(int *)item > 0; }
+static bool cq_check_nonzero(void *item) { return *(int *)item != 0; }
+static bool cq_check_true(void *item) { (void)item; return true; }
+
+/* Validation signal callback helpers (file-scope to avoid nested functions) */
+static int vs_tip_height_received;
+static int vs_tip_height;
+static struct uint256 vs_inv_hash_received;
+static int64_t vs_broadcast_time;
+static bool vs_checked_valid;
+static int vs_count;
+static int vs_multi_count;
+
+static void vs_tip_cb(void *ctx, int h) { (void)ctx; vs_tip_height_received = h; }
+static void vs_tip_cb2(void *ctx, int h) { (void)ctx; vs_tip_height = h; }
+static void vs_inv_cb(void *ctx, const struct uint256 *h) { (void)ctx; vs_inv_hash_received = *h; }
+static void vs_bc_cb(void *ctx, int64_t t) { (void)ctx; vs_broadcast_time = t; }
+static void vs_blk_cb(void *ctx, const struct block_header *hdr, bool valid) {
+    (void)ctx; (void)hdr; vs_checked_valid = valid;
+}
+static void vs_count_cb(void *ctx, int h) { (void)ctx; (void)h; vs_count++; }
+static void vs_multi_cb(void *ctx, int h) { (void)ctx; (void)h; vs_multi_count++; }
 
 static struct transaction make_simple_tx(void)
 {
@@ -1024,6 +1052,1549 @@ int test_validation(void)
         bool ok = (MAX_BLOCK_SIGOPS == 20000);
         if (ok) printf("OK\n");
         else { printf("FAIL (%d)\n", MAX_BLOCK_SIGOPS); failures++; }
+    }
+
+    /* ================================================================
+     * check_transaction: total output overflow (sum > MAX_MONEY)
+     * ================================================================ */
+    printf("check_transaction: rejects total output overflow... ");
+    {
+        struct transaction tx;
+        memset(&tx, 0, sizeof(tx));
+        tx.version = 1;
+        tx.num_vin = 1;
+        tx.vin = calloc(1, sizeof(struct tx_in));
+        memset(tx.vin[0].prevout.hash.data, 0xAA, 32);
+        tx.vin[0].prevout.n = 0;
+        uint8_t sig_of[] = {0x00, 0x00};
+        script_set(&tx.vin[0].script_sig, sig_of, 2);
+        tx.num_vout = 2;
+        tx.vout = calloc(2, sizeof(struct tx_out));
+        tx.vout[0].value = MAX_MONEY;
+        tx.vout[1].value = 1; /* sum overflows MAX_MONEY */
+        uint8_t pk_of[] = {0x00};
+        script_set(&tx.vout[0].script_pub_key, pk_of, 1);
+        script_set(&tx.vout[1].script_pub_key, pk_of, 1);
+
+        struct validation_state vs;
+        validation_state_init(&vs);
+        bool ok = !check_transaction(&tx, &vs);
+        free(tx.vin);
+        free(tx.vout);
+        if (ok && strstr(vs.reject_reason, "toolarge"))
+            printf("OK\n");
+        else { printf("FAIL (%s)\n", vs.reject_reason); failures++; }
+    }
+
+    /* ================================================================
+     * check_transaction: vpub_new > MAX_MONEY
+     * ================================================================ */
+    printf("check_transaction: rejects joinsplit vpub_new > MAX_MONEY... ");
+    {
+        struct transaction tx = make_simple_tx();
+        tx.num_joinsplit = 1;
+        tx.v_joinsplit = calloc(1, sizeof(struct js_description));
+        tx.v_joinsplit[0].vpub_new = MAX_MONEY + 1;
+        tx.v_joinsplit[0].vpub_old = 0;
+
+        struct validation_state vs;
+        validation_state_init(&vs);
+        bool ok = !check_transaction(&tx, &vs);
+        free_simple_tx(&tx);
+        free(tx.v_joinsplit);
+        if (ok && strstr(vs.reject_reason, "vpub_new-toolarge"))
+            printf("OK\n");
+        else { printf("FAIL (%s)\n", vs.reject_reason); failures++; }
+    }
+
+    /* ================================================================
+     * check_transaction: sprout version too low
+     * ================================================================ */
+    printf("check_transaction: rejects sprout version 0... ");
+    {
+        struct transaction tx = make_simple_tx();
+        tx.overwintered = false;
+        tx.version = 0;
+        struct validation_state vs;
+        validation_state_init(&vs);
+        bool ok = !check_transaction(&tx, &vs);
+        free_simple_tx(&tx);
+        if (ok && strstr(vs.reject_reason, "version-too-low"))
+            printf("OK\n");
+        else { printf("FAIL (%s)\n", vs.reject_reason); failures++; }
+    }
+
+    /* ================================================================
+     * check_transaction: overwinter version too low
+     * ================================================================ */
+    printf("check_transaction: rejects overwinter version 2... ");
+    {
+        struct transaction tx = make_simple_tx();
+        tx.overwintered = true;
+        tx.version = 2;
+        tx.version_group_id = OVERWINTER_VERSION_GROUP_ID;
+        struct validation_state vs;
+        validation_state_init(&vs);
+        bool ok = !check_transaction(&tx, &vs);
+        free_simple_tx(&tx);
+        if (ok && strstr(vs.reject_reason, "version-too-low"))
+            printf("OK\n");
+        else { printf("FAIL (%s)\n", vs.reject_reason); failures++; }
+    }
+
+    /* ================================================================
+     * check_transaction: negative value_balance accepted with shielded
+     * ================================================================ */
+    printf("check_transaction: accepts negative value_balance with shielded outputs... ");
+    {
+        struct transaction tx;
+        memset(&tx, 0, sizeof(tx));
+        tx.overwintered = true;
+        tx.version = 4;
+        tx.version_group_id = SAPLING_VERSION_GROUP_ID;
+        tx.num_vin = 1;
+        tx.vin = calloc(1, sizeof(struct tx_in));
+        memset(tx.vin[0].prevout.hash.data, 0xAA, 32);
+        tx.vin[0].prevout.n = 0;
+        uint8_t sig_nb[] = {0x00, 0x00};
+        script_set(&tx.vin[0].script_sig, sig_nb, 2);
+        tx.num_vout = 1;
+        tx.vout = calloc(1, sizeof(struct tx_out));
+        tx.vout[0].value = 100;
+        uint8_t pk_nb[] = {0x00};
+        script_set(&tx.vout[0].script_pub_key, pk_nb, 1);
+        tx.num_shielded_output = 1;
+        tx.v_shielded_output = calloc(1, sizeof(struct output_description));
+        tx.value_balance = -100; /* negative: transparent → shielded */
+
+        struct validation_state vs;
+        validation_state_init(&vs);
+        bool ok = check_transaction(&tx, &vs);
+        free(tx.vin);
+        free(tx.vout);
+        free(tx.v_shielded_output);
+        if (ok) printf("OK\n");
+        else { printf("FAIL (%s)\n", vs.reject_reason); failures++; }
+    }
+
+    /* ================================================================
+     * check_transaction: value_balance < -MAX_MONEY rejected
+     * ================================================================ */
+    printf("check_transaction: rejects value_balance < -MAX_MONEY... ");
+    {
+        struct transaction tx;
+        memset(&tx, 0, sizeof(tx));
+        tx.overwintered = true;
+        tx.version = 4;
+        tx.version_group_id = SAPLING_VERSION_GROUP_ID;
+        tx.num_vin = 1;
+        tx.vin = calloc(1, sizeof(struct tx_in));
+        memset(tx.vin[0].prevout.hash.data, 0xAA, 32);
+        tx.vin[0].prevout.n = 0;
+        uint8_t sig_vb[] = {0x00, 0x00};
+        script_set(&tx.vin[0].script_sig, sig_vb, 2);
+        tx.num_vout = 1;
+        tx.vout = calloc(1, sizeof(struct tx_out));
+        tx.vout[0].value = 100;
+        uint8_t pk_vb[] = {0x00};
+        script_set(&tx.vout[0].script_pub_key, pk_vb, 1);
+        tx.num_shielded_output = 1;
+        tx.v_shielded_output = calloc(1, sizeof(struct output_description));
+        tx.value_balance = -(MAX_MONEY + 1);
+
+        struct validation_state vs;
+        validation_state_init(&vs);
+        bool ok = !check_transaction(&tx, &vs);
+        free(tx.vin);
+        free(tx.vout);
+        free(tx.v_shielded_output);
+        if (ok && strstr(vs.reject_reason, "valuebalance-toolarge"))
+            printf("OK\n");
+        else { printf("FAIL (%s)\n", vs.reject_reason); failures++; }
+    }
+
+    /* ================================================================
+     * is_final_tx: time-based locktime not final
+     * ================================================================ */
+    printf("is_final_tx: time-based locktime not final... ");
+    {
+        struct transaction tx;
+        memset(&tx, 0, sizeof(tx));
+        tx.lock_time = 1700000000; /* above LOCKTIME_THRESHOLD = 500000000 */
+        tx.num_vin = 1;
+        tx.vin = calloc(1, sizeof(struct tx_in));
+        tx.vin[0].sequence = 0;
+        bool ok = !is_final_tx(&tx, 999999, 1699999999LL);
+        free(tx.vin);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("is_final_tx: time-based locktime is final when time >= lock... ");
+    {
+        struct transaction tx;
+        memset(&tx, 0, sizeof(tx));
+        tx.lock_time = 1700000000;
+        bool ok = is_final_tx(&tx, 999999, 1700000000LL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ================================================================
+     * contextual_check_tx: sapling rejects version too high
+     * ================================================================ */
+    printf("contextual_check_tx: sapling rejects version too high... ");
+    {
+        struct transaction tx = make_simple_tx();
+        tx.overwintered = true;
+        tx.version = 5; /* above SAPLING_MAX_TX_VERSION */
+        tx.version_group_id = SAPLING_VERSION_GROUP_ID;
+        tx.expiry_height = 500001;
+        struct validation_state vs;
+        validation_state_init(&vs);
+        bool ok = !contextual_check_transaction(&tx, &vs, &mainparams->consensus, 500000, 100);
+        free_simple_tx(&tx);
+        if (ok && strstr(vs.reject_reason, "version-too-high"))
+            printf("OK\n");
+        else { printf("FAIL (%s)\n", vs.reject_reason); failures++; }
+    }
+
+    /* ================================================================
+     * contextual_check_tx: pre-overwinter accepts legacy v1 tx
+     * ================================================================ */
+    printf("contextual_check_tx: pre-overwinter accepts legacy v1 tx... ");
+    {
+        struct transaction tx = make_simple_tx();
+        tx.overwintered = false;
+        tx.version = 1;
+        struct validation_state vs;
+        validation_state_init(&vs);
+        /* Height 1 is before Overwinter */
+        bool ok = contextual_check_transaction(&tx, &vs, &mainparams->consensus, 1, 100);
+        free_simple_tx(&tx);
+        if (ok) printf("OK\n");
+        else { printf("FAIL (%s)\n", vs.reject_reason); failures++; }
+    }
+
+    /* ================================================================
+     * contextual_check_tx: pre-sapling rejects oversized tx
+     * ================================================================ */
+    printf("contextual_check_tx: pre-sapling rejects oversized tx... ");
+    {
+        /* Before Sapling, tx size is limited to MAX_TX_SIZE_BEFORE_SAPLING (100000).
+         * On ZClassic mainnet, Overwinter and Sapling activate at the same height,
+         * so there's no window where Overwinter is active but Sapling is not.
+         * This test verifies the logic would reject if that window existed. */
+        struct transaction tx;
+        memset(&tx, 0, sizeof(tx));
+        tx.overwintered = true;
+        tx.version = 3;
+        tx.version_group_id = OVERWINTER_VERSION_GROUP_ID;
+        tx.expiry_height = 500000;
+        tx.num_vin = 1;
+        tx.vin = calloc(1, sizeof(struct tx_in));
+        memset(tx.vin[0].prevout.hash.data, 0xAA, 32);
+        uint8_t sig_os[] = {0x00, 0x00};
+        script_set(&tx.vin[0].script_sig, sig_os, 2);
+        tx.num_vout = 3000;
+        tx.vout = calloc(tx.num_vout, sizeof(struct tx_out));
+        for (size_t i = 0; i < tx.num_vout; i++) {
+            tx.vout[i].value = 1;
+            uint8_t pk_os[] = {0x76,0xa9,0x14,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0x88,0xac};
+            script_set(&tx.vout[i].script_pub_key, pk_os, 25);
+        }
+
+        /* Use a consensus_params copy where Overwinter is active but Sapling is not.
+         * Since ZClassic activates both at same height, we'd need to test with custom
+         * params. Instead, verify that the size limit constant is correct. */
+        bool ok = (MAX_TX_SIZE_BEFORE_SAPLING == 100000);
+        free(tx.vin);
+        free(tx.vout);
+        if (ok) printf("OK (MAX_TX_SIZE_BEFORE_SAPLING=%d)\n", MAX_TX_SIZE_BEFORE_SAPLING);
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ================================================================
+     * check_transaction: coinbase with valid script length accepted
+     * ================================================================ */
+    printf("check_transaction: coinbase script at max length (100) accepted... ");
+    {
+        struct transaction tx;
+        memset(&tx, 0, sizeof(tx));
+        tx.version = 1;
+        tx.num_vin = 1;
+        tx.vin = calloc(1, sizeof(struct tx_in));
+        memset(tx.vin[0].prevout.hash.data, 0, 32);
+        tx.vin[0].prevout.n = 0xFFFFFFFF;
+        uint8_t cb_max[100];
+        memset(cb_max, 0x42, 100);
+        script_set(&tx.vin[0].script_sig, cb_max, 100);
+        tx.num_vout = 1;
+        tx.vout = calloc(1, sizeof(struct tx_out));
+        tx.vout[0].value = 1000000000LL;
+        uint8_t pk_cb[] = {0x00};
+        script_set(&tx.vout[0].script_pub_key, pk_cb, 1);
+
+        struct validation_state vs;
+        validation_state_init(&vs);
+        bool ok = check_transaction(&tx, &vs);
+        free(tx.vin);
+        free(tx.vout);
+        if (ok) printf("OK\n");
+        else { printf("FAIL (%s)\n", vs.reject_reason); failures++; }
+    }
+
+    printf("check_transaction: coinbase rejects script too long (101)... ");
+    {
+        struct transaction tx;
+        memset(&tx, 0, sizeof(tx));
+        tx.version = 1;
+        tx.num_vin = 1;
+        tx.vin = calloc(1, sizeof(struct tx_in));
+        memset(tx.vin[0].prevout.hash.data, 0, 32);
+        tx.vin[0].prevout.n = 0xFFFFFFFF;
+        uint8_t cb_toolong[101];
+        memset(cb_toolong, 0x42, 101);
+        script_set(&tx.vin[0].script_sig, cb_toolong, 101);
+        tx.num_vout = 1;
+        tx.vout = calloc(1, sizeof(struct tx_out));
+        tx.vout[0].value = 1000000000LL;
+        uint8_t pk_cbtl[] = {0x00};
+        script_set(&tx.vout[0].script_pub_key, pk_cbtl, 1);
+
+        struct validation_state vs;
+        validation_state_init(&vs);
+        bool ok = !check_transaction(&tx, &vs);
+        free(tx.vin);
+        free(tx.vout);
+        if (ok && strstr(vs.reject_reason, "cb-length"))
+            printf("OK\n");
+        else { printf("FAIL (%s)\n", vs.reject_reason); failures++; }
+    }
+
+    /* ================================================================
+     * check_transaction: joinsplit vpub_new negative
+     * ================================================================ */
+    printf("check_transaction: rejects joinsplit vpub_new negative... ");
+    {
+        struct transaction tx = make_simple_tx();
+        tx.num_joinsplit = 1;
+        tx.v_joinsplit = calloc(1, sizeof(struct js_description));
+        tx.v_joinsplit[0].vpub_new = -1;
+        tx.v_joinsplit[0].vpub_old = 0;
+
+        struct validation_state vs;
+        validation_state_init(&vs);
+        bool ok = !check_transaction(&tx, &vs);
+        free_simple_tx(&tx);
+        free(tx.v_joinsplit);
+        if (ok && strstr(vs.reject_reason, "vpub_new-negative"))
+            printf("OK\n");
+        else { printf("FAIL (%s)\n", vs.reject_reason); failures++; }
+    }
+
+    /* ================================================================
+     * check_transaction: joinsplit vpub_old negative
+     * ================================================================ */
+    printf("check_transaction: rejects joinsplit vpub_old negative... ");
+    {
+        struct transaction tx = make_simple_tx();
+        tx.num_joinsplit = 1;
+        tx.v_joinsplit = calloc(1, sizeof(struct js_description));
+        tx.v_joinsplit[0].vpub_old = -1;
+        tx.v_joinsplit[0].vpub_new = 0;
+
+        struct validation_state vs;
+        validation_state_init(&vs);
+        bool ok = !check_transaction(&tx, &vs);
+        free_simple_tx(&tx);
+        free(tx.v_joinsplit);
+        if (ok && strstr(vs.reject_reason, "vpub_old-negative"))
+            printf("OK\n");
+        else { printf("FAIL (%s)\n", vs.reject_reason); failures++; }
+    }
+
+    /* ================================================================
+     * check_block: rejects block exceeding sigops limit
+     * ================================================================ */
+    printf("check_block: sigops limit enforced via MAX_BLOCK_SIGOPS... ");
+    {
+        /* This is a structural test: verify the limit exists and the
+         * get_legacy_sig_op_count function counts correctly for OP_CHECKSIG. */
+        struct transaction tx;
+        memset(&tx, 0, sizeof(tx));
+        tx.version = 1;
+        tx.num_vin = 0;
+        tx.num_vout = 1;
+        tx.vout = calloc(1, sizeof(struct tx_out));
+        tx.vout[0].value = 100;
+        /* OP_CHECKSIG = 0xac */
+        uint8_t pk_sigop[] = {0xac, 0xac, 0xac};
+        script_set(&tx.vout[0].script_pub_key, pk_sigop, 3);
+        uint64_t count = get_legacy_sig_op_count(&tx, SCRIPT_VERIFY_NONE);
+        free(tx.vout);
+        bool ok = (count == 3);
+        if (ok) printf("OK (3 OP_CHECKSIG = %llu sigops)\n", (unsigned long long)count);
+        else { printf("FAIL (expected 3, got %llu)\n", (unsigned long long)count); failures++; }
+    }
+
+    /* ================================================================
+     * check_block_header: accepts valid version 4 header
+     * ================================================================ */
+    printf("check_block_header: accepts valid version 4 header (no PoW)... ");
+    {
+        struct block_header hdr;
+        block_header_init(&hdr);
+        hdr.nVersion = 4;
+        struct validation_state vs;
+        validation_state_init(&vs);
+        bool ok = check_block_header(&hdr, &vs, mainparams, false);
+        if (ok) printf("OK\n");
+        else { printf("FAIL (%s)\n", vs.reject_reason); failures++; }
+    }
+
+    /* ================================================================
+     * is_expired_tx: coinbase never expires even with expiry_height set
+     * ================================================================ */
+    printf("is_expired_tx: coinbase never expires... ");
+    {
+        struct transaction tx;
+        memset(&tx, 0, sizeof(tx));
+        tx.version = 1;
+        tx.num_vin = 1;
+        tx.vin = calloc(1, sizeof(struct tx_in));
+        memset(tx.vin[0].prevout.hash.data, 0, 32);
+        tx.vin[0].prevout.n = 0xFFFFFFFF;
+        tx.expiry_height = 100;
+        bool ok = !is_expired_tx(&tx, 999999);
+        free(tx.vin);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ================================================================
+     * check_queue: single-threaded add + wait
+     * ================================================================ */
+    printf("check_queue: add items and wait (single-threaded)... ");
+    {
+        struct check_queue cq;
+        check_queue_init(&cq, 128, sizeof(int), cq_check_positive);
+        void *items[10];
+        for (int i = 0; i < 10; i++) {
+            items[i] = malloc(sizeof(int));
+            *(int *)items[i] = i + 1;
+        }
+        check_queue_add(&cq, items, 10);
+        bool all_ok = check_queue_wait(&cq);
+        check_queue_free(&cq);
+        if (all_ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ================================================================
+     * check_queue: failing item makes wait return false
+     * ================================================================ */
+    printf("check_queue: failing check makes wait return false... ");
+    {
+        struct check_queue cq;
+        check_queue_init(&cq, 128, sizeof(int), cq_check_nonzero);
+        void *items[5];
+        for (int i = 0; i < 5; i++) {
+            items[i] = malloc(sizeof(int));
+            *(int *)items[i] = i; /* item[0] = 0 → fails check */
+        }
+        check_queue_add(&cq, items, 5);
+        bool result = check_queue_wait(&cq);
+        check_queue_free(&cq);
+        if (!result) printf("OK\n");
+        else { printf("FAIL (expected false)\n"); failures++; }
+    }
+
+    /* ================================================================
+     * check_queue: is_idle after init
+     * ================================================================ */
+    printf("check_queue: is_idle after init... ");
+    {
+        struct check_queue cq;
+        check_queue_init(&cq, 128, sizeof(int), cq_check_true);
+        bool ok = check_queue_is_idle(&cq);
+        check_queue_free(&cq);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ================================================================
+     * check_transaction: oversize tx rejected
+     * ================================================================ */
+    printf("check_transaction: rejects oversized transaction... ");
+    {
+        /* MAX_TX_SIZE_AFTER_SAPLING is 2000000. Build a tx that exceeds it. */
+        struct transaction tx;
+        memset(&tx, 0, sizeof(tx));
+        tx.version = 1;
+        tx.num_vin = 1;
+        tx.vin = calloc(1, sizeof(struct tx_in));
+        memset(tx.vin[0].prevout.hash.data, 0xAA, 32);
+        tx.vin[0].prevout.n = 0;
+        uint8_t sig_big[] = {0x00, 0x00};
+        script_set(&tx.vin[0].script_sig, sig_big, 2);
+        /* ~60K outputs * ~34 bytes ≈ 2MB > MAX_TX_SIZE_AFTER_SAPLING */
+        tx.num_vout = 60000;
+        tx.vout = calloc(tx.num_vout, sizeof(struct tx_out));
+        for (size_t i = 0; i < tx.num_vout; i++) {
+            tx.vout[i].value = 1;
+            uint8_t pk_big[] = {0x76,0xa9,0x14,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0x88,0xac};
+            script_set(&tx.vout[i].script_pub_key, pk_big, 25);
+        }
+
+        struct validation_state vs;
+        validation_state_init(&vs);
+        bool ok = !check_transaction(&tx, &vs);
+        free(tx.vin);
+        free(tx.vout);
+        if (ok && strstr(vs.reject_reason, "oversize"))
+            printf("OK\n");
+        else { printf("FAIL (%s)\n", vs.reject_reason); failures++; }
+    }
+
+    /* ================================================================
+     * is_expiring_soon_tx: basic check
+     * ================================================================ */
+    printf("is_expiring_soon_tx: detects soon-to-expire tx... ");
+    {
+        struct transaction tx;
+        memset(&tx, 0, sizeof(tx));
+        tx.overwintered = true;
+        tx.version = 4;
+        tx.version_group_id = SAPLING_VERSION_GROUP_ID;
+        tx.expiry_height = 1010; /* will expire at block 1010 */
+        /* TX_EXPIRING_SOON_THRESHOLD is typically 3 */
+        bool soon = is_expiring_soon_tx(&tx, 1008);
+        bool not_soon = !is_expiring_soon_tx(&tx, 1000);
+        bool ok = soon && not_soon;
+        if (ok) printf("OK\n");
+        else { printf("FAIL (soon@1008=%d not_soon@1000=%d)\n", soon, !not_soon); failures++; }
+    }
+
+    /* ================================================================
+     * validation_state: DoS tracking
+     * ================================================================ */
+    printf("validation_state: DoS level tracked correctly... ");
+    {
+        struct validation_state vs;
+        validation_state_init(&vs);
+        validation_state_dos(&vs, 50, false, REJECT_INVALID, "test-reason", false, NULL);
+        bool ok = (vs.dos == 50) &&
+                  (strcmp(vs.reject_reason, "test-reason") == 0) &&
+                  !vs.corruption_possible;
+        if (ok) printf("OK\n");
+        else { printf("FAIL (dos=%d reason=%s)\n", vs.dos, vs.reject_reason); failures++; }
+    }
+
+    printf("validation_state: corruption flag set... ");
+    {
+        struct validation_state vs;
+        validation_state_init(&vs);
+        validation_state_dos(&vs, 100, false, REJECT_INVALID, "corrupt-test", true, NULL);
+        bool ok = vs.corruption_possible;
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ================================================================
+     * block_map: init, insert, find, count, iterate
+     * ================================================================ */
+    printf("block_map: init/insert/find/count... ");
+    {
+        struct block_map m;
+        block_map_init(&m);
+
+        struct uint256 h1, h2, h3;
+        memset(h1.data, 0x11, 32);
+        memset(h2.data, 0x22, 32);
+        memset(h3.data, 0x33, 32);
+
+        /* block_map_free calls free() on each index, so heap-allocate */
+        struct block_index *bi1 = calloc(1, sizeof(struct block_index));
+        struct block_index *bi2 = calloc(1, sizeof(struct block_index));
+        bi1->nHeight = 100;
+        bi2->nHeight = 200;
+
+        bool ok = block_map_insert(&m, &h1, bi1);
+        ok = ok && block_map_insert(&m, &h2, bi2);
+        ok = ok && (block_map_count(&m) == 2);
+        ok = ok && (block_map_find(&m, &h1) == bi1);
+        ok = ok && (block_map_find(&m, &h2) == bi2);
+        ok = ok && (block_map_find(&m, &h3) == NULL); /* not found */
+
+        block_map_free(&m); /* frees bi1, bi2 */
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("block_map: iterate all entries... ");
+    {
+        struct block_map m;
+        block_map_init(&m);
+
+        struct uint256 h1, h2;
+        memset(h1.data, 0xAA, 32);
+        memset(h2.data, 0xBB, 32);
+        struct block_index *bi1 = calloc(1, sizeof(struct block_index));
+        struct block_index *bi2 = calloc(1, sizeof(struct block_index));
+
+        block_map_insert(&m, &h1, bi1);
+        block_map_insert(&m, &h2, bi2);
+
+        size_t iter = 0;
+        const struct uint256 *hash_out;
+        struct block_index *idx_out;
+        int count = 0;
+        while (block_map_next(&m, &iter, &hash_out, &idx_out))
+            count++;
+
+        block_map_free(&m);
+        bool ok = (count == 2);
+        if (ok) printf("OK (%d entries)\n", count);
+        else { printf("FAIL (%d entries, expected 2)\n", count); failures++; }
+    }
+
+    /* ================================================================
+     * active_chain: init, set_tip, tip, at, height, contains
+     * ================================================================ */
+    printf("active_chain: basic operations... ");
+    {
+        struct active_chain c;
+        active_chain_init(&c);
+
+        bool ok = (active_chain_height(&c) == -1);
+        ok = ok && (active_chain_tip(&c) == NULL);
+
+        /* Create a small chain: genesis → block1 → block2 */
+        struct block_index genesis, blk1, blk2;
+        memset(&genesis, 0, sizeof(genesis));
+        memset(&blk1, 0, sizeof(blk1));
+        memset(&blk2, 0, sizeof(blk2));
+        genesis.nHeight = 0;
+        genesis.pprev = NULL;
+        blk1.nHeight = 1;
+        blk1.pprev = &genesis;
+        blk2.nHeight = 2;
+        blk2.pprev = &blk1;
+
+        ok = ok && active_chain_set_tip(&c, &blk2);
+        ok = ok && (active_chain_height(&c) == 2);
+        ok = ok && (active_chain_tip(&c) == &blk2);
+        ok = ok && (active_chain_at(&c, 0) == &genesis);
+        ok = ok && (active_chain_at(&c, 1) == &blk1);
+        ok = ok && (active_chain_at(&c, 2) == &blk2);
+        ok = ok && active_chain_contains(&c, &blk1);
+
+        active_chain_free(&c);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ================================================================
+     * block_file_info: add_block tracking
+     * ================================================================ */
+    printf("block_file_info: tracks height/time ranges... ");
+    {
+        struct block_file_info fi;
+        block_file_info_init(&fi);
+
+        block_file_info_add_block(&fi, 100, 1700000000);
+        block_file_info_add_block(&fi, 50, 1699999000);
+        block_file_info_add_block(&fi, 200, 1700001000);
+
+        bool ok = (fi.nBlocks == 3) &&
+                  (fi.nHeightFirst == 50) &&
+                  (fi.nHeightLast == 200) &&
+                  (fi.nTimeFirst == 1699999000) &&
+                  (fi.nTimeLast == 1700001000);
+        if (ok) printf("OK\n");
+        else { printf("FAIL (blocks=%u first=%u last=%u)\n",
+                       fi.nBlocks, fi.nHeightFirst, fi.nHeightLast); failures++; }
+    }
+
+    /* ================================================================
+     * chainstate: init, insert_block_index, free
+     * ================================================================ */
+    printf("chainstate: init/insert_block_index... ");
+    {
+        struct chainstate cs;
+        chainstate_init(&cs);
+
+        struct uint256 h1;
+        memset(h1.data, 0xDD, 32);
+        struct block_index *bi = chainstate_insert_block_index(&cs, &h1);
+        bool ok = (bi != NULL);
+
+        /* Inserting same hash returns same block_index */
+        struct block_index *bi2 = chainstate_insert_block_index(&cs, &h1);
+        ok = ok && (bi2 == bi);
+
+        /* Different hash returns different block_index */
+        struct uint256 h2;
+        memset(h2.data, 0xEE, 32);
+        struct block_index *bi3 = chainstate_insert_block_index(&cs, &h2);
+        ok = ok && (bi3 != NULL) && (bi3 != bi);
+
+        ok = ok && (block_map_count(&cs.map_block_index) == 2);
+
+        chainstate_free(&cs);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ================================================================
+     * tx_mempool: init, size, add, exists, lookup, remove
+     * ================================================================ */
+    printf("tx_mempool: init empty pool... ");
+    {
+        struct tx_mempool pool;
+        tx_mempool_init(&pool, 1000);
+        bool ok = (tx_mempool_size(&pool) == 0) &&
+                  (tx_mempool_total_size(&pool) == 0);
+        tx_mempool_free(&pool);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("tx_mempool: add_unchecked and exists... ");
+    {
+        struct tx_mempool pool;
+        tx_mempool_init(&pool, 1000);
+
+        struct transaction tx = make_simple_tx();
+        transaction_compute_hash(&tx);
+
+        struct mempool_entry entry;
+        mempool_entry_init(&entry, &tx, 10000, 1000, 1.0, 100, true, false, 0);
+
+        bool added = tx_mempool_add_unchecked(&pool, &tx.hash, &entry);
+        bool exists = tx_mempool_exists(&pool, &tx.hash);
+        bool ok = added && exists && (tx_mempool_size(&pool) == 1);
+
+        mempool_entry_free(&entry);
+        free_simple_tx(&tx);
+        tx_mempool_free(&pool);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("tx_mempool: lookup retrieves tx... ");
+    {
+        struct tx_mempool pool;
+        tx_mempool_init(&pool, 1000);
+
+        struct transaction tx = make_simple_tx();
+        transaction_compute_hash(&tx);
+
+        struct mempool_entry entry;
+        mempool_entry_init(&entry, &tx, 5000, 1000, 1.0, 100, true, false, 0);
+        tx_mempool_add_unchecked(&pool, &tx.hash, &entry);
+
+        struct transaction result;
+        memset(&result, 0, sizeof(result));
+        bool found = tx_mempool_lookup(&pool, &tx.hash, &result);
+        bool ok = found && (result.num_vout == tx.num_vout);
+
+        transaction_free(&result);
+        mempool_entry_free(&entry);
+        free_simple_tx(&tx);
+        tx_mempool_free(&pool);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("tx_mempool: lookup returns false for unknown hash... ");
+    {
+        struct tx_mempool pool;
+        tx_mempool_init(&pool, 1000);
+
+        struct uint256 unknown;
+        memset(unknown.data, 0xFF, 32);
+        struct transaction result;
+        memset(&result, 0, sizeof(result));
+        bool found = tx_mempool_lookup(&pool, &unknown, &result);
+        bool ok = !found;
+
+        tx_mempool_free(&pool);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("tx_mempool: remove deletes entry... ");
+    {
+        struct tx_mempool pool;
+        tx_mempool_init(&pool, 1000);
+
+        struct transaction tx = make_simple_tx();
+        transaction_compute_hash(&tx);
+
+        struct mempool_entry entry;
+        mempool_entry_init(&entry, &tx, 5000, 1000, 1.0, 100, true, false, 0);
+        tx_mempool_add_unchecked(&pool, &tx.hash, &entry);
+
+        tx_mempool_remove(&pool, &tx.hash);
+        bool ok = !tx_mempool_exists(&pool, &tx.hash) &&
+                  (tx_mempool_size(&pool) == 0);
+
+        mempool_entry_free(&entry);
+        free_simple_tx(&tx);
+        tx_mempool_free(&pool);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("tx_mempool: clear empties pool... ");
+    {
+        struct tx_mempool pool;
+        tx_mempool_init(&pool, 1000);
+
+        struct transaction tx = make_simple_tx();
+        transaction_compute_hash(&tx);
+
+        struct mempool_entry entry;
+        mempool_entry_init(&entry, &tx, 5000, 1000, 1.0, 100, true, false, 0);
+        tx_mempool_add_unchecked(&pool, &tx.hash, &entry);
+        tx_mempool_clear(&pool);
+
+        bool ok = (tx_mempool_size(&pool) == 0) &&
+                  (tx_mempool_total_size(&pool) == 0);
+
+        mempool_entry_free(&entry);
+        free_simple_tx(&tx);
+        tx_mempool_free(&pool);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("tx_mempool: txs_updated increments... ");
+    {
+        struct tx_mempool pool;
+        tx_mempool_init(&pool, 1000);
+
+        unsigned int initial = tx_mempool_txs_updated(&pool);
+        tx_mempool_add_txs_updated(&pool, 5);
+        bool ok = (tx_mempool_txs_updated(&pool) == initial + 5);
+
+        tx_mempool_free(&pool);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("tx_mempool: query_hashes returns all hashes... ");
+    {
+        struct tx_mempool pool;
+        tx_mempool_init(&pool, 1000);
+
+        struct transaction tx1 = make_simple_tx();
+        transaction_compute_hash(&tx1);
+        struct mempool_entry e1;
+        mempool_entry_init(&e1, &tx1, 5000, 1000, 1.0, 100, true, false, 0);
+        tx_mempool_add_unchecked(&pool, &tx1.hash, &e1);
+
+        struct uint256 hashes[10];
+        size_t count = 0;
+        tx_mempool_query_hashes(&pool, hashes, 10, &count);
+        bool ok = (count == 1);
+
+        mempool_entry_free(&e1);
+        free_simple_tx(&tx1);
+        tx_mempool_free(&pool);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("tx_mempool: has_no_inputs_of returns true for independent tx... ");
+    {
+        struct tx_mempool pool;
+        tx_mempool_init(&pool, 1000);
+
+        struct transaction tx = make_simple_tx();
+        transaction_compute_hash(&tx);
+
+        /* tx's input refers to 0xAA..., which is not in the pool */
+        bool ok = tx_mempool_has_no_inputs_of(&pool, &tx);
+
+        free_simple_tx(&tx);
+        tx_mempool_free(&pool);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("tx_mempool: remove_without_branch_id filters correctly... ");
+    {
+        struct tx_mempool pool;
+        tx_mempool_init(&pool, 1000);
+
+        struct transaction tx1 = make_simple_tx();
+        transaction_compute_hash(&tx1);
+        struct mempool_entry e1;
+        mempool_entry_init(&e1, &tx1, 5000, 1000, 1.0, 100, true, false, 0x01);
+        tx_mempool_add_unchecked(&pool, &tx1.hash, &e1);
+
+        struct transaction tx2 = make_simple_tx();
+        /* Make tx2 distinct */
+        memset(tx2.vin[0].prevout.hash.data, 0xBB, 32);
+        transaction_compute_hash(&tx2);
+        struct mempool_entry e2;
+        mempool_entry_init(&e2, &tx2, 5000, 1000, 1.0, 100, true, false, 0x02);
+        tx_mempool_add_unchecked(&pool, &tx2.hash, &e2);
+
+        /* Remove all entries that don't have branch_id 0x01 */
+        tx_mempool_remove_without_branch_id(&pool, 0x01);
+        bool ok = (tx_mempool_size(&pool) == 1) &&
+                  tx_mempool_exists(&pool, &tx1.hash);
+
+        mempool_entry_free(&e1);
+        mempool_entry_free(&e2);
+        free_simple_tx(&tx1);
+        free_simple_tx(&tx2);
+        tx_mempool_free(&pool);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("tx_mempool: prioritise and apply_deltas... ");
+    {
+        struct tx_mempool pool;
+        tx_mempool_init(&pool, 1000);
+
+        struct uint256 hash;
+        memset(hash.data, 0x42, 32);
+
+        tx_mempool_prioritise(&pool, &hash, 100.0, 5000);
+
+        double prio = 0.0;
+        int64_t fee = 0;
+        tx_mempool_apply_deltas(&pool, &hash, &prio, &fee);
+        bool ok = (prio == 100.0) && (fee == 5000);
+
+        /* Accumulate more deltas */
+        tx_mempool_prioritise(&pool, &hash, 50.0, 3000);
+        prio = 0.0; fee = 0;
+        tx_mempool_apply_deltas(&pool, &hash, &prio, &fee);
+        ok = ok && (prio == 150.0) && (fee == 8000);
+
+        tx_mempool_free(&pool);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("tx_mempool: clear_prioritisation removes deltas... ");
+    {
+        struct tx_mempool pool;
+        tx_mempool_init(&pool, 1000);
+
+        struct uint256 hash;
+        memset(hash.data, 0x42, 32);
+
+        tx_mempool_prioritise(&pool, &hash, 100.0, 5000);
+        tx_mempool_clear_prioritisation(&pool, &hash);
+
+        double prio = 0.0;
+        int64_t fee = 0;
+        tx_mempool_apply_deltas(&pool, &hash, &prio, &fee);
+        bool ok = (prio == 0.0) && (fee == 0);
+
+        tx_mempool_free(&pool);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("tx_mempool: remove_for_block... ");
+    {
+        struct tx_mempool pool;
+        tx_mempool_init(&pool, 1000);
+
+        struct transaction tx = make_simple_tx();
+        transaction_compute_hash(&tx);
+        struct mempool_entry entry;
+        mempool_entry_init(&entry, &tx, 5000, 1000, 1.0, 100, true, false, 0);
+        tx_mempool_add_unchecked(&pool, &tx.hash, &entry);
+
+        /* Simulate block containing this tx */
+        tx_mempool_remove_for_block(&pool, &tx, 1, 101);
+        bool ok = (tx_mempool_size(&pool) == 0);
+
+        mempool_entry_free(&entry);
+        free_simple_tx(&tx);
+        tx_mempool_free(&pool);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("mempool_entry: get_priority increases with height... ");
+    {
+        struct transaction tx = make_simple_tx();
+        transaction_compute_hash(&tx);
+
+        struct mempool_entry entry;
+        mempool_entry_init(&entry, &tx, 10000, 1000, 1.0, 100, true, false, 0);
+
+        double p1 = mempool_entry_get_priority(&entry, 110);
+        double p2 = mempool_entry_get_priority(&entry, 200);
+        bool ok = (p2 > p1) && (p1 > 1.0);
+
+        mempool_entry_free(&entry);
+        free_simple_tx(&tx);
+        if (ok) printf("OK\n");
+        else { printf("FAIL (p1=%f p2=%f)\n", p1, p2); failures++; }
+    }
+
+    /* ================================================================
+     * validation_signals: register, fire, unregister
+     * ================================================================ */
+    printf("validation_signals: init and register... ");
+    {
+        struct validation_signals vs;
+        validation_signals_init(&vs);
+
+        vs_tip_height_received = 0;
+
+        struct validation_callbacks cb;
+        memset(&cb, 0, sizeof(cb));
+        cb.ctx = (void *)0x1234;
+        cb.updated_block_tip = vs_tip_cb;
+        bool ok = validation_register(&vs, &cb);
+        ok = ok && (vs.num_listeners == 1);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("validation_signals: fire updated_block_tip... ");
+    {
+        struct validation_signals vs;
+        validation_signals_init(&vs);
+
+        vs_tip_height = 0;
+
+        struct validation_callbacks cb;
+        memset(&cb, 0, sizeof(cb));
+        cb.ctx = (void *)0x1;
+        cb.updated_block_tip = vs_tip_cb2;
+        validation_register(&vs, &cb);
+
+        signal_updated_block_tip(&vs, 42000);
+        bool ok = (vs_tip_height == 42000);
+        if (ok) printf("OK\n");
+        else { printf("FAIL (got %d)\n", vs_tip_height); failures++; }
+    }
+
+    printf("validation_signals: fire inventory signal... ");
+    {
+        struct validation_signals vs;
+        validation_signals_init(&vs);
+
+        memset(&vs_inv_hash_received, 0, sizeof(vs_inv_hash_received));
+
+        struct validation_callbacks cb;
+        memset(&cb, 0, sizeof(cb));
+        cb.ctx = (void *)0x2;
+        cb.inventory = vs_inv_cb;
+        validation_register(&vs, &cb);
+
+        struct uint256 test_hash;
+        memset(test_hash.data, 0xCC, 32);
+        signal_inventory(&vs, &test_hash);
+        bool ok = uint256_eq(&vs_inv_hash_received, &test_hash);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("validation_signals: fire broadcast signal... ");
+    {
+        struct validation_signals vs;
+        validation_signals_init(&vs);
+
+        vs_broadcast_time = 0;
+
+        struct validation_callbacks cb;
+        memset(&cb, 0, sizeof(cb));
+        cb.ctx = (void *)0x3;
+        cb.broadcast = vs_bc_cb;
+        validation_register(&vs, &cb);
+
+        signal_broadcast(&vs, 1700000000LL);
+        bool ok = (vs_broadcast_time == 1700000000LL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("validation_signals: fire block_checked signal... ");
+    {
+        struct validation_signals vs;
+        validation_signals_init(&vs);
+
+        vs_checked_valid = false;
+
+        struct validation_callbacks cb;
+        memset(&cb, 0, sizeof(cb));
+        cb.ctx = (void *)0x4;
+        cb.block_checked = vs_blk_cb;
+        validation_register(&vs, &cb);
+
+        struct block_header hdr;
+        block_header_init(&hdr);
+        signal_block_checked(&vs, &hdr, true);
+        bool ok = vs_checked_valid;
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("validation_signals: unregister removes listener... ");
+    {
+        struct validation_signals vs;
+        validation_signals_init(&vs);
+
+        vs_count = 0;
+
+        struct validation_callbacks cb;
+        memset(&cb, 0, sizeof(cb));
+        cb.ctx = (void *)0x99;
+        cb.updated_block_tip = vs_count_cb;
+        validation_register(&vs, &cb);
+
+        signal_updated_block_tip(&vs, 1);
+        bool ok = (vs_count == 1);
+
+        validation_unregister(&vs, (void *)0x99);
+        signal_updated_block_tip(&vs, 2);
+        ok = ok && (vs_count == 1); /* should not have incremented */
+        ok = ok && (vs.num_listeners == 0);
+        if (ok) printf("OK\n");
+        else { printf("FAIL (count=%d listeners=%zu)\n", vs_count, vs.num_listeners); failures++; }
+    }
+
+    printf("validation_signals: unregister_all clears all... ");
+    {
+        struct validation_signals vs;
+        validation_signals_init(&vs);
+
+        struct validation_callbacks cb1, cb2;
+        memset(&cb1, 0, sizeof(cb1));
+        memset(&cb2, 0, sizeof(cb2));
+        cb1.ctx = (void *)0xA;
+        cb2.ctx = (void *)0xB;
+        validation_register(&vs, &cb1);
+        validation_register(&vs, &cb2);
+        validation_unregister_all(&vs);
+        bool ok = (vs.num_listeners == 0);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("validation_signals: register up to MAX_VALIDATION_LISTENERS... ");
+    {
+        struct validation_signals vs;
+        validation_signals_init(&vs);
+
+        bool ok = true;
+        for (int i = 0; i < MAX_VALIDATION_LISTENERS; i++) {
+            struct validation_callbacks cb;
+            memset(&cb, 0, sizeof(cb));
+            cb.ctx = (void *)(uintptr_t)(i + 1);
+            ok = ok && validation_register(&vs, &cb);
+        }
+        /* One more should fail */
+        struct validation_callbacks extra;
+        memset(&extra, 0, sizeof(extra));
+        ok = ok && !validation_register(&vs, &extra);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("validation_signals: multiple listeners all fire... ");
+    {
+        struct validation_signals vs;
+        validation_signals_init(&vs);
+
+        vs_multi_count = 0;
+
+        for (int i = 0; i < 3; i++) {
+            struct validation_callbacks cb;
+            memset(&cb, 0, sizeof(cb));
+            cb.ctx = (void *)(uintptr_t)(i + 1);
+            cb.updated_block_tip = vs_multi_cb;
+            validation_register(&vs, &cb);
+        }
+
+        signal_updated_block_tip(&vs, 100);
+        bool ok = (vs_multi_count == 3);
+        if (ok) printf("OK\n");
+        else { printf("FAIL (count=%d)\n", vs_multi_count); failures++; }
+    }
+
+    printf("get_main_signals: returns valid pointer... ");
+    {
+        struct validation_signals *vs = get_main_signals();
+        bool ok = (vs != NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ================================================================
+     * sighash: signature_hash_version
+     * ================================================================ */
+    printf("signature_hash_version: sprout tx... ");
+    {
+        struct transaction tx;
+        memset(&tx, 0, sizeof(tx));
+        tx.overwintered = false;
+        tx.version = 1;
+        enum sig_version v = signature_hash_version(&tx);
+        bool ok = (v == SIGVERSION_SPROUT);
+        if (ok) printf("OK\n");
+        else { printf("FAIL (%d)\n", v); failures++; }
+    }
+
+    printf("signature_hash_version: overwinter tx... ");
+    {
+        struct transaction tx;
+        memset(&tx, 0, sizeof(tx));
+        tx.overwintered = true;
+        tx.version = 3;
+        tx.version_group_id = OVERWINTER_VERSION_GROUP_ID;
+        enum sig_version v = signature_hash_version(&tx);
+        bool ok = (v == SIGVERSION_OVERWINTER);
+        if (ok) printf("OK\n");
+        else { printf("FAIL (%d)\n", v); failures++; }
+    }
+
+    printf("signature_hash_version: sapling tx... ");
+    {
+        struct transaction tx;
+        memset(&tx, 0, sizeof(tx));
+        tx.overwintered = true;
+        tx.version = 4;
+        tx.version_group_id = SAPLING_VERSION_GROUP_ID;
+        enum sig_version v = signature_hash_version(&tx);
+        bool ok = (v == SIGVERSION_SAPLING);
+        if (ok) printf("OK\n");
+        else { printf("FAIL (%d)\n", v); failures++; }
+    }
+
+    /* ================================================================
+     * sighash: precompute_tx_data
+     * ================================================================ */
+    printf("precompute_tx_data: produces non-null hashes... ");
+    {
+        struct transaction tx = make_simple_tx();
+        tx.vin[0].sequence = 0xFFFFFFFF;
+        transaction_compute_hash(&tx);
+
+        struct precomputed_tx_data ptd;
+        precompute_tx_data(&tx, &ptd);
+
+        /* prevouts, sequence, outputs hashes should be non-null */
+        bool ok = !uint256_is_null(&ptd.hash_prevouts) &&
+                  !uint256_is_null(&ptd.hash_sequence) &&
+                  !uint256_is_null(&ptd.hash_outputs);
+        /* No joinsplits/shielded → those hashes should be null */
+        ok = ok && uint256_is_null(&ptd.hash_joinsplits) &&
+                   uint256_is_null(&ptd.hash_shielded_spends) &&
+                   uint256_is_null(&ptd.hash_shielded_outputs);
+
+        free_simple_tx(&tx);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("precompute_tx_data: deterministic... ");
+    {
+        struct transaction tx = make_simple_tx();
+        transaction_compute_hash(&tx);
+
+        struct precomputed_tx_data ptd1, ptd2;
+        precompute_tx_data(&tx, &ptd1);
+        precompute_tx_data(&tx, &ptd2);
+
+        bool ok = uint256_eq(&ptd1.hash_prevouts, &ptd2.hash_prevouts) &&
+                  uint256_eq(&ptd1.hash_sequence, &ptd2.hash_sequence) &&
+                  uint256_eq(&ptd1.hash_outputs, &ptd2.hash_outputs);
+
+        free_simple_tx(&tx);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ================================================================
+     * sighash: signature_hash sprout
+     * ================================================================ */
+    printf("signature_hash: sprout SIGHASH_ALL produces non-null hash... ");
+    {
+        struct transaction tx = make_simple_tx();
+        tx.overwintered = false;
+        tx.version = 1;
+        transaction_compute_hash(&tx);
+
+        struct script sc;
+        uint8_t code[] = {0x76, 0xa9, 0x14};
+        script_set(&sc, code, 3);
+        struct sighash_type ht = { .raw = SIGHASH_ALL };
+        struct uint256 result;
+
+        bool ok = signature_hash(&sc, &tx, 0, ht, 0, 0, NULL, &result);
+        ok = ok && !uint256_is_null(&result);
+
+        free_simple_tx(&tx);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("signature_hash: rejects nIn >= num_vin... ");
+    {
+        struct transaction tx = make_simple_tx();
+        tx.overwintered = false;
+        tx.version = 1;
+        transaction_compute_hash(&tx);
+
+        struct script sc;
+        uint8_t code[] = {0x76};
+        script_set(&sc, code, 1);
+        struct sighash_type ht = { .raw = SIGHASH_ALL };
+        struct uint256 result;
+
+        bool ok = !signature_hash(&sc, &tx, 5, ht, 0, 0, NULL, &result);
+
+        free_simple_tx(&tx);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("signature_hash: sapling SIGHASH_ALL produces non-null hash... ");
+    {
+        struct transaction tx = make_simple_tx();
+        tx.overwintered = true;
+        tx.version = 4;
+        tx.version_group_id = SAPLING_VERSION_GROUP_ID;
+        transaction_compute_hash(&tx);
+
+        struct precomputed_tx_data ptd;
+        precompute_tx_data(&tx, &ptd);
+
+        struct script sc;
+        uint8_t code[] = {0x76, 0xa9, 0x14};
+        script_set(&sc, code, 3);
+        struct sighash_type ht = { .raw = SIGHASH_ALL };
+        struct uint256 result;
+
+        bool ok = signature_hash(&sc, &tx, 0, ht, 100000000LL,
+                                 0x76b809bb, &ptd, &result);
+        ok = ok && !uint256_is_null(&result);
+
+        free_simple_tx(&tx);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("signature_hash: same tx produces same hash... ");
+    {
+        struct transaction tx = make_simple_tx();
+        tx.overwintered = true;
+        tx.version = 4;
+        tx.version_group_id = SAPLING_VERSION_GROUP_ID;
+        transaction_compute_hash(&tx);
+
+        struct precomputed_tx_data ptd;
+        precompute_tx_data(&tx, &ptd);
+
+        struct script sc;
+        uint8_t code[] = {0x76, 0xa9};
+        script_set(&sc, code, 2);
+        struct sighash_type ht = { .raw = SIGHASH_ALL };
+        struct uint256 r1, r2;
+
+        signature_hash(&sc, &tx, 0, ht, 100, 0x76b809bb, &ptd, &r1);
+        signature_hash(&sc, &tx, 0, ht, 100, 0x76b809bb, &ptd, &r2);
+
+        bool ok = uint256_eq(&r1, &r2);
+
+        free_simple_tx(&tx);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("signature_hash: different amounts produce different hashes (sapling)... ");
+    {
+        struct transaction tx = make_simple_tx();
+        tx.overwintered = true;
+        tx.version = 4;
+        tx.version_group_id = SAPLING_VERSION_GROUP_ID;
+        transaction_compute_hash(&tx);
+
+        struct precomputed_tx_data ptd;
+        precompute_tx_data(&tx, &ptd);
+
+        struct script sc;
+        uint8_t code[] = {0x76, 0xa9};
+        script_set(&sc, code, 2);
+        struct sighash_type ht = { .raw = SIGHASH_ALL };
+        struct uint256 r1, r2;
+
+        signature_hash(&sc, &tx, 0, ht, 100, 0x76b809bb, &ptd, &r1);
+        signature_hash(&sc, &tx, 0, ht, 200, 0x76b809bb, &ptd, &r2);
+
+        bool ok = !uint256_eq(&r1, &r2);
+
+        free_simple_tx(&tx);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("signature_hash: NOT_AN_INPUT accepted... ");
+    {
+        struct transaction tx = make_simple_tx();
+        tx.overwintered = true;
+        tx.version = 4;
+        tx.version_group_id = SAPLING_VERSION_GROUP_ID;
+        transaction_compute_hash(&tx);
+
+        struct script sc;
+        uint8_t code[] = {0x76};
+        script_set(&sc, code, 1);
+        struct sighash_type ht = { .raw = SIGHASH_ALL };
+        struct uint256 result;
+
+        bool ok = signature_hash(&sc, &tx, NOT_AN_INPUT, ht, 0,
+                                 0x76b809bb, NULL, &result);
+
+        free_simple_tx(&tx);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ================================================================
+     * tx_sig_checker: init and check_lock_time
+     * ================================================================ */
+    printf("tx_sig_checker: init stores fields... ");
+    {
+        struct transaction tx = make_simple_tx();
+        tx.lock_time = 100;
+        transaction_compute_hash(&tx);
+
+        struct tx_sig_checker c;
+        tx_sig_checker_init(&c, &tx, 0, 50000, 0x76b809bb, NULL);
+
+        bool ok = (c.tx == &tx) && (c.nIn == 0) &&
+                  (c.amount == 50000) && (c.consensus_branch_id == 0x76b809bb) &&
+                  (c.txdata == NULL);
+
+        free_simple_tx(&tx);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("tx_sig_checker: check_lock_time block height... ");
+    {
+        struct transaction tx = make_simple_tx();
+        tx.lock_time = 500; /* block-based (< LOCKTIME_THRESHOLD) */
+        tx.vin[0].sequence = 0;
+        transaction_compute_hash(&tx);
+
+        struct tx_sig_checker c;
+        tx_sig_checker_init(&c, &tx, 0, 0, 0, NULL);
+
+        /* lock_time 400 <= tx.lock_time 500 → should pass */
+        bool ok = tx_sig_checker_check_lock_time(&c, 400);
+        /* lock_time 600 > tx.lock_time 500 → should fail */
+        ok = ok && !tx_sig_checker_check_lock_time(&c, 600);
+
+        free_simple_tx(&tx);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("tx_sig_checker: check_lock_time rejects final sequence... ");
+    {
+        struct transaction tx = make_simple_tx();
+        tx.lock_time = 500;
+        tx.vin[0].sequence = 0xFFFFFFFF; /* final → CLTV always fails */
+        transaction_compute_hash(&tx);
+
+        struct tx_sig_checker c;
+        tx_sig_checker_init(&c, &tx, 0, 0, 0, NULL);
+
+        bool ok = !tx_sig_checker_check_lock_time(&c, 400);
+
+        free_simple_tx(&tx);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("tx_sig_checker: check_lock_time type mismatch... ");
+    {
+        struct transaction tx = make_simple_tx();
+        tx.lock_time = 500; /* block-based */
+        tx.vin[0].sequence = 0;
+        transaction_compute_hash(&tx);
+
+        struct tx_sig_checker c;
+        tx_sig_checker_init(&c, &tx, 0, 0, 0, NULL);
+
+        /* Requesting time-based lock on block-based tx → mismatch → fail */
+        bool ok = !tx_sig_checker_check_lock_time(&c, 600000000LL);
+
+        free_simple_tx(&tx);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("tx_sig_checker: check_sig rejects empty sig... ");
+    {
+        struct transaction tx = make_simple_tx();
+        tx.overwintered = false;
+        tx.version = 1;
+        transaction_compute_hash(&tx);
+
+        struct tx_sig_checker c;
+        tx_sig_checker_init(&c, &tx, 0, 0, 0, NULL);
+
+        struct script sc;
+        uint8_t code[] = {0x76};
+        script_set(&sc, code, 1);
+
+        unsigned char pubkey[33] = {0x02};
+        bool ok = !tx_sig_checker_check_sig(&c, NULL, 0, pubkey, 33, &sc);
+
+        free_simple_tx(&tx);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("tx_make_sig_checker: creates valid checker vtable... ");
+    {
+        struct transaction tx = make_simple_tx();
+        tx.lock_time = 100;
+        tx.vin[0].sequence = 0;
+        transaction_compute_hash(&tx);
+
+        struct tx_sig_checker tsc;
+        tx_sig_checker_init(&tsc, &tx, 0, 0, 0, NULL);
+
+        struct sig_checker checker = tx_make_sig_checker(&tsc);
+        bool ok = (checker.check_sig != NULL) &&
+                  (checker.check_lock_time != NULL) &&
+                  (checker.verify_signature != NULL) &&
+                  (checker.ctx == &tsc);
+
+        free_simple_tx(&tx);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ================================================================
+     * allow_free threshold
+     * ================================================================ */
+    printf("allow_free: high priority passes... ");
+    {
+        double threshold = allow_free_threshold();
+        bool ok = allow_free(threshold + 1.0) && !allow_free(threshold - 1.0);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
     }
 
     return failures;

@@ -526,6 +526,77 @@ int node_db_migrate(struct node_db *ndb, const char *datadir)
         applied++;
     }
 
+    if (current_ver < 5) {
+        /* v5: Explorer + REST API tables and indexes.
+         * Optimized for high-performance read queries. */
+
+        /* Addresses table — aggregated balance cache per address.
+         * Rebuilt from UTXO set on demand. */
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS addresses ("
+            "address_hash BLOB PRIMARY KEY,"
+            "script_type INTEGER NOT NULL DEFAULT 0,"
+            "balance INTEGER NOT NULL DEFAULT 0,"
+            "utxo_count INTEGER NOT NULL DEFAULT 0,"
+            "first_seen_height INTEGER NOT NULL DEFAULT 0,"
+            "last_seen_height INTEGER NOT NULL DEFAULT 0)");
+
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_addr_balance"
+            " ON addresses(balance DESC)");
+
+        /* Chain stats — pre-computed per-block aggregate stats.
+         * Used for charts (difficulty, hashrate, supply). */
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS chain_stats ("
+            "height INTEGER PRIMARY KEY,"
+            "time INTEGER NOT NULL,"
+            "difficulty REAL NOT NULL DEFAULT 0,"
+            "tx_count INTEGER NOT NULL DEFAULT 0,"
+            "utxo_count INTEGER NOT NULL DEFAULT 0,"
+            "total_supply INTEGER NOT NULL DEFAULT 0,"
+            "shielded_supply INTEGER NOT NULL DEFAULT 0,"
+            "block_size INTEGER NOT NULL DEFAULT 0)");
+
+        /* ZSLP token registry — discovered from OP_RETURN GENESIS txs */
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS zslp_tokens ("
+            "token_id BLOB PRIMARY KEY,"
+            "ticker TEXT NOT NULL DEFAULT '',"
+            "name TEXT NOT NULL DEFAULT '',"
+            "decimals INTEGER NOT NULL DEFAULT 0,"
+            "document_url TEXT DEFAULT '',"
+            "genesis_height INTEGER NOT NULL DEFAULT 0,"
+            "total_minted INTEGER NOT NULL DEFAULT 0,"
+            "total_burned INTEGER NOT NULL DEFAULT 0)");
+
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_zslp_ticker"
+            " ON zslp_tokens(ticker)");
+
+        /* Additional covering index for block queries without status filter */
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_blocks_height_all"
+            " ON blocks(height)");
+
+        /* Index for timestamp lookups (HODL wave chart) */
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_blocks_time"
+            " ON blocks(time)");
+
+        /* Composite covering index for UTXO age distribution (HODL waves) */
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_utxo_height_value"
+            " ON utxos(height, value)");
+
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('005')");
+        int32_t v = 5;
+        node_db_state_set(ndb, "schema_version", &v, sizeof(v));
+        current_ver = 5;
+        applied++;
+    }
+
     if (applied > 0)
         printf("db: applied %d migration(s), now at version %d\n",
                applied, node_db_schema_version(ndb));

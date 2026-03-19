@@ -6,6 +6,7 @@
 #ifndef BITCOIN_CRYPTO_SHA256_H
 #define BITCOIN_CRYPTO_SHA256_H
 
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
 
@@ -24,5 +25,12 @@ void sha256_finalize(struct sha256_ctx *ctx, unsigned char hash[SHA256_OUTPUT_SI
 int sha256_finalize_no_padding(struct sha256_ctx *ctx, unsigned char hash[SHA256_OUTPUT_SIZE],
                                int enforce_compression);
 void sha256_reset(struct sha256_ctx *ctx);
+
+/* Runtime self-test: verifies SHA-NI matches portable. Returns true if OK.
+ * Call once at startup. If false, SHA-NI is auto-disabled. */
+bool sha256_selftest(void);
+
+/* Returns "SHA-NI (hardware)" or "portable C" */
+const char *sha256_implementation(void);
 
 #endif

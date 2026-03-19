@@ -233,5 +233,298 @@ int test_coins(void)
         coins_free(&c);
     }
 
+    /* ================================================================
+     * coins_map: insert, find, erase, count
+     * ================================================================ */
+    printf("coins_map: insert/find/count... ");
+    {
+        struct coins_map m;
+        coins_map_init(&m);
+
+        struct uint256 txid1, txid2, txid3;
+        memset(txid1.data, 0x11, 32);
+        memset(txid2.data, 0x22, 32);
+        memset(txid3.data, 0x33, 32);
+
+        struct coins_cache_entry *e1 = coins_map_insert(&m, &txid1);
+        struct coins_cache_entry *e2 = coins_map_insert(&m, &txid2);
+        bool ok = (e1 != NULL) && (e2 != NULL) && (coins_map_count(&m) == 2);
+
+        /* Find existing */
+        ok = ok && (coins_map_find(&m, &txid1) == e1);
+        ok = ok && (coins_map_find(&m, &txid2) == e2);
+        /* Find non-existing */
+        ok = ok && (coins_map_find(&m, &txid3) == NULL);
+        /* Insert duplicate returns same entry */
+        ok = ok && (coins_map_insert(&m, &txid1) == e1);
+        ok = ok && (coins_map_count(&m) == 2);
+
+        coins_map_free(&m);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("coins_map: erase... ");
+    {
+        struct coins_map m;
+        coins_map_init(&m);
+
+        struct uint256 txid1, txid2;
+        memset(txid1.data, 0xAA, 32);
+        memset(txid2.data, 0xBB, 32);
+
+        coins_map_insert(&m, &txid1);
+        coins_map_insert(&m, &txid2);
+
+        bool ok = coins_map_erase(&m, &txid1);
+        ok = ok && (coins_map_count(&m) == 1);
+        ok = ok && (coins_map_find(&m, &txid1) == NULL);
+        ok = ok && (coins_map_find(&m, &txid2) != NULL);
+
+        /* Erase non-existing returns false */
+        ok = ok && !coins_map_erase(&m, &txid1);
+
+        coins_map_free(&m);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("coins_map: handles many insertions (rehash)... ");
+    {
+        struct coins_map m;
+        coins_map_init(&m);
+
+        for (int i = 0; i < 100; i++) {
+            struct uint256 txid;
+            memset(txid.data, 0, 32);
+            memcpy(txid.data, &i, sizeof(i));
+            coins_map_insert(&m, &txid);
+        }
+        bool ok = (coins_map_count(&m) == 100);
+
+        /* Verify we can find them all */
+        for (int i = 0; i < 100; i++) {
+            struct uint256 txid;
+            memset(txid.data, 0, 32);
+            memcpy(txid.data, &i, sizeof(i));
+            ok = ok && (coins_map_find(&m, &txid) != NULL);
+        }
+
+        coins_map_free(&m);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ================================================================
+     * coins_view_cache: init, modify_new, get_coins, have_coins
+     * ================================================================ */
+    printf("coins_view_cache: init and basic operations... ");
+    {
+        struct coins_view null_view;
+        memset(&null_view, 0, sizeof(null_view));
+        struct coins_view_cache cache;
+        coins_view_cache_init(&cache, &null_view);
+
+        bool ok = (coins_map_count(&cache.cache_coins) == 0);
+
+        /* modify_new creates a fresh entry */
+        struct uint256 txid;
+        memset(txid.data, 0x42, 32);
+        struct coins_cache_entry *entry = coins_view_cache_modify_new(&cache, &txid);
+        ok = ok && (entry != NULL);
+        ok = ok && (entry->flags & COINS_CACHE_DIRTY);
+        ok = ok && (entry->flags & COINS_CACHE_FRESH);
+
+        /* Populate the coins */
+        coins_alloc(&entry->coins, 2);
+        entry->coins.vout[0].value = 100;
+        uint8_t pk1[] = {0x76};
+        script_set(&entry->coins.vout[0].script_pub_key, pk1, 1);
+        entry->coins.vout[1].value = 200;
+        script_set(&entry->coins.vout[1].script_pub_key, pk1, 1);
+        entry->coins.height = 500;
+        entry->coins.version = 4;
+
+        /* have_coins should find it */
+        ok = ok && coins_view_cache_have_coins(&cache, &txid);
+
+        /* get_coins should retrieve it */
+        struct coins retrieved;
+        coins_init(&retrieved);
+        ok = ok && coins_view_cache_get_coins(&cache, &txid, &retrieved);
+        ok = ok && (retrieved.vout[0].value == 100);
+        ok = ok && (retrieved.vout[1].value == 200);
+        ok = ok && (retrieved.height == 500);
+        coins_free(&retrieved);
+
+        /* Unknown txid should not be found */
+        struct uint256 unknown;
+        memset(unknown.data, 0xFF, 32);
+        ok = ok && !coins_view_cache_have_coins(&cache, &unknown);
+
+        coins_view_cache_free(&cache);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ================================================================
+     * coins_view_cache: modify existing entry
+     * ================================================================ */
+    printf("coins_view_cache: modify marks dirty... ");
+    {
+        struct coins_view null_view;
+        memset(&null_view, 0, sizeof(null_view));
+        struct coins_view_cache cache;
+        coins_view_cache_init(&cache, &null_view);
+
+        struct uint256 txid;
+        memset(txid.data, 0x55, 32);
+        struct coins_cache_entry *entry = coins_view_cache_modify_new(&cache, &txid);
+        coins_alloc(&entry->coins, 1);
+        entry->coins.vout[0].value = 50;
+        uint8_t pk2[] = {0x76};
+        script_set(&entry->coins.vout[0].script_pub_key, pk2, 1);
+
+        /* modify should return same entry and mark dirty */
+        entry->flags = 0; /* clear flags */
+        struct coins_cache_entry *e2 = coins_view_cache_modify(&cache, &txid);
+        bool ok = (e2 == entry) && (e2->flags & COINS_CACHE_DIRTY);
+
+        coins_view_cache_free(&cache);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ================================================================
+     * coins_view_cache: set/get best block
+     * ================================================================ */
+    printf("coins_view_cache: set/get best block... ");
+    {
+        struct coins_view null_view;
+        memset(&null_view, 0, sizeof(null_view));
+        struct coins_view_cache cache;
+        coins_view_cache_init(&cache, &null_view);
+
+        struct uint256 block_hash;
+        memset(block_hash.data, 0xAA, 32);
+        coins_view_cache_set_best_block(&cache, &block_hash);
+
+        struct uint256 retrieved;
+        coins_view_cache_get_best_block(&cache, &retrieved);
+        bool ok = uint256_eq(&retrieved, &block_hash);
+
+        coins_view_cache_free(&cache);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ================================================================
+     * coins_view_cache: have_inputs for coinbase is always true
+     * ================================================================ */
+    printf("coins_view_cache: have_inputs coinbase always true... ");
+    {
+        struct coins_view null_view;
+        memset(&null_view, 0, sizeof(null_view));
+        struct coins_view_cache cache;
+        coins_view_cache_init(&cache, &null_view);
+
+        /* Create a coinbase tx (prevout hash all zeros, n=UINT32_MAX) */
+        struct transaction tx;
+        transaction_init(&tx);
+        transaction_alloc(&tx, 1, 1);
+        memset(tx.vin[0].prevout.hash.data, 0, 32);
+        tx.vin[0].prevout.n = UINT32_MAX;
+        tx.vout[0].value = 1250000000LL;
+
+        bool ok = coins_view_cache_have_inputs(&cache, &tx);
+
+        transaction_free(&tx);
+        coins_view_cache_free(&cache);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ================================================================
+     * coins_view_cache: flush to parent cache
+     * ================================================================ */
+    printf("coins_view_cache: flush to parent... ");
+    {
+        struct coins_view null_view;
+        memset(&null_view, 0, sizeof(null_view));
+
+        struct coins_view_cache parent;
+        coins_view_cache_init(&parent, &null_view);
+
+        /* Make parent usable as a backing view */
+        struct coins_view parent_as_view;
+        coins_view_cache_as_view(&parent_as_view, &parent);
+
+        struct coins_view_cache child;
+        coins_view_cache_init(&child, &parent_as_view);
+
+        /* Add a coin to child */
+        struct uint256 txid;
+        memset(txid.data, 0x77, 32);
+        struct coins_cache_entry *entry = coins_view_cache_modify_new(&child, &txid);
+        coins_alloc(&entry->coins, 1);
+        entry->coins.vout[0].value = 999;
+        uint8_t pk3[] = {0x76};
+        script_set(&entry->coins.vout[0].script_pub_key, pk3, 1);
+
+        struct uint256 block_hash;
+        memset(block_hash.data, 0x88, 32);
+        coins_view_cache_set_best_block(&child, &block_hash);
+
+        /* Flush child to parent */
+        bool ok = coins_view_cache_flush(&child);
+
+        /* Child should be empty after flush */
+        ok = ok && (coins_map_count(&child.cache_coins) == 0);
+
+        /* Parent should now have the coin */
+        ok = ok && coins_view_cache_have_coins(&parent, &txid);
+        struct coins retrieved;
+        coins_init(&retrieved);
+        ok = ok && coins_view_cache_get_coins(&parent, &txid, &retrieved);
+        ok = ok && (retrieved.vout[0].value == 999);
+        coins_free(&retrieved);
+
+        /* Parent should have the best block hash */
+        struct uint256 parent_hash;
+        coins_view_cache_get_best_block(&parent, &parent_hash);
+        ok = ok && uint256_eq(&parent_hash, &block_hash);
+
+        coins_view_cache_free(&child);
+        coins_view_cache_free(&parent);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ================================================================
+     * coins_view_cache: get_value_in for coinbase returns 0
+     * ================================================================ */
+    printf("coins_view_cache: get_value_in coinbase returns 0... ");
+    {
+        struct coins_view null_view;
+        memset(&null_view, 0, sizeof(null_view));
+        struct coins_view_cache cache;
+        coins_view_cache_init(&cache, &null_view);
+
+        struct transaction tx;
+        transaction_init(&tx);
+        transaction_alloc(&tx, 1, 1);
+        memset(tx.vin[0].prevout.hash.data, 0, 32);
+        tx.vin[0].prevout.n = UINT32_MAX;
+        tx.vout[0].value = 1250000000LL;
+
+        int64_t val = coins_view_cache_get_value_in(&cache, &tx);
+        bool ok = (val == 0);
+
+        transaction_free(&tx);
+        coins_view_cache_free(&cache);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     return failures;
 }

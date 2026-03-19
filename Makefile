@@ -36,9 +36,8 @@ TOR_LIBS = $(wildcard vendor/tor/libtor.a \
 	vendor/tor/src/ext/keccak-tiny/libkeccak-tiny.a)
 # All dependencies bundled in vendor/lib as static archives.
 # Zero system library requirements beyond libc.
-# When Tor is built: link libtor.a + system ssl/event/z
-# When Tor is not built: tor_integration.c stubs handle it gracefully
-LIBS = -Lvendor/lib -lsecp256k1 -lleveldb \
+# OpenSSL 3.0 (Apache 2.0), libevent, zlib — all vendored.
+LIBS = -Lvendor/lib -ltor_stub -Lvendor/lib -lsecp256k1 -lleveldb \
 	-lstdc++ -lm -lsqlite3 -ldl -lpthread \
 	-levent -levent_openssl -levent_pthreads \
 	-lssl -lcrypto -lz \
@@ -52,7 +51,7 @@ all: test_zcl zclassic23 zclassic-cli
 TEST_SRCS = $(wildcard lib/test/src/*.c)
 
 test_zcl: $(TEST_SRCS) $(ALL_SRCS)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(TOR_LIBS) $(LIBS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ -Lvendor/lib -ltor_stub $(LIBS)
 
 zclassic23: main.c $(ALL_SRCS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(TOR_LIBS) $(LIBS)
@@ -69,8 +68,24 @@ zcl-browser: tools/zcl-browser.c
 zcl-blog: tools/zcl-blog
 	$(CC) -std=c23 -O2 -x c $$(pkg-config --cflags webkit2gtk-4.1) -o $@ $< $$(pkg-config --libs webkit2gtk-4.1)
 
+explorer-css: app/views/src/explorer_css.css
+	python3 -c "\
+	import re; f=open('app/views/src/explorer_css.css'); css=f.read(); f.close(); \
+	css=re.sub(r'/\*.*?\*/', '', css, flags=re.DOTALL); \
+	css=re.sub(r'\s+', ' ', css).strip(); css=re.sub(r'\s*([{}:;,])\s*', r'\1', css); \
+	css=css.replace('\\\\','\\\\\\\\').replace('\"','\\\\\"'); \
+	lines=[]; i=0; \
+	exec('while i<len(css): lines.append(chr(32)*4+chr(34)+css[i:min(i+100,len(css))]+chr(34)); i+=100'); \
+	o=open('app/views/include/views/explorer_css.h','w'); \
+	o.write('/* Auto-generated from app/views/src/explorer_css.css */\n'); \
+	o.write('#ifndef EXPLORER_CSS_H\n#define EXPLORER_CSS_H\n\n'); \
+	o.write('static const char explorer_css[] =\n'+'\n'.join(lines)+';\n\n#endif\n'); o.close()"
+
 test: test_zcl
 	ulimit -s unlimited && ./test_zcl
+
+%.o: %.c
+	$(CC) $(CFLAGS) -c -o $@ $<
 
 clean:
 	rm -f test_zcl zclassic23 zclassic-cli $(ALL_OBJS)

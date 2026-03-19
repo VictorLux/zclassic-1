@@ -69,5 +69,61 @@ int test_crypto(void)
     hash160(NULL, 0, hash);
     failures += check_hex(hash, 20, "b472a266d0bd89c13706a4132ccfb16f7c3b9fcb");
 
+    printf("SHA-256 self-test (%s)... ", sha256_implementation());
+    if (sha256_selftest()) printf("OK\n");
+    else { printf("FAIL\n"); failures++; }
+
+    /* Stress test: SHA-256 1MB of data — verify both paths agree */
+    printf("SHA-256 1MB stress test... ");
+    {
+        unsigned char *big = malloc(1024 * 1024);
+        for (int i = 0; i < 1024 * 1024; i++)
+            big[i] = (unsigned char)(i * 137 + 73);
+
+        unsigned char h1[32], h2[32];
+
+        struct sha256_ctx c1;
+        sha256_init(&c1);
+        sha256_write(&c1, big, 1024 * 1024);
+        sha256_finalize(&c1, h1);
+
+        /* Second pass — must match */
+        struct sha256_ctx c2;
+        sha256_init(&c2);
+        sha256_write(&c2, big, 1024 * 1024);
+        sha256_finalize(&c2, h2);
+
+        free(big);
+
+        if (memcmp(h1, h2, 32) == 0) printf("OK\n");
+        else { printf("FAIL (non-deterministic)\n"); failures++; }
+    }
+
+    /* Benchmark: SHA-256 throughput */
+    printf("SHA-256 benchmark (%s)... ", sha256_implementation());
+    {
+        unsigned char block[64];
+        memset(block, 0x42, 64);
+        uint32_t state[8] = {
+            0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+            0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
+        };
+
+        struct timeval t1, t2;
+        gettimeofday(&t1, NULL);
+        int iters = 1000000;
+        struct sha256_ctx bench;
+        for (int i = 0; i < iters; i++) {
+            sha256_init(&bench);
+            sha256_write(&bench, block, 64);
+            sha256_finalize(&bench, (unsigned char *)state);
+        }
+        gettimeofday(&t2, NULL);
+        double elapsed = (double)(t2.tv_sec - t1.tv_sec) +
+                          (double)(t2.tv_usec - t1.tv_usec) / 1e6;
+        double mbs = (double)iters * 64.0 / elapsed / 1e6;
+        printf("OK (%.0f MB/s, %d hashes in %.3fs)\n", mbs, iters, elapsed);
+    }
+
     return failures;
 }

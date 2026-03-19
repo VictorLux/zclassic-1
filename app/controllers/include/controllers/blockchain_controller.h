@@ -12,10 +12,12 @@
 
 struct coins_view_db;
 struct coins_view_cache;
+struct node_db;
 void rpc_blockchain_set_state(struct main_state *ms, struct tx_mempool *mp,
                                const char *datadir);
 void rpc_blockchain_set_coins_db(struct coins_view_db *cvdb,
                                   struct coins_view_cache *coins_tip);
+void rpc_blockchain_set_node_db(struct node_db *ndb);
 void register_blockchain_rpc_commands(struct rpc_table *t);
 
 #endif

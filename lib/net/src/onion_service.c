@@ -330,6 +330,15 @@ size_t onion_service_handle_request(const char *method,
         return serve_search(q ? q + 2 : "", response, response_max);
     }
 
+    /* Explorer — block explorer */
+    if (strncmp(path, "/explorer", 9) == 0) {
+        extern size_t explorer_handle_request(const char *, const char *,
+            const uint8_t *, size_t, uint8_t *, size_t);
+        size_t n = explorer_handle_request(method, path, body, body_len,
+                                           response, response_max);
+        if (n > 0) return n;
+    }
+
     /* Store — ZSLP token commerce */
     if (strncmp(path, "/store", 6) == 0 && g_datadir) {
         extern size_t store_handle_request(const char *, const char *,

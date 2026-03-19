@@ -143,6 +143,49 @@ DNS:       dnsseed.zclnet.net, dnsseed.zslp.org, mainnet.zclassic.org
 Onion:     zc23kenfdqqkgamthif3m7lbbdsyrotsl2dlw35qrh3iuzopozmpjnad.onion
 ```
 
+## Block Explorer & REST API
+Live at https://zclnet.net/explorer — served by zclassic23 itself (TLS on port 443).
+
+### Routes
+```
+/explorer              Dashboard (latest blocks, stats)
+/explorer/block/:id    Block detail (by height or hash)
+/explorer/tx/:txid     Transaction detail (inputs, outputs, shielded, ZSLP)
+/explorer/address/:a   Address balance + UTXOs
+/explorer/stats        SVG charts: difficulty, hashrate, block times, HODL waves
+/explorer/tokens       ZSLP token scanner
+/explorer/search?q=    Smart search (height, hash, txid, address)
+/explorer/style.css    Customizable CSS (from {datadir}/explorer/style.css)
+```
+
+### SQLite Database (node.db)
+All blockchain data is indexed in SQLite for instant queries. Schema v5:
+```
+blocks          — hash(PK), height, time, bits, num_tx, sapling_value, file_pos
+transactions    — txid(PK), block_hash, block_height, is_coinbase
+utxos           — (txid,vout)(PK), value, address_hash, height, script_type
+addresses       — address_hash(PK), balance, utxo_count, first/last_seen
+chain_stats     — height(PK), difficulty, tx_count, supply, shielded_supply
+zslp_tokens     — token_id(PK), ticker, name, decimals, genesis_height
+```
+Key indexes: `idx_utxo_address`, `idx_utxo_height_value`, `idx_blocks_height_all`, `idx_addr_balance`
+
+### Populating the Index
+```bash
+# Import from legacy zclassicd block files (works while zclassicd runs):
+zcl-rpc indexlegacy /path/to/.zclassic
+# Indexes ~10,000 blocks/sec, ~5 minutes for 3M blocks
+```
+
+### Deployment
+```bash
+make zclassic23 && systemctl restart zclassic23   # no sudo needed
+systemctl status zclassic23                        # check status
+tail -f ~/.zclassic-c23/node.log                   # watch logs
+```
+SSL certs at `{datadir}/ssl/fullchain.pem` + `privkey.pem`.
+CSS template at `{datadir}/explorer/style.css` (live-editable).
+
 ## Quality
 Q = Clarity × Reliability × Performance × TestCoverage × UserImpact.
 Every commit must raise Q.

@@ -50,7 +50,11 @@ bool db_block_save(struct node_db *ndb, const struct db_block *b)
 
     /* Validate before save */
     struct ar_errors errors;
-    if (!db_block_validate(b, &errors)) return false;
+    if (!db_block_validate(b, &errors)) {
+        fprintf(stderr, "db_block_save: validation failed at height %d: %s\n",
+                b->height, errors.count > 0 ? errors.messages[0] : "unknown");
+        return false;
+    }
 
     /* Run before_save callbacks */
     struct ar_callbacks *cbs = db_block_callbacks();
@@ -79,7 +83,13 @@ bool db_block_save(struct node_db *ndb, const struct db_block *b)
     sqlite3_bind_int64(s, 18, b->sapling_value);
     sqlite3_bind_int64(s, 19, b->sprout_value);
 
-    bool ok = sqlite3_step(s) == SQLITE_DONE;
+    int rc = sqlite3_step(s);
+    bool ok = (rc == SQLITE_DONE);
+
+    if (!ok) {
+        fprintf(stderr, "db_block_save: INSERT failed at height %d: %s (rc=%d)\n",
+                b->height, sqlite3_errmsg(ndb->db), rc);
+    }
 
     if (ok) ar_run_after_save(cbs, (void *)b);
     return ok;

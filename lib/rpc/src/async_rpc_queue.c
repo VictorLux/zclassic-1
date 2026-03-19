@@ -19,11 +19,17 @@ void async_queue_init(struct async_rpc_queue *q)
 static void wait_for_workers(struct async_rpc_queue *q)
 {
     zcl_mutex_lock(&q->lock);
+    size_t nw = q->num_workers;
     zcl_cond_broadcast(&q->cond);
     zcl_mutex_unlock(&q->lock);
 
-    for (size_t i = 0; i < q->num_workers; i++)
+    for (size_t i = 0; i < nw; i++)
         pthread_join(q->workers[i], NULL);
+
+    /* Clear so a second call (e.g. free after finish_and_wait) is safe */
+    zcl_mutex_lock(&q->lock);
+    q->num_workers = 0;
+    zcl_mutex_unlock(&q->lock);
 }
 
 void async_queue_free(struct async_rpc_queue *q)
