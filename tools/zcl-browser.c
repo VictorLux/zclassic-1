@@ -307,7 +307,7 @@ static void serve_wallet_dashboard(void) {
         "<p style='color:#666;margin:0 0 16px'>Direct SQLite — no ports, no RPC</p>"
 
         "<div class='stats'>"
-        "<div class='stat'><div class='num'>%.8f</div><div class='lbl'>Total ZCL</div></div>"
+        "<div class='stat'><div class='num'>%.8f</div><div class='lbl'>Transparent ZCL</div></div>"
         "<div class='stat'><div class='num'>%d</div><div class='lbl'>Block Height</div></div>"
         "<div class='stat'><div class='num'>%d</div><div class='lbl'>Peers</div></div>"
         "</div>"
@@ -340,7 +340,7 @@ static void serve_wallet_dashboard(void) {
         "<div style='font-size:18px'>%d wallet transactions</div>"
         "</div>",
 
-        (double)(transparent_bal + shielded_bal) / 1e8, tip_height, peers,
+        (double)transparent_bal / 1e8, tip_height, peers,
         (double)transparent_bal / 1e8, unspent_t_utxos,
         (double)shielded_bal / 1e8, unspent_notes,
         t_keys, z_keys, tx_count);
