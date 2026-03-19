@@ -3,6 +3,7 @@
 
 #include "test/test_helpers.h"
 #include "controllers/store_controller.h"
+#include "controllers/zslp_controller.h"
 #include "net/fast_sync.h"
 #include "net/net.h"
 #include "rpc/httpserver.h"
@@ -496,6 +497,96 @@ int test_robustness(void)
         else { printf("FAIL (accepted oversized)\n"); failures++; }
         /* Clean up any allocated recv_msgs */
         free(fake_node.recv_msgs);
+    }
+
+    /* ── ZSLP ticker validation ──────────────────────────── */
+    printf("robust: ZSLP rejects empty ticker... ");
+    {
+        const char *r = zslp_create_token(test_datadir, "", "Test", 0, 1000);
+        if (!r) printf("OK\n");
+        else { printf("FAIL (accepted empty)\n"); failures++; }
+    }
+
+    printf("robust: ZSLP rejects oversized ticker (11 chars)... ");
+    {
+        const char *r = zslp_create_token(test_datadir, "ABCDEFGHIJK", "Test", 0, 1000);
+        if (!r) printf("OK\n");
+        else { printf("FAIL (accepted 11-char)\n"); failures++; }
+    }
+
+    printf("robust: ZSLP rejects non-alphanumeric ticker... ");
+    {
+        const char *r = zslp_create_token(test_datadir, "BAD!@#", "Test", 0, 1000);
+        if (!r) printf("OK\n");
+        else { printf("FAIL (accepted special chars)\n"); failures++; }
+    }
+
+    printf("robust: ZSLP rejects decimals > 8... ");
+    {
+        const char *r = zslp_create_token(test_datadir, "TEST", "Test", 9, 1000);
+        if (!r) printf("OK\n");
+        else { printf("FAIL (accepted decimals=9)\n"); failures++; }
+    }
+
+    printf("robust: ZSLP rejects overflow supply... ");
+    {
+        const char *r = zslp_create_token(test_datadir, "TEST", "Test", 0,
+                                            UINT64_MAX);
+        if (!r) printf("OK\n");
+        else { printf("FAIL (accepted overflow)\n"); failures++; }
+    }
+
+    printf("robust: ZSLP accepts valid ticker... ");
+    {
+        const char *r = zslp_create_token(test_datadir, "ZCL", "ZClassic", 8, 1000);
+        /* Returns non-NULL on success (placeholder token_id) */
+        if (r) printf("OK\n");
+        else { printf("FAIL (rejected valid)\n"); failures++; }
+    }
+
+    /* ── Rate limiter enforcement ────────────────────────── */
+    printf("robust: rate limiter enforces 5000 chunk limit... ");
+    {
+        struct fast_sync_rate_limiter rl;
+        memset(&rl, 0, sizeof(rl));
+        uint8_t ip[16] = {0};
+        ip[15] = 42;
+
+        bool ok = true;
+        /* Send 5000 chunks — all should be allowed */
+        for (int i = 0; i < 5000; i++) {
+            if (!fast_sync_rate_check(&rl, ip)) {
+                printf("FAIL (rejected at %d)\n", i);
+                ok = false;
+                break;
+            }
+        }
+        if (ok) {
+            /* 5001st should be rejected */
+            if (fast_sync_rate_check(&rl, ip)) {
+                printf("FAIL (accepted 5001st)\n");
+                ok = false;
+            }
+        }
+        if (ok) printf("OK\n");
+        else failures++;
+    }
+
+    printf("robust: rate limiter allows different IPs independently... ");
+    {
+        struct fast_sync_rate_limiter rl;
+        memset(&rl, 0, sizeof(rl));
+        uint8_t ip1[16] = {0}; ip1[15] = 1;
+        uint8_t ip2[16] = {0}; ip2[15] = 2;
+
+        /* Exhaust ip1 */
+        for (int i = 0; i < 5000; i++)
+            fast_sync_rate_check(&rl, ip1);
+
+        /* ip2 should still be allowed */
+        bool ok = fast_sync_rate_check(&rl, ip2);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
     }
 
     cleanup_robustness_datadir();

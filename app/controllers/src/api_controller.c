@@ -159,6 +159,7 @@ static int rpc_call(const char *method, const char *params_json,
 static bool json_extract_str(const char *json, const char *key,
                               char *out, size_t outmax)
 {
+    if (!json || !key || !out || outmax == 0) return false;
     char search[128];
     snprintf(search, sizeof(search), "\"%s\":", key);
     const char *p = strstr(json, search);
@@ -172,6 +173,8 @@ static bool json_extract_str(const char *json, const char *key,
         out[i] = p[i]; i++;
     }
     out[i] = '\0';
+    /* Reject if we hit NUL before closing quote (malformed JSON) */
+    if (p[i] != '"') return false;
     return i > 0;
 }
 
