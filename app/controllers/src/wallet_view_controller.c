@@ -317,28 +317,37 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
         sqlite3_finalize(s);
     }
 
-    int64_t total = transparent + shielded;
+    /* Coin analysis: started with 1.0 ZCL, fees reduce it.
+     * Only transparent UTXOs are from our original balance.
+     * Shielded notes are incoming from external sources. */
+    int64_t fees_paid = 100000000 - transparent; /* started with 1.0 ZCL */
+    if (fees_paid < 0) fees_paid = 0; /* shouldn't happen */
 
     size_t off = emit_header(r, max, "Wallet — ZClassic23", "/wallet");
 
-    /* Total balance */
+    /* Verified balance — transparent only */
     APPEND(off, r, max,
         "<div class='card' style='border-left-color:#33ff99;padding:20px'>"
-        "<div class='label'>Total Balance</div>"
+        "<div class='label'>Verified Balance</div>"
         "<div style='font-size:36px;color:#33ff99;font-weight:800'>"
         "%.8f ZCL</div>"
         "<div class='sub' style='margin-top:8px'>"
-        "Transparent: <span class='zcl'>%.8f</span> (%d UTXO%s)",
-        (double)total / 1e8,
-        (double)transparent / 1e8, t_utxos, t_utxos == 1 ? "" : "s");
+        "%d UTXO%s &middot; Fees paid: %.8f ZCL"
+        "</div></div>",
+        (double)transparent / 1e8,
+        t_utxos, t_utxos == 1 ? "" : "s",
+        (double)fees_paid / 1e8);
 
     if (shielded > 0) {
         APPEND(off, r, max,
-            " &middot; Shielded: <span style='color:#9999ff;font-weight:700'>"
-            "%.8f</span> (%d note%s)",
+            "<div class='card' style='border-left-color:#9999ff;padding:14px'>"
+            "<div class='label'>Incoming Shielded Notes</div>"
+            "<div style='font-size:18px;color:#9999ff;font-weight:700'>"
+            "%.8f ZCL</div>"
+            "<div class='sub'>%d note%s (received from external sources)</div>"
+            "</div>",
             (double)shielded / 1e8, z_notes, z_notes == 1 ? "" : "s");
     }
-    APPEND(off, r, max, "</div></div>");
 
     /* Stats row */
     APPEND(off, r, max,
