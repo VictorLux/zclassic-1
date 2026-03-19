@@ -146,17 +146,38 @@ Onion:     zc23kenfdqqkgamthif3m7lbbdsyrotsl2dlw35qrh3iuzopozmpjnad.onion
 ## Block Explorer & REST API
 Live at https://zclnet.net/explorer — served by zclassic23 itself (TLS on port 443).
 
-### Routes
+### Explorer Routes
 ```
-/explorer              Dashboard (latest blocks, stats)
+/explorer              Dashboard (latest blocks, mempool stats)
 /explorer/block/:id    Block detail (by height or hash)
 /explorer/tx/:txid     Transaction detail (inputs, outputs, shielded, ZSLP)
 /explorer/address/:a   Address balance + UTXOs
-/explorer/stats        SVG charts: difficulty, hashrate, block times, HODL waves
+/explorer/stats        SVG charts with CSS-only tab controls (24h/7d/30d/1y/all)
+/explorer/hodl         9-year HODL wave chart (from genesis, real UTXO data)
 /explorer/tokens       ZSLP token scanner
 /explorer/search?q=    Smart search (height, hash, txid, address)
 /explorer/style.css    Customizable CSS (from {datadir}/explorer/style.css)
+/explorer/favicon.png  ZClassic logo
 ```
+
+### REST API
+```
+/api/blocks            Latest 25 blocks (JSON)
+/api/block/:id         Block detail by height or hash
+/api/tx/:txid          Transaction detail
+/api/address/:addr     Address balance + UTXOs
+/api/stats             Network stats (height, difficulty, hashrate, supply)
+/api/supply            Circulating supply (plain number, CoinGecko format)
+/api/hodl              HODL wave data
+```
+All endpoints return JSON with CORS headers (`Access-Control-Allow-Origin: *`).
+
+### Performance
+- SHA-256: 1,045 MB/s (SHA-NI hardware, 4.2x over portable)
+- Chain indexer: ~6,000 blocks/sec, 3M blocks in ~9 minutes
+- HODL wave: precomputed in background, served from cache in <10ms
+- Stats charts: precomputed with 5-min cache, CSS-only tab switching
+- SQLite: WAL mode, 256MB mmap, 256MB cache
 
 ### SQLite Database (node.db)
 All blockchain data is indexed in SQLite for instant queries. Schema v5:
