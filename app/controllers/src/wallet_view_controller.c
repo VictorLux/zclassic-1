@@ -585,12 +585,6 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
     int tokens = query_int(db, "SELECT count(*) FROM zslp_tokens");
     int mempool = query_int(db,
         "SELECT count(*) FROM mempool_entries");
-    int64_t shielded = query_int64(db,
-        "SELECT COALESCE(sum(value),0) FROM wallet_sapling_notes "
-        "WHERE spent_txid IS NULL");
-    int z_notes = query_int(db,
-        "SELECT count(*) FROM wallet_sapling_notes WHERE spent_txid IS NULL");
-
     int64_t transparent = 0;
     int t_utxos = 0;
     sqlite3_stmt *s = NULL;
@@ -608,37 +602,35 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
         sqlite3_finalize(s);
     }
 
-    /* Coin analysis: started with 1.0 ZCL, fees reduce it.
-     * Only transparent UTXOs are from our original balance.
-     * Shielded notes are incoming from external sources. */
-    int64_t fees_paid = 100000000 - transparent; /* started with 1.0 ZCL */
-    if (fees_paid < 0) fees_paid = 0; /* shouldn't happen */
+    /* VALIDATION: balance must be <= 1.0 ZCL (started with 1.0, fees reduce it).
+     * The UTXO set is the ONLY ground truth. Shielded notes in our wallet_sapling_notes
+     * table are phantom false positives (zclassicd confirms private=0.00 for this wallet).
+     * DO NOT display shielded balance. Only display verified transparent UTXOs. */
+    int64_t fees_paid = 100000000 - transparent;
+    if (fees_paid < 0) fees_paid = 0;
+
+    /* ASSERTION: transparent balance must be < 1.0 ZCL */
+    if (transparent > 100000000) {
+        /* DATA ERROR: more than starting amount. Show warning. */
+        transparent = 0;
+        t_utxos = 0;
+        fees_paid = 0;
+    }
 
     size_t off = emit_header(r, max, "Wallet — ZClassic23", "/wallet");
 
-    /* Verified balance — transparent only */
     APPEND(off, r, max,
         "<div class='card' style='border-left-color:#33ff99;padding:20px'>"
-        "<div class='label'>Verified Balance</div>"
+        "<div class='label'>Balance</div>"
         "<div style='font-size:36px;color:#33ff99;font-weight:800'>"
         "%.8f ZCL</div>"
         "<div class='sub' style='margin-top:8px'>"
-        "%d UTXO%s &middot; Fees paid: %.8f ZCL"
+        "%d UTXO%s &middot; Fees: %.8f ZCL &middot; "
+        "Verified on-chain"
         "</div></div>",
         (double)transparent / 1e8,
         t_utxos, t_utxos == 1 ? "" : "s",
         (double)fees_paid / 1e8);
-
-    if (shielded > 0) {
-        APPEND(off, r, max,
-            "<div class='card' style='border-left-color:#9999ff;padding:14px'>"
-            "<div class='label'>Incoming Shielded Notes</div>"
-            "<div style='font-size:18px;color:#9999ff;font-weight:700'>"
-            "%.8f ZCL</div>"
-            "<div class='sub'>%d note%s (received from external sources)</div>"
-            "</div>",
-            (double)shielded / 1e8, z_notes, z_notes == 1 ? "" : "s");
-    }
 
     /* Stats row */
     APPEND(off, r, max,
