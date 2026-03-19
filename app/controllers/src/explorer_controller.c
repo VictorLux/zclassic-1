@@ -109,7 +109,9 @@ static void init_default_templates(void)
 /* Forward declarations for cache warming */
 static void *stats_compute_thread(void *arg);
 static void *hodl_compute_thread(void *arg);
+static void *tokens_compute_thread(void *arg);
 static volatile int g_stats_computing;
+static volatile int g_tokens_computing;
 static volatile int g_hodl_computing;
 
 static void prewarm_caches(void)
@@ -140,6 +142,19 @@ static void prewarm_caches(void)
         pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
         pthread_attr_setstacksize(&attr, 2 * 1024 * 1024);
         pthread_create(&t, &attr, hodl_compute_thread, NULL);
+        pthread_attr_destroy(&attr);
+    }
+
+    printf("Explorer: pre-warming tokens cache...\n");
+    fflush(stdout);
+    if (!g_tokens_computing) {
+        g_tokens_computing = 1;
+        pthread_t t;
+        pthread_attr_t attr;
+        pthread_attr_init(&attr);
+        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+        pthread_attr_setstacksize(&attr, 2 * 1024 * 1024);
+        pthread_create(&t, &attr, tokens_compute_thread, NULL);
         pthread_attr_destroy(&attr);
     }
 }
@@ -2049,169 +2064,218 @@ static size_t serve_stats(uint8_t *r, size_t max)
 
 /* ── ZSLP Tokens Page ─────────────────────────────────────── */
 
-static size_t serve_tokens(uint8_t *r, size_t max)
+/* Tokens page cache — precomputed in background */
+static char g_tokens_cache[131072] = "";
+static size_t g_tokens_cache_len = 0;
+
+static void *tokens_compute_thread(void *arg)
 {
+    (void)arg;
+    printf("Tokens background: computing...\n");
+    fflush(stdout);
+
+    char db_path[1024];
+    snprintf(db_path, sizeof(db_path), "%s/node.db", g_datadir);
+    sqlite3 *db = NULL;
+    if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
+        g_tokens_computing = 0;
+        return NULL;
+    }
+    sqlite3_exec(db, "PRAGMA mmap_size=268435456", NULL, NULL, NULL);
+
+    uint8_t *r = malloc(131072);
+    if (!r) { sqlite3_close(db); g_tokens_computing = 0; return NULL; }
+    size_t max = 131072;
     size_t off = 0;
-    char buf[65536];
 
     APPEND(off, r, max, EXPLORER_HEADER("ZSLP Tokens") EXPLORER_NAV);
-    APPEND(off, r, max,
-        "<h1>ZSLP Tokens</h1>"
-        "<p style='color:#aaa;font-size:16px'>"
-        "Simple Ledger Protocol tokens on ZClassic. "
-        "Tokens use OP_RETURN outputs to encode GENESIS, SEND, and MINT operations.</p>");
 
-    /* Scan recent blocks for ZSLP transactions */
-    rpc_call("getblockcount", "[]", buf, sizeof(buf));
-    int tip = (int)json_extract_int(buf, "result");
-
-    APPEND(off, r, max,
-        "<h2>Recent Token Transactions</h2>"
-        "<table><tr><th>Block</th><th>Type</th><th>Ticker</th>"
-        "<th>Name / Token ID</th><th>TxID</th></tr>");
-
-    int found = 0;
-    /* Scan last 500 blocks for SLP txs */
-    for (int h = tip; h > tip - 500 && h >= 0 && found < 50 && off + 1024 < max; h--) {
-        char params[64];
-        snprintf(params, sizeof(params), "[%d]", h);
-        rpc_call("getblockhash", params, buf, sizeof(buf));
-        char hash[65] = "";
-        json_extract_str(buf, "result", hash, sizeof(hash));
-        if (!hash[0]) continue;
-
-        char p2[128];
-        snprintf(p2, sizeof(p2), "[\"%s\", true]", hash);
-        rpc_call("getblock", p2, buf, sizeof(buf));
-
-        /* Check tx count — skip blocks with only coinbase */
-        const char *txarr = strstr(buf, "\"tx\":[");
-        if (!txarr) continue;
-        const char *txend = strchr(txarr, ']');
-        if (!txend) continue;
-
-        /* Count txs */
-        int ntx = 1;
-        for (const char *p = txarr; p < txend; p++)
-            if (*p == ',') ntx++;
-        if (ntx <= 1) continue; /* only coinbase */
-
-        /* Check each non-coinbase tx */
-        const char *p = txarr + 6;
-        int idx = 0;
-        while (p < txend && found < 50 && off + 1024 < max) {
-            if (*p == '"') {
-                p++;
-                const char *end = strchr(p, '"');
-                if (!end) break;
-                char txid[65];
-                size_t tlen = (size_t)(end - p);
-                if (tlen > 64) tlen = 64;
-                memcpy(txid, p, tlen);
-                txid[tlen] = '\0';
-                p = end + 1;
-
-                if (idx > 0) { /* skip coinbase */
-                    /* Fetch raw tx to check for OP_RETURN / SLP */
-                    char tp[128];
-                    snprintf(tp, sizeof(tp), "[\"%s\", 1]", txid);
-                    char txbuf[65536];
-                    rpc_call("getrawtransaction", tp, txbuf, sizeof(txbuf));
-
-                    /* Quick check: does it have scriptPubKey with OP_RETURN? */
-                    if (strstr(txbuf, "\"type\":\"nulldata\"")) {
-                        /* Try to find the hex */
-                        const char *hex_start = strstr(txbuf, "\"hex\":\"6a");
-                        if (hex_start) {
-                            hex_start += 7; /* skip "hex":" */
-                            const char *hex_end = strchr(hex_start, '"');
-                            if (hex_end) {
-                                /* Decode hex to bytes and try SLP parse */
-                                size_t hlen = (size_t)(hex_end - hex_start);
-                                if (hlen < 2048) {
-                                    uint8_t script[1024];
-                                    size_t slen = 0;
-                                    for (size_t j = 0; j + 1 < hlen && slen < sizeof(script); j += 2) {
-                                        unsigned int byte;
-                                        if (sscanf(hex_start + j, "%2x", &byte) == 1)
-                                            script[slen++] = (uint8_t)byte;
-                                    }
-
-                                    struct slp_message slp;
-                                    if (slp_parse(script, slen, &slp)) {
-                                        char safe_ticker[128] = "", safe_name[256] = "";
-                                        char short_txid[18];
-                                        snprintf(short_txid, sizeof(short_txid), "%.8s...%.4s",
-                                                 txid, txid + 60);
-
-                                        const char *type_str = "?";
-                                        if (slp.type == SLP_TX_GENESIS) {
-                                            type_str = "GENESIS";
-                                            html_escape(safe_ticker, sizeof(safe_ticker), slp.ticker);
-                                            html_escape(safe_name, sizeof(safe_name), slp.name);
-                                        } else if (slp.type == SLP_TX_SEND) {
-                                            type_str = "SEND";
-                                            char tid[65];
-                                            uint256_get_hex(&slp.token_id, tid);
-                                            snprintf(safe_name, sizeof(safe_name),
-                                                     "<a href='/explorer/tx/%s' class='hash'>%.16s...</a>",
-                                                     tid, tid);
-                                        } else if (slp.type == SLP_TX_MINT) {
-                                            type_str = "MINT";
-                                            char tid[65];
-                                            uint256_get_hex(&slp.token_id, tid);
-                                            snprintf(safe_name, sizeof(safe_name),
-                                                     "<a href='/explorer/tx/%s' class='hash'>%.16s...</a>",
-                                                     tid, tid);
-                                        }
-
-                                        APPEND(off, r, max,
-                                            "<tr><td><a href='/explorer/block/%d'>%d</a></td>"
-                                            "<td><span class='tag tag-slp'>%s</span></td>"
-                                            "<td style='color:#ff99ff;font-weight:700'>%s</td>"
-                                            "<td>%s</td>"
-                                            "<td class='hash'><a href='/explorer/tx/%s'>%s</a></td></tr>",
-                                            h, h, type_str, safe_ticker, safe_name, txid, short_txid);
-                                        found++;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                idx++;
-            } else {
-                p++;
-            }
+    /* Count tokens and transfers */
+    int64_t token_count = 0, xfer_count = 0;
+    {
+        sqlite3_stmt *s = NULL;
+        if (sqlite3_prepare_v2(db, "SELECT count(*) FROM zslp_tokens", -1, &s, NULL) == SQLITE_OK) {
+            if (sqlite3_step(s) == SQLITE_ROW) token_count = sqlite3_column_int64(s, 0);
+            sqlite3_finalize(s);
+        }
+        if (sqlite3_prepare_v2(db, "SELECT count(*) FROM zslp_transfers", -1, &s, NULL) == SQLITE_OK) {
+            if (sqlite3_step(s) == SQLITE_ROW) xfer_count = sqlite3_column_int64(s, 0);
+            sqlite3_finalize(s);
         }
     }
 
+    APPEND(off, r, max,
+        "<h1>ZSLP Tokens</h1>"
+        "<div class='stats-row'>"
+        "<div class='stat'><div class='num'>%" PRId64 "</div><div class='lbl'>Tokens Created</div></div>"
+        "<div class='stat'><div class='num'>%" PRId64 "</div><div class='lbl'>Token Transfers</div></div>"
+        "</div>"
+        "<p style='color:#aaa;font-size:16px'>"
+        "Simple Ledger Protocol (ZSLP) tokens on the ZClassic blockchain.</p>",
+        token_count, xfer_count);
+
+    /* Token list from SQLite */
+    APPEND(off, r, max,
+        "<h2>All Tokens (%" PRId64 ")</h2>"
+        "<table><tr><th>Ticker</th><th>Name</th><th>Decimals</th>"
+        "<th>Supply</th><th>Block</th></tr>",
+        token_count);
+    {
+        sqlite3_stmt *s = NULL;
+        if (sqlite3_prepare_v2(db,
+                "SELECT ticker, name, decimals, total_minted, genesis_height, hex(token_id)"
+                " FROM zslp_tokens ORDER BY genesis_height LIMIT 100",
+                -1, &s, NULL) == SQLITE_OK) {
+            while (sqlite3_step(s) == SQLITE_ROW && off + 512 < max) {
+                const char *ticker = (const char *)sqlite3_column_text(s, 0);
+                const char *name = (const char *)sqlite3_column_text(s, 1);
+                int dec = sqlite3_column_int(s, 2);
+                int64_t minted = sqlite3_column_int64(s, 3);
+                int height = sqlite3_column_int(s, 4);
+                const char *tid_hex = (const char *)sqlite3_column_text(s, 5);
+
+                char safe_ticker[128] = "", safe_name[256] = "";
+                html_escape(safe_ticker, sizeof(safe_ticker), ticker ? ticker : "");
+                html_escape(safe_name, sizeof(safe_name), name ? name : "");
+
+                /* Format supply with decimals */
+                char supply[64];
+                if (dec > 0 && dec <= 8) {
+                    int64_t divisor = 1;
+                    for (int d = 0; d < dec; d++) divisor *= 10;
+                    snprintf(supply, sizeof(supply), "%" PRId64 ".%0*" PRId64,
+                             minted / divisor, dec, minted % divisor);
+                } else {
+                    snprintf(supply, sizeof(supply), "%" PRId64, minted);
+                }
+
+                (void)tid_hex; /* token_id available for future detail pages */
+
+                APPEND(off, r, max,
+                    "<tr><td style='color:#ff99ff;font-weight:700;font-size:18px'>%s</td>"
+                    "<td>%s</td>"
+                    "<td>%d</td>"
+                    "<td class='amount'>%s</td>"
+                    "<td><a href='/explorer/block/%d'>%d</a></td></tr>",
+                    safe_ticker[0] ? safe_ticker : "(none)",
+                    safe_name, dec, supply, height, height);
+            }
+            sqlite3_finalize(s);
+        }
+    }
     APPEND(off, r, max, "</table>");
 
-    if (found == 0) {
-        APPEND(off, r, max,
-            "<div class='card'>"
-            "<p style='font-size:18px'>No ZSLP token transactions found in recent blocks.</p>"
-            "<p style='color:#888'>ZSLP tokens use the Simple Ledger Protocol (SLP) with "
-            "OP_RETURN outputs. Create a token with <code>zslp_create_token</code> via RPC.</p>"
-            "</div>");
-    }
+    /* Recent transfers */
+    APPEND(off, r, max,
+        "<h2>Recent Transfers</h2>"
+        "<table><tr><th>Block</th><th>Type</th><th>Token</th>"
+        "<th>Amount</th></tr>");
+    {
+        sqlite3_stmt *s = NULL;
+        if (sqlite3_prepare_v2(db,
+                "SELECT x.block_height, x.tx_type, x.amount, t.ticker, t.decimals "
+                "FROM zslp_transfers x "
+                "LEFT JOIN zslp_tokens t ON x.token_id = t.token_id "
+                "ORDER BY x.block_height DESC LIMIT 50",
+                -1, &s, NULL) == SQLITE_OK) {
+            while (sqlite3_step(s) == SQLITE_ROW && off + 256 < max) {
+                int height = sqlite3_column_int(s, 0);
+                int tx_type = sqlite3_column_int(s, 1);
+                int64_t amount = sqlite3_column_int64(s, 2);
+                const char *ticker = (const char *)sqlite3_column_text(s, 3);
+                int dec = sqlite3_column_int(s, 4);
 
+                const char *type_str = tx_type == 1 ? "GENESIS" :
+                                       tx_type == 2 ? "MINT" :
+                                       tx_type == 3 ? "SEND" : "?";
+                const char *type_class = tx_type == 1 ? "tag-cb" :
+                                         tx_type == 2 ? "tag-shielded" : "tag-slp";
+
+                char amt[64];
+                if (dec > 0 && dec <= 8) {
+                    int64_t divisor = 1;
+                    for (int d = 0; d < dec; d++) divisor *= 10;
+                    snprintf(amt, sizeof(amt), "%" PRId64 ".%0*" PRId64,
+                             amount / divisor, dec, amount % divisor);
+                } else {
+                    snprintf(amt, sizeof(amt), "%" PRId64, amount);
+                }
+
+                char safe_ticker[64] = "";
+                html_escape(safe_ticker, sizeof(safe_ticker), ticker ? ticker : "");
+
+                APPEND(off, r, max,
+                    "<tr><td><a href='/explorer/block/%d'>%d</a></td>"
+                    "<td><span class='tag %s'>%s</span></td>"
+                    "<td style='color:#ff99ff'>%s</td>"
+                    "<td class='amount'>%s</td></tr>",
+                    height, height, type_class, type_str,
+                    safe_ticker[0] ? safe_ticker : "?", amt);
+            }
+            sqlite3_finalize(s);
+        }
+    }
+    APPEND(off, r, max, "</table>");
+
+    /* About section */
     APPEND(off, r, max,
         "<h2>About ZSLP</h2>"
         "<div class='card'>"
         "<p style='font-size:16px;line-height:1.8'>"
         "ZSLP (ZClassic Simple Ledger Protocol) enables custom tokens on the ZClassic blockchain. "
-        "Based on the SLP specification from Bitcoin Cash, tokens are encoded entirely in "
+        "Based on the SLP specification, tokens are encoded in "
         "OP_RETURN outputs with no consensus changes required.</p>"
         "<div class='grid' style='margin-top:12px'>"
         "<div class='label'>GENESIS</div><div class='val'>Create a new token (ticker, name, supply, decimals)</div>"
         "<div class='label'>SEND</div><div class='val'>Transfer tokens between addresses</div>"
         "<div class='label'>MINT</div><div class='val'>Create additional supply (if baton exists)</div>"
         "<div class='label'>Token ID</div><div class='val'>The GENESIS transaction hash uniquely identifies each token</div>"
+        "<div class='label'>Lokad ID</div><div class='val'><code>SLP\\x00</code> (0x534c5000) in OP_RETURN</div>"
         "</div></div>");
 
     APPEND(off, r, max, EXPLORER_FOOTER);
+
+    /* Cache result */
+    if (off > 0 && off < sizeof(g_tokens_cache)) {
+        memcpy(g_tokens_cache, r, off);
+        g_tokens_cache_len = off;
+    }
+    free(r);
+    sqlite3_close(db);
+    g_tokens_computing = 0;
+    printf("Tokens background: cached %zu bytes (%" PRId64 " tokens)\n",
+           g_tokens_cache_len, token_count);
+    fflush(stdout);
+    return NULL;
+}
+
+static size_t serve_tokens(uint8_t *r, size_t max)
+{
+    if (g_tokens_cache_len > 0) {
+        size_t copy = g_tokens_cache_len < max ? g_tokens_cache_len : max;
+        memcpy(r, g_tokens_cache, copy);
+        return copy;
+    }
+    if (!g_tokens_computing) {
+        g_tokens_computing = 1;
+        pthread_t t;
+        pthread_attr_t attr;
+        pthread_attr_init(&attr);
+        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+        pthread_create(&t, &attr, tokens_compute_thread, NULL);
+        pthread_attr_destroy(&attr);
+    }
+    size_t off = 0;
+    APPEND(off, r, max,
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n"
+        "Connection: close\r\n\r\n<!DOCTYPE html><html><head><meta charset='utf-8'>"
+        "<meta http-equiv='refresh' content='3'>"
+        "<link rel='stylesheet' href='/explorer/style.css'>"
+        "</head><body>" EXPLORER_NAV
+        "<div style='text-align:center;margin:80px 0'>"
+        "<h1 style='font-size:32px;color:#ff99ff'>Loading Token Data...</h1>"
+        "<p style='font-size:18px;color:#888'>Scanning SQLite for ZSLP tokens.</p>"
+        "</div>" EXPLORER_FOOTER);
     return off;
 }
 
