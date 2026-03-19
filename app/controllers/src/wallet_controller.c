@@ -204,7 +204,8 @@ static bool rpc_listunspent(const struct json_value *params, bool help,
             json_push_kv_int(&entry, "vout", (int64_t)utxos[i].vout);
 
             /* Decode address from script */
-            if (utxos[i].script && utxos[i].script_len > 0) {
+            if (utxos[i].script && utxos[i].script_len > 0 &&
+                utxos[i].script_len <= MAX_SCRIPT_SIZE) {
                 struct script sc;
                 script_init(&sc);
                 memcpy(sc.data, utxos[i].script, utxos[i].script_len);
@@ -785,6 +786,10 @@ static bool rpc_createmultisig(const struct json_value *params, bool help,
             return false;
         }
         pubkey_set(&pks[i], buf, buf_len);
+        if (!pubkey_is_valid(&pks[i])) {
+            json_set_str(result, "Invalid public key (not a valid EC point)");
+            return false;
+        }
     }
 
     struct script redeem;
@@ -948,6 +953,10 @@ static bool rpc_addmultisigaddress(const struct json_value *params, bool help,
             return false;
         }
         pubkey_set(&pks[i], buf, buf_len);
+        if (!pubkey_is_valid(&pks[i])) {
+            json_set_str(result, "Invalid public key (not a valid EC point)");
+            return false;
+        }
     }
 
     struct script redeem;
