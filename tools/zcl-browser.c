@@ -32,6 +32,13 @@ extern size_t onion_service_handle_request(const char *method, const char *path,
                                             uint8_t *response, size_t response_max);
 extern const char *onion_service_start(const char *datadir);
 
+/* Explorer + database initialization */
+#include "models/database.h"
+#include "controllers/explorer_controller.h"
+#include "chain/chainparams.h"
+#include "keys/key.h"
+#include "keys/pubkey.h"
+
 static WebKitWebView *g_webview = NULL;
 static GtkWidget *g_url_bar = NULL;
 static GtkWidget *g_status_label = NULL;
@@ -174,12 +181,29 @@ static void on_forward(GtkWidget *b, gpointer d) {
 int main(int argc, char *argv[]) {
     gtk_init(&argc, &argv);
 
-    /* Initialize the onion service layer (sets up datadir, etc.) */
+    /* Initialize crypto + chain params (needed by explorer) */
+    chain_params_select(CHAIN_MAIN);
+    ecc_start();
+    ecc_verify_init();
+
+    /* Open the node database and initialize explorer */
     const char *home = getenv("HOME");
+    static char s_datadir[512];
+    static struct node_db s_ndb;
     if (home) {
-        char datadir[512];
-        snprintf(datadir, sizeof(datadir), "%s/.zclassic-c23", home);
-        onion_service_start(datadir);
+        snprintf(s_datadir, sizeof(s_datadir), "%s/.zclassic-c23", home);
+
+        /* Open node.db for block/tx/utxo queries */
+        char db_path[1024];
+        snprintf(db_path, sizeof(db_path), "%s/node.db", s_datadir);
+        if (node_db_open(&s_ndb, db_path)) {
+            explorer_set_state(NULL, NULL, NULL, &s_ndb, s_datadir);
+            printf("Explorer: opened %s\n", db_path);
+        } else {
+            printf("Explorer: could not open %s\n", db_path);
+        }
+
+        onion_service_start(s_datadir);
     }
 
     /* Window */
