@@ -646,6 +646,84 @@ static bool fast_rebuild_chainstate(struct coins_view_db *cvdb,
     return true;
 }
 
+/* ── Populate SQLite UTXOs from LevelDB chainstate ─────────
+ * Scans every coin entry in LevelDB and INSERTs into SQLite.
+ * Runs after fast_rebuild_chainstate to ensure SQLite matches LevelDB. */
+static void populate_sqlite_utxos_from_chainstate(struct coins_view_db *cvdb,
+                                                     struct node_db *ndb)
+{
+    if (!ndb || !ndb->db || !cvdb) return;
+
+    /* Clear stale UTXOs */
+    sqlite3_exec(ndb->db, "DELETE FROM utxos", NULL, NULL, NULL);
+
+    struct db_iterator it;
+    db_iter_init(&it, &cvdb->db);
+
+    char coins_prefix = 'c';
+    db_iter_seek(&it, &coins_prefix, 1);
+
+    int64_t count = 0;
+    int64_t t_start = (int64_t)time(NULL);
+    sqlite3_exec(ndb->db, "BEGIN TRANSACTION", NULL, NULL, NULL);
+
+    while (db_iter_valid(&it)) {
+        size_t klen = 0;
+        const char *key = db_iter_key(&it, &klen);
+        if (!key || klen < 1 || key[0] != 'c') break;
+
+        /* Key = 'c' + 32-byte txid */
+        if (klen != 33) { db_iter_next(&it); continue; }
+        const uint8_t *txid = (const uint8_t *)key + 1;
+
+        /* Read coins via the normal API using the txid */
+        struct uint256 tid;
+        memcpy(tid.data, txid, 32);
+        struct coins coins;
+        coins_init(&coins);
+
+        if (coins_view_db_get_coins(cvdb, &tid, &coins)) {
+            for (size_t i = 0; i < coins.num_vout; i++) {
+                if (tx_out_is_null(&coins.vout[i])) continue;
+
+                struct db_utxo u;
+                memset(&u, 0, sizeof(u));
+                memcpy(u.txid, txid, 32);
+                u.vout = (uint32_t)i;
+                u.value = coins.vout[i].value;
+                memcpy(u.script, coins.vout[i].script_pub_key.data,
+                       coins.vout[i].script_pub_key.size);
+                u.script_len = coins.vout[i].script_pub_key.size;
+                u.height = coins.height;
+                u.is_coinbase = coins.is_coinbase;
+                u.has_address = false;
+                db_utxo_save(ndb, &u);
+                count++;
+            }
+        }
+        coins_free(&coins);
+
+        if (count % 100000 == 0 && count > 0) {
+            sqlite3_exec(ndb->db, "COMMIT; BEGIN TRANSACTION", NULL, NULL, NULL);
+            int64_t elapsed = (int64_t)time(NULL) - t_start;
+            printf("  populate utxos: %lld (%lld/s)\n",
+                   (long long)count,
+                   elapsed > 0 ? (long long)(count / elapsed) : (long long)count);
+            fflush(stdout);
+        }
+
+        db_iter_next(&it);
+    }
+
+    sqlite3_exec(ndb->db, "COMMIT", NULL, NULL, NULL);
+    db_iter_free(&it);
+
+    int64_t elapsed = (int64_t)time(NULL) - t_start;
+    printf("populate_sqlite_utxos: %lld UTXOs in %llds\n",
+           (long long)count, (long long)elapsed);
+    fflush(stdout);
+}
+
 static bool reindex_chainstate(struct main_state *ms,
                                 struct coins_view_db *cvdb,
                                 struct coins_view_cache *cvtip,
@@ -1010,7 +1088,8 @@ bool app_init(struct app_context *ctx)
         }
         skip_activate = true;
 
-        /* Fast path: rebuild from SQLite UTXOs (~10s vs ~2h) */
+        /* Fast path: rebuild from SQLite UTXOs (~10s vs ~2h).
+         * Then repopulate SQLite from the authoritative LevelDB chainstate. */
         if (!fast_rebuild_chainstate(&g_coins_db, &g_coins_tip,
                                       ctx->datadir)) {
             printf("Fast rebuild unavailable, falling back to full reindex\n");
@@ -1018,6 +1097,12 @@ bool app_init(struct app_context *ctx)
                                      ctx->datadir)) {
                 fprintf(stderr, "Warning: Chainstate reindex had errors\n");
             }
+        }
+        /* Repopulate SQLite UTXOs from the authoritative LevelDB chainstate */
+        if (g_active_node_db) {
+            printf("Populating SQLite UTXOs from chainstate...\n");
+            fflush(stdout);
+            populate_sqlite_utxos_from_chainstate(&g_coins_db, g_active_node_db);
         }
     } else if (fast_restart) {
     } else if (g_state.map_block_index.size > 1) {
