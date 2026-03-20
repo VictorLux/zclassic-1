@@ -5,6 +5,7 @@
  * ZSLP tokens, and address lookups. */
 
 #include "controllers/explorer_controller.h"
+#include "controllers/explorer_stats.h"
 #include "controllers/api_controller.h"
 #include "chain/chain.h"
 #include "chain/chainparams.h"
@@ -1580,128 +1581,7 @@ static size_t serve_search(const char *query, uint8_t *r, size_t max)
 
 /* ── Stats Page with SVG Charts ────────────────────────────── */
 
-/* Smart Y-axis label formatter */
-static void format_y_label(char *buf, size_t max, double val)
-{
-    double av = val < 0 ? -val : val;
-    if (av >= 1e9)       snprintf(buf, max, "%.1fG", val / 1e9);
-    else if (av >= 1e6)  snprintf(buf, max, "%.1fM", val / 1e6);
-    else if (av >= 1e4)  snprintf(buf, max, "%.0fK", val / 1e3);
-    else if (av >= 1e3)  snprintf(buf, max, "%.1fK", val / 1e3);
-    else if (av >= 100)  snprintf(buf, max, "%.0f", val);
-    else if (av >= 10)   snprintf(buf, max, "%.1f", val);
-    else if (av >= 1)    snprintf(buf, max, "%.2f", val);
-    else if (av >= 0.01) snprintf(buf, max, "%.3f", val);
-    else                 snprintf(buf, max, "%.1e", val);
-}
-
-static void svg_line_chart(char *out, size_t max, size_t *off,
-                            const char *title, const char *color,
-                            double *values, const char labels[][20],
-                            int count, const char *y_label)
-{
-    if (count < 2) return;
-
-    double min_v = values[0], max_v = values[0];
-    for (int i = 1; i < count; i++) {
-        if (values[i] < min_v) min_v = values[i];
-        if (values[i] > max_v) max_v = values[i];
-    }
-    if (max_v == min_v) max_v = min_v + 1;
-
-    /* Auto-detect if log scale is needed (range spans >100x) */
-    double pos_min = min_v > 0 ? min_v : 0.01;
-    double pos_max = max_v > 0 ? max_v : 1;
-    bool use_log = (pos_max / pos_min > 100);
-
-    double range = max_v - min_v;
-    double log_min = 0, log_range = 1;
-    if (use_log) {
-        log_min = log10(pos_min > 0 ? pos_min : 0.01);
-        double log_max = log10(pos_max);
-        log_range = log_max - log_min;
-        if (log_range < 0.1) log_range = 0.1;
-    }
-
-    int w = 800, h = 300, pad_l = 90, pad_r = 20, pad_t = 40, pad_b = 60;
-    int plot_w = w - pad_l - pad_r;
-    int plot_h = h - pad_t - pad_b;
-
-    APPEND(*off, out, max,
-        "<svg viewBox='0 0 %d %d' style='width:100%%;max-width:%dpx;height:auto;"
-        "background:#0c0c0c;border-radius:8px;margin:4px 0'>",
-        w, h, w);
-
-    if (title && title[0])
-        APPEND(*off, out, max,
-            "<text x='%d' y='25' fill='#33ff99' font-size='16' font-weight='600'>%s%s</text>",
-            pad_l, title, use_log ? " (log scale)" : "");
-
-    /* Grid lines + Y labels */
-    for (int i = 0; i <= 4; i++) {
-        int y = pad_t + plot_h - (plot_h * i / 4);
-        double val;
-        if (use_log) {
-            double log_val = log_min + log_range * i / 4.0;
-            val = pow(10.0, log_val);
-        } else {
-            val = min_v + range * i / 4.0;
-        }
-        char lbl[32];
-        format_y_label(lbl, sizeof(lbl), val);
-        APPEND(*off, out, max,
-            "<line x1='%d' y1='%d' x2='%d' y2='%d' stroke='#1a1a1a' stroke-width='1'/>"
-            "<text x='%d' y='%d' fill='#666' font-size='13' text-anchor='end'>%s</text>",
-            pad_l, y, w - pad_r, y,
-            pad_l - 10, y + 5, lbl);
-    }
-
-    /* Y axis label */
-    APPEND(*off, out, max,
-        "<text x='14' y='%d' fill='#888' font-size='12' "
-        "transform='rotate(-90,14,%d)' text-anchor='middle'>%s</text>",
-        pad_t + plot_h / 2, pad_t + plot_h / 2, y_label);
-
-    /* Map value to Y coordinate */
-    #define VAL_TO_Y(v) (use_log \
-        ? (pad_t + plot_h - (int)(((log10((v) > 0 ? (v) : 0.01)) - log_min) / log_range * plot_h)) \
-        : (pad_t + plot_h - (int)(((v) - min_v) / range * plot_h)))
-
-    /* Data line */
-    APPEND(*off, out, max, "<polyline fill='none' stroke='%s' stroke-width='2.5' "
-        "stroke-linejoin='round' points='", color);
-
-    for (int i = 0; i < count; i++) {
-        int x = pad_l + plot_w * i / (count - 1);
-        int y = VAL_TO_Y(values[i]);
-        APPEND(*off, out, max, "%d,%d ", x, y);
-    }
-    APPEND(*off, out, max, "'/>");
-
-    /* Fill area under line */
-    APPEND(*off, out, max,
-        "<polyline fill='%s' fill-opacity='0.1' stroke='none' points='%d,%d ",
-        color, pad_l, pad_t + plot_h);
-    for (int i = 0; i < count; i++) {
-        int x = pad_l + plot_w * i / (count - 1);
-        int y = VAL_TO_Y(values[i]);
-        APPEND(*off, out, max, "%d,%d ", x, y);
-    }
-    APPEND(*off, out, max, "%d,%d '/>", w - pad_r, pad_t + plot_h);
-
-    #undef VAL_TO_Y
-
-    /* X labels */
-    int label_step = count > 10 ? count / 6 : 1;
-    for (int i = 0; i < count; i += label_step) {
-        int x = pad_l + plot_w * i / (count - 1);
-        APPEND(*off, out, max,
-            "<text x='%d' y='%d' fill='#666' font-size='11' text-anchor='middle'>%s</text>",
-            x, h - 10, labels[i]);
-    }
-
-    APPEND(*off, out, max, "</svg>");
-}
+/* format_y_label and svg_line_chart moved to explorer_internal.h */
 
 __attribute__((unused))
 static void svg_stacked_area(char *out, size_t max, size_t *off,
@@ -1764,263 +1644,24 @@ static void svg_stacked_area(char *out, size_t max, size_t *off,
 }
 
 /* Stats page — computed in background thread, served from cache */
-static char g_stats_cache[262144] = ""; /* 256KB for all charts */
+#define STATS_CACHE_SIZE (1024 * 1024) /* 1MB for comprehensive stats */
+static char g_stats_cache[STATS_CACHE_SIZE] = "";
 static size_t g_stats_cache_len = 0;
 
 static void *stats_compute_thread(void *arg)
 {
     (void)arg;
-    printf("Stats background: computing...\n");
+    printf("Stats background: computing comprehensive stats...\n");
     fflush(stdout);
-
-    uint8_t *r = malloc(262144);
-    if (!r) { g_stats_computing = 0; return NULL; }
-    size_t max = 262144;
-    size_t off = 0;
-
-    /* Query all data from our own SQLite — no RPC dependency */
-    char db_path[1024];
-    snprintf(db_path, sizeof(db_path), "%s/node.db", g_datadir);
-    sqlite3 *db = NULL;
-    if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
-        printf("Stats: failed to open SQLite\n"); fflush(stdout);
-        free(r); g_stats_computing = 0; return NULL;
-    }
-    sqlite3_exec(db, "PRAGMA mmap_size=268435456", NULL, NULL, NULL);
-
-    int tip = 0;
-    double diff = 0;
-    int64_t total_supply = 0;
-    int64_t utxo_count_val = 0;
-    int64_t mp_count = 0;
-    double mp_bytes = 0;
-
-    /* Tip height + difficulty from latest block */
-    {
-        sqlite3_stmt *s = NULL;
-        if (sqlite3_prepare_v2(db,
-                "SELECT height, bits FROM blocks ORDER BY height DESC LIMIT 1",
-                -1, &s, NULL) == SQLITE_OK && s) {
-            if (sqlite3_step(s) == SQLITE_ROW) {
-                tip = sqlite3_column_int(s, 0);
-                uint32_t bits = (uint32_t)sqlite3_column_int(s, 1);
-                if (bits > 0) {
-                    /* Zcash/ZClassic difficulty: powLimit / target
-                     * powLimit = 0x07ffff * 2^(8*(0x1f-3))
-                     * target = (bits & 0x00ffffff) * 2^(8*((bits>>24)-3)) */
-                    int exp = (int)((bits >> 24) & 0xff);
-                    double target = (double)(bits & 0x00ffffff) * pow(256.0, exp - 3);
-                    double pow_limit = (double)0x07ffff * pow(256.0, 0x1f - 3);
-                    if (target > 0) diff = pow_limit / target;
-                }
-            }
-            sqlite3_finalize(s);
-        }
-    }
-
-    if (tip <= 0) {
-        printf("Stats: no blocks in SQLite (tip=%d)\n", tip);
-        fflush(stdout);
-        sqlite3_close(db); free(r); g_stats_computing = 0; return NULL;
-    }
-
-    /* Supply + UTXO count */
-    {
-        sqlite3_stmt *s = NULL;
-        if (sqlite3_prepare_v2(db,
-                "SELECT COALESCE(SUM(value),0), count(*) FROM utxos",
-                -1, &s, NULL) == SQLITE_OK && s) {
-            if (sqlite3_step(s) == SQLITE_ROW) {
-                total_supply = sqlite3_column_int64(s, 0);
-                utxo_count_val = sqlite3_column_int64(s, 1);
-            }
-            sqlite3_finalize(s);
-        }
-    }
-
-    double hashrate = diff * 8192.0 / 150.0;
-    char hr_str[64];
-    if (hashrate > 1e9) snprintf(hr_str, sizeof(hr_str), "%.2f GH/s", hashrate / 1e9);
-    else if (hashrate > 1e6) snprintf(hr_str, sizeof(hr_str), "%.2f MH/s", hashrate / 1e6);
-    else if (hashrate > 1e3) snprintf(hr_str, sizeof(hr_str), "%.2f KH/s", hashrate / 1e3);
-    else snprintf(hr_str, sizeof(hr_str), "%.0f H/s", hashrate);
-
-    char supply_str[32];
-    format_zcl(supply_str, sizeof(supply_str), total_supply);
-
-    APPEND(off, r, max, EXPLORER_HEADER("Network Stats") EXPLORER_NAV
-        "<h1>Network Statistics</h1>");
-
-    APPEND(off, r, max,
-        "<div class='stats-row'>"
-        "<div class='stat'><div class='num'>%d</div><div class='lbl'>Block Height</div></div>"
-        "<div class='stat'><div class='num'>%.2f</div><div class='lbl'>Difficulty</div></div>"
-        "<div class='stat'><div class='num'>%s</div><div class='lbl'>Est. Hashrate</div></div>"
-        "</div>"
-        "<div class='stats-row'>"
-        "<div class='stat'><div class='num'>%s</div><div class='lbl'>Circulating Supply</div></div>"
-        "<div class='stat'><div class='num'>%" PRId64 "</div><div class='lbl'>UTXOs</div></div>"
-        "<div class='stat'><div class='num'>%" PRId64 "</div><div class='lbl'>Mempool Txs</div></div>"
-        "<div class='stat'><div class='num'>%.1f KB</div><div class='lbl'>Mempool Size</div></div>"
-        "</div>",
-        tip, diff, hr_str,
-        supply_str, utxo_count_val, mp_count, (double)mp_bytes / 1024.0);
-
-    /* Link to HODL wave */
-    APPEND(off, r, max,
-        "<div class='card' style='text-align:center'>"
-        "<a href='/explorer/hodl' style='font-size:20px;font-weight:700'>"
-        "View Full HODL Wave Chart &rarr;</a>"
-        "<p style='color:#888;margin:4px 0 0;font-size:14px'>"
-        "9-year UTXO age distribution from genesis</p></div>");
-
-    /* ── Interactive chart with CSS-only tab controls ── */
-
-    /* Inline CSS for the tab system (pure HTML/CSS, no JS) */
-    APPEND(off, r, max,
-        "<style>"
-        ".tabs input{display:none}"
-        ".tabs .tab-bar{display:flex;gap:0;margin:12px 0 0}"
-        ".tabs label{padding:10px 20px;background:#1a1a1a;color:#888;"
-        "cursor:pointer;font-size:16px;font-weight:600;border:1px solid #222;"
-        "border-bottom:none;border-radius:8px 8px 0 0;transition:all 0.2s}"
-        ".tabs label:hover{color:#fff;background:#222}"
-        ".tabs .panel{display:none;background:#111;border:1px solid #222;"
-        "border-radius:0 8px 8px 8px;padding:16px}"
-        "#d24h:checked ~ .tab-bar label[for=d24h],"
-        "#d7d:checked ~ .tab-bar label[for=d7d],"
-        "#d30d:checked ~ .tab-bar label[for=d30d],"
-        "#d1y:checked ~ .tab-bar label[for=d1y],"
-        "#dall:checked ~ .tab-bar label[for=dall]"
-        "{background:#111;color:#4db8ff;border-bottom-color:#111}"
-        "#d24h:checked ~ #p-d24h,"
-        "#d7d:checked ~ #p-d7d,"
-        "#d30d:checked ~ #p-d30d,"
-        "#d1y:checked ~ #p-d1y,"
-        "#dall:checked ~ #p-dall{display:block}"
-        "#h24h:checked ~ .tab-bar label[for=h24h],"
-        "#h7d:checked ~ .tab-bar label[for=h7d],"
-        "#h30d:checked ~ .tab-bar label[for=h30d],"
-        "#h1y:checked ~ .tab-bar label[for=h1y],"
-        "#hall:checked ~ .tab-bar label[for=hall]"
-        "{background:#111;color:#33ff99;border-bottom-color:#111}"
-        "#h24h:checked ~ #p-h24h,"
-        "#h7d:checked ~ #p-h7d,"
-        "#h30d:checked ~ #p-h30d,"
-        "#h1y:checked ~ #p-h1y,"
-        "#hall:checked ~ #p-hall{display:block}"
-        "</style>");
-
-    /* Compute charts at all time scales */
-    struct { const char *label; const char *id; int blocks; } ranges[] = {
-        {"24h",  "24h",  576},
-        {"7d",   "7d",   4032},
-        {"30d",  "30d",  17280},
-        {"1yr",  "1y",   210240},
-        {"All",  "all",  tip},
-    };
-    int num_ranges = 5;
-
-    /* Pre-compute all chart data */
-    double all_diff[5][40], all_hr[5][40];
-    char all_labels[5][40][20];
-
-    for (int ri = 0; ri < num_ranges; ri++) {
-        int total = ranges[ri].blocks;
-        if (total > tip) total = tip;
-        int step = total / 40;
-        if (step < 1) step = 1;
-
-        for (int i = 0; i < 40; i++) {
-            int h = tip - total + (i + 1) * step;
-            if (h < 0) h = 0;
-            if (h > tip) h = tip;
-            all_diff[ri][i] = diff;
-            all_hr[ri][i] = diff * 8192.0 / 150.0;
-
-            /* Query difficulty (bits) from our SQLite */
-            char sql[256];
-            snprintf(sql, sizeof(sql),
-                "SELECT bits FROM blocks WHERE height=%d LIMIT 1", h);
-            sqlite3_stmt *bs = NULL;
-            if (sqlite3_prepare_v2(db, sql, -1, &bs, NULL) == SQLITE_OK && bs) {
-                if (sqlite3_step(bs) == SQLITE_ROW) {
-                    uint32_t bits = (uint32_t)sqlite3_column_int(bs, 0);
-                    if (bits > 0) {
-                        double d = difficulty_from_bits(bits);
-                        all_diff[ri][i] = d;
-                        all_hr[ri][i] = d * 8192.0 / 150.0;
-                    }
-                }
-                sqlite3_finalize(bs);
-            }
-            snprintf(all_labels[ri][i], sizeof(all_labels[ri][i]), "%d", h);
-        }
-    }
-
-    /* ── Difficulty tabbed chart ── */
-    APPEND(off, r, max,
-        "<h2>Difficulty</h2>"
-        "<div class='tabs'>"
-        "<input type='radio' name='dtab' id='d24h'>"
-        "<input type='radio' name='dtab' id='d7d'>"
-        "<input type='radio' name='dtab' id='d30d' checked>"
-        "<input type='radio' name='dtab' id='d1y'>"
-        "<input type='radio' name='dtab' id='dall'>"
-        "<div class='tab-bar'>"
-        "<label for='d24h'>24h</label>"
-        "<label for='d7d'>7 Days</label>"
-        "<label for='d30d'>30 Days</label>"
-        "<label for='d1y'>1 Year</label>"
-        "<label for='dall'>All Time</label>"
-        "</div>");
-
-    for (int ri = 0; ri < num_ranges; ri++) {
-        APPEND(off, r, max, "<div class='panel' id='p-d%s'>", ranges[ri].id);
-        svg_line_chart((char *)r, max, &off, "",
-                        "#4db8ff", all_diff[ri], all_labels[ri], 40, "Difficulty");
-        APPEND(off, r, max, "</div>");
-    }
-    APPEND(off, r, max, "</div>");
-
-    /* ── Hashrate tabbed chart ── */
-    APPEND(off, r, max,
-        "<h2>Hashrate</h2>"
-        "<div class='tabs'>"
-        "<input type='radio' name='htab' id='h24h'>"
-        "<input type='radio' name='htab' id='h7d'>"
-        "<input type='radio' name='htab' id='h30d' checked>"
-        "<input type='radio' name='htab' id='h1y'>"
-        "<input type='radio' name='htab' id='hall'>"
-        "<div class='tab-bar'>"
-        "<label for='h24h'>24h</label>"
-        "<label for='h7d'>7 Days</label>"
-        "<label for='h30d'>30 Days</label>"
-        "<label for='h1y'>1 Year</label>"
-        "<label for='hall'>All Time</label>"
-        "</div>");
-
-    for (int ri = 0; ri < num_ranges; ri++) {
-        APPEND(off, r, max, "<div class='panel' id='p-h%s'>", ranges[ri].id);
-        svg_line_chart((char *)r, max, &off, "",
-                        "#33ff99", all_hr[ri], all_labels[ri], 40, "H/s");
-        APPEND(off, r, max, "</div>");
-    }
-    APPEND(off, r, max, "</div>");
-
-    APPEND(off, r, max, EXPLORER_FOOTER);
-
-    if (off > 0 && off < sizeof(g_stats_cache)) {
-        memcpy(g_stats_cache, r, off);
-        g_stats_cache_len = off;
-    }
-    sqlite3_close(db);
-    free(r);
+    size_t len = explorer_stats_build((uint8_t *)g_stats_cache, STATS_CACHE_SIZE, g_datadir);
+    if (len > 0)
+        g_stats_cache_len = len;
     g_stats_computing = 0;
-    printf("Stats background: cached %zu bytes (tip=%d)\n", g_stats_cache_len, tip);
-    fflush(stdout);
     return NULL;
 }
+
+/* (stats_query_int64, stats_query_double, stats_tab_css, and stats body
+ * moved to explorer_stats.c — see explorer_stats_build()) */
 
 static size_t serve_stats(uint8_t *r, size_t max)
 {
@@ -2038,7 +1679,7 @@ static size_t serve_stats(uint8_t *r, size_t max)
         pthread_attr_t attr;
         pthread_attr_init(&attr);
         pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-        pthread_attr_setstacksize(&attr, 1024 * 1024); /* 1MB stack */
+        pthread_attr_setstacksize(&attr, 2 * 1024 * 1024); /* 2MB stack */
         pthread_create(&t, &attr, stats_compute_thread, NULL);
         pthread_attr_destroy(&attr);
     }

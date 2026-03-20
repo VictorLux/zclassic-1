@@ -694,6 +694,39 @@ int node_db_migrate(struct node_db *ndb, const char *datadir)
         applied++;
     }
 
+    if (current_ver < 8) {
+        /* v8: Partial indexes on shielded value columns for fast stats queries.
+         * Only index non-zero rows — most blocks have zero shielded activity. */
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_blocks_sprout_value "
+            "ON blocks(sprout_value) WHERE sprout_value != 0");
+
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_blocks_sapling_value "
+            "ON blocks(sapling_value) WHERE sapling_value != 0");
+
+        /* Covering index for time-range queries on shielded blocks */
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_blocks_time_sprout "
+            "ON blocks(time, sprout_value) WHERE sprout_value != 0");
+
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_blocks_time_sapling "
+            "ON blocks(time, sapling_value) WHERE sapling_value != 0");
+
+        /* Index for num_tx queries (block records) */
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_blocks_num_tx "
+            "ON blocks(num_tx DESC)");
+
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('008')");
+        int32_t v = 8;
+        node_db_state_set(ndb, "schema_version", &v, sizeof(v));
+        current_ver = 8;
+        applied++;
+    }
+
     if (applied > 0)
         printf("db: applied %d migration(s), now at version %d\n",
                applied, node_db_schema_version(ndb));
