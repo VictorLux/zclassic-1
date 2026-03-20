@@ -1797,7 +1797,49 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
     int max_height = -1;
     int total_found = 0;
 
-    /* Always full re-index — wipe first, then scan everything */
+    /* ── Turbo mode: aggressive SQLite settings for bulk import ── */
+    printf("indexlegacy: Entering turbo mode (synchronous=OFF, journal=MEMORY)...\n");
+    fflush(stdout);
+    sqlite3_exec(g_node_db_bc->db, "PRAGMA synchronous=OFF", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "PRAGMA journal_mode=MEMORY", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "PRAGMA cache_size=-524288", NULL, NULL, NULL); /* 512MB */
+    sqlite3_exec(g_node_db_bc->db, "PRAGMA temp_store=MEMORY", NULL, NULL, NULL);
+
+    /* Drop all indexes before bulk insert — recreated after */
+    printf("indexlegacy: Dropping indexes for fast bulk insert...\n");
+    fflush(stdout);
+    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_utxo_address", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_utxo_value", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_utxo_height", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_utxo_height_value", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_tx_block", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_tx_height", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_blocks_height_all", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_blocks_prev", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_blocks_chainwork", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_blocks_time", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_blocks_sprout_value", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_blocks_sapling_value", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_blocks_time_sprout", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_blocks_time_sapling", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_blocks_num_tx", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_txo_addr", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_txo_height", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_txi_prev", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_txi_height", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_ss_nf", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_ss_height", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_so_height", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_js_height", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_spnf_height", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_opret_height", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_opret_slp", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_zslp_xfer_token", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_zslp_xfer_height", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_zslp_xfer_addr", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_zslp_ticker", NULL, NULL, NULL);
+
+    /* Wipe all data for clean re-index */
     printf("indexlegacy: Wiping all chain data for clean re-index...\n");
     fflush(stdout);
     node_db_exec(g_node_db_bc, "DELETE FROM utxos");
@@ -2462,7 +2504,7 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
 
         block_free(&blk);
 
-        if (blocks_indexed % 10000 == 0 && blocks_indexed > 0) {
+        if (blocks_indexed % 50000 == 0 && blocks_indexed > 0) {
             node_db_commit(g_node_db_bc);
             int64_t elapsed = (int64_t)time(NULL) - t_pass2;
             double rate = elapsed > 0 ?
@@ -2495,6 +2537,52 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
     sqlite3_finalize(stmt_opret);
     sqlite3_finalize(stmt_integrity);
     sqlite3_finalize(stmt_update_shielded);
+
+    /* ── Rebuild all indexes (dropped before bulk insert for speed) ── */
+    printf("indexlegacy: Rebuilding indexes...\n");
+    fflush(stdout);
+    int64_t t_idx = (int64_t)time(NULL);
+    /* Core block/tx/utxo indexes */
+    sqlite3_exec(g_node_db_bc->db, "CREATE UNIQUE INDEX IF NOT EXISTS idx_blocks_height ON blocks(height) WHERE status >= 3", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_blocks_prev ON blocks(prev_hash)", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_blocks_chainwork ON blocks(chain_work DESC)", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_blocks_height_all ON blocks(height)", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_blocks_time ON blocks(time)", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_blocks_sprout_value ON blocks(sprout_value) WHERE sprout_value != 0", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_blocks_sapling_value ON blocks(sapling_value) WHERE sapling_value != 0", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_blocks_time_sprout ON blocks(time, sprout_value) WHERE sprout_value != 0", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_blocks_time_sapling ON blocks(time, sapling_value) WHERE sapling_value != 0", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_blocks_num_tx ON blocks(num_tx DESC)", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_tx_block ON transactions(block_hash)", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_tx_height ON transactions(block_height)", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_utxo_address ON utxos(address_hash) WHERE address_hash IS NOT NULL", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_utxo_value ON utxos(value DESC)", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_utxo_height ON utxos(height)", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_utxo_height_value ON utxos(height, value)", NULL, NULL, NULL);
+    /* New chain index table indexes */
+    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_txo_addr ON tx_outputs(address_hash) WHERE address_hash IS NOT NULL", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_txo_height ON tx_outputs(block_height)", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_txi_prev ON tx_inputs(prev_txid, prev_vout)", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_txi_height ON tx_inputs(block_height)", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_ss_nf ON sapling_spends(nullifier)", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_ss_height ON sapling_spends(block_height)", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_so_height ON sapling_outputs(block_height)", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_js_height ON joinsplits(block_height)", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_spnf_height ON sprout_nullifiers(block_height)", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_opret_height ON op_returns(block_height)", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_opret_slp ON op_returns(is_slp) WHERE is_slp = 1", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_zslp_xfer_token ON zslp_transfers(token_id)", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_zslp_xfer_height ON zslp_transfers(block_height DESC)", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_zslp_xfer_addr ON zslp_transfers(to_addr) WHERE to_addr IS NOT NULL", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_zslp_ticker ON zslp_tokens(ticker)", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_addr_balance ON addresses(balance DESC)", NULL, NULL, NULL);
+    printf("indexlegacy: Indexes rebuilt in %llds\n",
+        (long long)((int64_t)time(NULL) - t_idx));
+    fflush(stdout);
+
+    /* Restore safe SQLite settings */
+    sqlite3_exec(g_node_db_bc->db, "PRAGMA synchronous=FULL", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "PRAGMA journal_mode=WAL", NULL, NULL, NULL);
 
     /* ── Populate addresses from UTXO set ── */
     printf("indexlegacy: Populating addresses from UTXO set...\n");
