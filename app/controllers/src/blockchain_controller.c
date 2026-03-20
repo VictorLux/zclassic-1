@@ -42,6 +42,7 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <pthread.h>
 
 static struct main_state *g_main_state = NULL;
 static struct tx_mempool *g_mempool = NULL;
@@ -1737,6 +1738,293 @@ static bool rpc_reindexchainstate(const struct json_value *params, bool help,
     return true;
 }
 
+/* ── Phase B data structures for parallel block extraction ── */
+
+#define N_INDEX_THREADS 4
+#define IDX_BATCH_CAP   4000000
+
+struct idx_tx_input {
+    uint8_t txid[32]; uint8_t prev_txid[32];
+    uint32_t vin_index; uint32_t prev_vout; int height;
+};
+struct idx_tx_output {
+    uint8_t txid[32]; int64_t value;
+    uint8_t addr_hash[20]; bool has_addr;
+    uint32_t vout; int script_type; int height;
+};
+struct idx_joinsplit {
+    uint8_t txid[32]; uint8_t anchor[32];
+    uint8_t nullifiers[2][32];
+    int64_t vpub_old; int64_t vpub_new;
+    uint32_t js_index; int height;
+};
+struct idx_sapling_spend {
+    uint8_t txid[32]; uint8_t cv[32]; uint8_t anchor[32];
+    uint8_t nullifier[32]; uint8_t rk[32];
+    uint32_t spend_index; int height;
+};
+struct idx_sapling_output {
+    uint8_t txid[32]; uint8_t cv[32]; uint8_t cm[32];
+    uint8_t ephemeral_key[32];
+    uint32_t output_index; int height;
+};
+struct idx_opret {
+    uint8_t txid[32]; uint8_t script[256];
+    size_t script_len; int is_slp; int height;
+};
+struct idx_block_shielded {
+    int height; int64_t sprout_value; int64_t sapling_value;
+    uint8_t block_hash[32];
+    uint32_t num_js; uint32_t num_ss; uint32_t num_so;
+    uint32_t num_tx;
+};
+
+struct blk_loc {
+    int file;
+    uint32_t offset;
+    uint32_t size;
+};
+
+struct worker_ctx {
+    int thread_id;
+    int height_from, height_to;
+    const struct blk_loc *locs;
+    int max_height;
+    const char *legacy_dir;
+
+    /* Output arrays -- allocated by thread */
+    struct idx_tx_input *inputs;      int num_inputs;      int cap_inputs;
+    struct idx_tx_output *outputs;    int num_outputs;     int cap_outputs;
+    struct idx_joinsplit *joinsplits; int num_joinsplits;  int cap_joinsplits;
+    struct idx_sapling_spend *sspends;   int num_sspends;  int cap_sspends;
+    struct idx_sapling_output *soutputs; int num_soutputs; int cap_soutputs;
+    struct idx_opret *oprets;         int num_oprets;      int cap_oprets;
+    struct idx_block_shielded *blocks_sh; int num_blocks_sh; int cap_blocks_sh;
+};
+
+/* Macro to grow a per-thread array if at capacity */
+#define IDX_GROW(arr, num, cap, type) do {            \
+    if ((num) >= (cap)) {                             \
+        (cap) = (cap) < 1024 ? 1024 : (cap) * 2;     \
+        (arr) = realloc((arr), (size_t)(cap) * sizeof(type)); \
+    }                                                 \
+} while (0)
+
+static void *index_worker(void *arg) {
+    struct worker_ctx *ctx = arg;
+
+    /* Allocate output arrays */
+    ctx->cap_inputs = IDX_BATCH_CAP;
+    ctx->cap_outputs = IDX_BATCH_CAP;
+    ctx->cap_joinsplits = IDX_BATCH_CAP / 4;
+    ctx->cap_sspends = IDX_BATCH_CAP / 4;
+    ctx->cap_soutputs = IDX_BATCH_CAP / 4;
+    ctx->cap_oprets = IDX_BATCH_CAP / 8;
+    ctx->cap_blocks_sh = (ctx->height_to - ctx->height_from + 2);
+
+    ctx->inputs    = malloc((size_t)ctx->cap_inputs    * sizeof(*ctx->inputs));
+    ctx->outputs   = malloc((size_t)ctx->cap_outputs   * sizeof(*ctx->outputs));
+    ctx->joinsplits= malloc((size_t)ctx->cap_joinsplits* sizeof(*ctx->joinsplits));
+    ctx->sspends   = malloc((size_t)ctx->cap_sspends   * sizeof(*ctx->sspends));
+    ctx->soutputs  = malloc((size_t)ctx->cap_soutputs  * sizeof(*ctx->soutputs));
+    ctx->oprets    = malloc((size_t)ctx->cap_oprets    * sizeof(*ctx->oprets));
+    ctx->blocks_sh = malloc((size_t)ctx->cap_blocks_sh * sizeof(*ctx->blocks_sh));
+
+    ctx->num_inputs = ctx->num_outputs = ctx->num_joinsplits = 0;
+    ctx->num_sspends = ctx->num_soutputs = ctx->num_oprets = 0;
+    ctx->num_blocks_sh = 0;
+
+    int cur_file = -1;
+    uint8_t *mdata = NULL;
+    size_t msize = 0;
+
+    printf("  Phase B: thread %d processing heights %d-%d\n",
+           ctx->thread_id, ctx->height_from, ctx->height_to);
+    fflush(stdout);
+
+    for (int h = ctx->height_from; h <= ctx->height_to; h++) {
+        if (h > ctx->max_height) break;
+        if (ctx->locs[h].size == 0) continue;
+
+        /* mmap block file if needed */
+        if (ctx->locs[h].file != cur_file) {
+            if (mdata) munmap(mdata, msize);
+            char path[1200];
+            snprintf(path, sizeof(path), "%s/blocks/blk%05d.dat",
+                     ctx->legacy_dir, ctx->locs[h].file);
+            struct stat st2;
+            if (stat(path, &st2) != 0) { mdata = NULL; continue; }
+            int fd2 = open(path, O_RDONLY);
+            if (fd2 < 0) { mdata = NULL; continue; }
+            msize = (size_t)st2.st_size;
+            mdata = mmap(NULL, msize, PROT_READ, MAP_PRIVATE, fd2, 0);
+            close(fd2);
+            if (mdata == MAP_FAILED) { mdata = NULL; continue; }
+            cur_file = ctx->locs[h].file;
+        }
+        if (!mdata) continue;
+        if (ctx->locs[h].offset + ctx->locs[h].size > msize) continue;
+
+        /* Deserialize block */
+        struct block blk2;
+        block_init(&blk2);
+        struct byte_stream bs2;
+        stream_init_from_data(&bs2, mdata + ctx->locs[h].offset,
+                              ctx->locs[h].size);
+        if (!block_deserialize(&blk2, &bs2)) {
+            stream_free(&bs2);
+            block_free(&blk2);
+            continue;
+        }
+        stream_free(&bs2);
+
+        struct uint256 bh2;
+        block_header_get_hash(&blk2.header, &bh2);
+
+        /* Per-block shielded accumulators */
+        int64_t bk_sprout = 0, bk_sapling = 0;
+        uint32_t bk_njs = 0, bk_nss = 0, bk_nso = 0;
+
+        for (size_t ti = 0; ti < blk2.num_vtx; ti++) {
+            const struct transaction *tx2 = &blk2.vtx[ti];
+
+            /* Transparent inputs (except coinbase) */
+            if (ti > 0) {
+                for (size_t j = 0; j < tx2->num_vin; j++) {
+                    IDX_GROW(ctx->inputs, ctx->num_inputs,
+                             ctx->cap_inputs, struct idx_tx_input);
+                    struct idx_tx_input *inp = &ctx->inputs[ctx->num_inputs++];
+                    memcpy(inp->txid, tx2->hash.data, 32);
+                    memcpy(inp->prev_txid, tx2->vin[j].prevout.hash.data, 32);
+                    inp->vin_index = (uint32_t)j;
+                    inp->prev_vout = tx2->vin[j].prevout.n;
+                    inp->height = h;
+                }
+            }
+
+            /* JoinSplits + sprout nullifiers */
+            for (size_t j = 0; j < tx2->num_joinsplit; j++) {
+                struct js_description *js = &tx2->v_joinsplit[j];
+                bk_sprout += js->vpub_old - js->vpub_new;
+
+                IDX_GROW(ctx->joinsplits, ctx->num_joinsplits,
+                         ctx->cap_joinsplits, struct idx_joinsplit);
+                struct idx_joinsplit *ij = &ctx->joinsplits[ctx->num_joinsplits++];
+                memcpy(ij->txid, tx2->hash.data, 32);
+                memcpy(ij->anchor, js->anchor.data, 32);
+                for (int nf = 0; nf < ZC_NUM_JS_INPUTS; nf++)
+                    memcpy(ij->nullifiers[nf], js->nullifiers[nf].data, 32);
+                ij->vpub_old = js->vpub_old;
+                ij->vpub_new = js->vpub_new;
+                ij->js_index = (uint32_t)j;
+                ij->height = h;
+                bk_njs++;
+            }
+
+            /* Sapling spends */
+            for (size_t j = 0; j < tx2->num_shielded_spend; j++) {
+                struct spend_description *sd = &tx2->v_shielded_spend[j];
+                IDX_GROW(ctx->sspends, ctx->num_sspends,
+                         ctx->cap_sspends, struct idx_sapling_spend);
+                struct idx_sapling_spend *isp = &ctx->sspends[ctx->num_sspends++];
+                memcpy(isp->txid, tx2->hash.data, 32);
+                memcpy(isp->cv, sd->cv.data, 32);
+                memcpy(isp->anchor, sd->anchor.data, 32);
+                memcpy(isp->nullifier, sd->nullifier.data, 32);
+                memcpy(isp->rk, sd->rk.data, 32);
+                isp->spend_index = (uint32_t)j;
+                isp->height = h;
+                bk_nss++;
+            }
+
+            /* Sapling outputs */
+            for (size_t j = 0; j < tx2->num_shielded_output; j++) {
+                struct output_description *od = &tx2->v_shielded_output[j];
+                IDX_GROW(ctx->soutputs, ctx->num_soutputs,
+                         ctx->cap_soutputs, struct idx_sapling_output);
+                struct idx_sapling_output *iso = &ctx->soutputs[ctx->num_soutputs++];
+                memcpy(iso->txid, tx2->hash.data, 32);
+                memcpy(iso->cv, od->cv.data, 32);
+                memcpy(iso->cm, od->cm.data, 32);
+                memcpy(iso->ephemeral_key, od->ephemeral_key.data, 32);
+                iso->output_index = (uint32_t)j;
+                iso->height = h;
+                bk_nso++;
+            }
+
+            /* Sapling value balance */
+            bk_sapling += tx2->value_balance;
+
+            /* Transparent outputs */
+            for (size_t j = 0; j < tx2->num_vout; j++) {
+                const uint8_t *scr = tx2->vout[j].script_pub_key.data;
+                size_t scr_len = tx2->vout[j].script_pub_key.size;
+
+                IDX_GROW(ctx->outputs, ctx->num_outputs,
+                         ctx->cap_outputs, struct idx_tx_output);
+                struct idx_tx_output *ot = &ctx->outputs[ctx->num_outputs++];
+                memcpy(ot->txid, tx2->hash.data, 32);
+                ot->value = tx2->vout[j].value;
+                ot->vout = (uint32_t)j;
+                ot->height = h;
+                ot->has_addr = false;
+                ot->script_type = 0;
+
+                if (scr_len == 25 && scr[0] == 0x76 && scr[1] == 0xa9 &&
+                    scr[2] == 0x14 && scr[23] == 0x88 && scr[24] == 0xac) {
+                    memcpy(ot->addr_hash, scr + 3, 20);
+                    ot->has_addr = true;
+                    ot->script_type = SCRIPT_P2PKH;
+                } else if (scr_len == 23 && scr[0] == 0xa9 && scr[1] == 0x14 &&
+                           scr[22] == 0x87) {
+                    memcpy(ot->addr_hash, scr + 2, 20);
+                    ot->has_addr = true;
+                    ot->script_type = SCRIPT_P2SH;
+                }
+            }
+
+            /* OP_RETURN (first per tx) */
+            for (size_t j = 0; j < tx2->num_vout; j++) {
+                if (tx2->vout[j].script_pub_key.size > 0 &&
+                    tx2->vout[j].script_pub_key.data[0] == 0x6a) {
+                    const uint8_t *scr = tx2->vout[j].script_pub_key.data;
+                    size_t scr_len = tx2->vout[j].script_pub_key.size;
+                    struct slp_message slp_chk;
+                    int is_slp_val = slp_parse(scr, scr_len, &slp_chk) ? 1 : 0;
+
+                    IDX_GROW(ctx->oprets, ctx->num_oprets,
+                             ctx->cap_oprets, struct idx_opret);
+                    struct idx_opret *op = &ctx->oprets[ctx->num_oprets++];
+                    memcpy(op->txid, tx2->hash.data, 32);
+                    op->script_len = scr_len > 256 ? 256 : scr_len;
+                    memcpy(op->script, scr, op->script_len);
+                    op->is_slp = is_slp_val;
+                    op->height = h;
+                    break; /* only first OP_RETURN per tx */
+                }
+            }
+        }
+
+        /* Record per-block shielded data */
+        IDX_GROW(ctx->blocks_sh, ctx->num_blocks_sh,
+                 ctx->cap_blocks_sh, struct idx_block_shielded);
+        struct idx_block_shielded *bsh = &ctx->blocks_sh[ctx->num_blocks_sh++];
+        bsh->height = h;
+        bsh->sprout_value = bk_sprout;
+        bsh->sapling_value = bk_sapling;
+        memcpy(bsh->block_hash, bh2.data, 32);
+        bsh->num_js = bk_njs;
+        bsh->num_ss = bk_nss;
+        bsh->num_so = bk_nso;
+        bsh->num_tx = (uint32_t)blk2.num_vtx;
+
+        block_free(&blk2);
+    }
+
+    if (mdata) munmap(mdata, msize);
+    return NULL;
+}
+
 /* ── indexlegacy: import full chain from zclassicd LevelDB → our SQLite ── */
 
 static struct node_db *g_node_db_bc = NULL;
@@ -1783,12 +2071,6 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
      *
      * Supports 100+ years of blocks (~21M blocks). Uses a sparse
      * height-indexed array that grows dynamically. */
-
-    struct blk_loc {
-        int file;
-        uint32_t offset;
-        uint32_t size;
-    };
 
     int locs_cap = 4000000; /* initial, grows as needed */
     struct blk_loc *locs = calloc((size_t)locs_cap, sizeof(struct blk_loc));
@@ -2059,9 +2341,11 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
         return false;
     }
 
-    /* ── Wipe existing UTXO data (stale from out-of-order indexing) ── */
-    /* ── Pass 2: Process blocks in HEIGHT ORDER ── */
-    printf("indexlegacy: Pass 2 — indexing %d blocks in height order...\n",
+    /* ================================================================
+     * Phase A: Sequential core chain data (blocks, txs, UTXOs, ZSLP)
+     * Must be sequential because UTXO spends depend on height order.
+     * ================================================================ */
+    printf("indexlegacy: Phase A — core chain data (%d blocks)...\n",
            total_found);
     fflush(stdout);
 
@@ -2070,81 +2354,14 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
     int txs_indexed = 0;
     int utxos_created = 0;
     int utxos_spent = 0;
-    int64_t joinsplits_indexed = 0;
-    int64_t sapling_spends_indexed = 0;
-    int64_t sapling_outputs_indexed = 0;
-    int64_t sprout_nullifiers_indexed = 0;
-    int64_t op_returns_indexed = 0;
     int last_file = -1;
     uint8_t *mmap_data = NULL;
     size_t mmap_size = 0;
 
-    /* Prepare statements for new chain index tables */
-    sqlite3_stmt *stmt_txo = NULL, *stmt_txi = NULL, *stmt_js = NULL;
-    sqlite3_stmt *stmt_ss = NULL, *stmt_so = NULL, *stmt_spnf = NULL;
-    sqlite3_stmt *stmt_opret = NULL, *stmt_integrity = NULL;
-    sqlite3_stmt *stmt_update_shielded = NULL;
-
-    sqlite3_prepare_v2(g_node_db_bc->db,
-        "INSERT OR IGNORE INTO tx_outputs"
-        "(txid,vout,value,script_type,address_hash,block_height)"
-        " VALUES(?,?,?,?,?,?)",
-        -1, &stmt_txo, NULL);
-
-    sqlite3_prepare_v2(g_node_db_bc->db,
-        "INSERT OR IGNORE INTO tx_inputs"
-        "(txid,vin_index,prev_txid,prev_vout,block_height)"
-        " VALUES(?,?,?,?,?)",
-        -1, &stmt_txi, NULL);
-
-    sqlite3_prepare_v2(g_node_db_bc->db,
-        "INSERT OR IGNORE INTO joinsplits"
-        "(txid,js_index,vpub_old,vpub_new,anchor,block_height)"
-        " VALUES(?,?,?,?,?,?)",
-        -1, &stmt_js, NULL);
-
-    sqlite3_prepare_v2(g_node_db_bc->db,
-        "INSERT OR IGNORE INTO sapling_spends"
-        "(txid,spend_index,cv,anchor,nullifier,rk,block_height)"
-        " VALUES(?,?,?,?,?,?,?)",
-        -1, &stmt_ss, NULL);
-
-    sqlite3_prepare_v2(g_node_db_bc->db,
-        "INSERT OR IGNORE INTO sapling_outputs"
-        "(txid,output_index,cv,cm,ephemeral_key,block_height)"
-        " VALUES(?,?,?,?,?,?)",
-        -1, &stmt_so, NULL);
-
-    sqlite3_prepare_v2(g_node_db_bc->db,
-        "INSERT OR IGNORE INTO sprout_nullifiers"
-        "(nullifier,txid,block_height)"
-        " VALUES(?,?,?)",
-        -1, &stmt_spnf, NULL);
-
-    sqlite3_prepare_v2(g_node_db_bc->db,
-        "INSERT OR IGNORE INTO op_returns"
-        "(txid,block_height,script,is_slp)"
-        " VALUES(?,?,?,?)",
-        -1, &stmt_opret, NULL);
-
-    sqlite3_prepare_v2(g_node_db_bc->db,
-        "INSERT OR REPLACE INTO view_integrity"
-        "(height,sha3_hash) VALUES(?,?)",
-        -1, &stmt_integrity, NULL);
-
-    sqlite3_prepare_v2(g_node_db_bc->db,
-        "UPDATE blocks SET sprout_value=?,sapling_value=?"
-        " WHERE height=?",
-        -1, &stmt_update_shielded, NULL);
-
-    /* SHA3 hash chain state — starts with 32 zero bytes */
-    uint8_t sha3_prev[32];
-    memset(sha3_prev, 0, 32);
-
     node_db_begin(g_node_db_bc);
 
     for (int h = 0; h <= max_height; h++) {
-        if (locs[h].size == 0) continue; /* no block at this height */
+        if (locs[h].size == 0) continue;
 
         /* mmap the block file if not already mapped */
         if (locs[h].file != last_file) {
@@ -2203,13 +2420,6 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
         db_block_save(g_node_db_bc, &db_blk);
         blocks_indexed++;
 
-        /* Per-block shielded value accumulators */
-        int64_t block_sprout_value = 0;
-        int64_t block_sapling_value = 0;
-        uint32_t block_num_joinsplits = 0;
-        uint32_t block_num_sapling_spends = 0;
-        uint32_t block_num_sapling_outputs = 0;
-
         /* Index transactions + UTXOs */
         for (size_t i = 0; i < blk.num_vtx; i++) {
             const struct transaction *tx = &blk.vtx[i];
@@ -2236,83 +2446,7 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
                 }
             }
 
-            /* ── Index ALL transparent inputs (except coinbase) ── */
-            if (i > 0) {
-                for (size_t j = 0; j < tx->num_vin; j++) {
-                    sqlite3_reset(stmt_txi);
-                    sqlite3_bind_blob(stmt_txi, 1, tx->hash.data, 32, SQLITE_STATIC);
-                    sqlite3_bind_int(stmt_txi, 2, (int)j);
-                    sqlite3_bind_blob(stmt_txi, 3, tx->vin[j].prevout.hash.data, 32, SQLITE_STATIC);
-                    sqlite3_bind_int(stmt_txi, 4, (int)tx->vin[j].prevout.n);
-                    sqlite3_bind_int(stmt_txi, 5, h);
-                    sqlite3_step(stmt_txi);
-                }
-            }
-
-            /* ── Index ALL JoinSplits + sprout nullifiers ── */
-            for (size_t j = 0; j < tx->num_joinsplit; j++) {
-                struct js_description *js = &tx->v_joinsplit[j];
-                block_sprout_value += js->vpub_old - js->vpub_new;
-
-                sqlite3_reset(stmt_js);
-                sqlite3_bind_blob(stmt_js, 1, tx->hash.data, 32, SQLITE_STATIC);
-                sqlite3_bind_int(stmt_js, 2, (int)j);
-                sqlite3_bind_int64(stmt_js, 3, js->vpub_old);
-                sqlite3_bind_int64(stmt_js, 4, js->vpub_new);
-                sqlite3_bind_blob(stmt_js, 5, js->anchor.data, 32, SQLITE_STATIC);
-                sqlite3_bind_int(stmt_js, 6, h);
-                sqlite3_step(stmt_js);
-                joinsplits_indexed++;
-                block_num_joinsplits++;
-
-                /* Index both nullifiers per JoinSplit */
-                for (int nf = 0; nf < ZC_NUM_JS_INPUTS; nf++) {
-                    sqlite3_reset(stmt_spnf);
-                    sqlite3_bind_blob(stmt_spnf, 1, js->nullifiers[nf].data, 32, SQLITE_STATIC);
-                    sqlite3_bind_blob(stmt_spnf, 2, tx->hash.data, 32, SQLITE_STATIC);
-                    sqlite3_bind_int(stmt_spnf, 3, h);
-                    sqlite3_step(stmt_spnf);
-                    sprout_nullifiers_indexed++;
-                }
-            }
-
-            /* ── Index ALL Sapling spends ── */
-            for (size_t j = 0; j < tx->num_shielded_spend; j++) {
-                struct spend_description *sd = &tx->v_shielded_spend[j];
-
-                sqlite3_reset(stmt_ss);
-                sqlite3_bind_blob(stmt_ss, 1, tx->hash.data, 32, SQLITE_STATIC);
-                sqlite3_bind_int(stmt_ss, 2, (int)j);
-                sqlite3_bind_blob(stmt_ss, 3, sd->cv.data, 32, SQLITE_STATIC);
-                sqlite3_bind_blob(stmt_ss, 4, sd->anchor.data, 32, SQLITE_STATIC);
-                sqlite3_bind_blob(stmt_ss, 5, sd->nullifier.data, 32, SQLITE_STATIC);
-                sqlite3_bind_blob(stmt_ss, 6, sd->rk.data, 32, SQLITE_STATIC);
-                sqlite3_bind_int(stmt_ss, 7, h);
-                sqlite3_step(stmt_ss);
-                sapling_spends_indexed++;
-                block_num_sapling_spends++;
-            }
-
-            /* ── Index ALL Sapling outputs ── */
-            for (size_t j = 0; j < tx->num_shielded_output; j++) {
-                struct output_description *od = &tx->v_shielded_output[j];
-
-                sqlite3_reset(stmt_so);
-                sqlite3_bind_blob(stmt_so, 1, tx->hash.data, 32, SQLITE_STATIC);
-                sqlite3_bind_int(stmt_so, 2, (int)j);
-                sqlite3_bind_blob(stmt_so, 3, od->cv.data, 32, SQLITE_STATIC);
-                sqlite3_bind_blob(stmt_so, 4, od->cm.data, 32, SQLITE_STATIC);
-                sqlite3_bind_blob(stmt_so, 5, od->ephemeral_key.data, 32, SQLITE_STATIC);
-                sqlite3_bind_int(stmt_so, 6, h);
-                sqlite3_step(stmt_so);
-                sapling_outputs_indexed++;
-                block_num_sapling_outputs++;
-            }
-
-            /* Accumulate Sapling value balance */
-            block_sapling_value += tx->value_balance;
-
-            /* Index OP_RETURN outputs for ZSLP token tracking */
+            /* Index OP_RETURN outputs for ZSLP token tracking (rare) */
             if (tx->num_vout > 0 &&
                 tx->vout[0].script_pub_key.size > 0 &&
                 tx->vout[0].script_pub_key.data[0] == 0x6a) {
@@ -2322,8 +2456,6 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
                 bool is_slp = slp_parse(script, script_len, &slp);
 
                 if (is_slp) {
-                    /* Normalize token_id: SLP OP_RETURN uses big-endian,
-                     * tx->hash.data is little-endian. Reverse for consistency. */
                     uint8_t tok_id[32];
                     if (slp.type == SLP_TX_GENESIS) {
                         memcpy(tok_id, tx->hash.data, 32);
@@ -2332,19 +2464,17 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
                             tok_id[b] = slp.token_id.data[31 - b];
                     }
 
-                    /* Save GENESIS token via model */
                     if (slp.type == SLP_TX_GENESIS)
                         db_zslp_token_save(g_node_db_bc, tok_id,
                             slp.ticker, slp.name, slp.decimals,
                             slp.document_url, h,
                             (int64_t)slp.initial_quantity);
 
-                    /* Save transfer records via model */
-                    int num_outputs = (slp.type == SLP_TX_SEND)
+                    int num_outputs_slp = (slp.type == SLP_TX_SEND)
                         ? slp.num_outputs : 1;
-                    if (num_outputs < 1) num_outputs = 1;
+                    if (num_outputs_slp < 1) num_outputs_slp = 1;
 
-                    for (int q = 0; q < num_outputs; q++) {
+                    for (int q = 0; q < num_outputs_slp; q++) {
                         int64_t amount = 0;
                         if (slp.type == SLP_TX_GENESIS)
                             amount = (int64_t)slp.initial_quantity;
@@ -2353,7 +2483,6 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
                         else if (q < slp.num_outputs)
                             amount = (int64_t)slp.output_quantities[q];
 
-                        /* Extract P2PKH recipient from vout[q+1] */
                         uint8_t to_addr[20];
                         const uint8_t *to = NULL;
                         int out_idx = (slp.type == SLP_TX_GENESIS) ? 1 : q + 1;
@@ -2370,26 +2499,6 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
                         db_zslp_transfer_save(g_node_db_bc, tx->hash.data,
                             h, tok_id, (int)slp.type, amount, q, to);
                     }
-                }
-            }
-
-            /* ── Index ALL OP_RETURN outputs into op_returns table ── */
-            for (size_t j = 0; j < tx->num_vout; j++) {
-                if (tx->vout[j].script_pub_key.size > 0 &&
-                    tx->vout[j].script_pub_key.data[0] == 0x6a) {
-                    const uint8_t *scr = tx->vout[j].script_pub_key.data;
-                    size_t scr_len = tx->vout[j].script_pub_key.size;
-                    struct slp_message slp_chk;
-                    int is_slp_val = slp_parse(scr, scr_len, &slp_chk) ? 1 : 0;
-
-                    sqlite3_reset(stmt_opret);
-                    sqlite3_bind_blob(stmt_opret, 1, tx->hash.data, 32, SQLITE_STATIC);
-                    sqlite3_bind_int(stmt_opret, 2, h);
-                    sqlite3_bind_blob(stmt_opret, 3, scr, (int)scr_len, SQLITE_STATIC);
-                    sqlite3_bind_int(stmt_opret, 4, is_slp_val);
-                    sqlite3_step(stmt_opret);
-                    op_returns_indexed++;
-                    break; /* only first OP_RETURN per tx in op_returns table */
                 }
             }
 
@@ -2427,97 +2536,21 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
                 db_utxo_save(g_node_db_bc, &u);
                 utxos_created++;
             }
-
-            /* ── Index ALL transparent outputs (permanent, survives spending) ── */
-            for (size_t j = 0; j < tx->num_vout; j++) {
-                int script_type = 0;
-                uint8_t addr_hash[20];
-                bool has_addr = false;
-                const uint8_t *sd = tx->vout[j].script_pub_key.data;
-                size_t sl = tx->vout[j].script_pub_key.size;
-
-                if (sl == 25 && sd[0] == 0x76 && sd[1] == 0xa9 &&
-                    sd[2] == 0x14 && sd[23] == 0x88 && sd[24] == 0xac) {
-                    memcpy(addr_hash, sd + 3, 20);
-                    has_addr = true;
-                    script_type = SCRIPT_P2PKH;
-                } else if (sl == 23 && sd[0] == 0xa9 && sd[1] == 0x14 &&
-                           sd[22] == 0x87) {
-                    memcpy(addr_hash, sd + 2, 20);
-                    has_addr = true;
-                    script_type = SCRIPT_P2SH;
-                }
-
-                sqlite3_reset(stmt_txo);
-                sqlite3_bind_blob(stmt_txo, 1, tx->hash.data, 32, SQLITE_STATIC);
-                sqlite3_bind_int(stmt_txo, 2, (int)j);
-                sqlite3_bind_int64(stmt_txo, 3, tx->vout[j].value);
-                sqlite3_bind_int(stmt_txo, 4, script_type);
-                if (has_addr)
-                    sqlite3_bind_blob(stmt_txo, 5, addr_hash, 20, SQLITE_STATIC);
-                else
-                    sqlite3_bind_null(stmt_txo, 5);
-                sqlite3_bind_int(stmt_txo, 6, h);
-                sqlite3_step(stmt_txo);
-            }
-        }
-
-        /* ── Update block sprout_value / sapling_value ── */
-        if (block_sprout_value != 0 || block_sapling_value != 0) {
-            sqlite3_reset(stmt_update_shielded);
-            sqlite3_bind_int64(stmt_update_shielded, 1, block_sprout_value);
-            sqlite3_bind_int64(stmt_update_shielded, 2, block_sapling_value);
-            sqlite3_bind_int(stmt_update_shielded, 3, h);
-            sqlite3_step(stmt_update_shielded);
-        }
-
-        /* ── SHA3-256 integrity hash chain ── */
-        {
-            struct sha3_256_ctx sha3;
-            sha3_256_init(&sha3);
-            sha3_256_write(&sha3, sha3_prev, 32);
-
-            uint32_t h_le = (uint32_t)h;
-            sha3_256_write(&sha3, (const unsigned char *)&h_le, 4);
-            sha3_256_write(&sha3, block_hash.data, 32);
-
-            int64_t sv_le = block_sprout_value;
-            sha3_256_write(&sha3, (const unsigned char *)&sv_le, 8);
-            int64_t sapv_le = block_sapling_value;
-            sha3_256_write(&sha3, (const unsigned char *)&sapv_le, 8);
-
-            uint32_t ntx_le = (uint32_t)blk.num_vtx;
-            sha3_256_write(&sha3, (const unsigned char *)&ntx_le, 4);
-            sha3_256_write(&sha3, (const unsigned char *)&block_num_joinsplits, 4);
-            sha3_256_write(&sha3, (const unsigned char *)&block_num_sapling_spends, 4);
-            sha3_256_write(&sha3, (const unsigned char *)&block_num_sapling_outputs, 4);
-
-            uint8_t sha3_out[32];
-            sha3_256_finalize(&sha3, sha3_out);
-            memcpy(sha3_prev, sha3_out, 32);
-
-            sqlite3_reset(stmt_integrity);
-            sqlite3_bind_int(stmt_integrity, 1, h);
-            sqlite3_bind_blob(stmt_integrity, 2, sha3_out, 32, SQLITE_STATIC);
-            sqlite3_step(stmt_integrity);
         }
 
         block_free(&blk);
 
-        if (blocks_indexed % 50000 == 0 && blocks_indexed > 0) {
+        if (blocks_indexed % 100000 == 0 && blocks_indexed > 0) {
             node_db_commit(g_node_db_bc);
             int64_t elapsed = (int64_t)time(NULL) - t_pass2;
             double rate = elapsed > 0 ?
                 (double)blocks_indexed / (double)elapsed : 0;
             int remaining = total_found - blocks_indexed;
             int eta = rate > 0 ? (int)((double)remaining / rate) : 0;
-            printf("  height %d/%d — %d txs, %d utxos (+%d -%d), "
-                   "%" PRId64 " js, %" PRId64 " sspend, %" PRId64 " sout "
+            printf("  Phase A: height %d/%d — %d txs, %d utxos (+%d -%d) "
                    "(%.0f blk/s, ETA %dm%ds)\n",
                    h, max_height, txs_indexed, utxos_created - utxos_spent,
                    utxos_created, utxos_spent,
-                   joinsplits_indexed, sapling_spends_indexed,
-                   sapling_outputs_indexed,
                    rate, eta / 60, eta % 60);
             fflush(stdout);
             node_db_begin(g_node_db_bc);
@@ -2527,7 +2560,307 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
     if (mmap_data) munmap(mmap_data, mmap_size);
     node_db_commit(g_node_db_bc);
 
-    /* Finalize prepared statements for chain index tables */
+    int64_t phase_a_time = (int64_t)time(NULL) - t_pass2;
+    printf("indexlegacy: Phase A complete — %d blocks, %d txs, %d net UTXOs "
+           "in %" PRId64 "s\n",
+           blocks_indexed, txs_indexed, utxos_created - utxos_spent,
+           phase_a_time);
+    fflush(stdout);
+
+    /* ================================================================
+     * Phase B: Parallel extraction of detailed chain data
+     * Worker threads re-read blocks and extract tx_inputs, tx_outputs,
+     * joinsplits, sapling_spends, sapling_outputs, sprout_nullifiers,
+     * op_returns, and per-block shielded values into memory arrays.
+     * Then the main thread writes everything sequentially to SQLite.
+     * ================================================================ */
+
+    printf("indexlegacy: Phase B — parallel extraction with %d threads...\n",
+           N_INDEX_THREADS);
+    fflush(stdout);
+    int64_t t_phase_b = (int64_t)time(NULL);
+
+    /* Divide height range among threads */
+    struct worker_ctx workers[N_INDEX_THREADS];
+    pthread_t threads[N_INDEX_THREADS];
+    int heights_per_thread = (max_height + 1 + N_INDEX_THREADS - 1) / N_INDEX_THREADS;
+
+    for (int t = 0; t < N_INDEX_THREADS; t++) {
+        memset(&workers[t], 0, sizeof(workers[t]));
+        workers[t].thread_id = t;
+        workers[t].height_from = t * heights_per_thread;
+        workers[t].height_to = (t + 1) * heights_per_thread - 1;
+        if (workers[t].height_to > max_height)
+            workers[t].height_to = max_height;
+        workers[t].locs = locs;
+        workers[t].max_height = max_height;
+        workers[t].legacy_dir = legacy_dir;
+        pthread_create(&threads[t], NULL, index_worker, &workers[t]);
+    }
+
+    for (int t = 0; t < N_INDEX_THREADS; t++)
+        pthread_join(threads[t], NULL);
+
+    int64_t extract_time = (int64_t)time(NULL) - t_phase_b;
+    printf("indexlegacy: Phase B extraction complete in %" PRId64 "s\n",
+           extract_time);
+    fflush(stdout);
+
+    /* ── Phase B write: sequential INSERT into SQLite ── */
+    printf("indexlegacy: Phase B — writing extracted data to SQLite...\n");
+    fflush(stdout);
+    int64_t t_write = (int64_t)time(NULL);
+
+    sqlite3_stmt *stmt_txo = NULL, *stmt_txi = NULL, *stmt_js = NULL;
+    sqlite3_stmt *stmt_ss = NULL, *stmt_so = NULL, *stmt_spnf = NULL;
+    sqlite3_stmt *stmt_opret = NULL, *stmt_integrity = NULL;
+    sqlite3_stmt *stmt_update_shielded = NULL;
+
+    sqlite3_prepare_v2(g_node_db_bc->db,
+        "INSERT OR IGNORE INTO tx_outputs"
+        "(txid,vout,value,script_type,address_hash,block_height)"
+        " VALUES(?,?,?,?,?,?)",
+        -1, &stmt_txo, NULL);
+    sqlite3_prepare_v2(g_node_db_bc->db,
+        "INSERT OR IGNORE INTO tx_inputs"
+        "(txid,vin_index,prev_txid,prev_vout,block_height)"
+        " VALUES(?,?,?,?,?)",
+        -1, &stmt_txi, NULL);
+    sqlite3_prepare_v2(g_node_db_bc->db,
+        "INSERT OR IGNORE INTO joinsplits"
+        "(txid,js_index,vpub_old,vpub_new,anchor,block_height)"
+        " VALUES(?,?,?,?,?,?)",
+        -1, &stmt_js, NULL);
+    sqlite3_prepare_v2(g_node_db_bc->db,
+        "INSERT OR IGNORE INTO sapling_spends"
+        "(txid,spend_index,cv,anchor,nullifier,rk,block_height)"
+        " VALUES(?,?,?,?,?,?,?)",
+        -1, &stmt_ss, NULL);
+    sqlite3_prepare_v2(g_node_db_bc->db,
+        "INSERT OR IGNORE INTO sapling_outputs"
+        "(txid,output_index,cv,cm,ephemeral_key,block_height)"
+        " VALUES(?,?,?,?,?,?)",
+        -1, &stmt_so, NULL);
+    sqlite3_prepare_v2(g_node_db_bc->db,
+        "INSERT OR IGNORE INTO sprout_nullifiers"
+        "(nullifier,txid,block_height)"
+        " VALUES(?,?,?)",
+        -1, &stmt_spnf, NULL);
+    sqlite3_prepare_v2(g_node_db_bc->db,
+        "INSERT OR IGNORE INTO op_returns"
+        "(txid,block_height,script,is_slp)"
+        " VALUES(?,?,?,?)",
+        -1, &stmt_opret, NULL);
+    sqlite3_prepare_v2(g_node_db_bc->db,
+        "INSERT OR REPLACE INTO view_integrity"
+        "(height,sha3_hash) VALUES(?,?)",
+        -1, &stmt_integrity, NULL);
+    sqlite3_prepare_v2(g_node_db_bc->db,
+        "UPDATE blocks SET sprout_value=?,sapling_value=?"
+        " WHERE height=?",
+        -1, &stmt_update_shielded, NULL);
+
+    int64_t joinsplits_indexed = 0, sapling_spends_indexed = 0;
+    int64_t sapling_outputs_indexed = 0, sprout_nullifiers_indexed = 0;
+    int64_t op_returns_indexed = 0;
+    int64_t total_inputs = 0, total_outputs = 0;
+
+    node_db_begin(g_node_db_bc);
+
+    /* Write tx_inputs from all threads */
+    for (int t = 0; t < N_INDEX_THREADS; t++) {
+        for (int k = 0; k < workers[t].num_inputs; k++) {
+            struct idx_tx_input *inp = &workers[t].inputs[k];
+            sqlite3_reset(stmt_txi);
+            sqlite3_bind_blob(stmt_txi, 1, inp->txid, 32, SQLITE_STATIC);
+            sqlite3_bind_int(stmt_txi, 2, (int)inp->vin_index);
+            sqlite3_bind_blob(stmt_txi, 3, inp->prev_txid, 32, SQLITE_STATIC);
+            sqlite3_bind_int(stmt_txi, 4, (int)inp->prev_vout);
+            sqlite3_bind_int(stmt_txi, 5, inp->height);
+            sqlite3_step(stmt_txi);
+            total_inputs++;
+        }
+    }
+
+    /* Write tx_outputs from all threads */
+    for (int t = 0; t < N_INDEX_THREADS; t++) {
+        for (int k = 0; k < workers[t].num_outputs; k++) {
+            struct idx_tx_output *ot = &workers[t].outputs[k];
+            sqlite3_reset(stmt_txo);
+            sqlite3_bind_blob(stmt_txo, 1, ot->txid, 32, SQLITE_STATIC);
+            sqlite3_bind_int(stmt_txo, 2, (int)ot->vout);
+            sqlite3_bind_int64(stmt_txo, 3, ot->value);
+            sqlite3_bind_int(stmt_txo, 4, ot->script_type);
+            if (ot->has_addr)
+                sqlite3_bind_blob(stmt_txo, 5, ot->addr_hash, 20, SQLITE_STATIC);
+            else
+                sqlite3_bind_null(stmt_txo, 5);
+            sqlite3_bind_int(stmt_txo, 6, ot->height);
+            sqlite3_step(stmt_txo);
+            total_outputs++;
+        }
+    }
+
+    /* Write joinsplits + sprout nullifiers from all threads */
+    for (int t = 0; t < N_INDEX_THREADS; t++) {
+        for (int k = 0; k < workers[t].num_joinsplits; k++) {
+            struct idx_joinsplit *ij = &workers[t].joinsplits[k];
+            sqlite3_reset(stmt_js);
+            sqlite3_bind_blob(stmt_js, 1, ij->txid, 32, SQLITE_STATIC);
+            sqlite3_bind_int(stmt_js, 2, (int)ij->js_index);
+            sqlite3_bind_int64(stmt_js, 3, ij->vpub_old);
+            sqlite3_bind_int64(stmt_js, 4, ij->vpub_new);
+            sqlite3_bind_blob(stmt_js, 5, ij->anchor, 32, SQLITE_STATIC);
+            sqlite3_bind_int(stmt_js, 6, ij->height);
+            sqlite3_step(stmt_js);
+            joinsplits_indexed++;
+
+            /* Write both sprout nullifiers */
+            for (int nf = 0; nf < 2; nf++) {
+                sqlite3_reset(stmt_spnf);
+                sqlite3_bind_blob(stmt_spnf, 1, ij->nullifiers[nf], 32, SQLITE_STATIC);
+                sqlite3_bind_blob(stmt_spnf, 2, ij->txid, 32, SQLITE_STATIC);
+                sqlite3_bind_int(stmt_spnf, 3, ij->height);
+                sqlite3_step(stmt_spnf);
+                sprout_nullifiers_indexed++;
+            }
+        }
+    }
+
+    /* Write sapling spends from all threads */
+    for (int t = 0; t < N_INDEX_THREADS; t++) {
+        for (int k = 0; k < workers[t].num_sspends; k++) {
+            struct idx_sapling_spend *is2 = &workers[t].sspends[k];
+            sqlite3_reset(stmt_ss);
+            sqlite3_bind_blob(stmt_ss, 1, is2->txid, 32, SQLITE_STATIC);
+            sqlite3_bind_int(stmt_ss, 2, (int)is2->spend_index);
+            sqlite3_bind_blob(stmt_ss, 3, is2->cv, 32, SQLITE_STATIC);
+            sqlite3_bind_blob(stmt_ss, 4, is2->anchor, 32, SQLITE_STATIC);
+            sqlite3_bind_blob(stmt_ss, 5, is2->nullifier, 32, SQLITE_STATIC);
+            sqlite3_bind_blob(stmt_ss, 6, is2->rk, 32, SQLITE_STATIC);
+            sqlite3_bind_int(stmt_ss, 7, is2->height);
+            sqlite3_step(stmt_ss);
+            sapling_spends_indexed++;
+        }
+    }
+
+    /* Write sapling outputs from all threads */
+    for (int t = 0; t < N_INDEX_THREADS; t++) {
+        for (int k = 0; k < workers[t].num_soutputs; k++) {
+            struct idx_sapling_output *io = &workers[t].soutputs[k];
+            sqlite3_reset(stmt_so);
+            sqlite3_bind_blob(stmt_so, 1, io->txid, 32, SQLITE_STATIC);
+            sqlite3_bind_int(stmt_so, 2, (int)io->output_index);
+            sqlite3_bind_blob(stmt_so, 3, io->cv, 32, SQLITE_STATIC);
+            sqlite3_bind_blob(stmt_so, 4, io->cm, 32, SQLITE_STATIC);
+            sqlite3_bind_blob(stmt_so, 5, io->ephemeral_key, 32, SQLITE_STATIC);
+            sqlite3_bind_int(stmt_so, 6, io->height);
+            sqlite3_step(stmt_so);
+            sapling_outputs_indexed++;
+        }
+    }
+
+    /* Write op_returns from all threads */
+    for (int t = 0; t < N_INDEX_THREADS; t++) {
+        for (int k = 0; k < workers[t].num_oprets; k++) {
+            struct idx_opret *op = &workers[t].oprets[k];
+            sqlite3_reset(stmt_opret);
+            sqlite3_bind_blob(stmt_opret, 1, op->txid, 32, SQLITE_STATIC);
+            sqlite3_bind_int(stmt_opret, 2, op->height);
+            sqlite3_bind_blob(stmt_opret, 3, op->script, (int)op->script_len, SQLITE_STATIC);
+            sqlite3_bind_int(stmt_opret, 4, op->is_slp);
+            sqlite3_step(stmt_opret);
+            op_returns_indexed++;
+        }
+    }
+
+    /* Collect all block_shielded entries, sort by height for SHA3 chain */
+    int total_bsh = 0;
+    for (int t = 0; t < N_INDEX_THREADS; t++)
+        total_bsh += workers[t].num_blocks_sh;
+
+    struct idx_block_shielded *all_bsh = malloc((size_t)total_bsh * sizeof(*all_bsh));
+    int bsh_idx = 0;
+    for (int t = 0; t < N_INDEX_THREADS; t++) {
+        if (workers[t].num_blocks_sh > 0) {
+            memcpy(all_bsh + bsh_idx, workers[t].blocks_sh,
+                   (size_t)workers[t].num_blocks_sh * sizeof(*all_bsh));
+            bsh_idx += workers[t].num_blocks_sh;
+        }
+    }
+
+    /* Sort by height (threads are already sorted within, but merge all) */
+    /* Simple: threads process contiguous ranges so concatenation is sorted.
+     * But verify by sorting anyway for safety. */
+    for (int a = 1; a < total_bsh; a++) {
+        if (all_bsh[a].height < all_bsh[a - 1].height) {
+            /* Need to sort — use insertion sort on nearly-sorted data */
+            for (int b = a; b > 0 && all_bsh[b].height < all_bsh[b-1].height; b--) {
+                struct idx_block_shielded tmp_bsh = all_bsh[b];
+                all_bsh[b] = all_bsh[b-1];
+                all_bsh[b-1] = tmp_bsh;
+            }
+        }
+    }
+
+    /* Update sprout_value/sapling_value + compute SHA3 hash chain */
+    uint8_t sha3_prev[32];
+    memset(sha3_prev, 0, 32);
+
+    for (int k = 0; k < total_bsh; k++) {
+        struct idx_block_shielded *b = &all_bsh[k];
+
+        if (b->sprout_value != 0 || b->sapling_value != 0) {
+            sqlite3_reset(stmt_update_shielded);
+            sqlite3_bind_int64(stmt_update_shielded, 1, b->sprout_value);
+            sqlite3_bind_int64(stmt_update_shielded, 2, b->sapling_value);
+            sqlite3_bind_int(stmt_update_shielded, 3, b->height);
+            sqlite3_step(stmt_update_shielded);
+        }
+
+        /* SHA3-256 integrity hash chain */
+        struct sha3_256_ctx sha3;
+        sha3_256_init(&sha3);
+        sha3_256_write(&sha3, sha3_prev, 32);
+
+        uint32_t h_le = (uint32_t)b->height;
+        sha3_256_write(&sha3, (const unsigned char *)&h_le, 4);
+        sha3_256_write(&sha3, b->block_hash, 32);
+
+        int64_t sv_le = b->sprout_value;
+        sha3_256_write(&sha3, (const unsigned char *)&sv_le, 8);
+        int64_t sapv_le = b->sapling_value;
+        sha3_256_write(&sha3, (const unsigned char *)&sapv_le, 8);
+
+        sha3_256_write(&sha3, (const unsigned char *)&b->num_tx, 4);
+        sha3_256_write(&sha3, (const unsigned char *)&b->num_js, 4);
+        sha3_256_write(&sha3, (const unsigned char *)&b->num_ss, 4);
+        sha3_256_write(&sha3, (const unsigned char *)&b->num_so, 4);
+
+        uint8_t sha3_out[32];
+        sha3_256_finalize(&sha3, sha3_out);
+        memcpy(sha3_prev, sha3_out, 32);
+
+        sqlite3_reset(stmt_integrity);
+        sqlite3_bind_int(stmt_integrity, 1, b->height);
+        sqlite3_bind_blob(stmt_integrity, 2, sha3_out, 32, SQLITE_STATIC);
+        sqlite3_step(stmt_integrity);
+    }
+
+    node_db_commit(g_node_db_bc);
+
+    /* Free all thread buffers */
+    for (int t = 0; t < N_INDEX_THREADS; t++) {
+        free(workers[t].inputs);
+        free(workers[t].outputs);
+        free(workers[t].joinsplits);
+        free(workers[t].sspends);
+        free(workers[t].soutputs);
+        free(workers[t].oprets);
+        free(workers[t].blocks_sh);
+    }
+    free(all_bsh);
+
     sqlite3_finalize(stmt_txo);
     sqlite3_finalize(stmt_txi);
     sqlite3_finalize(stmt_js);
@@ -2537,6 +2870,15 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
     sqlite3_finalize(stmt_opret);
     sqlite3_finalize(stmt_integrity);
     sqlite3_finalize(stmt_update_shielded);
+
+    int64_t write_time = (int64_t)time(NULL) - t_write;
+    printf("indexlegacy: Phase B wrote %" PRId64 " inputs, %" PRId64 " outputs, "
+           "%" PRId64 " joinsplits, %" PRId64 " sspends, %" PRId64 " soutputs, "
+           "%" PRId64 " spnf, %" PRId64 " oprets in %" PRId64 "s\n",
+           total_inputs, total_outputs, joinsplits_indexed,
+           sapling_spends_indexed, sapling_outputs_indexed,
+           sprout_nullifiers_indexed, op_returns_indexed, write_time);
+    fflush(stdout);
 
     /* ── Rebuild all indexes (dropped before bulk insert for speed) ── */
     printf("indexlegacy: Rebuilding indexes...\n");
