@@ -727,6 +727,100 @@ int node_db_migrate(struct node_db *ndb, const char *datadir)
         applied++;
     }
 
+    if (current_ver < 9) {
+        /* v9: Full chain indexing — permanent tx inputs/outputs,
+         * Sapling spends/outputs, Sprout JoinSplits, SHA3 integrity. */
+
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS tx_outputs ("
+            "txid BLOB NOT NULL, vout INTEGER NOT NULL,"
+            "value INTEGER NOT NULL, script_type INTEGER NOT NULL DEFAULT 0,"
+            "address_hash BLOB, block_height INTEGER NOT NULL,"
+            "PRIMARY KEY (txid, vout))");
+
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_txo_addr"
+            " ON tx_outputs(address_hash) WHERE address_hash IS NOT NULL");
+
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_txo_height"
+            " ON tx_outputs(block_height)");
+
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS tx_inputs ("
+            "txid BLOB NOT NULL, vin_index INTEGER NOT NULL,"
+            "prev_txid BLOB NOT NULL, prev_vout INTEGER NOT NULL,"
+            "block_height INTEGER NOT NULL,"
+            "PRIMARY KEY (txid, vin_index))");
+
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_txi_prev"
+            " ON tx_inputs(prev_txid, prev_vout)");
+
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_txi_height"
+            " ON tx_inputs(block_height)");
+
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS sapling_spends ("
+            "txid BLOB NOT NULL, spend_index INTEGER NOT NULL,"
+            "cv BLOB NOT NULL, anchor BLOB NOT NULL,"
+            "nullifier BLOB NOT NULL, rk BLOB NOT NULL,"
+            "block_height INTEGER NOT NULL,"
+            "PRIMARY KEY (txid, spend_index))");
+
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_ss_nf"
+            " ON sapling_spends(nullifier)");
+
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_ss_height"
+            " ON sapling_spends(block_height)");
+
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS sapling_outputs ("
+            "txid BLOB NOT NULL, output_index INTEGER NOT NULL,"
+            "cv BLOB NOT NULL, cm BLOB NOT NULL,"
+            "ephemeral_key BLOB NOT NULL, block_height INTEGER NOT NULL,"
+            "PRIMARY KEY (txid, output_index))");
+
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_so_height"
+            " ON sapling_outputs(block_height)");
+
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS joinsplits ("
+            "txid BLOB NOT NULL, js_index INTEGER NOT NULL,"
+            "vpub_old INTEGER NOT NULL, vpub_new INTEGER NOT NULL,"
+            "anchor BLOB NOT NULL, block_height INTEGER NOT NULL,"
+            "PRIMARY KEY (txid, js_index))");
+
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_js_height"
+            " ON joinsplits(block_height)");
+
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS sprout_nullifiers ("
+            "nullifier BLOB PRIMARY KEY,"
+            "txid BLOB NOT NULL, block_height INTEGER NOT NULL)");
+
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_spnf_height"
+            " ON sprout_nullifiers(block_height)");
+
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS view_integrity ("
+            "height INTEGER PRIMARY KEY,"
+            "sha3_hash BLOB NOT NULL)");
+
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('009')");
+        int32_t v = 9;
+        node_db_state_set(ndb, "schema_version", &v, sizeof(v));
+        current_ver = 9;
+        applied++;
+    }
+
     if (applied > 0)
         printf("db: applied %d migration(s), now at version %d\n",
                applied, node_db_schema_version(ndb));
