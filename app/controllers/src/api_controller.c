@@ -19,6 +19,7 @@
 #include <math.h>
 #include <pthread.h>
 #include <time.h>
+#include <sqlite3.h>
 
 /* ── State ────────────────────────────────────────────────── */
 
@@ -50,6 +51,10 @@ static size_t g_api_supply_cache_len = 0;
 
 static char   g_api_hodl_cache[API_HODL_CACHE_SIZE];
 static size_t g_api_hodl_cache_len = 0;
+
+#define API_DEEP_STATS_CACHE_SIZE 65536  /* 64KB */
+static char   g_api_deep_stats_cache[API_DEEP_STATS_CACHE_SIZE];
+static size_t g_api_deep_stats_cache_len = 0;
 
 static volatile int g_api_cache_thread_running = 0;
 static pthread_mutex_t g_api_cache_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -833,8 +838,122 @@ static size_t compute_address(const char *param, uint8_t *r, size_t max)
     return off;
 }
 
+/* ── Deep stats computation (SQLite-based) ───────────────── */
+
+static int64_t dq_i64(sqlite3 *db, const char *sql)
+{
+    int64_t val = 0;
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
+        if (sqlite3_step(s) == SQLITE_ROW)
+            val = sqlite3_column_int64(s, 0);
+        sqlite3_finalize(s);
+    }
+    return val;
+}
+
+static size_t compute_deep_stats(uint8_t *r, size_t max)
+{
+    if (!g_datadir) return json_error(r, max, JSON_500_HEADERS, "No datadir");
+
+    char dbpath[1024];
+    snprintf(dbpath, sizeof(dbpath), "%s/node.db", g_datadir);
+
+    sqlite3 *db = NULL;
+    if (sqlite3_open_v2(dbpath, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
+        if (db) sqlite3_close(db);
+        return json_error(r, max, JSON_500_HEADERS, "Cannot open database");
+    }
+    sqlite3_busy_timeout(db, 30000);
+
+    int64_t height = dq_i64(db, "SELECT MAX(height) FROM blocks");
+    int64_t block_count = dq_i64(db, "SELECT count(*) FROM blocks");
+    int64_t tx_count = dq_i64(db, "SELECT count(*) FROM transactions");
+    int64_t utxo_count = dq_i64(db, "SELECT count(*) FROM utxos");
+    int64_t dust_count = dq_i64(db, "SELECT count(*) FROM utxos WHERE value < 100000");
+    int64_t addr_total = dq_i64(db, "SELECT count(*) FROM addresses");
+    int64_t addr_nonzero = dq_i64(db, "SELECT count(*) FROM addresses WHERE balance > 0");
+
+    /* Sprout stats */
+    int64_t js_count = dq_i64(db, "SELECT count(*) FROM joinsplits");
+    int64_t js_first = dq_i64(db, "SELECT MIN(block_height) FROM joinsplits");
+
+    /* Sapling stats */
+    int64_t ss_count = dq_i64(db, "SELECT count(*) FROM sapling_spends");
+    int64_t so_count = dq_i64(db, "SELECT count(*) FROM sapling_outputs");
+    int64_t ss_first = dq_i64(db, "SELECT MIN(block_height) FROM sapling_spends");
+
+    /* ZSLP stats */
+    int64_t token_count = dq_i64(db, "SELECT count(*) FROM zslp_tokens");
+    int64_t transfer_count = dq_i64(db, "SELECT count(*) FROM zslp_transfers");
+
+    /* Supply */
+    int64_t supply_sat = 0;
+    {
+        int64_t h = height;
+        int64_t subsidy = 1250000000LL;
+        int64_t halving = 840000;
+        while (h > 0 && subsidy > 0) {
+            int64_t blks = h > halving ? halving : h;
+            supply_sat += blks * subsidy;
+            h -= blks;
+            subsidy /= 2;
+        }
+    }
+
+    /* Shielded supply from blocks table */
+    int64_t shielded_net = dq_i64(db, "SELECT COALESCE(SUM(sapling_value), 0) FROM blocks");
+
+    /* Integrity: checkpoint count and latest block hash */
+    char latest_hash[128] = "";
+    {
+        sqlite3_stmt *s = NULL;
+        if (sqlite3_prepare_v2(db,
+            "SELECT hash FROM blocks WHERE height = (SELECT MAX(height) FROM blocks)",
+            -1, &s, NULL) == SQLITE_OK && s) {
+            if (sqlite3_step(s) == SQLITE_ROW) {
+                const char *h = (const char *)sqlite3_column_text(s, 0);
+                if (h) snprintf(latest_hash, sizeof(latest_hash), "%s", h);
+            }
+            sqlite3_finalize(s);
+        }
+    }
+
+    sqlite3_close(db);
+
+    size_t off = 0;
+    off += (size_t)snprintf((char *)r + off, max - off,
+        "%s{"
+        "\"height\":%" PRId64
+        ",\"blocks\":%" PRId64
+        ",\"transactions\":%" PRId64
+        ",\"supply\":%.8f"
+        ",\"shielded_net\":%.8f"
+        ",\"sprout\":{\"joinsplits\":%" PRId64 ",\"first_height\":%" PRId64 "}"
+        ",\"sapling\":{\"spends\":%" PRId64 ",\"outputs\":%" PRId64
+            ",\"first_height\":%" PRId64 "}"
+        ",\"utxo\":{\"count\":%" PRId64 ",\"dust_under_0001\":%" PRId64 "}"
+        ",\"addresses\":{\"total\":%" PRId64 ",\"nonzero\":%" PRId64 "}"
+        ",\"zslp\":{\"tokens\":%" PRId64 ",\"transfers\":%" PRId64 "}"
+        ",\"integrity\":{\"indexed_blocks\":%" PRId64
+            ",\"latest_hash\":\"%s\"}"
+        "}",
+        JSON_HEADERS,
+        height, block_count, tx_count,
+        (double)supply_sat / 100000000.0,
+        (double)shielded_net / 100000000.0,
+        js_count, js_first,
+        ss_count, so_count, ss_first,
+        utxo_count, dust_count,
+        addr_total, addr_nonzero,
+        token_count, transfer_count,
+        block_count, latest_hash);
+
+    return off;
+}
+
 /* ── Background cache refresh thread ─────────────────────── */
-/* This thread periodically calls rpc_call (safe here — normal
+/* This thread periodically calls rpc_call (safe here -- normal
  * thread, not an HTTPS handler) and updates the static caches.
  * HTTPS handlers only read from cache, never call rpc_call. */
 
@@ -904,6 +1023,21 @@ static void *api_cache_refresh_thread(void *arg)
                     pthread_mutex_lock(&g_api_cache_mutex);
                     memcpy(g_api_hodl_cache, tmp, len);
                     g_api_hodl_cache_len = len;
+                    pthread_mutex_unlock(&g_api_cache_mutex);
+                }
+                free(tmp);
+            }
+        }
+
+        /* Refresh /api/stats/deep every 300 seconds (30 iterations) */
+        if (iteration % 30 == 0) {
+            uint8_t *tmp = malloc(API_DEEP_STATS_CACHE_SIZE);
+            if (tmp) {
+                size_t len = compute_deep_stats(tmp, API_DEEP_STATS_CACHE_SIZE);
+                if (len > 0 && len < API_DEEP_STATS_CACHE_SIZE) {
+                    pthread_mutex_lock(&g_api_cache_mutex);
+                    memcpy(g_api_deep_stats_cache, tmp, len);
+                    g_api_deep_stats_cache_len = len;
                     pthread_mutex_unlock(&g_api_cache_mutex);
                 }
                 free(tmp);
@@ -1141,6 +1275,11 @@ size_t api_handle_request(const char *method, const char *path,
     /* Route: /api/stats — served from cache */
     if (strcmp(clean_path, "/api/stats") == 0)
         return serve_from_cache(g_api_stats_cache, g_api_stats_cache_len,
+                                response, response_max);
+
+    /* Route: /api/stats/deep — deep stats served from cache */
+    if (strcmp(clean_path, "/api/stats/deep") == 0)
+        return serve_from_cache(g_api_deep_stats_cache, g_api_deep_stats_cache_len,
                                 response, response_max);
 
     /* Route: /api/supply — served from cache */

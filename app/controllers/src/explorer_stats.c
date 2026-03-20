@@ -482,7 +482,116 @@ size_t explorer_stats_build(uint8_t *r, size_t buf_max, const char *datadir)
     int64_t zslp_token_count = stats_q_i64(db, "SELECT count(*) FROM zslp_tokens");
     int64_t zslp_transfer_count = stats_q_i64(db, "SELECT count(*) FROM zslp_transfers");
 
-    /* ── 1h: Chart data — batch query per range ── */
+    /* ── 1h: Deep chain data (tx_outputs, tx_inputs, joinsplits, sapling_*, sprout_nullifiers, view_integrity) ── */
+    printf("Stats: querying deep chain data...\n"); fflush(stdout);
+
+    /* Transaction I/O */
+    int64_t total_outputs = stats_q_i64(db, "SELECT count(*) FROM tx_outputs");
+    int64_t total_inputs  = stats_q_i64(db, "SELECT count(*) FROM tx_inputs");
+    int64_t p2pkh_outputs = stats_q_i64(db, "SELECT count(*) FROM tx_outputs WHERE script_type=0");
+    int64_t p2sh_outputs  = stats_q_i64(db, "SELECT count(*) FROM tx_outputs WHERE script_type=1");
+    int64_t max_output_value = stats_q_i64(db, "SELECT MAX(value) FROM tx_outputs");
+    int64_t total_value_moved = stats_q_i64(db, "SELECT COALESCE(SUM(value),0) FROM tx_outputs");
+
+    /* Shielded deep dive (per-tx tables) */
+    int64_t total_joinsplits   = stats_q_i64(db, "SELECT count(*) FROM joinsplits");
+    int64_t total_vpub_old     = stats_q_i64(db, "SELECT COALESCE(SUM(vpub_old),0) FROM joinsplits");
+    int64_t total_vpub_new     = stats_q_i64(db, "SELECT COALESCE(SUM(vpub_new),0) FROM joinsplits");
+    int64_t total_sap_spends   = stats_q_i64(db, "SELECT count(*) FROM sapling_spends");
+    int64_t total_sap_outputs  = stats_q_i64(db, "SELECT count(*) FROM sapling_outputs");
+    int64_t total_sprout_nulls = stats_q_i64(db, "SELECT count(*) FROM sprout_nullifiers");
+    int64_t unique_sap_anchors = stats_q_i64(db, "SELECT count(DISTINCT anchor) FROM sapling_spends");
+
+    /* SHA3 integrity chain */
+    int64_t integrity_count     = stats_q_i64(db, "SELECT count(*) FROM view_integrity");
+    int64_t integrity_min_h     = stats_q_i64(db, "SELECT MIN(height) FROM view_integrity");
+    int64_t integrity_max_h     = stats_q_i64(db, "SELECT MAX(height) FROM view_integrity");
+    char integrity_latest_hash[130] = "N/A";
+    {
+        sqlite3_stmt *s = NULL;
+        if (sqlite3_prepare_v2(db,
+                "SELECT hex(sha3_hash) FROM view_integrity ORDER BY height DESC LIMIT 1",
+                -1, &s, NULL) == SQLITE_OK && s) {
+            if (sqlite3_step(s) == SQLITE_ROW) {
+                const char *h = (const char *)sqlite3_column_text(s, 0);
+                if (h) snprintf(integrity_latest_hash, sizeof(integrity_latest_hash), "%s", h);
+            }
+            sqlite3_finalize(s);
+        }
+    }
+
+    /* Chain firsts & records */
+    int64_t first_noncoinbase = stats_q_i64(db,
+        "SELECT MIN(block_height) FROM transactions WHERE is_coinbase=0");
+    int64_t first_joinsplit_h = stats_q_i64(db,
+        "SELECT MIN(block_height) FROM joinsplits");
+    int64_t first_sapling_h = stats_q_i64(db,
+        "SELECT MIN(block_height) FROM sapling_spends");
+    int64_t first_opreturn_h = stats_q_i64(db,
+        "SELECT MIN(block_height) FROM op_returns");
+    int64_t first_zslp_h = stats_q_i64(db,
+        "SELECT MIN(genesis_height) FROM zslp_tokens");
+
+    int64_t most_js_block = 0, most_js_count = 0;
+    {
+        sqlite3_stmt *s = NULL;
+        if (sqlite3_prepare_v2(db,
+                "SELECT block_height, count(*) as cnt FROM joinsplits "
+                "GROUP BY block_height ORDER BY cnt DESC LIMIT 1",
+                -1, &s, NULL) == SQLITE_OK && s) {
+            if (sqlite3_step(s) == SQLITE_ROW) {
+                most_js_block = sqlite3_column_int64(s, 0);
+                most_js_count = sqlite3_column_int64(s, 1);
+            }
+            sqlite3_finalize(s);
+        }
+    }
+    int64_t most_sap_out_block = 0, most_sap_out_count = 0;
+    {
+        sqlite3_stmt *s = NULL;
+        if (sqlite3_prepare_v2(db,
+                "SELECT block_height, count(*) as cnt FROM sapling_outputs "
+                "GROUP BY block_height ORDER BY cnt DESC LIMIT 1",
+                -1, &s, NULL) == SQLITE_OK && s) {
+            if (sqlite3_step(s) == SQLITE_ROW) {
+                most_sap_out_block = sqlite3_column_int64(s, 0);
+                most_sap_out_count = sqlite3_column_int64(s, 1);
+            }
+            sqlite3_finalize(s);
+        }
+    }
+    int64_t fastest_block_h = 0, fastest_block_gap = 0;
+    int64_t slowest_block_h = 0, slowest_block_gap = 0;
+    {
+        sqlite3_stmt *s = NULL;
+        if (sqlite3_prepare_v2(db,
+                "SELECT b2.height, b2.time - b1.time as gap "
+                "FROM blocks b1 JOIN blocks b2 ON b2.height = b1.height + 1 "
+                "WHERE b1.time > 0 AND b2.time > b1.time "
+                "ORDER BY gap ASC LIMIT 1",
+                -1, &s, NULL) == SQLITE_OK && s) {
+            if (sqlite3_step(s) == SQLITE_ROW) {
+                fastest_block_h   = sqlite3_column_int64(s, 0);
+                fastest_block_gap = sqlite3_column_int64(s, 1);
+            }
+            sqlite3_finalize(s);
+        }
+        s = NULL;
+        if (sqlite3_prepare_v2(db,
+                "SELECT b2.height, b2.time - b1.time as gap "
+                "FROM blocks b1 JOIN blocks b2 ON b2.height = b1.height + 1 "
+                "WHERE b1.time > 0 AND b2.time > b1.time "
+                "ORDER BY gap DESC LIMIT 1",
+                -1, &s, NULL) == SQLITE_OK && s) {
+            if (sqlite3_step(s) == SQLITE_ROW) {
+                slowest_block_h   = sqlite3_column_int64(s, 0);
+                slowest_block_gap = sqlite3_column_int64(s, 1);
+            }
+            sqlite3_finalize(s);
+        }
+    }
+
+    /* ── 1i: Chart data — batch query per range ── */
     printf("Stats: computing chart data...\n"); fflush(stdout);
     struct { const char *label; const char *id; int blocks; } ranges[] = {
         {"24h", "24h", 576}, {"7d", "7d", 4032}, {"30d", "30d", 17280},
@@ -866,6 +975,192 @@ size_t explorer_stats_build(uint8_t *r, size_t buf_max, const char *datadir)
             "<p style='text-align:center'>"
             "<a href='/explorer/tokens' style='font-size:18px;font-weight:700'>"
             "View All ZSLP Tokens &rarr;</a></p>");
+
+    /* Section 8b: Transaction I/O Deep Stats */
+    {
+        char max_out_str[32], total_moved_str[32];
+        explorer_format_zcl(max_out_str, sizeof(max_out_str), max_output_value);
+        explorer_format_zcl(total_moved_str, sizeof(total_moved_str), total_value_moved);
+        double io_ratio = total_inputs > 0 ? (double)total_outputs / total_inputs : 0;
+
+        APPEND(off, r, max,
+            "<h2>Transaction I/O Deep Stats</h2>"
+            "<p style='color:#888;margin:-4px 0 12px;font-size:14px'>"
+            "Per-output and per-input data from the full chain index.</p>"
+            "<div class='stats-row'>"
+            "<div class='stat'><div class='num'>%" PRId64 "</div>"
+            "<div class='lbl'>Total Outputs Ever</div></div>"
+            "<div class='stat'><div class='num'>%" PRId64 "</div>"
+            "<div class='lbl'>Total Inputs Ever</div></div>"
+            "<div class='stat'><div class='num'>%.2f</div>"
+            "<div class='lbl'>Output/Input Ratio</div></div>"
+            "</div>",
+            total_outputs, total_inputs, io_ratio);
+
+        APPEND(off, r, max,
+            "<div class='card'><div class='grid'>"
+            "<div class='label'>P2PKH Outputs</div>"
+            "<div class='val'>%" PRId64 " (%.1f%%)</div>"
+            "<div class='label'>P2SH Outputs</div>"
+            "<div class='val'>%" PRId64 " (%.1f%%)</div>"
+            "<div class='label'>Other Output Types</div>"
+            "<div class='val'>%" PRId64 "</div>"
+            "<div class='label'>Largest Output Ever</div>"
+            "<div class='val amount'>%s ZCL</div>"
+            "<div class='label'>Total Value Ever Moved</div>"
+            "<div class='val amount'>%s ZCL</div>"
+            "</div></div>",
+            p2pkh_outputs, total_outputs > 0 ? (double)p2pkh_outputs / total_outputs * 100 : 0,
+            p2sh_outputs, total_outputs > 0 ? (double)p2sh_outputs / total_outputs * 100 : 0,
+            total_outputs - p2pkh_outputs - p2sh_outputs,
+            max_out_str, total_moved_str);
+    }
+
+    /* Section 8c: Shielded Operations Detail */
+    {
+        char vpub_old_str[32], vpub_new_str[32];
+        explorer_format_zcl(vpub_old_str, sizeof(vpub_old_str), total_vpub_old);
+        explorer_format_zcl(vpub_new_str, sizeof(vpub_new_str), total_vpub_new);
+        double sap_ratio = total_sap_outputs > 0
+            ? (double)total_sap_spends / total_sap_outputs : 0;
+
+        APPEND(off, r, max,
+            "<h2>Shielded Operations Detail</h2>"
+            "<p style='color:#888;margin:-4px 0 12px;font-size:14px'>"
+            "Per-transaction shielded data from joinsplits, sapling_spends, "
+            "sapling_outputs, and sprout_nullifiers tables.</p>"
+            "<div class='stats-row'>"
+            "<div class='stat'><div class='num'>%" PRId64 "</div>"
+            "<div class='lbl'>Total JoinSplits</div></div>"
+            "<div class='stat'><div class='num'>%" PRId64 "</div>"
+            "<div class='lbl'>Total Sapling Spends</div></div>"
+            "<div class='stat'><div class='num'>%" PRId64 "</div>"
+            "<div class='lbl'>Total Sapling Outputs</div></div>"
+            "</div>",
+            total_joinsplits, total_sap_spends, total_sap_outputs);
+
+        APPEND(off, r, max,
+            "<div class='card'><div class='grid'>"
+            "<div class='label'>Sprout Nullifiers</div>"
+            "<div class='val'>%" PRId64 "</div>"
+            "<div class='label'>Total vpub_old (t&rarr;z via Sprout)</div>"
+            "<div class='val amount'>%s ZCL</div>"
+            "<div class='label'>Total vpub_new (z&rarr;t via Sprout)</div>"
+            "<div class='val amount'>%s ZCL</div>"
+            "<div class='label'>Unique Sapling Anchors</div>"
+            "<div class='val'>%" PRId64 "</div>"
+            "<div class='label'>Sapling Spend/Output Ratio</div>"
+            "<div class='val'>%.4f</div>"
+            "</div></div>",
+            total_sprout_nulls,
+            vpub_old_str, vpub_new_str,
+            unique_sap_anchors, sap_ratio);
+    }
+
+    /* Section 8d: SHA3-256 Integrity Chain */
+    {
+        char hash_short[20] = "N/A";
+        if (integrity_latest_hash[0] != 'N') {
+            snprintf(hash_short, sizeof(hash_short), "%.16s...", integrity_latest_hash);
+        }
+
+        APPEND(off, r, max,
+            "<h2>SHA3-256 Integrity Chain</h2>"
+            "<p style='color:#888;margin:-4px 0 12px;font-size:14px'>"
+            "Cryptographic chain of block data hashes for tamper detection.</p>"
+            "<div class='stats-row'>"
+            "<div class='stat'><div class='num'>%" PRId64 "</div>"
+            "<div class='lbl'>Total Checkpoints</div></div>"
+            "<div class='stat'><div class='num'>%" PRId64 " &ndash; %" PRId64 "</div>"
+            "<div class='lbl'>Chain Coverage (Height)</div></div>"
+            "</div>",
+            integrity_count, integrity_min_h, integrity_max_h);
+
+        APPEND(off, r, max,
+            "<div class='card'><div class='grid'>"
+            "<div class='label'>Latest SHA3 Hash</div>"
+            "<div class='val' style='font-family:monospace;font-size:13px'>%s</div>"
+            "</div>"
+            "<p style='color:#888;margin:12px 0 0;font-size:13px;line-height:1.5'>"
+            "Every block's data is chained via SHA3-256 hash. The integrity chain covers "
+            "H(prev_hash || height || block_hash || sprout_value || sapling_value || num_tx "
+            "|| num_joinsplits || num_sapling_spends || num_sapling_outputs). "
+            "Verify any block by recomputing from genesis.</p></div>",
+            integrity_latest_hash[0] != 'N' ? integrity_latest_hash : "N/A");
+    }
+
+    /* Section 8e: Chain Firsts & Records */
+    APPEND(off, r, max,
+        "<h2>Chain Firsts &amp; Records</h2>"
+        "<p style='color:#888;margin:-4px 0 12px;font-size:14px'>"
+        "Milestones and extremes from the full chain index.</p>"
+        "<table><tr><th>Milestone</th><th>Block</th><th>Detail</th></tr>");
+
+    if (first_noncoinbase > 0)
+        APPEND(off, r, max,
+            "<tr><td>First Non-Coinbase Transaction</td>"
+            "<td><a href='/explorer/block/%" PRId64 "'>%" PRId64 "</a></td>"
+            "<td>First user-to-user transfer</td></tr>",
+            first_noncoinbase, first_noncoinbase);
+
+    if (first_joinsplit_h > 0)
+        APPEND(off, r, max,
+            "<tr><td>First JoinSplit (Sprout Shielding)</td>"
+            "<td><a href='/explorer/block/%" PRId64 "'>%" PRId64 "</a></td>"
+            "<td>First shielded transaction</td></tr>",
+            first_joinsplit_h, first_joinsplit_h);
+
+    if (first_sapling_h > 0)
+        APPEND(off, r, max,
+            "<tr><td>First Sapling Spend</td>"
+            "<td><a href='/explorer/block/%" PRId64 "'>%" PRId64 "</a></td>"
+            "<td>First Groth16 shielded spend</td></tr>",
+            first_sapling_h, first_sapling_h);
+
+    if (first_opreturn_h > 0)
+        APPEND(off, r, max,
+            "<tr><td>First OP_RETURN</td>"
+            "<td><a href='/explorer/block/%" PRId64 "'>%" PRId64 "</a></td>"
+            "<td>First data-carrying output</td></tr>",
+            first_opreturn_h, first_opreturn_h);
+
+    if (first_zslp_h > 0)
+        APPEND(off, r, max,
+            "<tr><td>First ZSLP Token</td>"
+            "<td><a href='/explorer/block/%" PRId64 "'>%" PRId64 "</a></td>"
+            "<td>First token genesis</td></tr>",
+            first_zslp_h, first_zslp_h);
+
+    if (most_js_count > 0)
+        APPEND(off, r, max,
+            "<tr><td>Most JoinSplits in Block</td>"
+            "<td><a href='/explorer/block/%" PRId64 "'>%" PRId64 "</a></td>"
+            "<td>%" PRId64 " JoinSplit operations</td></tr>",
+            most_js_block, most_js_block, most_js_count);
+
+    if (most_sap_out_count > 0)
+        APPEND(off, r, max,
+            "<tr><td>Most Sapling Outputs in Block</td>"
+            "<td><a href='/explorer/block/%" PRId64 "'>%" PRId64 "</a></td>"
+            "<td>%" PRId64 " Sapling notes created</td></tr>",
+            most_sap_out_block, most_sap_out_block, most_sap_out_count);
+
+    if (fastest_block_gap > 0)
+        APPEND(off, r, max,
+            "<tr><td>Fastest Block Time</td>"
+            "<td><a href='/explorer/block/%" PRId64 "'>%" PRId64 "</a></td>"
+            "<td>%" PRId64 " seconds</td></tr>",
+            fastest_block_h, fastest_block_h, fastest_block_gap);
+
+    if (slowest_block_gap > 0)
+        APPEND(off, r, max,
+            "<tr><td>Slowest Block Time</td>"
+            "<td><a href='/explorer/block/%" PRId64 "'>%" PRId64 "</a></td>"
+            "<td>%" PRId64 " seconds (%.1f hours)</td></tr>",
+            slowest_block_h, slowest_block_h, slowest_block_gap,
+            (double)slowest_block_gap / 3600.0);
+
+    APPEND(off, r, max, "</table>");
 
     /* Section 9: Tx Volume by Year — single query */
     APPEND(off, r, max,

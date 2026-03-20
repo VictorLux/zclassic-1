@@ -6,6 +6,7 @@
 
 #include "controllers/explorer_controller.h"
 #include "controllers/explorer_stats.h"
+#include "controllers/explorer_factoids.h"
 #include "controllers/api_controller.h"
 #include "chain/chain.h"
 #include "chain/chainparams.h"
@@ -111,9 +112,11 @@ static void init_default_templates(void)
 static void *stats_compute_thread(void *arg);
 static void *hodl_compute_thread(void *arg);
 static void *tokens_compute_thread(void *arg);
+static void *factoids_compute_thread(void *arg);
 static volatile int g_stats_computing;
 static volatile int g_tokens_computing;
 static volatile int g_hodl_computing;
+static volatile int g_factoids_computing;
 
 static void prewarm_caches(void)
 {
@@ -156,6 +159,19 @@ static void prewarm_caches(void)
         pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
         pthread_attr_setstacksize(&attr, 2 * 1024 * 1024);
         pthread_create(&t, &attr, tokens_compute_thread, NULL);
+        pthread_attr_destroy(&attr);
+    }
+
+    printf("Explorer: pre-warming factoids cache...\n");
+    fflush(stdout);
+    if (!g_factoids_computing) {
+        g_factoids_computing = 1;
+        pthread_t t;
+        pthread_attr_t attr;
+        pthread_attr_init(&attr);
+        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+        pthread_attr_setstacksize(&attr, 2 * 1024 * 1024);
+        pthread_create(&t, &attr, factoids_compute_thread, NULL);
         pthread_attr_destroy(&attr);
     }
 }
@@ -1700,6 +1716,62 @@ static size_t serve_stats(uint8_t *r, size_t max)
     return off;
 }
 
+/* ── Factoids Page ────────────────────────────────────────── */
+
+#define FACTOIDS_CACHE_SIZE (512 * 1024)
+static char g_factoids_cache[FACTOIDS_CACHE_SIZE] = "";
+static size_t g_factoids_cache_len = 0;
+
+static void *factoids_compute_thread(void *arg)
+{
+    (void)arg;
+    printf("Factoids background: computing historian data...\n");
+    fflush(stdout);
+    size_t len = explorer_factoids_build((uint8_t *)g_factoids_cache,
+                                          FACTOIDS_CACHE_SIZE, g_datadir);
+    if (len > 0)
+        g_factoids_cache_len = len;
+    g_factoids_computing = 0;
+    return NULL;
+}
+
+static size_t serve_factoids(uint8_t *r, size_t max)
+{
+    /* Return cached version if available */
+    if (g_factoids_cache_len > 0) {
+        size_t copy = g_factoids_cache_len < max ? g_factoids_cache_len : max;
+        memcpy(r, g_factoids_cache, copy);
+        return copy;
+    }
+
+    /* Not cached yet -- trigger background computation */
+    if (!g_factoids_computing) {
+        g_factoids_computing = 1;
+        pthread_t t;
+        pthread_attr_t attr;
+        pthread_attr_init(&attr);
+        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+        pthread_attr_setstacksize(&attr, 2 * 1024 * 1024);
+        pthread_create(&t, &attr, factoids_compute_thread, NULL);
+        pthread_attr_destroy(&attr);
+    }
+    size_t off = 0;
+    APPEND(off, r, max,
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: text/html; charset=utf-8\r\n"
+        "Connection: close\r\n\r\n"
+        "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+        "<meta http-equiv='refresh' content='3'>"
+        "<link rel='stylesheet' href='/explorer/style.css'>"
+        "</head><body>" EXPLORER_NAV
+        "<div style='text-align:center;margin:80px 0'>"
+        "<h1 style='font-size:36px;color:#33ff99'>Loading Factoids...</h1>"
+        "<p style='font-size:20px;color:#888'>Computing historian data from blockchain.</p>"
+        "<p style='font-size:16px;color:#555'>Auto-refreshing every 3 seconds...</p>"
+        "</div>" EXPLORER_FOOTER);
+    return off;
+}
+
 /* ── ZSLP Tokens Page ─────────────────────────────────────── */
 
 /* Tokens page cache — precomputed in background */
@@ -2575,6 +2647,9 @@ size_t explorer_handle_request(const char *method, const char *path,
 
     if (strcmp(path, "/explorer/hodl") == 0 || strcmp(path, "/explorer/hodl/") == 0)
         return serve_hodl(response, response_max);
+
+    if (strcmp(path, "/explorer/factoids") == 0 || strcmp(path, "/explorer/factoids/") == 0)
+        return serve_factoids(response, response_max);
 
     if (strncmp(path, "/explorer/block/", 16) == 0)
         return serve_block(path + 16, response, response_max);
