@@ -1222,6 +1222,88 @@ bool app_init(struct app_context *ctx)
         printf("Chain tip: genesis\n");
     }
 
+    /* Backfill shielded values in SQLite from block_index.
+     * The legacy importer didn't populate sprout_value/sapling_value.
+     * Walk the in-memory block_index and UPDATE blocks that have nonzero values. */
+    if (g_active_node_db && tip && tip->nHeight > 1000) {
+        int64_t has_shielded = 0;
+        {
+            sqlite3_stmt *chk = NULL;
+            if (sqlite3_prepare_v2(g_node_db.db,
+                    "SELECT count(*) FROM blocks WHERE sprout_value != 0 OR sapling_value != 0",
+                    -1, &chk, NULL) == SQLITE_OK && chk) {
+                if (sqlite3_step(chk) == SQLITE_ROW)
+                    has_shielded = sqlite3_column_int64(chk, 0);
+                sqlite3_finalize(chk);
+            }
+        }
+        if (has_shielded == 0) {
+            printf("Backfilling shielded values from block_index...\n");
+            fflush(stdout);
+            sqlite3_exec(g_node_db.db, "BEGIN", NULL, NULL, NULL);
+            sqlite3_stmt *upd = NULL;
+            sqlite3_prepare_v2(g_node_db.db,
+                "UPDATE blocks SET sprout_value=?, sapling_value=? "
+                "WHERE height=?", -1, &upd, NULL);
+            int updated = 0;
+            size_t iter = 0;
+            struct block_index *bi;
+            while (block_map_next(&g_state.map_block_index, &iter, NULL, &bi)) {
+                if (!bi) continue;
+                if (bi->nSproutValue == 0 && bi->nSaplingValue == 0) continue;
+                sqlite3_reset(upd);
+                sqlite3_bind_int64(upd, 1, bi->nSproutValue);
+                sqlite3_bind_int64(upd, 2, bi->nSaplingValue);
+                sqlite3_bind_int(upd, 3, bi->nHeight);
+                sqlite3_step(upd);
+                updated++;
+            }
+            sqlite3_finalize(upd);
+            sqlite3_exec(g_node_db.db, "COMMIT", NULL, NULL, NULL);
+            printf("Backfill: updated %d blocks with shielded values\n", updated);
+            fflush(stdout);
+        }
+    }
+
+    /* Backfill addresses table from UTXOs if empty */
+    if (g_active_node_db) {
+        int64_t addr_count = 0;
+        {
+            sqlite3_stmt *chk = NULL;
+            if (sqlite3_prepare_v2(g_node_db.db,
+                    "SELECT count(*) FROM addresses", -1, &chk, NULL) == SQLITE_OK && chk) {
+                if (sqlite3_step(chk) == SQLITE_ROW)
+                    addr_count = sqlite3_column_int64(chk, 0);
+                sqlite3_finalize(chk);
+            }
+        }
+        if (addr_count == 0) {
+            printf("Backfilling addresses from UTXO set...\n");
+            fflush(stdout);
+            sqlite3_exec(g_node_db.db,
+                "INSERT OR REPLACE INTO addresses "
+                "(address_hash, script_type, balance, utxo_count, "
+                "first_seen_height, last_seen_height) "
+                "SELECT address_hash, MAX(script_type), SUM(value), count(*), "
+                "MIN(height), MAX(height) "
+                "FROM utxos WHERE address_hash IS NOT NULL "
+                "GROUP BY address_hash",
+                NULL, NULL, NULL);
+            int64_t new_count = 0;
+            {
+                sqlite3_stmt *chk = NULL;
+                if (sqlite3_prepare_v2(g_node_db.db,
+                        "SELECT count(*) FROM addresses", -1, &chk, NULL) == SQLITE_OK && chk) {
+                    if (sqlite3_step(chk) == SQLITE_ROW)
+                        new_count = sqlite3_column_int64(chk, 0);
+                    sqlite3_finalize(chk);
+                }
+            }
+            printf("Backfill: populated %lld addresses\n", (long long)new_count);
+            fflush(stdout);
+        }
+    }
+
     /* Initialize mempool */
     tx_mempool_init(&g_mempool, 1000);
     g_active_mempool = &g_mempool;
