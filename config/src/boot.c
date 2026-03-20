@@ -29,6 +29,7 @@
 #include "keys/key_io.h"
 #include "mining/gen.h"
 #include "script/standard.h"
+#include "controllers/api_controller.h"
 #include "controllers/explorer_controller.h"
 #include "controllers/wallet_controller.h"
 #include "wallet/wallet.h"
@@ -1452,6 +1453,9 @@ bool app_init(struct app_context *ctx)
 
     explorer_set_state(&g_state, &g_mempool, &g_coins_tip,
                         g_active_node_db, ctx->datadir);
+
+    api_set_state(&g_state, &g_mempool, &g_coins_tip,
+                   g_active_node_db, ctx->datadir);
 
     rpc_rawtx_set_state(&g_state, &g_mempool, &g_coins_tip, ctx->datadir);
     rpc_rawtx_set_keystore(&g_wallet.keystore);
