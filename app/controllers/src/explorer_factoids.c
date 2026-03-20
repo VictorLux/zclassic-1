@@ -543,74 +543,72 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
      * ================================================================ */
     APPEND(off, r, max,
         "<h2>Privacy Usage Over Time</h2>"
-        "<p style='color:#888'>Yearly band counts (each band ~210,240 blocks, ~1 year).</p>"
+        "<p style='color:#888'>Shielded operations by calendar year "
+        "(from actual block timestamps).</p>"
         "<table class='txlist'>"
-        "<tr><th>Year Band</th><th>Blocks</th><th>JoinSplits</th><th>Sapling Spends</th></tr>");
+        "<tr><th>Year</th><th>Blocks</th><th>JoinSplits</th>"
+        "<th>Sapling Spends</th></tr>");
 
-    /* JoinSplits by year band */
+    /* Use actual block timestamps for accurate year labels */
     {
-        /* Two separate queries merged in display */
         sqlite3_stmt *s = NULL;
-        int64_t js_bands[20] = {0};
-        int64_t ss_bands[20] = {0};
-        int max_band = 0;
+        int64_t js_yrs[20] = {0}, ss_yrs[20] = {0}, blk_yrs[20] = {0};
+        int max_yr = 2016;
 
-        const char *js_sql = "SELECT block_height / 210240 as yr_band, count(*) "
-                             "FROM joinsplits GROUP BY yr_band ORDER BY yr_band";
-        if (sqlite3_prepare_v2(db, js_sql, -1, &s, NULL) == SQLITE_OK && s) {
+        /* Blocks per year */
+        if (sqlite3_prepare_v2(db,
+                "SELECT CAST(strftime('%Y', time, 'unixepoch') AS INTEGER), "
+                "count(*) FROM blocks WHERE time > 0 GROUP BY 1 ORDER BY 1",
+                -1, &s, NULL) == SQLITE_OK && s) {
             while (sqlite3_step(s) == SQLITE_ROW) {
-                int band = (int)sqlite3_column_int64(s, 0);
-                int64_t cnt = sqlite3_column_int64(s, 1);
-                if (band >= 0 && band < 20) {
-                    js_bands[band] = cnt;
-                    if (band > max_band) max_band = band;
+                int yr = sqlite3_column_int(s, 0);
+                int idx = yr - 2016;
+                if (idx >= 0 && idx < 20) {
+                    blk_yrs[idx] = sqlite3_column_int64(s, 1);
+                    if (yr > max_yr) max_yr = yr;
                 }
             }
-            sqlite3_finalize(s);
-            s = NULL;
+            sqlite3_finalize(s); s = NULL;
         }
 
-        const char *ss_sql = "SELECT block_height / 210240 as yr_band, count(*) "
-                             "FROM sapling_spends GROUP BY yr_band ORDER BY yr_band";
-        if (sqlite3_prepare_v2(db, ss_sql, -1, &s, NULL) == SQLITE_OK && s) {
+        /* JoinSplits per year — join with blocks for real timestamp */
+        if (sqlite3_prepare_v2(db,
+                "SELECT CAST(strftime('%Y', b.time, 'unixepoch') AS INTEGER), "
+                "count(*) FROM joinsplits j "
+                "JOIN blocks b ON j.block_height = b.height "
+                "WHERE b.time > 0 GROUP BY 1 ORDER BY 1",
+                -1, &s, NULL) == SQLITE_OK && s) {
             while (sqlite3_step(s) == SQLITE_ROW) {
-                int band = (int)sqlite3_column_int64(s, 0);
-                int64_t cnt = sqlite3_column_int64(s, 1);
-                if (band >= 0 && band < 20) {
-                    ss_bands[band] = cnt;
-                    if (band > max_band) max_band = band;
-                }
+                int idx = sqlite3_column_int(s, 0) - 2016;
+                if (idx >= 0 && idx < 20)
+                    js_yrs[idx] = sqlite3_column_int64(s, 1);
             }
-            sqlite3_finalize(s);
-            s = NULL;
+            sqlite3_finalize(s); s = NULL;
         }
 
-        /* Also count blocks per band */
-        int64_t blk_bands[20] = {0};
-        const char *blk_sql = "SELECT height / 210240 as yr_band, count(*) "
-                              "FROM blocks GROUP BY yr_band ORDER BY yr_band";
-        if (sqlite3_prepare_v2(db, blk_sql, -1, &s, NULL) == SQLITE_OK && s) {
+        /* Sapling spends per year */
+        if (sqlite3_prepare_v2(db,
+                "SELECT CAST(strftime('%Y', b.time, 'unixepoch') AS INTEGER), "
+                "count(*) FROM sapling_spends sp "
+                "JOIN blocks b ON sp.block_height = b.height "
+                "WHERE b.time > 0 GROUP BY 1 ORDER BY 1",
+                -1, &s, NULL) == SQLITE_OK && s) {
             while (sqlite3_step(s) == SQLITE_ROW) {
-                int band = (int)sqlite3_column_int64(s, 0);
-                int64_t cnt = sqlite3_column_int64(s, 1);
-                if (band >= 0 && band < 20) {
-                    blk_bands[band] = cnt;
-                    if (band > max_band) max_band = band;
-                }
+                int idx = sqlite3_column_int(s, 0) - 2016;
+                if (idx >= 0 && idx < 20)
+                    ss_yrs[idx] = sqlite3_column_int64(s, 1);
             }
-            sqlite3_finalize(s);
-            s = NULL;
+            sqlite3_finalize(s); s = NULL;
         }
 
-        /* Genesis time: Nov 6, 2016 */
-        int base_year = 2016;
-        for (int b = 0; b <= max_band && b < 20; b++) {
+        for (int yr = 2016; yr <= max_yr && yr < 2036; yr++) {
+            int idx = yr - 2016;
+            if (blk_yrs[idx] == 0 && js_yrs[idx] == 0 && ss_yrs[idx] == 0)
+                continue;
             APPEND(off, r, max,
-                "<tr><td>~%d (band %d)</td>"
-                "<td>%" PRId64 "</td>"
-                "<td>%" PRId64 "</td>"
-                "<td>%" PRId64 "</td></tr>",
-                base_year + b, b, blk_bands[b], js_bands[b], ss_bands[b]);
+                "<tr><td>%d</td><td>%" PRId64 "</td>"
+                "<td>%" PRId64 "</td><td>%" PRId64 "</td></tr>",
+                yr, blk_yrs[idx], js_yrs[idx], ss_yrs[idx]);
         }
     }
     APPEND(off, r, max, "</table>");
