@@ -22,6 +22,7 @@
 #include "core/utiltime.h"
 #include "controllers/sync_controller.h"
 #include "event/event.h"
+#include <signal.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -820,6 +821,18 @@ bool activate_best_chain(struct validation_state *state,
 
         /* Connect in forward order (reverse of path) */
         for (int i = path_len - 1; i >= 0; i--) {
+            /* Check for shutdown request (Ctrl-C during replay) */
+            extern volatile sig_atomic_t g_shutdown_requested;
+            if (g_shutdown_requested) {
+                printf("activate_best_chain: shutdown requested at height %d, "
+                       "flushing coins...\n",
+                       active_chain_height(&ms->chain_active));
+                fflush(stdout);
+                flush_coins_if_needed(coins_tip, true); /* force flush */
+                free(connect_path);
+                return true; /* clean exit, coins flushed */
+            }
+
             struct block *use_block = NULL;
             if (pblock && i == 0) {
                 struct uint256 block_hash;

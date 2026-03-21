@@ -204,7 +204,7 @@ static int cli_main(int argc, char **argv)
  *  NODE MODE — full node daemon
  * ════════════════════════════════════════════════════════════════ */
 
-static volatile sig_atomic_t g_shutdown_requested = 0;
+volatile sig_atomic_t g_shutdown_requested = 0;
 
 static void signal_handler(int sig)
 {

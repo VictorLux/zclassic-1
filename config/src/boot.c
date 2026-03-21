@@ -1512,6 +1512,9 @@ bool app_init(struct app_context *ctx)
                 g_state.pindex_best_header = genesis;
             }
             skip_activate = false; /* MUST replay to rebuild UTXO set */
+
+            /* Flush coins every 50K blocks during replay for crash safety */
+            set_flush_policy(3600, 500000, 50000);
         } else if (chain_tip && chain_tip->nHeight > 0 &&
                    chain_tip->phashBlock &&
                    uint256_cmp(chain_tip->phashBlock, &coins_best) != 0) {
