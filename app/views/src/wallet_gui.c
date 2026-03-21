@@ -15,6 +15,7 @@
 #include <stdatomic.h>
 #include <inttypes.h>
 #include <pthread.h>
+#include "keys/key_io.h"
 
 static char g_db_path[600] = "";
 
@@ -180,31 +181,49 @@ static void *query_thread(void *arg)
     g_data.addr_count = bg_query(db, "SELECT COUNT(*) FROM addresses");
     g_data.tx_count = bg_query(db, "SELECT COUNT(*) FROM transactions");
 
-    /* ── Wallet address (first key) ── */
+    /* ── Wallet address (first key → base58check via encode_destination) ── */
     {
         sqlite3_stmt *s = NULL;
         if (sqlite3_prepare_v2(db,
-                "SELECT address FROM wallet_keys WHERE used=1 LIMIT 1",
+                "SELECT pubkey_hash FROM wallet_keys LIMIT 1",
                 -1, &s, NULL) == SQLITE_OK && s) {
             if (sqlite3_step(s) == SQLITE_ROW) {
-                const char *addr = (const char *)sqlite3_column_text(s, 0);
-                if (addr)
-                    snprintf(g_wallet_address, sizeof(g_wallet_address),
-                             "%s", addr);
+                const void *pkh = sqlite3_column_blob(s, 0);
+                int pkh_len = sqlite3_column_bytes(s, 0);
+                if (pkh && pkh_len == 20) {
+                    struct tx_destination dest;
+                    dest.type = DEST_KEY_ID;
+                    memcpy(dest.id.key.id.data, pkh, 20);
+                    const unsigned char pk_pfx[] = {0x1C, 0xB8};
+                    const unsigned char sc_pfx[] = {0x1C, 0xBD};
+                    encode_destination(&dest, pk_pfx, 2, sc_pfx, 2,
+                                       g_wallet_address,
+                                       sizeof(g_wallet_address));
+                }
             }
             sqlite3_finalize(s);
         }
     }
 
-    /* ── Recent transactions ── */
+    /* ── Recent transactions (from wallet_utxos as proxy) ── */
     g_tx_count = 0;
     {
         sqlite3_stmt *s = NULL;
-        if (sqlite3_prepare_v2(db,
-                "SELECT txid, amount, block_height, address "
-                "FROM wallet_transactions "
-                "ORDER BY block_height DESC LIMIT ?",
-                -1, &s, NULL) == SQLITE_OK && s) {
+        /* wallet_transactions may be empty if not scanned.
+         * Fall back to wallet_utxos which are populated from global UTXO join. */
+        const char *sql =
+            "SELECT hex(txid), value, height, '' "
+            "FROM wallet_utxos "
+            "ORDER BY height DESC LIMIT ?";
+        /* Try wallet_transactions first */
+        int64_t wtx_count = bg_query(db,
+            "SELECT COUNT(*) FROM wallet_transactions");
+        if (wtx_count > 0)
+            sql = "SELECT hex(txid), amount, block_height, '' "
+                  "FROM wallet_transactions "
+                  "ORDER BY block_height DESC LIMIT ?";
+
+        if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
             sqlite3_bind_int(s, 1, MAX_TX_DISPLAY);
             while (sqlite3_step(s) == SQLITE_ROW &&
                    g_tx_count < MAX_TX_DISPLAY) {
@@ -216,11 +235,7 @@ static void *query_thread(void *arg)
                     e->txid[0] = '\0';
                 e->amount = sqlite3_column_int64(s, 1);
                 e->height = sqlite3_column_int(s, 2);
-                const char *addr = (const char *)sqlite3_column_text(s, 3);
-                if (addr)
-                    snprintf(e->address, sizeof(e->address), "%s", addr);
-                else
-                    e->address[0] = '\0';
+                e->address[0] = '\0';
                 g_tx_count++;
             }
             sqlite3_finalize(s);
