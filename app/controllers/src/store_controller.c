@@ -603,19 +603,9 @@ void store_process_payments(const char *datadir)
             received = sqlite3_column_int64(check, 0);
         sqlite3_finalize(check);
 
-        /* Fallback: if no address match and using placeholder z-addrs,
-         * check for an unspent note with the exact expected amount. */
-        if (received < expected) {
-            check = NULL;
-            sqlite3_prepare_v2(db,
-                "SELECT COALESCE(SUM(value), 0) FROM wallet_sapling_notes "
-                "WHERE spent_txid IS NULL AND value = ?",
-                -1, &check, NULL);
-            sqlite3_bind_int64(check, 1, expected);
-            if (sqlite3_step(check) == SQLITE_ROW)
-                received = sqlite3_column_int64(check, 0);
-            sqlite3_finalize(check);
-        }
+        /* Only match by z-address — never fall back to amount matching.
+         * Amount-only matching is dangerous: could match unrelated
+         * payments with the same value, minting tokens for wrong orders. */
 
         if (received >= expected) {
             /* Payment confirmed — mint tokens FIRST, then update status.

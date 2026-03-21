@@ -48,7 +48,8 @@ static void query_node_stats(int *out_height, int *out_peers)
     sqlite3 *db = NULL;
     if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK)
         return;
-    sqlite3_busy_timeout(db, 1000);
+    /* 5s timeout — allows reads even during heavy block sync */
+    sqlite3_busy_timeout(db, 5000);
 
     sqlite3_stmt *s = NULL;
     if (sqlite3_prepare_v2(db,
@@ -136,17 +137,25 @@ static size_t serve_landing_page(uint8_t *response, size_t max)
         if (n > 0) off += (size_t)n;
     }
 
-    /* Dashboard stats */
+    /* Dashboard stats — detect sync-in-progress */
+    bool syncing = (height == 0 && uptime < 600) || (height > 0 && height < 100);
     n = snprintf(body + off, sizeof(body) - off,
         "<div class='dashboard'>"
-        "<div class='stat'><div class='val'>%d</div>"
+        "<div class='stat'><div class='val'>%s%d</div>"
         "<div class='label'>Block Height</div></div>"
         "<div class='stat'><div class='val'>%d</div>"
         "<div class='label'>Peers (1h)</div></div>"
         "<div class='stat'><div class='val'>%ldm</div>"
         "<div class='label'>Uptime</div></div>"
         "</div>",
-        height, peer_count, uptime / 60);
+        syncing ? "syncing... " : "", height, peer_count, uptime / 60);
+    if (syncing) {
+        n += snprintf(body + off + (n > 0 ? n : 0),
+            sizeof(body) - off - (size_t)(n > 0 ? n : 0),
+            "<p style='text-align:center;color:#ffaa00;font-size:14px'>"
+            "Node is syncing the blockchain. Stats will update as blocks are indexed."
+            "</p>");
+    }
     if (n > 0) off += (size_t)n;
 
     /* Navigation */
@@ -282,10 +291,12 @@ static size_t serve_status(uint8_t *response, size_t max)
     if (g_start_time > 0)
         uptime = (long)(time(NULL) - g_start_time);
 
+    bool is_syncing = (height == 0 && uptime < 600) || (height > 0 && height < 100);
     char body[512];
     int blen = snprintf(body, sizeof(body),
-        "{\"height\":%d,\"peers\":%d,\"version\":\"0.1.0\",\"uptime\":%ld}",
-        height, peers, uptime);
+        "{\"height\":%d,\"peers\":%d,\"version\":\"0.1.0\","
+        "\"uptime\":%ld,\"syncing\":%s}",
+        height, peers, uptime, is_syncing ? "true" : "false");
     if (blen < 0) blen = 0;
 
     return (size_t)snprintf((char *)response, max,
