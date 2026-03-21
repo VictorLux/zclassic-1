@@ -795,6 +795,21 @@ static bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
         if (new_tip) {
             event_emitf(EV_BLOCK_CONNECTED, (uint32_t)node->id,
                         "h=%d", new_tip->nHeight);
+
+            /* Check if we've caught up to the peer */
+            if (new_tip->nHeight >= node->starting_height &&
+                node->starting_height > 0) {
+                enum sync_state ss = sync_get_state();
+                if (ss == SYNC_BLOCKS_DOWNLOAD ||
+                    ss == SYNC_CONNECTING_BLOCKS)
+                    sync_set_state(SYNC_AT_TIP, "caught up to peer");
+                if (node->state == PEER_SYNCING_BLOCKS ||
+                    node->state == PEER_SYNCING_HEADERS)
+                    peer_set_state_checked((uint32_t)node->id,
+                                           &node->state, PEER_ACTIVE,
+                                           "chain caught up");
+            }
+
             if (new_tip->nHeight % 1000 == 0) {
                 printf("Chain tip: height=%d from peer %s\n",
                        new_tip->nHeight, node->addr_name);
@@ -991,6 +1006,10 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
         struct block_index *bi = block_map_find(
             &mp->main_state->map_block_index, &last_hash);
         if (bi && bi->nHeight > our_height) {
+            /* We have headers ahead of our chain — need block data */
+            if (sync_get_state() == SYNC_HEADERS_DOWNLOAD)
+                sync_set_state(SYNC_BLOCKS_DOWNLOAD,
+                               "headers ahead, requesting blocks");
             /* Count how many blocks we need */
             size_t total_needed = 0;
             struct block_index *walk = bi;

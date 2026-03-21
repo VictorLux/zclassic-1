@@ -335,7 +335,7 @@ static void *thread_socket_handler(void *arg)
                     struct p2p_node *p = cm->manager.nodes[pi];
                     if (p->disconnect) continue;
                     if (p->inbound) in++; else out++;
-                    if (p->successfully_connected) connected++;
+                    if (p->state >= PEER_HANDSHAKE_COMPLETE) connected++;
                 }
                 if (cm->manager.num_nodes > 0)
                     printf("Peers: %zu total (%zu out, %zu in, "
@@ -351,9 +351,13 @@ static void *thread_socket_handler(void *arg)
                 struct p2p_node *n = cm->manager.nodes[i];
                 if (n->disconnect) continue;
                 /* No recv for 120s and version handshake done */
-                if (n->successfully_connected &&
+                if (n->state >= PEER_HANDSHAKE_COMPLETE &&
                     n->last_recv > 0 &&
                     now_check - n->last_recv > 120) {
+                    event_emitf(EV_TCP_TIMEOUT, (uint32_t)n->id,
+                                "inactivity %llds state=%s",
+                                (long long)(now_check - n->last_recv),
+                                peer_state_name(n->state));
                     printf("Peer %s: timeout (no data for %llds)\n",
                            n->addr_name,
                            (long long)(now_check - n->last_recv));
@@ -361,14 +365,19 @@ static void *thread_socket_handler(void *arg)
                     n->disconnect = true;
                 }
                 /* Version handshake timeout: 30s */
-                if (!n->successfully_connected &&
+                if (n->state < PEER_HANDSHAKE_COMPLETE &&
                     n->time_connected > 0 &&
                     now_check - n->time_connected > 30) {
+                    event_emitf(EV_TCP_TIMEOUT, (uint32_t)n->id,
+                                "handshake %llds state=%s",
+                                (long long)(now_check - n->time_connected),
+                                peer_state_name(n->state));
                     printf("Peer %s: handshake timeout after %llds "
-                           "(version=%d, %s)\n",
+                           "(version=%d, state=%s, %s)\n",
                            n->addr_name,
                            (long long)(now_check - n->time_connected),
                            n->version,
+                           peer_state_name(n->state),
                            n->inbound ? "inbound" : "outbound");
                     fflush(stdout);
                     n->disconnect = true;

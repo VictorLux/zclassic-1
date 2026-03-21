@@ -8,6 +8,7 @@
 #include "controllers/api_controller.h"
 #include "controllers/explorer_internal.h"
 #include "controllers/explorer_factoids.h"
+#include "event/event.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1256,6 +1257,51 @@ size_t api_handle_request(const char *method, const char *path,
         if (!g_datadir)
             return json_error(response, response_max, JSON_500_HEADERS, "No datadir");
         return explorer_factoids_build_json(response, response_max, g_datadir);
+    }
+
+    /* Event log — live system state machine events */
+    if (strcmp(clean_path, "/api/events") == 0) {
+        size_t count = 200;
+        /* Parse ?count=N from query string if present */
+        const char *q = strchr(path, '?');
+        if (q) {
+            const char *cp = strstr(q, "count=");
+            if (cp) {
+                int n = atoi(cp + 6);
+                if (n > 0 && n <= 65536) count = (size_t)n;
+            }
+        }
+        /* Build JSON response with sync state header */
+        const char *hdr = "HTTP/1.1 200 OK\r\n"
+            "Content-Type: application/json\r\n"
+            "Access-Control-Allow-Origin: *\r\n"
+            "Connection: close\r\n\r\n";
+        size_t hlen = strlen(hdr);
+        if (hlen >= response_max) return 0;
+        memcpy(response, hdr, hlen);
+
+        /* Wrap: {"sync_state":"...","peer_states":[...],"events":[...]} */
+        size_t w = hlen;
+        w += (size_t)snprintf((char *)response + w, response_max - w,
+            "{\"sync_state\":\"%s\",\"events\":",
+            sync_state_name(sync_get_state()));
+        w += event_dump_json((char *)response + w, response_max - w, count);
+        if (w + 1 < response_max) {
+            response[w++] = '}';
+            response[w] = '\0';
+        }
+        return w;
+    }
+
+    /* Sync state — minimal endpoint for monitoring */
+    if (strcmp(clean_path, "/api/syncstate") == 0) {
+        return (size_t)snprintf((char *)response, response_max,
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Type: application/json\r\n"
+            "Access-Control-Allow-Origin: *\r\n"
+            "Connection: close\r\n\r\n"
+            "{\"sync_state\":\"%s\"}",
+            sync_state_name(sync_get_state()));
     }
 
     return json_error(response, response_max, JSON_404_HEADERS,

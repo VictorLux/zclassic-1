@@ -492,6 +492,18 @@ bool p2p_node_end_message(struct p2p_node *node)
     hash256(buf + MSG_HEADER_SIZE, total - MSG_HEADER_SIZE, hash.data);
     memcpy(buf + MESSAGE_START_SIZE + COMMAND_SIZE + 4, hash.data, 4);
 
+    /* Log every outbound message — extract command from header */
+    {
+        char cmd[COMMAND_SIZE + 1];
+        memcpy(cmd, buf + MESSAGE_START_SIZE, COMMAND_SIZE);
+        cmd[COMMAND_SIZE] = '\0';
+        /* Trim trailing nulls for clean display */
+        for (int ci = COMMAND_SIZE - 1; ci >= 0 && cmd[ci] == '\0'; ci--)
+            cmd[ci] = '\0';
+        event_emitf(EV_MSG_SENT, (uint32_t)node->id,
+                    "%s size=%u", cmd, payload_size);
+    }
+
     struct send_segment *seg = send_segment_create(buf, total);
     stream_free(&tls_msg_stream);
     tls_msg_active = false;
