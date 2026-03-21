@@ -692,12 +692,27 @@ void store_process_payments(const char *datadir)
         int64_t received = 0;
         sqlite3_stmt *check = NULL;
 
-        /* Primary: per-address query */
+        /* Require minimum 3 confirmations to prevent reorg-based
+         * double-spend: payment reversed but tokens already minted. */
+        int64_t tip_height = 0;
+        {
+            sqlite3_stmt *th = NULL;
+            sqlite3_prepare_v2(db, "SELECT MAX(height) FROM blocks",
+                               -1, &th, NULL);
+            if (sqlite3_step(th) == SQLITE_ROW)
+                tip_height = sqlite3_column_int64(th, 0);
+            sqlite3_finalize(th);
+        }
+        int64_t min_height = tip_height - 3; /* 3 confirmations */
+
+        /* Primary: per-address query with confirmation depth */
         sqlite3_prepare_v2(db,
             "SELECT COALESCE(SUM(value), 0) FROM wallet_sapling_notes "
-            "WHERE spent_txid IS NULL AND address = ?",
+            "WHERE spent_txid IS NULL AND address = ? "
+            "AND block_height IS NOT NULL AND block_height <= ?",
             -1, &check, NULL);
         sqlite3_bind_text(check, 1, pay_addr, -1, SQLITE_STATIC);
+        sqlite3_bind_int64(check, 2, min_height);
         if (sqlite3_step(check) == SQLITE_ROW)
             received = sqlite3_column_int64(check, 0);
         sqlite3_finalize(check);
