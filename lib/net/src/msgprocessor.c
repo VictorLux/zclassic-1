@@ -731,6 +731,7 @@ static bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
     block_init(&blk);
     if (!block_deserialize(&blk, s)) {
         printf("Peer %s: failed to deserialize block\n", node->addr_name);
+        peer_misbehaving(mp->net_mgr, node, 20, "block deserialize failed");
         block_free(&blk);
         return false;
     }
@@ -761,6 +762,13 @@ static bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
         if (validation_state_get_dos(&state, &dos) && dos > 0) {
             printf("Peer %s: invalid block (dos=%d): %s\n",
                    node->addr_name, dos, state.reject_reason);
+            peer_misbehaving(mp->net_mgr, node, dos,
+                             state.reject_reason[0] ? state.reject_reason
+                                                    : "invalid block");
+        } else if (!validation_state_is_valid(&state)) {
+            /* Block failed validation but no specific DOS score —
+             * still penalize to prevent free spam */
+            peer_misbehaving(mp->net_mgr, node, 10, "block validation failed");
         }
     }
 
@@ -812,6 +820,7 @@ static bool process_tx_msg(struct msg_processor *mp, struct p2p_node *node,
     transaction_init(&tx);
     if (!transaction_deserialize(&tx, s)) {
         printf("Peer %s: failed to deserialize tx\n", node->addr_name);
+        peer_misbehaving(mp->net_mgr, node, 10, "tx deserialize failed");
         transaction_free(&tx);
         return false;
     }
@@ -1295,7 +1304,18 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                         applied++;
                     }
                     sqlite3_finalize(ins);
-                    sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
+
+                    if (applied == entries) {
+                        /* Full chunk received — safe to commit */
+                        sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
+                    } else {
+                        /* Partial chunk (peer disconnected or bad data)
+                         * — rollback to avoid corrupted UTXO set */
+                        printf("Peer %s: incomplete chunk (%u/%u), rolling back\n",
+                               node->addr_name, applied, entries);
+                        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+                        node->disconnect = true;
+                    }
                     sqlite3_close(db);
 
                     node->zsync_offset += applied;

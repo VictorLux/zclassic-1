@@ -308,13 +308,21 @@ static size_t serve_create_order(sqlite3 *db, int64_t product_id,
     int64_t price = sqlite3_column_int64(s, 0);
     sqlite3_finalize(s);
 
-    /* Generate a unique Sapling z-address for this payment. */
+    /* Generate a unique Sapling z-address for this payment.
+     * NEVER fall back to a fake address — that loses user funds. */
     char payment_addr[128];
     if (!zslp_generate_payment_address(datadir, payment_addr,
                                         sizeof(payment_addr))) {
-        snprintf(payment_addr, sizeof(payment_addr),
-                 "zs1_order_%lld_%lld",
-                 (long long)product_id, (long long)time(NULL));
+        printf("store: CRITICAL — z-address generation failed for product %lld\n",
+               (long long)product_id);
+        fflush(stdout);
+        return (size_t)snprintf((char *)resp, max,
+            "HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/html\r\n"
+            "Connection: close\r\n\r\n"
+            "<h1>Payment Temporarily Unavailable</h1>"
+            "<p>The node is still loading cryptographic keys. "
+            "Please try again in a few minutes.</p>"
+            "<p><a href='/store'>Back to Store</a></p>");
     }
 
     /* Create order */
@@ -394,9 +402,11 @@ static size_t serve_order_status(sqlite3 *db, int64_t order_id,
     const char *pay_txid = (const char *)sqlite3_column_text(s, 4);
     const char *mint_txid = (const char *)sqlite3_column_text(s, 5);
 
-    const char *status_text = status == 0 ? "Pending" :
-                               status == 1 ? "Paid" :
-                               status == 2 ? "Tokens Sent" : "Failed";
+    const char *status_text = status == 0 ? "Pending Payment" :
+                               status == 1 ? "Payment Received" :
+                               status == 2 ? "Tokens Sent" :
+                               status == 3 ? "Mint Failed (contact support)" :
+                               "Unknown";
     const char *status_class = status == 0 ? "pending" :
                                 status >= 1 ? "paid" : "pending";
 
@@ -608,21 +618,29 @@ void store_process_payments(const char *datadir)
         }
 
         if (received >= expected) {
-            /* Payment confirmed — update order and mint tokens */
+            /* Payment confirmed — mint tokens FIRST, then update status.
+             * This ensures we never show "Tokens Sent" if mint failed. */
+            bool mint_ok = zslp_mint(datadir, token_id, cust_addr,
+                                      (uint64_t)tokens);
+
+            int new_status = mint_ok ? 2 : 3; /* 2=sent, 3=mint_failed */
             sqlite3_stmt *upd = NULL;
             sqlite3_prepare_v2(db,
-                "UPDATE orders SET status=2, paid_at=strftime('%%s','now') "
+                "UPDATE orders SET status=?, paid_at=strftime('%%s','now') "
                 "WHERE id=?", -1, &upd, NULL);
-            sqlite3_bind_int64(upd, 1, order_id);
+            sqlite3_bind_int(upd, 1, new_status);
+            sqlite3_bind_int64(upd, 2, order_id);
             sqlite3_step(upd);
             sqlite3_finalize(upd);
 
-            /* Mint ZSLP tokens to customer */
-            zslp_mint(datadir, token_id, cust_addr, (uint64_t)tokens);
-
-            printf("Store: order #%lld paid, minted %lld %s → %s\n",
-                   (long long)order_id, (long long)tokens,
-                   token_id, cust_addr);
+            if (mint_ok) {
+                printf("Store: order #%lld paid, minted %lld %s -> %s\n",
+                       (long long)order_id, (long long)tokens,
+                       token_id, cust_addr);
+            } else {
+                printf("Store: order #%lld paid but MINT FAILED for %s\n",
+                       (long long)order_id, cust_addr);
+            }
             fflush(stdout);
         }
     }
