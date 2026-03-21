@@ -34,6 +34,14 @@
 static int g_last_block_file = -1;
 static unsigned int g_last_block_file_size = 0;
 
+/* Externs from boot.c — global state accessed during block connection.
+ * Declared once at file scope instead of scattered inside functions. */
+extern struct block_tree_db *g_active_block_tree;
+extern struct wallet *g_active_wallet;
+extern struct node_db *g_active_node_db;
+extern struct tx_mempool *g_active_mempool;
+extern volatile sig_atomic_t g_shutdown_requested;
+
 /* LevelDB handle for persisting UTXO commitment alongside flushes.
  * Set by boot.c via set_coins_db_for_commitment(). */
 static struct coins_view_db *g_coins_db_ptr = NULL;
@@ -523,7 +531,6 @@ bool connect_tip(struct validation_state *state,
                            BLOCK_VALID_SCRIPTS;
 
     /* Persist block_index entry to LevelDB */
-    extern struct block_tree_db *g_active_block_tree;
     if (g_active_block_tree) {
         struct disk_block_index dbi;
         disk_block_index_init(&dbi);
@@ -579,8 +586,6 @@ bool connect_tip(struct validation_state *state,
     }
 
     /* Notify wallet of transactions in the connected block */
-    extern struct wallet *g_active_wallet;
-    extern struct node_db *g_active_node_db;
     if (g_active_wallet) {
         for (size_t i = 0; i < pblock->num_vtx; i++) {
             wallet_sync_transaction(g_active_wallet, &pblock->vtx[i],
@@ -622,7 +627,6 @@ bool connect_tip(struct validation_state *state,
 
     /* Remove confirmed transactions from mempool */
     {
-        extern struct tx_mempool *g_active_mempool;
         if (g_active_mempool)
             tx_mempool_remove_for_block(g_active_mempool,
                 pblock->vtx, pblock->num_vtx,
@@ -736,7 +740,6 @@ bool disconnect_tip(struct validation_state *state,
 
     /* Sync disconnect to SQLite */
     {
-        extern struct node_db *g_active_node_db;
         if (g_active_node_db)
             node_db_sync_disconnect_block(g_active_node_db,
                                           &block, pindex_delete);
@@ -820,7 +823,6 @@ bool activate_best_chain(struct validation_state *state,
         /* Connect in forward order (reverse of path) */
         for (int i = path_len - 1; i >= 0; i--) {
             /* Check for shutdown request (Ctrl-C during replay) */
-            extern volatile sig_atomic_t g_shutdown_requested;
             if (g_shutdown_requested) {
                 printf("activate_best_chain: shutdown requested at height %d, "
                        "flushing coins...\n",

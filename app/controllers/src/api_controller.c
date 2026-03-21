@@ -1314,7 +1314,6 @@ size_t api_handle_request(const char *method, const char *path,
 
     /* Download stats — IBD progress monitoring */
     if (strcmp(clean_path, "/api/downloadstats") == 0) {
-        extern struct download_manager *msg_get_download_mgr(void);
         struct download_manager *dm = msg_get_download_mgr();
         uint64_t req = 0, recv = 0, tout = 0, inflight = 0, queued = 0;
         dl_get_stats(dm, &req, &recv, &tout, &inflight, &queued);

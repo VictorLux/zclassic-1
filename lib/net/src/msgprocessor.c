@@ -31,6 +31,10 @@
 #include <time.h>
 #include <sys/time.h>
 
+/* Externs from boot.c / wallet_helpers.c */
+extern struct node_db *g_active_node_db;
+extern struct wallet *g_active_wallet;
+
 static void push_getheaders(struct msg_processor *mp, struct p2p_node *node);
 static void push_getheaders_from(struct msg_processor *mp,
                                   struct p2p_node *node,
@@ -347,7 +351,6 @@ static bool process_verack(struct msg_processor *mp, struct p2p_node *node)
     }
 
     /* Save peer to SQLite for explorer/browser visibility */
-    extern struct node_db *g_active_node_db;
     if (g_active_node_db && g_active_node_db->db) {
         sqlite3_exec(g_active_node_db->db,
             "CREATE TABLE IF NOT EXISTS peers ("
@@ -952,10 +955,8 @@ static bool process_tx_msg(struct msg_processor *mp, struct p2p_node *node,
             zcl_mutex_unlock(&mp->net_mgr->cs_nodes);
         }
 
-        extern struct wallet *g_active_wallet;
         if (g_active_wallet) {
             wallet_sync_transaction(g_active_wallet, &tx, NULL);
-            extern struct node_db *g_active_node_db;
             if (g_active_node_db)
                 node_db_sync_wallet_tx(g_active_node_db, &tx,
                                        g_active_wallet, 0);

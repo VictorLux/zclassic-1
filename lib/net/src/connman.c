@@ -396,7 +396,6 @@ static void *thread_socket_handler(void *arg)
 
                 /* Re-queue any in-flight blocks from this peer */
                 {
-                    extern struct download_manager *msg_get_download_mgr(void);
                     dl_peer_disconnected(msg_get_download_mgr(),
                                           (uint32_t)node->id);
                 }

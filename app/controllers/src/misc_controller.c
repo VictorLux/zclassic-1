@@ -177,7 +177,6 @@ static bool rpc_downloadstats(const struct json_value *params, bool help,
         "  { \"requested\", \"received\", \"timed_out\", "
         "\"in_flight\", \"queued\", \"sync_state\" }\n");
 
-    extern struct download_manager *msg_get_download_mgr(void);
     struct download_manager *dm = msg_get_download_mgr();
 
     uint64_t req = 0, recv = 0, tout = 0, inflight = 0, queued = 0;

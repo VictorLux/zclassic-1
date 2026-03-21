@@ -131,4 +131,7 @@ void dl_get_stats(struct download_manager *dm,
                   uint64_t *timed_out, uint64_t *in_flight,
                   uint64_t *queued);
 
+/* Global download manager accessor (initialized by msg_processor_init). */
+struct download_manager *msg_get_download_mgr(void);
+
 #endif /* ZCL_DOWNLOAD_H */
