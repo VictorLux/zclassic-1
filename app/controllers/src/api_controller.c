@@ -10,7 +10,7 @@
 #include "controllers/explorer_factoids.h"
 #include "event/event.h"
 #include "net/download.h"
-#include "validation/connect_block.h"
+#include "validation/contextual_check_tx.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1329,7 +1329,7 @@ size_t api_handle_request(const char *method, const char *path,
             sync_state_name(sync_get_state()),
             (unsigned long long)req, (unsigned long long)recv,
             (unsigned long long)tout, (unsigned long long)inflight,
-            (unsigned long long)queued, get_assume_valid_height());
+            (unsigned long long)queued, g_assume_valid_height);
     }
 
     return json_error(response, response_max, JSON_404_HEADERS,

@@ -13,14 +13,7 @@
 #include "coins/undo.h"
 #include "consensus/validation.h"
 #include "primitives/block.h"
-#include "core/uint256.h"
 #include <stdbool.h>
-
-/* Assumevalid: skip expensive verification below a known-good height.
- * PoW, merkle roots, and UTXO consistency are always checked.
- * Only script and Sapling proof verification are skipped. */
-void set_assume_valid(const struct uint256 *hash, int height);
-int get_assume_valid_height(void);
 
 bool connect_block(const struct block *block,
                    struct validation_state *state,

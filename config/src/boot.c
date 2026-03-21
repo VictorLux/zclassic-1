@@ -51,6 +51,7 @@
 #include "net/fast_sync.h"
 #include "net/peer_strategy.h"
 #include "event/event.h"
+#include "controllers/event_controller.h"
 #include <netdb.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -62,6 +63,7 @@
 #include <sys/mman.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <signal.h>
 #include <time.h>
 #include <pthread.h>
 #include <malloc.h>
@@ -978,14 +980,10 @@ bool app_init(struct app_context *ctx)
     g_datadir = ctx->datadir;
     g_blog_datadir = ctx->datadir;
 
-    /* Set assumevalid from highest checkpoint — skip expensive verification
-     * (script + Sapling proofs) for deeply-buried blocks during IBD.
-     * PoW, merkle roots, UTXO consistency still fully checked. */
-    if (params->checkpointData.nEntries > 0) {
-        int cp_idx = params->checkpointData.nEntries - 1;
-        set_assume_valid(&params->checkpointData.entries[cp_idx].hash,
-                         params->checkpointData.entries[cp_idx].height);
-    }
+    /* Assumevalid is set after block index loads (see ~line 1275).
+     * The remote dev's implementation in contextual_check_tx.c handles
+     * both script verification (connect_block.c) and Sapling proof
+     * verification (contextual_check_tx.c) via g_assume_valid_height. */
 
     ecc_start();
     ecc_verify_init();
@@ -1061,6 +1059,62 @@ bool app_init(struct app_context *ctx)
     printf("Wallet has %zu keys.\n", g_wallet.keystore.num_keys);
     g_active_wallet = &g_wallet;
 
+    /* Pre-flight: check for stale lock files from crashed processes */
+    {
+        char lock_path[1024];
+
+        /* Check LevelDB locks */
+        snprintf(lock_path, sizeof(lock_path), "%s/blocks/index/LOCK",
+                 ctx->datadir);
+        if (access(lock_path, F_OK) == 0) {
+            /* LevelDB LOCK exists — check if holder is still alive */
+            FILE *lf = fopen(lock_path, "r");
+            if (lf) {
+                char pidbuf[32] = {0};
+                size_t nr = fread(pidbuf, 1, sizeof(pidbuf) - 1, lf);
+                fclose(lf);
+                if (nr > 0) {
+                    long pid = strtol(pidbuf, NULL, 10);
+                    if (pid > 0 && kill((pid_t)pid, 0) != 0) {
+                        printf("Removing stale LevelDB LOCK (pid %ld dead)\n",
+                               pid);
+                        unlink(lock_path);
+                    } else if (pid > 0) {
+                        fprintf(stderr,
+                            "ERROR: LevelDB locked by pid %ld (still running)\n"
+                            "Kill the other process or use a different datadir.\n",
+                            pid);
+                    }
+                }
+            }
+        }
+        snprintf(lock_path, sizeof(lock_path), "%s/chainstate/LOCK",
+                 ctx->datadir);
+        if (access(lock_path, F_OK) == 0) {
+            FILE *lf = fopen(lock_path, "r");
+            if (lf) {
+                char pidbuf[32] = {0};
+                size_t nr = fread(pidbuf, 1, sizeof(pidbuf) - 1, lf);
+                fclose(lf);
+                if (nr > 0) {
+                    long pid = strtol(pidbuf, NULL, 10);
+                    if (pid > 0 && kill((pid_t)pid, 0) != 0) {
+                        printf("Removing stale chainstate LOCK (pid %ld dead)\n",
+                               pid);
+                        unlink(lock_path);
+                    }
+                }
+            }
+        }
+
+        /* Check SQLite WAL lock — WAL mode handles this via busy_timeout,
+         * but a crash can leave a -wal file. SQLite recovers automatically. */
+        snprintf(lock_path, sizeof(lock_path), "%s/node.db-wal",
+                 ctx->datadir);
+        if (access(lock_path, F_OK) == 0)
+            printf("SQLite WAL file exists (normal after crash recovery)\n");
+    }
+
     /* Open SQLite node database */
     if (node_db_sync_init(&g_node_db, ctx->datadir)) {
         g_active_node_db = &g_node_db;
@@ -1070,6 +1124,8 @@ bool app_init(struct app_context *ctx)
             printf("SQLite tip: height=%d\n", db_tip);
     } else {
         fprintf(stderr, "Warning: SQLite database unavailable\n");
+        event_emitf(EV_DB_ERROR, 0, "SQLite open failed at %s/node.db",
+                    ctx->datadir);
     }
 
     /* Fast path: -importlegacy imports wallet data from legacy block files
@@ -1738,6 +1794,7 @@ bool app_init(struct app_context *ctx)
     rpc_wallet_set_coins_tip(&g_coins_tip);
     rpc_wallet_set_node_db(g_active_node_db);
     register_wallet_rpc_commands(&g_rpc_table);
+    register_event_rpc_commands(&g_rpc_table);
 
     /* Pre-compute fast sync snapshot offer in background */
     {

@@ -6,7 +6,7 @@
 #include "controllers/strong_params.h"
 #include "event/event.h"
 #include "net/download.h"
-#include "validation/connect_block.h"
+#include "validation/contextual_check_tx.h"
 #include "chain/chainparams.h"
 #include "encoding/utilstrencodings.h"
 #include "json/json.h"
@@ -247,7 +247,7 @@ static bool rpc_downloadstats(const struct json_value *params, bool help,
     json_push_kv_int(result, "queued", (int64_t)queued);
     json_push_kv_str(result, "sync_state", sync_state_name(sync_get_state()));
     json_push_kv_int(result, "assume_valid_height",
-                      (int64_t)get_assume_valid_height());
+                      (int64_t)g_assume_valid_height);
     return true;
 }
 
