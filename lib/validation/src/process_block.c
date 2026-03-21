@@ -457,6 +457,24 @@ bool connect_tip(struct validation_state *state,
             return validation_state_error(state, "failed-to-read-block");
         }
         pblock = &local_block;
+
+        /* Verify block read from disk matches expected hash */
+        struct uint256 disk_hash;
+        block_header_get_hash(&pblock->header, &disk_hash);
+        if (pindex_new->phashBlock &&
+            uint256_cmp(&disk_hash, pindex_new->phashBlock) != 0) {
+            char exp[65], got[65];
+            uint256_get_hex(pindex_new->phashBlock, exp);
+            uint256_get_hex(&disk_hash, got);
+            printf("connect_tip: WRONG BLOCK at height %d!\n"
+                   "  expected: %s\n  got:      %s\n"
+                   "  file=%d pos=%u\n",
+                   pindex_new->nHeight, exp, got,
+                   pindex_new->nFile, pindex_new->nDataPos);
+            fflush(stdout);
+            block_free(&local_block);
+            return validation_state_error(state, "wrong-block-on-disk");
+        }
     }
 
     /* Apply the block to the chain state */
