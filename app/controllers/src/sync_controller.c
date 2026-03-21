@@ -341,9 +341,14 @@ bool node_db_sync_connect_block(struct node_db *ndb,
         incremental_tree_root(&tree, &tree_root);
         if (memcmp(tree_root.data,
                    blk->header.hashFinalSaplingRoot.data, 32) != 0) {
-            fprintf(stderr, "connect_block: Sapling tree root MISMATCH "
-                "at height %d (tree_size=%zu)\n",
+            /* Sapling tree root mismatch is a critical error — the
+             * cryptographic state has diverged. Reject the block to
+             * prevent building invalid shielded spend proofs. */
+            fprintf(stderr, "CRITICAL: Sapling tree root MISMATCH "
+                "at height %d (tree_size=%zu) — rejecting block\n",
                 pindex->nHeight, incremental_tree_size(&tree));
+            fflush(stderr);
+            return false;
         }
 
         /* Store tree state per-block for disconnect */

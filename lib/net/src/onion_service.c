@@ -291,17 +291,65 @@ static size_t serve_status(uint8_t *response, size_t max)
     if (g_start_time > 0)
         uptime = (long)(time(NULL) - g_start_time);
 
-    bool is_syncing = (height == 0 && uptime < 600) || (height > 0 && height < 100);
-    char body[512];
+    /* Query extra stats from SQLite */
+    int64_t last_block_time = 0, tx_count = 0;
+    if (g_datadir) {
+        char db_path[1024];
+        snprintf(db_path, sizeof(db_path), "%s/node.db", g_datadir);
+        sqlite3 *db = NULL;
+        if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) == SQLITE_OK) {
+            sqlite3_busy_timeout(db, 5000);
+            sqlite3_stmt *s = NULL;
+            if (sqlite3_prepare_v2(db,
+                    "SELECT time FROM blocks ORDER BY height DESC LIMIT 1",
+                    -1, &s, NULL) == SQLITE_OK && s) {
+                if (sqlite3_step(s) == SQLITE_ROW)
+                    last_block_time = sqlite3_column_int64(s, 0);
+                sqlite3_finalize(s);
+            }
+            s = NULL;
+            if (sqlite3_prepare_v2(db,
+                    "SELECT count(*) FROM transactions",
+                    -1, &s, NULL) == SQLITE_OK && s) {
+                if (sqlite3_step(s) == SQLITE_ROW)
+                    tx_count = sqlite3_column_int64(s, 0);
+                sqlite3_finalize(s);
+            }
+            sqlite3_close(db);
+        }
+    }
+
+    int64_t now = (int64_t)time(NULL);
+    int64_t last_block_age = (last_block_time > 0) ? now - last_block_time : -1;
+    bool is_syncing = (height == 0 && uptime < 600) ||
+                      (last_block_age > 600 && uptime > 300);
+
+    const char *onion = g_onion_address[0] ? g_onion_address : NULL;
+
+    char body[1024];
     int blen = snprintf(body, sizeof(body),
-        "{\"height\":%d,\"peers\":%d,\"version\":\"0.1.0\","
-        "\"uptime\":%ld,\"syncing\":%s}",
-        height, peers, uptime, is_syncing ? "true" : "false");
+        "{\"height\":%d"
+        ",\"peers\":%d"
+        ",\"version\":\"0.1.0\""
+        ",\"uptime\":%ld"
+        ",\"syncing\":%s"
+        ",\"last_block_age\":%lld"
+        ",\"transactions\":%lld"
+        "%s%s%s"
+        "}",
+        height, peers, uptime,
+        is_syncing ? "true" : "false",
+        (long long)last_block_age,
+        (long long)tx_count,
+        onion ? ",\"onion\":\"" : "",
+        onion ? onion : "",
+        onion ? "\"" : "");
     if (blen < 0) blen = 0;
 
     return (size_t)snprintf((char *)response, max,
         "HTTP/1.1 200 OK\r\n"
         "Content-Type: application/json\r\n"
+        "Access-Control-Allow-Origin: *\r\n"
         "Content-Length: %d\r\n"
         "Connection: close\r\n\r\n"
         "%s", blen, body);

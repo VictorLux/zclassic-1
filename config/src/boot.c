@@ -1071,6 +1071,29 @@ bool app_init(struct app_context *ctx)
         if (!ctx->reindex_chainstate)
             loaded = load_block_index_flat(ctx->datadir, &g_state);
 
+        /* Check if flat file is stale — if it loaded but has far fewer
+         * entries than the chain (checked via SQLite), reload from LevelDB.
+         * This fixes the case where an old flat file with 6K entries
+         * prevents loading the full 3M+ entry index. */
+        if (loaded && g_node_db.open) {
+            int64_t db_height = 0;
+            sqlite3_stmt *s = NULL;
+            if (sqlite3_prepare_v2(g_node_db.db,
+                    "SELECT MAX(height) FROM blocks", -1, &s, NULL) == SQLITE_OK && s) {
+                if (sqlite3_step(s) == SQLITE_ROW)
+                    db_height = sqlite3_column_int64(s, 0);
+                sqlite3_finalize(s);
+            }
+            size_t flat_count = g_state.map_block_index.size;
+            if (db_height > 0 && (int64_t)flat_count < db_height - 1000) {
+                printf("Block index flat: stale (%zu entries vs chain height %lld)"
+                       " — reloading from LevelDB\n",
+                       flat_count, (long long)db_height);
+                fflush(stdout);
+                loaded = false;  /* fall through to LevelDB */
+            }
+        }
+
         if (!loaded) {
             int64_t t_idx_start = (int64_t)time(NULL);
             printf("Loading block index from LevelDB...\n");
@@ -1706,6 +1729,14 @@ void app_shutdown(void)
         gen_stop(&g_gen);
 
     rpc_http_stop();
+
+    /* Save block index flat file for instant next restart */
+    if (g_state.map_block_index.size > 1000) {
+        printf("Saving block index flat file (%zu entries)...\n",
+               g_state.map_block_index.size);
+        fflush(stdout);
+        save_block_index_flat(g_datadir, &g_state);
+    }
 
     /* Save peer addresses */
     addr_db_write(&g_connman.manager, g_datadir);
