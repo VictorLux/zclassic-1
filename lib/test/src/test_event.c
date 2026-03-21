@@ -318,6 +318,49 @@ static int test_dump_empty_log(void)
     return failures;
 }
 
+static int test_dump_filtered(void)
+{
+    int failures = 0;
+
+    TEST("event_dump_json_filtered by type prefix") {
+        event_log_init();
+
+        event_emitf(EV_TCP_CONNECTED, 1, "peer1");
+        event_emitf(EV_PEER_VERSION, 1, "v170011");
+        event_emitf(EV_MSG_RECEIVED, 1, "block size=1000");
+        event_emitf(EV_BLOCK_CONNECTED, 1, "h=100");
+        event_emitf(EV_TX_ACCEPTED, 2, "txid");
+        event_emitf(EV_PEER_MISBEHAVE, 1, "+10=10 bad");
+
+        char buf[4096];
+
+        /* Filter: peer. should match PEER_VERSION and PEER_MISBEHAVE */
+        size_t len = event_dump_json_filtered(buf, sizeof(buf), 100, "peer.");
+        ASSERT(len > 0);
+        buf[len] = '\0';
+        ASSERT(strstr(buf, "peer.version") != NULL);
+        ASSERT(strstr(buf, "peer.misbehave") != NULL);
+        ASSERT(strstr(buf, "tcp.connected") == NULL);
+        ASSERT(strstr(buf, "val.block_connected") == NULL);
+
+        /* Filter: val. should match BLOCK_CONNECTED only */
+        len = event_dump_json_filtered(buf, sizeof(buf), 100, "val.");
+        buf[len] = '\0';
+        ASSERT(strstr(buf, "val.block_connected") != NULL);
+        ASSERT(strstr(buf, "peer.") == NULL);
+
+        /* Empty prefix = all events */
+        len = event_dump_json_filtered(buf, sizeof(buf), 100, "");
+        buf[len] = '\0';
+        ASSERT(strstr(buf, "tcp.connected") != NULL);
+        ASSERT(strstr(buf, "val.block_connected") != NULL);
+
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
 int test_event(void)
 {
     int failures = 0;
@@ -335,6 +378,7 @@ int test_event(void)
     failures += test_event_type_name();
     failures += test_dump_small_buffer();
     failures += test_dump_empty_log();
+    failures += test_dump_filtered();
 
     return failures;
 }
