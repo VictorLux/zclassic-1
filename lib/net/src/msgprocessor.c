@@ -795,8 +795,14 @@ static bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
                 node->starting_height > 0) {
                 enum sync_state ss = sync_get_state();
                 if (ss == SYNC_BLOCKS_DOWNLOAD ||
-                    ss == SYNC_CONNECTING_BLOCKS)
+                    ss == SYNC_CONNECTING_BLOCKS ||
+                    ss == SYNC_REORG) {
                     sync_set_state(SYNC_AT_TIP, "caught up to peer");
+                    set_flush_policy(3600, 500000, 100);
+                    if (ss != SYNC_REORG)
+                        printf("=== AT TIP: height=%d ===\n",
+                               new_tip->nHeight);
+                }
                 if (node->state == PEER_SYNCING_BLOCKS ||
                     node->state == PEER_SYNCING_HEADERS)
                     peer_set_state_checked((uint32_t)node->id,
