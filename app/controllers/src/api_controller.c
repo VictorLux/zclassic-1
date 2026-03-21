@@ -909,7 +909,7 @@ static size_t compute_deep_stats(uint8_t *r, size_t max)
     {
         sqlite3_stmt *s = NULL;
         if (sqlite3_prepare_v2(db,
-            "SELECT hash FROM blocks WHERE height = (SELECT MAX(height) FROM blocks)",
+            "SELECT hex(hash) FROM blocks WHERE height = (SELECT MAX(height) FROM blocks)",
             -1, &s, NULL) == SQLITE_OK && s) {
             if (sqlite3_step(s) == SQLITE_ROW) {
                 const char *h = (const char *)sqlite3_column_text(s, 0);

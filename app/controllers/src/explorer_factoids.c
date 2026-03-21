@@ -148,10 +148,11 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
     int64_t genesis_time = 0;
     char genesis_coinbase[128] = "";
 
-    fq_text(db, "SELECT hash FROM blocks WHERE height = 0", genesis_hash, sizeof(genesis_hash));
-    genesis_time = fq_i64(db, "SELECT time FROM blocks WHERE height = 0");
+    fq_text(db, "SELECT hex(hash) FROM blocks WHERE height = 0", genesis_hash, sizeof(genesis_hash));
+    /* Genesis block has time=0 in SQLite; use known constant */
+    genesis_time = 1478403829; /* Nov 6, 2016 03:43:49 UTC */
 
-    fq_text(db, "SELECT txid FROM transactions WHERE block_height = 0 AND is_coinbase = 1 LIMIT 1",
+    fq_text(db, "SELECT hex(txid) FROM transactions WHERE block_height = 0 AND is_coinbase = 1 LIMIT 1",
             genesis_coinbase, sizeof(genesis_coinbase));
 
     char tstr[64];
@@ -176,11 +177,12 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
 
     {
         sqlite3_stmt *s = NULL;
-        const char *sql = "SELECT height, time, hash FROM blocks WHERE height < 10 ORDER BY height";
+        const char *sql = "SELECT height, time, hex(hash) FROM blocks WHERE height < 10 ORDER BY height";
         if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
             while (sqlite3_step(s) == SQLITE_ROW) {
                 int64_t h = sqlite3_column_int64(s, 0);
                 int64_t t = sqlite3_column_int64(s, 1);
+                if (h == 0) t = 1478403829; /* genesis time fix */
                 const char *hash = (const char *)sqlite3_column_text(s, 2);
                 char ts[64];
                 fmt_time(ts, sizeof(ts), t);
@@ -249,13 +251,14 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
         {
             char sql[256];
             snprintf(sql, sizeof(sql),
-                "SELECT hash, time FROM blocks WHERE height = %" PRId64, height);
+                "SELECT hex(hash), time FROM blocks WHERE height = %" PRId64, height);
             sqlite3_stmt *s = NULL;
             if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
                 if (sqlite3_step(s) == SQLITE_ROW) {
                     const char *h = (const char *)sqlite3_column_text(s, 0);
                     if (h) snprintf(bhash, sizeof(bhash), "%s", h);
                     btime = sqlite3_column_int64(s, 1);
+                    if (height == 0) btime = 1478403829;
                 }
                 sqlite3_finalize(s);
             }
