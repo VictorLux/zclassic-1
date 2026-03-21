@@ -263,8 +263,15 @@ bool p2p_node_receive_bytes(struct p2p_node *node, const char *data,
     while (nbytes > 0) {
         if (node->recv_msg_count == 0 ||
             net_message_complete(&node->recv_msgs[node->recv_msg_count - 1])) {
+            /* Enforce message queue limit — prevents OOM from fast senders */
+            if (node->recv_msg_count >= MAX_RECV_MESSAGES) {
+                event_emitf(EV_PEER_MISBEHAVE, (uint32_t)node->id,
+                            "recv queue full (%zu msgs)", node->recv_msg_count);
+                return false;
+            }
             if (node->recv_msg_count >= node->recv_msg_cap) {
                 size_t newcap = node->recv_msg_cap ? node->recv_msg_cap * 2 : 16;
+                if (newcap > MAX_RECV_MESSAGES) newcap = MAX_RECV_MESSAGES;
                 struct net_message *tmp = realloc(node->recv_msgs,
                                                    newcap * sizeof(*tmp));
                 if (!tmp) return false;

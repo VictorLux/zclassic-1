@@ -18,6 +18,36 @@
 #include "validation/main_constants.h"
 #include "script/interpreter.h"
 #include <string.h>
+#include <stdio.h>
+
+/* ── Assumevalid ──────────────────────────────────────────
+ * Skip expensive validation (script verification + Sapling
+ * proof verification) for blocks at or below a known-good
+ * height. This mirrors Bitcoin Core's -assumevalid behavior.
+ *
+ * The assumption: these blocks were already validated by
+ * the honest majority when they were first mined. We still
+ * check PoW, merkle roots, UTXO consistency, and all
+ * structural rules — only the expensive crypto is skipped.
+ *
+ * Set via set_assume_valid() from boot.c. Default uses the
+ * highest checkpoint. Can be disabled with height=0. */
+static int g_assume_valid_height = 0;
+static struct uint256 g_assume_valid_hash;
+static bool g_assume_valid_set = false;
+
+void set_assume_valid(const struct uint256 *hash, int height)
+{
+    g_assume_valid_hash = *hash;
+    g_assume_valid_height = height;
+    g_assume_valid_set = true;
+    printf("Assume-valid: skip expensive checks below height %d\n", height);
+}
+
+int get_assume_valid_height(void)
+{
+    return g_assume_valid_height;
+}
 
 static bool checkpoint_covers(const struct checkpoint_data *cpdata,
                               int height)
@@ -36,6 +66,9 @@ bool connect_block(const struct block *block,
 {
     bool expensive_checks = true;
     if (checkpoint_covers(&params->checkpointData, pindex->nHeight))
+        expensive_checks = false;
+    /* Assumevalid: skip expensive checks below known-good height */
+    if (g_assume_valid_set && pindex->nHeight <= g_assume_valid_height)
         expensive_checks = false;
 
     if (!check_block(block, state, params, expensive_checks,

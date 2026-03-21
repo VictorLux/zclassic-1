@@ -977,6 +977,15 @@ bool app_init(struct app_context *ctx)
     g_datadir = ctx->datadir;
     g_blog_datadir = ctx->datadir;
 
+    /* Set assumevalid from highest checkpoint — skip expensive verification
+     * (script + Sapling proofs) for deeply-buried blocks during IBD.
+     * PoW, merkle roots, UTXO consistency still fully checked. */
+    if (params->checkpointData.nEntries > 0) {
+        int cp_idx = params->checkpointData.nEntries - 1;
+        set_assume_valid(&params->checkpointData.entries[cp_idx].hash,
+                         params->checkpointData.entries[cp_idx].height);
+    }
+
     ecc_start();
     ecc_verify_init();
 

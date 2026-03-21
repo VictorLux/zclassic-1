@@ -77,24 +77,11 @@ unsigned int GetNextWorkRequired(const struct block_index *pindexLast,
         struct arith_uint256 sum;
         arith_uint256_add(&sum, &bnTot, &bnTmp);
         bnTot = sum;
-        if (nHeight == 3046049 || nHeight == 3046050) {
-            printf("  pow[%d]: h=%d bits=0x%08x pprev=%s\n",
-                   i, pindexFirst->nHeight, pindexFirst->nBits,
-                   pindexFirst->pprev ? "yes" : "NULL");
-            fflush(stdout);
-        }
         pindexFirst = pindexFirst->pprev;
     }
 
-    if (pindexFirst == NULL) {
-        if (nHeight >= 3046049)
-            printf("GetNextWorkRequired: pindexFirst NULL after %lld iters "
-                   "(height %d, last_h=%d)\n",
-                   (long long)params->nPowAveragingWindow, nHeight,
-                   pindexLast->nHeight);
-        fflush(stdout);
+    if (pindexFirst == NULL)
         return nProofOfWorkLimit;
-    }
 
     struct arith_uint256 bnAvg;
     struct arith_uint256 window;
@@ -141,12 +128,7 @@ unsigned int CalculateNextWorkRequired(struct arith_uint256 bnAvg,
     if (arith_uint256_compare(&bnNew, &bnPowLimit) > 0)
         bnNew = bnPowLimit;
 
-    unsigned int result = arith_uint256_get_compact(&bnNew, false);
-    fprintf(stderr, "CalculateNextWorkRequired(h=%d): avg=%lld actual=%lld "
-            "min=%lld max=%lld result=0x%08x\n",
-            nextHeight, (long long)avgTimespan, (long long)nActualTimespan,
-            (long long)minTimespan, (long long)maxTimespan, result);
-    return result;
+    return arith_uint256_get_compact(&bnNew, false);
 }
 
 bool CheckProofOfWork(struct uint256 hash, unsigned int nBits,
