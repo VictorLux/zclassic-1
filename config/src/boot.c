@@ -1454,6 +1454,40 @@ bool app_init(struct app_context *ctx)
             g_state.pindex_best_header = best_hdr;
     }
 
+    /* Ensure genesis block is always properly initialized.
+     * On a fresh start, load_block_index creates genesis. On restart,
+     * LevelDB may have entries but genesis might lack BLOCK_HAVE_DATA
+     * or chain_active might not have a tip set. Fix both. */
+    {
+        struct block_index *genesis = block_map_find(
+            &g_state.map_block_index, &params->consensus.hashGenesisBlock);
+        if (!genesis) {
+            genesis = chainstate_insert_block_index(
+                (struct chainstate *)&g_state,
+                &params->consensus.hashGenesisBlock);
+        }
+        if (genesis) {
+            if (genesis->nHeight != 0)
+                genesis->nHeight = 0;
+            if (!(genesis->nStatus & BLOCK_HAVE_DATA)) {
+                genesis->nStatus |= BLOCK_HAVE_DATA;
+                genesis->nStatus = (genesis->nStatus & ~BLOCK_VALID_MASK) |
+                                    BLOCK_VALID_SCRIPTS;
+                genesis->nTx = 1;
+                genesis->nChainTx = 1;
+                printf("Genesis block: marked BLOCK_HAVE_DATA\n");
+            }
+            if (arith_uint256_is_zero(&genesis->nChainWork))
+                genesis->nChainWork = GetBlockProof(genesis);
+            /* Set chain tip to genesis if no tip exists */
+            if (!active_chain_tip(&g_state.chain_active)) {
+                active_chain_set_tip(&g_state.chain_active, genesis);
+                g_state.pindex_best_header = genesis;
+                printf("Chain tip: initialized to genesis (height 0)\n");
+            }
+        }
+    }
+
     /* Activate best chain (connects any new blocks beyond saved tip).
      * Skip for -fastsync and -reindex-chainstate. */
     if (ctx->fastsync_dir)
