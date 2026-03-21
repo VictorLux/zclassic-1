@@ -6,6 +6,7 @@
 #include "controllers/event_controller.h"
 #include "controllers/strong_params.h"
 #include "event/event.h"
+#include "net/download.h"
 #include "json/json.h"
 #include "rpc/server.h"
 #include <stdlib.h>
@@ -69,11 +70,53 @@ static bool rpc_syncstate(const struct json_value *params, bool help,
     return true;
 }
 
+static bool rpc_healthcheck(const struct json_value *params, bool help,
+                             struct json_value *result)
+{
+    (void)params;
+    RPC_HELP(help, result,
+        "healthcheck\n"
+        "\nReturn node health status — single pass/fail for monitoring.\n"
+        "\nResult:\n"
+        "  { \"healthy\": true/false, \"sync_state\": \"...\",\n"
+        "    \"checks\": { ... } }\n");
+
+    json_set_object(result);
+
+    enum sync_state ss = sync_get_state();
+    json_push_kv_str(result, "sync_state", sync_state_name(ss));
+
+    /* Individual health checks */
+    struct json_value checks = {0};
+    json_set_object(&checks);
+
+    bool synced = (ss == SYNC_AT_TIP);
+    json_push_kv_bool(&checks, "synced", synced);
+
+    bool has_peers = false;
+    extern struct download_manager *msg_get_download_mgr(void);
+    {
+        /* Count outbound peers via download manager stats as proxy */
+        uint64_t req = 0, recv = 0;
+        dl_get_stats(msg_get_download_mgr(), &req, &recv, NULL, NULL, NULL);
+        has_peers = (recv > 0 || synced);
+    }
+    json_push_kv_bool(&checks, "has_peers", has_peers);
+
+    bool healthy = synced && has_peers;
+    json_push_kv_bool(result, "healthy", healthy);
+    json_push_kv(result, "checks", &checks);
+    json_free(&checks);
+
+    return true;
+}
+
 void register_event_rpc_commands(struct rpc_table *t)
 {
     struct rpc_command cmds[] = {
-        { "control", "eventlog",   rpc_eventlog,   true },
-        { "control", "syncstate",  rpc_syncstate,  true },
+        { "control", "eventlog",     rpc_eventlog,     true },
+        { "control", "syncstate",    rpc_syncstate,    true },
+        { "control", "healthcheck",  rpc_healthcheck,  true },
     };
 
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++)

@@ -1333,6 +1333,22 @@ size_t api_handle_request(const char *method, const char *path,
             (unsigned long long)queued, g_assume_valid_height);
     }
 
+    /* Health check — lightweight, machine-readable */
+    if (strcmp(clean_path, "/api/health") == 0) {
+        enum sync_state ss = sync_get_state();
+        bool healthy = (ss == SYNC_AT_TIP);
+        return (size_t)snprintf((char *)response, response_max,
+            "HTTP/1.1 %s\r\n"
+            "Content-Type: application/json\r\n"
+            "Access-Control-Allow-Origin: *\r\n"
+            "Cache-Control: no-cache\r\n"
+            "Connection: close\r\n\r\n"
+            "{\"healthy\":%s,\"sync_state\":\"%s\"}",
+            healthy ? "200 OK" : "503 Service Unavailable",
+            healthy ? "true" : "false",
+            sync_state_name(ss));
+    }
+
     return json_error(response, response_max, JSON_404_HEADERS,
                       "Unknown API endpoint");
 }
