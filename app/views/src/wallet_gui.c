@@ -62,6 +62,25 @@ struct wallet_data {
 
 static struct wallet_data g_data = {0};
 
+/* Forward declarations */
+static GtkWidget *make_label(const char *text, const char *css_class,
+                             bool selectable);
+static void format_zcl(char *buf, size_t max, int64_t zatoshi);
+
+/* ── Wallet data for history/receive ─────────────────────── */
+
+static char g_wallet_address[128] = "";
+
+struct tx_entry {
+    char txid[65];
+    int64_t amount;
+    int height;
+    char address[64];
+};
+#define MAX_TX_DISPLAY 50
+static struct tx_entry g_tx_history[MAX_TX_DISPLAY];
+static int g_tx_count = 0;
+
 /* ── Background query thread ──────────────────────────────── */
 
 static int64_t bg_query(sqlite3 *db, const char *sql)
@@ -161,6 +180,53 @@ static void *query_thread(void *arg)
     g_data.addr_count = bg_query(db, "SELECT COUNT(*) FROM addresses");
     g_data.tx_count = bg_query(db, "SELECT COUNT(*) FROM transactions");
 
+    /* ── Wallet address (first key) ── */
+    {
+        sqlite3_stmt *s = NULL;
+        if (sqlite3_prepare_v2(db,
+                "SELECT address FROM wallet_keys WHERE used=1 LIMIT 1",
+                -1, &s, NULL) == SQLITE_OK && s) {
+            if (sqlite3_step(s) == SQLITE_ROW) {
+                const char *addr = (const char *)sqlite3_column_text(s, 0);
+                if (addr)
+                    snprintf(g_wallet_address, sizeof(g_wallet_address),
+                             "%s", addr);
+            }
+            sqlite3_finalize(s);
+        }
+    }
+
+    /* ── Recent transactions ── */
+    g_tx_count = 0;
+    {
+        sqlite3_stmt *s = NULL;
+        if (sqlite3_prepare_v2(db,
+                "SELECT txid, amount, block_height, address "
+                "FROM wallet_transactions "
+                "ORDER BY block_height DESC LIMIT ?",
+                -1, &s, NULL) == SQLITE_OK && s) {
+            sqlite3_bind_int(s, 1, MAX_TX_DISPLAY);
+            while (sqlite3_step(s) == SQLITE_ROW &&
+                   g_tx_count < MAX_TX_DISPLAY) {
+                struct tx_entry *e = &g_tx_history[g_tx_count];
+                const char *txid = (const char *)sqlite3_column_text(s, 0);
+                if (txid)
+                    snprintf(e->txid, sizeof(e->txid), "%s", txid);
+                else
+                    e->txid[0] = '\0';
+                e->amount = sqlite3_column_int64(s, 1);
+                e->height = sqlite3_column_int(s, 2);
+                const char *addr = (const char *)sqlite3_column_text(s, 3);
+                if (addr)
+                    snprintf(e->address, sizeof(e->address), "%s", addr);
+                else
+                    e->address[0] = '\0';
+                g_tx_count++;
+            }
+            sqlite3_finalize(s);
+        }
+    }
+
     sqlite3_close(db);
     atomic_store(&g_data.ready, true);
     return NULL;
@@ -200,6 +266,12 @@ static GtkWidget *lbl_utxos;
 static GtkWidget *lbl_status;
 static GtkWidget *lbl_addresses;
 static GtkWidget *lbl_txcount;
+
+/* Receive tab */
+static GtkWidget *lbl_recv_address;
+
+/* Transaction history */
+static GtkWidget *tx_list_box;
 
 static gboolean update_display(gpointer data)
 {
@@ -261,6 +333,53 @@ static gboolean update_display(gpointer data)
     snprintf(buf, sizeof(buf), "Txns: %" PRId64, g_data.tx_count);
     gtk_label_set_text(GTK_LABEL(lbl_txcount), buf);
 
+    /* Update receive address */
+    if (g_wallet_address[0])
+        gtk_label_set_text(GTK_LABEL(lbl_recv_address), g_wallet_address);
+    else
+        gtk_label_set_text(GTK_LABEL(lbl_recv_address), "(no address — run node first)");
+
+    /* Update transaction history */
+    {
+        /* Clear existing rows */
+        GList *children = gtk_container_get_children(GTK_CONTAINER(tx_list_box));
+        for (GList *l = children; l; l = l->next)
+            gtk_widget_destroy(GTK_WIDGET(l->data));
+        g_list_free(children);
+
+        for (int i = 0; i < g_tx_count; i++) {
+            struct tx_entry *e = &g_tx_history[i];
+            GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+            gtk_container_set_border_width(GTK_CONTAINER(row), 4);
+
+            /* Amount (green for received, red for sent) */
+            char amt[32];
+            format_zcl(amt, sizeof(amt), e->amount < 0 ? -e->amount : e->amount);
+            char amt_str[48];
+            snprintf(amt_str, sizeof(amt_str), "%s%s ZCL",
+                     e->amount >= 0 ? "+" : "-", amt);
+            GtkWidget *lbl_amt = make_label(amt_str, "balance", false);
+            gtk_widget_set_size_request(lbl_amt, 160, -1);
+
+            /* Height */
+            char ht[32];
+            snprintf(ht, sizeof(ht), "h=%d", e->height);
+            GtkWidget *lbl_ht = make_label(ht, "status", false);
+
+            /* Txid (truncated) */
+            char txid_short[20];
+            snprintf(txid_short, sizeof(txid_short), "%.16s...", e->txid);
+            GtkWidget *lbl_tx = make_label(txid_short, "status", true);
+
+            gtk_box_pack_start(GTK_BOX(row), lbl_amt, FALSE, FALSE, 0);
+            gtk_box_pack_start(GTK_BOX(row), lbl_ht, FALSE, FALSE, 0);
+            gtk_box_pack_start(GTK_BOX(row), lbl_tx, TRUE, TRUE, 0);
+
+            gtk_container_add(GTK_CONTAINER(tx_list_box), row);
+        }
+        gtk_widget_show_all(tx_list_box);
+    }
+
     /* Launch next background query */
     start_bg_query();
 
@@ -313,6 +432,10 @@ int wallet_gui_main(int argc, char **argv, const char *datadir)
         "label.status { font-size: 11px; color: #555555; }"
         "label.total { font-size: 24px; font-weight: bold; color: #33ff99; }"
         "separator { background-color: #333355; min-height: 1px; }"
+        "notebook tab { padding: 8px 16px; color: #888888; }"
+        "notebook tab:checked { color: #33ff99; }"
+        "list { background-color: #1a1a2e; }"
+        "list row { background-color: #1a1a2e; border-bottom: 1px solid #222244; }"
         , -1, NULL);
     gtk_style_context_add_provider_for_screen(
         gdk_screen_get_default(),
@@ -322,31 +445,73 @@ int wallet_gui_main(int argc, char **argv, const char *datadir)
 
     GtkWidget *win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(win), "ZClassic23");
-    gtk_window_set_default_size(GTK_WINDOW(win), 440, 340);
+    gtk_window_set_default_size(GTK_WINDOW(win), 520, 480);
     gtk_container_set_border_width(GTK_CONTAINER(win), 28);
     g_signal_connect(win, "destroy", G_CALLBACK(gtk_main_quit), NULL);
 
-    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
-    gtk_container_add(GTK_CONTAINER(win), vbox);
+    GtkWidget *outer = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_container_add(GTK_CONTAINER(win), outer);
 
+    /* Title bar */
     GtkWidget *title = make_label("ZClassic23", "title", false);
-    gtk_box_pack_start(GTK_BOX(vbox), title, FALSE, FALSE, 8);
+    gtk_box_pack_start(GTK_BOX(outer), title, FALSE, FALSE, 8);
 
-    gtk_box_pack_start(GTK_BOX(vbox),
-        make_row("Transparent", &lbl_transparent), FALSE, FALSE, 4);
-    gtk_box_pack_start(GTK_BOX(vbox),
-        make_row("Shielded", &lbl_shielded), FALSE, FALSE, 4);
+    /* Notebook with tabs */
+    GtkWidget *notebook = gtk_notebook_new();
+    gtk_box_pack_start(GTK_BOX(outer), notebook, TRUE, TRUE, 0);
 
-    gtk_box_pack_start(GTK_BOX(vbox),
-        gtk_separator_new(GTK_ORIENTATION_HORIZONTAL), FALSE, FALSE, 10);
+    /* ── Tab 1: Balance ── */
+    {
+        GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+        gtk_container_set_border_width(GTK_CONTAINER(vbox), 16);
 
-    GtkWidget *total_row = make_row("Total", &lbl_total);
-    gtk_style_context_add_class(
-        gtk_widget_get_style_context(lbl_total), "total");
-    gtk_box_pack_start(GTK_BOX(vbox), total_row, FALSE, FALSE, 4);
+        gtk_box_pack_start(GTK_BOX(vbox),
+            make_row("Transparent", &lbl_transparent), FALSE, FALSE, 4);
+        gtk_box_pack_start(GTK_BOX(vbox),
+            make_row("Shielded", &lbl_shielded), FALSE, FALSE, 4);
+        gtk_box_pack_start(GTK_BOX(vbox),
+            gtk_separator_new(GTK_ORIENTATION_HORIZONTAL), FALSE, FALSE, 10);
+        GtkWidget *total_row = make_row("Total", &lbl_total);
+        gtk_style_context_add_class(
+            gtk_widget_get_style_context(lbl_total), "total");
+        gtk_box_pack_start(GTK_BOX(vbox), total_row, FALSE, FALSE, 4);
 
-    gtk_box_pack_start(GTK_BOX(vbox), gtk_label_new(""), TRUE, TRUE, 0);
+        gtk_notebook_append_page(GTK_NOTEBOOK(notebook), vbox,
+            gtk_label_new("Balance"));
+    }
 
+    /* ── Tab 2: Receive ── */
+    {
+        GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
+        gtk_container_set_border_width(GTK_CONTAINER(vbox), 16);
+
+        gtk_box_pack_start(GTK_BOX(vbox),
+            make_label("Your Address", "dim-label", false), FALSE, FALSE, 4);
+        lbl_recv_address = make_label("Loading...", "balance", true);
+        gtk_label_set_line_wrap(GTK_LABEL(lbl_recv_address), TRUE);
+        gtk_box_pack_start(GTK_BOX(vbox), lbl_recv_address, FALSE, FALSE, 4);
+
+        gtk_box_pack_start(GTK_BOX(vbox),
+            make_label("Click address to select, then Ctrl+C to copy",
+                        "status", false), FALSE, FALSE, 8);
+
+        gtk_notebook_append_page(GTK_NOTEBOOK(notebook), vbox,
+            gtk_label_new("Receive"));
+    }
+
+    /* ── Tab 3: History ── */
+    {
+        GtkWidget *scroll = gtk_scrolled_window_new(NULL, NULL);
+        gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
+            GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+        tx_list_box = gtk_list_box_new();
+        gtk_container_add(GTK_CONTAINER(scroll), tx_list_box);
+
+        gtk_notebook_append_page(GTK_NOTEBOOK(notebook), scroll,
+            gtk_label_new("History"));
+    }
+
+    /* ── Status bar ── */
     GtkWidget *sb = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
     lbl_height = make_label("Height: —", "status", false);
     lbl_utxos = make_label("UTXOs: —", "status", false);
@@ -358,7 +523,7 @@ int wallet_gui_main(int argc, char **argv, const char *datadir)
     gtk_box_pack_start(GTK_BOX(sb), lbl_addresses, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(sb), lbl_txcount, FALSE, FALSE, 0);
     gtk_box_pack_end(GTK_BOX(sb), lbl_status, FALSE, FALSE, 0);
-    gtk_box_pack_end(GTK_BOX(vbox), sb, FALSE, FALSE, 0);
+    gtk_box_pack_end(GTK_BOX(outer), sb, FALSE, FALSE, 4);
 
     gtk_widget_show_all(win);
     gtk_window_present(GTK_WINDOW(win));
