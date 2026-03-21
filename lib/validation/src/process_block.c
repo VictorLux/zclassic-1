@@ -21,6 +21,7 @@
 #include "validation/txmempool.h"
 #include "core/utiltime.h"
 #include "controllers/sync_controller.h"
+#include "event/event.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -103,11 +104,15 @@ static bool flush_coins_if_needed(struct coins_view_cache *coins_tip,
                                             &coins_tip->commitment);
         }
 
-        printf("flush_coins: wrote %s (%zu blocks batched)\n",
-               force ? "forced" : time_flush ? "periodic" :
-               size_flush ? "cache-full" : "block-interval",
-               batched);
+        const char *trigger = force ? "forced" : time_flush ? "periodic" :
+                              size_flush ? "cache-full" : "block-interval";
+        event_emitf(EV_COINS_FLUSH, 0, "%s batched=%zu entries=%zu",
+                    trigger, batched, coins_tip->cache_coins.size);
+        if (batched >= 100)
+            printf("flush_coins: wrote %s (%zu blocks batched)\n",
+                   trigger, batched);
     } else {
+        event_emitf(EV_COINS_FLUSH_FAILED, 0, "flush returned false");
         printf("flush_coins: FAILED to flush coins cache to disk\n");
     }
     return ok;
@@ -245,9 +250,15 @@ static void update_tip(struct main_state *ms, struct block_index *pindex_new)
         uint256_get_hex(pindex_new->phashBlock, hex);
     else
         snprintf(hex, sizeof(hex), "(null)");
-    printf("UpdateTip: new best=%s  height=%d  tx=%u  date=%lld\n",
-           hex, pindex_new->nHeight, pindex_new->nTx,
-           (long long)pindex_new->nTime);
+
+    event_emitf(EV_TIP_UPDATED, 0, "h=%d %s",
+                pindex_new->nHeight, hex);
+
+    /* Only log every 1000 blocks during IBD to reduce noise */
+    if (pindex_new->nHeight % 1000 == 0 || pindex_new->nHeight < 10)
+        printf("UpdateTip: new best=%s  height=%d  tx=%u  date=%lld\n",
+               hex, pindex_new->nHeight, pindex_new->nTx,
+               (long long)pindex_new->nTime);
 }
 
 bool accept_block_header(const struct block_header *header,
@@ -710,6 +721,12 @@ bool activate_best_chain(struct validation_state *state,
                 return false;
 
             /* Disconnect blocks from current tip to fork point */
+            if (fork && tip->nHeight > fork->nHeight) {
+                event_emitf(EV_REORG_START, 0, "fork=%d tip=%d depth=%d",
+                            fork->nHeight, tip->nHeight,
+                            tip->nHeight - fork->nHeight);
+                sync_set_state(SYNC_REORG, "chain reorganization");
+            }
             while (active_chain_tip(&ms->chain_active) != fork) {
                 if (!disconnect_tip(state, ms, coins_tip, datadir))
                     return false;

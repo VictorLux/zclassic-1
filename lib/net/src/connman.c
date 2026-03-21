@@ -380,6 +380,12 @@ static void *thread_socket_handler(void *arg)
         for (size_t i = 0; i < cm->manager.num_nodes; ) {
             if (cm->manager.nodes[i]->disconnect) {
                 struct p2p_node *node = cm->manager.nodes[i];
+                event_emitf(EV_TCP_DISCONNECTED, (uint32_t)node->id,
+                            "%s state=%s misbehavior=%d",
+                            node->addr_name,
+                            peer_state_name(node->state),
+                            node->misbehavior);
+                node->state = PEER_DISCONNECTED;
                 p2p_node_close_socket(node);
 
                 /* Clean send queue while holding cs_nodes */

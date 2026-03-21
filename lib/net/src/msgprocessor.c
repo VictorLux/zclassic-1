@@ -265,8 +265,11 @@ static bool process_version(struct msg_processor *mp, struct p2p_node *node,
      * their version and sent verack. Mark connected once we also get their
      * verack (handled in process_verack). For inbound, the peer initiated,
      * so mark connected after we send our version+verack. */
-    if (node->inbound)
+    if (node->inbound) {
         node->successfully_connected = true;
+        peer_set_state_checked((uint32_t)node->id, &node->state,
+                               PEER_HANDSHAKE_COMPLETE, "inbound version+verack");
+    }
 
     /* Ask outbound peers for their address list */
     if (!node->inbound && !node->get_addr) {
@@ -877,6 +880,8 @@ static bool process_tx_msg(struct msg_processor *mp, struct p2p_node *node,
     tx_mark_seen(&hash);
 
     if (accept_to_mempool(mp, &tx)) {
+        event_emit(EV_TX_ACCEPTED, (uint32_t)node->id,
+                   hash.data, 32);
         struct inv_item inv;
         inv_item_init_typed(&inv, MSG_TX, &hash);
         p2p_node_add_inventory_known(node, &inv);
@@ -889,6 +894,9 @@ static bool process_tx_msg(struct msg_processor *mp, struct p2p_node *node,
                 node_db_sync_wallet_tx(g_active_node_db, &tx,
                                        g_active_wallet, 0);
         }
+    } else {
+        event_emit(EV_TX_REJECTED, (uint32_t)node->id,
+                   hash.data, 32);
     }
 
     transaction_free(&tx);
@@ -952,6 +960,11 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
     }
 
     if (accepted > 0) {
+        event_emitf(EV_HEADERS_RECEIVED, (uint32_t)node->id,
+                    "accepted=%zu total=%llu tip=%d",
+                    accepted, (unsigned long long)count,
+                    pindex_last ? pindex_last->nHeight : -1);
+
         /* Log progress: during IBD, only log every 10th batch */
         bool log_this = true;
         if (pindex_last && node->starting_height > 0 &&
@@ -1243,6 +1256,12 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                            node->addr_name, h, (unsigned long long)nu);
                     node->zsync_receiving = true;
                     node->zsync_offset = 0;
+                    peer_set_state_checked((uint32_t)node->id, &node->state,
+                                           PEER_SNAPSHOT_RECEIVING,
+                                           "accepted snapshot offer");
+                    event_emitf(EV_SNAPSHOT_OFFER_RECEIVED, (uint32_t)node->id,
+                                "h=%d utxos=%llu", h, (unsigned long long)nu);
+                    sync_set_state(SYNC_SNAPSHOT_RECEIVE, "peer snapshot");
                     /* Send zsnapreq to trigger chunk streaming */
                     p2p_node_begin_message(node, MSG_SNAPSHOT_REQ,
                                             mp->params->pchMessageStart);
@@ -1291,6 +1310,9 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                 node->zsync_serving = true;
                 node->zsync_offset = 0;
                 node->zsync_sent = 0;
+                peer_set_state_checked((uint32_t)node->id, &node->state,
+                                       PEER_SNAPSHOT_SERVING,
+                                       "serving snapshot request");
                 node->zsync_cursor_valid = false;
                 memset(node->zsync_cursor_txid, 0, 32);
                 node->zsync_cursor_vout = 0;
@@ -1447,6 +1469,13 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                    node->addr_name,
                    (unsigned long long)node->zsync_offset);
             node->zsync_receiving = false;
+            event_emitf(EV_SNAPSHOT_COMPLETE, (uint32_t)node->id,
+                        "utxos=%llu",
+                        (unsigned long long)node->zsync_offset);
+            peer_set_state_checked((uint32_t)node->id, &node->state,
+                                   PEER_ACTIVE, "snapshot complete");
+            sync_set_state(SYNC_HEADERS_DOWNLOAD,
+                           "snapshot done, sync remaining headers");
             fflush(stdout);
 
         /* ── Parallel chunk sync messages ────────────────────── */
@@ -1821,15 +1850,24 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
     struct msg_processor *mp = (struct msg_processor *)ctx;
 
     /* Outbound nodes: send version to initiate handshake */
-    if (!node->successfully_connected) {
-        if (!node->inbound && node->send_bytes == 0)
+    if (node->state < PEER_HANDSHAKE_COMPLETE) {
+        if (!node->inbound && node->send_bytes == 0) {
             push_version(mp, node);
+            peer_set_state_checked((uint32_t)node->id, &node->state,
+                                   PEER_VERSION_SENT, "outbound version sent");
+        }
         return true;
     }
 
+    /* Transition to ACTIVE if still at HANDSHAKE_COMPLETE */
+    if (node->state == PEER_HANDSHAKE_COMPLETE)
+        peer_set_state_checked((uint32_t)node->id, &node->state,
+                               PEER_ACTIVE, "ready for sync");
+
     /* Offer fast sync to ZCL23 peers that are behind us */
     if (peer_supports_fast_sync(node->services) &&
-        !node->zsync_serving && !node->zsync_receiving &&
+        node->state != PEER_SNAPSHOT_SERVING &&
+        node->state != PEER_SNAPSHOT_RECEIVING &&
         node->zsync_sent == 0 && /* only offer once */
         g_cached_offer_valid) {
         int our_h = msg_get_height(mp);
@@ -1837,6 +1875,9 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
             (node->starting_height < 0 ||
              our_h > node->starting_height + 100)) {
             node->zsync_sent = UINT64_MAX; /* mark: offered */
+            event_emitf(EV_SNAPSHOT_OFFER_SENT, (uint32_t)node->id,
+                        "h=%d utxos=%llu", g_cached_offer.height,
+                        (unsigned long long)g_cached_offer.num_utxos);
             printf("Peer %s: offering snapshot (us=%d, peer=%d)\n",
                    node->addr_name, our_h, node->starting_height);
             p2p_node_begin_message(node, MSG_SNAPSHOT_OFFER,
@@ -1860,6 +1901,9 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
         bool should_sync = false;
         if (!node->sync_started && !node->inbound) {
             node->sync_started = true;
+            peer_set_state_checked((uint32_t)node->id, &node->state,
+                                   PEER_SYNCING_HEADERS, "IBD start");
+            sync_set_state(SYNC_HEADERS_DOWNLOAD, "first outbound peer");
             should_sync = true;
         }
 
@@ -1989,6 +2033,8 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
                                             mp->params->pchMessageStart);
                     p2p_node_end_message(node);
                     node->zsync_serving = false;
+                    peer_set_state_checked((uint32_t)node->id, &node->state,
+                                           PEER_ACTIVE, "snapshot serve done");
                     printf("Peer %s: snapshot complete (%llu UTXOs sent)\n",
                            node->addr_name,
                            (unsigned long long)node->zsync_offset);

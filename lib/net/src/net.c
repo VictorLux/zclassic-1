@@ -757,12 +757,18 @@ void peer_misbehaving(struct net_manager *nm, struct p2p_node *node,
     if (!nm || !node || howmuch <= 0) return;
 
     node->misbehavior += howmuch;
+    event_emitf(EV_PEER_MISBEHAVE, (uint32_t)node->id,
+                "+%d=%d %s", howmuch, node->misbehavior,
+                reason ? reason : "");
     printf("Misbehaving: %s (%d -> %d) %s\n",
            node->addr_name, node->misbehavior - howmuch,
            node->misbehavior, reason ? reason : "");
     fflush(stdout);
 
     if (node->misbehavior >= 100) {
+        event_emitf(EV_PEER_BANNED, (uint32_t)node->id,
+                    "score=%d %s", node->misbehavior,
+                    reason ? reason : "threshold");
         printf("Banning %s (score=%d): %s\n",
                node->addr_name, node->misbehavior,
                reason ? reason : "threshold reached");
