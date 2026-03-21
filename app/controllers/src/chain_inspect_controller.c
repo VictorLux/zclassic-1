@@ -708,7 +708,8 @@ static bool rpc_hodltimeseries(const struct json_value *params, bool help,
         cum[b] = cum[b - 1] + bin_value[b];
 
     /* Subsidy model: approximate supply at each height.
-     * ZCL: 10 ZCL/block first 20000, then 12.5 halving every 840000.
+     * ZCL: 12.5 ZCL/block pre-Buttercup (halving every 840000),
+     * 6.25>>3 ZCL/block post-Buttercup (707000+, halving every 1680000).
      * For simplicity: use cumulative bin values for surviving UTXOs,
      * and scale by ratio of known total supply. */
     (void)total_utxos;

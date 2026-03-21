@@ -668,25 +668,28 @@ size_t explorer_stats_build(uint8_t *r, size_t buf_max, const char *datadir)
     if (genesis_time > 0 && tip_time > genesis_time)
         chain_age_days = (tip_time - genesis_time) / 86400;
 
-    /* Correct subsidy schedule: pre-Buttercup 12.5 ZCL, post-Buttercup 6.25/2^era */
-    int64_t current_subsidy;
+    /* Buttercup-aware halving calculation */
     int halvings;
     int next_halving;
     int blocks_until_halving;
-    if (tip < 707000) {
-        current_subsidy = 1250000000LL;
-        halvings = 0;
-        next_halving = 707000;
-        blocks_until_halving = 707000 - tip;
-    } else {
-        int era = (int)((tip - 1 - 707000) / 1680000);
+    int64_t current_subsidy;
+    if (tip >= BUTTERCUP_ACTIVATION_HEIGHT) {
+        int era = (int)(((int64_t)tip - 1 - BUTTERCUP_ACTIVATION_HEIGHT) / POST_BC_HALVING);
         halvings = era + 3;
-        current_subsidy = (1250000000LL / 2) >> halvings;
-        next_halving = (int)(707000 + (int64_t)(era + 1) * 1680000 + 1);
+        current_subsidy = (BASE_SUBSIDY_SAT / 2) >> halvings;
+        next_halving = (int)(BUTTERCUP_ACTIVATION_HEIGHT + 1 +
+                             ((int64_t)(era + 1)) * POST_BC_HALVING);
         blocks_until_halving = next_halving - tip;
+    } else {
+        halvings = tip / PRE_BC_HALVING;
+        next_halving = (halvings + 1) * PRE_BC_HALVING;
+        blocks_until_halving = next_halving - tip;
+        current_subsidy = BASE_SUBSIDY_SAT >> halvings;
     }
-    int64_t correct_supply = zcl_total_supply_zatoshi(tip);
-    double pct_mined = (double)correct_supply / 2100000000000000LL * 100.0;
+    /* Correct max supply using Buttercup-aware computation */
+    int64_t max_supply_sat = zcl_total_supply_zatoshi(100000000LL);
+    double pct_mined = (max_supply_sat > 0)
+        ? (double)total_supply / (double)max_supply_sat * 100.0 : 0.0;
 
     int64_t t_query_ms = (int64_t)time(NULL) - t_start_ms;
     printf("Stats: phase 1 complete in %llds, building HTML...\n",
@@ -713,7 +716,7 @@ size_t explorer_stats_build(uint8_t *r, size_t buf_max, const char *datadir)
         "</div>"
         "<div class='stats-row'>"
         "<div class='stat'><div class='num'>%s ZCL</div><div class='lbl'>Circulating Supply</div></div>"
-        "<div class='stat'><div class='num'>%.2f%%</div><div class='lbl'>%% of Max (21M)</div></div>"
+        "<div class='stat'><div class='num'>%.2f%%</div><div class='lbl'>%% of Max Supply</div></div>"
         "<div class='stat'><div class='num'>%" PRId64 "</div><div class='lbl'>Total UTXOs</div></div>"
         "</div>",
         tip, diff, hr_str,
@@ -829,6 +832,7 @@ size_t explorer_stats_build(uint8_t *r, size_t buf_max, const char *datadir)
                 while (sqlite3_step(s) == SQLITE_ROW) {
                     int64_t h = sqlite3_column_int64(s, 0);
                     int64_t t = sqlite3_column_int64(s, 1);
+                    if (t == 0 && h == 0) t = 1478403829; /* genesis */
                     int64_t v = sqlite3_column_int64(s, 2);
                     const char *txhex = (const char *)sqlite3_column_text(s, 3);
                     char ts[32], vs[32], txid[65] = "", short_tx[18] = "";

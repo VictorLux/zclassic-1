@@ -10,4 +10,8 @@
 
 size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir);
 
+/* JSON API version for /api/factoids */
+size_t explorer_factoids_build_json(uint8_t *buf, size_t buf_max,
+                                     const char *datadir);
+
 #endif

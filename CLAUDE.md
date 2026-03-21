@@ -6,7 +6,7 @@ A decentralized internet platform. Every node is a full ZClassic node, a Tor hid
 ## Build
 ```bash
 make zclassic23    # 26MB binary, zero system deps
-make test          # 869+ tests
+make test          # 1137+ tests
 make zcl-browser   # GTK Tor-only browser
 make zcl-rpc       # CLI RPC client
 ```
@@ -155,6 +155,7 @@ Live at https://zclnet.net/explorer — served by zclassic23 itself (TLS on port
 /explorer/stats        SVG charts with CSS-only tab controls (24h/7d/30d/1y/all)
 /explorer/hodl         9-year HODL wave chart (from genesis, real UTXO data)
 /explorer/tokens       ZSLP token scanner
+/explorer/factoids     Historian factoids (13 sections, SHA3 receipts)
 /explorer/search?q=    Smart search (height, hash, txid, address)
 /explorer/style.css    Customizable CSS (from {datadir}/explorer/style.css)
 /explorer/favicon.png  ZClassic logo
@@ -167,8 +168,10 @@ Live at https://zclnet.net/explorer — served by zclassic23 itself (TLS on port
 /api/tx/:txid          Transaction detail
 /api/address/:addr     Address balance + UTXOs
 /api/stats             Network stats (height, difficulty, hashrate, supply)
+/api/stats/deep        Deep stats (SQLite-backed, shielded, ZSLP, addresses)
 /api/supply            Circulating supply (plain number, CoinGecko format)
 /api/hodl              HODL wave data
+/api/factoids          Full historian factoids (JSON, SHA3 receipts)
 ```
 All endpoints return JSON with CORS headers (`Access-Control-Allow-Origin: *`).
 
