@@ -393,8 +393,27 @@ bool node_db_sync_disconnect_block(struct node_db *ndb,
         const struct transaction *tx = &blk->vtx[i - 1];
 
         /* Remove output UTXOs created by this tx */
-        for (size_t j = 0; j < tx->num_vout; j++)
+        for (size_t j = 0; j < tx->num_vout; j++) {
             db_utxo_delete(ndb, tx->hash.data, (uint32_t)j);
+            db_wallet_utxo_delete(ndb, tx->hash.data, (uint32_t)j);
+        }
+
+        /* Unmark any wallet_utxos that this tx spent.
+         * When disconnecting, inputs that were marked spent become
+         * unspent again (the spending tx is being reverted). */
+        for (size_t j = 0; j < tx->num_vin; j++) {
+            sqlite3_stmt *us = NULL;
+            sqlite3_prepare_v2(ndb->db,
+                "UPDATE wallet_utxos SET spent_txid=NULL, spent_vin=NULL"
+                " WHERE spent_txid=? AND spent_vin=?",
+                -1, &us, NULL);
+            if (us) {
+                sqlite3_bind_blob(us, 1, tx->hash.data, 32, SQLITE_STATIC);
+                sqlite3_bind_int(us, 2, (int)j);
+                sqlite3_step(us);
+                sqlite3_finalize(us);
+            }
+        }
 
         /* Remove tx index entry */
         db_tx_delete(ndb, tx->hash.data);
@@ -413,9 +432,10 @@ bool node_db_sync_disconnect_block(struct node_db *ndb,
             sqlite3_finalize(s);
         }
 
-        /* Note: restoring spent UTXOs requires undo data.
-         * The full UTXO restore happens via the coins_view_cache
-         * path. SQLite will be repopulated on reconnect. */
+        /* Note: restoring spent UTXOs (inputs consumed by this
+         * block's txs) requires undo data. The coins_view_cache
+         * path handles that; SQLite UTXOs are repopulated on
+         * reconnect via connect_block. */
     }
 
     /* Restore Sapling tree from previous block */
@@ -510,7 +530,9 @@ bool node_db_sync_wallet_tx(struct node_db *ndb,
         db_wallet_utxo_save(ndb, &wu);
     }
 
-    /* Mark inputs that spend our UTXOs */
+    /* Mark inputs that spend our UTXOs.
+     * Only mark spent if the UTXO actually exists in wallet_utxos —
+     * otherwise we'd silently set is_ours on non-wallet UTXOs. */
     for (size_t i = 0; i < tx->num_vin; i++) {
         struct db_wallet_utxo spent;
         if (db_wallet_utxo_find(ndb,
@@ -520,13 +542,13 @@ bool node_db_sync_wallet_tx(struct node_db *ndb,
             debit += spent.value;
             from_me = true;
             free(spent.script);
-        }
 
-        if (db_wallet_utxo_mark_spent(ndb,
-                tx->vin[i].prevout.hash.data,
-                tx->vin[i].prevout.n,
-                tx->hash.data, (int)i))
-            is_ours = true;
+            if (db_wallet_utxo_mark_spent(ndb,
+                    tx->vin[i].prevout.hash.data,
+                    tx->vin[i].prevout.n,
+                    tx->hash.data, (int)i))
+                is_ours = true;
+        }
     }
 
     /* Only save the full tx if it involves our wallet */

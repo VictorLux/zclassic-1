@@ -85,13 +85,13 @@ int test_core(void)
 
         struct byte_stream rs;
         stream_init_from_data(&rs, s.data, s.size);
-        uint8_t v8;
+        uint8_t v8 = 0;
         stream_read(&rs, &v8, 1);
-        uint32_t v32;
+        uint32_t v32 = 0;
         stream_read_u32_le(&rs, &v32);
-        uint64_t v64;
+        uint64_t v64 = 0;
         stream_read_u64_le(&rs, &v64);
-        uint64_t vcs;
+        uint64_t vcs = 0;
         stream_read_compact_size(&rs, &vcs);
 
         bool ok = (v8 == 0x42) && (v32 == 0xDEADBEEF) &&

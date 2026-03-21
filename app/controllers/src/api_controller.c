@@ -6,6 +6,7 @@
  * when called from HTTPS handler threads). */
 
 #include "controllers/api_controller.h"
+#include "controllers/explorer_internal.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -367,24 +368,7 @@ static size_t compute_stats(uint8_t *r, size_t max)
     if (rpc_call("getmininginfo", "[]", mbuf, sizeof(mbuf)) > 0)
         hashrate = json_extract_real(mbuf, "networkhashps");
 
-    /* Calculate supply: 12.5 ZCL per block for first 840000, then halving */
-    double supply = 0.0;
-    {
-        int64_t h = height;
-        int64_t subsidy = 1250000000LL; /* 12.5 ZCL in zatoshi */
-        int64_t halving_interval = 840000;
-        int64_t total_sat = 0;
-        while (h > 0) {
-            int64_t blocks_at_rate = h;
-            if (blocks_at_rate > halving_interval)
-                blocks_at_rate = halving_interval;
-            total_sat += blocks_at_rate * subsidy;
-            h -= blocks_at_rate;
-            subsidy /= 2;
-            if (subsidy == 0) break;
-        }
-        supply = (double)total_sat / 100000000.0;
-    }
+    double supply = (double)zcl_total_supply_zatoshi(height) / 100000000.0;
 
     /* UTXO count via gettxoutsetinfo — expensive, skip if too slow */
     int64_t utxo_count = -1;
@@ -423,21 +407,7 @@ static size_t compute_supply(uint8_t *r, size_t max)
     if (height < 0)
         return json_error(r, max, JSON_500_HEADERS, "Cannot get height");
 
-    /* Calculate supply */
-    int64_t h = height;
-    int64_t subsidy = 1250000000LL;
-    int64_t halving_interval = 840000;
-    int64_t total_sat = 0;
-    while (h > 0) {
-        int64_t blocks_at_rate = h;
-        if (blocks_at_rate > halving_interval)
-            blocks_at_rate = halving_interval;
-        total_sat += blocks_at_rate * subsidy;
-        h -= blocks_at_rate;
-        subsidy /= 2;
-        if (subsidy == 0) break;
-    }
-    double supply = (double)total_sat / 100000000.0;
+    double supply = (double)zcl_total_supply_zatoshi(height) / 100000000.0;
 
     /* Plain number -- CoinGecko expects just a number */
     return (size_t)snprintf((char *)r, max,
@@ -887,19 +857,7 @@ static size_t compute_deep_stats(uint8_t *r, size_t max)
     int64_t token_count = dq_i64(db, "SELECT count(*) FROM zslp_tokens");
     int64_t transfer_count = dq_i64(db, "SELECT count(*) FROM zslp_transfers");
 
-    /* Supply */
-    int64_t supply_sat = 0;
-    {
-        int64_t h = height;
-        int64_t subsidy = 1250000000LL;
-        int64_t halving = 840000;
-        while (h > 0 && subsidy > 0) {
-            int64_t blks = h > halving ? halving : h;
-            supply_sat += blks * subsidy;
-            h -= blks;
-            subsidy /= 2;
-        }
-    }
+    int64_t supply_sat = zcl_total_supply_zatoshi(height);
 
     /* Shielded supply from blocks table */
     int64_t shielded_net = dq_i64(db, "SELECT COALESCE(SUM(sapling_value), 0) FROM blocks");

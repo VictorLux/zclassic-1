@@ -604,35 +604,90 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
         sqlite3_finalize(s);
     }
 
-    /* VALIDATION: balance must be <= 1.0 ZCL (started with 1.0, fees reduce it).
-     * The UTXO set is the ONLY ground truth. Shielded notes in our wallet_sapling_notes
-     * table are phantom false positives (zclassicd confirms private=0.00 for this wallet).
-     * DO NOT display shielded balance. Only display verified transparent UTXOs. */
-    int64_t fees_paid = 100000000 - transparent;
-    if (fees_paid < 0) fees_paid = 0;
+    /* Two-layer balance (same architecture as GTK wallet):
+     * Batch layer = SUM(utxos) for wallet keys (deterministic, immutable chain data)
+     * Speed layer = SUM(wallet_utxos WHERE unspent) (may be ahead during IBD)
+     * Display = batch layer when current, speed layer when ahead */
+    int64_t speed_transparent = 0;
+    sqlite3_stmt *sw = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT COALESCE(SUM(value),0) FROM wallet_utxos"
+            " WHERE spent_txid IS NULL",
+            -1, &sw, NULL) == SQLITE_OK) {
+        if (sqlite3_step(sw) == SQLITE_ROW)
+            speed_transparent = sqlite3_column_int64(sw, 0);
+        sqlite3_finalize(sw);
+    }
 
-    /* ASSERTION: transparent balance must be < 1.0 ZCL */
-    if (transparent > 100000000) {
-        /* DATA ERROR: more than starting amount. Show warning. */
-        transparent = 0;
-        t_utxos = 0;
-        fees_paid = 0;
+    /* Shielded: only trust notes whose nullifiers are NOT on-chain */
+    int64_t shielded = 0;
+    sw = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT COALESCE(SUM(n.value),0) FROM wallet_sapling_notes n"
+            " WHERE NOT EXISTS ("
+            "   SELECT 1 FROM sapling_spends ss"
+            "   WHERE ss.nullifier = n.nullifier)",
+            -1, &sw, NULL) == SQLITE_OK) {
+        if (sqlite3_step(sw) == SQLITE_ROW)
+            shielded = sqlite3_column_int64(sw, 0);
+        sqlite3_finalize(sw);
+    }
+
+    /* Ground truth = global UTXO set (immutable chain data).
+     * Speed layer = wallet_utxos cache (may be stale after reorg).
+     * Use ground truth when available; flag discrepancies. */
+    int64_t display_transparent = transparent > 0 ? transparent : speed_transparent;
+    int64_t total_balance = display_transparent + shielded;
+    bool balance_mismatch = (transparent > 0 && speed_transparent > 0 &&
+                             transparent != speed_transparent);
+
+    /* Actual fees from wallet transaction history */
+    int64_t total_fees = 0;
+    sw = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT COALESCE(SUM(fee),0) FROM wallet_transactions"
+            " WHERE fee > 0",
+            -1, &sw, NULL) == SQLITE_OK) {
+        if (sqlite3_step(sw) == SQLITE_ROW)
+            total_fees = sqlite3_column_int64(sw, 0);
+        sqlite3_finalize(sw);
     }
 
     size_t off = emit_header(r, max, "Wallet — ZClassic23", "/wallet");
 
     APPEND(off, r, max,
         "<div class='card' style='border-left-color:#33ff99;padding:20px'>"
-        "<div class='label'>Balance</div>"
+        "<div class='label'>Total Balance</div>"
         "<div style='font-size:36px;color:#33ff99;font-weight:800'>"
         "%.8f ZCL</div>"
         "<div class='sub' style='margin-top:8px'>"
-        "%d UTXO%s &middot; Fees: %.8f ZCL &middot; "
-        "Verified on-chain"
-        "</div></div>",
-        (double)transparent / 1e8,
-        t_utxos, t_utxos == 1 ? "" : "s",
-        (double)fees_paid / 1e8);
+        "Transparent: %.8f ZCL (%d UTXO%s)",
+        (double)total_balance / 1e8,
+        (double)display_transparent / 1e8,
+        t_utxos, t_utxos == 1 ? "" : "s");
+
+    if (shielded > 0) {
+        APPEND(off, r, max,
+            " &middot; Shielded: %.8f ZCL",
+            (double)shielded / 1e8);
+    }
+    if (total_fees > 0) {
+        APPEND(off, r, max,
+            " &middot; Fees paid: %.8f ZCL",
+            (double)total_fees / 1e8);
+    }
+    APPEND(off, r, max,
+        " &middot; Verified on-chain"
+        "</div>");
+    if (balance_mismatch) {
+        APPEND(off, r, max,
+            "<div style='color:#ff8800;font-size:12px;margin-top:6px'>"
+            "UTXO index: %.8f &middot; wallet cache: %.8f "
+            "(reorg detected — using UTXO index)</div>",
+            (double)transparent / 1e8,
+            (double)speed_transparent / 1e8);
+    }
+    APPEND(off, r, max, "</div>");
 
     /* Stats row */
     APPEND(off, r, max,
@@ -651,13 +706,12 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
     /* One-click shielding — no forms, no addresses, just pick an amount.
      * The wallet handles everything: generates z-addr, builds tx, broadcasts.
      * User never sees technical details. */
-    if (transparent > 0) {
-        double bal = (double)transparent / 1e8;
-        /* Preset amounts: common fractions of balance */
-        double p1 = 0.1, p2 = 0.25, p3 = 0.5;
-        if (p1 > bal - 0.0002) p1 = bal * 0.1;
-        if (p2 > bal - 0.0002) p2 = bal * 0.25;
-        if (p3 > bal - 0.0002) p3 = bal * 0.5;
+    if (display_transparent > 0) {
+        double bal = (double)display_transparent / 1e8;
+        /* Preset amounts: fractions of balance, scaled to actual holdings */
+        double p1 = bal * 0.10;
+        double p2 = bal * 0.25;
+        double p3 = bal * 0.50;
 
         APPEND(off, r, max,
             "<div class='card' style='border-left-color:#9966ff;padding:18px;"
@@ -764,11 +818,9 @@ static size_t serve_send(uint8_t *r, size_t max) {
     int64_t balance = 0;
     if (db) {
         balance = query_int64(db,
-            "SELECT COALESCE(sum(u.value),0) FROM utxos u "
-            "WHERE length(u.script) = 25 "
-            "AND substr(hex(u.script), 1, 6) = '76A914' "
-            "AND EXISTS (SELECT 1 FROM wallet_keys wk "
-            "WHERE wk.pubkey_hash = substr(u.script, 4, 20))");
+            "SELECT COALESCE(SUM(u.value),0) FROM utxos u "
+            "WHERE u.address_hash IN "
+            "(SELECT pubkey_hash FROM wallet_keys)");
         sqlite3_close(db);
     }
 
@@ -1032,14 +1084,58 @@ static size_t serve_coins(uint8_t *r, size_t max) {
     }
     APPEND(off, r, max, "</table></div>");
 
-    /* Shielded notes: NOT shown.
-     * Our wallet_sapling_notes has phantom false positives.
-     * zclassicd confirms private=0.00 for this wallet.
-     * The UTXO set is the only ground truth. */
+    /* Shielded notes: show only nullifier-verified unspent notes */
+    int64_t z_total = 0;
+    int z_count = 0;
+    s = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT hex(n.cm), n.value, n.height FROM wallet_sapling_notes n"
+            " WHERE NOT EXISTS ("
+            "   SELECT 1 FROM sapling_spends ss"
+            "   WHERE ss.nullifier = n.nullifier)"
+            " ORDER BY n.value DESC",
+            -1, &s, NULL) == SQLITE_OK) {
+        if (z_count == 0) {
+            APPEND(off, r, max,
+                "<h3>Shielded Notes (verified unspent)</h3>"
+                "<div class='overflow-x'>"
+                "<table><tr><th>Commitment</th>"
+                "<th>Amount</th><th>Height</th></tr>");
+        }
+        while (sqlite3_step(s) == SQLITE_ROW && off + 400 < max) {
+            const char *cm = (const char *)sqlite3_column_text(s, 0);
+            int64_t val = sqlite3_column_int64(s, 1);
+            int h = sqlite3_column_int(s, 2);
+            if (!cm) continue;
 
-    /* Supply stats */
+            char short_cm[18];
+            txid_short(cm, short_cm, sizeof(short_cm));
+
+            APPEND(off, r, max,
+                "<tr>"
+                "<td class='hash'>%s</td>"
+                "<td class='zcl'>%.8f</td>"
+                "<td>%d</td>"
+                "</tr>",
+                short_cm, (double)val / 1e8, h);
+            z_total += val;
+            z_count++;
+        }
+        sqlite3_finalize(s);
+    }
+    if (z_count > 0) {
+        APPEND(off, r, max,
+            "<tr class='total-row'>"
+            "<td>Total (%d note%s)</td>"
+            "<td class='zcl'>%.8f</td>"
+            "<td></td></tr></table></div>",
+            z_count, z_count == 1 ? "" : "s",
+            (double)z_total / 1e8);
+    }
+
+    /* Supply stats — cross-validate UTXO sum vs theoretical supply */
     int64_t chain_supply = query_int64(db,
-        "SELECT COALESCE(sum(value),0) FROM utxos");
+        "SELECT COALESCE(SUM(value),0) FROM utxos");
     int chain_utxos = query_int(db, "SELECT count(*) FROM utxos");
 
     APPEND(off, r, max,
@@ -1047,15 +1143,15 @@ static size_t serve_coins(uint8_t *r, size_t max) {
         "<div class='stats'>"
         "<div class='stat'>"
         "<div class='n'>%.8f</div>"
-        "<div class='l'>Wallet Balance</div></div>"
+        "<div class='l'>Wallet Total</div></div>"
         "<div class='stat'>"
         "<div class='n'>%.2f</div>"
-        "<div class='l'>Chain Supply</div></div>"
+        "<div class='l'>Chain UTXO Supply</div></div>"
         "<div class='stat'>"
         "<div class='n'>%d</div>"
         "<div class='l'>Chain UTXOs</div></div>"
         "</div>",
-        (double)t_total / 1e8,
+        (double)(t_total + z_total) / 1e8,
         (double)chain_supply / 1e8,
         chain_utxos);
 
@@ -1077,12 +1173,12 @@ static size_t serve_shield(uint8_t *r, size_t max, const char *query) {
         if (amt) amount = strtod(amt + 7, NULL);
     }
 
-    if (amount <= 0 || amount > 1.0) {
+    if (amount <= 0) {
         size_t off = emit_header(r, max, "Shield — ZClassic23", "/wallet");
         APPEND(off, r, max,
             "<div class='card' style='border-left-color:#ff4444'>"
             "<div class='label' style='color:#ff4444'>Invalid Amount</div>"
-            "<div class='sub'>Amount must be between 0 and your balance.</div>"
+            "<div class='sub'>Amount must be greater than 0.</div>"
             "<a href='/wallet' style='color:#4db8ff'>Back to Wallet</a></div>");
         emit_footer(r, max, &off);
         return off;
@@ -1148,7 +1244,7 @@ static size_t serve_shield_confirm(uint8_t *r, size_t max, const char *query) {
 
     size_t off = emit_header(r, max, "Shielding — ZClassic23", "/wallet");
 
-    if (amount <= 0 || amount > 1.0) {
+    if (amount <= 0) {
         APPEND(off, r, max,
             "<div class='card' style='border-left-color:#ff4444'>"
             "<div class='label' style='color:#ff4444'>Invalid amount</div>"

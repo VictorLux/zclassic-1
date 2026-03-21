@@ -668,12 +668,25 @@ size_t explorer_stats_build(uint8_t *r, size_t buf_max, const char *datadir)
     if (genesis_time > 0 && tip_time > genesis_time)
         chain_age_days = (tip_time - genesis_time) / 86400;
 
-    int halvings = tip / 840000;
-    int next_halving = (halvings + 1) * 840000;
-    int blocks_until_halving = next_halving - tip;
-    int64_t current_subsidy = 1250000000LL;
-    for (int i = 0; i < halvings; i++) current_subsidy /= 2;
-    double pct_mined = (double)total_supply / 2100000000000000LL * 100.0;
+    /* Correct subsidy schedule: pre-Buttercup 12.5 ZCL, post-Buttercup 6.25/2^era */
+    int64_t current_subsidy;
+    int halvings;
+    int next_halving;
+    int blocks_until_halving;
+    if (tip < 707000) {
+        current_subsidy = 1250000000LL;
+        halvings = 0;
+        next_halving = 707000;
+        blocks_until_halving = 707000 - tip;
+    } else {
+        int era = (int)((tip - 1 - 707000) / 1680000);
+        halvings = era + 3;
+        current_subsidy = (1250000000LL / 2) >> halvings;
+        next_halving = (int)(707000 + (int64_t)(era + 1) * 1680000 + 1);
+        blocks_until_halving = next_halving - tip;
+    }
+    int64_t correct_supply = zcl_total_supply_zatoshi(tip);
+    double pct_mined = (double)correct_supply / 2100000000000000LL * 100.0;
 
     int64_t t_query_ms = (int64_t)time(NULL) - t_start_ms;
     printf("Stats: phase 1 complete in %llds, building HTML...\n",

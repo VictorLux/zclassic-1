@@ -99,6 +99,65 @@ static inline void explorer_format_y_label(char *buf, size_t max, double val)
     else                 snprintf(buf, max, "%.4f", val);
 }
 
+/* ── Correct ZClassic supply calculation ───────────────────────
+ *
+ * Matches get_block_subsidy() + consensus_halving() from consensus code.
+ * The chain has three subsidy eras:
+ *   Block 0:          0 ZCL (slow-start first half, nSubsidySlowStartInterval=2)
+ *   Block 1:          12.5 ZCL (slow-start second half)
+ *   Blocks 2-706999:  12.5 ZCL (pre-Buttercup, 0 halvings)
+ *   Blocks 707000+:   base/2 >> (era+3), where era = (h-1-707000)/1680000
+ *
+ * Post-Buttercup subsidy per block:
+ *   Era 0 (707000-2387000):   0.78125 ZCL   (625000000>>3 = 78125000 zatoshi)
+ *   Era 1 (2387001-4067000):  0.390625 ZCL  (625000000>>4 = 39062500 zatoshi)
+ *   Era 2 (4067001-5747000):  0.1953125 ZCL (625000000>>5 = 19531250 zatoshi)
+ *   ...
+ *
+ * Returns total supply in zatoshi (int64_t). Overflow-safe for all heights.
+ */
+static inline int64_t zcl_total_supply_zatoshi(int64_t height)
+{
+    if (height <= 0) return 0;
+
+    const int64_t base = 1250000000LL;   /* 12.5 ZCL in zatoshi */
+    const int64_t buttercup = 707000;
+    const int64_t post_interval = 1680000;
+    const int64_t post_base = base / 2;  /* 625000000 (spacing ratio = 2) */
+
+    int64_t total = 0;
+
+    /* Block 0: slow-start → 0 zatoshi. Block 1: full 12.5 ZCL. */
+    total += base;
+    if (height == 1) return total;
+
+    /* Pre-Buttercup: blocks 2..min(height, 706999) at 12.5 ZCL each.
+     * No halvings occur pre-Buttercup (first would be at block 840001). */
+    int64_t pre_end = height < buttercup ? height : buttercup - 1;
+    total += (pre_end - 1) * base;  /* count = pre_end - 2 + 1 = pre_end - 1 */
+    if (height < buttercup) return total;
+
+    /* Post-Buttercup: iterate through halving eras.
+     * consensus_halving() returns (h-1-707000)/1680000 + 3.
+     * Era 0: blocks 707000..2387000  (1680001 blocks)
+     * Era k>0: blocks (707000+k*1680000+1)..(707000+(k+1)*1680000) (1680000 blocks) */
+    for (int era = 0; era < 61; era++) {
+        int64_t subsidy = post_base >> (era + 3);
+        if (subsidy == 0) break;
+
+        int64_t era_start = buttercup + (int64_t)era * post_interval
+                            + (era > 0 ? 1 : 0);
+        int64_t era_end   = buttercup + (int64_t)(era + 1) * post_interval;
+
+        if (era_start > height) break;
+        if (era_end > height) era_end = height;
+
+        total += (era_end - era_start + 1) * subsidy;
+    }
+
+    return total;
+}
+
 /* SVG line chart — renders into buffer at *off, advances *off */
 static inline void explorer_svg_line_chart(char *out, size_t max, size_t *off,
                             const char *title, const char *color,

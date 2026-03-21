@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "test/test_helpers.h"
+#include "controllers/explorer_internal.h"
 
 int test_chain(void)
 {
@@ -1305,6 +1306,107 @@ int test_chain(void)
         if (ts == 17 * 75)
             printf("OK\n");
         else { printf("FAIL (got %lld)\n", (long long)ts); failures++; }
+    }
+
+    /* ── zcl_total_supply_zatoshi: cross-check vs per-block subsidy ── */
+    printf("Supply: block 0 = 0... ");
+    {
+        int64_t s = zcl_total_supply_zatoshi(0);
+        if (s == 0) printf("OK\n");
+        else { printf("FAIL (got %lld)\n", (long long)s); failures++; }
+    }
+
+    printf("Supply: block 1 = 12.5 ZCL... ");
+    {
+        int64_t s = zcl_total_supply_zatoshi(1);
+        if (s == 1250000000LL) printf("OK\n");
+        else { printf("FAIL (got %lld)\n", (long long)s); failures++; }
+    }
+
+    printf("Supply: block 2 = 25.0 ZCL... ");
+    {
+        int64_t s = zcl_total_supply_zatoshi(2);
+        if (s == 2500000000LL) printf("OK\n");
+        else { printf("FAIL (got %lld)\n", (long long)s); failures++; }
+    }
+
+    printf("Supply: block 100 = 100*12.5 ZCL... ");
+    {
+        int64_t s = zcl_total_supply_zatoshi(100);
+        /* block 0=0, blocks 1-100 = 100*12.5 = 1250 ZCL */
+        int64_t expected = 100LL * 1250000000LL;
+        if (s == expected) printf("OK\n");
+        else { printf("FAIL (got %lld, expected %lld)\n", (long long)s, (long long)expected); failures++; }
+    }
+
+    printf("Supply: cross-check vs get_block_subsidy up to block 1000... ");
+    {
+        chain_params_select(CHAIN_MAIN);
+        const struct consensus_params *cp = &chain_params_get()->consensus;
+        int64_t sum = 0;
+        for (int h = 0; h <= 1000; h++)
+            sum += get_block_subsidy(h, cp);
+        int64_t computed = zcl_total_supply_zatoshi(1000);
+        if (sum == computed) printf("OK\n");
+        else { printf("FAIL (sum=%lld, computed=%lld)\n", (long long)sum, (long long)computed); failures++; }
+    }
+
+    printf("Supply: pre-Buttercup boundary (706999)... ");
+    {
+        /* Block 0 = 0, blocks 1-706999 = 706999 * 12.5 ZCL */
+        int64_t expected = 706999LL * 1250000000LL;
+        int64_t computed = zcl_total_supply_zatoshi(706999);
+        if (computed == expected) printf("OK\n");
+        else { printf("FAIL (computed=%lld, expected=%lld)\n", (long long)computed, (long long)expected); failures++; }
+    }
+
+    printf("Supply: at Buttercup (707000)... ");
+    {
+        /* Pre-Buttercup: blocks 1-706999 at 12.5 ZCL = 706999 * 12.5 */
+        /* Block 707000: 0.78125 ZCL */
+        int64_t pre = 706999LL * 1250000000LL;
+        int64_t post = 78125000LL;
+        int64_t expected = pre + post;
+        int64_t computed = zcl_total_supply_zatoshi(707000);
+        if (computed == expected) printf("OK\n");
+        else { printf("FAIL (computed=%lld, expected=%lld)\n", (long long)computed, (long long)expected); failures++; }
+    }
+
+    printf("Supply: cross-check Buttercup boundary (707000-707100)... ");
+    {
+        const struct consensus_params *cp = &chain_params_get()->consensus;
+        int64_t base = zcl_total_supply_zatoshi(706999);
+        int64_t sum = base;
+        for (int h = 707000; h <= 707100; h++)
+            sum += get_block_subsidy(h, cp);
+        int64_t computed = zcl_total_supply_zatoshi(707100);
+        if (sum == computed) printf("OK\n");
+        else { printf("FAIL (sum=%lld, computed=%lld, diff=%lld)\n",
+            (long long)sum, (long long)computed, (long long)(sum - computed)); failures++; }
+    }
+
+    printf("Supply: second halving boundary (2387001)... ");
+    {
+        const struct consensus_params *cp = &chain_params_get()->consensus;
+        /* At 2387000: should still be era 0 (0.78125 ZCL) */
+        /* At 2387001: era 1 (0.390625 ZCL) */
+        int64_t s1 = get_block_subsidy(2387000, cp);
+        int64_t s2 = get_block_subsidy(2387001, cp);
+        if (s1 == 78125000 && s2 == 39062500) printf("OK\n");
+        else { printf("FAIL (s1=%lld, s2=%lld)\n", (long long)s1, (long long)s2); failures++; }
+    }
+
+    printf("Supply: cross-check era boundary (2386990-2387010)... ");
+    {
+        const struct consensus_params *cp = &chain_params_get()->consensus;
+        int64_t base = zcl_total_supply_zatoshi(2386989);
+        int64_t sum = base;
+        for (int h = 2386990; h <= 2387010; h++)
+            sum += get_block_subsidy(h, cp);
+        int64_t computed = zcl_total_supply_zatoshi(2387010);
+        if (sum == computed) printf("OK\n");
+        else { printf("FAIL (sum=%lld, computed=%lld, diff=%lld)\n",
+            (long long)sum, (long long)computed, (long long)(sum - computed)); failures++; }
     }
 
     return failures;

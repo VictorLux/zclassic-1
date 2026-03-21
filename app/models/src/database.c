@@ -262,7 +262,7 @@ static bool prepare_statements(struct node_db *ndb)
          " FROM transactions WHERE txid=?");
 
     PREP(stmt_wallet_utxo_insert,
-         "INSERT OR IGNORE INTO wallet_utxos"
+         "INSERT OR REPLACE INTO wallet_utxos"
          "(txid,vout,value,address_hash,"
          "script,height,is_coinbase)"
          " VALUES(?,?,?,?,?,?,?)");
