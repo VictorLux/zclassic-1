@@ -11,6 +11,8 @@
 #include "event/event.h"
 #include "net/download.h"
 #include "validation/contextual_check_tx.h"
+#include "keys/key_io.h"
+#include "models/database.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1368,6 +1370,109 @@ size_t api_handle_request(const char *method, const char *path,
             healthy ? "200 OK" : "503 Service Unavailable",
             healthy ? "true" : "false",
             sync_state_name(ss));
+    }
+
+    /* Wallet data — balance, address, activity */
+    if (strcmp(clean_path, "/api/wallet") == 0) {
+        extern struct node_db *g_active_node_db;
+        if (!g_active_node_db || !g_active_node_db->db) {
+            return json_error(response, response_max, JSON_500_HEADERS,
+                              "No database");
+        }
+        sqlite3 *db = g_active_node_db->db;
+        sqlite3_stmt *s = NULL;
+
+        /* Balance */
+        int64_t transparent = 0;
+        if (sqlite3_prepare_v2(db,
+                "SELECT COALESCE(SUM(u.value),0) FROM utxos u"
+                " INNER JOIN wallet_keys w ON u.address_hash=w.pubkey_hash",
+                -1, &s, NULL) == SQLITE_OK && s) {
+            if (sqlite3_step(s) == SQLITE_ROW)
+                transparent = sqlite3_column_int64(s, 0);
+            sqlite3_finalize(s);
+        }
+
+        int64_t shielded = 0;
+        if (sqlite3_prepare_v2(db,
+                "SELECT COALESCE(SUM(value),0) FROM wallet_sapling_notes"
+                " WHERE spent_txid IS NULL", -1, &s, NULL) == SQLITE_OK && s) {
+            if (sqlite3_step(s) == SQLITE_ROW)
+                shielded = sqlite3_column_int64(s, 0);
+            sqlite3_finalize(s);
+        }
+
+        /* Address */
+        char address[128] = "";
+        if (sqlite3_prepare_v2(db,
+                "SELECT pubkey_hash FROM wallet_keys LIMIT 1",
+                -1, &s, NULL) == SQLITE_OK && s) {
+            if (sqlite3_step(s) == SQLITE_ROW) {
+                const void *pkh = sqlite3_column_blob(s, 0);
+                if (pkh && sqlite3_column_bytes(s, 0) == 20) {
+                    struct tx_destination dest;
+                    dest.type = DEST_KEY_ID;
+                    memcpy(dest.id.key.id.data, pkh, 20);
+                    const unsigned char pk[] = {0x1C, 0xB8};
+                    const unsigned char sc[] = {0x1C, 0xBD};
+                    encode_destination(&dest, pk, 2, sc, 2,
+                                       address, sizeof(address));
+                }
+            }
+            sqlite3_finalize(s);
+        }
+
+        /* Chain height + latest block time */
+        int64_t height = 0, block_time = 0;
+        if (sqlite3_prepare_v2(db,
+                "SELECT COALESCE(MAX(height),0), COALESCE(MAX(time),0)"
+                " FROM blocks WHERE status>=3", -1, &s, NULL) == SQLITE_OK && s) {
+            if (sqlite3_step(s) == SQLITE_ROW) {
+                height = sqlite3_column_int64(s, 0);
+                block_time = sqlite3_column_int64(s, 1);
+            }
+            sqlite3_finalize(s);
+        }
+
+        /* Activity — last 20 wallet UTXOs with timestamps */
+        size_t w = 0;
+        char *buf = (char *)response;
+        w += (size_t)snprintf(buf + w, response_max - w,
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Type: application/json\r\n"
+            "Access-Control-Allow-Origin: *\r\n"
+            "Cache-Control: no-cache\r\n"
+            "Connection: close\r\n\r\n"
+            "{\"transparent\":%lld,\"shielded\":%lld,"
+            "\"address\":\"%s\",\"height\":%lld,"
+            "\"block_time\":%lld,\"now\":%lld,"
+            "\"activity\":[",
+            (long long)transparent, (long long)shielded,
+            address, (long long)height,
+            (long long)block_time, (long long)time(NULL));
+
+        if (sqlite3_prepare_v2(db,
+                "SELECT u.value, u.height, COALESCE(b.time,0)"
+                " FROM utxos u INNER JOIN wallet_keys w"
+                " ON u.address_hash=w.pubkey_hash"
+                " LEFT JOIN blocks b ON b.height=u.height"
+                " ORDER BY u.height DESC LIMIT 20",
+                -1, &s, NULL) == SQLITE_OK && s) {
+            bool first = true;
+            while (sqlite3_step(s) == SQLITE_ROW && w + 100 < response_max) {
+                if (!first) buf[w++] = ',';
+                first = false;
+                w += (size_t)snprintf(buf + w, response_max - w,
+                    "{\"value\":%lld,\"height\":%d,\"time\":%lld}",
+                    (long long)sqlite3_column_int64(s, 0),
+                    sqlite3_column_int(s, 1),
+                    (long long)sqlite3_column_int64(s, 2));
+            }
+            sqlite3_finalize(s);
+        }
+
+        w += (size_t)snprintf(buf + w, response_max - w, "]}");
+        return w;
     }
 
     return json_error(response, response_max, JSON_404_HEADERS,
