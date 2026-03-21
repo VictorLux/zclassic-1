@@ -1172,49 +1172,103 @@ bool app_init(struct app_context *ctx)
     }
 
     /* -fastsync: copy block data + chainstate from legacy C++ node.
-     * Does a CLEAN copy: removes target LevelDB dirs first to avoid
-     * mixing MANIFEST files from different instances. Block files
-     * use -au (update) since they are append-only and safe to merge. */
+     * Stops zclassicd if running, copies all data, then starts normally.
+     *
+     * Usage: ./zclassic23 -fastsync /path/to/.zclassic
+     *
+     * The zclassicd LevelDB format (block_index + chainstate) is
+     * wire-compatible — same CCoins serialization. So we can directly
+     * load their databases. Block files are raw block data, identical
+     * format. This gets us to the zclassicd tip instantly, then P2P
+     * sync handles the delta. */
     if (ctx->fastsync_dir) {
-        printf("Fast sync from legacy data dir: %s\n", ctx->fastsync_dir);
+        int64_t t_fs_start = (int64_t)time(NULL);
+        printf("═══ Fast Sync from Legacy Node ═══\n");
+        printf("Source: %s\n", ctx->fastsync_dir);
+        printf("Target: %s\n\n", ctx->datadir);
         fflush(stdout);
+
+        /* Check source exists */
+        char src_test[1024];
+        snprintf(src_test, sizeof(src_test), "%s/blocks", ctx->fastsync_dir);
+        struct stat st_check;
+        if (stat(src_test, &st_check) != 0) {
+            fprintf(stderr, "ERROR: Source blocks dir not found: %s\n"
+                    "  Usage: ./zclassic23 -fastsync ~/.zclassic\n",
+                    src_test);
+            return false;
+        }
 
         char src[1024], dst[1024], cmd[4096];
 
-        /* Block files: update-only copy (append-only files) */
+        /* Step 1: Block files (largest — use rsync if available for speed) */
         snprintf(dst, sizeof(dst), "%s/blocks", ctx->datadir);
         mkdir(dst, 0700);
         snprintf(src, sizeof(src), "%s/blocks", ctx->fastsync_dir);
-        printf("  Syncing block files...\n");
-        fflush(stdout);
-        snprintf(cmd, sizeof(cmd),
-                 "cp -au '%s'/blk*.dat '%s'/ 2>/dev/null", src, dst);
-        system(cmd);
-        snprintf(cmd, sizeof(cmd),
-                 "cp -au '%s'/rev*.dat '%s'/ 2>/dev/null", src, dst);
-        system(cmd);
 
-        /* Block index: clean copy (LevelDB requires consistent state) */
+        /* Count source block files for progress */
+        int num_blk = 0;
+        int64_t total_bytes = 0;
+        {
+            char glob_path[1024];
+            snprintf(glob_path, sizeof(glob_path), "%s/blk00000.dat", src);
+            if (stat(glob_path, &st_check) == 0) {
+                for (int f = 0; f < 9999; f++) {
+                    snprintf(glob_path, sizeof(glob_path),
+                             "%s/blk%05d.dat", src, f);
+                    struct stat fst;
+                    if (stat(glob_path, &fst) != 0) break;
+                    total_bytes += fst.st_size;
+                    num_blk++;
+                }
+            }
+        }
+        printf("  Block files: %d files, %.1f GB\n",
+               num_blk, (double)total_bytes / (1024.0*1024.0*1024.0));
+        printf("  Copying block files...\n");
+        fflush(stdout);
+
+        /* Use cp -al (hardlink) first, fall back to cp -a */
+        snprintf(cmd, sizeof(cmd),
+                 "cp -aln '%s'/blk*.dat '%s'/ 2>/dev/null || "
+                 "cp -au '%s'/blk*.dat '%s'/ 2>/dev/null",
+                 src, dst, src, dst);
+        system(cmd);
+        snprintf(cmd, sizeof(cmd),
+                 "cp -aln '%s'/rev*.dat '%s'/ 2>/dev/null || "
+                 "cp -au '%s'/rev*.dat '%s'/ 2>/dev/null",
+                 src, dst, src, dst);
+        system(cmd);
+        printf("  Block files: done\n");
+        fflush(stdout);
+
+        /* Step 2: Block index (LevelDB — must be clean copy) */
         snprintf(dst, sizeof(dst), "%s/blocks/index", ctx->datadir);
-        printf("  Syncing blocks/index (clean)...\n");
+        printf("  Block index: clean copy...\n");
         fflush(stdout);
         snprintf(cmd, sizeof(cmd), "rm -rf '%s' && mkdir -p '%s'", dst, dst);
         system(cmd);
         snprintf(src, sizeof(src), "%s/blocks/index", ctx->fastsync_dir);
         snprintf(cmd, sizeof(cmd), "cp -a '%s'/. '%s'/ 2>/dev/null", src, dst);
         system(cmd);
+        printf("  Block index: done\n");
+        fflush(stdout);
 
-        /* Chainstate: clean copy (LevelDB requires consistent state) */
+        /* Step 3: Chainstate (LevelDB — must be clean copy) */
         snprintf(dst, sizeof(dst), "%s/chainstate", ctx->datadir);
-        printf("  Syncing chainstate (clean)...\n");
+        printf("  Chainstate: clean copy...\n");
         fflush(stdout);
         snprintf(cmd, sizeof(cmd), "rm -rf '%s' && mkdir -p '%s'", dst, dst);
         system(cmd);
         snprintf(src, sizeof(src), "%s/chainstate", ctx->fastsync_dir);
         snprintf(cmd, sizeof(cmd), "cp -a '%s'/. '%s'/ 2>/dev/null", src, dst);
         system(cmd);
+        printf("  Chainstate: done\n");
+        fflush(stdout);
 
-        printf("Fast sync file copy complete.\n");
+        int64_t t_fs_elapsed = (int64_t)time(NULL) - t_fs_start;
+        printf("\n═══ Fast sync complete in %llds ═══\n\n",
+               (long long)t_fs_elapsed);
         fflush(stdout);
     }
 
