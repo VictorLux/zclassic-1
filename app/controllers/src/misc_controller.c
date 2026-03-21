@@ -7,6 +7,8 @@
 #include "event/event.h"
 #include "net/download.h"
 #include "validation/contextual_check_tx.h"
+#include "controllers/wallet_helpers.h"
+#include "coins/coins_view.h"
 #include "chain/chainparams.h"
 #include "encoding/utilstrencodings.h"
 #include "json/json.h"
@@ -251,6 +253,34 @@ static bool rpc_downloadstats(const struct json_value *params, bool help,
     return true;
 }
 
+static bool rpc_coinsinfo(const struct json_value *params, bool help,
+                           struct json_value *result)
+{
+    (void)params;
+    RPC_HELP(help, result,
+        "coinsinfo\n"
+        "\nReturn UTXO cache diagnostics.\n");
+
+    if (!g_coins_tip) {
+        json_set_str(result, "coins_tip not initialized");
+        return true;
+    }
+    struct coins_view_cache *tip = g_coins_tip;
+    json_set_object(result);
+    json_push_kv_int(result, "cache_size",
+                      (int64_t)tip->cache_coins.size);
+    json_push_kv_int(result, "cache_buckets",
+                      (int64_t)tip->cache_coins.num_buckets);
+
+    struct uint256 best;
+    coins_view_cache_get_best_block(tip, &best);
+    char hex[65];
+    uint256_get_hex(&best, hex);
+    json_push_kv_str(result, "best_block", hex);
+
+    return true;
+}
+
 void register_misc_rpc_commands(struct rpc_table *t)
 {
     struct rpc_command cmds[] = {
@@ -260,6 +290,7 @@ void register_misc_rpc_commands(struct rpc_table *t)
         { "control", "eventlog",         rpc_eventlog,         true },
         { "control", "syncstate",        rpc_syncstate,        true },
         { "control", "downloadstats",    rpc_downloadstats,    true },
+        { "control", "coinsinfo",        rpc_coinsinfo,        true },
     };
 
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++)
