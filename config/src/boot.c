@@ -1171,16 +1171,21 @@ bool app_init(struct app_context *ctx)
         snapshot_build_tx_index_bg(ctx->datadir);
     }
 
-    /* -fastsync: copy block data + chainstate from legacy C++ node.
-     * Stops zclassicd if running, copies all data, then starts normally.
+    /* -fastsync: snapshot zclassicd's data and start immediately.
      *
-     * Usage: ./zclassic23 -fastsync /path/to/.zclassic
+     * Usage: ./zclassic23 -fastsync ~/.zclassic
      *
-     * The zclassicd LevelDB format (block_index + chainstate) is
-     * wire-compatible — same CCoins serialization. So we can directly
-     * load their databases. Block files are raw block data, identical
-     * format. This gets us to the zclassicd tip instantly, then P2P
-     * sync handles the delta. */
+     * Strategy (fastest to slowest, tried in order):
+     * 1. Symlink LevelDB dirs + hardlink block files (instant, same FS)
+     * 2. Hardlink everything (instant, same FS)
+     * 3. Copy (minutes, cross FS)
+     *
+     * IMPORTANT: zclassicd MUST be stopped first. LevelDB cannot be
+     * shared between processes. The block files are read-only so
+     * hardlinks/symlinks are safe even if zclassicd restarts later.
+     *
+     * The LevelDB formats are wire-compatible — same CDiskBlockIndex
+     * and CCoins serialization. No conversion needed. */
     if (ctx->fastsync_dir) {
         int64_t t_fs_start = (int64_t)time(NULL);
         printf("═══ Fast Sync from Legacy Node ═══\n");
@@ -1188,47 +1193,63 @@ bool app_init(struct app_context *ctx)
         printf("Target: %s\n\n", ctx->datadir);
         fflush(stdout);
 
-        /* Check source exists */
         char src_test[1024];
         snprintf(src_test, sizeof(src_test), "%s/blocks", ctx->fastsync_dir);
         struct stat st_check;
         if (stat(src_test, &st_check) != 0) {
-            fprintf(stderr, "ERROR: Source blocks dir not found: %s\n"
-                    "  Usage: ./zclassic23 -fastsync ~/.zclassic\n",
-                    src_test);
+            fprintf(stderr, "ERROR: Source not found: %s\n"
+                    "  Stop zclassicd first, then:\n"
+                    "  ./zclassic23 -fastsync ~/.zclassic\n", src_test);
             return false;
+        }
+
+        /* Check if zclassicd is still running (LevelDB lock check) */
+        {
+            char lock_path[1024];
+            snprintf(lock_path, sizeof(lock_path),
+                     "%s/blocks/index/LOCK", ctx->fastsync_dir);
+            FILE *lf = fopen(lock_path, "r");
+            if (lf) {
+                char pidbuf[32] = {0};
+                size_t nr = fread(pidbuf, 1, sizeof(pidbuf) - 1, lf);
+                fclose(lf);
+                if (nr > 0) {
+                    long pid = strtol(pidbuf, NULL, 10);
+                    if (pid > 0 && kill((pid_t)pid, 0) == 0) {
+                        fprintf(stderr,
+                            "ERROR: zclassicd is still running (pid %ld)!\n"
+                            "  Stop it first: zcl-rpc stop\n", pid);
+                        return false;
+                    }
+                }
+            }
         }
 
         char src[1024], dst[1024], cmd[4096];
 
-        /* Step 1: Block files (largest — use rsync if available for speed) */
-        snprintf(dst, sizeof(dst), "%s/blocks", ctx->datadir);
-        mkdir(dst, 0700);
-        snprintf(src, sizeof(src), "%s/blocks", ctx->fastsync_dir);
-
-        /* Count source block files for progress */
+        /* Count source block files */
         int num_blk = 0;
         int64_t total_bytes = 0;
         {
-            char glob_path[1024];
-            snprintf(glob_path, sizeof(glob_path), "%s/blk00000.dat", src);
-            if (stat(glob_path, &st_check) == 0) {
-                for (int f = 0; f < 9999; f++) {
-                    snprintf(glob_path, sizeof(glob_path),
-                             "%s/blk%05d.dat", src, f);
-                    struct stat fst;
-                    if (stat(glob_path, &fst) != 0) break;
-                    total_bytes += fst.st_size;
-                    num_blk++;
-                }
+            snprintf(src, sizeof(src), "%s/blocks", ctx->fastsync_dir);
+            for (int f = 0; f < 9999; f++) {
+                char path[1024];
+                snprintf(path, sizeof(path), "%s/blk%05d.dat", src, f);
+                struct stat fst;
+                if (stat(path, &fst) != 0) break;
+                total_bytes += fst.st_size;
+                num_blk++;
             }
         }
-        printf("  Block files: %d files, %.1f GB\n",
+        printf("  Source: %d block files, %.1f GB\n\n",
                num_blk, (double)total_bytes / (1024.0*1024.0*1024.0));
-        printf("  Copying block files...\n");
-        fflush(stdout);
 
-        /* Use cp -al (hardlink) first, fall back to cp -a */
+        /* Block files: hardlink (instant on same FS) or copy */
+        snprintf(dst, sizeof(dst), "%s/blocks", ctx->datadir);
+        mkdir(dst, 0700);
+        snprintf(src, sizeof(src), "%s/blocks", ctx->fastsync_dir);
+        printf("  [1/3] Block files...");
+        fflush(stdout);
         snprintf(cmd, sizeof(cmd),
                  "cp -aln '%s'/blk*.dat '%s'/ 2>/dev/null || "
                  "cp -au '%s'/blk*.dat '%s'/ 2>/dev/null",
@@ -1239,32 +1260,32 @@ bool app_init(struct app_context *ctx)
                  "cp -au '%s'/rev*.dat '%s'/ 2>/dev/null",
                  src, dst, src, dst);
         system(cmd);
-        printf("  Block files: done\n");
-        fflush(stdout);
+        printf(" done\n");
 
-        /* Step 2: Block index (LevelDB — must be clean copy) */
+        /* Block index: symlink if possible (fastest), else clean copy */
         snprintf(dst, sizeof(dst), "%s/blocks/index", ctx->datadir);
-        printf("  Block index: clean copy...\n");
-        fflush(stdout);
-        snprintf(cmd, sizeof(cmd), "rm -rf '%s' && mkdir -p '%s'", dst, dst);
-        system(cmd);
         snprintf(src, sizeof(src), "%s/blocks/index", ctx->fastsync_dir);
-        snprintf(cmd, sizeof(cmd), "cp -a '%s'/. '%s'/ 2>/dev/null", src, dst);
-        system(cmd);
-        printf("  Block index: done\n");
+        printf("  [2/3] Block index...");
         fflush(stdout);
+        /* Remove existing, try symlink, fall back to copy */
+        snprintf(cmd, sizeof(cmd),
+                 "rm -rf '%s' && ln -s '%s' '%s' 2>/dev/null || "
+                 "(mkdir -p '%s' && cp -a '%s'/. '%s'/)",
+                 dst, src, dst, dst, src, dst);
+        system(cmd);
+        printf(" done\n");
 
-        /* Step 3: Chainstate (LevelDB — must be clean copy) */
+        /* Chainstate: symlink if possible, else clean copy */
         snprintf(dst, sizeof(dst), "%s/chainstate", ctx->datadir);
-        printf("  Chainstate: clean copy...\n");
-        fflush(stdout);
-        snprintf(cmd, sizeof(cmd), "rm -rf '%s' && mkdir -p '%s'", dst, dst);
-        system(cmd);
         snprintf(src, sizeof(src), "%s/chainstate", ctx->fastsync_dir);
-        snprintf(cmd, sizeof(cmd), "cp -a '%s'/. '%s'/ 2>/dev/null", src, dst);
-        system(cmd);
-        printf("  Chainstate: done\n");
+        printf("  [3/3] Chainstate...");
         fflush(stdout);
+        snprintf(cmd, sizeof(cmd),
+                 "rm -rf '%s' && ln -s '%s' '%s' 2>/dev/null || "
+                 "(mkdir -p '%s' && cp -a '%s'/. '%s'/)",
+                 dst, src, dst, dst, src, dst);
+        system(cmd);
+        printf(" done\n");
 
         int64_t t_fs_elapsed = (int64_t)time(NULL) - t_fs_start;
         printf("\n═══ Fast sync complete in %llds ═══\n\n",
