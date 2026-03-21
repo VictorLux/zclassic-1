@@ -24,6 +24,7 @@
 #include "wallet/wallet.h"
 #include "util/timedata.h"
 #include "event/event.h"
+#include "net/download.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -57,6 +58,19 @@ static int64_t g_swarm_last_progress_time = 0;
 
 /* Progress display interval (5 seconds). */
 #define SWARM_PROGRESS_INTERVAL_SECS 5
+
+/* Global download manager — coordinates parallel block downloads. */
+static struct download_manager g_download_mgr;
+static _Atomic bool g_download_mgr_init = false;
+
+static struct download_manager *get_download_mgr(void)
+{
+    if (!atomic_load(&g_download_mgr_init)) {
+        dl_init(&g_download_mgr);
+        atomic_store(&g_download_mgr_init, true);
+    }
+    return &g_download_mgr;
+}
 
 /* Ring buffers for duplicate detection of recently seen blocks and txs. */
 #define MAX_RECENT_BLOCKS 128
@@ -766,6 +780,9 @@ static bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
     struct uint256 hash;
     block_get_hash(&blk, &hash);
 
+    /* Mark received in download manager (removes from in-flight) */
+    dl_mark_received(get_download_mgr(), &hash);
+
     if (block_already_seen(&hash)) {
         block_free(&blk);
         return true;
@@ -994,9 +1011,9 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                    node->starting_height);
     }
 
-    /* Request blocks for headers we accepted but don't have data for.
-     * Walk backward to collect all needed blocks, then request in
-     * forward order (oldest first) so chain_has_all_data succeeds. */
+    /* Queue needed blocks into download manager. The download manager
+     * deduplicates, tracks in-flight, and assigns to peers. Actual
+     * getdata messages are sent from send_messages via dl_assign_to_peer. */
     if (accepted > 0) {
         struct block_index *tip = active_chain_tip(&mp->main_state->chain_active);
         int our_height = tip ? tip->nHeight : 0;
@@ -1004,60 +1021,47 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
         struct block_index *bi = block_map_find(
             &mp->main_state->map_block_index, &last_hash);
         if (bi && bi->nHeight > our_height) {
-            /* We have headers ahead of our chain — need block data */
             if (sync_get_state() == SYNC_HEADERS_DOWNLOAD)
                 sync_set_state(SYNC_BLOCKS_DOWNLOAD,
                                "headers ahead, requesting blocks");
-            /* Count how many blocks we need */
-            size_t total_needed = 0;
-            struct block_index *walk = bi;
-            while (walk && walk->nHeight > our_height) {
-                if (!(walk->nStatus & BLOCK_HAVE_DATA) && walk->phashBlock)
-                    total_needed++;
-                walk = walk->pprev;
-            }
 
-            /* Allocate and collect hashes (backward, then reverse) */
-            size_t max_batch = total_needed < 512 ? total_needed : 512;
-            struct uint256 *request_hashes = malloc(
-                max_batch * sizeof(struct uint256));
-            if (request_hashes) {
-                size_t num_requests = 0;
-                walk = bi;
+            /* Collect needed block hashes (backward walk, reverse for order) */
+            size_t max_collect = 2048;
+            struct uint256 *hashes = malloc(max_collect * sizeof(struct uint256));
+            int32_t *heights = malloc(max_collect * sizeof(int32_t));
+            if (hashes && heights) {
+                size_t count_needed = 0;
+                struct block_index *walk = bi;
                 while (walk && walk->nHeight > our_height &&
-                       num_requests < max_batch) {
-                    if (!(walk->nStatus & BLOCK_HAVE_DATA) && walk->phashBlock)
-                        request_hashes[num_requests++] = *walk->phashBlock;
+                       count_needed < max_collect) {
+                    if (!(walk->nStatus & BLOCK_HAVE_DATA) && walk->phashBlock) {
+                        hashes[count_needed] = *walk->phashBlock;
+                        heights[count_needed] = walk->nHeight;
+                        count_needed++;
+                    }
                     walk = walk->pprev;
                 }
 
-                if (num_requests > 0) {
-                    struct byte_stream getdata_msg;
-                    stream_init(&getdata_msg, num_requests * 36 + 8);
-                    uint64_t block_count = 0;
-
-                    for (size_t i = num_requests; i > 0; i--) {
-                        struct inv_item inv;
-                        inv_item_init_typed(&inv, MSG_BLOCK,
-                                            &request_hashes[i - 1]);
-                        inv_item_serialize(&inv, &getdata_msg);
-                        block_count++;
-                    }
-
-                    struct byte_stream msg;
-                    stream_init(&msg, getdata_msg.size + 8);
-                    stream_write_compact_size(&msg, block_count);
-                    stream_write(&msg, getdata_msg.data, getdata_msg.size);
-
-                    p2p_node_begin_message(node, "getdata",
-                                           mp->params->pchMessageStart);
-                    p2p_node_write_message_data(node, msg.data, msg.size);
-                    p2p_node_end_message(node);
-                    stream_free(&msg);
-                    stream_free(&getdata_msg);
+                /* Reverse to get oldest-first order */
+                for (size_t i = 0; i < count_needed / 2; i++) {
+                    struct uint256 th = hashes[i];
+                    hashes[i] = hashes[count_needed - 1 - i];
+                    hashes[count_needed - 1 - i] = th;
+                    int32_t ti = heights[i];
+                    heights[i] = heights[count_needed - 1 - i];
+                    heights[count_needed - 1 - i] = ti;
                 }
-                free(request_hashes);
+
+                struct download_manager *dm = get_download_mgr();
+                size_t queued = dl_queue_blocks(dm, hashes, heights,
+                                                count_needed);
+                if (queued > 0)
+                    event_emitf(EV_BLOCK_REQUESTED, (uint32_t)node->id,
+                                "queued=%zu total_needed=%zu",
+                                queued, count_needed);
             }
+            free(hashes);
+            free(heights);
         }
     }
 
@@ -1964,6 +1968,43 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
                 }
             }
             push_getheaders(mp, node);
+        }
+    }
+
+    /* ── Download manager: assign queued blocks to this peer ────── */
+    {
+        struct download_manager *dm = get_download_mgr();
+
+        /* Check timeouts periodically (every call, cheap) */
+        dl_check_timeouts(dm, (int64_t)time(NULL));
+
+        /* Assign blocks from queue to this peer if they have capacity */
+        if (node->state >= PEER_HANDSHAKE_COMPLETE && !node->inbound) {
+            struct uint256 assign_hashes[DL_WINDOW_SIZE];
+            size_t assigned = dl_assign_to_peer(dm, (uint32_t)node->id,
+                                                 assign_hashes, 64);
+            if (assigned > 0) {
+                /* Send getdata for assigned blocks */
+                struct byte_stream getdata_msg;
+                stream_init(&getdata_msg, assigned * 36 + 8);
+                stream_write_compact_size(&getdata_msg, (uint64_t)assigned);
+                for (size_t i = 0; i < assigned; i++) {
+                    struct inv_item inv;
+                    inv_item_init_typed(&inv, MSG_BLOCK, &assign_hashes[i]);
+                    inv_item_serialize(&inv, &getdata_msg);
+                }
+                p2p_node_begin_message(node, "getdata",
+                                       mp->params->pchMessageStart);
+                p2p_node_write_message_data(node, getdata_msg.data,
+                                            getdata_msg.size);
+                p2p_node_end_message(node);
+                stream_free(&getdata_msg);
+
+                event_emitf(EV_BLOCK_REQUESTED, (uint32_t)node->id,
+                            "assigned=%zu inflight=%zu",
+                            assigned, dl_peer_in_flight(dm,
+                                                        (uint32_t)node->id));
+            }
         }
     }
 
