@@ -1488,6 +1488,46 @@ bool app_init(struct app_context *ctx)
         }
     }
 
+    /* Detect chain tip / coins DB mismatch.
+     * If chainstate/ was deleted but block index survives, the chain tip
+     * is at height N but the UTXO set is empty. This causes all blocks
+     * with non-coinbase txs to fail with "bad-txns-inputs-missingorspent".
+     * Fix: reset chain tip to genesis and let activate_best_chain replay. */
+    {
+        struct block_index *chain_tip = active_chain_tip(&g_state.chain_active);
+        struct uint256 coins_best;
+        coins_view_cache_get_best_block(&g_coins_tip, &coins_best);
+
+        if (chain_tip && chain_tip->nHeight > 0 &&
+            uint256_is_null(&coins_best)) {
+            printf("WARNING: Chain tip at height %d but coins DB is empty!\n"
+                   "  Resetting chain to genesis — blocks will be replayed.\n",
+                   chain_tip->nHeight);
+            fflush(stdout);
+
+            /* Find genesis and reset chain tip */
+            struct block_index *genesis = block_map_find(
+                &g_state.map_block_index, &params->consensus.hashGenesisBlock);
+            if (genesis) {
+                active_chain_set_tip(&g_state.chain_active, genesis);
+                g_state.pindex_best_header = genesis;
+            }
+        } else if (chain_tip && chain_tip->nHeight > 0 &&
+                   chain_tip->phashBlock &&
+                   uint256_cmp(chain_tip->phashBlock, &coins_best) != 0) {
+            /* Chain tip and coins DB disagree on best block.
+             * Find the coins DB block in our index and reset to it. */
+            struct block_index *coins_block = block_map_find(
+                &g_state.map_block_index, &coins_best);
+            if (coins_block && coins_block->nHeight < chain_tip->nHeight) {
+                printf("Chain tip/coins mismatch: chain=%d coins=%d\n"
+                       "  Resetting chain to coins DB tip.\n",
+                       chain_tip->nHeight, coins_block->nHeight);
+                active_chain_set_tip(&g_state.chain_active, coins_block);
+            }
+        }
+    }
+
     /* Activate best chain (connects any new blocks beyond saved tip).
      * Skip for -fastsync and -reindex-chainstate. */
     if (ctx->fastsync_dir)
