@@ -1306,6 +1306,7 @@ size_t api_handle_request(const char *method, const char *path,
             "HTTP/1.1 200 OK\r\n"
             "Content-Type: application/json\r\n"
             "Access-Control-Allow-Origin: *\r\n"
+            "Cache-Control: no-cache\r\n"
             "Connection: close\r\n\r\n"
             "{\"sync_state\":\"%s\"}",
             sync_state_name(sync_get_state()));
@@ -1321,6 +1322,7 @@ size_t api_handle_request(const char *method, const char *path,
             "HTTP/1.1 200 OK\r\n"
             "Content-Type: application/json\r\n"
             "Access-Control-Allow-Origin: *\r\n"
+            "Cache-Control: no-cache\r\n"
             "Connection: close\r\n\r\n"
             "{\"sync_state\":\"%s\","
             "\"requested\":%llu,\"received\":%llu,"

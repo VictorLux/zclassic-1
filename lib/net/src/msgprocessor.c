@@ -60,23 +60,20 @@ static int64_t g_swarm_last_progress_time = 0;
 #define SWARM_PROGRESS_INTERVAL_SECS 5
 
 /* Global download manager — coordinates parallel block downloads.
- * Exposed via msg_get_download_mgr() for RPC diagnostics. */
+ * Initialized once from msg_processor_init, accessed via pointer. */
 static struct download_manager g_download_mgr;
-static _Atomic bool g_download_mgr_init = false;
+static bool g_download_mgr_init = false;
 
 struct download_manager *msg_get_download_mgr(void)
 {
-    if (!atomic_load(&g_download_mgr_init)) {
+    if (!g_download_mgr_init) {
         dl_init(&g_download_mgr);
-        atomic_store(&g_download_mgr_init, true);
+        g_download_mgr_init = true;
     }
     return &g_download_mgr;
 }
 
-static struct download_manager *get_download_mgr(void)
-{
-    return msg_get_download_mgr();
-}
+#define get_download_mgr() msg_get_download_mgr()
 
 /* Ring buffers for duplicate detection of recently seen blocks and txs. */
 #define MAX_RECENT_BLOCKS 128
@@ -149,6 +146,9 @@ void msg_processor_init(struct msg_processor *mp,
     mp->params = params;
     mp->datadir = datadir;
     mp->net_mgr = net_mgr;
+
+    /* Initialize download manager once (before threads start) */
+    msg_get_download_mgr();
 }
 
 int msg_get_height(void *ctx)
