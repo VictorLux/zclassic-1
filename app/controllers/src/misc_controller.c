@@ -166,64 +166,6 @@ static bool rpc_stop(const struct json_value *params, bool help,
     return true;
 }
 
-static bool rpc_eventlog(const struct json_value *params, bool help,
-                          struct json_value *result)
-{
-    RPC_HELP(help, result,
-        "eventlog ( count )\n"
-        "\nReturn recent events from the system event log.\n"
-        "Every P2P message, state transition, block validation,\n"
-        "and error is captured in a lock-free ring buffer.\n"
-        "\nArguments:\n"
-        "1. count     (numeric, optional, default=200) Number of events\n"
-        "\nResult:\n"
-        "  JSON object with sync_state and events array.\n");
-
-    int count = 200;
-    if (params && params->type == JSON_ARR && params->num_children > 0) {
-        const struct json_value *v = &params->children[0];
-        if (v->type == JSON_INT) count = (int)v->val.i;
-        else if (v->type == JSON_REAL) count = (int)v->val.d;
-    }
-    if (count < 1) count = 1;
-    if (count > 65536) count = 65536;
-
-    /* Build raw JSON via event_dump_json, then wrap */
-    char *buf = malloc(256 * (size_t)count + 256);
-    if (!buf) {
-        json_set_str(result, "out of memory");
-        return false;
-    }
-
-    size_t w = 0;
-    w += (size_t)snprintf(buf + w, 256, "{\"sync_state\":\"%s\",\"events\":",
-                           sync_state_name(sync_get_state()));
-    w += event_dump_json(buf + w, 256 * (size_t)count, (size_t)count);
-    buf[w++] = '}';
-    buf[w] = '\0';
-
-    /* Parse our JSON into the result value */
-    json_read(result, buf, w);
-    free(buf);
-    return true;
-}
-
-static bool rpc_syncstate(const struct json_value *params, bool help,
-                           struct json_value *result)
-{
-    (void)params;
-    RPC_HELP(help, result,
-        "syncstate\n"
-        "\nReturn the current sync state machine state.\n"
-        "\nResult:\n"
-        "  { \"state\": \"...\", \"state_id\": N }\n");
-
-    json_set_object(result);
-    json_push_kv_str(result, "state", sync_state_name(sync_get_state()));
-    json_push_kv_int(result, "state_id", (int64_t)sync_get_state());
-    return true;
-}
-
 static bool rpc_downloadstats(const struct json_value *params, bool help,
                                struct json_value *result)
 {
@@ -287,8 +229,6 @@ void register_misc_rpc_commands(struct rpc_table *t)
         { "control", "getinfo",          rpc_getinfo,          true },
         { "util",    "validateaddress",  rpc_validateaddress,  true },
         { "control", "stop",             rpc_stop,             true },
-        { "control", "eventlog",         rpc_eventlog,         true },
-        { "control", "syncstate",        rpc_syncstate,        true },
         { "control", "downloadstats",    rpc_downloadstats,    true },
         { "control", "coinsinfo",        rpc_coinsinfo,        true },
     };

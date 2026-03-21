@@ -110,10 +110,7 @@ const char *event_type_name(enum event_type type)
         [EV_SNAPSHOT_CHUNK_SENT]     = "snap.chunk_sent",
         [EV_SNAPSHOT_COMPLETE]       = "snap.complete",
         [EV_SNAPSHOT_FAILED]         = "snap.failed",
-        [EV_WALLET_TX_DETECTED]      = "wallet.tx_detected",
-        [EV_WALLET_BALANCE_CHANGED]  = "wallet.balance_changed",
-        [EV_RPC_CALL]                = "rpc.call",
-        [EV_RPC_RESPONSE]            = "rpc.response",
+        /* wallet/rpc events reserved for future use */
         [EV_NODE_STARTING]           = "sys.starting",
         [EV_NODE_READY]              = "sys.ready",
         [EV_NODE_SHUTDOWN]           = "sys.shutdown",

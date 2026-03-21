@@ -69,13 +69,7 @@ enum event_type {
     EV_SNAPSHOT_COMPLETE,        /* payload: total_utxos(u64) */
     EV_SNAPSHOT_FAILED,          /* payload: reason string */
 
-    /* ── Wallet ─────────────────────────────────────── */
-    EV_WALLET_TX_DETECTED,       /* payload: txid[32] + value(i64) */
-    EV_WALLET_BALANCE_CHANGED,   /* payload: old(i64) + new(i64) */
-
-    /* ── RPC ────────────────────────────────────────── */
-    EV_RPC_CALL,                 /* payload: method string + params_len(u32) */
-    EV_RPC_RESPONSE,             /* payload: method string + status(i32) */
+    /* (Wallet and RPC events reserved for future use) */
 
     /* ── System ─────────────────────────────────────── */
     EV_NODE_STARTING,            /* payload: version string */
