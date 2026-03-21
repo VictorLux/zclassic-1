@@ -8,6 +8,7 @@
 #include "config/boot.h"
 #include "rpc/client.h"
 #include "json/json.h"
+#include "views/wallet_gui.h"
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -249,6 +250,14 @@ int main(int argc, char **argv)
     /* CLI mode: zclassic23 getblockcount */
     if (argc > 1 && is_cli_mode(argc, argv))
         return cli_main(argc, argv);
+
+    /* GUI mode: no args = wallet viewer */
+    if (argc <= 1) {
+        const char *h = getenv("HOME");
+        char dd[512];
+        snprintf(dd, sizeof(dd), "%s/.zclassic-c23", h ? h : ".");
+        return wallet_gui_main(argc, argv, dd);
+    }
 
     /* Node mode */
     struct app_context ctx;

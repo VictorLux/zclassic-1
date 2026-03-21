@@ -22,11 +22,15 @@ LIB_SRCS = $(foreach m,$(LIB_MODULES),$(wildcard lib/$(m)/src/*.c))
 ALL_SRCS = $(APP_SRCS) $(CONFIG_SRCS) $(LIB_SRCS)
 ALL_OBJS = $(ALL_SRCS:.c=.o)
 
+GTK_CFLAGS := $(shell pkg-config --cflags gtk+-3.0 2>/dev/null)
+GTK_LIBS   := $(shell pkg-config --libs gtk+-3.0 2>/dev/null)
+GTK_DEF    := $(if $(GTK_CFLAGS),-DHAVE_GTK,)
+
 CFLAGS = -std=c23 -O3 -march=native -flto -Wall -Wextra -Werror -pedantic \
 	-Wno-stringop-overflow -Wno-unused-result \
 	$(APP_INCLUDES) $(CONFIG_INCLUDES) $(LIB_INCLUDES) \
 	-Ilib/test/include \
-	-D_POSIX_C_SOURCE=200809L -Ivendor/include
+	-D_POSIX_C_SOURCE=200809L -Ivendor/include $(GTK_DEF) $(GTK_CFLAGS)
 LDFLAGS = -pthread -flto
 # Use vendor/tor/libtor.a when Tor is built from source.
 # Tor: use full Tor if built, otherwise fall back to stub.
@@ -55,7 +59,7 @@ test_zcl: $(TEST_SRCS) $(ALL_SRCS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(TOR_LIBS) $(LIBS)
 
 zclassic23: main.c $(ALL_SRCS)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(TOR_LIBS) $(LIBS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(TOR_LIBS) $(LIBS) $(GTK_LIBS)
 
 zclassic-cli: cli.c $(CLI_SRCS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
