@@ -7,6 +7,7 @@
 #define _DEFAULT_SOURCE
 #include "net/connman.h"
 #include "net/addrman.h"
+#include "net/download.h"
 #include "controllers/blog_controller.h"
 #include "core/random.h"
 #include "net/netbase.h"
@@ -214,9 +215,12 @@ static void *thread_open_connections(void *arg)
 
             struct p2p_node *node = connect_node(&cm->manager, &info.addr, NULL);
             if (!node) {
-                /* Record failed attempt — exponential backoff in addrman */
                 addrman_attempt(&cm->manager.addrman, &info.addr.svc,
                                  (int64_t)time(NULL));
+                char ipbuf[64];
+                net_addr_to_string(&info.addr.svc.addr, ipbuf, sizeof(ipbuf));
+                event_emitf(EV_TCP_CONNECT_FAILED, 0,
+                            "%s:%u", ipbuf, info.addr.svc.port);
             }
         }
 
@@ -394,6 +398,14 @@ static void *thread_socket_handler(void *arg)
                             node->addr_name,
                             peer_state_name(node->state),
                             node->misbehavior);
+
+                /* Re-queue any in-flight blocks from this peer */
+                {
+                    extern struct download_manager *msg_get_download_mgr(void);
+                    dl_peer_disconnected(msg_get_download_mgr(),
+                                          (uint32_t)node->id);
+                }
+
                 node->state = PEER_DISCONNECTED;
                 p2p_node_close_socket(node);
 

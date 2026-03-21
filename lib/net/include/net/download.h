@@ -102,6 +102,10 @@ size_t dl_check_timeouts(struct download_manager *dm, int64_t now);
 /* Get number of in-flight blocks for a specific peer. */
 size_t dl_peer_in_flight(struct download_manager *dm, uint32_t peer_id);
 
+/* Handle peer disconnect — re-queue all in-flight blocks from this peer.
+ * Call from connman when a peer is disconnected. Returns count re-queued. */
+size_t dl_peer_disconnected(struct download_manager *dm, uint32_t peer_id);
+
 /* Add blocks to the download queue (blocks we need but haven't requested).
  * Deduplicates against already-in-flight and already-queued blocks. */
 size_t dl_queue_blocks(struct download_manager *dm,

@@ -265,6 +265,58 @@ size_t dl_peer_in_flight(struct download_manager *dm, uint32_t peer_id)
     return count;
 }
 
+size_t dl_peer_disconnected(struct download_manager *dm, uint32_t peer_id)
+{
+    zcl_mutex_lock(&dm->cs);
+    size_t requeued = 0;
+
+    for (size_t i = 0; i < dm->num_slots; i++) {
+        struct dl_in_flight *s = &dm->slots[i];
+        if (!s->active || s->peer_id != peer_id) continue;
+
+        /* Re-queue this block for another peer */
+        if (dm->queue_len < dm->queue_cap) {
+            dm->queue[dm->queue_len] = s->hash;
+            dm->queue_heights[dm->queue_len] = s->height;
+            dm->queue_len++;
+        } else if (dm->queue_cap < 65536) {
+            size_t new_cap = dm->queue_cap * 2;
+            struct uint256 *nq = realloc(dm->queue,
+                                          new_cap * sizeof(struct uint256));
+            int32_t *nh = realloc(dm->queue_heights,
+                                   new_cap * sizeof(int32_t));
+            if (nq && nh) {
+                dm->queue = nq;
+                dm->queue_heights = nh;
+                dm->queue_cap = new_cap;
+                dm->queue[dm->queue_len] = s->hash;
+                dm->queue_heights[dm->queue_len] = s->height;
+                dm->queue_len++;
+            }
+        }
+
+        s->active = false;
+        memset(&s->hash, 0, sizeof(s->hash));
+        dm->num_active--;
+        requeued++;
+    }
+
+    /* Mark peer as inactive */
+    for (size_t i = 0; i < dm->num_peers; i++) {
+        if (dm->peers[i].peer_id == peer_id) {
+            dm->peers[i].active = false;
+            break;
+        }
+    }
+
+    if (requeued > 0)
+        event_emitf(EV_BLOCK_REQUESTED, peer_id,
+                    "peer disconnect: %zu blocks requeued", requeued);
+
+    zcl_mutex_unlock(&dm->cs);
+    return requeued;
+}
+
 size_t dl_queue_blocks(struct download_manager *dm,
                        const struct uint256 *hashes,
                        const int32_t *heights,
