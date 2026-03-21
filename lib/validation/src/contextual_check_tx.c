@@ -97,12 +97,20 @@ bool contextual_check_transaction(const struct transaction *tx,
         }
     }
 
-    /* Compute sighash for shielded verification */
+    /* Skip all expensive shielded verification for assumed-valid blocks.
+     * PoW, merkle roots, and UTXO consistency are still fully checked.
+     * This includes sighash computation, joinsplit Ed25519 signatures,
+     * Sapling Groth16 proofs, and Sprout Groth16 proofs. */
+    bool skip_proofs = (g_assume_valid_height >= 0 &&
+                        nHeight <= g_assume_valid_height);
+
+    /* Compute sighash for shielded verification (only if checking proofs) */
     struct uint256 data_to_be_signed;
     uint256_set_null(&data_to_be_signed);
 
-    if (tx->num_joinsplit > 0 || tx->num_shielded_spend > 0 ||
-        tx->num_shielded_output > 0)
+    if (!skip_proofs &&
+        (tx->num_joinsplit > 0 || tx->num_shielded_spend > 0 ||
+         tx->num_shielded_output > 0))
     {
         uint32_t branch_id = consensus_current_epoch_branch_id(nHeight, params);
         struct script empty_script;
@@ -118,18 +126,13 @@ bool contextual_check_transaction(const struct transaction *tx,
     }
 
     /* Verify JoinSplit signature (Ed25519) */
-    if (tx->num_joinsplit > 0) {
+    if (!skip_proofs && tx->num_joinsplit > 0) {
         if (!ed25519_verify(tx->joinsplit_sig, data_to_be_signed.data, 32,
                             tx->joinsplit_pubkey.data)) {
             return validation_state_dos(state, 100, false, REJECT_INVALID,
                 "bad-txns-joinsplit-signature", false, NULL);
         }
     }
-
-    /* Verify Sapling shielded spends and outputs via native C23 prover.
-     * Skip expensive proof verification for assumed-valid blocks. */
-    bool skip_proofs = (g_assume_valid_height >= 0 &&
-                        nHeight <= g_assume_valid_height);
     if (!skip_proofs &&
         (tx->num_shielded_spend > 0 || tx->num_shielded_output > 0)) {
         void *sctx = zclassic_sapling_verification_ctx_init();
