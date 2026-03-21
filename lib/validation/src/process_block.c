@@ -336,16 +336,14 @@ bool accept_block(struct block *block,
     bool has_more_work = tip ?
         arith_uint256_compare(&pindex->nChainWork, &tip->nChainWork) >= 0 :
         true;
-    bool too_far_ahead = pindex->nHeight >
-        active_chain_height(&ms->chain_active) + MIN_BLOCKS_TO_KEEP;
-
     if (!requested) {
         if (pindex->nTx != 0)
             return true;
         if (!has_more_work)
             return true;
-        if (too_far_ahead)
-            return true;
+        /* Don't skip far-ahead blocks during IBD — we're downloading
+         * them in parallel and they arrive out of order. They get stored
+         * to disk and connected later by activate_best_chain. */
     }
 
     if (!check_block(block, state, params, true, true, true) ||
@@ -395,6 +393,47 @@ bool accept_block(struct block *block,
     pindex->nTx = (unsigned int)block->num_vtx;
     pindex->nChainTx = (pindex->pprev ? pindex->pprev->nChainTx : 0) +
                         pindex->nTx;
+
+    /* Propagate nChainTx forward to children that arrived out-of-order.
+     * During parallel IBD, block N+1 may arrive before block N. When
+     * block N is stored, block N+1 already has BLOCK_HAVE_DATA but its
+     * nChainTx was wrong (computed with pprev->nChainTx == 0).
+     * Walk forward through the block index and fix any chain that
+     * leads from this block. Uses a queue for BFS. */
+    {
+        struct block_index **queue = malloc(4096 * sizeof(struct block_index *));
+        if (queue) {
+            size_t qlen = 0, qcap = 4096;
+            queue[qlen++] = pindex;
+
+            while (qlen > 0) {
+                struct block_index *parent = queue[--qlen];
+                /* Scan all block_index entries for children of parent */
+                size_t iter2 = 0;
+                struct block_index *child;
+                while (block_map_next(&ms->map_block_index, &iter2,
+                                       NULL, &child)) {
+                    if (!child || child->pprev != parent) continue;
+                    if (!(child->nStatus & BLOCK_HAVE_DATA)) continue;
+
+                    unsigned int expected = parent->nChainTx + child->nTx;
+                    if (child->nChainTx != expected) {
+                        child->nChainTx = expected;
+                        /* Queue child to propagate further */
+                        if (qlen >= qcap && qcap < 65536) {
+                            size_t nc = qcap * 2;
+                            struct block_index **nq = realloc(queue,
+                                nc * sizeof(struct block_index *));
+                            if (nq) { queue = nq; qcap = nc; }
+                        }
+                        if (qlen < qcap)
+                            queue[qlen++] = child;
+                    }
+                }
+            }
+            free(queue);
+        }
+    }
 
     return true;
 }
