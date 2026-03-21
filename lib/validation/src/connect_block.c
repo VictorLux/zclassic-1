@@ -16,7 +16,6 @@
 #include "chain/checkpoints.h"
 #include "consensus/upgrades.h"
 #include "validation/main_constants.h"
-#include "validation/contextual_check_tx.h"
 #include "script/interpreter.h"
 #include <string.h>
 
@@ -107,39 +106,15 @@ bool connect_block(const struct block *block,
 
         if (!transaction_is_coinbase(tx)) {
             if (!coins_view_cache_have_inputs(view, tx)) {
-                /* Diagnostic: which input is missing? */
-                for (size_t di = 0; di < tx->num_vin; di++) {
+                /* Log first missing input for diagnostics */
+                if (tx->num_vin > 0) {
                     char prevhex[65];
-                    uint256_get_hex(&tx->vin[di].prevout.hash, prevhex);
-                    bool have = coins_view_cache_have_coins(view,
-                        &tx->vin[di].prevout.hash);
-                    printf("  missing-input: tx[%zu] vin[%zu] "
-                           "prevout=%s:%u have_coins=%d\n",
-                           i, di, prevhex, tx->vin[di].prevout.n, have);
-                }
-                {
-                    char blkhex[65];
-                    struct uint256 blkhash;
-                    block_header_get_hash(&block->header, &blkhash);
-                    uint256_get_hex(&blkhash, blkhex);
-                    char prevhex2[65];
-                    uint256_get_hex(&block->header.hashPrevBlock, prevhex2);
-                    printf("  block height=%d hash=%s prev=%s %zu txs\n",
-                           pindex->nHeight, blkhex, prevhex2, block->num_vtx);
-                    /* Show child view AND parent coins_tip cache sizes */
-                    printf("  child_view cache=%zu\n",
+                    uint256_get_hex(&tx->vin[0].prevout.hash, prevhex);
+                    printf("missing-input: h=%d tx[%zu] vin[0]=%s:%u "
+                           "cache=%zu\n", pindex->nHeight, i,
+                           prevhex, tx->vin[0].prevout.n,
                            view->cache_coins.size);
-                    /* Try LevelDB lookup directly for first missing input */
-                    struct coins test_coins;
-                    coins_init(&test_coins);
-                    bool in_parent = coins_view_get_coins(&view->base,
-                        &tx->vin[0].prevout.hash, &test_coins);
-                    printf("  parent_lookup(vin[0])=%d num_vout=%zu\n",
-                           in_parent,
-                           in_parent ? test_coins.num_vout : (size_t)0);
-                    coins_free(&test_coins);
                 }
-                fflush(stdout);
                 block_undo_free(&blockundo);
                 return validation_state_dos(state, 100, false, REJECT_INVALID,
                     "bad-txns-inputs-missingorspent", false, NULL);
