@@ -45,8 +45,12 @@ bool connect_block(const struct block *block,
                      !just_check, expensive_checks))
         return false;
 
+    /* Use pre-computed hash from block_index (avoids redundant SHA-256d) */
     struct uint256 block_hash;
-    block_header_get_hash(&block->header, &block_hash);
+    if (pindex->phashBlock)
+        block_hash = *pindex->phashBlock;
+    else
+        block_header_get_hash(&block->header, &block_hash);
 
     /* Special case: genesis block */
     if (uint256_cmp(&block_hash, &params->consensus.hashGenesisBlock) == 0) {
