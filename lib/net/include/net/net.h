@@ -147,7 +147,6 @@ struct p2p_node {
     bool client;
     bool inbound;
     bool network_node;
-    bool successfully_connected;
     bool disconnect;
     bool relay_txes;
     bool sent_addr;
@@ -188,7 +187,6 @@ struct p2p_node {
     bool ping_queued;
     bool prefer_headers;
     bool send_compact;
-    bool sync_started;
     int64_t last_getheaders_time;
 
     int misbehavior;          /* cumulative misbehavior score; banned at 100 */
@@ -198,9 +196,7 @@ struct p2p_node {
     int64_t avg_latency_us;   /* rolling average ping latency in microseconds */
     int blocks_received;      /* count of valid blocks from this peer */
 
-    /* zclassic23 fast sync state */
-    bool zsync_serving;       /* true if we're streaming UTXOs to this peer */
-    bool zsync_receiving;     /* true if we're receiving UTXOs from this peer */
+    /* zclassic23 fast sync state (tracked via enum peer_state) */
     uint64_t zsync_offset;    /* total UTXOs sent (for progress logging) */
     uint64_t zsync_total;     /* total UTXOs to send */
     uint64_t zsync_sent;      /* chunks sent so far */

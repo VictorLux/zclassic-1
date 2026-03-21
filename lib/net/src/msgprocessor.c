@@ -181,7 +181,6 @@ static void push_manifest(struct msg_processor *mp, struct p2p_node *node)
     node->swarm_manifest_sent = true;
     printf("Peer %s: sent manifest (h=%d, %u chunks)\n",
            node->addr_name, m->height, m->num_chunks);
-    fflush(stdout);
 }
 
 /* Send a chunk request to a peer. */
@@ -225,7 +224,6 @@ static void push_version(struct msg_processor *mp, struct p2p_node *node)
     printf("Sent version to %s: proto=%d h=%d subver=%s size=%zu\n",
            node->addr_name, ver.protocol_version, ver.start_height,
            ver.sub_version, s.size);
-    fflush(stdout);
     stream_free(&s);
 }
 
@@ -834,7 +832,6 @@ static bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
             if (new_tip->nHeight % 1000 == 0) {
                 printf("Chain tip: height=%d from peer %s\n",
                        new_tip->nHeight, node->addr_name);
-                fflush(stdout);
             }
 
             /* Relay accepted block to all connected peers (not during IBD).
@@ -1034,7 +1031,6 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                     "all %llu headers rejected", (unsigned long long)count);
         printf("WARNING: Peer %s: all %llu headers rejected — sync stalled!\n",
                node->addr_name, (unsigned long long)count);
-        fflush(stdout);
     }
 
     if (accepted > 0) {
@@ -1324,7 +1320,6 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                     /* Accept — request the snapshot data */
                     printf("Peer %s: accepting snapshot offer (h=%d, %llu UTXOs)\n",
                            node->addr_name, h, (unsigned long long)nu);
-                    node->zsync_receiving = true;
                     node->zsync_offset = 0;
                     peer_set_state_checked((uint32_t)node->id, &node->state,
                                            PEER_SNAPSHOT_RECEIVING,
@@ -1341,7 +1336,6 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                     p2p_node_write_message_data(node, rq.data, rq.size);
                     p2p_node_end_message(node);
                     stream_free(&rq);
-                    fflush(stdout);
                 }
             }
         } else if (strcmp(cmd, MSG_SNAPSHOT_REQ) == 0) {
@@ -1377,7 +1371,6 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                        node->addr_name);
             } else if (g_cached_offer_valid) {
                 /* Send cached offer and start serving chunks */
-                node->zsync_serving = true;
                 node->zsync_offset = 0;
                 node->zsync_sent = 0;
                 peer_set_state_checked((uint32_t)node->id, &node->state,
@@ -1540,7 +1533,6 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
             printf("Peer %s: snapshot transfer complete (%llu UTXOs)\n",
                    node->addr_name,
                    (unsigned long long)node->zsync_offset);
-            node->zsync_receiving = false;
             event_emitf(EV_SNAPSHOT_COMPLETE, (uint32_t)node->id,
                         "utxos=%llu",
                         (unsigned long long)node->zsync_offset);
@@ -1548,7 +1540,6 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                                    PEER_ACTIVE, "snapshot complete");
             sync_set_state(SYNC_HEADERS_DOWNLOAD,
                            "snapshot done, sync remaining headers");
-            fflush(stdout);
 
         /* ── Parallel chunk sync messages ────────────────────── */
 
@@ -1591,7 +1582,6 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                         g_swarm_last_progress_time = (int64_t)time(NULL);
                         printf("Swarm sync started: %u chunks from h=%d\n",
                                num_chunks, height);
-                        fflush(stdout);
                     }
                 }
             }
@@ -1700,7 +1690,6 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                                    g_swarm.manifest.num_chunks);
                             swarm_sync_free(&g_swarm);
                             g_swarm_active = false;
-                            fflush(stdout);
                         }
                     } else {
                         printf("Peer %s: truncated zchunkdata\n",
@@ -1771,7 +1760,6 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
             default:
                 break;
             }
-            fflush(stdout);
         }
 
         stream_free(&s);
@@ -1818,7 +1806,6 @@ static void build_block_locator(struct block_locator *loc,
     if (tip)
         printf("Locator: %zu hashes, tip h=%d, last h=%d\n",
                idx, tip->nHeight, bi ? bi->nHeight : -1);
-    fflush(stdout);
     loc->vhave = calloc(idx, sizeof(struct uint256));
     if (!loc->vhave) { loc->num_hashes = 0; return; }
     memcpy(loc->vhave, tmp, idx * sizeof(struct uint256));
@@ -1964,7 +1951,6 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
             p2p_node_write_message_data(node, os.data, os.size);
             p2p_node_end_message(node);
             stream_free(&os);
-            fflush(stdout);
         }
     }
 
@@ -1972,7 +1958,6 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
     {
         bool should_sync = false;
         if (node->state == PEER_ACTIVE && !node->inbound) {
-            node->sync_started = true; /* keep for backward compat */
             peer_set_state_checked((uint32_t)node->id, &node->state,
                                    PEER_SYNCING_HEADERS, "IBD start");
             if (sync_get_state() == SYNC_IDLE ||
@@ -2108,7 +2093,6 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
                        (unsigned long long)r, (unsigned long long)v,
                        (unsigned long long)f, (unsigned long long)q,
                        (unsigned long long)t);
-                fflush(stdout);
             }
         }
     }
@@ -2200,13 +2184,11 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
                     p2p_node_begin_message(node, MSG_SNAPSHOT_END,
                                             mp->params->pchMessageStart);
                     p2p_node_end_message(node);
-                    node->zsync_serving = false;
                     peer_set_state_checked((uint32_t)node->id, &node->state,
                                            PEER_ACTIVE, "snapshot serve done");
                     printf("Peer %s: snapshot complete (%llu UTXOs sent)\n",
                            node->addr_name,
                            (unsigned long long)node->zsync_offset);
-                    fflush(stdout);
                     break;
                 }
 
@@ -2230,7 +2212,6 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
                            node->addr_name,
                            (unsigned long long)node->zsync_offset,
                            (unsigned long long)g_cached_offer.num_utxos);
-                    fflush(stdout);
                 }
             }
             sqlite3_finalize(sel_first);
@@ -2295,7 +2276,6 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
                    swarm_sync_progress(&g_swarm),
                    g_swarm.chunks_complete, g_swarm.manifest.num_chunks,
                    g_swarm.chunks_inflight, serving_peers);
-            fflush(stdout);
         }
     }
 

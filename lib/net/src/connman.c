@@ -120,7 +120,6 @@ static void *thread_dns_seed(void *arg)
                 for (int i = 0; i < found; i++)
                     printf("  .onion peer: %s (h=%d)\n",
                            peers[i].hostname, peers[i].height);
-                fflush(stdout);
             }
             /* TODO: connect to discovered .onion peers via Tor SOCKS
              * or direct dynhost connection */
@@ -131,7 +130,6 @@ static void *thread_dns_seed(void *arg)
     sleep(12);
     if (!g_stop && cm->manager.num_nodes == 0) {
         printf("No peers found, retrying all discovery methods...\n");
-        fflush(stdout);
         seed_from_fixed(cm);
         dns_seed_resolve(cm);
     }
@@ -143,7 +141,6 @@ static void *thread_dns_seed(void *arg)
         if (cm->manager.num_nodes < 3) {
             printf("Low peer count (%zu), running peer discovery...\n",
                    cm->manager.num_nodes);
-            fflush(stdout);
             seed_from_fixed(cm);
             dns_seed_resolve(cm);
         }
@@ -365,7 +362,6 @@ static void *thread_socket_handler(void *arg)
                     printf("Peer %s: timeout (no data for %llds)\n",
                            n->addr_name,
                            (long long)(now_check - n->last_recv));
-                    fflush(stdout);
                     n->disconnect = true;
                 }
                 /* Version handshake timeout: 30s */
@@ -383,7 +379,6 @@ static void *thread_socket_handler(void *arg)
                            n->version,
                            peer_state_name(n->state),
                            n->inbound ? "inbound" : "outbound");
-                    fflush(stdout);
                     n->disconnect = true;
                 }
             }
@@ -550,7 +545,6 @@ void connman_relay_transaction(struct connman *cm,
     char hex[65];
     uint256_get_hex(txid, hex);
     printf("Relay tx %s to %d peers\n", hex, relayed);
-    fflush(stdout);
 }
 
 void connman_add_seed_node(struct connman *cm, const char *host,

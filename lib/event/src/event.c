@@ -529,10 +529,9 @@ bool sync_set_state(enum sync_state new_state, const char *reason)
                      reason ? reason : "");
     event_emit(EV_SYNC_STATE_CHANGE, 0, buf, (uint32_t)(n > 0 ? n : 0));
 
-    printf("Sync: %s → %s (%s)\n",
+    printf("Sync: %s -> %s (%s)\n",
            sync_state_name(old), sync_state_name(new_state),
            reason ? reason : "");
-    fflush(stdout);
 
     return true;
 }

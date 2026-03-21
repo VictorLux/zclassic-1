@@ -267,7 +267,6 @@ static void update_tip(struct main_state *ms, struct block_index *pindex_new)
                pindex_new->nHeight, bps);
         last_log_time = now_log;
         last_log_height = pindex_new->nHeight;
-        fflush(stdout);
     }
 }
 
@@ -481,7 +480,6 @@ bool connect_tip(struct validation_state *state,
                    "  file=%d pos=%u\n",
                    pindex_new->nHeight, exp, got,
                    pindex_new->nFile, pindex_new->nDataPos);
-            fflush(stdout);
             block_free(&local_block);
             return validation_state_error(state, "wrong-block-on-disk");
         }
@@ -827,7 +825,6 @@ bool activate_best_chain(struct validation_state *state,
                 printf("activate_best_chain: shutdown requested at height %d, "
                        "flushing coins...\n",
                        active_chain_height(&ms->chain_active));
-                fflush(stdout);
                 flush_coins_if_needed(coins_tip, true); /* force flush */
                 free(connect_path);
                 return true; /* clean exit, coins flushed */

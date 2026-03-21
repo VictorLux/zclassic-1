@@ -700,7 +700,6 @@ struct p2p_node *connect_node(struct net_manager *nm,
         char addr_str[64];
         net_service_to_string(&addr_connect->svc, addr_str, sizeof(addr_str));
         printf("connect_node: failed to connect to %s\n", addr_str);
-        fflush(stdout);
         return NULL;
     }
 
@@ -721,7 +720,6 @@ struct p2p_node *connect_node(struct net_manager *nm,
     char addr_str[64];
     net_service_to_string(&addr_connect->svc, addr_str, sizeof(addr_str));
     printf("Connected to %s\n", addr_str);
-    fflush(stdout);
     return node;
 }
 
@@ -784,7 +782,6 @@ void peer_misbehaving(struct net_manager *nm, struct p2p_node *node,
     printf("Misbehaving: %s (%d -> %d) %s\n",
            node->addr_name, node->misbehavior - howmuch,
            node->misbehavior, reason ? reason : "");
-    fflush(stdout);
 
     if (node->misbehavior >= 100) {
         event_emitf(EV_PEER_BANNED, (uint32_t)node->id,
@@ -793,7 +790,6 @@ void peer_misbehaving(struct net_manager *nm, struct p2p_node *node,
         printf("Banning %s (score=%d): %s\n",
                node->addr_name, node->misbehavior,
                reason ? reason : "threshold reached");
-        fflush(stdout);
         ban_addr(nm, &node->addr.svc.addr, 24 * 60 * 60, false);
         node->disconnect = true;
     }
