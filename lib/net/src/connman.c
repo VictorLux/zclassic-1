@@ -409,6 +409,9 @@ static void *thread_socket_handler(void *arg)
                                           (uint32_t)node->id);
                 }
 
+                /* Force disconnect — bypass transition validator since this
+                 * is cleanup, not a normal state change. The event was
+                 * already emitted (EV_TCP_DISCONNECTED above). */
                 node->state = PEER_DISCONNECTED;
                 p2p_node_close_socket(node);
 
