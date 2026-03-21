@@ -266,7 +266,6 @@ static bool process_version(struct msg_processor *mp, struct p2p_node *node,
      * verack (handled in process_verack). For inbound, the peer initiated,
      * so mark connected after we send our version+verack. */
     if (node->inbound) {
-        node->successfully_connected = true;
         peer_set_state_checked((uint32_t)node->id, &node->state,
                                PEER_HANDSHAKE_COMPLETE, "inbound version+verack");
     }
@@ -312,7 +311,6 @@ static bool process_verack(struct msg_processor *mp, struct p2p_node *node)
     /* Outbound: handshake complete (we sent version, got version+verack).
      * Inbound: already marked in process_version. */
     if (!node->inbound && node->state < PEER_HANDSHAKE_COMPLETE) {
-        node->successfully_connected = true; /* backward compat */
         peer_set_state_checked((uint32_t)node->id, &node->state,
                                PEER_HANDSHAKE_COMPLETE, "verack received");
         printf("Peer %s: handshake complete (outbound)\n", node->addr_name);
