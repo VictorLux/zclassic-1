@@ -2025,9 +2025,103 @@ static void *index_worker(void *arg) {
     return NULL;
 }
 
-/* ── indexlegacy: import full chain from zclassicd LevelDB → our SQLite ── */
-
 static struct node_db *g_node_db_bc = NULL;
+
+/* ── importchainstate: read UTXO set from external LevelDB chainstate ── */
+
+static bool rpc_importchainstate(const struct json_value *params, bool help,
+                                   struct json_value *result)
+{
+    RPC_HELP(help, result,
+        "importchainstate \"chainstate_path\"\n"
+        "\nRebuild the UTXO index from an external LevelDB chainstate directory.\n"
+        "Use this to import the complete UTXO set from a zclassicd node:\n"
+        "  importchainstate /home/user/.zclassic/chainstate\n"
+        "\nThis replaces all UTXOs in SQLite with those from the given chainstate.\n"
+        "The source node should be stopped to avoid LevelDB lock conflicts.\n");
+
+    struct rpc_params p;
+    rpc_params_init(&p, params);
+    rpc_params_expect(&p, 1, 1);
+    const char *cs_path = rpc_require_str(&p, 0, "chainstate_path");
+    if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); return false; }
+
+    if (!g_node_db_bc || !g_node_db_bc->open) {
+        json_set_str(result, "Node database not open");
+        return false;
+    }
+
+    printf("importchainstate: opening %s...\n", cs_path);
+    fflush(stdout);
+
+    struct coins_view_db ext_db;
+    memset(&ext_db, 0, sizeof(ext_db));
+    if (!coins_view_db_open(&ext_db, cs_path, 256, false, false)) {
+        json_set_str(result, "Cannot open chainstate LevelDB");
+        return false;
+    }
+
+    int count = node_db_sync_import_utxos(g_node_db_bc, &ext_db);
+    coins_view_db_close(&ext_db);
+
+    if (count < 0) {
+        json_set_str(result, "Import failed");
+        return false;
+    }
+
+    /* Rebuild wallet_utxos and addresses from new UTXO set */
+    sqlite3_exec(g_node_db_bc->db, "BEGIN", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db,
+        "DELETE FROM wallet_utxos", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db,
+        "INSERT INTO wallet_utxos "
+        "(txid, vout, value, address_hash, script, height, is_coinbase) "
+        "SELECT u.txid, u.vout, u.value, u.address_hash, u.script, "
+        "u.height, u.is_coinbase "
+        "FROM utxos u INNER JOIN wallet_keys wk "
+        "ON u.address_hash = wk.pubkey_hash",
+        NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db,
+        "DELETE FROM addresses", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db,
+        "INSERT OR REPLACE INTO addresses "
+        "(address_hash, script_type, balance, utxo_count, "
+        "first_seen_height, last_seen_height) "
+        "SELECT address_hash, MAX(script_type), SUM(value), count(*), "
+        "MIN(height), MAX(height) "
+        "FROM utxos WHERE address_hash IS NOT NULL "
+        "GROUP BY address_hash",
+        NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "COMMIT", NULL, NULL, NULL);
+
+    json_set_object(result);
+    json_push_kv_int(result, "utxos_imported", count);
+
+    /* Report balance */
+    sqlite3_stmt *s = NULL;
+    sqlite3_prepare_v2(g_node_db_bc->db,
+        "SELECT COALESCE(SUM(value),0) FROM utxos",
+        -1, &s, NULL);
+    if (sqlite3_step(s) == SQLITE_ROW)
+        json_push_kv_int(result, "total_value_zatoshi",
+                          sqlite3_column_int64(s, 0));
+    sqlite3_finalize(s);
+
+    s = NULL;
+    sqlite3_prepare_v2(g_node_db_bc->db,
+        "SELECT COALESCE(SUM(value),0) FROM wallet_utxos WHERE spent_txid IS NULL",
+        -1, &s, NULL);
+    if (sqlite3_step(s) == SQLITE_ROW)
+        json_push_kv_int(result, "wallet_balance_zatoshi",
+                          sqlite3_column_int64(s, 0));
+    sqlite3_finalize(s);
+
+    printf("importchainstate: done — %d UTXOs imported\n", count);
+    fflush(stdout);
+    return true;
+}
+
+/* ── indexlegacy: import full chain from zclassicd LevelDB → our SQLite ── */
 
 void rpc_blockchain_set_node_db(struct node_db *ndb) { g_node_db_bc = ndb; }
 
@@ -3009,6 +3103,7 @@ void register_blockchain_rpc_commands(struct rpc_table *t)
         { "blockchain", "gethodlwavetimeline",  rpc_gethodlwavetimeline,   true },
         { "blockchain", "gethodlwavechart",     rpc_gethodlwavechart,      true },
         { "blockchain", "reindexchainstate",    rpc_reindexchainstate,     false },
+        { "blockchain", "importchainstate",     rpc_importchainstate,       false },
         { "blockchain", "indexlegacy",          rpc_indexlegacy,            false },
     };
 
