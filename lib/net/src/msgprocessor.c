@@ -995,6 +995,15 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
         }
     }
 
+    if (accepted == 0 && count > 0) {
+        /* All headers rejected — this stalls sync. Log prominently. */
+        event_emitf(EV_HEADERS_REJECTED, (uint32_t)node->id,
+                    "all %llu headers rejected", (unsigned long long)count);
+        printf("WARNING: Peer %s: all %llu headers rejected — sync stalled!\n",
+               node->addr_name, (unsigned long long)count);
+        fflush(stdout);
+    }
+
     if (accepted > 0) {
         event_emitf(EV_HEADERS_RECEIVED, (uint32_t)node->id,
                     "accepted=%zu total=%llu tip=%d",
@@ -2055,12 +2064,14 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
             uint64_t r = 0, v = 0, t = 0, f = 0, q = 0;
             dl_get_stats(dm2, &r, &v, &t, &f, &q);
             int h = msg_get_height(mp);
+            int header_tip = mp->main_state->pindex_best_header
+                ? mp->main_state->pindex_best_header->nHeight : h;
             enum sync_state ss = sync_get_state();
             if (ss != SYNC_IDLE && ss != SYNC_AT_TIP) {
-                printf("IBD: height=%d sync=%s "
+                printf("IBD: chain=%d headers=%d sync=%s "
                        "dl[req=%llu recv=%llu flight=%llu queue=%llu "
                        "timeout=%llu]\n",
-                       h, sync_state_name(ss),
+                       h, header_tip, sync_state_name(ss),
                        (unsigned long long)r, (unsigned long long)v,
                        (unsigned long long)f, (unsigned long long)q,
                        (unsigned long long)t);
