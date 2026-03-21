@@ -197,16 +197,21 @@ zcl-rpc stop                           # stop zclassicd
 - Stats charts: precomputed with 5-min cache, CSS-only tab switching
 - SQLite: WAL mode, 256MB mmap, 256MB cache
 
-### Event State Machine
+### Event State Machine & Monitoring
 Every P2P event, state transition, and validation step is logged in a
 65536-event lock-free ring buffer. On crash, last 200 events dump to stderr.
 ```
+zcl-rpc healthcheck                    # pass/fail health status
 zcl-rpc eventlog 100                   # last 100 events (JSON)
 zcl-rpc syncstate                      # sync state machine
 zcl-rpc downloadstats                  # download manager stats
 zcl-rpc getpeerinfo                    # peer states + misbehavior
 zcl-rpc coinsinfo                      # UTXO cache diagnostics
+curl localhost:18232/api/health         # HTTP 200/503 health check
 ```
+
+Self-monitoring: tip-stale watchdog (auto-re-requests if no block for 10m),
+adaptive peer reconnection (30s recovery from 0 peers), peer health warnings.
 
 ### SQLite Database (node.db)
 All blockchain data is indexed in SQLite for instant queries. Schema v5:
