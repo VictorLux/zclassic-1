@@ -117,6 +117,20 @@ void g2_msm(struct g2_point *result,
             const struct g2_point *points, const struct fr *scalars,
             size_t n);
 
+/* ── Parallel MSM (pthread, ~Nx on N cores) ─────────────────────── */
+
+void g1_msm_parallel(struct g1_point *result,
+                     const struct g1_point *points, const struct fr *scalars,
+                     size_t n, int num_threads);
+
+void g2_msm_parallel(struct g2_point *result,
+                     const struct g2_point *points, const struct fr *scalars,
+                     size_t n, int num_threads);
+
+/* ── Parallel FFT ───────────────────────────────────────────────── */
+
+void fr_fft_parallel(struct fr *coeffs, size_t n, bool inverse, int num_threads);
+
 /* ── Groth16 Prover ─────────────────────────────────────────────── */
 
 /* Generate a Groth16 proof from a satisfied constraint system and proving key.

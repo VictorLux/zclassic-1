@@ -1259,41 +1259,46 @@ size_t api_handle_request(const char *method, const char *path,
         return explorer_factoids_build_json(response, response_max, g_datadir);
     }
 
-    /* Event log — live system state machine events */
-    if (strcmp(clean_path, "/api/events") == 0) {
+    /* Event log — lock-free atomic reads, safe from any handler thread */
+    if (strncmp(clean_path, "/api/events", 11) == 0 &&
+        (clean_path[11] == '\0' || clean_path[11] == '?')) {
         size_t count = 200;
-        /* Parse ?count=N from query string if present */
         const char *q = strchr(path, '?');
         if (q) {
             const char *cp = strstr(q, "count=");
             if (cp) {
-                int n = atoi(cp + 6);
-                if (n > 0 && n <= 65536) count = (size_t)n;
+                long v = strtol(cp + 6, NULL, 10);
+                if (v > 0 && v <= 65536) count = (size_t)v;
             }
         }
-        /* Build JSON response with sync state header */
-        const char *hdr = "HTTP/1.1 200 OK\r\n"
-            "Content-Type: application/json\r\n"
-            "Access-Control-Allow-Origin: *\r\n"
-            "Connection: close\r\n\r\n";
-        size_t hlen = strlen(hdr);
-        if (hlen >= response_max) return 0;
-        memcpy(response, hdr, hlen);
-
-        /* Wrap: {"sync_state":"...","peer_states":[...],"events":[...]} */
-        size_t w = hlen;
-        w += (size_t)snprintf((char *)response + w, response_max - w,
+        /* Build JSON body: {"sync_state":"...","events":[...]} */
+        char *buf = malloc(524288);
+        if (!buf)
+            return json_error(response, response_max, JSON_500_HEADERS,
+                              "Out of memory");
+        size_t w = 0;
+        w += (size_t)snprintf(buf + w, 524288 - w,
             "{\"sync_state\":\"%s\",\"events\":",
             sync_state_name(sync_get_state()));
-        w += event_dump_json((char *)response + w, response_max - w, count);
-        if (w + 1 < response_max) {
-            response[w++] = '}';
-            response[w] = '\0';
-        }
-        return w;
+        w += event_dump_json(buf + w, 524288 - w, count);
+        if (w + 1 < 524288) buf[w++] = '}';
+
+        size_t off = (size_t)snprintf((char *)response, response_max,
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Type: application/json; charset=utf-8\r\n"
+            "Access-Control-Allow-Origin: *\r\n"
+            "Cache-Control: no-cache\r\n"
+            "Connection: close\r\n"
+            "Content-Length: %zu\r\n\r\n", w);
+        if (off + w <= response_max)
+            memcpy(response + off, buf, w);
+        else if (off < response_max)
+            memcpy(response + off, buf, response_max - off);
+        free(buf);
+        return off + w < response_max ? off + w : response_max;
     }
 
-    /* Sync state — minimal endpoint for monitoring */
+    /* Sync state — minimal monitoring endpoint */
     if (strcmp(clean_path, "/api/syncstate") == 0) {
         return (size_t)snprintf((char *)response, response_max,
             "HTTP/1.1 200 OK\r\n"

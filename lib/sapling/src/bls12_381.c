@@ -8,6 +8,10 @@
 #include <string.h>
 #include <stdlib.h>
 
+/* Runtime-dispatched Montgomery multiply (CPUID → BMI2+ADX or portable) */
+extern void fp_mont_mul_accel(uint64_t r[6], const uint64_t a[6], const uint64_t b[6]);
+#define fp_mont_mul fp_mont_mul_accel
+
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wpedantic"
 
@@ -20,7 +24,7 @@ static const uint64_t FP_Q[6] = {
     0x4b1ba7b6434bacd7ULL, 0x1a0111ea397fe69aULL
 };
 
-static const uint64_t FP_INV = 0x89f3fffcfffcfffdULL;
+/* FP_INV moved to fr_avx512.c (runtime dispatch) */
 
 /* R = 2^384 mod q */
 static const uint64_t FP_R[6] = {
@@ -57,39 +61,7 @@ static void fp_sub_noborrow(uint64_t r[6], const uint64_t a[6], const uint64_t b
     }
 }
 
-static void fp_mont_mul(uint64_t r[6], const uint64_t a[6], const uint64_t b[6])
-{
-    uint64_t t[7] = {0};
-
-    for (int i = 0; i < 6; i++) {
-        unsigned __int128 carry = 0;
-        for (int j = 0; j < 6; j++) {
-            unsigned __int128 prod = (unsigned __int128)a[j] * b[i] + t[j] + carry;
-            t[j] = (uint64_t)prod;
-            carry = prod >> 64;
-        }
-        t[6] = (uint64_t)carry;
-
-        uint64_t m = t[0] * FP_INV;
-        carry = 0;
-        unsigned __int128 prod0 = (unsigned __int128)m * FP_Q[0] + t[0];
-        carry = prod0 >> 64;
-
-        for (int j = 1; j < 6; j++) {
-            unsigned __int128 prod = (unsigned __int128)m * FP_Q[j] + t[j] + carry;
-            t[j - 1] = (uint64_t)prod;
-            carry = prod >> 64;
-        }
-        unsigned __int128 sum = (unsigned __int128)t[6] + carry;
-        t[5] = (uint64_t)sum;
-        t[6] = (uint64_t)(sum >> 64);
-    }
-
-    if (t[6] || fp_gte(t, FP_Q))
-        fp_sub_noborrow(r, t, FP_Q);
-    else
-        memcpy(r, t, 48);
-}
+/* Montgomery multiply implementation is in fr_avx512.c (runtime dispatch) */
 
 void fp_zero(struct fp *r) { memset(r->d, 0, 48); }
 

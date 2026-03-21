@@ -7,6 +7,10 @@
 #include "sapling/fr.h"
 #include <string.h>
 
+/* Runtime-dispatched Montgomery multiply (CPUID → BMI2+ADX or portable) */
+extern void fr_mont_mul_accel(uint64_t r[4], const uint64_t a[4], const uint64_t b[4]);
+#define fr_mont_mul fr_mont_mul_accel
+
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wpedantic"
 
@@ -16,8 +20,7 @@ static const uint64_t FR_P[4] = {
     0x3339d80809a1d805ULL, 0x73eda753299d7d48ULL
 };
 
-/* -p^{-1} mod 2^64 */
-static const uint64_t FR_INV = 0xfffffffeffffffffULL;
+/* FR_INV moved to fr_avx512.c (runtime dispatch) */
 
 /* R mod p = 2^256 mod p (= 1 in Montgomery form) */
 static const uint64_t FR_R[4] = {
@@ -59,43 +62,7 @@ static void fr_sub_noborrow(uint64_t r[4], const uint64_t a[4], const uint64_t b
     }
 }
 
-/* Montgomery multiplication: r = a * b * R^{-1} mod p */
-static void fr_mont_mul(uint64_t r[4], const uint64_t a[4], const uint64_t b[4])
-{
-    uint64_t t[5] = {0};
-
-    for (int i = 0; i < 4; i++) {
-        /* Step 1: t += a * b[i] */
-        unsigned __int128 carry = 0;
-        for (int j = 0; j < 4; j++) {
-            unsigned __int128 prod = (unsigned __int128)a[j] * b[i] + t[j] + carry;
-            t[j] = (uint64_t)prod;
-            carry = prod >> 64;
-        }
-        t[4] = (uint64_t)carry;
-
-        /* Step 2: Montgomery reduce */
-        uint64_t m = t[0] * FR_INV;
-        carry = 0;
-        unsigned __int128 prod0 = (unsigned __int128)m * FR_P[0] + t[0];
-        carry = prod0 >> 64; /* t[0] + m*p[0] ≡ 0 mod 2^64 */
-
-        for (int j = 1; j < 4; j++) {
-            unsigned __int128 prod = (unsigned __int128)m * FR_P[j] + t[j] + carry;
-            t[j - 1] = (uint64_t)prod;
-            carry = prod >> 64;
-        }
-        unsigned __int128 sum = (unsigned __int128)t[4] + carry;
-        t[3] = (uint64_t)sum;
-        t[4] = (uint64_t)(sum >> 64);
-    }
-
-    /* Final reduction */
-    if (t[4] || fr_gte(t, FR_P))
-        fr_sub_noborrow(r, t, FR_P);
-    else
-        memcpy(r, t, 32);
-}
+/* Montgomery multiply implementation is in fr_avx512.c (runtime dispatch) */
 
 void fr_zero(struct fr *r) { memset(r->d, 0, 32); }
 

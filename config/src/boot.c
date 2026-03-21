@@ -329,13 +329,15 @@ static bool load_block_index_flat(const char *datadir, struct main_state *ms)
     return count > 0;
 }
 
-/* Save the most recent N block_index entries to SQLite for fast restart.
- * Only stores enough for difficulty validation (17 window + 11 median + reorg buffer). */
+/* Save ALL block_index entries to SQLite for instant restart.
+ * Replaces the previous approach of saving only 200 recent blocks.
+ * On restart, load from SQLite instead of 10-15s LevelDB scan. */
 static void save_block_index_recent(struct node_db *ndb, struct main_state *ms)
 {
     if (!ndb || !ndb->open) return;
-    struct block_index *tip = active_chain_tip(&ms->chain_active);
-    if (!tip) return;
+
+    size_t total = ms->map_block_index.size;
+    if (total == 0) return;
 
     int64_t t0 = (int64_t)time(NULL);
     sqlite3_exec(ndb->db, "DELETE FROM block_index_cache", NULL, NULL, NULL);
@@ -343,24 +345,24 @@ static void save_block_index_recent(struct node_db *ndb, struct main_state *ms)
 
     sqlite3_stmt *ins = NULL;
     sqlite3_prepare_v2(ndb->db,
-        "INSERT INTO block_index_cache "
+        "INSERT OR REPLACE INTO block_index_cache "
         "(hash,prev_hash,height,n_bits,n_time,n_version,n_status,"
-        "n_file,n_data_pos,n_undo_pos,n_tx,chain_work,n_cached_branch_id) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "n_file,n_data_pos,n_undo_pos,n_tx,chain_work,"
+        "n_cached_branch_id,n_chain_tx) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         -1, &ins, NULL);
 
-    /* Walk back 200 blocks from tip */
-    const struct block_index *p = tip;
-    int count = 0;
-    while (p && count < 200) {
+    static const unsigned char zero32[32] = {0};
+    size_t iter = 0, count = 0;
+    struct block_index *p;
+    while (block_map_next(&ms->map_block_index, &iter, NULL, &p)) {
+        if (!p || !p->phashBlock) continue;
+
         sqlite3_reset(ins);
         sqlite3_bind_blob(ins, 1, p->phashBlock->data, 32, SQLITE_STATIC);
-        {
-            static const unsigned char zero32[32] = {0};
-            const unsigned char *prev = (p->pprev && p->pprev->phashBlock)
-                ? p->pprev->phashBlock->data : zero32;
-            sqlite3_bind_blob(ins, 2, prev, 32, SQLITE_STATIC);
-        }
+        const unsigned char *prev = (p->pprev && p->pprev->phashBlock)
+            ? p->pprev->phashBlock->data : zero32;
+        sqlite3_bind_blob(ins, 2, prev, 32, SQLITE_STATIC);
         sqlite3_bind_int(ins, 3, p->nHeight);
         sqlite3_bind_int(ins, 4, (int)p->nBits);
         sqlite3_bind_int(ins, 5, (int)p->nTime);
@@ -372,16 +374,119 @@ static void save_block_index_recent(struct node_db *ndb, struct main_state *ms)
         sqlite3_bind_int(ins, 11, (int)p->nTx);
         sqlite3_bind_blob(ins, 12, p->nChainWork.pn, 32, SQLITE_STATIC);
         sqlite3_bind_int(ins, 13, (int)p->nCachedBranchId);
+        sqlite3_bind_int(ins, 14, (int)p->nChainTx);
         sqlite3_step(ins);
-        p = p->pprev;
         count++;
+
+        /* Commit in batches of 50000 to avoid holding a huge transaction */
+        if (count % 50000 == 0) {
+            sqlite3_exec(ndb->db, "COMMIT", NULL, NULL, NULL);
+            sqlite3_exec(ndb->db, "BEGIN", NULL, NULL, NULL);
+        }
     }
     sqlite3_finalize(ins);
     sqlite3_exec(ndb->db, "COMMIT", NULL, NULL, NULL);
 
-    printf("Block index: cached %d recent entries (%.0fms)\n",
-           count, difftime(time(NULL), t0) * 1000);
+    int64_t elapsed = (int64_t)time(NULL) - t0;
+    printf("Block index: cached %zu/%zu entries in SQLite (%llds)\n",
+           count, total, (long long)elapsed);
     fflush(stdout);
+}
+
+/* Load ALL block_index entries from SQLite.
+ * Returns true if loaded successfully, false to fall back to LevelDB. */
+static bool load_block_index_sqlite(struct node_db *ndb, struct main_state *ms)
+{
+    if (!ndb || !ndb->open) return false;
+
+    /* Check if block_index_cache has substantial data */
+    int64_t cached_count = 0;
+    sqlite3_stmt *cnt = NULL;
+    if (sqlite3_prepare_v2(ndb->db,
+            "SELECT COUNT(*) FROM block_index_cache", -1, &cnt, NULL) == SQLITE_OK && cnt) {
+        if (sqlite3_step(cnt) == SQLITE_ROW)
+            cached_count = sqlite3_column_int64(cnt, 0);
+        sqlite3_finalize(cnt);
+    }
+    if (cached_count < 1000) return false;
+
+    int64_t t0 = (int64_t)time(NULL);
+    printf("Loading block index from SQLite (%lld entries)...\n",
+           (long long)cached_count);
+    fflush(stdout);
+
+    /* Phase 1: Create all block_index entries */
+    sqlite3_stmt *sel = NULL;
+    if (sqlite3_prepare_v2(ndb->db,
+            "SELECT hash,prev_hash,height,n_bits,n_time,n_version,n_status,"
+            "n_file,n_data_pos,n_undo_pos,n_tx,chain_work,"
+            "n_cached_branch_id,n_chain_tx "
+            "FROM block_index_cache ORDER BY height",
+            -1, &sel, NULL) != SQLITE_OK || !sel)
+        return false;
+
+    size_t loaded = 0;
+    while (sqlite3_step(sel) == SQLITE_ROW) {
+        const void *hash_blob = sqlite3_column_blob(sel, 0);
+        if (!hash_blob || sqlite3_column_bytes(sel, 0) < 32) continue;
+
+        struct uint256 hash;
+        memcpy(hash.data, hash_blob, 32);
+        struct block_index *pindex = chainstate_insert_block_index(
+            (struct chainstate *)ms, &hash);
+        if (!pindex) continue;
+
+        pindex->nHeight         = sqlite3_column_int(sel, 2);
+        pindex->nBits           = (uint32_t)sqlite3_column_int(sel, 3);
+        pindex->nTime           = (uint32_t)sqlite3_column_int(sel, 4);
+        pindex->nVersion        = sqlite3_column_int(sel, 5);
+        pindex->nStatus         = (uint32_t)sqlite3_column_int(sel, 6);
+        pindex->nFile           = sqlite3_column_int(sel, 7);
+        pindex->nDataPos        = (uint32_t)sqlite3_column_int(sel, 8);
+        pindex->nUndoPos        = (uint32_t)sqlite3_column_int(sel, 9);
+        pindex->nTx             = (uint32_t)sqlite3_column_int(sel, 10);
+
+        const void *cw = sqlite3_column_blob(sel, 11);
+        if (cw && sqlite3_column_bytes(sel, 11) >= 32)
+            memcpy(pindex->nChainWork.pn, cw, 32);
+
+        pindex->nCachedBranchId = (uint32_t)sqlite3_column_int(sel, 12);
+        pindex->nChainTx        = (uint32_t)sqlite3_column_int(sel, 13);
+        loaded++;
+    }
+    sqlite3_finalize(sel);
+
+    /* Phase 2: Link pprev pointers */
+    sel = NULL;
+    if (sqlite3_prepare_v2(ndb->db,
+            "SELECT hash,prev_hash FROM block_index_cache "
+            "WHERE prev_hash != X'0000000000000000000000000000000000000000000000000000000000000000'",
+            -1, &sel, NULL) == SQLITE_OK && sel) {
+        while (sqlite3_step(sel) == SQLITE_ROW) {
+            const void *h = sqlite3_column_blob(sel, 0);
+            const void *ph = sqlite3_column_blob(sel, 1);
+            if (!h || !ph) continue;
+            if (sqlite3_column_bytes(sel, 0) < 32 ||
+                sqlite3_column_bytes(sel, 1) < 32) continue;
+
+            struct uint256 hash, prev;
+            memcpy(hash.data, h, 32);
+            memcpy(prev.data, ph, 32);
+
+            struct block_index *pindex = block_map_find(&ms->map_block_index, &hash);
+            struct block_index *pprev = block_map_find(&ms->map_block_index, &prev);
+            if (pindex && pprev)
+                pindex->pprev = pprev;
+        }
+        sqlite3_finalize(sel);
+    }
+
+    int64_t elapsed = (int64_t)time(NULL) - t0;
+    printf("Block index SQLite: loaded %zu entries in %llds\n",
+           loaded, (long long)elapsed);
+    fflush(stdout);
+
+    return loaded > 0;
 }
 
 void app_context_defaults(struct app_context *ctx)
@@ -1069,16 +1174,18 @@ bool app_init(struct app_context *ctx)
     struct uint256 coins_best_hash;
     coins_view_cache_get_best_block(&g_coins_tip, &coins_best_hash);
 
-    /* Fast restart disabled: block_index is needed for difficulty
-     * validation (GetNextWorkRequired walks 17 ancestors).
-     * TODO: cache block_index in SQLite for instant restart. */
+    /* Block index is now cached in SQLite (load_block_index_sqlite).
+     * The full index is saved on shutdown/save, enabling instant restart
+     * without the 10-15s LevelDB scan. */
     (void)sqlite_tip_height;
     (void)coins_best_hash;
 
-    /* Block index load: try flat file first, fall back to LevelDB */
+    /* Block index load: try SQLite first, then flat file, fall back to LevelDB */
     {
         bool loaded = false;
-        if (!ctx->reindex_chainstate)
+        if (!ctx->reindex_chainstate && g_active_node_db)
+            loaded = load_block_index_sqlite(&g_node_db, &g_state);
+        if (!loaded && !ctx->reindex_chainstate)
             loaded = load_block_index_flat(ctx->datadir, &g_state);
 
         /* Check if flat file is stale — if it loaded but has far fewer

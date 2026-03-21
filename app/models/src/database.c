@@ -823,6 +823,20 @@ int node_db_migrate(struct node_db *ndb, const char *datadir)
         applied++;
     }
 
+    if (current_ver < 10) {
+        /* v10: Add n_chain_tx to block_index_cache for full restart from SQLite.
+         * Needed so difficulty validation (17-ancestor walk) works without LevelDB. */
+        sqlite3_exec(ndb->db,
+            "ALTER TABLE block_index_cache ADD COLUMN n_chain_tx INTEGER NOT NULL DEFAULT 0",
+            NULL, NULL, NULL);
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('010')");
+        int32_t v = 10;
+        node_db_state_set(ndb, "schema_version", &v, sizeof(v));
+        current_ver = 10;
+        applied++;
+    }
+
     if (applied > 0)
         printf("db: applied %d migration(s), now at version %d\n",
                applied, node_db_schema_version(ndb));
