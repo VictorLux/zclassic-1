@@ -116,6 +116,12 @@ static inline void explorer_format_y_label(char *buf, size_t max, double val)
  *
  * Returns total supply in zatoshi (int64_t). Overflow-safe for all heights.
  */
+
+#define BUTTERCUP_ACTIVATION_HEIGHT 707000
+#define PRE_BC_HALVING   840000
+#define POST_BC_HALVING  1680000
+#define BASE_SUBSIDY_SAT 1250000000LL  /* 12.5 ZCL */
+
 static inline int64_t zcl_total_supply_zatoshi(int64_t height)
 {
     if (height <= 0) return 0;
@@ -127,7 +133,7 @@ static inline int64_t zcl_total_supply_zatoshi(int64_t height)
 
     int64_t total = 0;
 
-    /* Block 0: slow-start → 0 zatoshi. Block 1: full 12.5 ZCL. */
+    /* Block 0: slow-start -> 0 zatoshi. Block 1: full 12.5 ZCL. */
     total += base;
     if (height == 1) return total;
 
@@ -156,6 +162,17 @@ static inline int64_t zcl_total_supply_zatoshi(int64_t height)
     }
 
     return total;
+}
+
+/* Aliases used by factoids, API, and stats code */
+static inline int64_t compute_supply_at_height(int64_t height)
+{
+    return zcl_total_supply_zatoshi(height);
+}
+
+static inline double supply_zcl_at_height(int64_t height)
+{
+    return (double)zcl_total_supply_zatoshi(height) / 100000000.0;
 }
 
 /* SVG line chart — renders into buffer at *off, advances *off */

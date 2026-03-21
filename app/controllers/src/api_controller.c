@@ -7,6 +7,7 @@
 
 #include "controllers/api_controller.h"
 #include "controllers/explorer_internal.h"
+#include "controllers/explorer_factoids.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1249,6 +1250,13 @@ size_t api_handle_request(const char *method, const char *path,
     if (strcmp(clean_path, "/api/hodl") == 0)
         return serve_from_cache(g_api_hodl_cache, g_api_hodl_cache_len,
                                 response, response_max);
+
+    /* Route: /api/factoids — built from SQLite (read-only, safe from handler) */
+    if (strcmp(clean_path, "/api/factoids") == 0) {
+        if (!g_datadir)
+            return json_error(response, response_max, JSON_500_HEADERS, "No datadir");
+        return explorer_factoids_build_json(response, response_max, g_datadir);
+    }
 
     return json_error(response, response_max, JSON_404_HEADERS,
                       "Unknown API endpoint");

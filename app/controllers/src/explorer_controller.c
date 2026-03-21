@@ -1630,14 +1630,59 @@ static void svg_stacked_area(char *out, size_t max, size_t *off,
 static char g_stats_cache[STATS_CACHE_SIZE] = "";
 static size_t g_stats_cache_len = 0;
 
+/* ── Disk cache helpers (survive restarts) ────────────────── */
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-function"
+
+static void cache_save(const char *name, const char *data, size_t len)
+{
+    if (!g_explorer_dir[0] || len == 0) return;
+    char path[1200];
+    snprintf(path, sizeof(path), "%s/%s.cache", g_explorer_dir, name);
+    FILE *f = fopen(path, "w");
+    if (f) { fwrite(data, 1, len, f); fclose(f); }
+}
+
+static size_t cache_load(const char *name, char *buf, size_t max)
+{
+    if (!g_explorer_dir[0]) return 0;
+    char path[1200];
+    snprintf(path, sizeof(path), "%s/%s.cache", g_explorer_dir, name);
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    size_t len = fread(buf, 1, max - 1, f);
+    fclose(f);
+    buf[len] = '\0';
+    return len;
+}
+
+#pragma GCC diagnostic pop
+
 static void *stats_compute_thread(void *arg)
 {
     (void)arg;
+    /* Load previous cache from disk for instant serving while recomputing */
+    if (g_stats_cache_len == 0) {
+        size_t disk_len = cache_load("stats", g_stats_cache, STATS_CACHE_SIZE);
+        if (disk_len > 0) {
+            g_stats_cache_len = disk_len;
+            printf("Stats: loaded %zu bytes from disk cache (instant)\n", disk_len);
+            fflush(stdout);
+        }
+    }
     printf("Stats background: computing comprehensive stats...\n");
     fflush(stdout);
-    size_t len = explorer_stats_build((uint8_t *)g_stats_cache, STATS_CACHE_SIZE, g_datadir);
-    if (len > 0)
+    /* Compute fresh into a temp buffer so we don't blank the disk-loaded cache */
+    char *tmp = malloc(STATS_CACHE_SIZE);
+    if (!tmp) { g_stats_computing = 0; return NULL; }
+    size_t len = explorer_stats_build((uint8_t *)tmp, STATS_CACHE_SIZE, g_datadir);
+    if (len > 0) {
+        memcpy(g_stats_cache, tmp, len);
         g_stats_cache_len = len;
+        cache_save("stats", g_stats_cache, len);
+    }
+    free(tmp);
     g_stats_computing = 0;
     return NULL;
 }
@@ -1684,19 +1729,30 @@ static size_t serve_stats(uint8_t *r, size_t max)
 
 /* ── Factoids Page ────────────────────────────────────────── */
 
-#define FACTOIDS_CACHE_SIZE (512 * 1024)
+#define FACTOIDS_CACHE_SIZE (1024 * 1024)  /* 1MB — 17 sections with SHA3 */
 static char g_factoids_cache[FACTOIDS_CACHE_SIZE] = "";
 static size_t g_factoids_cache_len = 0;
 
 static void *factoids_compute_thread(void *arg)
 {
     (void)arg;
+    /* Load previous cache from disk for instant serving */
+    if (g_factoids_cache_len == 0) {
+        size_t disk_len = cache_load("factoids", g_factoids_cache, FACTOIDS_CACHE_SIZE);
+        if (disk_len > 0) {
+            g_factoids_cache_len = disk_len;
+            printf("Factoids: loaded %zu bytes from disk cache (instant)\n", disk_len);
+            fflush(stdout);
+        }
+    }
     printf("Factoids background: computing historian data...\n");
     fflush(stdout);
     size_t len = explorer_factoids_build((uint8_t *)g_factoids_cache,
                                           FACTOIDS_CACHE_SIZE, g_datadir);
-    if (len > 0)
+    if (len > 0) {
         g_factoids_cache_len = len;
+        cache_save("factoids", g_factoids_cache, len);
+    }
     g_factoids_computing = 0;
     return NULL;
 }
