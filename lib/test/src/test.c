@@ -52,6 +52,7 @@ int main(void)
     failures += test_scan_util();
     failures += test_tor();
     failures += test_event();
+    failures += test_download();
 
     ecc_verify_destroy();
     ecc_stop();

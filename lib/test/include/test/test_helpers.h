@@ -179,6 +179,7 @@ int test_mining(void);
 int test_utxo_commitment(void);
 int test_scan_util(void);
 int test_event(void);
+int test_download(void);
 
 /* ── DRY test macros ─────────────────────────────────────── */
 
