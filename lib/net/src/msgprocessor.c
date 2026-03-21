@@ -1269,7 +1269,8 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                            (unsigned long long)tb);
                     peer_misbehaving(mp->net_mgr, node, 20,
                                      "snapshot offer out of range");
-                } else if (h > our_h + 100 && !node->zsync_receiving) {
+                } else if (h > our_h + 100 &&
+                           node->state != PEER_SNAPSHOT_RECEIVING) {
                     /* Accept — request the snapshot data */
                     printf("Peer %s: accepting snapshot offer (h=%d, %llu UTXOs)\n",
                            node->addr_name, h, (unsigned long long)nu);
@@ -1358,9 +1359,11 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
             /* Receive UTXO chunk — validate and apply */
             uint32_t entries = 0;
             if (!stream_read_u32_le(&s, &entries) || entries > 1000 ||
-                entries == 0 || !node->zsync_receiving) {
-                printf("Peer %s: bad snapshot chunk (entries=%u, receiving=%d)\n",
-                       node->addr_name, entries, node->zsync_receiving);
+                entries == 0 ||
+                node->state != PEER_SNAPSHOT_RECEIVING) {
+                printf("Peer %s: bad snapshot chunk (entries=%u, state=%s)\n",
+                       node->addr_name, entries,
+                       peer_state_name(node->state));
                 node->disconnect = true;
             } else {
                 char db_path[1024];
@@ -1918,11 +1921,13 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
     /* Initiate sync, and periodically re-request if behind. */
     {
         bool should_sync = false;
-        if (!node->sync_started && !node->inbound) {
-            node->sync_started = true;
+        if (node->state == PEER_ACTIVE && !node->inbound) {
+            node->sync_started = true; /* keep for backward compat */
             peer_set_state_checked((uint32_t)node->id, &node->state,
                                    PEER_SYNCING_HEADERS, "IBD start");
-            sync_set_state(SYNC_HEADERS_DOWNLOAD, "first outbound peer");
+            if (sync_get_state() == SYNC_IDLE ||
+                sync_get_state() == SYNC_FINDING_PEERS)
+                sync_set_state(SYNC_HEADERS_DOWNLOAD, "first outbound peer");
             should_sync = true;
         }
 
@@ -1935,7 +1940,7 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
          * getheaders response — for a 3M block chain, we need ~1500 rounds. */
         int64_t now_send = (int64_t)time(NULL);
         int64_t resync_interval = in_ibd ? 10 : 60;
-        if (node->sync_started && !node->inbound &&
+        if (node->state >= PEER_SYNCING_HEADERS && !node->inbound &&
             node->starting_height > our_height &&
             now_send - node->last_getheaders_time > resync_interval) {
             should_sync = true;
@@ -1983,7 +1988,7 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
     }
 
     /* Stream fast sync UTXO chunks if serving this peer */
-    if (node->zsync_serving && g_cached_offer_valid) {
+    if (node->state == PEER_SNAPSHOT_SERVING && g_cached_offer_valid) {
         /* Send up to 10 chunks per tick (non-blocking) */
         char db_path[1024];
         snprintf(db_path, sizeof(db_path), "%s/node.db", mp->datadir);
@@ -2094,7 +2099,8 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
     /* For each connected ZCL23 peer with no inflight chunk, assign one
      * and send a zchunkreq. Also handle timeouts on stale requests. */
     if (g_swarm_active && peer_supports_fast_sync(node->services) &&
-        node->swarm_manifest_received && node->successfully_connected) {
+        node->swarm_manifest_received &&
+        node->state >= PEER_HANDSHAKE_COMPLETE) {
 
         /* Handle timeout: if this peer's chunk is stale, re-queue it */
         if (node->swarm_inflight_chunk >= 0) {

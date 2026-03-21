@@ -4,6 +4,7 @@
 
 #include "controllers/network_controller.h"
 #include "controllers/strong_params.h"
+#include "event/event.h"
 #include "json/json.h"
 #include "net/connman.h"
 #include "net/version.h"
@@ -85,6 +86,18 @@ static bool rpc_getpeerinfo(const struct json_value *params, bool help,
 
         double ping_ms = (double)node->ping_usec_time / 1000000.0;
         json_push_kv_real(&entry, "pingtime", ping_ms);
+
+        /* State machine fields — full observability */
+        json_push_kv_str(&entry, "state",
+                          peer_state_name(node->state));
+        json_push_kv_int(&entry, "state_id", (int64_t)node->state);
+        json_push_kv_int(&entry, "misbehavior",
+                          (int64_t)node->misbehavior);
+        json_push_kv_int(&entry, "blocks_received",
+                          (int64_t)node->blocks_received);
+        if (node->avg_latency_us > 0)
+            json_push_kv_real(&entry, "avg_latency_ms",
+                               (double)node->avg_latency_us / 1000.0);
 
         json_push_back(result, &entry);
         json_free(&entry);

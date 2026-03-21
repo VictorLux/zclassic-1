@@ -1644,6 +1644,7 @@ bool app_init(struct app_context *ctx)
     }
 
     connman_start(&g_connman);
+    sync_set_state(SYNC_FINDING_PEERS, "P2P started");
 
     /* Initialize RPC */
     rpc_table_init(&g_rpc_table);

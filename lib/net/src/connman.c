@@ -528,7 +528,7 @@ void connman_relay_transaction(struct connman *cm,
     zcl_mutex_lock(&cm->manager.cs_nodes);
     for (size_t i = 0; i < cm->manager.num_nodes; i++) {
         struct p2p_node *node = cm->manager.nodes[i];
-        if (node->successfully_connected && !node->disconnect) {
+        if (node->state >= PEER_HANDSHAKE_COMPLETE && !node->disconnect) {
             p2p_node_push_inventory(node, &inv);
             relayed++;
         }
