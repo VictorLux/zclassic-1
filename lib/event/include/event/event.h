@@ -15,7 +15,7 @@
 
 enum event_type {
     /* ── Network / TCP ──────────────────────────────── */
-    EV_TCP_CONNECT_ATTEMPT = 0,  /* payload: ip[16] + port(u16) */
+    EV_TCP_CONNECT_ATTEMPT = 0,  /* reserved (connected/failed cover this) */
     EV_TCP_CONNECTED,            /* payload: ip[16] + port(u16) */
     EV_TCP_CONNECT_FAILED,       /* payload: ip[16] + port(u16) + errno(i32) */
     EV_TCP_ACCEPTED,             /* payload: ip[16] + port(u16) */
@@ -38,36 +38,27 @@ enum event_type {
     EV_SYNC_STATE_CHANGE,        /* payload: from(u8) + to(u8) + reason string */
     EV_HEADERS_RECEIVED,         /* payload: count(u32) + from_h(i32) + to_h(i32) */
     EV_HEADERS_REJECTED,         /* payload: count(u32) + reason string */
-    EV_BLOCK_REQUESTED,          /* payload: hash[32] + height(i32) */
-    EV_BLOCK_RECEIVED,           /* payload: hash[32] + size(u32) */
+    EV_BLOCK_REQUESTED,          /* payload: queued/assigned/timeout string */
 
     /* ── Validation pipeline ────────────────────────── */
-    EV_BLOCK_DESERIALIZED,       /* payload: hash[32] + ntx(u32) */
-    EV_BLOCK_HEADER_CHECKED,     /* payload: hash[32] + height(i32) */
-    EV_BLOCK_SCRIPTS_VERIFIED,   /* payload: hash[32] + sigops(u32) */
-    EV_BLOCK_CONNECTED,          /* payload: hash[32] + height(i32) + ntx(u32) */
-    EV_BLOCK_REJECTED,           /* payload: hash[32] + reason + dos(i32) */
-    EV_BLOCK_PERSISTED,          /* payload: hash[32] + file(i32) + pos(u32) */
+    EV_BLOCK_CONNECTED,          /* payload: height string */
+    EV_BLOCK_REJECTED,           /* payload: dos + reason string */
 
     /* ── Chain ──────────────────────────────────────── */
     EV_TIP_UPDATED,              /* payload: hash[32] + height(i32) */
     EV_REORG_START,              /* payload: fork_height(i32) + new_height(i32) */
-    EV_REORG_COMPLETE,           /* payload: old_tip[32] + new_tip[32] */
+    /* EV_REORG_COMPLETE reserved for future use */
     EV_COINS_FLUSH,              /* payload: entries(u64) + blocks_batched(u32) */
     EV_COINS_FLUSH_FAILED,       /* payload: reason string */
 
     /* ── Transaction ────────────────────────────────── */
-    EV_TX_RECEIVED,              /* payload: txid[32] */
-    EV_TX_ACCEPTED,              /* payload: txid[32] + fee(i64) */
-    EV_TX_REJECTED,              /* payload: txid[32] + reason string */
+    EV_TX_ACCEPTED,              /* payload: txid[32] */
+    EV_TX_REJECTED,              /* payload: txid[32] */
 
     /* ── Fast sync / snapshot ───────────────────────── */
     EV_SNAPSHOT_OFFER_SENT,      /* payload: height(i32) + utxos(u64) */
     EV_SNAPSHOT_OFFER_RECEIVED,  /* payload: height(i32) + utxos(u64) */
-    EV_SNAPSHOT_CHUNK_RECEIVED,  /* payload: index(u32) + entries(u32) */
-    EV_SNAPSHOT_CHUNK_SENT,      /* payload: index(u32) + entries(u32) */
-    EV_SNAPSHOT_COMPLETE,        /* payload: total_utxos(u64) */
-    EV_SNAPSHOT_FAILED,          /* payload: reason string */
+    EV_SNAPSHOT_COMPLETE,        /* payload: total_utxos string */
 
     /* (Wallet and RPC events reserved for future use) */
 
