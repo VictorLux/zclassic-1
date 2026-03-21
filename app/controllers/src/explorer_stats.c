@@ -832,6 +832,7 @@ size_t explorer_stats_build(uint8_t *r, size_t buf_max, const char *datadir)
                 while (sqlite3_step(s) == SQLITE_ROW) {
                     int64_t h = sqlite3_column_int64(s, 0);
                     int64_t t = sqlite3_column_int64(s, 1);
+                    if (t == 0 && h == 0) t = 1478403829; /* genesis */
                     int64_t v = sqlite3_column_int64(s, 2);
                     const char *txhex = (const char *)sqlite3_column_text(s, 3);
                     char ts[32], vs[32], txid[65] = "", short_tx[18] = "";
