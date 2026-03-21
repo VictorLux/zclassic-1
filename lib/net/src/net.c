@@ -261,6 +261,8 @@ bool p2p_node_receive_bytes(struct p2p_node *node, const char *data,
     unsigned int orig_nbytes = nbytes;
     int msg_idx = 0;
     while (nbytes > 0) {
+        if (node->recv_msg_count >= MAX_RECV_MESSAGES)
+            return false;
         if (node->recv_msg_count == 0 ||
             net_message_complete(&node->recv_msgs[node->recv_msg_count - 1])) {
             /* Enforce message queue limit — prevents OOM from fast senders */

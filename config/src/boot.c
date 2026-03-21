@@ -24,6 +24,7 @@
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 #include "validation/process_block.h"
+#include "validation/contextual_check_tx.h"
 #include "net/connman.h"
 #include "net/msgprocessor.h"
 #include "keys/key_io.h"
@@ -1002,6 +1003,27 @@ bool app_init(struct app_context *ctx)
     g_state.fTxIndex = ctx->tx_index;
     g_state.fCheckpointsEnabled = ctx->checkpoints_enabled;
 
+    /* -assumevalid: skip Groth16/Sapling proof verification for blocks
+     * at or below the specified hash's height. Default: latest checkpoint.
+     * Pass -assumevalid=0 to disable (verify everything). */
+    {
+        const struct chain_params *cp = chain_params_get();
+        if (ctx->assume_valid && strcmp(ctx->assume_valid, "0") == 0) {
+            g_assume_valid_height = -1;
+            printf("Assume-valid: disabled (verifying all proofs)\n");
+        } else if (ctx->assume_valid) {
+            /* Resolve user-provided hash after block index loads (deferred) */
+        } else {
+            /* Default: latest checkpoint height */
+            if (cp->checkpointData.nEntries > 0) {
+                g_assume_valid_height =
+                    cp->checkpointData.entries[cp->checkpointData.nEntries - 1].height;
+                printf("Assume-valid: height %d (latest checkpoint)\n",
+                       g_assume_valid_height);
+            }
+        }
+    }
+
     /* Defer ZK key loading to background thread — not needed for RPC startup.
      * Keys load in parallel while block index + wallet initialize. */
     if (ctx->params_dir) {
@@ -1239,6 +1261,31 @@ bool app_init(struct app_context *ctx)
         /* Save recent blocks to SQLite */
         if (g_active_node_db && g_state.map_block_index.size > 1000)
             save_block_index_recent(&g_node_db, &g_state);
+    }
+
+    /* Resolve -assumevalid=<hash> now that block index is loaded */
+    if (ctx->assume_valid && strcmp(ctx->assume_valid, "0") != 0) {
+        struct uint256 av_hash;
+        if (strlen(ctx->assume_valid) == 64) {
+            /* Parse hex hash (reversed byte order like block explorer) */
+            for (int bi = 0; bi < 32; bi++) {
+                unsigned int byte;
+                sscanf(ctx->assume_valid + bi * 2, "%02x", &byte);
+                av_hash.data[31 - bi] = (uint8_t)byte;
+            }
+            struct block_index *pav = block_map_find(&g_state.map_block_index,
+                                                      &av_hash);
+            if (pav) {
+                g_assume_valid_height = pav->nHeight;
+                printf("Assume-valid: height %d (from hash)\n",
+                       g_assume_valid_height);
+            } else {
+                printf("Assume-valid: hash not found in block index, "
+                       "using checkpoint default\n");
+            }
+        } else {
+            fprintf(stderr, "Warning: -assumevalid hash must be 64 hex chars\n");
+        }
     }
 
     /* Restore chain tip from coins DB best block hash */

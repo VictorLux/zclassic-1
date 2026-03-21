@@ -15,6 +15,9 @@
 
 #include "sapling/sapling_prover.h"
 
+/* Default: -1 (verify everything). Set by boot.c from -assumevalid flag. */
+int g_assume_valid_height = -1;
+
 bool contextual_check_transaction(const struct transaction *tx,
                                    struct validation_state *state,
                                    const struct consensus_params *params,
@@ -123,8 +126,12 @@ bool contextual_check_transaction(const struct transaction *tx,
         }
     }
 
-    /* Verify Sapling shielded spends and outputs via native C23 prover */
-    if (tx->num_shielded_spend > 0 || tx->num_shielded_output > 0) {
+    /* Verify Sapling shielded spends and outputs via native C23 prover.
+     * Skip expensive proof verification for assumed-valid blocks. */
+    bool skip_proofs = (g_assume_valid_height >= 0 &&
+                        nHeight <= g_assume_valid_height);
+    if (!skip_proofs &&
+        (tx->num_shielded_spend > 0 || tx->num_shielded_output > 0)) {
         void *sctx = zclassic_sapling_verification_ctx_init();
         if (!sctx) {
             return validation_state_dos(state, 100, false, REJECT_INVALID,
@@ -166,8 +173,9 @@ bool contextual_check_transaction(const struct transaction *tx,
         zclassic_sapling_verification_ctx_free(sctx);
     }
 
-    /* Verify Sprout JoinSplit proofs (Groth16) */
-    for (size_t i = 0; i < tx->num_joinsplit; i++) {
+    /* Verify Sprout JoinSplit proofs (Groth16).
+     * Skipped for assumed-valid blocks (proofs already verified by honest nodes). */
+    for (size_t i = 0; !skip_proofs && i < tx->num_joinsplit; i++) {
         const struct js_description *js = &tx->v_joinsplit[i];
         if (!js->use_groth)
             continue; /* Pre-Sapling PHGR proofs not verified in pure C23 */

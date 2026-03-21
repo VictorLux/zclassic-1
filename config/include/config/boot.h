@@ -31,6 +31,7 @@ struct app_context {
     const char *snapshot_dir;
     bool reindex_chainstate;
     bool tor;
+    const char *assume_valid;  /* block hash: skip Groth16 at/below this height */
 };
 
 void app_context_defaults(struct app_context *ctx);
