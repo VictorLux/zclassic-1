@@ -2617,6 +2617,96 @@ static size_t serve_css(uint8_t *r, size_t max)
     return off;
 }
 
+/* ── Event Log Page ───────────────────────────────────────── */
+
+static size_t serve_events(uint8_t *r, size_t max)
+{
+    size_t off = 0;
+    char *response = (char *)r;
+
+    APPEND(off, response, max, EXPLORER_HEADER("Event Log — ZClassic23"));
+    APPEND(off, response, max, EXPLORER_NAV);
+
+    APPEND(off, response, max,
+        "<div class='content'>"
+        "<h1>Event Log</h1>"
+        "<p style='color:#888'>Live node events from the ring buffer. "
+        "Auto-refreshes every 3 seconds.</p>"
+        "<div style='margin:10px 0'>"
+        "<label style='color:#aaa'>Show: </label>"
+        "<select id='ev-count' style='background:#1a1a2e;color:#eee;border:1px solid #333;"
+        "padding:4px 8px;border-radius:4px'>"
+        "<option value='50'>50</option>"
+        "<option value='100' selected>100</option>"
+        "<option value='500'>500</option>"
+        "<option value='2000'>2000</option>"
+        "</select>"
+        "<label style='color:#aaa;margin-left:16px'>Filter: </label>"
+        "<input id='ev-filter' placeholder='type, peer, or data...' "
+        "style='background:#1a1a2e;color:#eee;border:1px solid #333;"
+        "padding:4px 8px;border-radius:4px;width:200px'>"
+        "<span id='ev-status' style='color:#555;margin-left:16px;font-size:13px'>"
+        "loading...</span>"
+        "</div>"
+        "<table class='block-table' style='font-size:13px'>"
+        "<thead><tr>"
+        "<th style='width:60px'>Seq</th>"
+        "<th style='width:170px'>Time</th>"
+        "<th style='width:180px'>Type</th>"
+        "<th style='width:60px'>Peer</th>"
+        "<th>Data</th>"
+        "</tr></thead>"
+        "<tbody id='ev-body'></tbody></table></div>");
+
+    APPEND(off, response, max,
+        "<script>"
+        "const tbody=document.getElementById('ev-body'),"
+        "sel=document.getElementById('ev-count'),"
+        "flt=document.getElementById('ev-filter'),"
+        "sts=document.getElementById('ev-status');"
+        "function fmt(ts){"
+        "const d=new Date(ts/1000);"
+        "return d.toISOString().replace('T',' ').replace('Z','')}"
+        "function cls(t){"
+        "if(t.startsWith('val.'))return'color:#ff6b6b';"
+        "if(t.startsWith('sync.'))return'color:#ffd93d';"
+        "if(t.startsWith('peer.'))return'color:#6bcb77';"
+        "if(t.startsWith('tcp.'))return'color:#4d96ff';"
+        "if(t.startsWith('snap.'))return'color:#ff922b';"
+        "if(t.startsWith('chain.'))return'color:#cc5de8';"
+        "if(t.startsWith('tx.'))return'color:#66d9e8';"
+        "if(t.startsWith('sys.'))return'color:#ff8787';"
+        "return'color:#aaa'}"
+        "function esc(s){const d=document.createElement('div');"
+        "d.textContent=s;return d.innerHTML}"
+        "async function refresh(){"
+        "try{"
+        "const r=await fetch('/api/events?count='+sel.value);"
+        "const evs=await r.json();"
+        "const f=flt.value.toLowerCase();"
+        "let html='';"
+        "for(let i=evs.length-1;i>=0;i--){"
+        "const e=evs[i];"
+        "if(f&&!(e.type+' '+e.peer+' '+e.data).toLowerCase().includes(f))continue;"
+        "html+='<tr><td>'+e.seq+'</td>"
+        "<td>'+fmt(e.ts)+'</td>"
+        "<td style=\"'+cls(e.type)+'\">'+esc(e.type)+'</td>"
+        "<td>'+(e.peer||'')+'</td>"
+        "<td style=\"font-family:monospace;font-size:12px;word-break:break-all\">"
+        "'+esc(e.data)+'</td></tr>'}"
+        "tbody.innerHTML=html;"
+        "sts.textContent=evs.length+' events ('+new Date().toLocaleTimeString()+')';"
+        "}catch(e){sts.textContent='Error: '+e.message}}"
+        "refresh();"
+        "setInterval(refresh,3000);"
+        "sel.onchange=refresh;"
+        "flt.oninput=refresh;"
+        "</script>");
+
+    APPEND(off, response, max, EXPLORER_FOOTER);
+    return off;
+}
+
 /* ── Main Request Handler ─────────────────────────────────── */
 
 size_t explorer_handle_request(const char *method, const char *path,
@@ -2671,6 +2761,9 @@ size_t explorer_handle_request(const char *method, const char *path,
 
     if (strcmp(path, "/explorer/hodl") == 0 || strcmp(path, "/explorer/hodl/") == 0)
         return serve_hodl(response, response_max);
+
+    if (strcmp(path, "/explorer/events") == 0 || strcmp(path, "/explorer/events/") == 0)
+        return serve_events(response, response_max);
 
     if (strcmp(path, "/explorer/factoids") == 0 || strcmp(path, "/explorer/factoids/") == 0)
         return serve_factoids(response, response_max);

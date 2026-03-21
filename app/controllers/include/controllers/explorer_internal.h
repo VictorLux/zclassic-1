@@ -42,6 +42,7 @@
     "<a href='/explorer/stats'>Stats</a>" \
     "<a href='/explorer/hodl'>HODL Wave</a>" \
     "<a href='/explorer/tokens'>Tokens</a>" \
+    "<a href='/explorer/events'>Events</a>" \
     "<a href='/explorer/factoids'>Factoids</a>" \
     "<div class='search'>" \
     "<form action='/explorer/search' method='get'>" \
