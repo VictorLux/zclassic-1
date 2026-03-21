@@ -46,9 +46,10 @@ static const char *SCHEMA[] = {
     /* UTXO set */
     "CREATE TABLE IF NOT EXISTS utxos ("
     "txid BLOB NOT NULL,vout INTEGER NOT NULL,"
-    "value INTEGER NOT NULL,script BLOB NOT NULL,"
+    "value INTEGER NOT NULL CHECK(value >= 0 AND value <= 2100000000000000),"
+    "script BLOB NOT NULL,"
     "script_type INTEGER NOT NULL DEFAULT 0,"
-    "address_hash BLOB,height INTEGER NOT NULL,"
+    "address_hash BLOB,height INTEGER NOT NULL CHECK(height >= 0),"
     "is_coinbase INTEGER NOT NULL DEFAULT 0,"
     "PRIMARY KEY (txid,vout))",
 
@@ -108,8 +109,9 @@ static const char *SCHEMA[] = {
 
     "CREATE TABLE IF NOT EXISTS wallet_utxos ("
     "txid BLOB NOT NULL,vout INTEGER NOT NULL,"
-    "value INTEGER NOT NULL,address_hash BLOB NOT NULL,"
-    "script BLOB NOT NULL,height INTEGER NOT NULL,"
+    "value INTEGER NOT NULL CHECK(value >= 0 AND value <= 2100000000000000),"
+    "address_hash BLOB NOT NULL,"
+    "script BLOB NOT NULL,height INTEGER NOT NULL CHECK(height >= 0),"
     "spent_txid BLOB,spent_vin INTEGER,"
     "is_coinbase INTEGER NOT NULL DEFAULT 0,"
     "PRIMARY KEY (txid,vout))",

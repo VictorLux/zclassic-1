@@ -30,6 +30,7 @@
 #include "mining/gen.h"
 #include "script/standard.h"
 #include "controllers/api_controller.h"
+#include "controllers/explorer_internal.h"
 #include "controllers/explorer_controller.h"
 #include "controllers/wallet_controller.h"
 #include "wallet/wallet.h"
@@ -1399,6 +1400,60 @@ bool app_init(struct app_context *ctx)
                (double)bal / 1e8, cnt,
                (long long)((int64_t)time(NULL) - t0) * 1000);
         fflush(stdout);
+
+        /* ── Supply invariant check ──────────────────────────────
+         * Fundamental blockchain identity:
+         *   SUM(transparent UTXOs) + shielded_pool = mined_supply
+         * If this doesn't hold, the UTXO index is corrupt.
+         * This is the cryptographic proof that our data is correct. */
+        int64_t utxo_sum = 0, shielded_pool = 0;
+        int64_t idx_height = 0;
+        s = NULL;
+        sqlite3_prepare_v2(g_active_node_db->db,
+            "SELECT COALESCE(SUM(value),0) FROM utxos",
+            -1, &s, NULL);
+        if (sqlite3_step(s) == SQLITE_ROW)
+            utxo_sum = sqlite3_column_int64(s, 0);
+        sqlite3_finalize(s);
+        s = NULL;
+        sqlite3_prepare_v2(g_active_node_db->db,
+            "SELECT COALESCE(SUM(sapling_value),0) FROM blocks",
+            -1, &s, NULL);
+        if (sqlite3_step(s) == SQLITE_ROW)
+            shielded_pool = sqlite3_column_int64(s, 0);
+        sqlite3_finalize(s);
+        s = NULL;
+        sqlite3_prepare_v2(g_active_node_db->db,
+            "SELECT MAX(height) FROM blocks WHERE status >= 3",
+            -1, &s, NULL);
+        if (sqlite3_step(s) == SQLITE_ROW)
+            idx_height = sqlite3_column_int64(s, 0);
+        sqlite3_finalize(s);
+
+        if (idx_height > 0) {
+            int64_t mined = zcl_total_supply_zatoshi(idx_height);
+            int64_t actual = utxo_sum + shielded_pool;
+            int64_t delta = actual - mined;
+            if (delta == 0) {
+                printf("Supply check: UTXO+shielded = mined = %.8f ZCL "
+                       "(height %lld) ✓\n",
+                       (double)mined / 1e8, (long long)idx_height);
+            } else {
+                printf("WARNING: Supply mismatch at height %lld!\n"
+                       "  UTXO sum:       %.8f ZCL\n"
+                       "  Shielded pool:  %.8f ZCL\n"
+                       "  Actual total:   %.8f ZCL\n"
+                       "  Expected mined: %.8f ZCL\n"
+                       "  Delta:          %.8f ZCL (%lld zatoshi)\n",
+                       (long long)idx_height,
+                       (double)utxo_sum / 1e8,
+                       (double)shielded_pool / 1e8,
+                       (double)actual / 1e8,
+                       (double)mined / 1e8,
+                       (double)delta / 1e8, (long long)delta);
+            }
+            fflush(stdout);
+        }
     }
 
     /* Sync wallet keys to SQLite */

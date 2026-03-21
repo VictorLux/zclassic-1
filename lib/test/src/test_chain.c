@@ -1409,5 +1409,35 @@ int test_chain(void)
             (long long)sum, (long long)computed, (long long)(sum - computed)); failures++; }
     }
 
+    printf("Supply: never exceeds MAX_MONEY (21M ZCL)... ");
+    {
+        /* MAX_MONEY = 21,000,000 ZCL = 2,100,000,000,000,000 zatoshi.
+         * Supply must never exceed this at any height. Test at very
+         * large height (well past all halvings) where supply converges. */
+        int64_t max_money = 2100000000000000LL;
+        int64_t at_10m = zcl_total_supply_zatoshi(10000000);
+        int64_t at_50m = zcl_total_supply_zatoshi(50000000);
+        if (at_10m <= max_money && at_50m <= max_money &&
+            at_50m >= at_10m) /* monotonically increasing */
+            printf("OK (at 50M blocks: %.8f ZCL)\n", (double)at_50m / 1e8);
+        else { printf("FAIL (10M=%lld, 50M=%lld, max=%lld)\n",
+            (long long)at_10m, (long long)at_50m, (long long)max_money); failures++; }
+    }
+
+    printf("Supply: monotonically increasing... ");
+    {
+        int64_t prev = 0;
+        bool ok = true;
+        int test_heights[] = {0, 1, 2, 100, 706999, 707000, 707001,
+            1000000, 2387000, 2387001, 3000000, 5000000, 10000000};
+        for (int i = 0; i < (int)(sizeof(test_heights)/sizeof(test_heights[0])); i++) {
+            int64_t s = zcl_total_supply_zatoshi(test_heights[i]);
+            if (s < prev) { ok = false; break; }
+            prev = s;
+        }
+        if (ok) printf("OK\n");
+        else { printf("FAIL (non-monotonic)\n"); failures++; }
+    }
+
     return failures;
 }
