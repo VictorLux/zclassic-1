@@ -59,17 +59,23 @@ static int64_t g_swarm_last_progress_time = 0;
 /* Progress display interval (5 seconds). */
 #define SWARM_PROGRESS_INTERVAL_SECS 5
 
-/* Global download manager — coordinates parallel block downloads. */
+/* Global download manager — coordinates parallel block downloads.
+ * Exposed via msg_get_download_mgr() for RPC diagnostics. */
 static struct download_manager g_download_mgr;
 static _Atomic bool g_download_mgr_init = false;
 
-static struct download_manager *get_download_mgr(void)
+struct download_manager *msg_get_download_mgr(void)
 {
     if (!atomic_load(&g_download_mgr_init)) {
         dl_init(&g_download_mgr);
         atomic_store(&g_download_mgr_init, true);
     }
     return &g_download_mgr;
+}
+
+static struct download_manager *get_download_mgr(void)
+{
+    return msg_get_download_mgr();
 }
 
 /* Ring buffers for duplicate detection of recently seen blocks and txs. */
@@ -1974,17 +1980,28 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
     /* ── Download manager: assign queued blocks to this peer ────── */
     {
         struct download_manager *dm = get_download_mgr();
+        int64_t now_dl = (int64_t)time(NULL);
 
-        /* Check timeouts periodically (every call, cheap) */
-        dl_check_timeouts(dm, (int64_t)time(NULL));
+        /* Check timeouts (cheap — linear scan of active slots) */
+        size_t timed_out = dl_check_timeouts(dm, now_dl);
+        if (timed_out > 0)
+            event_emitf(EV_BLOCK_REQUESTED, 0,
+                        "timeouts=%zu reassigned to queue", timed_out);
 
         /* Assign blocks from queue to this peer if they have capacity */
         if (node->state >= PEER_HANDSHAKE_COMPLETE && !node->inbound) {
+            /* Scale assignment size by peer quality:
+             * - Fast peers (low latency) get more blocks per tick
+             * - Slow peers get fewer to avoid congestion */
+            size_t max_assign = 64;
+            size_t in_flight = dl_peer_in_flight(dm, (uint32_t)node->id);
+            if (in_flight > DL_MAX_IN_FLIGHT_PER_PEER / 2)
+                max_assign = 16; /* slow down if already heavy */
+
             struct uint256 assign_hashes[DL_WINDOW_SIZE];
             size_t assigned = dl_assign_to_peer(dm, (uint32_t)node->id,
-                                                 assign_hashes, 64);
+                                                 assign_hashes, max_assign);
             if (assigned > 0) {
-                /* Send getdata for assigned blocks */
                 struct byte_stream getdata_msg;
                 stream_init(&getdata_msg, assigned * 36 + 8);
                 stream_write_compact_size(&getdata_msg, (uint64_t)assigned);
@@ -2002,8 +2019,27 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
 
                 event_emitf(EV_BLOCK_REQUESTED, (uint32_t)node->id,
                             "assigned=%zu inflight=%zu",
-                            assigned, dl_peer_in_flight(dm,
-                                                        (uint32_t)node->id));
+                            assigned, in_flight + assigned);
+            }
+
+            /* Stall detection: if queue is empty, in-flight is zero,
+             * and we're not at tip — we need more headers */
+            uint64_t dl_queued = 0, dl_inflight = 0;
+            dl_get_stats(dm, NULL, NULL, NULL, &dl_inflight, &dl_queued);
+            int our_h = msg_get_height(mp);
+            if (dl_queued == 0 && dl_inflight == 0 &&
+                node->starting_height > our_h + 10 &&
+                node->state >= PEER_SYNCING_HEADERS) {
+                /* No blocks queued or in-flight but still behind —
+                 * request more headers to discover needed blocks */
+                static int64_t last_stall_log = 0;
+                if (now_dl - last_stall_log > 30) {
+                    last_stall_log = now_dl;
+                    event_emitf(EV_SYNC_STATE_CHANGE, (uint32_t)node->id,
+                                "stall: queue=0 inflight=0 h=%d peer=%d",
+                                our_h, node->starting_height);
+                    push_getheaders(mp, node);
+                }
             }
         }
     }

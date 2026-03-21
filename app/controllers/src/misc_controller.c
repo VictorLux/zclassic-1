@@ -5,6 +5,8 @@
 #include "controllers/misc_controller.h"
 #include "controllers/strong_params.h"
 #include "event/event.h"
+#include "net/download.h"
+#include "validation/connect_block.h"
 #include "chain/chainparams.h"
 #include "encoding/utilstrencodings.h"
 #include "json/json.h"
@@ -220,6 +222,35 @@ static bool rpc_syncstate(const struct json_value *params, bool help,
     return true;
 }
 
+static bool rpc_downloadstats(const struct json_value *params, bool help,
+                               struct json_value *result)
+{
+    (void)params;
+    RPC_HELP(help, result,
+        "downloadstats\n"
+        "\nReturn block download manager statistics.\n"
+        "\nResult:\n"
+        "  { \"requested\", \"received\", \"timed_out\", "
+        "\"in_flight\", \"queued\", \"sync_state\" }\n");
+
+    extern struct download_manager *msg_get_download_mgr(void);
+    struct download_manager *dm = msg_get_download_mgr();
+
+    uint64_t req = 0, recv = 0, tout = 0, inflight = 0, queued = 0;
+    dl_get_stats(dm, &req, &recv, &tout, &inflight, &queued);
+
+    json_set_object(result);
+    json_push_kv_int(result, "requested", (int64_t)req);
+    json_push_kv_int(result, "received", (int64_t)recv);
+    json_push_kv_int(result, "timed_out", (int64_t)tout);
+    json_push_kv_int(result, "in_flight", (int64_t)inflight);
+    json_push_kv_int(result, "queued", (int64_t)queued);
+    json_push_kv_str(result, "sync_state", sync_state_name(sync_get_state()));
+    json_push_kv_int(result, "assume_valid_height",
+                      (int64_t)get_assume_valid_height());
+    return true;
+}
+
 void register_misc_rpc_commands(struct rpc_table *t)
 {
     struct rpc_command cmds[] = {
@@ -228,6 +259,7 @@ void register_misc_rpc_commands(struct rpc_table *t)
         { "control", "stop",             rpc_stop,             true },
         { "control", "eventlog",         rpc_eventlog,         true },
         { "control", "syncstate",        rpc_syncstate,        true },
+        { "control", "downloadstats",    rpc_downloadstats,    true },
     };
 
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++)
