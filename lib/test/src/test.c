@@ -2,6 +2,10 @@
  * Main test runner for ZClassic C23 test suite. */
 
 #include "test/test_helpers.h"
+#include <signal.h>
+
+/* Required by process_block.c (normally in main.c) */
+volatile sig_atomic_t g_shutdown_requested = 0;
 
 int main(void)
 {
