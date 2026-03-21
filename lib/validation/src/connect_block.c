@@ -107,6 +107,31 @@ bool connect_block(const struct block *block,
 
         if (!transaction_is_coinbase(tx)) {
             if (!coins_view_cache_have_inputs(view, tx)) {
+                /* Diagnostic: which input is missing? */
+                for (size_t di = 0; di < tx->num_vin; di++) {
+                    char prevhex[65];
+                    uint256_get_hex(&tx->vin[di].prevout.hash, prevhex);
+                    bool have = coins_view_cache_have_coins(view,
+                        &tx->vin[di].prevout.hash);
+                    printf("  missing-input: tx[%zu] vin[%zu] "
+                           "prevout=%s:%u have_coins=%d\n",
+                           i, di, prevhex, tx->vin[di].prevout.n, have);
+                }
+                {
+                    char blkhex[65];
+                    struct uint256 blkhash;
+                    block_header_get_hash(&block->header, &blkhash);
+                    uint256_get_hex(&blkhash, blkhex);
+                    char prevhex2[65];
+                    uint256_get_hex(&block->header.hashPrevBlock, prevhex2);
+                    printf("  block height=%d hash=%s prev=%s %zu txs\n",
+                           pindex->nHeight, blkhex, prevhex2, block->num_vtx);
+                    /* Show what coins_tip has */
+                    printf("  coins_tip cache_size=%zu best_block=%s\n",
+                           view->cache_coins.size,
+                           "check-manually");
+                }
+                fflush(stdout);
                 block_undo_free(&blockundo);
                 return validation_state_dos(state, 100, false, REJECT_INVALID,
                     "bad-txns-inputs-missingorspent", false, NULL);
