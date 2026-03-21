@@ -1282,7 +1282,23 @@ size_t api_handle_request(const char *method, const char *path,
         w += (size_t)snprintf(buf + w, 524288 - w,
             "{\"sync_state\":\"%s\",\"events\":",
             sync_state_name(sync_get_state()));
-        w += event_dump_json(buf + w, 524288 - w, count);
+        /* Parse ?type= filter from query string */
+        const char *type_filter = NULL;
+        if (q) {
+            const char *tp = strstr(q, "type=");
+            if (tp) {
+                static char type_buf[64];
+                size_t tlen = 0;
+                for (const char *c = tp + 5; *c && *c != '&' && tlen < 63; c++)
+                    type_buf[tlen++] = *c;
+                type_buf[tlen] = '\0';
+                type_filter = type_buf;
+            }
+        }
+        if (type_filter)
+            w += event_dump_json_filtered(buf + w, 524288 - w, count, type_filter);
+        else
+            w += event_dump_json(buf + w, 524288 - w, count);
         if (w + 1 < 524288) buf[w++] = '}';
 
         size_t off = (size_t)snprintf((char *)response, response_max,

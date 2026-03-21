@@ -251,6 +251,76 @@ size_t event_dump_json(char *buf, size_t buf_size, size_t count)
     return w;
 }
 
+size_t event_dump_json_filtered(char *buf, size_t buf_size, size_t count,
+                                 const char *type_prefix)
+{
+    if (!atomic_load(&g_log.initialized) || !type_prefix)
+        return event_dump_json(buf, buf_size, count);
+
+    size_t prefix_len = strlen(type_prefix);
+    if (prefix_len == 0)
+        return event_dump_json(buf, buf_size, count);
+
+    uint64_t end = atomic_load(&g_log.write_pos);
+    /* Scan more events than requested to find `count` matches */
+    uint64_t scan = count * 10;
+    if (scan > EVENT_LOG_SIZE) scan = EVENT_LOG_SIZE;
+    uint64_t start = end > scan ? end - scan : 0;
+
+    size_t w = 0;
+    if (w < buf_size) buf[w++] = '[';
+
+    bool first = true;
+    size_t matched = 0;
+    for (uint64_t i = start; i < end && w + 256 < buf_size && matched < count; i++) {
+        const struct event *ev = &g_log.ring[i & EVENT_LOG_MASK];
+        uint64_t seq = atomic_load_explicit(&ev->sequence,
+                                             memory_order_acquire);
+        if (seq != i + 1) continue;
+
+        const char *name = event_type_name(ev->type);
+        if (strncmp(name, type_prefix, prefix_len) != 0)
+            continue;
+
+        if (!first && w < buf_size) buf[w++] = ',';
+        first = false;
+        matched++;
+
+        char escaped[256];
+        size_t elen = 0;
+        if (ev->payload_len > 0) {
+            bool is_text = true;
+            for (uint32_t j = 0; j < ev->payload_len; j++) {
+                if (ev->payload[j] < 0x20 && ev->payload[j] != 0) {
+                    is_text = false;
+                    break;
+                }
+            }
+            if (is_text)
+                elen = json_escape(escaped, sizeof(escaped),
+                                   (const char *)ev->payload, ev->payload_len);
+            else
+                for (uint32_t j = 0; j < ev->payload_len &&
+                     elen + 2 < sizeof(escaped); j++)
+                    elen += (size_t)snprintf(escaped + elen,
+                                             sizeof(escaped) - elen,
+                                             "%02x", ev->payload[j]);
+        }
+
+        w += (size_t)snprintf(buf + w, buf_size - w,
+            "{\"seq\":%llu,\"ts\":%lld,\"type\":\"%s\","
+            "\"peer\":%u,\"data\":\"%.*s\"}",
+            (unsigned long long)(i),
+            (long long)ev->timestamp_us,
+            name, ev->peer_id,
+            (int)elen, escaped);
+    }
+
+    if (w < buf_size) buf[w++] = ']';
+    if (w < buf_size) buf[w] = '\0';
+    return w;
+}
+
 /* ── Crash handler ───────────────────────────────────────── */
 
 static void crash_signal_handler(int sig)

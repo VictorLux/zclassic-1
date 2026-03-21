@@ -156,6 +156,12 @@ size_t event_dump_json(char *buf, size_t buf_size, size_t count);
 /* Get event type name as string. */
 const char *event_type_name(enum event_type type);
 
+/* Dump events filtered by type prefix. Returns bytes written.
+ * prefix="" matches all. "peer." matches peer events. "val." matches validation.
+ * Useful for targeted monitoring: event_dump_json_filtered(buf, sz, 50, "val.") */
+size_t event_dump_json_filtered(char *buf, size_t buf_size, size_t count,
+                                 const char *type_prefix);
+
 /* Install crash signal handlers (SIGSEGV, SIGABRT, SIGBUS).
  * On crash, dumps last 200 events to stderr before exit. */
 void event_install_crash_handler(void);
