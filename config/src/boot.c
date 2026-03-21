@@ -100,13 +100,11 @@ static void *load_params_thread(void *arg)
 {
     (void)arg;
     printf("Loading verification keys (background)...\n");
-    fflush(stdout);
     if (sapling_init_params(g_params_dir_buf))
         atomic_store(&g_params_loaded, true);
     else
         fprintf(stderr, "Warning: Failed to load ZK params\n");
     printf("Verification keys loaded.\n");
-    fflush(stdout);
     return NULL;
 }
 
@@ -142,7 +140,6 @@ static void *build_snapshot_offer_thread(void *arg)
 {
     const char *datadir = (const char *)arg;
     printf("Building fast sync snapshot offer...\n");
-    fflush(stdout);
 
     extern struct snapshot_offer g_cached_offer;
     extern _Atomic bool g_cached_offer_valid;
@@ -155,14 +152,12 @@ static void *build_snapshot_offer_thread(void *arg)
     } else {
         printf("Fast sync: no snapshot available yet\n");
     }
-    fflush(stdout);
 
     /* Build parallel chunk sync manifest (BitTorrent-style). */
     extern struct sync_manifest g_cached_manifest;
     extern _Atomic bool g_cached_manifest_valid;
 
     printf("Building chunk sync manifest...\n");
-    fflush(stdout);
     if (fast_sync_build_manifest(datadir, &g_cached_manifest)) {
         g_cached_manifest_valid = true;
         printf("Chunk manifest ready: h=%d, %u chunks (%llu UTXOs)\n",
@@ -171,7 +166,6 @@ static void *build_snapshot_offer_thread(void *arg)
     } else {
         printf("Chunk manifest: not available yet\n");
     }
-    fflush(stdout);
 
     return NULL;
 }
@@ -254,7 +248,6 @@ static void save_block_index_flat(const char *datadir, struct main_state *ms)
     printf("Block index flat file: %zu entries, %zuMB (%llds)\n",
            count, count * sizeof(struct block_index_flat) / (1024*1024),
            (long long)elapsed);
-    fflush(stdout);
 }
 
 static bool load_block_index_flat(const char *datadir, struct main_state *ms)
@@ -327,7 +320,6 @@ static bool load_block_index_flat(const char *datadir, struct main_state *ms)
     int64_t elapsed = (int64_t)time(NULL) - t0;
     printf("Block index flat: loaded %u entries in %llds\n",
            count, (long long)elapsed);
-    fflush(stdout);
 
     return count > 0;
 }
@@ -393,7 +385,6 @@ static void save_block_index_recent(struct node_db *ndb, struct main_state *ms)
     int64_t elapsed = (int64_t)time(NULL) - t0;
     printf("Block index: cached %zu/%zu entries in SQLite (%llds)\n",
            count, total, (long long)elapsed);
-    fflush(stdout);
 }
 
 /* Load ALL block_index entries from SQLite.
@@ -416,7 +407,6 @@ static bool load_block_index_sqlite(struct node_db *ndb, struct main_state *ms)
     int64_t t0 = (int64_t)time(NULL);
     printf("Loading block index from SQLite (%lld entries)...\n",
            (long long)cached_count);
-    fflush(stdout);
 
     /* Phase 1: Create all block_index entries */
     sqlite3_stmt *sel = NULL;
@@ -487,7 +477,6 @@ static bool load_block_index_sqlite(struct node_db *ndb, struct main_state *ms)
     int64_t elapsed = (int64_t)time(NULL) - t0;
     printf("Block index SQLite: loaded %zu entries in %llds\n",
            loaded, (long long)elapsed);
-    fflush(stdout);
 
     return loaded > 0;
 }
@@ -643,7 +632,6 @@ static bool fast_rebuild_chainstate(struct coins_view_db *cvdb,
 
     printf("fast-rebuild: %lld UTXOs from SQLite → LevelDB...\n",
            (long long)total);
-    fflush(stdout);
 
     /* Wipe and reopen coins DB */
     coins_view_cache_flush(cvtip);
@@ -723,7 +711,6 @@ static bool fast_rebuild_chainstate(struct coins_view_db *cvdb,
             printf("  %lld / %lld UTXOs (%lld/s)\n",
                    (long long)count, (long long)total,
                    elapsed > 0 ? (long long)(count / elapsed) : (long long)count);
-            fflush(stdout);
         }
 
         /* Flush cache periodically to avoid memory bloat */
@@ -753,7 +740,6 @@ static bool fast_rebuild_chainstate(struct coins_view_db *cvdb,
     int64_t elapsed = (int64_t)time(NULL) - t_start;
     printf("fast-rebuild: done — %lld UTXOs in %llds\n",
            (long long)count, (long long)elapsed);
-    fflush(stdout);
     return true;
 }
 
@@ -820,7 +806,6 @@ static void populate_sqlite_utxos_from_chainstate(struct coins_view_db *cvdb,
             printf("  populate utxos: %lld (%lld/s)\n",
                    (long long)count,
                    elapsed > 0 ? (long long)(count / elapsed) : (long long)count);
-            fflush(stdout);
         }
 
         db_iter_next(&it);
@@ -832,7 +817,6 @@ static void populate_sqlite_utxos_from_chainstate(struct coins_view_db *cvdb,
     int64_t elapsed = (int64_t)time(NULL) - t_start;
     printf("populate_sqlite_utxos: %lld UTXOs in %llds\n",
            (long long)count, (long long)elapsed);
-    fflush(stdout);
 }
 
 static bool reindex_chainstate(struct main_state *ms,
@@ -848,7 +832,6 @@ static bool reindex_chainstate(struct main_state *ms,
 
     printf("reindex-chainstate: rebuilding UTXO set (%d blocks)...\n",
            tip_height + 1);
-    fflush(stdout);
 
     /* Reduce mmap threshold to prevent heap fragmentation.
      * Each tx_out is ~10KB due to script[10000]. Coins with 4+ vouts
@@ -939,7 +922,6 @@ static bool reindex_chainstate(struct main_state *ms,
                 printf("  height %d/%d (%.0f blk/s, ETA %dm%ds, cache %zu)\n",
                        h, tip_height, rate, eta / 60, eta % 60,
                        cvtip->cache_coins.size);
-                fflush(stdout);
             }
         }
     }
@@ -957,7 +939,6 @@ static bool reindex_chainstate(struct main_state *ms,
     int64_t elapsed = (int64_t)time(NULL) - t_start;
     printf("reindex-chainstate: complete in %lldm%llds (%d errors)\n",
            (long long)(elapsed / 60), (long long)(elapsed % 60), errors);
-    fflush(stdout);
 
     return errors == 0;
 }
@@ -1191,7 +1172,6 @@ bool app_init(struct app_context *ctx)
         printf("═══ Fast Sync from Legacy Node ═══\n");
         printf("Source: %s\n", ctx->fastsync_dir);
         printf("Target: %s\n\n", ctx->datadir);
-        fflush(stdout);
 
         char src_test[1024];
         snprintf(src_test, sizeof(src_test), "%s/blocks", ctx->fastsync_dir);
@@ -1226,6 +1206,16 @@ bool app_init(struct app_context *ctx)
         }
 
         char src[1024], dst[1024], cmd[4096];
+
+        /* Validate paths — reject shell metacharacters */
+        for (const char *p = ctx->fastsync_dir; *p; p++) {
+            if (*p == '\'' || *p == '`' || *p == '$' || *p == ';' ||
+                *p == '|' || *p == '&' || *p == '>' || *p == '<') {
+                fprintf(stderr, "ERROR: fastsync path contains unsafe "
+                        "character '%c'\n", *p);
+                return false;
+            }
+        }
 
         /* Count source block files */
         int num_blk = 0;
@@ -1290,7 +1280,6 @@ bool app_init(struct app_context *ctx)
         int64_t t_fs_elapsed = (int64_t)time(NULL) - t_fs_start;
         printf("\n═══ Fast sync complete in %llds ═══\n\n",
                (long long)t_fs_elapsed);
-        fflush(stdout);
     }
 
     /* Open block index database */
@@ -1376,7 +1365,6 @@ bool app_init(struct app_context *ctx)
         if (!loaded) {
             int64_t t_idx_start = (int64_t)time(NULL);
             printf("Loading block index from LevelDB...\n");
-            fflush(stdout);
             if (!load_block_index(&g_state, params)) {
                 fprintf(stderr, "Warning: Failed to load block index\n");
             }
@@ -1451,7 +1439,6 @@ bool app_init(struct app_context *ctx)
         /* Repopulate SQLite UTXOs from the authoritative LevelDB chainstate */
         if (g_active_node_db) {
             printf("Populating SQLite UTXOs from chainstate...\n");
-            fflush(stdout);
             populate_sqlite_utxos_from_chainstate(&g_coins_db, g_active_node_db);
         }
     } else if (fast_restart) {
@@ -1578,7 +1565,6 @@ bool app_init(struct app_context *ctx)
             printf("WARNING: Chain tip at height %d but coins DB is empty!\n"
                    "  Resetting chain to genesis — will replay %d blocks.\n",
                    chain_tip->nHeight, chain_tip->nHeight);
-            fflush(stdout);
 
             struct block_index *genesis = block_map_find(
                 &g_state.map_block_index, &params->consensus.hashGenesisBlock);
@@ -1662,7 +1648,6 @@ bool app_init(struct app_context *ctx)
         }
         if (has_shielded == 0) {
             printf("Backfilling shielded values from block_index...\n");
-            fflush(stdout);
             sqlite3_exec(g_node_db.db, "BEGIN", NULL, NULL, NULL);
             sqlite3_stmt *upd = NULL;
             sqlite3_prepare_v2(g_node_db.db,
@@ -1684,7 +1669,6 @@ bool app_init(struct app_context *ctx)
             sqlite3_finalize(upd);
             sqlite3_exec(g_node_db.db, "COMMIT", NULL, NULL, NULL);
             printf("Backfill: updated %d blocks with shielded values\n", updated);
-            fflush(stdout);
         }
     }
 
@@ -1702,7 +1686,6 @@ bool app_init(struct app_context *ctx)
         }
         if (addr_count == 0) {
             printf("Backfilling addresses from UTXO set...\n");
-            fflush(stdout);
             sqlite3_exec(g_node_db.db,
                 "INSERT OR REPLACE INTO addresses "
                 "(address_hash, script_type, balance, utxo_count, "
@@ -1723,7 +1706,6 @@ bool app_init(struct app_context *ctx)
                 }
             }
             printf("Backfill: populated %lld addresses\n", (long long)new_count);
-            fflush(stdout);
         }
     }
 
@@ -1820,7 +1802,6 @@ bool app_init(struct app_context *ctx)
         printf("Wallet: %.8f ZCL (%d UTXOs, %lldms)\n",
                (double)bal / 1e8, cnt,
                (long long)((int64_t)time(NULL) - t0) * 1000);
-        fflush(stdout);
 
         /* ── Supply invariant check ──────────────────────────────
          * Fundamental blockchain identity:
@@ -2029,7 +2010,6 @@ bool app_init(struct app_context *ctx)
         tor_integration_set_handler(onion_request_adapter, NULL);
 
         printf("Starting embedded Tor...\n");
-        fflush(stdout);
         if (!tor_integration_start(ctx->datadir, (uint16_t)ctx->p2p_port))
             fprintf(stderr, "Warning: Tor failed to start\n");
 
@@ -2065,7 +2045,6 @@ bool app_init(struct app_context *ctx)
                 printf(" %s", addrs[i]);
             printf("\n");
         }
-        fflush(stdout);
     }
 
     /* Start store payment processor (checks every 30s) */
@@ -2097,21 +2076,18 @@ bool app_init(struct app_context *ctx)
             struct block_index *fs_tip = active_chain_tip(&g_state.chain_active);
             printf("═══ SQLite Indexing (%d blocks) ═══\n",
                    fs_tip ? fs_tip->nHeight : 0);
-            fflush(stdout);
             int64_t t_import = (int64_t)time(NULL);
             node_db_sync_catchup(g_active_node_db,
                                  &g_state.chain_active,
                                  &g_wallet, ctx->datadir);
             int64_t t_idx_done = (int64_t)time(NULL);
             printf("Block index: %llds\n", (long long)(t_idx_done - t_import));
-            fflush(stdout);
             node_db_sync_import_utxos(g_active_node_db, &g_coins_db);
             int64_t t_utxo_done = (int64_t)time(NULL);
             printf("UTXO import: %llds\n",
                    (long long)(t_utxo_done - t_idx_done));
             printf("═══ SQLite complete in %llds ═══\n",
                    (long long)(t_utxo_done - t_import));
-            fflush(stdout);
         } else {
             static pthread_t catchup_thread;
             static struct {
@@ -2151,7 +2127,6 @@ void app_shutdown(void)
     if (g_state.map_block_index.size > 1000) {
         printf("Saving block index flat file (%zu entries)...\n",
                g_state.map_block_index.size);
-        fflush(stdout);
         save_block_index_flat(g_datadir, &g_state);
     }
 
