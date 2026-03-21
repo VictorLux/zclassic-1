@@ -1987,6 +1987,9 @@ bool app_init(struct app_context *ctx)
         }
     }
 
+    /* Start API cache thread immediately so endpoints are warm */
+    api_start_cache();
+
     /* Start public HTTPS block explorer on port 443 */
     {
         char cert_path[1024], key_path[1024];

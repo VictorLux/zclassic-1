@@ -1037,6 +1037,11 @@ static void ensure_cache_thread(void)
     pthread_attr_destroy(&attr);
 }
 
+void api_start_cache(void)
+{
+    ensure_cache_thread();
+}
+
 /* ── Serve from cache helpers ────────────────────────────── */
 
 static size_t serve_from_cache(const char *cache, size_t cache_len,

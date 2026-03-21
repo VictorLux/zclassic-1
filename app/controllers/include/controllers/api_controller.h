@@ -23,6 +23,10 @@ void api_set_state(struct main_state *ms, struct tx_mempool *mp,
 void api_set_rpc_backend(const char *rpc_user, const char *rpc_pass,
                           int rpc_port);
 
+/* Start the background API cache refresh thread.
+ * Call after api_set_rpc_backend so caches warm immediately. */
+void api_start_cache(void);
+
 /* Handle an API request. Returns bytes written to response, or 0 if not handled.
  * Response includes HTTP headers + JSON body. */
 size_t api_handle_request(const char *method, const char *path,
