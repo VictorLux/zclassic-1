@@ -1637,6 +1637,7 @@ static size_t g_stats_cache_len = 0;
 
 static void cache_save(const char *name, const char *data, size_t len)
 {
+    if (!g_explorer_dir[0]) ensure_explorer_dir();
     if (!g_explorer_dir[0] || len == 0) return;
     char path[1200];
     snprintf(path, sizeof(path), "%s/%s.cache", g_explorer_dir, name);
@@ -1646,6 +1647,7 @@ static void cache_save(const char *name, const char *data, size_t len)
 
 static size_t cache_load(const char *name, char *buf, size_t max)
 {
+    if (!g_explorer_dir[0]) ensure_explorer_dir();
     if (!g_explorer_dir[0]) return 0;
     char path[1200];
     snprintf(path, sizeof(path), "%s/%s.cache", g_explorer_dir, name);

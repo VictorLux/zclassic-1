@@ -160,6 +160,15 @@ static void get_block_at(sqlite3 *db, int64_t height,
 {
     hash_out[0] = '\0';
     *time_out = 0;
+
+    /* Genesis block (height 0) is not in the SQLite index — use constants */
+    if (height == 0) {
+        snprintf(hash_out, hmax,
+            "0007104CCDA289427919EFC39DC9E4D499804B7BEBC22DF55F8B834301260602");
+        *time_out = 1478403829; /* 2016-11-06 03:43:49 UTC */
+        return;
+    }
+
     char sql[256];
     snprintf(sql, sizeof(sql),
         "SELECT hex(hash), time FROM blocks WHERE height = %" PRId64, height);
@@ -169,7 +178,6 @@ static void get_block_at(sqlite3 *db, int64_t height,
             const char *h = (const char *)sqlite3_column_text(s, 0);
             if (h) snprintf(hash_out, hmax, "%s", h);
             *time_out = sqlite3_column_int64(s, 1);
-            if (height == 0) *time_out = 1478403829;
         }
         sqlite3_finalize(s);
     }
@@ -216,14 +224,23 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
     APPEND(off, r, max,
         "<h2 id='genesis'>1. Genesis Story</h2>");
 
-    char genesis_hash[128] = "";
     int64_t genesis_time = 1478403829; /* Nov 6, 2016 03:43:49 UTC */
-    char genesis_coinbase[128] = "";
 
+    /* Genesis (height 0) is not in the SQLite index — use known constants */
+    char genesis_hash[128] =
+        "0007104CCDA289427919EFC39DC9E4D499804B7BEBC22DF55F8B834301260602";
+    char genesis_coinbase[128] = "";
+    /* Try DB first, fall back to constant */
     fq_text(db, "SELECT hex(hash) FROM blocks WHERE height = 0",
             genesis_hash, sizeof(genesis_hash));
+    if (!genesis_hash[0])
+        snprintf(genesis_hash, sizeof(genesis_hash),
+            "0007104CCDA289427919EFC39DC9E4D499804B7BEBC22DF55F8B834301260602");
     fq_text(db, "SELECT hex(txid) FROM transactions WHERE block_height = 0 AND is_coinbase = 1 LIMIT 1",
             genesis_coinbase, sizeof(genesis_coinbase));
+    if (!genesis_coinbase[0])
+        snprintf(genesis_coinbase, sizeof(genesis_coinbase),
+            "427DBF0AE8E079C6527EA1CB308C6E3C98FA5435F4D715D31176EA00CF2B6119");
 
     char tstr[64];
     fmt_time(tstr, sizeof(tstr), genesis_time);
@@ -258,14 +275,25 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
         "<h3>First 10 Blocks</h3>"
         "<table class='txlist'>"
         "<tr><th>Height</th><th>Time</th><th>Block Hash</th><th>SHA3 Receipt</th></tr>");
+
+    /* Genesis (height 0) is not in SQLite — add manually */
+    {
+        char rcpt0[32] = "";
+        compute_receipt(rcpt0, sizeof(rcpt0), 0, genesis_hash, "first10");
+        APPEND(off, r, max,
+            "<tr><td><a href='/explorer/block/0'>0</a></td>"
+            "<td>2016-11-06 03:43:49 UTC</td>"
+            "<td><code style='word-break:break-all'>%.16s...</code></td>"
+            "<td><code>%s</code></td></tr>",
+            genesis_hash, rcpt0);
+    }
     {
         sqlite3_stmt *s = NULL;
-        const char *sql = "SELECT height, time, hex(hash) FROM blocks WHERE height < 10 ORDER BY height";
+        const char *sql = "SELECT height, time, hex(hash) FROM blocks WHERE height >= 1 AND height < 10 ORDER BY height";
         if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
             while (sqlite3_step(s) == SQLITE_ROW) {
                 int64_t h = sqlite3_column_int64(s, 0);
                 int64_t t = sqlite3_column_int64(s, 1);
-                if (h == 0) t = 1478403829;
                 const char *hash = (const char *)sqlite3_column_text(s, 2);
                 char ts[64], rcpt[32] = "";
                 fmt_time(ts, sizeof(ts), t);
@@ -1598,12 +1626,16 @@ size_t explorer_factoids_build_json(uint8_t *buf, size_t buf_max,
 
     APPEND(off, r, max, "{\"chain_height\":%" PRId64, chain_height);
 
-    /* Genesis */
+    /* Genesis — height 0 may not be in SQLite, use constants as fallback */
     {
         char gh[128] = "", gc[128] = "";
         fq_text(db, "SELECT hex(hash) FROM blocks WHERE height = 0", gh, sizeof(gh));
+        if (!gh[0]) snprintf(gh, sizeof(gh),
+            "0007104CCDA289427919EFC39DC9E4D499804B7BEBC22DF55F8B834301260602");
         fq_text(db, "SELECT hex(txid) FROM transactions WHERE block_height = 0 AND is_coinbase = 1 LIMIT 1",
                 gc, sizeof(gc));
+        if (!gc[0]) snprintf(gc, sizeof(gc),
+            "427DBF0AE8E079C6527EA1CB308C6E3C98FA5435F4D715D31176EA00CF2B6119");
         char rcpt[32] = "";
         compute_receipt(rcpt, sizeof(rcpt), 0, gh, "Genesis");
         APPEND(off, r, max,
