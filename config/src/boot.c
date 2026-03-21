@@ -49,6 +49,7 @@
 #include "net/https_server.h"
 #include "net/fast_sync.h"
 #include "net/peer_strategy.h"
+#include "event/event.h"
 #include <netdb.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -855,6 +856,11 @@ static bool reindex_chainstate(struct main_state *ms,
 
 bool app_init(struct app_context *ctx)
 {
+    /* Initialize event log first — everything after this is observable */
+    event_log_init();
+    event_install_crash_handler();
+    event_emitf(EV_NODE_STARTING, 0, "zclassic23 1.0.0");
+
     if (ctx->regtest)
         chain_params_select(CHAIN_REGTEST);
     else if (ctx->testnet)
@@ -873,6 +879,10 @@ bool app_init(struct app_context *ctx)
     if (!sha256_selftest())
         printf("WARNING: SHA-256 SHA-NI self-test FAILED — using portable fallback\n");
     printf("SHA-256: %s\n", sha256_implementation());
+
+    /* Report field arithmetic acceleration */
+    extern const char *fr_accel_implementation(void);
+    printf("Field arithmetic: %s\n", fr_accel_implementation());
 
     main_state_init(&g_state);
     g_state.fTxIndex = ctx->tx_index;
@@ -1656,6 +1666,12 @@ bool app_init(struct app_context *ctx)
     }
 
     atomic_store(&g_running, true);
+    {
+        struct block_index *tip = active_chain_tip(&g_state.chain_active);
+        int h = tip ? tip->nHeight : 0;
+        event_emitf(EV_NODE_READY, 0, "height=%d peers=%zu",
+                    h, g_connman.manager.num_nodes);
+    }
     printf("ZClassic C23 node initialized.\n");
 
     /* SQLite catchup: synchronous for -fastsync (full import before P2P),
@@ -1697,6 +1713,7 @@ bool app_init(struct app_context *ctx)
 void app_shutdown(void)
 {
     atomic_store(&g_running, false);
+    event_emitf(EV_NODE_SHUTDOWN, 0, "graceful");
 
     printf("Shutting down...\n");
 

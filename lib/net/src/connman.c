@@ -324,6 +324,26 @@ static void *thread_socket_handler(void *arg)
             p2p_node_free(cm->deferred_free[i]);
         cm->num_deferred_free = 0;
 
+        /* Periodic peer stats (every 60s) */
+        {
+            static int64_t last_peer_log = 0;
+            int64_t now_log = GetTime();
+            if (now_log - last_peer_log >= 60) {
+                last_peer_log = now_log;
+                size_t in = 0, out = 0, connected = 0;
+                for (size_t pi = 0; pi < cm->manager.num_nodes; pi++) {
+                    struct p2p_node *p = cm->manager.nodes[pi];
+                    if (p->disconnect) continue;
+                    if (p->inbound) in++; else out++;
+                    if (p->successfully_connected) connected++;
+                }
+                if (cm->manager.num_nodes > 0)
+                    printf("Peers: %zu total (%zu out, %zu in, "
+                           "%zu handshake-complete)\n",
+                           cm->manager.num_nodes, out, in, connected);
+            }
+        }
+
         /* Timeout: disconnect nodes with no activity for 120s */
         {
             int64_t now_check = GetTime();
@@ -344,6 +364,13 @@ static void *thread_socket_handler(void *arg)
                 if (!n->successfully_connected &&
                     n->time_connected > 0 &&
                     now_check - n->time_connected > 30) {
+                    printf("Peer %s: handshake timeout after %llds "
+                           "(version=%d, %s)\n",
+                           n->addr_name,
+                           (long long)(now_check - n->time_connected),
+                           n->version,
+                           n->inbound ? "inbound" : "outbound");
+                    fflush(stdout);
                     n->disconnect = true;
                 }
             }
@@ -434,7 +461,7 @@ bool connman_init(struct connman *cm, const struct chain_params *params,
     memcpy(cm->manager.message_start, params->pchMessageStart,
            MESSAGE_START_SIZE);
     cm->manager.default_port = (uint16_t)params->nDefaultPort;
-    cm->manager.local_services = NODE_NETWORK;
+    cm->manager.local_services = NODE_NETWORK | NODE_BLOOM;
     cm->manager.local_host_nonce = GetRand(UINT64_MAX);
     snprintf(cm->manager.sub_version, MAX_SUBVERSION_LENGTH,
              "/ZClassic-C23:1.0.0/");

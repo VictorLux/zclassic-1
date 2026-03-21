@@ -13,6 +13,7 @@
 #include "net/addrman.h"
 #include "bloom/bloom.h"
 #include "core/uint256.h"
+#include "event/event.h"
 #include "util/sync.h"
 #include <stdbool.h>
 #include <stdint.h>
@@ -113,6 +114,7 @@ struct askfor_entry {
 };
 
 struct p2p_node {
+    enum peer_state state;         /* explicit state machine — use peer_set_state_checked() */
     uint64_t services;
     zcl_socket_t socket;
 

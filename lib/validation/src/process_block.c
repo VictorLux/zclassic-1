@@ -61,8 +61,8 @@ static struct flush_policy g_flush_policy = {
     .max_entries    = 500000,
     .block_interval = 0,
 };
-static int64_t g_last_coins_flush = 0;
-static int64_t g_blocks_since_flush = 0;
+static _Atomic int64_t g_last_coins_flush = 0;
+static _Atomic int64_t g_blocks_since_flush = 0;
 
 void set_flush_policy(int64_t interval_secs, size_t max_entries,
                       int block_interval)
@@ -430,7 +430,14 @@ bool connect_tip(struct validation_state *state,
             return false;
         }
 
-        coins_view_cache_flush(&view);
+        if (!coins_view_cache_flush(&view)) {
+            printf("connect_tip: FATAL coins flush failed at height %d\n",
+                   pindex_new->nHeight);
+            coins_view_cache_free(&view);
+            if (pblock == &local_block)
+                block_free(&local_block);
+            return validation_state_error(state, "coins-flush-failed");
+        }
         coins_view_cache_free(&view);
     }
 
@@ -594,15 +601,35 @@ bool disconnect_tip(struct validation_state *state,
     if (undo_pos.nPos > 0) {
         FILE *f = open_undo_file(datadir, &undo_pos, true);
         if (f) {
-            /* Read undo data from file */
-            uint8_t buf[4 * 1024 * 1024];
-            size_t nread = fread(buf, 1, sizeof(buf), f);
+            /* Get file size to avoid fixed-size stack buffer */
+            fseek(f, 0, SEEK_END);
+            long file_len = ftell(f);
+            fseek(f, 0, SEEK_SET);
+            if (file_len <= 0 || file_len > 32 * 1024 * 1024) {
+                printf("disconnect_tip: undo file size %ld out of range\n",
+                       file_len);
+                fclose(f);
+                block_free(&block);
+                block_undo_free(&blockundo);
+                return validation_state_error(state, "bad-undo-file-size");
+            }
+            uint8_t *buf = malloc((size_t)file_len);
+            if (!buf) {
+                printf("disconnect_tip: failed to allocate %ld for undo data\n",
+                       file_len);
+                fclose(f);
+                block_free(&block);
+                block_undo_free(&blockundo);
+                return validation_state_error(state, "undo-alloc-failed");
+            }
+            size_t nread = fread(buf, 1, (size_t)file_len, f);
             fclose(f);
             if (nread > 0) {
                 struct byte_stream s;
                 stream_init_from_data(&s, buf, nread);
                 block_undo_deserialize(&blockundo, &s);
             }
+            free(buf);
         }
     }
 
@@ -620,7 +647,14 @@ bool disconnect_tip(struct validation_state *state,
             return false;
         }
 
-        coins_view_cache_flush(&view);
+        if (!coins_view_cache_flush(&view)) {
+            printf("disconnect_tip: FATAL coins flush failed at height %d\n",
+                   pindex_delete->nHeight);
+            coins_view_cache_free(&view);
+            block_free(&block);
+            block_undo_free(&blockundo);
+            return validation_state_error(state, "coins-flush-failed");
+        }
         coins_view_cache_free(&view);
     }
 

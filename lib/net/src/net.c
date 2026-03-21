@@ -149,6 +149,7 @@ struct p2p_node *p2p_node_create(struct net_manager *nm, zcl_socket_t sock,
                  ipbuf, addr->svc.port);
     }
 
+    node->state = inbound ? PEER_CONNECTED : PEER_CONNECTING;
     node->inbound = inbound;
     node->recv_version = INIT_PROTO_VERSION;
     node->time_connected = GetTime();
@@ -175,6 +176,9 @@ struct p2p_node *p2p_node_create(struct net_manager *nm, zcl_socket_t sock,
 
     if (nm->signals.initialize_node)
         nm->signals.initialize_node(nm->signals.ctx, node->id, node);
+
+    event_emitf(inbound ? EV_TCP_ACCEPTED : EV_TCP_CONNECTED,
+                (uint32_t)node->id, "%s", node->addr_name);
 
     return node;
 }

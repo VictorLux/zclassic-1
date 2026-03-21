@@ -23,6 +23,7 @@
 #include "storage/disk_block_io.h"
 #include "wallet/wallet.h"
 #include "util/timedata.h"
+#include "event/event.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -244,6 +245,12 @@ static bool process_version(struct msg_processor *mp, struct p2p_node *node,
     node->time_offset = ver.timestamp - (int64_t)time(NULL);
     node->relay_txes = ver.relay;
 
+    event_emitf(EV_PEER_VERSION, (uint32_t)node->id,
+                "proto=%d h=%d %s", ver.protocol_version,
+                ver.start_height, ver.sub_version);
+    peer_set_state_checked((uint32_t)node->id, &node->state,
+                           PEER_VERSION_RECEIVED, "version msg received");
+
     if (!node->inbound) {
         AddTimeData((const unsigned char *)node->addr_name,
                     (int)strlen(node->addr_name), node->time_offset);
@@ -254,7 +261,12 @@ static bool process_version(struct msg_processor *mp, struct p2p_node *node,
     if (node->inbound)
         push_version(mp, node);
 
-    node->successfully_connected = true;
+    /* For outbound connections, we already sent version; now we received
+     * their version and sent verack. Mark connected once we also get their
+     * verack (handled in process_verack). For inbound, the peer initiated,
+     * so mark connected after we send our version+verack. */
+    if (node->inbound)
+        node->successfully_connected = true;
 
     /* Ask outbound peers for their address list */
     if (!node->inbound && !node->get_addr) {
@@ -263,8 +275,10 @@ static bool process_version(struct msg_processor *mp, struct p2p_node *node,
         node->get_addr = true;
     }
 
-    /* Note: don't send sendheaders here — zclassicd sends headers
-     * proactively after seeing our height is behind theirs. */
+    /* Send sendheaders — tells peer we prefer headers announcements
+     * over inv. Critical for headers-first sync with legacy zclassicd. */
+    p2p_node_begin_message(node, "sendheaders", mp->params->pchMessageStart);
+    p2p_node_end_message(node);
 
     printf("Peer %s: version=%d subver=%s height=%d%s\n",
            node->addr_name, node->version, node->sub_ver,
@@ -291,7 +305,19 @@ static bool process_version(struct msg_processor *mp, struct p2p_node *node,
 static bool process_verack(struct msg_processor *mp, struct p2p_node *node)
 {
     node->recv_version = PROTOCOL_VERSION;
-    printf("Peer %s: verack received\n", node->addr_name);
+
+    /* Outbound: handshake complete (we sent version, got version+verack).
+     * Inbound: already marked in process_version. */
+    if (!node->inbound && !node->successfully_connected) {
+        node->successfully_connected = true;
+        peer_set_state_checked((uint32_t)node->id, &node->state,
+                               PEER_HANDSHAKE_COMPLETE, "verack received");
+        printf("Peer %s: handshake complete (outbound)\n", node->addr_name);
+    } else {
+        peer_set_state_checked((uint32_t)node->id, &node->state,
+                               PEER_HANDSHAKE_COMPLETE, "verack received");
+        printf("Peer %s: verack received\n", node->addr_name);
+    }
 
     /* Mark peer as good in addrman — increases selection priority */
     if (mp->net_mgr) {
@@ -731,6 +757,7 @@ static bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
     block_init(&blk);
     if (!block_deserialize(&blk, s)) {
         printf("Peer %s: failed to deserialize block\n", node->addr_name);
+        peer_misbehaving(mp->net_mgr, node, 20, "malformed block");
         block_free(&blk);
         return false;
     }
@@ -746,7 +773,10 @@ static bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
 
     char hex[65];
     uint256_get_hex(&hash, hex);
-    printf("Peer %s: received block %s\n", node->addr_name, hex);
+
+    struct block_index *tip = active_chain_tip(&mp->main_state->chain_active);
+    int tip_height = tip ? tip->nHeight : 0;
+    printf("Peer %s: block %s (tip=%d)\n", node->addr_name, hex, tip_height);
 
     struct validation_state state;
     validation_state_init(&state);
@@ -756,11 +786,26 @@ static bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
     if (validation_state_is_valid(&state)) {
         node->last_block_time = (int64_t)time(NULL);
         node->blocks_received++;
+
+        struct block_index *new_tip = active_chain_tip(
+            &mp->main_state->chain_active);
+        if (new_tip) {
+            event_emitf(EV_BLOCK_CONNECTED, (uint32_t)node->id,
+                        "h=%d", new_tip->nHeight);
+            if (new_tip->nHeight % 1000 == 0) {
+                printf("Chain tip: height=%d from peer %s\n",
+                       new_tip->nHeight, node->addr_name);
+                fflush(stdout);
+            }
+        }
     } else {
         int dos = 0;
         if (validation_state_get_dos(&state, &dos) && dos > 0) {
+            event_emitf(EV_BLOCK_REJECTED, (uint32_t)node->id,
+                        "dos=%d %s", dos, state.reject_reason);
             printf("Peer %s: invalid block (dos=%d): %s\n",
                    node->addr_name, dos, state.reject_reason);
+            peer_misbehaving(mp->net_mgr, node, dos, state.reject_reason);
         }
     }
 
@@ -812,6 +857,7 @@ static bool process_tx_msg(struct msg_processor *mp, struct p2p_node *node,
     transaction_init(&tx);
     if (!transaction_deserialize(&tx, s)) {
         printf("Peer %s: failed to deserialize tx\n", node->addr_name);
+        peer_misbehaving(mp->net_mgr, node, 20, "malformed tx");
         transaction_free(&tx);
         return false;
     }
@@ -853,6 +899,9 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
         return false;
 
     if (count > 2000) {
+        printf("Peer %s: headers count %llu exceeds maximum 2000\n",
+               node->addr_name, (unsigned long long)count);
+        peer_misbehaving(mp->net_mgr, node, 20, "too many headers");
         node->disconnect = true;
         return false;
     }
@@ -865,12 +914,18 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
     for (uint64_t i = 0; i < count; i++) {
         struct block_header hdr;
         block_header_init(&hdr);
-        if (!block_header_deserialize(&hdr, s))
+        if (!block_header_deserialize(&hdr, s)) {
+            printf("Peer %s: malformed header at index %llu\n",
+                   node->addr_name, (unsigned long long)i);
+            peer_misbehaving(mp->net_mgr, node, 20, "malformed header");
             return false;
+        }
 
         uint64_t dummy;
-        if (!stream_read_compact_size(s, &dummy))
+        if (!stream_read_compact_size(s, &dummy)) {
+            peer_misbehaving(mp->net_mgr, node, 20, "truncated header tx count");
             return false;
+        }
 
         struct validation_state state;
         validation_state_init(&state);
@@ -892,10 +947,22 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
         }
     }
 
-    if (accepted > 0)
-        printf("Peer %s: accepted %zu headers (tip height %d)\n",
-               node->addr_name, accepted,
-               pindex_last ? pindex_last->nHeight : -1);
+    if (accepted > 0) {
+        /* Log progress: during IBD, only log every 10th batch */
+        bool log_this = true;
+        if (pindex_last && node->starting_height > 0 &&
+            pindex_last->nHeight < node->starting_height - 2000) {
+            static int headers_log_count = 0;
+            log_this = (headers_log_count++ % 10 == 0);
+        }
+        if (log_this)
+            printf("Peer %s: accepted %zu/%llu headers "
+                   "(header tip=%d, chain tip=%d, peer=%d)\n",
+                   node->addr_name, accepted, (unsigned long long)count,
+                   pindex_last ? pindex_last->nHeight : -1,
+                   active_chain_height(&mp->main_state->chain_active),
+                   node->starting_height);
+    }
 
     /* Request blocks for headers we accepted but don't have data for.
      * Walk backward to collect all needed blocks, then request in
@@ -1083,6 +1150,8 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
         if (expected != msg.hdr.nChecksum) {
             char ccmd[COMMAND_SIZE + 1];
             msg_header_get_command(&msg.hdr, ccmd, sizeof(ccmd));
+            event_emitf(EV_MSG_CHECKSUM_FAIL, (uint32_t)node->id,
+                        "%s size=%u", ccmd, msg.hdr.nMessageSize);
             printf("Peer %s: checksum mismatch on '%s' (size=%u exp=%08x got=%08x)\n",
                    node->addr_name, ccmd, msg.hdr.nMessageSize,
                    expected, msg.hdr.nChecksum);
@@ -1092,6 +1161,10 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
 
         char cmd[COMMAND_SIZE + 1];
         msg_header_get_command(&msg.hdr, cmd, sizeof(cmd));
+
+        /* Log every message received */
+        event_emitf(EV_MSG_RECEIVED, (uint32_t)node->id,
+                    "%s size=%u", cmd, msg.hdr.nMessageSize);
 
         struct byte_stream s;
         stream_init_from_data(&s, msg.recv_data, msg.data_pos);
@@ -1248,41 +1321,78 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                 char db_path[1024];
                 snprintf(db_path, sizeof(db_path), "%s/node.db", mp->datadir);
                 sqlite3 *db = NULL;
-                if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READWRITE,
-                                     NULL) == SQLITE_OK) {
-                    sqlite3_exec(db, "BEGIN", NULL, NULL, NULL);
+                int rc = sqlite3_open_v2(db_path, &db,
+                                          SQLITE_OPEN_READWRITE, NULL);
+                if (rc != SQLITE_OK) {
+                    printf("Peer %s: snapshot db open failed: %s\n",
+                           node->addr_name, sqlite3_errmsg(db));
+                    if (db) sqlite3_close(db);
+                    node->disconnect = true;
+                } else {
+                    char *errmsg = NULL;
+                    rc = sqlite3_exec(db, "BEGIN", NULL, NULL, &errmsg);
+                    if (rc != SQLITE_OK) {
+                        printf("Peer %s: snapshot BEGIN failed: %s\n",
+                               node->addr_name, errmsg ? errmsg : "unknown");
+                        sqlite3_free(errmsg);
+                        sqlite3_close(db);
+                        node->disconnect = true;
+                    } else {
                     sqlite3_stmt *ins = NULL;
-                    sqlite3_prepare_v2(db,
+                    rc = sqlite3_prepare_v2(db,
                         "INSERT OR IGNORE INTO utxos "
                         "(txid,vout,value,script,script_type,height) "
                         "VALUES(?,?,?,?,0,?)", -1, &ins, NULL);
-
+                    if (rc != SQLITE_OK || !ins) {
+                        printf("Peer %s: snapshot prepare failed: %s\n",
+                               node->addr_name, sqlite3_errmsg(db));
+                        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+                        sqlite3_close(db);
+                        node->disconnect = true;
+                    } else {
                     uint32_t applied = 0;
+                    bool chunk_valid = true;
                     for (uint32_t i = 0; i < entries; i++) {
                         uint8_t txid[32];
                         int32_t vout, height;
                         int64_t value;
                         uint64_t slen;
-                        if (!stream_read_bytes(&s, txid, 32)) break;
-                        if (!stream_read_i32_le(&s, &vout)) break;
-                        if (!stream_read_i64_le(&s, &value)) break;
-                        if (!stream_read_i32_le(&s, &height)) break;
-                        if (!stream_read_compact_size(&s, &slen)) break;
+                        if (!stream_read_bytes(&s, txid, 32) ||
+                            !stream_read_i32_le(&s, &vout) ||
+                            !stream_read_i64_le(&s, &value) ||
+                            !stream_read_i32_le(&s, &height) ||
+                            !stream_read_compact_size(&s, &slen)) {
+                            printf("Peer %s: truncated UTXO in chunk\n",
+                                   node->addr_name);
+                            peer_misbehaving(mp->net_mgr, node, 20,
+                                             "truncated snapshot chunk");
+                            chunk_valid = false;
+                            break;
+                        }
 
-                        /* Validate UTXO data */
-                        if (vout < 0 || value < 0 || value > 2100000000000000LL ||
-                            height < 0 || slen > 520) {
+                        /* Validate UTXO data — fail fast */
+                        if (vout < 0 || value < 0 ||
+                            value > 2100000000000000LL ||
+                            height < 0 || height > 100000000 ||
+                            slen > 520) {
                             printf("Peer %s: invalid UTXO in chunk "
                                    "(vout=%d val=%lld h=%d slen=%llu)\n",
                                    node->addr_name, vout, (long long)value,
                                    height, (unsigned long long)slen);
-                            node->disconnect = true;
+                            peer_misbehaving(mp->net_mgr, node, 50,
+                                             "invalid UTXO data");
+                            chunk_valid = false;
                             break;
                         }
 
                         uint8_t script[520];
-                        if (slen > 0 && !stream_read_bytes(&s, script, (size_t)slen))
+                        if (slen > 0 &&
+                            !stream_read_bytes(&s, script, (size_t)slen)) {
+                            peer_misbehaving(mp->net_mgr, node, 20,
+                                             "truncated script in chunk");
+                            chunk_valid = false;
                             break;
+                        }
 
                         sqlite3_reset(ins);
                         sqlite3_bind_blob(ins, 1, txid, 32, SQLITE_STATIC);
@@ -1291,18 +1401,41 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                         sqlite3_bind_blob(ins, 4, script, (int)slen,
                                            SQLITE_STATIC);
                         sqlite3_bind_int(ins, 5, height);
-                        sqlite3_step(ins);
+                        rc = sqlite3_step(ins);
+                        if (rc != SQLITE_DONE && rc != SQLITE_CONSTRAINT) {
+                            printf("Peer %s: snapshot insert failed: %s\n",
+                                   node->addr_name, sqlite3_errmsg(db));
+                            chunk_valid = false;
+                            break;
+                        }
                         applied++;
                     }
                     sqlite3_finalize(ins);
-                    sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
+
+                    if (chunk_valid) {
+                        rc = sqlite3_exec(db, "COMMIT", NULL, NULL, &errmsg);
+                        if (rc != SQLITE_OK) {
+                            printf("Peer %s: snapshot COMMIT failed: %s\n",
+                                   node->addr_name,
+                                   errmsg ? errmsg : "unknown");
+                            sqlite3_free(errmsg);
+                            node->disconnect = true;
+                        }
+                    } else {
+                        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+                        node->disconnect = true;
+                    }
                     sqlite3_close(db);
 
-                    node->zsync_offset += applied;
-                    if (node->zsync_offset % 50000 < entries)
-                        printf("Peer %s: received %llu UTXOs\n",
-                               node->addr_name,
-                               (unsigned long long)node->zsync_offset);
+                    if (chunk_valid) {
+                        node->zsync_offset += applied;
+                        if (node->zsync_offset % 50000 < entries)
+                            printf("Peer %s: received %llu UTXOs\n",
+                                   node->addr_name,
+                                   (unsigned long long)node->zsync_offset);
+                    }
+                    } /* ins prepared */
+                    } /* BEGIN succeeded */
                 }
             }
         } else if (strcmp(cmd, MSG_SNAPSHOT_END) == 0) {
@@ -1725,19 +1858,40 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
             node->sync_started = true;
             should_sync = true;
         }
-        /* Re-request headers every 30s if peer is ahead of us */
+
+        int our_height = msg_get_height(mp);
+        bool in_ibd = (node->starting_height > 0 &&
+                       our_height < node->starting_height - 144);
+
+        /* Re-request headers aggressively during IBD (10s), slower at tip (60s).
+         * This is critical: legacy zclassicd sends at most 2000 headers per
+         * getheaders response — for a 3M block chain, we need ~1500 rounds. */
         int64_t now_send = (int64_t)time(NULL);
+        int64_t resync_interval = in_ibd ? 10 : 60;
         if (node->sync_started && !node->inbound &&
-            node->starting_height > msg_get_height(mp) &&
-            now_send - node->last_getheaders_time > 30) {
+            node->starting_height > our_height &&
+            now_send - node->last_getheaders_time > resync_interval) {
             should_sync = true;
             node->last_getheaders_time = now_send;
         }
         if (should_sync) {
-            struct block_index *tip = active_chain_tip(&mp->main_state->chain_active);
+            struct block_index *tip = active_chain_tip(
+                &mp->main_state->chain_active);
             if (tip && tip->phashBlock) {
-                printf("Sending getheaders to %s (our height=%d, peer=%d)\n",
-                       node->addr_name, tip->nHeight, node->starting_height);
+                if (in_ibd) {
+                    /* Only log every 10th request during IBD to avoid spam */
+                    static int getheaders_log_count = 0;
+                    if (getheaders_log_count++ % 10 == 0)
+                        printf("IBD getheaders to %s (height=%d, peer=%d, "
+                               "behind=%d)\n",
+                               node->addr_name, tip->nHeight,
+                               node->starting_height,
+                               node->starting_height - tip->nHeight);
+                } else {
+                    printf("Sending getheaders to %s (height=%d, peer=%d)\n",
+                           node->addr_name, tip->nHeight,
+                           node->starting_height);
+                }
             }
             push_getheaders(mp, node);
         }
