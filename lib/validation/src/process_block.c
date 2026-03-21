@@ -504,6 +504,14 @@ bool connect_tip(struct validation_state *state,
         }
 
         size_t pre_flush = coins_tip->cache_coins.size;
+        size_t child_size = view.cache_coins.size;
+
+        if (pindex_new->nHeight < 5) {
+            printf("connect_tip: h=%d child_cache=%zu coins_tip_before_flush=%zu\n",
+                   pindex_new->nHeight, child_size, pre_flush);
+            fflush(stdout);
+        }
+
         if (!coins_view_cache_flush(&view)) {
             printf("connect_tip: FATAL coins flush failed at height %d\n",
                    pindex_new->nHeight);
@@ -515,10 +523,10 @@ bool connect_tip(struct validation_state *state,
         coins_view_cache_free(&view);
 
         /* Verify coins_tip grew after flush */
-        if (pindex_new->nHeight % 10000 == 0 || pindex_new->nHeight < 5) {
-            printf("connect_tip: h=%d coins_tip BEFORE=%zu AFTER=%zu\n",
-                   pindex_new->nHeight, pre_flush,
-                   coins_tip->cache_coins.size);
+        if (pindex_new->nHeight < 5 || pindex_new->nHeight % 10000 == 0) {
+            printf("connect_tip: h=%d FLUSH child=%zu → coins_tip: %zu→%zu\n",
+                   pindex_new->nHeight, child_size,
+                   pre_flush, coins_tip->cache_coins.size);
             fflush(stdout);
         }
 

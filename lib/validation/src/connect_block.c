@@ -191,6 +191,7 @@ bool connect_block(const struct block *block,
         }
 
         /* Update UTXO set */
+        size_t cache_before = view->cache_coins.size;
         if (i > 0) {
             update_coins_with_undo(tx, view, &blockundo.vtxundo[i - 1],
                                    pindex->nHeight);
@@ -199,6 +200,16 @@ bool connect_block(const struct block *block,
             tx_undo_init(&dummy);
             update_coins_with_undo(tx, view, &dummy, pindex->nHeight);
             tx_undo_free(&dummy);
+        }
+
+        /* Verify UTXO set grew (at early heights) */
+        if (pindex->nHeight < 3) {
+            printf("  connect_block: h=%d tx[%zu] cache %zu→%zu "
+                   "(coinbase=%d vouts=%zu)\n",
+                   pindex->nHeight, i, cache_before,
+                   view->cache_coins.size,
+                   transaction_is_coinbase(tx), tx->num_vout);
+            fflush(stdout);
         }
     }
 
