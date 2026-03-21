@@ -2064,6 +2064,23 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
                        (unsigned long long)f, (unsigned long long)q,
                        (unsigned long long)t);
             }
+
+            /* Tip-stale watchdog: if we're at the tip but haven't
+             * received a new block in 10 minutes, re-request headers
+             * from all outbound peers. Handles the case where all
+             * peers went silent or our inv relay is broken. */
+            if (ss == SYNC_AT_TIP && node->last_block_time > 0 &&
+                now_prog - node->last_block_time > 600 &&
+                !node->inbound) {
+                static int64_t last_stale_warn = 0;
+                if (now_prog - last_stale_warn > 300) {
+                    last_stale_warn = now_prog;
+                    printf("Tip stale: no new block for %llds, "
+                           "re-requesting headers\n",
+                           (long long)(now_prog - node->last_block_time));
+                    push_getheaders(mp, node);
+                }
+            }
         }
     }
 

@@ -338,10 +338,14 @@ static void *thread_socket_handler(void *arg)
                     if (p->inbound) in++; else out++;
                     if (p->state >= PEER_HANDSHAKE_COMPLETE) connected++;
                 }
-                if (cm->manager.num_nodes > 0)
-                    printf("Peers: %zu total (%zu out, %zu in, "
-                           "%zu handshake-complete)\n",
+                if (out == 0 && cm->manager.num_nodes > 0)
+                    printf("WARNING: 0 outbound peers (%zu inbound) "
+                           "— cannot sync\n", in);
+                else if (cm->manager.num_nodes > 0)
+                    printf("Peers: %zu (%zu out, %zu in, %zu active)\n",
                            cm->manager.num_nodes, out, in, connected);
+                else if (now_log > 30) /* don't warn during first 30s */
+                    printf("WARNING: 0 peers connected\n");
             }
         }
 
