@@ -1964,6 +1964,29 @@ bool app_init(struct app_context *ctx)
     rpc_http_start(&g_rpc_table, (uint16_t)ctx->rpc_port,
                     ctx->rpc_user, ctx->rpc_password, ctx->datadir);
 
+    /* Configure API controller's RPC backend (reads cookie for auth) */
+    {
+        char cookie_path[1024], cookie[256] = "";
+        snprintf(cookie_path, sizeof(cookie_path), "%s/.cookie", ctx->datadir);
+        FILE *cf = fopen(cookie_path, "r");
+        if (cf) {
+            size_t n = fread(cookie, 1, sizeof(cookie) - 1, cf);
+            fclose(cf);
+            cookie[n] = '\0';
+            char *nl = strchr(cookie, '\n');
+            if (nl) *nl = '\0';
+            /* Cookie format: __cookie__:hextoken */
+            char *colon = strchr(cookie, ':');
+            if (colon) {
+                *colon = '\0';
+                api_set_rpc_backend(cookie, colon + 1, ctx->rpc_port);
+            }
+        } else if (ctx->rpc_user && ctx->rpc_password) {
+            api_set_rpc_backend(ctx->rpc_user, ctx->rpc_password,
+                                ctx->rpc_port);
+        }
+    }
+
     /* Start public HTTPS block explorer on port 443 */
     {
         char cert_path[1024], key_path[1024];
