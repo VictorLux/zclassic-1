@@ -134,12 +134,17 @@ static void *thread_dns_seed(void *arg)
         dns_seed_resolve(cm);
     }
 
-    /* Periodic rediscovery every 5 minutes */
+    /* Adaptive peer discovery:
+     * - 0 peers: retry every 30s (urgent)
+     * - 1-2 peers: retry every 60s (degraded)
+     * - 3+ peers: check every 5 minutes (healthy) */
     while (!g_stop) {
-        sleep(300);
+        size_t n = cm->manager.num_nodes;
+        int interval = (n == 0) ? 30 : (n < 3) ? 60 : 300;
+        sleep(interval);
         if (g_stop) break;
         if (cm->manager.num_nodes < 3) {
-            printf("Low peer count (%zu), running peer discovery...\n",
+            printf("Peer discovery: %zu peers (need 3+)\n",
                    cm->manager.num_nodes);
             seed_from_fixed(cm);
             dns_seed_resolve(cm);
@@ -192,8 +197,8 @@ static void *thread_open_connections(void *arg)
             continue;
         }
 
-        /* Try multiple peers per tick when we have zero connections */
-        int attempts = (outbound == 0) ? 5 : 1;
+        /* Try more peers per tick when connections are low */
+        int attempts = (outbound == 0) ? 5 : (outbound < 4) ? 3 : 1;
         for (int a = 0; a < attempts && !g_stop; a++) {
             struct addr_info info;
             memset(&info, 0, sizeof(info));
