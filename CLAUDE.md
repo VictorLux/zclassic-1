@@ -172,15 +172,41 @@ Live at https://zclnet.net/explorer — served by zclassic23 itself (TLS on port
 /api/supply            Circulating supply (plain number, CoinGecko format)
 /api/hodl              HODL wave data
 /api/factoids          Full historian factoids (JSON, SHA3 receipts)
+/api/events?count=N    Event log (lock-free ring buffer, JSON)
+/api/syncstate         Sync state machine state
+/api/downloadstats     Download manager stats (in-flight, queued, timeouts)
 ```
 All endpoints return JSON with CORS headers (`Access-Control-Allow-Origin: *`).
+
+### Fast Sync
+```bash
+zcl-rpc stop                           # stop zclassicd
+./zclassic23 -fastsync ~/.zclassic     # instant snapshot (symlinks)
+# Node at tip in 34 seconds total:
+#   Fastsync: 0s (symlinks on same FS)
+#   Block index load: 7s
+#   SQLite cache: 27s
+#   P2P delta: ~10 blocks
+```
 
 ### Performance
 - SHA-256: 1,045 MB/s (SHA-NI hardware, 4.2x over portable)
 - Chain indexer: ~6,000 blocks/sec, 3M blocks in ~9 minutes
+- Fastsync: 0s symlinks, 34s total to chain tip (3M+ blocks)
 - HODL wave: precomputed in background, served from cache in <10ms
 - Stats charts: precomputed with 5-min cache, CSS-only tab switching
 - SQLite: WAL mode, 256MB mmap, 256MB cache
+
+### Event State Machine
+Every P2P event, state transition, and validation step is logged in a
+65536-event lock-free ring buffer. On crash, last 200 events dump to stderr.
+```
+zcl-rpc eventlog 100                   # last 100 events (JSON)
+zcl-rpc syncstate                      # sync state machine
+zcl-rpc downloadstats                  # download manager stats
+zcl-rpc getpeerinfo                    # peer states + misbehavior
+zcl-rpc coinsinfo                      # UTXO cache diagnostics
+```
 
 ### SQLite Database (node.db)
 All blockchain data is indexed in SQLite for instant queries. Schema v5:
