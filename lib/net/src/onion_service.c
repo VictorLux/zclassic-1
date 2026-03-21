@@ -48,7 +48,8 @@ static void query_node_stats(int *out_height, int *out_peers)
     sqlite3 *db = NULL;
     if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK)
         return;
-    sqlite3_busy_timeout(db, 1000);
+    /* 5s timeout — allows reads even during heavy block sync */
+    sqlite3_busy_timeout(db, 5000);
 
     sqlite3_stmt *s = NULL;
     if (sqlite3_prepare_v2(db,
@@ -136,17 +137,25 @@ static size_t serve_landing_page(uint8_t *response, size_t max)
         if (n > 0) off += (size_t)n;
     }
 
-    /* Dashboard stats */
+    /* Dashboard stats — detect sync-in-progress */
+    bool syncing = (height == 0 && uptime < 600) || (height > 0 && height < 100);
     n = snprintf(body + off, sizeof(body) - off,
         "<div class='dashboard'>"
-        "<div class='stat'><div class='val'>%d</div>"
+        "<div class='stat'><div class='val'>%s%d</div>"
         "<div class='label'>Block Height</div></div>"
         "<div class='stat'><div class='val'>%d</div>"
         "<div class='label'>Peers (1h)</div></div>"
         "<div class='stat'><div class='val'>%ldm</div>"
         "<div class='label'>Uptime</div></div>"
         "</div>",
-        height, peer_count, uptime / 60);
+        syncing ? "syncing... " : "", height, peer_count, uptime / 60);
+    if (syncing) {
+        n += snprintf(body + off + (n > 0 ? n : 0),
+            sizeof(body) - off - (size_t)(n > 0 ? n : 0),
+            "<p style='text-align:center;color:#ffaa00;font-size:14px'>"
+            "Node is syncing the blockchain. Stats will update as blocks are indexed."
+            "</p>");
+    }
     if (n > 0) off += (size_t)n;
 
     /* Navigation */
@@ -271,6 +280,222 @@ static size_t serve_search(const char *query, uint8_t *response, size_t max)
         "%s", off, body);
 }
 
+/* ── Peer directory table ─────────────────────────────────── */
+
+static void ensure_directory_table(sqlite3 *db)
+{
+    sqlite3_exec(db,
+        "CREATE TABLE IF NOT EXISTS peer_directory ("
+        "onion_address TEXT PRIMARY KEY,"
+        "port INTEGER NOT NULL DEFAULT 8033,"
+        "services INTEGER NOT NULL DEFAULT 0,"
+        "height INTEGER NOT NULL DEFAULT 0,"
+        "last_seen INTEGER NOT NULL,"
+        "version TEXT,"
+        "self INTEGER NOT NULL DEFAULT 0"
+        ")", NULL, NULL, NULL);
+}
+
+/* Populate directory from chain scan (ZSLP .onion announcements) */
+static void populate_directory_from_chain(sqlite3 *db)
+{
+    extern int blog_discover_onion_peers(const char *,
+                                          struct onion_peer *, size_t);
+    if (!g_datadir) return;
+
+    struct onion_peer peers[256];
+    int found = blog_discover_onion_peers(g_datadir, peers, 256);
+
+    if (found <= 0) return;
+
+    sqlite3_stmt *ins = NULL;
+    sqlite3_prepare_v2(db,
+        "INSERT OR IGNORE INTO peer_directory "
+        "(onion_address, height, last_seen, version) "
+        "VALUES (?, ?, strftime('%s','now'), 'chain')",
+        -1, &ins, NULL);
+
+    for (int i = 0; i < found; i++) {
+        if (!peers[i].hostname[0]) continue;
+        sqlite3_reset(ins);
+        sqlite3_bind_text(ins, 1, peers[i].hostname, -1, SQLITE_STATIC);
+        sqlite3_bind_int(ins, 2, peers[i].height);
+        sqlite3_step(ins);
+    }
+    sqlite3_finalize(ins);
+
+    printf("Directory: loaded %d .onion peers from chain\n", found);
+    fflush(stdout);
+}
+
+/* Register our own .onion address */
+static void register_self(sqlite3 *db)
+{
+    if (!g_onion_address[0]) return;
+
+    sqlite3_stmt *ins = NULL;
+    sqlite3_prepare_v2(db,
+        "INSERT OR REPLACE INTO peer_directory "
+        "(onion_address, port, services, height, last_seen, version, self) "
+        "VALUES (?, 8033, 1029, 0, strftime('%s','now'), '0.1.0', 1)",
+        -1, &ins, NULL);
+    sqlite3_bind_text(ins, 1, g_onion_address, -1, SQLITE_STATIC);
+    sqlite3_step(ins);
+    sqlite3_finalize(ins);
+}
+
+/* ── Directory endpoints ─────────────────────────────────── */
+
+static size_t serve_directory_json(uint8_t *response, size_t max)
+{
+    if (!g_datadir) return 0;
+
+    char db_path[1024];
+    snprintf(db_path, sizeof(db_path), "%s/node.db", g_datadir);
+    sqlite3 *db = NULL;
+    if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
+        if (db) sqlite3_close(db);
+        return 0;
+    }
+    sqlite3_busy_timeout(db, 5000);
+
+    char body[65536];
+    size_t off = 0;
+    int n = snprintf(body, sizeof(body), "{\"nodes\":[");
+    if (n > 0) off = (size_t)n;
+
+    sqlite3_stmt *s = NULL;
+    sqlite3_prepare_v2(db,
+        "SELECT onion_address, port, services, height, last_seen, "
+        "version, self FROM peer_directory "
+        "ORDER BY self DESC, last_seen DESC LIMIT 500",
+        -1, &s, NULL);
+
+    int count = 0;
+    while (sqlite3_step(s) == SQLITE_ROW && off + 256 < sizeof(body)) {
+        const char *addr = (const char *)sqlite3_column_text(s, 0);
+        int port = sqlite3_column_int(s, 1);
+        int svc = sqlite3_column_int(s, 2);
+        int h = sqlite3_column_int(s, 3);
+        int64_t ls = sqlite3_column_int64(s, 4);
+        const char *ver = (const char *)sqlite3_column_text(s, 5);
+        int self = sqlite3_column_int(s, 6);
+
+        if (count > 0) off += (size_t)snprintf(body + off, sizeof(body) - off, ",");
+        off += (size_t)snprintf(body + off, sizeof(body) - off,
+            "{\"onion\":\"%s\",\"port\":%d,\"services\":%d,"
+            "\"height\":%d,\"last_seen\":%lld,"
+            "\"version\":\"%s\",\"self\":%s}",
+            addr ? addr : "", port, svc, h,
+            (long long)ls, ver ? ver : "",
+            self ? "true" : "false");
+        count++;
+    }
+    sqlite3_finalize(s);
+    sqlite3_close(db);
+
+    off += (size_t)snprintf(body + off, sizeof(body) - off,
+        "],\"count\":%d}", count);
+
+    return (size_t)snprintf((char *)response, max,
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: application/json\r\n"
+        "Access-Control-Allow-Origin: *\r\n"
+        "Content-Length: %zu\r\n"
+        "Connection: close\r\n\r\n"
+        "%s", off, body);
+}
+
+static size_t serve_directory_html(uint8_t *response, size_t max)
+{
+    if (!g_datadir) return 0;
+
+    char db_path[1024];
+    snprintf(db_path, sizeof(db_path), "%s/node.db", g_datadir);
+    sqlite3 *db = NULL;
+    if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
+        if (db) sqlite3_close(db);
+        return 0;
+    }
+    sqlite3_busy_timeout(db, 5000);
+
+    char body[65536];
+    size_t off = 0;
+    int n = snprintf(body, sizeof(body),
+        "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+        "<title>ZClassic23 Node Directory</title>"
+        "<style>"
+        "body{font-family:monospace;background:#0a0a0a;color:#e0e0e0;"
+        "max-width:900px;margin:0 auto;padding:20px}"
+        "h1{color:#00ff88;text-align:center}"
+        "table{width:100%%;border-collapse:collapse;margin:20px 0}"
+        "th{background:#1a1a1a;color:#00ff88;padding:10px;text-align:left}"
+        "td{padding:8px 10px;border-bottom:1px solid #222}"
+        "a{color:#00aaff;text-decoration:none}"
+        "a:hover{text-decoration:underline}"
+        ".self{background:#0a1a0a;border-left:3px solid #00ff88}"
+        ".count{text-align:center;color:#888;margin:10px 0}"
+        "footer{text-align:center;color:#333;margin-top:40px;font-size:11px}"
+        "</style></head><body>"
+        "<h1>ZClassic23 Node Directory</h1>"
+        "<p class='count'>Decentralized .onion network — every node is a server</p>");
+    if (n > 0) off = (size_t)n;
+
+    off += (size_t)snprintf(body + off, sizeof(body) - off,
+        "<table><tr><th>.onion Address</th><th>Port</th>"
+        "<th>Height</th><th>Last Seen</th><th>Version</th></tr>");
+
+    sqlite3_stmt *s = NULL;
+    sqlite3_prepare_v2(db,
+        "SELECT onion_address, port, height, last_seen, version, self "
+        "FROM peer_directory ORDER BY self DESC, last_seen DESC LIMIT 500",
+        -1, &s, NULL);
+
+    int count = 0;
+    while (sqlite3_step(s) == SQLITE_ROW && off + 512 < sizeof(body)) {
+        const char *addr = (const char *)sqlite3_column_text(s, 0);
+        int port = sqlite3_column_int(s, 1);
+        int h = sqlite3_column_int(s, 2);
+        int64_t ls = sqlite3_column_int64(s, 3);
+        const char *ver = (const char *)sqlite3_column_text(s, 4);
+        int self = sqlite3_column_int(s, 5);
+
+        /* Format last_seen as relative time */
+        int64_t age = (int64_t)time(NULL) - ls;
+        char age_str[32];
+        if (age < 60) snprintf(age_str, sizeof(age_str), "%llds ago", (long long)age);
+        else if (age < 3600) snprintf(age_str, sizeof(age_str), "%lldm ago", (long long)(age/60));
+        else if (age < 86400) snprintf(age_str, sizeof(age_str), "%lldh ago", (long long)(age/3600));
+        else snprintf(age_str, sizeof(age_str), "%lldd ago", (long long)(age/86400));
+
+        off += (size_t)snprintf(body + off, sizeof(body) - off,
+            "<tr%s><td><a href='http://%s/'>%s</a>%s</td>"
+            "<td>%d</td><td>%d</td><td>%s</td><td>%s</td></tr>",
+            self ? " class='self'" : "",
+            addr ? addr : "", addr ? addr : "",
+            self ? " (this node)" : "",
+            port, h, age_str, ver ? ver : "");
+        count++;
+    }
+    sqlite3_finalize(s);
+    sqlite3_close(db);
+
+    off += (size_t)snprintf(body + off, sizeof(body) - off,
+        "</table>"
+        "<p class='count'>%d nodes in directory</p>"
+        "<p class='count'><a href='/directory.json'>JSON API</a> | "
+        "<a href='/'>Home</a></p>"
+        "<footer>ZClassic23 &mdash; Decentralized Internet</footer>"
+        "</body></html>", count);
+
+    return (size_t)snprintf((char *)response, max,
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: text/html; charset=utf-8\r\n"
+        "Content-Length: %zu\r\n"
+        "Connection: close\r\n\r\n"
+        "%s", off, body);
+}
+
 /* ── Status endpoint (JSON API) ───────────────────────────── */
 
 static size_t serve_status(uint8_t *response, size_t max)
@@ -282,15 +507,65 @@ static size_t serve_status(uint8_t *response, size_t max)
     if (g_start_time > 0)
         uptime = (long)(time(NULL) - g_start_time);
 
-    char body[512];
+    /* Query extra stats from SQLite */
+    int64_t last_block_time = 0, tx_count = 0;
+    if (g_datadir) {
+        char db_path[1024];
+        snprintf(db_path, sizeof(db_path), "%s/node.db", g_datadir);
+        sqlite3 *db = NULL;
+        if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) == SQLITE_OK) {
+            sqlite3_busy_timeout(db, 5000);
+            sqlite3_stmt *s = NULL;
+            if (sqlite3_prepare_v2(db,
+                    "SELECT time FROM blocks ORDER BY height DESC LIMIT 1",
+                    -1, &s, NULL) == SQLITE_OK && s) {
+                if (sqlite3_step(s) == SQLITE_ROW)
+                    last_block_time = sqlite3_column_int64(s, 0);
+                sqlite3_finalize(s);
+            }
+            s = NULL;
+            if (sqlite3_prepare_v2(db,
+                    "SELECT count(*) FROM transactions",
+                    -1, &s, NULL) == SQLITE_OK && s) {
+                if (sqlite3_step(s) == SQLITE_ROW)
+                    tx_count = sqlite3_column_int64(s, 0);
+                sqlite3_finalize(s);
+            }
+            sqlite3_close(db);
+        }
+    }
+
+    int64_t now = (int64_t)time(NULL);
+    int64_t last_block_age = (last_block_time > 0) ? now - last_block_time : -1;
+    bool is_syncing = (height == 0 && uptime < 600) ||
+                      (last_block_age > 600 && uptime > 300);
+
+    const char *onion = g_onion_address[0] ? g_onion_address : NULL;
+
+    char body[1024];
     int blen = snprintf(body, sizeof(body),
-        "{\"height\":%d,\"peers\":%d,\"version\":\"0.1.0\",\"uptime\":%ld}",
-        height, peers, uptime);
+        "{\"height\":%d"
+        ",\"peers\":%d"
+        ",\"version\":\"0.1.0\""
+        ",\"uptime\":%ld"
+        ",\"syncing\":%s"
+        ",\"last_block_age\":%lld"
+        ",\"transactions\":%lld"
+        "%s%s%s"
+        "}",
+        height, peers, uptime,
+        is_syncing ? "true" : "false",
+        (long long)last_block_age,
+        (long long)tx_count,
+        onion ? ",\"onion\":\"" : "",
+        onion ? onion : "",
+        onion ? "\"" : "");
     if (blen < 0) blen = 0;
 
     return (size_t)snprintf((char *)response, max,
         "HTTP/1.1 200 OK\r\n"
         "Content-Type: application/json\r\n"
+        "Access-Control-Allow-Origin: *\r\n"
         "Content-Length: %d\r\n"
         "Connection: close\r\n\r\n"
         "%s", blen, body);
@@ -319,6 +594,14 @@ size_t onion_service_handle_request(const char *method,
     /* JSON status endpoint */
     if (strcmp(path, "/status") == 0)
         return serve_status(response, response_max);
+
+    /* Node directory — JSON API */
+    if (strcmp(path, "/directory.json") == 0)
+        return serve_directory_json(response, response_max);
+
+    /* Node directory — HTML page */
+    if (strcmp(path, "/directory") == 0 || strcmp(path, "/directory/") == 0)
+        return serve_directory_html(response, response_max);
 
     /* Landing page / directory */
     if (strcmp(path, "/") == 0)
@@ -369,6 +652,22 @@ const char *onion_service_start(const char *datadir)
 {
     g_datadir = datadir;
     g_start_time = time(NULL);
+
+    /* Initialize peer directory from chain data */
+    if (datadir) {
+        char db_path[1024];
+        snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
+        sqlite3 *db = NULL;
+        if (sqlite3_open(db_path, &db) == SQLITE_OK) {
+            sqlite3_busy_timeout(db, 5000);
+            ensure_directory_table(db);
+            populate_directory_from_chain(db);
+            if (g_onion_address[0])
+                register_self(db);
+            sqlite3_close(db);
+        }
+    }
+
     return g_onion_address[0] ? g_onion_address : NULL;
 }
 
@@ -386,6 +685,21 @@ void onion_service_set_address(const char *address)
 {
     if (address) {
         snprintf(g_onion_address, sizeof(g_onion_address), "%s", address);
+
+        /* Register ourselves in the peer directory */
+        if (g_datadir) {
+            char db_path[1024];
+            snprintf(db_path, sizeof(db_path), "%s/node.db", g_datadir);
+            sqlite3 *db = NULL;
+            if (sqlite3_open(db_path, &db) == SQLITE_OK) {
+                sqlite3_busy_timeout(db, 5000);
+                ensure_directory_table(db);
+                register_self(db);
+                sqlite3_close(db);
+                printf("Directory: registered self as %s\n", address);
+                fflush(stdout);
+            }
+        }
     } else {
         g_onion_address[0] = '\0';
     }

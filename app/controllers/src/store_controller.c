@@ -18,7 +18,7 @@ static size_t serve_gated_content(sqlite3 *db, const char *customer_addr,
                                    uint8_t *resp, size_t max);
 
 /* Ensure store tables exist */
-static void store_ensure_schema(sqlite3 *db)
+static void store_ensure_schema(sqlite3 *db, const char *datadir)
 {
     sqlite3_exec(db,
         "CREATE TABLE IF NOT EXISTS products ("
@@ -31,10 +31,110 @@ static void store_ensure_schema(sqlite3 *db)
         "active INTEGER NOT NULL DEFAULT 1"
         ")", NULL, NULL, NULL);
 
-    /* Seed demo product if empty */
+    /* Load products from {datadir}/store/products.json if it exists,
+     * otherwise seed with demo products. This lets node operators
+     * customize their store by editing a simple JSON file. */
     sqlite3_stmt *cnt = NULL;
     sqlite3_prepare_v2(db, "SELECT count(*) FROM products", -1, &cnt, NULL);
-    if (sqlite3_step(cnt) == SQLITE_ROW && sqlite3_column_int(cnt, 0) == 0) {
+    bool empty = (sqlite3_step(cnt) == SQLITE_ROW &&
+                  sqlite3_column_int(cnt, 0) == 0);
+    sqlite3_finalize(cnt);
+
+    if (empty && datadir) {
+        char json_path[1024];
+        snprintf(json_path, sizeof(json_path), "%s/store/products.json", datadir);
+        FILE *f = fopen(json_path, "r");
+        if (f) {
+            /* Parse simple JSON array of products:
+             * [{"name":"...","description":"...","price_zcl":0.01,
+             *   "token_id":"...","tokens_per_purchase":1}, ...] */
+            char buf[16384];
+            size_t len = fread(buf, 1, sizeof(buf) - 1, f);
+            buf[len] = '\0';
+            fclose(f);
+
+            /* Simple JSON array parser — find each {...} object */
+            const char *p = buf;
+            int loaded = 0;
+            while ((p = strchr(p, '{')) != NULL) {
+                const char *end = strchr(p, '}');
+                if (!end) break;
+
+                /* Extract fields with simple string search */
+                char name[256] = "", desc[1024] = "", token[64] = "";
+                double price_zcl = 0.0;
+                int tokens = 1;
+
+                /* name */
+                const char *q = strstr(p, "\"name\"");
+                if (q && q < end) {
+                    q = strchr(q + 6, '"'); if (q) { q++;
+                    const char *e = strchr(q, '"');
+                    if (e && (size_t)(e-q) < sizeof(name)) {
+                        memcpy(name, q, (size_t)(e-q)); name[e-q] = '\0';
+                    }}
+                }
+                /* description */
+                q = strstr(p, "\"description\"");
+                if (q && q < end) {
+                    q = strchr(q + 13, '"'); if (q) { q++;
+                    const char *e = strchr(q, '"');
+                    if (e && (size_t)(e-q) < sizeof(desc)) {
+                        memcpy(desc, q, (size_t)(e-q)); desc[e-q] = '\0';
+                    }}
+                }
+                /* token_id */
+                q = strstr(p, "\"token_id\"");
+                if (q && q < end) {
+                    q = strchr(q + 10, '"'); if (q) { q++;
+                    const char *e = strchr(q, '"');
+                    if (e && (size_t)(e-q) < sizeof(token)) {
+                        memcpy(token, q, (size_t)(e-q)); token[e-q] = '\0';
+                    }}
+                }
+                /* price_zcl */
+                q = strstr(p, "\"price_zcl\"");
+                if (q && q < end) {
+                    q += 11; while (*q == ':' || *q == ' ') q++;
+                    price_zcl = strtod(q, NULL);
+                }
+                /* tokens_per_purchase */
+                q = strstr(p, "\"tokens_per_purchase\"");
+                if (q && q < end) {
+                    q += 20; while (*q == ':' || *q == ' ') q++;
+                    tokens = atoi(q);
+                    if (tokens < 1) tokens = 1;
+                }
+
+                if (name[0] && price_zcl > 0) {
+                    int64_t price_sat = (int64_t)(price_zcl * 100000000.0);
+                    sqlite3_stmt *ins = NULL;
+                    sqlite3_prepare_v2(db,
+                        "INSERT INTO products (name, description, price_zatoshi, "
+                        "token_id, tokens_per_purchase) VALUES (?,?,?,?,?)",
+                        -1, &ins, NULL);
+                    sqlite3_bind_text(ins, 1, name, -1, SQLITE_STATIC);
+                    sqlite3_bind_text(ins, 2, desc, -1, SQLITE_STATIC);
+                    sqlite3_bind_int64(ins, 3, price_sat);
+                    sqlite3_bind_text(ins, 4, token, -1, SQLITE_STATIC);
+                    sqlite3_bind_int(ins, 5, tokens);
+                    sqlite3_step(ins);
+                    sqlite3_finalize(ins);
+                    loaded++;
+                }
+                p = end + 1;
+            }
+            if (loaded > 0)
+                printf("Store: loaded %d products from %s\n", loaded, json_path);
+            else
+                printf("Store: %s exists but no valid products found\n", json_path);
+            fflush(stdout);
+            empty = (loaded == 0);
+        }
+    }
+
+    /* Fallback: seed demo products if still empty */
+    if (empty) {
         sqlite3_exec(db,
             "INSERT INTO products (name, description, price_zatoshi, "
             "token_id, tokens_per_purchase) VALUES "
@@ -61,7 +161,6 @@ static void store_ensure_schema(sqlite3 *db)
             "2000000, 'ZCL23STORE', 1)",
             NULL, NULL, NULL);
     }
-    sqlite3_finalize(cnt);
 
     sqlite3_exec(db,
         "CREATE TABLE IF NOT EXISTS orders ("
@@ -308,13 +407,21 @@ static size_t serve_create_order(sqlite3 *db, int64_t product_id,
     int64_t price = sqlite3_column_int64(s, 0);
     sqlite3_finalize(s);
 
-    /* Generate a unique Sapling z-address for this payment. */
+    /* Generate a unique Sapling z-address for this payment.
+     * NEVER fall back to a fake address — that loses user funds. */
     char payment_addr[128];
     if (!zslp_generate_payment_address(datadir, payment_addr,
                                         sizeof(payment_addr))) {
-        snprintf(payment_addr, sizeof(payment_addr),
-                 "zs1_order_%lld_%lld",
-                 (long long)product_id, (long long)time(NULL));
+        printf("store: CRITICAL — z-address generation failed for product %lld\n",
+               (long long)product_id);
+        fflush(stdout);
+        return (size_t)snprintf((char *)resp, max,
+            "HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/html\r\n"
+            "Connection: close\r\n\r\n"
+            "<h1>Payment Temporarily Unavailable</h1>"
+            "<p>The node is still loading cryptographic keys. "
+            "Please try again in a few minutes.</p>"
+            "<p><a href='/store'>Back to Store</a></p>");
     }
 
     /* Create order */
@@ -394,9 +501,11 @@ static size_t serve_order_status(sqlite3 *db, int64_t order_id,
     const char *pay_txid = (const char *)sqlite3_column_text(s, 4);
     const char *mint_txid = (const char *)sqlite3_column_text(s, 5);
 
-    const char *status_text = status == 0 ? "Pending" :
-                               status == 1 ? "Paid" :
-                               status == 2 ? "Tokens Sent" : "Failed";
+    const char *status_text = status == 0 ? "Pending Payment" :
+                               status == 1 ? "Payment Received" :
+                               status == 2 ? "Tokens Sent" :
+                               status == 3 ? "Mint Failed (contact support)" :
+                               "Unknown";
     const char *status_class = status == 0 ? "pending" :
                                 status >= 1 ? "paid" : "pending";
 
@@ -497,7 +606,7 @@ size_t store_handle_request(const char *method, const char *path,
     sqlite3 *db = NULL;
     if (sqlite3_open(db_path, &db) != SQLITE_OK) return 0;
     sqlite3_busy_timeout(db, 5000);
-    store_ensure_schema(db);
+    store_ensure_schema(db, datadir);
 
     size_t result = 0;
 
@@ -583,46 +692,59 @@ void store_process_payments(const char *datadir)
         int64_t received = 0;
         sqlite3_stmt *check = NULL;
 
-        /* Primary: per-address query */
+        /* Require minimum 3 confirmations to prevent reorg-based
+         * double-spend: payment reversed but tokens already minted. */
+        int64_t tip_height = 0;
+        {
+            sqlite3_stmt *th = NULL;
+            sqlite3_prepare_v2(db, "SELECT MAX(height) FROM blocks",
+                               -1, &th, NULL);
+            if (sqlite3_step(th) == SQLITE_ROW)
+                tip_height = sqlite3_column_int64(th, 0);
+            sqlite3_finalize(th);
+        }
+        int64_t min_height = tip_height - 3; /* 3 confirmations */
+
+        /* Primary: per-address query with confirmation depth */
         sqlite3_prepare_v2(db,
             "SELECT COALESCE(SUM(value), 0) FROM wallet_sapling_notes "
-            "WHERE spent_txid IS NULL AND address = ?",
+            "WHERE spent_txid IS NULL AND address = ? "
+            "AND block_height IS NOT NULL AND block_height <= ?",
             -1, &check, NULL);
         sqlite3_bind_text(check, 1, pay_addr, -1, SQLITE_STATIC);
+        sqlite3_bind_int64(check, 2, min_height);
         if (sqlite3_step(check) == SQLITE_ROW)
             received = sqlite3_column_int64(check, 0);
         sqlite3_finalize(check);
 
-        /* Fallback: if no address match and using placeholder z-addrs,
-         * check for an unspent note with the exact expected amount. */
-        if (received < expected) {
-            check = NULL;
-            sqlite3_prepare_v2(db,
-                "SELECT COALESCE(SUM(value), 0) FROM wallet_sapling_notes "
-                "WHERE spent_txid IS NULL AND value = ?",
-                -1, &check, NULL);
-            sqlite3_bind_int64(check, 1, expected);
-            if (sqlite3_step(check) == SQLITE_ROW)
-                received = sqlite3_column_int64(check, 0);
-            sqlite3_finalize(check);
-        }
+        /* Only match by z-address — never fall back to amount matching.
+         * Amount-only matching is dangerous: could match unrelated
+         * payments with the same value, minting tokens for wrong orders. */
 
         if (received >= expected) {
-            /* Payment confirmed — update order and mint tokens */
+            /* Payment confirmed — mint tokens FIRST, then update status.
+             * This ensures we never show "Tokens Sent" if mint failed. */
+            bool mint_ok = zslp_mint(datadir, token_id, cust_addr,
+                                      (uint64_t)tokens);
+
+            int new_status = mint_ok ? 2 : 3; /* 2=sent, 3=mint_failed */
             sqlite3_stmt *upd = NULL;
             sqlite3_prepare_v2(db,
-                "UPDATE orders SET status=2, paid_at=strftime('%%s','now') "
+                "UPDATE orders SET status=?, paid_at=strftime('%%s','now') "
                 "WHERE id=?", -1, &upd, NULL);
-            sqlite3_bind_int64(upd, 1, order_id);
+            sqlite3_bind_int(upd, 1, new_status);
+            sqlite3_bind_int64(upd, 2, order_id);
             sqlite3_step(upd);
             sqlite3_finalize(upd);
 
-            /* Mint ZSLP tokens to customer */
-            zslp_mint(datadir, token_id, cust_addr, (uint64_t)tokens);
-
-            printf("Store: order #%lld paid, minted %lld %s → %s\n",
-                   (long long)order_id, (long long)tokens,
-                   token_id, cust_addr);
+            if (mint_ok) {
+                printf("Store: order #%lld paid, minted %lld %s -> %s\n",
+                       (long long)order_id, (long long)tokens,
+                       token_id, cust_addr);
+            } else {
+                printf("Store: order #%lld paid but MINT FAILED for %s\n",
+                       (long long)order_id, cust_addr);
+            }
             fflush(stdout);
         }
     }

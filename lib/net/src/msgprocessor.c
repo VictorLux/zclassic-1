@@ -805,7 +805,11 @@ static bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
                         "dos=%d %s", dos, state.reject_reason);
             printf("Peer %s: invalid block (dos=%d): %s\n",
                    node->addr_name, dos, state.reject_reason);
-            peer_misbehaving(mp->net_mgr, node, dos, state.reject_reason);
+            peer_misbehaving(mp->net_mgr, node, dos,
+                             state.reject_reason[0] ? state.reject_reason
+                                                    : "invalid block");
+        } else if (!validation_state_is_valid(&state)) {
+            peer_misbehaving(mp->net_mgr, node, 10, "block validation failed");
         }
     }
 
@@ -857,7 +861,7 @@ static bool process_tx_msg(struct msg_processor *mp, struct p2p_node *node,
     transaction_init(&tx);
     if (!transaction_deserialize(&tx, s)) {
         printf("Peer %s: failed to deserialize tx\n", node->addr_name);
-        peer_misbehaving(mp->net_mgr, node, 20, "malformed tx");
+        peer_misbehaving(mp->net_mgr, node, 10, "malformed tx");
         transaction_free(&tx);
         return false;
     }

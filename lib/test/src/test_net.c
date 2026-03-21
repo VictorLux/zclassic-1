@@ -2799,5 +2799,40 @@ skip_parallel_tests:
         else { printf("FAIL\n"); failures++; }
     }
 
+    /* ── Robustness: peer_misbehaving accumulates and bans ── */
+    printf("net: peer_misbehaving accumulates score... ");
+    {
+        struct p2p_node node;
+        memset(&node, 0, sizeof(node));
+        snprintf(node.addr_name, sizeof(node.addr_name), "test_peer");
+        struct net_manager nm;
+        memset(&nm, 0, sizeof(nm));
+
+        /* Below threshold — not disconnected */
+        peer_misbehaving(&nm, &node, 50, "test1");
+        bool ok = (node.misbehavior == 50 && !node.disconnect);
+        /* At threshold — banned and disconnected */
+        peer_misbehaving(&nm, &node, 50, "test2");
+        ok = ok && (node.misbehavior == 100 && node.disconnect);
+        if (ok) printf("OK\n");
+        else { printf("FAIL (score=%d, disc=%d)\n", node.misbehavior, node.disconnect); failures++; }
+    }
+
+    printf("net: peer_misbehaving small increments ban at 100... ");
+    {
+        struct p2p_node node;
+        memset(&node, 0, sizeof(node));
+        snprintf(node.addr_name, sizeof(node.addr_name), "test_spam");
+        struct net_manager nm;
+        memset(&nm, 0, sizeof(nm));
+
+        /* 10 bad blocks at 10 points each = 100 = banned */
+        for (int i = 0; i < 10; i++)
+            peer_misbehaving(&nm, &node, 10, "bad block");
+        bool ok = (node.misbehavior == 100 && node.disconnect);
+        if (ok) printf("OK\n");
+        else { printf("FAIL (score=%d)\n", node.misbehavior); failures++; }
+    }
+
     return failures;
 }

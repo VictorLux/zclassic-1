@@ -177,6 +177,7 @@ int test_api(void);
 int test_explorer(void);
 int test_mining(void);
 int test_utxo_commitment(void);
+int test_scan_util(void);
 
 /* ── DRY test macros ─────────────────────────────────────── */
 

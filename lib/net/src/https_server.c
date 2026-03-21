@@ -18,6 +18,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <signal.h>
+#include <stdatomic.h>
 #include <sys/time.h>
 
 static SSL_CTX *g_ssl_ctx = NULL;
@@ -27,6 +28,11 @@ static pthread_t g_https_thread;
 static pthread_t g_http_thread;
 static volatile bool g_running = false;
 static char g_hostname[256] = "";
+
+/* Connection limit — prevents OOM under heavy load.
+ * Each connection mallocs 512KB for response buffer. */
+#define MAX_HTTPS_CONNECTIONS 64
+static _Atomic int g_active_connections = 0;
 
 /* ── HTTP helpers ─────────────────────────────────────────── */
 
@@ -146,15 +152,17 @@ static void *https_client_thread(void *arg)
     int fd = ca->fd;
     free(ca);
 
+    atomic_fetch_add(&g_active_connections, 1);
+
     SSL *ssl = SSL_new(g_ssl_ctx);
-    if (!ssl) { close(fd); return NULL; }
+    if (!ssl) { close(fd); atomic_fetch_sub(&g_active_connections, 1); return NULL; }
 
     SSL_set_fd(ssl, fd);
 
     if (SSL_accept(ssl) <= 0) {
-        /* TLS handshake failed — log silently */
         SSL_free(ssl);
         close(fd);
+        atomic_fetch_sub(&g_active_connections, 1);
         return NULL;
     }
 
@@ -163,6 +171,7 @@ static void *https_client_thread(void *arg)
     SSL_shutdown(ssl);
     SSL_free(ssl);
     close(fd);
+    atomic_fetch_sub(&g_active_connections, 1);
     return NULL;
 }
 
@@ -177,6 +186,15 @@ static void *https_listen_fn(void *arg)
         if (client_fd < 0) {
             if (g_running && errno != EINVAL)
                 perror("https accept");
+            continue;
+        }
+
+        /* Reject if too many concurrent connections (prevents OOM) */
+        if (atomic_load(&g_active_connections) >= MAX_HTTPS_CONNECTIONS) {
+            const char *busy = "HTTP/1.1 503 Service Unavailable\r\n"
+                "Retry-After: 5\r\nConnection: close\r\n\r\n";
+            write(client_fd, busy, strlen(busy));
+            close(client_fd);
             continue;
         }
 
