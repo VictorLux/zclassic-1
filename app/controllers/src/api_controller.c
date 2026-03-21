@@ -8,6 +8,7 @@
 #include "controllers/api_controller.h"
 #include "controllers/explorer_internal.h"
 #include "controllers/explorer_factoids.h"
+#include "event/event.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1256,6 +1257,39 @@ size_t api_handle_request(const char *method, const char *path,
         if (!g_datadir)
             return json_error(response, response_max, JSON_500_HEADERS, "No datadir");
         return explorer_factoids_build_json(response, response_max, g_datadir);
+    }
+
+    /* Route: /api/events — event log dump (lock-free atomic reads, safe from handler) */
+    if (strncmp(clean_path, "/api/events", 11) == 0 &&
+        (clean_path[11] == '\0' || clean_path[11] == '?')) {
+        size_t count = 200;
+        const char *q = strchr(path, '?');
+        if (q) {
+            const char *cp = strstr(q, "count=");
+            if (cp) {
+                long v = strtol(cp + 6, NULL, 10);
+                if (v > 0 && v <= 65536) count = (size_t)v;
+            }
+        }
+        /* event_dump_json is lock-free (atomic reads), no RPC call needed */
+        char *buf = malloc(524288);
+        if (!buf)
+            return json_error(response, response_max, JSON_500_HEADERS,
+                              "Out of memory");
+        size_t json_len = event_dump_json(buf, 524288, count);
+        size_t off = (size_t)snprintf((char *)response, response_max,
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Type: application/json; charset=utf-8\r\n"
+            "Access-Control-Allow-Origin: *\r\n"
+            "Cache-Control: no-cache\r\n"
+            "Connection: close\r\n"
+            "Content-Length: %zu\r\n\r\n", json_len);
+        if (off + json_len <= response_max)
+            memcpy(response + off, buf, json_len);
+        else if (off < response_max)
+            memcpy(response + off, buf, response_max - off);
+        free(buf);
+        return off + json_len < response_max ? off + json_len : response_max;
     }
 
     return json_error(response, response_max, JSON_404_HEADERS,

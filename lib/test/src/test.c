@@ -47,6 +47,7 @@ int main(void)
     failures += test_utxo_commitment();
     failures += test_scan_util();
     failures += test_tor();
+    failures += test_event();
 
     ecc_verify_destroy();
     ecc_stop();
