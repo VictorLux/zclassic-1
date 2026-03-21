@@ -484,6 +484,11 @@ bool connect_tip(struct validation_state *state,
         coins_view_cache_as_view(&backing, coins_tip);
         coins_view_cache_init(&view, &backing);
 
+        /* Log coins_tip size periodically to verify UTXO set is growing */
+        if (pindex_new->nHeight % 10000 == 0 || pindex_new->nHeight < 5)
+            printf("connect_tip: h=%d coins_tip_cache=%zu\n",
+                   pindex_new->nHeight, coins_tip->cache_coins.size);
+
         bool rv = connect_block(pblock, state, pindex_new, &view, params, false);
         if (!rv) {
             printf("connect_tip: connect_block failed at height %d: %s\n",
