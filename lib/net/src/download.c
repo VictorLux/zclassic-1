@@ -126,13 +126,9 @@ static struct dl_in_flight *find_slot(struct download_manager *dm,
     return find_empty ? first_empty : NULL;
 }
 
-/* Grow hash table when load factor > 50% */
-static void maybe_grow(struct download_manager *dm)
+/* Rehash into a table of given size (must be power of 2). */
+static void dl_rehash(struct download_manager *dm, size_t new_size)
 {
-    if (dm->num_active * 2 < dm->num_slots)
-        return;
-
-    size_t new_size = dm->num_slots * 2;
     struct dl_in_flight *new_slots = calloc(new_size, sizeof(struct dl_in_flight));
     if (!new_slots) return;
 
@@ -151,6 +147,21 @@ static void maybe_grow(struct download_manager *dm)
     free(dm->slots);
     dm->slots = new_slots;
     dm->num_slots = new_size;
+}
+
+/* Grow or compact hash table.
+ * Grows when load factor > 50%.
+ * Compacts (rehash in place) when active entries < 25% of slots
+ * and total insertions have left many dead gaps. */
+static void maybe_grow(struct download_manager *dm)
+{
+    if (dm->num_active * 2 >= dm->num_slots) {
+        dl_rehash(dm, dm->num_slots * 2);
+    } else if (dm->num_slots > INITIAL_SLOTS &&
+               dm->num_active * 4 < dm->num_slots) {
+        /* Compact: rehash at same size to eliminate dead gaps */
+        dl_rehash(dm, dm->num_slots);
+    }
 }
 
 bool dl_is_in_flight(struct download_manager *dm, const struct uint256 *hash)
@@ -272,6 +283,9 @@ size_t dl_check_timeouts(struct download_manager *dm, int64_t now)
         reassigned++;
     }
 
+    /* Compact hash table if it has many dead gaps */
+    maybe_grow(dm);
+
     zcl_mutex_unlock(&dm->cs);
     return reassigned;
 }
@@ -368,21 +382,14 @@ size_t dl_assign_to_peer(struct download_manager *dm,
     if (dm->num_active + available > DL_MAX_IN_FLIGHT_TOTAL)
         available = DL_MAX_IN_FLIGHT_TOTAL - dm->num_active;
 
+    /* Pop from front — batch the memmove after the loop (O(1) per pop) */
+    size_t pop_count = 0;
     size_t assigned = 0;
-    for (size_t i = 0; i < available && dm->queue_len > 0; i++) {
-        struct uint256 hash = dm->queue[0];
-        int32_t height = dm->queue_heights[0];
+    while (assigned < available && pop_count < dm->queue_len) {
+        struct uint256 hash = dm->queue[pop_count];
+        int32_t height = dm->queue_heights[pop_count];
+        pop_count++;
 
-        /* Pop from front of queue */
-        dm->queue_len--;
-        if (dm->queue_len > 0) {
-            memmove(&dm->queue[0], &dm->queue[1],
-                    dm->queue_len * sizeof(struct uint256));
-            memmove(&dm->queue_heights[0], &dm->queue_heights[1],
-                    dm->queue_len * sizeof(int32_t));
-        }
-
-        /* Mark as in-flight */
         maybe_grow(dm);
         struct dl_in_flight *slot = find_slot(dm, &hash, true);
         if (!slot) continue;
@@ -396,6 +403,17 @@ size_t dl_assign_to_peer(struct download_manager *dm,
         dm->total_requested++;
 
         out_hashes[assigned++] = hash;
+    }
+
+    /* Batch shift: remove all popped entries in one memmove */
+    if (pop_count > 0) {
+        dm->queue_len -= pop_count;
+        if (dm->queue_len > 0) {
+            memmove(&dm->queue[0], &dm->queue[pop_count],
+                    dm->queue_len * sizeof(struct uint256));
+            memmove(&dm->queue_heights[0], &dm->queue_heights[pop_count],
+                    dm->queue_len * sizeof(int32_t));
+        }
     }
 
     if (assigned > 0) {
