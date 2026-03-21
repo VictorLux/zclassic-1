@@ -670,6 +670,58 @@ int test_store(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    /* ── Robustness: store buy never returns fake z-address ── */
+    printf("store: buy never generates fake zs1_order address... ");
+    {
+        uint8_t resp[4096];
+        size_t n = store_handle_request("POST", "/store/buy/1",
+            (const uint8_t *)"customer_addr=t1TestAddr123", 27,
+            resp, sizeof(resp), test_datadir);
+        resp[n < sizeof(resp) ? n : sizeof(resp) - 1] = '\0';
+        /* Should either show a real z-address (if ZK loaded) or 503.
+         * Must NEVER contain a fake placeholder like zs1_order_ */
+        bool ok = (n > 0 && strstr((char *)resp, "zs1_order_") == NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL (contains fake zs1_order_ address)\n"); failures++; }
+    }
+
+    /* ── Robustness: products.json loading ── */
+    printf("store: loads products from JSON file... ");
+    {
+        /* Create a store directory with products.json */
+        char store_dir[512], json_path[512];
+        snprintf(store_dir, sizeof(store_dir), "%s/store", test_datadir);
+        mkdir(store_dir, 0755);
+        snprintf(json_path, sizeof(json_path), "%s/products.json", store_dir);
+        FILE *f = fopen(json_path, "w");
+        if (f) {
+            fprintf(f, "[{\"name\":\"Test Product\","
+                    "\"description\":\"A test\","
+                    "\"price_zcl\":0.5,"
+                    "\"token_id\":\"TEST\","
+                    "\"tokens_per_purchase\":3}]");
+            fclose(f);
+        }
+        /* Delete existing products so schema re-seeds from JSON */
+        char db_path2[512];
+        snprintf(db_path2, sizeof(db_path2), "%s/node.db", test_datadir);
+        sqlite3 *db2 = NULL;
+        if (sqlite3_open(db_path2, &db2) == SQLITE_OK) {
+            sqlite3_exec(db2, "DELETE FROM products", NULL, NULL, NULL);
+            sqlite3_close(db2);
+        }
+        /* Trigger schema check via a store request */
+        uint8_t resp[8192];
+        size_t n = store_handle_request("GET", "/store", NULL, 0,
+            resp, sizeof(resp), test_datadir);
+        resp[n < sizeof(resp) ? n : sizeof(resp) - 1] = '\0';
+        bool ok = (n > 0 && strstr((char *)resp, "Test Product") != NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL (product not found in response)\n"); failures++; }
+        unlink(json_path);
+        rmdir(store_dir);
+    }
+
     if (failures > 0)
         printf("Store: debug datadir preserved at %s\n", test_datadir);
     else

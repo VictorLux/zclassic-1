@@ -18,7 +18,7 @@ static size_t serve_gated_content(sqlite3 *db, const char *customer_addr,
                                    uint8_t *resp, size_t max);
 
 /* Ensure store tables exist */
-static void store_ensure_schema(sqlite3 *db)
+static void store_ensure_schema(sqlite3 *db, const char *datadir)
 {
     sqlite3_exec(db,
         "CREATE TABLE IF NOT EXISTS products ("
@@ -31,10 +31,110 @@ static void store_ensure_schema(sqlite3 *db)
         "active INTEGER NOT NULL DEFAULT 1"
         ")", NULL, NULL, NULL);
 
-    /* Seed demo product if empty */
+    /* Load products from {datadir}/store/products.json if it exists,
+     * otherwise seed with demo products. This lets node operators
+     * customize their store by editing a simple JSON file. */
     sqlite3_stmt *cnt = NULL;
     sqlite3_prepare_v2(db, "SELECT count(*) FROM products", -1, &cnt, NULL);
-    if (sqlite3_step(cnt) == SQLITE_ROW && sqlite3_column_int(cnt, 0) == 0) {
+    bool empty = (sqlite3_step(cnt) == SQLITE_ROW &&
+                  sqlite3_column_int(cnt, 0) == 0);
+    sqlite3_finalize(cnt);
+
+    if (empty && datadir) {
+        char json_path[1024];
+        snprintf(json_path, sizeof(json_path), "%s/store/products.json", datadir);
+        FILE *f = fopen(json_path, "r");
+        if (f) {
+            /* Parse simple JSON array of products:
+             * [{"name":"...","description":"...","price_zcl":0.01,
+             *   "token_id":"...","tokens_per_purchase":1}, ...] */
+            char buf[16384];
+            size_t len = fread(buf, 1, sizeof(buf) - 1, f);
+            buf[len] = '\0';
+            fclose(f);
+
+            /* Simple JSON array parser — find each {...} object */
+            const char *p = buf;
+            int loaded = 0;
+            while ((p = strchr(p, '{')) != NULL) {
+                const char *end = strchr(p, '}');
+                if (!end) break;
+
+                /* Extract fields with simple string search */
+                char name[256] = "", desc[1024] = "", token[64] = "";
+                double price_zcl = 0.0;
+                int tokens = 1;
+
+                /* name */
+                const char *q = strstr(p, "\"name\"");
+                if (q && q < end) {
+                    q = strchr(q + 6, '"'); if (q) { q++;
+                    const char *e = strchr(q, '"');
+                    if (e && (size_t)(e-q) < sizeof(name)) {
+                        memcpy(name, q, (size_t)(e-q)); name[e-q] = '\0';
+                    }}
+                }
+                /* description */
+                q = strstr(p, "\"description\"");
+                if (q && q < end) {
+                    q = strchr(q + 13, '"'); if (q) { q++;
+                    const char *e = strchr(q, '"');
+                    if (e && (size_t)(e-q) < sizeof(desc)) {
+                        memcpy(desc, q, (size_t)(e-q)); desc[e-q] = '\0';
+                    }}
+                }
+                /* token_id */
+                q = strstr(p, "\"token_id\"");
+                if (q && q < end) {
+                    q = strchr(q + 10, '"'); if (q) { q++;
+                    const char *e = strchr(q, '"');
+                    if (e && (size_t)(e-q) < sizeof(token)) {
+                        memcpy(token, q, (size_t)(e-q)); token[e-q] = '\0';
+                    }}
+                }
+                /* price_zcl */
+                q = strstr(p, "\"price_zcl\"");
+                if (q && q < end) {
+                    q += 11; while (*q == ':' || *q == ' ') q++;
+                    price_zcl = strtod(q, NULL);
+                }
+                /* tokens_per_purchase */
+                q = strstr(p, "\"tokens_per_purchase\"");
+                if (q && q < end) {
+                    q += 20; while (*q == ':' || *q == ' ') q++;
+                    tokens = atoi(q);
+                    if (tokens < 1) tokens = 1;
+                }
+
+                if (name[0] && price_zcl > 0) {
+                    int64_t price_sat = (int64_t)(price_zcl * 100000000.0);
+                    sqlite3_stmt *ins = NULL;
+                    sqlite3_prepare_v2(db,
+                        "INSERT INTO products (name, description, price_zatoshi, "
+                        "token_id, tokens_per_purchase) VALUES (?,?,?,?,?)",
+                        -1, &ins, NULL);
+                    sqlite3_bind_text(ins, 1, name, -1, SQLITE_STATIC);
+                    sqlite3_bind_text(ins, 2, desc, -1, SQLITE_STATIC);
+                    sqlite3_bind_int64(ins, 3, price_sat);
+                    sqlite3_bind_text(ins, 4, token, -1, SQLITE_STATIC);
+                    sqlite3_bind_int(ins, 5, tokens);
+                    sqlite3_step(ins);
+                    sqlite3_finalize(ins);
+                    loaded++;
+                }
+                p = end + 1;
+            }
+            if (loaded > 0)
+                printf("Store: loaded %d products from %s\n", loaded, json_path);
+            else
+                printf("Store: %s exists but no valid products found\n", json_path);
+            fflush(stdout);
+            empty = (loaded == 0);
+        }
+    }
+
+    /* Fallback: seed demo products if still empty */
+    if (empty) {
         sqlite3_exec(db,
             "INSERT INTO products (name, description, price_zatoshi, "
             "token_id, tokens_per_purchase) VALUES "
@@ -61,7 +161,6 @@ static void store_ensure_schema(sqlite3 *db)
             "2000000, 'ZCL23STORE', 1)",
             NULL, NULL, NULL);
     }
-    sqlite3_finalize(cnt);
 
     sqlite3_exec(db,
         "CREATE TABLE IF NOT EXISTS orders ("
@@ -507,7 +606,7 @@ size_t store_handle_request(const char *method, const char *path,
     sqlite3 *db = NULL;
     if (sqlite3_open(db_path, &db) != SQLITE_OK) return 0;
     sqlite3_busy_timeout(db, 5000);
-    store_ensure_schema(db);
+    store_ensure_schema(db, datadir);
 
     size_t result = 0;
 
