@@ -836,6 +836,26 @@ static bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
                        new_tip->nHeight, node->addr_name);
                 fflush(stdout);
             }
+
+            /* Relay accepted block to all connected peers (not during IBD).
+             * At the tip, we act as a full relay node. During IBD, relaying
+             * would flood peers with old blocks they already have. */
+            if (sync_get_state() == SYNC_AT_TIP && new_tip->phashBlock) {
+                struct inv_item blk_inv;
+                inv_item_init_typed(&blk_inv, MSG_BLOCK, new_tip->phashBlock);
+                /* Push to all peers except the one who sent it */
+                if (mp->net_mgr) {
+                    zcl_mutex_lock(&mp->net_mgr->cs_nodes);
+                    for (size_t pi = 0; pi < mp->net_mgr->num_nodes; pi++) {
+                        struct p2p_node *peer = mp->net_mgr->nodes[pi];
+                        if (peer->id != node->id &&
+                            peer->state >= PEER_HANDSHAKE_COMPLETE &&
+                            !peer->disconnect)
+                            p2p_node_push_inventory(peer, &blk_inv);
+                    }
+                    zcl_mutex_unlock(&mp->net_mgr->cs_nodes);
+                }
+            }
         }
     } else {
         int dos = 0;
@@ -921,6 +941,19 @@ static bool process_tx_msg(struct msg_processor *mp, struct p2p_node *node,
         struct inv_item inv;
         inv_item_init_typed(&inv, MSG_TX, &hash);
         p2p_node_add_inventory_known(node, &inv);
+
+        /* Relay accepted tx to all connected peers */
+        if (mp->net_mgr) {
+            zcl_mutex_lock(&mp->net_mgr->cs_nodes);
+            for (size_t pi = 0; pi < mp->net_mgr->num_nodes; pi++) {
+                struct p2p_node *peer = mp->net_mgr->nodes[pi];
+                if (peer->id != node->id &&
+                    peer->state >= PEER_HANDSHAKE_COMPLETE &&
+                    !peer->disconnect && peer->relay_txes)
+                    p2p_node_push_inventory(peer, &inv);
+            }
+            zcl_mutex_unlock(&mp->net_mgr->cs_nodes);
+        }
 
         extern struct wallet *g_active_wallet;
         if (g_active_wallet) {
