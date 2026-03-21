@@ -42,6 +42,7 @@
 #include <pthread.h>
 #include <math.h>
 
+#include "controllers/explorer_internal.h"
 #include "views/explorer_css.h"
 
 static struct main_state *g_ms = NULL;
@@ -468,45 +469,10 @@ static bool addr_decode(const char *str, struct tx_destination *dest)
     return decode_destination(str, pk_pfx, pk_len, sh_pfx, sh_len, dest);
 }
 
-/* ── CSS ──────────────────────────────────────────────────── */
-
-#define EXPLORER_HEADER(title) \
-    "HTTP/1.1 200 OK\r\n" \
-    "Content-Type: text/html; charset=utf-8\r\n" \
-    "Connection: close\r\n\r\n" \
-    "<!DOCTYPE html><html><head><meta charset='utf-8'>" \
-    "<meta name='viewport' content='width=device-width,initial-scale=1'>" \
-    "<title>" title "</title>" \
-    "<link rel='icon' type='image/png' href='/explorer/favicon.png'>" \
-    "<link rel='stylesheet' href='/explorer/style.css'>" \
-    "</head><body>"
-
-#define EXPLORER_NAV \
-    "<div class='nav'>" \
-    "<a href='/explorer'>Blocks</a>" \
-    "<a href='/explorer/stats'>Stats</a>" \
-    "<a href='/explorer/hodl'>HODL Wave</a>" \
-    "<a href='/explorer/tokens'>Tokens</a>" \
-    "<div class='search'>" \
-    "<form action='/explorer/search' method='get'>" \
-    "<input name='q' placeholder='Search block, tx, or address...'>" \
-    "</form></div></div>"
-
-#define EXPLORER_FOOTER \
-    "<footer>ZClassic23 Block Explorer &mdash; Pure C23 &mdash; zclnet.net</footer>" \
-    "</body></html>"
-
-/* Append helper: advances offset, checks bounds to prevent overflow.
- * On truncation, advances to remaining space so buffer fills progressively. */
-#define APPEND(off, buf, max, ...) do { \
-    if ((off) < (max)) { \
-        size_t _rem = (max) - (off); \
-        int _n = snprintf((char *)(buf) + (off), _rem, __VA_ARGS__); \
-        if (_n > 0) { \
-            (off) += ((size_t)_n < _rem) ? (size_t)_n : _rem - 1; \
-        } \
-    } \
-} while(0)
+/* ── Macros from explorer_internal.h ──────────────────────── */
+/* EXPLORER_HEADER, EXPLORER_NAV, EXPLORER_FOOTER, and APPEND
+ * are all defined in controllers/explorer_internal.h (single source
+ * of truth for all explorer pages). */
 
 /* ── Dashboard (RPC proxy mode) ───────────────────────────── */
 
