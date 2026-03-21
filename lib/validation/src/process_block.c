@@ -254,11 +254,20 @@ static void update_tip(struct main_state *ms, struct block_index *pindex_new)
     event_emitf(EV_TIP_UPDATED, 0, "h=%d %s",
                 pindex_new->nHeight, hex);
 
-    /* Only log every 1000 blocks during IBD to reduce noise */
-    if (pindex_new->nHeight % 1000 == 0 || pindex_new->nHeight < 10)
-        printf("UpdateTip: new best=%s  height=%d  tx=%u  date=%lld\n",
-               hex, pindex_new->nHeight, pindex_new->nTx,
-               (long long)pindex_new->nTime);
+    /* Progress log every 10000 blocks with speed metric */
+    if (pindex_new->nHeight % 10000 == 0 && pindex_new->nHeight > 0) {
+        static int64_t last_log_time = 0;
+        static int last_log_height = 0;
+        int64_t now_log = GetTime();
+        int64_t elapsed = now_log - last_log_time;
+        int blocks_done = pindex_new->nHeight - last_log_height;
+        double bps = elapsed > 0 ? (double)blocks_done / (double)elapsed : 0;
+        printf("Chain: height=%d  %.0f blk/s\n",
+               pindex_new->nHeight, bps);
+        last_log_time = now_log;
+        last_log_height = pindex_new->nHeight;
+        fflush(stdout);
+    }
 }
 
 bool accept_block_header(const struct block_header *header,
@@ -484,11 +493,6 @@ bool connect_tip(struct validation_state *state,
         coins_view_cache_as_view(&backing, coins_tip);
         coins_view_cache_init(&view, &backing);
 
-        /* Log coins_tip size periodically to verify UTXO set is growing */
-        if (pindex_new->nHeight % 10000 == 0 || pindex_new->nHeight < 5)
-            printf("connect_tip: h=%d coins_tip_cache=%zu\n",
-                   pindex_new->nHeight, coins_tip->cache_coins.size);
-
         bool rv = connect_block(pblock, state, pindex_new, &view, params, false);
         if (!rv) {
             printf("connect_tip: connect_block failed at height %d: %s\n",
@@ -503,15 +507,6 @@ bool connect_tip(struct validation_state *state,
             return false;
         }
 
-        size_t pre_flush = coins_tip->cache_coins.size;
-        size_t child_size = view.cache_coins.size;
-
-        if (pindex_new->nHeight < 5) {
-            printf("connect_tip: h=%d child_cache=%zu coins_tip_before_flush=%zu\n",
-                   pindex_new->nHeight, child_size, pre_flush);
-            fflush(stdout);
-        }
-
         if (!coins_view_cache_flush(&view)) {
             printf("connect_tip: FATAL coins flush failed at height %d\n",
                    pindex_new->nHeight);
@@ -521,32 +516,6 @@ bool connect_tip(struct validation_state *state,
             return validation_state_error(state, "coins-flush-failed");
         }
         coins_view_cache_free(&view);
-
-        /* Verify coins_tip grew after flush */
-        if (pindex_new->nHeight < 5 || pindex_new->nHeight % 10000 == 0) {
-            printf("connect_tip: h=%d FLUSH child=%zu → coins_tip: %zu→%zu\n",
-                   pindex_new->nHeight, child_size,
-                   pre_flush, coins_tip->cache_coins.size);
-            fflush(stdout);
-        }
-
-        /* Self-check: verify the coinbase we just added is findable */
-        if (pblock->num_vtx > 0) {
-            struct coins check;
-            coins_init(&check);
-            bool found = coins_view_cache_get_coins(coins_tip,
-                &pblock->vtx[0].hash, &check);
-            if (!found && pindex_new->nHeight > 0) {
-                char cbhex[65];
-                uint256_get_hex(&pblock->vtx[0].hash, cbhex);
-                printf("SELF-CHECK FAIL: h=%d coinbase %s NOT in coins_tip "
-                       "(cache=%zu)\n",
-                       pindex_new->nHeight, cbhex,
-                       coins_tip->cache_coins.size);
-                fflush(stdout);
-            }
-            coins_free(&check);
-        }
     }
 
     /* Update chain tip */
