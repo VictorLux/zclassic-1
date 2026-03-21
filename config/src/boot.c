@@ -1501,17 +1501,17 @@ bool app_init(struct app_context *ctx)
         if (chain_tip && chain_tip->nHeight > 0 &&
             uint256_is_null(&coins_best)) {
             printf("WARNING: Chain tip at height %d but coins DB is empty!\n"
-                   "  Resetting chain to genesis — blocks will be replayed.\n",
-                   chain_tip->nHeight);
+                   "  Resetting chain to genesis — will replay %d blocks.\n",
+                   chain_tip->nHeight, chain_tip->nHeight);
             fflush(stdout);
 
-            /* Find genesis and reset chain tip */
             struct block_index *genesis = block_map_find(
                 &g_state.map_block_index, &params->consensus.hashGenesisBlock);
             if (genesis) {
                 active_chain_set_tip(&g_state.chain_active, genesis);
                 g_state.pindex_best_header = genesis;
             }
+            skip_activate = false; /* MUST replay to rebuild UTXO set */
         } else if (chain_tip && chain_tip->nHeight > 0 &&
                    chain_tip->phashBlock &&
                    uint256_cmp(chain_tip->phashBlock, &coins_best) != 0) {
@@ -1521,9 +1521,11 @@ bool app_init(struct app_context *ctx)
                 &g_state.map_block_index, &coins_best);
             if (coins_block && coins_block->nHeight < chain_tip->nHeight) {
                 printf("Chain tip/coins mismatch: chain=%d coins=%d\n"
-                       "  Resetting chain to coins DB tip.\n",
-                       chain_tip->nHeight, coins_block->nHeight);
+                       "  Resetting chain to coins DB tip — will replay %d blocks.\n",
+                       chain_tip->nHeight, coins_block->nHeight,
+                       chain_tip->nHeight - coins_block->nHeight);
                 active_chain_set_tip(&g_state.chain_active, coins_block);
+                skip_activate = false; /* replay delta */
             }
         }
     }
