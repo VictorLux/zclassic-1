@@ -9,11 +9,16 @@
 #include "rpc/client.h"
 #include "json/json.h"
 #include "views/wallet_gui.h"
+#include "models/database.h"
+#include "controllers/sync_controller.h"
+#include "storage/coins_db.h"
+#include "controllers/explorer_internal.h"
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <time.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -250,6 +255,121 @@ int main(int argc, char **argv)
     /* CLI mode: zclassic23 getblockcount */
     if (argc > 1 && is_cli_mode(argc, argv))
         return cli_main(argc, argv);
+
+    /* Direct chainstate import mode — no full node startup needed.
+     * Usage: zclassic23 --importchainstate /path/to/chainstate [dbpath] */
+    if (argc >= 3 && strcmp(argv[1], "--importchainstate") == 0) {
+        const char *cs_path = argv[2];
+        const char *home = getenv("HOME");
+        char db_path[512];
+        if (argc > 3)
+            snprintf(db_path, sizeof(db_path), "%s", argv[3]);
+        else
+            snprintf(db_path, sizeof(db_path), "%s/.zclassic-c23/node.db",
+                     home ? home : ".");
+
+        printf("=== ZClassic UTXO Import ===\n");
+        printf("Source: %s (LevelDB chainstate)\n", cs_path);
+        printf("Target: %s (SQLite)\n\n", db_path);
+
+        struct node_db ndb;
+        if (!node_db_open(&ndb, db_path)) {
+            fprintf(stderr, "Cannot open SQLite: %s\n", db_path);
+            return 1;
+        }
+
+        struct coins_view_db cvdb;
+        memset(&cvdb, 0, sizeof(cvdb));
+        if (!coins_view_db_open(&cvdb, cs_path, 512, false, false)) {
+            fprintf(stderr, "Cannot open LevelDB: %s\n", cs_path);
+            node_db_close(&ndb);
+            return 1;
+        }
+
+        int64_t t0 = (int64_t)time(NULL);
+        int count = node_db_sync_import_utxos(&ndb, &cvdb);
+        int64_t t1 = (int64_t)time(NULL);
+        coins_view_db_close(&cvdb);
+
+        if (count < 0) {
+            fprintf(stderr, "Import failed\n");
+            node_db_close(&ndb);
+            return 1;
+        }
+        printf("\nImported %d UTXOs in %llds\n", count, (long long)(t1 - t0));
+
+        /* Rebuild wallet_utxos from ground truth */
+        printf("Rebuilding wallet_utxos...\n");
+        sqlite3_exec(ndb.db, "BEGIN", NULL, NULL, NULL);
+        sqlite3_exec(ndb.db, "DELETE FROM wallet_utxos", NULL, NULL, NULL);
+        sqlite3_exec(ndb.db,
+            "INSERT INTO wallet_utxos "
+            "(txid, vout, value, address_hash, script, height, is_coinbase) "
+            "SELECT u.txid, u.vout, u.value, u.address_hash, u.script, "
+            "u.height, u.is_coinbase "
+            "FROM utxos u INNER JOIN wallet_keys wk "
+            "ON u.address_hash = wk.pubkey_hash",
+            NULL, NULL, NULL);
+        sqlite3_exec(ndb.db, "COMMIT", NULL, NULL, NULL);
+
+        /* Rebuild addresses */
+        printf("Rebuilding addresses...\n");
+        sqlite3_exec(ndb.db, "BEGIN", NULL, NULL, NULL);
+        sqlite3_exec(ndb.db, "DELETE FROM addresses", NULL, NULL, NULL);
+        sqlite3_exec(ndb.db,
+            "INSERT OR REPLACE INTO addresses "
+            "(address_hash, script_type, balance, utxo_count, "
+            "first_seen_height, last_seen_height) "
+            "SELECT address_hash, MAX(script_type), SUM(value), count(*), "
+            "MIN(height), MAX(height) "
+            "FROM utxos WHERE address_hash IS NOT NULL "
+            "GROUP BY address_hash",
+            NULL, NULL, NULL);
+        sqlite3_exec(ndb.db, "COMMIT", NULL, NULL, NULL);
+
+        /* Verify results */
+        sqlite3_stmt *s = NULL;
+        int64_t utxo_count = 0, utxo_sum = 0;
+        sqlite3_prepare_v2(ndb.db,
+            "SELECT count(*), COALESCE(SUM(value),0) FROM utxos",
+            -1, &s, NULL);
+        if (sqlite3_step(s) == SQLITE_ROW) {
+            utxo_count = sqlite3_column_int64(s, 0);
+            utxo_sum = sqlite3_column_int64(s, 1);
+        }
+        sqlite3_finalize(s);
+
+        int64_t wallet_bal = 0, wallet_cnt = 0;
+        s = NULL;
+        sqlite3_prepare_v2(ndb.db,
+            "SELECT count(*), COALESCE(SUM(value),0) FROM wallet_utxos "
+            "WHERE spent_txid IS NULL", -1, &s, NULL);
+        if (sqlite3_step(s) == SQLITE_ROW) {
+            wallet_cnt = sqlite3_column_int64(s, 0);
+            wallet_bal = sqlite3_column_int64(s, 1);
+        }
+        sqlite3_finalize(s);
+
+        int64_t addr_count = 0;
+        s = NULL;
+        sqlite3_prepare_v2(ndb.db,
+            "SELECT count(*) FROM addresses WHERE balance > 0",
+            -1, &s, NULL);
+        if (sqlite3_step(s) == SQLITE_ROW)
+            addr_count = sqlite3_column_int64(s, 0);
+        sqlite3_finalize(s);
+
+        printf("\n=== Results ===\n");
+        printf("UTXOs:     %lld (%.8f ZCL)\n",
+               (long long)utxo_count, (double)utxo_sum / 1e8);
+        printf("Wallet:    %lld UTXOs (%.8f ZCL)\n",
+               (long long)wallet_cnt, (double)wallet_bal / 1e8);
+        printf("Addresses: %lld with balance\n", (long long)addr_count);
+        printf("Time:      %llds\n", (long long)(t1 - t0));
+
+        node_db_close(&ndb);
+        return 0;
+    }
 
     /* GUI mode: no args = wallet viewer */
     if (argc <= 1) {
