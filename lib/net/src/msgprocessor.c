@@ -225,9 +225,6 @@ static void push_version(struct msg_processor *mp, struct p2p_node *node)
     p2p_node_write_message_data(node, s.data, s.size);
     p2p_node_end_message(node);
 
-    printf("Sent version to %s: proto=%d h=%d subver=%s size=%zu\n",
-           node->addr_name, ver.protocol_version, ver.start_height,
-           ver.sub_version, s.size);
     stream_free(&s);
 }
 
@@ -590,10 +587,6 @@ static bool process_getheaders(struct msg_processor *mp, struct p2p_node *node,
         iter = active_chain_at(chain, iter->nHeight + 1);
     }
 
-    printf("Responding to getheaders from %s with %d headers (from %d)\n",
-           node->addr_name, count,
-           pindex ? pindex->nHeight + 1 : 0);
-
     p2p_node_begin_message(node, "headers", mp->params->pchMessageStart);
     p2p_node_write_message_data(node, headers.data, headers.size);
     p2p_node_end_message(node);
@@ -619,9 +612,6 @@ static bool process_inv(struct msg_processor *mp, struct p2p_node *node,
     stream_init(&getdata, 256);
     uint64_t request_count = 0;
 
-    uint64_t skipped_blocks = 0;
-    uint64_t skipped_txs = 0;
-
     for (uint64_t i = 0; i < count; i++) {
         struct inv_item inv;
         if (!inv_item_deserialize(&inv, s)) {
@@ -632,10 +622,8 @@ static bool process_inv(struct msg_processor *mp, struct p2p_node *node,
         p2p_node_add_inventory_known(node, &inv);
 
         if (inv.type == MSG_BLOCK) {
-            if (block_already_seen(&inv.hash)) {
-                skipped_blocks++;
+            if (block_already_seen(&inv.hash))
                 continue;
-            }
             struct block_index *bi = block_map_find(
                 &mp->main_state->map_block_index, &inv.hash);
             struct block_index *tip = active_chain_tip(
@@ -656,22 +644,13 @@ static bool process_inv(struct msg_processor *mp, struct p2p_node *node,
                 node->hash_continue = inv.hash;
             }
         } else if (inv.type == MSG_TX) {
-            if (tx_already_seen(&inv.hash)) {
-                skipped_txs++;
+            if (tx_already_seen(&inv.hash))
                 continue;
-            }
             if (!tx_mempool_exists(mp->mempool, &inv.hash)) {
                 inv_item_serialize(&inv, &getdata);
                 request_count++;
             }
         }
-    }
-
-    if (skipped_blocks > 0 || skipped_txs > 0) {
-        printf("Peer %s: inv dedup skipped %llu blocks, %llu txs\n",
-               node->addr_name,
-               (unsigned long long)skipped_blocks,
-               (unsigned long long)skipped_txs);
     }
 
     if (request_count > 0) {
@@ -778,7 +757,7 @@ static bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
     struct block blk;
     block_init(&blk);
     if (!block_deserialize(&blk, s)) {
-        printf("Peer %s: failed to deserialize block\n", node->addr_name);
+        event_emitf(EV_MSG_DESERIALIZATION_FAIL, (uint32_t)node->id, "block");
         peer_misbehaving(mp->net_mgr, node, 20, "malformed block");
         block_free(&blk);
         return false;
@@ -795,13 +774,6 @@ static bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
         return true;
     }
     block_mark_seen(&hash);
-
-    char hex[65];
-    uint256_get_hex(&hash, hex);
-
-    struct block_index *tip = active_chain_tip(&mp->main_state->chain_active);
-    int tip_height = tip ? tip->nHeight : 0;
-    printf("Peer %s: block %s (tip=%d)\n", node->addr_name, hex, tip_height);
 
     struct validation_state state;
     validation_state_init(&state);
@@ -832,10 +804,7 @@ static bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
                                            "chain caught up");
             }
 
-            if (new_tip->nHeight % 1000 == 0) {
-                printf("Chain tip: height=%d from peer %s\n",
-                       new_tip->nHeight, node->addr_name);
-            }
+            /* Progress logged by IBD progress timer (every 30s) */
 
             /* Relay accepted block to all connected peers (not during IBD).
              * At the tip, we act as a full relay node. During IBD, relaying
@@ -919,7 +888,7 @@ static bool process_tx_msg(struct msg_processor *mp, struct p2p_node *node,
     struct transaction tx;
     transaction_init(&tx);
     if (!transaction_deserialize(&tx, s)) {
-        printf("Peer %s: failed to deserialize tx\n", node->addr_name);
+        event_emitf(EV_MSG_DESERIALIZATION_FAIL, (uint32_t)node->id, "tx");
         peer_misbehaving(mp->net_mgr, node, 10, "malformed tx");
         transaction_free(&tx);
         return false;
