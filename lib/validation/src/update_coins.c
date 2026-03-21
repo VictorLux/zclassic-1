@@ -7,6 +7,7 @@
 #include "validation/update_coins.h"
 #include "coins/utxo_commitment.h"
 #include <assert.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -46,8 +47,25 @@ void update_coins_with_undo(const struct transaction *tx,
 
     struct coins_cache_entry *new_entry =
         coins_view_cache_modify_new(inputs, &tx->hash);
-    if (!new_entry) return;
+    if (!new_entry) {
+        printf("update_coins: modify_new FAILED for h=%d\n", nHeight);
+        fflush(stdout);
+        return;
+    }
     coins_from_transaction(&new_entry->coins, tx, nHeight);
+
+    /* Verify the entry we just created is findable */
+    if (nHeight % 50000 == 0 || nHeight < 3) {
+        struct coins_cache_entry *verify =
+            coins_map_find(&inputs->cache_coins, &tx->hash);
+        printf("update_coins: h=%d txhash=%02x%02x.. vouts=%zu "
+               "cache=%zu verify=%s\n",
+               nHeight, tx->hash.data[31], tx->hash.data[30],
+               new_entry->coins.num_vout,
+               inputs->cache_coins.size,
+               verify ? "OK" : "MISSING");
+        fflush(stdout);
+    }
 
     /* Add new UTXOs to commitment */
     for (size_t vi = 0; vi < new_entry->coins.num_vout; vi++) {
