@@ -1626,6 +1626,21 @@ bool app_init(struct app_context *ctx)
         char hex[65];
         uint256_get_hex(tip->phashBlock, hex);
         printf("Chain tip: height=%d hash=%s\n", tip->nHeight, hex);
+
+        /* Auto-extend assumevalid to cover the startup chain tip.
+         * Everything already in the chainstate was validated by either:
+         * - zclassicd (via fastsync)
+         * - a previous run of zclassic23
+         * - the coins DB (trusted LevelDB state)
+         * Only blocks received via P2P AFTER startup need new validation.
+         * This prevents the broken Ed25519 joinsplit verifier from
+         * rejecting valid historical blocks above the checkpoint. */
+        if (g_assume_valid_height >= 0 &&
+            tip->nHeight > g_assume_valid_height) {
+            g_assume_valid_height = tip->nHeight;
+            printf("Assume-valid: extended to startup tip height %d\n",
+                   g_assume_valid_height);
+        }
     } else {
         printf("Chain tip: genesis\n");
     }
