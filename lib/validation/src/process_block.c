@@ -521,6 +521,24 @@ bool connect_tip(struct validation_state *state,
                    coins_tip->cache_coins.size);
             fflush(stdout);
         }
+
+        /* Self-check: verify the coinbase we just added is findable */
+        if (pblock->num_vtx > 0) {
+            struct coins check;
+            coins_init(&check);
+            bool found = coins_view_cache_get_coins(coins_tip,
+                &pblock->vtx[0].hash, &check);
+            if (!found && pindex_new->nHeight > 0) {
+                char cbhex[65];
+                uint256_get_hex(&pblock->vtx[0].hash, cbhex);
+                printf("SELF-CHECK FAIL: h=%d coinbase %s NOT in coins_tip "
+                       "(cache=%zu)\n",
+                       pindex_new->nHeight, cbhex,
+                       coins_tip->cache_coins.size);
+                fflush(stdout);
+            }
+            coins_free(&check);
+        }
     }
 
     /* Update chain tip */

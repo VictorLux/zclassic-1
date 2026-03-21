@@ -5,6 +5,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "coins/coins_view.h"
+#include <stdio.h>
 #include <string.h>
 
 #define COINS_MAP_INITIAL_BUCKETS 4096
@@ -251,6 +252,7 @@ static bool cvc_batch_write(void *self, struct coins_map *map_coins,
                              const struct uint256 *hash_block)
 {
     struct coins_view_cache *parent = (struct coins_view_cache *)self;
+    size_t written = 0, pruned = 0, skipped = 0;
 
     for (size_t i = 0; i < map_coins->num_buckets; i++) {
         struct coins_map_entry *e = &map_coins->buckets[i];
@@ -258,9 +260,8 @@ static bool cvc_batch_write(void *self, struct coins_map *map_coins,
             continue;
         if (e->entry.flags & COINS_CACHE_DIRTY) {
             if (coins_is_pruned(&e->entry.coins)) {
-                /* Erase pruned entries from parent — don't leave zombies
-                 * that shadow the backing store. C++ erases here too. */
                 coins_map_erase(&parent->cache_coins, &e->txid);
+                pruned++;
             } else {
                 struct coins_cache_entry *dest =
                     coins_map_insert(&parent->cache_coins, &e->txid);
@@ -268,16 +269,22 @@ static bool cvc_batch_write(void *self, struct coins_map *map_coins,
                 dest->coins = e->entry.coins;
                 coins_init(&e->entry.coins);
                 dest->flags |= COINS_CACHE_DIRTY;
+                written++;
             }
+        } else {
+            skipped++;
         }
     }
 
     if (!uint256_is_null(hash_block))
         parent->hash_block = *hash_block;
 
-    /* Note: commitment is merged in coins_view_cache_flush below,
-     * not here, since this vtable function doesn't have access to
-     * the child cache struct (only the map). */
+    /* Diagnostic: log if no entries were written (indicates a bug) */
+    if (written == 0 && map_coins->size > 0) {
+        fprintf(stderr, "cvc_batch_write: WARNING wrote 0 entries "
+                "(map_size=%zu pruned=%zu skipped=%zu)\n",
+                map_coins->size, pruned, skipped);
+    }
 
     return true;
 }
