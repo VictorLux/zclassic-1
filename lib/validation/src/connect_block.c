@@ -126,10 +126,18 @@ bool connect_block(const struct block *block,
                     uint256_get_hex(&block->header.hashPrevBlock, prevhex2);
                     printf("  block height=%d hash=%s prev=%s %zu txs\n",
                            pindex->nHeight, blkhex, prevhex2, block->num_vtx);
-                    /* Show what coins_tip has */
-                    printf("  coins_tip cache_size=%zu best_block=%s\n",
-                           view->cache_coins.size,
-                           "check-manually");
+                    /* Show child view AND parent coins_tip cache sizes */
+                    printf("  child_view cache=%zu\n",
+                           view->cache_coins.size);
+                    /* Try LevelDB lookup directly for first missing input */
+                    struct coins test_coins;
+                    coins_init(&test_coins);
+                    bool in_parent = coins_view_get_coins(&view->base,
+                        &tx->vin[0].prevout.hash, &test_coins);
+                    printf("  parent_lookup(vin[0])=%d num_vout=%zu\n",
+                           in_parent,
+                           in_parent ? test_coins.num_vout : (size_t)0);
+                    coins_free(&test_coins);
                 }
                 fflush(stdout);
                 block_undo_free(&blockundo);
