@@ -533,5 +533,169 @@ int test_sqlite(void) {
         else { printf("FAIL\n"); failures++; }
     }
 
+    /* ── Wallet UTXO lifecycle: save, balance, mark spent, balance ── */
+    {
+        printf("SQLite wallet UTXO lifecycle... ");
+        struct node_db ndb;
+        bool ok = node_db_open(&ndb, ":memory:");
+
+        uint8_t script[] = {0x76, 0xa9, 0x14};
+        uint8_t addr[20];
+        memset(addr, 0x42, 20);
+
+        /* Create two wallet UTXOs */
+        struct db_wallet_utxo wu1;
+        memset(&wu1, 0, sizeof(wu1));
+        memset(wu1.txid, 0xAA, 32);
+        wu1.vout = 0;
+        wu1.value = 50000000; /* 0.5 ZCL */
+        memcpy(wu1.address_hash, addr, 20);
+        wu1.script = script;
+        wu1.script_len = 3;
+        wu1.height = 100;
+        wu1.is_coinbase = false;
+
+        struct db_wallet_utxo wu2;
+        memset(&wu2, 0, sizeof(wu2));
+        memset(wu2.txid, 0xBB, 32);
+        wu2.vout = 0;
+        wu2.value = 48000000; /* 0.48 ZCL */
+        memcpy(wu2.address_hash, addr, 20);
+        wu2.script = script;
+        wu2.script_len = 3;
+        wu2.height = 101;
+        wu2.is_coinbase = false;
+
+        ok = ok && db_wallet_utxo_save(&ndb, &wu1);
+        ok = ok && db_wallet_utxo_save(&ndb, &wu2);
+
+        /* Balance = 0.98 ZCL unspent */
+        int64_t bal = db_wallet_utxo_balance(&ndb);
+        ok = ok && (bal == 98000000);
+
+        /* Mark one as spent */
+        uint8_t spent_by[32];
+        memset(spent_by, 0xCC, 32);
+        ok = ok && db_wallet_utxo_mark_spent(&ndb, wu1.txid, 0,
+                                              spent_by, 0);
+
+        /* Balance = 0.48 ZCL */
+        bal = db_wallet_utxo_balance(&ndb);
+        ok = ok && (bal == 48000000);
+
+        /* INSERT OR REPLACE: re-save wu1 should reset spent state */
+        ok = ok && db_wallet_utxo_save(&ndb, &wu1);
+        bal = db_wallet_utxo_balance(&ndb);
+        ok = ok && (bal == 98000000); /* back to 0.98 */
+
+        /* Delete one */
+        ok = ok && db_wallet_utxo_delete(&ndb, wu2.txid, 0);
+        bal = db_wallet_utxo_balance(&ndb);
+        ok = ok && (bal == 50000000); /* only wu1 */
+
+        node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ── UTXO value CHECK constraint ── */
+    {
+        printf("SQLite UTXO CHECK constraint (negative value rejected)... ");
+        struct node_db ndb;
+        bool ok = node_db_open(&ndb, ":memory:");
+
+        uint8_t script[] = {0x76, 0xa9, 0x14};
+        struct db_utxo u;
+        memset(&u, 0, sizeof(u));
+        memset(u.txid, 0xDD, 32);
+        u.vout = 0;
+        u.value = -1; /* negative — must be rejected */
+        u.script = script;
+        u.script_len = 3;
+        u.script_type = SCRIPT_P2PKH;
+        u.height = 1;
+
+        /* Should fail: validation rejects negative value */
+        bool saved = db_utxo_save(&ndb, &u);
+        ok = ok && !saved;
+
+        /* MAX_MONEY + 1 should also fail */
+        u.value = 2100000000000001LL;
+        saved = db_utxo_save(&ndb, &u);
+        ok = ok && !saved;
+
+        /* Exactly MAX_MONEY should succeed */
+        u.value = 2100000000000000LL;
+        saved = db_utxo_save(&ndb, &u);
+        ok = ok && saved;
+
+        /* Normal value should succeed */
+        u.value = 100000000; /* 1 ZCL */
+        memset(u.txid, 0xEE, 32);
+        saved = db_utxo_save(&ndb, &u);
+        ok = ok && saved;
+
+        node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ── Cross-validation: global UTXO vs wallet UTXO balance ── */
+    {
+        printf("SQLite cross-validate global vs wallet balance... ");
+        struct node_db ndb;
+        bool ok = node_db_open(&ndb, ":memory:");
+
+        uint8_t addr[20], script[] = {0x76, 0xa9, 0x14};
+        memset(addr, 0x42, 20);
+
+        /* Add UTXO to global table */
+        struct db_utxo u;
+        memset(&u, 0, sizeof(u));
+        memset(u.txid, 0xAA, 32);
+        u.vout = 0;
+        u.value = 98000000; /* 0.98 ZCL */
+        u.script = script;
+        u.script_len = 3;
+        u.script_type = SCRIPT_P2PKH;
+        u.has_address = true;
+        memcpy(u.address_hash, addr, 20);
+        u.height = 100;
+        ok = ok && db_utxo_save(&ndb, &u);
+
+        /* Add same UTXO to wallet table */
+        struct db_wallet_utxo wu;
+        memset(&wu, 0, sizeof(wu));
+        memcpy(wu.txid, u.txid, 32);
+        wu.vout = 0;
+        wu.value = 98000000;
+        memcpy(wu.address_hash, addr, 20);
+        wu.script = script;
+        wu.script_len = 3;
+        wu.height = 100;
+        ok = ok && db_wallet_utxo_save(&ndb, &wu);
+
+        /* Both should report same balance */
+        int64_t global_bal = db_utxo_balance_for_address(&ndb, addr);
+        int64_t wallet_bal = db_wallet_utxo_balance(&ndb);
+        ok = ok && (global_bal == 98000000);
+        ok = ok && (wallet_bal == 98000000);
+        ok = ok && (global_bal == wallet_bal);
+
+        /* Mark wallet UTXO spent — wallet should be 0, global unchanged */
+        uint8_t spent_by[32];
+        memset(spent_by, 0xCC, 32);
+        ok = ok && db_wallet_utxo_mark_spent(&ndb, wu.txid, 0,
+                                              spent_by, 0);
+        wallet_bal = db_wallet_utxo_balance(&ndb);
+        ok = ok && (wallet_bal == 0);
+        global_bal = db_utxo_balance_for_address(&ndb, addr);
+        ok = ok && (global_bal == 98000000); /* global unchanged */
+
+        node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     return failures;
 }
