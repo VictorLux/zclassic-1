@@ -2044,6 +2044,31 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
         }
     }
 
+    /* ── IBD progress log (every 30s, first outbound peer only) ── */
+    {
+        static int64_t last_progress_log = 0;
+        int64_t now_prog = (int64_t)time(NULL);
+        if (!node->inbound && node->id == 0 &&
+            now_prog - last_progress_log >= 30) {
+            last_progress_log = now_prog;
+            struct download_manager *dm2 = get_download_mgr();
+            uint64_t r = 0, v = 0, t = 0, f = 0, q = 0;
+            dl_get_stats(dm2, &r, &v, &t, &f, &q);
+            int h = msg_get_height(mp);
+            enum sync_state ss = sync_get_state();
+            if (ss != SYNC_IDLE && ss != SYNC_AT_TIP) {
+                printf("IBD: height=%d sync=%s "
+                       "dl[req=%llu recv=%llu flight=%llu queue=%llu "
+                       "timeout=%llu]\n",
+                       h, sync_state_name(ss),
+                       (unsigned long long)r, (unsigned long long)v,
+                       (unsigned long long)f, (unsigned long long)q,
+                       (unsigned long long)t);
+                fflush(stdout);
+            }
+        }
+    }
+
     /* Send ping */
     int64_t now = (int64_t)time(NULL);
     if (node->ping_nonce_sent == 0 &&

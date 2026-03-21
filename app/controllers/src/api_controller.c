@@ -9,6 +9,8 @@
 #include "controllers/explorer_internal.h"
 #include "controllers/explorer_factoids.h"
 #include "event/event.h"
+#include "net/download.h"
+#include "validation/connect_block.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1307,6 +1309,27 @@ size_t api_handle_request(const char *method, const char *path,
             "Connection: close\r\n\r\n"
             "{\"sync_state\":\"%s\"}",
             sync_state_name(sync_get_state()));
+    }
+
+    /* Download stats — IBD progress monitoring */
+    if (strcmp(clean_path, "/api/downloadstats") == 0) {
+        extern struct download_manager *msg_get_download_mgr(void);
+        struct download_manager *dm = msg_get_download_mgr();
+        uint64_t req = 0, recv = 0, tout = 0, inflight = 0, queued = 0;
+        dl_get_stats(dm, &req, &recv, &tout, &inflight, &queued);
+        return (size_t)snprintf((char *)response, response_max,
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Type: application/json\r\n"
+            "Access-Control-Allow-Origin: *\r\n"
+            "Connection: close\r\n\r\n"
+            "{\"sync_state\":\"%s\","
+            "\"requested\":%llu,\"received\":%llu,"
+            "\"timed_out\":%llu,\"in_flight\":%llu,"
+            "\"queued\":%llu,\"assume_valid_height\":%d}",
+            sync_state_name(sync_get_state()),
+            (unsigned long long)req, (unsigned long long)recv,
+            (unsigned long long)tout, (unsigned long long)inflight,
+            (unsigned long long)queued, get_assume_valid_height());
     }
 
     return json_error(response, response_max, JSON_404_HEADERS,
