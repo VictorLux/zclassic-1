@@ -1253,7 +1253,7 @@ int test_net(void)
         ok = ok && (strcmp(node->addr_name, "test-peer") == 0);
         ok = ok && (node->starting_height == -1);
         ok = ok && !node->disconnect;
-        ok = ok && !node->successfully_connected;
+        ok = ok && (node->state < PEER_HANDSHAKE_COMPLETE);
 
         /* Verify addr was copied */
         ok = ok && (node->addr.svc.port == 8033);

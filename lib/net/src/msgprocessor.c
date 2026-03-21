@@ -311,12 +311,12 @@ static bool process_verack(struct msg_processor *mp, struct p2p_node *node)
 
     /* Outbound: handshake complete (we sent version, got version+verack).
      * Inbound: already marked in process_version. */
-    if (!node->inbound && !node->successfully_connected) {
-        node->successfully_connected = true;
+    if (!node->inbound && node->state < PEER_HANDSHAKE_COMPLETE) {
+        node->successfully_connected = true; /* backward compat */
         peer_set_state_checked((uint32_t)node->id, &node->state,
                                PEER_HANDSHAKE_COMPLETE, "verack received");
         printf("Peer %s: handshake complete (outbound)\n", node->addr_name);
-    } else {
+    } else if (node->state < PEER_HANDSHAKE_COMPLETE) {
         peer_set_state_checked((uint32_t)node->id, &node->state,
                                PEER_HANDSHAKE_COMPLETE, "verack received");
         printf("Peer %s: verack received\n", node->addr_name);
