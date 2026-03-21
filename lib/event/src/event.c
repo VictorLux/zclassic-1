@@ -380,8 +380,9 @@ static const bool g_peer_transitions[PEER_NUM_STATES][PEER_NUM_STATES] = {
     [PEER_DISCONNECTED][PEER_CONNECTING]         = true,
     [PEER_DISCONNECTED][PEER_CONNECTED]          = true,
 
-    /* CONNECTING goes to CONNECTED or back to DISCONNECTED (fail) */
+    /* CONNECTING goes to CONNECTED or VERSION_SENT (outbound shortcut) */
     [PEER_CONNECTING][PEER_CONNECTED]            = true,
+    [PEER_CONNECTING][PEER_VERSION_SENT]         = true,
     [PEER_CONNECTING][PEER_DISCONNECTED]         = true,
     [PEER_CONNECTING][PEER_DISCONNECTING]        = true,
 

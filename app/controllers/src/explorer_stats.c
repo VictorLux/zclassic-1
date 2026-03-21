@@ -321,11 +321,16 @@ size_t explorer_stats_build(uint8_t *r, size_t buf_max, const char *datadir)
     char db_path[1024];
     snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
     sqlite3 *db = NULL;
-    if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
-        printf("Stats: failed to open %s\n", db_path); fflush(stdout);
+    int open_rc = sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL);
+    if (open_rc != SQLITE_OK) {
+        printf("Stats: failed to open %s: %s (rc=%d)\n",
+               db_path, db ? sqlite3_errmsg(db) : "null", open_rc);
+        fflush(stdout);
+        if (db) sqlite3_close(db);
         return 0;
     }
     sqlite3_exec(db, "PRAGMA mmap_size=268435456", NULL, NULL, NULL);
+    sqlite3_exec(db, "PRAGMA query_only=ON", NULL, NULL, NULL);
     sqlite3_busy_timeout(db, 30000);
 
     /* ════════════════════════════════════════════════════════
@@ -340,21 +345,30 @@ size_t explorer_stats_build(uint8_t *r, size_t buf_max, const char *datadir)
     int64_t tip_time = 0;
     {
         sqlite3_stmt *s = NULL;
-        if (sqlite3_prepare_v2(db,
+        int prep_rc = sqlite3_prepare_v2(db,
                 "SELECT height, bits, time FROM blocks ORDER BY height DESC LIMIT 1",
-                -1, &s, NULL) == SQLITE_OK && s) {
-            if (sqlite3_step(s) == SQLITE_ROW) {
+                -1, &s, NULL);
+        if (prep_rc == SQLITE_OK && s) {
+            int step_rc = sqlite3_step(s);
+            if (step_rc == SQLITE_ROW) {
                 tip = sqlite3_column_int(s, 0);
                 uint32_t bits = (uint32_t)sqlite3_column_int(s, 1);
                 tip_time = sqlite3_column_int64(s, 2);
                 if (bits > 0)
                     diff = explorer_difficulty_from_bits(bits);
+            } else {
+                printf("Stats: tip query step failed: rc=%d %s\n",
+                       step_rc, sqlite3_errmsg(db)); fflush(stdout);
             }
             sqlite3_finalize(s);
+        } else {
+            printf("Stats: tip query prepare failed: rc=%d %s\n",
+                   prep_rc, sqlite3_errmsg(db)); fflush(stdout);
         }
     }
     if (tip <= 0) {
-        printf("Stats: no blocks (tip=%d)\n", tip); fflush(stdout);
+        printf("Stats: no blocks (tip=%d, db=%s)\n", tip, db_path);
+        fflush(stdout);
         sqlite3_close(db);
         return 0;
     }

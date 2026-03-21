@@ -1377,8 +1377,11 @@ bool app_init(struct app_context *ctx)
                 save_block_index_flat(ctx->datadir, &g_state);
         }
 
-        /* Save recent blocks to SQLite */
-        if (g_active_node_db && g_state.map_block_index.size > 1000)
+        /* Save recent blocks to SQLite (skip for large indexes —
+         * the flat file handles 3M+ entries in 1-3s and the SQLite
+         * cache path uses 10GB+ RAM causing OOM kills) */
+        if (g_active_node_db && g_state.map_block_index.size > 1000
+            && g_state.map_block_index.size < 500000)
             save_block_index_recent(&g_node_db, &g_state);
     }
 
