@@ -2077,15 +2077,25 @@ bool app_init(struct app_context *ctx)
     if (g_active_node_db) {
         if (ctx->fastsync_dir) {
             /* Full synchronous import: block index + UTXO set.
-             * Must complete before P2P starts so the node is fully
-             * indexed and ready to serve RPC queries immediately. */
-            printf("Running full synchronous SQLite import...\n");
+             * P2P is already running in parallel — downloading new blocks
+             * while we index historical data into SQLite. */
+            struct block_index *fs_tip = active_chain_tip(&g_state.chain_active);
+            printf("═══ SQLite Indexing (%d blocks) ═══\n",
+                   fs_tip ? fs_tip->nHeight : 0);
             fflush(stdout);
+            int64_t t_import = (int64_t)time(NULL);
             node_db_sync_catchup(g_active_node_db,
                                  &g_state.chain_active,
                                  &g_wallet, ctx->datadir);
+            int64_t t_idx_done = (int64_t)time(NULL);
+            printf("Block index: %llds\n", (long long)(t_idx_done - t_import));
+            fflush(stdout);
             node_db_sync_import_utxos(g_active_node_db, &g_coins_db);
-            printf("Full import complete. Node ready.\n");
+            int64_t t_utxo_done = (int64_t)time(NULL);
+            printf("UTXO import: %llds\n",
+                   (long long)(t_utxo_done - t_idx_done));
+            printf("═══ SQLite complete in %llds ═══\n",
+                   (long long)(t_utxo_done - t_import));
             fflush(stdout);
         } else {
             static pthread_t catchup_thread;
