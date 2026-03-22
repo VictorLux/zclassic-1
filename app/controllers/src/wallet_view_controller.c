@@ -28,6 +28,130 @@ static const char *g_datadir = NULL;
 
 #define PRIMARY_ADDR "t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn"
 
+/* ── RPC to running node for live balance ──────────────────── */
+
+static int wallet_rpc_call(const char *method, const char *params_json,
+                            char *out, size_t outmax)
+{
+    if (!g_datadir) return -1;
+
+    /* Read auth cookie */
+    char cookie_path[1024], cookie[256] = "";
+    snprintf(cookie_path, sizeof(cookie_path), "%s/.cookie", g_datadir);
+    FILE *f = fopen(cookie_path, "r");
+    if (!f) {
+        /* Try config file credentials */
+        char conf_path[1024];
+        snprintf(conf_path, sizeof(conf_path), "%s/zclassic.conf", g_datadir);
+        f = fopen(conf_path, "r");
+        if (!f) return -1;
+        char user[64] = "", pass[64] = "";
+        char line[256];
+        while (fgets(line, sizeof(line), f)) {
+            if (strncmp(line, "rpcuser=", 8) == 0) {
+                char *nl = strchr(line + 8, '\n'); if (nl) *nl = '\0';
+                snprintf(user, sizeof(user), "%s", line + 8);
+            }
+            if (strncmp(line, "rpcpassword=", 12) == 0) {
+                char *nl = strchr(line + 12, '\n'); if (nl) *nl = '\0';
+                snprintf(pass, sizeof(pass), "%s", line + 12);
+            }
+        }
+        fclose(f);
+        if (!user[0] || !pass[0]) return -1;
+        snprintf(cookie, sizeof(cookie), "%s:%s", user, pass);
+    } else {
+        size_t n = fread(cookie, 1, sizeof(cookie) - 1, f);
+        fclose(f);
+        cookie[n] = '\0';
+        char *nl = strchr(cookie, '\n'); if (nl) *nl = '\0';
+    }
+
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = htons(18232);
+
+    struct timeval tv = { .tv_sec = 3, .tv_usec = 0 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        close(fd);
+        return -1;
+    }
+
+    char body[1024];
+    int blen = snprintf(body, sizeof(body),
+        "{\"jsonrpc\":\"1.0\",\"id\":1,\"method\":\"%s\",\"params\":%s}",
+        method, params_json);
+
+    static const char b64[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    char auth_b64[512];
+    size_t alen = strlen(cookie), bo = 0;
+    for (size_t i = 0; i < alen; i += 3) {
+        uint32_t n2 = ((uint32_t)(uint8_t)cookie[i]) << 16;
+        if (i + 1 < alen) n2 |= ((uint32_t)(uint8_t)cookie[i+1]) << 8;
+        if (i + 2 < alen) n2 |= (uint32_t)(uint8_t)cookie[i+2];
+        auth_b64[bo++] = b64[(n2 >> 18) & 63];
+        auth_b64[bo++] = b64[(n2 >> 12) & 63];
+        auth_b64[bo++] = (i + 1 < alen) ? b64[(n2 >> 6) & 63] : '=';
+        auth_b64[bo++] = (i + 2 < alen) ? b64[n2 & 63] : '=';
+    }
+    auth_b64[bo] = '\0';
+
+    char req[4096];
+    int rlen = snprintf(req, sizeof(req),
+        "POST / HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+        "Authorization: Basic %s\r\n"
+        "Content-Type: application/json\r\n"
+        "Content-Length: %d\r\nConnection: close\r\n\r\n%s",
+        auth_b64, blen, body);
+
+    if (write(fd, req, (size_t)rlen) != rlen) { close(fd); return -1; }
+
+    size_t total = 0;
+    while (total < outmax - 1) {
+        ssize_t r = read(fd, out + total, outmax - 1 - total);
+        if (r <= 0) break;
+        total += (size_t)r;
+    }
+    out[total] = '\0';
+    close(fd);
+
+    char *body_start = strstr(out, "\r\n\r\n");
+    if (body_start) {
+        body_start += 4;
+        size_t body_len = total - (size_t)(body_start - out);
+        memmove(out, body_start, body_len);
+        out[body_len] = '\0';
+        return (int)body_len;
+    }
+    return (int)total;
+}
+
+/* Query running node for wallet balance via z_gettotalbalance RPC */
+static bool query_node_balance(int64_t *transparent_out, int64_t *shielded_out)
+{
+    char buf[4096];
+    if (wallet_rpc_call("z_gettotalbalance", "[]", buf, sizeof(buf)) <= 0)
+        return false;
+
+    /* Parse: {"result":{"transparent":"0.98000000","private":"0.00","total":"0.98"}} */
+    char tval[32] = "", pval[32] = "";
+    zcl_json_extract_str(buf, "transparent", tval, sizeof(tval));
+    zcl_json_extract_str(buf, "private", pval, sizeof(pval));
+
+    if (tval[0]) *transparent_out = (int64_t)(strtod(tval, NULL) * 1e8 + 0.5);
+    if (pval[0]) *shielded_out = (int64_t)(strtod(pval, NULL) * 1e8 + 0.5);
+    return tval[0] || pval[0];
+}
+
 /* ── Shared CSS ─────────────────────────────────────────────── */
 
 #define WALLET_CSS_1 \
@@ -593,8 +717,20 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
      * Speed layer = wallet_utxos cache (may be stale after reorg).
      * Use ground truth when available; flag discrepancies. */
     int64_t display_transparent = transparent > 0 ? transparent : speed_transparent;
+
+    /* If SQLite has no balance data, query the running node via RPC */
+    bool from_rpc = false;
+    if (display_transparent == 0 && shielded == 0) {
+        int64_t rpc_t = 0, rpc_z = 0;
+        if (query_node_balance(&rpc_t, &rpc_z)) {
+            display_transparent = rpc_t;
+            shielded = rpc_z;
+            from_rpc = true;
+        }
+    }
+
     int64_t total_balance = display_transparent + shielded;
-    bool balance_mismatch = (transparent > 0 && speed_transparent > 0 &&
+    bool balance_mismatch = !from_rpc && (transparent > 0 && speed_transparent > 0 &&
                              transparent != speed_transparent);
 
     /* Actual fees from wallet transaction history */
