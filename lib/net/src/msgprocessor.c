@@ -25,6 +25,8 @@
 #include "util/timedata.h"
 #include "event/event.h"
 #include "net/download.h"
+#include "util/sync.h"
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -41,10 +43,11 @@ static void push_getheaders_from(struct msg_processor *mp,
                                   struct block_index *from);
 
 /* Cached snapshot offer — pre-computed at startup, not in message handler.
- * g_cached_offer_valid uses _Atomic to avoid data race between the
+ * Protected by g_offer_mutex to prevent struct tearing between the
  * background build thread (boot.c) and the P2P message handler. */
-struct snapshot_offer g_cached_offer;
-_Atomic bool g_cached_offer_valid = false;
+static struct snapshot_offer g_cached_offer;
+static _Atomic bool g_cached_offer_valid = false;
+static pthread_mutex_t g_offer_mutex = PTHREAD_MUTEX_INITIALIZER;
 static struct fast_sync_rate_limiter g_rate_limiter = {0};
 
 /* Cached manifest for parallel chunk sync (built in background at startup). */
@@ -52,9 +55,11 @@ struct sync_manifest g_cached_manifest;
 _Atomic bool g_cached_manifest_valid = false;
 
 /* Global swarm coordinator — manages parallel UTXO chunk download.
- * Only active when we are syncing from multiple ZCL23 peers. */
+ * Only active when we are syncing from multiple ZCL23 peers.
+ * All access to g_swarm fields protected by g_swarm_mutex. */
 static struct swarm_sync g_swarm __attribute__((used));
 static _Atomic bool g_swarm_active = false;
+static pthread_mutex_t g_swarm_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int64_t g_swarm_last_progress_time = 0;
 
 /* Timeout for inflight chunk requests (30 seconds). */
@@ -62,6 +67,20 @@ static int64_t g_swarm_last_progress_time = 0;
 
 /* Progress display interval (5 seconds). */
 #define SWARM_PROGRESS_INTERVAL_SECS 5
+
+/* ── Block swarm: parallel block download coordinator ───────── */
+/* Manages BitTorrent-style block piece download across multiple
+ * ZCL23 peers. Legacy peers contribute blocks via normal getdata/block
+ * which the coordinator assembles into verified pieces. */
+static struct block_swarm g_block_swarm __attribute__((used));
+static _Atomic bool g_block_swarm_active = false;
+static pthread_mutex_t g_block_swarm_mutex = PTHREAD_MUTEX_INITIALIZER;
+static int64_t g_block_swarm_last_progress = 0;
+
+/* Cached block piece manifest (built in background).
+ * Non-static: accessed from boot.c via extern. */
+struct block_piece_manifest g_cached_block_manifest;
+_Atomic bool g_cached_block_manifest_valid = false;
 
 /* Global download manager — coordinates parallel block downloads.
  * Initialized once from msg_processor_init, accessed via pointer. */
@@ -79,13 +98,49 @@ struct download_manager *msg_get_download_mgr(void)
 
 #define get_download_mgr() msg_get_download_mgr()
 
+/* Thread-safe accessor: update cached snapshot offer from boot.c */
+void msg_processor_update_offer(const struct snapshot_offer *offer)
+{
+    pthread_mutex_lock(&g_offer_mutex);
+    g_cached_offer = *offer;
+    pthread_mutex_unlock(&g_offer_mutex);
+    atomic_store(&g_cached_offer_valid, true);
+}
+
+/* Serialize and send a snapshot offer to a peer */
+static void send_snapshot_offer_msg(struct p2p_node *node,
+                                     const struct snapshot_offer *offer,
+                                     const unsigned char *msg_start)
+{
+    p2p_node_begin_message(node, MSG_SNAPSHOT_OFFER, msg_start);
+    struct byte_stream os;
+    stream_init(&os, 80);
+    stream_write_i32_le(&os, offer->height);
+    stream_write_bytes(&os, offer->block_hash, 32);
+    stream_write_bytes(&os, offer->utxo_root, 32);
+    stream_write_u64_le(&os, offer->num_utxos);
+    stream_write_u64_le(&os, offer->total_bytes);
+    p2p_node_write_message_data(node, os.data, os.size);
+    p2p_node_end_message(node);
+    stream_free(&os);
+}
+
+/* Take a thread-safe local copy of the cached offer */
+static struct snapshot_offer get_cached_offer(void)
+{
+    pthread_mutex_lock(&g_offer_mutex);
+    struct snapshot_offer offer = g_cached_offer;
+    pthread_mutex_unlock(&g_offer_mutex);
+    return offer;
+}
+
 /* Ring buffers for duplicate detection of recently seen blocks and txs. */
 #define MAX_RECENT_BLOCKS 128
 #define MAX_RECENT_TXS 4096
 static struct uint256 g_recent_blocks[MAX_RECENT_BLOCKS];
-static int g_recent_block_count = 0;
+static _Atomic int g_recent_block_count = 0;
 static struct uint256 g_recent_txs[MAX_RECENT_TXS];
-static int g_recent_tx_count = 0;
+static _Atomic int g_recent_tx_count = 0;
 
 static bool block_already_seen(const struct uint256 *hash) {
     int limit = g_recent_block_count < MAX_RECENT_BLOCKS
@@ -202,6 +257,86 @@ static void push_chunk_request(struct msg_processor *mp,
     stream_free(&s);
 }
 
+/* Send our block piece manifest to a ZCL23 peer.
+ * SAFETY: never call this for legacy peers — they will ignore it,
+ * but we avoid sending unknown messages to be a good network citizen. */
+static void push_block_manifest(struct msg_processor *mp,
+                                 struct p2p_node *node)
+{
+    if (!g_cached_block_manifest_valid || node->blk_manifest_sent)
+        return;
+    if (!peer_supports_fast_sync(node->services))
+        return; /* guard: only send to ZCL23 peers */
+
+    struct block_piece_manifest *m = &g_cached_block_manifest;
+    struct byte_stream s;
+    stream_init(&s, 80);
+    stream_write_i32_le(&s, m->start_height);
+    stream_write_i32_le(&s, m->end_height);
+    stream_write_u32_le(&s, m->num_pieces);
+    stream_write_bytes(&s, m->tip_hash, 32);
+    stream_write_bytes(&s, m->merkle_root, 32);
+
+    p2p_node_begin_message(node, MSG_BLOCK_MANIFEST,
+                            mp->params->pchMessageStart);
+    p2p_node_write_message_data(node, s.data, s.size);
+    p2p_node_end_message(node);
+    stream_free(&s);
+
+    node->blk_manifest_sent = true;
+    printf("Peer %s: sent block manifest (h=%d..%d, %u pieces)\n",
+           node->addr_name, m->start_height, m->end_height, m->num_pieces);
+}
+
+/* Send a block piece request to a peer. */
+static void push_block_piece_request(struct msg_processor *mp,
+                                      struct p2p_node *node,
+                                      uint32_t piece_index)
+{
+    struct byte_stream s;
+    stream_init(&s, 4);
+    stream_write_u32_le(&s, piece_index);
+
+    p2p_node_begin_message(node, MSG_BLOCK_REQ,
+                            mp->params->pchMessageStart);
+    p2p_node_write_message_data(node, s.data, s.size);
+    p2p_node_end_message(node);
+    stream_free(&s);
+}
+
+/* Send our piece availability bitmap to a peer. */
+static void __attribute__((unused)) push_block_bitmap(
+    struct msg_processor *mp, struct p2p_node *node)
+{
+    if (!g_block_swarm_active) return;
+
+    pthread_mutex_lock(&g_block_swarm_mutex);
+    uint32_t bytes = (g_block_swarm.manifest.num_pieces + 7) / 8;
+    if (bytes == 0 || bytes > 65536) {
+        pthread_mutex_unlock(&g_block_swarm_mutex);
+        return;
+    }
+    uint8_t *bitmap = calloc(bytes, 1);
+    if (!bitmap) {
+        pthread_mutex_unlock(&g_block_swarm_mutex);
+        return;
+    }
+    uint32_t len = block_swarm_serialize_bitmap(&g_block_swarm, bitmap, bytes);
+    pthread_mutex_unlock(&g_block_swarm_mutex);
+
+    struct byte_stream s;
+    stream_init(&s, 4 + len);
+    stream_write_u32_le(&s, len);
+    stream_write_bytes(&s, bitmap, len);
+
+    p2p_node_begin_message(node, MSG_BLOCK_BITMAP,
+                            mp->params->pchMessageStart);
+    p2p_node_write_message_data(node, s.data, s.size);
+    p2p_node_end_message(node);
+    stream_free(&s);
+    free(bitmap);
+}
+
 static void push_version(struct msg_processor *mp, struct p2p_node *node)
 {
     struct version_message ver;
@@ -313,11 +448,16 @@ static bool process_version(struct msg_processor *mp, struct p2p_node *node,
     if (is_zcl23) {
         node->services |= NODE_ZCL23; /* mark for fast sync */
         node->swarm_inflight_chunk = -1;
+        for (int pi = 0; pi < 4; pi++)
+            node->blk_pipeline[pi].piece_index = -1;
         printf("Peer %s: supports zclassic23 fast sync [ZCL23]\n",
                node->addr_name);
 
-        /* Exchange manifests — both peers announce what they have. */
+        /* Exchange UTXO manifests — both peers announce what they have. */
         push_manifest(mp, node);
+
+        /* Exchange block piece manifests for parallel block sync. */
+        push_block_manifest(mp, node);
     }
 
     return true;
@@ -1346,7 +1486,7 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                 printf("Peer %s: rate limited, rejecting snapshot request\n",
                        node->addr_name);
             } else if (g_cached_offer_valid) {
-                /* Send cached offer and start serving chunks */
+                struct snapshot_offer offer = get_cached_offer();
                 node->zsync_offset = 0;
                 node->zsync_sent = 0;
                 peer_set_state_checked((uint32_t)node->id, &node->state,
@@ -1355,22 +1495,12 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                 node->zsync_cursor_valid = false;
                 memset(node->zsync_cursor_txid, 0, 32);
                 node->zsync_cursor_vout = 0;
-                node->zsync_total = g_cached_offer.num_utxos;
+                node->zsync_total = offer.num_utxos;
                 printf("Peer %s: serving snapshot (h=%d, %llu UTXOs)\n",
-                       node->addr_name, g_cached_offer.height,
-                       (unsigned long long)g_cached_offer.num_utxos);
-                p2p_node_begin_message(node, MSG_SNAPSHOT_OFFER,
+                       node->addr_name, offer.height,
+                       (unsigned long long)offer.num_utxos);
+                send_snapshot_offer_msg(node, &offer,
                                         mp->params->pchMessageStart);
-                struct byte_stream os;
-                stream_init(&os, 80);
-                stream_write_i32_le(&os, g_cached_offer.height);
-                stream_write_bytes(&os, g_cached_offer.block_hash, 32);
-                stream_write_bytes(&os, g_cached_offer.utxo_root, 32);
-                stream_write_u64_le(&os, g_cached_offer.num_utxos);
-                stream_write_u64_le(&os, g_cached_offer.total_bytes);
-                p2p_node_write_message_data(node, os.data, os.size);
-                p2p_node_end_message(node);
-                stream_free(&os);
             } else {
                 printf("Peer %s: snapshot not ready yet\n", node->addr_name);
             }
@@ -1553,12 +1683,14 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                     memcpy(peer_manifest.block_hash, block_hash, 32);
                     memcpy(peer_manifest.merkle_root, merkle_root, 32);
 
+                    zcl_mutex_lock(&g_swarm_mutex);
                     if (swarm_sync_init(&g_swarm, &peer_manifest, mp->datadir)) {
-                        g_swarm_active = true;
                         g_swarm_last_progress_time = (int64_t)time(NULL);
+                        g_swarm_active = true;
                         printf("Swarm sync started: %u chunks from h=%d\n",
                                num_chunks, height);
                     }
+                    zcl_mutex_unlock(&g_swarm_mutex);
                 }
             }
 
@@ -1649,23 +1781,26 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                     }
 
                     if (parse_ok) {
+                        zcl_mutex_lock(&g_swarm_mutex);
                         bool verified = swarm_sync_receive_chunk(
                             &g_swarm, chunk, node->id);
                         node->swarm_inflight_chunk = -1;
 
                         if (!verified) {
+                            zcl_mutex_unlock(&g_swarm_mutex);
                             printf("Peer %s: chunk %u failed verification\n",
                                    node->addr_name, chunk_index);
                             peer_misbehaving(mp->net_mgr, node, 50,
                                              "bad chunk hash");
-                        }
-
-                        if (swarm_sync_is_complete(&g_swarm)) {
+                        } else if (swarm_sync_is_complete(&g_swarm)) {
                             printf("Swarm sync complete: %u/%u chunks\n",
                                    g_swarm.chunks_complete,
                                    g_swarm.manifest.num_chunks);
                             swarm_sync_free(&g_swarm);
                             g_swarm_active = false;
+                            zcl_mutex_unlock(&g_swarm_mutex);
+                        } else {
+                            zcl_mutex_unlock(&g_swarm_mutex);
                         }
                     } else {
                         printf("Peer %s: truncated zchunkdata\n",
@@ -1674,6 +1809,272 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                                          "truncated zchunkdata");
                     }
                     free(chunk);
+                }
+            }
+
+        /* ── Block swarm messages (parallel block download) ──── */
+
+        } else if (strcmp(cmd, MSG_BLOCK_MANIFEST) == 0) {
+            /* Peer sends their block piece manifest.
+             * DEFENSIVE: validate all fields before trusting any data. */
+            int32_t start_h = 0, end_h = 0;
+            uint32_t num_pieces = 0;
+            uint8_t tip_hash[32], merkle_root[32];
+
+            if (stream_read_i32_le(&s, &start_h) &&
+                stream_read_i32_le(&s, &end_h) &&
+                stream_read_u32_le(&s, &num_pieces) &&
+                stream_read_bytes(&s, tip_hash, 32) &&
+                stream_read_bytes(&s, merkle_root, 32)) {
+
+                /* Sanity: heights must be positive and consistent */
+                if (start_h < 0 || end_h < start_h || num_pieces == 0 ||
+                    num_pieces > 100000) {
+                    printf("Peer %s: invalid block manifest "
+                           "(start=%d end=%d pieces=%u)\n",
+                           node->addr_name, start_h, end_h, num_pieces);
+                    peer_misbehaving(mp->net_mgr, node, 20,
+                                     "invalid block manifest params");
+                } else {
+                    /* Verify piece count is consistent with height range */
+                    uint32_t expected = (uint32_t)((end_h - start_h +
+                        BLOCKS_PER_PIECE) / BLOCKS_PER_PIECE);
+                    if (num_pieces != expected) {
+                        printf("Peer %s: block manifest piece count mismatch "
+                               "(got %u, expected %u for h=%d..%d)\n",
+                               node->addr_name, num_pieces, expected,
+                               start_h, end_h);
+                        peer_misbehaving(mp->net_mgr, node, 10,
+                                         "block manifest piece count wrong");
+                    } else {
+                        node->blk_manifest_received = true;
+                        node->blk_peer_height = end_h;
+                    }
+                }
+
+                int our_h = active_chain_height(&mp->main_state->chain_active);
+                if (node->blk_manifest_received)
+                    printf("Peer %s: block manifest h=%d..%d (%u pieces)\n",
+                           node->addr_name, start_h, end_h, num_pieces);
+
+                /* If peer is ahead and no active block swarm, start one. */
+                if (node->blk_manifest_received &&
+                    end_h > our_h + BLOCKS_PER_PIECE &&
+                    !g_block_swarm_active && num_pieces > 0) {
+                    struct block_piece_manifest pm = {
+                        .start_height = start_h,
+                        .end_height = end_h,
+                        .num_pieces = num_pieces,
+                        .piece_hashes = NULL
+                    };
+                    memcpy(pm.tip_hash, tip_hash, 32);
+                    memcpy(pm.merkle_root, merkle_root, 32);
+
+                    pthread_mutex_lock(&g_block_swarm_mutex);
+                    if (block_swarm_init(&g_block_swarm, &pm, mp->datadir)) {
+                        g_block_swarm_active = true;
+                        g_block_swarm_last_progress = (int64_t)time(NULL);
+                        printf("Block swarm started: %u pieces, h=%d..%d\n",
+                               num_pieces, start_h, end_h);
+                    }
+                    pthread_mutex_unlock(&g_block_swarm_mutex);
+                }
+            }
+
+        } else if (strcmp(cmd, MSG_BLOCK_REQ) == 0) {
+            /* Peer requests a specific block piece by index.
+             * SAFETY: only serve if we have a valid manifest and the
+             * piece index is in range. Rate-limited like chunk requests. */
+            uint32_t piece_index = 0;
+            if (!stream_read_u32_le(&s, &piece_index)) {
+                printf("Peer %s: bad zblkreq\n", node->addr_name);
+            } else if (!g_cached_block_manifest_valid) {
+                printf("Peer %s: zblkreq but no block manifest\n",
+                       node->addr_name);
+            } else if (piece_index >= g_cached_block_manifest.num_pieces) {
+                printf("Peer %s: zblkreq %u out of range (%u)\n",
+                       node->addr_name, piece_index,
+                       g_cached_block_manifest.num_pieces);
+                peer_misbehaving(mp->net_mgr, node, 10,
+                                 "zblkreq out of range");
+            } else if (!fast_sync_rate_check(&g_rate_limiter,
+                                              node->addr.svc.addr.ip)) {
+                printf("Peer %s: rate limited on block piece\n",
+                       node->addr_name);
+            } else {
+                /* Serve the piece: send block hashes for this piece range.
+                 * The requester can then verify against their manifest. */
+                struct block_piece_manifest *bm = &g_cached_block_manifest;
+                int32_t piece_start = bm->start_height
+                    + (int32_t)(piece_index * BLOCKS_PER_PIECE);
+                int32_t piece_end = piece_start + BLOCKS_PER_PIECE - 1;
+                if (piece_end > bm->end_height)
+                    piece_end = bm->end_height;
+
+                /* Read block hashes from SQLite for this range */
+                char db_path[1024];
+                snprintf(db_path, sizeof(db_path), "%s/node.db", mp->datadir);
+                sqlite3 *bdb = NULL;
+                if (sqlite3_open_v2(db_path, &bdb, SQLITE_OPEN_READONLY,
+                                     NULL) == SQLITE_OK) {
+                    sqlite3_stmt *bsel = NULL;
+                    sqlite3_prepare_v2(bdb,
+                        "SELECT hash FROM blocks WHERE height >= ? "
+                        "AND height <= ? ORDER BY height ASC",
+                        -1, &bsel, NULL);
+                    sqlite3_bind_int(bsel, 1, piece_start);
+                    sqlite3_bind_int(bsel, 2, piece_end);
+
+                    struct byte_stream bs_msg;
+                    stream_init(&bs_msg, 4 + 4 + 32 * BLOCKS_PER_PIECE);
+                    stream_write_u32_le(&bs_msg, piece_index);
+                    uint32_t block_count = 0;
+                    /* Reserve space for count */
+                    size_t count_pos = bs_msg.size;
+                    stream_write_u32_le(&bs_msg, 0);
+
+                    while (sqlite3_step(bsel) == SQLITE_ROW) {
+                        const void *bh = sqlite3_column_blob(bsel, 0);
+                        if (bh && sqlite3_column_bytes(bsel, 0) >= 32) {
+                            stream_write_bytes(&bs_msg, bh, 32);
+                            block_count++;
+                        }
+                    }
+                    sqlite3_finalize(bsel);
+                    sqlite3_close(bdb);
+
+                    /* Patch count */
+                    bs_msg.data[count_pos] = (uint8_t)(block_count & 0xFF);
+                    bs_msg.data[count_pos + 1] = (uint8_t)((block_count >> 8) & 0xFF);
+                    bs_msg.data[count_pos + 2] = (uint8_t)((block_count >> 16) & 0xFF);
+                    bs_msg.data[count_pos + 3] = (uint8_t)((block_count >> 24) & 0xFF);
+
+                    p2p_node_begin_message(node, MSG_BLOCK_DATA,
+                                            mp->params->pchMessageStart);
+                    p2p_node_write_message_data(node, bs_msg.data, bs_msg.size);
+                    p2p_node_end_message(node);
+                    stream_free(&bs_msg);
+                }
+            }
+
+        } else if (strcmp(cmd, MSG_BLOCK_DATA) == 0) {
+            /* Peer sends block piece data (block hashes for a piece).
+             * DEFENSIVE: validate piece_index, block_count, and hash. */
+            uint32_t piece_index = 0, block_count = 0;
+            if (!stream_read_u32_le(&s, &piece_index) ||
+                !stream_read_u32_le(&s, &block_count) ||
+                block_count == 0 || block_count > BLOCKS_PER_PIECE) {
+                printf("Peer %s: bad zblkdata (piece=%u count=%u)\n",
+                       node->addr_name, piece_index, block_count);
+                peer_misbehaving(mp->net_mgr, node, 20,
+                                 "bad zblkdata header");
+            } else if (!g_block_swarm_active) {
+                printf("Peer %s: zblkdata piece=%u but no block swarm\n",
+                       node->addr_name, piece_index);
+            } else {
+                /* Read block hashes */
+                uint8_t (*blk_hashes)[32] = calloc(block_count, 32);
+                bool parse_ok = true;
+                if (blk_hashes) {
+                    for (uint32_t i = 0; i < block_count && parse_ok; i++) {
+                        if (!stream_read_bytes(&s, blk_hashes[i], 32))
+                            parse_ok = false;
+                    }
+                }
+
+                if (parse_ok && blk_hashes) {
+                    /* DEFENSIVE: bounds check before touching swarm */
+                    pthread_mutex_lock(&g_block_swarm_mutex);
+                    if (piece_index >= g_block_swarm.manifest.num_pieces) {
+                        pthread_mutex_unlock(&g_block_swarm_mutex);
+                        printf("Peer %s: zblkdata piece %u out of range "
+                               "(max %u)\n", node->addr_name, piece_index,
+                               g_block_swarm.manifest.num_pieces);
+                        peer_misbehaving(mp->net_mgr, node, 20,
+                                         "zblkdata piece out of range");
+                        free(blk_hashes);
+                        goto _blkdata_done;
+                    }
+
+                    /* Compute piece hash and verify against manifest.
+                     * SHA3-256 of (piece_index || count || block_hashes[]).
+                     * This is the core integrity check — if the hash doesn't
+                     * match the manifest, the peer sent bad data. */
+                    uint8_t computed_hash[32];
+                    block_piece_hash(
+                        (const uint8_t (*)[32])blk_hashes,
+                        block_count, piece_index, computed_hash);
+
+                    bool verified = false;
+                    if (g_block_swarm.manifest.piece_hashes) {
+                        verified = memcmp(computed_hash,
+                            g_block_swarm.manifest.piece_hashes[piece_index],
+                            32) == 0;
+                    }
+
+                    if (verified) {
+                        block_swarm_receive_piece(&g_block_swarm,
+                                                   piece_index, node->id);
+                        /* Clear pipeline slot */
+                        for (int pi = 0; pi < 4; pi++) {
+                            if (node->blk_pipeline[pi].piece_index ==
+                                (int32_t)piece_index) {
+                                node->blk_pipeline[pi].piece_index = -1;
+                                break;
+                            }
+                        }
+
+                        if (block_swarm_is_complete(&g_block_swarm)) {
+                            printf("Block swarm complete: %u/%u pieces\n",
+                                   g_block_swarm.pieces_complete,
+                                   g_block_swarm.manifest.num_pieces);
+                            block_swarm_free(&g_block_swarm);
+                            g_block_swarm_active = false;
+                        }
+                    } else {
+                        block_swarm_fail_piece(&g_block_swarm, piece_index);
+                        printf("Peer %s: block piece %u failed verification\n",
+                               node->addr_name, piece_index);
+                        peer_misbehaving(mp->net_mgr, node, 50,
+                                         "bad block piece hash");
+                    }
+                    pthread_mutex_unlock(&g_block_swarm_mutex);
+                } else {
+                    printf("Peer %s: truncated zblkdata\n", node->addr_name);
+                    peer_misbehaving(mp->net_mgr, node, 20,
+                                     "truncated zblkdata");
+                }
+                free(blk_hashes);
+            }
+            _blkdata_done:;
+
+        } else if (strcmp(cmd, MSG_BLOCK_BITMAP) == 0) {
+            /* Peer sends their piece availability bitmap.
+             * DEFENSIVE: validate length is reasonable. */
+            uint32_t bitmap_len = 0;
+            if (!stream_read_u32_le(&s, &bitmap_len) ||
+                bitmap_len == 0 || bitmap_len > 65536) {
+                printf("Peer %s: bad zblkbitmap len=%u\n",
+                       node->addr_name, bitmap_len);
+            } else {
+                uint8_t *bitmap = calloc(bitmap_len, 1);
+                if (bitmap && stream_read_bytes(&s, bitmap, bitmap_len)) {
+                    /* Store on peer for rarest-first selection */
+                    free(node->blk_bitmap);
+                    node->blk_bitmap = bitmap;
+                    node->blk_bitmap_len = bitmap_len;
+
+                    /* Update global availability counts */
+                    if (g_block_swarm_active) {
+                        pthread_mutex_lock(&g_block_swarm_mutex);
+                        block_swarm_update_availability(&g_block_swarm,
+                                                         bitmap, bitmap_len);
+                        pthread_mutex_unlock(&g_block_swarm_mutex);
+                    }
+                } else {
+                    free(bitmap);
+                    printf("Peer %s: truncated zblkbitmap\n",
+                           node->addr_name);
                 }
             }
 
@@ -1909,24 +2310,15 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
         if (our_h > 100 &&
             (node->starting_height < 0 ||
              our_h > node->starting_height + 100)) {
+            struct snapshot_offer offer = get_cached_offer();
             node->zsync_sent = UINT64_MAX; /* mark: offered */
             event_emitf(EV_SNAPSHOT_OFFER_SENT, (uint32_t)node->id,
-                        "h=%d utxos=%llu", g_cached_offer.height,
-                        (unsigned long long)g_cached_offer.num_utxos);
+                        "h=%d utxos=%llu", offer.height,
+                        (unsigned long long)offer.num_utxos);
             printf("Peer %s: offering snapshot (us=%d, peer=%d)\n",
                    node->addr_name, our_h, node->starting_height);
-            p2p_node_begin_message(node, MSG_SNAPSHOT_OFFER,
+            send_snapshot_offer_msg(node, &offer,
                                     mp->params->pchMessageStart);
-            struct byte_stream os;
-            stream_init(&os, 80);
-            stream_write_i32_le(&os, g_cached_offer.height);
-            stream_write_bytes(&os, g_cached_offer.block_hash, 32);
-            stream_write_bytes(&os, g_cached_offer.utxo_root, 32);
-            stream_write_u64_le(&os, g_cached_offer.num_utxos);
-            stream_write_u64_le(&os, g_cached_offer.total_bytes);
-            p2p_node_write_message_data(node, os.data, os.size);
-            p2p_node_end_message(node);
-            stream_free(&os);
         }
     }
 
@@ -2204,7 +2596,7 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
                     printf("Peer %s: sent %llu/%llu UTXOs\n",
                            node->addr_name,
                            (unsigned long long)node->zsync_offset,
-                           (unsigned long long)g_cached_offer.num_utxos);
+                           (unsigned long long)node->zsync_total);
                 }
             }
             sqlite3_finalize(sel_first);
@@ -2219,6 +2611,8 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
     if (g_swarm_active && peer_supports_fast_sync(node->services) &&
         node->swarm_manifest_received &&
         node->state >= PEER_HANDSHAKE_COMPLETE) {
+
+        zcl_mutex_lock(&g_swarm_mutex);
 
         /* Handle timeout: if this peer's chunk is stale, re-queue it */
         if (node->swarm_inflight_chunk >= 0) {
@@ -2248,13 +2642,18 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
             }
         }
 
-        /* Progress display (rate-limited to every 5 seconds).
-         * Only print from the first peer's tick to avoid duplicates. */
+        /* Progress display (rate-limited to every 5 seconds) */
         int64_t now_prog = (int64_t)time(NULL);
         if (now_prog - g_swarm_last_progress_time >= SWARM_PROGRESS_INTERVAL_SECS) {
             g_swarm_last_progress_time = now_prog;
 
-            /* Count serving peers */
+            int progress = swarm_sync_progress(&g_swarm);
+            uint32_t complete = g_swarm.chunks_complete;
+            uint32_t total = g_swarm.manifest.num_chunks;
+            uint32_t inflight = g_swarm.chunks_inflight;
+            zcl_mutex_unlock(&g_swarm_mutex);
+
+            /* Count serving peers (no swarm lock needed) */
             int serving_peers = 0;
             if (mp->net_mgr) {
                 for (size_t i = 0; i < mp->net_mgr->num_nodes; i++) {
@@ -2266,9 +2665,74 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
             }
 
             printf("Sync: %d%% (%u/%u chunks, %u inflight, %d peers serving)\n",
-                   swarm_sync_progress(&g_swarm),
-                   g_swarm.chunks_complete, g_swarm.manifest.num_chunks,
-                   g_swarm.chunks_inflight, serving_peers);
+                   progress, complete, total, inflight, serving_peers);
+        } else {
+            zcl_mutex_unlock(&g_swarm_mutex);
+        }
+    }
+
+    /* ── Block swarm coordinator: parallel block piece download ── */
+    /* Only for ZCL23 peers with completed handshake. Legacy peers
+     * contribute via normal getdata/block (handled by download manager). */
+    if (g_block_swarm_active && peer_supports_fast_sync(node->services) &&
+        node->blk_manifest_received &&
+        node->state >= PEER_HANDSHAKE_COMPLETE) {
+
+        pthread_mutex_lock(&g_block_swarm_mutex);
+
+        /* Handle timeouts on this peer's pipeline */
+        int64_t now_bs = (int64_t)time(NULL);
+        for (int pi = 0; pi < PIECE_PIPELINE_DEPTH; pi++) {
+            int32_t pidx = node->blk_pipeline[pi].piece_index;
+            if (pidx >= 0 &&
+                now_bs - node->blk_pipeline[pi].request_time >
+                    SWARM_CHUNK_TIMEOUT_SECS) {
+                if ((uint32_t)pidx < g_block_swarm.manifest.num_pieces &&
+                    g_block_swarm.piece_states[pidx] == CHUNK_INFLIGHT) {
+                    g_block_swarm.piece_states[pidx] = CHUNK_NEEDED;
+                    g_block_swarm.piece_peer[pidx] = -1;
+                    if (g_block_swarm.pieces_inflight > 0)
+                        g_block_swarm.pieces_inflight--;
+                }
+                node->blk_pipeline[pi].piece_index = -1;
+            }
+        }
+
+        /* Fill empty pipeline slots with new piece assignments */
+        for (int pi = 0; pi < PIECE_PIPELINE_DEPTH; pi++) {
+            if (node->blk_pipeline[pi].piece_index >= 0)
+                continue; /* slot occupied */
+
+            int32_t pidx = block_swarm_assign_piece(
+                &g_block_swarm, node->id, node->blk_bitmap);
+            if (pidx < 0)
+                break; /* no more pieces to assign */
+
+            node->blk_pipeline[pi].piece_index = pidx;
+            node->blk_pipeline[pi].request_time = now_bs;
+
+            pthread_mutex_unlock(&g_block_swarm_mutex);
+            push_block_piece_request(mp, node, (uint32_t)pidx);
+            pthread_mutex_lock(&g_block_swarm_mutex);
+        }
+
+        /* Progress display (rate-limited) */
+        int64_t now_bp = (int64_t)time(NULL);
+        if (now_bp - g_block_swarm_last_progress >=
+            SWARM_PROGRESS_INTERVAL_SECS) {
+            g_block_swarm_last_progress = now_bp;
+            int bprog = block_swarm_progress(&g_block_swarm);
+            uint32_t bcomplete = g_block_swarm.pieces_complete;
+            uint32_t btotal = g_block_swarm.manifest.num_pieces;
+            uint32_t binflight = g_block_swarm.pieces_inflight;
+            bool endgame = g_block_swarm.endgame;
+            pthread_mutex_unlock(&g_block_swarm_mutex);
+
+            printf("BlockSync: %d%% (%u/%u pieces, %u inflight%s)\n",
+                   bprog, bcomplete, btotal, binflight,
+                   endgame ? " [endgame]" : "");
+        } else {
+            pthread_mutex_unlock(&g_block_swarm_mutex);
         }
     }
 

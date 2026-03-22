@@ -6,6 +6,7 @@
 #include "core/uint256.h"
 #include <string.h>
 #include <stdio.h>
+#include <pthread.h>
 
 /* Helper: make a uint256 from a single byte value */
 static struct uint256 make_hash(uint8_t v)
@@ -337,6 +338,91 @@ static int test_dl_per_peer_limit(void)
     return failures;
 }
 
+/* Concurrency test: multiple threads hitting the download manager */
+struct dl_thread_ctx {
+    struct download_manager *dm;
+    int thread_id;
+    int ops_done;
+};
+
+static void *dl_concurrent_worker(void *arg)
+{
+    struct dl_thread_ctx *ctx = (struct dl_thread_ctx *)arg;
+    struct download_manager *dm = ctx->dm;
+    int tid = ctx->thread_id;
+    int ops = 0;
+
+    /* Each thread works on a unique range of hashes */
+    for (int round = 0; round < 10; round++) {
+        struct uint256 hashes[20];
+        int32_t heights[20];
+        for (int i = 0; i < 20; i++) {
+            memset(hashes[i].data, 0, 32);
+            hashes[i].data[0] = (uint8_t)(tid);
+            hashes[i].data[1] = (uint8_t)(round);
+            hashes[i].data[2] = (uint8_t)(i);
+            heights[i] = tid * 10000 + round * 100 + i;
+        }
+
+        /* Queue blocks */
+        dl_queue_blocks(dm, hashes, heights, 20);
+        ops++;
+
+        /* Assign to self */
+        struct uint256 out[20];
+        size_t assigned = dl_assign_to_peer(dm, (uint32_t)tid, out, 20);
+        ops++;
+
+        /* "Receive" them */
+        for (size_t i = 0; i < assigned; i++) {
+            dl_mark_received(dm, &out[i]);
+            ops++;
+        }
+    }
+
+    ctx->ops_done = ops;
+    return NULL;
+}
+
+static int test_dl_concurrent(void)
+{
+    int failures = 0;
+    TEST("download manager concurrent access (4 threads)") {
+        struct download_manager dm;
+        dl_init(&dm);
+
+        #define DL_NUM_THREADS 4
+        pthread_t threads[DL_NUM_THREADS];
+        struct dl_thread_ctx ctxs[DL_NUM_THREADS];
+
+        for (int i = 0; i < DL_NUM_THREADS; i++) {
+            ctxs[i].dm = &dm;
+            ctxs[i].thread_id = i + 1;
+            ctxs[i].ops_done = 0;
+            pthread_create(&threads[i], NULL, dl_concurrent_worker, &ctxs[i]);
+        }
+
+        for (int i = 0; i < DL_NUM_THREADS; i++)
+            pthread_join(threads[i], NULL);
+
+        /* Verify all threads completed */
+        int total_ops = 0;
+        for (int i = 0; i < DL_NUM_THREADS; i++) {
+            ASSERT(ctxs[i].ops_done > 0);
+            total_ops += ctxs[i].ops_done;
+        }
+
+        /* Verify stats are consistent: received <= requested, no negative */
+        uint64_t req, recv, tout, inflight, queued;
+        dl_get_stats(&dm, &req, &recv, &tout, &inflight, &queued);
+        ASSERT(recv <= req);
+
+        dl_free(&dm);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_download(void)
 {
     int failures = 0;
@@ -349,5 +435,6 @@ int test_download(void)
     failures += test_dl_check_timeouts();
     failures += test_dl_many_insertions();
     failures += test_dl_per_peer_limit();
+    failures += test_dl_concurrent();
     return failures;
 }

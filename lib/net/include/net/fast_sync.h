@@ -243,4 +243,128 @@ int swarm_sync_progress(const struct swarm_sync *ss);
 /* Handle timeout: re-assign inflight chunks older than timeout_ms */
 void swarm_sync_handle_timeouts(struct swarm_sync *ss, int timeout_secs);
 
+/* ── Block swarm: BitTorrent-style parallel block download ──── */
+/* Groups blocks into "pieces" (128 blocks each). Each piece is
+ * independently hashable and verifiable. Legacy peers contribute
+ * via normal getdata/block; ZCL23 peers use the swarm protocol.
+ *
+ * Wire messages (all ≤12 chars, ignored by legacy peers):
+ *   zblkmanfst  — block piece manifest (height range, piece count, merkle root)
+ *   zblkreq     — request piece by index
+ *   zblkdata    — piece response (serialized blocks)
+ *   zblkbitmap  — piece availability bitmap
+ */
+
+#define MSG_BLOCK_MANIFEST  "zblkmanfst"
+#define MSG_BLOCK_REQ       "zblkreq"
+#define MSG_BLOCK_DATA      "zblkdata"
+#define MSG_BLOCK_BITMAP    "zblkbitmap"
+
+/* Blocks per piece. 128 blocks × ~2KB avg = ~256KB per piece.
+ * Small enough for fast verification, large enough to reduce overhead. */
+#define BLOCKS_PER_PIECE 128
+
+/* Max inflight pieces per peer (pipeline depth) */
+#define PIECE_PIPELINE_DEPTH 4
+
+/* Endgame threshold: when fewer than this many pieces remain,
+ * request all remaining from every available peer. */
+#define ENDGAME_THRESHOLD 8
+
+/* Block piece manifest: describes a range of blocks as verified pieces. */
+struct block_piece_manifest {
+    int32_t  start_height;       /* first block height in manifest */
+    int32_t  end_height;         /* last block height (inclusive) */
+    uint32_t num_pieces;         /* ceil((end - start + 1) / BLOCKS_PER_PIECE) */
+    uint8_t  tip_hash[32];      /* block hash at end_height */
+    uint8_t  merkle_root[32];   /* Merkle root of piece hashes */
+    uint8_t  (*piece_hashes)[32]; /* array[num_pieces] (heap-allocated) */
+};
+
+/* Piece state (reuses chunk_state enum) */
+
+/* Per-peer block swarm pipeline slot */
+struct piece_slot {
+    int32_t piece_index;         /* -1 = empty */
+    int64_t request_time;        /* when requested */
+};
+
+/* Block swarm coordinator — manages parallel block download from
+ * multiple peers. Thread-safe access via external mutex. */
+struct block_swarm {
+    struct block_piece_manifest manifest;
+    enum chunk_state *piece_states;     /* array[num_pieces] */
+    int *piece_peer;                    /* which peer has each piece */
+    int64_t *piece_request_time;        /* when each piece was requested */
+    uint32_t *piece_availability;       /* how many peers have each piece */
+    uint32_t pieces_complete;
+    uint32_t pieces_inflight;
+    uint32_t pieces_failed;
+    bool endgame;                       /* true when < ENDGAME_THRESHOLD remain */
+    const char *datadir;
+};
+
+/* Initialize block swarm from a manifest */
+bool block_swarm_init(struct block_swarm *bs,
+                      const struct block_piece_manifest *manifest,
+                      const char *datadir);
+
+/* Free block swarm state */
+void block_swarm_free(struct block_swarm *bs);
+
+/* Assign next piece to a peer using rarest-first selection.
+ * Returns piece index or -1 if none available.
+ * peer_bitmap: which pieces this peer has (NULL = assume all). */
+int32_t block_swarm_assign_piece(struct block_swarm *bs, int peer_id,
+                                  const uint8_t *peer_bitmap);
+
+/* Mark a piece as received. Caller must verify hash before calling.
+ * Returns true on success. */
+bool block_swarm_receive_piece(struct block_swarm *bs,
+                                uint32_t piece_index, int peer_id);
+
+/* Mark a piece as failed (bad hash). Will be re-requested. */
+void block_swarm_fail_piece(struct block_swarm *bs, uint32_t piece_index);
+
+/* Check if block swarm is complete */
+bool block_swarm_is_complete(const struct block_swarm *bs);
+
+/* Get progress as percentage (0-100) */
+int block_swarm_progress(const struct block_swarm *bs);
+
+/* Handle timeouts: re-queue pieces older than timeout_secs */
+void block_swarm_handle_timeouts(struct block_swarm *bs, int timeout_secs);
+
+/* Update piece availability from peer's bitmap.
+ * bitmap: bit array, bit i set = peer has piece i. */
+void block_swarm_update_availability(struct block_swarm *bs,
+                                      const uint8_t *bitmap,
+                                      uint32_t bitmap_len);
+
+/* Check if in endgame mode and return list of needed pieces.
+ * Returns count of pieces written to out_indices (up to max). */
+uint32_t block_swarm_endgame_pieces(const struct block_swarm *bs,
+                                     uint32_t *out_indices, uint32_t max);
+
+/* Build a block piece manifest from local chain data.
+ * Reads block headers from the chain to compute piece hashes.
+ * Allocates piece_hashes; caller must call block_piece_manifest_free(). */
+bool block_piece_manifest_build(const char *datadir,
+                                 int32_t start_height, int32_t end_height,
+                                 struct block_piece_manifest *out);
+
+/* Free heap memory inside a block piece manifest. */
+void block_piece_manifest_free(struct block_piece_manifest *m);
+
+/* Compute SHA3-256 hash of a piece (128 block headers concatenated).
+ * block_hashes: array of 32-byte block hashes for this piece.
+ * count: number of blocks in this piece (≤ BLOCKS_PER_PIECE). */
+void block_piece_hash(const uint8_t (*block_hashes)[32], uint32_t count,
+                       uint32_t piece_index, uint8_t hash_out[32]);
+
+/* Serialize a piece availability bitmap.
+ * Returns bytes written to out (ceil(num_pieces/8)). */
+uint32_t block_swarm_serialize_bitmap(const struct block_swarm *bs,
+                                       uint8_t *out, uint32_t max_len);
+
 #endif

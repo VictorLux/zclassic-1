@@ -16,6 +16,7 @@
 #include "event/event.h"
 #include "util/sync.h"
 #include <stdbool.h>
+#include <stdatomic.h>
 #include <stdint.h>
 
 #define PING_INTERVAL (2 * 60)
@@ -189,7 +190,7 @@ struct p2p_node {
     bool send_compact;
     int64_t last_getheaders_time;
 
-    int misbehavior;          /* cumulative misbehavior score; banned at 100 */
+    _Atomic int misbehavior;  /* cumulative misbehavior score; banned at 100 */
 
     /* connection quality metrics */
     int64_t last_block_time;  /* timestamp of last valid block received */
@@ -204,11 +205,22 @@ struct p2p_node {
     int32_t zsync_cursor_vout;     /* keyset cursor: last vout sent */
     bool zsync_cursor_valid;       /* true after first batch */
 
-    /* Swarm parallel chunk sync state */
+    /* Swarm parallel chunk sync state (UTXO) */
     bool swarm_manifest_sent;     /* true if we sent our manifest to this peer */
     bool swarm_manifest_received; /* true if we received manifest from peer */
     int32_t swarm_inflight_chunk; /* chunk index assigned to this peer, -1 = none */
     int64_t swarm_chunk_req_time; /* when chunk was requested (for timeout) */
+
+    /* Block swarm state (parallel block download) */
+    bool blk_manifest_sent;       /* true if we sent block manifest to this peer */
+    bool blk_manifest_received;   /* true if we received block manifest from peer */
+    struct {
+        int32_t piece_index;      /* -1 = empty slot */
+        int64_t request_time;
+    } blk_pipeline[4];            /* pipeline: up to 4 inflight pieces */
+    uint8_t *blk_bitmap;          /* peer's piece availability bitmap (heap) */
+    uint32_t blk_bitmap_len;      /* bytes in bitmap */
+    int32_t blk_peer_height;      /* peer's manifest end_height */
 };
 
 struct node_signals {

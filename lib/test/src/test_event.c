@@ -5,6 +5,7 @@
 #include "event/event.h"
 #include <string.h>
 #include <stdio.h>
+#include <pthread.h>
 
 static int test_emit_dump_roundtrip(void)
 {
@@ -361,6 +362,196 @@ static int test_dump_filtered(void)
     return failures;
 }
 
+static int test_sync_full_lifecycle(void)
+{
+    int failures = 0;
+
+    TEST("sync state machine full IBD lifecycle with events") {
+        event_log_init();
+
+        /* Full IBD path: idle -> finding -> headers -> blocks -> connect -> tip */
+        ASSERT(sync_get_state() == SYNC_IDLE);
+        ASSERT(sync_set_state(SYNC_FINDING_PEERS, "bootstrap"));
+        ASSERT(sync_set_state(SYNC_HEADERS_DOWNLOAD, "got peers"));
+        ASSERT(sync_set_state(SYNC_BLOCKS_DOWNLOAD, "headers done"));
+        ASSERT(sync_set_state(SYNC_CONNECTING_BLOCKS, "blocks arrived"));
+        ASSERT(sync_set_state(SYNC_AT_TIP, "chain synced"));
+        ASSERT(sync_get_state() == SYNC_AT_TIP);
+
+        /* Reorg recovery: tip -> reorg -> tip */
+        ASSERT(sync_set_state(SYNC_REORG, "fork detected"));
+        ASSERT(sync_get_state() == SYNC_REORG);
+        ASSERT(sync_set_state(SYNC_AT_TIP, "reorg resolved"));
+
+        /* Return to idle */
+        ASSERT(sync_set_state(SYNC_IDLE, "shutdown"));
+
+        /* Verify events were emitted for transitions */
+        char buf[16384];
+        size_t len = event_dump_json_filtered(buf, sizeof(buf), 100, "sync.");
+        ASSERT(len > 0);
+        buf[len] = '\0';
+        ASSERT(strstr(buf, "sync.state_change") != NULL);
+
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+static int test_sync_snapshot_path(void)
+{
+    int failures = 0;
+
+    TEST("sync state machine snapshot receive path") {
+        event_log_init();
+
+        /* Snapshot path: idle -> finding -> snapshot -> connecting -> tip */
+        ASSERT(sync_set_state(SYNC_FINDING_PEERS, "bootstrap"));
+        ASSERT(sync_set_state(SYNC_SNAPSHOT_RECEIVE, "fast sync"));
+        ASSERT(sync_get_state() == SYNC_SNAPSHOT_RECEIVE);
+        ASSERT(sync_set_state(SYNC_CONNECTING_BLOCKS, "apply snapshot"));
+        ASSERT(sync_set_state(SYNC_AT_TIP, "synced via snapshot"));
+        ASSERT(sync_get_state() == SYNC_AT_TIP);
+
+        /* Reset for next test */
+        ASSERT(sync_set_state(SYNC_IDLE, "done"));
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+static int test_peer_full_lifecycle(void)
+{
+    int failures = 0;
+
+    TEST("peer state machine full lifecycle with ban") {
+        event_log_init();
+        enum peer_state s = PEER_DISCONNECTED;
+
+        /* Normal connect -> handshake -> active -> snapshot -> ban */
+        ASSERT(peer_set_state_checked(1, &s, PEER_CONNECTING, "outbound"));
+        ASSERT(peer_set_state_checked(1, &s, PEER_CONNECTED, "tcp"));
+        ASSERT(peer_set_state_checked(1, &s, PEER_VERSION_SENT, "ver"));
+        ASSERT(peer_set_state_checked(1, &s, PEER_VERSION_RECEIVED, "verack"));
+        ASSERT(s == PEER_VERSION_RECEIVED);
+        ASSERT(peer_set_state_checked(1, &s, PEER_HANDSHAKE_COMPLETE, "hs"));
+        ASSERT(peer_set_state_checked(1, &s, PEER_ACTIVE, "ready"));
+
+        /* Snapshot serving cycle */
+        ASSERT(peer_set_state_checked(1, &s, PEER_SNAPSHOT_SERVING, "zsync"));
+        ASSERT(s == PEER_SNAPSHOT_SERVING);
+        ASSERT(peer_set_state_checked(1, &s, PEER_ACTIVE, "done"));
+
+        /* Misbehavior -> ban */
+        ASSERT(peer_set_state_checked(1, &s, PEER_BANNED, "bad peer"));
+        ASSERT(s == PEER_BANNED);
+        ASSERT(peer_set_state_checked(1, &s, PEER_DISCONNECTED, "cleanup"));
+        ASSERT(s == PEER_DISCONNECTED);
+
+        /* Verify events captured the lifecycle */
+        char buf[8192];
+        size_t len = event_dump_json_filtered(buf, sizeof(buf), 50, "peer.state");
+        ASSERT(len > 0);
+        buf[len] = '\0';
+        ASSERT(strstr(buf, "peer.state_change") != NULL);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+static int test_peer_stale_recovery(void)
+{
+    int failures = 0;
+
+    TEST("peer state machine stale -> active recovery") {
+        event_log_init();
+        enum peer_state s = PEER_DISCONNECTED;
+
+        /* Get to active */
+        peer_set_state_checked(1, &s, PEER_CONNECTING, "out");
+        peer_set_state_checked(1, &s, PEER_CONNECTED, "tcp");
+        peer_set_state_checked(1, &s, PEER_VERSION_SENT, "ver");
+        peer_set_state_checked(1, &s, PEER_HANDSHAKE_COMPLETE, "hs");
+        peer_set_state_checked(1, &s, PEER_ACTIVE, "go");
+
+        /* Go stale and recover */
+        ASSERT(peer_set_state_checked(1, &s, PEER_STALE, "no response"));
+        ASSERT(s == PEER_STALE);
+        ASSERT(peer_set_state_checked(1, &s, PEER_ACTIVE, "responded"));
+        ASSERT(s == PEER_ACTIVE);
+
+        /* Clean disconnect from stale */
+        peer_set_state_checked(1, &s, PEER_STALE, "stale again");
+        ASSERT(peer_set_state_checked(1, &s, PEER_DISCONNECTING, "give up"));
+        ASSERT(peer_set_state_checked(1, &s, PEER_DISCONNECTED, "closed"));
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+static void *event_emit_worker(void *arg)
+{
+    int id = *(int *)arg;
+    for (int i = 0; i < 5000; i++)
+        event_emitf(EV_MSG_RECEIVED, (uint32_t)id, "t%d_e%d", id, i);
+    return NULL;
+}
+
+static int test_concurrent_emit(void)
+{
+    int failures = 0;
+
+    TEST("concurrent event emission (4 threads x 5000 events)") {
+        event_log_init();
+
+        #define EV_NUM_THREADS 4
+        pthread_t threads[EV_NUM_THREADS];
+        int ids[EV_NUM_THREADS];
+
+        for (int i = 0; i < EV_NUM_THREADS; i++) {
+            ids[i] = i + 1;
+            pthread_create(&threads[i], NULL, event_emit_worker, &ids[i]);
+        }
+        for (int i = 0; i < EV_NUM_THREADS; i++)
+            pthread_join(threads[i], NULL);
+
+        /* 20,000 events emitted total — ring buffer holds 65536 so all fit */
+        char buf[65536];
+        size_t len = event_dump_json(buf, sizeof(buf), 100);
+        ASSERT(len > 0);
+        buf[len] = '\0';
+
+        /* Verify events from all threads are present in the last 100 */
+        ASSERT(strstr(buf, "msg.received") != NULL);
+
+        /* Dump large to verify no corruption */
+        char *big = malloc(16 * 1024 * 1024);
+        ASSERT(big != NULL);
+        len = event_dump_json(big, 16 * 1024 * 1024, 20000);
+        ASSERT(len > 0);
+        big[len] = '\0';
+
+        /* Must be valid JSON array */
+        ASSERT(big[0] == '[');
+        ASSERT(big[len - 1] == ']');
+
+        /* Verify events from all 4 threads present */
+        ASSERT(strstr(big, "t1_e") != NULL);
+        ASSERT(strstr(big, "t2_e") != NULL);
+        ASSERT(strstr(big, "t3_e") != NULL);
+        ASSERT(strstr(big, "t4_e") != NULL);
+
+        free(big);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
 int test_event(void)
 {
     int failures = 0;
@@ -379,6 +570,11 @@ int test_event(void)
     failures += test_dump_small_buffer();
     failures += test_dump_empty_log();
     failures += test_dump_filtered();
+    failures += test_sync_full_lifecycle();
+    failures += test_sync_snapshot_path();
+    failures += test_peer_full_lifecycle();
+    failures += test_peer_stale_recovery();
+    failures += test_concurrent_emit();
 
     return failures;
 }

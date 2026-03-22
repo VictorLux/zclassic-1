@@ -35,6 +35,10 @@ bool msg_process_messages(void *ctx, struct p2p_node *node);
 bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle);
 int msg_get_height(void *ctx);
 
+/* Update the cached snapshot offer (thread-safe). Called from boot.c. */
+struct snapshot_offer;
+void msg_processor_update_offer(const struct snapshot_offer *offer);
+
 /* Test helpers for block relay deduplication. */
 #include "core/uint256.h"
 bool msgprocessor_test_block_already_seen(const struct uint256 *hash);

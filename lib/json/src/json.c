@@ -86,9 +86,10 @@ static bool json_grow(struct json_value *v)
         size_t newcap = v->children_cap == 0 ? 8 : v->children_cap * 2;
         struct json_value *nc = realloc(v->children,
                                         newcap * sizeof(*nc));
-        char **nk = realloc(v->keys, newcap * sizeof(*nk));
-        if (!nc || !nk) return false;
+        if (!nc) return false;
         v->children = nc;
+        char **nk = realloc(v->keys, newcap * sizeof(*nk));
+        if (!nk) return false;
         v->keys = nk;
         v->children_cap = newcap;
     }
@@ -371,10 +372,20 @@ static bool parse_string(char **out, const char **pp, const char *end)
                 break;
             default: free(s); return false;
             }
-            if (len >= cap - 1) { cap *= 2; s = realloc(s, cap); }
+            if (len >= cap - 1) {
+                cap *= 2;
+                char *ns = realloc(s, cap);
+                if (!ns) { free(s); return false; }
+                s = ns;
+            }
             s[len++] = c;
         } else {
-            if (len >= cap - 1) { cap *= 2; s = realloc(s, cap); }
+            if (len >= cap - 1) {
+                cap *= 2;
+                char *ns = realloc(s, cap);
+                if (!ns) { free(s); return false; }
+                s = ns;
+            }
             s[len++] = *p;
         }
         p++;

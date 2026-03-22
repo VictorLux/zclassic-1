@@ -3,7 +3,10 @@
 
 #include "test/test_helpers.h"
 #include "coins/utxo_commitment.h"
+#include "net/fast_sync.h"
 #include <string.h>
+#include <stdlib.h>
+#include <time.h>
 
 int test_utxo_commitment(void)
 {
@@ -162,6 +165,289 @@ int test_utxo_commitment(void)
         bool ok = utxo_commitment_equal(&uc, &expected);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
+    }
+
+    TEST("utxo_commitment skip flag bypasses add/remove") {
+        struct utxo_commitment uc;
+        utxo_commitment_init(&uc);
+
+        uint8_t txid[32] = {1,2,3,4,5,6,7,8};
+
+        /* Normal add — accumulator becomes non-zero */
+        utxo_commitment_add(&uc, txid, 0, 100, 1);
+        ASSERT(uc.count == 1);
+        bool is_zero = true;
+        for (int i = 0; i < 32; i++)
+            if (uc.accumulator[i] != 0) { is_zero = false; break; }
+        ASSERT(!is_zero);
+
+        /* Save state, enable skip */
+        struct utxo_commitment saved = uc;
+        g_utxo_commitment_skip = true;
+
+        /* Add under skip — should be no-op */
+        uint8_t txid2[32] = {9,10,11,12};
+        utxo_commitment_add(&uc, txid2, 1, 200, 2);
+        ASSERT(utxo_commitment_equal(&uc, &saved));
+
+        /* Remove under skip — should be no-op */
+        utxo_commitment_remove(&uc, txid, 0, 100, 1);
+        ASSERT(utxo_commitment_equal(&uc, &saved));
+
+        /* Disable skip */
+        g_utxo_commitment_skip = false;
+
+        /* Normal remove — accumulator returns to zero */
+        utxo_commitment_remove(&uc, txid, 0, 100, 1);
+        ASSERT(uc.count == 0);
+        is_zero = true;
+        for (int i = 0; i < 32; i++)
+            if (uc.accumulator[i] != 0) { is_zero = false; break; }
+        ASSERT(is_zero);
+        PASS();
+    } _test_next:;
+
+    /* ── Block swarm tests ────────────────────────────────── */
+
+    printf("block_piece_hash deterministic... ");
+    {
+        uint8_t hashes[2][32];
+        memset(hashes[0], 0xAA, 32);
+        memset(hashes[1], 0xBB, 32);
+
+        uint8_t h1[32], h2[32];
+        block_piece_hash((const uint8_t (*)[32])hashes, 2, 0, h1);
+        block_piece_hash((const uint8_t (*)[32])hashes, 2, 0, h2);
+        if (memcmp(h1, h2, 32) == 0) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("block_piece_hash differs by index... ");
+    {
+        uint8_t hashes[1][32];
+        memset(hashes[0], 0xCC, 32);
+
+        uint8_t h0[32], h1[32];
+        block_piece_hash((const uint8_t (*)[32])hashes, 1, 0, h0);
+        block_piece_hash((const uint8_t (*)[32])hashes, 1, 1, h1);
+        if (memcmp(h0, h1, 32) != 0) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("block_swarm init and free... ");
+    {
+        struct block_piece_manifest m = {
+            .start_height = 1, .end_height = 256,
+            .num_pieces = 2,
+            .piece_hashes = calloc(2, 32)
+        };
+        memset(m.piece_hashes[0], 0x11, 32);
+        memset(m.piece_hashes[1], 0x22, 32);
+
+        struct block_swarm bs;
+        bool ok = block_swarm_init(&bs, &m, "/tmp");
+        ok = ok && bs.manifest.num_pieces == 2;
+        ok = ok && bs.pieces_complete == 0;
+        ok = ok && bs.pieces_inflight == 0;
+        block_swarm_free(&bs);
+        free(m.piece_hashes);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("block_swarm assign sequential... ");
+    {
+        struct block_piece_manifest m = {
+            .start_height = 1, .end_height = 384,
+            .num_pieces = 3,
+            .piece_hashes = calloc(3, 32)
+        };
+        struct block_swarm bs;
+        block_swarm_init(&bs, &m, "/tmp");
+
+        int32_t p0 = block_swarm_assign_piece(&bs, 1, NULL);
+        int32_t p1 = block_swarm_assign_piece(&bs, 2, NULL);
+        int32_t p2 = block_swarm_assign_piece(&bs, 3, NULL);
+        int32_t p3 = block_swarm_assign_piece(&bs, 4, NULL);
+
+        bool ok = (p0 >= 0 && p1 >= 0 && p2 >= 0);
+        ok = ok && (p0 != p1 && p1 != p2);
+        ok = ok && (p3 == -1);
+        ok = ok && (bs.pieces_inflight == 3);
+
+        block_swarm_free(&bs);
+        free(m.piece_hashes);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("block_swarm receive completes... ");
+    {
+        struct block_piece_manifest m = {
+            .start_height = 1, .end_height = 128,
+            .num_pieces = 1,
+            .piece_hashes = calloc(1, 32)
+        };
+        struct block_swarm bs;
+        block_swarm_init(&bs, &m, "/tmp");
+
+        int32_t pi = block_swarm_assign_piece(&bs, 1, NULL);
+        bool ok = (pi == 0);
+        ok = ok && block_swarm_receive_piece(&bs, 0, 1);
+        ok = ok && block_swarm_is_complete(&bs);
+        ok = ok && (block_swarm_progress(&bs) == 100);
+
+        block_swarm_free(&bs);
+        free(m.piece_hashes);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("block_swarm timeout re-queues... ");
+    {
+        struct block_piece_manifest m = {
+            .start_height = 1, .end_height = 256,
+            .num_pieces = 2,
+            .piece_hashes = calloc(2, 32)
+        };
+        struct block_swarm bs;
+        block_swarm_init(&bs, &m, "/tmp");
+
+        block_swarm_assign_piece(&bs, 1, NULL);
+        bs.piece_request_time[0] = (int64_t)time(NULL) - 60;
+
+        block_swarm_handle_timeouts(&bs, 30);
+        bool ok = (bs.piece_states[0] == CHUNK_NEEDED);
+        ok = ok && (bs.pieces_inflight == 0);
+
+        int32_t pi = block_swarm_assign_piece(&bs, 2, NULL);
+        ok = ok && (pi == 0);
+
+        block_swarm_free(&bs);
+        free(m.piece_hashes);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("block_swarm fail allows retry... ");
+    {
+        struct block_piece_manifest m = {
+            .start_height = 1, .end_height = 128,
+            .num_pieces = 1,
+            .piece_hashes = calloc(1, 32)
+        };
+        struct block_swarm bs;
+        block_swarm_init(&bs, &m, "/tmp");
+
+        block_swarm_assign_piece(&bs, 1, NULL);
+        block_swarm_fail_piece(&bs, 0);
+        bool ok = (bs.piece_states[0] == CHUNK_NEEDED);
+        ok = ok && (bs.pieces_failed == 1);
+
+        int32_t pi = block_swarm_assign_piece(&bs, 2, NULL);
+        ok = ok && (pi == 0);
+
+        block_swarm_free(&bs);
+        free(m.piece_hashes);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("block_swarm bitmap serialize... ");
+    {
+        struct block_piece_manifest m = {
+            .start_height = 1, .end_height = 1024,
+            .num_pieces = 8,
+            .piece_hashes = calloc(8, 32)
+        };
+        struct block_swarm bs;
+        block_swarm_init(&bs, &m, "/tmp");
+
+        bs.piece_states[0] = CHUNK_COMPLETE; bs.pieces_complete++;
+        bs.piece_states[2] = CHUNK_COMPLETE; bs.pieces_complete++;
+        bs.piece_states[7] = CHUNK_COMPLETE; bs.pieces_complete++;
+
+        uint8_t bitmap[1];
+        uint32_t len = block_swarm_serialize_bitmap(&bs, bitmap, 1);
+        bool ok = (len == 1);
+        ok = ok && (bitmap[0] == (1 | (1 << 2) | (1 << 7)));
+
+        block_swarm_free(&bs);
+        free(m.piece_hashes);
+        if (ok) printf("OK\n");
+        else { printf("FAIL (bitmap=0x%02x)\n", bitmap[0]); failures++; }
+    }
+
+    printf("block_swarm rarest-first... ");
+    {
+        struct block_piece_manifest m = {
+            .start_height = 1, .end_height = 512,
+            .num_pieces = 4,
+            .piece_hashes = calloc(4, 32)
+        };
+        struct block_swarm bs;
+        block_swarm_init(&bs, &m, "/tmp");
+
+        uint8_t bm_a[] = { 0x03 };
+        uint8_t bm_b[] = { 0x06 };
+        block_swarm_update_availability(&bs, bm_a, 1);
+        block_swarm_update_availability(&bs, bm_b, 1);
+
+        int32_t pi = block_swarm_assign_piece(&bs, 1, NULL);
+        bool ok = (pi == 3); /* piece 3 has 0 availability = rarest */
+
+        block_swarm_free(&bs);
+        free(m.piece_hashes);
+        if (ok) printf("OK\n");
+        else { printf("FAIL (got piece %d)\n", pi); failures++; }
+    }
+
+    printf("block_swarm endgame mode... ");
+    {
+        struct block_piece_manifest m = {
+            .start_height = 1, .end_height = 512,
+            .num_pieces = 4,
+            .piece_hashes = calloc(4, 32)
+        };
+        struct block_swarm bs;
+        block_swarm_init(&bs, &m, "/tmp");
+
+        bs.piece_states[0] = CHUNK_COMPLETE; bs.pieces_complete++;
+        bs.piece_states[1] = CHUNK_COMPLETE; bs.pieces_complete++;
+        bs.piece_states[2] = CHUNK_COMPLETE; bs.pieces_complete++;
+
+        int32_t pi = block_swarm_assign_piece(&bs, 1, NULL);
+        bool ok = (pi == 3 && bs.endgame);
+
+        uint32_t indices[4];
+        uint32_t count = block_swarm_endgame_pieces(&bs, indices, 4);
+        ok = ok && (count == 1) && (indices[0] == 3);
+
+        block_swarm_free(&bs);
+        free(m.piece_hashes);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("block_swarm bitmap peer filtering... ");
+    {
+        struct block_piece_manifest m = {
+            .start_height = 1, .end_height = 512,
+            .num_pieces = 4,
+            .piece_hashes = calloc(4, 32)
+        };
+        struct block_swarm bs;
+        block_swarm_init(&bs, &m, "/tmp");
+
+        uint8_t bm[] = { 0x0C }; /* bits 2,3 only */
+
+        int32_t pi = block_swarm_assign_piece(&bs, 1, bm);
+        bool ok = (pi == 2 || pi == 3);
+
+        block_swarm_free(&bs);
+        free(m.piece_hashes);
+        if (ok) printf("OK\n");
+        else { printf("FAIL (got piece %d)\n", pi); failures++; }
     }
 
     return failures;

@@ -6,6 +6,28 @@
 #include "net/onion_service.h"
 #include <sys/stat.h>
 #include <unistd.h>
+#include <dirent.h>
+
+/* Recursively remove a directory tree (like rm -rf). */
+static void remove_tree(const char *path)
+{
+    DIR *d = opendir(path);
+    if (!d) { unlink(path); return; }
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL) {
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
+            continue;
+        char child[1024];
+        snprintf(child, sizeof(child), "%s/%s", path, ent->d_name);
+        struct stat st;
+        if (lstat(child, &st) == 0 && S_ISDIR(st.st_mode))
+            remove_tree(child);
+        else
+            unlink(child);
+    }
+    closedir(d);
+    rmdir(path);
+}
 
 static int test_tor_initial_state(void)
 {
@@ -96,18 +118,7 @@ static int test_tor_torrc_has_hidden_service_dir(void)
         failures++;
     }
 
-    /* Clean up */
-    unlink(torrc);
-    snprintf(td, sizeof(td), "%s/tor_data/onion_service", tmpdir);
-    rmdir(td);
-    snprintf(td, sizeof(td), "%s/tor_data", tmpdir);
-    rmdir(td);
-    /* tor.log may have been created */
-    char logp[512];
-    snprintf(logp, sizeof(logp), "%s/tor.log", tmpdir);
-    unlink(logp);
-    rmdir(tmpdir);
-
+    remove_tree(tmpdir);
     return failures;
 }
 
@@ -140,10 +151,7 @@ static int test_tor_persistent_hostname_read(void)
     FILE *f = fopen(hostname_path, "w");
     if (!f) {
         printf("SKIP (cannot write hostname file)\n");
-        rmdir(td);
-        snprintf(td, sizeof(td), "%s/tor_data", tmpdir);
-        rmdir(td);
-        rmdir(tmpdir);
+        remove_tree(tmpdir);
         return 0;
     }
     fprintf(f, "%s\n", fake_onion);
@@ -163,15 +171,8 @@ static int test_tor_persistent_hostname_read(void)
         failures++;
     }
 
-    /* Clean up */
     onion_service_set_address(NULL);
-    unlink(hostname_path);
-    snprintf(td, sizeof(td), "%s/tor_data/onion_service", tmpdir);
-    rmdir(td);
-    snprintf(td, sizeof(td), "%s/tor_data", tmpdir);
-    rmdir(td);
-    rmdir(tmpdir);
-
+    remove_tree(tmpdir);
     return failures;
 }
 
@@ -202,10 +203,7 @@ static int test_tor_address_persists_across_restarts(void)
     FILE *f = fopen(hostname_path, "w");
     if (!f) {
         printf("SKIP (cannot write hostname)\n");
-        rmdir(td);
-        snprintf(td, sizeof(td), "%s/tor_data", tmpdir);
-        rmdir(td);
-        rmdir(tmpdir);
+        remove_tree(tmpdir);
         return 0;
     }
     fprintf(f, "%s\n", expected);
@@ -247,15 +245,8 @@ static int test_tor_address_persists_across_restarts(void)
         failures++;
     }
 
-    /* Clean up */
     onion_service_set_address(NULL);
-    unlink(hostname_path);
-    snprintf(td, sizeof(td), "%s/tor_data/onion_service", tmpdir);
-    rmdir(td);
-    snprintf(td, sizeof(td), "%s/tor_data", tmpdir);
-    rmdir(td);
-    rmdir(tmpdir);
-
+    remove_tree(tmpdir);
     return failures;
 }
 
@@ -307,10 +298,7 @@ static int test_tor_torrc_contains_onion_service_path(void)
     if (!f) {
         printf("FAIL (torrc not found)\n");
         failures++;
-        rmdir(td);
-        snprintf(td, sizeof(td), "%s/tor_data", tmpdir);
-        rmdir(td);
-        rmdir(tmpdir);
+        remove_tree(tmpdir);
         return failures;
     }
 
@@ -331,16 +319,7 @@ static int test_tor_torrc_contains_onion_service_path(void)
         failures++;
     }
 
-    unlink(torrc);
-    snprintf(td, sizeof(td), "%s/tor_data/onion_service", tmpdir);
-    rmdir(td);
-    snprintf(td, sizeof(td), "%s/tor_data", tmpdir);
-    rmdir(td);
-    char logp[512];
-    snprintf(logp, sizeof(logp), "%s/tor.log", tmpdir);
-    unlink(logp);
-    rmdir(tmpdir);
-
+    remove_tree(tmpdir);
     return failures;
 }
 

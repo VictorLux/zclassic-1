@@ -234,7 +234,12 @@ static char *http_request(const char *host, uint16_t port, const char *method,
         ssize_t n = recv(sock, buf + len, cap - len - 1, 0);
         if (n <= 0) break;
         len += (size_t)n;
-        if (len + 1024 > cap) { cap *= 2; buf = realloc(buf, cap); }
+        if (len + 1024 > cap) {
+            cap *= 2;
+            char *nb = realloc(buf, cap);
+            if (!nb) { free(buf); return NULL; }
+            buf = nb;
+        }
     }
     close(sock);
     buf[len] = 0;

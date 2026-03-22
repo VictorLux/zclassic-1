@@ -772,3 +772,308 @@ void swarm_sync_handle_timeouts(struct swarm_sync *ss, int timeout_secs)
         }
     }
 }
+
+/* ── Block swarm: BitTorrent-style parallel block download ──── */
+
+void block_piece_hash(const uint8_t (*block_hashes)[32], uint32_t count,
+                       uint32_t piece_index, uint8_t hash_out[32])
+{
+    struct sha3_256_ctx ctx;
+    sha3_256_init(&ctx);
+    sha3_256_write(&ctx, (const unsigned char *)&piece_index, 4);
+    sha3_256_write(&ctx, (const unsigned char *)&count, 4);
+    for (uint32_t i = 0; i < count; i++)
+        sha3_256_write(&ctx, block_hashes[i], 32);
+    sha3_256_finalize(&ctx, hash_out);
+}
+
+void block_piece_manifest_free(struct block_piece_manifest *m)
+{
+    if (m && m->piece_hashes) {
+        free(m->piece_hashes);
+        m->piece_hashes = NULL;
+    }
+}
+
+bool block_piece_manifest_build(const char *datadir,
+                                 int32_t start_height, int32_t end_height,
+                                 struct block_piece_manifest *out)
+{
+    if (!out || end_height < start_height) return false;
+    memset(out, 0, sizeof(*out));
+
+    char db_path[1024];
+    snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
+
+    sqlite3 *db = NULL;
+    if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK)
+        return false;
+
+    out->start_height = start_height;
+    out->end_height = end_height;
+    int32_t total_blocks = end_height - start_height + 1;
+    out->num_pieces = (uint32_t)((total_blocks + BLOCKS_PER_PIECE - 1)
+                                  / BLOCKS_PER_PIECE);
+
+    /* Get tip hash */
+    sqlite3_stmt *s = NULL;
+    sqlite3_prepare_v2(db,
+        "SELECT hash FROM blocks WHERE height = ?", -1, &s, NULL);
+    sqlite3_bind_int(s, 1, end_height);
+    if (sqlite3_step(s) == SQLITE_ROW) {
+        const void *h = sqlite3_column_blob(s, 0);
+        if (h && sqlite3_column_bytes(s, 0) >= 32)
+            memcpy(out->tip_hash, h, 32);
+    }
+    sqlite3_finalize(s);
+
+    /* Allocate piece hashes */
+    out->piece_hashes = calloc(out->num_pieces, 32);
+    if (!out->piece_hashes) { sqlite3_close(db); return false; }
+
+    /* Fetch all block hashes in range, compute piece hashes */
+    sqlite3_prepare_v2(db,
+        "SELECT hash FROM blocks WHERE height >= ? AND height <= ? "
+        "ORDER BY height ASC", -1, &s, NULL);
+    sqlite3_bind_int(s, 1, start_height);
+    sqlite3_bind_int(s, 2, end_height);
+
+    uint8_t (*piece_block_hashes)[32] = calloc(BLOCKS_PER_PIECE, 32);
+    if (!piece_block_hashes) {
+        sqlite3_finalize(s);
+        sqlite3_close(db);
+        free(out->piece_hashes);
+        out->piece_hashes = NULL;
+        return false;
+    }
+
+    uint32_t piece_idx = 0;
+    uint32_t block_in_piece = 0;
+
+    while (sqlite3_step(s) == SQLITE_ROW) {
+        const void *h = sqlite3_column_blob(s, 0);
+        if (h && sqlite3_column_bytes(s, 0) >= 32)
+            memcpy(piece_block_hashes[block_in_piece], h, 32);
+        block_in_piece++;
+
+        if (block_in_piece == BLOCKS_PER_PIECE) {
+            block_piece_hash((const uint8_t (*)[32])piece_block_hashes,
+                             block_in_piece, piece_idx,
+                             out->piece_hashes[piece_idx]);
+            piece_idx++;
+            block_in_piece = 0;
+        }
+    }
+
+    /* Final partial piece */
+    if (block_in_piece > 0 && piece_idx < out->num_pieces) {
+        block_piece_hash((const uint8_t (*)[32])piece_block_hashes,
+                         block_in_piece, piece_idx,
+                         out->piece_hashes[piece_idx]);
+    }
+
+    free(piece_block_hashes);
+    sqlite3_finalize(s);
+
+    /* Build Merkle root from piece hashes */
+    fast_sync_merkle_root((const uint8_t (*)[32])out->piece_hashes,
+                           out->num_pieces, out->merkle_root);
+
+    sqlite3_close(db);
+    return true;
+}
+
+bool block_swarm_init(struct block_swarm *bs,
+                      const struct block_piece_manifest *manifest,
+                      const char *datadir)
+{
+    if (!bs || !manifest || manifest->num_pieces == 0) return false;
+    memset(bs, 0, sizeof(*bs));
+
+    uint32_t n = manifest->num_pieces;
+
+    /* Deep-copy manifest */
+    bs->manifest = *manifest;
+    bs->manifest.piece_hashes = calloc(n, 32);
+    if (!bs->manifest.piece_hashes) return false;
+    if (manifest->piece_hashes)
+        memcpy(bs->manifest.piece_hashes, manifest->piece_hashes,
+               (size_t)n * 32);
+
+    bs->piece_states = calloc(n, sizeof(enum chunk_state));
+    bs->piece_peer = calloc(n, sizeof(int));
+    bs->piece_request_time = calloc(n, sizeof(int64_t));
+    bs->piece_availability = calloc(n, sizeof(uint32_t));
+
+    if (!bs->piece_states || !bs->piece_peer ||
+        !bs->piece_request_time || !bs->piece_availability) {
+        block_swarm_free(bs);
+        return false;
+    }
+
+    for (uint32_t i = 0; i < n; i++)
+        bs->piece_peer[i] = -1;
+
+    bs->datadir = datadir;
+    return true;
+}
+
+void block_swarm_free(struct block_swarm *bs)
+{
+    if (!bs) return;
+    free(bs->manifest.piece_hashes);
+    bs->manifest.piece_hashes = NULL;
+    free(bs->piece_states);
+    bs->piece_states = NULL;
+    free(bs->piece_peer);
+    bs->piece_peer = NULL;
+    free(bs->piece_request_time);
+    bs->piece_request_time = NULL;
+    free(bs->piece_availability);
+    bs->piece_availability = NULL;
+}
+
+/* Rarest-first piece selection: pick the needed piece with the lowest
+ * availability count. Ties broken by sequential order (lower index first).
+ * If peer_bitmap is non-NULL, only consider pieces the peer has. */
+int32_t block_swarm_assign_piece(struct block_swarm *bs, int peer_id,
+                                  const uint8_t *peer_bitmap)
+{
+    if (!bs || !bs->piece_states) return -1;
+
+    /* Endgame mode: if few pieces remain, use broadcast strategy.
+     * Caller should request all remaining from all peers. */
+    uint32_t remaining = bs->manifest.num_pieces - bs->pieces_complete;
+    if (remaining <= ENDGAME_THRESHOLD && remaining > 0)
+        bs->endgame = true;
+
+    int32_t best = -1;
+    uint32_t best_avail = UINT32_MAX;
+
+    for (uint32_t i = 0; i < bs->manifest.num_pieces; i++) {
+        if (bs->piece_states[i] != CHUNK_NEEDED &&
+            bs->piece_states[i] != CHUNK_FAILED)
+            continue;
+
+        /* In endgame, also consider INFLIGHT pieces for duplicate requests */
+        if (bs->endgame && bs->piece_states[i] == CHUNK_INFLIGHT) {
+            /* Allow re-request in endgame, but not from same peer */
+            if (bs->piece_peer[i] == peer_id) continue;
+        } else if (bs->piece_states[i] == CHUNK_INFLIGHT) {
+            continue;
+        }
+
+        /* Check peer bitmap if available */
+        if (peer_bitmap && !(peer_bitmap[i / 8] & (1 << (i % 8))))
+            continue;
+
+        /* Rarest-first: prefer pieces fewer peers have */
+        uint32_t avail = bs->piece_availability
+            ? bs->piece_availability[i] : 1;
+        if (avail < best_avail || (avail == best_avail && best < 0)) {
+            best_avail = avail;
+            best = (int32_t)i;
+        }
+    }
+
+    if (best >= 0) {
+        bs->piece_states[best] = CHUNK_INFLIGHT;
+        bs->piece_peer[best] = peer_id;
+        bs->piece_request_time[best] = (int64_t)time(NULL);
+        bs->pieces_inflight++;
+    }
+    return best;
+}
+
+bool block_swarm_receive_piece(struct block_swarm *bs,
+                                uint32_t piece_index, int peer_id)
+{
+    if (!bs || piece_index >= bs->manifest.num_pieces) return false;
+    (void)peer_id;
+
+    bs->piece_states[piece_index] = CHUNK_COMPLETE;
+    if (bs->pieces_inflight > 0) bs->pieces_inflight--;
+    bs->pieces_complete++;
+
+    /* Check endgame exit */
+    uint32_t remaining = bs->manifest.num_pieces - bs->pieces_complete;
+    if (remaining == 0) bs->endgame = false;
+
+    return true;
+}
+
+void block_swarm_fail_piece(struct block_swarm *bs, uint32_t piece_index)
+{
+    if (!bs || piece_index >= bs->manifest.num_pieces) return;
+    bs->piece_states[piece_index] = CHUNK_NEEDED;
+    bs->piece_peer[piece_index] = -1;
+    if (bs->pieces_inflight > 0) bs->pieces_inflight--;
+    bs->pieces_failed++;
+}
+
+bool block_swarm_is_complete(const struct block_swarm *bs)
+{
+    if (!bs) return false;
+    return bs->pieces_complete == bs->manifest.num_pieces;
+}
+
+int block_swarm_progress(const struct block_swarm *bs)
+{
+    if (!bs || bs->manifest.num_pieces == 0) return 0;
+    return (int)(bs->pieces_complete * 100 / bs->manifest.num_pieces);
+}
+
+void block_swarm_handle_timeouts(struct block_swarm *bs, int timeout_secs)
+{
+    if (!bs || !bs->piece_states) return;
+
+    int64_t now = (int64_t)time(NULL);
+    for (uint32_t i = 0; i < bs->manifest.num_pieces; i++) {
+        if (bs->piece_states[i] == CHUNK_INFLIGHT &&
+            now - bs->piece_request_time[i] > timeout_secs) {
+            bs->piece_states[i] = CHUNK_NEEDED;
+            bs->piece_peer[i] = -1;
+            bs->piece_request_time[i] = 0;
+            if (bs->pieces_inflight > 0)
+                bs->pieces_inflight--;
+        }
+    }
+}
+
+void block_swarm_update_availability(struct block_swarm *bs,
+                                      const uint8_t *bitmap,
+                                      uint32_t bitmap_len)
+{
+    if (!bs || !bitmap || !bs->piece_availability) return;
+    for (uint32_t i = 0; i < bs->manifest.num_pieces; i++) {
+        if (i / 8 < bitmap_len && (bitmap[i / 8] & (1 << (i % 8))))
+            bs->piece_availability[i]++;
+    }
+}
+
+uint32_t block_swarm_endgame_pieces(const struct block_swarm *bs,
+                                     uint32_t *out_indices, uint32_t max)
+{
+    if (!bs || !out_indices || !bs->endgame) return 0;
+
+    uint32_t count = 0;
+    for (uint32_t i = 0; i < bs->manifest.num_pieces && count < max; i++) {
+        if (bs->piece_states[i] != CHUNK_COMPLETE)
+            out_indices[count++] = i;
+    }
+    return count;
+}
+
+uint32_t block_swarm_serialize_bitmap(const struct block_swarm *bs,
+                                       uint8_t *out, uint32_t max_len)
+{
+    if (!bs || !out) return 0;
+    uint32_t bytes = (bs->manifest.num_pieces + 7) / 8;
+    if (bytes > max_len) bytes = max_len;
+    memset(out, 0, bytes);
+    for (uint32_t i = 0; i < bs->manifest.num_pieces && i / 8 < bytes; i++) {
+        if (bs->piece_states[i] == CHUNK_COMPLETE)
+            out[i / 8] |= (uint8_t)(1 << (i % 8));
+    }
+    return bytes;
+}

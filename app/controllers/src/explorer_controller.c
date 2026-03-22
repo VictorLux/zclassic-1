@@ -1213,20 +1213,7 @@ static size_t serve_tx(const char *param, uint8_t *r, size_t max)
     for (size_t i = 0; i < tx.num_vin && off + 512 < max; i++) {
         if (transaction_is_coinbase(&tx) && i == 0) {
             char subsidy[32];
-            int64_t reward = 0;
-            if (block_height >= 0) {
-                /* Compute subsidy inline — no consensus params needed.
-                 * Matches get_block_subsidy() logic. */
-                if (block_height == 0)
-                    reward = 0;
-                else if (block_height < BUTTERCUP_ACTIVATION_HEIGHT)
-                    reward = BASE_SUBSIDY_SAT;
-                else {
-                    int era = (int)((block_height - 1 - BUTTERCUP_ACTIVATION_HEIGHT)
-                                    / POST_BC_HALVING);
-                    reward = (BASE_SUBSIDY_SAT / 2) >> (era + 3);
-                }
-            }
+            int64_t reward = block_height >= 0 ? get_block_subsidy(block_height, NULL) : 0;
             format_zcl(subsidy, sizeof(subsidy), reward);
             APPEND(off, r, max,
                 "<div class='io-row'>"

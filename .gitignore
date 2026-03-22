@@ -1,26 +1,44 @@
-# Build output
-build/
+# Build artifacts
+zclassic23
+zclassic23.old
+test_zcl
+zcl-rpc
+zcl-browser
+zclassic-cli
+bench_field
+hodlwave_chart
+hodlwave_svg
+hodlwave_view
 *.o
-
-# Legacy build artifacts (root-level, pre-build-dir)
-/zclassic23
-/test_zcl
-/zcl-rpc
-/zcl-browser
-/zclassic-cli
 
 # Vendor (built from source, not tracked)
 vendor/lib/
 vendor/zclassic-ref/
 vendor/sqlite3.c
-vendor/tor/libtor.a
+vendor/tor/
 
 # Tools (binary output)
 tools/hodl_chart
 tools/hodl_1yr_chart
+
+# Data / runtime
+*.db
+*.db-wal
+*.db-shm
+*.log
+node.log
+
+# Test artifacts (Tor integration temp dirs)
+zcl_torrc_hs_*/
+zcl_torrc_path_*/
+zcl_hostname_*/
+zcl_persist_*/
 
 # Editor / OS
 .DS_Store
 .vscode/
 *.swp
 *~
+tags
+TAGS
+.idea/

@@ -17,3 +17,6 @@ typedef size_t (*dynhost_external_handler_fn)(const char *, const char *,
 void dynhost_webserver_set_external_handler(
     dynhost_external_handler_fn handler, void *ctx)
 { (void)handler; (void)ctx; }
+
+/* Shutdown stub */
+void tor_shutdown_event_loop_and_exit(int exitcode) { (void)exitcode; }

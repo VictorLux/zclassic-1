@@ -47,4 +47,8 @@ bool utxo_commitment_deserialize(struct utxo_commitment *uc,
 bool utxo_commitment_equal(const struct utxo_commitment *a,
                             const struct utxo_commitment *b);
 
+/* Skip commitment tracking during bulk operations (reindex).
+ * When true, add/remove are no-ops for performance. */
+extern _Atomic bool g_utxo_commitment_skip;
+
 #endif

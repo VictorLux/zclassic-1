@@ -1,4 +1,4 @@
-# ZClassic23
+# ZClassic23 v0.1.0
 
 ## Vision
 A decentralized internet platform. Every node is a full ZClassic node, a Tor hidden service, a web application server, and a peer discovery engine. One binary. Pure C23. Zero dependencies.
@@ -6,10 +6,16 @@ A decentralized internet platform. Every node is a full ZClassic node, a Tor hid
 ## Build
 ```bash
 make zclassic23    # 26MB binary, zero system deps
-make test          # 1137+ tests
+make test          # 1066+ tests
 make zcl-browser   # GTK Tor-only browser
 make zcl-rpc       # CLI RPC client
 ```
+
+## Documentation
+- **README.md** — Quick start, architecture overview, build targets
+- **API.md** — Complete API reference (95 RPC commands, REST endpoints, explorer routes)
+- **VISION.md** — Project philosophy and roadmap
+- **CLAUDE.md** — This file: project structure, protocol, security, design decisions
 
 ## Project Structure
 ```
@@ -60,7 +66,8 @@ Legacy (18): version, verack, ping, pong, addr, inv, getdata, getblocks,
 getheaders, block, tx, headers, getaddr, mempool, notfound, sendheaders,
 reject, feefilter
 
-ZCL23 extension (4): zsnapshot, zsnapreq, zsnapdata, zsnapend
+ZCL23 extension (7): zsnapshot, zsnapreq, zsnapdata, zsnapend,
+  zchunkreq, zchunkdata, zmanifest
 
 ### Fast Sync
 ```
@@ -234,9 +241,13 @@ zcl-rpc indexlegacy /path/to/.zclassic
 
 ### Deployment
 ```bash
-make zclassic23 && systemctl restart zclassic23   # no sudo needed
-systemctl status zclassic23                        # check status
-tail -f ~/.zclassic-c23/node.log                   # watch logs
+# First time (one sudo, then never again):
+sudo deploy/setup.sh
+
+# Every deploy:
+make zclassic23 && make deploy
+systemctl --user status zclassic23
+tail -f ~/.zclassic-c23/node.log
 ```
 SSL certs at `{datadir}/ssl/fullchain.pem` + `privkey.pem`.
 CSS template at `{datadir}/explorer/style.css` (live-editable).

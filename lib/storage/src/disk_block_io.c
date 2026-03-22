@@ -8,6 +8,7 @@
 #include "core/serialize.h"
 #include "core/hash.h"
 #include <errno.h>
+#include <stdint.h>
 #include <string.h>
 #include <sys/stat.h>
 
@@ -89,7 +90,7 @@ bool write_block_to_disk(struct block *b, struct disk_block_pos *pos,
     }
 
     long data_pos = ftell(file);
-    if (data_pos < 0) {
+    if (data_pos < 0 || (unsigned long)data_pos > UINT32_MAX) {
         stream_free(&s);
         fclose(file);
         return false;

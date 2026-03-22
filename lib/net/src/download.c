@@ -195,10 +195,23 @@ bool dl_mark_requested(struct download_manager *dm,
 
     maybe_grow(dm);
 
+    /* Remove from queue if present (block is moving to in-flight) */
+    for (size_t j = 0; j < dm->queue_len; j++) {
+        if (uint256_eq(&dm->queue[j], hash)) {
+            dm->queue_len--;
+            if (j < dm->queue_len) {
+                memmove(&dm->queue[j], &dm->queue[j + 1],
+                        (dm->queue_len - j) * sizeof(struct uint256));
+                memmove(&dm->queue_heights[j], &dm->queue_heights[j + 1],
+                        (dm->queue_len - j) * sizeof(int32_t));
+            }
+            break;
+        }
+    }
+
     /* Find empty slot */
     struct dl_in_flight *slot = find_slot(dm, hash, true);
     if (!slot) {
-        /* Table full despite grow — shouldn't happen */
         zcl_mutex_unlock(&dm->cs);
         return false;
     }
@@ -211,25 +224,10 @@ bool dl_mark_requested(struct download_manager *dm,
     dm->num_active++;
     dm->total_requested++;
 
-    /* Remove from queue if present (it may have been queued first) */
-    for (size_t i = 0; i < dm->queue_len; i++) {
-        if (uint256_eq(&dm->queue[i], hash)) {
-            dm->queue_len--;
-            if (i < dm->queue_len) {
-                memmove(&dm->queue[i], &dm->queue[i + 1],
-                        (dm->queue_len - i) * sizeof(struct uint256));
-                memmove(&dm->queue_heights[i], &dm->queue_heights[i + 1],
-                        (dm->queue_len - i) * sizeof(int32_t));
-            }
-            break;
-        }
-    }
-
     /* Update peer stats */
     {
         struct dl_peer_stats *ps = dl_find_peer(dm, peer_id, true);
         if (ps) ps->blocks_requested++;
-        dm->num_peers++;
     }
 
     zcl_mutex_unlock(&dm->cs);

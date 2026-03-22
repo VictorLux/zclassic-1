@@ -5,7 +5,6 @@
 
 #include "controllers/blockchain_controller.h"
 #include "controllers/strong_params.h"
-#include "validation/process_block.h"
 #include "chain/chain.h"
 #include "chain/chainparams.h"
 #include "chain/pow.h"
@@ -1316,10 +1315,16 @@ static bool rpc_gethodlwavechart(const struct json_value *params, bool help,
                 if (num_utxos >= cap) {
                     size_t new_cap = cap * 2;
                     int64_t *new_ts = realloc(utxo_ts, new_cap * sizeof(int64_t));
+                    if (!new_ts) {
+                        free(utxo_ts); free(utxo_val);
+                        coins_free(&c); db_iter_free(&it);
+                        json_set_str(result, "Out of memory");
+                        return false;
+                    }
+                    utxo_ts = new_ts;
                     int64_t *new_val = realloc(utxo_val, new_cap * sizeof(int64_t));
-                    if (!new_ts || !new_val) {
-                        free(new_ts ? new_ts : utxo_ts);
-                        free(new_val ? new_val : utxo_val);
+                    if (!new_val) {
+                        free(utxo_ts); free(utxo_val);
                         coins_free(&c); db_iter_free(&it);
                         json_set_str(result, "Out of memory");
                         return false;
@@ -1617,92 +1622,6 @@ static bool rpc_gethodlwavechart(const struct json_value *params, bool help,
     return true;
 }
 
-/* ── invalidateblock / reconsiderblock ──────────────────────── */
-
-static bool rpc_invalidateblock(const struct json_value *params, bool help,
-                                  struct json_value *result)
-{
-    struct rpc_params p;
-    rpc_params_init(&p, params);
-    RPC_HELP(help, result,
-        "invalidateblock \"blockhash\"\n"
-        "\nPermanently marks a block as invalid, as if it violated a consensus rule.\n"
-        "If the block is on the active chain, the chain is rewound.\n");
-    const char *hash_str = rpc_require_str(&p, 0, "blockhash");
-    if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); return false; }
-
-    if (!g_main_state || !g_coins_tip || !g_datadir) {
-        json_set_str(result, "Node not initialized");
-        return false;
-    }
-
-    struct uint256 hash;
-    uint256_set_hex(&hash, hash_str);
-    struct block_index *pindex = block_map_find(&g_main_state->map_block_index,
-                                                 &hash);
-    if (!pindex) {
-        json_set_str(result, "Block not found");
-        return false;
-    }
-
-    const struct chain_params *cp = chain_params_get();
-    struct validation_state state;
-    validation_state_init(&state);
-
-    if (!invalidate_block(&state, g_main_state, g_coins_tip, cp,
-                           pindex, g_datadir)) {
-        char msg[256];
-        snprintf(msg, sizeof(msg), "Failed: %s", state.reject_reason);
-        json_set_str(result, msg);
-        return false;
-    }
-
-    json_set_null(result);
-    return true;
-}
-
-static bool rpc_reconsiderblock(const struct json_value *params, bool help,
-                                  struct json_value *result)
-{
-    struct rpc_params p;
-    rpc_params_init(&p, params);
-    RPC_HELP(help, result,
-        "reconsiderblock \"blockhash\"\n"
-        "\nRemoves invalidity status of a block and its descendants,\n"
-        "reconsidering them for activation.\n");
-    const char *hash_str = rpc_require_str(&p, 0, "blockhash");
-    if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); return false; }
-
-    if (!g_main_state || !g_coins_tip || !g_datadir) {
-        json_set_str(result, "Node not initialized");
-        return false;
-    }
-
-    struct uint256 hash;
-    uint256_set_hex(&hash, hash_str);
-    struct block_index *pindex = block_map_find(&g_main_state->map_block_index,
-                                                 &hash);
-    if (!pindex) {
-        json_set_str(result, "Block not found");
-        return false;
-    }
-
-    const struct chain_params *cp = chain_params_get();
-    struct validation_state state;
-    validation_state_init(&state);
-
-    if (!reconsider_block(&state, g_main_state, g_coins_tip, cp,
-                           pindex, g_datadir)) {
-        char msg[256];
-        snprintf(msg, sizeof(msg), "Failed: %s", state.reject_reason);
-        json_set_str(result, msg);
-        return false;
-    }
-
-    json_set_null(result);
-    return true;
-}
-
 /* reindexchainstate: Wipe and rebuild the UTXO set by replaying all blocks.
  * Fixes any corrupt coins entries from prior serialization bugs. */
 static bool rpc_reindexchainstate(const struct json_value *params, bool help,
@@ -1893,7 +1812,9 @@ struct worker_ctx {
 #define IDX_GROW(arr, num, cap, type) do {            \
     if ((num) >= (cap)) {                             \
         (cap) = (cap) < 1024 ? 1024 : (cap) * 2;     \
-        (arr) = realloc((arr), (size_t)(cap) * sizeof(type)); \
+        void *_tmp = realloc((arr), (size_t)(cap) * sizeof(type)); \
+        if (!_tmp) { free(arr); (arr) = NULL; (cap) = 0; break; } \
+        (arr) = _tmp;                                 \
     }                                                 \
 } while (0)
 
@@ -2204,89 +2125,6 @@ static bool rpc_importchainstate(const struct json_value *params, bool help,
     sqlite3_finalize(s);
 
     printf("importchainstate: done — %d UTXOs imported\n", count);
-    fflush(stdout);
-    return true;
-}
-
-/* ── rebuildutxoindex: rebuild SQLite UTXOs from our own LevelDB chainstate ── */
-
-static bool rpc_rebuildutxoindex(const struct json_value *params, bool help,
-                                   struct json_value *result)
-{
-    (void)params;
-    RPC_HELP(help, result,
-        "rebuildutxoindex\n"
-        "\nRebuilds the SQLite UTXO index from the node's LevelDB chainstate.\n"
-        "Use when /explorer/stats or /explorer/hodl show empty/stale data.\n"
-        "Also rebuilds addresses and wallet_utxos tables.\n"
-        "\nTakes ~30 seconds for the full chain.\n");
-
-    if (!g_coins_db) {
-        json_set_str(result, "Coins database not available");
-        return false;
-    }
-    if (!g_node_db_bc || !g_node_db_bc->open) {
-        json_set_str(result, "Node database not open");
-        return false;
-    }
-
-    printf("rebuildutxoindex: importing UTXOs from chainstate...\n");
-    fflush(stdout);
-
-    int count = node_db_sync_import_utxos(g_node_db_bc, g_coins_db);
-    if (count < 0) {
-        json_set_str(result, "UTXO import failed");
-        return false;
-    }
-
-    /* Rebuild wallet_utxos and addresses from new UTXO set */
-    sqlite3_exec(g_node_db_bc->db, "BEGIN", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db,
-        "DELETE FROM wallet_utxos", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db,
-        "INSERT INTO wallet_utxos "
-        "(txid, vout, value, address_hash, script, height, is_coinbase) "
-        "SELECT u.txid, u.vout, u.value, u.address_hash, u.script, "
-        "u.height, u.is_coinbase "
-        "FROM utxos u INNER JOIN wallet_keys wk "
-        "ON u.address_hash = wk.pubkey_hash",
-        NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db,
-        "DELETE FROM addresses", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db,
-        "INSERT OR REPLACE INTO addresses "
-        "(address_hash, script_type, balance, utxo_count, "
-        "first_seen_height, last_seen_height) "
-        "SELECT address_hash, MAX(script_type), SUM(value), count(*), "
-        "MIN(height), MAX(height) "
-        "FROM utxos WHERE address_hash IS NOT NULL "
-        "GROUP BY address_hash",
-        NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "COMMIT", NULL, NULL, NULL);
-
-    json_set_object(result);
-    json_push_kv_int(result, "utxos_imported", count);
-
-    /* Report balance */
-    sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(g_node_db_bc->db,
-        "SELECT COALESCE(SUM(value),0) FROM utxos",
-        -1, &s, NULL);
-    if (s && sqlite3_step(s) == SQLITE_ROW)
-        json_push_kv_int(result, "total_value_zatoshi",
-                          sqlite3_column_int64(s, 0));
-    if (s) sqlite3_finalize(s);
-
-    s = NULL;
-    sqlite3_prepare_v2(g_node_db_bc->db,
-        "SELECT count(*) FROM addresses WHERE balance > 0",
-        -1, &s, NULL);
-    if (s && sqlite3_step(s) == SQLITE_ROW)
-        json_push_kv_int(result, "addresses_with_balance",
-                          sqlite3_column_int64(s, 0));
-    if (s) sqlite3_finalize(s);
-
-    printf("rebuildutxoindex: done — %d UTXOs imported\n", count);
     fflush(stdout);
     return true;
 }
@@ -3272,11 +3110,8 @@ void register_blockchain_rpc_commands(struct rpc_table *t)
         { "blockchain", "gethodlwaveimage",      rpc_gethodlwaveimage,      true },
         { "blockchain", "gethodlwavetimeline",  rpc_gethodlwavetimeline,   true },
         { "blockchain", "gethodlwavechart",     rpc_gethodlwavechart,      true },
-        { "blockchain", "invalidateblock",      rpc_invalidateblock,       false },
-        { "blockchain", "reconsiderblock",     rpc_reconsiderblock,       false },
         { "blockchain", "reindexchainstate",    rpc_reindexchainstate,     false },
         { "blockchain", "importchainstate",     rpc_importchainstate,       false },
-        { "blockchain", "rebuildutxoindex",    rpc_rebuildutxoindex,       false },
         { "blockchain", "indexlegacy",          rpc_indexlegacy,            false },
     };
 

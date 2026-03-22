@@ -3,7 +3,6 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "controllers/sync_controller.h"
-#include "models/utxo.h"
 #include "models/wallet_key.h"
 #include "models/wallet_tx.h"
 #include "primitives/block.h"
@@ -1029,9 +1028,6 @@ int node_db_sync_catchup(struct node_db *ndb,
             continue;
         }
 
-        /* Update in-memory nTx so RPC getblock returns correct count */
-        ((struct block_index *)pindex)->nTx = (uint32_t)blk.num_vtx;
-
         /* Lean index: block header + txid index */
         if (!sync_block_lean(ndb, &blk, pindex) && indexed == 0) {
             fprintf(stderr, "catchup: first lean insert failed! "
@@ -1109,7 +1105,6 @@ struct catchup_args {
     const struct active_chain *chain;
     const struct wallet *w;
     const char *datadir;
-    struct coins_view_db *cvdb;  /* for auto-populating UTXOs after catchup */
 };
 
 /* sync_wallet_inmemory removed: it passed height=0 for all wallet
@@ -1134,53 +1129,6 @@ void *node_db_sync_catchup_thread(void *arg)
     }
 
     node_db_sync_catchup(&catchup_db, a->chain, a->w, a->datadir);
-
-    /* Auto-populate UTXOs from LevelDB if table is underpopulated.
-     * The lean catchup only indexes blocks+txids, not UTXOs.
-     * Without this, /explorer/stats and /explorer/hodl show empty data.
-     * Guard: only run if cvdb has a valid LevelDB handle. */
-    if (a->cvdb && a->cvdb->db.db) {
-        int64_t utxo_count = db_utxo_count(&catchup_db);
-        if (utxo_count < 1000) {
-            printf("UTXO table underpopulated (%lld rows), "
-                   "importing from LevelDB chainstate...\n",
-                   (long long)utxo_count);
-            fflush(stdout);
-            int imported = node_db_sync_import_utxos(&catchup_db, a->cvdb);
-            if (imported > 0) {
-                printf("UTXO import complete: %d outputs\n", imported);
-                /* Rebuild addresses from fresh UTXO set */
-                sqlite3_exec(catchup_db.db,
-                    "DELETE FROM addresses", NULL, NULL, NULL);
-                sqlite3_exec(catchup_db.db,
-                    "INSERT OR REPLACE INTO addresses "
-                    "(address_hash, script_type, balance, utxo_count, "
-                    "first_seen_height, last_seen_height) "
-                    "SELECT address_hash, MAX(script_type), SUM(value), "
-                    "count(*), MIN(height), MAX(height) "
-                    "FROM utxos WHERE address_hash IS NOT NULL "
-                    "GROUP BY address_hash",
-                    NULL, NULL, NULL);
-                /* Rebuild wallet_utxos */
-                sqlite3_exec(catchup_db.db,
-                    "DELETE FROM wallet_utxos", NULL, NULL, NULL);
-                sqlite3_exec(catchup_db.db,
-                    "INSERT INTO wallet_utxos "
-                    "(txid, vout, value, address_hash, script, "
-                    "height, is_coinbase) "
-                    "SELECT u.txid, u.vout, u.value, u.address_hash, "
-                    "u.script, u.height, u.is_coinbase "
-                    "FROM utxos u INNER JOIN wallet_keys wk "
-                    "ON u.address_hash = wk.pubkey_hash",
-                    NULL, NULL, NULL);
-                printf("Addresses + wallet UTXOs rebuilt from UTXO index\n");
-            } else {
-                printf("UTXO import returned %d (no chainstate data?)\n",
-                       imported);
-            }
-            fflush(stdout);
-        }
-    }
 
     node_db_close(&catchup_db);
     return NULL;

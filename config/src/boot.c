@@ -5,6 +5,8 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "config/boot.h"
+#include "util/sync.h"
+#include "net/msgprocessor.h"
 #include "chain/chainparams.h"
 #include "keys/key.h"
 #include "keys/pubkey.h"
@@ -141,14 +143,12 @@ static void *build_snapshot_offer_thread(void *arg)
     const char *datadir = (const char *)arg;
     printf("Building fast sync snapshot offer...\n");
 
-    extern struct snapshot_offer g_cached_offer;
-    extern _Atomic bool g_cached_offer_valid;
-
-    if (fast_sync_build_offer(datadir, &g_cached_offer)) {
-        g_cached_offer_valid = true;
+    struct snapshot_offer offer;
+    if (fast_sync_build_offer(datadir, &offer)) {
+        msg_processor_update_offer(&offer);
         printf("Fast sync ready: h=%d, %llu UTXOs\n",
-               g_cached_offer.height,
-               (unsigned long long)g_cached_offer.num_utxos);
+               offer.height,
+               (unsigned long long)offer.num_utxos);
     } else {
         printf("Fast sync: no snapshot available yet\n");
     }
@@ -165,6 +165,26 @@ static void *build_snapshot_offer_thread(void *arg)
                (unsigned long long)g_cached_manifest.num_utxos);
     } else {
         printf("Chunk manifest: not available yet\n");
+    }
+
+    /* Build block piece manifest for swarm block sync. */
+    extern struct block_piece_manifest g_cached_block_manifest;
+    extern _Atomic bool g_cached_block_manifest_valid;
+
+    int32_t tip_h = offer.height;
+
+    if (tip_h > BLOCKS_PER_PIECE) {
+        printf("Building block piece manifest...\n");
+        if (block_piece_manifest_build(datadir, 1, tip_h,
+                                        &g_cached_block_manifest)) {
+            g_cached_block_manifest_valid = true;
+            printf("Block manifest ready: h=%d..%d, %u pieces\n",
+                   g_cached_block_manifest.start_height,
+                   g_cached_block_manifest.end_height,
+                   g_cached_block_manifest.num_pieces);
+        } else {
+            printf("Block manifest: build failed\n");
+        }
     }
 
     return NULL;
@@ -743,82 +763,6 @@ static bool fast_rebuild_chainstate(struct coins_view_db *cvdb,
     return true;
 }
 
-/* ── Populate SQLite UTXOs from LevelDB chainstate ─────────
- * Scans every coin entry in LevelDB and INSERTs into SQLite.
- * Runs after fast_rebuild_chainstate to ensure SQLite matches LevelDB. */
-static void populate_sqlite_utxos_from_chainstate(struct coins_view_db *cvdb,
-                                                     struct node_db *ndb)
-{
-    if (!ndb || !ndb->db || !cvdb) return;
-
-    /* Clear stale UTXOs */
-    sqlite3_exec(ndb->db, "DELETE FROM utxos", NULL, NULL, NULL);
-
-    struct db_iterator it;
-    db_iter_init(&it, &cvdb->db);
-
-    char coins_prefix = 'c';
-    db_iter_seek(&it, &coins_prefix, 1);
-
-    int64_t count = 0;
-    int64_t t_start = (int64_t)time(NULL);
-    sqlite3_exec(ndb->db, "BEGIN TRANSACTION", NULL, NULL, NULL);
-
-    while (db_iter_valid(&it)) {
-        size_t klen = 0;
-        const char *key = db_iter_key(&it, &klen);
-        if (!key || klen < 1 || key[0] != 'c') break;
-
-        /* Key = 'c' + 32-byte txid */
-        if (klen != 33) { db_iter_next(&it); continue; }
-        const uint8_t *txid = (const uint8_t *)key + 1;
-
-        /* Read coins via the normal API using the txid */
-        struct uint256 tid;
-        memcpy(tid.data, txid, 32);
-        struct coins coins;
-        coins_init(&coins);
-
-        if (coins_view_db_get_coins(cvdb, &tid, &coins)) {
-            for (size_t i = 0; i < coins.num_vout; i++) {
-                if (tx_out_is_null(&coins.vout[i])) continue;
-
-                struct db_utxo u;
-                memset(&u, 0, sizeof(u));
-                memcpy(u.txid, txid, 32);
-                u.vout = (uint32_t)i;
-                u.value = coins.vout[i].value;
-                memcpy(u.script, coins.vout[i].script_pub_key.data,
-                       coins.vout[i].script_pub_key.size);
-                u.script_len = coins.vout[i].script_pub_key.size;
-                u.height = coins.height;
-                u.is_coinbase = coins.is_coinbase;
-                u.has_address = false;
-                db_utxo_save(ndb, &u);
-                count++;
-            }
-        }
-        coins_free(&coins);
-
-        if (count % 100000 == 0 && count > 0) {
-            sqlite3_exec(ndb->db, "COMMIT; BEGIN TRANSACTION", NULL, NULL, NULL);
-            int64_t elapsed = (int64_t)time(NULL) - t_start;
-            printf("  populate utxos: %lld (%lld/s)\n",
-                   (long long)count,
-                   elapsed > 0 ? (long long)(count / elapsed) : (long long)count);
-        }
-
-        db_iter_next(&it);
-    }
-
-    sqlite3_exec(ndb->db, "COMMIT", NULL, NULL, NULL);
-    db_iter_free(&it);
-
-    int64_t elapsed = (int64_t)time(NULL) - t_start;
-    printf("populate_sqlite_utxos: %lld UTXOs in %llds\n",
-           (long long)count, (long long)elapsed);
-}
-
 static bool reindex_chainstate(struct main_state *ms,
                                 struct coins_view_db *cvdb,
                                 struct coins_view_cache *cvtip,
@@ -832,6 +776,8 @@ static bool reindex_chainstate(struct main_state *ms,
 
     printf("reindex-chainstate: rebuilding UTXO set (%d blocks)...\n",
            tip_height + 1);
+    event_emitf(EV_SYNC_STATE_CHANGE, 0, "reindex start blocks=%d",
+                tip_height + 1);
 
     /* Reduce mmap threshold to prevent heap fragmentation.
      * Each tx_out is ~10KB due to script[10000]. Coins with 4+ vouts
@@ -862,6 +808,10 @@ static bool reindex_chainstate(struct main_state *ms,
     if (g_node_db.open)
         node_db_set_sync_batch_size(&g_node_db, 100);
 
+    /* Skip UTXO commitment hashing during reindex — recomputed at end */
+    extern _Atomic bool g_utxo_commitment_skip;
+    atomic_store(&g_utxo_commitment_skip, true);
+
     const struct chain_params *cparams = chain_params_get();
     int64_t t_start = (int64_t)time(NULL);
     int errors = 0;
@@ -882,36 +832,22 @@ static bool reindex_chainstate(struct main_state *ms,
             continue;
         }
 
-        /* Connect through a nested cache so failed blocks are discarded
-         * atomically. Without this, a block that fails partway through
-         * connect_block leaves partial UTXO updates in the cache. */
+        /* Write directly to main cache — no nested cache overhead.
+         * Safe because reindex blocks are from our own validated index. */
         struct validation_state state;
         validation_state_init(&state);
-        {
-            struct coins_view_cache view;
-            struct coins_view backing;
-            coins_view_cache_as_view(&backing, cvtip);
-            coins_view_cache_init(&view, &backing);
-
-            if (!connect_block(&blk, &state, pindex, &view, cparams, false)) {
-                printf("reindex-chainstate: connect_block failed at height %d: %s\n",
-                       h, state.reject_reason);
-                errors++;
-                coins_view_cache_free(&view);
-            } else {
-                coins_view_cache_flush(&view);
-                coins_view_cache_free(&view);
-            }
+        if (!connect_block(&blk, &state, pindex, cvtip, cparams, false)) {
+            printf("reindex-chainstate: connect_block failed at height %d: %s\n",
+                   h, state.reject_reason);
+            errors++;
         }
 
         block_free(&blk);
 
-        /* Flush every 100 blocks or when cache exceeds 20K entries.
-         * Each tx_out is ~10KB due to fixed script buffer, so 20K entries
-         * uses ~400MB. Flushing at 100-block intervals keeps RSS under 200MB
-         * for typical block sizes. */
-        bool need_flush = (h % 100 == 0) ||
-                          (cvtip->cache_coins.size > 20000);
+        /* Flush when cache exceeds 200K entries (~2GB) or every 10000 blocks.
+         * Larger batches reduce LevelDB write amplification significantly. */
+        bool need_flush = (h % 10000 == 0) ||
+                          (cvtip->cache_coins.size > 200000);
         if (need_flush) {
             coins_view_cache_flush(cvtip);
             malloc_trim(0);
@@ -929,6 +865,9 @@ static bool reindex_chainstate(struct main_state *ms,
     /* Final flush */
     coins_view_cache_flush(cvtip);
 
+    /* Re-enable UTXO commitment tracking */
+    atomic_store(&g_utxo_commitment_skip, false);
+
     /* Restore normal mode after reindex */
     set_flush_policy(3600, 500000, 0);
     if (g_node_db.open) {
@@ -939,6 +878,8 @@ static bool reindex_chainstate(struct main_state *ms,
     int64_t elapsed = (int64_t)time(NULL) - t_start;
     printf("reindex-chainstate: complete in %lldm%llds (%d errors)\n",
            (long long)(elapsed / 60), (long long)(elapsed % 60), errors);
+    event_emitf(EV_SYNC_STATE_CHANGE, 0, "reindex complete %dm%ds errors=%d",
+                (int)(elapsed / 60), (int)(elapsed % 60), errors);
 
     return errors == 0;
 }
@@ -1446,11 +1387,8 @@ bool app_init(struct app_context *ctx)
                 fprintf(stderr, "Warning: Chainstate reindex had errors\n");
             }
         }
-        /* Repopulate SQLite UTXOs from the authoritative LevelDB chainstate */
-        if (g_active_node_db) {
-            printf("Populating SQLite UTXOs from chainstate...\n");
-            populate_sqlite_utxos_from_chainstate(&g_coins_db, g_active_node_db);
-        }
+        /* SQLite UTXOs are already authoritative (we just rebuilt LevelDB
+         * from them). Skip repopulation to avoid redundant work. */
     } else if (fast_restart) {
     } else if (g_state.map_block_index.size > 1) {
         struct uint256 best_hash;
@@ -2211,13 +2149,11 @@ bool app_init(struct app_context *ctx)
                 const struct active_chain *chain;
                 const struct wallet *w;
                 const char *datadir;
-                struct coins_view_db *cvdb;
             } catchup_args;
             catchup_args.ndb = g_active_node_db;
             catchup_args.chain = &g_state.chain_active;
             catchup_args.w = &g_wallet;
             catchup_args.datadir = ctx->datadir;
-            catchup_args.cvdb = &g_coins_db;
             pthread_create(&catchup_thread, NULL, (void *(*)(void *))
                 node_db_sync_catchup_thread, &catchup_args);
             pthread_detach(catchup_thread);

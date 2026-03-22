@@ -4,6 +4,7 @@
  * No SOCKS proxy. Tor runs as a thread inside our process.
  * Dynhost handles .onion connections via direct C function calls. */
 
+#define _DEFAULT_SOURCE
 #include "net/tor_integration.h"
 #include <pthread.h>
 #include <stdatomic.h>
@@ -14,8 +15,11 @@
 #include <unistd.h>
 
 static pthread_t g_tor_thread;
+static pthread_t g_monitor_thread;
 static _Atomic bool g_tor_running = false;
 static _Atomic bool g_tor_ready = false;
+static _Atomic bool g_tor_started = false;   /* true once pthread_create succeeds */
+static _Atomic bool g_tor_thread_done = false; /* true once tor thread returns */
 static char g_onion_address[128];
 static char g_tor_datadir[512];
 
@@ -96,6 +100,9 @@ static bool read_onion_address(const char *datadir)
     snprintf(log_path, sizeof(log_path), "%s/tor.log", datadir);
 
     for (int attempt = 0; attempt < 120; attempt++) {
+        if (!atomic_load(&g_tor_running))
+            return false;
+
         /* Persistent key: Tor writes hostname file after bootstrap */
         if (read_onion_from_hostname_file(datadir))
             return true;
@@ -140,6 +147,7 @@ extern int tor_main_configuration_set_command_line(
     tor_main_configuration_t *cfg, int argc, char *argv[]);
 extern void tor_main_configuration_free(tor_main_configuration_t *cfg);
 extern int tor_run_main(const tor_main_configuration_t *);
+extern void tor_shutdown_event_loop_and_exit(int exitcode);
 
 /* Dynhost external handler — routes .onion requests to our code */
 typedef size_t (*dynhost_external_handler_fn)(const char *, const char *,
@@ -171,10 +179,8 @@ static void *tor_thread_fn(void *arg)
     printf("Tor: starting embedded (no ports, no SOCKS, dynhost only)\n");
     fflush(stdout);
 
-    /* Monitor for .onion address in parallel */
-    pthread_t mon;
-    pthread_create(&mon, NULL, tor_onion_monitor, NULL);
-    pthread_detach(mon);
+    /* Monitor for .onion address in parallel (joinable, not detached) */
+    pthread_create(&g_monitor_thread, NULL, tor_onion_monitor, NULL);
 
     /* Run Tor in this thread (blocks until exit) */
     tor_main_configuration_t *cfg = tor_main_configuration_new();
@@ -183,9 +189,14 @@ static void *tor_thread_fn(void *arg)
     int result = tor_run_main(cfg);
     tor_main_configuration_free(cfg);
 
+    /* Signal monitor to stop, then join it.
+     * Always join — pthread_create succeeded, so thread is joinable. */
     atomic_store(&g_tor_running, false);
     atomic_store(&g_tor_ready, false);
+    pthread_join(g_monitor_thread, NULL);
+
     printf("Tor: exited with code %d\n", result);
+    atomic_store(&g_tor_thread_done, true);
     return NULL;
 }
 
@@ -202,7 +213,8 @@ static void *tor_onion_monitor(void *arg)
         printf("Tor .onion: %s\n", g_onion_address);
         fflush(stdout);
     } else {
-        fprintf(stderr, "Tor: timed out waiting for .onion\n");
+        if (atomic_load(&g_tor_running))
+            fprintf(stderr, "Tor: timed out waiting for .onion\n");
     }
     return NULL;
 }
@@ -237,19 +249,35 @@ bool tor_integration_start(const char *datadir, uint16_t p2p_port)
     }
 
     atomic_store(&g_tor_running, true);
+    atomic_store(&g_tor_thread_done, false);
 
     if (pthread_create(&g_tor_thread, NULL, tor_thread_fn, NULL) != 0) {
         atomic_store(&g_tor_running, false);
         return false;
     }
-    pthread_detach(g_tor_thread);
+    atomic_store(&g_tor_started, true);
     return true;
 }
 
 void tor_integration_stop(void)
 {
+    if (!atomic_exchange(&g_tor_started, false))
+        return; /* Never started or already stopped */
+
     atomic_store(&g_tor_running, false);
     atomic_store(&g_tor_ready, false);
+
+    /* Tell Tor's event loop to exit. Retry briefly in case Tor
+     * hasn't entered its main loop yet when we first call. */
+    for (int i = 0; i < 50; i++) {
+        tor_shutdown_event_loop_and_exit(0);
+        if (atomic_load(&g_tor_thread_done))
+            break;
+        usleep(100000); /* 100ms, up to 5s total */
+    }
+
+    pthread_join(g_tor_thread, NULL);
+    atomic_store(&g_tor_thread_done, false);
 }
 
 const char *tor_integration_get_onion_address(void)

@@ -13,6 +13,9 @@
 #include "coins/utxo_commitment.h"
 #include "crypto/sha256.h"
 #include <string.h>
+#include <stdatomic.h>
+
+_Atomic bool g_utxo_commitment_skip = false;
 
 /* Hash a single UTXO to 32 bytes via SHA256(txid || vout || value || height) */
 static void hash_utxo(uint8_t out[32],
@@ -58,6 +61,8 @@ void utxo_commitment_add(struct utxo_commitment *uc,
                           const uint8_t txid[32], uint32_t vout,
                           int64_t value, int32_t height)
 {
+    if (atomic_load_explicit(&g_utxo_commitment_skip, memory_order_relaxed))
+        return;
     uint8_t h[32];
     hash_utxo(h, txid, vout, value, height);
     xor32(uc->accumulator, h);
@@ -68,6 +73,8 @@ void utxo_commitment_remove(struct utxo_commitment *uc,
                              const uint8_t txid[32], uint32_t vout,
                              int64_t value, int32_t height)
 {
+    if (atomic_load_explicit(&g_utxo_commitment_skip, memory_order_relaxed))
+        return;
     uint8_t h[32];
     hash_utxo(h, txid, vout, value, height);
     xor32(uc->accumulator, h);

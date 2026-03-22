@@ -7,7 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 
-const char CLIENT_NAME[] = "MagicBean";
+const char CLIENT_NAME[] = "ZClassic-C23";
 
 #define CLIENT_VERSION_SUFFIX ""
 

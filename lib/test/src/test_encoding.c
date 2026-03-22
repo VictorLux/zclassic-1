@@ -391,7 +391,7 @@ int test_encoding(void)
     {
         char ver[64];
         FormatVersion(CLIENT_VERSION, ver, sizeof(ver));
-        if (strstr(ver, "2.1.1") != NULL)
+        if (strstr(ver, "0.1.0") != NULL)
             printf("OK (%s)\n", ver);
         else {
             printf("FAIL: %s\n", ver);
@@ -401,7 +401,7 @@ int test_encoding(void)
 
     printf("CLIENT_NAME... ");
     {
-        if (strcmp(CLIENT_NAME, "MagicBean") == 0)
+        if (strcmp(CLIENT_NAME, "ZClassic-C23") == 0)
             printf("OK\n");
         else {
             printf("FAIL: %s\n", CLIENT_NAME);

@@ -8,10 +8,10 @@
 #ifndef BITCOIN_CLIENTVERSION_H
 #define BITCOIN_CLIENTVERSION_H
 
-#define CLIENT_VERSION_MAJOR 2
+#define CLIENT_VERSION_MAJOR 0
 #define CLIENT_VERSION_MINOR 1
-#define CLIENT_VERSION_REVISION 1
-#define CLIENT_VERSION_BUILD 60
+#define CLIENT_VERSION_REVISION 0
+#define CLIENT_VERSION_BUILD 50
 
 #define CLIENT_VERSION_IS_RELEASE 1
 
@@ -20,7 +20,7 @@
 #define STRINGIZE(X) DO_STRINGIZE(X)
 #define DO_STRINGIZE(X) #X
 
-#define COPYRIGHT_STR "2009-" STRINGIZE(COPYRIGHT_YEAR) " The Bitcoin Core Developers and The Zcash developers"
+#define COPYRIGHT_STR "2026 Rhett Creighton (Apache 2.0). Based on Bitcoin/Zcash."
 
 #if !defined(WINDRES_PREPROC)
 

@@ -224,6 +224,9 @@ void p2p_node_free(struct p2p_node *node)
 
     rolling_bloom_free(&node->addr_known);
 
+    free(node->blk_bitmap);
+    node->blk_bitmap = NULL;
+
     zcl_mutex_destroy(&node->cs_send);
     zcl_mutex_destroy(&node->cs_recv);
     zcl_mutex_destroy(&node->cs_inventory);
@@ -775,20 +778,20 @@ void peer_misbehaving(struct net_manager *nm, struct p2p_node *node,
 {
     if (!nm || !node || howmuch <= 0) return;
 
-    node->misbehavior += howmuch;
+    int new_score = atomic_fetch_add(&node->misbehavior, howmuch) + howmuch;
     event_emitf(EV_PEER_MISBEHAVE, (uint32_t)node->id,
-                "+%d=%d %s", howmuch, node->misbehavior,
+                "+%d=%d %s", howmuch, new_score,
                 reason ? reason : "");
     printf("Misbehaving: %s (%d -> %d) %s\n",
-           node->addr_name, node->misbehavior - howmuch,
-           node->misbehavior, reason ? reason : "");
+           node->addr_name, new_score - howmuch,
+           new_score, reason ? reason : "");
 
-    if (node->misbehavior >= 100) {
+    if (new_score >= 100) {
         event_emitf(EV_PEER_BANNED, (uint32_t)node->id,
-                    "score=%d %s", node->misbehavior,
+                    "score=%d %s", new_score,
                     reason ? reason : "threshold");
         printf("Banning %s (score=%d): %s\n",
-               node->addr_name, node->misbehavior,
+               node->addr_name, new_score,
                reason ? reason : "threshold reached");
         ban_addr(nm, &node->addr.svc.addr, 24 * 60 * 60, false);
         node->disconnect = true;

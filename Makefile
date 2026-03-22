@@ -2,7 +2,6 @@
 # Copyright 2026 Rhett Creighton - Apache License 2.0
 
 CC = cc
-BUILD = build
 
 # App layer (MVC)
 APP_DIRS = models controllers views
@@ -52,29 +51,26 @@ LIBS = -Lvendor/lib -lsecp256k1 -lleveldb \
 .PHONY: all test clean deploy
 
 CLI_SRCS = lib/rpc/src/client.c lib/json/src/json.c
-all: $(BUILD)/test_zcl $(BUILD)/zclassic23 $(BUILD)/zclassic-cli
+all: test_zcl zclassic23 zclassic-cli
 
 TEST_SRCS = $(wildcard lib/test/src/*.c)
 
-$(BUILD):
-	mkdir -p $(BUILD)
-
-$(BUILD)/test_zcl: $(TEST_SRCS) $(ALL_SRCS) | $(BUILD)
+test_zcl: $(TEST_SRCS) $(ALL_SRCS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(TOR_LIBS) $(LIBS)
 
-$(BUILD)/zclassic23: main.c $(ALL_SRCS) | $(BUILD)
+zclassic23: main.c $(ALL_SRCS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(TOR_LIBS) $(LIBS) $(GTK_LIBS)
 
-$(BUILD)/zclassic-cli: cli.c $(CLI_SRCS) | $(BUILD)
+zclassic-cli: cli.c $(CLI_SRCS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
 
-$(BUILD)/zcl-rpc: tools/zcl-rpc.c | $(BUILD)
+zcl-rpc: tools/zcl-rpc.c
 	$(CC) -std=c23 -O2 -Wall -o $@ $<
 
-$(BUILD)/zcl-browser: tools/zcl-browser.c $(ALL_SRCS) | $(BUILD)
+zcl-browser: tools/zcl-browser.c $(ALL_SRCS)
 	$(CC) $(CFLAGS) -Wno-deprecated-declarations $$(pkg-config --cflags webkit2gtk-4.1) -o $@ $^ $(TOR_LIBS) $(LIBS) $$(pkg-config --libs webkit2gtk-4.1)
 
-$(BUILD)/zcl-blog: tools/zcl-blog | $(BUILD)
+zcl-blog: tools/zcl-blog
 	$(CC) -std=c23 -O2 -x c $$(pkg-config --cflags webkit2gtk-4.1) -o $@ $< $$(pkg-config --libs webkit2gtk-4.1)
 
 explorer-css: app/views/src/explorer_css.css
@@ -90,19 +86,19 @@ explorer-css: app/views/src/explorer_css.css
 	o.write('#ifndef EXPLORER_CSS_H\n#define EXPLORER_CSS_H\n\n'); \
 	o.write('static const char explorer_css[] =\n'+'\n'.join(lines)+';\n\n#endif\n'); o.close()"
 
-test: $(BUILD)/test_zcl
-	ulimit -s unlimited && $(BUILD)/test_zcl
-
-# Deploy: build, install service, set port 443 capability, restart
-deploy: $(BUILD)/zclassic23
-	@install -m 644 deploy/zclassic23.service $(HOME)/.config/systemd/user/zclassic23.service
-	@systemctl --user daemon-reload
-	sudo /usr/sbin/setcap 'cap_net_bind_service=+ep' $(BUILD)/zclassic23
-	systemctl --user restart zclassic23
-	@sleep 2 && systemctl --user is-active zclassic23 && echo "Deployed."
+test: test_zcl
+	ulimit -s unlimited && ./test_zcl
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
+# Deploy: setcap (passwordless after setup.sh), install service, restart
+deploy: zclassic23
+	sudo /usr/sbin/setcap 'cap_net_bind_service=+ep' $(CURDIR)/zclassic23
+	@install -m 644 deploy/zclassic23.service $(HOME)/.config/systemd/user/zclassic23.service
+	@systemctl --user daemon-reload
+	systemctl --user restart zclassic23
+	@sleep 2 && systemctl --user is-active zclassic23 && echo "Deployed."
+
 clean:
-	rm -rf $(BUILD) $(ALL_OBJS)
+	rm -f test_zcl zclassic23 zclassic-cli $(ALL_OBJS)
