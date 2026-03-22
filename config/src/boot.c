@@ -1470,15 +1470,16 @@ bool app_init(struct app_context *ctx)
                 printf("WARNING: Chain tip at height %d but coins DB is empty!\n",
                        fallback->nHeight);
 
-                /* Fast path: rebuild LevelDB from SQLite UTXOs */
+                /* Try fast rebuild, then activate_best_chain to connect
+                 * blocks from the rebuilt tip to the actual best header */
                 printf("Attempting fast chainstate rebuild from SQLite...\n");
                 if (fast_rebuild_chainstate(&g_coins_db, &g_coins_tip,
                                              ctx->datadir)) {
-                    printf("Fast rebuild complete — chainstate restored.\n");
+                    printf("Fast rebuild complete — will activate chain.\n");
                 } else {
-                    printf("Fast rebuild unavailable — node will catch up via P2P.\n");
+                    printf("Fast rebuild unavailable — will activate from genesis.\n");
                 }
-                skip_activate = true;
+                skip_activate = false;  /* MUST activate to connect blocks */
             }
         }
 
