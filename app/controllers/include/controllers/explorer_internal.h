@@ -14,6 +14,7 @@
 #include <math.h>
 #include <time.h>
 #include <sqlite3.h>
+#include "views/format_helpers.h"
 
 /* ── Append helper ─────────────────────────────────────────── */
 #define APPEND(off, buf, max, ...) do { \
@@ -103,12 +104,12 @@ static inline void explorer_format_zcl(char *buf, size_t max, int64_t zatoshi)
 {
     int64_t whole, frac;
     if (zatoshi < 0) {
-        whole = (-zatoshi) / 100000000LL;
-        frac = (-zatoshi) % 100000000LL;
+        whole = (-zatoshi) / ZATOSHI_PER_ZCL;
+        frac = (-zatoshi) % ZATOSHI_PER_ZCL;
         snprintf(buf, max, "-%" PRId64 ".%08" PRId64, whole, frac);
     } else {
-        whole = zatoshi / 100000000LL;
-        frac = zatoshi % 100000000LL;
+        whole = zatoshi / ZATOSHI_PER_ZCL;
+        frac = zatoshi % ZATOSHI_PER_ZCL;
         snprintf(buf, max, "%" PRId64 ".%08" PRId64, whole, frac);
     }
 }
@@ -209,7 +210,7 @@ static inline int64_t compute_supply_at_height(int64_t height)
 
 static inline double supply_zcl_at_height(int64_t height)
 {
-    return (double)zcl_total_supply_zatoshi(height) / 100000000.0;
+    return (double)zcl_total_supply_zatoshi(height) / (double)ZATOSHI_PER_ZCL;
 }
 
 /* SVG line chart — renders into buffer at *off, advances *off */

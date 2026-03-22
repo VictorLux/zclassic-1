@@ -106,15 +106,7 @@ static void fmt_time(char *buf, size_t max, int64_t t)
 
 static void fmt_zcl(char *buf, size_t max, int64_t zatoshi)
 {
-    int64_t whole = zatoshi / 100000000LL;
-    int64_t frac = zatoshi % 100000000LL;
-    if (frac < 0) frac = -frac;
-    if (whole < 0 && zatoshi < 0) {
-        whole = (-zatoshi) / 100000000LL;
-        snprintf(buf, max, "-%" PRId64 ".%08" PRId64, whole, frac);
-    } else {
-        snprintf(buf, max, "%" PRId64 ".%08" PRId64, whole, frac);
-    }
+    zcl_format_zcl(buf, max, zatoshi);
 }
 
 static void fmt_comma(char *buf, size_t max, int64_t val)
@@ -764,11 +756,11 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
 
     /* Find block heights where supply reaches milestones via binary search */
     struct { const char *label; int64_t target_sat; } supply_milestones[] = {
-        { "1,000,000 ZCL mined",  100000000LL * 1000000LL },
-        { "5,000,000 ZCL mined",  100000000LL * 5000000LL },
-        { "8,837,500 ZCL (pre-Buttercup max)", 100000000LL * 8837500LL },
-        { "10,000,000 ZCL mined", 100000000LL * 10000000LL },
-        { "10,500,000 ZCL mined", 100000000LL * 10500000LL },
+        { "1,000,000 ZCL mined",  ZATOSHI_PER_ZCL * 1000000LL },
+        { "5,000,000 ZCL mined",  ZATOSHI_PER_ZCL * 5000000LL },
+        { "8,837,500 ZCL (pre-Buttercup max)", ZATOSHI_PER_ZCL * 8837500LL },
+        { "10,000,000 ZCL mined", ZATOSHI_PER_ZCL * 10000000LL },
+        { "10,500,000 ZCL mined", ZATOSHI_PER_ZCL * 10500000LL },
     };
 
     for (int i = 0; i < (int)(sizeof(supply_milestones)/sizeof(supply_milestones[0])); i++) {
@@ -1665,7 +1657,7 @@ size_t explorer_factoids_build_json(uint8_t *buf, size_t buf_max,
         compute_receipt_i64(rcpt, sizeof(rcpt), chain_height, supply, "total_supply");
         APPEND(off, r, max,
             ",\"supply\":{\"total_sat\":%" PRId64 ",\"total_zcl\":%.8f,\"sha3\":\"%s\"}",
-            supply, (double)supply / 100000000.0, rcpt);
+            supply, (double)supply / (double)ZATOSHI_PER_ZCL, rcpt);
     }
 
     /* Address stats */

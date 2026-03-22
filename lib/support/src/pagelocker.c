@@ -7,44 +7,22 @@
 #include <assert.h>
 #include <string.h>
 
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#else
 #include <sys/mman.h>
 #include <unistd.h>
-#endif
 
 size_t get_system_page_size(void)
 {
-#ifdef _WIN32
-    SYSTEM_INFO si;
-    GetSystemInfo(&si);
-    return si.dwPageSize;
-#else
     return (size_t)sysconf(_SC_PAGESIZE);
-#endif
 }
 
 bool memory_page_lock(const void *addr, size_t len)
 {
-#ifdef _WIN32
-    return VirtualLock((void *)addr, len) != 0;
-#else
     return mlock(addr, len) == 0;
-#endif
 }
 
 bool memory_page_unlock(const void *addr, size_t len)
 {
-#ifdef _WIN32
-    return VirtualUnlock((void *)addr, len) != 0;
-#else
     return munlock(addr, len) == 0;
-#endif
 }
 
 void locked_page_manager_init(struct locked_page_manager *m)

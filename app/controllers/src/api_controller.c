@@ -8,6 +8,7 @@
 #include "controllers/api_controller.h"
 #include "controllers/explorer_internal.h"
 #include "controllers/explorer_factoids.h"
+#include "views/format_helpers.h"
 #include "event/event.h"
 #include "net/download.h"
 #include "validation/contextual_check_tx.h"
@@ -166,67 +167,35 @@ static int rpc_call(const char *method, const char *params_json,
     return (int)total;
 }
 
-/* ── Simple JSON extraction helpers ──────────────────────── */
-
+/* JSON extraction and validation: delegated to shared format_helpers */
 static bool json_extract_str(const char *json, const char *key,
                               char *out, size_t outmax)
 {
-    if (!json || !key || !out || outmax == 0) return false;
-    char search[128];
-    snprintf(search, sizeof(search), "\"%s\":", key);
-    const char *p = strstr(json, search);
-    if (!p) return false;
-    p += strlen(search);
-    while (*p == ' ') p++;
-    if (*p != '"') return false;
-    p++;
-    size_t i = 0;
-    while (p[i] && p[i] != '"' && i < outmax - 1) {
-        out[i] = p[i]; i++;
-    }
-    out[i] = '\0';
-    /* Reject if we hit NUL before closing quote (malformed JSON) */
-    if (p[i] != '"') return false;
-    return i > 0;
+    return zcl_json_extract_str(json, key, out, outmax);
 }
 
 static int64_t json_extract_int(const char *json, const char *key)
 {
-    char search[128];
-    snprintf(search, sizeof(search), "\"%s\":", key);
-    const char *p = strstr(json, search);
-    if (!p) return -1;
-    p += strlen(search);
-    while (*p == ' ') p++;
-    return strtoll(p, NULL, 10);
+    int64_t v = -1;
+    zcl_json_extract_int(json, key, &v);
+    return v;
 }
 
 static double json_extract_real(const char *json, const char *key)
 {
-    char search[128];
-    snprintf(search, sizeof(search), "\"%s\":", key);
-    const char *p = strstr(json, search);
-    if (!p) return 0.0;
-    p += strlen(search);
-    while (*p == ' ') p++;
-    return strtod(p, NULL);
+    double v = 0.0;
+    zcl_json_extract_real(json, key, &v);
+    return v;
 }
-
-/* ── Validation helpers ──────────────────────────────────── */
 
 static bool is_all_hex(const char *s, size_t len)
 {
-    for (size_t i = 0; i < len; i++)
-        if (!isxdigit((unsigned char)s[i])) return false;
-    return true;
+    return zcl_is_all_hex(s, len);
 }
 
 static bool is_all_digits(const char *s)
 {
-    if (!s || !*s) return false;
-    for (; *s; s++)
-        if (!isdigit((unsigned char)*s)) return false;
-    return true;
+    return zcl_is_all_digits(s);
 }
 
 /* Validate address/param is safe to embed in JSON (alphanumeric only).

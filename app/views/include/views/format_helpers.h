@@ -1,0 +1,40 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * Shared formatting utilities for controllers and views.
+ * Centralizes html_escape, time formatting, ZCL amount formatting,
+ * and string validation to eliminate duplication across controllers. */
+
+#ifndef ZCL_VIEWS_FORMAT_HELPERS_H
+#define ZCL_VIEWS_FORMAT_HELPERS_H
+
+#include <stddef.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <inttypes.h>
+
+#define ZATOSHI_PER_ZCL 100000000LL
+
+/* Format UTC timestamp as "YYYY-MM-DD HH:MM:SS UTC". */
+void zcl_format_time(char *buf, size_t max, int64_t timestamp);
+
+/* Format zatoshi amount as "X.YYYYYYYY" ZCL string. */
+void zcl_format_zcl(char *buf, size_t max, int64_t zatoshi);
+
+/* Check if string is all hex digits of given length. */
+bool zcl_is_all_hex(const char *s, size_t len);
+
+/* Check if non-empty string contains only decimal digits. */
+bool zcl_is_all_digits(const char *s);
+
+/* Naive JSON string extraction: find "key":"value" and copy value to out.
+ * Validates closing quote. Returns false if key not found or malformed. */
+bool zcl_json_extract_str(const char *json, const char *key,
+                          char *out, size_t outmax);
+
+/* Naive JSON integer extraction. Returns false if key not found. */
+bool zcl_json_extract_int(const char *json, const char *key, int64_t *out);
+
+/* Naive JSON real extraction. Returns false if key not found. */
+bool zcl_json_extract_real(const char *json, const char *key, double *out);
+
+#endif

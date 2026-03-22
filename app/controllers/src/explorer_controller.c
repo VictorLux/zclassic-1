@@ -45,6 +45,7 @@
 #include "controllers/explorer_internal.h"
 #include "util/template.h"
 #include "views/explorer_css.h"
+#include "views/format_helpers.h"
 
 static struct main_state *g_ms = NULL;
 static struct tx_mempool *g_mp = NULL;
@@ -286,45 +287,26 @@ static int rpc_call(const char *method, const char *params_json,
 }
 
 /* Extract a JSON string value for a key (simple parser) */
+/* JSON extraction: use shared zcl_json_extract_* from format_helpers.h.
+ * Thin wrappers preserve the old call-site signatures. */
 static bool json_extract_str(const char *json, const char *key,
                               char *out, size_t outmax)
 {
-    char search[128];
-    snprintf(search, sizeof(search), "\"%s\":", key);
-    const char *p = strstr(json, search);
-    if (!p) return false;
-    p += strlen(search);
-    while (*p == ' ') p++;
-    if (*p != '"') return false;
-    p++;
-    size_t i = 0;
-    while (p[i] && p[i] != '"' && i < outmax - 1) {
-        out[i] = p[i]; i++;
-    }
-    out[i] = '\0';
-    return i > 0;
+    return zcl_json_extract_str(json, key, out, outmax);
 }
 
 static int64_t json_extract_int(const char *json, const char *key)
 {
-    char search[128];
-    snprintf(search, sizeof(search), "\"%s\":", key);
-    const char *p = strstr(json, search);
-    if (!p) return -1;
-    p += strlen(search);
-    while (*p == ' ') p++;
-    return strtoll(p, NULL, 10);
+    int64_t v = -1;
+    zcl_json_extract_int(json, key, &v);
+    return v;
 }
 
 static double json_extract_real(const char *json, const char *key)
 {
-    char search[128];
-    snprintf(search, sizeof(search), "\"%s\":", key);
-    const char *p = strstr(json, search);
-    if (!p) return 0.0;
-    p += strlen(search);
-    while (*p == ' ') p++;
-    return strtod(p, NULL);
+    double v = 0.0;
+    zcl_json_extract_real(json, key, &v);
+    return v;
 }
 
 void explorer_set_rpc(const char *user, const char *pass, int port)
@@ -362,7 +344,7 @@ static bool use_rpc_proxy(void)
 
 /* ── Helpers ──────────────────────────────────────────────── */
 
-/* html_escape() is provided by lib/util/template.h */
+/* html_escape provided by util/template.h (included above) */
 
 /* Zcash/ZClassic difficulty: powLimit / target.
  * powLimit = 0x07ffff * 256^(0x1f-3), genesis bits = 0x1f07ffff = diff 1. */
@@ -383,10 +365,7 @@ static double get_difficulty(const struct block_index *bi)
 
 static void format_time(char *buf, size_t max, uint32_t t)
 {
-    time_t ts = (time_t)t;
-    struct tm tm;
-    gmtime_r(&ts, &tm);
-    strftime(buf, max, "%Y-%m-%d %H:%M:%S UTC", &tm);
+    zcl_format_time(buf, max, (int64_t)t);
 }
 
 static void format_time_ago(char *buf, size_t max, uint32_t t)
@@ -406,31 +385,17 @@ static void format_time_ago(char *buf, size_t max, uint32_t t)
 
 static void format_zcl(char *buf, size_t max, int64_t zatoshi)
 {
-    int64_t whole, frac;
-    if (zatoshi < 0) {
-        whole = (-zatoshi) / 100000000LL;
-        frac = (-zatoshi) % 100000000LL;
-        snprintf(buf, max, "-%" PRId64 ".%08" PRId64, whole, frac);
-    } else {
-        whole = zatoshi / 100000000LL;
-        frac = zatoshi % 100000000LL;
-        snprintf(buf, max, "%" PRId64 ".%08" PRId64, whole, frac);
-    }
+    zcl_format_zcl(buf, max, zatoshi);
 }
 
 static bool is_all_hex(const char *s, size_t len)
 {
-    for (size_t i = 0; i < len; i++)
-        if (!isxdigit((unsigned char)s[i])) return false;
-    return true;
+    return zcl_is_all_hex(s, len);
 }
 
 static bool is_all_digits(const char *s)
 {
-    if (!s[0]) return false;
-    for (size_t i = 0; s[i]; i++)
-        if (!isdigit((unsigned char)s[i])) return false;
-    return true;
+    return zcl_is_all_digits(s);
 }
 
 /* Encode a tx_destination to a t-address string */

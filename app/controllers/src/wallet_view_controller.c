@@ -11,6 +11,7 @@
  *   /wallet/coins     UTXO and shielded note breakdown */
 
 #include "controllers/wallet_view_controller.h"
+#include "views/format_helpers.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -144,7 +145,9 @@ static size_t emit_nav(uint8_t *buf, size_t max, const char *active) {
 #include "controllers/explorer_internal.h"
 #include "util/template.h"
 
-/* html_escape() provided by lib/util/template.h: html_escape(dst, max, src) */
+/* APPEND macro provided by controllers/explorer_internal.h above */
+
+/* html_escape provided by util/template.h (included above) */
 
 /* ── DB helpers ─────────────────────────────────────────────── */
 
@@ -183,16 +186,9 @@ static void txid_lower(const char *hex, char *out, size_t out_max) {
     out[len] = '\0';
 }
 
-/* ── Time formatting ────────────────────────────────────────── */
-
+/* Time formatting — delegates to shared zcl_format_time */
 static void format_time(int64_t timestamp, char *out, size_t out_max) {
-    if (!out || out_max == 0) return;
-    out[0] = '\0';
-    if (timestamp <= 0) return;
-    time_t t = (time_t)timestamp;
-    struct tm tm;
-    if (!gmtime_r(&t, &tm)) return;
-    strftime(out, out_max, "%Y-%m-%d %H:%M", &tm);
+    zcl_format_time(out, out_max, timestamp);
 }
 
 /* ── Relative time formatting ───────────────────────────────── */

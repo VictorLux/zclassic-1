@@ -15,7 +15,6 @@ void GetRandBytes(unsigned char *buf, size_t num);
 uint64_t GetRand(uint64_t nMax);
 int GetRandInt(int nMax);
 void GetRandHash(struct uint256 *hash);
-int GenIdentity(int n);
 void seed_insecure_rand(bool deterministic);
 
 extern uint32_t insecure_rand_Rz;

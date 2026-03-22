@@ -27,9 +27,8 @@ static bool rate_limit_check(void)
     int64_t now = (int64_t)time(NULL);
     int64_t window = atomic_load(&g_rate_window_start);
     if (now != window) {
-        atomic_store(&g_rate_window_start, now);
-        atomic_store(&g_request_count, 1);
-        return true;
+        if (atomic_compare_exchange_strong(&g_rate_window_start, &window, now))
+            atomic_store(&g_request_count, 1);
     }
     int64_t count = atomic_fetch_add(&g_request_count, 1);
     return count < MAX_REQUESTS_PER_SECOND;

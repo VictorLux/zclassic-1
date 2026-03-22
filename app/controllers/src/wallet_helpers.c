@@ -4,6 +4,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "controllers/wallet_helpers.h"
+#include "views/format_helpers.h"
 #include "wallet/wallet.h"
 #include "chain/chainparams.h"
 #include "json/json.h"
@@ -28,13 +29,7 @@ struct coins_view_cache *g_coins_tip = NULL;
 
 void format_amount(int64_t satoshis, char *out, size_t out_size)
 {
-    bool neg = satoshis < 0;
-    int64_t abs_val = neg ? -satoshis : satoshis;
-    int64_t whole = abs_val / 100000000;
-    int64_t frac = abs_val % 100000000;
-    snprintf(out, out_size, "%s%lld.%08lld",
-             neg ? "-" : "",
-             (long long)whole, (long long)frac);
+    zcl_format_zcl(out, out_size, satoshis);
 }
 
 int64_t parse_amount(const struct json_value *v)
@@ -43,7 +38,7 @@ int64_t parse_amount(const struct json_value *v)
 
     if (v->type == JSON_INT) {
         int64_t val = json_get_int(v);
-        return val * 100000000;
+        return val * ZATOSHI_PER_ZCL;
     }
 
     const char *str = NULL;
@@ -82,7 +77,7 @@ int64_t parse_amount(const struct json_value *v)
         frac_digits++;
     }
 
-    int64_t satoshis = whole * 100000000 + frac;
+    int64_t satoshis = whole * ZATOSHI_PER_ZCL + frac;
     return neg ? -satoshis : satoshis;
 }
 

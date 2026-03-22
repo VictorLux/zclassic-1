@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "views/wallet_view.h"
+#include "views/format_helpers.h"
 #include "wallet/wallet.h"
 #include "models/chain_snapshot.h"
 #include "wallet/keystore.h"
@@ -17,13 +18,7 @@
 
 static void format_zcl(int64_t satoshis, char *out, size_t out_size)
 {
-    bool neg = satoshis < 0;
-    int64_t abs_val = neg ? -satoshis : satoshis;
-    int64_t whole = abs_val / 100000000;
-    int64_t frac = abs_val % 100000000;
-    snprintf(out, out_size, "%s%lld.%08lld",
-             neg ? "-" : "",
-             (long long)whole, (long long)frac);
+    zcl_format_zcl(out, out_size, satoshis);
 }
 
 void wallet_view_utxo(struct json_value *out,

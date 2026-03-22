@@ -26,6 +26,15 @@ static char g_tor_datadir[512];
 static tor_request_handler_fn g_request_handler = NULL;
 static void *g_request_handler_ctx = NULL;
 
+static void ensure_onion_suffix(void)
+{
+    if (!strstr(g_onion_address, ".onion")) {
+        size_t alen = strlen(g_onion_address);
+        if (alen + 7 <= sizeof(g_onion_address) - 1)
+            memcpy(g_onion_address + alen, ".onion", 7);
+    }
+}
+
 void tor_integration_set_handler(tor_request_handler_fn handler, void *ctx)
 {
     g_request_handler = handler;
@@ -82,13 +91,7 @@ static bool read_onion_from_hostname_file(const char *datadir)
         return false;
 
     memcpy(g_onion_address, line, len + 1);
-
-    /* Ensure .onion suffix */
-    if (!strstr(g_onion_address, ".onion")) {
-        size_t alen = strlen(g_onion_address);
-        if (alen + 7 <= sizeof(g_onion_address) - 1)
-            memcpy(g_onion_address + alen, ".onion", 7);
-    }
+    ensure_onion_suffix();
     return true;
 }
 
@@ -123,11 +126,7 @@ static bool read_onion_address(const char *datadir)
                     if (len > 0 && len < sizeof(g_onion_address)) {
                         memcpy(g_onion_address, p, len);
                         g_onion_address[len] = '\0';
-                        if (!strstr(g_onion_address, ".onion")) {
-                            size_t alen = strlen(g_onion_address);
-                            if (alen + 7 <= sizeof(g_onion_address) - 1)
-                                memcpy(g_onion_address + alen, ".onion", 7);
-                        }
+                        ensure_onion_suffix();
                         fclose(f);
                         return true;
                     }

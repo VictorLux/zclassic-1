@@ -9,16 +9,6 @@
 
 void memory_cleanse(void *ptr, size_t len)
 {
-#if defined(_WIN32)
-    SecureZeroMemory(ptr, len);
-#elif defined(__GLIBC__) && defined(_DEFAULT_SOURCE)
-    /* POSIX explicit_bzero: guaranteed not to be optimized away by the compiler */
-    explicit_bzero(ptr, len);
-#elif defined(__GNUC__) || defined(__clang__)
     memset(ptr, 0, len);
     __asm__ __volatile__("" : : "r"(ptr) : "memory");
-#else
-    volatile unsigned char *p = (volatile unsigned char *)ptr;
-    while (len--) *p++ = 0;
-#endif
 }
