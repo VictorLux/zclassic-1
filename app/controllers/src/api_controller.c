@@ -816,17 +816,8 @@ static size_t compute_address(const char *param, uint8_t *r, size_t max)
 
 /* ── Deep stats computation (SQLite-based) ───────────────── */
 
-static int64_t dq_i64(sqlite3 *db, const char *sql)
-{
-    int64_t val = 0;
-    sqlite3_stmt *s = NULL;
-    if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
-        if (sqlite3_step(s) == SQLITE_ROW)
-            val = sqlite3_column_int64(s, 0);
-        sqlite3_finalize(s);
-    }
-    return val;
-}
+/* sql_query_i64() provided by controllers/explorer_internal.h */
+#define dq_i64 sql_query_i64
 
 static size_t compute_deep_stats(uint8_t *r, size_t max)
 {

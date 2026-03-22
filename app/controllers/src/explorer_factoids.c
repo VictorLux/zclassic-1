@@ -22,19 +22,8 @@
 #include <inttypes.h>
 #include <time.h>
 
-/* ── SQLite query helpers ─────────────────────────────────── */
-
-static int64_t fq_i64(sqlite3 *db, const char *sql)
-{
-    int64_t val = 0;
-    sqlite3_stmt *s = NULL;
-    if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
-        if (sqlite3_step(s) == SQLITE_ROW)
-            val = sqlite3_column_int64(s, 0);
-        sqlite3_finalize(s);
-    }
-    return val;
-}
+/* sql_query_i64() provided by controllers/explorer_internal.h */
+#define fq_i64 sql_query_i64
 
 static void fq_text(sqlite3 *db, const char *sql, char *out, size_t outmax)
 {

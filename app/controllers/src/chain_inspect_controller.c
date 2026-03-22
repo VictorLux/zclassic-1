@@ -357,7 +357,7 @@ static bool rpc_saplingtreeinfo(const struct json_value *params, bool help,
         if (node_db_state_get(g_node_db, "sapling_tree_rescan_height",
                 hbuf, sizeof(hbuf), &hlen) && hlen > 0) {
             hbuf[hlen] = 0;
-            int rescan_h = atoi((char *)hbuf);
+            int rescan_h = (int)strtol((char *)hbuf, NULL, 10);
             json_push_kv_int(result, "rescan_height", rescan_h);
 
             /* Compare tree root with block header */

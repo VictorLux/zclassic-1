@@ -102,8 +102,8 @@ static void store_ensure_schema(sqlite3 *db, const char *datadir)
                 q = strstr(p, "\"tokens_per_purchase\"");
                 if (q && q < end) {
                     q += 20; while (*q == ':' || *q == ' ') q++;
-                    tokens = atoi(q);
-                    if (tokens < 1) tokens = 1;
+                    long tval = strtol(q, NULL, 10);
+                    tokens = (tval > 0 && tval <= 10000) ? (int)tval : 1;
                 }
 
                 if (name[0] && price_zcl > 0) {

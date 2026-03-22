@@ -140,33 +140,11 @@ static size_t emit_nav(uint8_t *buf, size_t max, const char *active) {
     return off;
 }
 
-/* ── APPEND macro (bounds-checked) ──────────────────────────── */
+/* ── APPEND macro — use shared from explorer_internal.h ─────── */
+#include "controllers/explorer_internal.h"
+#include "util/template.h"
 
-#define APPEND(off, buf, max, ...) do { \
-    if ((off) < (max)) { \
-        int _n = snprintf((char *)(buf) + (off), (max) - (off), __VA_ARGS__); \
-        if (_n > 0 && (size_t)_n < (max) - (off)) (off) += (size_t)_n; \
-    } \
-} while(0)
-
-/* ── HTML escape ────────────────────────────────────────────── */
-
-static size_t html_escape(const char *src, char *dst, size_t dst_max) {
-    if (!src || !dst || dst_max == 0) return 0;
-    size_t j = 0;
-    for (size_t i = 0; src[i] && j + 6 < dst_max; i++) {
-        switch (src[i]) {
-        case '&':  memcpy(dst + j, "&amp;", 5);  j += 5; break;
-        case '<':  memcpy(dst + j, "&lt;", 4);   j += 4; break;
-        case '>':  memcpy(dst + j, "&gt;", 4);   j += 4; break;
-        case '"':  memcpy(dst + j, "&quot;", 6); j += 6; break;
-        case '\'': memcpy(dst + j, "&#39;", 5);  j += 5; break;
-        default:   dst[j++] = src[i]; break;
-        }
-    }
-    dst[j] = '\0';
-    return j;
-}
+/* html_escape() provided by lib/util/template.h: html_escape(dst, max, src) */
 
 /* ── DB helpers ─────────────────────────────────────────────── */
 
@@ -183,27 +161,9 @@ static sqlite3 *open_db(void) {
     return db;
 }
 
-static int query_int(sqlite3 *db, const char *sql) {
-    if (!db || !sql) return 0;
-    sqlite3_stmt *s = NULL;
-    int val = 0;
-    if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK) {
-        if (sqlite3_step(s) == SQLITE_ROW) val = sqlite3_column_int(s, 0);
-        sqlite3_finalize(s);
-    }
-    return val;
-}
-
-static int64_t query_int64(sqlite3 *db, const char *sql) {
-    if (!db || !sql) return 0;
-    sqlite3_stmt *s = NULL;
-    int64_t val = 0;
-    if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK) {
-        if (sqlite3_step(s) == SQLITE_ROW) val = sqlite3_column_int64(s, 0);
-        sqlite3_finalize(s);
-    }
-    return val;
-}
+/* sql_query_int() and sql_query_i64() provided by controllers/explorer_internal.h */
+#define query_int sql_query_int
+#define query_int64 sql_query_i64
 
 /* ── Txid formatting ────────────────────────────────────────── */
 
@@ -784,9 +744,9 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
             format_relative_time(btime, rel_time, sizeof(rel_time));
 
             char esc_short[64], esc_lower[256], esc_rel[96];
-            html_escape(short_tx, esc_short, sizeof(esc_short));
-            html_escape(lower_tx, esc_lower, sizeof(esc_lower));
-            html_escape(rel_time, esc_rel, sizeof(esc_rel));
+            html_escape(esc_short, sizeof(esc_short), short_tx);
+            html_escape(esc_lower, sizeof(esc_lower), lower_tx);
+            html_escape(esc_rel, sizeof(esc_rel), rel_time);
 
             int confs = (tip > 0 && height > 0) ? (tip - height + 1) : 0;
             if (confs < 0) confs = 0;
@@ -919,7 +879,7 @@ static size_t serve_receive(uint8_t *r, size_t max) {
                 if (!raw || !raw[0]) continue;
 
                 char escaped[1024];
-                html_escape(raw, escaped, sizeof(escaped));
+                html_escape(escaped, sizeof(escaped), raw);
 
                 if (count == 0) {
                     APPEND(off, r, max,
@@ -984,10 +944,10 @@ static size_t serve_history(uint8_t *r, size_t max) {
             format_time(btime, ts, sizeof(ts));
 
             char esc_short[64], esc_lower[256], esc_rel[96], esc_ts[64];
-            html_escape(short_tx, esc_short, sizeof(esc_short));
-            html_escape(lower_tx, esc_lower, sizeof(esc_lower));
-            html_escape(rel_time, esc_rel, sizeof(esc_rel));
-            html_escape(ts, esc_ts, sizeof(esc_ts));
+            html_escape(esc_short, sizeof(esc_short), short_tx);
+            html_escape(esc_lower, sizeof(esc_lower), lower_tx);
+            html_escape(esc_rel, sizeof(esc_rel), rel_time);
+            html_escape(esc_ts, sizeof(esc_ts), ts);
 
             int confs = (tip > 0 && h > 0) ? (tip - h + 1) : 0;
             if (confs < 0) confs = 0;
@@ -1405,7 +1365,7 @@ static size_t serve_shield_confirm(uint8_t *r, size_t max, const char *query) {
     } else {
         /* Show the error clearly */
         char safe_result[1024];
-        html_escape(result, safe_result, sizeof(safe_result));
+        html_escape(safe_result, sizeof(safe_result), result);
 
         APPEND(off, r, max,
             "<div class='card' style='border-left-color:#ff8800;padding:20px'>"

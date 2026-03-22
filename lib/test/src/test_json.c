@@ -86,5 +86,191 @@ int test_json(void)
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
+    /* ── Edge cases ────────────────────────────────────────── */
+
+    printf("json parse empty string... ");
+    {
+        struct json_value v;
+        bool ok = json_read(&v, "\"\"", 2);
+        ok = ok && (v.type == JSON_STR) && (strcmp(json_get_str(&v), "") == 0);
+        json_free(&v);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("json parse empty object... ");
+    {
+        struct json_value v;
+        bool ok = json_read(&v, "{}", 2);
+        ok = ok && (v.type == JSON_OBJ) && (json_size(&v) == 0);
+        json_free(&v);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("json parse empty array... ");
+    {
+        struct json_value v;
+        bool ok = json_read(&v, "[]", 2);
+        ok = ok && (v.type == JSON_ARR) && (json_size(&v) == 0);
+        json_free(&v);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("json parse negative integer... ");
+    {
+        struct json_value v;
+        bool ok = json_read(&v, "-99", 3);
+        ok = ok && (v.type == JSON_INT) && (json_get_int(&v) == -99);
+        json_free(&v);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("json parse float... ");
+    {
+        struct json_value v;
+        bool ok = json_read(&v, "3.14", 4);
+        ok = ok && (v.type == JSON_REAL);
+        double d = json_get_real(&v);
+        ok = ok && (d > 3.13 && d < 3.15);
+        json_free(&v);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("json parse scientific notation... ");
+    {
+        struct json_value v;
+        bool ok = json_read(&v, "1e5", 3);
+        ok = ok && (v.type == JSON_REAL);
+        double d = json_get_real(&v);
+        ok = ok && (d > 99999 && d < 100001);
+        json_free(&v);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("json parse string with escapes... ");
+    {
+        const char *s = "\"hello\\nworld\\t!\"";
+        struct json_value v;
+        bool ok = json_read(&v, s, strlen(s));
+        ok = ok && (v.type == JSON_STR);
+        const char *r = json_get_str(&v);
+        ok = ok && r && (strcmp(r, "hello\nworld\t!") == 0);
+        json_free(&v);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("json parse string with unicode escape... ");
+    {
+        const char *s = "\"abc\\u0041def\"";
+        struct json_value v;
+        bool ok = json_read(&v, s, strlen(s));
+        ok = ok && (v.type == JSON_STR);
+        /* unicode escapes produce '?' placeholder */
+        const char *r = json_get_str(&v);
+        ok = ok && r && (strlen(r) == 7);
+        json_free(&v);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("json reject truncated input... ");
+    {
+        struct json_value v;
+        bool ok = !json_read(&v, "{\"a\":", 5);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); json_free(&v); failures++; }
+    }
+
+    printf("json reject invalid input... ");
+    {
+        struct json_value v;
+        bool ok = !json_read(&v, "xyz", 3);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); json_free(&v); failures++; }
+    }
+
+    printf("json parse zero-length... ");
+    {
+        struct json_value v;
+        bool ok = !json_read(&v, "", 0);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); json_free(&v); failures++; }
+    }
+
+    printf("json parse deeply nested array... ");
+    {
+        /* [[[[42]]]] — 4 levels deep */
+        const char *s = "[[[[42]]]]";
+        struct json_value v;
+        bool ok = json_read(&v, s, strlen(s));
+        ok = ok && (v.type == JSON_ARR);
+        const struct json_value *c = json_at(&v, 0);
+        ok = ok && c && (c->type == JSON_ARR);
+        c = json_at(c, 0);
+        ok = ok && c && (c->type == JSON_ARR);
+        c = json_at(c, 0);
+        ok = ok && c && (c->type == JSON_ARR);
+        c = json_at(c, 0);
+        ok = ok && c && (json_get_int(c) == 42);
+        json_free(&v);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("json parse large array (100 elements)... ");
+    {
+        char buf[512];
+        int off = 0;
+        off += snprintf(buf + off, sizeof(buf) - (size_t)off, "[");
+        for (int i = 0; i < 100; i++)
+            off += snprintf(buf + off, sizeof(buf) - (size_t)off, "%s%d", i ? "," : "", i);
+        off += snprintf(buf + off, sizeof(buf) - (size_t)off, "]");
+        (void)off;
+        struct json_value v;
+        bool ok = json_read(&v, buf, strlen(buf));
+        ok = ok && (v.type == JSON_ARR) && (json_size(&v) == 100);
+        const struct json_value *last = json_at(&v, 99);
+        ok = ok && last && (json_get_int(last) == 99);
+        json_free(&v);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("json write + read roundtrip... ");
+    {
+        struct json_value v;
+        json_set_object(&v);
+        json_push_kv_str(&v, "name", "ZClassic");
+        json_push_kv_int(&v, "height", 3045000);
+        json_push_kv_bool(&v, "synced", true);
+
+        char buf[512];
+        json_write(&v, buf, sizeof(buf));
+        json_free(&v);
+
+        struct json_value v2;
+        bool ok = json_read(&v2, buf, strlen(buf));
+        ok = ok && (v2.type == JSON_OBJ);
+        const struct json_value *n = json_get(&v2, "name");
+        ok = ok && n && (strcmp(json_get_str(n), "ZClassic") == 0);
+        const struct json_value *h = json_get(&v2, "height");
+        ok = ok && h && (json_get_int(h) == 3045000);
+        const struct json_value *s = json_get(&v2, "synced");
+        ok = ok && s && json_get_bool(s);
+        json_free(&v2);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("json copy deep equality... ");
+    {
+        const char *s = "{\"a\":[1,2,{\"b\":true}],\"c\":\"hello\"}";
+        struct json_value v;
+        bool ok = json_read(&v, s, strlen(s));
+
+        struct json_value v2;
+        json_copy(&v2, &v);
+
+        char buf1[256], buf2[256];
+        json_write(&v, buf1, sizeof(buf1));
+        json_write(&v2, buf2, sizeof(buf2));
+        ok = ok && (strcmp(buf1, buf2) == 0);
+        json_free(&v);
+        json_free(&v2);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
     return failures;
 }

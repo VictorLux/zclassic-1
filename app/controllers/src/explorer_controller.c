@@ -43,6 +43,7 @@
 #include <math.h>
 
 #include "controllers/explorer_internal.h"
+#include "util/template.h"
 #include "views/explorer_css.h"
 
 static struct main_state *g_ms = NULL;
@@ -361,22 +362,7 @@ static bool use_rpc_proxy(void)
 
 /* ── Helpers ──────────────────────────────────────────────── */
 
-static size_t html_escape(char *dst, size_t max, const char *src)
-{
-    size_t w = 0;
-    for (size_t i = 0; src[i] && w + 6 < max; i++) {
-        switch (src[i]) {
-        case '<':  w += (size_t)snprintf(dst + w, max - w, "&lt;"); break;
-        case '>':  w += (size_t)snprintf(dst + w, max - w, "&gt;"); break;
-        case '&':  w += (size_t)snprintf(dst + w, max - w, "&amp;"); break;
-        case '"':  w += (size_t)snprintf(dst + w, max - w, "&quot;"); break;
-        case '\'': w += (size_t)snprintf(dst + w, max - w, "&#39;"); break;
-        default:   dst[w++] = src[i]; break;
-        }
-    }
-    dst[w] = '\0';
-    return w;
-}
+/* html_escape() is provided by lib/util/template.h */
 
 /* Zcash/ZClassic difficulty: powLimit / target.
  * powLimit = 0x07ffff * 256^(0x1f-3), genesis bits = 0x1f07ffff = diff 1. */

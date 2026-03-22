@@ -7,11 +7,13 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 #include <inttypes.h>
 #include <math.h>
 #include <time.h>
+#include <sqlite3.h>
 
 /* ── Append helper ─────────────────────────────────────────── */
 #define APPEND(off, buf, max, ...) do { \
@@ -52,6 +54,40 @@
 #define EXPLORER_FOOTER \
     "<footer>ZClassic23 Block Explorer &mdash; Pure C23 &mdash; zclnet.net</footer>" \
     "</body></html>"
+
+/* ── SQLite query helpers (DRY — one definition for all controllers) ── */
+
+static inline int64_t sql_query_i64(sqlite3 *db, const char *sql)
+{
+    int64_t val = 0;
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
+        if (sqlite3_step(s) == SQLITE_ROW)
+            val = sqlite3_column_int64(s, 0);
+        sqlite3_finalize(s);
+    }
+    return val;
+}
+
+static inline int sql_query_int(sqlite3 *db, const char *sql)
+{
+    return (int)sql_query_i64(db, sql);
+}
+
+static inline bool sql_query_text(sqlite3 *db, const char *sql,
+                                   char *out, size_t max)
+{
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
+        if (sqlite3_step(s) == SQLITE_ROW) {
+            const char *t = (const char *)sqlite3_column_text(s, 0);
+            if (t) { snprintf(out, max, "%s", t); sqlite3_finalize(s); return true; }
+        }
+        sqlite3_finalize(s);
+    }
+    if (max > 0) out[0] = '\0';
+    return false;
+}
 
 /* ── Shared formatting helpers (static inline for header-only use) ── */
 
