@@ -1275,10 +1275,14 @@ size_t api_handle_request(const char *method, const char *path,
             "Cache-Control: no-cache\r\n"
             "Connection: close\r\n"
             "Content-Length: %zu\r\n\r\n", w);
+        if (w > 524288) w = 524288;  /* cap to buf size */
         if (off + w <= response_max)
             memcpy(response + off, buf, w);
-        else if (off < response_max)
-            memcpy(response + off, buf, response_max - off);
+        else if (off < response_max) {
+            size_t avail = response_max - off;
+            if (avail > w) avail = w;
+            memcpy(response + off, buf, avail);
+        }
         free(buf);
         return off + w < response_max ? off + w : response_max;
     }

@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * zcl-browser: thin GTK shell for ZClassic23 MVC controllers.
- * Routes zcl:// requests to controllers. No logic here — just rendering.
+ * zcl-browser: polished GTK WebKit shell for ZClassic23 MVC controllers.
+ * Routes zcl:// requests to controllers. Zero latency — all in-process.
  *
  * Build: make zcl-browser */
 
@@ -33,7 +33,88 @@ extern void explorer_set_rpc(const char *, const char *, int);
 
 static WebKitWebView *g_webview = NULL;
 static GtkWidget *g_url_bar = NULL;
-static uint8_t g_response[1 << 20];
+static GtkWidget *g_nav_buttons[5];
+static GtkWidget *g_status_label = NULL;
+static uint8_t g_response[1 << 20]; /* 1MB response buffer */
+static char g_current_section[32] = "wallet";
+
+/* ── GTK Dark Theme CSS ───────────────────────────────────── */
+
+static const char *GTK_DARK_CSS =
+    "window { background-color: #0c0c0c; }"
+    "box { background-color: #0c0c0c; }"
+    "headerbar {"
+    "  background: linear-gradient(to bottom, #141414, #0c0c0c);"
+    "  border-bottom: 1px solid #222;"
+    "  padding: 2px 8px;"
+    "  min-height: 36px;"
+    "}"
+    "headerbar .title { color: #33ff99; font-weight: 800; font-size: 14px; }"
+    "headerbar .subtitle { color: #666; font-size: 11px; }"
+    "#toolbar {"
+    "  background: #111;"
+    "  border-bottom: 1px solid #1a1a1a;"
+    "  padding: 4px 8px;"
+    "}"
+    "#nav-btn {"
+    "  background: transparent;"
+    "  border: 1px solid transparent;"
+    "  border-radius: 6px;"
+    "  color: #888;"
+    "  font-size: 13px;"
+    "  font-weight: 600;"
+    "  padding: 4px 14px;"
+    "  min-height: 28px;"
+    "  margin: 0 1px;"
+    "}"
+    "#nav-btn:hover {"
+    "  background: #1a1a1a;"
+    "  color: #ccc;"
+    "  border-color: #333;"
+    "}"
+    "#nav-btn.active {"
+    "  background: #0a1f0a;"
+    "  color: #33ff99;"
+    "  border-color: #1a3a1a;"
+    "}"
+    "#arrow-btn {"
+    "  background: transparent;"
+    "  border: none;"
+    "  color: #555;"
+    "  font-size: 16px;"
+    "  padding: 4px 8px;"
+    "  min-height: 28px;"
+    "  min-width: 28px;"
+    "}"
+    "#arrow-btn:hover { color: #33ff99; }"
+    "#arrow-btn:disabled { color: #2a2a2a; }"
+    "#url-bar {"
+    "  background: #0a0a0a;"
+    "  border: 1px solid #222;"
+    "  border-radius: 6px;"
+    "  color: #ccc;"
+    "  font-family: 'SF Mono', 'Fira Code', monospace;"
+    "  font-size: 13px;"
+    "  padding: 4px 12px;"
+    "  min-height: 28px;"
+    "  caret-color: #33ff99;"
+    "  selection-background-color: #1a3a1a;"
+    "}"
+    "#url-bar:focus {"
+    "  border-color: #33ff99;"
+    "  background: #0c0c0c;"
+    "}"
+    "#status-bar {"
+    "  background: #0a0a0a;"
+    "  border-top: 1px solid #1a1a1a;"
+    "  padding: 2px 12px;"
+    "  min-height: 20px;"
+    "}"
+    "#status-label {"
+    "  color: #444;"
+    "  font-size: 11px;"
+    "  font-family: 'SF Mono', monospace;"
+    "}";
 
 /* ── URI scheme handler — routes to MVC controllers ───────── */
 
@@ -52,6 +133,9 @@ static void on_uri_scheme_request(WebKitURISchemeRequest *request,
         }
     }
 
+    struct timeval t0, t1;
+    gettimeofday(&t0, NULL);
+
     /* Route to MVC controllers by path prefix */
     size_t len = 0;
 
@@ -59,6 +143,7 @@ static void on_uri_scheme_request(WebKitURISchemeRequest *request,
         len = wallet_view_handle_request("GET", path, NULL, 0,
                                           g_response, sizeof(g_response));
     else if (strncmp(path, "/explorer", 9) == 0 ||
+             strncmp(path, "/api/", 5) == 0 ||
              strstr(path, "style.css") || strstr(path, "favicon"))
         len = explorer_handle_request("GET", path, NULL, 0,
                                        g_response, sizeof(g_response));
@@ -67,11 +152,28 @@ static void on_uri_scheme_request(WebKitURISchemeRequest *request,
         len = onion_service_handle_request("GET", path, NULL, 0,
                                             g_response, sizeof(g_response));
 
+    gettimeofday(&t1, NULL);
+    long ms = (t1.tv_sec - t0.tv_sec) * 1000 +
+              (t1.tv_usec - t0.tv_usec) / 1000;
+
+    if (g_status_label) {
+        char status[128];
+        snprintf(status, sizeof(status), "%s  %ldms  %zu bytes", path, ms, len);
+        gtk_label_set_text(GTK_LABEL(g_status_label), status);
+    }
+
     if (len == 0) {
-        const char *html = "<html><body style='background:#0c0c0c;color:#e8e8e8;"
-            "font-family:monospace;padding:40px;text-align:center'>"
-            "<h1 style='color:#ff4444'>404</h1>"
-            "<p><a href='/wallet' style='color:#4db8ff'>Wallet</a></p>"
+        const char *html =
+            "<html><body style='background:#0c0c0c;color:#e8e8e8;"
+            "font-family:-apple-system,monospace;padding:60px;"
+            "text-align:center'>"
+            "<div style='font-size:72px;color:#222;margin-bottom:16px'>"
+            "&#x2717;</div>"
+            "<h2 style='color:#666;font-weight:400'>Page not found</h2>"
+            "<p style='margin-top:24px'>"
+            "<a href='/wallet' style='color:#33ff99;text-decoration:none;"
+            "padding:8px 24px;border:1px solid #33ff99;border-radius:6px'>"
+            "Open Wallet</a></p>"
             "</body></html>";
         GInputStream *s = g_memory_input_stream_new_from_data(
             g_strdup(html), (gssize)strlen(html), g_free);
@@ -110,11 +212,27 @@ static void on_uri_scheme_request(WebKitURISchemeRequest *request,
 
 /* ── Navigation ───────────────────────────────────────────── */
 
+static void update_nav_active(const char *section) {
+    snprintf(g_current_section, sizeof(g_current_section), "%s", section);
+    const char *sections[] = {"", "", "wallet", "explorer", "store"};
+    for (int i = 2; i < 5; i++) {
+        GtkStyleContext *sc = gtk_widget_get_style_context(g_nav_buttons[i]);
+        if (strcmp(sections[i], section) == 0)
+            gtk_style_context_add_class(sc, "active");
+        else
+            gtk_style_context_remove_class(sc, "active");
+    }
+}
+
 static void navigate(const char *path) {
     if (!path || !path[0]) path = "/wallet";
     char uri[512];
     snprintf(uri, sizeof(uri), "zcl://node%s", path);
     webkit_web_view_load_uri(g_webview, uri);
+
+    if (strncmp(path, "/wallet", 7) == 0) update_nav_active("wallet");
+    else if (strncmp(path, "/explorer", 9) == 0) update_nav_active("explorer");
+    else if (strncmp(path, "/store", 6) == 0) update_nav_active("store");
 }
 
 static gboolean on_decide_policy(WebKitWebView *v, WebKitPolicyDecision *dec,
@@ -161,18 +279,24 @@ static void on_load_changed(WebKitWebView *v, WebKitLoadEvent ev, gpointer d)
     }
 }
 
-/* Button callbacks */
+/* ── Button callbacks ─────────────────────────────────────── */
+
 static void on_back(GtkWidget *b, gpointer d) {
     (void)b;(void)d;
-    if (webkit_web_view_can_go_back(g_webview)) webkit_web_view_go_back(g_webview);
+    if (webkit_web_view_can_go_back(g_webview))
+        webkit_web_view_go_back(g_webview);
 }
 static void on_fwd(GtkWidget *b, gpointer d) {
     (void)b;(void)d;
-    if (webkit_web_view_can_go_forward(g_webview)) webkit_web_view_go_forward(g_webview);
+    if (webkit_web_view_can_go_forward(g_webview))
+        webkit_web_view_go_forward(g_webview);
 }
-static void on_wallet(GtkWidget *b, gpointer d) { (void)b;(void)d; navigate("/wallet"); }
-static void on_explorer(GtkWidget *b, gpointer d) { (void)b;(void)d; navigate("/explorer"); }
-static void on_store(GtkWidget *b, gpointer d) { (void)b;(void)d; navigate("/store"); }
+static void on_wallet(GtkWidget *b, gpointer d)
+    { (void)b;(void)d; navigate("/wallet"); }
+static void on_explorer(GtkWidget *b, gpointer d)
+    { (void)b;(void)d; navigate("/explorer"); }
+static void on_store(GtkWidget *b, gpointer d)
+    { (void)b;(void)d; navigate("/store"); }
 
 static void on_url_activate(GtkEntry *e, gpointer d) {
     (void)d;
@@ -186,7 +310,41 @@ static void on_url_activate(GtkEntry *e, gpointer d) {
     }
 }
 
-/* ── Init ─────────────────────────────────────────────────── */
+/* ── Keyboard shortcuts ───────────────────────────────────── */
+
+static gboolean on_key_press(GtkWidget *w, GdkEventKey *ev, gpointer d)
+{
+    (void)w; (void)d;
+    if (ev->state & GDK_CONTROL_MASK) {
+        switch (ev->keyval) {
+        case GDK_KEY_l: case GDK_KEY_L:
+            gtk_widget_grab_focus(g_url_bar);
+            gtk_editable_select_region(GTK_EDITABLE(g_url_bar), 0, -1);
+            return TRUE;
+        case GDK_KEY_1: navigate("/wallet"); return TRUE;
+        case GDK_KEY_2: navigate("/explorer"); return TRUE;
+        case GDK_KEY_3: navigate("/store"); return TRUE;
+        case GDK_KEY_r: case GDK_KEY_R:
+            webkit_web_view_reload(g_webview);
+            return TRUE;
+        case GDK_KEY_Left:
+            if (webkit_web_view_can_go_back(g_webview))
+                webkit_web_view_go_back(g_webview);
+            return TRUE;
+        case GDK_KEY_Right:
+            if (webkit_web_view_can_go_forward(g_webview))
+                webkit_web_view_go_forward(g_webview);
+            return TRUE;
+        }
+    }
+    if (ev->keyval == GDK_KEY_F5) {
+        webkit_web_view_reload(g_webview);
+        return TRUE;
+    }
+    return FALSE;
+}
+
+/* ── Init controllers ─────────────────────────────────────── */
 
 static void init_controllers(void) {
     const char *home = getenv("HOME");
@@ -224,6 +382,18 @@ static void init_controllers(void) {
     onion_service_start(datadir);
 }
 
+/* ── Build UI ─────────────────────────────────────────────── */
+
+static GtkWidget *make_nav_button(const char *label, const char *name,
+                                    GCallback cb)
+{
+    GtkWidget *btn = gtk_button_new_with_label(label);
+    gtk_widget_set_name(btn, name);
+    g_signal_connect(btn, "clicked", cb, NULL);
+    gtk_widget_set_can_focus(btn, FALSE);
+    return btn;
+}
+
 /* ── Main ─────────────────────────────────────────────────── */
 
 int main(int argc, char *argv[]) {
@@ -232,6 +402,19 @@ int main(int argc, char *argv[]) {
     ecc_start();
     ecc_verify_init();
     init_controllers();
+
+    /* Apply dark theme CSS */
+    GtkCssProvider *css = gtk_css_provider_new();
+    gtk_css_provider_load_from_data(css, GTK_DARK_CSS, -1, NULL);
+    gtk_style_context_add_provider_for_screen(
+        gdk_screen_get_default(),
+        GTK_STYLE_PROVIDER(css),
+        GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+    g_object_unref(css);
+
+    /* Prefer dark theme globally */
+    g_object_set(gtk_settings_get_default(),
+        "gtk-application-prefer-dark-theme", TRUE, NULL);
 
     /* Register zcl:// scheme */
     WebKitWebContext *ctx = webkit_web_context_get_default();
@@ -244,40 +427,93 @@ int main(int argc, char *argv[]) {
     /* Window */
     GtkWidget *win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(win), "ZClassic23");
-    gtk_window_set_default_size(GTK_WINDOW(win), 1000, 780);
+    gtk_window_set_default_size(GTK_WINDOW(win), 1100, 820);
     g_signal_connect(win, "destroy", G_CALLBACK(gtk_main_quit), NULL);
+    g_signal_connect(win, "key-press-event", G_CALLBACK(on_key_press), NULL);
 
     GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-    GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
 
-    const char *labels[] = {"<", ">", "Wallet", "Explorer", "Store"};
-    GCallback cbs[] = {
-        G_CALLBACK(on_back), G_CALLBACK(on_fwd),
-        G_CALLBACK(on_wallet), G_CALLBACK(on_explorer), G_CALLBACK(on_store)
-    };
-    for (int i = 0; i < 5; i++) {
-        GtkWidget *btn = gtk_button_new_with_label(labels[i]);
-        g_signal_connect(btn, "clicked", cbs[i], NULL);
-        gtk_box_pack_start(GTK_BOX(hbox), btn, FALSE, FALSE, 2);
-    }
+    /* ── Toolbar ── */
+    GtkWidget *toolbar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+    gtk_widget_set_name(toolbar, "toolbar");
 
+    /* Nav arrows */
+    g_nav_buttons[0] = make_nav_button("\xe2\x97\x80", "arrow-btn",
+                                        G_CALLBACK(on_back));
+    g_nav_buttons[1] = make_nav_button("\xe2\x96\xb6", "arrow-btn",
+                                        G_CALLBACK(on_fwd));
+    gtk_box_pack_start(GTK_BOX(toolbar), g_nav_buttons[0], FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(toolbar), g_nav_buttons[1], FALSE, FALSE, 0);
+
+    /* Separator */
+    GtkWidget *sep = gtk_separator_new(GTK_ORIENTATION_VERTICAL);
+    gtk_box_pack_start(GTK_BOX(toolbar), sep, FALSE, FALSE, 4);
+
+    /* Section tabs */
+    g_nav_buttons[2] = make_nav_button("Wallet", "nav-btn",
+                                        G_CALLBACK(on_wallet));
+    g_nav_buttons[3] = make_nav_button("Explorer", "nav-btn",
+                                        G_CALLBACK(on_explorer));
+    g_nav_buttons[4] = make_nav_button("Store", "nav-btn",
+                                        G_CALLBACK(on_store));
+    for (int i = 2; i < 5; i++)
+        gtk_box_pack_start(GTK_BOX(toolbar), g_nav_buttons[i], FALSE, FALSE, 0);
+
+    /* URL bar */
     g_url_bar = gtk_entry_new();
+    gtk_widget_set_name(g_url_bar, "url-bar");
     gtk_entry_set_placeholder_text(GTK_ENTRY(g_url_bar),
-        "Search blocks, txs, addresses...");
+        "Search blocks, txs, addresses...   (Ctrl+L)");
     g_signal_connect(g_url_bar, "activate", G_CALLBACK(on_url_activate), NULL);
-    gtk_box_pack_start(GTK_BOX(hbox), g_url_bar, TRUE, TRUE, 4);
+    gtk_box_pack_start(GTK_BOX(toolbar), g_url_bar, TRUE, TRUE, 4);
 
-    g_webview = WEBKIT_WEB_VIEW(webkit_web_view_new());
+    gtk_box_pack_start(GTK_BOX(vbox), toolbar, FALSE, FALSE, 0);
+
+    /* ── WebView ── */
+    WebKitSettings *settings = webkit_settings_new();
+    webkit_settings_set_enable_smooth_scrolling(settings, TRUE);
+    webkit_settings_set_enable_developer_extras(settings, FALSE);
+    webkit_settings_set_enable_java(settings, FALSE);
+    webkit_settings_set_enable_plugins(settings, FALSE);
+    webkit_settings_set_hardware_acceleration_policy(settings,
+        WEBKIT_HARDWARE_ACCELERATION_POLICY_ALWAYS);
+    webkit_settings_set_default_font_family(settings,
+        "SF Pro Display, -apple-system, Segoe UI, Roboto, sans-serif");
+    webkit_settings_set_monospace_font_family(settings,
+        "SF Mono, Fira Code, JetBrains Mono, monospace");
+    webkit_settings_set_default_font_size(settings, 16);
+    webkit_settings_set_default_monospace_font_size(settings, 13);
+
+    g_webview = WEBKIT_WEB_VIEW(
+        g_object_new(WEBKIT_TYPE_WEB_VIEW, "settings", settings, NULL));
+    g_object_unref(settings);
+
+    /* Dark background while loading */
+    GdkRGBA bg = { 0.047, 0.047, 0.047, 1.0 }; /* #0c0c0c */
+    webkit_web_view_set_background_color(g_webview, &bg);
+
     g_signal_connect(g_webview, "decide-policy",
         G_CALLBACK(on_decide_policy), NULL);
     g_signal_connect(g_webview, "load-changed",
         G_CALLBACK(on_load_changed), NULL);
 
-    gtk_box_pack_start(GTK_BOX(vbox), hbox, FALSE, FALSE, 2);
     gtk_box_pack_start(GTK_BOX(vbox), GTK_WIDGET(g_webview), TRUE, TRUE, 0);
+
+    /* ── Status bar ── */
+    GtkWidget *status_bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_set_name(status_bar, "status-bar");
+    g_status_label = gtk_label_new("Ready");
+    gtk_widget_set_name(g_status_label, "status-label");
+    gtk_label_set_xalign(GTK_LABEL(g_status_label), 0.0);
+    gtk_box_pack_start(GTK_BOX(status_bar), g_status_label, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(vbox), status_bar, FALSE, FALSE, 0);
+
     gtk_container_add(GTK_CONTAINER(win), vbox);
 
-    navigate(argc > 1 && argv[1][0] == '/' ? argv[1] : "/wallet");
+    /* Navigate to initial page */
+    const char *start = "/wallet";
+    if (argc > 1 && argv[1][0] == '/') start = argv[1];
+    navigate(start);
 
     gtk_widget_show_all(win);
     gtk_main();
