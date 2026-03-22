@@ -53,6 +53,8 @@ int main(void)
     failures += test_tor();
     failures += test_event();
     failures += test_download();
+    failures += test_consensus();
+    failures += test_policy();
 
     ecc_verify_destroy();
     ecc_stop();
