@@ -8,6 +8,7 @@
 #define ZCL_VALIDATION_CHAINSTATE_H
 
 #include "chain/chain.h"
+#include <pthread.h>
 #include "core/uint256.h"
 #include "util/sync.h"
 #include <stdbool.h>
@@ -67,6 +68,7 @@ struct block_map {
     struct block_map_entry *buckets;
     size_t size;
     size_t capacity;
+    pthread_rwlock_t rwlock;
 };
 
 void block_map_init(struct block_map *m);

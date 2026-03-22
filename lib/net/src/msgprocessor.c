@@ -1185,21 +1185,26 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                 sync_set_state(SYNC_BLOCKS_DOWNLOAD,
                                "headers ahead, requesting blocks");
 
-            /* Collect needed block hashes (backward walk, reverse for order) */
-            size_t max_collect = 2048;
+            /* Collect needed block hashes (backward walk, reverse for order).
+             * Limit walk to 512 steps to avoid traversing millions of entries
+             * during IBD when we're far behind. */
+            size_t max_collect = 512;
             struct uint256 *hashes = malloc(max_collect * sizeof(struct uint256));
             int32_t *heights = malloc(max_collect * sizeof(int32_t));
             if (hashes && heights) {
                 size_t count_needed = 0;
+                size_t walk_steps = 0;
                 struct block_index *walk = bi;
-                while (walk && walk->nHeight > our_height &&
-                       count_needed < max_collect) {
-                    if (!(walk->nStatus & BLOCK_HAVE_DATA) && walk->phashBlock) {
+                while (walk && walk->pprev && walk->nHeight > our_height &&
+                       count_needed < max_collect && walk_steps < 2048) {
+                    if (!(walk->nStatus & BLOCK_HAVE_DATA) &&
+                        walk->phashBlock) {
                         hashes[count_needed] = *walk->phashBlock;
                         heights[count_needed] = walk->nHeight;
                         count_needed++;
                     }
                     walk = walk->pprev;
+                    walk_steps++;
                 }
 
                 /* Reverse to get oldest-first order */
@@ -1226,7 +1231,7 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
     }
 
     /* Request more headers if we accepted any */
-    if (accepted > 0 && pindex_last)
+    if (accepted > 0 && pindex_last && pindex_last->phashBlock)
         push_getheaders_from(mp, node, pindex_last);
 
     return true;

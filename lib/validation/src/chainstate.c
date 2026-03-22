@@ -24,10 +24,12 @@ void block_map_init(struct block_map *m)
     m->buckets = NULL;
     m->size = 0;
     m->capacity = 0;
+    pthread_rwlock_init(&m->rwlock, NULL);
 }
 
 void block_map_free(struct block_map *m)
 {
+    pthread_rwlock_wrlock(&m->rwlock);
     for (size_t i = 0; i < m->capacity; i++)
         if (m->buckets[i].occupied)
             free(m->buckets[i].index);
@@ -35,22 +37,29 @@ void block_map_free(struct block_map *m)
     m->buckets = NULL;
     m->size = 0;
     m->capacity = 0;
+    pthread_rwlock_unlock(&m->rwlock);
+    pthread_rwlock_destroy(&m->rwlock);
 }
 
 struct block_index *block_map_find(const struct block_map *m,
                                     const struct uint256 *hash)
 {
     if (m->capacity == 0) return NULL;
+    pthread_rwlock_rdlock((pthread_rwlock_t *)&m->rwlock);
     uint64_t h = block_map_hash(hash);
     size_t idx = h & (m->capacity - 1);
+    struct block_index *result = NULL;
     for (size_t i = 0; i < m->capacity; i++) {
         size_t slot = (idx + i) & (m->capacity - 1);
         if (!m->buckets[slot].occupied)
-            return NULL;
-        if (uint256_eq(&m->buckets[slot].hash, hash))
-            return m->buckets[slot].index;
+            break;
+        if (uint256_eq(&m->buckets[slot].hash, hash)) {
+            result = m->buckets[slot].index;
+            break;
+        }
     }
-    return NULL;
+    pthread_rwlock_unlock((pthread_rwlock_t *)&m->rwlock);
+    return result;
 }
 
 static bool block_map_insert_internal(struct block_map *m,
@@ -102,13 +111,19 @@ static bool block_map_grow(struct block_map *m)
 bool block_map_insert(struct block_map *m, const struct uint256 *hash,
                       struct block_index *index)
 {
+    pthread_rwlock_wrlock(&m->rwlock);
     if (m->size * 4 >= m->capacity * 3) {
-        if (!block_map_grow(m))
+        if (!block_map_grow(m)) {
+            pthread_rwlock_unlock(&m->rwlock);
             return false;
+        }
     }
-    if (!block_map_insert_internal(m, hash, index))
+    if (!block_map_insert_internal(m, hash, index)) {
+        pthread_rwlock_unlock(&m->rwlock);
         return false;
+    }
     m->size++;
+    pthread_rwlock_unlock(&m->rwlock);
     return true;
 }
 
@@ -116,16 +131,21 @@ const struct uint256 *block_map_find_hash(const struct block_map *m,
                                            const struct uint256 *hash)
 {
     if (m->capacity == 0) return NULL;
+    pthread_rwlock_rdlock((pthread_rwlock_t *)&m->rwlock);
     uint64_t h = block_map_hash(hash);
     size_t idx = h & (m->capacity - 1);
+    const struct uint256 *result = NULL;
     for (size_t i = 0; i < m->capacity; i++) {
         size_t slot = (idx + i) & (m->capacity - 1);
         if (!m->buckets[slot].occupied)
-            return NULL;
-        if (uint256_eq(&m->buckets[slot].hash, hash))
-            return &m->buckets[slot].hash;
+            break;
+        if (uint256_eq(&m->buckets[slot].hash, hash)) {
+            result = &m->buckets[slot].hash;
+            break;
+        }
     }
-    return NULL;
+    pthread_rwlock_unlock((pthread_rwlock_t *)&m->rwlock);
+    return result;
 }
 
 size_t block_map_count(const struct block_map *m)
