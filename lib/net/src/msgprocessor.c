@@ -838,6 +838,22 @@ static bool process_getdata(struct msg_processor *mp, struct p2p_node *node,
                 block_init(&blk);
 
                 if (read_block_from_disk_index(&blk, bi, mp->datadir)) {
+                    /* Verify block hash before serving — never send
+                     * corrupted data that would get us banned */
+                    struct uint256 disk_hash;
+                    block_get_hash(&blk, &disk_hash);
+                    if (uint256_cmp(&disk_hash, &inv.hash) != 0) {
+                        char exp[65], got[65];
+                        uint256_get_hex(&inv.hash, exp);
+                        uint256_get_hex(&disk_hash, got);
+                        fprintf(stderr, "SAFETY: refusing to serve block "
+                                "h=%d — hash mismatch!\n"
+                                "  requested: %s\n  disk:      %s\n",
+                                bi->nHeight, exp, got);
+                        block_free(&blk);
+                        goto skip_block_serve;
+                    }
+
                     struct byte_stream blk_data;
                     stream_init(&blk_data, 1024 * 1024);
                     if (block_serialize(&blk, &blk_data)) {
@@ -852,6 +868,8 @@ static bool process_getdata(struct msg_processor *mp, struct p2p_node *node,
                 }
                 block_free(&blk);
             }
+            skip_block_serve:
+            (void)0;
         } else if (inv.type == MSG_TX) {
             struct transaction tx;
             transaction_init(&tx);
