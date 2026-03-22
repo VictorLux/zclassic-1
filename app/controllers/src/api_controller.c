@@ -11,8 +11,11 @@
 #include "event/event.h"
 #include "net/download.h"
 #include "validation/contextual_check_tx.h"
+#include "chain/chainparams.h"
 #include "keys/key_io.h"
 #include "models/database.h"
+#include "models/utxo.h"
+#include "core/uint256.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -333,10 +336,12 @@ static size_t compute_blocks(uint8_t *r, size_t max)
         int tx_count = 0;
         const char *txarr = strstr(buf, "\"tx\":[");
         if (txarr) {
-            const char *end = strchr(txarr, ']');
-            tx_count = 1;
-            if (end) for (const char *p = txarr; p < end; p++)
-                if (*p == ',') tx_count++;
+            const char *end = strchr(txarr + 6, ']');
+            if (end && end > txarr + 6) {
+                tx_count = 1;
+                for (const char *p = txarr + 6; p < end; p++)
+                    if (*p == ',') tx_count++;
+            }
         }
 
         if (i > 0) off += (size_t)snprintf((char *)r + off, max - off, ",");
@@ -512,10 +517,12 @@ static size_t compute_block(const char *param, uint8_t *r, size_t max)
     int tx_count = 0;
     const char *txarr = strstr(buf, "\"tx\":[");
     if (txarr) {
-        const char *end = strchr(txarr, ']');
-        tx_count = 1;
-        if (end) for (const char *p = txarr; p < end; p++)
-            if (*p == ',') tx_count++;
+        const char *end = strchr(txarr + 6, ']');
+        if (end && end > txarr + 6) {
+            tx_count = 1;
+            for (const char *p = txarr + 6; p < end; p++)
+                if (*p == ',') tx_count++;
+        }
     }
 
     size_t off = 0;
@@ -715,7 +722,7 @@ static size_t compute_tx(const char *param, uint8_t *r, size_t max)
     return off;
 }
 
-/* Compute /api/address/:addr — balance + UTXOs (called from bg thread) */
+/* Compute /api/address/:addr — balance + UTXOs from SQLite (called from bg thread) */
 static size_t compute_address(const char *param, uint8_t *r, size_t max)
 {
     if (!param || !*param)
@@ -725,89 +732,63 @@ static size_t compute_address(const char *param, uint8_t *r, size_t max)
     if (alen < 25 || alen > 95)
         return json_error(r, max, JSON_404_HEADERS, "Invalid address");
 
-    /* Ensure address is safe to embed in JSON/RPC params */
     if (!is_json_safe_param(param, alen))
         return json_error(r, max, JSON_404_HEADERS, "Invalid address characters");
 
-    char buf[262144];
+    /* Decode address to 20-byte hash */
+    const struct chain_params *cp = chain_params_get();
+    if (!cp || !g_ndb)
+        return json_error(r, max, JSON_HEADERS, "Node not ready");
+
+    struct tx_destination dest;
+    memset(&dest, 0, sizeof(dest));
+    size_t pk_len = 0, sh_len = 0;
+    const unsigned char *pk_pfx = chain_params_base58_prefix(cp, B58_PUBKEY_ADDRESS, &pk_len);
+    const unsigned char *sh_pfx = chain_params_base58_prefix(cp, B58_SCRIPT_ADDRESS, &sh_len);
+    if (!decode_destination(param, pk_pfx, pk_len, sh_pfx, sh_len, &dest))
+        return json_error(r, max, JSON_404_HEADERS, "Invalid address");
+
+    const uint8_t *addr_hash = NULL;
+    if (dest.type == DEST_KEY_ID)
+        addr_hash = dest.id.key.id.data;
+    else if (dest.type == DEST_SCRIPT_ID)
+        addr_hash = dest.id.script.hash.data;
+    if (!addr_hash)
+        return json_error(r, max, JSON_404_HEADERS, "Unsupported address type");
+
+    /* Query SQLite directly */
+    int64_t balance_sat = db_utxo_balance_for_address(g_ndb, addr_hash);
+
     size_t off = 0;
-
-    /* Try getaddressbalance (addressindex RPC) */
-    char params[256];
-    snprintf(params, sizeof(params),
-        "[{\"addresses\":[\"%s\"]}]", param);
-    int n = rpc_call("getaddressbalance", params, buf, sizeof(buf));
-
-    int64_t balance_sat = 0;
-    bool got_balance = false;
-
-    if (n > 0 && strstr(buf, "\"error\":null")) {
-        balance_sat = json_extract_int(buf, "balance");
-        got_balance = true;
-    }
-
-    /* Try getaddressutxos */
-    char ubuf[262144];
-    n = rpc_call("getaddressutxos", params, ubuf, sizeof(ubuf));
-
     off += (size_t)snprintf((char *)r + off, max - off,
-        "%s{\"address\":\"%s\"", JSON_HEADERS, param);
+        "%s{\"address\":\"%s\""
+        ",\"balance_sat\":%" PRId64
+        ",\"balance\":%.8f"
+        ",\"utxos\":[",
+        JSON_HEADERS, param,
+        balance_sat, (double)balance_sat / 100000000.0);
 
-    if (got_balance) {
+    struct db_utxo utxos[200];
+    int count = db_utxo_list_for_address(g_ndb, addr_hash, utxos, 200);
+
+    for (int i = 0; i < count && off + 512 < max; i++) {
+        char txid_hex[65];
+        struct uint256 utxo_txid;
+        memcpy(utxo_txid.data, utxos[i].txid, 32);
+        uint256_get_hex(&utxo_txid, txid_hex);
+
+        if (i > 0)
+            off += (size_t)snprintf((char *)r + off, max - off, ",");
         off += (size_t)snprintf((char *)r + off, max - off,
-            ",\"balance_sat\":%" PRId64
-            ",\"balance\":%.8f",
-            balance_sat, (double)balance_sat / 100000000.0);
-    }
+            "{\"txid\":\"%s\""
+            ",\"vout\":%u"
+            ",\"satoshis\":%" PRId64
+            ",\"value\":%.8f"
+            ",\"height\":%d}",
+            txid_hex, utxos[i].vout, utxos[i].value,
+            (double)utxos[i].value / 100000000.0, utxos[i].height);
 
-    /* Parse UTXOs from result array */
-    off += (size_t)snprintf((char *)r + off, max - off, ",\"utxos\":[");
-
-    if (n > 0 && strstr(ubuf, "\"error\":null")) {
-        const char *result = strstr(ubuf, "\"result\":[");
-        if (result) {
-            const char *p = result + 10;
-            int brace = 0, idx = 0;
-            while (*p && off + 512 < max) {
-                if (*p == '{') {
-                    brace++;
-                    if (brace == 1) {
-                        const char *entry = p;
-                        int depth = 0;
-                        const char *entry_end = NULL;
-                        for (const char *q = p; *q; q++) {
-                            if (*q == '{') depth++;
-                            if (*q == '}') { depth--; if (depth == 0) { entry_end = q + 1; break; } }
-                        }
-                        if (!entry_end) break;
-
-                        char txid[65] = "";
-                        json_extract_str(entry, "txid", txid, sizeof(txid));
-                        int64_t output_idx = json_extract_int(entry, "outputIndex");
-                        int64_t satoshis = json_extract_int(entry, "satoshis");
-                        int64_t utxo_height = json_extract_int(entry, "height");
-
-                        if (idx > 0)
-                            off += (size_t)snprintf((char *)r + off, max - off, ",");
-                        off += (size_t)snprintf((char *)r + off, max - off,
-                            "{\"txid\":\"%s\""
-                            ",\"vout\":%" PRId64
-                            ",\"satoshis\":%" PRId64
-                            ",\"value\":%.8f"
-                            ",\"height\":%" PRId64 "}",
-                            txid, output_idx, satoshis,
-                            (double)satoshis / 100000000.0, utxo_height);
-                        idx++;
-
-                        p = entry_end;
-                        brace = 0;
-                        continue;
-                    }
-                }
-                if (*p == ']' && brace == 0) break;
-                p++;
-            }
-        }
+        db_utxo_free(&utxos[i]);
     }
 
     off += (size_t)snprintf((char *)r + off, max - off, "]}");

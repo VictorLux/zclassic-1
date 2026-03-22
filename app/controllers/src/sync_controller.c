@@ -1029,6 +1029,9 @@ int node_db_sync_catchup(struct node_db *ndb,
             continue;
         }
 
+        /* Update in-memory nTx so RPC getblock returns correct count */
+        ((struct block_index *)pindex)->nTx = (uint32_t)blk.num_vtx;
+
         /* Lean index: block header + txid index */
         if (!sync_block_lean(ndb, &blk, pindex) && indexed == 0) {
             fprintf(stderr, "catchup: first lean insert failed! "
