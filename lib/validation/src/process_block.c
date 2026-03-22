@@ -469,11 +469,31 @@ bool connect_tip(struct validation_state *state,
 
     if (!pblock) {
         if (!read_block_from_disk_index(&local_block, pindex_new, datadir)) {
-            printf("connect_tip: failed to read block at height %d\n",
-                   pindex_new->nHeight);
+            /* Retry: pindex_new may be a stale copy (from mmap or header
+             * processing) without disk position. Look up the canonical
+             * block_index by hash which has the correct file/pos. */
+            if (pindex_new->phashBlock) {
+                struct block_index *canonical = block_map_find(
+                    &ms->map_block_index, pindex_new->phashBlock);
+                if (canonical && canonical != pindex_new &&
+                    (canonical->nStatus & BLOCK_HAVE_DATA) &&
+                    read_block_from_disk_index(&local_block, canonical,
+                                               datadir)) {
+                    /* Update pindex_new to use canonical data */
+                    pindex_new->nFile = canonical->nFile;
+                    pindex_new->nDataPos = canonical->nDataPos;
+                    pindex_new->nStatus |= BLOCK_HAVE_DATA;
+                    goto block_read_ok;
+                }
+            }
+            fprintf(stderr, "connect_tip: failed to read block at height %d "
+                    "file=%d pos=%u status=%u\n",
+                    pindex_new->nHeight, pindex_new->nFile,
+                    pindex_new->nDataPos, pindex_new->nStatus);
             block_free(&local_block);
             return validation_state_error(state, "failed-to-read-block");
         }
+        block_read_ok:
         pblock = &local_block;
 
         /* Verify block read from disk matches expected hash */
