@@ -168,13 +168,24 @@ bool read_block_from_disk_index(struct block *b,
         pos.nPos = pindex->nDataPos;
     }
 
-    if (!read_block_from_disk(b, &pos, datadir))
+    if (!read_block_from_disk(b, &pos, datadir)) {
+        printf("read_block_fail: h=%d file=%d pos=%u status=0x%x have_data=%d\n",
+               pindex->nHeight, pos.nFile, pos.nPos,
+               pindex->nStatus, !!(pindex->nStatus & BLOCK_HAVE_DATA));
+        fflush(stdout);
         return false;
+    }
 
     struct uint256 block_hash;
     block_get_hash(b, &block_hash);
     if (pindex->phashBlock &&
         uint256_cmp(&block_hash, pindex->phashBlock) != 0) {
+        char got[65], want[65];
+        uint256_get_hex(&block_hash, got);
+        uint256_get_hex(pindex->phashBlock, want);
+        printf("read_block_hash_mismatch: h=%d got=%.16s want=%.16s\n",
+               pindex->nHeight, got, want);
+        fflush(stdout);
         block_free(b);
         return false;
     }
