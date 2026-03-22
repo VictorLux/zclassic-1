@@ -183,29 +183,41 @@ static void on_uri_scheme_request(WebKitURISchemeRequest *request,
         return;
     }
 
-    /* Strip HTTP headers, detect Content-Type */
-    g_response[len < sizeof(g_response)-1 ? len : sizeof(g_response)-1] = '\0';
-    const char *body = (const char *)g_response;
+    /* Parse headers without corrupting binary body (favicon, CSS) */
+    const uint8_t *body = g_response;
+    size_t blen = len;
     const char *ctype = "text/html; charset=utf-8";
-    const char *hdr_end = strstr((char *)g_response, "\r\n\r\n");
+
+    size_t search_limit = len < 4096 ? len : 4096;
+    const char *hdr_end = NULL;
+    for (size_t i = 0; i + 3 < search_limit; i++) {
+        if (g_response[i] == '\r' && g_response[i+1] == '\n' &&
+            g_response[i+2] == '\r' && g_response[i+3] == '\n') {
+            hdr_end = (const char *)&g_response[i];
+            break;
+        }
+    }
     if (hdr_end) {
+        size_t hdr_size = (size_t)(hdr_end - (const char *)g_response);
+        g_response[hdr_size] = '\0';
         const char *ct = strstr((char *)g_response, "Content-Type: ");
-        if (ct && ct < hdr_end) {
+        if (ct) {
             ct += 14;
             static char ct_buf[128];
             size_t i = 0;
-            while (ct[i] && ct[i] != '\r' && ct[i] != '\n' && i < 127) {
-                ct_buf[i] = ct[i]; i++;
-            }
+            while (ct[i] && ct[i] != '\r' && ct[i] != '\n' && i < 127)
+                { ct_buf[i] = ct[i]; i++; }
             ct_buf[i] = '\0';
             ctype = ct_buf;
         }
-        body = hdr_end + 4;
+        body = (const uint8_t *)(hdr_end + 4);
+        blen = len - (size_t)(body - g_response);
     }
 
-    size_t blen = strlen(body);
+    char *body_copy = g_malloc(blen);
+    if (body_copy) memcpy(body_copy, body, blen);
     GInputStream *stream = g_memory_input_stream_new_from_data(
-        g_strndup(body, blen), (gssize)blen, g_free);
+        body_copy, (gssize)blen, g_free);
     webkit_uri_scheme_request_finish(request, stream, (gint64)blen, ctype);
     g_object_unref(stream);
 }
