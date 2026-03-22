@@ -25,12 +25,16 @@ ALL_OBJS = $(ALL_SRCS:.c=.o)
 GTK_CFLAGS := $(shell pkg-config --cflags gtk+-3.0 2>/dev/null)
 GTK_LIBS   := $(shell pkg-config --libs gtk+-3.0 2>/dev/null)
 GTK_DEF    := $(if $(GTK_CFLAGS),-DHAVE_GTK,)
+WEBKIT_CFLAGS := $(shell pkg-config --cflags webkit2gtk-4.1 2>/dev/null)
+WEBKIT_LIBS   := $(shell pkg-config --libs webkit2gtk-4.1 2>/dev/null)
+WEBKIT_DEF    := $(if $(WEBKIT_CFLAGS),-DHAVE_WEBKIT,)
 
 CFLAGS = -std=c23 -O3 -march=native -flto -Wall -Wextra -Werror -pedantic \
 	-Wno-stringop-overflow -Wno-unused-result \
 	$(APP_INCLUDES) $(CONFIG_INCLUDES) $(LIB_INCLUDES) \
 	-Ilib/test/include \
-	-D_POSIX_C_SOURCE=200809L -Ivendor/include $(GTK_DEF) $(GTK_CFLAGS)
+	-D_POSIX_C_SOURCE=200809L -Ivendor/include $(GTK_DEF) $(GTK_CFLAGS) \
+	$(WEBKIT_DEF) $(WEBKIT_CFLAGS)
 LDFLAGS = -pthread -flto
 # Use vendor/tor/libtor.a when Tor is built from source.
 # Tor: use full Tor if built, otherwise fall back to stub.
@@ -56,10 +60,10 @@ all: test_zcl zclassic23 zclassic-cli
 TEST_SRCS = $(wildcard lib/test/src/*.c)
 
 test_zcl: $(TEST_SRCS) $(ALL_SRCS)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(TOR_LIBS) $(LIBS)
+	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o $@ $^ $(TOR_LIBS) $(LIBS)
 
 zclassic23: main.c $(ALL_SRCS)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(TOR_LIBS) $(LIBS) $(GTK_LIBS)
+	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o $@ $^ $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)
 
 zclassic-cli: cli.c $(CLI_SRCS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm

@@ -1,532 +1,489 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * ZClassic23 Wallet GUI
- *
- * Design: Single screen. Balance always visible. Receive/Send are
- * inline toggle panels. Activity shows human-readable history.
- * All data from SQLite via background thread — GTK never blocks.
- */
+ * ZClassic23 GUI — WebKit browser with Wallet, Explorer, Store.
+ * Launches as the default mode when zclassic23 is run with no arguments.
+ * All routing is in-process C function calls — zero network latency. */
 
-#ifdef HAVE_GTK
+#if defined(HAVE_WEBKIT) && defined(HAVE_GTK)
 
 #include <gtk/gtk.h>
+#include <webkit2/webkit2.h>
 #include <sqlite3.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
-#include <stdatomic.h>
-#include <inttypes.h>
-#include <pthread.h>
-#include <time.h>
-#include "keys/key_io.h"
+#include <stdint.h>
+#include <sys/time.h>
 
-static char g_db_path[600] = "";
+#include "models/database.h"
+#include "controllers/explorer_controller.h"
+#include "controllers/wallet_view_controller.h"
+#include "chain/chainparams.h"
+#include "keys/key.h"
+#include "keys/pubkey.h"
 
-/* ── Data ──────────────────────────────────────────────── */
+extern size_t explorer_handle_request(const char *, const char *,
+    const uint8_t *, size_t, uint8_t *, size_t);
+extern size_t onion_service_handle_request(const char *, const char *,
+    const uint8_t *, size_t, uint8_t *, size_t);
+extern const char *onion_service_start(const char *);
+extern void explorer_set_rpc(const char *, const char *, int);
 
-struct activity_row {
-    int64_t value;
-    int     height;
-    int64_t block_time;
-};
-#define MAX_ACTIVITY 50
+static WebKitWebView *g_webview = NULL;
+static GtkWidget *g_url_bar = NULL;
+static GtkWidget *g_nav_buttons[5];
+static GtkWidget *g_status_label = NULL;
+static uint8_t g_response[1 << 20];
 
-static struct {
-    _Atomic bool ready;
-    bool db_ok;
-    int64_t transparent;
-    int64_t shielded;
-    int64_t chain_height;
-    int64_t latest_block_time;
-    char    address[128];
-    struct activity_row activity[MAX_ACTIVITY];
-    int     num_activity;
-} g_d = {0};
+/* ── GTK Dark Theme CSS ───────────────────────────────────── */
 
-/* ── Helpers ───────────────────────────────────────────── */
+static const char *GTK_DARK_CSS =
+    "window { background-color: #0c0c0c; }"
+    "box { background-color: #0c0c0c; }"
+    "#toolbar {"
+    "  background: #111;"
+    "  border-bottom: 1px solid #1a1a1a;"
+    "  padding: 4px 8px;"
+    "}"
+    "#nav-btn {"
+    "  background: transparent;"
+    "  border: 1px solid transparent;"
+    "  border-radius: 6px;"
+    "  color: #888;"
+    "  font-size: 13px;"
+    "  font-weight: 600;"
+    "  padding: 4px 14px;"
+    "  min-height: 28px;"
+    "  margin: 0 1px;"
+    "}"
+    "#nav-btn:hover {"
+    "  background: #1a1a1a;"
+    "  color: #ccc;"
+    "  border-color: #333;"
+    "}"
+    "#nav-btn.active {"
+    "  background: #0a1f0a;"
+    "  color: #33ff99;"
+    "  border-color: #1a3a1a;"
+    "}"
+    "#arrow-btn {"
+    "  background: transparent;"
+    "  border: none;"
+    "  color: #555;"
+    "  font-size: 16px;"
+    "  padding: 4px 8px;"
+    "  min-height: 28px;"
+    "  min-width: 28px;"
+    "}"
+    "#arrow-btn:hover { color: #33ff99; }"
+    "#arrow-btn:disabled { color: #2a2a2a; }"
+    "#url-bar {"
+    "  background: #0a0a0a;"
+    "  border: 1px solid #222;"
+    "  border-radius: 6px;"
+    "  color: #ccc;"
+    "  font-family: 'SF Mono', 'Fira Code', monospace;"
+    "  font-size: 13px;"
+    "  padding: 4px 12px;"
+    "  min-height: 28px;"
+    "  caret-color: #33ff99;"
+    "}"
+    "#url-bar:focus { border-color: #33ff99; background: #0c0c0c; }"
+    "#status-bar {"
+    "  background: #0a0a0a;"
+    "  border-top: 1px solid #1a1a1a;"
+    "  padding: 2px 12px;"
+    "  min-height: 20px;"
+    "}"
+    "#status-label {"
+    "  color: #444;"
+    "  font-size: 11px;"
+    "  font-family: 'SF Mono', monospace;"
+    "}";
 
-static int64_t qry(sqlite3 *db, const char *sql)
+/* ── URI scheme handler ───────────────────────────────────── */
+
+static void on_uri_scheme_request(WebKitURISchemeRequest *request,
+                                    gpointer user_data)
 {
-    sqlite3_stmt *s = NULL;
-    int64_t v = 0;
-    if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
-        if (sqlite3_step(s) == SQLITE_ROW) v = sqlite3_column_int64(s, 0);
-        sqlite3_finalize(s);
-    }
-    return v;
-}
-
-static void fmt_zcl(char *buf, size_t max, int64_t z, int decimals)
-{
-    int64_t whole = z / 100000000;
-    int64_t frac = z % 100000000;
-    if (frac < 0) frac = -frac;
-    if (decimals == 3) {
-        int64_t f3 = frac / 100000;
-        snprintf(buf, max, "%" PRId64 ".%03" PRId64, whole, f3);
-    } else {
-        snprintf(buf, max, "%" PRId64 ".%08" PRId64, whole, frac);
-        size_t len = strlen(buf);
-        while (len > 2 && buf[len-1] == '0' && buf[len-2] != '.') len--;
-        buf[len] = 0;
-    }
-}
-
-static void fmt_ago(char *buf, size_t max, int64_t block_time)
-{
-    if (block_time <= 0) { snprintf(buf, max, "—"); return; }
-    int64_t delta = (int64_t)time(NULL) - block_time;
-    if (delta < 0) delta = 0;
-    if (delta < 60) snprintf(buf, max, "just now");
-    else if (delta < 3600) snprintf(buf, max, "%lld min ago", (long long)(delta/60));
-    else if (delta < 86400) snprintf(buf, max, "%lld hours ago", (long long)(delta/3600));
-    else snprintf(buf, max, "%lld days ago", (long long)(delta/86400));
-}
-
-/* ── Background thread ─────────────────────────────────── */
-
-static void *bg_thread(void *arg)
-{
-    (void)arg;
-    sqlite3 *db = NULL;
-    if (sqlite3_open_v2(g_db_path, &db, SQLITE_OPEN_READONLY, NULL)
-        != SQLITE_OK || !db) {
-        g_d.db_ok = false;
-        atomic_store(&g_d.ready, true);
-        return NULL;
-    }
-    sqlite3_exec(db, "PRAGMA journal_mode=WAL", NULL, NULL, NULL);
-    sqlite3_exec(db, "PRAGMA mmap_size=67108864", NULL, NULL, NULL);
-    sqlite3_busy_timeout(db, 200);
-    g_d.db_ok = true;
-
-    g_d.transparent = qry(db,
-        "SELECT COALESCE(SUM(u.value),0) FROM utxos u"
-        " INNER JOIN wallet_keys w ON u.address_hash=w.pubkey_hash");
-    g_d.shielded = qry(db,
-        "SELECT COALESCE(SUM(value),0) FROM wallet_sapling_notes"
-        " WHERE spent_txid IS NULL");
-    g_d.chain_height = qry(db,
-        "SELECT COALESCE(MAX(height),0) FROM blocks WHERE status>=3");
-    g_d.latest_block_time = qry(db,
-        "SELECT COALESCE(MAX(time),0) FROM blocks WHERE status>=3");
-
-    /* Address */
-    g_d.address[0] = '\0';
-    {
-        sqlite3_stmt *s = NULL;
-        if (sqlite3_prepare_v2(db,
-                "SELECT pubkey_hash FROM wallet_keys LIMIT 1",
-                -1, &s, NULL) == SQLITE_OK && s) {
-            if (sqlite3_step(s) == SQLITE_ROW) {
-                const void *pkh = sqlite3_column_blob(s, 0);
-                if (pkh && sqlite3_column_bytes(s, 0) == 20) {
-                    struct tx_destination dest;
-                    dest.type = DEST_KEY_ID;
-                    memcpy(dest.id.key.id.data, pkh, 20);
-                    const unsigned char pk[] = {0x1C, 0xB8};
-                    const unsigned char sc[] = {0x1C, 0xBD};
-                    encode_destination(&dest, pk, 2, sc, 2,
-                                       g_d.address, sizeof(g_d.address));
-                }
-            }
-            sqlite3_finalize(s);
+    (void)user_data;
+    const char *uri = webkit_uri_scheme_request_get_uri(request);
+    const char *path = "/wallet";
+    if (uri) {
+        const char *after = strstr(uri, "://");
+        if (after) {
+            after += 3;
+            const char *slash = strchr(after, '/');
+            if (slash) path = slash;
         }
     }
 
-    /* Activity */
-    g_d.num_activity = 0;
-    {
-        sqlite3_stmt *s = NULL;
-        if (sqlite3_prepare_v2(db,
-                "SELECT u.value, u.height, COALESCE(b.time,0) "
-                "FROM utxos u INNER JOIN wallet_keys w "
-                "ON u.address_hash=w.pubkey_hash "
-                "LEFT JOIN blocks b ON b.height=u.height "
-                "ORDER BY u.height DESC LIMIT ?",
-                -1, &s, NULL) == SQLITE_OK && s) {
-            sqlite3_bind_int(s, 1, MAX_ACTIVITY);
-            while (sqlite3_step(s) == SQLITE_ROW &&
-                   g_d.num_activity < MAX_ACTIVITY) {
-                struct activity_row *r = &g_d.activity[g_d.num_activity++];
-                r->value = sqlite3_column_int64(s, 0);
-                r->height = sqlite3_column_int(s, 1);
-                r->block_time = sqlite3_column_int64(s, 2);
-            }
-            sqlite3_finalize(s);
-        }
+    struct timeval t0, t1;
+    gettimeofday(&t0, NULL);
+
+    size_t len = 0;
+    if (strncmp(path, "/wallet", 7) == 0)
+        len = wallet_view_handle_request("GET", path, NULL, 0,
+                                          g_response, sizeof(g_response));
+    else if (strncmp(path, "/explorer", 9) == 0 ||
+             strncmp(path, "/api/", 5) == 0 ||
+             strstr(path, "style.css") || strstr(path, "favicon"))
+        len = explorer_handle_request("GET", path, NULL, 0,
+                                       g_response, sizeof(g_response));
+    if (len == 0)
+        len = onion_service_handle_request("GET", path, NULL, 0,
+                                            g_response, sizeof(g_response));
+
+    gettimeofday(&t1, NULL);
+    long ms = (t1.tv_sec - t0.tv_sec) * 1000 +
+              (t1.tv_usec - t0.tv_usec) / 1000;
+    if (g_status_label) {
+        char status[128];
+        snprintf(status, sizeof(status), "%s  %ldms  %zu bytes", path, ms, len);
+        gtk_label_set_text(GTK_LABEL(g_status_label), status);
     }
 
-    sqlite3_close(db);
-    atomic_store(&g_d.ready, true);
-    return NULL;
+    if (len == 0) {
+        const char *html =
+            "<html><body style='background:#0c0c0c;color:#e8e8e8;"
+            "font-family:-apple-system,monospace;padding:60px;"
+            "text-align:center'>"
+            "<div style='font-size:72px;color:#222;margin-bottom:16px'>"
+            "&#x2717;</div>"
+            "<h2 style='color:#666;font-weight:400'>Page not found</h2>"
+            "<p style='margin-top:24px'>"
+            "<a href='/wallet' style='color:#33ff99;text-decoration:none;"
+            "padding:8px 24px;border:1px solid #33ff99;border-radius:6px'>"
+            "Open Wallet</a></p></body></html>";
+        GInputStream *s = g_memory_input_stream_new_from_data(
+            g_strdup(html), (gssize)strlen(html), g_free);
+        webkit_uri_scheme_request_finish(request, s,
+            (gint64)strlen(html), "text/html");
+        g_object_unref(s);
+        return;
+    }
+
+    g_response[len < sizeof(g_response)-1 ? len : sizeof(g_response)-1] = '\0';
+    const char *body = (const char *)g_response;
+    const char *ctype = "text/html; charset=utf-8";
+    const char *hdr_end = strstr((char *)g_response, "\r\n\r\n");
+    if (hdr_end) {
+        const char *ct = strstr((char *)g_response, "Content-Type: ");
+        if (ct && ct < hdr_end) {
+            ct += 14;
+            static char ct_buf[128];
+            size_t i = 0;
+            while (ct[i] && ct[i] != '\r' && ct[i] != '\n' && i < 127)
+                { ct_buf[i] = ct[i]; i++; }
+            ct_buf[i] = '\0';
+            ctype = ct_buf;
+        }
+        body = hdr_end + 4;
+    }
+    size_t blen = strlen(body);
+    GInputStream *stream = g_memory_input_stream_new_from_data(
+        g_strndup(body, blen), (gssize)blen, g_free);
+    webkit_uri_scheme_request_finish(request, stream, (gint64)blen, ctype);
+    g_object_unref(stream);
 }
 
-static void start_bg(void)
+/* ── Navigation ───────────────────────────────────────────── */
+
+static void navigate(const char *path) {
+    if (!path || !path[0]) path = "/wallet";
+    char uri[512];
+    snprintf(uri, sizeof(uri), "zcl://node%s", path);
+    webkit_web_view_load_uri(g_webview, uri);
+    const char *sections[] = {"", "", "wallet", "explorer", "store"};
+    const char *sec = "wallet";
+    if (strncmp(path, "/explorer", 9) == 0) sec = "explorer";
+    else if (strncmp(path, "/store", 6) == 0) sec = "store";
+    for (int i = 2; i < 5; i++) {
+        GtkStyleContext *sc = gtk_widget_get_style_context(g_nav_buttons[i]);
+        if (strcmp(sections[i], sec) == 0)
+            gtk_style_context_add_class(sc, "active");
+        else
+            gtk_style_context_remove_class(sc, "active");
+    }
+}
+
+static gboolean on_decide_policy(WebKitWebView *v, WebKitPolicyDecision *dec,
+                                   WebKitPolicyDecisionType type, gpointer d)
 {
-    atomic_store(&g_d.ready, false);
-    pthread_t t;
-    pthread_attr_t a;
-    pthread_attr_init(&a);
-    pthread_attr_setdetachstate(&a, PTHREAD_CREATE_DETACHED);
-    pthread_create(&t, &a, bg_thread, NULL);
-    pthread_attr_destroy(&a);
+    (void)v; (void)d;
+    if (type == WEBKIT_POLICY_DECISION_TYPE_NAVIGATION_ACTION) {
+        WebKitNavigationPolicyDecision *nav =
+            WEBKIT_NAVIGATION_POLICY_DECISION(dec);
+        WebKitNavigationAction *action =
+            webkit_navigation_policy_decision_get_navigation_action(nav);
+        WebKitURIRequest *req = webkit_navigation_action_get_request(action);
+        const char *uri = webkit_uri_request_get_uri(req);
+        if (uri && (strncmp(uri, "http://", 7) == 0 ||
+                    strncmp(uri, "https://", 8) == 0)) {
+            const char *after = strstr(uri, "://");
+            if (after) {
+                after += 3;
+                const char *slash = strchr(after, '/');
+                webkit_policy_decision_ignore(dec);
+                navigate(slash ? slash : "/wallet");
+                return TRUE;
+            }
+        }
+    }
+    webkit_policy_decision_use(dec);
+    return TRUE;
 }
 
-/* ── Widgets ───────────────────────────────────────────── */
-
-static GtkWidget *lbl_balance;
-static GtkWidget *lbl_transparent, *lbl_shielded;
-static GtkWidget *lbl_sync;
-static GtkWidget *recv_panel, *lbl_addr, *btn_copy;
-static GtkWidget *send_panel, *entry_to, *entry_amt, *lbl_send_msg;
-static GtkWidget *activity_box;
-static GtkWidget *lbl_status;
-
-static void on_recv(GtkWidget *w, gpointer d)
-{
-    (void)w; (void)d;
-    gtk_widget_set_visible(send_panel, FALSE);
-    gtk_widget_set_visible(recv_panel, !gtk_widget_get_visible(recv_panel));
-    if (gtk_widget_get_visible(recv_panel) && g_d.address[0])
-        gtk_label_set_text(GTK_LABEL(lbl_addr), g_d.address);
-}
-
-static void on_copy(GtkWidget *w, gpointer d)
-{
-    (void)w; (void)d;
-    GtkClipboard *c = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
-    gtk_clipboard_set_text(c, g_d.address, -1);
-    gtk_button_set_label(GTK_BUTTON(btn_copy), "✓ Copied");
-    /* Reset label after 2s would need a timeout — keep it simple */
-}
-
-static void on_send_toggle(GtkWidget *w, gpointer d)
-{
-    (void)w; (void)d;
-    gtk_widget_set_visible(recv_panel, FALSE);
-    gtk_widget_set_visible(send_panel, !gtk_widget_get_visible(send_panel));
-}
-
-static void on_send_submit(GtkWidget *w, gpointer d)
-{
-    (void)w; (void)d;
-    gtk_label_set_text(GTK_LABEL(lbl_send_msg),
-        "Sending requires a running node (./zclassic23 -daemon)");
-}
-
-/* ── Update loop ───────────────────────────────────────── */
-
-static gboolean tick(gpointer d)
+static void on_load_changed(WebKitWebView *v, WebKitLoadEvent ev, gpointer d)
 {
     (void)d;
-    if (!atomic_load(&g_d.ready)) return G_SOURCE_CONTINUE;
-
-    if (!g_d.db_ok) {
-        gtk_label_set_text(GTK_LABEL(lbl_balance), "No wallet");
-        gtk_label_set_text(GTK_LABEL(lbl_status),
-            g_db_path[0] ? g_db_path : "node.db not found");
-        start_bg();
-        return G_SOURCE_CONTINUE;
-    }
-
-    char buf[96];
-
-    /* Balance — 3 decimal places for scanning */
-    fmt_zcl(buf, sizeof(buf), g_d.transparent + g_d.shielded, 3);
-    char bal[96];
-    snprintf(bal, sizeof(bal), "%s ZCL", buf);
-    gtk_label_set_text(GTK_LABEL(lbl_balance), bal);
-
-    /* Full precision tooltip */
-    fmt_zcl(buf, sizeof(buf), g_d.transparent + g_d.shielded, 8);
-    snprintf(bal, sizeof(bal), "%s ZCL (exact)", buf);
-    gtk_widget_set_tooltip_text(lbl_balance, bal);
-
-    /* Transparent / Shielded sub-balances */
-    fmt_zcl(buf, sizeof(buf), g_d.transparent, 3);
-    snprintf(bal, sizeof(bal), "%s ZCL", buf);
-    gtk_label_set_text(GTK_LABEL(lbl_transparent), bal);
-
-    if (g_d.shielded > 0) {
-        fmt_zcl(buf, sizeof(buf), g_d.shielded, 3);
-        snprintf(bal, sizeof(bal), "%s ZCL", buf);
-    } else {
-        snprintf(bal, sizeof(bal), "—");
-    }
-    gtk_label_set_text(GTK_LABEL(lbl_shielded), bal);
-
-    /* Sync indicator */
-    int64_t block_age = (int64_t)time(NULL) - g_d.latest_block_time;
-    if (g_d.latest_block_time == 0)
-        snprintf(buf, sizeof(buf), "● No blocks");
-    else if (block_age < 300)
-        snprintf(buf, sizeof(buf), "● Synced");
-    else if (block_age < 3600)
-        snprintf(buf, sizeof(buf), "● %lld min behind", (long long)(block_age/60));
-    else
-        snprintf(buf, sizeof(buf), "● %lld hours behind", (long long)(block_age/3600));
-    gtk_label_set_text(GTK_LABEL(lbl_sync), buf);
-
-    /* Activity list */
-    {
-        GList *ch = gtk_container_get_children(GTK_CONTAINER(activity_box));
-        for (GList *l = ch; l; l = l->next)
-            gtk_widget_destroy(GTK_WIDGET(l->data));
-        g_list_free(ch);
-
-        if (g_d.num_activity == 0) {
-            GtkWidget *empty = gtk_label_new("No transactions yet");
-            gtk_style_context_add_class(
-                gtk_widget_get_style_context(empty), "muted");
-            gtk_container_add(GTK_CONTAINER(activity_box), empty);
+    if (ev == WEBKIT_LOAD_COMMITTED) {
+        const char *uri = webkit_web_view_get_uri(v);
+        if (uri && g_url_bar) {
+            const char *after = strstr(uri, "://");
+            if (after) {
+                after += 3;
+                const char *slash = strchr(after, '/');
+                if (slash)
+                    gtk_entry_set_text(GTK_ENTRY(g_url_bar), slash);
+            }
         }
-
-        for (int i = 0; i < g_d.num_activity; i++) {
-            struct activity_row *r = &g_d.activity[i];
-
-            GtkWidget *row = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
-            gtk_container_set_border_width(GTK_CONTAINER(row), 8);
-
-            /* Line 1: amount + relative time */
-            GtkWidget *line1 = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
-            char amt[64];
-            fmt_zcl(amt, sizeof(amt), r->value, 3);
-            char amt_str[80];
-            snprintf(amt_str, sizeof(amt_str), "↓  Received %s ZCL", amt);
-            GtkWidget *la = gtk_label_new(amt_str);
-            gtk_widget_set_halign(la, GTK_ALIGN_START);
-            gtk_style_context_add_class(gtk_widget_get_style_context(la), "received");
-
-            char ago[32];
-            fmt_ago(ago, sizeof(ago), r->block_time);
-            GtkWidget *lt = gtk_label_new(ago);
-            gtk_widget_set_halign(lt, GTK_ALIGN_END);
-            gtk_style_context_add_class(gtk_widget_get_style_context(lt), "muted");
-
-            gtk_box_pack_start(GTK_BOX(line1), la, TRUE, TRUE, 0);
-            gtk_box_pack_end(GTK_BOX(line1), lt, FALSE, FALSE, 0);
-
-            /* Line 2: block height + confirmed */
-            char detail[64];
-            snprintf(detail, sizeof(detail),
-                     "Block %d · confirmed", r->height);
-            GtkWidget *ld = gtk_label_new(detail);
-            gtk_widget_set_halign(ld, GTK_ALIGN_START);
-            gtk_style_context_add_class(gtk_widget_get_style_context(ld), "detail");
-
-            gtk_box_pack_start(GTK_BOX(row), line1, FALSE, FALSE, 0);
-            gtk_box_pack_start(GTK_BOX(row), ld, FALSE, FALSE, 0);
-            gtk_container_add(GTK_CONTAINER(activity_box), row);
-        }
-        gtk_widget_show_all(activity_box);
     }
-
-    /* Status bar */
-    snprintf(buf, sizeof(buf), "Block %" PRId64, g_d.chain_height);
-    gtk_label_set_text(GTK_LABEL(lbl_status), buf);
-
-    start_bg();
-    return G_SOURCE_CONTINUE;
 }
 
-/* ── Build UI ──────────────────────────────────────────── */
+static void on_back(GtkWidget *b, gpointer d) {
+    (void)b;(void)d;
+    if (webkit_web_view_can_go_back(g_webview)) webkit_web_view_go_back(g_webview);
+}
+static void on_fwd(GtkWidget *b, gpointer d) {
+    (void)b;(void)d;
+    if (webkit_web_view_can_go_forward(g_webview)) webkit_web_view_go_forward(g_webview);
+}
+static void on_wallet(GtkWidget *b, gpointer d)
+    { (void)b;(void)d; navigate("/wallet"); }
+static void on_explorer(GtkWidget *b, gpointer d)
+    { (void)b;(void)d; navigate("/explorer"); }
+static void on_store(GtkWidget *b, gpointer d)
+    { (void)b;(void)d; navigate("/store"); }
+
+static void on_url_activate(GtkEntry *e, gpointer d) {
+    (void)d;
+    const char *text = gtk_entry_get_text(e);
+    if (!text || !text[0]) return;
+    if (text[0] == '/') navigate(text);
+    else {
+        char path[512];
+        snprintf(path, sizeof(path), "/explorer/search?q=%s", text);
+        navigate(path);
+    }
+}
+
+static gboolean on_key_press(GtkWidget *w, GdkEventKey *ev, gpointer d)
+{
+    (void)w; (void)d;
+    if (ev->state & GDK_CONTROL_MASK) {
+        switch (ev->keyval) {
+        case GDK_KEY_l: case GDK_KEY_L:
+            gtk_widget_grab_focus(g_url_bar);
+            gtk_editable_select_region(GTK_EDITABLE(g_url_bar), 0, -1);
+            return TRUE;
+        case GDK_KEY_1: navigate("/wallet"); return TRUE;
+        case GDK_KEY_2: navigate("/explorer"); return TRUE;
+        case GDK_KEY_3: navigate("/store"); return TRUE;
+        case GDK_KEY_r: case GDK_KEY_R:
+            webkit_web_view_reload(g_webview); return TRUE;
+        case GDK_KEY_Left:
+            if (webkit_web_view_can_go_back(g_webview))
+                webkit_web_view_go_back(g_webview);
+            return TRUE;
+        case GDK_KEY_Right:
+            if (webkit_web_view_can_go_forward(g_webview))
+                webkit_web_view_go_forward(g_webview);
+            return TRUE;
+        }
+    }
+    if (ev->keyval == GDK_KEY_F5) {
+        webkit_web_view_reload(g_webview); return TRUE;
+    }
+    return FALSE;
+}
+
+/* ── Init controllers ─────────────────────────────────────── */
+
+static void init_controllers(const char *datadir) {
+    static struct node_db ndb;
+    char db_path[1024];
+    snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
+    if (!node_db_open(&ndb, db_path)) {
+        if (sqlite3_open_v2(db_path, &ndb.db,
+                SQLITE_OPEN_READWRITE, NULL) == SQLITE_OK) {
+            ndb.open = true;
+            sqlite3_busy_timeout(ndb.db, 5000);
+        }
+    }
+    if (ndb.open) {
+        explorer_set_state(NULL, NULL, NULL, &ndb, datadir);
+        char cookie_path[1024], cookie[256] = "";
+        snprintf(cookie_path, sizeof(cookie_path), "%s/.cookie", datadir);
+        FILE *f = fopen(cookie_path, "r");
+        if (f) {
+            if (fgets(cookie, sizeof(cookie), f)) {
+                char *nl = strchr(cookie, '\n'); if (nl) *nl = '\0';
+                char *col = strchr(cookie, ':');
+                if (col) { *col = '\0'; explorer_set_rpc(cookie, col+1, 18232); }
+            }
+            fclose(f);
+        }
+    }
+    wallet_view_init(datadir);
+    onion_service_start(datadir);
+}
+
+/* ── Main entry ───────────────────────────────────────────── */
+
+static GtkWidget *make_btn(const char *label, const char *name, GCallback cb) {
+    GtkWidget *btn = gtk_button_new_with_label(label);
+    gtk_widget_set_name(btn, name);
+    g_signal_connect(btn, "clicked", cb, NULL);
+    gtk_widget_set_can_focus(btn, FALSE);
+    return btn;
+}
 
 int wallet_gui_main(int argc, char **argv, const char *datadir)
 {
-    snprintf(g_db_path, sizeof(g_db_path), "%s/node.db", datadir);
     if (!gtk_init_check(&argc, &argv)) {
         fprintf(stderr, "Cannot open display.\n");
         return 1;
     }
 
+    chain_params_select(CHAIN_MAIN);
+    ecc_start();
+    ecc_verify_init();
+    init_controllers(datadir);
+
+    /* Dark theme */
     GtkCssProvider *css = gtk_css_provider_new();
-    gtk_css_provider_load_from_data(css,
-        "window { background-color: #0d1117; }"
-        "label { color: #e6edf3; font-family: 'Inter','Segoe UI',sans-serif; }"
-        ".bal { font-size: 42px; font-weight: 700; color: #e6edf3; }"
-        ".sub-val { font-size: 16px; font-weight: 500; color: #e6edf3; }"
-        ".sub-label { font-size: 12px; color: #8b949e; }"
-        ".sync-ok { font-size: 12px; color: #3fb950; }"
-        ".sync-warn { font-size: 12px; color: #d29922; }"
-        ".hdr { font-size: 14px; font-weight: 600; color: #8b949e; }"
-        ".muted { font-size: 12px; color: #484f58; }"
-        ".detail { font-size: 11px; color: #30363d; }"
-        ".received { font-size: 14px; font-weight: 600; color: #3fb950; }"
-        ".addr { font-size: 15px; font-family: monospace; color: #58a6ff; }"
-        ".status { font-size: 11px; color: #484f58; font-family: monospace; }"
-        "separator { background-color: #21262d; min-height: 1px; }"
-        "button { background: #21262d; color: #c9d1d9; border: 1px solid #30363d;"
-        "  border-radius: 6px; padding: 8px 24px; font-size: 14px; }"
-        "button:hover { background: #30363d; }"
-        "entry { background: #0d1117; color: #c9d1d9; border: 1px solid #30363d;"
-        "  border-radius: 6px; padding: 6px 12px; font-family: monospace; }"
-        "list { background-color: #0d1117; }"
-        "list row { background-color: #0d1117; padding: 0; }"
-        "list row:hover { background-color: #161b22; }"
-        , -1, NULL);
+    gtk_css_provider_load_from_data(css, GTK_DARK_CSS, -1, NULL);
     gtk_style_context_add_provider_for_screen(
         gdk_screen_get_default(), GTK_STYLE_PROVIDER(css),
         GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
     g_object_unref(css);
+    g_object_set(gtk_settings_get_default(),
+        "gtk-application-prefer-dark-theme", TRUE, NULL);
 
+    /* Register zcl:// scheme */
+    WebKitWebContext *ctx = webkit_web_context_get_default();
+    webkit_web_context_register_uri_scheme(ctx, "zcl",
+        on_uri_scheme_request, NULL, NULL);
+    WebKitSecurityManager *sec = webkit_web_context_get_security_manager(ctx);
+    webkit_security_manager_register_uri_scheme_as_local(sec, "zcl");
+    webkit_security_manager_register_uri_scheme_as_cors_enabled(sec, "zcl");
+
+    /* Window */
     GtkWidget *win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-    gtk_window_set_title(GTK_WINDOW(win), "ZClassic23 Wallet");
-    gtk_window_set_default_size(GTK_WINDOW(win), 480, 640);
-    gtk_container_set_border_width(GTK_CONTAINER(win), 32);
+    gtk_window_set_title(GTK_WINDOW(win), "ZClassic23");
+    gtk_window_set_default_size(GTK_WINDOW(win), 1100, 820);
     g_signal_connect(win, "destroy", G_CALLBACK(gtk_main_quit), NULL);
+    g_signal_connect(win, "key-press-event", G_CALLBACK(on_key_press), NULL);
 
-    GtkWidget *root = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-    gtk_container_add(GTK_CONTAINER(win), root);
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
 
-    /* ── Header ── */
-    {
-        GtkWidget *h = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
-        GtkWidget *t = gtk_label_new("ZClassic23");
-        gtk_style_context_add_class(gtk_widget_get_style_context(t), "hdr");
-        lbl_sync = gtk_label_new("● Connecting...");
-        gtk_style_context_add_class(gtk_widget_get_style_context(lbl_sync), "sync-ok");
-        gtk_box_pack_start(GTK_BOX(h), t, FALSE, FALSE, 0);
-        gtk_box_pack_end(GTK_BOX(h), lbl_sync, FALSE, FALSE, 0);
-        gtk_box_pack_start(GTK_BOX(root), h, FALSE, FALSE, 0);
-    }
+    /* Toolbar */
+    GtkWidget *toolbar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+    gtk_widget_set_name(toolbar, "toolbar");
 
-    /* ── Balance (centered) ── */
-    lbl_balance = gtk_label_new("—");
-    gtk_widget_set_halign(lbl_balance, GTK_ALIGN_CENTER);
-    gtk_style_context_add_class(gtk_widget_get_style_context(lbl_balance), "bal");
-    gtk_box_pack_start(GTK_BOX(root), lbl_balance, FALSE, FALSE, 20);
+    g_nav_buttons[0] = make_btn("\xe2\x97\x80", "arrow-btn", G_CALLBACK(on_back));
+    g_nav_buttons[1] = make_btn("\xe2\x96\xb6", "arrow-btn", G_CALLBACK(on_fwd));
+    gtk_box_pack_start(GTK_BOX(toolbar), g_nav_buttons[0], FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(toolbar), g_nav_buttons[1], FALSE, FALSE, 0);
 
-    /* ── Transparent / Shielded ── */
-    {
-        GtkWidget *cols = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 40);
-        gtk_widget_set_halign(cols, GTK_ALIGN_CENTER);
+    GtkWidget *sep = gtk_separator_new(GTK_ORIENTATION_VERTICAL);
+    gtk_box_pack_start(GTK_BOX(toolbar), sep, FALSE, FALSE, 4);
 
-        GtkWidget *lcol = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
-        GtkWidget *tl = gtk_label_new("Transparent");
-        gtk_style_context_add_class(gtk_widget_get_style_context(tl), "sub-label");
-        lbl_transparent = gtk_label_new("—");
-        gtk_style_context_add_class(gtk_widget_get_style_context(lbl_transparent), "sub-val");
-        gtk_box_pack_start(GTK_BOX(lcol), tl, FALSE, FALSE, 0);
-        gtk_box_pack_start(GTK_BOX(lcol), lbl_transparent, FALSE, FALSE, 0);
+    g_nav_buttons[2] = make_btn("Wallet", "nav-btn", G_CALLBACK(on_wallet));
+    g_nav_buttons[3] = make_btn("Explorer", "nav-btn", G_CALLBACK(on_explorer));
+    g_nav_buttons[4] = make_btn("Store", "nav-btn", G_CALLBACK(on_store));
+    for (int i = 2; i < 5; i++)
+        gtk_box_pack_start(GTK_BOX(toolbar), g_nav_buttons[i], FALSE, FALSE, 0);
 
-        GtkWidget *rcol = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
-        GtkWidget *sl = gtk_label_new("Shielded");
-        gtk_style_context_add_class(gtk_widget_get_style_context(sl), "sub-label");
-        lbl_shielded = gtk_label_new("—");
-        gtk_style_context_add_class(gtk_widget_get_style_context(lbl_shielded), "sub-val");
-        gtk_box_pack_start(GTK_BOX(rcol), sl, FALSE, FALSE, 0);
-        gtk_box_pack_start(GTK_BOX(rcol), lbl_shielded, FALSE, FALSE, 0);
+    g_url_bar = gtk_entry_new();
+    gtk_widget_set_name(g_url_bar, "url-bar");
+    gtk_entry_set_placeholder_text(GTK_ENTRY(g_url_bar),
+        "Search blocks, txs, addresses...   (Ctrl+L)");
+    g_signal_connect(g_url_bar, "activate", G_CALLBACK(on_url_activate), NULL);
+    gtk_box_pack_start(GTK_BOX(toolbar), g_url_bar, TRUE, TRUE, 4);
+    gtk_box_pack_start(GTK_BOX(vbox), toolbar, FALSE, FALSE, 0);
 
-        gtk_box_pack_start(GTK_BOX(cols), lcol, FALSE, FALSE, 0);
-        gtk_box_pack_start(GTK_BOX(cols), rcol, FALSE, FALSE, 0);
-        gtk_box_pack_start(GTK_BOX(root), cols, FALSE, FALSE, 8);
-    }
+    /* WebView */
+    WebKitSettings *settings = webkit_settings_new();
+    webkit_settings_set_enable_smooth_scrolling(settings, TRUE);
+    webkit_settings_set_enable_developer_extras(settings, FALSE);
+    webkit_settings_set_enable_java(settings, FALSE);
+    webkit_settings_set_enable_plugins(settings, FALSE);
+    webkit_settings_set_hardware_acceleration_policy(settings,
+        WEBKIT_HARDWARE_ACCELERATION_POLICY_ALWAYS);
+    webkit_settings_set_default_font_family(settings,
+        "SF Pro Display, -apple-system, Segoe UI, Roboto, sans-serif");
+    webkit_settings_set_monospace_font_family(settings,
+        "SF Mono, Fira Code, JetBrains Mono, monospace");
+    webkit_settings_set_default_font_size(settings, 16);
+    webkit_settings_set_default_monospace_font_size(settings, 13);
 
-    /* ── Buttons ── */
-    {
-        GtkWidget *btns = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
-        gtk_widget_set_halign(btns, GTK_ALIGN_CENTER);
-        GtkWidget *br = gtk_button_new_with_label("Receive");
-        GtkWidget *bs = gtk_button_new_with_label("Send");
-        g_signal_connect(br, "clicked", G_CALLBACK(on_recv), NULL);
-        g_signal_connect(bs, "clicked", G_CALLBACK(on_send_toggle), NULL);
-        gtk_box_pack_start(GTK_BOX(btns), br, FALSE, FALSE, 0);
-        gtk_box_pack_start(GTK_BOX(btns), bs, FALSE, FALSE, 0);
-        gtk_box_pack_start(GTK_BOX(root), btns, FALSE, FALSE, 16);
-    }
+    g_webview = WEBKIT_WEB_VIEW(
+        g_object_new(WEBKIT_TYPE_WEB_VIEW, "settings", settings, NULL));
+    g_object_unref(settings);
+    GdkRGBA bg = { 0.047, 0.047, 0.047, 1.0 };
+    webkit_web_view_set_background_color(g_webview, &bg);
+    g_signal_connect(g_webview, "decide-policy",
+        G_CALLBACK(on_decide_policy), NULL);
+    g_signal_connect(g_webview, "load-changed",
+        G_CALLBACK(on_load_changed), NULL);
+    gtk_box_pack_start(GTK_BOX(vbox), GTK_WIDGET(g_webview), TRUE, TRUE, 0);
 
-    /* ── Receive panel ── */
-    recv_panel = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
-    gtk_container_set_border_width(GTK_CONTAINER(recv_panel), 16);
-    {
-        GtkWidget *rl = gtk_label_new("Your Address");
-        gtk_style_context_add_class(gtk_widget_get_style_context(rl), "sub-label");
-        gtk_widget_set_halign(rl, GTK_ALIGN_START);
-        lbl_addr = gtk_label_new("Loading...");
-        gtk_label_set_selectable(GTK_LABEL(lbl_addr), TRUE);
-        gtk_label_set_line_wrap(GTK_LABEL(lbl_addr), TRUE);
-        gtk_widget_set_halign(lbl_addr, GTK_ALIGN_START);
-        gtk_style_context_add_class(gtk_widget_get_style_context(lbl_addr), "addr");
-        btn_copy = gtk_button_new_with_label("Copy");
-        gtk_widget_set_halign(btn_copy, GTK_ALIGN_START);
-        g_signal_connect(btn_copy, "clicked", G_CALLBACK(on_copy), NULL);
-        gtk_box_pack_start(GTK_BOX(recv_panel), rl, FALSE, FALSE, 0);
-        gtk_box_pack_start(GTK_BOX(recv_panel), lbl_addr, FALSE, FALSE, 0);
-        gtk_box_pack_start(GTK_BOX(recv_panel), btn_copy, FALSE, FALSE, 0);
-    }
-    gtk_widget_set_no_show_all(recv_panel, TRUE);
-    gtk_box_pack_start(GTK_BOX(root), recv_panel, FALSE, FALSE, 0);
+    /* Status bar */
+    GtkWidget *status_bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_set_name(status_bar, "status-bar");
+    g_status_label = gtk_label_new("Ready");
+    gtk_widget_set_name(g_status_label, "status-label");
+    gtk_label_set_xalign(GTK_LABEL(g_status_label), 0.0);
+    gtk_box_pack_start(GTK_BOX(status_bar), g_status_label, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(vbox), status_bar, FALSE, FALSE, 0);
 
-    /* ── Send panel ── */
-    send_panel = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
-    gtk_container_set_border_width(GTK_CONTAINER(send_panel), 16);
-    {
-        entry_to = gtk_entry_new();
-        gtk_entry_set_placeholder_text(GTK_ENTRY(entry_to), "t1... recipient address");
-        GtkWidget *ab = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-        entry_amt = gtk_entry_new();
-        gtk_entry_set_placeholder_text(GTK_ENTRY(entry_amt), "0.00");
-        GtkWidget *zl = gtk_label_new("ZCL");
-        gtk_style_context_add_class(gtk_widget_get_style_context(zl), "sub-label");
-        gtk_box_pack_start(GTK_BOX(ab), entry_amt, TRUE, TRUE, 0);
-        gtk_box_pack_start(GTK_BOX(ab), zl, FALSE, FALSE, 0);
-        GtkWidget *sb = gtk_button_new_with_label("Send");
-        gtk_widget_set_halign(sb, GTK_ALIGN_START);
-        g_signal_connect(sb, "clicked", G_CALLBACK(on_send_submit), NULL);
-        lbl_send_msg = gtk_label_new("");
-        gtk_style_context_add_class(gtk_widget_get_style_context(lbl_send_msg), "muted");
-        gtk_widget_set_halign(lbl_send_msg, GTK_ALIGN_START);
-        gtk_box_pack_start(GTK_BOX(send_panel), entry_to, FALSE, FALSE, 0);
-        gtk_box_pack_start(GTK_BOX(send_panel), ab, FALSE, FALSE, 0);
-        gtk_box_pack_start(GTK_BOX(send_panel), sb, FALSE, FALSE, 0);
-        gtk_box_pack_start(GTK_BOX(send_panel), lbl_send_msg, FALSE, FALSE, 0);
-    }
-    gtk_widget_set_no_show_all(send_panel, TRUE);
-    gtk_box_pack_start(GTK_BOX(root), send_panel, FALSE, FALSE, 0);
-
-    /* ── Separator ── */
-    gtk_box_pack_start(GTK_BOX(root),
-        gtk_separator_new(GTK_ORIENTATION_HORIZONTAL), FALSE, FALSE, 12);
-
-    /* ── Activity ── */
-    {
-        GtkWidget *al = gtk_label_new("Activity");
-        gtk_widget_set_halign(al, GTK_ALIGN_START);
-        gtk_style_context_add_class(gtk_widget_get_style_context(al), "hdr");
-        gtk_box_pack_start(GTK_BOX(root), al, FALSE, FALSE, 4);
-    }
-    {
-        GtkWidget *sw = gtk_scrolled_window_new(NULL, NULL);
-        gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sw),
-            GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
-        activity_box = gtk_list_box_new();
-        gtk_list_box_set_selection_mode(GTK_LIST_BOX(activity_box),
-            GTK_SELECTION_NONE);
-        gtk_container_add(GTK_CONTAINER(sw), activity_box);
-        gtk_box_pack_start(GTK_BOX(root), sw, TRUE, TRUE, 0);
-    }
-
-    /* ── Status ── */
-    lbl_status = gtk_label_new("");
-    gtk_widget_set_halign(lbl_status, GTK_ALIGN_START);
-    gtk_style_context_add_class(gtk_widget_get_style_context(lbl_status), "status");
-    gtk_box_pack_end(GTK_BOX(root), lbl_status, FALSE, FALSE, 0);
-
+    gtk_container_add(GTK_CONTAINER(win), vbox);
+    navigate("/wallet");
     gtk_widget_show_all(win);
-    start_bg();
-    g_timeout_add(1000, tick, NULL);
     gtk_main();
     return 0;
 }
 
+#elif defined(HAVE_GTK)
+/* GTK available but no WebKit — fall back to simple message */
+#include <gtk/gtk.h>
+#include <stdio.h>
+int wallet_gui_main(int argc, char **argv, const char *datadir)
+{
+    (void)datadir;
+    if (!gtk_init_check(&argc, &argv)) {
+        fprintf(stderr, "Cannot open display.\n");
+        return 1;
+    }
+    GtkWidget *d = gtk_message_dialog_new(NULL, 0, GTK_MESSAGE_INFO,
+        GTK_BUTTONS_OK,
+        "ZClassic23 GUI requires WebKit2GTK.\n"
+        "Install: pacman -S webkit2gtk-4.1\n\n"
+        "Run as node: ./zclassic23 -datadir=~/.zclassic-c23");
+    gtk_dialog_run(GTK_DIALOG(d));
+    gtk_widget_destroy(d);
+    return 1;
+}
 #else
 #include <stdio.h>
 int wallet_gui_main(int argc, char **argv, const char *datadir)
 {
     (void)argc; (void)argv; (void)datadir;
-    fprintf(stderr, "GUI not available — built without GTK3.\n");
+    fprintf(stderr, "GUI not available — built without GTK3 + WebKit2.\n"
+            "Run as node: ./zclassic23 -datadir=~/.zclassic-c23\n");
     return 1;
 }
 #endif
