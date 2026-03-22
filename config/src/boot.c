@@ -2211,11 +2211,13 @@ bool app_init(struct app_context *ctx)
                 const struct active_chain *chain;
                 const struct wallet *w;
                 const char *datadir;
+                struct coins_view_db *cvdb;
             } catchup_args;
             catchup_args.ndb = g_active_node_db;
             catchup_args.chain = &g_state.chain_active;
             catchup_args.w = &g_wallet;
             catchup_args.datadir = ctx->datadir;
+            catchup_args.cvdb = &g_coins_db;
             pthread_create(&catchup_thread, NULL, (void *(*)(void *))
                 node_db_sync_catchup_thread, &catchup_args);
             pthread_detach(catchup_thread);

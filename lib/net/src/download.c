@@ -211,6 +211,20 @@ bool dl_mark_requested(struct download_manager *dm,
     dm->num_active++;
     dm->total_requested++;
 
+    /* Remove from queue if present (it may have been queued first) */
+    for (size_t i = 0; i < dm->queue_len; i++) {
+        if (uint256_eq(&dm->queue[i], hash)) {
+            dm->queue_len--;
+            if (i < dm->queue_len) {
+                memmove(&dm->queue[i], &dm->queue[i + 1],
+                        (dm->queue_len - i) * sizeof(struct uint256));
+                memmove(&dm->queue_heights[i], &dm->queue_heights[i + 1],
+                        (dm->queue_len - i) * sizeof(int32_t));
+            }
+            break;
+        }
+    }
+
     /* Update peer stats */
     {
         struct dl_peer_stats *ps = dl_find_peer(dm, peer_id, true);
