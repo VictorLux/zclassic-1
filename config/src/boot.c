@@ -1448,8 +1448,9 @@ bool app_init(struct app_context *ctx)
             }
         }
 
-        /* If coins DB had no best block (null hash), fall back to the
-         * highest-work block with data in the index. */
+        /* If coins DB had no best block (null hash), the chainstate was
+         * likely deleted or corrupted. Try fast rebuild from SQLite UTXOs
+         * (~10s) before falling back to slow P2P catchup (~15h). */
         if (uint256_is_null(&best_hash) ||
             active_chain_tip(&g_state.chain_active) == NULL) {
             struct block_index *fallback = NULL;
@@ -1466,8 +1467,17 @@ bool app_init(struct app_context *ctx)
             if (fallback) {
                 active_chain_set_tip(&g_state.chain_active, fallback);
                 g_state.pindex_best_header = fallback;
-                printf("Chain tip from block index: height=%d\n",
+                printf("WARNING: Chain tip at height %d but coins DB is empty!\n",
                        fallback->nHeight);
+
+                /* Fast path: rebuild LevelDB from SQLite UTXOs */
+                printf("Attempting fast chainstate rebuild from SQLite...\n");
+                if (fast_rebuild_chainstate(&g_coins_db, &g_coins_tip,
+                                             ctx->datadir)) {
+                    printf("Fast rebuild complete — chainstate restored.\n");
+                } else {
+                    printf("Fast rebuild unavailable — node will catch up via P2P.\n");
+                }
                 skip_activate = true;
             }
         }
