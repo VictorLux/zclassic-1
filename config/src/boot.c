@@ -1467,6 +1467,11 @@ bool app_init(struct app_context *ctx)
                 char hex[65];
                 uint256_get_hex(&best_hash, hex);
                 printf("Coins DB best block %s not in index.\n", hex);
+                /* The coins DB was likely from a fastsync that included
+                 * blocks not yet in our LevelDB index. Find the highest
+                 * ancestor of the coins tip that IS in the index and
+                 * reset the coins DB to match. This ensures chainActive
+                 * and coins DB agree, preventing bad-txns-inputs-missingorspent. */
                 struct block_index *fallback = NULL;
                 size_t fi = 0;
                 struct block_index *fp;
@@ -1481,8 +1486,19 @@ bool app_init(struct app_context *ctx)
                 if (fallback) {
                     active_chain_set_tip(&g_state.chain_active, fallback);
                     g_state.pindex_best_header = fallback;
-                    printf("Fallback chain tip: height=%d\n",
-                           fallback->nHeight);
+                    /* Reset coins DB best block to match chain tip
+                     * so connect_block doesn't reject the next block */
+                    if (fallback->phashBlock) {
+                        coins_view_cache_set_best_block(&g_coins_tip,
+                                                         fallback->phashBlock);
+                        coins_view_cache_flush(&g_coins_tip);
+                        printf("Fallback chain tip: height=%d "
+                               "(coins DB reset to match)\n",
+                               fallback->nHeight);
+                    } else {
+                        printf("Fallback chain tip: height=%d\n",
+                               fallback->nHeight);
+                    }
                     skip_activate = true;
                 }
             }
