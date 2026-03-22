@@ -1,10 +1,13 @@
-# Build artifacts
-zclassic23
-test_zcl
-zcl-rpc
-zcl-browser
-zclassic-cli
+# Build output
+build/
 *.o
+
+# Legacy build artifacts (root-level, pre-build-dir)
+/zclassic23
+/test_zcl
+/zcl-rpc
+/zcl-browser
+/zclassic-cli
 
 # Vendor (built from source, not tracked)
 vendor/lib/

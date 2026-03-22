@@ -1,0 +1,24 @@
+[Unit]
+Description=ZClassic23 Full Node + Block Explorer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/zclassic23/build/zclassic23 \
+    -datadir=%h/.zclassic-c23 \
+    -port=8033 \
+    -rpcport=18232 \
+    -listen \
+    -txindex \
+    -addnode=205.209.104.118 \
+    -addnode=140.174.189.17 \
+    -addnode=140.174.189.3 \
+    -showmetrics=0
+Restart=on-failure
+RestartSec=10
+StandardOutput=append:%h/.zclassic-c23/node.log
+StandardError=append:%h/.zclassic-c23/node.log
+
+[Install]
+WantedBy=default.target
