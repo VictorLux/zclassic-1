@@ -921,6 +921,13 @@ static bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
     process_new_block(&state, mp->main_state, mp->coins_tip,
                       mp->params, &blk, false, mp->datadir);
 
+    if (!validation_state_is_valid(&state)) {
+        char hex[65];
+        uint256_get_hex(&hash, hex);
+        fprintf(stderr, "block_msg: REJECTED %s: %s\n", hex,
+                state.reject_reason[0] ? state.reject_reason : "unknown");
+    }
+
     if (validation_state_is_valid(&state)) {
         node->last_block_time = (int64_t)time(NULL);
         node->blocks_received++;

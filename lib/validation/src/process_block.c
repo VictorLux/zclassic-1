@@ -212,7 +212,8 @@ static struct block_index *add_to_block_index(struct main_state *ms,
 static bool chain_has_all_data(struct block_index *pindex,
                                struct block_index *tip)
 {
-    while (pindex && pindex != tip) {
+    int tip_height = tip ? tip->nHeight : -1;
+    while (pindex && pindex->nHeight > tip_height) {
         if (!(pindex->nStatus & BLOCK_HAVE_DATA))
             return false;
         pindex = pindex->pprev;
