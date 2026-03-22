@@ -134,7 +134,15 @@ bool connect_block(const struct block *block,
         if (!transaction_is_coinbase(tx)) {
             int64_t value_in = coins_view_cache_get_value_in(view, tx);
             int64_t value_out = transaction_get_value_out(tx);
-            fees += value_in - value_out;
+            int64_t tx_fee = value_in - value_out;
+
+            /* Defensive: detect fee overflow before accumulating */
+            if (tx_fee < 0 || fees > INT64_MAX - tx_fee) {
+                block_undo_free(&blockundo);
+                return validation_state_dos(state, 100, false, REJECT_INVALID,
+                    "bad-txns-fee-overflow", false, NULL);
+            }
+            fees += tx_fee;
 
             if (expensive_checks) {
                 struct precomputed_tx_data txdata;
@@ -181,9 +189,14 @@ bool connect_block(const struct block *block,
         }
     }
 
-    /* Verify coinbase reward */
-    int64_t block_reward = fees +
-        get_block_subsidy(pindex->nHeight, &params->consensus);
+    /* Verify coinbase reward (defensive overflow check) */
+    int64_t subsidy = get_block_subsidy(pindex->nHeight, &params->consensus);
+    if (fees > INT64_MAX - subsidy) {
+        block_undo_free(&blockundo);
+        return validation_state_dos(state, 100, false, REJECT_INVALID,
+            "bad-cb-reward-overflow", false, NULL);
+    }
+    int64_t block_reward = fees + subsidy;
     if (transaction_get_value_out(&block->vtx[0]) > block_reward) {
         block_undo_free(&blockundo);
         return validation_state_dos(state, 100, false, REJECT_INVALID,

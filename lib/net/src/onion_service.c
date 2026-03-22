@@ -283,7 +283,8 @@ static size_t serve_search(const char *query, uint8_t *response, size_t max)
 
 static void ensure_directory_table(sqlite3 *db)
 {
-    sqlite3_exec(db,
+    char *err = NULL;
+    int rc = sqlite3_exec(db,
         "CREATE TABLE IF NOT EXISTS peer_directory ("
         "onion_address TEXT PRIMARY KEY,"
         "port INTEGER NOT NULL DEFAULT 8033,"
@@ -292,7 +293,12 @@ static void ensure_directory_table(sqlite3 *db)
         "last_seen INTEGER NOT NULL,"
         "version TEXT,"
         "self INTEGER NOT NULL DEFAULT 0"
-        ")", NULL, NULL, NULL);
+        ")", NULL, NULL, &err);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "onion_service: failed to create directory table: %s\n",
+                err ? err : "unknown");
+        sqlite3_free(err);
+    }
 }
 
 /* Populate directory from chain scan (ZSLP .onion announcements) */
@@ -308,11 +314,15 @@ static void populate_directory_from_chain(sqlite3 *db)
     if (found <= 0) return;
 
     sqlite3_stmt *ins = NULL;
-    sqlite3_prepare_v2(db,
+    if (sqlite3_prepare_v2(db,
         "INSERT OR IGNORE INTO peer_directory "
         "(onion_address, height, last_seen, version) "
         "VALUES (?, ?, strftime('%s','now'), 'chain')",
-        -1, &ins, NULL);
+        -1, &ins, NULL) != SQLITE_OK || !ins) {
+        fprintf(stderr, "onion_service: failed to prepare peer insert: %s\n",
+                sqlite3_errmsg(db));
+        return;
+    }
 
     for (int i = 0; i < found; i++) {
         if (!peers[i].hostname[0]) continue;
@@ -333,11 +343,15 @@ static void register_self(sqlite3 *db)
     if (!g_onion_address[0]) return;
 
     sqlite3_stmt *ins = NULL;
-    sqlite3_prepare_v2(db,
+    if (sqlite3_prepare_v2(db,
         "INSERT OR REPLACE INTO peer_directory "
         "(onion_address, port, services, height, last_seen, version, self) "
         "VALUES (?, 8033, 1029, 0, strftime('%s','now'), '0.1.0', 1)",
-        -1, &ins, NULL);
+        -1, &ins, NULL) != SQLITE_OK || !ins) {
+        fprintf(stderr, "onion_service: failed to prepare self-register: %s\n",
+                sqlite3_errmsg(db));
+        return;
+    }
     sqlite3_bind_text(ins, 1, g_onion_address, -1, SQLITE_STATIC);
     sqlite3_step(ins);
     sqlite3_finalize(ins);

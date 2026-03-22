@@ -478,8 +478,14 @@ bool connect_tip(struct validation_state *state,
         /* Verify block read from disk matches expected hash */
         struct uint256 disk_hash;
         block_header_get_hash(&pblock->header, &disk_hash);
-        if (pindex_new->phashBlock &&
-            uint256_cmp(&disk_hash, pindex_new->phashBlock) != 0) {
+        if (!pindex_new->phashBlock) {
+            fprintf(stderr, "connect_tip: block index at height %d has NULL "
+                    "hash pointer — cannot verify disk block integrity\n",
+                    pindex_new->nHeight);
+            block_free(&local_block);
+            return validation_state_error(state, "block-index-no-hash");
+        }
+        if (uint256_cmp(&disk_hash, pindex_new->phashBlock) != 0) {
             char exp[65], got[65];
             uint256_get_hex(pindex_new->phashBlock, exp);
             uint256_get_hex(&disk_hash, got);
@@ -559,6 +565,10 @@ bool connect_tip(struct validation_state *state,
         struct uint256 *txids = malloc(pblock->num_vtx * sizeof(struct uint256));
         struct disk_tx_pos *positions = malloc(
             pblock->num_vtx * sizeof(struct disk_tx_pos));
+        if (!txids || !positions) {
+            fprintf(stderr, "connect_tip: tx index alloc failed at height %d "
+                    "(%zu txs)\n", pindex_new->nHeight, pblock->num_vtx);
+        }
         if (txids && positions) {
             size_t header_size = BLOCK_HEADER_SIZE +
                 compact_size_sizeof(pblock->header.nSolutionSize) +

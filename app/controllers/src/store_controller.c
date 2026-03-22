@@ -109,10 +109,14 @@ static void store_ensure_schema(sqlite3 *db, const char *datadir)
                 if (name[0] && price_zcl > 0) {
                     int64_t price_sat = (int64_t)(price_zcl * 100000000.0);
                     sqlite3_stmt *ins = NULL;
-                    sqlite3_prepare_v2(db,
+                    if (sqlite3_prepare_v2(db,
                         "INSERT INTO products (name, description, price_zatoshi, "
                         "token_id, tokens_per_purchase) VALUES (?,?,?,?,?)",
-                        -1, &ins, NULL);
+                        -1, &ins, NULL) != SQLITE_OK || !ins) {
+                        fprintf(stderr, "store: failed to prepare product insert\n");
+                        p = end + 1;
+                        continue;
+                    }
                     sqlite3_bind_text(ins, 1, name, -1, SQLITE_STATIC);
                     sqlite3_bind_text(ins, 2, desc, -1, SQLITE_STATIC);
                     sqlite3_bind_int64(ins, 3, price_sat);

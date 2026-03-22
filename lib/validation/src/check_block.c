@@ -122,7 +122,8 @@ bool contextual_check_block_header(const struct block_header *header,
     if (uint256_eq(&hash, &params->consensus.hashGenesisBlock))
         return true;
 
-    assert(pindex_prev);
+    if (!pindex_prev)
+        return validation_state_error(state, "prev-block-index-null");
 
     int nHeight = pindex_prev->nHeight + 1;
 
