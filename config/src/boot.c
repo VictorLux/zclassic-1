@@ -1234,20 +1234,27 @@ bool app_init(struct app_context *ctx)
         printf("  Source: %d block files, %.1f GB\n\n",
                num_blk, (double)total_bytes / (1024.0*1024.0*1024.0));
 
-        /* Block files: hardlink (instant on same FS) or copy */
+        /* Block files: remove stale files, then hardlink or copy.
+         * Stale blk/rev files from old P2P sync cause "failed to read block"
+         * because they have different sizes than the source originals. */
         snprintf(dst, sizeof(dst), "%s/blocks", ctx->datadir);
         mkdir(dst, 0700);
         snprintf(src, sizeof(src), "%s/blocks", ctx->fastsync_dir);
         printf("  [1/3] Block files...");
         fflush(stdout);
+        /* Remove any pre-existing block files so hardlinks succeed */
+        snprintf(cmd, sizeof(cmd),
+                 "rm -f '%s'/blk*.dat '%s'/rev*.dat 2>/dev/null",
+                 dst, dst);
+        system(cmd);
         snprintf(cmd, sizeof(cmd),
                  "cp -aln '%s'/blk*.dat '%s'/ 2>/dev/null || "
-                 "cp -au '%s'/blk*.dat '%s'/ 2>/dev/null",
+                 "cp -a '%s'/blk*.dat '%s'/",
                  src, dst, src, dst);
         system(cmd);
         snprintf(cmd, sizeof(cmd),
                  "cp -aln '%s'/rev*.dat '%s'/ 2>/dev/null || "
-                 "cp -au '%s'/rev*.dat '%s'/ 2>/dev/null",
+                 "cp -a '%s'/rev*.dat '%s'/",
                  src, dst, src, dst);
         system(cmd);
         printf(" done\n");
@@ -1549,6 +1556,70 @@ bool app_init(struct app_context *ctx)
                 active_chain_set_tip(&g_state.chain_active, genesis);
                 g_state.pindex_best_header = genesis;
                 printf("Chain tip: initialized to genesis (height 0)\n");
+            }
+        }
+    }
+
+    /* Repair block index from SQLite.
+     * After fastsync, blocks in the LevelDB index may lack BLOCK_VALID_SCRIPTS
+     * (they were validated by zclassicd but our index doesn't know that).
+     * Without this, activate_best_chain won't extend the chain past
+     * previously-connected blocks because it only follows fully-validated
+     * entries. Also fix any stale file positions. */
+    if (g_active_node_db && g_state.map_block_index.size > 1000) {
+        sqlite3_stmt *sel = NULL;
+        int rc = sqlite3_prepare_v2(g_node_db.db,
+            "SELECT hash, file_num, data_pos, status FROM blocks "
+            "WHERE file_num >= 0 AND data_pos >= 0",
+            -1, &sel, NULL);
+        if (rc == SQLITE_OK && sel) {
+            int repaired = 0, checked = 0;
+            while (sqlite3_step(sel) == SQLITE_ROW) {
+                const void *hash_blob = sqlite3_column_blob(sel, 0);
+                int hash_len = sqlite3_column_bytes(sel, 0);
+                int file_num = sqlite3_column_int(sel, 1);
+                int data_pos = sqlite3_column_int(sel, 2);
+                int status = sqlite3_column_int(sel, 3);
+
+                if (!hash_blob || hash_len != 32) continue;
+
+                struct uint256 hash;
+                memcpy(hash.data, hash_blob, 32);
+
+                struct block_index *bi = block_map_find(
+                    &g_state.map_block_index, &hash);
+                if (!bi) continue;
+                checked++;
+
+                bool changed = false;
+
+                /* Fix file positions */
+                if (bi->nFile != file_num || bi->nDataPos != (unsigned)data_pos) {
+                    if (file_num >= 0 && data_pos > 0) {
+                        bi->nFile = file_num;
+                        bi->nDataPos = (unsigned)data_pos;
+                        changed = true;
+                    }
+                }
+
+                /* Promote validation status from SQLite (indexlegacy
+                 * sets BLOCK_HAVE_DATA|BLOCK_HAVE_UNDO|BLOCK_VALID_SCRIPTS
+                 * for all blocks it successfully indexes) */
+                if (status > 0 && (bi->nStatus & BLOCK_VALID_MASK) <
+                    (unsigned)(status & BLOCK_VALID_MASK)) {
+                    bi->nStatus = (bi->nStatus & ~(unsigned)BLOCK_VALID_MASK) |
+                                  ((unsigned)status & (BLOCK_VALID_MASK |
+                                   BLOCK_HAVE_DATA | BLOCK_HAVE_UNDO));
+                    changed = true;
+                }
+
+                if (changed) repaired++;
+            }
+            sqlite3_finalize(sel);
+            if (repaired > 0) {
+                printf("Block index repair: updated %d/%d entries from SQLite\n",
+                       repaired, checked);
+                fflush(stdout);
             }
         }
     }
