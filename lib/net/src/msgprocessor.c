@@ -772,10 +772,11 @@ static bool process_inv(struct msg_processor *mp, struct p2p_node *node,
              * during IBD, rely on headers-first sync. */
             bool in_ibd = !tip || (node->starting_height > 0 &&
                           tip->nHeight < node->starting_height - 1000);
-            if (!bi && !in_ibd) {
+            bool need_data = !bi || !(bi->nStatus & BLOCK_HAVE_DATA);
+            if (need_data && !in_ibd) {
                 inv_item_serialize(&inv, &getdata);
                 request_count++;
-            } else if (!bi && in_ibd) {
+            } else if (need_data && in_ibd) {
                 /* Ask for headers instead */
                 push_getheaders_from(mp, node, tip);
             }
