@@ -1391,10 +1391,26 @@ bool app_init(struct app_context *ctx)
                 fprintf(stderr, "Warning: Chainstate reindex had errors\n");
             }
         }
-        /* After reindex, run activate_best_chain to connect any additional
-         * blocks that are on disk but weren't in the connected chain.
-         * This handles the case where block files have more blocks than
-         * what nChainTx tracks. */
+        /* After reindex, clear BLOCK_HAVE_DATA for blocks above our tip.
+         * These blocks came from prior P2P sessions and may be on forks.
+         * Clearing the flag forces the download manager to re-request
+         * them from peers, getting the correct main chain blocks. */
+        {
+            int reindex_tip = active_chain_height(&g_state.chain_active);
+            int cleared = 0;
+            size_t ci = 0;
+            struct block_index *cp;
+            while (block_map_next(&g_state.map_block_index, &ci, NULL, &cp)) {
+                if (cp && cp->nHeight > reindex_tip &&
+                    (cp->nStatus & BLOCK_HAVE_DATA)) {
+                    cp->nStatus &= ~BLOCK_HAVE_DATA;
+                    cleared++;
+                }
+            }
+            if (cleared > 0)
+                printf("Cleared BLOCK_HAVE_DATA for %d blocks above tip %d "
+                       "(will re-download from peers)\n", cleared, reindex_tip);
+        }
         skip_activate = false;
     } else if (fast_restart) {
     } else if (g_state.map_block_index.size > 1) {
