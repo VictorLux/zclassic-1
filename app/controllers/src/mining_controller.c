@@ -7,6 +7,7 @@
 #include "controllers/strong_params.h"
 #include "chain/chain.h"
 #include "chain/chainparams.h"
+#include "core/arith_uint256.h"
 #include "chain/pow.h"
 #include "consensus/upgrades.h"
 #include "core/core_io.h"
@@ -39,6 +40,54 @@ void rpc_mining_set_state(struct main_state *ms, struct tx_mempool *mp,
     g_datadir = datadir;
 }
 
+/* Estimate network hash rate from chain work over a window of blocks.
+ * Matches zclassicd GetNetworkHashPS() exactly. */
+static double get_network_hashps(const struct active_chain *chain, int lookup)
+{
+    struct block_index *pb = active_chain_tip(chain);
+    if (!pb || !pb->nHeight) return 0;
+
+    /* Default: use difficulty averaging window (17 blocks for ZClassic) */
+    if (lookup <= 0) lookup = 17;
+    if (lookup > pb->nHeight) lookup = pb->nHeight;
+
+    struct block_index *pb0 = pb;
+    int64_t minTime = (int64_t)pb0->nTime;
+    int64_t maxTime = minTime;
+    for (int i = 0; i < lookup; i++) {
+        pb0 = pb0->pprev;
+        if (!pb0) break;
+        int64_t t = (int64_t)pb0->nTime;
+        if (t < minTime) minTime = t;
+        if (t > maxTime) maxTime = t;
+    }
+
+    if (minTime == maxTime) return 0;
+
+    struct arith_uint256 work_diff;
+    arith_uint256_sub(&work_diff, &pb->nChainWork, &pb0->nChainWork);
+    double work = arith_uint256_getdouble(&work_diff);
+    int64_t timeDiff = maxTime - minTime;
+
+    return work / (double)timeDiff;
+}
+
+static bool rpc_getnetworkhashps(const struct json_value *params, bool help,
+                                   struct json_value *result)
+{
+    struct rpc_params p;
+    rpc_params_init(&p, params);
+    RPC_HELP(help, result,
+        "getnetworkhashps ( blocks height )\n"
+        "Returns the estimated network hashes per second.\n");
+
+    int lookup = (int)rpc_permit_int(&p, 0, "blocks", 120);
+
+    double hashps = get_network_hashps(&g_ms->chain_active, lookup);
+    json_set_real(result, hashps);
+    return true;
+}
+
 static bool rpc_getmininginfo(const struct json_value *params, bool help,
                                 struct json_value *result)
 {
@@ -65,6 +114,9 @@ static bool rpc_getmininginfo(const struct json_value *params, bool help,
             difficulty = (double)0x00ffff / diff;
     }
     json_push_kv_real(result, "difficulty", difficulty);
+
+    double hashps = get_network_hashps(&g_ms->chain_active, 120);
+    json_push_kv_real(result, "networkhashps", hashps);
 
     json_push_kv_str(result, "chain", cp->strNetworkID);
     json_push_kv_bool(result, "generate", false);
@@ -326,6 +378,7 @@ void register_mining_rpc_commands(struct rpc_table *t)
 {
     struct rpc_command cmds[] = {
         { "mining", "getmininginfo",     rpc_getmininginfo,    true },
+        { "mining", "getnetworkhashps",  rpc_getnetworkhashps, true },
         { "mining", "generate",          rpc_generate,         true },
         { "mining", "submitblock",       rpc_submitblock,      true },
         { "mining", "getblocktemplate",  rpc_getblocktemplate, true },

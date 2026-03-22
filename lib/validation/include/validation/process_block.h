@@ -76,4 +76,25 @@ bool test_block_validity(struct validation_state *state,
                          const struct block *block,
                          struct block_index *pindex_prev);
 
+/* Mark a block (and all descendants) as invalid. If the block is on the
+ * active chain, disconnects back to the fork point.
+ * Equivalent to Bitcoin Core's invalidateblock RPC. */
+bool invalidate_block(struct validation_state *state,
+                      struct main_state *ms,
+                      struct coins_view_cache *coins_tip,
+                      const struct chain_params *params,
+                      struct block_index *pindex,
+                      const char *datadir);
+
+/* Clear the invalid flag from a block and all descendants, then
+ * reactivate the best chain (may trigger reorg if the reconsidered
+ * chain has more work).
+ * Equivalent to Bitcoin Core's reconsiderblock RPC. */
+bool reconsider_block(struct validation_state *state,
+                      struct main_state *ms,
+                      struct coins_view_cache *coins_tip,
+                      const struct chain_params *params,
+                      struct block_index *pindex,
+                      const char *datadir);
+
 #endif
