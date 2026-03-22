@@ -812,6 +812,12 @@ static bool reindex_chainstate(struct main_state *ms,
     extern _Atomic bool g_utxo_commitment_skip;
     atomic_store(&g_utxo_commitment_skip, true);
 
+    /* Reset sapling tree state — must start from empty for replay from genesis */
+    if (g_node_db.open) {
+        node_db_state_set(&g_node_db, "sapling_tree", NULL, 0);
+        node_db_state_set(&g_node_db, "sapling_tree_rescan_height", NULL, 0);
+    }
+
     const struct chain_params *cparams = chain_params_get();
     int64_t t_start = (int64_t)time(NULL);
     int errors = 0;

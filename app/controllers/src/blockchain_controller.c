@@ -1669,6 +1669,16 @@ static bool rpc_reindexchainstate(const struct json_value *params, bool help,
     /* Step 3: Reinitialize coins cache */
     coins_view_cache_init(g_coins_tip, &g_coins_db->view);
 
+    /* Step 3.5: Reset sapling tree state — must replay from empty.
+     * Use the global node_db (set later in file via rpc_blockchain_set_node_db). */
+    {
+        extern struct node_db *g_active_node_db;
+        if (g_active_node_db && g_active_node_db->open) {
+            node_db_state_set(g_active_node_db, "sapling_tree", NULL, 0);
+            node_db_state_set(g_active_node_db, "sapling_tree_rescan_height", NULL, 0);
+        }
+    }
+
     int64_t t_start = (int64_t)time(NULL);
     int errors = 0;
 
