@@ -1381,8 +1381,6 @@ bool app_init(struct app_context *ctx)
             g_state.pindex_best_header = best;
             printf("Chain tip from block index: height=%d\n", best->nHeight);
         }
-        skip_activate = true;
-
         /* Fast path: rebuild from SQLite UTXOs (~10s vs ~2h).
          * Then repopulate SQLite from the authoritative LevelDB chainstate. */
         if (!fast_rebuild_chainstate(&g_coins_db, &g_coins_tip,
@@ -1393,8 +1391,11 @@ bool app_init(struct app_context *ctx)
                 fprintf(stderr, "Warning: Chainstate reindex had errors\n");
             }
         }
-        /* SQLite UTXOs are already authoritative (we just rebuilt LevelDB
-         * from them). Skip repopulation to avoid redundant work. */
+        /* After reindex, run activate_best_chain to connect any additional
+         * blocks that are on disk but weren't in the connected chain.
+         * This handles the case where block files have more blocks than
+         * what nChainTx tracks. */
+        skip_activate = false;
     } else if (fast_restart) {
     } else if (g_state.map_block_index.size > 1) {
         struct uint256 best_hash;
