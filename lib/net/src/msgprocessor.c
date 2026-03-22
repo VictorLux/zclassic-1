@@ -2418,7 +2418,8 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
             }
 
             /* Stall detection: if queue is empty, in-flight is zero,
-             * and we're not at tip — queue needed blocks directly */
+             * and we're not at tip — request more headers to discover
+             * needed blocks */
             uint64_t dl_queued = 0, dl_inflight = 0;
             dl_get_stats(dm, NULL, NULL, NULL, &dl_inflight, &dl_queued);
             int our_h = msg_get_height(mp);
@@ -2426,59 +2427,11 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
                 node->starting_height > our_h + 10 &&
                 node->state >= PEER_SYNCING_HEADERS) {
                 static int64_t last_stall_log = 0;
-                if (now_dl - last_stall_log > 10) {
+                if (now_dl - last_stall_log > 30) {
                     last_stall_log = now_dl;
-
-                    /* Scan the chain from our tip forward and queue
-                     * blocks that we have headers for but no data */
-                    struct block_index *tip = active_chain_tip(
-                        &mp->main_state->chain_active);
-                    struct block_index *best_hdr =
-                        mp->main_state->pindex_best_header;
-                    if (best_hdr && tip &&
-                        best_hdr->nHeight > tip->nHeight) {
-                        size_t max_q = 512;
-                        struct uint256 *hashes = malloc(
-                            max_q * sizeof(struct uint256));
-                        int32_t *heights = malloc(
-                            max_q * sizeof(int32_t));
-                        if (hashes && heights) {
-                            size_t need = 0;
-                            /* Walk forward from tip */
-                            struct block_index *walk = best_hdr;
-                            while (walk && walk->nHeight > our_h &&
-                                   need < max_q) {
-                                if (!(walk->nStatus & BLOCK_HAVE_DATA)
-                                    && walk->phashBlock) {
-                                    hashes[need] = *walk->phashBlock;
-                                    heights[need] = walk->nHeight;
-                                    need++;
-                                }
-                                walk = walk->pprev;
-                            }
-                            /* Reverse to oldest-first */
-                            for (size_t i = 0; i < need / 2; i++) {
-                                struct uint256 th = hashes[i];
-                                hashes[i] = hashes[need-1-i];
-                                hashes[need-1-i] = th;
-                                int32_t ti = heights[i];
-                                heights[i] = heights[need-1-i];
-                                heights[need-1-i] = ti;
-                            }
-                            size_t queued = dl_queue_blocks(
-                                dm, hashes, heights, need);
-                            if (queued > 0)
-                                event_emitf(EV_BLOCK_REQUESTED,
-                                    (uint32_t)node->id,
-                                    "stall-recovery: queued=%zu "
-                                    "gap=%d->%d",
-                                    queued, our_h,
-                                    best_hdr->nHeight);
-                        }
-                        free(hashes);
-                        free(heights);
-                    }
-                    /* Also request more headers in case we're behind */
+                    event_emitf(EV_SYNC_STATE_CHANGE, (uint32_t)node->id,
+                                "stall: queue=0 inflight=0 h=%d peer=%d",
+                                our_h, node->starting_height);
                     push_getheaders(mp, node);
                 }
             }
