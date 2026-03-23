@@ -1248,23 +1248,38 @@ bool app_init(struct app_context *ctx)
      * The old LevelDB had the authoritative UTXO set; SQLite's utxos table
      * may be incomplete. Check for migration flag in node_state. */
     if (g_node_db.open && g_coins_sqlite.db) {
-        /* Seed coins_best_block from tip_hash if not yet set */
+        /* Seed coins_best_block from tip_hash if not yet set.
+         * Only do this if UTXOs actually exist in SQLite — otherwise
+         * the coins DB is empty and should stay at null (triggers replay). */
         struct uint256 coins_check;
         if (!coins_view_sqlite_get_best_block(&g_coins_sqlite, &coins_check)
             || uint256_is_null(&coins_check)) {
-            uint8_t tip_buf[32];
-            size_t tip_len = 0;
-            if (node_db_state_get(&g_node_db, "tip_hash",
-                                   tip_buf, 32, &tip_len) && tip_len == 32) {
-                sqlite3_stmt *seed = NULL;
-                sqlite3_prepare_v2(g_node_db.db,
-                    "INSERT OR REPLACE INTO node_state(key,value)"
-                    " VALUES('coins_best_block',?)", -1, &seed, NULL);
-                if (seed) {
-                    sqlite3_bind_blob(seed, 1, tip_buf, 32, SQLITE_STATIC);
-                    sqlite3_step(seed);
-                    sqlite3_finalize(seed);
-                    printf("Migrated coins_best_block from tip_hash\n");
+            /* Check if UTXOs exist */
+            sqlite3_stmt *cnt = NULL;
+            int64_t utxo_count = 0;
+            sqlite3_prepare_v2(g_node_db.db,
+                "SELECT count(*) FROM utxos", -1, &cnt, NULL);
+            if (cnt) {
+                if (sqlite3_step(cnt) == SQLITE_ROW)
+                    utxo_count = sqlite3_column_int64(cnt, 0);
+                sqlite3_finalize(cnt);
+            }
+            if (utxo_count > 0) {
+                uint8_t tip_buf[32];
+                size_t tip_len = 0;
+                if (node_db_state_get(&g_node_db, "tip_hash",
+                                       tip_buf, 32, &tip_len) && tip_len == 32) {
+                    sqlite3_stmt *seed = NULL;
+                    sqlite3_prepare_v2(g_node_db.db,
+                        "INSERT OR REPLACE INTO node_state(key,value)"
+                        " VALUES('coins_best_block',?)", -1, &seed, NULL);
+                    if (seed) {
+                        sqlite3_bind_blob(seed, 1, tip_buf, 32, SQLITE_STATIC);
+                        sqlite3_step(seed);
+                        sqlite3_finalize(seed);
+                        printf("Migrated coins_best_block from tip_hash "
+                               "(%lld UTXOs)\n", (long long)utxo_count);
+                    }
                 }
             }
         }
