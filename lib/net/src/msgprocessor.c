@@ -1229,17 +1229,23 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                 sync_set_state(SYNC_BLOCKS_DOWNLOAD,
                                "headers ahead, requesting blocks");
 
-            /* Verify this header chain connects to our tip.
-             * Walk pprev from the last header to our tip height.
-             * If it reaches our actual tip block, this chain extends
-             * our chain. If it reaches a DIFFERENT block at our height,
-             * this is a fork chain — don't queue its blocks. */
-            bool chains_from_tip = false;
-            struct block_index *verify = bi;
-            while (verify && verify->nHeight > our_height)
-                verify = verify->pprev;
-            if (verify == tip)
-                chains_from_tip = true;
+            /* Verify this header chain connects to our tip and has
+             * no failed blocks in its ancestry. Walk pprev from the
+             * last header back to our tip. Reject if any ancestor is
+             * on a failed chain or if the walk doesn't reach our tip. */
+            bool chains_from_tip = true;
+            {
+                struct block_index *verify = bi;
+                while (verify && verify->nHeight > our_height) {
+                    if (verify->nStatus & BLOCK_FAILED_MASK) {
+                        chains_from_tip = false;
+                        break;
+                    }
+                    verify = verify->pprev;
+                }
+                if (verify != tip)
+                    chains_from_tip = false;
+            }
 
             size_t max_collect = 512;
             struct uint256 *hashes = malloc(max_collect * sizeof(struct uint256));
