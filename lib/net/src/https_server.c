@@ -450,3 +450,26 @@ bool https_server_is_running(void)
 {
     return g_running;
 }
+
+/* ── Deferred HTTPS start (after IBD completes) ──────────── */
+
+static char g_deferred_cert[1024];
+static char g_deferred_key[1024];
+static _Atomic bool g_deferred_pending = false;
+
+void https_deferred_set(const char *cert, const char *key)
+{
+    strncpy(g_deferred_cert, cert, sizeof(g_deferred_cert) - 1);
+    strncpy(g_deferred_key, key, sizeof(g_deferred_key) - 1);
+    atomic_store(&g_deferred_pending, true);
+    printf("HTTPS: deferred start queued (will start when synced)\n");
+}
+
+void https_deferred_check(void)
+{
+    if (atomic_load(&g_deferred_pending) && !g_running) {
+        atomic_store(&g_deferred_pending, false);
+        printf("HTTPS: starting deferred server (node synced)\n");
+        https_server_start(g_deferred_cert, g_deferred_key, "zclnet.net");
+    }
+}

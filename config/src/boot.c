@@ -2049,7 +2049,12 @@ bool app_init(struct app_context *ctx)
     /* Start API cache thread immediately so endpoints are warm */
     api_start_cache();
 
-    /* Start public HTTPS block explorer on port 443 */
+    /* Start public HTTPS block explorer on port 443.
+     * DEFER during IBD: the HTTPS handler thread reads block_map and
+     * chain_active concurrently with the P2P thread that modifies them
+     * during header sync. This causes segfaults. Start HTTPS only once
+     * we're close to the chain tip. A background thread checks
+     * periodically and starts HTTPS when ready. */
     {
         char cert_path[1024], key_path[1024];
         snprintf(cert_path, sizeof(cert_path), "%s/ssl/fullchain.pem",
@@ -2057,7 +2062,25 @@ bool app_init(struct app_context *ctx)
         snprintf(key_path, sizeof(key_path), "%s/ssl/privkey.pem",
                  ctx->datadir);
         if (access(cert_path, R_OK) == 0 && access(key_path, R_OK) == 0) {
-            https_server_start(cert_path, key_path, "zclnet.net");
+            int chain_tip = active_chain_height(&g_state.chain_active);
+            int best_header = g_state.pindex_best_header ?
+                g_state.pindex_best_header->nHeight : chain_tip;
+            bool near_tip = (best_header - chain_tip < 1000);
+            if (near_tip) {
+                https_server_start(cert_path, key_path, "zclnet.net");
+            } else {
+                printf("HTTPS: deferred during IBD (chain=%d, headers=%d, "
+                       "behind=%d). Will start when near tip.\n",
+                       chain_tip, best_header, best_header - chain_tip);
+                /* Store paths for deferred start */
+                static char s_cert[1024], s_key[1024];
+                strncpy(s_cert, cert_path, sizeof(s_cert) - 1);
+                strncpy(s_key, key_path, sizeof(s_key) - 1);
+                /* The sync controller will call https_server_start
+                 * when sync reaches SYNC_AT_TIP state */
+                extern void https_deferred_set(const char *cert, const char *key);
+                https_deferred_set(s_cert, s_key);
+            }
         } else {
             printf("HTTPS: no cert at %s — block explorer not on clearnet\n",
                    cert_path);

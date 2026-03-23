@@ -965,6 +965,9 @@ static bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
                     ss == SYNC_REORG) {
                     sync_set_state(SYNC_AT_TIP, "caught up to peer");
                     set_flush_policy(3600, 500000, 100);
+                    /* Start deferred HTTPS server now that it's safe */
+                    extern void https_deferred_check(void);
+                    https_deferred_check();
                     if (ss != SYNC_REORG)
                         printf("=== AT TIP: height=%d ===\n",
                                new_tip->nHeight);
