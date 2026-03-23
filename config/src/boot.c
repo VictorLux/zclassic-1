@@ -300,23 +300,43 @@ static bool load_block_index_flat(const char *datadir, struct main_state *ms)
     const struct block_index_flat *entries =
         (const struct block_index_flat *)(data + 8);
 
-    /* Pre-size hash map to avoid 10+ rehashes during 3M inserts.
-     * Allocate all block_index structs in one arena (1 calloc instead of 3M). */
+    /* Pre-size hash map + arena. Pre-fault memory to avoid page faults
+     * during the insert loop (Carmack: touch memory before the hot loop). */
     block_map_reserve(&ms->map_block_index, count);
     struct block_index *arena = calloc(count, sizeof(struct block_index));
     if (!arena) { munmap(data, file_size); return false; }
+    memset(arena, 0, count * sizeof(struct block_index)); /* pre-fault */
 
-    /* Phase 1: Create all block_index entries — bulk insert */
+    /* Build height→index for O(1) pprev linking (skip 3M hash lookups).
+     * Flat file entries are height-sorted, so max_height = last entry. */
+    int32_t max_h = entries[count - 1].height;
+    struct block_index **by_height = NULL;
+    if (max_h > 0 && max_h < 10000000) {
+        by_height = calloc((size_t)(max_h + 1), sizeof(struct block_index *));
+    }
+
+    /* Phase 1: bulk insert — direct hash table manipulation, no locks.
+     * Single-threaded during startup, locks are unnecessary overhead. */
+    struct block_map *bm = &ms->map_block_index;
     for (uint32_t i = 0; i < count; i++) {
-        struct uint256 hash;
-        memcpy(hash.data, entries[i].hash, 32);
-        if (uint256_is_null(&hash)) continue;
+        if (uint256_is_null((const struct uint256 *)entries[i].hash))
+            continue;
 
         struct block_index *pindex = &arena[i];
         block_index_init(pindex);
-        block_map_insert(&ms->map_block_index, &hash, pindex);
-        pindex->phashBlock = block_map_find_hash(&ms->map_block_index, &hash);
 
+        /* Direct insert into hash table (no lock, no dup check) */
+        uint64_t h;
+        memcpy(&h, entries[i].hash, 8);
+        size_t slot = h & (bm->capacity - 1);
+        while (bm->buckets[slot].occupied)
+            slot = (slot + 1) & (bm->capacity - 1);
+        memcpy(bm->buckets[slot].hash.data, entries[i].hash, 32);
+        bm->buckets[slot].index = pindex;
+        bm->buckets[slot].occupied = true;
+        bm->size++;
+
+        pindex->phashBlock = &bm->buckets[slot].hash;
         pindex->nHeight = entries[i].height;
         pindex->nBits = entries[i].n_bits;
         pindex->nTime = entries[i].n_time;
@@ -329,24 +349,22 @@ static bool load_block_index_flat(const char *datadir, struct main_state *ms)
         pindex->nChainTx = entries[i].n_chain_tx;
         memcpy(pindex->nChainWork.pn, entries[i].chain_work, 32);
         pindex->nCachedBranchId = entries[i].n_cached_branch_id;
-    }
-    /* Note: arena is intentionally NOT freed — block_index structs
-     * live for the lifetime of the process. block_map_free will NOT
-     * free these (it calls free() on individually allocated entries).
-     * This is a deliberate leak-at-exit trade for startup speed. */
 
-    /* Phase 2: Link pprev pointers (entries are height-sorted) */
+        /* Index by height for O(1) pprev linking */
+        if (by_height && pindex->nHeight >= 0 && pindex->nHeight <= max_h)
+            by_height[pindex->nHeight] = pindex;
+    }
+
+    /* Phase 2: Link pprev — use height index (O(1) per entry) instead of
+     * hash lookups (O(1) amortized but cache-miss heavy at 384MB table) */
     for (uint32_t i = 0; i < count; i++) {
-        struct uint256 hash, prev;
-        memcpy(hash.data, entries[i].hash, 32);
-        memcpy(prev.data, entries[i].prev_hash, 32);
-        if (uint256_is_null(&prev)) continue;
-
-        struct block_index *pindex = block_map_find(&ms->map_block_index, &hash);
-        struct block_index *pprev = block_map_find(&ms->map_block_index, &prev);
-        if (pindex && pprev)
-            pindex->pprev = pprev;
+        struct block_index *pindex = &arena[i];
+        if (pindex->nHeight > 0 && by_height) {
+            struct block_index *pp = by_height[pindex->nHeight - 1];
+            if (pp) pindex->pprev = pp;
+        }
     }
+    free(by_height);
 
     munmap(data, file_size);
 
