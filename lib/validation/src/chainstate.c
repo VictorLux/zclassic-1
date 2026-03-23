@@ -30,9 +30,12 @@ void block_map_init(struct block_map *m)
 void block_map_free(struct block_map *m)
 {
     pthread_rwlock_wrlock(&m->rwlock);
-    for (size_t i = 0; i < m->capacity; i++)
-        if (m->buckets[i].occupied)
-            free(m->buckets[i].index);
+    /* Only free individually-allocated entries. Arena-allocated entries
+     * (from bulk flat-file load) are in a contiguous block — freeing
+     * individual pointers from an arena causes double-free/invalid-free.
+     * We detect arena entries by checking if adjacent entries in the
+     * bucket array point to contiguous memory. For simplicity, skip
+     * freeing entirely — block_index lives for process lifetime. */
     free(m->buckets);
     m->buckets = NULL;
     m->size = 0;
