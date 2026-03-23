@@ -12,6 +12,7 @@
 #include "keys/pubkey.h"
 #include "coins/coins_view.h"
 #include "storage/coins_view_sqlite.h"
+#include "storage/coins_db.h"
 #include "consensus/validation.h"
 #include "controllers/blockchain_controller.h"
 #include "controllers/chain_inspect_controller.h"
@@ -37,6 +38,7 @@
 #include "controllers/wallet_controller.h"
 #include "wallet/wallet.h"
 #include "wallet/wallet_sqlite.h"
+#include "wallet/wallet_db.h"
 #include "sapling/params_init.h"
 #include "metrics/metrics.h"
 #include "chain/pow.h"
@@ -930,6 +932,37 @@ bool app_init(struct app_context *ctx)
         printf("New wallet created.\n");
     }
 
+    /* One-time wallet migration: if SQLite wallet is empty but LevelDB
+     * wallet/ directory exists, import keys/txs from LevelDB. */
+    if (g_wallet.keystore.num_keys == 0) {
+        char wallet_path[1024];
+        snprintf(wallet_path, sizeof(wallet_path), "%s/wallet", ctx->datadir);
+        struct stat wst;
+        if (stat(wallet_path, &wst) == 0) {
+            struct wallet_db legacy_wdb;
+            if (wallet_db_open(&legacy_wdb, wallet_path)) {
+                printf("Migrating wallet from LevelDB...\n");
+                wallet_db_read_keys(&legacy_wdb, &g_wallet);
+                wallet_db_read_txs(&legacy_wdb, &g_wallet);
+                wallet_rebuild_spent_set(&g_wallet);
+                wallet_db_read_sapling_keys(&legacy_wdb, &g_wallet);
+                wallet_db_read_scripts(&legacy_wdb, &g_wallet);
+                int saved_height = 0;
+                if (wallet_db_read_scan_height(&legacy_wdb, &saved_height))
+                    g_wallet.best_block_height = saved_height;
+                wallet_db_close(&legacy_wdb);
+
+                /* Save to SQLite */
+                if (g_wallet_sqlite.open)
+                    wallet_sqlite_flush(&g_wallet_sqlite, &g_wallet);
+
+                printf("Wallet migrated: %zu keys, %zu sapling keys\n",
+                       g_wallet.keystore.num_keys,
+                       g_wallet.sapling_keys.num_keys);
+            }
+        }
+    }
+
     if (g_wallet.keystore.num_keys == 0)
         wallet_top_up_key_pool(&g_wallet, DEFAULT_KEYPOOL_SIZE);
     printf("Wallet has %zu keys.\n", g_wallet.keystore.num_keys);
@@ -1204,10 +1237,11 @@ bool app_init(struct app_context *ctx)
         }
     }
 
-    /* Migration: seed coins_best_block from tip_hash if not yet set.
-     * Existing nodes have tip_hash in node_state from sync_controller
-     * but not coins_best_block (new key for SQLite-backed coins view). */
+    /* One-time migration: import UTXOs from LevelDB chainstate into SQLite.
+     * The old LevelDB had the authoritative UTXO set; SQLite's utxos table
+     * may be incomplete. Check for migration flag in node_state. */
     if (g_node_db.open && g_coins_sqlite.db) {
+        /* Seed coins_best_block from tip_hash if not yet set */
         struct uint256 coins_check;
         if (!coins_view_sqlite_get_best_block(&g_coins_sqlite, &coins_check)
             || uint256_is_null(&coins_check)) {
@@ -1225,6 +1259,41 @@ bool app_init(struct app_context *ctx)
                     sqlite3_finalize(seed);
                     printf("Migrated coins_best_block from tip_hash\n");
                 }
+            }
+        }
+
+        /* Check if LevelDB UTXO migration has been done */
+        uint8_t mig_buf[8];
+        size_t mig_len = 0;
+        bool migration_done = node_db_state_get(&g_node_db,
+            "leveldb_utxo_migrated", mig_buf, sizeof(mig_buf), &mig_len);
+
+        if (!migration_done) {
+            char cs_path[1024];
+            snprintf(cs_path, sizeof(cs_path), "%s/chainstate",
+                     ctx->datadir);
+            struct stat cs_st;
+            if (stat(cs_path, &cs_st) == 0) {
+                printf("One-time LevelDB→SQLite UTXO migration...\n");
+                fflush(stdout);
+                struct coins_view_db migrate_db;
+                if (coins_view_db_open(&migrate_db, cs_path,
+                                       450 << 20, false, false)) {
+                    node_db_sync_import_utxos(&g_node_db, &migrate_db);
+                    coins_view_db_close(&migrate_db);
+
+                    /* Mark migration as done */
+                    uint8_t one = 1;
+                    node_db_state_set(&g_node_db, "leveldb_utxo_migrated",
+                                       &one, 1);
+                    printf("UTXO migration complete.\n");
+                    fflush(stdout);
+                }
+            } else {
+                /* No chainstate dir — mark as done (fresh node) */
+                uint8_t one = 1;
+                node_db_state_set(&g_node_db, "leveldb_utxo_migrated",
+                                   &one, 1);
             }
         }
     }
