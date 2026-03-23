@@ -219,6 +219,14 @@ static bool rpc_coinsinfo(const struct json_value *params, bool help,
     uint256_get_hex(&best, hex);
     json_push_kv_str(result, "best_block", hex);
 
+    /* UTXO commitment — XOR-hash of all UTXOs. Two nodes with the same
+     * UTXO set will have the same commitment. Divergence = bug. */
+    char commit_hex[65];
+    for (int i = 0; i < 32; i++)
+        snprintf(commit_hex + i * 2, 3, "%02x", tip->commitment.accumulator[i]);
+    json_push_kv_str(result, "utxo_commitment", commit_hex);
+    json_push_kv_int(result, "utxo_count", (int64_t)tip->commitment.count);
+
     return true;
 }
 
