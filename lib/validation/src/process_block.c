@@ -830,8 +830,16 @@ bool activate_best_chain(struct validation_state *state,
                 walk = walk->pprev;
             }
 
-            if (tip->nHeight - (fork ? fork->nHeight : -1) > MAX_REORG_LENGTH)
+            /* During IBD, allow deep reorgs — fork blocks received in
+             * parallel can cause the wrong chain to be connected initially.
+             * At tip (steady state), enforce the reorg limit. */
+            int reorg_depth = tip->nHeight - (fork ? fork->nHeight : -1);
+            bool in_ibd = (sync_get_state() <= SYNC_BLOCKS_DOWNLOAD);
+            if (!in_ibd && reorg_depth > MAX_REORG_LENGTH) {
+                printf("activate_best_chain: reorg depth %d exceeds max %d\n",
+                       reorg_depth, MAX_REORG_LENGTH);
                 return false;
+            }
 
             /* Disconnect blocks from current tip to fork point */
             if (fork && tip->nHeight > fork->nHeight) {

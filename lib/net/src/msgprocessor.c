@@ -944,6 +944,14 @@ static bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
         uint256_get_hex(&hash, hex);
         fprintf(stderr, "block_msg: REJECTED %s: %s\n", hex,
                 state.reject_reason[0] ? state.reject_reason : "unknown");
+
+        /* When a block fails validation during IBD (likely a fork block),
+         * re-request headers from this peer starting at our current tip.
+         * This forces the peer to send us the correct chain of headers,
+         * which will include the valid block at the failed height. */
+        if (sync_get_state() <= SYNC_BLOCKS_DOWNLOAD) {
+            push_getheaders(mp, node);
+        }
     }
 
     if (validation_state_is_valid(&state)) {
