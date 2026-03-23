@@ -867,8 +867,13 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
             "<div class='title'>Your funds are publicly visible</div>"
             "<div class='desc'>Transparent balances can be traced on-chain. "
             "Shield your ZCL for full privacy.</div>"
+            "<div style='display:flex;gap:8px;justify-content:center'>"
             "<a class='btn' href='/wallet/shield?all=1'>"
-            "Shield All Funds</a></div>");
+            "Shield All</a>"
+            "<a class='btn' style='background:#1a1428;color:#a78bfa;"
+            "border:1px solid #a78bfa' href='/wallet/shield'>"
+            "Choose Amount</a>"
+            "</div></div>");
     }
 
     /* 6. Recent transactions (5 items) */
@@ -1671,12 +1676,45 @@ static size_t serve_shield(uint8_t *r, size_t max, const char *query) {
     }
 
     if (amount <= 0) {
-        size_t off = emit_header(r, max, "Shield — ZClassic23", "/wallet");
+        /* No amount specified — show amount input form */
+        size_t off = emit_header(r, max, "Shield Funds", "/wallet");
+        int64_t avail = 0;
+        {
+            sqlite3 *sdb = open_db();
+            if (sdb) {
+                avail = query_ground_truth_balance(sdb, NULL);
+                sqlite3_close(sdb);
+            }
+        }
+        char avail_str[32];
+        zcl_format_zcl(avail_str, sizeof(avail_str), avail);
         APPEND(off, r, max,
-            "<div class='card' style='border-left-color:#f87171'>"
-            "<div class='label' style='color:#f87171'>Invalid Amount</div>"
-            "<div class='sub'>Amount must be greater than 0.</div>"
-            "<a href='/wallet' style='color:#60a5fa'>Back to Wallet</a></div>");
+            "<div style='text-align:center;padding:16px 0'>"
+            "<div style='color:#a78bfa;font-size:20px;font-weight:700;"
+            "margin-bottom:4px'>Shield Funds</div>"
+            "<div class='balance-sub'>Move ZCL to a shielded address "
+            "for full privacy</div></div>"
+            "<form method='GET' action='/wallet/shield'>"
+            "<div class='form-group'>"
+            "<label class='form-label' for='shield-amt'>Amount to Shield</label>"
+            "<div style='display:flex;gap:8px;align-items:center'>"
+            "<input class='form-input' type='text' id='shield-amt' "
+            "name='amount' placeholder='0.00' required>"
+            "<button type='button' class='send-max' "
+            "onclick='document.getElementById(\"shield-amt\").value="
+            "\"%.8f\"'>Max</button>"
+            "</div>"
+            "<div style='color:#888;font-size:14px;margin-top:6px'>"
+            "Available: <span style='color:#34d399'>%s ZCL</span>"
+            "</div></div>"
+            "<button type='submit' class='btn-primary' "
+            "style='background:#a78bfa;color:#fff;margin-top:8px'>"
+            "Review Shield</button>"
+            "</form>"
+            "<div style='text-align:center;margin-top:16px'>"
+            "<a href='/wallet' style='color:#888'>Cancel</a></div>",
+            (double)avail / (double)ZATOSHI_PER_ZCL - FEE_ZCL,
+            avail_str);
         emit_footer(r, max, &off);
         return off;
     }

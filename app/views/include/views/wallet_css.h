@@ -7,8 +7,8 @@
 static const char wallet_css_0[] =
     "*{box-sizing:border-box;margin:0;padding:0}"
     "body{font-family:Inter,-apple-system,'Segoe UI',system-ui,sans-serif;"
-    "background:#0c0c0c;color:#e2e2e2;max-width:480px;margin:0 auto;"
-    "padding:16px;font-size:15px;line-height:1.5}"
+    "background:#0c0c0c;color:#e2e2e2;max-width:520px;margin:0 auto;"
+    "padding:20px;font-size:17px;line-height:1.6}"
     "a{color:#60a5fa;text-decoration:none;transition:color .15s ease}"
     "a:hover{color:#93c5fd}"
     "a:focus-visible{outline:2px solid #34d399;outline-offset:2px}"
@@ -18,17 +18,17 @@ static const char wallet_css_0[] =
     /* Navigation */
     ".nav{display:flex;gap:4px;margin:0 0 16px;padding:4px;background:#111;"
     "border-radius:10px}"
-    ".nav a{flex:1;text-align:center;padding:8px 4px;border-radius:8px;"
-    "font-size:13px;font-weight:600;color:#999;transition:all .15s ease;"
+    ".nav a{flex:1;text-align:center;padding:10px 4px;border-radius:8px;"
+    "font-size:14px;font-weight:600;color:#999;transition:all .15s ease;"
     "text-decoration:none;touch-action:manipulation}"
     ".nav a:hover{color:#e2e2e2;background:#161616}"
     ".nav a.active{color:#34d399;background:#0a1f14}"
     ".nav a:focus-visible{outline:2px solid #34d399;outline-offset:-2px}"
 
     /* Balance hero */
-    ".balance{text-align:center;font-size:42px;font-weight:800;"
+    ".balance{text-align:center;font-size:48px;font-weight:800;"
     "color:#34d399;letter-spacing:-1px;line-height:1.1}"
-    ".balance-sub{text-align:center;color:#a1a1a1;font-size:13px;margin-top:8px}"
+    ".balance-sub{text-align:center;color:#a1a1a1;font-size:15px;margin-top:8px}"
 
     /* Sync badge */
     ".sync-badge{display:inline-block;font-size:10px;font-weight:600;"
@@ -57,14 +57,14 @@ static const char wallet_css_1[] =
 
     /* Buttons */
     ".btn-primary{display:block;width:100%;background:#34d399;color:#0c0c0c;"
-    "border:none;padding:14px;font-size:15px;font-weight:700;"
+    "border:none;padding:16px;font-size:17px;font-weight:700;"
     "border-radius:10px;cursor:pointer;font-family:inherit;"
     "transition:background .15s ease;touch-action:manipulation}"
     ".btn-primary:hover{background:#4ade80}"
     ".btn-primary:focus-visible{outline:2px solid #34d399;outline-offset:2px}"
     ".btn-primary:disabled{opacity:.5;cursor:not-allowed}"
     ".btn-secondary{display:block;width:100%;background:transparent;"
-    "color:#e2e2e2;border:1px solid #333;padding:14px;font-size:15px;"
+    "color:#e2e2e2;border:1px solid #333;padding:16px;font-size:17px;"
     "font-weight:700;border-radius:10px;cursor:pointer;font-family:inherit;"
     "transition:all .15s ease;touch-action:manipulation}"
     ".btn-secondary:hover{border-color:#999}"
@@ -80,8 +80,8 @@ static const char wallet_css_1[] =
     ".form-label{display:block;font-size:11px;font-weight:600;"
     "text-transform:uppercase;letter-spacing:.08em;color:#a1a1a1;margin-bottom:6px}"
     ".form-input{display:block;width:100%;background:#111;color:#e2e2e2;"
-    "border:1px solid #1e1e1e;padding:12px 14px;"
-    "font-family:inherit;font-size:15px;border-radius:8px;"
+    "border:1px solid #1e1e1e;padding:14px 16px;"
+    "font-family:inherit;font-size:17px;border-radius:8px;"
     "transition:border-color .15s ease}"
     ".form-input:focus{border-color:#333;outline:none;"
     "box-shadow:0 0 0 3px rgba(52,211,153,.12)}"
@@ -101,11 +101,11 @@ static const char wallet_css_2[] =
     ".tx-row{display:flex;justify-content:space-between;align-items:center;"
     "padding:12px 0;border-bottom:1px solid #1e1e1e}"
     ".tx-row:last-child{border-bottom:none}"
-    ".tx-amount{font-size:16px;font-weight:700;"
+    ".tx-amount{font-size:18px;font-weight:700;"
     "font-family:'JetBrains Mono','SF Mono','Fira Code',monospace}"
     ".tx-amount.recv{color:#34d399}"
     ".tx-amount.send{color:#f87171}"
-    ".tx-meta{font-size:12px;color:#888;text-align:right}"
+    ".tx-meta{font-size:14px;color:#888;text-align:right}"
     ".tx-meta a{color:#60a5fa;font-family:'JetBrains Mono','SF Mono',monospace;"
     "font-size:11px}"
     ".tx-time{display:block;margin-bottom:2px}"
@@ -122,15 +122,15 @@ static const char wallet_css_2[] =
     ".tx-card:hover{background:#161616}"
 
     /* Address display */
-    ".addr-display{background:#111;padding:14px;border-radius:8px;"
+    ".addr-display{background:#111;padding:16px;border-radius:8px;"
     "font-family:'JetBrains Mono','SF Mono','Fira Code',monospace;"
-    "font-size:14px;color:#60a5fa;word-break:break-all;text-align:center;"
+    "font-size:16px;color:#60a5fa;word-break:break-all;text-align:center;"
     "margin:12px 0;user-select:all;cursor:pointer;"
     "border:1px solid #1e1e1e;transition:border-color .15s ease}"
     ".addr-display:hover{border-color:#333}"
-    ".addr-display-sm{background:#111;padding:10px;border-radius:8px;"
+    ".addr-display-sm{background:#111;padding:12px;border-radius:8px;"
     "font-family:'JetBrains Mono','SF Mono','Fira Code',monospace;"
-    "font-size:11px;color:#a78bfa;word-break:break-all;text-align:center;"
+    "font-size:13px;color:#a78bfa;word-break:break-all;text-align:center;"
     "margin:8px 0;user-select:all;cursor:pointer;"
     "border:1px solid #1e1e1e;transition:border-color .15s ease}"
     ".addr-display-sm:hover{border-color:#333}";
@@ -180,7 +180,7 @@ static const char wallet_css_3[] =
     ".page-controls a{color:#60a5fa}"
 
     /* Tables (coins page) */
-    "table{width:100%;border-collapse:collapse;font-size:13px}"
+    "table{width:100%;border-collapse:collapse;font-size:15px}"
     "th{text-align:left;color:#666;padding:8px 6px;"
     "border-bottom:1px solid #1e1e1e;font-size:11px;"
     "text-transform:uppercase;letter-spacing:.05em;font-weight:600}"
@@ -189,9 +189,9 @@ static const char wallet_css_3[] =
 
 static const char wallet_css_4[] =
     ".hash{color:#60a5fa;"
-    "font-family:'JetBrains Mono','SF Mono','Fira Code',monospace;font-size:12px}"
+    "font-family:'JetBrains Mono','SF Mono','Fira Code',monospace;font-size:14px}"
     ".zcl{color:#34d399;font-weight:700;font-family:'JetBrains Mono','SF Mono',monospace;"
-    "font-size:14px;text-align:right}"
+    "font-size:16px;text-align:right}"
     ".mono{font-family:'JetBrains Mono','SF Mono','Fira Code',monospace;font-size:13px}"
     ".total-row{font-weight:700;background:#0a1f14}"
     ".overflow-x{overflow-x:auto;-webkit-overflow-scrolling:touch}"
