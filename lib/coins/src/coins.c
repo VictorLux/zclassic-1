@@ -56,7 +56,13 @@ bool coins_spend(struct coins *c, uint32_t pos)
     if (pos >= c->num_vout || tx_out_is_null(&c->vout[pos]))
         return false;
     tx_out_set_null(&c->vout[pos]);
-    coins_cleanup(c);
+    /* Do NOT call coins_cleanup() here. While ZClassic C++ does call
+     * Cleanup() from Spend(), the C++ vector auto-grows when disconnect
+     * restores UTXOs. Our C array doesn't auto-grow. Calling cleanup
+     * truncates num_vout, then the assert in update_coins crashes when
+     * a subsequent spend targets a position >= the new num_vout.
+     * Cleanup is still called from coins_from_transaction (creation)
+     * and coins_view_db_get_coins (deserialization). */
     return true;
 }
 

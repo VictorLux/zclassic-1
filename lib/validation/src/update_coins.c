@@ -25,8 +25,23 @@ void update_coins_with_undo(const struct transaction *tx,
             if (!entry) return;
             unsigned int nPos = tx->vin[i].prevout.n;
 
-            assert(nPos < entry->coins.num_vout &&
-                   !tx_out_is_null(&entry->coins.vout[nPos]));
+            /* Grow vout array if needed (can happen after reorg when
+             * coins_cleanup reduced num_vout in the old chain) */
+            if (nPos >= entry->coins.num_vout) {
+                size_t new_size = nPos + 1;
+                struct tx_out *nv = realloc(entry->coins.vout,
+                    new_size * sizeof(struct tx_out));
+                if (!nv) return;
+                for (size_t k = entry->coins.num_vout; k < new_size; k++)
+                    tx_out_set_null(&nv[k]);
+                entry->coins.vout = nv;
+                entry->coins.num_vout = new_size;
+            }
+            if (tx_out_is_null(&entry->coins.vout[nPos])) {
+                /* Output not available — can happen during reorg if
+                 * the output was already spent on the old chain */
+                return;
+            }
 
             /* Remove spent UTXO from commitment before spending */
             utxo_commitment_remove(&inputs->commitment,

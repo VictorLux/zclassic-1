@@ -921,8 +921,16 @@ bool activate_best_chain(struct validation_state *state,
             if (!connect_tip(state, ms, coins_tip, connect_path[i],
                             use_block, params, datadir)) {
                 if (validation_state_is_invalid(state)) {
+                    /* Block failed validation — mark it and retry.
+                     * The do-while loop will call find_most_work_chain
+                     * again, which skips this failed block and finds
+                     * an alternative chain. This matches ZClassic C++
+                     * ActivateBestChainStep behavior. */
                     validation_state_init(state);
+                    free(connect_path);
+                    break; /* break inner loop, retry outer do-while */
                 }
+                /* System error (not invalid block) — abort */
                 free(connect_path);
                 return false;
             }
