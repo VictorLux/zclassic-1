@@ -254,13 +254,11 @@ static size_t emit_nav(uint8_t *buf, size_t max, const char *active) {
         { "/wallet/send",    "Send"      },
         { "/wallet/receive", "Receive"   },
         { "/wallet/history", "History"   },
-        { "/wallet/coins",   "Coins"     },
-        { "/explorer",       "Explorer"  },
     };
     int n = snprintf((char *)buf, max, "<div class='nav'>");
     if (n < 0 || (size_t)n >= max) return 0;
     size_t off = (size_t)n;
-    for (int i = 0; i < 6 && off < max; i++) {
+    for (int i = 0; i < 4 && off < max; i++) {
         bool is_active = (strcmp(tabs[i].href, active) == 0);
         int w = snprintf((char *)buf + off, max - off,
             "<a href='%s'%s>%s</a>",
@@ -654,17 +652,13 @@ static size_t emit_header(uint8_t *buf, size_t max, const char *title,
     APPEND(off, buf, max, WALLET_CSS_1);
     APPEND(off, buf, max, WALLET_CSS_2);
     APPEND(off, buf, max,
-        "</style></head><body>"
-        "<h1>ZClassic23</h1>"
-        "<p class='subtitle'>Direct SQLite — no ports</p>");
+        "</style></head><body>");
     off += emit_nav(buf + off, max - off, active_tab);
     return off;
 }
 
 static void emit_footer(uint8_t *buf, size_t max, size_t *off) {
-    APPEND(*off, buf, max,
-        "<footer>ZClassic23 — pure C23 full node + Tor</footer>"
-        "</body></html>");
+    APPEND(*off, buf, max, "</body></html>");
 }
 
 /* ── Dashboard (/wallet) ────────────────────────────────────── */
@@ -674,21 +668,15 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
     if (!db) return 0;
 
     int tip = query_int(db, "SELECT MAX(height) FROM blocks");
-    int peers = query_int(db, "SELECT count(*) FROM peers");
-    int mempool = query_int(db,
-        "SELECT count(*) FROM mempool_entries");
     int64_t transparent = 0;
-    int t_utxos = 0;
     sqlite3_stmt *s = NULL;
     if (sqlite3_prepare_v2(db,
-            "SELECT count(*), COALESCE(sum(u.value),0) FROM utxos u "
+            "SELECT COALESCE(sum(u.value),0) FROM utxos u "
             "WHERE u.address_hash IN "
             "(SELECT pubkey_hash FROM wallet_keys)",
             -1, &s, NULL) == SQLITE_OK) {
-        if (sqlite3_step(s) == SQLITE_ROW) {
-            t_utxos = sqlite3_column_int(s, 0);
-            transparent = sqlite3_column_int64(s, 1);
-        }
+        if (sqlite3_step(s) == SQLITE_ROW)
+            transparent = sqlite3_column_int64(s, 0);
         sqlite3_finalize(s);
     }
 
@@ -726,136 +714,67 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
      * Use ground truth when available; flag discrepancies. */
     int64_t display_transparent = transparent > 0 ? transparent : speed_transparent;
 
-    /* If SQLite has no balance data, query the running node via RPC */
-    bool from_rpc = false;
+    /* RPC fallback if SQLite has no balance */
     if (display_transparent == 0 && shielded == 0) {
         int64_t rpc_t = 0, rpc_z = 0;
         if (query_node_balance(&rpc_t, &rpc_z)) {
             display_transparent = rpc_t;
             shielded = rpc_z;
-            from_rpc = true;
         }
     }
 
     int64_t total_balance = display_transparent + shielded;
-    bool balance_mismatch = !from_rpc && (transparent > 0 && speed_transparent > 0 &&
-                             transparent != speed_transparent);
 
-    /* Actual fees from wallet transaction history */
-    int64_t total_fees = 0;
-    sw = NULL;
-    if (sqlite3_prepare_v2(db,
-            "SELECT COALESCE(SUM(fee),0) FROM wallet_transactions"
-            " WHERE fee > 0",
-            -1, &sw, NULL) == SQLITE_OK) {
-        if (sqlite3_step(sw) == SQLITE_ROW)
-            total_fees = sqlite3_column_int64(sw, 0);
-        sqlite3_finalize(sw);
-    }
-
-    size_t off = emit_header(r, max, "Wallet — ZClassic23", "/wallet");
+    size_t off = emit_header(r, max, "ZClassic Wallet", "/wallet");
 
     const char *sync = sync_state_name(sync_get_state());
     bool synced = (sync_get_state() == SYNC_AT_TIP);
 
+    /* Format balance — show minimal decimals (Ive: precision without noise) */
+    char bal_str[32];
+    double bal_f = (double)total_balance / (double)ZATOSHI_PER_ZCL;
+    if (total_balance == 0)
+        snprintf(bal_str, sizeof(bal_str), "0.00");
+    else if (total_balance % 1000000 == 0)
+        snprintf(bal_str, sizeof(bal_str), "%.2f", bal_f);
+    else if (total_balance % 10000 == 0)
+        snprintf(bal_str, sizeof(bal_str), "%.4f", bal_f);
+    else
+        snprintf(bal_str, sizeof(bal_str), "%.8f", bal_f);
+
+    /* Balance hero — the page IS the balance (Krug: self-evident) */
     APPEND(off, r, max,
-        "<div class='card' style='border-left-color:#33ff99;padding:20px'>"
-        "<div style='display:flex;justify-content:space-between;"
-        "align-items:center'>"
-        "<div class='label'>Total Balance</div>"
-        "<span id='sync' class='pill %s'>%s</span></div>"
-        "<div id='bal' style='font-size:36px;color:#33ff99;font-weight:800'>"
-        "%.8f ZCL</div>"
-        "<div class='sub' style='margin-top:8px'>"
-        "Transparent: <span id='t-bal'>%.8f</span> ZCL (%d UTXO%s)",
+        "<div style='text-align:center;padding:32px 0 20px'>"
+        "<span id='sync' class='pill %s' style='font-size:10px'>%s</span>"
+        "<div id='bal' style='font-size:40px;color:#34d399;"
+        "font-weight:700;letter-spacing:-1px;margin-top:8px'>"
+        "%s ZCL</div>",
         synced ? "pill-t" : "pill-syncing",
         synced ? "Synced" : sync,
-        (double)total_balance / 1e8,
-        (double)display_transparent / 1e8,
-        t_utxos, t_utxos == 1 ? "" : "s");
+        bal_str);
 
+    /* Breakdown only when there are two pools */
     if (shielded > 0) {
         APPEND(off, r, max,
-            " &middot; Shielded: %.8f ZCL",
-            (double)shielded / 1e8);
+            "<div style='color:#6b7280;font-size:13px;margin-top:8px'>"
+            "%.8f transparent + %.8f shielded</div>",
+            (double)display_transparent / (double)ZATOSHI_PER_ZCL,
+            (double)shielded / (double)ZATOSHI_PER_ZCL);
     }
-    if (total_fees > 0) {
+    if (!synced) {
         APPEND(off, r, max,
-            " &middot; Fees paid: %.8f ZCL",
-            (double)total_fees / 1e8);
-    }
-    APPEND(off, r, max,
-        " &middot; Verified on-chain"
-        "</div>");
-    if (balance_mismatch) {
-        APPEND(off, r, max,
-            "<div style='color:#ff8800;font-size:12px;margin-top:6px'>"
-            "UTXO index: %.8f &middot; wallet cache: %.8f "
-            "(reorg detected — using UTXO index)</div>",
-            (double)transparent / 1e8,
-            (double)speed_transparent / 1e8);
+            "<div style='color:#60a5fa;font-size:12px;margin-top:6px'>"
+            "Syncing &mdash; balance updating</div>");
     }
     APPEND(off, r, max, "</div>");
 
-    if (!synced) {
-        APPEND(off, r, max,
-            "<div class='sync-note'>Balance may be incomplete during sync</div>");
-    }
-
-    /* Stats row */
+    /* Primary actions — Send and Receive as equal-weight buttons */
     APPEND(off, r, max,
-        "<div class='stats'>"
-        "<div class='stat'><div class='n' id='stat-h'>%d</div>"
-        "<div class='l'>Height</div></div>"
-        "<div class='stat'><div class='n' id='stat-p'>%d</div>"
-        "<div class='l'>Peers</div></div>"
-        "<div class='stat'><div class='n' id='stat-m'>%d</div>"
-        "<div class='l'>Mempool</div></div>"
-        "</div>",
-        tip, peers, mempool);
-
-    /* One-click shielding — no forms, no addresses, just pick an amount.
-     * The wallet handles everything: generates z-addr, builds tx, broadcasts.
-     * User never sees technical details. */
-    if (display_transparent > 0) {
-        double bal = (double)display_transparent / 1e8;
-        /* Preset amounts: fractions of balance, scaled to actual holdings */
-        double p1 = bal * 0.10;
-        double p2 = bal * 0.25;
-        double p3 = bal * 0.50;
-
-        APPEND(off, r, max,
-            "<div class='card' style='border-left-color:#9966ff;padding:18px;"
-            "background:linear-gradient(135deg,#141414,#1a1a2a)'>"
-            "<div style='font-size:16px;font-weight:700;color:#bb99ff;"
-            "margin-bottom:8px'>Shield Your Funds</div>"
-            "<div style='color:#999;font-size:13px;margin-bottom:12px'>"
-            "Make your ZCL untraceable. Pick an amount — the wallet "
-            "handles everything. Fully private in ~6 hours.</div>"
-            "<div style='display:flex;gap:8px;flex-wrap:wrap'>"
-            "<a href='/wallet/shield?amount=%.4f' "
-            "style='flex:1;min-width:80px;background:#9966ff;color:#fff;"
-            "padding:10px 0;border-radius:6px;font-weight:700;"
-            "font-size:15px;text-align:center;text-decoration:none'>"
-            "%.4f ZCL</a>"
-            "<a href='/wallet/shield?amount=%.4f' "
-            "style='flex:1;min-width:80px;background:#7744dd;color:#fff;"
-            "padding:10px 0;border-radius:6px;font-weight:700;"
-            "font-size:15px;text-align:center;text-decoration:none'>"
-            "%.4f ZCL</a>"
-            "<a href='/wallet/shield?amount=%.4f' "
-            "style='flex:1;min-width:80px;background:#5522bb;color:#fff;"
-            "padding:10px 0;border-radius:6px;font-weight:700;"
-            "font-size:15px;text-align:center;text-decoration:none'>"
-            "%.4f ZCL</a>"
-            "<a href='/wallet/shield?amount=%.8f' "
-            "style='flex:1;min-width:80px;background:#331199;color:#fff;"
-            "padding:10px 0;border-radius:6px;font-weight:700;"
-            "font-size:15px;text-align:center;text-decoration:none'>"
-            "All</a>"
-            "</div></div>",
-            p1, p1, p2, p2, p3, p3, bal - 0.0001);
-    }
+        "<div class='actions'>"
+        "<a href='/wallet/send' style='border:2px solid #374151'>Send</a>"
+        "<a href='/wallet/receive' style='background:#34d399;"
+        "color:#0a0a0a;border:none'>Receive</a>"
+        "</div>");
 
     /* Quick actions */
     APPEND(off, r, max,
@@ -865,65 +784,77 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
         "</div>");
 
     /* Recent transactions */
-    APPEND(off, r, max, "<h2>Recent Activity</h2>");
+    APPEND(off, r, max,
+        "<div style='margin-top:24px'>"
+        "<div style='color:#6b7280;font-size:12px;font-weight:600;"
+        "text-transform:uppercase;letter-spacing:0.05em;"
+        "margin-bottom:12px'>Recent</div>");
 
+    /* Activity: show amounts (the #1 UX fix — amounts were missing) */
     s = NULL;
     if (sqlite3_prepare_v2(db,
-            "SELECT hex(wt.txid), wt.block_height, b.time, "
-            "wt.fee "
-            "FROM wallet_transactions wt "
-            "LEFT JOIN blocks b ON wt.block_height = b.height "
-            "ORDER BY wt.block_height DESC LIMIT 10",
+            "SELECT u.value, u.height, COALESCE(b.time,0), hex(u.txid) "
+            "FROM utxos u "
+            "INNER JOIN wallet_keys w ON u.address_hash = w.pubkey_hash "
+            "LEFT JOIN blocks b ON b.height = u.height "
+            "ORDER BY u.height DESC LIMIT 5",
             -1, &s, NULL) == SQLITE_OK) {
-        while (sqlite3_step(s) == SQLITE_ROW && off + 600 < max) {
-            const char *txid = (const char *)sqlite3_column_text(s, 0);
+        while (sqlite3_step(s) == SQLITE_ROW && off + 400 < max) {
+            int64_t value = sqlite3_column_int64(s, 0);
             int height = sqlite3_column_int(s, 1);
             int64_t btime = sqlite3_column_int64(s, 2);
-            int64_t fee = sqlite3_column_int64(s, 3);
-            if (!txid) continue;
+            const char *txid = (const char *)sqlite3_column_text(s, 3);
 
-            char short_tx[18], lower_tx[65], rel_time[48];
-            txid_short(txid, short_tx, sizeof(short_tx));
-            txid_lower(txid, lower_tx, sizeof(lower_tx));
+            char rel_time[48], esc_rel[96];
             format_relative_time(btime, rel_time, sizeof(rel_time));
-
-            char esc_short[64], esc_lower[256], esc_rel[96];
-            html_escape(esc_short, sizeof(esc_short), short_tx);
-            html_escape(esc_lower, sizeof(esc_lower), lower_tx);
             html_escape(esc_rel, sizeof(esc_rel), rel_time);
 
+            char lower_tx[65];
+            if (txid) txid_lower(txid, lower_tx, sizeof(lower_tx));
+            else lower_tx[0] = '\0';
+
             int confs = (tip > 0 && height > 0) ? (tip - height + 1) : 0;
-            if (confs < 0) confs = 0;
+
+            char amt[32];
+            zcl_format_zcl(amt, sizeof(amt), value);
 
             APPEND(off, r, max,
-                "<div class='tx-card'>"
-                "<div class='tx-meta'>"
-                "<span class='tx-time'>%s</span>"
-                "<a href='/explorer/tx/%s' class='tx-hash'>%s</a>"
-                "<span class='tx-conf'>%d conf%s%s</span>"
+                "<div style='display:flex;justify-content:space-between;"
+                "align-items:center;padding:10px 0;"
+                "border-bottom:1px solid #1a1a1a'>"
+                "<div>"
+                "<span style='color:#34d399;font-size:16px;font-weight:700;"
+                "font-family:monospace'>+%s</span>"
+                "<span style='color:#6b7280;font-size:12px;"
+                "margin-left:8px'>ZCL</span></div>"
+                "<div style='text-align:right'>"
+                "<div style='color:#6b7280;font-size:13px'>%s</div>"
+                "<a href='/explorer/tx/%s' style='color:#374151;"
+                "font-size:11px;font-family:monospace'>%d conf%s</a>"
                 "</div></div>",
-                esc_rel,
-                esc_lower, esc_short,
-                confs, confs == 1 ? "" : "s",
-                fee > 0 ? " · fee" : "");
+                amt, esc_rel, lower_tx,
+                confs, confs == 1 ? "" : "s");
         }
         sqlite3_finalize(s);
     }
-    /* Live pulse: update balance, height, peers every 2s without reload */
+
+    APPEND(off, r, max,
+        "<div style='text-align:center;margin-top:12px'>"
+        "<a href='/wallet/history' style='color:#6b7280;font-size:13px'>"
+        "View all</a></div></div>");
+    /* Live pulse — balance and sync update every 2s (Victor: immediacy) */
     APPEND(off, r, max,
         "<script>"
+        "function fmt(z){var v=z/1e8;if(z===0)return'0.00';"
+        "if(z%%1000000===0)return v.toFixed(2);"
+        "if(z%%10000===0)return v.toFixed(4);return v.toFixed(8);}"
         "setInterval(function(){"
         "fetch('zcl://node/api/wallet/pulse')"
         ".then(function(r){return r.json()})"
         ".then(function(d){"
         "var b=document.getElementById('bal');"
-        "if(b)b.textContent=(d.balance/1e8).toFixed(8)+' ZCL';"
-        "var h=document.getElementById('stat-h');"
-        "if(h)h.textContent=d.height.toLocaleString();"
-        "var p=document.getElementById('stat-p');"
-        "if(p)p.textContent=d.peers;"
-        "var m=document.getElementById('stat-m');"
-        "if(m)m.textContent=d.mempool;"
+        "if(b){var n=fmt(d.balance+d.shielded)+' ZCL';"
+        "if(b.textContent!==n){b.textContent=n;}}"
         "var s=document.getElementById('sync');"
         "if(s){s.textContent=d.sync==='at_tip'?'Synced':d.sync;"
         "s.className='pill '+(d.sync==='at_tip'?'pill-t':'pill-syncing');}"
