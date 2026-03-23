@@ -7,6 +7,7 @@
 #include "validation/process_block.h"
 #include "validation/check_block.h"
 #include "validation/connect_block.h"
+#include "net/download.h"
 #include "validation/validationinterface.h"
 #include "chain/checkpoints.h"
 #include "chain/pow.h"
@@ -209,17 +210,9 @@ static struct block_index *add_to_block_index(struct main_state *ms,
     return pindex;
 }
 
-static bool chain_has_all_data(struct block_index *pindex,
-                               struct block_index *tip)
-{
-    int tip_height = tip ? tip->nHeight : -1;
-    while (pindex && pindex->nHeight > tip_height) {
-        if (!(pindex->nStatus & BLOCK_HAVE_DATA))
-            return false;
-        pindex = pindex->pprev;
-    }
-    return true;
-}
+/* chain_has_all_data removed — find_most_work_chain no longer requires
+ * BLOCK_HAVE_DATA. activate_best_chain checks data availability inline
+ * before each connect_tip, queuing missing blocks for download. */
 
 static struct block_index *find_most_work_chain(struct main_state *ms)
 {
@@ -231,21 +224,17 @@ static struct block_index *find_most_work_chain(struct main_state *ms)
         if (!pindex)
             continue;
 
-        if (!(pindex->nStatus & BLOCK_HAVE_DATA))
-            continue;
+        /* Skip failed blocks and their children */
         if (pindex->nStatus & BLOCK_FAILED_MASK)
             continue;
-        if (!block_index_is_valid(pindex, BLOCK_VALID_TRANSACTIONS))
-            continue;
-        if (pindex->nChainTx == 0)
+
+        /* Must have at least header validation */
+        if (!block_index_is_valid(pindex, BLOCK_VALID_TREE))
             continue;
 
         if (!best || arith_uint256_compare(&pindex->nChainWork,
                                             &best->nChainWork) > 0) {
-            /* Check that the chain from pindex back to our tip has no
-             * failed blocks. Without this, a failed block deep in the
-             * chain causes activate_best_chain to loop forever trying
-             * to connect through it. */
+            /* Check ancestry for failed blocks */
             bool chain_ok = true;
             struct block_index *check = pindex;
             int tip_h = best ? best->nHeight : -1;
@@ -256,7 +245,7 @@ static struct block_index *find_most_work_chain(struct main_state *ms)
                 }
                 check = check->pprev;
             }
-            if (chain_ok && chain_has_all_data(pindex, best))
+            if (chain_ok)
                 best = pindex;
         }
     }
@@ -916,6 +905,22 @@ bool activate_best_chain(struct validation_state *state,
                 if (connect_path[0]->phashBlock &&
                     uint256_cmp(&block_hash, connect_path[0]->phashBlock) == 0)
                     use_block = pblock;
+            }
+
+            /* Only connect blocks that have data. If a block on the
+             * path doesn't have data yet (header-only), stop here.
+             * The download manager will fetch it; on the next call
+             * to activate_best_chain we'll continue from this point. */
+            if (!(connect_path[i]->nStatus & BLOCK_HAVE_DATA)) {
+                /* Queue this block for download */
+                if (connect_path[i]->phashBlock) {
+                    struct download_manager *dm_abc = msg_get_download_mgr();
+                    struct uint256 need_hash = *connect_path[i]->phashBlock;
+                    int32_t need_height = connect_path[i]->nHeight;
+                    dl_queue_blocks(dm_abc, &need_hash, &need_height, 1);
+                }
+                free(connect_path);
+                return true; /* partial success, will continue later */
             }
 
             if (!connect_tip(state, ms, coins_tip, connect_path[i],
