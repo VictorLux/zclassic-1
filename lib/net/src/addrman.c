@@ -372,11 +372,16 @@ bool addrman_add(struct addr_man *am, const struct net_address *addr,
     if (am->vvNew[nUBucket][nUBucketPos] != nId) {
         bool fInsert = am->vvNew[nUBucket][nUBucketPos] == -1;
         if (!fInsert) {
-            struct addr_info *existing =
-                &am->entries[am->vvNew[nUBucket][nUBucketPos]];
-            if (addr_info_is_terrible(existing, GetAdjustedTime()) ||
-                (existing->ref_count > 1 && pinfo->ref_count == 0))
+            int eId = am->vvNew[nUBucket][nUBucketPos];
+            if (eId < 0 || (size_t)eId >= am->entries_cap) {
+                am->vvNew[nUBucket][nUBucketPos] = -1;
                 fInsert = true;
+            } else {
+                struct addr_info *existing = &am->entries[eId];
+                if (addr_info_is_terrible(existing, GetAdjustedTime()) ||
+                    (existing->ref_count > 1 && pinfo->ref_count == 0))
+                    fInsert = true;
+            }
         }
         if (fInsert) {
             clear_new(am, nUBucket, nUBucketPos);
@@ -713,6 +718,17 @@ bool addrman_deserialize(struct addr_man *am, struct byte_stream *s)
             info.random_pos = (int)am->random_size;
             info.in_tried = true;
             int id = am->id_count++;
+            if ((size_t)id >= am->entries_cap) {
+                size_t new_cap = am->entries_cap * 2;
+                while (new_cap <= (size_t)id) new_cap *= 2;
+                struct addr_info *p = realloc(am->entries,
+                    new_cap * sizeof(struct addr_info));
+                if (!p) continue;
+                memset(p + am->entries_cap, 0,
+                    (new_cap - am->entries_cap) * sizeof(struct addr_info));
+                am->entries = p;
+                am->entries_cap = new_cap;
+            }
             am->entries[id] = info;
             random_push(am, id);
             am->vvTried[nKBucket][nKBucketPos] = id;
@@ -728,7 +744,8 @@ bool addrman_deserialize(struct addr_man *am, struct byte_stream *s)
         for (int n = 0; n < nSize; n++) {
             int32_t nIndex;
             if (!stream_read_i32_le(s, &nIndex)) return false;
-            if (nIndex >= 0 && nIndex < nNew && bucket < ADDRMAN_NEW_BUCKET_COUNT) {
+            if (nIndex >= 0 && nIndex < nNew && bucket < ADDRMAN_NEW_BUCKET_COUNT
+                && (size_t)nIndex < am->entries_cap) {
                 struct addr_info *info = &am->entries[nIndex];
                 int nUBucketPos = addr_info_get_bucket_position(
                     info, &am->nKey, true, bucket);
