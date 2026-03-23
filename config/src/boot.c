@@ -1303,6 +1303,29 @@ bool app_init(struct app_context *ctx)
                 if (coins_view_db_open(&migrate_db, cs_path,
                                        450 << 20, false, false)) {
                     node_db_sync_import_utxos(&g_node_db, &migrate_db);
+
+                    /* Set coins_best_block from LevelDB's best block hash.
+                     * This matches the height of the imported UTXOs. */
+                    struct uint256 ldb_best;
+                    if (coins_view_db_get_best_block(&migrate_db, &ldb_best)
+                        && !uint256_is_null(&ldb_best)) {
+                        sqlite3_stmt *set_bb = NULL;
+                        sqlite3_prepare_v2(g_node_db.db,
+                            "INSERT OR REPLACE INTO node_state(key,value)"
+                            " VALUES('coins_best_block',?)",
+                            -1, &set_bb, NULL);
+                        if (set_bb) {
+                            sqlite3_bind_blob(set_bb, 1, ldb_best.data, 32,
+                                              SQLITE_STATIC);
+                            sqlite3_step(set_bb);
+                            sqlite3_finalize(set_bb);
+                            char hex[65];
+                            uint256_get_hex(&ldb_best, hex);
+                            printf("Set coins_best_block from LevelDB: %s\n",
+                                   hex);
+                        }
+                    }
+
                     coins_view_db_close(&migrate_db);
 
                     /* Mark migration as done */
