@@ -2478,20 +2478,97 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
             }
 
             /* Stall detection: if queue is empty, in-flight is zero,
-             * and we're not at tip — request more headers to discover
-             * needed blocks */
+             * and we're not at tip — find alternative blocks to download.
+             * Scan block_map for blocks at tip+1 with header data but
+             * no block data, that aren't failed. Queue them. */
             uint64_t dl_queued = 0, dl_inflight = 0;
             dl_get_stats(dm, NULL, NULL, NULL, &dl_inflight, &dl_queued);
             int our_h = msg_get_height(mp);
             if (dl_queued == 0 && dl_inflight == 0 &&
                 node->starting_height > our_h + 10 &&
-                node->state >= PEER_SYNCING_HEADERS) {
+                node->state >= PEER_ACTIVE) {
                 static int64_t last_stall_log = 0;
-                if (now_dl - last_stall_log > 30) {
+                if (now_dl - last_stall_log > 10) {
+                    {
+                        /* Count blocks at tip+1 */
+                        size_t at_next = 0, failed_next = 0, data_next = 0;
+                        size_t ci = 0;
+                        struct block_index *cx;
+                        while (block_map_next(&mp->main_state->map_block_index,
+                                               &ci, NULL, &cx)) {
+                            if (cx && cx->nHeight == our_h + 1) {
+                                at_next++;
+                                if (cx->nStatus & BLOCK_FAILED_MASK) failed_next++;
+                                if (cx->nStatus & BLOCK_HAVE_DATA) data_next++;
+                            }
+                        }
+                        printf("STALL: h=%d entries_at_%d=%zu (data=%zu fail=%zu)\n",
+                               our_h, our_h + 1, at_next, data_next, failed_next);
+                    }
                     last_stall_log = now_dl;
-                    event_emitf(EV_SYNC_STATE_CHANGE, (uint32_t)node->id,
-                                "stall: queue=0 inflight=0 h=%d peer=%d",
-                                our_h, node->starting_height);
+
+                    /* Find alternative blocks at tip+1..tip+512 that
+                     * have headers but no data, and aren't failed.
+                     * These are correct-chain blocks that were never
+                     * queued for download. */
+                    struct block_index *tip = active_chain_tip(
+                        &mp->main_state->chain_active);
+                    if (tip) {
+                        /* Look for alternative blocks at tip+1..+512 */
+                        struct uint256 alt_hashes[64];
+                        int32_t alt_heights[64];
+                        size_t alt_count = 0;
+                        size_t iter2 = 0;
+                        struct block_index *alt;
+                        while (block_map_next(&mp->main_state->map_block_index,
+                                               &iter2, NULL, &alt)) {
+                            if (!alt || alt_count >= 64) continue;
+                            if (alt->nHeight <= our_h) continue;
+                            if (alt->nHeight > our_h + 512) continue;
+                            if (alt->nStatus & BLOCK_FAILED_MASK) continue;
+                            if (alt->nStatus & BLOCK_HAVE_DATA) continue;
+                            if (!alt->phashBlock) continue;
+                            struct block_index *w = alt;
+                            while (w && w->nHeight > our_h) w = w->pprev;
+                            if (w == tip) {
+                                alt_hashes[alt_count] = *alt->phashBlock;
+                                alt_heights[alt_count] = alt->nHeight;
+                                alt_count++;
+                            }
+                        }
+                        if (alt_count > 0) {
+                            dl_queue_blocks(dm, alt_hashes, alt_heights,
+                                            alt_count);
+                            printf("Stall recovery: queued %zu alt blocks\n",
+                                   alt_count);
+                        } else {
+                            /* No alternatives found. The block at tip+1
+                             * may have BLOCK_HAVE_DATA (downloaded but
+                             * connect_block failed) OR BLOCK_FAILED_MASK.
+                             * Clear both so it gets re-downloaded from
+                             * peers who have the correct version. */
+                            static int64_t last_clear = 0;
+                            if (now_dl - last_clear > 30) {
+                                last_clear = now_dl;
+                                iter2 = 0;
+                                int cleared = 0;
+                                while (block_map_next(
+                                    &mp->main_state->map_block_index,
+                                    &iter2, NULL, &alt)) {
+                                    if (!alt) continue;
+                                    if (alt->nHeight == our_h + 1) {
+                                        alt->nStatus &= ~BLOCK_FAILED_MASK;
+                                        alt->nStatus &= ~BLOCK_HAVE_DATA;
+                                        cleared++;
+                                    }
+                                }
+                                if (cleared > 0)
+                                    printf("Stall recovery: reset %d blocks "
+                                           "at h=%d for re-download\n",
+                                           cleared, our_h + 1);
+                            }
+                        }
+                    }
                     push_getheaders(mp, node);
                 }
             }
