@@ -141,7 +141,8 @@ tokens when shielded payment confirms.
 - Snapshot offer: pre-computed in background thread
 
 ### Wallet
-All funds at `t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn` (0.98 ZCL).
+All funds at `t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn` (0.87941630 ZCL, 1 UTXO at h=3046138).
+85 Sapling z-addresses (0 shielded balance). 110 wallet transactions.
 
 ## Network Seeds
 ```
