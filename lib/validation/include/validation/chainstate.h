@@ -79,6 +79,7 @@ const struct uint256 *block_map_find_hash(const struct block_map *m,
                                            const struct uint256 *hash);
 bool block_map_insert(struct block_map *m, const struct uint256 *hash,
                       struct block_index *index);
+bool block_map_reserve(struct block_map *m, size_t expected_count);
 size_t block_map_count(const struct block_map *m);
 
 /* Iteration: call with *iter=0, returns false when done */

@@ -300,13 +300,22 @@ static bool load_block_index_flat(const char *datadir, struct main_state *ms)
     const struct block_index_flat *entries =
         (const struct block_index_flat *)(data + 8);
 
-    /* Phase 1: Create all block_index entries */
+    /* Pre-size hash map to avoid 10+ rehashes during 3M inserts.
+     * Allocate all block_index structs in one arena (1 calloc instead of 3M). */
+    block_map_reserve(&ms->map_block_index, count);
+    struct block_index *arena = calloc(count, sizeof(struct block_index));
+    if (!arena) { munmap(data, file_size); return false; }
+
+    /* Phase 1: Create all block_index entries — bulk insert */
     for (uint32_t i = 0; i < count; i++) {
         struct uint256 hash;
         memcpy(hash.data, entries[i].hash, 32);
-        struct block_index *pindex = chainstate_insert_block_index(
-            (struct chainstate *)ms, &hash);
-        if (!pindex) continue;
+        if (uint256_is_null(&hash)) continue;
+
+        struct block_index *pindex = &arena[i];
+        block_index_init(pindex);
+        block_map_insert(&ms->map_block_index, &hash, pindex);
+        pindex->phashBlock = block_map_find_hash(&ms->map_block_index, &hash);
 
         pindex->nHeight = entries[i].height;
         pindex->nBits = entries[i].n_bits;
@@ -321,6 +330,10 @@ static bool load_block_index_flat(const char *datadir, struct main_state *ms)
         memcpy(pindex->nChainWork.pn, entries[i].chain_work, 32);
         pindex->nCachedBranchId = entries[i].n_cached_branch_id;
     }
+    /* Note: arena is intentionally NOT freed — block_index structs
+     * live for the lifetime of the process. block_map_free will NOT
+     * free these (it calls free() on individually allocated entries).
+     * This is a deliberate leak-at-exit trade for startup speed. */
 
     /* Phase 2: Link pprev pointers (entries are height-sorted) */
     for (uint32_t i = 0; i < count; i++) {

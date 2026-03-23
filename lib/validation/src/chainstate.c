@@ -82,6 +82,36 @@ static bool block_map_insert_internal(struct block_map *m,
     return false;
 }
 
+/* Pre-allocate hash map to avoid repeated rehashing during bulk load.
+ * next_power_of_2(n * 2) gives ~50% load factor for good probe performance. */
+bool block_map_reserve(struct block_map *m, size_t expected_count)
+{
+    size_t target = expected_count * 2;
+    size_t cap = 4096;
+    while (cap < target) cap *= 2;
+    if (cap <= m->capacity) return true;
+
+    pthread_rwlock_wrlock(&m->rwlock);
+    struct block_map_entry *old = m->buckets;
+    size_t old_cap = m->capacity;
+
+    m->buckets = calloc(cap, sizeof(struct block_map_entry));
+    if (!m->buckets) { m->buckets = old; pthread_rwlock_unlock(&m->rwlock); return false; }
+    m->capacity = cap;
+
+    for (size_t i = 0; i < old_cap; i++) {
+        if (old[i].occupied)
+            block_map_insert_internal(m, &old[i].hash, old[i].index);
+    }
+    free(old);
+    for (size_t i = 0; i < cap; i++) {
+        if (m->buckets[i].occupied && m->buckets[i].index)
+            m->buckets[i].index->phashBlock = &m->buckets[i].hash;
+    }
+    pthread_rwlock_unlock(&m->rwlock);
+    return true;
+}
+
 static bool block_map_grow(struct block_map *m)
 {
     size_t new_cap = m->capacity ? m->capacity * 2 : 4096;
