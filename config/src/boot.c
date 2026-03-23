@@ -1407,20 +1407,40 @@ bool app_init(struct app_context *ctx)
 
     /* Restore chain tip from coins DB best block hash */
     if (ctx->reindex_chainstate) {
+        /* Find the highest block to replay. Use SQLite tip if available,
+         * otherwise scan block_index for highest with BLOCK_HAVE_DATA. */
+        int reindex_target = -1;
+        if (g_active_node_db) {
+            int64_t st = 0;
+            node_db_state_get_int(&g_node_db, "tip_height", &st);
+            if (st > 0) reindex_target = (int)st;
+        }
         struct block_index *best = NULL;
-        size_t fi = 0;
-        struct block_index *fp;
-        while (block_map_next(&g_state.map_block_index, &fi, NULL, &fp)) {
-            if (fp && (fp->nStatus & BLOCK_HAVE_DATA) &&
-                fp->nChainTx > 0 &&
-                (!best || arith_uint256_compare(
-                    &fp->nChainWork, &best->nChainWork) > 0))
-                best = fp;
+        if (reindex_target > 0) {
+            best = active_chain_at(&g_state.chain_active, reindex_target);
+            if (!best) {
+                /* Try block index directly */
+                size_t fi = 0;
+                struct block_index *fp;
+                while (block_map_next(&g_state.map_block_index, &fi, NULL, &fp)) {
+                    if (fp && fp->nHeight == reindex_target) { best = fp; break; }
+                }
+            }
+        }
+        if (!best) {
+            /* Fallback: highest chainwork */
+            size_t fi = 0;
+            struct block_index *fp;
+            while (block_map_next(&g_state.map_block_index, &fi, NULL, &fp)) {
+                if (fp && (!best || arith_uint256_compare(
+                        &fp->nChainWork, &best->nChainWork) > 0))
+                    best = fp;
+            }
         }
         if (best) {
             active_chain_set_tip(&g_state.chain_active, best);
             g_state.pindex_best_header = best;
-            printf("Chain tip from block index: height=%d\n", best->nHeight);
+            printf("Reindex target: height=%d\n", best->nHeight);
         }
         /* Full chainstate rebuild: wipe UTXOs and replay all blocks */
         if (!reindex_chainstate(&g_state, &g_coins_sqlite, &g_coins_tip,
