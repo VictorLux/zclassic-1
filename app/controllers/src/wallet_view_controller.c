@@ -31,41 +31,48 @@ static const char *g_datadir = NULL;
 
 /* ── RPC to running node for live balance ──────────────────── */
 
-static int wallet_rpc_call(const char *method, const char *params_json,
-                            char *out, size_t outmax)
+static int wallet_rpc_call_port(const char *method, const char *params_json,
+                                char *out, size_t outmax,
+                                uint16_t port, const char *auth_cookie)
 {
-    if (!g_datadir) return -1;
+    char cookie[256] = "";
 
-    /* Read auth cookie */
-    char cookie_path[1024], cookie[256] = "";
-    snprintf(cookie_path, sizeof(cookie_path), "%s/.cookie", g_datadir);
-    FILE *f = fopen(cookie_path, "r");
-    if (!f) {
-        /* Try config file credentials */
-        char conf_path[1024];
-        snprintf(conf_path, sizeof(conf_path), "%s/zclassic.conf", g_datadir);
-        f = fopen(conf_path, "r");
-        if (!f) return -1;
-        char user[64] = "", pass[64] = "";
-        char line[256];
-        while (fgets(line, sizeof(line), f)) {
-            if (strncmp(line, "rpcuser=", 8) == 0) {
-                char *nl = strchr(line + 8, '\n'); if (nl) *nl = '\0';
-                snprintf(user, sizeof(user), "%s", line + 8);
-            }
-            if (strncmp(line, "rpcpassword=", 12) == 0) {
-                char *nl = strchr(line + 12, '\n'); if (nl) *nl = '\0';
-                snprintf(pass, sizeof(pass), "%s", line + 12);
-            }
-        }
-        fclose(f);
-        if (!user[0] || !pass[0]) return -1;
-        snprintf(cookie, sizeof(cookie), "%s:%s", user, pass);
+    if (auth_cookie && auth_cookie[0]) {
+        snprintf(cookie, sizeof(cookie), "%s", auth_cookie);
     } else {
-        size_t n = fread(cookie, 1, sizeof(cookie) - 1, f);
-        fclose(f);
-        cookie[n] = '\0';
-        char *nl = strchr(cookie, '\n'); if (nl) *nl = '\0';
+        if (!g_datadir) return -1;
+
+        /* Read auth cookie */
+        char cookie_path[1024];
+        snprintf(cookie_path, sizeof(cookie_path), "%s/.cookie", g_datadir);
+        FILE *f = fopen(cookie_path, "r");
+        if (!f) {
+            /* Try config file credentials */
+            char conf_path[1024];
+            snprintf(conf_path, sizeof(conf_path), "%s/zclassic.conf", g_datadir);
+            f = fopen(conf_path, "r");
+            if (!f) return -1;
+            char user[64] = "", pass[64] = "";
+            char line[256];
+            while (fgets(line, sizeof(line), f)) {
+                if (strncmp(line, "rpcuser=", 8) == 0) {
+                    char *nl = strchr(line + 8, '\n'); if (nl) *nl = '\0';
+                    snprintf(user, sizeof(user), "%s", line + 8);
+                }
+                if (strncmp(line, "rpcpassword=", 12) == 0) {
+                    char *nl = strchr(line + 12, '\n'); if (nl) *nl = '\0';
+                    snprintf(pass, sizeof(pass), "%s", line + 12);
+                }
+            }
+            fclose(f);
+            if (!user[0] || !pass[0]) return -1;
+            snprintf(cookie, sizeof(cookie), "%s:%s", user, pass);
+        } else {
+            size_t n = fread(cookie, 1, sizeof(cookie) - 1, f);
+            fclose(f);
+            cookie[n] = '\0';
+            char *nl = strchr(cookie, '\n'); if (nl) *nl = '\0';
+        }
     }
 
     int fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -75,7 +82,7 @@ static int wallet_rpc_call(const char *method, const char *params_json,
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    addr.sin_port = htons(18232);
+    addr.sin_port = htons(port);
 
     struct timeval tv = { .tv_sec = 3, .tv_usec = 0 };
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
@@ -136,14 +143,12 @@ static int wallet_rpc_call(const char *method, const char *params_json,
     return (int)total;
 }
 
-/* Query running node for wallet balance via z_gettotalbalance RPC */
-static bool query_node_balance(int64_t *transparent_out, int64_t *shielded_out)
+/* Parse z_gettotalbalance JSON response into satoshi amounts.
+ * Returns true if at least one balance field was found. */
+static bool parse_balance_response(const char *buf,
+                                   int64_t *transparent_out,
+                                   int64_t *shielded_out)
 {
-    char buf[4096];
-    if (wallet_rpc_call("z_gettotalbalance", "[]", buf, sizeof(buf)) <= 0)
-        return false;
-
-    /* Parse: {"result":{"transparent":"0.98000000","private":"0.00","total":"0.98"}} */
     char tval[32] = "", pval[32] = "";
     zcl_json_extract_str(buf, "transparent", tval, sizeof(tval));
     zcl_json_extract_str(buf, "private", pval, sizeof(pval));
@@ -151,6 +156,33 @@ static bool query_node_balance(int64_t *transparent_out, int64_t *shielded_out)
     if (tval[0]) *transparent_out = (int64_t)(strtod(tval, NULL) * 1e8 + 0.5);
     if (pval[0]) *shielded_out = (int64_t)(strtod(pval, NULL) * 1e8 + 0.5);
     return tval[0] || pval[0];
+}
+
+/* Query running node for wallet balance via z_gettotalbalance RPC.
+ * Tries C23 node (port 18232) first, then falls back to legacy
+ * zclassicd (port 8232) with zcluser:zclpass credentials. */
+static bool query_node_balance(int64_t *transparent_out, int64_t *shielded_out)
+{
+    char buf[4096];
+
+    /* Try C23 node first */
+    if (wallet_rpc_call_port("z_gettotalbalance", "[]", buf, sizeof(buf),
+                             18232, NULL) > 0) {
+        if (parse_balance_response(buf, transparent_out, shielded_out)) {
+            if (*transparent_out > 0 || *shielded_out > 0)
+                return true;
+        }
+    }
+
+    /* Fall back to legacy zclassicd on port 8232 */
+    memset(buf, 0, sizeof(buf));
+    if (wallet_rpc_call_port("z_gettotalbalance", "[]", buf, sizeof(buf),
+                             8232, "zcluser:zclpass") > 0) {
+        if (parse_balance_response(buf, transparent_out, shielded_out))
+            return true;
+    }
+
+    return false;
 }
 
 /* ── Shared CSS ─────────────────────────────────────────────── */
