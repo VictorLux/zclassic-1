@@ -139,7 +139,8 @@ static void on_uri_scheme_request(WebKitURISchemeRequest *request,
     /* Route to MVC controllers by path prefix */
     size_t len = 0;
 
-    if (strncmp(path, "/wallet", 7) == 0)
+    if (strncmp(path, "/wallet", 7) == 0 ||
+        strncmp(path, "/api/wallet/", 12) == 0)
         len = wallet_view_handle_request("GET", path, NULL, 0,
                                           g_response, sizeof(g_response));
     else if (strncmp(path, "/explorer", 9) == 0 ||

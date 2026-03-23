@@ -12,6 +12,7 @@
 
 #include "controllers/wallet_view_controller.h"
 #include "views/format_helpers.h"
+#include "event/event.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -230,6 +231,14 @@ static bool query_node_balance(int64_t *transparent_out, int64_t *shielded_out)
     ".tx-hash{color:#4db8ff;font-family:'SF Mono',monospace;font-size:12px}" \
     ".tx-conf{color:#555;font-size:11px}" \
     "footer{text-align:center;color:#333;font-size:11px;margin-top:32px}" \
+    "@keyframes sync-pulse{0%%,100%%{opacity:1}50%%{opacity:.5}}" \
+    ".pill-syncing{animation:sync-pulse 1.5s ease infinite}" \
+    ".actions{display:flex;gap:12px;margin:16px 0}" \
+    ".actions a{flex:1;text-align:center;background:#141414;padding:14px;" \
+    "border-radius:8px;border:1px solid #1e1e1e;font-size:16px;font-weight:700;" \
+    "color:#e8e8e8;text-decoration:none}" \
+    ".actions a:hover{border-color:#33ff99;color:#33ff99}" \
+    ".sync-note{color:#4db8ff;font-size:12px;margin-top:4px}" \
     "@media(max-width:600px){" \
     ".stat{min-width:100px;padding:10px}" \
     ".stat .n{font-size:20px}" \
@@ -666,7 +675,6 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
 
     int tip = query_int(db, "SELECT MAX(height) FROM blocks");
     int peers = query_int(db, "SELECT count(*) FROM peers");
-    int tokens = query_int(db, "SELECT count(*) FROM zslp_tokens");
     int mempool = query_int(db,
         "SELECT count(*) FROM mempool_entries");
     int64_t transparent = 0;
@@ -747,13 +755,21 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
 
     size_t off = emit_header(r, max, "Wallet — ZClassic23", "/wallet");
 
+    const char *sync = sync_state_name(sync_get_state());
+    bool synced = (sync_get_state() == SYNC_AT_TIP);
+
     APPEND(off, r, max,
         "<div class='card' style='border-left-color:#33ff99;padding:20px'>"
+        "<div style='display:flex;justify-content:space-between;"
+        "align-items:center'>"
         "<div class='label'>Total Balance</div>"
-        "<div style='font-size:36px;color:#33ff99;font-weight:800'>"
+        "<span id='sync' class='pill %s'>%s</span></div>"
+        "<div id='bal' style='font-size:36px;color:#33ff99;font-weight:800'>"
         "%.8f ZCL</div>"
         "<div class='sub' style='margin-top:8px'>"
-        "Transparent: %.8f ZCL (%d UTXO%s)",
+        "Transparent: <span id='t-bal'>%.8f</span> ZCL (%d UTXO%s)",
+        synced ? "pill-t" : "pill-syncing",
+        synced ? "Synced" : sync,
         (double)total_balance / 1e8,
         (double)display_transparent / 1e8,
         t_utxos, t_utxos == 1 ? "" : "s");
@@ -781,19 +797,22 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
     }
     APPEND(off, r, max, "</div>");
 
+    if (!synced) {
+        APPEND(off, r, max,
+            "<div class='sync-note'>Balance may be incomplete during sync</div>");
+    }
+
     /* Stats row */
     APPEND(off, r, max,
         "<div class='stats'>"
-        "<div class='stat'><div class='n'>%d</div>"
+        "<div class='stat'><div class='n' id='stat-h'>%d</div>"
         "<div class='l'>Height</div></div>"
-        "<div class='stat'><div class='n'>%d</div>"
+        "<div class='stat'><div class='n' id='stat-p'>%d</div>"
         "<div class='l'>Peers</div></div>"
-        "<div class='stat'><div class='n'>%d</div>"
-        "<div class='l'>Tokens</div></div>"
-        "<div class='stat'><div class='n'>%d</div>"
+        "<div class='stat'><div class='n' id='stat-m'>%d</div>"
         "<div class='l'>Mempool</div></div>"
         "</div>",
-        tip, peers, tokens, mempool);
+        tip, peers, mempool);
 
     /* One-click shielding — no forms, no addresses, just pick an amount.
      * The wallet handles everything: generates z-addr, builds tx, broadcasts.
@@ -840,16 +859,9 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
 
     /* Quick actions */
     APPEND(off, r, max,
-        "<div class='stats' style='margin:16px 0'>"
-        "<div class='stat' style='cursor:pointer'>"
-        "<a href='/wallet/send' style='color:#33ff99;font-size:18px;"
-        "font-weight:700;text-decoration:none'>Send</a></div>"
-        "<div class='stat' style='cursor:pointer'>"
-        "<a href='/wallet/receive' style='color:#4db8ff;font-size:18px;"
-        "font-weight:700;text-decoration:none'>Receive</a></div>"
-        "<div class='stat' style='cursor:pointer'>"
-        "<a href='/wallet/coins' style='color:#e8e8e8;font-size:18px;"
-        "font-weight:700;text-decoration:none'>Coins</a></div>"
+        "<div class='actions'>"
+        "<a href='/wallet/send'>Send</a>"
+        "<a href='/wallet/receive'>Receive</a>"
         "</div>");
 
     /* Recent transactions */
@@ -897,6 +909,28 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
         }
         sqlite3_finalize(s);
     }
+    /* Live pulse: update balance, height, peers every 2s without reload */
+    APPEND(off, r, max,
+        "<script>"
+        "setInterval(function(){"
+        "fetch('zcl://node/api/wallet/pulse')"
+        ".then(function(r){return r.json()})"
+        ".then(function(d){"
+        "var b=document.getElementById('bal');"
+        "if(b)b.textContent=(d.balance/1e8).toFixed(8)+' ZCL';"
+        "var h=document.getElementById('stat-h');"
+        "if(h)h.textContent=d.height.toLocaleString();"
+        "var p=document.getElementById('stat-p');"
+        "if(p)p.textContent=d.peers;"
+        "var m=document.getElementById('stat-m');"
+        "if(m)m.textContent=d.mempool;"
+        "var s=document.getElementById('sync');"
+        "if(s){s.textContent=d.sync==='at_tip'?'Synced':d.sync;"
+        "s.className='pill '+(d.sync==='at_tip'?'pill-t':'pill-syncing');}"
+        "}).catch(function(){});"
+        "},2000);"
+        "</script>");
+
     emit_footer(r, max, &off);
     sqlite3_close(db);
     return off;
@@ -1030,6 +1064,19 @@ static size_t serve_receive(uint8_t *r, size_t max) {
         }
         sqlite3_close(db);
     }
+
+    /* Click-to-copy: click address → clipboard, border flashes green */
+    APPEND(off, r, max,
+        "<script>"
+        "document.querySelectorAll('.addr-box,.addr-box-sm')"
+        ".forEach(function(el){"
+        "el.style.cursor='pointer';"
+        "el.addEventListener('click',function(){"
+        "navigator.clipboard.writeText(this.textContent.trim())"
+        ".then(function(){el.style.borderColor='#33ff99';"
+        "setTimeout(function(){el.style.borderColor='';},1000);});"
+        "});});"
+        "</script>");
 
     emit_footer(r, max, &off);
     return off;
@@ -1524,6 +1571,63 @@ static size_t serve_shield_confirm(uint8_t *r, size_t max, const char *query) {
     return off;
 }
 
+/* ── Pulse endpoint (JSON, <5ms) ────────────────────────────── */
+
+static size_t serve_pulse(uint8_t *r, size_t max) {
+    sqlite3 *db = open_db();
+    int height = 0, peers = 0, mempool = 0;
+    int64_t balance = 0, shielded = 0;
+
+    if (db) {
+        height = query_int(db, "SELECT MAX(height) FROM blocks");
+        peers = query_int(db,  "SELECT count(*) FROM peers");
+        mempool = query_int(db, "SELECT count(*) FROM mempool_entries");
+
+        sqlite3_stmt *s = NULL;
+        if (sqlite3_prepare_v2(db,
+                "SELECT COALESCE(SUM(u.value),0) FROM utxos u "
+                "WHERE u.address_hash IN "
+                "(SELECT pubkey_hash FROM wallet_keys)",
+                -1, &s, NULL) == SQLITE_OK && s) {
+            if (sqlite3_step(s) == SQLITE_ROW)
+                balance = sqlite3_column_int64(s, 0);
+            sqlite3_finalize(s);
+        }
+        s = NULL;
+        if (sqlite3_prepare_v2(db,
+                "SELECT COALESCE(SUM(n.value),0) FROM wallet_sapling_notes n"
+                " WHERE NOT EXISTS ("
+                "   SELECT 1 FROM sapling_spends ss"
+                "   WHERE ss.nullifier = n.nullifier)",
+                -1, &s, NULL) == SQLITE_OK && s) {
+            if (sqlite3_step(s) == SQLITE_ROW)
+                shielded = sqlite3_column_int64(s, 0);
+            sqlite3_finalize(s);
+        }
+
+        /* RPC fallback if SQLite has no balance */
+        if (balance == 0 && shielded == 0) {
+            int64_t rpc_t = 0, rpc_z = 0;
+            if (query_node_balance(&rpc_t, &rpc_z)) {
+                balance = rpc_t;
+                shielded = rpc_z;
+            }
+        }
+        sqlite3_close(db);
+    }
+
+    const char *sync = sync_state_name(sync_get_state());
+
+    return (size_t)snprintf((char *)r, max,
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: application/json\r\n"
+        "Cache-Control: no-cache\r\n"
+        "Connection: close\r\n\r\n"
+        "{\"height\":%d,\"balance\":%" PRId64 ",\"shielded\":%" PRId64
+        ",\"peers\":%d,\"sync\":\"%s\",\"mempool\":%d}",
+        height, balance, shielded, peers, sync, mempool);
+}
+
 /* ── Router ─────────────────────────────────────────────────── */
 
 void wallet_view_init(const char *datadir) {
@@ -1536,6 +1640,10 @@ size_t wallet_view_handle_request(const char *method, const char *path,
 {
     (void)method; (void)body; (void)body_len;
     if (!path || !response || response_max == 0) return 0;
+
+    /* JSON pulse endpoint — polled every 2s by dashboard JS */
+    if (strcmp(path, "/api/wallet/pulse") == 0)
+        return serve_pulse(response, response_max);
 
     if (strcmp(path, "/wallet") == 0 || strcmp(path, "/wallet/") == 0)
         return serve_dashboard(response, response_max);
