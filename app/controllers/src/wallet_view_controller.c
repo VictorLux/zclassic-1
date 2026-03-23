@@ -12,6 +12,7 @@
 
 #include "controllers/wallet_view_controller.h"
 #include "views/format_helpers.h"
+#include "views/wallet_css.h"
 #include "event/event.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -186,98 +187,7 @@ static bool query_node_balance(int64_t *transparent_out, int64_t *shielded_out)
     return false;
 }
 
-/* ── Shared CSS ─────────────────────────────────────────────── */
-
-#define WALLET_CSS_1 \
-    "body{font-family:-apple-system,'Segoe UI',Roboto,monospace;" \
-    "background:#0c0c0c;color:#e8e8e8;max-width:960px;margin:0 auto;" \
-    "padding:16px 20px;font-size:16px;line-height:1.5}" \
-    "*{box-sizing:border-box}" \
-    "a{color:#4db8ff;text-decoration:none}" \
-    "a:hover{color:#80ccff;text-decoration:underline}" \
-    "h1{color:#33ff99;font-size:28px;margin:0 0 4px;font-weight:800}" \
-    "h2{color:#33ff99;font-size:20px;border-bottom:1px solid #222;" \
-    "padding-bottom:6px;margin:24px 0 12px}" \
-    "h3{color:#aaa;font-size:16px;margin:20px 0 8px}" \
-    ".subtitle{color:#888;font-size:13px;margin:0 0 16px}" \
-    ".stats{display:flex;gap:10px;margin:12px 0;flex-wrap:wrap}" \
-    ".stat{flex:1;min-width:130px;background:#141414;padding:14px;" \
-    "border-radius:8px;text-align:center;border:1px solid #1e1e1e}" \
-    ".stat .n{font-size:28px;color:#33ff99;font-weight:800;line-height:1.2}" \
-    ".stat .l{font-size:11px;color:#888;text-transform:uppercase;" \
-    "letter-spacing:1px;margin-top:2px}" \
-    ".nav{display:flex;gap:8px;margin:14px 0;flex-wrap:wrap}" \
-    ".nav a{background:#141414;padding:8px 16px;border-radius:6px;" \
-    "border:1px solid #1e1e1e;font-size:14px;font-weight:600}" \
-    ".nav a:hover{border-color:#33ff99;color:#33ff99}" \
-    ".nav a.active{border-color:#33ff99;color:#33ff99;background:#0a1f0a}" \
-    ".card{background:#141414;padding:14px 18px;border-radius:8px;" \
-    "margin:8px 0;border:1px solid #1e1e1e;border-left:3px solid #33ff99}" \
-    ".card .label{color:#888;font-size:12px}" \
-    ".card .value{font-size:22px;color:#33ff99;font-weight:700}" \
-    ".card .sub{color:#888;font-size:12px;margin-top:2px}" \
-    "table{width:100%%;border-collapse:collapse;font-size:14px}" \
-    "th{text-align:left;color:#888;padding:8px;border-bottom:1px solid #222;" \
-    "font-size:12px;text-transform:uppercase;letter-spacing:0.5px}" \
-    "td{padding:8px;border-bottom:1px solid #1a1a1a}" \
-    "tr:hover{background:#161616}" \
-    ".mono{font-family:'SF Mono','Fira Code',monospace;font-size:13px}" \
-    ".hash{color:#4db8ff;font-family:'SF Mono',monospace;font-size:13px}" \
-    ".zcl{color:#33ff99;font-weight:700}"
-
-#define WALLET_CSS_2 \
-    ".addr-box{background:#0a0a0a;padding:12px;border-radius:6px;" \
-    "font-family:monospace;font-size:14px;color:#4db8ff;" \
-    "word-break:break-all;text-align:center;margin:10px 0;" \
-    "border:1px solid #222;user-select:all;cursor:pointer}" \
-    ".addr-box-sm{background:#0a0a0a;padding:10px;border-radius:6px;" \
-    "font-family:monospace;font-size:11px;color:#9999ff;" \
-    "word-break:break-all;text-align:center;margin:8px 0;" \
-    "border:1px solid #222;user-select:all;cursor:pointer}" \
-    "input,select{background:#1a1a1a;color:#e8e8e8;border:1px solid #333;" \
-    "padding:10px 14px;font-family:inherit;font-size:15px;width:100%%;" \
-    "border-radius:6px;margin:4px 0}" \
-    "input:focus{border-color:#33ff99;outline:none}" \
-    "button{background:#33ff99;color:#0c0c0c;border:none;padding:12px 24px;" \
-    "font-size:16px;font-weight:700;border-radius:6px;cursor:pointer;" \
-    "font-family:inherit;width:100%%}" \
-    "button:hover{background:#44ffaa}" \
-    ".pill{display:inline-block;padding:2px 8px;border-radius:10px;" \
-    "font-size:11px;font-weight:700}" \
-    ".pill-t{background:#1a2a1a;color:#33ff99}" \
-    ".pill-z{background:#1a1a2a;color:#9999ff}" \
-    ".pill-recv{background:#0a1f0a;color:#33ff99}" \
-    ".pill-send{background:#2a1a1a;color:#ff6666}" \
-    ".err{color:#ff4444;font-size:13px;margin:4px 0}" \
-    ".qr-wrap{text-align:center;margin:16px 0}" \
-    ".total-row{font-weight:700;background:#0a1f0a}" \
-    ".overflow-x{overflow-x:auto}" \
-    ".tx-card{background:#141414;padding:14px 18px;border-radius:8px;" \
-    "margin:8px 0;border:1px solid #1e1e1e;border-left:3px solid #333}" \
-    ".tx-card:hover{background:#181818}" \
-    ".tx-amount{font-size:22px;font-weight:800;font-family:'SF Mono',monospace}" \
-    ".tx-amount.recv{color:#33ff99}" \
-    ".tx-amount.send{color:#ff6666}" \
-    ".tx-meta{display:flex;gap:12px;align-items:center;flex-wrap:wrap;" \
-    "margin-top:4px;font-size:13px}" \
-    ".tx-time{color:#888}" \
-    ".tx-hash{color:#4db8ff;font-family:'SF Mono',monospace;font-size:12px}" \
-    ".tx-conf{color:#555;font-size:11px}" \
-    "footer{text-align:center;color:#333;font-size:11px;margin-top:32px}" \
-    "@keyframes sync-pulse{0%%,100%%{opacity:1}50%%{opacity:.5}}" \
-    ".pill-syncing{animation:sync-pulse 1.5s ease infinite}" \
-    ".actions{display:flex;gap:12px;margin:16px 0}" \
-    ".actions a{flex:1;text-align:center;background:#141414;padding:14px;" \
-    "border-radius:8px;border:1px solid #1e1e1e;font-size:16px;font-weight:700;" \
-    "color:#e8e8e8;text-decoration:none}" \
-    ".actions a:hover{border-color:#33ff99;color:#33ff99}" \
-    ".sync-note{color:#4db8ff;font-size:12px;margin-top:4px}" \
-    "@media(max-width:600px){" \
-    ".stat{min-width:100px;padding:10px}" \
-    ".stat .n{font-size:20px}" \
-    "table{font-size:12px}" \
-    "td,th{padding:5px}" \
-    "}"
+/* CSS loaded from views/wallet_css.h */
 
 /* ── Navigation with active state ───────────────────────────── */
 
@@ -681,18 +591,35 @@ static size_t emit_header(uint8_t *buf, size_t max, const char *title,
         "Connection: close\r\n\r\n"
         "<!DOCTYPE html><html><head><meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-        "<title>%s</title><style>",
-        title);
-    APPEND(off, buf, max, WALLET_CSS_1);
-    APPEND(off, buf, max, WALLET_CSS_2);
-    APPEND(off, buf, max,
-        "</style></head><body>");
+        "<title>%s</title><style>%s</style></head><body>",
+        title, wallet_css);
     off += emit_nav(buf + off, max - off, active_tab);
     return off;
 }
 
 static void emit_footer(uint8_t *buf, size_t max, size_t *off) {
-    APPEND(*off, buf, max, "</body></html>");
+    APPEND(*off, buf, max,
+        "<div id='sbar' class='status-bar'>"
+        "<span id='sb-h'>---</span>"
+        "<span id='sb-p'>---</span>"
+        "<span id='sb-m'>---</span>"
+        "</div>"
+        "<script>"
+        "(function(){"
+        "var u='zcl://node/api/wallet/pulse';"
+        "function up(){"
+        "fetch(u).then(function(r){return r.json()}).then(function(d){"
+        "var h=document.getElementById('sb-h');"
+        "var p=document.getElementById('sb-p');"
+        "var m=document.getElementById('sb-m');"
+        "if(h)h.textContent='H:'+d.height;"
+        "if(p)p.textContent='P:'+d.peers;"
+        "if(m)m.textContent='M:'+d.mempool;"
+        "}).catch(function(){});}"
+        "up();setInterval(up,5000);"
+        "})();"
+        "</script>"
+        "</body></html>");
 }
 
 /* ── URL decoding + form parsing ────────────────────────────── */
@@ -826,12 +753,12 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
     if (!db) {
         size_t off = emit_header(r, max, "ZClassic Wallet", "/wallet");
         APPEND(off, r, max,
-            "<div style='text-align:center;padding:48px 0'>"
+            "<div class='empty-state' style='padding:48px 0'>"
             "<div style='font-size:40px;margin-bottom:12px'>&#x23F3;</div>"
-            "<div style='color:#e8e8e8;font-size:20px;font-weight:600'>"
+            "<div style='color:#e2e2e2;font-size:18px;font-weight:600'>"
             "Wallet Loading</div>"
-            "<div style='color:#888;font-size:14px;margin-top:8px'>"
-            "The database is not yet available. The node may still be starting.</div>"
+            "<div style='margin-top:8px'>"
+            "The database is not yet available.</div>"
             "</div>");
         emit_footer(r, max, &off);
         return off;
@@ -842,9 +769,6 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
     /* Ground-truth transparent balance (P2PKH + P2SH change addresses) */
     int t_utxos = 0;
     int64_t transparent = query_ground_truth_balance(db, &t_utxos);
-
-    /* Speed-layer balance (wallet_utxos cache — may differ) */
-    int64_t speed_bal = query_speed_balance(db);
 
     /* Shielded: verified notes minus spent nullifiers */
     int z_notes = 0;
@@ -878,21 +802,20 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
     else
         snprintf(bal_str, sizeof(bal_str), "%.8f", bal_f);
 
-    /* Balance hero */
+    /* 1. Sync badge (top center) */
     APPEND(off, r, max,
-        "<div style='text-align:center;padding:32px 0 20px'>"
-        "<span id='sync' class='pill %s' style='font-size:10px'>%s</span>"
-        "<div id='bal' style='font-size:40px;color:#34d399;"
-        "font-weight:700;letter-spacing:-1px;margin-top:8px'>"
+        "<div style='text-align:center;padding:24px 0 16px'>"
+        "<span id='sync' class='pill %s sync-badge'>%s</span>"
+        /* 2. Balance hero */
+        "<div id='bal' class='balance' style='margin-top:8px'>"
         "%s ZCL</div>",
-        synced ? "pill-t" : "pill-syncing",
+        synced ? "pill-synced" : "pill-syncing",
         synced ? "Synced" : sync,
         bal_str);
 
-    /* Always show breakdown: transparent + shielded */
+    /* 3. Breakdown line */
     APPEND(off, r, max,
-        "<div id='breakdown' style='color:#6b7280;font-size:13px;"
-        "margin-top:8px'>"
+        "<div id='breakdown' class='balance-sub'>"
         "%.8f transparent",
         (double)transparent / (double)ZATOSHI_PER_ZCL);
     if (shielded > 0)
@@ -902,207 +825,25 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
 
     if (!synced) {
         APPEND(off, r, max,
-            "<div style='color:#60a5fa;font-size:12px;margin-top:6px'>"
+            "<div class='sync-note'>"
             "Syncing &mdash; balance updating</div>");
     }
     APPEND(off, r, max, "</div>");
 
-    /* Primary actions */
+    /* 4. Action buttons (Send / Receive) */
     APPEND(off, r, max,
         "<div class='actions'>"
-        "<a href='/wallet/send' style='border:2px solid #374151'>Send</a>"
+        "<a href='/wallet/send' style='border:1px solid #333;"
+        "color:#e2e2e2'>Send</a>"
         "<a href='/wallet/receive' style='background:#34d399;"
-        "color:#0a0a0a;border:none'>Receive</a>"
+        "color:#0c0c0c'>Receive</a>"
         "</div>");
 
-    /* Shielded address count + ZSLP tokens */
-    {
-        int z_count = 0, token_count = 0;
-        sqlite3_stmt *zs = NULL;
-        if (sqlite3_prepare_v2(db,
-                "SELECT count(*) FROM wallet_sapling_keys "
-                "WHERE address IS NOT NULL AND length(address) > 0",
-                -1, &zs, NULL) == SQLITE_OK && zs) {
-            if (sqlite3_step(zs) == SQLITE_ROW)
-                z_count = sqlite3_column_int(zs, 0);
-            sqlite3_finalize(zs);
-        }
-        zs = NULL;
-        if (sqlite3_prepare_v2(db,
-                "SELECT count(*) FROM zslp_tokens",
-                -1, &zs, NULL) == SQLITE_OK && zs) {
-            if (sqlite3_step(zs) == SQLITE_ROW)
-                token_count = sqlite3_column_int(zs, 0);
-            sqlite3_finalize(zs);
-        }
-
-        if (z_count > 0 || shielded > 0 || token_count > 0) {
-            APPEND(off, r, max,
-                "<div style='display:flex;gap:16px;margin:8px 0 0;"
-                "font-size:12px;color:#6b7280'>");
-            if (z_count > 0 || shielded > 0)
-                APPEND(off, r, max,
-                    "<a href='/wallet/receive' style='color:#a78bfa'>"
-                    "%d shielded address%s</a>",
-                    z_count, z_count == 1 ? "" : "es");
-            if (token_count > 0)
-                APPEND(off, r, max,
-                    "<a href='/explorer/tokens' style='color:#6b7280'>"
-                    "%d ZSLP tokens</a>", token_count);
-            APPEND(off, r, max, "</div>");
-        }
-    }
-
-    /* ── Transparent UTXOs breakdown ─────────────────────────── */
+    /* 5. Recent transactions (5 items) */
     APPEND(off, r, max,
-        "<div style='margin-top:24px'>"
-        "<div style='display:flex;justify-content:space-between;"
-        "align-items:baseline'>"
-        "<div style='color:#6b7280;font-size:12px;font-weight:600;"
-        "text-transform:uppercase;letter-spacing:0.05em'>"
-        "Your Coins</div>"
-        "<div style='color:#34d399;font-size:14px;font-weight:700;"
-        "font-family:monospace'>%.8f ZCL</div></div>",
-        (double)transparent / (double)ZATOSHI_PER_ZCL);
-
-    /* Show top UTXOs from ground-truth query (P2PKH + P2SH change) */
-    {
-        sqlite3_stmt *us = NULL;
-        int shown = 0;
-        /* Union P2PKH and P2SH change UTXOs, sorted by value desc */
-        const char *utxo_sql =
-            "SELECT u.value, u.height, hex(u.txid), u.vout, "
-            "  CASE WHEN u.address_hash IN "
-            "    (SELECT pubkey_hash FROM wallet_keys) "
-            "  THEN 'P2PKH' ELSE 'P2SH' END as stype "
-            "FROM utxos u "
-            "WHERE u.address_hash IN "
-            "  (SELECT pubkey_hash FROM wallet_keys) "
-            "OR u.address_hash IN ("
-            "  SELECT DISTINCT to2.address_hash "
-            "  FROM tx_inputs ti "
-            "  JOIN tx_outputs to1 ON ti.prev_txid = to1.txid "
-            "    AND ti.prev_vout = to1.vout "
-            "  JOIN tx_outputs to2 ON ti.txid = to2.txid "
-            "  WHERE to1.address_hash IN "
-            "    (SELECT pubkey_hash FROM wallet_keys) "
-            "  AND to2.address_hash != to1.address_hash"
-            ") "
-            "ORDER BY u.value DESC LIMIT 5";
-        if (sqlite3_prepare_v2(db, utxo_sql, -1, &us, NULL) == SQLITE_OK) {
-            while (sqlite3_step(us) == SQLITE_ROW && off + 500 < max) {
-                int64_t val = sqlite3_column_int64(us, 0);
-                int h = sqlite3_column_int(us, 1);
-                const char *txid = (const char *)sqlite3_column_text(us, 2);
-                int vout = sqlite3_column_int(us, 3);
-                const char *stype = (const char *)sqlite3_column_text(us, 4);
-                if (!txid) continue;
-
-                int confs = (tip > 0 && h > 0) ? (tip - h + 1) : 0;
-                if (confs < 0) confs = 0;
-                char short_tx[18];
-                txid_short(txid, short_tx, sizeof(short_tx));
-                char lower_tx[65];
-                txid_lower(txid, lower_tx, sizeof(lower_tx));
-
-                /* Format height with commas */
-                char h_fmt[20];
-                {
-                    char tmp[20];
-                    int tl = snprintf(tmp, sizeof(tmp), "%d", h);
-                    int ci = 0, ti = 0;
-                    int digits_left = tl;
-                    for (int di = 0; di < tl && ci < (int)sizeof(h_fmt)-1; di++) {
-                        h_fmt[ci++] = tmp[ti++];
-                        digits_left--;
-                        if (digits_left > 0 && digits_left % 3 == 0)
-                            h_fmt[ci++] = ',';
-                    }
-                    h_fmt[ci] = '\0';
-                }
-                /* Format confirmations with commas */
-                char c_fmt[20];
-                {
-                    char tmp[20];
-                    int tl = snprintf(tmp, sizeof(tmp), "%d", confs);
-                    int ci = 0, ti = 0;
-                    int digits_left = tl;
-                    for (int di = 0; di < tl && ci < (int)sizeof(c_fmt)-1; di++) {
-                        c_fmt[ci++] = tmp[ti++];
-                        digits_left--;
-                        if (digits_left > 0 && digits_left % 3 == 0)
-                            c_fmt[ci++] = ',';
-                    }
-                    c_fmt[ci] = '\0';
-                }
-                const char *type_label = (stype && stype[2] == 'S') ? "Script" : "Standard";
-
-                APPEND(off, r, max,
-                    "<div style='display:flex;justify-content:space-between;"
-                    "align-items:center;padding:8px 0;"
-                    "border-bottom:1px solid #1a1a1a'>"
-                    "<div>"
-                    "<a href='/explorer/tx/%s' style='color:#4db8ff;"
-                    "font-family:monospace;font-size:12px'>%s:%d</a>"
-                    " <span class='pill pill-%s' "
-                    "style='font-size:9px'>%s</span>"
-                    "</div>"
-                    "<div style='text-align:right'>"
-                    "<span style='color:#34d399;font-size:14px;"
-                    "font-weight:700;font-family:monospace'>%.8f</span>"
-                    "<span style='color:#555;font-size:11px;"
-                    "margin-left:6px'>Block %s &middot; %s conf</span>"
-                    "</div></div>",
-                    lower_tx, short_tx, vout,
-                    stype && stype[2] == 'S' ? "z" : "t", type_label,
-                    (double)val / 1e8, h_fmt, c_fmt);
-                shown++;
-            }
-            sqlite3_finalize(us);
-        }
-        if (t_utxos > shown && shown > 0) {
-            /* Calculate remaining value */
-            APPEND(off, r, max,
-                "<div style='color:#555;font-size:12px;padding:6px 0;"
-                "text-align:center'>+ %d more UTXO%s</div>",
-                t_utxos - shown, (t_utxos - shown) == 1 ? "" : "s");
-        }
-    }
-    APPEND(off, r, max, "</div>");
-
-    /* ── Data Integrity check ─────────────────────────────────── */
-    {
-        int64_t discrepancy = transparent - speed_bal;
-        if (discrepancy != 0 && speed_bal > 0) {
-            APPEND(off, r, max,
-                "<div style='margin-top:16px;background:#1a1510;"
-                "border:1px solid #4a3520;border-radius:8px;padding:12px;"
-                "font-size:12px'>"
-                "<div style='color:#f59e0b;font-weight:700;"
-                "margin-bottom:4px'>Balance Discrepancy</div>"
-                "<div style='color:#92712a'>"
-                "Cached balance: %.8f ZCL"
-                "<br>Chain-verified: %.8f ZCL "
-                "(%d UTXOs from chain UTXO set)"
-                "<br>Difference: %.8f ZCL &mdash; "
-                "run <code style='color:#f59e0b'>rescanwallet</code>"
-                " to fix</div></div>",
-                (double)speed_bal / 1e8,
-                (double)transparent / 1e8, t_utxos,
-                (double)discrepancy / 1e8);
-        }
-    }
-
-    /* ── Recent transactions ─────────────────────────────────── */
-    APPEND(off, r, max,
-        "<div style='margin-top:20px'>"
-        "<div style='display:flex;justify-content:space-between;"
-        "align-items:baseline'>"
-        "<div style='color:#6b7280;font-size:12px;font-weight:600;"
-        "text-transform:uppercase;letter-spacing:0.05em'>"
-        "Recent</div>"
-        "<a href='/wallet/history' style='color:#6b7280;"
-        "font-size:12px'>View all</a></div>");
+        "<div class='section-header'>"
+        "<span>Recent</span>"
+        "<a href='/wallet/history'>View all</a></div>");
 
     sqlite3_stmt *s = NULL;
     if (sqlite3_prepare_v2(db,
@@ -1123,6 +864,7 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
             "LEFT JOIN blocks b ON b.height = u.height "
             "ORDER BY u.height DESC LIMIT 5",
             -1, &s, NULL) == SQLITE_OK) {
+        int tx_shown = 0;
         while (sqlite3_step(s) == SQLITE_ROW && off + 400 < max) {
             int64_t value = sqlite3_column_int64(s, 0);
             int height = sqlite3_column_int(s, 1);
@@ -1143,27 +885,26 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
             zcl_format_zcl(amt, sizeof(amt), value);
 
             APPEND(off, r, max,
-                "<div style='display:flex;justify-content:space-between;"
-                "align-items:center;padding:10px 0;"
-                "border-bottom:1px solid #1a1a1a'>"
+                "<div class='tx-row'>"
                 "<div>"
-                "<span style='color:#34d399;font-size:16px;font-weight:700;"
-                "font-family:monospace'>+%s</span>"
-                "<span style='color:#6b7280;font-size:12px;"
-                "margin-left:8px'>ZCL</span></div>"
-                "<div style='text-align:right'>"
-                "<div style='color:#6b7280;font-size:13px'>%s</div>"
-                "<a href='/explorer/tx/%s' style='color:#374151;"
-                "font-size:11px;font-family:monospace'>%d conf%s</a>"
+                "<span class='tx-amount recv'>+%s</span>"
+                "<span style='color:#666;font-size:12px;"
+                "margin-left:6px'>ZCL</span></div>"
+                "<div class='tx-meta'>"
+                "<span class='tx-time'>%s</span>"
+                "<a href='/explorer/tx/%s'>%d conf%s</a>"
                 "</div></div>",
                 amt, esc_rel, lower_tx,
                 confs, confs == 1 ? "" : "s");
+            tx_shown++;
         }
         sqlite3_finalize(s);
+        if (tx_shown == 0)
+            APPEND(off, r, max,
+                "<div class='empty-state'>No transactions yet</div>");
     }
-    APPEND(off, r, max, "</div>");
 
-    /* Live pulse + event ticker JS — polls ring buffer for events */
+    /* Live pulse JS — polls every 500ms for responsive updates */
     APPEND(off, r, max,
         "<script>"
         "function fmt(z){var v=z/1e8;if(z===0)return'0.00';"
@@ -1178,13 +919,14 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
         "if(b.textContent!==n){b.textContent=n;}}"
         "var s=document.getElementById('sync');"
         "if(s){s.textContent=d.sync==='at_tip'?'Synced':d.sync;"
-        "s.className='pill '+(d.sync==='at_tip'?'pill-t':'pill-syncing');}"
+        "s.className='pill sync-badge '+"
+        "(d.sync==='at_tip'?'pill-synced':'pill-syncing');}"
         "var bd=document.getElementById('breakdown');"
         "if(bd){var t=fmt(d.balance)+' transparent';"
         "if(d.shielded>0)t+=' + '+fmt(d.shielded)+' shielded';"
         "bd.textContent=t;}"
         "}).catch(function(){});"
-        "},2000);"
+        "},500);"
         "</script>");
 
     emit_footer(r, max, &off);
@@ -1209,40 +951,42 @@ static size_t serve_send(uint8_t *r, size_t max) {
     zcl_format_zcl(bal_fmt, sizeof(bal_fmt), balance);
 
     APPEND(off, r, max,
-        "<div style='text-align:center;padding:16px 0;color:#6b7280;"
-        "font-size:13px'>Available: <span style='color:#34d399;"
-        "font-weight:600'>%s ZCL</span></div>",
+        "<div style='text-align:center;padding:16px 0'>"
+        "<span class='balance-sub'>Available: "
+        "<span style='color:#34d399;font-weight:600'>%s ZCL</span>"
+        "</span></div>",
         bal_fmt);
 
     APPEND(off, r, max,
-        "<div class='card'>"
         "<form id='send-form' method='POST' action='zcl://node/wallet/send/review' "
-        "onsubmit='return validateSend()'>"
-        "<label class='label' for='addr'>To</label>"
-        "<input type='text' id='addr' name='address' "
-        "placeholder='t1... or zs1...' required>"
-        "<div id='addr-err' class='err'></div>"
-        "<label class='label' for='amt' style='margin-top:12px'>Amount</label>"
-        "<div style='display:flex;gap:8px'>"
-        "<input type='text' id='amt' name='amount' style='flex:1' "
-        "placeholder='0.00' required oninput='updateRemaining()'>"
-        "<button type='button' style='background:#333;color:#34d399;"
-        "border:1px solid #333;padding:8px 12px;border-radius:6px;"
-        "font-size:12px;cursor:pointer;white-space:nowrap' "
+        "onsubmit='return validateSend()' autocomplete='off'>"
+        "<div class='form-group'>"
+        "<label class='form-label' for='addr'>To</label>"
+        "<input class='form-input' type='text' id='addr' name='address' "
+        "placeholder='t1... or zs1...' required></div>"
+        "<div id='addr-err' class='form-error'></div>"
+        "<div class='form-group'>"
+        "<label class='form-label' for='amt'>Amount</label>"
+        "<div style='display:flex;gap:8px;align-items:center'>"
+        "<input class='form-input' type='text' id='amt' name='amount' "
+        "style='flex:1' placeholder='0.00' required "
+        "oninput='updateRemaining()'>"
+        "<button type='button' class='send-max' "
         "onclick='document.getElementById(\"amt\").value="
-        "(BAL-%.4f).toFixed(8);updateRemaining()'>Send Max</button></div>"
-        "<div id='remaining' class='remaining'></div>"
-        "<div id='amt-err' class='err'></div>"
-        "<button type='submit' style='margin-top:16px' "
-        "onclick='this.disabled=true;this.form.submit()'>Send</button>"
-        "</form></div>"
+        "(BAL-%.4f).toFixed(8);updateRemaining()'>Max</button></div></div>"
+        "<div id='remaining' class='remaining' "
+        "style='color:#666;font-size:12px;margin:4px 0'></div>"
+        "<div id='amt-err' class='form-error'></div>"
+        "<button type='submit' class='btn-primary' style='margin-top:16px' "
+        "onclick='this.disabled=true;this.form.submit()'>Review Send</button>"
+        "</form>"
         "<script>"
         "var BAL=%.8f;"
         "function updateRemaining(){"
         "var a=parseFloat(document.getElementById('amt').value)||0;"
         "var r=document.getElementById('remaining');"
         "if(a>0&&a<=BAL){r.textContent='Remaining: '+(BAL-a-%.4f).toFixed(8)+' ZCL';"
-        "r.style.color='#6b7280';}"
+        "r.style.color='#666';}"
         "else if(a>BAL){r.textContent='Insufficient funds';"
         "r.style.color='#f87171';}"
         "else{r.textContent='';}}"
@@ -1263,7 +1007,7 @@ static size_t serve_send(uint8_t *r, size_t max) {
         "'Insufficient funds';return false;}"
         "return true;}"
         "</script>",
-        (double)balance / (double)ZATOSHI_PER_ZCL, FEE_ZCL, FEE_ZCL, FEE_ZCL);
+        FEE_ZCL, (double)balance / (double)ZATOSHI_PER_ZCL, FEE_ZCL, FEE_ZCL);
 
     emit_footer(r, max, &off);
     return off;
@@ -1278,13 +1022,13 @@ static size_t serve_receive(uint8_t *r, size_t max) {
     /* QR code is the hero — the address IS the page */
     APPEND(off, r, max,
         "<div style='text-align:center;padding:16px 0'>"
-        "<div style='color:#6b7280;font-size:14px;margin-bottom:12px'>"
+        "<div class='balance-sub' style='margin-bottom:12px'>"
         "Share this address to receive ZCL</div>");
     off = emit_qr_svg(r, max, off, PRIMARY_ADDR, 5);
     APPEND(off, r, max,
-        "<div class='addr-box' style='margin-top:16px'>"
+        "<div class='addr-display' style='margin-top:16px'>"
         PRIMARY_ADDR "</div>"
-        "<div id='copy-msg' style='color:#6b7280;font-size:12px;"
+        "<div id='copy-msg' style='color:#666;font-size:12px;"
         "margin-top:4px;height:16px'></div>"
         "</div>");
 
@@ -1304,10 +1048,10 @@ static size_t serve_receive(uint8_t *r, size_t max) {
                 html_escape(escaped, sizeof(escaped), raw);
                 if (z_shown == 0)
                     APPEND(off, r, max,
-                        "<div class='card' style='border-left-color:#a78bfa'>"
-                        "<div class='label'>Shielded Address</div>");
+                        "<div class='section-header' style='margin-top:24px'>"
+                        "<span style='color:#a78bfa'>Shielded Addresses</span></div>");
                 APPEND(off, r, max,
-                    "<div class='addr-box-sm'>%s</div>", escaped);
+                    "<div class='addr-display-sm'>%s</div>", escaped);
                 z_shown++;
             }
             sqlite3_finalize(s);
@@ -1338,12 +1082,12 @@ static size_t serve_receive(uint8_t *r, size_t max) {
                             addr[alen] = '\0';
                             if (z_shown == 0)
                                 APPEND(off, r, max,
-                                    "<div class='card' "
-                                    "style='border-left-color:#a78bfa'>"
-                                    "<div class='label'>Shielded Addresses "
-                                    "(from wallet)</div>");
+                                    "<div class='section-header' "
+                                    "style='margin-top:24px'>"
+                                    "<span style='color:#a78bfa'>"
+                                    "Shielded Addresses</span></div>");
                             APPEND(off, r, max,
-                                "<div class='addr-box-sm'>%s</div>", addr);
+                                "<div class='addr-display-sm'>%s</div>", addr);
                             z_shown++;
                             p = end + 1;
                         } else break;
@@ -1352,13 +1096,10 @@ static size_t serve_receive(uint8_t *r, size_t max) {
             }
         }
     }
-    if (z_shown > 0)
-        APPEND(off, r, max, "</div>");
-
     /* Click-to-copy with "Copied!" feedback */
     APPEND(off, r, max,
         "<script>"
-        "document.querySelectorAll('.addr-box,.addr-box-sm')"
+        "document.querySelectorAll('.addr-display,.addr-display-sm')"
         ".forEach(function(el){"
         "el.style.cursor='pointer';"
         "el.addEventListener('click',function(){"
@@ -1480,16 +1221,14 @@ static size_t serve_history(uint8_t *r, size_t max, int page) {
 
     /* Pagination */
     if (total_pages > 1) {
-        APPEND(off, r, max,
-            "<div style='display:flex;justify-content:center;gap:12px;"
-            "margin:20px 0;font-size:14px'>");
+        APPEND(off, r, max, "<div class='page-controls'>");
         if (page > 0)
             APPEND(off, r, max,
-                "<a href='/wallet/history?page=%d' style='color:#4db8ff'>"
+                "<a href='/wallet/history?page=%d'>"
                 "&larr; Newer</a>", page - 1);
         if (page < total_pages - 1)
             APPEND(off, r, max,
-                "<a href='/wallet/history?page=%d' style='color:#4db8ff'>"
+                "<a href='/wallet/history?page=%d'>"
                 "Older &rarr;</a>", page + 1);
         APPEND(off, r, max, "</div>");
     }
@@ -2109,10 +1848,10 @@ static size_t serve_send_review(uint8_t *r, size_t max,
         : "Invalid amount";
     if (!addr_ok || amount <= 0) {
         APPEND(off, r, max,
-            "<div style='text-align:center;padding:32px'>"
-            "<div style='font-size:48px;color:#f87171'>&#x2717;</div>"
-            "<h2 style='color:#e5e7eb'>Invalid Transaction</h2>"
-            "<p style='color:#6b7280'>%s</p>"
+            "<div class='result-error'>"
+            "<div class='icon'>&#x2717;</div>"
+            "<h2>Invalid Transaction</h2>"
+            "<p>%s</p>"
             "<a href='/wallet/send' style='color:#34d399'>Try Again</a>"
             "</div>",
             err_reason);
@@ -2139,52 +1878,46 @@ static size_t serve_send_review(uint8_t *r, size_t max,
     html_escape(safe_addr, sizeof(safe_addr), address);
 
     APPEND(off, r, max,
-        "<div class='card' style='border-left-color:%s;padding:20px'>"
         "<div style='text-align:center;margin-bottom:16px'>"
-        "<div style='font-size:14px;color:#888'>Review Transaction</div>"
-        "</div>"
-        "<table style='width:100%%;font-size:14px'>"
-        "<tr><td style='color:#888;padding:8px 0'>To</td>"
-        "<td style='color:#4db8ff;font-family:monospace;font-size:12px;"
-        "word-break:break-all;text-align:right'>%s</td></tr>"
-        "<tr><td style='color:#888;padding:8px 0'>Amount</td>"
-        "<td style='color:#34d399;font-size:18px;font-weight:700;"
-        "text-align:right'>%.8f ZCL</td></tr>"
-        "<tr><td style='color:#888;padding:8px 0'>Fee</td>"
-        "<td style='color:#6b7280;text-align:right'>%.4f ZCL</td></tr>"
-        "<tr style='border-top:1px solid #333'>"
-        "<td style='color:#888;padding:8px 0;font-weight:700'>Total deducted</td>"
-        "<td style='color:#e5e7eb;font-weight:700;text-align:right'>"
+        "<span class='form-label'>Review Transaction</span></div>"
+        "<table class='review-table'>"
+        "<tr><td>To</td>"
+        "<td style='color:#60a5fa;font-family:\"JetBrains Mono\",monospace;"
+        "font-size:12px;word-break:break-all'>%s</td></tr>"
+        "<tr><td>Amount</td>"
+        "<td style='color:#34d399;font-size:18px;font-weight:700'>"
         "%.8f ZCL</td></tr>"
-        "<tr><td style='color:#888;padding:8px 0'>Remaining balance</td>"
-        "<td style='color:#6b7280;text-align:right'>%.8f ZCL</td></tr>"
-        "<tr><td style='color:#888;padding:8px 0'>Privacy</td>"
-        "<td style='text-align:right'>"
-        "<span class='pill %s'>%s</span></td></tr>"
-        "</table></div>",
-        is_shielded ? "#a78bfa" : "#33ff99",
+        "<tr><td>Fee</td>"
+        "<td style='color:#666'>%.4f ZCL</td></tr>"
+        "<tr><td style='font-weight:700'>Total</td>"
+        "<td style='color:#e2e2e2;font-weight:700'>"
+        "%.8f ZCL</td></tr>"
+        "<tr><td>Remaining</td>"
+        "<td style='color:#666'>%.8f ZCL</td></tr>"
+        "<tr><td>Privacy</td>"
+        "<td><span class='pill %s'>%s</span></td></tr>"
+        "</table>",
         safe_addr, amount, fee, total_deducted, remaining,
-        is_shielded ? "pill-z" : "pill-t",
+        is_shielded ? "pill-private" : "pill-t",
         is_shielded ? "Private (shielded)" : "Public (transparent)");
 
     /* Cancel / Confirm buttons */
     APPEND(off, r, max,
-        "<div style='display:flex;gap:10px;margin:16px 0'>"
-        "<a href='/wallet/send' style='flex:1;background:#333;color:#e8e8e8;"
-        "padding:12px;border-radius:6px;text-align:center;"
-        "font-weight:700;text-decoration:none;font-size:16px'>Cancel</a>"
+        "<div style='display:flex;gap:10px;margin:20px 0'>"
+        "<a href='/wallet/send' class='btn-secondary' "
+        "style='flex:1;text-align:center;text-decoration:none;"
+        "display:flex;align-items:center;justify-content:center'>Cancel</a>"
         "<form method='POST' action='zcl://node/wallet/send/confirm' "
         "style='flex:2;margin:0'>"
         "<input type='hidden' name='address' value='%s'>"
         "<input type='hidden' name='amount' value='%.8f'>"
-        "<button type='submit' style='background:%s;color:%s;"
-        "border:none;padding:12px;border-radius:6px;font-size:16px;"
-        "font-weight:700;cursor:pointer;width:100%%'"
+        "<button type='submit' class='btn-primary'"
+        " style='background:%s;color:%s'"
         " onclick='this.disabled=true;this.form.submit()'>"
         "Confirm Send</button></form></div>",
         safe_addr, amount,
         is_shielded ? "#a78bfa" : "#34d399",
-        is_shielded ? "#fff" : "#0a0a0a");
+        is_shielded ? "#fff" : "#0c0c0c");
 
     emit_footer(r, max, &off);
     return off;
@@ -2216,10 +1949,10 @@ static size_t serve_send_confirm(uint8_t *r, size_t max,
     double amount = strtod(amount_str, NULL);
     if (!addr_ok || amount <= 0) {
         APPEND(off, r, max,
-            "<div style='text-align:center;padding:32px'>"
-            "<div style='font-size:48px;color:#f87171'>&#x2717;</div>"
-            "<h2 style='color:#e5e7eb'>Invalid Transaction</h2>"
-            "<p style='color:#6b7280'>%s</p>"
+            "<div class='result-error'>"
+            "<div class='icon'>&#x2717;</div>"
+            "<h2>Invalid Transaction</h2>"
+            "<p>%s</p>"
             "<a href='/wallet/send' style='color:#34d399'>Try Again</a>"
             "</div>",
             !addr_ok ? "Invalid address" : "Invalid amount");
@@ -2261,20 +1994,20 @@ static size_t serve_send_confirm(uint8_t *r, size_t max,
     if (!rpc_buf[0]) {
         /* Node offline */
         APPEND(off, r, max,
-            "<div style='text-align:center;padding:32px'>"
-            "<div style='font-size:48px;color:#fbbf24'>&#x26A0;</div>"
-            "<h2 style='color:#e5e7eb'>Node Offline</h2>"
-            "<p style='color:#6b7280'>Cannot reach the node on port 18232.</p>"
+            "<div class='result-warning'>"
+            "<div class='icon'>&#x26A0;</div>"
+            "<h2>Node Offline</h2>"
+            "<p>Cannot reach the node on port 18232.</p>"
             "<a href='/wallet/send' style='color:#34d399'>Try Again</a>"
             "</div>");
     } else if (has_error) {
         char safe_err[512];
         html_escape(safe_err, sizeof(safe_err), error_msg);
         APPEND(off, r, max,
-            "<div style='text-align:center;padding:32px'>"
-            "<div style='font-size:48px;color:#f87171'>&#x2717;</div>"
-            "<h2 style='color:#e5e7eb'>Send Failed</h2>"
-            "<p style='color:#6b7280'>%s</p>"
+            "<div class='result-error'>"
+            "<div class='icon'>&#x2717;</div>"
+            "<h2>Send Failed</h2>"
+            "<p>%s</p>"
             "<a href='/wallet/send' style='color:#34d399'>Try Again</a>"
             "</div>", safe_err);
     } else if (result_val[0]) {
@@ -2285,10 +2018,10 @@ static size_t serve_send_confirm(uint8_t *r, size_t max,
         bool is_opid = (strncmp(result_val, "opid-", 5) == 0);
 
         APPEND(off, r, max,
-            "<div style='text-align:center;padding:32px'>"
-            "<div style='font-size:48px;color:#34d399'>&#x2713;</div>"
-            "<h2 style='color:#e5e7eb'>%s</h2>"
-            "<p style='color:#6b7280'>%.8f ZCL to %s</p>",
+            "<div class='result-success'>"
+            "<div class='icon'>&#x2713;</div>"
+            "<h2>%s</h2>"
+            "<p>%.8f ZCL to %s</p>",
             is_opid ? "Shielded Send Initiated" : "Transaction Sent",
             amount, safe_addr);
 
@@ -2296,14 +2029,12 @@ static size_t serve_send_confirm(uint8_t *r, size_t max,
             APPEND(off, r, max,
                 "<p style='color:#a78bfa;font-family:monospace;font-size:12px;"
                 "word-break:break-all'>%s</p>"
-                "<p style='color:#6b7280;font-size:13px'>"
-                "Shielded transactions take ~6 hours to confirm.</p>",
+                "<p>Shielded transactions take ~6 hours to confirm.</p>",
                 safe_txid);
         } else {
             APPEND(off, r, max,
-                "<a href='/explorer/tx/%s' style='color:#60a5fa;"
-                "font-family:monospace;font-size:12px;"
-                "word-break:break-all'>%s</a>",
+                "<a href='/explorer/tx/%s' class='hash' "
+                "style='word-break:break-all'>%s</a>",
                 safe_txid, safe_txid);
         }
 
@@ -2313,9 +2044,9 @@ static size_t serve_send_confirm(uint8_t *r, size_t max,
             "Back to Wallet</a></div></div>");
     } else {
         APPEND(off, r, max,
-            "<div style='text-align:center;padding:32px'>"
-            "<div style='font-size:48px;color:#fbbf24'>&#x26A0;</div>"
-            "<h2 style='color:#e5e7eb'>Unknown Response</h2>"
+            "<div class='result-warning'>"
+            "<div class='icon'>&#x26A0;</div>"
+            "<h2>Unknown Response</h2>"
             "<a href='/wallet/send' style='color:#34d399'>Try Again</a>"
             "</div>");
     }
