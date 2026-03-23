@@ -1350,8 +1350,13 @@ static bool process_reject(struct p2p_node *node, struct byte_stream *s)
     uint8_t code = 0;
     if (!stream_read_u8(s, &code))
         return true;  /* truncated reject is non-fatal */
-    (void)code;
-    (void)msg_type;
+    uint64_t reason_len = 0;
+    char reason[256] = {0};
+    if (stream_read_compact_size(s, &reason_len) && reason_len > 0 &&
+        reason_len < sizeof(reason))
+        stream_read_bytes(s, (unsigned char *)reason, reason_len);
+    printf("Peer %s: reject %s (code=%d) %s\n",
+           node->addr_name, msg_type, code, reason);
     return true;
 }
 
