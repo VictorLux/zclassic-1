@@ -246,10 +246,8 @@ static int print_mining_status(bool mining)
 {
     int lines = 1;
     if (mining) {
-        printf("You are currently not mining.\n");
-        printf("To enable mining, add 'gen=1' to your "
-               "zclassic.conf and restart.\n");
-        lines += 2;
+        printf("Mining is active.\n");
+        lines += 1;
     } else {
         printf("You are currently not mining.\n");
         printf("To enable mining, add 'gen=1' to your "

@@ -23,6 +23,7 @@
 #include <sys/time.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <stdatomic.h>
 #include <unistd.h>
 #include <math.h>
 #include <pthread.h>
@@ -64,7 +65,7 @@ static size_t g_api_hodl_cache_len = 0;
 static char   g_api_deep_stats_cache[API_DEEP_STATS_CACHE_SIZE];
 static size_t g_api_deep_stats_cache_len = 0;
 
-static volatile int g_api_cache_thread_running = 0;
+static _Atomic int g_api_cache_thread_running = 0;
 static pthread_mutex_t g_api_cache_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 void api_set_state(struct main_state *ms, struct tx_mempool *mp,
@@ -1030,11 +1031,11 @@ static pthread_cond_t  g_lookup_done_cond = PTHREAD_COND_INITIALIZER;
 
 enum lookup_type { LOOKUP_NONE = 0, LOOKUP_BLOCK, LOOKUP_TX, LOOKUP_ADDRESS };
 
-static volatile enum lookup_type g_lookup_type = LOOKUP_NONE;
+static _Atomic enum lookup_type g_lookup_type = LOOKUP_NONE;
 static char    g_lookup_param[512];
 static uint8_t g_lookup_result[262144];
 static size_t  g_lookup_result_len = 0;
-static volatile int g_lookup_thread_running = 0;
+static _Atomic int g_lookup_thread_running = 0;
 
 /* Background thread that processes lookup requests one at a time */
 static void *api_lookup_thread(void *arg)

@@ -5,8 +5,8 @@
  *
  * Relationships:
  *   ChainSnapshot has_one :block_data
- *   ChainSnapshot has_one :block_index_store
- *   ChainSnapshot has_one :chainstate_store
+ *   ChainSnapshot has_one :index (leveldb_store)
+ *   ChainSnapshot has_one :chainstate (leveldb_store)
  *
  * Pattern:
  *   struct chain_snapshot snap = { .src_dir = legacy, .dst_dir = c23 };
@@ -18,8 +18,7 @@
 #define ZCL_MODELS_CHAIN_SNAPSHOT_H
 
 #include "models/block_data.h"
-#include "models/block_index_store.h"
-#include "models/chainstate_store.h"
+#include "models/leveldb_store.h"
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -39,11 +38,11 @@ struct chain_snapshot {
     /* has_one :block_data */
     struct block_data blocks;
 
-    /* has_one :block_index_store */
-    struct block_index_store index;
+    /* has_one :block_index (leveldb_store) */
+    struct leveldb_store index;
 
-    /* has_one :chainstate_store */
-    struct chainstate_store chainstate;
+    /* has_one :chainstate (leveldb_store) */
+    struct leveldb_store chainstate;
 
     /* Aggregate validation */
     bool src_valid;

@@ -47,23 +47,4 @@ size_t onion_service_handle_request(const char *method,
                                      uint8_t *response,
                                      size_t response_max);
 
-/* Register a .onion site on-chain via ZSLP.
- * title: human-readable site name
- * description: short description
- * Returns true if the ZSLP tx was broadcast. */
-bool onion_service_register_site(const char *title,
-                                  const char *description);
-
-/* Search registered .onion sites by keyword.
- * Returns count of matches. */
-struct onion_site {
-    char address[68];     /* .onion address */
-    char title[128];      /* site title */
-    char description[256]; /* site description */
-    int height;           /* registration block height */
-};
-
-int onion_service_search(const char *query,
-                          struct onion_site *results, size_t max);
-
 #endif

@@ -286,11 +286,12 @@ static size_t emit_nav(uint8_t *buf, size_t max, const char *active) {
         { "/wallet/send",    "Send"      },
         { "/wallet/receive", "Receive"   },
         { "/wallet/history", "History"   },
+        { "/wallet/coins",   "Coins"     },
     };
     int n = snprintf((char *)buf, max, "<div class='nav'>");
     if (n < 0 || (size_t)n >= max) return 0;
     size_t off = (size_t)n;
-    for (int i = 0; i < 4 && off < max; i++) {
+    for (int i = 0; i < 5 && off < max; i++) {
         bool is_active = (strcmp(tabs[i].href, active) == 0);
         int w = snprintf((char *)buf + off, max - off,
             "<a href='%s'%s>%s</a>",
@@ -738,6 +739,85 @@ static bool parse_form_field(const uint8_t *body, size_t body_len,
     return false;
 }
 
+/* ── Ground-truth balance: scan global UTXO set for wallet keys ── */
+
+static int64_t query_ground_truth_balance(sqlite3 *db, int *utxo_count) {
+    int64_t total = 0;
+    int count = 0;
+    sqlite3_stmt *s = NULL;
+
+    /* P2PKH: match utxos.address_hash against wallet_keys.pubkey_hash */
+    if (sqlite3_prepare_v2(db,
+            "SELECT COALESCE(SUM(u.value),0), COUNT(*) FROM utxos u "
+            "WHERE u.address_hash IN "
+            "(SELECT pubkey_hash FROM wallet_keys)",
+            -1, &s, NULL) == SQLITE_OK && s) {
+        if (sqlite3_step(s) == SQLITE_ROW) {
+            total += sqlite3_column_int64(s, 0);
+            count += sqlite3_column_int(s, 1);
+        }
+        sqlite3_finalize(s);
+    }
+
+    /* P2SH: find UTXOs at addresses that received change from wallet txs.
+     * Heuristic: any address that appears as an output of a transaction
+     * that spent from a known wallet P2PKH address is a wallet address. */
+    s = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT COALESCE(SUM(u.value),0), COUNT(*) FROM utxos u "
+            "WHERE u.address_hash NOT IN "
+            "  (SELECT pubkey_hash FROM wallet_keys) "
+            "AND u.address_hash IN ("
+            "  SELECT DISTINCT to2.address_hash "
+            "  FROM tx_inputs ti "
+            "  JOIN tx_outputs to1 ON ti.prev_txid = to1.txid AND ti.prev_vout = to1.vout "
+            "  JOIN tx_outputs to2 ON ti.txid = to2.txid "
+            "  WHERE to1.address_hash IN (SELECT pubkey_hash FROM wallet_keys) "
+            "  AND to2.address_hash != to1.address_hash"
+            ")",
+            -1, &s, NULL) == SQLITE_OK && s) {
+        if (sqlite3_step(s) == SQLITE_ROW) {
+            total += sqlite3_column_int64(s, 0);
+            count += sqlite3_column_int(s, 1);
+        }
+        sqlite3_finalize(s);
+    }
+
+    if (utxo_count) *utxo_count = count;
+    return total;
+}
+
+/* ── Shielded balance: verified notes minus spent nullifiers ──── */
+
+static int64_t query_shielded_balance(sqlite3 *db, int *note_count) {
+    int64_t total = 0;
+    int count = 0;
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT COALESCE(SUM(n.value),0), COUNT(*) "
+            "FROM wallet_sapling_notes n"
+            " WHERE NOT EXISTS ("
+            "   SELECT 1 FROM sapling_spends ss"
+            "   WHERE ss.nullifier = n.nullifier)",
+            -1, &s, NULL) == SQLITE_OK && s) {
+        if (sqlite3_step(s) == SQLITE_ROW) {
+            total = sqlite3_column_int64(s, 0);
+            count = sqlite3_column_int(s, 1);
+        }
+        sqlite3_finalize(s);
+    }
+    if (note_count) *note_count = count;
+    return total;
+}
+
+/* ── Speed-layer balance (wallet_utxos cache) ────────────────── */
+
+static int64_t query_speed_balance(sqlite3 *db) {
+    return query_int64(db,
+        "SELECT COALESCE(SUM(value),0) FROM wallet_utxos"
+        " WHERE spent_txid IS NULL");
+}
+
 /* ── Dashboard (/wallet) ────────────────────────────────────── */
 
 static size_t serve_dashboard(uint8_t *r, size_t max) {
@@ -745,69 +825,35 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
     if (!db) return 0;
 
     int tip = query_int(db, "SELECT MAX(height) FROM blocks");
-    int64_t transparent = 0;
-    sqlite3_stmt *s = NULL;
-    if (sqlite3_prepare_v2(db,
-            "SELECT COALESCE(sum(u.value),0) FROM utxos u "
-            "WHERE u.address_hash IN "
-            "(SELECT pubkey_hash FROM wallet_keys)",
-            -1, &s, NULL) == SQLITE_OK) {
-        if (sqlite3_step(s) == SQLITE_ROW)
-            transparent = sqlite3_column_int64(s, 0);
-        sqlite3_finalize(s);
-    }
 
-    /* Two-layer balance (same architecture as GTK wallet):
-     * Batch layer = SUM(utxos) for wallet keys (deterministic, immutable chain data)
-     * Speed layer = SUM(wallet_utxos WHERE unspent) (may be ahead during IBD)
-     * Display = batch layer when current, speed layer when ahead */
-    int64_t speed_transparent = 0;
-    sqlite3_stmt *sw = NULL;
-    if (sqlite3_prepare_v2(db,
-            "SELECT COALESCE(SUM(value),0) FROM wallet_utxos"
-            " WHERE spent_txid IS NULL",
-            -1, &sw, NULL) == SQLITE_OK) {
-        if (sqlite3_step(sw) == SQLITE_ROW)
-            speed_transparent = sqlite3_column_int64(sw, 0);
-        sqlite3_finalize(sw);
-    }
+    /* Ground-truth transparent balance (P2PKH + P2SH change addresses) */
+    int t_utxos = 0;
+    int64_t transparent = query_ground_truth_balance(db, &t_utxos);
 
-    /* Shielded: only trust notes whose nullifiers are NOT on-chain */
-    int64_t shielded = 0;
-    sw = NULL;
-    if (sqlite3_prepare_v2(db,
-            "SELECT COALESCE(SUM(n.value),0) FROM wallet_sapling_notes n"
-            " WHERE NOT EXISTS ("
-            "   SELECT 1 FROM sapling_spends ss"
-            "   WHERE ss.nullifier = n.nullifier)",
-            -1, &sw, NULL) == SQLITE_OK) {
-        if (sqlite3_step(sw) == SQLITE_ROW)
-            shielded = sqlite3_column_int64(sw, 0);
-        sqlite3_finalize(sw);
-    }
+    /* Speed-layer balance (wallet_utxos cache — may differ) */
+    int64_t speed_bal = query_speed_balance(db);
 
-    /* Ground truth = global UTXO set (immutable chain data).
-     * Speed layer = wallet_utxos cache (may be stale after reorg).
-     * Use ground truth when available; flag discrepancies. */
-    int64_t display_transparent = transparent > 0 ? transparent : speed_transparent;
+    /* Shielded: verified notes minus spent nullifiers */
+    int z_notes = 0;
+    int64_t shielded = query_shielded_balance(db, &z_notes);
 
     /* RPC fallback if SQLite has no balance */
-    if (display_transparent == 0 && shielded == 0) {
+    if (transparent == 0 && shielded == 0) {
         int64_t rpc_t = 0, rpc_z = 0;
         if (query_node_balance(&rpc_t, &rpc_z)) {
-            display_transparent = rpc_t;
+            transparent = rpc_t;
             shielded = rpc_z;
         }
     }
 
-    int64_t total_balance = display_transparent + shielded;
+    int64_t total_balance = transparent + shielded;
 
     size_t off = emit_header(r, max, "ZClassic Wallet", "/wallet");
 
     const char *sync = sync_state_name(sync_get_state());
     bool synced = (sync_get_state() == SYNC_AT_TIP);
 
-    /* Format balance — show minimal decimals (Ive: precision without noise) */
+    /* Format balance — show minimal decimals */
     char bal_str[32];
     double bal_f = (double)total_balance / (double)ZATOSHI_PER_ZCL;
     if (total_balance == 0)
@@ -819,7 +865,7 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
     else
         snprintf(bal_str, sizeof(bal_str), "%.8f", bal_f);
 
-    /* Balance hero — the page IS the balance (Krug: self-evident) */
+    /* Balance hero */
     APPEND(off, r, max,
         "<div style='text-align:center;padding:32px 0 20px'>"
         "<span id='sync' class='pill %s' style='font-size:10px'>%s</span>"
@@ -830,14 +876,17 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
         synced ? "Synced" : sync,
         bal_str);
 
-    /* Breakdown only when there are two pools */
-    if (shielded > 0) {
-        APPEND(off, r, max,
-            "<div style='color:#6b7280;font-size:13px;margin-top:8px'>"
-            "%.8f transparent + %.8f shielded</div>",
-            (double)display_transparent / (double)ZATOSHI_PER_ZCL,
+    /* Always show breakdown: transparent + shielded */
+    APPEND(off, r, max,
+        "<div id='breakdown' style='color:#6b7280;font-size:13px;"
+        "margin-top:8px'>"
+        "%.8f transparent",
+        (double)transparent / (double)ZATOSHI_PER_ZCL);
+    if (shielded > 0)
+        APPEND(off, r, max, " + %.8f shielded",
             (double)shielded / (double)ZATOSHI_PER_ZCL);
-    }
+    APPEND(off, r, max, "</div>");
+
     if (!synced) {
         APPEND(off, r, max,
             "<div style='color:#60a5fa;font-size:12px;margin-top:6px'>"
@@ -853,7 +902,7 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
         "color:#0a0a0a;border:none'>Receive</a>"
         "</div>");
 
-    /* Shielded address count + ZSLP tokens — contextual info */
+    /* Shielded address count + ZSLP tokens */
     {
         int z_count = 0, token_count = 0;
         sqlite3_stmt *zs = NULL;
@@ -874,7 +923,6 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
             sqlite3_finalize(zs);
         }
 
-        /* Show ecosystem info only when there's something to show */
         if (z_count > 0 || shielded > 0 || token_count > 0) {
             APPEND(off, r, max,
                 "<div style='display:flex;gap:16px;margin:8px 0 0;"
@@ -892,19 +940,153 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
         }
     }
 
-    /* Recent transactions */
+    /* ── Transparent UTXOs breakdown ─────────────────────────── */
     APPEND(off, r, max,
         "<div style='margin-top:24px'>"
+        "<div style='display:flex;justify-content:space-between;"
+        "align-items:baseline'>"
+        "<div style='color:#6b7280;font-size:12px;font-weight:600;"
+        "text-transform:uppercase;letter-spacing:0.05em'>"
+        "Transparent UTXOs</div>"
+        "<div style='color:#34d399;font-size:14px;font-weight:700;"
+        "font-family:monospace'>%.8f ZCL</div></div>",
+        (double)transparent / (double)ZATOSHI_PER_ZCL);
+
+    /* Show top UTXOs from ground-truth query (P2PKH + P2SH change) */
+    {
+        sqlite3_stmt *us = NULL;
+        int shown = 0;
+        /* Union P2PKH and P2SH change UTXOs, sorted by value desc */
+        const char *utxo_sql =
+            "SELECT u.value, u.height, hex(u.txid), u.vout, "
+            "  CASE WHEN u.address_hash IN "
+            "    (SELECT pubkey_hash FROM wallet_keys) "
+            "  THEN 'P2PKH' ELSE 'P2SH' END as stype "
+            "FROM utxos u "
+            "WHERE u.address_hash IN "
+            "  (SELECT pubkey_hash FROM wallet_keys) "
+            "OR u.address_hash IN ("
+            "  SELECT DISTINCT to2.address_hash "
+            "  FROM tx_inputs ti "
+            "  JOIN tx_outputs to1 ON ti.prev_txid = to1.txid "
+            "    AND ti.prev_vout = to1.vout "
+            "  JOIN tx_outputs to2 ON ti.txid = to2.txid "
+            "  WHERE to1.address_hash IN "
+            "    (SELECT pubkey_hash FROM wallet_keys) "
+            "  AND to2.address_hash != to1.address_hash"
+            ") "
+            "ORDER BY u.value DESC LIMIT 5";
+        if (sqlite3_prepare_v2(db, utxo_sql, -1, &us, NULL) == SQLITE_OK) {
+            while (sqlite3_step(us) == SQLITE_ROW && off + 500 < max) {
+                int64_t val = sqlite3_column_int64(us, 0);
+                int h = sqlite3_column_int(us, 1);
+                const char *txid = (const char *)sqlite3_column_text(us, 2);
+                int vout = sqlite3_column_int(us, 3);
+                const char *stype = (const char *)sqlite3_column_text(us, 4);
+                if (!txid) continue;
+
+                int confs = (tip > 0 && h > 0) ? (tip - h + 1) : 0;
+                if (confs < 0) confs = 0;
+                char short_tx[18];
+                txid_short(txid, short_tx, sizeof(short_tx));
+                char lower_tx[65];
+                txid_lower(txid, lower_tx, sizeof(lower_tx));
+
+                APPEND(off, r, max,
+                    "<div style='display:flex;justify-content:space-between;"
+                    "align-items:center;padding:8px 0;"
+                    "border-bottom:1px solid #1a1a1a'>"
+                    "<div>"
+                    "<a href='/explorer/tx/%s' style='color:#4db8ff;"
+                    "font-family:monospace;font-size:12px'>%s:%d</a>"
+                    " <span class='pill pill-%s' "
+                    "style='font-size:9px'>%s</span>"
+                    "</div>"
+                    "<div style='text-align:right'>"
+                    "<span style='color:#34d399;font-size:14px;"
+                    "font-weight:700;font-family:monospace'>%.8f</span>"
+                    "<span style='color:#555;font-size:11px;"
+                    "margin-left:6px'>h=%d %dc</span>"
+                    "</div></div>",
+                    lower_tx, short_tx, vout,
+                    stype[2] == 'S' ? "z" : "t", stype,
+                    (double)val / 1e8, h, confs);
+                shown++;
+            }
+            sqlite3_finalize(us);
+        }
+        if (t_utxos > shown && shown > 0) {
+            /* Calculate remaining value */
+            APPEND(off, r, max,
+                "<div style='color:#555;font-size:12px;padding:6px 0;"
+                "text-align:center'>+ %d more UTXO%s</div>",
+                t_utxos - shown, (t_utxos - shown) == 1 ? "" : "s");
+        }
+    }
+    APPEND(off, r, max, "</div>");
+
+    /* ── Data Integrity check ─────────────────────────────────── */
+    {
+        int64_t discrepancy = transparent - speed_bal;
+        if (discrepancy != 0 && speed_bal > 0) {
+            APPEND(off, r, max,
+                "<div style='margin-top:16px;background:#1a1510;"
+                "border:1px solid #4a3520;border-radius:8px;padding:12px;"
+                "font-size:12px'>"
+                "<div style='color:#f59e0b;font-weight:700;"
+                "margin-bottom:4px'>Balance Discrepancy</div>"
+                "<div style='color:#92712a'>"
+                "getbalance reports %.8f ZCL (wallet_utxos cache)"
+                "<br>Ground truth is %.8f ZCL "
+                "(%d UTXOs from chain UTXO set)"
+                "<br>Difference: %.8f ZCL &mdash; "
+                "run <code style='color:#f59e0b'>rescanwallet</code>"
+                " to fix</div></div>",
+                (double)speed_bal / 1e8,
+                (double)transparent / 1e8, t_utxos,
+                (double)discrepancy / 1e8);
+        }
+    }
+
+    /* ── Live Events ticker (from ring buffer via /api/events) ── */
+    APPEND(off, r, max,
+        "<div style='margin-top:20px'>"
         "<div style='color:#6b7280;font-size:12px;font-weight:600;"
         "text-transform:uppercase;letter-spacing:0.05em;"
-        "margin-bottom:12px'>Recent</div>");
+        "margin-bottom:8px'>Live Events</div>"
+        "<div id='evticker' style='font-family:monospace;font-size:11px;"
+        "color:#555;background:#0a0a0a;border-radius:6px;padding:8px;"
+        "max-height:120px;overflow:hidden;border:1px solid #1a1a1a'>"
+        "<div style='color:#333'>Connecting...</div>"
+        "</div></div>");
 
-    /* Activity: show amounts (the #1 UX fix — amounts were missing) */
-    s = NULL;
+    /* ── Recent transactions ─────────────────────────────────── */
+    APPEND(off, r, max,
+        "<div style='margin-top:20px'>"
+        "<div style='display:flex;justify-content:space-between;"
+        "align-items:baseline'>"
+        "<div style='color:#6b7280;font-size:12px;font-weight:600;"
+        "text-transform:uppercase;letter-spacing:0.05em'>"
+        "Recent</div>"
+        "<a href='/wallet/history' style='color:#6b7280;"
+        "font-size:12px'>View all</a></div>");
+
+    sqlite3_stmt *s = NULL;
     if (sqlite3_prepare_v2(db,
             "SELECT u.value, u.height, COALESCE(b.time,0), hex(u.txid) "
             "FROM utxos u "
-            "INNER JOIN wallet_keys w ON u.address_hash = w.pubkey_hash "
+            "WHERE u.address_hash IN "
+            "  (SELECT pubkey_hash FROM wallet_keys) "
+            "OR u.address_hash IN ("
+            "  SELECT DISTINCT to2.address_hash "
+            "  FROM tx_inputs ti "
+            "  JOIN tx_outputs to1 ON ti.prev_txid = to1.txid "
+            "    AND ti.prev_vout = to1.vout "
+            "  JOIN tx_outputs to2 ON ti.txid = to2.txid "
+            "  WHERE to1.address_hash IN "
+            "    (SELECT pubkey_hash FROM wallet_keys) "
+            "  AND to2.address_hash != to1.address_hash"
+            ") "
             "LEFT JOIN blocks b ON b.height = u.height "
             "ORDER BY u.height DESC LIMIT 5",
             -1, &s, NULL) == SQLITE_OK) {
@@ -946,12 +1128,9 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
         }
         sqlite3_finalize(s);
     }
+    APPEND(off, r, max, "</div>");
 
-    APPEND(off, r, max,
-        "<div style='text-align:center;margin-top:12px'>"
-        "<a href='/wallet/history' style='color:#6b7280;font-size:13px'>"
-        "View all</a></div></div>");
-    /* Live pulse — balance and sync update every 2s (Victor: immediacy) */
+    /* Live pulse + event ticker JS — polls ring buffer for events */
     APPEND(off, r, max,
         "<script>"
         "function fmt(z){var v=z/1e8;if(z===0)return'0.00';"
@@ -967,8 +1146,33 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
         "var s=document.getElementById('sync');"
         "if(s){s.textContent=d.sync==='at_tip'?'Synced':d.sync;"
         "s.className='pill '+(d.sync==='at_tip'?'pill-t':'pill-syncing');}"
+        "var bd=document.getElementById('breakdown');"
+        "if(bd){var t=fmt(d.balance)+' transparent';"
+        "if(d.shielded>0)t+=' + '+fmt(d.shielded)+' shielded';"
+        "bd.textContent=t;}"
         "}).catch(function(){});"
         "},2000);"
+        /* Event ticker: poll ring buffer every 2s */
+        "function loadEvents(){"
+        "fetch('zcl://node/api/events?count=5')"
+        ".then(function(r){return r.json()})"
+        ".then(function(d){"
+        "var el=document.getElementById('evticker');"
+        "if(!el||!d.events)return;"
+        "var h='';"
+        "for(var i=d.events.length-1;i>=0;i--){"
+        "var e=d.events[i];"
+        "var ts=new Date(e.timestamp_us/1000).toLocaleTimeString();"
+        "var c=e.type.startsWith('chain.')?'#34d399':"
+        "e.type.startsWith('peer.')?'#60a5fa':"
+        "e.type.startsWith('tx.')?'#a78bfa':'#555';"
+        "h+='<div style=\"padding:2px 0\">'+"
+        "'<span style=\"color:#444\">'+ts+'</span> '+"
+        "'<span style=\"color:'+c+'\">'+e.type+'</span> '+"
+        "'<span style=\"color:#666\">'+(e.payload||'')+'</span></div>';}"
+        "if(h)el.innerHTML=h;"
+        "}).catch(function(){});}"
+        "loadEvents();setInterval(loadEvents,2000);"
         "</script>");
 
     emit_footer(r, max, &off);
@@ -983,10 +1187,7 @@ static size_t serve_send(uint8_t *r, size_t max) {
 
     int64_t balance = 0;
     if (db) {
-        balance = query_int64(db,
-            "SELECT COALESCE(SUM(u.value),0) FROM utxos u "
-            "WHERE u.address_hash IN "
-            "(SELECT pubkey_hash FROM wallet_keys)");
+        balance = query_ground_truth_balance(db, NULL);
         sqlite3_close(db);
     }
 
@@ -1231,7 +1432,7 @@ static size_t serve_history(uint8_t *r, size_t max) {
     return off;
 }
 
-/* ── Coins (/wallet/coins) ──────────────────────────────────── */
+/* ── Coins (/wallet/coins) — Full UTXO audit view ──────────── */
 
 static size_t serve_coins(uint8_t *r, size_t max) {
     sqlite3 *db = open_db();
@@ -1240,132 +1441,196 @@ static size_t serve_coins(uint8_t *r, size_t max) {
     int tip = query_int(db, "SELECT MAX(height) FROM blocks");
 
     size_t off = emit_header(r, max, "Coins — ZClassic23", "/wallet/coins");
-    APPEND(off, r, max, "<h2>Coin Analysis</h2>");
+    APPEND(off, r, max, "<h2>Coin Audit</h2>"
+        "<div style='color:#6b7280;font-size:13px;margin-bottom:16px'>"
+        "Every zatoshi, verified against the chain UTXO set.</div>");
 
-    /* Transparent UTXOs */
+    /* Ground-truth transparent UTXOs (P2PKH + P2SH change) */
     APPEND(off, r, max,
-        "<h3>Transparent UTXOs</h3>"
+        "<h3>Transparent UTXOs (Chain-Verified)</h3>"
         "<div class='overflow-x'>"
-        "<table><tr><th>Outpoint</th>"
-        "<th>Amount</th><th>Height</th><th>Confirmations</th></tr>");
+        "<table><tr><th>Outpoint</th><th>Type</th>"
+        "<th>Amount</th><th>Height</th><th>Conf</th></tr>");
 
     int64_t t_total = 0;
     int t_count = 0;
     sqlite3_stmt *s = NULL;
-    if (sqlite3_prepare_v2(db,
-            "SELECT hex(u.txid), u.vout, u.value, u.height FROM utxos u "
-            "WHERE u.address_hash IN "
-            "(SELECT pubkey_hash FROM wallet_keys) "
-            "ORDER BY u.value DESC",
-            -1, &s, NULL) == SQLITE_OK) {
-        while (sqlite3_step(s) == SQLITE_ROW && off + 400 < max) {
+    const char *coins_sql =
+        "SELECT hex(u.txid), u.vout, u.value, u.height, "
+        "  CASE WHEN u.address_hash IN "
+        "    (SELECT pubkey_hash FROM wallet_keys) "
+        "  THEN 'P2PKH' ELSE 'P2SH' END "
+        "FROM utxos u "
+        "WHERE u.address_hash IN "
+        "  (SELECT pubkey_hash FROM wallet_keys) "
+        "OR u.address_hash IN ("
+        "  SELECT DISTINCT to2.address_hash "
+        "  FROM tx_inputs ti "
+        "  JOIN tx_outputs to1 ON ti.prev_txid = to1.txid "
+        "    AND ti.prev_vout = to1.vout "
+        "  JOIN tx_outputs to2 ON ti.txid = to2.txid "
+        "  WHERE to1.address_hash IN "
+        "    (SELECT pubkey_hash FROM wallet_keys) "
+        "  AND to2.address_hash != to1.address_hash"
+        ") "
+        "ORDER BY u.value DESC";
+    if (sqlite3_prepare_v2(db, coins_sql, -1, &s, NULL) == SQLITE_OK) {
+        while (sqlite3_step(s) == SQLITE_ROW && off + 500 < max) {
             const char *txid = (const char *)sqlite3_column_text(s, 0);
             int vout = sqlite3_column_int(s, 1);
             int64_t val = sqlite3_column_int64(s, 2);
             int h = sqlite3_column_int(s, 3);
+            const char *stype = (const char *)sqlite3_column_text(s, 4);
             if (!txid) continue;
 
-            char short_tx[18];
+            char short_tx[18], lower_tx[65];
             txid_short(txid, short_tx, sizeof(short_tx));
+            txid_lower(txid, lower_tx, sizeof(lower_tx));
 
             int confs = (tip > 0 && h > 0) ? (tip - h + 1) : 0;
             if (confs < 0) confs = 0;
 
             APPEND(off, r, max,
                 "<tr>"
-                "<td class='hash'>%s:%d</td>"
+                "<td><a href='/explorer/tx/%s' class='hash'>"
+                "%s:%d</a></td>"
+                "<td><span class='pill pill-%s' style='font-size:10px'>"
+                "%s</span></td>"
                 "<td class='zcl'>%.8f</td>"
                 "<td>%d</td>"
                 "<td>%d</td>"
                 "</tr>",
-                short_tx, vout, (double)val / 1e8, h, confs);
+                lower_tx, short_tx, vout,
+                stype && stype[2] == 'S' ? "z" : "t",
+                stype ? stype : "?",
+                (double)val / 1e8, h, confs);
             t_total += val;
             t_count++;
         }
         sqlite3_finalize(s);
     }
 
-    if (t_count > 0) {
+    APPEND(off, r, max,
+        "<tr class='total-row'>"
+        "<td colspan='2'>Total (%d UTXO%s)</td>"
+        "<td class='zcl'>%.8f</td>"
+        "<td></td><td></td></tr></table></div>",
+        t_count, t_count == 1 ? "" : "s",
+        (double)t_total / 1e8);
+
+    /* Shielded notes: nullifier-verified unspent */
+    int z_notes = 0;
+    int64_t z_total = query_shielded_balance(db, &z_notes);
+
+    APPEND(off, r, max,
+        "<h3>Shielded Notes</h3>");
+
+    if (z_notes > 0) {
         APPEND(off, r, max,
-            "<tr class='total-row'>"
-            "<td>Total (%d UTXO%s)</td>"
-            "<td class='zcl'>%.8f</td>"
-            "<td></td><td></td></tr>",
-            t_count, t_count == 1 ? "" : "s",
-            (double)t_total / 1e8);
-    }
-    APPEND(off, r, max, "</table></div>");
-
-    /* Shielded notes: show only nullifier-verified unspent notes */
-    int64_t z_total = 0;
-    int z_count = 0;
-    s = NULL;
-    if (sqlite3_prepare_v2(db,
-            "SELECT hex(n.cm), n.value, n.height FROM wallet_sapling_notes n"
-            " WHERE NOT EXISTS ("
-            "   SELECT 1 FROM sapling_spends ss"
-            "   WHERE ss.nullifier = n.nullifier)"
-            " ORDER BY n.value DESC",
-            -1, &s, NULL) == SQLITE_OK) {
-        if (z_count == 0) {
-            APPEND(off, r, max,
-                "<h3>Shielded Notes (verified unspent)</h3>"
-                "<div class='overflow-x'>"
-                "<table><tr><th>Commitment</th>"
-                "<th>Amount</th><th>Height</th></tr>");
+            "<div class='overflow-x'>"
+            "<table><tr><th>Commitment</th>"
+            "<th>Amount</th><th>Height</th></tr>");
+        s = NULL;
+        if (sqlite3_prepare_v2(db,
+                "SELECT hex(n.cm), n.value, n.height "
+                "FROM wallet_sapling_notes n"
+                " WHERE NOT EXISTS ("
+                "   SELECT 1 FROM sapling_spends ss"
+                "   WHERE ss.nullifier = n.nullifier)"
+                " ORDER BY n.value DESC",
+                -1, &s, NULL) == SQLITE_OK) {
+            while (sqlite3_step(s) == SQLITE_ROW && off + 400 < max) {
+                const char *cm = (const char *)sqlite3_column_text(s, 0);
+                int64_t val = sqlite3_column_int64(s, 1);
+                int h = sqlite3_column_int(s, 2);
+                if (!cm) continue;
+                char short_cm[18];
+                txid_short(cm, short_cm, sizeof(short_cm));
+                APPEND(off, r, max,
+                    "<tr><td class='hash'>%s</td>"
+                    "<td class='zcl'>%.8f</td>"
+                    "<td>%d</td></tr>",
+                    short_cm, (double)val / 1e8, h);
+            }
+            sqlite3_finalize(s);
         }
-        while (sqlite3_step(s) == SQLITE_ROW && off + 400 < max) {
-            const char *cm = (const char *)sqlite3_column_text(s, 0);
-            int64_t val = sqlite3_column_int64(s, 1);
-            int h = sqlite3_column_int(s, 2);
-            if (!cm) continue;
-
-            char short_cm[18];
-            txid_short(cm, short_cm, sizeof(short_cm));
-
-            APPEND(off, r, max,
-                "<tr>"
-                "<td class='hash'>%s</td>"
-                "<td class='zcl'>%.8f</td>"
-                "<td>%d</td>"
-                "</tr>",
-                short_cm, (double)val / 1e8, h);
-            z_total += val;
-            z_count++;
-        }
-        sqlite3_finalize(s);
-    }
-    if (z_count > 0) {
         APPEND(off, r, max,
             "<tr class='total-row'>"
             "<td>Total (%d note%s)</td>"
             "<td class='zcl'>%.8f</td>"
             "<td></td></tr></table></div>",
-            z_count, z_count == 1 ? "" : "s",
+            z_notes, z_notes == 1 ? "" : "s",
             (double)z_total / 1e8);
+    } else {
+        /* No notes found — explain why */
+        int sapling_keys = query_int(db,
+            "SELECT count(*) FROM wallet_sapling_keys");
+        APPEND(off, r, max,
+            "<div class='card' style='border-left-color:#f59e0b'>"
+            "<div class='label' style='color:#f59e0b'>"
+            "No shielded notes found</div>"
+            "<div style='color:#666;font-size:13px'>"
+            "%d Sapling keys in wallet. "
+            "Run <code style='color:#f59e0b'>rescanwallet</code> "
+            "to scan the chain for notes belonging to these keys."
+            "</div></div>", sapling_keys);
     }
 
-    /* Supply stats — cross-validate UTXO sum vs theoretical supply */
+    /* Grand total */
+    int64_t grand = t_total + z_total;
+    APPEND(off, r, max,
+        "<div class='stats' style='margin-top:20px'>"
+        "<div class='stat'>"
+        "<div class='n'>%.8f</div>"
+        "<div class='l'>Transparent</div></div>"
+        "<div class='stat' style='border-color:#a78bfa'>"
+        "<div class='n' style='color:#a78bfa'>%.8f</div>"
+        "<div class='l'>Shielded</div></div>"
+        "<div class='stat' style='border-color:#f59e0b'>"
+        "<div class='n' style='color:#f59e0b'>%.8f</div>"
+        "<div class='l'>Total</div></div>"
+        "</div>",
+        (double)t_total / 1e8,
+        (double)z_total / 1e8,
+        (double)grand / 1e8);
+
+    /* Data source comparison */
+    int64_t speed_bal = query_speed_balance(db);
+    int speed_utxos = query_int(db,
+        "SELECT count(*) FROM wallet_utxos WHERE spent_txid IS NULL");
+    APPEND(off, r, max,
+        "<h3>Data Source Comparison</h3>"
+        "<div class='overflow-x'>"
+        "<table><tr><th>Source</th><th>Balance</th>"
+        "<th>UTXOs</th><th>Status</th></tr>"
+        "<tr><td>Chain UTXO set (ground truth)</td>"
+        "<td class='zcl'>%.8f</td><td>%d</td>"
+        "<td><span class='pill pill-t'>verified</span></td></tr>"
+        "<tr><td>SQLite wallet_utxos (cache)</td>"
+        "<td class='zcl'>%.8f</td><td>%d</td>"
+        "<td>%s</td></tr>"
+        "</table></div>",
+        (double)t_total / 1e8, t_count,
+        (double)speed_bal / 1e8, speed_utxos,
+        (speed_bal == t_total)
+            ? "<span class='pill pill-t'>match</span>"
+            : "<span class='pill pill-send'>stale</span>");
+
+    /* Chain supply context */
     int64_t chain_supply = query_int64(db,
         "SELECT COALESCE(SUM(value),0) FROM utxos");
     int chain_utxos = query_int(db, "SELECT count(*) FROM utxos");
-
     APPEND(off, r, max,
-        "<h3>Supply Summary</h3>"
+        "<h3>Chain Supply</h3>"
         "<div class='stats'>"
         "<div class='stat'>"
-        "<div class='n'>%.8f</div>"
-        "<div class='l'>Wallet Total</div></div>"
-        "<div class='stat'>"
         "<div class='n'>%.2f</div>"
-        "<div class='l'>Chain UTXO Supply</div></div>"
+        "<div class='l'>UTXO Supply (ZCL)</div></div>"
         "<div class='stat'>"
         "<div class='n'>%d</div>"
-        "<div class='l'>Chain UTXOs</div></div>"
+        "<div class='l'>Total UTXOs</div></div>"
         "</div>",
-        (double)(t_total + z_total) / 1e8,
-        (double)chain_supply / 1e8,
-        chain_utxos);
+        (double)chain_supply / 1e8, chain_utxos);
 
     emit_footer(r, max, &off);
     sqlite3_close(db);
@@ -1649,34 +1914,17 @@ static size_t serve_shield_confirm(uint8_t *r, size_t max, const char *query) {
 static size_t serve_pulse(uint8_t *r, size_t max) {
     sqlite3 *db = open_db();
     int height = 0, peers = 0, mempool = 0;
-    int64_t balance = 0, shielded = 0;
+    int64_t balance = 0, shielded = 0, speed_bal = 0;
+    int t_utxos = 0, z_notes = 0;
 
     if (db) {
         height = query_int(db, "SELECT MAX(height) FROM blocks");
         peers = query_int(db,  "SELECT count(*) FROM peers");
         mempool = query_int(db, "SELECT count(*) FROM mempool_entries");
 
-        sqlite3_stmt *s = NULL;
-        if (sqlite3_prepare_v2(db,
-                "SELECT COALESCE(SUM(u.value),0) FROM utxos u "
-                "WHERE u.address_hash IN "
-                "(SELECT pubkey_hash FROM wallet_keys)",
-                -1, &s, NULL) == SQLITE_OK && s) {
-            if (sqlite3_step(s) == SQLITE_ROW)
-                balance = sqlite3_column_int64(s, 0);
-            sqlite3_finalize(s);
-        }
-        s = NULL;
-        if (sqlite3_prepare_v2(db,
-                "SELECT COALESCE(SUM(n.value),0) FROM wallet_sapling_notes n"
-                " WHERE NOT EXISTS ("
-                "   SELECT 1 FROM sapling_spends ss"
-                "   WHERE ss.nullifier = n.nullifier)",
-                -1, &s, NULL) == SQLITE_OK && s) {
-            if (sqlite3_step(s) == SQLITE_ROW)
-                shielded = sqlite3_column_int64(s, 0);
-            sqlite3_finalize(s);
-        }
+        balance = query_ground_truth_balance(db, &t_utxos);
+        shielded = query_shielded_balance(db, &z_notes);
+        speed_bal = query_speed_balance(db);
 
         /* RPC fallback if SQLite has no balance */
         if (balance == 0 && shielded == 0) {
@@ -1697,8 +1945,12 @@ static size_t serve_pulse(uint8_t *r, size_t max) {
         "Cache-Control: no-cache\r\n"
         "Connection: close\r\n\r\n"
         "{\"height\":%d,\"balance\":%" PRId64 ",\"shielded\":%" PRId64
+        ",\"speed_balance\":%" PRId64
+        ",\"t_utxos\":%d,\"z_notes\":%d"
         ",\"peers\":%d,\"sync\":\"%s\",\"mempool\":%d}",
-        height, balance, shielded, peers, sync, mempool);
+        height, balance, shielded, speed_bal,
+        t_utxos, z_notes,
+        peers, sync, mempool);
 }
 
 /* ── Send Confirm (/wallet/send/confirm POST) ──────────────── */

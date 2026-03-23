@@ -719,17 +719,3 @@ void onion_service_set_address(const char *address)
     }
 }
 
-bool onion_service_register_site(const char *title, const char *description)
-{
-    (void)title; (void)description;
-    /* TODO: build ZSLP GENESIS/SEND tx with .onion + title + description */
-    return false;
-}
-
-int onion_service_search(const char *query,
-                          struct onion_site *results, size_t max)
-{
-    (void)query; (void)results; (void)max;
-    /* TODO: scan chain for ZSLP tokens matching query */
-    return 0;
-}

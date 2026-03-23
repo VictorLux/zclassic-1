@@ -45,11 +45,11 @@ bool chain_snapshot_validate(struct chain_snapshot *snap)
         return false;
     }
 
-    /* ── Validate BlockIndexStore (optional) ── */
-    snap->src_has_index = block_index_store_validate(&snap->index, &errors);
+    /* ── Validate block index LevelDB (optional) ── */
+    snap->src_has_index = leveldb_store_validate(&snap->index, &errors);
 
-    /* ── Validate ChainstateStore ── */
-    if (!chainstate_store_validate(&snap->chainstate, &errors)) {
+    /* ── Validate chainstate LevelDB ── */
+    if (!leveldb_store_validate(&snap->chainstate, &errors)) {
         char msg[512];
         ar_errors_full_messages(&errors, msg, sizeof(msg));
         printf("chain_snapshot: chainstate invalid: %s\n", msg);
@@ -77,9 +77,14 @@ bool chain_snapshot_save(struct chain_snapshot *snap)
         return false;
 
     snap->copy_blocks_ok = block_data_save(&snap->blocks);
-    snap->copy_index_ok = snap->src_has_index
-                        ? block_index_store_save(&snap->index) : false;
-    snap->copy_chainstate_ok = chainstate_store_save(&snap->chainstate);
+    if (snap->src_has_index) {
+        snap->index.label = "block_index";
+        snap->copy_index_ok = leveldb_store_save(&snap->index);
+    } else {
+        snap->copy_index_ok = false;
+    }
+    snap->chainstate.label = "chainstate";
+    snap->copy_chainstate_ok = leveldb_store_save(&snap->chainstate);
     snap->files_copied = snap->src_block_files;
 
     printf("chain_snapshot: copy complete. blocks=%s index=%s chainstate=%s\n",

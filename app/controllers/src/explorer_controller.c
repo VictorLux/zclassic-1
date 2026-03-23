@@ -37,6 +37,7 @@
 #include <sys/time.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <stdatomic.h>
 #include <unistd.h>
 #include <sys/stat.h>
 #include <pthread.h>
@@ -116,10 +117,10 @@ static void *stats_compute_thread(void *arg);
 static void *hodl_compute_thread(void *arg);
 static void *tokens_compute_thread(void *arg);
 static void *factoids_compute_thread(void *arg);
-static volatile int g_stats_computing;
-static volatile int g_tokens_computing;
-static volatile int g_hodl_computing;
-static volatile int g_factoids_computing;
+static _Atomic int g_stats_computing;
+static _Atomic int g_tokens_computing;
+static _Atomic int g_hodl_computing;
+static _Atomic int g_factoids_computing;
 
 static void prewarm_caches(void)
 {
