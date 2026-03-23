@@ -14,6 +14,8 @@
 #include "views/format_helpers.h"
 #include "views/wallet_css.h"
 #include "event/event.h"
+#include "encoding/base58.h"
+#include "encoding/bech32.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -612,9 +614,9 @@ static void emit_footer(uint8_t *buf, size_t max, size_t *off) {
         "var h=document.getElementById('sb-h');"
         "var p=document.getElementById('sb-p');"
         "var m=document.getElementById('sb-m');"
-        "if(h)h.textContent='H:'+d.height;"
-        "if(p)p.textContent='P:'+d.peers;"
-        "if(m)m.textContent='M:'+d.mempool;"
+        "if(h)h.textContent='Block '+d.height;"
+        "if(p)p.textContent=d.peers+' peers';"
+        "if(m)m.textContent=d.mempool+' mempool';"
         "}).catch(function(){});}"
         "up();setInterval(up,5000);"
         "})();"
@@ -664,6 +666,37 @@ static bool parse_form_field(const uint8_t *body, size_t body_len,
         if (p < end) p++;
     }
     out[0] = '\0';
+    return false;
+}
+
+/* ── Address validation with checksum ───────────────────────── */
+/* Returns true if address has a valid checksum (Base58Check for t1/t3,
+ * Bech32 for zs1). This catches typos that prefix+length checks miss. */
+
+static bool validate_zcl_address(const char *addr) {
+    if (!addr || !addr[0]) return false;
+    size_t alen = strlen(addr);
+
+    /* t1 or t3: Base58Check with 2-byte version prefix */
+    if ((addr[0] == 't' && (addr[1] == '1' || addr[1] == '3')) &&
+        alen >= 26 && alen <= 36) {
+        unsigned char decoded[64];
+        size_t decoded_len = 0;
+        return base58check_decode(addr, decoded, sizeof(decoded), &decoded_len);
+    }
+
+    /* zs1: Bech32 with "zs" human-readable part */
+    if (alen >= 3 && addr[0] == 'z' && addr[1] == 's' && addr[2] == '1' &&
+        alen >= 70) {
+        char hrp[8];
+        uint8_t data[128];
+        size_t data_len = 0;
+        if (!bech32_decode(hrp, sizeof(hrp), data, sizeof(data),
+                           &data_len, addr))
+            return false;
+        return (strcmp(hrp, "zs") == 0 && data_len > 0);
+    }
+
     return false;
 }
 
@@ -839,8 +872,8 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
         "color:#0c0c0c'>Receive</a>"
         "</div>");
 
-    /* 5. Privacy nudge — show when transparent balance > 0 and shielded == 0 */
-    if (transparent > 0 && shielded == 0) {
+    /* 5. Privacy nudge — show when transparent balance > 0 */
+    if (transparent > 0) {
         APPEND(off, r, max,
             "<div class='privacy-card'>"
             "<div class='title'>Your funds are publicly visible</div>"
@@ -859,49 +892,43 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
 
     sqlite3_stmt *s = NULL;
     if (sqlite3_prepare_v2(db,
-            "SELECT u.value, u.height, COALESCE(b.time,0), hex(u.txid) "
-            "FROM utxos u "
-            "WHERE u.address_hash IN "
-            "  (SELECT pubkey_hash FROM wallet_keys) "
-            "OR u.address_hash IN ("
-            "  SELECT DISTINCT to2.address_hash "
-            "  FROM tx_inputs ti "
-            "  JOIN tx_outputs to1 ON ti.prev_txid = to1.txid "
-            "    AND ti.prev_vout = to1.vout "
-            "  JOIN tx_outputs to2 ON ti.txid = to2.txid "
-            "  WHERE to1.address_hash IN "
-            "    (SELECT pubkey_hash FROM wallet_keys) "
-            "  AND to2.address_hash != to1.address_hash"
-            ") "
-            "LEFT JOIN blocks b ON b.height = u.height "
-            "ORDER BY u.height DESC LIMIT 5",
+            "SELECT hex(wt.txid), wt.block_height, COALESCE(b.time,0), "
+            "wt.from_me, "
+            "COALESCE((SELECT SUM(wu.value) FROM wallet_utxos wu "
+            "  WHERE wu.txid = wt.txid),0) "
+            "FROM wallet_transactions wt "
+            "LEFT JOIN blocks b ON wt.block_height = b.height "
+            "ORDER BY wt.block_height DESC LIMIT 5",
             -1, &s, NULL) == SQLITE_OK) {
         int tx_shown = 0;
         while (sqlite3_step(s) == SQLITE_ROW && off + 400 < max) {
-            int64_t value = sqlite3_column_int64(s, 0);
+            const char *txid = (const char *)sqlite3_column_text(s, 0);
             int height = sqlite3_column_int(s, 1);
             int64_t btime = sqlite3_column_int64(s, 2);
-            const char *txid = (const char *)sqlite3_column_text(s, 3);
+            int from_me = sqlite3_column_int(s, 3);
+            int64_t wallet_output = sqlite3_column_int64(s, 4);
+            if (!txid) continue;
+
+            bool is_recv = (from_me == 0);
 
             char rel_time[48], esc_rel[96];
             format_relative_time(btime, rel_time, sizeof(rel_time));
             html_escape(esc_rel, sizeof(esc_rel), rel_time);
 
             char lower_tx[65];
-            if (txid) txid_lower(txid, lower_tx, sizeof(lower_tx));
-            else lower_tx[0] = '\0';
+            txid_lower(txid, lower_tx, sizeof(lower_tx));
 
             int confs = (tip > 0 && height > 0) ? (tip - height + 1) : 0;
 
             char amt[32];
-            zcl_format_zcl(amt, sizeof(amt), value);
+            zcl_format_zcl(amt, sizeof(amt), wallet_output);
 
             APPEND(off, r, max,
                 "<a href='/wallet/tx/%s' style='text-decoration:none;"
                 "color:inherit;display:block'>"
                 "<div class='tx-row'>"
                 "<div>"
-                "<span class='tx-amount recv'>+%s</span>"
+                "<span class='tx-amount %s'>%s%s</span>"
                 "<span style='color:#888;font-size:12px;"
                 "margin-left:6px'>ZCL</span></div>"
                 "<div class='tx-meta'>"
@@ -909,6 +936,8 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
                 "<span class='tx-conf'>%d conf%s</span>"
                 "</div></div></a>",
                 lower_tx,
+                is_recv ? "recv" : "send",
+                is_recv ? "+" : "-",
                 amt, esc_rel,
                 confs, confs == 1 ? "" : "s");
             tx_shown++;
@@ -1096,7 +1125,7 @@ static size_t serve_receive(uint8_t *r, size_t max) {
     }
     APPEND(off, r, max,
         "<div id='copy-msg' style='color:#888;font-size:12px;"
-        "margin-top:4px;height:16px'></div>"
+        "margin-top:4px;height:16px'>Tap address to copy</div>"
         "<div style='color:#888;font-size:11px;margin-top:2px'>"
         "<span class='pill pill-t'>Transparent</span> "
         "Publicly visible on chain</div>"
@@ -1226,7 +1255,18 @@ static size_t serve_receive(uint8_t *r, size_t max) {
 static size_t serve_history(uint8_t *r, size_t max, int page,
                             const char *filter, const char *search) {
     sqlite3 *db = open_db();
-    if (!db) return 0;
+    if (!db) {
+        size_t off = emit_header(r, max, "History", "/wallet/history");
+        APPEND(off, r, max,
+            "<div class='empty-state' style='padding:48px 0'>"
+            "<div style='font-size:40px;margin-bottom:12px'>&#x23F3;</div>"
+            "<div style='color:#e2e2e2;font-size:18px;font-weight:600'>"
+            "Wallet Loading</div>"
+            "<div style='margin-top:8px'>"
+            "The database is not yet available.</div></div>");
+        emit_footer(r, max, &off);
+        return off;
+    }
 
     int tip = query_int(db, "SELECT MAX(height) FROM blocks");
     int per_page = 50;
@@ -1413,7 +1453,18 @@ static size_t serve_history(uint8_t *r, size_t max, int page,
 
 static size_t serve_coins(uint8_t *r, size_t max) {
     sqlite3 *db = open_db();
-    if (!db) return 0;
+    if (!db) {
+        size_t off = emit_header(r, max, "Coins", "/wallet/coins");
+        APPEND(off, r, max,
+            "<div class='empty-state' style='padding:48px 0'>"
+            "<div style='font-size:40px;margin-bottom:12px'>&#x23F3;</div>"
+            "<div style='color:#e2e2e2;font-size:18px;font-weight:600'>"
+            "Wallet Loading</div>"
+            "<div style='margin-top:8px'>"
+            "The database is not yet available.</div></div>");
+        emit_footer(r, max, &off);
+        return off;
+    }
 
     int tip = query_int(db, "SELECT MAX(height) FROM blocks");
 
@@ -1630,10 +1681,10 @@ static size_t serve_shield(uint8_t *r, size_t max, const char *query) {
     if (amount <= 0) {
         size_t off = emit_header(r, max, "Shield — ZClassic23", "/wallet");
         APPEND(off, r, max,
-            "<div class='card' style='border-left-color:#ff4444'>"
-            "<div class='label' style='color:#ff4444'>Invalid Amount</div>"
+            "<div class='card' style='border-left-color:#f87171'>"
+            "<div class='label' style='color:#f87171'>Invalid Amount</div>"
             "<div class='sub'>Amount must be greater than 0.</div>"
-            "<a href='/wallet' style='color:#4db8ff'>Back to Wallet</a></div>");
+            "<a href='/wallet' style='color:#60a5fa'>Back to Wallet</a></div>");
         emit_footer(r, max, &off);
         return off;
     }
@@ -1644,12 +1695,12 @@ static size_t serve_shield(uint8_t *r, size_t max, const char *query) {
     size_t off = emit_header(r, max, "Shield Funds — ZClassic23", "/wallet");
 
     APPEND(off, r, max,
-        "<div class='card' style='border-left-color:#9966ff;padding:20px;"
+        "<div class='card' style='border-left-color:#a78bfa;padding:20px;"
         "background:linear-gradient(135deg,#141414,#1a1a2a)'>"
         "<div style='text-align:center'>"
         "<div style='font-size:14px;color:#888;margin-bottom:8px'>"
         "Shielding</div>"
-        "<div style='font-size:40px;color:#bb99ff;font-weight:800'>"
+        "<div style='font-size:40px;color:#a78bfa;font-weight:800'>"
         "%.8f ZCL</div>"
         "<div style='color:#888;font-size:13px;margin-top:8px'>"
         "Fee: %.4f ZCL &middot; Total: %.8f ZCL</div>"
@@ -1660,48 +1711,60 @@ static size_t serve_shield(uint8_t *r, size_t max, const char *query) {
         "<div class='card'>"
         "<div style='color:#888;font-size:13px;line-height:1.6'>"
         "<div style='margin-bottom:8px'>"
-        "<span style='color:#33ff99;font-weight:700'>Step 1:</span> "
+        "<span style='color:#34d399;font-weight:700'>Step 1:</span> "
         "Your transparent ZCL moves to a shielded address.</div>"
         "<div style='margin-bottom:8px'>"
-        "<span style='color:#bb99ff;font-weight:700'>Step 2:</span> "
+        "<span style='color:#a78bfa;font-weight:700'>Step 2:</span> "
         "Wait ~6 hours for the timing link to break.</div>"
         "<div>"
-        "<span style='color:#4db8ff;font-weight:700'>Step 3:</span> "
+        "<span style='color:#60a5fa;font-weight:700'>Step 3:</span> "
         "Your funds are fully private and untraceable.</div>"
         "</div></div>");
 
     APPEND(off, r, max,
         "<div style='display:flex;gap:10px;margin:16px 0'>"
-        "<a href='/wallet' style='flex:1;background:#333;color:#e8e8e8;"
-        "padding:12px;border-radius:6px;text-align:center;"
-        "font-weight:700;text-decoration:none;font-size:16px'>Cancel</a>"
-        "<a href='/wallet/shield/confirm?amount=%.8f' "
-        "style='flex:2;background:#9966ff;color:#fff;"
-        "padding:12px;border-radius:6px;text-align:center;"
-        "font-weight:700;text-decoration:none;font-size:16px'>"
-        "Confirm Shield</a></div>",
+        "<a href='/wallet' class='btn-secondary' "
+        "style='flex:1;text-align:center;text-decoration:none;"
+        "display:flex;align-items:center;justify-content:center'>Cancel</a>"
+        "<form method='POST' action='zcl://node/wallet/shield/confirm' "
+        "style='flex:2;margin:0'>"
+        "<input type='hidden' name='amount' value='%.8f'>"
+        "<button type='submit' class='btn-primary' "
+        "style='background:#a78bfa;color:#fff'"
+        " id='shield-btn'>Confirm Shield</button></form></div>"
+        "<div id='shield-loading' class='loading-overlay' style='display:none'>"
+        "<div class='spinner'></div>"
+        "<p>Shielding funds...</p></div>"
+        "<script>"
+        "document.getElementById('shield-btn').addEventListener('click',"
+        "function(e){e.preventDefault();this.disabled=true;"
+        "document.getElementById('shield-loading').style.display='flex';"
+        "this.form.submit();});"
+        "</script>",
         amount);
 
     emit_footer(r, max, &off);
     return off;
 }
 
-/* ── Shield Confirm (/wallet/shield/confirm?amount=X) ──────── */
+/* ── Shield Confirm (/wallet/shield/confirm POST) ──────────── */
 /* Executes the shielding transaction via the node's z_sendmany. */
 
-static size_t serve_shield_confirm(uint8_t *r, size_t max, const char *query) {
+static size_t serve_shield_confirm(uint8_t *r, size_t max,
+                                    const uint8_t *body, size_t body_len) {
     double amount = 0;
-    if (query) {
-        const char *amt = strstr(query, "amount=");
-        if (amt) amount = strtod(amt + 7, NULL);
-    }
+    char amount_str[32] = "";
+    if (body && body_len > 0)
+        parse_form_field(body, body_len, "amount", amount_str, sizeof(amount_str));
+    if (amount_str[0])
+        amount = strtod(amount_str, NULL);
 
     size_t off = emit_header(r, max, "Shielding — ZClassic23", "/wallet");
 
     if (amount <= 0) {
         APPEND(off, r, max,
-            "<div class='card' style='border-left-color:#ff4444'>"
-            "<div class='label' style='color:#ff4444'>Invalid amount</div>"
+            "<div class='card' style='border-left-color:#f87171'>"
+            "<div class='label' style='color:#f87171'>Invalid amount</div>"
             "<a href='/wallet'>Back to Wallet</a></div>");
         emit_footer(r, max, &off);
         return off;
@@ -1730,17 +1793,17 @@ static size_t serve_shield_confirm(uint8_t *r, size_t max, const char *query) {
 
     if (!z_dest[0]) {
         APPEND(off, r, max,
-            "<div class='card' style='border-left-color:#ff4444;padding:20px'>"
+            "<div class='card' style='border-left-color:#f87171;padding:20px'>"
             "<div style='text-align:center'>"
             "<div style='font-size:40px;margin-bottom:8px'>&#x274C;</div>"
-            "<div style='font-size:20px;color:#ff4444;font-weight:700'>"
+            "<div style='font-size:20px;color:#f87171;font-weight:700'>"
             "No Shielded Address Available</div>"
             "<div style='color:#888;font-size:13px;margin-top:8px'>"
             "The wallet has no shielded addresses. Generate one with:<br>"
-            "<code style='color:#4db8ff'>zcl-rpc z_getnewaddress</code></div>"
+            "<code style='color:#60a5fa'>zcl-rpc z_getnewaddress</code></div>"
             "</div></div>"
             "<div style='text-align:center;margin:16px'>"
-            "<a href='/wallet' style='color:#4db8ff;font-size:16px'>"
+            "<a href='/wallet' style='color:#60a5fa;font-size:16px'>"
             "Back to Wallet</a></div>");
         emit_footer(r, max, &off);
         return off;
@@ -1792,17 +1855,17 @@ static size_t serve_shield_confirm(uint8_t *r, size_t max, const char *query) {
 
     if (!node_reachable) {
         APPEND(off, r, max,
-            "<div class='card' style='border-left-color:#ff4444;padding:20px'>"
+            "<div class='card' style='border-left-color:#f87171;padding:20px'>"
             "<div style='text-align:center'>"
             "<div style='font-size:40px;margin-bottom:8px'>&#x274C;</div>"
-            "<div style='font-size:20px;color:#ff4444;font-weight:700'>"
+            "<div style='font-size:20px;color:#f87171;font-weight:700'>"
             "Node Offline</div>"
             "<div style='color:#888;font-size:13px;margin-top:8px'>"
             "The ZClassic23 node is not running. Start it with:<br>"
-            "<code style='color:#4db8ff'>./zclassic23 -datadir=~/.zclassic-c23</code></div>"
+            "<code style='color:#60a5fa'>./zclassic23 -datadir=~/.zclassic-c23</code></div>"
             "</div></div>"
             "<div style='text-align:center;margin:16px'>"
-            "<a href='/wallet' style='color:#4db8ff;font-size:16px'>"
+            "<a href='/wallet' style='color:#60a5fa;font-size:16px'>"
             "Back to Wallet</a></div>");
         emit_footer(r, max, &off);
         return off;
@@ -1877,10 +1940,10 @@ static size_t serve_shield_confirm(uint8_t *r, size_t max, const char *query) {
         }
 
         APPEND(off, r, max,
-            "<div class='card' style='border-left-color:#33ff99;padding:20px'>"
+            "<div class='card' style='border-left-color:#34d399;padding:20px'>"
             "<div style='text-align:center'>"
             "<div style='font-size:40px;margin-bottom:8px'>&#x2705;</div>"
-            "<div style='font-size:20px;color:#33ff99;font-weight:700'>"
+            "<div style='font-size:20px;color:#34d399;font-weight:700'>"
             "Shielding Started</div>"
             "<div style='color:#888;font-size:14px;margin-top:8px'>"
             "%.8f ZCL is being moved to a shielded address.</div>"
@@ -1896,10 +1959,10 @@ static size_t serve_shield_confirm(uint8_t *r, size_t max, const char *query) {
         html_escape(safe_result, sizeof(safe_result), result);
 
         APPEND(off, r, max,
-            "<div class='card' style='border-left-color:#ff8800;padding:20px'>"
+            "<div class='card' style='border-left-color:#fbbf24;padding:20px'>"
             "<div style='text-align:center'>"
             "<div style='font-size:40px;margin-bottom:8px'>&#x26A0;</div>"
-            "<div style='font-size:20px;color:#ff8800;font-weight:700'>"
+            "<div style='font-size:20px;color:#fbbf24;font-weight:700'>"
             "Could Not Shield</div>"
             "<div style='color:#888;font-size:13px;margin-top:8px'>"
             "The node may not be running, or the wallet has no "
@@ -1913,7 +1976,7 @@ static size_t serve_shield_confirm(uint8_t *r, size_t max, const char *query) {
 
     APPEND(off, r, max,
         "<div style='text-align:center;margin:16px'>"
-        "<a href='/wallet' style='color:#4db8ff;font-size:16px'>"
+        "<a href='/wallet' style='color:#60a5fa;font-size:16px'>"
         "Back to Wallet</a></div>");
 
     emit_footer(r, max, &off);
@@ -1999,23 +2062,22 @@ static size_t serve_send_review(uint8_t *r, size_t max,
     parse_form_field(body, body_len, "address", address, sizeof(address));
     parse_form_field(body, body_len, "amount", amount_str, sizeof(amount_str));
 
-    /* Validate address: must be alphanumeric with valid ZCL prefix */
-    size_t alen = strlen(address);
-    bool addr_ok = alen >= 26 && alen <= 96;
-    for (size_t i = 0; addr_ok && address[i]; i++)
-        if (!((address[i]>='a'&&address[i]<='z') || (address[i]>='A'&&address[i]<='Z') ||
-              (address[i]>='0'&&address[i]<='9')))
-            addr_ok = false;
-    /* Require valid ZCL prefix */
-    if (addr_ok) {
-        bool has_prefix = (address[0] == 't' && (address[1] == '1' || address[1] == '3'))
-                       || (alen >= 3 && address[0] == 'z' && address[1] == 's' && address[2] == '1');
-        if (!has_prefix) addr_ok = false;
+    /* Validate address: checksum verification (Base58Check or Bech32) */
+    bool addr_ok = validate_zcl_address(address);
+    const char *addr_err = NULL;
+    if (!addr_ok) {
+        size_t alen = strlen(address);
+        if (alen < 26)
+            addr_err = "Address too short.";
+        else if (!(address[0] == 't' || (alen >= 3 && address[0] == 'z')))
+            addr_err = "ZClassic addresses start with t1, t3, or zs1.";
+        else
+            addr_err = "Invalid address checksum. Check for typos.";
     }
 
     double amount = strtod(amount_str, NULL);
     const char *err_reason = !addr_ok
-        ? "Invalid address. ZClassic addresses start with t1, t3, or zs1."
+        ? (addr_err ? addr_err : "Invalid address.")
         : "Invalid amount";
     if (!addr_ok || amount <= 0) {
         APPEND(off, r, max,
@@ -2113,18 +2175,8 @@ static size_t serve_send_confirm(uint8_t *r, size_t max,
     parse_form_field(body, body_len, "address", address, sizeof(address));
     parse_form_field(body, body_len, "amount", amount_str, sizeof(amount_str));
 
-    /* Validate address: alphanumeric with valid ZCL prefix */
-    size_t alen = strlen(address);
-    bool addr_ok = alen >= 26 && alen <= 96;
-    for (size_t i = 0; addr_ok && address[i]; i++)
-        if (!((address[i]>='a'&&address[i]<='z') || (address[i]>='A'&&address[i]<='Z') ||
-              (address[i]>='0'&&address[i]<='9')))
-            addr_ok = false;
-    if (addr_ok) {
-        bool has_prefix = (address[0] == 't' && (address[1] == '1' || address[1] == '3'))
-                       || (alen >= 3 && address[0] == 'z' && address[1] == 's' && address[2] == '1');
-        if (!has_prefix) addr_ok = false;
-    }
+    /* Validate address: checksum verification */
+    bool addr_ok = validate_zcl_address(address);
 
     double amount = strtod(amount_str, NULL);
     if (!addr_ok || amount <= 0) {
@@ -2445,10 +2497,8 @@ size_t wallet_view_handle_request(const char *method, const char *path,
         return serve_send_review(response, response_max, body, body_len);
     if (strcmp(path, "/wallet/send/confirm") == 0)
         return serve_send_confirm(response, response_max, body, body_len);
-    if (strncmp(path, "/wallet/shield/confirm", 22) == 0) {
-        const char *q = strchr(path, '?');
-        return serve_shield_confirm(response, response_max, q);
-    }
+    if (strncmp(path, "/wallet/shield/confirm", 22) == 0)
+        return serve_shield_confirm(response, response_max, body, body_len);
     if (strncmp(path, "/wallet/shield", 14) == 0) {
         const char *q = strchr(path, '?');
         return serve_shield(response, response_max, q);
