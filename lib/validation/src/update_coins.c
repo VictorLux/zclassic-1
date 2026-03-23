@@ -7,6 +7,7 @@
 #include "validation/update_coins.h"
 #include "coins/utxo_commitment.h"
 #include <assert.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 

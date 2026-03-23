@@ -114,10 +114,18 @@ bool connect_block(const struct block *block,
                 if (tx->num_vin > 0) {
                     char prevhex[65];
                     uint256_get_hex(&tx->vin[0].prevout.hash, prevhex);
+                    /* Also show raw bytes for byte-order debugging */
+                    char rawbytes[20];
+                    snprintf(rawbytes, sizeof(rawbytes),
+                             "%02x%02x%02x%02x",
+                             tx->vin[0].prevout.hash.data[0],
+                             tx->vin[0].prevout.hash.data[1],
+                             tx->vin[0].prevout.hash.data[2],
+                             tx->vin[0].prevout.hash.data[3]);
                     printf("missing-input: h=%d tx[%zu] vin[0]=%s:%u "
-                           "cache=%zu\n", pindex->nHeight, i,
+                           "cache=%zu raw4=%s\n", pindex->nHeight, i,
                            prevhex, tx->vin[0].prevout.n,
-                           view->cache_coins.size);
+                           view->cache_coins.size, rawbytes);
                 }
                 block_undo_free(&blockundo);
                 return validation_state_dos(state, 100, false, REJECT_INVALID,
