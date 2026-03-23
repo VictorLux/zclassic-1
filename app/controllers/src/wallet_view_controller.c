@@ -800,7 +800,7 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
     }
     APPEND(off, r, max, "</div>");
 
-    /* Primary actions — Send and Receive as equal-weight buttons */
+    /* Primary actions */
     APPEND(off, r, max,
         "<div class='actions'>"
         "<a href='/wallet/send' style='border:2px solid #374151'>Send</a>"
@@ -808,12 +808,44 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
         "color:#0a0a0a;border:none'>Receive</a>"
         "</div>");
 
-    /* Quick actions */
-    APPEND(off, r, max,
-        "<div class='actions'>"
-        "<a href='/wallet/send'>Send</a>"
-        "<a href='/wallet/receive'>Receive</a>"
-        "</div>");
+    /* Shielded address count + ZSLP tokens — contextual info */
+    {
+        int z_count = 0, token_count = 0;
+        sqlite3_stmt *zs = NULL;
+        if (sqlite3_prepare_v2(db,
+                "SELECT count(*) FROM wallet_sapling_keys "
+                "WHERE address IS NOT NULL AND length(address) > 0",
+                -1, &zs, NULL) == SQLITE_OK && zs) {
+            if (sqlite3_step(zs) == SQLITE_ROW)
+                z_count = sqlite3_column_int(zs, 0);
+            sqlite3_finalize(zs);
+        }
+        zs = NULL;
+        if (sqlite3_prepare_v2(db,
+                "SELECT count(*) FROM zslp_tokens",
+                -1, &zs, NULL) == SQLITE_OK && zs) {
+            if (sqlite3_step(zs) == SQLITE_ROW)
+                token_count = sqlite3_column_int(zs, 0);
+            sqlite3_finalize(zs);
+        }
+
+        /* Show ecosystem info only when there's something to show */
+        if (z_count > 0 || shielded > 0 || token_count > 0) {
+            APPEND(off, r, max,
+                "<div style='display:flex;gap:16px;margin:8px 0 0;"
+                "font-size:12px;color:#6b7280'>");
+            if (z_count > 0 || shielded > 0)
+                APPEND(off, r, max,
+                    "<a href='/wallet/receive' style='color:#a78bfa'>"
+                    "%d shielded address%s</a>",
+                    z_count, z_count == 1 ? "" : "es");
+            if (token_count > 0)
+                APPEND(off, r, max,
+                    "<a href='/explorer/tokens' style='color:#6b7280'>"
+                    "%d ZSLP tokens</a>", token_count);
+            APPEND(off, r, max, "</div>");
+        }
+    }
 
     /* Recent transactions */
     APPEND(off, r, max,
@@ -988,37 +1020,72 @@ static size_t serve_receive(uint8_t *r, size_t max) {
         "margin-top:4px;height:16px'></div>"
         "</div>");
 
-    /* Shielded addresses */
+    /* Shielded addresses — try SQLite first, fall back to RPC */
+    int z_shown = 0;
     if (db) {
         sqlite3_stmt *s = NULL;
         if (sqlite3_prepare_v2(db,
                 "SELECT address FROM wallet_sapling_keys "
-                "WHERE address IS NOT NULL AND address != '' "
+                "WHERE address IS NOT NULL AND length(address) > 0 "
                 "ORDER BY rowid",
                 -1, &s, NULL) == SQLITE_OK) {
-            int count = 0;
             while (sqlite3_step(s) == SQLITE_ROW && off + 512 < max) {
                 const char *raw = (const char *)sqlite3_column_text(s, 0);
                 if (!raw || !raw[0]) continue;
-
                 char escaped[1024];
                 html_escape(escaped, sizeof(escaped), raw);
-
-                if (count == 0) {
+                if (z_shown == 0)
                     APPEND(off, r, max,
                         "<div class='card' style='border-left-color:#a78bfa'>"
                         "<div class='label'>Shielded Address</div>");
-                }
                 APPEND(off, r, max,
                     "<div class='addr-box-sm'>%s</div>", escaped);
-                count++;
+                z_shown++;
             }
-            if (count > 0)
-                APPEND(off, r, max, "</div>");
             sqlite3_finalize(s);
         }
         sqlite3_close(db);
     }
+
+    /* RPC fallback: get z-addresses from running node if SQLite empty */
+    if (z_shown == 0) {
+        char rpc_buf[8192];
+        if (wallet_rpc_call_port("z_listaddresses", "[]",
+                                  rpc_buf, sizeof(rpc_buf),
+                                  18232, NULL) > 0) {
+            /* Parse JSON array of strings: ["zs1...", "zs1...", ...] */
+            const char *p = strchr(rpc_buf, '[');
+            if (p) {
+                p++;
+                while (*p && z_shown < 3 && off + 512 < max) {
+                    while (*p == ' ' || *p == '\n' || *p == ',') p++;
+                    if (*p == '"') {
+                        p++;
+                        const char *end = strchr(p, '"');
+                        if (end && end - p > 10) {
+                            char addr[256];
+                            size_t alen = (size_t)(end - p);
+                            if (alen >= sizeof(addr)) alen = sizeof(addr) - 1;
+                            memcpy(addr, p, alen);
+                            addr[alen] = '\0';
+                            if (z_shown == 0)
+                                APPEND(off, r, max,
+                                    "<div class='card' "
+                                    "style='border-left-color:#a78bfa'>"
+                                    "<div class='label'>Shielded Addresses "
+                                    "(from wallet)</div>");
+                            APPEND(off, r, max,
+                                "<div class='addr-box-sm'>%s</div>", addr);
+                            z_shown++;
+                            p = end + 1;
+                        } else break;
+                    } else break;
+                }
+            }
+        }
+    }
+    if (z_shown > 0)
+        APPEND(off, r, max, "</div>");
 
     /* Click-to-copy with "Copied!" feedback */
     APPEND(off, r, max,
