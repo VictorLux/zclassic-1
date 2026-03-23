@@ -165,6 +165,7 @@ bool coins_view_sqlite_get_coins(struct coins_view_sqlite *cvs,
                                   struct coins *out)
 {
     coins_init(out);
+    if (!cvs || !cvs->db || !cvs->stmt_get || !txid) return false;
 
     sqlite3_stmt *s = cvs->stmt_get;
     sqlite3_reset(s);
@@ -222,6 +223,7 @@ bool coins_view_sqlite_get_coins(struct coins_view_sqlite *cvs,
 bool coins_view_sqlite_have_coins(struct coins_view_sqlite *cvs,
                                    const struct uint256 *txid)
 {
+    if (!cvs || !cvs->stmt_have || !txid) return false;
     sqlite3_stmt *s = cvs->stmt_have;
     sqlite3_reset(s);
     sqlite3_bind_blob(s, 1, txid->data, 32, SQLITE_STATIC);
