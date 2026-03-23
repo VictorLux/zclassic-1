@@ -2569,7 +2569,15 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
                             }
                         }
                     }
-                    push_getheaders(mp, node);
+                    /* Send getheaders from tip's PARENT, not tip.
+                     * If the peer has our tip, it returns "no new headers"
+                     * (empty response). By starting from tip-1, the peer
+                     * includes our tip AND the block at tip+1 in its
+                     * response — giving us the header we need. */
+                    if (tip && tip->pprev)
+                        push_getheaders_from(mp, node, tip->pprev);
+                    else
+                        push_getheaders(mp, node);
                 }
             }
         }

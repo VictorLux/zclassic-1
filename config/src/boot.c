@@ -2097,7 +2097,11 @@ bool app_init(struct app_context *ctx)
             int chain_tip = active_chain_height(&g_state.chain_active);
             int best_header = g_state.pindex_best_header ?
                 g_state.pindex_best_header->nHeight : chain_tip;
-            bool near_tip = (best_header - chain_tip < 1000);
+            /* Also check against assume-valid height as a proxy for
+             * network tip. If our chain is far below it, we're in IBD
+             * even if best_header == chain_tip (headers not synced yet). */
+            bool near_tip = (best_header - chain_tip < 1000) &&
+                            (chain_tip > g_assume_valid_height - 10000);
             if (near_tip) {
                 https_server_start(cert_path, key_path, "zclnet.net");
             } else {
