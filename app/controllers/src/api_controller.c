@@ -343,7 +343,7 @@ static size_t compute_stats(uint8_t *r, size_t max)
     if (rpc_call("getmininginfo", "[]", mbuf, sizeof(mbuf)) > 0)
         hashrate = json_extract_real(mbuf, "networkhashps");
 
-    double supply = (double)zcl_total_supply_zatoshi(height) / 100000000.0;
+    double supply = (double)zcl_total_supply_zatoshi(height) / (double)ZATOSHI_PER_ZCL;
 
     /* UTXO count via gettxoutsetinfo — expensive, skip if too slow */
     int64_t utxo_count = -1;
@@ -382,7 +382,7 @@ static size_t compute_supply(uint8_t *r, size_t max)
     if (height < 0)
         return json_error(r, max, JSON_500_HEADERS, "Cannot get height");
 
-    double supply = (double)zcl_total_supply_zatoshi(height) / 100000000.0;
+    double supply = (double)zcl_total_supply_zatoshi(height) / (double)ZATOSHI_PER_ZCL;
 
     /* Plain number -- CoinGecko expects just a number */
     return (size_t)snprintf((char *)r, max,
@@ -726,7 +726,7 @@ static size_t compute_address(const char *param, uint8_t *r, size_t max)
         off += (size_t)snprintf((char *)r + off, max - off,
             ",\"balance_sat\":%" PRId64
             ",\"balance\":%.8f",
-            balance_sat, (double)balance_sat / 100000000.0);
+            balance_sat, (double)balance_sat / (double)ZATOSHI_PER_ZCL);
     }
 
     /* Parse UTXOs from result array */
@@ -765,7 +765,7 @@ static size_t compute_address(const char *param, uint8_t *r, size_t max)
                             ",\"value\":%.8f"
                             ",\"height\":%" PRId64 "}",
                             txid, output_idx, satoshis,
-                            (double)satoshis / 100000000.0, utxo_height);
+                            (double)satoshis / (double)ZATOSHI_PER_ZCL, utxo_height);
                         idx++;
 
                         p = entry_end;
@@ -864,8 +864,8 @@ static size_t compute_deep_stats(uint8_t *r, size_t max)
         "}",
         JSON_HEADERS,
         height, block_count, tx_count,
-        (double)supply_sat / 100000000.0,
-        (double)shielded_net / 100000000.0,
+        (double)supply_sat / (double)ZATOSHI_PER_ZCL,
+        (double)shielded_net / (double)ZATOSHI_PER_ZCL,
         js_count, js_first,
         ss_count, so_count, ss_first,
         utxo_count, dust_count,

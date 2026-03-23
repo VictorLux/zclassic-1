@@ -935,7 +935,7 @@ static size_t serve_tx_rpc(const char *param, uint8_t *r, size_t max)
             "<div class='label'>Expiry Height</div><div class='val'>%" PRId64 "</div>", expiry);
     if (value_balance != 0.0) {
         char vb[32];
-        format_zcl(vb, sizeof(vb), (int64_t)(value_balance * 100000000.0));
+        format_zcl(vb, sizeof(vb), (int64_t)(value_balance * (double)ZATOSHI_PER_ZCL));
         APPEND(off, r, max,
             "<div class='label'>Value Balance</div><div class='val amount'>%s ZCL</div>", vb);
     }
@@ -966,7 +966,7 @@ static size_t serve_tx_rpc(const char *param, uint8_t *r, size_t max)
 
             double val = strtod(val_str + 8, NULL);
             char val_fmt[32];
-            format_zcl(val_fmt, sizeof(val_fmt), (int64_t)(val * 100000000.0));
+            format_zcl(val_fmt, sizeof(val_fmt), (int64_t)(val * (double)ZATOSHI_PER_ZCL));
 
             /* Try to find address */
             char addr[64] = "";

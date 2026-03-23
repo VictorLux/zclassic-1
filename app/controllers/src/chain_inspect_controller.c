@@ -4,6 +4,7 @@
  * Provides fast, comprehensive views of blocks, transactions, UTXO set,
  * Sapling tree state, and chain statistics. */
 
+#include "views/format_helpers.h"
 #include "controllers/chain_inspect_controller.h"
 #include "controllers/strong_params.h"
 #include "chain/chain.h"
@@ -288,8 +289,8 @@ static bool rpc_gettxdetail(const struct json_value *params, bool help,
             json_push_kv_bool(&out, "spent", false);
             char amt[32];
             snprintf(amt, sizeof(amt), "%lld.%08lld",
-                     (long long)(c.vout[i].value / 100000000LL),
-                     (long long)(c.vout[i].value % 100000000LL));
+                     (long long)(c.vout[i].value / ZATOSHI_PER_ZCL),
+                     (long long)(c.vout[i].value % ZATOSHI_PER_ZCL));
             json_push_kv_str(&out, "amount", amt);
             json_push_kv_int(&out, "script_size",
                              (int64_t)c.vout[i].script_pub_key.size);
@@ -305,8 +306,8 @@ static bool rpc_gettxdetail(const struct json_value *params, bool help,
 
     char total_str[32];
     snprintf(total_str, sizeof(total_str), "%lld.%08lld",
-             (long long)(total_unspent / 100000000LL),
-             (long long)(total_unspent % 100000000LL));
+             (long long)(total_unspent / ZATOSHI_PER_ZCL),
+             (long long)(total_unspent % ZATOSHI_PER_ZCL));
     json_push_kv_str(result, "total_unspent", total_str);
     json_push_kv_int(result, "unspent_outputs", unspent_count);
 

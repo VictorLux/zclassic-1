@@ -3,6 +3,7 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
+#include "views/format_helpers.h"
 #include "controllers/transaction_controller.h"
 #include "controllers/strong_params.h"
 #include "chain/chainparams.h"
@@ -380,7 +381,7 @@ static bool rpc_createrawtransaction(const struct json_value *params, bool help,
                 transaction_free(&tx);
                 return false;
             }
-            amount = (int64_t)(d * 100000000.0);
+            amount = (int64_t)(d * (double)ZATOSHI_PER_ZCL);
         } else if (amt_v->type == JSON_INT) {
             int64_t v = json_get_int(amt_v);
             if (v < 0 || v > 21000000) {
@@ -388,7 +389,7 @@ static bool rpc_createrawtransaction(const struct json_value *params, bool help,
                 transaction_free(&tx);
                 return false;
             }
-            amount = v * 100000000;
+            amount = v * ZATOSHI_PER_ZCL;
         }
         vout.value = amount;
 
@@ -651,7 +652,7 @@ static bool rpc_signrawtransaction(const struct json_value *params, bool help,
 
                 const struct json_value *amt = json_get(po, "amount");
                 prevouts[num_prevouts].amount = amt ?
-                    (int64_t)(json_get_real(amt) * 100000000.0 + 0.5) : 0;
+                    (int64_t)(json_get_real(amt) * (double)ZATOSHI_PER_ZCL + 0.5) : 0;
                 prevouts[num_prevouts].valid = true;
 
                 /* If prevout has redeemScript, add it to keystore */

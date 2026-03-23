@@ -9,6 +9,7 @@
  *
  * The legacy node should be stopped to avoid partial block reads. */
 
+#include "views/format_helpers.h"
 #include "controllers/legacy_import.h"
 #include "controllers/wallet_scan.h"
 #include "controllers/sync_controller.h"
@@ -755,7 +756,7 @@ int legacy_import(const char *legacy_datadir,
     printf("legacy_import: pass 2 done in %.1f ms — %d blocks, "
            "%d wallet txs, %d UTXOs, balance %.8f ZCL\n",
            p2_ms, total_blocks_p2, wl.count, unspent,
-           (double)balance / 100000000.0);
+           (double)balance / (double)ZATOSHI_PER_ZCL);
     fflush(stdout);
 
     /* Write transparent results to SQLite. */

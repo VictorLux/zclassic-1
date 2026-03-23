@@ -2,6 +2,7 @@
  *
  * Store controller — ZSLP token commerce. */
 
+#include "views/format_helpers.h"
 #include "controllers/store_controller.h"
 #include "controllers/zslp_controller.h"
 #include "util/template.h"
@@ -107,7 +108,7 @@ static void store_ensure_schema(sqlite3 *db, const char *datadir)
                 }
 
                 if (name[0] && price_zcl > 0) {
-                    int64_t price_sat = (int64_t)(price_zcl * 100000000.0);
+                    int64_t price_sat = (int64_t)(price_zcl * (double)ZATOSHI_PER_ZCL);
                     sqlite3_stmt *ins = NULL;
                     if (sqlite3_prepare_v2(db,
                         "INSERT INTO products (name, description, price_zatoshi, "

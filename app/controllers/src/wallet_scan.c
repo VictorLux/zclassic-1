@@ -14,6 +14,7 @@
  *
  * Result: skips 99.9%+ of block deserialization. */
 
+#include "views/format_helpers.h"
 #include "controllers/wallet_scan.h"
 #include "controllers/sync_controller.h"
 #include "models/wallet_tx.h"
@@ -357,7 +358,7 @@ int wallet_scan_blocks(struct node_db *ndb,
            "%d wallet txs\n", p2_ms, blocks_deserialized, wl.count);
     printf("wallet_scan: TOTAL %.1f ms — %d unspent UTXOs, "
            "balance %.8f ZCL\n",
-           total_ms, unspent, (double)balance / 100000000.0);
+           total_ms, unspent, (double)balance / (double)ZATOSHI_PER_ZCL);
     fflush(stdout);
 
     /* ========== Write results to SQLite ========== */

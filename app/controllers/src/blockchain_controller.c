@@ -3,6 +3,7 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
+#include "views/format_helpers.h"
 #include "controllers/blockchain_controller.h"
 #include "controllers/strong_params.h"
 #include "chain/chain.h"
@@ -377,8 +378,8 @@ static bool rpc_gettxoutsetinfo(const struct json_value *params, bool help,
 
     char amt[32];
     snprintf(amt, sizeof(amt), "%lld.%08lld",
-             (long long)(total_amount / 100000000),
-             (long long)(total_amount % 100000000));
+             (long long)(total_amount / ZATOSHI_PER_ZCL),
+             (long long)(total_amount % ZATOSHI_PER_ZCL));
     json_push_kv_str(result, "total_amount", amt);
 
     return true;
@@ -526,7 +527,7 @@ static bool rpc_gethodlwave(const struct json_value *params, bool help,
         json_push_kv_int(result, "skipped_entries", skipped);
 
     char amt[32];
-    double total_zcl = (double)total_value / 100000000.0;
+    double total_zcl = (double)total_value / (double)ZATOSHI_PER_ZCL;
     snprintf(amt, sizeof(amt), "%.8f", total_zcl);
     json_push_kv_str(result, "total_supply_zcl", amt);
 
@@ -551,7 +552,7 @@ static bool rpc_gethodlwave(const struct json_value *params, bool help,
         json_set_object(&entry);
         json_push_kv_str(&entry, "age", buckets[b].label);
 
-        double bval = (double)bucket_values[b] / 100000000.0;
+        double bval = (double)bucket_values[b] / (double)ZATOSHI_PER_ZCL;
         snprintf(amt, sizeof(amt), "%.8f", bval);
         json_push_kv_str(&entry, "zcl", amt);
 
@@ -880,8 +881,8 @@ static bool rpc_gethodlwaveimage(const struct json_value *params, bool help,
 
     char amt[32];
     snprintf(amt, sizeof(amt), "%lld.%08lld",
-             (long long)(total_value / 100000000),
-             (long long)(total_value % 100000000));
+             (long long)(total_value / ZATOSHI_PER_ZCL),
+             (long long)(total_value % ZATOSHI_PER_ZCL));
     json_push_kv_str(result, "total_value", amt);
 
     /* Also include the HODL wave percentages */
@@ -900,8 +901,8 @@ static bool rpc_gethodlwaveimage(const struct json_value *params, bool help,
         json_push_kv_real(&entry, "percent", pct);
 
         snprintf(amt, sizeof(amt), "%lld.%08lld",
-                 (long long)(hodl_values[b] / 100000000),
-                 (long long)(hodl_values[b] % 100000000));
+                 (long long)(hodl_values[b] / ZATOSHI_PER_ZCL),
+                 (long long)(hodl_values[b] % ZATOSHI_PER_ZCL));
         json_push_kv_str(&entry, "value", amt);
         json_push_back(&wave, &entry);
         json_free(&entry);

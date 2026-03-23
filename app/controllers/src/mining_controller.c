@@ -3,6 +3,7 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
+#include "views/format_helpers.h"
 #include "controllers/mining_controller.h"
 #include "controllers/strong_params.h"
 #include "chain/chain.h"
@@ -317,7 +318,7 @@ static bool rpc_getblocksubsidy(const struct json_value *params, bool help,
     int64_t subsidy = get_block_subsidy(height, &cp->consensus);
 
     json_set_object(result);
-    json_push_kv_real(result, "miner", (double)subsidy / 100000000.0);
+    json_push_kv_real(result, "miner", (double)subsidy / (double)ZATOSHI_PER_ZCL);
 
     return true;
 }
