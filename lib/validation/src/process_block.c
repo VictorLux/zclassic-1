@@ -548,6 +548,30 @@ bool connect_tip(struct validation_state *state,
                    state->reject_reason[0] ? state->reject_reason : "unknown");
             if (validation_state_is_invalid(state)) {
                 pindex_new->nStatus |= BLOCK_FAILED_VALID;
+                /* Propagate BLOCK_FAILED_CHILD to all descendants.
+                 * This matches ZClassic C++ InvalidBlockFound behavior:
+                 * once a block is invalid, ALL children are rejected.
+                 * This prevents fork chains from growing in the index. */
+                size_t propagated = 0;
+                bool changed = true;
+                while (changed) {
+                    changed = false;
+                    size_t iter = 0;
+                    struct block_index *child;
+                    while (block_map_next(&ms->map_block_index, &iter,
+                                           NULL, &child)) {
+                        if (!child || !child->pprev) continue;
+                        if (child->nStatus & BLOCK_FAILED_MASK) continue;
+                        if (child->pprev->nStatus & BLOCK_FAILED_MASK) {
+                            child->nStatus |= BLOCK_FAILED_CHILD;
+                            propagated++;
+                            changed = true;
+                        }
+                    }
+                }
+                if (propagated > 0)
+                    printf("Propagated BLOCK_FAILED_CHILD to %zu descendants\n",
+                           propagated);
             }
             if (pblock == &local_block)
                 block_free(&local_block);
