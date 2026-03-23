@@ -50,6 +50,7 @@ static struct tx_mempool *g_mempool = NULL;
 static const char *g_datadir = NULL;
 static struct coins_view_db *g_coins_db = NULL;
 static struct coins_view_cache *g_coins_tip = NULL;
+static struct node_db *g_node_db_bc = NULL;
 
 void rpc_blockchain_set_state(struct main_state *ms, struct tx_mempool *mp,
                                const char *datadir)
@@ -316,7 +317,7 @@ static bool rpc_gettxoutsetinfo(const struct json_value *params, bool help,
         "gettxoutsetinfo\n"
         "\nReturns statistics about the UTXO set.\n");
 
-    if (!g_coins_db) {
+    if (!g_node_db_bc || !g_node_db_bc->open) {
         json_set_str(result, "Coins database not available");
         return false;
     }
@@ -325,7 +326,7 @@ static bool rpc_gettxoutsetinfo(const struct json_value *params, bool help,
         return false;
     }
 
-    /* Flush in-memory UTXO cache to LevelDB for accurate totals */
+    /* Flush in-memory UTXO cache to SQLite for accurate totals */
     if (g_coins_tip)
         coins_view_cache_flush(g_coins_tip);
 
@@ -336,35 +337,17 @@ static bool rpc_gettxoutsetinfo(const struct json_value *params, bool help,
     int64_t num_txs = 0;
     int64_t num_txouts = 0;
 
-    struct db_iterator it;
-    db_iter_init(&it, &g_coins_db->db);
-    char prefix = 'c';
-    db_iter_seek(&it, &prefix, 1);
-
-    while (db_iter_valid(&it)) {
-        size_t keylen = 0;
-        const char *key = db_iter_key(&it, &keylen);
-        if (!key || keylen != 33 || key[0] != 'c')
-            break;
-
-        struct uint256 txid;
-        memcpy(txid.data, key + 1, 32);
-
-        struct coins c;
-        coins_init(&c);
-        if (coins_view_db_get_coins(g_coins_db, &txid, &c)) {
-            num_txs++;
-            for (size_t i = 0; i < c.num_vout; i++) {
-                if (!tx_out_is_null(&c.vout[i])) {
-                    total_amount += c.vout[i].value;
-                    num_txouts++;
-                }
-            }
-        }
-        coins_free(&c);
-        db_iter_next(&it);
+    /* Query UTXO set from SQLite */
+    sqlite3_stmt *s = NULL;
+    sqlite3_prepare_v2(g_node_db_bc->db,
+        "SELECT COUNT(DISTINCT txid), COUNT(*), COALESCE(SUM(value),0)"
+        " FROM utxos", -1, &s, NULL);
+    if (s && sqlite3_step(s) == SQLITE_ROW) {
+        num_txs = sqlite3_column_int64(s, 0);
+        num_txouts = sqlite3_column_int64(s, 1);
+        total_amount = sqlite3_column_int64(s, 2);
     }
-    db_iter_free(&it);
+    sqlite3_finalize(s);
 
     json_set_object(result);
     json_push_kv_int(result, "height", tip_height);
@@ -398,7 +381,7 @@ static bool rpc_gethodlwave(const struct json_value *params, bool help,
         "\nBuckets: <1d, 1d-1w, 1w-1m, 1-3m, 3-6m, 6-12m, 1-2y, 2-3y, 3-5y, >5y\n"
         "\nResult: { buckets: [{label, value, pct, utxo_count}], summary }\n");
 
-    if (!g_coins_db) {
+    if (!g_node_db_bc || !g_node_db_bc->open) {
         json_set_str(result, "Coins database not available");
         return false;
     }
@@ -407,7 +390,7 @@ static bool rpc_gethodlwave(const struct json_value *params, bool help,
         return false;
     }
 
-    /* Flush in-memory UTXO cache to LevelDB for accurate totals */
+    /* Flush in-memory UTXO cache to SQLite for accurate totals */
     if (g_coins_tip)
         coins_view_cache_flush(g_coins_tip);
 
@@ -457,34 +440,18 @@ static bool rpc_gethodlwave(const struct json_value *params, bool help,
     int64_t over_1y_value = 0;
     int64_t over_1y_count = 0;
 
-    struct db_iterator it;
-    db_iter_init(&it, &g_coins_db->db);
-    char prefix = 'c';
-    db_iter_seek(&it, &prefix, 1);
+    /* Query UTXOs from SQLite for HODL wave analysis */
+    sqlite3_stmt *hodl_s = NULL;
+    sqlite3_prepare_v2(g_node_db_bc->db,
+        "SELECT height, value FROM utxos",
+        -1, &hodl_s, NULL);
 
-    while (db_iter_valid(&it)) {
-        size_t keylen = 0;
-        const char *key = db_iter_key(&it, &keylen);
-        if (!key || keylen != 33 || key[0] != 'c')
-            break;
+    while (hodl_s && sqlite3_step(hodl_s) == SQLITE_ROW) {
+        int height = sqlite3_column_int(hodl_s, 0);
+        int64_t value = sqlite3_column_int64(hodl_s, 1);
 
-        struct uint256 txid;
-        memcpy(txid.data, key + 1, 32);
-
-        struct coins c;
-        coins_init(&c);
-        if (!coins_view_db_get_coins(g_coins_db, &txid, &c)) {
-            skipped++;
-            coins_free(&c);
-            db_iter_next(&it);
-            continue;
-        }
-
-        int height = c.height;
         if (height < 0 || height > tip_height + 100) {
             skipped++;
-            coins_free(&c);
-            db_iter_next(&it);
             continue;
         }
 
@@ -497,22 +464,16 @@ static bool rpc_gethodlwave(const struct json_value *params, bool help,
             }
         }
 
-        for (size_t i = 0; i < c.num_vout; i++) {
-            if (!tx_out_is_null(&c.vout[i])) {
-                bucket_values[bucket_idx] += c.vout[i].value;
-                bucket_counts[bucket_idx]++;
-                if (age_secs >= SECS_PER_YEAR) {
-                    over_1y_value += c.vout[i].value;
-                    over_1y_count++;
-                }
-            }
+        /* Each SQLite row is one UTXO */
+        bucket_values[bucket_idx] += value;
+        bucket_counts[bucket_idx]++;
+        if (age_secs >= SECS_PER_YEAR) {
+            over_1y_value += value;
+            over_1y_count++;
         }
-
-        coins_free(&c);
         total_txs++;
-        db_iter_next(&it);
     }
-    db_iter_free(&it);
+    sqlite3_finalize(hodl_s);
 
     for (int b = 0; b < NUM_HODL_BUCKETS; b++) {
         total_value += bucket_values[b];
@@ -2043,8 +2004,6 @@ static void *index_worker(void *arg) {
     if (mdata) munmap(mdata, msize);
     return NULL;
 }
-
-static struct node_db *g_node_db_bc = NULL;
 
 /* ── importchainstate: read UTXO set from external LevelDB chainstate ── */
 

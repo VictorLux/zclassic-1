@@ -19,7 +19,7 @@
 #include "core/utiltime.h"
 #include "validation/main_state.h"
 #include "validation/txmempool.h"
-#include "wallet/wallet_db.h"
+#include "wallet/wallet_sqlite.h"
 #include "net/connman.h"
 #include "core/hash.h"
 #include "models/database.h"
@@ -34,7 +34,7 @@
 #include <string.h>
 
 void rpc_wallet_set_state(struct wallet *w, struct main_state *ms,
-                          const char *datadir, struct wallet_db *wdb,
+                          const char *datadir, struct wallet_sqlite *wdb,
                           struct tx_mempool *mempool,
                           struct connman *connman)
 {
@@ -74,7 +74,7 @@ static bool rpc_getnewaddress(const struct json_value *params, bool help,
 
     /* Persist new key to wallet DB */
     if (g_wallet_db)
-        wallet_db_flush(g_wallet_db, g_wallet);
+        wallet_sqlite_flush(g_wallet_db, g_wallet);
 
     json_set_str(result, addr);
     return true;
@@ -333,7 +333,7 @@ static bool rpc_sendtoaddress(const struct json_value *params, bool help,
 
     /* Persist wallet state after sending */
     if (g_wallet_db)
-        wallet_db_flush(g_wallet_db, g_wallet);
+        wallet_sqlite_flush(g_wallet_db, g_wallet);
 
     char txid[65];
     uint256_get_hex(&wtx.tx.hash, txid);
@@ -442,7 +442,7 @@ static bool rpc_importprivkey(const struct json_value *params, bool help,
         return false;
     }
     if (g_wallet_db)
-        wallet_db_write_key(g_wallet_db, &pk, &key);
+        wallet_sqlite_write_key(g_wallet_db, &pk, &key);
 
     memory_cleanse(key.vch, 32);
 
@@ -900,7 +900,7 @@ static bool rpc_sendmany(const struct json_value *params, bool help,
         connman_relay_transaction(g_connman_ptr, &wtx.tx.hash);
 
     if (g_wallet_db)
-        wallet_db_flush(g_wallet_db, g_wallet);
+        wallet_sqlite_flush(g_wallet_db, g_wallet);
 
     char txid[65];
     uint256_get_hex(&wtx.tx.hash, txid);
@@ -970,7 +970,7 @@ static bool rpc_addmultisigaddress(const struct json_value *params, bool help,
 
     /* Persist script to wallet DB */
     if (g_wallet_db)
-        wallet_db_write_script(g_wallet_db, &sid.hash, &redeem);
+        wallet_sqlite_write_script(g_wallet_db, &sid.hash, &redeem);
 
     const struct chain_params *cp = chain_params_get();
     size_t pk_pfx_len, sc_pfx_len;

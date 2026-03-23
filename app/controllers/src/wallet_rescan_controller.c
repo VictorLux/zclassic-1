@@ -24,7 +24,7 @@
 #include "validation/main_state.h"
 #include "validation/sighash.h"
 #include "validation/txmempool.h"
-#include "wallet/wallet_db.h"
+#include "wallet/wallet_sqlite.h"
 #include "net/connman.h"
 #include "sapling/sapling.h"
 #include "sapling/fr.h"
@@ -157,29 +157,22 @@ static bool rpc_fastsync(const struct json_value *params, bool help,
 
     json_set_object(result);
 
-    /* ── Phase 1: Repair wallet LevelDB ── */
-    char wallet_path[1024];
-    snprintf(wallet_path, sizeof(wallet_path), "%s/wallet", g_datadir);
-
+    /* ── Phase 1: Reload wallet from SQLite ── */
     size_t keys_before = g_wallet->keystore.num_keys;
     size_t txs_before = g_wallet->num_wallet_tx;
 
-    /* Close, repair, reopen */
-    if (g_wallet_db->open) {
-        wallet_db_close(g_wallet_db);
-    }
-
-    bool repaired = db_wrapper_repair(wallet_path);
+    /* Re-read wallet data from SQLite (no LevelDB repair needed) */
+    bool repaired = true;
 
     struct json_value phase1 = {0};
     json_set_object(&phase1);
     json_push_kv_bool(&phase1, "repair_success", repaired);
 
-    if (wallet_db_open(g_wallet_db, wallet_path)) {
-        wallet_db_read_keys(g_wallet_db, g_wallet);
-        wallet_db_read_txs(g_wallet_db, g_wallet);
-        wallet_db_read_sapling_keys(g_wallet_db, g_wallet);
-        wallet_db_read_scripts(g_wallet_db, g_wallet);
+    if (g_wallet_db && g_wallet_db->open) {
+        wallet_sqlite_read_keys(g_wallet_db, g_wallet);
+        wallet_sqlite_read_txs(g_wallet_db, g_wallet);
+        wallet_sqlite_read_sapling_keys(g_wallet_db, g_wallet);
+        wallet_sqlite_read_scripts(g_wallet_db, g_wallet);
     }
 
     size_t keys_after = g_wallet->keystore.num_keys;

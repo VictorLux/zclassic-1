@@ -30,7 +30,7 @@
 #include <sys/stat.h>
 
 #include "validation/main_constants.h"
-#include "storage/coins_db.h"
+#include "storage/coins_view_sqlite.h"
 
 static int g_last_block_file = -1;
 static unsigned int g_last_block_file_size = 0;
@@ -43,13 +43,13 @@ extern struct node_db *g_active_node_db;
 extern struct tx_mempool *g_active_mempool;
 extern volatile sig_atomic_t g_shutdown_requested;
 
-/* LevelDB handle for persisting UTXO commitment alongside flushes.
- * Set by boot.c via set_coins_db_for_commitment(). */
-static struct coins_view_db *g_coins_db_ptr = NULL;
+/* SQLite handle for persisting UTXO commitment alongside flushes.
+ * Set by boot.c via set_coins_sqlite_for_commitment(). */
+static struct coins_view_sqlite *g_coins_sqlite_ptr = NULL;
 
-void set_coins_db_for_commitment(struct coins_view_db *cvdb)
+void set_coins_sqlite_for_commitment(struct coins_view_sqlite *cvs)
 {
-    g_coins_db_ptr = cvdb;
+    g_coins_sqlite_ptr = cvs;
 }
 
 /* ── Flush policy ────────────────────────────────────────────
@@ -109,9 +109,9 @@ static bool flush_coins_if_needed(struct coins_view_cache *coins_tip,
         g_blocks_since_flush = 0;
 
         /* Persist UTXO commitment atomically with the flush */
-        if (g_coins_db_ptr) {
-            coins_view_db_write_commitment(g_coins_db_ptr,
-                                            &coins_tip->commitment);
+        if (g_coins_sqlite_ptr) {
+            coins_view_sqlite_write_commitment(g_coins_sqlite_ptr,
+                                                &coins_tip->commitment);
         }
 
         const char *trigger = force ? "forced" : time_flush ? "periodic" :

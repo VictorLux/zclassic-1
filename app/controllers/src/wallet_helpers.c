@@ -21,7 +21,7 @@
 struct wallet *g_wallet = NULL;
 struct main_state *g_main_state = NULL;
 const char *g_datadir = NULL;
-struct wallet_db *g_wallet_db = NULL;
+struct wallet_sqlite *g_wallet_db = NULL;
 struct tx_mempool *g_mempool = NULL;
 struct connman *g_connman_ptr = NULL;
 struct node_db *g_node_db = NULL;

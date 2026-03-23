@@ -21,7 +21,7 @@
 #include "validation/main_state.h"
 #include "validation/sighash.h"
 #include "validation/txmempool.h"
-#include "wallet/wallet_db.h"
+#include "wallet/wallet_sqlite.h"
 #include "net/connman.h"
 #include "sapling/sapling.h"
 #include "sapling/fr.h"
@@ -77,9 +77,9 @@ static bool rpc_z_getnewaddress(const struct json_value *params, bool help,
     if (g_wallet_db) {
         struct sapling_keystore *sks = &g_wallet->sapling_keys;
         if (sks->has_seed)
-            wallet_db_write_sapling_seed(g_wallet_db, sks->seed);
+            wallet_sqlite_write_sapling_seed(g_wallet_db, sks->seed);
         if (sks->num_keys > 0)
-            wallet_db_write_sapling_key(g_wallet_db,
+            wallet_sqlite_write_sapling_key(g_wallet_db,
                 sks->keys[sks->num_keys - 1].child_index,
                 &sks->keys[sks->num_keys - 1]);
     }
@@ -1093,7 +1093,7 @@ shielded_cleanup:
         connman_relay_transaction(g_connman_ptr, &wtx.tx.hash);
 
     if (g_wallet_db)
-        wallet_db_flush(g_wallet_db, g_wallet);
+        wallet_sqlite_flush(g_wallet_db, g_wallet);
 
     char txid[65];
     uint256_get_hex(&wtx.tx.hash, txid);
@@ -1332,8 +1332,8 @@ static bool rpc_z_importkey(const struct json_value *params, bool help,
     if (g_wallet_db) {
         struct sapling_keystore *sks = &g_wallet->sapling_keys;
         if (sks->has_seed)
-            wallet_db_write_sapling_seed(g_wallet_db, sks->seed);
-        wallet_db_write_sapling_key(g_wallet_db,
+            wallet_sqlite_write_sapling_seed(g_wallet_db, sks->seed);
+        wallet_sqlite_write_sapling_key(g_wallet_db,
             sks->keys[sks->num_keys - 1].child_index,
             &sks->keys[sks->num_keys - 1]);
     }

@@ -22,7 +22,7 @@
 #include "validation/main_state.h"
 #include "validation/sighash.h"
 #include "validation/txmempool.h"
-#include "wallet/wallet_db.h"
+#include "wallet/wallet_sqlite.h"
 #include "net/connman.h"
 #include "sapling/sapling.h"
 #include "sapling/fr.h"
@@ -69,7 +69,7 @@ static bool rpc_scanblockfiles(const struct json_value *params, bool help,
 
     /* Also persist wallet updates */
     if (g_wallet_db)
-        wallet_db_flush(g_wallet_db, g_wallet);
+        wallet_sqlite_flush(g_wallet_db, g_wallet);
 
     json_set_object(result);
     json_push_kv_int(result, "wallet_outputs_found", found);

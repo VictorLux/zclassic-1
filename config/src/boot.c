@@ -11,7 +11,7 @@
 #include "keys/key.h"
 #include "keys/pubkey.h"
 #include "coins/coins_view.h"
-#include "storage/coins_db.h"
+#include "storage/coins_view_sqlite.h"
 #include "consensus/validation.h"
 #include "controllers/blockchain_controller.h"
 #include "controllers/chain_inspect_controller.h"
@@ -22,7 +22,6 @@
 #include "controllers/transaction_controller.h"
 #include "rpc/server.h"
 #include "storage/block_index_db.h"
-#include "storage/coins_db.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 #include "validation/process_block.h"
@@ -37,7 +36,7 @@
 #include "controllers/explorer_controller.h"
 #include "controllers/wallet_controller.h"
 #include "wallet/wallet.h"
-#include "wallet/wallet_db.h"
+#include "wallet/wallet_sqlite.h"
 #include "sapling/params_init.h"
 #include "metrics/metrics.h"
 #include "chain/pow.h"
@@ -47,7 +46,7 @@
 #include "validation/update_coins.h"
 #include "validation/connect_block.h"
 #include "storage/disk_block_io.h"
-#include "storage/dbwrapper.h"
+/* LevelDB dbwrapper only used for legacy import paths */
 #include "net/tor_integration.h"
 #include "net/https_server.h"
 #include "net/fast_sync.h"
@@ -72,8 +71,9 @@
 #include <sqlite3.h>
 
 static struct main_state g_state;
-static struct coins_view_db g_coins_db;
+static struct coins_view_sqlite g_coins_sqlite;
 static struct coins_view_cache g_coins_tip;
+/* block_tree_db kept for legacy import only — not used at runtime */
 static struct block_tree_db g_block_tree;
 struct block_tree_db *g_active_block_tree = NULL;
 static bool g_block_tree_open = false;
@@ -84,7 +84,7 @@ static struct connman g_connman;
 static struct wallet g_wallet;
 struct wallet *g_active_wallet = NULL;
 static struct gen_context g_gen;
-static struct wallet_db g_wallet_db;
+static struct wallet_sqlite g_wallet_sqlite;
 static struct node_db g_node_db;
 struct node_db *g_active_node_db = NULL;
 struct tx_mempool *g_active_mempool = NULL;
@@ -662,140 +662,55 @@ static bool load_block_index(struct main_state *ms,
  * Instead of replaying 3M blocks (~2 hours), write the 1.6M UTXOs
  * from SQLite directly to LevelDB (~10 seconds). The UTXO set in
  * SQLite was populated during the original sync and is authoritative. */
-static bool fast_rebuild_chainstate(struct coins_view_db *cvdb,
+/* With SQLite as the canonical UTXO store, fast_rebuild is a no-op:
+ * the UTXO set is already in node.db. Just verify it has data. */
+static bool fast_rebuild_chainstate(struct coins_view_sqlite *cvs,
                                       struct coins_view_cache *cvtip,
                                       const char *datadir)
 {
-    char db_path[1024];
-    snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
-    sqlite3 *db = NULL;
-    if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK)
-        return false;
+    (void)datadir;
+    if (!cvs->db) return false;
 
-    /* Count UTXOs */
     sqlite3_stmt *cnt = NULL;
-    sqlite3_prepare_v2(db, "SELECT count(*) FROM utxos", -1, &cnt, NULL);
+    sqlite3_prepare_v2(cvs->db, "SELECT count(*) FROM utxos", -1, &cnt, NULL);
     int64_t total = 0;
     if (sqlite3_step(cnt) == SQLITE_ROW) total = sqlite3_column_int64(cnt, 0);
     sqlite3_finalize(cnt);
 
-    if (total == 0) { sqlite3_close(db); return false; }
+    if (total == 0) return false;
 
-    printf("fast-rebuild: %lld UTXOs from SQLite → LevelDB...\n",
-           (long long)total);
+    printf("SQLite UTXO set: %lld UTXOs (canonical)\n", (long long)total);
 
-    /* Wipe and reopen coins DB */
-    coins_view_cache_flush(cvtip);
-    coins_view_cache_free(cvtip);
-    coins_view_db_close(cvdb);
-
-    char coins_path[1024];
-    snprintf(coins_path, sizeof(coins_path), "%s/chainstate", datadir);
-    if (!coins_view_db_open(cvdb, coins_path, 450 << 20, false, true)) {
-        sqlite3_close(db);
-        return false;
+    /* Ensure best block is set */
+    struct uint256 best;
+    if (!coins_view_sqlite_get_best_block(cvs, &best) || uint256_is_null(&best)) {
+        /* Seed from node_state tip_hash */
+        sqlite3_stmt *th = NULL;
+        sqlite3_prepare_v2(cvs->db,
+            "SELECT value FROM node_state WHERE key='tip_hash'",
+            -1, &th, NULL);
+        if (sqlite3_step(th) == SQLITE_ROW) {
+            const void *h = sqlite3_column_blob(th, 0);
+            if (h && sqlite3_column_bytes(th, 0) >= 32) {
+                memcpy(best.data, h, 32);
+                sqlite3_stmt *set = NULL;
+                sqlite3_prepare_v2(cvs->db,
+                    "INSERT OR REPLACE INTO node_state(key,value)"
+                    " VALUES('coins_best_block',?)", -1, &set, NULL);
+                sqlite3_bind_blob(set, 1, best.data, 32, SQLITE_STATIC);
+                sqlite3_step(set);
+                sqlite3_finalize(set);
+            }
+        }
+        sqlite3_finalize(th);
+        coins_view_cache_set_best_block(cvtip, &best);
     }
-    coins_view_cache_init(cvtip, &cvdb->view);
 
-    /* Stream UTXOs from SQLite into the coins cache */
-    sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(db,
-        "SELECT txid, vout, value, script, height, is_coinbase "
-        "FROM utxos ORDER BY txid, vout",
-        -1, &s, NULL);
-
-    int64_t count = 0;
-    int64_t t_start = (int64_t)time(NULL);
-    struct uint256 prev_txid;
-    uint256_set_null(&prev_txid);
-    struct coins_cache_entry *cur_entry = NULL;
-
-    while (sqlite3_step(s) == SQLITE_ROW) {
-        const void *txid_blob = sqlite3_column_blob(s, 0);
-        int vout = sqlite3_column_int(s, 1);
-        int64_t value = sqlite3_column_int64(s, 2);
-        const void *script = sqlite3_column_blob(s, 3);
-        int script_len = sqlite3_column_bytes(s, 3);
-        int height = sqlite3_column_int(s, 4);
-        int is_cb = sqlite3_column_int(s, 5);
-
-        if (!txid_blob || vout < 0) continue;
-
-        struct uint256 txid;
-        memcpy(txid.data, txid_blob, 32);
-
-        /* New txid — flush previous, start new coins entry */
-        if (!uint256_eq(&txid, &prev_txid)) {
-            cur_entry = coins_view_cache_modify_new(cvtip, &txid);
-            if (!cur_entry) continue;
-            cur_entry->coins.height = height;
-            cur_entry->coins.is_coinbase = (is_cb != 0);
-            cur_entry->coins.version = 1;
-            prev_txid = txid;
-        }
-
-        if (!cur_entry) continue;
-
-        /* Ensure vout array is large enough */
-        if ((size_t)vout >= cur_entry->coins.num_vout) {
-            size_t new_size = (size_t)vout + 1;
-            struct tx_out *new_vout = realloc(cur_entry->coins.vout,
-                new_size * sizeof(struct tx_out));
-            if (!new_vout) continue;
-            for (size_t i = cur_entry->coins.num_vout; i < new_size; i++)
-                tx_out_set_null(&new_vout[i]);
-            cur_entry->coins.vout = new_vout;
-            cur_entry->coins.num_vout = new_size;
-        }
-
-        cur_entry->coins.vout[vout].value = value;
-        if (script && script_len > 0 &&
-            (size_t)script_len <= MAX_SCRIPT_SIZE) {
-            memcpy(cur_entry->coins.vout[vout].script_pub_key.data,
-                   script, (size_t)script_len);
-            cur_entry->coins.vout[vout].script_pub_key.size = (size_t)script_len;
-        }
-
-        count++;
-        if (count % 100000 == 0) {
-            int64_t elapsed = (int64_t)time(NULL) - t_start;
-            printf("  %lld / %lld UTXOs (%lld/s)\n",
-                   (long long)count, (long long)total,
-                   elapsed > 0 ? (long long)(count / elapsed) : (long long)count);
-        }
-
-        /* Flush cache periodically to avoid memory bloat */
-        if (count % 500000 == 0)
-            coins_view_cache_flush(cvtip);
-    }
-    sqlite3_finalize(s);
-
-    /* Get tip hash from node_state */
-    sqlite3_stmt *th = NULL;
-    sqlite3_prepare_v2(db, "SELECT value FROM node_state WHERE key='tip_hash'",
-                        -1, &th, NULL);
-    struct uint256 tip_hash;
-    uint256_set_null(&tip_hash);
-    if (sqlite3_step(th) == SQLITE_ROW) {
-        const void *h = sqlite3_column_blob(th, 0);
-        if (h && sqlite3_column_bytes(th, 0) >= 32)
-            memcpy(tip_hash.data, h, 32);
-    }
-    sqlite3_finalize(th);
-    sqlite3_close(db);
-
-    /* Final flush with tip hash */
-    coins_view_cache_set_best_block(cvtip, &tip_hash);
-    coins_view_cache_flush(cvtip);
-
-    int64_t elapsed = (int64_t)time(NULL) - t_start;
-    printf("fast-rebuild: done — %lld UTXOs in %llds\n",
-           (long long)count, (long long)elapsed);
     return true;
 }
 
 static bool reindex_chainstate(struct main_state *ms,
-                                struct coins_view_db *cvdb,
+                                struct coins_view_sqlite *cvs,
                                 struct coins_view_cache *cvtip,
                                 const char *datadir)
 {
@@ -821,18 +736,21 @@ static bool reindex_chainstate(struct main_state *ms,
     coins_view_cache_flush(cvtip);
     coins_view_cache_free(cvtip);
 
-    /* Close and reopen coins DB with wipe=true */
-    coins_view_db_close(cvdb);
-
-    char coins_path[1024];
-    snprintf(coins_path, sizeof(coins_path), "%s/chainstate", datadir);
-    if (!coins_view_db_open(cvdb, coins_path, 450 << 20, false, true)) {
-        fprintf(stderr, "reindex-chainstate: failed to reopen coins DB\n");
-        return false;
+    /* Wipe UTXO table and reset best block */
+    (void)cvs;
+    if (g_node_db.open) {
+        sqlite3_exec(g_node_db.db, "DELETE FROM utxos", NULL, NULL, NULL);
+        sqlite3_exec(g_node_db.db,
+            "DELETE FROM node_state WHERE key='coins_best_block'",
+            NULL, NULL, NULL);
+        sqlite3_exec(g_node_db.db,
+            "DELETE FROM node_state WHERE key='utxo_commitment'",
+            NULL, NULL, NULL);
+        printf("reindex-chainstate: wiped SQLite UTXO set\n");
     }
 
-    /* Reinitialize coins cache */
-    coins_view_cache_init(cvtip, &cvdb->view);
+    /* Reinitialize coins cache against SQLite */
+    coins_view_cache_init(cvtip, &cvs->view);
 
     /* IBD mode: aggressive batching for throughput */
     set_flush_policy(3600, 1000000, 1000);
@@ -991,16 +909,15 @@ bool app_init(struct app_context *ctx)
     /* Initialize wallet (before block index — needed for -importlegacy) */
     wallet_init(&g_wallet);
 
-    char wallet_path[1024];
-    snprintf(wallet_path, sizeof(wallet_path), "%s/wallet", ctx->datadir);
-    if (wallet_db_open(&g_wallet_db, wallet_path)) {
-        wallet_db_read_keys(&g_wallet_db, &g_wallet);
-        wallet_db_read_txs(&g_wallet_db, &g_wallet);
+    /* Load wallet from SQLite (node.db wallet_* tables) */
+    if (g_node_db.open && wallet_sqlite_open(&g_wallet_sqlite, g_node_db.db)) {
+        wallet_sqlite_read_keys(&g_wallet_sqlite, &g_wallet);
+        wallet_sqlite_read_txs(&g_wallet_sqlite, &g_wallet);
         wallet_rebuild_spent_set(&g_wallet);
-        wallet_db_read_sapling_keys(&g_wallet_db, &g_wallet);
-        wallet_db_read_scripts(&g_wallet_db, &g_wallet);
+        wallet_sqlite_read_sapling_keys(&g_wallet_sqlite, &g_wallet);
+        wallet_sqlite_read_scripts(&g_wallet_sqlite, &g_wallet);
         int saved_height = 0;
-        if (wallet_db_read_scan_height(&g_wallet_db, &saved_height))
+        if (wallet_sqlite_read_scan_height(&g_wallet_sqlite, &saved_height))
             g_wallet.best_block_height = saved_height;
         printf("Wallet loaded: %zu keys, %zu sapling keys, %zu scripts, "
                "%zu txs, scan height %d.\n",
@@ -1280,22 +1197,45 @@ bool app_init(struct app_context *ctx)
                 blocktree_path);
     }
 
-    /* Open coins database */
-    char coins_path[1024];
-    snprintf(coins_path, sizeof(coins_path), "%s/chainstate", ctx->datadir);
-    if (!coins_view_db_open(&g_coins_db, coins_path,
-                            DEFAULT_DB_CACHE << 20, false, false)) {
-        fprintf(stderr, "Warning: Could not open coins DB at %s\n", coins_path);
+    /* Open SQLite-backed coins view (canonical UTXO set in node.db) */
+    if (g_node_db.open) {
+        if (!coins_view_sqlite_open(&g_coins_sqlite, g_node_db.db)) {
+            fprintf(stderr, "Warning: Could not open SQLite coins view\n");
+        }
     }
 
-    coins_view_cache_init(&g_coins_tip, &g_coins_db.view);
+    /* Migration: seed coins_best_block from tip_hash if not yet set.
+     * Existing nodes have tip_hash in node_state from sync_controller
+     * but not coins_best_block (new key for SQLite-backed coins view). */
+    if (g_node_db.open && g_coins_sqlite.db) {
+        struct uint256 coins_check;
+        if (!coins_view_sqlite_get_best_block(&g_coins_sqlite, &coins_check)
+            || uint256_is_null(&coins_check)) {
+            uint8_t tip_buf[32];
+            size_t tip_len = 0;
+            if (node_db_state_get(&g_node_db, "tip_hash",
+                                   tip_buf, 32, &tip_len) && tip_len == 32) {
+                sqlite3_stmt *seed = NULL;
+                sqlite3_prepare_v2(g_node_db.db,
+                    "INSERT OR REPLACE INTO node_state(key,value)"
+                    " VALUES('coins_best_block',?)", -1, &seed, NULL);
+                if (seed) {
+                    sqlite3_bind_blob(seed, 1, tip_buf, 32, SQLITE_STATIC);
+                    sqlite3_step(seed);
+                    sqlite3_finalize(seed);
+                    printf("Migrated coins_best_block from tip_hash\n");
+                }
+            }
+        }
+    }
 
-    /* Wire UTXO commitment: load from LevelDB and set db pointer for
-     * persistence on flush. This connects the incremental commitment
-     * (updated per-UTXO in update_coins) to its LevelDB backing store. */
-    set_coins_db_for_commitment(&g_coins_db);
-    if (coins_view_db_read_commitment(&g_coins_db, &g_coins_tip.commitment)) {
-        printf("Loaded UTXO commitment from LevelDB (count=%llu)\n",
+    coins_view_cache_init(&g_coins_tip, &g_coins_sqlite.view);
+
+    /* Wire UTXO commitment: load from SQLite and set pointer for
+     * persistence on flush. */
+    set_coins_sqlite_for_commitment(&g_coins_sqlite);
+    if (coins_view_sqlite_read_commitment(&g_coins_sqlite, &g_coins_tip.commitment)) {
+        printf("Loaded UTXO commitment from SQLite (count=%llu)\n",
                (unsigned long long)g_coins_tip.commitment.count);
     }
 
@@ -1415,10 +1355,10 @@ bool app_init(struct app_context *ctx)
         }
         /* Fast path: rebuild from SQLite UTXOs (~10s vs ~2h).
          * Then repopulate SQLite from the authoritative LevelDB chainstate. */
-        if (!fast_rebuild_chainstate(&g_coins_db, &g_coins_tip,
+        if (!fast_rebuild_chainstate(&g_coins_sqlite, &g_coins_tip,
                                       ctx->datadir)) {
             printf("Fast rebuild unavailable, falling back to full reindex\n");
-            if (!reindex_chainstate(&g_state, &g_coins_db, &g_coins_tip,
+            if (!reindex_chainstate(&g_state, &g_coins_sqlite, &g_coins_tip,
                                      ctx->datadir)) {
                 fprintf(stderr, "Warning: Chainstate reindex had errors\n");
             }
@@ -1522,7 +1462,7 @@ bool app_init(struct app_context *ctx)
                 /* Try fast rebuild, then activate_best_chain to connect
                  * blocks from the rebuilt tip to the actual best header */
                 printf("Attempting fast chainstate rebuild from SQLite...\n");
-                if (fast_rebuild_chainstate(&g_coins_db, &g_coins_tip,
+                if (fast_rebuild_chainstate(&g_coins_sqlite, &g_coins_tip,
                                              ctx->datadir)) {
                     printf("Fast rebuild complete — will activate chain.\n");
                 } else {
@@ -2005,12 +1945,12 @@ bool app_init(struct app_context *ctx)
     /* Initialize RPC */
     rpc_table_init(&g_rpc_table);
     rpc_blockchain_set_state(&g_state, &g_mempool, ctx->datadir);
-    rpc_blockchain_set_coins_db(&g_coins_db, &g_coins_tip);
+    rpc_blockchain_set_coins_db(NULL, &g_coins_tip);
     rpc_blockchain_set_node_db(g_active_node_db);
     register_blockchain_rpc_commands(&g_rpc_table);
 
     rpc_chain_inspect_set_state(&g_state, ctx->datadir,
-                                 &g_coins_db, &g_coins_tip, g_active_node_db);
+                                 NULL, &g_coins_tip, g_active_node_db);
     register_chain_inspect_rpc_commands(&g_rpc_table);
 
     explorer_set_state(&g_state, &g_mempool, &g_coins_tip,
@@ -2033,7 +1973,7 @@ bool app_init(struct app_context *ctx)
     rpc_net_set_connman(&g_connman);
     register_net_rpc_commands(&g_rpc_table);
 
-    rpc_wallet_set_state(&g_wallet, &g_state, ctx->datadir, &g_wallet_db,
+    rpc_wallet_set_state(&g_wallet, &g_state, ctx->datadir, &g_wallet_sqlite,
                          &g_mempool, &g_connman);
     rpc_wallet_set_coins_tip(&g_coins_tip);
     rpc_wallet_set_node_db(g_active_node_db);
@@ -2229,10 +2169,8 @@ bool app_init(struct app_context *ctx)
                                  &g_wallet, ctx->datadir);
             int64_t t_idx_done = (int64_t)time(NULL);
             printf("Block index: %llds\n", (long long)(t_idx_done - t_import));
-            node_db_sync_import_utxos(g_active_node_db, &g_coins_db);
+            /* UTXOs already in SQLite — no separate import needed */
             int64_t t_utxo_done = (int64_t)time(NULL);
-            printf("UTXO import: %llds\n",
-                   (long long)(t_utxo_done - t_idx_done));
             printf("═══ SQLite complete in %llds ═══\n",
                    (long long)(t_utxo_done - t_import));
         } else {
@@ -2285,16 +2223,16 @@ void app_shutdown(void)
 
     coins_view_cache_flush(&g_coins_tip);
     coins_view_cache_free(&g_coins_tip);
-    coins_view_db_close(&g_coins_db);
+    coins_view_sqlite_close(&g_coins_sqlite);
 
     if (g_block_tree_open) {
         block_tree_db_close(&g_block_tree);
         g_block_tree_open = false;
     }
 
-    if (g_wallet_db.open) {
-        wallet_db_flush(&g_wallet_db, &g_wallet);
-        wallet_db_close(&g_wallet_db);
+    if (g_wallet_sqlite.open) {
+        wallet_sqlite_flush(&g_wallet_sqlite, &g_wallet);
+        wallet_sqlite_close(&g_wallet_sqlite);
     }
     if (g_node_db.open) {
         node_db_sync_flush(&g_node_db);

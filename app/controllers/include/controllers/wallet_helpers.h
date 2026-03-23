@@ -10,7 +10,7 @@
 
 struct wallet;
 struct main_state;
-struct wallet_db;
+struct wallet_sqlite;
 struct tx_mempool;
 struct connman;
 struct node_db;
@@ -23,7 +23,7 @@ struct db_wallet_tx;
 extern struct wallet *g_wallet;
 extern struct main_state *g_main_state;
 extern const char *g_datadir;
-extern struct wallet_db *g_wallet_db;
+extern struct wallet_sqlite *g_wallet_db;
 extern struct tx_mempool *g_mempool;
 extern struct connman *g_connman_ptr;
 extern struct node_db *g_node_db;
