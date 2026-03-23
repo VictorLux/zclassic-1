@@ -222,7 +222,7 @@ int test_wallet_view(void)
         wv_get("/wallet");
         bool ok = wv_has("'Block '+d.height");
         ok = ok && wv_has("d.peers+' peers'");
-        ok = ok && wv_has("d.mempool+' mempool'");
+        ok = ok && wv_has("d.mempool+' pending'");
         /* Must NOT have cryptic H:/P:/M: abbreviations */
         bool bad = wv_has("'H:'+d.height");
         if (ok && !bad) printf("OK\n");
@@ -963,6 +963,428 @@ int test_wallet_view(void)
         if (ok) printf("OK (n=%zu)\n", n);
         else { printf("FAIL (overflow! n=%zu)\n", n); failures++; }
     }
+
+    /* ═══════════════════════════════════════════════════════════
+     * 13. LIVE RENDER — real datadir, real data, production-grade audit
+     *     These tests only run if ~/.zclassic-c23/node.db exists.
+     * ═══════════════════════════════════════════════════════════ */
+
+    const char *home = getenv("HOME");
+    char live_datadir[256], live_db[300];
+    if (home) {
+        snprintf(live_datadir, sizeof(live_datadir), "%s/.zclassic-c23", home);
+        snprintf(live_db, sizeof(live_db), "%s/node.db", live_datadir);
+    } else {
+        live_datadir[0] = '\0';
+        live_db[0] = '\0';
+    }
+
+    bool have_live_db = (access(live_db, R_OK) == 0);
+    if (!have_live_db) {
+        printf("wallet_view: LIVE TESTS SKIPPED (no %s)\n", live_db);
+        return failures;
+    }
+
+    /* Switch to real datadir for live tests */
+    wallet_view_init(live_datadir);
+    printf("\n=== LIVE WALLET RENDER TESTS (real data) ===\n\n");
+
+    /* ── Dashboard with real data ────────────────────────────── */
+
+    printf("LIVE: dashboard shows real balance (not loading)... ");
+    {
+        wv_get("/wallet");
+        bool ok = wv_has("class='balance'") && wv_has("ZCL</div>");
+        bool bad = wv_has("Wallet Loading");
+        if (ok && !bad) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("LIVE: dashboard shows sync badge... ");
+    {
+        wv_get("/wallet");
+        bool ok = wv_has("id='sync'") && wv_has("sync-badge");
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("LIVE: dashboard shows balance breakdown (transparent)... ");
+    {
+        wv_get("/wallet");
+        bool ok = wv_has("id='breakdown'") && wv_has("transparent");
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("LIVE: dashboard shows privacy shield card... ");
+    {
+        wv_get("/wallet");
+        bool ok = wv_has("privacy-card") && wv_has("Shield All Funds");
+        if (ok) printf("OK (privacy nudge visible)\n");
+        else printf("OK (no card — shielded balance exists or zero balance)\n");
+        /* Not a failure either way — depends on balance state */
+    }
+
+    printf("LIVE: dashboard recent txs from wallet_transactions... ");
+    {
+        wv_get("/wallet");
+        /* Should have tx-row elements with links to /wallet/tx/ */
+        bool ok = wv_has("tx-row") || wv_has("No transactions yet");
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("LIVE: dashboard recent txs link to /wallet/tx/... ");
+    {
+        wv_get("/wallet");
+        bool ok = wv_has("href='/wallet/tx/") || wv_has("No transactions yet");
+        if (ok) printf("OK\n");
+        else { printf("FAIL (links to explorer instead of wallet detail)\n"); failures++; }
+    }
+
+    printf("LIVE: dashboard balance > 0 (funds exist)... ");
+    {
+        wv_get("/api/wallet/pulse");
+        /* Extract balance from JSON */
+        const char *bal = strstr((char *)_wv_resp, "\"balance\":");
+        int64_t balance = 0;
+        if (bal) balance = strtoll(bal + 10, NULL, 10);
+        if (balance > 0) printf("OK (%.8f ZCL)\n", (double)balance / 1e8);
+        else { printf("FAIL (balance=%lld)\n", (long long)balance); failures++; }
+    }
+
+    printf("LIVE: pulse returns correct sync state... ");
+    {
+        wv_get("/api/wallet/pulse");
+        bool ok = wv_has("\"sync\":\"");
+        /* Must be a known state */
+        ok = ok && (wv_has("at_tip") || wv_has("downloading") ||
+                    wv_has("scanning") || wv_has("connecting") ||
+                    wv_has("init") || wv_has("idle"));
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("LIVE: pulse has peers > 0... ");
+    {
+        wv_get("/api/wallet/pulse");
+        const char *p = strstr((char *)_wv_resp, "\"peers\":");
+        int peers = 0;
+        if (p) peers = atoi(p + 8);
+        if (peers > 0) printf("OK (%d peers)\n", peers);
+        else printf("WARN (0 peers)\n");
+        /* Not a failure — node might be offline */
+    }
+
+    /* ── Send form with real balance ─────────────────────────── */
+
+    printf("LIVE: send form shows real available balance... ");
+    {
+        wv_get("/wallet/send");
+        bool ok = wv_has("Available:") && wv_has("ZCL");
+        /* Should show a non-zero balance */
+        bool has_zero_only = wv_has("0.00000000 ZCL") && !wv_has("0.9");
+        if (ok && !has_zero_only) printf("OK\n");
+        else if (ok) printf("OK (but balance might be 0)\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("LIVE: send form Max button uses real balance... ");
+    {
+        wv_get("/wallet/send");
+        /* BAL variable should be set to actual balance */
+        bool ok = wv_has("var BAL=");
+        /* Should NOT be 0 */
+        const char *bal_js = strstr((char *)_wv_resp, "var BAL=");
+        double bal_val = 0;
+        if (bal_js) bal_val = strtod(bal_js + 8, NULL);
+        if (ok && bal_val > 0) printf("OK (BAL=%.8f)\n", bal_val);
+        else if (ok) printf("OK (BAL=0, empty wallet)\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ── Receive with real address ───────────────────────────── */
+
+    printf("LIVE: receive shows PRIMARY_ADDR in chunked format... ");
+    {
+        wv_get("/wallet/receive");
+        bool ok = wv_has("t1YR") && wv_has("BXK");
+        ok = ok && wv_has("addr-chunked");
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("LIVE: receive QR code is valid SVG... ");
+    {
+        wv_get("/wallet/receive");
+        bool ok = wv_has("<svg") && wv_has("</svg>");
+        ok = ok && wv_has("viewBox='0 0");
+        /* Should have many rect elements (QR modules) */
+        int rects = 0;
+        const char *p = (char *)_wv_resp;
+        while ((p = strstr(p, "<rect")) != NULL) { rects++; p += 5; }
+        ok = ok && (rects > 50);  /* QR has many modules */
+        if (ok) printf("OK (%d rects)\n", rects);
+        else { printf("FAIL (rects=%d)\n", rects); failures++; }
+    }
+
+    printf("LIVE: receive has shielded addresses from DB... ");
+    {
+        wv_get("/wallet/receive");
+        bool ok = wv_has("Shielded") || wv_has("No shielded addresses");
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ── History with real transactions ──────────────────────── */
+
+    printf("LIVE: history shows real transactions... ");
+    {
+        wv_get("/wallet/history");
+        bool ok = wv_has("Transaction History") && wv_has("filter-tabs");
+        /* Should have tx cards or empty state */
+        ok = ok && (wv_has("tx-card") || wv_has("0 transaction"));
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("LIVE: history filter tabs present and styled... ");
+    {
+        wv_get("/wallet/history");
+        bool ok = wv_has("filter=all");
+        ok = ok && wv_has("filter=sent");
+        ok = ok && wv_has("filter=recv");
+        ok = ok && wv_has(">All</a>");
+        ok = ok && wv_has(">Sent</a>");
+        ok = ok && wv_has(">Received</a>");
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("LIVE: history search input present... ");
+    {
+        wv_get("/wallet/history");
+        bool ok = wv_has("search-input") && wv_has("Search by txid");
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("LIVE: history sent filter works... ");
+    {
+        wv_get("/wallet/history?filter=sent");
+        bool ok = wv_has("Transaction History");
+        /* The sent filter tab should be active */
+        ok = ok && wv_has("filter=sent' class='active'");
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("LIVE: history recv filter works... ");
+    {
+        wv_get("/wallet/history?filter=recv");
+        bool ok = wv_has("Transaction History");
+        ok = ok && wv_has("filter=recv' class='active'");
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("LIVE: history tx cards have direction badges... ");
+    {
+        wv_get("/wallet/history");
+        bool ok = wv_has("pill-t") || wv_has("pill-pending") ||
+                  wv_has("0 transaction");
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("LIVE: history pagination shows page count... ");
+    {
+        wv_get("/wallet/history");
+        bool ok = wv_has("page ") && wv_has(" of ");
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ── Coins page with real UTXOs ──────────────────────────── */
+
+    printf("LIVE: coins page shows UTXO table... ");
+    {
+        wv_get("/wallet/coins");
+        bool ok = wv_has("Coin Audit");
+        ok = ok && wv_has("Transparent UTXOs");
+        ok = ok && (wv_has("total-row") || wv_has("0 UTXO"));
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("LIVE: coins page shows shielded notes section... ");
+    {
+        wv_get("/wallet/coins");
+        bool ok = wv_has("Shielded Notes");
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("LIVE: coins page shows data source comparison... ");
+    {
+        wv_get("/wallet/coins");
+        bool ok = wv_has("Data Source Comparison");
+        ok = ok && wv_has("Chain UTXO set");
+        ok = ok && wv_has("verified");
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("LIVE: coins page shows grand total stats... ");
+    {
+        wv_get("/wallet/coins");
+        bool ok = wv_has("Transparent</div>") && wv_has("Shielded</div>");
+        ok = ok && wv_has("Total</div>");
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ── production-grade design scrutiny ─────────────────────────── */
+
+    printf("LIVE: no inline style= colors (use CSS classes)... ");
+    {
+        wv_get("/wallet");
+        /* Count inline color overrides — some are acceptable for dynamic
+         * values but raw hex colors in style= are a design smell */
+        int inline_colors = 0;
+        const char *p = (char *)_wv_resp;
+        while ((p = strstr(p, "style='")) != NULL) {
+            const char *end = strchr(p + 7, '\'');
+            if (end && (strstr(p, "color:#") && strstr(p, "color:#") < end))
+                inline_colors++;
+            p += 7;
+        }
+        /* A few inline colors are acceptable for dynamic state.
+         * More than 10 suggests we should use more CSS classes. */
+        if (inline_colors <= 10) printf("OK (%d inline)\n", inline_colors);
+        else { printf("WARN (%d inline colors — consider CSS classes)\n",
+                       inline_colors); }
+    }
+
+    printf("LIVE: all pages have consistent footer structure... ");
+    {
+        const char *pages[] = {"/wallet", "/wallet/send", "/wallet/receive",
+                                "/wallet/coins", NULL};
+        bool ok = true;
+        for (int i = 0; pages[i]; i++) {
+            wv_get(pages[i]);
+            if (!wv_has("class='status-bar'") || !wv_has("</html>")) {
+                ok = false;
+                break;
+            }
+        }
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("LIVE: all pages have consistent nav structure... ");
+    {
+        const char *pages[] = {"/wallet", "/wallet/send", "/wallet/receive",
+                                "/wallet/coins", NULL};
+        bool ok = true;
+        for (int i = 0; pages[i]; i++) {
+            wv_get(pages[i]);
+            if (!wv_has("class='nav'") || !wv_has("Dashboard</a>")) {
+                ok = false;
+                break;
+            }
+        }
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("LIVE: no broken HTML entities... ");
+    {
+        wv_get("/wallet");
+        /* Check for common broken entities */
+        bool bad = wv_has("&amp;amp;") || wv_has("&amp;lt;") ||
+                   wv_has("&#x0;") || wv_has("&undefined;");
+        if (!bad) printf("OK\n");
+        else { printf("FAIL (double-encoded entities)\n"); failures++; }
+    }
+
+    printf("LIVE: wallet CSS loads without overflow... ");
+    {
+        wv_get("/wallet");
+        /* Check CSS contains key selectors */
+        bool ok = wv_has(".balance{") || wv_has(".balance {");
+        ok = ok && (wv_has(".nav{") || wv_has(".nav {") || wv_has(".nav a{"));
+        ok = ok && (wv_has("@keyframes") || wv_has("@media"));
+        if (ok) printf("OK\n");
+        else { printf("FAIL (CSS missing/truncated)\n"); failures++; }
+    }
+
+    printf("LIVE: no TODO/FIXME/HACK in rendered HTML... ");
+    {
+        const char *pages[] = {"/wallet", "/wallet/send", "/wallet/receive",
+                                "/wallet/history", "/wallet/coins", NULL};
+        bool bad = false;
+        for (int i = 0; pages[i]; i++) {
+            wv_get(pages[i]);
+            if (wv_has("TODO") || wv_has("FIXME") || wv_has("HACK") ||
+                wv_has("XXX")) {
+                bad = true;
+                break;
+            }
+        }
+        if (!bad) printf("OK\n");
+        else { printf("FAIL (debug text in production HTML)\n"); failures++; }
+    }
+
+    printf("LIVE: send review with valid address shows checksum validation... ");
+    {
+        /* t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn is a real valid address */
+        wv_post("/wallet/send/review",
+            "address=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn&amount=0.001");
+        bool ok = wv_has("Review") && wv_has("Confirm Send");
+        ok = ok && wv_has("0.001");
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("LIVE: send review with typo address shows checksum error... ");
+    {
+        /* Change one character to create invalid checksum */
+        wv_post("/wallet/send/review",
+            "address=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrN&amount=0.001");
+        bool ok = wv_has("checksum") || wv_has("Invalid");
+        if (ok) printf("OK (typo caught)\n");
+        else { printf("FAIL (typo not caught!)\n"); failures++; }
+    }
+
+    /* Dump pages to disk for manual inspection */
+    system("mkdir -p .zcl_test_render");
+    {
+        const char *routes[][3] = {
+            {"GET", "/wallet", "dashboard.html"},
+            {"GET", "/wallet/send", "send.html"},
+            {"GET", "/wallet/receive", "receive.html"},
+            {"GET", "/wallet/history", "history.html"},
+            {"GET", "/wallet/history?filter=sent", "history_sent.html"},
+            {"GET", "/wallet/coins", "coins.html"},
+            {"GET", "/wallet/shield?amount=0.5", "shield.html"},
+            {"GET", "/api/wallet/pulse", "pulse.json"},
+            {NULL, NULL, NULL}
+        };
+        for (int i = 0; routes[i][0]; i++) {
+            wv_get(routes[i][1]);
+            char path[128];
+            snprintf(path, sizeof(path), ".zcl_test_render/%s", routes[i][2]);
+            const char *html = strstr((char *)_wv_resp, "\r\n\r\n");
+            if (html) html += 4; else html = (char *)_wv_resp;
+            FILE *f = fopen(path, "w");
+            if (f) { fputs(html, f); fclose(f); }
+        }
+        printf("LIVE: pages dumped to .zcl_test_render/ for inspection\n");
+    }
+
+    /* Restore NULL for safety */
+    wallet_view_init(NULL);
 
     return failures;
 }

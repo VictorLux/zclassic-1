@@ -44,7 +44,8 @@ static const char wallet_css_0[] =
     ".pill-pending{background:#1a1510;color:#fbbf24}"
     ".pill-private{background:#1a1428;color:#a78bfa}"
     ".pill-t{background:#0a1f14;color:#34d399}"
-    ".pill-z{background:#1a1428;color:#a78bfa}";
+    ".pill-z{background:#1a1428;color:#a78bfa}"
+    ".pill-send{background:#1f1010;color:#f87171}";
 
 static const char wallet_css_1[] =
     /* Actions */
@@ -267,7 +268,7 @@ static const char wallet_css_5[] =
     "font-size:15px;letter-spacing:.5px;line-height:1.8;"
     "word-break:break-all;text-align:center}"
     ".addr-chunked .sep{color:#333;margin:0 1px}"
-    ".addr-chunked .hi{color:#34d399}"
+    ".addr-chunked .hi{color:#34d399;font-weight:700}"
 
     /* Search input */
     ".search-input{display:block;width:100%%;background:#111;color:#e2e2e2;"

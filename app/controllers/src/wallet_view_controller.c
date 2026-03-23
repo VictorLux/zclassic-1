@@ -602,9 +602,9 @@ static size_t emit_header(uint8_t *buf, size_t max, const char *title,
 static void emit_footer(uint8_t *buf, size_t max, size_t *off) {
     APPEND(*off, buf, max,
         "<div id='sbar' class='status-bar'>"
-        "<span id='sb-h'>---</span>"
-        "<span id='sb-p'>---</span>"
-        "<span id='sb-m'>---</span>"
+        "<span id='sb-h'>Block --</span>"
+        "<span id='sb-p'>0 peers</span>"
+        "<span id='sb-m'>0 mempool</span>"
         "</div>"
         "<script>"
         "(function(){"
@@ -616,7 +616,7 @@ static void emit_footer(uint8_t *buf, size_t max, size_t *off) {
         "var m=document.getElementById('sb-m');"
         "if(h)h.textContent='Block '+d.height;"
         "if(p)p.textContent=d.peers+' peers';"
-        "if(m)m.textContent=d.mempool+' mempool';"
+        "if(m)m.textContent=d.mempool+' pending';"
         "}).catch(function(){});}"
         "up();setInterval(up,5000);"
         "})();"
@@ -820,8 +820,17 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
 
     size_t off = emit_header(r, max, "ZClassic Wallet", "/wallet");
 
-    const char *sync = sync_state_name(sync_get_state());
+    const char *sync_raw = sync_state_name(sync_get_state());
     bool synced = (sync_get_state() == SYNC_AT_TIP);
+    /* Map internal state names to user-friendly labels */
+    const char *sync = synced ? "Synced" : "Syncing...";
+    if (!synced) {
+        if (strstr(sync_raw, "download")) sync = "Syncing blocks...";
+        else if (strstr(sync_raw, "header")) sync = "Syncing headers...";
+        else if (strstr(sync_raw, "connect")) sync = "Connecting...";
+        else if (strstr(sync_raw, "idle")) sync = "Connecting...";
+        else if (strstr(sync_raw, "scan")) sync = "Scanning...";
+    }
 
     /* Format balance — show minimal decimals */
     char bal_str[32];
@@ -843,7 +852,7 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
         "<div id='bal' class='balance' style='margin-top:8px'>"
         "%s ZCL</div>",
         synced ? "pill-synced" : "pill-syncing",
-        synced ? "Synced" : sync,
+        sync,
         bal_str);
 
     /* 3. Breakdown line */
@@ -866,10 +875,10 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
     /* 4. Action buttons (Send / Receive) */
     APPEND(off, r, max,
         "<div class='actions'>"
-        "<a href='/wallet/send' style='border:1px solid #333;"
-        "color:#e2e2e2'>Send</a>"
-        "<a href='/wallet/receive' style='background:#34d399;"
-        "color:#0c0c0c'>Receive</a>"
+        "<a href='/wallet/send' class='btn-secondary'"
+        " style='display:flex;align-items:center;justify-content:center'>Send</a>"
+        "<a href='/wallet/receive' class='btn-primary'"
+        " style='display:flex;align-items:center;justify-content:center'>Receive</a>"
         "</div>");
 
     /* 5. Privacy nudge — show when transparent balance > 0 */
@@ -879,9 +888,8 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
             "<div class='title'>Your funds are publicly visible</div>"
             "<div class='desc'>Transparent balances can be traced on-chain. "
             "Shield your ZCL for full privacy.</div>"
-            "<a class='btn' href='/wallet/shield?amount=%.8f'>"
-            "Shield All Funds</a></div>",
-            (double)transparent / (double)ZATOSHI_PER_ZCL - FEE_ZCL);
+            "<a class='btn' href='/wallet/shield?all=1'>"
+            "Shield All Funds</a></div>");
     }
 
     /* 6. Recent transactions (5 items) */
@@ -1007,8 +1015,8 @@ static size_t serve_send(uint8_t *r, size_t max) {
         "<div class='form-group'>"
         "<label class='form-label' for='addr'>To</label>"
         "<input class='form-input' type='text' id='addr' name='address' "
-        "placeholder='t1... or zs1...' required></div>"
-        "<div id='addr-err' class='form-error'></div>"
+        "placeholder='Recipient address (t1... or zs1...)' required>"
+        "<div id='addr-err' class='form-error'></div></div>"
         "<div class='form-group'>"
         "<label class='form-label' for='amt'>Amount</label>"
         "<div style='display:flex;gap:8px;align-items:center'>"
@@ -1017,10 +1025,13 @@ static size_t serve_send(uint8_t *r, size_t max) {
         "oninput='updateRemaining()'>"
         "<button type='button' class='send-max' "
         "onclick='document.getElementById(\"amt\").value="
-        "(BAL-%.4f).toFixed(8);updateRemaining()'>Max</button></div></div>"
+        "(BAL-%.4f).toFixed(8);updateRemaining()'>Max</button></div>"
         "<div id='remaining' class='remaining' "
-        "style='color:#666;font-size:12px;margin:4px 0'></div>"
+        "style='color:#888;font-size:12px;margin:4px 0'></div>"
         "<div id='amt-err' class='form-error'></div>"
+        "<div style='color:#888;font-size:12px;margin:4px 0'>"
+        "Network fee: <span style='color:#f59e0b'>%.4f ZCL</span>"
+        "</div></div>"
         "<button type='submit' class='btn-primary' style='margin-top:16px' "
         "id='review-btn'>Review Send</button>"
         "</form>"
@@ -1076,7 +1087,8 @@ static size_t serve_send(uint8_t *r, size_t max) {
         "this.disabled=true;this.textContent='Reviewing...';"
         "});"
         "</script>",
-        FEE_ZCL, (double)balance / (double)ZATOSHI_PER_ZCL, FEE_ZCL, FEE_ZCL, FEE_ZCL);
+        FEE_ZCL, FEE_ZCL,
+        (double)balance / (double)ZATOSHI_PER_ZCL, FEE_ZCL, FEE_ZCL, FEE_ZCL);
 
     emit_footer(r, max, &off);
     return off;
@@ -1235,7 +1247,7 @@ static size_t serve_receive(uint8_t *r, size_t max) {
         "var msg=document.getElementById('copy-msg');"
         "if(msg)msg.textContent='Copied!';"
         "setTimeout(function(){el.style.borderColor='';"
-        "if(msg)msg.textContent='';},1500);}"
+        "if(msg)msg.textContent='Tap address to copy';},1500);}"
         ").catch(function(){"
         "var ta=document.createElement('textarea');"
         "ta.value=txt;ta.style.position='fixed';ta.style.opacity='0';"
@@ -1417,7 +1429,7 @@ static size_t serve_history(uint8_t *r, size_t max, int page,
                 is_recv ? "recv" : "send",
                 is_recv ? "+" : "-",
                 (double)display_val / 1e8,
-                is_recv ? "pill-t" : "pill-pending",
+                is_recv ? "pill-t" : "pill-send",
                 is_recv ? "Received" : "Sent",
                 esc_ts,
                 esc_rel,
@@ -1676,6 +1688,16 @@ static size_t serve_shield(uint8_t *r, size_t max, const char *query) {
     if (query) {
         const char *amt = strstr(query, "amount=");
         if (amt) amount = strtod(amt + 7, NULL);
+        /* ?all=1 — compute from balance (avoids leaking amount in URL) */
+        if (strstr(query, "all=1")) {
+            sqlite3 *sdb = open_db();
+            if (sdb) {
+                int64_t bal = query_ground_truth_balance(sdb, NULL);
+                sqlite3_close(sdb);
+                amount = (double)bal / (double)ZATOSHI_PER_ZCL - FEE_ZCL;
+                if (amount < 0) amount = 0;
+            }
+        }
     }
 
     if (amount <= 0) {
