@@ -5,6 +5,7 @@
 
 #include "net/onion_service.h"
 #include "controllers/blog_controller.h"
+#include "views/format_helpers.h"
 #include "util/template.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -43,7 +44,7 @@ static void query_node_stats(int *out_height, int *out_peers)
     if (!g_datadir) return;
 
     char db_path[1024];
-    snprintf(db_path, sizeof(db_path), "%s/node.db", g_datadir);
+    zcl_node_db_path(db_path, sizeof(db_path), g_datadir);
     sqlite3 *db = NULL;
     if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK)
         return;
@@ -364,7 +365,7 @@ static size_t serve_directory_json(uint8_t *response, size_t max)
     if (!g_datadir) return 0;
 
     char db_path[1024];
-    snprintf(db_path, sizeof(db_path), "%s/node.db", g_datadir);
+    zcl_node_db_path(db_path, sizeof(db_path), g_datadir);
     sqlite3 *db = NULL;
     if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
         if (db) sqlite3_close(db);
@@ -424,7 +425,7 @@ static size_t serve_directory_html(uint8_t *response, size_t max)
     if (!g_datadir) return 0;
 
     char db_path[1024];
-    snprintf(db_path, sizeof(db_path), "%s/node.db", g_datadir);
+    zcl_node_db_path(db_path, sizeof(db_path), g_datadir);
     sqlite3 *db = NULL;
     if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
         if (db) sqlite3_close(db);
@@ -524,7 +525,7 @@ static size_t serve_status(uint8_t *response, size_t max)
     int64_t last_block_time = 0, tx_count = 0;
     if (g_datadir) {
         char db_path[1024];
-        snprintf(db_path, sizeof(db_path), "%s/node.db", g_datadir);
+        zcl_node_db_path(db_path, sizeof(db_path), g_datadir);
         sqlite3 *db = NULL;
         if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) == SQLITE_OK) {
             sqlite3_busy_timeout(db, 5000);
@@ -669,7 +670,7 @@ const char *onion_service_start(const char *datadir)
     /* Initialize peer directory from chain data */
     if (datadir) {
         char db_path[1024];
-        snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
+        zcl_node_db_path(db_path, sizeof(db_path), datadir);
         sqlite3 *db = NULL;
         if (sqlite3_open(db_path, &db) == SQLITE_OK) {
             sqlite3_busy_timeout(db, 5000);
@@ -702,7 +703,7 @@ void onion_service_set_address(const char *address)
         /* Register ourselves in the peer directory */
         if (g_datadir) {
             char db_path[1024];
-            snprintf(db_path, sizeof(db_path), "%s/node.db", g_datadir);
+            zcl_node_db_path(db_path, sizeof(db_path), g_datadir);
             sqlite3 *db = NULL;
             if (sqlite3_open(db_path, &db) == SQLITE_OK) {
                 sqlite3_busy_timeout(db, 5000);

@@ -244,11 +244,11 @@ bool site_announce_replica(const char *datadir,
            onion_addr, capacity, content_version, off);
     fflush(stdout);
 
-    /* TODO: create a transaction with this OP_RETURN as vout[0],
-     * sign it, and broadcast via sendrawtransaction.
-     * Requires wallet integration (need UTXOs to fund the tx). */
+    /* Not yet implemented: needs wallet integration to create,
+     * sign, and broadcast a transaction with this OP_RETURN. */
     (void)datadir;
-    return true; /* script built successfully, broadcast TODO */
+    fprintf(stderr, "load_balancer: site_build_replica_announcement not implemented\n");
+    return false;
 }
 
 /* ── Connect to best replica ─────────────────────────────── */

@@ -3,6 +3,7 @@
  * Fast P2P sync: UTXO snapshot transfer between zclassic23 nodes. */
 
 #include "net/fast_sync.h"
+#include "views/format_helpers.h"
 #include "coins/utxo_commitment.h"
 #include "models/database.h"
 #include "models/utxo.h"
@@ -29,7 +30,7 @@ bool fast_sync_build_offer(const char *datadir,
     memset(offer, 0, sizeof(*offer));
 
     char db_path[1024];
-    snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
+    zcl_node_db_path(db_path, sizeof(db_path), datadir);
 
     sqlite3 *db = NULL;
     if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK)
@@ -127,7 +128,7 @@ bool fast_sync_compute_utxo_root(const char *datadir,
                                   uint8_t root_out[32])
 {
     char db_path[1024];
-    snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
+    zcl_node_db_path(db_path, sizeof(db_path), datadir);
 
     sqlite3 *db = NULL;
     if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK)
@@ -143,7 +144,7 @@ bool fast_sync_serve_snapshot(const char *datadir,
                                chunk_callback cb, void *ctx)
 {
     char db_path[1024];
-    snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
+    zcl_node_db_path(db_path, sizeof(db_path), datadir);
 
     sqlite3 *db = NULL;
     if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK)
@@ -286,7 +287,7 @@ bool fast_sync_apply_chunk(const char *datadir,
                             const struct utxo_chunk *chunk)
 {
     char db_path[1024];
-    snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
+    zcl_node_db_path(db_path, sizeof(db_path), datadir);
 
     sqlite3 *db = NULL;
     if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READWRITE, NULL) != SQLITE_OK)
@@ -533,7 +534,7 @@ bool fast_sync_serve_chunk(const char *datadir, uint32_t chunk_index,
                             struct utxo_chunk *out)
 {
     char db_path[1024];
-    snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
+    zcl_node_db_path(db_path, sizeof(db_path), datadir);
 
     sqlite3 *db = NULL;
     if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK)
@@ -621,7 +622,7 @@ bool fast_sync_build_manifest(const char *datadir,
                                struct sync_manifest *out)
 {
     char db_path[1024];
-    snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
+    zcl_node_db_path(db_path, sizeof(db_path), datadir);
 
     sqlite3 *db = NULL;
     if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK)
@@ -803,7 +804,7 @@ bool block_piece_manifest_build(const char *datadir,
     memset(out, 0, sizeof(*out));
 
     char db_path[1024];
-    snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
+    zcl_node_db_path(db_path, sizeof(db_path), datadir);
 
     sqlite3 *db = NULL;
     if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK)

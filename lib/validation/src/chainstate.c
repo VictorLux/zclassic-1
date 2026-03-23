@@ -157,14 +157,17 @@ bool block_map_next(const struct block_map *m, size_t *iter,
                     const struct uint256 **hash_out,
                     struct block_index **index_out)
 {
+    pthread_rwlock_rdlock((pthread_rwlock_t *)&m->rwlock);
     while (*iter < m->capacity) {
         size_t i = (*iter)++;
         if (m->buckets[i].occupied) {
             if (hash_out) *hash_out = &m->buckets[i].hash;
             if (index_out) *index_out = m->buckets[i].index;
+            pthread_rwlock_unlock((pthread_rwlock_t *)&m->rwlock);
             return true;
         }
     }
+    pthread_rwlock_unlock((pthread_rwlock_t *)&m->rwlock);
     return false;
 }
 
