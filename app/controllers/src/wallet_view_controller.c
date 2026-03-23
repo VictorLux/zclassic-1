@@ -701,46 +701,24 @@ static bool validate_zcl_address(const char *addr) {
     return false;
 }
 
-/* ── Ground-truth balance: scan global UTXO set for wallet keys ── */
+/* ── Wallet balance: unspent wallet_utxos (maintained by wallet layer) ── */
 
 static int64_t query_ground_truth_balance(sqlite3 *db, int *utxo_count) {
     int64_t total = 0;
     int count = 0;
     sqlite3_stmt *s = NULL;
 
-    /* P2PKH: match utxos.address_hash against wallet_keys.pubkey_hash */
+    /* wallet_utxos tracks UTXOs belonging to this wallet with correct
+     * spent/unspent state. This is authoritative — the global utxos table
+     * may contain stale entries from incomplete UTXO pruning, and the
+     * P2SH change heuristic was producing false positives. */
     if (sqlite3_prepare_v2(db,
-            "SELECT COALESCE(SUM(u.value),0), COUNT(*) FROM utxos u "
-            "WHERE u.address_hash IN "
-            "(SELECT pubkey_hash FROM wallet_keys)",
+            "SELECT COALESCE(SUM(value),0), COUNT(*) "
+            "FROM wallet_utxos WHERE spent_txid IS NULL",
             -1, &s, NULL) == SQLITE_OK && s) {
         if (sqlite3_step(s) == SQLITE_ROW) {
-            total += sqlite3_column_int64(s, 0);
-            count += sqlite3_column_int(s, 1);
-        }
-        sqlite3_finalize(s);
-    }
-
-    /* P2SH: find UTXOs at addresses that received change from wallet txs.
-     * Heuristic: any address that appears as an output of a transaction
-     * that spent from a known wallet P2PKH address is a wallet address. */
-    s = NULL;
-    if (sqlite3_prepare_v2(db,
-            "SELECT COALESCE(SUM(u.value),0), COUNT(*) FROM utxos u "
-            "WHERE u.address_hash NOT IN "
-            "  (SELECT pubkey_hash FROM wallet_keys) "
-            "AND u.address_hash IN ("
-            "  SELECT DISTINCT to2.address_hash "
-            "  FROM tx_inputs ti "
-            "  JOIN tx_outputs to1 ON ti.prev_txid = to1.txid AND ti.prev_vout = to1.vout "
-            "  JOIN tx_outputs to2 ON ti.txid = to2.txid "
-            "  WHERE to1.address_hash IN (SELECT pubkey_hash FROM wallet_keys) "
-            "  AND to2.address_hash != to1.address_hash"
-            ")",
-            -1, &s, NULL) == SQLITE_OK && s) {
-        if (sqlite3_step(s) == SQLITE_ROW) {
-            total += sqlite3_column_int64(s, 0);
-            count += sqlite3_column_int(s, 1);
+            total = sqlite3_column_int64(s, 0);
+            count = sqlite3_column_int(s, 1);
         }
         sqlite3_finalize(s);
     }
@@ -1501,24 +1479,11 @@ static size_t serve_coins(uint8_t *r, size_t max) {
     int t_count = 0;
     sqlite3_stmt *s = NULL;
     const char *coins_sql =
-        "SELECT hex(u.txid), u.vout, u.value, u.height, "
-        "  CASE WHEN u.address_hash IN "
-        "    (SELECT pubkey_hash FROM wallet_keys) "
-        "  THEN 'P2PKH' ELSE 'P2SH' END "
-        "FROM utxos u "
-        "WHERE u.address_hash IN "
-        "  (SELECT pubkey_hash FROM wallet_keys) "
-        "OR u.address_hash IN ("
-        "  SELECT DISTINCT to2.address_hash "
-        "  FROM tx_inputs ti "
-        "  JOIN tx_outputs to1 ON ti.prev_txid = to1.txid "
-        "    AND ti.prev_vout = to1.vout "
-        "  JOIN tx_outputs to2 ON ti.txid = to2.txid "
-        "  WHERE to1.address_hash IN "
-        "    (SELECT pubkey_hash FROM wallet_keys) "
-        "  AND to2.address_hash != to1.address_hash"
-        ") "
-        "ORDER BY u.value DESC";
+        "SELECT hex(wu.txid), wu.vout, wu.value, wu.height, "
+        "  CASE WHEN wu.is_coinbase THEN 'Coinbase' ELSE 'Standard' END "
+        "FROM wallet_utxos wu "
+        "WHERE wu.spent_txid IS NULL "
+        "ORDER BY wu.value DESC";
     if (sqlite3_prepare_v2(db, coins_sql, -1, &s, NULL) == SQLITE_OK) {
         while (sqlite3_step(s) == SQLITE_ROW && off + 500 < max) {
             const char *txid = (const char *)sqlite3_column_text(s, 0);
@@ -1546,8 +1511,8 @@ static size_t serve_coins(uint8_t *r, size_t max) {
                 "<td>%d</td>"
                 "</tr>",
                 lower_tx, short_tx, vout,
-                stype && stype[2] == 'S' ? "z" : "t",
-                (stype && stype[2] == 'S') ? "Script" : "Standard",
+                stype && stype[0] == 'C' ? "pending" : "t",
+                stype ? stype : "Standard",
                 (double)val / 1e8, h, confs);
             t_total += val;
             t_count++;
