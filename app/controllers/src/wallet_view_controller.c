@@ -839,7 +839,19 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
         "color:#0c0c0c'>Receive</a>"
         "</div>");
 
-    /* 5. Recent transactions (5 items) */
+    /* 5. Privacy nudge — show when transparent balance > 0 and shielded == 0 */
+    if (transparent > 0 && shielded == 0) {
+        APPEND(off, r, max,
+            "<div class='privacy-card'>"
+            "<div class='title'>Your funds are publicly visible</div>"
+            "<div class='desc'>Transparent balances can be traced on-chain. "
+            "Shield your ZCL for full privacy.</div>"
+            "<a class='btn' href='/wallet/shield?amount=%.8f'>"
+            "Shield All Funds</a></div>",
+            (double)transparent / (double)ZATOSHI_PER_ZCL - FEE_ZCL);
+    }
+
+    /* 6. Recent transactions (5 items) */
     APPEND(off, r, max,
         "<div class='section-header'>"
         "<span>Recent</span>"
@@ -885,16 +897,19 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
             zcl_format_zcl(amt, sizeof(amt), value);
 
             APPEND(off, r, max,
+                "<a href='/wallet/tx/%s' style='text-decoration:none;"
+                "color:inherit;display:block'>"
                 "<div class='tx-row'>"
                 "<div>"
                 "<span class='tx-amount recv'>+%s</span>"
-                "<span style='color:#666;font-size:12px;"
+                "<span style='color:#888;font-size:12px;"
                 "margin-left:6px'>ZCL</span></div>"
                 "<div class='tx-meta'>"
                 "<span class='tx-time'>%s</span>"
-                "<a href='/explorer/tx/%s'>%d conf%s</a>"
-                "</div></div>",
-                amt, esc_rel, lower_tx,
+                "<span class='tx-conf'>%d conf%s</span>"
+                "</div></div></a>",
+                lower_tx,
+                amt, esc_rel,
                 confs, confs == 1 ? "" : "s");
             tx_shown++;
         }
@@ -978,7 +993,7 @@ static size_t serve_send(uint8_t *r, size_t max) {
         "style='color:#666;font-size:12px;margin:4px 0'></div>"
         "<div id='amt-err' class='form-error'></div>"
         "<button type='submit' class='btn-primary' style='margin-top:16px' "
-        "onclick='this.disabled=true;this.form.submit()'>Review Send</button>"
+        "id='review-btn'>Review Send</button>"
         "</form>"
         "<script>"
         "var BAL=%.8f;"
@@ -998,16 +1013,41 @@ static size_t serve_send(uint8_t *r, size_t max) {
         "if(!a||a.length<26){"
         "document.getElementById('addr-err').textContent="
         "'Enter a valid address';return false;}"
+        "if(!(/^(t[13]|zs1)/.test(a))){"
+        "document.getElementById('addr-err').textContent="
+        "'Must start with t1, t3, or zs1';return false;}"
+        "if(!(/^[a-zA-Z0-9]+$/.test(a))){"
+        "document.getElementById('addr-err').textContent="
+        "'Invalid characters in address';return false;}"
         "var amt=parseFloat(m);"
         "if(isNaN(amt)||amt<=0){"
         "document.getElementById('amt-err').textContent="
         "'Enter an amount';return false;}"
         "if(amt+%.4f>BAL){"
         "document.getElementById('amt-err').textContent="
-        "'Insufficient funds';return false;}"
+        "'Insufficient funds: need '+(amt+%.4f-BAL).toFixed(8)+' more ZCL';"
+        "return false;}"
         "return true;}"
+        /* Real-time address validation on blur */
+        "document.getElementById('addr').addEventListener('blur',function(){"
+        "var a=this.value.trim(),e=document.getElementById('addr-err');"
+        "e.textContent='';"
+        "if(!a)return;"
+        "if(a.length<26){e.textContent='Address too short';return;}"
+        "if(!(/^(t[13]|zs1)/.test(a))){e.textContent="
+        "'Must start with t1, t3, or zs1';return;}"
+        "if(!(/^[a-zA-Z0-9]+$/.test(a))){e.textContent="
+        "'Invalid characters';return;}"
+        "this.style.borderColor='#34d399';"
+        "setTimeout(function(){document.getElementById('addr')"
+        ".style.borderColor='';},1500);});"
+        /* Loading overlay on submit */
+        "document.getElementById('review-btn').addEventListener('click',"
+        "function(e){if(!validateSend()){e.preventDefault();return;}"
+        "this.disabled=true;this.textContent='Reviewing...';"
+        "});"
         "</script>",
-        FEE_ZCL, (double)balance / (double)ZATOSHI_PER_ZCL, FEE_ZCL, FEE_ZCL);
+        FEE_ZCL, (double)balance / (double)ZATOSHI_PER_ZCL, FEE_ZCL, FEE_ZCL, FEE_ZCL);
 
     emit_footer(r, max, &off);
     return off;
@@ -1019,18 +1059,54 @@ static size_t serve_receive(uint8_t *r, size_t max) {
     sqlite3 *db = open_db();
     size_t off = emit_header(r, max, "Receive — ZClassic23", "/wallet/receive");
 
-    /* QR code is the hero — the address IS the page */
+    /* Address type tabs */
     APPEND(off, r, max,
-        "<div style='text-align:center;padding:16px 0'>"
+        "<div class='tab-toggle'>"
+        "<a id='tab-t' class='active' onclick='showTab(\"t\")'>Transparent</a>"
+        "<a id='tab-z' onclick='showTab(\"z\")'>Shielded</a>"
+        "</div>");
+
+    /* Transparent address section */
+    APPEND(off, r, max,
+        "<div id='pane-t' style='text-align:center;padding:16px 0'>"
         "<div class='balance-sub' style='margin-bottom:12px'>"
         "Share this address to receive ZCL</div>");
     off = emit_qr_svg(r, max, off, PRIMARY_ADDR, 5);
+
+    /* Address with 4-char chunking for visual verification */
+    {
+        const char *a = PRIMARY_ADDR;
+        size_t alen = strlen(a);
+        APPEND(off, r, max,
+            "<div class='addr-display addr-chunked' "
+            "style='margin-top:16px' id='t-addr'>");
+        /* First 4 chars highlighted */
+        APPEND(off, r, max, "<span class='hi'>%.4s</span>", a);
+        for (size_t i = 4; i < alen; i += 4) {
+            size_t left = alen - i;
+            if (left > 4) left = 4;
+            APPEND(off, r, max, "<span class='sep'> </span>");
+            if (i + left >= alen) /* Last chunk highlighted */
+                APPEND(off, r, max, "<span class='hi'>%.*s</span>",
+                    (int)left, a + i);
+            else
+                APPEND(off, r, max, "%.*s", (int)left, a + i);
+        }
+        APPEND(off, r, max, "</div>");
+    }
     APPEND(off, r, max,
-        "<div class='addr-display' style='margin-top:16px'>"
-        PRIMARY_ADDR "</div>"
-        "<div id='copy-msg' style='color:#666;font-size:12px;"
+        "<div id='copy-msg' style='color:#888;font-size:12px;"
         "margin-top:4px;height:16px'></div>"
+        "<div style='color:#888;font-size:11px;margin-top:2px'>"
+        "<span class='pill pill-t'>Transparent</span> "
+        "Publicly visible on chain</div>"
         "</div>");
+
+    /* Shielded address pane (hidden by default) */
+    APPEND(off, r, max,
+        "<div id='pane-z' style='display:none;text-align:center;padding:16px 0'>"
+        "<div class='balance-sub' style='margin-bottom:12px'>"
+        "Share a shielded address for private transactions</div>");
 
     /* Shielded addresses — try SQLite first, fall back to RPC */
     int z_shown = 0;
@@ -1096,20 +1172,48 @@ static size_t serve_receive(uint8_t *r, size_t max) {
             }
         }
     }
+    if (z_shown == 0) {
+        APPEND(off, r, max,
+            "<div class='empty-state'>"
+            "<div style='color:#a78bfa;font-size:13px'>"
+            "No shielded addresses yet</div>"
+            "<div style='color:#888;font-size:12px;margin-top:4px'>"
+            "Generate one: <code>zcl-rpc z_getnewaddress</code></div>"
+            "</div>");
+    }
+    APPEND(off, r, max, "</div>"); /* close pane-z */
+
+    /* Tab switching JS */
+    APPEND(off, r, max,
+        "<script>"
+        "function showTab(t){"
+        "document.getElementById('pane-t').style.display=t==='t'?'':'none';"
+        "document.getElementById('pane-z').style.display=t==='z'?'':'none';"
+        "document.getElementById('tab-t').className=t==='t'?'active':'';"
+        "document.getElementById('tab-z').className=t==='z'?'active-z':'';}"
+        "</script>");
+
     /* Click-to-copy with "Copied!" feedback */
     APPEND(off, r, max,
         "<script>"
-        "document.querySelectorAll('.addr-display,.addr-display-sm')"
+        "document.querySelectorAll('.addr-display,.addr-display-sm,.addr-chunked')"
         ".forEach(function(el){"
         "el.style.cursor='pointer';"
         "el.addEventListener('click',function(){"
-        "var txt=this.textContent.trim();"
+        "var txt=this.textContent.replace(/\\s+/g,'').trim();"
         "navigator.clipboard.writeText(txt).then(function(){"
         "el.style.borderColor='#34d399';"
         "var msg=document.getElementById('copy-msg');"
         "if(msg)msg.textContent='Copied!';"
         "setTimeout(function(){el.style.borderColor='';"
-        "if(msg)msg.textContent='';},1500);});"
+        "if(msg)msg.textContent='';},1500);}"
+        ").catch(function(){"
+        "var ta=document.createElement('textarea');"
+        "ta.value=txt;ta.style.position='fixed';ta.style.opacity='0';"
+        "document.body.appendChild(ta);ta.select();"
+        "document.execCommand('copy');document.body.removeChild(ta);"
+        "var msg=document.getElementById('copy-msg');"
+        "if(msg)msg.textContent='Copied!';});"
         "});});"
         "</script>");
 
@@ -1119,7 +1223,8 @@ static size_t serve_receive(uint8_t *r, size_t max) {
 
 /* ── History (/wallet/history) ──────────────────────────────── */
 
-static size_t serve_history(uint8_t *r, size_t max, int page) {
+static size_t serve_history(uint8_t *r, size_t max, int page,
+                            const char *filter, const char *search) {
     sqlite3 *db = open_db();
     if (!db) return 0;
 
@@ -1128,15 +1233,69 @@ static size_t serve_history(uint8_t *r, size_t max, int page) {
 
     size_t off = emit_header(r, max, "Transaction History", "/wallet/history");
 
-    int tx_count = query_int(db,
-        "SELECT count(*) FROM wallet_transactions");
+    /* Filter: all, sent, received */
+    const char *where_clause = "";
+    if (filter && strcmp(filter, "sent") == 0)
+        where_clause = " WHERE wt.from_me = 1";
+    else if (filter && strcmp(filter, "recv") == 0)
+        where_clause = " WHERE wt.from_me = 0";
+
+    /* Search by txid prefix */
+    char search_clause[256] = "";
+    char safe_search[65] = "";
+    if (search && search[0]) {
+        /* Sanitize: only hex chars */
+        size_t si = 0;
+        for (size_t i = 0; search[i] && si < 64; i++) {
+            char c = search[i];
+            if ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
+                (c >= 'A' && c <= 'F'))
+                safe_search[si++] = c;
+        }
+        safe_search[si] = '\0';
+        if (safe_search[0]) {
+            if (where_clause[0])
+                snprintf(search_clause, sizeof(search_clause),
+                    " AND hex(wt.txid) LIKE '%%%s%%'", safe_search);
+            else
+                snprintf(search_clause, sizeof(search_clause),
+                    " WHERE hex(wt.txid) LIKE '%%%s%%'", safe_search);
+        }
+    }
+
+    char count_sql[512];
+    snprintf(count_sql, sizeof(count_sql),
+        "SELECT count(*) FROM wallet_transactions wt%s%s",
+        where_clause, search_clause);
+    int tx_count = query_int(db, count_sql);
 
     int total_pages = (tx_count + per_page - 1) / per_page;
     if (page >= total_pages && total_pages > 0) page = total_pages - 1;
 
+    /* Filter tabs */
+    const char *f = filter ? filter : "all";
     APPEND(off, r, max,
         "<h2>Transaction History</h2>"
+        "<div class='filter-tabs'>"
+        "<a href='/wallet/history?filter=all' class='%s'>All</a>"
+        "<a href='/wallet/history?filter=sent' class='%s'>Sent</a>"
+        "<a href='/wallet/history?filter=recv' class='%s'>Received</a>"
+        "</div>",
+        strcmp(f, "all") == 0 || !filter ? "active" : "",
+        strcmp(f, "sent") == 0 ? "active" : "",
+        strcmp(f, "recv") == 0 ? "active" : "");
+
+    /* Search bar */
+    APPEND(off, r, max,
+        "<input class='search-input' type='text' id='tx-search' "
+        "placeholder='Search by txid...' value='%s' "
+        "aria-label='Search transactions'"
+        "onkeydown='if(event.key===\"Enter\"){"
+        "var v=this.value.trim();"
+        "window.location=\"/wallet/history?filter=%s\"+"
+        "(v?\"&amp;q=\"+v:\"\");}'>"
         "<div class='sub'>%d transaction%s (page %d of %d)</div>",
+        safe_search, f,
         tx_count, tx_count == 1 ? "" : "s",
         page + 1, total_pages > 0 ? total_pages : 1);
 
@@ -1144,15 +1303,18 @@ static size_t serve_history(uint8_t *r, size_t max, int page) {
      * Use from_me to determine send vs receive.
      * Compute net value from wallet UTXOs for this txid. */
     sqlite3_stmt *s = NULL;
-    if (sqlite3_prepare_v2(db,
-            "SELECT hex(wt.txid), wt.block_height, b.time, "
-            "wt.from_me, wt.fee, "
-            "COALESCE((SELECT SUM(wu.value) FROM wallet_utxos wu "
-            "  WHERE wu.txid = wt.txid),0) "
-            "FROM wallet_transactions wt "
-            "LEFT JOIN blocks b ON wt.block_height = b.height "
-            "ORDER BY wt.block_height DESC LIMIT ? OFFSET ?",
-            -1, &s, NULL) == SQLITE_OK) {
+    char history_sql[1024];
+    snprintf(history_sql, sizeof(history_sql),
+        "SELECT hex(wt.txid), wt.block_height, b.time, "
+        "wt.from_me, wt.fee, "
+        "COALESCE((SELECT SUM(wu.value) FROM wallet_utxos wu "
+        "  WHERE wu.txid = wt.txid),0) "
+        "FROM wallet_transactions wt "
+        "LEFT JOIN blocks b ON wt.block_height = b.height "
+        "%s%s"
+        "ORDER BY wt.block_height DESC LIMIT ? OFFSET ?",
+        where_clause, search_clause);
+    if (sqlite3_prepare_v2(db, history_sql, -1, &s, NULL) == SQLITE_OK) {
         sqlite3_bind_int(s, 1, per_page);
         sqlite3_bind_int(s, 2, page * per_page);
         while (sqlite3_step(s) == SQLITE_ROW && off + 600 < max) {
@@ -1200,36 +1362,45 @@ static size_t serve_history(uint8_t *r, size_t max, int page) {
             }
 
             APPEND(off, r, max,
+                "<a href='/wallet/tx/%s' style='text-decoration:none;color:inherit'>"
                 "<div class='tx-card' style='border-left-color:%s'>"
-                "<div class='tx-amount %s'>%s%.8f ZCL</div>"
+                "<div style='display:flex;justify-content:space-between;"
+                "align-items:baseline'>"
+                "<span class='tx-amount %s'>%s%.8f ZCL</span>"
+                "<span class='pill %s' style='font-size:9px'>%s</span></div>"
                 "<div class='tx-meta'>"
                 "<span class='tx-time' title='%s'>%s</span>"
-                "<a href='/explorer/tx/%s' class='tx-hash'>%s</a>"
                 "<span class='tx-conf'>Block %s &middot; %d conf%s</span>"
-                "</div></div>",
-                is_recv ? "#33ff99" : "#ff6666",
+                "</div></div></a>",
+                esc_lower,
+                is_recv ? "#34d399" : "#f87171",
                 is_recv ? "recv" : "send",
                 is_recv ? "+" : "-",
                 (double)display_val / 1e8,
+                is_recv ? "pill-t" : "pill-pending",
+                is_recv ? "Received" : "Sent",
                 esc_ts,
                 esc_rel,
-                esc_lower, esc_short,
                 h_fmt, confs, confs == 1 ? "" : "s");
         }
         sqlite3_finalize(s);
     }
 
-    /* Pagination */
+    /* Pagination (preserve filter + search) */
     if (total_pages > 1) {
         APPEND(off, r, max, "<div class='page-controls'>");
         if (page > 0)
             APPEND(off, r, max,
-                "<a href='/wallet/history?page=%d'>"
-                "&larr; Newer</a>", page - 1);
+                "<a href='/wallet/history?page=%d&amp;filter=%s%s%s'>"
+                "&larr; Newer</a>", page - 1, f,
+                safe_search[0] ? "&amp;q=" : "",
+                safe_search[0] ? safe_search : "");
         if (page < total_pages - 1)
             APPEND(off, r, max,
-                "<a href='/wallet/history?page=%d'>"
-                "Older &rarr;</a>", page + 1);
+                "<a href='/wallet/history?page=%d&amp;filter=%s%s%s'>"
+                "Older &rarr;</a>", page + 1, f,
+                safe_search[0] ? "&amp;q=" : "",
+                safe_search[0] ? safe_search : "");
         APPEND(off, r, max, "</div>");
     }
 
@@ -1913,8 +2084,17 @@ static size_t serve_send_review(uint8_t *r, size_t max,
         "<input type='hidden' name='amount' value='%.8f'>"
         "<button type='submit' class='btn-primary'"
         " style='background:%s;color:%s'"
-        " onclick='this.disabled=true;this.form.submit()'>"
-        "Confirm Send</button></form></div>",
+        " id='confirm-btn'>"
+        "Confirm Send</button></form></div>"
+        "<div id='send-loading' class='loading-overlay' style='display:none'>"
+        "<div class='spinner'></div>"
+        "<p>Sending transaction...</p></div>"
+        "<script>"
+        "document.getElementById('confirm-btn').addEventListener('click',"
+        "function(e){e.preventDefault();this.disabled=true;"
+        "document.getElementById('send-loading').style.display='flex';"
+        "this.form.submit();});"
+        "</script>",
         safe_addr, amount,
         is_shielded ? "#a78bfa" : "#34d399",
         is_shielded ? "#fff" : "#0c0c0c");
@@ -2055,6 +2235,191 @@ static size_t serve_send_confirm(uint8_t *r, size_t max,
     return off;
 }
 
+/* ── Transaction Detail (/wallet/tx/:txid) ──────────────────── */
+
+static size_t serve_tx_detail(uint8_t *r, size_t max, const char *txid_hex) {
+    sqlite3 *db = open_db();
+    if (!db) return 0;
+
+    int tip = query_int(db, "SELECT MAX(height) FROM blocks");
+    size_t off = emit_header(r, max, "Transaction Detail", "/wallet/history");
+
+    /* Sanitize txid: only hex chars, max 64 */
+    char safe_txid[65] = "";
+    {
+        size_t si = 0;
+        for (size_t i = 0; txid_hex && txid_hex[i] && si < 64; i++) {
+            char c = txid_hex[i];
+            if ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
+                (c >= 'A' && c <= 'F'))
+                safe_txid[si++] = c;
+        }
+        safe_txid[si] = '\0';
+    }
+
+    if (strlen(safe_txid) < 64) {
+        APPEND(off, r, max,
+            "<div class='result-error'>"
+            "<div class='icon'>&#x2717;</div>"
+            "<h2>Invalid Transaction ID</h2>"
+            "<a href='/wallet/history' style='color:#34d399'>Back to History</a>"
+            "</div>");
+        emit_footer(r, max, &off);
+        sqlite3_close(db);
+        return off;
+    }
+
+    /* Convert to uppercase for BLOB comparison */
+    char upper_txid[65];
+    for (int i = 0; i < 64; i++)
+        upper_txid[i] = (safe_txid[i] >= 'a' && safe_txid[i] <= 'f')
+            ? (char)(safe_txid[i] - 32) : safe_txid[i];
+    upper_txid[64] = '\0';
+
+    /* Lookup wallet transaction */
+    int block_height = 0, from_me = 0;
+    int64_t fee = 0, btime = 0;
+
+    sqlite3_stmt *s = NULL;
+    char sql[512];
+    snprintf(sql, sizeof(sql),
+        "SELECT wt.block_height, wt.from_me, wt.fee, "
+        "COALESCE(b.time, 0) "
+        "FROM wallet_transactions wt "
+        "LEFT JOIN blocks b ON wt.block_height = b.height "
+        "WHERE hex(wt.txid) = '%s'", upper_txid);
+    bool found = false;
+    if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK) {
+        if (sqlite3_step(s) == SQLITE_ROW) {
+            block_height = sqlite3_column_int(s, 0);
+            from_me = sqlite3_column_int(s, 1);
+            fee = sqlite3_column_int64(s, 2);
+            btime = sqlite3_column_int64(s, 3);
+            found = true;
+        }
+        sqlite3_finalize(s);
+    }
+
+    if (!found) {
+        APPEND(off, r, max,
+            "<div class='result-warning'>"
+            "<div class='icon'>&#x1F50D;</div>"
+            "<h2>Transaction Not Found</h2>"
+            "<p>This transaction is not in your wallet.</p>"
+            "<a href='/wallet/history' style='color:#34d399'>Back to History</a>"
+            "</div>");
+        emit_footer(r, max, &off);
+        sqlite3_close(db);
+        return off;
+    }
+
+    int confs = (tip > 0 && block_height > 0) ? (tip - block_height + 1) : 0;
+    if (confs < 0) confs = 0;
+    bool is_recv = (from_me == 0);
+
+    /* Confirmation progress (6 = fully confirmed) */
+    int conf_pct = confs >= 6 ? 100 : (confs * 100 / 6);
+
+    char rel_time[48], abs_time[32];
+    format_relative_time(btime, rel_time, sizeof(rel_time));
+    format_time(btime, abs_time, sizeof(abs_time));
+
+    char esc_rel[96], esc_abs[64];
+    html_escape(esc_rel, sizeof(esc_rel), rel_time);
+    html_escape(esc_abs, sizeof(esc_abs), abs_time);
+
+    /* Header with direction and status */
+    APPEND(off, r, max,
+        "<div style='text-align:center;padding:16px 0'>"
+        "<span class='pill %s' style='font-size:13px;padding:4px 12px'>"
+        "%s</span>"
+        "<h2 style='margin:12px 0 4px;color:%s'>%s</h2>"
+        "<div class='balance-sub'>%s &middot; %s</div>"
+        "</div>",
+        is_recv ? "pill-t" : "pill-pending",
+        is_recv ? "Received" : "Sent",
+        is_recv ? "#34d399" : "#f87171",
+        is_recv ? "Incoming Transaction" : "Outgoing Transaction",
+        esc_rel, esc_abs);
+
+    /* Confirmation meter */
+    APPEND(off, r, max,
+        "<div style='margin:0 0 16px'>"
+        "<div style='display:flex;justify-content:space-between;"
+        "font-size:11px;color:#888;margin-bottom:4px'>"
+        "<span>%d confirmation%s</span>"
+        "<span>%s</span></div>"
+        "<div class='conf-meter'>"
+        "<div class='fill' style='width:%d%%;background:%s'></div>"
+        "</div></div>",
+        confs, confs == 1 ? "" : "s",
+        confs >= 6 ? "Confirmed" : "Pending",
+        conf_pct,
+        confs >= 6 ? "#34d399" : confs >= 1 ? "#fbbf24" : "#f87171");
+
+    /* Transaction details grid */
+    APPEND(off, r, max,
+        "<div class='detail-grid'>"
+        "<div class='lbl'>TxID</div>"
+        "<div class='val'><a href='/explorer/tx/%s' class='hash' "
+        "style='font-size:13px'>%s</a></div>"
+        "<div class='lbl'>Block</div>"
+        "<div class='val'>%d</div>"
+        "<div class='lbl'>Direction</div>"
+        "<div class='val'>%s</div>",
+        safe_txid, safe_txid,
+        block_height,
+        is_recv ? "Received" : "Sent");
+
+    if (fee > 0 && !is_recv)
+        APPEND(off, r, max,
+            "<div class='lbl'>Fee</div>"
+            "<div class='val zcl'>%.8f ZCL</div>",
+            (double)fee / 1e8);
+
+    APPEND(off, r, max, "</div>");
+
+    /* Outputs belonging to wallet */
+    s = NULL;
+    snprintf(sql, sizeof(sql),
+        "SELECT vout, value, hex(address_hash) "
+        "FROM wallet_utxos WHERE hex(txid) = '%s' "
+        "ORDER BY vout", upper_txid);
+    if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK) {
+        bool header_shown = false;
+        while (sqlite3_step(s) == SQLITE_ROW && off + 300 < max) {
+            if (!header_shown) {
+                APPEND(off, r, max,
+                    "<h3>Wallet Outputs</h3>");
+                header_shown = true;
+            }
+            int vout = sqlite3_column_int(s, 0);
+            int64_t val = sqlite3_column_int64(s, 1);
+            APPEND(off, r, max,
+                "<div class='utxo-row'>"
+                "<span class='mono' style='color:#888'>:%d</span>"
+                "<span class='zcl'>%.8f ZCL</span>"
+                "</div>",
+                vout, (double)val / 1e8);
+        }
+        sqlite3_finalize(s);
+    }
+
+    /* Link to full explorer view */
+    APPEND(off, r, max,
+        "<div style='text-align:center;margin:24px 0'>"
+        "<a href='/explorer/tx/%s' style='color:#60a5fa;font-size:13px'>"
+        "View full details in Explorer &rarr;</a></div>"
+        "<div style='text-align:center'>"
+        "<a href='/wallet/history' style='color:#34d399;font-size:14px'>"
+        "&larr; Back to History</a></div>",
+        safe_txid);
+
+    emit_footer(r, max, &off);
+    sqlite3_close(db);
+    return off;
+}
+
 /* ── Router ─────────────────────────────────────────────────── */
 
 void wallet_view_init(const char *datadir) {
@@ -2095,10 +2460,38 @@ size_t wallet_view_handle_request(const char *method, const char *path,
         const char *pq = strstr(path, "page=");
         if (pq) page = atoi(pq + 5);
         if (page < 0) page = 0;
-        return serve_history(response, response_max, page);
+        /* Parse filter param */
+        const char *filt = NULL;
+        char filt_buf[16] = "";
+        const char *fp = strstr(path, "filter=");
+        if (fp) {
+            fp += 7;
+            size_t fi = 0;
+            while (fp[fi] && fp[fi] != '&' && fi < 15)
+                { filt_buf[fi] = fp[fi]; fi++; }
+            filt_buf[fi] = '\0';
+            filt = filt_buf;
+        }
+        /* Parse search param */
+        const char *srch = NULL;
+        char srch_buf[65] = "";
+        const char *sp = strstr(path, "q=");
+        if (sp) {
+            sp += 2;
+            size_t si = 0;
+            while (sp[si] && sp[si] != '&' && si < 64)
+                { srch_buf[si] = sp[si]; si++; }
+            srch_buf[si] = '\0';
+            srch = srch_buf;
+        }
+        return serve_history(response, response_max, page, filt, srch);
     }
     if (strcmp(path, "/wallet/coins") == 0)
         return serve_coins(response, response_max);
+    if (strncmp(path, "/wallet/tx/", 11) == 0) {
+        const char *txid = path + 11;
+        return serve_tx_detail(response, response_max, txid);
+    }
 
     return 0;
 }

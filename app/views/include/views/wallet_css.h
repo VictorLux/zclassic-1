@@ -28,7 +28,7 @@ static const char wallet_css_0[] =
     /* Balance hero */
     ".balance{text-align:center;font-size:42px;font-weight:800;"
     "color:#34d399;letter-spacing:-1px;line-height:1.1}"
-    ".balance-sub{text-align:center;color:#999;font-size:13px;margin-top:8px}"
+    ".balance-sub{text-align:center;color:#a1a1a1;font-size:13px;margin-top:8px}"
 
     /* Sync badge */
     ".sync-badge{display:inline-block;font-size:10px;font-weight:600;"
@@ -77,7 +77,7 @@ static const char wallet_css_1[] =
     /* Forms */
     ".form-group{margin-bottom:16px}"
     ".form-label{display:block;font-size:11px;font-weight:600;"
-    "text-transform:uppercase;letter-spacing:.08em;color:#999;margin-bottom:6px}"
+    "text-transform:uppercase;letter-spacing:.08em;color:#a1a1a1;margin-bottom:6px}"
     ".form-input{display:block;width:100%%;background:#111;color:#e2e2e2;"
     "border:1px solid #1e1e1e;padding:12px 14px;"
     "font-family:inherit;font-size:15px;border-radius:8px;"
@@ -92,9 +92,9 @@ static const char wallet_css_2[] =
     ".section-header{display:flex;justify-content:space-between;"
     "align-items:baseline;margin:24px 0 8px}"
     ".section-header span{font-size:11px;font-weight:600;"
-    "text-transform:uppercase;letter-spacing:.08em;color:#666}"
-    ".section-header a{font-size:12px;color:#666}"
-    ".section-header a:hover{color:#999}"
+    "text-transform:uppercase;letter-spacing:.08em;color:#888}"
+    ".section-header a{font-size:12px;color:#888}"
+    ".section-header a:hover{color:#a1a1a1}"
 
     /* Transaction rows */
     ".tx-row{display:flex;justify-content:space-between;align-items:center;"
@@ -104,7 +104,7 @@ static const char wallet_css_2[] =
     "font-family:'JetBrains Mono','SF Mono','Fira Code',monospace}"
     ".tx-amount.recv{color:#34d399}"
     ".tx-amount.send{color:#f87171}"
-    ".tx-meta{font-size:12px;color:#666;text-align:right}"
+    ".tx-meta{font-size:12px;color:#888;text-align:right}"
     ".tx-meta a{color:#60a5fa;font-family:'JetBrains Mono','SF Mono',monospace;"
     "font-size:11px}"
     ".tx-time{display:block;margin-bottom:2px}"
@@ -138,7 +138,7 @@ static const char wallet_css_3[] =
     /* Review table */
     ".review-table{width:100%%}"
     ".review-table td{padding:10px 0;font-size:14px}"
-    ".review-table td:first-child{color:#666}"
+    ".review-table td:first-child{color:#888}"
     ".review-table td:last-child{text-align:right}"
     ".review-table tr+tr{border-top:1px solid #1e1e1e}"
 
@@ -228,16 +228,86 @@ static const char wallet_css_4[] =
 
     /* Print */
     "@media print{.nav,.status-bar,.actions{display:none}"
-    "body{background:#fff;color:#000;max-width:none}}"
+    "body{background:#fff;color:#000;max-width:none}}";
+
+static const char wallet_css_5[] =
+    /* Loading overlay */
+    ".loading-overlay{position:fixed;inset:0;background:rgba(12,12,12,.85);"
+    "display:flex;align-items:center;justify-content:center;"
+    "flex-direction:column;z-index:200}"
+    ".loading-overlay .spinner{width:40px;height:40px;"
+    "border:3px solid #222;border-top-color:#34d399;"
+    "border-radius:50%%;animation:spin .8s linear infinite}"
+    "@keyframes spin{to{transform:rotate(360deg)}}"
+    ".loading-overlay p{color:#a1a1a1;font-size:14px;margin-top:16px}"
+
+    /* Filter tabs */
+    ".filter-tabs{display:flex;gap:0;margin:12px 0;background:#111;"
+    "border-radius:8px;overflow:hidden;border:1px solid #1e1e1e}"
+    ".filter-tabs a{flex:1;text-align:center;padding:8px;font-size:12px;"
+    "font-weight:600;color:#888;text-decoration:none;"
+    "transition:all .15s ease}"
+    ".filter-tabs a:hover{color:#e2e2e2;background:#161616}"
+    ".filter-tabs a.active{color:#34d399;background:#0a1f14}"
+
+    /* Privacy card */
+    ".privacy-card{background:linear-gradient(135deg,#0a1428,#1a1428);"
+    "border:1px solid #2a1a3a;border-radius:10px;padding:16px;"
+    "margin:16px 0;text-align:center}"
+    ".privacy-card .title{color:#a78bfa;font-size:13px;font-weight:600;"
+    "margin-bottom:4px}"
+    ".privacy-card .desc{color:#888;font-size:12px;margin-bottom:12px}"
+    ".privacy-card .btn{display:inline-block;background:#a78bfa;color:#0c0c0c;"
+    "padding:10px 24px;border-radius:8px;font-weight:700;font-size:13px;"
+    "text-decoration:none;transition:background .15s ease}"
+    ".privacy-card .btn:hover{background:#c4b5fd}"
+
+    /* Address chunking */
+    ".addr-chunked{font-family:'JetBrains Mono','SF Mono','Fira Code',monospace;"
+    "font-size:15px;letter-spacing:.5px;line-height:1.8;"
+    "word-break:break-all;text-align:center}"
+    ".addr-chunked .sep{color:#333;margin:0 1px}"
+    ".addr-chunked .hi{color:#34d399}"
+
+    /* Search input */
+    ".search-input{display:block;width:100%%;background:#111;color:#e2e2e2;"
+    "border:1px solid #1e1e1e;padding:10px 14px;font-size:13px;"
+    "border-radius:8px;font-family:inherit;margin:8px 0}"
+    ".search-input:focus{border-color:#333;outline:none;"
+    "box-shadow:0 0 0 3px rgba(52,211,153,.12)}"
+    ".search-input::placeholder{color:#555}"
+
+    /* Tab toggle (receive page) */
+    ".tab-toggle{display:flex;gap:0;margin:12px 0;background:#111;"
+    "border-radius:10px;overflow:hidden;border:1px solid #1e1e1e}"
+    ".tab-toggle button,.tab-toggle a{flex:1;text-align:center;padding:10px;"
+    "font-size:13px;font-weight:700;border:none;cursor:pointer;"
+    "color:#888;background:transparent;font-family:inherit;"
+    "transition:all .15s ease;text-decoration:none}"
+    ".tab-toggle .active{color:#34d399;background:#0a1f14}"
+    ".tab-toggle .active-z{color:#a78bfa;background:#1a1428}"
+
+    /* Tx detail grid */
+    ".detail-grid{display:grid;grid-template-columns:100px 1fr;"
+    "gap:8px 12px;font-size:14px;margin:12px 0}"
+    ".detail-grid .lbl{color:#888;font-weight:600;font-size:12px;"
+    "text-transform:uppercase;letter-spacing:.05em}"
+    ".detail-grid .val{color:#e2e2e2;word-break:break-all}"
+
+    /* Confirmation progress */
+    ".conf-meter{height:4px;background:#1e1e1e;border-radius:2px;margin:8px 0}"
+    ".conf-meter .fill{height:100%%;border-radius:2px;transition:width .3s ease}"
 
     /* Small screens */
     "@media(max-width:360px){body{padding:12px;font-size:14px}"
     ".balance{font-size:32px}.nav a{font-size:11px;padding:6px 2px}"
     ".actions a{padding:12px 4px;font-size:14px}"
     ".stat .n{font-size:18px}"
-    "table{font-size:12px}td,th{padding:5px 4px}}";
+    "table{font-size:12px}td,th{padding:5px 4px}"
+    ".detail-grid{grid-template-columns:1fr;gap:2px 0}"
+    ".detail-grid .lbl{margin-top:8px}}";
 
-static char _wallet_css_buf[16384];
+static char _wallet_css_buf[24576];
 static const char *wallet_css_get(void) {
     size_t off = 0;
     size_t l0 = __builtin_strlen(wallet_css_0);
@@ -250,6 +320,8 @@ static const char *wallet_css_get(void) {
     __builtin_memcpy(_wallet_css_buf + off, wallet_css_3, l3); off += l3;
     size_t l4 = __builtin_strlen(wallet_css_4);
     __builtin_memcpy(_wallet_css_buf + off, wallet_css_4, l4); off += l4;
+    size_t l5 = __builtin_strlen(wallet_css_5);
+    __builtin_memcpy(_wallet_css_buf + off, wallet_css_5, l5); off += l5;
     _wallet_css_buf[off] = 0;
     return _wallet_css_buf;
 }
