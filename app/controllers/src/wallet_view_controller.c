@@ -1378,21 +1378,26 @@ static size_t serve_receive(uint8_t *r, size_t max) {
 
 /* ── History (/wallet/history) ──────────────────────────────── */
 
-static size_t serve_history(uint8_t *r, size_t max) {
+static size_t serve_history(uint8_t *r, size_t max, int page) {
     sqlite3 *db = open_db();
     if (!db) return 0;
 
     int tip = query_int(db, "SELECT MAX(height) FROM blocks");
+    int per_page = 50;
 
     size_t off = emit_header(r, max, "Transaction History", "/wallet/history");
 
     int tx_count = query_int(db,
         "SELECT count(*) FROM wallet_transactions");
 
+    int total_pages = (tx_count + per_page - 1) / per_page;
+    if (page >= total_pages && total_pages > 0) page = total_pages - 1;
+
     APPEND(off, r, max,
         "<h2>Transaction History</h2>"
-        "<div class='sub'>%d transaction%s</div>",
-        tx_count, tx_count == 1 ? "" : "s");
+        "<div class='sub'>%d transaction%s (page %d of %d)</div>",
+        tx_count, tx_count == 1 ? "" : "s",
+        page + 1, total_pages > 0 ? total_pages : 1);
 
     /* Timeline view (tx-cards).
      * Use from_me to determine send vs receive.
@@ -1405,8 +1410,10 @@ static size_t serve_history(uint8_t *r, size_t max) {
             "  WHERE wu.txid = wt.txid),0) "
             "FROM wallet_transactions wt "
             "LEFT JOIN blocks b ON wt.block_height = b.height "
-            "ORDER BY wt.block_height DESC LIMIT 100",
+            "ORDER BY wt.block_height DESC LIMIT ? OFFSET ?",
             -1, &s, NULL) == SQLITE_OK) {
+        sqlite3_bind_int(s, 1, per_page);
+        sqlite3_bind_int(s, 2, page * per_page);
         while (sqlite3_step(s) == SQLITE_ROW && off + 600 < max) {
             const char *txid = (const char *)sqlite3_column_text(s, 0);
             int h = sqlite3_column_int(s, 1);
@@ -1470,6 +1477,23 @@ static size_t serve_history(uint8_t *r, size_t max) {
         }
         sqlite3_finalize(s);
     }
+
+    /* Pagination */
+    if (total_pages > 1) {
+        APPEND(off, r, max,
+            "<div style='display:flex;justify-content:center;gap:12px;"
+            "margin:20px 0;font-size:14px'>");
+        if (page > 0)
+            APPEND(off, r, max,
+                "<a href='/wallet/history?page=%d' style='color:#4db8ff'>"
+                "&larr; Newer</a>", page - 1);
+        if (page < total_pages - 1)
+            APPEND(off, r, max,
+                "<a href='/wallet/history?page=%d' style='color:#4db8ff'>"
+                "Older &rarr;</a>", page + 1);
+        APPEND(off, r, max, "</div>");
+    }
+
     emit_footer(r, max, &off);
     sqlite3_close(db);
     return off;
@@ -1986,7 +2010,15 @@ static size_t serve_shield_confirm(uint8_t *r, size_t max, const char *query) {
     return off;
 }
 
-/* ── Pulse endpoint (JSON, <5ms) ────────────────────────────── */
+/* ── Pulse endpoint (JSON) ──────────────────────────────────── */
+/* Balance cache: recompute only when block height changes.
+ * The ground-truth query has 3 JOINs — too heavy for 2-second polls. */
+
+static struct {
+    int height;
+    int64_t balance, shielded, speed_bal;
+    int t_utxos, z_notes;
+} pulse_cache;
 
 static size_t serve_pulse(uint8_t *r, size_t max) {
     sqlite3 *db = open_db();
@@ -1999,17 +2031,33 @@ static size_t serve_pulse(uint8_t *r, size_t max) {
         peers = query_int(db,  "SELECT count(*) FROM peers");
         mempool = query_int(db, "SELECT count(*) FROM mempool_entries");
 
-        balance = query_ground_truth_balance(db, &t_utxos);
-        shielded = query_shielded_balance(db, &z_notes);
-        speed_bal = query_speed_balance(db);
+        if (height != pulse_cache.height || pulse_cache.height == 0) {
+            /* Block height changed — recompute balances */
+            balance = query_ground_truth_balance(db, &t_utxos);
+            shielded = query_shielded_balance(db, &z_notes);
+            speed_bal = query_speed_balance(db);
 
-        /* RPC fallback if SQLite has no balance */
-        if (balance == 0 && shielded == 0) {
-            int64_t rpc_t = 0, rpc_z = 0;
-            if (query_node_balance(&rpc_t, &rpc_z)) {
-                balance = rpc_t;
-                shielded = rpc_z;
+            /* RPC fallback if SQLite has no balance */
+            if (balance == 0 && shielded == 0) {
+                int64_t rpc_t = 0, rpc_z = 0;
+                if (query_node_balance(&rpc_t, &rpc_z)) {
+                    balance = rpc_t;
+                    shielded = rpc_z;
+                }
             }
+            pulse_cache.height = height;
+            pulse_cache.balance = balance;
+            pulse_cache.shielded = shielded;
+            pulse_cache.speed_bal = speed_bal;
+            pulse_cache.t_utxos = t_utxos;
+            pulse_cache.z_notes = z_notes;
+        } else {
+            /* Same height — serve cached balances, only refresh peers/mempool */
+            balance = pulse_cache.balance;
+            shielded = pulse_cache.shielded;
+            speed_bal = pulse_cache.speed_bal;
+            t_utxos = pulse_cache.t_utxos;
+            z_notes = pulse_cache.z_notes;
         }
         sqlite3_close(db);
     }
@@ -2311,8 +2359,13 @@ size_t wallet_view_handle_request(const char *method, const char *path,
     }
     if (strcmp(path, "/wallet/receive") == 0)
         return serve_receive(response, response_max);
-    if (strcmp(path, "/wallet/history") == 0)
-        return serve_history(response, response_max);
+    if (strncmp(path, "/wallet/history", 15) == 0) {
+        int page = 0;
+        const char *pq = strstr(path, "page=");
+        if (pq) page = atoi(pq + 5);
+        if (page < 0) page = 0;
+        return serve_history(response, response_max, page);
+    }
     if (strcmp(path, "/wallet/coins") == 0)
         return serve_coins(response, response_max);
 
