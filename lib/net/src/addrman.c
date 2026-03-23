@@ -480,6 +480,11 @@ bool addrman_select(struct addr_man *am, bool new_only,
                 }
             }
             int nId = am->vvTried[nKBucket][nKBucketPos];
+            if (nId < 0 || (size_t)nId >= am->entries_cap) {
+                am->vvTried[nKBucket][nKBucketPos] = -1; /* repair */
+                fChanceFactor *= 1.2;
+                continue;
+            }
             struct addr_info *info = &am->entries[nId];
             double chance = fChanceFactor * addr_info_get_chance(info, nNow);
             if (GetRandInt(1 << 30) < chance * (double)(1 << 30)) {
@@ -505,6 +510,11 @@ bool addrman_select(struct addr_man *am, bool new_only,
                 }
             }
             int nId = am->vvNew[nUBucket][nUBucketPos];
+            if (nId < 0 || (size_t)nId >= am->entries_cap) {
+                am->vvNew[nUBucket][nUBucketPos] = -1; /* repair */
+                fChanceFactor *= 1.2;
+                continue;
+            }
             struct addr_info *info = &am->entries[nId];
             double chance = fChanceFactor * addr_info_get_chance(info, nNow);
             if (GetRandInt(1 << 30) < chance * (double)(1 << 30)) {

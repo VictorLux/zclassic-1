@@ -322,10 +322,7 @@ static void *thread_socket_handler(void *arg)
                 zcl_mutex_unlock(&node->cs_send);
             }
         }
-        zcl_mutex_unlock(&cm->manager.cs_nodes);
-
-        /* Free deferred nodes from previous cycle */
-        zcl_mutex_lock(&cm->manager.cs_nodes);
+        /* Free deferred nodes (still under cs_nodes lock) */
         for (size_t i = 0; i < cm->num_deferred_free; i++)
             p2p_node_free(cm->deferred_free[i]);
         cm->num_deferred_free = 0;
