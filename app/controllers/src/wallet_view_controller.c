@@ -2291,7 +2291,18 @@ static size_t serve_send_confirm(uint8_t *r, size_t max,
 
 static size_t serve_tx_detail(uint8_t *r, size_t max, const char *txid_hex) {
     sqlite3 *db = open_db();
-    if (!db) return 0;
+    if (!db) {
+        size_t off = emit_header(r, max, "Transaction", "/wallet/history");
+        APPEND(off, r, max,
+            "<div class='empty-state' style='padding:48px 0'>"
+            "<div style='font-size:40px;margin-bottom:12px'>&#x23F3;</div>"
+            "<div style='color:#e2e2e2;font-size:18px;font-weight:600'>"
+            "Wallet Loading</div>"
+            "<div style='margin-top:8px'>"
+            "The database is not yet available.</div></div>");
+        emit_footer(r, max, &off);
+        return off;
+    }
 
     int tip = query_int(db, "SELECT MAX(height) FROM blocks");
     size_t off = emit_header(r, max, "Transaction Detail", "/wallet/history");

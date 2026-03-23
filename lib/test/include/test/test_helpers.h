@@ -181,6 +181,7 @@ int test_event(void);
 int test_download(void);
 int test_consensus(void);
 int test_policy(void);
+int test_wallet_view(void);
 
 /* ── DRY test macros ─────────────────────────────────────── */
 

@@ -55,6 +55,7 @@ int main(void)
     failures += test_download();
     failures += test_consensus();
     failures += test_policy();
+    failures += test_wallet_view();
 
     ecc_verify_destroy();
     ecc_stop();
