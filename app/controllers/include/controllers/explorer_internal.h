@@ -61,7 +61,9 @@ static inline size_t explorer_emit_nav(char *buf, size_t max, const char *active
     APPEND(off, buf, max,
         "<div class='search'>"
         "<form action='/explorer/search' method='get'>"
-        "<input name='q' placeholder='Search block, tx, or address...'>"
+        "<label for='explorer-search' class='sr-only'>Search</label>"
+        "<input id='explorer-search' name='q' placeholder='Search block, tx, or address...' "
+        "aria-label='Search blocks, transactions, or addresses'>"
         "</form></div></nav>");
     return off;
 }

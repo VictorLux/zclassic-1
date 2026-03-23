@@ -50,7 +50,8 @@ static const char explorer_css_1[] =
     "ex-wrap:wrap;gap:4px;padding:8px 4px;}.io-idx{min-width:24px;}.io-addr{font-size:13px;min-width:100%"
     ";}.io-val{min-width:unset;font-size:15px;text-align:left;}}@media (max-width:480px){body{padding:8px"
     " 10px;font-size:15px;}.stats-row .stat{flex:1 1 100%;}.stat .num{font-size:24px;}table{font-size:14p"
-    "x;}td,th{padding:6px 4px;}}";
+    "x;}td,th{padding:6px 4px;}}.sr-only{position:absolute;width:1px;height:1px;"
+    "padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0;}";
 
 static char _explorer_css_buf[8192];
 static const char *explorer_css_get(void) {

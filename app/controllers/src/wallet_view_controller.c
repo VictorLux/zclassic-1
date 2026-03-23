@@ -199,7 +199,7 @@ static bool query_node_balance(int64_t *transparent_out, int64_t *shielded_out)
     "h2{color:#33ff99;font-size:20px;border-bottom:1px solid #222;" \
     "padding-bottom:6px;margin:24px 0 12px}" \
     "h3{color:#aaa;font-size:16px;margin:20px 0 8px}" \
-    ".subtitle{color:#666;font-size:13px;margin:0 0 16px}" \
+    ".subtitle{color:#888;font-size:13px;margin:0 0 16px}" \
     ".stats{display:flex;gap:10px;margin:12px 0;flex-wrap:wrap}" \
     ".stat{flex:1;min-width:130px;background:#141414;padding:14px;" \
     "border-radius:8px;text-align:center;border:1px solid #1e1e1e}" \
@@ -215,7 +215,7 @@ static bool query_node_balance(int64_t *transparent_out, int64_t *shielded_out)
     "margin:8px 0;border:1px solid #1e1e1e;border-left:3px solid #33ff99}" \
     ".card .label{color:#888;font-size:12px}" \
     ".card .value{font-size:22px;color:#33ff99;font-weight:700}" \
-    ".card .sub{color:#666;font-size:12px;margin-top:2px}" \
+    ".card .sub{color:#888;font-size:12px;margin-top:2px}" \
     "table{width:100%%;border-collapse:collapse;font-size:14px}" \
     "th{text-align:left;color:#888;padding:8px;border-bottom:1px solid #222;" \
     "font-size:12px;text-transform:uppercase;letter-spacing:0.5px}" \
@@ -823,7 +823,19 @@ static int64_t query_speed_balance(sqlite3 *db) {
 
 static size_t serve_dashboard(uint8_t *r, size_t max) {
     sqlite3 *db = open_db();
-    if (!db) return 0;
+    if (!db) {
+        size_t off = emit_header(r, max, "ZClassic Wallet", "/wallet");
+        APPEND(off, r, max,
+            "<div style='text-align:center;padding:48px 0'>"
+            "<div style='font-size:40px;margin-bottom:12px'>&#x23F3;</div>"
+            "<div style='color:#e8e8e8;font-size:20px;font-weight:600'>"
+            "Wallet Loading</div>"
+            "<div style='color:#888;font-size:14px;margin-top:8px'>"
+            "The database is not yet available. The node may still be starting.</div>"
+            "</div>");
+        emit_footer(r, max, &off);
+        return off;
+    }
 
     int tip = query_int(db, "SELECT MAX(height) FROM blocks");
 
@@ -1206,13 +1218,19 @@ static size_t serve_send(uint8_t *r, size_t max) {
         "<div class='card'>"
         "<form id='send-form' method='POST' action='zcl://node/wallet/send/review' "
         "onsubmit='return validateSend()'>"
-        "<label class='label'>To</label>"
+        "<label class='label' for='addr'>To</label>"
         "<input type='text' id='addr' name='address' "
         "placeholder='t1... or zs1...' required>"
         "<div id='addr-err' class='err'></div>"
-        "<label class='label' style='margin-top:12px'>Amount</label>"
-        "<input type='text' id='amt' name='amount' "
+        "<label class='label' for='amt' style='margin-top:12px'>Amount</label>"
+        "<div style='display:flex;gap:8px'>"
+        "<input type='text' id='amt' name='amount' style='flex:1' "
         "placeholder='0.00' required oninput='updateRemaining()'>"
+        "<button type='button' style='background:#333;color:#34d399;"
+        "border:1px solid #333;padding:8px 12px;border-radius:6px;"
+        "font-size:12px;cursor:pointer;white-space:nowrap' "
+        "onclick='document.getElementById(\"amt\").value="
+        "(BAL-%.4f).toFixed(8);updateRemaining()'>Send Max</button></div>"
         "<div id='remaining' class='remaining'></div>"
         "<div id='amt-err' class='err'></div>"
         "<button type='submit' style='margin-top:16px' "
@@ -1245,7 +1263,7 @@ static size_t serve_send(uint8_t *r, size_t max) {
         "'Insufficient funds';return false;}"
         "return true;}"
         "</script>",
-        (double)balance / (double)ZATOSHI_PER_ZCL, FEE_ZCL, FEE_ZCL);
+        (double)balance / (double)ZATOSHI_PER_ZCL, FEE_ZCL, FEE_ZCL, FEE_ZCL);
 
     emit_footer(r, max, &off);
     return off;
@@ -1594,7 +1612,7 @@ static size_t serve_coins(uint8_t *r, size_t max) {
             "<div class='card' style='border-left-color:#f59e0b'>"
             "<div class='label' style='color:#f59e0b'>"
             "No shielded notes found</div>"
-            "<div style='color:#666;font-size:13px'>"
+            "<div style='color:#888;font-size:13px'>"
             "%d Sapling keys in wallet. "
             "Run <code style='color:#f59e0b'>rescanwallet</code> "
             "to scan the chain for notes belonging to these keys."
@@ -1699,7 +1717,7 @@ static size_t serve_shield(uint8_t *r, size_t max, const char *query) {
         "Shielding</div>"
         "<div style='font-size:40px;color:#bb99ff;font-weight:800'>"
         "%.8f ZCL</div>"
-        "<div style='color:#666;font-size:13px;margin-top:8px'>"
+        "<div style='color:#888;font-size:13px;margin-top:8px'>"
         "Fee: %.4f ZCL &middot; Total: %.8f ZCL</div>"
         "</div></div>",
         amount, fee, total_cost);
@@ -1932,7 +1950,7 @@ static size_t serve_shield_confirm(uint8_t *r, size_t max, const char *query) {
             "Shielding Started</div>"
             "<div style='color:#888;font-size:14px;margin-top:8px'>"
             "%.8f ZCL is being moved to a shielded address.</div>"
-            "<div style='color:#666;font-size:12px;margin-top:12px;"
+            "<div style='color:#888;font-size:12px;margin-top:12px;"
             "font-family:monospace;word-break:break-all'>%s</div>"
             "<div style='color:#555;font-size:13px;margin-top:12px'>"
             "Your funds will be fully private in ~6 hours.</div>"
@@ -2023,14 +2041,24 @@ static size_t serve_send_review(uint8_t *r, size_t max,
     parse_form_field(body, body_len, "address", address, sizeof(address));
     parse_form_field(body, body_len, "amount", amount_str, sizeof(amount_str));
 
-    /* Validate */
-    bool addr_ok = strlen(address) >= 26 && strlen(address) <= 96;
+    /* Validate address: must be alphanumeric with valid ZCL prefix */
+    size_t alen = strlen(address);
+    bool addr_ok = alen >= 26 && alen <= 96;
     for (size_t i = 0; addr_ok && address[i]; i++)
         if (!((address[i]>='a'&&address[i]<='z') || (address[i]>='A'&&address[i]<='Z') ||
               (address[i]>='0'&&address[i]<='9')))
             addr_ok = false;
+    /* Require valid ZCL prefix */
+    if (addr_ok) {
+        bool has_prefix = (address[0] == 't' && (address[1] == '1' || address[1] == '3'))
+                       || (alen >= 3 && address[0] == 'z' && address[1] == 's' && address[2] == '1');
+        if (!has_prefix) addr_ok = false;
+    }
 
     double amount = strtod(amount_str, NULL);
+    const char *err_reason = !addr_ok
+        ? "Invalid address. ZClassic addresses start with t1, t3, or zs1."
+        : "Invalid amount";
     if (!addr_ok || amount <= 0) {
         APPEND(off, r, max,
             "<div style='text-align:center;padding:32px'>"
@@ -2039,7 +2067,7 @@ static size_t serve_send_review(uint8_t *r, size_t max,
             "<p style='color:#6b7280'>%s</p>"
             "<a href='/wallet/send' style='color:#34d399'>Try Again</a>"
             "</div>",
-            !addr_ok ? "Invalid address" : "Invalid amount");
+            err_reason);
         emit_footer(r, max, &off);
         return off;
     }
@@ -2124,12 +2152,18 @@ static size_t serve_send_confirm(uint8_t *r, size_t max,
     parse_form_field(body, body_len, "address", address, sizeof(address));
     parse_form_field(body, body_len, "amount", amount_str, sizeof(amount_str));
 
-    /* Validate address (alphanumeric, 26-96 chars) */
-    bool addr_ok = strlen(address) >= 26 && strlen(address) <= 96;
+    /* Validate address: alphanumeric with valid ZCL prefix */
+    size_t alen = strlen(address);
+    bool addr_ok = alen >= 26 && alen <= 96;
     for (size_t i = 0; addr_ok && address[i]; i++)
         if (!((address[i]>='a'&&address[i]<='z') || (address[i]>='A'&&address[i]<='Z') ||
               (address[i]>='0'&&address[i]<='9')))
             addr_ok = false;
+    if (addr_ok) {
+        bool has_prefix = (address[0] == 't' && (address[1] == '1' || address[1] == '3'))
+                       || (alen >= 3 && address[0] == 'z' && address[1] == 's' && address[2] == '1');
+        if (!has_prefix) addr_ok = false;
+    }
 
     double amount = strtod(amount_str, NULL);
     if (!addr_ok || amount <= 0) {
