@@ -1422,15 +1422,10 @@ bool app_init(struct app_context *ctx)
             g_state.pindex_best_header = best;
             printf("Chain tip from block index: height=%d\n", best->nHeight);
         }
-        /* Fast path: rebuild from SQLite UTXOs (~10s vs ~2h).
-         * Then repopulate SQLite from the authoritative LevelDB chainstate. */
-        if (!fast_rebuild_chainstate(&g_coins_sqlite, &g_coins_tip,
-                                      ctx->datadir)) {
-            printf("Fast rebuild unavailable, falling back to full reindex\n");
-            if (!reindex_chainstate(&g_state, &g_coins_sqlite, &g_coins_tip,
-                                     ctx->datadir)) {
-                fprintf(stderr, "Warning: Chainstate reindex had errors\n");
-            }
+        /* Full chainstate rebuild: wipe UTXOs and replay all blocks */
+        if (!reindex_chainstate(&g_state, &g_coins_sqlite, &g_coins_tip,
+                                 ctx->datadir)) {
+            fprintf(stderr, "Warning: Chainstate reindex had errors\n");
         }
         /* After reindex, clear BLOCK_HAVE_DATA for blocks above our tip.
          * These blocks came from prior P2P sessions and may be on forks.
