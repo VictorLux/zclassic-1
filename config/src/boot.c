@@ -1285,13 +1285,14 @@ bool app_init(struct app_context *ctx)
     (void)sqlite_tip_height;
     (void)coins_best_hash;
 
-    /* Block index load: try SQLite first, then flat file, fall back to LevelDB */
+    /* Block index load: flat file first (mmap, <2s), then SQLite, then LevelDB.
+     * Jeff Dean rule: use the fastest data structure available. */
     {
         bool loaded = false;
-        if (!ctx->reindex_chainstate && g_active_node_db)
-            loaded = load_block_index_sqlite(&g_node_db, &g_state);
-        if (!loaded && !ctx->reindex_chainstate)
+        if (!ctx->reindex_chainstate)
             loaded = load_block_index_flat(ctx->datadir, &g_state);
+        if (!loaded && !ctx->reindex_chainstate && g_active_node_db)
+            loaded = load_block_index_sqlite(&g_node_db, &g_state);
 
         /* Check if flat file is stale — if it loaded but has far fewer
          * entries than the chain (checked via SQLite), reload from LevelDB.

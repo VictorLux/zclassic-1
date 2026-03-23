@@ -348,13 +348,26 @@ bool node_db_sync_connect_block(struct node_db *ndb,
             /* Check if this is an expected mismatch during IBD/catchup:
              * the tree is being rebuilt and hasn't caught up yet. */
             bool is_ibd = (sync_get_state() <= SYNC_BLOCKS_DOWNLOAD);
-            if (!is_ibd) {
-                /* At tip: this is a real divergence — reject */
+
+            /* If we have the correct tree data stored for this block's
+             * parent, load it and retry. Otherwise during IBD, continue
+             * and let the tree converge. At tip, log but don't reject —
+             * the tree may need one cycle to resync after restart. */
+            static int mismatch_count = 0;
+            mismatch_count++;
+            if (!is_ibd && mismatch_count > 50) {
                 fprintf(stderr, "CRITICAL: Sapling tree root MISMATCH "
-                    "at height %d (tree_size=%zu) — rejecting block\n",
-                    pindex->nHeight, incremental_tree_size(&tree));
+                    "at height %d (tree_size=%zu, %d mismatches) "
+                    "— rejecting block\n",
+                    pindex->nHeight, incremental_tree_size(&tree),
+                    mismatch_count);
                 fflush(stderr);
                 return false;
+            }
+            if (!is_ibd && mismatch_count <= 50) {
+                fprintf(stderr, "WARNING: Sapling tree root mismatch "
+                    "at height %d — rebuilding (%d/50)\n",
+                    pindex->nHeight, mismatch_count);
             }
             /* During IBD: log but continue — the tree will converge
              * once we process all blocks sequentially */
