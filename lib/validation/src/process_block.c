@@ -242,7 +242,21 @@ static struct block_index *find_most_work_chain(struct main_state *ms)
 
         if (!best || arith_uint256_compare(&pindex->nChainWork,
                                             &best->nChainWork) > 0) {
-            if (chain_has_all_data(pindex, best))
+            /* Check that the chain from pindex back to our tip has no
+             * failed blocks. Without this, a failed block deep in the
+             * chain causes activate_best_chain to loop forever trying
+             * to connect through it. */
+            bool chain_ok = true;
+            struct block_index *check = pindex;
+            int tip_h = best ? best->nHeight : -1;
+            while (check && check->nHeight > tip_h) {
+                if (check->nStatus & BLOCK_FAILED_MASK) {
+                    chain_ok = false;
+                    break;
+                }
+                check = check->pprev;
+            }
+            if (chain_ok && chain_has_all_data(pindex, best))
                 best = pindex;
         }
     }
