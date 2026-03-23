@@ -235,9 +235,9 @@ bool node_db_sync_connect_block(struct node_db *ndb,
     memset(&db_blk, 0, sizeof(db_blk));
     memcpy(db_blk.hash, pindex->phashBlock->data, 32);
     db_blk.height = pindex->nHeight;
-    if (pindex->pprev)
-        memcpy(db_blk.prev_hash,
-               pindex->pprev->phashBlock->data, 32);
+    /* Get prev_hash from block header (always available) rather than
+     * pprev pointer (may be NULL if block_index has gaps) */
+    memcpy(db_blk.prev_hash, blk->header.hashPrevBlock.data, 32);
     db_blk.version = blk->header.nVersion;
     memcpy(db_blk.merkle_root,
            blk->header.hashMerkleRoot.data, 32);
@@ -750,9 +750,9 @@ static bool sync_block_lean(struct node_db *ndb,
     memset(&db_blk, 0, sizeof(db_blk));
     memcpy(db_blk.hash, pindex->phashBlock->data, 32);
     db_blk.height = pindex->nHeight;
-    if (pindex->pprev)
-        memcpy(db_blk.prev_hash,
-               pindex->pprev->phashBlock->data, 32);
+    /* Get prev_hash from block header (always available) rather than
+     * pprev pointer (may be NULL if block_index has gaps) */
+    memcpy(db_blk.prev_hash, blk->header.hashPrevBlock.data, 32);
     db_blk.version = blk->header.nVersion;
     memcpy(db_blk.merkle_root,
            blk->header.hashMerkleRoot.data, 32);
