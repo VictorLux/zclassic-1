@@ -1034,10 +1034,12 @@ int test_wallet_view(void)
         else { printf("FAIL\n"); failures++; }
     }
 
-    printf("LIVE: dashboard recent txs link to /wallet/tx/... ");
+    printf("LIVE: dashboard recent txs link to /wallet/tx/ or syncing... ");
     {
         wv_get("/wallet");
-        bool ok = wv_has("href='/wallet/tx/") || wv_has("No transactions yet");
+        bool ok = wv_has("href='/wallet/tx/") ||
+                  wv_has("No transactions yet") ||
+                  wv_has("history syncing");
         if (ok) printf("OK\n");
         else { printf("FAIL (links to explorer instead of wallet detail)\n"); failures++; }
     }

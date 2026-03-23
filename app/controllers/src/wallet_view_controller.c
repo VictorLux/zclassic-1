@@ -604,7 +604,7 @@ static void emit_footer(uint8_t *buf, size_t max, size_t *off) {
         "<div id='sbar' class='status-bar'>"
         "<span id='sb-h'>Block --</span>"
         "<span id='sb-p'>0 peers</span>"
-        "<span id='sb-m'>0 mempool</span>"
+        "<span id='sb-m'>0 pending</span>"
         "</div>"
         "<script>"
         "(function(){"
@@ -617,6 +617,7 @@ static void emit_footer(uint8_t *buf, size_t max, size_t *off) {
         "if(h)h.textContent='Block '+d.height;"
         "if(p)p.textContent=d.peers+' peers';"
         "if(m)m.textContent=d.mempool+' pending';"
+        "if(window._dashUpdate)window._dashUpdate(d);"
         "}).catch(function(){});}"
         "up();setInterval(up,5000);"
         "})();"
@@ -951,21 +952,27 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
             tx_shown++;
         }
         sqlite3_finalize(s);
-        if (tx_shown == 0)
-            APPEND(off, r, max,
-                "<div class='empty-state'>No transactions yet</div>");
+        if (tx_shown == 0) {
+            if (total_balance > 0)
+                APPEND(off, r, max,
+                    "<div class='empty-state'>"
+                    "Transaction history syncing..."
+                    "</div>");
+            else
+                APPEND(off, r, max,
+                    "<div class='empty-state'>"
+                    "No transactions yet"
+                    "</div>");
+        }
     }
 
-    /* Live pulse JS — polls every 500ms for responsive updates */
+    /* Dashboard live-update JS — merged into footer poll (no duplicate fetch) */
     APPEND(off, r, max,
         "<script>"
         "function fmt(z){var v=z/1e8;if(z===0)return'0.00';"
         "if(z%%1000000===0)return v.toFixed(2);"
         "if(z%%10000===0)return v.toFixed(4);return v.toFixed(8);}"
-        "setInterval(function(){"
-        "fetch('zcl://node/api/wallet/pulse')"
-        ".then(function(r){return r.json()})"
-        ".then(function(d){"
+        "window._dashUpdate=function(d){"
         "var b=document.getElementById('bal');"
         "if(b){var n=fmt(d.balance+d.shielded)+' ZCL';"
         "if(b.textContent!==n){b.textContent=n;}}"
@@ -976,9 +983,7 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
         "var bd=document.getElementById('breakdown');"
         "if(bd){var t=fmt(d.balance)+' transparent';"
         "if(d.shielded>0)t+=' + '+fmt(d.shielded)+' shielded';"
-        "bd.textContent=t;}"
-        "}).catch(function(){});"
-        "},500);"
+        "bd.textContent=t;}};"
         "</script>");
 
     emit_footer(r, max, &off);

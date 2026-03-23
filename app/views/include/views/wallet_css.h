@@ -33,7 +33,7 @@ static const char wallet_css_0[] =
     /* Sync badge */
     ".sync-badge{display:inline-block;font-size:10px;font-weight:600;"
     "letter-spacing:.08em;text-transform:uppercase}"
-    "@keyframes pulse{0%%,100%%{opacity:1}50%%{opacity:.4}}"
+    "@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}"
 
     /* Pill variants */
     ".pill{display:inline-block;padding:2px 8px;border-radius:10px;"
@@ -56,14 +56,14 @@ static const char wallet_css_1[] =
     ".actions a:focus-visible{outline:2px solid #34d399;outline-offset:2px}"
 
     /* Buttons */
-    ".btn-primary{display:block;width:100%%;background:#34d399;color:#0c0c0c;"
+    ".btn-primary{display:block;width:100%;background:#34d399;color:#0c0c0c;"
     "border:none;padding:14px;font-size:15px;font-weight:700;"
     "border-radius:10px;cursor:pointer;font-family:inherit;"
     "transition:background .15s ease;touch-action:manipulation}"
     ".btn-primary:hover{background:#4ade80}"
     ".btn-primary:focus-visible{outline:2px solid #34d399;outline-offset:2px}"
     ".btn-primary:disabled{opacity:.5;cursor:not-allowed}"
-    ".btn-secondary{display:block;width:100%%;background:transparent;"
+    ".btn-secondary{display:block;width:100%;background:transparent;"
     "color:#e2e2e2;border:1px solid #333;padding:14px;font-size:15px;"
     "font-weight:700;border-radius:10px;cursor:pointer;font-family:inherit;"
     "transition:all .15s ease;touch-action:manipulation}"
@@ -79,7 +79,7 @@ static const char wallet_css_1[] =
     ".form-group{margin-bottom:16px}"
     ".form-label{display:block;font-size:11px;font-weight:600;"
     "text-transform:uppercase;letter-spacing:.08em;color:#a1a1a1;margin-bottom:6px}"
-    ".form-input{display:block;width:100%%;background:#111;color:#e2e2e2;"
+    ".form-input{display:block;width:100%;background:#111;color:#e2e2e2;"
     "border:1px solid #1e1e1e;padding:12px 14px;"
     "font-family:inherit;font-size:15px;border-radius:8px;"
     "transition:border-color .15s ease}"
@@ -137,7 +137,7 @@ static const char wallet_css_2[] =
 
 static const char wallet_css_3[] =
     /* Review table */
-    ".review-table{width:100%%}"
+    ".review-table{width:100%}"
     ".review-table td{padding:10px 0;font-size:14px}"
     ".review-table td:first-child{color:#888}"
     ".review-table td:last-child{text-align:right}"
@@ -180,7 +180,7 @@ static const char wallet_css_3[] =
     ".page-controls a{color:#60a5fa}"
 
     /* Tables (coins page) */
-    "table{width:100%%;border-collapse:collapse;font-size:13px}"
+    "table{width:100%;border-collapse:collapse;font-size:13px}"
     "th{text-align:left;color:#666;padding:8px 6px;"
     "border-bottom:1px solid #1e1e1e;font-size:11px;"
     "text-transform:uppercase;letter-spacing:.05em;font-weight:600}"
@@ -238,7 +238,7 @@ static const char wallet_css_5[] =
     "flex-direction:column;z-index:200}"
     ".loading-overlay .spinner{width:40px;height:40px;"
     "border:3px solid #222;border-top-color:#34d399;"
-    "border-radius:50%%;animation:spin .8s linear infinite}"
+    "border-radius:50%;animation:spin .8s linear infinite}"
     "@keyframes spin{to{transform:rotate(360deg)}}"
     ".loading-overlay p{color:#a1a1a1;font-size:14px;margin-top:16px}"
 
@@ -271,7 +271,7 @@ static const char wallet_css_5[] =
     ".addr-chunked .hi{color:#34d399;font-weight:700}"
 
     /* Search input */
-    ".search-input{display:block;width:100%%;background:#111;color:#e2e2e2;"
+    ".search-input{display:block;width:100%;background:#111;color:#e2e2e2;"
     "border:1px solid #1e1e1e;padding:10px 14px;font-size:13px;"
     "border-radius:8px;font-family:inherit;margin:8px 0}"
     ".search-input:focus{border-color:#333;outline:none;"
@@ -297,7 +297,7 @@ static const char wallet_css_5[] =
 
     /* Confirmation progress */
     ".conf-meter{height:4px;background:#1e1e1e;border-radius:2px;margin:8px 0}"
-    ".conf-meter .fill{height:100%%;border-radius:2px;transition:width .3s ease}"
+    ".conf-meter .fill{height:100%;border-radius:2px;transition:width .3s ease}"
 
     /* Small screens */
     "@media(max-width:360px){body{padding:12px;font-size:14px}"
