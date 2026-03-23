@@ -18,6 +18,20 @@ static size_t serve_gated_content(sqlite3 *db, const char *customer_addr,
                                    const char *datadir,
                                    uint8_t *resp, size_t max);
 
+/* Format ZCL price: trim trailing zeros but keep at least 2 decimals. */
+static void format_zcl_price(char *out, size_t out_len, int64_t zatoshi)
+{
+    snprintf(out, out_len, "%.8f", (double)zatoshi / 1e8);
+    /* Find decimal point */
+    char *dot = strchr(out, '.');
+    if (!dot) return;
+    /* Trim trailing zeros, but keep at least 2 decimal places */
+    char *end = out + strlen(out) - 1;
+    char *min_pos = dot + 2; /* keep at least ".XX" */
+    while (end > min_pos && *end == '0') end--;
+    *(end + 1) = '\0';
+}
+
 /* Ensure store tables exist */
 static void store_ensure_schema(sqlite3 *db, const char *datadir)
 {
@@ -215,6 +229,7 @@ static int html_body_start(char *buf, size_t max, const char *title)
         ".status{padding:8px 16px;border-radius:4px;display:inline-block}"
         ".pending{background:#333;color:#ff8800}"
         ".paid{background:#1a3a1a;color:#00ff88}"
+        ".failed{background:#3a1a1a;color:#ff4444}"
         "input{background:#1a1a1a;color:#e0e0e0;border:1px solid #333;"
         "padding:8px;font-family:monospace;width:100%%;margin:5px 0;"
         "box-sizing:border-box}"
@@ -299,7 +314,7 @@ static size_t serve_product_list(sqlite3 *db, uint8_t *resp, size_t max)
 
         char id_str[32], price_str[32];
         snprintf(id_str, sizeof(id_str), "%lld", (long long)id);
-        snprintf(price_str, sizeof(price_str), "%.8f", (double)price / 1e8);
+        format_zcl_price(price_str, sizeof(price_str), price);
 
         struct template_var vars[] = {
             { "id",          id_str },
@@ -363,11 +378,14 @@ static size_t serve_product_detail(sqlite3 *db, int64_t product_id,
     int n = html_body_start(body, sizeof(body), safe_name);
     if (n > 0) off = (size_t)n;
 
+    char detail_price[32];
+    format_zcl_price(detail_price, sizeof(detail_price), price);
+
     n = snprintf(body + off, sizeof(body) - off,
         "<div class='product'>"
         "<h2>%s</h2>"
         "<p>%s</p>"
-        "<div class='price'>%.8f ZCL</div>"
+        "<div class='price'>%s ZCL</div>"
         "<p>You will receive <b>%lld</b> %s tokens.</p>"
         "<h3>Purchase</h3>"
         "<form method='post' action='/store/buy/%lld'>"
@@ -381,7 +399,7 @@ static size_t serve_product_detail(sqlite3 *db, int64_t product_id,
         "</body></html>",
         safe_name,
         safe_desc,
-        (double)price / 1e8,
+        detail_price,
         (long long)tokens,
         safe_token,
         (long long)product_id);
@@ -461,11 +479,17 @@ static size_t serve_create_order(sqlite3 *db, int64_t product_id,
     html_escape(safe_cust, sizeof(safe_cust),
                 customer_addr ? customer_addr : "(not provided)");
 
+    char order_price[32];
+    format_zcl_price(order_price, sizeof(order_price), price);
+
     n = snprintf(body + off, sizeof(body) - off,
         "<h2>Order #%lld</h2>"
         "<div class='product'>"
-        "<p>Send exactly <span class='price'>%.8f ZCL</span> to:</p>"
+        "<p>Send exactly <span class='price'>%s ZCL</span> to:</p>"
         "<div class='addr'>%s</div>"
+        "<button class='btn' style='font-size:12px;padding:6px 12px;cursor:pointer;border:none' "
+        "onclick=\"navigator.clipboard?navigator.clipboard.writeText('%s'):void(0);"
+        "this.textContent='Copied!'\">Copy Address</button>"
         "<p>After payment confirms, tokens will be sent to:</p>"
         "<div class='addr'>%s</div>"
         "<p><a href='/store/order/%lld'>Check payment status</a></p>"
@@ -473,7 +497,8 @@ static size_t serve_create_order(sqlite3 *db, int64_t product_id,
         "<p><a href='/store'>&larr; Back to store</a></p>"
         "</body></html>",
         (long long)order_id,
-        (double)price / 1e8,
+        order_price,
+        safe_pay,
         safe_pay,
         safe_cust,
         (long long)order_id);
@@ -488,8 +513,10 @@ static size_t serve_order_status(sqlite3 *db, int64_t order_id,
 {
     sqlite3_stmt *s = NULL;
     sqlite3_prepare_v2(db,
-        "SELECT status, amount_zatoshi, payment_addr, customer_addr, "
-        "payment_txid, mint_txid FROM orders WHERE id=?", -1, &s, NULL);
+        "SELECT o.status, o.amount_zatoshi, o.payment_addr, o.customer_addr, "
+        "o.payment_txid, o.mint_txid, p.name "
+        "FROM orders o LEFT JOIN products p ON o.product_id = p.id "
+        "WHERE o.id=?", -1, &s, NULL);
     sqlite3_bind_int64(s, 1, order_id);
     if (sqlite3_step(s) != SQLITE_ROW) {
         sqlite3_finalize(s);
@@ -505,32 +532,47 @@ static size_t serve_order_status(sqlite3 *db, int64_t order_id,
     const char *cust_addr = (const char *)sqlite3_column_text(s, 3);
     const char *pay_txid = (const char *)sqlite3_column_text(s, 4);
     const char *mint_txid = (const char *)sqlite3_column_text(s, 5);
+    const char *product_name = (const char *)sqlite3_column_text(s, 6);
 
     const char *status_text = status == 0 ? "Pending Payment" :
                                status == 1 ? "Payment Received" :
                                status == 2 ? "Tokens Sent" :
                                status == 3 ? "Mint Failed (contact support)" :
                                "Unknown";
-    const char *status_class = status == 0 ? "pending" :
-                                status >= 1 ? "paid" : "pending";
+    const char *status_class = (status == 0) ? "pending" :
+                                (status == 3) ? "failed" : "paid";
 
     char body[8192];
     size_t off = 0;
     int n = html_body_start(body, sizeof(body), "Order Status");
     if (n > 0) off = (size_t)n;
 
+    /* Auto-refresh while pending */
+    if (status == 0) {
+        n = snprintf(body + off, sizeof(body) - off,
+            "<meta http-equiv='refresh' content='15'>");
+        if (n > 0) off += (size_t)n;
+    }
+
     char safe_pay[256], safe_cust[256];
     char safe_ptxid[256], safe_mtxid[256];
+    char safe_product[256];
     html_escape(safe_pay, sizeof(safe_pay), pay_addr ? pay_addr : "?");
     html_escape(safe_cust, sizeof(safe_cust), cust_addr ? cust_addr : "?");
     html_escape(safe_ptxid, sizeof(safe_ptxid), pay_txid ? pay_txid : "");
     html_escape(safe_mtxid, sizeof(safe_mtxid), mint_txid ? mint_txid : "");
+    html_escape(safe_product, sizeof(safe_product),
+                product_name ? product_name : "Unknown Product");
+
+    char status_price[32];
+    format_zcl_price(status_price, sizeof(status_price), amount);
 
     n = snprintf(body + off, sizeof(body) - off,
         "<h2>Order #%lld</h2>"
         "<div class='product'>"
+        "<h3>%s</h3>"
         "<div class='status %s'>%s</div>"
-        "<p>Amount: <span class='price'>%.8f ZCL</span></p>"
+        "<p>Amount: <span class='price'>%s ZCL</span></p>"
         "<p>Payment address:</p><div class='addr'>%s</div>"
         "<p>Deliver to:</p><div class='addr'>%s</div>"
         "%s%s%s%s%s%s"
@@ -538,8 +580,9 @@ static size_t serve_order_status(sqlite3 *db, int64_t order_id,
         "<a href='/store'>&larr; Back to store</a></p>"
         "</div></body></html>",
         (long long)order_id,
+        safe_product,
         status_class, status_text,
-        (double)amount / 1e8,
+        status_price,
         safe_pay,
         safe_cust,
         pay_txid ? "<p>Payment: <code>" : "",
@@ -563,18 +606,31 @@ static int64_t parse_id_from_path(const char *path)
     return (int64_t)atoll(last + 1);
 }
 
-/* Validate address: alphanumeric + limited special chars only.
- * Prevents XSS via customer_addr in HTML output. */
+/* Validate address: must be a valid ZClassic t-address or z-address.
+ * Also prevents XSS via customer_addr in HTML output. */
 static bool validate_address(const char *addr)
 {
     if (!addr || !addr[0]) return false;
+    size_t len = strlen(addr);
+
+    /* Alphanumeric check (XSS prevention) */
     for (size_t i = 0; addr[i]; i++) {
         char c = addr[i];
         if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
             (c >= '0' && c <= '9') || c == '_') continue;
         return false;
     }
-    return true;
+
+    /* t-address: t1... or t3..., length 34-35 */
+    if ((addr[0] == 't' && (addr[1] == '1' || addr[1] == '3')) &&
+        len >= 34 && len <= 35)
+        return true;
+
+    /* z-address (Sapling): zs1..., length 78+ */
+    if (len >= 78 && addr[0] == 'z' && addr[1] == 's' && addr[2] == '1')
+        return true;
+
+    return false;
 }
 
 /* Parse POST body for customer_addr=value */
@@ -631,7 +687,8 @@ size_t store_handle_request(const char *method, const char *path,
                              "customer_addr", addr, sizeof(addr));
         if (!validate_address(addr)) {
             const char *err_body = "<h1>Invalid address</h1>"
-                "<p>Address must be alphanumeric.</p>"
+                "<p>Must be a ZClassic t-address (t1.../t3...) or "
+                "z-address (zs1...).</p>"
                 "<p><a href='/store'>&larr; Back to store</a></p>";
             result = store_error_response("400 Bad Request",
                 err_body, strlen(err_body), response, response_max);

@@ -39,8 +39,37 @@
     "<link rel='stylesheet' href='/explorer/style.css'>" \
     "</head><body>"
 
+/* Nav helper: emits <nav> with active class on the matching link.
+ * Pass NULL for active to highlight nothing. */
+static inline size_t explorer_emit_nav(char *buf, size_t max, const char *active)
+{
+    static const struct { const char *href; const char *label; const char *id; } links[] = {
+        { "/explorer",          "Blocks",    "blocks"   },
+        { "/explorer/stats",    "Stats",     "stats"    },
+        { "/explorer/hodl",     "HODL Wave", "hodl"     },
+        { "/explorer/tokens",   "Tokens",    "tokens"   },
+        { "/explorer/events",   "Events",    "events"   },
+        { "/explorer/factoids", "Factoids",  "factoids" },
+    };
+    size_t off = 0;
+    APPEND(off, buf, max, "<nav class='nav'>");
+    for (size_t i = 0; i < sizeof(links)/sizeof(links[0]); i++) {
+        bool act = active && strcmp(active, links[i].id) == 0;
+        APPEND(off, buf, max, "<a href='%s'%s>%s</a>",
+               links[i].href, act ? " class='active'" : "", links[i].label);
+    }
+    APPEND(off, buf, max,
+        "<div class='search'>"
+        "<form action='/explorer/search' method='get'>"
+        "<input name='q' placeholder='Search block, tx, or address...'>"
+        "</form></div></nav>");
+    return off;
+}
+
+/* Legacy EXPLORER_NAV macro — kept for error pages and one-shot snprintf.
+ * Does not highlight any active link; use explorer_emit_nav() for that. */
 #define EXPLORER_NAV \
-    "<div class='nav'>" \
+    "<nav class='nav'>" \
     "<a href='/explorer'>Blocks</a>" \
     "<a href='/explorer/stats'>Stats</a>" \
     "<a href='/explorer/hodl'>HODL Wave</a>" \
@@ -50,7 +79,7 @@
     "<div class='search'>" \
     "<form action='/explorer/search' method='get'>" \
     "<input name='q' placeholder='Search block, tx, or address...'>" \
-    "</form></div></div>"
+    "</form></div></nav>"
 
 #define EXPLORER_FOOTER \
     "<footer>ZClassic23 Block Explorer &mdash; Pure C23 &mdash; zclnet.net</footer>" \
@@ -88,6 +117,36 @@ static inline bool sql_query_text(sqlite3 *db, const char *sql,
     }
     if (max > 0) out[0] = '\0';
     return false;
+}
+
+/* ── Number formatting with comma separators ─────────────── */
+
+static inline int format_with_commas(char *buf, size_t max, int64_t val)
+{
+    char tmp[32];
+    int len = snprintf(tmp, sizeof(tmp), "%" PRId64, val);
+    if (len <= 0 || (size_t)len >= sizeof(tmp)) { buf[0] = '\0'; return 0; }
+
+    bool neg = (tmp[0] == '-');
+    int digits_start = neg ? 1 : 0;
+    int ndigits = len - digits_start;
+    int ncommas = (ndigits - 1) / 3;
+    int total = len + ncommas;
+
+    if ((size_t)total >= max) { buf[0] = '\0'; return 0; }
+
+    int src = len - 1;
+    int dst = total;
+    buf[dst--] = '\0';
+    int count = 0;
+    while (src >= digits_start) {
+        buf[dst--] = tmp[src--];
+        count++;
+        if (count % 3 == 0 && src >= digits_start)
+            buf[dst--] = ',';
+    }
+    if (neg) buf[dst] = '-';
+    return total;
 }
 
 /* ── Shared formatting helpers (static inline for header-only use) ── */

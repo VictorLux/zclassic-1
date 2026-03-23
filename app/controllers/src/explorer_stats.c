@@ -702,7 +702,9 @@ size_t explorer_stats_build(uint8_t *r, size_t buf_max, const char *datadir)
      *  PHASE 2: Render HTML
      * ════════════════════════════════════════════════════════ */
 
-    APPEND(off, r, max, EXPLORER_HEADER("ZClassic Deep Stats") EXPLORER_NAV
+    APPEND(off, r, max, EXPLORER_HEADER("ZClassic Deep Stats"));
+    off += explorer_emit_nav((char *)r + off, max - off, "stats");
+    APPEND(off, r, max,
         "<h1>ZClassic Blockchain Deep Statistics</h1>"
         "<p style='color:#888;margin:-8px 0 16px;font-size:15px'>"
         "Every statistic from %d days of blockchain history "

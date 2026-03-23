@@ -161,17 +161,18 @@ static size_t serve_landing_page(uint8_t *response, size_t max)
     /* Navigation */
     n = snprintf(body + off, sizeof(body) - off,
         "<div class='nav'>"
-        "<a href='/store'>Token Store</a>"
-        "<a href='/status'>Status API</a>"
+        "<a href='/explorer'>Explorer</a>"
+        "<a href='/store'>Store</a>"
         "<a href='/blog'>Blog</a>"
-        "<a href='/search'>Search Network</a>"
+        "<a href='/search'>Search</a>"
+        "<a href='/directory'>Directory</a>"
         "</div>");
     if (n > 0) off += (size_t)n;
 
     /* Search bar */
     n = snprintf(body + off, sizeof(body) - off,
         "<form action='/search' method='get'>"
-        "<input type='text' name='q' placeholder='Search .onion sites...'>"
+        "<input type='text' name='q' placeholder='Search .onion sites by hostname...'>"
         "</form>");
     if (n > 0) off += (size_t)n;
 
@@ -209,7 +210,7 @@ static size_t serve_landing_page(uint8_t *response, size_t max)
         "<div class='desc'>Every zclassic23 node is a .onion web server.<br>"
         "Put HTML in <code>{datadir}/blog/</code> and it's live.<br>"
         "Register on-chain via ZSLP for network discovery.</div></div>"
-        "<footer>ZClassic23 v0.1.0 — pure C23 full node + Tor</footer>"
+        "<footer>ZClassic23 v0.1.0 &mdash; pure C23 full node + Tor</footer>"
         "</body></html>");
     if (n > 0) off += (size_t)n;
 
@@ -241,11 +242,24 @@ static size_t serve_search(const char *query, uint8_t *response, size_t max)
         "<meta charset='utf-8'><title>Search: %s</title>"
         "<style>body{font-family:monospace;background:#0a0a0a;color:#e0e0e0;"
         "max-width:800px;margin:0 auto;padding:20px}"
-        "h1{color:#00ff88}a{color:#00aaff}"
+        "h1{color:#00ff88;text-align:center}a{color:#00aaff}"
+        ".nav{display:flex;gap:12px;justify-content:center;margin:20px 0;flex-wrap:wrap}"
+        ".nav a{background:#1a1a1a;color:#00aaff;padding:10px 20px;"
+        "border-radius:4px;text-decoration:none;border:1px solid #333}"
+        ".nav a:hover{border-color:#00ff88;color:#00ff88}"
         ".site{background:#1a1a1a;padding:15px;margin:10px 0;border-radius:8px;"
         "border-left:3px solid #00ff88}"
+        ".note{color:#666;font-size:13px;margin:15px 0}"
         "</style></head><body>"
-        "<h1><a href='/' style='text-decoration:none'>ZClassic23</a> / Search</h1>"
+        "<h1><a href='/' style='text-decoration:none;color:#00ff88'>ZClassic23</a></h1>"
+        "<div class='nav'>"
+        "<a href='/'>Home</a>"
+        "<a href='/explorer'>Explorer</a>"
+        "<a href='/store'>Store</a>"
+        "<a href='/blog'>Blog</a>"
+        "<a href='/directory'>Directory</a>"
+        "</div>"
+        "<h2 style='color:#00cc66'>Search</h2>"
         "<p>Results for: <b>%s</b></p>",
         safe_query, safe_query);
     if (n > 0) off = (size_t)n;
@@ -269,7 +283,10 @@ static size_t serve_search(const char *query, uint8_t *response, size_t max)
     }
 
     n = snprintf(body + off, sizeof(body) - off,
-        "<p><a href='/'>Back to home</a></p></body></html>");
+        "<p class='note'>Search matches against .onion hostnames registered "
+        "on-chain via ZSLP. Peer nodes do not yet broadcast titles or "
+        "descriptions &mdash; only hostnames are searchable.</p>"
+        "</body></html>");
     if (n > 0) off += (size_t)n;
 
     return (size_t)snprintf((char *)response, max,
@@ -442,6 +459,10 @@ static size_t serve_directory_html(uint8_t *response, size_t max)
         "body{font-family:monospace;background:#0a0a0a;color:#e0e0e0;"
         "max-width:900px;margin:0 auto;padding:20px}"
         "h1{color:#00ff88;text-align:center}"
+        ".nav{display:flex;gap:12px;justify-content:center;margin:20px 0;flex-wrap:wrap}"
+        ".nav a{background:#1a1a1a;color:#00aaff;padding:10px 20px;"
+        "border-radius:4px;text-decoration:none;border:1px solid #333}"
+        ".nav a:hover{border-color:#00ff88;color:#00ff88}"
         "table{width:100%%;border-collapse:collapse;margin:20px 0}"
         "th{background:#1a1a1a;color:#00ff88;padding:10px;text-align:left}"
         "td{padding:8px 10px;border-bottom:1px solid #222}"
@@ -452,7 +473,14 @@ static size_t serve_directory_html(uint8_t *response, size_t max)
         "footer{text-align:center;color:#333;margin-top:40px;font-size:11px}"
         "</style></head><body>"
         "<h1>ZClassic23 Node Directory</h1>"
-        "<p class='count'>Decentralized .onion network — every node is a server</p>");
+        "<div class='nav'>"
+        "<a href='/'>Home</a>"
+        "<a href='/explorer'>Explorer</a>"
+        "<a href='/store'>Store</a>"
+        "<a href='/blog'>Blog</a>"
+        "<a href='/search'>Search</a>"
+        "</div>"
+        "<p class='count'>Decentralized .onion network &mdash; every node is a server</p>");
     if (n > 0) off = (size_t)n;
 
     off += (size_t)snprintf(body + off, sizeof(body) - off,
@@ -600,9 +628,26 @@ size_t onion_service_handle_request(const char *method,
     if (!rate_limit_check()) {
         return (size_t)snprintf((char *)response, response_max,
             "HTTP/1.1 429 Too Many Requests\r\n"
-            "Content-Type: text/html\r\nConnection: close\r\n"
+            "Content-Type: text/html; charset=utf-8\r\nConnection: close\r\n"
             "Retry-After: 1\r\n\r\n"
-            "<h1>429 Too Many Requests</h1>");
+            "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+            "<title>429 Too Many Requests</title>"
+            "<style>"
+            "body{font-family:monospace;background:#0a0a0a;color:#e0e0e0;"
+            "display:flex;flex-direction:column;align-items:center;"
+            "justify-content:center;min-height:90vh;margin:0;padding:20px}"
+            "h1{color:#ffaa00;font-size:28px}"
+            "p{color:#888;font-size:16px;max-width:500px;text-align:center}"
+            "a{color:#00aaff;text-decoration:none}"
+            "a:hover{color:#00ff88}"
+            ".nav{display:flex;gap:12px;margin-top:30px}"
+            "</style></head><body>"
+            "<h1>429 Too Many Requests</h1>"
+            "<p>Too many requests. Please wait a moment and try again.</p>"
+            "<div class='nav'>"
+            "<a href='/'>Home</a> | "
+            "<a href='/explorer'>Explorer</a>"
+            "</div></body></html>");
     }
 
     /* JSON status endpoint */
@@ -652,12 +697,32 @@ size_t onion_service_handle_request(const char *method,
 
     /* 404 */
     return (size_t)snprintf((char *)response, response_max,
-        "HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\n"
+        "HTTP/1.1 404 Not Found\r\n"
+        "Content-Type: text/html; charset=utf-8\r\n"
         "Connection: close\r\n\r\n"
-        "<html><body style='background:#0a0a0a;color:#e0e0e0;font-family:monospace;"
-        "padding:40px'><h1 style='color:#ff4444'>404 Not Found</h1>"
-        "<p><a href='/' style='color:#00aaff'>Back to directory</a></p>"
-        "</body></html>");
+        "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+        "<title>404 Not Found</title>"
+        "<style>"
+        "body{font-family:monospace;background:#0a0a0a;color:#e0e0e0;"
+        "display:flex;flex-direction:column;align-items:center;"
+        "justify-content:center;min-height:90vh;margin:0;padding:20px}"
+        "h1{color:#ff4444;font-size:28px}"
+        "p{color:#888;font-size:16px}"
+        "a{color:#00aaff;text-decoration:none}"
+        "a:hover{color:#00ff88}"
+        ".nav{display:flex;gap:12px;margin-top:30px}"
+        ".nav a{background:#1a1a1a;color:#00aaff;padding:10px 20px;"
+        "border-radius:4px;border:1px solid #333}"
+        ".nav a:hover{border-color:#00ff88;color:#00ff88}"
+        "</style></head><body>"
+        "<h1>404 Not Found</h1>"
+        "<p>The page you requested does not exist.</p>"
+        "<div class='nav'>"
+        "<a href='/'>Home</a>"
+        "<a href='/explorer'>Explorer</a>"
+        "<a href='/store'>Store</a>"
+        "<a href='/blog'>Blog</a>"
+        "</div></body></html>");
 }
 
 /* ── Lifecycle ────────────────────────────────────────────── */

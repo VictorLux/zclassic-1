@@ -187,9 +187,9 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
     size_t max = buf_max;
 
     /* ── HTTP header + HTML head ──────────────────────────── */
+    APPEND(off, r, max, EXPLORER_HEADER("ZClassic Historian Factoids"));
+    off += explorer_emit_nav((char *)r + off, max - off, "factoids");
     APPEND(off, r, max,
-        EXPLORER_HEADER("ZClassic Historian Factoids")
-        EXPLORER_NAV
         "<div class='content'>"
         "<h1>ZClassic Historian Factoids</h1>"
         "<p style='color:#888'>Deep chain archaeology with SHA3-256 data receipts. "

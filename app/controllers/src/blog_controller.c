@@ -80,7 +80,12 @@ size_t blog_serve(const char *datadir, const char *path,
     if (rel[0] == '\0') rel = "index.html";
 
     if (!safe_path(rel)) {
-        const char *body = "<h1>403 Forbidden</h1>";
+        const char *body =
+            "<html><head><style>body{background:#0a0a0a;color:#e0e0e0;"
+            "font-family:monospace;text-align:center;padding:80px 20px}"
+            "</style></head><body><h1>403 Forbidden</h1>"
+            "<p><a href='/' style='color:#00ff88'>Return home</a></p>"
+            "</body></html>";
         return http_response(out, out_len, 403, "text/html",
                              body, strlen(body));
     }
@@ -90,7 +95,12 @@ size_t blog_serve(const char *datadir, const char *path,
     snprintf(blog_root, sizeof(blog_root), "%s/blog", datadir);
     char real_root[PATH_MAX];
     if (!realpath(blog_root, real_root)) {
-        const char *body = "<h1>404 Not Found</h1>";
+        const char *body =
+            "<html><head><style>body{background:#0a0a0a;color:#e0e0e0;"
+            "font-family:monospace;text-align:center;padding:80px 20px}"
+            "</style></head><body><h1>404 Not Found</h1>"
+            "<p><a href='/' style='color:#00ff88'>Return home</a></p>"
+            "</body></html>";
         return http_response(out, out_len, 404, "text/html",
                              body, strlen(body));
     }
@@ -107,7 +117,12 @@ size_t blog_serve(const char *datadir, const char *path,
         f = fopen(filepath, "rb");
     }
     if (!f) {
-        const char *body = "<h1>404 Not Found</h1>";
+        const char *body =
+            "<html><head><style>body{background:#0a0a0a;color:#e0e0e0;"
+            "font-family:monospace;text-align:center;padding:80px 20px}"
+            "</style></head><body><h1>404 Not Found</h1>"
+            "<p><a href='/' style='color:#00ff88'>Return home</a></p>"
+            "</body></html>";
         return http_response(out, out_len, 404, "text/html",
                              body, strlen(body));
     }
@@ -118,7 +133,12 @@ size_t blog_serve(const char *datadir, const char *path,
         strncmp(real_file, real_root, root_len) != 0 ||
         (real_file[root_len] != '/' && real_file[root_len] != '\0')) {
         fclose(f);
-        const char *body = "<h1>403 Forbidden</h1>";
+        const char *body =
+            "<html><head><style>body{background:#0a0a0a;color:#e0e0e0;"
+            "font-family:monospace;text-align:center;padding:80px 20px}"
+            "</style></head><body><h1>403 Forbidden</h1>"
+            "<p><a href='/' style='color:#00ff88'>Return home</a></p>"
+            "</body></html>";
         return http_response(out, out_len, 403, "text/html",
                              body, strlen(body));
     }

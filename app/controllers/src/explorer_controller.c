@@ -443,16 +443,19 @@ static size_t serve_dashboard_rpc(uint8_t *r, size_t max)
     int64_t mp_count = json_extract_int(buf, "size");
     int64_t mp_bytes = json_extract_int(buf, "bytes");
 
-    APPEND(off, r, max, EXPLORER_HEADER("Dashboard") EXPLORER_NAV);
+    APPEND(off, r, max, EXPLORER_HEADER("Dashboard"));
+    off += explorer_emit_nav((char *)r + off, max - off, "blocks");
 
+    char ht_fmt[32];
+    format_with_commas(ht_fmt, sizeof(ht_fmt), tip);
     APPEND(off, r, max,
         "<div class='stats-row'>"
-        "<div class='stat'><div class='num'>%d</div><div class='lbl'>Block Height</div></div>"
+        "<div class='stat'><div class='num'>%s</div><div class='lbl'>Block Height</div></div>"
         "<div class='stat'><div class='num'>%.2f</div><div class='lbl'>Difficulty</div></div>"
         "<div class='stat'><div class='num'>%" PRId64 "</div><div class='lbl'>Mempool Txs</div></div>"
         "<div class='stat'><div class='num'>%.1f KB</div><div class='lbl'>Mempool Size</div></div>"
         "</div>",
-        tip, diff, mp_count, (double)mp_bytes / 1024.0);
+        ht_fmt, diff, mp_count, (double)mp_bytes / 1024.0);
 
     /* Latest blocks */
     APPEND(off, r, max,
@@ -527,35 +530,42 @@ static size_t serve_dashboard_rpc(uint8_t *r, size_t max)
 
 /* ── Dashboard (native chain mode) ───────────────────────── */
 
-static size_t serve_dashboard_native(uint8_t *r, size_t max)
+static size_t serve_dashboard_native_page(uint8_t *r, size_t max, int page)
 {
     size_t off = 0;
 
     int tip = active_chain_height(&g_ms->chain_active);
     const struct block_index *tip_bi = active_chain_tip(&g_ms->chain_active);
 
-    APPEND(off, r, max, EXPLORER_HEADER("Dashboard") EXPLORER_NAV);
+    APPEND(off, r, max, EXPLORER_HEADER("Dashboard"));
+    off += explorer_emit_nav((char *)r + off, max - off, "blocks");
 
     size_t mp_count = g_mp ? tx_mempool_size(g_mp) : 0;
     uint64_t mp_bytes = g_mp ? tx_mempool_total_size(g_mp) : 0;
 
+    char ht_fmt[32];
+    format_with_commas(ht_fmt, sizeof(ht_fmt), tip);
     APPEND(off, r, max,
         "<div class='stats-row'>"
-        "<div class='stat'><div class='num'>%d</div><div class='lbl'>Block Height</div></div>"
+        "<div class='stat'><div class='num'>%s</div><div class='lbl'>Block Height</div></div>"
         "<div class='stat'><div class='num'>%.2f</div><div class='lbl'>Difficulty</div></div>"
         "<div class='stat'><div class='num'>%zu</div><div class='lbl'>Mempool Txs</div></div>"
         "<div class='stat'><div class='num'>%.1f KB</div><div class='lbl'>Mempool Size</div></div>"
         "</div>",
-        tip, get_difficulty(tip_bi), mp_count, (double)mp_bytes / 1024.0);
+        ht_fmt, get_difficulty(tip_bi), mp_count, (double)mp_bytes / 1024.0);
 
     APPEND(off, r, max,
         "<h2>Latest Blocks</h2>"
         "<table><tr><th>Height</th><th>Hash</th><th>Time</th>"
         "<th>Txs</th><th>Difficulty</th><th>Shielded</th></tr>");
 
-    int show = 25;
-    if (show > tip + 1) show = tip + 1;
-    for (int h = tip; h > tip - show && h >= 0; h--) {
+    int per_page = 25;
+    if (page < 0) page = 0;
+    int start_height = tip - page * per_page;
+    int end_height = start_height - per_page + 1;
+    if (end_height < 0) end_height = 0;
+
+    for (int h = start_height; h >= end_height && h >= 0; h--) {
         const struct block_index *bi = active_chain_at(&g_ms->chain_active, h);
         if (!bi) continue;
 
@@ -569,28 +579,51 @@ static size_t serve_dashboard_native(uint8_t *r, size_t max)
         if (bi->nSaplingValue != 0)
             format_zcl(sap_val, sizeof(sap_val), bi->nSaplingValue);
 
+        char h_fmt[32];
+        format_with_commas(h_fmt, sizeof(h_fmt), h);
         APPEND(off, r, max,
-            "<tr><td><a href='/explorer/block/%d'>%d</a></td>"
+            "<tr><td><a href='/explorer/block/%d'>%s</a></td>"
             "<td class='hash'><a href='/explorer/block/%s'>%s</a></td>"
             "<td>%s</td><td>%u</td><td>%.4f</td><td class='amount'>%s</td></tr>",
-            h, h, hash, short_hash, ts, bi->nTx, get_difficulty(bi), sap_val);
+            h, h_fmt, hash, short_hash, ts, bi->nTx, get_difficulty(bi), sap_val);
 
         if (off + 512 >= max) break;
     }
 
-    APPEND(off, r, max, "</table>" EXPLORER_FOOTER);
+    APPEND(off, r, max, "</table>");
+
+    /* Pagination */
+    APPEND(off, r, max, "<div class='pager'>");
+    if (page > 0)
+        APPEND(off, r, max, "<a href='/explorer?page=%d'>&larr; Newer</a>", page - 1);
+    if (end_height > 0)
+        APPEND(off, r, max, "<a href='/explorer?page=%d'>Older &rarr;</a>", page + 1);
+    APPEND(off, r, max, "</div>");
+
+    APPEND(off, r, max, EXPLORER_FOOTER);
     return off;
+}
+
+__attribute__((unused))
+static size_t serve_dashboard_native(uint8_t *r, size_t max)
+{
+    return serve_dashboard_native_page(r, max, 0);
 }
 
 /* ── Dashboard (SQLite-only, no RPC or main_state needed) ── */
 
 
-static size_t serve_dashboard(uint8_t *r, size_t max)
+static size_t serve_dashboard_with_page(uint8_t *r, size_t max, int page)
 {
     /* Use native if chain is loaded, otherwise fall back to RPC proxy */
     if (g_ms && active_chain_height(&g_ms->chain_active) > 0)
-        return serve_dashboard_native(r, max);
+        return serve_dashboard_native_page(r, max, page);
     return serve_dashboard_rpc(r, max);
+}
+
+static size_t serve_dashboard(uint8_t *r, size_t max)
+{
+    return serve_dashboard_with_page(r, max, 0);
 }
 
 /* ── Block Detail (RPC proxy) ─────────────────────────────── */
@@ -647,7 +680,8 @@ static size_t serve_block_rpc(const char *param, uint8_t *r, size_t max)
             if (*p == ',') tx_count++;
     }
 
-    APPEND(off, r, max, EXPLORER_HEADER("Block") EXPLORER_NAV);
+    APPEND(off, r, max, EXPLORER_HEADER("Block"));
+    off += explorer_emit_nav((char *)r + off, max - off, "blocks");
 
     /* Pager */
     APPEND(off, r, max, "<div class='pager'>");
@@ -771,35 +805,44 @@ static size_t serve_block(const char *param, uint8_t *r, size_t max)
     char sprout_val[32] = "0";
     format_zcl(sprout_val, sizeof(sprout_val), bi->nSproutValue);
 
-    APPEND(off, r, max, EXPLORER_HEADER("Block") EXPLORER_NAV);
+    APPEND(off, r, max, EXPLORER_HEADER("Block"));
+    off += explorer_emit_nav((char *)r + off, max - off, "blocks");
 
     /* Navigation */
-    APPEND(off, r, max, "<div class='pager'>");
-    if (height > 0)
-        APPEND(off, r, max, "<a href='/explorer/block/%d'>&laquo; Block %d</a>", height - 1, height - 1);
-    if (height < tip)
-        APPEND(off, r, max, "<a href='/explorer/block/%d'>Block %d &raquo;</a>", height + 1, height + 1);
-    APPEND(off, r, max, "</div>");
+    {
+        char prev_fmt[32], next_fmt[32], h_fmt[32], conf_fmt[32];
+        format_with_commas(prev_fmt, sizeof(prev_fmt), height - 1);
+        format_with_commas(next_fmt, sizeof(next_fmt), height + 1);
+        format_with_commas(h_fmt, sizeof(h_fmt), height);
+        format_with_commas(conf_fmt, sizeof(conf_fmt), tip - height + 1);
 
-    APPEND(off, r, max,
-        "<h2>Block %d</h2>"
-        "<div class='card'><div class='grid'>"
-        "<div class='label'>Hash</div><div class='val hash'>%s</div>"
-        "<div class='label'>Height</div><div class='val'>%d</div>"
-        "<div class='label'>Confirmations</div><div class='val'>%d</div>"
-        "<div class='label'>Time</div><div class='val'>%s</div>"
-        "<div class='label'>Transactions</div><div class='val'>%u</div>"
-        "<div class='label'>Difficulty</div><div class='val'>%.6f</div>"
-        "<div class='label'>Merkle Root</div><div class='val mono'>%s</div>"
-        "<div class='label'>Sapling Root</div><div class='val mono'>%s</div>"
-        "<div class='label'>Nonce</div><div class='val mono'>%s</div>"
-        "<div class='label'>Bits</div><div class='val'>0x%08x</div>"
-        "<div class='label'>Sapling &Delta;</div><div class='val amount'>%s ZCL</div>"
-        "<div class='label'>Sprout &Delta;</div><div class='val amount'>%s ZCL</div>"
-        "</div></div>",
-        height, hash, height, tip - height + 1, ts, bi->nTx,
-        get_difficulty(bi), merkle, sapling_root, nonce,
-        bi->nBits, sap_val, sprout_val);
+        APPEND(off, r, max, "<div class='pager'>");
+        if (height > 0)
+            APPEND(off, r, max, "<a href='/explorer/block/%d'>&laquo; Block %s</a>", height - 1, prev_fmt);
+        if (height < tip)
+            APPEND(off, r, max, "<a href='/explorer/block/%d'>Block %s &raquo;</a>", height + 1, next_fmt);
+        APPEND(off, r, max, "</div>");
+
+        APPEND(off, r, max,
+            "<h2>Block %s</h2>"
+            "<div class='card'><div class='grid'>"
+            "<div class='label'>Hash</div><div class='val hash'>%s</div>"
+            "<div class='label'>Height</div><div class='val'>%s</div>"
+            "<div class='label'>Confirmations</div><div class='val'>%s</div>"
+            "<div class='label'>Time</div><div class='val'>%s</div>"
+            "<div class='label'>Transactions</div><div class='val'>%u</div>"
+            "<div class='label'>Difficulty</div><div class='val'>%.6f</div>"
+            "<div class='label'>Merkle Root</div><div class='val mono'>%s</div>"
+            "<div class='label'>Sapling Root</div><div class='val mono'>%s</div>"
+            "<div class='label'>Nonce</div><div class='val mono'>%s</div>"
+            "<div class='label'>Bits</div><div class='val'>0x%08x</div>"
+            "<div class='label'>Sapling &Delta;</div><div class='val amount'>%s ZCL</div>"
+            "<div class='label'>Sprout &Delta;</div><div class='val amount'>%s ZCL</div>"
+            "</div></div>",
+            h_fmt, hash, h_fmt, conf_fmt, ts, bi->nTx,
+            get_difficulty(bi), merkle, sapling_root, nonce,
+            bi->nBits, sap_val, sprout_val);
+    }
 
     /* Load block from disk to show transactions */
     struct block blk;
@@ -914,7 +957,8 @@ static size_t serve_tx_rpc(const char *param, uint8_t *r, size_t max)
     char blockhash[65] = "";
     json_extract_str(result, "blockhash", blockhash, sizeof(blockhash));
 
-    APPEND(off, r, max, EXPLORER_HEADER("Transaction") EXPLORER_NAV);
+    APPEND(off, r, max, EXPLORER_HEADER("Transaction"));
+    off += explorer_emit_nav((char *)r + off, max - off, NULL);
 
     APPEND(off, r, max,
         "<h2>Transaction</h2>"
@@ -1108,7 +1152,8 @@ static size_t serve_tx(const char *param, uint8_t *r, size_t max)
     int tip = active_chain_height(&g_ms->chain_active);
     int confirmations = in_mempool ? 0 : (block_height >= 0 ? tip - block_height + 1 : 0);
 
-    APPEND(off, r, max, EXPLORER_HEADER("Transaction") EXPLORER_NAV);
+    APPEND(off, r, max, EXPLORER_HEADER("Transaction"));
+    off += explorer_emit_nav((char *)r + off, max - off, NULL);
 
     /* Header info */
     char txid_hex[65];
@@ -1131,11 +1176,14 @@ static size_t serve_tx(const char *param, uint8_t *r, size_t max)
         in_mempool ? "<span class='tag tag-mempool'>Mempool</span>" : "Confirmed",
         confirmations);
 
-    if (block_height >= 0)
+    if (block_height >= 0) {
+        char bh_fmt[32];
+        format_with_commas(bh_fmt, sizeof(bh_fmt), block_height);
         APPEND(off, r, max,
             "<div class='label'>Block</div><div class='val'>"
-            "<a href='/explorer/block/%d'>%d</a></div>",
-            block_height, block_height);
+            "<a href='/explorer/block/%d'>%s</a></div>",
+            block_height, bh_fmt);
+    }
 
     APPEND(off, r, max,
         "<div class='label'>Version</div><div class='val'>%d%s</div>"
@@ -1180,12 +1228,39 @@ static size_t serve_tx(const char *param, uint8_t *r, size_t max)
             char prev_short[18];
             snprintf(prev_short, sizeof(prev_short), "%.8s...%.4s",
                      prev_hash, prev_hash + 60);
-            APPEND(off, r, max,
-                "<div class='io-row'>"
-                "<div class='io-idx'>%zu</div>"
-                "<div class='io-addr'><a href='/explorer/tx/%s'>%s</a>:%u</div>"
-                "<div class='io-val'></div></div>",
-                i, prev_hash, prev_short, tx.vin[i].prevout.n);
+
+            /* Look up previous output value from tx_outputs table */
+            char in_val[32] = "?";
+            if (g_ndb && g_ndb->db) {
+                sqlite3_stmt *vs = NULL;
+                if (sqlite3_prepare_v2(g_ndb->db,
+                        "SELECT value FROM tx_outputs WHERE txid=? AND vout=?",
+                        -1, &vs, NULL) == SQLITE_OK && vs) {
+                    sqlite3_bind_blob(vs, 1, tx.vin[i].prevout.hash.data, 32, SQLITE_STATIC);
+                    sqlite3_bind_int(vs, 2, (int)tx.vin[i].prevout.n);
+                    if (sqlite3_step(vs) == SQLITE_ROW) {
+                        int64_t prev_val = sqlite3_column_int64(vs, 0);
+                        format_zcl(in_val, sizeof(in_val), prev_val);
+                    }
+                    sqlite3_finalize(vs);
+                }
+            }
+
+            if (in_val[0] != '?') {
+                APPEND(off, r, max,
+                    "<div class='io-row'>"
+                    "<div class='io-idx'>%zu</div>"
+                    "<div class='io-addr'><a href='/explorer/tx/%s'>%s</a>:%u</div>"
+                    "<div class='io-val'>%s ZCL</div></div>",
+                    i, prev_hash, prev_short, tx.vin[i].prevout.n, in_val);
+            } else {
+                APPEND(off, r, max,
+                    "<div class='io-row'>"
+                    "<div class='io-idx'>%zu</div>"
+                    "<div class='io-addr'><a href='/explorer/tx/%s'>%s</a>:%u</div>"
+                    "<div class='io-val' style='color:#666'>?</div></div>",
+                    i, prev_hash, prev_short, tx.vin[i].prevout.n);
+            }
         }
     }
     APPEND(off, r, max, "</div>");
@@ -1368,7 +1443,8 @@ static size_t serve_address(const char *param, uint8_t *r, size_t max)
     else if (dest.type == DEST_SCRIPT_ID)
         addr_hash = dest.id.script.hash.data;
 
-    APPEND(off, r, max, EXPLORER_HEADER("Address") EXPLORER_NAV);
+    APPEND(off, r, max, EXPLORER_HEADER("Address"));
+    off += explorer_emit_nav((char *)r + off, max - off, NULL);
 
     APPEND(off, r, max,
         "<h2>Address</h2>"
@@ -1503,8 +1579,9 @@ static size_t serve_search(const char *query, uint8_t *r, size_t max)
     char safe[512];
     html_escape(safe, sizeof(safe), q);
     size_t off = 0;
+    APPEND(off, r, max, EXPLORER_HEADER("Search"));
+    off += explorer_emit_nav((char *)r + off, max - off, NULL);
     APPEND(off, r, max,
-        EXPLORER_HEADER("Search") EXPLORER_NAV
         "<h2>Search Results</h2>"
         "<div class='card'>"
         "<p>No results for: <code>%s</code></p>"
@@ -1774,7 +1851,8 @@ static void *tokens_compute_thread(void *arg)
     size_t max = 131072;
     size_t off = 0;
 
-    APPEND(off, r, max, EXPLORER_HEADER("ZSLP Tokens") EXPLORER_NAV);
+    APPEND(off, r, max, EXPLORER_HEADER("ZSLP Tokens"));
+    off += explorer_emit_nav((char *)r + off, max - off, "tokens");
 
     /* Count tokens and transfers */
     int64_t token_count = 0, xfer_count = 0;
@@ -2084,7 +2162,8 @@ static size_t serve_token_detail(const char *token_id_hex, uint8_t *r, size_t ma
         }
     }
 
-    APPEND(off, r, max, EXPLORER_HEADER("Token") EXPLORER_NAV);
+    APPEND(off, r, max, EXPLORER_HEADER("Token"));
+    off += explorer_emit_nav((char *)r + off, max - off, "tokens");
 
     /* Token header */
     APPEND(off, r, max,
@@ -2411,7 +2490,8 @@ static void *hodl_compute_thread(void *arg)
     /* Get current >1yr percentage for the headline */
     double current_pct = pct_over_1yr[npts - 1];
 
-    APPEND(off, r, max, EXPLORER_HEADER("HODL Wave") EXPLORER_NAV);
+    APPEND(off, r, max, EXPLORER_HEADER("HODL Wave"));
+    off += explorer_emit_nav((char *)r + off, max - off, "hodl");
 
     /* Newspaper-style headline */
     APPEND(off, r, max,
@@ -2577,7 +2657,7 @@ static size_t serve_events(uint8_t *r, size_t max)
     char *response = (char *)r;
 
     APPEND(off, response, max, EXPLORER_HEADER("Event Log — ZClassic23"));
-    APPEND(off, response, max, EXPLORER_NAV);
+    off += explorer_emit_nav(response + off, max - off, "events");
 
     APPEND(off, response, max,
         "<div class='content'>"
@@ -2699,8 +2779,14 @@ size_t explorer_handle_request(const char *method, const char *path,
         return 0;
     }
 
-    if (strcmp(path, "/explorer") == 0 || strcmp(path, "/explorer/") == 0)
-        return serve_dashboard(response, response_max);
+    if (strcmp(path, "/explorer") == 0 || strcmp(path, "/explorer/") == 0 ||
+        strncmp(path, "/explorer?", 10) == 0 || strncmp(path, "/explorer/?", 11) == 0) {
+        int page = 0;
+        const char *pp = strstr(path, "page=");
+        if (pp) page = atoi(pp + 5);
+        if (page < 0) page = 0;
+        return serve_dashboard_with_page(response, response_max, page);
+    }
 
     if (strcmp(path, "/explorer/stats") == 0 || strcmp(path, "/explorer/stats/") == 0)
         return serve_stats(response, response_max);

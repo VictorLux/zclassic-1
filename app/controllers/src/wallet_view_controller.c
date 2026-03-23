@@ -28,6 +28,7 @@
 static const char *g_datadir = NULL;
 
 #define PRIMARY_ADDR "t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn"
+#define FEE_ZCL 0.0001
 
 /* ── RPC to running node for live balance ──────────────────── */
 
@@ -947,7 +948,7 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
         "align-items:baseline'>"
         "<div style='color:#6b7280;font-size:12px;font-weight:600;"
         "text-transform:uppercase;letter-spacing:0.05em'>"
-        "Transparent UTXOs</div>"
+        "Your Coins</div>"
         "<div style='color:#34d399;font-size:14px;font-weight:700;"
         "font-family:monospace'>%.8f ZCL</div></div>",
         (double)transparent / (double)ZATOSHI_PER_ZCL);
@@ -992,6 +993,38 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
                 char lower_tx[65];
                 txid_lower(txid, lower_tx, sizeof(lower_tx));
 
+                /* Format height with commas */
+                char h_fmt[20];
+                {
+                    char tmp[20];
+                    int tl = snprintf(tmp, sizeof(tmp), "%d", h);
+                    int ci = 0, ti = 0;
+                    int digits_left = tl;
+                    for (int di = 0; di < tl && ci < (int)sizeof(h_fmt)-1; di++) {
+                        h_fmt[ci++] = tmp[ti++];
+                        digits_left--;
+                        if (digits_left > 0 && digits_left % 3 == 0)
+                            h_fmt[ci++] = ',';
+                    }
+                    h_fmt[ci] = '\0';
+                }
+                /* Format confirmations with commas */
+                char c_fmt[20];
+                {
+                    char tmp[20];
+                    int tl = snprintf(tmp, sizeof(tmp), "%d", confs);
+                    int ci = 0, ti = 0;
+                    int digits_left = tl;
+                    for (int di = 0; di < tl && ci < (int)sizeof(c_fmt)-1; di++) {
+                        c_fmt[ci++] = tmp[ti++];
+                        digits_left--;
+                        if (digits_left > 0 && digits_left % 3 == 0)
+                            c_fmt[ci++] = ',';
+                    }
+                    c_fmt[ci] = '\0';
+                }
+                const char *type_label = (stype && stype[2] == 'S') ? "Script" : "Standard";
+
                 APPEND(off, r, max,
                     "<div style='display:flex;justify-content:space-between;"
                     "align-items:center;padding:8px 0;"
@@ -1006,11 +1039,11 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
                     "<span style='color:#34d399;font-size:14px;"
                     "font-weight:700;font-family:monospace'>%.8f</span>"
                     "<span style='color:#555;font-size:11px;"
-                    "margin-left:6px'>h=%d %dc</span>"
+                    "margin-left:6px'>Block %s &middot; %s conf</span>"
                     "</div></div>",
                     lower_tx, short_tx, vout,
-                    stype[2] == 'S' ? "z" : "t", stype,
-                    (double)val / 1e8, h, confs);
+                    stype && stype[2] == 'S' ? "z" : "t", type_label,
+                    (double)val / 1e8, h_fmt, c_fmt);
                 shown++;
             }
             sqlite3_finalize(us);
@@ -1036,8 +1069,8 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
                 "<div style='color:#f59e0b;font-weight:700;"
                 "margin-bottom:4px'>Balance Discrepancy</div>"
                 "<div style='color:#92712a'>"
-                "getbalance reports %.8f ZCL (wallet_utxos cache)"
-                "<br>Ground truth is %.8f ZCL "
+                "Cached balance: %.8f ZCL"
+                "<br>Chain-verified: %.8f ZCL "
                 "(%d UTXOs from chain UTXO set)"
                 "<br>Difference: %.8f ZCL &mdash; "
                 "run <code style='color:#f59e0b'>rescanwallet</code>"
@@ -1047,18 +1080,6 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
                 (double)discrepancy / 1e8);
         }
     }
-
-    /* ── Live Events ticker (from ring buffer via /api/events) ── */
-    APPEND(off, r, max,
-        "<div style='margin-top:20px'>"
-        "<div style='color:#6b7280;font-size:12px;font-weight:600;"
-        "text-transform:uppercase;letter-spacing:0.05em;"
-        "margin-bottom:8px'>Live Events</div>"
-        "<div id='evticker' style='font-family:monospace;font-size:11px;"
-        "color:#555;background:#0a0a0a;border-radius:6px;padding:8px;"
-        "max-height:120px;overflow:hidden;border:1px solid #1a1a1a'>"
-        "<div style='color:#333'>Connecting...</div>"
-        "</div></div>");
 
     /* ── Recent transactions ─────────────────────────────────── */
     APPEND(off, r, max,
@@ -1152,27 +1173,6 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
         "bd.textContent=t;}"
         "}).catch(function(){});"
         "},2000);"
-        /* Event ticker: poll ring buffer every 2s */
-        "function loadEvents(){"
-        "fetch('zcl://node/api/events?count=5')"
-        ".then(function(r){return r.json()})"
-        ".then(function(d){"
-        "var el=document.getElementById('evticker');"
-        "if(!el||!d.events)return;"
-        "var h='';"
-        "for(var i=d.events.length-1;i>=0;i--){"
-        "var e=d.events[i];"
-        "var ts=new Date(e.timestamp_us/1000).toLocaleTimeString();"
-        "var c=e.type.startsWith('chain.')?'#34d399':"
-        "e.type.startsWith('peer.')?'#60a5fa':"
-        "e.type.startsWith('tx.')?'#a78bfa':'#555';"
-        "h+='<div style=\"padding:2px 0\">'+"
-        "'<span style=\"color:#444\">'+ts+'</span> '+"
-        "'<span style=\"color:'+c+'\">'+e.type+'</span> '+"
-        "'<span style=\"color:#666\">'+(e.payload||'')+'</span></div>';}"
-        "if(h)el.innerHTML=h;"
-        "}).catch(function(){});}"
-        "loadEvents();setInterval(loadEvents,2000);"
         "</script>");
 
     emit_footer(r, max, &off);
@@ -1204,7 +1204,7 @@ static size_t serve_send(uint8_t *r, size_t max) {
 
     APPEND(off, r, max,
         "<div class='card'>"
-        "<form id='send-form' method='POST' action='zcl://node/wallet/send/confirm' "
+        "<form id='send-form' method='POST' action='zcl://node/wallet/send/review' "
         "onsubmit='return validateSend()'>"
         "<label class='label'>To</label>"
         "<input type='text' id='addr' name='address' "
@@ -1223,7 +1223,7 @@ static size_t serve_send(uint8_t *r, size_t max) {
         "function updateRemaining(){"
         "var a=parseFloat(document.getElementById('amt').value)||0;"
         "var r=document.getElementById('remaining');"
-        "if(a>0&&a<=BAL){r.textContent='Remaining: '+(BAL-a-0.0001).toFixed(8)+' ZCL';"
+        "if(a>0&&a<=BAL){r.textContent='Remaining: '+(BAL-a-%.4f).toFixed(8)+' ZCL';"
         "r.style.color='#6b7280';}"
         "else if(a>BAL){r.textContent='Insufficient funds';"
         "r.style.color='#f87171';}"
@@ -1240,12 +1240,12 @@ static size_t serve_send(uint8_t *r, size_t max) {
         "if(isNaN(amt)||amt<=0){"
         "document.getElementById('amt-err').textContent="
         "'Enter an amount';return false;}"
-        "if(amt+0.0001>BAL){"
+        "if(amt+%.4f>BAL){"
         "document.getElementById('amt-err').textContent="
         "'Insufficient funds';return false;}"
         "return true;}"
         "</script>",
-        (double)balance / (double)ZATOSHI_PER_ZCL);
+        (double)balance / (double)ZATOSHI_PER_ZCL, FEE_ZCL, FEE_ZCL);
 
     emit_footer(r, max, &off);
     return off;
@@ -1259,7 +1259,9 @@ static size_t serve_receive(uint8_t *r, size_t max) {
 
     /* QR code is the hero — the address IS the page */
     APPEND(off, r, max,
-        "<div style='text-align:center;padding:16px 0'>");
+        "<div style='text-align:center;padding:16px 0'>"
+        "<div style='color:#6b7280;font-size:14px;margin-bottom:12px'>"
+        "Share this address to receive ZCL</div>");
     off = emit_qr_svg(r, max, off, PRIMARY_ADDR, 5);
     APPEND(off, r, max,
         "<div class='addr-box' style='margin-top:16px'>"
@@ -1374,11 +1376,15 @@ static size_t serve_history(uint8_t *r, size_t max) {
         "<div class='sub'>%d transaction%s</div>",
         tx_count, tx_count == 1 ? "" : "s");
 
-    /* Timeline view (tx-cards) */
+    /* Timeline view (tx-cards).
+     * Use from_me to determine send vs receive.
+     * Compute net value from wallet UTXOs for this txid. */
     sqlite3_stmt *s = NULL;
     if (sqlite3_prepare_v2(db,
             "SELECT hex(wt.txid), wt.block_height, b.time, "
-            "wt.fee "
+            "wt.from_me, wt.fee, "
+            "COALESCE((SELECT SUM(wu.value) FROM wallet_utxos wu "
+            "  WHERE wu.txid = wt.txid),0) "
             "FROM wallet_transactions wt "
             "LEFT JOIN blocks b ON wt.block_height = b.height "
             "ORDER BY wt.block_height DESC LIMIT 100",
@@ -1387,8 +1393,14 @@ static size_t serve_history(uint8_t *r, size_t max) {
             const char *txid = (const char *)sqlite3_column_text(s, 0);
             int h = sqlite3_column_int(s, 1);
             int64_t btime = sqlite3_column_int64(s, 2);
-            int64_t net_val = sqlite3_column_int64(s, 3);
+            int from_me = sqlite3_column_int(s, 3);
+            int64_t fee = sqlite3_column_int64(s, 4);
+            int64_t wallet_output = sqlite3_column_int64(s, 5);
             if (!txid) continue;
+
+            bool is_recv = (from_me == 0);
+            int64_t display_val = is_recv ? wallet_output :
+                                  (fee > 0 ? fee : wallet_output);
 
             char short_tx[18], lower_tx[65], rel_time[48], ts[32];
             txid_short(txid, short_tx, sizeof(short_tx));
@@ -1405,8 +1417,21 @@ static size_t serve_history(uint8_t *r, size_t max) {
             int confs = (tip > 0 && h > 0) ? (tip - h + 1) : 0;
             if (confs < 0) confs = 0;
 
-            bool is_recv = (net_val >= 0);
-            int64_t abs_val = is_recv ? net_val : -net_val;
+            /* Format height with commas */
+            char h_fmt[20];
+            {
+                char tmp[20];
+                int tl = snprintf(tmp, sizeof(tmp), "%d", h);
+                int ci = 0, ti = 0;
+                int digits_left = tl;
+                for (int di = 0; di < tl && ci < (int)sizeof(h_fmt)-1; di++) {
+                    h_fmt[ci++] = tmp[ti++];
+                    digits_left--;
+                    if (digits_left > 0 && digits_left % 3 == 0)
+                        h_fmt[ci++] = ',';
+                }
+                h_fmt[ci] = '\0';
+            }
 
             APPEND(off, r, max,
                 "<div class='tx-card' style='border-left-color:%s'>"
@@ -1414,16 +1439,16 @@ static size_t serve_history(uint8_t *r, size_t max) {
                 "<div class='tx-meta'>"
                 "<span class='tx-time' title='%s'>%s</span>"
                 "<a href='/explorer/tx/%s' class='tx-hash'>%s</a>"
-                "<span class='tx-conf'>h=%d &middot; %d conf%s</span>"
+                "<span class='tx-conf'>Block %s &middot; %d conf%s</span>"
                 "</div></div>",
                 is_recv ? "#33ff99" : "#ff6666",
                 is_recv ? "recv" : "send",
                 is_recv ? "+" : "-",
-                (double)abs_val / 1e8,
+                (double)display_val / 1e8,
                 esc_ts,
                 esc_rel,
                 esc_lower, esc_short,
-                h, confs, confs == 1 ? "" : "s");
+                h_fmt, confs, confs == 1 ? "" : "s");
         }
         sqlite3_finalize(s);
     }
@@ -1443,7 +1468,7 @@ static size_t serve_coins(uint8_t *r, size_t max) {
     size_t off = emit_header(r, max, "Coins — ZClassic23", "/wallet/coins");
     APPEND(off, r, max, "<h2>Coin Audit</h2>"
         "<div style='color:#6b7280;font-size:13px;margin-bottom:16px'>"
-        "Every zatoshi, verified against the chain UTXO set.</div>");
+        "Every coin, verified against the chain UTXO set.</div>");
 
     /* Ground-truth transparent UTXOs (P2PKH + P2SH change) */
     APPEND(off, r, max,
@@ -1502,7 +1527,7 @@ static size_t serve_coins(uint8_t *r, size_t max) {
                 "</tr>",
                 lower_tx, short_tx, vout,
                 stype && stype[2] == 'S' ? "z" : "t",
-                stype ? stype : "?",
+                (stype && stype[2] == 'S') ? "Script" : "Standard",
                 (double)val / 1e8, h, confs);
             t_total += val;
             t_count++;
@@ -1528,7 +1553,7 @@ static size_t serve_coins(uint8_t *r, size_t max) {
     if (z_notes > 0) {
         APPEND(off, r, max,
             "<div class='overflow-x'>"
-            "<table><tr><th>Commitment</th>"
+            "<table><tr><th>Note ID</th>"
             "<th>Amount</th><th>Height</th></tr>");
         s = NULL;
         if (sqlite3_prepare_v2(db,
@@ -1603,10 +1628,10 @@ static size_t serve_coins(uint8_t *r, size_t max) {
         "<div class='overflow-x'>"
         "<table><tr><th>Source</th><th>Balance</th>"
         "<th>UTXOs</th><th>Status</th></tr>"
-        "<tr><td>Chain UTXO set (ground truth)</td>"
+        "<tr><td>Chain UTXO set (chain-verified)</td>"
         "<td class='zcl'>%.8f</td><td>%d</td>"
         "<td><span class='pill pill-t'>verified</span></td></tr>"
-        "<tr><td>SQLite wallet_utxos (cache)</td>"
+        "<tr><td>Cached balance</td>"
         "<td class='zcl'>%.8f</td><td>%d</td>"
         "<td>%s</td></tr>"
         "</table></div>",
@@ -1661,7 +1686,7 @@ static size_t serve_shield(uint8_t *r, size_t max, const char *query) {
         return off;
     }
 
-    double fee = 0.0001;
+    double fee = FEE_ZCL;
     double total_cost = amount + fee;
 
     size_t off = emit_header(r, max, "Shield Funds — ZClassic23", "/wallet");
@@ -1730,17 +1755,51 @@ static size_t serve_shield_confirm(uint8_t *r, size_t max, const char *query) {
         return off;
     }
 
-    /* Execute z_sendmany via RPC to the running node.
-     * From: t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn
-     * To: auto-generated z-address (node handles it)
-     * This calls the running node's RPC internally. */
+    /* Look up a z-address from the wallet to use as destination */
+    char z_dest[256] = "";
+    {
+        sqlite3 *sdb = open_db();
+        if (sdb) {
+            sqlite3_stmt *zs = NULL;
+            if (sqlite3_prepare_v2(sdb,
+                    "SELECT address FROM wallet_sapling_keys "
+                    "WHERE address IS NOT NULL AND length(address) > 0 "
+                    "ORDER BY rowid LIMIT 1",
+                    -1, &zs, NULL) == SQLITE_OK && zs) {
+                if (sqlite3_step(zs) == SQLITE_ROW) {
+                    const char *a = (const char *)sqlite3_column_text(zs, 0);
+                    if (a) snprintf(z_dest, sizeof(z_dest), "%s", a);
+                }
+                sqlite3_finalize(zs);
+            }
+            sqlite3_close(sdb);
+        }
+    }
 
-    /* Build RPC call */
-    char rpc_body[512];
+    if (!z_dest[0]) {
+        APPEND(off, r, max,
+            "<div class='card' style='border-left-color:#ff4444;padding:20px'>"
+            "<div style='text-align:center'>"
+            "<div style='font-size:40px;margin-bottom:8px'>&#x274C;</div>"
+            "<div style='font-size:20px;color:#ff4444;font-weight:700'>"
+            "No Shielded Address Available</div>"
+            "<div style='color:#888;font-size:13px;margin-top:8px'>"
+            "The wallet has no shielded addresses. Generate one with:<br>"
+            "<code style='color:#4db8ff'>zcl-rpc z_getnewaddress</code></div>"
+            "</div></div>"
+            "<div style='text-align:center;margin:16px'>"
+            "<a href='/wallet' style='color:#4db8ff;font-size:16px'>"
+            "Back to Wallet</a></div>");
+        emit_footer(r, max, &off);
+        return off;
+    }
+
+    /* Build RPC call: send FROM transparent TO shielded z-address */
+    char rpc_body[1024];
     snprintf(rpc_body, sizeof(rpc_body),
         "{\"method\":\"z_sendmany\",\"params\":[\"" PRIMARY_ADDR "\","
-        "[{\"address\":\"" PRIMARY_ADDR "\",\"amount\":%.8f}]"
-        ",1,0.0001],\"id\":1}", amount);
+        "[{\"address\":\"%s\",\"amount\":%.8f}]"
+        ",1,%.4f],\"id\":1}", z_dest, amount, FEE_ZCL);
 
     /* Read cookie for auth */
     char cookie[256] = "";
@@ -1953,6 +2012,108 @@ static size_t serve_pulse(uint8_t *r, size_t max) {
         peers, sync, mempool);
 }
 
+/* ── Send Review (/wallet/send/review POST) ─────────────────── */
+/* Intermediate confirmation step: show details before executing. */
+
+static size_t serve_send_review(uint8_t *r, size_t max,
+                                 const uint8_t *body, size_t body_len) {
+    size_t off = emit_header(r, max, "Review Send", "/wallet/send");
+
+    char address[128] = "", amount_str[32] = "";
+    parse_form_field(body, body_len, "address", address, sizeof(address));
+    parse_form_field(body, body_len, "amount", amount_str, sizeof(amount_str));
+
+    /* Validate */
+    bool addr_ok = strlen(address) >= 26 && strlen(address) <= 96;
+    for (size_t i = 0; addr_ok && address[i]; i++)
+        if (!((address[i]>='a'&&address[i]<='z') || (address[i]>='A'&&address[i]<='Z') ||
+              (address[i]>='0'&&address[i]<='9')))
+            addr_ok = false;
+
+    double amount = strtod(amount_str, NULL);
+    if (!addr_ok || amount <= 0) {
+        APPEND(off, r, max,
+            "<div style='text-align:center;padding:32px'>"
+            "<div style='font-size:48px;color:#f87171'>&#x2717;</div>"
+            "<h2 style='color:#e5e7eb'>Invalid Transaction</h2>"
+            "<p style='color:#6b7280'>%s</p>"
+            "<a href='/wallet/send' style='color:#34d399'>Try Again</a>"
+            "</div>",
+            !addr_ok ? "Invalid address" : "Invalid amount");
+        emit_footer(r, max, &off);
+        return off;
+    }
+
+    bool is_shielded = (strncmp(address, "zs1", 3) == 0);
+    double fee = FEE_ZCL;
+    double total_deducted = amount + fee;
+
+    /* Query balance */
+    int64_t balance = 0;
+    {
+        sqlite3 *db = open_db();
+        if (db) {
+            balance = query_ground_truth_balance(db, NULL);
+            sqlite3_close(db);
+        }
+    }
+    double remaining = (double)balance / (double)ZATOSHI_PER_ZCL - total_deducted;
+
+    char safe_addr[256];
+    html_escape(safe_addr, sizeof(safe_addr), address);
+
+    APPEND(off, r, max,
+        "<div class='card' style='border-left-color:%s;padding:20px'>"
+        "<div style='text-align:center;margin-bottom:16px'>"
+        "<div style='font-size:14px;color:#888'>Review Transaction</div>"
+        "</div>"
+        "<table style='width:100%%;font-size:14px'>"
+        "<tr><td style='color:#888;padding:8px 0'>To</td>"
+        "<td style='color:#4db8ff;font-family:monospace;font-size:12px;"
+        "word-break:break-all;text-align:right'>%s</td></tr>"
+        "<tr><td style='color:#888;padding:8px 0'>Amount</td>"
+        "<td style='color:#34d399;font-size:18px;font-weight:700;"
+        "text-align:right'>%.8f ZCL</td></tr>"
+        "<tr><td style='color:#888;padding:8px 0'>Fee</td>"
+        "<td style='color:#6b7280;text-align:right'>%.4f ZCL</td></tr>"
+        "<tr style='border-top:1px solid #333'>"
+        "<td style='color:#888;padding:8px 0;font-weight:700'>Total deducted</td>"
+        "<td style='color:#e5e7eb;font-weight:700;text-align:right'>"
+        "%.8f ZCL</td></tr>"
+        "<tr><td style='color:#888;padding:8px 0'>Remaining balance</td>"
+        "<td style='color:#6b7280;text-align:right'>%.8f ZCL</td></tr>"
+        "<tr><td style='color:#888;padding:8px 0'>Privacy</td>"
+        "<td style='text-align:right'>"
+        "<span class='pill %s'>%s</span></td></tr>"
+        "</table></div>",
+        is_shielded ? "#a78bfa" : "#33ff99",
+        safe_addr, amount, fee, total_deducted, remaining,
+        is_shielded ? "pill-z" : "pill-t",
+        is_shielded ? "Private (shielded)" : "Public (transparent)");
+
+    /* Cancel / Confirm buttons */
+    APPEND(off, r, max,
+        "<div style='display:flex;gap:10px;margin:16px 0'>"
+        "<a href='/wallet/send' style='flex:1;background:#333;color:#e8e8e8;"
+        "padding:12px;border-radius:6px;text-align:center;"
+        "font-weight:700;text-decoration:none;font-size:16px'>Cancel</a>"
+        "<form method='POST' action='zcl://node/wallet/send/confirm' "
+        "style='flex:2;margin:0'>"
+        "<input type='hidden' name='address' value='%s'>"
+        "<input type='hidden' name='amount' value='%.8f'>"
+        "<button type='submit' style='background:%s;color:%s;"
+        "border:none;padding:12px;border-radius:6px;font-size:16px;"
+        "font-weight:700;cursor:pointer;width:100%%'"
+        " onclick='this.disabled=true;this.form.submit()'>"
+        "Confirm Send</button></form></div>",
+        safe_addr, amount,
+        is_shielded ? "#a78bfa" : "#34d399",
+        is_shielded ? "#fff" : "#0a0a0a");
+
+    emit_footer(r, max, &off);
+    return off;
+}
+
 /* ── Send Confirm (/wallet/send/confirm POST) ──────────────── */
 
 static size_t serve_send_confirm(uint8_t *r, size_t max,
@@ -1991,8 +2152,8 @@ static size_t serve_send_confirm(uint8_t *r, size_t max,
 
     if (is_shielded) {
         snprintf(params, sizeof(params),
-            "[\"" PRIMARY_ADDR "\", [{\"address\":\"%s\",\"amount\":%.8f}], 1, 0.0001]",
-            address, amount);
+            "[\"" PRIMARY_ADDR "\", [{\"address\":\"%s\",\"amount\":%.8f}], 1, %.4f]",
+            address, amount, FEE_ZCL);
         wallet_rpc_call_port("z_sendmany", params, rpc_buf, sizeof(rpc_buf), 18232, NULL);
     } else {
         snprintf(params, sizeof(params), "[\"%s\", %.8f]", address, amount);
@@ -2102,6 +2263,8 @@ size_t wallet_view_handle_request(const char *method, const char *path,
         return serve_dashboard(response, response_max);
     if (strcmp(path, "/wallet/send") == 0)
         return serve_send(response, response_max);
+    if (strcmp(path, "/wallet/send/review") == 0)
+        return serve_send_review(response, response_max, body, body_len);
     if (strcmp(path, "/wallet/send/confirm") == 0)
         return serve_send_confirm(response, response_max, body, body_len);
     if (strncmp(path, "/wallet/shield/confirm", 22) == 0) {

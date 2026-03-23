@@ -83,22 +83,22 @@ int test_store(void)
 
     printf("store: POST /store/buy/1 creates order... ");
     {
-        const char *body = "customer_addr=t1TestAddr123";
+        const char *body = "customer_addr=t1TestAddr1234567890abcdefghijklmn";
         size_t n = store_handle_request("POST", "/store/buy/1",
                                          (const uint8_t *)body, strlen(body),
                                          resp, sizeof(resp), test_datadir);
         bool ok = (n > 0);
         ok = ok && (strstr((char *)resp, "200 OK") != NULL);
         ok = ok && (strstr((char *)resp, "Order #") != NULL);
-        ok = ok && (strstr((char *)resp, "t1TestAddr123") != NULL);
-        ok = ok && (strstr((char *)resp, "0.01000000 ZCL") != NULL);
+        ok = ok && (strstr((char *)resp, "t1TestAddr1234567890abcdefghijklmn") != NULL);
+        ok = ok && (strstr((char *)resp, "0.01") != NULL);
         if (ok) printf("OK (%zu bytes)\n", n);
         else { printf("FAIL\n"); failures++; }
     }
 
     printf("store: POST /store/buy/999 returns 404... ");
     {
-        const char *body = "customer_addr=t1Test";
+        const char *body = "customer_addr=t1TestAddr1234567890abcdefghijklmn";
         size_t n = store_handle_request("POST", "/store/buy/999",
                                          (const uint8_t *)body, strlen(body),
                                          resp, sizeof(resp), test_datadir);
@@ -335,7 +335,7 @@ int test_store(void)
                                          resp, sizeof(resp), test_datadir);
         bool ok = (n > 0);
         ok = ok && (strstr((char *)resp, "200 OK") != NULL);
-        ok = ok && (strstr((char *)resp, "0.01000000 ZCL") != NULL);
+        ok = ok && (strstr((char *)resp, "0.01") != NULL);
         ok = ok && (strstr((char *)resp, "customer_addr") != NULL);
         ok = ok && (strstr((char *)resp, "<form") != NULL);
         if (ok) printf("OK\n");
@@ -344,14 +344,14 @@ int test_store(void)
 
     printf("store: e2e: POST /store/buy/1 creates order with z-addr... ");
     {
-        const char *body = "customer_addr=t1Test";
+        const char *body = "customer_addr=t1TestAddr1234567890abcdefghijklmn";
         size_t n = store_handle_request("POST", "/store/buy/1",
                                          (const uint8_t *)body, strlen(body),
                                          resp, sizeof(resp), test_datadir);
         bool ok = (n > 0);
         ok = ok && (strstr((char *)resp, "200 OK") != NULL);
         ok = ok && (strstr((char *)resp, "Order #") != NULL);
-        ok = ok && (strstr((char *)resp, "t1Test") != NULL);
+        ok = ok && (strstr((char *)resp, "t1TestAddr") != NULL);
         ok = ok && (strstr((char *)resp, "zs1") != NULL);
         if (ok) printf("OK (z-address generated)\n");
         else { printf("FAIL\n"); failures++; }
@@ -675,7 +675,7 @@ int test_store(void)
     {
         uint8_t resp[4096];
         size_t n = store_handle_request("POST", "/store/buy/1",
-            (const uint8_t *)"customer_addr=t1TestAddr123", 27,
+            (const uint8_t *)"customer_addr=t1TestAddr1234567890abcdefghijklmn", 48,
             resp, sizeof(resp), test_datadir);
         resp[n < sizeof(resp) ? n : sizeof(resp) - 1] = '\0';
         /* Should either show a real z-address (if ZK loaded) or 503.
