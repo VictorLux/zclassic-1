@@ -1285,17 +1285,13 @@ bool app_init(struct app_context *ctx)
         }
 
         /* Check if LevelDB UTXO migration has been done.
-         * Only import if tip_height > 0 (node was previously synced).
-         * On a fresh fastsync, tip_height is 0 — skip import. */
+         * Import if chainstate/ LevelDB exists and hasn't been imported yet. */
         uint8_t mig_buf[8];
         size_t mig_len = 0;
         bool migration_done = node_db_state_get(&g_node_db,
             "leveldb_utxo_migrated", mig_buf, sizeof(mig_buf), &mig_len);
 
-        int64_t existing_tip = 0;
-        node_db_state_get_int(&g_node_db, "tip_height", &existing_tip);
-
-        if (!migration_done && existing_tip > 0) {
+        if (!migration_done) {
             char cs_path[1024];
             snprintf(cs_path, sizeof(cs_path), "%s/chainstate",
                      ctx->datadir);
