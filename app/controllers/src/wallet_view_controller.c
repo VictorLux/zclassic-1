@@ -881,61 +881,59 @@ static size_t serve_send(uint8_t *r, size_t max) {
         sqlite3_close(db);
     }
 
-    size_t off = emit_header(r, max, "Send — ZClassic23", "/wallet/send");
+    size_t off = emit_header(r, max, "Send ZCL", "/wallet/send");
+
+    char bal_fmt[32];
+    zcl_format_zcl(bal_fmt, sizeof(bal_fmt), balance);
 
     APPEND(off, r, max,
-        "<h2>Send ZCL</h2>"
-        "<div class='card'>"
-        "<div class='label'>Available Balance</div>"
-        "<div class='value'>%.8f ZCL</div>"
-        "</div>",
-        (double)balance / 1e8);
+        "<div style='text-align:center;padding:16px 0;color:#6b7280;"
+        "font-size:13px'>Available: <span style='color:#34d399;"
+        "font-weight:600'>%s ZCL</span></div>",
+        bal_fmt);
 
     APPEND(off, r, max,
         "<div class='card'>"
         "<form id='send-form' onsubmit='return validateSend()'>"
-        "<label class='label'>To Address</label>"
+        "<label class='label'>To</label>"
         "<input type='text' id='addr' name='address' "
         "placeholder='t1... or zs1...' required>"
         "<div id='addr-err' class='err'></div>"
-        "<label class='label' style='margin-top:12px'>Amount (ZCL)</label>"
+        "<label class='label' style='margin-top:12px'>Amount</label>"
         "<input type='text' id='amt' name='amount' "
-        "placeholder='0.00000000' required>"
+        "placeholder='0.00' required oninput='updateRemaining()'>"
+        "<div id='remaining' class='remaining'></div>"
         "<div id='amt-err' class='err'></div>"
-        "<label class='label' style='margin-top:12px'>Fee (ZCL)</label>"
-        "<input type='text' id='fee' name='fee' value='0.0001'>"
-        "<div id='fee-err' class='err'></div>"
-        "<button type='submit' style='margin-top:16px'>Send Transaction</button>"
-        "</form>"
-        "<p style='color:#666;font-size:12px;margin-top:8px'>"
-        "Transactions are signed locally and broadcast via P2P.</p>"
-        "</div>"
+        "<button type='submit' style='margin-top:16px'>Send</button>"
+        "</form></div>"
         "<script>"
+        "var BAL=%.8f;"
+        "function updateRemaining(){"
+        "var a=parseFloat(document.getElementById('amt').value)||0;"
+        "var r=document.getElementById('remaining');"
+        "if(a>0&&a<=BAL){r.textContent='Remaining: '+(BAL-a-0.0001).toFixed(8)+' ZCL';"
+        "r.style.color='#6b7280';}"
+        "else if(a>BAL){r.textContent='Insufficient funds';"
+        "r.style.color='#f87171';}"
+        "else{r.textContent='';}}"
         "function validateSend(){"
-        "var ok=true;"
         "var a=document.getElementById('addr').value.trim();"
         "var m=document.getElementById('amt').value.trim();"
-        "var f=document.getElementById('fee').value.trim();"
         "document.getElementById('addr-err').textContent='';"
         "document.getElementById('amt-err').textContent='';"
-        "document.getElementById('fee-err').textContent='';"
         "if(!a||a.length<26){"
         "document.getElementById('addr-err').textContent="
-        "'Address is required (t1... or zs1...)';ok=false;}"
+        "'Enter a valid address';return false;}"
         "var amt=parseFloat(m);"
         "if(isNaN(amt)||amt<=0){"
         "document.getElementById('amt-err').textContent="
-        "'Amount must be a positive number';ok=false;}"
-        "var fee=parseFloat(f);"
-        "if(isNaN(fee)||fee<0){"
-        "document.getElementById('fee-err').textContent="
-        "'Fee must be a non-negative number';ok=false;}"
-        "if(ok&&(amt+fee)>%.8f){"
+        "'Enter an amount';return false;}"
+        "if(amt+0.0001>BAL){"
         "document.getElementById('amt-err').textContent="
-        "'Insufficient funds';ok=false;}"
-        "return ok;}"
+        "'Insufficient funds';return false;}"
+        "return true;}"
         "</script>",
-        (double)balance / 1e8);
+        (double)balance / (double)ZATOSHI_PER_ZCL);
 
     emit_footer(r, max, &off);
     return off;
@@ -947,19 +945,15 @@ static size_t serve_receive(uint8_t *r, size_t max) {
     sqlite3 *db = open_db();
     size_t off = emit_header(r, max, "Receive — ZClassic23", "/wallet/receive");
 
-    APPEND(off, r, max, "<h2>Receive ZCL</h2>");
-
-    /* Primary transparent address with visual encoding */
+    /* QR code is the hero — the address IS the page */
     APPEND(off, r, max,
-        "<div class='card'>"
-        "<div class='label'>Your Transparent Address</div>");
-    off = emit_qr_svg(r, max, off, PRIMARY_ADDR, 4);
+        "<div style='text-align:center;padding:16px 0'>");
+    off = emit_qr_svg(r, max, off, PRIMARY_ADDR, 5);
     APPEND(off, r, max,
-        "<div class='addr-box'>" PRIMARY_ADDR "</div>"
-        "<div style='text-align:center;color:#666;font-size:12px'>"
-        "Copy Address</div>"
-        "<div class='sub' style='margin-top:8px'>"
-        "Share this address to receive transparent ZCL.</div>"
+        "<div class='addr-box' style='margin-top:16px'>"
+        PRIMARY_ADDR "</div>"
+        "<div id='copy-msg' style='color:#6b7280;font-size:12px;"
+        "margin-top:4px;height:16px'></div>"
         "</div>");
 
     /* Shielded addresses */
@@ -980,10 +974,8 @@ static size_t serve_receive(uint8_t *r, size_t max) {
 
                 if (count == 0) {
                     APPEND(off, r, max,
-                        "<div class='card' style='border-left-color:#9999ff'>"
-                        "<div class='label'>Shielded Addresses (Sapling)</div>"
-                        "<div class='sub' style='margin-bottom:8px'>"
-                        "Shielded addresses provide full privacy.</div>");
+                        "<div class='card' style='border-left-color:#a78bfa'>"
+                        "<div class='label'>Shielded Address</div>");
                 }
                 APPEND(off, r, max,
                     "<div class='addr-box-sm'>%s</div>", escaped);
@@ -996,16 +988,20 @@ static size_t serve_receive(uint8_t *r, size_t max) {
         sqlite3_close(db);
     }
 
-    /* Click-to-copy: click address → clipboard, border flashes green */
+    /* Click-to-copy with "Copied!" feedback */
     APPEND(off, r, max,
         "<script>"
         "document.querySelectorAll('.addr-box,.addr-box-sm')"
         ".forEach(function(el){"
         "el.style.cursor='pointer';"
         "el.addEventListener('click',function(){"
-        "navigator.clipboard.writeText(this.textContent.trim())"
-        ".then(function(){el.style.borderColor='#33ff99';"
-        "setTimeout(function(){el.style.borderColor='';},1000);});"
+        "var txt=this.textContent.trim();"
+        "navigator.clipboard.writeText(txt).then(function(){"
+        "el.style.borderColor='#34d399';"
+        "var msg=document.getElementById('copy-msg');"
+        "if(msg)msg.textContent='Copied!';"
+        "setTimeout(function(){el.style.borderColor='';"
+        "if(msg)msg.textContent='';},1500);});"
         "});});"
         "</script>");
 
@@ -1021,7 +1017,7 @@ static size_t serve_history(uint8_t *r, size_t max) {
 
     int tip = query_int(db, "SELECT MAX(height) FROM blocks");
 
-    size_t off = emit_header(r, max, "History — ZClassic23", "/wallet/history");
+    size_t off = emit_header(r, max, "Transaction History", "/wallet/history");
 
     int tx_count = query_int(db,
         "SELECT count(*) FROM wallet_transactions");
