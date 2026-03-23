@@ -1714,6 +1714,25 @@ bool app_init(struct app_context *ctx)
             }
             skip_activate = false; /* MUST replay to rebuild UTXO set */
 
+            /* Clear any BLOCK_FAILED flags from stale flat file.
+             * These were set by prior runs that had corrupt UTXO state.
+             * With a fresh UTXO set, all blocks should be re-validated. */
+            {
+                int cleared = 0;
+                size_t ci = 0;
+                struct block_index *cp;
+                while (block_map_next(&g_state.map_block_index, &ci,
+                                       NULL, &cp)) {
+                    if (cp && (cp->nStatus & BLOCK_FAILED_MASK)) {
+                        cp->nStatus &= ~BLOCK_FAILED_MASK;
+                        cleared++;
+                    }
+                }
+                if (cleared > 0)
+                    printf("Cleared BLOCK_FAILED from %d entries "
+                           "(fresh UTXO rebuild)\n", cleared);
+            }
+
             /* Skip UTXO commitment during replay — recomputed at end */
             extern _Atomic bool g_utxo_commitment_skip;
             atomic_store(&g_utxo_commitment_skip, true);
