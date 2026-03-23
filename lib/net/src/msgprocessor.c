@@ -1229,10 +1229,8 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                 sync_set_state(SYNC_BLOCKS_DOWNLOAD,
                                "headers ahead, requesting blocks");
 
-            /* Verify this header chain connects to our tip.
-             * Walk pprev from the last header to our tip height.
-             * If it reaches our actual tip block, this chain extends
-             * our chain — queue its blocks. Otherwise it's a fork. */
+            /* Only queue blocks that chain from our tip. Fork blocks
+             * from orphan chains cause connect_block failures. */
             bool chains_from_tip = false;
             {
                 struct block_index *verify = bi;
