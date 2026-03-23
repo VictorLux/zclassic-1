@@ -133,6 +133,22 @@ static void on_uri_scheme_request(WebKitURISchemeRequest *request,
         }
     }
 
+    const char *http_method = webkit_uri_scheme_request_get_http_method(request);
+    if (!http_method) http_method = "GET";
+
+    uint8_t post_body[4096];
+    size_t post_body_len = 0;
+    if (strcmp(http_method, "POST") == 0) {
+        GInputStream *body_stream = webkit_uri_scheme_request_get_http_body(request);
+        if (body_stream) {
+            gsize bytes_read = 0;
+            g_input_stream_read_all(body_stream, post_body, sizeof(post_body) - 1,
+                                    &bytes_read, NULL, NULL);
+            post_body[bytes_read] = '\0';
+            post_body_len = (size_t)bytes_read;
+        }
+    }
+
     struct timeval t0, t1;
     gettimeofday(&t0, NULL);
 
@@ -141,16 +157,22 @@ static void on_uri_scheme_request(WebKitURISchemeRequest *request,
 
     if (strncmp(path, "/wallet", 7) == 0 ||
         strncmp(path, "/api/wallet/", 12) == 0)
-        len = wallet_view_handle_request("GET", path, NULL, 0,
+        len = wallet_view_handle_request(http_method, path,
+                                          post_body_len ? post_body : NULL,
+                                          post_body_len,
                                           g_response, sizeof(g_response));
     else if (strncmp(path, "/explorer", 9) == 0 ||
              strncmp(path, "/api/", 5) == 0 ||
              strstr(path, "style.css") || strstr(path, "favicon"))
-        len = explorer_handle_request("GET", path, NULL, 0,
+        len = explorer_handle_request(http_method, path,
+                                       post_body_len ? post_body : NULL,
+                                       post_body_len,
                                        g_response, sizeof(g_response));
 
     if (len == 0)
-        len = onion_service_handle_request("GET", path, NULL, 0,
+        len = onion_service_handle_request(http_method, path,
+                                            post_body_len ? post_body : NULL,
+                                            post_body_len,
                                             g_response, sizeof(g_response));
 
     gettimeofday(&t1, NULL);

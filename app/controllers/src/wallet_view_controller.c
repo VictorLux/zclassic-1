@@ -693,6 +693,51 @@ static void emit_footer(uint8_t *buf, size_t max, size_t *off) {
     APPEND(*off, buf, max, "</body></html>");
 }
 
+/* ── URL decoding + form parsing ────────────────────────────── */
+
+static void url_decode(char *dst, size_t dstmax, const char *src) {
+    size_t di = 0;
+    for (size_t si = 0; src[si] && di < dstmax - 1; si++) {
+        if (src[si] == '%' && src[si+1] && src[si+2]) {
+            char hex[3] = { src[si+1], src[si+2], '\0' };
+            dst[di++] = (char)strtol(hex, NULL, 16);
+            si += 2;
+        } else if (src[si] == '+') {
+            dst[di++] = ' ';
+        } else {
+            dst[di++] = src[si];
+        }
+    }
+    dst[di] = '\0';
+}
+
+static bool parse_form_field(const uint8_t *body, size_t body_len,
+                              const char *key, char *out, size_t outmax) {
+    if (!body || !key || !out || outmax == 0) return false;
+    size_t klen = strlen(key);
+    const char *p = (const char *)body;
+    const char *end = p + body_len;
+    while (p < end) {
+        if (strncmp(p, key, klen) == 0 && p[klen] == '=') {
+            p += klen + 1;
+            const char *ve = p;
+            while (ve < end && *ve != '&') ve++;
+            size_t vlen = (size_t)(ve - p);
+            if (vlen >= outmax) vlen = outmax - 1;
+            char encoded[512];
+            if (vlen >= sizeof(encoded)) vlen = sizeof(encoded) - 1;
+            memcpy(encoded, p, vlen);
+            encoded[vlen] = '\0';
+            url_decode(out, outmax, encoded);
+            return true;
+        }
+        while (p < end && *p != '&') p++;
+        if (p < end) p++;
+    }
+    out[0] = '\0';
+    return false;
+}
+
 /* ── Dashboard (/wallet) ────────────────────────────────────── */
 
 static size_t serve_dashboard(uint8_t *r, size_t max) {
@@ -958,7 +1003,8 @@ static size_t serve_send(uint8_t *r, size_t max) {
 
     APPEND(off, r, max,
         "<div class='card'>"
-        "<form id='send-form' onsubmit='return validateSend()'>"
+        "<form id='send-form' method='POST' action='zcl://node/wallet/send/confirm' "
+        "onsubmit='return validateSend()'>"
         "<label class='label'>To</label>"
         "<input type='text' id='addr' name='address' "
         "placeholder='t1... or zs1...' required>"
@@ -968,7 +1014,8 @@ static size_t serve_send(uint8_t *r, size_t max) {
         "placeholder='0.00' required oninput='updateRemaining()'>"
         "<div id='remaining' class='remaining'></div>"
         "<div id='amt-err' class='err'></div>"
-        "<button type='submit' style='margin-top:16px'>Send</button>"
+        "<button type='submit' style='margin-top:16px' "
+        "onclick='this.disabled=true;this.form.submit()'>Send</button>"
         "</form></div>"
         "<script>"
         "var BAL=%.8f;"
@@ -1654,6 +1701,134 @@ static size_t serve_pulse(uint8_t *r, size_t max) {
         height, balance, shielded, peers, sync, mempool);
 }
 
+/* ── Send Confirm (/wallet/send/confirm POST) ──────────────── */
+
+static size_t serve_send_confirm(uint8_t *r, size_t max,
+                                  const uint8_t *body, size_t body_len) {
+    size_t off = emit_header(r, max, "Sending...", "/wallet/send");
+
+    char address[128] = "", amount_str[32] = "";
+    parse_form_field(body, body_len, "address", address, sizeof(address));
+    parse_form_field(body, body_len, "amount", amount_str, sizeof(amount_str));
+
+    /* Validate address (alphanumeric, 26-96 chars) */
+    bool addr_ok = strlen(address) >= 26 && strlen(address) <= 96;
+    for (size_t i = 0; addr_ok && address[i]; i++)
+        if (!((address[i]>='a'&&address[i]<='z') || (address[i]>='A'&&address[i]<='Z') ||
+              (address[i]>='0'&&address[i]<='9')))
+            addr_ok = false;
+
+    double amount = strtod(amount_str, NULL);
+    if (!addr_ok || amount <= 0) {
+        APPEND(off, r, max,
+            "<div style='text-align:center;padding:32px'>"
+            "<div style='font-size:48px;color:#f87171'>&#x2717;</div>"
+            "<h2 style='color:#e5e7eb'>Invalid Transaction</h2>"
+            "<p style='color:#6b7280'>%s</p>"
+            "<a href='/wallet/send' style='color:#34d399'>Try Again</a>"
+            "</div>",
+            !addr_ok ? "Invalid address" : "Invalid amount");
+        emit_footer(r, max, &off);
+        return off;
+    }
+
+    /* Determine send type and make RPC call */
+    char rpc_buf[4096] = "";
+    char params[512];
+    bool is_shielded = (strncmp(address, "zs1", 3) == 0);
+
+    if (is_shielded) {
+        snprintf(params, sizeof(params),
+            "[\"" PRIMARY_ADDR "\", [{\"address\":\"%s\",\"amount\":%.8f}], 1, 0.0001]",
+            address, amount);
+        wallet_rpc_call_port("z_sendmany", params, rpc_buf, sizeof(rpc_buf), 18232, NULL);
+    } else {
+        snprintf(params, sizeof(params), "[\"%s\", %.8f]", address, amount);
+        wallet_rpc_call_port("sendtoaddress", params, rpc_buf, sizeof(rpc_buf), 18232, NULL);
+    }
+
+    /* Parse result */
+    char result_val[128] = "";
+    char error_msg[256] = "";
+    zcl_json_extract_str(rpc_buf, "result", result_val, sizeof(result_val));
+
+    /* Check for error */
+    const char *err_ptr = strstr(rpc_buf, "\"error\":");
+    bool has_error = false;
+    if (err_ptr) {
+        const char *msg = strstr(err_ptr, "\"message\":");
+        if (msg) {
+            zcl_json_extract_str(err_ptr, "message", error_msg, sizeof(error_msg));
+            if (error_msg[0]) has_error = true;
+        }
+    }
+
+    if (!rpc_buf[0]) {
+        /* Node offline */
+        APPEND(off, r, max,
+            "<div style='text-align:center;padding:32px'>"
+            "<div style='font-size:48px;color:#fbbf24'>&#x26A0;</div>"
+            "<h2 style='color:#e5e7eb'>Node Offline</h2>"
+            "<p style='color:#6b7280'>Cannot reach the node on port 18232.</p>"
+            "<a href='/wallet/send' style='color:#34d399'>Try Again</a>"
+            "</div>");
+    } else if (has_error) {
+        char safe_err[512];
+        html_escape(safe_err, sizeof(safe_err), error_msg);
+        APPEND(off, r, max,
+            "<div style='text-align:center;padding:32px'>"
+            "<div style='font-size:48px;color:#f87171'>&#x2717;</div>"
+            "<h2 style='color:#e5e7eb'>Send Failed</h2>"
+            "<p style='color:#6b7280'>%s</p>"
+            "<a href='/wallet/send' style='color:#34d399'>Try Again</a>"
+            "</div>", safe_err);
+    } else if (result_val[0]) {
+        char safe_addr[256], safe_txid[256];
+        html_escape(safe_addr, sizeof(safe_addr), address);
+        html_escape(safe_txid, sizeof(safe_txid), result_val);
+
+        bool is_opid = (strncmp(result_val, "opid-", 5) == 0);
+
+        APPEND(off, r, max,
+            "<div style='text-align:center;padding:32px'>"
+            "<div style='font-size:48px;color:#34d399'>&#x2713;</div>"
+            "<h2 style='color:#e5e7eb'>%s</h2>"
+            "<p style='color:#6b7280'>%.8f ZCL to %s</p>",
+            is_opid ? "Shielded Send Initiated" : "Transaction Sent",
+            amount, safe_addr);
+
+        if (is_opid) {
+            APPEND(off, r, max,
+                "<p style='color:#a78bfa;font-family:monospace;font-size:12px;"
+                "word-break:break-all'>%s</p>"
+                "<p style='color:#6b7280;font-size:13px'>"
+                "Shielded transactions take ~6 hours to confirm.</p>",
+                safe_txid);
+        } else {
+            APPEND(off, r, max,
+                "<a href='/explorer/tx/%s' style='color:#60a5fa;"
+                "font-family:monospace;font-size:12px;"
+                "word-break:break-all'>%s</a>",
+                safe_txid, safe_txid);
+        }
+
+        APPEND(off, r, max,
+            "<div style='margin-top:24px'>"
+            "<a href='/wallet' style='color:#34d399;font-size:16px'>"
+            "Back to Wallet</a></div></div>");
+    } else {
+        APPEND(off, r, max,
+            "<div style='text-align:center;padding:32px'>"
+            "<div style='font-size:48px;color:#fbbf24'>&#x26A0;</div>"
+            "<h2 style='color:#e5e7eb'>Unknown Response</h2>"
+            "<a href='/wallet/send' style='color:#34d399'>Try Again</a>"
+            "</div>");
+    }
+
+    emit_footer(r, max, &off);
+    return off;
+}
+
 /* ── Router ─────────────────────────────────────────────────── */
 
 void wallet_view_init(const char *datadir) {
@@ -1664,7 +1839,7 @@ size_t wallet_view_handle_request(const char *method, const char *path,
                                   const uint8_t *body, size_t body_len,
                                   uint8_t *response, size_t response_max)
 {
-    (void)method; (void)body; (void)body_len;
+    (void)method;
     if (!path || !response || response_max == 0) return 0;
 
     /* JSON pulse endpoint — polled every 2s by dashboard JS */
@@ -1675,6 +1850,8 @@ size_t wallet_view_handle_request(const char *method, const char *path,
         return serve_dashboard(response, response_max);
     if (strcmp(path, "/wallet/send") == 0)
         return serve_send(response, response_max);
+    if (strcmp(path, "/wallet/send/confirm") == 0)
+        return serve_send_confirm(response, response_max, body, body_len);
     if (strncmp(path, "/wallet/shield/confirm", 22) == 0) {
         const char *q = strchr(path, '?');
         return serve_shield_confirm(response, response_max, q);
