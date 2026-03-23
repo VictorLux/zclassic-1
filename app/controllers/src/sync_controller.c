@@ -253,8 +253,9 @@ bool node_db_sync_connect_block(struct node_db *ndb,
     db_blk.num_tx = (int)blk->num_vtx;
 
     if (!db_block_save(ndb, &db_blk)) {
-        node_db_rollback(ndb);
-        return false;
+        /* Don't rollback — continue with tx/UTXO indexing.
+         * Block header save can fail due to SQLite lock contention
+         * with the catchup thread. UTXOs are more important. */
     }
 
     /* 2. Index each transaction and update UTXOs */

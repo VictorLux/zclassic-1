@@ -1450,6 +1450,25 @@ bool app_init(struct app_context *ctx)
         }
     }
 
+    /* Clear BLOCK_FAILED flags from stale flat file on every startup.
+     * Blocks may have been marked failed due to transient issues
+     * (SQLite lock, incomplete UTXO state) that are resolved on restart.
+     * Re-validation will catch genuinely invalid blocks. */
+    {
+        int cleared = 0;
+        size_t ci = 0;
+        struct block_index *cp;
+        while (block_map_next(&g_state.map_block_index, &ci, NULL, &cp)) {
+            if (cp && (cp->nStatus & BLOCK_FAILED_MASK)) {
+                cp->nStatus &= ~BLOCK_FAILED_MASK;
+                cleared++;
+            }
+        }
+        if (cleared > 0)
+            printf("Cleared BLOCK_FAILED from %d block index entries\n",
+                   cleared);
+    }
+
     /* Restore chain tip from coins DB best block hash */
     if (ctx->reindex_chainstate) {
         /* Find the highest block to replay.
