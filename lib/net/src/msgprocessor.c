@@ -1210,7 +1210,14 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
 
     /* Queue needed blocks into download manager. The download manager
      * deduplicates, tracks in-flight, and assigns to peers. Actual
-     * getdata messages are sent from send_messages via dl_assign_to_peer. */
+     * getdata messages are sent from send_messages via dl_assign_to_peer.
+     *
+     * CRITICAL: Only queue blocks that chain from our current tip.
+     * During IBD, multiple peers send headers that may form different
+     * chain paths (orphan forks). If we queue blocks from a fork chain,
+     * they'll fail connect_block and stall the node. By verifying the
+     * backward walk reaches our tip, we ensure only main-chain blocks
+     * are queued. */
     if (accepted > 0) {
         struct block_index *tip = active_chain_tip(&mp->main_state->chain_active);
         int our_height = tip ? tip->nHeight : 0;
@@ -1222,19 +1229,29 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                 sync_set_state(SYNC_BLOCKS_DOWNLOAD,
                                "headers ahead, requesting blocks");
 
-            /* Collect needed block hashes (backward walk, reverse for order).
-             * Limit walk to 512 steps to avoid traversing millions of entries
-             * during IBD when we're far behind. */
+            /* Verify this header chain connects to our tip.
+             * Walk pprev from the last header to our tip height.
+             * If it reaches our actual tip block, this chain extends
+             * our chain. If it reaches a DIFFERENT block at our height,
+             * this is a fork chain — don't queue its blocks. */
+            bool chains_from_tip = false;
+            struct block_index *verify = bi;
+            while (verify && verify->nHeight > our_height)
+                verify = verify->pprev;
+            if (verify == tip)
+                chains_from_tip = true;
+
             size_t max_collect = 512;
             struct uint256 *hashes = malloc(max_collect * sizeof(struct uint256));
             int32_t *heights = malloc(max_collect * sizeof(int32_t));
-            if (hashes && heights) {
+            if (hashes && heights && chains_from_tip) {
                 size_t count_needed = 0;
                 size_t walk_steps = 0;
                 struct block_index *walk = bi;
                 while (walk && walk->pprev && walk->nHeight > our_height &&
                        count_needed < max_collect && walk_steps < 2048) {
                     if (!(walk->nStatus & BLOCK_HAVE_DATA) &&
+                        !(walk->nStatus & BLOCK_FAILED_MASK) &&
                         walk->phashBlock) {
                         hashes[count_needed] = *walk->phashBlock;
                         heights[count_needed] = walk->nHeight;
