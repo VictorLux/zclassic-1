@@ -1329,9 +1329,8 @@ bool app_init(struct app_context *ctx)
      * Jeff Dean rule: use the fastest data structure available. */
     {
         bool loaded = false;
-        if (!ctx->reindex_chainstate)
-            loaded = load_block_index_flat(ctx->datadir, &g_state);
-        if (!loaded && !ctx->reindex_chainstate && g_active_node_db)
+        loaded = load_block_index_flat(ctx->datadir, &g_state);
+        if (!loaded && g_active_node_db)
             loaded = load_block_index_sqlite(&g_node_db, &g_state);
 
         /* Check if flat file is stale — if it loaded but has far fewer
@@ -1407,33 +1406,15 @@ bool app_init(struct app_context *ctx)
 
     /* Restore chain tip from coins DB best block hash */
     if (ctx->reindex_chainstate) {
-        /* Find the highest block to replay. Use SQLite tip if available,
-         * otherwise scan block_index for highest with BLOCK_HAVE_DATA. */
-        int reindex_target = -1;
-        if (g_active_node_db) {
-            int64_t st = 0;
-            node_db_state_get_int(&g_node_db, "tip_height", &st);
-            if (st > 0) reindex_target = (int)st;
-        }
+        /* Find the highest block to replay.
+         * Scan block_index for highest height with valid pprev chain. */
         struct block_index *best = NULL;
-        if (reindex_target > 0) {
-            best = active_chain_at(&g_state.chain_active, reindex_target);
-            if (!best) {
-                /* Try block index directly */
-                size_t fi = 0;
-                struct block_index *fp;
-                while (block_map_next(&g_state.map_block_index, &fi, NULL, &fp)) {
-                    if (fp && fp->nHeight == reindex_target) { best = fp; break; }
-                }
-            }
-        }
-        if (!best) {
-            /* Fallback: highest chainwork */
+        {
             size_t fi = 0;
             struct block_index *fp;
             while (block_map_next(&g_state.map_block_index, &fi, NULL, &fp)) {
-                if (fp && (!best || arith_uint256_compare(
-                        &fp->nChainWork, &best->nChainWork) > 0))
+                if (fp && fp->pprev && fp->nHeight > 0 &&
+                    (!best || fp->nHeight > best->nHeight))
                     best = fp;
             }
         }
@@ -1441,6 +1422,20 @@ bool app_init(struct app_context *ctx)
             active_chain_set_tip(&g_state.chain_active, best);
             g_state.pindex_best_header = best;
             printf("Reindex target: height=%d\n", best->nHeight);
+        } else {
+            /* Debug: count blocks with/without pprev */
+            int with_pprev = 0, without_pprev = 0, max_h_seen = 0;
+            size_t di = 0;
+            struct block_index *dp;
+            while (block_map_next(&g_state.map_block_index, &di, NULL, &dp)) {
+                if (!dp) continue;
+                if (dp->pprev) with_pprev++;
+                else without_pprev++;
+                if (dp->nHeight > max_h_seen) max_h_seen = dp->nHeight;
+            }
+            printf("Reindex: no best found. pprev=%d no_pprev=%d max_h=%d total=%zu\n",
+                   with_pprev, without_pprev, max_h_seen,
+                   g_state.map_block_index.size);
         }
         /* Full chainstate rebuild: wipe UTXOs and replay all blocks */
         if (!reindex_chainstate(&g_state, &g_coins_sqlite, &g_coins_tip,
