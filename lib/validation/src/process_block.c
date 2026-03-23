@@ -562,9 +562,12 @@ bool connect_tip(struct validation_state *state,
                     printf("Propagated BLOCK_FAILED_CHILD to %zu descendants\n",
                            propagated);
             }
+            /* Clean up: free view first (may contain entries from update_coins),
+             * then block. Zero view to prevent any double-free. */
+            coins_view_cache_free(&view);
+            memset(&view, 0, sizeof(view));
             if (pblock == &local_block)
                 block_free(&local_block);
-            coins_view_cache_free(&view);
             return false;
         }
 
