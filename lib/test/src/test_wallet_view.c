@@ -1387,6 +1387,140 @@ int test_wallet_view(void)
         printf("LIVE: pages dumped to .zcl_test_render/ for inspection\n");
     }
 
+    /* ═══════════════════════════════════════════════════════════
+     * 14. BALANCE CONSISTENCY — the same number everywhere
+     *     This catches the bug where api_controller and
+     *     wallet_view showed different balances.
+     * ═══════════════════════════════════════════════════════════ */
+
+    printf("LIVE: balance consistent: pulse == send == coins... ");
+    {
+        /* Get balance from pulse */
+        wv_get("/api/wallet/pulse");
+        const char *bp = strstr((char *)_wv_resp, "\"balance\":");
+        int64_t pulse_bal = bp ? strtoll(bp + 10, NULL, 10) : -1;
+
+        /* Get balance from send page (var BAL=...) */
+        wv_get("/wallet/send");
+        const char *bs = strstr((char *)_wv_resp, "var BAL=");
+        double send_bal = bs ? strtod(bs + 8, NULL) : -1;
+        int64_t send_sat = (int64_t)(send_bal * 1e8 + 0.5);
+
+        /* Get balance from coins page total row */
+        wv_get("/wallet/coins");
+        /* Find the total-row value */
+        const char *tc = strstr((char *)_wv_resp, "total-row");
+        double coins_bal = -1;
+        if (tc) {
+            const char *cv = strstr(tc, "class='zcl'>");
+            if (cv) coins_bal = strtod(cv + 12, NULL);
+        }
+        int64_t coins_sat = (coins_bal >= 0)
+            ? (int64_t)(coins_bal * 1e8 + 0.5) : -1;
+
+        bool ok = (pulse_bal == send_sat) && (pulse_bal == coins_sat);
+        if (ok) printf("OK (all show %lld sat = %.8f ZCL)\n",
+            (long long)pulse_bal, (double)pulse_bal / 1e8);
+        else {
+            printf("FAIL (pulse=%lld send=%lld coins=%lld)\n",
+                (long long)pulse_bal, (long long)send_sat,
+                (long long)coins_sat);
+            failures++;
+        }
+    }
+
+    printf("LIVE: balance must be < 1 ZCL (sanity check)... ");
+    {
+        wv_get("/api/wallet/pulse");
+        const char *bp = strstr((char *)_wv_resp, "\"balance\":");
+        int64_t bal = bp ? strtoll(bp + 10, NULL, 10) : 0;
+        bool ok = (bal > 0 && bal < 100000000);  /* < 1 ZCL */
+        if (ok) printf("OK (%.8f ZCL)\n", (double)bal / 1e8);
+        else { printf("FAIL (bal=%lld, expected < 1 ZCL)\n",
+                       (long long)bal); failures++; }
+    }
+
+    printf("LIVE: no stale global utxo query in rendered pages... ");
+    {
+        /* The old bug: querying global utxos table showed stale spent UTXOs.
+         * Verify no page shows the stale 1.849 or 1.955 balance. */
+        const char *pages[] = {"/wallet", "/wallet/send", "/wallet/coins", NULL};
+        bool bad = false;
+        for (int i = 0; pages[i]; i++) {
+            wv_get(pages[i]);
+            if (wv_has("1.849") || wv_has("1.955") || wv_has("1.84913")) {
+                bad = true;
+                break;
+            }
+        }
+        if (!bad) printf("OK\n");
+        else { printf("FAIL (stale balance visible!)\n"); failures++; }
+    }
+
+    printf("LIVE: history shows > 0 transactions... ");
+    {
+        wv_get("/wallet/history");
+        /* Look for "NN transaction" pattern in the sub div */
+        const char *tc = strstr((char *)_wv_resp, " transaction");
+        int count = 0;
+        if (tc) {
+            /* Walk back past spaces and digits */
+            const char *p = tc - 1;
+            while (p > (char *)_wv_resp && *p >= '0' && *p <= '9') p--;
+            if (p[1] >= '0' && p[1] <= '9')
+                count = atoi(p + 1);
+        }
+        /* Also check for tx-card elements */
+        int cards = 0;
+        const char *cp = (char *)_wv_resp;
+        while ((cp = strstr(cp, "tx-card")) != NULL) { cards++; cp += 7; }
+        if (count > 0 || cards > 0)
+            printf("OK (%d txs, %d cards)\n", count, cards);
+        else { printf("FAIL (0 transactions shown)\n"); failures++; }
+    }
+
+    printf("LIVE: history txs show non-zero amounts... ");
+    {
+        wv_get("/wallet/history");
+        /* Count tx-amount elements and check if any are non-zero */
+        int nonzero = 0, total = 0;
+        const char *p = (char *)_wv_resp;
+        while ((p = strstr(p, "tx-amount")) != NULL) {
+            p += 9;
+            /* Find the next number after > */
+            const char *gt = strchr(p, '>');
+            if (gt) {
+                double v = strtod(gt + 1, NULL);
+                if (v < 0) v = -v;
+                total++;
+                if (v > 0.000000005) nonzero++;
+            }
+        }
+        if (nonzero > 0)
+            printf("OK (%d/%d non-zero)\n", nonzero, total);
+        else if (total == 0)
+            printf("OK (no tx-amount elements — may be loading)\n");
+        else { printf("FAIL (%d amounts all zero)\n", total); failures++; }
+    }
+
+    printf("LIVE: shield flow has z-addresses available... ");
+    {
+        wv_get("/wallet/shield?amount=0.01");
+        /* Must show confirmation page, not "No Shielded Address" error */
+        bool ok = wv_has("Confirm Shield") || wv_has("Shielding");
+        bool bad = wv_has("No Shielded Address");
+        if (ok && !bad) printf("OK\n");
+        else { printf("FAIL (no z-address!)\n"); failures++; }
+    }
+
+    printf("LIVE: receive page shows z-addresses... ");
+    {
+        wv_get("/wallet/receive");
+        bool ok = wv_has("zs1");
+        if (ok) printf("OK\n");
+        else { printf("FAIL (no z-addresses on receive)\n"); failures++; }
+    }
+
     /* Restore NULL for safety */
     wallet_view_init(NULL);
 

@@ -886,8 +886,12 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
     if (sqlite3_prepare_v2(db,
             "SELECT hex(wt.txid), wt.block_height, COALESCE(b.time,0), "
             "wt.from_me, "
-            "COALESCE((SELECT SUM(wu.value) FROM wallet_utxos wu "
-            "  WHERE wu.txid = wt.txid),0) "
+            "COALESCE("
+            "  (SELECT SUM(wu.value) FROM wallet_utxos wu WHERE wu.txid = wt.txid),"
+            "  (SELECT SUM(o.value) FROM tx_outputs o "
+            "    WHERE o.txid = wt.txid AND o.address_hash IN "
+            "    (SELECT pubkey_hash FROM wallet_keys)),"
+            "  0) "
             "FROM wallet_transactions wt "
             "LEFT JOIN blocks b ON wt.block_height = b.height "
             "ORDER BY wt.block_height DESC LIMIT 5",
@@ -1345,10 +1349,15 @@ static size_t serve_history(uint8_t *r, size_t max, int page,
     sqlite3_stmt *s = NULL;
     char history_sql[1024];
     snprintf(history_sql, sizeof(history_sql),
-        "SELECT hex(wt.txid), wt.block_height, b.time, "
+        "SELECT hex(wt.txid), wt.block_height, COALESCE(b.time,0), "
         "wt.from_me, wt.fee, "
-        "COALESCE((SELECT SUM(wu.value) FROM wallet_utxos wu "
-        "  WHERE wu.txid = wt.txid),0) "
+        /* Try wallet_utxos first, fall back to tx_outputs for wallet addrs */
+        "COALESCE("
+        "  (SELECT SUM(wu.value) FROM wallet_utxos wu WHERE wu.txid = wt.txid),"
+        "  (SELECT SUM(o.value) FROM tx_outputs o "
+        "    WHERE o.txid = wt.txid AND o.address_hash IN "
+        "    (SELECT pubkey_hash FROM wallet_keys)),"
+        "  0) "
         "FROM wallet_transactions wt "
         "LEFT JOIN blocks b ON wt.block_height = b.height "
         "%s%s"

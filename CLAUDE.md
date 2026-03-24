@@ -142,8 +142,8 @@ tokens when shielded payment confirms.
 
 ### Wallet
 All funds at `t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn` (0.96971630 ZCL, 1 UTXO).
-85 Sapling z-addresses (0 shielded balance). 350 wallet transactions.
-Accounting: 1.105 deposited, 0.091 sent out, 0.134 fees, 0.879 on-chain.
+6 Sapling z-addresses (0 shielded balance). 51 wallet transactions.
+Balance source: `wallet_utxos WHERE spent_txid IS NULL` (authoritative).
 
 ## Network Seeds
 ```

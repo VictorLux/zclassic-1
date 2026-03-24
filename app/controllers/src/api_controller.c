@@ -1347,11 +1347,11 @@ size_t api_handle_request(const char *method, const char *path,
         sqlite3 *db = g_active_node_db->db;
         sqlite3_stmt *s = NULL;
 
-        /* Balance */
+        /* Balance — use wallet_utxos (correct spent tracking) */
         int64_t transparent = 0;
         if (sqlite3_prepare_v2(db,
-                "SELECT COALESCE(SUM(u.value),0) FROM utxos u"
-                " INNER JOIN wallet_keys w ON u.address_hash=w.pubkey_hash",
+                "SELECT COALESCE(SUM(value),0) FROM wallet_utxos"
+                " WHERE spent_txid IS NULL",
                 -1, &s, NULL) == SQLITE_OK && s) {
             if (sqlite3_step(s) == SQLITE_ROW)
                 transparent = sqlite3_column_int64(s, 0);
@@ -1417,11 +1417,11 @@ size_t api_handle_request(const char *method, const char *path,
             (long long)block_time, (long long)time(NULL));
 
         if (sqlite3_prepare_v2(db,
-                "SELECT u.value, u.height, COALESCE(b.time,0)"
-                " FROM utxos u INNER JOIN wallet_keys w"
-                " ON u.address_hash=w.pubkey_hash"
-                " LEFT JOIN blocks b ON b.height=u.height"
-                " ORDER BY u.height DESC LIMIT 20",
+                "SELECT wu.value, wu.height, COALESCE(b.time,0)"
+                " FROM wallet_utxos wu"
+                " LEFT JOIN blocks b ON b.height=wu.height"
+                " WHERE wu.spent_txid IS NULL"
+                " ORDER BY wu.height DESC LIMIT 20",
                 -1, &s, NULL) == SQLITE_OK && s) {
             bool first = true;
             while (sqlite3_step(s) == SQLITE_ROW && w + 100 < response_max) {
