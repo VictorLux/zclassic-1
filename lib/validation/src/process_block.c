@@ -490,9 +490,12 @@ bool connect_tip(struct validation_state *state,
                 }
             }
             fprintf(stderr, "connect_tip: failed to read block at height %d "
-                    "file=%d pos=%u status=%u\n",
+                    "file=%d pos=%u status=%u — clearing HAVE_DATA for re-download\n",
                     pindex_new->nHeight, pindex_new->nFile,
                     pindex_new->nDataPos, pindex_new->nStatus);
+            /* Clear HAVE_DATA so the download manager requests this block
+             * from peers. The on-disk data may be from a different fork. */
+            pindex_new->nStatus &= ~BLOCK_HAVE_DATA;
             block_free(&local_block);
             return validation_state_error(state, "failed-to-read-block");
         }
@@ -521,6 +524,14 @@ bool connect_tip(struct validation_state *state,
             block_free(&local_block);
             return validation_state_error(state, "wrong-block-on-disk");
         }
+    }
+
+    /* Debug: log every 100 blocks near the crash zone */
+    if (pindex_new->nHeight >= 170000 && pindex_new->nHeight % 100 == 0) {
+        fprintf(stderr, "connect_tip: h=%d cache=%zu buckets=%zu\n",
+               pindex_new->nHeight, coins_tip->cache_coins.size,
+               coins_tip->cache_coins.num_buckets);
+        fflush(stderr);
     }
 
     /* Apply the block to the chain state */
