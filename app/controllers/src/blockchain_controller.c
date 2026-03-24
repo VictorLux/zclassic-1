@@ -2193,10 +2193,11 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
     sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_zslp_xfer_addr", NULL, NULL, NULL);
     sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_zslp_ticker", NULL, NULL, NULL);
 
-    /* Wipe all data for clean re-index */
-    printf("indexlegacy: Wiping all chain data for clean re-index...\n");
+    /* Wipe secondary index data (NOT utxos — that's the canonical UTXO store).
+     * indexlegacy rebuilds blocks + transactions from block files. */
+    printf("indexlegacy: Wiping secondary chain data for re-index...\n");
     fflush(stdout);
-    node_db_exec(g_node_db_bc, "DELETE FROM utxos");
+    /* DO NOT DELETE FROM utxos — canonical UTXO store managed by coins_view_sqlite */
     node_db_exec(g_node_db_bc, "DELETE FROM transactions");
     node_db_exec(g_node_db_bc, "DELETE FROM blocks");
     node_db_exec(g_node_db_bc, "DELETE FROM tx_outputs");
@@ -2508,12 +2509,11 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
             db_tx_save(g_node_db_bc, &db_tx);
             txs_indexed++;
 
-            /* Spend inputs (delete UTXOs) — works because we process in height order */
+            /* Count spent inputs (but don't modify utxos table —
+             * that's the canonical UTXO store managed by coins_view_sqlite) */
             if (i > 0) {
                 for (size_t j = 0; j < tx->num_vin; j++) {
-                    db_utxo_delete(g_node_db_bc,
-                        tx->vin[j].prevout.hash.data,
-                        tx->vin[j].prevout.n);
+                    /* db_utxo_delete removed: utxos table is canonical */
                     utxos_spent++;
                 }
             }
@@ -2605,7 +2605,7 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
                     u.script_type = SCRIPT_P2SH;
                 }
 
-                db_utxo_save(g_node_db_bc, &u);
+                /* db_utxo_save removed: utxos table is canonical */
                 utxos_created++;
             }
         }

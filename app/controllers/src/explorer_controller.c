@@ -2376,62 +2376,47 @@ static void *hodl_compute_thread(void *arg)
     fflush(stdout);
     int64_t t_hodl = (int64_t)time(NULL);
 
-    /* Single-pass: scan UTXOs sorted by height, build cumulative totals.
-     * Also build a height→time lookup from blocks table. */
+    /* Height-based HODL wave computation.
+     * Uses fixed block spacing (150s pre-Buttercup, 75s post) to convert
+     * between heights and time. No dependency on blocks.time column.
+     * Same approach as the working gethodlwave RPC. */
 
-    /* Step 1: Build height→time map from sampled blocks (fast: ~1s).
-     * Then compute checkpoints using interpolation. */
-    #define TIME_SAMPLES 200
-    int sample_h[TIME_SAMPLES];
-    int64_t sample_t[TIME_SAMPLES];
-    int num_samples = 0;
-    {
-        sqlite3_stmt *s = NULL;
-        int step = tip > TIME_SAMPLES ? tip / TIME_SAMPLES : 1;
-        char sql[256];
-        snprintf(sql, sizeof(sql),
-            "SELECT height, time FROM blocks WHERE height %% %d = 0 "
-            "AND time > 0 ORDER BY height", step);
-        if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK) {
-            while (sqlite3_step(s) == SQLITE_ROW && num_samples < TIME_SAMPLES) {
-                sample_h[num_samples] = sqlite3_column_int(s, 0);
-                sample_t[num_samples] = sqlite3_column_int64(s, 1);
-                num_samples++;
-            }
-            sqlite3_finalize(s);
-        }
-    }
+    #define BUTTERCUP_HEIGHT  707000
+    #define PRE_SPACING       150
+    #define POST_SPACING      75
 
-    /* Build checkpoint list using sample interpolation */
+    /* Convert a timestamp to approximate block height */
+    #define TS_TO_HEIGHT(ts) ( \
+        ((ts) <= genesis_ts) ? 0 : \
+        ((int64_t)((ts) - genesis_ts) < (int64_t)BUTTERCUP_HEIGHT * PRE_SPACING) \
+            ? (int)(((ts) - genesis_ts) / PRE_SPACING) \
+            : (int)(BUTTERCUP_HEIGHT + (((ts) - genesis_ts) - \
+                    (int64_t)BUTTERCUP_HEIGHT * PRE_SPACING) / POST_SPACING))
+
+    /* Build checkpoint list: for each monthly sample, compute the height
+     * at that time and the height 1 year earlier. */
     int64_t cp_time[120];
     int cp_height[120];
     int cp_old_height[120];
 
     for (int i = 0; i < npts; i++) {
         cp_time[i] = start_ts + (int64_t)i * (now_ts - start_ts) / (npts - 1);
-
-        /* Find height at this time by binary search in samples */
-        cp_height[i] = 0;
-        for (int k = num_samples - 1; k >= 0; k--) {
-            if (sample_t[k] <= cp_time[i]) { cp_height[i] = sample_h[k]; break; }
-        }
-        cp_old_height[i] = 0;
+        cp_height[i] = TS_TO_HEIGHT(cp_time[i]);
+        if (cp_height[i] > tip) cp_height[i] = tip;
         int64_t old_time = cp_time[i] - one_year;
-        for (int k = num_samples - 1; k >= 0; k--) {
-            if (sample_t[k] <= old_time) { cp_old_height[i] = sample_h[k]; break; }
-        }
+        cp_old_height[i] = TS_TO_HEIGHT(old_time);
+        if (cp_old_height[i] < 0) cp_old_height[i] = 0;
 
-        /* Generate label */
+        /* Generate label — year for January */
         time_t t = (time_t)cp_time[i];
         struct tm tm;
         gmtime_r(&t, &tm);
         snprintf(labels[i], sizeof(labels[i]), "%d", tm.tm_year + 1900);
-        /* Label January of each year + the very first point (genesis) */
         if (tm.tm_mon != 0 && i != 0) labels[i][0] = '\0';
     }
 
-    /* Step 2: Fast GROUP BY approach — aggregate UTXOs into 10K-block buckets,
-     * then compute cumulative sums. ~2 seconds for 1.3M UTXOs. */
+    /* Aggregate UTXOs into height buckets, build cumulative sum.
+     * Filter out garbage heights (> tip + 1000). */
     {
         #define BUCKET_SIZE 10000
         #define MAX_BUCKETS 400
@@ -2443,10 +2428,12 @@ static void *hodl_compute_thread(void *arg)
         char sql_buf[256];
         snprintf(sql_buf, sizeof(sql_buf),
             "SELECT (height/%d)*%d, SUM(value) FROM utxos "
-            "GROUP BY height/%d ORDER BY 1", BUCKET_SIZE, BUCKET_SIZE, BUCKET_SIZE);
+            "WHERE height <= %d "
+            "GROUP BY height/%d ORDER BY 1",
+            BUCKET_SIZE, BUCKET_SIZE, tip + 1000, BUCKET_SIZE);
 
         if (sqlite3_prepare_v2(db, sql_buf, -1, &stmt, NULL) == SQLITE_OK) {
-            while (sqlite3_step(stmt) == SQLITE_ROW && bucket_count < MAX_BUCKETS) {
+            while (sqlite3_step(stmt) == SQLITE_ROW) {
                 int bh = sqlite3_column_int(stmt, 0);
                 int64_t bv = sqlite3_column_int64(stmt, 1);
                 int idx = bh / BUCKET_SIZE;
@@ -2458,23 +2445,23 @@ static void *hodl_compute_thread(void *arg)
             sqlite3_finalize(stmt);
         }
 
-        /* Build cumulative sum array */
+        /* Build cumulative sum: cumsum[i] = sum of buckets 0..(i-1) */
         int64_t cumsum[MAX_BUCKETS + 1];
         cumsum[0] = 0;
         for (int i = 0; i < bucket_count; i++)
             cumsum[i + 1] = cumsum[i] + bucket_vals[i];
 
-        /* For each checkpoint, lookup cumulative values using bucket index */
+        /* For each checkpoint, compute % of value older than 1 year */
         for (int i = 0; i < npts; i++) {
-            int at_bucket = cp_height[i] / BUCKET_SIZE;
-            int old_bucket = cp_old_height[i] / BUCKET_SIZE;
-            if (at_bucket >= bucket_count) at_bucket = bucket_count;
-            if (old_bucket >= bucket_count) old_bucket = bucket_count;
-            if (at_bucket < 0) at_bucket = 0;
-            if (old_bucket < 0) old_bucket = 0;
+            int at_idx = cp_height[i] / BUCKET_SIZE + 1;
+            int old_idx = cp_old_height[i] / BUCKET_SIZE + 1;
+            if (at_idx > bucket_count) at_idx = bucket_count;
+            if (old_idx > bucket_count) old_idx = bucket_count;
+            if (at_idx < 0) at_idx = 0;
+            if (old_idx < 0) old_idx = 0;
 
-            int64_t total_val = cumsum[at_bucket];
-            int64_t old_val = cumsum[old_bucket];
+            int64_t total_val = cumsum[at_idx];
+            int64_t old_val = cumsum[old_idx];
 
             pct_over_1yr[i] = total_val > 0
                 ? (double)old_val / (double)total_val * 100.0 : 0;
