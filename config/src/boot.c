@@ -1541,9 +1541,29 @@ bool app_init(struct app_context *ctx)
                 printf("Restored chain tip from coins DB: height=%d\n",
                        best->nHeight);
 
-                /* Do NOT erase entries above tip — P2P-accepted headers
-                 * with correct chainwork may exist there and are needed
-                 * for activate_best_chain to find the most-work chain. */
+                /* Clear BLOCK_HAVE_DATA for entries above tip whose
+                 * block files may not exist on disk. The LevelDB snapshot
+                 * had HAVE_DATA set for blocks that existed on the
+                 * snapshot's disk, but our disk only has block files
+                 * up to the legacy sync point. Without clearing, P2P
+                 * downloaded blocks are rejected as "duplicate". */
+                {
+                    int cleared_data = 0;
+                    size_t ai = 0;
+                    struct block_index *ap;
+                    while (block_map_next(&g_state.map_block_index,
+                                           &ai, NULL, &ap)) {
+                        if (ap && ap->nHeight > best->nHeight &&
+                            (ap->nStatus & BLOCK_HAVE_DATA)) {
+                            ap->nStatus &= ~BLOCK_HAVE_DATA;
+                            cleared_data++;
+                        }
+                    }
+                    if (cleared_data > 0)
+                        printf("Cleared HAVE_DATA from %d entries above "
+                               "tip %d (block files may not exist)\n",
+                               cleared_data, best->nHeight);
+                }
             } else {
                 char hex[65];
                 uint256_get_hex(&best_hash, hex);
