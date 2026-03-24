@@ -192,8 +192,11 @@ static void random_push(struct addr_man *am, int id)
 static void swap_random(struct addr_man *am, unsigned int p1, unsigned int p2)
 {
     if (p1 == p2) return;
+    if (p1 >= am->random_size || p2 >= am->random_size) return;
     int id1 = am->random_order[p1];
     int id2 = am->random_order[p2];
+    if (id1 < 0 || (size_t)id1 >= am->entries_cap) return;
+    if (id2 < 0 || (size_t)id2 >= am->entries_cap) return;
     am->entries[id1].random_pos = (int)p2;
     am->entries[id2].random_pos = (int)p1;
     am->random_order[p1] = id2;
@@ -264,6 +267,10 @@ static void clear_new(struct addr_man *am, int nUBucket, int nUBucketPos)
 {
     if (am->vvNew[nUBucket][nUBucketPos] != -1) {
         int nIdDelete = am->vvNew[nUBucket][nUBucketPos];
+        if (nIdDelete < 0 || (size_t)nIdDelete >= am->entries_cap) {
+            am->vvNew[nUBucket][nUBucketPos] = -1;
+            return;
+        }
         struct addr_info *info = &am->entries[nIdDelete];
         info->ref_count--;
         am->vvNew[nUBucket][nUBucketPos] = -1;
@@ -289,18 +296,22 @@ static void make_tried(struct addr_man *am, struct addr_info *info, int nId)
 
     if (am->vvTried[nKBucket][nKBucketPos] != -1) {
         int nIdEvict = am->vvTried[nKBucket][nKBucketPos];
-        struct addr_info *old = &am->entries[nIdEvict];
-        old->in_tried = false;
-        am->vvTried[nKBucket][nKBucketPos] = -1;
-        am->tried_count--;
+        if (nIdEvict < 0 || (size_t)nIdEvict >= am->entries_cap) {
+            am->vvTried[nKBucket][nKBucketPos] = -1;
+        } else {
+            struct addr_info *old = &am->entries[nIdEvict];
+            old->in_tried = false;
+            am->vvTried[nKBucket][nKBucketPos] = -1;
+            am->tried_count--;
 
-        int nUBucket = addr_info_get_new_bucket(old, &am->nKey, &old->source);
-        int nUBucketPos = addr_info_get_bucket_position(old, &am->nKey, true,
-                                                         nUBucket);
-        clear_new(am, nUBucket, nUBucketPos);
-        old->ref_count = 1;
-        am->vvNew[nUBucket][nUBucketPos] = nIdEvict;
-        am->new_count++;
+            int nUBucket = addr_info_get_new_bucket(old, &am->nKey, &old->source);
+            int nUBucketPos = addr_info_get_bucket_position(old, &am->nKey, true,
+                                                             nUBucket);
+            clear_new(am, nUBucket, nUBucketPos);
+            old->ref_count = 1;
+            am->vvNew[nUBucket][nUBucketPos] = nIdEvict;
+            am->new_count++;
+        }
     }
 
     am->vvTried[nKBucket][nKBucketPos] = nId;
@@ -564,7 +575,9 @@ size_t addrman_get_addr(struct addr_man *am, struct net_address *out,
     for (size_t n = 0; n < am->random_size && count < nNodes; n++) {
         int nRndPos = GetRandInt((int)(am->random_size - n)) + (int)n;
         swap_random(am, (unsigned int)n, (unsigned int)nRndPos);
-        struct addr_info *ai = &am->entries[am->random_order[n]];
+        int rid = am->random_order[n];
+        if (rid < 0 || (size_t)rid >= am->entries_cap) continue;
+        struct addr_info *ai = &am->entries[rid];
         if (!addr_info_is_terrible(ai, nNow))
             out[count++] = ai->addr;
     }
