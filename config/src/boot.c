@@ -1559,9 +1559,13 @@ bool app_init(struct app_context *ctx)
                             erased++;
                         }
                     }
-                    if (erased > 0)
+                    if (erased > 0) {
                         printf("Erased %d stale entries above tip %d\n",
                                erased, best->nHeight);
+                        /* Re-save flat file without the erased entries.
+                         * Otherwise next restart reloads stale data. */
+                        save_block_index_flat(ctx->datadir, &g_state);
+                    }
                 }
             } else {
                 char hex[65];
