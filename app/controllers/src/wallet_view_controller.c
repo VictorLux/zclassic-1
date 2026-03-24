@@ -146,6 +146,7 @@ static int wallet_rpc_call_port(const char *method, const char *params_json,
     int blen = snprintf(body, sizeof(body),
         "{\"jsonrpc\":\"1.0\",\"id\":1,\"method\":\"%s\",\"params\":%s}",
         method, params_json);
+    if (blen < 0 || (size_t)blen >= sizeof(body)) { close(fd); return -1; }
 
     static const char b64[] =
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -190,6 +191,42 @@ static int wallet_rpc_call_port(const char *method, const char *params_json,
         return (int)body_len;
     }
     return (int)total;
+}
+
+/* Get the best-funded transparent address from zclassicd listunspent.
+ * Returns true if an address was found. */
+static bool get_funded_taddr(char *out, size_t outmax) {
+    out[0] = '\0';
+    char lu[8192] = "";
+    if (wallet_rpc_call_port("listunspent", "[]", lu, sizeof(lu),
+                              ZCLASSICD_PORT, zclassicd_auth()) <= 0)
+        return false;
+    const char *best = NULL;
+    size_t blen = 0;
+    double bval = 0;
+    const char *p = lu;
+    while ((p = strstr(p, "\"address\"")) != NULL) {
+        p += 9;
+        while (*p == ' ' || *p == ':' || *p == '"') p++;
+        const char *a = p;
+        while (*p && *p != '"') p++;
+        size_t al = (size_t)(p - a);
+        const char *am = strstr(p, "\"amount\"");
+        if (am) {
+            am += 8;
+            while (*am == ' ' || *am == ':') am++;
+            double v = strtod(am, NULL);
+            if (v > bval && al > 20 && al < 64) {
+                best = a; blen = al; bval = v;
+            }
+        }
+    }
+    if (best && blen + 1 <= outmax) {
+        memcpy(out, best, blen);
+        out[blen] = '\0';
+        return true;
+    }
+    return false;
 }
 
 /* Balance comes from SQLite only — no RPC. */
@@ -282,19 +319,20 @@ static size_t hex_to_bin(const char *hex, size_t hexlen,
 /* Extract next JSON string value after a key like "txid": "abc...".
  * Scans from *pos forward. On success, sets *val and *vlen, advances
  * *pos past the closing quote, returns true. */
-static bool json_next_str(const char *buf __attribute__((unused)),
-                           const char **pos,
-                           const char *key, const char **val, size_t *vlen) {
+static bool json_next_str(const char **pos, const char *key,
+                           const char **val, size_t *vlen) {
     char pattern[64];
     snprintf(pattern, sizeof(pattern), "\"%s\"", key);
     const char *p = strstr(*pos, pattern);
     if (!p) return false;
     p += strlen(pattern);
-    while (*p == ' ' || *p == ':' || *p == ' ') p++;
+    while (*p == ' ' || *p == ':') p++;
     if (*p != '"') return false;
-    p++; /* skip opening quote */
-    const char *end = strchr(p, '"');
-    if (!end) return false;
+    p++;
+    /* Find closing quote, skipping escaped quotes */
+    const char *end = p;
+    while (*end && !(*end == '"' && (end == p || *(end-1) != '\\'))) end++;
+    if (!*end) return false;
     *val = p;
     *vlen = (size_t)(end - p);
     *pos = end + 1;
@@ -302,38 +340,39 @@ static bool json_next_str(const char *buf __attribute__((unused)),
 }
 
 /* Extract next JSON number value after a key. */
-static bool json_next_num(const char *buf __attribute__((unused)),
-                           const char **pos,
-                           const char *key, double *out) {
+static bool json_next_num(const char **pos, const char *key, double *out) {
     char pattern[64];
     snprintf(pattern, sizeof(pattern), "\"%s\"", key);
     const char *p = strstr(*pos, pattern);
     if (!p) return false;
     p += strlen(pattern);
     while (*p == ' ' || *p == ':') p++;
-    *out = strtod(p, NULL);
-    *pos = p;
+    char *endptr = NULL;
+    *out = strtod(p, &endptr);
+    *pos = endptr ? endptr : p + 1;
     return true;
 }
 
-static bool json_next_int(const char *buf __attribute__((unused)),
-                           const char **pos,
-                           const char *key, int *out) {
+static bool json_next_int(const char **pos, const char *key, int *out) {
     char pattern[64];
     snprintf(pattern, sizeof(pattern), "\"%s\"", key);
     const char *p = strstr(*pos, pattern);
     if (!p) return false;
     p += strlen(pattern);
     while (*p == ' ' || *p == ':') p++;
-    *out = (int)strtol(p, NULL, 10);
-    *pos = p;
+    char *endptr = NULL;
+    *out = (int)strtol(p, &endptr, 10);
+    *pos = endptr ? endptr : p + 1;
     return true;
 }
 
 /* Sync wallet_utxos and wallet_sapling_notes from zclassicd.
  * Uses atomic transaction: if RPC fails, DB is not modified.
  * Called after shield/send operations to keep balance accurate. */
+static bool g_sync_enabled = false; /* Only enable after GUI starts */
+
 static void sync_wallet_from_zclassicd(void) {
+    if (!g_sync_enabled) return;
     sqlite3 *db = open_db_rw();
     if (!db) return;
 
@@ -370,7 +409,7 @@ static void sync_wallet_from_zclassicd(void) {
     if (ins_utxo) {
         const char *p = lu;
         const char *txid_s; size_t txid_l;
-        while (json_next_str(lu, &p, "txid", &txid_s, &txid_l)) {
+        while (json_next_str(&p, "txid", &txid_s, &txid_l)) {
             if (txid_l != 64) continue;
             uint8_t txid_bin[32];
             if (hex_to_bin(txid_s, 64, txid_bin, 32) != 32) continue;
@@ -379,9 +418,9 @@ static void sync_wallet_from_zclassicd(void) {
             double amt = 0;
             const char *script_s; size_t script_l;
             const char *scan = p;
-            json_next_int(lu, &scan, "vout", &vout);
+            json_next_int(&scan, "vout", &vout);
             scan = p;
-            json_next_num(lu, &scan, "amount", &amt);
+            json_next_num(&scan, "amount", &amt);
             int64_t val = (int64_t)(amt * 1e8 + 0.5);
 
             /* Get scriptPubKey for address_hash extraction */
@@ -389,7 +428,7 @@ static void sync_wallet_from_zclassicd(void) {
             uint8_t script_bin[64] = {0};
             size_t script_bin_len = 0;
             scan = p;
-            if (json_next_str(lu, &scan, "scriptPubKey", &script_s, &script_l)) {
+            if (json_next_str(&scan, "scriptPubKey", &script_s, &script_l)) {
                 script_bin_len = hex_to_bin(script_s, script_l,
                                              script_bin, sizeof(script_bin));
                 /* P2PKH: 76a914{20}88ac — extract 20-byte hash */
@@ -424,7 +463,7 @@ static void sync_wallet_from_zclassicd(void) {
     if (ins_note) {
         const char *p = zlu;
         const char *txid_s; size_t txid_l;
-        while (json_next_str(zlu, &p, "txid", &txid_s, &txid_l)) {
+        while (json_next_str(&p, "txid", &txid_s, &txid_l)) {
             if (txid_l != 64) continue;
             uint8_t txid_bin[32];
             if (hex_to_bin(txid_s, 64, txid_bin, 32) != 32) continue;
@@ -433,14 +472,14 @@ static void sync_wallet_from_zclassicd(void) {
             double amt = 0;
             const char *addr_s; size_t addr_l;
             const char *scan = p;
-            json_next_int(zlu, &scan, "outindex", &outindex);
+            json_next_int(&scan, "outindex", &outindex);
             scan = p;
-            json_next_num(zlu, &scan, "amount", &amt);
+            json_next_num(&scan, "amount", &amt);
             int64_t val = (int64_t)(amt * 1e8 + 0.5);
 
             char addr_str[128] = "";
             scan = p;
-            if (json_next_str(zlu, &scan, "address", &addr_s, &addr_l) &&
+            if (json_next_str(&scan, "address", &addr_s, &addr_l) &&
                 addr_l < sizeof(addr_str)) {
                 memcpy(addr_str, addr_s, addr_l);
                 addr_str[addr_l] = '\0';
@@ -2103,36 +2142,7 @@ static size_t serve_shield_confirm(uint8_t *r, size_t max,
      * addresses from zclassicd transactions. This is the only RPC
      * besides z_sendmany itself. */
     char t_addr[128] = "";
-    {
-        char lu[8192] = "";
-        if (wallet_rpc_call_port("listunspent", "[]", lu, sizeof(lu),
-                                  ZCLASSICD_PORT, zclassicd_auth()) > 0) {
-            const char *best = NULL;
-            size_t blen = 0;
-            double bval = 0;
-            const char *p = lu;
-            while ((p = strstr(p, "\"address\"")) != NULL) {
-                p += 9;
-                while (*p == ' ' || *p == ':' || *p == '"') p++;
-                const char *a = p;
-                while (*p && *p != '"') p++;
-                size_t al = (size_t)(p - a);
-                const char *am = strstr(p, "\"amount\"");
-                if (am) {
-                    am += 8;
-                    while (*am == ' ' || *am == ':') am++;
-                    double v = strtod(am, NULL);
-                    if (v > bval && al > 20 && al < 64) {
-                        best = a; blen = al; bval = v;
-                    }
-                }
-            }
-            if (best && blen < sizeof(t_addr)) {
-                memcpy(t_addr, best, blen);
-                t_addr[blen] = '\0';
-            }
-        }
-    }
+    get_funded_taddr(t_addr, sizeof(t_addr));
 
     if (!t_addr[0]) {
         APPEND(off, r, max,
@@ -2457,37 +2467,7 @@ static size_t serve_send_confirm(uint8_t *r, size_t max,
          * Get the funded t-address from zclassicd listunspent
          * (our SQLite may be stale after change-address txs). */
         char t_from[128] = "";
-        {
-            char lu_buf[8192] = "";
-            if (wallet_rpc_call_port("listunspent", "[]",
-                                      lu_buf, sizeof(lu_buf),
-                                      ZCLASSICD_PORT, zclassicd_auth()) > 0) {
-                const char *best_a = NULL;
-                size_t best_l = 0;
-                double best_v = 0;
-                const char *p = lu_buf;
-                while ((p = strstr(p, "\"address\"")) != NULL) {
-                    p += 9;
-                    while (*p == ' ' || *p == ':' || *p == '"') p++;
-                    const char *as = p;
-                    while (*p && *p != '"') p++;
-                    size_t al = (size_t)(p - as);
-                    const char *am = strstr(p, "\"amount\"");
-                    if (am) {
-                        am += 8;
-                        while (*am == ' ' || *am == ':') am++;
-                        double v = strtod(am, NULL);
-                        if (v > best_v && al > 20 && al < 64) {
-                            best_a = as; best_l = al; best_v = v;
-                        }
-                    }
-                }
-                if (best_a && best_l > 0 && best_l < sizeof(t_from)) {
-                    memcpy(t_from, best_a, best_l);
-                    t_from[best_l] = '\0';
-                }
-            }
-        }
+        get_funded_taddr(t_from, sizeof(t_from));
         if (t_from[0]) {
             char zp[1024];
             snprintf(zp, sizeof(zp),
@@ -2772,6 +2752,10 @@ static size_t serve_tx_detail(uint8_t *r, size_t max, const char *txid_hex) {
 
 void wallet_view_init(const char *datadir) {
     g_datadir = datadir;
+}
+
+void wallet_view_enable_sync(void) {
+    g_sync_enabled = true;
 }
 
 size_t wallet_view_handle_request(const char *method, const char *path,

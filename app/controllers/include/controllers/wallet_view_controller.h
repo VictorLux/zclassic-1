@@ -20,6 +20,9 @@
 /* Initialize with datadir for SQLite access */
 void wallet_view_init(const char *datadir);
 
+/* Enable zclassicd sync (call after GUI starts, not during tests) */
+void wallet_view_enable_sync(void);
+
 /* Handle a wallet view request. Returns HTTP response bytes. */
 size_t wallet_view_handle_request(const char *method, const char *path,
                                     const uint8_t *body, size_t body_len,

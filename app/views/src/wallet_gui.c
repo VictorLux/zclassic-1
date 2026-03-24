@@ -378,6 +378,7 @@ static void init_controllers(const char *datadir) {
         }
     }
     wallet_view_init(datadir);
+    wallet_view_enable_sync();
     onion_service_start(datadir);
 }
 
@@ -394,7 +395,8 @@ static GtkWidget *make_btn(const char *label, const char *name, GCallback cb) {
 int wallet_gui_main(int argc, char **argv, const char *datadir)
 {
     if (!gtk_init_check(&argc, &argv)) {
-        fprintf(stderr, "Cannot open display.\n");
+        fprintf(stderr, "Cannot open display (DISPLAY=%s).\n",
+            getenv("DISPLAY") ? getenv("DISPLAY") : "unset");
         return 1;
     }
 
