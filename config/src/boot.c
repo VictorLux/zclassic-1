@@ -2057,32 +2057,44 @@ bool app_init(struct app_context *ctx)
 
     wallet_verify_utxos(&g_wallet, &g_coins_tip);
 
-    /* Rebuild wallet_utxos from ground truth:
-     * global UTXO set × wallet_keys = authoritative balance.
-     * This ensures getbalance is always correct, even after
-     * fast sync, import, or stale data.
-     * ATOMIC: wrapped in a single transaction so crash between
-     * DELETE and INSERT can't leave wallet_utxos empty. */
+    /* Rebuild wallet_utxos from ground truth ONLY if empty.
+     * If the GUI's zclassicd sync already populated wallet_utxos
+     * with correct change-address UTXOs, don't overwrite them with
+     * stale data from the global utxos table (which may not track
+     * zclassicd change addresses). */
     if (g_active_node_db && g_active_node_db->open) {
         int64_t t0 = (int64_t)time(NULL);
-        char *err = NULL;
-        sqlite3_exec(g_active_node_db->db, "BEGIN", NULL, NULL, NULL);
-        sqlite3_exec(g_active_node_db->db,
-            "DELETE FROM wallet_utxos", NULL, NULL, &err);
-        if (err) { printf("wallet_utxos DELETE: %s\n", err); sqlite3_free(err); err = NULL; }
-        int rc = sqlite3_exec(g_active_node_db->db,
-            "INSERT INTO wallet_utxos "
-            "(txid, vout, value, address_hash, script, height, is_coinbase) "
-            "SELECT u.txid, u.vout, u.value, u.address_hash, u.script, "
-            "u.height, u.is_coinbase "
-            "FROM utxos u INNER JOIN wallet_keys wk "
-            "ON u.address_hash = wk.pubkey_hash",
-            NULL, NULL, &err);
-        if (err) { printf("wallet_utxos INSERT: %s\n", err); sqlite3_free(err); err = NULL; }
-        if (rc != SQLITE_OK)
-            sqlite3_exec(g_active_node_db->db, "ROLLBACK", NULL, NULL, NULL);
-        else
-            sqlite3_exec(g_active_node_db->db, "COMMIT", NULL, NULL, NULL);
+        /* Check if wallet_utxos already has unspent entries */
+        sqlite3_stmt *chk = NULL;
+        int existing = 0;
+        if (sqlite3_prepare_v2(g_active_node_db->db,
+                "SELECT count(*) FROM wallet_utxos WHERE spent_txid IS NULL",
+                -1, &chk, NULL) == SQLITE_OK) {
+            if (sqlite3_step(chk) == SQLITE_ROW)
+                existing = sqlite3_column_int(chk, 0);
+            sqlite3_finalize(chk);
+        }
+        if (existing > 0) {
+            printf("wallet_utxos: keeping %d existing UTXOs (synced from zclassicd)\n",
+                existing);
+        } else {
+            /* Empty — rebuild from global utxos × wallet_keys */
+            char *err = NULL;
+            sqlite3_exec(g_active_node_db->db, "BEGIN", NULL, NULL, NULL);
+            int rc = sqlite3_exec(g_active_node_db->db,
+                "INSERT OR IGNORE INTO wallet_utxos "
+                "(txid, vout, value, address_hash, script, height, is_coinbase) "
+                "SELECT u.txid, u.vout, u.value, u.address_hash, u.script, "
+                "u.height, u.is_coinbase "
+                "FROM utxos u INNER JOIN wallet_keys wk "
+                "ON u.address_hash = wk.pubkey_hash",
+                NULL, NULL, &err);
+            if (err) { printf("wallet_utxos INSERT: %s\n", err); sqlite3_free(err); err = NULL; }
+            if (rc != SQLITE_OK)
+                sqlite3_exec(g_active_node_db->db, "ROLLBACK", NULL, NULL, NULL);
+            else
+                sqlite3_exec(g_active_node_db->db, "COMMIT", NULL, NULL, NULL);
+        }
         int64_t bal = 0;
         sqlite3_stmt *s = NULL;
         sqlite3_prepare_v2(g_active_node_db->db,
