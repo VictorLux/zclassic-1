@@ -2404,8 +2404,10 @@ static void *hodl_compute_thread(void *arg)
         cp_height[i] = TS_TO_HEIGHT(cp_time[i]);
         if (cp_height[i] > tip) cp_height[i] = tip;
         int64_t old_time = cp_time[i] - one_year;
-        cp_old_height[i] = TS_TO_HEIGHT(old_time);
-        if (cp_old_height[i] < 0) cp_old_height[i] = 0;
+        if (old_time <= genesis_ts)
+            cp_old_height[i] = -1; /* no coins exist 1yr before this point */
+        else
+            cp_old_height[i] = TS_TO_HEIGHT(old_time);
 
         /* Generate label — year for January */
         time_t t = (time_t)cp_time[i];
@@ -2453,8 +2455,8 @@ static void *hodl_compute_thread(void *arg)
 
         /* For each checkpoint, compute % of value older than 1 year */
         for (int i = 0; i < npts; i++) {
-            int at_idx = cp_height[i] / BUCKET_SIZE + 1;
-            int old_idx = cp_old_height[i] / BUCKET_SIZE + 1;
+            int at_idx = cp_height[i] >= 0 ? cp_height[i] / BUCKET_SIZE + 1 : 0;
+            int old_idx = cp_old_height[i] >= 0 ? cp_old_height[i] / BUCKET_SIZE + 1 : 0;
             if (at_idx > bucket_count) at_idx = bucket_count;
             if (old_idx > bucket_count) old_idx = bucket_count;
             if (at_idx < 0) at_idx = 0;
