@@ -1868,122 +1868,32 @@ static size_t serve_shield_confirm(uint8_t *r, size_t max,
         return off;
     }
 
-    /* Build RPC call: send FROM transparent TO shielded z-address */
-    char rpc_body[1024];
-    snprintf(rpc_body, sizeof(rpc_body),
-        "{\"method\":\"z_sendmany\",\"params\":[\"" PRIMARY_ADDR "\","
+    /* Execute z_sendmany via RPC — try C23 node first, fall back to zclassicd */
+    char params[512];
+    snprintf(params, sizeof(params),
+        "[\"" PRIMARY_ADDR "\","
         "[{\"address\":\"%s\",\"amount\":%.8f}]"
-        ",1,%.4f],\"id\":1}", z_dest, amount, FEE_ZCL);
+        ",1,%.4f]", z_dest, amount, FEE_ZCL);
 
-    /* Read cookie for auth */
-    char cookie[256] = "";
-    if (g_datadir) {
-        char cp[1024];
-        snprintf(cp, sizeof(cp), "%s/.cookie", g_datadir);
-        FILE *f = fopen(cp, "r");
-        if (f) {
-            if (fgets(cookie, sizeof(cookie), f)) {
-                char *nl = strchr(cookie, '\n');
-                if (nl) *nl = '\0';
-            }
-            fclose(f);
-        }
-    }
-
-    /* Quick check: is the node even running? Try connect with 500ms timeout */
     char result[4096] = "";
     bool success = false;
-    bool node_reachable = false;
 
-    {
-        int probe = socket(AF_INET, SOCK_STREAM, 0);
-        if (probe >= 0) {
-            struct sockaddr_in pa;
-            memset(&pa, 0, sizeof(pa));
-            pa.sin_family = AF_INET;
-            pa.sin_port = htons(18232);
-            pa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-            /* Non-blocking connect check */
-            struct timeval ptv = {.tv_sec = 0, .tv_usec = 500000};
-            setsockopt(probe, SOL_SOCKET, SO_SNDTIMEO, &ptv, sizeof(ptv));
-            if (connect(probe, (struct sockaddr *)&pa, sizeof(pa)) == 0)
-                node_reachable = true;
-            close(probe);
-        }
+    /* Try C23 node (port 18232) */
+    if (wallet_rpc_call_port("z_sendmany", params,
+                              result, sizeof(result), 18232, NULL) > 0) {
+        if (strstr(result, "opid-"))
+            success = true;
     }
 
-    if (!node_reachable) {
-        APPEND(off, r, max,
-            "<div class='card' style='border-left-color:#f87171;padding:20px'>"
-            "<div style='text-align:center'>"
-            "<div style='font-size:40px;margin-bottom:8px'>&#x274C;</div>"
-            "<div style='font-size:20px;color:#f87171;font-weight:700'>"
-            "Node Offline</div>"
-            "<div style='color:#888;font-size:13px;margin-top:8px'>"
-            "The ZClassic23 node is not running. Start it with:<br>"
-            "<code style='color:#60a5fa'>./zclassic23 -datadir=~/.zclassic-c23</code></div>"
-            "</div></div>"
-            "<div style='text-align:center;margin:16px'>"
-            "<a href='/wallet' style='color:#60a5fa;font-size:16px'>"
-            "Back to Wallet</a></div>");
-        emit_footer(r, max, &off);
-        return off;
-    }
-
-    /* Node is reachable — make the z_sendmany RPC call */
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd >= 0) {
-        struct sockaddr_in addr;
-        memset(&addr, 0, sizeof(addr));
-        addr.sin_family = AF_INET;
-        addr.sin_port = htons(18232);
-        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        struct timeval tv = {.tv_sec = 2};
-        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-
-        if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
-            /* Base64 encode cookie */
-            static const char b64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-            char auth[512];
-            size_t cl = strlen(cookie), bo = 0;
-            for (size_t i = 0; i < cl; i += 3) {
-                uint32_t n = ((uint32_t)(uint8_t)cookie[i]) << 16;
-                if (i+1 < cl) n |= ((uint32_t)(uint8_t)cookie[i+1]) << 8;
-                if (i+2 < cl) n |= (uint32_t)(uint8_t)cookie[i+2];
-                auth[bo++] = b64[(n>>18)&63]; auth[bo++] = b64[(n>>12)&63];
-                auth[bo++] = (i+1<cl) ? b64[(n>>6)&63] : '=';
-                auth[bo++] = (i+2<cl) ? b64[n&63] : '=';
-            }
-            auth[bo] = '\0';
-
-            char req[2048];
-            int rl = snprintf(req, sizeof(req),
-                "POST / HTTP/1.1\r\nHost:127.0.0.1\r\n"
-                "Authorization:Basic %s\r\n"
-                "Content-Type:application/json\r\n"
-                "Content-Length:%zu\r\nConnection:close\r\n\r\n%s",
-                auth, strlen(rpc_body), rpc_body);
-            write(fd, req, (size_t)rl);
-
-            char raw[8192]; size_t tot = 0;
-            while (tot < sizeof(raw)-1) {
-                ssize_t n = read(fd, raw+tot, sizeof(raw)-1-tot);
-                if (n <= 0) break;
-                tot += (size_t)n;
-            }
-            raw[tot] = '\0';
-
-            char *body = strstr(raw, "\r\n\r\n");
-            if (body) {
-                body += 4;
-                snprintf(result, sizeof(result), "%s", body);
-                /* Check for operation ID (success) */
-                if (strstr(result, "opid-"))
-                    success = true;
-            }
+    /* Fall back to zclassicd (port 8232) */
+    if (!success) {
+        memset(result, 0, sizeof(result));
+        if (wallet_rpc_call_port("z_sendmany", params,
+                                  result, sizeof(result),
+                                  8232, "zcluser:zclpass") > 0) {
+            if (strstr(result, "opid-"))
+                success = true;
         }
-        close(fd);
     }
 
     if (success) {
@@ -2260,10 +2170,20 @@ static size_t serve_send_confirm(uint8_t *r, size_t max,
         snprintf(params, sizeof(params),
             "[\"" PRIMARY_ADDR "\", [{\"address\":\"%s\",\"amount\":%.8f}], 1, %.4f]",
             address, amount, FEE_ZCL);
-        wallet_rpc_call_port("z_sendmany", params, rpc_buf, sizeof(rpc_buf), 18232, NULL);
+        /* Try C23 node first, fall back to zclassicd */
+        if (wallet_rpc_call_port("z_sendmany", params,
+                                  rpc_buf, sizeof(rpc_buf), 18232, NULL) <= 0)
+            wallet_rpc_call_port("z_sendmany", params,
+                                  rpc_buf, sizeof(rpc_buf),
+                                  8232, "zcluser:zclpass");
     } else {
         snprintf(params, sizeof(params), "[\"%s\", %.8f]", address, amount);
-        wallet_rpc_call_port("sendtoaddress", params, rpc_buf, sizeof(rpc_buf), 18232, NULL);
+        /* Try C23 node first, fall back to zclassicd */
+        if (wallet_rpc_call_port("sendtoaddress", params,
+                                  rpc_buf, sizeof(rpc_buf), 18232, NULL) <= 0)
+            wallet_rpc_call_port("sendtoaddress", params,
+                                  rpc_buf, sizeof(rpc_buf),
+                                  8232, "zcluser:zclpass");
     }
 
     /* Parse result */
