@@ -18,6 +18,7 @@
 #include "encoding/base58.h"
 #include "encoding/bech32.h"
 #include "chain/chainparams.h"
+#include "crypto/sha256.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -258,152 +259,239 @@ static sqlite3 *open_db_rw(void) {
     return db;
 }
 
+/* Convert hex char to nibble value, or -1 on error. */
+static int hex_nibble(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+/* Convert hex string to binary. Returns bytes written, or 0 on error. */
+static size_t hex_to_bin(const char *hex, size_t hexlen,
+                          uint8_t *out, size_t outmax) {
+    if (hexlen % 2 != 0 || hexlen / 2 > outmax) return 0;
+    for (size_t i = 0; i < hexlen; i += 2) {
+        int hi = hex_nibble(hex[i]), lo = hex_nibble(hex[i+1]);
+        if (hi < 0 || lo < 0) return 0;
+        out[i/2] = (uint8_t)((hi << 4) | lo);
+    }
+    return hexlen / 2;
+}
+
+/* Extract next JSON string value after a key like "txid": "abc...".
+ * Scans from *pos forward. On success, sets *val and *vlen, advances
+ * *pos past the closing quote, returns true. */
+static bool json_next_str(const char *buf __attribute__((unused)),
+                           const char **pos,
+                           const char *key, const char **val, size_t *vlen) {
+    char pattern[64];
+    snprintf(pattern, sizeof(pattern), "\"%s\"", key);
+    const char *p = strstr(*pos, pattern);
+    if (!p) return false;
+    p += strlen(pattern);
+    while (*p == ' ' || *p == ':' || *p == ' ') p++;
+    if (*p != '"') return false;
+    p++; /* skip opening quote */
+    const char *end = strchr(p, '"');
+    if (!end) return false;
+    *val = p;
+    *vlen = (size_t)(end - p);
+    *pos = end + 1;
+    return true;
+}
+
+/* Extract next JSON number value after a key. */
+static bool json_next_num(const char *buf __attribute__((unused)),
+                           const char **pos,
+                           const char *key, double *out) {
+    char pattern[64];
+    snprintf(pattern, sizeof(pattern), "\"%s\"", key);
+    const char *p = strstr(*pos, pattern);
+    if (!p) return false;
+    p += strlen(pattern);
+    while (*p == ' ' || *p == ':') p++;
+    *out = strtod(p, NULL);
+    *pos = p;
+    return true;
+}
+
+static bool json_next_int(const char *buf __attribute__((unused)),
+                           const char **pos,
+                           const char *key, int *out) {
+    char pattern[64];
+    snprintf(pattern, sizeof(pattern), "\"%s\"", key);
+    const char *p = strstr(*pos, pattern);
+    if (!p) return false;
+    p += strlen(pattern);
+    while (*p == ' ' || *p == ':') p++;
+    *out = (int)strtol(p, NULL, 10);
+    *pos = p;
+    return true;
+}
+
 /* Sync wallet_utxos and wallet_sapling_notes from zclassicd.
+ * Uses atomic transaction: if RPC fails, DB is not modified.
  * Called after shield/send operations to keep balance accurate. */
 static void sync_wallet_from_zclassicd(void) {
     sqlite3 *db = open_db_rw();
     if (!db) return;
 
-    /* 1. Sync transparent UTXOs from listunspent */
-    char lu[16384] = "";
-    if (wallet_rpc_call_port("listunspent", "[]", lu, sizeof(lu),
-                              ZCLASSICD_PORT, zclassicd_auth()) > 0) {
-        /* Mark all existing wallet UTXOs as spent */
-        sqlite3_exec(db,
-            "UPDATE wallet_utxos SET spent_txid = X'00000000000000000000"
-            "00000000000000000000000000000000000000000001' "
-            "WHERE spent_txid IS NULL", NULL, NULL, NULL);
+    /* Fetch transparent UTXOs from zclassicd */
+    char lu[65536] = "";
+    int lu_rc = wallet_rpc_call_port("listunspent", "[0]", lu, sizeof(lu),
+                                      ZCLASSICD_PORT, zclassicd_auth());
+    if (lu_rc <= 0) { sqlite3_close(db); return; }
 
-        /* Parse and insert current UTXOs */
+    /* Fetch shielded notes from zclassicd */
+    char zlu[65536] = "";
+    int zlu_rc = wallet_rpc_call_port("z_listunspent", "[0]", zlu, sizeof(zlu),
+                                       ZCLASSICD_PORT, zclassicd_auth());
+    if (zlu_rc <= 0) { sqlite3_close(db); return; }
+
+    /* Sanity: response must contain "result" and at least one entry.
+     * If response is an error or empty, don't wipe the DB. */
+    if (!strstr(lu, "\"result\"") || !strstr(lu, "\"txid\"")) {
+        sqlite3_close(db); return;
+    }
+
+    /* Both RPCs succeeded — atomically replace wallet data */
+    sqlite3_exec(db, "BEGIN", NULL, NULL, NULL);
+
+    /* 1. Rebuild transparent UTXOs */
+    sqlite3_exec(db, "DELETE FROM wallet_utxos", NULL, NULL, NULL);
+
+    sqlite3_stmt *ins_utxo = NULL;
+    sqlite3_prepare_v2(db,
+        "INSERT INTO wallet_utxos "
+        "(txid,vout,value,address_hash,script,height,is_coinbase,spent_txid) "
+        "VALUES (?,?,?,?,?,0,0,NULL)", -1, &ins_utxo, NULL);
+
+    if (ins_utxo) {
         const char *p = lu;
-        while ((p = strstr(p, "\"txid\"")) != NULL) {
-            p += 6;
-            while (*p == ' ' || *p == ':' || *p == '"') p++;
-            const char *tid = p;
-            while (*p && *p != '"') p++;
-            size_t tlen = (size_t)(p - tid);
-            if (tlen != 64) continue;
-
-            const char *vp = strstr(p, "\"vout\"");
-            const char *ap = strstr(p, "\"address\"");
-            const char *amp = strstr(p, "\"amount\"");
-            if (!vp || !ap || !amp) continue;
-
-            vp += 6; while (*vp == ' ' || *vp == ':') vp++;
-            int vout = (int)strtol(vp, NULL, 10);
-
-            ap += 9; while (*ap == ' ' || *ap == ':' || *ap == '"') ap++;
-            const char *addr = ap;
-            while (*ap && *ap != '"') ap++;
-            size_t alen = (size_t)(ap - addr);
-
-            amp += 8; while (*amp == ' ' || *amp == ':') amp++;
-            int64_t val = (int64_t)(strtod(amp, NULL) * 1e8 + 0.5);
-
-            /* Convert hex txid to blob */
+        const char *txid_s; size_t txid_l;
+        while (json_next_str(lu, &p, "txid", &txid_s, &txid_l)) {
+            if (txid_l != 64) continue;
             uint8_t txid_bin[32];
-            for (int i = 0; i < 32 && (size_t)(i*2+1) < tlen; i++) {
-                char hx[3] = { tid[i*2], tid[i*2+1], '\0' };
-                txid_bin[i] = (uint8_t)strtol(hx, NULL, 16);
+            if (hex_to_bin(txid_s, 64, txid_bin, 32) != 32) continue;
+
+            int vout = 0;
+            double amt = 0;
+            const char *script_s; size_t script_l;
+            const char *scan = p;
+            json_next_int(lu, &scan, "vout", &vout);
+            scan = p;
+            json_next_num(lu, &scan, "amount", &amt);
+            int64_t val = (int64_t)(amt * 1e8 + 0.5);
+
+            /* Get scriptPubKey for address_hash extraction */
+            uint8_t addr_hash[20] = {0};
+            uint8_t script_bin[64] = {0};
+            size_t script_bin_len = 0;
+            scan = p;
+            if (json_next_str(lu, &scan, "scriptPubKey", &script_s, &script_l)) {
+                script_bin_len = hex_to_bin(script_s, script_l,
+                                             script_bin, sizeof(script_bin));
+                /* P2PKH: 76a914{20}88ac — extract 20-byte hash */
+                if (script_bin_len == 25 && script_bin[0] == 0x76 &&
+                    script_bin[1] == 0xa9 && script_bin[2] == 0x14) {
+                    memcpy(addr_hash, script_bin + 3, 20);
+                }
             }
 
-            sqlite3_stmt *ins = NULL;
-            if (sqlite3_prepare_v2(db,
-                    "INSERT OR REPLACE INTO wallet_utxos "
-                    "(txid,vout,value,address_hash,script,height,"
-                    "is_coinbase,spent_txid) "
-                    "VALUES (?,?,?,X'00',X'00',0,0,NULL)",
-                    -1, &ins, NULL) == SQLITE_OK) {
-                sqlite3_bind_blob(ins, 1, txid_bin, 32, SQLITE_STATIC);
-                sqlite3_bind_int(ins, 2, vout);
-                sqlite3_bind_int64(ins, 3, val);
-                sqlite3_step(ins);
-                sqlite3_finalize(ins);
-            }
-            (void)addr; (void)alen;
+            sqlite3_bind_blob(ins_utxo, 1, txid_bin, 32, SQLITE_TRANSIENT);
+            sqlite3_bind_int(ins_utxo, 2, vout);
+            sqlite3_bind_int64(ins_utxo, 3, val);
+            sqlite3_bind_blob(ins_utxo, 4, addr_hash, 20, SQLITE_TRANSIENT);
+            sqlite3_bind_blob(ins_utxo, 5, script_bin,
+                              (int)script_bin_len, SQLITE_TRANSIENT);
+            sqlite3_step(ins_utxo);
+            sqlite3_reset(ins_utxo);
         }
+        sqlite3_finalize(ins_utxo);
     }
 
-    /* 2. Sync shielded notes from z_listunspent */
-    char zlu[32768] = "";
-    if (wallet_rpc_call_port("z_listunspent", "[]", zlu, sizeof(zlu),
-                              ZCLASSICD_PORT, zclassicd_auth()) > 0) {
+    /* 2. Rebuild shielded notes */
+    sqlite3_exec(db, "DELETE FROM wallet_sapling_notes", NULL, NULL, NULL);
+
+    sqlite3_stmt *ins_note = NULL;
+    sqlite3_prepare_v2(db,
+        "INSERT INTO wallet_sapling_notes "
+        "(txid,output_index,value,rcm,ivk,diversifier,pk_d,"
+        "cm,nullifier,block_height,address) "
+        "VALUES (?,?,?,?,?,?,?,?,?,0,?)", -1, &ins_note, NULL);
+
+    if (ins_note) {
         const char *p = zlu;
-        while ((p = strstr(p, "\"txid\"")) != NULL) {
-            p += 6;
-            while (*p == ' ' || *p == ':' || *p == '"') p++;
-            const char *tid = p;
-            while (*p && *p != '"') p++;
-            size_t tlen = (size_t)(p - tid);
-            if (tlen != 64) continue;
-
-            const char *oi = strstr(p, "\"outindex\"");
-            const char *amp = strstr(p, "\"amount\"");
-            const char *adp = strstr(p, "\"address\"");
-            if (!oi || !amp || !adp) continue;
-
-            oi += 10; while (*oi == ' ' || *oi == ':') oi++;
-            int outindex = (int)strtol(oi, NULL, 10);
-
-            amp += 8; while (*amp == ' ' || *amp == ':') amp++;
-            int64_t val = (int64_t)(strtod(amp, NULL) * 1e8 + 0.5);
-
-            adp += 9; while (*adp == ' ' || *adp == ':' || *adp == '"') adp++;
-            const char *addr = adp;
-            while (*adp && *adp != '"') adp++;
-            size_t alen = (size_t)(adp - addr);
-            char addr_str[128] = "";
-            if (alen < sizeof(addr_str)) {
-                memcpy(addr_str, addr, alen);
-                addr_str[alen] = '\0';
-            }
-
+        const char *txid_s; size_t txid_l;
+        while (json_next_str(zlu, &p, "txid", &txid_s, &txid_l)) {
+            if (txid_l != 64) continue;
             uint8_t txid_bin[32];
-            for (int i = 0; i < 32 && (size_t)(i*2+1) < tlen; i++) {
-                char hx[3] = { tid[i*2], tid[i*2+1], '\0' };
-                txid_bin[i] = (uint8_t)strtol(hx, NULL, 16);
+            if (hex_to_bin(txid_s, 64, txid_bin, 32) != 32) continue;
+
+            int outindex = 0;
+            double amt = 0;
+            const char *addr_s; size_t addr_l;
+            const char *scan = p;
+            json_next_int(zlu, &scan, "outindex", &outindex);
+            scan = p;
+            json_next_num(zlu, &scan, "amount", &amt);
+            int64_t val = (int64_t)(amt * 1e8 + 0.5);
+
+            char addr_str[128] = "";
+            scan = p;
+            if (json_next_str(zlu, &scan, "address", &addr_s, &addr_l) &&
+                addr_l < sizeof(addr_str)) {
+                memcpy(addr_str, addr_s, addr_l);
+                addr_str[addr_l] = '\0';
             }
 
-            /* Generate deterministic placeholder fields */
-            uint8_t seed[96];
+            /* Deterministic unique placeholder crypto fields.
+             * These are not real Sapling keys — just unique identifiers
+             * so SQLite UNIQUE constraints don't collide. */
+            uint8_t seed[36];
             memcpy(seed, txid_bin, 32);
-            seed[32] = (uint8_t)outindex;
-            uint8_t nf[32], cm[32], rcm[32], ivk[32], pkd[32], div[11];
-            /* Simple hash-based placeholders */
-            for (int i = 0; i < 32; i++) {
-                nf[i] = seed[i] ^ 0xAA;
-                cm[i] = seed[i] ^ 0xBB;
-                rcm[i] = seed[i] ^ 0xCC;
-                ivk[i] = seed[i] ^ 0xDD;
-                pkd[i] = seed[i] ^ 0xEE;
-            }
-            for (int i = 0; i < 11; i++) div[i] = seed[i] ^ 0xFF;
+            seed[32] = (uint8_t)(outindex & 0xFF);
+            seed[33] = (uint8_t)((outindex >> 8) & 0xFF);
+            seed[34] = 0; seed[35] = 0;
 
-            sqlite3_stmt *ins = NULL;
-            if (sqlite3_prepare_v2(db,
-                    "INSERT OR IGNORE INTO wallet_sapling_notes "
-                    "(txid,output_index,value,rcm,ivk,diversifier,pk_d,"
-                    "cm,nullifier,block_height,address) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,0,?)",
-                    -1, &ins, NULL) == SQLITE_OK) {
-                sqlite3_bind_blob(ins, 1, txid_bin, 32, SQLITE_STATIC);
-                sqlite3_bind_int(ins, 2, outindex);
-                sqlite3_bind_int64(ins, 3, val);
-                sqlite3_bind_blob(ins, 4, rcm, 32, SQLITE_STATIC);
-                sqlite3_bind_blob(ins, 5, ivk, 32, SQLITE_STATIC);
-                sqlite3_bind_blob(ins, 6, div, 11, SQLITE_STATIC);
-                sqlite3_bind_blob(ins, 7, pkd, 32, SQLITE_STATIC);
-                sqlite3_bind_blob(ins, 8, cm, 32, SQLITE_STATIC);
-                sqlite3_bind_blob(ins, 9, nf, 32, SQLITE_STATIC);
-                sqlite3_bind_text(ins, 10, addr_str, -1, SQLITE_STATIC);
-                sqlite3_step(ins);
-                sqlite3_finalize(ins);
-            }
+            /* Use SHA-256 context API for each field */
+            #define HASH_FIELD(tag, taglen, out) do { \
+                struct sha256_ctx _hc; \
+                sha256_init(&_hc); \
+                sha256_write(&_hc, (const unsigned char *)(tag), (taglen)); \
+                sha256_write(&_hc, seed, 36); \
+                sha256_finalize(&_hc, (out)); \
+            } while(0)
+
+            uint8_t nf[32], cm[32], rcm[32], ivk[32], pkd[32], div_full[32];
+            HASH_FIELD("nf", 2, nf);
+            HASH_FIELD("cm", 2, cm);
+            HASH_FIELD("rcm", 3, rcm);
+            HASH_FIELD("ivk", 3, ivk);
+            HASH_FIELD("pkd", 3, pkd);
+            HASH_FIELD("div", 3, div_full);
+            #undef HASH_FIELD
+
+            sqlite3_bind_blob(ins_note, 1, txid_bin, 32, SQLITE_TRANSIENT);
+            sqlite3_bind_int(ins_note, 2, outindex);
+            sqlite3_bind_int64(ins_note, 3, val);
+            sqlite3_bind_blob(ins_note, 4, rcm, 32, SQLITE_TRANSIENT);
+            sqlite3_bind_blob(ins_note, 5, ivk, 32, SQLITE_TRANSIENT);
+            sqlite3_bind_blob(ins_note, 6, div_full, 11, SQLITE_TRANSIENT);
+            sqlite3_bind_blob(ins_note, 7, pkd, 32, SQLITE_TRANSIENT);
+            sqlite3_bind_blob(ins_note, 8, cm, 32, SQLITE_TRANSIENT);
+            sqlite3_bind_blob(ins_note, 9, nf, 32, SQLITE_TRANSIENT);
+            sqlite3_bind_text(ins_note, 10, addr_str, -1, SQLITE_TRANSIENT);
+            sqlite3_step(ins_note);
+            sqlite3_reset(ins_note);
         }
+        sqlite3_finalize(ins_note);
     }
 
+    sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
     sqlite3_close(db);
-    g_balance_dirty = 1; /* Force balance recompute on next pulse */
+    g_balance_dirty = 1;
 }
 
 /* sql_query_int() and sql_query_i64() provided by controllers/explorer_internal.h */
@@ -2104,8 +2192,8 @@ static size_t serve_shield_confirm(uint8_t *r, size_t max,
     }
 
     if (success) {
-        /* Sync wallet tables so balance updates immediately */
-        sync_wallet_from_zclassicd();
+        /* Mark balance dirty — sync on next pulse (avoids blocking render) */
+        g_balance_dirty = 1;
         APPEND(off, r, max,
             "<div class='card' style='border-left-color:#34d399;padding:20px'>"
             "<div style='text-align:center'>"
@@ -2163,10 +2251,18 @@ static size_t serve_pulse(uint8_t *r, size_t max) {
         peers = query_int(db,  "SELECT count(*) FROM peers");
         mempool = query_int(db, "SELECT count(*) FROM mempool_entries");
 
+        if (g_balance_dirty) {
+            /* Wallet changed — sync from zclassicd then recompute */
+            sqlite3_close(db);
+            sync_wallet_from_zclassicd();
+            db = open_db();
+            if (!db) return 0;
+        }
+
         if (height != pulse_cache.height || pulse_cache.height == 0 ||
             g_balance_dirty) {
             g_balance_dirty = 0;
-            /* Block height changed — recompute balances */
+            /* Recompute balances */
             balance = query_ground_truth_balance(db, &t_utxos);
             shielded = query_shielded_balance(db, &z_notes);
             speed_bal = query_speed_balance(db);
@@ -2428,8 +2524,8 @@ static size_t serve_send_confirm(uint8_t *r, size_t max,
     }
 
     if (send_ok) {
-        /* Sync wallet tables so balance updates immediately */
-        sync_wallet_from_zclassicd();
+        /* Mark balance dirty — sync on next pulse (avoids blocking render) */
+        g_balance_dirty = 1;
         char safe_addr[256], safe_txid[256];
         html_escape(safe_addr, sizeof(safe_addr), address);
         html_escape(safe_txid, sizeof(safe_txid), txid_result);

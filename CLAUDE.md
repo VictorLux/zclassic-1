@@ -141,8 +141,9 @@ tokens when shielded payment confirms.
 - Snapshot offer: pre-computed in background thread
 
 ### Wallet
-0.00009459 ZCL transparent (t1bUDbrSmCGRLLPGrB5BeQXkcRnCxDb7a3P).
-0.08200000 ZCL shielded (28 Sapling notes across 6 z-addresses). Total: 0.08209459 ZCL.
+Started with 1.00000000 ZCL. Balance changes with each shield op (0.0001 fee each).
+zclassicd `z_gettotalbalance` is the ONLY source of truth.
+Auto-sync: pulse handler syncs wallet_utxos + wallet_sapling_notes when dirty.
 Shield delegation: C23 GUI calls zclassicd `z_sendmany` on port 8232.
 Auto-sync: after shield/send, `sync_wallet_from_zclassicd()` refreshes wallet_utxos
 and wallet_sapling_notes from zclassicd `listunspent` + `z_listunspent`.
