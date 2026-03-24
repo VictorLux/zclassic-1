@@ -2084,13 +2084,13 @@ static size_t serve_shield(uint8_t *r, size_t max, const char *query) {
         "<div style='color:#888;font-size:13px;line-height:1.6'>"
         "<div style='margin-bottom:8px'>"
         "<span style='color:#34d399;font-weight:700'>Step 1:</span> "
-        "Your transparent ZCL moves to a shielded address.</div>"
+        "Your transparent ZCL moves to a shielded address (1 confirmation, ~2.5 min).</div>"
         "<div style='margin-bottom:8px'>"
         "<span style='color:#a78bfa;font-weight:700'>Step 2:</span> "
-        "Wait ~6 hours for full unlinkability.</div>"
+        "Wait ~6 hours so timing analysis cannot link the transparent source to your shielded note.</div>"
         "<div>"
         "<span style='color:#60a5fa;font-weight:700'>Step 3:</span> "
-        "Your funds are fully private and untraceable.</div>"
+        "Spend from your shielded balance with no on-chain link to the original address.</div>"
         "</div></div>");
 
     APPEND(off, r, max,
@@ -2241,8 +2241,9 @@ static size_t serve_shield_confirm(uint8_t *r, size_t max,
     }
 
     if (success) {
-        /* Mark balance dirty — sync on next pulse (avoids blocking render) */
-        g_balance_dirty = 1;
+        /* Sync wallet tables immediately so balance is correct on return */
+        sync_wallet_from_zclassicd();
+        g_balance_dirty = 1; /* Also recompute on next pulse */
         APPEND(off, r, max,
             "<div class='card' style='border-left-color:#34d399;padding:20px'>"
             "<div style='text-align:center'>"
@@ -2254,9 +2255,33 @@ static size_t serve_shield_confirm(uint8_t *r, size_t max,
             "<div style='color:#888;font-size:12px;margin-top:12px;"
             "font-family:monospace;word-break:break-all'>%s</div>"
             "<div style='color:#555;font-size:13px;margin-top:12px'>"
-            "Your funds will be fully private in ~6 hours.</div>"
-            "</div></div>",
+            "Shielded immediately. Wait ~6 hours to break timing correlation "
+            "with the transparent source address.</div>",
             amount, opid_str);
+
+        /* Show updated balance from the sync we just did */
+        {
+            sqlite3 *sdb = open_db();
+            if (sdb) {
+                int64_t new_t = query_ground_truth_balance(sdb, NULL);
+                int64_t new_z = query_shielded_balance(sdb, NULL);
+                int64_t new_total = new_t + new_z;
+                APPEND(off, r, max,
+                    "<div style='margin-top:16px;padding:12px;background:#0a1f14;"
+                    "border-radius:8px'>"
+                    "<div style='color:#34d399;font-size:18px;font-weight:700'>"
+                    "%.8f ZCL</div>"
+                    "<div style='color:#888;font-size:12px;margin-top:4px'>"
+                    "%.8f transparent + %.8f shielded</div>"
+                    "</div>",
+                    (double)new_total / 1e8,
+                    (double)new_t / 1e8,
+                    (double)new_z / 1e8);
+                sqlite3_close(sdb);
+            }
+        }
+
+        APPEND(off, r, max, "</div></div>");
     } else {
         char safe_err[512];
         html_escape(safe_err, sizeof(safe_err), shield_err);
@@ -2543,7 +2568,8 @@ static size_t serve_send_confirm(uint8_t *r, size_t max,
     }
 
     if (send_ok) {
-        /* Mark balance dirty — sync on next pulse (avoids blocking render) */
+        /* Sync wallet tables immediately so balance is correct on return */
+        sync_wallet_from_zclassicd();
         g_balance_dirty = 1;
         char safe_addr[256], safe_txid[256];
         html_escape(safe_addr, sizeof(safe_addr), address);

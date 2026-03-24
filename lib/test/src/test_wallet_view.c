@@ -661,7 +661,7 @@ int test_wallet_view(void)
         ok = ok && wv_has("Step 2:");
         ok = ok && wv_has("Step 3:");
         ok = ok && wv_has("shielded address");
-        ok = ok && wv_has("private and untraceable");
+        ok = ok && wv_has("timing analysis");
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
