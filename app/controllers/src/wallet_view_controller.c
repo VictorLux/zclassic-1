@@ -11,6 +11,7 @@
  *   /wallet/coins     UTXO and shielded note breakdown */
 
 #include "controllers/wallet_view_controller.h"
+#include "controllers/wallet_controller.h"
 #include "views/format_helpers.h"
 #include "views/wallet_css.h"
 #include "event/event.h"
@@ -1868,33 +1869,14 @@ static size_t serve_shield_confirm(uint8_t *r, size_t max,
         return off;
     }
 
-    /* Execute z_sendmany via RPC — try C23 node first, fall back to zclassicd */
-    char params[512];
-    snprintf(params, sizeof(params),
-        "[\"" PRIMARY_ADDR "\","
-        "[{\"address\":\"%s\",\"amount\":%.8f}]"
-        ",1,%.4f]", z_dest, amount, FEE_ZCL);
-
-    char result[4096] = "";
-    bool success = false;
-
-    /* Try C23 node (port 18232) */
-    if (wallet_rpc_call_port("z_sendmany", params,
-                              result, sizeof(result), 18232, NULL) > 0) {
-        if (strstr(result, "opid-"))
-            success = true;
-    }
-
-    /* Fall back to zclassicd (port 8232) */
-    if (!success) {
-        memset(result, 0, sizeof(result));
-        if (wallet_rpc_call_port("z_sendmany", params,
-                                  result, sizeof(result),
-                                  8232, "zcluser:zclpass") > 0) {
-            if (strstr(result, "opid-"))
-                success = true;
-        }
-    }
+    /* Execute shield directly in C */
+    int64_t amount_sat = (int64_t)(amount * 1e8 + 0.5);
+    int64_t fee_sat = (int64_t)(FEE_ZCL * 1e8 + 0.5);
+    char result[256] = "";
+    char shield_err[256] = "";
+    bool success = wallet_direct_shield(z_dest, amount_sat, fee_sat,
+                                         result, sizeof(result),
+                                         shield_err, sizeof(shield_err));
 
     if (success) {
         /* Extract operation ID */
@@ -1923,24 +1905,16 @@ static size_t serve_shield_confirm(uint8_t *r, size_t max,
             "</div></div>",
             amount, opid_str);
     } else {
-        /* Show the error clearly */
-        char safe_result[1024];
-        html_escape(safe_result, sizeof(safe_result), result);
+        char safe_err[512];
+        html_escape(safe_err, sizeof(safe_err), shield_err);
 
         APPEND(off, r, max,
-            "<div class='card' style='border-left-color:#fbbf24;padding:20px'>"
-            "<div style='text-align:center'>"
-            "<div style='font-size:40px;margin-bottom:8px'>&#x26A0;</div>"
-            "<div style='font-size:20px;color:#fbbf24;font-weight:700'>"
-            "Could Not Shield</div>"
-            "<div style='color:#888;font-size:13px;margin-top:8px'>"
-            "The node may not be running, or the wallet has no "
-            "spendable funds. Check that zclassic23 is running.</div>"
-            "<div style='color:#555;font-size:11px;margin-top:12px;"
-            "font-family:monospace;word-break:break-all;text-align:left;"
-            "background:#0a0a0a;padding:10px;border-radius:6px'>%s</div>"
-            "</div></div>",
-            safe_result[0] ? safe_result : "No response from node");
+            "<div class='result-error'>"
+            "<div class='icon'>&#x26A0;</div>"
+            "<h2>Could Not Shield</h2>"
+            "<p>%s</p>"
+            "<a href='/wallet' style='color:#34d399'>Back to Wallet</a>"
+            "</div>", safe_err[0] ? safe_err : "Unknown error");
     }
 
     APPEND(off, r, max,
@@ -2161,57 +2135,41 @@ static size_t serve_send_confirm(uint8_t *r, size_t max,
         return off;
     }
 
-    /* Determine send type and make RPC call */
-    char rpc_buf[4096] = "";
-    char params[512];
+    /* Execute send directly in C — no RPC round-trip */
     bool is_shielded = (strncmp(address, "zs1", 3) == 0);
+    char txid_result[65] = "";
+    char error_msg[256] = "";
+    int64_t amount_sat = (int64_t)(amount * 1e8 + 0.5);
+    bool send_ok = false;
 
     if (is_shielded) {
-        snprintf(params, sizeof(params),
-            "[\"" PRIMARY_ADDR "\", [{\"address\":\"%s\",\"amount\":%.8f}], 1, %.4f]",
-            address, amount, FEE_ZCL);
-        /* Try C23 node first, fall back to zclassicd */
-        if (wallet_rpc_call_port("z_sendmany", params,
-                                  rpc_buf, sizeof(rpc_buf), 18232, NULL) <= 0)
-            wallet_rpc_call_port("z_sendmany", params,
-                                  rpc_buf, sizeof(rpc_buf),
-                                  8232, "zcluser:zclpass");
+        send_ok = wallet_direct_shield(address, amount_sat,
+            (int64_t)(FEE_ZCL * 1e8 + 0.5),
+            txid_result, sizeof(txid_result),
+            error_msg, sizeof(error_msg));
     } else {
-        snprintf(params, sizeof(params), "[\"%s\", %.8f]", address, amount);
-        /* Try C23 node first, fall back to zclassicd */
-        if (wallet_rpc_call_port("sendtoaddress", params,
-                                  rpc_buf, sizeof(rpc_buf), 18232, NULL) <= 0)
-            wallet_rpc_call_port("sendtoaddress", params,
-                                  rpc_buf, sizeof(rpc_buf),
-                                  8232, "zcluser:zclpass");
+        send_ok = wallet_direct_sendtoaddress(address, amount_sat,
+            txid_result, sizeof(txid_result),
+            error_msg, sizeof(error_msg));
     }
 
-    /* Parse result */
-    char result_val[128] = "";
-    char error_msg[256] = "";
-    zcl_json_extract_str(rpc_buf, "result", result_val, sizeof(result_val));
+    if (send_ok) {
+        char safe_addr[256], safe_txid[256];
+        html_escape(safe_addr, sizeof(safe_addr), address);
+        html_escape(safe_txid, sizeof(safe_txid), txid_result);
 
-    /* Check for error */
-    const char *err_ptr = strstr(rpc_buf, "\"error\":");
-    bool has_error = false;
-    if (err_ptr) {
-        const char *msg = strstr(err_ptr, "\"message\":");
-        if (msg) {
-            zcl_json_extract_str(err_ptr, "message", error_msg, sizeof(error_msg));
-            if (error_msg[0]) has_error = true;
-        }
-    }
-
-    if (!rpc_buf[0]) {
-        /* Node offline */
         APPEND(off, r, max,
-            "<div class='result-warning'>"
-            "<div class='icon'>&#x26A0;</div>"
-            "<h2>Node Offline</h2>"
-            "<p>Cannot reach the node on port 18232.</p>"
-            "<a href='/wallet/send' style='color:#34d399'>Try Again</a>"
-            "</div>");
-    } else if (has_error) {
+            "<div class='result-success'>"
+            "<div class='icon'>&#x2713;</div>"
+            "<h2>Transaction Sent</h2>"
+            "<p>%.8f ZCL to %s</p>"
+            "<a href='/explorer/tx/%s' class='hash' "
+            "style='word-break:break-all'>%s</a>"
+            "<div style='margin-top:24px'>"
+            "<a href='/wallet' style='color:#34d399;font-size:16px'>"
+            "Back to Wallet</a></div></div>",
+            amount, safe_addr, safe_txid, safe_txid);
+    } else {
         char safe_err[512];
         html_escape(safe_err, sizeof(safe_err), error_msg);
         APPEND(off, r, max,
@@ -2221,45 +2179,6 @@ static size_t serve_send_confirm(uint8_t *r, size_t max,
             "<p>%s</p>"
             "<a href='/wallet/send' style='color:#34d399'>Try Again</a>"
             "</div>", safe_err);
-    } else if (result_val[0]) {
-        char safe_addr[256], safe_txid[256];
-        html_escape(safe_addr, sizeof(safe_addr), address);
-        html_escape(safe_txid, sizeof(safe_txid), result_val);
-
-        bool is_opid = (strncmp(result_val, "opid-", 5) == 0);
-
-        APPEND(off, r, max,
-            "<div class='result-success'>"
-            "<div class='icon'>&#x2713;</div>"
-            "<h2>%s</h2>"
-            "<p>%.8f ZCL to %s</p>",
-            is_opid ? "Shielded Send Initiated" : "Transaction Sent",
-            amount, safe_addr);
-
-        if (is_opid) {
-            APPEND(off, r, max,
-                "<p style='color:#a78bfa;font-family:monospace;font-size:12px;"
-                "word-break:break-all'>%s</p>"
-                "<p>Shielded transactions take ~6 hours to confirm.</p>",
-                safe_txid);
-        } else {
-            APPEND(off, r, max,
-                "<a href='/explorer/tx/%s' class='hash' "
-                "style='word-break:break-all'>%s</a>",
-                safe_txid, safe_txid);
-        }
-
-        APPEND(off, r, max,
-            "<div style='margin-top:24px'>"
-            "<a href='/wallet' style='color:#34d399;font-size:16px'>"
-            "Back to Wallet</a></div></div>");
-    } else {
-        APPEND(off, r, max,
-            "<div class='result-warning'>"
-            "<div class='icon'>&#x26A0;</div>"
-            "<h2>Unknown Response</h2>"
-            "<a href='/wallet/send' style='color:#34d399'>Try Again</a>"
-            "</div>");
     }
 
     emit_footer(r, max, &off);

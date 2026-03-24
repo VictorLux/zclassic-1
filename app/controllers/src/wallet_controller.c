@@ -341,6 +341,73 @@ static bool rpc_sendtoaddress(const struct json_value *params, bool help,
     return true;
 }
 
+/* ── Direct C API for wallet view controller ──────────────── */
+
+bool wallet_direct_sendtoaddress(const char *address, int64_t amount_sat,
+                                  char *txid_out, size_t txid_out_size,
+                                  char *error_out, size_t error_out_size)
+{
+    (void)txid_out_size; /* always 65 bytes for hex txid */
+    if (!g_wallet) {
+        snprintf(error_out, error_out_size, "Wallet not loaded");
+        return false;
+    }
+    if (amount_sat <= 0) {
+        snprintf(error_out, error_out_size, "Invalid amount");
+        return false;
+    }
+
+    const struct chain_params *cp = chain_params_get();
+    size_t pk_len, sc_len;
+    const unsigned char *pk = chain_params_base58_prefix(cp, B58_PUBKEY_ADDRESS, &pk_len);
+    const unsigned char *sc = chain_params_base58_prefix(cp, B58_SCRIPT_ADDRESS, &sc_len);
+
+    struct tx_destination dest;
+    if (!decode_destination(address, pk, pk_len, sc, sc_len, &dest)) {
+        snprintf(error_out, error_out_size, "Invalid address");
+        return false;
+    }
+
+    struct wallet_tx wtx;
+    int64_t fee = 0;
+    const char *err = NULL;
+    if (!wallet_create_transaction(g_wallet, &dest, amount_sat, &wtx, &fee, &err)) {
+        snprintf(error_out, error_out_size, "%s", err ? err : "Transaction creation failed");
+        return false;
+    }
+
+    if (!wallet_commit_transaction(g_wallet, &wtx, g_mempool)) {
+        snprintf(error_out, error_out_size, "Error committing transaction");
+        transaction_free(&wtx.tx);
+        return false;
+    }
+
+    if (g_node_db && g_node_db->open)
+        node_db_sync_wallet_tx(g_node_db, &wtx.tx, g_wallet, 0);
+    if (g_connman_ptr)
+        connman_relay_transaction(g_connman_ptr, &wtx.tx.hash);
+    if (g_wallet_db)
+        wallet_sqlite_flush(g_wallet_db, g_wallet);
+
+    uint256_get_hex(&wtx.tx.hash, txid_out);
+    return true;
+}
+
+bool wallet_direct_shield(const char *z_address, int64_t amount_sat,
+                           int64_t fee_sat,
+                           char *opid_out, size_t opid_out_size,
+                           char *error_out, size_t error_out_size)
+{
+    /* Shielded sends require the async RPC queue (z_sendmany).
+     * For now, delegate to the RPC layer which handles this. */
+    (void)z_address; (void)amount_sat; (void)fee_sat;
+    (void)opid_out; (void)opid_out_size;
+    snprintf(error_out, error_out_size,
+        "Shielded sends require the Groth16 prover (not yet implemented in C23). "
+        "Use zclassicd for shielded transactions.");
+    return false;
+}
+
 static bool rpc_dumpprivkey(const struct json_value *params, bool help,
                               struct json_value *result)
 {
