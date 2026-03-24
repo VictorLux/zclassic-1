@@ -1528,23 +1528,23 @@ int test_wallet_view(void)
         else { printf("FAIL (no z-addresses on receive)\n"); failures++; }
     }
 
-    printf("LIVE: shield confirm does not show Groth16 error... ");
+    printf("LIVE: shield review page renders correctly... ");
     {
-        /* POST shield confirm with a tiny amount.
-         * Should delegate to zclassicd, NOT return "Groth16" error.
-         * Expected: either "Shielding Started" (success) or a real
-         * error from zclassicd (insufficient funds, etc). */
-        wv_post("/wallet/shield/confirm", "amount=0.001");
+        /* Test the shield REVIEW page (not confirm — confirm triggers
+         * real z_sendmany which spends actual ZCL). */
+        wv_get("/wallet/shield?amount=0.001");
         bool groth16 = wv_has("Groth16");
         bool not_impl = wv_has("not yet implemented");
-        if (!groth16 && !not_impl) printf("OK\n");
-        else { printf("FAIL (still showing stub error)\n"); failures++; }
+        bool has_confirm = wv_has("Confirm Shield");
+        if (!groth16 && !not_impl && has_confirm) printf("OK\n");
+        else { printf("FAIL (groth16=%d notimpl=%d confirm=%d)\n",
+            groth16, not_impl, has_confirm); failures++; }
     }
 
-    printf("LIVE: shield confirm page has back-to-wallet link... ");
+    printf("LIVE: shield review page has back link... ");
     {
-        wv_post("/wallet/shield/confirm", "amount=0.001");
-        bool ok = wv_has("Back to Wallet") || wv_has("href='/wallet'");
+        wv_get("/wallet/shield?amount=0.001");
+        bool ok = wv_has("Cancel") || wv_has("href='/wallet'");
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
@@ -1557,16 +1557,18 @@ int test_wallet_view(void)
         else { printf("FAIL\n"); failures++; }
     }
 
-    printf("LIVE: send to z-address does not show Groth16 error... ");
+    printf("LIVE: send review for z-address shows shielded indicator... ");
     {
-        /* Simulate sending to a z-address via the send confirm flow */
-        wv_post("/wallet/send/confirm",
+        /* Test the send REVIEW page (not confirm — confirm triggers
+         * real z_sendmany which spends actual ZCL). */
+        wv_post("/wallet/send/review",
             "address=zs19hc6ghlrzklr7y82u9w6822zuvrpfmgzlqz7alx8"
             "eqtwh2rvzgykl6m3lu8gwarpflcczgyse2p&amount=0.001");
         bool groth16 = wv_has("Groth16");
         bool not_impl = wv_has("not yet implemented");
-        if (!groth16 && !not_impl) printf("OK\n");
-        else { printf("FAIL (still showing stub error)\n"); failures++; }
+        bool has_shielded = wv_has("Private") || wv_has("shielded");
+        if (!groth16 && !not_impl && has_shielded) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
     }
 
     /* ═══════════════════════════════════════════════════════════
