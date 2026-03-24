@@ -881,15 +881,25 @@ bool activate_best_chain(struct validation_state *state,
             }
 
             /* Disconnect blocks from current tip to fork point */
-            if (fork && tip->nHeight > fork->nHeight) {
+            if (!fork) {
+                /* No common ancestor found — chains are completely
+                 * divergent (broken pprev links). Reset to genesis. */
+                struct block_index *genesis = active_chain_at(
+                    &ms->chain_active, 0);
+                if (genesis) {
+                    active_chain_set_tip(&ms->chain_active, genesis);
+                    printf("activate_best_chain: no fork point, "
+                           "reset to genesis\n");
+                }
+            } else if (tip->nHeight > fork->nHeight) {
                 event_emitf(EV_REORG_START, 0, "fork=%d tip=%d depth=%d",
                             fork->nHeight, tip->nHeight,
                             tip->nHeight - fork->nHeight);
                 sync_set_state(SYNC_REORG, "chain reorganization");
-            }
-            while (active_chain_tip(&ms->chain_active) != fork) {
-                if (!disconnect_tip(state, ms, coins_tip, datadir))
-                    return false;
+                while (active_chain_tip(&ms->chain_active) != fork) {
+                    if (!disconnect_tip(state, ms, coins_tip, datadir))
+                        return false;
+                }
             }
         }
 
