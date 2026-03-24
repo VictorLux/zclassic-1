@@ -1541,32 +1541,9 @@ bool app_init(struct app_context *ctx)
                 printf("Restored chain tip from coins DB: height=%d\n",
                        best->nHeight);
 
-                /* Erase block_index entries above our validated tip.
-                 * These may be fork blocks from a stale LevelDB with
-                 * wrong nBits/hash, blocking header download. Clearing
-                 * nStatus prevents them from being used in chains. */
-                {
-                    int erased = 0;
-                    size_t ai = 0;
-                    struct block_index *ap;
-                    while (block_map_next(&g_state.map_block_index,
-                                           &ai, NULL, &ap)) {
-                        if (ap && ap->nHeight > best->nHeight) {
-                            ap->nStatus = 0;
-                            ap->nBits = 0;
-                            ap->nTime = 0;
-                            ap->pprev = NULL;
-                            erased++;
-                        }
-                    }
-                    if (erased > 0) {
-                        printf("Erased %d stale entries above tip %d\n",
-                               erased, best->nHeight);
-                        /* Re-save flat file without the erased entries.
-                         * Otherwise next restart reloads stale data. */
-                        save_block_index_flat(ctx->datadir, &g_state);
-                    }
-                }
+                /* Do NOT erase entries above tip — P2P-accepted headers
+                 * with correct chainwork may exist there and are needed
+                 * for activate_best_chain to find the most-work chain. */
             } else {
                 char hex[65];
                 uint256_get_hex(&best_hash, hex);
