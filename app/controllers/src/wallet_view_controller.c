@@ -1214,6 +1214,22 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
         " style='display:flex;align-items:center;justify-content:center'>Receive</a>"
         "</div>");
 
+    /* 4b. ZSLP token count (if any held) */
+    {
+        int tok_count = query_int(db,
+            "SELECT COUNT(DISTINCT t.token_id) FROM zslp_tokens t "
+            "JOIN zslp_transfers tr ON tr.token_id = t.token_id "
+            "WHERE tr.to_addr IN (SELECT pubkey_hash FROM wallet_keys) "
+            "AND tr.tx_type IN ('GENESIS','MINT','SEND')");
+        if (tok_count > 0)
+            APPEND(off, r, max,
+                "<div style='text-align:center;margin:8px 0'>"
+                "<a href='/wallet/coins' style='text-decoration:none'>"
+                "<span class='pill pill-z'>%d ZSLP token%s</span>"
+                "</a></div>",
+                tok_count, tok_count == 1 ? "" : "s");
+    }
+
     /* 5. Privacy nudge — show when transparent balance > 0 */
     if (transparent > 0) {
         APPEND(off, r, max,
@@ -1948,37 +1964,44 @@ static size_t serve_coins(uint8_t *r, size_t max) {
     if (z_notes > 0) {
         APPEND(off, r, max,
             "<div class='overflow-x'>"
-            "<table><tr><th>Note ID</th>"
-            "<th>Amount</th><th>Height</th></tr>");
+            "<table><tr><th>Amount</th>"
+            "<th>Address</th><th>Height</th><th>Conf</th></tr>");
         s = NULL;
         if (sqlite3_prepare_v2(db,
-                "SELECT hex(n.cm), n.value, n.height "
+                "SELECT n.value, n.block_height, n.address "
                 "FROM wallet_sapling_notes n"
-                " WHERE NOT EXISTS ("
-                "   SELECT 1 FROM sapling_spends ss"
-                "   WHERE ss.nullifier = n.nullifier)"
+                " WHERE n.spent_txid IS NULL"
                 " ORDER BY n.value DESC",
                 -1, &s, NULL) == SQLITE_OK) {
             while (sqlite3_step(s) == SQLITE_ROW && off + 400 < max) {
-                const char *cm = (const char *)sqlite3_column_text(s, 0);
-                int64_t val = sqlite3_column_int64(s, 1);
-                int h = sqlite3_column_int(s, 2);
-                if (!cm) continue;
-                char short_cm[18];
-                txid_short(cm, short_cm, sizeof(short_cm));
+                int64_t val = sqlite3_column_int64(s, 0);
+                int h = sqlite3_column_int(s, 1);
+                const char *addr = (const char *)sqlite3_column_text(s, 2);
+                int confs = (tip > 0 && h > 0) ? (tip - h + 1) : 0;
+                if (confs < 0) confs = 0;
+                char short_addr[18] = "—";
+                if (addr && addr[0])
+                    txid_short(addr + 3, short_addr, sizeof(short_addr));
                 APPEND(off, r, max,
-                    "<tr><td class='hash'>%s</td>"
+                    "<tr>"
                     "<td class='zcl'>%.8f</td>"
-                    "<td>%d</td></tr>",
-                    short_cm, (double)val / 1e8, h);
+                    "<td class='hash' style='color:#a78bfa'>zs1%s</td>",
+                    (double)val / 1e8, short_addr);
+                if (h > 0)
+                    APPEND(off, r, max, "<td>%d</td><td>%d</td>", h, confs);
+                else
+                    APPEND(off, r, max,
+                        "<td><span class='pill pill-pending'>Pending</span></td>"
+                        "<td><span class='pill pill-pending'>Pending</span></td>");
+                APPEND(off, r, max, "</tr>");
             }
             sqlite3_finalize(s);
         }
         APPEND(off, r, max,
             "<tr class='total-row'>"
             "<td>Total (%d note%s)</td>"
-            "<td class='zcl'>%.8f</td>"
-            "<td></td></tr></table></div>",
+            "<td></td><td></td>"
+            "<td class='zcl'>%.8f</td></tr></table></div>",
             z_notes, z_notes == 1 ? "" : "s",
             (double)z_total / 1e8);
     } else {
@@ -2035,6 +2058,59 @@ static size_t serve_coins(uint8_t *r, size_t max) {
         (speed_bal == t_total)
             ? "<span class='pill pill-t'>match</span>"
             : "<span class='pill pill-send'>stale</span>");
+
+    /* ZSLP Tokens held by wallet addresses */
+    {
+        sqlite3_stmt *tok = NULL;
+        int token_count = 0;
+        if (sqlite3_prepare_v2(db,
+                "SELECT hex(t.token_id), t.ticker, t.name, t.decimals, "
+                "  SUM(tr.amount) as balance "
+                "FROM zslp_tokens t "
+                "JOIN zslp_transfers tr ON tr.token_id = t.token_id "
+                "WHERE tr.to_addr IN (SELECT pubkey_hash FROM wallet_keys) "
+                "  AND tr.tx_type IN ('GENESIS','MINT','SEND') "
+                "GROUP BY t.token_id "
+                "HAVING balance > 0 "
+                "ORDER BY balance DESC LIMIT 50",
+                -1, &tok, NULL) == SQLITE_OK) {
+            while (sqlite3_step(tok) == SQLITE_ROW) {
+                if (token_count == 0) {
+                    APPEND(off, r, max,
+                        "<h3>ZSLP Tokens</h3>"
+                        "<div class='overflow-x'><table>"
+                        "<tr><th>Token</th><th>Name</th>"
+                        "<th>Balance</th></tr>");
+                }
+                const char *ticker = (const char *)sqlite3_column_text(tok, 1);
+                const char *name = (const char *)sqlite3_column_text(tok, 2);
+                int decimals = sqlite3_column_int(tok, 3);
+                int64_t bal = sqlite3_column_int64(tok, 4);
+                char esc_ticker[64] = "", esc_name[128] = "";
+                if (ticker) html_escape(esc_ticker, sizeof(esc_ticker), ticker);
+                if (name) html_escape(esc_name, sizeof(esc_name), name);
+                double divisor = 1.0;
+                for (int d = 0; d < decimals; d++) divisor *= 10.0;
+                double disp = (double)bal / divisor;
+                APPEND(off, r, max,
+                    "<tr><td><span class='pill pill-z'>%s</span></td>"
+                    "<td>%s</td>"
+                    "<td class='zcl' style='color:#a78bfa'>%.*f</td></tr>",
+                    esc_ticker[0] ? esc_ticker : "—",
+                    esc_name[0] ? esc_name : "—",
+                    decimals, disp);
+                token_count++;
+            }
+            sqlite3_finalize(tok);
+        }
+        if (token_count > 0)
+            APPEND(off, r, max, "</table></div>");
+        else
+            APPEND(off, r, max,
+                "<h3>ZSLP Tokens</h3>"
+                "<div class='empty-state' style='padding:16px 0'>"
+                "No tokens held at wallet addresses</div>");
+    }
 
     /* Chain supply context */
     int64_t chain_supply = query_int64(db,
