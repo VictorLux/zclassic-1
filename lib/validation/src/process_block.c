@@ -709,12 +709,9 @@ bool connect_tip(struct validation_state *state,
     {
         if (g_active_node_db) {
             node_db_sync_connect_block(g_active_node_db, pblock, pindex_new);
-            if (g_active_wallet) {
-                for (size_t i = 0; i < pblock->num_vtx; i++)
-                    node_db_sync_wallet_tx(g_active_node_db,
-                        &pblock->vtx[i], g_active_wallet,
-                        pindex_new->nHeight);
-            }
+            /* Wallet tx scan deferred to tip — expensive per-tx SQLite
+             * queries slow down IBD and can corrupt heap (db_wallet_utxo_find
+             * allocates per-call). Use rescanblockchain RPC after sync. */
 
             /* Keep coins_best_block in sync with SQLite tip.
              * sync_controller writes UTXOs immediately, so the SQLite UTXO
