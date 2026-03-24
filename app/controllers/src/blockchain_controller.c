@@ -2509,12 +2509,11 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
             db_tx_save(g_node_db_bc, &db_tx);
             txs_indexed++;
 
-            /* Spend inputs (delete UTXOs) — works because we process in height order */
+            /* Count spent inputs (but don't modify utxos table —
+             * that's the canonical UTXO store managed by coins_view_sqlite) */
             if (i > 0) {
                 for (size_t j = 0; j < tx->num_vin; j++) {
-                    db_utxo_delete(g_node_db_bc,
-                        tx->vin[j].prevout.hash.data,
-                        tx->vin[j].prevout.n);
+                    /* db_utxo_delete removed: utxos table is canonical */
                     utxos_spent++;
                 }
             }
@@ -2606,7 +2605,7 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
                     u.script_type = SCRIPT_P2SH;
                 }
 
-                db_utxo_save(g_node_db_bc, &u);
+                /* db_utxo_save removed: utxos table is canonical */
                 utxos_created++;
             }
         }
