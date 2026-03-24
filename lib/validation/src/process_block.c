@@ -257,19 +257,20 @@ static struct block_index *find_most_work_chain(struct main_state *ms)
 static void update_tip(struct main_state *ms, struct block_index *pindex_new)
 {
     active_chain_set_tip(&ms->chain_active, pindex_new);
-    ms->pindex_best_header = pindex_new;
+    if (pindex_new)
+        ms->pindex_best_header = pindex_new;
 
     char hex[65];
-    if (pindex_new->phashBlock)
+    if (pindex_new && pindex_new->phashBlock)
         uint256_get_hex(pindex_new->phashBlock, hex);
     else
         snprintf(hex, sizeof(hex), "(null)");
 
     event_emitf(EV_TIP_UPDATED, 0, "h=%d %s",
-                pindex_new->nHeight, hex);
+                pindex_new ? pindex_new->nHeight : -1, hex);
 
     /* Progress log every 10000 blocks with speed metric */
-    if (pindex_new->nHeight % 10000 == 0 && pindex_new->nHeight > 0) {
+    if (pindex_new && pindex_new->nHeight % 10000 == 0 && pindex_new->nHeight > 0) {
         static int64_t last_log_time = 0;
         static int last_log_height = 0;
         int64_t now_log = GetTime();
@@ -741,6 +742,9 @@ bool disconnect_tip(struct validation_state *state,
 {
     struct block_index *pindex_delete = active_chain_tip(&ms->chain_active);
     if (!pindex_delete)
+        return false;
+    /* Never disconnect genesis (pprev is NULL) */
+    if (!pindex_delete->pprev)
         return false;
 
     struct block block;
