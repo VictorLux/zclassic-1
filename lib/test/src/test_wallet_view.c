@@ -24,6 +24,7 @@
 #include "controllers/wallet_view_controller.h"
 #include <unistd.h>
 #include <sys/stat.h>
+#include <time.h>
 
 /* Response buffer — 64KB is enough for any wallet page */
 static uint8_t _wv_resp[65536];
@@ -70,7 +71,7 @@ int test_wallet_view(void)
     {
         size_t n = wv_get("/wallet");
         bool ok = (n > 0) && wv_is_200();
-        ok = ok && wv_has("ZClassic Wallet");  /* page title */
+        ok = ok && wv_has("ZClassic23 Wallet");  /* page title */
         ok = ok && wv_has("class='nav'");       /* navigation */
         if (ok) printf("OK (%zu bytes)\n", n);
         else { printf("FAIL (n=%zu)\n", n); failures++; }
@@ -80,7 +81,7 @@ int test_wallet_view(void)
     {
         size_t n = wv_get("/wallet/");
         bool ok = (n > 0) && wv_is_200();
-        ok = ok && wv_has("ZClassic Wallet");
+        ok = ok && wv_has("ZClassic23 Wallet");
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
@@ -89,7 +90,7 @@ int test_wallet_view(void)
     {
         size_t n = wv_get("/wallet/send");
         bool ok = (n > 0) && wv_is_200();
-        ok = ok && wv_has("Send ZCL");
+        ok = ok && wv_has("Send");
         ok = ok && wv_has("form");
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
@@ -1158,9 +1159,9 @@ int test_wallet_view(void)
         bool ok = wv_has("filter=all");
         ok = ok && wv_has("filter=sent");
         ok = ok && wv_has("filter=recv");
-        ok = ok && wv_has(">All</a>");
-        ok = ok && wv_has(">Sent</a>");
-        ok = ok && wv_has(">Received</a>");
+        ok = ok && wv_has(">All (");
+        ok = ok && wv_has(">Sent (");
+        ok = ok && wv_has(">Received (");
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
@@ -1519,6 +1520,304 @@ int test_wallet_view(void)
         bool ok = wv_has("zs1");
         if (ok) printf("OK\n");
         else { printf("FAIL (no z-addresses on receive)\n"); failures++; }
+    }
+
+    printf("LIVE: shield confirm does not show Groth16 error... ");
+    {
+        /* POST shield confirm with a tiny amount.
+         * Should delegate to zclassicd, NOT return "Groth16" error.
+         * Expected: either "Shielding Started" (success) or a real
+         * error from zclassicd (insufficient funds, etc). */
+        wv_post("/wallet/shield/confirm", "amount=0.001");
+        bool groth16 = wv_has("Groth16");
+        bool not_impl = wv_has("not yet implemented");
+        if (!groth16 && !not_impl) printf("OK\n");
+        else { printf("FAIL (still showing stub error)\n"); failures++; }
+    }
+
+    printf("LIVE: shield confirm page has back-to-wallet link... ");
+    {
+        wv_post("/wallet/shield/confirm", "amount=0.001");
+        bool ok = wv_has("Back to Wallet") || wv_has("href='/wallet'");
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("LIVE: dashboard privacy card has shield link... ");
+    {
+        wv_get("/wallet");
+        bool ok = wv_has("Shield All") || wv_has("/wallet/shield");
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("LIVE: send to z-address does not show Groth16 error... ");
+    {
+        /* Simulate sending to a z-address via the send confirm flow */
+        wv_post("/wallet/send/confirm",
+            "address=zs19hc6ghlrzklr7y82u9w6822zuvrpfmgzlqz7alx8"
+            "eqtwh2rvzgykl6m3lu8gwarpflcczgyse2p&amount=0.001");
+        bool groth16 = wv_has("Groth16");
+        bool not_impl = wv_has("not yet implemented");
+        if (!groth16 && !not_impl) printf("OK\n");
+        else { printf("FAIL (still showing stub error)\n"); failures++; }
+    }
+
+    /* ═══════════════════════════════════════════════════════════
+     * 15. EMPTY STATE TESTS — no DB, simulate fresh install
+     * ═══════════════════════════════════════════════════════════ */
+
+    wallet_view_init(NULL);
+    printf("\n=== EMPTY STATE TESTS ===\n\n");
+
+    printf("EMPTY: dashboard with no DB renders gracefully... ");
+    {
+        wv_get("/wallet");
+        bool ok = wv_is_200();
+        ok = ok && (wv_has("Wallet Loading") || wv_has("class='balance'"));
+        ok = ok && wv_has("class='nav'");
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("EMPTY: history with no DB shows loading state... ");
+    {
+        wv_get("/wallet/history");
+        bool ok = wv_is_200();
+        ok = ok && (wv_has("Wallet Loading") || wv_has("0 transaction") ||
+                    wv_has("No transactions"));
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("EMPTY: coins with no DB shows loading state... ");
+    {
+        wv_get("/wallet/coins");
+        bool ok = wv_is_200();
+        ok = ok && (wv_has("Wallet Loading") || wv_has("0 UTXO") ||
+                    wv_has("No coins"));
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("EMPTY: pulse returns 0 balance when no DB... ");
+    {
+        wv_get("/api/wallet/pulse");
+        bool ok = wv_has("\"balance\":0");
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("EMPTY: send form still renders with no DB... ");
+    {
+        wv_get("/wallet/send");
+        bool ok = wv_is_200() && wv_has("form");
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ═══════════════════════════════════════════════════════════
+     * 16. EDGE CASE TESTS — boundary amounts, invalid inputs
+     * ═══════════════════════════════════════════════════════════ */
+
+    printf("\n=== EDGE CASE TESTS ===\n\n");
+
+    printf("EDGE: XSS in address field is escaped... ");
+    {
+        wv_post("/wallet/send/review",
+            "address=%3Cscript%3Ealert(1)%3C%2Fscript%3E&amount=0.01");
+        bool bad = wv_has("<script>alert(1)</script>");
+        if (!bad) printf("OK\n");
+        else { printf("FAIL (XSS!)\n"); failures++; }
+    }
+
+    printf("EDGE: img onerror XSS escaped... ");
+    {
+        wv_post("/wallet/send/review",
+            "address=%3Cimg%20src%3Dx%20onerror%3Dalert(1)%3E&amount=0.01");
+        bool bad = wv_has("<img src=x onerror=alert(1)>");
+        if (!bad) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("EDGE: too-short address rejected... ");
+    {
+        wv_post("/wallet/send/review", "address=t1abc&amount=0.01");
+        bool ok = wv_has("Invalid");
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("EDGE: shield amount=0 shows input form, not confirm... ");
+    {
+        wv_get("/wallet/shield?amount=0");
+        bool has_form = wv_has("shield-amt");
+        bool bad = wv_has("Confirm Shield");
+        if (has_form && !bad) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("EDGE: SQL injection in search sanitized... ");
+    {
+        wv_get("/wallet/history?q=1'%20OR%20'1'%3D'1");
+        bool bad = wv_has("syntax error") || wv_has("SQLITE");
+        if (!bad) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("EDGE: path traversal in /wallet/tx/ blocked... ");
+    {
+        wv_get("/wallet/tx/../../../etc/passwd");
+        bool bad = wv_has("root:") || wv_has("/bin/bash");
+        if (!bad) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("EDGE: oversized POST body does not crash... ");
+    {
+        char big[4096];
+        memset(big, 'A', sizeof(big) - 1);
+        big[sizeof(big) - 1] = '\0';
+        memcpy(big, "address=", 8);
+        memcpy(big + 4000, "&amount=1", 9);
+        size_t n = wv_post("/wallet/send/review", big);
+        bool ok = (n > 0);
+        if (ok) printf("OK (%zu bytes)\n", n);
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ═══════════════════════════════════════════════════════════
+     * 17. NAVIGATION CONSISTENCY TESTS
+     * ═══════════════════════════════════════════════════════════ */
+
+    printf("\n=== NAVIGATION CONSISTENCY TESTS ===\n\n");
+
+    printf("NAV: every tab highlights correctly... ");
+    {
+        struct { const char *path; const char *active; } tabs[] = {
+            {"/wallet",         "class='active'>Dashboard"},
+            {"/wallet/send",    "class='active'>Send"},
+            {"/wallet/receive", "class='active'>Receive"},
+            {"/wallet/history", "class='active'>History"},
+            {"/wallet/coins",   "class='active'>Coins"},
+        };
+        bool ok = true;
+        for (int i = 0; i < 5; i++) {
+            wv_get(tabs[i].path);
+            if (!wv_has(tabs[i].active)) {
+                printf("FAIL (%s)\n", tabs[i].path);
+                ok = false; failures++; break;
+            }
+        }
+        if (ok) printf("OK (all 5)\n");
+    }
+
+    printf("NAV: shield page has no active tab... ");
+    {
+        wv_get("/wallet/shield?amount=0.5");
+        bool bad = wv_has("class='active'>Dashboard");
+        if (!bad) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("NAV: all pages have nav bar... ");
+    {
+        const char *pages[] = {"/wallet", "/wallet/send", "/wallet/receive",
+                                "/wallet/history", "/wallet/coins", NULL};
+        bool ok = true;
+        for (int i = 0; pages[i]; i++) {
+            wv_get(pages[i]);
+            if (!wv_has("class='nav'")) {
+                printf("FAIL (%s)\n", pages[i]);
+                ok = false; failures++; break;
+            }
+        }
+        if (ok) printf("OK\n");
+    }
+
+    printf("NAV: no page contains 'Groth16'... ");
+    {
+        const char *pages[] = {"/wallet", "/wallet/send", "/wallet/receive",
+                                "/wallet/history", "/wallet/coins",
+                                "/wallet/shield?amount=0.5", NULL};
+        bool bad = false;
+        for (int i = 0; pages[i]; i++) {
+            wv_get(pages[i]);
+            if (wv_has("Groth16") || wv_has("not yet implemented")) {
+                printf("FAIL (%s)\n", pages[i]);
+                bad = true; failures++; break;
+            }
+        }
+        if (!bad) printf("OK\n");
+    }
+
+    printf("NAV: all titles contain 'ZClassic23'... ");
+    {
+        const char *pages[] = {"/wallet", "/wallet/send", "/wallet/receive",
+                                "/wallet/history", "/wallet/coins", NULL};
+        bool ok = true;
+        for (int i = 0; pages[i]; i++) {
+            wv_get(pages[i]);
+            if (!wv_has("ZClassic23")) {
+                printf("FAIL (%s)\n", pages[i]);
+                ok = false; failures++; break;
+            }
+        }
+        if (ok) printf("OK\n");
+    }
+
+    /* ═══════════════════════════════════════════════════════════
+     * 18. PERFORMANCE TESTS — render timing
+     * ═══════════════════════════════════════════════════════════ */
+
+    printf("\n=== PERFORMANCE TESTS ===\n\n");
+
+    printf("PERF: dashboard renders in < 50ms... ");
+    {
+        struct timespec t0, t1;
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        for (int i = 0; i < 100; i++) wv_get("/wallet");
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        double ms = ((t1.tv_sec - t0.tv_sec) * 1000.0 +
+                      (t1.tv_nsec - t0.tv_nsec) / 1e6) / 100.0;
+        if (ms < 50.0) printf("OK (%.2f ms avg)\n", ms);
+        else { printf("FAIL (%.2f ms)\n", ms); failures++; }
+    }
+
+    printf("PERF: pulse renders in < 10ms... ");
+    {
+        struct timespec t0, t1;
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        for (int i = 0; i < 100; i++) wv_get("/api/wallet/pulse");
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        double ms = ((t1.tv_sec - t0.tv_sec) * 1000.0 +
+                      (t1.tv_nsec - t0.tv_nsec) / 1e6) / 100.0;
+        if (ms < 10.0) printf("OK (%.2f ms avg)\n", ms);
+        else { printf("FAIL (%.2f ms)\n", ms); failures++; }
+    }
+
+    printf("PERF: history renders in < 100ms... ");
+    {
+        struct timespec t0, t1;
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        for (int i = 0; i < 100; i++) wv_get("/wallet/history");
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        double ms = ((t1.tv_sec - t0.tv_sec) * 1000.0 +
+                      (t1.tv_nsec - t0.tv_nsec) / 1e6) / 100.0;
+        if (ms < 100.0) printf("OK (%.2f ms avg)\n", ms);
+        else { printf("FAIL (%.2f ms)\n", ms); failures++; }
+    }
+
+    printf("PERF: receive renders in < 50ms... ");
+    {
+        struct timespec t0, t1;
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        for (int i = 0; i < 100; i++) wv_get("/wallet/receive");
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        double ms = ((t1.tv_sec - t0.tv_sec) * 1000.0 +
+                      (t1.tv_nsec - t0.tv_nsec) / 1e6) / 100.0;
+        if (ms < 50.0) printf("OK (%.2f ms avg)\n", ms);
+        else { printf("FAIL (%.2f ms)\n", ms); failures++; }
     }
 
     /* Restore NULL for safety */

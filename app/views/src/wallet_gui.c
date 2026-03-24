@@ -372,7 +372,7 @@ static void init_controllers(const char *datadir) {
             if (fgets(cookie, sizeof(cookie), f)) {
                 char *nl = strchr(cookie, '\n'); if (nl) *nl = '\0';
                 char *col = strchr(cookie, ':');
-                if (col) { *col = '\0'; explorer_set_rpc(cookie, col+1, 18232); }
+                if (col) { *col = '\0'; explorer_set_rpc(cookie, col+1, 8232); }
             }
             fclose(f);
         }

@@ -29,9 +29,15 @@
 #include "controllers/wallet_scan.h"
 #include "coins/coins_view.h"
 #include "core/serialize.h"
+#include "encoding/base58.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+#include <sys/socket.h>
+#include <sys/time.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 void rpc_wallet_set_state(struct wallet *w, struct main_state *ms,
                           const char *datadir, struct wallet_sqlite *wdb,
@@ -393,19 +399,224 @@ bool wallet_direct_sendtoaddress(const char *address, int64_t amount_sat,
     return true;
 }
 
+/* RPC call to zclassicd for shielded operations.
+ * Groth16 prover is not yet in C23, so we delegate to the running
+ * zclassicd instance on port 8232. */
+static int shield_rpc_call(const char *method, const char *params_json,
+                           char *out, size_t outmax)
+{
+    const char *creds = "zcluser:zclpass";
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = htons(8232);
+
+    struct timeval tv = { .tv_sec = 30, .tv_usec = 0 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        close(fd);
+        return -1;
+    }
+
+    char body[2048];
+    int blen = snprintf(body, sizeof(body),
+        "{\"jsonrpc\":\"1.0\",\"id\":1,\"method\":\"%s\",\"params\":%s}",
+        method, params_json);
+
+    /* Base64 encode credentials */
+    static const char b64[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    char auth_b64[256];
+    size_t alen = strlen(creds), bo = 0;
+    for (size_t i = 0; i < alen; i += 3) {
+        uint32_t n = ((uint32_t)(uint8_t)creds[i]) << 16;
+        if (i + 1 < alen) n |= ((uint32_t)(uint8_t)creds[i+1]) << 8;
+        if (i + 2 < alen) n |= (uint32_t)(uint8_t)creds[i+2];
+        auth_b64[bo++] = b64[(n >> 18) & 63];
+        auth_b64[bo++] = b64[(n >> 12) & 63];
+        auth_b64[bo++] = (i + 1 < alen) ? b64[(n >> 6) & 63] : '=';
+        auth_b64[bo++] = (i + 2 < alen) ? b64[n & 63] : '=';
+    }
+    auth_b64[bo] = '\0';
+
+    char req[4096];
+    int rlen = snprintf(req, sizeof(req),
+        "POST / HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+        "Authorization: Basic %s\r\n"
+        "Content-Type: application/json\r\n"
+        "Content-Length: %d\r\nConnection: close\r\n\r\n%s",
+        auth_b64, blen, body);
+
+    if (write(fd, req, (size_t)rlen) != rlen) { close(fd); return -1; }
+
+    size_t total = 0;
+    while (total < outmax - 1) {
+        ssize_t r = read(fd, out + total, outmax - 1 - total);
+        if (r <= 0) break;
+        total += (size_t)r;
+    }
+    out[total] = '\0';
+    close(fd);
+    return (int)total;
+}
+
+/* Extract a JSON string field value (simple, no nesting) */
+static bool shield_json_extract(const char *json, const char *key,
+                                char *out, size_t outmax)
+{
+    char pattern[128];
+    snprintf(pattern, sizeof(pattern), "\"%s\"", key);
+    const char *p = strstr(json, pattern);
+    if (!p) return false;
+    p += strlen(pattern);
+    while (*p == ' ' || *p == ':') p++;
+    if (*p == '"') {
+        p++;
+        size_t i = 0;
+        while (p[i] && p[i] != '"' && i < outmax - 1) {
+            out[i] = p[i]; i++;
+        }
+        out[i] = '\0';
+        return i > 0;
+    }
+    /* Non-string value (null, number) */
+    size_t i = 0;
+    while (p[i] && p[i] != ',' && p[i] != '}' && i < outmax - 1) {
+        out[i] = p[i]; i++;
+    }
+    out[i] = '\0';
+    return i > 0;
+}
+
 bool wallet_direct_shield(const char *z_address, int64_t amount_sat,
                            int64_t fee_sat,
                            char *opid_out, size_t opid_out_size,
                            char *error_out, size_t error_out_size)
 {
-    /* Shielded sends require the async RPC queue (z_sendmany).
-     * For now, delegate to the RPC layer which handles this. */
-    (void)z_address; (void)amount_sat; (void)fee_sat;
-    (void)opid_out; (void)opid_out_size;
-    snprintf(error_out, error_out_size,
-        "Shielded sends require the Groth16 prover (not yet implemented in C23). "
-        "Use zclassicd for shielded transactions.");
-    return false;
+    if (!z_address || z_address[0] != 'z') {
+        snprintf(error_out, error_out_size, "Invalid z-address");
+        return false;
+    }
+
+    /* Get the wallet's transparent address.
+     * Derive from pubkey_hash in wallet_keys using Base58Check encoding. */
+    char t_addr[128] = "";
+
+    if (g_node_db && g_node_db->open) {
+        sqlite3_stmt *s = NULL;
+        if (sqlite3_prepare_v2(g_node_db->db,
+                "SELECT pubkey_hash FROM wallet_keys ORDER BY rowid LIMIT 1",
+                -1, &s, NULL) == SQLITE_OK && s) {
+            if (sqlite3_step(s) == SQLITE_ROW) {
+                const unsigned char *hash = sqlite3_column_blob(s, 0);
+                int hash_len = sqlite3_column_bytes(s, 0);
+                if (hash && hash_len == 20) {
+                    /* ZClassic t-address: 2-byte prefix {0x1C,0xB8} + 20-byte hash160 */
+                    const struct chain_params *cp = chain_params_get();
+                    size_t pfx_len;
+                    const unsigned char *pfx = chain_params_base58_prefix(
+                        cp, B58_PUBKEY_ADDRESS, &pfx_len);
+                    unsigned char payload[22];
+                    memcpy(payload, pfx, pfx_len);
+                    memcpy(payload + pfx_len, hash, 20);
+                    size_t addr_len = 0;
+                    base58check_encode(payload, pfx_len + 20,
+                                       t_addr, sizeof(t_addr), &addr_len);
+                }
+            }
+            sqlite3_finalize(s);
+        }
+    }
+
+    /* Fallback: ask zclassicd for an address */
+    if (!t_addr[0]) {
+        char rpc_buf[4096] = "";
+        if (shield_rpc_call("getaddressesbyaccount", "[\"\"]",
+                            rpc_buf, sizeof(rpc_buf)) > 0) {
+            /* Extract first address from result array */
+            const char *q = strstr(rpc_buf, "\"result\"");
+            if (q) {
+                const char *start = strchr(q + 8, '"');
+                if (start) {
+                    start++; /* skip opening quote */
+                    const char *end = strchr(start, '"');
+                    if (end && end - start < 64 && end - start > 20) {
+                        size_t len = (size_t)(end - start);
+                        memcpy(t_addr, start, len);
+                        t_addr[len] = '\0';
+                    }
+                }
+            }
+        }
+    }
+
+    if (!t_addr[0]) {
+        snprintf(error_out, error_out_size,
+            "No transparent address found in wallet");
+        return false;
+    }
+
+    /* Build z_sendmany params:
+     * z_sendmany "from_t_addr" [{"address":"zs1...","amount":X.XX}] 1 fee */
+    double amount_zcl = (double)amount_sat / 1e8;
+    double fee_zcl = (double)fee_sat / 1e8;
+    char params[1024];
+    snprintf(params, sizeof(params),
+        "[\"%s\", [{\"address\":\"%s\",\"amount\":%.8f}], 1, %.8f]",
+        t_addr, z_address, amount_zcl, fee_zcl);
+
+    char buf[4096] = "";
+    int rc = shield_rpc_call("z_sendmany", params, buf, sizeof(buf));
+    if (rc <= 0) {
+        snprintf(error_out, error_out_size,
+            "Could not connect to zclassicd (port 8232). "
+            "Start it with: zclassicd -daemon");
+        return false;
+    }
+
+    /* Check for error in response */
+    char err_msg[256] = "";
+    char result_str[256] = "";
+    shield_json_extract(buf, "result", result_str, sizeof(result_str));
+
+    /* Check if result is null (error case) */
+    if (strstr(buf, "\"result\":null") || strstr(buf, "\"result\": null")) {
+        /* Extract error message */
+        const char *emsg = strstr(buf, "\"message\"");
+        if (emsg) {
+            shield_json_extract(buf, "message", err_msg, sizeof(err_msg));
+            snprintf(error_out, error_out_size, "%s", err_msg);
+        } else {
+            snprintf(error_out, error_out_size,
+                "zclassicd returned an error");
+        }
+        return false;
+    }
+
+    /* Success — result contains the opid */
+    if (result_str[0]) {
+        snprintf(opid_out, opid_out_size, "%s", result_str);
+    } else {
+        /* Try to extract opid from raw response */
+        const char *opid = strstr(buf, "opid-");
+        if (opid) {
+            size_t i = 0;
+            while (opid[i] && opid[i] != '"' && opid[i] != '}'
+                   && i < opid_out_size - 1) {
+                opid_out[i] = opid[i]; i++;
+            }
+            opid_out[i] = '\0';
+        } else {
+            snprintf(opid_out, opid_out_size, "submitted");
+        }
+    }
+    return true;
 }
 
 static bool rpc_dumpprivkey(const struct json_value *params, bool help,

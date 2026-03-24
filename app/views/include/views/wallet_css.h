@@ -28,7 +28,7 @@ static const char wallet_css_0[] =
     /* Balance hero */
     ".balance{text-align:center;font-size:48px;font-weight:800;"
     "color:#34d399;letter-spacing:-1px;line-height:1.1}"
-    ".balance-sub{text-align:center;color:#a1a1a1;font-size:15px;margin-top:8px}"
+    ".balance-sub{text-align:center;color:#bbb;font-size:15px;margin-top:8px}"
 
     /* Sync badge */
     ".sync-badge{display:inline-block;font-size:10px;font-weight:600;"
@@ -39,6 +39,7 @@ static const char wallet_css_0[] =
     ".pill{display:inline-block;padding:2px 8px;border-radius:10px;"
     "font-size:11px;font-weight:700;letter-spacing:.03em}"
     ".pill-synced{background:#0a1f14;color:#34d399}"
+    ".pill-ready{background:#0f1a2e;color:#60a5fa}"
     ".pill-syncing{background:#1a1510;color:#fbbf24;animation:pulse 1.5s ease infinite}"
     ".pill-confirmed{background:#0a1f14;color:#34d399}"
     ".pill-pending{background:#1a1510;color:#fbbf24}"
@@ -74,18 +75,19 @@ static const char wallet_css_1[] =
     "font-family:inherit;white-space:nowrap;transition:background .15s ease;"
     "touch-action:manipulation}"
     ".send-max:hover{background:#333}"
+    ".send-max:focus-visible{outline:2px solid #34d399;outline-offset:2px}"
 
     /* Forms */
     ".form-group{margin-bottom:16px}"
     ".form-label{display:block;font-size:11px;font-weight:600;"
-    "text-transform:uppercase;letter-spacing:.08em;color:#a1a1a1;margin-bottom:6px}"
+    "text-transform:uppercase;letter-spacing:.08em;color:#bbb;margin-bottom:6px}"
     ".form-input{display:block;width:100%;background:#111;color:#e2e2e2;"
     "border:1px solid #1e1e1e;padding:14px 16px;"
     "font-family:inherit;font-size:17px;border-radius:8px;"
     "transition:border-color .15s ease}"
     ".form-input:focus{border-color:#333;outline:none;"
     "box-shadow:0 0 0 3px rgba(52,211,153,.12)}"
-    ".form-input::placeholder{color:#555}"
+    ".form-input::placeholder{color:#777}"
     ".form-error{color:#f87171;font-size:12px;margin-top:4px}";
 
 static const char wallet_css_2[] =
@@ -93,9 +95,9 @@ static const char wallet_css_2[] =
     ".section-header{display:flex;justify-content:space-between;"
     "align-items:baseline;margin:24px 0 8px}"
     ".section-header span{font-size:11px;font-weight:600;"
-    "text-transform:uppercase;letter-spacing:.08em;color:#888}"
-    ".section-header a{font-size:12px;color:#888}"
-    ".section-header a:hover{color:#a1a1a1}"
+    "text-transform:uppercase;letter-spacing:.08em;color:#aaa}"
+    ".section-header a{font-size:12px;color:#aaa}"
+    ".section-header a:hover{color:#ccc}"
 
     /* Transaction rows */
     ".tx-row{display:flex;justify-content:space-between;align-items:center;"
@@ -105,11 +107,11 @@ static const char wallet_css_2[] =
     "font-family:'JetBrains Mono','SF Mono','Fira Code',monospace}"
     ".tx-amount.recv{color:#34d399}"
     ".tx-amount.send{color:#f87171}"
-    ".tx-meta{font-size:14px;color:#888;text-align:right}"
+    ".tx-meta{font-size:14px;color:#aaa;text-align:right}"
     ".tx-meta a{color:#60a5fa;font-family:'JetBrains Mono','SF Mono',monospace;"
     "font-size:11px}"
     ".tx-time{display:block;margin-bottom:2px}"
-    ".tx-conf{font-size:11px;color:#555}"
+    ".tx-conf{font-size:11px;color:#999}"
 
     /* UTXO rows */
     ".utxo-row{display:flex;justify-content:space-between;align-items:center;"
@@ -139,7 +141,7 @@ static const char wallet_css_3[] =
     /* Review table */
     ".review-table{width:100%}"
     ".review-table td{padding:10px 0;font-size:14px}"
-    ".review-table td:first-child{color:#888}"
+    ".review-table td:first-child{color:#aaa}"
     ".review-table td:last-child{text-align:right}"
     ".review-table tr+tr{border-top:1px solid #1e1e1e}"
 
@@ -160,13 +162,13 @@ static const char wallet_css_3[] =
     /* Status bar */
     ".status-bar{position:fixed;bottom:0;left:0;right:0;background:#111;"
     "border-top:1px solid #1e1e1e;padding:6px 16px;display:flex;"
-    "justify-content:center;gap:16px;font-size:11px;color:#555;"
+    "justify-content:center;gap:16px;font-size:12px;color:#999;"
     "font-family:'JetBrains Mono','SF Mono',monospace;z-index:100}"
     ".status-bar span{white-space:nowrap}"
     "body{padding-bottom:40px}"
 
     /* Empty state */
-    ".empty-state{text-align:center;padding:40px 0;color:#555;font-size:14px}"
+    ".empty-state{text-align:center;padding:40px 0;color:#999;font-size:14px}"
 
     /* Discrepancy warning */
     ".discrepancy{background:#1a1510;border:1px solid #4a3520;border-radius:8px;"
@@ -306,7 +308,26 @@ static const char wallet_css_5[] =
     ".stat .n{font-size:18px}"
     "table{font-size:12px}td,th{padding:5px 4px}"
     ".detail-grid{grid-template-columns:1fr;gap:2px 0}"
-    ".detail-grid .lbl{margin-top:8px}}";
+    ".detail-grid .lbl{margin-top:8px}}"
+
+    /* Reduced motion */
+    "@media(prefers-reduced-motion:reduce){"
+    "*{animation:none!important;transition:none!important}}"
+
+    /* Button press feedback */
+    ".btn-primary:active{transform:scale(.98);opacity:.9}"
+    ".btn-secondary:active{transform:scale(.98);opacity:.9}"
+    ".send-max:active{transform:scale(.96)}"
+
+    /* Nav uses semantic <nav> now */
+    "nav.nav{display:flex;gap:4px;margin:0 0 16px;padding:4px;background:#111;"
+    "border-radius:10px}"
+
+    /* Search placeholder contrast */
+    ".search-input::placeholder{color:#777}"
+
+    /* Detail grid label contrast */
+    ".detail-grid .lbl{color:#aaa}";
 
 static char _wallet_css_buf[24576];
 static const char *wallet_css_get(void) {
