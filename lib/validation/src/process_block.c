@@ -968,7 +968,7 @@ bool activate_best_chain(struct validation_state *state,
                      * an alternative chain. This matches ZClassic C++
                      * ActivateBestChainStep behavior. */
                     validation_state_init(state);
-                    free(connect_path);
+                    connect_path = NULL; /* prevent double-free at line 979 */
                     break; /* break inner loop, retry outer do-while */
                 }
                 /* System error (not invalid block) — abort */
