@@ -696,27 +696,29 @@ int test_wallet_view(void)
         else { printf("FAIL\n"); failures++; }
     }
 
-    printf("wallet_view: shield with zero amount shows error... ");
+    printf("wallet_view: shield with zero amount shows amount form... ");
     {
         size_t n = wv_get("/wallet/shield?amount=0");
-        bool ok = (n > 0) && wv_has("Invalid Amount");
-        ok = ok && wv_has("Back to Wallet");
+        bool ok = (n > 0) && wv_has("Shield Funds");
+        ok = ok && wv_has("shield-amt");  /* amount input */
+        ok = ok && wv_has("Review Shield");
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
 
-    printf("wallet_view: shield with negative amount shows error... ");
+    printf("wallet_view: shield with negative amount shows amount form... ");
     {
         size_t n = wv_get("/wallet/shield?amount=-1");
-        bool ok = (n > 0) && wv_has("Invalid Amount");
+        bool ok = (n > 0) && wv_has("Shield Funds");
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
 
-    printf("wallet_view: shield with no amount param shows error... ");
+    printf("wallet_view: shield with no amount shows amount form... ");
     {
         size_t n = wv_get("/wallet/shield");
-        bool ok = (n > 0) && wv_has("Invalid Amount");
+        bool ok = (n > 0) && wv_has("Shield Funds");
+        ok = ok && wv_has("Amount to Shield");
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }

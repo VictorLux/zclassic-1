@@ -1821,20 +1821,40 @@ static size_t serve_shield_confirm(uint8_t *r, size_t max,
         }
     }
 
+    /* If no z-address in DB, try to generate one via RPC */
+    if (!z_dest[0]) {
+        char gen_buf[4096] = "";
+        if (wallet_rpc_call_port("z_getnewaddress", "[]",
+                                  gen_buf, sizeof(gen_buf), 18232, NULL) > 0) {
+            /* Extract the z-address from the result */
+            char new_addr[256] = "";
+            zcl_json_extract_str(gen_buf, "result", new_addr, sizeof(new_addr));
+            if (new_addr[0] == 'z' && strlen(new_addr) > 60)
+                snprintf(z_dest, sizeof(z_dest), "%s", new_addr);
+        }
+        /* Also try zclassicd as fallback */
+        if (!z_dest[0]) {
+            char gen_buf2[4096] = "";
+            if (wallet_rpc_call_port("z_getnewaddress", "[]",
+                                      gen_buf2, sizeof(gen_buf2),
+                                      8232, "zcluser:zclpass") > 0) {
+                char new_addr[256] = "";
+                zcl_json_extract_str(gen_buf2, "result", new_addr, sizeof(new_addr));
+                if (new_addr[0] == 'z' && strlen(new_addr) > 60)
+                    snprintf(z_dest, sizeof(z_dest), "%s", new_addr);
+            }
+        }
+    }
+
     if (!z_dest[0]) {
         APPEND(off, r, max,
-            "<div class='card' style='border-left-color:#f87171;padding:20px'>"
-            "<div style='text-align:center'>"
-            "<div style='font-size:40px;margin-bottom:8px'>&#x274C;</div>"
-            "<div style='font-size:20px;color:#f87171;font-weight:700'>"
-            "No Shielded Address Available</div>"
-            "<div style='color:#888;font-size:13px;margin-top:8px'>"
-            "The wallet has no shielded addresses. Generate one with:<br>"
-            "<code style='color:#60a5fa'>zcl-rpc z_getnewaddress</code></div>"
-            "</div></div>"
-            "<div style='text-align:center;margin:16px'>"
-            "<a href='/wallet' style='color:#60a5fa;font-size:16px'>"
-            "Back to Wallet</a></div>");
+            "<div class='result-error'>"
+            "<div class='icon'>&#x274C;</div>"
+            "<h2>Could Not Shield</h2>"
+            "<p>No shielded address available and the node could not "
+            "generate one. Is the node running?</p>"
+            "<a href='/wallet' style='color:#34d399'>Back to Wallet</a>"
+            "</div>");
         emit_footer(r, max, &off);
         return off;
     }
