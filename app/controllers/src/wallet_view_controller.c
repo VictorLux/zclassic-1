@@ -597,6 +597,15 @@ static void sync_wallet_from_zclassicd(void) {
 #define query_int sql_query_int
 #define query_int64 sql_query_i64
 
+/* Effective chain tip: max of our indexed blocks and wallet UTXO heights
+ * (wallet may be synced from zclassicd which is ahead of our indexer). */
+static int effective_tip(sqlite3 *db) {
+    int t = query_int(db, "SELECT MAX(height) FROM blocks");
+    int u = query_int(db,
+        "SELECT MAX(height) FROM wallet_utxos WHERE spent_txid IS NULL");
+    return u > t ? u : t;
+}
+
 /* ── Txid formatting ────────────────────────────────────────── */
 
 static void txid_short(const char *hex, char *out, size_t out_max) {
@@ -1130,7 +1139,7 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
         return off;
     }
 
-    int tip = query_int(db, "SELECT MAX(height) FROM blocks");
+    int tip = effective_tip(db);
 
     /* Ground-truth transparent balance (P2PKH + P2SH change addresses) */
     int t_utxos = 0;
@@ -1643,7 +1652,7 @@ static size_t serve_history(uint8_t *r, size_t max, int page,
         return off;
     }
 
-    int tip = query_int(db, "SELECT MAX(height) FROM blocks");
+    int tip = effective_tip(db);
     int per_page = 50;
 
     size_t off = emit_header(r, max, "History — ZClassic23", "/wallet/history");
@@ -1858,7 +1867,7 @@ static size_t serve_coins(uint8_t *r, size_t max) {
         return off;
     }
 
-    int tip = query_int(db, "SELECT MAX(height) FROM blocks");
+    int tip = effective_tip(db);
 
     size_t off = emit_header(r, max, "Coins — ZClassic23", "/wallet/coins");
     APPEND(off, r, max, "<h2>Coin Audit</h2>"
@@ -2376,7 +2385,7 @@ static size_t serve_pulse(uint8_t *r, size_t max) {
     int t_utxos = 0, z_notes = 0;
 
     if (db) {
-        height = query_int(db, "SELECT MAX(height) FROM blocks");
+        height = effective_tip(db);
         peers = query_int(db,  "SELECT count(*) FROM peers");
         mempool = query_int(db, "SELECT count(*) FROM mempool_entries");
 
@@ -2689,7 +2698,7 @@ static size_t serve_tx_detail(uint8_t *r, size_t max, const char *txid_hex) {
         return off;
     }
 
-    int tip = query_int(db, "SELECT MAX(height) FROM blocks");
+    int tip = effective_tip(db);
     size_t off = emit_header(r, max, "Transaction — ZClassic23", "/wallet/history");
 
     /* Sanitize txid: only hex chars, max 64 */
