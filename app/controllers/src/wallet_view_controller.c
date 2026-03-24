@@ -401,11 +401,22 @@ static void sync_wallet_from_zclassicd(void) {
         "CREATE TEMP TABLE new_utxos AS SELECT * FROM wallet_utxos WHERE 0",
         NULL, NULL, NULL);
 
+    /* Get chain tip for height computation: height = tip - confirmations + 1 */
+    int chain_tip = 0;
+    { sqlite3_stmt *tip_s = NULL;
+      if (sqlite3_prepare_v2(db, "SELECT MAX(height) FROM blocks",
+                              -1, &tip_s, NULL) == SQLITE_OK) {
+          if (sqlite3_step(tip_s) == SQLITE_ROW)
+              chain_tip = sqlite3_column_int(tip_s, 0);
+          sqlite3_finalize(tip_s);
+      }
+    }
+
     sqlite3_stmt *ins_utxo = NULL;
     sqlite3_prepare_v2(db,
         "INSERT INTO new_utxos "
         "(txid,vout,value,address_hash,script,height,is_coinbase,spent_txid) "
-        "VALUES (?,?,?,?,?,0,0,NULL)", -1, &ins_utxo, NULL);
+        "VALUES (?,?,?,?,?,?,0,NULL)", -1, &ins_utxo, NULL);
 
     if (ins_utxo) {
         const char *p = lu;
@@ -415,14 +426,18 @@ static void sync_wallet_from_zclassicd(void) {
             uint8_t txid_bin[32];
             if (hex_to_bin(txid_s, 64, txid_bin, 32) != 32) continue;
 
-            int vout = 0;
+            int vout = 0, confs = 0;
             double amt = 0;
             const char *script_s; size_t script_l;
             const char *scan = p;
             json_next_int(&scan, "vout", &vout);
             scan = p;
             json_next_num(&scan, "amount", &amt);
+            scan = p;
+            json_next_int(&scan, "confirmations", &confs);
             int64_t val = (int64_t)(amt * 1e8 + 0.5);
+            int height = (chain_tip > 0 && confs > 0)
+                ? (chain_tip - confs + 1) : 0;
 
             /* Get scriptPubKey for address_hash extraction */
             uint8_t addr_hash[20] = {0};
@@ -445,6 +460,7 @@ static void sync_wallet_from_zclassicd(void) {
             sqlite3_bind_blob(ins_utxo, 4, addr_hash, 20, SQLITE_TRANSIENT);
             sqlite3_bind_blob(ins_utxo, 5, script_bin,
                               (int)script_bin_len, SQLITE_TRANSIENT);
+            sqlite3_bind_int(ins_utxo, 6, height);
             sqlite3_step(ins_utxo);
             sqlite3_reset(ins_utxo);
         }
@@ -479,7 +495,7 @@ static void sync_wallet_from_zclassicd(void) {
         "INSERT INTO new_notes "
         "(txid,output_index,value,rcm,ivk,diversifier,pk_d,"
         "cm,nullifier,block_height,address) "
-        "VALUES (?,?,?,?,?,?,?,?,?,0,?)", -1, &ins_note, NULL);
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?)", -1, &ins_note, NULL);
 
     if (ins_note) {
         const char *p = zlu;
@@ -489,14 +505,18 @@ static void sync_wallet_from_zclassicd(void) {
             uint8_t txid_bin[32];
             if (hex_to_bin(txid_s, 64, txid_bin, 32) != 32) continue;
 
-            int outindex = 0;
+            int outindex = 0, confs = 0;
             double amt = 0;
             const char *addr_s; size_t addr_l;
             const char *scan = p;
             json_next_int(&scan, "outindex", &outindex);
             scan = p;
             json_next_num(&scan, "amount", &amt);
+            scan = p;
+            json_next_int(&scan, "confirmations", &confs);
             int64_t val = (int64_t)(amt * 1e8 + 0.5);
+            int note_height = (chain_tip > 0 && confs > 0)
+                ? (chain_tip - confs + 1) : 0;
 
             char addr_str[128] = "";
             scan = p;
@@ -542,7 +562,8 @@ static void sync_wallet_from_zclassicd(void) {
             sqlite3_bind_blob(ins_note, 7, pkd, 32, SQLITE_TRANSIENT);
             sqlite3_bind_blob(ins_note, 8, cm, 32, SQLITE_TRANSIENT);
             sqlite3_bind_blob(ins_note, 9, nf, 32, SQLITE_TRANSIENT);
-            sqlite3_bind_text(ins_note, 10, addr_str, -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int(ins_note, 10, note_height);
+            sqlite3_bind_text(ins_note, 11, addr_str, -1, SQLITE_TRANSIENT);
             sqlite3_step(ins_note);
             sqlite3_reset(ins_note);
         }
