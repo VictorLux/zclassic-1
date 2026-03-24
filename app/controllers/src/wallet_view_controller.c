@@ -1315,6 +1315,42 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
             tx_shown++;
         }
         sqlite3_finalize(s);
+
+        /* Show recent shielded notes (received shields) */
+        if (tx_shown < 5) {
+            sqlite3_stmt *zs = NULL;
+            if (sqlite3_prepare_v2(db,
+                    "SELECT n.value, n.block_height, n.address "
+                    "FROM wallet_sapling_notes n "
+                    "WHERE n.spent_txid IS NULL "
+                    "ORDER BY n.block_height DESC LIMIT ?",
+                    -1, &zs, NULL) == SQLITE_OK) {
+                sqlite3_bind_int(zs, 1, 5 - tx_shown);
+                while (sqlite3_step(zs) == SQLITE_ROW && tx_shown < 5) {
+                    int64_t val = sqlite3_column_int64(zs, 0);
+                    int nh = sqlite3_column_int(zs, 1);
+                    int nc = (tip > 0 && nh > 0) ? (tip - nh + 1) : 0;
+                    if (nc < 0) nc = 0;
+                    char amt[32];
+                    zcl_format_zcl(amt, sizeof(amt), val);
+                    APPEND(off, r, max,
+                        "<div class='tx-row'>"
+                        "<div>"
+                        "<span class='tx-amount recv'>+%s</span>"
+                        "<span style='color:#888;font-size:12px;"
+                        "margin-left:6px'>ZCL</span></div>"
+                        "<div class='tx-meta'>"
+                        "<span class='tx-time' style='color:#a78bfa'>"
+                        "Shielded</span>"
+                        "<span class='tx-conf'>%d conf%s</span>"
+                        "</div></div>",
+                        amt, nc, nc == 1 ? "" : "s");
+                    tx_shown++;
+                }
+                sqlite3_finalize(zs);
+            }
+        }
+
         if (tx_shown == 0) {
             if (total_balance > 0)
                 APPEND(off, r, max,
@@ -1377,8 +1413,10 @@ static size_t serve_send(uint8_t *r, size_t max) {
     sqlite3 *db = open_db();
 
     int64_t balance = 0;
+    int64_t shielded_bal = 0;
     if (db) {
         balance = query_ground_truth_balance(db, NULL);
+        shielded_bal = query_shielded_balance(db, NULL);
         sqlite3_close(db);
     }
 
@@ -1388,7 +1426,6 @@ static size_t serve_send(uint8_t *r, size_t max) {
     zcl_format_zcl(bal_fmt, sizeof(bal_fmt), balance);
 
     {
-        int64_t shielded_bal = query_shielded_balance(db, NULL);
         APPEND(off, r, max,
             "<div style='text-align:center;padding:16px 0'>"
             "<span class='balance-sub'>Transparent: "
