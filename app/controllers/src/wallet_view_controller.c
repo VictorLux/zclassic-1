@@ -394,15 +394,16 @@ static void sync_wallet_from_zclassicd(void) {
         sqlite3_close(db); return;
     }
 
-    /* Both RPCs succeeded — atomically replace wallet data */
+    /* Both RPCs succeeded — parse into temp table first, then swap.
+     * If parsing produces 0 results, don't touch the real tables. */
     sqlite3_exec(db, "BEGIN", NULL, NULL, NULL);
-
-    /* 1. Rebuild transparent UTXOs */
-    sqlite3_exec(db, "DELETE FROM wallet_utxos", NULL, NULL, NULL);
+    sqlite3_exec(db,
+        "CREATE TEMP TABLE new_utxos AS SELECT * FROM wallet_utxos WHERE 0",
+        NULL, NULL, NULL);
 
     sqlite3_stmt *ins_utxo = NULL;
     sqlite3_prepare_v2(db,
-        "INSERT INTO wallet_utxos "
+        "INSERT INTO new_utxos "
         "(txid,vout,value,address_hash,script,height,is_coinbase,spent_txid) "
         "VALUES (?,?,?,?,?,0,0,NULL)", -1, &ins_utxo, NULL);
 
@@ -450,12 +451,32 @@ static void sync_wallet_from_zclassicd(void) {
         sqlite3_finalize(ins_utxo);
     }
 
-    /* 2. Rebuild shielded notes */
-    sqlite3_exec(db, "DELETE FROM wallet_sapling_notes", NULL, NULL, NULL);
+    /* Only replace wallet_utxos if parsing produced results */
+    int new_count = 0;
+    { sqlite3_stmt *cnt = NULL;
+      if (sqlite3_prepare_v2(db, "SELECT count(*) FROM new_utxos",
+                              -1, &cnt, NULL) == SQLITE_OK) {
+          if (sqlite3_step(cnt) == SQLITE_ROW)
+              new_count = sqlite3_column_int(cnt, 0);
+          sqlite3_finalize(cnt);
+      }
+    }
+    if (new_count > 0) {
+        sqlite3_exec(db, "DELETE FROM wallet_utxos", NULL, NULL, NULL);
+        sqlite3_exec(db,
+            "INSERT INTO wallet_utxos SELECT * FROM new_utxos",
+            NULL, NULL, NULL);
+    }
+    sqlite3_exec(db, "DROP TABLE IF EXISTS new_utxos", NULL, NULL, NULL);
+
+    /* 2. Rebuild shielded notes (same safe pattern) */
+    sqlite3_exec(db,
+        "CREATE TEMP TABLE new_notes AS SELECT * FROM wallet_sapling_notes WHERE 0",
+        NULL, NULL, NULL);
 
     sqlite3_stmt *ins_note = NULL;
     sqlite3_prepare_v2(db,
-        "INSERT INTO wallet_sapling_notes "
+        "INSERT INTO new_notes "
         "(txid,output_index,value,rcm,ivk,diversifier,pk_d,"
         "cm,nullifier,block_height,address) "
         "VALUES (?,?,?,?,?,?,?,?,?,0,?)", -1, &ins_note, NULL);
@@ -527,6 +548,24 @@ static void sync_wallet_from_zclassicd(void) {
         }
         sqlite3_finalize(ins_note);
     }
+
+    /* Only replace notes if parsing produced results */
+    int note_count = 0;
+    { sqlite3_stmt *cnt = NULL;
+      if (sqlite3_prepare_v2(db, "SELECT count(*) FROM new_notes",
+                              -1, &cnt, NULL) == SQLITE_OK) {
+          if (sqlite3_step(cnt) == SQLITE_ROW)
+              note_count = sqlite3_column_int(cnt, 0);
+          sqlite3_finalize(cnt);
+      }
+    }
+    if (note_count > 0) {
+        sqlite3_exec(db, "DELETE FROM wallet_sapling_notes", NULL, NULL, NULL);
+        sqlite3_exec(db,
+            "INSERT INTO wallet_sapling_notes SELECT * FROM new_notes",
+            NULL, NULL, NULL);
+    }
+    sqlite3_exec(db, "DROP TABLE IF EXISTS new_notes", NULL, NULL, NULL);
 
     sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
     sqlite3_close(db);
