@@ -13,6 +13,8 @@
 
 #include "json/json.h"
 #include <stdint.h>
+#include <stddef.h>
+#include <inttypes.h>
 
 struct wallet;
 struct wallet_tx;
@@ -95,5 +97,71 @@ void wallet_view_fastsync(struct json_value *out,
                            const struct chain_snapshot *snap,
                            int keys_recovered, int keys_total,
                            int64_t balance);
+
+/* ── HTML view layer ─────────────────────────────────────────
+ * Controller fills struct with data, view renders HTML.
+ * No SQLite calls in view functions. */
+
+#include <stdbool.h>
+
+/* ── Pulse (JSON, no HTML) ──────────────────────────────────── */
+
+struct wv_pulse {
+    int     height;
+    int64_t balance;            /* transparent, zatoshi */
+    int64_t shielded;           /* zatoshi */
+    int64_t speed_balance;
+    int     t_utxos;
+    int     z_notes;
+    int     peers;
+    int     mempool;
+    char    sync[32];
+};
+
+size_t wv_render_pulse(uint8_t *buf, size_t max, const struct wv_pulse *d);
+
+/* ── Send Review ────────────────────────────────────────────── */
+
+struct wv_send_review {
+    char    address[256];
+    double  amount;
+    double  fee;
+    double  remaining;
+    int64_t balance;            /* transparent, zatoshi */
+    bool    is_shielded;
+    bool    valid;
+    char    error[128];
+};
+
+size_t wv_render_send_review(uint8_t *buf, size_t max,
+                              const struct wv_send_review *d);
+
+/* ── Send Confirm result ────────────────────────────────────── */
+
+struct wv_send_result {
+    bool    success;
+    char    address[256];
+    double  amount;
+    char    txid[128];          /* txid or opid-... */
+    bool    is_opid;
+    char    error[256];
+};
+
+size_t wv_render_send_result(uint8_t *buf, size_t max,
+                              const struct wv_send_result *d);
+
+/* ── Shield Confirm result ──────────────────────────────────── */
+
+struct wv_shield_result {
+    bool    success;
+    double  amount;
+    char    opid[128];
+    char    error[256];
+    int64_t new_transparent;
+    int64_t new_shielded;
+};
+
+size_t wv_render_shield_result(uint8_t *buf, size_t max,
+                                const struct wv_shield_result *d);
 
 #endif

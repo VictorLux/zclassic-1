@@ -11,6 +11,7 @@
  *   /wallet/coins     UTXO and shielded note breakdown */
 
 #include "controllers/wallet_view_controller.h"
+#include "views/wallet_view.h"
 #include "controllers/wallet_controller.h"
 #include "views/format_helpers.h"
 #include "views/wallet_css.h"
@@ -1698,9 +1699,12 @@ static size_t serve_history(uint8_t *r, size_t max, int page,
     }
 
     /* Exclude ghost entries: must have either a real block or wallet_utxos */
+    /* Exclude ghost entries AND zero-amount sends (shielded ops) */
     const char *ghost_filter =
         " AND (wt.block_height > 0 OR EXISTS "
-        "(SELECT 1 FROM wallet_utxos wu WHERE wu.txid = wt.txid))";
+        "(SELECT 1 FROM wallet_utxos wu WHERE wu.txid = wt.txid))"
+        " AND NOT (wt.from_me = 1 AND NOT EXISTS "
+        "(SELECT 1 FROM wallet_utxos wu2 WHERE wu2.txid = wt.txid))";
     char count_sql[1024];
     snprintf(count_sql, sizeof(count_sql),
         "SELECT count(*) FROM wallet_transactions wt"
@@ -1826,9 +1830,7 @@ static size_t serve_history(uint8_t *r, size_t max, int page,
                 "<span class='tx-amount %s'>%s%.8f ZCL</span>"
                 "<span class='pill %s' style='font-size:9px'>%s</span></div>"
                 "<div class='tx-meta'>"
-                "<span class='tx-time' title='%s'>%s</span>"
-                "<span class='tx-conf'>Block %s &middot; %d conf%s</span>"
-                "</div></div></a>",
+                "<span class='tx-time' title='%s'>%s</span>",
                 esc_lower,
                 is_recv ? "#34d399" : "#f87171",
                 is_recv ? "recv" : "send",
@@ -1836,9 +1838,15 @@ static size_t serve_history(uint8_t *r, size_t max, int page,
                 (double)display_val / 1e8,
                 is_recv ? "pill-t" : "pill-send",
                 is_recv ? "Received" : "Sent",
-                esc_ts,
-                esc_rel,
-                h_fmt, confs, confs == 1 ? "" : "s");
+                esc_ts, esc_rel);
+            if (h > 0)
+                APPEND(off, r, max,
+                    "<span class='tx-conf'>Block %s &middot; %d conf%s</span>",
+                    h_fmt, confs, confs == 1 ? "" : "s");
+            else
+                APPEND(off, r, max,
+                    "<span class='tx-conf'>Unconfirmed</span>");
+            APPEND(off, r, max, "</div></div></a>");
         }
         sqlite3_finalize(s);
     }
@@ -1965,45 +1973,53 @@ static size_t serve_coins(uint8_t *r, size_t max) {
         APPEND(off, r, max,
             "<div class='overflow-x'>"
             "<table><tr><th>Amount</th>"
-            "<th>Address</th><th>Height</th><th>Conf</th></tr>");
+            "<th>Address</th><th>Count</th><th>Height Range</th></tr>");
         s = NULL;
+        /* Group notes by amount + address for cleaner display */
         if (sqlite3_prepare_v2(db,
-                "SELECT n.value, n.block_height, n.address "
+                "SELECT n.value, n.address, COUNT(*) as cnt, "
+                "  MIN(n.block_height) as min_h, MAX(n.block_height) as max_h "
                 "FROM wallet_sapling_notes n"
                 " WHERE n.spent_txid IS NULL"
+                " GROUP BY n.value, n.address"
                 " ORDER BY n.value DESC",
                 -1, &s, NULL) == SQLITE_OK) {
             while (sqlite3_step(s) == SQLITE_ROW && off + 400 < max) {
                 int64_t val = sqlite3_column_int64(s, 0);
-                int h = sqlite3_column_int(s, 1);
-                const char *addr = (const char *)sqlite3_column_text(s, 2);
-                int confs = (tip > 0 && h > 0) ? (tip - h + 1) : 0;
-                if (confs < 0) confs = 0;
+                const char *addr = (const char *)sqlite3_column_text(s, 1);
+                int cnt = sqlite3_column_int(s, 2);
+                int min_h = sqlite3_column_int(s, 3);
+                int max_h = sqlite3_column_int(s, 4);
                 char short_addr[18] = "—";
-                if (addr && addr[0])
+                if (addr && addr[0] && strlen(addr) > 3)
                     txid_short(addr + 3, short_addr, sizeof(short_addr));
                 APPEND(off, r, max,
                     "<tr>"
                     "<td class='zcl'>%.8f</td>"
-                    "<td class='hash' style='color:#a78bfa'>zs1%s</td>",
-                    (double)val / 1e8, short_addr);
-                if (h > 0)
-                    APPEND(off, r, max, "<td>%d</td><td>%d</td>", h, confs);
-                else
+                    "<td class='hash' style='color:#a78bfa'>zs1%s</td>"
+                    "<td>%d</td>",
+                    (double)val / 1e8, short_addr, cnt);
+                if (min_h > 0) {
+                    if (min_h == max_h)
+                        APPEND(off, r, max, "<td>%d</td>", min_h);
+                    else
+                        APPEND(off, r, max, "<td>%d–%d</td>", min_h, max_h);
+                } else {
                     APPEND(off, r, max,
-                        "<td><span class='pill pill-pending'>Pending</span></td>"
                         "<td><span class='pill pill-pending'>Pending</span></td>");
+                }
                 APPEND(off, r, max, "</tr>");
             }
             sqlite3_finalize(s);
         }
         APPEND(off, r, max,
             "<tr class='total-row'>"
-            "<td>Total (%d note%s)</td>"
-            "<td></td><td></td>"
-            "<td class='zcl'>%.8f</td></tr></table></div>",
-            z_notes, z_notes == 1 ? "" : "s",
-            (double)z_total / 1e8);
+            "<td class='zcl'>%.8f</td>"
+            "<td></td>"
+            "<td>%d note%s</td>"
+            "<td></td></tr></table></div>",
+            (double)z_total / 1e8,
+            z_notes, z_notes == 1 ? "" : "s");
     } else {
         /* No notes found — explain why */
         int sapling_keys = query_int(db,
@@ -2500,18 +2516,13 @@ static size_t serve_pulse(uint8_t *r, size_t max) {
 
     const char *sync = sync_state_name(sync_get_state());
 
-    return (size_t)snprintf((char *)r, max,
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: application/json\r\n"
-        "Cache-Control: no-cache\r\n"
-        "Connection: close\r\n\r\n"
-        "{\"height\":%d,\"balance\":%" PRId64 ",\"shielded\":%" PRId64
-        ",\"speed_balance\":%" PRId64
-        ",\"t_utxos\":%d,\"z_notes\":%d"
-        ",\"peers\":%d,\"sync\":\"%s\",\"mempool\":%d}",
-        height, balance, shielded, speed_bal,
-        t_utxos, z_notes,
-        peers, sync, mempool);
+    struct wv_pulse p = {
+        .height = height, .balance = balance, .shielded = shielded,
+        .speed_balance = speed_bal, .t_utxos = t_utxos, .z_notes = z_notes,
+        .peers = peers, .mempool = mempool
+    };
+    snprintf(p.sync, sizeof(p.sync), "%s", sync ? sync : "idle");
+    return wv_render_pulse(r, max, &p);
 }
 
 /* ── Send Review (/wallet/send/review POST) ─────────────────── */
