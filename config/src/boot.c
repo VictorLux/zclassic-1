@@ -1543,8 +1543,8 @@ bool app_init(struct app_context *ctx)
 
                 /* Erase block_index entries above our validated tip.
                  * These may be fork blocks from a stale LevelDB with
-                 * wrong nBits/hash, causing bad-diffbits when peers
-                 * send correct main-chain headers. */
+                 * wrong nBits/hash, blocking header download. Clearing
+                 * nStatus prevents them from being used in chains. */
                 {
                     int erased = 0;
                     size_t ai = 0;
@@ -1552,8 +1552,6 @@ bool app_init(struct app_context *ctx)
                     while (block_map_next(&g_state.map_block_index,
                                            &ai, NULL, &ap)) {
                         if (ap && ap->nHeight > best->nHeight) {
-                            /* Zero out the entry to prevent it from
-                             * interfering with difficulty calculations */
                             ap->nStatus = 0;
                             ap->nBits = 0;
                             ap->nTime = 0;
@@ -1562,8 +1560,7 @@ bool app_init(struct app_context *ctx)
                         }
                     }
                     if (erased > 0)
-                        printf("Erased %d stale block_index entries "
-                               "above validated tip %d\n",
+                        printf("Erased %d stale entries above tip %d\n",
                                erased, best->nHeight);
                 }
             } else {

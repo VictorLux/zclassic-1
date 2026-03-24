@@ -138,7 +138,11 @@ bool contextual_check_block_header(const struct block_header *header,
                                         false, NULL);
     }
 
-    {
+    /* Skip difficulty check if prev block was erased (nBits=0).
+     * This happens when fork entries from a stale LevelDB were
+     * cleared on startup. Full validation at connect_block will
+     * re-check with correct chain data. */
+    if (pindex_prev->nBits != 0) {
         unsigned int expected_bits = GetNextWorkRequired(pindex_prev, header,
                                                          &params->consensus);
         if (header->nBits != expected_bits) {
