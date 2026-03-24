@@ -604,7 +604,7 @@ static void format_time(int64_t timestamp, char *out, size_t out_max) {
 static void format_relative_time(int64_t timestamp, char *out, size_t out_max) {
     if (!out || out_max == 0) return;
     out[0] = '\0';
-    if (timestamp <= 0) { snprintf(out, out_max, "unknown"); return; }
+    if (timestamp <= 0) { snprintf(out, out_max, "Unconfirmed"); return; }
     time_t now = time(NULL);
     int64_t diff = (int64_t)now - timestamp;
     if (diff < 0) { snprintf(out, out_max, "just now"); return; }
@@ -1188,16 +1188,17 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
     if (transparent > 0) {
         APPEND(off, r, max,
             "<div class='privacy-card'>"
-            "<div class='title'>Your funds are publicly visible</div>"
-            "<div class='desc'>Transparent balances can be traced on-chain. "
-            "Shield your ZCL for full privacy.</div>"
+            "<div class='title'>%.8f ZCL is traceable on-chain</div>"
+            "<div class='desc'>Shield your transparent balance to remove "
+            "the link between your address and your funds.</div>"
             "<div style='display:flex;gap:8px;justify-content:center'>"
             "<a class='btn' href='/wallet/shield?all=1'>"
             "Shield All</a>"
             "<a class='btn' style='background:#1a1428;color:#a78bfa;"
             "border:1px solid #a78bfa' href='/wallet/shield'>"
-            "Choose Amount</a>"
-            "</div></div>");
+            "Shield Custom Amount</a>"
+            "</div></div>",
+            (double)transparent / (double)ZATOSHI_PER_ZCL);
     }
 
     /* 6. Recent transactions (5 items) */
@@ -1228,8 +1229,10 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
             int from_me = sqlite3_column_int(s, 3);
             int64_t wallet_output = sqlite3_column_int64(s, 4);
             if (!txid) continue;
-            /* Skip ghost entries with no amount and no block */
+            /* Skip entries with no useful data */
             if (wallet_output == 0 && height == 0) continue;
+            /* Skip zero-amount sends (shielded ops with no transparent delta) */
+            if (wallet_output == 0 && from_me) continue;
 
             bool is_recv = (from_me == 0);
 
@@ -1337,12 +1340,24 @@ static size_t serve_send(uint8_t *r, size_t max) {
     char bal_fmt[32];
     zcl_format_zcl(bal_fmt, sizeof(bal_fmt), balance);
 
-    APPEND(off, r, max,
-        "<div style='text-align:center;padding:16px 0'>"
-        "<span class='balance-sub'>Available: "
-        "<span style='color:#34d399;font-weight:600'>%s ZCL</span>"
-        "</span></div>",
-        bal_fmt);
+    {
+        int64_t shielded_bal = query_shielded_balance(db, NULL);
+        APPEND(off, r, max,
+            "<div style='text-align:center;padding:16px 0'>"
+            "<span class='balance-sub'>Transparent: "
+            "<span style='color:#34d399;font-weight:600'>%s ZCL</span>"
+            "</span>",
+            bal_fmt);
+        if (shielded_bal > 0) {
+            char z_fmt[32];
+            zcl_format_zcl(z_fmt, sizeof(z_fmt), shielded_bal);
+            APPEND(off, r, max,
+                "<div style='color:#a78bfa;font-size:12px;margin-top:4px'>"
+                "+ %s ZCL shielded (send to z-address to use)</div>",
+                z_fmt);
+        }
+        APPEND(off, r, max, "</div>");
+    }
 
     APPEND(off, r, max,
         "<form id='send-form' method='POST' action='zcl://node/wallet/send/review' "
@@ -1500,16 +1515,32 @@ static size_t serve_receive(uint8_t *r, size_t max) {
                 if (!raw || !raw[0]) continue;
                 char escaped[1024];
                 html_escape(escaped, sizeof(escaped), raw);
-                if (z_shown == 0)
+                if (z_shown == 0) {
                     APPEND(off, r, max,
                         "<div class='section-header' style='margin-top:24px'>"
-                        "<span style='color:#a78bfa'>Shielded Addresses</span></div>");
-                APPEND(off, r, max,
-                    "<div class='addr-display-sm'>%s</div>", escaped);
+                        "<span style='color:#a78bfa'>Your Shielded Address</span></div>");
+                    APPEND(off, r, max,
+                        "<div class='addr-display-sm' style='font-size:11px'>"
+                        "%s</div>", escaped);
+                } else if (z_shown == 1) {
+                    APPEND(off, r, max,
+                        "<details style='margin-top:8px'>"
+                        "<summary style='color:#888;font-size:12px;cursor:pointer'>"
+                        "Show all addresses</summary>");
+                    APPEND(off, r, max,
+                        "<div class='addr-display-sm' style='font-size:11px'>"
+                        "%s</div>", escaped);
+                } else {
+                    APPEND(off, r, max,
+                        "<div class='addr-display-sm' style='font-size:11px'>"
+                        "%s</div>", escaped);
+                }
                 z_shown++;
             }
             sqlite3_finalize(s);
         }
+        if (z_shown > 1)
+            APPEND(off, r, max, "</details>");
         sqlite3_close(db);
     }
 
@@ -1702,8 +1733,10 @@ static size_t serve_history(uint8_t *r, size_t max, int page,
             (void)sqlite3_column_int64(s, 4); /* fee — not displayed */
             int64_t wallet_output = sqlite3_column_int64(s, 5);
             if (!txid) continue;
-            /* Skip ghost entries: no real amount and no confirmed block */
+            /* Skip entries with no useful data */
             if (wallet_output == 0 && h == 0) continue;
+            /* Skip zero-amount sends (shielded ops with no transparent delta) */
+            if (wallet_output == 0 && from_me) continue;
 
             bool is_recv = (from_me == 0);
             int64_t display_val = wallet_output;
@@ -2087,7 +2120,8 @@ static size_t serve_shield(uint8_t *r, size_t max, const char *query) {
         "Your transparent ZCL moves to a shielded address (1 confirmation, ~2.5 min).</div>"
         "<div style='margin-bottom:8px'>"
         "<span style='color:#a78bfa;font-weight:700'>Step 2:</span> "
-        "Wait ~6 hours so timing analysis cannot link the transparent source to your shielded note.</div>"
+        "Funds are spendable immediately. For maximum privacy, wait ~6 hours "
+        "before spending so timing analysis cannot link the transparent source.</div>"
         "<div>"
         "<span style='color:#60a5fa;font-weight:700'>Step 3:</span> "
         "Spend from your shielded balance with no on-chain link to the original address.</div>"

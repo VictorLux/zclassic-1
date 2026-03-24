@@ -1086,7 +1086,7 @@ int test_wallet_view(void)
     printf("LIVE: send form shows real available balance... ");
     {
         wv_get("/wallet/send");
-        bool ok = wv_has("Available:") && wv_has("ZCL");
+        bool ok = (wv_has("Transparent:") || wv_has("Available:")) && wv_has("ZCL");
         /* Should show a non-zero balance */
         bool has_zero_only = wv_has("0.00000000 ZCL") && !wv_has("0.9");
         if (ok && !has_zero_only) printf("OK\n");
