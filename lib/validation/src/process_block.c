@@ -102,6 +102,7 @@ static bool flush_coins_if_needed(struct coins_view_cache *coins_tip,
     if (!force && !time_flush && !size_flush && !block_flush)
         return true;
 
+
     size_t batched = (size_t)g_blocks_since_flush;
     bool ok = coins_view_cache_flush(coins_tip);
     if (ok) {
@@ -526,14 +527,6 @@ bool connect_tip(struct validation_state *state,
         }
     }
 
-    /* Debug: log every 100 blocks near the crash zone */
-    if (pindex_new->nHeight >= 170000 && pindex_new->nHeight % 100 == 0) {
-        fprintf(stderr, "connect_tip: h=%d cache=%zu buckets=%zu\n",
-               pindex_new->nHeight, coins_tip->cache_coins.size,
-               coins_tip->cache_coins.num_buckets);
-        fflush(stderr);
-    }
-
     /* Apply the block to the chain state */
     {
         struct coins_view_cache view;
@@ -733,7 +726,7 @@ bool connect_tip(struct validation_state *state,
         }
     }
 
-    /* Periodically flush coins cache to LevelDB to prevent UTXO corruption */
+    /* Periodically flush coins cache to SQLite */
     flush_coins_if_needed(coins_tip, false);
 
     if (pblock == &local_block)

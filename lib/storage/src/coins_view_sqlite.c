@@ -171,38 +171,45 @@ bool coins_view_sqlite_get_coins(struct coins_view_sqlite *cvs,
     sqlite3_reset(s);
     sqlite3_bind_blob(s, 1, txid->data, 32, SQLITE_STATIC);
 
-    /* Process rows incrementally, growing the vout array as needed.
-     * Results are ORDER BY vout so max_vout grows monotonically. */
-    bool first = true;
+    /* Two-pass: first find max vout index, then allocate and fill.
+     * This avoids realloc during iteration (which caused heap corruption). */
+    uint32_t max_vout = 0;
+    int nrows = 0;
+    int height = 0;
+    int is_coinbase = 0;
+
+    /* Pass 1: find max vout and metadata */
+    while (sqlite3_step(s) == SQLITE_ROW) {
+        uint32_t vi = (uint32_t)sqlite3_column_int(s, 0);
+        if (nrows == 0) {
+            height = sqlite3_column_int(s, 3);
+            is_coinbase = sqlite3_column_int(s, 4);
+        }
+        if (vi > max_vout) max_vout = vi;
+        nrows++;
+    }
+
+    if (nrows == 0)
+        return false;
+
+    /* Allocate once */
+    if (!coins_alloc(out, (size_t)(max_vout + 1)))
+        return false;
+    out->version = 1;
+    out->height = height;
+    out->is_coinbase = (is_coinbase != 0);
+
+    /* Pass 2: fill in values */
+    sqlite3_reset(s);
+    sqlite3_bind_blob(s, 1, txid->data, 32, SQLITE_STATIC);
 
     while (sqlite3_step(s) == SQLITE_ROW) {
         uint32_t vi = (uint32_t)sqlite3_column_int(s, 0);
-        int64_t value = sqlite3_column_int64(s, 1);
+        if (vi >= out->num_vout) continue;
+
+        out->vout[vi].value = sqlite3_column_int64(s, 1);
         const void *script = sqlite3_column_blob(s, 2);
         int script_len = sqlite3_column_bytes(s, 2);
-        int height = sqlite3_column_int(s, 3);
-        int is_coinbase = sqlite3_column_int(s, 4);
-
-        if (first) {
-            out->height = height;
-            out->is_coinbase = (is_coinbase != 0);
-            out->version = 1;
-            first = false;
-        }
-
-        /* Grow vout array if needed */
-        if (vi >= out->num_vout) {
-            size_t new_size = (size_t)(vi + 1);
-            struct tx_out *new_vout = realloc(out->vout,
-                new_size * sizeof(struct tx_out));
-            if (!new_vout) continue;
-            for (size_t j = out->num_vout; j < new_size; j++)
-                tx_out_set_null(&new_vout[j]);
-            out->vout = new_vout;
-            out->num_vout = new_size;
-        }
-
-        out->vout[vi].value = value;
         if (script && script_len > 0) {
             size_t slen = (size_t)script_len;
             if (slen > MAX_SCRIPT_SIZE) slen = MAX_SCRIPT_SIZE;
@@ -210,9 +217,6 @@ bool coins_view_sqlite_get_coins(struct coins_view_sqlite *cvs,
             out->vout[vi].script_pub_key.size = slen;
         }
     }
-
-    if (first) /* no rows */
-        return false;
 
     coins_cleanup(out);
     return true;
