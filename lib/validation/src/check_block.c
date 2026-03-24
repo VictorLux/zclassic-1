@@ -138,11 +138,20 @@ bool contextual_check_block_header(const struct block_header *header,
                                         false, NULL);
     }
 
-    /* Skip difficulty check if prev block was erased (nBits=0).
-     * This happens when fork entries from a stale LevelDB were
+    /* Skip difficulty check if any block in the averaging window
+     * was erased (nBits=0). Fork entries from stale LevelDB were
      * cleared on startup. Full validation at connect_block will
      * re-check with correct chain data. */
-    if (pindex_prev->nBits != 0) {
+    {
+        bool window_clean = true;
+        const struct block_index *check = pindex_prev;
+        for (int w = 0; w < 17 && check; w++) {
+            if (check->nBits == 0) { window_clean = false; break; }
+            check = check->pprev;
+        }
+        if (!window_clean) goto skip_diffbits;
+    }
+    {
         unsigned int expected_bits = GetNextWorkRequired(pindex_prev, header,
                                                          &params->consensus);
         if (header->nBits != expected_bits) {
@@ -155,6 +164,7 @@ bool contextual_check_block_header(const struct block_header *header,
                                         "bad-diffbits", false, NULL);
         }
     }
+    skip_diffbits:
 
     if (block_header_get_time(header) <=
         block_index_get_median_time_past(pindex_prev))
