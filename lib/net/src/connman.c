@@ -226,6 +226,34 @@ static void *thread_open_connections(void *arg)
             }
         }
 
+        /* Reconnect persistent addnodes that dropped.
+         * Check every iteration: if an addnode is not connected, retry. */
+        for (int ai = 0; ai < cm->num_addnodes && !g_stop; ai++) {
+            bool connected = false;
+            zcl_mutex_lock(&cm->manager.cs_nodes);
+            for (size_t ni = 0; ni < cm->manager.num_nodes; ni++) {
+                struct p2p_node *n = cm->manager.nodes[ni];
+                if (n->disconnect) continue;
+                if (net_addr_eq(&n->addr.svc.addr, &cm->addnodes[ai].svc.addr) &&
+                    n->addr.svc.port == cm->addnodes[ai].svc.port) {
+                    connected = true;
+                    break;
+                }
+            }
+            zcl_mutex_unlock(&cm->manager.cs_nodes);
+
+            if (!connected) {
+                char dest[64];
+                net_service_to_string(&cm->addnodes[ai].svc, dest, sizeof(dest));
+                struct p2p_node *node = connect_node(&cm->manager,
+                    &cm->addnodes[ai], dest);
+                if (node) {
+                    printf("Reconnected addnode %s\n", dest);
+                    fflush(stdout);
+                }
+            }
+        }
+
         /* Sleep less when desperate for peers */
         if (outbound == 0)
             usleep(200000); /* 200ms */
@@ -367,16 +395,29 @@ static void *thread_socket_handler(void *arg)
             }
         }
 
-        /* Timeout: disconnect nodes with no activity for 120s */
+        /* Timeout: disconnect nodes with no activity */
         {
             int64_t now_check = GetTime();
             for (size_t i = 0; i < cm->manager.num_nodes; i++) {
                 struct p2p_node *n = cm->manager.nodes[i];
                 if (n->disconnect) continue;
-                /* No recv for 120s and version handshake done */
+
+                /* Addnode peers get longer timeout (10 min) since they
+                 * auto-reconnect anyway and we want them stable */
+                bool is_addnode = false;
+                for (int ai = 0; ai < cm->num_addnodes; ai++) {
+                    if (net_addr_eq(&n->addr.svc.addr,
+                                    &cm->addnodes[ai].svc.addr) &&
+                        n->addr.svc.port == cm->addnodes[ai].svc.port) {
+                        is_addnode = true;
+                        break;
+                    }
+                }
+                int timeout = is_addnode ? 600 : 120;
+
                 if (n->state >= PEER_HANDSHAKE_COMPLETE &&
                     n->last_recv > 0 &&
-                    now_check - n->last_recv > 120) {
+                    now_check - n->last_recv > timeout) {
                     event_emitf(EV_TCP_TIMEOUT, (uint32_t)n->id,
                                 "inactivity %llds state=%s",
                                 (long long)(now_check - n->last_recv),
@@ -604,6 +645,21 @@ void connman_add_seed_node(struct connman *cm, const char *host,
 void connman_open_connection(struct connman *cm,
                               const struct net_address *addr)
 {
+    /* Store in persistent addnode list for automatic reconnection */
+    if (cm->num_addnodes < MAX_ADDNODES) {
+        /* Avoid duplicates */
+        bool dup = false;
+        for (int i = 0; i < cm->num_addnodes; i++) {
+            if (net_addr_eq(&cm->addnodes[i].svc.addr, &addr->svc.addr) &&
+                cm->addnodes[i].svc.port == addr->svc.port) {
+                dup = true;
+                break;
+            }
+        }
+        if (!dup)
+            cm->addnodes[cm->num_addnodes++] = *addr;
+    }
+
     /* Pass addr_name as dest so connect_node skips is_local check.
      * This allows connecting to localhost (e.g. local zclassicd peer). */
     char dest[64];

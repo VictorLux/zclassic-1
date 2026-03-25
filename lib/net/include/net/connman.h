@@ -11,12 +11,17 @@
 #include "chain/chainparams.h"
 #include <stdbool.h>
 
+#define MAX_ADDNODES 16
+
 struct connman {
     struct net_manager manager;
     const struct chain_params *params;
     bool started;
     struct p2p_node *deferred_free[64];
     size_t num_deferred_free;
+    /* Persistent addnode list — reconnected automatically on disconnect */
+    struct net_address addnodes[MAX_ADDNODES];
+    int num_addnodes;
 };
 
 bool connman_init(struct connman *cm, const struct chain_params *params,
