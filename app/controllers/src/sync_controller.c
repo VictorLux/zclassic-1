@@ -280,37 +280,9 @@ bool node_db_sync_connect_block(struct node_db *ndb,
             return false;
         }
 
-        /* Spend inputs (delete consumed UTXOs) */
-        if (i > 0) { /* skip coinbase — no inputs */
-            for (size_t j = 0; j < tx->num_vin; j++) {
-                db_utxo_delete(ndb,
-                    tx->vin[j].prevout.hash.data,
-                    tx->vin[j].prevout.n);
-            }
-        }
-
-        /* Create output UTXOs */
-        for (size_t j = 0; j < tx->num_vout; j++) {
-            if (tx->vout[j].value == 0 &&
-                tx->vout[j].script_pub_key.size > 0 &&
-                tx->vout[j].script_pub_key.data[0] == 0x6a)
-                continue; /* skip OP_RETURN */
-
-            struct db_utxo u;
-            memset(&u, 0, sizeof(u));
-            memcpy(u.txid, tx->hash.data, 32);
-            u.vout = (uint32_t)j;
-            u.value = tx->vout[j].value;
-            u.script = (uint8_t *)tx->vout[j].script_pub_key.data;
-            u.script_len = tx->vout[j].script_pub_key.size;
-            u.script_type = classify_script(
-                u.script, u.script_len,
-                u.address_hash, &u.has_address);
-            u.height = pindex->nHeight;
-            u.is_coinbase = (i == 0);
-
-            db_utxo_save(ndb, &u);
-        }
+        /* UTXOs are managed by coins_view_sqlite (the canonical UTXO store).
+         * Do NOT write UTXOs here — sync_controller handles blocks, txs,
+         * sapling nullifiers, and wallet scanning only. */
 
         /* Track Sapling nullifiers (spends) */
         for (size_t j = 0; j < tx->num_shielded_spend; j++) {
@@ -421,9 +393,10 @@ bool node_db_sync_disconnect_block(struct node_db *ndb,
     for (size_t i = blk->num_vtx; i > 0; i--) {
         const struct transaction *tx = &blk->vtx[i - 1];
 
-        /* Remove output UTXOs created by this tx */
+        /* Remove wallet UTXOs created by this tx.
+         * Note: consensus UTXOs are handled by coins_view_sqlite,
+         * not sync_controller. */
         for (size_t j = 0; j < tx->num_vout; j++) {
-            db_utxo_delete(ndb, tx->hash.data, (uint32_t)j);
             db_wallet_utxo_delete(ndb, tx->hash.data, (uint32_t)j);
         }
 
