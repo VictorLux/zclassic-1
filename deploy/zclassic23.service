@@ -11,6 +11,7 @@ ExecStart=%h/zclassic23/zclassic23 \
     -rpcport=18232 \
     -listen \
     -txindex \
+    -addnode=127.0.0.1:8034 \
     -addnode=205.209.104.118 \
     -addnode=140.174.189.17 \
     -addnode=140.174.189.3 \
