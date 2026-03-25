@@ -297,8 +297,13 @@ bool accept_block_header(const struct block_header *header,
     if (pindex) {
         if (ppindex)
             *ppindex = pindex;
-        if (pindex->nStatus & BLOCK_FAILED_MASK)
-            return validation_state_invalid(state, false, 0, "duplicate", NULL);
+        if (pindex->nStatus & BLOCK_FAILED_MASK) {
+            /* Clear FAILED flag to allow re-validation. Blocks may have
+             * been marked failed due to transient UTXO state issues
+             * (e.g. connecting out-of-order during IBD). The block data
+             * will be re-checked when connect_block runs. */
+            pindex->nStatus &= ~BLOCK_FAILED_MASK;
+        }
         return true;
     }
 
@@ -360,13 +365,14 @@ bool accept_block(struct block *block,
         arith_uint256_compare(&pindex->nChainWork, &tip->nChainWork) >= 0 :
         true;
     if (!requested) {
-        if (pindex->nTx != 0)
+        /* Skip blocks we already have data for (nTx set AND data on disk).
+         * During IBD, blocks whose BLOCK_HAVE_DATA was cleared (e.g. from
+         * snapshot cleanup) may still have nTx set from the index — we
+         * must NOT skip those, they need to be re-written to disk. */
+        if (pindex->nTx != 0 && (pindex->nStatus & BLOCK_HAVE_DATA))
             return true;
         if (!has_more_work)
             return true;
-        /* Don't skip far-ahead blocks during IBD — we're downloading
-         * them in parallel and they arrive out of order. They get stored
-         * to disk and connected later by activate_best_chain. */
     }
 
     if (!check_block(block, state, params, true, true, true) ||
@@ -955,6 +961,11 @@ bool activate_best_chain(struct validation_state *state,
                     int32_t need_height = connect_path[i]->nHeight;
                     dl_queue_blocks(dm_abc, &need_hash, &need_height, 1);
                 }
+                /* Force flush coins to SQLite before pausing. If we
+                 * connected any blocks above, their UTXOs are in the
+                 * in-memory cache only. A restart without flush would
+                 * lose them, corrupting the UTXO set. */
+                flush_coins_if_needed(coins_tip, true);
                 free(connect_path);
                 return true; /* partial success, will continue later */
             }

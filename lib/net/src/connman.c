@@ -289,6 +289,22 @@ static void *thread_socket_handler(void *arg)
             int fd = (int)node->socket;
             if (fd < 0) continue;
 
+            /* Outbound nodes that haven't sent version yet: push it now.
+             * This runs in the socket handler thread to avoid the race
+             * between connection creation and the message handler thread. */
+            if (!node->inbound && node->send_bytes == 0 &&
+                node->state < PEER_VERSION_SENT && !node->disconnect &&
+                cm->manager.signals.send_messages) {
+                cm->manager.signals.send_messages(
+                    cm->manager.signals.ctx, node, false);
+                /* Flush immediately to the wire */
+                if (node->send_size > 0) {
+                    zcl_mutex_lock(&node->cs_send);
+                    socket_send_data(node);
+                    zcl_mutex_unlock(&node->cs_send);
+                }
+            }
+
             if (FD_ISSET(fd, &readfds) && !node->disconnect) {
                 zcl_mutex_lock(&node->cs_recv);
                 char buf[0x10000];
@@ -588,7 +604,11 @@ void connman_add_seed_node(struct connman *cm, const char *host,
 void connman_open_connection(struct connman *cm,
                               const struct net_address *addr)
 {
-    connect_node(&cm->manager, (struct net_address *)addr, NULL);
+    /* Pass addr_name as dest so connect_node skips is_local check.
+     * This allows connecting to localhost (e.g. local zclassicd peer). */
+    char dest[64];
+    net_service_to_string(&addr->svc, dest, sizeof(dest));
+    connect_node(&cm->manager, (struct net_address *)addr, dest);
 }
 
 size_t connman_get_node_count(const struct connman *cm)
