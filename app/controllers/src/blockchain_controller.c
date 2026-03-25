@@ -2686,21 +2686,25 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
     struct idx_block_shielded *all_bsh = NULL;
     
 
-    /* Open a SEPARATE sqlite3 connection for Phase B writes.
-     * The main g_node_db_bc->db handle may have an open transaction
-     * from sync_controller that would swallow our writes on rollback.
-     * A separate connection in WAL mode can write concurrently. */
+    /* Phase B MUST use a separate sqlite3 connection. The main handle
+     * has sync_controller's batch transaction which gets rolled back
+     * on any block validation error — destroying all Phase B inserts.
+     * WAL mode allows concurrent readers but only ONE writer. We set
+     * a 60-second busy timeout so Phase B waits for the write lock. */
     const char *phase_b_path = sqlite3_db_filename(g_node_db_bc->db, "main");
     sqlite3 *phase_b_db = NULL;
-    if (sqlite3_open(phase_b_path, &phase_b_db) != SQLITE_OK) {
-        printf("indexlegacy: Phase B failed to open separate DB connection\n");
+    if (sqlite3_open(phase_b_path, &phase_b_db) != SQLITE_OK || !phase_b_db) {
+        printf("indexlegacy: Phase B FATAL: cannot open DB: %s\n",
+               phase_b_db ? sqlite3_errmsg(phase_b_db) : "null");
         fflush(stdout);
-        phase_b_db = NULL;
+        /* Fall through with empty tables rather than crash */
+        phase_b_db = g_node_db_bc->db; /* fallback */
     }
-    if (!phase_b_db) goto phase_b_skip;
     sqlite3_exec(phase_b_db, "PRAGMA journal_mode=WAL", NULL, NULL, NULL);
     sqlite3_exec(phase_b_db, "PRAGMA synchronous=OFF", NULL, NULL, NULL);
-    sqlite3_busy_timeout(phase_b_db, 30000);
+    sqlite3_busy_timeout(phase_b_db, 60000); /* 60s wait for write lock */
+    bool phase_b_own_txn = true;
+    sqlite3_exec(phase_b_db, "BEGIN IMMEDIATE", NULL, NULL, NULL);
 
     sqlite3_stmt *stmt_txo = NULL, *stmt_txi = NULL, *stmt_js = NULL;
     sqlite3_stmt *stmt_ss = NULL, *stmt_so = NULL, *stmt_spnf = NULL;
@@ -2763,13 +2767,21 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
             sqlite3_bind_blob(stmt_txi, 3, inp->prev_txid, 32, SQLITE_STATIC);
             sqlite3_bind_int(stmt_txi, 4, (int)inp->prev_vout);
             sqlite3_bind_int(stmt_txi, 5, inp->height);
-            sqlite3_step(stmt_txi);
+            {
+                int rc = sqlite3_step(stmt_txi);
+                if (rc != SQLITE_DONE && rc != SQLITE_ROW && total_inputs == 0)
+                    printf("Phase B: first INSERT rc=%d (%s) autocommit=%d\n",
+                           rc, sqlite3_errmsg(phase_b_db),
+                           sqlite3_get_autocommit(phase_b_db));
+            }
             total_inputs++;
             if (++batch_rows % 500000 == 0) {
-                sqlite3_exec(phase_b_db, "COMMIT", NULL, NULL, NULL);
+                if (phase_b_own_txn) {
+                    sqlite3_exec(phase_b_db, "COMMIT", NULL, NULL, NULL);
+                    sqlite3_exec(phase_b_db, "BEGIN", NULL, NULL, NULL);
+                }
                 printf("  Phase B write: %lld rows...\n", (long long)batch_rows);
                 fflush(stdout);
-                sqlite3_exec(phase_b_db, "BEGIN", NULL, NULL, NULL);
             }
         }
     }
@@ -2940,9 +2952,9 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
     }
 
     sqlite3_exec(phase_b_db, "COMMIT", NULL, NULL, NULL);
-    sqlite3_close(phase_b_db);
+    if (phase_b_db != g_node_db_bc->db)
+        sqlite3_close(phase_b_db);
     phase_b_db = NULL;
-phase_b_skip:
 
     /* Free all thread buffers */
     for (int t = 0; t < N_INDEX_THREADS; t++) {
