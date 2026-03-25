@@ -77,7 +77,7 @@ $(TMPL_GEN): $(TMPL_SRC) $(TMPL_TOOL)
 templates: $(TMPL_GEN)
 
 test_zcl: $(TMPL_GEN) $(TEST_SRCS) $(ALL_SRCS)
-	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o $@ $(filter-out $(TMPL_GEN),$^) $(TOR_LIBS) $(LIBS)
+	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o $@ $(filter-out $(TMPL_GEN),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)
 
 zclassic23: $(TMPL_GEN) main.c $(ALL_SRCS)
 	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o $@ $(filter-out $(TMPL_GEN),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)

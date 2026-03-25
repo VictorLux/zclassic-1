@@ -646,7 +646,7 @@ bool redjubjub_sign(const uint8_t sk[32],
 
     /* r = to_scalar(BLAKE2b-512("Zcash_RedJubjubH", T || vk_bytes || msg)) */
     static const uint8_t personal[16] = {'Z','c','a','s','h','_','R','e','d','J','u','b','j','u','b','H'};
-    uint8_t digest[64];
+    uint8_t digest[64] = {0};
     struct blake2b_ctx bctx;
     blake2b_init_salt_personal(&bctx, 64, NULL, 0, NULL, personal);
     blake2b_update(&bctx, T, sizeof(T));

@@ -365,7 +365,7 @@ int test_script(void)
         ScriptError err;
         bool ok = eval_script(&stk, &s, 0, NULL, 0, &err);
         if (ok && stk.count == 1) {
-            struct script_num sn;
+            struct script_num sn = {0};
             script_num_from_bytes(&sn, stack_top(&stk, -1)->data,
                                   stack_top(&stk, -1)->size, false, 4);
             if (sn.value == 5)
@@ -437,7 +437,7 @@ int test_script(void)
         ScriptError err;
         bool ok = eval_script(&stk, &s, 0, NULL, 0, &err);
         if (ok && stk.count == 1) {
-            struct script_num sn;
+            struct script_num sn = {0};
             script_num_from_bytes(&sn, stack_top(&stk, -1)->data,
                                   stack_top(&stk, -1)->size, false, 4);
             if (sn.value == 2)

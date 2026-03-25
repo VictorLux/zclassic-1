@@ -12,6 +12,16 @@
 #include <secp256k1.h>
 #include <secp256k1_recovery.h>
 
+/* Vendor libsecp256k1 uses older API name (privkey vs seckey) */
+extern int secp256k1_ec_privkey_tweak_add(
+    const secp256k1_context *ctx, unsigned char *seckey,
+    const unsigned char *tweak);
+int secp256k1_ec_seckey_tweak_add(
+    const secp256k1_context *ctx, unsigned char *seckey,
+    const unsigned char *tweak) {
+    return secp256k1_ec_privkey_tweak_add(ctx, seckey, tweak);
+}
+
 static secp256k1_context *secp256k1_ctx_sign = NULL;
 
 void privkey_make_new(struct privkey *k, bool fCompressed)
