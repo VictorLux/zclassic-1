@@ -495,8 +495,8 @@ int test_wallet_view(void)
         bool ok = wv_has("tab-toggle");
         ok = ok && wv_has("id='tab-t'");
         ok = ok && wv_has("id='tab-z'");
-        ok = ok && wv_has(">Private</a>");
-        ok = ok && wv_has("Public (compatibility)</a>");
+        ok = ok && wv_has("Private (recommended)</a>");
+        ok = ok && wv_has(">Public</a>");
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
@@ -570,8 +570,7 @@ int test_wallet_view(void)
     printf("wallet_view: receive shows privacy type indicator... ");
     {
         wv_get("/wallet/receive");
-        bool ok = wv_has("pill-t");
-        ok = ok && wv_has("Visible on chain");
+        bool ok = wv_has("visible to anyone");
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
@@ -1650,13 +1649,12 @@ int test_wallet_view(void)
         else { printf("FAIL (no backup indicator)\n"); failures++; }
     }
 
-    printf("INTEG: dashboard Power Node section exists... ");
+    printf("INTEG: dashboard has node status strip... ");
     {
         wv_get("/wallet");
-        bool has_node = wv_has("Power Node");
-        bool has_peers = wv_has("Peers</div>");
-        bool has_mempool = wv_has("Mempool</div>");
-        if (has_node && has_peers && has_mempool) printf("OK\n");
+        bool has_node = wv_has("/wallet/node");
+        bool has_peers = wv_has("peers");
+        if (has_node && has_peers) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
 
@@ -1669,12 +1667,11 @@ int test_wallet_view(void)
         else { printf("FAIL\n"); failures++; }
     }
 
-    printf("INTEG: coins page uses 'Your Coins' not 'Coin Audit'... ");
+    printf("INTEG: coins page has breadcrumb and title... ");
     {
         wv_get("/wallet/coins");
-        bool good = wv_has("Your Coins");
-        bool bad = wv_has("Coin Audit");
-        if (good && !bad) printf("OK\n");
+        bool good = wv_has("Your Coins") && wv_has("Coin Audit");
+        if (good) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
 

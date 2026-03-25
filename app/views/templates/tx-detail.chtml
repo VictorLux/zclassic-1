@@ -1,3 +1,9 @@
+<div style='margin-bottom:12px'>
+<a href='/wallet/history' style='color:#888;font-size:13px;
+text-decoration:none'>History &#x2192;</a>
+<span style='color:#e2e2e2;font-size:13px;font-weight:600'>
+Transaction</span></div>
+
 <div style='text-align:center;padding:16px 0'>
 <span class='pill {{{pill_class}}}' style='font-size:13px;padding:4px 12px'>
 {{{direction}}}</span>
@@ -16,7 +22,7 @@ font-size:13px;color:#888;margin-bottom:4px'>
 
 <div class='detail-grid'>
 <div class='lbl'>TxID</div>
-<div class='val'><a href='/explorer/tx/{{{txid}}}' class='hash' 
+<div class='val'><a href='/explorer/tx/{{{txid}}}' class='hash'
 style='font-size:13px'>{{{txid}}}</a></div>
 <div class='lbl'>Block</div>
 <div class='val'>{{{block_height}}}</div>
@@ -29,7 +35,4 @@ style='font-size:13px'>{{{txid}}}</a></div>
 
 <div style='text-align:center;margin:24px 0'>
 <a href='/explorer/tx/{{{txid}}}' style='color:#60a5fa;font-size:13px'>
-View full details in Explorer &rarr;</a></div>
-<div style='text-align:center'>
-<a href='/wallet/history' style='color:#34d399;font-size:14px'>
-&larr; Back to History</a></div>
+View in Explorer &#x2192;</a></div>

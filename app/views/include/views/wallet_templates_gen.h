@@ -31,28 +31,6 @@ static const char TMPL_COINS_NOTES_TABLE[] =
     "nge</th></tr>\n{{{note_rows}}}\n<tr class='total-row'>\n<td class='zcl'>{{{z_total}}}</td>\n<td><"
     "/td>\n<td>{{{z_notes}}} note{{{z_plural}}}</td>\n<td></td></tr></table></div>\n";
 
-static const char TMPL_COINS_PAGE[] =
-    "<h2>Your Coins</h2>\n<div style='color:#6b7280;font-size:13px;margin-bottom:16px'>\nEvery coin in"
-    " your wallet, verified against the blockchain.</div>\n\n<h3>Public UTXOs (Chain-Verified)</h3>\n<"
-    "div class='overflow-x'>\n<table><tr><th>Transaction</th><th>Type</th>\n<th>Amount</th><th>Height<"
-    "/th><th>Conf</th></tr>\n{{{utxo_rows}}}\n<tr class='total-row'>\n<td colspan='2'>Total ({{{t_coun"
-    "t}}} UTXO{{{t_plural}}})</td>\n<td class='zcl'>{{{t_total}}}</td>\n<td></td><td></td></tr></table"
-    "></div>\n\n<h3>Private Notes</h3>\n{{{notes_section}}}\n\n<div class='stats' style='margin-top:20"
-    "px'>\n<div class='stat'>\n<div class='n'>{{{t_total}}}</div>\n<div class='l'>Public</div></div>\n"
-    "<div class='stat' style='border-color:#a78bfa'>\n<div class='n' style='color:#a78bfa'>{{{z_total}"
-    "}}</div>\n<div class='l'>Private</div></div>\n<div class='stat' style='border-color:#f59e0b'>\n<d"
-    "iv class='n' style='color:#f59e0b'>{{{grand_total}}}</div>\n<div class='l'>Total</div></div>\n</d"
-    "iv>\n\n<details style='margin-top:16px'>\n<summary style='color:#999;font-size:13px;font-weight:6"
-    "00;\ntext-transform:uppercase;letter-spacing:.05em;cursor:pointer'>\nDiagnostics &#x25BE;</summar"
-    "y>\n<div class='overflow-x'>\n<table><tr><th>Source</th><th>Balance</th>\n<th>UTXOs</th><th>Statu"
-    "s</th></tr>\n<tr><td>Chain UTXO set (chain-verified)</td>\n<td class='zcl'>{{{t_total}}}</td><td>"
-    "{{{t_count}}}</td>\n<td><span class='pill pill-t'>verified</span></td></tr>\n<tr><td>Cached balan"
-    "ce</td>\n<td class='zcl'>{{{speed_bal}}}</td><td>{{{speed_utxos}}}</td>\n<td>{{{diag_status}}}</t"
-    "d></tr>\n</table></div></details>\n\n{{{token_section}}}\n\n<h3>Chain Supply</h3>\n<div class='st"
-    "ats'>\n<div class='stat'>\n<div class='n'>{{{chain_supply}}}</div>\n<div class='l'>UTXO Supply (Z"
-    "CL)</div></div>\n<div class='stat'>\n<div class='n'>{{{chain_utxos}}}</div>\n<div class='l'>Total"
-    " UTXOs</div></div>\n</div>\n";
-
 static const char TMPL_COINS_TOKENS[] =
     "<h3>ZSLP Tokens</h3>\n<div class='overflow-x'><table>\n<tr><th>Token</th><th>Name</th>\n<th>Balan"
     "ce</th></tr>\n{{{token_rows}}}\n</table></div>\n";
@@ -100,20 +78,6 @@ static const char TMPL_PRIVACY_NUDGE[] =
     "></div>\n<a class='btn' href='/wallet/shield?all=1' \nstyle='white-space:nowrap;padding:10px 16px"
     "'>Secure All</a>\n</div>\n";
 
-static const char TMPL_RECEIVE_COPY_JS[] =
-    "<script>\ndocument.querySelectorAll('.addr-display,.addr-display-sm,.addr-chunked')\n.forEach(fun"
-    "ction(el){\nel.style.cursor='pointer';\nel.addEventListener('click',function(){\nvar txt=this.tex"
-    "tContent.replace(/\\\\s+/g,'').trim();\nnavigator.clipboard.writeText(txt).then(function(){\nel.s"
-    "tyle.borderColor='#34d399';\nvar msg=document.getElementById('copy-msg')||\ndocument.getElementBy"
-    "Id('copy-msg-z');\nvar pz=document.getElementById('pane-z');\nif(pz&&pz.style.display!=='none')\n"
-    "msg=document.getElementById('copy-msg-z');\nif(msg)msg.textContent='Copied!';\nsetTimeout(functio"
-    "n(){el.style.borderColor='';\nif(msg)msg.textContent='Click to copy';},1500);}\n).catch(function("
-    "){\nvar ta=document.createElement('textarea');\nta.value=txt;ta.style.position='fixed';ta.style.l"
-    "eft='-9999px';\ndocument.body.appendChild(ta);ta.select();\ndocument.execCommand('copy');document"
-    ".body.removeChild(ta);\nvar msg=document.getElementById('copy-msg')||\ndocument.getElementById('c"
-    "opy-msg-z');\nvar pz=document.getElementById('pane-z');\nif(pz&&pz.style.display!=='none')\nmsg=d"
-    "ocument.getElementById('copy-msg-z');\nif(msg)msg.textContent='Copied!';});\n});});\n</script>\n";
-
 static const char TMPL_RECEIVE_JS[] =
     "<script>\nfunction showTab(t){\ndocument.getElementById('pane-t').style.display=t==='t'?'':'none'"
     ";\ndocument.getElementById('pane-z').style.display=t==='z'?'':'none';\ndocument.getElementById('t"
@@ -125,24 +89,9 @@ static const char TMPL_RECEIVE_NO_ZADDR[] =
     "div>\n<div style='color:#888;font-size:14px;margin-top:4px'>\nGenerate one: <code>zcl-rpc z_getne"
     "waddress</code></div>\n</div>\n";
 
-static const char TMPL_RECEIVE_TABS[] =
-    "<div class='tab-toggle'>\n<a id='tab-z' class='active-z' onclick='showTab(\"z\")'>Private</a>\n<a"
-    " id='tab-t' onclick='showTab(\"t\")'>Public (compatibility)</a>\n</div>\n";
-
-static const char TMPL_RECEIVE_TPANE[] =
-    "<div id='pane-t' style='display:none;text-align:center;padding:16px 0'>\n<div class='balance-sub'"
-    " style='margin-bottom:12px'>\nPublic address &mdash; visible on the blockchain</div>\n{{{qr_svg}}"
-    "}\n{{{chunked_addr}}}\n<div id='copy-msg' style='color:#888;font-size:14px;\nmargin-top:4px;heigh"
-    "t:16px'>Click to copy</div>\n<div style='color:#888;font-size:13px;margin-top:2px'>\n<span class="
-    "'pill pill-t'>Public</span> \nVisible on chain &mdash; use only when required</div>\n</div>\n";
-
 static const char TMPL_RECEIVE_ZPANE_CLOSE[] =
     "<div id='copy-msg-z' style='color:#888;font-size:14px;\nmargin-top:4px;height:16px'>Click to copy"
     "</div>\n</div>\n";
-
-static const char TMPL_RECEIVE_ZPANE_OPEN[] =
-    "<div id='pane-z' style='text-align:center;padding:16px 0'>\n<div class='balance-sub' style='margi"
-    "n-bottom:12px'>\nShare this address to receive ZCL privately</div>\n";
 
 static const char TMPL_SEND_CONFIRM_BUTTONS[] =
     "<div style='display:flex;gap:10px;margin:20px 0'>\n<a href='/wallet/send' class='btn-secondary'\n"
@@ -161,17 +110,6 @@ static const char TMPL_SEND_ERROR[] =
     "e}}</p>\n<div style='margin-top:16px;display:flex;gap:16px;justify-content:center'>\n<a href='/wa"
     "llet' style='color:#999'>Back to Wallet</a>\n<a href='/wallet/send' style='color:#34d399'>Try Aga"
     "in</a>\n</div></div>\n";
-
-static const char TMPL_SEND_REVIEW[] =
-    "<div style='text-align:center;margin-bottom:16px'>\n<span class='form-label'>Review Transaction</"
-    "span></div>\n<table class='review-table'>\n<tr><td>To</td>\n<td style='color:#60a5fa;font-family:"
-    "\"JetBrains Mono\",monospace;\nfont-size:14px;word-break:break-all'>{{address}}</td></tr>\n<tr><t"
-    "d>Amount</td>\n<td style='color:#34d399;font-size:18px;font-weight:700'>\n{{{amount}}} ZCL</td></"
-    "tr>\n<tr><td>Fee</td>\n<td style='color:#999'>{{{fee}}} ZCL</td></tr>\n<tr><td style='font-weight"
-    ":700'>Total</td>\n<td style='color:#e2e2e2;font-weight:700'>\n{{{total}}} ZCL</td></tr>\n<tr><td>"
-    "Remaining</td>\n<td style='color:#999'>{{{remaining}}} ZCL</td></tr>\n<tr><td>Privacy</td>\n<td><"
-    "span class='pill {{{privacy_pill}}}'>{{{privacy_label}}}</span>\n{{{privacy_warning}}}</td></tr>\n"
-    "<tr><td>Est. Time</td>\n<td style='color:#999'>~2.5 min (1 confirmation)</td></tr>\n</table>\n";
 
 static const char TMPL_SEND_SUCCESS[] =
     "<div class='result-success'>\n<div class='icon'>&#x2713;</div>\n<h2>{{{heading}}}</h2>\n<p>{{{amo"
@@ -196,23 +134,6 @@ static const char TMPL_SEND[] =
     "tyle='color:#888;font-size:14px;margin:4px 0'>\nNetwork fee: <span style='color:#f59e0b'>{{{fee}}"
     "} ZCL</span>\n</div></div>\n<button type='submit' class='btn-primary' style='margin-top:16px' \ni"
     "d='review-btn'>Review Send</button>\n</form>\n{{{contacts_datalist}}}\n";
-
-static const char TMPL_SHIELD_AMOUNT_FORM[] =
-    "<div style='text-align:center;padding:16px 0'>\n<div style='color:#a78bfa;font-size:20px;font-wei"
-    "ght:700;\nmargin-bottom:4px'>&#x1F512; Secure Funds</div>\n<div class='balance-sub'>Make your pub"
-    "lic ZCL private\n&mdash; no longer linked to your address</div></div>\n<form method='GET' action="
-    "'/wallet/shield'>\n<div class='form-group'>\n<label class='form-label' for='shield-amt'>Amount to"
-    " Secure</label>\n<div style='display:flex;gap:8px;align-items:center'>\n<input class='form-input'"
-    " type='text' id='shield-amt'\ninputmode='decimal' name='amount' placeholder='0.00' required>\n<bu"
-    "tton type='button' class='send-max'\nonclick='document.getElementById(\"shield-amt\").value=\"{{{"
-    "max_amount}}}\"'>Max</button>\n</div>\n<div style='color:#888;font-size:14px;margin-top:6px'>\nAv"
-    "ailable: <span style='color:#34d399'>{{{available}}} ZCL</span>\n</div></div>\n<div id='shield-er"
-    "r' class='form-error'></div>\n<button type='submit' class='btn-primary'\nstyle='background:#a78bf"
-    "a;color:#fff;margin-top:8px'\nonclick='var a=parseFloat(document.getElementById(\"shield-amt\").v"
-    "alue);if(isNaN(a)||a<=0){document.getElementById(\"shield-err\").textContent=\"Enter a valid amou"
-    "nt\";return false;}if(a>{{{max_amount}}}){document.getElementById(\"shield-err\").textContent=\"I"
-    "nsufficient funds\";return false;}'>\nReview</button>\n</form>\n<div style='text-align:center;mar"
-    "gin-top:16px'>\n<a href='/wallet' style='color:#888'>Cancel</a></div>\n";
 
 static const char TMPL_SHIELD_BALANCE_CARD[] =
     "<div style='margin-top:16px;padding:12px;background:#0a1f14;\nborder-radius:8px'>\n<div style='co"
@@ -272,22 +193,6 @@ static const char TMPL_SHIELD_SUCCESS[] =
     "olor:#555;font-size:14px;margin-top:12px'>\nSpendable immediately. For maximum privacy, wait ~6 h"
     "ours \nbefore spending so timing analysis can't link back.</div>\n{{{balance_card}}}\n</div></div"
     ">\n";
-
-static const char TMPL_TX_DETAIL[] =
-    "<div style='text-align:center;padding:16px 0'>\n<span class='pill {{{pill_class}}}' style='font-s"
-    "ize:13px;padding:4px 12px'>\n{{{direction}}}</span>\n<h2 style='margin:12px 0 4px;color:{{{color}"
-    "}}'>{{{heading}}}</h2>\n<div class='balance-sub'>{{{rel_time}}} &middot; {{{abs_time}}}</div>\n</"
-    "div>\n\n<div style='margin:0 0 16px'>\n<div style='display:flex;justify-content:space-between;\nf"
-    "ont-size:13px;color:#888;margin-bottom:4px'>\n<span>{{{confs}}} confirmation{{{conf_plural}}}</sp"
-    "an>\n<span>{{{conf_status}}}</span></div>\n<div class='conf-meter'>\n<div class='fill' style='wid"
-    "th:{{{conf_pct}}}%;background:{{{conf_color}}}'></div>\n</div></div>\n\n<div class='detail-grid'>"
-    "\n<div class='lbl'>TxID</div>\n<div class='val'><a href='/explorer/tx/{{{txid}}}' class='hash' \n"
-    "style='font-size:13px'>{{{txid}}}</a></div>\n<div class='lbl'>Block</div>\n<div class='val'>{{{bl"
-    "ock_height}}}</div>\n<div class='lbl'>Direction</div>\n<div class='val'>{{{direction}}}</div>\n{{"
-    "{fee_row}}}\n</div>\n\n{{{outputs_section}}}\n\n<div style='text-align:center;margin:24px 0'>\n<a"
-    " href='/explorer/tx/{{{txid}}}' style='color:#60a5fa;font-size:13px'>\nView full details in Explo"
-    "rer &rarr;</a></div>\n<div style='text-align:center'>\n<a href='/wallet/history' style='color:#34"
-    "d399;font-size:14px'>\n&larr; Back to History</a></div>\n";
 
 static const char TMPL_TX_INVALID[] =
     "<div class='result-error'>\n<div class='icon'>&#x2717;</div>\n<h2>Invalid Transaction ID</h2>\n<a"
@@ -363,14 +268,32 @@ static const char TMPL_NODE_PEER_ROW[] =
     "}}}'>{{{direction}}}</span></td>\n<td style='font-size:13px'>{{{subver}}}</td>\n<td style='font-s"
     "ize:13px;color:#888'>{{{height}}}</td>\n</tr>\n";
 
+static const char TMPL_CHECKPOINT_ROW[] =
+    "<tr><td><a href='/explorer/block/{{{height}}}'>{{{height}}}</a></td>\n<td>{{{time}}}</td>\n<td><c"
+    "ode style='word-break:break-all'>{{{hash_short}}}...</code></td>\n<td><code>{{{receipt}}}</code><"
+    "/td></tr>\n";
+
+static const char TMPL_BREADCRUMB[] =
+    "<div style='margin-bottom:12px'>\n<a href='{{{parent_href}}}' style='color:#888;font-size:13px;\n"
+    "text-decoration:none'>{{{parent_label}}} &#x2192;</a>\n<span style='color:#e2e2e2;font-size:13px;"
+    "font-weight:600'>\n{{{current}}}</span></div>\n";
+
+static const char TMPL_NODE_STATUS_STRIP[] =
+    "<a href='/wallet/node' style='text-decoration:none;color:inherit'>\n<div style='display:flex;alig"
+    "n-items:center;gap:10px;\nbackground:#111;border-radius:8px;padding:10px 14px;margin:4px 0;\nfont"
+    "-size:13px;color:#888'>\n<span style='color:#34d399;font-weight:700'>Node</span>\n<span>{{{peers}"
+    "}} peers</span>\n<span>&middot;</span>\n<span>Block {{{height}}}</span>\n<span>&middot;</span>\n<"
+    "span style='color:{{{status_color}}}'>{{{status}}}</span>\n<span style='margin-left:auto;color:#6"
+    "0a5fa;font-size:12px'>\n&#x2192;</span>\n</div></a>\n";
+
 static const char TMPL_DASHBOARD[] =
     "<div style='text-align:center;padding:24px 0 16px'>\n<span id='sync' class='pill {{{sync_class}}}"
     " sync-badge'>{{{sync_label}}}</span>\n<div id='bal' class='balance' style='margin-top:8px'>\n{{{b"
     "alance}}} ZCL</div>\n\n<div id='privacy-meter' style='margin:8px auto;max-width:280px'>\n<div sty"
     "le='display:flex;justify-content:space-between;\nfont-size:14px;margin-bottom:4px'>\n<span style="
-    "'color:{{{pct_color}}}'>{{{pct}}}% private</span>\n<a href='/wallet/coins' style='color:#888;font"
-    "-size:14px'>\nDetails</a></div>\n<div style='height:6px;background:#1e1e1e;border-radius:3px;\nov"
-    "erflow:hidden'>\n<div id='lock' style='height:100%;width:{{{pct}}}%;background:{{{pct_color}}};\n"
+    "'color:{{{pct_color}}}'>{{{pct}}}% private</span>\n<a href='/wallet/shield' style='color:#888;fon"
+    "t-size:14px'>\nDetails</a></div>\n<div style='height:6px;background:#1e1e1e;border-radius:3px;\no"
+    "verflow:hidden'>\n<div id='lock' style='height:100%;width:{{{pct}}}%;background:{{{pct_color}}};\n"
     "border-radius:3px;transition:width .5s'></div>\n</div></div>\n\n<div id='bal-details' style='text"
     "-align:center;margin:4px 0'>\n<span id='breakdown' class='balance-sub' style='font-size:14px'>\n{"
     "{{breakdown}}}</span></div>\n</div>\n\n<div class='actions'>\n<a href='/wallet/send' class='btn-s"
@@ -378,25 +301,119 @@ static const char TMPL_DASHBOARD[] =
     "llet/receive' class='btn-primary'\n style='display:flex;align-items:center;justify-content:center"
     "'>Receive</a>\n</div>\n\n{{{privacy_card}}}\n\n{{{token_cards}}}\n\n<div class='section-header'>\n"
     "<span>Recent</span>\n<a href='/wallet/history'>View all</a></div>\n{{{recent_txs}}}\n\n{{{backup_"
-    "warning}}}\n\n<div class='section-header'>\n<span>Power Node</span>\n<a href='/wallet/node'>Comma"
-    "nd Center</a></div>\n<a href='/wallet/node' style='text-decoration:none;color:inherit'>\n<div sty"
-    "le='background:linear-gradient(135deg,#0a1f14,#0a1428);\nborder:1px solid #1a2a1a;border-radius:1"
-    "0px;padding:14px;margin:4px 0'>\n<div style='display:flex;gap:8px;margin-bottom:8px'>\n<div class"
-    "='stat' style='flex:1;padding:8px;background:rgba(0,0,0,.3);\nborder:none'>\n<div class='n' style"
-    "='font-size:18px'>{{{peers}}}</div>\n<div class='l'>Peers</div></div>\n<div class='stat' style='f"
-    "lex:1;padding:8px;background:rgba(0,0,0,.3);\nborder:none'>\n<div class='n' style='font-size:18px"
-    "'>{{{mempool}}}</div>\n<div class='l'>Mempool</div></div>\n<div class='stat' style='flex:1;paddin"
-    "g:8px;background:rgba(0,0,0,.3);\nborder:none'>\n<div class='n' style='font-size:18px;color:{{{no"
-    "de_status_color}}}'>\n{{{node_status}}}</div>\n<div class='l'>Status</div></div>\n</div>\n<div st"
-    "yle='display:flex;align-items:center;gap:8px;\nfont-size:13px;color:#888'>\n<div id='tor-dot' sty"
-    "le='width:6px;height:6px;border-radius:50%;\nbackground:{{{tor_color}}}'></div>\n<span>{{{tor_lab"
-    "el}}}</span>\n<span style='margin-left:auto;color:#60a5fa;font-size:12px'>\nView details &#x2192;"
-    "</span>\n</div>\n</div></a>\n";
+    "warning}}}\n\n{{{node_strip}}}\n";
 
-static const char TMPL_CHECKPOINT_ROW[] =
-    "<tr><td><a href='/explorer/block/{{{height}}}'>{{{height}}}</a></td>\n<td>{{{time}}}</td>\n<td><c"
-    "ode style='word-break:break-all'>{{{hash_short}}}...</code></td>\n<td><code>{{{receipt}}}</code><"
-    "/td></tr>\n";
+static const char TMPL_RECEIVE_TABS[] =
+    "<div class='tab-toggle'>\n<a id='tab-z' class='active-z' onclick='showTab(\"z\")'>Private (recomm"
+    "ended)</a>\n<a id='tab-t' onclick='showTab(\"t\")'>Public</a>\n</div>\n";
+
+static const char TMPL_RECEIVE_ZPANE_OPEN[] =
+    "<div id='pane-z' style='text-align:center;padding:16px 0'>\n<div class='balance-sub' style='margi"
+    "n-bottom:4px'>\nShare this address to receive ZCL privately</div>\n<div style='color:#34d399;font"
+    "-size:12px;margin-bottom:12px'>\nFunds sent here are invisible on the blockchain</div>\n";
+
+static const char TMPL_RECEIVE_TPANE[] =
+    "<div id='pane-t' style='display:none;text-align:center;padding:16px 0'>\n<div class='balance-sub'"
+    " style='margin-bottom:4px'>\nPublic address</div>\n<div style='color:#fbbf24;font-size:12px;margi"
+    "n-bottom:12px'>\nFunds sent here are visible to anyone. Use only when the sender\nrequires a publ"
+    "ic address.</div>\n{{{qr_svg}}}\n{{{chunked_addr}}}\n<button onclick='copyAddr()' class='btn-seco"
+    "ndary'\n style='margin:12px auto;padding:10px 24px;width:auto;font-size:14px'\n id='copy-btn'>Cop"
+    "y Address</button>\n<div id='copy-msg' style='color:#888;font-size:13px;\nmargin-top:4px;height:1"
+    "6px'></div>\n</div>\n";
+
+static const char TMPL_TX_DETAIL[] =
+    "<div style='margin-bottom:12px'>\n<a href='/wallet/history' style='color:#888;font-size:13px;\nte"
+    "xt-decoration:none'>History &#x2192;</a>\n<span style='color:#e2e2e2;font-size:13px;font-weight:6"
+    "00'>\nTransaction</span></div>\n\n<div style='text-align:center;padding:16px 0'>\n<span class='pi"
+    "ll {{{pill_class}}}' style='font-size:13px;padding:4px 12px'>\n{{{direction}}}</span>\n<h2 style="
+    "'margin:12px 0 4px;color:{{{color}}}'>{{{heading}}}</h2>\n<div class='balance-sub'>{{{rel_time}}}"
+    " &middot; {{{abs_time}}}</div>\n</div>\n\n<div style='margin:0 0 16px'>\n<div style='display:flex"
+    ";justify-content:space-between;\nfont-size:13px;color:#888;margin-bottom:4px'>\n<span>{{{confs}}}"
+    " confirmation{{{conf_plural}}}</span>\n<span>{{{conf_status}}}</span></div>\n<div class='conf-met"
+    "er'>\n<div class='fill' style='width:{{{conf_pct}}}%;background:{{{conf_color}}}'></div>\n</div><"
+    "/div>\n\n<div class='detail-grid'>\n<div class='lbl'>TxID</div>\n<div class='val'><a href='/explo"
+    "rer/tx/{{{txid}}}' class='hash'\nstyle='font-size:13px'>{{{txid}}}</a></div>\n<div class='lbl'>Bl"
+    "ock</div>\n<div class='val'>{{{block_height}}}</div>\n<div class='lbl'>Direction</div>\n<div clas"
+    "s='val'>{{{direction}}}</div>\n{{{fee_row}}}\n</div>\n\n{{{outputs_section}}}\n\n<div style='text"
+    "-align:center;margin:24px 0'>\n<a href='/explorer/tx/{{{txid}}}' style='color:#60a5fa;font-size:1"
+    "3px'>\nView in Explorer &#x2192;</a></div>\n";
+
+static const char TMPL_COINS_PAGE[] =
+    "<div style='margin-bottom:12px'>\n<a href='/wallet/node' style='color:#888;font-size:13px;\ntext-"
+    "decoration:none'>Node &#x2192;</a>\n<span style='color:#e2e2e2;font-size:13px;font-weight:600'>\n"
+    "Coin Audit</span></div>\n\n<h2>Your Coins</h2>\n<div style='color:#6b7280;font-size:13px;margin-b"
+    "ottom:16px'>\nEvery coin in your wallet, verified against the blockchain.</div>\n\n<h3>Public UTX"
+    "Os (Chain-Verified)</h3>\n<div class='overflow-x'>\n<table><tr><th>Transaction</th><th>Type</th>\n"
+    "<th>Amount</th><th>Height</th><th>Conf</th></tr>\n{{{utxo_rows}}}\n<tr class='total-row'>\n<td co"
+    "lspan='2'>Total ({{{t_count}}} UTXO{{{t_plural}}})</td>\n<td class='zcl'>{{{t_total}}}</td>\n<td>"
+    "</td><td></td></tr></table></div>\n\n<h3>Private Notes</h3>\n{{{notes_section}}}\n\n<div class='s"
+    "tats' style='margin-top:20px'>\n<div class='stat'>\n<div class='n'>{{{t_total}}}</div>\n<div clas"
+    "s='l'>Public</div></div>\n<div class='stat' style='border-color:#a78bfa'>\n<div class='n' style='"
+    "color:#a78bfa'>{{{z_total}}}</div>\n<div class='l'>Private</div></div>\n<div class='stat' style='"
+    "border-color:#f59e0b'>\n<div class='n' style='color:#f59e0b'>{{{grand_total}}}</div>\n<div class="
+    "'l'>Total</div></div>\n</div>\n\n<details style='margin-top:16px'>\n<summary style='color:#999;fo"
+    "nt-size:13px;font-weight:600;\ntext-transform:uppercase;letter-spacing:.05em;cursor:pointer'>\nDi"
+    "agnostics &#x25BE;</summary>\n<div class='overflow-x'>\n<table><tr><th>Source</th><th>Balance</th"
+    ">\n<th>UTXOs</th><th>Status</th></tr>\n<tr><td>Chain UTXO set (chain-verified)</td>\n<td class='z"
+    "cl'>{{{t_total}}}</td><td>{{{t_count}}}</td>\n<td><span class='pill pill-t'>verified</span></td><"
+    "/tr>\n<tr><td>Cached balance</td>\n<td class='zcl'>{{{speed_bal}}}</td><td>{{{speed_utxos}}}</td>"
+    "\n<td>{{{diag_status}}}</td></tr>\n</table></div></details>\n\n{{{token_section}}}\n\n<h3>Chain S"
+    "upply</h3>\n<div class='stats'>\n<div class='stat'>\n<div class='n'>{{{chain_supply}}}</div>\n<di"
+    "v class='l'>UTXO Supply (ZCL)</div></div>\n<div class='stat'>\n<div class='n'>{{{chain_utxos}}}</"
+    "div>\n<div class='l'>Total UTXOs</div></div>\n</div>\n";
+
+static const char TMPL_SHIELD_AMOUNT_FORM[] =
+    "<div style='margin-bottom:12px'>\n<a href='/wallet' style='color:#888;font-size:13px;\ntext-decor"
+    "ation:none'>Home &#x2192;</a>\n<span style='color:#e2e2e2;font-size:13px;font-weight:600'>\nSecur"
+    "e Funds</span></div>\n\n<div style='text-align:center;padding:16px 0'>\n<div style='color:#a78bfa"
+    ";font-size:20px;font-weight:700;\nmargin-bottom:4px'>&#x1F512; Secure Funds</div>\n<div class='ba"
+    "lance-sub'>Make your public ZCL private\n&mdash; no longer linked to your address</div></div>\n<f"
+    "orm method='GET' action='/wallet/shield'>\n<div class='form-group'>\n<label class='form-label' fo"
+    "r='shield-amt'>Amount to Secure</label>\n<div style='display:flex;gap:8px;align-items:center'>\n<"
+    "input class='form-input' type='text' id='shield-amt'\ninputmode='decimal' name='amount' placehold"
+    "er='0.00' required>\n<button type='button' class='send-max'\nonclick='document.getElementById(\"s"
+    "hield-amt\").value=\"{{{max_amount}}}\"'>Max</button>\n</div>\n<div style='color:#888;font-size:1"
+    "4px;margin-top:6px'>\nAvailable: <span style='color:#34d399'>{{{available}}} ZCL</span>\n</div></"
+    "div>\n<div id='shield-err' class='form-error'></div>\n<button type='submit' class='btn-primary'\n"
+    "style='background:#a78bfa;color:#fff;margin-top:8px'\nonclick='var a=parseFloat(document.getEleme"
+    "ntById(\"shield-amt\").value);if(isNaN(a)||a<=0){document.getElementById(\"shield-err\").textCont"
+    "ent=\"Enter a valid amount\";return false;}if(a>{{{max_amount}}}){document.getElementById(\"shiel"
+    "d-err\").textContent=\"Insufficient funds\";return false;}'>\nReview</button>\n</form>\n<div styl"
+    "e='text-align:center;margin-top:16px'>\n<a href='/wallet' style='color:#888'>Cancel</a></div>\n";
+
+static const char TMPL_SEND_REVIEW[] =
+    "<div style='margin-bottom:12px'>\n<a href='/wallet/send' style='color:#888;font-size:13px;\ntext-"
+    "decoration:none'>Send &#x2192;</a>\n<span style='color:#e2e2e2;font-size:13px;font-weight:600'>\n"
+    "Review</span></div>\n\n<div style='text-align:center;margin-bottom:16px'>\n<span class='form-labe"
+    "l'>Review Transaction</span></div>\n<table class='review-table'>\n<tr><td>To</td>\n<td style='col"
+    "or:#60a5fa;font-family:\"JetBrains Mono\",monospace;\nfont-size:14px;word-break:break-all'>{{addr"
+    "ess}}</td></tr>\n<tr><td>Amount</td>\n<td style='color:#34d399;font-size:18px;font-weight:700'>\n"
+    "{{{amount}}} ZCL</td></tr>\n<tr><td>Fee</td>\n<td style='color:#999'>{{{fee}}} ZCL</td></tr>\n<tr"
+    "><td style='font-weight:700'>Total</td>\n<td style='color:#e2e2e2;font-weight:700'>\n{{{total}}} "
+    "ZCL</td></tr>\n<tr><td>Remaining</td>\n<td style='color:#999'>{{{remaining}}} ZCL</td></tr>\n<tr>"
+    "<td>Privacy</td>\n<td><span class='pill {{{privacy_pill}}}'>{{{privacy_label}}}</span>\n{{{privac"
+    "y_warning}}}</td></tr>\n<tr><td>Est. Time</td>\n<td style='color:#999'>~2.5 min (1 confirmation)<"
+    "/td></tr>\n</table>\n";
+
+static const char TMPL_RECEIVE_COPY_JS[] =
+    "<script>\nfunction copyAddr(){\nvar el=document.getElementById('t-addr');\nif(!el)return;\nvar tx"
+    "t=el.textContent.replace(/\\s+/g,'').trim();\nnavigator.clipboard.writeText(txt).then(function(){"
+    "\nvar b=document.getElementById('copy-btn');\nif(b){b.textContent='Copied!';b.style.borderColor='"
+    "#34d399';\nsetTimeout(function(){b.textContent='Copy Address';\nb.style.borderColor='';},1500);}\n"
+    "}).catch(function(){\nvar ta=document.createElement('textarea');\nta.value=txt;ta.style.position="
+    "'fixed';ta.style.left='-9999px';\ndocument.body.appendChild(ta);ta.select();\ndocument.execComman"
+    "d('copy');document.body.removeChild(ta);\nvar b=document.getElementById('copy-btn');\nif(b)b.text"
+    "Content='Copied!';});}\ndocument.querySelectorAll('.addr-display,.addr-display-sm,.addr-chunked')"
+    "\n.forEach(function(el){\nel.style.cursor='pointer';\nel.addEventListener('click',function(){\nva"
+    "r txt=this.textContent.replace(/\\s+/g,'').trim();\nnavigator.clipboard.writeText(txt).then(funct"
+    "ion(){\nel.style.borderColor='#34d399';\nvar msg=document.getElementById('copy-msg')||\ndocument."
+    "getElementById('copy-msg-z');\nvar pz=document.getElementById('pane-z');\nif(pz&&pz.style.display"
+    "!=='none')\nmsg=document.getElementById('copy-msg-z');\nif(msg)msg.textContent='Copied!';\nsetTim"
+    "eout(function(){el.style.borderColor='';\nif(msg)msg.textContent='';},1500);}\n).catch(function()"
+    "{\nvar ta=document.createElement('textarea');\nta.value=txt;ta.style.position='fixed';ta.style.le"
+    "ft='-9999px';\ndocument.body.appendChild(ta);ta.select();\ndocument.execCommand('copy');document."
+    "body.removeChild(ta);\nvar msg=document.getElementById('copy-msg')||\ndocument.getElementById('co"
+    "py-msg-z');\nif(msg)msg.textContent='Copied!';});\n});});\n</script>\n";
 
 static const char CSS_WALLET_0[] =
     "*{box-sizing:border-box;margin:0;padding:0}body{font-family:Inter,-apple-system,'Segoe UI',system"

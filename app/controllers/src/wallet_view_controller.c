@@ -315,52 +315,45 @@ static size_t serve_dashboard(uint8_t *r, size_t max) {
         }
     }
 
-    /* Power Node stats */
+    /* Node status strip (compact, replaces old Power Node card) */
     int peers = wv_query_int(db, "SELECT count(*) FROM peers");
-    int mempool = wv_query_int(db, "SELECT count(*) FROM mempool_entries");
     bool is_ready = synced || strstr(sync_raw, "idle");
     const char *node_status = synced ? "Synced" :
                               strstr(sync_raw, "idle") ? "Ready" : "Syncing";
     const char *node_color = is_ready ? "#34d399" : "#fbbf24";
-    char peers_str[16], mempool_str[16];
+    char peers_str[16], height_str[16];
     snprintf(peers_str, sizeof(peers_str), "%d", peers);
-    snprintf(mempool_str, sizeof(mempool_str), "%d", mempool);
+    snprintf(height_str, sizeof(height_str), "%d", tip);
 
-    /* Tor status for dashboard card */
-    const char *tor_color = "#666";
-    const char *tor_label = "Tor: not configured";
-    if (g_wv_datadir) {
-        char onion_path[512];
-        snprintf(onion_path, sizeof(onion_path), "%s/onion/hostname",
-            g_wv_datadir);
-        if (access(onion_path, F_OK) == 0) {
-            tor_color = "#a78bfa";
-            tor_label = "Tor hidden service active";
-        }
+    char node_strip[512] = "";
+    {
+        struct template_var nv[] = {
+            { "peers",        peers_str },
+            { "height",       height_str },
+            { "status",       node_status },
+            { "status_color", node_color },
+        };
+        template_render(TMPL_NODE_STATUS_STRIP, nv, 4,
+            node_strip, sizeof(node_strip));
     }
 
     /* Render full dashboard via TMPL_DASHBOARD */
     size_t off = wv_emit_header(r, max, "ZClassic23 Wallet", "/wallet");
 
     struct template_var vars[] = {
-        { "sync_class",        sync_class },
-        { "sync_label",        sync_label },
-        { "balance",           bal_str },
-        { "pct_color",         pct_color },
-        { "pct",               pct_str },
-        { "breakdown",         breakdown },
-        { "privacy_card",      privacy_buf },
-        { "token_cards",       token_buf },
-        { "recent_txs",        tx_buf },
-        { "backup_warning",    backup_buf },
-        { "peers",             peers_str },
-        { "mempool",           mempool_str },
-        { "node_status_color", node_color },
-        { "node_status",       node_status },
-        { "tor_color",         tor_color },
-        { "tor_label",         tor_label },
+        { "sync_class",     sync_class },
+        { "sync_label",     sync_label },
+        { "balance",        bal_str },
+        { "pct_color",      pct_color },
+        { "pct",            pct_str },
+        { "breakdown",      breakdown },
+        { "privacy_card",   privacy_buf },
+        { "token_cards",    token_buf },
+        { "recent_txs",     tx_buf },
+        { "backup_warning", backup_buf },
+        { "node_strip",     node_strip },
     };
-    off += template_render(TMPL_DASHBOARD, vars, 16,
+    off += template_render(TMPL_DASHBOARD, vars, 11,
         (char *)r + off, max - off);
 
     /* Dashboard live-update JS */

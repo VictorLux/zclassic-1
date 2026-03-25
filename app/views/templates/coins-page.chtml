@@ -1,3 +1,9 @@
+<div style='margin-bottom:12px'>
+<a href='/wallet/node' style='color:#888;font-size:13px;
+text-decoration:none'>Node &#x2192;</a>
+<span style='color:#e2e2e2;font-size:13px;font-weight:600'>
+Coin Audit</span></div>
+
 <h2>Your Coins</h2>
 <div style='color:#6b7280;font-size:13px;margin-bottom:16px'>
 Every coin in your wallet, verified against the blockchain.</div>
