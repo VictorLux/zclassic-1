@@ -198,11 +198,18 @@ static void *thread_open_connections(void *arg)
         }
 
         /* Try more peers per tick when connections are low */
-        int attempts = (outbound == 0) ? 5 : (outbound < 4) ? 3 : 1;
+        int attempts = (outbound == 0) ? 3 : 1;
         for (int a = 0; a < attempts && !g_stop; a++) {
             struct addr_info info;
             memset(&info, 0, sizeof(info));
             if (!addrman_select(&cm->manager.addrman, false, &info))
+                continue;
+
+            /* Skip non-ZClassic ports (16125 etc from corrupted addrman).
+             * ZClassic mainnet uses port 8033. */
+            uint16_t port = info.addr.svc.port;
+            if (port != 8033 && port != 18033 && port != 8034 &&
+                port != 9033 && port != 20022)
                 continue;
 
             /* Eclipse attack defense: limit outbound peers per /16 subnet */
