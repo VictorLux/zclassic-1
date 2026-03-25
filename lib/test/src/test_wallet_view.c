@@ -1774,6 +1774,130 @@ int test_wallet_view(void)
     }
 
     /* ═══════════════════════════════════════════════════════════
+     * 14c. TEMPLATE CORRECTNESS TESTS
+     * ═══════════════════════════════════════════════════════════ */
+
+    printf("\n=== TEMPLATE CORRECTNESS TESTS ===\n\n");
+
+    printf("TMPL: no unresolved {{vars}} in dashboard... ");
+    {
+        wv_get("/wallet");
+        /* Check for literal {{ in body but not in JS */
+        const char *body = strstr((char *)_wv_resp, "<main>");
+        const char *script = strstr((char *)_wv_resp, "<script");
+        bool has_unresolved = false;
+        if (body && script) {
+            for (const char *p = body; p < script; p++) {
+                if (p[0] == '{' && p[1] == '{' && p[2] != '{') {
+                    has_unresolved = true; break;
+                }
+            }
+        }
+        if (!has_unresolved) printf("OK\n");
+        else { printf("FAIL (unresolved template var)\n"); failures++; }
+    }
+
+    printf("TMPL: no unresolved {{vars}} in history... ");
+    {
+        wv_get("/wallet/history");
+        const char *body = strstr((char *)_wv_resp, "<main>");
+        const char *script = strstr((char *)_wv_resp, "<script");
+        bool has_unresolved = false;
+        if (body && script) {
+            for (const char *p = body; p < script; p++) {
+                if (p[0] == '{' && p[1] == '{' && p[2] != '{') {
+                    has_unresolved = true; break;
+                }
+            }
+        }
+        if (!has_unresolved) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("TMPL: no unresolved {{vars}} in coins... ");
+    {
+        wv_get("/wallet/coins");
+        const char *body = strstr((char *)_wv_resp, "<main>");
+        const char *script = strstr((char *)_wv_resp, "<script");
+        bool has_unresolved = false;
+        if (body && script) {
+            for (const char *p = body; p < script; p++) {
+                if (p[0] == '{' && p[1] == '{' && p[2] != '{') {
+                    has_unresolved = true; break;
+                }
+            }
+        }
+        if (!has_unresolved) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("TMPL: shield confirm uses template (no inline HTML)... ");
+    {
+        wv_get("/wallet/shield?amount=0.5");
+        bool has_template_content = wv_has("Step 1:") && wv_has("Step 2:");
+        bool has_confirm_btn = wv_has("id='shield-btn'");
+        if (has_template_content && has_confirm_btn) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("TMPL: send review uses template for privacy label... ");
+    {
+        wv_post("/wallet/send/review",
+            "address=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn&amount=0.01");
+        bool has_review_table = wv_has("review-table");
+        bool has_privacy_row = wv_has("Privacy");
+        bool has_est_time = wv_has("Est. Time");
+        if (has_review_table && has_privacy_row && has_est_time) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("TMPL: history cards use template (Secured badge)... ");
+    {
+        wv_get("/wallet/history");
+        bool has_secured = wv_has("Funds Secured") || wv_has("Received");
+        bool has_card = wv_has("tx-card");
+        if (has_secured && has_card) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("TMPL: coins page uses template (notes table)... ");
+    {
+        wv_get("/wallet/coins");
+        bool has_title = wv_has("Your Coins");
+        bool has_stats = wv_has("Public") && wv_has("Private") && wv_has("Total");
+        bool has_diag = wv_has("Diagnostics");
+        if (has_title && has_stats && has_diag) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("TMPL: validation error template works on bad send... ");
+    {
+        wv_post("/wallet/send/review", "address=bad&amount=0");
+        bool has_error = wv_has("Invalid Transaction");
+        bool has_retry = wv_has("Try Again");
+        if (has_error && has_retry) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("TMPL: shield error template works on zero amount... ");
+    {
+        wv_post("/wallet/shield/confirm", "amount=0");
+        bool has_invalid = wv_has("Invalid amount") || wv_has("invalid");
+        if (has_invalid) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("TMPL: backup warning template has address... ");
+    {
+        wv_get("/wallet");
+        bool has_backup = wv_has("Not Backed Up");
+        bool has_addr = wv_has("t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn");
+        if (has_backup && has_addr) printf("OK (address in backup cmd)\n");
+        else if (!has_backup) printf("OK (backed up)\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ═══════════════════════════════════════════════════════════
      * 15. EMPTY STATE TESTS — no DB, simulate fresh install
      * ═══════════════════════════════════════════════════════════ */
 
