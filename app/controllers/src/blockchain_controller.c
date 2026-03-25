@@ -2152,12 +2152,18 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
     int total_found = 0;
 
     /* ── Turbo mode: aggressive SQLite settings for bulk import ── */
-    printf("indexlegacy: Entering turbo mode (synchronous=OFF, journal=MEMORY)...\n");
+    printf("indexlegacy: Entering turbo mode (synchronous=OFF, journal=OFF)...\n");
     fflush(stdout);
+    /* Checkpoint and switch OUT of WAL mode first — WAL mode ignores
+     * journal_mode changes and grows unbounded during bulk inserts. */
+    sqlite3_wal_checkpoint_v2(g_node_db_bc->db, NULL,
+        SQLITE_CHECKPOINT_TRUNCATE, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "PRAGMA journal_mode=OFF", NULL, NULL, NULL);
     sqlite3_exec(g_node_db_bc->db, "PRAGMA synchronous=OFF", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "PRAGMA journal_mode=MEMORY", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "PRAGMA locking_mode=EXCLUSIVE", NULL, NULL, NULL);
     sqlite3_exec(g_node_db_bc->db, "PRAGMA cache_size=-524288", NULL, NULL, NULL); /* 512MB */
     sqlite3_exec(g_node_db_bc->db, "PRAGMA temp_store=MEMORY", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "PRAGMA mmap_size=1073741824", NULL, NULL, NULL); /* 1GB */
 
     /* Drop all indexes before bulk insert — recreated after */
     printf("indexlegacy: Dropping indexes for fast bulk insert...\n");
@@ -2736,6 +2742,7 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
     int64_t sapling_outputs_indexed = 0, sprout_nullifiers_indexed = 0;
     int64_t op_returns_indexed = 0;
     int64_t total_inputs = 0, total_outputs = 0;
+    int64_t batch_rows = 0;
 
     node_db_begin(g_node_db_bc);
 
@@ -2751,6 +2758,12 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
             sqlite3_bind_int(stmt_txi, 5, inp->height);
             sqlite3_step(stmt_txi);
             total_inputs++;
+            if (++batch_rows % 500000 == 0) {
+                node_db_commit(g_node_db_bc);
+                printf("  Phase B write: %lld rows...\n", (long long)batch_rows);
+                fflush(stdout);
+                node_db_begin(g_node_db_bc);
+            }
         }
     }
 
@@ -2995,8 +3008,11 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
     fflush(stdout);
 
     /* Restore safe SQLite settings */
-    sqlite3_exec(g_node_db_bc->db, "PRAGMA synchronous=FULL", NULL, NULL, NULL);
     sqlite3_exec(g_node_db_bc->db, "PRAGMA journal_mode=WAL", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "PRAGMA synchronous=NORMAL", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "PRAGMA locking_mode=NORMAL", NULL, NULL, NULL);
+    sqlite3_wal_checkpoint_v2(g_node_db_bc->db, NULL,
+        SQLITE_CHECKPOINT_TRUNCATE, NULL, NULL);
 
     /* ── Populate addresses from UTXO set ── */
     printf("indexlegacy: Populating addresses from UTXO set...\n");
