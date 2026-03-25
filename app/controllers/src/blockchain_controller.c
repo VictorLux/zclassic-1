@@ -2733,7 +2733,9 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
     int64_t total_inputs = 0, total_outputs = 0;
     int64_t batch_rows = 0;
 
-    node_db_begin(g_node_db_bc);
+    /* Use SAVEPOINT to nest within any existing transaction from
+     * sync_controller (which may have a batch transaction open). */
+    sqlite3_exec(g_node_db_bc->db, "SAVEPOINT indexlegacy_b", NULL, NULL, NULL);
 
     /* Write tx_inputs from all threads */
     for (int t = 0; t < N_INDEX_THREADS; t++) {
@@ -2748,10 +2750,10 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
             sqlite3_step(stmt_txi);
             total_inputs++;
             if (++batch_rows % 500000 == 0) {
-                node_db_commit(g_node_db_bc);
+                sqlite3_exec(g_node_db_bc->db, "RELEASE SAVEPOINT indexlegacy_b", NULL, NULL, NULL);
                 printf("  Phase B write: %lld rows...\n", (long long)batch_rows);
                 fflush(stdout);
-                node_db_begin(g_node_db_bc);
+                sqlite3_exec(g_node_db_bc->db, "SAVEPOINT indexlegacy_b", NULL, NULL, NULL);
             }
         }
     }
@@ -2921,7 +2923,7 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
         sqlite3_step(stmt_integrity);
     }
 
-    node_db_commit(g_node_db_bc);
+    sqlite3_exec(g_node_db_bc->db, "RELEASE SAVEPOINT indexlegacy_b", NULL, NULL, NULL);
 
     /* Free all thread buffers */
     for (int t = 0; t < N_INDEX_THREADS; t++) {
