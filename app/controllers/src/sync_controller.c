@@ -1395,52 +1395,98 @@ static int decode_coins_entry(const struct raw_entry *raw,
         if (ch != 0) mask_remaining--;
     }
 
-    /* Deserialize each available output */
+    /* Deserialize each available output.
+     * We do inline parsing instead of compressed_txout_deserialize to avoid
+     * secp256k1 point decompression (unnecessary for index) and to ensure
+     * every output is captured — zero tolerance for data loss. */
     int nrows = 0;
     for (size_t vi = 0; vi < num_avail && nrows < max_rows; vi++) {
         if (!avail[vi]) continue;
 
-        struct tx_out txout;
-        tx_out_set_null(&txout);
-        if (!compressed_txout_deserialize(&txout, &s))
-            break;
+        /* Read compressed amount (varint) */
+        uint64_t comp_amount = 0;
+        if (!stream_read_varint(&s, &comp_amount)) break;
+        int64_t value = (int64_t)decompress_amount(comp_amount);
 
+        /* Read script type/size (varint) */
+        uint64_t nSize = 0;
+        if (!stream_read_varint(&s, &nSize)) break;
+
+        /* Determine raw script data size in the stream */
+        size_t raw_script_len = 0;
+        if (nSize == 0 || nSize == 1) raw_script_len = 20;      /* P2PKH / P2SH hash */
+        else if (nSize >= 2 && nSize <= 5) raw_script_len = 32;  /* compressed pubkey */
+        else raw_script_len = (size_t)(nSize - 6);               /* raw script */
+
+        /* Read raw script data */
+        uint8_t raw_script[10240];
+        if (raw_script_len > sizeof(raw_script)) raw_script_len = sizeof(raw_script);
+        if (!stream_read_bytes(&s, raw_script, raw_script_len)) break;
+
+        /* Reconstruct full script for classification */
         struct utxo_row *r = &out[nrows];
         memcpy(r->txid, raw->txid, 32);
         r->vout = (uint32_t)vi;
-        r->value = txout.value;
+        r->value = value;
         r->is_coinbase = is_coinbase;
-        r->height = 0; /* set below after reading height varint */
+        r->height = 0;
         r->script_overflow = NULL;
-
-        /* Copy script into inline buffer or heap */
-        uint16_t slen = txout.script_pub_key.size;
-        r->script_len = slen;
-        if (slen <= sizeof(r->script)) {
-            memcpy(r->script, txout.script_pub_key.data, slen);
-        } else {
-            r->script_overflow = malloc(slen);
-            if (r->script_overflow)
-                memcpy(r->script_overflow, txout.script_pub_key.data, slen);
-        }
-
-        /* Classify script for address indexing */
-        const uint8_t *sc = r->script_overflow ? r->script_overflow : r->script;
         r->has_address = 0;
-        if (slen == 25 && sc[0] == 0x76 && sc[1] == 0xa9 &&
-            sc[2] == 0x14 && sc[23] == 0x88 && sc[24] == 0xac) {
-            memcpy(r->address_hash, sc + 3, 20);
+        r->script_type = 0; /* OTHER */
+
+        if (nSize == 0) {
+            /* P2PKH: OP_DUP OP_HASH160 <20 bytes> OP_EQUALVERIFY OP_CHECKSIG */
+            r->script_len = 25;
+            r->script[0] = 0x76; r->script[1] = 0xa9; r->script[2] = 0x14;
+            memcpy(r->script + 3, raw_script, 20);
+            r->script[23] = 0x88; r->script[24] = 0xac;
+            memcpy(r->address_hash, raw_script, 20);
             r->has_address = 1;
             r->script_type = 1; /* P2PKH */
-        } else if (slen == 23 && sc[0] == 0xa9 && sc[1] == 0x14 &&
-                   sc[22] == 0x87) {
-            memcpy(r->address_hash, sc + 2, 20);
+        } else if (nSize == 1) {
+            /* P2SH: OP_HASH160 <20 bytes> OP_EQUAL */
+            r->script_len = 23;
+            r->script[0] = 0xa9; r->script[1] = 0x14;
+            memcpy(r->script + 2, raw_script, 20);
+            r->script[22] = 0x87;
+            memcpy(r->address_hash, raw_script, 20);
             r->has_address = 1;
             r->script_type = 2; /* P2SH */
-        } else if (slen > 0 && sc[0] == 0x6a) {
-            r->script_type = 3; /* OP_RETURN */
+        } else if (nSize >= 2 && nSize <= 5) {
+            /* Compressed/uncompressed pubkey → P2PK script.
+             * Store the raw 33-byte compressed pubkey directly as script.
+             * We skip secp256k1 decompression — not needed for indexing. */
+            uint8_t prefix = (nSize == 2 || nSize == 4) ? 0x02 : 0x03;
+            r->script_len = 35; /* 1(push33) + 33(pubkey) + 1(OP_CHECKSIG) */
+            r->script[0] = 0x21; /* push 33 bytes */
+            r->script[1] = prefix;
+            memcpy(r->script + 2, raw_script, 32);
+            r->script[34] = 0xac; /* OP_CHECKSIG */
         } else {
-            r->script_type = 0; /* OTHER */
+            /* Raw script */
+            uint16_t slen = (uint16_t)raw_script_len;
+            r->script_len = slen;
+            if (slen <= sizeof(r->script)) {
+                memcpy(r->script, raw_script, slen);
+            } else {
+                r->script_overflow = malloc(slen);
+                if (r->script_overflow)
+                    memcpy(r->script_overflow, raw_script, slen);
+            }
+            /* Classify raw script */
+            const uint8_t *sc = r->script_overflow ? r->script_overflow : r->script;
+            if (slen == 25 && sc[0]==0x76 && sc[1]==0xa9 && sc[2]==0x14 &&
+                sc[23]==0x88 && sc[24]==0xac) {
+                memcpy(r->address_hash, sc + 3, 20);
+                r->has_address = 1;
+                r->script_type = 1;
+            } else if (slen == 23 && sc[0]==0xa9 && sc[1]==0x14 && sc[22]==0x87) {
+                memcpy(r->address_hash, sc + 2, 20);
+                r->has_address = 1;
+                r->script_type = 2;
+            } else if (slen > 0 && sc[0] == 0x6a) {
+                r->script_type = 3;
+            }
         }
         nrows++;
     }
@@ -1720,6 +1766,12 @@ reader_done:
     /* ── Wait for writer ───────────────────────────────────────────── */
     pthread_join(writer, NULL);
     int total_rows = atomic_load(&ctx->total_rows);
+    int decode_fail = atomic_load(&ctx->decode_failures);
+    int skip_out = atomic_load(&ctx->skipped_outputs);
+    if (decode_fail > 0 || skip_out > 0)
+        printf("UTXO import: %d decode failures, %d skipped outputs\n",
+               decode_fail, skip_out);
+    fflush(stdout);
 
     struct timespec ts_write;
     clock_gettime(CLOCK_MONOTONIC, &ts_write);
