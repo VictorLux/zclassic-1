@@ -733,13 +733,8 @@ static size_t serve_history(uint8_t *r, size_t max, int page,
     sqlite3 *db = wv_open_db();
     if (!db) {
         size_t off = wv_emit_header(r, max, "History — ZClassic23", "/wallet/history");
-        APPEND(off, r, max,
-            "<div class='empty-state' style='padding:48px 0'>"
-            "<div style='font-size:40px;margin-bottom:12px'>&#x23F3;</div>"
-            "<div style='color:#e2e2e2;font-size:18px;font-weight:600'>"
-            "Wallet Loading</div>"
-            "<div style='margin-top:8px'>"
-            "The database is not yet available.</div></div>");
+        off += template_render(TMPL_LOADING, NULL, 0,
+            (char *)r + off, max - off);
         wv_emit_footer(r, max, &off);
         return off;
     }
@@ -800,30 +795,32 @@ static size_t serve_history(uint8_t *r, size_t max, int page,
     int c_all = wv_query_int(db, all_sql);
     int c_sent = wv_query_int(db, sent_sql);
     int c_recv = wv_query_int(db, recv_sql);
-    APPEND(off, r, max,
-        "<h2>Transaction History</h2>"
-        "<div class='filter-tabs'>"
-        "<a href='/wallet/history?filter=all' class='%s'>All (%d)</a>"
-        "<a href='/wallet/history?filter=sent' class='%s'>Sent (%d)</a>"
-        "<a href='/wallet/history?filter=recv' class='%s'>Received (%d)</a>"
-        "</div>",
-        strcmp(f, "all") == 0 || !filter ? "active" : "", c_all,
-        strcmp(f, "sent") == 0 ? "active" : "", c_sent,
-        strcmp(f, "recv") == 0 ? "active" : "", c_recv);
-
-    /* Search bar */
-    APPEND(off, r, max,
-        "<input class='search-input' type='text' id='tx-search' "
-        "placeholder='Search by txid...' value='%s' "
-        "aria-label='Search transactions'"
-        "onkeydown='if(event.key===\"Enter\"){"
-        "var v=this.value.trim();"
-        "window.location=\"/wallet/history?filter=%s\"+"
-        "(v?\"&amp;q=\"+v:\"\");}'>"
-        "<div class='sub'>%d transaction%s (page %d of %d)</div>",
-        safe_search, f,
-        tx_count, tx_count == 1 ? "" : "s",
-        page + 1, total_pages > 0 ? total_pages : 1);
+    {
+        char ca[16], cs[16], cr[16], cnt[16], pg[16], pgs[16];
+        snprintf(ca, sizeof(ca), "%d", c_all);
+        snprintf(cs, sizeof(cs), "%d", c_sent);
+        snprintf(cr, sizeof(cr), "%d", c_recv);
+        snprintf(cnt, sizeof(cnt), "%d", tx_count);
+        snprintf(pg, sizeof(pg), "%d", page + 1);
+        snprintf(pgs, sizeof(pgs), "%d", total_pages > 0 ? total_pages : 1);
+        bool is_all = (strcmp(f, "all") == 0 || !filter);
+        struct template_var hv[] = {
+            { "all_active",   is_all ? "active" : "" },
+            { "sent_active",  strcmp(f, "sent") == 0 ? "active" : "" },
+            { "recv_active",  strcmp(f, "recv") == 0 ? "active" : "" },
+            { "c_all",        ca },
+            { "c_sent",       cs },
+            { "c_recv",       cr },
+            { "search",       safe_search },
+            { "filter",       f },
+            { "count",        cnt },
+            { "count_plural", tx_count == 1 ? "" : "s" },
+            { "page",         pg },
+            { "pages",        pgs },
+        };
+        off += template_render(TMPL_HISTORY_HEADER, hv, 12,
+            (char *)r + off, max - off);
+    }
 
     /* Timeline view (tx-cards).
      * Use from_me to determine send vs receive.
@@ -973,20 +970,23 @@ static size_t serve_history(uint8_t *r, size_t max, int page,
 
     /* Pagination (preserve filter + search) */
     if (total_pages > 1) {
-        APPEND(off, r, max, "<div class='page-controls'>");
+        char newer[256] = "", older[256] = "";
+        const char *qs = safe_search[0] ? safe_search : "";
+        const char *qp = safe_search[0] ? "&amp;q=" : "";
         if (page > 0)
-            APPEND(off, r, max,
+            snprintf(newer, sizeof(newer),
                 "<a href='/wallet/history?page=%d&amp;filter=%s%s%s'>"
-                "&larr; Newer</a>", page - 1, f,
-                safe_search[0] ? "&amp;q=" : "",
-                safe_search[0] ? safe_search : "");
+                "&larr; Newer</a>", page - 1, f, qp, qs);
         if (page < total_pages - 1)
-            APPEND(off, r, max,
+            snprintf(older, sizeof(older),
                 "<a href='/wallet/history?page=%d&amp;filter=%s%s%s'>"
-                "Older &rarr;</a>", page + 1, f,
-                safe_search[0] ? "&amp;q=" : "",
-                safe_search[0] ? safe_search : "");
-        APPEND(off, r, max, "</div>");
+                "Older &rarr;</a>", page + 1, f, qp, qs);
+        struct template_var pv[] = {
+            { "newer_link", newer },
+            { "older_link", older },
+        };
+        off += template_render(TMPL_PAGINATION, pv, 2,
+            (char *)r + off, max - off);
     }
 
     wv_emit_footer(r, max, &off);
@@ -1592,16 +1592,15 @@ static size_t serve_send_review(uint8_t *r, size_t max,
         ? (addr_err ? addr_err : "Invalid address.")
         : "Invalid amount";
     if (!addr_ok || amount <= 0) {
-        APPEND(off, r, max,
-            "<div class='result-error'>"
-            "<div class='icon'>&#x2717;</div>"
-            "<h2>Invalid Transaction</h2>"
-            "<p>%s</p>"
-            "<div style='margin-top:16px;display:flex;gap:16px;justify-content:center'>"
-            "<a href='/wallet' style='color:#999'>Back to Wallet</a>"
-            "<a href='/wallet/send' style='color:#34d399'>Try Again</a>"
-            "</div></div>",
-            err_reason);
+        struct template_var ev[] = {
+            { "heading",   "Invalid Transaction" },
+            { "message",   err_reason },
+            { "back_url",  "/wallet" },
+            { "back_label", "Back to Wallet" },
+            { "retry_url", "/wallet/send" },
+        };
+        off += template_render(TMPL_VALIDATION_ERROR, ev, 5,
+            (char *)r + off, max - off);
         wv_emit_footer(r, max, &off);
         return off;
     }
@@ -1685,14 +1684,15 @@ static size_t serve_send_confirm(uint8_t *r, size_t max,
 
     double amount = strtod(amount_str, NULL);
     if (!addr_ok || amount <= 0) {
-        APPEND(off, r, max,
-            "<div class='result-error'>"
-            "<div class='icon'>&#x2717;</div>"
-            "<h2>Invalid Transaction</h2>"
-            "<p>%s</p>"
-            "<a href='/wallet/send' style='color:#34d399'>Try Again</a>"
-            "</div>",
-            !addr_ok ? "Invalid address" : "Invalid amount");
+        struct template_var ev[] = {
+            { "heading",    "Invalid Transaction" },
+            { "message",    !addr_ok ? "Invalid address" : "Invalid amount" },
+            { "back_url",   "/wallet/send" },
+            { "back_label", "Try Again" },
+            { "retry_url",  "/wallet/send" },
+        };
+        off += template_render(TMPL_VALIDATION_ERROR, ev, 5,
+            (char *)r + off, max - off);
         wv_emit_footer(r, max, &off);
         return off;
     }

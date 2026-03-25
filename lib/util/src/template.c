@@ -4,6 +4,7 @@
 
 #include "util/template.h"
 #include <string.h>
+#include <stdbool.h>
 
 /* Escape HTML special characters to prevent XSS.
  * Writes at most max-1 bytes + NUL. Returns bytes written. */
@@ -36,10 +37,24 @@ size_t html_escape(char *dst, size_t max, const char *src)
     return w;
 }
 
+/* Validate key: alphanumeric + underscore only. Rejects injection. */
+static bool tmpl_valid_key(const char *key, size_t len)
+{
+    for (size_t i = 0; i < len; i++) {
+        char c = key[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+              (c >= '0' && c <= '9') || c == '_'))
+            return false;
+    }
+    return len > 0;
+}
+
 /* Find variable by key. Returns value or NULL. */
 static const char *tmpl_lookup(const struct template_var *vars, size_t n,
                                const char *key, size_t key_len)
 {
+    if (!tmpl_valid_key(key, key_len))
+        return NULL; /* reject invalid key names */
     for (size_t i = 0; i < n; i++) {
         if (vars[i].key && strlen(vars[i].key) == key_len &&
             memcmp(vars[i].key, key, key_len) == 0)
