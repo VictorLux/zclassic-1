@@ -1388,14 +1388,13 @@ static size_t serve_shield_confirm(uint8_t *r, size_t max,
         return off;
     }
 
-    /* Get funded t-address for z_sendmany. One fast RPC to zclassicd
-     * listunspent — required because our SQLite doesn't track change
-     * addresses from zclassicd transactions. This is the only RPC
-     * besides z_sendmany itself. */
-    char t_addr[128] = "";
-    wv_get_funded_taddr(t_addr, sizeof(t_addr));
+    /* Get ALL funded t-addresses. "Secure All" must shield from every
+     * address, not just the one with the highest balance. Each address
+     * requires a separate z_sendmany call (zclassicd requirement). */
+    struct wv_funded_addr funded[16];
+    int n_funded = wv_get_all_funded_taddrs(funded, 16);
 
-    if (!t_addr[0]) {
+    if (n_funded == 0) {
         struct template_var ev[] = {{ "message",
             "No public address found in wallet." }};
         off += template_render(TMPL_SHIELD_ERROR, ev, 1,
@@ -1404,55 +1403,71 @@ static size_t serve_shield_confirm(uint8_t *r, size_t max,
         return off;
     }
 
-    /* Call zclassicd z_sendmany via RPC (Groth16 runs there) */
-    char z_params[1024];
-    snprintf(z_params, sizeof(z_params),
-        "[\"%s\",[{\"address\":\"%s\",\"amount\":%.8f}],1,%.8f]",
-        t_addr, z_dest, amount, FEE_ZCL);
-
-    char rpc_buf[4096] = "";
-    int rpc_rc = wv_rpc_call("z_sendmany", z_params,
-                                       rpc_buf, sizeof(rpc_buf));
-
+    /* Issue z_sendmany for each funded address.
+     * Each deducts its own fee. Total shielded = sum(addr_amount - fee). */
     bool success = false;
+    int ops_started = 0;
     char opid_str[128] = "";
     char shield_err[256] = "";
+    double total_shielded = 0;
 
-    if (rpc_rc > 0) {
-        /* Check for opid in result */
-        char result_val[256] = "";
-        zcl_json_extract_str(rpc_buf, "result", result_val, sizeof(result_val));
-        if (strstr(result_val, "opid-")) {
-            snprintf(opid_str, sizeof(opid_str), "%s", result_val);
-            success = true;
-        } else if (strstr(rpc_buf, "opid-")) {
-            /* Extract opid from raw response */
-            const char *op = strstr(rpc_buf, "opid-");
-            size_t i = 0;
-            while (op[i] && op[i] != '"' && op[i] != '}' && i < 127) {
-                opid_str[i] = op[i]; i++;
+    for (int ai = 0; ai < n_funded; ai++) {
+        double addr_amt = funded[ai].amount - FEE_ZCL;
+        if (addr_amt <= 0.00000001) continue; /* dust, skip */
+
+        /* Cap at requested amount minus what we've already queued */
+        double remaining = amount - total_shielded;
+        if (remaining <= 0.00000001) break;
+        if (addr_amt > remaining) addr_amt = remaining;
+
+        char z_params[1024];
+        snprintf(z_params, sizeof(z_params),
+            "[\"%s\",[{\"address\":\"%s\",\"amount\":%.8f}],1,%.8f]",
+            funded[ai].addr, z_dest, addr_amt, FEE_ZCL);
+
+        char rpc_buf[4096] = "";
+        int rpc_rc = wv_rpc_call("z_sendmany", z_params,
+                                           rpc_buf, sizeof(rpc_buf));
+
+        if (rpc_rc > 0) {
+            char result_val[256] = "";
+            zcl_json_extract_str(rpc_buf, "result",
+                result_val, sizeof(result_val));
+            if (strstr(result_val, "opid-") || strstr(rpc_buf, "opid-")) {
+                if (!opid_str[0]) {
+                    /* Save first opid for tracking */
+                    if (result_val[0] && strstr(result_val, "opid-"))
+                        snprintf(opid_str, sizeof(opid_str), "%s",
+                            result_val);
+                    else {
+                        const char *op = strstr(rpc_buf, "opid-");
+                        size_t oi = 0;
+                        while (op[oi] && op[oi] != '"' &&
+                               op[oi] != '}' && oi < 127) {
+                            opid_str[oi] = op[oi]; oi++;
+                        }
+                        opid_str[oi] = '\0';
+                    }
+                }
+                total_shielded += addr_amt;
+                ops_started++;
+                success = true;
+            } else {
+                zcl_json_extract_str(rpc_buf, "message",
+                    shield_err, sizeof(shield_err));
             }
-            opid_str[i] = '\0';
-            success = true;
-        } else {
-            /* Error from zclassicd */
-            zcl_json_extract_str(rpc_buf, "message", shield_err,
-                                  sizeof(shield_err));
-            if (!shield_err[0])
-                snprintf(shield_err, sizeof(shield_err),
-                    "zclassicd returned an error");
+        } else if (!shield_err[0]) {
+            snprintf(shield_err, sizeof(shield_err),
+                "Could not connect to zclassicd (port %d). "
+                "Start it with: zclassicd -daemon", ZCLASSICD_PORT);
         }
-    } else {
-        snprintf(shield_err, sizeof(shield_err),
-            "Could not connect to zclassicd (port %d). "
-            "Start it with: zclassicd -daemon", ZCLASSICD_PORT);
     }
 
     if (success) {
         /* Track the pending shield operation for dashboard feedback */
         g_shield_pending_since = time(NULL);
         snprintf(g_shield_opid, sizeof(g_shield_opid), "%s", opid_str);
-        g_shield_pending_amount = (int64_t)(amount * 1e8 + 0.5);
+        g_shield_pending_amount = (int64_t)(total_shielded * 1e8 + 0.5);
         /* Sync wallet tables immediately so balance is correct on return */
         wv_sync_wallet_from_zclassicd();
         g_balance_dirty = 1; /* Also recompute on next pulse */
@@ -1476,14 +1491,16 @@ static size_t serve_shield_confirm(uint8_t *r, size_t max,
             }
         }
 
-        char amt_s[32];
-        snprintf(amt_s, sizeof(amt_s), "%.8f", amount);
+        char amt_s[32], ops_s[16];
+        snprintf(amt_s, sizeof(amt_s), "%.8f", total_shielded);
+        snprintf(ops_s, sizeof(ops_s), "%d", ops_started);
         struct template_var sv[] = {
             { "amount",       amt_s },
             { "opid",         opid_str },
             { "balance_card", bal_card },
+            { "ops_count",    ops_s },
         };
-        off += template_render(TMPL_SHIELD_SUCCESS, sv, 3,
+        off += template_render(TMPL_SHIELD_SUCCESS, sv, 4,
             (char *)r + off, max - off);
     } else {
         struct template_var ev[] = {{ "message",

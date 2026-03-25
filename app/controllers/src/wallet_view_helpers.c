@@ -188,14 +188,15 @@ int wv_rpc_call(const char *method, const char *params_json,
 
 /* ── Get best-funded transparent address ───────────────────── */
 
-void wv_get_funded_taddr(char *out, size_t max) {
-    out[0] = '\0';
-    char lu[8192] = "";
+/* Get ALL funded t-addresses with per-address balances.
+ * Aggregates UTXOs by address. Returns count of addresses found.
+ * Each entry: addrs[i].addr, addrs[i].amount (ZCL as double). */
+int wv_get_all_funded_taddrs(struct wv_funded_addr *addrs, int max_addrs) {
+    char lu[16384] = "";
     if (wv_rpc_call("listunspent", "[]", lu, sizeof(lu)) <= 0)
-        return;
-    const char *best = NULL;
-    size_t blen = 0;
-    double bval = 0;
+        return 0;
+    int n = 0;
+    /* Parse listunspent JSON: aggregate amounts per address */
     const char *p = lu;
     while ((p = strstr(p, "\"address\"")) != NULL) {
         p += 9;
@@ -203,19 +204,44 @@ void wv_get_funded_taddr(char *out, size_t max) {
         const char *a = p;
         while (*p && *p != '"') p++;
         size_t al = (size_t)(p - a);
+        if (al < 20 || al >= 128) continue;
         const char *am = strstr(p, "\"amount\"");
-        if (am) {
-            am += 8;
-            while (*am == ' ' || *am == ':') am++;
-            double v = strtod(am, NULL);
-            if (v > bval && al > 20 && al < 64) {
-                best = a; blen = al; bval = v;
+        if (!am) continue;
+        am += 8;
+        while (*am == ' ' || *am == ':') am++;
+        double v = strtod(am, NULL);
+        if (v <= 0) continue;
+        /* Find existing entry or add new */
+        int found = -1;
+        for (int i = 0; i < n; i++) {
+            if (strlen(addrs[i].addr) == al &&
+                memcmp(addrs[i].addr, a, al) == 0) {
+                found = i; break;
             }
         }
+        if (found >= 0) {
+            addrs[found].amount += v;
+        } else if (n < max_addrs) {
+            memcpy(addrs[n].addr, a, al);
+            addrs[n].addr[al] = '\0';
+            addrs[n].amount = v;
+            n++;
+        }
     }
-    if (best && blen + 1 <= max) {
-        memcpy(out, best, blen);
-        out[blen] = '\0';
+    return n;
+}
+
+void wv_get_funded_taddr(char *out, size_t max) {
+    out[0] = '\0';
+    struct wv_funded_addr addrs[16];
+    int n = wv_get_all_funded_taddrs(addrs, 16);
+    /* Return address with highest balance */
+    double best = 0;
+    for (int i = 0; i < n; i++) {
+        if (addrs[i].amount > best) {
+            best = addrs[i].amount;
+            snprintf(out, max, "%s", addrs[i].addr);
+        }
     }
 }
 
