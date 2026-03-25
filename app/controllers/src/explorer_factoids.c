@@ -135,6 +135,23 @@ static void fmt_comma(char *buf, size_t max, int64_t val)
 
 /* ── Shared: get block hash + time at height ─────────────── */
 
+/* Estimate block time from height using Buttercup spacing.
+ * Pre-707000: 150s/block, Post-707000: 75s/block.
+ * Used as fallback when block isn't in the SQLite index. */
+static int64_t estimate_block_time(int64_t height)
+{
+    const int64_t genesis_time = 1478403829; /* 2016-11-06 03:43:49 UTC */
+    const int64_t buttercup_height = 707000;
+    const int64_t pre_spacing = 150;
+    const int64_t post_spacing = 75;
+
+    if (height <= 0) return genesis_time;
+    if (height <= buttercup_height)
+        return genesis_time + height * pre_spacing;
+    return genesis_time + buttercup_height * pre_spacing +
+           (height - buttercup_height) * post_spacing;
+}
+
 static void get_block_at(sqlite3 *db, int64_t height,
                          char *hash_out, size_t hmax,
                          int64_t *time_out)
@@ -162,6 +179,22 @@ static void get_block_at(sqlite3 *db, int64_t height,
         }
         sqlite3_finalize(s);
     }
+
+    /* Fallback: if block not in index or time=0, estimate from height */
+    if (*time_out == 0 && height > 0)
+        *time_out = estimate_block_time(height);
+}
+
+/* Get block time from SQLite, fallback to height-based estimate */
+static int64_t get_block_time(sqlite3 *db, int64_t height)
+{
+    char sql[128];
+    snprintf(sql, sizeof(sql),
+        "SELECT time FROM blocks WHERE height = %" PRId64, height);
+    int64_t t = fq_i64(db, sql);
+    if (t <= 0 && height > 0)
+        t = estimate_block_time(height);
+    return t;
 }
 
 /* ── Build the factoids page (HTML) ──────────────────────── */
@@ -607,10 +640,7 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
             if (sqlite3_step(s) == SQLITE_ROW) {
                 int64_t h = sqlite3_column_int64(s, 0);
                 int64_t cnt = sqlite3_column_int64(s, 1);
-                char sq2[128];
-                snprintf(sq2, sizeof(sq2),
-                    "SELECT time FROM blocks WHERE height = %" PRId64, h);
-                int64_t t = fq_i64(db, sq2);
+                int64_t t = get_block_time(db, h);
                 RECORD_ROW("Most JoinSplits in a block",
                     "%" PRId64, cnt, h, t);
             }
@@ -627,10 +657,7 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
             if (sqlite3_step(s) == SQLITE_ROW) {
                 int64_t h = sqlite3_column_int64(s, 0);
                 int64_t cnt = sqlite3_column_int64(s, 1);
-                char sq2[128];
-                snprintf(sq2, sizeof(sq2),
-                    "SELECT time FROM blocks WHERE height = %" PRId64, h);
-                int64_t t = fq_i64(db, sq2);
+                int64_t t = get_block_time(db, h);
                 RECORD_ROW("Most Sapling outputs in a block",
                     "%" PRId64, cnt, h, t);
             }
