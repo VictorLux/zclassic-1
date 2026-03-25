@@ -18,7 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
-#include <sys/select.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
@@ -278,59 +278,83 @@ static void *thread_socket_handler(void *arg)
     struct connman *cm = (struct connman *)arg;
 
     while (!g_stop) {
-        fd_set readfds, writefds;
-        FD_ZERO(&readfds);
-        FD_ZERO(&writefds);
-        int maxfd = -1;
+        /* Build poll array: listen sockets + connected nodes.
+         * Using poll() instead of select() avoids FD_SETSIZE (1024) limit
+         * which caused stack corruption with high fd numbers. */
+        struct pollfd pfds[256]; /* max: 8 listen + ~200 peers */
+        size_t npfds = 0;
+        size_t listen_count = cm->manager.num_listen_sockets;
 
         /* Add listen sockets */
-        for (size_t i = 0; i < cm->manager.num_listen_sockets; i++) {
-            int fd = (int)cm->manager.listen_sockets[i].socket;
-            FD_SET(fd, &readfds);
-            if (fd > maxfd) maxfd = fd;
+        for (size_t i = 0; i < listen_count && npfds < 256; i++) {
+            pfds[npfds].fd = (int)cm->manager.listen_sockets[i].socket;
+            pfds[npfds].events = POLLIN;
+            pfds[npfds].revents = 0;
+            npfds++;
         }
 
-        /* Add connected nodes */
+        /* Add connected nodes — snapshot fd + index under lock */
+        struct { int fd; size_t node_idx; } node_fds[200];
+        size_t n_node_fds = 0;
         zcl_mutex_lock(&cm->manager.cs_nodes);
-        for (size_t i = 0; i < cm->manager.num_nodes; i++) {
+        for (size_t i = 0; i < cm->manager.num_nodes && npfds < 256; i++) {
             struct p2p_node *node = cm->manager.nodes[i];
             int fd = (int)node->socket;
             if (fd < 0) continue;
-            FD_SET(fd, &readfds);
+            short events = POLLIN;
             if (node->send_size > 0)
-                FD_SET(fd, &writefds);
-            if (fd > maxfd) maxfd = fd;
+                events |= POLLOUT;
+            pfds[npfds].fd = fd;
+            pfds[npfds].events = events;
+            pfds[npfds].revents = 0;
+            if (n_node_fds < 200) {
+                node_fds[n_node_fds].fd = fd;
+                node_fds[n_node_fds].node_idx = i;
+                n_node_fds++;
+            }
+            npfds++;
         }
         zcl_mutex_unlock(&cm->manager.cs_nodes);
 
-        if (maxfd < 0) {
+        if (npfds == 0) {
             usleep(50000);
             continue;
         }
 
-        struct timeval tv = { .tv_sec = 0, .tv_usec = 50000 };
-        int nsel = select(maxfd + 1, &readfds, &writefds, NULL, &tv);
-        if (nsel <= 0) continue;
+        int nready = poll(pfds, (nfds_t)npfds, 50 /* ms */);
+        if (nready <= 0) continue;
 
         /* Accept new connections via net.c accept_connection() */
-        for (size_t i = 0; i < cm->manager.num_listen_sockets; i++) {
-            int lfd = (int)cm->manager.listen_sockets[i].socket;
-            if (FD_ISSET(lfd, &readfds))
+        for (size_t i = 0; i < listen_count; i++) {
+            if (pfds[i].revents & POLLIN)
                 accept_connection(&cm->manager,
                                   &cm->manager.listen_sockets[i]);
         }
 
-        /* Read/write on connected nodes */
+        /* Read/write on connected nodes — re-acquire lock and match by fd.
+         * Nodes may have changed since the poll snapshot, so validate. */
         zcl_mutex_lock(&cm->manager.cs_nodes);
-        for (size_t i = 0; i < cm->manager.num_nodes; i++) {
-            struct p2p_node *node = cm->manager.nodes[i];
-            int fd = (int)node->socket;
-            if (fd < 0) continue;
+        for (size_t pi = 0; pi < n_node_fds; pi++) {
+            size_t poll_idx = listen_count + pi;
+            if (poll_idx >= npfds) break;
+            short rev = pfds[poll_idx].revents;
+            if (!rev) continue;
 
-            if (FD_ISSET(fd, &readfds) && !node->disconnect) {
+            /* Find the node that still has this fd */
+            int target_fd = node_fds[pi].fd;
+            struct p2p_node *node = NULL;
+            for (size_t ni = 0; ni < cm->manager.num_nodes; ni++) {
+                if ((int)cm->manager.nodes[ni]->socket == target_fd) {
+                    node = cm->manager.nodes[ni];
+                    break;
+                }
+            }
+            if (!node) continue; /* node was removed between poll and now */
+
+            if ((rev & POLLIN) && !node->disconnect) {
                 zcl_mutex_lock(&node->cs_recv);
                 char buf[0x10000];
-                ssize_t n = recv(fd, buf, sizeof(buf), MSG_DONTWAIT);
+                ssize_t n = recv(target_fd, buf, sizeof(buf), MSG_DONTWAIT);
                 if (n > 0) {
                     if (!p2p_node_receive_bytes(node, buf, (unsigned int)n,
                                                 cm->manager.message_start)) {
@@ -354,11 +378,15 @@ static void *thread_socket_handler(void *arg)
                 zcl_mutex_unlock(&node->cs_recv);
             }
 
-            if (FD_ISSET(fd, &writefds)) {
+            if ((rev & POLLOUT) && !node->disconnect) {
                 zcl_mutex_lock(&node->cs_send);
                 socket_send_data(node);
                 zcl_mutex_unlock(&node->cs_send);
             }
+
+            /* POLLHUP/POLLERR — peer disconnected or socket error */
+            if (rev & (POLLHUP | POLLERR))
+                node->disconnect = true;
         }
         /* Free deferred nodes (still under cs_nodes lock) */
         for (size_t i = 0; i < cm->num_deferred_free; i++)

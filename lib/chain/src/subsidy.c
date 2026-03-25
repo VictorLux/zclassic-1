@@ -7,9 +7,14 @@
 #include "chain/subsidy.h"
 #include "consensus/upgrades.h"
 #include <assert.h>
+#include <stdio.h>
 
 int64_t get_block_subsidy(int nHeight, const struct consensus_params *params)
 {
+    if (!params) {
+        fprintf(stderr, "FATAL: get_block_subsidy called with NULL params at height %d\n", nHeight);
+        return 0; /* fail safe, don't crash */
+    }
     int64_t nSubsidy = (int64_t)(12.5 * COIN);
 
     if (nHeight < params->nSubsidySlowStartInterval / 2) {

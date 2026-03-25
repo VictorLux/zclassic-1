@@ -793,10 +793,22 @@ static size_t serve_block(const char *param, uint8_t *r, size_t max)
 
     char hash[65] = "";
     if (bi->phashBlock) uint256_get_hex(bi->phashBlock, hash);
+    /* Read block from disk early to get header fields (merkle root, etc.)
+     * The block_index mmap doesn't store these — only the full block has them. */
+    struct block blk;
+    block_init(&blk);
+    bool loaded = g_datadir && read_block_from_disk_index(&blk, bi, g_datadir);
+
     char merkle[65], sapling_root[65], nonce[65];
-    uint256_get_hex(&bi->hashMerkleRoot, merkle);
-    uint256_get_hex(&bi->hashFinalSaplingRoot, sapling_root);
-    uint256_get_hex(&bi->nNonce, nonce);
+    if (loaded) {
+        uint256_get_hex(&blk.header.hashMerkleRoot, merkle);
+        uint256_get_hex(&blk.header.hashFinalSaplingRoot, sapling_root);
+        uint256_get_hex(&blk.header.nNonce, nonce);
+    } else {
+        uint256_get_hex(&bi->hashMerkleRoot, merkle);
+        uint256_get_hex(&bi->hashFinalSaplingRoot, sapling_root);
+        uint256_get_hex(&bi->nNonce, nonce);
+    }
 
     char ts[32];
     format_time(ts, sizeof(ts), bi->nTime);
@@ -844,10 +856,7 @@ static size_t serve_block(const char *param, uint8_t *r, size_t max)
             bi->nBits, sap_val, sprout_val);
     }
 
-    /* Load block from disk to show transactions */
-    struct block blk;
-    block_init(&blk);
-    bool loaded = g_datadir && read_block_from_disk_index(&blk, bi, g_datadir);
+    /* Block already loaded above for header fields */
 
     if (loaded && blk.num_vtx > 0) {
         APPEND(off, r, max,
@@ -1213,7 +1222,7 @@ static size_t serve_tx(const char *param, uint8_t *r, size_t max)
     for (size_t i = 0; i < tx.num_vin && off + 512 < max; i++) {
         if (transaction_is_coinbase(&tx) && i == 0) {
             char subsidy[32];
-            int64_t reward = block_height >= 0 ? get_block_subsidy(block_height, NULL) : 0;
+            int64_t reward = block_height >= 0 ? get_block_subsidy(block_height, &chain_params_get()->consensus) : 0;
             format_zcl(subsidy, sizeof(subsidy), reward);
             APPEND(off, r, max,
                 "<div class='io-row'>"

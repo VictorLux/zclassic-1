@@ -346,7 +346,7 @@ static void push_version(struct msg_processor *mp, struct p2p_node *node)
     ver.services = NODE_NETWORK | NODE_BLOOM;
     ver.timestamp = (int64_t)time(NULL);
     ver.addr_recv = node->addr;
-    ver.nonce = GetRand(UINT64_MAX);
+    ver.nonce = mp->net_mgr->local_host_nonce;
     snprintf(ver.sub_version, sizeof(ver.sub_version),
              "/ZClassic-C23:1.0.0/");
     ver.start_height = active_chain_height(&mp->main_state->chain_active);
@@ -385,6 +385,16 @@ static bool process_version(struct msg_processor *mp, struct p2p_node *node,
     if (ver.protocol_version < MIN_PEER_PROTO_VERSION) {
         printf("Peer %s: protocol version %d too old (min %d)\n",
                node->addr_name, ver.protocol_version, MIN_PEER_PROTO_VERSION);
+        node->disconnect = true;
+        return false;
+    }
+
+    /* Self-connection detection: if the peer's nonce matches our own
+     * local_host_nonce, we are connecting to ourselves. Disconnect. */
+    if (ver.nonce == mp->net_mgr->local_host_nonce &&
+        mp->net_mgr->local_host_nonce != 0) {
+        printf("Peer %s: self-connection detected (nonce match), disconnecting\n",
+               node->addr_name);
         node->disconnect = true;
         return false;
     }
