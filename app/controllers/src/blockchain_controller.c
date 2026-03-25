@@ -2152,15 +2152,13 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
     int total_found = 0;
 
     /* ── Turbo mode: aggressive SQLite settings for bulk import ── */
-    printf("indexlegacy: Entering turbo mode (synchronous=OFF, journal=OFF)...\n");
+    printf("indexlegacy: Entering turbo mode (synchronous=OFF, WAL)...\n");
     fflush(stdout);
-    /* Checkpoint and switch OUT of WAL mode first — WAL mode ignores
-     * journal_mode changes and grows unbounded during bulk inserts. */
-    sqlite3_wal_checkpoint_v2(g_node_db_bc->db, NULL,
-        SQLITE_CHECKPOINT_TRUNCATE, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "PRAGMA journal_mode=OFF", NULL, NULL, NULL);
+    /* Stay in WAL mode — journal_mode=OFF loses data when concurrent
+     * writes happen (sync_controller commits new blocks via P2P).
+     * WAL mode handles concurrent readers/writers safely. */
     sqlite3_exec(g_node_db_bc->db, "PRAGMA synchronous=OFF", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "PRAGMA locking_mode=EXCLUSIVE", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "PRAGMA wal_autocheckpoint=10000", NULL, NULL, NULL);
     sqlite3_exec(g_node_db_bc->db, "PRAGMA cache_size=-524288", NULL, NULL, NULL); /* 512MB */
     sqlite3_exec(g_node_db_bc->db, "PRAGMA temp_store=MEMORY", NULL, NULL, NULL);
     sqlite3_exec(g_node_db_bc->db, "PRAGMA mmap_size=1073741824", NULL, NULL, NULL); /* 1GB */
@@ -2199,23 +2197,14 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
     sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_zslp_xfer_addr", NULL, NULL, NULL);
     sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_zslp_ticker", NULL, NULL, NULL);
 
-    /* Wipe secondary index data (NOT utxos — that's the canonical UTXO store).
-     * indexlegacy rebuilds blocks + transactions from block files. */
-    printf("indexlegacy: Wiping secondary chain data for re-index...\n");
+    /* Additive index: INSERT OR IGNORE for blocks/transactions (immutable chain
+     * data that never changes). Phase B uses INSERT OR IGNORE for tx_outputs,
+     * tx_inputs, joinsplits, etc. We DO NOT wipe — this makes indexlegacy
+     * idempotent and crash-safe. Only addresses are recomputed from UTXOs. */
+    printf("indexlegacy: Additive index mode (no wipe, INSERT OR IGNORE)...\n");
     fflush(stdout);
-    /* DO NOT DELETE FROM utxos — canonical UTXO store managed by coins_view_sqlite */
-    node_db_exec(g_node_db_bc, "DELETE FROM transactions");
-    node_db_exec(g_node_db_bc, "DELETE FROM blocks");
-    node_db_exec(g_node_db_bc, "DELETE FROM tx_outputs");
-    node_db_exec(g_node_db_bc, "DELETE FROM tx_inputs");
-    node_db_exec(g_node_db_bc, "DELETE FROM joinsplits");
-    node_db_exec(g_node_db_bc, "DELETE FROM sapling_spends");
-    node_db_exec(g_node_db_bc, "DELETE FROM sapling_outputs");
-    node_db_exec(g_node_db_bc, "DELETE FROM sprout_nullifiers");
-    node_db_exec(g_node_db_bc, "DELETE FROM op_returns");
-    node_db_exec(g_node_db_bc, "DELETE FROM view_integrity");
     node_db_exec(g_node_db_bc, "DELETE FROM addresses");
-    db_zslp_clear_all(g_node_db_bc);
+    node_db_exec(g_node_db_bc, "DELETE FROM view_integrity");
 
     /* ── Pass 1: Scan all blocks, build hash→(file,offset,size) map.
      * Then chain-walk from genesis using prev_hash to assign heights.
@@ -3008,11 +2997,10 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
     fflush(stdout);
 
     /* Restore safe SQLite settings */
-    sqlite3_exec(g_node_db_bc->db, "PRAGMA journal_mode=WAL", NULL, NULL, NULL);
     sqlite3_exec(g_node_db_bc->db, "PRAGMA synchronous=NORMAL", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "PRAGMA locking_mode=NORMAL", NULL, NULL, NULL);
+    sqlite3_exec(g_node_db_bc->db, "PRAGMA wal_autocheckpoint=1000", NULL, NULL, NULL);
     sqlite3_wal_checkpoint_v2(g_node_db_bc->db, NULL,
-        SQLITE_CHECKPOINT_TRUNCATE, NULL, NULL);
+        SQLITE_CHECKPOINT_PASSIVE, NULL, NULL);
 
     /* ── Populate addresses from UTXO set ── */
     printf("indexlegacy: Populating addresses from UTXO set...\n");
