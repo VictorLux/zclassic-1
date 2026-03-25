@@ -227,29 +227,32 @@ static void *thread_open_connections(void *arg)
         }
 
         /* Reconnect persistent addnodes that dropped.
-         * Check every iteration: if an addnode is not connected, retry. */
-        for (int ai = 0; ai < cm->num_addnodes && !g_stop; ai++) {
-            bool connected = false;
-            zcl_mutex_lock(&cm->manager.cs_nodes);
-            for (size_t ni = 0; ni < cm->manager.num_nodes; ni++) {
-                struct p2p_node *n = cm->manager.nodes[ni];
-                if (n->disconnect) continue;
-                if (net_addr_eq(&n->addr.svc.addr, &cm->addnodes[ai].svc.addr) &&
-                    n->addr.svc.port == cm->addnodes[ai].svc.port) {
-                    connected = true;
-                    break;
+         * 30-second cooldown per addnode to prevent reconnect storms
+         * that cause use-after-free crashes from rapid node churn. */
+        {
+            static int64_t s_addnode_last_attempt[MAX_ADDNODES] = {0};
+            int64_t now_an = (int64_t)time(NULL);
+            for (int ai = 0; ai < cm->num_addnodes && !g_stop; ai++) {
+                if (now_an - s_addnode_last_attempt[ai] < 30)
+                    continue; /* cooldown */
+                bool connected = false;
+                zcl_mutex_lock(&cm->manager.cs_nodes);
+                for (size_t ni = 0; ni < cm->manager.num_nodes; ni++) {
+                    struct p2p_node *n = cm->manager.nodes[ni];
+                    if (n->disconnect) continue;
+                    if (net_addr_eq(&n->addr.svc.addr, &cm->addnodes[ai].svc.addr) &&
+                        n->addr.svc.port == cm->addnodes[ai].svc.port) {
+                        connected = true;
+                        break;
+                    }
                 }
-            }
-            zcl_mutex_unlock(&cm->manager.cs_nodes);
+                zcl_mutex_unlock(&cm->manager.cs_nodes);
 
-            if (!connected) {
-                char dest[64];
-                net_service_to_string(&cm->addnodes[ai].svc, dest, sizeof(dest));
-                struct p2p_node *node = connect_node(&cm->manager,
-                    &cm->addnodes[ai], dest);
-                if (node) {
-                    printf("Reconnected addnode %s\n", dest);
-                    fflush(stdout);
+                if (!connected) {
+                    s_addnode_last_attempt[ai] = now_an;
+                    char dest[64];
+                    net_service_to_string(&cm->addnodes[ai].svc, dest, sizeof(dest));
+                    connect_node(&cm->manager, &cm->addnodes[ai], dest);
                 }
             }
         }
