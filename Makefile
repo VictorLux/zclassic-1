@@ -59,9 +59,9 @@ all: test_zcl zclassic23 zclassic-cli
 
 TEST_SRCS = $(wildcard lib/test/src/*.c)
 
-# Generate templates from .chtml files
+# Generate templates from .chtml and .ccss files
 TMPL_GEN = app/views/include/views/wallet_templates_gen.h
-TMPL_SRC = $(wildcard app/views/templates/*.chtml)
+TMPL_SRC = $(wildcard app/views/templates/*.chtml) $(wildcard app/views/css/*.ccss)
 TMPL_TOOL = tools/gen_templates
 
 $(TMPL_TOOL): tools/gen_templates.c
@@ -71,7 +71,7 @@ tools/inspect_html: tools/inspect_html.c
 	$(CC) -std=c23 -O2 -Wall -Wextra -o $@ $<
 
 $(TMPL_GEN): $(TMPL_SRC) $(TMPL_TOOL)
-	./$(TMPL_TOOL) app/views/templates $@
+	./$(TMPL_TOOL) app/views/templates $@ app/views/css
 
 .PHONY: templates
 templates: $(TMPL_GEN)

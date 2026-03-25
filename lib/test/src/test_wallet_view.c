@@ -222,7 +222,7 @@ int test_wallet_view(void)
         wv_get("/wallet");
         bool ok = wv_has("'Block '+d.height");
         ok = ok && wv_has("d.peers+' peers'");
-        ok = ok && wv_has("d.mempool+' pending'");
+        ok = ok && wv_has("d.mempool+' tx'");
         /* Must NOT have cryptic H:/P:/M: abbreviations */
         bool bad = wv_has("'H:'+d.height");
         if (ok && !bad) printf("OK\n");
@@ -2033,16 +2033,17 @@ int test_wallet_view(void)
             {"/wallet/send",    "class='active'>Send"},
             {"/wallet/receive", "class='active'>Receive"},
             {"/wallet/history", "class='active'>History"},
+            {"/wallet/node",    "class='active'>Node"},
         };
         bool ok = true;
-        for (int i = 0; i < 4; i++) {
+        for (int i = 0; i < 5; i++) {
             wv_get(tabs[i].path);
             if (!wv_has(tabs[i].active)) {
                 printf("FAIL (%s)\n", tabs[i].path);
                 ok = false; failures++; break;
             }
         }
-        if (ok) printf("OK (all 4)\n");
+        if (ok) printf("OK (all 5)\n");
     }
 
     printf("NAV: shield page has no active nav tab (not in main nav)... ");
@@ -2089,7 +2090,8 @@ int test_wallet_view(void)
     printf("NAV: all titles contain 'ZClassic23'... ");
     {
         const char *pages[] = {"/wallet", "/wallet/send", "/wallet/receive",
-                                "/wallet/history", "/wallet/coins", NULL};
+                                "/wallet/history", "/wallet/coins",
+                                "/wallet/node", NULL};
         bool ok = true;
         for (int i = 0; pages[i]; i++) {
             wv_get(pages[i]);
@@ -2099,6 +2101,73 @@ int test_wallet_view(void)
             }
         }
         if (ok) printf("OK\n");
+    }
+
+    printf("NAV: nav has 5 tabs including Node... ");
+    {
+        wv_get("/wallet");
+        bool ok = wv_has("/wallet/node") && wv_has(">Node<");
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("NODE: command center page renders... ");
+    {
+        wv_get("/wallet/node");
+        bool ok = wv_has("Command Center");
+        ok = ok && wv_has("Block Height");
+        ok = ok && wv_has("Connected Peers");
+        ok = ok && wv_has("Mempool");
+        ok = ok && wv_has("Network Status");
+        ok = ok && wv_has("Quick Actions");
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("NODE: command center has Tor section... ");
+    {
+        wv_get("/wallet/node");
+        bool ok = wv_has("Tor Hidden Service");
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("NODE: command center has peer table... ");
+    {
+        wv_get("/wallet/node");
+        /* Table with address/direction/version/height headers */
+        bool ok = wv_has("<th>Address</th>");
+        ok = ok && wv_has("<th>Dir</th>");
+        ok = ok && wv_has("Connecting to network");
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("NODE: command center links to explorer... ");
+    {
+        wv_get("/wallet/node");
+        bool ok = wv_has("/explorer");
+        ok = ok && wv_has("Block Explorer");
+        ok = ok && wv_has("Network Stats");
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("DASHBOARD: node tab links to command center... ");
+    {
+        wv_get("/wallet");
+        /* Dashboard nav always renders even without DB */
+        bool ok = wv_has("/wallet/node");
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("NODE: page has ZClassic-C23 version string... ");
+    {
+        wv_get("/wallet/node");
+        bool ok = wv_has("ZClassic-C23:0.1.0");
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
     }
 
     /* ═══════════════════════════════════════════════════════════

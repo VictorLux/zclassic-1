@@ -4,7 +4,7 @@
  * Global state, DB access, RPC, QR codes, HTML chrome, form parsing. */
 
 #include "controllers/wallet_view_internal.h"
-#include "views/wallet_css.h"
+/* CSS is now in app/views/css/wallet.ccss, compiled as CSS_WALLET */
 #include "crypto/sha256.h"
 #include <sys/time.h>
 #include <sys/socket.h>
@@ -714,11 +714,12 @@ size_t wv_emit_nav(uint8_t *buf, size_t max, const char *active) {
         { "/wallet/send",    "Send"    },
         { "/wallet/receive", "Receive" },
         { "/wallet/history", "History" },
+        { "/wallet/node",    "Node"    },
     };
     int n = snprintf((char *)buf, max, "<nav class='nav' role='navigation'>");
     if (n < 0 || (size_t)n >= max) return 0;
     size_t off = (size_t)n;
-    for (int i = 0; i < 4 && off < max; i++) {
+    for (int i = 0; i < 5 && off < max; i++) {
         bool is_active = (strcmp(tabs[i].href, active) == 0);
         int w = snprintf((char *)buf + off, max - off,
             "<a href='%s'%s>%s</a>",
@@ -994,7 +995,7 @@ size_t wv_emit_header(uint8_t *buf, size_t max, const char *title,
         "<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
         "<title>%s</title><style>%s</style></head><body>",
-        title, wallet_css);
+        title, CSS_WALLET);
     off += wv_emit_nav(buf + off, max - off, active_tab);
     APPEND(off, buf, max, "<main>");
     return off;
@@ -1004,10 +1005,10 @@ void wv_emit_footer(uint8_t *buf, size_t max, size_t *off) {
     APPEND(*off, buf, max, "</main>");
     APPEND(*off, buf, max,
         "<div id='sbar' class='status-bar'>"
-        "<span style='color:#a78bfa;font-weight:700'>Power Node</span>"
+        "<span style='color:#34d399;font-weight:700'>ZCL23</span>"
         "<span id='sb-h'>Block --</span>"
         "<span id='sb-p'>0 peers</span>"
-        "<span id='sb-m'>0 pending</span>"
+        "<span id='sb-m'>0 tx</span>"
         "</div>"
         "<script>"
         "(function(){"
@@ -1019,7 +1020,7 @@ void wv_emit_footer(uint8_t *buf, size_t max, size_t *off) {
         "var m=document.getElementById('sb-m');"
         "if(h)h.textContent='Block '+d.height;"
         "if(p)p.textContent=d.peers+' peers';"
-        "if(m)m.textContent=d.mempool+' pending';"
+        "if(m)m.textContent=d.mempool+' tx';"
         "if(window._dashUpdate)window._dashUpdate(d);"
         "}).catch(function(){});}"
         "up();setInterval(up,5000);"

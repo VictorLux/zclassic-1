@@ -37,16 +37,20 @@ size_t html_escape(char *dst, size_t max, const char *src)
     return w;
 }
 
-/* Validate key: alphanumeric + underscore only. Rejects injection. */
+/* Max key length prevents unbounded scanning of malformed templates. */
+#define TMPL_MAX_KEY_LEN 64
+
+/* Validate key: alphanumeric + underscore only, max 64 chars. */
 static bool tmpl_valid_key(const char *key, size_t len)
 {
+    if (len == 0 || len > TMPL_MAX_KEY_LEN) return false;
     for (size_t i = 0; i < len; i++) {
         char c = key[i];
         if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
               (c >= '0' && c <= '9') || c == '_'))
             return false;
     }
-    return len > 0;
+    return true;
 }
 
 /* Find variable by key. Returns value or NULL. */

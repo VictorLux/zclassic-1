@@ -39,16 +39,32 @@ border-radius:3px;transition:width .5s'></div>
 {{{backup_warning}}}
 
 <div class='section-header'>
-<span>Power Node</span></div>
-<div style='display:flex;gap:8px;margin:4px 0'>
-<div class='stat' style='flex:1;padding:10px'>
-<div class='n' style='font-size:16px'>{{{peers}}}</div>
+<span>Power Node</span>
+<a href='/wallet/node'>Command Center</a></div>
+<a href='/wallet/node' style='text-decoration:none;color:inherit'>
+<div style='background:linear-gradient(135deg,#0a1f14,#0a1428);
+border:1px solid #1a2a1a;border-radius:10px;padding:14px;margin:4px 0'>
+<div style='display:flex;gap:8px;margin-bottom:8px'>
+<div class='stat' style='flex:1;padding:8px;background:rgba(0,0,0,.3);
+border:none'>
+<div class='n' style='font-size:18px'>{{{peers}}}</div>
 <div class='l'>Peers</div></div>
-<div class='stat' style='flex:1;padding:10px'>
-<div class='n' style='font-size:16px'>{{{mempool}}}</div>
+<div class='stat' style='flex:1;padding:8px;background:rgba(0,0,0,.3);
+border:none'>
+<div class='n' style='font-size:18px'>{{{mempool}}}</div>
 <div class='l'>Mempool</div></div>
-<div class='stat' style='flex:1;padding:10px'>
-<div class='n' style='font-size:16px;color:{{{node_status_color}}}'>
+<div class='stat' style='flex:1;padding:8px;background:rgba(0,0,0,.3);
+border:none'>
+<div class='n' style='font-size:18px;color:{{{node_status_color}}}'>
 {{{node_status}}}</div>
 <div class='l'>Status</div></div>
 </div>
+<div style='display:flex;align-items:center;gap:8px;
+font-size:13px;color:#888'>
+<div id='tor-dot' style='width:6px;height:6px;border-radius:50%;
+background:{{{tor_color}}}'></div>
+<span>{{{tor_label}}}</span>
+<span style='margin-left:auto;color:#60a5fa;font-size:12px'>
+View details &#x2192;</span>
+</div>
+</div></a>
