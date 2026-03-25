@@ -1,0 +1,54 @@
+<div style='text-align:center;padding:24px 0 16px'>
+<span id='sync' class='pill {{{sync_class}}} sync-badge'>{{{sync_label}}}</span>
+<div id='bal' class='balance' style='margin-top:8px'>
+{{{balance}}} ZCL</div>
+
+<div id='privacy-meter' style='margin:8px auto;max-width:280px'>
+<div style='display:flex;justify-content:space-between;
+font-size:14px;margin-bottom:4px'>
+<span style='color:{{{pct_color}}}'>{{{pct}}}% private</span>
+<a href='/wallet/coins' style='color:#888;font-size:14px'>
+Details</a></div>
+<div style='height:6px;background:#1e1e1e;border-radius:3px;
+overflow:hidden'>
+<div id='lock' style='height:100%;width:{{{pct}}}%;background:{{{pct_color}}};
+border-radius:3px;transition:width .5s'></div>
+</div></div>
+
+<div id='bal-details' style='text-align:center;margin:4px 0'>
+<span id='breakdown' class='balance-sub' style='font-size:14px'>
+{{{breakdown}}}</span></div>
+</div>
+
+<div class='actions'>
+<a href='/wallet/send' class='btn-secondary'
+ style='display:flex;align-items:center;justify-content:center'>Send</a>
+<a href='/wallet/receive' class='btn-primary'
+ style='display:flex;align-items:center;justify-content:center'>Receive</a>
+</div>
+
+{{{privacy_card}}}
+
+{{{token_cards}}}
+
+<div class='section-header'>
+<span>Recent</span>
+<a href='/wallet/history'>View all</a></div>
+{{{recent_txs}}}
+
+{{{backup_warning}}}
+
+<div class='section-header'>
+<span>Power Node</span></div>
+<div style='display:flex;gap:8px;margin:4px 0'>
+<div class='stat' style='flex:1;padding:10px'>
+<div class='n' style='font-size:16px'>{{{peers}}}</div>
+<div class='l'>Peers</div></div>
+<div class='stat' style='flex:1;padding:10px'>
+<div class='n' style='font-size:16px'>{{{mempool}}}</div>
+<div class='l'>Mempool</div></div>
+<div class='stat' style='flex:1;padding:10px'>
+<div class='n' style='font-size:16px;color:{{{node_status_color}}}'>
+{{{node_status}}}</div>
+<div class='l'>Status</div></div>
+</div>

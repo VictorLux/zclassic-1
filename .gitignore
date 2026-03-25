@@ -43,3 +43,4 @@ tags
 TAGS
 .idea/
 .zcl_test_render/
+tools/gen_templates

@@ -1,0 +1,8 @@
+<div class='result-success'>
+<div class='icon'>&#x2713;</div>
+<h2>{{{heading}}}</h2>
+<p>{{{amount}}} ZCL to {{address}}</p>
+{{{txid_html}}}
+<div style='margin-top:24px'>
+<a href='/wallet' style='color:#34d399;font-size:16px'>
+Back to Wallet</a></div></div>

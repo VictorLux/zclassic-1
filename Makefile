@@ -59,11 +59,25 @@ all: test_zcl zclassic23 zclassic-cli
 
 TEST_SRCS = $(wildcard lib/test/src/*.c)
 
-test_zcl: $(TEST_SRCS) $(ALL_SRCS)
-	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o $@ $^ $(TOR_LIBS) $(LIBS)
+# Generate templates from .chtml files
+TMPL_GEN = app/views/include/views/wallet_templates_gen.h
+TMPL_SRC = $(wildcard app/views/templates/*.chtml)
+TMPL_TOOL = tools/gen_templates
 
-zclassic23: main.c $(ALL_SRCS)
-	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o $@ $^ $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)
+$(TMPL_TOOL): tools/gen_templates.c
+	$(CC) -std=c23 -O2 -Wall -Wextra -o $@ $<
+
+$(TMPL_GEN): $(TMPL_SRC) $(TMPL_TOOL)
+	./$(TMPL_TOOL) app/views/templates $@
+
+.PHONY: templates
+templates: $(TMPL_GEN)
+
+test_zcl: $(TMPL_GEN) $(TEST_SRCS) $(ALL_SRCS)
+	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o $@ $(filter-out $(TMPL_GEN),$^) $(TOR_LIBS) $(LIBS)
+
+zclassic23: $(TMPL_GEN) main.c $(ALL_SRCS)
+	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o $@ $(filter-out $(TMPL_GEN),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)
 
 zclassic-cli: cli.c $(CLI_SRCS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm

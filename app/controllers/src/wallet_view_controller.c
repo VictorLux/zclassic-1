@@ -627,18 +627,10 @@ static size_t serve_receive(uint8_t *r, size_t max) {
     sqlite3 *db = wv_open_db();
     size_t off = wv_emit_header(r, max, "Receive — ZClassic23", "/wallet/receive");
 
-    /* Tabs */
-    APPEND(off, r, max,
-        "<div class='tab-toggle'>"
-        "<a id='tab-z' class='active-z' onclick='showTab(\"z\")'>Private</a>"
-        "<a id='tab-t' onclick='showTab(\"t\")'>Public (compatibility)</a>"
-        "</div>");
-
-    /* ── Private address pane (QR SVGs rendered directly into output) ── */
-    APPEND(off, r, max,
-        "<div id='pane-z' style='text-align:center;padding:16px 0'>"
-        "<div class='balance-sub' style='margin-bottom:12px'>"
-        "Share this address to receive ZCL privately</div>");
+    off += template_render(TMPL_RECEIVE_TABS, NULL, 0,
+        (char *)r + off, max - off);
+    off += template_render(TMPL_RECEIVE_ZPANE_OPEN, NULL, 0,
+        (char *)r + off, max - off);
 
     int z_shown = 0;
     if (db) {
@@ -685,87 +677,50 @@ static size_t serve_receive(uint8_t *r, size_t max) {
             (char *)r + off, max - off);
     }
 
-    APPEND(off, r, max,
-        "<div id='copy-msg-z' style='color:#888;font-size:14px;"
-        "margin-top:4px;height:16px'>Click to copy</div>"
-        "</div>");
+    off += template_render(TMPL_RECEIVE_ZPANE_CLOSE, NULL, 0,
+        (char *)r + off, max - off);
 
-    /* ── Public address pane (template-driven) ── */
-    APPEND(off, r, max,
-        "<div id='pane-t' style='display:none;text-align:center;padding:16px 0'>"
-        "<div class='balance-sub' style='margin-bottom:12px'>"
-        "Public address &mdash; visible on the blockchain</div>");
-    off = wv_emit_qr_svg(r, max, off, PRIMARY_ADDR, 5);
-
-    /* Chunked public address for visual verification */
+    /* ── Public address pane ── */
     {
+        /* Build QR SVG into temp buffer */
+        char qr_buf[65536] = "";
+        wv_emit_qr_svg((uint8_t *)qr_buf, sizeof(qr_buf), 0, PRIMARY_ADDR, 5);
+
+        /* Build chunked address display */
+        char chunk_buf[512];
+        size_t ci = 0;
         const char *a = PRIMARY_ADDR;
         size_t alen = strlen(a);
-        APPEND(off, r, max,
+        ci += (size_t)snprintf(chunk_buf + ci, sizeof(chunk_buf) - ci,
             "<div class='addr-display addr-chunked' "
             "style='margin-top:16px' id='t-addr'>"
             "<span class='hi'>%.4s</span>", a);
-        for (size_t i = 4; i < alen; i += 4) {
+        for (size_t i = 4; i < alen && ci < sizeof(chunk_buf) - 80; i += 4) {
             size_t left = alen - i;
             if (left > 4) left = 4;
-            APPEND(off, r, max, "<span class='sep'> </span>");
+            ci += (size_t)snprintf(chunk_buf + ci, sizeof(chunk_buf) - ci,
+                "<span class='sep'> </span>");
             if (i + left >= alen)
-                APPEND(off, r, max, "<span class='hi'>%.*s</span>",
-                    (int)left, a + i);
+                ci += (size_t)snprintf(chunk_buf + ci, sizeof(chunk_buf) - ci,
+                    "<span class='hi'>%.*s</span>", (int)left, a + i);
             else
-                APPEND(off, r, max, "%.*s", (int)left, a + i);
+                ci += (size_t)snprintf(chunk_buf + ci, sizeof(chunk_buf) - ci,
+                    "%.*s", (int)left, a + i);
         }
-        APPEND(off, r, max, "</div>");
+        snprintf(chunk_buf + ci, sizeof(chunk_buf) - ci, "</div>");
+
+        struct template_var tv[] = {
+            { "qr_svg", qr_buf },
+            { "chunked_addr", chunk_buf },
+        };
+        off += template_render(TMPL_RECEIVE_TPANE, tv, 2,
+            (char *)r + off, max - off);
     }
-    APPEND(off, r, max,
-        "<div id='copy-msg' style='color:#888;font-size:14px;"
-        "margin-top:4px;height:16px'>Click to copy</div>"
-        "<div style='color:#888;font-size:13px;margin-top:2px'>"
-        "<span class='pill pill-t'>Public</span> "
-        "Visible on chain &mdash; use only when required</div>"
-        "</div>");
 
-    /* Tab switching JS */
-    APPEND(off, r, max,
-        "<script>"
-        "function showTab(t){"
-        "document.getElementById('pane-t').style.display=t==='t'?'':'none';"
-        "document.getElementById('pane-z').style.display=t==='z'?'':'none';"
-        "document.getElementById('tab-t').className=t==='t'?'active':'';"
-        "document.getElementById('tab-z').className=t==='z'?'active-z':'';}"
-        "</script>");
-
-    /* Click-to-copy with "Copied!" feedback */
-    APPEND(off, r, max,
-        "<script>"
-        "document.querySelectorAll('.addr-display,.addr-display-sm,.addr-chunked')"
-        ".forEach(function(el){"
-        "el.style.cursor='pointer';"
-        "el.addEventListener('click',function(){"
-        "var txt=this.textContent.replace(/\\s+/g,'').trim();"
-        "navigator.clipboard.writeText(txt).then(function(){"
-        "el.style.borderColor='#34d399';"
-        "var msg=document.getElementById('copy-msg')||"
-        "document.getElementById('copy-msg-z');"
-        "var pz=document.getElementById('pane-z');"
-        "if(pz&&pz.style.display!=='none')"
-        "msg=document.getElementById('copy-msg-z');"
-        "if(msg)msg.textContent='Copied!';"
-        "setTimeout(function(){el.style.borderColor='';"
-        "if(msg)msg.textContent='Click to copy';},1500);}"
-        ").catch(function(){"
-        "var ta=document.createElement('textarea');"
-        "ta.value=txt;ta.style.position='fixed';ta.style.left='-9999px';"
-        "document.body.appendChild(ta);ta.select();"
-        "document.execCommand('copy');document.body.removeChild(ta);"
-        "var msg=document.getElementById('copy-msg')||"
-        "document.getElementById('copy-msg-z');"
-        "var pz=document.getElementById('pane-z');"
-        "if(pz&&pz.style.display!=='none')"
-        "msg=document.getElementById('copy-msg-z');"
-        "if(msg)msg.textContent='Copied!';});"
-        "});});"
-        "</script>");
+    off += template_render(TMPL_RECEIVE_JS, NULL, 0,
+        (char *)r + off, max - off);
+    off += template_render(TMPL_RECEIVE_COPY_JS, NULL, 0,
+        (char *)r + off, max - off);
 
     wv_emit_footer(r, max, &off);
     return off;
@@ -1328,42 +1283,16 @@ static size_t serve_shield(uint8_t *r, size_t max, const char *query) {
                 sqlite3_close(sdb);
             }
         }
-        char avail_str[32];
+        char avail_str[32], max_str[32];
         zcl_format_zcl(avail_str, sizeof(avail_str), avail);
-        APPEND(off, r, max,
-            "<div style='text-align:center;padding:16px 0'>"
-            "<div style='color:#a78bfa;font-size:20px;font-weight:700;"
-            "margin-bottom:4px'>&#x1F512; Secure Funds</div>"
-            "<div class='balance-sub'>Make your public ZCL private "
-            "&mdash; no longer linked to your address</div></div>"
-            "<form method='GET' action='/wallet/shield'>"
-            "<div class='form-group'>"
-            "<label class='form-label' for='shield-amt'>Amount to Secure</label>"
-            "<div style='display:flex;gap:8px;align-items:center'>"
-            "<input class='form-input' type='text' id='shield-amt' "
-            "inputmode='decimal' name='amount' placeholder='0.00' required>"
-            "<button type='button' class='send-max' "
-            "onclick='document.getElementById(\"shield-amt\").value="
-            "\"%.8f\"'>Max</button>"
-            "</div>"
-            "<div style='color:#888;font-size:14px;margin-top:6px'>"
-            "Available: <span style='color:#34d399'>%s ZCL</span>"
-            "</div></div>"
-            "<div id='shield-err' class='form-error'></div>"
-            "<button type='submit' class='btn-primary' "
-            "style='background:#a78bfa;color:#fff;margin-top:8px' "
-            "onclick='var a=parseFloat(document.getElementById(\"shield-amt\")"
-            ".value);if(isNaN(a)||a<=0){document.getElementById(\"shield-err\")"
-            ".textContent=\"Enter a valid amount\";return false;}"
-            "if(a>%.8f){document.getElementById(\"shield-err\")"
-            ".textContent=\"Insufficient funds\";return false;}'>"
-            "Review</button>"
-            "</form>"
-            "<div style='text-align:center;margin-top:16px'>"
-            "<a href='/wallet' style='color:#888'>Cancel</a></div>",
-            (double)avail / (double)ZATOSHI_PER_ZCL - FEE_ZCL,
-            avail_str,
+        snprintf(max_str, sizeof(max_str), "%.8f",
             (double)avail / (double)ZATOSHI_PER_ZCL - FEE_ZCL);
+        struct template_var fv[] = {
+            { "max_amount", max_str },
+            { "available",  avail_str },
+        };
+        off += template_render(TMPL_SHIELD_AMOUNT_FORM, fv, 2,
+            (char *)r + off, max - off);
         wv_emit_footer(r, max, &off);
         return off;
     }
@@ -1407,10 +1336,8 @@ static size_t serve_shield_confirm(uint8_t *r, size_t max,
     size_t off = wv_emit_header(r, max, "Securing — ZClassic23", "/wallet/shield");
 
     if (amount <= 0) {
-        APPEND(off, r, max,
-            "<div class='card' style='border-left-color:#f87171'>"
-            "<div class='label' style='color:#f87171'>Invalid amount</div>"
-            "<a href='/wallet'>Back to Wallet</a></div>");
+        off += template_render(TMPL_SHIELD_INVALID, NULL, 0,
+            (char *)r + off, max - off);
         wv_emit_footer(r, max, &off);
         return off;
     }
@@ -1437,14 +1364,10 @@ static size_t serve_shield_confirm(uint8_t *r, size_t max,
     }
 
     if (!z_dest[0]) {
-        APPEND(off, r, max,
-            "<div class='result-error'>"
-            "<div class='icon'>&#x274C;</div>"
-            "<h2>Could Not Secure</h2>"
-            "<p>No private address available and the node could not "
-            "generate one. Is the node running?</p>"
-            "<a href='/wallet' style='color:#34d399'>Back to Wallet</a>"
-            "</div>");
+        struct template_var ev[] = {{ "message",
+            "No private address available. Is the node running?" }};
+        off += template_render(TMPL_SHIELD_ERROR, ev, 1,
+            (char *)r + off, max - off);
         wv_emit_footer(r, max, &off);
         return off;
     }
@@ -1457,13 +1380,10 @@ static size_t serve_shield_confirm(uint8_t *r, size_t max,
     wv_get_funded_taddr(t_addr, sizeof(t_addr));
 
     if (!t_addr[0]) {
-        APPEND(off, r, max,
-            "<div class='result-error'>"
-            "<div class='icon'>&#x26A0;</div>"
-            "<h2>Could Not Secure</h2>"
-            "<p>No public address found in wallet.</p>"
-            "<a href='/wallet' style='color:#34d399'>Back to Wallet</a>"
-            "</div>");
+        struct template_var ev[] = {{ "message",
+            "No public address found in wallet." }};
+        off += template_render(TMPL_SHIELD_ERROR, ev, 1,
+            (char *)r + off, max - off);
         wv_emit_footer(r, max, &off);
         return off;
     }
@@ -1520,61 +1440,44 @@ static size_t serve_shield_confirm(uint8_t *r, size_t max,
         /* Sync wallet tables immediately so balance is correct on return */
         wv_sync_wallet_from_zclassicd();
         g_balance_dirty = 1; /* Also recompute on next pulse */
-        APPEND(off, r, max,
-            "<div class='card' style='border-left-color:#34d399;padding:20px'>"
-            "<div style='text-align:center'>"
-            "<div style='font-size:40px;margin-bottom:8px'>&#x2705;</div>"
-            "<div style='font-size:20px;color:#34d399;font-weight:700'>"
-            "&#x1F512; Funds Secured</div>"
-            "<div style='color:#888;font-size:14px;margin-top:8px'>"
-            "%.8f ZCL is being made private.</div>"
-            "<div style='color:#888;font-size:14px;margin-top:12px;"
-            "font-family:monospace;word-break:break-all'>%s</div>"
-            "<div style='color:#555;font-size:13px;margin-top:12px'>"
-            "Spendable immediately. For maximum privacy, wait ~6 hours "
-            "before spending so timing analysis can't link back.</div>",
-            amount, opid_str);
-
-        /* Show updated balance from the sync we just did */
+        /* Build balance card */
+        char bal_card[512] = "";
         {
             sqlite3 *sdb = wv_open_db();
             if (sdb) {
                 int64_t new_t = wv_query_ground_truth_balance(sdb, NULL);
                 int64_t new_z = wv_query_shielded_balance(sdb, NULL);
-                int64_t new_total = new_t + new_z;
-                APPEND(off, r, max,
-                    "<div style='margin-top:16px;padding:12px;background:#0a1f14;"
-                    "border-radius:8px'>"
-                    "<div style='color:#34d399;font-size:18px;font-weight:700'>"
-                    "%.8f ZCL</div>"
-                    "<div style='color:#888;font-size:14px;margin-top:4px'>"
-                    "%.8f public + %.8f private</div>"
-                    "</div>",
-                    (double)new_total / 1e8,
-                    (double)new_t / 1e8,
-                    (double)new_z / 1e8);
+                char ts[32], zs[32], gs[32];
+                snprintf(ts, sizeof(ts), "%.8f", (double)new_t / 1e8);
+                snprintf(zs, sizeof(zs), "%.8f", (double)new_z / 1e8);
+                snprintf(gs, sizeof(gs), "%.8f", (double)(new_t+new_z) / 1e8);
+                struct template_var bv[] = {
+                    {"total", gs}, {"transparent", ts}, {"shielded", zs}
+                };
+                template_render(TMPL_SHIELD_BALANCE_CARD, bv, 3,
+                    bal_card, sizeof(bal_card));
                 sqlite3_close(sdb);
             }
         }
 
-        APPEND(off, r, max, "</div></div>");
+        char amt_s[32];
+        snprintf(amt_s, sizeof(amt_s), "%.8f", amount);
+        struct template_var sv[] = {
+            { "amount",       amt_s },
+            { "opid",         opid_str },
+            { "balance_card", bal_card },
+        };
+        off += template_render(TMPL_SHIELD_SUCCESS, sv, 3,
+            (char *)r + off, max - off);
     } else {
-        char safe_err[512];
-        html_escape(safe_err, sizeof(safe_err), shield_err);
-
-        APPEND(off, r, max,
-            "<div class='result-error'>"
-            "<div class='icon'>&#x26A0;</div>"
-            "<h2>Could Not Secure</h2>"
-            "<p>%s</p>"
-            "<a href='/wallet' style='color:#34d399'>Back to Wallet</a>"
-            "</div>", safe_err[0] ? safe_err : "Unknown error");
+        struct template_var ev[] = {{ "message",
+            shield_err[0] ? shield_err : "Unknown error" }};
+        off += template_render(TMPL_SHIELD_ERROR, ev, 1,
+            (char *)r + off, max - off);
     }
 
-    APPEND(off, r, max,
-        "<div style='text-align:center;margin:16px'>"
-        "<a href='/wallet' style='color:#60a5fa;font-size:16px'>"
-        "Back to Wallet</a></div>");
+    off += template_render(TMPL_BACK_TO_WALLET, NULL, 0,
+        (char *)r + off, max - off);
 
     wv_emit_footer(r, max, &off);
     return off;
@@ -1721,64 +1624,47 @@ static size_t serve_send_review(uint8_t *r, size_t max,
     char safe_addr[256];
     html_escape(safe_addr, sizeof(safe_addr), address);
 
-    APPEND(off, r, max,
-        "<div style='text-align:center;margin-bottom:16px'>"
-        "<span class='form-label'>Review Transaction</span></div>"
-        "<table class='review-table'>"
-        "<tr><td>To</td>"
-        "<td style='color:#60a5fa;font-family:\"JetBrains Mono\",monospace;"
-        "font-size:14px;word-break:break-all'>%s</td></tr>"
-        "<tr><td>Amount</td>"
-        "<td style='color:#34d399;font-size:18px;font-weight:700'>"
-        "%.8f ZCL</td></tr>"
-        "<tr><td>Fee</td>"
-        "<td style='color:#999'>%.8f ZCL</td></tr>"
-        "<tr><td style='font-weight:700'>Total</td>"
-        "<td style='color:#e2e2e2;font-weight:700'>"
-        "%.8f ZCL</td></tr>"
-        "<tr><td>Remaining</td>"
-        "<td style='color:#999'>%.8f ZCL</td></tr>"
-        "<tr><td>Privacy</td>"
-        "<td><span class='pill %s'>%s</span>"
-        "%s</td></tr>"
-        "<tr><td>Est. Time</td>"
-        "<td style='color:#999'>~2.5 min (1 confirmation)</td></tr>"
-        "</table>",
-        safe_addr, amount, fee, total_deducted, remaining,
-        is_shielded ? "pill-private" : "pill-t",
-        is_shielded ? "&#x1F512; Recipient private"
-                     : "&#x1F534; Public",
-        is_shielded ? "<div style='color:#fbbf24;font-size:13px;"
-                       "margin-top:4px'>&#x26A0; Your sending address "
-                       "is visible on-chain (t&#x2192;z send)</div>"
-                     : "");
+    {
+        char amt_s[32], fee_s[32], tot_s[32], rem_s[32];
+        snprintf(amt_s, sizeof(amt_s), "%.8f", amount);
+        snprintf(fee_s, sizeof(fee_s), "%.8f", fee);
+        snprintf(tot_s, sizeof(tot_s), "%.8f", total_deducted);
+        snprintf(rem_s, sizeof(rem_s), "%.8f", remaining);
+
+        const char *pw = is_shielded
+            ? "<div style='color:#fbbf24;font-size:13px;margin-top:4px'>"
+              "&#x26A0; Your sending address is visible on-chain "
+              "(t&#x2192;z send)</div>"
+            : "";
+
+        struct template_var rv[] = {
+            { "address",         safe_addr },
+            { "amount",          amt_s },
+            { "fee",             fee_s },
+            { "total",           tot_s },
+            { "remaining",       rem_s },
+            { "privacy_pill",    is_shielded ? "pill-private" : "pill-t" },
+            { "privacy_label",   is_shielded ? "&#x1F512; Recipient private"
+                                              : "&#x1F534; Public" },
+            { "privacy_warning", pw },
+        };
+        off += template_render(TMPL_SEND_REVIEW, rv, 8,
+            (char *)r + off, max - off);
+    }
 
     /* Cancel / Confirm buttons */
-    APPEND(off, r, max,
-        "<div style='display:flex;gap:10px;margin:20px 0'>"
-        "<a href='/wallet/send' class='btn-secondary' "
-        "style='flex:1;text-align:center;text-decoration:none;"
-        "display:flex;align-items:center;justify-content:center'>Cancel</a>"
-        "<form method='POST' action='zcl://node/wallet/send/confirm' "
-        "style='flex:2;margin:0'>"
-        "<input type='hidden' name='address' value='%s'>"
-        "<input type='hidden' name='amount' value='%.8f'>"
-        "<button type='submit' class='btn-primary'"
-        " style='background:%s;color:%s'"
-        " id='confirm-btn'>"
-        "Confirm Send</button></form></div>"
-        "<div id='send-loading' class='loading-overlay' style='display:none'>"
-        "<div class='spinner'></div>"
-        "<p>Sending transaction...</p></div>"
-        "<script>"
-        "document.getElementById('confirm-btn').addEventListener('click',"
-        "function(e){e.preventDefault();this.disabled=true;"
-        "document.getElementById('send-loading').style.display='flex';"
-        "this.form.submit();});"
-        "</script>",
-        safe_addr, amount,
-        is_shielded ? "#a78bfa" : "#34d399",
-        is_shielded ? "#fff" : "#0c0c0c");
+    {
+        char amt_s[32];
+        snprintf(amt_s, sizeof(amt_s), "%.8f", amount);
+        struct template_var bv[] = {
+            { "address",   safe_addr },
+            { "amount",    amt_s },
+            { "btn_color", is_shielded ? "#a78bfa" : "#34d399" },
+            { "btn_text",  is_shielded ? "#fff" : "#0c0c0c" },
+        };
+        off += template_render(TMPL_SEND_CONFIRM_BUTTONS, bv, 4,
+            (char *)r + off, max - off);
+    }
 
     wv_emit_footer(r, max, &off);
     return off;
@@ -1867,45 +1753,40 @@ static size_t serve_send_confirm(uint8_t *r, size_t max,
         html_escape(safe_txid, sizeof(safe_txid), txid_result);
 
         bool is_opid = (strncmp(txid_result, "opid-", 5) == 0);
-        APPEND(off, r, max,
-            "<div class='result-success'>"
-            "<div class='icon'>&#x2713;</div>"
-            "<h2>%s</h2>"
-            "<p>%.8f ZCL to %s</p>",
-            is_opid ? "&#x1F512; Send to Private Address Started"
-                    : "Transaction Sent",
-            amount, safe_addr);
+        char txid_html[512] = "";
         if (is_opid)
-            APPEND(off, r, max,
+            snprintf(txid_html, sizeof(txid_html),
                 "<div class='hash' style='word-break:break-all;"
                 "color:#a78bfa;font-size:14px'>%s</div>"
                 "<div style='color:#888;font-size:14px;margin-top:8px'>"
                 "Funds will arrive after ~10 confirmations (~25 min)</div>",
                 safe_txid);
         else
-            APPEND(off, r, max,
+            snprintf(txid_html, sizeof(txid_html),
                 "<a href='/explorer/tx/%s' class='hash' "
                 "style='word-break:break-all'>%s</a>",
                 safe_txid, safe_txid);
-        /* Save as contact (auto-save, silent) */
-        wv_save_contact(address, address); /* Use address as name initially */
 
-        APPEND(off, r, max,
-            "<div style='margin-top:24px'>"
-            "<a href='/wallet' style='color:#34d399;font-size:16px'>"
-            "Back to Wallet</a></div></div>");
+        wv_save_contact(address, address);
+
+        char amt_s[32];
+        snprintf(amt_s, sizeof(amt_s), "%.8f", amount);
+        struct template_var sv[] = {
+            { "heading",   is_opid ? "&#x1F512; Send to Private Address Started"
+                                   : "Transaction Sent" },
+            { "amount",    amt_s },
+            { "address",   address },
+            { "txid_html", txid_html },
+        };
+        off += template_render(TMPL_SEND_SUCCESS, sv, 4,
+            (char *)r + off, max - off);
     } else {
-        char safe_err[512];
-        html_escape(safe_err, sizeof(safe_err), error_msg);
-        APPEND(off, r, max,
-            "<div class='result-error'>"
-            "<div class='icon'>&#x2717;</div>"
-            "<h2>Send Failed</h2>"
-            "<p>%s</p>"
-            "<div style='margin-top:16px;display:flex;gap:16px;justify-content:center'>"
-            "<a href='/wallet' style='color:#999'>Back to Wallet</a>"
-            "<a href='/wallet/send' style='color:#34d399'>Try Again</a>"
-            "</div></div>", safe_err);
+        struct template_var ev[] = {
+            { "heading", "Send Failed" },
+            { "message", error_msg[0] ? error_msg : "Unknown error" },
+        };
+        off += template_render(TMPL_SEND_ERROR, ev, 2,
+            (char *)r + off, max - off);
     }
 
     wv_emit_footer(r, max, &off);

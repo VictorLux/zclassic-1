@@ -1,0 +1,13 @@
+<div class='card' style='border-left-color:#f87171;margin:16px 0'>
+<div style='display:flex;align-items:center;gap:8px'>
+<span style='font-size:20px'>&#x26A0;</span>
+<div>
+<div style='color:#f87171;font-weight:700;font-size:14px'>
+Wallet Not Backed Up</div>
+<div style='color:#888;font-size:14px'>
+If you lose this device, your funds are gone forever.</div>
+</div></div>
+<div style='margin-top:10px'>
+<code style='font-size:13px;color:#999'>
+zcl-rpc dumpprivkey {{address}}</code></div>
+</div>

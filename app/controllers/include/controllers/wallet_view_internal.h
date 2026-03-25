@@ -8,7 +8,7 @@
 
 #include "controllers/wallet_view_controller.h"
 #include "views/wallet_view.h"
-#include "views/wallet_templates.h"
+#include "views/wallet_templates_gen.h"
 #include "views/format_helpers.h"
 #include "controllers/explorer_internal.h"  /* APPEND macro */
 #include "util/template.h"

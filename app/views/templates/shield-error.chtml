@@ -1,0 +1,6 @@
+<div class='result-error'>
+<div class='icon'>&#x26A0;</div>
+<h2>Could Not Secure</h2>
+<p>{{message}}</p>
+<a href='/wallet' style='color:#34d399'>Back to Wallet</a>
+</div>
