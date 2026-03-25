@@ -127,6 +127,17 @@ GET  /store/access       Token-gated content (addr= token= params)
 Background thread polls pending orders every 30s, auto-mints ZSLP
 tokens when shielded payment confirms.
 
+### ZSLP Token RPCs
+```
+zslp_createtoken "TICK" "Name" decimals supply   Create GENESIS tx
+zslp_send "token_id" "address" amount             Send tokens
+zslp_mint "token_id" "address" amount             Mint new tokens
+zslp_balance "token_id" "address"                  Query balance
+```
+On-chain broadcast: builds OP_RETURN + dust outputs, signs via wallet,
+commits to mempool. Falls back to SQLite-only tracking when wallet
+unavailable (test mode).
+
 ## Key Design
 
 ### Instant Operations (no rescans)

@@ -36,6 +36,7 @@
 #include "controllers/explorer_internal.h"
 #include "controllers/explorer_controller.h"
 #include "controllers/wallet_controller.h"
+#include "controllers/zslp_controller.h"
 #include "wallet/wallet.h"
 #include "wallet/wallet_sqlite.h"
 #include "wallet/wallet_db.h"
@@ -2253,6 +2254,9 @@ bool app_init(struct app_context *ctx)
     rpc_wallet_set_node_db(g_active_node_db);
     register_wallet_rpc_commands(&g_rpc_table);
     register_event_rpc_commands(&g_rpc_table);
+
+    zslp_rpc_set_datadir(ctx->datadir);
+    register_zslp_rpc_commands(&g_rpc_table);
 
     /* Pre-compute fast sync snapshot offer in background */
     {

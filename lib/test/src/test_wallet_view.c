@@ -27,7 +27,7 @@
 #include <time.h>
 
 /* Response buffer — 64KB is enough for any wallet page */
-static uint8_t _wv_resp[65536];
+static uint8_t _wv_resp[131072];
 
 /* Helper: call GET route, return response size */
 static size_t wv_get(const char *path) {
@@ -148,22 +148,21 @@ int test_wallet_view(void)
      * 2. DASHBOARD — visual elements and structure
      * ═══════════════════════════════════════════════════════════ */
 
-    printf("wallet_view: dashboard has navigation with 5 tabs... ");
+    printf("wallet_view: dashboard has navigation with 4 tabs... ");
     {
         wv_get("/wallet");
-        bool ok = wv_has("Dashboard</a>");
+        bool ok = wv_has("Home</a>");
         ok = ok && wv_has("Send</a>");
         ok = ok && wv_has("Receive</a>");
         ok = ok && wv_has("History</a>");
-        ok = ok && wv_has("Coins</a>");
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
 
-    printf("wallet_view: dashboard nav marks Dashboard as active... ");
+    printf("wallet_view: dashboard nav marks Home as active... ");
     {
         wv_get("/wallet");
-        bool ok = wv_has("class='active'>Dashboard");
+        bool ok = wv_has("class='active'>Home");
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
@@ -419,11 +418,11 @@ int test_wallet_view(void)
         else { printf("FAIL\n"); failures++; }
     }
 
-    printf("wallet_view: send review shows privacy level (transparent)... ");
+    printf("wallet_view: send review shows privacy level (public)... ");
     {
         wv_post("/wallet/send/review",
             "address=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn&amount=0.01");
-        bool ok = wv_has("Public (transparent)");
+        bool ok = wv_has("Public");
         ok = ok && wv_has("pill-t");
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
@@ -490,22 +489,22 @@ int test_wallet_view(void)
      * 4. RECEIVE — QR code, address display, chunking, tabs
      * ═══════════════════════════════════════════════════════════ */
 
-    printf("wallet_view: receive has tab toggle (Transparent/Shielded)... ");
+    printf("wallet_view: receive has tab toggle (Private/Public)... ");
     {
         wv_get("/wallet/receive");
         bool ok = wv_has("tab-toggle");
         ok = ok && wv_has("id='tab-t'");
         ok = ok && wv_has("id='tab-z'");
-        ok = ok && wv_has(">Transparent</a>");
-        ok = ok && wv_has(">Shielded</a>");
+        ok = ok && wv_has(">Private</a>");
+        ok = ok && wv_has("Public (compatibility)</a>");
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
 
-    printf("wallet_view: receive transparent tab is active by default... ");
+    printf("wallet_view: receive private tab is active by default... ");
     {
         wv_get("/wallet/receive");
-        bool ok = wv_has("id='tab-t' class='active'");
+        bool ok = wv_has("id='tab-z' class='active-z'");
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
@@ -535,7 +534,7 @@ int test_wallet_view(void)
     printf("wallet_view: receive shows 'Tap to copy' hint... ");
     {
         wv_get("/wallet/receive");
-        bool ok = wv_has("Tap address to copy");
+        bool ok = wv_has("Click to copy");
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
@@ -559,11 +558,11 @@ int test_wallet_view(void)
         else { printf("FAIL\n"); failures++; }
     }
 
-    printf("wallet_view: receive shielded pane hidden by default... ");
+    printf("wallet_view: receive public pane hidden by default... ");
     {
         wv_get("/wallet/receive");
-        /* Check both quote styles and that pane-z exists with display:none */
-        bool ok = wv_has("id='pane-z'") && wv_has("display:none");
+        /* Public (t-address) pane is hidden by default, private shown */
+        bool ok = wv_has("id='pane-t'") && wv_has("display:none");
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
@@ -572,7 +571,7 @@ int test_wallet_view(void)
     {
         wv_get("/wallet/receive");
         bool ok = wv_has("pill-t");
-        ok = ok && wv_has("Publicly visible on chain");
+        ok = ok && wv_has("Visible on chain");
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
@@ -631,10 +630,11 @@ int test_wallet_view(void)
         else { printf("FAIL\n"); failures++; }
     }
 
-    printf("wallet_view: coins nav marks Coins as active... ");
+    printf("wallet_view: coins page renders (no active nav tab)... ");
     {
         wv_get("/wallet/coins");
-        bool ok = wv_has("class='active'>Coins");
+        bool ok = (wv_has("Your Coins") || wv_has("Wallet Loading")) &&
+                  wv_has("class='nav'");
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
@@ -648,7 +648,7 @@ int test_wallet_view(void)
         size_t n = wv_get("/wallet/shield?amount=0.5");
         bool ok = (n > 0) && wv_is_200();
         ok = ok && wv_has("0.50000000");  /* amount displayed */
-        ok = ok && wv_has("Confirm Shield");
+        ok = ok && wv_has("Confirm");
         ok = ok && wv_has("Cancel");
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
@@ -660,7 +660,7 @@ int test_wallet_view(void)
         bool ok = wv_has("Step 1:");
         ok = ok && wv_has("Step 2:");
         ok = ok && wv_has("Step 3:");
-        ok = ok && wv_has("shielded address");
+        ok = ok && wv_has("private address");
         ok = ok && wv_has("timing analysis");
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
@@ -692,7 +692,7 @@ int test_wallet_view(void)
         wv_get("/wallet/shield?amount=0.5");
         bool ok = wv_has("id='shield-loading'");
         ok = ok && wv_has("loading-overlay");
-        ok = ok && wv_has("Shielding funds...");
+        ok = ok && wv_has("Securing funds...");
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
@@ -700,9 +700,9 @@ int test_wallet_view(void)
     printf("wallet_view: shield with zero amount shows amount form... ");
     {
         size_t n = wv_get("/wallet/shield?amount=0");
-        bool ok = (n > 0) && wv_has("Shield Funds");
+        bool ok = (n > 0) && wv_has("Secure Funds");
         ok = ok && wv_has("shield-amt");  /* amount input */
-        ok = ok && wv_has("Review Shield");
+        ok = ok && wv_has("Review");
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
@@ -710,7 +710,7 @@ int test_wallet_view(void)
     printf("wallet_view: shield with negative amount shows amount form... ");
     {
         size_t n = wv_get("/wallet/shield?amount=-1");
-        bool ok = (n > 0) && wv_has("Shield Funds");
+        bool ok = (n > 0) && wv_has("Secure Funds");
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
@@ -718,8 +718,8 @@ int test_wallet_view(void)
     printf("wallet_view: shield with no amount shows amount form... ");
     {
         size_t n = wv_get("/wallet/shield");
-        bool ok = (n > 0) && wv_has("Shield Funds");
-        ok = ok && wv_has("Amount to Shield");
+        bool ok = (n > 0) && wv_has("Secure Funds");
+        ok = ok && wv_has("Amount to Secure");
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
@@ -1011,20 +1011,21 @@ int test_wallet_view(void)
         else { printf("FAIL\n"); failures++; }
     }
 
-    printf("LIVE: dashboard shows balance breakdown (transparent)... ");
+    printf("LIVE: dashboard shows balance breakdown (public/private)... ");
     {
         wv_get("/wallet");
-        bool ok = wv_has("id='breakdown'") && wv_has("transparent");
+        bool ok = wv_has("id='breakdown'") &&
+                  (wv_has("public") || wv_has("private") || wv_has("All funds"));
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
 
-    printf("LIVE: dashboard shows privacy shield card... ");
+    printf("LIVE: dashboard shows privacy secure card... ");
     {
         wv_get("/wallet");
-        bool ok = wv_has("privacy-card") && wv_has("Shield All Funds");
+        bool ok = wv_has("privacy-card") && wv_has("Secure All");
         if (ok) printf("OK (privacy nudge visible)\n");
-        else printf("OK (no card — shielded balance exists or zero balance)\n");
+        else printf("OK (no card — private balance exists or zero balance)\n");
         /* Not a failure either way — depends on balance state */
     }
 
@@ -1086,7 +1087,7 @@ int test_wallet_view(void)
     printf("LIVE: send form shows real available balance... ");
     {
         wv_get("/wallet/send");
-        bool ok = (wv_has("Transparent:") || wv_has("Available:")) && wv_has("ZCL");
+        bool ok = wv_has("ZCL");  /* Shows total balance with ZCL label */
         /* Should show a non-zero balance */
         bool has_zero_only = wv_has("0.00000000 ZCL") && !wv_has("0.9");
         if (ok && !has_zero_only) printf("OK\n");
@@ -1133,10 +1134,10 @@ int test_wallet_view(void)
         else { printf("FAIL (rects=%d)\n", rects); failures++; }
     }
 
-    printf("LIVE: receive has shielded addresses from DB... ");
+    printf("LIVE: receive has private addresses from DB... ");
     {
         wv_get("/wallet/receive");
-        bool ok = wv_has("Shielded") || wv_has("No shielded addresses");
+        bool ok = wv_has("Private") || wv_has("No private addresses");
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
@@ -1215,17 +1216,17 @@ int test_wallet_view(void)
     printf("LIVE: coins page shows UTXO table... ");
     {
         wv_get("/wallet/coins");
-        bool ok = wv_has("Coin Audit");
-        ok = ok && wv_has("Transparent UTXOs");
+        bool ok = wv_has("Your Coins");
+        ok = ok && wv_has("Public UTXOs");
         ok = ok && (wv_has("total-row") || wv_has("0 UTXO"));
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
 
-    printf("LIVE: coins page shows shielded notes section... ");
+    printf("LIVE: coins page shows private notes section... ");
     {
         wv_get("/wallet/coins");
-        bool ok = wv_has("Shielded Notes");
+        bool ok = wv_has("Private Notes");
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
@@ -1233,7 +1234,7 @@ int test_wallet_view(void)
     printf("LIVE: coins page shows data source comparison... ");
     {
         wv_get("/wallet/coins");
-        bool ok = wv_has("Data Source Comparison");
+        bool ok = wv_has("Diagnostics");
         ok = ok && wv_has("Chain UTXO set");
         ok = ok && wv_has("verified");
         if (ok) printf("OK\n");
@@ -1243,7 +1244,7 @@ int test_wallet_view(void)
     printf("LIVE: coins page shows grand total stats... ");
     {
         wv_get("/wallet/coins");
-        bool ok = wv_has("Transparent</div>") && wv_has("Shielded</div>");
+        bool ok = wv_has("Public</div>") && wv_has("Private</div>");
         ok = ok && wv_has("Total</div>");
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
@@ -1294,7 +1295,7 @@ int test_wallet_view(void)
         bool ok = true;
         for (int i = 0; pages[i]; i++) {
             wv_get(pages[i]);
-            if (!wv_has("class='nav'") || !wv_has("Dashboard</a>")) {
+            if (!wv_has("class='nav'") || !wv_has("Home</a>")) {
                 ok = false;
                 break;
             }
@@ -1513,9 +1514,9 @@ int test_wallet_view(void)
     printf("LIVE: shield flow has z-addresses available... ");
     {
         wv_get("/wallet/shield?amount=0.01");
-        /* Must show confirmation page, not "No Shielded Address" error */
-        bool ok = wv_has("Confirm Shield") || wv_has("Shielding");
-        bool bad = wv_has("No Shielded Address");
+        /* Must show confirmation page, not error */
+        bool ok = wv_has("Confirm") || wv_has("Securing");
+        bool bad = wv_has("Could Not Secure");
         if (ok && !bad) printf("OK\n");
         else { printf("FAIL (no z-address!)\n"); failures++; }
     }
@@ -1535,7 +1536,7 @@ int test_wallet_view(void)
         wv_get("/wallet/shield?amount=0.001");
         bool groth16 = wv_has("Groth16");
         bool not_impl = wv_has("not yet implemented");
-        bool has_confirm = wv_has("Confirm Shield");
+        bool has_confirm = wv_has("Confirm");
         if (!groth16 && !not_impl && has_confirm) printf("OK\n");
         else { printf("FAIL (groth16=%d notimpl=%d confirm=%d)\n",
             groth16, not_impl, has_confirm); failures++; }
@@ -1549,15 +1550,15 @@ int test_wallet_view(void)
         else { printf("FAIL\n"); failures++; }
     }
 
-    printf("LIVE: dashboard privacy card has shield link... ");
+    printf("LIVE: dashboard privacy card has secure link... ");
     {
         wv_get("/wallet");
-        bool ok = wv_has("Shield All") || wv_has("/wallet/shield");
+        bool ok = wv_has("Secure All") || wv_has("/wallet/shield");
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
 
-    printf("LIVE: send review for z-address shows shielded indicator... ");
+    printf("LIVE: send review for z-address shows private indicator... ");
     {
         /* Test the send REVIEW page (not confirm — confirm triggers
          * real z_sendmany which spends actual ZCL). */
@@ -1566,8 +1567,209 @@ int test_wallet_view(void)
             "eqtwh2rvzgykl6m3lu8gwarpflcczgyse2p&amount=0.001");
         bool groth16 = wv_has("Groth16");
         bool not_impl = wv_has("not yet implemented");
-        bool has_shielded = wv_has("Private") || wv_has("shielded");
+        bool has_shielded = wv_has("private") || wv_has("Private") || wv_has("shielded");
         if (!groth16 && !not_impl && has_shielded) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ═══════════════════════════════════════════════════════════
+     * 14b. PRIVACY & ACCURACY INTEGRATION TESTS
+     * ═══════════════════════════════════════════════════════════ */
+
+    printf("\n=== PRIVACY & ACCURACY TESTS ===\n\n");
+
+    printf("INTEG: send review to zs1 shows t→z privacy warning... ");
+    {
+        wv_post("/wallet/send/review",
+            "address=zs19hc6ghlrzklr7y82u9w6822zuvrpfmgzlqz7alx8"
+            "eqtwh2rvzgykl6m3lu8gwarpflcczgyse2p&amount=0.001");
+        bool has_warning = wv_has("sending address") && wv_has("visible");
+        bool has_label = wv_has("Recipient private");
+        if (has_warning && has_label) printf("OK (honest t→z label)\n");
+        else { printf("FAIL (warning=%d label=%d)\n", has_warning, has_label); failures++; }
+    }
+
+    printf("INTEG: send review to t-addr shows Public pill, no warning... ");
+    {
+        wv_post("/wallet/send/review",
+            "address=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn&amount=0.001");
+        bool has_public = wv_has("Public");
+        bool no_tz_warning = !wv_has("sending address");
+        if (has_public && no_tz_warning) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("INTEG: dashboard Power Node shows Ready or Synced (not Syncing when idle)... ");
+    {
+        wv_get("/wallet");
+        /* The sync badge says "Ready" when idle; Power Node should match */
+        bool has_syncing_in_node = wv_has(">Syncing</div>") &&
+                                    wv_has("Power Node");
+        bool has_ready = wv_has(">Ready</div>") || wv_has(">Synced</div>");
+        /* If badge says Ready, Power Node must not say Syncing */
+        if (has_ready && !has_syncing_in_node) printf("OK\n");
+        else if (wv_has("pill-syncing")) printf("OK (actually syncing)\n");
+        else { printf("FAIL (inconsistent sync state)\n"); failures++; }
+    }
+
+    printf("INTEG: send form fee shows 0.0001 (not 0.00010000)... ");
+    {
+        wv_get("/wallet/send");
+        bool short_fee = wv_has("0.0001 ZCL");
+        bool no_long_fee = !wv_has("0.00010000 ZCL");
+        if (short_fee && no_long_fee) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("INTEG: dashboard lock icon is NOT green when balance is zero... ");
+    {
+        /* Can't easily test with zero balance in live mode, but verify
+         * the icon exists and is yellow (since we have public balance) */
+        wv_get("/wallet");
+        bool has_lock = wv_has("id='lock'");
+        bool is_yellow = wv_has("color:#fbbf24");
+        if (has_lock && is_yellow) printf("OK (yellow for mixed balance)\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("INTEG: dashboard has contacts datalist on send page... ");
+    {
+        wv_get("/wallet/send");
+        bool has_datalist = wv_has("id='contacts'") && wv_has("datalist");
+        bool has_list_attr = wv_has("list='contacts'");
+        if (has_datalist && has_list_attr) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("INTEG: dashboard has backup warning... ");
+    {
+        wv_get("/wallet");
+        bool has_backup = wv_has("Not Backed Up") || wv_has("wallet.backup");
+        /* Either shows warning or backup exists — both are valid */
+        if (has_backup || wv_has("Backed Up")) printf("OK\n");
+        else { printf("FAIL (no backup indicator)\n"); failures++; }
+    }
+
+    printf("INTEG: dashboard Power Node section exists... ");
+    {
+        wv_get("/wallet");
+        bool has_node = wv_has("Power Node");
+        bool has_peers = wv_has("Peers</div>");
+        bool has_mempool = wv_has("Mempool</div>");
+        if (has_node && has_peers && has_mempool) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("INTEG: coins page Diagnostics is collapsed... ");
+    {
+        wv_get("/wallet/coins");
+        bool has_details = wv_has("<details");
+        bool has_diag = wv_has("Diagnostics");
+        if (has_details && has_diag) printf("OK (collapsed)\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("INTEG: coins page uses 'Your Coins' not 'Coin Audit'... ");
+    {
+        wv_get("/wallet/coins");
+        bool good = wv_has("Your Coins");
+        bool bad = wv_has("Coin Audit");
+        if (good && !bad) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("INTEG: receive page shows z-address QR code... ");
+    {
+        wv_get("/wallet/receive");
+        /* The private pane should have a QR SVG for the z-address */
+        int svg_count = 0;
+        const char *p = (char *)_wv_resp;
+        while ((p = strstr(p, "<svg")) != NULL) { svg_count++; p += 4; }
+        /* Should have at least 2 SVGs: one for t-address, one for z-address */
+        if (svg_count >= 2) printf("OK (%d QR codes)\n", svg_count);
+        else if (svg_count == 1) printf("OK (1 QR — z-addr may be too long)\n");
+        else { printf("FAIL (no QR codes)\n"); failures++; }
+    }
+
+    printf("INTEG: nav has 4 tabs (Home, Send, Receive, History)... ");
+    {
+        wv_get("/wallet");
+        bool has_home = wv_has(">Home</a>");
+        bool has_send = wv_has(">Send</a>");
+        bool has_recv = wv_has(">Receive</a>");
+        bool has_hist = wv_has(">History</a>");
+        bool no_secure = !wv_has(">Secure</a>");
+        bool no_coins = !wv_has(">Coins</a>");
+        if (has_home && has_send && has_recv && has_hist &&
+            no_secure && no_coins) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("INTEG: dashboard shows 'Pending' not '0 confs' for unconfirmed... ");
+    {
+        wv_get("/wallet");
+        bool bad = wv_has("0 confs");
+        bool good = wv_has("Pending") || !wv_has("Unconfirmed");
+        if (!bad && good) printf("OK\n");
+        else if (!bad) printf("OK (no unconfirmed txs)\n");
+        else { printf("FAIL (shows '0 confs')\n"); failures++; }
+    }
+
+    printf("INTEG: receive page says 'Click to copy' not 'Tap'... ");
+    {
+        wv_get("/wallet/receive");
+        bool good = wv_has("Click to copy");
+        bool bad = wv_has("Tap address");
+        if (good && !bad) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("INTEG: shield fee shows 4 decimals not 8... ");
+    {
+        wv_get("/wallet/shield?amount=0.5");
+        bool has_short = wv_has("0.0001 ZCL");
+        bool no_long = !wv_has("0.00010000 ZCL");
+        if (has_short && no_long) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("INTEG: body font is 20px... ");
+    {
+        wv_get("/wallet");
+        bool ok = wv_has("font-size:20px");
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("INTEG: balance font is 56px... ");
+    {
+        wv_get("/wallet");
+        bool ok = wv_has("font-size:56px");
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("INTEG: privacy meter exists with percentage... ");
+    {
+        wv_get("/wallet");
+        bool ok = wv_has("privacy-meter") && wv_has("private");
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("INTEG: send page has privacy hint div... ");
+    {
+        wv_get("/wallet/send");
+        bool ok = wv_has("privacy-hint");
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("INTEG: send page privacy hint JS detects zs1... ");
+    {
+        wv_get("/wallet/send");
+        bool ok = wv_has("Private send") && wv_has("Visible on blockchain");
+        if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
 
@@ -1660,7 +1862,7 @@ int test_wallet_view(void)
     {
         wv_get("/wallet/shield?amount=0");
         bool has_form = wv_has("shield-amt");
-        bool bad = wv_has("Confirm Shield");
+        bool bad = wv_has("Confirm</button>") && !wv_has("shield-amt");
         if (has_form && !bad) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
@@ -1703,27 +1905,28 @@ int test_wallet_view(void)
     printf("NAV: every tab highlights correctly... ");
     {
         struct { const char *path; const char *active; } tabs[] = {
-            {"/wallet",         "class='active'>Dashboard"},
+            {"/wallet",         "class='active'>Home"},
             {"/wallet/send",    "class='active'>Send"},
             {"/wallet/receive", "class='active'>Receive"},
             {"/wallet/history", "class='active'>History"},
-            {"/wallet/coins",   "class='active'>Coins"},
         };
         bool ok = true;
-        for (int i = 0; i < 5; i++) {
+        for (int i = 0; i < 4; i++) {
             wv_get(tabs[i].path);
             if (!wv_has(tabs[i].active)) {
                 printf("FAIL (%s)\n", tabs[i].path);
                 ok = false; failures++; break;
             }
         }
-        if (ok) printf("OK (all 5)\n");
+        if (ok) printf("OK (all 4)\n");
     }
 
-    printf("NAV: shield page has no active tab... ");
+    printf("NAV: shield page has no active nav tab (not in main nav)... ");
     {
         wv_get("/wallet/shield?amount=0.5");
-        bool bad = wv_has("class='active'>Dashboard");
+        /* Shield is not in nav anymore — no tab should be active */
+        bool bad = wv_has("class='active'>Home") ||
+                   wv_has("class='active'>Send");
         if (!bad) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }

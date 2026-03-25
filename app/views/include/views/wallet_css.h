@@ -8,7 +8,7 @@ static const char wallet_css_0[] =
     "*{box-sizing:border-box;margin:0;padding:0}"
     "body{font-family:Inter,-apple-system,'Segoe UI',system-ui,sans-serif;"
     "background:#0c0c0c;color:#e2e2e2;max-width:520px;margin:0 auto;"
-    "padding:20px;font-size:17px;line-height:1.6}"
+    "padding:20px;font-size:20px;line-height:1.6}"
     "a{color:#60a5fa;text-decoration:none;transition:color .15s ease}"
     "a:hover{color:#93c5fd}"
     "a:focus-visible{outline:2px solid #34d399;outline-offset:2px}"
@@ -18,26 +18,26 @@ static const char wallet_css_0[] =
     /* Navigation */
     ".nav{display:flex;gap:4px;margin:0 0 16px;padding:4px;background:#111;"
     "border-radius:10px}"
-    ".nav a{flex:1;text-align:center;padding:10px 4px;border-radius:8px;"
-    "font-size:14px;font-weight:600;color:#999;transition:all .15s ease;"
+    ".nav a{flex:1;text-align:center;padding:12px 8px;border-radius:8px;"
+    "font-size:16px;font-weight:600;color:#999;transition:all .15s ease;min-height:48px;"
     "text-decoration:none;touch-action:manipulation}"
     ".nav a:hover{color:#e2e2e2;background:#161616}"
     ".nav a.active{color:#34d399;background:#0a1f14}"
     ".nav a:focus-visible{outline:2px solid #34d399;outline-offset:-2px}"
 
     /* Balance hero */
-    ".balance{text-align:center;font-size:48px;font-weight:800;"
+    ".balance{text-align:center;font-size:56px;font-weight:800;"
     "color:#34d399;letter-spacing:-1px;line-height:1.1}"
-    ".balance-sub{text-align:center;color:#bbb;font-size:15px;margin-top:8px}"
+    ".balance-sub{text-align:center;color:#bbb;font-size:16px;margin-top:8px}"
 
     /* Sync badge */
-    ".sync-badge{display:inline-block;font-size:10px;font-weight:600;"
+    ".sync-badge{display:inline-block;font-size:12px;font-weight:600;"
     "letter-spacing:.08em;text-transform:uppercase}"
     "@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}"
 
     /* Pill variants */
     ".pill{display:inline-block;padding:2px 8px;border-radius:10px;"
-    "font-size:11px;font-weight:700;letter-spacing:.03em}"
+    "font-size:13px;font-weight:700;letter-spacing:.03em}"
     ".pill-synced{background:#0a1f14;color:#34d399}"
     ".pill-ready{background:#0f1a2e;color:#60a5fa}"
     ".pill-syncing{background:#1a1510;color:#fbbf24;animation:pulse 1.5s ease infinite}"
@@ -51,27 +51,27 @@ static const char wallet_css_0[] =
 static const char wallet_css_1[] =
     /* Actions */
     ".actions{display:flex;gap:12px;margin:16px 0}"
-    ".actions a{flex:1;text-align:center;padding:14px 8px;border-radius:10px;"
-    "font-size:15px;font-weight:700;text-decoration:none;"
+    ".actions a{flex:1;text-align:center;padding:16px 8px;border-radius:10px;"
+    "font-size:18px;font-weight:700;text-decoration:none;min-height:52px;"
     "transition:all .15s ease;touch-action:manipulation}"
     ".actions a:focus-visible{outline:2px solid #34d399;outline-offset:2px}"
 
     /* Buttons */
     ".btn-primary{display:block;width:100%;background:#34d399;color:#0c0c0c;"
-    "border:none;padding:16px;font-size:17px;font-weight:700;"
+    "border:none;padding:16px;font-size:18px;font-weight:700;"
     "border-radius:10px;cursor:pointer;font-family:inherit;"
     "transition:background .15s ease;touch-action:manipulation}"
     ".btn-primary:hover{background:#4ade80}"
     ".btn-primary:focus-visible{outline:2px solid #34d399;outline-offset:2px}"
     ".btn-primary:disabled{opacity:.5;cursor:not-allowed}"
     ".btn-secondary{display:block;width:100%;background:transparent;"
-    "color:#e2e2e2;border:1px solid #333;padding:16px;font-size:17px;"
+    "color:#e2e2e2;border:1px solid #333;padding:16px;font-size:18px;"
     "font-weight:700;border-radius:10px;cursor:pointer;font-family:inherit;"
     "transition:all .15s ease;touch-action:manipulation}"
     ".btn-secondary:hover{border-color:#999}"
     ".btn-secondary:focus-visible{outline:2px solid #34d399;outline-offset:2px}"
-    ".send-max{background:#1e1e1e;color:#34d399;border:none;padding:6px 10px;"
-    "font-size:11px;font-weight:700;border-radius:6px;cursor:pointer;"
+    ".send-max{background:#1e1e1e;color:#34d399;border:none;padding:10px 14px;"
+    "font-size:12px;font-weight:700;border-radius:6px;cursor:pointer;min-height:36px;"
     "font-family:inherit;white-space:nowrap;transition:background .15s ease;"
     "touch-action:manipulation}"
     ".send-max:hover{background:#333}"
@@ -79,11 +79,11 @@ static const char wallet_css_1[] =
 
     /* Forms */
     ".form-group{margin-bottom:16px}"
-    ".form-label{display:block;font-size:11px;font-weight:600;"
+    ".form-label{display:block;font-size:13px;font-weight:600;"
     "text-transform:uppercase;letter-spacing:.08em;color:#bbb;margin-bottom:6px}"
     ".form-input{display:block;width:100%;background:#111;color:#e2e2e2;"
     "border:1px solid #1e1e1e;padding:14px 16px;"
-    "font-family:inherit;font-size:17px;border-radius:8px;"
+    "font-family:inherit;font-size:18px;border-radius:8px;"
     "transition:border-color .15s ease}"
     ".form-input:focus{border-color:#333;outline:none;"
     "box-shadow:0 0 0 3px rgba(52,211,153,.12)}"
@@ -94,7 +94,7 @@ static const char wallet_css_2[] =
     /* Section header */
     ".section-header{display:flex;justify-content:space-between;"
     "align-items:baseline;margin:24px 0 8px}"
-    ".section-header span{font-size:11px;font-weight:600;"
+    ".section-header span{font-size:13px;font-weight:600;"
     "text-transform:uppercase;letter-spacing:.08em;color:#aaa}"
     ".section-header a{font-size:12px;color:#aaa}"
     ".section-header a:hover{color:#ccc}"
@@ -103,15 +103,15 @@ static const char wallet_css_2[] =
     ".tx-row{display:flex;justify-content:space-between;align-items:center;"
     "padding:12px 0;border-bottom:1px solid #1e1e1e}"
     ".tx-row:last-child{border-bottom:none}"
-    ".tx-amount{font-size:18px;font-weight:700;"
+    ".tx-amount{font-size:20px;font-weight:700;"
     "font-family:'JetBrains Mono','SF Mono','Fira Code',monospace}"
     ".tx-amount.recv{color:#34d399}"
     ".tx-amount.send{color:#f87171}"
     ".tx-meta{font-size:14px;color:#aaa;text-align:right}"
     ".tx-meta a{color:#60a5fa;font-family:'JetBrains Mono','SF Mono',monospace;"
-    "font-size:11px}"
+    "font-size:12px}"
     ".tx-time{display:block;margin-bottom:2px}"
-    ".tx-conf{font-size:11px;color:#999}"
+    ".tx-conf{font-size:13px;color:#999}"
 
     /* UTXO rows */
     ".utxo-row{display:flex;justify-content:space-between;align-items:center;"
@@ -182,9 +182,9 @@ static const char wallet_css_3[] =
     ".page-controls a{color:#60a5fa}"
 
     /* Tables (coins page) */
-    "table{width:100%;border-collapse:collapse;font-size:15px}"
+    "table{width:100%;border-collapse:collapse;font-size:16px}"
     "th{text-align:left;color:#666;padding:8px 6px;"
-    "border-bottom:1px solid #1e1e1e;font-size:11px;"
+    "border-bottom:1px solid #1e1e1e;font-size:13px;"
     "text-transform:uppercase;letter-spacing:.05em;font-weight:600}"
     "td{padding:8px 6px;border-bottom:1px solid #1e1e1e;color:#e2e2e2}"
     "tr:hover{background:#111}";
@@ -204,19 +204,19 @@ static const char wallet_css_4[] =
     "border-radius:8px;text-align:center}"
     ".stat .n{font-size:24px;color:#34d399;font-weight:800;line-height:1.2;"
     "font-family:'JetBrains Mono','SF Mono',monospace}"
-    ".stat .l{font-size:10px;color:#666;text-transform:uppercase;"
+    ".stat .l{font-size:13px;color:#666;text-transform:uppercase;"
     "letter-spacing:.08em;margin-top:4px;font-weight:600}"
 
     /* Headings */
-    "h2{color:#e2e2e2;font-size:18px;margin:24px 0 8px;font-weight:700}"
-    "h3{color:#999;font-size:13px;font-weight:600;margin:20px 0 8px;"
+    "h2{color:#e2e2e2;font-size:22px;margin:24px 0 8px;font-weight:700}"
+    "h3{color:#999;font-size:15px;font-weight:600;margin:20px 0 8px;"
     "text-transform:uppercase;letter-spacing:.05em}"
     ".sub{color:#666;font-size:13px;margin-bottom:12px}"
 
     /* Card (legacy compat for shield/coins pages) */
     ".card{background:#111;padding:14px 16px;border-radius:8px;"
     "margin:8px 0;border-left:3px solid #34d399}"
-    ".card .label{color:#666;font-size:11px;font-weight:600;"
+    ".card .label{color:#666;font-size:13px;font-weight:600;"
     "text-transform:uppercase;letter-spacing:.05em}"
     ".card .value{font-size:22px;color:#34d399;font-weight:700}"
 
@@ -303,7 +303,7 @@ static const char wallet_css_5[] =
 
     /* Small screens */
     "@media(max-width:360px){body{padding:12px;font-size:14px}"
-    ".balance{font-size:32px}.nav a{font-size:11px;padding:6px 2px}"
+    ".balance{font-size:36px}.nav a{font-size:13px;padding:8px 4px}"
     ".actions a{padding:12px 4px;font-size:14px}"
     ".stat .n{font-size:18px}"
     "table{font-size:12px}td,th{padding:5px 4px}"

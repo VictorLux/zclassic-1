@@ -6,7 +6,17 @@
 #include "zslp/slp.h"
 #include "core/uint256.h"
 #include "wallet/wallet.h"
+#include "wallet/keystore.h"
+#include "keys/key.h"
+#include "keys/pubkey.h"
+#include "keys/key_io.h"
 #include "chain/chainparams.h"
+#include "script/standard.h"
+#include "validation/sighash.h"
+#include "consensus/upgrades.h"
+#include "support/cleanse.h"
+#include "validation/txmempool.h"
+#include "primitives/transaction.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -90,16 +100,166 @@ const char *zslp_create_token(const char *datadir,
            "script=%zu bytes\n",
            ticker, name, decimals, (unsigned long long)initial_supply, slen);
 
-    /* TODO: Build transaction with:
-     *   vout[0]: OP_RETURN with script (value=0)
+    /* Build transaction:
+     *   vout[0]: OP_RETURN with GENESIS script (value=0)
      *   vout[1]: dust output to our address (receives initial supply)
      *   vout[2]: dust output to our address (mint baton)
-     * Sign and broadcast via sendrawtransaction.
-     *
-     * The token_id = txid of this GENESIS transaction.
-     * Until we build and broadcast the tx, return a placeholder. */
+     * Sign and broadcast via wallet. */
+    extern struct wallet *g_active_wallet;
+    extern struct tx_mempool *g_mempool;
 
-    /* Store token info in SQLite for tracking */
+    char *broadcast_txid = NULL; /* set if we successfully broadcast */
+
+    if (!g_active_wallet || !g_mempool) {
+        /* No wallet available (test mode) — skip on-chain broadcast,
+         * just track in SQLite below. */
+        goto store_sqlite;
+    }
+
+    /* Build a multi-output transaction with OP_RETURN at vout[0] */
+    struct wallet_tx wtx;
+    int64_t fee_paid = 0;
+    const char *tx_error = NULL;
+
+    /* We need our own address for dust outputs (token receiver + mint baton) */
+    struct pubkey our_pk;
+    if (!wallet_get_key_from_pool(g_active_wallet, &our_pk)) {
+        fprintf(stderr, "zslp: cannot get address from wallet\n");
+        return NULL;
+    }
+    struct key_id our_kid = pubkey_get_id(&our_pk);
+    struct tx_destination our_dest;
+    our_dest.type = DEST_KEY_ID;
+    our_dest.id.key = our_kid;
+
+    /* Create transaction with 2 dust outputs (546 satoshi each).
+     * The OP_RETURN is prepended after, by patching the raw tx. */
+    struct tx_destination dests[2] = { our_dest, our_dest };
+    int64_t vals[2] = { 546, 546 }; /* dust for token + mint baton */
+
+    if (!wallet_create_transaction_multi(g_active_wallet,
+            dests, vals, 2, &wtx, &fee_paid, &tx_error)) {
+        fprintf(stderr, "zslp: tx build failed: %s\n",
+                tx_error ? tx_error : "unknown");
+        return NULL;
+    }
+
+    /* Shift existing vouts right by 1 to insert OP_RETURN at position 0.
+     * wallet_create_transaction_multi already allocated and signed the tx.
+     * We need to re-allocate vout array with one extra slot. */
+    size_t old_nout = wtx.tx.num_vout;
+    size_t new_nout = old_nout + 1;
+    struct tx_out *new_vout = calloc(new_nout, sizeof(struct tx_out));
+    if (!new_vout) {
+        transaction_free(&wtx.tx);
+        return NULL;
+    }
+
+    /* vout[0] = OP_RETURN */
+    new_vout[0].value = 0;
+    new_vout[0].script_pub_key.size = slen;
+    memcpy(new_vout[0].script_pub_key.data, script, slen);
+
+    /* Copy existing outputs (dust + change) to positions 1..N */
+    for (size_t i = 0; i < old_nout; i++)
+        new_vout[i + 1] = wtx.tx.vout[i];
+
+    free(wtx.tx.vout);
+    wtx.tx.vout = new_vout;
+    wtx.tx.num_vout = new_nout;
+
+    /* Re-sign: the vout change invalidates the sighash.
+     * We need to clear scriptSigs and re-sign. */
+    const struct chain_params *cp = chain_params_get();
+    int height = g_active_wallet->best_block_height;
+    uint32_t branch_id = consensus_current_epoch_branch_id(
+        height + 1, &cp->consensus);
+
+    zcl_mutex_lock(&g_active_wallet->cs);
+    for (size_t i = 0; i < wtx.tx.num_vin; i++) {
+        /* Find the prevout to get the scriptPubKey and amount */
+        struct wallet_tx *prev_wtx = NULL;
+        for (size_t j = 0; j < g_active_wallet->num_wallet_tx; j++) {
+            if (uint256_eq(&g_active_wallet->map_wallet[j].tx.hash,
+                           &wtx.tx.vin[i].prevout.hash)) {
+                prev_wtx = &g_active_wallet->map_wallet[j];
+                break;
+            }
+        }
+        if (!prev_wtx) continue;
+
+        const struct tx_out *prev_out =
+            &prev_wtx->tx.vout[wtx.tx.vin[i].prevout.n];
+        struct tx_destination prev_dest;
+        if (!script_extract_destination(&prev_out->script_pub_key, &prev_dest))
+            continue;
+
+        struct privkey skey;
+        if (!keystore_get_key(&g_active_wallet->keystore,
+                               &prev_dest.id.key, &skey))
+            continue;
+
+        struct pubkey spk;
+        privkey_get_pubkey(&skey, &spk);
+
+        struct sighash_type ht;
+        ht.raw = SIGHASH_ALL;
+        struct precomputed_tx_data txdata;
+        precompute_tx_data(&wtx.tx, &txdata);
+
+        struct uint256 sighash;
+        if (!signature_hash(&prev_out->script_pub_key, &wtx.tx,
+                            (unsigned int)i, ht, prev_out->value,
+                            branch_id, &txdata, &sighash)) {
+            memory_cleanse(skey.vch, 32);
+            continue;
+        }
+
+        unsigned char sig[SIGNATURE_SIZE + 1];
+        size_t siglen = 0;
+        if (!privkey_sign(&skey, &sighash, sig, &siglen)) {
+            memory_cleanse(skey.vch, 32);
+            continue;
+        }
+        sig[siglen++] = 0x01;
+
+        struct script *ss = &wtx.tx.vin[i].script_sig;
+        ss->size = 0;
+        ss->data[ss->size++] = (unsigned char)siglen;
+        memcpy(&ss->data[ss->size], sig, siglen);
+        ss->size += siglen;
+        ss->data[ss->size++] = (unsigned char)spk.size;
+        memcpy(&ss->data[ss->size], spk.vch, spk.size);
+        ss->size += spk.size;
+
+        memory_cleanse(skey.vch, 32);
+    }
+    zcl_mutex_unlock(&g_active_wallet->cs);
+
+    /* Compute final tx hash — this IS the token_id */
+    transaction_compute_hash(&wtx.tx);
+
+    /* Commit to mempool + relay */
+    if (!wallet_commit_transaction(g_active_wallet, &wtx, g_mempool)) {
+        fprintf(stderr, "zslp: commit failed\n");
+        transaction_free(&wtx.tx);
+        return NULL;
+    }
+
+    static char bc_txid[128];
+    uint256_get_hex(&wtx.tx.hash, bc_txid);
+    broadcast_txid = bc_txid;
+    printf("ZSLP GENESIS broadcast: token_id=%s\n", broadcast_txid);
+
+store_sqlite:
+    ;
+    /* Store token info in SQLite */
+    static char result[128];
+    if (broadcast_txid)
+        snprintf(result, sizeof(result), "%s", broadcast_txid);
+    else
+        snprintf(result, sizeof(result), "%s", ticker); /* placeholder */
+
     char db_path[1024];
     snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
     sqlite3 *db = NULL;
@@ -115,10 +275,10 @@ const char *zslp_create_token(const char *datadir,
         sqlite3_stmt *ins = NULL;
         sqlite3_prepare_v2(db,
             "INSERT OR REPLACE INTO zslp_tokens "
-            "(token_id, ticker, name, decimals, supply, created_at) "
-            "VALUES (?, ?, ?, ?, ?, strftime('%s','now'))",
+            "(token_id, ticker, name, decimals, supply, mint_baton_vout, "
+            "created_at) VALUES (?, ?, ?, ?, ?, 2, strftime('%s','now'))",
             -1, &ins, NULL);
-        sqlite3_bind_text(ins, 1, ticker, -1, SQLITE_STATIC);
+        sqlite3_bind_text(ins, 1, result, -1, SQLITE_STATIC);
         sqlite3_bind_text(ins, 2, ticker, -1, SQLITE_STATIC);
         sqlite3_bind_text(ins, 3, name, -1, SQLITE_STATIC);
         sqlite3_bind_int(ins, 4, decimals);
@@ -128,9 +288,6 @@ const char *zslp_create_token(const char *datadir,
         sqlite3_close(db);
     }
 
-    /* Return ticker as placeholder token_id until GENESIS tx is broadcast */
-    static char result[128];
-    snprintf(result, sizeof(result), "%s", ticker);
     return result;
 }
 
@@ -322,23 +479,286 @@ bool zslp_send(const char *datadir,
 {
     if (!datadir || !token_id_hex || !to_addr) return false;
 
-    /* Validate amount */
     if (amount == 0) {
         fprintf(stderr, "zslp: send amount must be > 0\n");
         return false;
     }
 
-    /* Validate recipient address: non-empty, alphanumeric */
     size_t addr_len = strlen(to_addr);
-    if (addr_len == 0) {
-        fprintf(stderr, "zslp: send address must be non-empty\n");
-        return false;
-    }
-    if (!is_alphanumeric(to_addr, addr_len)) {
-        fprintf(stderr, "zslp: send address must be alphanumeric\n");
+    if (addr_len == 0 || !is_alphanumeric(to_addr, addr_len)) {
+        fprintf(stderr, "zslp: invalid recipient address\n");
         return false;
     }
 
-    /* Same as mint for now — debit sender, credit receiver */
-    return zslp_mint(datadir, token_id_hex, to_addr, amount);
+    extern struct wallet *g_active_wallet;
+    extern struct tx_mempool *g_mempool;
+
+    if (!g_active_wallet || !g_mempool) {
+        /* No wallet (test mode) — just update SQLite balances */
+        return zslp_mint(datadir, token_id_hex, to_addr, amount);
+    }
+
+    /* Build SEND OP_RETURN script */
+    struct uint256 token_id;
+    uint256_set_hex(&token_id, token_id_hex);
+    if (uint256_is_null(&token_id)) {
+        fprintf(stderr, "zslp: invalid token_id\n");
+        return false;
+    }
+
+    uint64_t quantities[1] = { amount };
+    uint8_t op_script[256];
+    size_t slen = slp_build_send(op_script, sizeof(op_script),
+        &token_id, quantities, 1);
+    if (slen == 0) {
+        fprintf(stderr, "zslp: failed to build SEND script\n");
+        return false;
+    }
+
+    /* Decode recipient address to destination */
+    const struct chain_params *cp = chain_params_get();
+    size_t pk_len = 0, sc_len = 0;
+    const unsigned char *pk_pfx =
+        chain_params_base58_prefix(cp, B58_PUBKEY_ADDRESS, &pk_len);
+    const unsigned char *sc_pfx =
+        chain_params_base58_prefix(cp, B58_SCRIPT_ADDRESS, &sc_len);
+    struct tx_destination dest;
+    if (!decode_destination(to_addr, pk_pfx, pk_len, sc_pfx, sc_len, &dest)) {
+        fprintf(stderr, "zslp: cannot decode recipient address\n");
+        return false;
+    }
+
+    /* Build tx: vout[0]=OP_RETURN, vout[1]=dust to recipient (token output) */
+    struct wallet_tx wtx;
+    int64_t fee_paid = 0;
+    const char *tx_error = NULL;
+
+    int64_t vals[1] = { 546 }; /* dust for token output */
+    if (!wallet_create_transaction_multi(g_active_wallet,
+            &dest, vals, 1, &wtx, &fee_paid, &tx_error)) {
+        fprintf(stderr, "zslp: tx build failed: %s\n",
+                tx_error ? tx_error : "unknown");
+        return false;
+    }
+
+    /* Prepend OP_RETURN at vout[0], shift existing outputs right */
+    size_t old_nout = wtx.tx.num_vout;
+    struct tx_out *new_vout = calloc(old_nout + 1, sizeof(struct tx_out));
+    if (!new_vout) { transaction_free(&wtx.tx); return false; }
+
+    new_vout[0].value = 0;
+    new_vout[0].script_pub_key.size = slen;
+    memcpy(new_vout[0].script_pub_key.data, op_script, slen);
+    for (size_t i = 0; i < old_nout; i++)
+        new_vout[i + 1] = wtx.tx.vout[i];
+    free(wtx.tx.vout);
+    wtx.tx.vout = new_vout;
+    wtx.tx.num_vout = old_nout + 1;
+
+    /* Re-sign (vout change invalidates sighash) */
+    int height = g_active_wallet->best_block_height;
+    uint32_t branch_id = consensus_current_epoch_branch_id(
+        height + 1, &cp->consensus);
+
+    zcl_mutex_lock(&g_active_wallet->cs);
+    for (size_t i = 0; i < wtx.tx.num_vin; i++) {
+        struct wallet_tx *prev_wtx = NULL;
+        for (size_t j = 0; j < g_active_wallet->num_wallet_tx; j++) {
+            if (uint256_eq(&g_active_wallet->map_wallet[j].tx.hash,
+                           &wtx.tx.vin[i].prevout.hash)) {
+                prev_wtx = &g_active_wallet->map_wallet[j];
+                break;
+            }
+        }
+        if (!prev_wtx) continue;
+
+        const struct tx_out *prev_out =
+            &prev_wtx->tx.vout[wtx.tx.vin[i].prevout.n];
+        struct tx_destination prev_dest;
+        if (!script_extract_destination(&prev_out->script_pub_key, &prev_dest))
+            continue;
+
+        struct privkey skey;
+        if (!keystore_get_key(&g_active_wallet->keystore,
+                               &prev_dest.id.key, &skey))
+            continue;
+
+        struct pubkey spk;
+        privkey_get_pubkey(&skey, &spk);
+
+        struct sighash_type ht;
+        ht.raw = SIGHASH_ALL;
+        struct precomputed_tx_data txdata;
+        precompute_tx_data(&wtx.tx, &txdata);
+
+        struct uint256 sighash;
+        if (!signature_hash(&prev_out->script_pub_key, &wtx.tx,
+                            (unsigned int)i, ht, prev_out->value,
+                            branch_id, &txdata, &sighash)) {
+            memory_cleanse(skey.vch, 32);
+            continue;
+        }
+
+        unsigned char sig[SIGNATURE_SIZE + 1];
+        size_t siglen = 0;
+        if (!privkey_sign(&skey, &sighash, sig, &siglen)) {
+            memory_cleanse(skey.vch, 32);
+            continue;
+        }
+        sig[siglen++] = 0x01;
+
+        struct script *ss = &wtx.tx.vin[i].script_sig;
+        ss->size = 0;
+        ss->data[ss->size++] = (unsigned char)siglen;
+        memcpy(&ss->data[ss->size], sig, siglen);
+        ss->size += siglen;
+        ss->data[ss->size++] = (unsigned char)spk.size;
+        memcpy(&ss->data[ss->size], spk.vch, spk.size);
+        ss->size += spk.size;
+
+        memory_cleanse(skey.vch, 32);
+    }
+    zcl_mutex_unlock(&g_active_wallet->cs);
+
+    transaction_compute_hash(&wtx.tx);
+
+    if (!wallet_commit_transaction(g_active_wallet, &wtx, g_mempool)) {
+        fprintf(stderr, "zslp: commit failed\n");
+        transaction_free(&wtx.tx);
+        return false;
+    }
+
+    /* Update balances in SQLite */
+    zslp_mint(datadir, token_id_hex, to_addr, amount);
+
+    char txid[65];
+    uint256_get_hex(&wtx.tx.hash, txid);
+    printf("ZSLP SEND broadcast: token=%s amount=%llu to=%s txid=%s\n",
+           token_id_hex, (unsigned long long)amount, to_addr, txid);
+    return true;
+}
+
+/* ── RPC handlers ────────────────────────────────────────── */
+
+#include "rpc/server.h"
+#include "json/json.h"
+
+static const char *g_zslp_datadir = NULL;
+
+void zslp_rpc_set_datadir(const char *datadir) {
+    g_zslp_datadir = datadir;
+}
+
+/* zslp_createtoken "ticker" "name" decimals supply */
+static bool rpc_zslp_createtoken(const struct json_value *params,
+                                   bool help, struct json_value *result)
+{
+    if (help || !params || json_size(params) < 4) {
+        json_set_str(result,
+            "zslp_createtoken \"ticker\" \"name\" decimals supply");
+        return !help;
+    }
+
+    const char *ticker = json_get_str(json_at(params, 0));
+    const char *name = json_get_str(json_at(params, 1));
+    int decimals = (int)json_get_int(json_at(params, 2));
+    uint64_t supply = (uint64_t)json_get_int(json_at(params, 3));
+
+    if (!ticker || !name) {
+        json_set_str(result, "invalid parameters");
+        return false;
+    }
+
+    const char *token_id = zslp_create_token(g_zslp_datadir,
+        ticker, name, (uint8_t)decimals, supply);
+    if (token_id)
+        json_set_str(result, token_id);
+    else {
+        json_set_str(result, "token creation failed");
+        return false;
+    }
+    return true;
+}
+
+/* zslp_send "token_id" "address" amount */
+static bool rpc_zslp_send(const struct json_value *params,
+                             bool help, struct json_value *result)
+{
+    if (help || !params || json_size(params) < 3) {
+        json_set_str(result,
+            "zslp_send \"token_id\" \"address\" amount");
+        return !help;
+    }
+
+    const char *token_id = json_get_str(json_at(params, 0));
+    const char *addr = json_get_str(json_at(params, 1));
+    uint64_t amount = (uint64_t)json_get_int(json_at(params, 2));
+
+    if (!token_id || !addr) {
+        json_set_str(result, "invalid parameters");
+        return false;
+    }
+
+    bool ok = zslp_send(g_zslp_datadir, token_id, addr, amount);
+    json_set_bool(result, ok);
+    return ok;
+}
+
+/* zslp_balance "token_id" "address" */
+static bool rpc_zslp_balance(const struct json_value *params,
+                               bool help, struct json_value *result)
+{
+    if (help || !params || json_size(params) < 2) {
+        json_set_str(result,
+            "zslp_balance \"token_id\" \"address\"");
+        return !help;
+    }
+
+    const char *token_id = json_get_str(json_at(params, 0));
+    const char *addr = json_get_str(json_at(params, 1));
+
+    if (!token_id || !addr) {
+        json_set_str(result, "invalid parameters");
+        return false;
+    }
+
+    uint64_t bal = zslp_balance(g_zslp_datadir, token_id, addr);
+    json_set_int(result, (int64_t)bal);
+    return true;
+}
+
+/* zslp_mint "token_id" "address" amount */
+static bool rpc_zslp_mint(const struct json_value *params,
+                             bool help, struct json_value *result)
+{
+    if (help || !params || json_size(params) < 3) {
+        json_set_str(result,
+            "zslp_mint \"token_id\" \"address\" amount");
+        return !help;
+    }
+
+    const char *token_id = json_get_str(json_at(params, 0));
+    const char *addr = json_get_str(json_at(params, 1));
+    uint64_t amount = (uint64_t)json_get_int(json_at(params, 2));
+
+    if (!token_id || !addr) {
+        json_set_str(result, "invalid parameters");
+        return false;
+    }
+
+    bool ok = zslp_mint(g_zslp_datadir, token_id, addr, amount);
+    json_set_bool(result, ok);
+    return ok;
+}
+
+void register_zslp_rpc_commands(struct rpc_table *t)
+{
+    struct rpc_command cmds[] = {
+        { "zslp", "zslp_createtoken", rpc_zslp_createtoken, false },
+        { "zslp", "zslp_send",       rpc_zslp_send,         false },
+        { "zslp", "zslp_balance",    rpc_zslp_balance,      true  },
+        { "zslp", "zslp_mint",       rpc_zslp_mint,         false },
+    };
+    for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++)
+        rpc_table_append(t, &cmds[i]);
 }

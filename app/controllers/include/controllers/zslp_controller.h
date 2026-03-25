@@ -48,4 +48,11 @@ int64_t zslp_check_payment(const char *datadir,
                             const char *z_addr,
                             int64_t min_amount);
 
+/* Set the datadir for RPC commands */
+void zslp_rpc_set_datadir(const char *datadir);
+
+/* Register ZSLP RPC commands */
+struct rpc_table;
+void register_zslp_rpc_commands(struct rpc_table *t);
+
 #endif
