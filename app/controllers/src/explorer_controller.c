@@ -45,6 +45,7 @@
 
 #include "controllers/explorer_internal.h"
 #include "util/template.h"
+#include "views/wallet_templates_gen.h"
 #include "views/explorer_css.h"
 #include "views/format_helpers.h"
 
@@ -902,14 +903,29 @@ static size_t serve_block(const char *param, uint8_t *r, size_t max)
             }
             type_tags = tags_buf;
 
-            APPEND(off, r, max,
-                "<tr><td>%zu</td>"
-                "<td class='hash'><a href='/explorer/tx/%s'>%s</a></td>"
-                "<td>%s</td>"
-                "<td>%zu</td><td>%zu</td>"
-                "<td class='amount'>%s</td></tr>",
-                i, txid, short_txid, type_tags,
-                tx->num_vin, tx->num_vout, val);
+            /* Combined transparent + shielded counts */
+            size_t total_in = tx->num_vin + tx->num_shielded_spend +
+                              tx->num_joinsplit;
+            size_t total_out = tx->num_vout + tx->num_shielded_output +
+                               tx->num_joinsplit;
+
+            char idx_s[16], in_s[16], out_s[16];
+            snprintf(idx_s, sizeof(idx_s), "%zu", i);
+            snprintf(in_s, sizeof(in_s), "%zu", total_in);
+            snprintf(out_s, sizeof(out_s), "%zu", total_out);
+
+            struct template_var vars[] = {
+                { "index",      idx_s },
+                { "txid",       txid },
+                { "short_txid", short_txid },
+                { "type_tags",  type_tags },
+                { "inputs",     in_s },
+                { "outputs",    out_s },
+                { "value",      val },
+            };
+            off += template_render(TMPL_EXPLORER_TX_ROW,
+                                   vars, sizeof(vars)/sizeof(vars[0]),
+                                   (char *)r + off, max - off);
         }
 
         if (blk.num_vtx > 100)

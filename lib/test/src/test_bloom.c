@@ -8,7 +8,7 @@ int test_bloom(void)
 
     printf("bloom_filter_init... ");
     {
-        struct bloom_filter f;
+        struct bloom_filter f = {0};
         bool ok = bloom_filter_init(&f, 10, 0.0001, 0, BLOOM_UPDATE_ALL);
         if (ok && f.data != NULL && f.data_size > 0 &&
             f.num_hash_funcs > 0 && f.num_hash_funcs <= MAX_BLOOM_HASH_FUNCS) {
@@ -21,7 +21,7 @@ int test_bloom(void)
 
     printf("bloom_filter insert/contains... ");
     {
-        struct bloom_filter f;
+        struct bloom_filter f = {0};
         bloom_filter_init(&f, 10, 0.0001, 0, BLOOM_UPDATE_ALL);
         const unsigned char data1[] = "hello";
         const unsigned char data2[] = "world";
@@ -42,7 +42,7 @@ int test_bloom(void)
 
     printf("bloom_filter uint256 insert/contains... ");
     {
-        struct bloom_filter f;
+        struct bloom_filter f = {0};
         bloom_filter_init(&f, 10, 0.0001, 0, BLOOM_UPDATE_ALL);
         struct uint256 h1, h2;
         memset(h1.data, 0xAA, 32);
@@ -61,7 +61,7 @@ int test_bloom(void)
 
     printf("bloom_filter_clear... ");
     {
-        struct bloom_filter f;
+        struct bloom_filter f = {0};
         bloom_filter_init(&f, 10, 0.0001, 0, BLOOM_UPDATE_ALL);
         const unsigned char data[] = "test";
         bloom_filter_insert(&f, data, 4);
@@ -75,7 +75,7 @@ int test_bloom(void)
 
     printf("bloom_filter size constraints... ");
     {
-        struct bloom_filter f;
+        struct bloom_filter f = {0};
         bloom_filter_init(&f, 10, 0.0001, 0, BLOOM_UPDATE_ALL);
         bool within = bloom_filter_is_within_size_constraints(&f);
         if (within)
@@ -86,7 +86,7 @@ int test_bloom(void)
 
     printf("bloom_filter false positive rate... ");
     {
-        struct bloom_filter f;
+        struct bloom_filter f = {0};
         bloom_filter_init(&f, 100, 0.01, 42, BLOOM_UPDATE_NONE);
         for (int i = 0; i < 100; i++) {
             unsigned char buf[4];
@@ -119,7 +119,7 @@ int test_bloom(void)
 
     printf("bloom_filter_reset... ");
     {
-        struct bloom_filter f;
+        struct bloom_filter f = {0};
         bloom_filter_init(&f, 10, 0.0001, 0, BLOOM_UPDATE_ALL);
         const unsigned char data[] = "resetme";
         bloom_filter_insert(&f, data, 7);
