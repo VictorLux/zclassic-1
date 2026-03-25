@@ -11,12 +11,13 @@
 #include <string.h>
 
 static struct checkpoint_entry mainnet_checkpoints[] = {
-    { 0,      {{0}} },
-    { 30000,  {{0}} },
-    { 160000, {{0}} },
-    { 468200, {{0}} },
+    { 0,       {{0}} },
+    { 30000,   {{0}} },
+    { 160000,  {{0}} },
+    { 468200,  {{0}} },
     { 2013514, {{0}} },
     { 2879438, {{0}} },
+    { 3054000, {{0}} },
 };
 
 static struct checkpoint_entry testnet_checkpoints[] = {
@@ -190,11 +191,13 @@ static void init_main_params(void)
         "000019679aa2ea97a3f18bd9265bc91a09929ea0b1acc0fc5ef77cdf3cf906e7");
     uint256_set_hex(&mainnet_checkpoints[5].hash,
         "000007e8fccb9e4831c7d7376a283b016ead6166491f951f4f083dbe366992b2");
+    uint256_set_hex(&mainnet_checkpoints[6].hash,
+        "000005aa8e8c321cf364788e81b94619434b0dc1a85e658a022b44f23eb85662");
 
     p->checkpointData.entries = mainnet_checkpoints;
-    p->checkpointData.nEntries = 6;
-    p->checkpointData.nTimeLastCheckpoint = 1729305135;
-    p->checkpointData.nTransactionsLastCheckpoint = 5293850;
+    p->checkpointData.nEntries = 7;
+    p->checkpointData.nTimeLastCheckpoint = 1774300000;
+    p->checkpointData.nTransactionsLastCheckpoint = 5037600;
     p->checkpointData.fTransactionsPerDay = 1060;
 
     static const char *main_founders[] = {
