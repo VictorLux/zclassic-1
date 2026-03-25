@@ -293,7 +293,7 @@ bool tor_integration_is_ready(void)
 
 void tor_integration_set_vanity_prefix(const char *prefix)
 {
-    extern void dynhost_set_vanity_prefix(const char *);
-    if (prefix && prefix[0])
+    extern void dynhost_set_vanity_prefix(const char *) __attribute__((weak));
+    if (dynhost_set_vanity_prefix && prefix && prefix[0])
         dynhost_set_vanity_prefix(prefix);
 }

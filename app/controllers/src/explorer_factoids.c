@@ -15,6 +15,8 @@
 #include "controllers/explorer_factoids.h"
 #include "controllers/explorer_internal.h"
 #include "crypto/sha3.h"
+#include "util/template.h"
+#include "views/wallet_templates_gen.h"
 #include <sqlite3.h>
 #include <stdlib.h>
 #include <string.h>
@@ -510,30 +512,35 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
         const char *name;
         const char *sql;
         int64_t fixed_height;
+        int64_t known_height;  /* authoritative fallback when SQL table is empty */
     };
 
+    /* known_height values are immutable blockchain facts verified against
+     * zclassicd getblock RPC on 2026-03-25.  They serve as fallbacks when
+     * Phase B indexing tables (joinsplits, sapling_spends, sapling_outputs,
+     * op_returns) haven't been populated yet. */
     struct milestone milestones[] = {
-        { "Genesis (Nov 6, 2016)", NULL, 0 },
+        { "Genesis (Nov 6, 2016)", NULL, 0, -1 },
         { "First non-coinbase tx",
-          "SELECT MIN(block_height) FROM transactions WHERE is_coinbase = 0", -1 },
+          "SELECT MIN(block_height) FROM transactions WHERE is_coinbase = 0", -1, -1 },
         { "First Sprout JoinSplit",
-          "SELECT MIN(block_height) FROM joinsplits", -1 },
-        { "Overwinter + Sapling activation", NULL, 476969 },
+          "SELECT MIN(block_height) FROM joinsplits", -1, 241 },
+        { "Overwinter + Sapling activation", NULL, 476969, -1 },
         { "First Sapling shielded spend",
-          "SELECT MIN(block_height) FROM sapling_spends", -1 },
+          "SELECT MIN(block_height) FROM sapling_spends", -1, 477214 },
         { "First Sapling shielded output",
-          "SELECT MIN(block_height) FROM sapling_outputs", -1 },
+          "SELECT MIN(block_height) FROM sapling_outputs", -1, 477214 },
         { "First OP_RETURN",
-          "SELECT MIN(block_height) FROM op_returns", -1 },
-        { "Bubbles upgrade activation", NULL, 585318 },
-        { "DiffAdj (Bubbly) activation", NULL, 585322 },
+          "SELECT MIN(block_height) FROM op_returns", -1, 649950 },
+        { "Bubbles upgrade activation", NULL, 585318, -1 },
+        { "DiffAdj (Bubbly) activation", NULL, 585322, -1 },
         { "First ZSLP token genesis",
-          "SELECT MIN(genesis_height) FROM zslp_tokens", -1 },
-        { "Buttercup activation (75s blocks)", NULL, 707000 },
-        { "First halving (pre-Buttercup)", NULL, 840000 },
-        { "Block 1,000,000", NULL, 1000000 },
-        { "Block 2,000,000", NULL, 2000000 },
-        { "Block 3,000,000", NULL, 3000000 },
+          "SELECT MIN(genesis_height) FROM zslp_tokens", -1, -1 },
+        { "Buttercup activation (75s blocks)", NULL, 707000, -1 },
+        { "First halving (pre-Buttercup)", NULL, 840000, -1 },
+        { "Block 1,000,000", NULL, 1000000, -1 },
+        { "Block 2,000,000", NULL, 2000000, -1 },
+        { "Block 3,000,000", NULL, 3000000, -1 },
     };
 
     int n_milestones = (int)(sizeof(milestones) / sizeof(milestones[0]));
@@ -542,10 +549,20 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
         if (milestones[i].sql)
             height = fq_i64(db, milestones[i].sql);
 
+        /* If SQL returned nothing (table empty), fall back to known height */
+        if (height <= 0 && milestones[i].known_height > 0)
+            height = milestones[i].known_height;
+
         if (height <= 0 && i > 0) {
+            /* Distinguish "not yet reached" from "index not yet built" —
+             * if chain is past Sapling activation and a table is empty,
+             * the data exists on-chain but hasn't been indexed yet. */
+            bool index_pending = (milestones[i].sql != NULL &&
+                                  chain_height > 500000);
             APPEND(off, r, max,
-                "<tr><td>%s</td><td colspan='3' style='color:#666'>Not yet reached</td></tr>",
-                milestones[i].name);
+                "<tr><td>%s</td><td colspan='3' style='color:#666'>%s</td></tr>",
+                milestones[i].name,
+                index_pending ? "Pending index rebuild" : "Not yet reached");
             continue;
         }
         if (height > chain_height && milestones[i].fixed_height >= 0) {
@@ -1185,33 +1202,40 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
         "<tr><th>Height</th><th>Date</th><th>Block Hash</th><th>SHA3</th></tr>");
 
     {
-        int64_t cp_heights[] = { 0, 30000, 160000, 468200, 2013514, 2879438 };
-        int n_cp = (int)(sizeof(cp_heights) / sizeof(cp_heights[0]));
+        /* Checkpoint data: heights + authoritative hashes from zclassicd.
+         * These are immutable blockchain facts — no SQLite dependency. */
+        struct { int64_t height; const char *hash; } checkpoints[] = {
+            { 0,       "0007104ccda289427919efc39dc9e4d499804b7bebc22df55f8b834301260602" },
+            { 30000,   "000000005c2ad200c3c7c8e627f67b306659efca1268c9bb014335fdadc0c392" },
+            { 160000,  "000000065093005a1a46ee95d6d66c2b07008220ca64dd3b3a93bbd1945480c0" },
+            { 468200,  "000000009bd5548c851c2b237894d6807a53bf1e2808402545e27a995ae4f3c3" },
+            { 2013514, "000019679aa2ea97a3f18bd9265bc91a09929ea0b1acc0fc5ef77cdf3cf906e7" },
+            { 2879438, "000007e8fccb9e4831c7d7376a283b016ead6166491f951f4f083dbe366992b2" },
+            { 3054000, "000005aa8e8c321cf364788e81b94619434b0dc1a85e658a022b44f23eb85662" },
+        };
+        int n_cp = (int)(sizeof(checkpoints) / sizeof(checkpoints[0]));
         for (int i = 0; i < n_cp; i++) {
-            char bhash[128] = "";
             int64_t btime = 0;
-            if (cp_heights[i] <= chain_height) {
-                get_block_at(db, cp_heights[i], bhash, sizeof(bhash), &btime);
-            }
-            char ts[64], rcpt[32] = "";
-            fmt_time(ts, sizeof(ts), btime);
-            compute_receipt(rcpt, sizeof(rcpt), cp_heights[i], bhash, "checkpoint");
+            char bhash_unused[128] = "";
+            get_block_at(db, checkpoints[i].height, bhash_unused, sizeof(bhash_unused), &btime);
 
-            if (btime > 0 || cp_heights[i] == 0) {
-                APPEND(off, r, max,
-                    "<tr><td><a href='/explorer/block/%" PRId64 "'>%" PRId64 "</a></td>"
-                    "<td>%s</td>"
-                    "<td><code style='word-break:break-all'>%.16s...</code></td>"
-                    "<td><code>%s</code></td></tr>",
-                    cp_heights[i], cp_heights[i], ts,
-                    bhash[0] ? bhash : "?", rcpt);
-            } else {
-                APPEND(off, r, max,
-                    "<tr><td>%" PRId64 "</td>"
-                    "<td style='color:#666'>Not yet indexed</td>"
-                    "<td>--</td><td><code>--</code></td></tr>",
-                    cp_heights[i]);
-            }
+            char height_s[32], ts[64], rcpt[32] = "";
+            char hash_short[20];
+            snprintf(height_s, sizeof(height_s), "%" PRId64, checkpoints[i].height);
+            fmt_time(ts, sizeof(ts), btime);
+            compute_receipt(rcpt, sizeof(rcpt), checkpoints[i].height,
+                            checkpoints[i].hash, "checkpoint");
+            snprintf(hash_short, sizeof(hash_short), "%.16s", checkpoints[i].hash);
+
+            struct template_var vars[] = {
+                { "height",     height_s },
+                { "time",       checkpoints[i].height <= chain_height ? ts : "<span style='color:#666'>Not yet reached</span>" },
+                { "hash_short", hash_short },
+                { "receipt",    checkpoints[i].height <= chain_height ? rcpt : "--" },
+            };
+            off += template_render(TMPL_CHECKPOINT_ROW,
+                                   vars, sizeof(vars)/sizeof(vars[0]),
+                                   (char *)r + off, max - off);
         }
     }
     APPEND(off, r, max, "</table>");

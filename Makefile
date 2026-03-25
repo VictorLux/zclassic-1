@@ -35,7 +35,7 @@ CFLAGS = -std=c23 -O3 -march=native -flto -Wall -Wextra -Werror -pedantic \
 	-Ilib/test/include \
 	-D_POSIX_C_SOURCE=200809L -Ivendor/include $(GTK_DEF) $(GTK_CFLAGS) \
 	$(WEBKIT_DEF) $(WEBKIT_CFLAGS)
-LDFLAGS = -pthread -flto
+LDFLAGS = -pthread -flto -rdynamic
 # Use vendor/tor/libtor.a when Tor is built from source.
 # Tor: use full Tor if built, otherwise fall back to stub.
 TOR_FULL = $(wildcard vendor/tor/libtor.a \

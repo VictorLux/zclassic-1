@@ -7,6 +7,7 @@
 #include <stdarg.h>
 #include <signal.h>
 #include <unistd.h>
+#include <execinfo.h>
 #include <sys/time.h>
 
 /* ── Global event log ─────────────────────────────────────
@@ -330,6 +331,16 @@ static void crash_signal_handler(int sig)
      * async-signal-safe, but on Linux it works in practice for
      * crash diagnostics. This is a best-effort dump. */
     fprintf(stderr, "\n\n*** FATAL SIGNAL %d ***\n", sig);
+
+    /* Print stack backtrace — requires -rdynamic for symbol names */
+    {
+        void *frames[64];
+        int nframes = backtrace(frames, 64);
+        fprintf(stderr, "\n=== STACK BACKTRACE (%d frames) ===\n", nframes);
+        backtrace_symbols_fd(frames, nframes, STDERR_FILENO);
+        fprintf(stderr, "=== END BACKTRACE ===\n\n");
+    }
+
     event_emitf(EV_CRASH, 0, "signal %d", sig);
     event_dump_recent(200);
     _exit(128 + sig);
