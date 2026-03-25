@@ -44,3 +44,4 @@ TAGS
 .idea/
 .zcl_test_render/
 tools/gen_templates
+tools/inspect_html

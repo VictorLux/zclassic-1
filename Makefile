@@ -67,6 +67,9 @@ TMPL_TOOL = tools/gen_templates
 $(TMPL_TOOL): tools/gen_templates.c
 	$(CC) -std=c23 -O2 -Wall -Wextra -o $@ $<
 
+tools/inspect_html: tools/inspect_html.c
+	$(CC) -std=c23 -O2 -Wall -Wextra -o $@ $<
+
 $(TMPL_GEN): $(TMPL_SRC) $(TMPL_TOOL)
 	./$(TMPL_TOOL) app/views/templates $@
 

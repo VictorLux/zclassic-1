@@ -868,8 +868,9 @@ static size_t serve_history(uint8_t *r, size_t max, int page,
             int64_t wallet_output = sqlite3_column_int64(s, 5);
             int64_t wallet_input = sqlite3_column_int64(s, 6);
             if (!txid) continue;
-            /* Skip entries with no useful data */
-            if (wallet_output == 0 && wallet_input == 0 && h == 0) continue;
+            /* Skip ghost entries (no data AND not a send we initiated) */
+            if (wallet_output == 0 && wallet_input == 0 && h == 0 && !from_me)
+                continue;
 
             bool is_recv = (from_me == 0);
             int64_t display_val;
