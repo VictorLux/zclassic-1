@@ -1346,6 +1346,8 @@ struct import_context {
     struct import_chunk chunks[IMPORT_NUM_CHUNKS];
     _Atomic int total_txids;
     _Atomic int total_rows;
+    _Atomic int decode_failures;
+    _Atomic int skipped_outputs;
     _Atomic bool reader_done;
     _Atomic bool decoders_done;
     /* LevelDB reader state (single-threaded) */
@@ -1377,9 +1379,10 @@ static int decode_coins_entry(const struct raw_entry *raw,
 
     if (nMaskCode > 10000) { stream_free(&s); return 0; }
 
-    /* Build availability vector */
+    /* Build availability vector (max 4096 vouts per tx, largest seen: 468) */
     size_t num_avail = 2;
-    bool avail[256];
+    bool avail[4096];
+    memset(avail, 0, sizeof(avail));
     avail[0] = vout0_present;
     avail[1] = vout1_present;
 
@@ -1387,7 +1390,7 @@ static int decode_coins_entry(const struct raw_entry *raw,
     while (mask_remaining > 0) {
         unsigned char ch = 0;
         if (!stream_read_bytes(&s, &ch, 1)) break;
-        for (unsigned int p = 0; p < 8 && num_avail < 256; p++)
+        for (unsigned int p = 0; p < 8 && num_avail < 4096; p++)
             avail[num_avail++] = (ch & (1 << p)) != 0;
         if (ch != 0) mask_remaining--;
     }
