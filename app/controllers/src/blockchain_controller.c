@@ -2678,64 +2678,80 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
     fflush(stdout);
     int64_t t_write = (int64_t)time(NULL);
 
-    sqlite3_stmt *stmt_txo = NULL, *stmt_txi = NULL, *stmt_js = NULL;
-    sqlite3_stmt *stmt_ss = NULL, *stmt_so = NULL, *stmt_spnf = NULL;
-    sqlite3_stmt *stmt_opret = NULL, *stmt_integrity = NULL;
-    sqlite3_stmt *stmt_update_shielded = NULL;
-
-    sqlite3_prepare_v2(g_node_db_bc->db,
-        "INSERT OR IGNORE INTO tx_outputs"
-        "(txid,vout,value,script_type,address_hash,block_height)"
-        " VALUES(?,?,?,?,?,?)",
-        -1, &stmt_txo, NULL);
-    sqlite3_prepare_v2(g_node_db_bc->db,
-        "INSERT OR IGNORE INTO tx_inputs"
-        "(txid,vin_index,prev_txid,prev_vout,block_height)"
-        " VALUES(?,?,?,?,?)",
-        -1, &stmt_txi, NULL);
-    sqlite3_prepare_v2(g_node_db_bc->db,
-        "INSERT OR IGNORE INTO joinsplits"
-        "(txid,js_index,vpub_old,vpub_new,anchor,block_height)"
-        " VALUES(?,?,?,?,?,?)",
-        -1, &stmt_js, NULL);
-    sqlite3_prepare_v2(g_node_db_bc->db,
-        "INSERT OR IGNORE INTO sapling_spends"
-        "(txid,spend_index,cv,anchor,nullifier,rk,block_height)"
-        " VALUES(?,?,?,?,?,?,?)",
-        -1, &stmt_ss, NULL);
-    sqlite3_prepare_v2(g_node_db_bc->db,
-        "INSERT OR IGNORE INTO sapling_outputs"
-        "(txid,output_index,cv,cm,ephemeral_key,block_height)"
-        " VALUES(?,?,?,?,?,?)",
-        -1, &stmt_so, NULL);
-    sqlite3_prepare_v2(g_node_db_bc->db,
-        "INSERT OR IGNORE INTO sprout_nullifiers"
-        "(nullifier,txid,block_height)"
-        " VALUES(?,?,?)",
-        -1, &stmt_spnf, NULL);
-    sqlite3_prepare_v2(g_node_db_bc->db,
-        "INSERT OR IGNORE INTO op_returns"
-        "(txid,block_height,script,is_slp)"
-        " VALUES(?,?,?,?)",
-        -1, &stmt_opret, NULL);
-    sqlite3_prepare_v2(g_node_db_bc->db,
-        "INSERT OR REPLACE INTO view_integrity"
-        "(height,sha3_hash) VALUES(?,?)",
-        -1, &stmt_integrity, NULL);
-    sqlite3_prepare_v2(g_node_db_bc->db,
-        "UPDATE blocks SET sprout_value=?,sapling_value=?"
-        " WHERE height=?",
-        -1, &stmt_update_shielded, NULL);
-
     int64_t joinsplits_indexed = 0, sapling_spends_indexed = 0;
     int64_t sapling_outputs_indexed = 0, sprout_nullifiers_indexed = 0;
     int64_t op_returns_indexed = 0;
     int64_t total_inputs = 0, total_outputs = 0;
     int64_t batch_rows = 0;
+    struct idx_block_shielded *all_bsh = NULL;
+    
 
-    /* Use SAVEPOINT to nest within any existing transaction from
-     * sync_controller (which may have a batch transaction open). */
-    sqlite3_exec(g_node_db_bc->db, "SAVEPOINT indexlegacy_b", NULL, NULL, NULL);
+    /* Open a SEPARATE sqlite3 connection for Phase B writes.
+     * The main g_node_db_bc->db handle may have an open transaction
+     * from sync_controller that would swallow our writes on rollback.
+     * A separate connection in WAL mode can write concurrently. */
+    const char *phase_b_path = sqlite3_db_filename(g_node_db_bc->db, "main");
+    sqlite3 *phase_b_db = NULL;
+    if (sqlite3_open(phase_b_path, &phase_b_db) != SQLITE_OK) {
+        printf("indexlegacy: Phase B failed to open separate DB connection\n");
+        fflush(stdout);
+        phase_b_db = NULL;
+    }
+    if (!phase_b_db) goto phase_b_skip;
+    sqlite3_exec(phase_b_db, "PRAGMA journal_mode=WAL", NULL, NULL, NULL);
+    sqlite3_exec(phase_b_db, "PRAGMA synchronous=OFF", NULL, NULL, NULL);
+    sqlite3_busy_timeout(phase_b_db, 30000);
+
+    sqlite3_stmt *stmt_txo = NULL, *stmt_txi = NULL, *stmt_js = NULL;
+    sqlite3_stmt *stmt_ss = NULL, *stmt_so = NULL, *stmt_spnf = NULL;
+    sqlite3_stmt *stmt_opret = NULL, *stmt_integrity = NULL;
+    sqlite3_stmt *stmt_update_shielded = NULL;
+
+    sqlite3_prepare_v2(phase_b_db,
+        "INSERT OR IGNORE INTO tx_outputs"
+        "(txid,vout,value,script_type,address_hash,block_height)"
+        " VALUES(?,?,?,?,?,?)",
+        -1, &stmt_txo, NULL);
+    sqlite3_prepare_v2(phase_b_db,
+        "INSERT OR IGNORE INTO tx_inputs"
+        "(txid,vin_index,prev_txid,prev_vout,block_height)"
+        " VALUES(?,?,?,?,?)",
+        -1, &stmt_txi, NULL);
+    sqlite3_prepare_v2(phase_b_db,
+        "INSERT OR IGNORE INTO joinsplits"
+        "(txid,js_index,vpub_old,vpub_new,anchor,block_height)"
+        " VALUES(?,?,?,?,?,?)",
+        -1, &stmt_js, NULL);
+    sqlite3_prepare_v2(phase_b_db,
+        "INSERT OR IGNORE INTO sapling_spends"
+        "(txid,spend_index,cv,anchor,nullifier,rk,block_height)"
+        " VALUES(?,?,?,?,?,?,?)",
+        -1, &stmt_ss, NULL);
+    sqlite3_prepare_v2(phase_b_db,
+        "INSERT OR IGNORE INTO sapling_outputs"
+        "(txid,output_index,cv,cm,ephemeral_key,block_height)"
+        " VALUES(?,?,?,?,?,?)",
+        -1, &stmt_so, NULL);
+    sqlite3_prepare_v2(phase_b_db,
+        "INSERT OR IGNORE INTO sprout_nullifiers"
+        "(nullifier,txid,block_height)"
+        " VALUES(?,?,?)",
+        -1, &stmt_spnf, NULL);
+    sqlite3_prepare_v2(phase_b_db,
+        "INSERT OR IGNORE INTO op_returns"
+        "(txid,block_height,script,is_slp)"
+        " VALUES(?,?,?,?)",
+        -1, &stmt_opret, NULL);
+    sqlite3_prepare_v2(phase_b_db,
+        "INSERT OR REPLACE INTO view_integrity"
+        "(height,sha3_hash) VALUES(?,?)",
+        -1, &stmt_integrity, NULL);
+    sqlite3_prepare_v2(phase_b_db,
+        "UPDATE blocks SET sprout_value=?,sapling_value=?"
+        " WHERE height=?",
+        -1, &stmt_update_shielded, NULL);
+
+    /* Phase B BEGIN on separate connection */
 
     /* Write tx_inputs from all threads */
     for (int t = 0; t < N_INDEX_THREADS; t++) {
@@ -2750,10 +2766,10 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
             sqlite3_step(stmt_txi);
             total_inputs++;
             if (++batch_rows % 500000 == 0) {
-                sqlite3_exec(g_node_db_bc->db, "RELEASE SAVEPOINT indexlegacy_b", NULL, NULL, NULL);
+                sqlite3_exec(phase_b_db, "COMMIT", NULL, NULL, NULL);
                 printf("  Phase B write: %lld rows...\n", (long long)batch_rows);
                 fflush(stdout);
-                sqlite3_exec(g_node_db_bc->db, "SAVEPOINT indexlegacy_b", NULL, NULL, NULL);
+                sqlite3_exec(phase_b_db, "BEGIN", NULL, NULL, NULL);
             }
         }
     }
@@ -2855,7 +2871,7 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
     for (int t = 0; t < N_INDEX_THREADS; t++)
         total_bsh += workers[t].num_blocks_sh;
 
-    struct idx_block_shielded *all_bsh = malloc((size_t)total_bsh * sizeof(*all_bsh));
+    all_bsh = malloc((size_t)total_bsh * sizeof(*all_bsh));
     int bsh_idx = 0;
     for (int t = 0; t < N_INDEX_THREADS; t++) {
         if (workers[t].num_blocks_sh > 0) {
@@ -2923,7 +2939,10 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
         sqlite3_step(stmt_integrity);
     }
 
-    sqlite3_exec(g_node_db_bc->db, "RELEASE SAVEPOINT indexlegacy_b", NULL, NULL, NULL);
+    sqlite3_exec(phase_b_db, "COMMIT", NULL, NULL, NULL);
+    sqlite3_close(phase_b_db);
+    phase_b_db = NULL;
+phase_b_skip:
 
     /* Free all thread buffers */
     for (int t = 0; t < N_INDEX_THREADS; t++) {
