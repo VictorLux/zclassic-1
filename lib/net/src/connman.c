@@ -320,22 +320,6 @@ static void *thread_socket_handler(void *arg)
             int fd = (int)node->socket;
             if (fd < 0) continue;
 
-            /* Outbound nodes that haven't sent version yet: push it now.
-             * This runs in the socket handler thread to avoid the race
-             * between connection creation and the message handler thread. */
-            if (!node->inbound && node->send_bytes == 0 &&
-                node->state < PEER_VERSION_SENT && !node->disconnect &&
-                cm->manager.signals.send_messages) {
-                cm->manager.signals.send_messages(
-                    cm->manager.signals.ctx, node, false);
-                /* Flush immediately to the wire */
-                if (node->send_size > 0) {
-                    zcl_mutex_lock(&node->cs_send);
-                    socket_send_data(node);
-                    zcl_mutex_unlock(&node->cs_send);
-                }
-            }
-
             if (FD_ISSET(fd, &readfds) && !node->disconnect) {
                 zcl_mutex_lock(&node->cs_recv);
                 char buf[0x10000];
