@@ -82,6 +82,7 @@ int main(void)
     failures += spec_ux_sierra();
     failures += spec_html_quality();
     failures += spec_user_journeys();
+    failures += spec_e2e_wallet();
 
     ecc_verify_destroy();
     ecc_stop();

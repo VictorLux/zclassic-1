@@ -208,6 +208,7 @@ int spec_state_machine(void);
 int spec_ux_sierra(void);
 int spec_html_quality(void);
 int spec_user_journeys(void);
+int spec_e2e_wallet(void);
 
 /* ── DRY test macros ─────────────────────────────────────── */
 
