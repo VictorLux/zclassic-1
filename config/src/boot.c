@@ -2337,7 +2337,7 @@ bool app_init(struct app_context *ctx)
     rpc_http_start(&g_rpc_table, (uint16_t)ctx->rpc_port,
                     ctx->rpc_user, ctx->rpc_password, ctx->datadir);
 
-    /* Configure API controller's RPC backend (reads cookie for auth) */
+    /* Configure API + explorer RPC backends (reads fresh cookie for auth) */
     {
         char cookie_path[1024], cookie[256] = "";
         snprintf(cookie_path, sizeof(cookie_path), "%s/.cookie", ctx->datadir);
@@ -2353,10 +2353,13 @@ bool app_init(struct app_context *ctx)
             if (colon) {
                 *colon = '\0';
                 api_set_rpc_backend(cookie, colon + 1, ctx->rpc_port);
+                explorer_set_rpc(cookie, colon + 1, ctx->rpc_port);
             }
         } else if (ctx->rpc_user && ctx->rpc_password) {
             api_set_rpc_backend(ctx->rpc_user, ctx->rpc_password,
                                 ctx->rpc_port);
+            explorer_set_rpc(ctx->rpc_user, ctx->rpc_password,
+                             ctx->rpc_port);
         }
     }
 
