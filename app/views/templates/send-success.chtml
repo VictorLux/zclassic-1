@@ -2,6 +2,8 @@
 <div class='icon'>&#x2713;</div>
 <h2>{{{heading}}}</h2>
 <p>{{{amount}}} ZCL to {{address}}</p>
+<div style='color:#555;font-size:14px;margin-top:8px'>
+No bank. No intermediary. Peer-to-peer, as money should be.</div>
 {{{txid_html}}}
 <div style='margin-top:24px'>
 <a href='/wallet' style='color:#34d399;font-size:16px'>

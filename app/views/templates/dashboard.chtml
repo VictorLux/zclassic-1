@@ -2,6 +2,8 @@
 <span id='sync' class='pill {{{sync_class}}} sync-badge'>{{{sync_label}}}</span>
 <div id='bal' class='balance' style='margin-top:8px'>
 {{{balance}}} ZCL</div>
+<div style='font-size:12px;color:#555;margin-top:2px'>
+Your node, your keys, your money</div>
 
 <div id='privacy-meter' style='margin:8px auto;max-width:280px'>
 <div style='display:flex;justify-content:space-between;

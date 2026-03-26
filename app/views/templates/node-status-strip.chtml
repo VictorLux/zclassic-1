@@ -2,7 +2,7 @@
 <div style='display:flex;align-items:center;gap:10px;
 background:#111;border-radius:8px;padding:10px 14px;margin:4px 0;
 font-size:13px;color:#888'>
-<span style='color:#34d399;font-weight:700'>Node</span>
+<span style='color:#34d399;font-weight:700'>Your Node</span>
 <span>{{{peers}}} peers</span>
 <span>&middot;</span>
 <span>Block {{{height}}}</span>

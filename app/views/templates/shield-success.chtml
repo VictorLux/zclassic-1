@@ -2,9 +2,9 @@
 <div style='text-align:center'>
 <div style='font-size:40px;margin-bottom:8px'>&#x2705;</div>
 <div style='font-size:20px;color:#34d399;font-weight:700'>
-&#x1F512; Funds Secured</div>
+&#x1F512; You just became untraceable</div>
 <div style='color:#888;font-size:14px;margin-top:8px'>
-{{{amount}}} ZCL is being made private.</div>
+{{{amount}}} ZCL is being made invisible. No chain analysis can link it to you.</div>
 <div style='color:#888;font-size:14px;margin-top:12px;
 font-family:monospace;word-break:break-all'>{{opid}}</div>
 <div style='color:#555;font-size:14px;margin-top:12px'>

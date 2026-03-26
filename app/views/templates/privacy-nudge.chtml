@@ -3,7 +3,7 @@ gap:12px;text-align:left'>
 <div style='flex:1'>
 <div class='title' style='margin:0'>{{{amount}}} ZCL publicly visible</div>
 <div class='desc' style='margin:0;margin-top:2px'>
-Make private to unlink from your address</div></div>
-<a class='btn' href='/wallet/shield?all=1' 
-style='white-space:nowrap;padding:10px 16px'>Secure All</a>
+Anyone can see this balance. Make yourself invisible.</div></div>
+<a class='btn' href='/wallet/shield?all=1'
+style='white-space:nowrap;padding:10px 16px'>Go Invisible</a>
 </div>

@@ -79,6 +79,7 @@ int main(void)
     failures += spec_data_hooks();
     failures += spec_event_observers();
     failures += spec_state_machine();
+    failures += spec_ux_sierra();
 
     ecc_verify_destroy();
     ecc_stop();

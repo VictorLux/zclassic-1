@@ -25,6 +25,9 @@ You are running a sovereign full node on the ZClassic network.</div>
 <div class='val'>ZClassic mainnet (Equihash 192,7)</div>
 <div class='lbl'>Protocol</div>
 <div class='val'>NODE_NETWORK | NODE_BLOOM | NODE_ZCL23</div>
+<div class='lbl'></div>
+<div class='val' style='color:#555;font-size:12px'>
+Full network participant &mdash; you help keep ZClassic decentralized</div>
 <div class='lbl'>Version</div>
 <div class='val' style='color:#34d399'>/ZClassic-C23:0.1.0/</div>
 </div>
