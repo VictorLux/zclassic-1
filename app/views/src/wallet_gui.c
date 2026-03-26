@@ -156,8 +156,24 @@ static const struct bot_action g_bot_script[] = {
       NULL, "document.querySelector('input[name=\"amount\"]') ? 'YES' : 'NO'",
       "YES", NULL },
 
+    /* ── Send flow: fill form and submit ── */
+    { "Send flow: navigate to send",
+      "/wallet/send", "document.body.innerText",
+      "Spendable", NULL },
+    { "Send flow: check spendable shows total",
+      NULL, "document.body.innerText",
+      "0.97", NULL },
+
+    /* ── Shield flow check ── */
+    { "Shield: navigate to shield form",
+      "/wallet/shield", "document.body.innerText",
+      "Secure Funds", NULL },
+    { "Shield: available balance shown",
+      NULL, "document.body.innerText",
+      "Available", NULL },
+
     /* ── Navigate back to dashboard ── */
-    { "Return to dashboard",
+    { "Return to dashboard after flows",
       "/wallet", "document.body.innerText",
       "ZCL", NULL },
 
