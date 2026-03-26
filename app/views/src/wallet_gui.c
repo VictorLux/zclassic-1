@@ -36,6 +36,118 @@ static GtkWidget *g_nav_buttons[5];
 static GtkWidget *g_status_label = NULL;
 static uint8_t g_response[1 << 20];
 
+/* ── Self-test mode ────────────────────────────────────── */
+static bool g_self_test = false;
+static int g_test_step = 0;
+static int g_st_pass = 0;
+static int g_st_fail = 0;
+static void navigate(const char *path);
+
+static const char *g_test_pages[] = {
+    "/wallet",
+    "/wallet/send",
+    "/wallet/receive",
+    "/wallet/history",
+    "/wallet/node",
+    "/wallet/coins",
+    "/wallet/shield",
+    NULL
+};
+
+static const char *g_test_labels[] = {
+    "Dashboard",
+    "Send",
+    "Receive",
+    "History",
+    "Node",
+    "Coins",
+    "Shield",
+    NULL
+};
+
+/* Called with the JS result — check the page content */
+static void on_test_js_result(GObject *source, GAsyncResult *res, gpointer data)
+{
+    (void)data;
+    WebKitJavascriptResult *js_result =
+        webkit_web_view_run_javascript_finish(WEBKIT_WEB_VIEW(source), res, NULL);
+    if (js_result) {
+        JSCValue *val = webkit_javascript_result_get_js_value(js_result);
+        if (jsc_value_is_string(val)) {
+            char *text = jsc_value_to_string(val);
+            if (text) {
+                const char *label = g_test_labels[g_test_step - 1];
+                int len = (int)strlen(text);
+
+                /* Basic checks */
+                bool ok = len > 50;
+                bool has_zcl = strstr(text, "ZCL") != NULL;
+                bool has_error = strstr(text, "sqlite3") != NULL ||
+                                 strstr(text, "SELECT ") != NULL ||
+                                 strstr(text, "segfault") != NULL;
+
+                if (ok && !has_error) {
+                    g_st_pass++;
+                    printf("  OK   %-15s (%d chars)%s\n",
+                           label, len, has_zcl ? "" : " [no ZCL]");
+                } else {
+                    g_st_fail++;
+                    printf("  FAIL %-15s (%d chars)%s%s\n",
+                           label, len,
+                           ok ? "" : " TOO SHORT",
+                           has_error ? " LEAKED INTERNALS" : "");
+                }
+
+                /* Print first 200 chars of visible text */
+                printf("       \"%.200s\"\n\n", text);
+                g_free(text);
+            }
+        }
+        webkit_javascript_result_unref(js_result);
+    }
+
+    /* Navigate to next page or finish */
+    if (g_test_pages[g_test_step] != NULL) {
+        navigate(g_test_pages[g_test_step]);
+        g_test_step++;
+    } else {
+        printf("════════════════════════════════════════\n");
+        printf("%d passed, %d failed\n", g_st_pass, g_st_fail);
+        printf(g_st_fail ? "SELF-TEST FAILED\n" : "SELF-TEST PASSED\n");
+        printf("════════════════════════════════════════\n");
+        gtk_main_quit();
+    }
+}
+
+/* Called after each page finishes loading in test mode */
+static void on_test_load_finished(WebKitWebView *v, WebKitLoadEvent ev, gpointer d)
+{
+    (void)d;
+    if (!g_self_test || ev != WEBKIT_LOAD_FINISHED) return;
+
+    /* Small delay to let JS execute (pulse updates etc.) */
+    webkit_web_view_run_javascript(v,
+        "document.body.innerText",
+        NULL, on_test_js_result, NULL);
+}
+
+/* Start the test sequence after window shows */
+static gboolean start_self_test(gpointer data)
+{
+    (void)data;
+    printf("\n=== ZClassic23 Self-Test (real GTK WebKit) ===\n\n");
+    printf("Testing %zu pages with live rendering...\n\n",
+           sizeof(g_test_pages) / sizeof(g_test_pages[0]) - 1);
+
+    /* Connect our test load handler */
+    g_signal_connect(g_webview, "load-changed",
+        G_CALLBACK(on_test_load_finished), NULL);
+
+    /* Navigate to first page (dashboard is already loading) */
+    g_test_step = 1;
+    return G_SOURCE_REMOVE;
+}
+
 /* ── GTK Dark Theme CSS ───────────────────────────────────── */
 
 static const char *GTK_DARK_CSS =
@@ -394,8 +506,15 @@ static GtkWidget *make_btn(const char *label, const char *name, GCallback cb) {
 
 int wallet_gui_main(int argc, char **argv, const char *datadir)
 {
+    /* Check for --self-test flag */
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--self-test") == 0)
+            g_self_test = true;
+    }
+
     if (!gtk_init_check(&argc, &argv)) {
-        fprintf(stderr, "Cannot open display (DISPLAY=%s).\n",
+        fprintf(stderr, "Cannot open display (DISPLAY=%s).\n"
+                "For headless testing: xvfb-run ./zclassic23 --self-test\n",
             getenv("DISPLAY") ? getenv("DISPLAY") : "unset");
         return 1;
     }
@@ -496,8 +615,12 @@ int wallet_gui_main(int argc, char **argv, const char *datadir)
     gtk_container_add(GTK_CONTAINER(win), vbox);
     navigate("/wallet");
     gtk_widget_show_all(win);
+
+    if (g_self_test)
+        g_idle_add(start_self_test, NULL);
+
     gtk_main();
-    return 0;
+    return g_self_test ? (g_st_fail > 0 ? 1 : 0) : 0;
 }
 
 #elif defined(HAVE_GTK)
