@@ -90,38 +90,11 @@ bool fast_sync_build_offer(const char *datadir,
 /* Internal: compute root from open db handle */
 void fast_sync_compute_utxo_root_db(sqlite3 *db, uint8_t root_out[32])
 {
-    /* Rolling SHA-256 hash of all UTXOs ordered by (txid, vout).
-     * This is a simple commitment — not a full Merkle tree yet,
-     * but sufficient for snapshot verification. */
-    struct sha256_ctx ctx;
-    sha256_init(&ctx);
-
-    sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(db,
-        "SELECT txid, vout, value, height FROM utxos ORDER BY txid, vout",
-        -1, &s, NULL);
-
+    /* SHA3-256 commitment over all UTXOs in canonical order.
+     * Identical to utxo_commitment_sha3_compute() — ensures the
+     * snapshot offer hash matches what the receiver will compute. */
     uint64_t count = 0;
-    while (sqlite3_step(s) == SQLITE_ROW) {
-        const void *txid = sqlite3_column_blob(s, 0);
-        int32_t vout = sqlite3_column_int(s, 1);
-        int64_t value = sqlite3_column_int64(s, 2);
-        int32_t height = sqlite3_column_int(s, 3);
-
-        if (txid) sha256_write(&ctx, txid, 32);
-        sha256_write(&ctx, (const unsigned char *)&vout, 4);
-        sha256_write(&ctx, (const unsigned char *)&value, 8);
-        sha256_write(&ctx, (const unsigned char *)&height, 4);
-        count++;
-    }
-    sqlite3_finalize(s);
-
-    /* Finalize: double-SHA256 */
-    unsigned char h1[32];
-    sha256_finalize(&ctx, h1);
-    sha256_init(&ctx);
-    sha256_write(&ctx, h1, 32);
-    sha256_finalize(&ctx, root_out);
+    utxo_commitment_sha3_compute(db, root_out, &count);
 }
 
 bool fast_sync_compute_utxo_root(const char *datadir,

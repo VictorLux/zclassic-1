@@ -9,6 +9,7 @@
 #include "models/peer.h"
 #include "models/database.h"
 #include "net/fast_sync.h"
+#include "coins/utxo_commitment.h"
 #include "net/p2p_game.h"
 #include "net/version.h"
 #include "net/p2p_message.h"
@@ -1899,6 +1900,28 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                             printf("Swarm sync complete: %u/%u chunks\n",
                                    g_swarm.chunks_complete,
                                    g_swarm.manifest.num_chunks);
+
+                            /* Verify SHA3 UTXO commitment matches the
+                             * snapshot offer's root hash. This catches
+                             * any data corruption during transfer. */
+                            if (g_active_node_db && g_active_node_db->db) {
+                                uint8_t local_root[32];
+                                uint64_t local_count = 0;
+                                utxo_commitment_sha3_compute(
+                                    g_active_node_db->db,
+                                    local_root, &local_count);
+                                if (memcmp(local_root,
+                                           g_swarm.manifest.merkle_root,
+                                           32) == 0) {
+                                    printf("SHA3 UTXO verification: PASSED "
+                                           "(%lu UTXOs)\n",
+                                           (unsigned long)local_count);
+                                } else {
+                                    printf("SHA3 UTXO verification: FAILED "
+                                           "— snapshot data corrupted!\n");
+                                }
+                            }
+
                             swarm_sync_free(&g_swarm);
                             g_swarm_active = false;
                             zcl_mutex_unlock(&g_swarm_mutex);
