@@ -321,10 +321,21 @@ bool coins_view_cache_flush(struct coins_view_cache *c)
         utxo_commitment_merge(&parent->commitment, &c->commitment);
     }
 
-    coins_map_free(&c->cache_coins);
-    coins_map_init(&c->cache_coins);
-    /* Reset child commitment after flush (deltas merged into parent) */
-    utxo_commitment_init(&c->commitment);
+    if (ok) {
+        /* Only clear cache after successful flush. If batch_write failed
+         * (e.g. SQLite COMMIT error due to active statements), we MUST
+         * retain the dirty entries so the next flush attempt can persist
+         * them. Clearing on failure causes UTXO loss — the data disappears
+         * from both RAM and disk, causing "bad-txns-inputs-missingorspent"
+         * when later blocks try to spend those UTXOs. */
+        coins_map_free(&c->cache_coins);
+        coins_map_init(&c->cache_coins);
+        /* Reset child commitment after flush (deltas merged into parent) */
+        utxo_commitment_init(&c->commitment);
+    } else {
+        fprintf(stderr, "WARNING: coins cache flush FAILED — retaining %zu "
+                "dirty entries for retry\n", c->cache_coins.size);
+    }
     return ok;
 }
 

@@ -328,12 +328,25 @@ bool coins_view_sqlite_batch_write(struct coins_view_sqlite *cvs,
     }
 
     if (own_txn) {
+        /* Reset ALL prepared statements on this db handle before COMMIT.
+         * SQLite returns "cannot commit - SQL statements in progress" if
+         * any statement has an active result set. Since we share the db
+         * handle with g_node_db (sync_controller, etc.), we must reset
+         * everything — not just our own statements. */
+        sqlite3_stmt *stmt = NULL;
+        while ((stmt = sqlite3_next_stmt(cvs->db, stmt)) != NULL)
+            sqlite3_reset(stmt);
+
         char *errmsg = NULL;
-        sqlite3_exec(cvs->db, "COMMIT", NULL, NULL, &errmsg);
-        if (errmsg) {
-            fprintf(stderr, "coins_view_sqlite batch_write COMMIT: %s\n",
-                    errmsg);
-            sqlite3_free(errmsg);
+        int rc = sqlite3_exec(cvs->db, "COMMIT", NULL, NULL, &errmsg);
+        if (rc != SQLITE_OK) {
+            fprintf(stderr, "coins_view_sqlite batch_write COMMIT FAILED: %s\n",
+                    errmsg ? errmsg : "unknown error");
+            if (errmsg) sqlite3_free(errmsg);
+            /* Rollback the failed transaction so the db isn't left in a
+             * half-committed state. The caller (coins_view_cache_flush)
+             * will retain the dirty cache entries for retry. */
+            sqlite3_exec(cvs->db, "ROLLBACK", NULL, NULL, NULL);
             return false;
         }
     }
