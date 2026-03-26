@@ -212,6 +212,7 @@ int spec_e2e_wallet(void);
 int spec_render_audit(void);
 int spec_smoke(void);
 int spec_100_stories(void);
+int spec_consensus_compat(void);
 
 /* ── DRY test macros ─────────────────────────────────────── */
 

@@ -86,6 +86,7 @@ int main(void)
     failures += spec_render_audit();
     failures += spec_smoke();
     failures += spec_100_stories();
+    failures += spec_consensus_compat();
 
     ecc_verify_destroy();
     ecc_stop();

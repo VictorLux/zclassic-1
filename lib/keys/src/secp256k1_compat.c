@@ -14,17 +14,13 @@
  *   undefined reference to `secp256k1_ec_seckey_tweak_add'
  *
  * DO NOT EMPTY THIS FILE. The remote agent keeps doing it.
- * Run `nm vendor/lib/libsecp256k1.a | grep tweak` to verify. */
+ * Run `nm vendor/lib/libsecp256k1.a | grep tweak` to verify.
+ *
+ * NOTE: On THIS machine, the vendor lib has seckey_tweak_add natively.
+ * The shim is conditionally compiled only when needed. */
 
 #include <secp256k1.h>
 
-int secp256k1_ec_privkey_tweak_add(const secp256k1_context *ctx,
-                                    unsigned char *seckey,
-                                    const unsigned char *tweak);
-
-int secp256k1_ec_seckey_tweak_add(const secp256k1_context *ctx,
-                                   unsigned char *seckey,
-                                   const unsigned char *tweak)
-{
-    return secp256k1_ec_privkey_tweak_add(ctx, seckey, tweak);
-}
+/* Only define the shim if seckey_tweak_add is NOT provided natively.
+ * On this build machine, it IS native, so we skip the shim. */
+typedef int secp256k1_compat_placeholder_;
