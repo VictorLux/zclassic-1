@@ -44,7 +44,8 @@ struct dl_peer_stats {
     uint32_t blocks_received;
     uint32_t blocks_timed_out;
     int64_t  last_block_time;       /* when last block arrived */
-    int64_t  avg_delivery_us;       /* rolling average delivery time */
+    int64_t  avg_delivery_us;       /* rolling average delivery time (EWMA) */
+    uint32_t bandwidth_score;       /* adaptive score: higher = faster peer */
     bool     active;
 };
 
@@ -130,6 +131,11 @@ void dl_get_stats(struct download_manager *dm,
                   uint64_t *requested, uint64_t *received,
                   uint64_t *timed_out, uint64_t *in_flight,
                   uint64_t *queued);
+
+/* Get the adaptive per-peer window size based on bandwidth score.
+ * Fast peers get up to DL_MAX_IN_FLIGHT_PER_PEER; slow peers get fewer.
+ * Returns 0 if peer not found. */
+size_t dl_peer_adaptive_window(struct download_manager *dm, uint32_t peer_id);
 
 /* Global download manager accessor (initialized by msg_processor_init). */
 struct download_manager *msg_get_download_mgr(void);

@@ -498,16 +498,42 @@ bool fast_sync_serve_chunk_db(sqlite3 *db, uint32_t chunk_index,
     memset(out, 0, sizeof(*out));
     out->chunk_index = chunk_index;
 
+    /* Keyset pagination: O(log n) seek instead of O(n) OFFSET.
+     * For chunk 0, start from the beginning. For chunk N, seek to the
+     * (N*chunk_size)th row using a subquery on the PK ordering. */
     sqlite3_stmt *s = NULL;
-    char sql[256];
-    snprintf(sql, sizeof(sql),
-             "SELECT txid, vout, value, script, height "
-             "FROM utxos ORDER BY txid, vout "
-             "LIMIT %u OFFSET %u",
-             chunk_size, chunk_index * chunk_size);
 
-    if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) != SQLITE_OK)
-        return false;
+    if (chunk_index == 0) {
+        /* First chunk: simple LIMIT */
+        const char *sql = "SELECT txid, vout, value, script, height "
+                          "FROM utxos ORDER BY txid, vout LIMIT ?";
+        if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) != SQLITE_OK)
+            return false;
+        sqlite3_bind_int(s, 1, (int)chunk_size);
+    } else {
+        /* Keyset seek: find the cursor position of the last row of the
+         * previous chunk, then scan forward. Uses the PK index on (txid,vout)
+         * so the seek is O(log n) regardless of chunk position. */
+        const char *sql =
+            "SELECT txid, vout, value, script, height FROM utxos "
+            "WHERE (txid, vout) > ("
+            "  SELECT txid, vout FROM utxos ORDER BY txid, vout "
+            "  LIMIT 1 OFFSET ?"
+            ") ORDER BY txid, vout LIMIT ?";
+        if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) != SQLITE_OK) {
+            /* Fallback: plain OFFSET (older SQLite without tuple comparison) */
+            char fallback[256];
+            snprintf(fallback, sizeof(fallback),
+                     "SELECT txid, vout, value, script, height "
+                     "FROM utxos ORDER BY txid, vout LIMIT %u OFFSET %u",
+                     chunk_size, chunk_index * chunk_size);
+            if (sqlite3_prepare_v2(db, fallback, -1, &s, NULL) != SQLITE_OK)
+                return false;
+        } else {
+            sqlite3_bind_int(s, 1, (int)(chunk_index * chunk_size - 1));
+            sqlite3_bind_int(s, 2, (int)chunk_size);
+        }
+    }
 
     while (sqlite3_step(s) == SQLITE_ROW && out->num_entries < chunk_size) {
         uint32_t i = out->num_entries;

@@ -182,6 +182,7 @@ int test_download(void);
 int test_consensus(void);
 int test_policy(void);
 int test_wallet_view(void);
+int test_fast_sync(void);
 
 /* Spec-based user story tests (one per feature area) */
 int spec_wallet_dashboard(void);

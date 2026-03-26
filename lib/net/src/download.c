@@ -263,6 +263,17 @@ uint32_t dl_mark_received(struct download_manager *dm,
             ps->avg_delivery_us = delivery_us;
         else
             ps->avg_delivery_us = (ps->avg_delivery_us * 7 + delivery_us) / 8;
+
+        /* Update bandwidth score: inverse of delivery time.
+         * Score 128 = baseline (1s delivery). Faster = higher score.
+         * Range: 1 (very slow) to 255 (very fast, <50ms). */
+        if (ps->avg_delivery_us > 0) {
+            /* 128M / avg_us gives ~128 at 1s, ~256 at 0.5s, ~64 at 2s */
+            uint64_t score = 128000000ULL / (uint64_t)ps->avg_delivery_us;
+            if (score < 1) score = 1;
+            if (score > 255) score = 255;
+            ps->bandwidth_score = (uint32_t)score;
+        }
     }
 
     zcl_mutex_unlock(&dm->cs);
@@ -378,15 +389,27 @@ size_t dl_assign_to_peer(struct download_manager *dm,
 {
     zcl_mutex_lock(&dm->cs);
 
-    /* Check per-peer limit */
+    /* Adaptive per-peer limit: fast peers get larger windows.
+     * bandwidth_score 0-63 → 16 slots, 64-127 → 32-64, 128+ → 64-128.
+     * This naturally gives ~4x more work to 4x-faster peers. */
     size_t peer_count = 0;
     for (size_t i = 0; i < dm->num_slots; i++) {
         if (dm->slots[i].active && dm->slots[i].peer_id == peer_id)
             peer_count++;
     }
+    struct dl_peer_stats *ps_assign = dl_find_peer(dm, peer_id, false);
+    size_t peer_limit = DL_MAX_IN_FLIGHT_PER_PEER; /* default for new peers */
+    if (ps_assign && ps_assign->bandwidth_score > 0) {
+        /* Scale: score/128 * MAX, clamped to [16, MAX] */
+        peer_limit = (size_t)ps_assign->bandwidth_score
+                     * DL_MAX_IN_FLIGHT_PER_PEER / 128;
+        if (peer_limit < 16) peer_limit = 16;
+        if (peer_limit > DL_MAX_IN_FLIGHT_PER_PEER)
+            peer_limit = DL_MAX_IN_FLIGHT_PER_PEER;
+    }
     size_t available = 0;
-    if (peer_count < DL_MAX_IN_FLIGHT_PER_PEER)
-        available = DL_MAX_IN_FLIGHT_PER_PEER - peer_count;
+    if (peer_count < peer_limit)
+        available = peer_limit - peer_count;
     if (available > max_assign) available = max_assign;
     if (available > dm->queue_len) available = dm->queue_len;
 
@@ -449,8 +472,30 @@ void dl_peer_block_received(struct download_manager *dm,
             ps->avg_delivery_us = delivery_us;
         else
             ps->avg_delivery_us = (ps->avg_delivery_us * 7 + delivery_us) / 8;
+
+        /* Update bandwidth score */
+        if (ps->avg_delivery_us > 0) {
+            uint64_t score = 128000000ULL / (uint64_t)ps->avg_delivery_us;
+            if (score < 1) score = 1;
+            if (score > 255) score = 255;
+            ps->bandwidth_score = (uint32_t)score;
+        }
     }
     zcl_mutex_unlock(&dm->cs);
+}
+
+size_t dl_peer_adaptive_window(struct download_manager *dm, uint32_t peer_id)
+{
+    zcl_mutex_lock(&dm->cs);
+    struct dl_peer_stats *ps = dl_find_peer(dm, peer_id, false);
+    size_t window = DL_MAX_IN_FLIGHT_PER_PEER;
+    if (ps && ps->bandwidth_score > 0) {
+        window = (size_t)ps->bandwidth_score * DL_MAX_IN_FLIGHT_PER_PEER / 128;
+        if (window < 16) window = 16;
+        if (window > DL_MAX_IN_FLIGHT_PER_PEER) window = DL_MAX_IN_FLIGHT_PER_PEER;
+    }
+    zcl_mutex_unlock(&dm->cs);
+    return window;
 }
 
 void dl_get_stats(struct download_manager *dm,

@@ -56,6 +56,7 @@ int main(void)
     failures += test_consensus();
     failures += test_policy();
     failures += test_wallet_view();
+    failures += test_fast_sync();
 
     /* Spec-based user story tests */
     failures += spec_wallet_dashboard();
