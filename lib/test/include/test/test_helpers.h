@@ -209,6 +209,7 @@ int spec_ux_sierra(void);
 int spec_html_quality(void);
 int spec_user_journeys(void);
 int spec_e2e_wallet(void);
+int spec_render_audit(void);
 
 /* ── DRY test macros ─────────────────────────────────────── */
 
