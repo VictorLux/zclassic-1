@@ -118,8 +118,8 @@ size_t serve_dashboard(uint8_t *r, size_t max) {
             char amt_s[32];
             zcl_format_zcl(amt_s, sizeof(amt_s), g_shield_pending_amount);
             const char *msg = (transparent <= 0)
-                ? "You are now untraceable. No one can see what you own."
-                : "These funds are now private. Shield remaining balance to go fully invisible.";
+                ? "Moved to z-address. Not linkable to your transparent address."
+                : "Moved to z-address. Transparent balance remains — shield to complete.";
             struct template_var dv[] = {
                 { "amount", amt_s }, { "message", msg }
             };

@@ -85,16 +85,16 @@ int spec_wallet_empowerment(void)
                 GET("/wallet/receive");
             THEN("recommended label on private tab")
                 EXPECT(has("recommended"));
-            THEN("benefit explained without jargon")
-                EXPECT(has("invisible on the blockchain"));
+            THEN("zero-knowledge proof explained")
+                EXPECT(has("zero-knowledge proof"));
             PASS();
         }
 
         STORY("public option honestly explains the tradeoff") {
             GIVEN("receive page loads")
                 GET("/wallet/receive");
-            THEN("visibility warning present")
-                EXPECT(has("visible to anyone"));
+            THEN("on-chain visibility explained")
+                EXPECT(has("on-chain"));
             PASS();
         }
     }

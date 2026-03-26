@@ -59,8 +59,8 @@ int spec_ux_sierra(void)
         STORY("protocol line has human explanation") {
             GIVEN("node page loads")
                 GET("/wallet/node");
-            THEN("decentralization context exists")
-                EXPECT(has("decentralized") || has("Decentralized"));
+            THEN("validation context exists")
+                EXPECT(has("verified independently") || has("validation"));
             PASS();
         }
 
@@ -79,16 +79,16 @@ int spec_ux_sierra(void)
                 GET("/wallet/receive");
             THEN("recommended label")
                 EXPECT(has("recommended"));
-            THEN("invisibility benefit")
-                EXPECT(has("invisible on the blockchain"));
+            THEN("zero-knowledge proof explained")
+                EXPECT(has("zero-knowledge proof"));
             PASS();
         }
 
         STORY("public option is honest about tradeoffs") {
             GIVEN("receive page loads")
                 GET("/wallet/receive");
-            THEN("visibility warning")
-                EXPECT(has("visible to anyone"));
+            THEN("on-chain visibility explained")
+                EXPECT(has("on-chain"));
             PASS();
         }
     }

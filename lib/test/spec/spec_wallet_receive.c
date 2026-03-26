@@ -24,19 +24,19 @@ int spec_wallet_receive(void)
             PASS();
         }
 
-        STORY("user understands WHY private is better") {
+        STORY("shielded address explains zero-knowledge protection") {
             GIVEN("receive page loads")
                 GET("/wallet/receive");
-            THEN("context explains the benefit, not the tech")
-                EXPECT(has("invisible on the blockchain"));
+            THEN("zero-knowledge proof described")
+                EXPECT(has("zero-knowledge proof"));
             PASS();
         }
 
-        STORY("public option warns without blocking") {
+        STORY("transparent address explains on-chain visibility") {
             GIVEN("receive page loads")
                 GET("/wallet/receive");
-            THEN("public tab explains the tradeoff")
-                EXPECT(has("visible to anyone"));
+            THEN("on-chain visibility described")
+                EXPECT(has("on-chain"));
             PASS();
         }
     }

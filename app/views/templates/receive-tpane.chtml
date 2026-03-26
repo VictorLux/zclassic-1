@@ -1,9 +1,9 @@
 <div id='pane-t' style='display:none;text-align:center;padding:16px 0'>
 <div class='balance-sub' style='margin-bottom:4px'>
-Public address</div>
+Transparent t-address</div>
 <div style='color:#fbbf24;font-size:12px;margin-bottom:12px'>
-Funds sent here are visible to anyone. Use only when the sender
-requires a public address.</div>
+Balance and transactions visible on-chain. Use when sender
+does not support shielded addresses.</div>
 {{{qr_svg}}}
 {{{chunked_addr}}}
 <button onclick='copyAddr()' class='btn-secondary'

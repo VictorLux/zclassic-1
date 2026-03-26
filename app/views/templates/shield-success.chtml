@@ -2,10 +2,10 @@
 <div style='text-align:center'>
 <div style='font-size:40px;margin-bottom:8px'>&#x2705;</div>
 <div style='font-size:20px;color:#34d399;font-weight:700'>
-&#x1F512; {{{amount}}} ZCL is now private</div>
+&#x1F512; Shielding {{{amount}}} ZCL</div>
 <div style='color:#888;font-size:14px;margin-top:8px'>
-These funds are being moved to your private balance.
-No chain analysis can link them to your public address.</div>
+z_sendmany initiated. Funds moving from t-address to z-address.
+The link between your transparent and shielded balance is broken on-chain.</div>
 <div style='color:#888;font-size:14px;margin-top:12px;
 font-family:monospace;word-break:break-all'>{{opid}}</div>
 <div style='color:#555;font-size:14px;margin-top:12px'>

@@ -571,7 +571,7 @@ int test_wallet_view(void)
     printf("wallet_view: receive shows privacy type indicator... ");
     {
         wv_get("/wallet/receive");
-        bool ok = wv_has("visible to anyone");
+        bool ok = wv_has("visible on-chain");
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }

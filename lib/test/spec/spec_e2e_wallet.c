@@ -177,7 +177,7 @@ int spec_e2e_wallet(void)
             ok = ok && !e2e_has("untraceable");
             ok = ok && !e2e_has("You are now untraceable");
             /* Should show nudge to shield remaining */
-            ok = ok && (e2e_has("Go Invisible") || e2e_has("Secure") ||
+            ok = ok && (e2e_has("Shield All") || e2e_has("shield") ||
                         e2e_has("/wallet/shield"));
         }
         cleanup_test_db();
@@ -194,8 +194,8 @@ int spec_e2e_wallet(void)
             /* Should show 100% private */
             ok = e2e_has("100%") || e2e_has("All funds private");
             /* Should NOT show the nudge */
-            ok = ok && !e2e_has("Go Invisible");
-            ok = ok && !e2e_has("publicly visible");
+            ok = ok && !e2e_has("Shield All");
+            ok = ok && !e2e_has("transparent addresses");
         }
         cleanup_test_db();
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
