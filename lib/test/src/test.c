@@ -85,6 +85,7 @@ int main(void)
     failures += spec_e2e_wallet();
     failures += spec_render_audit();
     failures += spec_smoke();
+    failures += spec_100_stories();
 
     ecc_verify_destroy();
     ecc_stop();

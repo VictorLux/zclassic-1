@@ -23,6 +23,10 @@ bool g_sync_enabled = false;
 
 void wallet_view_init(const char *datadir) {
     g_wv_datadir = datadir;
+    g_balance_dirty = 0;
+    g_shield_pending_since = 0;
+    g_shield_opid[0] = '\0';
+    g_shield_pending_amount = 0;
     tmpl_init_partials();
 }
 
