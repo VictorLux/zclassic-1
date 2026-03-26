@@ -616,6 +616,74 @@ int wv_effective_tip(sqlite3 *db) {
     return u > t ? u : t;
 }
 
+/* ── Funded z-address lookup ───────────────────────────────── */
+
+void wv_get_funded_zaddr(char *out, size_t max, double *out_balance) {
+    out[0] = '\0';
+    if (out_balance) *out_balance = 0;
+
+    char buf[65536] = "";
+    int rc = wv_rpc_call("z_listunspent", "[0]", buf, sizeof(buf));
+    if (rc <= 0) return;
+
+    /* Aggregate balances per z-address */
+    struct { char addr[256]; double total; } addrs[16];
+    int n_addrs = 0;
+
+    const char *p = buf;
+    while ((p = strstr(p, "\"address\"")) != NULL) {
+        p += 9;
+        const char *q = strchr(p, '"');
+        if (!q) break;
+        q++;
+        const char *end = strchr(q, '"');
+        if (!end || (size_t)(end - q) >= 256) { p = end ? end : q; continue; }
+
+        char addr[256];
+        size_t alen = (size_t)(end - q);
+        memcpy(addr, q, alen);
+        addr[alen] = '\0';
+
+        /* Find amount for this entry */
+        const char *amt_p = strstr(end, "\"amount\"");
+        if (!amt_p) break;
+        amt_p += 8;
+        while (*amt_p && (*amt_p == ' ' || *amt_p == ':' || *amt_p == '\t'))
+            amt_p++;
+        double amt = strtod(amt_p, NULL);
+
+        /* Aggregate into addrs[] */
+        bool found = false;
+        for (int i = 0; i < n_addrs; i++) {
+            if (strcmp(addrs[i].addr, addr) == 0) {
+                addrs[i].total += amt;
+                found = true;
+                break;
+            }
+        }
+        if (!found && n_addrs < 16) {
+            snprintf(addrs[n_addrs].addr, 256, "%s", addr);
+            addrs[n_addrs].total = amt;
+            n_addrs++;
+        }
+        p = amt_p;
+    }
+
+    /* Find the address with the highest balance */
+    double best = 0;
+    int best_idx = -1;
+    for (int i = 0; i < n_addrs; i++) {
+        if (addrs[i].total > best) {
+            best = addrs[i].total;
+            best_idx = i;
+        }
+    }
+    if (best_idx >= 0) {
+        snprintf(out, max, "%s", addrs[best_idx].addr);
+        if (out_balance) *out_balance = best;
+    }
+}
+
 /* ── Txid formatting ───────────────────────────────────────── */
 
 void wv_txid_short(const char *hex, char *out, size_t out_max) {

@@ -68,7 +68,8 @@ size_t serve_send(uint8_t *r, size_t max) {
     size_t off = wv_emit_header(r, max, "Send — ZClassic23", "/wallet/send");
 
     char bal_fmt[32];
-    zcl_format_zcl(bal_fmt, sizeof(bal_fmt), balance);
+    int64_t spendable_total = balance + shielded_bal;
+    zcl_format_zcl(bal_fmt, sizeof(bal_fmt), spendable_total);
 
     /* Shielded note (raw HTML, empty if no shielded balance) */
     char shielded_note[256] = "";
@@ -265,16 +266,18 @@ size_t serve_send_review(uint8_t *r, size_t max,
     double fee = FEE_ZCL;
     double total_deducted = amount + fee;
 
-    /* Query balance */
-    int64_t balance = 0;
+    /* Query balance — use BOTH transparent and shielded */
+    int64_t t_balance = 0, z_balance = 0;
     {
         sqlite3 *db = wv_open_db();
         if (db) {
-            balance = wv_query_ground_truth_balance(db, NULL);
+            t_balance = wv_query_ground_truth_balance(db, NULL);
+            z_balance = wv_query_shielded_balance(db, NULL);
             sqlite3_close(db);
         }
     }
-    double remaining = (double)balance / (double)ZATOSHI_PER_ZCL - total_deducted;
+    int64_t spendable = t_balance + z_balance;
+    double remaining = (double)spendable / (double)ZATOSHI_PER_ZCL - total_deducted;
 
     char safe_addr[256];
     html_escape(safe_addr, sizeof(safe_addr), address);
@@ -365,15 +368,25 @@ size_t serve_send_confirm(uint8_t *r, size_t max,
 
     if (is_shielded) {
         /* Shielded send: delegate to zclassicd z_sendmany.
-         * Get the funded t-address from zclassicd listunspent
-         * (our SQLite may be stale after change-address txs). */
-        char t_from[128] = "";
-        wv_get_funded_taddr(t_from, sizeof(t_from));
-        if (t_from[0]) {
+         * Try z-address first (z→z, fully private), fall back to
+         * t-address (t→z, sender visible on-chain). */
+        char from_addr[256] = "";
+
+        /* Prefer sending from z-address (z→z = fully private) */
+        double z_bal = 0;
+        wv_get_funded_zaddr(from_addr, sizeof(from_addr), &z_bal);
+
+        /* Fall back to t-address if z-address has insufficient funds */
+        if (z_bal < amount + FEE_ZCL) {
+            from_addr[0] = '\0';
+            wv_get_funded_taddr(from_addr, sizeof(from_addr));
+        }
+
+        if (from_addr[0]) {
             char zp[1024];
             snprintf(zp, sizeof(zp),
                 "[\"%s\",[{\"address\":\"%s\",\"amount\":%.8f}],1,%.8f]",
-                t_from, address, amount, FEE_ZCL);
+                from_addr, address, amount, FEE_ZCL);
             char rb[4096] = "";
             if (wv_rpc_call("z_sendmany", zp, rb, sizeof(rb)) > 0) {
                 char rv[256] = "";
@@ -387,7 +400,7 @@ size_t serve_send_confirm(uint8_t *r, size_t max,
                                           sizeof(error_msg));
                     if (!error_msg[0])
                         snprintf(error_msg, sizeof(error_msg),
-                            "zclassicd returned an error");
+                            "z_sendmany error: %.180s", rb);
                 }
             } else {
                 snprintf(error_msg, sizeof(error_msg),
@@ -395,7 +408,7 @@ size_t serve_send_confirm(uint8_t *r, size_t max,
             }
         } else {
             snprintf(error_msg, sizeof(error_msg),
-                "No public address found in wallet");
+                "No funded address found (transparent or shielded)");
         }
     } else {
         send_ok = wallet_direct_sendtoaddress(address, amount_sat,

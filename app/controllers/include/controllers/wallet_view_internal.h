@@ -61,6 +61,7 @@ int wv_rpc_call(const char *method, const char *params,
 void wv_get_funded_taddr(char *out, size_t max);
 struct wv_funded_addr { char addr[128]; double amount; };
 int wv_get_all_funded_taddrs(struct wv_funded_addr *addrs, int max_addrs);
+void wv_get_funded_zaddr(char *out, size_t max, double *out_balance);
 void wv_sync_wallet_from_zclassicd(void);
 int wv_shield_check_status(void);
 
