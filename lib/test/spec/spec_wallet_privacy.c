@@ -57,8 +57,8 @@ int spec_wallet_privacy(void)
         STORY("shield page frames as security upgrade") {
             GIVEN("user opens shield")
                 GET("/wallet/shield");
-            THEN("language is about securing, not just moving funds")
-                EXPECT(has("Secure") || has("secure") || is_loading());
+            THEN("language is about shielding or shows nothing-to-shield")
+                EXPECT(has("Shield") || has("shield") || has("Nothing") || is_loading());
             PASS();
         }
 

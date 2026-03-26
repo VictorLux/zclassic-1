@@ -28,8 +28,8 @@ size_t serve_shield(uint8_t *r, size_t max, const char *query) {
     }
 
     if (amount <= 0) {
-        /* No amount specified — show amount input form */
-        size_t off = wv_emit_header(r, max, "Secure — ZClassic23", "/wallet/shield");
+        /* No amount specified — show amount input form (or nothing-to-shield) */
+        size_t off = wv_emit_header(r, max, "Shield — ZClassic23", "/wallet/shield");
         int64_t avail = 0;
         {
             sqlite3 *sdb = wv_open_db();
@@ -38,20 +38,45 @@ size_t serve_shield(uint8_t *r, size_t max, const char *query) {
                 sqlite3_close(sdb);
             }
         }
-        char avail_str[32], max_str[32];
-        zcl_format_zcl(avail_str, sizeof(avail_str), avail);
         double max_val = (double)avail / (double)ZATOSHI_PER_ZCL - FEE_ZCL;
         if (max_val < 0) max_val = 0;
-        snprintf(max_str, sizeof(max_str), "%.8f", max_val);
-        struct template_var fv[] = {
-            { "parent_href",  "/wallet" },
-            { "parent_label", "Home" },
-            { "current",      "Secure Funds" },
-            { "max_amount",   max_str },
-            { "available",    avail_str },
-        };
-        off += template_render(TMPL_SHIELD_AMOUNT_FORM, fv, 5,
-            (char *)r + off, max - off);
+
+        if (avail < (int64_t)(FEE_ZCL * ZATOSHI_PER_ZCL + 1)) {
+            /* Nothing to shield — transparent balance is dust */
+            struct template_var bv[] = {
+                { "parent_href",  "/wallet" },
+                { "parent_label", "Home" },
+                { "current",      "Shield" },
+            };
+            off += template_render(TMPL_BREADCRUMB, bv, 3,
+                (char *)r + off, max - off);
+            APPEND(off, r, max,
+                "<div style='text-align:center;padding:32px 0'>"
+                "<div style='font-size:24px;margin-bottom:12px'>"
+                "&#x2705;</div>"
+                "<div style='color:#34d399;font-size:18px;"
+                "font-weight:700'>Nothing to shield</div>"
+                "<div style='color:#888;font-size:14px;"
+                "margin-top:8px'>"
+                "All spendable funds are already in z-addresses."
+                "</div>"
+                "<div style='margin-top:24px'>"
+                "<a href='/wallet' style='color:#34d399'>"
+                "Back to Wallet</a></div></div>");
+        } else {
+            char avail_str[32], max_str_buf[32];
+            zcl_format_zcl(avail_str, sizeof(avail_str), avail);
+            snprintf(max_str_buf, sizeof(max_str_buf), "%.8f", max_val);
+            struct template_var fv[] = {
+                { "parent_href",  "/wallet" },
+                { "parent_label", "Home" },
+                { "current",      "Shield" },
+                { "max_amount",   max_str_buf },
+                { "available",    avail_str },
+            };
+            off += template_render(TMPL_SHIELD_AMOUNT_FORM, fv, 5,
+                (char *)r + off, max - off);
+        }
         wv_emit_footer(r, max, &off);
         return off;
     }
@@ -59,7 +84,7 @@ size_t serve_shield(uint8_t *r, size_t max, const char *query) {
     double fee = FEE_ZCL;
     double total_cost = amount + fee;
 
-    size_t off = wv_emit_header(r, max, "Secure — ZClassic23", "/wallet/shield");
+    size_t off = wv_emit_header(r, max, "Shield — ZClassic23", "/wallet/shield");
 
     /* Render shield confirmation using template */
     char amt_s[32], fee_s[32], tot_s[32];
@@ -92,7 +117,7 @@ size_t serve_shield_confirm(uint8_t *r, size_t max,
     if (amount_str[0])
         amount = strtod(amount_str, NULL);
 
-    size_t off = wv_emit_header(r, max, "Securing — ZClassic23", "/wallet/shield");
+    size_t off = wv_emit_header(r, max, "Shield — ZClassic23", "/wallet/shield");
 
     if (amount <= 0) {
         off += template_render(TMPL_SHIELD_INVALID, NULL, 0,

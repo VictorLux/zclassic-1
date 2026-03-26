@@ -93,8 +93,8 @@ int spec_user_journeys(void)
                 GET("/wallet/shield");
             THEN("shield form loads")
                 EXPECT(is_200());
-            THEN("sees Max button for easy input")
-                EXPECT(has("Max") || is_loading());
+            THEN("sees Max button or nothing-to-shield")
+                EXPECT(has("Max") || has("Nothing to shield") || is_loading());
 
             GIVEN("user enters an amount to shield")
                 GET("/wallet/shield?amount=0.5");

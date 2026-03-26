@@ -56,7 +56,7 @@ int spec_wallet_accessibility(void)
             GIVEN("shield page loads")
                 GET("/wallet/shield");
             THEN("Max button fills amount automatically")
-                EXPECT(has("Max") || is_loading());
+                EXPECT(has("Max") || has("Nothing to shield") || is_loading() || is_loading());
             PASS();
         }
     }

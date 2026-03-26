@@ -49,7 +49,7 @@ int spec_wallet_flow(void)
             GIVEN("shield page loads")
                 GET("/wallet/shield");
             THEN("amount input with Max button")
-                EXPECT(has("Max") || is_loading());
+                EXPECT(has("Max") || has("Nothing to shield") || is_loading() || is_loading());
             PASS();
         }
 

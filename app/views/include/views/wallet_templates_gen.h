@@ -8,14 +8,6 @@ static const char TMPL_BACK_TO_WALLET[] =
     "<div style='text-align:center;margin:16px'>\n<a href='/wallet' style='color:#60a5fa;font-size:16p"
     "x'>\nBack to Wallet</a></div>\n";
 
-static const char TMPL_BACKUP_WARNING[] =
-    "<div class='card' style='border-left-color:#f87171;margin:16px 0'>\n<div style='display:flex;alig"
-    "n-items:center;gap:8px'>\n<span style='font-size:20px'>&#x26A0;</span>\n<div>\n<div style='color:"
-    "#f87171;font-weight:700;font-size:14px'>\nWallet Not Backed Up</div>\n<div style='color:#888;font"
-    "-size:14px'>\nIf you lose this device, your funds are gone forever.</div>\n</div></div>\n<div sty"
-    "le='margin-top:10px'>\n<code style='font-size:13px;color:#999'>\nzcl-rpc dumpprivkey {{address}}<"
-    "/code></div>\n</div>\n";
-
 static const char TMPL_COINS_NO_NOTES[] =
     "<div class='card' style='border-left-color:#f59e0b'>\n<div class='label' style='color:#f59e0b'>\n"
     "No private notes found</div>\n<div style='color:#888;font-size:13px'>\n{{{sapling_keys}}} Sapling"
@@ -417,6 +409,14 @@ static const char TMPL_SHIELD_AMOUNT_FORM[] =
     "d-err\").textContent=\"Insufficient funds\";return false;}'>\nReview</button>\n</form>\n<div styl"
     "e='text-align:center;margin-top:16px'>\n<a href='/wallet' style='color:#888'>Cancel</a></div>\n";
 
+static const char TMPL_BACKUP_WARNING[] =
+    "<div class='card' style='border-left-color:#f87171;margin:16px 0'>\n<div style='display:flex;alig"
+    "n-items:center;gap:8px'>\n<span style='font-size:20px'>&#x26A0;</span>\n<div>\n<div style='color:"
+    "#f87171;font-weight:700;font-size:14px'>\nBack Up Your Wallet</div>\n<div style='color:#888;font-"
+    "size:14px'>\nPrivate keys are only on this device. Export to a safe location.</div>\n</div></div>"
+    "\n<div style='margin-top:10px;font-size:13px;color:#555'>\nTerminal: <code>zcl-rpc dumpprivkey {{"
+    "address}}</code></div>\n</div>\n";
+
 static const char CSS_WALLET_0[] =
     "*{box-sizing:border-box;margin:0;padding:0}body{font-family:Inter,-apple-system,'Segoe UI',system"
     "-ui,sans-serif;background:#0c0c0c;color:#e2e2e2;max-width:520px;margin:0 auto;padding:20px;font-s"
@@ -571,7 +571,6 @@ static const char *CSS_WALLET_get(void) {
 
 static const struct template_partial _tmpl_partials[] = {
     { "back-to-wallet", TMPL_BACK_TO_WALLET },
-    { "backup-warning", TMPL_BACKUP_WARNING },
     { "coins-no-notes", TMPL_COINS_NO_NOTES },
     { "coins-no-tokens", TMPL_COINS_NO_TOKENS },
     { "coins-notes-table", TMPL_COINS_NOTES_TABLE },
@@ -619,6 +618,7 @@ static const struct template_partial _tmpl_partials[] = {
     { "shield-error", TMPL_SHIELD_ERROR },
     { "history-shield", TMPL_HISTORY_SHIELD },
     { "shield-amount-form", TMPL_SHIELD_AMOUNT_FORM },
+    { "backup-warning", TMPL_BACKUP_WARNING },
 };
 
 #define TMPL_PARTIAL_COUNT 49
