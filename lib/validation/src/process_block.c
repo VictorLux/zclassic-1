@@ -8,6 +8,7 @@
 #include "validation/check_block.h"
 #include "validation/connect_block.h"
 #include "controllers/blockchain_controller.h"
+#include "coins/utxo_commitment.h"
 #include "net/download.h"
 #include "validation/validationinterface.h"
 #include "chain/checkpoints.h"
@@ -601,6 +602,50 @@ bool connect_tip(struct validation_state *state,
             return validation_state_error(state, "coins-flush-failed");
         }
         coins_view_cache_free(&view);
+    }
+
+    /* ── Mandatory SHA3 UTXO checkpoint verification ──────────── */
+    /* When we reach a hardcoded checkpoint height, flush all coins to
+     * SQLite and verify the SHA3 hash matches the compiled-in constant.
+     * This is a one-time O(n) check that guarantees UTXO set integrity.
+     * If it fails, the node's data is corrupted and MUST NOT continue. */
+    {
+        const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
+        if (cp && pindex_new->nHeight == cp->height) {
+            /* Force full coins flush to SQLite */
+            flush_coins_if_needed(coins_tip, true);
+
+            extern struct node_db *g_active_node_db;
+            if (g_active_node_db && g_active_node_db->db) {
+                uint8_t sha3[32];
+                uint64_t count = 0;
+                utxo_commitment_sha3_compute(g_active_node_db->db, sha3, &count);
+
+                if (memcmp(sha3, cp->sha3_hash, 32) != 0) {
+                    char exp[65], got[65];
+                    for (int i = 0; i < 32; i++) {
+                        snprintf(exp + i*2, 3, "%02x", cp->sha3_hash[i]);
+                        snprintf(got + i*2, 3, "%02x", sha3[i]);
+                    }
+                    fprintf(stderr,
+                        "\n*** SHA3 UTXO CHECKPOINT FAILED at height %d ***\n"
+                        "Expected: %s\n"
+                        "Computed: %s\n"
+                        "Expected %lu UTXOs, computed %lu\n"
+                        "Your UTXO set is corrupted. The node will shut down.\n"
+                        "Fix: delete node.db and resync from scratch.\n\n",
+                        cp->height, exp, got,
+                        (unsigned long)cp->utxo_count,
+                        (unsigned long)count);
+                    fflush(stderr);
+                    return validation_state_error(state,
+                        "sha3-utxo-checkpoint-failed");
+                }
+                printf("SHA3 checkpoint PASSED at height %d (%lu UTXOs)\n",
+                       cp->height, (unsigned long)count);
+                fflush(stdout);
+            }
+        }
     }
 
     /* Update chain tip */
