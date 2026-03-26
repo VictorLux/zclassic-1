@@ -45,11 +45,12 @@ size_t serve_history(uint8_t *r, size_t max, int page,
                 " AND hex(wt.txid) LIKE '%%%s%%'", safe_search);
     }
 
-    /* Exclude ghost entries: must have a block, wallet_utxos, or be a known send */
+    /* Exclude ghost/zero-value entries:
+     * - Must have block, UTXOs, or be a send (no orphans)
+     * - Received entries must have wallet_utxo value > 0 (no zero-value notes) */
     const char *ghost_filter =
-        " AND (wt.block_height > 0 OR EXISTS "
-        "(SELECT 1 FROM wallet_utxos wu WHERE wu.txid = wt.txid)"
-        " OR wt.from_me = 1)";
+        " AND (wt.from_me = 1 OR EXISTS "
+        "(SELECT 1 FROM wallet_utxos wu WHERE wu.txid = wt.txid AND wu.value > 0))";
     char count_sql[1024];
     snprintf(count_sql, sizeof(count_sql),
         "SELECT count(*) FROM wallet_transactions wt"

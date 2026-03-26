@@ -1,10 +1,8 @@
 {{> breadcrumb}}
 
 <div style='text-align:center;padding:16px 0'>
-<div style='color:#a78bfa;font-size:20px;font-weight:700;
-margin-bottom:4px'>&#x1F512; Secure Funds</div>
-<div class='balance-sub'>Make your public ZCL private
-&mdash; no longer linked to your address</div></div>
+<div class='balance-sub'>Shield transparent ZCL to a z-address.
+Breaks the on-chain link to your public address.</div></div>
 <form method='GET' action='/wallet/shield'>
 <div class='form-group'>
 <label class='form-label' for='shield-amt'>Amount to Secure</label>

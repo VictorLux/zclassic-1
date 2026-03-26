@@ -13,14 +13,13 @@
 
 #include <secp256k1.h>
 
-/* Vendor lib has seckey natively. Provide old name as alias. */
-int secp256k1_ec_seckey_tweak_add(const secp256k1_context *ctx,
-                                   unsigned char *seckey,
-                                   const unsigned char *tweak);
-
 int secp256k1_ec_privkey_tweak_add(const secp256k1_context *ctx,
                                     unsigned char *seckey,
-                                    const unsigned char *tweak)
+                                    const unsigned char *tweak);
+
+int secp256k1_ec_seckey_tweak_add(const secp256k1_context *ctx,
+                                   unsigned char *seckey,
+                                   const unsigned char *tweak)
 {
-    return secp256k1_ec_seckey_tweak_add(ctx, seckey, tweak);
+    return secp256k1_ec_privkey_tweak_add(ctx, seckey, tweak);
 }

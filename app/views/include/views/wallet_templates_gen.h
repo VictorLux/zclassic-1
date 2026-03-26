@@ -274,23 +274,6 @@ static const char TMPL_COINS_PAGE[] =
     "s='l'>UTXO Supply (ZCL)</div></div>\n<div class='stat'>\n<div class='n'>{{{chain_utxos}}}</div>\n"
     "<div class='l'>Total UTXOs</div></div>\n</div>\n";
 
-static const char TMPL_SHIELD_AMOUNT_FORM[] =
-    "{{> breadcrumb}}\n\n<div style='text-align:center;padding:16px 0'>\n<div style='color:#a78bfa;fon"
-    "t-size:20px;font-weight:700;\nmargin-bottom:4px'>&#x1F512; Secure Funds</div>\n<div class='balanc"
-    "e-sub'>Make your public ZCL private\n&mdash; no longer linked to your address</div></div>\n<form "
-    "method='GET' action='/wallet/shield'>\n<div class='form-group'>\n<label class='form-label' for='s"
-    "hield-amt'>Amount to Secure</label>\n<div style='display:flex;gap:8px;align-items:center'>\n<inpu"
-    "t class='form-input' type='text' id='shield-amt'\ninputmode='decimal' name='amount' placeholder='"
-    "0.00' required>\n<button type='button' class='send-max'\nonclick='document.getElementById(\"shiel"
-    "d-amt\").value=\"{{{max_amount}}}\"'>Max</button>\n</div>\n<div style='color:#888;font-size:14px;"
-    "margin-top:6px'>\nAvailable: <span style='color:#34d399'>{{{available}}} ZCL</span>\n</div></div>"
-    "\n<div id='shield-err' class='form-error'></div>\n<button type='submit' class='btn-primary'\nstyl"
-    "e='background:#a78bfa;color:#fff;margin-top:8px'\nonclick='var a=parseFloat(document.getElementBy"
-    "Id(\"shield-amt\").value);if(isNaN(a)||a<=0){document.getElementById(\"shield-err\").textContent="
-    "\"Enter a valid amount\";return false;}if(a>{{{max_amount}}}){document.getElementById(\"shield-er"
-    "r\").textContent=\"Insufficient funds\";return false;}'>\nReview</button>\n</form>\n<div style='t"
-    "ext-align:center;margin-top:16px'>\n<a href='/wallet' style='color:#888'>Cancel</a></div>\n";
-
 static const char TMPL_SEND_REVIEW[] =
     "{{> breadcrumb}}\n\n<div style='text-align:center;margin-bottom:16px'>\n<span class='form-label'>"
     "Review Transaction</span></div>\n<table class='review-table'>\n<tr><td>To</td>\n<td style='color:"
@@ -417,6 +400,22 @@ static const char TMPL_HISTORY_SHIELD[] =
     "gn-items:baseline'>\n<span style='color:#a78bfa;font-weight:700'>\n&#x1F512; Shield Operation</sp"
     "an>\n<span class='pill pill-private'>t &rarr; z</span></div>\n<div class='tx-meta'>\n<span class="
     "'tx-time' title='{{timestamp}}'>{{{rel_time}}}</span>\n{{{conf_html}}}\n</div></div></a>\n";
+
+static const char TMPL_SHIELD_AMOUNT_FORM[] =
+    "{{> breadcrumb}}\n\n<div style='text-align:center;padding:16px 0'>\n<div class='balance-sub'>Shie"
+    "ld transparent ZCL to a z-address.\nBreaks the on-chain link to your public address.</div></div>\n"
+    "<form method='GET' action='/wallet/shield'>\n<div class='form-group'>\n<label class='form-label' "
+    "for='shield-amt'>Amount to Secure</label>\n<div style='display:flex;gap:8px;align-items:center'>\n"
+    "<input class='form-input' type='text' id='shield-amt'\ninputmode='decimal' name='amount' placehol"
+    "der='0.00' required>\n<button type='button' class='send-max'\nonclick='document.getElementById(\""
+    "shield-amt\").value=\"{{{max_amount}}}\"'>Max</button>\n</div>\n<div style='color:#888;font-size:"
+    "14px;margin-top:6px'>\nAvailable: <span style='color:#34d399'>{{{available}}} ZCL</span>\n</div><"
+    "/div>\n<div id='shield-err' class='form-error'></div>\n<button type='submit' class='btn-primary'\n"
+    "style='background:#a78bfa;color:#fff;margin-top:8px'\nonclick='var a=parseFloat(document.getEleme"
+    "ntById(\"shield-amt\").value);if(isNaN(a)||a<=0){document.getElementById(\"shield-err\").textCont"
+    "ent=\"Enter a valid amount\";return false;}if(a>{{{max_amount}}}){document.getElementById(\"shiel"
+    "d-err\").textContent=\"Insufficient funds\";return false;}'>\nReview</button>\n</form>\n<div styl"
+    "e='text-align:center;margin-top:16px'>\n<a href='/wallet' style='color:#888'>Cancel</a></div>\n";
 
 static const char CSS_WALLET_0[] =
     "*{box-sizing:border-box;margin:0;padding:0}body{font-family:Inter,-apple-system,'Segoe UI',system"
@@ -606,7 +605,6 @@ static const struct template_partial _tmpl_partials[] = {
     { "receive-copy-js", TMPL_RECEIVE_COPY_JS },
     { "tx-detail", TMPL_TX_DETAIL },
     { "coins-page", TMPL_COINS_PAGE },
-    { "shield-amount-form", TMPL_SHIELD_AMOUNT_FORM },
     { "send-review", TMPL_SEND_REVIEW },
     { "explorer-tx-row", TMPL_EXPLORER_TX_ROW },
     { "dashboard", TMPL_DASHBOARD },
@@ -620,6 +618,7 @@ static const struct template_partial _tmpl_partials[] = {
     { "node-page", TMPL_NODE_PAGE },
     { "shield-error", TMPL_SHIELD_ERROR },
     { "history-shield", TMPL_HISTORY_SHIELD },
+    { "shield-amount-form", TMPL_SHIELD_AMOUNT_FORM },
 };
 
 #define TMPL_PARTIAL_COUNT 49

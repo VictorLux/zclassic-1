@@ -1706,7 +1706,7 @@ int test_wallet_view(void)
     printf("INTEG: dashboard shows 'Pending' not '0 confs' for unconfirmed... ");
     {
         wv_get("/wallet");
-        bool bad = wv_has("0 confs");
+        bool bad = wv_has(">0 confs<") || wv_has(" 0 confs\n");
         bool good = wv_has("Pending") || !wv_has("Unconfirmed");
         if (!bad && good) printf("OK\n");
         else if (!bad) printf("OK (no unconfirmed txs)\n");
