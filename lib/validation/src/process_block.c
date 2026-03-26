@@ -233,8 +233,28 @@ static struct block_index *find_most_work_chain(struct main_state *ms)
         if (!block_index_is_valid(pindex, BLOCK_VALID_TREE))
             continue;
 
-        if (!best || arith_uint256_compare(&pindex->nChainWork,
-                                            &best->nChainWork) > 0) {
+        int work_cmp = !best ? 1 : arith_uint256_compare(
+            &pindex->nChainWork, &best->nChainWork);
+        /* When two chains have exactly equal work (1-block forks at same
+         * difficulty), use block hash as deterministic tie-breaker.
+         * Lower hash (more PoW) wins. This matches how Bitcoin Core /
+         * zclassicd resolves equal-work forks deterministically.
+         * Without this, the winner depends on hash map iteration order,
+         * causing reindex to pick wrong fork blocks and cascade
+         * "bad-txns-inputs-missingorspent" errors. */
+        if (work_cmp == 0 && best && pindex->phashBlock && best->phashBlock) {
+            /* Compare hashes: lower hash = more work = preferred.
+             * uint256 stored little-endian; compare from high byte down. */
+            for (int bi = 31; bi >= 0; bi--) {
+                if (pindex->phashBlock->data[bi] < best->phashBlock->data[bi]) {
+                    work_cmp = 1; break; /* pindex has lower hash = better */
+                }
+                if (pindex->phashBlock->data[bi] > best->phashBlock->data[bi]) {
+                    work_cmp = -1; break; /* best has lower hash = keep it */
+                }
+            }
+        }
+        if (work_cmp > 0) {
             /* Check ancestry for failed blocks */
             bool chain_ok = true;
             struct block_index *check = pindex;
