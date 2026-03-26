@@ -2,24 +2,11 @@
  *
  * secp256k1 API compatibility shim.
  *
- * $ nm vendor/lib/libsecp256k1.a | grep tweak_add
- *   T secp256k1_ec_privkey_tweak_add    <-- OLD name, exists
- *   T secp256k1_ec_pubkey_tweak_add
+ * The vendored libsecp256k1.a now exports the modern name
+ * secp256k1_ec_seckey_tweak_add directly. No shim needed.
  *
- * Header declares secp256k1_ec_seckey_tweak_add (NEW name).
- * This shim provides seckey_tweak_add by calling privkey_tweak_add.
- *
- * DO NOT FLIP THE DIRECTION. DO NOT MAKE THIS FILE EMPTY. */
+ * If the library is ever downgraded to an older version that only
+ * has privkey_tweak_add, flip the shim direction:
+ *   seckey_tweak_add → calls privkey_tweak_add */
 
-#include <secp256k1.h>
-
-int secp256k1_ec_privkey_tweak_add(const secp256k1_context *ctx,
-                                    unsigned char *seckey,
-                                    const unsigned char *tweak);
-
-int secp256k1_ec_seckey_tweak_add(const secp256k1_context *ctx,
-                                   unsigned char *seckey,
-                                   const unsigned char *tweak)
-{
-    return secp256k1_ec_privkey_tweak_add(ctx, seckey, tweak);
-}
+typedef int secp256k1_compat_unused;

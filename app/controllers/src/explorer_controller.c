@@ -1163,6 +1163,9 @@ static size_t serve_tx(const char *param, uint8_t *r, size_t max)
 
     if (!in_mempool && !from_block) {
         block_free(&blk);
+        /* SQLite didn't have it — fall back to RPC (covers txindex gaps) */
+        size_t rpc_result = serve_tx_rpc(param, r, max);
+        if (rpc_result > 0) return rpc_result;
         char safe_param[256];
         html_escape(safe_param, sizeof(safe_param), param ? param : "");
         return (size_t)snprintf((char *)r, max,
@@ -1542,12 +1545,31 @@ static size_t serve_search(const char *query, uint8_t *r, size_t max)
 {
     if (!query) return 0;
 
+    /* URL-decode the query ('+' → space, %XX → byte) */
+    char decoded[256];
+    {
+        size_t di = 0;
+        for (size_t si = 0; query[si] && di < sizeof(decoded) - 1; si++) {
+            if (query[si] == '%' && query[si+1] && query[si+2]) {
+                char hex[3] = { query[si+1], query[si+2], '\0' };
+                decoded[di++] = (char)strtol(hex, NULL, 16);
+                si += 2;
+            } else if (query[si] == '+') {
+                decoded[di++] = ' ';
+            } else {
+                decoded[di++] = query[si];
+            }
+        }
+        decoded[di] = '\0';
+    }
+
     /* Strip leading/trailing whitespace */
-    while (*query == ' ') query++;
-    size_t qlen = strlen(query);
+    const char *dq = decoded;
+    while (*dq == ' ') dq++;
+    size_t qlen = strlen(dq);
     char q[256];
     if (qlen >= sizeof(q)) qlen = sizeof(q) - 1;
-    memcpy(q, query, qlen);
+    memcpy(q, dq, qlen);
     q[qlen] = '\0';
     while (qlen > 0 && q[qlen - 1] == ' ') q[--qlen] = '\0';
 
@@ -1589,7 +1611,16 @@ static size_t serve_search(const char *query, uint8_t *r, size_t max)
                 return serve_tx(q, r, max);
         }
 
-        /* Fallback: try as block hash via RPC (works when chain isn't loaded) */
+        /* Fallback: try as tx via RPC, then block hash via RPC */
+        {
+            char rpc_buf[1024];
+            char rpc_params[128];
+            snprintf(rpc_params, sizeof(rpc_params), "[\"%s\", 1]", q);
+            int rn = rpc_call("getrawtransaction", rpc_params,
+                              rpc_buf, sizeof(rpc_buf));
+            if (rn > 0 && strstr(rpc_buf, "\"error\":null"))
+                return serve_tx(q, r, max);
+        }
         return serve_block(q, r, max);
     }
 
