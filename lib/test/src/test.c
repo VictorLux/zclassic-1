@@ -49,6 +49,7 @@ int main(void)
     failures += test_explorer();
     failures += test_mining();
     failures += test_utxo_commitment();
+    failures += test_mmr();
     failures += test_scan_util();
     failures += test_tor();
     failures += test_event();

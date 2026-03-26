@@ -8,7 +8,9 @@
 #include "controllers/strong_params.h"
 #include "chain/chain.h"
 #include "chain/chainparams.h"
+#include "chain/mmr.h"
 #include "chain/pow.h"
+#include "coins/utxo_commitment.h"
 #include "coins/coins.h"
 #include "coins/coins_view.h"
 #include "coins/undo.h"
@@ -3101,6 +3103,156 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
     return true;
 }
 
+/* ── Global MMR ────────────────────────────────────────── */
+
+static struct mmr g_mmr;
+static bool g_mmr_initialized = false;
+
+void rpc_blockchain_mmr_append(const uint8_t block_hash[32])
+{
+    if (!g_mmr_initialized) {
+        mmr_init(&g_mmr);
+        g_mmr_initialized = true;
+    }
+    mmr_append(&g_mmr, block_hash);
+}
+
+struct mmr *rpc_blockchain_get_mmr(void) { return &g_mmr; }
+
+void rpc_blockchain_mmr_init_from_state(struct node_db *ndb)
+{
+    if (!ndb || !ndb->open) return;
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(ndb->db,
+            "SELECT value FROM node_state WHERE key='mmr_state'",
+            -1, &s, NULL) != SQLITE_OK)
+        return;
+    if (sqlite3_step(s) == SQLITE_ROW) {
+        const uint8_t *blob = (const uint8_t *)sqlite3_column_blob(s, 0);
+        int len = sqlite3_column_bytes(s, 0);
+        if (blob && len >= 12 && mmr_deserialize(&g_mmr, blob, (size_t)len))
+            g_mmr_initialized = true;
+    }
+    sqlite3_finalize(s);
+    if (!g_mmr_initialized) {
+        mmr_init(&g_mmr);
+        g_mmr_initialized = true;
+    }
+}
+
+void rpc_blockchain_mmr_catchup(struct main_state *ms)
+{
+    if (!g_mmr_initialized || !ms) return;
+    int chain_height = active_chain_height(&ms->chain_active);
+    int mmr_height = (int)g_mmr.num_leaves - 1;
+
+    if (mmr_height >= chain_height) return;
+
+    int start = mmr_height + 1;
+    int64_t t0 = (int64_t)time(NULL);
+    for (int h = start; h <= chain_height; h++) {
+        const struct block_index *bi = active_chain_at(&ms->chain_active, h);
+        if (bi && bi->phashBlock)
+            mmr_append(&g_mmr, bi->phashBlock->data);
+    }
+    int64_t elapsed = (int64_t)time(NULL) - t0;
+    printf("MMR catchup: %d → %d (%d blocks, %llds)\n",
+           start, chain_height, chain_height - start + 1, (long long)elapsed);
+}
+
+void rpc_blockchain_mmr_save(struct node_db *ndb)
+{
+    if (!ndb || !ndb->open || !g_mmr_initialized) return;
+    uint8_t buf[MMR_SERIALIZED_MAX];
+    size_t len = mmr_serialize(&g_mmr, buf, sizeof(buf));
+    if (len == 0) return;
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(ndb->db,
+            "INSERT OR REPLACE INTO node_state(key,value) "
+            "VALUES('mmr_state',?)", -1, &s, NULL) != SQLITE_OK)
+        return;
+    sqlite3_bind_blob(s, 1, buf, (int)len, SQLITE_STATIC);
+    sqlite3_step(s);
+    sqlite3_finalize(s);
+}
+
+/* ── SHA3 UTXO commitment RPC ──────────────────────────── */
+
+static bool rpc_getutxocommitment(const struct json_value *params, bool help,
+                                    struct json_value *result)
+{
+    (void)params;
+    RPC_HELP(help, result,
+        "getutxocommitment\n"
+        "\nComputes SHA3-256 hash over the entire UTXO set in canonical order.\n"
+        "This is a deterministic commitment that two nodes can compare.\n");
+
+    if (!g_node_db_bc || !g_node_db_bc->open) {
+        json_set_str(result, "Database not available");
+        return false;
+    }
+    if (!g_main_state) {
+        json_set_str(result, "Chain not loaded");
+        return false;
+    }
+
+    /* Flush coins cache first */
+    if (g_coins_tip)
+        coins_view_cache_flush(g_coins_tip);
+
+    uint8_t sha3_hash[32];
+    uint64_t count = 0;
+    int64_t t0 = (int64_t)time(NULL);
+    utxo_commitment_sha3_compute(g_node_db_bc->db, sha3_hash, &count);
+    int64_t elapsed = (int64_t)time(NULL) - t0;
+
+    int tip = active_chain_height(&g_main_state->chain_active);
+
+    /* Save checkpoint */
+    utxo_commitment_sha3_save(g_node_db_bc->db, sha3_hash, tip, count);
+
+    char hex[65];
+    for (int i = 0; i < 32; i++)
+        snprintf(hex + i * 2, 3, "%02x", sha3_hash[i]);
+
+    json_set_object(result);
+    json_push_kv_str(result, "sha3_hash", hex);
+    json_push_kv_int(result, "height", tip);
+    json_push_kv_int(result, "utxo_count", (int64_t)count);
+    json_push_kv_int(result, "elapsed_seconds", elapsed);
+    return true;
+}
+
+/* ── MMR root RPC ──────────────────────────────────────── */
+
+static bool rpc_getmmrroot(const struct json_value *params, bool help,
+                             struct json_value *result)
+{
+    (void)params;
+    RPC_HELP(help, result,
+        "getmmrroot\n"
+        "\nReturns the Merkle Mountain Range root over all block hashes.\n"
+        "Uses SHA3-256 with domain separation for power node sync.\n");
+
+    if (!g_mmr_initialized) {
+        json_set_str(result, "MMR not initialized");
+        return false;
+    }
+
+    uint8_t root[32];
+    mmr_root(&g_mmr, root);
+
+    char hex[65];
+    for (int i = 0; i < 32; i++)
+        snprintf(hex + i * 2, 3, "%02x", root[i]);
+
+    json_set_object(result);
+    json_push_kv_str(result, "mmr_root", hex);
+    json_push_kv_int(result, "num_leaves", (int64_t)g_mmr.num_leaves);
+    json_push_kv_int(result, "num_peaks", g_mmr.num_peaks);
+    return true;
+}
+
 void register_blockchain_rpc_commands(struct rpc_table *t)
 {
     struct rpc_command cmds[] = {
@@ -3120,6 +3272,8 @@ void register_blockchain_rpc_commands(struct rpc_table *t)
         { "blockchain", "reindexchainstate",    rpc_reindexchainstate,     false },
         { "blockchain", "importchainstate",     rpc_importchainstate,       false },
         { "blockchain", "indexlegacy",          rpc_indexlegacy,            false },
+        { "blockchain", "getutxocommitment",   rpc_getutxocommitment,     true },
+        { "blockchain", "getmmrroot",          rpc_getmmrroot,            true },
     };
 
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++)

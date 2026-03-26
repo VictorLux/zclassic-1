@@ -7,6 +7,7 @@
 #include "validation/process_block.h"
 #include "validation/check_block.h"
 #include "validation/connect_block.h"
+#include "controllers/blockchain_controller.h"
 #include "net/download.h"
 #include "validation/validationinterface.h"
 #include "chain/checkpoints.h"
@@ -741,6 +742,10 @@ bool connect_tip(struct validation_state *state,
             }
         }
     }
+
+    /* Append block hash to Merkle Mountain Range */
+    if (pindex_new->phashBlock)
+        rpc_blockchain_mmr_append(pindex_new->phashBlock->data);
 
     /* Periodically flush coins cache to SQLite */
     flush_coins_if_needed(coins_tip, false);

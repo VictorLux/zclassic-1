@@ -45,6 +45,7 @@ void sha3_512_finalize(struct sha3_512_ctx *ctx, unsigned char output[64]);
 void sha3_512_reset(struct sha3_512_ctx *ctx);
 
 /* One-shot convenience */
+void sha3_256(const unsigned char *data, size_t len, unsigned char output[32]);
 void sha3_512(const unsigned char *data, size_t len, unsigned char output[64]);
 
 /* HMAC-SHA3-512 for keyed authentication */

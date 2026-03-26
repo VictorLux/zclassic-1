@@ -176,6 +176,7 @@ int test_api(void);
 int test_explorer(void);
 int test_mining(void);
 int test_utxo_commitment(void);
+int test_mmr(void);
 int test_scan_util(void);
 int test_event(void);
 int test_download(void);

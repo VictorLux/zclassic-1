@@ -72,4 +72,20 @@ bool utxo_commitment_save_checkpoint(struct sqlite3 *db,
 bool utxo_commitment_load_checkpoint(struct sqlite3 *db,
                                       struct utxo_commitment *uc);
 
+/* ── SHA3-256 full-set commitment ────────────────────────── */
+
+/* Deterministic SHA3-256 hash over the canonically ordered UTXO set.
+ * Streams all UTXOs in (txid, vout) order into a single SHA3 context.
+ * Each UTXO serialized as: txid(32) || vout_le(4) || value_le(8) ||
+ *   script_len_le(4) || script(var) || height_le(4) || is_coinbase(1).
+ * More secure than XOR accumulator but O(n). */
+void utxo_commitment_sha3_compute(struct sqlite3 *db, uint8_t out[32],
+                                   uint64_t *utxo_count);
+
+/* Save/load SHA3 commitment to node_state (key='utxo_sha3'). */
+bool utxo_commitment_sha3_save(struct sqlite3 *db, const uint8_t hash[32],
+                                int32_t height, uint64_t count);
+bool utxo_commitment_sha3_load(struct sqlite3 *db, uint8_t hash[32],
+                                int32_t *height, uint64_t *count);
+
 #endif

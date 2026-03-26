@@ -2286,6 +2286,8 @@ bool app_init(struct app_context *ctx)
     rpc_blockchain_set_state(&g_state, &g_mempool, ctx->datadir);
     rpc_blockchain_set_coins_db(NULL, &g_coins_tip);
     rpc_blockchain_set_node_db(g_active_node_db);
+    rpc_blockchain_mmr_init_from_state(g_active_node_db);
+    rpc_blockchain_mmr_catchup(&g_state);
     register_blockchain_rpc_commands(&g_rpc_table);
 
     rpc_chain_inspect_set_state(&g_state, ctx->datadir,
@@ -2569,6 +2571,9 @@ void app_shutdown(void)
     coins_view_cache_flush(&g_coins_tip);
     coins_view_cache_free(&g_coins_tip);
     coins_view_sqlite_close(&g_coins_sqlite);
+
+    /* Save MMR state */
+    rpc_blockchain_mmr_save(g_active_node_db);
 
     if (g_block_tree_open) {
         block_tree_db_close(&g_block_tree);
