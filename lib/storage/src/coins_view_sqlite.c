@@ -261,12 +261,10 @@ bool coins_view_sqlite_batch_write(struct coins_view_sqlite *cvs,
 {
     if (!cvs->db) return false;
 
-    /* Only start a transaction if one isn't already active.
-     * sync_controller may have an open batch transaction on
-     * the same sqlite3 handle. */
-    bool own_txn = (sqlite3_get_autocommit(cvs->db) != 0);
-    if (own_txn)
-        sqlite3_exec(cvs->db, "BEGIN", NULL, NULL, NULL);
+    /* Use SAVEPOINT instead of BEGIN/COMMIT to avoid conflicts with
+     * other transactions on the shared sqlite3 handle. SAVEPOINT nests
+     * inside any existing transaction and always works. */
+    sqlite3_exec(cvs->db, "SAVEPOINT coins_flush", NULL, NULL, NULL);
 
     for (size_t i = 0; i < map_coins->num_buckets; i++) {
         struct coins_map_entry *e = &map_coins->buckets[i];
@@ -327,26 +325,24 @@ bool coins_view_sqlite_batch_write(struct coins_view_sqlite *cvs,
         sqlite3_step(cvs->stmt_best_set);
     }
 
-    if (own_txn) {
-        /* Reset ALL prepared statements on this db handle before COMMIT.
-         * SQLite returns "cannot commit - SQL statements in progress" if
-         * any statement has an active result set. Since we share the db
-         * handle with g_node_db (sync_controller, etc.), we must reset
-         * everything — not just our own statements. */
+    {
+        /* Reset all prepared statements before releasing savepoint.
+         * Active result sets block any transaction operations. */
         sqlite3_stmt *stmt = NULL;
         while ((stmt = sqlite3_next_stmt(cvs->db, stmt)) != NULL)
             sqlite3_reset(stmt);
 
         char *errmsg = NULL;
-        int rc = sqlite3_exec(cvs->db, "COMMIT", NULL, NULL, &errmsg);
+        int rc = sqlite3_exec(cvs->db, "RELEASE SAVEPOINT coins_flush",
+                               NULL, NULL, &errmsg);
         if (rc != SQLITE_OK) {
-            fprintf(stderr, "coins_view_sqlite batch_write COMMIT FAILED: %s\n",
-                    errmsg ? errmsg : "unknown error");
+            fprintf(stderr, "coins_view_sqlite RELEASE FAILED: %s\n",
+                    errmsg ? errmsg : "unknown");
             if (errmsg) sqlite3_free(errmsg);
-            /* Rollback the failed transaction so the db isn't left in a
-             * half-committed state. The caller (coins_view_cache_flush)
-             * will retain the dirty cache entries for retry. */
-            sqlite3_exec(cvs->db, "ROLLBACK", NULL, NULL, NULL);
+            sqlite3_exec(cvs->db, "ROLLBACK TO SAVEPOINT coins_flush",
+                          NULL, NULL, NULL);
+            sqlite3_exec(cvs->db, "RELEASE SAVEPOINT coins_flush",
+                          NULL, NULL, NULL);
             return false;
         }
     }
