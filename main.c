@@ -371,12 +371,17 @@ int main(int argc, char **argv)
         return 0;
     }
 
-    /* GUI mode: no args = wallet viewer */
-    if (argc <= 1) {
-        const char *h = getenv("HOME");
-        char dd[512];
-        snprintf(dd, sizeof(dd), "%s/.zclassic-c23", h ? h : ".");
-        return wallet_gui_main(argc, argv, dd);
+    /* GUI mode: no args or --self-test = wallet viewer */
+    {
+        bool gui_mode = (argc <= 1);
+        for (int i = 1; i < argc; i++)
+            if (strcmp(argv[i], "--self-test") == 0) gui_mode = true;
+        if (gui_mode) {
+            const char *h = getenv("HOME");
+            char dd[512];
+            snprintf(dd, sizeof(dd), "%s/.zclassic-c23", h ? h : ".");
+            return wallet_gui_main(argc, argv, dd);
+        }
     }
 
     /* Node mode */

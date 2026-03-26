@@ -36,39 +36,144 @@ static GtkWidget *g_nav_buttons[5];
 static GtkWidget *g_status_label = NULL;
 static uint8_t g_response[1 << 20];
 
-/* ── Self-test mode ────────────────────────────────────── */
+/* ── Bot Driver (Selenium-like) ────────────────────────── */
 static bool g_self_test = false;
-static int g_test_step = 0;
-static int g_st_pass = 0;
-static int g_st_fail = 0;
+static int g_bot_step = 0;
+static int g_bot_pass = 0;
+static int g_bot_fail = 0;
+static char g_bot_last_text[32768]; /* last page DOM text */
 static void navigate(const char *path);
 
-static const char *g_test_pages[] = {
-    "/wallet",
-    "/wallet/send",
-    "/wallet/receive",
-    "/wallet/history",
-    "/wallet/node",
-    "/wallet/coins",
-    "/wallet/shield",
-    NULL
+/* A bot action: navigate, execute JS, check result */
+struct bot_action {
+    const char *desc;       /* human-readable description */
+    const char *navigate;   /* path to navigate to (NULL = stay) */
+    const char *js;         /* JS to execute after load */
+    const char *expect;     /* string that must appear in result */
+    const char *reject;     /* string that must NOT appear (NULL=skip) */
 };
 
-static const char *g_test_labels[] = {
-    "Dashboard",
-    "Send",
-    "Receive",
-    "History",
-    "Node",
-    "Coins",
-    "Shield",
-    NULL
+/* Full test scenario — every user flow */
+static const struct bot_action g_bot_script[] = {
+    /* ── Dashboard ── */
+    { "Dashboard loads",
+      "/wallet", "document.body.innerText",
+      "ZCL", "sqlite3" },
+    { "Dashboard: balance visible",
+      NULL, "document.querySelector('.balance')?.textContent || 'MISSING'",
+      "ZCL", NULL },
+    { "Dashboard: nav tabs present",
+      NULL, "document.querySelectorAll('.nav a').length.toString()",
+      "5", NULL },
+    { "Dashboard: Send button exists",
+      NULL, "document.querySelector('a[href=\"/wallet/send\"]')?.textContent || 'MISSING'",
+      "Send", NULL },
+    { "Dashboard: Receive button exists",
+      NULL, "document.querySelector('a[href=\"/wallet/receive\"]')?.textContent || 'MISSING'",
+      "Receive", NULL },
+    { "Dashboard: privacy meter exists",
+      NULL, "document.getElementById('privacy-meter')?.innerText || 'MISSING'",
+      "private", NULL },
+    { "Dashboard: no SQL leaks",
+      NULL, "document.body.innerText",
+      NULL, "SELECT " },
+
+    /* ── Send ── */
+    { "Send page loads",
+      "/wallet/send", "document.body.innerText",
+      "Spendable", "sqlite3" },
+    { "Send: active tab correct",
+      NULL, "document.querySelector('.nav a.active')?.textContent || 'MISSING'",
+      "Send", NULL },
+    { "Send: address input exists",
+      NULL, "document.querySelector('input[name=\"address\"]') ? 'YES' : 'NO'",
+      "YES", NULL },
+    { "Send: amount input exists",
+      NULL, "document.querySelector('input[name=\"amount\"]') ? 'YES' : 'NO'",
+      "YES", NULL },
+    { "Send: fee shown",
+      NULL, "document.body.innerText",
+      "0.0001", NULL },
+
+    /* ── Receive ── */
+    { "Receive page loads",
+      "/wallet/receive", "document.body.innerText",
+      "recommended", "sqlite3" },
+    { "Receive: QR code rendered",
+      NULL, "document.querySelector('svg') ? 'HAS_SVG' : 'NO_SVG'",
+      "HAS_SVG", NULL },
+    { "Receive: z-address shown",
+      NULL, "document.body.innerText",
+      "zs1", NULL },
+    { "Receive: zero-knowledge described",
+      NULL, "document.body.innerText",
+      "zero-knowledge proof", NULL },
+    { "Receive: t-addr pane has on-chain warning",
+      NULL, "document.getElementById('pane-t')?.innerHTML || 'MISSING'",
+      "on-chain", NULL },
+
+    /* ── History ── */
+    { "History page loads",
+      "/wallet/history", "document.body.innerText",
+      "History", "sqlite3" },
+    { "History: active tab correct",
+      NULL, "document.querySelector('.nav a.active')?.textContent || 'MISSING'",
+      "History", NULL },
+    { "History: no raw SQL",
+      NULL, "document.body.innerText",
+      NULL, "SELECT " },
+
+    /* ── Node ── */
+    { "Node page loads",
+      "/wallet/node", "document.body.innerText",
+      "Command Center", "sqlite3" },
+    { "Node: sovereignty statement",
+      NULL, "document.body.innerText",
+      "sovereign", NULL },
+    { "Node: block height shown",
+      NULL, "document.body.innerHTML.includes('Block Height') ? 'YES' : 'NO'",
+      "YES", NULL },
+    { "Node: peer count shown",
+      NULL, "document.body.innerHTML.includes('Connected Peers') ? 'YES' : 'NO'",
+      "YES", NULL },
+    { "Node: version shown",
+      NULL, "document.body.innerText",
+      "ZClassic-C23", NULL },
+
+    /* ── Coins ── */
+    { "Coins page loads",
+      "/wallet/coins", "document.body.innerText",
+      "Coin Audit", "sqlite3" },
+
+    /* ── Shield ── */
+    { "Shield page loads",
+      "/wallet/shield", "document.body.innerText",
+      "Secure Funds", "sqlite3" },
+    { "Shield: Max button exists",
+      NULL, "document.querySelector('.send-max') ? 'HAS_MAX' : 'NO_MAX'",
+      "HAS_MAX", NULL },
+    { "Shield: amount input exists",
+      NULL, "document.querySelector('input[name=\"amount\"]') ? 'YES' : 'NO'",
+      "YES", NULL },
+
+    /* ── Navigate back to dashboard ── */
+    { "Return to dashboard",
+      "/wallet", "document.body.innerText",
+      "ZCL", NULL },
+
+    /* ── End ── */
+    { NULL, NULL, NULL, NULL, NULL }
 };
 
-/* Called with the JS result — check the page content */
-static void on_test_js_result(GObject *source, GAsyncResult *res, gpointer data)
+/* JS result callback */
+static void on_bot_js_result(GObject *source, GAsyncResult *res, gpointer data);
+static void bot_advance(void);
+
+static void on_bot_js_result(GObject *source, GAsyncResult *res, gpointer data)
 {
     (void)data;
+    const struct bot_action *act = &g_bot_script[g_bot_step];
+
     WebKitJavascriptResult *js_result =
         webkit_web_view_run_javascript_finish(WEBKIT_WEB_VIEW(source), res, NULL);
     if (js_result) {
@@ -76,75 +181,106 @@ static void on_test_js_result(GObject *source, GAsyncResult *res, gpointer data)
         if (jsc_value_is_string(val)) {
             char *text = jsc_value_to_string(val);
             if (text) {
-                const char *label = g_test_labels[g_test_step - 1];
-                int len = (int)strlen(text);
+                size_t tlen = strlen(text);
+                if (tlen >= sizeof(g_bot_last_text))
+                    tlen = sizeof(g_bot_last_text) - 1;
+                memcpy(g_bot_last_text, text, tlen);
+                g_bot_last_text[tlen] = '\0';
 
-                /* Basic checks */
-                bool ok = len > 50;
-                bool has_zcl = strstr(text, "ZCL") != NULL;
-                bool has_error = strstr(text, "sqlite3") != NULL ||
-                                 strstr(text, "SELECT ") != NULL ||
-                                 strstr(text, "segfault") != NULL;
+                bool pass = true;
+                char reason[256] = "";
 
-                if (ok && !has_error) {
-                    g_st_pass++;
-                    printf("  OK   %-15s (%d chars)%s\n",
-                           label, len, has_zcl ? "" : " [no ZCL]");
-                } else {
-                    g_st_fail++;
-                    printf("  FAIL %-15s (%d chars)%s%s\n",
-                           label, len,
-                           ok ? "" : " TOO SHORT",
-                           has_error ? " LEAKED INTERNALS" : "");
+                /* Check expect */
+                if (act->expect && !strstr(text, act->expect)) {
+                    pass = false;
+                    snprintf(reason, sizeof(reason),
+                        "expected \"%s\" not found", act->expect);
+                }
+                /* Check reject */
+                if (act->reject && strstr(text, act->reject)) {
+                    pass = false;
+                    snprintf(reason, sizeof(reason),
+                        "rejected \"%s\" found", act->reject);
                 }
 
-                /* Print first 200 chars of visible text */
-                printf("       \"%.200s\"\n\n", text);
+                if (pass) {
+                    g_bot_pass++;
+                    /* Truncate result for display */
+                    char preview[80];
+                    snprintf(preview, sizeof(preview), "%.75s", text);
+                    printf("  OK   %-40s \"%s\"\n", act->desc, preview);
+                } else {
+                    g_bot_fail++;
+                    printf("  FAIL %-40s %s\n", act->desc, reason);
+                    /* Show what we got */
+                    printf("       got: \"%.120s\"\n", text);
+                }
+
                 g_free(text);
             }
         }
         webkit_javascript_result_unref(js_result);
     }
 
-    /* Navigate to next page or finish */
-    if (g_test_pages[g_test_step] != NULL) {
-        navigate(g_test_pages[g_test_step]);
-        g_test_step++;
-    } else {
-        printf("════════════════════════════════════════\n");
-        printf("%d passed, %d failed\n", g_st_pass, g_st_fail);
-        printf(g_st_fail ? "SELF-TEST FAILED\n" : "SELF-TEST PASSED\n");
-        printf("════════════════════════════════════════\n");
-        gtk_main_quit();
-    }
+    g_bot_step++;
+    bot_advance();
 }
 
-/* Called after each page finishes loading in test mode */
-static void on_test_load_finished(WebKitWebView *v, WebKitLoadEvent ev, gpointer d)
+static void on_bot_load_finished(WebKitWebView *v, WebKitLoadEvent ev, gpointer d)
 {
     (void)d;
     if (!g_self_test || ev != WEBKIT_LOAD_FINISHED) return;
 
-    /* Small delay to let JS execute (pulse updates etc.) */
-    webkit_web_view_run_javascript(v,
-        "document.body.innerText",
-        NULL, on_test_js_result, NULL);
+    const struct bot_action *act = &g_bot_script[g_bot_step];
+    if (!act->desc) return;
+
+    if (act->js) {
+        webkit_web_view_run_javascript(v, act->js,
+            NULL, on_bot_js_result, NULL);
+    }
 }
 
-/* Start the test sequence after window shows */
+static void bot_advance(void)
+{
+    const struct bot_action *act = &g_bot_script[g_bot_step];
+
+    if (!act->desc) {
+        /* Done */
+        printf("\n════════════════════════════════════════\n");
+        printf("Bot driver: %d passed, %d failed\n",
+               g_bot_pass, g_bot_fail);
+        if (g_bot_fail)
+            printf("SELF-TEST FAILED\n");
+        else
+            printf("ALL CHECKS PASSED\n");
+        printf("════════════════════════════════════════\n");
+        gtk_main_quit();
+        return;
+    }
+
+    if (act->navigate) {
+        /* Navigate and wait for load-finished to fire */
+        navigate(act->navigate);
+    } else {
+        /* No navigation — execute JS immediately */
+        if (act->js) {
+            webkit_web_view_run_javascript(g_webview, act->js,
+                NULL, on_bot_js_result, NULL);
+        }
+    }
+}
+
 static gboolean start_self_test(gpointer data)
 {
     (void)data;
-    printf("\n=== ZClassic23 Self-Test (real GTK WebKit) ===\n\n");
-    printf("Testing %zu pages with live rendering...\n\n",
-           sizeof(g_test_pages) / sizeof(g_test_pages[0]) - 1);
+    printf("\n=== ZClassic23 Bot Driver ===\n");
+    printf("Navigating real GTK WebKit app, reading DOM, verifying data.\n\n");
 
-    /* Connect our test load handler */
     g_signal_connect(g_webview, "load-changed",
-        G_CALLBACK(on_test_load_finished), NULL);
+        G_CALLBACK(on_bot_load_finished), NULL);
 
-    /* Navigate to first page (dashboard is already loading) */
-    g_test_step = 1;
+    g_bot_step = 0;
+    bot_advance();
     return G_SOURCE_REMOVE;
 }
 
@@ -620,7 +756,7 @@ int wallet_gui_main(int argc, char **argv, const char *datadir)
         g_idle_add(start_self_test, NULL);
 
     gtk_main();
-    return g_self_test ? (g_st_fail > 0 ? 1 : 0) : 0;
+    return g_self_test ? (g_bot_fail > 0 ? 1 : 0) : 0;
 }
 
 #elif defined(HAVE_GTK)
