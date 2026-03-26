@@ -526,5 +526,105 @@ int test_coins(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    /* ================================================================
+     * BUG FIX TEST: OP_RETURN outputs excluded from UTXO set
+     * Bitcoin Core's AddCoin() calls IsUnspendable() and skips OP_RETURN.
+     * Our coins_from_transaction must do the same.
+     * ================================================================ */
+    printf("coins_from_transaction: OP_RETURN excluded... ");
+    {
+        struct transaction tx;
+        transaction_init(&tx);
+        transaction_alloc(&tx, 1, 3);
+        tx.version = 4;
+
+        /* vout[0]: normal P2PKH output */
+        tx.vout[0].value = 100000;
+        uint8_t p2pkh[] = {0x76, 0xa9, 0x14,
+            0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+            0x88, 0xac};
+        script_set(&tx.vout[0].script_pub_key, p2pkh, sizeof(p2pkh));
+
+        /* vout[1]: OP_RETURN (unspendable — must NOT enter UTXO set) */
+        tx.vout[1].value = 0;
+        uint8_t op_return[] = {0x6a, 0x04, 'S', 'L', 'P', 0x00};
+        script_set(&tx.vout[1].script_pub_key, op_return, sizeof(op_return));
+
+        /* vout[2]: normal P2SH output */
+        tx.vout[2].value = 50000;
+        uint8_t p2sh[] = {0xa9, 0x14,
+            0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+            0x87};
+        script_set(&tx.vout[2].script_pub_key, p2sh, sizeof(p2sh));
+
+        struct coins c;
+        coins_init(&c);
+        coins_from_transaction(&c, &tx, 1000);
+
+        /* vout[0] should be available (P2PKH) */
+        bool ok = coins_is_available(&c, 0);
+        /* vout[1] should be NULL (OP_RETURN filtered out) */
+        ok = ok && !coins_is_available(&c, 1);
+        /* vout[2] should be available (P2SH) */
+        ok = ok && coins_is_available(&c, 2);
+        /* Values should be correct */
+        ok = ok && (c.vout[0].value == 100000);
+        ok = ok && (c.vout[2].value == 50000);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+        coins_free(&c);
+        transaction_free(&tx);
+    }
+
+    printf("coins_from_transaction: all OP_RETURN tx pruned... ");
+    {
+        struct transaction tx;
+        transaction_init(&tx);
+        transaction_alloc(&tx, 1, 1);
+        tx.version = 4;
+
+        /* Single OP_RETURN output */
+        tx.vout[0].value = 0;
+        uint8_t op_return[] = {0x6a, 0x02, 0xFF, 0xFF};
+        script_set(&tx.vout[0].script_pub_key, op_return, sizeof(op_return));
+
+        struct coins c;
+        coins_init(&c);
+        coins_from_transaction(&c, &tx, 2000);
+
+        /* Should be pruned (no available outputs) */
+        bool ok = coins_is_pruned(&c);
+        /* num_vout should be 0 after cleanup */
+        ok = ok && (c.num_vout == 0);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+        coins_free(&c);
+        transaction_free(&tx);
+    }
+
+    printf("script_is_unspendable: OP_RETURN... ");
+    {
+        struct script s;
+        uint8_t op_ret[] = {0x6a, 0x04, 0x00, 0x00, 0x00, 0x00};
+        script_set(&s, op_ret, sizeof(op_ret));
+        bool ok = script_is_unspendable(&s);
+
+        /* Normal P2PKH should be spendable */
+        uint8_t p2pkh[] = {0x76, 0xa9, 0x14,
+            0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+            0x88, 0xac};
+        script_set(&s, p2pkh, sizeof(p2pkh));
+        ok = ok && !script_is_unspendable(&s);
+
+        /* Empty script is spendable */
+        s.size = 0;
+        ok = ok && !script_is_unspendable(&s);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     return failures;
 }
