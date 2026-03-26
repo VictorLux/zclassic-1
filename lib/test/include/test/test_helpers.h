@@ -197,6 +197,10 @@ int spec_wallet_navigation(void);
 int spec_wallet_errors(void);
 int spec_wallet_privacy(void);
 int spec_wallet_sovereignty(void);
+int spec_wallet_celebration(void);
+int spec_wallet_empowerment(void);
+int spec_wallet_flow(void);
+int spec_wallet_accessibility(void);
 
 /* ── DRY test macros ─────────────────────────────────────── */
 

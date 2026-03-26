@@ -38,6 +38,10 @@ int main(void)
     failures += spec_wallet_errors();
     failures += spec_wallet_privacy();
     failures += spec_wallet_sovereignty();
+    failures += spec_wallet_celebration();
+    failures += spec_wallet_empowerment();
+    failures += spec_wallet_flow();
+    failures += spec_wallet_accessibility();
 
     ecc_verify_destroy();
     ecc_stop();
