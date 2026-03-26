@@ -252,6 +252,69 @@ size_t serve_history(uint8_t *r, size_t max, int page,
         sqlite3_finalize(s);
     }
 
+    /* Shielded note activity — show recent note deposits */
+    if (page == 0 && (strcmp(f, "all") == 0 || strcmp(f, "recv") == 0)) {
+        sqlite3_stmt *ns = NULL;
+        if (sqlite3_prepare_v2(db,
+                "SELECT n.value, n.block_height, n.address, "
+                "COALESCE(b.time, 0) "
+                "FROM wallet_sapling_notes n "
+                "LEFT JOIN blocks b ON n.block_height = b.height "
+                "WHERE NOT EXISTS ("
+                "  SELECT 1 FROM sapling_spends ss "
+                "  WHERE ss.nullifier = n.nullifier) "
+                "AND n.value > 0 "
+                "ORDER BY n.block_height DESC LIMIT 10",
+                -1, &ns, NULL) == SQLITE_OK) {
+
+            bool header_shown = false;
+            while (sqlite3_step(ns) == SQLITE_ROW && off + 600 < max) {
+                int64_t val = sqlite3_column_int64(ns, 0);
+                (void)sqlite3_column_int(ns, 1); /* block height */
+                const char *addr = (const char *)sqlite3_column_text(ns, 2);
+                int64_t ntime = sqlite3_column_int64(ns, 3);
+
+                if (!header_shown) {
+                    APPEND(off, r, max,
+                        "<div class='section-header' style='margin-top:16px'>"
+                        "<span>&#x1F512; Shielded Notes</span></div>");
+                    header_shown = true;
+                }
+
+                char amt_s[32];
+                zcl_format_zcl_short(amt_s, sizeof(amt_s), val);
+                char rel[48], esc_rel[96];
+                wv_format_relative_time(ntime, rel, sizeof(rel));
+                html_escape(esc_rel, sizeof(esc_rel), rel);
+
+                /* Short z-address label */
+                char addr_short[24] = "";
+                if (addr && strlen(addr) > 12)
+                    snprintf(addr_short, sizeof(addr_short),
+                        "%.8s...%.4s", addr, addr + strlen(addr) - 4);
+
+                /* Is this one of my addresses? (all z-addresses in wallet are mine) */
+                bool is_mine = (addr && addr[0]);
+
+                APPEND(off, r, max,
+                    "<div class='tx-card' style='border-left-color:#a78bfa'>"
+                    "<div style='display:flex;justify-content:space-between;"
+                    "align-items:baseline'>"
+                    "<span class='tx-amount recv'>+%s ZCL</span>"
+                    "<span class='pill pill-z'>%s</span></div>"
+                    "<div class='tx-meta'>"
+                    "<span style='color:#888;font-size:13px'>%s</span>"
+                    "<span class='tx-time'>%s</span>"
+                    "</div></div>",
+                    amt_s,
+                    is_mine ? "my z-addr" : "external",
+                    addr_short,
+                    esc_rel);
+            }
+            sqlite3_finalize(ns);
+        }
+    }
+
     /* Pagination (preserve filter + search) */
     if (total_pages > 1) {
         char newer[256] = "", older[256] = "";
