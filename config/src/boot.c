@@ -849,6 +849,63 @@ static bool reindex_chainstate(struct main_state *ms,
     return errors == 0;
 }
 
+/* Background thread: backfill addresses table from UTXOs.
+ * Uses its own SQLite connection to avoid blocking the main thread. */
+static void *backfill_addresses_thread(void *arg)
+{
+    const char *db_path = (const char *)arg;
+    sqlite3 *db = NULL;
+    if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READWRITE, NULL) != SQLITE_OK) {
+        printf("Address backfill: failed to open db\n");
+        return NULL;
+    }
+    sqlite3_exec(db, "PRAGMA mmap_size=268435456", NULL, NULL, NULL);
+    sqlite3_busy_timeout(db, 60000);
+
+    printf("Address backfill: aggregating UTXOs...\n");
+    fflush(stdout);
+    int64_t t0 = (int64_t)time(NULL);
+
+    /* Ensure index exists for the GROUP BY */
+    sqlite3_exec(db,
+        "CREATE INDEX IF NOT EXISTS idx_utxo_address"
+        " ON utxos(address_hash) WHERE address_hash IS NOT NULL",
+        NULL, NULL, NULL);
+
+    sqlite3_exec(db,
+        "INSERT OR REPLACE INTO addresses "
+        "(address_hash, script_type, balance, utxo_count, "
+        "first_seen_height, last_seen_height) "
+        "SELECT address_hash, MAX(script_type), SUM(value), count(*), "
+        "MIN(height), MAX(height) "
+        "FROM utxos WHERE address_hash IS NOT NULL "
+        "GROUP BY address_hash",
+        NULL, NULL, NULL);
+
+    int64_t elapsed = (int64_t)time(NULL) - t0;
+
+    /* Count results */
+    int64_t new_count = 0;
+    sqlite3_stmt *chk = NULL;
+    if (sqlite3_prepare_v2(db, "SELECT count(*) FROM addresses",
+                           -1, &chk, NULL) == SQLITE_OK && chk) {
+        if (sqlite3_step(chk) == SQLITE_ROW)
+            new_count = sqlite3_column_int64(chk, 0);
+        sqlite3_finalize(chk);
+    }
+
+    /* Set flag via this connection */
+    sqlite3_exec(db,
+        "INSERT OR REPLACE INTO node_state(key,value) "
+        "VALUES('addresses_backfilled', X'01')", NULL, NULL, NULL);
+
+    sqlite3_close(db);
+    printf("Address backfill: %lld addresses in %llds\n",
+           (long long)new_count, (long long)elapsed);
+    fflush(stdout);
+    return NULL;
+}
+
 bool app_init(struct app_context *ctx)
 {
     /* Initialize event log first — everything after this is observable */
@@ -1696,11 +1753,18 @@ bool app_init(struct app_context *ctx)
      * previously-connected blocks because it only follows fully-validated
      * entries. Also fix any stale file positions. */
     if (g_active_node_db && g_state.map_block_index.size > 1000) {
+        /* Only repair blocks near the tip (within 1000 of chain height).
+         * The flat file load already has correct data for most blocks.
+         * Full 3M-row scan was taking 8+ minutes — this takes <100ms. */
+        int repair_from = active_chain_height(&g_state.chain_active) - 1000;
+        if (repair_from < 0) repair_from = 0;
         sqlite3_stmt *sel = NULL;
-        int rc = sqlite3_prepare_v2(g_node_db.db,
+        char repair_sql[256];
+        snprintf(repair_sql, sizeof(repair_sql),
             "SELECT hash, file_num, data_pos, status FROM blocks "
-            "WHERE file_num >= 0 AND data_pos >= 0",
-            -1, &sel, NULL);
+            "WHERE file_num >= 0 AND data_pos >= 0 AND height >= %d",
+            repair_from);
+        int rc = sqlite3_prepare_v2(g_node_db.db, repair_sql, -1, &sel, NULL);
         if (rc == SQLITE_OK && sel) {
             int repaired = 0, checked = 0;
             while (sqlite3_step(sel) == SQLITE_ROW) {
@@ -1854,6 +1918,26 @@ bool app_init(struct app_context *ctx)
         }
     }
 
+    /* Clear HAVE_DATA for blocks above the chain tip — they came from
+     * the flat block index file but may not be validated against the
+     * current UTXO set. Let P2P re-download them fresh. */
+    {
+        int tip_h = active_chain_height(&g_state.chain_active);
+        int cleared = 0;
+        size_t ci = 0;
+        struct block_index *cp;
+        while (block_map_next(&g_state.map_block_index, &ci, NULL, &cp)) {
+            if (cp && cp->nHeight > tip_h &&
+                (cp->nStatus & BLOCK_HAVE_DATA)) {
+                cp->nStatus &= ~BLOCK_HAVE_DATA;
+                cleared++;
+            }
+        }
+        if (cleared > 0)
+            printf("Cleared HAVE_DATA from %d blocks above tip %d\n",
+                   cleared, tip_h);
+    }
+
     /* Activate best chain (connects any new blocks beyond saved tip).
      * Skip for -fastsync and -reindex-chainstate. */
     if (ctx->fastsync_dir)
@@ -1929,20 +2013,10 @@ bool app_init(struct app_context *ctx)
     }
 
     /* Backfill shielded values in SQLite from block_index.
-     * The legacy importer didn't populate sprout_value/sapling_value.
-     * Walk the in-memory block_index and UPDATE blocks that have nonzero values. */
+     * Only needed once — check via node_state flag, not full table scan. */
     if (g_active_node_db && tip && tip->nHeight > 1000) {
         int64_t has_shielded = 0;
-        {
-            sqlite3_stmt *chk = NULL;
-            if (sqlite3_prepare_v2(g_node_db.db,
-                    "SELECT count(*) FROM blocks WHERE sprout_value != 0 OR sapling_value != 0",
-                    -1, &chk, NULL) == SQLITE_OK && chk) {
-                if (sqlite3_step(chk) == SQLITE_ROW)
-                    has_shielded = sqlite3_column_int64(chk, 0);
-                sqlite3_finalize(chk);
-            }
-        }
+        node_db_state_get_int(&g_node_db, "shielded_backfilled", &has_shielded);
         if (has_shielded == 0) {
             printf("Backfilling shielded values from block_index...\n");
             sqlite3_exec(g_node_db.db, "BEGIN", NULL, NULL, NULL);
@@ -1966,43 +2040,29 @@ bool app_init(struct app_context *ctx)
             sqlite3_finalize(upd);
             sqlite3_exec(g_node_db.db, "COMMIT", NULL, NULL, NULL);
             printf("Backfill: updated %d blocks with shielded values\n", updated);
+            fflush(stdout);
+            node_db_state_set_int(&g_node_db, "shielded_backfilled", 1);
         }
     }
 
-    /* Backfill addresses table from UTXOs if empty */
+    /* Backfill addresses table from UTXOs — runs in background thread
+     * to avoid blocking startup. Uses its own SQLite connection. */
     if (g_active_node_db) {
-        int64_t addr_count = 0;
-        {
-            sqlite3_stmt *chk = NULL;
-            if (sqlite3_prepare_v2(g_node_db.db,
-                    "SELECT count(*) FROM addresses", -1, &chk, NULL) == SQLITE_OK && chk) {
-                if (sqlite3_step(chk) == SQLITE_ROW)
-                    addr_count = sqlite3_column_int64(chk, 0);
-                sqlite3_finalize(chk);
-            }
-        }
-        if (addr_count == 0) {
-            printf("Backfilling addresses from UTXO set...\n");
-            sqlite3_exec(g_node_db.db,
-                "INSERT OR REPLACE INTO addresses "
-                "(address_hash, script_type, balance, utxo_count, "
-                "first_seen_height, last_seen_height) "
-                "SELECT address_hash, MAX(script_type), SUM(value), count(*), "
-                "MIN(height), MAX(height) "
-                "FROM utxos WHERE address_hash IS NOT NULL "
-                "GROUP BY address_hash",
-                NULL, NULL, NULL);
-            int64_t new_count = 0;
-            {
-                sqlite3_stmt *chk = NULL;
-                if (sqlite3_prepare_v2(g_node_db.db,
-                        "SELECT count(*) FROM addresses", -1, &chk, NULL) == SQLITE_OK && chk) {
-                    if (sqlite3_step(chk) == SQLITE_ROW)
-                        new_count = sqlite3_column_int64(chk, 0);
-                    sqlite3_finalize(chk);
-                }
-            }
-            printf("Backfill: populated %lld addresses\n", (long long)new_count);
+        int64_t addr_done = 0;
+        node_db_state_get_int(&g_node_db, "addresses_backfilled", &addr_done);
+        if (!addr_done) {
+            static char s_backfill_path[1024];
+            snprintf(s_backfill_path, sizeof(s_backfill_path),
+                     "%s/node.db", ctx->datadir);
+            pthread_t bg;
+            pthread_attr_t attr;
+            pthread_attr_init(&attr);
+            pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+            pthread_create(&bg, &attr, backfill_addresses_thread,
+                           s_backfill_path);
+            pthread_attr_destroy(&attr);
+            printf("Address backfill: started in background thread\n");
+            fflush(stdout);
         }
     }
 
