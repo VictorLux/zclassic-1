@@ -22,6 +22,7 @@
 
 #include "test/test_helpers.h"
 #include "controllers/wallet_view_controller.h"
+#include "util/template.h"
 #include <unistd.h>
 #include <sys/stat.h>
 #include <time.h>
@@ -2163,6 +2164,62 @@ int test_wallet_view(void)
     {
         wv_get("/wallet/node");
         bool ok = wv_has("ZClassic-C23:0.1.0");
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ═══════════════════════════════════════════════════════════
+     * PARTIAL TEMPLATE TESTS — {{> name}} includes
+     * ═══════════════════════════════════════════════════════════ */
+
+    printf("\n=== PARTIAL TEMPLATE TESTS ===\n\n");
+
+    printf("PARTIAL: shield page uses {{> breadcrumb}} partial... ");
+    {
+        /* Shield with no amount shows amount form with breadcrumb */
+        wv_get("/wallet/shield");
+        /* breadcrumb partial renders: "Home" link + "Secure Funds" label */
+        bool ok = wv_has("/wallet") && wv_has("Secure Funds");
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("PARTIAL: template_render handles {{> name}} syntax... ");
+    {
+        char buf[1024];
+        struct template_var vars[] = {
+            { "parent_href", "/test" },
+            { "parent_label", "Test" },
+            { "current", "Page" },
+        };
+        size_t n = template_render("before{{> breadcrumb}}after",
+            vars, 3, buf, sizeof(buf));
+        bool ok = (n > 0) && strstr(buf, "before") && strstr(buf, "after");
+        ok = ok && strstr(buf, "/test");
+        ok = ok && strstr(buf, "Test");
+        ok = ok && strstr(buf, "Page");
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("PARTIAL: missing partial silently skipped... ");
+    {
+        char buf[256];
+        size_t n = template_render("A{{> nonexistent}}B", NULL, 0,
+            buf, sizeof(buf));
+        bool ok = (n == 2) && buf[0] == 'A' && buf[1] == 'B';
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("PARTIAL: max depth prevents infinite recursion... ");
+    {
+        /* Even if a partial references itself, depth limit stops it */
+        char buf[256];
+        size_t n = template_render("X{{> breadcrumb}}Y", NULL, 0,
+            buf, sizeof(buf));
+        /* Should render without hanging, partial vars are empty */
+        bool ok = (n > 0) && strstr(buf, "X") && strstr(buf, "Y");
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }

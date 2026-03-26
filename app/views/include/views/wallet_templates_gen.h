@@ -321,80 +321,6 @@ static const char TMPL_RECEIVE_TPANE[] =
     "y Address</button>\n<div id='copy-msg' style='color:#888;font-size:13px;\nmargin-top:4px;height:1"
     "6px'></div>\n</div>\n";
 
-static const char TMPL_TX_DETAIL[] =
-    "<div style='margin-bottom:12px'>\n<a href='/wallet/history' style='color:#888;font-size:13px;\nte"
-    "xt-decoration:none'>History &#x2192;</a>\n<span style='color:#e2e2e2;font-size:13px;font-weight:6"
-    "00'>\nTransaction</span></div>\n\n<div style='text-align:center;padding:16px 0'>\n<span class='pi"
-    "ll {{{pill_class}}}' style='font-size:13px;padding:4px 12px'>\n{{{direction}}}</span>\n<h2 style="
-    "'margin:12px 0 4px;color:{{{color}}}'>{{{heading}}}</h2>\n<div class='balance-sub'>{{{rel_time}}}"
-    " &middot; {{{abs_time}}}</div>\n</div>\n\n<div style='margin:0 0 16px'>\n<div style='display:flex"
-    ";justify-content:space-between;\nfont-size:13px;color:#888;margin-bottom:4px'>\n<span>{{{confs}}}"
-    " confirmation{{{conf_plural}}}</span>\n<span>{{{conf_status}}}</span></div>\n<div class='conf-met"
-    "er'>\n<div class='fill' style='width:{{{conf_pct}}}%;background:{{{conf_color}}}'></div>\n</div><"
-    "/div>\n\n<div class='detail-grid'>\n<div class='lbl'>TxID</div>\n<div class='val'><a href='/explo"
-    "rer/tx/{{{txid}}}' class='hash'\nstyle='font-size:13px'>{{{txid}}}</a></div>\n<div class='lbl'>Bl"
-    "ock</div>\n<div class='val'>{{{block_height}}}</div>\n<div class='lbl'>Direction</div>\n<div clas"
-    "s='val'>{{{direction}}}</div>\n{{{fee_row}}}\n</div>\n\n{{{outputs_section}}}\n\n<div style='text"
-    "-align:center;margin:24px 0'>\n<a href='/explorer/tx/{{{txid}}}' style='color:#60a5fa;font-size:1"
-    "3px'>\nView in Explorer &#x2192;</a></div>\n";
-
-static const char TMPL_COINS_PAGE[] =
-    "<div style='margin-bottom:12px'>\n<a href='/wallet/node' style='color:#888;font-size:13px;\ntext-"
-    "decoration:none'>Node &#x2192;</a>\n<span style='color:#e2e2e2;font-size:13px;font-weight:600'>\n"
-    "Coin Audit</span></div>\n\n<h2>Your Coins</h2>\n<div style='color:#6b7280;font-size:13px;margin-b"
-    "ottom:16px'>\nEvery coin in your wallet, verified against the blockchain.</div>\n\n<h3>Public UTX"
-    "Os (Chain-Verified)</h3>\n<div class='overflow-x'>\n<table><tr><th>Transaction</th><th>Type</th>\n"
-    "<th>Amount</th><th>Height</th><th>Conf</th></tr>\n{{{utxo_rows}}}\n<tr class='total-row'>\n<td co"
-    "lspan='2'>Total ({{{t_count}}} UTXO{{{t_plural}}})</td>\n<td class='zcl'>{{{t_total}}}</td>\n<td>"
-    "</td><td></td></tr></table></div>\n\n<h3>Private Notes</h3>\n{{{notes_section}}}\n\n<div class='s"
-    "tats' style='margin-top:20px'>\n<div class='stat'>\n<div class='n'>{{{t_total}}}</div>\n<div clas"
-    "s='l'>Public</div></div>\n<div class='stat' style='border-color:#a78bfa'>\n<div class='n' style='"
-    "color:#a78bfa'>{{{z_total}}}</div>\n<div class='l'>Private</div></div>\n<div class='stat' style='"
-    "border-color:#f59e0b'>\n<div class='n' style='color:#f59e0b'>{{{grand_total}}}</div>\n<div class="
-    "'l'>Total</div></div>\n</div>\n\n<details style='margin-top:16px'>\n<summary style='color:#999;fo"
-    "nt-size:13px;font-weight:600;\ntext-transform:uppercase;letter-spacing:.05em;cursor:pointer'>\nDi"
-    "agnostics &#x25BE;</summary>\n<div class='overflow-x'>\n<table><tr><th>Source</th><th>Balance</th"
-    ">\n<th>UTXOs</th><th>Status</th></tr>\n<tr><td>Chain UTXO set (chain-verified)</td>\n<td class='z"
-    "cl'>{{{t_total}}}</td><td>{{{t_count}}}</td>\n<td><span class='pill pill-t'>verified</span></td><"
-    "/tr>\n<tr><td>Cached balance</td>\n<td class='zcl'>{{{speed_bal}}}</td><td>{{{speed_utxos}}}</td>"
-    "\n<td>{{{diag_status}}}</td></tr>\n</table></div></details>\n\n{{{token_section}}}\n\n<h3>Chain S"
-    "upply</h3>\n<div class='stats'>\n<div class='stat'>\n<div class='n'>{{{chain_supply}}}</div>\n<di"
-    "v class='l'>UTXO Supply (ZCL)</div></div>\n<div class='stat'>\n<div class='n'>{{{chain_utxos}}}</"
-    "div>\n<div class='l'>Total UTXOs</div></div>\n</div>\n";
-
-static const char TMPL_SHIELD_AMOUNT_FORM[] =
-    "<div style='margin-bottom:12px'>\n<a href='/wallet' style='color:#888;font-size:13px;\ntext-decor"
-    "ation:none'>Home &#x2192;</a>\n<span style='color:#e2e2e2;font-size:13px;font-weight:600'>\nSecur"
-    "e Funds</span></div>\n\n<div style='text-align:center;padding:16px 0'>\n<div style='color:#a78bfa"
-    ";font-size:20px;font-weight:700;\nmargin-bottom:4px'>&#x1F512; Secure Funds</div>\n<div class='ba"
-    "lance-sub'>Make your public ZCL private\n&mdash; no longer linked to your address</div></div>\n<f"
-    "orm method='GET' action='/wallet/shield'>\n<div class='form-group'>\n<label class='form-label' fo"
-    "r='shield-amt'>Amount to Secure</label>\n<div style='display:flex;gap:8px;align-items:center'>\n<"
-    "input class='form-input' type='text' id='shield-amt'\ninputmode='decimal' name='amount' placehold"
-    "er='0.00' required>\n<button type='button' class='send-max'\nonclick='document.getElementById(\"s"
-    "hield-amt\").value=\"{{{max_amount}}}\"'>Max</button>\n</div>\n<div style='color:#888;font-size:1"
-    "4px;margin-top:6px'>\nAvailable: <span style='color:#34d399'>{{{available}}} ZCL</span>\n</div></"
-    "div>\n<div id='shield-err' class='form-error'></div>\n<button type='submit' class='btn-primary'\n"
-    "style='background:#a78bfa;color:#fff;margin-top:8px'\nonclick='var a=parseFloat(document.getEleme"
-    "ntById(\"shield-amt\").value);if(isNaN(a)||a<=0){document.getElementById(\"shield-err\").textCont"
-    "ent=\"Enter a valid amount\";return false;}if(a>{{{max_amount}}}){document.getElementById(\"shiel"
-    "d-err\").textContent=\"Insufficient funds\";return false;}'>\nReview</button>\n</form>\n<div styl"
-    "e='text-align:center;margin-top:16px'>\n<a href='/wallet' style='color:#888'>Cancel</a></div>\n";
-
-static const char TMPL_SEND_REVIEW[] =
-    "<div style='margin-bottom:12px'>\n<a href='/wallet/send' style='color:#888;font-size:13px;\ntext-"
-    "decoration:none'>Send &#x2192;</a>\n<span style='color:#e2e2e2;font-size:13px;font-weight:600'>\n"
-    "Review</span></div>\n\n<div style='text-align:center;margin-bottom:16px'>\n<span class='form-labe"
-    "l'>Review Transaction</span></div>\n<table class='review-table'>\n<tr><td>To</td>\n<td style='col"
-    "or:#60a5fa;font-family:\"JetBrains Mono\",monospace;\nfont-size:14px;word-break:break-all'>{{addr"
-    "ess}}</td></tr>\n<tr><td>Amount</td>\n<td style='color:#34d399;font-size:18px;font-weight:700'>\n"
-    "{{{amount}}} ZCL</td></tr>\n<tr><td>Fee</td>\n<td style='color:#999'>{{{fee}}} ZCL</td></tr>\n<tr"
-    "><td style='font-weight:700'>Total</td>\n<td style='color:#e2e2e2;font-weight:700'>\n{{{total}}} "
-    "ZCL</td></tr>\n<tr><td>Remaining</td>\n<td style='color:#999'>{{{remaining}}} ZCL</td></tr>\n<tr>"
-    "<td>Privacy</td>\n<td><span class='pill {{{privacy_pill}}}'>{{{privacy_label}}}</span>\n{{{privac"
-    "y_warning}}}</td></tr>\n<tr><td>Est. Time</td>\n<td style='color:#999'>~2.5 min (1 confirmation)<"
-    "/td></tr>\n</table>\n";
-
 static const char TMPL_RECEIVE_COPY_JS[] =
     "<script>\nfunction copyAddr(){\nvar el=document.getElementById('t-addr');\nif(!el)return;\nvar tx"
     "t=el.textContent.replace(/\\s+/g,'').trim();\nnavigator.clipboard.writeText(txt).then(function(){"
@@ -414,6 +340,72 @@ static const char TMPL_RECEIVE_COPY_JS[] =
     "ft='-9999px';\ndocument.body.appendChild(ta);ta.select();\ndocument.execCommand('copy');document."
     "body.removeChild(ta);\nvar msg=document.getElementById('copy-msg')||\ndocument.getElementById('co"
     "py-msg-z');\nif(msg)msg.textContent='Copied!';});\n});});\n</script>\n";
+
+static const char TMPL_TX_DETAIL[] =
+    "{{> breadcrumb}}\n\n<div style='text-align:center;padding:16px 0'>\n<span class='pill {{{pill_cla"
+    "ss}}}' style='font-size:13px;padding:4px 12px'>\n{{{direction}}}</span>\n<h2 style='margin:12px 0"
+    " 4px;color:{{{color}}}'>{{{heading}}}</h2>\n<div class='balance-sub'>{{{rel_time}}} &middot; {{{a"
+    "bs_time}}}</div>\n</div>\n\n<div style='margin:0 0 16px'>\n<div style='display:flex;justify-conte"
+    "nt:space-between;\nfont-size:13px;color:#888;margin-bottom:4px'>\n<span>{{{confs}}} confirmation{"
+    "{{conf_plural}}}</span>\n<span>{{{conf_status}}}</span></div>\n<div class='conf-meter'>\n<div cla"
+    "ss='fill' style='width:{{{conf_pct}}}%;background:{{{conf_color}}}'></div>\n</div></div>\n\n<div "
+    "class='detail-grid'>\n<div class='lbl'>TxID</div>\n<div class='val'><a href='/explorer/tx/{{{txid"
+    "}}}' class='hash'\nstyle='font-size:13px'>{{{txid}}}</a></div>\n<div class='lbl'>Block</div>\n<di"
+    "v class='val'>{{{block_height}}}</div>\n<div class='lbl'>Direction</div>\n<div class='val'>{{{dir"
+    "ection}}}</div>\n{{{fee_row}}}\n</div>\n\n{{{outputs_section}}}\n\n<div style='text-align:center;"
+    "margin:24px 0'>\n<a href='/explorer/tx/{{{txid}}}' style='color:#60a5fa;font-size:13px'>\nView in"
+    " Explorer &#x2192;</a></div>\n";
+
+static const char TMPL_COINS_PAGE[] =
+    "{{> breadcrumb}}\n\n<h2>Your Coins</h2>\n<div style='color:#6b7280;font-size:13px;margin-bottom:1"
+    "6px'>\nEvery coin in your wallet, verified against the blockchain.</div>\n\n<h3>Public UTXOs (Cha"
+    "in-Verified)</h3>\n<div class='overflow-x'>\n<table><tr><th>Transaction</th><th>Type</th>\n<th>Am"
+    "ount</th><th>Height</th><th>Conf</th></tr>\n{{{utxo_rows}}}\n<tr class='total-row'>\n<td colspan="
+    "'2'>Total ({{{t_count}}} UTXO{{{t_plural}}})</td>\n<td class='zcl'>{{{t_total}}}</td>\n<td></td><"
+    "td></td></tr></table></div>\n\n<h3>Private Notes</h3>\n{{{notes_section}}}\n\n<div class='stats' "
+    "style='margin-top:20px'>\n<div class='stat'>\n<div class='n'>{{{t_total}}}</div>\n<div class='l'>"
+    "Public</div></div>\n<div class='stat' style='border-color:#a78bfa'>\n<div class='n' style='color:"
+    "#a78bfa'>{{{z_total}}}</div>\n<div class='l'>Private</div></div>\n<div class='stat' style='border"
+    "-color:#f59e0b'>\n<div class='n' style='color:#f59e0b'>{{{grand_total}}}</div>\n<div class='l'>To"
+    "tal</div></div>\n</div>\n\n<details style='margin-top:16px'>\n<summary style='color:#999;font-siz"
+    "e:13px;font-weight:600;\ntext-transform:uppercase;letter-spacing:.05em;cursor:pointer'>\nDiagnost"
+    "ics &#x25BE;</summary>\n<div class='overflow-x'>\n<table><tr><th>Source</th><th>Balance</th>\n<th"
+    ">UTXOs</th><th>Status</th></tr>\n<tr><td>Chain UTXO set (chain-verified)</td>\n<td class='zcl'>{{"
+    "{t_total}}}</td><td>{{{t_count}}}</td>\n<td><span class='pill pill-t'>verified</span></td></tr>\n"
+    "<tr><td>Cached balance</td>\n<td class='zcl'>{{{speed_bal}}}</td><td>{{{speed_utxos}}}</td>\n<td>"
+    "{{{diag_status}}}</td></tr>\n</table></div></details>\n\n{{{token_section}}}\n\n<h3>Chain Supply<"
+    "/h3>\n<div class='stats'>\n<div class='stat'>\n<div class='n'>{{{chain_supply}}}</div>\n<div clas"
+    "s='l'>UTXO Supply (ZCL)</div></div>\n<div class='stat'>\n<div class='n'>{{{chain_utxos}}}</div>\n"
+    "<div class='l'>Total UTXOs</div></div>\n</div>\n";
+
+static const char TMPL_SHIELD_AMOUNT_FORM[] =
+    "{{> breadcrumb}}\n\n<div style='text-align:center;padding:16px 0'>\n<div style='color:#a78bfa;fon"
+    "t-size:20px;font-weight:700;\nmargin-bottom:4px'>&#x1F512; Secure Funds</div>\n<div class='balanc"
+    "e-sub'>Make your public ZCL private\n&mdash; no longer linked to your address</div></div>\n<form "
+    "method='GET' action='/wallet/shield'>\n<div class='form-group'>\n<label class='form-label' for='s"
+    "hield-amt'>Amount to Secure</label>\n<div style='display:flex;gap:8px;align-items:center'>\n<inpu"
+    "t class='form-input' type='text' id='shield-amt'\ninputmode='decimal' name='amount' placeholder='"
+    "0.00' required>\n<button type='button' class='send-max'\nonclick='document.getElementById(\"shiel"
+    "d-amt\").value=\"{{{max_amount}}}\"'>Max</button>\n</div>\n<div style='color:#888;font-size:14px;"
+    "margin-top:6px'>\nAvailable: <span style='color:#34d399'>{{{available}}} ZCL</span>\n</div></div>"
+    "\n<div id='shield-err' class='form-error'></div>\n<button type='submit' class='btn-primary'\nstyl"
+    "e='background:#a78bfa;color:#fff;margin-top:8px'\nonclick='var a=parseFloat(document.getElementBy"
+    "Id(\"shield-amt\").value);if(isNaN(a)||a<=0){document.getElementById(\"shield-err\").textContent="
+    "\"Enter a valid amount\";return false;}if(a>{{{max_amount}}}){document.getElementById(\"shield-er"
+    "r\").textContent=\"Insufficient funds\";return false;}'>\nReview</button>\n</form>\n<div style='t"
+    "ext-align:center;margin-top:16px'>\n<a href='/wallet' style='color:#888'>Cancel</a></div>\n";
+
+static const char TMPL_SEND_REVIEW[] =
+    "{{> breadcrumb}}\n\n<div style='text-align:center;margin-bottom:16px'>\n<span class='form-label'>"
+    "Review Transaction</span></div>\n<table class='review-table'>\n<tr><td>To</td>\n<td style='color:"
+    "#60a5fa;font-family:\"JetBrains Mono\",monospace;\nfont-size:14px;word-break:break-all'>{{address"
+    "}}</td></tr>\n<tr><td>Amount</td>\n<td style='color:#34d399;font-size:18px;font-weight:700'>\n{{{"
+    "amount}}} ZCL</td></tr>\n<tr><td>Fee</td>\n<td style='color:#999'>{{{fee}}} ZCL</td></tr>\n<tr><t"
+    "d style='font-weight:700'>Total</td>\n<td style='color:#e2e2e2;font-weight:700'>\n{{{total}}} ZCL"
+    "</td></tr>\n<tr><td>Remaining</td>\n<td style='color:#999'>{{{remaining}}} ZCL</td></tr>\n<tr><td"
+    ">Privacy</td>\n<td><span class='pill {{{privacy_pill}}}'>{{{privacy_label}}}</span>\n{{{privacy_w"
+    "arning}}}</td></tr>\n<tr><td>Est. Time</td>\n<td style='color:#999'>~2.5 min (1 confirmation)</td"
+    "></tr>\n</table>\n";
 
 static const char CSS_WALLET_0[] =
     "*{box-sizing:border-box;margin:0;padding:0}body{font-family:Inter,-apple-system,'Segoe UI',system"
@@ -564,5 +556,65 @@ static const char *CSS_WALLET_get(void) {
     return _CSS_WALLET_buf;
 }
 #define CSS_WALLET (CSS_WALLET_get())
+
+#include "util/template.h"
+
+static const struct template_partial _tmpl_partials[] = {
+    { "back-to-wallet", TMPL_BACK_TO_WALLET },
+    { "backup-warning", TMPL_BACKUP_WARNING },
+    { "coins-no-notes", TMPL_COINS_NO_NOTES },
+    { "coins-no-tokens", TMPL_COINS_NO_TOKENS },
+    { "coins-notes-table", TMPL_COINS_NOTES_TABLE },
+    { "coins-tokens", TMPL_COINS_TOKENS },
+    { "conf-confirmed", TMPL_CONF_CONFIRMED },
+    { "conf-pending", TMPL_CONF_PENDING },
+    { "history-card", TMPL_HISTORY_CARD },
+    { "history-header", TMPL_HISTORY_HEADER },
+    { "history-shield", TMPL_HISTORY_SHIELD },
+    { "loading", TMPL_LOADING },
+    { "privacy-nudge", TMPL_PRIVACY_NUDGE },
+    { "receive-js", TMPL_RECEIVE_JS },
+    { "receive-no-zaddr", TMPL_RECEIVE_NO_ZADDR },
+    { "receive-zpane-close", TMPL_RECEIVE_ZPANE_CLOSE },
+    { "send-confirm-buttons", TMPL_SEND_CONFIRM_BUTTONS },
+    { "send-error", TMPL_SEND_ERROR },
+    { "send-success", TMPL_SEND_SUCCESS },
+    { "send", TMPL_SEND },
+    { "shield-balance-card", TMPL_SHIELD_BALANCE_CARD },
+    { "shield-confirm", TMPL_SHIELD_CONFIRM },
+    { "shield-done", TMPL_SHIELD_DONE },
+    { "shield-error", TMPL_SHIELD_ERROR },
+    { "shield-invalid", TMPL_SHIELD_INVALID },
+    { "shield-pending", TMPL_SHIELD_PENDING },
+    { "shield-success", TMPL_SHIELD_SUCCESS },
+    { "tx-invalid", TMPL_TX_INVALID },
+    { "tx-not-found", TMPL_TX_NOT_FOUND },
+    { "tx-row", TMPL_TX_ROW },
+    { "pagination", TMPL_PAGINATION },
+    { "validation-error", TMPL_VALIDATION_ERROR },
+    { "node-page", TMPL_NODE_PAGE },
+    { "node-tor", TMPL_NODE_TOR },
+    { "node-no-tor", TMPL_NODE_NO_TOR },
+    { "node-peer-row", TMPL_NODE_PEER_ROW },
+    { "checkpoint-row", TMPL_CHECKPOINT_ROW },
+    { "breadcrumb", TMPL_BREADCRUMB },
+    { "node-status-strip", TMPL_NODE_STATUS_STRIP },
+    { "dashboard", TMPL_DASHBOARD },
+    { "receive-tabs", TMPL_RECEIVE_TABS },
+    { "receive-zpane-open", TMPL_RECEIVE_ZPANE_OPEN },
+    { "receive-tpane", TMPL_RECEIVE_TPANE },
+    { "receive-copy-js", TMPL_RECEIVE_COPY_JS },
+    { "tx-detail", TMPL_TX_DETAIL },
+    { "coins-page", TMPL_COINS_PAGE },
+    { "shield-amount-form", TMPL_SHIELD_AMOUNT_FORM },
+    { "send-review", TMPL_SEND_REVIEW },
+};
+
+#define TMPL_PARTIAL_COUNT 48
+
+__attribute__((unused))
+static void tmpl_init_partials(void) {
+    template_register_partials(_tmpl_partials, TMPL_PARTIAL_COUNT);
+}
 
 #endif

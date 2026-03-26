@@ -1234,6 +1234,9 @@ static size_t serve_coins(uint8_t *r, size_t max) {
     snprintf(chain_utxos_s, sizeof(chain_utxos_s), "%d", chain_utxo_count);
 
     struct template_var vars[] = {
+        { "parent_href",   "/wallet/node" },
+        { "parent_label",  "Node" },
+        { "current",       "Coin Audit" },
         { "utxo_rows",     utxo_rows },
         { "t_count",       t_count_s },
         { "t_plural",      t_count == 1 ? "" : "s" },
@@ -1297,10 +1300,13 @@ static size_t serve_shield(uint8_t *r, size_t max, const char *query) {
         snprintf(max_str, sizeof(max_str), "%.8f",
             (double)avail / (double)ZATOSHI_PER_ZCL - FEE_ZCL);
         struct template_var fv[] = {
-            { "max_amount", max_str },
-            { "available",  avail_str },
+            { "parent_href",  "/wallet" },
+            { "parent_label", "Home" },
+            { "current",      "Secure Funds" },
+            { "max_amount",   max_str },
+            { "available",    avail_str },
         };
-        off += template_render(TMPL_SHIELD_AMOUNT_FORM, fv, 2,
+        off += template_render(TMPL_SHIELD_AMOUNT_FORM, fv, 5,
             (char *)r + off, max - off);
         wv_emit_footer(r, max, &off);
         return off;
@@ -1663,6 +1669,9 @@ static size_t serve_send_review(uint8_t *r, size_t max,
             : "";
 
         struct template_var rv[] = {
+            { "parent_href",     "/wallet/send" },
+            { "parent_label",    "Send" },
+            { "current",         "Review" },
             { "address",         safe_addr },
             { "amount",          amt_s },
             { "fee",             fee_s },
@@ -1673,7 +1682,7 @@ static size_t serve_send_review(uint8_t *r, size_t max,
                                               : "&#x1F534; Public" },
             { "privacy_warning", pw },
         };
-        off += template_render(TMPL_SEND_REVIEW, rv, 8,
+        off += template_render(TMPL_SEND_REVIEW, rv, 11,
             (char *)r + off, max - off);
     }
 
@@ -1955,6 +1964,9 @@ static size_t serve_tx_detail(uint8_t *r, size_t max, const char *txid_hex) {
     snprintf(block_h_s, sizeof(block_h_s), "%d", block_height);
 
     struct template_var vars[] = {
+        { "parent_href",     "/wallet/history" },
+        { "parent_label",    "History" },
+        { "current",         "Transaction" },
         { "pill_class",      is_recv ? "pill-t" : "pill-pending" },
         { "direction",       is_recv ? "Received" : "Sent" },
         { "color",           is_recv ? "#34d399" : "#f87171" },

@@ -154,9 +154,15 @@ static char *minify_css(const char *src, size_t src_len, size_t *out_len) {
     return out;
 }
 
+/* Track template names for partial registry */
+#define MAX_TEMPLATES 256
+static struct { char base[128]; char upper[128]; } tmpl_names[MAX_TEMPLATES];
+static int tmpl_name_count = 0;
+
 /* Process a directory of files with given extension.
  * prefix: "TMPL" for .chtml, "CSS" for .css
- * minify: true for .css files */
+ * minify: true for .css files
+ * track: true to add to partial registry */
 static int process_dir(const char *dir, const char *ext, const char *prefix,
                        bool minify, FILE *out) {
     DIR *d = opendir(dir);
@@ -194,6 +200,13 @@ static int process_dir(const char *dir, const char *ext, const char *prefix,
             (int)base_len, ent->d_name);
         char name_upper[256];
         to_upper_underscore(name_base, name_upper, sizeof(name_upper));
+
+        /* Track for partial registry (templates only, not CSS) */
+        if (!minify && tmpl_name_count < MAX_TEMPLATES) {
+            snprintf(tmpl_names[tmpl_name_count].base, 128, "%s", name_base);
+            snprintf(tmpl_names[tmpl_name_count].upper, 128, "%s", name_upper);
+            tmpl_name_count++;
+        }
 
         if (minify) {
             size_t min_len = 0;
@@ -275,6 +288,23 @@ int main(int argc, char **argv) {
     int css_count = 0;
     if (css_dir)
         css_count = process_dir(css_dir, ".ccss", "CSS", true, out);
+
+    /* Generate partial registry for {{> name}} lookups */
+    fprintf(out, "#include \"util/template.h\"\n\n");
+    fprintf(out,
+        "static const struct template_partial _tmpl_partials[] = {\n");
+    for (int i = 0; i < tmpl_name_count; i++) {
+        fprintf(out, "    { \"%s\", TMPL_%s },\n",
+            tmpl_names[i].base, tmpl_names[i].upper);
+    }
+    fprintf(out, "};\n\n");
+    fprintf(out,
+        "#define TMPL_PARTIAL_COUNT %d\n\n"
+        "__attribute__((unused))\n"
+        "static void tmpl_init_partials(void) {\n"
+        "    template_register_partials(_tmpl_partials, TMPL_PARTIAL_COUNT);\n"
+        "}\n\n",
+        tmpl_name_count);
 
     fprintf(out, "#endif\n");
     fclose(out);

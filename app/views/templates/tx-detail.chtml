@@ -1,8 +1,4 @@
-<div style='margin-bottom:12px'>
-<a href='/wallet/history' style='color:#888;font-size:13px;
-text-decoration:none'>History &#x2192;</a>
-<span style='color:#e2e2e2;font-size:13px;font-weight:600'>
-Transaction</span></div>
+{{> breadcrumb}}
 
 <div style='text-align:center;padding:16px 0'>
 <span class='pill {{{pill_class}}}' style='font-size:13px;padding:4px 12px'>

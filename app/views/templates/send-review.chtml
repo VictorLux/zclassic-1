@@ -1,8 +1,4 @@
-<div style='margin-bottom:12px'>
-<a href='/wallet/send' style='color:#888;font-size:13px;
-text-decoration:none'>Send &#x2192;</a>
-<span style='color:#e2e2e2;font-size:13px;font-weight:600'>
-Review</span></div>
+{{> breadcrumb}}
 
 <div style='text-align:center;margin-bottom:16px'>
 <span class='form-label'>Review Transaction</span></div>

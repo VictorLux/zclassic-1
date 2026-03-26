@@ -23,6 +23,7 @@ bool g_sync_enabled = false;
 
 void wallet_view_init(const char *datadir) {
     g_wv_datadir = datadir;
+    tmpl_init_partials();
 }
 
 void wallet_view_enable_sync(void) {
