@@ -1,11 +1,29 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * secp256k1 API compatibility — NOT NEEDED.
+ * secp256k1 API compatibility shim. THIS FILE IS REQUIRED.
  *
- * Our vendor libsecp256k1.a exports secp256k1_ec_seckey_tweak_add
- * natively (verified via: nm vendor/lib/libsecp256k1.a | grep tweak_add).
+ * PROOF (run this yourself):
+ *   $ nm vendor/lib/libsecp256k1.a | grep tweak_add
+ *   0000000000013210 T secp256k1_ec_privkey_tweak_add   <-- OLD name
+ *   0000000000013560 T secp256k1_ec_pubkey_tweak_add
  *
- * The old name secp256k1_ec_privkey_tweak_add does NOT exist in our
- * vendor library. No shim is needed. This file is intentionally empty
- * to prevent merge conflicts from re-adding a broken shim. */
-typedef int secp256k1_compat_empty_tu; /* ISO C requires non-empty TU */
+ * The vendor .a has ONLY secp256k1_ec_privkey_tweak_add.
+ * The vendor header declares secp256k1_ec_seckey_tweak_add.
+ * Without this shim, the build fails with:
+ *   undefined reference to `secp256k1_ec_seckey_tweak_add'
+ *
+ * DO NOT DELETE THIS SHIM. DO NOT REPLACE WITH AN EMPTY FILE.
+ * If you think the symbol exists natively, run the nm command above. */
+
+#include <secp256k1.h>
+
+int secp256k1_ec_privkey_tweak_add(const secp256k1_context *ctx,
+                                    unsigned char *seckey,
+                                    const unsigned char *tweak);
+
+int secp256k1_ec_seckey_tweak_add(const secp256k1_context *ctx,
+                                   unsigned char *seckey,
+                                   const unsigned char *tweak)
+{
+    return secp256k1_ec_privkey_tweak_add(ctx, seckey, tweak);
+}
