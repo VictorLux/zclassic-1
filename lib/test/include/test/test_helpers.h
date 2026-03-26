@@ -206,6 +206,8 @@ int spec_data_hooks(void);
 int spec_event_observers(void);
 int spec_state_machine(void);
 int spec_ux_sierra(void);
+int spec_html_quality(void);
+int spec_user_journeys(void);
 
 /* ── DRY test macros ─────────────────────────────────────── */
 

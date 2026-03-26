@@ -80,6 +80,8 @@ int main(void)
     failures += spec_event_observers();
     failures += spec_state_machine();
     failures += spec_ux_sierra();
+    failures += spec_html_quality();
+    failures += spec_user_journeys();
 
     ecc_verify_destroy();
     ecc_stop();
