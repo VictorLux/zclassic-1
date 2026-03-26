@@ -181,6 +181,9 @@ static void *build_snapshot_offer_thread(void *arg)
         if (block_piece_manifest_build(datadir, 1, tip_h,
                                         &g_cached_block_manifest)) {
             g_cached_block_manifest_valid = true;
+            /* Track build height for refresh logic in msgprocessor.c */
+            extern int32_t g_manifest_built_at_height;
+            g_manifest_built_at_height = tip_h;
             printf("Block manifest ready: h=%d..%d, %u pieces\n",
                    g_cached_block_manifest.start_height,
                    g_cached_block_manifest.end_height,
