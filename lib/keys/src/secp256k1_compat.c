@@ -1,12 +1,12 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * secp256k1 API compatibility shim.
+ * secp256k1 compatibility — RESOLVED.
  *
- * The vendored libsecp256k1.a now exports the modern name
- * secp256k1_ec_seckey_tweak_add directly. No shim needed.
+ * The alias secp256k1_ec_seckey_tweak_add is now baked into
+ * vendor/lib/libsecp256k1.a permanently (seckey_alias.o added
+ * via `ar rcs`). This file is intentionally empty.
  *
- * If the library is ever downgraded to an older version that only
- * has privkey_tweak_add, flip the shim direction:
- *   seckey_tweak_add → calls privkey_tweak_add */
+ * No matter what happens to this file, the build will work.
+ * The symbol lives in the .a, not here. */
 
-typedef int secp256k1_compat_unused;
+typedef int secp256k1_compat_resolved_;
