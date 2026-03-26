@@ -213,6 +213,21 @@ void msg_processor_init(struct msg_processor *mp,
 
     /* Initialize download manager once (before threads start) */
     msg_get_download_mgr();
+
+    /* Build initial block piece manifest for swarm sync.
+     * This enables serving block pieces to peers immediately. */
+    if (ms && datadir) {
+        int tip = active_chain_height(&ms->chain_active);
+        if (tip > 1000 && !g_cached_block_manifest_valid) {
+            if (block_piece_manifest_build(datadir, 1, tip,
+                                            &g_cached_block_manifest)) {
+                g_manifest_built_at_height = tip;
+                g_cached_block_manifest_valid = true;
+                printf("Block manifest built: h=1..%d (%u pieces, SHA3 verified)\n",
+                       tip, g_cached_block_manifest.num_pieces);
+            }
+        }
+    }
 }
 
 int msg_get_height(void *ctx)
@@ -1007,9 +1022,10 @@ static bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
             /* Refresh block manifest when chain grows beyond cached range.
              * This ensures new peers connecting to us get a manifest that
              * covers the full chain, not just what we had at startup. */
-            if (g_cached_block_manifest_valid &&
-                new_tip->nHeight - g_manifest_built_at_height
-                    >= MANIFEST_REFRESH_BLOCKS) {
+            if (new_tip->nHeight > 1000 &&
+                (!g_cached_block_manifest_valid ||
+                 new_tip->nHeight - g_manifest_built_at_height
+                    >= MANIFEST_REFRESH_BLOCKS)) {
                 /* Rebuild in a detached thread to avoid blocking message processing */
                 static _Atomic bool g_manifest_rebuilding = false;
                 if (!atomic_exchange(&g_manifest_rebuilding, true)) {
