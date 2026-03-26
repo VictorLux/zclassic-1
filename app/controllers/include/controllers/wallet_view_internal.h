@@ -93,20 +93,21 @@ void wv_txid_lower(const char *txid, char *out, size_t max);
 
 /* ── Page handlers (each in its own .c file) ──────────────── */
 
-size_t wv_serve_dashboard(uint8_t *r, size_t max);
-size_t wv_serve_send(uint8_t *r, size_t max);
-size_t wv_serve_send_review(uint8_t *r, size_t max,
+size_t serve_dashboard(uint8_t *r, size_t max);
+size_t serve_pulse(uint8_t *r, size_t max);
+size_t serve_send(uint8_t *r, size_t max);
+size_t serve_send_review(uint8_t *r, size_t max,
+                          const uint8_t *body, size_t body_len);
+size_t serve_send_confirm(uint8_t *r, size_t max,
+                           const uint8_t *body, size_t body_len);
+size_t serve_receive(uint8_t *r, size_t max);
+size_t serve_history(uint8_t *r, size_t max, int page,
+                      const char *filter, const char *search);
+size_t serve_coins(uint8_t *r, size_t max);
+size_t serve_shield(uint8_t *r, size_t max, const char *query);
+size_t serve_shield_confirm(uint8_t *r, size_t max,
                              const uint8_t *body, size_t body_len);
-size_t wv_serve_send_confirm(uint8_t *r, size_t max,
-                              const uint8_t *body, size_t body_len);
-size_t wv_serve_receive(uint8_t *r, size_t max);
-size_t wv_serve_history(uint8_t *r, size_t max, int page,
-                         const char *filter, const char *search);
-size_t wv_serve_coins(uint8_t *r, size_t max);
-size_t wv_serve_shield(uint8_t *r, size_t max, const char *query);
-size_t wv_serve_shield_confirm(uint8_t *r, size_t max,
-                                const uint8_t *body, size_t body_len);
-size_t wv_serve_pulse(uint8_t *r, size_t max);
-size_t wv_serve_tx_detail(uint8_t *r, size_t max, const char *txid);
+size_t serve_tx_detail(uint8_t *r, size_t max, const char *txid);
+size_t serve_node(uint8_t *r, size_t max);
 
 #endif /* ZCL_CONTROLLERS_WALLET_VIEW_INTERNAL_H */
