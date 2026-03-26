@@ -45,8 +45,15 @@ void coins_from_transaction(struct coins *c, const struct transaction *tx, int h
     if (!coins_alloc(c, tx->num_vout))
         return;
 
-    for (size_t i = 0; i < tx->num_vout; i++)
-        c->vout[i] = tx->vout[i];
+    for (size_t i = 0; i < tx->num_vout; i++) {
+        /* Skip provably unspendable outputs (OP_RETURN).
+         * Bitcoin Core's AddCoin() checks IsUnspendable() and skips them.
+         * They never enter the UTXO set in zclassicd. */
+        if (script_is_unspendable(&tx->vout[i].script_pub_key))
+            tx_out_set_null(&c->vout[i]);
+        else
+            c->vout[i] = tx->vout[i];
+    }
 
     coins_cleanup(c);
 }
