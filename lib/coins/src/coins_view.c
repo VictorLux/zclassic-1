@@ -260,7 +260,16 @@ static bool cvc_batch_write(void *self, struct coins_map *map_coins,
             continue;
         if (e->entry.flags & COINS_CACHE_DIRTY) {
             if (coins_is_pruned(&e->entry.coins)) {
-                coins_map_erase(&parent->cache_coins, &e->txid);
+                /* Keep the pruned entry in the parent cache so that
+                 * when the parent flushes to SQLite, the DELETE fires.
+                 * Without this, erased entries vanish from RAM but
+                 * remain in SQLite as stale UTXOs. */
+                struct coins_cache_entry *dest =
+                    coins_map_insert(&parent->cache_coins, &e->txid);
+                coins_free(&dest->coins);
+                dest->coins = e->entry.coins;
+                coins_init(&e->entry.coins);
+                dest->flags |= COINS_CACHE_DIRTY;
                 pruned++;
             } else {
                 struct coins_cache_entry *dest =
