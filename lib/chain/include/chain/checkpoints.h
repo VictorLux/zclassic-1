@@ -30,4 +30,18 @@ double checkpoints_guess_verification_progress(
     const struct checkpoint_data *data,
     const struct block_index *pindex, bool fSigchecks);
 
+/* SHA3 UTXO checkpoint — compiled-in commitment that a new node
+ * can verify its UTXO set against without trusting any peer.
+ * Verified bit-for-bit against zclassicd reference implementation. */
+struct sha3_utxo_checkpoint {
+    int32_t  height;            /* block height */
+    uint8_t  block_hash[32];    /* block hash at height (hex in source) */
+    uint8_t  sha3_hash[32];     /* SHA3-256 over canonical UTXO set */
+    uint64_t utxo_count;        /* number of UTXOs */
+    int64_t  total_supply;      /* total transparent supply in zatoshi */
+};
+
+/* Returns the latest hardcoded SHA3 UTXO checkpoint, or NULL if none. */
+const struct sha3_utxo_checkpoint *get_sha3_utxo_checkpoint(void);
+
 #endif

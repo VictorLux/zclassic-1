@@ -88,4 +88,31 @@ bool utxo_commitment_sha3_save(struct sqlite3 *db, const uint8_t hash[32],
 bool utxo_commitment_sha3_load(struct sqlite3 *db, uint8_t hash[32],
                                 int32_t *height, uint64_t *count);
 
+/* ── Full data integrity hash ────────────────────────────── */
+
+/* SHA3-256 over ALL consensus-critical data in canonical order:
+ * blocks, transactions, tx_inputs, tx_outputs, utxos,
+ * sapling_nullifiers, sapling_outputs, sapling_spends,
+ * sprout_nullifiers, joinsplits, zslp_tokens, zslp_transfers.
+ * Each table hashed separately, then combined into a master hash.
+ * Returns per-table hashes in the detail struct for diagnostics. */
+struct data_integrity_detail {
+    uint8_t blocks[32];
+    uint8_t transactions[32];
+    uint8_t tx_inputs[32];
+    uint8_t tx_outputs[32];
+    uint8_t utxos[32];
+    uint8_t sapling_nullifiers[32];
+    uint8_t sapling_outputs[32];
+    uint8_t sapling_spends[32];
+    uint8_t sprout_nullifiers[32];
+    uint8_t joinsplits[32];
+    uint8_t zslp_tokens[32];
+    uint8_t zslp_transfers[32];
+    uint8_t master[32];         /* SHA3-256 of all above concatenated */
+};
+
+void data_integrity_compute(struct sqlite3 *db,
+                            struct data_integrity_detail *out);
+
 #endif

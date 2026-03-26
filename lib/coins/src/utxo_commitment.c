@@ -341,3 +341,135 @@ bool utxo_commitment_sha3_load(sqlite3 *db, uint8_t hash[32],
     sqlite3_finalize(st);
     return ok;
 }
+
+/* ── Full data integrity hash ────────────────────────────── */
+
+/* Hash all rows of a table: stream every column of every row in order
+ * into a SHA3-256 context. NULL blobs are hashed as 4 zero bytes. */
+static void hash_table(sqlite3 *db, const char *sql, uint8_t out[32])
+{
+    struct sha3_256_ctx ctx;
+    sha3_256_init(&ctx);
+
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) != SQLITE_OK) {
+        sha3_256_finalize(&ctx, out);
+        return;
+    }
+
+    int ncols = sqlite3_column_count(s);
+    while (sqlite3_step(s) == SQLITE_ROW) {
+        for (int c = 0; c < ncols; c++) {
+            int type = sqlite3_column_type(s, c);
+            if (type == SQLITE_BLOB || type == SQLITE_TEXT) {
+                const uint8_t *data = (const uint8_t *)sqlite3_column_blob(s, c);
+                int len = sqlite3_column_bytes(s, c);
+                /* Write length prefix + data */
+                uint8_t le4[4];
+                uint32_t ulen = (uint32_t)(len > 0 ? len : 0);
+                le4[0] = (uint8_t)(ulen); le4[1] = (uint8_t)(ulen >> 8);
+                le4[2] = (uint8_t)(ulen >> 16); le4[3] = (uint8_t)(ulen >> 24);
+                sha3_256_write(&ctx, le4, 4);
+                if (data && len > 0)
+                    sha3_256_write(&ctx, data, (size_t)len);
+            } else if (type == SQLITE_INTEGER) {
+                int64_t val = sqlite3_column_int64(s, c);
+                uint8_t le8[8];
+                uint64_t v = (uint64_t)val;
+                for (int i = 0; i < 8; i++) le8[i] = (uint8_t)(v >> (8 * i));
+                sha3_256_write(&ctx, le8, 8);
+            } else if (type == SQLITE_FLOAT) {
+                double val = sqlite3_column_double(s, c);
+                uint8_t buf[8];
+                memcpy(buf, &val, 8);
+                sha3_256_write(&ctx, buf, 8);
+            } else {
+                /* NULL — write 4 zero bytes as sentinel */
+                uint8_t z[4] = {0};
+                sha3_256_write(&ctx, z, 4);
+            }
+        }
+    }
+    sqlite3_finalize(s);
+    sha3_256_finalize(&ctx, out);
+}
+
+void data_integrity_compute(sqlite3 *db, struct data_integrity_detail *out)
+{
+    memset(out, 0, sizeof(*out));
+    if (!db) return;
+
+    /* Hash each consensus-critical table in canonical order.
+     * Primary key ordering ensures deterministic results. */
+
+    hash_table(db,
+        "SELECT hash,height,prev_hash,version,merkle_root,time,bits,"
+        "nonce,num_tx,sapling_value,sprout_value"
+        " FROM blocks ORDER BY hash",
+        out->blocks);
+
+    hash_table(db,
+        "SELECT txid,block_hash,block_height,tx_index,file_num,file_pos,"
+        "is_coinbase FROM transactions ORDER BY txid",
+        out->transactions);
+
+    hash_table(db,
+        "SELECT * FROM tx_inputs ORDER BY rowid",
+        out->tx_inputs);
+
+    hash_table(db,
+        "SELECT * FROM tx_outputs ORDER BY rowid",
+        out->tx_outputs);
+
+    hash_table(db,
+        "SELECT txid,vout,value,script,script_type,address_hash,"
+        "height,is_coinbase FROM utxos ORDER BY txid,vout",
+        out->utxos);
+
+    hash_table(db,
+        "SELECT nullifier FROM sapling_nullifiers ORDER BY nullifier",
+        out->sapling_nullifiers);
+
+    hash_table(db,
+        "SELECT * FROM sapling_outputs ORDER BY rowid",
+        out->sapling_outputs);
+
+    hash_table(db,
+        "SELECT * FROM sapling_spends ORDER BY rowid",
+        out->sapling_spends);
+
+    hash_table(db,
+        "SELECT * FROM sprout_nullifiers ORDER BY rowid",
+        out->sprout_nullifiers);
+
+    hash_table(db,
+        "SELECT * FROM joinsplits ORDER BY rowid",
+        out->joinsplits);
+
+    hash_table(db,
+        "SELECT token_id,ticker,name,decimals,document_url,"
+        "genesis_height,total_minted,total_burned"
+        " FROM zslp_tokens ORDER BY token_id",
+        out->zslp_tokens);
+
+    hash_table(db,
+        "SELECT * FROM zslp_transfers ORDER BY rowid",
+        out->zslp_transfers);
+
+    /* Master hash: SHA3-256 of all per-table hashes concatenated */
+    struct sha3_256_ctx ctx;
+    sha3_256_init(&ctx);
+    sha3_256_write(&ctx, out->blocks, 32);
+    sha3_256_write(&ctx, out->transactions, 32);
+    sha3_256_write(&ctx, out->tx_inputs, 32);
+    sha3_256_write(&ctx, out->tx_outputs, 32);
+    sha3_256_write(&ctx, out->utxos, 32);
+    sha3_256_write(&ctx, out->sapling_nullifiers, 32);
+    sha3_256_write(&ctx, out->sapling_outputs, 32);
+    sha3_256_write(&ctx, out->sapling_spends, 32);
+    sha3_256_write(&ctx, out->sprout_nullifiers, 32);
+    sha3_256_write(&ctx, out->joinsplits, 32);
+    sha3_256_write(&ctx, out->zslp_tokens, 32);
+    sha3_256_write(&ctx, out->zslp_transfers, 32);
+    sha3_256_finalize(&ctx, out->master);
+}

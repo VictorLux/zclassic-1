@@ -8,6 +8,7 @@
 #include "controllers/strong_params.h"
 #include "chain/chain.h"
 #include "chain/chainparams.h"
+#include "chain/checkpoints.h"
 #include "chain/mmr.h"
 #include "chain/pow.h"
 #include "coins/utxo_commitment.h"
@@ -3223,6 +3224,134 @@ static bool rpc_getutxocommitment(const struct json_value *params, bool help,
     return true;
 }
 
+/* ── SHA3 checkpoint verification RPC ──────────────────── */
+
+static bool rpc_verifycheckpoint(const struct json_value *params, bool help,
+                                   struct json_value *result)
+{
+    (void)params;
+    RPC_HELP(help, result,
+        "verifycheckpoint\n"
+        "\nVerifies the UTXO set against the hardcoded SHA3 checkpoint.\n"
+        "Returns pass/fail with details. Flushes coins cache first.\n");
+
+    const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
+    if (!cp) {
+        json_set_str(result, "No checkpoint available");
+        return false;
+    }
+    if (!g_node_db_bc || !g_node_db_bc->open) {
+        json_set_str(result, "Database not available");
+        return false;
+    }
+    if (!g_main_state) {
+        json_set_str(result, "Chain not loaded");
+        return false;
+    }
+
+    int tip = active_chain_height(&g_main_state->chain_active);
+    if (tip < cp->height) {
+        json_set_object(result);
+        json_push_kv_str(result, "status", "pending");
+        json_push_kv_int(result, "checkpoint_height", cp->height);
+        json_push_kv_int(result, "current_height", tip);
+        return true;
+    }
+
+    /* Flush coins cache */
+    if (g_coins_tip)
+        coins_view_cache_flush(g_coins_tip);
+
+    uint8_t sha3_hash[32];
+    uint64_t count = 0;
+    utxo_commitment_sha3_compute(g_node_db_bc->db, sha3_hash, &count);
+
+    bool match = (memcmp(sha3_hash, cp->sha3_hash, 32) == 0);
+
+    char local_hex[65], expected_hex[65];
+    for (int i = 0; i < 32; i++) {
+        snprintf(local_hex + i * 2, 3, "%02x", sha3_hash[i]);
+        snprintf(expected_hex + i * 2, 3, "%02x", cp->sha3_hash[i]);
+    }
+
+    json_set_object(result);
+    json_push_kv_str(result, "status", match ? "PASSED" : "FAILED");
+    json_push_kv_int(result, "checkpoint_height", cp->height);
+    json_push_kv_str(result, "expected_sha3", expected_hex);
+    json_push_kv_str(result, "computed_sha3", local_hex);
+    json_push_kv_int(result, "expected_utxos", (int64_t)cp->utxo_count);
+    json_push_kv_int(result, "computed_utxos", (int64_t)count);
+
+    if (match)
+        printf("SHA3 checkpoint verification: PASSED at height %d\n",
+               cp->height);
+    else
+        printf("SHA3 checkpoint verification: FAILED at height %d!\n"
+               "  expected: %s\n  computed: %s\n",
+               cp->height, expected_hex, local_hex);
+
+    return true;
+}
+
+/* ── Full data integrity hash RPC ──────────────────────── */
+
+static bool rpc_getdataintegrity(const struct json_value *params, bool help,
+                                   struct json_value *result)
+{
+    (void)params;
+    RPC_HELP(help, result,
+        "getdataintegrity\n"
+        "\nComputes SHA3-256 hashes over ALL consensus data tables:\n"
+        "blocks, transactions, tx_inputs, tx_outputs, utxos,\n"
+        "sapling_nullifiers, sapling_outputs, sapling_spends,\n"
+        "sprout_nullifiers, joinsplits, zslp_tokens, zslp_transfers.\n"
+        "Returns per-table hashes and a master hash combining all.\n");
+
+    if (!g_node_db_bc || !g_node_db_bc->open) {
+        json_set_str(result, "Database not available");
+        return false;
+    }
+
+    if (g_coins_tip)
+        coins_view_cache_flush(g_coins_tip);
+
+    int64_t t0 = (int64_t)time(NULL);
+    struct data_integrity_detail d;
+    data_integrity_compute(g_node_db_bc->db, &d);
+    int64_t elapsed = (int64_t)time(NULL) - t0;
+
+    json_set_object(result);
+
+    /* Helper: convert 32-byte hash to hex and push as kv */
+    const struct { const char *name; const uint8_t *hash; } tables[] = {
+        { "blocks",              d.blocks },
+        { "transactions",        d.transactions },
+        { "tx_inputs",           d.tx_inputs },
+        { "tx_outputs",          d.tx_outputs },
+        { "utxos",               d.utxos },
+        { "sapling_nullifiers",  d.sapling_nullifiers },
+        { "sapling_outputs",     d.sapling_outputs },
+        { "sapling_spends",      d.sapling_spends },
+        { "sprout_nullifiers",   d.sprout_nullifiers },
+        { "joinsplits",          d.joinsplits },
+        { "zslp_tokens",         d.zslp_tokens },
+        { "zslp_transfers",      d.zslp_transfers },
+        { "master",              d.master },
+    };
+
+    for (size_t i = 0; i < sizeof(tables) / sizeof(tables[0]); i++) {
+        char hex[65];
+        for (int j = 0; j < 32; j++)
+            snprintf(hex + j * 2, 3, "%02x", tables[i].hash[j]);
+        json_push_kv_str(result, tables[i].name, hex);
+    }
+
+    int tip = g_main_state ? active_chain_height(&g_main_state->chain_active) : 0;
+    json_push_kv_int(result, "height", tip);
+    json_push_kv_int(result, "elapsed_seconds", elapsed);
+    return true;
+}
+
 /* ── MMR root RPC ──────────────────────────────────────── */
 
 static bool rpc_getmmrroot(const struct json_value *params, bool help,
@@ -3274,6 +3403,8 @@ void register_blockchain_rpc_commands(struct rpc_table *t)
         { "blockchain", "indexlegacy",          rpc_indexlegacy,            false },
         { "blockchain", "getutxocommitment",   rpc_getutxocommitment,     true },
         { "blockchain", "getmmrroot",          rpc_getmmrroot,            true },
+        { "blockchain", "verifycheckpoint",    rpc_verifycheckpoint,      true },
+        { "blockchain", "getdataintegrity",    rpc_getdataintegrity,      true },
     };
 
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++)

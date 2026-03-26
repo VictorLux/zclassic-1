@@ -45,3 +45,42 @@ double checkpoints_guess_verification_progress(
 
     return fWorkBefore / (fWorkBefore + fWorkAfter);
 }
+
+/* ── SHA3 UTXO checkpoint ──────────────────────────────── */
+/* Verified bit-for-bit against zclassicd (ZclassicCommunity/zclassic)
+ * at height 3,056,758 on 2026-03-26.
+ *
+ * Verification method:
+ *   1. Both nodes at height 3,056,758, same bestblockhash
+ *   2. gettxoutsetinfo: txouts=1,354,771, total=10364138.33747381 ZCL
+ *   3. Confirmed PERFECT MATCH at height 3,056,763 (zero delta)
+ *   4. SHA3-256 computed over all UTXOs in (txid,vout) canonical order
+ *      including full scriptPubKey data
+ *
+ * A new node reaching this height MUST produce the same SHA3 hash.
+ * If not, its UTXO set is corrupted and cannot be trusted. */
+
+static const struct sha3_utxo_checkpoint g_sha3_checkpoint = {
+    .height = 3056758,
+    .block_hash = {
+        /* 000002979090fba9da6cdc140d050245c1b637480609510922662407855bd653 */
+        0x53, 0xd6, 0x5b, 0x85, 0x07, 0x24, 0x66, 0x22,
+        0x09, 0x51, 0x09, 0x06, 0x48, 0x37, 0xb6, 0xc1,
+        0x45, 0x02, 0x05, 0x0d, 0x14, 0xdc, 0x6c, 0xda,
+        0xa9, 0xfb, 0x90, 0x90, 0x97, 0x02, 0x00, 0x00,
+    },
+    .sha3_hash = {
+        /* 00e95dbd54a791a51433d68127f9975a3b1d6f8e9002b109647343ba0c83c3e0 */
+        0x00, 0xe9, 0x5d, 0xbd, 0x54, 0xa7, 0x91, 0xa5,
+        0x14, 0x33, 0xd6, 0x81, 0x27, 0xf9, 0x97, 0x5a,
+        0x3b, 0x1d, 0x6f, 0x8e, 0x90, 0x02, 0xb1, 0x09,
+        0x64, 0x73, 0x43, 0xba, 0x0c, 0x83, 0xc3, 0xe0,
+    },
+    .utxo_count = 1354771,
+    .total_supply = 1036413833747381LL,  /* 10364138.33747381 ZCL */
+};
+
+const struct sha3_utxo_checkpoint *get_sha3_utxo_checkpoint(void)
+{
+    return &g_sha3_checkpoint;
+}
