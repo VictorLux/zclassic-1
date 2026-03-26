@@ -16,6 +16,11 @@
 #include "chain/checkpoints.h"
 #include "consensus/upgrades.h"
 #include "validation/main_constants.h"
+
+/* From consensus/consensus.h — included by value to avoid macro conflicts */
+#ifndef COINBASE_MATURITY
+#define COINBASE_MATURITY 100
+#endif
 #include "script/interpreter.h"
 #include <string.h>
 
@@ -109,6 +114,28 @@ bool connect_block(const struct block *block,
         }
 
         if (!transaction_is_coinbase(tx)) {
+            /* Coinbase maturity check: match ZClassic C++ CheckTxInputs().
+             * Spending a coinbase output requires COINBASE_MATURITY (100)
+             * confirmations. Without this, a miner could spend their own
+             * coinbase in the very next block. */
+            for (size_t j = 0; j < tx->num_vin; j++) {
+                struct coins prev_coins;
+                coins_init(&prev_coins);
+                if (coins_view_cache_get_coins(view,
+                        &tx->vin[j].prevout.hash, &prev_coins)) {
+                    if (prev_coins.is_coinbase &&
+                        pindex->nHeight - prev_coins.height < COINBASE_MATURITY) {
+                        coins_free(&prev_coins);
+                        block_undo_free(&blockundo);
+                        return validation_state_dos(state, 100, false,
+                            REJECT_INVALID,
+                            "bad-txns-premature-spend-of-coinbase",
+                            false, NULL);
+                    }
+                }
+                coins_free(&prev_coins);
+            }
+
             if (!coins_view_cache_have_inputs(view, tx)) {
                 /* Log first missing input for diagnostics */
                 if (tx->num_vin > 0) {
