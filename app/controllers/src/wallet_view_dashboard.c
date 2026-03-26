@@ -16,6 +16,22 @@ size_t serve_dashboard(uint8_t *r, size_t max) {
     }
 
     int tip = wv_effective_tip(db);
+    sqlite3_close(db);
+
+    /* Sync wallet from zclassicd before displaying balance.
+     * This ensures the dashboard never shows stale data.
+     * Only sync when explicitly enabled (live mode, not tests). */
+    if (g_sync_enabled)
+        wv_sync_wallet_from_zclassicd();
+
+    db = wv_open_db();
+    if (!db) {
+        size_t off = wv_emit_header(r, max, "ZClassic23 Wallet", "/wallet");
+        off += template_render(TMPL_LOADING, NULL, 0,
+            (char *)r + off, max - off);
+        wv_emit_footer(r, max, &off);
+        return off;
+    }
 
     /* Ground-truth transparent balance (P2PKH + P2SH change addresses) */
     int t_utxos = 0;
@@ -125,15 +141,18 @@ size_t serve_dashboard(uint8_t *r, size_t max) {
             };
             size_t dlen = template_render(TMPL_SHIELD_DONE, dv, 2,
                 privacy_buf, sizeof(privacy_buf));
-            /* If there's STILL public balance, also show the nudge */
-            if (transparent > 0 && dlen < sizeof(privacy_buf) - 256) {
+            /* If there's STILL shieldable balance, also show the nudge */
+            if (transparent > (int64_t)(FEE_ZCL * ZATOSHI_PER_ZCL + 1) &&
+                dlen < sizeof(privacy_buf) - 256) {
                 char t_fmt[32];
                 zcl_format_zcl(t_fmt, sizeof(t_fmt), transparent);
                 struct template_var pv[] = { { "amount", t_fmt } };
                 template_render(TMPL_PRIVACY_NUDGE, pv, 1,
                     privacy_buf + dlen, sizeof(privacy_buf) - dlen);
             }
-        } else if (transparent > 0) {
+        } else if (transparent > (int64_t)(FEE_ZCL * ZATOSHI_PER_ZCL + 1)) {
+            /* Only show nudge if transparent balance exceeds fee.
+             * Dust amounts (< 0.0001 ZCL) can't be shielded. */
             char t_fmt[32];
             zcl_format_zcl(t_fmt, sizeof(t_fmt), transparent);
             struct template_var pv[] = { { "amount", t_fmt } };

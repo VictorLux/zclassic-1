@@ -376,7 +376,7 @@ static bool json_next_int(const char **pos, const char *key, int *out) {
 /* ── Sync wallet from zclassicd ────────────────────────────── */
 
 void wv_sync_wallet_from_zclassicd(void) {
-    if (!g_sync_enabled) return;
+    if (!g_wv_datadir) return;
     sqlite3 *db = wv_open_db_rw();
     if (!db) return;
 
