@@ -215,7 +215,7 @@ size_t serve_send(uint8_t *r, size_t max) {
         "this.disabled=true;this.textContent='Reviewing...';"
         "});"
         "</script>",
-        (double)balance / (double)ZATOSHI_PER_ZCL, FEE_ZCL, FEE_ZCL, FEE_ZCL);
+        (double)spendable_total / (double)ZATOSHI_PER_ZCL, FEE_ZCL, FEE_ZCL, FEE_ZCL);
 
     wv_emit_footer(r, max, &off);
     return off;

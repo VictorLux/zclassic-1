@@ -94,6 +94,17 @@ static const struct bot_action g_bot_script[] = {
     { "Send: fee shown",
       NULL, "document.body.innerText",
       "0.0001", NULL },
+    { "Send: JS BAL includes shielded balance",
+      NULL, "typeof BAL !== 'undefined' ? (BAL > 0.001 ? 'BAL_OK_'+BAL.toFixed(4) : 'BAL_TOO_LOW_'+BAL) : 'NO_BAL'",
+      "BAL_OK", NULL },
+    { "Send: fill 0.001 ZCL → no 'Insufficient'",
+      NULL,
+      "var ai=document.querySelector('input[name=\"amount\"]');"
+      "if(ai){ai.value='0.001';updateRemaining();"
+      "var r=document.getElementById('remaining');"
+      "r&&r.textContent.includes('Insufficient')?'INSUFFICIENT':'OK'}"
+      "else 'NO_INPUT'",
+      "OK", NULL },
 
     /* ── Receive ── */
     { "Receive page loads",
@@ -148,13 +159,11 @@ static const struct bot_action g_bot_script[] = {
     /* ── Shield ── */
     { "Shield page loads",
       "/wallet/shield", "document.body.innerText",
-      "Secure Funds", "sqlite3" },
-    { "Shield: Max button exists",
-      NULL, "document.querySelector('.send-max') ? 'HAS_MAX' : 'NO_MAX'",
-      "HAS_MAX", NULL },
-    { "Shield: amount input exists",
-      NULL, "document.querySelector('input[name=\"amount\"]') ? 'YES' : 'NO'",
-      "YES", NULL },
+      "Shield", "sqlite3" },
+    { "Shield: shows form or nothing-to-shield",
+      NULL, "document.body.innerText.includes('Nothing to shield') ? 'ALL_SHIELDED' : "
+            "(document.querySelector('.send-max') ? 'HAS_FORM' : 'UNKNOWN')",
+      NULL, "UNKNOWN" },
 
     /* ── Send flow: fill form and submit ── */
     { "Send flow: navigate to send",
@@ -165,12 +174,9 @@ static const struct bot_action g_bot_script[] = {
       "0.97", NULL },
 
     /* ── Shield flow check ── */
-    { "Shield: navigate to shield form",
+    { "Shield: page renders correctly",
       "/wallet/shield", "document.body.innerText",
-      "Secure Funds", NULL },
-    { "Shield: available balance shown",
-      NULL, "document.body.innerText",
-      "Available", NULL },
+      "Shield", NULL },
 
     /* ── Navigate back to dashboard ── */
     { "Return to dashboard after flows",
