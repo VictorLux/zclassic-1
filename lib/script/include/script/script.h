@@ -127,9 +127,12 @@ static inline int script_decode_op_n(enum opcodetype op)
 
 #define FIRST_UNDEFINED_OP_VALUE 0xbc
 
+/* Match Bitcoin Core CScript::IsUnspendable() exactly:
+ * (size() > 0 && *begin() == OP_RETURN) || (size() > MAX_SCRIPT_SIZE) */
 static inline bool script_is_unspendable(const struct script *s)
 {
-    return s->size > 0 && s->data[0] == OP_RETURN;
+    return (s->size > 0 && s->data[0] == OP_RETURN) ||
+           (s->size > MAX_SCRIPT_SIZE);
 }
 
 static inline bool script_is_push_only(const struct script *s)
