@@ -164,8 +164,8 @@ size_t serve_history(uint8_t *r, size_t max, int page,
             /* Shield operations: from_me with no transparent output = secured */
             bool is_shield_op = (from_me && wallet_output == 0 &&
                                   wallet_input == 0 && display_val == 0);
-            /* Skip true ghost entries (no data at all) */
-            if (display_val == 0 && !is_shield_op && h == 0) continue;
+            /* Skip zero-value entries (change outputs, empty notes) */
+            if (display_val == 0 && !is_shield_op) continue;
 
             char short_tx[18], lower_tx[65], rel_time[48], ts[32];
             wv_txid_short(txid, short_tx, sizeof(short_tx));

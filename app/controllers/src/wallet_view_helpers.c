@@ -591,6 +591,53 @@ void wv_sync_wallet_from_zclassicd(void) {
     sqlite3_exec(db, "DROP TABLE IF EXISTS new_notes", NULL, NULL, NULL);
 
     sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
+
+    /* Update wallet_transactions: fill in block_height for confirmed txs.
+     * Query zclassicd gettransaction for each tx with height=0. */
+    {
+        sqlite3_stmt *unconf = NULL;
+        sqlite3_prepare_v2(db,
+            "SELECT txid FROM wallet_transactions WHERE block_height = 0",
+            -1, &unconf, NULL);
+        sqlite3_stmt *upd = NULL;
+        sqlite3_prepare_v2(db,
+            "UPDATE wallet_transactions SET block_height = ? WHERE txid = ?",
+            -1, &upd, NULL);
+
+        int updated = 0;
+        while (unconf && upd && sqlite3_step(unconf) == SQLITE_ROW) {
+            const void *txid_blob = sqlite3_column_blob(unconf, 0);
+            int txid_len = sqlite3_column_bytes(unconf, 0);
+            if (!txid_blob || txid_len != 32) continue;
+
+            char txid_hex[65];
+            for (int i = 0; i < 32; i++)
+                snprintf(txid_hex + 2*i, 3, "%02x",
+                         ((const uint8_t *)txid_blob)[i]);
+
+            char params[256];
+            snprintf(params, sizeof(params), "[\"%s\"]", txid_hex);
+            char gtx[4096] = "";
+            if (wv_rpc_call("gettransaction", params, gtx, sizeof(gtx)) > 0) {
+                int confs = 0;
+                const char *scan = gtx;
+                json_next_int(&scan, "confirmations", &confs);
+                if (confs > 0 && chain_tip > 0) {
+                    int tx_height = chain_tip - confs + 1;
+                    sqlite3_reset(upd);
+                    sqlite3_bind_int(upd, 1, tx_height);
+                    sqlite3_bind_blob(upd, 2, txid_blob, 32, SQLITE_STATIC);
+                    sqlite3_step(upd);
+                    updated++;
+                }
+            }
+            /* Limit RPC calls to avoid slowdown on first sync */
+            if (updated >= 50) break;
+        }
+        if (unconf) sqlite3_finalize(unconf);
+        if (upd) sqlite3_finalize(upd);
+    }
+
     sqlite3_close(db);
     g_balance_dirty = 1;
 }

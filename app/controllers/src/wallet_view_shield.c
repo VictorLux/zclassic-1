@@ -40,8 +40,9 @@ size_t serve_shield(uint8_t *r, size_t max, const char *query) {
         }
         char avail_str[32], max_str[32];
         zcl_format_zcl(avail_str, sizeof(avail_str), avail);
-        snprintf(max_str, sizeof(max_str), "%.8f",
-            (double)avail / (double)ZATOSHI_PER_ZCL - FEE_ZCL);
+        double max_val = (double)avail / (double)ZATOSHI_PER_ZCL - FEE_ZCL;
+        if (max_val < 0) max_val = 0;
+        snprintf(max_str, sizeof(max_str), "%.8f", max_val);
         struct template_var fv[] = {
             { "parent_href",  "/wallet" },
             { "parent_label", "Home" },

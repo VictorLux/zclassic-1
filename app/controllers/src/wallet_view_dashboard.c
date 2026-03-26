@@ -246,8 +246,7 @@ size_t serve_dashboard(uint8_t *r, size_t max) {
                     display_amount = wallet_input - wallet_output;
                     if (display_amount < 0) display_amount = 0;
                 }
-                if (display_amount == 0 && height == 0) continue;
-                if (display_amount == 0 && from_me) continue;
+                if (display_amount == 0) continue; /* skip zero-value entries */
 
                 bool is_recv = (from_me == 0);
                 char rel_time[48], esc_rel[96];
