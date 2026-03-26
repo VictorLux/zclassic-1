@@ -138,10 +138,14 @@ bool contextual_check_block_header(const struct block_header *header,
                                         false, NULL);
     }
 
-    /* Skip difficulty check if any block in the averaging window
-     * was erased (nBits=0). Fork entries from stale LevelDB were
-     * cleared on startup. Full validation at connect_block will
-     * re-check with correct chain data. */
+    /* Skip difficulty check if:
+     * 1. Any block in the averaging window has nBits=0 (erased forks)
+     * 2. Height is at or below assume-valid (already validated by zclassicd)
+     * The full difficulty algorithm requires a complete, correctly-linked
+     * block index with MTP. During fast-sync or legacy import, the pprev
+     * chain may be incomplete, causing MTP to return wrong values. */
+    if (g_assume_valid_height >= 0 && nHeight <= g_assume_valid_height)
+        goto skip_diffbits;
     {
         bool window_clean = true;
         const struct block_index *check = pindex_prev;
