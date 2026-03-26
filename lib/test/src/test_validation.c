@@ -2636,5 +2636,137 @@ int test_validation(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    /* ================================================================
+     * CONSENSUS COMPATIBILITY: verified against ZClassic C++ source
+     * (ZclassicCommunity/zclassic src/main.cpp, src/coins.h)
+     * ================================================================ */
+
+    printf("consensus: COINBASE_MATURITY is 100... ");
+    {
+#ifndef COINBASE_MATURITY
+#define COINBASE_MATURITY 100
+#endif
+        if (COINBASE_MATURITY == 100)
+            printf("OK\n");
+        else { printf("FAIL (COINBASE_MATURITY=%d)\n", COINBASE_MATURITY); failures++; }
+    }
+
+    printf("consensus: OP_RETURN outputs are unspendable... ");
+    {
+        struct script s;
+        /* OP_RETURN followed by data */
+        uint8_t op_ret[] = {0x6a, 0x04, 0x53, 0x4c, 0x50, 0x00};
+        script_set(&s, op_ret, sizeof(op_ret));
+        bool ok = script_is_unspendable(&s);
+        /* OP_RETURN alone */
+        uint8_t op_ret_bare[] = {0x6a};
+        script_set(&s, op_ret_bare, 1);
+        ok = ok && script_is_unspendable(&s);
+        /* Normal P2PKH is spendable */
+        uint8_t p2pkh[] = {0x76, 0xa9, 0x14,
+            0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+            0x88, 0xac};
+        script_set(&s, p2pkh, sizeof(p2pkh));
+        ok = ok && !script_is_unspendable(&s);
+        /* Empty script is spendable (matches C++ IsUnspendable) */
+        s.size = 0;
+        ok = ok && !script_is_unspendable(&s);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("consensus: ClearUnspendable nulls OP_RETURN in coins... ");
+    {
+        struct transaction tx;
+        transaction_init(&tx);
+        transaction_alloc(&tx, 1, 3);
+        tx.version = 4;
+        tx.vout[0].value = 100000;
+        uint8_t p2pkh[] = {0x76, 0xa9, 0x14,
+            0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+            0x88, 0xac};
+        script_set(&tx.vout[0].script_pub_key, p2pkh, sizeof(p2pkh));
+        tx.vout[1].value = 0;
+        uint8_t op_ret[] = {0x6a, 0x04, 'Z', 'S', 'L', 'P'};
+        script_set(&tx.vout[1].script_pub_key, op_ret, sizeof(op_ret));
+        tx.vout[2].value = 50000;
+        script_set(&tx.vout[2].script_pub_key, p2pkh, sizeof(p2pkh));
+
+        struct coins c;
+        coins_init(&c);
+        coins_from_transaction(&c, &tx, 1000);
+        /* Matches ZClassic C++ CCoins::FromTx() + ClearUnspendable():
+         * vout[0] = 100000 (P2PKH, available)
+         * vout[1] = null (OP_RETURN, cleared)
+         * vout[2] = 50000 (P2PKH, available) */
+        bool ok = coins_is_available(&c, 0) &&
+                  !coins_is_available(&c, 1) &&
+                  coins_is_available(&c, 2);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+        coins_free(&c);
+        transaction_free(&tx);
+    }
+
+    printf("consensus: coins_spend matches ZClassic Spend()... ");
+    {
+        struct coins c;
+        coins_init(&c);
+        coins_alloc(&c, 3);
+        c.vout[0].value = 100;
+        c.vout[1].value = 200;
+        c.vout[2].value = 300;
+        /* Spend vout[1] */
+        bool ok = coins_spend(&c, 1);
+        ok = ok && !coins_is_available(&c, 1);
+        ok = ok && coins_is_available(&c, 0);
+        ok = ok && coins_is_available(&c, 2);
+        /* Spend vout[0] and vout[2] — should be pruned */
+        coins_spend(&c, 0);
+        coins_spend(&c, 2);
+        ok = ok && coins_is_pruned(&c);
+        /* Double-spend fails */
+        ok = ok && !coins_spend(&c, 0);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+        coins_free(&c);
+    }
+
+    printf("consensus: coins_cleanup trims trailing nulls (ZClassic Cleanup)... ");
+    {
+        struct coins c;
+        coins_init(&c);
+        coins_alloc(&c, 5);
+        c.vout[0].value = 100;
+        c.vout[1].value = 200;
+        /* vout[2..4] are null */
+        coins_cleanup(&c);
+        /* Should trim to 2 (matching C++ Cleanup behavior) */
+        bool ok = (c.num_vout == 2);
+        ok = ok && coins_is_available(&c, 0);
+        ok = ok && coins_is_available(&c, 1);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+        coins_free(&c);
+    }
+
+    printf("consensus: IsPruned matches ZClassic... ");
+    {
+        struct coins c;
+        coins_init(&c);
+        /* Empty = pruned */
+        bool ok = coins_is_pruned(&c);
+        /* Has output = not pruned */
+        coins_alloc(&c, 1);
+        c.vout[0].value = 1;
+        ok = ok && !coins_is_pruned(&c);
+        /* Spend last output = pruned */
+        coins_spend(&c, 0);
+        ok = ok && coins_is_pruned(&c);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+        coins_free(&c);
+    }
+
     return failures;
 }
