@@ -17,11 +17,55 @@
 
 static struct event_log g_log;
 
+/* ── Event observers ─────────────────────────────────────── */
+
+struct event_observer_entry {
+    event_observer_fn fn;
+    void *ctx;
+};
+
+static struct {
+    struct event_observer_entry observers[EVENT_MAX_OBSERVERS];
+    int count;
+} g_observers[EV_NUM_TYPES];
+
+bool event_observe(enum event_type type, event_observer_fn fn, void *ctx)
+{
+    if ((int)type < 0 || type >= EV_NUM_TYPES) return false;
+    if (g_observers[type].count >= EVENT_MAX_OBSERVERS) return false;
+    int idx = g_observers[type].count++;
+    g_observers[type].observers[idx].fn = fn;
+    g_observers[type].observers[idx].ctx = ctx;
+    return true;
+}
+
+void event_clear_observers(enum event_type type)
+{
+    if ((int)type >= 0 && type < EV_NUM_TYPES)
+        g_observers[type].count = 0;
+}
+
+void event_clear_all_observers(void)
+{
+    for (int i = 0; i < EV_NUM_TYPES; i++)
+        g_observers[i].count = 0;
+}
+
+static void notify_observers(enum event_type type, uint32_t peer_id,
+                              const void *payload, uint32_t payload_len)
+{
+    if ((int)type < 0 || type >= EV_NUM_TYPES) return;
+    for (int i = 0; i < g_observers[type].count; i++)
+        g_observers[type].observers[i].fn(type, peer_id, payload, payload_len,
+                                           g_observers[type].observers[i].ctx);
+}
+
 void event_log_init(void)
 {
     memset(&g_log, 0, sizeof(g_log));
     atomic_store(&g_log.write_pos, 0);
     atomic_store(&g_log.initialized, true);
+    event_clear_all_observers();
 }
 
 static int64_t now_us(void)
@@ -53,6 +97,9 @@ void event_emit(enum event_type type, uint32_t peer_id,
 
     /* Publish: readers check sequence matches expected slot */
     atomic_store_explicit(&ev->sequence, seq + 1, memory_order_release);
+
+    /* Notify observers synchronously */
+    notify_observers(type, peer_id, payload, payload_len);
 }
 
 void event_emitf(enum event_type type, uint32_t peer_id,

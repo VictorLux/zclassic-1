@@ -202,6 +202,9 @@ int spec_wallet_celebration(void);
 int spec_wallet_empowerment(void);
 int spec_wallet_flow(void);
 int spec_wallet_accessibility(void);
+int spec_data_hooks(void);
+int spec_event_observers(void);
+int spec_state_machine(void);
 
 /* ── DRY test macros ─────────────────────────────────────── */
 

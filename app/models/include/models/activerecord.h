@@ -182,17 +182,30 @@ static inline void ar_errors_full_messages(const struct ar_errors *e,
 typedef bool (*ar_before_cb)(void *record, void *ctx);
 typedef void (*ar_after_cb)(void *record, void *ctx);
 
+/* Async callback — queued for background execution.
+ * Does not block the save/destroy operation. */
+typedef void (*ar_async_cb)(void *record_copy, size_t record_size, void *ctx);
+
 /* Per-model callback registry.
  * Each model type that wants callbacks declares a static instance. */
 struct ar_callbacks {
+    ar_before_cb before_validate[AR_MAX_CALLBACKS];
     ar_before_cb before_save[AR_MAX_CALLBACKS];
     ar_after_cb  after_save[AR_MAX_CALLBACKS];
     ar_before_cb before_destroy[AR_MAX_CALLBACKS];
     ar_after_cb  after_destroy[AR_MAX_CALLBACKS];
+    ar_after_cb  after_validate[AR_MAX_CALLBACKS];
+    ar_async_cb  after_save_async[AR_MAX_CALLBACKS];
+    ar_async_cb  after_destroy_async[AR_MAX_CALLBACKS];
+    int n_before_validate;
+    int n_after_validate;
     int n_before_save;
     int n_after_save;
     int n_before_destroy;
     int n_after_destroy;
+    int n_after_save_async;
+    int n_after_destroy_async;
+    size_t record_size;  /* size of the record struct for async copy */
     void *ctx;
 };
 
@@ -204,6 +217,22 @@ static inline void ar_callbacks_init(struct ar_callbacks *cb)
 static inline void ar_callbacks_set_ctx(struct ar_callbacks *cb, void *ctx)
 {
     cb->ctx = ctx;
+}
+
+static inline bool ar_register_before_validate(struct ar_callbacks *cb,
+                                                ar_before_cb fn)
+{
+    if (cb->n_before_validate >= AR_MAX_CALLBACKS) return false;
+    cb->before_validate[cb->n_before_validate++] = fn;
+    return true;
+}
+
+static inline bool ar_register_after_validate(struct ar_callbacks *cb,
+                                               ar_after_cb fn)
+{
+    if (cb->n_after_validate >= AR_MAX_CALLBACKS) return false;
+    cb->after_validate[cb->n_after_validate++] = fn;
+    return true;
 }
 
 static inline bool ar_register_before_save(struct ar_callbacks *cb,
@@ -238,7 +267,42 @@ static inline bool ar_register_after_destroy(struct ar_callbacks *cb,
     return true;
 }
 
+static inline bool ar_register_after_save_async(struct ar_callbacks *cb,
+                                                 ar_async_cb fn)
+{
+    if (cb->n_after_save_async >= AR_MAX_CALLBACKS) return false;
+    cb->after_save_async[cb->n_after_save_async++] = fn;
+    return true;
+}
+
+static inline bool ar_register_after_destroy_async(struct ar_callbacks *cb,
+                                                    ar_async_cb fn)
+{
+    if (cb->n_after_destroy_async >= AR_MAX_CALLBACKS) return false;
+    cb->after_destroy_async[cb->n_after_destroy_async++] = fn;
+    return true;
+}
+
+static inline void ar_set_record_size(struct ar_callbacks *cb, size_t sz)
+{
+    cb->record_size = sz;
+}
+
 /* Run callbacks — return false if any before_ callback returns false */
+
+static inline bool ar_run_before_validate(struct ar_callbacks *cb, void *record)
+{
+    for (int i = 0; i < cb->n_before_validate; i++)
+        if (!cb->before_validate[i](record, cb->ctx)) return false;
+    return true;
+}
+
+static inline void ar_run_after_validate(struct ar_callbacks *cb, void *record)
+{
+    for (int i = 0; i < cb->n_after_validate; i++)
+        cb->after_validate[i](record, cb->ctx);
+}
+
 static inline bool ar_run_before_save(struct ar_callbacks *cb, void *record)
 {
     for (int i = 0; i < cb->n_before_save; i++)
@@ -263,6 +327,23 @@ static inline void ar_run_after_destroy(struct ar_callbacks *cb, void *record)
 {
     for (int i = 0; i < cb->n_after_destroy; i++)
         cb->after_destroy[i](record, cb->ctx);
+}
+
+/* Run async callbacks — copies record and dispatches.
+ * In the current implementation, runs synchronously (inline).
+ * A future thread-pool dispatch would replace the loop body. */
+static inline void ar_run_after_save_async(struct ar_callbacks *cb, void *record)
+{
+    if (cb->n_after_save_async == 0) return;
+    for (int i = 0; i < cb->n_after_save_async; i++)
+        cb->after_save_async[i](record, cb->record_size, cb->ctx);
+}
+
+static inline void ar_run_after_destroy_async(struct ar_callbacks *cb, void *record)
+{
+    if (cb->n_after_destroy_async == 0) return;
+    for (int i = 0; i < cb->n_after_destroy_async; i++)
+        cb->after_destroy_async[i](record, cb->record_size, cb->ctx);
 }
 
 /* ── Relationship Macros ───────────────────────────────────────── */

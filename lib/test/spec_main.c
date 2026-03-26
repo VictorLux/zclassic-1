@@ -43,6 +43,11 @@ int main(void)
     failures += spec_wallet_flow();
     failures += spec_wallet_accessibility();
 
+    printf("\n=== MVC Data Layer & Event System ===\n");
+    failures += spec_data_hooks();
+    failures += spec_event_observers();
+    failures += spec_state_machine();
+
     ecc_verify_destroy();
     ecc_stop();
 

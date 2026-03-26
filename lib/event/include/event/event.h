@@ -179,6 +179,26 @@ const char *peer_state_name(enum peer_state state);
 /* Check if a transition is legal without executing it. */
 bool peer_transition_valid(enum peer_state from, enum peer_state to);
 
+/* ── Event observers ───────────────────────────────────── */
+
+/* Observer callback — called synchronously from event_emit().
+ * Must be fast (no blocking I/O). For heavy work, queue internally. */
+typedef void (*event_observer_fn)(enum event_type type, uint32_t peer_id,
+                                   const void *payload, uint32_t payload_len,
+                                   void *ctx);
+
+#define EVENT_MAX_OBSERVERS 8
+
+/* Register an observer for a specific event type.
+ * Returns false if observer table is full. */
+bool event_observe(enum event_type type, event_observer_fn fn, void *ctx);
+
+/* Remove all observers for a specific event type. */
+void event_clear_observers(enum event_type type);
+
+/* Remove all observers for all event types. */
+void event_clear_all_observers(void);
+
 /* ── Sync state machine API ─────────────────────────────── */
 
 /* Global sync state — atomic read/write. */
