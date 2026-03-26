@@ -390,8 +390,10 @@ void wv_sync_wallet_from_zclassicd(void) {
     int lu_rc = wv_rpc_call("listunspent", "[0]", lu, sizeof(lu));
     if (lu_rc <= 0) { sqlite3_close(db); return; }
 
-    /* Fetch shielded notes from zclassicd */
-    char zlu[65536] = "";
+    /* Fetch shielded notes from zclassicd.
+     * z_listunspent can be large (~1.3KB per note with memo fields).
+     * 256KB handles ~200 notes safely. */
+    char zlu[262144] = "";
     int zlu_rc = wv_rpc_call("z_listunspent", "[0]", zlu, sizeof(zlu));
     if (zlu_rc <= 0) { sqlite3_close(db); return; }
 
