@@ -191,14 +191,30 @@ size_t serve_shield_confirm(uint8_t *r, size_t max,
                 ops_started++;
                 success = true;
             } else {
+                /* Try nested error.message first, then top-level message */
                 zcl_json_extract_str(rpc_buf, "message",
                     shield_err, sizeof(shield_err));
+                if (!shield_err[0]) {
+                    /* Show raw RPC response for debugging */
+                    snprintf(shield_err, sizeof(shield_err),
+                        "z_sendmany failed for %s (%.4f ZCL). "
+                        "RPC response: %.180s",
+                        funded[ai].addr, addr_amt, rpc_buf);
+                }
             }
         } else if (!shield_err[0]) {
             snprintf(shield_err, sizeof(shield_err),
                 "Could not connect to zclassicd (port %d). "
                 "Start it with: zclassicd -daemon", ZCLASSICD_PORT);
         }
+    }
+
+    /* If we iterated all addresses but none had enough after fees */
+    if (!success && !shield_err[0] && ops_started == 0) {
+        snprintf(shield_err, sizeof(shield_err),
+            "All %d funded addresses have insufficient balance after "
+            "0.0001 ZCL fee. Total available may be too small to shield.",
+            n_funded);
     }
 
     if (success) {

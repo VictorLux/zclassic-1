@@ -150,10 +150,6 @@ static const char TMPL_SHIELD_CONFIRM[] =
     "-btn').addEventListener('click',\nfunction(e){e.preventDefault();this.disabled=true;\ndocument.ge"
     "tElementById('shield-loading').style.display='flex';\nthis.form.submit();});\n</script>\n";
 
-static const char TMPL_SHIELD_ERROR[] =
-    "<div class='result-error'>\n<div class='icon'>&#x26A0;</div>\n<h2>Could Not Secure</h2>\n<p>{{mes"
-    "sage}}</p>\n<a href='/wallet' style='color:#34d399'>Back to Wallet</a>\n</div>\n";
-
 static const char TMPL_SHIELD_INVALID[] =
     "<div class='card' style='border-left-color:#f87171'>\n<div class='label' style='color:#f87171'>In"
     "valid amount</div>\n<a href='/wallet'>Back to Wallet</a></div>\n";
@@ -416,6 +412,12 @@ static const char TMPL_NODE_PAGE[] =
     "px;font-size:14px'>ZSLP Tokens</a>\n<a href='/explorer/stats' class='btn-secondary'\n style='text"
     "-align:center;padding:12px;font-size:14px'>Network Stats</a>\n</div>\n";
 
+static const char TMPL_SHIELD_ERROR[] =
+    "<div class='result-error'>\n<div class='icon'>&#x26A0;</div>\n<h2>Shield Failed</h2>\n<p>{{messag"
+    "e}}</p>\n<div style='margin-top:12px'>\n<a href='/wallet/shield' style='color:#34d399'>Try Again<"
+    "/a>\n<span style='color:#555;margin:0 8px'>|</span>\n<a href='/wallet' style='color:#888'>Back to"
+    " Wallet</a>\n</div></div>\n";
+
 static const char CSS_WALLET_0[] =
     "*{box-sizing:border-box;margin:0;padding:0}body{font-family:Inter,-apple-system,'Segoe UI',system"
     "-ui,sans-serif;background:#0c0c0c;color:#e2e2e2;max-width:520px;margin:0 auto;padding:20px;font-s"
@@ -589,7 +591,6 @@ static const struct template_partial _tmpl_partials[] = {
     { "send", TMPL_SEND },
     { "shield-balance-card", TMPL_SHIELD_BALANCE_CARD },
     { "shield-confirm", TMPL_SHIELD_CONFIRM },
-    { "shield-error", TMPL_SHIELD_ERROR },
     { "shield-invalid", TMPL_SHIELD_INVALID },
     { "shield-pending", TMPL_SHIELD_PENDING },
     { "tx-invalid", TMPL_TX_INVALID },
@@ -618,6 +619,7 @@ static const struct template_partial _tmpl_partials[] = {
     { "receive-zpane-open", TMPL_RECEIVE_ZPANE_OPEN },
     { "receive-tpane", TMPL_RECEIVE_TPANE },
     { "node-page", TMPL_NODE_PAGE },
+    { "shield-error", TMPL_SHIELD_ERROR },
 };
 
 #define TMPL_PARTIAL_COUNT 49

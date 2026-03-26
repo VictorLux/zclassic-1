@@ -12,8 +12,7 @@
 #include <secp256k1.h>
 #include <secp256k1_recovery.h>
 
-/* secp256k1_ec_seckey_tweak_add provided natively by vendor libsecp256k1.
- * Older API name secp256k1_ec_privkey_tweak_add no longer exists. */
+/* secp256k1_ec_seckey_tweak_add shim is in secp256k1_compat.c */
 
 static secp256k1_context *secp256k1_ctx_sign = NULL;
 
