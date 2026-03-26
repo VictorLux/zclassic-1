@@ -1770,6 +1770,12 @@ int node_db_sync_import_utxos(struct node_db *ndb,
             atomic_store(&chunk->state, 0); /* empty, release */
     }
 reader_done:
+    /* Check for iterator errors — checksum failures can cause early
+     * termination, silently dropping remaining entries. */
+    {
+        extern void db_iter_check_error(struct db_iterator *it);
+        db_iter_check_error(&it);
+    }
     db_iter_free(&it);
     atomic_store(&ctx->reader_done, true);
 

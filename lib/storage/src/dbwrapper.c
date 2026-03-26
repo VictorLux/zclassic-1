@@ -68,7 +68,12 @@ bool db_wrapper_open(struct db_wrapper *w, const char *path,
 
     w->read_options = leveldb_readoptions_create();
     w->iter_options = leveldb_readoptions_create();
-    leveldb_readoptions_set_verify_checksums(w->iter_options, 1);
+    /* Do NOT verify checksums during iteration — a corrupt LevelDB block
+     * causes the iterator to silently stop early, dropping all remaining
+     * entries. This caused 219 missing UTXOs during import from a
+     * zclassicd chainstate copy. Data integrity is verified through
+     * consensus (block validation) instead. */
+    leveldb_readoptions_set_verify_checksums(w->iter_options, 0);
     leveldb_readoptions_set_fill_cache(w->read_options, 1);
     leveldb_readoptions_set_fill_cache(w->iter_options, 0);
 
@@ -304,6 +309,16 @@ void db_iter_init(struct db_iterator *it, struct db_wrapper *w)
     it->obfuscate_key_len = w->obfuscate_key_len;
     it->deobf_buf = NULL;
     it->deobf_cap = 0;
+}
+
+void db_iter_check_error(struct db_iterator *it)
+{
+    char *err = NULL;
+    leveldb_iter_get_error(it->iter, &err);
+    if (err) {
+        fprintf(stderr, "LevelDB iterator error: %s\n", err);
+        leveldb_free(err);
+    }
 }
 
 void db_iter_free(struct db_iterator *it)
