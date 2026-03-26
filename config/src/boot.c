@@ -1540,6 +1540,7 @@ bool app_init(struct app_context *ctx)
             struct block_index *fp;
             while (block_map_next(&g_state.map_block_index, &fi, NULL, &fp)) {
                 if (fp && fp->pprev && fp->nHeight > 0 &&
+                    fp->nChainTx > 0 && /* only blocks on canonical chain */
                     (!best || fp->nHeight > best->nHeight))
                     best = fp;
             }
