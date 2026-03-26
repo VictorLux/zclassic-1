@@ -216,3 +216,42 @@ bool db_peer_mark_seen(struct node_db *ndb,
     sqlite3_finalize(s);
     return rc == SQLITE_DONE;
 }
+
+bool db_peer_update_score(struct node_db *ndb,
+                          const uint8_t ip[16], uint16_t port,
+                          uint32_t bandwidth_score, bool is_zcl23)
+{
+    if (!ndb->open) return false;
+    sqlite3_stmt *s = NULL;
+    sqlite3_prepare_v2(ndb->db,
+        "UPDATE peers SET bandwidth_score=?,is_zcl23=?"
+        " WHERE ip=? AND port=?",
+        -1, &s, NULL);
+    sqlite3_bind_int(s, 1, (int)bandwidth_score);
+    sqlite3_bind_int(s, 2, is_zcl23 ? 1 : 0);
+    sqlite3_bind_blob(s, 3, ip, 16, SQLITE_STATIC);
+    sqlite3_bind_int(s, 4, port);
+    int rc = sqlite3_step(s);
+    sqlite3_finalize(s);
+    return rc == SQLITE_DONE;
+}
+
+int db_peer_fast_zcl23(struct node_db *ndb, struct db_peer *out, size_t max)
+{
+    if (!ndb->open) return 0;
+    sqlite3_stmt *s = NULL;
+    sqlite3_prepare_v2(ndb->db,
+        "SELECT id,ip,port,services,last_seen,last_try,attempts,source"
+        " FROM peers WHERE is_zcl23=1 AND bandwidth_score > 0"
+        " ORDER BY bandwidth_score DESC LIMIT ?",
+        -1, &s, NULL);
+    sqlite3_bind_int(s, 1, (int)max);
+    int count = 0;
+    while (sqlite3_step(s) == SQLITE_ROW && (size_t)count < max) {
+        memset(&out[count], 0, sizeof(out[count]));
+        row_to_peer(s, &out[count], 0);
+        count++;
+    }
+    sqlite3_finalize(s);
+    return count;
+}

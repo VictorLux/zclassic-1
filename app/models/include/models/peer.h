@@ -20,6 +20,8 @@ struct db_peer {
     int attempts;
     uint8_t source[16];
     bool has_source;
+    uint32_t bandwidth_score; /* 0-255, higher = faster peer */
+    bool is_zcl23;            /* true if peer speaks ZCL23 protocol */
 };
 
 /* Callbacks and validation */
@@ -47,5 +49,16 @@ bool db_peer_mark_tried(struct node_db *ndb,
 bool db_peer_mark_seen(struct node_db *ndb,
                        const uint8_t ip[16], uint16_t port,
                        int64_t now);
+
+/* Update bandwidth score and ZCL23 flag for a peer.
+ * Called when peer disconnects to persist performance data. */
+bool db_peer_update_score(struct node_db *ndb,
+                          const uint8_t ip[16], uint16_t port,
+                          uint32_t bandwidth_score, bool is_zcl23);
+
+/* Get fast ZCL23 peers for priority reconnection.
+ * Returns peers sorted by bandwidth_score DESC, is_zcl23 DESC.
+ * These peers should be tried first for swarm sync. */
+int db_peer_fast_zcl23(struct node_db *ndb, struct db_peer *out, size_t max);
 
 #endif

@@ -81,6 +81,10 @@ static int64_t g_block_swarm_last_progress = 0;
  * Non-static: accessed from boot.c via extern. */
 struct block_piece_manifest g_cached_block_manifest;
 _Atomic bool g_cached_block_manifest_valid = false;
+int32_t g_manifest_built_at_height = 0; /* height when manifest was last built */
+/* Rebuild manifest when chain grows this many blocks beyond the cached one.
+ * This ensures new peers always get a reasonably fresh manifest. */
+#define MANIFEST_REFRESH_BLOCKS 1000
 
 /* Global download manager — coordinates parallel block downloads.
  * Initialized once from msg_processor_init, accessed via pointer. */
@@ -998,6 +1002,32 @@ static bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
             }
 
             /* Progress logged by IBD progress timer (every 30s) */
+
+            /* Refresh block manifest when chain grows beyond cached range.
+             * This ensures new peers connecting to us get a manifest that
+             * covers the full chain, not just what we had at startup. */
+            if (g_cached_block_manifest_valid &&
+                new_tip->nHeight - g_manifest_built_at_height
+                    >= MANIFEST_REFRESH_BLOCKS) {
+                /* Rebuild in a detached thread to avoid blocking message processing */
+                static _Atomic bool g_manifest_rebuilding = false;
+                if (!atomic_exchange(&g_manifest_rebuilding, true)) {
+                    struct block_piece_manifest new_m;
+                    memset(&new_m, 0, sizeof(new_m));
+                    if (block_piece_manifest_build(mp->datadir, 1,
+                            new_tip->nHeight, &new_m)) {
+                        /* Swap atomically: invalidate, swap, re-validate */
+                        g_cached_block_manifest_valid = false;
+                        block_piece_manifest_free(&g_cached_block_manifest);
+                        g_cached_block_manifest = new_m;
+                        g_manifest_built_at_height = new_tip->nHeight;
+                        g_cached_block_manifest_valid = true;
+                        event_emitf(EV_SYNC_STATE_CHANGE, 0, "manifest refreshed to h=%d (%u pieces)",
+                                    new_tip->nHeight, new_m.num_pieces);
+                    }
+                    atomic_store(&g_manifest_rebuilding, false);
+                }
+            }
 
             /* Relay accepted block to all connected peers (not during IBD).
              * At the tip, we act as a full relay node. During IBD, relaying

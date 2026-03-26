@@ -691,6 +691,14 @@ bool node_db_sync_peer(struct node_db *ndb,
     return db_peer_save(ndb, &p);
 }
 
+bool node_db_sync_peer_score(struct node_db *ndb,
+                              const uint8_t ip[16], uint16_t port,
+                              uint32_t bandwidth_score, bool is_zcl23)
+{
+    if (!ndb || !ndb->open) return false;
+    return db_peer_update_score(ndb, ip, port, bandwidth_score, is_zcl23);
+}
+
 int node_db_sync_get_tip_height(struct node_db *ndb)
 {
     int64_t h = -1;

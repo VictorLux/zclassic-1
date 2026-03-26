@@ -93,6 +93,12 @@ bool node_db_sync_peer(struct node_db *ndb,
                        const uint8_t ip[16], uint16_t port,
                        uint64_t services, int64_t last_seen);
 
+/* Persist peer bandwidth score and ZCL23 flag on disconnect.
+ * Enables fast ZCL23 peer reconnection on next startup. */
+bool node_db_sync_peer_score(struct node_db *ndb,
+                              const uint8_t ip[16], uint16_t port,
+                              uint32_t bandwidth_score, bool is_zcl23);
+
 /* Load persisted state on startup:
  * Returns the chain tip height stored in SQLite, or -1. */
 int node_db_sync_get_tip_height(struct node_db *ndb);

@@ -837,6 +837,28 @@ int node_db_migrate(struct node_db *ndb, const char *datadir)
         applied++;
     }
 
+    if (current_ver < 11) {
+        /* v11: Peer bandwidth scores + ZCL23 flag for fast reconnection.
+         * New nodes should reconnect to fast ZCL23 peers first, enabling
+         * instant swarm sync on subsequent starts. */
+        sqlite3_exec(ndb->db,
+            "ALTER TABLE peers ADD COLUMN bandwidth_score INTEGER NOT NULL DEFAULT 0",
+            NULL, NULL, NULL);
+        sqlite3_exec(ndb->db,
+            "ALTER TABLE peers ADD COLUMN is_zcl23 INTEGER NOT NULL DEFAULT 0",
+            NULL, NULL, NULL);
+        /* Index: prioritize fast ZCL23 peers for reconnection */
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_peers_zcl23_score "
+            "ON peers(is_zcl23 DESC, bandwidth_score DESC)");
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('011')");
+        int32_t v = 11;
+        node_db_state_set(ndb, "schema_version", &v, sizeof(v));
+        current_ver = 11;
+        applied++;
+    }
+
     if (applied > 0)
         printf("db: applied %d migration(s), now at version %d\n",
                applied, node_db_schema_version(ndb));
