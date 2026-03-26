@@ -11,15 +11,19 @@ size_t serve_shield(uint8_t *r, size_t max, const char *query) {
     if (query) {
         const char *amt = strstr(query, "amount=");
         if (amt) amount = strtod(amt + 7, NULL);
-        /* ?all=1 — compute from balance (avoids leaking amount in URL) */
+        /* ?all=1 — compute from actual zclassicd listunspent, not SQLite.
+         * SQLite may be stale if a prior shield is still pending. */
         if (strstr(query, "all=1")) {
-            sqlite3 *sdb = wv_open_db();
-            if (sdb) {
-                int64_t bal = wv_query_ground_truth_balance(sdb, NULL);
-                sqlite3_close(sdb);
-                amount = (double)bal / (double)ZATOSHI_PER_ZCL - FEE_ZCL;
-                if (amount < 0) amount = 0;
-            }
+            struct wv_funded_addr addrs[16];
+            int n = wv_get_all_funded_taddrs(addrs, 16);
+            double total = 0;
+            for (int i = 0; i < n; i++) total += addrs[i].amount;
+            /* Each address needs its own fee */
+            int paying_addrs = 0;
+            for (int i = 0; i < n; i++)
+                if (addrs[i].amount > FEE_ZCL + 0.00000001) paying_addrs++;
+            amount = total - (paying_addrs > 0 ? paying_addrs : 1) * FEE_ZCL;
+            if (amount < 0) amount = 0;
         }
     }
 
@@ -211,10 +215,20 @@ size_t serve_shield_confirm(uint8_t *r, size_t max,
 
     /* If we iterated all addresses but none had enough after fees */
     if (!success && !shield_err[0] && ops_started == 0) {
-        snprintf(shield_err, sizeof(shield_err),
-            "All %d funded addresses have insufficient balance after "
-            "0.0001 ZCL fee. Total available may be too small to shield.",
-            n_funded);
+        double total_funded = 0;
+        for (int i = 0; i < n_funded; i++)
+            total_funded += funded[i].amount;
+        if (total_funded < 0.00011)
+            snprintf(shield_err, sizeof(shield_err),
+                "No spendable transparent balance found in zclassicd. "
+                "If you recently shielded, the previous operation may "
+                "still be pending (~2.5 min for 1 confirmation). "
+                "Check with: zcl-rpc z_getoperationstatus");
+        else
+            snprintf(shield_err, sizeof(shield_err),
+                "All %d funded addresses (total %.8f ZCL) have "
+                "insufficient balance after 0.0001 ZCL fee per address.",
+                n_funded, total_funded);
     }
 
     if (success) {
