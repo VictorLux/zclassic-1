@@ -2538,26 +2538,27 @@ static void *hodl_compute_thread(void *arg)
             "<line x1='%d' y1='%d' x2='%d' y2='%d' stroke='#1a1a1a' stroke-width='1'/>",
             pad_l, y, w - pad_r, y);
         APPEND(off, r, max,
-            "<text x='%d' y='%d' fill='#888' font-size='16' "
-            "font-family='Georgia,serif' text-anchor='end' font-weight='600'>%d%%</text>",
-            pad_l - 12, y + 6, g * 25);
+            "<text x='%d' y='%d' fill='#888' font-size='14' "
+            "font-family='Georgia,serif' text-anchor='end'>%d%%</text>",
+            pad_l - 10, y + 5, g * 25);
     }
 
     /* Y-axis title */
     APPEND(off, r, max,
-        "<text x='18' y='%d' fill='#aaa' font-size='14' "
+        "<text x='16' y='%d' fill='#aaa' font-size='13' "
         "font-family='Georgia,serif' "
-        "transform='rotate(-90,18,%d)' text-anchor='middle'>"
+        "transform='rotate(-90,16,%d)' text-anchor='middle'>"
         "Coins Unmoved &gt;1 Year</text>",
         pad_t + plot_h / 2, pad_t + plot_h / 2);
 
-    /* Filled area */
+    /* Gradient fill */
     APPEND(off, r, max,
         "<defs><linearGradient id='hodlGrad' x1='0' y1='0' x2='0' y2='1'>"
         "<stop offset='0%%' stop-color='#8844ff' stop-opacity='0.6'/>"
         "<stop offset='100%%' stop-color='#8844ff' stop-opacity='0.05'/>"
         "</linearGradient></defs>");
 
+    /* Filled area */
     APPEND(off, r, max,
         "<polygon fill='url(#hodlGrad)' points='%d,%d ",
         pad_l, pad_t + plot_h);
@@ -2570,7 +2571,7 @@ static void *hodl_compute_thread(void *arg)
 
     /* Line on top */
     APPEND(off, r, max,
-        "<polyline fill='none' stroke='#aa66ff' stroke-width='3' "
+        "<polyline fill='none' stroke='#aa66ff' stroke-width='2.5' "
         "stroke-linejoin='round' points='");
     for (int i = 0; i < npts; i++) {
         int x = pad_l + plot_w * i / (npts - 1);
@@ -2579,39 +2580,96 @@ static void *hodl_compute_thread(void *arg)
     }
     APPEND(off, r, max, "'/>");
 
+    /* Data points with hover circles + invisible hit areas for tooltip */
+    for (int i = 0; i < npts; i++) {
+        int x = pad_l + plot_w * i / (npts - 1);
+        int y = pad_t + plot_h - (int)(pct_over_1yr[i] / 100.0 * plot_h);
+        time_t t = (time_t)cp_time[i];
+        struct tm tm;
+        gmtime_r(&t, &tm);
+        char date_str[32];
+        snprintf(date_str, sizeof(date_str), "%04d-%02d",
+                 tm.tm_year + 1900, tm.tm_mon + 1);
+        /* Small dot at each data point */
+        APPEND(off, r, max,
+            "<circle cx='%d' cy='%d' r='2' fill='#aa66ff' opacity='0.5'/>",
+            x, y);
+        /* Invisible wider hit area with SVG <title> tooltip */
+        int hit_w = plot_w / npts;
+        if (hit_w < 8) hit_w = 8;
+        APPEND(off, r, max,
+            "<rect x='%d' y='%d' width='%d' height='%d' fill='transparent' "
+            "class='hodl-pt' data-x='%d' data-y='%d' data-pct='%.1f' data-date='%s'>"
+            "<title>%s: %.1f%% unmoved &gt;1yr (h=%d)</title></rect>",
+            x - hit_w/2, pad_t, hit_w, plot_h,
+            x, y, pct_over_1yr[i], date_str,
+            date_str, pct_over_1yr[i], cp_height[i]);
+    }
+
     /* Current value dot + label */
     {
         int x = pad_l + plot_w;
         int y = pad_t + plot_h - (int)(current_pct / 100.0 * plot_h);
         APPEND(off, r, max,
-            "<circle cx='%d' cy='%d' r='6' fill='#aa66ff'/>"
-            "<text x='%d' y='%d' fill='#fff' font-size='18' "
+            "<circle cx='%d' cy='%d' r='5' fill='#aa66ff'/>"
+            "<text x='%d' y='%d' fill='#fff' font-size='16' "
             "font-family='Georgia,serif' font-weight='700' text-anchor='end'>"
             "%.1f%%</text>",
-            x, y, x - 12, y - 12, current_pct);
+            x, y, x - 10, y - 10, current_pct);
     }
 
-    /* X-axis year labels */
+    /* X-axis: show year labels at January, plus quarter ticks */
     for (int i = 0; i < npts; i++) {
-        if (labels[i][0] != '\0') {
-            int x = pad_l + plot_w * i / (npts - 1);
+        time_t t = (time_t)cp_time[i];
+        struct tm tm;
+        gmtime_r(&t, &tm);
+        int x = pad_l + plot_w * i / (npts - 1);
+
+        if (tm.tm_mon == 0) {
+            /* January — show year label + tick */
             APPEND(off, r, max,
                 "<line x1='%d' y1='%d' x2='%d' y2='%d' stroke='#333' stroke-width='1'/>"
-                "<text x='%d' y='%d' fill='#888' font-size='16' "
-                "font-family='Georgia,serif' text-anchor='middle'>%s</text>",
-                x, pad_t + plot_h, x, pad_t + plot_h + 8,
-                x, pad_t + plot_h + 28, labels[i]);
+                "<text x='%d' y='%d' fill='#aaa' font-size='14' "
+                "font-family='Georgia,serif' text-anchor='middle' font-weight='600'>"
+                "%d</text>",
+                x, pad_t + plot_h, x, pad_t + plot_h + 6,
+                x, pad_t + plot_h + 24, tm.tm_year + 1900);
+        } else if (tm.tm_mon % 3 == 0) {
+            /* Quarter boundary — small tick only */
+            APPEND(off, r, max,
+                "<line x1='%d' y1='%d' x2='%d' y2='%d' stroke='#222' stroke-width='1'/>",
+                x, pad_t + plot_h, x, pad_t + plot_h + 4);
         }
     }
 
-    /* Title inside chart */
+    /* Source attribution */
     APPEND(off, r, max,
-        "<text x='%d' y='%d' fill='#555' font-size='13' "
+        "<text x='%d' y='%d' fill='#444' font-size='11' "
         "font-family='Georgia,serif' text-anchor='end'>"
-        "Source: ZClassic23 SQLite UTXO Index &mdash; zclnet.net</text>",
-        w - pad_r, h - 8);
+        "Source: ZClassic23 UTXO Index &mdash; zclnet.net</text>",
+        w - pad_r, h - 6);
 
     APPEND(off, r, max, "</svg>");
+
+    /* JavaScript tooltip: shows crosshair + value on hover */
+    APPEND(off, r, max,
+        "<div id='hodl-tip' style='display:none;position:fixed;background:#1a1a2a;"
+        "border:1px solid #aa66ff;border-radius:6px;padding:8px 12px;"
+        "color:#fff;font-family:Georgia,serif;font-size:14px;"
+        "pointer-events:none;z-index:999;box-shadow:0 4px 12px rgba(0,0,0,0.5)'></div>"
+        "<script>"
+        "document.querySelectorAll('.hodl-pt').forEach(function(el){"
+        "el.addEventListener('mouseenter',function(e){"
+        "var tip=document.getElementById('hodl-tip');"
+        "tip.innerHTML='<b>'+el.dataset.date+'</b><br>'+el.dataset.pct+'%% unmoved &gt;1yr';"
+        "tip.style.display='block';"
+        "tip.style.left=(e.clientX+12)+'px';tip.style.top=(e.clientY-40)+'px'});"
+        "el.addEventListener('mousemove',function(e){"
+        "var tip=document.getElementById('hodl-tip');"
+        "tip.style.left=(e.clientX+12)+'px';tip.style.top=(e.clientY-40)+'px'});"
+        "el.addEventListener('mouseleave',function(){"
+        "document.getElementById('hodl-tip').style.display='none'})});"
+        "</script>");
 
     /* Description */
     APPEND(off, r, max,
