@@ -51,4 +51,25 @@ bool utxo_commitment_equal(const struct utxo_commitment *a,
  * When true, add/remove are no-ops for performance. */
 extern _Atomic bool g_utxo_commitment_skip;
 
+/* ── Checkpoint verification ──────────────────────────────── */
+
+/* Recompute commitment from the full UTXO set in SQLite.
+ * This is O(n) and should only be called at startup or periodically. */
+struct sqlite3;
+bool utxo_commitment_verify_db(struct sqlite3 *db,
+                                const struct utxo_commitment *expected);
+
+/* Compute commitment from SQLite UTXO set (result in out). */
+void utxo_commitment_compute_db(struct sqlite3 *db,
+                                 struct utxo_commitment *out);
+
+/* Save commitment checkpoint to node_state table. */
+bool utxo_commitment_save_checkpoint(struct sqlite3 *db,
+                                      const struct utxo_commitment *uc);
+
+/* Load commitment checkpoint from node_state table.
+ * Returns false if no checkpoint stored. */
+bool utxo_commitment_load_checkpoint(struct sqlite3 *db,
+                                      struct utxo_commitment *uc);
+
 #endif

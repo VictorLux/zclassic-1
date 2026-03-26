@@ -14,6 +14,8 @@
 #include "crypto/sha256.h"
 #include <string.h>
 #include <stdatomic.h>
+#include <stdio.h>
+#include <sqlite3.h>
 
 _Atomic bool g_utxo_commitment_skip = false;
 
@@ -113,4 +115,106 @@ bool utxo_commitment_equal(const struct utxo_commitment *a,
 {
     return a->count == b->count &&
            memcmp(a->accumulator, b->accumulator, 32) == 0;
+}
+
+/* ── Checkpoint: full UTXO set verification ──────────────── */
+
+void utxo_commitment_compute_db(sqlite3 *db, struct utxo_commitment *out)
+{
+    utxo_commitment_init(out);
+    if (!db) return;
+
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT txid, vout, value, height FROM utxos "
+            "ORDER BY txid, vout", -1, &s, NULL) != SQLITE_OK)
+        return;
+
+    while (sqlite3_step(s) == SQLITE_ROW) {
+        const uint8_t *txid = (const uint8_t *)sqlite3_column_blob(s, 0);
+        if (!txid || sqlite3_column_bytes(s, 0) < 32) continue;
+        uint32_t vout = (uint32_t)sqlite3_column_int(s, 1);
+        int64_t value = sqlite3_column_int64(s, 2);
+        int32_t height = sqlite3_column_int(s, 3);
+
+        uint8_t h[32];
+        /* Inline hash_utxo to avoid static function scope issue */
+        uint8_t buf[48];
+        memcpy(buf, txid, 32);
+        buf[32] = (uint8_t)(vout & 0xFF);
+        buf[33] = (uint8_t)((vout >> 8) & 0xFF);
+        buf[34] = (uint8_t)((vout >> 16) & 0xFF);
+        buf[35] = (uint8_t)((vout >> 24) & 0xFF);
+        uint64_t v = (uint64_t)value;
+        for (int i = 0; i < 8; i++)
+            buf[36 + i] = (uint8_t)((v >> (8 * i)) & 0xFF);
+        uint32_t ht = (uint32_t)height;
+        buf[44] = (uint8_t)(ht & 0xFF);
+        buf[45] = (uint8_t)((ht >> 8) & 0xFF);
+        buf[46] = (uint8_t)((ht >> 16) & 0xFF);
+        buf[47] = (uint8_t)((ht >> 24) & 0xFF);
+        struct sha256_ctx ctx;
+        sha256_init(&ctx);
+        sha256_write(&ctx, buf, 48);
+        sha256_finalize(&ctx, h);
+
+        xor32(out->accumulator, h);
+        out->count++;
+    }
+    sqlite3_finalize(s);
+}
+
+bool utxo_commitment_verify_db(sqlite3 *db,
+                                const struct utxo_commitment *expected)
+{
+    if (!db || !expected) return false;
+    struct utxo_commitment computed;
+    utxo_commitment_compute_db(db, &computed);
+    bool ok = utxo_commitment_equal(&computed, expected);
+    if (!ok) {
+        fprintf(stderr, "UTXO commitment mismatch: expected count=%lu, "
+                "got count=%lu\n",
+                (unsigned long)expected->count,
+                (unsigned long)computed.count);
+    }
+    return ok;
+}
+
+bool utxo_commitment_save_checkpoint(sqlite3 *db,
+                                      const struct utxo_commitment *uc)
+{
+    if (!db || !uc) return false;
+    uint8_t buf[UTXO_COMMITMENT_SERIALIZED_SIZE];
+    utxo_commitment_serialize(uc, buf);
+
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO node_state(key,value) "
+            "VALUES('utxo_commitment',?)", -1, &s, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_blob(s, 1, buf, UTXO_COMMITMENT_SERIALIZED_SIZE, SQLITE_STATIC);
+    bool ok = sqlite3_step(s) == SQLITE_DONE;
+    sqlite3_finalize(s);
+    return ok;
+}
+
+bool utxo_commitment_load_checkpoint(sqlite3 *db,
+                                      struct utxo_commitment *uc)
+{
+    if (!db || !uc) return false;
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT value FROM node_state WHERE key='utxo_commitment'",
+            -1, &s, NULL) != SQLITE_OK)
+        return false;
+
+    bool ok = false;
+    if (sqlite3_step(s) == SQLITE_ROW) {
+        const void *blob = sqlite3_column_blob(s, 0);
+        int len = sqlite3_column_bytes(s, 0);
+        if (blob && len >= UTXO_COMMITMENT_SERIALIZED_SIZE)
+            ok = utxo_commitment_deserialize(uc, blob, (size_t)len);
+    }
+    sqlite3_finalize(s);
+    return ok;
 }
