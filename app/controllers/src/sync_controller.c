@@ -1331,7 +1331,10 @@ struct utxo_row {
 
 /* A chunk of raw LevelDB entries for decode workers */
 #define IMPORT_CHUNK_ENTRIES 2048
-#define IMPORT_MAX_ROWS_PER_CHUNK (IMPORT_CHUNK_ENTRIES * 8)
+/* Max outputs per chunk. Must be large enough to hold all outputs from
+ * 2048 entries. Worst case: 2048 entries * 468 outputs = 958,464.
+ * In practice ~5500 rows per chunk. Use 32768 for 4x safety margin. */
+#define IMPORT_MAX_ROWS_PER_CHUNK 32768
 
 struct raw_entry {
     uint8_t  txid[32];
@@ -1530,7 +1533,7 @@ static void *import_decoder_thread(void *arg)
         struct import_chunk *chunk = NULL;
         for (int i = 0; i < IMPORT_NUM_CHUNKS; i++) {
             int expected = 1; /* filled */
-            if (atomic_compare_exchange_weak(&ctx->chunks[i].state,
+            if (atomic_compare_exchange_strong(&ctx->chunks[i].state,
                                               &expected, -1)) {
                 chunk = &ctx->chunks[i];
                 break;
@@ -1556,13 +1559,23 @@ static void *import_decoder_thread(void *arg)
 
         /* Decode all entries in this chunk */
         chunk->num_rows = 0;
+        int skipped_in_chunk = 0;
         for (int i = 0; i < chunk->num_entries; i++) {
             int space = IMPORT_MAX_ROWS_PER_CHUNK - chunk->num_rows;
-            if (space <= 0) break;
+            if (space <= 0) { skipped_in_chunk += chunk->num_entries - i; break; }
             int n = decode_coins_entry(&chunk->entries[i],
                                        &chunk->rows[chunk->num_rows],
                                        space);
+            if (n == 0) {
+                atomic_fetch_add(&ctx->decode_failures, 1);
+            }
             chunk->num_rows += n;
+        }
+        if (skipped_in_chunk > 0) {
+            atomic_fetch_add(&ctx->skipped_outputs, skipped_in_chunk);
+            fprintf(stderr, "UTXO import: chunk overflow! %d entries skipped "
+                    "(rows=%d, max=%d)\n", skipped_in_chunk,
+                    chunk->num_rows, IMPORT_MAX_ROWS_PER_CHUNK);
         }
 
         atomic_store(&chunk->state, 2); /* decoded */
@@ -1587,7 +1600,7 @@ static void *import_writer_thread(void *arg)
         for (int i = 0; i < IMPORT_NUM_CHUNKS; i++) {
             int idx = (next_chunk + i) % IMPORT_NUM_CHUNKS;
             int expected = 2; /* decoded */
-            if (atomic_compare_exchange_weak(&ctx->chunks[idx].state,
+            if (atomic_compare_exchange_strong(&ctx->chunks[idx].state,
                                               &expected, -1)) {
                 chunk = &ctx->chunks[idx];
                 next_chunk = (idx + 1) % IMPORT_NUM_CHUNKS;
@@ -1596,11 +1609,20 @@ static void *import_writer_thread(void *arg)
         }
         if (!chunk) {
             if (atomic_load(&ctx->decoders_done)) {
-                /* Check once more */
+                /* All decoders have joined. Any remaining chunks must be
+                 * in state 2 (decoded, waiting for writer). Check multiple
+                 * times to handle memory ordering delays. */
                 bool found = false;
-                for (int i = 0; i < IMPORT_NUM_CHUNKS; i++) {
-                    int s = atomic_load(&ctx->chunks[i].state);
-                    if (s == 1 || s == 2) { found = true; break; }
+                for (int retry = 0; retry < 3 && !found; retry++) {
+                    for (int i = 0; i < IMPORT_NUM_CHUNKS; i++) {
+                        int s = atomic_load_explicit(&ctx->chunks[i].state,
+                                                      memory_order_acquire);
+                        if (s == 2) { found = true; break; }
+                    }
+                    if (!found) {
+                        struct timespec ts = {0, 1000000}; /* 1ms */
+                        nanosleep(&ts, NULL);
+                    }
                 }
                 if (!found) break;
             }
@@ -1724,7 +1746,7 @@ int node_db_sync_import_utxos(struct node_db *ndb,
             for (int i = 0; i < IMPORT_NUM_CHUNKS; i++) {
                 int idx = (chunk_idx + i) % IMPORT_NUM_CHUNKS;
                 int expected = 0;
-                if (atomic_compare_exchange_weak(&ctx->chunks[idx].state,
+                if (atomic_compare_exchange_strong(&ctx->chunks[idx].state,
                                                   &expected, -1)) {
                     chunk = &ctx->chunks[idx];
                     chunk_idx = (idx + 1) % IMPORT_NUM_CHUNKS;
@@ -1782,9 +1804,27 @@ reader_done:
     printf("UTXO import: read %d txids from LevelDB\n", total_entries);
     fflush(stdout);
 
-    /* ── Wait for decoders, then signal writer ─────────────────────── */
+    /* ── Wait for decoders ────────────────────────────────────────── */
     for (int i = 0; i < num_decoders; i++)
         pthread_join(decoders[i], NULL);
+
+    /* ── Wait for ALL chunks to be consumed by writer ──────────── */
+    /* After decoders finish, remaining chunks are in state 2 (decoded).
+     * We MUST wait for the writer to consume them ALL before signaling
+     * decoders_done. Otherwise the writer sees decoders_done=true, does
+     * a quick scan, misses state=2 chunks due to timing, and exits
+     * early — dropping the last ~219 txids / ~520 UTXOs. */
+    for (;;) {
+        bool any_pending = false;
+        for (int i = 0; i < IMPORT_NUM_CHUNKS; i++) {
+            int s = atomic_load_explicit(&ctx->chunks[i].state,
+                                          memory_order_acquire);
+            if (s == 1 || s == 2) { any_pending = true; break; }
+        }
+        if (!any_pending) break;
+        struct timespec ts = {0, 1000000}; /* 1ms */
+        nanosleep(&ts, NULL);
+    }
     atomic_store(&ctx->decoders_done, true);
 
     /* ── Wait for writer ───────────────────────────────────────────── */
@@ -1795,6 +1835,25 @@ reader_done:
     if (decode_fail > 0 || skip_out > 0)
         printf("UTXO import: %d decode failures, %d skipped outputs\n",
                decode_fail, skip_out);
+
+    /* Validation: verify all txids made it to SQLite */
+    {
+        sqlite3_stmt *cnt = NULL;
+        sqlite3_prepare_v2(ndb->db,
+            "SELECT COUNT(DISTINCT txid), COUNT(*) FROM utxos",
+            -1, &cnt, NULL);
+        if (cnt && sqlite3_step(cnt) == SQLITE_ROW) {
+            int64_t sql_txids = sqlite3_column_int64(cnt, 0);
+            int64_t sql_rows = sqlite3_column_int64(cnt, 1);
+            if (sql_txids != total_entries || sql_rows != total_rows) {
+                fprintf(stderr, "UTXO IMPORT MISMATCH: read %d txids/%d rows "
+                        "but SQLite has %lld txids/%lld rows\n",
+                        total_entries, total_rows,
+                        (long long)sql_txids, (long long)sql_rows);
+            }
+        }
+        sqlite3_finalize(cnt);
+    }
     fflush(stdout);
 
     struct timespec ts_write;
