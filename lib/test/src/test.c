@@ -57,6 +57,13 @@ int main(void)
     failures += test_policy();
     failures += test_wallet_view();
 
+    /* Spec-based user story tests */
+    failures += spec_wallet_dashboard();
+    failures += spec_wallet_send();
+    failures += spec_wallet_receive();
+    failures += spec_wallet_shield();
+    failures += spec_wallet_node();
+
     ecc_verify_destroy();
     ecc_stop();
 

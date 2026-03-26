@@ -183,6 +183,13 @@ int test_consensus(void);
 int test_policy(void);
 int test_wallet_view(void);
 
+/* Spec-based user story tests (one per feature area) */
+int spec_wallet_dashboard(void);
+int spec_wallet_send(void);
+int spec_wallet_receive(void);
+int spec_wallet_shield(void);
+int spec_wallet_node(void);
+
 /* ── DRY test macros ─────────────────────────────────────── */
 
 /* Run a named test. Usage:
