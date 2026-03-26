@@ -42,9 +42,32 @@ const char *wv_zclassicd_auth(void) {
     const char *home = getenv("HOME");
     if (!home) home = "/root";
     char path[512];
-    /* Try cookie first */
-    snprintf(path, sizeof(path), "%s/.zclassic/.cookie", home);
+    /* Try zclassic.conf first (stable credentials survive restarts) */
+    snprintf(path, sizeof(path), "%s/.zclassic/zclassic.conf", home);
     FILE *f = fopen(path, "r");
+    if (f) {
+        char user[64] = "", pass[64] = "", line[256];
+        while (fgets(line, sizeof(line), f)) {
+            if (strncmp(line, "rpcuser=", 8) == 0) {
+                char *e = strchr(line + 8, '\n'); if (e) *e = '\0';
+                char *r = strchr(line + 8, '\r'); if (r) *r = '\0';
+                snprintf(user, sizeof(user), "%s", line + 8);
+            }
+            if (strncmp(line, "rpcpassword=", 12) == 0) {
+                char *e = strchr(line + 12, '\n'); if (e) *e = '\0';
+                char *r = strchr(line + 12, '\r'); if (r) *r = '\0';
+                snprintf(pass, sizeof(pass), "%s", line + 12);
+            }
+        }
+        fclose(f);
+        if (user[0] && pass[0]) {
+            snprintf(auth, sizeof(auth), "%s:%s", user, pass);
+            return auth;
+        }
+    }
+    /* Fall back to cookie file (ephemeral, changes on restart) */
+    snprintf(path, sizeof(path), "%s/.zclassic/.cookie", home);
+    f = fopen(path, "r");
     if (f) {
         size_t n = fread(auth, 1, sizeof(auth) - 1, f);
         fclose(f);
@@ -52,26 +75,8 @@ const char *wv_zclassicd_auth(void) {
         char *nl = strchr(auth, '\n'); if (nl) *nl = '\0';
         if (auth[0]) return auth;
     }
-    /* Fall back to zclassic.conf */
-    snprintf(path, sizeof(path), "%s/.zclassic/zclassic.conf", home);
-    f = fopen(path, "r");
-    if (!f) { snprintf(auth, sizeof(auth), "zcluser:zclpass"); return auth; }
-    char user[64] = "", pass[64] = "", line[256];
-    while (fgets(line, sizeof(line), f)) {
-        if (strncmp(line, "rpcuser=", 8) == 0) {
-            char *e = strchr(line + 8, '\n'); if (e) *e = '\0';
-            snprintf(user, sizeof(user), "%s", line + 8);
-        }
-        if (strncmp(line, "rpcpassword=", 12) == 0) {
-            char *e = strchr(line + 12, '\n'); if (e) *e = '\0';
-            snprintf(pass, sizeof(pass), "%s", line + 12);
-        }
-    }
-    fclose(f);
-    if (user[0] && pass[0])
-        snprintf(auth, sizeof(auth), "%s:%s", user, pass);
-    else
-        snprintf(auth, sizeof(auth), "zcluser:zclpass");
+    /* Last resort */
+    snprintf(auth, sizeof(auth), "zcluser:zclpass");
     return auth;
 }
 
