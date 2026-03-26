@@ -58,6 +58,7 @@ CLI_SRCS = lib/rpc/src/client.c lib/json/src/json.c
 all: test_zcl zclassic23 zclassic-cli
 
 TEST_SRCS = $(wildcard lib/test/src/*.c)
+SPEC_SRCS = $(wildcard lib/test/spec/*.c)
 
 # Generate templates from .chtml and .ccss files
 TMPL_GEN = app/views/include/views/wallet_templates_gen.h
@@ -76,8 +77,15 @@ $(TMPL_GEN): $(TMPL_SRC) $(TMPL_TOOL)
 .PHONY: templates
 templates: $(TMPL_GEN)
 
-test_zcl: $(TMPL_GEN) $(TEST_SRCS) $(ALL_SRCS)
+test_zcl: $(TMPL_GEN) $(TEST_SRCS) $(SPEC_SRCS) $(ALL_SRCS)
 	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o $@ $(filter-out $(TMPL_GEN),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)
+
+spec_zcl: $(TMPL_GEN) lib/test/spec_main.c $(SPEC_SRCS) lib/test/src/test_helpers.c $(ALL_SRCS)
+	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o $@ $(filter-out $(TMPL_GEN),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)
+
+.PHONY: spec
+spec: spec_zcl
+	ulimit -s unlimited && ./spec_zcl
 
 zclassic23: $(TMPL_GEN) main.c $(ALL_SRCS)
 	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o $@ $(filter-out $(TMPL_GEN),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)

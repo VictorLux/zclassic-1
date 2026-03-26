@@ -63,6 +63,14 @@ int main(void)
     failures += spec_wallet_receive();
     failures += spec_wallet_shield();
     failures += spec_wallet_node();
+    failures += spec_wallet_history();
+    failures += spec_wallet_coins();
+    failures += spec_wallet_pulse();
+    failures += spec_wallet_tx_detail();
+    failures += spec_wallet_navigation();
+    failures += spec_wallet_errors();
+    failures += spec_wallet_privacy();
+    failures += spec_wallet_sovereignty();
 
     ecc_verify_destroy();
     ecc_stop();

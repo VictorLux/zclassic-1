@@ -189,6 +189,14 @@ int spec_wallet_send(void);
 int spec_wallet_receive(void);
 int spec_wallet_shield(void);
 int spec_wallet_node(void);
+int spec_wallet_history(void);
+int spec_wallet_coins(void);
+int spec_wallet_pulse(void);
+int spec_wallet_tx_detail(void);
+int spec_wallet_navigation(void);
+int spec_wallet_errors(void);
+int spec_wallet_privacy(void);
+int spec_wallet_sovereignty(void);
 
 /* ── DRY test macros ─────────────────────────────────────── */
 

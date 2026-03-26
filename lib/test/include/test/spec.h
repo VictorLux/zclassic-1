@@ -1,28 +1,27 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * User story spec test framework — structured C tests that read like English.
+ * User story spec framework — Kathy Sierra "Badass" testing.
+ *
+ * Core principle: Don't test if the APP works.
+ * Test if the USER becomes more capable.
+ *
+ * FEATURE  = What the user is trying to accomplish
+ * STORY    = One moment where the user succeeds or fails
+ * GIVEN    = The user's context (what just happened)
+ * WHEN     = The user's action
+ * THEN     = What the user experiences (not what the code does)
+ * EXPECT   = Verify the experience matches intent
  *
  * Usage:
- *   FEATURE("Wallet Dashboard") {
- *       STORY("user sees total balance") {
- *           GIVEN("dashboard page loads")
- *               wv_get("/wallet");
- *           THEN("balance is displayed")
- *               EXPECT(wv_has("ZCL"));
- *           THEN("privacy meter is visible")
- *               EXPECT(wv_has("% private"));
+ *   FEATURE("User understands their financial privacy") {
+ *       STORY("user immediately sees how private they are") {
+ *           GIVEN("user opens the wallet")
+ *               GET("/wallet");
+ *           THEN("privacy status is the first thing they grasp")
+ *               EXPECT(has("% private"));
+ *           PASS();
  *       }
- *   }
- *
- * Each FEATURE/STORY prints its name. EXPECT tracks pass/fail counts.
- * At the end, call spec_summary() to print totals and return exit code.
- *
- * Design goals:
- *   - Zero dependencies (just macros + static counters)
- *   - LLM-friendly: each story is self-contained, copy-pasteable
- *   - Organized by feature: one spec_*.c file per feature area
- *   - GIVEN/WHEN/THEN are documentation only (no runtime effect)
- *   - EXPECT is the only assertion — keeps it simple */
+ *   } */
 
 #ifndef ZCL_TEST_SPEC_H
 #define ZCL_TEST_SPEC_H
@@ -30,74 +29,46 @@
 #include <stdio.h>
 #include <stdbool.h>
 
-/* ── Counters (one set per translation unit) ─────────────── */
-
 static int _spec_pass = 0;
 static int _spec_fail = 0;
-static const char *_spec_current_story = "";
-static const char *_spec_current_feature = "";
-
-/* ── Feature / Story ─────────────────────────────────────── */
+static bool _spec_story_failed = false;
 
 #define FEATURE(name) \
-    _spec_current_feature = (name); \
     printf("\n=== %s ===\n", (name)); \
     if (1)
 
 #define STORY(name) \
-    _spec_current_story = (name); \
+    _spec_story_failed = false; \
     printf("  %s... ", (name)); \
     if (1)
 
-/* ── Given / When / Then (documentation markers) ─────────── */
-
-#define GIVEN(desc)  /* context setup */
-#define WHEN(desc)   /* action */
-#define THEN(desc)   /* assertion phase */
-
-/* ── Assertions ──────────────────────────────────────────── */
-
-/* Internal: track if current story already failed */
-static bool _spec_story_failed = false;
+#define GIVEN(desc)  /* user's context */
+#define WHEN(desc)   /* user's action */
+#define THEN(desc)   /* user's experience */
 
 #define EXPECT(cond) do { \
     if (cond) { _spec_pass++; } \
     else { \
         _spec_fail++; _spec_story_failed = true; \
-        printf("FAIL\n    EXPECT failed: %s\n    at %s:%d\n", \
+        printf("FAIL\n    %s\n    at %s:%d\n", \
             #cond, __FILE__, __LINE__); \
     } \
 } while (0)
 
-#define EXPECT_EQ(a, b) do { \
-    if ((a) == (b)) { _spec_pass++; } \
+#define EXPECT_NOT(cond) do { \
+    if (!(cond)) { _spec_pass++; } \
     else { \
         _spec_fail++; _spec_story_failed = true; \
-        printf("FAIL\n    EXPECT_EQ failed: %s != %s\n    at %s:%d\n", \
-            #a, #b, __FILE__, __LINE__); \
+        printf("FAIL (should NOT match)\n    %s\n    at %s:%d\n", \
+            #cond, __FILE__, __LINE__); \
     } \
 } while (0)
 
-#define EXPECT_STR(haystack, needle) do { \
-    if (strstr((haystack), (needle))) { _spec_pass++; } \
-    else { \
-        _spec_fail++; _spec_story_failed = true; \
-        printf("FAIL\n    EXPECT_STR: \"%s\" not found\n    at %s:%d\n", \
-            (needle), __FILE__, __LINE__); \
-    } \
-} while (0)
+#define PASS() if (!_spec_story_failed) printf("OK\n");
 
-/* Mark story as passed (call at end of story block) */
-#define PASS() if (!_spec_story_failed) printf("OK\n"); \
-    _spec_story_failed = false;
+#define SPEC_SUMMARY() \
+    printf("\n%d passed, %d failed\n", _spec_pass, _spec_fail)
 
-/* ── Summary ─────────────────────────────────────────────── */
-
-#define SPEC_SUMMARY() do { \
-    printf("\n%d passed, %d failed\n", _spec_pass, _spec_fail); \
-} while (0)
-
-/* Return pass/fail counts to caller */
 #define SPEC_FAILURES() (_spec_fail)
 
-#endif /* ZCL_TEST_SPEC_H */
+#endif
