@@ -86,10 +86,15 @@ spec_zcl: $(TMPL_GEN) lib/test/spec_main.c $(SPEC_SRCS) lib/test/src/test_helper
 wallet_dump: $(TMPL_GEN) tools/wallet_dump.c $(ALL_SRCS)
 	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o $@ tools/wallet_dump.c $(ALL_SRCS) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)
 
+wallet_sim: $(TMPL_GEN) tools/wallet_sim.c $(ALL_SRCS)
+	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o $@ tools/wallet_sim.c $(ALL_SRCS) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)
+
 wallet_check: $(TMPL_GEN) tools/wallet_check.c $(ALL_SRCS)
 	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o $@ tools/wallet_check.c $(ALL_SRCS) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) -lm
 
-.PHONY: dump check-wallet
+.PHONY: sim dump check-wallet
+sim: wallet_sim
+	./wallet_sim
 dump: wallet_dump
 	./wallet_dump
 
