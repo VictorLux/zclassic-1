@@ -142,7 +142,7 @@ size_t serve_history(uint8_t *r, size_t max, int page,
             int h = sqlite3_column_int(s, 1);
             int64_t btime = sqlite3_column_int64(s, 2);
             int from_me = sqlite3_column_int(s, 3);
-            (void)sqlite3_column_int64(s, 4); /* fee */
+            int64_t fee = sqlite3_column_int64(s, 4);
             int64_t wallet_output = sqlite3_column_int64(s, 5);
             int64_t wallet_input = sqlite3_column_int64(s, 6);
             if (!txid) continue;
@@ -214,16 +214,21 @@ size_t serve_history(uint8_t *r, size_t max, int page,
                     conf_html, sizeof(conf_html));
             }
 
-            /* Render card using template */
+            /* Render card — use short format, better labels */
             char amt_s[32];
-            snprintf(amt_s, sizeof(amt_s), "%.8f", (double)display_val / 1e8);
+            zcl_format_zcl_short(amt_s, sizeof(amt_s), display_val);
 
             if (is_shield_op) {
+                /* Show fee if known, otherwise just label */
+                char fee_s[32] = "";
+                if (fee > 0)
+                    zcl_format_zcl_short(fee_s, sizeof(fee_s), fee);
+
                 struct template_var sv[] = {
                     { "txid",      esc_lower },
+                    { "fee",       fee_s },
                     { "timestamp", esc_ts },
                     { "rel_time",  esc_rel },
-                    { "conf_html", conf_html },
                 };
                 off += template_render(TMPL_HISTORY_SHIELD, sv, 4,
                     (char *)r + off, max - off);

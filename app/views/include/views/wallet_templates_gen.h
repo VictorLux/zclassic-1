@@ -33,14 +33,6 @@ static const char TMPL_CONF_CONFIRMED[] =
 static const char TMPL_CONF_PENDING[] =
     "<span class='tx-conf pill pill-pending' style='font-size:13px'>Pending</span>\n";
 
-static const char TMPL_HISTORY_CARD[] =
-    "<a href='/wallet/tx/{{{txid}}}' style='text-decoration:none;color:inherit'>\n<div class='tx-card'"
-    " style='border-left-color:{{{color}}}'>\n<div style='display:flex;justify-content:space-between;\n"
-    "align-items:baseline'>\n<span class='tx-amount {{{amount_class}}}'>{{{sign}}}{{{amount}}} ZCL</sp"
-    "an>\n<span class='pill {{{pill_class}}}'>{{{pill_label}}}</span></div>\n<div class='tx-meta'>\n<s"
-    "pan class='tx-time' title='{{timestamp}}'>{{{rel_time}}}</span>\n{{{conf_html}}}\n</div></div></a"
-    ">\n";
-
 static const char TMPL_HISTORY_HEADER[] =
     "<h2>Transaction History</h2>\n<div class='filter-tabs'>\n<a href='/wallet/history?filter=all' cla"
     "ss='{{{all_active}}}'>All ({{{c_all}}})</a>\n<a href='/wallet/history?filter=sent' class='{{{sent"
@@ -368,13 +360,6 @@ static const char TMPL_SHIELD_ERROR[] =
     "/a>\n<span style='color:#555;margin:0 8px'>|</span>\n<a href='/wallet' style='color:#888'>Back to"
     " Wallet</a>\n</div></div>\n";
 
-static const char TMPL_HISTORY_SHIELD[] =
-    "<a href='/wallet/tx/{{{txid}}}' style='text-decoration:none;color:inherit'>\n<div class='tx-card'"
-    " style='border-left-color:#a78bfa'>\n<div style='display:flex;justify-content:space-between;\nali"
-    "gn-items:baseline'>\n<span style='color:#a78bfa;font-weight:700'>\n&#x1F512; Shield Operation</sp"
-    "an>\n<span class='pill pill-private'>t &rarr; z</span></div>\n<div class='tx-meta'>\n<span class="
-    "'tx-time' title='{{timestamp}}'>{{{rel_time}}}</span>\n{{{conf_html}}}\n</div></div></a>\n";
-
 static const char TMPL_SHIELD_AMOUNT_FORM[] =
     "{{> breadcrumb}}\n\n<div style='text-align:center;padding:16px 0'>\n<div class='balance-sub'>Shie"
     "ld transparent ZCL to a z-address.\nBreaks the on-chain link to your public address.</div></div>\n"
@@ -419,6 +404,20 @@ static const char TMPL_DASHBOARD[] =
     "x;font-size:13px'>Block Explorer</a>\n<a href='/wallet/coins' class='btn-secondary'\n style='text"
     "-align:center;padding:10px;font-size:13px'>Coin Audit</a>\n</div>\n\n{{{backup_warning}}}\n\n{{{n"
     "ode_strip}}}\n";
+
+static const char TMPL_HISTORY_CARD[] =
+    "<a href='/wallet/tx/{{{txid}}}' style='text-decoration:none;color:inherit'>\n<div class='tx-card'"
+    " style='border-left-color:{{{color}}}'>\n<div style='display:flex;justify-content:space-between;\n"
+    "align-items:baseline'>\n<span class='tx-amount {{{amount_class}}}'>{{{sign}}}{{{amount}}} ZCL</sp"
+    "an>\n<span class='pill {{{pill_class}}}'>{{{pill_label}}}</span></div>\n<div class='tx-meta'>\n<s"
+    "pan class='tx-time' title='{{timestamp}}'>{{{rel_time}}}</span>\n</div></div></a>\n";
+
+static const char TMPL_HISTORY_SHIELD[] =
+    "<a href='/wallet/tx/{{{txid}}}' style='text-decoration:none;color:inherit'>\n<div class='tx-card'"
+    " style='border-left-color:#a78bfa'>\n<div style='display:flex;justify-content:space-between;\nali"
+    "gn-items:baseline'>\n<span style='color:#a78bfa;font-weight:700'>\n&#x1F512; Shielded</span>\n<sp"
+    "an class='pill pill-private'>t &rarr; z</span></div>\n<div class='tx-meta'>\n<span class='tx-time"
+    "' title='{{timestamp}}'>{{{rel_time}}}</span>\n</div></div></a>\n";
 
 static const char CSS_WALLET_0[] =
     "*{box-sizing:border-box;margin:0;padding:0}body{font-family:Inter,-apple-system,'Segoe UI',system"
@@ -580,7 +579,6 @@ static const struct template_partial _tmpl_partials[] = {
     { "coins-tokens", TMPL_COINS_TOKENS },
     { "conf-confirmed", TMPL_CONF_CONFIRMED },
     { "conf-pending", TMPL_CONF_PENDING },
-    { "history-card", TMPL_HISTORY_CARD },
     { "history-header", TMPL_HISTORY_HEADER },
     { "loading", TMPL_LOADING },
     { "receive-js", TMPL_RECEIVE_JS },
@@ -618,10 +616,11 @@ static const struct template_partial _tmpl_partials[] = {
     { "receive-tpane", TMPL_RECEIVE_TPANE },
     { "node-page", TMPL_NODE_PAGE },
     { "shield-error", TMPL_SHIELD_ERROR },
-    { "history-shield", TMPL_HISTORY_SHIELD },
     { "shield-amount-form", TMPL_SHIELD_AMOUNT_FORM },
     { "backup-warning", TMPL_BACKUP_WARNING },
     { "dashboard", TMPL_DASHBOARD },
+    { "history-card", TMPL_HISTORY_CARD },
+    { "history-shield", TMPL_HISTORY_SHIELD },
 };
 
 #define TMPL_PARTIAL_COUNT 49
