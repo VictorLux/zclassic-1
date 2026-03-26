@@ -114,8 +114,25 @@ size_t serve_dashboard(uint8_t *r, size_t max) {
             template_render(TMPL_SHIELD_PENDING, pv, 1,
                 privacy_buf, sizeof(privacy_buf));
         } else if (shield_st == 2) {
-            template_render(TMPL_SHIELD_DONE, NULL, 0,
+            /* Shield op completed — show what happened honestly */
+            char amt_s[32];
+            zcl_format_zcl(amt_s, sizeof(amt_s), g_shield_pending_amount);
+            const char *msg = (transparent <= 0)
+                ? "You are now untraceable. No one can see what you own."
+                : "These funds are now private. Shield remaining balance to go fully invisible.";
+            struct template_var dv[] = {
+                { "amount", amt_s }, { "message", msg }
+            };
+            size_t dlen = template_render(TMPL_SHIELD_DONE, dv, 2,
                 privacy_buf, sizeof(privacy_buf));
+            /* If there's STILL public balance, also show the nudge */
+            if (transparent > 0 && dlen < sizeof(privacy_buf) - 256) {
+                char t_fmt[32];
+                zcl_format_zcl(t_fmt, sizeof(t_fmt), transparent);
+                struct template_var pv[] = { { "amount", t_fmt } };
+                template_render(TMPL_PRIVACY_NUDGE, pv, 1,
+                    privacy_buf + dlen, sizeof(privacy_buf) - dlen);
+            }
         } else if (transparent > 0) {
             char t_fmt[32];
             zcl_format_zcl(t_fmt, sizeof(t_fmt), transparent);

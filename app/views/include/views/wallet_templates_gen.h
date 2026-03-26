@@ -351,23 +351,6 @@ static const char TMPL_DASHBOARD[] =
     "<span>Recent</span>\n<a href='/wallet/history'>View all</a></div>\n{{{recent_txs}}}\n\n{{{backup_"
     "warning}}}\n\n{{{node_strip}}}\n";
 
-static const char TMPL_SHIELD_DONE[] =
-    "<div class='privacy-card' style='display:flex;align-items:center;\ngap:12px;text-align:left;borde"
-    "r-color:#34d399'>\n<div style='font-size:24px;flex-shrink:0'>&#x2705;</div>\n<div style='flex:1'>"
-    "\n<div class='title' style='margin:0;color:#34d399'>\nYou are now untraceable</div>\n<div class='"
-    "desc' style='margin:0;margin-top:2px'>\nYour balance is invisible on the blockchain. No one can s"
-    "ee what you own.</div></div></div>\n";
-
-static const char TMPL_SHIELD_SUCCESS[] =
-    "<div class='card' style='border-left-color:#34d399;padding:20px'>\n<div style='text-align:center'"
-    ">\n<div style='font-size:40px;margin-bottom:8px'>&#x2705;</div>\n<div style='font-size:20px;color"
-    ":#34d399;font-weight:700'>\n&#x1F512; You just became untraceable</div>\n<div style='color:#888;f"
-    "ont-size:14px;margin-top:8px'>\n{{{amount}}} ZCL is being made invisible. No chain analysis can l"
-    "ink it to you.</div>\n<div style='color:#888;font-size:14px;margin-top:12px;\nfont-family:monospa"
-    "ce;word-break:break-all'>{{opid}}</div>\n<div style='color:#555;font-size:14px;margin-top:12px'>\n"
-    "Spendable immediately. For maximum privacy, wait ~6 hours \nbefore spending so timing analysis ca"
-    "n't link back.</div>\n{{{balance_card}}}\n</div></div>\n";
-
 static const char TMPL_SEND_SUCCESS[] =
     "<div class='result-success'>\n<div class='icon'>&#x2713;</div>\n<h2>{{{heading}}}</h2>\n<p>{{{amo"
     "unt}}} ZCL to {{address}}</p>\n<div style='color:#555;font-size:14px;margin-top:8px'>\nNo bank. N"
@@ -415,6 +398,22 @@ static const char TMPL_NODE_STATUS_STRIP[] =
     "eers}}} peers</span>\n<span>&middot;</span>\n<span>Block {{{height}}}</span>\n<span>&middot;</spa"
     "n>\n<span style='color:{{{status_color}}}'>{{{status}}}</span>\n<span style='margin-left:auto;col"
     "or:#60a5fa;font-size:12px'>\n&#x2192;</span>\n</div></a>\n";
+
+static const char TMPL_SHIELD_DONE[] =
+    "<div class='privacy-card' style='display:flex;align-items:center;\ngap:12px;text-align:left;borde"
+    "r-color:#34d399'>\n<div style='font-size:24px;flex-shrink:0'>&#x2705;</div>\n<div style='flex:1'>"
+    "\n<div class='title' style='margin:0;color:#34d399'>\n{{{amount}}} ZCL secured</div>\n<div class="
+    "'desc' style='margin:0;margin-top:2px'>\n{{{message}}}</div></div></div>\n";
+
+static const char TMPL_SHIELD_SUCCESS[] =
+    "<div class='card' style='border-left-color:#34d399;padding:20px'>\n<div style='text-align:center'"
+    ">\n<div style='font-size:40px;margin-bottom:8px'>&#x2705;</div>\n<div style='font-size:20px;color"
+    ":#34d399;font-weight:700'>\n&#x1F512; {{{amount}}} ZCL is now private</div>\n<div style='color:#8"
+    "88;font-size:14px;margin-top:8px'>\nThese funds are being moved to your private balance.\nNo chai"
+    "n analysis can link them to your public address.</div>\n<div style='color:#888;font-size:14px;mar"
+    "gin-top:12px;\nfont-family:monospace;word-break:break-all'>{{opid}}</div>\n<div style='color:#555"
+    ";font-size:14px;margin-top:12px'>\nSpendable immediately. For maximum privacy, wait ~6 hours\nbef"
+    "ore spending so timing analysis can't link back.</div>\n{{{balance_card}}}\n</div></div>\n";
 
 static const char CSS_WALLET_0[] =
     "*{box-sizing:border-box;margin:0;padding:0}body{font-family:Inter,-apple-system,'Segoe UI',system"
@@ -612,12 +611,12 @@ static const struct template_partial _tmpl_partials[] = {
     { "send-review", TMPL_SEND_REVIEW },
     { "explorer-tx-row", TMPL_EXPLORER_TX_ROW },
     { "dashboard", TMPL_DASHBOARD },
-    { "shield-done", TMPL_SHIELD_DONE },
-    { "shield-success", TMPL_SHIELD_SUCCESS },
     { "send-success", TMPL_SEND_SUCCESS },
     { "node-page", TMPL_NODE_PAGE },
     { "privacy-nudge", TMPL_PRIVACY_NUDGE },
     { "node-status-strip", TMPL_NODE_STATUS_STRIP },
+    { "shield-done", TMPL_SHIELD_DONE },
+    { "shield-success", TMPL_SHIELD_SUCCESS },
 };
 
 #define TMPL_PARTIAL_COUNT 49
