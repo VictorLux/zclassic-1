@@ -1347,8 +1347,17 @@ struct import_chunk {
     _Atomic int state; /* 0=free, 1=filled, 2=decoded */
 };
 
-#define IMPORT_NUM_CHUNKS 48
-#define IMPORT_NUM_DECODERS 8
+#define IMPORT_NUM_CHUNKS 64
+/* Auto-detect decoder count: use all cores minus 2 (reader + writer).
+ * Minimum 4, maximum 32. More decoders = faster LevelDB deserialization. */
+#include <unistd.h>
+static int import_num_decoders(void) {
+    long n = sysconf(_SC_NPROCESSORS_ONLN);
+    if (n < 6) return 4;
+    if (n > 34) return 32;
+    return (int)(n - 2);
+}
+#define IMPORT_NUM_DECODERS_MAX 32
 
 struct import_context {
     struct import_chunk chunks[IMPORT_NUM_CHUNKS];
@@ -1650,8 +1659,9 @@ int node_db_sync_import_utxos(struct node_db *ndb,
 {
     if (!ndb->open || !cvdb) return -1;
 
-    printf("UTXO import: parallel pipeline (%d decoders, %d chunks)...\n",
-           IMPORT_NUM_DECODERS, IMPORT_NUM_CHUNKS);
+    int num_decoders = import_num_decoders();
+    printf("UTXO import: parallel pipeline (%d decoders, %d chunks, %ld cores)...\n",
+           num_decoders, IMPORT_NUM_CHUNKS, sysconf(_SC_NPROCESSORS_ONLN));
     fflush(stdout);
 
     struct timespec ts_start;
@@ -1689,8 +1699,8 @@ int node_db_sync_import_utxos(struct node_db *ndb,
         atomic_store(&ctx->chunks[i].state, 0);
 
     /* ── Start decoder + writer threads ────────────────────────────── */
-    pthread_t decoders[IMPORT_NUM_DECODERS];
-    for (int i = 0; i < IMPORT_NUM_DECODERS; i++)
+    pthread_t decoders[IMPORT_NUM_DECODERS_MAX];
+    for (int i = 0; i < num_decoders; i++)
         pthread_create(&decoders[i], NULL, import_decoder_thread, ctx);
 
     pthread_t writer;
@@ -1767,7 +1777,7 @@ reader_done:
     fflush(stdout);
 
     /* ── Wait for decoders, then signal writer ─────────────────────── */
-    for (int i = 0; i < IMPORT_NUM_DECODERS; i++)
+    for (int i = 0; i < num_decoders; i++)
         pthread_join(decoders[i], NULL);
     atomic_store(&ctx->decoders_done, true);
 
