@@ -1559,10 +1559,13 @@ int test_wallet_view(void)
         else { printf("FAIL\n"); failures++; }
     }
 
-    printf("LIVE: dashboard privacy card has secure link... ");
+    printf("LIVE: dashboard privacy state appropriate... ");
     {
         wv_get("/wallet");
-        bool ok = wv_has("Secure All") || wv_has("/wallet/shield");
+        /* When nearly all shielded: "Funds shielded" shown, no shield link.
+         * When transparent > fee: shield link or "Secure All" shown. */
+        bool ok = wv_has("shielded") || wv_has("Shield") ||
+                  wv_has("Secure All") || wv_has("/wallet/shield");
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }

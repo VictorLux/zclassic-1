@@ -17,8 +17,12 @@
 /* Format UTC timestamp as "YYYY-MM-DD HH:MM:SS UTC". */
 void zcl_format_time(char *buf, size_t max, int64_t timestamp);
 
-/* Format zatoshi amount as "X.YYYYYYYY" ZCL string. */
+/* Format zatoshi amount as "X.YYYYYYYY" ZCL string (8 decimals). */
 void zcl_format_zcl(char *buf, size_t max, int64_t zatoshi);
+
+/* Format zatoshi as short "X.YYYY" (4 decimals, trailing zeros trimmed).
+ * Use for dashboard/history display. Full precision on detail pages. */
+void zcl_format_zcl_short(char *buf, size_t max, int64_t zatoshi);
 
 /* Check if string is all hex digits of given length. */
 bool zcl_is_all_hex(const char *s, size_t len);

@@ -92,12 +92,16 @@ size_t serve_dashboard(uint8_t *r, size_t max) {
     char pct_str[8];
     snprintf(pct_str, sizeof(pct_str), "%d", pct);
 
-    /* Breakdown text */
+    /* Breakdown text — contextual based on privacy state */
     char breakdown[256] = "";
-    if (transparent > 0 && shielded > 0) {
+    if (pct >= 95 && shielded > 0 && transparent > 0) {
+        /* Nearly all private — don't clutter with dust amounts */
+        snprintf(breakdown, sizeof(breakdown),
+            "<span style='color:#34d399'>&#x1F512; Funds shielded</span>");
+    } else if (transparent > 0 && shielded > 0) {
         char t_fmt[32], s_fmt[32];
-        zcl_format_zcl(t_fmt, sizeof(t_fmt), transparent);
-        zcl_format_zcl(s_fmt, sizeof(s_fmt), shielded);
+        zcl_format_zcl_short(t_fmt, sizeof(t_fmt), transparent);
+        zcl_format_zcl_short(s_fmt, sizeof(s_fmt), shielded);
         snprintf(breakdown, sizeof(breakdown),
             "%s public + %s private", t_fmt, s_fmt);
     } else if (shielded > 0) {
@@ -105,7 +109,7 @@ size_t serve_dashboard(uint8_t *r, size_t max) {
             "<span style='color:#34d399'>&#x1F512; All funds private</span>");
     } else if (transparent > 0) {
         char t_fmt[32];
-        zcl_format_zcl(t_fmt, sizeof(t_fmt), transparent);
+        zcl_format_zcl_short(t_fmt, sizeof(t_fmt), transparent);
         snprintf(breakdown, sizeof(breakdown), "%s public", t_fmt);
     }
     /* Append sync note if still syncing */
@@ -256,10 +260,10 @@ size_t serve_dashboard(uint8_t *r, size_t max) {
                 wv_txid_lower(txid, lower_tx, sizeof(lower_tx));
                 int confs = (tip > 0 && height > 0) ? (tip - height + 1) : 0;
                 char amt[32];
-                zcl_format_zcl(amt, sizeof(amt), display_amount);
+                zcl_format_zcl_short(amt, sizeof(amt), display_amount);
                 char conf_str[32] = "";
-                if (confs > 0)
-                    snprintf(conf_str, sizeof(conf_str), "%d confs", confs);
+                /* Show time, not conf count — users don't need "3256 confs" */
+                (void)confs;
                 char link[80];
                 snprintf(link, sizeof(link), "/wallet/tx/%s", lower_tx);
 
@@ -297,10 +301,10 @@ size_t serve_dashboard(uint8_t *r, size_t max) {
                         int nc = (tip > 0 && nh > 0) ? (tip - nh + 1) : 0;
                         if (nc < 0) nc = 0;
                         char amt[32];
-                        zcl_format_zcl(amt, sizeof(amt), val);
-                        char nc_str[32];
-                        if (nc == 0) snprintf(nc_str, sizeof(nc_str), "Pending");
-                        else snprintf(nc_str, sizeof(nc_str), "%d confs", nc);
+                        zcl_format_zcl_short(amt, sizeof(amt), val);
+                        /* Don't show confs on dashboard — just time context */
+                        char nc_str[32] = "";
+                        (void)nc;
 
                         struct template_var tv[] = {
                             { "link",            "/wallet/coins" },
@@ -365,6 +369,11 @@ size_t serve_dashboard(uint8_t *r, size_t max) {
     /* Render full dashboard via TMPL_DASHBOARD */
     size_t off = wv_emit_header(r, max, "ZClassic23 Wallet", "/wallet");
 
+    /* Only show "Details" link when there's something to shield */
+    const char *details_link = (transparent > (int64_t)(FEE_ZCL * ZATOSHI_PER_ZCL + 1))
+        ? "<a href='/wallet/shield' style='color:#888;font-size:14px'>Shield</a>"
+        : "";
+
     struct template_var vars[] = {
         { "sync_class",     sync_class },
         { "sync_label",     sync_label },
@@ -372,13 +381,14 @@ size_t serve_dashboard(uint8_t *r, size_t max) {
         { "pct_color",      pct_color },
         { "pct",            pct_str },
         { "breakdown",      breakdown },
+        { "details_link",   details_link },
         { "privacy_card",   privacy_buf },
         { "token_cards",    token_buf },
         { "recent_txs",     tx_buf },
         { "backup_warning", backup_buf },
         { "node_strip",     node_strip },
     };
-    off += template_render(TMPL_DASHBOARD, vars, 11,
+    off += template_render(TMPL_DASHBOARD, vars, 12,
         (char *)r + off, max - off);
 
     /* Dashboard live-update JS */

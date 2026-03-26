@@ -32,6 +32,21 @@ void zcl_format_zcl(char *buf, size_t max, int64_t zatoshi)
     }
 }
 
+void zcl_format_zcl_short(char *buf, size_t max, int64_t zatoshi)
+{
+    char full[32];
+    zcl_format_zcl(full, sizeof(full), zatoshi);
+    char *dot = strchr(full, '.');
+    if (dot && strlen(dot) > 5) {
+        /* Trim to the last significant digit, minimum 4 places */
+        int last_nonzero = 4;
+        for (int i = 8; i > 4; i--)
+            if (dot[i] != '0') { last_nonzero = i; break; }
+        dot[last_nonzero + 1] = '\0';
+    }
+    snprintf(buf, max, "%s", full);
+}
+
 const char *zcl_node_db_path(char *buf, size_t bufmax, const char *datadir)
 {
     if (!buf || bufmax == 0 || !datadir) return "";

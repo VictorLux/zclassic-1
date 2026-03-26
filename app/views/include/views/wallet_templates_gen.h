@@ -283,24 +283,6 @@ static const char TMPL_EXPLORER_TX_ROW[] =
     "</td>\n<td>{{{type_tags}}}</td>\n<td>{{{inputs}}}</td><td>{{{outputs}}}</td>\n<td class='amount'>"
     "{{{value}}}</td></tr>\n";
 
-static const char TMPL_DASHBOARD[] =
-    "<div style='text-align:center;padding:24px 0 16px'>\n<span id='sync' class='pill {{{sync_class}}}"
-    " sync-badge'>{{{sync_label}}}</span>\n<div id='bal' class='balance' style='margin-top:8px'>\n{{{b"
-    "alance}}} ZCL</div>\n<div style='font-size:12px;color:#555;margin-top:2px'>\nYour node, your keys"
-    ", your money</div>\n\n<div id='privacy-meter' style='margin:8px auto;max-width:280px'>\n<div styl"
-    "e='display:flex;justify-content:space-between;\nfont-size:14px;margin-bottom:4px'>\n<span style='"
-    "color:{{{pct_color}}}'>{{{pct}}}% private</span>\n<a href='/wallet/shield' style='color:#888;font"
-    "-size:14px'>\nDetails</a></div>\n<div style='height:6px;background:#1e1e1e;border-radius:3px;\nov"
-    "erflow:hidden'>\n<div id='lock' style='height:100%;width:{{{pct}}}%;background:{{{pct_color}}};\n"
-    "border-radius:3px;transition:width .5s'></div>\n</div></div>\n\n<div id='bal-details' style='text"
-    "-align:center;margin:4px 0'>\n<span id='breakdown' class='balance-sub' style='font-size:14px'>\n{"
-    "{{breakdown}}}</span></div>\n</div>\n\n<div class='actions'>\n<a href='/wallet/send' class='btn-s"
-    "econdary'\n style='display:flex;align-items:center;justify-content:center'>Send</a>\n<a href='/wa"
-    "llet/receive' class='btn-primary'\n style='display:flex;align-items:center;justify-content:center"
-    "'>Receive</a>\n</div>\n\n{{{privacy_card}}}\n\n{{{token_cards}}}\n\n<div class='section-header'>\n"
-    "<span>Recent</span>\n<a href='/wallet/history'>View all</a></div>\n{{{recent_txs}}}\n\n{{{backup_"
-    "warning}}}\n\n{{{node_strip}}}\n";
-
 static const char TMPL_NODE_STATUS_STRIP[] =
     "<a href='/wallet/node' style='text-decoration:none;color:inherit'>\n<div style='display:flex;alig"
     "n-items:center;gap:10px;\nbackground:#111;border-radius:8px;padding:10px 14px;margin:4px 0;\nfont"
@@ -416,6 +398,27 @@ static const char TMPL_BACKUP_WARNING[] =
     "size:14px'>\nPrivate keys are only on this device. Export to a safe location.</div>\n</div></div>"
     "\n<div style='margin-top:10px;font-size:13px;color:#555'>\nTerminal: <code>zcl-rpc dumpprivkey {{"
     "address}}</code></div>\n</div>\n";
+
+static const char TMPL_DASHBOARD[] =
+    "<div style='text-align:center;padding:24px 0 16px'>\n<span id='sync' class='pill {{{sync_class}}}"
+    " sync-badge'>{{{sync_label}}}</span>\n<div id='bal' class='balance' style='margin-top:8px'>\n{{{b"
+    "alance}}} ZCL</div>\n<div style='font-size:12px;color:#555;margin-top:2px'>\nYour node, your keys"
+    ", your money</div>\n\n<div id='privacy-meter' style='margin:8px auto;max-width:280px'>\n<div styl"
+    "e='display:flex;justify-content:space-between;\nfont-size:14px;margin-bottom:4px'>\n<span style='"
+    "color:{{{pct_color}}}'>{{{pct}}}% private</span>\n{{{details_link}}}</div>\n<div style='height:6p"
+    "x;background:#1e1e1e;border-radius:3px;\noverflow:hidden'>\n<div id='lock' style='height:100%;wid"
+    "th:{{{pct}}}%;background:{{{pct_color}}};\nborder-radius:3px;transition:width .5s'></div>\n</div>"
+    "</div>\n\n<div id='bal-details' style='text-align:center;margin:4px 0'>\n<span id='breakdown' cla"
+    "ss='balance-sub' style='font-size:14px'>\n{{{breakdown}}}</span></div>\n</div>\n\n<div class='act"
+    "ions'>\n<a href='/wallet/send' class='btn-secondary'\n style='display:flex;align-items:center;jus"
+    "tify-content:center'>Send</a>\n<a href='/wallet/receive' class='btn-primary'\n style='display:fle"
+    "x;align-items:center;justify-content:center'>Receive</a>\n</div>\n\n{{{privacy_card}}}\n\n{{{toke"
+    "n_cards}}}\n\n<div class='section-header'>\n<span>Recent</span>\n<a href='/wallet/history'>View a"
+    "ll</a></div>\n{{{recent_txs}}}\n\n<div style='display:grid;grid-template-columns:1fr 1fr;gap:8px;"
+    "margin:12px 0'>\n<a href='/explorer' class='btn-secondary'\n style='text-align:center;padding:10p"
+    "x;font-size:13px'>Block Explorer</a>\n<a href='/wallet/coins' class='btn-secondary'\n style='text"
+    "-align:center;padding:10px;font-size:13px'>Coin Audit</a>\n</div>\n\n{{{backup_warning}}}\n\n{{{n"
+    "ode_strip}}}\n";
 
 static const char CSS_WALLET_0[] =
     "*{box-sizing:border-box;margin:0;padding:0}body{font-family:Inter,-apple-system,'Segoe UI',system"
@@ -606,7 +609,6 @@ static const struct template_partial _tmpl_partials[] = {
     { "coins-page", TMPL_COINS_PAGE },
     { "send-review", TMPL_SEND_REVIEW },
     { "explorer-tx-row", TMPL_EXPLORER_TX_ROW },
-    { "dashboard", TMPL_DASHBOARD },
     { "node-status-strip", TMPL_NODE_STATUS_STRIP },
     { "privacy-nudge", TMPL_PRIVACY_NUDGE },
     { "shield-done", TMPL_SHIELD_DONE },
@@ -619,6 +621,7 @@ static const struct template_partial _tmpl_partials[] = {
     { "history-shield", TMPL_HISTORY_SHIELD },
     { "shield-amount-form", TMPL_SHIELD_AMOUNT_FORM },
     { "backup-warning", TMPL_BACKUP_WARNING },
+    { "dashboard", TMPL_DASHBOARD },
 };
 
 #define TMPL_PARTIAL_COUNT 49
