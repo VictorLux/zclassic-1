@@ -1040,6 +1040,13 @@ bool activate_best_chain(struct validation_state *state,
 
             if (!connect_tip(state, ms, coins_tip, connect_path[i],
                             use_block, params, datadir)) {
+                fprintf(stderr,
+                    "activate_best_chain: connect_tip FAILED at height %d "
+                    "reason=%s invalid=%d\n",
+                    connect_path[i]->nHeight,
+                    state->reject_reason[0] ? state->reject_reason
+                                            : "unknown",
+                    validation_state_is_invalid(state));
                 if (validation_state_is_invalid(state)) {
                     /* Block failed validation — mark it and retry.
                      * The do-while loop will call find_most_work_chain
