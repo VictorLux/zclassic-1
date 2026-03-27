@@ -7,6 +7,7 @@
 
 #include "config/boot.h"
 #include "rpc/client.h"
+#include <sqlite3.h>
 #include "json/json.h"
 #include "views/wallet_gui.h"
 #include "models/database.h"
@@ -255,6 +256,250 @@ int main(int argc, char **argv)
     /* CLI mode: zclassic23 getblockcount */
     if (argc > 1 && is_cli_mode(argc, argv))
         return cli_main(argc, argv);
+
+    /* UTXO repair mode — fetch missing UTXOs from zclassicd, no full node.
+     * Usage: zclassic23 --repair [num_blocks] [port] [creds]
+     * Scans blocks ahead of current tip via zclassicd RPC, inserts missing
+     * UTXOs into SQLite with correct byte order. Restart node after. */
+    if (argc >= 2 && strcmp(argv[1], "--repair") == 0) {
+        int num_blocks = argc > 2 ? atoi(argv[2]) : 5000;
+        int port = argc > 3 ? atoi(argv[3]) : 8232;
+        const char *creds = argc > 4 ? argv[4] : "zcluser:zclpass";
+        const char *home = getenv("HOME");
+        char db_path[512];
+        snprintf(db_path, sizeof(db_path), "%s/.zclassic-c23/node.db",
+                 home ? home : ".");
+
+        printf("=== UTXO Repair ===\n");
+        printf("DB:     %s\n", db_path);
+        printf("Source: zclassicd on port %d\n", port);
+        printf("Scan:   %d blocks ahead\n\n", num_blocks);
+
+        sqlite3 *db = NULL;
+        if (sqlite3_open(db_path, &db) != SQLITE_OK) {
+            fprintf(stderr, "Cannot open %s\n", db_path);
+            return 1;
+        }
+
+        /* Get current tip */
+        int tip = 0;
+        { sqlite3_stmt *s = NULL;
+          sqlite3_prepare_v2(db, "SELECT MAX(height) FROM blocks", -1, &s, NULL);
+          if (s && sqlite3_step(s) == SQLITE_ROW) tip = sqlite3_column_int(s, 0);
+          if (s) sqlite3_finalize(s);
+        }
+        printf("Current tip: %d\n", tip);
+
+        /* Get zclassicd tip */
+        char rbuf[4096];
+        int ztip = 0;
+        if (rpc_call_local(port, creds, "getblockcount", "[]",
+                            rbuf, sizeof(rbuf)) > 0) {
+            const char *body = rpc_http_body(rbuf);
+            if (body) {
+                const char *rp = strstr(body, "\"result\":");
+                if (rp) ztip = (int)strtol(rp + 9, NULL, 10);
+            }
+        }
+        if (ztip == 0) {
+            fprintf(stderr, "Cannot reach zclassicd on port %d\n", port);
+            sqlite3_close(db);
+            return 1;
+        }
+        int scan_end = tip + num_blocks;
+        if (scan_end > ztip) scan_end = ztip;
+        printf("zclassicd tip: %d\nScan range: %d → %d\n\n", ztip, tip+1, scan_end);
+
+        sqlite3_exec(db, "BEGIN", NULL, NULL, NULL);
+        sqlite3_stmt *ins = NULL;
+        sqlite3_prepare_v2(db,
+            "INSERT OR IGNORE INTO utxos"
+            "(txid,vout,value,script,script_type,address_hash,height,is_coinbase)"
+            " VALUES(?,?,?,?,?,?,?,0)", -1, &ins, NULL);
+
+        int fixed = 0, checked = 0;
+
+        for (int h = tip + 1; h <= scan_end; h++) {
+            /* Get block hash */
+            char params[64];
+            snprintf(params, sizeof(params), "[%d]", h);
+            char hbuf[256];
+            if (rpc_call_local(port, creds, "getblockhash", params,
+                                hbuf, sizeof(hbuf)) <= 0) break;
+            const char *hbody = rpc_http_body(hbuf);
+            if (!hbody) break;
+            const char *hp = strstr(hbody, "\"result\":\"");
+            if (!hp) break;
+            char bhash[65] = "";
+            { const char *s = hp + 10; int i = 0;
+              while (*s && *s != '"' && i < 64) bhash[i++] = *s++;
+              bhash[i] = '\0'; }
+
+            /* Get block with full tx data */
+            char bparams[128];
+            snprintf(bparams, sizeof(bparams), "[\"%s\",2]", bhash);
+            char *bbuf = malloc(2*1024*1024); /* 2MB for block data */
+            if (!bbuf) break;
+            int brc = rpc_call_local(port, creds, "getblock", bparams,
+                                      bbuf, 2*1024*1024);
+            if (brc <= 0) { free(bbuf); break; }
+            const char *bbody = rpc_http_body(bbuf);
+            if (!bbody) { free(bbuf); break; }
+
+            /* Parse inputs: find each "vin":[{"txid":"...","vout":N}] */
+            const char *p = bbody;
+            while ((p = strstr(p, "\"vin\"")) != NULL) {
+                p += 5;
+                /* Walk through vin array entries */
+                while ((p = strstr(p, "\"txid\"")) != NULL) {
+                    p += 6;
+                    const char *q = strchr(p, '"');
+                    if (!q) break;
+                    q++;
+                    const char *end = strchr(q, '"');
+                    if (!end || end - q != 64) { p = end ? end : q; continue; }
+
+                    char txid_hex[65];
+                    memcpy(txid_hex, q, 64);
+                    txid_hex[64] = '\0';
+
+                    /* Get vout */
+                    const char *vp = strstr(end, "\"vout\"");
+                    if (!vp) break;
+                    int vout = (int)strtol(vp + 7, NULL, 10);
+                    checked++;
+
+                    /* Reverse txid for internal byte order */
+                    uint8_t txid_bin[32];
+                    for (int i = 0; i < 32; i++) {
+                        char hex2[3] = { txid_hex[62-2*i], txid_hex[63-2*i], 0 };
+                        txid_bin[i] = (uint8_t)strtol(hex2, NULL, 16);
+                    }
+
+                    /* Check if exists */
+                    sqlite3_stmt *chk = NULL;
+                    sqlite3_prepare_v2(db,
+                        "SELECT 1 FROM utxos WHERE txid=? AND vout=?",
+                        -1, &chk, NULL);
+                    sqlite3_bind_blob(chk, 1, txid_bin, 32, SQLITE_STATIC);
+                    sqlite3_bind_int(chk, 2, vout);
+                    bool exists = (sqlite3_step(chk) == SQLITE_ROW);
+                    sqlite3_finalize(chk);
+
+                    if (!exists) {
+                        /* Fetch from zclassicd */
+                        char txp[128];
+                        snprintf(txp, sizeof(txp), "[\"%s\",1]", txid_hex);
+                        char txbuf[65536];
+                        if (rpc_call_local(port, creds, "getrawtransaction", txp,
+                                            txbuf, sizeof(txbuf)) > 0) {
+                            const char *txbody = rpc_http_body(txbuf);
+                            if (txbody) {
+                                /* Find the output at vout index */
+                                /* Find "vout":[...{...value...scriptPubKey...}...] */
+                                const char *vouts = strstr(txbody, "\"vout\"");
+                                if (vouts) {
+                                    /* Skip to the vout-th entry */
+                                    const char *entry = vouts;
+                                    for (int vi = 0; vi <= vout && entry; vi++)
+                                        entry = strstr(entry + 1, "\"value\"");
+                                    if (entry) {
+                                        double val = strtod(entry + 8, NULL);
+                                        int64_t val_sat = (int64_t)(val * 1e8 + 0.5);
+
+                                        /* Find scriptPubKey hex */
+                                        const char *sp = strstr(entry, "\"hex\":\"");
+                                        uint8_t script[520] = {0};
+                                        int script_len = 0;
+                                        if (sp) {
+                                            sp += 7;
+                                            const char *se = strchr(sp, '"');
+                                            if (se) {
+                                                script_len = (int)(se - sp) / 2;
+                                                if (script_len > 520) script_len = 520;
+                                                for (int si = 0; si < script_len; si++) {
+                                                    char h2[3] = { sp[si*2], sp[si*2+1], 0 };
+                                                    script[si] = (uint8_t)strtol(h2, NULL, 16);
+                                                }
+                                            }
+                                        }
+
+                                        int stype = 0;
+                                        uint8_t addr_hash[20] = {0};
+                                        if (script_len == 25 && script[0] == 0x76) {
+                                            memcpy(addr_hash, script + 3, 20);
+                                        } else if (script_len == 23 && script[0] == 0xa9) {
+                                            memcpy(addr_hash, script + 2, 20);
+                                            stype = 1;
+                                        }
+
+                                        /* Get block height */
+                                        int txht = 0;
+                                        const char *bhp = strstr(txbody, "\"blockhash\"");
+                                        if (bhp) {
+                                            /* Get height from block header */
+                                            const char *bhs = strchr(bhp + 11, '"');
+                                            if (bhs) {
+                                                bhs++;
+                                                char bhhex[65] = "";
+                                                const char *bhe = strchr(bhs, '"');
+                                                if (bhe && bhe - bhs == 64) {
+                                                    memcpy(bhhex, bhs, 64);
+                                                    char bhp2[128];
+                                                    snprintf(bhp2, sizeof(bhp2), "[\"%s\"]", bhhex);
+                                                    char bhbuf[4096];
+                                                    if (rpc_call_local(port, creds, "getblockheader", bhp2,
+                                                                        bhbuf, sizeof(bhbuf)) > 0) {
+                                                        const char *bhb = rpc_http_body(bhbuf);
+                                                        if (bhb) {
+                                                            const char *hhp = strstr(bhb, "\"height\":");
+                                                            if (hhp) txht = (int)strtol(hhp + 9, NULL, 10);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        sqlite3_reset(ins);
+                                        sqlite3_bind_blob(ins, 1, txid_bin, 32, SQLITE_STATIC);
+                                        sqlite3_bind_int(ins, 2, vout);
+                                        sqlite3_bind_int64(ins, 3, val_sat);
+                                        sqlite3_bind_blob(ins, 4, script, script_len, SQLITE_STATIC);
+                                        sqlite3_bind_int(ins, 5, stype);
+                                        sqlite3_bind_blob(ins, 6, addr_hash, 20, SQLITE_STATIC);
+                                        sqlite3_bind_int(ins, 7, txht);
+                                        sqlite3_step(ins);
+                                        fixed++;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    p = end + 1;
+                }
+                break; /* only process first vin array per tx */
+            }
+
+            if (h % 200 == 0) {
+                sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
+                sqlite3_exec(db, "BEGIN", NULL, NULL, NULL);
+                printf("  h=%d  checked=%d  fixed=%d\n", h, checked, fixed);
+                fflush(stdout);
+            }
+
+            free(bbuf);
+        }
+
+        if (ins) sqlite3_finalize(ins);
+        sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
+        sqlite3_exec(db, "PRAGMA wal_checkpoint(TRUNCATE)", NULL, NULL, NULL);
+        sqlite3_close(db);
+
+        printf("\nDone: checked %d inputs, fixed %d UTXOs\n", checked, fixed);
+        printf("Restart the node to apply.\n");
+        return 0;
+    }
 
     /* Direct chainstate import mode — no full node startup needed.
      * Usage: zclassic23 --importchainstate /path/to/chainstate [dbpath] */
