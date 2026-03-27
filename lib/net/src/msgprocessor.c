@@ -1332,6 +1332,18 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                     event_emitf(EV_BLOCK_REQUESTED, (uint32_t)node->id,
                                 "queued=%zu total_needed=%zu",
                                 queued, count_needed);
+
+                if (count_needed == 0) {
+                    /* All blocks already have data — trigger chain activation.
+                     * This happens after restart: blocks on disk from before,
+                     * headers re-received, but activate_best_chain only runs
+                     * on block receipt. Without this, the node stalls with
+                     * headers ahead but no block requests (all HAVE_DATA). */
+                    struct validation_state vs;
+                    validation_state_init(&vs);
+                    activate_best_chain(&vs, mp->main_state, mp->coins_tip,
+                                        mp->params, NULL, mp->datadir);
+                }
             }
             free(hashes);
             free(heights);
