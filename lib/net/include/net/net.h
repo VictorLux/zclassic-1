@@ -198,12 +198,15 @@ struct p2p_node {
     int blocks_received;      /* count of valid blocks from this peer */
 
     /* zclassic23 fast sync state (tracked via enum peer_state) */
-    uint64_t zsync_offset;    /* total UTXOs sent (for progress logging) */
-    uint64_t zsync_total;     /* total UTXOs to send */
+    uint64_t zsync_offset;    /* total UTXOs received/sent (progress) */
+    uint64_t zsync_total;     /* total UTXOs expected */
     uint64_t zsync_sent;      /* chunks sent so far */
     uint8_t zsync_cursor_txid[32]; /* keyset cursor: last txid sent */
     int32_t zsync_cursor_vout;     /* keyset cursor: last vout sent */
     bool zsync_cursor_valid;       /* true after first batch */
+    uint8_t zsync_offered_root[32]; /* SHA3 root from offer (verify on end) */
+    int32_t zsync_offered_height;   /* height of offered snapshot */
+    uint8_t zsync_offered_block[32]; /* block hash of offered snapshot */
 
     /* Swarm parallel chunk sync state (UTXO) */
     bool swarm_manifest_sent;     /* true if we sent our manifest to this peer */

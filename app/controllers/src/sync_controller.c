@@ -221,6 +221,15 @@ bool node_db_sync_connect_block(struct node_db *ndb,
     db_blk.data_pos = (int)pindex->nDataPos;
     db_blk.num_tx = (int)blk->num_vtx;
 
+    /* Compute per-block shielded value from transactions */
+    for (size_t ti = 0; ti < blk->num_vtx; ti++) {
+        const struct transaction *tx = &blk->vtx[ti];
+        for (size_t ji = 0; ji < tx->num_joinsplit; ji++)
+            db_blk.sprout_value += tx->v_joinsplit[ji].vpub_old
+                                  - tx->v_joinsplit[ji].vpub_new;
+        db_blk.sapling_value += tx->value_balance;
+    }
+
     if (!db_block_save(ndb, &db_blk)) {
         /* Don't rollback — continue with tx/UTXO indexing.
          * Block header save can fail due to SQLite lock contention

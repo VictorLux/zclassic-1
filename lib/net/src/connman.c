@@ -592,9 +592,14 @@ bool connman_start(struct connman *cm)
     return true;
 }
 
-void connman_stop(struct connman *cm)
+void connman_signal_stop(struct connman *cm)
 {
+    (void)cm;
     g_stop = true;
+}
+
+void connman_join(struct connman *cm)
+{
     if (cm->started) {
         pthread_join(g_thread_dns_seed, NULL);
         pthread_join(g_thread_socket, NULL);
@@ -603,6 +608,12 @@ void connman_stop(struct connman *cm)
         cm->started = false;
     }
     printf("P2P threads stopped.\n");
+}
+
+void connman_stop(struct connman *cm)
+{
+    connman_signal_stop(cm);
+    connman_join(cm);
 }
 
 void connman_free(struct connman *cm)

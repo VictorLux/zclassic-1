@@ -1288,15 +1288,33 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                 sync_set_state(SYNC_BLOCKS_DOWNLOAD,
                                "headers ahead, requesting blocks");
 
-            /* Only queue blocks that chain from our tip. Fork blocks
-             * from orphan chains cause connect_block failures. */
+            /* Verify headers chain from our tip. Fork blocks cause
+             * connect_block failures so we only queue main chain. */
             bool chains_from_tip = false;
             {
                 struct block_index *verify = bi;
-                while (verify && verify->nHeight > our_height)
+                int steps = 0;
+                while (verify && verify->nHeight > our_height) {
                     verify = verify->pprev;
-                if (verify == tip)
+                    steps++;
+                }
+                if (verify == tip) {
                     chains_from_tip = true;
+                } else if (verify && tip && verify->nHeight == tip->nHeight &&
+                           verify->phashBlock && tip->phashBlock &&
+                           uint256_eq(verify->phashBlock, tip->phashBlock)) {
+                    /* Same block hash but different pointer — can happen
+                     * when block_index loaded from flat file (arena alloc)
+                     * vs header processing (individual alloc). */
+                    chains_from_tip = true;
+                } else {
+                    /* Log why we're not requesting blocks */
+                    printf("headers: skip block queue — chain doesn't reach "
+                           "tip h=%d (walked %d steps, landed h=%d%s)\n",
+                           our_height, steps,
+                           verify ? verify->nHeight : -1,
+                           verify ? "" : " NULL");
+                }
             }
 
             size_t max_collect = 512;
@@ -1555,9 +1573,12 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                                      "snapshot offer out of range");
                 } else if (h > our_h + 100 &&
                            node->state != PEER_SNAPSHOT_RECEIVING) {
-                    /* Accept — request the snapshot data */
+                    /* Accept — store offered root for verification at end */
                     printf("Peer %s: accepting snapshot offer (h=%d, %llu UTXOs)\n",
                            node->addr_name, h, (unsigned long long)nu);
+                    memcpy(node->zsync_offered_root, ur, 32);
+                    memcpy(node->zsync_offered_block, bh, 32);
+                    node->zsync_offered_height = h;
                     node->zsync_offset = 0;
                     peer_set_state_checked((uint32_t)node->id, &node->state,
                                            PEER_SNAPSHOT_RECEIVING,
@@ -1761,13 +1782,83 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
             printf("Peer %s: snapshot transfer complete (%llu UTXOs)\n",
                    node->addr_name,
                    (unsigned long long)node->zsync_offset);
-            event_emitf(EV_SNAPSHOT_COMPLETE, (uint32_t)node->id,
-                        "utxos=%llu",
-                        (unsigned long long)node->zsync_offset);
-            peer_set_state_checked((uint32_t)node->id, &node->state,
-                                   PEER_ACTIVE, "snapshot complete");
-            sync_set_state(SYNC_HEADERS_DOWNLOAD,
-                           "snapshot done, sync remaining headers");
+
+            /* Verify SHA3 root of received UTXOs against offered root */
+            bool snapshot_valid = false;
+            {
+                char db_path[1024];
+                snprintf(db_path, sizeof(db_path), "%s/node.db", mp->datadir);
+                sqlite3 *vdb = NULL;
+                if (sqlite3_open_v2(db_path, &vdb,
+                                     SQLITE_OPEN_READWRITE, NULL) == SQLITE_OK) {
+                    uint8_t local_root[32];
+                    uint64_t local_count = 0;
+                    utxo_commitment_sha3_compute(vdb, local_root, &local_count);
+
+                    if (memcmp(local_root, node->zsync_offered_root, 32) == 0) {
+                        printf("SHA3 UTXO verification: PASSED (%llu UTXOs)\n",
+                               (unsigned long long)local_count);
+                        snapshot_valid = true;
+
+                        /* Set coins_best_block so the node knows UTXO state */
+                        sqlite3_stmt *set = NULL;
+                        sqlite3_prepare_v2(vdb,
+                            "INSERT OR REPLACE INTO node_state(key,value)"
+                            " VALUES('coins_best_block',?)", -1, &set, NULL);
+                        if (set) {
+                            sqlite3_bind_blob(set, 1,
+                                node->zsync_offered_block, 32, SQLITE_STATIC);
+                            sqlite3_step(set);
+                            sqlite3_finalize(set);
+                        }
+                    } else {
+                        char offered_hex[65], local_hex[65];
+                        for (int i = 0; i < 32; i++) {
+                            sprintf(offered_hex + i*2, "%02x",
+                                    node->zsync_offered_root[i]);
+                            sprintf(local_hex + i*2, "%02x",
+                                    local_root[i]);
+                        }
+                        printf("SHA3 UTXO verification: FAILED!\n"
+                               "  Offered: %s\n"
+                               "  Local:   %s\n"
+                               "  Count:   %llu received, %llu computed\n",
+                               offered_hex, local_hex,
+                               (unsigned long long)node->zsync_offset,
+                               (unsigned long long)local_count);
+                    }
+                    sqlite3_close(vdb);
+                }
+            }
+
+            if (snapshot_valid) {
+                event_emitf(EV_SNAPSHOT_COMPLETE, (uint32_t)node->id,
+                            "utxos=%llu sha3=PASSED",
+                            (unsigned long long)node->zsync_offset);
+                peer_set_state_checked((uint32_t)node->id, &node->state,
+                                       PEER_ACTIVE, "snapshot verified");
+                sync_set_state(SYNC_HEADERS_DOWNLOAD,
+                               "snapshot verified, sync remaining headers");
+            } else {
+                /* Wipe the bad UTXOs — can't trust them */
+                char db_path[1024];
+                snprintf(db_path, sizeof(db_path), "%s/node.db", mp->datadir);
+                sqlite3 *wdb = NULL;
+                if (sqlite3_open_v2(db_path, &wdb,
+                                     SQLITE_OPEN_READWRITE, NULL) == SQLITE_OK) {
+                    sqlite3_exec(wdb, "DELETE FROM utxos", NULL, NULL, NULL);
+                    sqlite3_exec(wdb,
+                        "DELETE FROM node_state WHERE key='coins_best_block'",
+                        NULL, NULL, NULL);
+                    sqlite3_close(wdb);
+                    printf("Wiped untrusted snapshot UTXOs\n");
+                }
+                event_emitf(EV_SNAPSHOT_COMPLETE, (uint32_t)node->id,
+                            "utxos=%llu sha3=FAILED",
+                            (unsigned long long)node->zsync_offset);
+                peer_misbehaving(mp->net_mgr, node, 100,
+                                 "snapshot SHA3 verification failed");
+            }
 
         /* ── Parallel chunk sync messages ────────────────────── */
 
@@ -2570,7 +2661,7 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
             int our_h = msg_get_height(mp);
             if (dl_queued == 0 && dl_inflight == 0 &&
                 node->starting_height > our_h + 10 &&
-                node->state >= PEER_ACTIVE) {
+                node->state >= PEER_HANDSHAKE_COMPLETE) {
                 static int64_t last_stall_log = 0;
                 if (now_dl - last_stall_log > 10) {
                     {
@@ -2614,7 +2705,9 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
                             if (!alt->phashBlock) continue;
                             struct block_index *w = alt;
                             while (w && w->nHeight > our_h) w = w->pprev;
-                            if (w == tip) {
+                            if (w == tip ||
+                                (w && tip && w->phashBlock && tip->phashBlock &&
+                                 uint256_eq(w->phashBlock, tip->phashBlock))) {
                                 alt_hashes[alt_count] = *alt->phashBlock;
                                 alt_heights[alt_count] = alt->nHeight;
                                 alt_count++;

@@ -27,6 +27,8 @@ struct connman {
 bool connman_init(struct connman *cm, const struct chain_params *params,
                    struct node_signals *signals);
 bool connman_start(struct connman *cm);
+void connman_signal_stop(struct connman *cm);
+void connman_join(struct connman *cm);
 void connman_stop(struct connman *cm);
 void connman_free(struct connman *cm);
 
