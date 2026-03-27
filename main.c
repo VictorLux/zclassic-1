@@ -493,6 +493,37 @@ int main(int argc, char **argv)
 
         if (ins) sqlite3_finalize(ins);
         sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
+
+        /* Reset coins_best_block to match our SQLite tip so the node
+         * doesn't roll back on restart. The --repair modified the utxos
+         * table directly, invalidating the cached coins state. */
+        if (fixed > 0) {
+            sqlite3_stmt *tip_s = NULL;
+            sqlite3_prepare_v2(db,
+                "SELECT hash FROM blocks WHERE height = "
+                "(SELECT MAX(height) FROM blocks)",
+                -1, &tip_s, NULL);
+            if (tip_s && sqlite3_step(tip_s) == SQLITE_ROW) {
+                const void *tip_hash = sqlite3_column_blob(tip_s, 0);
+                int tip_len = sqlite3_column_bytes(tip_s, 0);
+                if (tip_hash && tip_len >= 32) {
+                    sqlite3_stmt *up = NULL;
+                    sqlite3_prepare_v2(db,
+                        "INSERT OR REPLACE INTO node_state(key,value)"
+                        " VALUES('coins_best_block',?)",
+                        -1, &up, NULL);
+                    if (up) {
+                        sqlite3_bind_blob(up, 1, tip_hash, tip_len,
+                                          SQLITE_STATIC);
+                        sqlite3_step(up);
+                        sqlite3_finalize(up);
+                        printf("Reset coins_best_block to tip\n");
+                    }
+                }
+            }
+            if (tip_s) sqlite3_finalize(tip_s);
+        }
+
         sqlite3_exec(db, "PRAGMA wal_checkpoint(TRUNCATE)", NULL, NULL, NULL);
         sqlite3_close(db);
 
