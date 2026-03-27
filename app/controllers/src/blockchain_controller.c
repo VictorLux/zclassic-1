@@ -3694,22 +3694,25 @@ static bool rpc_repairutxos(const struct json_value *params, bool help,
     int tip_height = active_chain_height(&g_main_state->chain_active);
     int scan_end = tip_height + num_blocks;
 
-    /* Use zclassicd's chain height as scan limit (our active chain
-     * may be behind because of missing UTXOs — that's what we're fixing) */
+    /* Get zclassicd's chain height as our scan limit — our active chain
+     * may be behind because of missing UTXOs (that's what we're fixing) */
     {
-        char rpc_buf[256] = "";
-        char rpc_body[128];
-        snprintf(rpc_body, sizeof(rpc_body),
-            "{\"jsonrpc\":\"1.0\",\"method\":\"getblockcount\",\"params\":[]}");
-        if (repair_rpc_call(port, creds, rpc_body, rpc_buf, sizeof(rpc_buf)) > 0) {
-            const char *rp = strstr(rpc_buf, "\"result\":");
+        char resp[4096];
+        int rc = zclassicd_rpc_call(port, creds, "getblockcount", "[]",
+                                     resp, sizeof(resp));
+        if (rc > 0) {
+            const char *body = http_body(resp);
+            const char *rp = strstr(body, "\"result\"");
             if (rp) {
-                int remote_tip = (int)strtol(rp + 9, NULL, 10);
+                rp += 8;
+                while (*rp == ' ' || *rp == ':') rp++;
+                int remote_tip = (int)strtol(rp, NULL, 10);
                 if (remote_tip > 0 && scan_end > remote_tip)
                     scan_end = remote_tip;
-                if (scan_end < tip_height + 1)
-                    scan_end = tip_height + num_blocks;
             }
+        } else {
+            json_set_str(result, "Cannot connect to zclassicd — is it running?");
+            return false;
         }
     }
 
@@ -3724,61 +3727,139 @@ static bool rpc_repairutxos(const struct json_value *params, bool help,
     int repair_failed = 0;
 
     /* Flush coins cache so LevelDB is current */
-    coins_view_cache_flush(g_coins_tip);
+    if (g_coins_tip)
+        coins_view_cache_flush(g_coins_tip);
 
     /* Begin SQLite transaction for batch inserts */
     sqlite3_exec(g_node_db_bc->db, "BEGIN", NULL, NULL, NULL);
 
-    for (int h = tip_height + 1; h <= scan_end; h++) {
-        struct block_index *pindex = active_chain_at(
-            &g_main_state->chain_active, h);
-        if (!pindex) break;
+    /* Allocate a large buffer for getblock responses (verbose=2 can be big) */
+    size_t blk_buf_size = 4 * 1024 * 1024;
+    char *blk_buf = malloc(blk_buf_size);
+    if (!blk_buf) {
+        json_set_str(result, "Out of memory");
+        return false;
+    }
 
-        struct block blk;
-        block_init(&blk);
-        if (!read_block_from_disk_index(&blk, pindex, g_datadir)) {
-            printf("repairutxos: cannot read block %d\n", h);
-            continue;
+    for (int h = tip_height + 1; h <= scan_end; h++) {
+        /* Step 1: getblockhash h */
+        char hash_params[64];
+        snprintf(hash_params, sizeof(hash_params), "[%d]", h);
+        char hash_resp[4096];
+        int rc = zclassicd_rpc_call(port, creds, "getblockhash", hash_params,
+                                     hash_resp, sizeof(hash_resp));
+        if (rc <= 0) {
+            printf("repairutxos: getblockhash(%d) failed\n", h);
+            break;
+        }
+        /* Extract block hash from response */
+        const char *hbody = http_body(hash_resp);
+        const char *hr = strstr(hbody, "\"result\"");
+        if (!hr) { printf("repairutxos: no result for getblockhash(%d)\n", h); break; }
+        hr += 8;
+        while (*hr == ' ' || *hr == ':') hr++;
+        if (*hr != '"') { printf("repairutxos: bad getblockhash(%d) result\n", h); break; }
+        hr++;
+        char block_hash[65];
+        size_t bhi = 0;
+        while (*hr && *hr != '"' && bhi < 64) block_hash[bhi++] = *hr++;
+        block_hash[bhi] = '\0';
+
+        /* Step 2: getblock hash 2 (verbose with decoded tx) */
+        char blk_params[256];
+        snprintf(blk_params, sizeof(blk_params), "[\"%s\", 2]", block_hash);
+        rc = zclassicd_rpc_call(port, creds, "getblock", blk_params,
+                                 blk_buf, blk_buf_size);
+        if (rc <= 0) {
+            printf("repairutxos: getblock(%d) failed\n", h);
+            break;
         }
 
-        for (size_t ti = 0; ti < blk.num_vtx; ti++) {
-            const struct transaction *tx = &blk.vtx[ti];
-            if (transaction_is_coinbase(tx)) continue;
+        const char *bbody = http_body(blk_buf);
 
-            for (size_t vi = 0; vi < tx->num_vin; vi++) {
-                const struct outpoint *prevout = &tx->vin[vi].prevout;
-                if (prevout->n == 0xFFFFFFFF) continue;
+        /* Step 3: Parse transactions from the block JSON.
+         * We scan for "vin" arrays containing "txid" + "vout" fields.
+         * Format: "vin": [{"txid":"hex","vout":N,...}, ...] */
+        const char *tx_start = bbody;
+        while ((tx_start = strstr(tx_start, "\"vin\"")) != NULL) {
+            /* Find the vin array opening bracket */
+            const char *arr = strchr(tx_start, '[');
+            if (!arr) break;
+            tx_start = arr + 1;
+
+            /* Parse each vin entry */
+            const char *vp = tx_start;
+            while (*vp) {
+                /* Find next "txid" within this vin array */
+                const char *tid = strstr(vp, "\"txid\"");
+                if (!tid) break;
+                /* Make sure we haven't left the vin array */
+                const char *arr_end = strchr(vp, ']');
+                if (arr_end && tid > arr_end) break;
+
+                /* Extract prevout txid */
+                tid += 6;
+                while (*tid == ' ' || *tid == ':') tid++;
+                if (*tid != '"') { vp = tid; continue; }
+                tid++;
+                char prev_txid_hex[65];
+                size_t ti2 = 0;
+                while (*tid && *tid != '"' && ti2 < 64) prev_txid_hex[ti2++] = *tid++;
+                prev_txid_hex[ti2] = '\0';
+
+                /* Extract prevout vout */
+                const char *vn = strstr(tid, "\"vout\"");
+                if (!vn || (arr_end && vn > arr_end)) { vp = tid; continue; }
+                vn += 6;
+                while (*vn == ' ' || *vn == ':') vn++;
+                uint32_t prev_vout = (uint32_t)strtoul(vn, NULL, 10);
+
+                /* Skip coinbase inputs (no txid or txid is all zeros) */
+                if (ti2 == 0 || strstr(vp, "\"coinbase\"") != NULL) {
+                    /* Check if coinbase is before the next txid */
+                    const char *cb = strstr(vp, "\"coinbase\"");
+                    if (cb && (!arr_end || cb < arr_end) && cb < tid) {
+                        vp = tid;
+                        continue;
+                    }
+                }
+
                 inputs_checked++;
 
-                /* Check if this UTXO exists in coins cache/LevelDB */
-                struct coins c;
-                coins_init(&c);
-                bool have = coins_view_cache_get_coins(
-                    g_coins_tip, &prevout->hash, &c);
-
-                bool output_exists = false;
-                if (have && prevout->n < c.num_vout &&
-                    !tx_out_is_null(&c.vout[prevout->n])) {
-                    output_exists = true;
+                /* Convert hex txid to internal byte order (reversed) */
+                uint8_t prev_txid_bytes[32];
+                for (int bi = 0; bi < 32; bi++) {
+                    char hx[3] = { prev_txid_hex[bi*2], prev_txid_hex[bi*2+1], '\0' };
+                    prev_txid_bytes[31 - bi] = (uint8_t)strtoul(hx, NULL, 16);
                 }
-                coins_free(&c);
+
+                /* Check if UTXO exists in coins cache */
+                bool output_exists = false;
+                if (g_coins_tip) {
+                    struct uint256 ptxid;
+                    memcpy(ptxid.data, prev_txid_bytes, 32);
+                    struct coins c;
+                    coins_init(&c);
+                    bool have = coins_view_cache_get_coins(g_coins_tip, &ptxid, &c);
+                    if (have && prev_vout < c.num_vout &&
+                        !tx_out_is_null(&c.vout[prev_vout]))
+                        output_exists = true;
+                    coins_free(&c);
+                }
 
                 /* Also check SQLite */
                 if (!output_exists) {
                     output_exists = db_utxo_exists(g_node_db_bc,
-                        prevout->hash.data, prevout->n);
+                        prev_txid_bytes, prev_vout);
                 }
 
-                if (output_exists) continue;
+                if (output_exists) { vp = tid; continue; }
 
-                /* Missing UTXO! Try to fetch from zclassicd */
+                /* Missing UTXO! Fetch from zclassicd */
                 missing_found++;
-                char txid_hex[65];
-                uint256_get_hex(&prevout->hash, txid_hex);
-
                 if (missing_found <= 20 || missing_found % 100 == 0)
                     printf("repairutxos: missing %s:%u (block %d)\n",
-                           txid_hex, prevout->n, h);
+                           prev_txid_hex, prev_vout, h);
 
                 int64_t value = 0;
                 uint8_t script[10001];
@@ -3786,15 +3867,15 @@ static bool rpc_repairutxos(const struct json_value *params, bool help,
                 int utxo_height = 0;
                 bool is_coinbase = false;
 
-                /* Try gettxout first (fast, works for unspent UTXOs) */
+                /* Try gettxout first (fast, unspent UTXOs) */
                 bool fetched = fetch_utxo_from_zclassicd(
-                    port, creds, txid_hex, prevout->n,
+                    port, creds, prev_txid_hex, prev_vout,
                     &value, script, &script_len, &utxo_height, &is_coinbase);
 
                 if (!fetched) {
-                    /* Try getrawtransaction (works if txindex=1) */
+                    /* Try getrawtransaction (needs txindex=1) */
                     fetched = fetch_utxo_via_rawtx(
-                        port, creds, txid_hex, prevout->n,
+                        port, creds, prev_txid_hex, prev_vout,
                         &value, script, &script_len, &utxo_height,
                         &is_coinbase);
                     if (fetched) repaired_rawtx++;
@@ -3805,39 +3886,42 @@ static bool rpc_repairutxos(const struct json_value *params, bool help,
                 if (!fetched) {
                     repair_failed++;
                     printf("repairutxos: FAILED to fetch %s:%u\n",
-                           txid_hex, prevout->n);
+                           prev_txid_hex, prev_vout);
+                    vp = tid;
                     continue;
                 }
 
                 /* Insert into coins cache (for connect_block) */
-                struct coins_cache_entry *entry =
-                    coins_view_cache_modify_new(g_coins_tip, &prevout->hash);
-                if (entry) {
-                    /* If coins already exist but the specific vout is
-                     * missing, grow the array */
-                    if (entry->coins.num_vout <= prevout->n) {
-                        size_t new_size = prevout->n + 1;
-                        struct tx_out *nv = realloc(entry->coins.vout,
-                            new_size * sizeof(struct tx_out));
-                        if (nv) {
-                            for (size_t k = entry->coins.num_vout;
-                                 k < new_size; k++)
-                                tx_out_set_null(&nv[k]);
-                            entry->coins.vout = nv;
-                            entry->coins.num_vout = new_size;
+                if (g_coins_tip) {
+                    struct uint256 ptxid;
+                    memcpy(ptxid.data, prev_txid_bytes, 32);
+                    struct coins_cache_entry *entry =
+                        coins_view_cache_modify_new(g_coins_tip, &ptxid);
+                    if (entry) {
+                        if (entry->coins.num_vout <= prev_vout) {
+                            size_t new_size = prev_vout + 1;
+                            struct tx_out *nv = realloc(entry->coins.vout,
+                                new_size * sizeof(struct tx_out));
+                            if (nv) {
+                                for (size_t k = entry->coins.num_vout;
+                                     k < new_size; k++)
+                                    tx_out_set_null(&nv[k]);
+                                entry->coins.vout = nv;
+                                entry->coins.num_vout = new_size;
+                            }
                         }
+                        if (prev_vout < entry->coins.num_vout) {
+                            entry->coins.vout[prev_vout].value = value;
+                            script_init(&entry->coins.vout[prev_vout].script_pub_key);
+                            script_set(&entry->coins.vout[prev_vout].script_pub_key,
+                                       script, script_len);
+                        }
+                        if (entry->coins.height == 0)
+                            entry->coins.height = utxo_height;
+                        if (is_coinbase)
+                            entry->coins.is_coinbase = true;
+                        entry->flags |= COINS_CACHE_DIRTY;
                     }
-                    if (prevout->n < entry->coins.num_vout) {
-                        entry->coins.vout[prevout->n].value = value;
-                        script_init(&entry->coins.vout[prevout->n].script_pub_key);
-                        script_set(&entry->coins.vout[prevout->n].script_pub_key,
-                                   script, script_len);
-                    }
-                    if (entry->coins.height == 0)
-                        entry->coins.height = utxo_height;
-                    if (is_coinbase)
-                        entry->coins.is_coinbase = true;
-                    entry->flags |= COINS_CACHE_DIRTY;
                 }
 
                 /* Insert into SQLite too */
@@ -3848,8 +3932,8 @@ static bool rpc_repairutxos(const struct json_value *params, bool help,
 
                 struct db_utxo u;
                 memset(&u, 0, sizeof(u));
-                memcpy(u.txid, prevout->hash.data, 32);
-                u.vout = prevout->n;
+                memcpy(u.txid, prev_txid_bytes, 32);
+                u.vout = prev_vout;
                 u.value = value;
                 u.script = malloc(script_len);
                 if (u.script) memcpy(u.script, script, script_len);
@@ -3861,24 +3945,27 @@ static bool rpc_repairutxos(const struct json_value *params, bool help,
                 u.is_coinbase = is_coinbase;
                 db_utxo_save(g_node_db_bc, &u);
                 free(u.script);
+
+                vp = tid;
             }
         }
 
-        block_free(&blk);
         blocks_scanned++;
 
-        if (blocks_scanned % 1000 == 0) {
-            printf("repairutxos: scanned %d blocks, %d missing, %d repaired\n",
-                   blocks_scanned, missing_found,
-                   repaired_gettxout + repaired_rawtx);
+        if (blocks_scanned % 100 == 0) {
+            printf("repairutxos: scanned %d/%d blocks, %d missing, %d repaired\n",
+                   blocks_scanned, scan_end - tip_height,
+                   missing_found, repaired_gettxout + repaired_rawtx);
             fflush(stdout);
         }
     }
 
+    free(blk_buf);
     sqlite3_exec(g_node_db_bc->db, "COMMIT", NULL, NULL, NULL);
 
     /* Flush coins cache to LevelDB */
-    coins_view_cache_flush(g_coins_tip);
+    if (g_coins_tip)
+        coins_view_cache_flush(g_coins_tip);
 
     int64_t elapsed = (int64_t)time(NULL) - t_start;
 
