@@ -116,8 +116,33 @@ Cookie file: `~/.zclassic-c23/.cookie` (regenerated each start)
 | `indexlegacy` | `path` | Index legacy zclassicd block files into SQLite |
 | `importchainstate` | `path` | Import UTXO set from LevelDB chainstate directory |
 | `reindexchainstate` | | Rebuild UTXO set from block data on disk |
+| `repairutxos` | `[port] [creds] [num_blocks]` | Scan ahead, find missing UTXOs, fetch from zclassicd |
 
-**`importchainstate`** — The primary tool for fixing UTXO gaps. Reads every UTXO from a LevelDB chainstate directory and replaces the SQLite UTXO set. Uses parallel pipeline (30 decoder threads on 32-core). Runs live via RPC — no restart needed.
+**`repairutxos`** — Proactive UTXO repair. Scans forward through upcoming blocks, identifies transaction inputs whose UTXOs are missing from the local database, and fetches them from a running zclassicd instance via RPC. Uses `gettxout` first (fast, for unspent UTXOs), falls back to `getrawtransaction` (requires txindex=1 on zclassicd). Inserts repaired UTXOs into both the coins cache (LevelDB) and SQLite. Runs live — no restart needed.
+
+```bash
+# Default: scan 10,000 blocks ahead, zclassicd on port 8232
+zcl-rpc repairutxos
+
+# Custom: port 8232, creds, scan 50,000 blocks
+zcl-rpc repairutxos 8232 '"zclrhett:zclrhettpass2026"' 50000
+```
+
+```json
+{
+  "blocks_scanned": 3304,
+  "inputs_checked": 8291,
+  "missing_found": 144,
+  "repaired_gettxout": 98,
+  "repaired_rawtx": 46,
+  "repair_failed": 0,
+  "scan_start": 3053455,
+  "scan_end": 3056758,
+  "elapsed_seconds": 12
+}
+```
+
+**`importchainstate`** — Bulk UTXO import. Reads every UTXO from a LevelDB chainstate directory and replaces the SQLite UTXO set. Uses parallel pipeline (30 decoder threads on 32-core). Runs live via RPC — no restart needed.
 
 ```bash
 # Import from your own chainstate (created during fastsync)
@@ -330,6 +355,9 @@ make zclassic23
 
 # Fix UTXO gaps (if stuck during sync)
 zcl-rpc importchainstate ~/.zclassic-c23/chainstate
+
+# Or repair from running zclassicd (no restart needed)
+zcl-rpc repairutxos 8232 "zcluser:zclpass" 50000
 
 # Verify data integrity
 zcl-rpc verifycheckpoint
