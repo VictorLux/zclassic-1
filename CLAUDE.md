@@ -70,20 +70,33 @@ Legacy (18): version, verack, ping, pong, addr, inv, getdata, getblocks,
 getheaders, block, tx, headers, getaddr, mempool, notfound, sendheaders,
 reject, feefilter
 
-ZCL23 extension (7): zsnapshot, zsnapreq, zsnapdata, zsnapend,
-  zchunkreq, zchunkdata, zmanifest
+ZCL23 extension — UTXO snapshot (5): zsnapshot, zsnapreq, zsnapdata, zsnapend, zmanifest
+ZCL23 extension — Block swarm (4): zblkmanfst, zblkreq, zblkdata, zblkbitmap
 
-### Fast Sync
+### Fast Sync (UTXO Snapshot)
 ```
 Requester (behind)          Server (ahead)
-   ← zsnapshot offer (height, UTXO count, root hash)
+   ← zsnapshot offer (height, SHA3 root, UTXO count)
    → zsnapreq (accept)
    ← zsnapdata (500 UTXOs per chunk)
    ← zsnapdata ...
    ← zsnapend
-   verify UTXO root → switch to delta block sync
+   compute SHA3 → verify against offer → switch to delta block sync
 ```
-Defense: 20-bit PoW per request, 5000 chunks/IP/hour rate limit.
+SHA3 verification after all chunks: `SHA3 UTXO verification: PASSED/FAILED`
+
+### Block Swarm (BitTorrent-Style)
+```
+Both peers exchange:         zblkmanfst (height range, SHA3 piece hashes, merkle root)
+Requester (behind):          zblkreq (piece index)
+Server (ahead):              zblkdata (128 block hashes per piece)
+Both peers:                  zblkbitmap (availability bitmap)
+```
+Each piece = 128 blocks, SHA3-256 verified. Rarest-first selection.
+4-deep pipeline per peer. Endgame mode for last 8 pieces.
+3000 blocks behind → 24 pieces → synced in seconds with multiple peers.
+
+Defense: 20-bit PoW per snapshot, 5000 chunks/IP/hour, misbehavior scoring.
 
 ### Clearnet vs Tor
 | Transport | Content | Auth |
@@ -272,6 +285,35 @@ tail -f ~/.zclassic-c23/node.log
 ```
 SSL certs at `{datadir}/ssl/fullchain.pem` + `privkey.pem`.
 CSS template at `{datadir}/explorer/style.css` (live-editable).
+
+## SHA3 Data Integrity
+
+### Hardcoded UTXO Checkpoint (height 3,056,758)
+```
+SHA3:    00e95dbd54a791a51433d68127f9975a3b1d6f8e9002b109647343ba0c83c3e0
+UTXOs:   1,354,771
+Supply:  10,364,138.33747381 ZCL
+Block:   000002979090fba9da6cdc140d050245c1b637480609510922662407855bd653
+```
+**Mandatory enforcement**: `connect_block` verifies at this height. Mismatch = fatal halt.
+Verified bit-for-bit against zclassicd reference implementation.
+
+### RPCs
+- `getutxocommitment` — SHA3-256 over canonical UTXO set (~1s)
+- `getdataintegrity` — SHA3-256 over ALL 12 consensus tables + master hash
+- `verifycheckpoint` — compare against hardcoded SHA3 checkpoint
+- `getmmrroot` — MMR root over block hashes (O(log n) proofs)
+
+### Merkle Mountain Range (MMR)
+SHA3-256 with domain separation: leaf=0x00, internal=0x01, root=0x02.
+Built from 3M blocks in 2s at startup. Updated per block. Persisted on shutdown.
+Enables O(log n) inclusion proofs between power nodes.
+
+### Fixing UTXO Gaps
+```bash
+zcl-rpc importchainstate ~/.zclassic-c23/chainstate  # reimport from LevelDB
+zcl-rpc verifycheckpoint                               # verify SHA3 matches
+```
 
 ## Quality
 Q = Clarity × Reliability × Performance × TestCoverage × UserImpact.
