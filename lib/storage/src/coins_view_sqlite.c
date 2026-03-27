@@ -237,6 +237,10 @@ bool coins_view_sqlite_batch_write(struct coins_view_sqlite *cvs,
      * inside any existing transaction and always works. */
     sqlite3_exec(cvs->db, "SAVEPOINT coins_flush", NULL, NULL, NULL);
 
+    int write_errors = 0;
+    size_t entries_written = 0;
+    size_t entries_deleted = 0;
+
     for (size_t i = 0; i < map_coins->num_buckets; i++) {
         struct coins_map_entry *e = &map_coins->buckets[i];
         if (!e->occupied || !(e->entry.flags & COINS_CACHE_DIRTY))
@@ -247,13 +251,25 @@ bool coins_view_sqlite_batch_write(struct coins_view_sqlite *cvs,
             sqlite3_reset(cvs->stmt_delete_tx);
             sqlite3_bind_blob(cvs->stmt_delete_tx, 1,
                               e->txid.data, 32, SQLITE_STATIC);
-            sqlite3_step(cvs->stmt_delete_tx);
+            int rc = sqlite3_step(cvs->stmt_delete_tx);
+            if (rc != SQLITE_DONE && rc != SQLITE_ROW) {
+                fprintf(stderr, "coins_flush: DELETE failed rc=%d: %s\n",
+                        rc, sqlite3_errmsg(cvs->db));
+                write_errors++;
+            } else {
+                entries_deleted++;
+            }
         } else {
             /* Delete stale rows first, then insert current outputs */
             sqlite3_reset(cvs->stmt_delete_tx);
             sqlite3_bind_blob(cvs->stmt_delete_tx, 1,
                               e->txid.data, 32, SQLITE_STATIC);
-            sqlite3_step(cvs->stmt_delete_tx);
+            int rc = sqlite3_step(cvs->stmt_delete_tx);
+            if (rc != SQLITE_DONE && rc != SQLITE_ROW) {
+                fprintf(stderr, "coins_flush: pre-DELETE failed rc=%d: %s\n",
+                        rc, sqlite3_errmsg(cvs->db));
+                write_errors++;
+            }
 
             const struct coins *cc = &e->entry.coins;
             for (size_t vi = 0; vi < cc->num_vout; vi++) {
@@ -283,9 +299,28 @@ bool coins_view_sqlite_batch_write(struct coins_view_sqlite *cvs,
                     sqlite3_bind_null(ins, 6);
                 sqlite3_bind_int(ins, 7, cc->height);
                 sqlite3_bind_int(ins, 8, cc->is_coinbase ? 1 : 0);
-                sqlite3_step(ins);
+                rc = sqlite3_step(ins);
+                if (rc != SQLITE_DONE && rc != SQLITE_ROW) {
+                    fprintf(stderr, "coins_flush: INSERT failed rc=%d "
+                            "h=%d vout=%zu: %s\n",
+                            rc, cc->height, vi, sqlite3_errmsg(cvs->db));
+                    write_errors++;
+                } else {
+                    entries_written++;
+                }
             }
         }
+    }
+
+    if (write_errors > 0) {
+        fprintf(stderr, "coins_flush: %d write errors! "
+                "Rolling back savepoint to prevent UTXO loss\n",
+                write_errors);
+        sqlite3_exec(cvs->db, "ROLLBACK TO SAVEPOINT coins_flush",
+                      NULL, NULL, NULL);
+        sqlite3_exec(cvs->db, "RELEASE SAVEPOINT coins_flush",
+                      NULL, NULL, NULL);
+        return false;
     }
 
     /* Update best block hash */
@@ -293,7 +328,16 @@ bool coins_view_sqlite_batch_write(struct coins_view_sqlite *cvs,
         sqlite3_reset(cvs->stmt_best_set);
         sqlite3_bind_blob(cvs->stmt_best_set, 1,
                           hash_block->data, 32, SQLITE_STATIC);
-        sqlite3_step(cvs->stmt_best_set);
+        int rc = sqlite3_step(cvs->stmt_best_set);
+        if (rc != SQLITE_DONE && rc != SQLITE_ROW) {
+            fprintf(stderr, "coins_flush: best_block UPDATE failed rc=%d: "
+                    "%s\n", rc, sqlite3_errmsg(cvs->db));
+            sqlite3_exec(cvs->db, "ROLLBACK TO SAVEPOINT coins_flush",
+                          NULL, NULL, NULL);
+            sqlite3_exec(cvs->db, "RELEASE SAVEPOINT coins_flush",
+                          NULL, NULL, NULL);
+            return false;
+        }
     }
 
     {

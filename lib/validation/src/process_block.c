@@ -105,6 +105,15 @@ static bool flush_coins_if_needed(struct coins_view_cache *coins_tip,
         return true;
 
 
+    /* Flush the node_db batch transaction BEFORE flushing coins.
+     * Both use the same sqlite3 handle. The coins flush uses SAVEPOINT
+     * which nests inside node_db's BEGIN TRANSACTION. If the node_db
+     * transaction later rolls back, the coins flush data is lost but
+     * the cache was already cleared → UTXO loss. Committing node_db
+     * first ensures the coins SAVEPOINT runs outside any open txn. */
+    if (g_active_node_db && g_active_node_db->sync_in_batch)
+        node_db_sync_flush(g_active_node_db);
+
     size_t batched = (size_t)g_blocks_since_flush;
     bool ok = coins_view_cache_flush(coins_tip);
     if (ok) {
