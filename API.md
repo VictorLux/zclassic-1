@@ -1,7 +1,5 @@
 # ZClassic23 API Reference
 
-Version 0.1.0
-
 ## Overview
 
 ZClassic23 exposes three interfaces:
@@ -11,6 +9,8 @@ ZClassic23 exposes three interfaces:
 | **JSON-RPC** | 18232 | Cookie file or `rpcuser:rpcpassword` | JSON-RPC 1.0 |
 | **REST API** | 443 (TLS) | None | JSON with CORS |
 | **Block Explorer** | 443 (TLS) | None | HTML |
+
+---
 
 ## JSON-RPC
 
@@ -47,11 +47,11 @@ Cookie file: `~/.zclassic-c23/.cookie` (regenerated each start)
 | Command | Parameters | Description |
 |---------|-----------|-------------|
 | `getutxocommitment` | | SHA3-256 hash over entire UTXO set in canonical order |
-| `getdataintegrity` | | SHA3-256 hashes over ALL 12 consensus tables + master hash |
+| `getdataintegrity` | | SHA3-256 hashes over all 12 consensus tables + master hash |
 | `verifycheckpoint` | | Verify UTXO set against hardcoded SHA3 checkpoint |
 | `getmmrroot` | | Merkle Mountain Range root over all block hashes |
 
-**`getutxocommitment`** — Computes a deterministic SHA3-256 hash over every UTXO sorted by (txid, vout). Two nodes with identical UTXO sets produce the same hash. Takes ~1 second over 1.3M UTXOs.
+**`getutxocommitment`** — Deterministic SHA3-256 over every UTXO sorted by (txid, vout). Two nodes with identical UTXO sets produce the same hash. ~1 second over 1.3M UTXOs.
 
 ```json
 {
@@ -62,104 +62,71 @@ Cookie file: `~/.zclassic-c23/.cookie` (regenerated each start)
 }
 ```
 
-**`getdataintegrity`** — SHA3-256 over every row of all consensus-critical tables: blocks, transactions, tx_inputs, tx_outputs, utxos, sapling_nullifiers, sapling_outputs, sapling_spends, sprout_nullifiers, joinsplits, zslp_tokens, zslp_transfers. Returns per-table hashes for diagnostics plus a master hash.
-
-```json
-{
-  "blocks": "5e9ec791...",
-  "transactions": "89359c96...",
-  "utxos": "25d75dd9...",
-  "zslp_tokens": "5d358e2c...",
-  "master": "209f92de...",
-  "height": 3056758,
-  "elapsed_seconds": 96
-}
-```
-
-**`verifycheckpoint`** — Compares local UTXO set SHA3 hash against the hardcoded checkpoint (height 3,056,758, verified bit-for-bit against zclassicd). Returns `PASSED` or `FAILED`.
-
-```json
-{
-  "status": "PASSED",
-  "checkpoint_height": 3056758,
-  "expected_sha3": "00e95dbd54a791a51433d68127f9975a3b1d6f8e9002b109647343ba0c83c3e0",
-  "computed_sha3": "00e95dbd54a791a51433d68127f9975a3b1d6f8e9002b109647343ba0c83c3e0",
-  "expected_utxos": 1354771,
-  "computed_utxos": 1354771
-}
-```
+**`verifycheckpoint`** — Compares local UTXO SHA3 against hardcoded checkpoint at height 3,056,758. Returns `PASSED` or `FAILED`.
 
 **`getmmrroot`** — Merkle Mountain Range root (SHA3-256 with domain separation) over all block hashes. Enables O(log n) inclusion proofs between power nodes.
-
-```json
-{
-  "mmr_root": "6d03d381...",
-  "num_leaves": 3056758,
-  "num_peaks": 12
-}
-```
 
 ### Chain Inspection
 
 | Command | Parameters | Description |
 |---------|-----------|-------------|
-| `chainview` | | Chain view details |
-| `chainstats` | | Chain statistics summary |
-| `gettxdetail` | `txid` | Detailed transaction information |
+| `chainview` | | Chain view: fork info, active chain details |
+| `chainstats` | | Chain statistics: blocks, txs, data size |
+| `gettxdetail` | `txid` | Detailed transaction with inputs/outputs |
 | `saplingtreeinfo` | | Sapling merkle tree state |
 | `verifychainroots` | | Verify integrity of all chain roots |
+| `hodltimeseries` | `[years]` | Monthly HODL wave time series (default 9 years) |
 
 ### Chain Import & Repair
 
 | Command | Parameters | Description |
 |---------|-----------|-------------|
+| `importchainstate` | `path` | Import UTXO set from LevelDB chainstate |
+| `reindexchainstate` | | Rebuild UTXO set by replaying all blocks |
 | `indexlegacy` | `path` | Index legacy zclassicd block files into SQLite |
-| `importchainstate` | `path` | Import UTXO set from LevelDB chainstate directory |
-| `reindexchainstate` | | Rebuild UTXO set from block data on disk |
-| `repairutxos` | `[port] [creds] [num_blocks]` | Scan ahead, find missing UTXOs, fetch from zclassicd |
+| `repairutxos` | `[port] [creds] [num_blocks]` | Fetch missing UTXOs from running zclassicd |
+| `repairheights` | | Fix height=0 UTXOs from transaction index |
 
-**`repairutxos`** — Proactive UTXO repair. Scans forward through upcoming blocks, identifies transaction inputs whose UTXOs are missing from the local database, and fetches them from a running zclassicd instance via RPC. Uses `gettxout` first (fast, for unspent UTXOs), falls back to `getrawtransaction` (requires txindex=1 on zclassicd). Inserts repaired UTXOs into both the coins cache (LevelDB) and SQLite. Runs live — no restart needed.
-
-```bash
-# Default: scan 10,000 blocks ahead, zclassicd on port 8232
-zcl-rpc repairutxos
-
-# Custom: port 8232, creds, scan 50,000 blocks
-zcl-rpc repairutxos 8232 '"zclrhett:zclrhettpass2026"' 50000
-```
-
-```json
-{
-  "blocks_scanned": 3304,
-  "inputs_checked": 8291,
-  "missing_found": 144,
-  "repaired_gettxout": 98,
-  "repaired_rawtx": 46,
-  "repair_failed": 0,
-  "scan_start": 3053455,
-  "scan_end": 3056758,
-  "elapsed_seconds": 12
-}
-```
-
-**`importchainstate`** — Bulk UTXO import. Reads every UTXO from a LevelDB chainstate directory and replaces the SQLite UTXO set. Uses parallel pipeline (30 decoder threads on 32-core). Runs live via RPC — no restart needed.
+**`repairutxos`** — Scans forward through blocks via zclassicd RPC, finds missing input UTXOs, fetches and inserts them. Runs live, no restart needed.
 
 ```bash
-# Import from your own chainstate (created during fastsync)
-zcl-rpc importchainstate ~/.zclassic-c23/chainstate
-
-# Import from a zclassicd data directory
-zcl-rpc importchainstate /path/to/.zclassic/chainstate
+zcl-rpc repairutxos                              # defaults: port 8232, 10000 blocks
+zcl-rpc repairutxos 8232 "user:pass" 50000       # custom
 ```
 
-### HODL Wave Analysis
+**`repairheights`** — Fixes UTXOs with height=0 (from LevelDB import) by looking up block heights from the transaction index. Fixes HODL wave calculations.
+
+**`importchainstate`** — Bulk import from LevelDB chainstate. Parallel pipeline (30 decoder threads). Auto-runs `repairheights` after import.
+
+### HODL Wave
 
 | Command | Parameters | Description |
 |---------|-----------|-------------|
-| `gethodlwave` | | HODL wave data (UTXO age distribution) |
-| `gethodlwaveimage` | | HODL wave as SVG image |
-| `gethodlwavetimeline` | | HODL wave timeline data |
-| `gethodlwavechart` | | HODL wave chart data |
+| `gethodlwave` | | Current UTXO age distribution (10 buckets) |
+| `gethodlwaveimage` | | HODL wave heatmap PNG |
+| `gethodlwavetimeline` | | Timeline PNG showing UTXO creation dates |
+| `gethodlwavechart` | | Stacked-area HODL wave chart PNG |
+
+**`gethodlwave`** — Scans entire UTXO set, returns value and count per age bucket.
+
+```json
+{
+  "tip_height": 3056897,
+  "total_supply_zcl": "10364151.61831153",
+  "buckets": [
+    { "age": "< 1 day",  "zcl": "469.87",      "utxos": 147,     "pct": 0.00 },
+    { "age": "1d - 1w",  "zcl": "152106.25",   "utxos": 197,     "pct": 1.47 },
+    { "age": "1w - 1m",  "zcl": "97407.17",    "utxos": 475,     "pct": 0.94 },
+    { "age": "1 - 3m",   "zcl": "165744.42",   "utxos": 1323,    "pct": 1.60 },
+    { "age": "3 - 6m",   "zcl": "886910.61",   "utxos": 2249,    "pct": 8.56 },
+    { "age": "6 - 12m",  "zcl": "374491.09",   "utxos": 68806,   "pct": 3.61 },
+    { "age": "1 - 2y",   "zcl": "544212.28",   "utxos": 37288,   "pct": 5.25 },
+    { "age": "2 - 3y",   "zcl": "760274.96",   "utxos": 45889,   "pct": 7.34 },
+    { "age": "3 - 5y",   "zcl": "1248721.80",  "utxos": 75914,   "pct": 12.05 },
+    { "age": "> 5y",     "zcl": "6133813.15",  "utxos": 1122447, "pct": 59.18 }
+  ]
+}
+```
 
 ### Raw Transactions
 
@@ -179,6 +146,7 @@ zcl-rpc importchainstate /path/to/.zclassic/chainstate
 | `getblocktemplate` | `[params]` | Block template for miners |
 | `submitblock` | `hex` | Submit solved block |
 | `getblocksubsidy` | `[height]` | Block reward at height |
+| `generate` | `num_blocks` | Generate blocks (regtest only) |
 
 ### Network
 
@@ -198,7 +166,9 @@ zcl-rpc importchainstate /path/to/.zclassic/chainstate
 | `getwalletinfo` | | Wallet status |
 | `getnewaddress` | | Generate new t-address |
 | `listunspent` | `[minconf] [maxconf]` | List UTXOs |
+| `listtransactions` | `[count] [skip]` | Recent transactions |
 | `sendtoaddress` | `addr amount` | Send ZCL |
+| `sendmany` | `"" {addr:amount,...}` | Send to multiple addresses |
 | `dumpprivkey` | `address` | Export private key (WIF) |
 | `importprivkey` | `wif [label] [rescan]` | Import private key |
 | `validateaddress` | `address` | Validate address format |
@@ -213,15 +183,18 @@ zcl-rpc importchainstate /path/to/.zclassic/chainstate
 | `z_gettotalbalance` | `[minconf]` | Total balance (t + z) |
 | `z_sendmany` | `from [{addr, amount}]` | Shielded send |
 | `z_listunspent` | `[minconf] [maxconf]` | Shielded UTXOs |
+| `z_listreceivedbyaddress` | `address [minconf]` | Received notes |
 | `z_exportkey` | `address` | Export spending key |
+| `z_exportviewingkey` | `address` | Export viewing key |
 | `z_importkey` | `key [rescan] [height]` | Import spending key |
 
-### Wallet Sync
+### Wallet Sync & Repair
 
 | Command | Parameters | Description |
 |---------|-----------|-------------|
-| `rescanblockchain` | `[start] [stop]` | Rescan for wallet txs |
-| `rescanwallet` | | Rescan wallet |
+| `rescanblockchain` | `[start] [stop]` | Rescan for wallet transactions |
+| `rescanwallet` | | Full wallet rescan |
+| `rescanwitnesses` | | Rebuild Sapling witnesses |
 
 ### Control & Monitoring
 
@@ -246,6 +219,25 @@ zcl-rpc importchainstate /path/to/.zclassic/chainstate
 
 ---
 
+## CLI Tools
+
+### `--repair` (standalone, no node required)
+
+Scans ahead through zclassicd blocks, inserts missing UTXOs into SQLite. Resets `coins_best_block` after repair so the node doesn't roll back on restart.
+
+```bash
+./zclassic23 --repair [num_blocks] [port] [creds]
+./zclassic23 --repair 5000 8232 "zcluser:zclpass"
+```
+
+### `--importchainstate` (standalone)
+
+```bash
+./zclassic23 --importchainstate /path/to/chainstate [db_path]
+```
+
+---
+
 ## REST API
 
 Base URL: `https://zclnet.net` (port 443)
@@ -261,7 +253,7 @@ All endpoints return JSON with `Access-Control-Allow-Origin: *`.
 | `GET /api/stats` | Network stats (height, difficulty, supply) |
 | `GET /api/stats/deep` | Extended stats (shielded, ZSLP, addresses) |
 | `GET /api/supply` | Circulating supply (plain number, CoinGecko format) |
-| `GET /api/hodl` | HODL wave data |
+| `GET /api/hodl` | Full HODL wave data (10 age buckets with values) |
 | `GET /api/events?count=N` | Event log (lock-free ring buffer) |
 | `GET /api/health` | HTTP 200/503 health check |
 | `GET /api/syncstate` | Sync state machine |
@@ -281,7 +273,7 @@ HTML routes at `https://zclnet.net/explorer`. CSS customizable via `{datadir}/ex
 | `/explorer/tx/:txid` | Transaction: inputs, outputs, shielded, ZSLP |
 | `/explorer/address/:addr` | Address: balance, UTXO list |
 | `/explorer/stats` | SVG charts (24h/7d/30d/1y/all) |
-| `/explorer/hodl` | HODL wave chart |
+| `/explorer/hodl` | HODL wave chart (9-year history) |
 | `/explorer/tokens` | ZSLP token scanner |
 | `/explorer/factoids` | Historian factoids |
 | `/explorer/search?q=` | Smart search (height, hash, txid, address) |
@@ -301,23 +293,17 @@ Power nodes (service bit `NODE_ZCL23 = 1024`) exchange these messages for fast s
 | `zsnapend` | Server → Client | End of snapshot transfer |
 | `zmanifest` | Server → Client | Chunk manifest with Merkle root |
 
-After all chunks received, the client computes SHA3-256 over its UTXO set and verifies against the manifest root. Prints `SHA3 UTXO verification: PASSED` or `FAILED`.
+After all chunks received, the client computes SHA3-256 over its UTXO set and verifies against the manifest root.
 
 ### Block Swarm (BitTorrent-Style)
 | Message | Direction | Description |
 |---------|-----------|-------------|
 | `zblkmanfst` | Both | Block piece manifest (height range, SHA3 piece hashes) |
 | `zblkreq` | Client → Server | Request piece by index |
-| `zblkdata` | Server → Client | Piece response (128 blocks of hashes) |
+| `zblkdata` | Server → Client | Piece response (128 blocks per piece) |
 | `zblkbitmap` | Both | Piece availability bitmap |
 
-Each piece = 128 blocks. SHA3-256 verified. Rarest-first selection. 4-deep pipeline per peer. Endgame mode broadcasts last 8 pieces to all peers.
-
-**Example: Peer 3000 blocks behind**
-- 3000 blocks / 128 per piece = 24 pieces needed
-- With 4 peers x 4 pipeline depth = 16 pieces in flight simultaneously
-- Each piece SHA3 verified independently
-- Synced in seconds, not minutes
+Each piece = 128 blocks, SHA3-256 verified. Rarest-first selection. 4-deep pipeline per peer.
 
 ### Defense
 - 20-bit PoW per snapshot request (hashcash)
@@ -337,27 +323,26 @@ Supply:  10,364,138.33747381 ZCL
 Block:   000002979090fba9da6cdc140d050245c1b637480609510922662407855bd653
 ```
 
-This is **mandatory** — enforced in `connect_block`. A node with a corrupt UTXO set will halt at this height with a fatal error. Verified bit-for-bit against the zclassicd reference implementation.
+Enforced in `connect_block`. Mismatch = fatal halt. Verified bit-for-bit against zclassicd.
 
 ---
 
-## Quick Start: New Node
+## Quick Start
 
 ```bash
 # Build
 make zclassic23
 
-# Fast bootstrap from zclassicd (same machine, instant symlinks)
+# Fast bootstrap from zclassicd (same machine)
 ./zclassic23 -fastsync ~/.zclassic -datadir=~/.zclassic-c23
 
-# Or start fresh and sync via P2P
+# Or sync via P2P
 ./zclassic23 -datadir=~/.zclassic-c23 -addnode=74.50.74.102
 
 # Fix UTXO gaps (if stuck during sync)
-zcl-rpc importchainstate ~/.zclassic-c23/chainstate
-
-# Or repair from running zclassicd (no restart needed)
-zcl-rpc repairutxos 8232 "zcluser:zclpass" 50000
+zcl-rpc repairutxos                         # live repair from zclassicd
+./zclassic23 --repair 5000                   # standalone repair (node stopped)
+zcl-rpc repairheights                        # fix HODL wave heights
 
 # Verify data integrity
 zcl-rpc verifycheckpoint
