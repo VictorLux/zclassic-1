@@ -2619,7 +2619,7 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
                         "timeouts=%zu reassigned to queue", timed_out);
 
         /* Assign blocks from queue to this peer if they have capacity */
-        if (node->state >= PEER_HANDSHAKE_COMPLETE && !node->inbound) {
+        if (node->state >= PEER_HANDSHAKE_COMPLETE) {
             /* Scale assignment size by peer quality:
              * - Fast peers (low latency) get more blocks per tick
              * - Slow peers get fewer to avoid congestion */
