@@ -403,6 +403,13 @@ static bool process_version(struct msg_processor *mp, struct p2p_node *node,
     event_emitf(EV_PEER_VERSION, (uint32_t)node->id,
                 "proto=%d h=%d %s", ver.protocol_version,
                 ver.start_height, ver.sub_version);
+
+    /* Ignore duplicate version messages from peers already past handshake */
+    if (node->state >= PEER_HANDSHAKE_COMPLETE) {
+        printf("Peer %s: ignoring duplicate version (already %s)\n",
+               node->addr_name, peer_state_name(node->state));
+        return true;
+    }
     peer_set_state_checked((uint32_t)node->id, &node->state,
                            PEER_VERSION_RECEIVED, "version msg received");
 
@@ -1542,8 +1549,9 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                            (unsigned long long)tb);
                     peer_misbehaving(mp->net_mgr, node, 20,
                                      "snapshot offer out of range");
-                } else if (h > our_h + 100 &&
-                           node->state != PEER_SNAPSHOT_RECEIVING) {
+                } else if (h > our_h + 5000 &&
+                           node->state != PEER_SNAPSHOT_RECEIVING &&
+                           sync_get_state() != SYNC_AT_TIP) {
                     /* Accept — store offered root for verification at end */
                     printf("Peer %s: accepting snapshot offer (h=%d, %llu UTXOs)\n",
                            node->addr_name, h, (unsigned long long)nu);
