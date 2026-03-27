@@ -348,16 +348,8 @@ static bool use_rpc_proxy(void)
 
 /* html_escape provided by util/template.h (included above) */
 
-/* Zcash/ZClassic difficulty: powLimit / target.
- * powLimit = 0x07ffff * 256^(0x1f-3), genesis bits = 0x1f07ffff = diff 1. */
-static double difficulty_from_bits(uint32_t bits)
-{
-    if (bits == 0) return 1.0;
-    int exp = (int)((bits >> 24) & 0xff);
-    double target = (double)(bits & 0x00ffffff) * pow(256.0, exp - 3);
-    double pow_limit = (double)0x07ffff * pow(256.0, 0x1f - 3);
-    return (target > 0) ? pow_limit / target : 1.0;
-}
+/* difficulty_from_bits() now in chain/pow.h */
+#include "chain/pow.h"
 
 static double get_difficulty(const struct block_index *bi)
 {

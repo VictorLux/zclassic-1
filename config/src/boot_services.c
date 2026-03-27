@@ -7,6 +7,7 @@
 #include "chain/subsidy.h"
 #include "coins/coins_view.h"
 #include "controllers/blockchain_controller.h"
+#include "controllers/hodl_controller.h"
 #include "controllers/repair_controller.h"
 #include "controllers/chain_inspect_controller.h"
 #include "controllers/misc_controller.h"
@@ -286,6 +287,10 @@ bool app_init_services(struct app_context *ctx,
     rpc_blockchain_mmr_init_from_state(g_active_node_db);
     rpc_blockchain_mmr_catchup(svc->state);
     register_blockchain_rpc_commands(svc->rpc_table);
+
+    rpc_hodl_set_state(svc->state, svc->coins_tip, g_active_node_db,
+                        ctx->datadir);
+    register_hodl_rpc_commands(svc->rpc_table);
 
     rpc_repair_set_state(svc->state, svc->coins_tip, g_active_node_db);
     register_repair_rpc_commands(svc->rpc_table);

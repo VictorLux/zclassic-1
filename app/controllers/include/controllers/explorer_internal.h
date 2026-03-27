@@ -175,13 +175,11 @@ static inline void explorer_format_zcl(char *buf, size_t max, int64_t zatoshi)
     }
 }
 
+/* Shared difficulty calculation — canonical version in chain/pow.h */
+#include "chain/pow.h"
 static inline double explorer_difficulty_from_bits(uint32_t bits)
 {
-    if (bits == 0) return 1.0;
-    int exp = (int)((bits >> 24) & 0xff);
-    double target = (double)(bits & 0x00ffffff) * pow(256.0, exp - 3);
-    double pow_limit = (double)0x07ffff * pow(256.0, 0x1f - 3);
-    return (target > 0) ? pow_limit / target : 1.0;
+    return difficulty_from_bits(bits);
 }
 
 static inline void explorer_format_y_label(char *buf, size_t max, double val)

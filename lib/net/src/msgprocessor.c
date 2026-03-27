@@ -324,38 +324,9 @@ static void push_block_piece_request(struct msg_processor *mp,
     stream_free(&s);
 }
 
-/* Send our piece availability bitmap to a peer. */
-static void __attribute__((unused)) push_block_bitmap(
-    struct msg_processor *mp, struct p2p_node *node)
-{
-    if (!g_block_swarm_active) return;
-
-    pthread_mutex_lock(&g_block_swarm_mutex);
-    uint32_t bytes = (g_block_swarm.manifest.num_pieces + 7) / 8;
-    if (bytes == 0 || bytes > 65536) {
-        pthread_mutex_unlock(&g_block_swarm_mutex);
-        return;
-    }
-    uint8_t *bitmap = calloc(bytes, 1);
-    if (!bitmap) {
-        pthread_mutex_unlock(&g_block_swarm_mutex);
-        return;
-    }
-    uint32_t len = block_swarm_serialize_bitmap(&g_block_swarm, bitmap, bytes);
-    pthread_mutex_unlock(&g_block_swarm_mutex);
-
-    struct byte_stream s;
-    stream_init(&s, 4 + len);
-    stream_write_u32_le(&s, len);
-    stream_write_bytes(&s, bitmap, len);
-
-    p2p_node_begin_message(node, MSG_BLOCK_BITMAP,
-                            mp->params->pchMessageStart);
-    p2p_node_write_message_data(node, s.data, s.size);
-    p2p_node_end_message(node);
-    stream_free(&s);
-    free(bitmap);
-}
+/* push_block_bitmap removed — receiver handler for MSG_BLOCK_BITMAP
+ * still active (line ~2286). Sender will be added when block swarm
+ * bitmap exchange is fully integrated. */
 
 static void push_version(struct msg_processor *mp, struct p2p_node *node)
 {

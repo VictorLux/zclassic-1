@@ -37,4 +37,16 @@ int64_t GetBlockProofEquivalentTime(const struct block_index *to,
                                     const struct block_index *tip,
                                     const struct consensus_params *params);
 
+/* Human-readable difficulty from compact nBits representation.
+ * Used by RPC getdifficulty, explorer, and factoids. */
+static inline double difficulty_from_bits(uint32_t bits)
+{
+    if (bits == 0) return 1.0;
+    int shift = (int)((bits >> 24) & 0xff) - 29;
+    double diff = (double)0x0000ffff / (double)(bits & 0x00ffffff);
+    while (shift < 0) { diff *= 256.0; shift++; }
+    while (shift > 0) { diff /= 256.0; shift--; }
+    return diff;
+}
+
 #endif
