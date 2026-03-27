@@ -511,10 +511,89 @@ static bool rpc_repairutxos(const struct json_value *params, bool help,
     return true;
 }
 
+/* ── repairheights: fix height=0 UTXOs from transaction index ──── */
+
+static bool rpc_repairheights(const struct json_value *params, bool help,
+                                struct json_value *result)
+{
+    (void)params;
+    RPC_HELP(help, result,
+        "repairheights\n"
+        "\nFixes UTXOs with height=0 by looking up the creating transaction\n"
+        "in the transaction index. This repairs HODL wave calculations that\n"
+        "show incorrect age distributions.\n"
+        "\nThe LevelDB import pipeline sometimes fails to decode the height\n"
+        "varint from coins entries, leaving height=0. This command fixes\n"
+        "those entries using the transaction → block_height mapping.\n");
+
+    if (!g_node_db_r || !g_node_db_r->open) {
+        json_set_str(result, "Database not available");
+        return false;
+    }
+
+    int64_t t0 = (int64_t)time(NULL);
+
+    /* Count before */
+    sqlite3_stmt *s = NULL;
+    int64_t before = 0;
+    sqlite3_prepare_v2(g_node_db_r->db,
+        "SELECT COUNT(*) FROM utxos WHERE height = 0 AND value > 0",
+        -1, &s, NULL);
+    if (s && sqlite3_step(s) == SQLITE_ROW)
+        before = sqlite3_column_int64(s, 0);
+    sqlite3_finalize(s);
+
+    if (before == 0) {
+        json_set_object(result);
+        json_push_kv_int(result, "fixed", 0);
+        json_push_kv_str(result, "status", "no height=0 UTXOs to fix");
+        return true;
+    }
+
+    printf("repairheights: fixing %lld UTXOs with height=0...\n",
+           (long long)before);
+    fflush(stdout);
+
+    /* Fix heights by joining with transactions table */
+    sqlite3_exec(g_node_db_r->db,
+        "UPDATE utxos SET height = ("
+        "  SELECT t.block_height FROM transactions t"
+        "  WHERE t.txid = utxos.txid"
+        ") WHERE height = 0 AND EXISTS ("
+        "  SELECT 1 FROM transactions t"
+        "  WHERE t.txid = utxos.txid AND t.block_height IS NOT NULL"
+        ")", NULL, NULL, NULL);
+
+    int changes = sqlite3_changes(g_node_db_r->db);
+
+    /* Count remaining */
+    int64_t after = 0;
+    s = NULL;
+    sqlite3_prepare_v2(g_node_db_r->db,
+        "SELECT COUNT(*) FROM utxos WHERE height = 0 AND value > 0",
+        -1, &s, NULL);
+    if (s && sqlite3_step(s) == SQLITE_ROW)
+        after = sqlite3_column_int64(s, 0);
+    sqlite3_finalize(s);
+
+    int64_t elapsed = (int64_t)time(NULL) - t0;
+
+    printf("repairheights: fixed %d heights in %llds (%lld remaining)\n",
+           changes, (long long)elapsed, (long long)after);
+    fflush(stdout);
+
+    json_set_object(result);
+    json_push_kv_int(result, "fixed", changes);
+    json_push_kv_int(result, "remaining_height_zero", after);
+    json_push_kv_int(result, "elapsed_seconds", elapsed);
+    return true;
+}
+
 void register_repair_rpc_commands(struct rpc_table *t)
 {
     struct rpc_command cmds[] = {
         { "blockchain", "repairutxos", rpc_repairutxos, false },
+        { "blockchain", "repairheights", rpc_repairheights, false },
     };
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++)
         rpc_table_append(t, &cmds[i]);

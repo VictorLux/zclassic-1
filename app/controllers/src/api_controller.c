@@ -390,47 +390,42 @@ static size_t compute_supply(uint8_t *r, size_t max)
         "%s%.8f", JSON_HEADERS, supply);
 }
 
-/* Compute /api/hodl — HODL wave data */
+/* Compute /api/hodl — HODL wave data via gethodlwave RPC */
 static size_t compute_hodl(uint8_t *r, size_t max)
 {
-    char buf[65536];
+    char *buf = malloc(262144);
+    if (!buf) return json_error(r, max, JSON_500_HEADERS, "Out of memory");
 
-    /* Get current height and time */
-    if (rpc_call("getblockcount", "[]", buf, sizeof(buf)) <= 0)
+    if (rpc_call("gethodlwave", "[]", buf, 262144) <= 0) {
+        free(buf);
         return json_error(r, max, JSON_500_HEADERS, "RPC unavailable");
+    }
 
-    int64_t height = json_extract_int(buf, "result");
-    if (height < 0)
-        return json_error(r, max, JSON_500_HEADERS, "Cannot get height");
+    /* Extract the "result" JSON object from the RPC response */
+    const char *result_start = strstr(buf, "\"result\"");
+    if (!result_start) {
+        free(buf);
+        return json_error(r, max, JSON_500_HEADERS, "No result");
+    }
+    result_start += 8;
+    while (*result_start == ' ' || *result_start == ':') result_start++;
 
-    /* Get current block time */
-    char params[64];
-    snprintf(params, sizeof(params), "[%" PRId64 "]", height);
-    if (rpc_call("getblockhash", params, buf, sizeof(buf)) <= 0)
-        return json_error(r, max, JSON_500_HEADERS, "RPC unavailable");
+    /* Find the end of the result object (before ,"error") */
+    const char *result_end = strstr(result_start, ",\"error\"");
+    if (!result_end) result_end = result_start + strlen(result_start);
 
-    char hash[65] = "";
-    json_extract_str(buf, "result", hash, sizeof(hash));
+    size_t result_len = (size_t)(result_end - result_start);
+    size_t hdr_len = strlen(JSON_HEADERS);
 
-    char params2[128];
-    snprintf(params2, sizeof(params2), "[\"%s\", true]", hash);
-    if (rpc_call("getblock", params2, buf, sizeof(buf)) <= 0)
-        return json_error(r, max, JSON_500_HEADERS, "RPC unavailable");
+    if (hdr_len + result_len >= max) {
+        free(buf);
+        return json_error(r, max, JSON_500_HEADERS, "Response too large");
+    }
 
-    int64_t tip_time = json_extract_int(buf, "time");
-
-    size_t off = 0;
-    off += (size_t)snprintf((char *)r + off, max - off,
-        "%s{"
-        "\"height\":%" PRId64
-        ",\"time\":%" PRId64
-        ",\"description\":\"HODL wave data — ratio of UTXOs by age band\""
-        ",\"bands\":[\"<1d\",\"1d-1w\",\"1w-1m\",\"1m-3m\",\"3m-6m\",\"6m-1y\",\"1y+\"]"
-        ",\"note\":\"Detailed HODL data available at /explorer/hodl\""
-        "}",
-        JSON_HEADERS, height, tip_time);
-
-    return off;
+    memcpy(r, JSON_HEADERS, hdr_len);
+    memcpy(r + hdr_len, result_start, result_len);
+    free(buf);
+    return hdr_len + result_len;
 }
 
 /* Compute /api/block/:id — block detail (called from bg thread) */

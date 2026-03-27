@@ -2050,6 +2050,33 @@ static bool rpc_importchainstate(const struct json_value *params, bool help,
         return false;
     }
 
+    /* Fix height=0 UTXOs from transaction index (LevelDB decoder can
+     * fail to read the trailing height varint for some entries). */
+    {
+        sqlite3_stmt *h0 = NULL;
+        sqlite3_prepare_v2(g_node_db_bc->db,
+            "SELECT COUNT(*) FROM utxos WHERE height = 0 AND value > 0",
+            -1, &h0, NULL);
+        int64_t h0_count = 0;
+        if (h0 && sqlite3_step(h0) == SQLITE_ROW)
+            h0_count = sqlite3_column_int64(h0, 0);
+        sqlite3_finalize(h0);
+        if (h0_count > 0) {
+            printf("importchainstate: fixing %lld UTXOs with height=0...\n",
+                   (long long)h0_count);
+            sqlite3_exec(g_node_db_bc->db,
+                "UPDATE utxos SET height = ("
+                "  SELECT t.block_height FROM transactions t"
+                "  WHERE t.txid = utxos.txid"
+                ") WHERE height = 0 AND EXISTS ("
+                "  SELECT 1 FROM transactions t"
+                "  WHERE t.txid = utxos.txid AND t.block_height IS NOT NULL"
+                ")", NULL, NULL, NULL);
+            printf("importchainstate: fixed %d UTXO heights\n",
+                   sqlite3_changes(g_node_db_bc->db));
+        }
+    }
+
     /* Rebuild wallet_utxos and addresses from new UTXO set */
     sqlite3_exec(g_node_db_bc->db, "BEGIN", NULL, NULL, NULL);
     sqlite3_exec(g_node_db_bc->db,
