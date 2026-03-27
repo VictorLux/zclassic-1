@@ -3673,7 +3673,7 @@ static bool rpc_repairutxos(const struct json_value *params, bool help,
         "\nRequires zclassicd running on localhost with RPC enabled.\n"
         "For spent UTXOs, zclassicd needs txindex=1.\n");
 
-    if (!g_main_state || !g_coins_tip || !g_coins_db || !g_datadir) {
+    if (!g_main_state || !g_coins_tip || !g_datadir) {
         json_set_str(result, "Node not fully initialized");
         return false;
     }
@@ -3694,11 +3694,23 @@ static bool rpc_repairutxos(const struct json_value *params, bool help,
     int tip_height = active_chain_height(&g_main_state->chain_active);
     int scan_end = tip_height + num_blocks;
 
-    /* Clamp scan_end to actual chain length */
-    for (int h = tip_height + 1; h <= scan_end; h++) {
-        struct block_index *bx = active_chain_at(
-            &g_main_state->chain_active, h);
-        if (!bx) { scan_end = h - 1; break; }
+    /* Use zclassicd's chain height as scan limit (our active chain
+     * may be behind because of missing UTXOs — that's what we're fixing) */
+    {
+        char rpc_buf[256] = "";
+        char rpc_body[128];
+        snprintf(rpc_body, sizeof(rpc_body),
+            "{\"jsonrpc\":\"1.0\",\"method\":\"getblockcount\",\"params\":[]}");
+        if (repair_rpc_call(port, creds, rpc_body, rpc_buf, sizeof(rpc_buf)) > 0) {
+            const char *rp = strstr(rpc_buf, "\"result\":");
+            if (rp) {
+                int remote_tip = (int)strtol(rp + 9, NULL, 10);
+                if (remote_tip > 0 && scan_end > remote_tip)
+                    scan_end = remote_tip;
+                if (scan_end < tip_height + 1)
+                    scan_end = tip_height + num_blocks;
+            }
+        }
     }
 
     printf("repairutxos: scanning blocks %d → %d (%d blocks)\n",
