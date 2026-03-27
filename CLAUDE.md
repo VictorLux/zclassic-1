@@ -5,8 +5,12 @@ A decentralized internet platform. Every node is a full ZClassic node, a Tor hid
 
 ## Build
 ```bash
-make zclassic23    # 26MB binary, zero system deps
-make test          # 1066+ tests
+make zclassic23    # 28MB binary, zero system deps
+make test          # 1100+ tests (unit + spec + e2e)
+make bot           # 71-check headless bot driver (pure C, no display)
+make session       # 19-step timed user session simulator
+make check-wallet  # Verify UI matches zclassicd balance
+make dump          # Render every page as text for inspection
 make zcl-browser   # GTK Tor-only browser
 make zcl-rpc       # CLI RPC client
 ```
