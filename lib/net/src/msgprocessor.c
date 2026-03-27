@@ -1020,9 +1020,11 @@ static bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
             /* Progress logged by IBD progress timer (every 30s) */
 
             /* Refresh block manifest when chain grows beyond cached range.
-             * This ensures new peers connecting to us get a manifest that
-             * covers the full chain, not just what we had at startup. */
-            if (new_tip->nHeight > 1000 &&
+             * Only at tip — during IBD, SQLite is still catching up and
+             * manifest build can crash on partial data. We're a client
+             * during IBD, not serving pieces to peers. */
+            if (sync_get_state() == SYNC_AT_TIP &&
+                new_tip->nHeight > 1000 &&
                 (!g_cached_block_manifest_valid ||
                  new_tip->nHeight - g_manifest_built_at_height
                     >= MANIFEST_REFRESH_BLOCKS)) {
