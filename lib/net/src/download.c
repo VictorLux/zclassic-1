@@ -498,6 +498,32 @@ size_t dl_peer_adaptive_window(struct download_manager *dm, uint32_t peer_id)
     return window;
 }
 
+void dl_add_bytes_received(struct download_manager *dm, uint64_t bytes)
+{
+    zcl_mutex_lock(&dm->cs);
+    if (dm->sync_start_time == 0)
+        dm->sync_start_time = (int64_t)time(NULL);
+    dm->total_bytes_received += bytes;
+    zcl_mutex_unlock(&dm->cs);
+}
+
+void dl_get_throughput(struct download_manager *dm,
+                       uint64_t *total_bytes, double *mbps_avg)
+{
+    zcl_mutex_lock(&dm->cs);
+    if (total_bytes) *total_bytes = dm->total_bytes_received;
+    if (mbps_avg) {
+        if (dm->sync_start_time > 0 && dm->total_bytes_received > 0) {
+            int64_t elapsed = (int64_t)time(NULL) - dm->sync_start_time;
+            if (elapsed < 1) elapsed = 1;
+            *mbps_avg = (double)dm->total_bytes_received / (1048576.0 * elapsed);
+        } else {
+            *mbps_avg = 0.0;
+        }
+    }
+    zcl_mutex_unlock(&dm->cs);
+}
+
 void dl_get_stats(struct download_manager *dm,
                   uint64_t *requested, uint64_t *received,
                   uint64_t *timed_out, uint64_t *in_flight,

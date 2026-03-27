@@ -934,7 +934,11 @@ static bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
     block_get_hash(&blk, &hash);
 
     /* Mark received in download manager (removes from in-flight) */
-    dl_mark_received(get_download_mgr(), &hash);
+    struct download_manager *dm = get_download_mgr();
+    dl_mark_received(dm, &hash);
+
+    /* Track block bytes for MB/s throughput reporting */
+    dl_add_bytes_received(dm, s->size);
 
     if (block_already_seen(&hash)) {
         block_free(&blk);
@@ -1439,14 +1443,22 @@ static bool process_feefilter(struct p2p_node *node, struct byte_stream *s)
 
 static bool process_notfound(struct p2p_node *node, struct byte_stream *s)
 {
-    (void)node;
     uint64_t count;
     if (!stream_read_compact_size(s, &count))
         return false;
+
+    struct download_manager *dm = get_download_mgr();
     for (uint64_t i = 0; i < count; i++) {
         struct inv_item inv;
         if (!inv_item_deserialize(&inv, s))
             return false;
+        if (inv.type == MSG_BLOCK) {
+            char hex[65];
+            uint256_get_hex(&inv.hash, hex);
+            printf("Peer %s: notfound block %s\n", node->addr_name, hex);
+            /* Re-queue so another peer can try */
+            dl_peer_disconnected(dm, (uint32_t)node->id);
+        }
     }
     return true;
 }
@@ -2638,6 +2650,13 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
                 p2p_node_end_message(node);
                 stream_free(&getdata_msg);
 
+                /* Log first requested hash for debugging notfound */
+                if (assigned > 0) {
+                    char hex[65];
+                    uint256_get_hex(&assign_hashes[0], hex);
+                    printf("getdata: %zu blocks to %s (first=%s)\n",
+                           assigned, node->addr_name, hex);
+                }
                 event_emitf(EV_BLOCK_REQUESTED, (uint32_t)node->id,
                             "assigned=%zu inflight=%zu",
                             assigned, in_flight + assigned);
@@ -2766,13 +2785,17 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
                 ? mp->main_state->pindex_best_header->nHeight : h;
             enum sync_state ss = sync_get_state();
             if (ss != SYNC_IDLE && ss != SYNC_AT_TIP) {
+                uint64_t total_bytes = 0;
+                double mbps = 0.0;
+                dl_get_throughput(dm2, &total_bytes, &mbps);
+                double gb = (double)total_bytes / (1024.0 * 1024.0 * 1024.0);
                 printf("IBD: chain=%d headers=%d sync=%s "
                        "dl[req=%llu recv=%llu flight=%llu queue=%llu "
-                       "timeout=%llu]\n",
+                       "timeout=%llu] %.2f GB @ %.1f MB/s\n",
                        h, header_tip, sync_state_name(ss),
                        (unsigned long long)r, (unsigned long long)v,
                        (unsigned long long)f, (unsigned long long)q,
-                       (unsigned long long)t);
+                       (unsigned long long)t, gb, mbps);
             }
 
             /* Tip-stale watchdog: if we're at the tip but haven't

@@ -188,6 +188,19 @@ static bool rpc_downloadstats(const struct json_value *params, bool help,
     json_push_kv_int(result, "timed_out", (int64_t)tout);
     json_push_kv_int(result, "in_flight", (int64_t)inflight);
     json_push_kv_int(result, "queued", (int64_t)queued);
+
+    uint64_t total_bytes = 0;
+    double mbps = 0.0;
+    dl_get_throughput(dm, &total_bytes, &mbps);
+    json_push_kv_int(result, "bytes_downloaded", (int64_t)total_bytes);
+    char mbps_str[32];
+    snprintf(mbps_str, sizeof(mbps_str), "%.1f", mbps);
+    json_push_kv_str(result, "mbps_avg", mbps_str);
+    char gb_str[32];
+    snprintf(gb_str, sizeof(gb_str), "%.2f",
+             (double)total_bytes / (1024.0 * 1024.0 * 1024.0));
+    json_push_kv_str(result, "gb_downloaded", gb_str);
+
     json_push_kv_str(result, "sync_state", sync_state_name(sync_get_state()));
     json_push_kv_int(result, "assume_valid_height",
                       (int64_t)g_assume_valid_height);

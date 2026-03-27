@@ -73,6 +73,10 @@ struct download_manager {
     uint64_t total_received;
     uint64_t total_timed_out;
     uint64_t total_duplicate;
+
+    /* Byte throughput tracking */
+    uint64_t total_bytes_received;   /* total block bytes downloaded */
+    int64_t  sync_start_time;        /* epoch seconds when first block received */
 };
 
 /* Initialize the download manager. Call once at startup. */
@@ -131,6 +135,13 @@ void dl_get_stats(struct download_manager *dm,
                   uint64_t *requested, uint64_t *received,
                   uint64_t *timed_out, uint64_t *in_flight,
                   uint64_t *queued);
+
+/* Record block bytes received (call from process_block_msg). */
+void dl_add_bytes_received(struct download_manager *dm, uint64_t bytes);
+
+/* Get byte throughput stats. */
+void dl_get_throughput(struct download_manager *dm,
+                       uint64_t *total_bytes, double *mbps_avg);
 
 /* Get the adaptive per-peer window size based on bandwidth score.
  * Fast peers get up to DL_MAX_IN_FLIGHT_PER_PEER; slow peers get fewer.

@@ -57,6 +57,7 @@
 #include "net/peer_strategy.h"
 #include "event/event.h"
 #include "controllers/event_controller.h"
+#include "models/block.h"
 #include <netdb.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -819,6 +820,56 @@ bool app_init(struct app_context *ctx)
         if (!uint256_is_null(&best_hash)) {
             struct block_index *best = block_map_find(
                 &g_state.map_block_index, &best_hash);
+            /* SQLite fallback: if block_map maps the hash to height 0
+             * but it's not actually the genesis block, the LevelDB
+             * block_index was built from a different chain state.
+             * Query SQLite blocks table for the real height.
+             *
+             * This handles the case where a remote node ran --fastsync
+             * with a LevelDB block_index from a different sync session.
+             * The coins DB has the correct best block hash, but the
+             * in-memory block map (loaded from LevelDB) maps it to
+             * height 0 because the entry was uninitialized or from a
+             * different fork. Without this fallback, the node would
+             * set chain tip to height 0 and re-download everything. */
+            if (best && best->nHeight == 0 &&
+                !uint256_eq(&best_hash,
+                            &params->consensus.hashGenesisBlock)) {
+                char hex[65];
+                uint256_get_hex(&best_hash, hex);
+                fprintf(stderr,
+                    "WARNING: coins DB best block %s mapped to height=0 "
+                    "in block_index (not genesis) — possible LevelDB "
+                    "mismatch\n", hex);
+
+                if (g_active_node_db) {
+                    struct db_block sqlite_blk;
+                    if (db_block_find_by_hash(g_active_node_db,
+                                              best_hash.data,
+                                              &sqlite_blk)) {
+                        fprintf(stderr,
+                            "  SQLite blocks table: height=%d for "
+                            "this hash\n", sqlite_blk.height);
+                        if (sqlite_blk.height > 0) {
+                            printf("Correcting: block_index height=0 "
+                                   "vs SQLite height=%d — using "
+                                   "fallback recovery\n",
+                                   sqlite_blk.height);
+                            best = NULL; /* fall through to
+                                          * not-in-index path */
+                        }
+                    } else {
+                        fprintf(stderr,
+                            "  SQLite blocks table: hash NOT FOUND "
+                            "(coins DB references unknown block)\n");
+                        best = NULL; /* can't trust height=0 either */
+                    }
+                } else {
+                    fprintf(stderr,
+                        "  SQLite not available for fallback — "
+                        "accepting height=0 (may need --fastsync)\n");
+                }
+            }
             if (best) {
                 active_chain_set_tip(&g_state.chain_active, best);
                 g_state.pindex_best_header = best;
@@ -851,7 +902,9 @@ bool app_init(struct app_context *ctx)
             } else {
                 char hex[65];
                 uint256_get_hex(&best_hash, hex);
-                printf("Coins DB best block %s not in index.\n", hex);
+                printf("Coins DB best block %s not in index "
+                       "(block_map size=%zu).\n",
+                       hex, g_state.map_block_index.size);
                 /* The coins DB was likely from a fastsync that included
                  * blocks not yet in our LevelDB index. Find the highest
                  * ancestor of the coins tip that IS in the index and

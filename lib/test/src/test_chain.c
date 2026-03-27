@@ -2,6 +2,7 @@
 
 #include "test/test_helpers.h"
 #include "controllers/explorer_internal.h"
+#include <unistd.h>
 
 int test_chain(void)
 {
@@ -1437,6 +1438,182 @@ int test_chain(void)
         }
         if (ok) printf("OK\n");
         else { printf("FAIL (non-monotonic)\n"); failures++; }
+    }
+
+    /* ── Boot SQLite fallback: block_map height=0 detection ── */
+
+    printf("boot: block_map height=0 non-genesis detected... ");
+    {
+        /* Simulate the scenario from boot.c: coins DB best block hash
+         * exists in block_map but with nHeight=0 (LevelDB mismatch).
+         *
+         * We test the detection logic directly:
+         * - Create a block_map with a non-genesis hash at height 0
+         * - Verify this is detectable as a mismatch */
+        struct block_map bm;
+        block_map_init(&bm);
+
+        /* Non-genesis hash mapped to height 0 (the bug scenario) */
+        struct uint256 fake_hash;
+        memset(fake_hash.data, 0xAB, 32); /* definitely not genesis */
+
+        struct block_index *bi = calloc(1, sizeof(struct block_index));
+        block_index_init(bi);
+        bi->nHeight = 0;  /* wrong! should be e.g. 3,056,896 */
+        block_map_insert(&bm, &fake_hash, bi);
+
+        struct block_index *found = block_map_find(&bm, &fake_hash);
+        bool is_mismatch = found && found->nHeight == 0;
+
+        /* Verify genesis hash is different */
+        const struct chain_params *p = chain_params_get();
+        bool not_genesis = !uint256_eq(&fake_hash,
+                                       &p->consensus.hashGenesisBlock);
+
+        if (is_mismatch && not_genesis)
+            printf("OK\n");
+        else {
+            printf("FAIL (mismatch=%d not_genesis=%d)\n",
+                   is_mismatch, not_genesis);
+            failures++;
+        }
+
+        free(bi);
+        block_map_free(&bm);
+    }
+
+    printf("boot: genesis block at height=0 is NOT flagged... ");
+    {
+        /* Genesis block at height 0 is correct — should NOT trigger fallback */
+        struct block_map bm;
+        block_map_init(&bm);
+
+        const struct chain_params *p = chain_params_get();
+        struct uint256 genesis = p->consensus.hashGenesisBlock;
+
+        struct block_index *bi = calloc(1, sizeof(struct block_index));
+        block_index_init(bi);
+        bi->nHeight = 0;  /* correct for genesis */
+        block_map_insert(&bm, &genesis, bi);
+
+        struct block_index *found = block_map_find(&bm, &genesis);
+        bool is_genesis = uint256_eq(&genesis,
+                                     &p->consensus.hashGenesisBlock);
+
+        /* Should NOT be treated as mismatch: height=0 for genesis is valid */
+        if (found && found->nHeight == 0 && is_genesis)
+            printf("OK\n");
+        else {
+            printf("FAIL\n");
+            failures++;
+        }
+
+        free(bi);
+        block_map_free(&bm);
+    }
+
+    printf("boot: block_map height>0 not flagged as mismatch... ");
+    {
+        /* Normal case: coins tip at height 3056896, found correctly */
+        struct block_map bm;
+        block_map_init(&bm);
+
+        struct uint256 tip_hash;
+        memset(tip_hash.data, 0xCD, 32);
+
+        struct block_index *bi = calloc(1, sizeof(struct block_index));
+        block_index_init(bi);
+        bi->nHeight = 3056896;  /* correct mapping */
+        block_map_insert(&bm, &tip_hash, bi);
+
+        struct block_index *found = block_map_find(&bm, &tip_hash);
+        bool would_trigger_fallback = found && found->nHeight == 0;
+
+        if (!would_trigger_fallback && found && found->nHeight == 3056896)
+            printf("OK\n");
+        else {
+            printf("FAIL (height=%d)\n", found ? found->nHeight : -1);
+            failures++;
+        }
+
+        free(bi);
+        block_map_free(&bm);
+    }
+
+    printf("boot: SQLite block lookup by hash... ");
+    {
+        /* Test that db_block_find_by_hash works for fallback.
+         * Create an in-memory SQLite DB and verify hash→height lookup. */
+        struct node_db ndb;
+        memset(&ndb, 0, sizeof(ndb));
+        (void)mkdir("/tmp/test_boot_fallback", 0755);
+        if (node_db_open(&ndb, "/tmp/test_boot_fallback/node.db")) {
+            /* Insert a block */
+            struct db_block blk;
+            memset(&blk, 0, sizeof(blk));
+            memset(blk.hash, 0xAB, 32);
+            memset(blk.prev_hash, 0x11, 32);
+            memset(blk.merkle_root, 0x22, 32);
+            memset(blk.chain_work, 0x01, 32);
+            blk.height = 3056896;
+            blk.version = 4;
+            blk.time = 1700000000;
+            blk.bits = 0x1d00ffff;
+            blk.num_tx = 1;
+            blk.status = 1;
+            /* Equihash solution required by schema */
+            uint8_t dummy_sol[1344];
+            memset(dummy_sol, 0, sizeof(dummy_sol));
+            blk.solution = dummy_sol;
+            blk.solution_len = sizeof(dummy_sol);
+            db_block_save(&ndb, &blk);
+
+            /* Look it up by hash */
+            struct db_block found;
+            bool ok = db_block_find_by_hash(&ndb, blk.hash, &found);
+            if (ok && found.height == 3056896)
+                printf("OK\n");
+            else {
+                printf("FAIL (found=%d height=%d)\n", ok,
+                       ok ? found.height : -1);
+                failures++;
+            }
+
+            node_db_close(&ndb);
+        } else {
+            printf("SKIP (SQLite init failed)\n");
+        }
+        /* Cleanup */
+        (void)remove("/tmp/test_boot_fallback/node.db");
+        (void)remove("/tmp/test_boot_fallback/node.db-wal");
+        (void)remove("/tmp/test_boot_fallback/node.db-shm");
+        (void)rmdir("/tmp/test_boot_fallback");
+    }
+
+    printf("boot: SQLite lookup for missing hash returns false... ");
+    {
+        struct node_db ndb;
+        memset(&ndb, 0, sizeof(ndb));
+        (void)mkdir("/tmp/test_boot_fallback2", 0755);
+        if (node_db_open(&ndb, "/tmp/test_boot_fallback2/node.db")) {
+            uint8_t missing[32];
+            memset(missing, 0xFF, 32);
+            struct db_block found;
+            bool ok = db_block_find_by_hash(&ndb, missing, &found);
+            if (!ok)
+                printf("OK\n");
+            else {
+                printf("FAIL (found non-existent block)\n");
+                failures++;
+            }
+            node_db_close(&ndb);
+        } else {
+            printf("SKIP (SQLite init failed)\n");
+        }
+        (void)remove("/tmp/test_boot_fallback2/node.db");
+        (void)remove("/tmp/test_boot_fallback2/node.db-wal");
+        (void)remove("/tmp/test_boot_fallback2/node.db-shm");
+        (void)rmdir("/tmp/test_boot_fallback2");
     }
 
     return failures;

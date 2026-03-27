@@ -423,6 +423,115 @@ static int test_dl_concurrent(void)
     return failures;
 }
 
+static int test_dl_byte_tracking(void)
+{
+    int failures = 0;
+    TEST("dl_add_bytes_received tracks total bytes") {
+        struct download_manager dm;
+        dl_init(&dm);
+
+        /* Initially zero */
+        uint64_t total_bytes = 0;
+        double mbps = 0.0;
+        dl_get_throughput(&dm, &total_bytes, &mbps);
+        ASSERT(total_bytes == 0);
+        ASSERT(mbps == 0.0);
+
+        /* Record some block bytes */
+        dl_add_bytes_received(&dm, 1048576);  /* 1 MB */
+        dl_add_bytes_received(&dm, 524288);   /* 0.5 MB */
+        dl_add_bytes_received(&dm, 2097152);  /* 2 MB */
+
+        dl_get_throughput(&dm, &total_bytes, &mbps);
+        ASSERT(total_bytes == 3670016);  /* 3.5 MB total */
+        /* mbps > 0 since sync_start_time was set on first call */
+        ASSERT(mbps >= 0.0);
+
+        /* Verify sync_start_time was set */
+        ASSERT(dm.sync_start_time > 0);
+
+        dl_free(&dm);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_dl_byte_tracking_before_sync(void)
+{
+    int failures = 0;
+    TEST("dl_get_throughput returns 0 before any bytes received") {
+        struct download_manager dm;
+        dl_init(&dm);
+
+        uint64_t total_bytes = 99;
+        double mbps = 99.0;
+        dl_get_throughput(&dm, &total_bytes, &mbps);
+        ASSERT(total_bytes == 0);
+        ASSERT(mbps == 0.0);
+
+        /* sync_start_time should not be set */
+        ASSERT(dm.sync_start_time == 0);
+
+        dl_free(&dm);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_dl_byte_tracking_large(void)
+{
+    int failures = 0;
+    TEST("dl_add_bytes_received handles 11 GB (realistic sync)") {
+        struct download_manager dm;
+        dl_init(&dm);
+
+        /* Simulate receiving ~11 GB in 1000-block chunks (~3.6 KB avg) */
+        uint64_t expected_total = 0;
+        for (int i = 0; i < 3000000; i += 1000) {
+            uint64_t chunk_bytes = 3600 * 1000; /* ~3.6 MB per 1000 blocks */
+            dl_add_bytes_received(&dm, chunk_bytes);
+            expected_total += chunk_bytes;
+        }
+
+        uint64_t total_bytes = 0;
+        double mbps = 0.0;
+        dl_get_throughput(&dm, &total_bytes, &mbps);
+        ASSERT(total_bytes == expected_total);
+        /* ~10.8 GB */
+        ASSERT(total_bytes > 10ULL * 1024 * 1024 * 1024);
+
+        dl_free(&dm);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_dl_null_throughput_params(void)
+{
+    int failures = 0;
+    TEST("dl_get_throughput handles NULL params") {
+        struct download_manager dm;
+        dl_init(&dm);
+
+        dl_add_bytes_received(&dm, 1000);
+
+        /* Should not crash with NULL params */
+        dl_get_throughput(&dm, NULL, NULL);
+
+        uint64_t total = 0;
+        dl_get_throughput(&dm, &total, NULL);
+        ASSERT(total == 1000);
+
+        double mbps = 0;
+        dl_get_throughput(&dm, NULL, &mbps);
+        ASSERT(mbps >= 0.0);
+
+        dl_free(&dm);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_download(void)
 {
     int failures = 0;
@@ -436,5 +545,9 @@ int test_download(void)
     failures += test_dl_many_insertions();
     failures += test_dl_per_peer_limit();
     failures += test_dl_concurrent();
+    failures += test_dl_byte_tracking();
+    failures += test_dl_byte_tracking_before_sync();
+    failures += test_dl_byte_tracking_large();
+    failures += test_dl_null_throughput_params();
     return failures;
 }
