@@ -15,6 +15,7 @@
 #include "storage/coins_db.h"
 #include "consensus/validation.h"
 #include "controllers/blockchain_controller.h"
+#include "controllers/repair_controller.h"
 #include "controllers/chain_inspect_controller.h"
 #include "controllers/misc_controller.h"
 #include "controllers/network_controller.h"
@@ -2289,6 +2290,9 @@ bool app_init(struct app_context *ctx)
     rpc_blockchain_mmr_init_from_state(g_active_node_db);
     rpc_blockchain_mmr_catchup(&g_state);
     register_blockchain_rpc_commands(&g_rpc_table);
+
+    rpc_repair_set_state(&g_state, &g_coins_tip, g_active_node_db);
+    register_repair_rpc_commands(&g_rpc_table);
 
     rpc_chain_inspect_set_state(&g_state, ctx->datadir,
                                  NULL, &g_coins_tip, g_active_node_db);

@@ -52,40 +52,8 @@ bool node_db_sync_init(struct node_db *ndb, const char *datadir)
     return true;
 }
 
-/* Extract the 20-byte address hash from a scriptPubKey.
- * Returns script type and fills addr_hash if applicable. */
-static enum script_type classify_script(const uint8_t *script,
-                                        size_t script_len,
-                                        uint8_t addr_hash[20],
-                                        bool *has_addr)
-{
-    *has_addr = false;
-
-    /* P2PKH: OP_DUP OP_HASH160 <20> <hash> OP_EQUALVERIFY OP_CHECKSIG */
-    if (script_len == 25 &&
-        script[0] == 0x76 && script[1] == 0xa9 &&
-        script[2] == 0x14 &&
-        script[23] == 0x88 && script[24] == 0xac) {
-        memcpy(addr_hash, script + 3, 20);
-        *has_addr = true;
-        return SCRIPT_P2PKH;
-    }
-
-    /* P2SH: OP_HASH160 <20> <hash> OP_EQUAL */
-    if (script_len == 23 &&
-        script[0] == 0xa9 && script[1] == 0x14 &&
-        script[22] == 0x87) {
-        memcpy(addr_hash, script + 2, 20);
-        *has_addr = true;
-        return SCRIPT_P2SH;
-    }
-
-    /* OP_RETURN */
-    if (script_len > 0 && script[0] == 0x6a)
-        return SCRIPT_OP_RETURN;
-
-    return SCRIPT_OTHER;
-}
+/* classify_script: use shared utxo_classify_script() from models/utxo.h */
+#define classify_script utxo_classify_script
 
 /* Serialize a transaction to raw bytes. Caller must free. */
 static uint8_t *serialize_tx(const struct transaction *tx,

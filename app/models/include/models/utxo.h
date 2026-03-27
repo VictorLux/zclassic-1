@@ -31,6 +31,11 @@ struct db_utxo {
     bool is_coinbase;
 };
 
+/* Classify a scriptPubKey into script_type and extract address hash.
+ * Single shared implementation — do not duplicate this function. */
+enum script_type utxo_classify_script(const uint8_t *script, size_t len,
+                                       uint8_t addr_hash[20], bool *has_addr);
+
 /* Callbacks and validation */
 struct ar_callbacks *db_utxo_callbacks(void);
 bool db_utxo_validate(const struct db_utxo *u, struct ar_errors *errors);

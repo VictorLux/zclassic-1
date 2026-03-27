@@ -7,40 +7,11 @@
 #include "storage/coins_view_sqlite.h"
 #include "coins/coins.h"
 #include "coins/utxo_commitment.h"
+#include "models/utxo.h"
 #include "script/standard.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-/* ── Script classification (same as sync_controller.c) ─────────── */
-
-static int classify_script_for_coins(const uint8_t *script, size_t len,
-                                     uint8_t addr_hash[20], bool *has_addr)
-{
-    *has_addr = false;
-
-    /* P2PKH: OP_DUP OP_HASH160 <20> <hash> OP_EQUALVERIFY OP_CHECKSIG */
-    if (len == 25 && script[0] == 0x76 && script[1] == 0xa9 &&
-        script[2] == 0x14 && script[23] == 0x88 && script[24] == 0xac) {
-        memcpy(addr_hash, script + 3, 20);
-        *has_addr = true;
-        return 1; /* SCRIPT_P2PKH */
-    }
-
-    /* P2SH: OP_HASH160 <20> <hash> OP_EQUAL */
-    if (len == 23 && script[0] == 0xa9 && script[1] == 0x14 &&
-        script[22] == 0x87) {
-        memcpy(addr_hash, script + 2, 20);
-        *has_addr = true;
-        return 2; /* SCRIPT_P2SH */
-    }
-
-    /* OP_RETURN */
-    if (len > 0 && script[0] == 0x6a)
-        return 3; /* SCRIPT_OP_RETURN */
-
-    return 0; /* SCRIPT_OTHER */
-}
 
 /* ── vtable implementations ────────────────────────────────────── */
 
@@ -291,7 +262,7 @@ bool coins_view_sqlite_batch_write(struct coins_view_sqlite *cvs,
 
                 uint8_t addr_hash[20];
                 bool has_addr = false;
-                int stype = classify_script_for_coins(
+                enum script_type stype = utxo_classify_script(
                     cc->vout[vi].script_pub_key.data,
                     cc->vout[vi].script_pub_key.size,
                     addr_hash, &has_addr);

@@ -5,6 +5,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "rpc/client.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -161,4 +162,81 @@ bool rpc_convert_values(const char *method, const char **str_params,
         }
     }
     return true;
+}
+
+/* ── Shared RPC caller for local node communication ────────────── */
+
+#include <sys/socket.h>
+#include <sys/time.h>
+#include <netinet/in.h>
+#include <unistd.h>
+
+int rpc_call_local(int port, const char *creds,
+                   const char *method, const char *params_json,
+                   char *out, size_t outmax)
+{
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = htons((uint16_t)port);
+
+    struct timeval tv = { .tv_sec = 30, .tv_usec = 0 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        close(fd);
+        return -1;
+    }
+
+    char body[4096];
+    int blen = snprintf(body, sizeof(body),
+        "{\"jsonrpc\":\"1.0\",\"id\":1,\"method\":\"%s\",\"params\":%s}",
+        method, params_json);
+
+    /* Base64 encode credentials */
+    static const char b64[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    char auth_b64[256];
+    size_t alen = strlen(creds), bo = 0;
+    for (size_t i = 0; i < alen; i += 3) {
+        uint32_t n = ((uint32_t)(uint8_t)creds[i]) << 16;
+        if (i + 1 < alen) n |= ((uint32_t)(uint8_t)creds[i+1]) << 8;
+        if (i + 2 < alen) n |= (uint32_t)(uint8_t)creds[i+2];
+        auth_b64[bo++] = b64[(n >> 18) & 63];
+        auth_b64[bo++] = b64[(n >> 12) & 63];
+        auth_b64[bo++] = (i + 1 < alen) ? b64[(n >> 6) & 63] : '=';
+        auth_b64[bo++] = (i + 2 < alen) ? b64[n & 63] : '=';
+    }
+    auth_b64[bo] = '\0';
+
+    char req[8192];
+    int rlen = snprintf(req, sizeof(req),
+        "POST / HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+        "Authorization: Basic %s\r\n"
+        "Content-Type: application/json\r\n"
+        "Content-Length: %d\r\nConnection: close\r\n\r\n%s",
+        auth_b64, blen, body);
+
+    if (write(fd, req, (size_t)rlen) != rlen) { close(fd); return -1; }
+
+    size_t total = 0;
+    while (total < outmax - 1) {
+        ssize_t r = read(fd, out + total, outmax - 1 - total);
+        if (r <= 0) break;
+        total += (size_t)r;
+    }
+    out[total] = '\0';
+    close(fd);
+    return (int)total;
+}
+
+const char *rpc_http_body(const char *response)
+{
+    const char *p = strstr(response, "\r\n\r\n");
+    return p ? p + 4 : response;
 }
