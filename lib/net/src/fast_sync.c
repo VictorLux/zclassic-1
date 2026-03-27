@@ -809,6 +809,32 @@ bool block_piece_manifest_build(const char *datadir,
     if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK)
         return false;
 
+    /* Verify the blocks table has data in the requested range.
+     * During IBD the SQLite index may lag behind the chain tip. */
+    {
+        sqlite3_stmt *cnt = NULL;
+        int rc = sqlite3_prepare_v2(db,
+            "SELECT COUNT(*) FROM blocks WHERE height >= ? AND height <= ?",
+            -1, &cnt, NULL);
+        if (rc != SQLITE_OK || !cnt) {
+            sqlite3_close(db);
+            return false;
+        }
+        sqlite3_bind_int(cnt, 1, start_height);
+        sqlite3_bind_int(cnt, 2, end_height);
+        int64_t block_count = 0;
+        if (sqlite3_step(cnt) == SQLITE_ROW)
+            block_count = sqlite3_column_int64(cnt, 0);
+        sqlite3_finalize(cnt);
+
+        /* Need at least 90% coverage to build a useful manifest */
+        int64_t expected = end_height - start_height + 1;
+        if (block_count < expected * 9 / 10) {
+            sqlite3_close(db);
+            return false;
+        }
+    }
+
     out->start_height = start_height;
     out->end_height = end_height;
     int32_t total_blocks = end_height - start_height + 1;
@@ -817,8 +843,9 @@ bool block_piece_manifest_build(const char *datadir,
 
     /* Get tip hash */
     sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(db,
+    int rc = sqlite3_prepare_v2(db,
         "SELECT hash FROM blocks WHERE height = ?", -1, &s, NULL);
+    if (rc != SQLITE_OK || !s) { sqlite3_close(db); return false; }
     sqlite3_bind_int(s, 1, end_height);
     if (sqlite3_step(s) == SQLITE_ROW) {
         const void *h = sqlite3_column_blob(s, 0);
@@ -832,9 +859,16 @@ bool block_piece_manifest_build(const char *datadir,
     if (!out->piece_hashes) { sqlite3_close(db); return false; }
 
     /* Fetch all block hashes in range, compute piece hashes */
-    sqlite3_prepare_v2(db,
+    s = NULL;
+    rc = sqlite3_prepare_v2(db,
         "SELECT hash FROM blocks WHERE height >= ? AND height <= ? "
         "ORDER BY height ASC", -1, &s, NULL);
+    if (rc != SQLITE_OK || !s) {
+        sqlite3_close(db);
+        free(out->piece_hashes);
+        out->piece_hashes = NULL;
+        return false;
+    }
     sqlite3_bind_int(s, 1, start_height);
     sqlite3_bind_int(s, 2, end_height);
 
@@ -857,9 +891,11 @@ bool block_piece_manifest_build(const char *datadir,
         block_in_piece++;
 
         if (block_in_piece == BLOCKS_PER_PIECE) {
-            block_piece_hash((const uint8_t (*)[32])piece_block_hashes,
-                             block_in_piece, piece_idx,
-                             out->piece_hashes[piece_idx]);
+            if (piece_idx < out->num_pieces) {
+                block_piece_hash((const uint8_t (*)[32])piece_block_hashes,
+                                 block_in_piece, piece_idx,
+                                 out->piece_hashes[piece_idx]);
+            }
             piece_idx++;
             block_in_piece = 0;
         }
