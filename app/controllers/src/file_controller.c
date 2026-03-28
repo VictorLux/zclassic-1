@@ -82,13 +82,27 @@ bool file_manifest_build(struct file_manifest *fm, const char *datadir)
     char blocks_dir[512];
     snprintf(blocks_dir, sizeof(blocks_dir), "%s/blocks", datadir);
 
-    /* Scan block files: blk00000.dat, blk00001.dat, ... */
+    /* Count block files first to find the last one */
+    int num_files = 0;
     for (int i = 0; i < 256; i++) {
+        char path[576];
+        snprintf(path, sizeof(path), "%s/blk%05d.dat", blocks_dir, i);
+        struct stat st;
+        if (stat(path, &st) != 0) break;
+        num_files++;
+    }
+
+    /* Scan block files. Skip the LAST file — it may be actively written
+     * by P2P block download, causing SHA3 mismatches when served. Only
+     * serve complete, immutable files. The last file's blocks will be
+     * synced via P2P after the file transfer completes. */
+    int files_to_serve = num_files > 1 ? num_files - 1 : num_files;
+    for (int i = 0; i < files_to_serve; i++) {
         char path[576];
         snprintf(path, sizeof(path), "%s/blk%05d.dat", blocks_dir, i);
 
         struct stat st;
-        if (stat(path, &st) != 0) break; /* no more files */
+        if (stat(path, &st) != 0) break;
         if (st.st_size == 0) continue;
 
         if (!hash_file_chunks(path, (uint8_t)i, fm))

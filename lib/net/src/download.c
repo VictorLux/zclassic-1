@@ -382,6 +382,53 @@ size_t dl_queue_blocks(struct download_manager *dm,
     return added;
 }
 
+void dl_queue_priority(struct download_manager *dm,
+                       const struct uint256 *hash, int32_t height)
+{
+    zcl_mutex_lock(&dm->cs);
+
+    /* Skip if already in-flight */
+    struct dl_in_flight *s = find_slot(dm, hash, false);
+    if (s && s->active) {
+        zcl_mutex_unlock(&dm->cs);
+        return;
+    }
+
+    /* Remove from queue if already present (we'll re-add at front) */
+    for (size_t j = 0; j < dm->queue_len; j++) {
+        if (uint256_eq(&dm->queue[j], hash)) {
+            memmove(&dm->queue[j], &dm->queue[j+1],
+                    (dm->queue_len - j - 1) * sizeof(dm->queue[0]));
+            memmove(&dm->queue_heights[j], &dm->queue_heights[j+1],
+                    (dm->queue_len - j - 1) * sizeof(dm->queue_heights[0]));
+            dm->queue_len--;
+            break;
+        }
+    }
+
+    /* Ensure capacity */
+    if (dm->queue_len >= dm->queue_cap) {
+        size_t nc = dm->queue_cap * 2;
+        struct uint256 *nq = realloc(dm->queue, nc * sizeof(struct uint256));
+        int32_t *nh = realloc(dm->queue_heights, nc * sizeof(int32_t));
+        if (!nq || !nh) { zcl_mutex_unlock(&dm->cs); return; }
+        dm->queue = nq;
+        dm->queue_heights = nh;
+        dm->queue_cap = nc;
+    }
+
+    /* Shift everything right and insert at front */
+    memmove(&dm->queue[1], &dm->queue[0],
+            dm->queue_len * sizeof(dm->queue[0]));
+    memmove(&dm->queue_heights[1], &dm->queue_heights[0],
+            dm->queue_len * sizeof(dm->queue_heights[0]));
+    dm->queue[0] = *hash;
+    dm->queue_heights[0] = height;
+    dm->queue_len++;
+
+    zcl_mutex_unlock(&dm->cs);
+}
+
 size_t dl_assign_to_peer(struct download_manager *dm,
                          uint32_t peer_id,
                          struct uint256 *out_hashes,

@@ -1020,12 +1020,13 @@ bool activate_best_chain(struct validation_state *state,
              * The download manager will fetch it; on the next call
              * to activate_best_chain we'll continue from this point. */
             if (!(connect_path[i]->nStatus & BLOCK_HAVE_DATA)) {
-                /* Queue this block for download */
+                /* Priority-queue this block — it's the NEXT one needed
+                 * to advance the chain. Gets assigned to the next peer
+                 * before any other queued blocks. */
                 if (connect_path[i]->phashBlock) {
                     struct download_manager *dm_abc = msg_get_download_mgr();
-                    struct uint256 need_hash = *connect_path[i]->phashBlock;
-                    int32_t need_height = connect_path[i]->nHeight;
-                    dl_queue_blocks(dm_abc, &need_hash, &need_height, 1);
+                    dl_queue_priority(dm_abc, connect_path[i]->phashBlock,
+                                       connect_path[i]->nHeight);
                 }
                 /* Force flush coins to SQLite before pausing. If we
                  * connected any blocks above, their UTXOs are in the
