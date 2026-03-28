@@ -251,6 +251,10 @@ bool app_init_services(struct app_context *ctx,
         .ctx = svc->msg_processor,
     };
     connman_init(svc->connman, params, &signals);
+    svc->connman->datadir = ctx->datadir;
+
+    /* Load persisted peer addresses from previous session */
+    connman_load_addrman(svc->connman);
 
     addr_db_read(&svc->connman->manager, ctx->datadir);
 

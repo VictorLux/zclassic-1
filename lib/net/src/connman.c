@@ -9,7 +9,9 @@
 #include "net/addrman.h"
 #include "net/download.h"
 #include "controllers/blog_controller.h"
+#include "models/peer.h"
 #include "core/random.h"
+#include "core/serialize.h"
 #include "net/netbase.h"
 #include "net/version.h"
 #include <netdb.h>
@@ -23,6 +25,9 @@
 #include <time.h>
 #include <unistd.h>
 #include "core/utiltime.h"
+
+/* Extern from boot.c — used for ZCL23 peer preference */
+extern struct node_db *g_active_node_db;
 
 static pthread_t g_thread_dns_seed;
 static pthread_t g_thread_socket;
@@ -197,8 +202,44 @@ static void *thread_open_connections(void *arg)
             continue;
         }
 
+        /* ZCL23 peer preference: 50% of connection attempts go to known
+         * ZCL23 peers (fast sync capable, high bandwidth). This creates
+         * a tight mesh of power nodes that find each other quickly. */
+        bool tried_zcl23 = false;
+        if (g_active_node_db && (GetRand(2) == 0)) {
+            struct db_peer zcl_peers[8];
+            int nzcl = db_peer_fast_zcl23(g_active_node_db, zcl_peers, 8);
+            if (nzcl > 0) {
+                struct db_peer *pick = &zcl_peers[GetRand((uint64_t)nzcl)];
+                /* Check not already connected */
+                bool already = false;
+                zcl_mutex_lock(&cm->manager.cs_nodes);
+                for (size_t ni = 0; ni < cm->manager.num_nodes; ni++) {
+                    struct p2p_node *n = cm->manager.nodes[ni];
+                    if (!n->disconnect &&
+                        memcmp(n->addr.svc.addr.ip, pick->ip, 16) == 0 &&
+                        n->addr.svc.port == pick->port) {
+                        already = true;
+                        break;
+                    }
+                }
+                zcl_mutex_unlock(&cm->manager.cs_nodes);
+                if (!already) {
+                    struct net_address addr;
+                    memset(&addr, 0, sizeof(addr));
+                    memcpy(addr.svc.addr.ip, pick->ip, 16);
+                    addr.svc.port = pick->port;
+                    addr.nServices = pick->services;
+                    addr.nTime = (uint32_t)time(NULL);
+                    struct p2p_node *node = connect_node(&cm->manager,
+                                                          &addr, NULL);
+                    if (node) tried_zcl23 = true;
+                }
+            }
+        }
+
         /* Try more peers per tick when connections are low */
-        int attempts = (outbound == 0) ? 3 : 1;
+        int attempts = (outbound == 0) ? 3 : (tried_zcl23 ? 0 : 1);
         for (int a = 0; a < attempts && !g_stop; a++) {
             struct addr_info info;
             memset(&info, 0, sizeof(info));
@@ -616,10 +657,83 @@ void connman_stop(struct connman *cm)
     connman_join(cm);
 }
 
+void connman_save_addrman(struct connman *cm)
+{
+    if (!cm->datadir) return;
+    char path[512];
+    snprintf(path, sizeof(path), "%s/peers.dat", cm->datadir);
+
+    struct byte_stream s;
+    stream_init(&s, 65536);
+    zcl_mutex_lock(&cm->manager.addrman.cs);
+    bool ok = addrman_serialize(&cm->manager.addrman, &s);
+    zcl_mutex_unlock(&cm->manager.addrman.cs);
+
+    if (ok && s.size > 0) {
+        char tmp_path[520];
+        snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
+        FILE *f = fopen(tmp_path, "wb");
+        if (f) {
+            size_t written = fwrite(s.data, 1, s.size, f);
+            fclose(f);
+            if (written == s.size) {
+                rename(tmp_path, path);
+                printf("Saved %zu peers to %s (%zu bytes)\n",
+                       addrman_size(&cm->manager.addrman), path, s.size);
+            } else {
+                remove(tmp_path);
+                fprintf(stderr, "addrman save: short write (%zu/%zu)\n",
+                        written, s.size);
+            }
+        }
+    }
+    stream_free(&s);
+}
+
+void connman_load_addrman(struct connman *cm)
+{
+    if (!cm->datadir) return;
+    char path[512];
+    snprintf(path, sizeof(path), "%s/peers.dat", cm->datadir);
+
+    FILE *f = fopen(path, "rb");
+    if (!f) return; /* no saved peers — normal on first run */
+
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (sz <= 0 || sz > 50 * 1024 * 1024) { /* sanity: max 50 MB */
+        fclose(f);
+        return;
+    }
+
+    uint8_t *buf = malloc((size_t)sz);
+    if (!buf) { fclose(f); return; }
+    size_t rd = fread(buf, 1, (size_t)sz, f);
+    fclose(f);
+
+    if (rd == (size_t)sz) {
+        struct byte_stream s;
+        stream_init_from_data(&s, buf, (size_t)sz);
+        zcl_mutex_lock(&cm->manager.addrman.cs);
+        if (addrman_deserialize(&cm->manager.addrman, &s)) {
+            printf("Loaded %zu peers from %s\n",
+                   addrman_size(&cm->manager.addrman), path);
+        } else {
+            fprintf(stderr, "addrman load: deserialize failed, starting fresh\n");
+            addrman_clear(&cm->manager.addrman);
+        }
+        zcl_mutex_unlock(&cm->manager.addrman.cs);
+        stream_free(&s);
+    }
+    free(buf);
+}
+
 void connman_free(struct connman *cm)
 {
     if (cm->started)
         connman_stop(cm);
+    connman_save_addrman(cm);
     net_manager_free(&cm->manager);
 }
 

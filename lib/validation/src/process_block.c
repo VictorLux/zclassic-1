@@ -105,14 +105,25 @@ static bool flush_coins_if_needed(struct coins_view_cache *coins_tip,
         return true;
 
 
-    /* Flush the node_db batch transaction BEFORE flushing coins.
-     * Both use the same sqlite3 handle. The coins flush uses SAVEPOINT
-     * which nests inside node_db's BEGIN TRANSACTION. If the node_db
-     * transaction later rolls back, the coins flush data is lost but
-     * the cache was already cleared → UTXO loss. Committing node_db
-     * first ensures the coins SAVEPOINT runs outside any open txn. */
-    if (g_active_node_db && g_active_node_db->sync_in_batch)
-        node_db_sync_flush(g_active_node_db);
+    /* Commit ALL open transactions on the shared sqlite3 handle before
+     * flushing coins. The coins flush needs exclusive transaction control.
+     * Loop until autocommit is restored — handles nested/restarted txns. */
+    if (g_active_node_db && g_active_node_db->open) {
+        if (g_active_node_db->sync_in_batch)
+            node_db_sync_flush(g_active_node_db);
+        /* Belt-and-suspenders: if autocommit is still off after flush,
+         * force a COMMIT. This catches any transaction started by code
+         * outside the sync_in_batch tracking. */
+        if (g_active_node_db->db &&
+            sqlite3_get_autocommit(g_active_node_db->db) == 0) {
+            fprintf(stderr, "flush_coins: forcing COMMIT on orphaned "
+                    "transaction (sync_in_batch=%d)\n",
+                    g_active_node_db->sync_in_batch);
+            sqlite3_exec(g_active_node_db->db, "COMMIT", NULL, NULL, NULL);
+            g_active_node_db->sync_in_batch = false;
+            g_active_node_db->sync_pending_blocks = 0;
+        }
+    }
 
     size_t batched = (size_t)g_blocks_since_flush;
     bool ok = coins_view_cache_flush(coins_tip);
@@ -790,8 +801,19 @@ bool connect_tip(struct validation_state *state,
     if (pindex_new->phashBlock)
         rpc_blockchain_mmr_append(pindex_new->phashBlock->data);
 
-    /* Periodically flush coins cache to SQLite */
-    flush_coins_if_needed(coins_tip, false);
+    /* Periodically flush coins cache to SQLite.
+     * If flush fails, we MUST stop connecting blocks. Continuing would
+     * spend UTXOs that were never written to SQLite, causing permanent
+     * UTXO loss (the "create → refuse flush → spend → later flush DELETEs
+     * a UTXO that was never INSERTed" bug). */
+    if (!flush_coins_if_needed(coins_tip, false)) {
+        fprintf(stderr, "connect_block: coins flush failed at height %d "
+                "— halting block connection to prevent UTXO loss\n",
+                pindex_new->nHeight);
+        if (pblock == &local_block)
+            block_free(&local_block);
+        return false;
+    }
 
     if (pblock == &local_block)
         block_free(&local_block);

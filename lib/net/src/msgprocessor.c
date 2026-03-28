@@ -495,7 +495,30 @@ static bool process_verack(struct msg_processor *mp, struct p2p_node *node)
                            (int64_t)time(NULL));
     }
 
-    /* Save peer to SQLite for explorer/browser visibility */
+    /* Aggressive peer exchange with ZCL23 nodes — don't wait for getaddr.
+     * Push all known addresses immediately so both nodes build their
+     * address books fast. This is the key to low-friction peer discovery:
+     * every ZCL23 handshake floods addresses in both directions. */
+    if (peer_supports_fast_sync(node->services) && mp->net_mgr) {
+        struct net_address addrs[2500];
+        size_t num = addrman_get_addr(&mp->net_mgr->addrman, addrs, 2500);
+        if (num > 0) {
+            struct byte_stream addr_msg;
+            stream_init(&addr_msg, num * 30 + 8);
+            stream_write_compact_size(&addr_msg, num);
+            for (size_t i = 0; i < num; i++)
+                net_address_serialize(&addrs[i], &addr_msg, true);
+            p2p_node_begin_message(node, "addr",
+                                    mp->params->pchMessageStart);
+            p2p_node_write_message_data(node, addr_msg.data, addr_msg.size);
+            p2p_node_end_message(node);
+            stream_free(&addr_msg);
+            printf("Peer %s: pushed %zu addresses (ZCL23 peer exchange)\n",
+                   node->addr_name, num);
+        }
+    }
+
+    /* Save peer to SQLite with ZCL23 flag for peer preference */
     if (g_active_node_db && g_active_node_db->db) {
         sqlite3_exec(g_active_node_db->db,
             "CREATE TABLE IF NOT EXISTS peers ("
@@ -504,17 +527,21 @@ static bool process_verack(struct msg_processor *mp, struct p2p_node *node)
             "services INTEGER NOT NULL DEFAULT 0,"
             "last_seen INTEGER NOT NULL,"
             "last_try INTEGER DEFAULT 0,attempts INTEGER DEFAULT 0,"
-            "source BLOB,UNIQUE(ip,port))",
+            "source BLOB,bandwidth_score INTEGER DEFAULT 0,"
+            "is_zcl23 INTEGER DEFAULT 0,UNIQUE(ip,port))",
             NULL, NULL, NULL);
+        bool is_zcl23 = peer_supports_fast_sync(node->services);
         sqlite3_stmt *ins = NULL;
         sqlite3_prepare_v2(g_active_node_db->db,
-            "INSERT OR REPLACE INTO peers (ip,port,services,last_seen)"
-            " VALUES(?,?,?,?)", -1, &ins, NULL);
+            "INSERT OR REPLACE INTO peers"
+            " (ip,port,services,last_seen,is_zcl23)"
+            " VALUES(?,?,?,?,?)", -1, &ins, NULL);
         if (ins) {
             sqlite3_bind_blob(ins, 1, node->addr.svc.addr.ip, 16, SQLITE_STATIC);
             sqlite3_bind_int(ins, 2, node->addr.svc.port);
             sqlite3_bind_int64(ins, 3, (int64_t)node->services);
             sqlite3_bind_int64(ins, 4, (int64_t)time(NULL));
+            sqlite3_bind_int(ins, 5, is_zcl23 ? 1 : 0);
             sqlite3_step(ins);
             sqlite3_finalize(ins);
         }

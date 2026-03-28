@@ -242,8 +242,8 @@ int db_peer_fast_zcl23(struct node_db *ndb, struct db_peer *out, size_t max)
     sqlite3_stmt *s = NULL;
     sqlite3_prepare_v2(ndb->db,
         "SELECT id,ip,port,services,last_seen,last_try,attempts,source"
-        " FROM peers WHERE is_zcl23=1 AND bandwidth_score > 0"
-        " ORDER BY bandwidth_score DESC LIMIT ?",
+        " FROM peers WHERE is_zcl23=1"
+        " ORDER BY bandwidth_score DESC, last_seen DESC LIMIT ?",
         -1, &s, NULL);
     sqlite3_bind_int(s, 1, (int)max);
     int count = 0;

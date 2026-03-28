@@ -234,16 +234,27 @@ bool coins_view_sqlite_batch_write(struct coins_view_sqlite *cvs,
 
     /* The db handle must be in autocommit mode (no open transaction).
      * flush_coins_if_needed commits the node_db batch before calling us.
-     * If a foreign transaction is still open, refuse to write — the
-     * caller will retain the coins cache and retry later. This prevents
-     * the catastrophic scenario where we write UTXOs into someone else's
-     * transaction, clear the cache, and then that transaction rolls back
-     * (losing UTXOs from both RAM and disk). */
+     * If a foreign transaction is STILL open (shouldn't happen), force
+     * commit it. We cannot refuse — refusing causes UTXO loss because
+     * the node continues connecting blocks that spend unflushed UTXOs. */
     if (sqlite3_get_autocommit(cvs->db) == 0) {
-        fprintf(stderr, "coins_flush: REFUSED — db has open transaction "
-                "(cache retained for retry, %zu dirty entries safe in RAM)\n",
+        fprintf(stderr, "coins_flush: WARNING — forcing COMMIT on open "
+                "transaction before coins flush (%zu dirty entries)\n",
                 map_coins->size);
-        return false;
+        sqlite3_exec(cvs->db, "COMMIT", NULL, NULL, NULL);
+        /* If COMMIT fails (no active transaction to commit), that's OK —
+         * autocommit will be restored. If it succeeds, we're clean. */
+        if (sqlite3_get_autocommit(cvs->db) == 0) {
+            /* Still not in autocommit — try ROLLBACK as last resort */
+            fprintf(stderr, "coins_flush: COMMIT didn't restore autocommit, "
+                    "trying ROLLBACK\n");
+            sqlite3_exec(cvs->db, "ROLLBACK", NULL, NULL, NULL);
+        }
+        if (sqlite3_get_autocommit(cvs->db) == 0) {
+            fprintf(stderr, "coins_flush: FATAL — cannot restore autocommit "
+                    "mode, aborting flush\n");
+            return false;
+        }
     }
     {
         char *txn_err = NULL;

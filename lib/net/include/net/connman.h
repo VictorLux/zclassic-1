@@ -22,6 +22,8 @@ struct connman {
     /* Persistent addnode list — reconnected automatically on disconnect */
     struct net_address addnodes[MAX_ADDNODES];
     int num_addnodes;
+    /* Data directory for persisting addrman (peers.dat) */
+    const char *datadir;
 };
 
 bool connman_init(struct connman *cm, const struct chain_params *params,
@@ -31,6 +33,12 @@ void connman_signal_stop(struct connman *cm);
 void connman_join(struct connman *cm);
 void connman_stop(struct connman *cm);
 void connman_free(struct connman *cm);
+
+/* Persist addrman to {datadir}/peers.dat. Call on shutdown. */
+void connman_save_addrman(struct connman *cm);
+
+/* Load addrman from {datadir}/peers.dat. Call before connman_start. */
+void connman_load_addrman(struct connman *cm);
 
 void connman_add_seed_node(struct connman *cm, const char *host,
                             uint16_t port);
