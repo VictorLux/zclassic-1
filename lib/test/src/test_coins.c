@@ -749,5 +749,243 @@ int test_coins(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    printf("coins_view_sqlite: force-commit orphaned transaction... ");
+    {
+        /* THE CRITICAL TEST: simulates the exact production bug.
+         * 1. Open a sqlite3 db
+         * 2. Start a foreign BEGIN TRANSACTION (like node_db batch)
+         * 3. Call coins_view_sqlite_batch_write
+         * 4. It must force-commit the foreign txn and succeed
+         * 5. UTXOs must be readable after */
+        sqlite3 *db = NULL;
+        int rc = sqlite3_open(":memory:", &db);
+        bool ok = (rc == SQLITE_OK && db != NULL);
+        if (ok) {
+            sqlite3_exec(db,
+                "CREATE TABLE IF NOT EXISTS utxos ("
+                " txid BLOB NOT NULL, vout INTEGER NOT NULL,"
+                " value INTEGER, script BLOB, script_type INTEGER,"
+                " address_hash BLOB, height INTEGER, is_coinbase INTEGER,"
+                " PRIMARY KEY(txid, vout))",
+                NULL, NULL, NULL);
+            sqlite3_exec(db,
+                "CREATE TABLE IF NOT EXISTS node_state ("
+                " key TEXT PRIMARY KEY, value BLOB)",
+                NULL, NULL, NULL);
+
+            struct coins_view_sqlite cvs;
+            if (coins_view_sqlite_open(&cvs, db)) {
+                /* Simulate node_db opening a transaction */
+                sqlite3_exec(db, "BEGIN TRANSACTION", NULL, NULL, NULL);
+                /* Verify autocommit is OFF (foreign txn is open) */
+                ok = (sqlite3_get_autocommit(db) == 0);
+
+                /* Build coins map */
+                struct coins_map cm;
+                coins_map_init(&cm);
+                struct uint256 txid;
+                memset(txid.data, 0x55, 32);
+                struct coins_cache_entry *e = coins_map_insert(&cm, &txid);
+                coins_alloc(&e->coins, 1);
+                e->coins.vout[0].value = 12345678;
+                uint8_t p2pkh[] = {0x76, 0xa9, 0x14,
+                    1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,
+                    0x88, 0xac};
+                script_set(&e->coins.vout[0].script_pub_key,
+                           p2pkh, sizeof(p2pkh));
+                e->coins.height = 200;
+                e->coins.is_coinbase = false;
+                e->flags = COINS_CACHE_DIRTY;
+
+                struct uint256 best;
+                memset(best.data, 0xCC, 32);
+
+                /* THIS IS THE KEY: batch_write must force-commit the
+                 * foreign txn and then succeed with its own BEGIN/COMMIT */
+                bool flush_ok = coins_view_sqlite_batch_write(&cvs, &cm, &best);
+                ok = ok && flush_ok;
+
+                /* Verify autocommit is restored */
+                ok = ok && (sqlite3_get_autocommit(db) != 0);
+
+                /* Verify UTXO was actually written and is readable */
+                if (ok) {
+                    struct coins readback;
+                    coins_init(&readback);
+                    ok = ok && coins_view_sqlite_get_coins(&cvs, &txid, &readback);
+                    ok = ok && readback.vout[0].value == 12345678;
+                    ok = ok && readback.height == 200;
+                    coins_free(&readback);
+                }
+
+                coins_map_free(&cm);
+                coins_view_sqlite_close(&cvs);
+            } else {
+                ok = false;
+            }
+            sqlite3_close(db);
+        }
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("coins_view_sqlite: multi-flush with interleaved foreign txns... ");
+    {
+        /* Simulate the IBD pattern: repeated flushes where each one
+         * might find a foreign transaction open. ALL must succeed. */
+        sqlite3 *db = NULL;
+        sqlite3_open(":memory:", &db);
+        bool ok = (db != NULL);
+        if (ok) {
+            sqlite3_exec(db,
+                "CREATE TABLE IF NOT EXISTS utxos ("
+                " txid BLOB NOT NULL, vout INTEGER NOT NULL,"
+                " value INTEGER, script BLOB, script_type INTEGER,"
+                " address_hash BLOB, height INTEGER, is_coinbase INTEGER,"
+                " PRIMARY KEY(txid, vout))", NULL, NULL, NULL);
+            sqlite3_exec(db,
+                "CREATE TABLE IF NOT EXISTS node_state ("
+                " key TEXT PRIMARY KEY, value BLOB)", NULL, NULL, NULL);
+
+            struct coins_view_sqlite cvs;
+            coins_view_sqlite_open(&cvs, db);
+
+            uint8_t p2pkh[] = {0x76, 0xa9, 0x14,
+                1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,
+                0x88, 0xac};
+
+            /* Do 10 flush cycles, alternating foreign txn / clean */
+            for (int cycle = 0; cycle < 10 && ok; cycle++) {
+                /* Half the time, open a foreign transaction first */
+                if (cycle % 2 == 0)
+                    sqlite3_exec(db, "BEGIN", NULL, NULL, NULL);
+
+                struct coins_map cm;
+                coins_map_init(&cm);
+                struct uint256 txid;
+                memset(txid.data, 0, 32);
+                txid.data[0] = (uint8_t)cycle;
+                struct coins_cache_entry *e = coins_map_insert(&cm, &txid);
+                coins_alloc(&e->coins, 1);
+                e->coins.vout[0].value = 1000 * (cycle + 1);
+                script_set(&e->coins.vout[0].script_pub_key,
+                           p2pkh, sizeof(p2pkh));
+                e->coins.height = cycle * 500;
+                e->flags = COINS_CACHE_DIRTY;
+
+                struct uint256 best;
+                memset(best.data, (uint8_t)cycle, 32);
+
+                bool flush_ok = coins_view_sqlite_batch_write(&cvs, &cm, &best);
+                ok = ok && flush_ok;
+                /* Autocommit must be on after every flush */
+                ok = ok && (sqlite3_get_autocommit(db) != 0);
+
+                coins_map_free(&cm);
+            }
+
+            /* Verify all 10 UTXOs are readable */
+            for (int cycle = 0; cycle < 10 && ok; cycle++) {
+                struct uint256 txid;
+                memset(txid.data, 0, 32);
+                txid.data[0] = (uint8_t)cycle;
+                struct coins readback;
+                coins_init(&readback);
+                ok = ok && coins_view_sqlite_get_coins(&cvs, &txid, &readback);
+                ok = ok && readback.vout[0].value == 1000 * (cycle + 1);
+                coins_free(&readback);
+            }
+
+            coins_view_sqlite_close(&cvs);
+            sqlite3_close(db);
+        }
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("coins_view_sqlite: spend-after-flush roundtrip... ");
+    {
+        /* Test the exact failure mode: create UTXO, flush, spend UTXO,
+         * flush again. The second flush must DELETE from SQLite. */
+        sqlite3 *db = NULL;
+        sqlite3_open(":memory:", &db);
+        bool ok = (db != NULL);
+        if (ok) {
+            sqlite3_exec(db,
+                "CREATE TABLE IF NOT EXISTS utxos ("
+                " txid BLOB NOT NULL, vout INTEGER NOT NULL,"
+                " value INTEGER, script BLOB, script_type INTEGER,"
+                " address_hash BLOB, height INTEGER, is_coinbase INTEGER,"
+                " PRIMARY KEY(txid, vout))", NULL, NULL, NULL);
+            sqlite3_exec(db,
+                "CREATE TABLE IF NOT EXISTS node_state ("
+                " key TEXT PRIMARY KEY, value BLOB)", NULL, NULL, NULL);
+
+            struct coins_view_sqlite cvs;
+            coins_view_sqlite_open(&cvs, db);
+
+            /* Step 1: Create and flush a UTXO */
+            struct uint256 txid;
+            memset(txid.data, 0xAA, 32);
+            {
+                struct coins_map cm;
+                coins_map_init(&cm);
+                struct coins_cache_entry *e = coins_map_insert(&cm, &txid);
+                coins_alloc(&e->coins, 1);
+                e->coins.vout[0].value = 50000000;
+                uint8_t p2pkh[] = {0x76, 0xa9, 0x14,
+                    1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,
+                    0x88, 0xac};
+                script_set(&e->coins.vout[0].script_pub_key,
+                           p2pkh, sizeof(p2pkh));
+                e->coins.height = 100;
+                e->flags = COINS_CACHE_DIRTY;
+                struct uint256 best;
+                memset(best.data, 0x11, 32);
+                ok = coins_view_sqlite_batch_write(&cvs, &cm, &best);
+                coins_map_free(&cm);
+            }
+
+            /* Verify UTXO exists in SQLite */
+            if (ok) {
+                struct coins c;
+                coins_init(&c);
+                ok = coins_view_sqlite_get_coins(&cvs, &txid, &c);
+                ok = ok && c.vout[0].value == 50000000;
+                coins_free(&c);
+            }
+
+            /* Step 2: "Spend" the UTXO (mark as pruned) and flush */
+            if (ok) {
+                struct coins_map cm;
+                coins_map_init(&cm);
+                struct coins_cache_entry *e = coins_map_insert(&cm, &txid);
+                /* Pruned = all outputs null, num_vout = 0 */
+                e->coins.num_vout = 0;
+                e->coins.vout = NULL;
+                e->flags = COINS_CACHE_DIRTY;
+                struct uint256 best;
+                memset(best.data, 0x22, 32);
+                ok = coins_view_sqlite_batch_write(&cvs, &cm, &best);
+                coins_map_free(&cm);
+            }
+
+            /* Verify UTXO is gone from SQLite */
+            if (ok) {
+                struct coins c;
+                coins_init(&c);
+                bool found = coins_view_sqlite_get_coins(&cvs, &txid, &c);
+                /* Should NOT be found (was deleted) */
+                ok = !found;
+                coins_free(&c);
+            }
+
+            coins_view_sqlite_close(&cvs);
+            sqlite3_close(db);
+        }
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     return failures;
 }
