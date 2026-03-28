@@ -51,54 +51,11 @@ static struct coins_view_vtable cvs_vtable = {
 
 /* ── Open / Close ──────────────────────────────────────────────── */
 
-bool coins_view_sqlite_open_path(struct coins_view_sqlite *cvs,
-                                  const char *db_path)
-{
-    if (!db_path) return false;
-    sqlite3 *db = NULL;
-    int rc = sqlite3_open_v2(db_path, &db,
-                              SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE,
-                              NULL);
-    if (rc != SQLITE_OK || !db) {
-        fprintf(stderr, "coins_view_sqlite: failed to open %s: %s\n",
-                db_path, db ? sqlite3_errmsg(db) : "NULL");
-        if (db) sqlite3_close(db);
-        return false;
-    }
-    /* WAL mode for concurrent reads while node_db writes */
-    sqlite3_exec(db, "PRAGMA journal_mode=WAL", NULL, NULL, NULL);
-    sqlite3_exec(db, "PRAGMA synchronous=NORMAL", NULL, NULL, NULL);
-    sqlite3_exec(db, "PRAGMA cache_size=-65536", NULL, NULL, NULL); /* 64MB */
-    sqlite3_exec(db, "PRAGMA mmap_size=268435456", NULL, NULL, NULL); /* 256MB */
-    sqlite3_busy_timeout(db, 5000);
-
-    /* Ensure tables exist on this connection */
-    sqlite3_exec(db,
-        "CREATE TABLE IF NOT EXISTS utxos ("
-        " txid BLOB NOT NULL, vout INTEGER NOT NULL,"
-        " value INTEGER, script BLOB, script_type INTEGER,"
-        " address_hash BLOB, height INTEGER, is_coinbase INTEGER,"
-        " PRIMARY KEY(txid, vout))", NULL, NULL, NULL);
-    sqlite3_exec(db,
-        "CREATE TABLE IF NOT EXISTS node_state ("
-        " key TEXT PRIMARY KEY, value BLOB)", NULL, NULL, NULL);
-
-    if (!coins_view_sqlite_open(cvs, db)) {
-        sqlite3_close(db);
-        return false;
-    }
-    cvs->owns_db = true;
-    printf("Coins UTXO service: dedicated connection to %s (WAL mode)\n",
-           db_path);
-    return true;
-}
-
 bool coins_view_sqlite_open(struct coins_view_sqlite *cvs, sqlite3 *db)
 {
     if (!db) return false;
     memset(cvs, 0, sizeof(*cvs));
     cvs->db = db;
-    cvs->owns_db = false;
     cvs->view.vtable = &cvs_vtable;
     cvs->view.impl = cvs;
 
@@ -169,11 +126,7 @@ void coins_view_sqlite_close(struct coins_view_sqlite *cvs)
     if (cvs->stmt_best_set)   { sqlite3_finalize(cvs->stmt_best_set);   cvs->stmt_best_set = NULL; }
     if (cvs->stmt_commit_get) { sqlite3_finalize(cvs->stmt_commit_get); cvs->stmt_commit_get = NULL; }
     if (cvs->stmt_commit_set) { sqlite3_finalize(cvs->stmt_commit_set); cvs->stmt_commit_set = NULL; }
-    if (cvs->owns_db && cvs->db) {
-        sqlite3_close(cvs->db);
-    }
-    cvs->db = NULL;
-    cvs->owns_db = false;
+    cvs->db = NULL; /* shared handle — caller owns the connection */
 }
 
 /* ── get_coins: build struct coins from SQLite rows ────────────── */
@@ -207,18 +160,8 @@ bool coins_view_sqlite_get_coins(struct coins_view_sqlite *cvs,
         nrows++;
     }
 
-    if (nrows == 0) {
-        /* Diagnostic: log failed lookup for debugging UTXO misses */
-        static int miss_count = 0;
-        if (miss_count < 5) {
-            miss_count++;
-            fprintf(stderr, "coins_sqlite: MISS txid=");
-            for (int di = 0; di < 32; di++)
-                fprintf(stderr, "%02x", txid->data[di]);
-            fprintf(stderr, " (search on db=%p)\n", (void *)cvs->db);
-        }
+    if (nrows == 0)
         return false;
-    }
 
     /* Allocate once */
     if (!coins_alloc(out, (size_t)(max_vout + 1)))
@@ -289,10 +232,10 @@ bool coins_view_sqlite_batch_write(struct coins_view_sqlite *cvs,
 {
     if (!cvs->db) return false;
 
-    /* Use SAVEPOINT for transaction control. On a shared connection,
-     * SAVEPOINT nests cleanly inside node_db's open BEGIN TRANSACTION.
-     * On a dedicated connection, SAVEPOINT works in autocommit mode too
-     * (it implicitly starts a transaction). Either way: safe. */
+    /* SAVEPOINT nests cleanly inside node_db's open BEGIN TRANSACTION.
+     * flush_coins_if_needed commits node_db's batch first, so the
+     * SAVEPOINT typically runs in autocommit mode. If a transaction
+     * IS open, nesting still works correctly in SQLite. */
     {
         char *txn_err = NULL;
         int txn_rc = sqlite3_exec(cvs->db, "SAVEPOINT coins_flush",

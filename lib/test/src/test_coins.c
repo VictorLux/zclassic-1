@@ -749,14 +749,14 @@ int test_coins(void)
         else { printf("FAIL\n"); failures++; }
     }
 
-    printf("coins_view_sqlite: force-commit orphaned transaction... ");
+    printf("coins_view_sqlite: SAVEPOINT nests inside foreign transaction... ");
     {
-        /* THE CRITICAL TEST: simulates the exact production bug.
+        /* THE CRITICAL TEST: coins flush works inside a foreign transaction.
          * 1. Open a sqlite3 db
          * 2. Start a foreign BEGIN TRANSACTION (like node_db batch)
-         * 3. Call coins_view_sqlite_batch_write
-         * 4. It must force-commit the foreign txn and succeed
-         * 5. UTXOs must be readable after */
+         * 3. Call coins_view_sqlite_batch_write (uses SAVEPOINT)
+         * 4. SAVEPOINT nests inside the BEGIN, flush succeeds
+         * 5. COMMIT the foreign txn, then verify UTXOs readable */
         sqlite3 *db = NULL;
         int rc = sqlite3_open(":memory:", &db);
         bool ok = (rc == SQLITE_OK && db != NULL);
@@ -800,15 +800,14 @@ int test_coins(void)
                 struct uint256 best;
                 memset(best.data, 0xCC, 32);
 
-                /* THIS IS THE KEY: batch_write must force-commit the
-                 * foreign txn and then succeed with its own BEGIN/COMMIT */
+                /* SAVEPOINT nests inside the foreign BEGIN — flush succeeds */
                 bool flush_ok = coins_view_sqlite_batch_write(&cvs, &cm, &best);
                 ok = ok && flush_ok;
 
-                /* Verify autocommit is restored */
-                ok = ok && (sqlite3_get_autocommit(db) != 0);
+                /* Foreign transaction is still open (SAVEPOINT doesn't end it) */
+                ok = ok && (sqlite3_get_autocommit(db) == 0);
 
-                /* Verify UTXO was actually written and is readable */
+                /* UTXO is visible within the transaction */
                 if (ok) {
                     struct coins readback;
                     coins_init(&readback);
@@ -817,6 +816,10 @@ int test_coins(void)
                     ok = ok && readback.height == 200;
                     coins_free(&readback);
                 }
+
+                /* Commit the foreign transaction — data persists */
+                sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
+                ok = ok && (sqlite3_get_autocommit(db) != 0);
 
                 coins_map_free(&cm);
                 coins_view_sqlite_close(&cvs);
@@ -878,8 +881,10 @@ int test_coins(void)
 
                 bool flush_ok = coins_view_sqlite_batch_write(&cvs, &cm, &best);
                 ok = ok && flush_ok;
-                /* Autocommit must be on after every flush */
-                ok = ok && (sqlite3_get_autocommit(db) != 0);
+
+                /* If we opened a foreign txn, commit it after flush */
+                if (cycle % 2 == 0)
+                    sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
 
                 coins_map_free(&cm);
             }

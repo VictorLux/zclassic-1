@@ -10,8 +10,7 @@
 
 struct coins_view_sqlite {
     struct coins_view view;          /* vtable-based polymorphism */
-    sqlite3 *db;                     /* database handle */
-    bool owns_db;                    /* true if we opened it (must close) */
+    sqlite3 *db;                     /* shared handle to node.db */
 
     /* Prepared statements */
     sqlite3_stmt *stmt_get;          /* all vouts for a txid */
@@ -24,13 +23,9 @@ struct coins_view_sqlite {
     sqlite3_stmt *stmt_commit_set;   /* write UTXO commitment */
 };
 
-/* Open on a shared db handle (legacy — transaction conflicts possible) */
+/* Open coins view on a shared sqlite3 handle.
+ * Uses SAVEPOINT for transaction nesting with node_db. */
 bool coins_view_sqlite_open(struct coins_view_sqlite *cvs, sqlite3 *db);
-
-/* Open a DEDICATED connection to the db file. This is the correct way:
- * each service owns its connection, no transaction conflicts. */
-bool coins_view_sqlite_open_path(struct coins_view_sqlite *cvs,
-                                  const char *db_path);
 void coins_view_sqlite_close(struct coins_view_sqlite *cvs);
 
 /* coins_view vtable implementations */
