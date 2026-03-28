@@ -508,7 +508,7 @@ static void *fs_server_thread(void *arg)
 
         const struct file_manifest *fm = atomic_load(&g_have_manifest) ? &g_server_fm : NULL;
 
-        /* Serve: receive REQUESTs, send DATA */
+        /* Serve: receive control frames, send data */
         while (g_fs_running) {
             uint8_t type;
             const uint8_t *payload;
@@ -517,8 +517,30 @@ static void *fs_server_thread(void *arg)
             if (!fs_recv_frame(&session, &type, &payload, &plen))
                 break;
 
-            if (type == FS_REQUEST && plen >= 32 && fm) {
-                /* Payload is a SHA3 hash of requested chunk */
+            if (type == FS_REQUEST && plen == 3 &&
+                memcmp(payload, "ALL", 3) == 0 && fm) {
+                /* Stream ALL chunks back-to-back — zero round trips */
+                printf("file_service: streaming %u chunks (%.1f GB)...\n",
+                       fm->num_chunks,
+                       (double)fm->total_bytes / (1024.0*1024.0*1024.0));
+                for (uint32_t ci = 0; ci < fm->num_chunks; ci++) {
+                    uint8_t *data = NULL;
+                    uint32_t data_size = 0;
+                    if (file_chunk_read(&fm->chunks[ci], g_fs_datadir,
+                                         &data, &data_size)) {
+                        fs_send_chunk_fast(&session, data, data_size,
+                                            fm->chunks[ci].sha3);
+                        free(data);
+                    } else {
+                        fprintf(stderr, "file_service: chunk %u read "
+                                "failed\n", ci);
+                        break;
+                    }
+                }
+                printf("file_service: streaming done (%.1f MB/s)\n",
+                       fs_session_mbps(&session));
+            } else if (type == FS_REQUEST && plen >= 32 && fm) {
+                /* Single chunk request by hash */
                 const struct file_chunk *chunk =
                     file_manifest_find(fm, payload);
                 if (chunk) {
@@ -529,9 +551,6 @@ static void *fs_server_thread(void *arg)
                         fs_send_chunk_fast(&session, data, data_size,
                                             chunk->sha3);
                         free(data);
-                        printf("file_service: served chunk %u bytes "
-                               "(%.1f MB/s)\n",
-                               data_size, fs_session_mbps(&session));
                     }
                 }
             } else if (type == FS_MANIFEST) {
@@ -672,23 +691,12 @@ bool fs_client_sync(const char *peer_addr, uint16_t port,
         return false;
     }
 
-    /* Windowed pipeline: keep 4 requests in flight at all times.
-     * While we receive and write chunk N, server is already reading
-     * chunks N+1..N+4 from disk. Eliminates per-chunk round-trip. */
-    #define FS_PIPELINE_DEPTH 4
-    uint32_t sent = 0;
-    /* Prime the pipeline */
-    while (sent < num_chunks && sent < FS_PIPELINE_DEPTH) {
-        fs_send_frame(&session, FS_REQUEST, chunks[sent].sha3, 32);
-        sent++;
-    }
+    /* Request ALL chunks in one batch frame, then receive all data.
+     * Single request message tells server "send everything".
+     * Server streams chunks back-to-back. Zero round trips. */
+    fs_send_frame(&session, FS_REQUEST, (const uint8_t *)"ALL", 3);
 
     for (uint32_t i = 0; i < num_chunks; i++) {
-        /* Send next request to keep pipeline full */
-        if (sent < num_chunks) {
-            fs_send_frame(&session, FS_REQUEST, chunks[sent].sha3, 32);
-            sent++;
-        }
         uint8_t *chunk_buf = NULL;
         uint32_t chunk_size = 0;
         if (!fs_recv_chunk_fast(&session, &chunk_buf, &chunk_size,
