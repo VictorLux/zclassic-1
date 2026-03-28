@@ -14,6 +14,7 @@
 #include "controllers/network_controller.h"
 #include "controllers/mining_controller.h"
 #include "controllers/file_controller.h"
+#include "net/file_service.h"
 #include "controllers/transaction_controller.h"
 #include "controllers/api_controller.h"
 #include "controllers/explorer_internal.h"
@@ -328,6 +329,10 @@ bool app_init_services(struct app_context *ctx,
     file_controller_init(ctx->datadir);
     register_file_rpc_commands(svc->rpc_table);
 
+    /* Start file service server on dedicated port.
+     * Auto-serves blockchain data to any ZCL23 peer that connects. */
+    fs_server_start(ctx->datadir, FS_PORT);
+
     rpc_wallet_set_state(svc->wallet, svc->state, ctx->datadir, svc->wallet_sqlite,
                          svc->mempool, svc->connman);
     rpc_wallet_set_coins_tip(svc->coins_tip);
@@ -548,6 +553,9 @@ void app_shutdown_svc(struct boot_svc_ctx *svc)
         gen_stop(svc->gen);
 
     rpc_http_stop();
+
+    /* Stop file service */
+    fs_server_stop();
 
     /* Save block index flat file for instant next restart */
     if (svc->state->map_block_index.size > 1000) {

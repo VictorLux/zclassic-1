@@ -6,6 +6,7 @@
 
 #include "net/msgprocessor.h"
 #include "net/addrman.h"
+#include "net/file_service.h"
 #include "models/peer.h"
 #include "models/database.h"
 #include "net/fast_sync.h"
@@ -466,6 +467,26 @@ static bool process_version(struct msg_processor *mp, struct p2p_node *node,
 
         /* Exchange block piece manifests for parallel block sync. */
         push_block_manifest(mp, node);
+
+        /* Advertise file service port. The peer knows our IP from the
+         * TCP connection — we just tell them which port to connect to
+         * for the fast file service. They cache it in SQLite for
+         * sticky reconnection across restarts.
+         * Message: "zfileaddr" with [2-byte port]. */
+        {
+            uint8_t faddr[2];
+            uint16_t fport = FS_PORT;
+            memcpy(faddr, &fport, 2);
+
+            struct byte_stream fs_msg;
+            stream_init(&fs_msg, 4);
+            stream_write_bytes(&fs_msg, faddr, 2);
+            p2p_node_begin_message(node, "zfileaddr",
+                                    mp->params->pchMessageStart);
+            p2p_node_write_message_data(node, fs_msg.data, fs_msg.size);
+            p2p_node_end_message(node);
+            stream_free(&fs_msg);
+        }
     }
 
     return true;
@@ -1581,6 +1602,46 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
             ok = process_feefilter(node, &s);
         } else if (strcmp(cmd, "notfound") == 0) {
             ok = process_notfound(node, &s);
+        } else if (strcmp(cmd, "zfileaddr") == 0) {
+            /* Peer advertises their file service port.
+             * We know their IP from the TCP connection.
+             * Save to SQLite for sticky reconnection. */
+            uint8_t faddr[2];
+            if (stream_read_bytes(&s, faddr, 2)) {
+                uint16_t fport;
+                memcpy(&fport, faddr, 2);
+                /* Use peer's IP from the P2P connection */
+                uint8_t fip[16];
+                memcpy(fip, node->addr.svc.addr.ip, 16);
+
+                if (g_active_node_db && g_active_node_db->db) {
+                    sqlite3_exec(g_active_node_db->db,
+                        "CREATE TABLE IF NOT EXISTS file_services ("
+                        " ip BLOB NOT NULL, port INTEGER NOT NULL,"
+                        " p2p_port INTEGER, last_seen INTEGER,"
+                        " is_zcl23 INTEGER DEFAULT 1,"
+                        " UNIQUE(ip, port))",
+                        NULL, NULL, NULL);
+                    sqlite3_stmt *ins = NULL;
+                    sqlite3_prepare_v2(g_active_node_db->db,
+                        "INSERT OR REPLACE INTO file_services"
+                        " (ip,port,p2p_port,last_seen,is_zcl23)"
+                        " VALUES(?,?,?,?,1)",
+                        -1, &ins, NULL);
+                    if (ins) {
+                        sqlite3_bind_blob(ins, 1, fip, 16, SQLITE_STATIC);
+                        sqlite3_bind_int(ins, 2, fport);
+                        sqlite3_bind_int(ins, 3, node->addr.svc.port);
+                        sqlite3_bind_int64(ins, 4, (int64_t)time(NULL));
+                        sqlite3_step(ins);
+                        sqlite3_finalize(ins);
+                    }
+                }
+                char ipbuf[64];
+                net_addr_to_string(&node->addr.svc.addr, ipbuf, sizeof(ipbuf));
+                printf("Peer %s: file service at port %d (saved)\n",
+                       ipbuf, fport);
+            }
         } else if (strcmp(cmd, MSG_SNAPSHOT_OFFER) == 0) {
             /* Peer offers a UTXO snapshot — parse and decide */
             int32_t h; uint8_t bh[32], ur[32]; uint64_t nu, tb;
