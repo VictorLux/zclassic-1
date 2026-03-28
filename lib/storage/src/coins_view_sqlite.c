@@ -207,8 +207,18 @@ bool coins_view_sqlite_get_coins(struct coins_view_sqlite *cvs,
         nrows++;
     }
 
-    if (nrows == 0)
+    if (nrows == 0) {
+        /* Diagnostic: log failed lookup for debugging UTXO misses */
+        static int miss_count = 0;
+        if (miss_count < 5) {
+            miss_count++;
+            fprintf(stderr, "coins_sqlite: MISS txid=");
+            for (int di = 0; di < 32; di++)
+                fprintf(stderr, "%02x", txid->data[di]);
+            fprintf(stderr, " (search on db=%p)\n", (void *)cvs->db);
+        }
         return false;
+    }
 
     /* Allocate once */
     if (!coins_alloc(out, (size_t)(max_vout + 1)))
@@ -279,24 +289,16 @@ bool coins_view_sqlite_batch_write(struct coins_view_sqlite *cvs,
 {
     if (!cvs->db) return false;
 
-    /* With a dedicated connection (owns_db=true), this handle is never
-     * touched by node_db's transaction batching. No foreign transaction
-     * conflicts possible. With a shared handle (legacy), warn. */
-    if (sqlite3_get_autocommit(cvs->db) == 0) {
-        fprintf(stderr, "coins_flush: WARNING — db not in autocommit "
-                "(owns_db=%d, %zu dirty entries). Forcing COMMIT.\n",
-                cvs->owns_db, map_coins->size);
-        sqlite3_exec(cvs->db, "COMMIT", NULL, NULL, NULL);
-        if (sqlite3_get_autocommit(cvs->db) == 0) {
-            sqlite3_exec(cvs->db, "ROLLBACK", NULL, NULL, NULL);
-        }
-    }
+    /* Use SAVEPOINT for transaction control. On a shared connection,
+     * SAVEPOINT nests cleanly inside node_db's open BEGIN TRANSACTION.
+     * On a dedicated connection, SAVEPOINT works in autocommit mode too
+     * (it implicitly starts a transaction). Either way: safe. */
     {
         char *txn_err = NULL;
-        int txn_rc = sqlite3_exec(cvs->db, "BEGIN IMMEDIATE",
+        int txn_rc = sqlite3_exec(cvs->db, "SAVEPOINT coins_flush",
                                    NULL, NULL, &txn_err);
         if (txn_rc != SQLITE_OK) {
-            fprintf(stderr, "coins_flush: BEGIN failed rc=%d: %s\n",
+            fprintf(stderr, "coins_flush: SAVEPOINT failed rc=%d: %s\n",
                     txn_rc, txn_err ? txn_err : "unknown");
             if (txn_err) sqlite3_free(txn_err);
             return false;
@@ -382,7 +384,10 @@ bool coins_view_sqlite_batch_write(struct coins_view_sqlite *cvs,
         fprintf(stderr, "coins_flush: %d write errors! "
                 "Rolling back to prevent UTXO loss\n",
                 write_errors);
-        sqlite3_exec(cvs->db, "ROLLBACK", NULL, NULL, NULL);
+        sqlite3_exec(cvs->db, "ROLLBACK TO SAVEPOINT coins_flush",
+                      NULL, NULL, NULL);
+        sqlite3_exec(cvs->db, "RELEASE SAVEPOINT coins_flush",
+                      NULL, NULL, NULL);
         return false;
     }
 
@@ -395,7 +400,10 @@ bool coins_view_sqlite_batch_write(struct coins_view_sqlite *cvs,
         if (rc != SQLITE_DONE && rc != SQLITE_ROW) {
             fprintf(stderr, "coins_flush: best_block UPDATE failed rc=%d: "
                     "%s\n", rc, sqlite3_errmsg(cvs->db));
-            sqlite3_exec(cvs->db, "ROLLBACK", NULL, NULL, NULL);
+            sqlite3_exec(cvs->db, "ROLLBACK TO SAVEPOINT coins_flush",
+                          NULL, NULL, NULL);
+            sqlite3_exec(cvs->db, "RELEASE SAVEPOINT coins_flush",
+                          NULL, NULL, NULL);
             return false;
         }
     }
@@ -410,12 +418,16 @@ bool coins_view_sqlite_batch_write(struct coins_view_sqlite *cvs,
 
     {
         char *errmsg = NULL;
-        int rc = sqlite3_exec(cvs->db, "COMMIT", NULL, NULL, &errmsg);
+        int rc = sqlite3_exec(cvs->db, "RELEASE SAVEPOINT coins_flush",
+                               NULL, NULL, &errmsg);
         if (rc != SQLITE_OK) {
-            fprintf(stderr, "coins_flush: COMMIT failed: %s\n",
+            fprintf(stderr, "coins_flush: RELEASE failed: %s\n",
                     errmsg ? errmsg : "unknown");
             if (errmsg) sqlite3_free(errmsg);
-            sqlite3_exec(cvs->db, "ROLLBACK", NULL, NULL, NULL);
+            sqlite3_exec(cvs->db, "ROLLBACK TO SAVEPOINT coins_flush",
+                          NULL, NULL, NULL);
+            sqlite3_exec(cvs->db, "RELEASE SAVEPOINT coins_flush",
+                          NULL, NULL, NULL);
             return false;
         }
     }

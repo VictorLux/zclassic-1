@@ -521,20 +521,14 @@ bool app_init(struct app_context *ctx)
                 blocktree_path);
     }
 
-    /* Open DEDICATED SQLite connection for the UTXO coins service.
-     * This is a separate connection to the same node.db file, so the
-     * coins flush has its own transaction space — no conflicts with
-     * node_db's block/tx batch transactions. WAL mode allows both
-     * connections to operate concurrently. */
+    /* Open coins view on the SHARED sqlite3 handle.
+     * Both node_db and coins_view_sqlite use the same connection.
+     * Transaction coordination is handled by flush_coins_if_needed
+     * which commits node_db's batch before the coins flush runs
+     * its own BEGIN/COMMIT. One connection = no WAL lock contention. */
     if (g_node_db.open) {
-        char coins_db_path[512];
-        snprintf(coins_db_path, sizeof(coins_db_path),
-                 "%s/node.db", ctx->datadir);
-        if (!coins_view_sqlite_open_path(&g_coins_sqlite, coins_db_path)) {
-            /* Fallback to shared handle (legacy, may have txn conflicts) */
-            fprintf(stderr, "Warning: dedicated coins connection failed, "
-                    "falling back to shared handle\n");
-            coins_view_sqlite_open(&g_coins_sqlite, g_node_db.db);
+        if (!coins_view_sqlite_open(&g_coins_sqlite, g_node_db.db)) {
+            fprintf(stderr, "Warning: Could not open SQLite coins view\n");
         }
     }
 
