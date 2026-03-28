@@ -662,13 +662,6 @@ bool fs_client_sync(const char *peer_addr, uint16_t port,
     int64_t dl_start = (int64_t)time(NULL);
     uint64_t bytes_done = 0;
 
-    /* Pipeline: send ALL requests upfront so server streams continuously.
-     * No round-trip latency between chunks — server reads from disk and
-     * sends back-to-back while we receive and write in parallel. */
-    for (uint32_t i = 0; i < num_chunks; i++)
-        fs_send_frame(&session, FS_REQUEST, chunks[i].sha3, 32);
-    printf("file_service: sent %u pipelined requests\n", num_chunks);
-
     /* Open output file once (keep open for all chunks) */
     char out_path[576];
     snprintf(out_path, sizeof(out_path), "%s/blocks/blk00000.dat", datadir);
@@ -679,8 +672,23 @@ bool fs_client_sync(const char *peer_addr, uint16_t port,
         return false;
     }
 
-    /* Receive chunks in order — server sends them back-to-back */
+    /* Windowed pipeline: keep 4 requests in flight at all times.
+     * While we receive and write chunk N, server is already reading
+     * chunks N+1..N+4 from disk. Eliminates per-chunk round-trip. */
+    #define FS_PIPELINE_DEPTH 4
+    uint32_t sent = 0;
+    /* Prime the pipeline */
+    while (sent < num_chunks && sent < FS_PIPELINE_DEPTH) {
+        fs_send_frame(&session, FS_REQUEST, chunks[sent].sha3, 32);
+        sent++;
+    }
+
     for (uint32_t i = 0; i < num_chunks; i++) {
+        /* Send next request to keep pipeline full */
+        if (sent < num_chunks) {
+            fs_send_frame(&session, FS_REQUEST, chunks[sent].sha3, 32);
+            sent++;
+        }
         uint8_t *chunk_buf = NULL;
         uint32_t chunk_size = 0;
         if (!fs_recv_chunk_fast(&session, &chunk_buf, &chunk_size,
