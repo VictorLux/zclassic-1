@@ -12,6 +12,7 @@
 #include "storage/disk_block_io.h"
 #include "coins/coins_view.h"
 #include "event/event.h"
+#include "crypto/sha256.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -682,3 +683,90 @@ void *backfill_addresses_thread(void *arg)
     fflush(stdout);
     return NULL;
 }
+
+/* ── scan_block_files_mark_data ──────────────────────────────── */
+
+int scan_block_files_mark_data(struct main_state *ms, const char *datadir)
+{
+    int marked = 0;
+    char path[576];
+
+    for (int file_idx = 0; file_idx < 256; file_idx++) {
+        snprintf(path, sizeof(path), "%s/blocks/blk%05d.dat",
+                 datadir, file_idx);
+        FILE *f = fopen(path, "rb");
+        if (!f) break;
+
+        fseek(f, 0, SEEK_END);
+        long file_size = ftell(f);
+        fseek(f, 0, SEEK_SET);
+
+        long pos = 0;
+        while (pos + 4 + 4 + 80 <= file_size) {
+            /* Block file format: [4-byte magic][4-byte size][block data] */
+            uint8_t hdr[8];
+            if (fread(hdr, 1, 8, f) != 8) break;
+
+            uint32_t magic = (uint32_t)hdr[0] | ((uint32_t)hdr[1] << 8) |
+                             ((uint32_t)hdr[2] << 16) | ((uint32_t)hdr[3] << 24);
+            uint32_t blk_size = (uint32_t)hdr[4] | ((uint32_t)hdr[5] << 8) |
+                                ((uint32_t)hdr[6] << 16) | ((uint32_t)hdr[7] << 24);
+
+            /* Validate magic (mainnet: 24e92764) */
+            if (magic != 0x6427e924 && magic != 0x6427E924) {
+                /* Try skipping to find next magic */
+                pos += 1;
+                fseek(f, pos, SEEK_SET);
+                continue;
+            }
+
+            if (blk_size < 80 || blk_size > 2000000 ||
+                pos + 8 + (long)blk_size > file_size) {
+                pos += 8;
+                fseek(f, pos, SEEK_SET);
+                continue;
+            }
+
+            /* Read just the 80-byte block header to get the hash */
+            uint8_t block_hdr[80];
+            if (fread(block_hdr, 1, 80, f) != 80) break;
+
+            /* Compute block hash (SHA-256d of first 80 bytes,
+             * but we need to use our block_header_hash function).
+             * For speed, use the raw double-SHA256: */
+            struct uint256 hash;
+            {
+                struct sha256_ctx sctx;
+                uint8_t tmp[32];
+                sha256_init(&sctx);
+                sha256_write(&sctx, block_hdr, 80);
+                sha256_finalize(&sctx, tmp);
+                sha256_init(&sctx);
+                sha256_write(&sctx, tmp, 32);
+                sha256_finalize(&sctx, hash.data);
+            }
+
+            /* Look up in block_index */
+            struct block_index *bi = block_map_find(
+                &ms->map_block_index, &hash);
+            if (bi && !(bi->nStatus & BLOCK_HAVE_DATA)) {
+                bi->nStatus |= BLOCK_HAVE_DATA;
+                bi->nFile = file_idx;
+                bi->nDataPos = (unsigned int)(pos + 8);
+                marked++;
+            }
+
+            /* Skip to next block */
+            pos += 8 + (long)blk_size;
+            fseek(f, pos, SEEK_SET);
+        }
+
+        fclose(f);
+        if (marked > 0 && (file_idx % 10 == 0))
+            printf("  Scanned blk%05d.dat (%d blocks marked so far)\n",
+                   file_idx, marked);
+    }
+
+    return marked;
+}
+

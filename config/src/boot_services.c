@@ -348,6 +348,7 @@ bool app_init_services(struct app_context *ctx,
                 "140.174.189.3",
                 NULL
             };
+            bool file_sync_ok = false;
             for (int i = 0; file_seeds[i]; i++) {
                 printf("Trying file service at %s:%d...\n",
                        file_seeds[i], FS_PORT);
@@ -357,10 +358,26 @@ bool app_init_services(struct app_context *ctx,
                     int64_t elapsed = (int64_t)time(NULL) - t0;
                     printf("=== File sync complete from %s: %llds ===\n",
                            file_seeds[i], (long long)elapsed);
+                    file_sync_ok = true;
                     break;
                 }
                 printf("File sync from %s failed, trying next...\n",
                        file_seeds[i]);
+            }
+
+            /* After file sync: scan block files and register blocks in
+             * the block index. This marks them BLOCK_HAVE_DATA so
+             * activate_best_chain reads from disk instead of P2P.
+             * Headers arrive via P2P to create block_index entries,
+             * then our scan marks them as having data on disk. */
+            if (file_sync_ok) {
+                printf("=== Scanning downloaded block files ===\n");
+                int64_t t0 = (int64_t)time(NULL);
+                int scanned = scan_block_files_mark_data(
+                    svc->state, ctx->datadir);
+                int64_t elapsed = (int64_t)time(NULL) - t0;
+                printf("=== Scanned %d blocks from disk (%llds) ===\n",
+                       scanned, (long long)elapsed);
             }
         }
     }
