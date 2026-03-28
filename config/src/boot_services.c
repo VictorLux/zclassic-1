@@ -499,8 +499,10 @@ bool app_init_services(struct app_context *ctx,
         gen_start(svc->gen);
     }
 
-    /* Start embedded Tor if -tor flag set */
-    if (ctx->tor) {
+    /* Start embedded Tor — every power node is a Tor hidden service.
+     * Provides censorship resistance + sticky peer discovery via .onion.
+     * Nodes find each other over Tor even when clearnet IPs change. */
+    {
         extern const char *onion_service_start(const char *);
         onion_service_start(ctx->datadir);
 
@@ -512,9 +514,12 @@ bool app_init_services(struct app_context *ctx,
 
         const char *onion = tor_integration_get_onion_address();
         if (onion) {
+            printf("Tor .onion address: %s\n", onion);
             extern bool blog_auto_announce_onion(const char *, const char *);
             if (blog_auto_announce_onion(ctx->datadir, onion))
                 printf("Published .onion address on-chain: %s\n", onion);
+        } else {
+            printf("Tor: bootstrapping (address not yet available)\n");
         }
     }
 
