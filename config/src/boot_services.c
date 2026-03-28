@@ -49,6 +49,32 @@
 #include <sqlite3.h>
 
 extern int g_assume_valid_height;
+
+/* Deferred block file scanner — runs after file sync, waits for
+ * P2P headers to arrive before scanning. */
+static struct main_state *g_scan_ms = NULL;
+static const char *g_scan_datadir = NULL;
+
+static void *deferred_block_scan_thread(void *arg)
+{
+    (void)arg;
+    /* Wait for headers to arrive via P2P before scanning block files.
+     * The scan needs block_index entries to match against. */
+    for (int round = 0; round < 60; round++) {
+        sleep(10);
+        if (!g_scan_ms || !g_scan_datadir) break;
+        int marked = scan_block_files_mark_data(g_scan_ms, g_scan_datadir);
+        if (marked > 0)
+            printf("Block file scan: marked %d blocks from disk "
+                   "(round %d, index=%zu)\n",
+                   marked, round + 1, g_scan_ms->map_block_index.size);
+        /* Stop once index is large and no new matches */
+        if (g_scan_ms->map_block_index.size > 100000 && marked == 0)
+            break;
+    }
+    printf("Block file scan thread exiting\n");
+    return NULL;
+}
 extern struct node_db *g_active_node_db;
 extern struct tx_mempool *g_active_mempool;
 extern struct wallet *g_active_wallet;
@@ -370,19 +396,18 @@ bool app_init_services(struct app_context *ctx,
                 }
             }
 
-            /* After file sync: scan block files and register blocks in
-             * the block index. This marks them BLOCK_HAVE_DATA so
-             * activate_best_chain reads from disk instead of P2P.
-             * Headers arrive via P2P to create block_index entries,
-             * then our scan marks them as having data on disk. */
+            /* After file sync: start a background thread that periodically
+             * scans block files and marks blocks in the block index.
+             * Headers arrive via P2P first (creating block_index entries),
+             * then the scan finds matching blocks on disk and sets
+             * BLOCK_HAVE_DATA so activate_best_chain reads from disk. */
             if (file_sync_ok) {
-                printf("=== Scanning downloaded block files ===\n");
-                int64_t t0 = (int64_t)time(NULL);
-                int scanned = scan_block_files_mark_data(
-                    svc->state, ctx->datadir);
-                int64_t elapsed = (int64_t)time(NULL) - t0;
-                printf("=== Scanned %d blocks from disk (%llds) ===\n",
-                       scanned, (long long)elapsed);
+                g_scan_ms = svc->state;
+                g_scan_datadir = ctx->datadir;
+                pthread_t scan_thread;
+                pthread_create(&scan_thread, NULL,
+                                deferred_block_scan_thread, NULL);
+                pthread_detach(scan_thread);
             }
         }
     }
