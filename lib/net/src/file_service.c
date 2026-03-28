@@ -657,19 +657,42 @@ bool fs_client_sync(const char *peer_addr, uint16_t port,
     int64_t dl_start = (int64_t)time(NULL);
     uint64_t bytes_done = 0;
 
-    /* Open output file once (keep open for all chunks) */
+    /* Check if a previous partial download exists — resume from there */
     char out_path[576];
     snprintf(out_path, sizeof(out_path), "%s/blocks/blk00000.dat", datadir);
-    FILE *out_file = fopen(out_path, "wb");
+    uint64_t existing_bytes = 0;
+    uint32_t skip_chunks = 0;
+    {
+        struct stat st;
+        if (stat(out_path, &st) == 0 && st.st_size > 0) {
+            existing_bytes = (uint64_t)st.st_size;
+            /* Count how many complete chunks we already have */
+            uint64_t accum = 0;
+            for (uint32_t j = 0; j < num_chunks; j++) {
+                if (accum + chunks[j].size <= existing_bytes) {
+                    skip_chunks++;
+                    accum += chunks[j].size;
+                } else {
+                    break;
+                }
+            }
+            if (skip_chunks > 0) {
+                printf("file_service: resuming — %u/%u chunks already on disk "
+                       "(%.1f GB)\n", skip_chunks, num_chunks,
+                       (double)accum / (1024.0 * 1024.0 * 1024.0));
+            }
+        }
+    }
+
+    /* Open for append if resuming, write if fresh */
+    FILE *out_file = fopen(out_path, skip_chunks > 0 ? "ab" : "wb");
     if (!out_file) {
-        fprintf(stderr, "file_service: cannot open %s for writing\n", out_path);
+        fprintf(stderr, "file_service: cannot open %s\n", out_path);
         close(fd);
         return false;
     }
 
-    /* Request ALL chunks in one batch frame, then receive all data.
-     * Single request message tells server "send everything".
-     * Server streams chunks back-to-back. Zero round trips. */
+    /* Request ALL chunks — server streams back-to-back */
     fs_send_frame(&session, FS_REQUEST, (const uint8_t *)"ALL", 3);
 
     for (uint32_t i = 0; i < num_chunks; i++) {
@@ -682,6 +705,12 @@ bool fs_client_sync(const char *peer_addr, uint16_t port,
             fclose(out_file);
             close(fd);
             return false;
+        }
+
+        /* Skip chunks we already have on disk (resume support) */
+        if (i < skip_chunks) {
+            free(chunk_buf);
+            continue;
         }
 
         fwrite(chunk_buf, 1, chunk_size, out_file);

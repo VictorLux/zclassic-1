@@ -764,6 +764,8 @@ int main(int argc, char **argv)
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
 
+    printf("zclassic23 starting (datadir=%s)...\n", ctx.datadir);
+
     if (!app_init(&ctx)) {
         if (ctx.import_legacy_dir) return 0;
         fprintf(stderr, "Initialization failed.\n");
