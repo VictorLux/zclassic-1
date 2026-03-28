@@ -283,66 +283,40 @@ bool fs_handshake(struct fs_session *s, const uint8_t utxo_root[32],
 }
 
 /* ── Fast encrypted chunk transfer ─────────────────────────────── */
-/* Encrypt the ENTIRE chunk as one unit — one SHA3 MAC per 50MB
- * instead of 800 MACs (one per 64KB frame). AVX-512 SHA3 keystream
- * runs at ~1 GB/s, so network (100 Mbps) is the bottleneck.
+/* Fast authenticated chunk transfer.
+ * SHA3 MAC for integrity + authentication (post-quantum secure).
+ * No bulk encryption — blockchain data is public. The MAC proves:
+ *   1. Data came from a node with the shared key (same chain)
+ *   2. Data wasn't tampered with in transit
+ *   3. Replay protection via counter
  *
- * Wire format: [4-byte size][encrypted data][32-byte MAC]
- * MAC = SHA3-256(key || chunk_counter || ciphertext)
- * Encryption = SHA3-CTR with AVX-512 4-way parallel */
-
-static void encrypt_chunk_inplace(const uint8_t key[32],
-                                    uint64_t chunk_counter,
-                                    uint8_t *data, uint32_t size)
-{
-    uint8_t nonce[32];
-    memset(nonce, 0, 32);
-    memcpy(nonce, &chunk_counter, 8);
-
-    uint32_t offset = 0;
-    uint64_t block_ctr = 0;
-    while (offset < size) {
-        uint8_t ks[256];
-        sha3_512_x4(key, nonce, block_ctr, ks);
-        block_ctr += 4;
-        uint32_t chunk = size - offset;
-        if (chunk > 256) chunk = 256;
-        for (uint32_t i = 0; i < chunk; i++)
-            data[offset + i] ^= ks[i];
-        offset += chunk;
-    }
-}
+ * Wire format: [4-byte size][raw data][32-byte SHA3 MAC]
+ * MAC = SHA3-256(key || counter || expected_sha3 || data)
+ * Speed: limited only by network + disk I/O, not crypto. */
 
 bool fs_send_chunk_fast(struct fs_session *s, const uint8_t *data,
                          uint32_t size, const uint8_t sha3[32])
 {
-    /* Allocate, copy, encrypt in-place */
-    uint8_t *buf = malloc(size);
-    if (!buf) return false;
-    memcpy(buf, data, size);
-    encrypt_chunk_inplace(s->key, s->send_counter, buf, size);
-
     /* Send size header */
     uint8_t hdr[4];
     hdr[0] = (uint8_t)(size);
     hdr[1] = (uint8_t)(size >> 8);
     hdr[2] = (uint8_t)(size >> 16);
     hdr[3] = (uint8_t)(size >> 24);
-    if (!send_all(s->fd, hdr, 4)) { free(buf); return false; }
+    if (!send_all(s->fd, hdr, 4)) return false;
 
-    /* Send encrypted data */
-    if (!send_all(s->fd, buf, size)) { free(buf); return false; }
+    /* Send raw data — zero copy overhead */
+    if (!send_all(s->fd, data, size)) return false;
 
-    /* MAC over ciphertext: SHA3-256(key || counter || sha3 || ciphertext) */
+    /* SHA3 MAC: authenticates data + binds to session + prevents replay */
     uint8_t mac[32];
     struct sha3_256_ctx mctx;
     sha3_256_init(&mctx);
     sha3_256_write(&mctx, s->key, 32);
     sha3_256_write(&mctx, (const unsigned char *)&s->send_counter, 8);
-    sha3_256_write(&mctx, sha3, 32); /* bind MAC to expected content */
-    sha3_256_write(&mctx, buf, size);
+    sha3_256_write(&mctx, sha3, 32);
+    sha3_256_write(&mctx, data, size);
     sha3_256_finalize(&mctx, mac);
-    free(buf);
 
     if (!send_all(s->fd, mac, 32)) return false;
 
@@ -362,12 +336,12 @@ static bool fs_recv_chunk_fast(struct fs_session *s, uint8_t **out,
                     ((uint32_t)hdr[2] << 16) | ((uint32_t)hdr[3] << 24);
     if (size > 60 * 1024 * 1024) return false;
 
-    /* Read encrypted data */
+    /* Read data */
     uint8_t *buf = malloc(size);
     if (!buf) return false;
     if (!recv_all(s->fd, buf, size)) { free(buf); return false; }
 
-    /* Read and verify MAC BEFORE decrypting (fail fast) */
+    /* Read and verify SHA3 MAC */
     uint8_t mac_wire[32];
     if (!recv_all(s->fd, mac_wire, 32)) { free(buf); return false; }
 
@@ -380,6 +354,7 @@ static bool fs_recv_chunk_fast(struct fs_session *s, uint8_t **out,
     sha3_256_write(&mctx, buf, size);
     sha3_256_finalize(&mctx, mac_expected);
 
+    /* Constant-time MAC verification */
     uint8_t diff = 0;
     for (int i = 0; i < 32; i++) diff |= mac_wire[i] ^ mac_expected[i];
     if (diff != 0) {
@@ -388,16 +363,13 @@ static bool fs_recv_chunk_fast(struct fs_session *s, uint8_t **out,
         free(buf);
         return false;
     }
-
-    /* Decrypt in-place */
-    encrypt_chunk_inplace(s->key, s->recv_counter, buf, size);
     s->recv_counter++;
 
-    /* Verify plaintext SHA3 matches expected (from manifest) */
+    /* Verify SHA3 of data matches manifest */
     uint8_t hash[32];
     sha3_256(buf, size, hash);
     if (memcmp(hash, expected_sha3, 32) != 0) {
-        fprintf(stderr, "file_service: SHA3 MISMATCH after decrypt\n");
+        fprintf(stderr, "file_service: SHA3 MISMATCH on chunk\n");
         free(buf);
         return false;
     }
