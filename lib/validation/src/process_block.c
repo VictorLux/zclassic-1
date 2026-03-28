@@ -105,25 +105,12 @@ static bool flush_coins_if_needed(struct coins_view_cache *coins_tip,
         return true;
 
 
-    /* Commit ALL open transactions on the shared sqlite3 handle before
-     * flushing coins. The coins flush needs exclusive transaction control.
-     * Loop until autocommit is restored — handles nested/restarted txns. */
-    if (g_active_node_db && g_active_node_db->open) {
-        if (g_active_node_db->sync_in_batch)
-            node_db_sync_flush(g_active_node_db);
-        /* Belt-and-suspenders: if autocommit is still off after flush,
-         * force a COMMIT. This catches any transaction started by code
-         * outside the sync_in_batch tracking. */
-        if (g_active_node_db->db &&
-            sqlite3_get_autocommit(g_active_node_db->db) == 0) {
-            fprintf(stderr, "flush_coins: forcing COMMIT on orphaned "
-                    "transaction (sync_in_batch=%d)\n",
-                    g_active_node_db->sync_in_batch);
-            sqlite3_exec(g_active_node_db->db, "COMMIT", NULL, NULL, NULL);
-            g_active_node_db->sync_in_batch = false;
-            g_active_node_db->sync_pending_blocks = 0;
-        }
-    }
+    /* With dedicated coins connection (coins_view_sqlite_open_path),
+     * no need to coordinate with node_db transactions. The coins flush
+     * has its own sqlite3 handle with independent transaction control.
+     * Flush node_db batch anyway for data consistency on disk. */
+    if (g_active_node_db && g_active_node_db->sync_in_batch)
+        node_db_sync_flush(g_active_node_db);
 
     size_t batched = (size_t)g_blocks_since_flush;
     bool ok = coins_view_cache_flush(coins_tip);

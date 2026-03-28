@@ -51,11 +51,54 @@ static struct coins_view_vtable cvs_vtable = {
 
 /* ── Open / Close ──────────────────────────────────────────────── */
 
+bool coins_view_sqlite_open_path(struct coins_view_sqlite *cvs,
+                                  const char *db_path)
+{
+    if (!db_path) return false;
+    sqlite3 *db = NULL;
+    int rc = sqlite3_open_v2(db_path, &db,
+                              SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE,
+                              NULL);
+    if (rc != SQLITE_OK || !db) {
+        fprintf(stderr, "coins_view_sqlite: failed to open %s: %s\n",
+                db_path, db ? sqlite3_errmsg(db) : "NULL");
+        if (db) sqlite3_close(db);
+        return false;
+    }
+    /* WAL mode for concurrent reads while node_db writes */
+    sqlite3_exec(db, "PRAGMA journal_mode=WAL", NULL, NULL, NULL);
+    sqlite3_exec(db, "PRAGMA synchronous=NORMAL", NULL, NULL, NULL);
+    sqlite3_exec(db, "PRAGMA cache_size=-65536", NULL, NULL, NULL); /* 64MB */
+    sqlite3_exec(db, "PRAGMA mmap_size=268435456", NULL, NULL, NULL); /* 256MB */
+    sqlite3_busy_timeout(db, 5000);
+
+    /* Ensure tables exist on this connection */
+    sqlite3_exec(db,
+        "CREATE TABLE IF NOT EXISTS utxos ("
+        " txid BLOB NOT NULL, vout INTEGER NOT NULL,"
+        " value INTEGER, script BLOB, script_type INTEGER,"
+        " address_hash BLOB, height INTEGER, is_coinbase INTEGER,"
+        " PRIMARY KEY(txid, vout))", NULL, NULL, NULL);
+    sqlite3_exec(db,
+        "CREATE TABLE IF NOT EXISTS node_state ("
+        " key TEXT PRIMARY KEY, value BLOB)", NULL, NULL, NULL);
+
+    if (!coins_view_sqlite_open(cvs, db)) {
+        sqlite3_close(db);
+        return false;
+    }
+    cvs->owns_db = true;
+    printf("Coins UTXO service: dedicated connection to %s (WAL mode)\n",
+           db_path);
+    return true;
+}
+
 bool coins_view_sqlite_open(struct coins_view_sqlite *cvs, sqlite3 *db)
 {
     if (!db) return false;
     memset(cvs, 0, sizeof(*cvs));
     cvs->db = db;
+    cvs->owns_db = false;
     cvs->view.vtable = &cvs_vtable;
     cvs->view.impl = cvs;
 
@@ -126,7 +169,11 @@ void coins_view_sqlite_close(struct coins_view_sqlite *cvs)
     if (cvs->stmt_best_set)   { sqlite3_finalize(cvs->stmt_best_set);   cvs->stmt_best_set = NULL; }
     if (cvs->stmt_commit_get) { sqlite3_finalize(cvs->stmt_commit_get); cvs->stmt_commit_get = NULL; }
     if (cvs->stmt_commit_set) { sqlite3_finalize(cvs->stmt_commit_set); cvs->stmt_commit_set = NULL; }
+    if (cvs->owns_db && cvs->db) {
+        sqlite3_close(cvs->db);
+    }
     cvs->db = NULL;
+    cvs->owns_db = false;
 }
 
 /* ── get_coins: build struct coins from SQLite rows ────────────── */
@@ -232,28 +279,16 @@ bool coins_view_sqlite_batch_write(struct coins_view_sqlite *cvs,
 {
     if (!cvs->db) return false;
 
-    /* The db handle must be in autocommit mode (no open transaction).
-     * flush_coins_if_needed commits the node_db batch before calling us.
-     * If a foreign transaction is STILL open (shouldn't happen), force
-     * commit it. We cannot refuse — refusing causes UTXO loss because
-     * the node continues connecting blocks that spend unflushed UTXOs. */
+    /* With a dedicated connection (owns_db=true), this handle is never
+     * touched by node_db's transaction batching. No foreign transaction
+     * conflicts possible. With a shared handle (legacy), warn. */
     if (sqlite3_get_autocommit(cvs->db) == 0) {
-        fprintf(stderr, "coins_flush: WARNING — forcing COMMIT on open "
-                "transaction before coins flush (%zu dirty entries)\n",
-                map_coins->size);
+        fprintf(stderr, "coins_flush: WARNING — db not in autocommit "
+                "(owns_db=%d, %zu dirty entries). Forcing COMMIT.\n",
+                cvs->owns_db, map_coins->size);
         sqlite3_exec(cvs->db, "COMMIT", NULL, NULL, NULL);
-        /* If COMMIT fails (no active transaction to commit), that's OK —
-         * autocommit will be restored. If it succeeds, we're clean. */
         if (sqlite3_get_autocommit(cvs->db) == 0) {
-            /* Still not in autocommit — try ROLLBACK as last resort */
-            fprintf(stderr, "coins_flush: COMMIT didn't restore autocommit, "
-                    "trying ROLLBACK\n");
             sqlite3_exec(cvs->db, "ROLLBACK", NULL, NULL, NULL);
-        }
-        if (sqlite3_get_autocommit(cvs->db) == 0) {
-            fprintf(stderr, "coins_flush: FATAL — cannot restore autocommit "
-                    "mode, aborting flush\n");
-            return false;
         }
     }
     {
