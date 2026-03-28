@@ -13,6 +13,7 @@
 #include "controllers/misc_controller.h"
 #include "controllers/network_controller.h"
 #include "controllers/mining_controller.h"
+#include "controllers/file_controller.h"
 #include "controllers/transaction_controller.h"
 #include "controllers/api_controller.h"
 #include "controllers/explorer_internal.h"
@@ -322,6 +323,10 @@ bool app_init_services(struct app_context *ctx,
     register_misc_rpc_commands(svc->rpc_table);
     rpc_net_set_connman(svc->connman);
     register_net_rpc_commands(svc->rpc_table);
+
+    /* File transfer service — SHA3-verified chunk serving */
+    file_controller_init(ctx->datadir);
+    register_file_rpc_commands(svc->rpc_table);
 
     rpc_wallet_set_state(svc->wallet, svc->state, ctx->datadir, svc->wallet_sqlite,
                          svc->mempool, svc->connman);

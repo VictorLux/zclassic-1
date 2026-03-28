@@ -8,6 +8,7 @@
 #include "controllers/api_controller.h"
 #include "controllers/explorer_internal.h"
 #include "controllers/explorer_factoids.h"
+#include "controllers/file_controller.h"
 #include "views/format_helpers.h"
 #include "event/event.h"
 #include "net/download.h"
@@ -1433,6 +1434,102 @@ size_t api_handle_request(const char *method, const char *path,
 
         w += (size_t)snprintf(buf + w, response_max - w, "]}");
         return w;
+    }
+
+    /* ── File Transfer Service — SHA3-verified chunks ──────────── */
+
+    /* GET /api/files/manifest — JSON manifest of all chunks */
+    if (strcmp(clean_path, "/api/files/manifest") == 0) {
+        const struct file_manifest *fm = file_controller_get_manifest();
+        if (!fm) {
+            /* Try building on demand */
+            extern void file_controller_init(const char *);
+            if (g_datadir) file_controller_init(g_datadir);
+            fm = file_controller_get_manifest();
+        }
+        if (!fm)
+            return json_error(response, response_max, JSON_500_HEADERS,
+                              "No block files for manifest");
+
+        /* Build JSON response */
+        char *buf = malloc(131072);
+        if (!buf)
+            return json_error(response, response_max, JSON_500_HEADERS, "OOM");
+        size_t w = 0;
+        char root_hex[65];
+        for (int i = 0; i < 32; i++)
+            snprintf(root_hex + i * 2, 3, "%02x", fm->root_hash[i]);
+
+        w += (size_t)snprintf(buf + w, 131072 - w,
+            "{\"root_hash\":\"%s\","
+            "\"num_chunks\":%u,"
+            "\"total_bytes\":%llu,"
+            "\"chunks\":[",
+            root_hex, fm->num_chunks,
+            (unsigned long long)fm->total_bytes);
+        for (uint32_t i = 0; i < fm->num_chunks && w + 256 < 131072; i++) {
+            char hex[65];
+            for (int j = 0; j < 32; j++)
+                snprintf(hex + j * 2, 3, "%02x", fm->chunks[i].sha3[j]);
+            w += (size_t)snprintf(buf + w, 131072 - w,
+                "%s{\"sha3\":\"%s\",\"size\":%u,\"file\":%d,\"offset\":%llu}",
+                i > 0 ? "," : "", hex, fm->chunks[i].size,
+                fm->chunks[i].file_index,
+                (unsigned long long)fm->chunks[i].offset);
+        }
+        w += (size_t)snprintf(buf + w, 131072 - w, "]}");
+
+        size_t off = (size_t)snprintf((char *)response, response_max,
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Type: application/json\r\n"
+            "Access-Control-Allow-Origin: *\r\n"
+            "Cache-Control: public, max-age=300\r\n"
+            "Connection: close\r\n"
+            "Content-Length: %zu\r\n\r\n", w);
+        if (off + w <= response_max)
+            memcpy(response + off, buf, w);
+        free(buf);
+        return off + w < response_max ? off + w : response_max;
+    }
+
+    /* GET /api/files/:sha3hash — raw chunk bytes by SHA3 hash */
+    if (strncmp(clean_path, "/api/files/", 11) == 0 &&
+        strlen(clean_path + 11) == 64) {
+        const char *hex = clean_path + 11;
+        uint8_t sha3[32];
+        for (int i = 0; i < 32; i++) {
+            unsigned int byte;
+            if (sscanf(hex + i * 2, "%2x", &byte) != 1)
+                return json_error(response, response_max,
+                    JSON_404_HEADERS, "Invalid SHA3 hash");
+            sha3[i] = (uint8_t)byte;
+        }
+        const struct file_manifest *fm = file_controller_get_manifest();
+        if (!fm)
+            return json_error(response, response_max,
+                JSON_404_HEADERS, "No manifest");
+        const struct file_chunk *chunk = file_manifest_find(fm, sha3);
+        if (!chunk)
+            return json_error(response, response_max,
+                JSON_404_HEADERS, "Chunk not found");
+        uint8_t *data = NULL;
+        uint32_t data_size = 0;
+        if (!file_chunk_read(chunk, g_datadir, &data, &data_size))
+            return json_error(response, response_max,
+                JSON_500_HEADERS, "Failed to read chunk");
+
+        size_t off = (size_t)snprintf((char *)response, response_max,
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Type: application/octet-stream\r\n"
+            "Access-Control-Allow-Origin: *\r\n"
+            "Cache-Control: public, max-age=31536000, immutable\r\n"
+            "X-SHA3-256: %s\r\n"
+            "Connection: close\r\n"
+            "Content-Length: %u\r\n\r\n", hex, data_size);
+        if (off + data_size <= response_max)
+            memcpy(response + off, data, data_size);
+        free(data);
+        return off + data_size < response_max ? off + data_size : response_max;
     }
 
     return json_error(response, response_max, JSON_404_HEADERS,
