@@ -107,32 +107,25 @@ static bool encrypt_frame(const struct fs_session *s, uint8_t type,
     if (payload_len > 0)
         memcpy(plain + FS_HEADER_SIZE, payload, payload_len);
 
-    /* Fill remaining with random padding (anti-fingerprint) */
-    size_t pad_start = FS_HEADER_SIZE + payload_len;
-    size_t pad_len = sizeof(plain) - pad_start;
-    if (pad_len > 0)
-        GetRandBytes(plain + pad_start, pad_len);
+    /* Padding is zeros — encrypted zeros look random. No need for
+     * expensive /dev/urandom reads on every frame. */
 
-    /* SHA3-CTR encrypt the entire plaintext portion */
+    /* SHA3-CTR encrypt using AVX-512 4-way parallel SHA3-512.
+     * Generates 256 bytes of keystream per batch (4 × 64).
+     * 64KB / 256 = 256 batches. With AVX-512: ~4x faster. */
     uint8_t nonce[32];
     memset(nonce, 0, 32);
-    memcpy(nonce, &counter, 8); /* counter as nonce */
+    memcpy(nonce, &counter, 8);
 
-    /* XOR with keystream */
     size_t offset = 0;
     uint64_t block_ctr = 0;
     while (offset < sizeof(plain)) {
-        uint8_t ks[32];
-        struct sha3_256_ctx ctx;
-        sha3_256_init(&ctx);
-        sha3_256_write(&ctx, s->key, 32);
-        sha3_256_write(&ctx, nonce, 32);
-        sha3_256_write(&ctx, (const unsigned char *)&block_ctr, 8);
-        sha3_256_finalize(&ctx, ks);
-        block_ctr++;
+        uint8_t ks[256];
+        sha3_512_x4(s->key, nonce, block_ctr, ks);
+        block_ctr += 4;
 
         size_t chunk = sizeof(plain) - offset;
-        if (chunk > 32) chunk = 32;
+        if (chunk > 256) chunk = 256;
         for (size_t i = 0; i < chunk; i++)
             plain[offset + i] ^= ks[i];
         offset += chunk;
@@ -174,7 +167,7 @@ static bool decrypt_frame(const struct fs_session *s,
         diff |= in[ct_len + i] ^ expected_mac[i];
     if (diff != 0) return false;
 
-    /* Decrypt */
+    /* Decrypt using AVX-512 4-way parallel SHA3 */
     uint8_t plain[FS_FRAME_SIZE - FS_MAC_SIZE];
     memcpy(plain, in, ct_len);
 
@@ -185,17 +178,12 @@ static bool decrypt_frame(const struct fs_session *s,
     size_t offset = 0;
     uint64_t block_ctr = 0;
     while (offset < ct_len) {
-        uint8_t ks[32];
-        struct sha3_256_ctx ctx;
-        sha3_256_init(&ctx);
-        sha3_256_write(&ctx, s->key, 32);
-        sha3_256_write(&ctx, nonce, 32);
-        sha3_256_write(&ctx, (const unsigned char *)&block_ctr, 8);
-        sha3_256_finalize(&ctx, ks);
-        block_ctr++;
+        uint8_t ks[256];
+        sha3_512_x4(s->key, nonce, block_ctr, ks);
+        block_ctr += 4;
 
         size_t chunk = ct_len - offset;
-        if (chunk > 32) chunk = 32;
+        if (chunk > 256) chunk = 256;
         for (size_t i = 0; i < chunk; i++)
             plain[offset + i] ^= ks[i];
         offset += chunk;

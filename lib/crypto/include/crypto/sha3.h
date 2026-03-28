@@ -53,4 +53,10 @@ void hmac_sha3_512(const unsigned char *key, size_t key_len,
                    const unsigned char *data, size_t data_len,
                    unsigned char output[64]);
 
+/* 4-way parallel SHA3-512 via AVX-512 (4x keystream throughput).
+ * Generates 256 bytes per call. Falls back to sequential if no AVX-512. */
+void sha3_512_x4(const uint8_t key[32], const uint8_t nonce[32],
+                  uint64_t counter_base, uint8_t out[256]);
+bool sha3_avx512_available(void);
+
 #endif
