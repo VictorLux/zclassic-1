@@ -10,6 +10,7 @@
 #include "json/json.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <dirent.h>
@@ -92,18 +93,23 @@ bool file_manifest_build(struct file_manifest *fm, const char *datadir)
         num_files++;
     }
 
-    /* Scan block files. Skip the LAST file — it may be actively written
-     * by P2P block download, causing SHA3 mismatches when served. Only
-     * serve complete, immutable files. The last file's blocks will be
-     * synced via P2P after the file transfer completes. */
-    int files_to_serve = num_files > 1 ? num_files - 1 : num_files;
-    for (int i = 0; i < files_to_serve; i++) {
+    /* Scan block files. Skip any file modified in the last hour —
+     * the node may be actively appending blocks via P2P, which
+     * changes the file after we hash it, causing SHA3 mismatches.
+     * Only serve stable, immutable files. */
+    int64_t cutoff = (int64_t)time(NULL) - 3600;
+    for (int i = 0; i < num_files; i++) {
         char path[576];
         snprintf(path, sizeof(path), "%s/blk%05d.dat", blocks_dir, i);
 
         struct stat st;
         if (stat(path, &st) != 0) break;
         if (st.st_size == 0) continue;
+        if ((int64_t)st.st_mtime > cutoff) {
+            printf("file_manifest: skipping %s (modified %llds ago)\n",
+                   path, (long long)((int64_t)time(NULL) - (int64_t)st.st_mtime));
+            continue;
+        }
 
         if (!hash_file_chunks(path, (uint8_t)i, fm))
             return false;
