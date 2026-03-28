@@ -662,33 +662,37 @@ bool fs_client_sync(const char *peer_addr, uint16_t port,
     int64_t dl_start = (int64_t)time(NULL);
     uint64_t bytes_done = 0;
 
-    /* Request and receive each chunk using fast encrypted transfer.
-     * Each chunk is one encrypted blob (not 800 frames) — network
-     * limited, not crypto limited. */
-    for (uint32_t i = 0; i < num_chunks; i++) {
-        /* Send request (still use encrypted frame for control msgs) */
+    /* Pipeline: send ALL requests upfront so server streams continuously.
+     * No round-trip latency between chunks — server reads from disk and
+     * sends back-to-back while we receive and write in parallel. */
+    for (uint32_t i = 0; i < num_chunks; i++)
         fs_send_frame(&session, FS_REQUEST, chunks[i].sha3, 32);
+    printf("file_service: sent %u pipelined requests\n", num_chunks);
 
-        /* Receive entire chunk as one encrypted blob */
+    /* Open output file once (keep open for all chunks) */
+    char out_path[576];
+    snprintf(out_path, sizeof(out_path), "%s/blocks/blk00000.dat", datadir);
+    FILE *out_file = fopen(out_path, "wb");
+    if (!out_file) {
+        fprintf(stderr, "file_service: cannot open %s for writing\n", out_path);
+        close(fd);
+        return false;
+    }
+
+    /* Receive chunks in order — server sends them back-to-back */
+    for (uint32_t i = 0; i < num_chunks; i++) {
         uint8_t *chunk_buf = NULL;
         uint32_t chunk_size = 0;
         if (!fs_recv_chunk_fast(&session, &chunk_buf, &chunk_size,
                                  chunks[i].sha3)) {
             fprintf(stderr, "file_service: chunk %u/%u FAILED\n",
                     i + 1, num_chunks);
+            fclose(out_file);
             close(fd);
             return false;
         }
 
-        /* Write to disk — append to block file */
-        char path[576];
-        snprintf(path, sizeof(path), "%s/blocks/blk00000.dat", datadir);
-        FILE *f = fopen(path, "ab");
-        if (f) {
-            fwrite(chunk_buf, 1, chunk_size, f);
-            fclose(f);
-        }
-
+        fwrite(chunk_buf, 1, chunk_size, out_file);
         free(chunk_buf);
         bytes_done += chunk_size;
 
@@ -709,6 +713,7 @@ bool fs_client_sync(const char *peer_addr, uint16_t port,
         fflush(stdout);
     }
 
+    fclose(out_file);
     fs_send_frame(&session, FS_DONE, NULL, 0);
     int64_t dl_elapsed = (int64_t)time(NULL) - dl_start;
     printf("=== File sync complete: %.1f GB in %llds (%.1f MB/s avg) ===\n",
