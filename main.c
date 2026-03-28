@@ -693,10 +693,10 @@ int main(int argc, char **argv)
     char default_datadir[512];
     char default_paramsdir[512];
     if (home) {
-        snprintf(default_datadir, sizeof(default_datadir), "%s/.zclassic", home);
+        snprintf(default_datadir, sizeof(default_datadir), "%s/.zclassic-c23", home);
         snprintf(default_paramsdir, sizeof(default_paramsdir), "%s/.zcash-params", home);
     } else {
-        snprintf(default_datadir, sizeof(default_datadir), ".zclassic");
+        snprintf(default_datadir, sizeof(default_datadir), ".zclassic-c23");
         snprintf(default_paramsdir, sizeof(default_paramsdir), ".zcash-params");
     }
     ctx.datadir = default_datadir;

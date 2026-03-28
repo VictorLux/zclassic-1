@@ -125,9 +125,9 @@ void app_context_defaults(struct app_context *ctx)
     memset(ctx, 0, sizeof(*ctx));
     ctx->datadir = NULL;
     ctx->params_dir = NULL;
-    ctx->rpc_port = 8232;
+    ctx->rpc_port = 18232;
     ctx->p2p_port = 8033;
-    ctx->listen = false;
+    ctx->listen = true;   /* accept inbound by default — be a good peer */
     ctx->checkpoints_enabled = true;
 }
 
@@ -149,6 +149,15 @@ bool app_init(struct app_context *ctx)
     const struct chain_params *params = chain_params_get();
     g_datadir = ctx->datadir;
     g_blog_datadir = ctx->datadir;
+
+    /* Auto-create datadir if it doesn't exist */
+    {
+        struct stat st;
+        if (stat(ctx->datadir, &st) != 0) {
+            mkdir(ctx->datadir, 0700);
+            printf("Created data directory: %s\n", ctx->datadir);
+        }
+    }
 
     /* Assumevalid is set after block index loads (see ~line 1275).
      * The remote dev's implementation in contextual_check_tx.c handles
