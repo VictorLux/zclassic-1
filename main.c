@@ -7,6 +7,7 @@
 
 #include "config/boot.h"
 #include "rpc/client.h"
+#include "net/file_service.h"
 #include <sqlite3.h>
 #include "json/json.h"
 #include "views/wallet_gui.h"
@@ -20,6 +21,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <time.h>
+#include <sys/stat.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -702,8 +704,34 @@ int main(int argc, char **argv)
         else if (strncmp(argv[i], "-showmetrics=", 13) == 0) show_metrics = atoi(argv[i]+13) != 0;
         else if (strcmp(argv[i], "-tor") == 0) ctx.tor = true;
         else if (strncmp(argv[i], "-assumevalid=", 13) == 0) ctx.assume_valid = argv[i]+13;
+        else if (strncmp(argv[i], "-filesync=", 10) == 0) { /* handled below */ }
         else if (strcmp(argv[i], "-help") == 0 || strcmp(argv[i], "--help") == 0) {
             print_usage(argv[0]); return 0;
+        }
+    }
+
+    /* Fast file sync: download block files via SHA3 encrypted service
+     * BEFORE starting the full node. Wire speed, not block-by-block. */
+    for (int i = 1; i < argc; i++) {
+        if (strncmp(argv[i], "-filesync=", 10) == 0) {
+            const char *host = argv[i] + 10;
+            printf("=== SHA3 File Sync from %s:%d ===\n", host, FS_PORT);
+            uint8_t utxo_root[32];
+            memset(utxo_root, 0, 32);
+            char blocks_dir[512];
+            snprintf(blocks_dir, sizeof(blocks_dir), "%s/blocks", ctx.datadir);
+            mkdir(blocks_dir, 0755);
+            int64_t t0 = (int64_t)time(NULL);
+            bool ok = fs_client_sync(host, FS_PORT, ctx.datadir, utxo_root);
+            int64_t elapsed = (int64_t)time(NULL) - t0;
+            if (elapsed < 1) elapsed = 1;
+            if (ok) {
+                printf("=== File sync complete: %lld seconds ===\n",
+                       (long long)elapsed);
+            } else {
+                fprintf(stderr, "File sync failed from %s\n", host);
+            }
+            break;
         }
     }
 

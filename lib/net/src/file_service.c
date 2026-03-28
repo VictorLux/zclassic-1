@@ -21,6 +21,7 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <sys/time.h>
 #include <sys/stat.h>
 
@@ -328,6 +329,29 @@ static pthread_t g_fs_thread;
 static const char *g_fs_datadir = NULL;
 static uint16_t g_fs_port = FS_PORT;
 
+/* Background manifest builder — hashes all block files (~7 GB). */
+static struct file_manifest g_server_fm;
+static _Atomic bool g_have_manifest = false;
+
+static void *fs_manifest_thread(void *arg)
+{
+    (void)arg;
+    int64_t t0 = (int64_t)time(NULL);
+    bool ok = file_manifest_build(&g_server_fm, g_fs_datadir);
+    int64_t elapsed = (int64_t)time(NULL) - t0;
+    if (ok) {
+        printf("File service: manifest ready — %u chunks, "
+               "%.1f GB (%llds to hash)\n",
+               g_server_fm.num_chunks,
+               (double)g_server_fm.total_bytes / (1024.0*1024.0*1024.0),
+               (long long)elapsed);
+        atomic_store(&g_have_manifest, true);
+    } else {
+        printf("File service: no block files for manifest\n");
+    }
+    return NULL;
+}
+
 static void *fs_server_thread(void *arg)
 {
     (void)arg;
@@ -360,10 +384,16 @@ static void *fs_server_thread(void *arg)
     printf("File service listening on port %d (SHA3 quantum-secure)\n",
            g_fs_port);
 
+    /* Kick off manifest build in background thread */
+    if (g_fs_datadir) {
+        pthread_t mt;
+        pthread_create(&mt, NULL, fs_manifest_thread, NULL);
+        pthread_detach(mt);
+    }
+
     /* Get UTXO root for key derivation */
     uint8_t utxo_root[32];
     memset(utxo_root, 0, 32);
-    /* TODO: get from coins_view_sqlite UTXO commitment */
 
     while (g_fs_running) {
         struct sockaddr_in6 client_addr;
@@ -390,13 +420,7 @@ static void *fs_server_thread(void *arg)
             continue;
         }
 
-        /* Build manifest if needed */
-        const struct file_manifest *fm = file_controller_get_manifest();
-        if (!fm && g_fs_datadir) {
-            static struct file_manifest local_fm;
-            if (file_manifest_build(&local_fm, g_fs_datadir))
-                fm = &local_fm;
-        }
+        const struct file_manifest *fm = atomic_load(&g_have_manifest) ? &g_server_fm : NULL;
 
         /* Serve: receive REQUESTs, send DATA */
         while (g_fs_running) {
