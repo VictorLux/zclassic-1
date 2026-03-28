@@ -349,20 +349,25 @@ bool app_init_services(struct app_context *ctx,
                 NULL
             };
             bool file_sync_ok = false;
-            for (int i = 0; file_seeds[i]; i++) {
-                printf("Trying file service at %s:%d...\n",
-                       file_seeds[i], FS_PORT);
-                int64_t t0 = (int64_t)time(NULL);
-                if (fs_client_sync(file_seeds[i], FS_PORT,
-                                    ctx->datadir, utxo_root)) {
-                    int64_t elapsed = (int64_t)time(NULL) - t0;
-                    printf("=== File sync complete from %s: %llds ===\n",
-                           file_seeds[i], (long long)elapsed);
-                    file_sync_ok = true;
-                    break;
+            /* Retry up to 3 rounds — server manifest may still be building */
+            for (int round = 0; round < 3 && !file_sync_ok; round++) {
+                if (round > 0) {
+                    printf("File sync: retrying in 10s (round %d/3)...\n",
+                           round + 1);
+                    sleep(10);
                 }
-                printf("File sync from %s failed, trying next...\n",
-                       file_seeds[i]);
+                for (int i = 0; file_seeds[i] && !file_sync_ok; i++) {
+                    printf("Trying file service at %s:%d...\n",
+                           file_seeds[i], FS_PORT);
+                    int64_t t0 = (int64_t)time(NULL);
+                    if (fs_client_sync(file_seeds[i], FS_PORT,
+                                        ctx->datadir, utxo_root)) {
+                        int64_t elapsed = (int64_t)time(NULL) - t0;
+                        printf("=== File sync complete from %s: %llds ===\n",
+                               file_seeds[i], (long long)elapsed);
+                        file_sync_ok = true;
+                    }
+                }
             }
 
             /* After file sync: scan block files and register blocks in

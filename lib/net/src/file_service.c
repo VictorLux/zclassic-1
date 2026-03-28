@@ -639,16 +639,10 @@ bool fs_client_sync(const char *peer_addr, uint16_t port,
 
     printf("file_service: connected, requesting manifest...\n");
 
-    /* Request manifest — retry if server returns 0 chunks (still building).
-     * Server hashes 6+ GB of block files in background; may not be ready. */
-    int manifest_attempts = 0;
+    fs_send_frame(&session, FS_MANIFEST, NULL, 0);
 
     struct file_chunk chunks[FILE_MAX_CHUNKS];
     uint32_t num_chunks = 0;
-
-retry_manifest:
-    fs_send_frame(&session, FS_MANIFEST, NULL, 0);
-    num_chunks = 0;
 
     while (num_chunks < FILE_MAX_CHUNKS) {
         uint8_t type;
@@ -670,13 +664,10 @@ retry_manifest:
         }
     }
 
-    /* Retry if manifest is empty (server still building) */
-    if (num_chunks == 0 && manifest_attempts < 6) {
-        manifest_attempts++;
-        printf("file_service: manifest empty, waiting 5s (attempt %d/6)...\n",
-               manifest_attempts);
-        sleep(5);
-        goto retry_manifest;
+    if (num_chunks == 0) {
+        printf("file_service: manifest empty (server still building)\n");
+        close(fd);
+        return false; /* caller retries with next seed or waits */
     }
 
     /* Compute total download size for progress reporting */
