@@ -777,23 +777,12 @@ bool connect_tip(struct validation_state *state,
              * queries slow down IBD and can corrupt heap (db_wallet_utxo_find
              * allocates per-call). Use rescanblockchain RPC after sync. */
 
-            /* Keep coins_best_block in sync with SQLite tip.
-             * sync_controller writes UTXOs immediately, so the SQLite UTXO
-             * set is always up-to-date. If the node crashes before the
-             * coins_view_cache flushes, coins_best_block will match the
-             * SQLite tip and on restart we won't have missing inputs. */
-            if (g_coins_sqlite_ptr && pindex_new->phashBlock) {
-                sqlite3_stmt *upd = NULL;
-                sqlite3_prepare_v2(g_coins_sqlite_ptr->db,
-                    "INSERT OR REPLACE INTO node_state(key,value)"
-                    " VALUES('coins_best_block',?)", -1, &upd, NULL);
-                if (upd) {
-                    sqlite3_bind_blob(upd, 1, pindex_new->phashBlock->data,
-                                      32, SQLITE_STATIC);
-                    sqlite3_step(upd);
-                    sqlite3_finalize(upd);
-                }
-            }
+            /* coins_best_block is updated by coins_view_sqlite_batch_write
+             * when the coins cache flushes to SQLite. Do NOT update it
+             * per-block here — it creates a consistency gap where
+             * coins_best_block points ahead of the actual flushed UTXO
+             * set. On crash, the node would think UTXOs are current
+             * when they're actually stale in the cache. */
         }
     }
 
