@@ -232,10 +232,30 @@ bool coins_view_sqlite_batch_write(struct coins_view_sqlite *cvs,
 {
     if (!cvs->db) return false;
 
-    /* Use SAVEPOINT instead of BEGIN/COMMIT to avoid conflicts with
-     * other transactions on the shared sqlite3 handle. SAVEPOINT nests
-     * inside any existing transaction and always works. */
-    sqlite3_exec(cvs->db, "SAVEPOINT coins_flush", NULL, NULL, NULL);
+    /* The db handle must be in autocommit mode (no open transaction).
+     * flush_coins_if_needed commits the node_db batch before calling us.
+     * If a foreign transaction is still open, refuse to write — the
+     * caller will retain the coins cache and retry later. This prevents
+     * the catastrophic scenario where we write UTXOs into someone else's
+     * transaction, clear the cache, and then that transaction rolls back
+     * (losing UTXOs from both RAM and disk). */
+    if (sqlite3_get_autocommit(cvs->db) == 0) {
+        fprintf(stderr, "coins_flush: REFUSED — db has open transaction "
+                "(cache retained for retry, %zu dirty entries safe in RAM)\n",
+                map_coins->size);
+        return false;
+    }
+    {
+        char *txn_err = NULL;
+        int txn_rc = sqlite3_exec(cvs->db, "BEGIN IMMEDIATE",
+                                   NULL, NULL, &txn_err);
+        if (txn_rc != SQLITE_OK) {
+            fprintf(stderr, "coins_flush: BEGIN failed rc=%d: %s\n",
+                    txn_rc, txn_err ? txn_err : "unknown");
+            if (txn_err) sqlite3_free(txn_err);
+            return false;
+        }
+    }
 
     int write_errors = 0;
     size_t entries_written = 0;
@@ -314,12 +334,9 @@ bool coins_view_sqlite_batch_write(struct coins_view_sqlite *cvs,
 
     if (write_errors > 0) {
         fprintf(stderr, "coins_flush: %d write errors! "
-                "Rolling back savepoint to prevent UTXO loss\n",
+                "Rolling back to prevent UTXO loss\n",
                 write_errors);
-        sqlite3_exec(cvs->db, "ROLLBACK TO SAVEPOINT coins_flush",
-                      NULL, NULL, NULL);
-        sqlite3_exec(cvs->db, "RELEASE SAVEPOINT coins_flush",
-                      NULL, NULL, NULL);
+        sqlite3_exec(cvs->db, "ROLLBACK", NULL, NULL, NULL);
         return false;
     }
 
@@ -332,32 +349,27 @@ bool coins_view_sqlite_batch_write(struct coins_view_sqlite *cvs,
         if (rc != SQLITE_DONE && rc != SQLITE_ROW) {
             fprintf(stderr, "coins_flush: best_block UPDATE failed rc=%d: "
                     "%s\n", rc, sqlite3_errmsg(cvs->db));
-            sqlite3_exec(cvs->db, "ROLLBACK TO SAVEPOINT coins_flush",
-                          NULL, NULL, NULL);
-            sqlite3_exec(cvs->db, "RELEASE SAVEPOINT coins_flush",
-                          NULL, NULL, NULL);
+            sqlite3_exec(cvs->db, "ROLLBACK", NULL, NULL, NULL);
             return false;
         }
     }
 
+    /* Reset all prepared statements before COMMIT.
+     * Active result sets block transaction operations. */
     {
-        /* Reset all prepared statements before releasing savepoint.
-         * Active result sets block any transaction operations. */
         sqlite3_stmt *stmt = NULL;
         while ((stmt = sqlite3_next_stmt(cvs->db, stmt)) != NULL)
             sqlite3_reset(stmt);
+    }
 
+    {
         char *errmsg = NULL;
-        int rc = sqlite3_exec(cvs->db, "RELEASE SAVEPOINT coins_flush",
-                               NULL, NULL, &errmsg);
+        int rc = sqlite3_exec(cvs->db, "COMMIT", NULL, NULL, &errmsg);
         if (rc != SQLITE_OK) {
-            fprintf(stderr, "coins_view_sqlite RELEASE FAILED: %s\n",
+            fprintf(stderr, "coins_flush: COMMIT failed: %s\n",
                     errmsg ? errmsg : "unknown");
             if (errmsg) sqlite3_free(errmsg);
-            sqlite3_exec(cvs->db, "ROLLBACK TO SAVEPOINT coins_flush",
-                          NULL, NULL, NULL);
-            sqlite3_exec(cvs->db, "RELEASE SAVEPOINT coins_flush",
-                          NULL, NULL, NULL);
+            sqlite3_exec(cvs->db, "ROLLBACK", NULL, NULL, NULL);
             return false;
         }
     }

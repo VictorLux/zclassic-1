@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "test/test_helpers.h"
+#include "storage/coins_view_sqlite.h"
 
 int test_coins(void)
 {
@@ -622,6 +623,128 @@ int test_coins(void)
         s.size = 0;
         ok = ok && !script_is_unspendable(&s);
 
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ── coins_view_sqlite batch_write error safety ── */
+
+    printf("coins_view_sqlite: batch_write with NULL db returns false... ");
+    {
+        struct coins_view_sqlite cvs;
+        memset(&cvs, 0, sizeof(cvs));
+        /* db is NULL — should return false immediately */
+        struct coins_map cm;
+        coins_map_init(&cm);
+        struct uint256 hash;
+        uint256_set_null(&hash);
+        bool ok = !coins_view_sqlite_batch_write(&cvs, &cm, &hash);
+        coins_map_free(&cm);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("coins_view_sqlite: roundtrip flush and read back... ");
+    {
+        /* Create an in-memory SQLite DB, open coins_view_sqlite on it,
+         * write some UTXOs via batch_write, then read them back. */
+        sqlite3 *db = NULL;
+        int rc = sqlite3_open(":memory:", &db);
+        bool ok = (rc == SQLITE_OK && db != NULL);
+        if (ok) {
+            /* Create utxos table */
+            sqlite3_exec(db,
+                "CREATE TABLE IF NOT EXISTS utxos ("
+                " txid BLOB NOT NULL, vout INTEGER NOT NULL,"
+                " value INTEGER, script BLOB, script_type INTEGER,"
+                " address_hash BLOB, height INTEGER, is_coinbase INTEGER,"
+                " PRIMARY KEY(txid, vout))",
+                NULL, NULL, NULL);
+            sqlite3_exec(db,
+                "CREATE TABLE IF NOT EXISTS node_state ("
+                " key TEXT PRIMARY KEY, value BLOB)",
+                NULL, NULL, NULL);
+
+            struct coins_view_sqlite cvs;
+            if (coins_view_sqlite_open(&cvs, db)) {
+                /* Build a coins_map with one entry */
+                struct coins_map cm;
+                coins_map_init(&cm);
+                struct uint256 txid;
+                memset(txid.data, 0x42, 32);
+                struct coins_cache_entry *e = coins_map_insert(&cm, &txid);
+                coins_alloc(&e->coins, 2);
+                e->coins.vout[0].value = 50000000;
+                uint8_t p2pkh[] = {0x76, 0xa9, 0x14,
+                    1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,
+                    0x88, 0xac};
+                script_set(&e->coins.vout[0].script_pub_key,
+                           p2pkh, sizeof(p2pkh));
+                e->coins.height = 100;
+                e->coins.is_coinbase = true;
+                e->flags = COINS_CACHE_DIRTY;
+
+                struct uint256 best;
+                memset(best.data, 0xBB, 32);
+
+                /* Flush to SQLite */
+                ok = coins_view_sqlite_batch_write(&cvs, &cm, &best);
+
+                /* Read back */
+                if (ok) {
+                    struct coins readback;
+                    coins_init(&readback);
+                    ok = coins_view_sqlite_get_coins(&cvs, &txid, &readback);
+                    ok = ok && readback.height == 100;
+                    ok = ok && readback.is_coinbase;
+                    ok = ok && readback.num_vout >= 1;
+                    ok = ok && readback.vout[0].value == 50000000;
+                    coins_free(&readback);
+
+                    /* Read back best block */
+                    struct uint256 read_best;
+                    ok = ok && coins_view_sqlite_get_best_block(&cvs, &read_best);
+                    ok = ok && uint256_eq(&read_best, &best);
+                }
+
+                coins_map_free(&cm);
+                coins_view_sqlite_close(&cvs);
+            } else {
+                ok = false;
+            }
+            sqlite3_close(db);
+        }
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("coins_view_sqlite: flush retains cache on failure... ");
+    {
+        /* The coins_view_cache_flush must NOT clear the cache when
+         * batch_write returns false. Verify via the null-view pattern. */
+        struct coins_view null_view;
+        memset(&null_view, 0, sizeof(null_view));
+        struct coins_view_cache cache;
+        coins_view_cache_init(&cache, &null_view);
+
+        /* Add a coin to the cache */
+        struct uint256 txid;
+        memset(txid.data, 0x77, 32);
+        struct coins_cache_entry *entry =
+            coins_view_cache_modify_new(&cache, &txid);
+        coins_alloc(&entry->coins, 1);
+        entry->coins.vout[0].value = 999;
+        entry->coins.height = 500;
+
+        /* Flush will fail because null_view has no batch_write */
+        bool flush_ok = coins_view_cache_flush(&cache);
+        /* Flush should fail */
+        bool ok = !flush_ok;
+        /* Cache should still have the entry (not cleared) */
+        ok = ok && coins_view_cache_have_coins(&cache, &txid);
+        ok = ok && (cache.cache_coins.size > 0);
+
+        coins_view_cache_free(&cache);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
