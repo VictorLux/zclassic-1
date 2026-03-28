@@ -549,13 +549,20 @@ bool fs_client_sync(const char *peer_addr, uint16_t port,
         }
     }
 
-    printf("file_service: manifest has %u chunks, downloading...\n",
-           num_chunks);
+    /* Compute total download size for progress reporting */
+    uint64_t total_bytes = 0;
+    for (uint32_t j = 0; j < num_chunks; j++)
+        total_bytes += chunks[j].size;
+    printf("file_service: manifest has %u chunks (%.1f GB), downloading...\n",
+           num_chunks, (double)total_bytes / (1024.0 * 1024.0 * 1024.0));
 
     /* Create blocks directory */
     char blocks_dir[512];
     snprintf(blocks_dir, sizeof(blocks_dir), "%s/blocks", datadir);
     mkdir(blocks_dir, 0755);
+
+    int64_t dl_start = (int64_t)time(NULL);
+    uint64_t bytes_done = 0;
 
     /* Request each chunk */
     for (uint32_t i = 0; i < num_chunks; i++) {
@@ -608,15 +615,31 @@ bool fs_client_sync(const char *peer_addr, uint16_t port,
         }
 
         free(chunk_buf);
+        bytes_done += chunks[i].size;
 
-        printf("file_service: chunk %u/%u verified (%.1f MB/s)\n",
-               i + 1, num_chunks, fs_session_mbps(&session));
+        /* Progress: percentage, downloaded/total, speed, ETA */
+        double pct = total_bytes > 0 ? 100.0 * (double)bytes_done / (double)total_bytes : 0;
+        double gb_done = (double)bytes_done / (1024.0 * 1024.0 * 1024.0);
+        double gb_total = (double)total_bytes / (1024.0 * 1024.0 * 1024.0);
+        double mbps = fs_session_mbps(&session);
+        int64_t elapsed = (int64_t)time(NULL) - dl_start;
+        int eta_sec = 0;
+        if (bytes_done > 0 && elapsed > 0)
+            eta_sec = (int)((double)(total_bytes - bytes_done) /
+                            ((double)bytes_done / (double)elapsed));
+        printf("file_service: [%3.0f%%] %.1f/%.1f GB  %.1f MB/s  "
+               "chunk %u/%u  ETA %dm%02ds\n",
+               pct, gb_done, gb_total, mbps, i + 1, num_chunks,
+               eta_sec / 60, eta_sec % 60);
+        fflush(stdout);
     }
 
     fs_send_frame(&session, FS_DONE, NULL, 0);
-    printf("file_service: sync complete — %llu bytes at %.1f MB/s\n",
-           (unsigned long long)(session.bytes_sent + session.bytes_received),
-           fs_session_mbps(&session));
+    int64_t dl_elapsed = (int64_t)time(NULL) - dl_start;
+    printf("=== File sync complete: %.1f GB in %llds (%.1f MB/s avg) ===\n",
+           (double)bytes_done / (1024.0 * 1024.0 * 1024.0),
+           (long long)dl_elapsed,
+           dl_elapsed > 0 ? (double)bytes_done / (1024.0 * 1024.0) / (double)dl_elapsed : 0);
 
     close(fd);
     return true;

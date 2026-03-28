@@ -10,9 +10,10 @@
 
 struct coins_view_sqlite {
     struct coins_view view;          /* vtable-based polymorphism */
-    sqlite3 *db;                     /* shared handle to node.db */
+    sqlite3 *db;                     /* dedicated handle for coins (reads+writes) */
+    bool owns_db;                    /* true = we opened db, must close it */
 
-    /* Prepared statements */
+    /* Prepared statements (all on dedicated db handle) */
     sqlite3_stmt *stmt_get;          /* all vouts for a txid */
     sqlite3_stmt *stmt_have;         /* existence check */
     sqlite3_stmt *stmt_insert;       /* upsert single UTXO */
@@ -23,8 +24,9 @@ struct coins_view_sqlite {
     sqlite3_stmt *stmt_commit_set;   /* write UTXO commitment */
 };
 
-/* Open coins view on a shared sqlite3 handle.
- * Uses SAVEPOINT for transaction nesting with node_db. */
+/* Open coins view. Opens a dedicated SQLite connection to the same
+ * database file as `db`. This avoids SAVEPOINT/transaction conflicts
+ * with node_db which runs BEGIN TRANSACTION on the shared handle. */
 bool coins_view_sqlite_open(struct coins_view_sqlite *cvs, sqlite3 *db);
 void coins_view_sqlite_close(struct coins_view_sqlite *cvs);
 
