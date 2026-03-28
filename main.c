@@ -649,39 +649,21 @@ int main(int argc, char **argv)
         return 0;
     }
 
-    /* GUI mode: default when no args and a display is available.
-     * Headless/service mode: use -daemon flag, or if no DISPLAY.
-     * The linger service unit uses -daemon for headless operation. */
+    /* Default: headless node. GUI only with explicit --gui flag.
+     * ./zclassic23         → node (always)
+     * ./zclassic23 --gui   → wallet GUI (if display available) */
     {
-        bool has_daemon_flag = false;
-        bool has_node_flags = false;
+        bool gui_mode = false;
         for (int i = 1; i < argc; i++) {
-            if (strcmp(argv[i], "-daemon") == 0) has_daemon_flag = true;
-            if (strncmp(argv[i], "-port=", 6) == 0 ||
-                strncmp(argv[i], "-datadir=", 9) == 0 ||
-                strncmp(argv[i], "-addnode=", 9) == 0 ||
-                strncmp(argv[i], "-rpcport=", 9) == 0 ||
-                strcmp(argv[i], "-listen") == 0 ||
-                strncmp(argv[i], "-filesync=", 10) == 0)
-                has_node_flags = true;
+            if (strcmp(argv[i], "--gui") == 0 ||
+                strcmp(argv[i], "--self-test") == 0)
+                gui_mode = true;
         }
-
-        bool has_display = (getenv("DISPLAY") != NULL ||
-                            getenv("WAYLAND_DISPLAY") != NULL);
-        bool gui_mode = !has_daemon_flag && !has_node_flags &&
-                        (argc <= 1 || false); /* no args = try GUI */
-        for (int i = 1; i < argc; i++)
-            if (strcmp(argv[i], "--self-test") == 0) gui_mode = true;
-
-        if (gui_mode && has_display) {
+        if (gui_mode) {
             const char *h = getenv("HOME");
             char dd[512];
             snprintf(dd, sizeof(dd), "%s/.zclassic-c23", h ? h : ".");
             return wallet_gui_main(argc, argv, dd);
-        }
-        if (gui_mode && !has_display) {
-            printf("No display — starting as headless node.\n"
-                   "Use -daemon to suppress this message.\n");
         }
     }
 
@@ -728,7 +710,7 @@ int main(int argc, char **argv)
         else if (strcmp(argv[i], "-tor") == 0) ctx.tor = true;
         else if (strncmp(argv[i], "-assumevalid=", 13) == 0) ctx.assume_valid = argv[i]+13;
         else if (strncmp(argv[i], "-filesync=", 10) == 0) { /* handled above */ }
-        else if (strcmp(argv[i], "-daemon") == 0) { /* handled above */ }
+        else if (strcmp(argv[i], "-daemon") == 0) { /* legacy compat */ }
         else if (strcmp(argv[i], "-help") == 0 || strcmp(argv[i], "--help") == 0) {
             print_usage(argv[0]); return 0;
         }
