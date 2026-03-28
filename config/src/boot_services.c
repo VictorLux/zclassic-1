@@ -37,6 +37,7 @@
 #include "sapling/params_init.h"
 #include <netdb.h>
 #include <stdatomic.h>
+#include <time.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -328,6 +329,41 @@ bool app_init_services(struct app_context *ctx,
     /* File transfer service — SHA3-verified chunk serving */
     file_controller_init(ctx->datadir);
     register_file_rpc_commands(svc->rpc_table);
+
+    /* Auto file sync: if chain is at genesis (fresh node), try to
+     * download block files from seed peers via fast file service.
+     * This gets 6+ GB of blockchain data at ~68 MB/s instead of
+     * waiting hours for block-by-block P2P sync. */
+    {
+        int chain_height = active_chain_height(&svc->state->chain_active);
+        if (chain_height <= 0) {
+            printf("=== Fresh node — trying fast file sync ===\n");
+            uint8_t utxo_root[32];
+            memset(utxo_root, 0, 32);
+
+            /* Try each seed peer's file service */
+            const char *file_seeds[] = {
+                "74.50.74.102",   /* rhett.dev */
+                "205.209.104.118",
+                "140.174.189.3",
+                NULL
+            };
+            for (int i = 0; file_seeds[i]; i++) {
+                printf("Trying file service at %s:%d...\n",
+                       file_seeds[i], FS_PORT);
+                int64_t t0 = (int64_t)time(NULL);
+                if (fs_client_sync(file_seeds[i], FS_PORT,
+                                    ctx->datadir, utxo_root)) {
+                    int64_t elapsed = (int64_t)time(NULL) - t0;
+                    printf("=== File sync complete from %s: %llds ===\n",
+                           file_seeds[i], (long long)elapsed);
+                    break;
+                }
+                printf("File sync from %s failed, trying next...\n",
+                       file_seeds[i]);
+            }
+        }
+    }
 
     /* Start file service server on dedicated port.
      * Auto-serves blockchain data to any ZCL23 peer that connects. */
