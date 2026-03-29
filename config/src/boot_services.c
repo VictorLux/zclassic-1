@@ -488,27 +488,32 @@ bool app_init_services(struct app_context *ctx,
         gen_start(svc->gen);
     }
 
-    /* Start embedded Tor — every power node is a Tor hidden service.
-     * Provides censorship resistance + sticky peer discovery via .onion.
-     * Nodes find each other over Tor even when clearnet IPs change. */
+    /* Start embedded Tor only if explicitly requested (-tor flag)
+     * or if the node has a previous .onion key (returning node).
+     * Fresh nodes skip Tor to avoid SIGABRT from bad torrc configs.
+     * Clearnet P2P + file service works fine without Tor. */
     {
-        extern const char *onion_service_start(const char *);
-        onion_service_start(ctx->datadir);
+        char onion_dir[512];
+        snprintf(onion_dir, sizeof(onion_dir), "%s/onion-keys", ctx->datadir);
+        struct stat onion_st;
+        bool has_onion_keys = (stat(onion_dir, &onion_st) == 0);
 
-        tor_integration_set_handler(onion_request_adapter, NULL);
-
-        printf("Starting embedded Tor...\n");
-        if (!tor_integration_start(ctx->datadir, (uint16_t)ctx->p2p_port))
-            fprintf(stderr, "Warning: Tor failed to start\n");
-
-        const char *onion = tor_integration_get_onion_address();
-        if (onion) {
-            printf("Tor .onion address: %s\n", onion);
-            extern bool blog_auto_announce_onion(const char *, const char *);
-            if (blog_auto_announce_onion(ctx->datadir, onion))
-                printf("Published .onion address on-chain: %s\n", onion);
+        if (ctx->tor || has_onion_keys) {
+            extern const char *onion_service_start(const char *);
+            onion_service_start(ctx->datadir);
+            tor_integration_set_handler(onion_request_adapter, NULL);
+            printf("Starting embedded Tor...\n");
+            if (!tor_integration_start(ctx->datadir, (uint16_t)ctx->p2p_port))
+                fprintf(stderr, "Warning: Tor failed to start\n");
+            else {
+                const char *onion = tor_integration_get_onion_address();
+                if (onion)
+                    printf("Tor .onion address: %s\n", onion);
+                else
+                    printf("Tor: bootstrapping...\n");
+            }
         } else {
-            printf("Tor: bootstrapping (address not yet available)\n");
+            printf("Tor: skipped (use -tor to enable)\n");
         }
     }
 
