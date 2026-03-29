@@ -410,6 +410,89 @@ static void *fs_manifest_thread(void *arg)
     return NULL;
 }
 
+/* Per-client handler thread — allows multiple parallel downloads */
+static void *fs_handle_client(void *arg)
+{
+    int client_fd = *(int *)arg;
+    free(arg);
+
+    struct fs_session session;
+    fs_session_init(&session, client_fd);
+
+    uint8_t ur[32];
+    memset(ur, 0, 32);
+    if (!fs_handshake(&session, ur, false)) {
+        close(client_fd);
+        return NULL;
+    }
+
+    const struct file_manifest *fm =
+        atomic_load(&g_have_manifest) ? &g_server_fm : NULL;
+
+    while (g_fs_running) {
+        uint8_t type;
+        const uint8_t *payload;
+        uint32_t plen;
+        if (!fs_recv_frame(&session, &type, &payload, &plen)) break;
+
+        if (type == FS_REQUEST && plen >= 8 &&
+            memcmp(payload, "RNG", 3) == 0 && fm) {
+            /* Range: chunks[start..end) */
+            uint16_t start = (uint16_t)payload[3] |
+                              ((uint16_t)payload[4] << 8);
+            uint16_t end = (uint16_t)payload[5] |
+                            ((uint16_t)payload[6] << 8);
+            if (end > fm->num_chunks) end = fm->num_chunks;
+            for (uint32_t ci = start; ci < end && g_fs_running; ci++) {
+                uint8_t *data = NULL;
+                uint32_t dsz = 0;
+                if (file_chunk_read(&fm->chunks[ci], g_fs_datadir,
+                                     &data, &dsz)) {
+                    fs_send_chunk_fast(&session, data, dsz,
+                                        fm->chunks[ci].sha3);
+                    free(data);
+                } else break;
+            }
+        } else if (type == FS_REQUEST && plen == 3 &&
+                   memcmp(payload, "ALL", 3) == 0 && fm) {
+            printf("file_service: streaming %u chunks (%.1f GB)...\n",
+                   fm->num_chunks,
+                   (double)fm->total_bytes / (1024.0*1024.0*1024.0));
+            for (uint32_t ci = 0; ci < fm->num_chunks && g_fs_running; ci++) {
+                uint8_t *data = NULL;
+                uint32_t dsz = 0;
+                if (file_chunk_read(&fm->chunks[ci], g_fs_datadir,
+                                     &data, &dsz)) {
+                    fs_send_chunk_fast(&session, data, dsz,
+                                        fm->chunks[ci].sha3);
+                    free(data);
+                } else break;
+            }
+            printf("file_service: streaming done (%.1f MB/s)\n",
+                   fs_session_mbps(&session));
+        } else if (type == FS_MANIFEST && fm) {
+            for (uint32_t i = 0; i < fm->num_chunks; i++) {
+                uint8_t entry[36];
+                memcpy(entry, fm->chunks[i].sha3, 32);
+                entry[32] = (uint8_t)(fm->chunks[i].size);
+                entry[33] = (uint8_t)(fm->chunks[i].size >> 8);
+                entry[34] = (uint8_t)(fm->chunks[i].size >> 16);
+                entry[35] = (uint8_t)(fm->chunks[i].size >> 24);
+                fs_send_frame(&session, FS_MANIFEST, entry, 36);
+            }
+            fs_send_frame(&session, FS_DONE, NULL, 0);
+        } else if (type == FS_DONE) {
+            break;
+        }
+    }
+
+    printf("file_service: client done (%.1f MB/s, %llu bytes)\n",
+           fs_session_mbps(&session),
+           (unsigned long long)(session.bytes_sent + session.bytes_received));
+    close(client_fd);
+    return NULL;
+}
+
 static void *fs_server_thread(void *arg)
 {
     (void)arg;
@@ -467,89 +550,16 @@ static void *fs_server_thread(void *arg)
                                 (struct sockaddr *)&client_addr, &client_len);
         if (client_fd < 0) continue;
 
-        printf("file_service: client connected\n");
-
-        struct fs_session session;
-        fs_session_init(&session, client_fd);
-
-        if (!fs_handshake(&session, utxo_root, false)) {
-            fprintf(stderr, "file_service: handshake failed\n");
+        /* Spawn handler thread — supports multiple parallel clients */
+        int *cfd = malloc(sizeof(int));
+        if (cfd) {
+            *cfd = client_fd;
+            pthread_t ct;
+            pthread_create(&ct, NULL, fs_handle_client, cfd);
+            pthread_detach(ct);
+        } else {
             close(client_fd);
-            continue;
         }
-
-        const struct file_manifest *fm = atomic_load(&g_have_manifest) ? &g_server_fm : NULL;
-
-        /* Serve: receive control frames, send data */
-        while (g_fs_running) {
-            uint8_t type;
-            const uint8_t *payload;
-            uint32_t plen;
-
-            if (!fs_recv_frame(&session, &type, &payload, &plen))
-                break;
-
-            if (type == FS_REQUEST && plen == 3 &&
-                memcmp(payload, "ALL", 3) == 0 && fm) {
-                /* Stream ALL chunks back-to-back — zero round trips */
-                printf("file_service: streaming %u chunks (%.1f GB)...\n",
-                       fm->num_chunks,
-                       (double)fm->total_bytes / (1024.0*1024.0*1024.0));
-                for (uint32_t ci = 0; ci < fm->num_chunks; ci++) {
-                    uint8_t *data = NULL;
-                    uint32_t data_size = 0;
-                    if (file_chunk_read(&fm->chunks[ci], g_fs_datadir,
-                                         &data, &data_size)) {
-                        fs_send_chunk_fast(&session, data, data_size,
-                                            fm->chunks[ci].sha3);
-                        free(data);
-                    } else {
-                        fprintf(stderr, "file_service: chunk %u read "
-                                "failed\n", ci);
-                        break;
-                    }
-                }
-                printf("file_service: streaming done (%.1f MB/s)\n",
-                       fs_session_mbps(&session));
-            } else if (type == FS_REQUEST && plen >= 32 && fm) {
-                /* Single chunk request by hash */
-                const struct file_chunk *chunk =
-                    file_manifest_find(fm, payload);
-                if (chunk) {
-                    uint8_t *data = NULL;
-                    uint32_t data_size = 0;
-                    if (file_chunk_read(chunk, g_fs_datadir,
-                                         &data, &data_size)) {
-                        fs_send_chunk_fast(&session, data, data_size,
-                                            chunk->sha3);
-                        free(data);
-                    }
-                }
-            } else if (type == FS_MANIFEST) {
-                /* Client requests manifest — send chunk list */
-                if (fm) {
-                    /* Send each chunk hash+size as manifest entries */
-                    for (uint32_t i = 0; i < fm->num_chunks; i++) {
-                        uint8_t entry[36];
-                        memcpy(entry, fm->chunks[i].sha3, 32);
-                        entry[32] = (uint8_t)(fm->chunks[i].size);
-                        entry[33] = (uint8_t)(fm->chunks[i].size >> 8);
-                        entry[34] = (uint8_t)(fm->chunks[i].size >> 16);
-                        entry[35] = (uint8_t)(fm->chunks[i].size >> 24);
-                        fs_send_frame(&session, FS_MANIFEST, entry, 36);
-                    }
-                    fs_send_frame(&session, FS_DONE, NULL, 0);
-                }
-            } else if (type == FS_DONE) {
-                break;
-            }
-        }
-
-        printf("file_service: client done (%.1f MB/s, %llu bytes)\n",
-               fs_session_mbps(&session),
-               (unsigned long long)(session.bytes_sent +
-                                     session.bytes_received));
-        close(client_fd);
     }
 
     close(listen_fd);
@@ -568,6 +578,71 @@ void fs_server_stop(void)
 {
     g_fs_running = false;
     pthread_join(g_fs_thread, NULL);
+}
+
+/* ── Parallel download worker ──────────────────────────────────── */
+
+struct range_worker {
+    const char *peer_addr;
+    uint16_t port;
+    uint8_t utxo_root[32];
+    struct file_chunk *chunks;
+    uint32_t start, end;
+    const char *out_path;
+    int id;
+    _Atomic bool done;
+    _Atomic uint64_t bytes;
+};
+
+static void *range_worker_fn(void *arg)
+{
+    struct range_worker *w = (struct range_worker *)arg;
+    if (w->start >= w->end) { atomic_store(&w->done, true); return NULL; }
+
+    struct addrinfo hints, *res;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    char ps[8];
+    snprintf(ps, sizeof(ps), "%d", w->port);
+    if (getaddrinfo(w->peer_addr, ps, &hints, &res) != 0) return NULL;
+    int wfd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+    if (wfd < 0) { freeaddrinfo(res); return NULL; }
+    if (connect(wfd, res->ai_addr, res->ai_addrlen) < 0) {
+        close(wfd); freeaddrinfo(res); return NULL;
+    }
+    freeaddrinfo(res);
+
+    struct fs_session ws;
+    fs_session_init(&ws, wfd);
+    if (!fs_handshake(&ws, w->utxo_root, true)) { close(wfd); return NULL; }
+
+    /* Send range request */
+    uint8_t rng[8] = {'R','N','G', 0,0,0,0,0};
+    rng[3] = (uint8_t)(w->start);
+    rng[4] = (uint8_t)(w->start >> 8);
+    rng[5] = (uint8_t)(w->end);
+    rng[6] = (uint8_t)(w->end >> 8);
+    fs_send_frame(&ws, FS_REQUEST, rng, 8);
+
+    FILE *f = fopen(w->out_path, "wb");
+    if (!f) { close(wfd); return NULL; }
+
+    for (uint32_t i = w->start; i < w->end; i++) {
+        uint8_t *buf = NULL;
+        uint32_t sz = 0;
+        if (!fs_recv_chunk_fast(&ws, &buf, &sz, w->chunks[i].sha3)) {
+            fclose(f); close(wfd); return NULL;
+        }
+        fwrite(buf, 1, sz, f);
+        free(buf);
+        atomic_fetch_add(&w->bytes, sz);
+    }
+
+    fclose(f);
+    close(wfd);
+    atomic_store(&w->done, true);
+    return NULL;
 }
 
 /* ── Client ────────────────────────────────────────────────────── */
@@ -655,7 +730,6 @@ bool fs_client_sync(const char *peer_addr, uint16_t port,
     mkdir(blocks_dir, 0755);
 
     int64_t dl_start = (int64_t)time(NULL);
-    uint64_t bytes_done = 0;
 
     /* Check if a previous partial download exists — resume from there */
     char out_path[576];
@@ -684,64 +758,97 @@ bool fs_client_sync(const char *peer_addr, uint16_t port,
         }
     }
 
-    /* Open for append if resuming, write if fresh */
-    FILE *out_file = fopen(out_path, skip_chunks > 0 ? "ab" : "wb");
-    if (!out_file) {
-        fprintf(stderr, "file_service: cannot open %s\n", out_path);
-        close(fd);
-        return false;
+    /* Close manifest connection — we'll open parallel ones */
+    close(fd);
+
+    /* Launch 8 parallel workers, each downloads a range of chunks */
+    #define FS_NWORKERS 8
+    uint32_t remaining = num_chunks - skip_chunks;
+    uint32_t per = (remaining + FS_NWORKERS - 1) / FS_NWORKERS;
+    struct range_worker workers[FS_NWORKERS];
+    pthread_t wthreads[FS_NWORKERS];
+    int nworkers = 0;
+
+    for (int w = 0; w < FS_NWORKERS; w++) {
+        uint32_t ws = skip_chunks + (uint32_t)w * per;
+        uint32_t we = ws + per;
+        if (we > num_chunks) we = num_chunks;
+        if (ws >= num_chunks) break;
+
+        char *wp = malloc(600);
+        snprintf(wp, 600, "%s/blocks/.part%d", datadir, w);
+
+        workers[nworkers].peer_addr = peer_addr;
+        workers[nworkers].port = port;
+        memcpy(workers[nworkers].utxo_root, utxo_root, 32);
+        workers[nworkers].chunks = chunks;
+        workers[nworkers].start = ws;
+        workers[nworkers].end = we;
+        workers[nworkers].out_path = wp;
+        workers[nworkers].id = w;
+        atomic_store(&workers[nworkers].done, false);
+        atomic_store(&workers[nworkers].bytes, 0);
+        pthread_create(&wthreads[nworkers], NULL,
+                        range_worker_fn, &workers[nworkers]);
+        nworkers++;
     }
 
-    /* Request ALL chunks — server streams back-to-back */
-    fs_send_frame(&session, FS_REQUEST, (const uint8_t *)"ALL", 3);
+    printf("file_service: %d parallel connections downloading...\n", nworkers);
 
-    for (uint32_t i = 0; i < num_chunks; i++) {
-        uint8_t *chunk_buf = NULL;
-        uint32_t chunk_size = 0;
-        if (!fs_recv_chunk_fast(&session, &chunk_buf, &chunk_size,
-                                 chunks[i].sha3)) {
-            fprintf(stderr, "file_service: chunk %u/%u FAILED\n",
-                    i + 1, num_chunks);
-            fclose(out_file);
-            close(fd);
-            return false;
+    /* Monitor progress */
+    while (true) {
+        sleep(5);
+        uint64_t done = 0;
+        bool all_done = true;
+        for (int w = 0; w < nworkers; w++) {
+            done += atomic_load(&workers[w].bytes);
+            if (!atomic_load(&workers[w].done)) all_done = false;
         }
-
-        /* Skip chunks we already have on disk (resume support) */
-        if (i < skip_chunks) {
-            free(chunk_buf);
-            continue;
-        }
-
-        fwrite(chunk_buf, 1, chunk_size, out_file);
-        free(chunk_buf);
-        bytes_done += chunk_size;
-
-        /* Progress: percentage, downloaded/total, speed, ETA */
-        double pct = total_bytes > 0 ? 100.0 * (double)bytes_done / (double)total_bytes : 0;
-        double gb_done = (double)bytes_done / (1024.0 * 1024.0 * 1024.0);
-        double gb_total = (double)total_bytes / (1024.0 * 1024.0 * 1024.0);
-        double mbps = fs_session_mbps(&session);
+        double pct = total_bytes > 0 ? 100.0 * (double)done / (double)total_bytes : 0;
         int64_t elapsed = (int64_t)time(NULL) - dl_start;
-        int eta_sec = 0;
-        if (bytes_done > 0 && elapsed > 0)
-            eta_sec = (int)((double)(total_bytes - bytes_done) /
-                            ((double)bytes_done / (double)elapsed));
+        double mbps = elapsed > 0 ? (double)done / (1048576.0 * (double)elapsed) : 0;
+        int eta = (done > 0 && elapsed > 0) ?
+            (int)((double)(total_bytes - done) / ((double)done / (double)elapsed)) : 0;
         printf("file_service: [%3.0f%%] %.1f/%.1f GB  %.1f MB/s  "
-               "chunk %u/%u  ETA %dm%02ds\n",
-               pct, gb_done, gb_total, mbps, i + 1, num_chunks,
-               eta_sec / 60, eta_sec % 60);
+               "(%d connections)  ETA %dm%02ds\n",
+               pct, (double)done / (1024.0*1024.0*1024.0),
+               (double)total_bytes / (1024.0*1024.0*1024.0),
+               mbps, nworkers, eta / 60, eta % 60);
         fflush(stdout);
+        if (all_done || done >= total_bytes) break;
     }
 
-    fclose(out_file);
-    fs_send_frame(&session, FS_DONE, NULL, 0);
+    for (int w = 0; w < nworkers; w++)
+        pthread_join(wthreads[w], NULL);
+
+    /* Concatenate part files in order */
+    FILE *out = fopen(out_path, skip_chunks > 0 ? "ab" : "wb");
+    if (out) {
+        uint8_t *cat = malloc(1024 * 1024);
+        for (int w = 0; w < nworkers; w++) {
+            FILE *pf = fopen(workers[w].out_path, "rb");
+            if (pf) {
+                size_t n;
+                while ((n = fread(cat, 1, 1024*1024, pf)) > 0)
+                    fwrite(cat, 1, n, out);
+                fclose(pf);
+            }
+            remove(workers[w].out_path);
+            free((void *)workers[w].out_path);
+        }
+        free(cat);
+        fclose(out);
+    }
+
+    uint64_t bytes_done = 0;
+    for (int w = 0; w < nworkers; w++)
+        bytes_done += atomic_load(&workers[w].bytes);
+
     int64_t dl_elapsed = (int64_t)time(NULL) - dl_start;
     printf("=== File sync complete: %.1f GB in %llds (%.1f MB/s avg) ===\n",
            (double)bytes_done / (1024.0 * 1024.0 * 1024.0),
            (long long)dl_elapsed,
            dl_elapsed > 0 ? (double)bytes_done / (1024.0 * 1024.0) / (double)dl_elapsed : 0);
 
-    close(fd);
-    return true;
+    return bytes_done > 0;
 }
