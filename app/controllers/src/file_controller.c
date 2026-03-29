@@ -76,8 +76,78 @@ static bool hash_file_chunks(const char *path, uint8_t file_index,
     return true;
 }
 
+/* Save manifest to disk for instant reload on restart */
+static bool file_manifest_save(const struct file_manifest *fm,
+                                const char *datadir)
+{
+    char path[512];
+    snprintf(path, sizeof(path), "%s/file_manifest.bin", datadir);
+    FILE *f = fopen(path, "wb");
+    if (!f) return false;
+    /* Write header: magic + num_chunks + total_bytes + root_hash */
+    uint32_t magic = 0x464D414E; /* "FMAN" */
+    fwrite(&magic, 4, 1, f);
+    fwrite(&fm->num_chunks, 4, 1, f);
+    fwrite(&fm->total_bytes, 8, 1, f);
+    fwrite(fm->root_hash, 32, 1, f);
+    /* Write chunks */
+    for (uint32_t i = 0; i < fm->num_chunks; i++) {
+        fwrite(fm->chunks[i].sha3, 32, 1, f);
+        fwrite(&fm->chunks[i].offset, 8, 1, f);
+        fwrite(&fm->chunks[i].size, 4, 1, f);
+        fwrite(&fm->chunks[i].file_index, 1, 1, f);
+    }
+    fclose(f);
+    return true;
+}
+
+/* Load cached manifest from disk — instant startup */
+static bool file_manifest_load(struct file_manifest *fm,
+                                const char *datadir)
+{
+    char path[512];
+    snprintf(path, sizeof(path), "%s/file_manifest.bin", datadir);
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    memset(fm, 0, sizeof(*fm));
+    uint32_t magic = 0;
+    if (fread(&magic, 4, 1, f) != 1 || magic != 0x464D414E) {
+        fclose(f); return false;
+    }
+    fread(&fm->num_chunks, 4, 1, f);
+    fread(&fm->total_bytes, 8, 1, f);
+    fread(fm->root_hash, 32, 1, f);
+    if (fm->num_chunks > FILE_MAX_CHUNKS) { fclose(f); return false; }
+    for (uint32_t i = 0; i < fm->num_chunks; i++) {
+        fread(fm->chunks[i].sha3, 32, 1, f);
+        fread(&fm->chunks[i].offset, 8, 1, f);
+        fread(&fm->chunks[i].size, 4, 1, f);
+        fread(&fm->chunks[i].file_index, 1, 1, f);
+    }
+    fclose(f);
+    /* Verify the block files still match — check first chunk */
+    if (fm->num_chunks > 0) {
+        uint8_t *data = NULL;
+        uint32_t sz = 0;
+        if (file_chunk_read(&fm->chunks[0], datadir, &data, &sz)) {
+            free(data); /* SHA3 verified inside file_chunk_read */
+        } else {
+            printf("file_manifest: cached manifest stale, rebuilding\n");
+            return false;
+        }
+    }
+    printf("file_manifest: loaded cached manifest (%u chunks, %.1f GB)\n",
+           fm->num_chunks,
+           (double)fm->total_bytes / (1024.0*1024.0*1024.0));
+    return true;
+}
+
 bool file_manifest_build(struct file_manifest *fm, const char *datadir)
 {
+    /* Try loading cached manifest first — instant startup */
+    if (file_manifest_load(fm, datadir))
+        return true;
+
     memset(fm, 0, sizeof(*fm));
 
     char blocks_dir[512];
@@ -128,6 +198,9 @@ bool file_manifest_build(struct file_manifest *fm, const char *datadir)
            fm->num_chunks, (unsigned long long)fm->total_bytes);
     for (int i = 0; i < 8; i++) printf("%02x", fm->root_hash[i]);
     printf("...\n");
+
+    /* Cache to disk for instant reload on next restart */
+    file_manifest_save(fm, datadir);
 
     return true;
 }
