@@ -51,31 +51,6 @@
 
 extern int g_assume_valid_height;
 
-/* Deferred block file scanner — runs after file sync, waits for
- * P2P headers to arrive before scanning. */
-static struct main_state *g_scan_ms = NULL;
-static const char *g_scan_datadir = NULL;
-
-static void *deferred_block_scan_thread(void *arg)
-{
-    (void)arg;
-    /* Wait for headers to arrive via P2P before scanning block files.
-     * The scan needs block_index entries to match against. */
-    for (int round = 0; round < 60; round++) {
-        sleep(10);
-        if (!g_scan_ms || !g_scan_datadir) break;
-        int marked = scan_block_files_mark_data(g_scan_ms, g_scan_datadir);
-        if (marked > 0)
-            printf("Block file scan: marked %d blocks from disk "
-                   "(round %d, index=%zu)\n",
-                   marked, round + 1, g_scan_ms->map_block_index.size);
-        /* Stop once index is large and no new matches */
-        if (g_scan_ms->map_block_index.size > 100000 && marked == 0)
-            break;
-    }
-    printf("Block file scan thread exiting\n");
-    return NULL;
-}
 extern struct node_db *g_active_node_db;
 extern struct tx_mempool *g_active_mempool;
 extern struct wallet *g_active_wallet;
@@ -395,24 +370,11 @@ bool app_init_services(struct app_context *ctx,
     file_controller_init(ctx->datadir);
     register_file_rpc_commands(svc->rpc_table);
 
-    /* Start deferred block scanner if blk_sync.dat exists (from file sync).
-     * Waits for P2P headers to arrive, then marks blocks from disk. */
-    {
-        char sync_path[512];
-        snprintf(sync_path, sizeof(sync_path), "%s/blocks/blk_sync.dat",
-                 ctx->datadir);
-        struct stat st;
-        if (stat(sync_path, &st) == 0 && st.st_size > 0) {
-            printf("Found blk_sync.dat (%.1f GB) — starting block scanner\n",
-                   (double)st.st_size / (1024.0*1024.0*1024.0));
-            g_scan_ms = svc->state;
-            g_scan_datadir = ctx->datadir;
-            pthread_t scan_thread;
-            pthread_create(&scan_thread, NULL,
-                            deferred_block_scan_thread, NULL);
-            pthread_detach(scan_thread);
-        }
-    }
+    /* blk_sync.dat from file service is on disk. P2P will re-request
+     * blocks it needs — the OS disk cache serves them fast since the
+     * data is already in memory from the recent file sync download.
+     * The deferred scanner was causing crashes (SIGABRT from concurrent
+     * block_index access) and isn't worth the complexity. */
 
     /* Start file service server on dedicated port.
      * Auto-serves blockchain data to any ZCL23 peer that connects. */

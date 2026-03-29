@@ -9,6 +9,7 @@
 #include "crypto/sha3.h"
 #include "core/random.h"
 #include "controllers/file_controller.h"
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -472,13 +473,15 @@ static void *fs_handle_client(void *arg)
                    fs_session_mbps(&session));
         } else if (type == FS_MANIFEST && fm) {
             for (uint32_t i = 0; i < fm->num_chunks; i++) {
-                uint8_t entry[36];
+                uint8_t entry[45]; /* sha3(32)+size(4)+file_idx(1)+offset(8) */
                 memcpy(entry, fm->chunks[i].sha3, 32);
                 entry[32] = (uint8_t)(fm->chunks[i].size);
                 entry[33] = (uint8_t)(fm->chunks[i].size >> 8);
                 entry[34] = (uint8_t)(fm->chunks[i].size >> 16);
                 entry[35] = (uint8_t)(fm->chunks[i].size >> 24);
-                fs_send_frame(&session, FS_MANIFEST, entry, 36);
+                entry[36] = fm->chunks[i].file_index;
+                memcpy(entry + 37, &fm->chunks[i].offset, 8);
+                fs_send_frame(&session, FS_MANIFEST, entry, 45);
             }
             fs_send_frame(&session, FS_DONE, NULL, 0);
         } else if (type == FS_DONE) {
@@ -589,6 +592,7 @@ struct range_worker {
     struct file_chunk *chunks;
     uint32_t start, end;
     const char *out_path;
+    const char *datadir;
     int id;
     _Atomic bool done;
     _Atomic uint64_t bytes;
@@ -632,21 +636,36 @@ static void *range_worker_fn(void *arg)
     rng[6] = (uint8_t)(w->end >> 8);
     fs_send_frame(&ws, FS_REQUEST, rng, 8);
 
-    FILE *f = fopen(w->out_path, "wb");
-    if (!f) { close(wfd); return NULL; }
-
     for (uint32_t i = w->start; i < w->end; i++) {
         uint8_t *buf = NULL;
         uint32_t sz = 0;
         if (!fs_recv_chunk_fast(&ws, &buf, &sz, w->chunks[i].sha3)) {
-            fclose(f); close(wfd); return NULL;
+            close(wfd); return NULL;
         }
-        fwrite(buf, 1, sz, f);
+
+        /* Write to the CORRECT block file at the correct offset.
+         * Uses pwrite() for atomic positioned write — safe with
+         * multiple threads writing to the same file. */
+        char blk_path[600];
+        snprintf(blk_path, 600, "%s/blocks/blk%05d.dat",
+                 w->datadir, w->chunks[i].file_index);
+        int bfd = open(blk_path, O_WRONLY | O_CREAT, 0644);
+        if (bfd >= 0) {
+            ssize_t written = pwrite(bfd, buf, sz, (off_t)w->chunks[i].offset);
+            if (written != (ssize_t)sz)
+                fprintf(stderr, "worker %d: pwrite %s offset=%llu "
+                        "sz=%u wrote=%zd errno=%d\n",
+                        w->id, blk_path,
+                        (unsigned long long)w->chunks[i].offset,
+                        sz, written, errno);
+            close(bfd);
+        } else {
+            fprintf(stderr, "worker %d: open %s failed: %s\n",
+                    w->id, blk_path, strerror(errno));
+        }
         free(buf);
         atomic_fetch_add(&w->bytes, sz);
     }
-
-    fclose(f);
     close(wfd);
     atomic_store(&w->done, true);
     return NULL;
@@ -714,6 +733,11 @@ bool fs_client_sync(const char *peer_addr, uint16_t port,
                 ((uint32_t)payload[33] << 8) |
                 ((uint32_t)payload[34] << 16) |
                 ((uint32_t)payload[35] << 24);
+            /* Extended manifest: file_index + offset */
+            if (plen >= 45) {
+                chunks[num_chunks].file_index = payload[36];
+                memcpy(&chunks[num_chunks].offset, payload + 37, 8);
+            }
             num_chunks++;
         }
     }
@@ -792,6 +816,7 @@ bool fs_client_sync(const char *peer_addr, uint16_t port,
         workers[nworkers].start = ws;
         workers[nworkers].end = we;
         workers[nworkers].out_path = wp;
+        workers[nworkers].datadir = datadir;
         workers[nworkers].id = w;
         atomic_store(&workers[nworkers].done, false);
         atomic_store(&workers[nworkers].bytes, 0);
@@ -836,24 +861,9 @@ bool fs_client_sync(const char *peer_addr, uint16_t port,
     for (int w = 0; w < nworkers; w++)
         pthread_join(wthreads[w], NULL);
 
-    /* Concatenate part files in order */
-    FILE *out = fopen(out_path, skip_chunks > 0 ? "ab" : "wb");
-    if (out) {
-        uint8_t *cat = malloc(1024 * 1024);
-        for (int w = 0; w < nworkers; w++) {
-            FILE *pf = fopen(workers[w].out_path, "rb");
-            if (pf) {
-                size_t n;
-                while ((n = fread(cat, 1, 1024*1024, pf)) > 0)
-                    fwrite(cat, 1, n, out);
-                fclose(pf);
-            }
-            remove(workers[w].out_path);
-            free((void *)workers[w].out_path);
-        }
-        free(cat);
-        fclose(out);
-    }
+    /* Workers wrote directly to blk%05d.dat files — no concatenation needed */
+    for (int w = 0; w < nworkers; w++)
+        free((void *)workers[w].out_path);
 
     uint64_t bytes_done = 0;
     for (int w = 0; w < nworkers; w++)
