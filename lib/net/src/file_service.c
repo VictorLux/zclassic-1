@@ -608,6 +608,13 @@ static void *range_worker_fn(void *arg)
     if (getaddrinfo(w->peer_addr, ps, &hints, &res) != 0) return NULL;
     int wfd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
     if (wfd < 0) { freeaddrinfo(res); return NULL; }
+
+    /* Timeouts prevent hung connections from blocking the whole download */
+    struct timeval tv;
+    tv.tv_sec = 120; /* 2 min per chunk max */
+    tv.tv_usec = 0;
+    setsockopt(wfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(wfd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
     if (connect(wfd, res->ai_addr, res->ai_addrlen) < 0) {
         close(wfd); freeaddrinfo(res); return NULL;
     }
@@ -795,7 +802,8 @@ bool fs_client_sync(const char *peer_addr, uint16_t port,
 
     printf("file_service: %d parallel connections downloading...\n", nworkers);
 
-    /* Monitor progress */
+    /* Monitor progress — give up after 30 min total */
+    int64_t max_wait = 1800;
     while (true) {
         sleep(5);
         uint64_t done = 0;
@@ -803,6 +811,13 @@ bool fs_client_sync(const char *peer_addr, uint16_t port,
         for (int w = 0; w < nworkers; w++) {
             done += atomic_load(&workers[w].bytes);
             if (!atomic_load(&workers[w].done)) all_done = false;
+        }
+        int64_t el = (int64_t)time(NULL) - dl_start;
+        if (el > max_wait) {
+            printf("file_service: timeout after %llds, proceeding with "
+                   "%.1f GB downloaded\n", (long long)el,
+                   (double)done / (1024.0*1024.0*1024.0));
+            break;
         }
         double pct = total_bytes > 0 ? 100.0 * (double)done / (double)total_bytes : 0;
         int64_t elapsed = (int64_t)time(NULL) - dl_start;
