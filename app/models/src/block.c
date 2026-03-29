@@ -107,8 +107,18 @@ bool db_block_save(struct node_db *ndb, const struct db_block *b)
     bool ok = (rc == SQLITE_DONE);
 
     if (!ok) {
-        fprintf(stderr, "db_block_save: INSERT failed at height %d: %s (rc=%d)\n",
-                b->height, sqlite3_errmsg(ndb->db), rc);
+        /* Rate-limit lock errors during file sync (can be thousands) */
+        static int lock_err_count = 0;
+        if (rc == SQLITE_BUSY || rc == SQLITE_LOCKED) {
+            lock_err_count++;
+            if (lock_err_count <= 3 || (lock_err_count % 1000 == 0))
+                fprintf(stderr, "db_block_save: locked at height %d "
+                        "(%d total, transient during file sync)\n",
+                        b->height, lock_err_count);
+        } else {
+            fprintf(stderr, "db_block_save: INSERT failed at height %d: "
+                    "%s (rc=%d)\n", b->height, sqlite3_errmsg(ndb->db), rc);
+        }
     }
 
     if (ok) ar_run_after_save(cbs, (void *)b);
