@@ -767,6 +767,65 @@ int scan_block_files_mark_data(struct main_state *ms, const char *datadir)
                    file_idx, marked);
     }
 
+    /* Also scan blk_sync.dat — written by file sync service.
+     * Uses file_index=255 to distinguish from regular blk*.dat files. */
+    snprintf(path, sizeof(path), "%s/blocks/blk_sync.dat", datadir);
+    {
+        FILE *f = fopen(path, "rb");
+        if (f) {
+            fseek(f, 0, SEEK_END);
+            long file_size = ftell(f);
+            fseek(f, 0, SEEK_SET);
+
+            long pos = 0;
+            while (pos + 4 + 4 + 80 <= file_size) {
+                uint8_t hdr[8];
+                if (fread(hdr, 1, 8, f) != 8) break;
+                uint32_t magic = (uint32_t)hdr[0] | ((uint32_t)hdr[1] << 8) |
+                                 ((uint32_t)hdr[2] << 16) | ((uint32_t)hdr[3] << 24);
+                uint32_t blk_size = (uint32_t)hdr[4] | ((uint32_t)hdr[5] << 8) |
+                                    ((uint32_t)hdr[6] << 16) | ((uint32_t)hdr[7] << 24);
+                if (magic != 0x6427e924 && magic != 0x6427E924) {
+                    pos += 1;
+                    fseek(f, pos, SEEK_SET);
+                    continue;
+                }
+                if (blk_size < 80 || blk_size > 2000000 ||
+                    pos + 8 + (long)blk_size > file_size) {
+                    pos += 8;
+                    fseek(f, pos, SEEK_SET);
+                    continue;
+                }
+                uint8_t block_hdr[80];
+                if (fread(block_hdr, 1, 80, f) != 80) break;
+                struct uint256 hash;
+                {
+                    struct sha256_ctx sctx;
+                    uint8_t tmp[32];
+                    sha256_init(&sctx);
+                    sha256_write(&sctx, block_hdr, 80);
+                    sha256_finalize(&sctx, tmp);
+                    sha256_init(&sctx);
+                    sha256_write(&sctx, tmp, 32);
+                    sha256_finalize(&sctx, hash.data);
+                }
+                struct block_index *bi = block_map_find(
+                    &ms->map_block_index, &hash);
+                if (bi && !(bi->nStatus & BLOCK_HAVE_DATA)) {
+                    bi->nStatus |= BLOCK_HAVE_DATA;
+                    bi->nFile = 255; /* special index for blk_sync.dat */
+                    bi->nDataPos = (unsigned int)(pos + 8);
+                    marked++;
+                }
+                pos += 8 + (long)blk_size;
+                fseek(f, pos, SEEK_SET);
+            }
+            fclose(f);
+            if (marked > 0)
+                printf("  Scanned blk_sync.dat (%d blocks total)\n", marked);
+        }
+    }
+
     return marked;
 }
 

@@ -17,7 +17,10 @@ void get_block_pos_filename(char *buf, size_t buflen,
                             const struct disk_block_pos *pos,
                             const char *prefix)
 {
-    snprintf(buf, buflen, "%s/blocks/%s%05d.dat", datadir, prefix, pos->nFile);
+    if (pos->nFile == 255)
+        snprintf(buf, buflen, "%s/blocks/%s_sync.dat", datadir, prefix);
+    else
+        snprintf(buf, buflen, "%s/blocks/%s%05d.dat", datadir, prefix, pos->nFile);
 }
 
 static bool ensure_directory(const char *path)

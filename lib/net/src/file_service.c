@@ -740,7 +740,7 @@ bool fs_client_sync(const char *peer_addr, uint16_t port,
 
     /* Check if a previous partial download exists — resume from there */
     char out_path[576];
-    snprintf(out_path, sizeof(out_path), "%s/blocks/blk00000.dat", datadir);
+    snprintf(out_path, sizeof(out_path), "%s/blocks/blk_sync.dat", datadir);
     uint64_t existing_bytes = 0;
     uint32_t skip_chunks = 0;
     {

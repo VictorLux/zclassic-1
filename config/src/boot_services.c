@@ -45,6 +45,7 @@
 #include <netinet/in.h>
 #include <unistd.h>
 #include <time.h>
+#include <sys/stat.h>
 #include <pthread.h>
 #include <sqlite3.h>
 
@@ -309,6 +310,44 @@ bool app_init_services(struct app_context *ctx,
             fprintf(stderr, "Warning: ZK params not loaded\n");
     }
 
+    /* File sync BEFORE P2P — download block files first, then start P2P.
+     * This prevents concurrent writes to block files (file sync + P2P
+     * both writing to blk*.dat caused crashes). */
+    {
+        int chain_height = active_chain_height(&svc->state->chain_active);
+        if (chain_height <= 0) {
+            printf("=== Fresh node — trying fast file sync ===\n");
+            uint8_t utxo_root[32];
+            memset(utxo_root, 0, 32);
+            const char *file_seeds[] = {
+                "74.50.74.102",
+                "205.209.104.118",
+                "140.174.189.3",
+                NULL
+            };
+            bool file_sync_ok = false;
+            for (int round = 0; round < 3 && !file_sync_ok; round++) {
+                if (round > 0) {
+                    printf("File sync: retrying in 10s (round %d/3)...\n",
+                           round + 1);
+                    sleep(10);
+                }
+                for (int i = 0; file_seeds[i] && !file_sync_ok; i++) {
+                    printf("Trying file service at %s:%d...\n",
+                           file_seeds[i], FS_PORT);
+                    int64_t t0 = (int64_t)time(NULL);
+                    if (fs_client_sync(file_seeds[i], FS_PORT,
+                                        ctx->datadir, utxo_root)) {
+                        int64_t elapsed = (int64_t)time(NULL) - t0;
+                        printf("=== File sync complete from %s: %llds ===\n",
+                               file_seeds[i], (long long)elapsed);
+                        file_sync_ok = true;
+                    }
+                }
+            }
+        }
+    }
+
     connman_start(svc->connman);
     sync_set_state(SYNC_FINDING_PEERS, "P2P started");
 
@@ -356,59 +395,22 @@ bool app_init_services(struct app_context *ctx,
     file_controller_init(ctx->datadir);
     register_file_rpc_commands(svc->rpc_table);
 
-    /* Auto file sync: if chain is at genesis (fresh node), try to
-     * download block files from seed peers via fast file service.
-     * This gets 6+ GB of blockchain data at ~68 MB/s instead of
-     * waiting hours for block-by-block P2P sync. */
+    /* Start deferred block scanner if blk_sync.dat exists (from file sync).
+     * Waits for P2P headers to arrive, then marks blocks from disk. */
     {
-        int chain_height = active_chain_height(&svc->state->chain_active);
-        if (chain_height <= 0) {
-            printf("=== Fresh node — trying fast file sync ===\n");
-            uint8_t utxo_root[32];
-            memset(utxo_root, 0, 32);
-
-            /* Try each seed peer's file service */
-            const char *file_seeds[] = {
-                "74.50.74.102",   /* rhett.dev */
-                "205.209.104.118",
-                "140.174.189.3",
-                NULL
-            };
-            bool file_sync_ok = false;
-            /* Retry up to 3 rounds — server manifest may still be building */
-            for (int round = 0; round < 3 && !file_sync_ok; round++) {
-                if (round > 0) {
-                    printf("File sync: retrying in 10s (round %d/3)...\n",
-                           round + 1);
-                    sleep(10);
-                }
-                for (int i = 0; file_seeds[i] && !file_sync_ok; i++) {
-                    printf("Trying file service at %s:%d...\n",
-                           file_seeds[i], FS_PORT);
-                    int64_t t0 = (int64_t)time(NULL);
-                    if (fs_client_sync(file_seeds[i], FS_PORT,
-                                        ctx->datadir, utxo_root)) {
-                        int64_t elapsed = (int64_t)time(NULL) - t0;
-                        printf("=== File sync complete from %s: %llds ===\n",
-                               file_seeds[i], (long long)elapsed);
-                        file_sync_ok = true;
-                    }
-                }
-            }
-
-            /* After file sync: start a background thread that periodically
-             * scans block files and marks blocks in the block index.
-             * Headers arrive via P2P first (creating block_index entries),
-             * then the scan finds matching blocks on disk and sets
-             * BLOCK_HAVE_DATA so activate_best_chain reads from disk. */
-            if (file_sync_ok) {
-                g_scan_ms = svc->state;
-                g_scan_datadir = ctx->datadir;
-                pthread_t scan_thread;
-                pthread_create(&scan_thread, NULL,
-                                deferred_block_scan_thread, NULL);
-                pthread_detach(scan_thread);
-            }
+        char sync_path[512];
+        snprintf(sync_path, sizeof(sync_path), "%s/blocks/blk_sync.dat",
+                 ctx->datadir);
+        struct stat st;
+        if (stat(sync_path, &st) == 0 && st.st_size > 0) {
+            printf("Found blk_sync.dat (%.1f GB) — starting block scanner\n",
+                   (double)st.st_size / (1024.0*1024.0*1024.0));
+            g_scan_ms = svc->state;
+            g_scan_datadir = ctx->datadir;
+            pthread_t scan_thread;
+            pthread_create(&scan_thread, NULL,
+                            deferred_block_scan_thread, NULL);
+            pthread_detach(scan_thread);
         }
     }
 
