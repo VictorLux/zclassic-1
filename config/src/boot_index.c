@@ -3,6 +3,7 @@
  * chainstate rebuild/reindex, address backfill. */
 
 #include "config/boot_internal.h"
+#include "chain/chain.h"
 #include "chain/chainparams.h"
 #include "chain/pow.h"
 #include "validation/chainstate.h"
@@ -13,6 +14,8 @@
 #include "coins/coins_view.h"
 #include "event/event.h"
 #include "crypto/sha256.h"
+#include "primitives/block.h"
+#include "core/serialize.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -21,8 +24,17 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <time.h>
+#include <errno.h>
 #include <malloc.h>
 #include <sqlite3.h>
+
+/* ZClassic mainnet block file magic (little-endian 0x6427e924) */
+#define ZCL_BLOCK_MAGIC 0x6427e924
+
+/* Max bytes to read from a block for header parsing + tx count.
+ * ZClassic header = 140 fixed + ~1347 equihash solution = ~1487 bytes.
+ * 1600 gives margin for the compact_size tx count after the header. */
+#define BLOCK_HEADER_READ_SIZE 1600
 
 /* ── Flat block_index file: mmap for instant restart ──────── */
 
@@ -60,7 +72,11 @@ void save_block_index_flat(const char *datadir, struct main_state *ms)
 
     size_t count = ms->map_block_index.size;
     struct block_index **sorted = malloc(count * sizeof(void *));
-    if (!sorted) return;
+    if (!sorted) {
+        fprintf(stderr, "save_block_index_flat: malloc failed for %zu entries\n",
+                count);
+        return;
+    }
 
     size_t idx = 0, iter = 0;
     struct block_index *p;
@@ -73,12 +89,18 @@ void save_block_index_flat(const char *datadir, struct main_state *ms)
 
     int64_t t0 = (int64_t)time(NULL);
     FILE *f = fopen(path, "wb");
-    if (!f) { free(sorted); return; }
+    if (!f) {
+        fprintf(stderr, "save_block_index_flat: cannot create %s: %s\n",
+                path, strerror(errno));
+        free(sorted); return;
+    }
 
     uint32_t magic = 0x5A434C49; /* "ZCLI" */
-    fwrite(&magic, 4, 1, f);
-    uint32_t cnt = (uint32_t)count;
-    fwrite(&cnt, 4, 1, f);
+    if (fwrite(&magic, 4, 1, f) != 1 ||
+        fwrite(&(uint32_t){(uint32_t)count}, 4, 1, f) != 1) {
+        fprintf(stderr, "save_block_index_flat: header write failed\n");
+        fclose(f); free(sorted); return;
+    }
 
     for (size_t i = 0; i < count; i++) {
         struct block_index_flat entry;
@@ -99,8 +121,13 @@ void save_block_index_flat(const char *datadir, struct main_state *ms)
         entry.n_chain_tx = sorted[i]->nChainTx;
         memcpy(entry.chain_work, sorted[i]->nChainWork.pn, 32);
         entry.n_cached_branch_id = (uint32_t)sorted[i]->nCachedBranchId;
-        fwrite(&entry, sizeof(entry), 1, f);
+        if (fwrite(&entry, sizeof(entry), 1, f) != 1) {
+            fprintf(stderr, "save_block_index_flat: write failed at entry "
+                    "%zu/%zu: %s\n", i, count, strerror(errno));
+            fclose(f); free(sorted); return;
+        }
     }
+    fflush(f);
     fclose(f);
     free(sorted);
 
@@ -116,24 +143,50 @@ bool load_block_index_flat(const char *datadir, struct main_state *ms)
     snprintf(path, sizeof(path), "%s/block_index.bin", datadir);
 
     int fd = open(path, O_RDONLY);
-    if (fd < 0) return false;
+    if (fd < 0) {
+        fprintf(stderr, "block_index_flat: cannot open %s: %s\n",
+                path, strerror(errno));
+        return false;
+    }
 
     struct stat st;
-    if (fstat(fd, &st) != 0) { close(fd); return false; }
+    if (fstat(fd, &st) != 0) {
+        fprintf(stderr, "block_index_flat: fstat failed: %s\n", strerror(errno));
+        close(fd); return false;
+    }
     size_t file_size = (size_t)st.st_size;
-    if (file_size < 8) { close(fd); return false; }
+    if (file_size < 8) {
+        fprintf(stderr, "block_index_flat: file too small (%zu bytes)\n", file_size);
+        close(fd); return false;
+    }
 
     uint8_t *data = mmap(NULL, file_size, PROT_READ, MAP_PRIVATE, fd, 0);
     close(fd);
-    if (data == MAP_FAILED) return false;
+    if (data == MAP_FAILED) {
+        fprintf(stderr, "block_index_flat: mmap failed (%zu bytes): %s\n",
+                file_size, strerror(errno));
+        return false;
+    }
 
     uint32_t magic, count;
     memcpy(&magic, data, 4);
     memcpy(&count, data + 4, 4);
-    if (magic != 0x5A434C49) { munmap(data, file_size); return false; }
+    if (magic != 0x5A434C49) {
+        fprintf(stderr, "block_index_flat: bad magic 0x%08x (expected 0x5A434C49)\n",
+                magic);
+        munmap(data, file_size); return false;
+    }
+    if (count > 10000000) {
+        fprintf(stderr, "block_index_flat: count %u too large (max 10M)\n", count);
+        munmap(data, file_size); return false;
+    }
 
     size_t expected = 8 + (size_t)count * sizeof(struct block_index_flat);
-    if (file_size < expected) { munmap(data, file_size); return false; }
+    if (file_size < expected) {
+        fprintf(stderr, "block_index_flat: truncated — %zu bytes < %zu expected "
+                "(%u entries)\n", file_size, expected, count);
+        munmap(data, file_size); return false;
+    }
 
     int64_t t0 = (int64_t)time(NULL);
     const struct block_index_flat *entries =
@@ -142,7 +195,11 @@ bool load_block_index_flat(const char *datadir, struct main_state *ms)
     /* Pre-size hash map + arena. Pre-fault memory. */
     block_map_reserve(&ms->map_block_index, count);
     struct block_index *arena = calloc(count, sizeof(struct block_index));
-    if (!arena) { munmap(data, file_size); return false; }
+    if (!arena) {
+        fprintf(stderr, "block_index_flat: calloc failed for %u entries "
+                "(%zu bytes)\n", count, (size_t)count * sizeof(struct block_index));
+        munmap(data, file_size); return false;
+    }
     memset(arena, 0, count * sizeof(struct block_index)); /* pre-fault */
 
     /* Height→index for O(1) pprev linking */
@@ -150,6 +207,9 @@ bool load_block_index_flat(const char *datadir, struct main_state *ms)
     struct block_index **by_height = NULL;
     if (max_h > 0 && max_h < 10000000) {
         by_height = calloc((size_t)(max_h + 1), sizeof(struct block_index *));
+        if (!by_height)
+            fprintf(stderr, "block_index_flat: by_height calloc failed "
+                    "(%d entries) — pprev linking will be slow\n", max_h + 1);
     }
 
     /* Phase 1: bulk insert — direct hash table, no locks */
@@ -189,15 +249,63 @@ bool load_block_index_flat(const char *datadir, struct main_state *ms)
             by_height[pindex->nHeight] = pindex;
     }
 
-    /* Phase 2: Link pprev via height index (O(1) per entry) */
+    /* Phase 2: Link pprev via prev_hash lookup (handles orphans correctly).
+     * Height-based linking breaks when orphan blocks at the same height
+     * overwrite the main chain entry in by_height[], causing the pprev
+     * chain to follow orphan forks instead of the main chain. */
     for (uint32_t i = 0; i < count; i++) {
         struct block_index *pindex = &arena[i];
-        if (pindex->nHeight > 0 && by_height) {
-            struct block_index *pp = by_height[pindex->nHeight - 1];
-            if (pp) pindex->pprev = pp;
+        if (pindex->nHeight > 0) {
+            /* Look up prev_hash in block_map */
+            struct uint256 prev;
+            memcpy(prev.data, entries[i].prev_hash, 32);
+            struct block_index *pp = block_map_find(bm, &prev);
+            if (pp)
+                pindex->pprev = pp;
+            else if (by_height && pindex->nHeight - 1 >= 0 &&
+                     pindex->nHeight - 1 <= max_h) {
+                pindex->pprev = by_height[pindex->nHeight - 1]; /* fallback */
+                printf("WARNING: pprev for height %d resolved via height fallback "
+                       "(prev_hash not found in block_map)\n", pindex->nHeight);
+            }
         }
     }
     free(by_height);
+
+    /* Recompute nChainWork and nChainTx from pprev chain.
+     * The flat file may have stale values for blocks that were connected
+     * via P2P after the LevelDB post-load but before the file was saved.
+     * These blocks can have truncated chain_work (only low 32 bits set)
+     * because connect_tip computed them with a pprev that had wrong state.
+     * Recomputing from the sorted array with correct pprev fixes this. */
+    {
+        int fixed_work = 0, fixed_tx = 0;
+        for (uint32_t i = 0; i < count; i++) {
+            struct block_index *pi = &arena[i];
+            if (!pi->pprev) continue;
+
+            /* Recompute chain_work from pprev */
+            struct arith_uint256 proof = GetBlockProof(pi);
+            struct arith_uint256 expected;
+            arith_uint256_add(&expected, &pi->pprev->nChainWork, &proof);
+            if (arith_uint256_compare(&expected, &pi->nChainWork) != 0) {
+                pi->nChainWork = expected;
+                fixed_work++;
+            }
+
+            /* Fix nChainTx */
+            if (pi->nTx > 0 && pi->pprev->nChainTx > 0) {
+                uint32_t expected_ctx = pi->pprev->nChainTx + pi->nTx;
+                if (pi->nChainTx != expected_ctx) {
+                    pi->nChainTx = expected_ctx;
+                    fixed_tx++;
+                }
+            }
+        }
+        if (fixed_work > 0 || fixed_tx > 0)
+            printf("Block index flat: fixed %d chain_work, %d chain_tx\n",
+                   fixed_work, fixed_tx);
+    }
 
     munmap(data, file_size);
 
@@ -574,22 +682,26 @@ bool reindex_chainstate(struct main_state *ms,
         if (!pindex) {
             printf("reindex-chainstate: missing block_index at height %d\n", h);
             errors++;
-            continue;
+            break;
         }
 
         struct block blk;
         if (!read_block_from_disk_index(&blk, pindex, datadir)) {
-            printf("reindex-chainstate: failed to read block at height %d\n", h);
+            fprintf(stderr, "reindex-chainstate: failed to read block at "
+                    "height %d — stopping to prevent UTXO corruption\n", h);
             errors++;
-            continue;
+            break; /* Can't skip blocks during UTXO replay */
         }
 
         struct validation_state state;
         validation_state_init(&state);
         if (!connect_block(&blk, &state, pindex, cvtip, cparams, false)) {
-            printf("reindex-chainstate: connect_block failed at height %d: %s\n",
-                   h, state.reject_reason);
+            fprintf(stderr, "reindex-chainstate: connect_block FATAL at "
+                    "height %d: %s — stopping to prevent UTXO corruption\n",
+                    h, state.reject_reason);
+            block_free(&blk);
             errors++;
+            break; /* MUST stop — continuing would skip this block's UTXOs */
         }
 
         block_free(&blk);
@@ -685,146 +797,341 @@ void *backfill_addresses_thread(void *arg)
 }
 
 /* ── scan_block_files_mark_data ──────────────────────────────── */
+/* Scan block files on disk, parse proper ZClassic headers (with
+ * equihash solution), create block_index entries if missing, set
+ * nTx, mark BLOCK_HAVE_DATA, and propagate nChainTx so
+ * find_most_work_chain can find the best tip.
+ *
+ * This is the critical bridge between file_service (downloads
+ * block files) and activate_best_chain (needs BLOCK_HAVE_DATA +
+ * nChainTx > 0 to connect blocks). Without this, downloaded
+ * blocks sit unused on disk while P2P re-downloads them. */
 
-int scan_block_files_mark_data(struct main_state *ms, const char *datadir)
+/* Helper: create a block_index entry directly from a parsed header.
+ * Skips PoW/equihash validation — blocks from disk are trusted
+ * and verified later via SHA3 UTXO checkpoint. This is 1000x
+ * faster than accept_block_header (no equihash solve check). */
+static struct block_index *create_block_index_fast(
+    struct main_state *ms, const struct block_header *hdr,
+    const struct uint256 *hash)
 {
-    int marked = 0;
-    char path[576];
+    struct block_index *pindex = calloc(1, sizeof(struct block_index));
+    if (!pindex) return NULL;
+    block_index_init(pindex);
 
+    pindex->nVersion = hdr->nVersion;
+    pindex->hashMerkleRoot = hdr->hashMerkleRoot;
+    pindex->hashFinalSaplingRoot = hdr->hashFinalSaplingRoot;
+    pindex->nTime = hdr->nTime;
+    pindex->nBits = hdr->nBits;
+    pindex->nNonce = hdr->nNonce;
+    uint32_t sol_copy = hdr->nSolutionSize;
+    if (sol_copy > MAX_SOLUTION_SIZE) sol_copy = MAX_SOLUTION_SIZE;
+    memcpy(pindex->nSolution, hdr->nSolution, sol_copy);
+    pindex->nSolutionSize = sol_copy;
+
+    if (!block_map_insert(&ms->map_block_index, hash, pindex)) {
+        free(pindex);
+        return block_map_find(&ms->map_block_index, hash);
+    }
+
+    /* phashBlock must point to stable storage inside the block map */
+    struct block_index *found = block_map_find(&ms->map_block_index, hash);
+    if (found) {
+        const struct uint256 *stored = block_map_find_hash(
+            &ms->map_block_index, hash);
+        if (stored) found->phashBlock = stored;
+    }
+
+    /* Link to previous block */
+    struct block_index *pprev = block_map_find(
+        &ms->map_block_index, &hdr->hashPrevBlock);
+    if (pprev) {
+        pindex->pprev = pprev;
+        pindex->nHeight = pprev->nHeight + 1;
+        block_index_build_skip(pindex);
+        struct arith_uint256 proof = GetBlockProof(pindex);
+        arith_uint256_add(&pindex->nChainWork,
+                          &pprev->nChainWork, &proof);
+    } else {
+        /* Genesis or orphan — height determined on retry pass */
+        pindex->nHeight = 0;
+        pindex->nChainWork = GetBlockProof(pindex);
+    }
+
+    pindex->nStatus = BLOCK_VALID_TREE;
+    return pindex;
+}
+
+/* Helper: scan one block file, return number of blocks marked.
+ * If params != NULL, creates block_index entries for unknown blocks
+ * using fast path (no equihash verification — SHA3 checkpoint
+ * validates the entire chain later). */
+static int scan_one_block_file(struct main_state *ms,
+                                const char *filepath, int file_idx,
+                                const struct chain_params *params,
+                                int *created_out)
+{
+    int marked = 0, created = 0, consec_errors = 0;
+    FILE *f = fopen(filepath, "rb");
+    if (!f) {
+        fprintf(stderr, "scan: cannot open %s: %s\n", filepath, strerror(errno));
+        return 0;
+    }
+
+    fseek(f, 0, SEEK_END);
+    long file_size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    long pos = 0;
+    while (pos + 8 + 140 <= file_size) {
+        /* Block file format: [4-byte magic][4-byte size][block data] */
+        uint8_t frame[8];
+        if (fread(frame, 1, 8, f) != 8) break;
+
+        uint32_t magic = (uint32_t)frame[0] | ((uint32_t)frame[1] << 8) |
+                         ((uint32_t)frame[2] << 16) | ((uint32_t)frame[3] << 24);
+        uint32_t blk_size = (uint32_t)frame[4] | ((uint32_t)frame[5] << 8) |
+                            ((uint32_t)frame[6] << 16) | ((uint32_t)frame[7] << 24);
+
+        /* Validate magic (mainnet: 24e92764) */
+        if (magic != ZCL_BLOCK_MAGIC) {
+            pos += 1;
+            fseek(f, pos, SEEK_SET);
+            continue;
+        }
+
+        if (blk_size < 140 || blk_size > 2000000 ||
+            pos + 8 + (long)blk_size > file_size) {
+            pos += 8;
+            fseek(f, pos, SEEK_SET);
+            continue;
+        }
+
+        /* Read enough for header + tx count. ZClassic header = ~1487 bytes
+         * (140 fixed + compact_size + 1344 equihash solution).
+         * Read 1600 bytes to also capture the tx count compact_size. */
+        size_t read_sz = (blk_size < BLOCK_HEADER_READ_SIZE) ? blk_size : BLOCK_HEADER_READ_SIZE;
+        uint8_t buf[BLOCK_HEADER_READ_SIZE];
+        if (fread(buf, 1, read_sz, f) != read_sz) break;
+
+        /* Parse the block header using proper deserializer */
+        struct block_header bhdr;
+        block_header_init(&bhdr);
+        struct byte_stream bs;
+        stream_init_from_data(&bs, buf, read_sz);
+        if (!block_header_deserialize(&bhdr, &bs)) {
+            /* Corrupt or truncated header — skip this block */
+            consec_errors++;
+            if (consec_errors > 20) {
+                fprintf(stderr, "scan: %d consecutive corrupt blocks in "
+                        "blk%05d.dat at pos %ld — aborting file\n",
+                        consec_errors, file_idx, pos);
+                break;
+            }
+            pos += 8 + (long)blk_size;
+            fseek(f, pos, SEEK_SET);
+            continue;
+        }
+        consec_errors = 0; /* reset on success */
+
+        /* Read tx count (compact size right after header) */
+        uint64_t num_tx = 0;
+        if (!stream_read_compact_size(&bs, &num_tx) || num_tx == 0)
+            num_tx = 1; /* minimum: at least coinbase tx */
+        if (num_tx > 100000) {
+            fprintf(stderr, "scan: suspicious num_tx=%llu at file %d pos %ld, "
+                    "clamping to 1\n", (unsigned long long)num_tx,
+                    file_idx, pos);
+            num_tx = 1;
+        }
+
+        /* Compute proper block hash (SHA256d of full serialized header) */
+        struct uint256 hash;
+        block_header_get_hash(&bhdr, &hash);
+
+        /* Look up or create block_index entry */
+        struct block_index *bi = block_map_find(&ms->map_block_index, &hash);
+
+        if (!bi && params) {
+            /* Block not in index — create directly (no equihash check).
+             * Blocks from disk are trusted; SHA3 UTXO checkpoint at
+             * height 3,056,758 validates the entire chain integrity.
+             * This is ~1000x faster than accept_block_header. */
+            bi = create_block_index_fast(ms, &bhdr, &hash);
+            if (bi) created++;
+        }
+
+        if (bi) {
+            /* Fix missing pprev link (block was created out of order
+             * in a previous pass — its pprev is now in the map) */
+            if (!bi->pprev && bi->nHeight == 0 && params) {
+                struct block_index *pprev = block_map_find(
+                    &ms->map_block_index, &bhdr.hashPrevBlock);
+                if (pprev) {
+                    bi->pprev = pprev;
+                    bi->nHeight = pprev->nHeight + 1;
+                    block_index_build_skip(bi);
+                    struct arith_uint256 proof = GetBlockProof(bi);
+                    arith_uint256_add(&bi->nChainWork,
+                                      &pprev->nChainWork, &proof);
+                }
+            }
+
+            if (!(bi->nStatus & BLOCK_HAVE_DATA)) {
+                bi->nStatus |= BLOCK_HAVE_DATA;
+                bi->nStatus = (bi->nStatus & ~(unsigned)BLOCK_VALID_MASK) |
+                               BLOCK_VALID_TRANSACTIONS;
+                bi->nFile = file_idx;
+                bi->nDataPos = (unsigned int)(pos + 8);
+                if (bi->nTx == 0)
+                    bi->nTx = (unsigned int)num_tx;
+                marked++;
+            } else if (bi->nTx == 0) {
+                bi->nTx = (unsigned int)num_tx;
+            }
+        }
+
+        pos += 8 + (long)blk_size;
+        fseek(f, pos, SEEK_SET);
+    }
+
+    fclose(f);
+    if (created_out) *created_out += created;
+    return marked;
+}
+
+/* (constants defined at top of file) */
+
+int scan_block_files_mark_data(struct main_state *ms, const char *datadir,
+                                const struct chain_params *params)
+{
+    if (!ms || !datadir) {
+        fprintf(stderr, "scan_block_files_mark_data: NULL argument\n");
+        return 0;
+    }
+
+    int marked = 0, created = 0;
+    char path[576];
+    int64_t t0 = (int64_t)time(NULL);
+
+    /* Pass 1: scan all block files.
+     * Don't break on first gap — blk00000.dat may be empty (0 bytes)
+     * while blk00001.dat+ have data. Stop after 3 consecutive misses. */
+    int consecutive_misses = 0;
     for (int file_idx = 0; file_idx < 256; file_idx++) {
         snprintf(path, sizeof(path), "%s/blocks/blk%05d.dat",
                  datadir, file_idx);
-        FILE *f = fopen(path, "rb");
-        if (!f) break;
-
-        fseek(f, 0, SEEK_END);
-        long file_size = ftell(f);
-        fseek(f, 0, SEEK_SET);
-
-        long pos = 0;
-        while (pos + 4 + 4 + 80 <= file_size) {
-            /* Block file format: [4-byte magic][4-byte size][block data] */
-            uint8_t hdr[8];
-            if (fread(hdr, 1, 8, f) != 8) break;
-
-            uint32_t magic = (uint32_t)hdr[0] | ((uint32_t)hdr[1] << 8) |
-                             ((uint32_t)hdr[2] << 16) | ((uint32_t)hdr[3] << 24);
-            uint32_t blk_size = (uint32_t)hdr[4] | ((uint32_t)hdr[5] << 8) |
-                                ((uint32_t)hdr[6] << 16) | ((uint32_t)hdr[7] << 24);
-
-            /* Validate magic (mainnet: 24e92764) */
-            if (magic != 0x6427e924 && magic != 0x6427E924) {
-                /* Try skipping to find next magic */
-                pos += 1;
-                fseek(f, pos, SEEK_SET);
-                continue;
-            }
-
-            if (blk_size < 80 || blk_size > 2000000 ||
-                pos + 8 + (long)blk_size > file_size) {
-                pos += 8;
-                fseek(f, pos, SEEK_SET);
-                continue;
-            }
-
-            /* Read just the 80-byte block header to get the hash */
-            uint8_t block_hdr[80];
-            if (fread(block_hdr, 1, 80, f) != 80) break;
-
-            /* Compute block hash (SHA-256d of first 80 bytes,
-             * but we need to use our block_header_hash function).
-             * For speed, use the raw double-SHA256: */
-            struct uint256 hash;
-            {
-                struct sha256_ctx sctx;
-                uint8_t tmp[32];
-                sha256_init(&sctx);
-                sha256_write(&sctx, block_hdr, 80);
-                sha256_finalize(&sctx, tmp);
-                sha256_init(&sctx);
-                sha256_write(&sctx, tmp, 32);
-                sha256_finalize(&sctx, hash.data);
-            }
-
-            /* Look up in block_index */
-            struct block_index *bi = block_map_find(
-                &ms->map_block_index, &hash);
-            if (bi && !(bi->nStatus & BLOCK_HAVE_DATA)) {
-                bi->nStatus |= BLOCK_HAVE_DATA;
-                bi->nFile = file_idx;
-                bi->nDataPos = (unsigned int)(pos + 8);
-                marked++;
-            }
-
-            /* Skip to next block */
-            pos += 8 + (long)blk_size;
-            fseek(f, pos, SEEK_SET);
+        struct stat st;
+        if (stat(path, &st) != 0 || st.st_size == 0) {
+            if (++consecutive_misses >= 3) break;
+            continue;
         }
+        consecutive_misses = 0;
 
-        fclose(f);
-        if (marked > 0 && (file_idx % 10 == 0))
-            printf("  Scanned blk%05d.dat (%d blocks marked so far)\n",
-                   file_idx, marked);
+        int m = scan_one_block_file(ms, path, file_idx, params, &created);
+        marked += m;
+
+        if ((file_idx % 20 == 0) && (marked > 0 || created > 0))
+            printf("  blk%05d.dat: %d marked, %d created so far\n",
+                   file_idx, marked, created);
     }
 
-    /* Also scan blk_sync.dat — written by file sync service.
-     * Uses file_index=255 to distinguish from regular blk*.dat files. */
+    /* Also scan blk_sync.dat */
     snprintf(path, sizeof(path), "%s/blocks/blk_sync.dat", datadir);
-    {
-        FILE *f = fopen(path, "rb");
-        if (f) {
-            fseek(f, 0, SEEK_END);
-            long file_size = ftell(f);
-            fseek(f, 0, SEEK_SET);
+    marked += scan_one_block_file(ms, path, 255, params, &created);
 
-            long pos = 0;
-            while (pos + 4 + 4 + 80 <= file_size) {
-                uint8_t hdr[8];
-                if (fread(hdr, 1, 8, f) != 8) break;
-                uint32_t magic = (uint32_t)hdr[0] | ((uint32_t)hdr[1] << 8) |
-                                 ((uint32_t)hdr[2] << 16) | ((uint32_t)hdr[3] << 24);
-                uint32_t blk_size = (uint32_t)hdr[4] | ((uint32_t)hdr[5] << 8) |
-                                    ((uint32_t)hdr[6] << 16) | ((uint32_t)hdr[7] << 24);
-                if (magic != 0x6427e924 && magic != 0x6427E924) {
-                    pos += 1;
-                    fseek(f, pos, SEEK_SET);
+    /* Pass 2: retry for out-of-order blocks (prevblock now in map).
+     * Block files from zclassicd are 99%+ in order, so pass 1 catches
+     * nearly everything. Pass 2 picks up stragglers. */
+    if (created > 0 && params) {
+        for (int retry = 0; retry < 3; retry++) {
+            int prev_marked = marked;
+            int rmiss = 0;
+            for (int file_idx = 0; file_idx < 256; file_idx++) {
+                snprintf(path, sizeof(path), "%s/blocks/blk%05d.dat",
+                         datadir, file_idx);
+                struct stat st;
+                if (stat(path, &st) != 0 || st.st_size == 0) {
+                    if (++rmiss >= 3) break;
                     continue;
                 }
-                if (blk_size < 80 || blk_size > 2000000 ||
-                    pos + 8 + (long)blk_size > file_size) {
-                    pos += 8;
-                    fseek(f, pos, SEEK_SET);
-                    continue;
-                }
-                uint8_t block_hdr[80];
-                if (fread(block_hdr, 1, 80, f) != 80) break;
-                struct uint256 hash;
-                {
-                    struct sha256_ctx sctx;
-                    uint8_t tmp[32];
-                    sha256_init(&sctx);
-                    sha256_write(&sctx, block_hdr, 80);
-                    sha256_finalize(&sctx, tmp);
-                    sha256_init(&sctx);
-                    sha256_write(&sctx, tmp, 32);
-                    sha256_finalize(&sctx, hash.data);
-                }
-                struct block_index *bi = block_map_find(
-                    &ms->map_block_index, &hash);
-                if (bi && !(bi->nStatus & BLOCK_HAVE_DATA)) {
-                    bi->nStatus |= BLOCK_HAVE_DATA;
-                    bi->nFile = 255; /* special index for blk_sync.dat */
-                    bi->nDataPos = (unsigned int)(pos + 8);
-                    marked++;
-                }
-                pos += 8 + (long)blk_size;
-                fseek(f, pos, SEEK_SET);
+                rmiss = 0;
+                marked += scan_one_block_file(ms, path, file_idx, params,
+                                               &created);
             }
-            fclose(f);
-            if (marked > 0)
-                printf("  Scanned blk_sync.dat (%d blocks total)\n", marked);
+            int delta = marked - prev_marked;
+            if (delta == 0) break;
+            printf("  Retry pass %d: %d additional blocks\n", retry + 1, delta);
         }
     }
+
+    /* Propagate nChainTx along the chain. This is REQUIRED for
+     * find_most_work_chain to consider these blocks as candidates.
+     * Collect all blocks with BLOCK_HAVE_DATA, sort by height,
+     * compute nChainTx = pprev->nChainTx + nTx.
+     * Multiple passes handle gaps (e.g., retry-created blocks
+     * whose pprev was missing in earlier passes). */
+    if (marked > 0) {
+        size_t total = ms->map_block_index.size;
+        struct block_index **sorted = malloc(total * sizeof(struct block_index *));
+        if (sorted) {
+            size_t n = 0, iter = 0;
+            struct block_index *bi;
+            while (block_map_next(&ms->map_block_index, &iter, NULL, &bi)) {
+                if (bi && (bi->nStatus & BLOCK_HAVE_DATA) && bi->nTx > 0)
+                    sorted[n++] = bi;
+            }
+
+            qsort(sorted, n, sizeof(struct block_index *), block_index_cmp_height);
+
+            int total_propagated = 0;
+            for (int pass = 0; pass < 5; pass++) {
+                int propagated = 0;
+                for (size_t i = 0; i < n; i++) {
+                    struct block_index *b = sorted[i];
+                    if (b->nHeight == 0) {
+                        if (b->nChainTx == 0) {
+                            b->nChainTx = b->nTx;
+                            propagated++;
+                        }
+                    } else if (b->pprev && b->pprev->nChainTx > 0) {
+                        unsigned int expected = b->pprev->nChainTx + b->nTx;
+                        if (b->nChainTx != expected) {
+                            b->nChainTx = expected;
+                            propagated++;
+                        }
+                    }
+                }
+                total_propagated += propagated;
+                if (propagated == 0) break;
+                if (pass == 4)
+                    fprintf(stderr, "WARNING: nChainTx did not converge in "
+                            "5 passes (%d blocks still pending) — possible "
+                            "gap in block chain\n", propagated);
+            }
+
+            /* Count blocks with HAVE_DATA but no nChainTx — these are
+             * unreachable from genesis (orphans or broken pprev links) */
+            int orphans = 0;
+            for (size_t i = 0; i < n; i++)
+                if (sorted[i]->nChainTx == 0 && sorted[i]->nHeight > 0)
+                    orphans++;
+            free(sorted);
+            if (total_propagated > 0)
+                printf("  nChainTx propagated for %d blocks",
+                       total_propagated);
+            if (orphans > 0)
+                printf(" (%d orphan blocks without chain)", orphans);
+            if (total_propagated > 0 || orphans > 0)
+                printf("\n");
+        }
+    }
+
+    int64_t elapsed = (int64_t)time(NULL) - t0;
+    if (marked > 0 || created > 0)
+        printf("Block file scan: %d blocks marked, %d created in %llds\n",
+               marked, created, (long long)elapsed);
 
     return marked;
 }

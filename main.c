@@ -710,6 +710,7 @@ int main(int argc, char **argv)
         else if (strcmp(argv[i], "-tor") == 0) ctx.tor = true;
         else if (strncmp(argv[i], "-assumevalid=", 13) == 0) ctx.assume_valid = argv[i]+13;
         else if (strncmp(argv[i], "-filesync=", 10) == 0) { /* handled above */ }
+        else if (strncmp(argv[i], "-fileservice=", 13) == 0) ctx.file_service_peer = argv[i]+13;
         else if (strcmp(argv[i], "-daemon") == 0) { /* legacy compat */ }
         else if (strcmp(argv[i], "-help") == 0 || strcmp(argv[i], "--help") == 0) {
             print_usage(argv[0]); return 0;

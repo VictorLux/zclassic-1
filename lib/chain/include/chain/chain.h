@@ -135,4 +135,12 @@ static inline bool block_index_is_valid(const struct block_index *bi,
 struct block_index *block_index_get_ancestor(struct block_index *bi, int height);
 void block_index_build_skip(struct block_index *bi);
 
+/* qsort comparator: sort block_index pointers by height ascending */
+static inline int block_index_cmp_height(const void *a, const void *b)
+{
+    const struct block_index *ba = *(const struct block_index *const *)a;
+    const struct block_index *bb = *(const struct block_index *const *)b;
+    return (ba->nHeight > bb->nHeight) - (ba->nHeight < bb->nHeight);
+}
+
 #endif

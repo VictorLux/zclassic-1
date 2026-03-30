@@ -335,7 +335,7 @@ static bool fs_recv_chunk_fast(struct fs_session *s, uint8_t **out,
     if (!recv_all(s->fd, hdr, 4)) return false;
     uint32_t size = (uint32_t)hdr[0] | ((uint32_t)hdr[1] << 8) |
                     ((uint32_t)hdr[2] << 16) | ((uint32_t)hdr[3] << 24);
-    if (size > 60 * 1024 * 1024) return false;
+    if (size == 0 || size > 60 * 1024 * 1024) return false;
 
     /* Read data */
     uint8_t *buf = malloc(size);
@@ -594,8 +594,12 @@ struct range_worker {
     const char *out_path;
     const char *datadir;
     int id;
+    int fd;                /* socket fd — for cancellation */
     _Atomic bool done;
+    _Atomic bool cancel;   /* set by main thread to abort stuck worker */
     _Atomic uint64_t bytes;
+    _Atomic uint32_t chunks_ok;    /* successfully written chunks */
+    _Atomic uint32_t chunks_fail;  /* failed recv or write */
 };
 
 static void *range_worker_fn(void *arg)
@@ -624,6 +628,7 @@ static void *range_worker_fn(void *arg)
     }
     freeaddrinfo(res);
 
+    w->fd = wfd;  /* allow main thread to close on cancel */
     struct fs_session ws;
     fs_session_init(&ws, wfd);
     if (!fs_handshake(&ws, w->utxo_root, true)) { close(wfd); return NULL; }
@@ -637,31 +642,50 @@ static void *range_worker_fn(void *arg)
     fs_send_frame(&ws, FS_REQUEST, rng, 8);
 
     for (uint32_t i = w->start; i < w->end; i++) {
+        if (atomic_load(&w->cancel)) { close(wfd); return NULL; }
         uint8_t *buf = NULL;
         uint32_t sz = 0;
         if (!fs_recv_chunk_fast(&ws, &buf, &sz, w->chunks[i].sha3)) {
-            close(wfd); return NULL;
+            fprintf(stderr, "worker %d: chunk %u/%u recv failed\n",
+                    w->id, i, w->end);
+            atomic_fetch_add(&w->chunks_fail, 1);
+            continue;
         }
 
-        /* Write to the CORRECT block file at the correct offset.
-         * Uses pwrite() for atomic positioned write — safe with
-         * multiple threads writing to the same file. */
+        /* Write to the correct file at the correct offset.
+         * file_index 0-252: block files (blk%05d.dat)
+         * file_index 253: block_index.bin
+         * file_index 254: node.db (SQLite UTXO set)
+         * Uses pwrite() for atomic positioned write. */
         char blk_path[600];
-        snprintf(blk_path, 600, "%s/blocks/blk%05d.dat",
-                 w->datadir, w->chunks[i].file_index);
+        if (w->chunks[i].file_index == 254)
+            snprintf(blk_path, 600, "%s/consensus_snapshot.db", w->datadir);
+        else if (w->chunks[i].file_index == 253)
+            snprintf(blk_path, 600, "%s/block_index.bin", w->datadir);
+        else
+            snprintf(blk_path, 600, "%s/blocks/blk%05d.dat",
+                     w->datadir, w->chunks[i].file_index);
         int bfd = open(blk_path, O_WRONLY | O_CREAT, 0644);
         if (bfd >= 0) {
             ssize_t written = pwrite(bfd, buf, sz, (off_t)w->chunks[i].offset);
-            if (written != (ssize_t)sz)
+            if (written != (ssize_t)sz) {
                 fprintf(stderr, "worker %d: pwrite %s offset=%llu "
                         "sz=%u wrote=%zd errno=%d\n",
                         w->id, blk_path,
                         (unsigned long long)w->chunks[i].offset,
                         sz, written, errno);
+                close(bfd);
+                free(buf);
+                continue; /* skip — don't count failed write as progress */
+            }
+            /* Sync to disk so crash can't lose this chunk */
+            fdatasync(bfd);
             close(bfd);
+            atomic_fetch_add(&w->chunks_ok, 1);
         } else {
             fprintf(stderr, "worker %d: open %s failed: %s\n",
                     w->id, blk_path, strerror(errno));
+            atomic_fetch_add(&w->chunks_fail, 1);
         }
         free(buf);
         atomic_fetch_add(&w->bytes, sz);
@@ -711,6 +735,12 @@ bool fs_client_sync(const char *peer_addr, uint16_t port,
     }
 
     printf("file_service: connected, requesting manifest...\n");
+
+    /* Set timeout for manifest reception — don't block forever */
+    struct timeval mtv;
+    mtv.tv_sec = 60; /* 60s to receive full manifest */
+    mtv.tv_usec = 0;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &mtv, sizeof(mtv));
 
     fs_send_frame(&session, FS_MANIFEST, NULL, 0);
 
@@ -762,30 +792,56 @@ bool fs_client_sync(const char *peer_addr, uint16_t port,
 
     int64_t dl_start = (int64_t)time(NULL);
 
-    /* Check if a previous partial download exists — resume from there */
-    char out_path[576];
-    snprintf(out_path, sizeof(out_path), "%s/blocks/blk_sync.dat", datadir);
-    uint64_t existing_bytes = 0;
+    /* Check if previous partial download exists — verify and resume.
+     * We spot-check existing chunks with SHA3 to detect corruption. */
     uint32_t skip_chunks = 0;
     {
-        struct stat st;
-        if (stat(out_path, &st) == 0 && st.st_size > 0) {
-            existing_bytes = (uint64_t)st.st_size;
-            /* Count how many complete chunks we already have */
-            uint64_t accum = 0;
-            for (uint32_t j = 0; j < num_chunks; j++) {
-                if (accum + chunks[j].size <= existing_bytes) {
-                    skip_chunks++;
-                    accum += chunks[j].size;
-                } else {
+        uint32_t verified = 0, checked = 0;
+        for (uint32_t j = 0; j < num_chunks; j++) {
+            char blk_path[600];
+            if (chunks[j].file_index == 253)
+                snprintf(blk_path, 600, "%s/block_index.bin", datadir);
+            else
+                snprintf(blk_path, 600, "%s/blocks/blk%05d.dat",
+                         datadir, chunks[j].file_index);
+
+            /* Check if file is large enough for this chunk */
+            struct stat st;
+            if (stat(blk_path, &st) != 0 ||
+                (uint64_t)st.st_size < chunks[j].offset + chunks[j].size)
+                break; /* this chunk not on disk, stop skipping */
+
+            /* SHA3 verify every 20th chunk + first + last existing.
+             * Full verification would be slow on 7GB, spot-check is fast. */
+            if (j == 0 || j % 20 == 0) {
+                int fd2 = open(blk_path, O_RDONLY);
+                if (fd2 < 0) break;
+                uint8_t *vbuf = malloc(chunks[j].size);
+                if (!vbuf) { close(fd2); break; }
+                ssize_t got = pread(fd2, vbuf, chunks[j].size,
+                                     (off_t)chunks[j].offset);
+                close(fd2);
+                if (got != (ssize_t)chunks[j].size) {
+                    free(vbuf); break;
+                }
+                uint8_t hash[32];
+                sha3_256(vbuf, chunks[j].size, hash);
+                free(vbuf);
+                if (memcmp(hash, chunks[j].sha3, 32) != 0) {
+                    fprintf(stderr, "file_service: resume SHA3 mismatch at "
+                            "chunk %u (file=%d off=%llu) — re-downloading "
+                            "from here\n", j, chunks[j].file_index,
+                            (unsigned long long)chunks[j].offset);
                     break;
                 }
+                checked++;
             }
-            if (skip_chunks > 0) {
-                printf("file_service: resuming — %u/%u chunks already on disk "
-                       "(%.1f GB)\n", skip_chunks, num_chunks,
-                       (double)accum / (1024.0 * 1024.0 * 1024.0));
-            }
+            verified++;
+        }
+        skip_chunks = verified;
+        if (skip_chunks > 0) {
+            printf("file_service: resuming — %u/%u chunks on disk "
+                   "(%u SHA3-verified)\n", skip_chunks, num_chunks, checked);
         }
     }
 
@@ -818,8 +874,12 @@ bool fs_client_sync(const char *peer_addr, uint16_t port,
         workers[nworkers].out_path = wp;
         workers[nworkers].datadir = datadir;
         workers[nworkers].id = w;
+        workers[nworkers].fd = -1;
         atomic_store(&workers[nworkers].done, false);
+        atomic_store(&workers[nworkers].cancel, false);
         atomic_store(&workers[nworkers].bytes, 0);
+        atomic_store(&workers[nworkers].chunks_ok, 0);
+        atomic_store(&workers[nworkers].chunks_fail, 0);
         pthread_create(&wthreads[nworkers], NULL,
                         range_worker_fn, &workers[nworkers]);
         nworkers++;
@@ -829,6 +889,12 @@ bool fs_client_sync(const char *peer_addr, uint16_t port,
 
     /* Monitor progress — give up after 30 min total */
     int64_t max_wait = 1800;
+    uint64_t prev_done_bytes[FS_NWORKERS];
+    int stall_counts[FS_NWORKERS];
+    memset(prev_done_bytes, 0, sizeof(prev_done_bytes));
+    /* Start at -4 so workers have 20s grace period to connect+handshake
+     * before stall detection kicks in. Prevents false cancellation. */
+    for (int w = 0; w < FS_NWORKERS; w++) stall_counts[w] = -4;
     while (true) {
         sleep(5);
         uint64_t done = 0;
@@ -839,10 +905,35 @@ bool fs_client_sync(const char *peer_addr, uint16_t port,
         }
         int64_t el = (int64_t)time(NULL) - dl_start;
         if (el > max_wait) {
-            printf("file_service: timeout after %llds, proceeding with "
-                   "%.1f GB downloaded\n", (long long)el,
-                   (double)done / (1024.0*1024.0*1024.0));
+            printf("file_service: timeout after %llds, cancelling stuck "
+                   "workers\n", (long long)el);
+            for (int w = 0; w < nworkers; w++) {
+                if (!atomic_load(&workers[w].done)) {
+                    atomic_store(&workers[w].cancel, true);
+                    shutdown(workers[w].fd, SHUT_RDWR);
+                }
+            }
             break;
+        }
+        /* Cancel workers stuck on a single chunk for >60s */
+        {
+            for (int w = 0; w < nworkers; w++) {
+                uint64_t wb = atomic_load(&workers[w].bytes);
+                if (!atomic_load(&workers[w].done) && wb == prev_done_bytes[w]) {
+                    stall_counts[w]++;
+                    if (stall_counts[w] >= 12) { /* 12*5s = 60s stall */
+                        fprintf(stderr, "file_service: worker %d stalled "
+                                "at %llu bytes, cancelling\n",
+                                w, (unsigned long long)wb);
+                        atomic_store(&workers[w].cancel, true);
+                        shutdown(workers[w].fd, SHUT_RDWR);
+                        stall_counts[w] = 0;
+                    }
+                } else {
+                    stall_counts[w] = 0;
+                    prev_done_bytes[w] = wb;
+                }
+            }
         }
         double pct = total_bytes > 0 ? 100.0 * (double)done / (double)total_bytes : 0;
         int64_t elapsed = (int64_t)time(NULL) - dl_start;
@@ -866,14 +957,33 @@ bool fs_client_sync(const char *peer_addr, uint16_t port,
         free((void *)workers[w].out_path);
 
     uint64_t bytes_done = 0;
-    for (int w = 0; w < nworkers; w++)
+    uint32_t total_ok = 0, total_fail = 0;
+    for (int w = 0; w < nworkers; w++) {
         bytes_done += atomic_load(&workers[w].bytes);
+        total_ok += atomic_load(&workers[w].chunks_ok);
+        total_fail += atomic_load(&workers[w].chunks_fail);
+    }
 
     int64_t dl_elapsed = (int64_t)time(NULL) - dl_start;
-    printf("=== File sync complete: %.1f GB in %llds (%.1f MB/s avg) ===\n",
+    printf("=== File sync: %.1f GB in %llds (%.1f MB/s avg) "
+           "chunks: %u ok, %u failed out of %u ===\n",
            (double)bytes_done / (1024.0 * 1024.0 * 1024.0),
            (long long)dl_elapsed,
-           dl_elapsed > 0 ? (double)bytes_done / (1024.0 * 1024.0) / (double)dl_elapsed : 0);
+           dl_elapsed > 0 ? (double)bytes_done / (1024.0 * 1024.0) / (double)dl_elapsed : 0,
+           total_ok, total_fail, remaining);
 
-    return bytes_done > 0;
+    if (total_fail > 0) {
+        fprintf(stderr, "file_service: %u/%u chunks failed — download incomplete\n",
+                total_fail, remaining);
+        /* TODO: retry failed chunks on next connect */
+        return false;
+    }
+
+    if (total_ok < remaining) {
+        fprintf(stderr, "file_service: only %u/%u chunks received — incomplete\n",
+                total_ok, remaining);
+        return false;
+    }
+
+    return true;
 }

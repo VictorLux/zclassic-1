@@ -79,4 +79,31 @@ bool mmr_prove_from_leaves(const uint8_t (*all_leaves)[32],
 bool mmr_verify(const struct mmr_proof *proof,
                 const uint8_t expected_root[32]);
 
+/* ── Unified commitment leaf ──────────────────────────── */
+/* A commitment leaf binds block data + UTXO state + file chunks
+ * at a given height. One leaf every COMMITMENT_INTERVAL blocks.
+ * This is the minimum unit of trust for a new node:
+ *   - block_hash:  proves PoW chain at this height
+ *   - utxo_root:   proves UTXO set state (SHA3 over all UTXOs)
+ *   - data_root:   proves raw file data (SHA3 over chunk hashes)
+ *
+ * A new node only needs: MMR root + latest commitment + delta blocks.
+ * Energy cost: one SHA3 per commitment (microseconds). */
+
+#define MMR_COMMITMENT_INTERVAL 100  /* ~20 minutes between commits */
+
+struct mmr_commitment {
+    int32_t  height;            /* block height of this commitment */
+    uint8_t  block_hash[32];    /* block hash at height */
+    uint8_t  utxo_root[32];     /* SHA3 of UTXO set at height */
+    uint8_t  data_root[32];     /* SHA3 of file chunk hashes up to height */
+};
+
+/* Hash a commitment into an MMR leaf.
+ * SHA3(0x00 || height || block_hash || utxo_root || data_root) */
+void mmr_hash_commitment(const struct mmr_commitment *c, uint8_t out[32]);
+
+/* Append a commitment to the MMR (convenience wrapper) */
+int mmr_append_commitment(struct mmr *m, const struct mmr_commitment *c);
+
 #endif

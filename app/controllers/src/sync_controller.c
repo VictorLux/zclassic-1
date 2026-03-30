@@ -1347,6 +1347,8 @@ struct import_context {
     _Atomic int skipped_outputs;
     _Atomic bool reader_done;
     _Atomic bool decoders_done;
+    _Atomic int chunks_produced;  /* total chunks filled by reader */
+    _Atomic int chunks_consumed;  /* total chunks written by writer */
     /* LevelDB reader state (single-threaded) */
     struct coins_view_db *cvdb;
     /* Writer state */
@@ -1467,8 +1469,13 @@ static int decode_coins_entry(const struct raw_entry *raw,
                 memcpy(r->script, raw_script, slen);
             } else {
                 r->script_overflow = malloc(slen);
-                if (r->script_overflow)
+                if (r->script_overflow) {
                     memcpy(r->script_overflow, raw_script, slen);
+                } else {
+                    /* malloc failed — cap to inline buffer */
+                    r->script_len = (uint16_t)sizeof(r->script);
+                    memcpy(r->script, raw_script, sizeof(r->script));
+                }
             }
             /* Classify raw script */
             const uint8_t *sc = r->script_overflow ? r->script_overflow : r->script;
@@ -1512,6 +1519,7 @@ static void *import_decoder_thread(void *arg)
             int expected = 1; /* filled */
             if (atomic_compare_exchange_strong(&ctx->chunks[i].state,
                                               &expected, -1)) {
+                atomic_thread_fence(memory_order_acquire);
                 chunk = &ctx->chunks[i];
                 break;
             }
@@ -1569,7 +1577,15 @@ static void *import_writer_thread(void *arg)
     int total_rows = 0;
     int next_chunk = 0;
 
-    sqlite3_exec(ndb->db, "BEGIN", NULL, NULL, NULL);
+    {
+        char *err = NULL;
+        int brc = sqlite3_exec(ndb->db, "BEGIN", NULL, NULL, &err);
+        if (brc != SQLITE_OK) {
+            fprintf(stderr, "UTXO import writer: BEGIN failed rc=%d: %s\n",
+                    brc, err ? err : "unknown");
+            sqlite3_free(err);
+        }
+    }
 
     for (;;) {
         /* Look for any decoded chunk to write */
@@ -1586,22 +1602,13 @@ static void *import_writer_thread(void *arg)
         }
         if (!chunk) {
             if (atomic_load(&ctx->decoders_done)) {
-                /* All decoders have joined. Any remaining chunks must be
-                 * in state 2 (decoded, waiting for writer). Check multiple
-                 * times to handle memory ordering delays. */
-                bool found = false;
-                for (int retry = 0; retry < 3 && !found; retry++) {
-                    for (int i = 0; i < IMPORT_NUM_CHUNKS; i++) {
-                        int s = atomic_load_explicit(&ctx->chunks[i].state,
-                                                      memory_order_acquire);
-                        if (s == 2) { found = true; break; }
-                    }
-                    if (!found) {
-                        struct timespec ts = {0, 1000000}; /* 1ms */
-                        nanosleep(&ts, NULL);
-                    }
-                }
-                if (!found) break;
+                /* Decoders are done. Use definitive chunk count to
+                 * know when we're truly finished — no race possible. */
+                int produced = atomic_load(&ctx->chunks_produced);
+                int consumed = atomic_load(&ctx->chunks_consumed);
+                if (consumed >= produced) break;
+                /* Still have chunks to consume — scan harder */
+                atomic_thread_fence(memory_order_seq_cst);
             }
             struct timespec ts = {0, 100000}; /* 100μs */
             nanosleep(&ts, NULL);
@@ -1626,7 +1633,13 @@ static void *import_writer_thread(void *arg)
                 sqlite3_bind_null(ins, 6);
             sqlite3_bind_int(ins, 7, r->height);
             sqlite3_bind_int(ins, 8, r->is_coinbase);
-            sqlite3_step(ins);
+            int step_rc = sqlite3_step(ins);
+            if (step_rc != SQLITE_DONE && step_rc != SQLITE_ROW) {
+                if (total_rows < 5 || total_rows % 100000 == 0)
+                    fprintf(stderr, "UTXO import: sqlite3_step failed rc=%d "
+                            "at row %d: %s\n", step_rc, total_rows,
+                            sqlite3_errmsg(ndb->db));
+            }
             total_rows++;
         }
 
@@ -1645,6 +1658,7 @@ static void *import_writer_thread(void *arg)
             free(chunk->rows[ri].script_overflow);
         chunk->num_entries = 0;
         chunk->num_rows = 0;
+        atomic_fetch_add(&ctx->chunks_consumed, 1);
         atomic_store(&chunk->state, 0); /* free for reuse */
     }
 
@@ -1667,21 +1681,25 @@ int node_db_sync_import_utxos(struct node_db *ndb,
     clock_gettime(CLOCK_MONOTONIC, &ts_start);
 
     /* ── SQLite turbo mode ─────────────────────────────────────────── */
-    sqlite3_exec(ndb->db, "PRAGMA journal_mode=OFF", NULL, NULL, NULL);
+    /* Use WAL mode (not OFF) — another connection (coins_view_sqlite)
+     * may have the DB open in WAL mode, and journal_mode=OFF fails
+     * silently when WAL is active, causing the writer thread to hang. */
+    sqlite3_exec(ndb->db, "PRAGMA journal_mode=WAL", NULL, NULL, NULL);
     sqlite3_exec(ndb->db, "PRAGMA synchronous=OFF", NULL, NULL, NULL);
-    sqlite3_exec(ndb->db, "PRAGMA locking_mode=EXCLUSIVE", NULL, NULL, NULL);
+    sqlite3_exec(ndb->db, "PRAGMA locking_mode=NORMAL", NULL, NULL, NULL);
     sqlite3_exec(ndb->db, "PRAGMA cache_size=-524288", NULL, NULL, NULL);
     sqlite3_exec(ndb->db, "PRAGMA mmap_size=1073741824", NULL, NULL, NULL);
     sqlite3_busy_timeout(ndb->db, 10000);
 
-    /* Drop all UTXO indexes for bulk load */
+    /* Drop UTXO indexes for bulk load */
     sqlite3_exec(ndb->db, "DROP INDEX IF EXISTS idx_utxo_address",
                  NULL, NULL, NULL);
+    sqlite3_exec(ndb->db, "DROP INDEX IF EXISTS idx_utxo_height_value",
+                 NULL, NULL, NULL);
+    /* Also drop legacy indexes that may exist from older schema */
     sqlite3_exec(ndb->db, "DROP INDEX IF EXISTS idx_utxo_value",
                  NULL, NULL, NULL);
     sqlite3_exec(ndb->db, "DROP INDEX IF EXISTS idx_utxo_height",
-                 NULL, NULL, NULL);
-    sqlite3_exec(ndb->db, "DROP INDEX IF EXISTS idx_utxo_height_value",
                  NULL, NULL, NULL);
 
     /* Clear existing UTXOs */
@@ -1699,11 +1717,30 @@ int node_db_sync_import_utxos(struct node_db *ndb,
 
     /* ── Start decoder + writer threads ────────────────────────────── */
     pthread_t decoders[IMPORT_NUM_DECODERS_MAX];
-    for (int i = 0; i < num_decoders; i++)
-        pthread_create(&decoders[i], NULL, import_decoder_thread, ctx);
+    for (int i = 0; i < num_decoders; i++) {
+        int rc = pthread_create(&decoders[i], NULL, import_decoder_thread, ctx);
+        if (rc != 0) {
+            fprintf(stderr, "UTXO import: pthread_create decoder[%d] failed: %d\n",
+                    i, rc);
+            num_decoders = i; /* only join threads we actually started */
+            break;
+        }
+    }
+    if (num_decoders == 0) {
+        fprintf(stderr, "UTXO import: FATAL — no decoder threads started\n");
+        free(ctx);
+        return -1;
+    }
 
     pthread_t writer;
-    pthread_create(&writer, NULL, import_writer_thread, ctx);
+    if (pthread_create(&writer, NULL, import_writer_thread, ctx) != 0) {
+        fprintf(stderr, "UTXO import: FATAL — writer thread failed to start\n");
+        atomic_store(&ctx->reader_done, true);
+        for (int i = 0; i < num_decoders; i++)
+            pthread_join(decoders[i], NULL);
+        free(ctx);
+        return -1;
+    }
 
     /* ── Reader (main thread): iterate LevelDB, fill chunks ────────── */
     struct db_iterator it;
@@ -1715,6 +1752,7 @@ int node_db_sync_import_utxos(struct node_db *ndb,
 
     int chunk_idx = 0;
     int total_entries = 0;
+    int skipped_entries = 0;
 
     while (db_iter_valid(&it)) {
         /* Find a free chunk */
@@ -1756,17 +1794,26 @@ int node_db_sync_import_utxos(struct node_db *ndb,
             e->value = malloc(val_len);
             if (e->value) {
                 memcpy(e->value, val_data, val_len);
+                /* db_iter_value() already deobfuscates values using the
+                 * obfuscation key (dbwrapper.c:370-372). Do NOT XOR
+                 * again here — that would undo the deobfuscation. */
                 e->value_len = (uint16_t)val_len;
                 chunk->num_entries++;
                 total_entries++;
+            } else {
+                fprintf(stderr, "WARNING: malloc failed for chunk entry value (%zu bytes), skipping entry\n", val_len);
+                skipped_entries++;
             }
             db_iter_next(&it);
         }
 
-        if (chunk->num_entries > 0)
+        if (chunk->num_entries > 0) {
+            atomic_fetch_add(&ctx->chunks_produced, 1);
+            atomic_thread_fence(memory_order_release);
             atomic_store(&chunk->state, 1); /* filled → decoders */
-        else
+        } else {
             atomic_store(&chunk->state, 0); /* empty, release */
+        }
     }
 reader_done:
     /* Check for iterator errors — checksum failures can cause early
@@ -1779,6 +1826,7 @@ reader_done:
     atomic_store(&ctx->reader_done, true);
 
     printf("UTXO import: read %d txids from LevelDB\n", total_entries);
+    fflush(stdout);
     fflush(stdout);
 
     /* ── Wait for decoders ────────────────────────────────────────── */
@@ -1822,11 +1870,19 @@ reader_done:
         if (cnt && sqlite3_step(cnt) == SQLITE_ROW) {
             int64_t sql_txids = sqlite3_column_int64(cnt, 0);
             int64_t sql_rows = sqlite3_column_int64(cnt, 1);
-            if (sql_txids != total_entries || sql_rows != total_rows) {
-                fprintf(stderr, "UTXO IMPORT MISMATCH: read %d txids/%d rows "
-                        "but SQLite has %lld txids/%lld rows\n",
-                        total_entries, total_rows,
-                        (long long)sql_txids, (long long)sql_rows);
+            if (sql_rows != total_rows) {
+                /* Row count mismatch = real data loss — pipeline bug */
+                fprintf(stderr, "UTXO IMPORT ERROR: wrote %d rows but "
+                        "SQLite has %lld rows — data loss!\n",
+                        total_rows, (long long)sql_rows);
+            } else if (sql_txids < total_entries) {
+                /* Fewer distinct txids is expected: fully-pruned CCoins
+                 * (all outputs spent) produce zero rows per txid.
+                 * These exist in LevelDB as tombstones until compaction. */
+                int pruned = total_entries - (int)sql_txids;
+                printf("UTXO import: %d/%d LevelDB entries were "
+                       "fully-pruned (all outputs spent)\n",
+                       pruned, total_entries);
             }
         }
         sqlite3_finalize(cnt);
@@ -1847,25 +1903,14 @@ reader_done:
     struct timespec ts_idx;
     clock_gettime(CLOCK_MONOTONIC, &ts_idx);
 
-    /* Address lookup — balance queries, listunspent */
+    /* Address lookup — balance queries, listunspent (critical) */
     sqlite3_exec(ndb->db,
         "CREATE INDEX IF NOT EXISTS idx_utxo_address"
         " ON utxos(address_hash) WHERE address_hash IS NOT NULL",
         NULL, NULL, NULL);
 
-    /* Top-value queries */
-    sqlite3_exec(ndb->db,
-        "CREATE INDEX IF NOT EXISTS idx_utxo_value"
-        " ON utxos(value DESC)",
-        NULL, NULL, NULL);
-
-    /* Age queries */
-    sqlite3_exec(ndb->db,
-        "CREATE INDEX IF NOT EXISTS idx_utxo_height"
-        " ON utxos(height)",
-        NULL, NULL, NULL);
-
-    /* HODL wave covering index — height+value for age distribution */
+    /* HODL wave covering index — height+value for age distribution.
+     * Also covers height-only queries, so idx_utxo_height is redundant. */
     sqlite3_exec(ndb->db,
         "CREATE INDEX IF NOT EXISTS idx_utxo_height_value"
         " ON utxos(height, value)",

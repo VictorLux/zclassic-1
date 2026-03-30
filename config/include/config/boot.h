@@ -32,6 +32,8 @@ struct app_context {
     bool reindex_chainstate;
     bool tor;
     const char *assume_valid;  /* block hash: skip Groth16 at/below this height */
+    bool no_services;          /* skip P2P, RPC, Tor — boot only (speedrun) */
+    const char *file_service_peer; /* -fileservice=addr : download from this peer */
 };
 
 void app_context_defaults(struct app_context *ctx);
@@ -43,5 +45,11 @@ bool app_is_running(void);
 void app_add_node(const char *host, int port);
 void app_start_metrics(bool mining);
 void app_stop_metrics(void);
+
+/* Background UTXO replay status (after fast file sync).
+ * Node is usable immediately; replay builds UTXO set in background. */
+#include <stdatomic.h>
+extern _Atomic bool g_utxo_replay_active;
+extern _Atomic int  g_utxo_replay_height;
 
 #endif

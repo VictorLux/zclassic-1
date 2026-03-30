@@ -5,6 +5,7 @@
 
 #include "controllers/event_controller.h"
 #include "controllers/strong_params.h"
+#include "config/boot.h"
 #include "event/event.h"
 #include "net/download.h"
 #include "json/json.h"
@@ -67,6 +68,10 @@ static bool rpc_syncstate(const struct json_value *params, bool help,
     json_set_object(result);
     json_push_kv_str(result, "state", sync_state_name(sync_get_state()));
     json_push_kv_int(result, "state_id", (int64_t)sync_get_state());
+    json_push_kv_bool(result, "utxo_replay_active",
+                      atomic_load(&g_utxo_replay_active));
+    json_push_kv_int(result, "utxo_replay_height",
+                     (int64_t)atomic_load(&g_utxo_replay_height));
     return true;
 }
 

@@ -278,6 +278,127 @@ int test_mmr(void)
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
-    printf("\n%d passed, %d failed\n", 14 - failures, failures);
+    /* ── Unified commitment leaf tests ──────────────────── */
+
+    printf("mmr: commitment hash is deterministic... ");
+    {
+        struct mmr_commitment c = {
+            .height = 3056758,
+        };
+        memset(c.block_hash, 0xAA, 32);
+        memset(c.utxo_root, 0xBB, 32);
+        memset(c.data_root, 0xCC, 32);
+
+        uint8_t h1[32], h2[32];
+        mmr_hash_commitment(&c, h1);
+        mmr_hash_commitment(&c, h2);
+        bool ok = memcmp(h1, h2, 32) == 0;
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("mmr: commitment hash changes with height... ");
+    {
+        struct mmr_commitment c1 = { .height = 100 };
+        struct mmr_commitment c2 = { .height = 200 };
+        memset(c1.block_hash, 0x11, 32); memset(c2.block_hash, 0x11, 32);
+        memset(c1.utxo_root, 0x22, 32);  memset(c2.utxo_root, 0x22, 32);
+        memset(c1.data_root, 0x33, 32);  memset(c2.data_root, 0x33, 32);
+
+        uint8_t h1[32], h2[32];
+        mmr_hash_commitment(&c1, h1);
+        mmr_hash_commitment(&c2, h2);
+        bool ok = memcmp(h1, h2, 32) != 0;
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("mmr: commitment hash changes with utxo_root... ");
+    {
+        struct mmr_commitment c1 = { .height = 100 };
+        struct mmr_commitment c2 = { .height = 100 };
+        memset(c1.block_hash, 0x11, 32); memset(c2.block_hash, 0x11, 32);
+        memset(c1.utxo_root, 0x22, 32);  memset(c2.utxo_root, 0xFF, 32);
+        memset(c1.data_root, 0x33, 32);  memset(c2.data_root, 0x33, 32);
+
+        uint8_t h1[32], h2[32];
+        mmr_hash_commitment(&c1, h1);
+        mmr_hash_commitment(&c2, h2);
+        bool ok = memcmp(h1, h2, 32) != 0;
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("mmr: commitment append builds valid MMR... ");
+    {
+        struct mmr m;
+        mmr_init(&m);
+
+        for (int i = 0; i < 10; i++) {
+            struct mmr_commitment c = { .height = i * 100 };
+            memset(c.block_hash, (uint8_t)i, 32);
+            memset(c.utxo_root, (uint8_t)(i + 50), 32);
+            memset(c.data_root, (uint8_t)(i + 100), 32);
+            mmr_append_commitment(&m, &c);
+        }
+
+        bool ok = (m.num_leaves == 10 && m.num_peaks > 0);
+        uint8_t root[32];
+        mmr_root(&m, root);
+        uint8_t zero[32] = {0};
+        ok = ok && memcmp(root, zero, 32) != 0;
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("mmr: commitment MMR is deterministic... ");
+    {
+        uint8_t r1[32], r2[32];
+        for (int trial = 0; trial < 2; trial++) {
+            struct mmr m;
+            mmr_init(&m);
+            for (int i = 0; i < 30; i++) {
+                struct mmr_commitment c = { .height = i * 100 };
+                memset(c.block_hash, (uint8_t)i, 32);
+                memset(c.utxo_root, (uint8_t)(i + 50), 32);
+                memset(c.data_root, (uint8_t)(i + 100), 32);
+                mmr_append_commitment(&m, &c);
+            }
+            mmr_root(&m, trial == 0 ? r1 : r2);
+        }
+        bool ok = memcmp(r1, r2, 32) == 0;
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("mmr: commitment serializes and deserializes... ");
+    {
+        struct mmr m;
+        mmr_init(&m);
+        for (int i = 0; i < 25; i++) {
+            struct mmr_commitment c = { .height = i * 100 };
+            memset(c.block_hash, (uint8_t)i, 32);
+            memset(c.utxo_root, (uint8_t)(i + 1), 32);
+            memset(c.data_root, (uint8_t)(i + 2), 32);
+            mmr_append_commitment(&m, &c);
+        }
+
+        uint8_t buf[MMR_SERIALIZED_MAX];
+        size_t len = mmr_serialize(&m, buf, sizeof(buf));
+
+        struct mmr m2;
+        bool ok = mmr_deserialize(&m2, buf, len);
+
+        uint8_t r1[32], r2[32];
+        mmr_root(&m, r1);
+        mmr_root(&m2, r2);
+        ok = ok && memcmp(r1, r2, 32) == 0;
+        ok = ok && m.num_leaves == m2.num_leaves;
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("mmr: commitment interval constant defined... ");
+    {
+        bool ok = (MMR_COMMITMENT_INTERVAL == 100);
+        if (ok) printf("OK (every %d blocks)\n", MMR_COMMITMENT_INTERVAL);
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("\n%d passed, %d failed\n", 21 - failures, failures);
     return failures;
 }

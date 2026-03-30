@@ -28,12 +28,14 @@
 #include "event/event.h"
 #include "net/download.h"
 #include "util/sync.h"
+#include "config/boot_internal.h"
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <sys/time.h>
+#include <sys/stat.h>
 
 /* Externs from boot.c / wallet_helpers.c */
 extern struct node_db *g_active_node_db;
@@ -1297,6 +1299,32 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                    node->starting_height);
     }
 
+    /* One-shot block file scan: if block files exist on disk (from
+     * file_service) but weren't scanned at boot (empty index at boot),
+     * scan them now that we have headers. This marks downloaded blocks
+     * as BLOCK_HAVE_DATA so we don't re-download them from P2P.
+     * Triggers once when header tip passes 1000 (enough chain context). */
+    if (accepted > 0 && pindex_last && pindex_last->nHeight > 1000) {
+        static _Atomic bool g_block_files_scanned_p2p = false;
+        if (!atomic_exchange(&g_block_files_scanned_p2p, true)) {
+            char bfp[576];
+            snprintf(bfp, sizeof(bfp), "%s/blocks/blk00000.dat", mp->datadir);
+            struct stat bfst;
+            if (stat(bfp, &bfst) == 0 && bfst.st_size > 0) {
+                printf("P2P trigger: scanning block files for HAVE_DATA...\n");
+                int scan_m = scan_block_files_mark_data(
+                    mp->main_state, mp->datadir, mp->params);
+                if (scan_m > 0) {
+                    printf("P2P block file scan: %d blocks marked\n", scan_m);
+                    struct validation_state vs;
+                    validation_state_init(&vs);
+                    activate_best_chain(&vs, mp->main_state, mp->coins_tip,
+                                        mp->params, NULL, mp->datadir);
+                }
+            }
+        }
+    }
+
     /* Queue needed blocks into download manager. The download manager
      * deduplicates, tracks in-flight, and assigns to peers. Actual
      * getdata messages are sent from send_messages via dl_assign_to_peer.
@@ -1350,6 +1378,12 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
             size_t max_collect = 512;
             struct uint256 *hashes = malloc(max_collect * sizeof(struct uint256));
             int32_t *heights = malloc(max_collect * sizeof(int32_t));
+            if (!hashes || !heights) {
+                fprintf(stderr, "msgprocessor: malloc failed for block request "
+                        "arrays (%zu entries)\n", max_collect);
+                free(hashes); free(heights);
+                hashes = NULL; heights = NULL;
+            }
             if (hashes && heights && chains_from_tip) {
                 size_t count_needed = 0;
                 size_t walk_steps = 0;
@@ -1540,7 +1574,7 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
             msg_header_get_command(&msg.hdr, ccmd, sizeof(ccmd));
             event_emitf(EV_MSG_CHECKSUM_FAIL, (uint32_t)node->id,
                         "%s size=%u", ccmd, msg.hdr.nMessageSize);
-            printf("Peer %s: checksum mismatch on '%s' (size=%u exp=%08x got=%08x)\n",
+            fprintf(stderr, "Peer %s: checksum mismatch on '%s' (size=%u exp=%08x got=%08x)\n",
                    node->addr_name, ccmd, msg.hdr.nMessageSize,
                    expected, msg.hdr.nChecksum);
             net_message_free(&msg);
@@ -1755,7 +1789,7 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                 int rc = sqlite3_open_v2(db_path, &db,
                                           SQLITE_OPEN_READWRITE, NULL);
                 if (rc != SQLITE_OK) {
-                    printf("Peer %s: snapshot db open failed: %s\n",
+                    fprintf(stderr, "Peer %s: snapshot db open failed: %s\n",
                            node->addr_name, sqlite3_errmsg(db));
                     if (db) sqlite3_close(db);
                     node->disconnect = true;
@@ -1763,7 +1797,7 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                     char *errmsg = NULL;
                     rc = sqlite3_exec(db, "BEGIN", NULL, NULL, &errmsg);
                     if (rc != SQLITE_OK) {
-                        printf("Peer %s: snapshot BEGIN failed: %s\n",
+                        fprintf(stderr, "Peer %s: snapshot BEGIN failed: %s\n",
                                node->addr_name, errmsg ? errmsg : "unknown");
                         sqlite3_free(errmsg);
                         sqlite3_close(db);
@@ -1775,7 +1809,7 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                         "(txid,vout,value,script,script_type,height) "
                         "VALUES(?,?,?,?,0,?)", -1, &ins, NULL);
                     if (rc != SQLITE_OK || !ins) {
-                        printf("Peer %s: snapshot prepare failed: %s\n",
+                        fprintf(stderr, "Peer %s: snapshot prepare failed: %s\n",
                                node->addr_name, sqlite3_errmsg(db));
                         sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
                         sqlite3_close(db);
@@ -1834,7 +1868,7 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                         sqlite3_bind_int(ins, 5, height);
                         rc = sqlite3_step(ins);
                         if (rc != SQLITE_DONE && rc != SQLITE_CONSTRAINT) {
-                            printf("Peer %s: snapshot insert failed: %s\n",
+                            fprintf(stderr, "Peer %s: snapshot insert failed: %s\n",
                                    node->addr_name, sqlite3_errmsg(db));
                             chunk_valid = false;
                             break;
@@ -1846,7 +1880,7 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                     if (chunk_valid) {
                         rc = sqlite3_exec(db, "COMMIT", NULL, NULL, &errmsg);
                         if (rc != SQLITE_OK) {
-                            printf("Peer %s: snapshot COMMIT failed: %s\n",
+                            fprintf(stderr, "Peer %s: snapshot COMMIT failed: %s\n",
                                    node->addr_name,
                                    errmsg ? errmsg : "unknown");
                             sqlite3_free(errmsg);
@@ -2077,8 +2111,12 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                         uint16_t slen = 0;
                         if (!stream_read_u16_le(&s, &slen))
                             { parse_ok = false; break; }
+                        if (slen > 128) {
+                            /* Script too large for entry — reject chunk.
+                             * Don't silently truncate, that corrupts UTXOs. */
+                            parse_ok = false; break;
+                        }
                         chunk->entries[i].script_len = slen;
-                        if (slen > 128) slen = 128;
                         if (slen > 0 &&
                             !stream_read_bytes(&s, chunk->entries[i].script, slen))
                             { parse_ok = false; break; }
@@ -2092,7 +2130,7 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
 
                         if (!verified) {
                             zcl_mutex_unlock(&g_swarm_mutex);
-                            printf("Peer %s: chunk %u failed verification\n",
+                            fprintf(stderr, "Peer %s: chunk %u failed verification\n",
                                    node->addr_name, chunk_index);
                             peer_misbehaving(mp->net_mgr, node, 50,
                                              "bad chunk hash");
@@ -2166,7 +2204,7 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                     uint32_t expected = (uint32_t)((end_h - start_h +
                         BLOCKS_PER_PIECE) / BLOCKS_PER_PIECE);
                     if (num_pieces != expected) {
-                        printf("Peer %s: block manifest piece count mismatch "
+                        fprintf(stderr, "Peer %s: block manifest piece count mismatch "
                                "(got %u, expected %u for h=%d..%d)\n",
                                node->addr_name, num_pieces, expected,
                                start_h, end_h);
@@ -2359,7 +2397,7 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                         }
                     } else {
                         block_swarm_fail_piece(&g_block_swarm, piece_index);
-                        printf("Peer %s: block piece %u failed verification\n",
+                        fprintf(stderr, "Peer %s: block piece %u failed verification\n",
                                node->addr_name, piece_index);
                         peer_misbehaving(mp->net_mgr, node, 50,
                                          "bad block piece hash");

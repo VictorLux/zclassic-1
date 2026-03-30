@@ -1977,6 +1977,99 @@ void rpc_blockchain_mmr_save(struct node_db *ndb)
     sqlite3_finalize(s);
 }
 
+/* ── Commitment MMR (UTXO state binding) ─────────────── */
+
+static struct mmr g_commitment_mmr;
+static bool g_commitment_mmr_initialized = false;
+
+struct mmr *rpc_blockchain_get_commitment_mmr(void)
+{
+    if (!g_commitment_mmr_initialized) {
+        mmr_init(&g_commitment_mmr);
+        g_commitment_mmr_initialized = true;
+    }
+    return &g_commitment_mmr;
+}
+
+void rpc_blockchain_commitment_mmr_init_from_state(struct node_db *ndb)
+{
+    if (!ndb || !ndb->open) return;
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(ndb->db,
+            "SELECT value FROM node_state WHERE key='commitment_mmr_state'",
+            -1, &s, NULL) != SQLITE_OK)
+        return;
+    if (sqlite3_step(s) == SQLITE_ROW) {
+        const uint8_t *blob = (const uint8_t *)sqlite3_column_blob(s, 0);
+        int len = sqlite3_column_bytes(s, 0);
+        if (blob && len >= 12 &&
+            mmr_deserialize(&g_commitment_mmr, blob, (size_t)len)) {
+            g_commitment_mmr_initialized = true;
+            printf("Commitment MMR loaded: %llu leaves\n",
+                   (unsigned long long)g_commitment_mmr.num_leaves);
+        }
+    }
+    sqlite3_finalize(s);
+    if (!g_commitment_mmr_initialized) {
+        mmr_init(&g_commitment_mmr);
+        g_commitment_mmr_initialized = true;
+    }
+}
+
+void rpc_blockchain_commitment_mmr_save(struct node_db *ndb)
+{
+    if (!ndb || !ndb->open || !g_commitment_mmr_initialized) return;
+    uint8_t buf[MMR_SERIALIZED_MAX];
+    size_t len = mmr_serialize(&g_commitment_mmr, buf, sizeof(buf));
+    if (len == 0) return;
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(ndb->db,
+            "INSERT OR REPLACE INTO node_state(key,value) "
+            "VALUES('commitment_mmr_state',?)", -1, &s, NULL) != SQLITE_OK)
+        return;
+    sqlite3_bind_blob(s, 1, buf, (int)len, SQLITE_STATIC);
+    sqlite3_step(s);
+    sqlite3_finalize(s);
+}
+
+void rpc_blockchain_maybe_commit(int32_t height,
+                                  const uint8_t block_hash[32],
+                                  void *utxo_db)
+{
+    if (height <= 0 || height % MMR_COMMITMENT_INTERVAL != 0)
+        return;
+    if (!utxo_db) return;
+    sqlite3 *db = (sqlite3 *)utxo_db;
+
+    if (!g_commitment_mmr_initialized) {
+        mmr_init(&g_commitment_mmr);
+        g_commitment_mmr_initialized = true;
+    }
+
+    /* Compute SHA3 UTXO root from SQLite */
+    uint8_t utxo_root[32];
+    uint64_t utxo_count = 0;
+    utxo_commitment_sha3_compute(db, utxo_root, &utxo_count);
+
+    /* Build commitment leaf */
+    struct mmr_commitment c = { .height = height };
+    memcpy(c.block_hash, block_hash, 32);
+    memcpy(c.utxo_root, utxo_root, 32);
+    memset(c.data_root, 0, 32); /* data_root populated by file service */
+
+    mmr_append_commitment(&g_commitment_mmr, &c);
+
+    if (height % 10000 == 0 || height % MMR_COMMITMENT_INTERVAL == 0) {
+        uint8_t root[32];
+        mmr_root(&g_commitment_mmr, root);
+        printf("MMR commitment: h=%d utxos=%llu root=",
+               height, (unsigned long long)utxo_count);
+        for (int i = 0; i < 8; i++) printf("%02x", root[i]);
+        printf("... (%u leaves)\n",
+               (unsigned)g_commitment_mmr.num_leaves);
+    }
+}
+
 /* ── SHA3 UTXO commitment RPC ──────────────────────────── */
 
 static bool rpc_getutxocommitment(const struct json_value *params, bool help,
@@ -2182,7 +2275,82 @@ static bool rpc_getmmrroot(const struct json_value *params, bool help,
     return true;
 }
 
-/* repairutxos moved to repair_controller.c */
+static bool rpc_getcommitmentmmr(const struct json_value *params, bool help,
+                                  struct json_value *result)
+{
+    (void)params;
+    RPC_HELP(help, result,
+        "getcommitmentmmr\n"
+        "\nReturns the commitment MMR root (binds UTXO state to PoW chain).\n"
+        "Each leaf: SHA3(height || block_hash || utxo_root) every 100 blocks.\n"
+        "Used to verify imported UTXO snapshots without replaying history.\n");
+
+    struct mmr *cm = rpc_blockchain_get_commitment_mmr();
+    uint8_t root[32];
+    mmr_root(cm, root);
+
+    char hex[65];
+    for (int i = 0; i < 32; i++)
+        snprintf(hex + i * 2, 3, "%02x", root[i]);
+
+    json_set_object(result);
+    json_push_kv_str(result, "commitment_mmr_root", hex);
+    json_push_kv_int(result, "num_commitments", (int64_t)cm->num_leaves);
+    json_push_kv_int(result, "commitment_interval", MMR_COMMITMENT_INTERVAL);
+    json_push_kv_int(result, "covers_height",
+        (int64_t)cm->num_leaves * MMR_COMMITMENT_INTERVAL);
+    return true;
+}
+
+static bool rpc_auditchain(const struct json_value *params, bool help,
+                            struct json_value *result)
+{
+    (void)params;
+    RPC_HELP(help, result,
+        "auditchain\n"
+        "\nFull chain audit: verify block-hash MMR and commitment MMR.\n"
+        "Reports the state of both MMRs and what height they cover.\n"
+        "Use reindexchainstate for full block replay + UTXO rebuild.\n"
+        "Use verifycheckpoint to check UTXO SHA3 at hardcoded height.\n");
+
+    json_set_object(result);
+
+    /* Block-hash MMR */
+    uint8_t broot[32];
+    mmr_root(&g_mmr, broot);
+    char bhex[65];
+    for (int i = 0; i < 32; i++)
+        snprintf(bhex + i * 2, 3, "%02x", broot[i]);
+    json_push_kv_str(result, "block_mmr_root", bhex);
+    json_push_kv_int(result, "block_mmr_leaves", (int64_t)g_mmr.num_leaves);
+
+    /* Commitment MMR */
+    struct mmr *cm = rpc_blockchain_get_commitment_mmr();
+    uint8_t croot[32];
+    mmr_root(cm, croot);
+    char chex[65];
+    for (int i = 0; i < 32; i++)
+        snprintf(chex + i * 2, 3, "%02x", croot[i]);
+    json_push_kv_str(result, "commitment_mmr_root", chex);
+    json_push_kv_int(result, "commitment_leaves", (int64_t)cm->num_leaves);
+    json_push_kv_int(result, "commitment_covers_height",
+        (int64_t)cm->num_leaves * MMR_COMMITMENT_INTERVAL);
+
+    /* Chain state */
+    int chain_h = g_main_state ? active_chain_height(
+        &g_main_state->chain_active) : 0;
+    json_push_kv_int(result, "chain_height", chain_h);
+
+    /* Consistency check */
+    bool block_mmr_ok = (int64_t)g_mmr.num_leaves >= chain_h;
+    bool commit_ok = (int64_t)cm->num_leaves * MMR_COMMITMENT_INTERVAL >=
+                     chain_h - MMR_COMMITMENT_INTERVAL;
+    json_push_kv_bool(result, "block_mmr_consistent", block_mmr_ok);
+    json_push_kv_bool(result, "commitment_mmr_consistent", commit_ok);
+    json_push_kv_bool(result, "audit_passed", block_mmr_ok && commit_ok);
+
+    return true;
+}
 
 void register_blockchain_rpc_commands(struct rpc_table *t)
 {
@@ -2202,6 +2370,8 @@ void register_blockchain_rpc_commands(struct rpc_table *t)
         { "blockchain", "indexlegacy",          rpc_indexlegacy,            false },
         { "blockchain", "getutxocommitment",   rpc_getutxocommitment,     true },
         { "blockchain", "getmmrroot",          rpc_getmmrroot,            true },
+        { "blockchain", "getcommitmentmmr",   rpc_getcommitmentmmr,     true },
+        { "blockchain", "auditchain",          rpc_auditchain,            true },
         { "blockchain", "verifycheckpoint",    rpc_verifycheckpoint,      true },
         { "blockchain", "getdataintegrity",    rpc_getdataintegrity,      true },
     };

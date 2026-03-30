@@ -58,6 +58,7 @@ int main(void)
     failures += test_policy();
     failures += test_wallet_view();
     failures += test_fast_sync();
+    failures += test_block_scan();
 
     /* Spec-based user story tests */
     failures += spec_wallet_dashboard();

@@ -7,6 +7,7 @@
 #include "storage/block_index_db.h"
 #include "core/hash.h"
 #include "primitives/block.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -174,6 +175,15 @@ bool block_tree_db_load_block_index_guts(struct block_tree_db *btdb,
         stream_init_from_data(&s, (unsigned char *)val_data, val_len);
 
         if (!disk_block_index_deserialize(&dbi, &s)) {
+            /* Log which key failed — helps diagnose corrupt LevelDB */
+            if (key_len >= 33) {
+                char hex[17];
+                for (int hi = 0; hi < 8 && hi + 1 < (int)key_len; hi++)
+                    snprintf(hex + hi*2, 3, "%02x",
+                             (unsigned char)key_data[1 + hi]);
+                fprintf(stderr, "block_index_db: deserialize failed "
+                        "key=%.16s (val_len=%zu)\n", hex, val_len);
+            }
             stream_free(&s);
             db_iter_next(&it);
             continue;

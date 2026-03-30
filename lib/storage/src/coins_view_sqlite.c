@@ -4,6 +4,7 @@
  * Implements coins_view_vtable so coins_view_cache can flush here.
  * No LevelDB needed at runtime — LevelDB is import-only. */
 
+#include <time.h>
 #include "storage/coins_view_sqlite.h"
 #include "coins/coins.h"
 #include "coins/utxo_commitment.h"
@@ -64,7 +65,7 @@ bool coins_view_sqlite_open(struct coins_view_sqlite *cvs, sqlite3 *db)
      * loss (proven at heights 2218, 17418, 20634, 39371).
      * A dedicated connection has independent transaction control. */
     const char *db_path = sqlite3_db_filename(db, "main");
-    if (db_path) {
+    if (db_path && db_path[0] != '\0') {
         int frc = sqlite3_open_v2(db_path, &cvs->db,
                                    SQLITE_OPEN_READWRITE, NULL);
         if (frc == SQLITE_OK && cvs->db) {
@@ -74,7 +75,7 @@ bool coins_view_sqlite_open(struct coins_view_sqlite *cvs, sqlite3 *db)
                          NULL, NULL, NULL);
             sqlite3_exec(cvs->db, "PRAGMA cache_size=-65536",
                          NULL, NULL, NULL);
-            sqlite3_busy_timeout(cvs->db, 5000);
+            sqlite3_busy_timeout(cvs->db, 30000); /* 30s — large block replays */
             cvs->owns_db = true;
             printf("coins_view_sqlite: dedicated connection opened\n");
         } else {
@@ -243,6 +244,8 @@ bool coins_view_sqlite_have_coins(struct coins_view_sqlite *cvs,
 bool coins_view_sqlite_get_best_block(struct coins_view_sqlite *cvs,
                                        struct uint256 *hash)
 {
+    if (!cvs || !cvs->db || !hash) return false;
+    if (!cvs->stmt_best_get) { uint256_set_null(hash); return false; }
     sqlite3_stmt *s = cvs->stmt_best_get;
     sqlite3_reset(s);
     if (sqlite3_step(s) == SQLITE_ROW) {
@@ -265,15 +268,22 @@ bool coins_view_sqlite_batch_write(struct coins_view_sqlite *cvs,
 {
     if (!cvs->db) return false;
 
-    /* Dedicated connection — use plain BEGIN IMMEDIATE / COMMIT.
-     * No SAVEPOINT needed since this handle is independent of node_db. */
+    /* Transaction control: dedicated connection uses BEGIN IMMEDIATE.
+     * Shared handle (in-memory or fallback) uses SAVEPOINT to nest
+     * inside any existing transaction from node_db batch writes. */
+    const char *txn_begin = cvs->owns_db ? "BEGIN IMMEDIATE"
+                                          : "SAVEPOINT coins_flush";
+    const char *txn_commit = cvs->owns_db ? "COMMIT"
+                                           : "RELEASE coins_flush";
+    const char *txn_rollback = cvs->owns_db ? "ROLLBACK"
+                                : "ROLLBACK TO SAVEPOINT coins_flush";
     {
         char *txn_err = NULL;
-        int txn_rc = sqlite3_exec(cvs->db, "BEGIN IMMEDIATE",
+        int txn_rc = sqlite3_exec(cvs->db, txn_begin,
                                    NULL, NULL, &txn_err);
         if (txn_rc != SQLITE_OK) {
-            fprintf(stderr, "coins_flush: BEGIN failed rc=%d: %s\n",
-                    txn_rc, txn_err ? txn_err : "unknown");
+            fprintf(stderr, "coins_flush: %s failed rc=%d: %s\n",
+                    txn_begin, txn_rc, txn_err ? txn_err : "unknown");
             if (txn_err) sqlite3_free(txn_err);
             return false;
         }
@@ -358,7 +368,7 @@ bool coins_view_sqlite_batch_write(struct coins_view_sqlite *cvs,
         fprintf(stderr, "coins_flush: %d write errors! "
                 "Rolling back to prevent UTXO loss\n",
                 write_errors);
-        sqlite3_exec(cvs->db, "ROLLBACK", NULL, NULL, NULL);
+        sqlite3_exec(cvs->db, txn_rollback, NULL, NULL, NULL);
         return false;
     }
 
@@ -371,12 +381,12 @@ bool coins_view_sqlite_batch_write(struct coins_view_sqlite *cvs,
         if (rc != SQLITE_DONE && rc != SQLITE_ROW) {
             fprintf(stderr, "coins_flush: best_block UPDATE failed rc=%d: "
                     "%s\n", rc, sqlite3_errmsg(cvs->db));
-            sqlite3_exec(cvs->db, "ROLLBACK", NULL, NULL, NULL);
+            sqlite3_exec(cvs->db, txn_rollback, NULL, NULL, NULL);
             return false;
         }
     }
 
-    /* Reset all prepared statements before COMMIT. */
+    /* Reset all prepared statements before COMMIT/RELEASE. */
     {
         sqlite3_stmt *stmt = NULL;
         while ((stmt = sqlite3_next_stmt(cvs->db, stmt)) != NULL)
@@ -385,12 +395,12 @@ bool coins_view_sqlite_batch_write(struct coins_view_sqlite *cvs,
 
     {
         char *errmsg = NULL;
-        int rc = sqlite3_exec(cvs->db, "COMMIT", NULL, NULL, &errmsg);
+        int rc = sqlite3_exec(cvs->db, txn_commit, NULL, NULL, &errmsg);
         if (rc != SQLITE_OK) {
-            fprintf(stderr, "coins_flush: COMMIT failed: %s\n",
-                    errmsg ? errmsg : "unknown");
+            fprintf(stderr, "coins_flush: %s failed: %s\n",
+                    txn_commit, errmsg ? errmsg : "unknown");
             if (errmsg) sqlite3_free(errmsg);
-            sqlite3_exec(cvs->db, "ROLLBACK", NULL, NULL, NULL);
+            sqlite3_exec(cvs->db, txn_rollback, NULL, NULL, NULL);
             return false;
         }
     }
@@ -402,6 +412,7 @@ bool coins_view_sqlite_batch_write(struct coins_view_sqlite *cvs,
 bool coins_view_sqlite_write_commitment(struct coins_view_sqlite *cvs,
                                          const struct utxo_commitment *uc)
 {
+    if (!cvs || !cvs->db || !uc || !cvs->stmt_commit_set) return false;
     uint8_t buf[UTXO_COMMITMENT_SERIALIZED_SIZE];
     utxo_commitment_serialize(uc, buf);
 
@@ -414,6 +425,8 @@ bool coins_view_sqlite_write_commitment(struct coins_view_sqlite *cvs,
 bool coins_view_sqlite_read_commitment(struct coins_view_sqlite *cvs,
                                         struct utxo_commitment *uc)
 {
+    if (!cvs || !cvs->db || !uc) { if (uc) utxo_commitment_init(uc); return false; }
+    if (!cvs->stmt_commit_get) { utxo_commitment_init(uc); return false; }
     sqlite3_reset(cvs->stmt_commit_get);
     if (sqlite3_step(cvs->stmt_commit_get) == SQLITE_ROW) {
         int len = sqlite3_column_bytes(cvs->stmt_commit_get, 0);

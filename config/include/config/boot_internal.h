@@ -46,10 +46,12 @@ bool reindex_chainstate(struct main_state *ms,
                           const char *datadir);
 void *backfill_addresses_thread(void *arg);
 
-/* Scan block files (blk*.dat) and mark matching block_index entries
- * as BLOCK_HAVE_DATA. Used after file sync to register downloaded
- * blocks so activate_best_chain reads from disk, not P2P. */
-int scan_block_files_mark_data(struct main_state *ms, const char *datadir);
+/* Scan block files (blk*.dat), parse ZClassic block headers,
+ * create block_index entries for unknown blocks, mark BLOCK_HAVE_DATA,
+ * set nTx, and propagate nChainTx. If params is NULL, only marks
+ * blocks already in the index (no creation). */
+int scan_block_files_mark_data(struct main_state *ms, const char *datadir,
+                                const struct chain_params *params);
 
 /* ── boot_services.c ────────────────────────────────────────── */
 

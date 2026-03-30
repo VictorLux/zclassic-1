@@ -40,6 +40,7 @@ struct file_manifest {
     struct file_chunk chunks[FILE_MAX_CHUNKS];
     uint32_t          num_chunks;
     uint8_t           root_hash[32]; /* SHA3-256 of all chunk hashes */
+    uint8_t           mmr_root[32];  /* MMR root at chain_height (trust anchor) */
     int32_t           chain_height;  /* height when manifest was built */
     uint64_t          total_bytes;   /* total data size */
 };
@@ -63,5 +64,11 @@ void file_controller_init(const char *datadir);
 
 /* Get the cached manifest (built in background). */
 const struct file_manifest *file_controller_get_manifest(void);
+
+/* Export public consensus tables from node.db to consensus_snapshot.db.
+ * SECURITY: excludes wallet_keys, wallet_utxos, wallet_sapling_keys,
+ * wallet_sapling_notes, node_state — only public blockchain data.
+ * Returns true on success. Safe to call from background thread. */
+bool file_export_consensus_snapshot(const char *datadir);
 
 #endif

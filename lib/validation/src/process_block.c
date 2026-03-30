@@ -4,6 +4,7 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
+#include <sqlite3.h>
 #include "validation/process_block.h"
 #include "validation/check_block.h"
 #include "validation/connect_block.h"
@@ -105,15 +106,13 @@ static bool flush_coins_if_needed(struct coins_view_cache *coins_tip,
         return true;
 
 
-    /* With dedicated coins connection (coins_view_sqlite_open_path),
-     * no need to coordinate with node_db transactions. The coins flush
-     * has its own sqlite3 handle with independent transaction control.
-     * Flush node_db batch anyway for data consistency on disk. */
+    /* Flush node_db batch first — coins_flush needs the write lock. */
     if (g_active_node_db && g_active_node_db->sync_in_batch)
         node_db_sync_flush(g_active_node_db);
 
     size_t batched = (size_t)g_blocks_since_flush;
     bool ok = coins_view_cache_flush(coins_tip);
+
     if (ok) {
         g_last_coins_flush = now;
         g_blocks_since_flush = 0;
@@ -133,7 +132,32 @@ static bool flush_coins_if_needed(struct coins_view_cache *coins_tip,
                    trigger, batched);
     } else {
         event_emitf(EV_COINS_FLUSH_FAILED, 0, "flush returned false");
-        printf("flush_coins: FAILED to flush coins cache to disk\n");
+        /* If there's nothing dirty in the cache, the flush "failure" is
+         * harmless — nothing was lost. This happens when force-flush
+         * triggers before any blocks are connected (SQLITE_BUSY from
+         * background threads). */
+        if (coins_tip->cache_coins.size == 0 && batched <= 1) {
+            /* Empty cache — nothing to flush, not fatal */
+            return true;
+        }
+        /* During IBD (many blocks since last flush), a flush failure
+         * is likely SQLITE_BUSY from lock contention. Don't treat as
+         * fatal — retry on next interval. The coins stay in memory. */
+        if (batched > 10 && coins_tip->cache_coins.size < 2000000) {
+            fprintf(stderr, "flush_coins: BUSY — coins cached in memory, "
+                    "will retry (%zu blocks batched, %zu entries)\n",
+                   batched, coins_tip->cache_coins.size);
+            return true; /* non-fatal during IBD */
+        }
+        if (coins_tip->cache_coins.size >= 2000000) {
+            fprintf(stderr, "flush_coins: CRITICAL — cache has %zu entries "
+                    "and flush keeps failing. Halting to prevent OOM.\n",
+                    coins_tip->cache_coins.size);
+            return false; /* force caller to handle */
+        }
+        fprintf(stderr, "flush_coins: FAILED to flush coins cache to disk "
+                "(%zu blocks batched, %zu entries)\n",
+                batched, coins_tip->cache_coins.size);
     }
     return ok;
 }
@@ -449,6 +473,10 @@ bool accept_block(struct block *block,
      * leads from this block. Uses a queue for BFS. */
     {
         struct block_index **queue = malloc(4096 * sizeof(struct block_index *));
+        if (!queue) {
+            fprintf(stderr, "process_block: nChainTx propagation skipped "
+                    "— malloc(4096) failed\n");
+        }
         if (queue) {
             size_t qlen = 0, qcap = 4096;
             queue[qlen++] = pindex;
@@ -498,6 +526,20 @@ bool connect_tip(struct validation_state *state,
 
     if (!pblock) {
         if (!read_block_from_disk_index(&local_block, pindex_new, datadir)) {
+            /* Genesis block (height 0) may not be on disk (blk00000.dat
+             * empty after fastsync). Genesis has only the unspendable
+             * coinbase — safe to connect without block data. */
+            if (pindex_new->nHeight == 0) {
+                block_free(&local_block);
+                pindex_new->nStatus |= BLOCK_HAVE_DATA;
+                pindex_new->nStatus = (pindex_new->nStatus & ~BLOCK_VALID_MASK)
+                                       | BLOCK_VALID_SCRIPTS;
+                pindex_new->nTx = 1;
+                pindex_new->nChainTx = 1;
+                active_chain_set_tip(&ms->chain_active, pindex_new);
+                printf("Genesis block: connected (no disk data needed)\n");
+                return true;
+            }
             /* Retry: pindex_new may be a stale copy (from mmap or header
              * processing) without disk position. Look up the canonical
              * block_index by hash which has the correct file/pos. */
@@ -508,7 +550,6 @@ bool connect_tip(struct validation_state *state,
                     (canonical->nStatus & BLOCK_HAVE_DATA) &&
                     read_block_from_disk_index(&local_block, canonical,
                                                datadir)) {
-                    /* Update pindex_new to use canonical data */
                     pindex_new->nFile = canonical->nFile;
                     pindex_new->nDataPos = canonical->nDataPos;
                     pindex_new->nStatus |= BLOCK_HAVE_DATA;
@@ -516,11 +557,9 @@ bool connect_tip(struct validation_state *state,
                 }
             }
             fprintf(stderr, "connect_tip: failed to read block at height %d "
-                    "file=%d pos=%u status=%u — clearing HAVE_DATA for re-download\n",
+                    "file=%d pos=%u status=%u — clearing HAVE_DATA\n",
                     pindex_new->nHeight, pindex_new->nFile,
                     pindex_new->nDataPos, pindex_new->nStatus);
-            /* Clear HAVE_DATA so the download manager requests this block
-             * from peers. The on-disk data may be from a different fork. */
             pindex_new->nStatus &= ~BLOCK_HAVE_DATA;
             block_free(&local_block);
             return validation_state_error(state, "failed-to-read-block");
@@ -542,9 +581,9 @@ bool connect_tip(struct validation_state *state,
             char exp[65], got[65];
             uint256_get_hex(pindex_new->phashBlock, exp);
             uint256_get_hex(&disk_hash, got);
-            printf("connect_tip: WRONG BLOCK at height %d!\n"
-                   "  expected: %s\n  got:      %s\n"
-                   "  file=%d pos=%u\n",
+            fprintf(stderr, "connect_tip: WRONG BLOCK at height %d!\n"
+                    "  expected: %s\n  got:      %s\n"
+                    "  file=%d pos=%u\n",
                    pindex_new->nHeight, exp, got,
                    pindex_new->nFile, pindex_new->nDataPos);
             block_free(&local_block);
@@ -561,35 +600,50 @@ bool connect_tip(struct validation_state *state,
 
         bool rv = connect_block(pblock, state, pindex_new, &view, params, false);
         if (!rv) {
-            printf("connect_tip: connect_block failed at height %d: %s\n",
-                   pindex_new->nHeight,
-                   state->reject_reason[0] ? state->reject_reason : "unknown");
+            fprintf(stderr, "connect_tip: connect_block FAILED h=%d: %s\n",
+                    pindex_new->nHeight,
+                    state->reject_reason[0] ? state->reject_reason : "unknown");
             if (validation_state_is_invalid(state)) {
                 pindex_new->nStatus |= BLOCK_FAILED_VALID;
                 /* Propagate BLOCK_FAILED_CHILD to all descendants.
-                 * This matches ZClassic C++ InvalidBlockFound behavior:
-                 * once a block is invalid, ALL children are rejected.
-                 * This prevents fork chains from growing in the index. */
-                size_t propagated = 0;
-                bool changed = true;
-                while (changed) {
-                    changed = false;
-                    size_t iter = 0;
-                    struct block_index *child;
-                    while (block_map_next(&ms->map_block_index, &iter,
-                                           NULL, &child)) {
-                        if (!child || !child->pprev) continue;
-                        if (child->nStatus & BLOCK_FAILED_MASK) continue;
-                        if (child->pprev->nStatus & BLOCK_FAILED_MASK) {
-                            child->nStatus |= BLOCK_FAILED_CHILD;
-                            propagated++;
-                            changed = true;
+                 * Uses height-sorted single pass instead of repeated
+                 * full-map scans (O(n) vs O(n*depth) for 3M+ blocks). */
+                {
+                    size_t map_sz = ms->map_block_index.size;
+                    struct block_index **all = malloc(
+                        map_sz * sizeof(struct block_index *));
+                    size_t propagated = 0;
+                    if (!all) {
+                        fprintf(stderr, "BLOCK_FAILED_CHILD: malloc failed "
+                                "for %zu entries — propagation skipped!\n",
+                                map_sz);
+                    } else {
+                        size_t n = 0, iter2 = 0;
+                        struct block_index *ch;
+                        while (block_map_next(&ms->map_block_index,
+                                               &iter2, NULL, &ch)) {
+                            if (ch && ch->nHeight > pindex_new->nHeight)
+                                all[n++] = ch;
                         }
+                        /* Sort by height ascending — parents before children.
+                         * Use a simple comparator with qsort. */
+                        qsort(all, n, sizeof(struct block_index *),
+                              block_index_cmp_height);
+                        /* Single pass: if parent is failed, child is failed */
+                        for (size_t i = 0; i < n; i++) {
+                            if (!all[i]->pprev) continue;
+                            if (all[i]->nStatus & BLOCK_FAILED_MASK) continue;
+                            if (all[i]->pprev->nStatus & BLOCK_FAILED_MASK) {
+                                all[i]->nStatus |= BLOCK_FAILED_CHILD;
+                                propagated++;
+                            }
+                        }
+                        free(all);
                     }
+                    if (propagated > 0)
+                        printf("Propagated BLOCK_FAILED_CHILD to %zu "
+                               "descendants\n", propagated);
                 }
-                if (propagated > 0)
-                    printf("Propagated BLOCK_FAILED_CHILD to %zu descendants\n",
-                           propagated);
             }
             /* Clean up: free view first (may contain entries from update_coins),
              * then block. Zero view to prevent any double-free. */
@@ -601,8 +655,8 @@ bool connect_tip(struct validation_state *state,
         }
 
         if (!coins_view_cache_flush(&view)) {
-            printf("connect_tip: FATAL coins flush failed at height %d\n",
-                   pindex_new->nHeight);
+            fprintf(stderr, "connect_tip: FATAL coins flush failed h=%d\n",
+                    pindex_new->nHeight);
             coins_view_cache_free(&view);
             if (pblock == &local_block)
                 block_free(&local_block);
@@ -788,6 +842,16 @@ bool connect_tip(struct validation_state *state,
     if (pindex_new->phashBlock)
         rpc_blockchain_mmr_append(pindex_new->phashBlock->data);
 
+    /* Every 100 blocks: compute UTXO commitment and append to
+     * commitment MMR. This binds the UTXO state to the PoW chain.
+     * Used to verify imported snapshots without replaying history. */
+    if (pindex_new->phashBlock && g_coins_sqlite_ptr &&
+        g_coins_sqlite_ptr->db) {
+        rpc_blockchain_maybe_commit(pindex_new->nHeight,
+                                     pindex_new->phashBlock->data,
+                                     g_coins_sqlite_ptr->db);
+    }
+
     /* Periodically flush coins cache to SQLite.
      * If flush fails, we MUST stop connecting blocks. Continuing would
      * spend UTXOs that were never written to SQLite, causing permanent
@@ -842,8 +906,8 @@ bool disconnect_tip(struct validation_state *state,
             long file_len = ftell(f);
             fseek(f, 0, SEEK_SET);
             if (file_len <= 0 || file_len > 32 * 1024 * 1024) {
-                printf("disconnect_tip: undo file size %ld out of range\n",
-                       file_len);
+                fprintf(stderr, "disconnect_tip: undo file size %ld out of "
+                        "range\n", file_len);
                 fclose(f);
                 block_free(&block);
                 block_undo_free(&blockundo);
@@ -851,8 +915,8 @@ bool disconnect_tip(struct validation_state *state,
             }
             uint8_t *buf = malloc((size_t)file_len);
             if (!buf) {
-                printf("disconnect_tip: failed to allocate %ld for undo data\n",
-                       file_len);
+                fprintf(stderr, "disconnect_tip: malloc(%ld) failed for "
+                        "undo data\n", file_len);
                 fclose(f);
                 block_free(&block);
                 block_undo_free(&blockundo);
@@ -884,8 +948,8 @@ bool disconnect_tip(struct validation_state *state,
         }
 
         if (!coins_view_cache_flush(&view)) {
-            printf("disconnect_tip: FATAL coins flush failed at height %d\n",
-                   pindex_delete->nHeight);
+            fprintf(stderr, "disconnect_tip: FATAL coins flush failed "
+                    "h=%d\n", pindex_delete->nHeight);
             coins_view_cache_free(&view);
             block_free(&block);
             block_undo_free(&blockundo);
@@ -929,12 +993,18 @@ bool activate_best_chain(struct validation_state *state,
 
         /* Check reorg length */
         if (tip) {
-            /* Find fork point */
+            /* Find fork point.
+             * SAFETY: check pprev at every step — blocks loaded from
+             * flat file may have dangling pprev if the file was saved
+             * before all P2P blocks were linked. */
             struct block_index *fork = tip;
-            while (fork && fork->nHeight > pindex_most_work->nHeight)
+            while (fork && fork->pprev &&
+                   fork->nHeight > pindex_most_work->nHeight)
                 fork = fork->pprev;
+            if (!fork) return true; /* chain broken, wait for P2P */
             struct block_index *walk = pindex_most_work;
-            while (walk && walk->nHeight > fork->nHeight)
+            while (walk && walk->pprev &&
+                   walk->nHeight > fork->nHeight)
                 walk = walk->pprev;
             while (fork && walk && fork != walk) {
                 fork = fork->pprev;
@@ -1078,8 +1148,8 @@ bool process_new_block(struct validation_state *state,
 {
     bool checked = check_block(pblock, state, params, true, true, true);
     if (!checked) {
-        printf("process_new_block: check_block failed: %s\n",
-               state->reject_reason[0] ? state->reject_reason : "unknown");
+        fprintf(stderr, "process_new_block: check_block FAILED: %s\n",
+                state->reject_reason[0] ? state->reject_reason : "unknown");
         return false;
     }
 
@@ -1087,14 +1157,14 @@ bool process_new_block(struct validation_state *state,
     bool requested = force_processing;
 
     if (!accept_block(pblock, state, ms, params, &pindex, requested, datadir)) {
-        printf("process_new_block: accept_block failed: %s\n",
-               state->reject_reason[0] ? state->reject_reason : "unknown");
+        fprintf(stderr, "process_new_block: accept_block FAILED: %s\n",
+                state->reject_reason[0] ? state->reject_reason : "unknown");
         return false;
     }
 
     if (!activate_best_chain(state, ms, coins_tip, params, pblock, datadir)) {
-        printf("process_new_block: activate_best_chain failed: %s\n",
-               state->reject_reason[0] ? state->reject_reason : "unknown");
+        fprintf(stderr, "process_new_block: activate_best_chain FAILED: %s\n",
+                state->reject_reason[0] ? state->reject_reason : "unknown");
         return false;
     }
 

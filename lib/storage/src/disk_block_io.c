@@ -10,6 +10,7 @@
 #include <errno.h>
 #include <stdint.h>
 #include <string.h>
+#include <unistd.h>
 #include <sys/stat.h>
 
 void get_block_pos_filename(char *buf, size_t buflen,
@@ -48,11 +49,16 @@ FILE *open_disk_file(const char *datadir,
     FILE *file = fopen(path, "rb+");
     if (!file && !read_only)
         file = fopen(path, "wb+");
-    if (!file)
+    if (!file) {
+        fprintf(stderr, "open_disk_file: cannot open %s: %s\n",
+                path, strerror(errno));
         return NULL;
+    }
 
     if (pos->nPos) {
         if (fseek(file, (long)pos->nPos, SEEK_SET)) {
+            fprintf(stderr, "open_disk_file: fseek to %u failed in %s: %s\n",
+                    pos->nPos, path, strerror(errno));
             fclose(file);
             return NULL;
         }
@@ -98,13 +104,26 @@ bool write_block_to_disk(struct block *b, struct disk_block_pos *pos,
         fclose(file);
         return false;
     }
-    pos->nPos = (unsigned int)data_pos;
 
     if (fwrite(s.data, 1, s.size, file) != s.size) {
         stream_free(&s);
         fclose(file);
         return false;
     }
+
+    /* Flush to disk before reporting success — prevents silent data loss
+     * on power failure. fdatasync skips metadata update (faster). */
+    if (fflush(file) != 0 || fdatasync(fileno(file)) != 0) {
+        fprintf(stderr, "write_block_to_disk: fdatasync failed: %s\n",
+                strerror(errno));
+        stream_free(&s);
+        fclose(file);
+        return false;
+    }
+
+    /* Only record position AFTER data is confirmed on disk.
+     * If we crash before this, caller retries from scratch — safe. */
+    pos->nPos = (unsigned int)data_pos;
 
     stream_free(&s);
     fclose(file);
@@ -140,6 +159,7 @@ bool read_block_from_disk(struct block *b, const struct disk_block_pos *pos,
 
     unsigned char *buf = malloc(bufsize);
     if (!buf) {
+        fprintf(stderr, "read_block_from_disk: malloc(%zu) failed\n", bufsize);
         fclose(file);
         return false;
     }
@@ -148,6 +168,8 @@ bool read_block_from_disk(struct block *b, const struct disk_block_pos *pos,
     fclose(file);
 
     if (nread == 0) {
+        fprintf(stderr, "read_block_from_disk: 0 bytes read (file=%d pos=%u "
+                "bufsize=%zu)\n", pos->nFile, pos->nPos, bufsize);
         free(buf);
         return false;
     }
@@ -173,10 +195,9 @@ bool read_block_from_disk_index(struct block *b,
     }
 
     if (!read_block_from_disk(b, &pos, datadir)) {
-        printf("read_block_fail: h=%d file=%d pos=%u status=0x%x have_data=%d\n",
-               pindex->nHeight, pos.nFile, pos.nPos,
-               pindex->nStatus, !!(pindex->nStatus & BLOCK_HAVE_DATA));
-        fflush(stdout);
+        fprintf(stderr, "read_block_fail: h=%d file=%d pos=%u status=0x%x "
+                "have_data=%d\n", pindex->nHeight, pos.nFile, pos.nPos,
+                pindex->nStatus, !!(pindex->nStatus & BLOCK_HAVE_DATA));
         return false;
     }
 
@@ -192,8 +213,8 @@ bool read_block_from_disk_index(struct block *b,
             char got[65], want[65];
             uint256_get_hex(&block_hash, got);
             uint256_get_hex(pindex->phashBlock, want);
-            printf("read_block_hash_repair: h=%d disk=%.16s index=%.16s — using disk\n",
-                   pindex->nHeight, got, want);
+            fprintf(stderr, "read_block_hash_repair: h=%d disk=%.16s index=%.16s "
+                    "— using disk\n", pindex->nHeight, got, want);
             /* Update the block_index to use the disk block's hash.
              * This is safe because the block has valid proof-of-work. */
             struct block_index *mut = (struct block_index *)pindex;
@@ -204,9 +225,8 @@ bool read_block_from_disk_index(struct block *b,
         char got[65], want[65];
         uint256_get_hex(&block_hash, got);
         uint256_get_hex(pindex->phashBlock, want);
-        printf("read_block_hash_mismatch: h=%d got=%.16s want=%.16s\n",
-               pindex->nHeight, got, want);
-        fflush(stdout);
+        fprintf(stderr, "read_block_hash_mismatch: h=%d got=%.16s want=%.16s\n",
+                pindex->nHeight, got, want);
         block_free(b);
         return false;
     }

@@ -28,4 +28,19 @@ void rpc_blockchain_mmr_catchup(struct main_state *ms);
 void rpc_blockchain_mmr_save(struct node_db *ndb);
 struct mmr *rpc_blockchain_get_mmr(void);
 
+/* Commitment MMR — binds UTXO state to PoW chain every 100 blocks.
+ * Each leaf: SHA3(height || block_hash || utxo_root).
+ * Used to verify imported UTXO snapshots without replaying history. */
+struct mmr *rpc_blockchain_get_commitment_mmr(void);
+void rpc_blockchain_commitment_mmr_init_from_state(struct node_db *ndb);
+void rpc_blockchain_commitment_mmr_save(struct node_db *ndb);
+
+/* Append commitment at current height if it's a commitment interval.
+ * Called from connect_block after UTXO set is updated.
+ * Computes SHA3 UTXO root and appends to commitment MMR. */
+/* utxo_db is a sqlite3* handle — passed as void* to avoid sqlite3.h dep */
+void rpc_blockchain_maybe_commit(int32_t height,
+                                  const uint8_t block_hash[32],
+                                  void *utxo_db);
+
 #endif

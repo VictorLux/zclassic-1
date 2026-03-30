@@ -125,6 +125,9 @@ zclassic-cli: cli.c $(CLI_SRCS)
 wallet-wireframes: $(TMPL_GEN) tools/wallet_wireframes.c $(ALL_SRCS)
 	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o $@ $(filter-out $(TMPL_GEN),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)
 
+speedrun: $(TMPL_GEN) tools/speedrun.c $(ALL_SRCS)
+	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o $@ tools/speedrun.c $(ALL_SRCS) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)
+
 zcl-rpc: tools/zcl-rpc.c
 	$(CC) -std=c23 -O2 -Wall -o $@ $<
 

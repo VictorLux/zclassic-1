@@ -266,13 +266,25 @@ bool fast_sync_apply_chunk(const char *datadir,
     if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READWRITE, NULL) != SQLITE_OK)
         return false;
 
-    sqlite3_exec(db, "BEGIN", NULL, NULL, NULL);
+    if (sqlite3_exec(db, "BEGIN", NULL, NULL, NULL) != SQLITE_OK) {
+        fprintf(stderr, "fast_sync_apply_chunk: BEGIN failed: %s\n",
+                sqlite3_errmsg(db));
+        sqlite3_close(db);
+        return false;
+    }
 
     sqlite3_stmt *ins = NULL;
-    sqlite3_prepare_v2(db,
+    if (sqlite3_prepare_v2(db,
         "INSERT OR REPLACE INTO utxos (txid,vout,value,script,script_type,height) "
-        "VALUES (?,?,?,?,0,?)", -1, &ins, NULL);
+        "VALUES (?,?,?,?,0,?)", -1, &ins, NULL) != SQLITE_OK) {
+        fprintf(stderr, "fast_sync_apply_chunk: prepare failed: %s\n",
+                sqlite3_errmsg(db));
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        sqlite3_close(db);
+        return false;
+    }
 
+    bool insert_ok = true;
     for (uint32_t i = 0; i < chunk->num_entries; i++) {
         sqlite3_reset(ins);
         sqlite3_bind_blob(ins, 1, chunk->entries[i].txid, 32, SQLITE_STATIC);
@@ -281,10 +293,30 @@ bool fast_sync_apply_chunk(const char *datadir,
         sqlite3_bind_blob(ins, 4, chunk->entries[i].script,
                            chunk->entries[i].script_len, SQLITE_STATIC);
         sqlite3_bind_int(ins, 5, chunk->entries[i].height);
-        sqlite3_step(ins);
+        int rc = sqlite3_step(ins);
+        if (rc != SQLITE_DONE && rc != SQLITE_ROW) {
+            fprintf(stderr, "fast_sync_apply_chunk: insert %u/%u failed: %s\n",
+                    i, chunk->num_entries, sqlite3_errmsg(db));
+            insert_ok = false;
+            break;
+        }
     }
     sqlite3_finalize(ins);
-    sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
+
+    if (!insert_ok) {
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        sqlite3_close(db);
+        return false;
+    }
+
+    if (sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK) {
+        fprintf(stderr, "fast_sync_apply_chunk: COMMIT failed: %s\n",
+                sqlite3_errmsg(db));
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        sqlite3_close(db);
+        return false;
+    }
+
     sqlite3_close(db);
     return true;
 }
@@ -660,8 +692,10 @@ bool swarm_sync_init(struct swarm_sync *ss, const struct sync_manifest *manifest
     ss->chunk_states = calloc(n, sizeof(enum chunk_state));
     ss->chunk_peer = calloc(n, sizeof(int));
     ss->chunk_request_time = calloc(n, sizeof(int64_t));
+    ss->chunk_retries = calloc(n, sizeof(int));
 
-    if (!ss->chunk_states || !ss->chunk_peer || !ss->chunk_request_time) {
+    if (!ss->chunk_states || !ss->chunk_peer || !ss->chunk_request_time
+        || !ss->chunk_retries) {
         swarm_sync_free(ss);
         return false;
     }
@@ -685,6 +719,8 @@ void swarm_sync_free(struct swarm_sync *ss)
     ss->chunk_peer = NULL;
     free(ss->chunk_request_time);
     ss->chunk_request_time = NULL;
+    free(ss->chunk_retries);
+    ss->chunk_retries = NULL;
 }
 
 int32_t swarm_sync_assign_chunk(struct swarm_sync *ss, int peer_id)
@@ -715,11 +751,22 @@ bool swarm_sync_receive_chunk(struct swarm_sync *ss,
     /* Verify chunk hash against manifest */
     if (ss->manifest.chunk_hashes) {
         if (!fast_sync_verify_chunk(chunk, ss->manifest.chunk_hashes[idx])) {
-            ss->chunk_states[idx] = CHUNK_FAILED;
+            ss->chunk_retries[idx]++;
+            fprintf(stderr, "fast_sync: chunk %u hash mismatch from peer %d "
+                    "(retry %d/5)\n", idx, ss->chunk_peer[idx],
+                    ss->chunk_retries[idx]);
+            /* Reset to NEEDED so another peer can retry — unless max retries */
+            if (ss->chunk_retries[idx] >= 5) {
+                fprintf(stderr, "fast_sync: chunk %u FAILED after 5 retries\n",
+                        idx);
+                ss->chunk_states[idx] = CHUNK_FAILED;
+                ss->chunks_failed++;
+            } else {
+                ss->chunk_states[idx] = CHUNK_NEEDED;
+            }
             ss->chunk_peer[idx] = -1;
             if (ss->chunks_inflight > 0)
                 ss->chunks_inflight--;
-            ss->chunks_failed++;
             return false;
         }
     }
@@ -727,11 +774,18 @@ bool swarm_sync_receive_chunk(struct swarm_sync *ss,
     /* Apply chunk to database */
     if (ss->datadir) {
         if (!fast_sync_apply_chunk(ss->datadir, chunk)) {
-            ss->chunk_states[idx] = CHUNK_FAILED;
+            ss->chunk_retries[idx]++;
+            fprintf(stderr, "fast_sync: chunk %u apply failed (retry %d/5)\n",
+                    idx, ss->chunk_retries[idx]);
+            if (ss->chunk_retries[idx] >= 5) {
+                ss->chunk_states[idx] = CHUNK_FAILED;
+                ss->chunks_failed++;
+            } else {
+                ss->chunk_states[idx] = CHUNK_NEEDED;
+            }
             ss->chunk_peer[idx] = -1;
             if (ss->chunks_inflight > 0)
                 ss->chunks_inflight--;
-            ss->chunks_failed++;
             return false;
         }
     }

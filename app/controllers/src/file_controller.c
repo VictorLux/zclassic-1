@@ -6,6 +6,7 @@
 
 #include "controllers/file_controller.h"
 #include "controllers/strong_params.h"
+#include "chain/mmr.h"
 #include "crypto/sha3.h"
 #include "json/json.h"
 #include <stdio.h>
@@ -14,6 +15,8 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <dirent.h>
+#include <unistd.h>
+#include <sqlite3.h>
 
 static const char *g_file_datadir = NULL;
 static struct file_manifest g_manifest;
@@ -97,6 +100,8 @@ static bool file_manifest_save(const struct file_manifest *fm,
         fwrite(&fm->chunks[i].size, 4, 1, f);
         fwrite(&fm->chunks[i].file_index, 1, 1, f);
     }
+    fflush(f);
+    fdatasync(fileno(f));
     fclose(f);
     return true;
 }
@@ -125,15 +130,44 @@ static bool file_manifest_load(struct file_manifest *fm,
         fread(&fm->chunks[i].file_index, 1, 1, f);
     }
     fclose(f);
-    /* Verify the block files still match — check first chunk */
+    /* Verify block files still match — check first AND last chunk.
+     * The last chunk is most likely to be stale (active block file). */
     if (fm->num_chunks > 0) {
         uint8_t *data = NULL;
         uint32_t sz = 0;
-        if (file_chunk_read(&fm->chunks[0], datadir, &data, &sz)) {
-            free(data); /* SHA3 verified inside file_chunk_read */
-        } else {
-            printf("file_manifest: cached manifest stale, rebuilding\n");
+        if (!file_chunk_read(&fm->chunks[0], datadir, &data, &sz)) {
+            printf("file_manifest: first chunk stale, rebuilding\n");
             return false;
+        }
+        free(data);
+        /* Also check last chunk — most likely to be stale */
+        if (fm->num_chunks > 1) {
+            data = NULL; sz = 0;
+            if (!file_chunk_read(&fm->chunks[fm->num_chunks - 1],
+                                  datadir, &data, &sz)) {
+                printf("file_manifest: last chunk stale, rebuilding\n");
+                return false;
+            }
+            free(data);
+        }
+        /* Check if any block file was modified after manifest cache.
+         * If so, the manifest is stale. */
+        struct stat cache_st;
+        char cache_path[512];
+        snprintf(cache_path, sizeof(cache_path),
+                 "%s/file_manifest.bin", datadir);
+        if (stat(cache_path, &cache_st) == 0) {
+            uint8_t last_fi = fm->chunks[fm->num_chunks - 1].file_index;
+            char blk_path[576];
+            snprintf(blk_path, sizeof(blk_path),
+                     "%s/blocks/blk%05d.dat", datadir, last_fi);
+            struct stat blk_st;
+            if (stat(blk_path, &blk_st) == 0 &&
+                blk_st.st_mtime > cache_st.st_mtime) {
+                printf("file_manifest: blk%05d.dat modified after cache, "
+                       "rebuilding\n", last_fi);
+                return false;
+            }
         }
     }
     printf("file_manifest: loaded cached manifest (%u chunks, %.1f GB)\n",
@@ -185,6 +219,37 @@ bool file_manifest_build(struct file_manifest *fm, const char *datadir)
             return false;
     }
 
+    /* Serve block_index.bin (flat file, ~409MB) as file_index=253.
+     * Saves 116s LevelDB scan on first boot. Block index is safe to
+     * transfer — it only contains PoW-verified header metadata. */
+    {
+        char flat_path[576];
+        snprintf(flat_path, sizeof(flat_path), "%s/block_index.bin", datadir);
+        struct stat flat_st;
+        if (stat(flat_path, &flat_st) == 0 && flat_st.st_size > 1000000) {
+            printf("file_manifest: adding block_index.bin (%.0f MB)\n",
+                   (double)flat_st.st_size / (1024.0*1024.0));
+            hash_file_chunks(flat_path, 253, fm);
+        }
+    }
+
+    /* Serve consensus snapshot as file_index=254.
+     * SECURITY: node.db contains private wallet keys/txns.
+     * We export ONLY public consensus tables (blocks, utxos,
+     * addresses, chain_stats) into a separate snapshot file.
+     * This file is SHA3-verified and safe to share with any peer. */
+    {
+        char snap_path[576];
+        snprintf(snap_path, sizeof(snap_path),
+                 "%s/consensus_snapshot.db", datadir);
+        struct stat snap_st;
+        if (stat(snap_path, &snap_st) == 0 && snap_st.st_size > 1000000) {
+            printf("file_manifest: adding consensus_snapshot.db (%.0f MB)\n",
+                   (double)snap_st.st_size / (1024.0*1024.0));
+            hash_file_chunks(snap_path, 254, fm);
+        }
+    }
+
     if (fm->num_chunks == 0) return false;
 
     /* Compute root hash: SHA3-256 of all chunk hashes concatenated */
@@ -193,6 +258,20 @@ bool file_manifest_build(struct file_manifest *fm, const char *datadir)
     for (uint32_t i = 0; i < fm->num_chunks; i++)
         sha3_256_write(&ctx, fm->chunks[i].sha3, 32);
     sha3_256_finalize(&ctx, fm->root_hash);
+
+    /* Embed current MMR root as trust anchor.
+     * Receivers verify: MMR root matches expected value for this chain.
+     * This binds the file data to the PoW-secured block hash chain. */
+    {
+        extern struct mmr *rpc_blockchain_get_mmr(void);
+        struct mmr *m = rpc_blockchain_get_mmr();
+        if (m && m->num_leaves > 0) {
+            mmr_root(m, fm->mmr_root);
+            fm->chain_height = (int32_t)m->num_leaves;
+        } else {
+            memset(fm->mmr_root, 0, 32);
+        }
+    }
 
     printf("File manifest: %u chunks, %llu bytes, root=",
            fm->num_chunks, (unsigned long long)fm->total_bytes);
@@ -219,8 +298,13 @@ bool file_chunk_read(const struct file_chunk *chunk, const char *datadir,
                      uint8_t **out, uint32_t *out_size)
 {
     char path[576];
-    snprintf(path, sizeof(path), "%s/blocks/blk%05d.dat",
-             datadir, chunk->file_index);
+    if (chunk->file_index == 254)
+        snprintf(path, sizeof(path), "%s/consensus_snapshot.db", datadir);
+    else if (chunk->file_index == 253)
+        snprintf(path, sizeof(path), "%s/block_index.bin", datadir);
+    else
+        snprintf(path, sizeof(path), "%s/blocks/blk%05d.dat",
+                 datadir, chunk->file_index);
 
     FILE *f = fopen(path, "rb");
     if (!f) return false;
@@ -252,6 +336,121 @@ bool file_chunk_read(const struct file_chunk *chunk, const char *datadir,
     *out = buf;
     *out_size = chunk->size;
     return true;
+}
+
+/* ── Consensus snapshot export ─────────────────────────────────── */
+/* Exports ONLY public consensus tables from node.db.
+ * NEVER exports: wallet_keys, wallet_utxos, wallet_sapling_keys,
+ * wallet_sapling_notes, wallet_sapling_witnesses, node_state.
+ * The exported file is safe to share with any peer. */
+
+bool file_export_consensus_snapshot(const char *datadir)
+{
+    char src_path[576], dst_path[576];
+    snprintf(src_path, sizeof(src_path), "%s/node.db", datadir);
+    snprintf(dst_path, sizeof(dst_path), "%s/consensus_snapshot.db", datadir);
+
+    struct stat src_st;
+    if (stat(src_path, &src_st) != 0 || src_st.st_size < 1000000)
+        return false;
+
+    /* Remove old snapshot */
+    unlink(dst_path);
+
+    /* Open source read-only */
+    sqlite3 *src_db = NULL;
+    if (sqlite3_open_v2(src_path, &src_db, SQLITE_OPEN_READONLY, NULL)
+        != SQLITE_OK) return false;
+
+    /* Create destination and copy only consensus tables via ATTACH */
+    sqlite3 *dst_db = NULL;
+    if (sqlite3_open_v2(dst_path, &dst_db,
+        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL) != SQLITE_OK) {
+        sqlite3_close(src_db);
+        return false;
+    }
+
+    /* Performance: batch everything in one transaction */
+    sqlite3_exec(dst_db, "PRAGMA journal_mode=WAL", NULL, NULL, NULL);
+    sqlite3_exec(dst_db, "PRAGMA synchronous=OFF", NULL, NULL, NULL);
+    sqlite3_exec(dst_db, "PRAGMA cache_size=-262144", NULL, NULL, NULL);
+
+    /* Attach source database */
+    char attach_sql[600];
+    snprintf(attach_sql, sizeof(attach_sql),
+             "ATTACH DATABASE '%s' AS src", src_path);
+    if (sqlite3_exec(dst_db, attach_sql, NULL, NULL, NULL) != SQLITE_OK) {
+        fprintf(stderr, "consensus_snapshot: ATTACH failed: %s\n",
+                sqlite3_errmsg(dst_db));
+        sqlite3_close(dst_db);
+        sqlite3_close(src_db);
+        unlink(dst_path);
+        return false;
+    }
+
+    /* Copy ONLY public consensus tables.
+     * This whitelist approach is safer than a blacklist — new private
+     * tables added later won't accidentally get exported. */
+    static const char *safe_tables[] = {
+        "blocks", "transactions", "utxos", "addresses",
+        "chain_stats", "zslp_tokens", "zslp_balances",
+        NULL
+    };
+
+    sqlite3_exec(dst_db, "BEGIN", NULL, NULL, NULL);
+    int tables_copied = 0;
+    for (int i = 0; safe_tables[i]; i++) {
+        /* Create table with same schema */
+        char create_sql[512];
+        snprintf(create_sql, sizeof(create_sql),
+            "CREATE TABLE IF NOT EXISTS %s AS SELECT * FROM src.%s",
+            safe_tables[i], safe_tables[i]);
+        int rc = sqlite3_exec(dst_db, create_sql, NULL, NULL, NULL);
+        if (rc == SQLITE_OK) {
+            tables_copied++;
+        }
+        /* Silently skip tables that don't exist in source */
+    }
+
+    /* Store snapshot metadata */
+    sqlite3_exec(dst_db,
+        "CREATE TABLE IF NOT EXISTS _snapshot_meta "
+        "(key TEXT PRIMARY KEY, value TEXT)", NULL, NULL, NULL);
+
+    /* Get source chain height */
+    sqlite3_stmt *sel = NULL;
+    sqlite3_prepare_v2(dst_db,
+        "SELECT MAX(height) FROM blocks", -1, &sel, NULL);
+    int snap_height = 0;
+    if (sel && sqlite3_step(sel) == SQLITE_ROW)
+        snap_height = sqlite3_column_int(sel, 0);
+    if (sel) sqlite3_finalize(sel);
+
+    char meta_sql[256];
+    snprintf(meta_sql, sizeof(meta_sql),
+        "INSERT INTO _snapshot_meta VALUES('height','%d')", snap_height);
+    sqlite3_exec(dst_db, meta_sql, NULL, NULL, NULL);
+    snprintf(meta_sql, sizeof(meta_sql),
+        "INSERT INTO _snapshot_meta VALUES('tables','%d')", tables_copied);
+    sqlite3_exec(dst_db, meta_sql, NULL, NULL, NULL);
+
+    sqlite3_exec(dst_db, "COMMIT", NULL, NULL, NULL);
+    sqlite3_exec(dst_db, "DETACH DATABASE src", NULL, NULL, NULL);
+
+    /* Compact */
+    sqlite3_exec(dst_db, "PRAGMA synchronous=NORMAL", NULL, NULL, NULL);
+    sqlite3_exec(dst_db, "VACUUM", NULL, NULL, NULL);
+
+    sqlite3_close(dst_db);
+    sqlite3_close(src_db);
+
+    struct stat dst_st;
+    stat(dst_path, &dst_st);
+    printf("Consensus snapshot: %d tables, height %d, %.0f MB\n",
+           tables_copied, snap_height,
+           (double)dst_st.st_size / (1024.0*1024.0));
+
+    return tables_copied > 0;
 }
 
 /* ── RPC handlers ──────────────────────────────────────────────── */

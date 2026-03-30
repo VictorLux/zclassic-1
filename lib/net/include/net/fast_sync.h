@@ -213,6 +213,7 @@ struct swarm_sync {
     enum chunk_state *chunk_states;    /* array[num_chunks] */
     int *chunk_peer;                   /* which peer has each inflight chunk */
     int64_t *chunk_request_time;       /* when each chunk was requested (ms) */
+    int *chunk_retries;                /* retry count per chunk (max 5) */
     uint32_t chunks_complete;
     uint32_t chunks_inflight;
     uint32_t chunks_failed;

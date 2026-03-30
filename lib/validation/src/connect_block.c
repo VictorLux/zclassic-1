@@ -4,6 +4,7 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
+#include <stdio.h>
 #include "validation/connect_block.h"
 #include "validation/check_block.h"
 #include "validation/check_transaction.h"
@@ -92,6 +93,8 @@ bool connect_block(const struct block *block,
     block_undo_init(&blockundo);
     if (block->num_vtx > 1) {
         if (!block_undo_alloc(&blockundo, block->num_vtx - 1)) {
+            fprintf(stderr, "connect_block: block_undo_alloc failed h=%d "
+                    "ntx=%zu\n", pindex->nHeight, block->num_vtx);
             block_undo_free(&blockundo);
             return false;
         }
@@ -257,31 +260,45 @@ bool disconnect_block(const struct block *block,
 {
     (void)state;
 
-    if (blockundo->num_txundo != block->num_vtx - 1)
+    if (blockundo->num_txundo != block->num_vtx - 1) {
+        fprintf(stderr, "disconnect_block: undo size mismatch "
+                "(undo=%zu vtx=%zu)\n",
+                blockundo->num_txundo, block->num_vtx);
         return false;
+    }
 
     for (size_t i = block->num_vtx; i-- > 0; ) {
         const struct transaction *tx = &block->vtx[i];
 
         if (i > 0) {
             const struct tx_undo *txundo = &blockundo->vtxundo[i - 1];
-            if (txundo->num_prevout != tx->num_vin)
+            if (txundo->num_prevout != tx->num_vin) {
+                fprintf(stderr, "disconnect_block: txundo prevout mismatch "
+                        "tx=%zu (prevout=%zu vin=%zu)\n",
+                        i, txundo->num_prevout, tx->num_vin);
                 return false;
+            }
 
             for (size_t j = tx->num_vin; j-- > 0; ) {
                 const struct tx_in_undo *undo = &txundo->vprevout[j];
                 struct coins_cache_entry *entry =
                     coins_view_cache_modify(view, &tx->vin[j].prevout.hash);
-                if (!entry)
+                if (!entry) {
+                    fprintf(stderr, "disconnect_block: coins_modify failed "
+                            "tx=%zu vin=%zu\n", i, j);
                     return false;
+                }
 
                 if (tx->vin[j].prevout.n >= entry->coins.num_vout) {
                     size_t new_size = tx->vin[j].prevout.n + 1;
                     struct tx_out *new_vout =
                         realloc(entry->coins.vout,
                                 new_size * sizeof(struct tx_out));
-                    if (!new_vout)
+                    if (!new_vout) {
+                        fprintf(stderr, "disconnect_block: realloc failed "
+                                "tx=%zu vin=%zu new_size=%zu\n", i, j, new_size);
                         return false;
+                    }
                     for (size_t k = entry->coins.num_vout; k < new_size; k++)
                         tx_out_set_null(&new_vout[k]);
                     entry->coins.vout = new_vout;

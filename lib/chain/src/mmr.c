@@ -204,6 +204,48 @@ bool mmr_prove_from_leaves(const uint8_t (*all_leaves)[32],
     return true;
 }
 
+/* ── Unified commitment leaf ──────────────────────────── */
+
+void mmr_hash_commitment(const struct mmr_commitment *c, uint8_t out[32])
+{
+    struct sha3_256_ctx ctx;
+    sha3_256_init(&ctx);
+    uint8_t tag = MMR_TAG_LEAF;
+    sha3_256_write(&ctx, &tag, 1);
+    sha3_256_write(&ctx, (const uint8_t *)&c->height, 4);
+    sha3_256_write(&ctx, c->block_hash, 32);
+    sha3_256_write(&ctx, c->utxo_root, 32);
+    sha3_256_write(&ctx, c->data_root, 32);
+    sha3_256_finalize(&ctx, out);
+}
+
+int mmr_append_commitment(struct mmr *m, const struct mmr_commitment *c)
+{
+    uint8_t leaf[32];
+    mmr_hash_commitment(c, leaf);
+
+    /* Same append logic but skip mmr_hash_leaf — we already hashed */
+    uint8_t h[32];
+    memcpy(h, leaf, 32);
+
+    int merges = 0;
+    uint64_t n = m->num_leaves + 1;
+    while (n % 2 == 0 && m->num_peaks > 0) {
+        uint8_t parent[32];
+        mmr_hash_internal(m->peaks[m->num_peaks - 1], h, parent);
+        memcpy(h, parent, 32);
+        m->num_peaks--;
+        n /= 2;
+        merges++;
+    }
+
+    memcpy(m->peaks[m->num_peaks], h, 32);
+    m->num_peaks++;
+    m->num_leaves++;
+
+    return merges;
+}
+
 /* ── Proof verification ────────────────────────────────── */
 
 bool mmr_verify(const struct mmr_proof *proof,
