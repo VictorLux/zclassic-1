@@ -1,4 +1,11 @@
-/* Copyright 2026 Rhett Creighton - Apache License 2.0 */
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * ActiveRecord model: Transaction (tx_index)
+ *
+ * validates :txid, :block_hash, presence: true
+ * validates :block_height, :tx_index, :file_num, :file_pos, numericality: { >= 0 }
+ *
+ * belongs_to :block */
 
 #include "models/tx_index.h"
 #include "models/block.h"
@@ -6,17 +13,7 @@
 
 /* ── Callbacks ─────────────────────────────────────────────────── */
 
-static struct ar_callbacks tx_cbs;
-static bool tx_cbs_init = false;
-
-struct ar_callbacks *db_tx_callbacks(void)
-{
-    if (!tx_cbs_init) {
-        ar_callbacks_init(&tx_cbs);
-        tx_cbs_init = true;
-    }
-    return &tx_cbs;
-}
+DEFINE_MODEL_CALLBACKS(tx)
 
 /* ── Validation ────────────────────────────────────────────────── */
 
@@ -32,32 +29,37 @@ bool db_tx_validate(const struct db_tx_index *t, struct ar_errors *errors)
     return !ar_errors_any(errors);
 }
 
-/* ── CRUD ──────────────────────────────────────────────────────── */
+/* ── Save ──────────────────────────────────────────────────────── */
 
 bool db_tx_save(struct node_db *ndb, const struct db_tx_index *t)
 {
     if (!ndb->open) return false;
 
     struct ar_errors errors;
-    if (!db_tx_validate(t, &errors)) return false;
+    if (!db_tx_validate(t, &errors)) {
+        AR_LOG_VALIDATION_FAILURE("tx_index", &errors);
+        return false;
+    }
 
     struct ar_callbacks *cbs = db_tx_callbacks();
     if (!ar_run_before_save(cbs, (void *)t)) return false;
 
     sqlite3_stmt *s = ndb->stmt_tx_insert;
     sqlite3_reset(s);
-    sqlite3_bind_blob(s, 1, t->txid, 32, SQLITE_STATIC);
-    sqlite3_bind_blob(s, 2, t->block_hash, 32, SQLITE_STATIC);
-    sqlite3_bind_int(s, 3, t->block_height);
-    sqlite3_bind_int(s, 4, t->tx_index);
-    sqlite3_bind_int(s, 5, t->file_num);
-    sqlite3_bind_int(s, 6, t->file_pos);
-    sqlite3_bind_int(s, 7, t->is_coinbase ? 1 : 0);
+    AR_BIND_BLOB(s, 1, t->txid, 32);
+    AR_BIND_BLOB(s, 2, t->block_hash, 32);
+    AR_BIND_INT(s, 3, t->block_height);
+    AR_BIND_INT(s, 4, t->tx_index);
+    AR_BIND_INT(s, 5, t->file_num);
+    AR_BIND_INT(s, 6, t->file_pos);
+    AR_BIND_INT(s, 7, t->is_coinbase ? 1 : 0);
 
-    bool ok = sqlite3_step(s) == SQLITE_DONE;
+    bool ok = AR_STEP_DONE(s);
     if (ok) ar_run_after_save(cbs, (void *)t);
     return ok;
 }
+
+/* ── Find ──────────────────────────────────────────────────────── */
 
 bool db_tx_find(struct node_db *ndb, const uint8_t txid[32],
                 struct db_tx_index *out)
@@ -65,19 +67,20 @@ bool db_tx_find(struct node_db *ndb, const uint8_t txid[32],
     if (!ndb->open) return false;
     sqlite3_stmt *s = ndb->stmt_tx_find;
     sqlite3_reset(s);
-    sqlite3_bind_blob(s, 1, txid, 32, SQLITE_STATIC);
-    if (sqlite3_step(s) != SQLITE_ROW) return false;
+    AR_BIND_BLOB(s, 1, txid, 32);
+    if (!AR_STEP_ROW(s)) return false;
     memset(out, 0, sizeof(*out));
     memcpy(out->txid, txid, 32);
-    const void *bh = sqlite3_column_blob(s, 0);
-    if (bh) memcpy(out->block_hash, bh, 32);
-    out->block_height = sqlite3_column_int(s, 1);
-    out->tx_index = sqlite3_column_int(s, 2);
-    out->file_num = sqlite3_column_int(s, 3);
-    out->file_pos = sqlite3_column_int(s, 4);
-    out->is_coinbase = sqlite3_column_int(s, 5) != 0;
+    AR_READ_BLOB(s, 0, out->block_hash, 32);
+    out->block_height = (int)AR_COL_INT(s, 1);
+    out->tx_index = (int)AR_COL_INT(s, 2);
+    out->file_num = (int)AR_COL_INT(s, 3);
+    out->file_pos = (int)AR_COL_INT(s, 4);
+    out->is_coinbase = AR_COL_INT(s, 5) != 0;
     return true;
 }
+
+/* ── Delete ────────────────────────────────────────────────────── */
 
 bool db_tx_delete(struct node_db *ndb, const uint8_t txid[32])
 {
@@ -91,14 +94,16 @@ bool db_tx_delete(struct node_db *ndb, const uint8_t txid[32])
     sqlite3_stmt *s = NULL;
     sqlite3_prepare_v2(ndb->db, "DELETE FROM transactions WHERE txid=?",
                        -1, &s, NULL);
-    sqlite3_bind_blob(s, 1, txid, 32, SQLITE_STATIC);
+    AR_BIND_BLOB(s, 1, txid, 32);
     int rc = sqlite3_step(s);
-    sqlite3_finalize(s);
+    AR_FINALIZE(s);
 
     bool ok = rc == SQLITE_DONE;
     if (ok) ar_run_after_destroy(cbs, &t);
     return ok;
 }
+
+/* ── Queries ───────────────────────────────────────────────────── */
 
 int db_tx_count(struct node_db *ndb)
 {
@@ -107,9 +112,9 @@ int db_tx_count(struct node_db *ndb)
     sqlite3_prepare_v2(ndb->db, "SELECT COUNT(*) FROM transactions",
                        -1, &s, NULL);
     int count = 0;
-    if (sqlite3_step(s) == SQLITE_ROW)
-        count = sqlite3_column_int(s, 0);
-    sqlite3_finalize(s);
+    if (AR_STEP_ROW(s))
+        count = (int)AR_COL_INT(s, 0);
+    AR_FINALIZE(s);
     return count;
 }
 
@@ -132,21 +137,20 @@ int db_tx_find_by_block(struct node_db *ndb, const uint8_t block_hash[32],
         "SELECT txid,block_height,tx_index,file_num,file_pos,is_coinbase"
         " FROM transactions WHERE block_hash=? ORDER BY tx_index",
         -1, &s, NULL);
-    sqlite3_bind_blob(s, 1, block_hash, 32, SQLITE_STATIC);
+    AR_BIND_BLOB(s, 1, block_hash, 32);
     int count = 0;
-    while (sqlite3_step(s) == SQLITE_ROW && (size_t)count < max) {
+    while (AR_STEP_ROW(s) && (size_t)count < max) {
         memset(&out[count], 0, sizeof(out[count]));
-        const void *t = sqlite3_column_blob(s, 0);
-        if (t) memcpy(out[count].txid, t, 32);
+        AR_READ_BLOB(s, 0, out[count].txid, 32);
         memcpy(out[count].block_hash, block_hash, 32);
-        out[count].block_height = sqlite3_column_int(s, 1);
-        out[count].tx_index = sqlite3_column_int(s, 2);
-        out[count].file_num = sqlite3_column_int(s, 3);
-        out[count].file_pos = sqlite3_column_int(s, 4);
-        out[count].is_coinbase = sqlite3_column_int(s, 5) != 0;
+        out[count].block_height = (int)AR_COL_INT(s, 1);
+        out[count].tx_index = (int)AR_COL_INT(s, 2);
+        out[count].file_num = (int)AR_COL_INT(s, 3);
+        out[count].file_pos = (int)AR_COL_INT(s, 4);
+        out[count].is_coinbase = AR_COL_INT(s, 5) != 0;
         count++;
     }
-    sqlite3_finalize(s);
+    AR_FINALIZE(s);
     return count;
 }
 

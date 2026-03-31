@@ -8,6 +8,7 @@
 #include "storage/coins_view_sqlite.h"
 #include "coins/coins.h"
 #include "coins/utxo_commitment.h"
+#include "event/event.h"
 #include "models/utxo.h"
 #include "script/standard.h"
 #include <stdio.h>
@@ -59,34 +60,16 @@ bool coins_view_sqlite_open(struct coins_view_sqlite *cvs, sqlite3 *db)
     cvs->view.vtable = &cvs_vtable;
     cvs->view.impl = cvs;
 
-    /* Open a dedicated connection to the same database file.
-     * node_db runs BEGIN TRANSACTION on the shared handle; if coins
-     * flush uses the same handle, SAVEPOINT/RELEASE races cause data
-     * loss (proven at heights 2218, 17418, 20634, 39371).
-     * A dedicated connection has independent transaction control. */
-    const char *db_path = sqlite3_db_filename(db, "main");
-    if (db_path && db_path[0] != '\0') {
-        int frc = sqlite3_open_v2(db_path, &cvs->db,
-                                   SQLITE_OPEN_READWRITE, NULL);
-        if (frc == SQLITE_OK && cvs->db) {
-            sqlite3_exec(cvs->db, "PRAGMA journal_mode=WAL",
-                         NULL, NULL, NULL);
-            sqlite3_exec(cvs->db, "PRAGMA synchronous=NORMAL",
-                         NULL, NULL, NULL);
-            sqlite3_exec(cvs->db, "PRAGMA cache_size=-65536",
-                         NULL, NULL, NULL);
-            sqlite3_busy_timeout(cvs->db, 30000); /* 30s — large block replays */
-            cvs->owns_db = true;
-            printf("coins_view_sqlite: dedicated connection opened\n");
-        } else {
-            fprintf(stderr, "coins_view_sqlite: dedicated open failed, "
-                    "falling back to shared handle\n");
-            cvs->db = db;
-            cvs->owns_db = false;
-        }
-    } else {
-        cvs->db = db;
-        cvs->owns_db = false;
+    /* Use the shared database handle with SAVEPOINT nesting.
+     * A dedicated connection causes WAL lock contention: when node_db
+     * has an open transaction, the dedicated connection's BEGIN IMMEDIATE
+     * gets SQLITE_BUSY (proven at heights 3061210-3061212).
+     * SAVEPOINT nests cleanly inside any existing transaction. */
+    cvs->db = db;
+    cvs->owns_db = false;
+    printf("coins_view_sqlite: using shared connection (SAVEPOINT mode)\n");
+    {
+        (void)0; /* placeholder for removed dedicated connection code */
     }
 
     int rc;
@@ -366,10 +349,23 @@ bool coins_view_sqlite_batch_write(struct coins_view_sqlite *cvs,
 
     if (write_errors > 0) {
         fprintf(stderr, "coins_flush: %d write errors! "
-                "Rolling back to prevent UTXO loss\n",
-                write_errors);
+                "Rolling back to prevent UTXO loss "
+                "(wrote=%zu deleted=%zu)\n",
+                write_errors, entries_written, entries_deleted);
+        event_emitf(EV_COINS_FLUSH_FAILED, 0,
+                    "write_errors=%d wrote=%zu deleted=%zu",
+                    write_errors, entries_written, entries_deleted);
         sqlite3_exec(cvs->db, txn_rollback, NULL, NULL, NULL);
         return false;
+    }
+
+    /* Verify: at least one operation should have occurred if map was dirty.
+     * Zero operations with a non-empty map indicates a silent failure. */
+    if (entries_written == 0 && entries_deleted == 0 &&
+        map_coins->size > 0) {
+        fprintf(stderr, "coins_flush: WARNING zero operations with "
+                "%zu dirty entries — possible silent failure\n",
+                map_coins->size);
     }
 
     /* Update best block hash */

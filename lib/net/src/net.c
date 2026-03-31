@@ -95,6 +95,11 @@ int net_message_read_data(struct net_message *msg,
     unsigned int remaining = msg->hdr.nMessageSize - msg->data_pos;
     unsigned int copy = remaining < nbytes ? remaining : nbytes;
 
+    /* Reject oversized messages BEFORE allocating.
+     * MAX_PROTOCOL_MESSAGE_LENGTH = 2MB. An attacker sending a crafted
+     * header with nMessageSize=2GB would cause OOM without this check. */
+    if (msg->hdr.nMessageSize > 2 * 1024 * 1024) return -1;
+
     size_t needed = msg->data_pos + copy;
     if (msg->recv_alloc < needed) {
         size_t alloc = msg->hdr.nMessageSize;
@@ -730,6 +735,11 @@ struct p2p_node *connect_node(struct net_manager *nm,
 
 bool is_banned(struct net_manager *nm, const struct net_addr *addr)
 {
+    /* Localhost is NEVER banned — it's our own zclassicd */
+    static const uint8_t lo_prefix[13] = {0,0,0,0,0,0,0,0,0,0,0xff,0xff,127};
+    if (memcmp(addr->ip, lo_prefix, 13) == 0)
+        return false;
+
     zcl_mutex_lock(&nm->cs_banned);
     int64_t now = GetTime();
     for (size_t i = 0; i < nm->num_banned; i++) {
@@ -773,18 +783,34 @@ void ban_addr(struct net_manager *nm, const struct net_addr *addr,
     zcl_mutex_unlock(&nm->cs_banned);
 }
 
+/* Check if a peer is a trusted local node (localhost or whitelisted).
+ * These peers are NEVER banned — they are our own infrastructure. */
+static bool is_trusted_peer(const struct p2p_node *node)
+{
+    /* Localhost: 127.0.0.0/8 (IPv4-mapped: ::ffff:127.x.x.x) */
+    static const uint8_t lo_prefix[13] = {0,0,0,0,0,0,0,0,0,0,0xff,0xff,127};
+    if (memcmp(node->addr.svc.addr.ip, lo_prefix, 13) == 0)
+        return true;
+    /* Whitelisted peers (set by -whitelist or listen socket config) */
+    if (node->whitelisted)
+        return true;
+    return false;
+}
+
 void peer_misbehaving(struct net_manager *nm, struct p2p_node *node,
                       int howmuch, const char *reason)
 {
     if (!nm || !node || howmuch <= 0) return;
 
+    /* NEVER penalize trusted peers (localhost, whitelisted, addnode).
+     * These are our own infrastructure — banning them breaks sync. */
+    if (is_trusted_peer(node))
+        return;
+
     int new_score = atomic_fetch_add(&node->misbehavior, howmuch) + howmuch;
     event_emitf(EV_PEER_MISBEHAVE, (uint32_t)node->id,
                 "+%d=%d %s", howmuch, new_score,
                 reason ? reason : "");
-    printf("Misbehaving: %s (%d -> %d) %s\n",
-           node->addr_name, new_score - howmuch,
-           new_score, reason ? reason : "");
 
     if (new_score >= 100) {
         event_emitf(EV_PEER_BANNED, (uint32_t)node->id,
@@ -1031,13 +1057,25 @@ bool accept_connection(struct net_manager *nm, const struct listen_socket *ls)
         return false;
     }
 
+    /* Per-IP inbound limit: max 3 connections from same IP.
+     * Prevents a single IP from consuming all inbound slots (sybil). */
     int inbound_count = 0;
+    int same_ip_count = 0;
     int max_inbound = nm->max_connections - MAX_OUTBOUND_CONNECTIONS;
     zcl_mutex_lock(&nm->cs_nodes);
-    for (size_t i = 0; i < nm->num_nodes; i++)
+    for (size_t i = 0; i < nm->num_nodes; i++) {
         if (nm->nodes[i]->inbound)
             inbound_count++;
+        if (nm->nodes[i]->inbound &&
+            memcmp(nm->nodes[i]->addr.svc.addr.ip, addr.svc.addr.ip, 16) == 0)
+            same_ip_count++;
+    }
     zcl_mutex_unlock(&nm->cs_nodes);
+
+    if (!is_whitelisted && same_ip_count >= 3) {
+        close_socket(&sock);
+        return false;
+    }
 
     if (inbound_count >= max_inbound) {
         close_socket(&sock);

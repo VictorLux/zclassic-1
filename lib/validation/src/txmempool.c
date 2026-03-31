@@ -213,6 +213,32 @@ bool tx_mempool_add_unchecked(struct tx_mempool *pool,
 {
     zcl_mutex_lock(&pool->cs);
 
+    /* Mempool size limit: 300MB total, prevents OOM from tx flooding.
+     * Matches Bitcoin Core's default -maxmempool=300. */
+    if (pool->total_tx_size + entry->tx_size > 300 * 1024 * 1024) {
+        zcl_mutex_unlock(&pool->cs);
+        return false;
+    }
+
+    /* Double-spend detection: reject if any input is already spent
+     * by another mempool transaction. */
+    for (size_t i = 0; i < entry->tx.num_vin; i++) {
+        struct outpoint op;
+        op.hash = entry->tx.vin[i].prevout.hash;
+        op.n = entry->tx.vin[i].prevout.n;
+        uint32_t idx = outpoint_hash(&op, pool->next_tx_cap);
+        for (size_t j = 0; j < pool->next_tx_cap; j++) {
+            size_t pos = (idx + j) % pool->next_tx_cap;
+            if (!pool->next_tx[pos].used) break;
+            if (uint256_eq(&pool->next_tx[pos].key.hash, &op.hash) &&
+                pool->next_tx[pos].key.n == op.n) {
+                /* Input already spent by another mempool tx */
+                zcl_mutex_unlock(&pool->cs);
+                return false;
+            }
+        }
+    }
+
     if (pool->num_entries >= pool->entries_cap) {
         size_t newcap = pool->entries_cap * 2;
         struct mempool_entry *tmp = realloc(pool->entries,

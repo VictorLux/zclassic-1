@@ -1,39 +1,34 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
- * Distributed under the MIT software license, see the accompanying
- * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
+ *
+ * ActiveRecord model: Peer
+ *
+ * validates :ip, presence: true
+ * validates :port, not_zero: true
+ * validates :attempts, range: [0, 10000]
+ *
+ * after_save -> emit EV_MODEL_SAVED */
 
 #include "models/peer.h"
+#include "event/event.h"
 #include <string.h>
 #include <time.h>
 
 /* ── Callbacks ─────────────────────────────────────────────────── */
 
-static struct ar_callbacks peer_cbs;
-static bool peer_cbs_init;
-
-struct ar_callbacks *db_peer_callbacks(void)
-{
-    if (!peer_cbs_init) {
-        ar_callbacks_init(&peer_cbs);
-        peer_cbs_init = true;
-    }
-    return &peer_cbs;
-}
+DEFINE_MODEL_CALLBACKS(peer)
 
 bool db_peer_validate(const struct db_peer *p, struct ar_errors *errors)
 {
     ar_errors_clear(errors);
     validates_presence_of(errors, p, ip);
-    if (p->port == 0)
-        ar_errors_add(errors, "port", "can't be zero");
-    if (p->attempts < 0)
-        ar_errors_add(errors, "attempts", "must be non-negative");
-    if (p->attempts > 10000)
-        ar_errors_add(errors, "attempts", "exceeds reasonable limit");
+    validates_not_zero(errors, p, port);
+    validates_non_negative(errors, p, attempts);
+    validates_max(errors, p, attempts, 10000);
     if (p->has_source) {
         static const uint8_t z[16] = {0};
-        if (memcmp(p->source, z, 16) == 0)
-            ar_errors_add(errors, "source", "can't be blank when has_source");
+        validates_custom(errors,
+            memcmp(p->source, z, 16) != 0,
+            "source", "can't be blank when has_source");
     }
     return !ar_errors_any(errors);
 }
@@ -45,28 +40,32 @@ bool db_peer_save(struct node_db *ndb, const struct db_peer *p)
     if (p->last_seen == 0)
         ((struct db_peer *)p)->last_seen = (int64_t)time(NULL);
     struct ar_errors errors;
-    if (!db_peer_validate(p, &errors)) return false;
-    if (!ar_run_before_save(&peer_cbs, (void *)p)) return false;
+    if (!db_peer_validate(p, &errors)) {
+        AR_LOG_VALIDATION_FAILURE("peer", &errors);
+        return false;
+    }
+    struct ar_callbacks *cbs = db_peer_callbacks();
+    if (!ar_run_before_save(cbs, (void *)p)) return false;
     sqlite3_stmt *s = NULL;
     sqlite3_prepare_v2(ndb->db,
         "INSERT OR REPLACE INTO peers"
         "(ip,port,services,last_seen,last_try,attempts,source)"
         " VALUES(?,?,?,?,?,?,?)",
         -1, &s, NULL);
-    sqlite3_bind_blob(s, 1, p->ip, 16, SQLITE_STATIC);
-    sqlite3_bind_int(s, 2, p->port);
-    sqlite3_bind_int64(s, 3, (int64_t)p->services);
-    sqlite3_bind_int64(s, 4, p->last_seen);
-    sqlite3_bind_int64(s, 5, p->last_try);
-    sqlite3_bind_int(s, 6, p->attempts);
+    AR_BIND_BLOB(s, 1, p->ip, 16);
+    AR_BIND_INT(s, 2, p->port);
+    AR_BIND_INT(s, 3, (int64_t)p->services);
+    AR_BIND_INT(s, 4, p->last_seen);
+    AR_BIND_INT(s, 5, p->last_try);
+    AR_BIND_INT(s, 6, p->attempts);
     if (p->has_source)
-        sqlite3_bind_blob(s, 7, p->source, 16, SQLITE_STATIC);
+        AR_BIND_BLOB(s, 7, p->source, 16);
     else
-        sqlite3_bind_null(s, 7);
+        AR_BIND_NULL(s, 7);
     int rc = sqlite3_step(s);
-    sqlite3_finalize(s);
+    AR_FINALIZE(s);
     bool ok = rc == SQLITE_DONE;
-    if (ok) ar_run_after_save(&peer_cbs, (void *)p);
+    if (ok) ar_run_after_save(cbs, (void *)p);
     return ok;
 }
 

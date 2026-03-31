@@ -5,6 +5,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "coins/coins.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -42,6 +43,13 @@ void coins_from_transaction(struct coins *c, const struct transaction *tx, int h
     c->version = tx->version;
 
     coins_free(c);
+    /* Validate output count before allocating. MAX_TX_OUTPUTS (65536)
+     * is already enforced at deserialization, but defense-in-depth. */
+    if (tx->num_vout > 65536) {
+        fprintf(stderr, "coins_from_transaction: num_vout=%zu exceeds max "
+                "at h=%d\n", tx->num_vout, height);
+        return;
+    }
     if (!coins_alloc(c, tx->num_vout))
         return;
 

@@ -42,18 +42,18 @@ bool db_wallet_tx_validate(const struct db_wallet_tx *t, struct ar_errors *error
 {
     ar_errors_clear(errors);
     validates_presence_of(errors, t, txid);
-    if (t->time_received <= 0)
-        ar_errors_add(errors, "time_received", "must be positive");
-    if (t->raw_tx && t->raw_tx_len == 0)
-        ar_errors_add(errors, "raw_tx_len", "must be positive when raw_tx present");
-    if (t->raw_tx_len > (size_t)INT32_MAX)
-        ar_errors_add(errors, "raw_tx_len", "exceeds max size");
+    validates_positive(errors, t, time_received);
+    validates_custom(errors,
+        !(t->raw_tx && t->raw_tx_len == 0),
+        "raw_tx_len", "must be positive when raw_tx present");
+    validates_custom(errors,
+        t->raw_tx_len <= (size_t)INT32_MAX,
+        "raw_tx_len", "exceeds max size");
     if (t->has_block) {
         validates_non_negative(errors, t, block_height);
         validates_presence_of(errors, t, block_hash);
     }
-    if (t->fee < 0)
-        ar_errors_add(errors, "fee", "must be non-negative");
+    validates_non_negative(errors, t, fee);
     return !ar_errors_any(errors);
 }
 
@@ -62,35 +62,30 @@ static void db_wallet_tx_read_row(sqlite3_stmt *s, int col,
 {
     memset(out, 0, sizeof(*out));
 
-    const void *t = sqlite3_column_blob(s, col++);
-    if (t && sqlite3_column_bytes(s, col - 1) >= 32)
-        memcpy(out->txid, t, 32);
+    AR_READ_BLOB(s, col, out->txid, 32);                  col++;
 
-    out->raw_tx_len = (size_t)sqlite3_column_bytes(s, col);
+    /* raw_tx: variable-length blob, needs malloc */
+    out->raw_tx_len = (size_t)AR_COL_BYTES(s, col);
     const void *rt = sqlite3_column_blob(s, col++);
     if (rt && out->raw_tx_len > 0) {
         out->raw_tx = malloc(out->raw_tx_len);
         if (!out->raw_tx) { out->raw_tx_len = 0; return; }
-        if (out->raw_tx)
-            memcpy(out->raw_tx, rt, out->raw_tx_len);
+        memcpy(out->raw_tx, rt, out->raw_tx_len);
     }
 
-    const void *bh = sqlite3_column_blob(s, col);
-    if (bh && sqlite3_column_bytes(s, col) >= 32) {
-        memcpy(out->block_hash, bh, 32);
-        out->has_block = memcmp(out->block_hash, ZERO_HASH, 32) != 0;
-    }
+    AR_READ_BLOB(s, col, out->block_hash, 32);
+    out->has_block = memcmp(out->block_hash, ZERO_HASH, 32) != 0;
     col++;
 
     if (sqlite3_column_type(s, col) != SQLITE_NULL) {
-        out->block_height = sqlite3_column_int(s, col);
+        out->block_height = (int)AR_COL_INT(s, col);
         out->has_block = true;
     }
     col++;
 
-    out->time_received = sqlite3_column_int64(s, col++);
-    out->from_me = sqlite3_column_int(s, col++) != 0;
-    out->fee = sqlite3_column_int64(s, col++);
+    out->time_received = AR_COL_INT(s, col++);
+    out->from_me = AR_COL_INT(s, col++) != 0;
+    out->fee = AR_COL_INT(s, col++);
 }
 
 /* Read wallet_utxo core columns: txid,vout,value,address_hash,script,height,is_coinbase
@@ -100,17 +95,12 @@ static void db_wallet_utxo_read_row(sqlite3_stmt *s, int col,
                                      struct db_wallet_utxo *out)
 {
     memset(out, 0, sizeof(*out));
-    const void *t = sqlite3_column_blob(s, col);
-    if (t && sqlite3_column_bytes(s, col) >= 32)
-        memcpy(out->txid, t, 32);
-    col++;
-    out->vout = (uint32_t)sqlite3_column_int(s, col++);
-    out->value = sqlite3_column_int64(s, col++);
-    const void *ah = sqlite3_column_blob(s, col);
-    if (ah && sqlite3_column_bytes(s, col) >= 20)
-        memcpy(out->address_hash, ah, 20);
-    col++;
-    out->script_len = (size_t)sqlite3_column_bytes(s, col);
+    AR_READ_BLOB(s, col, out->txid, 32);                   col++;
+    out->vout = (uint32_t)AR_COL_INT(s, col++);
+    out->value = AR_COL_INT(s, col++);
+    AR_READ_BLOB(s, col, out->address_hash, 20);           col++;
+    /* script: variable-length, needs malloc */
+    out->script_len = (size_t)AR_COL_BYTES(s, col);
     const void *sc = sqlite3_column_blob(s, col);
     if (sc && out->script_len > 0) {
         out->script = malloc(out->script_len);
@@ -120,8 +110,8 @@ static void db_wallet_utxo_read_row(sqlite3_stmt *s, int col,
         out->script = NULL;
     }
     col++;
-    out->height = sqlite3_column_int(s, col++);
-    out->is_coinbase = sqlite3_column_int(s, col++) != 0;
+    out->height = (int)AR_COL_INT(s, col++);
+    out->is_coinbase = AR_COL_INT(s, col++) != 0;
 }
 
 /* Read sapling_note columns: txid,output_index,value,rcm,memo,ivk,
@@ -130,46 +120,28 @@ static void db_sapling_note_read_row(sqlite3_stmt *s, int col,
                                       struct db_sapling_note *out)
 {
     memset(out, 0, sizeof(*out));
-    const void *t = sqlite3_column_blob(s, col);
-    if (t && sqlite3_column_bytes(s, col) >= 32)
-        memcpy(out->txid, t, 32);
-    col++;
-    out->output_index = (uint32_t)sqlite3_column_int(s, col++);
-    out->value = sqlite3_column_int64(s, col++);
-    const void *rcm = sqlite3_column_blob(s, col);
-    if (rcm && sqlite3_column_bytes(s, col) >= 32)
-        memcpy(out->rcm, rcm, 32);
-    col++;
-    int memo_len = sqlite3_column_bytes(s, col);
-    const void *memo = sqlite3_column_blob(s, col);
-    if (memo && memo_len > 0) {
-        size_t ml = (size_t)memo_len < 512 ? (size_t)memo_len : 512;
-        memcpy(out->memo, memo, ml);
-        out->memo_len = ml;
+    AR_READ_BLOB(s, col, out->txid, 32);                   col++;
+    out->output_index = (uint32_t)AR_COL_INT(s, col++);
+    out->value = AR_COL_INT(s, col++);
+    AR_READ_BLOB(s, col, out->rcm, 32);                    col++;
+    /* memo: variable-length, capped at 512 */
+    {
+        int memo_len = AR_COL_BYTES(s, col);
+        const void *memo = sqlite3_column_blob(s, col);
+        if (memo && memo_len > 0) {
+            size_t ml = (size_t)memo_len < 512 ? (size_t)memo_len : 512;
+            memcpy(out->memo, memo, ml);
+            out->memo_len = ml;
+        }
     }
     col++;
-    const void *ivk = sqlite3_column_blob(s, col);
-    if (ivk && sqlite3_column_bytes(s, col) >= 32)
-        memcpy(out->ivk, ivk, 32);
-    col++;
-    const void *div = sqlite3_column_blob(s, col);
-    if (div && sqlite3_column_bytes(s, col) >= 11)
-        memcpy(out->diversifier, div, 11);
-    col++;
-    const void *pkd = sqlite3_column_blob(s, col);
-    if (pkd && sqlite3_column_bytes(s, col) >= 32)
-        memcpy(out->pk_d, pkd, 32);
-    col++;
-    const void *cm = sqlite3_column_blob(s, col);
-    if (cm && sqlite3_column_bytes(s, col) >= 32)
-        memcpy(out->cm, cm, 32);
-    col++;
-    const void *nf = sqlite3_column_blob(s, col);
-    if (nf && sqlite3_column_bytes(s, col) >= 32)
-        memcpy(out->nullifier, nf, 32);
-    col++;
+    AR_READ_BLOB(s, col, out->ivk, 32);                    col++;
+    AR_READ_BLOB(s, col, out->diversifier, 11);             col++;
+    AR_READ_BLOB(s, col, out->pk_d, 32);                   col++;
+    AR_READ_BLOB(s, col, out->cm, 32);                     col++;
+    AR_READ_BLOB(s, col, out->nullifier, 32);              col++;
     if (sqlite3_column_type(s, col) != SQLITE_NULL)
-        out->block_height = sqlite3_column_int(s, col);
+        out->block_height = (int)AR_COL_INT(s, col);
 
     /* Derive bech32 z-address from diversifier+pk_d for in-memory use. */
     const struct chain_params *cp = chain_params_get();
@@ -184,16 +156,15 @@ bool db_wallet_utxo_validate(const struct db_wallet_utxo *u,
 {
     ar_errors_clear(errors);
     validates_presence_of(errors, u, txid);
-    validates_non_negative(errors, u, value);
-    if (u->value > 2100000000000000LL)
-        ar_errors_add(errors, "value", "exceeds MAX_MONEY");
+    validates_money_range(errors, u, value, 2100000000000000LL);
     validates_non_negative(errors, u, height);
-    if (u->script && u->script_len == 0)
-        ar_errors_add(errors, "script_len", "must be positive when script present");
-    if (u->script_len > 10000)
-        ar_errors_add(errors, "script_len", "exceeds max script size");
-    if (u->script_len > 0 && !u->script)
-        ar_errors_add(errors, "script", "null pointer with nonzero length");
+    validates_custom(errors,
+        !(u->script && u->script_len == 0),
+        "script_len", "must be positive when script present");
+    validates_max(errors, u, script_len, 10000);
+    validates_custom(errors,
+        !(u->script_len > 0 && !u->script),
+        "script", "null pointer with nonzero length");
     if (u->is_spent) {
         static const uint8_t z[32] = {0};
         if (memcmp(u->spent_txid, z, 32) == 0)
@@ -207,17 +178,14 @@ bool db_sapling_note_validate(const struct db_sapling_note *n,
 {
     ar_errors_clear(errors);
     validates_presence_of(errors, n, txid);
-    validates_non_negative(errors, n, value);
-    if (n->value > 2100000000000000LL)
-        ar_errors_add(errors, "value", "exceeds MAX_MONEY");
+    validates_money_range(errors, n, value, 2100000000000000LL);
     validates_presence_of(errors, n, ivk);
     validates_presence_of(errors, n, nullifier);
     validates_presence_of(errors, n, cm);
     validates_presence_of(errors, n, pk_d);
     validates_presence_of(errors, n, diversifier);
     validates_presence_of(errors, n, rcm);
-    if (n->memo_len > 512)
-        ar_errors_add(errors, "memo_len", "exceeds 512 byte limit");
+    validates_max(errors, n, memo_len, 512);
     validates_non_negative(errors, n, block_height);
     if (n->is_spent) {
         static const uint8_t z[32] = {0};
@@ -234,7 +202,11 @@ bool db_wallet_tx_save(struct node_db *ndb, const struct db_wallet_tx *t)
     if (t->time_received == 0)
         ((struct db_wallet_tx *)t)->time_received = (int64_t)time(NULL);
     struct ar_errors errors;
-    if (!db_wallet_tx_validate(t, &errors)) return false;
+    ar_errors_clear(&errors);
+    if (!db_wallet_tx_validate(t, &errors)) {
+        fprintf(stderr, "wallet_tx save FAILED: %s\n", ar_errors_full(&errors));
+        return false;
+    }
     if (!ar_run_before_save(&wtx_cbs, (void *)t)) return false;
     sqlite3_stmt *s = NULL;
     sqlite3_prepare_v2(ndb->db,
@@ -418,7 +390,12 @@ bool db_wallet_utxo_save(struct node_db *ndb, const struct db_wallet_utxo *u)
 {
     if (!ndb->open) return false;
     struct ar_errors errors;
-    if (!db_wallet_utxo_validate(u, &errors)) return false;
+    ar_errors_clear(&errors);
+    if (!db_wallet_utxo_validate(u, &errors)) {
+        fprintf(stderr, "wallet_utxo save FAILED: %s (vout=%u)\n",
+                ar_errors_full(&errors), u->vout);
+        return false;
+    }
     if (!ar_run_before_save(&wutxo_cbs, (void *)u)) return false;
     sqlite3_stmt *s = ndb->stmt_wallet_utxo_insert;
     sqlite3_reset(s);
@@ -634,7 +611,12 @@ bool db_sapling_note_save(struct node_db *ndb, const struct db_sapling_note *n)
 {
     if (!ndb->open) return false;
     struct ar_errors errors;
-    if (!db_sapling_note_validate(n, &errors)) return false;
+    ar_errors_clear(&errors);
+    if (!db_sapling_note_validate(n, &errors)) {
+        fprintf(stderr, "sapling_note save FAILED: %s (idx=%u)\n",
+                ar_errors_full(&errors), n->output_index);
+        return false;
+    }
     if (!ar_run_before_save(&snote_cbs, (void *)n)) return false;
 
     /* Derive bech32 z-address from diversifier+pk_d if not already set. */

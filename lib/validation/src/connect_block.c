@@ -2,7 +2,17 @@
  * Copyright (c) 2009-2014 The Bitcoin Core developers
  * Copyright 2026 Rhett Creighton - Apache License 2.0
  * Distributed under the MIT software license, see the accompanying
- * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
+ * file COPYING or http://www.opensource.org/licenses/mit-license.php.
+ *
+ * ConnectBlock — full block validation against the UTXO set.
+ * 14 checks matching zclassicd main.cpp:2489-2702 exactly.
+ *
+ * NEW in this refactor:
+ *   - REJECT_IF / REJECT_UNLESS macros (Rails-style DRY)
+ *   - ZIP-209 turnstile checks (Sprout/Sapling pool can't go negative)
+ *   - Per-input MoneyRange validation
+ *   - Validation events via event_emitf()
+ *   - Input value < output check (bad-txns-in-belowout) */
 
 #include <stdio.h>
 #include "validation/connect_block.h"
@@ -17,8 +27,8 @@
 #include "chain/checkpoints.h"
 #include "consensus/upgrades.h"
 #include "validation/main_constants.h"
+#include "event/event.h"
 
-/* From consensus/consensus.h — included by value to avoid macro conflicts */
 #ifndef COINBASE_MATURITY
 #define COINBASE_MATURITY 100
 #endif
@@ -43,47 +53,111 @@ bool connect_block(const struct block *block,
     bool expensive_checks = true;
     if (checkpoint_covers(&params->checkpointData, pindex->nHeight))
         expensive_checks = false;
-    /* Assumevalid: skip script verification below known-good height */
     if (g_assume_valid_height >= 0 && pindex->nHeight <= g_assume_valid_height)
         expensive_checks = false;
 
+    /* Re-validate block (with proofs enabled post-checkpoint) */
     if (!check_block(block, state, params, expensive_checks,
                      !just_check, expensive_checks))
         return false;
 
-    /* Use pre-computed hash from block_index (avoids redundant SHA-256d) */
+    /* Use pre-computed hash from block_index */
     struct uint256 block_hash;
     if (pindex->phashBlock)
         block_hash = *pindex->phashBlock;
     else
         block_header_get_hash(&block->header, &block_hash);
 
-    /* Special case: genesis block */
+    /* Genesis block: just set best block, no validation needed */
     if (uint256_cmp(&block_hash, &params->consensus.hashGenesisBlock) == 0) {
         if (!just_check)
             coins_view_cache_set_best_block(view, &block_hash);
         return true;
     }
 
-    /* BIP30: do not allow blocks that overwrite existing unspent transactions.
-     * After BIP34 activation (height in coinbase), duplicate txids are impossible.
-     * ZClassic has BIP34 from genesis, so BIP30 violations cannot occur.
-     * We still check for blocks below the BIP34 enforcement height as a safety
-     * measure, but skip for heights where BIP34 guarantees uniqueness. */
-    if (pindex->nHeight <= 91842) {
+    event_emitf(EV_BLOCK_CONNECT_START, 0,
+                "height=%d ntx=%zu", pindex->nHeight, block->num_vtx);
+
+    /* ── View/prevblock invariant (zclassicd main.cpp:2513) ── */
+    {
+        struct uint256 view_best;
+        coins_view_cache_get_best_block(view, &view_best);
+        if (!uint256_is_null(&view_best) &&
+            uint256_cmp(&block->header.hashPrevBlock, &view_best) != 0) {
+            char vhex[65], phex[65];
+            uint256_get_hex(&view_best, vhex);
+            uint256_get_hex(&block->header.hashPrevBlock, phex);
+            fprintf(stderr, "connect_block: FATAL view/prevblock mismatch "
+                    "h=%d view=%s prev=%s\n", pindex->nHeight, vhex, phex);
+            REJECT_FATAL(state, "connect_block-view-mismatch");
+        }
+    }
+
+    /* ── ZIP-209: Turnstile enforcement ─────────────────────── *
+     * Shielded value pools (Sprout and Sapling) must never go negative.
+     * This matches zclassicd ConnectBlock lines 2537-2551.
+     *
+     * CRITICAL: nChainSproutValue/nChainSaplingValue use boost::optional
+     * semantics in zclassicd. We mirror this with has_chain_*_value flags.
+     * Only enforce the turnstile when the cumulative value is KNOWN —
+     * i.e., when every ancestor block's per-block value was computed.
+     * If the parent's chain value is unknown (imported from LevelDB where
+     * these weren't tracked), skip the check. */
+    if (pindex->pprev) {
+        /* Compute per-block shielded value from transactions */
+        int64_t sprout_value = 0;
+        int64_t sapling_value = 0;
         for (size_t i = 0; i < block->num_vtx; i++) {
-            if (coins_view_cache_have_coins(view, &block->vtx[i].hash)) {
-                struct coins existing;
-                coins_init(&existing);
-                if (coins_view_cache_get_coins(view, &block->vtx[i].hash, &existing)) {
-                    if (!coins_is_pruned(&existing)) {
-                        coins_free(&existing);
-                        return validation_state_dos(state, 100, false, REJECT_INVALID,
-                            "bad-txns-BIP30", false, NULL);
-                    }
-                }
-                coins_free(&existing);
+            const struct transaction *tx = &block->vtx[i];
+            for (size_t j = 0; j < tx->num_joinsplit; j++) {
+                sprout_value += tx->v_joinsplit[j].vpub_old;
+                sprout_value -= tx->v_joinsplit[j].vpub_new;
             }
+            sapling_value += tx->value_balance;
+        }
+        pindex->nSproutValue = sprout_value;
+        pindex->has_sprout_value = true;
+        pindex->nSaplingValue = sapling_value;
+
+        /* Propagate cumulative chain values only when parent is known */
+        if (pindex->pprev->has_chain_sprout_value) {
+            pindex->nChainSproutValue =
+                pindex->pprev->nChainSproutValue + sprout_value;
+            pindex->has_chain_sprout_value = true;
+
+            /* ZIP-209: Sprout pool can't go negative */
+            REJECT_IF(pindex->nChainSproutValue < 0,
+                      state, 100,
+                      "bad-txns-sprout-turnstile-violation");
+        }
+
+        if (pindex->pprev->has_chain_sapling_value) {
+            pindex->nChainSaplingValue =
+                pindex->pprev->nChainSaplingValue + sapling_value;
+            pindex->has_chain_sapling_value = true;
+
+            /* ZIP-209: Sapling pool can't go negative */
+            REJECT_IF(pindex->nChainSaplingValue < 0,
+                      state, 100,
+                      "bad-txns-sapling-turnstile-violation");
+        }
+    }
+
+    /* ── BIP30: no overwriting unspent transactions ─────────── *
+     * ZClassic enforces unconditionally — no height exceptions. */
+    for (size_t i = 0; i < block->num_vtx; i++) {
+        if (coins_view_cache_have_coins(view, &block->vtx[i].hash)) {
+            struct coins existing;
+            coins_init(&existing);
+            if (coins_view_cache_get_coins(view, &block->vtx[i].hash,
+                                           &existing)) {
+                if (!coins_is_pruned(&existing)) {
+                    coins_free(&existing);
+                    return validation_state_dos(state, 100, false,
+                        REJECT_INVALID, "bad-txns-BIP30", false, NULL);
+                }
+            }
+            coins_free(&existing);
         }
     }
 
@@ -109,18 +183,14 @@ bool connect_block(const struct block *block,
     for (size_t i = 0; i < block->num_vtx; i++) {
         const struct transaction *tx = &block->vtx[i];
 
+        /* ── Sigops check ─────────────────────────────── */
         sig_ops += (unsigned int)get_legacy_sig_op_count(tx, flags);
-        if (sig_ops > MAX_BLOCK_SIGOPS) {
-            block_undo_free(&blockundo);
-            return validation_state_dos(state, 100, false, REJECT_INVALID,
-                "bad-blk-sigops", false, NULL);
-        }
+        REJECT_IF_CLEANUP(sig_ops > MAX_BLOCK_SIGOPS,
+                          state, 100, "bad-blk-sigops",
+                          block_undo_free(&blockundo));
 
         if (!transaction_is_coinbase(tx)) {
-            /* Coinbase maturity check: match ZClassic C++ CheckTxInputs().
-             * Spending a coinbase output requires COINBASE_MATURITY (100)
-             * confirmations. Without this, a miner could spend their own
-             * coinbase in the very next block. */
+            /* ── Coinbase maturity (100 blocks) ───────── */
             for (size_t j = 0; j < tx->num_vin; j++) {
                 struct coins prev_coins;
                 coins_init(&prev_coins);
@@ -139,12 +209,11 @@ bool connect_block(const struct block *block,
                 coins_free(&prev_coins);
             }
 
+            /* ── All inputs must exist and be unspent ── */
             if (!coins_view_cache_have_inputs(view, tx)) {
-                /* Log first missing input for diagnostics */
                 if (tx->num_vin > 0) {
                     char prevhex[65];
                     uint256_get_hex(&tx->vin[0].prevout.hash, prevhex);
-                    /* Also show raw bytes for byte-order debugging */
                     char rawbytes[20];
                     snprintf(rawbytes, sizeof(rawbytes),
                              "%02x%02x%02x%02x",
@@ -162,6 +231,7 @@ bool connect_block(const struct block *block,
                     "bad-txns-inputs-missingorspent", false, NULL);
             }
 
+            /* ── JoinSplit anchor requirements ─────────── */
             if (!coins_view_cache_have_joinsplit_requirements(view, tx)) {
                 block_undo_free(&blockundo);
                 return validation_state_dos(state, 100, false, REJECT_INVALID,
@@ -169,19 +239,44 @@ bool connect_block(const struct block *block,
             }
         }
 
+        /* ── Fee calculation with per-input MoneyRange ─── */
         if (!transaction_is_coinbase(tx)) {
             int64_t value_in = coins_view_cache_get_value_in(view, tx);
             int64_t value_out = transaction_get_value_out(tx);
+
+            /* get_value_in returns -1 on missing inputs or out-of-range values.
+             * This catches corrupted coins before they propagate. */
+            REJECT_IF_CLEANUP(value_in < 0,
+                              state, 100, "bad-txns-inputvalues-outofrange",
+                              block_undo_free(&blockundo));
+
+            /* Per-input value range check (zclassicd CheckTxInputs:2075) */
+            REJECT_IF_CLEANUP(!MoneyRange(value_in),
+                              state, 100, "bad-txns-inputvalues-outofrange",
+                              block_undo_free(&blockundo));
+
+            /* Inputs must cover outputs (no money creation) */
+            REJECT_IF_CLEANUP(value_in < value_out,
+                              state, 100, "bad-txns-in-belowout",
+                              block_undo_free(&blockundo));
+
             int64_t tx_fee = value_in - value_out;
 
-            /* Defensive: detect fee overflow before accumulating */
-            if (tx_fee < 0 || fees > INT64_MAX - tx_fee) {
-                block_undo_free(&blockundo);
-                return validation_state_dos(state, 100, false, REJECT_INVALID,
-                    "bad-txns-fee-overflow", false, NULL);
-            }
+            /* Fee sanity: non-negative and no overflow */
+            REJECT_IF_CLEANUP(tx_fee < 0,
+                              state, 100, "bad-txns-fee-negative",
+                              block_undo_free(&blockundo));
+            REJECT_IF_CLEANUP(!MoneyRange(fees + tx_fee),
+                              state, 100, "bad-txns-fee-outofrange",
+                              block_undo_free(&blockundo));
             fees += tx_fee;
 
+            event_emitf(EV_TX_INPUTS_CHECKED, 0,
+                        "h=%d tx=%zu value_in=%lld fee=%lld",
+                        pindex->nHeight, i,
+                        (long long)value_in, (long long)tx_fee);
+
+            /* ── Script verification ─────────────────── */
             if (expensive_checks) {
                 struct precomputed_tx_data txdata;
                 precompute_tx_data(tx, &txdata);
@@ -196,6 +291,12 @@ bool connect_block(const struct block *block,
                             false, NULL);
                     }
 
+                    /* Per-input value in valid range */
+                    REJECT_IF_CLEANUP(!MoneyRange(prev_out->value),
+                                      state, 100,
+                                      "bad-txns-inputvalues-outofrange",
+                                      block_undo_free(&blockundo));
+
                     struct tx_sig_checker tsc;
                     tx_sig_checker_init(&tsc, tx, (unsigned int)j,
                                         prev_out->value, branch_id, &txdata);
@@ -208,38 +309,49 @@ bool connect_block(const struct block *block,
                                        branch_id, &serror)) {
                         block_undo_free(&blockundo);
                         return validation_state_dos(state, 100, false,
-                            REJECT_INVALID, "mandatory-script-verify-flag-failed",
+                            REJECT_INVALID,
+                            "mandatory-script-verify-flag-failed",
                             false, NULL);
                     }
                 }
+                event_emitf(EV_SCRIPT_VERIFIED, 0,
+                            "h=%d tx=%zu inputs=%zu",
+                            pindex->nHeight, i, tx->num_vin);
             }
         }
 
-        /* Update UTXO set */
+        /* ── Update UTXO set ──────────────────────────── */
         if (i > 0) {
-            update_coins_with_undo(tx, view, &blockundo.vtxundo[i - 1],
-                                   pindex->nHeight);
+            if (!update_coins_with_undo(tx, view, &blockundo.vtxundo[i - 1],
+                                        pindex->nHeight)) {
+                block_undo_free(&blockundo);
+                return validation_state_dos(state, 100, false, REJECT_INVALID,
+                    "bad-txns-utxo-update-failed", true, NULL);
+            }
         } else {
             struct tx_undo dummy;
             tx_undo_init(&dummy);
-            update_coins_with_undo(tx, view, &dummy, pindex->nHeight);
+            bool ok = update_coins_with_undo(tx, view, &dummy,
+                                              pindex->nHeight);
             tx_undo_free(&dummy);
+            if (!ok) {
+                block_undo_free(&blockundo);
+                return validation_state_dos(state, 100, false, REJECT_INVALID,
+                    "bad-txns-utxo-update-failed", true, NULL);
+            }
         }
     }
 
-    /* Verify coinbase reward (defensive overflow check) */
+    /* ── Coinbase reward validation ───────────────────────── */
     int64_t subsidy = get_block_subsidy(pindex->nHeight, &params->consensus);
-    if (fees > INT64_MAX - subsidy) {
-        block_undo_free(&blockundo);
-        return validation_state_dos(state, 100, false, REJECT_INVALID,
-            "bad-cb-reward-overflow", false, NULL);
-    }
+    REJECT_IF_CLEANUP(fees > INT64_MAX - subsidy,
+                      state, 100, "bad-cb-reward-overflow",
+                      block_undo_free(&blockundo));
+
     int64_t block_reward = fees + subsidy;
-    if (transaction_get_value_out(&block->vtx[0]) > block_reward) {
-        block_undo_free(&blockundo);
-        return validation_state_dos(state, 100, false, REJECT_INVALID,
-            "bad-cb-amount", false, NULL);
-    }
+    REJECT_IF_CLEANUP(transaction_get_value_out(&block->vtx[0]) > block_reward,
+                      state, 100, "bad-cb-amount",
+                      block_undo_free(&blockundo));
 
     if (just_check) {
         block_undo_free(&blockundo);
@@ -247,6 +359,10 @@ bool connect_block(const struct block *block,
     }
 
     coins_view_cache_set_best_block(view, &block_hash);
+
+    event_emitf(EV_BLOCK_CONNECT_DONE, 0,
+                "height=%d fees=%lld sigops=%u",
+                pindex->nHeight, (long long)fees, sig_ops);
 
     block_undo_free(&blockundo);
     return true;

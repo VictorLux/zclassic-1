@@ -68,6 +68,10 @@ unsigned int GetNextWorkRequired(const struct block_index *pindexLast,
             return nProofOfWorkLimit;
     }
 
+    /* Validate averaging window is positive — zero would cause division by zero */
+    if (params->nPowAveragingWindow <= 0)
+        return nProofOfWorkLimit;
+
     const struct block_index *pindexFirst = pindexLast;
     struct arith_uint256 bnTot;
     arith_uint256_set_zero(&bnTot);

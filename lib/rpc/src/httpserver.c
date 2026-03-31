@@ -16,6 +16,7 @@
 #include <string.h>
 #include <strings.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 static int g_listen_fd = -1;
@@ -121,6 +122,12 @@ static void send_response(int fd, int status_code, const char *status_text,
 
 static void handle_client(int client_fd)
 {
+    /* Set socket timeout to prevent slowloris attacks.
+     * 5 seconds to send complete request — generous for local RPC,
+     * fatal for attackers trying to hold connections open. */
+    struct timeval tv = { .tv_sec = 5, .tv_usec = 0 };
+    setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
     char method[16];
     char path[256];
     char line[4096];

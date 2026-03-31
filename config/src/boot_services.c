@@ -214,6 +214,16 @@ bool app_init_services(struct app_context *ctx,
 {
     S = svc;
 
+    /* ── Register sync state observer ──────────────────────────── *
+     * Logs every sync state transition via the event system.
+     * Registered as async observer so it never blocks P2P threads. */
+    extern void boot_sync_state_logger(enum event_type, uint32_t,
+                                        const void *, uint32_t, void *);
+    event_observe_async(EV_SYNC_STATE_CHANGE, boot_sync_state_logger, NULL);
+    event_observe_async(EV_TIP_UPDATED, boot_sync_state_logger, NULL);
+    event_observe_async(EV_BLOCK_CONNECTED, boot_sync_state_logger, NULL);
+    event_observe_async(EV_REORG_START, boot_sync_state_logger, NULL);
+
     /* Initialize mempool */
     tx_mempool_init(svc->mempool, 1000);
     g_active_mempool = svc->mempool;
@@ -819,7 +829,7 @@ bool app_init_services(struct app_context *ctx,
 
     /* SQLite catchup */
     if (g_active_node_db) {
-        if (ctx->fastsync_dir) {
+        if (ctx->legacy_import_dir) {
             struct block_index *fs_tip = active_chain_tip(&svc->state->chain_active);
             printf("=== SQLite Indexing (%d blocks) ===\n",
                    fs_tip ? fs_tip->nHeight : 0);
@@ -858,6 +868,7 @@ void app_shutdown_svc(struct boot_svc_ctx *svc)
 {
     atomic_store(svc->running, false);
     event_emitf(EV_NODE_SHUTDOWN, 0, "graceful");
+    event_async_stop();
 
     printf("Shutting down...\n");
 
@@ -1000,4 +1011,39 @@ void app_start_metrics(bool mining)
 void app_stop_metrics(void)
 {
     metrics_stop(S->metrics);
+}
+
+/* ── Sync state observer ──────────────────────────────────────── *
+ * Async observer that logs sync state transitions, tip updates,
+ * block connections, and reorgs. Provides high-level observability
+ * of the sync pipeline without blocking any P2P or validation thread.
+ *
+ * Registered at boot via event_observe_async() for:
+ *   EV_SYNC_STATE_CHANGE — sync FSM transitions
+ *   EV_TIP_UPDATED       — chain tip advances
+ *   EV_BLOCK_CONNECTED    — individual blocks connected
+ *   EV_REORG_START        — chain reorganization begins */
+void boot_sync_state_logger(enum event_type type, uint32_t peer_id,
+                               const void *payload, uint32_t payload_len,
+                               void *ctx)
+{
+    (void)ctx;
+    const char *msg = (payload_len > 0 && payload) ? (const char *)payload : "";
+
+    switch (type) {
+    case EV_SYNC_STATE_CHANGE:
+        printf("[observer] sync state → %s\n", msg);
+        break;
+    case EV_TIP_UPDATED:
+        /* Only log major milestones to avoid flooding */
+        break;
+    case EV_BLOCK_CONNECTED:
+        break; /* too noisy for printf, event log captures it */
+    case EV_REORG_START:
+        fprintf(stderr, "[observer] REORG: %s (peer=%u)\n", msg, peer_id);
+        break;
+    default:
+        break;
+    }
+    fflush(stdout);
 }

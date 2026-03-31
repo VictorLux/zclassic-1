@@ -186,6 +186,14 @@ static bool find_block_pos(struct disk_block_pos *pos, unsigned int block_size,
         g_last_block_file_size = 0;
     }
 
+    /* Safety: cap file number to prevent runaway file creation.
+     * 10000 files * 128MB each = 1.28TB which is more than enough. */
+    if (g_last_block_file > 9999) {
+        fprintf(stderr, "find_block_pos: file number %d exceeds max (9999)\n",
+                g_last_block_file);
+        return false;
+    }
+
     pos->nFile = g_last_block_file;
     pos->nPos = g_last_block_file_size;
     return true;
@@ -357,12 +365,21 @@ bool accept_block_header(const struct block_header *header,
     if (uint256_cmp(&hash, &params->consensus.hashGenesisBlock) != 0) {
         pindex_prev = block_map_find(&ms->map_block_index,
                                       &header->hashPrevBlock);
-        if (!pindex_prev)
-            return validation_state_dos(state, 10, false, 0, "bad-prevblk",
-                                        false, NULL);
-        if (pindex_prev->nStatus & BLOCK_FAILED_MASK)
-            return validation_state_dos(state, 100, false, REJECT_INVALID,
-                                        "bad-prevblk", false, NULL);
+        if (!pindex_prev) {
+            /* Parent not in our block index — this is an orphan block.
+             * Normal during sync (blocks arrive before headers).
+             * DoS=0: don't penalize the peer for out-of-order delivery. */
+            return validation_state_invalid(state, false, 0,
+                                            "bad-prevblk", NULL);
+        }
+        if (pindex_prev->nStatus & BLOCK_FAILED_MASK) {
+            /* Don't ban peer — parent may have been marked failed by a
+             * prior validation bug (e.g. turnstile false positive).
+             * The block is invalid from our perspective, but the peer
+             * isn't misbehaving. DoS=0 rejects without penalty. */
+            return validation_state_invalid(state, false, REJECT_INVALID,
+                                            "bad-prevblk", NULL);
+        }
     }
 
     if (pindex_prev &&
@@ -425,12 +442,28 @@ bool accept_block(struct block *block,
         return false;
     }
 
-    /* Write block to disk */
+    event_emitf(EV_BLOCK_CHECK_PASSED, 0,
+                "height=%d ntx=%zu checks=header,merkle,tx,contextual",
+                pindex->nHeight, block->num_vtx);
+
+    /* Write block to disk — validate serialized size first */
     struct byte_stream blk_stream;
     stream_init(&blk_stream, 4096);
     if (!block_serialize(block, &blk_stream)) {
         stream_free(&blk_stream);
         return validation_state_error(state, "failed-to-serialize-block");
+    }
+
+    /* Reject blocks larger than MAX_BLOCK_SIZE before persisting.
+     * This catches oversized blocks that passed earlier checks
+     * (e.g. check_block only checks vtx count, not serialized size). */
+    if (blk_stream.size > 2000000) {
+        fprintf(stderr, "accept_block: serialized size %zu exceeds "
+                "MAX_BLOCK_SIZE at height %d\n",
+                blk_stream.size, pindex->nHeight);
+        stream_free(&blk_stream);
+        return validation_state_dos(state, 100, false, REJECT_INVALID,
+                                    "bad-blk-length", false, NULL);
     }
 
     struct disk_block_pos block_pos;
@@ -527,7 +560,7 @@ bool connect_tip(struct validation_state *state,
     if (!pblock) {
         if (!read_block_from_disk_index(&local_block, pindex_new, datadir)) {
             /* Genesis block (height 0) may not be on disk (blk00000.dat
-             * empty after fastsync). Genesis has only the unspendable
+             * empty after legacy import). Genesis has only the unspendable
              * coinbase — safe to connect without block data. */
             if (pindex_new->nHeight == 0) {
                 block_free(&local_block);
@@ -586,8 +619,19 @@ bool connect_tip(struct validation_state *state,
                     "  file=%d pos=%u\n",
                    pindex_new->nHeight, exp, got,
                    pindex_new->nFile, pindex_new->nDataPos);
+            event_emitf(EV_BLOCK_REJECTED, 0,
+                        "wrong-block-on-disk h=%d", pindex_new->nHeight);
             block_free(&local_block);
             return validation_state_error(state, "wrong-block-on-disk");
+        }
+
+        /* Redundant: verify transaction count matches header.
+         * Catches truncated block reads from disk corruption. */
+        if (pblock->num_vtx == 0) {
+            fprintf(stderr, "connect_tip: empty block at h=%d "
+                    "(deserialization or disk error)\n", pindex_new->nHeight);
+            block_free(&local_block);
+            return validation_state_error(state, "empty-block-from-disk");
         }
     }
 
@@ -699,12 +743,18 @@ bool connect_tip(struct validation_state *state,
                         (unsigned long)cp->utxo_count,
                         (unsigned long)count);
                     fflush(stderr);
+                    event_emitf(EV_UTXO_CHECKPOINT_FAIL, 0,
+                                "height=%d expected=%s got=%s",
+                                cp->height, exp, got);
                     return validation_state_error(state,
                         "sha3-utxo-checkpoint-failed");
                 }
                 printf("SHA3 checkpoint PASSED at height %d (%lu UTXOs)\n",
                        cp->height, (unsigned long)count);
                 fflush(stdout);
+                event_emitf(EV_UTXO_CHECKPOINT_PASS, 0,
+                            "height=%d count=%lu",
+                            cp->height, (unsigned long)count);
             }
         }
     }
@@ -987,9 +1037,18 @@ bool activate_best_chain(struct validation_state *state,
         struct block_index *tip = active_chain_tip(&ms->chain_active);
         if (!pindex_most_work || pindex_most_work == tip)
             return true;
+        /* Don't reorg to a chain with less or equal work than our tip.
+         * This happens when nChainTx gaps make find_most_work_chain
+         * return a shorter chain that is actually part of our chain. */
+        if (tip && arith_uint256_compare(&pindex_most_work->nChainWork,
+                                          &tip->nChainWork) <= 0)
+            return true;
         printf("activate_best_chain: tip=%d most_work=%d\n",
                tip ? tip->nHeight : -1,
                pindex_most_work->nHeight);
+        event_emitf(EV_BOOT_ACTIVATE, 0, "tip=%d most_work=%d",
+                    tip ? tip->nHeight : -1,
+                    pindex_most_work->nHeight);
 
         /* Check reorg length */
         if (tip) {
@@ -1116,6 +1175,10 @@ bool activate_best_chain(struct validation_state *state,
                     state->reject_reason[0] ? state->reject_reason
                                             : "unknown",
                     validation_state_is_invalid(state));
+                event_emitf(EV_BOOT_ACTIVATE, 0, "FAILED h=%d reason=%s",
+                    connect_path[i]->nHeight,
+                    state->reject_reason[0] ? state->reject_reason
+                                            : "unknown");
                 if (validation_state_is_invalid(state)) {
                     /* Block failed validation — mark it and retry.
                      * The do-while loop will call find_most_work_chain

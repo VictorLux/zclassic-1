@@ -16,7 +16,10 @@
 #include "validation/contextual_check_tx.h"
 #include "keys/key_io.h"
 #include "models/database.h"
+#include "models/block.h"
+#include <sys/stat.h>
 #include <stdio.h>
+#include <sys/stat.h>
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
@@ -215,6 +218,11 @@ static bool is_json_safe_param(const char *s, size_t maxlen)
 
 /* ── HTTP response helpers ───────────────────────────────── */
 
+#define SECURITY_HEADERS \
+    "X-Content-Type-Options: nosniff\r\n" \
+    "X-Frame-Options: DENY\r\n" \
+    "Strict-Transport-Security: max-age=31536000\r\n"
+
 #define JSON_HEADERS \
     "HTTP/1.1 200 OK\r\n" \
     "Content-Type: application/json; charset=utf-8\r\n" \
@@ -222,6 +230,7 @@ static bool is_json_safe_param(const char *s, size_t maxlen)
     "Access-Control-Allow-Methods: GET, OPTIONS\r\n" \
     "Access-Control-Allow-Headers: Content-Type\r\n" \
     "Cache-Control: public, max-age=10\r\n" \
+    SECURITY_HEADERS \
     "Connection: close\r\n\r\n"
 
 #define JSON_404_HEADERS \
@@ -1326,16 +1335,72 @@ size_t api_handle_request(const char *method, const char *path,
     if (strcmp(clean_path, "/api/health") == 0) {
         enum sync_state ss = sync_get_state();
         bool healthy = (ss == SYNC_AT_TIP);
+
+        /* Chain + database state */
+        extern struct node_db *g_active_node_db;
+        int tip_height = -1;
+        if (g_active_node_db && g_active_node_db->open)
+            tip_height = db_block_max_height(g_active_node_db);
+        int64_t utxo_count = 0;
+        int64_t wal_size = 0;
+        if (g_active_node_db && g_active_node_db->open) {
+            utxo_count = node_db_utxo_count(g_active_node_db);
+            /* Check WAL file size */
+            const char *db_path = sqlite3_db_filename(g_active_node_db->db, "main");
+            if (db_path) {
+                char wal_path[1024];
+                snprintf(wal_path, sizeof(wal_path), "%s-wal", db_path);
+                struct stat wal_st;
+                if (stat(wal_path, &wal_st) == 0)
+                    wal_size = wal_st.st_size;
+            }
+        }
+
+        /* Error state */
+        struct error_ring *er = error_ring_global();
+        int err_count = error_ring_total(er);
+        const struct error_entry *last_err = error_ring_last(er);
+
+        /* Uptime */
+        static int64_t s_start_time = 0;
+        if (s_start_time == 0) s_start_time = (int64_t)time(NULL);
+        int64_t uptime = (int64_t)time(NULL) - s_start_time;
+
+        char body[4096];
+        snprintf(body, sizeof(body),
+            "{"
+            "\"healthy\":%s,"
+            "\"sync_state\":\"%s\","
+            "\"chain\":{\"tip_height\":%d},"
+            "\"database\":{"
+              "\"wal_size_bytes\":%lld,"
+              "\"utxo_count\":%lld"
+            "},"
+            "\"boot\":{\"uptime_seconds\":%lld},"
+            "\"errors\":{"
+              "\"total\":%d,"
+              "\"last\":%s%s%s"
+            "}"
+            "}",
+            healthy ? "true" : "false",
+            sync_state_name(ss),
+            tip_height,
+            (long long)wal_size, (long long)utxo_count,
+            (long long)uptime,
+            err_count,
+            last_err ? "\"" : "null",
+            last_err ? last_err->message : "",
+            last_err ? "\"" : "");
+
         return (size_t)snprintf((char *)response, response_max,
             "HTTP/1.1 %s\r\n"
             "Content-Type: application/json\r\n"
             "Access-Control-Allow-Origin: *\r\n"
             "Cache-Control: no-cache\r\n"
             "Connection: close\r\n\r\n"
-            "{\"healthy\":%s,\"sync_state\":\"%s\"}",
+            "%s",
             healthy ? "200 OK" : "503 Service Unavailable",
-            healthy ? "true" : "false",
-            sync_state_name(ss));
+            body);
     }
 
     /* Wallet data — balance, address, activity */

@@ -16,6 +16,7 @@
  * sequence field as a publish marker. */
 
 static struct event_log g_log;
+static struct error_ring g_error_ring;  /* forward decl for event_log_init */
 
 /* ── Event observers ─────────────────────────────────────── */
 
@@ -51,6 +52,140 @@ void event_clear_all_observers(void)
         g_observers[i].count = 0;
 }
 
+/* ── Async observer dispatch ─────────────────────────────── */
+
+#include <pthread.h>
+
+/* Async queue entry — snapshot of event data for deferred dispatch */
+struct async_event {
+    enum event_type type;
+    uint32_t peer_id;
+    uint8_t  payload[EVENT_PAYLOAD_SIZE];
+    uint32_t payload_len;
+};
+
+#define ASYNC_QUEUE_SIZE 4096
+#define ASYNC_QUEUE_MASK (ASYNC_QUEUE_SIZE - 1)
+
+static struct {
+    struct event_observer_entry observers[EVENT_MAX_OBSERVERS];
+    int count;
+} g_async_observers[EV_NUM_TYPES];
+
+static struct {
+    struct async_event ring[ASYNC_QUEUE_SIZE];
+    _Atomic uint64_t   write_pos;
+    _Atomic uint64_t   read_pos;
+    pthread_t          thread;
+    _Atomic bool       running;
+    pthread_mutex_t    wake_mutex;
+    pthread_cond_t     wake_cond;
+} g_async;
+
+bool event_observe_async(enum event_type type, event_observer_fn fn, void *ctx)
+{
+    if ((int)type < 0 || type >= EV_NUM_TYPES) return false;
+    if (g_async_observers[type].count >= EVENT_MAX_OBSERVERS) return false;
+    int idx = g_async_observers[type].count++;
+    g_async_observers[type].observers[idx].fn = fn;
+    g_async_observers[type].observers[idx].ctx = ctx;
+    return true;
+}
+
+static void notify_async_observers(const struct async_event *ae)
+{
+    enum event_type t = ae->type;
+    if ((int)t < 0 || t >= EV_NUM_TYPES) return;
+    for (int i = 0; i < g_async_observers[t].count; i++)
+        g_async_observers[t].observers[i].fn(
+            t, ae->peer_id, ae->payload, ae->payload_len,
+            g_async_observers[t].observers[i].ctx);
+}
+
+/* Enqueue event for async dispatch. Lock-free, O(1). */
+static void async_enqueue(enum event_type type, uint32_t peer_id,
+                          const void *payload, uint32_t payload_len)
+{
+    /* Check if any async observers exist for this type */
+    if ((int)type < 0 || type >= EV_NUM_TYPES) return;
+    if (g_async_observers[type].count == 0) return;
+
+    uint64_t wp = atomic_fetch_add(&g_async.write_pos, 1);
+    struct async_event *ae = &g_async.ring[wp & ASYNC_QUEUE_MASK];
+    ae->type = type;
+    ae->peer_id = peer_id;
+    ae->payload_len = payload_len < EVENT_PAYLOAD_SIZE
+                      ? payload_len : EVENT_PAYLOAD_SIZE;
+    if (payload && ae->payload_len > 0)
+        memcpy(ae->payload, payload, ae->payload_len);
+    else
+        ae->payload_len = 0;
+
+    /* Wake the dispatch thread */
+    pthread_mutex_lock(&g_async.wake_mutex);
+    pthread_cond_signal(&g_async.wake_cond);
+    pthread_mutex_unlock(&g_async.wake_mutex);
+}
+
+static void *async_dispatch_thread(void *arg)
+{
+    (void)arg;
+    while (atomic_load(&g_async.running)) {
+        uint64_t rp = atomic_load(&g_async.read_pos);
+        uint64_t wp = atomic_load(&g_async.write_pos);
+
+        if (rp >= wp) {
+            /* Nothing to process — wait for signal */
+            pthread_mutex_lock(&g_async.wake_mutex);
+            if (atomic_load(&g_async.read_pos) >= atomic_load(&g_async.write_pos))
+                pthread_cond_wait(&g_async.wake_cond, &g_async.wake_mutex);
+            pthread_mutex_unlock(&g_async.wake_mutex);
+            continue;
+        }
+
+        /* Process all pending events */
+        while (rp < wp) {
+            struct async_event *ae = &g_async.ring[rp & ASYNC_QUEUE_MASK];
+            notify_async_observers(ae);
+            rp++;
+        }
+        atomic_store(&g_async.read_pos, rp);
+    }
+
+    /* Drain remaining events on shutdown */
+    uint64_t rp = atomic_load(&g_async.read_pos);
+    uint64_t wp = atomic_load(&g_async.write_pos);
+    while (rp < wp) {
+        struct async_event *ae = &g_async.ring[rp & ASYNC_QUEUE_MASK];
+        notify_async_observers(ae);
+        rp++;
+    }
+    atomic_store(&g_async.read_pos, rp);
+
+    return NULL;
+}
+
+void event_async_start(void)
+{
+    atomic_store(&g_async.write_pos, 0);
+    atomic_store(&g_async.read_pos, 0);
+    pthread_mutex_init(&g_async.wake_mutex, NULL);
+    pthread_cond_init(&g_async.wake_cond, NULL);
+    atomic_store(&g_async.running, true);
+    pthread_create(&g_async.thread, NULL, async_dispatch_thread, NULL);
+}
+
+void event_async_stop(void)
+{
+    atomic_store(&g_async.running, false);
+    pthread_mutex_lock(&g_async.wake_mutex);
+    pthread_cond_signal(&g_async.wake_cond);
+    pthread_mutex_unlock(&g_async.wake_mutex);
+    pthread_join(g_async.thread, NULL);
+    pthread_mutex_destroy(&g_async.wake_mutex);
+    pthread_cond_destroy(&g_async.wake_cond);
+}
+
 static void notify_observers(enum event_type type, uint32_t peer_id,
                               const void *payload, uint32_t payload_len)
 {
@@ -66,6 +201,7 @@ void event_log_init(void)
     atomic_store(&g_log.write_pos, 0);
     atomic_store(&g_log.initialized, true);
     event_clear_all_observers();
+    error_ring_init(&g_error_ring);
 }
 
 static int64_t now_us(void)
@@ -98,8 +234,12 @@ void event_emit(enum event_type type, uint32_t peer_id,
     /* Publish: readers check sequence matches expected slot */
     atomic_store_explicit(&ev->sequence, seq + 1, memory_order_release);
 
-    /* Notify observers synchronously */
+    /* Notify sync observers immediately */
     notify_observers(type, peer_id, payload, payload_len);
+
+    /* Enqueue for async observers (non-blocking) */
+    if (atomic_load(&g_async.running))
+        async_enqueue(type, peer_id, payload, payload_len);
 }
 
 void event_emitf(enum event_type type, uint32_t peer_id,
@@ -148,7 +288,28 @@ const char *event_type_name(enum event_type type)
         [EV_SNAPSHOT_OFFER_SENT]     = "snap.offer_sent",
         [EV_SNAPSHOT_OFFER_RECEIVED] = "snap.offer_received",
         [EV_SNAPSHOT_COMPLETE]       = "snap.complete",
-        /* wallet/rpc events reserved for future use */
+        /* Boot phases */
+        [EV_BOOT_PHASE]              = "boot.phase",
+        [EV_BOOT_DB_OPEN]            = "boot.db_open",
+        [EV_BOOT_COINS_OPEN]         = "boot.coins_open",
+        [EV_BOOT_UTXO_IMPORT]        = "boot.utxo_import",
+        [EV_BOOT_BLOCK_INDEX]        = "boot.block_index",
+        [EV_BOOT_CHAIN_RESTORED]     = "boot.chain_restored",
+        [EV_BOOT_ACTIVATE]           = "boot.activate",
+        /* Validation pipeline (detailed) */
+        [EV_BLOCK_CHECK_PASSED]      = "val.check_passed",
+        [EV_BLOCK_CONNECT_START]     = "val.connect_start",
+        [EV_BLOCK_CONNECT_DONE]      = "val.connect_done",
+        [EV_TX_INPUTS_CHECKED]       = "val.tx_inputs",
+        [EV_TURNSTILE_CHECK]         = "val.turnstile",
+        [EV_SCRIPT_VERIFIED]         = "val.script_verified",
+        [EV_UTXO_CHECKPOINT_PASS]    = "val.utxo_cp_pass",
+        [EV_UTXO_CHECKPOINT_FAIL]    = "val.utxo_cp_fail",
+        /* ActiveRecord model lifecycle */
+        [EV_MODEL_SAVED]             = "model.saved",
+        [EV_MODEL_DESTROYED]         = "model.destroyed",
+        [EV_MODEL_VALIDATION_FAILED] = "model.validation_failed",
+        /* System */
         [EV_NODE_STARTING]           = "sys.starting",
         [EV_NODE_READY]              = "sys.ready",
         [EV_NODE_SHUTDOWN]           = "sys.shutdown",
@@ -650,4 +811,78 @@ bool sync_set_state(enum sync_state new_state, const char *reason)
            reason ? reason : "");
 
     return true;
+}
+
+/* ── Error accumulator ──────────────────────────────────── */
+
+void error_ring_init(struct error_ring *r)
+{
+    memset(r, 0, sizeof(*r));
+    atomic_store(&r->write_pos, 0);
+    atomic_store(&r->total_count, 0);
+}
+
+void error_ring_observer(enum event_type type, uint32_t peer_id,
+                         const void *payload, uint32_t payload_len, void *ctx)
+{
+    (void)peer_id;
+    struct error_ring *r = (struct error_ring *)ctx;
+    int pos = atomic_fetch_add(&r->write_pos, 1) % ERROR_RING_SIZE;
+    struct error_entry *e = &r->entries[pos];
+
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    e->timestamp_us = (int64_t)tv.tv_sec * 1000000 + tv.tv_usec;
+    e->type = type;
+    if (payload && payload_len > 0) {
+        size_t copy = payload_len < sizeof(e->message) - 1
+                      ? payload_len : sizeof(e->message) - 1;
+        memcpy(e->message, payload, copy);
+        e->message[copy] = '\0';
+    } else {
+        e->message[0] = '\0';
+    }
+    atomic_fetch_add(&r->total_count, 1);
+}
+
+int error_ring_total(const struct error_ring *r)
+{
+    return atomic_load(&r->total_count);
+}
+
+const struct error_entry *error_ring_last(const struct error_ring *r)
+{
+    int total = atomic_load(&r->total_count);
+    if (total == 0) return NULL;
+    int pos = (atomic_load(&r->write_pos) - 1 + ERROR_RING_SIZE) % ERROR_RING_SIZE;
+    return &r->entries[pos];
+}
+
+size_t error_ring_dump_json(const struct error_ring *r, char *buf, size_t sz)
+{
+    int total = atomic_load(&r->total_count);
+    int count = total < ERROR_RING_SIZE ? total : ERROR_RING_SIZE;
+    int wp = atomic_load(&r->write_pos);
+
+    size_t off = 0;
+    off += (size_t)snprintf(buf + off, sz - off,
+        "{\"total\":%d,\"errors\":[", total);
+
+    for (int i = 0; i < count && off < sz - 2; i++) {
+        int idx = (wp - count + i + ERROR_RING_SIZE) % ERROR_RING_SIZE;
+        const struct error_entry *e = &r->entries[idx];
+        if (i > 0) off += (size_t)snprintf(buf + off, sz - off, ",");
+        off += (size_t)snprintf(buf + off, sz - off,
+            "{\"type\":\"%s\",\"time\":%lld,\"msg\":\"%s\"}",
+            event_type_name(e->type),
+            (long long)(e->timestamp_us / 1000000),
+            e->message);
+    }
+    off += (size_t)snprintf(buf + off, sz - off, "]}");
+    return off;
+}
+
+struct error_ring *error_ring_global(void)
+{
+    return &g_error_ring;
 }

@@ -139,23 +139,57 @@ bool read_block_from_disk(struct block *b, const struct disk_block_pos *pos,
     if (!file)
         return false;
 
-    /* Read block size from the 4-byte header preceding block data.
+    /* Read magic + block size from the 8-byte header preceding block data.
      * Block file format: [magic(4)][size(4)][block_data(size)]
      * open_block_file seeks to nPos which points to block_data start. */
     size_t bufsize = 0;
     long cur = ftell(file);
-    if (cur >= 4) {
+    if (cur >= 8) {
+        /* Seek back to magic number (8 bytes before block data) */
+        if (fseek(file, cur - 8, SEEK_SET) == 0) {
+            uint8_t magic[4] = {0};
+            uint32_t block_size = 0;
+            if (fread(magic, 1, 4, file) == 4 &&
+                fread(&block_size, 4, 1, file) == 1) {
+                /* Validate magic bytes match ZClassic mainnet/testnet.
+                 * This catches file corruption and wrong-file reads. */
+                bool magic_ok = (magic[0] == 0x24 && magic[1] == 0xe9 &&
+                                 magic[2] == 0x27 && magic[3] == 0x64) ||
+                                /* testnet magic */
+                                (magic[0] == 0xfa && magic[1] == 0x1a &&
+                                 magic[2] == 0xf9 && magic[3] == 0xbf) ||
+                                /* regtest magic */
+                                (magic[0] == 0xaa && magic[1] == 0xe8 &&
+                                 magic[2] == 0x3f && magic[3] == 0x5f);
+                if (!magic_ok) {
+                    fprintf(stderr, "read_block: BAD MAGIC at file=%d pos=%u "
+                            "got=%02x%02x%02x%02x\n",
+                            pos->nFile, pos->nPos,
+                            magic[0], magic[1], magic[2], magic[3]);
+                }
+                if (magic_ok && block_size > 0 && block_size <= 2000000) {
+                    bufsize = block_size;
+                }
+            }
+        }
+        /* Seek back to block data start */
+        fseek(file, cur, SEEK_SET);
+    } else if (cur >= 4) {
+        /* Fallback: read just the size field */
         if (fseek(file, cur - 4, SEEK_SET) == 0) {
             uint32_t block_size = 0;
             if (fread(&block_size, 4, 1, file) == 1 &&
-                block_size > 0 && block_size < 64 * 1024 * 1024) {
+                block_size > 0 && block_size <= 2000000) {
                 bufsize = block_size;
             }
         }
+        fseek(file, cur, SEEK_SET);
     }
 
+    /* If we couldn't read the size header, use a safe default.
+     * Cap at MAX_BLOCK_SIZE (2MB) not 32MB — prevents reading garbage. */
     if (bufsize == 0)
-        bufsize = 32 * 1024 * 1024;
+        bufsize = 2000000;
 
     unsigned char *buf = malloc(bufsize);
     if (!buf) {

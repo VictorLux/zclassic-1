@@ -1,6 +1,12 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
- * Distributed under the MIT software license, see the accompanying
- * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
+ *
+ * ActiveRecord model: MempoolEntry
+ *
+ * validates :txid, presence: true
+ * validates :size, positive: true, max: 2_000_000
+ * validates :fee, numericality: { >= 0 }
+ * validates :time_added, positive: true
+ * validates :height_added, numericality: { >= 0 } */
 
 #include "models/mempool_entry.h"
 #include <string.h>
@@ -9,35 +15,23 @@
 
 /* ── Callbacks ─────────────────────────────────────────────────── */
 
-static struct ar_callbacks mempool_cbs;
-static bool mempool_cbs_init;
-
-struct ar_callbacks *db_mempool_callbacks(void)
-{
-    if (!mempool_cbs_init) {
-        ar_callbacks_init(&mempool_cbs);
-        mempool_cbs_init = true;
-    }
-    return &mempool_cbs;
-}
+DEFINE_MODEL_CALLBACKS(mempool)
 
 bool db_mempool_validate(const struct db_mempool_entry *e,
                          struct ar_errors *errors)
 {
     ar_errors_clear(errors);
     validates_presence_of(errors, e, txid);
-    if (e->size <= 0)
-        ar_errors_add(errors, "size", "must be positive");
-    if (e->size > 2000000)
-        ar_errors_add(errors, "size", "exceeds MAX_BLOCK_SIZE");
-    if (e->raw_tx && e->raw_tx_len == 0)
-        ar_errors_add(errors, "raw_tx_len", "must be positive when raw_tx present");
-    if (e->raw_tx_len > (size_t)INT32_MAX)
-        ar_errors_add(errors, "raw_tx_len", "exceeds max size");
-    if (e->fee < 0)
-        ar_errors_add(errors, "fee", "must be non-negative");
-    if (e->time_added <= 0)
-        ar_errors_add(errors, "time_added", "must be positive");
+    validates_positive(errors, e, size);
+    validates_max(errors, e, size, 2000000);
+    validates_custom(errors,
+        !(e->raw_tx && e->raw_tx_len == 0),
+        "raw_tx_len", "must be positive when raw_tx present");
+    validates_custom(errors,
+        e->raw_tx_len <= (size_t)INT32_MAX,
+        "raw_tx_len", "exceeds max size");
+    validates_non_negative(errors, e, fee);
+    validates_positive(errors, e, time_added);
     validates_non_negative(errors, e, height_added);
     return !ar_errors_any(errors);
 }
@@ -49,8 +43,12 @@ bool db_mempool_save(struct node_db *ndb, const struct db_mempool_entry *e)
     if (e->time_added == 0)
         ((struct db_mempool_entry *)e)->time_added = (int64_t)time(NULL);
     struct ar_errors errors;
-    if (!db_mempool_validate(e, &errors)) return false;
-    if (!ar_run_before_save(&mempool_cbs, (void *)e)) return false;
+    if (!db_mempool_validate(e, &errors)) {
+        AR_LOG_VALIDATION_FAILURE("mempool_entry", &errors);
+        return false;
+    }
+    struct ar_callbacks *cbs = db_mempool_callbacks();
+    if (!ar_run_before_save(cbs, (void *)e)) return false;
     sqlite3_stmt *s = NULL;
     sqlite3_prepare_v2(ndb->db,
         "INSERT OR REPLACE INTO mempool"

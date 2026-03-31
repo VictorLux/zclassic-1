@@ -11,7 +11,9 @@
 #include "coins/undo.h"
 #include "primitives/transaction.h"
 
-void update_coins_with_undo(const struct transaction *tx,
+/* Returns false on UTXO corruption (missing inputs, invalid values).
+ * Caller MUST check return and reject the block on failure. */
+bool update_coins_with_undo(const struct transaction *tx,
                             struct coins_view_cache *inputs,
                             struct tx_undo *txundo,
                             int nHeight);

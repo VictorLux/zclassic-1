@@ -367,7 +367,8 @@ static bool process_version(struct msg_processor *mp, struct p2p_node *node,
                              struct byte_stream *s)
 {
     if (node->version != 0) {
-        printf("Peer %s: duplicate version message\n", node->addr_name);
+        event_emitf(EV_PEER_MISBEHAVE, (uint32_t)node->id,
+                    "duplicate version from %s", node->addr_name);
         return false;
     }
 
@@ -377,8 +378,10 @@ static bool process_version(struct msg_processor *mp, struct p2p_node *node,
         return false;
 
     if (ver.protocol_version < MIN_PEER_PROTO_VERSION) {
-        printf("Peer %s: protocol version %d too old (min %d)\n",
-               node->addr_name, ver.protocol_version, MIN_PEER_PROTO_VERSION);
+        event_emitf(EV_PEER_MISBEHAVE, (uint32_t)node->id,
+                    "proto %d too old (min %d) %s",
+                    ver.protocol_version, MIN_PEER_PROTO_VERSION,
+                    node->addr_name);
         node->disconnect = true;
         return false;
     }
@@ -387,8 +390,8 @@ static bool process_version(struct msg_processor *mp, struct p2p_node *node,
      * local_host_nonce, we are connecting to ourselves. Disconnect. */
     if (ver.nonce == mp->net_mgr->local_host_nonce &&
         mp->net_mgr->local_host_nonce != 0) {
-        printf("Peer %s: self-connection detected (nonce match), disconnecting\n",
-               node->addr_name);
+        event_emitf(EV_TCP_DISCONNECTED, (uint32_t)node->id,
+                    "self-connection %s", node->addr_name);
         node->disconnect = true;
         return false;
     }
@@ -447,10 +450,11 @@ static bool process_version(struct msg_processor *mp, struct p2p_node *node,
     p2p_node_begin_message(node, "sendheaders", mp->params->pchMessageStart);
     p2p_node_end_message(node);
 
-    printf("Peer %s: version=%d subver=%s height=%d%s\n",
-           node->addr_name, node->version, node->sub_ver,
-           node->starting_height,
-           peer_supports_fast_sync(node->services) ? " [ZCL23]" : "");
+    event_emitf(EV_PEER_VERSION, (uint32_t)node->id,
+                "%s v=%d h=%d %s%s",
+                node->addr_name, node->version, node->starting_height,
+                node->sub_ver,
+                peer_supports_fast_sync(node->services) ? " [ZCL23]" : "");
 
     /* Detect zclassic23 peers via subversion string.
      * Service bit detection is secondary — some peers filter unknown bits. */
@@ -800,6 +804,9 @@ static bool process_inv(struct msg_processor *mp, struct p2p_node *node,
         return false;
 
     if (count > MAX_INV_SZ) {
+        event_emitf(EV_PEER_MISBEHAVE, (uint32_t)node->id,
+                    "inv too large (%llu) from %s",
+                    (unsigned long long)count, node->addr_name);
         printf("Peer %s: inv message too large (%llu)\n",
                node->addr_name, (unsigned long long)count);
         node->disconnect = true;
@@ -971,6 +978,15 @@ static bool process_getdata(struct msg_processor *mp, struct p2p_node *node,
 static bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
                                struct byte_stream *s)
 {
+    /* Pre-check: reject oversized block messages before deserialization.
+     * Prevents allocation DoS from crafted messages. */
+    if (s->size > 2000000) {
+        event_emitf(EV_PEER_MISBEHAVE, (uint32_t)node->id,
+                    "oversized block msg %zu bytes", s->size);
+        peer_misbehaving(mp->net_mgr, node, 100, "oversized block");
+        return false;
+    }
+
     struct block blk;
     block_init(&blk);
     if (!block_deserialize(&blk, s)) {
@@ -1004,8 +1020,9 @@ static bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
     if (!validation_state_is_valid(&state)) {
         char hex[65];
         uint256_get_hex(&hash, hex);
-        fprintf(stderr, "block_msg: REJECTED %s: %s\n", hex,
-                state.reject_reason[0] ? state.reject_reason : "unknown");
+        event_emitf(EV_BLOCK_REJECTED, (uint32_t)node->id,
+                    "hash=%s reason=%s", hex,
+                    state.reject_reason[0] ? state.reject_reason : "unknown");
 
         /* When a block fails validation during IBD (likely a fork block),
          * re-request headers from this peer starting at our current tip.
@@ -1039,8 +1056,9 @@ static bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
                     extern void https_deferred_check(void);
                     https_deferred_check();
                     if (ss != SYNC_REORG)
-                        printf("=== AT TIP: height=%d ===\n",
-                               new_tip->nHeight);
+                        event_emitf(EV_TIP_UPDATED, 0,
+                                    "AT_TIP height=%d",
+                                    new_tip->nHeight);
                 }
                 if (node->state == PEER_SYNCING_BLOCKS ||
                     node->state == PEER_SYNCING_HEADERS)
@@ -1111,7 +1129,8 @@ static bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
                              state.reject_reason[0] ? state.reject_reason
                                                     : "invalid block");
         } else if (!validation_state_is_valid(&state)) {
-            peer_misbehaving(mp->net_mgr, node, 10, "block validation failed");
+            /* DoS=0 but invalid: orphan block or parent-failed.
+             * Don't penalize peer — this is normal during sync. */
         }
     }
 
@@ -1221,8 +1240,9 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
         return false;
 
     if (count > 2000) {
-        printf("Peer %s: headers count %llu exceeds maximum 2000\n",
-               node->addr_name, (unsigned long long)count);
+        event_emitf(EV_PEER_MISBEHAVE, (uint32_t)node->id,
+                    "headers count %llu exceeds 2000 from %s",
+                    (unsigned long long)count, node->addr_name);
         peer_misbehaving(mp->net_mgr, node, 20, "too many headers");
         node->disconnect = true;
         return false;
@@ -1237,8 +1257,9 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
         struct block_header hdr;
         block_header_init(&hdr);
         if (!block_header_deserialize(&hdr, s)) {
-            printf("Peer %s: malformed header at index %llu\n",
-                   node->addr_name, (unsigned long long)i);
+            event_emitf(EV_HEADERS_REJECTED, (uint32_t)node->id,
+                        "malformed header[%llu] from %s",
+                        (unsigned long long)i, node->addr_name);
             peer_misbehaving(mp->net_mgr, node, 20, "malformed header");
             return false;
         }
@@ -1263,9 +1284,11 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
             struct uint256 hh;
             block_header_get_hash(&hdr, &hh);
             uint256_get_hex(&hh, hex);
-            printf("  header[%llu] REJECTED hash=%s reason=%s\n",
-                   (unsigned long long)i, hex,
-                   state.reject_reason[0] ? state.reject_reason : "unknown");
+            event_emitf(EV_HEADERS_REJECTED, (uint32_t)node->id,
+                        "header[%llu] %s reason=%s",
+                        (unsigned long long)i, hex,
+                        state.reject_reason[0] ? state.reject_reason
+                                               : "unknown");
         }
     }
 
@@ -1573,7 +1596,9 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
             char ccmd[COMMAND_SIZE + 1];
             msg_header_get_command(&msg.hdr, ccmd, sizeof(ccmd));
             event_emitf(EV_MSG_CHECKSUM_FAIL, (uint32_t)node->id,
-                        "%s size=%u", ccmd, msg.hdr.nMessageSize);
+                        "%s size=%u exp=%08x got=%08x",
+                        ccmd, msg.hdr.nMessageSize,
+                        expected, msg.hdr.nChecksum);
             fprintf(stderr, "Peer %s: checksum mismatch on '%s' (size=%u exp=%08x got=%08x)\n",
                    node->addr_name, ccmd, msg.hdr.nMessageSize,
                    expected, msg.hdr.nChecksum);
@@ -1904,9 +1929,10 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                 }
             }
         } else if (strcmp(cmd, MSG_SNAPSHOT_END) == 0) {
-            printf("Peer %s: snapshot transfer complete (%llu UTXOs)\n",
-                   node->addr_name,
-                   (unsigned long long)node->zsync_offset);
+            event_emitf(EV_SNAPSHOT_COMPLETE, (uint32_t)node->id,
+                        "%llu UTXOs from %s",
+                        (unsigned long long)node->zsync_offset,
+                        node->addr_name);
 
             /* Verify SHA3 root of received UTXOs against offered root */
             bool snapshot_valid = false;
@@ -1921,8 +1947,9 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                     utxo_commitment_sha3_compute(vdb, local_root, &local_count);
 
                     if (memcmp(local_root, node->zsync_offered_root, 32) == 0) {
-                        printf("SHA3 UTXO verification: PASSED (%llu UTXOs)\n",
-                               (unsigned long long)local_count);
+                        event_emitf(EV_UTXO_CHECKPOINT_PASS, 0,
+                                    "snapshot SHA3 PASSED count=%llu",
+                                    (unsigned long long)local_count);
                         snapshot_valid = true;
 
                         /* Set coins_best_block so the node knows UTXO state */
@@ -1944,7 +1971,14 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                             sprintf(local_hex + i*2, "%02x",
                                     local_root[i]);
                         }
-                        printf("SHA3 UTXO verification: FAILED!\n"
+                        event_emitf(EV_UTXO_CHECKPOINT_FAIL, 0,
+                                    "snapshot SHA3 FAILED offered=%s "
+                                    "local=%s recv=%llu computed=%llu",
+                                    offered_hex, local_hex,
+                                    (unsigned long long)node->zsync_offset,
+                                    (unsigned long long)local_count);
+                        fprintf(stderr,
+                               "SHA3 UTXO verification: FAILED!\n"
                                "  Offered: %s\n"
                                "  Local:   %s\n"
                                "  Count:   %llu received, %llu computed\n",

@@ -35,10 +35,10 @@ bool db_wallet_key_validate(const struct db_wallet_key *k,
     validates_presence_of(errors, k, pubkey_hash);
     validates_presence_of(errors, k, pubkey);
     validates_presence_of(errors, k, privkey);
-    if (k->pubkey_len != 33)
-        ar_errors_add(errors, "pubkey_len", "must be 33 (compressed)");
-    if (k->pubkey_len == 33 && !k->compressed)
-        ar_errors_add(errors, "compressed", "must be true for 33-byte pubkey");
+    validates_custom(errors, k->pubkey_len == 33,
+                     "pubkey_len", "must be 33 (compressed)");
+    validates_custom(errors, !(k->pubkey_len == 33 && !k->compressed),
+                     "compressed", "must be true for 33-byte pubkey");
     validates_non_negative(errors, k, created_at);
     return !ar_errors_any(errors);
 }
@@ -52,7 +52,11 @@ bool db_wallet_key_save(struct node_db *ndb, const struct db_wallet_key *k)
     if (k->created_at == 0)
         ((struct db_wallet_key *)k)->created_at = (int64_t)time(NULL);
     struct ar_errors errors;
-    if (!db_wallet_key_validate(k, &errors)) return false;
+    ar_errors_clear(&errors);
+    if (!db_wallet_key_validate(k, &errors)) {
+        AR_LOG_VALIDATION_FAILURE("wallet_key", &errors);
+        return false;
+    }
     if (!ar_run_before_save(&wkey_cbs, (void *)k)) return false;
     sqlite3_stmt *s = NULL;
     sqlite3_prepare_v2(ndb->db,
@@ -60,13 +64,13 @@ bool db_wallet_key_save(struct node_db *ndb, const struct db_wallet_key *k)
         "(pubkey_hash,pubkey,privkey,compressed,created_at)"
         " VALUES(?,?,?,?,?)",
         -1, &s, NULL);
-    sqlite3_bind_blob(s, 1, k->pubkey_hash, 20, SQLITE_STATIC);
-    sqlite3_bind_blob(s, 2, k->pubkey, (int)k->pubkey_len, SQLITE_STATIC);
-    sqlite3_bind_blob(s, 3, k->privkey, 32, SQLITE_STATIC);
-    sqlite3_bind_int(s, 4, k->compressed ? 1 : 0);
-    sqlite3_bind_int64(s, 5, k->created_at);
+    AR_BIND_BLOB(s, 1, k->pubkey_hash, 20);
+    AR_BIND_BLOB(s, 2, k->pubkey, (int)k->pubkey_len);
+    AR_BIND_BLOB(s, 3, k->privkey, 32);
+    AR_BIND_INT(s, 4, k->compressed ? 1 : 0);
+    AR_BIND_INT(s, 5, k->created_at);
     int rc = sqlite3_step(s);
-    sqlite3_finalize(s);
+    AR_FINALIZE(s);
     bool ok = rc == SQLITE_DONE;
     if (ok) ar_run_after_save(&wkey_cbs, (void *)k);
     return ok;
@@ -81,24 +85,23 @@ bool db_wallet_key_find(struct node_db *ndb, const uint8_t pubkey_hash[20],
         "SELECT pubkey,privkey,compressed,created_at"
         " FROM wallet_keys WHERE pubkey_hash=?",
         -1, &s, NULL);
-    sqlite3_bind_blob(s, 1, pubkey_hash, 20, SQLITE_STATIC);
-    if (sqlite3_step(s) != SQLITE_ROW) {
-        sqlite3_finalize(s);
+    AR_BIND_BLOB(s, 1, pubkey_hash, 20);
+    if (!AR_STEP_ROW(s)) {
+        AR_FINALIZE(s);
         return false;
     }
     memset(out, 0, sizeof(*out));
     memcpy(out->pubkey_hash, pubkey_hash, 20);
-    int pk_len = sqlite3_column_bytes(s, 0);
+    int pk_len = AR_COL_BYTES(s, 0);
     const void *pk = sqlite3_column_blob(s, 0);
     if (pk && pk_len <= 33) {
         memcpy(out->pubkey, pk, (size_t)pk_len);
         out->pubkey_len = (size_t)pk_len;
     }
-    const void *sk = sqlite3_column_blob(s, 1);
-    if (sk) memcpy(out->privkey, sk, 32);
-    out->compressed = sqlite3_column_int(s, 2) != 0;
-    out->created_at = sqlite3_column_int64(s, 3);
-    sqlite3_finalize(s);
+    AR_READ_BLOB(s, 1, out->privkey, 32);
+    out->compressed = AR_COL_INT(s, 2) != 0;
+    out->created_at = AR_COL_INT(s, 3);
+    AR_FINALIZE(s);
     return true;
 }
 
@@ -202,7 +205,11 @@ bool db_sapling_key_save(struct node_db *ndb, const struct db_sapling_key *k)
 {
     if (!ndb->open) return false;
     struct ar_errors errors;
-    if (!db_sapling_key_validate(k, &errors)) return false;
+    ar_errors_clear(&errors);
+    if (!db_sapling_key_validate(k, &errors)) {
+        fprintf(stderr, "sapling_key save FAILED: %s\n", ar_errors_full(&errors));
+        return false;
+    }
     if (!ar_run_before_save(&skey_cbs, (void *)k)) return false;
     sqlite3_stmt *s = NULL;
     sqlite3_prepare_v2(ndb->db,

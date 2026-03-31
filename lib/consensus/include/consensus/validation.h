@@ -116,6 +116,70 @@ static inline bool validation_state_get_dos(const struct validation_state *s,
     return false;
 }
 
+/* ── Rails-style consensus validation macros ──────────────────────
+ * DRY up the repetitive validation_state_dos() boilerplate.
+ * Every macro returns false from the enclosing function on failure.
+ *
+ * Usage:
+ *   REJECT_IF(tx->num_vin == 0, state, 10, "bad-txns-vin-empty");
+ *   REJECT_UNLESS(MoneyRange(value), state, 100, "bad-txns-toolarge");
+ *   REJECT_CORRUPT_IF(mutated, state, 100, "bad-txns-duplicate");
+ *   REJECT_FATAL(state, "out-of-memory");
+ */
+
+/* Reject with DoS score if condition is true */
+#define REJECT_IF(cond, state, dos, reason) do { \
+    if (cond) \
+        return validation_state_dos(state, dos, false, REJECT_INVALID, \
+                                    reason, false, NULL); \
+} while (0)
+
+/* Reject with DoS score if condition is false */
+#define REJECT_UNLESS(cond, state, dos, reason) \
+    REJECT_IF(!(cond), state, dos, reason)
+
+/* Reject with corruption flag (data may need re-download) */
+#define REJECT_CORRUPT_IF(cond, state, dos, reason) do { \
+    if (cond) \
+        return validation_state_dos(state, dos, false, REJECT_INVALID, \
+                                    reason, true, NULL); \
+} while (0)
+
+/* Reject as obsolete (old version, not necessarily malicious) */
+#define REJECT_OBSOLETE_IF(cond, state, reason) do { \
+    if (cond) \
+        return validation_state_invalid(state, false, REJECT_OBSOLETE, \
+                                        reason, NULL); \
+} while (0)
+
+/* Reject with no DoS (peer isn't misbehaving, just invalid data) */
+#define REJECT_INVALID_IF(cond, state, reason) do { \
+    if (cond) \
+        return validation_state_invalid(state, false, REJECT_INVALID, \
+                                        reason, NULL); \
+} while (0)
+
+/* Reject at checkpoint boundary */
+#define REJECT_CHECKPOINT_IF(cond, state, dos, reason) do { \
+    if (cond) \
+        return validation_state_dos(state, dos, false, REJECT_CHECKPOINT, \
+                                    reason, false, NULL); \
+} while (0)
+
+/* Fatal internal error (not peer-caused) */
+#define REJECT_FATAL(state, reason) \
+    return validation_state_error(state, reason)
+
+/* Reject with cleanup: runs cleanup_stmt before returning.
+ * For use inside loops where resources need freeing. */
+#define REJECT_IF_CLEANUP(cond, state, dos, reason, cleanup) do { \
+    if (cond) { \
+        cleanup; \
+        return validation_state_dos(state, dos, false, REJECT_INVALID, \
+                                    reason, false, NULL); \
+    } \
+} while (0)
+
 static inline void format_state_message(const struct validation_state *s,
                                         char *buf, size_t buflen)
 {

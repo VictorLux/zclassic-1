@@ -130,6 +130,40 @@ static inline void ar_errors_full_messages(const struct ar_errors *e,
         ar_errors_add(errors, #field, "is not included in the list"); \
 } while (0)
 
+#define validates_max(errors, record, field, max_val) do { \
+    if ((record)->field > (max_val)) \
+        ar_errors_add(errors, #field, "exceeds maximum"); \
+} while (0)
+
+#define validates_min(errors, record, field, min_val) do { \
+    if ((record)->field < (min_val)) \
+        ar_errors_add(errors, #field, "below minimum"); \
+} while (0)
+
+#define validates_not_zero(errors, record, field) do { \
+    if ((record)->field == 0) \
+        ar_errors_add(errors, #field, "can't be zero"); \
+} while (0)
+
+/* Validates a money amount is in consensus range [0, MAX_MONEY].
+ * Use for ZCL values: UTXO amounts, fees, balances. */
+#define validates_money_range(errors, record, field, max_money) do { \
+    if ((record)->field < 0 || (record)->field > (max_money)) \
+        ar_errors_add(errors, #field, "is out of money range"); \
+} while (0)
+
+/* Validates string field is not empty. */
+#define validates_string_present(errors, str, name) do { \
+    if (!(str) || (str)[0] == '\0') \
+        ar_errors_add(errors, name, "can't be blank"); \
+} while (0)
+
+/* Validates a custom condition with a custom message. */
+#define validates_custom(errors, cond, field, msg) do { \
+    if (!(cond)) \
+        ar_errors_add(errors, field, msg); \
+} while (0)
+
 /* ── DRY Macros ────────────────────────────────────────────────── */
 
 /* Define a model's callback registry with lazy init.
@@ -172,6 +206,91 @@ static inline void ar_errors_full_messages(const struct ar_errors *e,
     } else { \
         (dest)[0] = 0; \
     } \
+} while (0)
+
+/* ── SQLite Statement Macros ──────────────────────────────────── *
+ * Eliminate prepare/bind/step/finalize boilerplate.
+ *
+ * Usage:
+ *   AR_PREPARE(ndb, s, "SELECT * FROM blocks WHERE height = ?");
+ *   AR_BIND_INT(s, 1, height);
+ *   if (!AR_STEP_ROW(s)) { AR_FINALIZE(s); return false; }
+ *   int h = AR_COL_INT(s, 0);
+ *   AR_FINALIZE(s);
+ */
+
+/* Prepare a statement. Sets ndb->last_error on failure, returns false. */
+#define AR_PREPARE(ndb, stmt, sql) do { \
+    if (sqlite3_prepare_v2((ndb)->db, sql, -1, &(stmt), NULL) != SQLITE_OK) { \
+        snprintf((ndb)->last_error, sizeof((ndb)->last_error), \
+                 "prepare failed: %s", sqlite3_errmsg((ndb)->db)); \
+        return false; \
+    } \
+} while (0)
+
+/* Prepare, but don't return — for functions that need custom error handling. */
+#define AR_PREPARE_OR(ndb, stmt, sql, fail_action) do { \
+    if (sqlite3_prepare_v2((ndb)->db, sql, -1, &(stmt), NULL) != SQLITE_OK) { \
+        snprintf((ndb)->last_error, sizeof((ndb)->last_error), \
+                 "prepare failed: %s", sqlite3_errmsg((ndb)->db)); \
+        fail_action; \
+    } \
+} while (0)
+
+/* Bind helpers */
+#define AR_BIND_INT(stmt, pos, val) \
+    sqlite3_bind_int64(stmt, pos, (int64_t)(val))
+
+#define AR_BIND_BLOB(stmt, pos, data, len) \
+    sqlite3_bind_blob(stmt, pos, data, (int)(len), SQLITE_STATIC)
+
+#define AR_BIND_TEXT(stmt, pos, str) \
+    sqlite3_bind_text(stmt, pos, str, -1, SQLITE_STATIC)
+
+#define AR_BIND_DOUBLE(stmt, pos, val) \
+    sqlite3_bind_double(stmt, pos, val)
+
+#define AR_BIND_NULL(stmt, pos) \
+    sqlite3_bind_null(stmt, pos)
+
+/* Step and check result */
+#define AR_STEP_ROW(stmt)  (sqlite3_step(stmt) == SQLITE_ROW)
+#define AR_STEP_DONE(stmt) (sqlite3_step(stmt) == SQLITE_DONE)
+
+/* Column readers */
+#define AR_COL_INT(stmt, col)    sqlite3_column_int64(stmt, col)
+#define AR_COL_DOUBLE(stmt, col) sqlite3_column_double(stmt, col)
+#define AR_COL_TEXT(stmt, col)   ((const char *)sqlite3_column_text(stmt, col))
+#define AR_COL_BYTES(stmt, col)  sqlite3_column_bytes(stmt, col)
+
+/* Finalize */
+#define AR_FINALIZE(stmt) do { \
+    if (stmt) { sqlite3_finalize(stmt); (stmt) = NULL; } \
+} while (0)
+
+/* Execute a simple SQL statement (no bindings, no result). */
+#define AR_EXEC(ndb, sql) do { \
+    char *_err = NULL; \
+    if (sqlite3_exec((ndb)->db, sql, NULL, NULL, &_err) != SQLITE_OK) { \
+        if (_err) { \
+            snprintf((ndb)->last_error, sizeof((ndb)->last_error), \
+                     "exec failed: %s", _err); \
+            sqlite3_free(_err); \
+        } \
+    } \
+} while (0)
+
+/* ── Validate + Save lifecycle macro ──────────────────────────── *
+ * Standard Rails-like lifecycle: validate → before_save → SQL → after_save.
+ * Use in _save() implementations to eliminate boilerplate.
+ *
+ * Usage:
+ *   AR_VALIDATE_AND_SAVE(ndb, record, model_name, validate_fn, sql_fn)
+ */
+#define AR_LOG_VALIDATION_FAILURE(model, errors) do { \
+    char _msgs[512]; \
+    ar_errors_full_messages(errors, _msgs, sizeof(_msgs)); \
+    fprintf(stderr, "%s validation FAILED: %s\n", model, _msgs); \
 } while (0)
 
 /* ── Callback System ───────────────────────────────────────────── */

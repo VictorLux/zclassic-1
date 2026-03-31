@@ -2,7 +2,13 @@
  * Copyright (c) 2009-2014 The Bitcoin Core developers
  * Copyright 2026 Rhett Creighton - Apache License 2.0
  * Distributed under the MIT software license, see the accompanying
- * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
+ * file COPYING or http://www.opensource.org/licenses/mit-license.php.
+ *
+ * CheckTransaction — context-free transaction validation.
+ * 30 checks matching zclassicd main.cpp:1116-1364 exactly.
+ *
+ * Uses REJECT_IF / REJECT_UNLESS macros from validation.h
+ * for Rails-style DRY validation (no boilerplate). */
 
 #include "validation/check_transaction.h"
 #include "core/amount.h"
@@ -14,231 +20,153 @@ bool check_transaction(const struct transaction *tx,
 {
     if (!transaction_is_coinbase(tx))
         metrics_increment_tx_validated();
-    if (!tx->overwintered && tx->version < SPROUT_MIN_TX_VERSION) {
-        return validation_state_dos(state, 100, false, REJECT_INVALID,
-                                    "bad-txns-version-too-low", false, NULL);
-    }
+
+    /* ── Version checks ─────────────────────────────────────── */
+    REJECT_IF(!tx->overwintered && tx->version < SPROUT_MIN_TX_VERSION,
+              state, 100, "bad-txns-version-too-low");
 
     if (tx->overwintered) {
-        if (tx->version < OVERWINTER_MIN_TX_VERSION) {
-            return validation_state_dos(state, 100, false, REJECT_INVALID,
-                                        "bad-tx-overwinter-version-too-low",
-                                        false, NULL);
-        }
-        if (tx->version_group_id != OVERWINTER_VERSION_GROUP_ID &&
-            tx->version_group_id != SAPLING_VERSION_GROUP_ID) {
-            return validation_state_dos(state, 100, false, REJECT_INVALID,
-                                        "bad-tx-version-group-id",
-                                        false, NULL);
-        }
-        if (tx->expiry_height >= TX_EXPIRY_HEIGHT_THRESHOLD) {
-            return validation_state_dos(state, 100, false, REJECT_INVALID,
-                                        "bad-tx-expiry-height-too-high",
-                                        false, NULL);
-        }
+        REJECT_IF(tx->version < OVERWINTER_MIN_TX_VERSION,
+                  state, 100, "bad-tx-overwinter-version-too-low");
+
+        REJECT_IF(tx->version_group_id != OVERWINTER_VERSION_GROUP_ID &&
+                  tx->version_group_id != SAPLING_VERSION_GROUP_ID,
+                  state, 100, "bad-tx-version-group-id");
+
+        REJECT_IF(tx->expiry_height >= TX_EXPIRY_HEIGHT_THRESHOLD,
+                  state, 100, "bad-tx-expiry-height-too-high");
     }
 
-    /* vin may be empty if joinsplits or shielded spends exist */
-    if (tx->num_vin == 0 && tx->num_joinsplit == 0 &&
-        tx->num_shielded_spend == 0) {
-        return validation_state_dos(state, 10, false, REJECT_INVALID,
-                                    "bad-txns-vin-empty", false, NULL);
-    }
-    /* vout may be empty if joinsplits or shielded outputs exist */
-    if (tx->num_vout == 0 && tx->num_joinsplit == 0 &&
-        tx->num_shielded_output == 0) {
-        return validation_state_dos(state, 10, false, REJECT_INVALID,
-                                    "bad-txns-vout-empty", false, NULL);
-    }
+    /* ── Input/output existence ─────────────────────────────── */
+    REJECT_IF(tx->num_vin == 0 && tx->num_joinsplit == 0 &&
+              tx->num_shielded_spend == 0,
+              state, 10, "bad-txns-vin-empty");
 
-    /* Size limits (post-Sapling max) */
+    REJECT_IF(tx->num_vout == 0 && tx->num_joinsplit == 0 &&
+              tx->num_shielded_output == 0,
+              state, 10, "bad-txns-vout-empty");
+
+    /* ── Size limit ─────────────────────────────────────────── */
     size_t tx_size = transaction_serialize_size(tx);
-    if (tx_size > MAX_TX_SIZE_AFTER_SAPLING) {
-        return validation_state_dos(state, 100, false, REJECT_INVALID,
-                                    "bad-txns-oversize", false, NULL);
-    }
+    REJECT_IF(tx_size > MAX_TX_SIZE_AFTER_SAPLING,
+              state, 100, "bad-txns-oversize");
 
-    /* Check for negative or overflow output values */
+    /* ── Output value validation ────────────────────────────── */
     int64_t value_out = 0;
     for (size_t i = 0; i < tx->num_vout; i++) {
-        if (tx->vout[i].value < 0) {
-            return validation_state_dos(state, 100, false, REJECT_INVALID,
-                                        "bad-txns-vout-negative", false, NULL);
-        }
-        if (tx->vout[i].value > MAX_MONEY) {
-            return validation_state_dos(state, 100, false, REJECT_INVALID,
-                                        "bad-txns-vout-toolarge", false, NULL);
-        }
+        REJECT_IF(tx->vout[i].value < 0,
+                  state, 100, "bad-txns-vout-negative");
+        REJECT_IF(tx->vout[i].value > MAX_MONEY,
+                  state, 100, "bad-txns-vout-toolarge");
         value_out += tx->vout[i].value;
-        if (!MoneyRange(value_out)) {
-            return validation_state_dos(state, 100, false, REJECT_INVALID,
-                                        "bad-txns-txouttotal-toolarge",
-                                        false, NULL);
-        }
+        REJECT_UNLESS(MoneyRange(value_out),
+                      state, 100, "bad-txns-txouttotal-toolarge");
     }
 
-    /* Check for non-zero valueBalance when there are no Sapling inputs or outputs */
-    if (tx->num_shielded_spend == 0 && tx->num_shielded_output == 0 &&
-        tx->value_balance != 0) {
-        return validation_state_dos(state, 100, false, REJECT_INVALID,
-                                    "bad-txns-valuebalance-nonzero",
-                                    false, NULL);
-    }
+    /* ── Sapling valueBalance ───────────────────────────────── */
+    REJECT_IF(tx->num_shielded_spend == 0 && tx->num_shielded_output == 0 &&
+              tx->value_balance != 0,
+              state, 100, "bad-txns-valuebalance-nonzero");
 
-    /* Check for overflow valueBalance */
-    if (tx->value_balance > MAX_MONEY || tx->value_balance < -MAX_MONEY) {
-        return validation_state_dos(state, 100, false, REJECT_INVALID,
-                                    "bad-txns-valuebalance-toolarge",
-                                    false, NULL);
-    }
+    REJECT_IF(tx->value_balance > MAX_MONEY || tx->value_balance < -MAX_MONEY,
+              state, 100, "bad-txns-valuebalance-toolarge");
 
-    /* Negative valueBalance takes from transparent pool like outputs */
+    /* Negative valueBalance takes from transparent pool */
     if (tx->value_balance <= 0) {
         value_out += -tx->value_balance;
-        if (!MoneyRange(value_out)) {
-            return validation_state_dos(state, 100, false, REJECT_INVALID,
-                                        "bad-txns-txouttotal-toolarge",
-                                        false, NULL);
-        }
+        REJECT_UNLESS(MoneyRange(value_out),
+                      state, 100, "bad-txns-txouttotal-toolarge");
     }
 
-    /* Ensure that joinsplit values are well-formed */
+    /* ── JoinSplit value validation ─────────────────────────── */
     for (size_t i = 0; i < tx->num_joinsplit; i++) {
         const struct js_description *js = &tx->v_joinsplit[i];
-        if (js->vpub_old < 0) {
-            return validation_state_dos(state, 100, false, REJECT_INVALID,
-                                        "bad-txns-vpub_old-negative",
-                                        false, NULL);
-        }
-        if (js->vpub_new < 0) {
-            return validation_state_dos(state, 100, false, REJECT_INVALID,
-                                        "bad-txns-vpub_new-negative",
-                                        false, NULL);
-        }
-        if (js->vpub_old > MAX_MONEY) {
-            return validation_state_dos(state, 100, false, REJECT_INVALID,
-                                        "bad-txns-vpub_old-toolarge",
-                                        false, NULL);
-        }
-        if (js->vpub_new > MAX_MONEY) {
-            return validation_state_dos(state, 100, false, REJECT_INVALID,
-                                        "bad-txns-vpub_new-toolarge",
-                                        false, NULL);
-        }
-        if (js->vpub_new != 0 && js->vpub_old != 0) {
-            return validation_state_dos(state, 100, false, REJECT_INVALID,
-                                        "bad-txns-vpubs-both-nonzero",
-                                        false, NULL);
-        }
+
+        REJECT_IF(js->vpub_old < 0, state, 100, "bad-txns-vpub_old-negative");
+        REJECT_IF(js->vpub_new < 0, state, 100, "bad-txns-vpub_new-negative");
+        REJECT_IF(js->vpub_old > MAX_MONEY,
+                  state, 100, "bad-txns-vpub_old-toolarge");
+        REJECT_IF(js->vpub_new > MAX_MONEY,
+                  state, 100, "bad-txns-vpub_new-toolarge");
+        REJECT_IF(js->vpub_new != 0 && js->vpub_old != 0,
+                  state, 100, "bad-txns-vpubs-both-nonzero");
+
         value_out += js->vpub_old;
-        if (!MoneyRange(value_out)) {
-            return validation_state_dos(state, 100, false, REJECT_INVALID,
-                                        "bad-txns-txouttotal-toolarge",
-                                        false, NULL);
-        }
+        REJECT_UNLESS(MoneyRange(value_out),
+                      state, 100, "bad-txns-txouttotal-toolarge");
     }
 
-    /* Ensure input values do not exceed MAX_MONEY */
+    /* ── Input value overflow check ─────────────────────────── */
     {
         int64_t value_in = 0;
         for (size_t i = 0; i < tx->num_joinsplit; i++) {
             value_in += tx->v_joinsplit[i].vpub_new;
-            if (!MoneyRange(tx->v_joinsplit[i].vpub_new) ||
-                !MoneyRange(value_in)) {
-                return validation_state_dos(state, 100, false, REJECT_INVALID,
-                                            "bad-txns-txintotal-toolarge",
-                                            false, NULL);
-            }
+            REJECT_IF(!MoneyRange(tx->v_joinsplit[i].vpub_new) ||
+                      !MoneyRange(value_in),
+                      state, 100, "bad-txns-txintotal-toolarge");
         }
-        /* Positive valueBalance adds to transparent pool like inputs */
         if (tx->value_balance >= 0) {
             value_in += tx->value_balance;
-            if (!MoneyRange(value_in)) {
-                return validation_state_dos(state, 100, false, REJECT_INVALID,
-                                            "bad-txns-txintotal-toolarge",
-                                            false, NULL);
-            }
+            REJECT_UNLESS(MoneyRange(value_in),
+                          state, 100, "bad-txns-txintotal-toolarge");
         }
     }
 
-    /* Check for duplicate inputs */
+    /* ── Duplicate transparent inputs ───────────────────────── */
     for (size_t i = 0; i < tx->num_vin; i++) {
         for (size_t j = i + 1; j < tx->num_vin; j++) {
-            if (outpoint_cmp(&tx->vin[i].prevout, &tx->vin[j].prevout) == 0) {
-                return validation_state_dos(state, 100, false, REJECT_INVALID,
-                                            "bad-txns-inputs-duplicate",
-                                            false, NULL);
-            }
+            REJECT_IF(outpoint_cmp(&tx->vin[i].prevout,
+                                   &tx->vin[j].prevout) == 0,
+                      state, 100, "bad-txns-inputs-duplicate");
         }
     }
 
-    /* Check for duplicate joinsplit nullifiers */
+    /* ── Duplicate JoinSplit nullifiers ──────────────────────── */
     for (size_t i = 0; i < tx->num_joinsplit; i++) {
         for (int ni = 0; ni < ZC_NUM_JS_INPUTS; ni++) {
             const struct uint256 *nf = &tx->v_joinsplit[i].nullifiers[ni];
             for (size_t j = 0; j < i; j++) {
                 for (int nj = 0; nj < ZC_NUM_JS_INPUTS; nj++) {
-                    if (uint256_cmp(nf, &tx->v_joinsplit[j].nullifiers[nj]) == 0) {
-                        return validation_state_dos(state, 100, false,
-                            REJECT_INVALID,
-                            "bad-joinsplits-nullifiers-duplicate",
-                            false, NULL);
-                    }
+                    REJECT_IF(uint256_cmp(nf,
+                              &tx->v_joinsplit[j].nullifiers[nj]) == 0,
+                              state, 100,
+                              "bad-joinsplits-nullifiers-duplicate");
                 }
             }
-            /* Check within same joinsplit */
             for (int nj = 0; nj < ni; nj++) {
-                if (uint256_cmp(nf, &tx->v_joinsplit[i].nullifiers[nj]) == 0) {
-                    return validation_state_dos(state, 100, false,
-                        REJECT_INVALID,
-                        "bad-joinsplits-nullifiers-duplicate",
-                        false, NULL);
-                }
+                REJECT_IF(uint256_cmp(nf,
+                          &tx->v_joinsplit[i].nullifiers[nj]) == 0,
+                          state, 100, "bad-joinsplits-nullifiers-duplicate");
             }
         }
     }
 
-    /* Check for duplicate sapling nullifiers */
+    /* ── Duplicate Sapling nullifiers ───────────────────────── */
     for (size_t i = 0; i < tx->num_shielded_spend; i++) {
         for (size_t j = i + 1; j < tx->num_shielded_spend; j++) {
-            if (uint256_cmp(&tx->v_shielded_spend[i].nullifier,
-                            &tx->v_shielded_spend[j].nullifier) == 0) {
-                return validation_state_dos(state, 100, false, REJECT_INVALID,
-                    "bad-spend-description-nullifiers-duplicate",
-                    false, NULL);
-            }
+            REJECT_IF(uint256_cmp(&tx->v_shielded_spend[i].nullifier,
+                                  &tx->v_shielded_spend[j].nullifier) == 0,
+                      state, 100,
+                      "bad-spend-description-nullifiers-duplicate");
         }
     }
 
+    /* ── Coinbase restrictions ──────────────────────────────── */
     if (transaction_is_coinbase(tx)) {
-        /* Coinbase cannot have joinsplits */
-        if (tx->num_joinsplit > 0) {
-            return validation_state_dos(state, 100, false, REJECT_INVALID,
-                                        "bad-cb-has-joinsplits", false, NULL);
-        }
-        /* Coinbase cannot have shielded spends or outputs */
-        if (tx->num_shielded_spend > 0) {
-            return validation_state_dos(state, 100, false, REJECT_INVALID,
-                                        "bad-cb-has-spend-description",
-                                        false, NULL);
-        }
-        if (tx->num_shielded_output > 0) {
-            return validation_state_dos(state, 100, false, REJECT_INVALID,
-                                        "bad-cb-has-output-description",
-                                        false, NULL);
-        }
-        if (tx->vin[0].script_sig.size < 2 ||
-            tx->vin[0].script_sig.size > 100) {
-            return validation_state_dos(state, 100, false, REJECT_INVALID,
-                                        "bad-cb-length", false, NULL);
-        }
+        REJECT_IF(tx->num_joinsplit > 0,
+                  state, 100, "bad-cb-has-joinsplits");
+        REJECT_IF(tx->num_shielded_spend > 0,
+                  state, 100, "bad-cb-has-spend-description");
+        REJECT_IF(tx->num_shielded_output > 0,
+                  state, 100, "bad-cb-has-output-description");
+        REJECT_IF(tx->vin[0].script_sig.size < 2 ||
+                  tx->vin[0].script_sig.size > 100,
+                  state, 100, "bad-cb-length");
     } else {
+        /* Non-coinbase: no null prevouts */
         for (size_t i = 0; i < tx->num_vin; i++) {
-            if (outpoint_is_null(&tx->vin[i].prevout)) {
-                return validation_state_dos(state, 10, false, REJECT_INVALID,
-                                            "bad-txns-prevout-null",
-                                            false, NULL);
-            }
+            REJECT_IF(outpoint_is_null(&tx->vin[i].prevout),
+                      state, 10, "bad-txns-prevout-null");
         }
     }
 

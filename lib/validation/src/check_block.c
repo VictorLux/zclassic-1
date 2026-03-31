@@ -2,7 +2,12 @@
  * Copyright (c) 2009-2014 The Bitcoin Core developers
  * Copyright 2026 Rhett Creighton - Apache License 2.0
  * Distributed under the MIT software license, see the accompanying
- * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
+ * file COPYING or http://www.opensource.org/licenses/mit-license.php.
+ *
+ * CheckBlock, CheckBlockHeader, ContextualCheckBlock[Header]
+ * 21 checks matching zclassicd main.cpp:3922-4101 exactly.
+ *
+ * Uses REJECT_IF / REJECT_UNLESS / REJECT_CORRUPT_IF macros. */
 
 #include "validation/check_block.h"
 #include "bloom/merkle.h"
@@ -19,33 +24,34 @@
 #include <math.h>
 #include <string.h>
 
+/* ── CheckBlockHeader (4 checks) ──────────────────────────────── */
+
 bool check_block_header(const struct block_header *header,
                         struct validation_state *state,
                         const struct chain_params *params,
                         bool check_pow)
 {
-    if (header->nVersion < MIN_BLOCK_VERSION)
-        return validation_state_dos(state, 100, false, REJECT_INVALID,
-                                    "version-too-low", false, NULL);
-
-    if (check_pow && !check_equihash_solution(header, params))
-        return validation_state_dos(state, 100, false, REJECT_INVALID,
-                                    "invalid-solution", false, NULL);
+    REJECT_IF(header->nVersion < MIN_BLOCK_VERSION,
+              state, 100, "version-too-low");
 
     if (check_pow) {
+        REJECT_IF(!check_equihash_solution(header, params),
+                  state, 100, "invalid-solution");
+
         struct uint256 hash;
         block_header_get_hash(header, &hash);
-        if (!CheckProofOfWork(hash, header->nBits, &params->consensus))
-            return validation_state_dos(state, 50, false, REJECT_INVALID,
-                                        "high-hash", false, NULL);
+        REJECT_IF(!CheckProofOfWork(hash, header->nBits, &params->consensus),
+                  state, 50, "high-hash");
     }
 
-    if (block_header_get_time(header) > GetAdjustedTime() + 2 * 60 * 60)
-        return validation_state_invalid(state, false, REJECT_INVALID,
-                                        "time-too-new", NULL);
+    REJECT_INVALID_IF(
+        block_header_get_time(header) > GetAdjustedTime() + 2 * 60 * 60,
+        state, "time-too-new");
 
     return true;
 }
+
+/* ── CheckBlock (8 checks) ─────────────────────────────────────── */
 
 bool check_block(const struct block *block,
                  struct validation_state *state,
@@ -60,7 +66,7 @@ bool check_block(const struct block *block,
     if (check_merkle_root) {
         struct uint256 *txids = malloc(block->num_vtx * sizeof(struct uint256));
         if (!txids && block->num_vtx > 0)
-            return validation_state_error(state, "out-of-memory");
+            REJECT_FATAL(state, "out-of-memory");
 
         for (size_t i = 0; i < block->num_vtx; i++)
             txids[i] = block->vtx[i].hash;
@@ -70,28 +76,26 @@ bool check_block(const struct block *block,
             compute_merkle_root_mutated(txids, block->num_vtx, &mutated);
         free(txids);
 
-        if (!uint256_eq(&block->header.hashMerkleRoot, &merkle_root))
-            return validation_state_dos(state, 100, false, REJECT_INVALID,
-                                        "bad-txnmrklroot", true, NULL);
+        REJECT_CORRUPT_IF(
+            !uint256_eq(&block->header.hashMerkleRoot, &merkle_root),
+            state, 100, "bad-txnmrklroot");
 
-        if (mutated)
-            return validation_state_dos(state, 100, false, REJECT_INVALID,
-                                        "bad-txns-duplicate", true, NULL);
+        REJECT_CORRUPT_IF(mutated, state, 100, "bad-txns-duplicate");
     }
 
     if (check_size_limits) {
         const unsigned int GENEROUS_BLOCK_SIZE_LIMIT = 2000000;
-        if (block->num_vtx == 0 || block->num_vtx > GENEROUS_BLOCK_SIZE_LIMIT)
-            return validation_state_dos(state, 100, false, REJECT_INVALID,
-                                        "bad-blk-length", false, NULL);
 
-        if (!transaction_is_coinbase(&block->vtx[0]))
-            return validation_state_dos(state, 100, false, REJECT_INVALID,
-                                        "bad-cb-missing", false, NULL);
+        REJECT_IF(block->num_vtx == 0 ||
+                  block->num_vtx > GENEROUS_BLOCK_SIZE_LIMIT,
+                  state, 100, "bad-blk-length");
+
+        REJECT_IF(!transaction_is_coinbase(&block->vtx[0]),
+                  state, 100, "bad-cb-missing");
+
         for (size_t i = 1; i < block->num_vtx; i++) {
-            if (transaction_is_coinbase(&block->vtx[i]))
-                return validation_state_dos(state, 100, false, REJECT_INVALID,
-                                            "bad-cb-multiple", false, NULL);
+            REJECT_IF(transaction_is_coinbase(&block->vtx[i]),
+                      state, 100, "bad-cb-multiple");
         }
 
         for (size_t i = 0; i < block->num_vtx; i++) {
@@ -103,13 +107,14 @@ bool check_block(const struct block *block,
         for (size_t i = 0; i < block->num_vtx; i++)
             nSigOps += (unsigned int)get_legacy_sig_op_count(
                 &block->vtx[i], SCRIPT_VERIFY_NONE);
-        if (nSigOps > MAX_BLOCK_SIGOPS)
-            return validation_state_dos(state, 100, false, REJECT_INVALID,
-                                        "bad-blk-sigops", true, NULL);
+        REJECT_CORRUPT_IF(nSigOps > MAX_BLOCK_SIGOPS,
+                          state, 100, "bad-blk-sigops");
     }
 
     return true;
 }
+
+/* ── ContextualCheckBlockHeader (6 checks) ─────────────────────── */
 
 bool contextual_check_block_header(const struct block_header *header,
                                    struct validation_state *state,
@@ -119,31 +124,27 @@ bool contextual_check_block_header(const struct block_header *header,
 {
     struct uint256 hash;
     block_header_get_hash(header, &hash);
+
+    /* Genesis: skip all contextual checks */
     if (uint256_eq(&hash, &params->consensus.hashGenesisBlock))
         return true;
 
     if (!pindex_prev)
-        return validation_state_error(state, "prev-block-index-null");
+        REJECT_FATAL(state, "prev-block-index-null");
 
     int nHeight = pindex_prev->nHeight + 1;
 
+    /* Equihash solution size for this height's (N,K) params */
     size_t sol_size = header->nSolutionSize;
     if (sol_size > 0) {
         unsigned int n = chain_params_equihash_n(params, nHeight);
         unsigned int k = chain_params_equihash_k(params, nHeight);
         size_t expected = (size_t)((pow(2, k) * ((n / (k + 1)) + 1)) / 8);
-        if (sol_size != expected)
-            return validation_state_dos(state, 100, false, REJECT_INVALID,
-                                        "bad-equihash-solution-size",
-                                        false, NULL);
+        REJECT_IF(sol_size != expected,
+                  state, 100, "bad-equihash-solution-size");
     }
 
-    /* Skip difficulty check if:
-     * 1. Any block in the averaging window has nBits=0 (erased forks)
-     * 2. Height is at or below assume-valid (already validated by zclassicd)
-     * The full difficulty algorithm requires a complete, correctly-linked
-     * block index with MTP. During fast-sync or legacy import, the pprev
-     * chain may be incomplete, causing MTP to return wrong values. */
+    /* Difficulty check — skip during assumed-valid or incomplete windows */
     if (g_assume_valid_height >= 0 && nHeight <= g_assume_valid_height)
         goto skip_diffbits;
     {
@@ -164,35 +165,35 @@ bool contextual_check_block_header(const struct block_header *header,
                    nHeight, header->nBits, expected_bits,
                    pindex_prev->nHeight, pindex_prev->nBits);
             fflush(stdout);
-            return validation_state_dos(state, 100, false, REJECT_INVALID,
-                                        "bad-diffbits", false, NULL);
+            REJECT_IF(true, state, 100, "bad-diffbits");
         }
     }
     skip_diffbits:
 
-    if (block_header_get_time(header) <=
-        block_index_get_median_time_past(pindex_prev))
-        return validation_state_invalid(state, false, REJECT_INVALID,
-                                        "time-too-old", NULL);
+    /* Timestamp must be after median of previous 11 blocks */
+    REJECT_INVALID_IF(
+        block_header_get_time(header) <=
+            block_index_get_median_time_past(pindex_prev),
+        state, "time-too-old");
 
+    /* Checkpoint enforcement */
     if (checkpoints_enabled) {
         const struct checkpoint_data *cpdata = &params->checkpointData;
         for (int i = 0; i < cpdata->nEntries; i++) {
             if (nHeight == cpdata->entries[i].height) {
-                if (uint256_cmp(&hash, &cpdata->entries[i].hash) != 0)
-                    return validation_state_dos(state, 100, false,
-                        REJECT_CHECKPOINT, "bad-fork-at-checkpoint",
-                        false, NULL);
+                REJECT_CHECKPOINT_IF(
+                    uint256_cmp(&hash, &cpdata->entries[i].hash) != 0,
+                    state, 100, "bad-fork-at-checkpoint");
             }
         }
     }
 
-    if (header->nVersion < 4)
-        return validation_state_invalid(state, false, REJECT_OBSOLETE,
-                                        "bad-version", NULL);
+    REJECT_OBSOLETE_IF(header->nVersion < 4, state, "bad-version");
 
     return true;
 }
+
+/* ── BIP34 coinbase height encoding ────────────────────────────── */
 
 static bool bip34_check_coinbase_height(const struct transaction *coinbase,
                                         int nHeight)
@@ -213,8 +214,7 @@ static bool bip34_check_coinbase_height(const struct transaction *coinbase,
             return true;
     }
 
-    /* Encode height as CScriptNum: minimal signed little-endian with length prefix.
-     * Values with high bit set need an extra 0x00 sign byte. */
+    /* Encode height as CScriptNum: minimal signed little-endian */
     unsigned char expect[6];
     size_t expect_len = 0;
     {
@@ -237,6 +237,8 @@ static bool bip34_check_coinbase_height(const struct transaction *coinbase,
     return memcmp(sig->data, expect, expect_len) == 0;
 }
 
+/* ── ContextualCheckBlock (3 checks) ──────────────────────────── */
+
 bool contextual_check_block(const struct block *block,
                             struct validation_state *state,
                             const struct chain_params *params,
@@ -250,15 +252,13 @@ bool contextual_check_block(const struct block *block,
             return false;
 
         int64_t nLockTimeCutoff = block_header_get_time(&block->header);
-        if (!is_final_tx(&block->vtx[i], nHeight, nLockTimeCutoff))
-            return validation_state_dos(state, 10, false, REJECT_INVALID,
-                                        "bad-txns-nonfinal", false, NULL);
+        REJECT_UNLESS(is_final_tx(&block->vtx[i], nHeight, nLockTimeCutoff),
+                      state, 10, "bad-txns-nonfinal");
     }
 
     if (nHeight > 0) {
-        if (!bip34_check_coinbase_height(&block->vtx[0], nHeight))
-            return validation_state_dos(state, 100, false, REJECT_INVALID,
-                                        "bad-cb-height", false, NULL);
+        REJECT_UNLESS(bip34_check_coinbase_height(&block->vtx[0], nHeight),
+                      state, 100, "bad-cb-height");
     }
 
     return true;

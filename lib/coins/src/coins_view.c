@@ -171,6 +171,7 @@ bool coins_view_cache_get_coins(struct coins_view_cache *c,
     if (coins_view_get_coins(&c->base, txid, &fetched)) {
         struct coins_cache_entry *new_entry =
             coins_map_insert(&c->cache_coins, txid);
+        if (!new_entry) { coins_free(&fetched); return false; }
         new_entry->coins = fetched;
         if (coins_is_pruned(&new_entry->coins))
             return false;
@@ -217,6 +218,7 @@ struct coins_cache_entry *coins_view_cache_modify(struct coins_view_cache *c,
     }
 
     struct coins_cache_entry *new_entry = coins_map_insert(&c->cache_coins, txid);
+    if (!new_entry) return NULL;
     coins_view_get_coins(&c->base, txid, &new_entry->coins);
     new_entry->flags |= COINS_CACHE_DIRTY;
     return new_entry;
@@ -226,6 +228,7 @@ struct coins_cache_entry *coins_view_cache_modify_new(struct coins_view_cache *c
                                                        const struct uint256 *txid)
 {
     struct coins_cache_entry *entry = coins_map_insert(&c->cache_coins, txid);
+    if (!entry) return NULL;
     entry->flags |= COINS_CACHE_DIRTY | COINS_CACHE_FRESH;
     return entry;
 }
@@ -260,12 +263,13 @@ static bool cvc_batch_write(void *self, struct coins_map *map_coins,
             continue;
         if (e->entry.flags & COINS_CACHE_DIRTY) {
             if (coins_is_pruned(&e->entry.coins)) {
-                /* Keep the pruned entry in the parent cache so that
-                 * when the parent flushes to SQLite, the DELETE fires.
-                 * Without this, erased entries vanish from RAM but
-                 * remain in SQLite as stale UTXOs. */
                 struct coins_cache_entry *dest =
                     coins_map_insert(&parent->cache_coins, &e->txid);
+                if (!dest) {
+                    fprintf(stderr, "cvc_batch_write: FATAL hash table full "
+                            "(pruned entry)\n");
+                    return false;
+                }
                 coins_free(&dest->coins);
                 dest->coins = e->entry.coins;
                 coins_init(&e->entry.coins);
@@ -274,6 +278,11 @@ static bool cvc_batch_write(void *self, struct coins_map *map_coins,
             } else {
                 struct coins_cache_entry *dest =
                     coins_map_insert(&parent->cache_coins, &e->txid);
+                if (!dest) {
+                    fprintf(stderr, "cvc_batch_write: FATAL hash table full "
+                            "(write entry)\n");
+                    return false;
+                }
                 coins_free(&dest->coins);
                 dest->coins = e->entry.coins;
                 coins_init(&e->entry.coins);
@@ -362,6 +371,7 @@ const struct tx_out *coins_view_cache_get_output_for(
         }
         struct coins_cache_entry *new_entry =
             coins_map_insert(&c->cache_coins, &in->prevout.hash);
+        if (!new_entry) { coins_free(&coins); return NULL; }
         new_entry->coins = coins;
         new_entry->flags = 0;
         entry = new_entry;
@@ -394,13 +404,35 @@ int64_t coins_view_cache_get_value_in(struct coins_view_cache *c,
     int64_t value = 0;
     for (size_t i = 0; i < tx->num_vin; i++) {
         const struct tx_out *out = coins_view_cache_get_output_for(c, &tx->vin[i]);
-        if (out)
-            value += out->value;
+        if (!out) {
+            /* Missing input — caller should have checked have_inputs first.
+             * Return -1 to signal error rather than silently undercounting. */
+            return -1;
+        }
+        /* Per-input MoneyRange: each input must be in [0, MAX_MONEY].
+         * Catches corrupted coins with invalid values before summing. */
+        if (out->value < 0 || out->value > 2100000000000000LL) {
+            fprintf(stderr, "get_value_in: input[%zu] value %lld out of range\n",
+                    i, (long long)out->value);
+            return -1;
+        }
+        value += out->value;
+        /* Overflow check: cumulative transparent inputs can't exceed MAX_MONEY */
+        if (value < 0 || value > 2100000000000000LL)
+            return -1;
     }
-    if (tx->value_balance >= 0)
+    /* Sapling value balance: positive = value FROM shielded pool */
+    if (tx->value_balance >= 0) {
         value += tx->value_balance;
-    for (size_t i = 0; i < tx->num_joinsplit; i++)
+        if (value < 0 || value > 2100000000000000LL)
+            return -1;
+    }
+    /* JoinSplit vpub_new: value FROM Sprout pool */
+    for (size_t i = 0; i < tx->num_joinsplit; i++) {
         value += tx->v_joinsplit[i].vpub_new;
+        if (value < 0 || value > 2100000000000000LL)
+            return -1;
+    }
     return value;
 }
 

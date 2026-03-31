@@ -1,8 +1,12 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Public HTTPS server — serves the block explorer on port 443.
- * Uses OpenSSL for TLS. Port 80 redirects to HTTPS.
- * Thread-per-connection model (explorer pages are fast). */
+ * Public HTTPS server — serves the block explorer.
+ * Uses OpenSSL for TLS. HTTP port redirects to HTTPS.
+ * Thread-per-connection model (explorer pages are fast).
+ *
+ * Listens on high ports (8443/8080) to avoid needing root or setcap.
+ * Use iptables NAT redirect (80→8080, 443→8443) for public access.
+ * See deploy/zcl-portfwd.service. */
 
 #include "net/https_server.h"
 #include <openssl/ssl.h>
@@ -198,8 +202,9 @@ static void *https_listen_fn(void *arg)
             continue;
         }
 
-        /* Set timeouts — allow longer for heavy pages like HODL chart */
-        struct timeval tv = { .tv_sec = 120, .tv_usec = 0 };
+        /* Slowloris protection: 15s timeout for HTTPS requests.
+         * Heavy pages (HODL, stats) are pre-cached so serve instantly. */
+        struct timeval tv = { .tv_sec = 15, .tv_usec = 0 };
         setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
         setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
@@ -383,17 +388,17 @@ bool https_server_start(const char *cert_path, const char *key_path,
         return false;
     }
 
-    /* Bind HTTPS port 443 */
-    g_https_fd = bind_port(443, true);
+    /* Bind HTTPS port 8443 (iptables redirects 443→8443) */
+    g_https_fd = bind_port(8443, true);
     if (g_https_fd < 0) {
-        fprintf(stderr, "HTTPS: cannot bind port 443 (need root or CAP_NET_BIND_SERVICE)\n");
+        fprintf(stderr, "HTTPS: cannot bind port 8443\n");
         return false;
     }
 
-    /* Bind HTTP port 80 (redirect) */
-    g_http_fd = bind_port(80, true);
+    /* Bind HTTP port 8080 for redirect (iptables redirects 80→8080) */
+    g_http_fd = bind_port(8080, true);
     if (g_http_fd < 0) {
-        fprintf(stderr, "HTTPS: cannot bind port 80, redirect won't work\n");
+        fprintf(stderr, "HTTPS: cannot bind port 8080, HTTP redirect won't work\n");
         /* Non-fatal — continue with HTTPS only */
     }
 
@@ -415,9 +420,9 @@ bool https_server_start(const char *cert_path, const char *key_path,
         }
     }
 
-    printf("HTTPS server listening on 0.0.0.0:443 (TLS)\n");
+    printf("HTTPS server listening on 0.0.0.0:8443 (TLS)\n");
     if (g_http_fd >= 0)
-        printf("HTTP redirect on 0.0.0.0:80 -> https://%s\n", g_hostname);
+        printf("HTTP redirect on 0.0.0.0:8080 -> https://%s\n", g_hostname);
 
     return true;
 }

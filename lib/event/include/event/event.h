@@ -62,6 +62,30 @@ enum event_type {
 
     /* (Wallet and RPC events reserved for future use) */
 
+    /* ── Boot phases ────────────────────────────────── */
+    EV_BOOT_PHASE,               /* payload: phase name + status */
+    EV_BOOT_DB_OPEN,             /* payload: "schema=N tip=H" */
+    EV_BOOT_COINS_OPEN,          /* payload: "dedicated=true|false" */
+    EV_BOOT_UTXO_IMPORT,         /* payload: "start|done count=N elapsed=Xms" */
+    EV_BOOT_BLOCK_INDEX,         /* payload: "loaded entries=N elapsed=Xs" */
+    EV_BOOT_CHAIN_RESTORED,      /* payload: "height=N" */
+    EV_BOOT_ACTIVATE,            /* payload: "tip=N most_work=N" or "FAILED ..." */
+
+    /* ── Validation pipeline (detailed) ────────────── */
+    EV_BLOCK_CHECK_PASSED,       /* payload: "height=N checks=header,merkle,txns" */
+    EV_BLOCK_CONNECT_START,      /* payload: "height=N ntx=N" */
+    EV_BLOCK_CONNECT_DONE,       /* payload: "height=N fee=N sigops=N elapsed=Nms" */
+    EV_TX_INPUTS_CHECKED,        /* payload: "tx=N value_in=N fee=N" */
+    EV_TURNSTILE_CHECK,          /* payload: "sprout=N sapling=N height=N" */
+    EV_SCRIPT_VERIFIED,          /* payload: "height=N tx=N inputs=N" */
+    EV_UTXO_CHECKPOINT_PASS,     /* payload: "height=N count=N" */
+    EV_UTXO_CHECKPOINT_FAIL,     /* payload: "height=N expected=X got=Y" */
+
+    /* ── ActiveRecord model lifecycle ──────────────── */
+    EV_MODEL_SAVED,              /* payload: "model=block height=N" */
+    EV_MODEL_DESTROYED,          /* payload: "model=utxo txid=..." */
+    EV_MODEL_VALIDATION_FAILED,  /* payload: "model=peer errors=..." */
+
     /* ── System ─────────────────────────────────────── */
     EV_NODE_STARTING,            /* payload: version string */
     EV_NODE_READY,               /* payload: height(i32) + peers(u32) */
@@ -198,6 +222,56 @@ void event_clear_observers(enum event_type type);
 
 /* Remove all observers for all event types. */
 void event_clear_all_observers(void);
+
+/* ── Async observers ───────────────────────────────────── */
+
+/* Async observer — fires on a background thread, never blocks emit().
+ * Use for logging, metrics, persistence that can tolerate brief delay.
+ * Same callback signature as sync observers. */
+bool event_observe_async(enum event_type type, event_observer_fn fn, void *ctx);
+
+/* Start/stop the async observer dispatch thread.
+ * Call event_async_start() after registering async observers.
+ * Call event_async_stop() during shutdown (drains pending events). */
+void event_async_start(void);
+void event_async_stop(void);
+
+/* ── Error accumulator ─────────────────────────────────── */
+
+/* Captures last N errors for instant health queries.
+ * Register as async observer on EV_DB_ERROR, EV_BLOCK_REJECTED, etc. */
+#define ERROR_RING_SIZE 10
+
+struct error_entry {
+    int64_t timestamp_us;
+    enum event_type type;
+    char message[EVENT_PAYLOAD_SIZE];
+};
+
+struct error_ring {
+    struct error_entry entries[ERROR_RING_SIZE];
+    _Atomic int write_pos;
+    _Atomic int total_count;
+};
+
+/* Initialize error ring (call once at startup). */
+void error_ring_init(struct error_ring *r);
+
+/* Observer callback — register with event_observe_async(). */
+void error_ring_observer(enum event_type type, uint32_t peer_id,
+                         const void *payload, uint32_t payload_len, void *ctx);
+
+/* Query: total errors since startup. */
+int error_ring_total(const struct error_ring *r);
+
+/* Query: most recent error (NULL if none). */
+const struct error_entry *error_ring_last(const struct error_ring *r);
+
+/* Dump as JSON into buf. Returns bytes written. */
+size_t error_ring_dump_json(const struct error_ring *r, char *buf, size_t sz);
+
+/* Global error ring (initialized in event_log_init). */
+struct error_ring *error_ring_global(void);
 
 /* ── Sync state machine API ─────────────────────────────── */
 
