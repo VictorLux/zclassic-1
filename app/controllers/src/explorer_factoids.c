@@ -806,8 +806,10 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
     APPEND(off, r, max,
         "<h2 id='addresses'>7. Address Statistics</h2>");
 
-    int64_t addr_total = fq_i64(db, "SELECT count(*) FROM addresses");
-    int64_t addr_nonzero = fq_i64(db, "SELECT count(*) FROM addresses WHERE balance > 0");
+    struct explorer_address_stats address_stats = {0};
+    explorer_query_address_stats(db, &address_stats);
+    int64_t addr_total = address_stats.total;
+    int64_t addr_nonzero = address_stats.nonzero;
     int64_t addr_over_1 = fq_i64(db, "SELECT count(*) FROM addresses WHERE balance >= 100000000");
     int64_t addr_over_100 = fq_i64(db, "SELECT count(*) FROM addresses WHERE balance >= 10000000000");
 
@@ -1657,22 +1659,22 @@ size_t explorer_factoids_build_json(uint8_t *buf, size_t buf_max,
 
     /* Address stats */
     {
-        int64_t at = fq_i64(db, "SELECT count(*) FROM addresses");
-        int64_t an = fq_i64(db, "SELECT count(*) FROM addresses WHERE balance > 0");
+        struct explorer_address_stats address_stats = {0};
+        explorer_query_address_stats(db, &address_stats);
         APPEND(off, r, max,
-            ",\"addresses\":{\"total\":%" PRId64 ",\"nonzero\":%" PRId64 "}", at, an);
+            ",\"addresses\":{\"total\":%" PRId64 ",\"nonzero\":%" PRId64 "}",
+            address_stats.total, address_stats.nonzero);
     }
 
     /* Privacy stats */
     {
-        int64_t js = fq_i64(db, "SELECT count(*) FROM joinsplits");
-        int64_t ss = fq_i64(db, "SELECT count(*) FROM sapling_spends");
-        int64_t so = fq_i64(db, "SELECT count(*) FROM sapling_outputs");
-        int64_t sv = fq_i64(db, "SELECT COALESCE(SUM(sapling_value),0) FROM blocks");
+        struct explorer_privacy_stats privacy_stats = {0};
+        explorer_query_privacy_stats(db, &privacy_stats);
         APPEND(off, r, max,
             ",\"privacy\":{\"joinsplits\":%" PRId64 ",\"sapling_spends\":%" PRId64
             ",\"sapling_outputs\":%" PRId64 ",\"net_shielded_sat\":%" PRId64 "}",
-            js, ss, so, sv);
+            privacy_stats.joinsplits, privacy_stats.sapling_spends,
+            privacy_stats.sapling_outputs, privacy_stats.net_shielded_sat);
     }
 
     /* ZSLP */

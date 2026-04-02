@@ -836,16 +836,15 @@ static size_t compute_deep_stats(uint8_t *r, size_t max)
     int64_t tx_count = sql_query_i64(db, "SELECT count(*) FROM transactions");
     int64_t utxo_count = sql_query_i64(db, "SELECT count(*) FROM utxos");
     int64_t dust_count = sql_query_i64(db, "SELECT count(*) FROM utxos WHERE value < 100000");
-    int64_t addr_total = sql_query_i64(db, "SELECT count(*) FROM addresses");
-    int64_t addr_nonzero = sql_query_i64(db, "SELECT count(*) FROM addresses WHERE balance > 0");
+    struct explorer_address_stats address_stats = {0};
+    explorer_query_address_stats(db, &address_stats);
 
     /* Sprout stats */
-    int64_t js_count = sql_query_i64(db, "SELECT count(*) FROM joinsplits");
+    struct explorer_privacy_stats privacy_stats = {0};
+    explorer_query_privacy_stats(db, &privacy_stats);
     int64_t js_first = sql_query_i64(db, "SELECT MIN(block_height) FROM joinsplits");
 
     /* Sapling stats */
-    int64_t ss_count = sql_query_i64(db, "SELECT count(*) FROM sapling_spends");
-    int64_t so_count = sql_query_i64(db, "SELECT count(*) FROM sapling_outputs");
     int64_t ss_first = sql_query_i64(db, "SELECT MIN(block_height) FROM sapling_spends");
 
     /* ZSLP stats */
@@ -853,9 +852,6 @@ static size_t compute_deep_stats(uint8_t *r, size_t max)
     explorer_query_token_stats(db, &token_stats);
 
     int64_t supply_sat = zcl_total_supply_zatoshi(height);
-
-    /* Shielded supply from blocks table */
-    int64_t shielded_net = sql_query_i64(db, "SELECT COALESCE(SUM(sapling_value), 0) FROM blocks");
 
     /* Integrity: checkpoint count and latest block hash */
     char latest_hash[128] = "";
@@ -885,11 +881,11 @@ static size_t compute_deep_stats(uint8_t *r, size_t max)
         JSON_HEADERS,
         height, block_count, tx_count,
         (double)supply_sat / (double)ZATOSHI_PER_ZCL,
-        (double)shielded_net / (double)ZATOSHI_PER_ZCL,
-        js_count, js_first,
-        ss_count, so_count, ss_first,
+        (double)privacy_stats.net_shielded_sat / (double)ZATOSHI_PER_ZCL,
+        privacy_stats.joinsplits, js_first,
+        privacy_stats.sapling_spends, privacy_stats.sapling_outputs, ss_first,
         utxo_count, dust_count,
-        addr_total, addr_nonzero,
+        address_stats.total, address_stats.nonzero,
         token_stats.token_count, token_stats.transfer_count,
         block_count, latest_hash);
 

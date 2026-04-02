@@ -116,3 +116,4 @@ Recent slices:
 - started explorer/API read-helper extraction with shared text and fixed-width
   integer row helpers
 - started consolidating repeated ZSLP summary reads behind one shared helper
+- started consolidating repeated address/privacy summaries behind shared helpers

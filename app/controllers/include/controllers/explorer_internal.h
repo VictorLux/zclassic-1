@@ -122,6 +122,18 @@ struct explorer_token_stats {
     int64_t transfer_count;
 };
 
+struct explorer_address_stats {
+    int64_t total;
+    int64_t nonzero;
+};
+
+struct explorer_privacy_stats {
+    int64_t joinsplits;
+    int64_t sapling_spends;
+    int64_t sapling_outputs;
+    int64_t net_shielded_sat;
+};
+
 static inline bool sql_query_row_i64_2(sqlite3 *db, const char *sql,
                                        struct sql_row_i64_2 *out)
 {
@@ -180,6 +192,28 @@ static inline void explorer_query_token_stats(sqlite3 *db,
 
     out->token_count = sql_query_i64(db, "SELECT count(*) FROM zslp_tokens");
     out->transfer_count = sql_query_i64(db, "SELECT count(*) FROM zslp_transfers");
+}
+
+static inline void explorer_query_address_stats(sqlite3 *db,
+                                                struct explorer_address_stats *out)
+{
+    if (!out)
+        return;
+
+    out->total = sql_query_i64(db, "SELECT count(*) FROM addresses");
+    out->nonzero = sql_query_i64(db, "SELECT count(*) FROM addresses WHERE balance > 0");
+}
+
+static inline void explorer_query_privacy_stats(sqlite3 *db,
+                                                struct explorer_privacy_stats *out)
+{
+    if (!out)
+        return;
+
+    out->joinsplits = sql_query_i64(db, "SELECT count(*) FROM joinsplits");
+    out->sapling_spends = sql_query_i64(db, "SELECT count(*) FROM sapling_spends");
+    out->sapling_outputs = sql_query_i64(db, "SELECT count(*) FROM sapling_outputs");
+    out->net_shielded_sat = sql_query_i64(db, "SELECT COALESCE(SUM(sapling_value), 0) FROM blocks");
 }
 
 static inline bool sql_query_text(sqlite3 *db, const char *sql,

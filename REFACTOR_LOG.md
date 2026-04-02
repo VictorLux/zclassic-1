@@ -20,6 +20,8 @@ Completed in this slice:
 - added a shared explorer/API token-summary helper and rewired the ZSLP counts
   in `explorer_controller.c`, `api_controller.c`, and
   `explorer_factoids.c` to consume the same domain read
+- added shared explorer/API address and privacy summary helpers and rewired
+  the duplicated deep-stats / factoids summary counts to consume them
 
 Why:
 
