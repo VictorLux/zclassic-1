@@ -26,6 +26,8 @@ Completed in this slice:
   deep-stats / factoids UTXO summary counts to consume it
 - added shared explorer/API OP_RETURN and transaction summary helpers and
   rewired the duplicated deep-stats / factoids summary counts to consume them
+- added a shared explorer/API chain-summary helper and rewired duplicated
+  chain height / block-count reads in deep-stats and factoids to consume it
 
 Why:
 

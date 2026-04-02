@@ -206,7 +206,9 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
     }
     sqlite3_busy_timeout(db, 30000);
 
-    int64_t chain_height = fq_i64(db, "SELECT MAX(height) FROM blocks");
+    struct explorer_chain_stats chain_stats = {0};
+    explorer_query_chain_stats(db, &chain_stats);
+    int64_t chain_height = chain_stats.height;
 
     size_t off = 0;
     char *r = (char *)buf;
@@ -1447,8 +1449,10 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
     APPEND(off, r, max,
         "<h2 id='integrity'>17. Data Integrity</h2>");
 
-    int64_t block_count = fq_i64(db, "SELECT count(*) FROM blocks");
-    int64_t tx_count = fq_i64(db, "SELECT count(*) FROM transactions");
+    int64_t block_count = chain_stats.blocks;
+    struct explorer_transaction_stats integrity_tx_stats = {0};
+    explorer_query_transaction_stats(db, &integrity_tx_stats);
+    int64_t tx_count = integrity_tx_stats.total;
 
     char integrity_hash[128] = "";
     {
@@ -1591,7 +1595,9 @@ size_t explorer_factoids_build_json(uint8_t *buf, size_t buf_max,
     }
     sqlite3_busy_timeout(db, 30000);
 
-    int64_t chain_height = fq_i64(db, "SELECT MAX(height) FROM blocks");
+    struct explorer_chain_stats chain_stats = {0};
+    explorer_query_chain_stats(db, &chain_stats);
+    int64_t chain_height = chain_stats.height;
 
     size_t off = 0;
     char *r = (char *)buf;

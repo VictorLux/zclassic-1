@@ -153,6 +153,11 @@ struct explorer_transaction_stats {
     int64_t empty_blocks;
 };
 
+struct explorer_chain_stats {
+    int64_t height;
+    int64_t blocks;
+};
+
 static inline bool sql_query_row_i64_2(sqlite3 *db, const char *sql,
                                        struct sql_row_i64_2 *out)
 {
@@ -267,6 +272,16 @@ static inline void explorer_query_transaction_stats(sqlite3 *db,
     out->inputs = sql_query_i64(db, "SELECT count(*) FROM tx_inputs");
     out->outputs = sql_query_i64(db, "SELECT count(*) FROM tx_outputs");
     out->empty_blocks = sql_query_i64(db, "SELECT count(*) FROM blocks WHERE num_tx <= 1");
+}
+
+static inline void explorer_query_chain_stats(sqlite3 *db,
+                                              struct explorer_chain_stats *out)
+{
+    if (!out)
+        return;
+
+    out->height = sql_query_i64(db, "SELECT MAX(height) FROM blocks");
+    out->blocks = sql_query_i64(db, "SELECT count(*) FROM blocks");
 }
 
 static inline bool sql_query_text(sqlite3 *db, const char *sql,
