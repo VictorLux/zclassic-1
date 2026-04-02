@@ -14,47 +14,40 @@ size_t serve_receive(uint8_t *r, size_t max) {
     off += template_render(TMPL_RECEIVE_ZPANE_OPEN, NULL, 0,
         (char *)r + off, max - off);
 
-    int z_shown = 0;
+    struct wv_receive_address z_addrs[16];
+    int z_count = 0;
     if (db) {
-        sqlite3_stmt *s = NULL;
-        if (sqlite3_prepare_v2(db,
-                "SELECT address FROM wallet_sapling_keys "
-                "WHERE address IS NOT NULL AND length(address) > 0 "
-                "ORDER BY rowid",
-                -1, &s, NULL) == SQLITE_OK) {
-            while (sqlite3_step(s) == SQLITE_ROW && off + 512 < max) {
-                const char *raw = (const char *)sqlite3_column_text(s, 0);
-                if (!raw || !raw[0]) continue;
-                char escaped[1024];
-                html_escape(escaped, sizeof(escaped), raw);
-                if (z_shown == 0) {
-                    off = wv_emit_qr_svg(r, max, off, raw, 3);
-                    APPEND(off, r, max,
-                        "<div class='addr-display-sm' style='font-size:13px;"
-                        "margin-top:12px'>%s</div>", escaped);
-                } else if (z_shown == 1) {
-                    APPEND(off, r, max,
-                        "<details style='margin-top:8px'>"
-                        "<summary style='color:#888;font-size:14px;"
-                        "cursor:pointer'>Show all addresses</summary>"
-                        "<div class='addr-display-sm' style='font-size:13px'>"
-                        "%s</div>", escaped);
-                } else {
-                    APPEND(off, r, max,
-                        "<div class='addr-display-sm' style='font-size:13px'>"
-                        "%s</div>", escaped);
-                }
-                z_shown++;
-            }
-            sqlite3_finalize(s);
-        }
-        if (z_shown > 1)
-            APPEND(off, r, max, "</details>");
+        z_count = wv_list_receive_addresses(db, z_addrs,
+            sizeof(z_addrs) / sizeof(z_addrs[0]));
         sqlite3_close(db);
         db = NULL;
     }
 
-    if (z_shown == 0) {
+    for (int i = 0; i < z_count && off + 512 < max; i++) {
+        char escaped[1024];
+        html_escape(escaped, sizeof(escaped), z_addrs[i].address);
+        if (i == 0) {
+            off = wv_emit_qr_svg(r, max, off, z_addrs[i].address, 3);
+            APPEND(off, r, max,
+                "<div class='addr-display-sm' style='font-size:13px;"
+                "margin-top:12px'>%s</div>", escaped);
+        } else if (i == 1) {
+            APPEND(off, r, max,
+                "<details style='margin-top:8px'>"
+                "<summary style='color:#888;font-size:14px;"
+                "cursor:pointer'>Show all addresses</summary>"
+                "<div class='addr-display-sm' style='font-size:13px'>"
+                "%s</div>", escaped);
+        } else {
+            APPEND(off, r, max,
+                "<div class='addr-display-sm' style='font-size:13px'>"
+                "%s</div>", escaped);
+        }
+    }
+    if (z_count > 1)
+        APPEND(off, r, max, "</details>");
+
+    if (z_count == 0) {
         off += template_render(TMPL_RECEIVE_NO_ZADDR, NULL, 0,
             (char *)r + off, max - off);
     }

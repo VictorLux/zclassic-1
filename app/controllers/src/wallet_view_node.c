@@ -26,18 +26,9 @@ size_t serve_node(uint8_t *r, size_t max) {
     const char *sync_class = synced ? "pill-synced" :
         (strstr(sync_raw, "idle") ? "pill-ready" : "pill-syncing");
 
-    /* Format height with commas */
     char height_s[20];
-    {
-        char tmp[20];
-        int tl = snprintf(tmp, sizeof(tmp), "%d", tip);
-        int ci = 0, ti = 0, dl = tl;
-        for (int di = 0; di < tl && ci < (int)sizeof(height_s)-1; di++) {
-            height_s[ci++] = tmp[ti++]; dl--;
-            if (dl > 0 && dl % 3 == 0) height_s[ci++] = ',';
-        }
-        height_s[ci] = '\0';
-    }
+    if (format_with_commas(height_s, sizeof(height_s), tip) == 0)
+        snprintf(height_s, sizeof(height_s), "%d", tip);
 
     char peers_s[16], mempool_s[16], utxo_s[16], supply_s[32];
     snprintf(peers_s, sizeof(peers_s), "%d", peers);
@@ -48,33 +39,18 @@ size_t serve_node(uint8_t *r, size_t max) {
     /* Difficulty from latest block */
     char diff_s[32] = "\xe2\x80\x94";
     if (db) {
-        sqlite3_stmt *ds = NULL;
-        if (sqlite3_prepare_v2(db,
-                "SELECT bits FROM blocks ORDER BY height DESC LIMIT 1",
-                -1, &ds, NULL) == SQLITE_OK) {
-            if (sqlite3_step(ds) == SQLITE_ROW) {
-                uint32_t bits = (uint32_t)sqlite3_column_int(ds, 0);
-                /* Compact difficulty representation */
-                double diff = 1.0;
-                if (bits > 0) {
-                    int exp = (int)(bits >> 24);
-                    double mantissa = (double)(bits & 0x007fffff);
-                    if (exp <= 3)
-                        diff = mantissa / (1 << (8 * (3 - exp)));
-                    else
-                        diff = mantissa * (double)(1ULL << (8 * (exp - 3)));
-                    if (diff > 0) diff = (double)0x0000ffff / diff * 65536.0;
-                }
-                if (diff >= 1e9)
-                    snprintf(diff_s, sizeof(diff_s), "%.2fG", diff / 1e9);
-                else if (diff >= 1e6)
-                    snprintf(diff_s, sizeof(diff_s), "%.2fM", diff / 1e6);
-                else if (diff >= 1e3)
-                    snprintf(diff_s, sizeof(diff_s), "%.1fK", diff / 1e3);
-                else
-                    snprintf(diff_s, sizeof(diff_s), "%.1f", diff);
-            }
-            sqlite3_finalize(ds);
+        int64_t bits = wv_query_int64(db,
+            "SELECT bits FROM blocks ORDER BY height DESC LIMIT 1");
+        if (bits > 0) {
+            double diff = explorer_difficulty_from_bits((uint32_t)bits);
+            if (diff >= 1e9)
+                snprintf(diff_s, sizeof(diff_s), "%.2fG", diff / 1e9);
+            else if (diff >= 1e6)
+                snprintf(diff_s, sizeof(diff_s), "%.2fM", diff / 1e6);
+            else if (diff >= 1e3)
+                snprintf(diff_s, sizeof(diff_s), "%.1fK", diff / 1e3);
+            else
+                snprintf(diff_s, sizeof(diff_s), "%.1f", diff);
         }
     }
 

@@ -22,20 +22,8 @@
 #include <stdlib.h>
 #include <unistd.h>
 
-static uint8_t _buf[131072];
-
-static size_t render(const char *method, const char *path,
-                      const char *body) {
-    memset(_buf, 0, sizeof(_buf));
-    return wallet_view_handle_request(method, path,
-        body ? (const uint8_t *)body : NULL,
-        body ? strlen(body) : 0,
-        _buf, sizeof(_buf));
-}
-
-static bool contains(const char *s) {
-    return strstr((char *)_buf, s) != NULL;
-}
+DEFINE_WALLET_VIEW_CLIENT(_buf, _audit_len, render, audit_get, audit_post,
+                          contains, 131072)
 
 static char g_tmp[256];
 

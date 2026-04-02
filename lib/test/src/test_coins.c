@@ -653,17 +653,15 @@ int test_coins(void)
         bool ok = (rc == SQLITE_OK && db != NULL);
         if (ok) {
             /* Create utxos table */
-            sqlite3_exec(db,
+            TEST_DB_EXEC(db,
                 "CREATE TABLE IF NOT EXISTS utxos ("
                 " txid BLOB NOT NULL, vout INTEGER NOT NULL,"
                 " value INTEGER, script BLOB, script_type INTEGER,"
                 " address_hash BLOB, height INTEGER, is_coinbase INTEGER,"
-                " PRIMARY KEY(txid, vout))",
-                NULL, NULL, NULL);
-            sqlite3_exec(db,
+                " PRIMARY KEY(txid, vout))");
+            TEST_DB_EXEC(db,
                 "CREATE TABLE IF NOT EXISTS node_state ("
-                " key TEXT PRIMARY KEY, value BLOB)",
-                NULL, NULL, NULL);
+                " key TEXT PRIMARY KEY, value BLOB)");
 
             struct coins_view_sqlite cvs;
             if (coins_view_sqlite_open(&cvs, db)) {
@@ -761,22 +759,20 @@ int test_coins(void)
         int rc = sqlite3_open(":memory:", &db);
         bool ok = (rc == SQLITE_OK && db != NULL);
         if (ok) {
-            sqlite3_exec(db,
+            TEST_DB_EXEC(db,
                 "CREATE TABLE IF NOT EXISTS utxos ("
                 " txid BLOB NOT NULL, vout INTEGER NOT NULL,"
                 " value INTEGER, script BLOB, script_type INTEGER,"
                 " address_hash BLOB, height INTEGER, is_coinbase INTEGER,"
-                " PRIMARY KEY(txid, vout))",
-                NULL, NULL, NULL);
-            sqlite3_exec(db,
+                " PRIMARY KEY(txid, vout))");
+            TEST_DB_EXEC(db,
                 "CREATE TABLE IF NOT EXISTS node_state ("
-                " key TEXT PRIMARY KEY, value BLOB)",
-                NULL, NULL, NULL);
+                " key TEXT PRIMARY KEY, value BLOB)");
 
             struct coins_view_sqlite cvs;
             if (coins_view_sqlite_open(&cvs, db)) {
                 /* Simulate node_db opening a transaction */
-                sqlite3_exec(db, "BEGIN TRANSACTION", NULL, NULL, NULL);
+                TEST_DB_BEGIN_TXN(db);
                 /* Verify autocommit is OFF (foreign txn is open) */
                 ok = (sqlite3_get_autocommit(db) == 0);
 
@@ -818,7 +814,7 @@ int test_coins(void)
                 }
 
                 /* Commit the foreign transaction — data persists */
-                sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
+                TEST_DB_COMMIT(db);
                 ok = ok && (sqlite3_get_autocommit(db) != 0);
 
                 coins_map_free(&cm);
@@ -840,15 +836,15 @@ int test_coins(void)
         sqlite3_open(":memory:", &db);
         bool ok = (db != NULL);
         if (ok) {
-            sqlite3_exec(db,
+            TEST_DB_EXEC(db,
                 "CREATE TABLE IF NOT EXISTS utxos ("
                 " txid BLOB NOT NULL, vout INTEGER NOT NULL,"
                 " value INTEGER, script BLOB, script_type INTEGER,"
                 " address_hash BLOB, height INTEGER, is_coinbase INTEGER,"
-                " PRIMARY KEY(txid, vout))", NULL, NULL, NULL);
-            sqlite3_exec(db,
+                " PRIMARY KEY(txid, vout))");
+            TEST_DB_EXEC(db,
                 "CREATE TABLE IF NOT EXISTS node_state ("
-                " key TEXT PRIMARY KEY, value BLOB)", NULL, NULL, NULL);
+                " key TEXT PRIMARY KEY, value BLOB)");
 
             struct coins_view_sqlite cvs;
             coins_view_sqlite_open(&cvs, db);
@@ -861,7 +857,7 @@ int test_coins(void)
             for (int cycle = 0; cycle < 10 && ok; cycle++) {
                 /* Half the time, open a foreign transaction first */
                 if (cycle % 2 == 0)
-                    sqlite3_exec(db, "BEGIN", NULL, NULL, NULL);
+                    TEST_DB_BEGIN(db);
 
                 struct coins_map cm;
                 coins_map_init(&cm);
@@ -884,7 +880,7 @@ int test_coins(void)
 
                 /* If we opened a foreign txn, commit it after flush */
                 if (cycle % 2 == 0)
-                    sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
+                    TEST_DB_COMMIT(db);
 
                 coins_map_free(&cm);
             }

@@ -2,6 +2,74 @@
 
 ## 2026-04-02
 
+### Consistency Program: Checklist And First Controller Helper Pass
+
+Completed in this slice:
+
+- added `CONSISTENCY_CHECKLIST.md` to turn broad consistency concerns into an
+  explicit execution checklist instead of leaving them as review notes
+- documented the main consistency tracks:
+  controller query ownership, SQLite call pattern standardization, wallet-view
+  cleanup, explorer/API splitting, runtime context cleanup, and bulk import
+  helper cleanup
+- started the first low-risk controller pass by moving wallet-view code toward
+  shared helpers instead of page-local formatting/query drift
+
+Why:
+
+- the codebase already has direction in `ARCHITECTURE.md` and
+  `REFACTOR_CHECKLIST.md`, but consistency work still needed a concrete,
+  cross-cutting checklist
+- consistency regressions are usually death by a thousand local exceptions, so
+  the cleanup needs a named program and a preferred execution order
+- small helper-driven refactors are the safest way to chip away at the drift
+  without destabilizing larger controller and runtime work
+
+### Wallet View Consistency: Shared Projection Helpers For Send/Receive
+
+Completed in this slice:
+
+- added shared wallet-view projection helpers for receive addresses and held
+  token reads in `app/controllers/src/wallet_view_projection.c`
+- extended `wallet_view_internal.h` with explicit wallet-view projection
+  structs instead of keeping those shapes anonymous inside page handlers
+- rewired `wallet_view_receive.c` to consume `wv_list_receive_addresses`
+  instead of owning its own SQLite scan loop
+- rewired `wallet_view_send.c` to consume `wv_list_held_tokens`
+  instead of preparing and iterating token queries inline
+
+Why:
+
+- these page handlers were still doing their own direct SQLite read loops even
+  though wallet-view consistency was the first target in the new checklist
+- moving those reads behind one wallet-view projection surface makes the page
+  handlers more uniform and sets up the next extractions without touching the
+  already-dirty controller/model files
+
+### ActiveRecord Macro Guide And CRUD Pattern Standardization
+
+Completed in this slice:
+
+- documented the intended model-layer macro usage directly in
+  `app/models/include/models/activerecord.h`, including the preferred save,
+  read, update, and destroy patterns
+- added `app/models/README.md` as a compact guide for model file structure,
+  macro selection, and when to prefer a small helper function over another
+  macro
+- continued standardizing model CRUD code around the shared macro layer so
+  save/read/update/destroy paths follow one predictable structure instead of
+  diverging file by file
+
+Why:
+
+- the macro layer is now large enough that undocumented convenience would turn
+  into hidden policy and inconsistent usage
+- if the goal is DRY, clear, LLM-friendly code, the abstractions need an
+  obvious contract and a standard file shape, not just more helpers
+- documenting the intended patterns at the model boundary makes it easier to
+  keep future refactors consistent instead of letting each new file drift back
+  into ad hoc SQLite lifecycle code
+
 ### Restart Correctness: Validated Tip Authority And Safer AT_TIP Transitions
 
 Completed in this slice:
@@ -674,3 +742,32 @@ Recent cleanup and hardening:
 - validated the new control path directly on this node: cold stop worked, start returned RPC readiness, and status exposed the live degraded state without needing the old shell wrapper
 - added open-time SQLite `quick_check` in `database.c`; malformed `node.db` now gets quarantined to a timestamped `node.db.corrupt-*` file and startup continues on a fresh SQLite store
 - validated the recovery path live on this node: startup quarantined `/home/rhett/.zclassic-c23/node.db` after quick-check failure, rebuilt forward from active chain state, and `zcl-nodectl verify-follow` confirmed `zclassic23` returned to the same tip as legacy `zclassicd`
+- added a wallet transaction read-projection model, `db_wallet_tx_recent_raw`, so controller/service scans can consume recent serialized wallet tx rows without owning raw SQL
+- moved `blog_discover_onion_peers` in `blog_controller.c` off its direct `wallet_transactions` query and onto the wallet model projection layer
+- updated the blog test surface to verify onion announcement persistence through model APIs instead of raw SQLite statements
+- added sapling note payment projection helpers, `db_sapling_note_balance_for_address` and `db_sapling_note_balance_for_exact_value`, so payment checks can read through the model layer instead of hand-writing note-table SQL
+- moved `zslp_payment_service` off its direct `wallet_sapling_notes` queries and onto the new wallet note model projections
+- extended the focused wallet projection tests to cover address-based and exact-value sapling payment reads
+- added model-owned bulk wallet projection helpers:
+  `db_wallet_utxo_replace_all`, `db_sapling_note_replace_all`,
+  `db_wallet_tx_list_unconfirmed`, and `db_wallet_tx_update_block_height`
+- rewired `wv_sync_wallet_from_zclassicd` so wallet rebuild no longer creates temp SQLite tables or issues direct wallet projection update SQL from the controller
+- wallet-view sync now parses RPC responses into validated model structs and applies them through the wallet model layer, keeping the controller closer to transport/parsing and the model layer responsible for persistence
+- extended the focused wallet projection tests to cover bulk wallet projection replacement and unconfirmed-tx height backfill through the new model APIs
+- moved snapshot transaction-index bulk-load lifecycle into the tx-index model via
+  `db_tx_prepare_bulk_load`, `db_tx_finalize_bulk_load`, and `db_tx_delete_all`
+- rewired `snapshot_controller.c` to use tx-index model helpers instead of issuing direct transaction-table truncate/index DDL and WAL cleanup SQL inline
+- extended the focused wallet/model projection tests to cover the tx-index bulk-load lifecycle so the new model-owned path stays covered
+- added `DEFINE_MODEL_BEFORE_SAVE_READY` to `activerecord.h` so models can share one lazy before-save callback-registration pattern instead of repeating bespoke `*_callbacks_ready()` boilerplate
+- rewired contact, store, onion-announcement, file-service, peer, and ZSLP models onto that shared callback-registration macro to keep model structure more consistent and DRY
+- added shared model text helpers in `model_text.h` for ASCII trim, upcase/downcase, printable checks, alnum checks, and hex checks
+- rewired contact, store, onion-announcement, and ZSLP models to use the shared text helpers instead of repeating local string normalization/validation functions
+- added `AR_PREPARE_RET` and `AR_LIST_ROWS` to `activerecord.h` so models can share the common prepare/bind/list-row/finalize loop shape for read collections
+- rewired store, peer, file-service, and onion-announcement list queries onto the shared query macros to keep model read paths more uniform and reduce repeated SQLite loop boilerplate
+- added `AR_PREPARE_BOOL`, `AR_FIND_ONE_CACHED`, and `AR_FINALIZE_STEP_DONE` to `activerecord.h` so models can share the common single-row find and ad hoc update/delete statement shape
+- rewired tx-index, file-service, and peer find/update/delete paths onto the shared single-row/update macros to keep model CRUD code more uniform and reduce repeated finalize boilerplate
+- audited the remaining dynamic-SQL controller hotspots and confirmed the `explorer_stats` column fragments are internal-only hardcoded values, not user-controlled input
+- hardened `file_export_consensus_snapshot` so the SQLite `ATTACH DATABASE` path is quoted via `sqlite3_mprintf('%q', ...)` instead of raw string interpolation
+- moved wallet tx-detail lookups in `wallet_view_history.c` off interpolated txid SQL and onto bound parameters, even though the txids were already hex-sanitized
+- rewired the main wallet history list/count queries onto one bound-parameter filter/search pattern instead of assembling `WHERE` fragments with string interpolation
+- added local history filter helpers in `wallet_view_history.c` so count and list queries share one filter/search binding path, which reduces duplication and removes the main remaining user-facing dynamic SQL in that file

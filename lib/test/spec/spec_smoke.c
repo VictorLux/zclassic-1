@@ -15,24 +15,8 @@
 #include <stdlib.h>
 #include <unistd.h>
 
-static uint8_t _r[131072];
-static size_t _rlen;
-
-static size_t DO_GET(const char *path) {
-    memset(_r, 0, sizeof(_r));
-    _rlen = wallet_view_handle_request("GET", path, NULL, 0, _r, sizeof(_r));
-    return _rlen;
-}
-
-static size_t DO_POST(const char *path, const char *body) {
-    memset(_r, 0, sizeof(_r));
-    _rlen = wallet_view_handle_request("POST", path,
-        body ? (const uint8_t *)body : NULL,
-        body ? strlen(body) : 0, _r, sizeof(_r));
-    return _rlen;
-}
-
-static bool HAS(const char *s) { return strstr((char *)_r, s) != NULL; }
+DEFINE_WALLET_VIEW_CLIENT(_r, _rlen, smoke_request, DO_GET, DO_POST, HAS,
+                          131072)
 
 /* Check a rendered page for common defects */
 static int check_page(const char *name, size_t min_len) {

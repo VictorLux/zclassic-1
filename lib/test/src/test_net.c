@@ -2294,38 +2294,40 @@ int test_net(void)
             goto skip_parallel_tests;
         }
 
-        sqlite3_exec(test_db,
+        TEST_DB_EXEC(test_db,
             "CREATE TABLE IF NOT EXISTS node_state "
-            "(key TEXT PRIMARY KEY, value BLOB)", NULL, NULL, NULL);
-        sqlite3_exec(test_db,
+            "(key TEXT PRIMARY KEY, value BLOB)");
+        TEST_DB_EXEC(test_db,
             "CREATE TABLE IF NOT EXISTS utxos ("
             "txid BLOB NOT NULL, vout INTEGER NOT NULL, "
             "value INTEGER NOT NULL, script BLOB NOT NULL, "
             "script_type INTEGER NOT NULL DEFAULT 0, "
             "address_hash BLOB, height INTEGER NOT NULL, "
             "is_coinbase INTEGER NOT NULL DEFAULT 0, "
-            "PRIMARY KEY (txid, vout))", NULL, NULL, NULL);
+            "PRIMARY KEY (txid, vout))");
 
         /* Set tip height and hash */
         int64_t tip_height = 100000;
         sqlite3_stmt *ins = NULL;
-        sqlite3_prepare_v2(test_db,
+        TEST_DB_RUN(test_db, ins,
             "INSERT INTO node_state (key, value) VALUES (?, ?)",
-            -1, &ins, NULL);
-        sqlite3_bind_text(ins, 1, "tip_height", -1, SQLITE_STATIC);
-        sqlite3_bind_blob(ins, 2, &tip_height, sizeof(tip_height), SQLITE_STATIC);
-        sqlite3_step(ins);
-        sqlite3_reset(ins);
+        {
+            sqlite3_bind_text(ins, 1, "tip_height", -1, SQLITE_STATIC);
+            sqlite3_bind_blob(ins, 2, &tip_height, sizeof(tip_height),
+                              SQLITE_STATIC);
+        });
 
         uint8_t tip_hash[32];
         memset(tip_hash, 0xAB, 32);
-        sqlite3_bind_text(ins, 1, "tip_hash", -1, SQLITE_STATIC);
-        sqlite3_bind_blob(ins, 2, tip_hash, 32, SQLITE_STATIC);
-        sqlite3_step(ins);
-        sqlite3_finalize(ins);
+        TEST_DB_RUN(test_db, ins,
+            "INSERT INTO node_state (key, value) VALUES (?, ?)",
+        {
+            sqlite3_bind_text(ins, 1, "tip_hash", -1, SQLITE_STATIC);
+            sqlite3_bind_blob(ins, 2, tip_hash, 32, SQLITE_STATIC);
+        });
 
         /* Insert 100 test UTXOs with deterministic data */
-        sqlite3_exec(test_db, "BEGIN", NULL, NULL, NULL);
+        TEST_DB_BEGIN(test_db);
         sqlite3_prepare_v2(test_db,
             "INSERT INTO utxos (txid, vout, value, script, height) "
             "VALUES (?, ?, ?, ?, ?)", -1, &ins, NULL);
@@ -2349,7 +2351,7 @@ int test_net(void)
             sqlite3_step(ins);
         }
         sqlite3_finalize(ins);
-        sqlite3_exec(test_db, "COMMIT", NULL, NULL, NULL);
+        TEST_DB_COMMIT(test_db);
     }
 
     printf("parallel_sync: manifest chunk_count = ceil(100/500)... ");

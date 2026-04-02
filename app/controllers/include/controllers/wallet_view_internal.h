@@ -53,6 +53,20 @@ int64_t wv_query_shielded_balance(sqlite3 *db, int *note_count);
 int64_t wv_query_speed_balance(sqlite3 *db);
 int wv_effective_tip(sqlite3 *db);
 
+struct wv_receive_address {
+    char address[128];
+};
+
+struct wv_held_token {
+    char token_id[65];
+    char ticker[16];
+    int decimals;
+};
+
+int wv_list_receive_addresses(sqlite3 *db, struct wv_receive_address *out,
+                              size_t max);
+int wv_list_held_tokens(sqlite3 *db, struct wv_held_token *out, size_t max);
+
 /* ── RPC helpers ──────────────────────────────────────────── */
 
 const char *wv_zclassicd_auth(void);

@@ -27,24 +27,7 @@
 
 /* ── Rendering helpers ─────────────────────────────────── */
 
-static uint8_t _b[131072];
-static size_t _n;
-
-static size_t G(const char *path) {
-    memset(_b, 0, sizeof(_b));
-    _n = wallet_view_handle_request("GET", path, NULL, 0, _b, sizeof(_b));
-    return _n;
-}
-
-static size_t P(const char *path, const char *body) {
-    memset(_b, 0, sizeof(_b));
-    _n = wallet_view_handle_request("POST", path,
-        body ? (const uint8_t *)body : NULL,
-        body ? strlen(body) : 0, _b, sizeof(_b));
-    return _n;
-}
-
-static bool H(const char *s) { return strstr((char *)_b, s) != NULL; }
+DEFINE_WALLET_VIEW_CLIENT(_b, _n, stories_request, G, P, H, 131072)
 
 /* Checks every page must pass */
 static bool clean(void) {

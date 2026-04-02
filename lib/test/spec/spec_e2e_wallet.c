@@ -19,17 +19,8 @@
 #include <stdlib.h>
 #include <unistd.h>
 
-static uint8_t _resp[131072];
-
-static size_t e2e_GET(const char *path) {
-    memset(_resp, 0, sizeof(_resp));
-    return wallet_view_handle_request("GET", path, NULL, 0,
-                                       _resp, sizeof(_resp));
-}
-
-static bool e2e_has(const char *needle) {
-    return strstr((char *)_resp, needle) != NULL;
-}
+DEFINE_WALLET_VIEW_CLIENT(_resp, _e2e_len, e2e_request, e2e_GET, e2e_POST,
+                          e2e_has, 131072)
 
 /* Create a temp dir with a node.db that has controlled wallet state */
 static char g_tmpdir[256];
@@ -46,7 +37,7 @@ static bool setup_test_db(int64_t transparent_sat, int64_t shielded_sat)
     if (sqlite3_open(dbpath, &db) != SQLITE_OK) return false;
 
     /* Create minimal schema */
-    sqlite3_exec(db,
+    TEST_DB_EXEC(db,
         "CREATE TABLE IF NOT EXISTS blocks ("
         "  hash BLOB PRIMARY KEY, height INTEGER, time INTEGER,"
         "  prev_hash BLOB, version INTEGER, merkle_root BLOB,"
@@ -93,22 +84,21 @@ static bool setup_test_db(int64_t transparent_sat, int64_t shielded_sat)
         "  id INTEGER PRIMARY KEY, token_id BLOB, tx_type TEXT,"
         "  txid BLOB, from_addr BLOB, to_addr BLOB, amount INTEGER);"
         "CREATE TABLE IF NOT EXISTS contacts ("
-        "  address TEXT PRIMARY KEY, name TEXT, last_used INTEGER);",
-        NULL, NULL, NULL);
+        "  address TEXT PRIMARY KEY, name TEXT, last_used INTEGER);"
+    );
 
     /* Insert transparent UTXOs if requested */
     if (transparent_sat > 0) {
         uint8_t fake_txid[32] = {0x01};
         uint8_t fake_addr[20] = {0xAA};
         sqlite3_stmt *s = NULL;
-        sqlite3_prepare_v2(db,
+        TEST_DB_RUN(db, s,
             "INSERT INTO wallet_utxos (txid,vout,value,address_hash,height)"
-            " VALUES (?,0,?,?,100)", -1, &s, NULL);
-        sqlite3_bind_blob(s, 1, fake_txid, 32, SQLITE_STATIC);
-        sqlite3_bind_int64(s, 2, transparent_sat);
-        sqlite3_bind_blob(s, 3, fake_addr, 20, SQLITE_STATIC);
-        sqlite3_step(s);
-        sqlite3_finalize(s);
+            " VALUES (?,0,?,?,100)", {
+            sqlite3_bind_blob(s, 1, fake_txid, 32, SQLITE_STATIC);
+            sqlite3_bind_int64(s, 2, transparent_sat);
+            sqlite3_bind_blob(s, 3, fake_addr, 20, SQLITE_STATIC);
+        });
     }
 
     /* Insert shielded notes if requested */
@@ -116,15 +106,14 @@ static bool setup_test_db(int64_t transparent_sat, int64_t shielded_sat)
         uint8_t fake_txid[32] = {0x02};
         uint8_t fake_nf[32] = {0xBB};
         sqlite3_stmt *s = NULL;
-        sqlite3_prepare_v2(db,
+        TEST_DB_RUN(db, s,
             "INSERT INTO wallet_sapling_notes"
             " (txid,output_index,value,nullifier,block_height)"
-            " VALUES (?,0,?,?,200)", -1, &s, NULL);
-        sqlite3_bind_blob(s, 1, fake_txid, 32, SQLITE_STATIC);
-        sqlite3_bind_int64(s, 2, shielded_sat);
-        sqlite3_bind_blob(s, 3, fake_nf, 32, SQLITE_STATIC);
-        sqlite3_step(s);
-        sqlite3_finalize(s);
+            " VALUES (?,0,?,?,200)", {
+            sqlite3_bind_blob(s, 1, fake_txid, 32, SQLITE_STATIC);
+            sqlite3_bind_int64(s, 2, shielded_sat);
+            sqlite3_bind_blob(s, 3, fake_nf, 32, SQLITE_STATIC);
+        });
     }
 
     /* Insert a tip block so height queries work */
@@ -133,16 +122,15 @@ static bool setup_test_db(int64_t transparent_sat, int64_t shielded_sat)
         uint8_t ph[32] = {0xFE};
         uint8_t mr[32] = {0xFD};
         sqlite3_stmt *s = NULL;
-        sqlite3_prepare_v2(db,
+        TEST_DB_RUN(db, s,
             "INSERT INTO blocks (hash,height,time,prev_hash,version,"
             "merkle_root,bits,status,num_tx)"
             " VALUES (?,500000,1700000000,?,4,?,0x1d00ffff,3,1)",
-            -1, &s, NULL);
-        sqlite3_bind_blob(s, 1, h, 32, SQLITE_STATIC);
-        sqlite3_bind_blob(s, 2, ph, 32, SQLITE_STATIC);
-        sqlite3_bind_blob(s, 3, mr, 32, SQLITE_STATIC);
-        sqlite3_step(s);
-        sqlite3_finalize(s);
+        {
+            sqlite3_bind_blob(s, 1, h, 32, SQLITE_STATIC);
+            sqlite3_bind_blob(s, 2, ph, 32, SQLITE_STATIC);
+            sqlite3_bind_blob(s, 3, mr, 32, SQLITE_STATIC);
+        });
     }
 
     sqlite3_close(db);

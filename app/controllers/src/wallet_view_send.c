@@ -15,37 +15,13 @@ size_t serve_send(uint8_t *r, size_t max) {
     struct db_contact contacts[20];
     int n_contacts = 0;
     /* ZSLP tokens held (max 10) */
-    struct { char token_id[65]; char ticker[16]; int decimals; } tokens[10];
+    struct wv_held_token tokens[10];
     int n_tokens = 0;
     if (db) {
         balance = wv_query_ground_truth_balance(db, NULL);
         shielded_bal = wv_query_shielded_balance(db, NULL);
-        /* Load held tokens */
-        {
-            sqlite3_stmt *ts = NULL;
-            if (sqlite3_prepare_v2(db,
-                    "SELECT hex(t.token_id), t.ticker, t.decimals "
-                    "FROM zslp_tokens t "
-                    "JOIN zslp_transfers tr ON tr.token_id = t.token_id "
-                    "WHERE tr.to_addr IN (SELECT pubkey_hash FROM wallet_keys) "
-                    "  AND tr.tx_type IN ('GENESIS','MINT','SEND') "
-                    "GROUP BY t.token_id HAVING SUM(tr.amount) > 0 "
-                    "ORDER BY SUM(tr.amount) DESC LIMIT 10",
-                    -1, &ts, NULL) == SQLITE_OK) {
-                while (sqlite3_step(ts) == SQLITE_ROW && n_tokens < 10) {
-                    const char *tid = (const char *)sqlite3_column_text(ts, 0);
-                    const char *tk = (const char *)sqlite3_column_text(ts, 1);
-                    int dec = sqlite3_column_int(ts, 2);
-                    if (tid && tk) {
-                        snprintf(tokens[n_tokens].token_id, 65, "%s", tid);
-                        snprintf(tokens[n_tokens].ticker, 16, "%s", tk);
-                        tokens[n_tokens].decimals = dec;
-                        n_tokens++;
-                    }
-                }
-                sqlite3_finalize(ts);
-            }
-        }
+        n_tokens = wv_list_held_tokens(db, tokens,
+            sizeof(tokens) / sizeof(tokens[0]));
         /* Load contacts */
         n_contacts = wv_recent_contacts(contacts, 20);
         sqlite3_close(db);
