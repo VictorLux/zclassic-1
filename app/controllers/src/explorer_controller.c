@@ -1984,18 +1984,10 @@ static void *tokens_compute_thread(void *arg)
     off += explorer_emit_nav((char *)r + off, max - off, "tokens");
 
     /* Count tokens and transfers */
-    int64_t token_count = 0, xfer_count = 0;
-    {
-        sqlite3_stmt *s = NULL;
-        if (sqlite3_prepare_v2(db, "SELECT count(*) FROM zslp_tokens", -1, &s, NULL) == SQLITE_OK) {
-            if (sqlite3_step(s) == SQLITE_ROW) token_count = sqlite3_column_int64(s, 0);
-            sqlite3_finalize(s);
-        }
-        if (sqlite3_prepare_v2(db, "SELECT count(*) FROM zslp_transfers", -1, &s, NULL) == SQLITE_OK) {
-            if (sqlite3_step(s) == SQLITE_ROW) xfer_count = sqlite3_column_int64(s, 0);
-            sqlite3_finalize(s);
-        }
-    }
+    struct explorer_token_stats token_stats = {0};
+    explorer_query_token_stats(db, &token_stats);
+    int64_t token_count = token_stats.token_count;
+    int64_t xfer_count = token_stats.transfer_count;
 
     APPEND(off, r, max,
         "<h1>ZSLP Tokens</h1>"

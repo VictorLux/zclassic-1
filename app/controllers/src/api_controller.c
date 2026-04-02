@@ -816,9 +816,6 @@ static size_t compute_address(const char *param, uint8_t *r, size_t max)
 
 /* ── Deep stats computation (SQLite-based) ───────────────── */
 
-/* sql_query_i64() provided by controllers/explorer_internal.h */
-#define dq_i64 sql_query_i64
-
 static size_t compute_deep_stats(uint8_t *r, size_t max)
 {
     if (!g_api_ctx.datadir)
@@ -834,46 +831,37 @@ static size_t compute_deep_stats(uint8_t *r, size_t max)
     }
     sqlite3_busy_timeout(db, 30000);
 
-    int64_t height = dq_i64(db, "SELECT MAX(height) FROM blocks");
-    int64_t block_count = dq_i64(db, "SELECT count(*) FROM blocks");
-    int64_t tx_count = dq_i64(db, "SELECT count(*) FROM transactions");
-    int64_t utxo_count = dq_i64(db, "SELECT count(*) FROM utxos");
-    int64_t dust_count = dq_i64(db, "SELECT count(*) FROM utxos WHERE value < 100000");
-    int64_t addr_total = dq_i64(db, "SELECT count(*) FROM addresses");
-    int64_t addr_nonzero = dq_i64(db, "SELECT count(*) FROM addresses WHERE balance > 0");
+    int64_t height = sql_query_i64(db, "SELECT MAX(height) FROM blocks");
+    int64_t block_count = sql_query_i64(db, "SELECT count(*) FROM blocks");
+    int64_t tx_count = sql_query_i64(db, "SELECT count(*) FROM transactions");
+    int64_t utxo_count = sql_query_i64(db, "SELECT count(*) FROM utxos");
+    int64_t dust_count = sql_query_i64(db, "SELECT count(*) FROM utxos WHERE value < 100000");
+    int64_t addr_total = sql_query_i64(db, "SELECT count(*) FROM addresses");
+    int64_t addr_nonzero = sql_query_i64(db, "SELECT count(*) FROM addresses WHERE balance > 0");
 
     /* Sprout stats */
-    int64_t js_count = dq_i64(db, "SELECT count(*) FROM joinsplits");
-    int64_t js_first = dq_i64(db, "SELECT MIN(block_height) FROM joinsplits");
+    int64_t js_count = sql_query_i64(db, "SELECT count(*) FROM joinsplits");
+    int64_t js_first = sql_query_i64(db, "SELECT MIN(block_height) FROM joinsplits");
 
     /* Sapling stats */
-    int64_t ss_count = dq_i64(db, "SELECT count(*) FROM sapling_spends");
-    int64_t so_count = dq_i64(db, "SELECT count(*) FROM sapling_outputs");
-    int64_t ss_first = dq_i64(db, "SELECT MIN(block_height) FROM sapling_spends");
+    int64_t ss_count = sql_query_i64(db, "SELECT count(*) FROM sapling_spends");
+    int64_t so_count = sql_query_i64(db, "SELECT count(*) FROM sapling_outputs");
+    int64_t ss_first = sql_query_i64(db, "SELECT MIN(block_height) FROM sapling_spends");
 
     /* ZSLP stats */
-    int64_t token_count = dq_i64(db, "SELECT count(*) FROM zslp_tokens");
-    int64_t transfer_count = dq_i64(db, "SELECT count(*) FROM zslp_transfers");
+    struct explorer_token_stats token_stats = {0};
+    explorer_query_token_stats(db, &token_stats);
 
     int64_t supply_sat = zcl_total_supply_zatoshi(height);
 
     /* Shielded supply from blocks table */
-    int64_t shielded_net = dq_i64(db, "SELECT COALESCE(SUM(sapling_value), 0) FROM blocks");
+    int64_t shielded_net = sql_query_i64(db, "SELECT COALESCE(SUM(sapling_value), 0) FROM blocks");
 
     /* Integrity: checkpoint count and latest block hash */
     char latest_hash[128] = "";
-    {
-        sqlite3_stmt *s = NULL;
-        if (sqlite3_prepare_v2(db,
-            "SELECT hex(hash) FROM blocks WHERE height = (SELECT MAX(height) FROM blocks)",
-            -1, &s, NULL) == SQLITE_OK && s) {
-            if (sqlite3_step(s) == SQLITE_ROW) {
-                const char *h = (const char *)sqlite3_column_text(s, 0);
-                if (h) snprintf(latest_hash, sizeof(latest_hash), "%s", h);
-            }
-            sqlite3_finalize(s);
-        }
-    }
+    sql_query_text(db,
+        "SELECT hex(hash) FROM blocks WHERE height = (SELECT MAX(height) FROM blocks)",
+        latest_hash, sizeof(latest_hash));
 
     sqlite3_close(db);
 
@@ -902,7 +890,7 @@ static size_t compute_deep_stats(uint8_t *r, size_t max)
         ss_count, so_count, ss_first,
         utxo_count, dust_count,
         addr_total, addr_nonzero,
-        token_count, transfer_count,
+        token_stats.token_count, token_stats.transfer_count,
         block_count, latest_hash);
 
     return off;

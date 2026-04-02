@@ -106,6 +106,82 @@ static inline int sql_query_int(sqlite3 *db, const char *sql)
     return (int)sql_query_i64(db, sql);
 }
 
+struct sql_row_i64_2 {
+    int64_t v0;
+    int64_t v1;
+};
+
+struct sql_row_i64_3 {
+    int64_t v0;
+    int64_t v1;
+    int64_t v2;
+};
+
+struct explorer_token_stats {
+    int64_t token_count;
+    int64_t transfer_count;
+};
+
+static inline bool sql_query_row_i64_2(sqlite3 *db, const char *sql,
+                                       struct sql_row_i64_2 *out)
+{
+    sqlite3_stmt *s = NULL;
+
+    if (out) {
+        out->v0 = 0;
+        out->v1 = 0;
+    }
+    if (!out)
+        return false;
+
+    if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
+        if (sqlite3_step(s) == SQLITE_ROW) {
+            out->v0 = sqlite3_column_int64(s, 0);
+            out->v1 = sqlite3_column_int64(s, 1);
+            sqlite3_finalize(s);
+            return true;
+        }
+        sqlite3_finalize(s);
+    }
+    return false;
+}
+
+static inline bool sql_query_row_i64_3(sqlite3 *db, const char *sql,
+                                       struct sql_row_i64_3 *out)
+{
+    sqlite3_stmt *s = NULL;
+
+    if (out) {
+        out->v0 = 0;
+        out->v1 = 0;
+        out->v2 = 0;
+    }
+    if (!out)
+        return false;
+
+    if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
+        if (sqlite3_step(s) == SQLITE_ROW) {
+            out->v0 = sqlite3_column_int64(s, 0);
+            out->v1 = sqlite3_column_int64(s, 1);
+            out->v2 = sqlite3_column_int64(s, 2);
+            sqlite3_finalize(s);
+            return true;
+        }
+        sqlite3_finalize(s);
+    }
+    return false;
+}
+
+static inline void explorer_query_token_stats(sqlite3 *db,
+                                              struct explorer_token_stats *out)
+{
+    if (!out)
+        return;
+
+    out->token_count = sql_query_i64(db, "SELECT count(*) FROM zslp_tokens");
+    out->transfer_count = sql_query_i64(db, "SELECT count(*) FROM zslp_transfers");
+}
+
 static inline bool sql_query_text(sqlite3 *db, const char *sql,
                                    char *out, size_t max)
 {

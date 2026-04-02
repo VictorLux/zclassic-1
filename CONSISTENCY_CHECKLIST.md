@@ -104,6 +104,15 @@ Exit criteria:
 
 In progress:
 
-- document the consistency program
-- start replacing local controller formatting/query drift with existing shared helpers
-- extract wallet-view page-local read queries into shared wallet-view projection helpers
+- keep the consistency work tracked as an explicit step-by-step program
+- extend shared controller SQLite helpers beyond scalar-only reads
+- replace low-risk explorer/API prepare-step-finalize boilerplate with those helpers
+- consolidate repeated explorer/API domain summaries behind shared read helpers
+
+Recent slices:
+
+- added wallet-view projection helpers for send/receive page queries
+- standardized shared test DB macros across repeated fixture/setup code
+- started explorer/API read-helper extraction with shared text and fixed-width
+  integer row helpers
+- started consolidating repeated ZSLP summary reads behind one shared helper

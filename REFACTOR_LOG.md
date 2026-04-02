@@ -2,6 +2,35 @@
 
 ## 2026-04-02
 
+### Explorer/API Consistency: Shared Row Query Helpers
+
+Completed in this slice:
+
+- extended `app/controllers/include/controllers/explorer_internal.h` with
+  shared fixed-width SQLite row helpers for 2-column and 3-column integer reads
+- rewired `app/controllers/src/api_controller.c` to stop aliasing
+  `sql_query_i64` locally and to use shared text-query helpers for the latest
+  block hash lookup in deep stats
+- rewired the record-heavy section of `app/controllers/src/explorer_factoids.c`
+  off repeated row-query boilerplate so explorer/API controller reads converge
+  on one small helper vocabulary
+- updated `CONSISTENCY_CHECKLIST.md` so the current slice reflects the ongoing
+  explorer/API helper extraction work instead of only the earlier wallet-view
+  pass
+- added a shared explorer/API token-summary helper and rewired the ZSLP counts
+  in `explorer_controller.c`, `api_controller.c`, and
+  `explorer_factoids.c` to consume the same domain read
+
+Why:
+
+- the next consistency bottleneck after wallet-view cleanup is repeated
+  controller-owned SQLite lifecycle boilerplate in explorer/API code
+- scalar helpers alone were not enough; several files repeatedly read the same
+  two- and three-column row shapes and reimplemented the same control flow
+- adding a small row-helper layer is a lower-risk step than trying to split the
+  large explorer/API controllers first, and it gives those future splits a more
+  uniform query vocabulary
+
 ### Consistency Program: Checklist And First Controller Helper Pass
 
 Completed in this slice:

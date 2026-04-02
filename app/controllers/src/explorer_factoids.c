@@ -24,20 +24,11 @@
 #include <inttypes.h>
 #include <time.h>
 
-/* sql_query_i64() provided by controllers/explorer_internal.h */
 #define fq_i64 sql_query_i64
 
 static void fq_text(sqlite3 *db, const char *sql, char *out, size_t outmax)
 {
-    out[0] = '\0';
-    sqlite3_stmt *s = NULL;
-    if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
-        if (sqlite3_step(s) == SQLITE_ROW) {
-            const char *t = (const char *)sqlite3_column_text(s, 0);
-            if (t) snprintf(out, outmax, "%s", t);
-        }
-        sqlite3_finalize(s);
-    }
+    sql_query_text(db, sql, out, outmax);
 }
 
 /* ── SHA3-256 receipt computation ─────────────────────────── */
@@ -613,175 +604,123 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
 
     /* Largest transparent output */
     {
-        sqlite3_stmt *s = NULL;
+        struct sql_row_i64_3 row;
         const char *sql = "SELECT u.value, u.height, b.time FROM utxos u "
                           "JOIN blocks b ON u.height = b.height "
                           "ORDER BY u.value DESC LIMIT 1";
-        if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
-            if (sqlite3_step(s) == SQLITE_ROW) {
-                int64_t val = sqlite3_column_int64(s, 0);
-                int64_t h = sqlite3_column_int64(s, 1);
-                int64_t t = sqlite3_column_int64(s, 2);
-                char vstr[64];
-                fmt_zcl(vstr, sizeof(vstr), val);
-                RECORD_ROW("Largest transparent output",
-                    "%s ZCL", vstr, h, t);
-            }
-            sqlite3_finalize(s);
+        if (sql_query_row_i64_3(db, sql, &row)) {
+            char vstr[64];
+            fmt_zcl(vstr, sizeof(vstr), row.v0);
+            RECORD_ROW("Largest transparent output",
+                "%s ZCL", vstr, row.v1, row.v2);
         }
     }
 
     /* Most transactions in a single block */
     {
-        sqlite3_stmt *s = NULL;
+        struct sql_row_i64_3 row;
         const char *sql = "SELECT b.height, b.num_tx, b.time FROM blocks b "
                           "ORDER BY b.num_tx DESC LIMIT 1";
-        if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
-            if (sqlite3_step(s) == SQLITE_ROW) {
-                int64_t h = sqlite3_column_int64(s, 0);
-                int64_t ntx = sqlite3_column_int64(s, 1);
-                int64_t t = sqlite3_column_int64(s, 2);
-                RECORD_ROW("Most transactions in a block",
-                    "%" PRId64 " tx", ntx, h, t);
-            }
-            sqlite3_finalize(s);
+        if (sql_query_row_i64_3(db, sql, &row)) {
+            RECORD_ROW("Most transactions in a block",
+                "%" PRId64 " tx", row.v1, row.v0, row.v2);
         }
     }
 
     /* Most JoinSplits in a single block */
     {
-        sqlite3_stmt *s = NULL;
+        struct sql_row_i64_2 row;
         const char *sql = "SELECT block_height, count(*) as cnt FROM joinsplits "
                           "GROUP BY block_height ORDER BY cnt DESC LIMIT 1";
-        if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
-            if (sqlite3_step(s) == SQLITE_ROW) {
-                int64_t h = sqlite3_column_int64(s, 0);
-                int64_t cnt = sqlite3_column_int64(s, 1);
-                int64_t t = get_block_time(db, h);
-                RECORD_ROW("Most JoinSplits in a block",
-                    "%" PRId64, cnt, h, t);
-            }
-            sqlite3_finalize(s);
+        if (sql_query_row_i64_2(db, sql, &row)) {
+            int64_t t = get_block_time(db, row.v0);
+            RECORD_ROW("Most JoinSplits in a block",
+                "%" PRId64, row.v1, row.v0, t);
         }
     }
 
     /* Most Sapling outputs in a single block */
     {
-        sqlite3_stmt *s = NULL;
+        struct sql_row_i64_2 row;
         const char *sql = "SELECT block_height, count(*) as cnt FROM sapling_outputs "
                           "GROUP BY block_height ORDER BY cnt DESC LIMIT 1";
-        if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
-            if (sqlite3_step(s) == SQLITE_ROW) {
-                int64_t h = sqlite3_column_int64(s, 0);
-                int64_t cnt = sqlite3_column_int64(s, 1);
-                int64_t t = get_block_time(db, h);
-                RECORD_ROW("Most Sapling outputs in a block",
-                    "%" PRId64, cnt, h, t);
-            }
-            sqlite3_finalize(s);
+        if (sql_query_row_i64_2(db, sql, &row)) {
+            int64_t t = get_block_time(db, row.v0);
+            RECORD_ROW("Most Sapling outputs in a block",
+                "%" PRId64, row.v1, row.v0, t);
         }
     }
 
     /* Highest difficulty ever */
     {
-        sqlite3_stmt *s = NULL;
+        struct sql_row_i64_3 row;
         const char *sql = "SELECT height, bits, time FROM blocks "
                           "WHERE bits > 0 ORDER BY bits ASC LIMIT 1";
-        if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
-            if (sqlite3_step(s) == SQLITE_ROW) {
-                int64_t h = sqlite3_column_int64(s, 0);
-                uint32_t bits = (uint32_t)sqlite3_column_int64(s, 1);
-                int64_t t = sqlite3_column_int64(s, 2);
-                double diff = explorer_difficulty_from_bits(bits);
-                char dstr[64];
-                snprintf(dstr, sizeof(dstr), "%.2f", diff);
-                RECORD_ROW("Highest difficulty",
-                    "%s", dstr, h, t);
-            }
-            sqlite3_finalize(s);
+        if (sql_query_row_i64_3(db, sql, &row)) {
+            double diff = explorer_difficulty_from_bits((uint32_t)row.v1);
+            char dstr[64];
+            snprintf(dstr, sizeof(dstr), "%.2f", diff);
+            RECORD_ROW("Highest difficulty",
+                "%s", dstr, row.v0, row.v2);
         }
     }
 
     /* Longest gap between blocks */
     {
-        sqlite3_stmt *s = NULL;
+        struct sql_row_i64_3 row;
         const char *sql =
             "SELECT a.height, a.time, (b.time - a.time) as gap "
             "FROM blocks a JOIN blocks b ON b.height = a.height + 1 "
             "WHERE a.time > 0 AND b.time > 0 "
             "ORDER BY gap DESC LIMIT 1";
-        if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
-            if (sqlite3_step(s) == SQLITE_ROW) {
-                int64_t h = sqlite3_column_int64(s, 0);
-                int64_t t = sqlite3_column_int64(s, 1);
-                int64_t gap = sqlite3_column_int64(s, 2);
-                char gstr[64];
-                snprintf(gstr, sizeof(gstr), "%" PRId64 "m %" PRId64 "s",
-                         gap / 60, gap % 60);
-                RECORD_ROW("Longest block gap",
-                    "%s", gstr, h, t);
-            }
-            sqlite3_finalize(s);
+        if (sql_query_row_i64_3(db, sql, &row)) {
+            char gstr[64];
+            snprintf(gstr, sizeof(gstr), "%" PRId64 "m %" PRId64 "s",
+                     row.v2 / 60, row.v2 % 60);
+            RECORD_ROW("Longest block gap",
+                "%s", gstr, row.v0, row.v1);
         }
     }
 
     /* Shortest gap between blocks */
     {
-        sqlite3_stmt *s = NULL;
+        struct sql_row_i64_3 row;
         const char *sql =
             "SELECT a.height, a.time, (b.time - a.time) as gap "
             "FROM blocks a JOIN blocks b ON b.height = a.height + 1 "
             "WHERE a.time > 0 AND b.time > 0 AND (b.time - a.time) > 0 "
             "ORDER BY gap ASC LIMIT 1";
-        if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
-            if (sqlite3_step(s) == SQLITE_ROW) {
-                int64_t h = sqlite3_column_int64(s, 0);
-                int64_t t = sqlite3_column_int64(s, 1);
-                int64_t gap = sqlite3_column_int64(s, 2);
-                char gstr[64];
-                snprintf(gstr, sizeof(gstr), "%" PRId64 "s", gap);
-                RECORD_ROW("Shortest block gap",
-                    "%s", gstr, h, t);
-            }
-            sqlite3_finalize(s);
+        if (sql_query_row_i64_3(db, sql, &row)) {
+            char gstr[64];
+            snprintf(gstr, sizeof(gstr), "%" PRId64 "s", row.v2);
+            RECORD_ROW("Shortest block gap",
+                "%s", gstr, row.v0, row.v1);
         }
     }
 
     /* Largest single shielding (t→z) */
     {
-        sqlite3_stmt *s = NULL;
+        struct sql_row_i64_3 row;
         const char *sql = "SELECT height, sapling_value, time FROM blocks "
                           "WHERE sapling_value > 0 ORDER BY sapling_value DESC LIMIT 1";
-        if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
-            if (sqlite3_step(s) == SQLITE_ROW) {
-                int64_t h = sqlite3_column_int64(s, 0);
-                int64_t sv = sqlite3_column_int64(s, 1);
-                int64_t t = sqlite3_column_int64(s, 2);
-                char vstr[64];
-                fmt_zcl(vstr, sizeof(vstr), sv);
-                RECORD_ROW("Largest single-block shielding (t\xe2\x86\x92z)",
-                    "%s ZCL", vstr, h, t);
-            }
-            sqlite3_finalize(s);
+        if (sql_query_row_i64_3(db, sql, &row)) {
+            char vstr[64];
+            fmt_zcl(vstr, sizeof(vstr), row.v1);
+            RECORD_ROW("Largest single-block shielding (t\xe2\x86\x92z)",
+                "%s ZCL", vstr, row.v0, row.v2);
         }
     }
 
     /* Largest single unshielding (z→t) */
     {
-        sqlite3_stmt *s = NULL;
+        struct sql_row_i64_3 row;
         const char *sql = "SELECT height, sapling_value, time FROM blocks "
                           "WHERE sapling_value < 0 ORDER BY sapling_value ASC LIMIT 1";
-        if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
-            if (sqlite3_step(s) == SQLITE_ROW) {
-                int64_t h = sqlite3_column_int64(s, 0);
-                int64_t sv = sqlite3_column_int64(s, 1);
-                int64_t t = sqlite3_column_int64(s, 2);
-                char vstr[64];
-                fmt_zcl(vstr, sizeof(vstr), sv);
-                RECORD_ROW("Largest single-block unshielding (z\xe2\x86\x92t)",
-                    "%s ZCL", vstr, h, t);
-            }
-            sqlite3_finalize(s);
+        if (sql_query_row_i64_3(db, sql, &row)) {
+            char vstr[64];
+            fmt_zcl(vstr, sizeof(vstr), row.v1);
+            RECORD_ROW("Largest single-block unshielding (z\xe2\x86\x92t)",
+                "%s ZCL", vstr, row.v0, row.v2);
         }
     }
 
@@ -1041,8 +980,10 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
     APPEND(off, r, max,
         "<h2 id='zslp'>9. ZSLP Token History</h2>");
 
-    int64_t total_tokens = fq_i64(db, "SELECT count(*) FROM zslp_tokens");
-    int64_t total_transfers = fq_i64(db, "SELECT count(*) FROM zslp_transfers");
+    struct explorer_token_stats token_stats = {0};
+    explorer_query_token_stats(db, &token_stats);
+    int64_t total_tokens = token_stats.token_count;
+    int64_t total_transfers = token_stats.transfer_count;
 
     {
         char tk_str[32], xf_str[32], rcpt[32] = "";
@@ -1656,6 +1597,9 @@ size_t explorer_factoids_build_json(uint8_t *buf, size_t buf_max,
         "Cache-Control: public, max-age=300\r\n"
         "Connection: close\r\n\r\n");
 
+    struct explorer_token_stats token_stats = {0};
+    explorer_query_token_stats(db, &token_stats);
+
     APPEND(off, r, max, "{\"chain_height\":%" PRId64, chain_height);
 
     /* Genesis — height 0 may not be in SQLite, use constants as fallback */
@@ -1733,10 +1677,9 @@ size_t explorer_factoids_build_json(uint8_t *buf, size_t buf_max,
 
     /* ZSLP */
     {
-        int64_t tk = fq_i64(db, "SELECT count(*) FROM zslp_tokens");
-        int64_t xf = fq_i64(db, "SELECT count(*) FROM zslp_transfers");
         APPEND(off, r, max,
-            ",\"zslp\":{\"tokens\":%" PRId64 ",\"transfers\":%" PRId64 "}", tk, xf);
+            ",\"zslp\":{\"tokens\":%" PRId64 ",\"transfers\":%" PRId64 "}",
+            token_stats.token_count, token_stats.transfer_count);
     }
 
     /* UTXO stats */
