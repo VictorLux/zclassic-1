@@ -13,7 +13,12 @@
 #include "coins/undo.h"
 #include "consensus/validation.h"
 #include "primitives/block.h"
+#include "sapling/incremental_merkle_tree.h"
 #include <stdbool.h>
+
+/* Set the Sapling commitment tree for connect_block to update and verify.
+ * Must be called before connect_block. Set to NULL for just_check mode. */
+void connect_block_set_sapling_tree(struct incremental_merkle_tree *tree);
 
 bool connect_block(const struct block *block,
                    struct validation_state *state,

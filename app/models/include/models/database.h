@@ -31,6 +31,16 @@ struct node_db {
     sqlite3_stmt *stmt_state_set;
     sqlite3_stmt *stmt_state_get;
 
+    /* Peer model — cached for hot P2P paths */
+    sqlite3_stmt *stmt_peer_save;
+    sqlite3_stmt *stmt_peer_find;
+    sqlite3_stmt *stmt_peer_delete;
+    sqlite3_stmt *stmt_peer_count;
+
+    /* File service model */
+    sqlite3_stmt *stmt_file_service_save;
+    sqlite3_stmt *stmt_file_service_find;
+
     /* Batch sync: accumulate N blocks before COMMIT for throughput.
      * batch_size=1 is the safe default (per-block COMMIT).
      * During IBD, set batch_size=100+ for 10-50x SQLite throughput. */
@@ -66,6 +76,36 @@ bool node_db_state_get(struct node_db *ndb, const char *key,
                        void *value, size_t max_len, size_t *out_len);
 bool node_db_state_set_int(struct node_db *ndb, const char *key, int64_t val);
 bool node_db_state_get_int(struct node_db *ndb, const char *key, int64_t *val);
+
+/* ── UTXO Lifecycle ─────────────────────────────────────────────── */
+
+/* Wipe all UTXOs and related state (coins_best_block, utxo_commitment).
+ * Used when resetting to genesis for clean replay. */
+bool node_db_wipe_utxos(struct node_db *ndb);
+
+/* Count UTXOs in the database. */
+int64_t node_db_utxo_count(struct node_db *ndb);
+
+/* ── Performance Modes ─────────────────────────────────────────── */
+
+/* IBD turbo: synchronous=OFF, large cache, drop secondary indexes.
+ * Call before bulk block import. ~60x throughput improvement. */
+bool node_db_ibd_turbo_mode(struct node_db *ndb);
+
+/* Normal mode: synchronous=NORMAL, rebuild indexes, truncate WAL.
+ * Call after IBD completes. */
+bool node_db_normal_mode(struct node_db *ndb);
+
+/* WAL checkpoint (TRUNCATE). Call after large bulk operations. */
+bool node_db_wal_checkpoint(struct node_db *ndb);
+
+/* Drop secondary indexes for bulk load throughput. */
+bool node_db_drop_indexes(struct node_db *ndb);
+
+/* Rebuild secondary indexes after bulk load. */
+bool node_db_rebuild_indexes(struct node_db *ndb);
+
+/* ── Schema ────────────────────────────────────────────────────── */
 
 /* Schema version for future migrations. */
 int node_db_schema_version(struct node_db *ndb);

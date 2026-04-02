@@ -98,7 +98,9 @@ struct utxo_chunk {
 struct snapshot_offer {
     int32_t  height;         /* snapshot height */
     uint8_t  block_hash[32]; /* block hash at height */
-    uint8_t  utxo_root[32]; /* Merkle root of UTXO set */
+    uint8_t  utxo_root[32]; /* SHA3 Merkle root of UTXO set */
+    uint8_t  mmr_root[32];  /* MMR root over all block hashes (legacy) */
+    uint8_t  mmb_root[32];  /* MMB root — FlyClient O(log k) proofs */
     uint64_t num_utxos;      /* total UTXO count */
     uint64_t total_bytes;    /* estimated transfer size */
 };
@@ -112,6 +114,29 @@ static inline bool peer_supports_fast_sync(uint64_t services)
 /* Build a snapshot offer from current chain state */
 bool fast_sync_build_offer(const char *datadir,
                             struct snapshot_offer *offer);
+
+/* Path to the pre-serialized snapshot file ({datadir}/snapshot.bin).
+ * Built by fast_sync_prebuild_snapshot() for zero-copy serving. */
+void fast_sync_snapshot_path(char *out, size_t max, const char *datadir);
+
+/* Pre-serialize all UTXOs into a binary snapshot file for fast serving.
+ * Uses the shared node_db via db_utxo_serialize_snapshot().
+ * Must be called after the UTXO set is stable (at tip).
+ * Returns total UTXOs serialized, or -1 on error. */
+struct node_db;
+int64_t fast_sync_prebuild_snapshot(struct node_db *ndb, const char *datadir);
+
+/* Get the size of the pre-built snapshot file in bytes. Returns 0 if none. */
+uint64_t fast_sync_snapshot_file_size(const char *datadir);
+
+/* Get the in-memory snapshot buffer for zero-copy serving.
+ * Returns NULL if no snapshot loaded. Sets *size to buffer length. */
+const uint8_t *fast_sync_get_snapshot_buf(int64_t *size);
+
+/* Get the SHA3-256 hash computed during pre-serialization.
+ * This hash is guaranteed to match the file contents exactly.
+ * Returns false if no snapshot has been pre-built yet. */
+bool fast_sync_get_snapshot_sha3(uint8_t out[32], uint64_t *count);
 
 /* Serve a snapshot to a requesting peer (chunked) */
 typedef bool (*chunk_callback)(const struct utxo_chunk *chunk,

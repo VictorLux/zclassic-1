@@ -10,6 +10,7 @@
 #include "validation/main_constants.h"
 #include "validation/chainstate.h"
 #include "validation/txmempool.h"
+#include "sapling/incremental_merkle_tree.h"
 #include "util/sync.h"
 #include <stdbool.h>
 #include <stdatomic.h>
@@ -20,6 +21,12 @@ struct main_state {
     struct block_map map_block_index;
     struct active_chain chain_active;
     struct block_index *pindex_best_header;
+
+    /* Sapling note commitment tree — maintained by connect_block.
+     * Root verified against hashFinalSaplingRoot in each block header.
+     * Persisted to node_state["sapling_tree"] on flush. */
+    struct incremental_merkle_tree sapling_tree;
+    bool sapling_tree_loaded;
 
     int nScriptCheckThreads;
 
@@ -52,6 +59,8 @@ static inline void main_state_init(struct main_state *ms)
     block_map_init(&ms->map_block_index);
     active_chain_init(&ms->chain_active);
     ms->pindex_best_header = NULL;
+    sapling_tree_init(&ms->sapling_tree);
+    ms->sapling_tree_loaded = false;
     ms->nScriptCheckThreads = 0;
     atomic_store(&ms->fImporting, false);
     atomic_store(&ms->fReindex, false);

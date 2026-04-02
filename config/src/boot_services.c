@@ -3,8 +3,11 @@
  * mining, wallet sync, shutdown, and utility functions. */
 
 #include "config/boot_internal.h"
+#include "models/utxo.h"
+#include "models/mmb_leaf_store.h"
 #include "chain/chainparams.h"
 #include "chain/mmr.h"
+#include "chain/mmb.h"
 #include "chain/subsidy.h"
 #include "coins/coins_view.h"
 #include "controllers/blockchain_controller.h"
@@ -52,12 +55,31 @@
 
 extern int g_assume_valid_height;
 
-extern struct node_db *g_active_node_db;
-extern struct tx_mempool *g_active_mempool;
-extern struct wallet *g_active_wallet;
-
 /* Module-local pointer to boot context (set once by app_init_services) */
 static struct boot_svc_ctx *S;
+
+static struct app_runtime_context *boot_runtime(void)
+{
+    if (!S)
+        return NULL;
+    return &S->runtime;
+}
+
+static struct node_db *boot_node_db(void)
+{
+    struct app_runtime_context *runtime = boot_runtime();
+    if (!runtime)
+        return NULL;
+    return runtime->node_db;
+}
+
+static struct wallet *boot_wallet(void)
+{
+    struct app_runtime_context *runtime = boot_runtime();
+    if (!runtime)
+        return NULL;
+    return runtime->wallet;
+}
 
 /* ── Helper threads ────────────────────────────────────────── */
 
@@ -71,6 +93,9 @@ static void *payment_processor_thread(void *arg)
     }
     return NULL;
 }
+
+/* ── Global MMB leaf store for FlyClient proofs ─────────────── */
+struct mmb_leaf_store g_mmb_leaf_store = {0};
 
 /* ── Background UTXO replay ───────────────────────────────── */
 /* After file sync, replay blocks to build UTXO set in background.
@@ -95,13 +120,13 @@ static void *background_utxo_replay(void *arg)
     fflush(stdout);
 
     /* IBD turbo: skip non-essential work during replay */
-    extern struct node_db *g_active_node_db;
-    if (g_active_node_db && g_active_node_db->open) {
-        sqlite3_exec(g_active_node_db->db,
+    struct node_db *ndb = boot_node_db();
+    if (ndb && ndb->open) {
+        sqlite3_exec(ndb->db,
             "PRAGMA synchronous=OFF", NULL, NULL, NULL);
-        sqlite3_exec(g_active_node_db->db,
+        sqlite3_exec(ndb->db,
             "PRAGMA cache_size=-524288", NULL, NULL, NULL);
-        node_db_set_sync_batch_size(g_active_node_db, 1000);
+        node_db_set_sync_batch_size(ndb, 1000);
     }
     set_flush_policy(3600, 1000000, 100000);
 
@@ -112,12 +137,12 @@ static void *background_utxo_replay(void *arg)
 
     /* Restore normal flush policy */
     set_flush_policy(3600, 500000, 500);
-    if (g_active_node_db && g_active_node_db->open) {
-        sqlite3_exec(g_active_node_db->db,
+    if (ndb && ndb->open) {
+        sqlite3_exec(ndb->db,
             "PRAGMA synchronous=NORMAL", NULL, NULL, NULL);
-        sqlite3_exec(g_active_node_db->db,
+        sqlite3_exec(ndb->db,
             "PRAGMA cache_size=-65536", NULL, NULL, NULL);
-        node_db_set_sync_batch_size(g_active_node_db, 100);
+        node_db_set_sync_batch_size(ndb, 100);
     }
 
     int tip = active_chain_height(&a->state->chain_active);
@@ -162,8 +187,65 @@ static void *build_snapshot_offer_thread(void *arg)
 
     struct snapshot_offer offer;
     if (fast_sync_build_offer(datadir, &offer)) {
+        /* Embed MMR root — cryptographically binds UTXO snapshot to PoW chain */
+        struct mmr *m = rpc_blockchain_get_mmr();
+        if (m && m->num_leaves > 0) {
+            mmr_root(m, offer.mmr_root);
+        } else {
+            memset(offer.mmr_root, 0, 32);
+        }
+
+        /* Embed MMB root — replayed from leaf hash store via
+         * mmb_append_hash(), guaranteeing identical merge logic
+         * as mmb_prove() uses internally. */
+        if (g_mmb_leaf_store.open && g_mmb_leaf_store.num_leaves > 0) {
+            const uint8_t (*lh)[32] = mmb_leaf_store_all(&g_mmb_leaf_store);
+            /* Replay only up to snapshot height — the FlyClient
+             * challenge uses offer.height as chain_length, so the
+             * MMB root must match that exact leaf count. */
+            uint64_t replay_count = (uint64_t)offer.height;
+            if (replay_count > g_mmb_leaf_store.num_leaves)
+                replay_count = g_mmb_leaf_store.num_leaves;
+            if (lh && replay_count > 0) {
+                struct mmb replay;
+                mmb_init(&replay);
+                for (uint64_t i = 0; i < replay_count; i++)
+                    mmb_append_hash(&replay, lh[i]);
+                mmb_root(&replay, offer.mmb_root);
+                printf("Fast sync: MMB root at h=%d (%llu/%llu leaves, "
+                       "%u peaks)\n", offer.height,
+                       (unsigned long long)replay.num_leaves,
+                       (unsigned long long)g_mmb_leaf_store.num_leaves,
+                       replay.num_mountains);
+            } else {
+                memset(offer.mmb_root, 0, 32);
+            }
+        } else {
+            memset(offer.mmb_root, 0, 32);
+            printf("Fast sync: WARNING — no MMB leaf store\n");
+        }
+        /* Pre-serialize snapshot file for zero-copy serving.
+         * MUST happen before updating offer — the SHA3 from pre-serialization
+         * is used as the offer's utxo_root to guarantee hash/file match. */
+        struct node_db *ndb = boot_node_db();
+        if (ndb && ndb->open) {
+            int64_t snap_count = fast_sync_prebuild_snapshot(
+                ndb, datadir);
+            if (snap_count > 0) {
+                /* Use the SHA3 computed during serialization */
+                uint8_t snap_sha3[32];
+                uint64_t snap_n = 0;
+                if (fast_sync_get_snapshot_sha3(snap_sha3, &snap_n)) {
+                    memcpy(offer.utxo_root, snap_sha3, 32);
+                    offer.num_utxos = snap_n;
+                    printf("Snapshot: %llu UTXOs, SHA3 from file\n",
+                           (unsigned long long)snap_n);
+                }
+            }
+        }
+
         msg_processor_update_offer(&offer);
-        printf("Fast sync ready: h=%d, %llu UTXOs\n",
+        printf("Fast sync ready: h=%d, %llu UTXOs, MMB+MMR secured\n",
                offer.height, (unsigned long long)offer.num_utxos);
     } else {
         printf("Fast sync: no snapshot available yet\n");
@@ -213,6 +295,10 @@ bool app_init_services(struct app_context *ctx,
                         struct boot_svc_ctx *svc)
 {
     S = svc;
+    svc->runtime.node_db = svc->node_db;
+    svc->runtime.mempool = svc->mempool;
+    svc->runtime.wallet = svc->wallet;
+    app_runtime_set_current(&svc->runtime);
 
     /* ── Register sync state observer ──────────────────────────── *
      * Logs every sync state transition via the event system.
@@ -226,10 +312,9 @@ bool app_init_services(struct app_context *ctx,
 
     /* Initialize mempool */
     tx_mempool_init(svc->mempool, 1000);
-    g_active_mempool = svc->mempool;
 
-    if (g_active_node_db)
-        node_db_sync_mempool_load(g_active_node_db, svc->mempool);
+    if (boot_node_db())
+        node_db_sync_mempool_load(boot_node_db(), svc->mempool);
 
     /* Rescan blockchain for wallet transactions if wallet is behind chain tip */
     {
@@ -268,65 +353,72 @@ bool app_init_services(struct app_context *ctx,
     wallet_verify_utxos(svc->wallet, svc->coins_tip);
 
     /* Rebuild wallet_utxos from ground truth ONLY if empty */
-    if (g_active_node_db && g_active_node_db->open) {
-        int64_t t0 = (int64_t)time(NULL);
-        sqlite3_stmt *chk = NULL;
-        int existing = 0;
-        if (sqlite3_prepare_v2(g_active_node_db->db,
+    {
+        struct node_db *ndb = boot_node_db();
+        if (ndb && ndb->open) {
+            int64_t t0 = (int64_t)time(NULL);
+            sqlite3_stmt *chk = NULL;
+            int existing = 0;
+            if (sqlite3_prepare_v2(ndb->db,
+                    "SELECT count(*) FROM wallet_utxos WHERE spent_txid IS NULL",
+                    -1, &chk, NULL) == SQLITE_OK) {
+                if (sqlite3_step(chk) == SQLITE_ROW)
+                    existing = sqlite3_column_int(chk, 0);
+                sqlite3_finalize(chk);
+            }
+            if (existing > 0) {
+                printf("wallet_utxos: keeping %d existing UTXOs (synced from zclassicd)\n",
+                    existing);
+            } else {
+                char *err = NULL;
+                sqlite3_exec(ndb->db, "BEGIN", NULL, NULL, NULL);
+                int rc = sqlite3_exec(ndb->db,
+                    "INSERT OR IGNORE INTO wallet_utxos "
+                    "(txid, vout, value, address_hash, script, height, is_coinbase) "
+                    "SELECT u.txid, u.vout, u.value, u.address_hash, u.script, "
+                    "u.height, u.is_coinbase "
+                    "FROM utxos u INNER JOIN wallet_keys wk "
+                    "ON u.address_hash = wk.pubkey_hash",
+                    NULL, NULL, &err);
+                if (err) {
+                    printf("wallet_utxos INSERT: %s\n", err);
+                    sqlite3_free(err);
+                    err = NULL;
+                }
+                if (rc != SQLITE_OK)
+                    sqlite3_exec(ndb->db, "ROLLBACK", NULL, NULL, NULL);
+                else
+                    sqlite3_exec(ndb->db, "COMMIT", NULL, NULL, NULL);
+            }
+            int64_t bal = 0;
+            sqlite3_stmt *s = NULL;
+            sqlite3_prepare_v2(ndb->db,
+                "SELECT COALESCE(sum(value),0) FROM wallet_utxos "
+                "WHERE spent_txid IS NULL", -1, &s, NULL);
+            if (sqlite3_step(s) == SQLITE_ROW)
+                bal = sqlite3_column_int64(s, 0);
+            sqlite3_finalize(s);
+            int cnt = 0;
+            sqlite3_prepare_v2(ndb->db,
                 "SELECT count(*) FROM wallet_utxos WHERE spent_txid IS NULL",
-                -1, &chk, NULL) == SQLITE_OK) {
-            if (sqlite3_step(chk) == SQLITE_ROW)
-                existing = sqlite3_column_int(chk, 0);
-            sqlite3_finalize(chk);
+                -1, &s, NULL);
+            if (sqlite3_step(s) == SQLITE_ROW)
+                cnt = sqlite3_column_int(s, 0);
+            sqlite3_finalize(s);
+            printf("Wallet: %.8f ZCL (%d UTXOs, %lldms)\n",
+                   (double)bal / 1e8, cnt,
+                   (long long)((int64_t)time(NULL) - t0) * 1000);
         }
-        if (existing > 0) {
-            printf("wallet_utxos: keeping %d existing UTXOs (synced from zclassicd)\n",
-                existing);
-        } else {
-            char *err = NULL;
-            sqlite3_exec(g_active_node_db->db, "BEGIN", NULL, NULL, NULL);
-            int rc = sqlite3_exec(g_active_node_db->db,
-                "INSERT OR IGNORE INTO wallet_utxos "
-                "(txid, vout, value, address_hash, script, height, is_coinbase) "
-                "SELECT u.txid, u.vout, u.value, u.address_hash, u.script, "
-                "u.height, u.is_coinbase "
-                "FROM utxos u INNER JOIN wallet_keys wk "
-                "ON u.address_hash = wk.pubkey_hash",
-                NULL, NULL, &err);
-            if (err) { printf("wallet_utxos INSERT: %s\n", err); sqlite3_free(err); err = NULL; }
-            if (rc != SQLITE_OK)
-                sqlite3_exec(g_active_node_db->db, "ROLLBACK", NULL, NULL, NULL);
-            else
-                sqlite3_exec(g_active_node_db->db, "COMMIT", NULL, NULL, NULL);
-        }
-        int64_t bal = 0;
-        sqlite3_stmt *s = NULL;
-        sqlite3_prepare_v2(g_active_node_db->db,
-            "SELECT COALESCE(sum(value),0) FROM wallet_utxos "
-            "WHERE spent_txid IS NULL", -1, &s, NULL);
-        if (sqlite3_step(s) == SQLITE_ROW)
-            bal = sqlite3_column_int64(s, 0);
-        sqlite3_finalize(s);
-        int cnt = 0;
-        sqlite3_prepare_v2(g_active_node_db->db,
-            "SELECT count(*) FROM wallet_utxos WHERE spent_txid IS NULL",
-            -1, &s, NULL);
-        if (sqlite3_step(s) == SQLITE_ROW)
-            cnt = sqlite3_column_int(s, 0);
-        sqlite3_finalize(s);
-        printf("Wallet: %.8f ZCL (%d UTXOs, %lldms)\n",
-               (double)bal / 1e8, cnt,
-               (long long)((int64_t)time(NULL) - t0) * 1000);
     }
 
     /* Sync wallet keys to SQLite */
-    if (g_active_node_db)
-        node_db_sync_wallet_keys(g_active_node_db, svc->wallet);
+    if (boot_node_db())
+        node_db_sync_wallet_keys(boot_node_db(), boot_wallet());
 
     /* Initialize message processor */
     msg_processor_init(svc->msg_processor, svc->state, svc->mempool,
                        svc->coins_tip, params, ctx->datadir,
-                       &svc->connman->manager);
+                       &svc->connman->manager, &svc->runtime);
 
     /* Initialize P2P connection manager */
     struct node_signals signals = {
@@ -393,13 +485,15 @@ bool app_init_services(struct app_context *ctx,
                 }
             }
 
-            /* Fall back to hardcoded seeds */
+            /* Fall back to hardcoded seeds (skip in connect-only mode) */
             const char *file_seeds[] = {
                 "74.50.74.102",
                 "205.209.104.118",
                 "140.174.189.3",
                 NULL
             };
+            /* File service seeds always active — even in connect-only mode,
+             * block data comes from file service, not P2P */
             for (int round = 0; round < 3 && !file_sync_ok; round++) {
                 if (round > 0) {
                     printf("File sync: retrying in 10s (round %d/3)...\n",
@@ -429,7 +523,19 @@ bool app_init_services(struct app_context *ctx,
              * need to be re-downloaded via P2P — once headers arrive
              * and a UTXO snapshot is received, the blocks on disk will
              * be used automatically. */
-            if (file_sync_ok) {
+            /* Run scan even on partial downloads — 94% of blocks is
+             * still useful. Blocks on disk can serve headers + delta sync. */
+            {
+                /* Check if we have any block files at all */
+                char blk0[576];
+                snprintf(blk0, sizeof(blk0), "%s/blocks/blk00000.dat",
+                         ctx->datadir);
+                struct stat blk0_st;
+                bool have_blocks = (stat(blk0, &blk0_st) == 0 &&
+                                    blk0_st.st_size > 100000);
+                if (!have_blocks && !file_sync_ok) goto skip_block_scan;
+            }
+            {
                 /* Load block index from flat file if downloaded */
                 char dl_flat[576];
                 snprintf(dl_flat, sizeof(dl_flat), "%s/block_index.bin",
@@ -527,31 +633,38 @@ bool app_init_services(struct app_context *ctx,
                         printf("=== UTXO snapshot imported — "
                                "delta replay only ===\n");
                     } else {
-                        printf("=== No UTXO snapshot — full replay "
-                               "in background ===\n");
+                        /* Skip full replay — ZCL23 peers will provide
+                         * a UTXO snapshot in ~6 seconds. Replaying 3M
+                         * blocks would take ~10 min and starve the P2P
+                         * socket, preventing snapshot receipt. */
+                        printf("=== No UTXO snapshot — waiting for P2P "
+                               "snapshot from ZCL23 peers ===\n");
                     }
                     fflush(stdout);
 
-                    /* Replay in background — node is usable immediately.
-                     * With UTXO snapshot: only delta blocks (seconds).
-                     * Without: full replay (~10min for 3M blocks). */
-                    static struct {
-                        struct main_state *state;
-                        struct coins_view_cache *coins_tip;
-                        const struct chain_params *params;
-                        const char *datadir;
-                    } replay_args;
-                    replay_args.state = svc->state;
-                    replay_args.coins_tip = svc->coins_tip;
-                    replay_args.params = params;
-                    replay_args.datadir = ctx->datadir;
+                    /* Only replay if we have a UTXO snapshot from file
+                     * service (delta replay). Otherwise, wait for P2P
+                     * snapshot which is much faster than full replay. */
+                    if (has_utxo_snapshot) {
+                        static struct {
+                            struct main_state *state;
+                            struct coins_view_cache *coins_tip;
+                            const struct chain_params *params;
+                            const char *datadir;
+                        } replay_args;
+                        replay_args.state = svc->state;
+                        replay_args.coins_tip = svc->coins_tip;
+                        replay_args.params = params;
+                        replay_args.datadir = ctx->datadir;
 
-                    static pthread_t replay_thread;
-                    pthread_create(&replay_thread, NULL,
-                        background_utxo_replay, &replay_args);
-                    pthread_detach(replay_thread);
+                        static pthread_t replay_thread;
+                        pthread_create(&replay_thread, NULL,
+                            background_utxo_replay, &replay_args);
+                        pthread_detach(replay_thread);
+                    }
                 }
             }
+        skip_block_scan: ;
         }
     }
 
@@ -562,10 +675,33 @@ bool app_init_services(struct app_context *ctx,
     rpc_table_init(svc->rpc_table);
     rpc_blockchain_set_state(svc->state, svc->mempool, ctx->datadir);
     rpc_blockchain_set_coins_db(NULL, svc->coins_tip);
-    rpc_blockchain_set_node_db(g_active_node_db);
-    rpc_blockchain_mmr_init_from_state(g_active_node_db);
+    rpc_blockchain_set_node_db(boot_node_db());
+    rpc_blockchain_mmr_init_from_state(boot_node_db());
     rpc_blockchain_mmr_catchup(svc->state);
-    rpc_blockchain_commitment_mmr_init_from_state(g_active_node_db);
+    rpc_blockchain_mmb_init_from_state(boot_node_db());
+    rpc_blockchain_mmb_catchup(svc->state);
+
+    /* Build MMB leaf hash store for FlyClient proof serving.
+     * Stored as flat file: 32 bytes per leaf, mmap'd for O(1) access. */
+    {
+        char leaf_path[512];
+        snprintf(leaf_path, sizeof(leaf_path), "%s/mmb_leaves.bin",
+                 ctx->datadir);
+        mmb_leaf_store_open(&g_mmb_leaf_store, leaf_path);
+        struct mmb *mmb = rpc_blockchain_get_mmb();
+        if (mmb && g_mmb_leaf_store.num_leaves < mmb->num_leaves) {
+            printf("[FlyClient] Rebuilding MMB leaf store (%llu → %llu)...\n",
+                   (unsigned long long)g_mmb_leaf_store.num_leaves,
+                   (unsigned long long)mmb->num_leaves);
+            mmb_leaf_store_rebuild(&g_mmb_leaf_store,
+                                  &svc->state->chain_active);
+        } else {
+            printf("[FlyClient] MMB leaf store: %llu hashes ready\n",
+                   (unsigned long long)g_mmb_leaf_store.num_leaves);
+        }
+    }
+
+    rpc_blockchain_commitment_mmr_init_from_state(boot_node_db());
 
     /* Bootstrap commitment MMR if empty but chain is at height.
      * After legacy import, we have the UTXO set at tip but no
@@ -576,7 +712,7 @@ bool app_init_services(struct app_context *ctx,
         struct mmr *cm = rpc_blockchain_get_commitment_mmr();
         int chain_h = active_chain_height(&svc->state->chain_active);
         if (cm->num_leaves == 0 && chain_h > 1000 &&
-            g_active_node_db && g_active_node_db->open) {
+            boot_node_db() && boot_node_db()->open) {
             printf("Commitment MMR empty at height %d — computing "
                    "bootstrap commitment...\n", chain_h);
 
@@ -593,8 +729,8 @@ bool app_init_services(struct app_context *ctx,
             if (bi && bi->phashBlock && bi->nHeight == commit_h) {
                 rpc_blockchain_maybe_commit(
                     commit_h, bi->phashBlock->data,
-                    g_active_node_db->db);
-                rpc_blockchain_commitment_mmr_save(g_active_node_db);
+                    boot_node_db()->db);
+                rpc_blockchain_commitment_mmr_save(boot_node_db());
                 printf("Bootstrap commitment at height %d saved\n",
                        commit_h);
             }
@@ -602,22 +738,22 @@ bool app_init_services(struct app_context *ctx,
     }
     register_blockchain_rpc_commands(svc->rpc_table);
 
-    rpc_hodl_set_state(svc->state, svc->coins_tip, g_active_node_db,
+    rpc_hodl_set_state(svc->state, svc->coins_tip, boot_node_db(),
                         ctx->datadir);
     register_hodl_rpc_commands(svc->rpc_table);
 
-    rpc_repair_set_state(svc->state, svc->coins_tip, g_active_node_db);
+    rpc_repair_set_state(svc->state, svc->coins_tip, boot_node_db());
     register_repair_rpc_commands(svc->rpc_table);
 
     rpc_chain_inspect_set_state(svc->state, ctx->datadir,
-                                 NULL, svc->coins_tip, g_active_node_db);
+                                 NULL, svc->coins_tip, boot_node_db());
     register_chain_inspect_rpc_commands(svc->rpc_table);
 
     explorer_set_state(svc->state, svc->mempool, svc->coins_tip,
-                        g_active_node_db, ctx->datadir);
+                        boot_node_db(), ctx->datadir);
 
     api_set_state(svc->state, svc->mempool, svc->coins_tip,
-                   g_active_node_db, ctx->datadir);
+                   boot_node_db(), ctx->datadir);
 
     rpc_rawtx_set_state(svc->state, svc->mempool, svc->coins_tip, ctx->datadir);
     rpc_rawtx_set_keystore(&svc->wallet->keystore);
@@ -645,12 +781,12 @@ bool app_init_services(struct app_context *ctx,
 
     /* Start file service server on dedicated port.
      * Auto-serves blockchain data to any ZCL23 peer that connects. */
-    fs_server_start(ctx->datadir, FS_PORT);
+    fs_server_start(ctx->datadir, (uint16_t)ctx->fs_port);
 
     rpc_wallet_set_state(svc->wallet, svc->state, ctx->datadir, svc->wallet_sqlite,
                          svc->mempool, svc->connman);
     rpc_wallet_set_coins_tip(svc->coins_tip);
-    rpc_wallet_set_node_db(g_active_node_db);
+    rpc_wallet_set_node_db(boot_node_db());
     register_wallet_rpc_commands(svc->rpc_table);
     register_event_rpc_commands(svc->rpc_table);
 
@@ -713,7 +849,8 @@ bool app_init_services(struct app_context *ctx,
             bool near_tip = (best_header - chain_tip_h < 1000) &&
                             (chain_tip_h > g_assume_valid_height - 10000);
             if (near_tip) {
-                https_server_start(cert_path, key_path, "zclnet.net");
+                https_server_start_on_port(cert_path, key_path, "zclnet.net",
+                                            ctx->https_port, ctx->https_port - 363);
             } else {
                 printf("HTTPS: deferred during IBD (chain=%d, headers=%d, "
                        "behind=%d). Will start when near tip.\n",
@@ -827,14 +964,19 @@ bool app_init_services(struct app_context *ctx,
     }
     printf("ZClassic C23 node initialized.\n");
 
-    /* SQLite catchup */
-    if (g_active_node_db) {
-        if (ctx->legacy_import_dir) {
+    /* SQLite catchup — skip when no UTXO set (P2P snapshot incoming).
+     * Running catchup during snapshot receive causes DB lock contention
+     * that stalls the snapshot data flow. */
+    if (boot_node_db()) {
+        int64_t utxo_count = db_utxo_count(boot_node_db());
+        if (utxo_count == 0 && !ctx->legacy_import_dir) {
+            printf("SQLite catchup: skipped (no UTXOs, waiting for P2P snapshot)\n");
+        } else if (ctx->legacy_import_dir) {
             struct block_index *fs_tip = active_chain_tip(&svc->state->chain_active);
             printf("=== SQLite Indexing (%d blocks) ===\n",
                    fs_tip ? fs_tip->nHeight : 0);
             int64_t t_import = (int64_t)time(NULL);
-            node_db_sync_catchup(g_active_node_db,
+            node_db_sync_catchup(boot_node_db(),
                                  &svc->state->chain_active,
                                  svc->wallet, ctx->datadir);
             int64_t t_idx_done = (int64_t)time(NULL);
@@ -849,7 +991,7 @@ bool app_init_services(struct app_context *ctx,
                 const struct wallet *w;
                 const char *datadir;
             } catchup_args;
-            catchup_args.ndb = g_active_node_db;
+            catchup_args.ndb = boot_node_db();
             catchup_args.chain = &svc->state->chain_active;
             catchup_args.w = svc->wallet;
             catchup_args.datadir = ctx->datadir;
@@ -864,34 +1006,31 @@ bool app_init_services(struct app_context *ctx,
 
 /* ── Shutdown ──────────────────────────────────────────────── */
 
-void app_shutdown_svc(struct boot_svc_ctx *svc)
+static void shutdown_stop_frontend_services(struct boot_svc_ctx *svc)
 {
-    atomic_store(svc->running, false);
-    event_emitf(EV_NODE_SHUTDOWN, 0, "graceful");
-    event_async_stop();
-
-    printf("Shutting down...\n");
-
+    (void)svc;
     tor_integration_stop();
 
     if (svc->gen->running)
         gen_stop(svc->gen);
 
     rpc_http_stop();
-
-    /* Stop file service */
     fs_server_stop();
+}
 
-    /* Save block index flat file for instant next restart */
+static void shutdown_persist_fast_restart_state(struct boot_svc_ctx *svc)
+{
     if (svc->state->map_block_index.size > 1000) {
         printf("Saving block index flat file (%zu entries)...\n",
                svc->state->map_block_index.size);
         save_block_index_flat(svc->datadir, svc->state);
     }
 
-    /* Save peer addresses */
     addr_db_write(&svc->connman->manager, svc->datadir);
+}
 
+static void shutdown_quiesce_network_and_flush_coins(struct boot_svc_ctx *svc)
+{
     /* Signal P2P threads to stop, then flush coins while threads wind down.
      * The message thread checks g_stop each iteration (~100ms). Any
      * in-flight activate_best_chain sees g_shutdown_requested and returns.
@@ -917,10 +1056,13 @@ void app_shutdown_svc(struct boot_svc_ctx *svc)
     coins_view_cache_flush(svc->coins_tip);
     coins_view_cache_free(svc->coins_tip);
     coins_view_sqlite_close(svc->coins_sqlite);
+}
 
-    /* Save MMR state (block hashes + commitment leaves) */
-    rpc_blockchain_mmr_save(g_active_node_db);
-    rpc_blockchain_commitment_mmr_save(g_active_node_db);
+static void shutdown_persist_runtime_state(struct boot_svc_ctx *svc)
+{
+    rpc_blockchain_mmr_save(boot_node_db());
+    rpc_blockchain_mmb_save(boot_node_db());
+    rpc_blockchain_commitment_mmr_save(boot_node_db());
 
     if (svc->block_tree_open) {
         block_tree_db_close(svc->block_tree);
@@ -936,7 +1078,11 @@ void app_shutdown_svc(struct boot_svc_ctx *svc)
         node_db_sync_mempool_save(svc->node_db, svc->mempool);
         node_db_close(svc->node_db);
     }
-    g_active_node_db = NULL;
+}
+
+static void shutdown_release_owned_resources(struct boot_svc_ctx *svc)
+{
+    app_runtime_set_current(NULL);
     wallet_free(svc->wallet);
     tx_mempool_free(svc->mempool);
     main_state_free(svc->state);
@@ -944,6 +1090,21 @@ void app_shutdown_svc(struct boot_svc_ctx *svc)
 
     ecc_verify_destroy();
     ecc_stop();
+}
+
+void app_shutdown_svc(struct boot_svc_ctx *svc)
+{
+    atomic_store(svc->running, false);
+    event_emitf(EV_NODE_SHUTDOWN, 0, "graceful");
+    event_async_stop();
+
+    printf("Shutting down...\n");
+
+    shutdown_stop_frontend_services(svc);
+    shutdown_persist_fast_restart_state(svc);
+    shutdown_quiesce_network_and_flush_coins(svc);
+    shutdown_persist_runtime_state(svc);
+    shutdown_release_owned_resources(svc);
 
     printf("Shutdown complete.\n");
 }

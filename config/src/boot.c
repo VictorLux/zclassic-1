@@ -90,12 +90,9 @@ static struct rpc_table g_rpc_table;
 static struct msg_processor g_msg_processor;
 static struct connman g_connman;
 static struct wallet g_wallet;
-struct wallet *g_active_wallet = NULL;
 static struct gen_context g_gen;
 static struct wallet_sqlite g_wallet_sqlite;
 static struct node_db g_node_db;
-struct node_db *g_active_node_db = NULL;
-struct tx_mempool *g_active_mempool = NULL;
 static const char *g_datadir = NULL;
 const char *g_blog_datadir = NULL;
 static _Atomic bool g_running = false;
@@ -145,6 +142,8 @@ void app_context_defaults(struct app_context *ctx)
     ctx->params_dir = NULL;
     ctx->rpc_port = 18232;
     ctx->p2p_port = 8033;
+    ctx->https_port = 8443;
+    ctx->fs_port = 18034;
     ctx->listen = true;   /* accept inbound by default — be a good peer */
     ctx->checkpoints_enabled = true;
 }
@@ -298,7 +297,6 @@ bool app_init(struct app_context *ctx)
     if (g_wallet.keystore.num_keys == 0)
         wallet_top_up_key_pool(&g_wallet, DEFAULT_KEYPOOL_SIZE);
     printf("Wallet has %zu keys.\n", g_wallet.keystore.num_keys);
-    g_active_wallet = &g_wallet;
 
     /* Pre-flight: check for stale lock files from crashed processes */
     {
@@ -358,7 +356,6 @@ bool app_init(struct app_context *ctx)
 
     /* Open SQLite node database */
     if (node_db_sync_init(&g_node_db, ctx->datadir)) {
-        g_active_node_db = &g_node_db;
         node_db_migrate(&g_node_db, ctx->datadir);
         int db_tip = node_db_sync_get_tip_height(&g_node_db);
         if (db_tip >= 0) {
@@ -375,12 +372,12 @@ bool app_init(struct app_context *ctx)
     /* Fast path: -importlegacy imports wallet data from legacy block files
      * and exits. No block index, no P2P, no RPC needed. */
     if (ctx->import_legacy_dir) {
-        if (!g_active_node_db) {
+        if (!g_node_db.open) {
             fprintf(stderr, "Error: SQLite database required for import\n");
             return false;
         }
         int result = legacy_import(ctx->import_legacy_dir,
-                                    g_active_node_db, &g_wallet,
+                                    &g_node_db, &g_wallet,
                                     ctx->sapling_scan);
         if (result >= 0)
             printf("Import complete: %d wallet transactions found.\n", result);
@@ -392,7 +389,7 @@ bool app_init(struct app_context *ctx)
     /* -snapshot: Create snapshot of legacy data dir, import in parallel,
      * then start normally with P2P sync to catch up any delta. */
     if (ctx->snapshot_dir) {
-        if (!g_active_node_db) {
+        if (!g_node_db.open) {
             fprintf(stderr, "Error: SQLite database required for snapshot\n");
             return false;
         }
@@ -407,7 +404,7 @@ bool app_init(struct app_context *ctx)
 
         /* Step 2: Parallel import (block index + UTXOs + wallet) */
         if (snapshot_import(snap, ctx->datadir,
-                            g_active_node_db, &g_wallet) < 0) {
+                            &g_node_db, &g_wallet) < 0) {
             fprintf(stderr, "Warning: Snapshot import had errors\n");
         }
 
@@ -779,7 +776,7 @@ bool app_init(struct app_context *ctx)
     {
         bool loaded = false;
         loaded = load_block_index_flat(ctx->datadir, &g_state);
-        if (!loaded && g_active_node_db)
+        if (!loaded && g_node_db.open)
             loaded = load_block_index_sqlite(&g_node_db, &g_state);
 
         /* Check if flat file is stale — if it loaded but has far fewer
@@ -818,7 +815,7 @@ bool app_init(struct app_context *ctx)
         /* Save recent blocks to SQLite (skip for large indexes —
          * the flat file handles 3M+ entries in 1-3s and the SQLite
          * cache path uses 10GB+ RAM causing OOM kills) */
-        if (g_active_node_db && g_state.map_block_index.size > 1000
+        if (g_node_db.open && g_state.map_block_index.size > 1000
             && g_state.map_block_index.size < 500000)
             save_block_index_recent(&g_node_db, &g_state);
 
@@ -974,9 +971,9 @@ bool app_init(struct app_context *ctx)
                 fprintf(stderr,
                     "WARNING: coins DB best block %s mapped to height=0 "
                     "in block_index (not genesis)\n", hex);
-                if (g_active_node_db) {
+                if (g_node_db.open) {
                     struct db_block sqlite_blk;
-                    if (db_block_find_by_hash(g_active_node_db,
+                    if (db_block_find_by_hash(&g_node_db,
                                               best_hash.data,
                                               &sqlite_blk) &&
                         sqlite_blk.height > 0) {
@@ -1108,7 +1105,7 @@ bool app_init(struct app_context *ctx)
      * Without this, activate_best_chain won't extend the chain past
      * previously-connected blocks because it only follows fully-validated
      * entries. Also fix any stale file positions. */
-    if (g_active_node_db && g_state.map_block_index.size > 1000) {
+    if (g_node_db.open && g_state.map_block_index.size > 1000) {
         /* Only repair blocks near the tip (within 1000 of chain height).
          * The flat file load already has correct data for most blocks.
          * Full 3M-row scan was taking 8+ minutes — this takes <100ms. */
@@ -1173,69 +1170,62 @@ bool app_init(struct app_context *ctx)
         }
     }
 
-    /* Detect chain tip / coins DB mismatch.
-     * If chainstate/ was deleted but block index survives, the chain tip
-     * is at height N but the UTXO set is empty. This causes all blocks
-     * with non-coinbase txs to fail with "bad-txns-inputs-missingorspent".
-     * Fix: reset chain tip to genesis and let activate_best_chain replay. */
+    /* Validate coins/chain agreement at boot.
+     * ActiveRecord-style: validate → diagnose → recover. */
     {
-        struct block_index *chain_tip = active_chain_tip(&g_state.chain_active);
-        struct uint256 coins_best;
-        coins_view_cache_get_best_block(&g_coins_tip, &coins_best);
-
-        if (chain_tip && chain_tip->nHeight > 0 &&
-            uint256_is_null(&coins_best)) {
-            printf("WARNING: Chain tip at height %d but coins DB is empty!\n"
-                   "  Wiping stale UTXOs + resetting to genesis for clean replay.\n",
-                   chain_tip->nHeight);
+        struct boot_validation_result vr =
+            validate_coins_chain_agreement(&g_state, &g_coins_tip,
+                                           ctx->datadir);
+        switch (vr.action) {
+        case BOOT_RECOVER_REIMPORT:
+        case BOOT_RECOVER_WIPE_WAIT:
+            printf("WARNING: Chain tip at h=%d but coins DB %s!\n",
+                   vr.chain_height,
+                   vr.action == BOOT_RECOVER_REIMPORT
+                       ? "empty (LevelDB available)" : "empty");
 
             node_db_wipe_utxos(&g_node_db);
             coins_view_cache_flush(&g_coins_tip);
 
             struct block_index *genesis = block_map_find(
-                &g_state.map_block_index, &params->consensus.hashGenesisBlock);
+                &g_state.map_block_index,
+                &params->consensus.hashGenesisBlock);
             if (genesis) {
                 active_chain_set_tip(&g_state.chain_active, genesis);
                 g_state.pindex_best_header = genesis;
             }
-            skip_activate = false; /* MUST replay to rebuild UTXO set */
+            skip_activate = false;
 
-            /* Clear migration flag so LevelDB re-import runs on next boot
-             * (faster than replaying 3M blocks from genesis) */
+            /* Clear migration flag for LevelDB re-import on next boot */
             node_db_exec(&g_node_db,
                 "DELETE FROM node_state WHERE key='leveldb_utxo_migrated'");
 
-            /* BLOCK_FAILED already cleared by the single-pass scan above. */
-
-            /* Skip UTXO commitment during replay — recomputed at end */
             extern _Atomic bool g_utxo_commitment_skip;
             atomic_store(&g_utxo_commitment_skip, true);
 
-            /* IBD turbo mode: maximize throughput for full chain replay.
-             * ~60x speedup: 86 blk/s → 5000+ blk/s */
             if (g_node_db.open) {
                 node_db_ibd_turbo_mode(&g_node_db);
                 node_db_set_sync_batch_size(&g_node_db, 1000);
-                printf("IBD turbo: synchronous=OFF, indexes dropped, "
-                       "batch=1000\n");
             }
-            /* Large cache, infrequent flushes during replay */
             set_flush_policy(3600, 1000000, 100000);
-        } else if (chain_tip && chain_tip->nHeight > 0 &&
-                   chain_tip->phashBlock &&
-                   uint256_cmp(chain_tip->phashBlock, &coins_best) != 0) {
-            /* Chain tip and coins DB disagree on best block.
-             * Find the coins DB block in our index and reset to it. */
+            break;
+
+        case BOOT_RECOVER_RESET_CHAIN: {
             struct block_index *coins_block = block_map_find(
-                &g_state.map_block_index, &coins_best);
-            if (coins_block && coins_block->nHeight < chain_tip->nHeight) {
+                &g_state.map_block_index, &vr.coins_hash);
+            if (coins_block) {
                 printf("Chain tip/coins mismatch: chain=%d coins=%d\n"
-                       "  Resetting chain to coins DB tip — will replay %d blocks.\n",
-                       chain_tip->nHeight, coins_block->nHeight,
-                       chain_tip->nHeight - coins_block->nHeight);
+                       "  Resetting chain to coins tip — "
+                       "will replay %d blocks.\n",
+                       vr.chain_height, vr.coins_height,
+                       vr.chain_height - vr.coins_height);
                 active_chain_set_tip(&g_state.chain_active, coins_block);
-                skip_activate = false; /* replay delta */
+                skip_activate = false;
             }
+            break;
+        }
+        case BOOT_OK:
+            break;
         }
     }
 
@@ -1282,6 +1272,35 @@ bool app_init(struct app_context *ctx)
                 scan_block_files_mark_data(&g_state, ctx->datadir, params);
                 fflush(stdout);
             }
+        }
+    }
+
+    /* Load Sapling commitment tree from persistent storage.
+     * This tree is maintained by connect_block and verified against
+     * hashFinalSaplingRoot in each block header. */
+    if (g_node_db.open && !g_state.sapling_tree_loaded) {
+        uint8_t tree_buf[8192];
+        size_t tree_len = 0;
+        if (node_db_state_get(&g_node_db, "sapling_tree",
+                               tree_buf, sizeof(tree_buf), &tree_len)
+            && tree_len > 0) {
+            struct byte_stream ts;
+            stream_init_from_data(&ts, tree_buf, tree_len);
+            sapling_tree_init(&g_state.sapling_tree);
+            if (incremental_tree_deserialize(&g_state.sapling_tree, &ts)) {
+                g_state.sapling_tree_loaded = true;
+                set_sapling_tree_for_flush(&g_state.sapling_tree);
+                printf("Sapling tree loaded: %zu commitments\n",
+                       incremental_tree_size(&g_state.sapling_tree));
+            } else {
+                fprintf(stderr, "WARNING: Sapling tree deserialization "
+                        "failed — tree will rebuild during sync\n");
+                sapling_tree_init(&g_state.sapling_tree);
+            }
+        } else {
+            printf("No saved Sapling tree — will build during sync\n");
+            g_state.sapling_tree_loaded = true; /* empty tree is valid pre-Sapling */
+            set_sapling_tree_for_flush(&g_state.sapling_tree);
         }
     }
 
@@ -1335,7 +1354,7 @@ bool app_init(struct app_context *ctx)
     /* Backfill shielded values in SQLite from block_index.
      * Only needed once — check via node_state flag, not full table scan.
      * Skip in no_services mode (speedrun). */
-    if (g_active_node_db && tip && tip->nHeight > 1000 && !ctx->no_services) {
+    if (g_node_db.open && tip && tip->nHeight > 1000 && !ctx->no_services) {
         int64_t has_shielded = 0;
         node_db_state_get_int(&g_node_db, "shielded_backfilled", &has_shielded);
         if (has_shielded == 0) {
@@ -1365,7 +1384,7 @@ bool app_init(struct app_context *ctx)
     /* Backfill addresses table from UTXOs — runs in background thread
      * to avoid blocking startup. Uses its own SQLite connection.
      * Skip in no_services mode (speedrun). */
-    if (g_active_node_db && !ctx->no_services) {
+    if (g_node_db.open && !ctx->no_services) {
         int64_t addr_done = 0;
         node_db_state_get_int(&g_node_db, "addresses_backfilled", &addr_done);
         if (!addr_done) {
@@ -1423,4 +1442,3 @@ void app_shutdown(void) { app_shutdown_svc(&g_svc); }
 bool app_is_running(void) { return atomic_load(&g_running); }
 
 /* app_add_node, app_start_metrics, app_stop_metrics: boot_services.c */
-

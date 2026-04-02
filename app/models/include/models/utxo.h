@@ -61,6 +61,38 @@ int db_utxo_list_for_address(struct node_db *ndb,
 /* Count total UTXOs in the set. */
 int64_t db_utxo_count(struct node_db *ndb);
 
+/* ── Iteration ─────────────────────────────────────────────────── */
+
+/* Callback for db_utxo_each(). Return true to continue, false to stop.
+ * The db_utxo pointer is valid only for the duration of the callback;
+ * script points into SQLite's internal buffer (do not free). */
+typedef bool (*db_utxo_each_fn)(const struct db_utxo *u, void *ctx);
+
+/* Iterate all UTXOs in canonical (txid, vout) order.
+ * Calls fn for each UTXO. Returns number of UTXOs visited.
+ * Uses a single cursor on ndb — no separate connection. */
+int64_t db_utxo_each(struct node_db *ndb, db_utxo_each_fn fn, void *ctx);
+
+/* ── Bulk Import (fast path for snapshot sync) ────────────────── */
+
+/* Insert a UTXO with no validation, no callbacks, no events.
+ * Uses the pre-prepared stmt_utxo_insert. Caller must wrap in
+ * BEGIN/COMMIT and set turbo mode. For snapshot bulk import only. */
+bool db_utxo_insert_raw(struct node_db *ndb, const struct db_utxo *u);
+
+/* ── Snapshot Serialization ────────────────────────────────────── */
+
+/* Serialize all UTXOs to a binary snapshot file in wire format.
+ * File format: sequence of chunks, each: entry_count(4LE) + entries.
+ * Each entry: txid(32) + vout(4) + value(8) + height(4) + compact_size + script.
+ * Uses db_utxo_each() internally. Returns total UTXOs written.
+ * chunk_size = UTXOs per chunk (default 500).
+ * If sha3_out is non-NULL, computes SHA3-256 commitment during the same pass
+ * to guarantee the hash matches the serialized file contents. */
+int64_t db_utxo_serialize_snapshot(struct node_db *ndb,
+                                    const char *path, uint32_t chunk_size,
+                                    uint8_t sha3_out[32]);
+
 /* ── Relationships ─────────────────────────────────────────────── */
 
 /* belongs_to :transaction — find the tx that created this UTXO */

@@ -17,6 +17,8 @@
 
 DEFINE_MODEL_CALLBACKS(mempool)
 
+/* ── Validation ────────────────────────────────────────────────── */
+
 bool db_mempool_validate(const struct db_mempool_entry *e,
                          struct ar_errors *errors)
 {
@@ -36,38 +38,45 @@ bool db_mempool_validate(const struct db_mempool_entry *e,
     return !ar_errors_any(errors);
 }
 
+/* ── Save ─────────────────────────────────────────────────────── */
+
 bool db_mempool_save(struct node_db *ndb, const struct db_mempool_entry *e)
 {
     if (!ndb->open) return false;
-    /* Auto-timestamp if caller didn't set time_added */
     if (e->time_added == 0)
         ((struct db_mempool_entry *)e)->time_added = (int64_t)time(NULL);
+
     struct ar_errors errors;
     if (!db_mempool_validate(e, &errors)) {
         AR_LOG_VALIDATION_FAILURE("mempool_entry", &errors);
         return false;
     }
+
     struct ar_callbacks *cbs = db_mempool_callbacks();
     if (!ar_run_before_save(cbs, (void *)e)) return false;
+
     sqlite3_stmt *s = NULL;
     sqlite3_prepare_v2(ndb->db,
         "INSERT OR REPLACE INTO mempool"
         "(txid,raw_tx,fee,size,time_added,height_added,spends_coinbase)"
         " VALUES(?,?,?,?,?,?,?)",
         -1, &s, NULL);
-    sqlite3_bind_blob(s, 1, e->txid, 32, SQLITE_STATIC);
-    sqlite3_bind_blob(s, 2, e->raw_tx, (int)e->raw_tx_len, SQLITE_STATIC);
-    sqlite3_bind_int64(s, 3, e->fee);
-    sqlite3_bind_int(s, 4, e->size);
-    sqlite3_bind_int64(s, 5, e->time_added);
-    sqlite3_bind_int(s, 6, e->height_added);
-    sqlite3_bind_int(s, 7, e->spends_coinbase ? 1 : 0);
-    int rc = sqlite3_step(s);
-    sqlite3_finalize(s);
-    bool ok = rc == SQLITE_DONE;
-    if (ok) ar_run_after_save(&mempool_cbs, (void *)e);
+    if (!s) return false;
+    AR_BIND_BLOB(s, 1, e->txid, 32);
+    AR_BIND_BLOB(s, 2, e->raw_tx, (int)e->raw_tx_len);
+    AR_BIND_INT(s, 3, e->fee);
+    AR_BIND_INT(s, 4, e->size);
+    AR_BIND_INT(s, 5, e->time_added);
+    AR_BIND_INT(s, 6, e->height_added);
+    AR_BIND_INT(s, 7, e->spends_coinbase ? 1 : 0);
+    bool ok = AR_STEP_DONE(s);
+    AR_FINALIZE(s);
+
+    if (ok) ar_run_after_save(cbs, (void *)e);
     return ok;
 }
+
+/* ── Find ─────────────────────────────────────────────────────── */
 
 bool db_mempool_find(struct node_db *ndb, const uint8_t txid[32],
                      struct db_mempool_entry *out)
@@ -78,26 +87,25 @@ bool db_mempool_find(struct node_db *ndb, const uint8_t txid[32],
         "SELECT raw_tx,fee,size,time_added,height_added,spends_coinbase"
         " FROM mempool WHERE txid=?",
         -1, &s, NULL);
-    sqlite3_bind_blob(s, 1, txid, 32, SQLITE_STATIC);
-    if (sqlite3_step(s) != SQLITE_ROW) {
-        sqlite3_finalize(s);
-        return false;
-    }
+    if (!s) return false;
+    AR_BIND_BLOB(s, 1, txid, 32);
+    if (!AR_STEP_ROW(s)) { AR_FINALIZE(s); return false; }
+
     memset(out, 0, sizeof(*out));
     memcpy(out->txid, txid, 32);
-    out->raw_tx_len = (size_t)sqlite3_column_bytes(s, 0);
+    out->raw_tx_len = (size_t)AR_COL_BYTES(s, 0);
     const void *rt = sqlite3_column_blob(s, 0);
     if (rt && out->raw_tx_len > 0) {
         out->raw_tx = malloc(out->raw_tx_len);
         if (out->raw_tx)
             memcpy(out->raw_tx, rt, out->raw_tx_len);
     }
-    out->fee = sqlite3_column_int64(s, 1);
-    out->size = sqlite3_column_int(s, 2);
-    out->time_added = sqlite3_column_int64(s, 3);
-    out->height_added = sqlite3_column_int(s, 4);
-    out->spends_coinbase = sqlite3_column_int(s, 5) != 0;
-    sqlite3_finalize(s);
+    out->fee = AR_COL_INT(s, 1);
+    out->size = (int)AR_COL_INT(s, 2);
+    out->time_added = AR_COL_INT(s, 3);
+    out->height_added = (int)AR_COL_INT(s, 4);
+    out->spends_coinbase = AR_COL_INT(s, 5) != 0;
+    AR_FINALIZE(s);
     return true;
 }
 
@@ -108,6 +116,8 @@ void db_mempool_entry_free(struct db_mempool_entry *e)
     e->raw_tx = NULL;
     e->raw_tx_len = 0;
 }
+
+/* ── Delete ───────────────────────────────────────────────────── */
 
 bool db_mempool_delete(struct node_db *ndb, const uint8_t txid[32])
 {
@@ -123,14 +133,16 @@ bool db_mempool_delete(struct node_db *ndb, const uint8_t txid[32])
     sqlite3_stmt *s = NULL;
     sqlite3_prepare_v2(ndb->db,
         "DELETE FROM mempool WHERE txid=?", -1, &s, NULL);
-    sqlite3_bind_blob(s, 1, txid, 32, SQLITE_STATIC);
-    int rc = sqlite3_step(s);
-    sqlite3_finalize(s);
+    if (!s) return false;
+    AR_BIND_BLOB(s, 1, txid, 32);
+    bool ok = AR_STEP_DONE(s);
+    AR_FINALIZE(s);
 
-    bool ok = rc == SQLITE_DONE;
     if (ok) ar_run_after_destroy(cbs, &e);
     return ok;
 }
+
+/* ── Count / Aggregate ────────────────────────────────────────── */
 
 int db_mempool_count(struct node_db *ndb)
 {
@@ -139,9 +151,9 @@ int db_mempool_count(struct node_db *ndb)
     sqlite3_prepare_v2(ndb->db,
         "SELECT COUNT(*) FROM mempool", -1, &s, NULL);
     int c = 0;
-    if (sqlite3_step(s) == SQLITE_ROW)
-        c = sqlite3_column_int(s, 0);
-    sqlite3_finalize(s);
+    if (s && AR_STEP_ROW(s))
+        c = (int)AR_COL_INT(s, 0);
+    AR_FINALIZE(s);
     return c;
 }
 
@@ -152,9 +164,9 @@ int64_t db_mempool_total_size(struct node_db *ndb)
     sqlite3_prepare_v2(ndb->db,
         "SELECT COALESCE(SUM(size),0) FROM mempool", -1, &s, NULL);
     int64_t sz = 0;
-    if (sqlite3_step(s) == SQLITE_ROW)
-        sz = sqlite3_column_int64(s, 0);
-    sqlite3_finalize(s);
+    if (s && AR_STEP_ROW(s))
+        sz = AR_COL_INT(s, 0);
+    AR_FINALIZE(s);
     return sz;
 }
 
@@ -165,6 +177,8 @@ bool db_mempool_clear(struct node_db *ndb)
     return node_db_exec(ndb, "DELETE FROM mempool");
 }
 
+/* ── Spend Tracking ───────────────────────────────────────────── */
+
 bool db_mempool_is_spent(struct node_db *ndb,
                          const uint8_t txid[32], uint32_t vout)
 {
@@ -173,10 +187,11 @@ bool db_mempool_is_spent(struct node_db *ndb,
     sqlite3_prepare_v2(ndb->db,
         "SELECT 1 FROM mempool_spends WHERE spent_txid=? AND spent_vout=?",
         -1, &s, NULL);
-    sqlite3_bind_blob(s, 1, txid, 32, SQLITE_STATIC);
-    sqlite3_bind_int(s, 2, (int)vout);
-    bool found = sqlite3_step(s) == SQLITE_ROW;
-    sqlite3_finalize(s);
+    if (!s) return false;
+    AR_BIND_BLOB(s, 1, txid, 32);
+    AR_BIND_INT(s, 2, (int)vout);
+    bool found = AR_STEP_ROW(s);
+    AR_FINALIZE(s);
     return found;
 }
 
@@ -190,12 +205,13 @@ bool db_mempool_add_spend(struct node_db *ndb,
         "INSERT OR REPLACE INTO mempool_spends(txid,spent_txid,spent_vout)"
         " VALUES(?,?,?)",
         -1, &s, NULL);
-    sqlite3_bind_blob(s, 1, spending_txid, 32, SQLITE_STATIC);
-    sqlite3_bind_blob(s, 2, spent_txid, 32, SQLITE_STATIC);
-    sqlite3_bind_int(s, 3, (int)spent_vout);
-    int rc = sqlite3_step(s);
-    sqlite3_finalize(s);
-    return rc == SQLITE_DONE;
+    if (!s) return false;
+    AR_BIND_BLOB(s, 1, spending_txid, 32);
+    AR_BIND_BLOB(s, 2, spent_txid, 32);
+    AR_BIND_INT(s, 3, (int)spent_vout);
+    bool ok = AR_STEP_DONE(s);
+    AR_FINALIZE(s);
+    return ok;
 }
 
 bool db_mempool_remove_spends(struct node_db *ndb, const uint8_t txid[32])
@@ -204,11 +220,14 @@ bool db_mempool_remove_spends(struct node_db *ndb, const uint8_t txid[32])
     sqlite3_stmt *s = NULL;
     sqlite3_prepare_v2(ndb->db,
         "DELETE FROM mempool_spends WHERE txid=?", -1, &s, NULL);
-    sqlite3_bind_blob(s, 1, txid, 32, SQLITE_STATIC);
-    int rc = sqlite3_step(s);
-    sqlite3_finalize(s);
-    return rc == SQLITE_DONE;
+    if (!s) return false;
+    AR_BIND_BLOB(s, 1, txid, 32);
+    bool ok = AR_STEP_DONE(s);
+    AR_FINALIZE(s);
+    return ok;
 }
+
+/* ── Each (iteration) ─────────────────────────────────────────── */
 
 int db_mempool_each(struct node_db *ndb, mempool_entry_cb cb, void *ctx)
 {
@@ -218,29 +237,28 @@ int db_mempool_each(struct node_db *ndb, mempool_entry_cb cb, void *ctx)
         "SELECT txid,raw_tx,fee,size,time_added,height_added,spends_coinbase"
         " FROM mempool ORDER BY fee DESC",
         -1, &s, NULL);
+    if (!s) return 0;
     int count = 0;
-    while (sqlite3_step(s) == SQLITE_ROW) {
+    while (AR_STEP_ROW(s)) {
         struct db_mempool_entry e;
         memset(&e, 0, sizeof(e));
-        const void *t = sqlite3_column_blob(s, 0);
-        if (t && sqlite3_column_bytes(s, 0) >= 32)
-            memcpy(e.txid, t, 32);
-        e.raw_tx_len = (size_t)sqlite3_column_bytes(s, 1);
+        AR_READ_BLOB(s, 0, e.txid, 32);
+        e.raw_tx_len = (size_t)AR_COL_BYTES(s, 1);
         const void *rt = sqlite3_column_blob(s, 1);
         if (rt && e.raw_tx_len > 0) {
             e.raw_tx = malloc(e.raw_tx_len);
             if (e.raw_tx)
                 memcpy(e.raw_tx, rt, e.raw_tx_len);
         }
-        e.fee = sqlite3_column_int64(s, 2);
-        e.size = sqlite3_column_int(s, 3);
-        e.time_added = sqlite3_column_int64(s, 4);
-        e.height_added = sqlite3_column_int(s, 5);
-        e.spends_coinbase = sqlite3_column_int(s, 6) != 0;
+        e.fee = AR_COL_INT(s, 2);
+        e.size = (int)AR_COL_INT(s, 3);
+        e.time_added = AR_COL_INT(s, 4);
+        e.height_added = (int)AR_COL_INT(s, 5);
+        e.spends_coinbase = AR_COL_INT(s, 6) != 0;
         cb(&e, ctx);
         free(e.raw_tx);
         count++;
     }
-    sqlite3_finalize(s);
+    AR_FINALIZE(s);
     return count;
 }

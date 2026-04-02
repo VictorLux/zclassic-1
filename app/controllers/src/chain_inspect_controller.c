@@ -35,22 +35,32 @@
 #include <unistd.h>
 #include <time.h>
 
-static struct main_state *g_main_state = NULL;
-static const char *g_datadir = NULL;
-static struct coins_view_db *g_coins_db = NULL;
-static struct coins_view_cache *g_coins_tip = NULL;
-static struct node_db *g_node_db = NULL;
+struct chain_inspect_context {
+    struct main_state *main_state;
+    const char *datadir;
+    struct coins_view_db *coins_db;
+    struct coins_view_cache *coins_tip;
+    struct node_db *node_db;
+};
+
+static struct chain_inspect_context g_chain_inspect_ctx = {0};
+
+static struct chain_inspect_context *chain_inspect_ctx(void)
+{
+    return &g_chain_inspect_ctx;
+}
 
 void rpc_chain_inspect_set_state(struct main_state *ms, const char *datadir,
                                   struct coins_view_db *cvdb,
                                   struct coins_view_cache *coins_tip,
                                   struct node_db *ndb)
 {
-    g_main_state = ms;
-    g_datadir = datadir;
-    g_coins_db = cvdb;
-    g_coins_tip = coins_tip;
-    g_node_db = ndb;
+    struct chain_inspect_context *ctx = chain_inspect_ctx();
+    ctx->main_state = ms;
+    ctx->datadir = datadir;
+    ctx->coins_db = cvdb;
+    ctx->coins_tip = coins_tip;
+    ctx->node_db = ndb;
 }
 
 /* chainview height [count]
@@ -58,6 +68,7 @@ void rpc_chain_inspect_set_state(struct main_state *ms, const char *datadir,
 static bool rpc_chainview(const struct json_value *params, bool help,
                             struct json_value *result)
 {
+    struct chain_inspect_context *ctx = chain_inspect_ctx();
     RPC_HELP(help, result,
         "chainview height [count=1]\n"
         "Returns detailed block index metadata for blocks at height..height+count-1.\n"
@@ -67,7 +78,7 @@ static bool rpc_chainview(const struct json_value *params, bool help,
         "1. height  (int, required) Starting block height\n"
         "2. count   (int, optional, default=1) Number of blocks\n");
 
-    if (!g_main_state) {
+    if (!ctx->main_state) {
         json_set_str(result, "Chain not initialized");
         return false;
     }
@@ -78,7 +89,7 @@ static bool rpc_chainview(const struct json_value *params, bool help,
     int count = (int)rpc_permit_int(&p, 1, "count", 1);
     if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); return false; }
 
-    int chain_tip = active_chain_height(&g_main_state->chain_active);
+    int chain_tip = active_chain_height(&ctx->main_state->chain_active);
     if (height < 0 || height > chain_tip) {
         json_set_str(result, "Height out of range");
         return false;
@@ -93,7 +104,7 @@ static bool rpc_chainview(const struct json_value *params, bool help,
 
     for (int h = height; h < height + count; h++) {
         const struct block_index *bi =
-            active_chain_at(&g_main_state->chain_active, h);
+            active_chain_at(&ctx->main_state->chain_active, h);
         if (!bi) continue;
 
         struct json_value entry = {0};
@@ -149,6 +160,7 @@ static bool rpc_chainview(const struct json_value *params, bool help,
 static bool rpc_chainstats(const struct json_value *params, bool help,
                              struct json_value *result)
 {
+    struct chain_inspect_context *ctx = chain_inspect_ctx();
     RPC_HELP(help, result,
         "chainstats [start_height] [end_height]\n"
         "Returns aggregate statistics over a block range.\n"
@@ -158,12 +170,12 @@ static bool rpc_chainstats(const struct json_value *params, bool help,
         "1. start_height  (int, optional, default=0)\n"
         "2. end_height    (int, optional, default=tip)\n");
 
-    if (!g_main_state) {
+    if (!ctx->main_state) {
         json_set_str(result, "Chain not initialized");
         return false;
     }
 
-    int chain_tip = active_chain_height(&g_main_state->chain_active);
+    int chain_tip = active_chain_height(&ctx->main_state->chain_active);
 
     struct rpc_params p;
     rpc_params_init(&p, params);
@@ -184,7 +196,7 @@ static bool rpc_chainstats(const struct json_value *params, bool help,
 
     for (int h = start; h <= end; h++) {
         const struct block_index *bi =
-            active_chain_at(&g_main_state->chain_active, h);
+            active_chain_at(&ctx->main_state->chain_active, h);
         if (!bi) continue;
         total_tx += bi->nTx;
         sapling_delta += bi->nSaplingValue;
@@ -210,11 +222,11 @@ static bool rpc_chainstats(const struct json_value *params, bool help,
     json_push_kv_int(result, "max_block_file", max_file);
 
     /* Estimate total block data size */
-    if (g_datadir) {
+    if (ctx->datadir) {
         int64_t total_bytes = 0;
         for (int f = 0; f <= max_file; f++) {
             char path[512];
-            snprintf(path, sizeof(path), "%s/blocks/blk%05d.dat", g_datadir, f);
+            snprintf(path, sizeof(path), "%s/blocks/blk%05d.dat", ctx->datadir, f);
             struct stat st;
             if (stat(path, &st) == 0)
                 total_bytes += st.st_size;
@@ -233,6 +245,7 @@ static bool rpc_chainstats(const struct json_value *params, bool help,
 static bool rpc_gettxdetail(const struct json_value *params, bool help,
                               struct json_value *result)
 {
+    struct chain_inspect_context *ctx = chain_inspect_ctx();
     RPC_HELP(help, result,
         "gettxdetail txid\n"
         "Returns UTXO details for a transaction from chainstate.\n"
@@ -240,7 +253,7 @@ static bool rpc_gettxdetail(const struct json_value *params, bool help,
         "\nArguments:\n"
         "1. txid  (hex, required) Transaction ID\n");
 
-    if (!g_coins_tip && !g_coins_db) {
+    if (!ctx->coins_tip && !ctx->coins_db) {
         json_set_str(result, "Chainstate not available");
         return false;
     }
@@ -256,10 +269,10 @@ static bool rpc_gettxdetail(const struct json_value *params, bool help,
     struct coins c;
     coins_init(&c);
     bool found = false;
-    if (g_coins_tip)
-        found = coins_view_cache_get_coins(g_coins_tip, &txid, &c);
-    if (!found && g_coins_db)
-        found = coins_view_db_get_coins(g_coins_db, &txid, &c);
+    if (ctx->coins_tip)
+        found = coins_view_cache_get_coins(ctx->coins_tip, &txid, &c);
+    if (!found && ctx->coins_db)
+        found = coins_view_db_get_coins(ctx->coins_db, &txid, &c);
 
     if (!found) {
         json_set_str(result, "Transaction not found in UTXO set (fully spent or unknown)");
@@ -320,6 +333,7 @@ static bool rpc_gettxdetail(const struct json_value *params, bool help,
 static bool rpc_saplingtreeinfo(const struct json_value *params, bool help,
                                   struct json_value *result)
 {
+    struct chain_inspect_context *ctx = chain_inspect_ctx();
     (void)params;
     RPC_HELP(help, result,
         "saplingtreeinfo\n"
@@ -327,7 +341,7 @@ static bool rpc_saplingtreeinfo(const struct json_value *params, bool help,
         "Includes: tree size, serialized size, root hash,\n"
         "rescan height, block header comparison.");
 
-    if (!g_main_state) {
+    if (!ctx->main_state) {
         json_set_str(result, "Chain not initialized");
         return false;
     }
@@ -339,10 +353,10 @@ static bool rpc_saplingtreeinfo(const struct json_value *params, bool help,
     sapling_tree_init(&tree);
     bool have_tree = false;
 
-    if (g_node_db) {
+    if (ctx->node_db) {
         uint8_t tbuf[2048];
         size_t tlen = 0;
-        if (node_db_state_get(g_node_db, "sapling_tree_rescan",
+        if (node_db_state_get(ctx->node_db, "sapling_tree_rescan",
                 tbuf, sizeof(tbuf), &tlen) && tlen > 0) {
             struct byte_stream ts;
             stream_init_from_data(&ts, tbuf, tlen);
@@ -355,7 +369,7 @@ static bool rpc_saplingtreeinfo(const struct json_value *params, bool help,
         /* Get rescan height */
         uint8_t hbuf[32];
         size_t hlen = 0;
-        if (node_db_state_get(g_node_db, "sapling_tree_rescan_height",
+        if (node_db_state_get(ctx->node_db, "sapling_tree_rescan_height",
                 hbuf, sizeof(hbuf), &hlen) && hlen > 0) {
             hbuf[hlen] = 0;
             int rescan_h = (int)strtol((char *)hbuf, NULL, 10);
@@ -372,7 +386,7 @@ static bool rpc_saplingtreeinfo(const struct json_value *params, bool help,
                                  (int64_t)incremental_tree_size(&tree));
 
                 const struct block_index *bi =
-                    active_chain_at(&g_main_state->chain_active, rescan_h);
+                    active_chain_at(&ctx->main_state->chain_active, rescan_h);
                 if (bi) {
                     char blk_hex[65];
                     uint256_get_hex(&bi->hashFinalSaplingRoot, blk_hex);
@@ -393,9 +407,9 @@ static bool rpc_saplingtreeinfo(const struct json_value *params, bool help,
     json_push_kv_int(result, "sapling_activation", 476969);
 
     /* Chain tip sapling root */
-    int tip = active_chain_height(&g_main_state->chain_active);
+    int tip = active_chain_height(&ctx->main_state->chain_active);
     const struct block_index *tip_bi =
-        active_chain_at(&g_main_state->chain_active, tip);
+        active_chain_at(&ctx->main_state->chain_active, tip);
     if (tip_bi) {
         char tip_hex[65];
         uint256_get_hex(&tip_bi->hashFinalSaplingRoot, tip_hex);
@@ -411,6 +425,7 @@ static bool rpc_saplingtreeinfo(const struct json_value *params, bool help,
 static bool rpc_scancommitments(const struct json_value *params, bool help,
                                   struct json_value *result)
 {
+    struct chain_inspect_context *ctx = chain_inspect_ctx();
     RPC_HELP(help, result,
         "scancommitments start_height end_height\n"
         "Fast-scan blocks for Sapling commitments without building tree.\n"
@@ -419,7 +434,7 @@ static bool rpc_scancommitments(const struct json_value *params, bool help,
         "1. start_height  (int, required)\n"
         "2. end_height    (int, required)\n");
 
-    if (!g_main_state || !g_datadir) {
+    if (!ctx->main_state || !ctx->datadir) {
         json_set_str(result, "Chain/datadir not available");
         return false;
     }
@@ -430,7 +445,7 @@ static bool rpc_scancommitments(const struct json_value *params, bool help,
     int end = (int)rpc_require_int(&p, 1, "end");
     if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); return false; }
 
-    int chain_tip = active_chain_height(&g_main_state->chain_active);
+    int chain_tip = active_chain_height(&ctx->main_state->chain_active);
     if (start < 0) start = 0;
     if (end > chain_tip) end = chain_tip;
     if (end - start > 100000) {
@@ -447,14 +462,14 @@ static bool rpc_scancommitments(const struct json_value *params, bool help,
 
     for (int h = start; h <= end; h++) {
         const struct block_index *bi =
-            active_chain_at(&g_main_state->chain_active, h);
+            active_chain_at(&ctx->main_state->chain_active, h);
         if (!bi || !(bi->nStatus & BLOCK_HAVE_DATA)) continue;
 
         if (bi->nFile != cached_file) {
             if (cached_data) munmap(cached_data, cached_size);
             char path[512];
             snprintf(path, sizeof(path), "%s/blocks/blk%05d.dat",
-                     g_datadir, bi->nFile);
+                     ctx->datadir, bi->nFile);
             int fd = open(path, O_RDONLY);
             if (fd < 0) { cached_data = NULL; cached_file = -1; continue; }
             struct stat fst;
@@ -498,6 +513,7 @@ static bool rpc_scancommitments(const struct json_value *params, bool help,
 static bool rpc_verifychainroots(const struct json_value *params, bool help,
                                    struct json_value *result)
 {
+    struct chain_inspect_context *ctx = chain_inspect_ctx();
     RPC_HELP(help, result,
         "verifychainroots start_height end_height\n"
         "Build Sapling commitment tree from scratch and compare root\n"
@@ -507,7 +523,7 @@ static bool rpc_verifychainroots(const struct json_value *params, bool help,
         "1. start_height  (int, required) Must be >= Sapling activation\n"
         "2. end_height    (int, required)\n");
 
-    if (!g_main_state || !g_datadir) {
+    if (!ctx->main_state || !ctx->datadir) {
         json_set_str(result, "Chain/datadir not available");
         return false;
     }
@@ -518,7 +534,7 @@ static bool rpc_verifychainroots(const struct json_value *params, bool help,
     int end = (int)rpc_require_int(&p, 1, "end");
     if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); return false; }
 
-    int chain_tip = active_chain_height(&g_main_state->chain_active);
+    int chain_tip = active_chain_height(&ctx->main_state->chain_active);
     if (end > chain_tip) end = chain_tip;
 
     struct incremental_merkle_tree tree;
@@ -537,7 +553,7 @@ static bool rpc_verifychainroots(const struct json_value *params, bool help,
 
     for (int h = sapling_start; h <= end; h++) {
         const struct block_index *bi =
-            active_chain_at(&g_main_state->chain_active, h);
+            active_chain_at(&ctx->main_state->chain_active, h);
         if (!bi) continue;
 
         if (bi->nStatus & BLOCK_HAVE_DATA) {
@@ -545,7 +561,7 @@ static bool rpc_verifychainroots(const struct json_value *params, bool help,
                 if (cached_data) munmap(cached_data, cached_size);
                 char path[512];
                 snprintf(path, sizeof(path), "%s/blocks/blk%05d.dat",
-                         g_datadir, bi->nFile);
+                         ctx->datadir, bi->nFile);
                 int fd = open(path, O_RDONLY);
                 if (fd < 0) { cached_data = NULL; cached_file = -1; goto next; }
                 struct stat fst;
@@ -621,6 +637,7 @@ next:
 static bool rpc_hodltimeseries(const struct json_value *params, bool help,
                                  struct json_value *result)
 {
+    struct chain_inspect_context *ctx = chain_inspect_ctx();
     (void)params;
     RPC_HELP(help, result,
         "hodltimeseries [years]\n"
@@ -630,15 +647,15 @@ static bool rpc_hodltimeseries(const struct json_value *params, bool help,
         "\nArguments:\n"
         "1. years  (int, optional, default=9)\n");
 
-    if (!g_coins_db || !g_main_state) {
+    if (!ctx->coins_db || !ctx->main_state) {
         json_set_str(result, "Chain/coins not available");
         return false;
     }
 
-    if (g_coins_tip)
-        coins_view_cache_flush(g_coins_tip);
+    if (ctx->coins_tip)
+        coins_view_cache_flush(ctx->coins_tip);
 
-    int tip = active_chain_height(&g_main_state->chain_active);
+    int tip = active_chain_height(&ctx->main_state->chain_active);
 
     /* Block timing model */
     #define BC_HEIGHT 707000
@@ -647,7 +664,7 @@ static bool rpc_hodltimeseries(const struct json_value *params, bool help,
 
     /* Get tip time from block index */
     const struct block_index *tip_bi =
-        active_chain_at(&g_main_state->chain_active, tip);
+        active_chain_at(&ctx->main_state->chain_active, tip);
     int64_t tip_time = tip_bi ? (int64_t)tip_bi->nTime : (int64_t)time(NULL);
 
     /* Height → approximate time */
@@ -669,7 +686,7 @@ static bool rpc_hodltimeseries(const struct json_value *params, bool help,
 
     /* Scan all UTXOs */
     struct db_iterator it;
-    db_iter_init(&it, &g_coins_db->db);
+    db_iter_init(&it, &ctx->coins_db->db);
     char prefix = 'c';
     db_iter_seek(&it, &prefix, 1);
 
@@ -683,7 +700,7 @@ static bool rpc_hodltimeseries(const struct json_value *params, bool help,
 
         struct coins c;
         coins_init(&c);
-        if (coins_view_db_get_coins(g_coins_db, &txid, &c)) {
+        if (coins_view_db_get_coins(ctx->coins_db, &txid, &c)) {
             int h = c.height;
             if (h >= 0 && h <= tip) {
                 int bin = h / BIN_SIZE;

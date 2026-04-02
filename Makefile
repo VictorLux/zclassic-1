@@ -4,7 +4,7 @@
 CC = cc
 
 # App layer (MVC)
-APP_DIRS = models controllers views
+APP_DIRS = models controllers views services
 APP_INCLUDES = $(foreach d,$(APP_DIRS),-Iapp/$(d)/include)
 APP_SRCS = $(foreach d,$(APP_DIRS),$(wildcard app/$(d)/src/*.c))
 
@@ -156,9 +156,8 @@ test: test_zcl
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-# Deploy: setcap (passwordless after setup.sh), install service, restart
+# Deploy: install service + restart (no setcap needed — iptables redirects 80/443)
 deploy: zclassic23
-	sudo /usr/sbin/setcap 'cap_net_bind_service=+ep' $(CURDIR)/zclassic23
 	@install -m 644 deploy/zclassic23.service $(HOME)/.config/systemd/user/zclassic23.service
 	@systemctl --user daemon-reload
 	systemctl --user restart zclassic23

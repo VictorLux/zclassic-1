@@ -6,8 +6,8 @@
 #include "controllers/event_controller.h"
 #include "controllers/strong_params.h"
 #include "config/boot.h"
+#include "services/node_health_service.h"
 #include "event/event.h"
-#include "net/download.h"
 #include "json/json.h"
 #include "rpc/server.h"
 #include <stdlib.h>
@@ -88,28 +88,19 @@ static bool rpc_healthcheck(const struct json_value *params, bool help,
 
     json_set_object(result);
 
-    enum sync_state ss = sync_get_state();
-    json_push_kv_str(result, "sync_state", sync_state_name(ss));
+    struct node_health_snapshot health;
+    node_health_collect(&health, NULL);
+    json_push_kv_str(result, "sync_state", sync_state_name(health.sync_state));
 
     /* Individual health checks */
     struct json_value checks = {0};
     json_set_object(&checks);
 
-    bool synced = (ss == SYNC_AT_TIP);
-    json_push_kv_bool(&checks, "synced", synced);
+    json_push_kv_bool(&checks, "synced", health.synced);
+    json_push_kv_bool(&checks, "has_peers", health.has_peers);
+    json_push_kv_int(&checks, "peer_count", (int64_t)health.peer_count);
 
-    bool has_peers = false;
-    extern struct download_manager *msg_get_download_mgr(void);
-    {
-        /* Count outbound peers via download manager stats as proxy */
-        uint64_t req = 0, recv = 0;
-        dl_get_stats(msg_get_download_mgr(), &req, &recv, NULL, NULL, NULL);
-        has_peers = (recv > 0 || synced);
-    }
-    json_push_kv_bool(&checks, "has_peers", has_peers);
-
-    bool healthy = synced && has_peers;
-    json_push_kv_bool(result, "healthy", healthy);
+    json_push_kv_bool(result, "healthy", health.healthy);
     json_push_kv(result, "checks", &checks);
     json_free(&checks);
 

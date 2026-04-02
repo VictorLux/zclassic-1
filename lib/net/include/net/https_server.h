@@ -11,6 +11,8 @@
 
 bool https_server_start(const char *cert_path, const char *key_path,
                          const char *hostname);
+bool https_server_start_on_port(const char *cert_path, const char *key_path,
+                                const char *hostname, int https_port, int http_port);
 void https_server_stop(void);
 bool https_server_is_running(void);
 

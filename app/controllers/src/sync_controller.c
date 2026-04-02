@@ -307,21 +307,29 @@ bool node_db_sync_connect_block(struct node_db *ndb,
             static int mismatch_count = 0;
             mismatch_count++;
             if (!is_ibd && mismatch_count > 50) {
+                char hdr_hex[65], tree_hex[65];
+                uint256_get_hex(&blk->header.hashFinalSaplingRoot, hdr_hex);
+                uint256_get_hex(&tree_root, tree_hex);
                 fprintf(stderr, "CRITICAL: Sapling tree root MISMATCH "
-                    "at height %d (tree_size=%zu, %d mismatches) "
-                    "— rejecting block\n",
+                    "at height %d (tree_size=%zu, %d mismatches)\n"
+                    "  header: %s\n  tree:   %s\n",
                     pindex->nHeight, incremental_tree_size(&tree),
-                    mismatch_count);
+                    mismatch_count, hdr_hex, tree_hex);
                 fflush(stderr);
+                event_emitf(EV_BLOCK_REJECTED, 0,
+                            "bad-sapling-root h=%d mismatches=%d",
+                            pindex->nHeight, mismatch_count);
                 return false;
             }
             if (!is_ibd && mismatch_count <= 50) {
                 fprintf(stderr, "WARNING: Sapling tree root mismatch "
                     "at height %d — rebuilding (%d/50)\n",
                     pindex->nHeight, mismatch_count);
+            } else if (is_ibd && mismatch_count <= 3) {
+                fprintf(stderr, "IBD: Sapling tree rebuilding at h=%d "
+                    "(tree_size=%zu)\n",
+                    pindex->nHeight, incremental_tree_size(&tree));
             }
-            /* During IBD: log but continue — the tree will converge
-             * once we process all blocks sequentially */
         }
 
         /* Store tree state per-block for disconnect */
@@ -748,68 +756,7 @@ static bool sync_block_lean(struct node_db *ndb,
     return true;
 }
 
-/* Drop non-essential indexes for fast bulk loading. */
-static void drop_bulk_indexes(struct node_db *ndb)
-{
-    const char *drops[] = {
-        "DROP INDEX IF EXISTS idx_blocks_prev",
-        "DROP INDEX IF EXISTS idx_blocks_chainwork",
-        "DROP INDEX IF EXISTS idx_tx_block",
-        "DROP INDEX IF EXISTS idx_tx_height",
-        "DROP INDEX IF EXISTS idx_utxo_address",
-        "DROP INDEX IF EXISTS idx_utxo_value",
-        "DROP INDEX IF EXISTS idx_utxo_height",
-        "DROP INDEX IF EXISTS idx_wtx_height",
-        "DROP INDEX IF EXISTS idx_wtx_time",
-        "DROP INDEX IF EXISTS idx_wutxo_unspent",
-        "DROP INDEX IF EXISTS idx_wutxo_spent",
-        "DROP INDEX IF EXISTS idx_snote_unspent",
-        "DROP INDEX IF EXISTS idx_snote_nullifier",
-        NULL
-    };
-    for (int i = 0; drops[i]; i++)
-        sqlite3_exec(ndb->db, drops[i], NULL, NULL, NULL);
-}
-
-/* Rebuild indexes after bulk loading. */
-static void rebuild_indexes(struct node_db *ndb)
-{
-    const char *creates[] = {
-        "CREATE INDEX IF NOT EXISTS idx_blocks_prev"
-        " ON blocks(prev_hash)",
-        "CREATE INDEX IF NOT EXISTS idx_blocks_chainwork"
-        " ON blocks(chain_work DESC)",
-        "CREATE INDEX IF NOT EXISTS idx_tx_block"
-        " ON transactions(block_hash)",
-        "CREATE INDEX IF NOT EXISTS idx_tx_height"
-        " ON transactions(block_height)",
-        "CREATE INDEX IF NOT EXISTS idx_utxo_address"
-        " ON utxos(address_hash) WHERE address_hash IS NOT NULL",
-        "CREATE INDEX IF NOT EXISTS idx_utxo_value"
-        " ON utxos(value DESC)",
-        "CREATE INDEX IF NOT EXISTS idx_utxo_height"
-        " ON utxos(height)",
-        "CREATE INDEX IF NOT EXISTS idx_wtx_height"
-        " ON wallet_transactions(block_height)",
-        "CREATE INDEX IF NOT EXISTS idx_wtx_time"
-        " ON wallet_transactions(time_received DESC)",
-        "CREATE INDEX IF NOT EXISTS idx_wutxo_unspent"
-        " ON wallet_utxos(address_hash) WHERE spent_txid IS NULL",
-        "CREATE INDEX IF NOT EXISTS idx_wutxo_spent"
-        " ON wallet_utxos(spent_txid) WHERE spent_txid IS NOT NULL",
-        "CREATE INDEX IF NOT EXISTS idx_snote_unspent"
-        " ON wallet_sapling_notes(ivk) WHERE spent_txid IS NULL",
-        "CREATE INDEX IF NOT EXISTS idx_snote_nullifier"
-        " ON wallet_sapling_notes(nullifier)",
-        NULL
-    };
-    printf("SQLite: rebuilding indexes...\n");
-    fflush(stdout);
-    for (int i = 0; creates[i]; i++)
-        sqlite3_exec(ndb->db, creates[i], NULL, NULL, NULL);
-    printf("SQLite: indexes rebuilt\n");
-    fflush(stdout);
-}
+/* Index drop/rebuild delegated to node_db_ibd_turbo_mode/normal_mode. */
 
 /* Helper: mmap a block file, returning mapped data or NULL. */
 static uint8_t *mmap_block_file(const char *datadir, int file_num,
@@ -939,14 +886,8 @@ int node_db_sync_catchup(struct node_db *ndb,
 
     /* Turbo mode: disable fsync, drop indexes, enlarge cache. */
     bool bulk_mode = (total > 50000);
-    if (bulk_mode) {
-        sqlite3_exec(ndb->db, "PRAGMA synchronous=OFF", NULL, NULL, NULL);
-        sqlite3_exec(ndb->db, "PRAGMA cache_size=-524288", NULL, NULL, NULL);
-        sqlite3_exec(ndb->db, "PRAGMA wal_autocheckpoint=0",
-                     NULL, NULL, NULL);
-        sqlite3_busy_timeout(ndb->db, 10000);
-        drop_bulk_indexes(ndb);
-    }
+    if (bulk_mode)
+        node_db_ibd_turbo_mode(ndb);
 
     /* Verify connection works before starting */
     if (!node_db_begin(ndb)) {
@@ -1064,15 +1005,8 @@ int node_db_sync_catchup(struct node_db *ndb,
     node_db_commit(ndb);
 
     /* Restore safe pragmas and rebuild indexes */
-    if (bulk_mode) {
-        rebuild_indexes(ndb);
-        sqlite3_exec(ndb->db, "PRAGMA synchronous=NORMAL", NULL, NULL, NULL);
-        sqlite3_exec(ndb->db, "PRAGMA cache_size=-65536", NULL, NULL, NULL);
-        sqlite3_exec(ndb->db, "PRAGMA wal_autocheckpoint=1000",
-                     NULL, NULL, NULL);
-        sqlite3_wal_checkpoint_v2(ndb->db, NULL,
-            SQLITE_CHECKPOINT_TRUNCATE, NULL, NULL);
-    }
+    if (bulk_mode)
+        node_db_normal_mode(ndb);
 
     int64_t elapsed = (int64_t)time(NULL) - t_start;
     printf("SQLite catchup complete: %d blocks in %llds (%d blk/s)\n",
@@ -1577,15 +1511,8 @@ static void *import_writer_thread(void *arg)
     int total_rows = 0;
     int next_chunk = 0;
 
-    {
-        char *err = NULL;
-        int brc = sqlite3_exec(ndb->db, "BEGIN", NULL, NULL, &err);
-        if (brc != SQLITE_OK) {
-            fprintf(stderr, "UTXO import writer: BEGIN failed rc=%d: %s\n",
-                    brc, err ? err : "unknown");
-            sqlite3_free(err);
-        }
-    }
+    if (!node_db_begin(ndb))
+        fprintf(stderr, "UTXO import writer: BEGIN failed\n");
 
     for (;;) {
         /* Look for any decoded chunk to write */
@@ -1645,10 +1572,10 @@ static void *import_writer_thread(void *arg)
 
         /* Commit every ~100K rows */
         if (total_rows % 100000 < chunk->num_rows) {
-            sqlite3_exec(ndb->db, "COMMIT", NULL, NULL, NULL);
+            node_db_commit(ndb);
             printf("UTXO import: %d rows written...\n", total_rows);
             fflush(stdout);
-            sqlite3_exec(ndb->db, "BEGIN", NULL, NULL, NULL);
+            node_db_begin(ndb);
         }
 
         /* Free buffers and release chunk */
@@ -1662,7 +1589,7 @@ static void *import_writer_thread(void *arg)
         atomic_store(&chunk->state, 0); /* free for reuse */
     }
 
-    sqlite3_exec(ndb->db, "COMMIT", NULL, NULL, NULL);
+    node_db_commit(ndb);
     atomic_store(&ctx->total_rows, total_rows);
     return NULL;
 }
@@ -1680,30 +1607,9 @@ int node_db_sync_import_utxos(struct node_db *ndb,
     struct timespec ts_start;
     clock_gettime(CLOCK_MONOTONIC, &ts_start);
 
-    /* ── SQLite turbo mode ─────────────────────────────────────────── */
-    /* Use WAL mode (not OFF) — another connection (coins_view_sqlite)
-     * may have the DB open in WAL mode, and journal_mode=OFF fails
-     * silently when WAL is active, causing the writer thread to hang. */
-    sqlite3_exec(ndb->db, "PRAGMA journal_mode=WAL", NULL, NULL, NULL);
-    sqlite3_exec(ndb->db, "PRAGMA synchronous=OFF", NULL, NULL, NULL);
-    sqlite3_exec(ndb->db, "PRAGMA locking_mode=NORMAL", NULL, NULL, NULL);
-    sqlite3_exec(ndb->db, "PRAGMA cache_size=-524288", NULL, NULL, NULL);
-    sqlite3_exec(ndb->db, "PRAGMA mmap_size=1073741824", NULL, NULL, NULL);
-    sqlite3_busy_timeout(ndb->db, 10000);
-
-    /* Drop UTXO indexes for bulk load */
-    sqlite3_exec(ndb->db, "DROP INDEX IF EXISTS idx_utxo_address",
-                 NULL, NULL, NULL);
-    sqlite3_exec(ndb->db, "DROP INDEX IF EXISTS idx_utxo_height_value",
-                 NULL, NULL, NULL);
-    /* Also drop legacy indexes that may exist from older schema */
-    sqlite3_exec(ndb->db, "DROP INDEX IF EXISTS idx_utxo_value",
-                 NULL, NULL, NULL);
-    sqlite3_exec(ndb->db, "DROP INDEX IF EXISTS idx_utxo_height",
-                 NULL, NULL, NULL);
-
-    /* Clear existing UTXOs */
-    sqlite3_exec(ndb->db, "DELETE FROM utxos", NULL, NULL, NULL);
+    /* ── SQLite turbo mode — delegate to node_db layer ────────────── */
+    node_db_ibd_turbo_mode(ndb);
+    node_db_wipe_utxos(ndb);
 
     /* ── Initialize pipeline context ───────────────────────────────── */
     struct import_context *ctx = calloc(1, sizeof(struct import_context));
@@ -1903,34 +1809,14 @@ reader_done:
     struct timespec ts_idx;
     clock_gettime(CLOCK_MONOTONIC, &ts_idx);
 
-    /* Address lookup — balance queries, listunspent (critical) */
-    sqlite3_exec(ndb->db,
-        "CREATE INDEX IF NOT EXISTS idx_utxo_address"
-        " ON utxos(address_hash) WHERE address_hash IS NOT NULL",
-        NULL, NULL, NULL);
-
-    /* HODL wave covering index — height+value for age distribution.
-     * Also covers height-only queries, so idx_utxo_height is redundant. */
-    sqlite3_exec(ndb->db,
-        "CREATE INDEX IF NOT EXISTS idx_utxo_height_value"
-        " ON utxos(height, value)",
-        NULL, NULL, NULL);
+    /* Rebuild indexes and restore safe pragmas */
+    node_db_normal_mode(ndb);
 
     struct timespec ts_idx_done;
     clock_gettime(CLOCK_MONOTONIC, &ts_idx_done);
     double idx_ms = (ts_idx_done.tv_sec - ts_idx.tv_sec) * 1000.0 +
                     (ts_idx_done.tv_nsec - ts_idx.tv_nsec) / 1e6;
     printf("UTXO import: indexes built in %.0fms\n", idx_ms);
-
-    /* ── Restore safe pragmas ──────────────────────────────────────── */
-    sqlite3_exec(ndb->db, "PRAGMA journal_mode=WAL", NULL, NULL, NULL);
-    sqlite3_exec(ndb->db, "PRAGMA synchronous=NORMAL", NULL, NULL, NULL);
-    sqlite3_exec(ndb->db, "PRAGMA locking_mode=NORMAL", NULL, NULL, NULL);
-    sqlite3_exec(ndb->db, "PRAGMA cache_size=-65536", NULL, NULL, NULL);
-    sqlite3_exec(ndb->db, "PRAGMA wal_autocheckpoint=1000",
-                 NULL, NULL, NULL);
-    sqlite3_wal_checkpoint_v2(ndb->db, NULL,
-        SQLITE_CHECKPOINT_TRUNCATE, NULL, NULL);
 
     double total_ms = (ts_idx_done.tv_sec - ts_start.tv_sec) * 1000.0 +
                       (ts_idx_done.tv_nsec - ts_start.tv_nsec) / 1e6;

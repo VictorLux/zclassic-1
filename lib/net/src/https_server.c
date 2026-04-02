@@ -349,8 +349,8 @@ static int bind_port(uint16_t port, bool any_addr)
 
 /* ── Public API ───────────────────────────────────────────── */
 
-bool https_server_start(const char *cert_path, const char *key_path,
-                         const char *hostname)
+bool https_server_start_on_port(const char *cert_path, const char *key_path,
+                                const char *hostname, int https_port, int http_port)
 {
     signal(SIGPIPE, SIG_IGN);
 
@@ -388,17 +388,18 @@ bool https_server_start(const char *cert_path, const char *key_path,
         return false;
     }
 
-    /* Bind HTTPS port 8443 (iptables redirects 443→8443) */
-    g_https_fd = bind_port(8443, true);
+    /* Bind HTTPS port (iptables redirects 443→default 8443) */
+    g_https_fd = bind_port(https_port, true);
     if (g_https_fd < 0) {
-        fprintf(stderr, "HTTPS: cannot bind port 8443\n");
+        fprintf(stderr, "HTTPS: cannot bind port %d\n", https_port);
         return false;
     }
 
-    /* Bind HTTP port 8080 for redirect (iptables redirects 80→8080) */
-    g_http_fd = bind_port(8080, true);
+    /* Bind HTTP port for redirect */
+    g_http_fd = bind_port(http_port, true);
     if (g_http_fd < 0) {
-        fprintf(stderr, "HTTPS: cannot bind port 8080, HTTP redirect won't work\n");
+        fprintf(stderr, "HTTPS: cannot bind port %d, HTTP redirect won't work\n",
+                http_port);
         /* Non-fatal — continue with HTTPS only */
     }
 
@@ -420,11 +421,17 @@ bool https_server_start(const char *cert_path, const char *key_path,
         }
     }
 
-    printf("HTTPS server listening on 0.0.0.0:8443 (TLS)\n");
+    printf("HTTPS server listening on 0.0.0.0:%d (TLS)\n", https_port);
     if (g_http_fd >= 0)
-        printf("HTTP redirect on 0.0.0.0:8080 -> https://%s\n", g_hostname);
+        printf("HTTP redirect on 0.0.0.0:%d -> https://%s\n", http_port, g_hostname);
 
     return true;
+}
+
+bool https_server_start(const char *cert_path, const char *key_path,
+                         const char *hostname)
+{
+    return https_server_start_on_port(cert_path, key_path, hostname, 8443, 8080);
 }
 
 void https_server_stop(void)

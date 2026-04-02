@@ -61,3 +61,40 @@ bool version_message_deserialize(struct version_message *v,
     }
     return true;
 }
+
+bool getdata_blocks_serialize(struct byte_stream *s,
+                              const struct uint256 *hashes,
+                              size_t count)
+{
+    if (!s || (!hashes && count > 0))
+        return false;
+    if (!stream_write_compact_size(s, (uint64_t)count))
+        return false;
+
+    for (size_t i = 0; i < count; i++) {
+        struct inv_item inv;
+        inv_item_init_typed(&inv, MSG_BLOCK, &hashes[i]);
+        if (!inv_item_serialize(&inv, s))
+            return false;
+    }
+
+    return true;
+}
+
+bool getheaders_serialize(struct byte_stream *s,
+                          const struct block_locator *locator,
+                          const struct uint256 *stop_hash)
+{
+    struct uint256 zero;
+
+    if (!s || !locator)
+        return false;
+    if (!block_locator_serialize(locator, s))
+        return false;
+
+    if (!stop_hash) {
+        uint256_set_null(&zero);
+        stop_hash = &zero;
+    }
+    return stream_write_bytes(s, stop_hash->data, 32);
+}

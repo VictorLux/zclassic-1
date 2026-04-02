@@ -19,22 +19,81 @@ struct json_value;
 struct transaction;
 struct db_wallet_tx;
 
-/* Shared wallet state — set once at boot, read by all wallet controllers */
-extern struct wallet *g_wallet;
-extern struct main_state *g_main_state;
-extern const char *g_datadir;
-extern struct wallet_sqlite *g_wallet_db;
-extern struct tx_mempool *g_mempool;
-extern struct connman *g_connman_ptr;
-extern struct node_db *g_node_db;
-extern struct coins_view_cache *g_coins_tip;
+struct wallet_rpc_context {
+    struct wallet *wallet;
+    struct main_state *main_state;
+    const char *datadir;
+    struct wallet_sqlite *wallet_db;
+    struct tx_mempool *mempool;
+    struct connman *connman;
+    struct node_db *node_db;
+    struct coins_view_cache *coins_tip;
+};
+
+/* Shared wallet controller state.
+ * This centralizes wallet-controller composition in one context object. */
+extern struct wallet_rpc_context g_wallet_ctx;
+
+static inline struct wallet_rpc_context *wallet_rpc_context_current(void)
+{
+    return &g_wallet_ctx;
+}
+
+static inline struct wallet *wallet_rpc_wallet(void)
+{
+    return g_wallet_ctx.wallet;
+}
+
+static inline struct main_state *wallet_rpc_main_state(void)
+{
+    return g_wallet_ctx.main_state;
+}
+
+static inline const char *wallet_rpc_datadir(void)
+{
+    return g_wallet_ctx.datadir;
+}
+
+static inline struct wallet_sqlite *wallet_rpc_wallet_db(void)
+{
+    return g_wallet_ctx.wallet_db;
+}
+
+static inline struct tx_mempool *wallet_rpc_mempool(void)
+{
+    return g_wallet_ctx.mempool;
+}
+
+static inline struct connman *wallet_rpc_connman(void)
+{
+    return g_wallet_ctx.connman;
+}
+
+static inline struct node_db *wallet_rpc_node_db(void)
+{
+    return g_wallet_ctx.node_db;
+}
+
+static inline struct coins_view_cache *wallet_rpc_coins_tip(void)
+{
+    return g_wallet_ctx.coins_tip;
+}
 
 #define ENSURE_WALLET(result) do {                        \
-    if (!g_wallet) {                                      \
+    if (!wallet_rpc_wallet()) {                           \
         json_set_str((result), "Wallet not available");   \
         return false;                                     \
     }                                                     \
 } while (0)
+
+void wallet_rpc_context_set_base(struct wallet *wallet,
+                                 struct main_state *main_state,
+                                 const char *datadir,
+                                 struct wallet_sqlite *wallet_db,
+                                 struct tx_mempool *mempool,
+                                 struct connman *connman);
+void wallet_rpc_context_set_node_db(struct node_db *node_db);
+void wallet_rpc_context_set_coins_tip(struct coins_view_cache *coins_tip);
 
 /* Amount formatting/parsing */
 void format_amount(int64_t satoshis, char *out, size_t out_size);

@@ -163,10 +163,22 @@ static const char *SCHEMA[] = {
     "services INTEGER NOT NULL DEFAULT 0,"
     "last_seen INTEGER NOT NULL,last_try INTEGER DEFAULT 0,"
     "attempts INTEGER DEFAULT 0,source BLOB,"
+    "bandwidth_score INTEGER NOT NULL DEFAULT 0,"
+    "is_zcl23 INTEGER NOT NULL DEFAULT 0,"
     "UNIQUE(ip,port))",
 
     "CREATE INDEX IF NOT EXISTS idx_peers_seen"
     " ON peers(last_seen DESC)",
+
+    "CREATE INDEX IF NOT EXISTS idx_peers_zcl23_score"
+    " ON peers(is_zcl23 DESC, bandwidth_score DESC)",
+
+    /* File services */
+    "CREATE TABLE IF NOT EXISTS file_services ("
+    "ip BLOB NOT NULL,port INTEGER NOT NULL,"
+    "p2p_port INTEGER,last_seen INTEGER,"
+    "is_zcl23 INTEGER DEFAULT 1,"
+    "UNIQUE(ip,port))",
 
     /* Node state */
     "CREATE TABLE IF NOT EXISTS node_state ("
@@ -296,6 +308,34 @@ static bool prepare_statements(struct node_db *ndb)
          "SELECT value FROM node_state"
          " WHERE key=?");
 
+    /* Peer model */
+    PREP(stmt_peer_save,
+         "INSERT OR REPLACE INTO peers"
+         "(ip,port,services,last_seen,last_try,attempts,source,"
+         "bandwidth_score,is_zcl23)"
+         " VALUES(?,?,?,?,?,?,?,?,?)");
+
+    PREP(stmt_peer_find,
+         "SELECT id,ip,port,services,last_seen,last_try,attempts,"
+         "source,bandwidth_score,is_zcl23"
+         " FROM peers WHERE ip=? AND port=?");
+
+    PREP(stmt_peer_delete,
+         "DELETE FROM peers WHERE ip=? AND port=?");
+
+    PREP(stmt_peer_count,
+         "SELECT COUNT(*) FROM peers");
+
+    /* File service model */
+    PREP(stmt_file_service_save,
+         "INSERT OR REPLACE INTO file_services"
+         " (ip, port, p2p_port, last_seen, is_zcl23)"
+         " VALUES(?, ?, ?, ?, ?)");
+
+    PREP(stmt_file_service_find,
+         "SELECT ip, port, p2p_port, last_seen, is_zcl23"
+         " FROM file_services WHERE ip=? AND port=?");
+
 #undef PREP
     return true;
 }
@@ -317,6 +357,12 @@ static void finalize_statements(struct node_db *ndb)
     sqlite3_finalize(ndb->stmt_nullifier_exists);
     sqlite3_finalize(ndb->stmt_state_set);
     sqlite3_finalize(ndb->stmt_state_get);
+    sqlite3_finalize(ndb->stmt_peer_save);
+    sqlite3_finalize(ndb->stmt_peer_find);
+    sqlite3_finalize(ndb->stmt_peer_delete);
+    sqlite3_finalize(ndb->stmt_peer_count);
+    sqlite3_finalize(ndb->stmt_file_service_save);
+    sqlite3_finalize(ndb->stmt_file_service_find);
 }
 
 bool node_db_open(struct node_db *ndb, const char *path)
@@ -864,4 +910,107 @@ int node_db_migrate(struct node_db *ndb, const char *datadir)
                applied, node_db_schema_version(ndb));
 
     return applied;
+}
+
+/* ── UTXO Lifecycle ────────────────────────────────────────────── */
+
+bool node_db_wipe_utxos(struct node_db *ndb)
+{
+    if (!ndb || !ndb->open) return false;
+    bool ok = true;
+    ok &= node_db_exec(ndb, "DELETE FROM utxos");
+    ok &= node_db_exec(ndb, "DELETE FROM node_state WHERE key='coins_best_block'");
+    ok &= node_db_exec(ndb, "DELETE FROM node_state WHERE key='utxo_commitment'");
+    if (ok)
+        printf("db: wiped UTXO set + coins state\n");
+    return ok;
+}
+
+int64_t node_db_utxo_count(struct node_db *ndb)
+{
+    if (!ndb || !ndb->open) return 0;
+    sqlite3_stmt *stmt = NULL;
+    int64_t count = 0;
+    if (sqlite3_prepare_v2(ndb->db, "SELECT count(*) FROM utxos",
+                           -1, &stmt, NULL) == SQLITE_OK) {
+        if (sqlite3_step(stmt) == SQLITE_ROW)
+            count = sqlite3_column_int64(stmt, 0);
+        sqlite3_finalize(stmt);
+    }
+    return count;
+}
+
+/* ── Performance Modes ─────────────────────────────────────────── */
+
+/* Secondary indexes dropped during IBD for throughput, rebuilt after. */
+static const char *const DB_DROP_INDEXES[] = {
+    "DROP INDEX IF EXISTS idx_utxo_address",
+    "DROP INDEX IF EXISTS idx_utxo_value",
+    "DROP INDEX IF EXISTS idx_utxo_height",
+    "DROP INDEX IF EXISTS idx_utxo_height_value",
+    "DROP INDEX IF EXISTS idx_tx_block",
+    "DROP INDEX IF EXISTS idx_tx_height",
+};
+static const char *const DB_CREATE_INDEXES[] = {
+    "CREATE INDEX IF NOT EXISTS idx_utxo_address"
+        " ON utxos(address_hash) WHERE address_hash IS NOT NULL",
+    "CREATE INDEX IF NOT EXISTS idx_utxo_value"
+        " ON utxos(value DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_utxo_height"
+        " ON utxos(height)",
+    "CREATE INDEX IF NOT EXISTS idx_utxo_height_value"
+        " ON utxos(height, value)",
+    "CREATE INDEX IF NOT EXISTS idx_tx_block"
+        " ON transactions(block_hash)",
+    "CREATE INDEX IF NOT EXISTS idx_tx_height"
+        " ON transactions(block_height)",
+};
+#define NUM_DB_INDEXES (sizeof(DB_DROP_INDEXES) / sizeof(DB_DROP_INDEXES[0]))
+
+bool node_db_drop_indexes(struct node_db *ndb)
+{
+    if (!ndb || !ndb->open) return false;
+    for (size_t i = 0; i < NUM_DB_INDEXES; i++)
+        sqlite3_exec(ndb->db, DB_DROP_INDEXES[i], NULL, NULL, NULL);
+    return true;
+}
+
+bool node_db_rebuild_indexes(struct node_db *ndb)
+{
+    if (!ndb || !ndb->open) return false;
+    for (size_t i = 0; i < NUM_DB_INDEXES; i++)
+        sqlite3_exec(ndb->db, DB_CREATE_INDEXES[i], NULL, NULL, NULL);
+    return true;
+}
+
+bool node_db_ibd_turbo_mode(struct node_db *ndb)
+{
+    if (!ndb || !ndb->open) return false;
+    sqlite3_exec(ndb->db, "PRAGMA synchronous=OFF", NULL, NULL, NULL);
+    sqlite3_exec(ndb->db, "PRAGMA cache_size=-524288", NULL, NULL, NULL);
+    sqlite3_exec(ndb->db, "PRAGMA wal_autocheckpoint=0", NULL, NULL, NULL);
+    sqlite3_busy_timeout(ndb->db, 10000);
+    node_db_drop_indexes(ndb);
+    printf("db: IBD turbo mode (synchronous=OFF, indexes dropped)\n");
+    return true;
+}
+
+bool node_db_normal_mode(struct node_db *ndb)
+{
+    if (!ndb || !ndb->open) return false;
+    sqlite3_exec(ndb->db, "PRAGMA synchronous=NORMAL", NULL, NULL, NULL);
+    sqlite3_exec(ndb->db, "PRAGMA cache_size=-65536", NULL, NULL, NULL);
+    sqlite3_exec(ndb->db, "PRAGMA wal_autocheckpoint=1000", NULL, NULL, NULL);
+    node_db_rebuild_indexes(ndb);
+    node_db_wal_checkpoint(ndb);
+    printf("db: normal mode (synchronous=NORMAL, indexes rebuilt)\n");
+    return true;
+}
+
+bool node_db_wal_checkpoint(struct node_db *ndb)
+{
+    if (!ndb || !ndb->open) return false;
+    sqlite3_wal_checkpoint_v2(ndb->db, NULL, SQLITE_CHECKPOINT_TRUNCATE,
+                              NULL, NULL);
+    return true;
 }

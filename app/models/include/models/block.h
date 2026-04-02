@@ -72,4 +72,10 @@ bool db_block_prev(struct node_db *ndb, const struct db_block *b,
 bool db_block_next(struct node_db *ndb, const struct db_block *b,
                    struct db_block *out);
 
+/* scope :hashes_in_range — block hashes for a height range (ASC order).
+ * Returns count of hashes written to hashes_out (up to max). */
+int db_block_hashes_in_range(struct node_db *ndb,
+                             int start_height, int end_height,
+                             uint8_t (*hashes_out)[32], size_t max);
+
 #endif

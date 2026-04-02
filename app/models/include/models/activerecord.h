@@ -219,11 +219,11 @@ static inline void ar_errors_full_messages(const struct ar_errors *e,
  *   AR_FINALIZE(s);
  */
 
-/* Prepare a statement. Sets ndb->last_error on failure, returns false. */
+/* Prepare a statement. Logs on failure, returns false from enclosing fn. */
 #define AR_PREPARE(ndb, stmt, sql) do { \
     if (sqlite3_prepare_v2((ndb)->db, sql, -1, &(stmt), NULL) != SQLITE_OK) { \
-        snprintf((ndb)->last_error, sizeof((ndb)->last_error), \
-                 "prepare failed: %s", sqlite3_errmsg((ndb)->db)); \
+        fprintf(stderr, "AR_PREPARE failed: %s\n", \
+                sqlite3_errmsg((ndb)->db)); \
         return false; \
     } \
 } while (0)
@@ -231,8 +231,8 @@ static inline void ar_errors_full_messages(const struct ar_errors *e,
 /* Prepare, but don't return — for functions that need custom error handling. */
 #define AR_PREPARE_OR(ndb, stmt, sql, fail_action) do { \
     if (sqlite3_prepare_v2((ndb)->db, sql, -1, &(stmt), NULL) != SQLITE_OK) { \
-        snprintf((ndb)->last_error, sizeof((ndb)->last_error), \
-                 "prepare failed: %s", sqlite3_errmsg((ndb)->db)); \
+        fprintf(stderr, "AR_PREPARE failed: %s\n", \
+                sqlite3_errmsg((ndb)->db)); \
         fail_action; \
     } \
 } while (0)
@@ -273,12 +273,32 @@ static inline void ar_errors_full_messages(const struct ar_errors *e,
     char *_err = NULL; \
     if (sqlite3_exec((ndb)->db, sql, NULL, NULL, &_err) != SQLITE_OK) { \
         if (_err) { \
-            snprintf((ndb)->last_error, sizeof((ndb)->last_error), \
-                     "exec failed: %s", _err); \
+            fprintf(stderr, "AR_EXEC failed: %s\n", _err); \
             sqlite3_free(_err); \
         } \
     } \
 } while (0)
+
+/* ── DRY Query Macros ─────────────────────────────────────────── *
+ * Eliminate repetitive count/find patterns across models.
+ *
+ * AR_CACHED_SAVE: validate → before_save → bind+step cached stmt → after_save
+ * AR_CACHED_COUNT: reset cached count stmt → step → return int
+ * AR_CACHED_FIND_RESET: reset + clear bindings on a cached stmt
+ */
+
+/* Count via a pre-cached SELECT COUNT(*) statement.
+ * Usage: return AR_CACHED_COUNT(ndb->stmt_peer_count); */
+#define AR_CACHED_COUNT(stmt) do { \
+    sqlite3_reset(stmt); \
+    int _c = 0; \
+    if (AR_STEP_ROW(stmt)) \
+        _c = (int)AR_COL_INT(stmt, 0); \
+    return _c; \
+} while (0)
+
+/* Reset a cached statement for reuse (no finalize). */
+#define AR_RESET(stmt) sqlite3_reset(stmt)
 
 /* ── Validate + Save lifecycle macro ──────────────────────────── *
  * Standard Rails-like lifecycle: validate → before_save → SQL → after_save.

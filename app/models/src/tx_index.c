@@ -94,11 +94,10 @@ bool db_tx_delete(struct node_db *ndb, const uint8_t txid[32])
     sqlite3_stmt *s = NULL;
     sqlite3_prepare_v2(ndb->db, "DELETE FROM transactions WHERE txid=?",
                        -1, &s, NULL);
+    if (!s) return false;
     AR_BIND_BLOB(s, 1, txid, 32);
-    int rc = sqlite3_step(s);
+    bool ok = AR_STEP_DONE(s);
     AR_FINALIZE(s);
-
-    bool ok = rc == SQLITE_DONE;
     if (ok) ar_run_after_destroy(cbs, &t);
     return ok;
 }

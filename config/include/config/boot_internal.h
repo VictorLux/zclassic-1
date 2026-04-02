@@ -6,6 +6,7 @@
 #define ZCL_BOOT_INTERNAL_H
 
 #include "config/boot.h"
+#include "config/runtime.h"
 #include "validation/main_state.h"
 #include "storage/coins_view_sqlite.h"
 #include "coins/coins_view.h"
@@ -53,6 +54,31 @@ void *backfill_addresses_thread(void *arg);
 int scan_block_files_mark_data(struct main_state *ms, const char *datadir,
                                 const struct chain_params *params);
 
+/* ── Boot-time Validation ────────────────────────────────────── */
+
+/* ActiveRecord-style validation for coins/chain agreement at boot.
+ * Detects mismatch between coins_best_block and active chain tip,
+ * returns the appropriate recovery action. Emits EV_BOOT_VALIDATION_FAILED. */
+
+enum boot_recovery_action {
+    BOOT_OK = 0,               /* coins and chain agree */
+    BOOT_RECOVER_REIMPORT,     /* LevelDB chainstate exists, reimport */
+    BOOT_RECOVER_WIPE_WAIT,    /* wipe UTXOs, wait for P2P snapshot */
+    BOOT_RECOVER_RESET_CHAIN,  /* coins behind chain, reset chain tip */
+};
+
+struct boot_validation_result {
+    enum boot_recovery_action action;
+    int chain_height;
+    int coins_height;      /* -1 if coins_best_block not found in index */
+    struct uint256 coins_hash;
+};
+
+struct boot_validation_result validate_coins_chain_agreement(
+    struct main_state *ms,
+    struct coins_view_cache *cvtip,
+    const char *datadir);
+
 /* ── boot_services.c ────────────────────────────────────────── */
 
 struct boot_svc_ctx {
@@ -74,12 +100,21 @@ struct boot_svc_ctx {
     _Atomic bool *params_loaded;
     bool block_tree_open;
     struct block_tree_db *block_tree;
+    /* Composition-owned runtime passed into long-lived services. */
+    struct app_runtime_context runtime;
 };
 
 bool app_init_services(struct app_context *ctx,
                         const struct chain_params *params,
                         struct boot_svc_ctx *svc);
 
+/* Shutdown phase order:
+ * 1. stop externally visible services
+ * 2. persist fast-restart state
+ * 3. quiesce network and flush chainstate
+ * 4. persist runtime-owned stores
+ * 5. clear runtime registry and free owned resources
+ */
 void app_shutdown_svc(struct boot_svc_ctx *svc);
 
 #endif

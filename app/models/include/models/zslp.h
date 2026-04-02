@@ -5,8 +5,13 @@
 #define ZCL_DB_MODEL_ZSLP_H
 
 #include "models/database.h"
+#include "models/activerecord.h"
 #include <stdbool.h>
 #include <stdint.h>
+
+/* Lifecycle callbacks */
+struct ar_callbacks *db_zslp_token_callbacks(void);
+struct ar_callbacks *db_zslp_transfer_callbacks(void);
 
 /* Save a ZSLP token GENESIS record. token_id = genesis txid (internal order). */
 bool db_zslp_token_save(struct node_db *ndb, const uint8_t token_id[32],

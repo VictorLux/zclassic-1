@@ -8,6 +8,7 @@
 #define ZCL_P2P_MESSAGE_H
 
 #include "net/protocol.h"
+#include "primitives/block.h"
 #include "core/serialize.h"
 #include <stdbool.h>
 #include <stdint.h>
@@ -43,5 +44,11 @@ bool version_message_serialize(const struct version_message *v,
                                struct byte_stream *s);
 bool version_message_deserialize(struct version_message *v,
                                  struct byte_stream *s);
+bool getdata_blocks_serialize(struct byte_stream *s,
+                              const struct uint256 *hashes,
+                              size_t count);
+bool getheaders_serialize(struct byte_stream *s,
+                          const struct block_locator *locator,
+                          const struct uint256 *stop_hash);
 
 #endif

@@ -5,11 +5,14 @@
 
 #include "views/format_helpers.h"
 #include "controllers/blockchain_controller.h"
+#include "config/runtime.h"
 #include "controllers/strong_params.h"
 #include "chain/chain.h"
 #include "chain/chainparams.h"
 #include "chain/checkpoints.h"
 #include "chain/mmr.h"
+#include "chain/mmb.h"
+#include "event/event.h"
 #include "chain/pow.h"
 #include "coins/utxo_commitment.h"
 #include "coins/coins.h"
@@ -48,26 +51,35 @@
 #include <unistd.h>
 #include <pthread.h>
 
-static struct main_state *g_main_state = NULL;
-static struct tx_mempool *g_mempool = NULL;
-static const char *g_datadir = NULL;
-static struct coins_view_db *g_coins_db = NULL;
-static struct coins_view_cache *g_coins_tip = NULL;
-static struct node_db *g_node_db_bc = NULL;
+struct blockchain_context {
+    struct main_state *main_state;
+    struct tx_mempool *mempool;
+    const char *datadir;
+    struct coins_view_db *coins_db;
+    struct coins_view_cache *coins_tip;
+    struct node_db *node_db;
+};
+
+static struct blockchain_context g_blockchain_ctx = {0};
+
+static struct blockchain_context *blockchain_ctx(void)
+{
+    return &g_blockchain_ctx;
+}
 
 void rpc_blockchain_set_state(struct main_state *ms, struct tx_mempool *mp,
                                const char *datadir)
 {
-    g_main_state = ms;
-    g_mempool = mp;
-    g_datadir = datadir;
+    g_blockchain_ctx.main_state = ms;
+    g_blockchain_ctx.mempool = mp;
+    g_blockchain_ctx.datadir = datadir;
 }
 
 void rpc_blockchain_set_coins_db(struct coins_view_db *cvdb,
                                   struct coins_view_cache *coins_tip)
 {
-    g_coins_db = cvdb;
-    g_coins_tip = coins_tip;
+    g_blockchain_ctx.coins_db = cvdb;
+    g_blockchain_ctx.coins_tip = coins_tip;
 }
 
 static double get_difficulty(const struct block_index *bi)
@@ -78,26 +90,28 @@ static double get_difficulty(const struct block_index *bi)
 static bool rpc_getblockcount(const struct json_value *params, bool help,
                                struct json_value *result)
 {
+    struct blockchain_context *ctx = blockchain_ctx();
     (void)params;
     RPC_HELP(help, result, "getblockcount\nReturns the number of blocks.");
-    if (!g_main_state) {
+    if (!ctx->main_state) {
         json_set_str(result, "Not initialized");
         return false;
     }
-    json_set_int(result, active_chain_height(&g_main_state->chain_active));
+    json_set_int(result, active_chain_height(&ctx->main_state->chain_active));
     return true;
 }
 
 static bool rpc_getbestblockhash(const struct json_value *params, bool help,
                                   struct json_value *result)
 {
+    struct blockchain_context *ctx = blockchain_ctx();
     (void)params;
     RPC_HELP(help, result, "getbestblockhash\nReturns the hash of the best block.");
-    if (!g_main_state) {
+    if (!ctx->main_state) {
         json_set_str(result, "Not initialized");
         return false;
     }
-    struct block_index *tip = active_chain_tip(&g_main_state->chain_active);
+    struct block_index *tip = active_chain_tip(&ctx->main_state->chain_active);
     if (!tip || !tip->phashBlock) {
         json_set_str(result, "No tip");
         return false;
@@ -111,13 +125,14 @@ static bool rpc_getbestblockhash(const struct json_value *params, bool help,
 static bool rpc_getdifficulty(const struct json_value *params, bool help,
                                struct json_value *result)
 {
+    struct blockchain_context *ctx = blockchain_ctx();
     (void)params;
     RPC_HELP(help, result, "getdifficulty\nReturns proof-of-work difficulty.");
-    if (!g_main_state) {
+    if (!ctx->main_state) {
         json_set_str(result, "Not initialized");
         return false;
     }
-    struct block_index *tip = active_chain_tip(&g_main_state->chain_active);
+    struct block_index *tip = active_chain_tip(&ctx->main_state->chain_active);
     json_set_real(result, get_difficulty(tip));
     return true;
 }
@@ -125,6 +140,7 @@ static bool rpc_getdifficulty(const struct json_value *params, bool help,
 static bool rpc_getblockhash(const struct json_value *params, bool help,
                               struct json_value *result)
 {
+    struct blockchain_context *ctx = blockchain_ctx();
     RPC_HELP(help, result, "getblockhash height\nReturns hash of block at height.");
 
     struct rpc_params p;
@@ -135,11 +151,11 @@ static bool rpc_getblockhash(const struct json_value *params, bool help,
         rpc_params_error(&p, result);
         return false;
     }
-    if (!g_main_state) {
+    if (!ctx->main_state) {
         json_set_str(result, "Not initialized");
         return false;
     }
-    struct block_index *bi = active_chain_at(&g_main_state->chain_active, height);
+    struct block_index *bi = active_chain_at(&ctx->main_state->chain_active, height);
     if (!bi || !bi->phashBlock) {
         json_set_str(result, "Block height out of range");
         return false;
@@ -185,6 +201,7 @@ static void block_header_to_json(const struct block_index *bi,
 static bool rpc_getblockheader(const struct json_value *params, bool help,
                                 struct json_value *result)
 {
+    struct blockchain_context *ctx = blockchain_ctx();
     RPC_HELP(help, result,
              "getblockheader \"hash\" ( verbose )\nReturns block header.");
 
@@ -196,14 +213,14 @@ static bool rpc_getblockheader(const struct json_value *params, bool help,
         rpc_params_error(&p, result);
         return false;
     }
-    if (!g_main_state) {
+    if (!ctx->main_state) {
         json_set_str(result, "Not initialized");
         return false;
     }
     struct uint256 hash;
     uint256_set_hex(&hash, hash_str);
 
-    struct block_index *bi = block_map_find(&g_main_state->map_block_index, &hash);
+    struct block_index *bi = block_map_find(&ctx->main_state->map_block_index, &hash);
     if (!bi) {
         json_set_str(result, "Block not found");
         return false;
@@ -216,6 +233,7 @@ static bool rpc_getblockheader(const struct json_value *params, bool help,
 static bool rpc_getblock(const struct json_value *params, bool help,
                           struct json_value *result)
 {
+    struct blockchain_context *ctx = blockchain_ctx();
     RPC_HELP(help, result,
              "getblock \"hash\" ( verbose )\nReturns block data.");
 
@@ -227,14 +245,14 @@ static bool rpc_getblock(const struct json_value *params, bool help,
         rpc_params_error(&p, result);
         return false;
     }
-    if (!g_main_state) {
+    if (!ctx->main_state) {
         json_set_str(result, "Not initialized");
         return false;
     }
     struct uint256 hash;
     uint256_set_hex(&hash, hash_str);
 
-    struct block_index *bi = block_map_find(&g_main_state->map_block_index, &hash);
+    struct block_index *bi = block_map_find(&ctx->main_state->map_block_index, &hash);
     if (!bi) {
         json_set_str(result, "Block not found");
         return false;
@@ -251,9 +269,10 @@ static bool rpc_getblock(const struct json_value *params, bool help,
 static bool rpc_getblockchaininfo(const struct json_value *params, bool help,
                                    struct json_value *result)
 {
+    struct blockchain_context *ctx = blockchain_ctx();
     (void)params;
     RPC_HELP(help, result, "getblockchaininfo\nReturns blockchain state info.");
-    if (!g_main_state) {
+    if (!ctx->main_state) {
         json_set_str(result, "Not initialized");
         return false;
     }
@@ -263,7 +282,7 @@ static bool rpc_getblockchaininfo(const struct json_value *params, bool help,
     json_set_object(result);
     json_push_kv_str(result, "chain", cp->strNetworkID);
 
-    struct block_index *tip = active_chain_tip(&g_main_state->chain_active);
+    struct block_index *tip = active_chain_tip(&ctx->main_state->chain_active);
     json_push_kv_int(result, "blocks", tip ? tip->nHeight : 0);
     json_push_kv_int(result, "headers", tip ? tip->nHeight : 0);
 
@@ -288,14 +307,15 @@ static bool rpc_getblockchaininfo(const struct json_value *params, bool help,
 static bool rpc_getmempoolinfo(const struct json_value *params, bool help,
                                 struct json_value *result)
 {
+    struct blockchain_context *ctx = blockchain_ctx();
     (void)params;
     RPC_HELP(help, result, "getmempoolinfo\nReturns mempool state.");
 
     json_set_object(result);
     json_push_kv_int(result, "size",
-                     g_mempool ? (int64_t)g_mempool->num_entries : 0);
+                     ctx->mempool ? (int64_t)ctx->mempool->num_entries : 0);
     json_push_kv_int(result, "bytes",
-                     g_mempool ? (int64_t)g_mempool->total_tx_size : 0);
+                     ctx->mempool ? (int64_t)ctx->mempool->total_tx_size : 0);
     return true;
 }
 
@@ -303,26 +323,27 @@ static bool rpc_getmempoolinfo(const struct json_value *params, bool help,
 static bool rpc_gettxoutsetinfo(const struct json_value *params, bool help,
                                  struct json_value *result)
 {
+    struct blockchain_context *ctx = blockchain_ctx();
     (void)params;
     RPC_HELP(help, result,
         "gettxoutsetinfo\n"
         "\nReturns statistics about the UTXO set.\n");
 
-    if (!g_node_db_bc || !g_node_db_bc->open) {
+    if (!ctx->node_db || !ctx->node_db->open) {
         json_set_str(result, "Coins database not available");
         return false;
     }
-    if (!g_main_state || !active_chain_tip(&g_main_state->chain_active)) {
+    if (!ctx->main_state || !active_chain_tip(&ctx->main_state->chain_active)) {
         json_set_str(result, "Chain not loaded");
         return false;
     }
 
     /* Flush in-memory UTXO cache to SQLite for accurate totals */
-    if (g_coins_tip)
-        coins_view_cache_flush(g_coins_tip);
+    if (ctx->coins_tip)
+        coins_view_cache_flush(ctx->coins_tip);
 
-    int tip_height = active_chain_height(&g_main_state->chain_active);
-    struct block_index *tip = active_chain_tip(&g_main_state->chain_active);
+    int tip_height = active_chain_height(&ctx->main_state->chain_active);
+    struct block_index *tip = active_chain_tip(&ctx->main_state->chain_active);
 
     int64_t total_amount = 0;
     int64_t num_txs = 0;
@@ -330,7 +351,7 @@ static bool rpc_gettxoutsetinfo(const struct json_value *params, bool help,
 
     /* Query UTXO set from SQLite */
     sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(g_node_db_bc->db,
+    sqlite3_prepare_v2(ctx->node_db->db,
         "SELECT COUNT(DISTINCT txid), COUNT(*), COALESCE(SUM(value),0)"
         " FROM utxos", -1, &s, NULL);
     if (s && sqlite3_step(s) == SQLITE_ROW) {
@@ -365,6 +386,7 @@ static bool rpc_gettxoutsetinfo(const struct json_value *params, bool help,
 static bool rpc_reindexchainstate(const struct json_value *params, bool help,
                                     struct json_value *result)
 {
+    struct blockchain_context *ctx = blockchain_ctx();
     (void)params;
     RPC_HELP(help, result,
         "reindexchainstate\n"
@@ -374,12 +396,12 @@ static bool rpc_reindexchainstate(const struct json_value *params, bool help,
         "\nWARNING: This operation takes a long time (minutes to hours).\n"
         "The node will not process new blocks or transactions during reindex.\n");
 
-    if (!g_coins_db || !g_coins_tip || !g_main_state || !g_datadir) {
+    if (!ctx->coins_db || !ctx->coins_tip || !ctx->main_state || !ctx->datadir) {
         json_set_str(result, "Node not fully initialized");
         return false;
     }
 
-    int tip_height = active_chain_height(&g_main_state->chain_active);
+    int tip_height = active_chain_height(&ctx->main_state->chain_active);
     if (tip_height < 0) {
         json_set_str(result, "No active chain");
         return false;
@@ -390,30 +412,30 @@ static bool rpc_reindexchainstate(const struct json_value *params, bool help,
     fflush(stdout);
 
     /* Step 1: Flush and free the in-memory cache */
-    coins_view_cache_flush(g_coins_tip);
-    coins_view_cache_free(g_coins_tip);
+    coins_view_cache_flush(ctx->coins_tip);
+    coins_view_cache_free(ctx->coins_tip);
 
     /* Step 2: Close and reopen coins DB with wipe=true */
-    coins_view_db_close(g_coins_db);
+    coins_view_db_close(ctx->coins_db);
 
     char coins_path[1024];
-    snprintf(coins_path, sizeof(coins_path), "%s/chainstate", g_datadir);
-    if (!coins_view_db_open(g_coins_db, coins_path,
+    snprintf(coins_path, sizeof(coins_path), "%s/chainstate", ctx->datadir);
+    if (!coins_view_db_open(ctx->coins_db, coins_path,
                             450 << 20, false, true)) {
         json_set_str(result, "Failed to reopen coins database");
         return false;
     }
 
     /* Step 3: Reinitialize coins cache */
-    coins_view_cache_init(g_coins_tip, &g_coins_db->view);
+    coins_view_cache_init(ctx->coins_tip, &ctx->coins_db->view);
 
     /* Step 3.5: Reset sapling tree state — must replay from empty.
      * Use the global node_db (set later in file via rpc_blockchain_set_node_db). */
     {
-        extern struct node_db *g_active_node_db;
-        if (g_active_node_db && g_active_node_db->open) {
-            node_db_state_set(g_active_node_db, "sapling_tree", NULL, 0);
-            node_db_state_set(g_active_node_db, "sapling_tree_rescan_height", NULL, 0);
+        struct node_db *ndb = app_runtime_node_db();
+        if (ndb && ndb->open) {
+            node_db_state_set(ndb, "sapling_tree", NULL, 0);
+            node_db_state_set(ndb, "sapling_tree_rescan_height", NULL, 0);
         }
     }
 
@@ -423,7 +445,7 @@ static bool rpc_reindexchainstate(const struct json_value *params, bool help,
     /* Step 4: Replay all blocks */
     for (int h = 0; h <= tip_height; h++) {
         struct block_index *pindex = active_chain_at(
-            &g_main_state->chain_active, h);
+            &ctx->main_state->chain_active, h);
         if (!pindex) {
             printf("reindexchainstate: missing block_index at height %d\n", h);
             errors++;
@@ -431,7 +453,7 @@ static bool rpc_reindexchainstate(const struct json_value *params, bool help,
         }
 
         struct block blk;
-        if (!read_block_from_disk_index(&blk, pindex, g_datadir)) {
+        if (!read_block_from_disk_index(&blk, pindex, ctx->datadir)) {
             printf("reindexchainstate: failed to read block at height %d\n", h);
             errors++;
             continue;
@@ -441,7 +463,7 @@ static bool rpc_reindexchainstate(const struct json_value *params, bool help,
         if (h == 0) {
             struct uint256 block_hash;
             block_header_get_hash(&blk.header, &block_hash);
-            coins_view_cache_set_best_block(g_coins_tip, &block_hash);
+            coins_view_cache_set_best_block(ctx->coins_tip, &block_hash);
             block_free(&blk);
             if (h % 10000 == 0) {
                 printf("  height %d/%d\n", h, tip_height);
@@ -452,19 +474,19 @@ static bool rpc_reindexchainstate(const struct json_value *params, bool help,
 
         /* Apply each transaction to the UTXO set */
         for (size_t i = 0; i < blk.num_vtx; i++) {
-            update_coins(&blk.vtx[i], g_coins_tip, pindex->nHeight);
+            update_coins(&blk.vtx[i], ctx->coins_tip, pindex->nHeight);
         }
 
         /* Set best block hash */
         struct uint256 block_hash;
         block_header_get_hash(&blk.header, &block_hash);
-        coins_view_cache_set_best_block(g_coins_tip, &block_hash);
+        coins_view_cache_set_best_block(ctx->coins_tip, &block_hash);
 
         block_free(&blk);
 
         /* Periodic flush every 10000 blocks */
         if (h % 10000 == 0) {
-            coins_view_cache_flush(g_coins_tip);
+            coins_view_cache_flush(ctx->coins_tip);
             int64_t elapsed = (int64_t)time(NULL) - t_start;
             double rate = elapsed > 0 ? (double)h / (double)elapsed : 0;
             int eta = rate > 0 ? (int)((tip_height - h) / rate) : 0;
@@ -475,7 +497,7 @@ static bool rpc_reindexchainstate(const struct json_value *params, bool help,
     }
 
     /* Step 5: Final flush */
-    coins_view_cache_flush(g_coins_tip);
+    coins_view_cache_flush(ctx->coins_tip);
 
     int64_t elapsed = (int64_t)time(NULL) - t_start;
     printf("reindexchainstate: complete in %lldm%llds (%d errors)\n",
@@ -786,6 +808,7 @@ static void *index_worker(void *arg) {
 static bool rpc_importchainstate(const struct json_value *params, bool help,
                                    struct json_value *result)
 {
+    struct blockchain_context *ctx = blockchain_ctx();
     RPC_HELP(help, result,
         "importchainstate \"chainstate_path\"\n"
         "\nRebuild the UTXO index from an external LevelDB chainstate directory.\n"
@@ -800,7 +823,7 @@ static bool rpc_importchainstate(const struct json_value *params, bool help,
     const char *cs_path = rpc_require_str(&p, 0, "chainstate_path");
     if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); return false; }
 
-    if (!g_node_db_bc || !g_node_db_bc->open) {
+    if (!ctx->node_db || !ctx->node_db->open) {
         json_set_str(result, "Node database not open");
         return false;
     }
@@ -815,7 +838,13 @@ static bool rpc_importchainstate(const struct json_value *params, bool help,
         return false;
     }
 
-    int count = node_db_sync_import_utxos(g_node_db_bc, &ext_db);
+    /* Read best block hash from LevelDB before importing.
+     * This is the height at which the UTXO set was snapshotted. */
+    struct uint256 ldb_best_block;
+    memset(&ldb_best_block, 0, sizeof(ldb_best_block));
+    coins_view_db_get_best_block(&ext_db, &ldb_best_block);
+
+    int count = node_db_sync_import_utxos(ctx->node_db, &ext_db);
     coins_view_db_close(&ext_db);
 
     if (count < 0) {
@@ -827,7 +856,7 @@ static bool rpc_importchainstate(const struct json_value *params, bool help,
      * fail to read the trailing height varint for some entries). */
     {
         sqlite3_stmt *h0 = NULL;
-        sqlite3_prepare_v2(g_node_db_bc->db,
+        sqlite3_prepare_v2(ctx->node_db->db,
             "SELECT COUNT(*) FROM utxos WHERE height = 0 AND value > 0",
             -1, &h0, NULL);
         int64_t h0_count = 0;
@@ -837,7 +866,7 @@ static bool rpc_importchainstate(const struct json_value *params, bool help,
         if (h0_count > 0) {
             printf("importchainstate: fixing %lld UTXOs with height=0...\n",
                    (long long)h0_count);
-            sqlite3_exec(g_node_db_bc->db,
+            sqlite3_exec(ctx->node_db->db,
                 "UPDATE utxos SET height = ("
                 "  SELECT t.block_height FROM transactions t"
                 "  WHERE t.txid = utxos.txid"
@@ -846,15 +875,15 @@ static bool rpc_importchainstate(const struct json_value *params, bool help,
                 "  WHERE t.txid = utxos.txid AND t.block_height IS NOT NULL"
                 ")", NULL, NULL, NULL);
             printf("importchainstate: fixed %d UTXO heights\n",
-                   sqlite3_changes(g_node_db_bc->db));
+                   sqlite3_changes(ctx->node_db->db));
         }
     }
 
     /* Rebuild wallet_utxos and addresses from new UTXO set */
-    sqlite3_exec(g_node_db_bc->db, "BEGIN", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db,
+    sqlite3_exec(ctx->node_db->db, "BEGIN", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db,
         "DELETE FROM wallet_utxos", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db,
+    sqlite3_exec(ctx->node_db->db,
         "INSERT INTO wallet_utxos "
         "(txid, vout, value, address_hash, script, height, is_coinbase) "
         "SELECT u.txid, u.vout, u.value, u.address_hash, u.script, "
@@ -862,9 +891,9 @@ static bool rpc_importchainstate(const struct json_value *params, bool help,
         "FROM utxos u INNER JOIN wallet_keys wk "
         "ON u.address_hash = wk.pubkey_hash",
         NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db,
+    sqlite3_exec(ctx->node_db->db,
         "DELETE FROM addresses", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db,
+    sqlite3_exec(ctx->node_db->db,
         "INSERT OR REPLACE INTO addresses "
         "(address_hash, script_type, balance, utxo_count, "
         "first_seen_height, last_seen_height) "
@@ -873,14 +902,29 @@ static bool rpc_importchainstate(const struct json_value *params, bool help,
         "FROM utxos WHERE address_hash IS NOT NULL "
         "GROUP BY address_hash",
         NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "COMMIT", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "COMMIT", NULL, NULL, NULL);
+
+    /* Set coins_best_block from the LevelDB source.
+     * This ensures connect_block's view/prevblock check passes
+     * when resuming from the imported UTXO set. */
+    {
+        static const uint8_t zero_hash[32] = {0};
+        if (memcmp(ldb_best_block.data, zero_hash, 32) != 0) {
+            node_db_state_set(ctx->node_db, "coins_best_block",
+                              ldb_best_block.data, 32);
+            char hex[65];
+            for (int i = 0; i < 32; i++)
+                sprintf(hex + i*2, "%02x", ldb_best_block.data[i]);
+            printf("importchainstate: set coins_best_block=%s\n", hex);
+        }
+    }
 
     json_set_object(result);
     json_push_kv_int(result, "utxos_imported", count);
 
     /* Report balance */
     sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(g_node_db_bc->db,
+    sqlite3_prepare_v2(ctx->node_db->db,
         "SELECT COALESCE(SUM(value),0) FROM utxos",
         -1, &s, NULL);
     if (sqlite3_step(s) == SQLITE_ROW)
@@ -889,7 +933,7 @@ static bool rpc_importchainstate(const struct json_value *params, bool help,
     sqlite3_finalize(s);
 
     s = NULL;
-    sqlite3_prepare_v2(g_node_db_bc->db,
+    sqlite3_prepare_v2(ctx->node_db->db,
         "SELECT COALESCE(SUM(value),0) FROM wallet_utxos WHERE spent_txid IS NULL",
         -1, &s, NULL);
     if (sqlite3_step(s) == SQLITE_ROW)
@@ -904,11 +948,15 @@ static bool rpc_importchainstate(const struct json_value *params, bool help,
 
 /* ── indexlegacy: import full chain from zclassicd LevelDB → our SQLite ── */
 
-void rpc_blockchain_set_node_db(struct node_db *ndb) { g_node_db_bc = ndb; }
+void rpc_blockchain_set_node_db(struct node_db *ndb)
+{
+    g_blockchain_ctx.node_db = ndb;
+}
 
 static bool rpc_indexlegacy(const struct json_value *params, bool help,
                              struct json_value *result)
 {
+    struct blockchain_context *ctx = blockchain_ctx();
     RPC_HELP(help, result,
         "indexlegacy ( \"legacy_datadir\" )\n"
         "\nImport the ENTIRE blockchain from a legacy zclassicd node into SQLite.\n"
@@ -932,7 +980,7 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
         legacy_dir = default_dir;
     }
 
-    if (!g_node_db_bc || !g_node_db_bc->open) {
+    if (!ctx->node_db || !ctx->node_db->open) {
         json_set_str(result, "SQLite database not available");
         return false;
     }
@@ -960,45 +1008,45 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
     /* Stay in WAL mode — journal_mode=OFF loses data when concurrent
      * writes happen (sync_controller commits new blocks via P2P).
      * WAL mode handles concurrent readers/writers safely. */
-    sqlite3_exec(g_node_db_bc->db, "PRAGMA synchronous=OFF", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "PRAGMA wal_autocheckpoint=10000", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "PRAGMA cache_size=-524288", NULL, NULL, NULL); /* 512MB */
-    sqlite3_exec(g_node_db_bc->db, "PRAGMA temp_store=MEMORY", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "PRAGMA mmap_size=1073741824", NULL, NULL, NULL); /* 1GB */
+    sqlite3_exec(ctx->node_db->db, "PRAGMA synchronous=OFF", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "PRAGMA wal_autocheckpoint=10000", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "PRAGMA cache_size=-524288", NULL, NULL, NULL); /* 512MB */
+    sqlite3_exec(ctx->node_db->db, "PRAGMA temp_store=MEMORY", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "PRAGMA mmap_size=1073741824", NULL, NULL, NULL); /* 1GB */
 
     /* Drop all indexes before bulk insert — recreated after */
     printf("indexlegacy: Dropping indexes for fast bulk insert...\n");
     fflush(stdout);
-    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_utxo_address", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_utxo_value", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_utxo_height", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_utxo_height_value", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_tx_block", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_tx_height", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_blocks_height_all", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_blocks_prev", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_blocks_chainwork", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_blocks_time", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_blocks_sprout_value", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_blocks_sapling_value", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_blocks_time_sprout", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_blocks_time_sapling", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_blocks_num_tx", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_txo_addr", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_txo_height", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_txi_prev", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_txi_height", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_ss_nf", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_ss_height", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_so_height", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_js_height", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_spnf_height", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_opret_height", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_opret_slp", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_zslp_xfer_token", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_zslp_xfer_height", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_zslp_xfer_addr", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "DROP INDEX IF EXISTS idx_zslp_ticker", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "DROP INDEX IF EXISTS idx_utxo_address", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "DROP INDEX IF EXISTS idx_utxo_value", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "DROP INDEX IF EXISTS idx_utxo_height", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "DROP INDEX IF EXISTS idx_utxo_height_value", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "DROP INDEX IF EXISTS idx_tx_block", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "DROP INDEX IF EXISTS idx_tx_height", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "DROP INDEX IF EXISTS idx_blocks_height_all", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "DROP INDEX IF EXISTS idx_blocks_prev", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "DROP INDEX IF EXISTS idx_blocks_chainwork", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "DROP INDEX IF EXISTS idx_blocks_time", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "DROP INDEX IF EXISTS idx_blocks_sprout_value", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "DROP INDEX IF EXISTS idx_blocks_sapling_value", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "DROP INDEX IF EXISTS idx_blocks_time_sprout", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "DROP INDEX IF EXISTS idx_blocks_time_sapling", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "DROP INDEX IF EXISTS idx_blocks_num_tx", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "DROP INDEX IF EXISTS idx_txo_addr", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "DROP INDEX IF EXISTS idx_txo_height", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "DROP INDEX IF EXISTS idx_txi_prev", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "DROP INDEX IF EXISTS idx_txi_height", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "DROP INDEX IF EXISTS idx_ss_nf", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "DROP INDEX IF EXISTS idx_ss_height", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "DROP INDEX IF EXISTS idx_so_height", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "DROP INDEX IF EXISTS idx_js_height", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "DROP INDEX IF EXISTS idx_spnf_height", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "DROP INDEX IF EXISTS idx_opret_height", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "DROP INDEX IF EXISTS idx_opret_slp", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "DROP INDEX IF EXISTS idx_zslp_xfer_token", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "DROP INDEX IF EXISTS idx_zslp_xfer_height", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "DROP INDEX IF EXISTS idx_zslp_xfer_addr", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "DROP INDEX IF EXISTS idx_zslp_ticker", NULL, NULL, NULL);
 
     /* Additive index: INSERT OR IGNORE for blocks/transactions (immutable chain
      * data that never changes). Phase B uses INSERT OR IGNORE for tx_outputs,
@@ -1006,8 +1054,8 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
      * idempotent and crash-safe. Only addresses are recomputed from UTXOs. */
     printf("indexlegacy: Additive index mode (no wipe, INSERT OR IGNORE)...\n");
     fflush(stdout);
-    node_db_exec(g_node_db_bc, "DELETE FROM addresses");
-    node_db_exec(g_node_db_bc, "DELETE FROM view_integrity");
+    node_db_exec(ctx->node_db, "DELETE FROM addresses");
+    node_db_exec(ctx->node_db, "DELETE FROM view_integrity");
 
     /* ── Pass 1: Scan all blocks, build hash→(file,offset,size) map.
      * Then chain-walk from genesis using prev_hash to assign heights.
@@ -1229,7 +1277,7 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
     uint8_t *mmap_data = NULL;
     size_t mmap_size = 0;
 
-    node_db_begin(g_node_db_bc);
+    node_db_begin(ctx->node_db);
 
     for (int h = 0; h <= max_height; h++) {
         if (locs[h].size == 0) continue;
@@ -1288,7 +1336,7 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
         db_blk.solution_len = blk.header.nSolutionSize;
         db_blk.status = 29; /* BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA */
 
-        db_block_save(g_node_db_bc, &db_blk);
+        db_block_save(ctx->node_db, &db_blk);
         blocks_indexed++;
 
         /* Index transactions + UTXOs */
@@ -1304,7 +1352,7 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
             db_tx.file_num = locs[h].file;
             db_tx.file_pos = (int)locs[h].offset;
             db_tx.is_coinbase = (i == 0);
-            db_tx_save(g_node_db_bc, &db_tx);
+            db_tx_save(ctx->node_db, &db_tx);
             txs_indexed++;
 
             /* Count spent inputs (but don't modify utxos table —
@@ -1335,7 +1383,7 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
                     }
 
                     if (slp.type == SLP_TX_GENESIS)
-                        db_zslp_token_save(g_node_db_bc, tok_id,
+                        db_zslp_token_save(ctx->node_db, tok_id,
                             slp.ticker, slp.name, slp.decimals,
                             slp.document_url, h,
                             (int64_t)slp.initial_quantity);
@@ -1366,7 +1414,7 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
                             }
                         }
 
-                        db_zslp_transfer_save(g_node_db_bc, tx->hash.data,
+                        db_zslp_transfer_save(ctx->node_db, tx->hash.data,
                             h, tok_id, (int)slp.type, amount, q, to);
                     }
                 }
@@ -1411,7 +1459,7 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
         block_free(&blk);
 
         if (blocks_indexed % 100000 == 0 && blocks_indexed > 0) {
-            node_db_commit(g_node_db_bc);
+            node_db_commit(ctx->node_db);
             int64_t elapsed = (int64_t)time(NULL) - t_pass2;
             double rate = elapsed > 0 ?
                 (double)blocks_indexed / (double)elapsed : 0;
@@ -1423,12 +1471,12 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
                    utxos_created, utxos_spent,
                    rate, eta / 60, eta % 60);
             fflush(stdout);
-            node_db_begin(g_node_db_bc);
+            node_db_begin(ctx->node_db);
         }
     }
 
     if (mmap_data) munmap(mmap_data, mmap_size);
-    node_db_commit(g_node_db_bc);
+    node_db_commit(ctx->node_db);
 
     int64_t phase_a_time = (int64_t)time(NULL) - t_pass2;
     printf("indexlegacy: Phase A complete — %d blocks, %d txs, %d net UTXOs "
@@ -1494,14 +1542,14 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
      * on any block validation error — destroying all Phase B inserts.
      * WAL mode allows concurrent readers but only ONE writer. We set
      * a 60-second busy timeout so Phase B waits for the write lock. */
-    const char *phase_b_path = sqlite3_db_filename(g_node_db_bc->db, "main");
+    const char *phase_b_path = sqlite3_db_filename(ctx->node_db->db, "main");
     sqlite3 *phase_b_db = NULL;
     if (sqlite3_open(phase_b_path, &phase_b_db) != SQLITE_OK || !phase_b_db) {
         printf("indexlegacy: Phase B FATAL: cannot open DB: %s\n",
                phase_b_db ? sqlite3_errmsg(phase_b_db) : "null");
         fflush(stdout);
         /* Fall through with empty tables rather than crash */
-        phase_b_db = g_node_db_bc->db; /* fallback */
+        phase_b_db = ctx->node_db->db; /* fallback */
     }
     sqlite3_exec(phase_b_db, "PRAGMA journal_mode=WAL", NULL, NULL, NULL);
     sqlite3_exec(phase_b_db, "PRAGMA synchronous=OFF", NULL, NULL, NULL);
@@ -1755,7 +1803,7 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
     }
 
     sqlite3_exec(phase_b_db, "COMMIT", NULL, NULL, NULL);
-    if (phase_b_db != g_node_db_bc->db)
+    if (phase_b_db != ctx->node_db->db)
         sqlite3_close(phase_b_db);
     phase_b_db = NULL;
 
@@ -1795,54 +1843,54 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
     fflush(stdout);
     int64_t t_idx = (int64_t)time(NULL);
     /* Core block/tx/utxo indexes */
-    sqlite3_exec(g_node_db_bc->db, "CREATE UNIQUE INDEX IF NOT EXISTS idx_blocks_height ON blocks(height) WHERE status >= 3", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_blocks_prev ON blocks(prev_hash)", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_blocks_chainwork ON blocks(chain_work DESC)", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_blocks_height_all ON blocks(height)", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_blocks_time ON blocks(time)", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_blocks_sprout_value ON blocks(sprout_value) WHERE sprout_value != 0", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_blocks_sapling_value ON blocks(sapling_value) WHERE sapling_value != 0", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_blocks_time_sprout ON blocks(time, sprout_value) WHERE sprout_value != 0", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_blocks_time_sapling ON blocks(time, sapling_value) WHERE sapling_value != 0", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_blocks_num_tx ON blocks(num_tx DESC)", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_tx_block ON transactions(block_hash)", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_tx_height ON transactions(block_height)", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_utxo_address ON utxos(address_hash) WHERE address_hash IS NOT NULL", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_utxo_value ON utxos(value DESC)", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_utxo_height ON utxos(height)", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_utxo_height_value ON utxos(height, value)", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "CREATE UNIQUE INDEX IF NOT EXISTS idx_blocks_height ON blocks(height) WHERE status >= 3", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "CREATE INDEX IF NOT EXISTS idx_blocks_prev ON blocks(prev_hash)", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "CREATE INDEX IF NOT EXISTS idx_blocks_chainwork ON blocks(chain_work DESC)", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "CREATE INDEX IF NOT EXISTS idx_blocks_height_all ON blocks(height)", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "CREATE INDEX IF NOT EXISTS idx_blocks_time ON blocks(time)", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "CREATE INDEX IF NOT EXISTS idx_blocks_sprout_value ON blocks(sprout_value) WHERE sprout_value != 0", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "CREATE INDEX IF NOT EXISTS idx_blocks_sapling_value ON blocks(sapling_value) WHERE sapling_value != 0", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "CREATE INDEX IF NOT EXISTS idx_blocks_time_sprout ON blocks(time, sprout_value) WHERE sprout_value != 0", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "CREATE INDEX IF NOT EXISTS idx_blocks_time_sapling ON blocks(time, sapling_value) WHERE sapling_value != 0", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "CREATE INDEX IF NOT EXISTS idx_blocks_num_tx ON blocks(num_tx DESC)", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "CREATE INDEX IF NOT EXISTS idx_tx_block ON transactions(block_hash)", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "CREATE INDEX IF NOT EXISTS idx_tx_height ON transactions(block_height)", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "CREATE INDEX IF NOT EXISTS idx_utxo_address ON utxos(address_hash) WHERE address_hash IS NOT NULL", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "CREATE INDEX IF NOT EXISTS idx_utxo_value ON utxos(value DESC)", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "CREATE INDEX IF NOT EXISTS idx_utxo_height ON utxos(height)", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "CREATE INDEX IF NOT EXISTS idx_utxo_height_value ON utxos(height, value)", NULL, NULL, NULL);
     /* New chain index table indexes */
-    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_txo_addr ON tx_outputs(address_hash) WHERE address_hash IS NOT NULL", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_txo_height ON tx_outputs(block_height)", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_txi_prev ON tx_inputs(prev_txid, prev_vout)", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_txi_height ON tx_inputs(block_height)", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_ss_nf ON sapling_spends(nullifier)", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_ss_height ON sapling_spends(block_height)", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_so_height ON sapling_outputs(block_height)", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_js_height ON joinsplits(block_height)", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_spnf_height ON sprout_nullifiers(block_height)", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_opret_height ON op_returns(block_height)", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_opret_slp ON op_returns(is_slp) WHERE is_slp = 1", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_zslp_xfer_token ON zslp_transfers(token_id)", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_zslp_xfer_height ON zslp_transfers(block_height DESC)", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_zslp_xfer_addr ON zslp_transfers(to_addr) WHERE to_addr IS NOT NULL", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_zslp_ticker ON zslp_tokens(ticker)", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "CREATE INDEX IF NOT EXISTS idx_addr_balance ON addresses(balance DESC)", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "CREATE INDEX IF NOT EXISTS idx_txo_addr ON tx_outputs(address_hash) WHERE address_hash IS NOT NULL", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "CREATE INDEX IF NOT EXISTS idx_txo_height ON tx_outputs(block_height)", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "CREATE INDEX IF NOT EXISTS idx_txi_prev ON tx_inputs(prev_txid, prev_vout)", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "CREATE INDEX IF NOT EXISTS idx_txi_height ON tx_inputs(block_height)", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "CREATE INDEX IF NOT EXISTS idx_ss_nf ON sapling_spends(nullifier)", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "CREATE INDEX IF NOT EXISTS idx_ss_height ON sapling_spends(block_height)", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "CREATE INDEX IF NOT EXISTS idx_so_height ON sapling_outputs(block_height)", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "CREATE INDEX IF NOT EXISTS idx_js_height ON joinsplits(block_height)", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "CREATE INDEX IF NOT EXISTS idx_spnf_height ON sprout_nullifiers(block_height)", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "CREATE INDEX IF NOT EXISTS idx_opret_height ON op_returns(block_height)", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "CREATE INDEX IF NOT EXISTS idx_opret_slp ON op_returns(is_slp) WHERE is_slp = 1", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "CREATE INDEX IF NOT EXISTS idx_zslp_xfer_token ON zslp_transfers(token_id)", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "CREATE INDEX IF NOT EXISTS idx_zslp_xfer_height ON zslp_transfers(block_height DESC)", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "CREATE INDEX IF NOT EXISTS idx_zslp_xfer_addr ON zslp_transfers(to_addr) WHERE to_addr IS NOT NULL", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "CREATE INDEX IF NOT EXISTS idx_zslp_ticker ON zslp_tokens(ticker)", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "CREATE INDEX IF NOT EXISTS idx_addr_balance ON addresses(balance DESC)", NULL, NULL, NULL);
     printf("indexlegacy: Indexes rebuilt in %llds\n",
         (long long)((int64_t)time(NULL) - t_idx));
     fflush(stdout);
 
     /* Restore safe SQLite settings */
-    sqlite3_exec(g_node_db_bc->db, "PRAGMA synchronous=NORMAL", NULL, NULL, NULL);
-    sqlite3_exec(g_node_db_bc->db, "PRAGMA wal_autocheckpoint=1000", NULL, NULL, NULL);
-    sqlite3_wal_checkpoint_v2(g_node_db_bc->db, NULL,
+    sqlite3_exec(ctx->node_db->db, "PRAGMA synchronous=NORMAL", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "PRAGMA wal_autocheckpoint=1000", NULL, NULL, NULL);
+    sqlite3_wal_checkpoint_v2(ctx->node_db->db, NULL,
         SQLITE_CHECKPOINT_PASSIVE, NULL, NULL);
 
     /* ── Populate addresses from UTXO set ── */
     printf("indexlegacy: Populating addresses from UTXO set...\n");
     fflush(stdout);
-    node_db_exec(g_node_db_bc, "DELETE FROM addresses");
-    sqlite3_exec(g_node_db_bc->db,
+    node_db_exec(ctx->node_db, "DELETE FROM addresses");
+    sqlite3_exec(ctx->node_db->db,
         "INSERT OR REPLACE INTO addresses "
         "(address_hash, script_type, balance, utxo_count, "
         "first_seen_height, last_seen_height) "
@@ -1854,7 +1902,7 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
     int64_t addr_count = 0;
     {
         sqlite3_stmt *chk = NULL;
-        if (sqlite3_prepare_v2(g_node_db_bc->db,
+        if (sqlite3_prepare_v2(ctx->node_db->db,
                 "SELECT count(*) FROM addresses", -1, &chk, NULL) == SQLITE_OK && chk) {
             if (sqlite3_step(chk) == SQLITE_ROW)
                 addr_count = sqlite3_column_int64(chk, 0);
@@ -1867,8 +1915,8 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
     /* Update tip */
     {
         struct db_block tip_blk;
-        if (db_block_find_by_height(g_node_db_bc, max_height, &tip_blk))
-            node_db_sync_set_tip(g_node_db_bc, tip_blk.hash, max_height);
+        if (db_block_find_by_height(ctx->node_db, max_height, &tip_blk))
+            node_db_sync_set_tip(ctx->node_db, tip_blk.hash, max_height);
     }
 
     int64_t total_elapsed = (int64_t)time(NULL) - t_start;
@@ -1977,6 +2025,89 @@ void rpc_blockchain_mmr_save(struct node_db *ndb)
     sqlite3_finalize(s);
 }
 
+/* ── Global MMB (Merkle Mountain Belt) ────────────────── */
+
+static struct mmb g_mmb;
+static bool g_mmb_initialized = false;
+
+void rpc_blockchain_mmb_append(const struct mmb_leaf *leaf)
+{
+    if (!g_mmb_initialized) {
+        mmb_init(&g_mmb);
+        g_mmb_initialized = true;
+    }
+    mmb_append(&g_mmb, leaf);
+}
+
+struct mmb *rpc_blockchain_get_mmb(void) { return &g_mmb; }
+
+void rpc_blockchain_mmb_init_from_state(struct node_db *ndb)
+{
+    if (!ndb || !ndb->open) return;
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(ndb->db,
+            "SELECT value FROM node_state WHERE key='mmb_state'",
+            -1, &s, NULL) != SQLITE_OK)
+        return;
+    if (sqlite3_step(s) == SQLITE_ROW) {
+        const uint8_t *blob = (const uint8_t *)sqlite3_column_blob(s, 0);
+        int len = sqlite3_column_bytes(s, 0);
+        if (blob && len >= 13 && mmb_deserialize(&g_mmb, blob, (size_t)len))
+            g_mmb_initialized = true;
+    }
+    sqlite3_finalize(s);
+    if (!g_mmb_initialized) {
+        mmb_init(&g_mmb);
+        g_mmb_initialized = true;
+    }
+    printf("MMB: loaded %llu leaves, %u peaks\n",
+           (unsigned long long)g_mmb.num_leaves, g_mmb.num_mountains);
+}
+
+void rpc_blockchain_mmb_catchup(struct main_state *ms)
+{
+    if (!g_mmb_initialized || !ms) return;
+    int chain_height = active_chain_height(&ms->chain_active);
+    int mmb_height = (int)g_mmb.num_leaves - 1;
+
+    if (mmb_height >= chain_height) return;
+
+    int start = mmb_height + 1;
+    int64_t t0 = (int64_t)time(NULL);
+    for (int h = start; h <= chain_height; h++) {
+        const struct block_index *bi = active_chain_at(&ms->chain_active, h);
+        if (bi && bi->phashBlock) {
+            struct mmb_leaf leaf;
+            mmb_leaf_from_block(&leaf,
+                bi->phashBlock->data,
+                bi->nHeight, bi->nTime, bi->nBits,
+                bi->hashFinalSaplingRoot.data,
+                (const uint8_t *)bi->nChainWork.pn);
+            mmb_append(&g_mmb, &leaf);
+        }
+    }
+    int64_t elapsed = (int64_t)time(NULL) - t0;
+    printf("MMB catchup: %d → %d (%d blocks, %llds, %u peaks)\n",
+           start, chain_height, chain_height - start + 1,
+           (long long)elapsed, g_mmb.num_mountains);
+}
+
+void rpc_blockchain_mmb_save(struct node_db *ndb)
+{
+    if (!ndb || !ndb->open || !g_mmb_initialized) return;
+    uint8_t buf[MMB_SERIALIZED_MAX];
+    size_t len = mmb_serialize(&g_mmb, buf, sizeof(buf));
+    if (len == 0) return;
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(ndb->db,
+            "INSERT OR REPLACE INTO node_state(key,value) "
+            "VALUES('mmb_state',?)", -1, &s, NULL) != SQLITE_OK)
+        return;
+    sqlite3_bind_blob(s, 1, buf, (int)len, SQLITE_STATIC);
+    sqlite3_step(s);
+    sqlite3_finalize(s);
+}
+
 /* ── Commitment MMR (UTXO state binding) ─────────────── */
 
 static struct mmr g_commitment_mmr;
@@ -2075,35 +2206,36 @@ void rpc_blockchain_maybe_commit(int32_t height,
 static bool rpc_getutxocommitment(const struct json_value *params, bool help,
                                     struct json_value *result)
 {
+    struct blockchain_context *ctx = blockchain_ctx();
     (void)params;
     RPC_HELP(help, result,
         "getutxocommitment\n"
         "\nComputes SHA3-256 hash over the entire UTXO set in canonical order.\n"
         "This is a deterministic commitment that two nodes can compare.\n");
 
-    if (!g_node_db_bc || !g_node_db_bc->open) {
+    if (!ctx->node_db || !ctx->node_db->open) {
         json_set_str(result, "Database not available");
         return false;
     }
-    if (!g_main_state) {
+    if (!ctx->main_state) {
         json_set_str(result, "Chain not loaded");
         return false;
     }
 
     /* Flush coins cache first */
-    if (g_coins_tip)
-        coins_view_cache_flush(g_coins_tip);
+    if (ctx->coins_tip)
+        coins_view_cache_flush(ctx->coins_tip);
 
     uint8_t sha3_hash[32];
     uint64_t count = 0;
     int64_t t0 = (int64_t)time(NULL);
-    utxo_commitment_sha3_compute(g_node_db_bc->db, sha3_hash, &count);
+    utxo_commitment_sha3_compute(ctx->node_db->db, sha3_hash, &count);
     int64_t elapsed = (int64_t)time(NULL) - t0;
 
-    int tip = active_chain_height(&g_main_state->chain_active);
+    int tip = active_chain_height(&ctx->main_state->chain_active);
 
     /* Save checkpoint */
-    utxo_commitment_sha3_save(g_node_db_bc->db, sha3_hash, tip, count);
+    utxo_commitment_sha3_save(ctx->node_db->db, sha3_hash, tip, count);
 
     char hex[65];
     for (int i = 0; i < 32; i++)
@@ -2122,6 +2254,7 @@ static bool rpc_getutxocommitment(const struct json_value *params, bool help,
 static bool rpc_verifycheckpoint(const struct json_value *params, bool help,
                                    struct json_value *result)
 {
+    struct blockchain_context *ctx = blockchain_ctx();
     (void)params;
     RPC_HELP(help, result,
         "verifycheckpoint\n"
@@ -2133,16 +2266,16 @@ static bool rpc_verifycheckpoint(const struct json_value *params, bool help,
         json_set_str(result, "No checkpoint available");
         return false;
     }
-    if (!g_node_db_bc || !g_node_db_bc->open) {
+    if (!ctx->node_db || !ctx->node_db->open) {
         json_set_str(result, "Database not available");
         return false;
     }
-    if (!g_main_state) {
+    if (!ctx->main_state) {
         json_set_str(result, "Chain not loaded");
         return false;
     }
 
-    int tip = active_chain_height(&g_main_state->chain_active);
+    int tip = active_chain_height(&ctx->main_state->chain_active);
     if (tip < cp->height) {
         json_set_object(result);
         json_push_kv_str(result, "status", "pending");
@@ -2152,12 +2285,12 @@ static bool rpc_verifycheckpoint(const struct json_value *params, bool help,
     }
 
     /* Flush coins cache */
-    if (g_coins_tip)
-        coins_view_cache_flush(g_coins_tip);
+    if (ctx->coins_tip)
+        coins_view_cache_flush(ctx->coins_tip);
 
     uint8_t sha3_hash[32];
     uint64_t count = 0;
-    utxo_commitment_sha3_compute(g_node_db_bc->db, sha3_hash, &count);
+    utxo_commitment_sha3_compute(ctx->node_db->db, sha3_hash, &count);
 
     bool match = (memcmp(sha3_hash, cp->sha3_hash, 32) == 0);
 
@@ -2191,6 +2324,7 @@ static bool rpc_verifycheckpoint(const struct json_value *params, bool help,
 static bool rpc_getdataintegrity(const struct json_value *params, bool help,
                                    struct json_value *result)
 {
+    struct blockchain_context *ctx = blockchain_ctx();
     (void)params;
     RPC_HELP(help, result,
         "getdataintegrity\n"
@@ -2200,17 +2334,17 @@ static bool rpc_getdataintegrity(const struct json_value *params, bool help,
         "sprout_nullifiers, joinsplits, zslp_tokens, zslp_transfers.\n"
         "Returns per-table hashes and a master hash combining all.\n");
 
-    if (!g_node_db_bc || !g_node_db_bc->open) {
+    if (!ctx->node_db || !ctx->node_db->open) {
         json_set_str(result, "Database not available");
         return false;
     }
 
-    if (g_coins_tip)
-        coins_view_cache_flush(g_coins_tip);
+    if (ctx->coins_tip)
+        coins_view_cache_flush(ctx->coins_tip);
 
     int64_t t0 = (int64_t)time(NULL);
     struct data_integrity_detail d;
-    data_integrity_compute(g_node_db_bc->db, &d);
+    data_integrity_compute(ctx->node_db->db, &d);
     int64_t elapsed = (int64_t)time(NULL) - t0;
 
     json_set_object(result);
@@ -2239,7 +2373,7 @@ static bool rpc_getdataintegrity(const struct json_value *params, bool help,
         json_push_kv_str(result, tables[i].name, hex);
     }
 
-    int tip = g_main_state ? active_chain_height(&g_main_state->chain_active) : 0;
+    int tip = ctx->main_state ? active_chain_height(&ctx->main_state->chain_active) : 0;
     json_push_kv_int(result, "height", tip);
     json_push_kv_int(result, "elapsed_seconds", elapsed);
     return true;
@@ -2305,6 +2439,7 @@ static bool rpc_getcommitmentmmr(const struct json_value *params, bool help,
 static bool rpc_auditchain(const struct json_value *params, bool help,
                             struct json_value *result)
 {
+    struct blockchain_context *ctx = blockchain_ctx();
     (void)params;
     RPC_HELP(help, result,
         "auditchain\n"
@@ -2337,8 +2472,8 @@ static bool rpc_auditchain(const struct json_value *params, bool help,
         (int64_t)cm->num_leaves * MMR_COMMITMENT_INTERVAL);
 
     /* Chain state */
-    int chain_h = g_main_state ? active_chain_height(
-        &g_main_state->chain_active) : 0;
+    int chain_h = ctx->main_state ? active_chain_height(
+        &ctx->main_state->chain_active) : 0;
     json_push_kv_int(result, "chain_height", chain_h);
 
     /* Consistency check */

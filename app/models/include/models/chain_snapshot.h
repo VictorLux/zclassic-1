@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * ChainSnapshot — composes BlockData, BlockIndexStore, and ChainstateStore
- * into a single fastsync operation.
+ * into a single legacy import operation.
  *
  * Relationships:
  *   ChainSnapshot has_one :block_data

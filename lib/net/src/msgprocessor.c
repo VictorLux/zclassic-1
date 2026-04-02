@@ -8,15 +8,24 @@
 #include "net/addrman.h"
 #include "net/file_service.h"
 #include "models/peer.h"
+#include "models/block.h"
+#include "models/file_service.h"
 #include "models/database.h"
 #include "net/fast_sync.h"
 #include "coins/utxo_commitment.h"
 #include "net/p2p_game.h"
 #include "net/version.h"
 #include "net/p2p_message.h"
+#include "services/header_sync_service.h"
+#include "services/block_sync_service.h"
 #include "core/hash.h"
 #include "core/random.h"
 #include "core/serialize.h"
+#include "services/snapshot_sync_service.h"
+#include "controllers/blockchain_controller.h"
+#include "models/mmb_leaf_store.h"
+#include "net/flyclient.h"
+#include "chain/mmb.h"
 #include "consensus/upgrades.h"
 #include "consensus/validation.h"
 #include "validation/check_transaction.h"
@@ -37,14 +46,13 @@
 #include <sys/time.h>
 #include <sys/stat.h>
 
-/* Externs from boot.c / wallet_helpers.c */
-extern struct node_db *g_active_node_db;
-extern struct wallet *g_active_wallet;
-
 static void push_getheaders(struct msg_processor *mp, struct p2p_node *node);
 static void push_getheaders_from(struct msg_processor *mp,
                                   struct p2p_node *node,
                                   struct block_index *from);
+static void exec_getheaders_action(struct msg_processor *mp,
+                                   struct p2p_node *node,
+                                   const struct sync_getheaders_action *action);
 
 /* Cached snapshot offer — pre-computed at startup, not in message handler.
  * Protected by g_offer_mutex to prevent struct tearing between the
@@ -52,7 +60,7 @@ static void push_getheaders_from(struct msg_processor *mp,
 static struct snapshot_offer g_cached_offer;
 static _Atomic bool g_cached_offer_valid = false;
 static pthread_mutex_t g_offer_mutex = PTHREAD_MUTEX_INITIALIZER;
-static struct fast_sync_rate_limiter g_rate_limiter = {0};
+struct fast_sync_rate_limiter g_rate_limiter = {0};
 
 /* Cached manifest for parallel chunk sync (built in background at startup). */
 struct sync_manifest g_cached_manifest;
@@ -64,6 +72,8 @@ _Atomic bool g_cached_manifest_valid = false;
 static struct swarm_sync g_swarm __attribute__((used));
 static _Atomic bool g_swarm_active = false;
 static pthread_mutex_t g_swarm_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+/* Snapshot sync service — global singleton in snapshot_sync_service.c */
 static int64_t g_swarm_last_progress_time = 0;
 
 /* Timeout for inflight chunk requests (30 seconds). */
@@ -95,6 +105,20 @@ int32_t g_manifest_built_at_height = 0; /* height when manifest was last built *
 static struct download_manager g_download_mgr;
 static bool g_download_mgr_init = false;
 
+static struct node_db *msg_node_db(const struct msg_processor *mp)
+{
+    if (!mp || !mp->runtime)
+        return NULL;
+    return mp->runtime->node_db;
+}
+
+static struct wallet *msg_wallet(const struct msg_processor *mp)
+{
+    if (!mp || !mp->runtime)
+        return NULL;
+    return mp->runtime->wallet;
+}
+
 struct download_manager *msg_get_download_mgr(void)
 {
     if (!g_download_mgr_init) {
@@ -115,19 +139,24 @@ void msg_processor_update_offer(const struct snapshot_offer *offer)
     atomic_store(&g_cached_offer_valid, true);
 }
 
-/* Serialize and send a snapshot offer to a peer */
+/* Serialize and send a snapshot offer to a peer.
+ * Wire: height(4) + block_hash(32) + utxo_root(32) + mmr_root(32) +
+ *       num_utxos(8) + total_bytes(8) + mmb_root(32) = 148 bytes
+ * Older ZCL23 nodes read 116 bytes and ignore the trailing mmb_root. */
 static void send_snapshot_offer_msg(struct p2p_node *node,
                                      const struct snapshot_offer *offer,
                                      const unsigned char *msg_start)
 {
     p2p_node_begin_message(node, MSG_SNAPSHOT_OFFER, msg_start);
     struct byte_stream os;
-    stream_init(&os, 80);
+    stream_init(&os, 152);
     stream_write_i32_le(&os, offer->height);
     stream_write_bytes(&os, offer->block_hash, 32);
     stream_write_bytes(&os, offer->utxo_root, 32);
+    stream_write_bytes(&os, offer->mmr_root, 32);
     stream_write_u64_le(&os, offer->num_utxos);
     stream_write_u64_le(&os, offer->total_bytes);
+    stream_write_bytes(&os, offer->mmb_root, 32); /* appended: backward compat */
     p2p_node_write_message_data(node, os.data, os.size);
     p2p_node_end_message(node);
     stream_free(&os);
@@ -205,7 +234,8 @@ void msg_processor_init(struct msg_processor *mp,
                          struct coins_view_cache *coins_tip,
                          const struct chain_params *params,
                          const char *datadir,
-                         struct net_manager *net_mgr)
+                         struct net_manager *net_mgr,
+                         const struct app_runtime_context *runtime)
 {
     mp->main_state = ms;
     mp->mempool = mempool;
@@ -213,6 +243,7 @@ void msg_processor_init(struct msg_processor *mp,
     mp->params = params;
     mp->datadir = datadir;
     mp->net_mgr = net_mgr;
+    mp->runtime = runtime;
 
     /* Initialize download manager once (before threads start) */
     msg_get_download_mgr();
@@ -481,7 +512,7 @@ static bool process_version(struct msg_processor *mp, struct p2p_node *node,
          * Message: "zfileaddr" with [2-byte port]. */
         {
             uint8_t faddr[2];
-            uint16_t fport = FS_PORT;
+            uint16_t fport = fs_server_get_port();
             memcpy(faddr, &fport, 2);
 
             struct byte_stream fs_msg;
@@ -545,33 +576,17 @@ static bool process_verack(struct msg_processor *mp, struct p2p_node *node)
         }
     }
 
-    /* Save peer to SQLite with ZCL23 flag for peer preference */
-    if (g_active_node_db && g_active_node_db->db) {
-        sqlite3_exec(g_active_node_db->db,
-            "CREATE TABLE IF NOT EXISTS peers ("
-            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
-            "ip BLOB NOT NULL,port INTEGER NOT NULL,"
-            "services INTEGER NOT NULL DEFAULT 0,"
-            "last_seen INTEGER NOT NULL,"
-            "last_try INTEGER DEFAULT 0,attempts INTEGER DEFAULT 0,"
-            "source BLOB,bandwidth_score INTEGER DEFAULT 0,"
-            "is_zcl23 INTEGER DEFAULT 0,UNIQUE(ip,port))",
-            NULL, NULL, NULL);
-        bool is_zcl23 = peer_supports_fast_sync(node->services);
-        sqlite3_stmt *ins = NULL;
-        sqlite3_prepare_v2(g_active_node_db->db,
-            "INSERT OR REPLACE INTO peers"
-            " (ip,port,services,last_seen,is_zcl23)"
-            " VALUES(?,?,?,?,?)", -1, &ins, NULL);
-        if (ins) {
-            sqlite3_bind_blob(ins, 1, node->addr.svc.addr.ip, 16, SQLITE_STATIC);
-            sqlite3_bind_int(ins, 2, node->addr.svc.port);
-            sqlite3_bind_int64(ins, 3, (int64_t)node->services);
-            sqlite3_bind_int64(ins, 4, (int64_t)time(NULL));
-            sqlite3_bind_int(ins, 5, is_zcl23 ? 1 : 0);
-            sqlite3_step(ins);
-            sqlite3_finalize(ins);
-        }
+    /* Save peer via ActiveRecord model */
+    struct node_db *ndb = msg_node_db(mp);
+    if (ndb && ndb->open) {
+        struct db_peer peer;
+        memset(&peer, 0, sizeof(peer));
+        memcpy(peer.ip, node->addr.svc.addr.ip, 16);
+        peer.port = node->addr.svc.port;
+        peer.services = node->services;
+        peer.last_seen = (int64_t)time(NULL);
+        peer.is_zcl23 = peer_supports_fast_sync(node->services);
+        db_peer_save(ndb, &peer);
     }
     return true;
 }
@@ -829,6 +844,9 @@ static bool process_inv(struct msg_processor *mp, struct p2p_node *node,
         if (inv.type == MSG_BLOCK) {
             if (block_already_seen(&inv.hash))
                 continue;
+            /* Don't request blocks during snapshot sync */
+            if (snapsync_is_active())
+                continue;
             struct block_index *bi = block_map_find(
                 &mp->main_state->map_block_index, &inv.hash);
             struct block_index *tip = active_chain_tip(
@@ -1012,6 +1030,15 @@ static bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
     }
     block_mark_seen(&hash);
 
+    /* Defer block processing while snapshot sync is active (any state).
+     * During NEGOTIATING: blocks fail at height 0, accumulate dos points.
+     * During RECEIVING: starves P2P socket reads.
+     * During VERIFYING: SHA3 computation needs uncontested SQLite. */
+    if (snapsync_is_active()) {
+        block_free(&blk);
+        return true;
+    }
+
     struct validation_state state;
     validation_state_init(&state);
     process_new_block(&state, mp->main_state, mp->coins_tip,
@@ -1028,43 +1055,44 @@ static bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
          * re-request headers from this peer starting at our current tip.
          * This forces the peer to send us the correct chain of headers,
          * which will include the valid block at the failed height. */
-        if (sync_get_state() <= SYNC_BLOCKS_DOWNLOAD) {
-            push_getheaders(mp, node);
+        {
+            struct sync_getheaders_action action = {0};
+            syncsvc_plan_invalid_block_getheaders(&action, sync_get_state());
+            exec_getheaders_action(mp, node, &action);
         }
     }
 
     if (validation_state_is_valid(&state)) {
-        node->last_block_time = (int64_t)time(NULL);
-        node->blocks_received++;
-
         struct block_index *new_tip = active_chain_tip(
             &mp->main_state->chain_active);
         if (new_tip) {
+            struct sync_block_acceptance acceptance;
+            node->last_block_time = (int64_t)time(NULL);
+            node->blocks_received++;
+            syncsvc_note_valid_block(&acceptance, node, sync_get_state(),
+                                     new_tip->nHeight);
             event_emitf(EV_BLOCK_CONNECTED, (uint32_t)node->id,
                         "h=%d", new_tip->nHeight);
 
-            /* Check if we've caught up to the peer */
-            if (new_tip->nHeight >= node->starting_height &&
-                node->starting_height > 0) {
-                enum sync_state ss = sync_get_state();
-                if (ss == SYNC_BLOCKS_DOWNLOAD ||
-                    ss == SYNC_CONNECTING_BLOCKS ||
-                    ss == SYNC_REORG) {
-                    sync_set_state(SYNC_AT_TIP, "caught up to peer");
-                    set_flush_policy(3600, 500000, 100);
-                    /* Start deferred HTTPS server now that it's safe */
-                    extern void https_deferred_check(void);
-                    https_deferred_check();
-                    if (ss != SYNC_REORG)
-                        event_emitf(EV_TIP_UPDATED, 0,
-                                    "AT_TIP height=%d",
-                                    new_tip->nHeight);
+            if (acceptance.reached_peer_tip) {
+                if (acceptance.should_set_sync_state) {
+                    sync_set_state(acceptance.next_sync_state,
+                                   "caught up to peer");
                 }
-                if (node->state == PEER_SYNCING_BLOCKS ||
-                    node->state == PEER_SYNCING_HEADERS)
-                    peer_set_state_checked((uint32_t)node->id,
-                                           &node->state, PEER_ACTIVE,
+                if (acceptance.should_set_flush_policy)
+                    set_flush_policy(3600, 500000, 100);
+                if (acceptance.should_update_peer_state) {
+                    peer_set_state_checked((uint32_t)node->id, &node->state,
+                                           acceptance.next_peer_state,
                                            "chain caught up");
+                }
+                /* Start deferred HTTPS server now that it's safe */
+                extern void https_deferred_check(void);
+                https_deferred_check();
+                if (acceptance.should_emit_tip_updated)
+                    event_emitf(EV_TIP_UPDATED, 0,
+                                "AT_TIP height=%d",
+                                new_tip->nHeight);
             }
 
             /* Progress logged by IBD progress timer (every 30s) */
@@ -1217,11 +1245,16 @@ static bool process_tx_msg(struct msg_processor *mp, struct p2p_node *node,
             zcl_mutex_unlock(&mp->net_mgr->cs_nodes);
         }
 
-        if (g_active_wallet) {
-            wallet_sync_transaction(g_active_wallet, &tx, NULL);
-            if (g_active_node_db)
-                node_db_sync_wallet_tx(g_active_node_db, &tx,
-                                       g_active_wallet, 0);
+        {
+            struct wallet *wallet = msg_wallet(mp);
+            if (wallet) {
+                wallet_sync_transaction(wallet, &tx, NULL);
+                {
+                    struct node_db *ndb = msg_node_db(mp);
+                    if (ndb)
+                        node_db_sync_wallet_tx(ndb, &tx, wallet, 0);
+                }
+            }
         }
     } else {
         event_emit(EV_TX_REJECTED, (uint32_t)node->id,
@@ -1235,6 +1268,12 @@ static bool process_tx_msg(struct msg_processor *mp, struct p2p_node *node,
 static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                              struct byte_stream *s)
 {
+    /* Defer header processing during any snapshot sync state — header parsing
+     * and block index updates consume CPU and starve P2P reads.
+     * During NEGOTIATING: headers trigger getblocks which compete. */
+    if (snapsync_is_active())
+        return true;
+
     uint64_t count;
     if (!stream_read_compact_size(s, &count))
         return false;
@@ -1251,6 +1290,7 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
     struct uint256 last_hash;
     uint256_set_null(&last_hash);
     struct block_index *pindex_last = NULL;
+    struct sync_header_processing_plan header_plan = {0};
     size_t accepted = 0;
 
     for (uint64_t i = 0; i < count; i++) {
@@ -1292,44 +1332,55 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
         }
     }
 
-    if (accepted == 0 && count > 0) {
-        /* All headers rejected — this stalls sync. Log prominently. */
-        event_emitf(EV_HEADERS_REJECTED, (uint32_t)node->id,
-                    "all %llu headers rejected", (unsigned long long)count);
-        printf("WARNING: Peer %s: all %llu headers rejected — sync stalled!\n",
-               node->addr_name, (unsigned long long)count);
-    }
+    {
+        struct block_index *tip = active_chain_tip(&mp->main_state->chain_active);
+        int our_height = tip ? tip->nHeight : 0;
+        struct block_index *bi = block_map_find(
+            &mp->main_state->map_block_index, &last_hash);
+        size_t max_collect = 512;
+        struct uint256 *hashes = malloc(max_collect * sizeof(struct uint256));
+        int32_t *heights = malloc(max_collect * sizeof(int32_t));
 
-    if (accepted > 0) {
-        event_emitf(EV_HEADERS_RECEIVED, (uint32_t)node->id,
-                    "accepted=%zu total=%llu tip=%d",
-                    accepted, (unsigned long long)count,
-                    pindex_last ? pindex_last->nHeight : -1);
-
-        /* Log progress: during IBD, only log every 10th batch */
-        bool log_this = true;
-        if (pindex_last && node->starting_height > 0 &&
-            pindex_last->nHeight < node->starting_height - 2000) {
-            static int headers_log_count = 0;
-            log_this = (headers_log_count++ % 10 == 0);
+        if (!hashes || !heights) {
+            fprintf(stderr, "msgprocessor: malloc failed for block request "
+                    "arrays (%zu entries)\n", max_collect);
+            free(hashes); free(heights);
+            hashes = NULL; heights = NULL;
         }
-        if (log_this)
-            printf("Peer %s: accepted %zu/%llu headers "
-                   "(header tip=%d, chain tip=%d, peer=%d)\n",
-                   node->addr_name, accepted, (unsigned long long)count,
-                   pindex_last ? pindex_last->nHeight : -1,
-                   active_chain_height(&mp->main_state->chain_active),
-                   node->starting_height);
-    }
 
-    /* One-shot block file scan: if block files exist on disk (from
-     * file_service) but weren't scanned at boot (empty index at boot),
-     * scan them now that we have headers. This marks downloaded blocks
-     * as BLOCK_HAVE_DATA so we don't re-download them from P2P.
-     * Triggers once when header tip passes 1000 (enough chain context). */
-    if (accepted > 0 && pindex_last && pindex_last->nHeight > 1000) {
-        static _Atomic bool g_block_files_scanned_p2p = false;
-        if (!atomic_exchange(&g_block_files_scanned_p2p, true)) {
+        syncsvc_plan_header_processing(&header_plan, accepted, count,
+                                       pindex_last, sync_get_state(),
+                                       bi, tip, our_height,
+                                       hashes, heights, max_collect);
+
+        if (header_plan.batch.should_warn_all_rejected) {
+            /* All headers rejected — this stalls sync. Log prominently. */
+            event_emitf(EV_HEADERS_REJECTED, (uint32_t)node->id,
+                        "all %llu headers rejected", (unsigned long long)count);
+            printf("WARNING: Peer %s: all %llu headers rejected — sync stalled!\n",
+                   node->addr_name, (unsigned long long)count);
+        }
+
+        if (header_plan.batch.should_emit_received) {
+            event_emitf(EV_HEADERS_RECEIVED, (uint32_t)node->id,
+                        "accepted=%zu total=%llu tip=%d",
+                        accepted, (unsigned long long)count,
+                        pindex_last ? pindex_last->nHeight : -1);
+
+            if (syncsvc_should_log_accepted_headers(node, pindex_last))
+                printf("Peer %s: accepted %zu/%llu headers "
+                       "(header tip=%d, chain tip=%d, peer=%d)\n",
+                       node->addr_name, accepted, (unsigned long long)count,
+                       pindex_last ? pindex_last->nHeight : -1,
+                       active_chain_height(&mp->main_state->chain_active),
+                       node->starting_height);
+        }
+
+        /* One-shot block file scan: if block files exist on disk (from
+         * file_service) but weren't scanned at boot (empty index at boot),
+         * scan them now that we have headers. This marks downloaded blocks
+         * as BLOCK_HAVE_DATA so we don't re-download them from P2P. */
+        if (header_plan.should_scan_block_files) {
             char bfp[576];
             snprintf(bfp, sizeof(bfp), "%s/blocks/blk00000.dat", mp->datadir);
             struct stat bfst;
@@ -1337,7 +1388,9 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                 printf("P2P trigger: scanning block files for HAVE_DATA...\n");
                 int scan_m = scan_block_files_mark_data(
                     mp->main_state, mp->datadir, mp->params);
-                if (scan_m > 0) {
+                struct sync_chain_activation activation = {0};
+                syncsvc_build_block_file_scan_activation(&activation, scan_m);
+                if (activation.should_activate) {
                     printf("P2P block file scan: %d blocks marked\n", scan_m);
                     struct validation_state vs;
                     validation_state_init(&vs);
@@ -1346,121 +1399,47 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                 }
             }
         }
-    }
-
-    /* Queue needed blocks into download manager. The download manager
-     * deduplicates, tracks in-flight, and assigns to peers. Actual
-     * getdata messages are sent from send_messages via dl_assign_to_peer.
-     *
-     * CRITICAL: Only queue blocks that chain from our current tip.
-     * During IBD, multiple peers send headers that may form different
-     * chain paths (orphan forks). If we queue blocks from a fork chain,
-     * they'll fail connect_block and stall the node. By verifying the
-     * backward walk reaches our tip, we ensure only main-chain blocks
-     * are queued. */
-    if (accepted > 0) {
-        struct block_index *tip = active_chain_tip(&mp->main_state->chain_active);
-        int our_height = tip ? tip->nHeight : 0;
-
-        struct block_index *bi = block_map_find(
-            &mp->main_state->map_block_index, &last_hash);
-        if (bi && bi->nHeight > our_height) {
-            if (sync_get_state() == SYNC_HEADERS_DOWNLOAD)
-                sync_set_state(SYNC_BLOCKS_DOWNLOAD,
+        if (header_plan.should_queue_needed_blocks) {
+            if (header_plan.should_set_sync_state)
+                sync_set_state(header_plan.next_sync_state,
                                "headers ahead, requesting blocks");
+            if (!header_plan.download.needed_blocks.chains_from_tip)
+                printf("headers: skip block queue — chain doesn't reach "
+                       "tip h=%d\n", our_height);
 
-            /* Verify headers chain from our tip. Fork blocks cause
-             * connect_block failures so we only queue main chain. */
-            bool chains_from_tip = false;
             {
-                struct block_index *verify = bi;
-                int steps = 0;
-                while (verify && verify->nHeight > our_height) {
-                    verify = verify->pprev;
-                    steps++;
-                }
-                if (verify == tip) {
-                    chains_from_tip = true;
-                } else if (verify && tip && verify->nHeight == tip->nHeight &&
-                           verify->phashBlock && tip->phashBlock &&
-                           uint256_eq(verify->phashBlock, tip->phashBlock)) {
-                    /* Same block hash but different pointer — can happen
-                     * when block_index loaded from flat file (arena alloc)
-                     * vs header processing (individual alloc). */
-                    chains_from_tip = true;
-                } else {
-                    /* Log why we're not requesting blocks */
-                    printf("headers: skip block queue — chain doesn't reach "
-                           "tip h=%d (walked %d steps, landed h=%d%s)\n",
-                           our_height, steps,
-                           verify ? verify->nHeight : -1,
-                           verify ? "" : " NULL");
-                }
-            }
-
-            size_t max_collect = 512;
-            struct uint256 *hashes = malloc(max_collect * sizeof(struct uint256));
-            int32_t *heights = malloc(max_collect * sizeof(int32_t));
-            if (!hashes || !heights) {
-                fprintf(stderr, "msgprocessor: malloc failed for block request "
-                        "arrays (%zu entries)\n", max_collect);
-                free(hashes); free(heights);
-                hashes = NULL; heights = NULL;
-            }
-            if (hashes && heights && chains_from_tip) {
-                size_t count_needed = 0;
-                size_t walk_steps = 0;
-                struct block_index *walk = bi;
-                while (walk && walk->pprev && walk->nHeight > our_height &&
-                       count_needed < max_collect && walk_steps < 2048) {
-                    if (!(walk->nStatus & BLOCK_HAVE_DATA) &&
-                        !(walk->nStatus & BLOCK_FAILED_MASK) &&
-                        walk->phashBlock) {
-                        hashes[count_needed] = *walk->phashBlock;
-                        heights[count_needed] = walk->nHeight;
-                        count_needed++;
-                    }
-                    walk = walk->pprev;
-                    walk_steps++;
-                }
-
-                /* Reverse to get oldest-first order */
-                for (size_t i = 0; i < count_needed / 2; i++) {
-                    struct uint256 th = hashes[i];
-                    hashes[i] = hashes[count_needed - 1 - i];
-                    hashes[count_needed - 1 - i] = th;
-                    int32_t ti = heights[i];
-                    heights[i] = heights[count_needed - 1 - i];
-                    heights[count_needed - 1 - i] = ti;
-                }
-
                 struct download_manager *dm = get_download_mgr();
                 size_t queued = dl_queue_blocks(dm, hashes, heights,
-                                                count_needed);
+                                                header_plan.queue_count);
                 if (queued > 0)
                     event_emitf(EV_BLOCK_REQUESTED, (uint32_t)node->id,
                                 "queued=%zu total_needed=%zu",
-                                queued, count_needed);
+                                queued, header_plan.queue_count);
+            }
 
-                if (count_needed == 0) {
-                    /* All blocks already have data — trigger chain activation.
-                     * This happens after restart: blocks on disk from before,
-                     * headers re-received, but activate_best_chain only runs
-                     * on block receipt. Without this, the node stalls with
-                     * headers ahead but no block requests (all HAVE_DATA). */
-                    struct validation_state vs;
-                    validation_state_init(&vs);
-                    activate_best_chain(&vs, mp->main_state, mp->coins_tip,
-                                        mp->params, NULL, mp->datadir);
+            {
+                struct sync_chain_activation activation = {0};
+                syncsvc_build_header_processing_activation(&activation,
+                                                          &header_plan);
+                if (activation.should_activate) {
+                /* All blocks already have data — trigger chain activation.
+                 * This happens after restart: blocks on disk from before,
+                 * headers re-received, but activate_best_chain only runs
+                 * on block receipt. Without this, the node stalls with
+                 * headers ahead but no block requests (all HAVE_DATA). */
+                struct validation_state vs;
+                validation_state_init(&vs);
+                activate_best_chain(&vs, mp->main_state, mp->coins_tip,
+                                    mp->params, NULL, mp->datadir);
                 }
             }
-            free(hashes);
-            free(heights);
         }
+        free(hashes);
+        free(heights);
     }
 
     /* Request more headers if we accepted any */
-    if (accepted > 0 && pindex_last && pindex_last->phashBlock)
+    if (header_plan.batch.should_request_more_headers)
         push_getheaders_from(mp, node, pindex_last);
 
     return true;
@@ -1673,28 +1652,16 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                 uint8_t fip[16];
                 memcpy(fip, node->addr.svc.addr.ip, 16);
 
-                if (g_active_node_db && g_active_node_db->db) {
-                    sqlite3_exec(g_active_node_db->db,
-                        "CREATE TABLE IF NOT EXISTS file_services ("
-                        " ip BLOB NOT NULL, port INTEGER NOT NULL,"
-                        " p2p_port INTEGER, last_seen INTEGER,"
-                        " is_zcl23 INTEGER DEFAULT 1,"
-                        " UNIQUE(ip, port))",
-                        NULL, NULL, NULL);
-                    sqlite3_stmt *ins = NULL;
-                    sqlite3_prepare_v2(g_active_node_db->db,
-                        "INSERT OR REPLACE INTO file_services"
-                        " (ip,port,p2p_port,last_seen,is_zcl23)"
-                        " VALUES(?,?,?,?,1)",
-                        -1, &ins, NULL);
-                    if (ins) {
-                        sqlite3_bind_blob(ins, 1, fip, 16, SQLITE_STATIC);
-                        sqlite3_bind_int(ins, 2, fport);
-                        sqlite3_bind_int(ins, 3, node->addr.svc.port);
-                        sqlite3_bind_int64(ins, 4, (int64_t)time(NULL));
-                        sqlite3_step(ins);
-                        sqlite3_finalize(ins);
-                    }
+                struct node_db *ndb = msg_node_db(mp);
+                if (ndb && ndb->open) {
+                    struct db_file_service fs;
+                    memset(&fs, 0, sizeof(fs));
+                    memcpy(fs.ip, fip, 16);
+                    fs.port = fport;
+                    fs.p2p_port = node->addr.svc.port;
+                    fs.last_seen = (int64_t)time(NULL);
+                    fs.is_zcl23 = true;
+                    db_file_service_save(ndb, &fs);
                 }
                 char ipbuf[64];
                 net_addr_to_string(&node->addr.svc.addr, ipbuf, sizeof(ipbuf));
@@ -1702,321 +1669,277 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                        ipbuf, fport);
             }
         } else if (strcmp(cmd, MSG_SNAPSHOT_OFFER) == 0) {
-            /* Peer offers a UTXO snapshot — parse and decide */
-            int32_t h; uint8_t bh[32], ur[32]; uint64_t nu, tb;
-            if (stream_read_i32_le(&s, &h) &&
-                stream_read_bytes(&s, bh, 32) &&
-                stream_read_bytes(&s, ur, 32) &&
-                stream_read_u64_le(&s, &nu) &&
-                stream_read_u64_le(&s, &tb)) {
-                int our_h = active_chain_height(&mp->main_state->chain_active);
-                printf("Peer %s: snapshot offer h=%d utxos=%llu (%lluMB)\n",
-                       node->addr_name, h, (unsigned long long)nu,
-                       (unsigned long long)(tb / (1024*1024)));
-                /* Sanity-check snapshot offer values */
-                if (nu > 100000000ULL || tb > 100ULL * 1024 * 1024 * 1024) {
-                    printf("Peer %s: snapshot offer out of range (utxos=%llu, bytes=%llu)\n",
-                           node->addr_name, (unsigned long long)nu,
-                           (unsigned long long)tb);
-                    peer_misbehaving(mp->net_mgr, node, 20,
-                                     "snapshot offer out of range");
-                } else if (h > our_h + 5000 &&
-                           node->state != PEER_SNAPSHOT_RECEIVING &&
-                           sync_get_state() != SYNC_AT_TIP) {
-                    /* Accept — store offered root for verification at end */
-                    printf("Peer %s: accepting snapshot offer (h=%d, %llu UTXOs)\n",
-                           node->addr_name, h, (unsigned long long)nu);
-                    memcpy(node->zsync_offered_root, ur, 32);
-                    memcpy(node->zsync_offered_block, bh, 32);
-                    node->zsync_offered_height = h;
-                    node->zsync_offset = 0;
-                    peer_set_state_checked((uint32_t)node->id, &node->state,
-                                           PEER_SNAPSHOT_RECEIVING,
-                                           "accepted snapshot offer");
-                    event_emitf(EV_SNAPSHOT_OFFER_RECEIVED, (uint32_t)node->id,
-                                "h=%d utxos=%llu", h, (unsigned long long)nu);
-                    sync_set_state(SYNC_SNAPSHOT_RECEIVE, "peer snapshot");
-                    /* Send zsnapreq to trigger chunk streaming */
-                    p2p_node_begin_message(node, MSG_SNAPSHOT_REQ,
-                                            mp->params->pchMessageStart);
-                    struct byte_stream rq;
-                    stream_init(&rq, 4);
-                    stream_write_i32_le(&rq, our_h);
-                    p2p_node_write_message_data(node, rq.data, rq.size);
-                    p2p_node_end_message(node);
-                    stream_free(&rq);
+            /* ── Route: zsnapshot → snapsync_handle_offer ──────── */
+            struct snapshot_offer_params params;
+            if (snapsync_parse_offer_params(&params, &s)) {
+                params.peer_id = (uint32_t)node->id;
+                params.our_height = active_chain_height(
+                    &mp->main_state->chain_active);
+
+                /* Additional gate: must not already be receiving, must
+                 * not be at tip, peer state must be compatible */
+                if (node->state == PEER_SNAPSHOT_RECEIVING ||
+                    sync_get_state() == SYNC_AT_TIP) {
+                    /* silently ignore */
+                } else {
+                    {
+                        struct node_db *ndb = msg_node_db(mp);
+                        if (!snapsync_global_initialized() && ndb)
+                            snapsync_global_ensure_init(ndb);
+                    }
+
+                    enum snapsync_offer_result result =
+                        snapsync_handle_offer(snapsync_global(), &params);
+
+                    switch (result) {
+                    case SNAPSYNC_OFFER_ACCEPTED: {
+                        struct snapsync_offer_acceptance accepted = {0};
+                        snapsync_build_offer_acceptance(&accepted);
+                        if (accepted.should_store_offer_details) {
+                            memcpy(node->zsync_offered_root, params.utxo_root, 32);
+                            memcpy(node->zsync_offered_mmr, params.mmr_root, 32);
+                            memcpy(node->zsync_offered_block, params.block_hash, 32);
+                            node->zsync_offered_height = params.height;
+                        }
+                        if (accepted.should_reset_offset)
+                            node->zsync_offset = 0;
+                        if (accepted.should_update_peer_state)
+                            peer_set_state_checked((uint32_t)node->id, &node->state,
+                                accepted.peer_state, "accepted snapshot offer");
+                        event_emitf(EV_SNAPSHOT_OFFER_RECEIVED, (uint32_t)node->id,
+                            "h=%d utxos=%llu", params.height,
+                            (unsigned long long)params.num_utxos);
+                        if (accepted.should_set_sync_state)
+                            sync_set_state(accepted.sync_state, "peer snapshot");
+
+                        struct snapshot_sync_service *svc = snapsync_global();
+                        struct snapsync_offer_followup followup = {0};
+                        snapsync_build_offer_followup(&followup, svc);
+                        if (followup.action ==
+                            SNAPSYNC_FOLLOWUP_SEND_FC_CHALLENGE) {
+                            /* Send FlyClient challenge — verify chain
+                             * before requesting snapshot data */
+                            p2p_node_begin_message(node, MSG_FC_CHALLENGE,
+                                mp->params->pchMessageStart);
+                            struct byte_stream fc;
+                            stream_init(&fc, 72);
+                            snapsync_write_fc_challenge(svc, &fc);
+                            p2p_node_write_message_data(node, fc.data, fc.size);
+                            p2p_node_end_message(node);
+                            stream_free(&fc);
+                            printf("[snapsync] Sent FlyClient challenge to %s\n",
+                                   node->addr_name);
+                        } else if (followup.action ==
+                                   SNAPSYNC_FOLLOWUP_SEND_SNAPSHOT_REQ) {
+                            /* No MMB — send zsnapreq directly */
+                            struct byte_stream rq;
+                            stream_init(&rq, 52);
+                            if (snapsync_write_snapshot_request(
+                                    &rq, params.our_height,
+                                    node->addr.svc.addr.ip)) {
+                                p2p_node_begin_message(node, MSG_SNAPSHOT_REQ,
+                                    mp->params->pchMessageStart);
+                                p2p_node_write_message_data(node, rq.data, rq.size);
+                                p2p_node_end_message(node);
+                            }
+                            stream_free(&rq);
+                        }
+                        break;
+                    }
+                    case SNAPSYNC_OFFER_REJECTED_RANGE:
+                        peer_misbehaving(mp->net_mgr, node, 20,
+                            "snapshot offer out of range");
+                        break;
+                    case SNAPSYNC_OFFER_REJECTED_NO_MMR:
+                        peer_misbehaving(mp->net_mgr, node, 10,
+                            "snapshot without MMR proof");
+                        break;
+                    default:
+                        break; /* not ahead or busy — ignore silently */
+                    }
                 }
             }
+
         } else if (strcmp(cmd, MSG_SNAPSHOT_REQ) == 0) {
-            /* Peer requests our UTXO snapshot */
+            /* ── Route: zsnapreq → snapsync_validate_serve_request ─ */
             int32_t from_h = 0;
             if (!stream_read_i32_le(&s, &from_h)) {
-                printf("Peer %s: truncated zsnapreq\n", node->addr_name);
                 peer_misbehaving(mp->net_mgr, node, 10, "truncated zsnapreq");
                 net_message_free(&msg);
                 continue;
             }
 
-            /* Verify PoW before serving snapshot */
-            struct fast_sync_pow pow;
-            memset(&pow, 0, sizeof(pow));
-            bool has_pow = (s.size - s.read_pos >= sizeof(pow.peer_id) + 8 + 8);
-            if (has_pow) {
-                if (!stream_read_bytes(&s, pow.peer_id, 32) ||
-                    !stream_read_i64_le(&s, &pow.timestamp) ||
-                    !stream_read_u64_le(&s, &pow.nonce)) {
-                    has_pow = false;  /* truncated PoW data */
-                }
-            }
-            if (!has_pow || !fast_sync_verify_pow(&pow)) {
-                printf("Peer %s: snapshot request rejected, invalid PoW\n",
-                       node->addr_name);
-                peer_misbehaving(mp->net_mgr, node, 20,
-                                 "zsnapreq without valid PoW");
-            /* Rate limit check */
-            } else if (!fast_sync_rate_check(&g_rate_limiter,
-                                              node->addr.svc.addr.ip)) {
-                printf("Peer %s: rate limited, rejecting snapshot request\n",
-                       node->addr_name);
-            } else if (g_cached_offer_valid) {
-                struct snapshot_offer offer = get_cached_offer();
-                node->zsync_offset = 0;
-                node->zsync_sent = 0;
-                peer_set_state_checked((uint32_t)node->id, &node->state,
-                                       PEER_SNAPSHOT_SERVING,
-                                       "serving snapshot request");
-                node->zsync_cursor_valid = false;
-                memset(node->zsync_cursor_txid, 0, 32);
-                node->zsync_cursor_vout = 0;
-                node->zsync_total = offer.num_utxos;
-                printf("Peer %s: serving snapshot (h=%d, %llu UTXOs)\n",
-                       node->addr_name, offer.height,
-                       (unsigned long long)offer.num_utxos);
-                send_snapshot_offer_msg(node, &offer,
-                                        mp->params->pchMessageStart);
-            } else {
-                printf("Peer %s: snapshot not ready yet\n", node->addr_name);
-            }
-        } else if (strcmp(cmd, MSG_SNAPSHOT_DATA) == 0) {
-            /* Receive UTXO chunk — validate and apply */
-            uint32_t entries = 0;
-            if (!stream_read_u32_le(&s, &entries) || entries > 1000 ||
-                entries == 0 ||
-                node->state != PEER_SNAPSHOT_RECEIVING) {
-                printf("Peer %s: bad snapshot chunk (entries=%u, state=%s)\n",
-                       node->addr_name, entries,
-                       peer_state_name(node->state));
-                node->disconnect = true;
-            } else {
-                char db_path[1024];
-                snprintf(db_path, sizeof(db_path), "%s/node.db", mp->datadir);
-                sqlite3 *db = NULL;
-                int rc = sqlite3_open_v2(db_path, &db,
-                                          SQLITE_OPEN_READWRITE, NULL);
-                if (rc != SQLITE_OK) {
-                    fprintf(stderr, "Peer %s: snapshot db open failed: %s\n",
-                           node->addr_name, sqlite3_errmsg(db));
-                    if (db) sqlite3_close(db);
-                    node->disconnect = true;
+            /* Pass remaining bytes (PoW data) to controller */
+            size_t pow_len = s.size - s.read_pos;
+            const uint8_t *pow_data = pow_len > 0 ? s.data + s.read_pos : NULL;
+            enum snapsync_serve_result srv = snapsync_validate_serve_request(
+                pow_data, pow_len, node->addr.svc.addr.ip);
+
+            switch (srv) {
+            case SNAPSYNC_SERVE_OK:
+                if (g_cached_offer_valid) {
+                    struct snapshot_offer offer = get_cached_offer();
+                    struct snapsync_serve_start serve = {0};
+                    snapsync_build_serve_start(&serve, offer.num_utxos);
+                    if (serve.should_reset_progress) {
+                        node->zsync_offset = 0;
+                        node->zsync_sent = 0;
+                        node->zsync_file_offset = 0;
+                        node->zsync_file_size = 0;
+                    }
+                    if (serve.should_update_peer_state)
+                        peer_set_state_checked((uint32_t)node->id, &node->state,
+                            serve.peer_state, "serving snapshot request");
+                    if (serve.should_reset_cursor) {
+                        node->zsync_cursor_valid = false;
+                        memset(node->zsync_cursor_txid, 0, 32);
+                        node->zsync_cursor_vout = 0;
+                    }
+                    node->zsync_total = serve.total_utxos;
+                    printf("Peer %s: serving snapshot (h=%d, %llu UTXOs)\n",
+                           node->addr_name, offer.height,
+                           (unsigned long long)offer.num_utxos);
+                    send_snapshot_offer_msg(node, &offer,
+                                            mp->params->pchMessageStart);
                 } else {
-                    char *errmsg = NULL;
-                    rc = sqlite3_exec(db, "BEGIN", NULL, NULL, &errmsg);
-                    if (rc != SQLITE_OK) {
-                        fprintf(stderr, "Peer %s: snapshot BEGIN failed: %s\n",
-                               node->addr_name, errmsg ? errmsg : "unknown");
-                        sqlite3_free(errmsg);
-                        sqlite3_close(db);
-                        node->disconnect = true;
-                    } else {
-                    sqlite3_stmt *ins = NULL;
-                    rc = sqlite3_prepare_v2(db,
-                        "INSERT OR IGNORE INTO utxos "
-                        "(txid,vout,value,script,script_type,height) "
-                        "VALUES(?,?,?,?,0,?)", -1, &ins, NULL);
-                    if (rc != SQLITE_OK || !ins) {
-                        fprintf(stderr, "Peer %s: snapshot prepare failed: %s\n",
-                               node->addr_name, sqlite3_errmsg(db));
-                        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
-                        sqlite3_close(db);
-                        node->disconnect = true;
-                    } else {
-                    uint32_t applied = 0;
-                    bool chunk_valid = true;
-                    for (uint32_t i = 0; i < entries; i++) {
-                        uint8_t txid[32];
-                        int32_t vout, height;
-                        int64_t value;
-                        uint64_t slen;
-                        if (!stream_read_bytes(&s, txid, 32) ||
-                            !stream_read_i32_le(&s, &vout) ||
-                            !stream_read_i64_le(&s, &value) ||
-                            !stream_read_i32_le(&s, &height) ||
-                            !stream_read_compact_size(&s, &slen)) {
-                            printf("Peer %s: truncated UTXO in chunk\n",
-                                   node->addr_name);
-                            peer_misbehaving(mp->net_mgr, node, 20,
-                                             "truncated snapshot chunk");
-                            chunk_valid = false;
-                            break;
-                        }
-
-                        /* Validate UTXO data — fail fast */
-                        if (vout < 0 || value < 0 ||
-                            value > 2100000000000000LL ||
-                            height < 0 || height > 100000000 ||
-                            slen > 520) {
-                            printf("Peer %s: invalid UTXO in chunk "
-                                   "(vout=%d val=%lld h=%d slen=%llu)\n",
-                                   node->addr_name, vout, (long long)value,
-                                   height, (unsigned long long)slen);
-                            peer_misbehaving(mp->net_mgr, node, 50,
-                                             "invalid UTXO data");
-                            chunk_valid = false;
-                            break;
-                        }
-
-                        uint8_t script[520];
-                        if (slen > 0 &&
-                            !stream_read_bytes(&s, script, (size_t)slen)) {
-                            peer_misbehaving(mp->net_mgr, node, 20,
-                                             "truncated script in chunk");
-                            chunk_valid = false;
-                            break;
-                        }
-
-                        sqlite3_reset(ins);
-                        sqlite3_bind_blob(ins, 1, txid, 32, SQLITE_STATIC);
-                        sqlite3_bind_int(ins, 2, vout);
-                        sqlite3_bind_int64(ins, 3, value);
-                        sqlite3_bind_blob(ins, 4, script, (int)slen,
-                                           SQLITE_STATIC);
-                        sqlite3_bind_int(ins, 5, height);
-                        rc = sqlite3_step(ins);
-                        if (rc != SQLITE_DONE && rc != SQLITE_CONSTRAINT) {
-                            fprintf(stderr, "Peer %s: snapshot insert failed: %s\n",
-                                   node->addr_name, sqlite3_errmsg(db));
-                            chunk_valid = false;
-                            break;
-                        }
-                        applied++;
-                    }
-                    sqlite3_finalize(ins);
-
-                    if (chunk_valid) {
-                        rc = sqlite3_exec(db, "COMMIT", NULL, NULL, &errmsg);
-                        if (rc != SQLITE_OK) {
-                            fprintf(stderr, "Peer %s: snapshot COMMIT failed: %s\n",
-                                   node->addr_name,
-                                   errmsg ? errmsg : "unknown");
-                            sqlite3_free(errmsg);
-                            node->disconnect = true;
-                        }
-                    } else {
-                        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
-                        node->disconnect = true;
-                    }
-                    sqlite3_close(db);
-
-                    if (chunk_valid) {
-                        node->zsync_offset += applied;
-                        if (node->zsync_offset % 50000 < entries)
-                            printf("Peer %s: received %llu UTXOs\n",
-                                   node->addr_name,
-                                   (unsigned long long)node->zsync_offset);
-                    }
-                    } /* ins prepared */
-                    } /* BEGIN succeeded */
+                    printf("Peer %s: snapshot not ready yet\n",
+                           node->addr_name);
                 }
+                break;
+            case SNAPSYNC_SERVE_BAD_POW:
+                peer_misbehaving(mp->net_mgr, node, 20,
+                    "zsnapreq without valid PoW");
+                break;
+            case SNAPSYNC_SERVE_RATE_LIMITED:
+                printf("Peer %s: rate limited\n", node->addr_name);
+                break;
+            default:
+                break;
             }
-        } else if (strcmp(cmd, MSG_SNAPSHOT_END) == 0) {
-            event_emitf(EV_SNAPSHOT_COMPLETE, (uint32_t)node->id,
-                        "%llu UTXOs from %s",
-                        (unsigned long long)node->zsync_offset,
-                        node->addr_name);
 
-            /* Verify SHA3 root of received UTXOs against offered root */
-            bool snapshot_valid = false;
+        } else if (strcmp(cmd, MSG_SNAPSHOT_DATA) == 0) {
+            /* ── Route: zsnapdata → snapsync_apply_chunk ───────── */
             {
-                char db_path[1024];
-                snprintf(db_path, sizeof(db_path), "%s/node.db", mp->datadir);
-                sqlite3 *vdb = NULL;
-                if (sqlite3_open_v2(db_path, &vdb,
-                                     SQLITE_OPEN_READWRITE, NULL) == SQLITE_OK) {
-                    uint8_t local_root[32];
-                    uint64_t local_count = 0;
-                    utxo_commitment_sha3_compute(vdb, local_root, &local_count);
+                struct node_db *ndb = msg_node_db(mp);
+                if (!snapsync_global_initialized() && ndb)
+                    snapsync_global_ensure_init(ndb);
+            }
+            int applied = snapsync_apply_chunk(snapsync_global(),
+                s.data + s.read_pos, s.size - s.read_pos);
+            if (applied < 0)
+                peer_misbehaving(mp->net_mgr, node, 10, "bad snapshot chunk");
+            else
+                node->zsync_offset += (uint64_t)applied;
 
-                    if (memcmp(local_root, node->zsync_offered_root, 32) == 0) {
-                        event_emitf(EV_UTXO_CHECKPOINT_PASS, 0,
-                                    "snapshot SHA3 PASSED count=%llu",
-                                    (unsigned long long)local_count);
-                        snapshot_valid = true;
+        } else if (strcmp(cmd, MSG_SNAPSHOT_END) == 0) {
+            /* ── Route: zsnapend → snapsync_handle_end ─────────── */
+            if (!snapsync_global_initialized()) {
+                /* nothing to finalize */
+            } else {
+                struct snapsync_end_result end_result = {0};
+                bool verified = snapsync_handle_end(snapsync_global(),
+                                                    (uint32_t)node->id);
+                snapsync_build_end_result(&end_result, verified);
+                if (end_result.verified) {
+                if (end_result.should_update_peer_state) {
+                    peer_set_state_checked((uint32_t)node->id, &node->state,
+                        end_result.peer_state, "snapshot verified");
+                }
 
-                        /* Set coins_best_block so the node knows UTXO state */
-                        sqlite3_stmt *set = NULL;
-                        sqlite3_prepare_v2(vdb,
-                            "INSERT OR REPLACE INTO node_state(key,value)"
-                            " VALUES('coins_best_block',?)", -1, &set, NULL);
-                        if (set) {
-                            sqlite3_bind_blob(set, 1,
-                                node->zsync_offered_block, 32, SQLITE_STATIC);
-                            sqlite3_step(set);
-                            sqlite3_finalize(set);
-                        }
-                    } else {
-                        char offered_hex[65], local_hex[65];
-                        for (int i = 0; i < 32; i++) {
-                            sprintf(offered_hex + i*2, "%02x",
-                                    node->zsync_offered_root[i]);
-                            sprintf(local_hex + i*2, "%02x",
-                                    local_root[i]);
-                        }
-                        event_emitf(EV_UTXO_CHECKPOINT_FAIL, 0,
-                                    "snapshot SHA3 FAILED offered=%s "
-                                    "local=%s recv=%llu computed=%llu",
-                                    offered_hex, local_hex,
-                                    (unsigned long long)node->zsync_offset,
-                                    (unsigned long long)local_count);
-                        fprintf(stderr,
-                               "SHA3 UTXO verification: FAILED!\n"
-                               "  Offered: %s\n"
-                               "  Local:   %s\n"
-                               "  Count:   %llu received, %llu computed\n",
-                               offered_hex, local_hex,
-                               (unsigned long long)node->zsync_offset,
-                               (unsigned long long)local_count);
-                    }
-                    sqlite3_close(vdb);
+                /* Set chain tip to snapshot height */
+                if (end_result.should_activate_tip) {
+                    int activated_height = snapsync_activate_verified_tip(
+                        snapsync_global(), mp->main_state);
+                    if (activated_height >= 0)
+                        printf("[snapshot] Chain tip set to height %d\n",
+                               activated_height);
+                }
+                if (end_result.should_set_sync_state) {
+                    sync_set_state(end_result.sync_state,
+                        "snapshot verified, sync remaining headers");
+                }
+                } else {
+                peer_misbehaving(mp->net_mgr, node, 100,
+                    "snapshot SHA3 verification failed");
                 }
             }
 
-            if (snapshot_valid) {
-                event_emitf(EV_SNAPSHOT_COMPLETE, (uint32_t)node->id,
-                            "utxos=%llu sha3=PASSED",
-                            (unsigned long long)node->zsync_offset);
-                peer_set_state_checked((uint32_t)node->id, &node->state,
-                                       PEER_ACTIVE, "snapshot verified");
-                sync_set_state(SYNC_HEADERS_DOWNLOAD,
-                               "snapshot verified, sync remaining headers");
-            } else {
-                /* Wipe the bad UTXOs — can't trust them */
-                char db_path[1024];
-                snprintf(db_path, sizeof(db_path), "%s/node.db", mp->datadir);
-                sqlite3 *wdb = NULL;
-                if (sqlite3_open_v2(db_path, &wdb,
-                                     SQLITE_OPEN_READWRITE, NULL) == SQLITE_OK) {
-                    sqlite3_exec(wdb, "DELETE FROM utxos", NULL, NULL, NULL);
-                    sqlite3_exec(wdb,
-                        "DELETE FROM node_state WHERE key='coins_best_block'",
-                        NULL, NULL, NULL);
-                    sqlite3_close(wdb);
-                    printf("Wiped untrusted snapshot UTXOs\n");
+        /* ── FlyClient chain verification messages ────────────── */
+
+        } else if (strcmp(cmd, MSG_FC_CHALLENGE) == 0) {
+            /* ── Route: zfcchallenge → build and send proofs ───── */
+            struct fc_challenge challenge;
+            memset(&challenge, 0, sizeof(challenge));
+            if (stream_read_bytes(&s, challenge.seed, 32) &&
+                stream_read_u64_le(&s, &challenge.chain_length) &&
+                stream_read_bytes(&s, challenge.mmb_root, 32)) {
+
+                /* Build FlyClient response with real MMB proofs.
+                 * Uses mmb_leaf_store (mmap'd flat file of all leaf
+                 * hashes) for mmb_prove() + block index for leaf data. */
+                struct mmb *mmb = rpc_blockchain_get_mmb();
+                extern struct mmb_leaf_store g_mmb_leaf_store;
+                const uint8_t (*all_hashes)[32] =
+                    mmb_leaf_store_all(&g_mmb_leaf_store);
+
+                if (mmb && mmb->num_leaves > 0 && all_hashes) {
+                    /* Build response: leaves from block index,
+                     * proofs from mmb_prove() via leaf store */
+                    struct fc_response resp;
+                    if (snapsync_build_fc_response(
+                            &resp, &challenge,
+                            &mp->main_state->chain_active,
+                            &g_mmb_leaf_store)) {
+                        /* Send zfcproofs */
+                        p2p_node_begin_message(node, MSG_FC_PROOFS,
+                            mp->params->pchMessageStart);
+                        struct byte_stream fp;
+                        stream_init(&fp, 4 + resp.num_samples * 2048);
+                        snapsync_write_fc_response(&fp, &resp);
+                        p2p_node_write_message_data(node, fp.data, fp.size);
+                        p2p_node_end_message(node);
+                        stream_free(&fp);
+                        printf("Peer %s: sent %u FlyClient proofs\n",
+                               node->addr_name, resp.num_samples);
+                    }
+                } else {
+                    printf("Peer %s: FlyClient challenge but no MMB data\n",
+                           node->addr_name);
                 }
-                event_emitf(EV_SNAPSHOT_COMPLETE, (uint32_t)node->id,
-                            "utxos=%llu sha3=FAILED",
-                            (unsigned long long)node->zsync_offset);
-                peer_misbehaving(mp->net_mgr, node, 100,
-                                 "snapshot SHA3 verification failed");
+            }
+
+        } else if (strcmp(cmd, MSG_FC_PROOFS) == 0) {
+            /* ── Route: zfcproofs → snapsync_verify_flyclient ──── */
+            struct fc_response resp;
+            if (!snapsync_parse_fc_response(&resp, &s)) {
+                peer_misbehaving(mp->net_mgr, node, 20,
+                    "truncated FlyClient proofs");
+            } else {
+                struct snapsync_verify_result verify_result = {0};
+                if (snapsync_global_initialized()) {
+                    snapsync_build_verify_result(
+                        &verify_result,
+                        snapsync_verify_flyclient(snapsync_global(), &resp));
+                }
+                if (verify_result.should_send &&
+                    verify_result.action == SNAPSYNC_FOLLOWUP_SEND_SNAPSHOT_REQ) {
+                    /* FlyClient passed — now send zsnapreq */
+                    int our_h = active_chain_height(
+                        &mp->main_state->chain_active);
+                    struct byte_stream rq;
+                    stream_init(&rq, 52);
+                    if (snapsync_write_snapshot_request(
+                            &rq, our_h, node->addr.svc.addr.ip)) {
+                        p2p_node_begin_message(node, MSG_SNAPSHOT_REQ,
+                            mp->params->pchMessageStart);
+                        p2p_node_write_message_data(node, rq.data, rq.size);
+                        p2p_node_end_message(node);
+                    }
+                    stream_free(&rq);
+                } else {
+                    peer_misbehaving(mp->net_mgr, node, 100,
+                        "FlyClient chain verification failed");
+                }
             }
 
         /* ── Parallel chunk sync messages ────────────────────── */
@@ -2176,11 +2099,13 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                             /* Verify SHA3 UTXO commitment matches the
                              * snapshot offer's root hash. This catches
                              * any data corruption during transfer. */
-                            if (g_active_node_db && g_active_node_db->db) {
+                            {
+                                struct node_db *ndb = msg_node_db(mp);
+                                if (ndb && ndb->db) {
                                 uint8_t local_root[32];
                                 uint64_t local_count = 0;
                                 utxo_commitment_sha3_compute(
-                                    g_active_node_db->db,
+                                    ndb->db,
                                     local_root, &local_count);
                                 if (memcmp(local_root,
                                            g_swarm.manifest.merkle_root,
@@ -2192,6 +2117,7 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                                     printf("SHA3 UTXO verification: FAILED "
                                            "— snapshot data corrupted!\n");
                                 }
+                            }
                             }
 
                             swarm_sync_free(&g_swarm);
@@ -2309,44 +2235,18 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                 if (piece_end > bm->end_height)
                     piece_end = bm->end_height;
 
-                /* Read block hashes from SQLite for this range */
-                char db_path[1024];
-                snprintf(db_path, sizeof(db_path), "%s/node.db", mp->datadir);
-                sqlite3 *bdb = NULL;
-                if (sqlite3_open_v2(db_path, &bdb, SQLITE_OPEN_READONLY,
-                                     NULL) == SQLITE_OK) {
-                    sqlite3_stmt *bsel = NULL;
-                    sqlite3_prepare_v2(bdb,
-                        "SELECT hash FROM blocks WHERE height >= ? "
-                        "AND height <= ? ORDER BY height ASC",
-                        -1, &bsel, NULL);
-                    sqlite3_bind_int(bsel, 1, piece_start);
-                    sqlite3_bind_int(bsel, 2, piece_end);
-
+                /* Read block hashes via ActiveRecord model */
+                uint8_t piece_hashes[BLOCKS_PER_PIECE][32];
+                int block_count = db_block_hashes_in_range(
+                    msg_node_db(mp), piece_start, piece_end,
+                    piece_hashes, BLOCKS_PER_PIECE);
+                if (block_count > 0) {
                     struct byte_stream bs_msg;
-                    stream_init(&bs_msg, 4 + 4 + 32 * BLOCKS_PER_PIECE);
+                    stream_init(&bs_msg, 4 + 4 + 32 * (size_t)block_count);
                     stream_write_u32_le(&bs_msg, piece_index);
-                    uint32_t block_count = 0;
-                    /* Reserve space for count */
-                    size_t count_pos = bs_msg.size;
-                    stream_write_u32_le(&bs_msg, 0);
-
-                    while (sqlite3_step(bsel) == SQLITE_ROW) {
-                        const void *bh = sqlite3_column_blob(bsel, 0);
-                        if (bh && sqlite3_column_bytes(bsel, 0) >= 32) {
-                            stream_write_bytes(&bs_msg, bh, 32);
-                            block_count++;
-                        }
-                    }
-                    sqlite3_finalize(bsel);
-                    sqlite3_close(bdb);
-
-                    /* Patch count */
-                    bs_msg.data[count_pos] = (uint8_t)(block_count & 0xFF);
-                    bs_msg.data[count_pos + 1] = (uint8_t)((block_count >> 8) & 0xFF);
-                    bs_msg.data[count_pos + 2] = (uint8_t)((block_count >> 16) & 0xFF);
-                    bs_msg.data[count_pos + 3] = (uint8_t)((block_count >> 24) & 0xFF);
-
+                    stream_write_u32_le(&bs_msg, (uint32_t)block_count);
+                    for (int bi = 0; bi < block_count; bi++)
+                        stream_write_bytes(&bs_msg, piece_hashes[bi], 32);
                     p2p_node_begin_message(node, MSG_BLOCK_DATA,
                                             mp->params->pchMessageStart);
                     p2p_node_write_message_data(node, bs_msg.data, bs_msg.size);
@@ -2547,125 +2447,29 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
     return true;
 }
 
-static void build_block_locator(struct block_locator *loc,
-                                 const struct active_chain *chain)
-{
-    if (!chain || active_chain_height(chain) < 0) {
-        loc->vhave = NULL;
-        loc->num_hashes = 0;
-        return;
-    }
-
-    struct uint256 tmp[64];
-    size_t idx = 0;
-    int step = 1;
-
-    struct block_index *tip = active_chain_tip(chain);
-    struct block_index *bi = tip;
-    while (bi && bi->phashBlock && idx < 63) {
-        tmp[idx++] = *bi->phashBlock;
-        if (bi->nHeight <= 0) break;
-        int target = bi->nHeight - step;
-        if (target < 0) target = 0;
-        /* Walk pprev to target height */
-        while (bi->pprev && bi->pprev->nHeight > target)
-            bi = bi->pprev;
-        if (bi->pprev)
-            bi = bi->pprev;
-        else
-            break;
-        if (idx >= 10) step *= 2;
-    }
-
-    if (idx == 0) { loc->vhave = NULL; loc->num_hashes = 0; return; }
-    if (tip)
-        printf("Locator: %zu hashes, tip h=%d, last h=%d\n",
-               idx, tip->nHeight, bi ? bi->nHeight : -1);
-    loc->vhave = calloc(idx, sizeof(struct uint256));
-    if (!loc->vhave) { loc->num_hashes = 0; return; }
-    memcpy(loc->vhave, tmp, idx * sizeof(struct uint256));
-    loc->num_hashes = idx;
-}
-
-static void build_block_locator_from_index(struct block_locator *loc,
-                                            struct block_index *pindex)
-{
-    /* Collect hashes into a temporary array, then allocate */
-    struct uint256 tmp[64];
-    size_t idx = 0;
-    int step = 1;
-    struct block_index *p = pindex;
-
-    while (p && p->phashBlock && idx < 63) {
-        tmp[idx++] = *p->phashBlock;
-        if (p->nHeight <= 0) break;
-        int target = p->nHeight - step;
-        if (target < 0) target = 0;
-        while (p && p->nHeight > target) {
-            if (!p->pprev) break;
-            p = p->pprev;
-        }
-        if (!p || !p->phashBlock) break;
-        if (idx > 10) step *= 2;
-    }
-
-    loc->vhave = calloc(idx, sizeof(struct uint256));
-    if (!loc->vhave) { loc->num_hashes = 0; return; }
-    memcpy(loc->vhave, tmp, idx * sizeof(struct uint256));
-    loc->num_hashes = idx;
-}
-
 static void push_getheaders_from(struct msg_processor *mp,
                                   struct p2p_node *node,
                                   struct block_index *from)
 {
     if (from && !from->phashBlock) return;
 
+    /* Don't request headers during any snapshot sync state. */
+    if (snapsync_is_active())
+        return;
+
     struct block_locator loc;
-    block_locator_init(&loc);
-
-    if (from)
-        build_block_locator_from_index(&loc, from);
-    else
-        build_block_locator(&loc, &mp->main_state->chain_active);
-
-    /* If locator is empty, skip — chain not ready */
-    if (loc.num_hashes == 0) {
-        /* Empty chain — send genesis hash so peer knows to start from block 1 */
-        loc.vhave = malloc(sizeof(struct uint256));
-        if (loc.vhave) {
-            loc.vhave[0] = mp->params->consensus.hashGenesisBlock;
-            loc.num_hashes = 1;
-        } else {
-            block_locator_free(&loc);
-            return;
-        }
-    }
-
-    /* Ensure genesis hash is always at the end of the locator. */
-    bool has_genesis = false;
-    for (size_t i = 0; i < loc.num_hashes; i++) {
-        if (uint256_eq(&loc.vhave[i], &mp->params->consensus.hashGenesisBlock)) {
-            has_genesis = true;
-            break;
-        }
-    }
-    if (!has_genesis && loc.num_hashes > 0) {
-        struct uint256 *new_vhave = realloc(loc.vhave,
-            (loc.num_hashes + 1) * sizeof(struct uint256));
-        if (new_vhave) {
-            loc.vhave = new_vhave;
-            loc.vhave[loc.num_hashes] = mp->params->consensus.hashGenesisBlock;
-            loc.num_hashes++;
-        }
-    }
+    if (!syncsvc_build_getheaders_locator(&loc, &mp->main_state->chain_active,
+                                          from,
+                                          &mp->params->consensus.hashGenesisBlock))
+        return;
 
     struct byte_stream s;
     stream_init(&s, 512);
-    block_locator_serialize(&loc, &s);
-    struct uint256 zero;
-    uint256_set_null(&zero);
-    stream_write_bytes(&s, zero.data, 32);
+    if (!getheaders_serialize(&s, &loc, NULL)) {
+        stream_free(&s);
+        block_locator_free(&loc);
+        return;
+    }
 
     p2p_node_begin_message(node, "getheaders", mp->params->pchMessageStart);
     p2p_node_write_message_data(node, s.data, s.size);
@@ -2677,6 +2481,31 @@ static void push_getheaders_from(struct msg_processor *mp,
 static void push_getheaders(struct msg_processor *mp, struct p2p_node *node)
 {
     push_getheaders_from(mp, node, NULL);
+}
+
+static void exec_getheaders_action(struct msg_processor *mp,
+                                   struct p2p_node *node,
+                                   const struct sync_getheaders_action *action)
+{
+    struct block_index *tip;
+
+    if (!mp || !node || !action || !action->should_send)
+        return;
+
+    tip = active_chain_tip(&mp->main_state->chain_active);
+    switch (action->anchor) {
+    case SYNC_HEADER_REQUEST_TIP_PARENT:
+        if (tip && tip->pprev)
+            push_getheaders_from(mp, node, tip->pprev);
+        else
+            push_getheaders(mp, node);
+        break;
+    case SYNC_HEADER_REQUEST_TIP:
+    case SYNC_HEADER_REQUEST_EXPLICIT:
+    default:
+        push_getheaders(mp, node);
+        break;
+    }
 }
 
 bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
@@ -2722,51 +2551,42 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
 
     /* Initiate sync, and periodically re-request if behind. */
     {
-        bool should_sync = false;
-        if (node->state == PEER_ACTIVE && !node->inbound) {
-            peer_set_state_checked((uint32_t)node->id, &node->state,
-                                   PEER_SYNCING_HEADERS, "IBD start");
-            if (sync_get_state() == SYNC_IDLE ||
-                sync_get_state() == SYNC_FINDING_PEERS)
-                sync_set_state(SYNC_HEADERS_DOWNLOAD, "first outbound peer");
-            should_sync = true;
-        }
+        bool should_sync = syncsvc_begin_peer_sync(node);
+        struct sync_getheaders_action periodic = {0};
 
         int our_height = msg_get_height(mp);
-        bool in_ibd = (node->starting_height > 0 &&
-                       our_height < node->starting_height - 144);
+        bool in_ibd = syncsvc_is_initial_block_download(node, our_height);
 
         /* Re-request headers aggressively during IBD (10s), slower at tip (60s).
          * This is critical: legacy zclassicd sends at most 2000 headers per
          * getheaders response — for a 3M block chain, we need ~1500 rounds. */
         int64_t now_send = (int64_t)time(NULL);
-        int64_t resync_interval = in_ibd ? 10 : 60;
-        if (node->state >= PEER_SYNCING_HEADERS && !node->inbound &&
-            node->starting_height > our_height &&
-            now_send - node->last_getheaders_time > resync_interval) {
+        syncsvc_plan_periodic_getheaders(&periodic, node, our_height, now_send);
+        if (periodic.should_send && !snapsync_is_active()) {
             should_sync = true;
-            node->last_getheaders_time = now_send;
+            syncsvc_note_headers_requested(node, now_send);
         }
         if (should_sync) {
             struct block_index *tip = active_chain_tip(
                 &mp->main_state->chain_active);
-            if (tip && tip->phashBlock) {
-                if (in_ibd) {
-                    /* Only log every 10th request during IBD to avoid spam */
-                    static int getheaders_log_count = 0;
-                    if (getheaders_log_count++ % 10 == 0)
-                        printf("IBD getheaders to %s (height=%d, peer=%d, "
-                               "behind=%d)\n",
-                               node->addr_name, tip->nHeight,
-                               node->starting_height,
-                               node->starting_height - tip->nHeight);
-                } else {
-                    printf("Sending getheaders to %s (height=%d, peer=%d)\n",
-                           node->addr_name, tip->nHeight,
-                           node->starting_height);
-                }
+            switch (syncsvc_header_log_mode(node, tip, in_ibd)) {
+            case SYNC_HEADER_LOG_IBD:
+                printf("IBD getheaders to %s (height=%d, peer=%d, "
+                       "behind=%d)\n",
+                       node->addr_name, tip->nHeight,
+                       node->starting_height,
+                       node->starting_height - tip->nHeight);
+                break;
+            case SYNC_HEADER_LOG_TIP:
+                printf("Sending getheaders to %s (height=%d, peer=%d)\n",
+                       node->addr_name, tip->nHeight,
+                       node->starting_height);
+                break;
+            case SYNC_HEADER_LOG_NONE:
+            default:
+                break;
             }
-            push_getheaders(mp, node);
+            exec_getheaders_action(mp, node, &periodic);
         }
     }
 
@@ -2782,44 +2602,34 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
                         "timeouts=%zu reassigned to queue", timed_out);
 
         /* Assign blocks from queue to this peer if they have capacity */
-        if (node->state >= PEER_HANDSHAKE_COMPLETE) {
-            /* Scale assignment size by peer quality:
-             * - Fast peers (low latency) get more blocks per tick
-             * - Slow peers get fewer to avoid congestion */
-            size_t max_assign = 64;
-            size_t in_flight = dl_peer_in_flight(dm, (uint32_t)node->id);
-            if (in_flight > DL_MAX_IN_FLIGHT_PER_PEER / 2)
-                max_assign = 16; /* slow down if already heavy */
-
+        {
             struct uint256 assign_hashes[DL_WINDOW_SIZE];
-            size_t assigned = dl_assign_to_peer(dm, (uint32_t)node->id,
-                                                 assign_hashes, max_assign);
-            if (assigned > 0) {
+            struct sync_block_batch batch;
+            syncsvc_assign_peer_blocks(&batch, dm, node, assign_hashes,
+                                       DL_WINDOW_SIZE);
+            if (batch.assigned > 0) {
                 struct byte_stream getdata_msg;
-                stream_init(&getdata_msg, assigned * 36 + 8);
-                stream_write_compact_size(&getdata_msg, (uint64_t)assigned);
-                for (size_t i = 0; i < assigned; i++) {
-                    struct inv_item inv;
-                    inv_item_init_typed(&inv, MSG_BLOCK, &assign_hashes[i]);
-                    inv_item_serialize(&inv, &getdata_msg);
+                stream_init(&getdata_msg, batch.assigned * 36 + 8);
+                if (getdata_blocks_serialize(&getdata_msg, assign_hashes,
+                                             batch.assigned)) {
+                    p2p_node_begin_message(node, "getdata",
+                                           mp->params->pchMessageStart);
+                    p2p_node_write_message_data(node, getdata_msg.data,
+                                                getdata_msg.size);
+                    p2p_node_end_message(node);
                 }
-                p2p_node_begin_message(node, "getdata",
-                                       mp->params->pchMessageStart);
-                p2p_node_write_message_data(node, getdata_msg.data,
-                                            getdata_msg.size);
-                p2p_node_end_message(node);
                 stream_free(&getdata_msg);
 
-                /* Log first requested hash for debugging notfound */
-                if (assigned > 0) {
+                {
                     char hex[65];
                     uint256_get_hex(&assign_hashes[0], hex);
                     printf("getdata: %zu blocks to %s (first=%s)\n",
-                           assigned, node->addr_name, hex);
+                           batch.assigned, node->addr_name, hex);
                 }
                 event_emitf(EV_BLOCK_REQUESTED, (uint32_t)node->id,
                             "assigned=%zu inflight=%zu",
-                            assigned, in_flight + assigned);
+                            batch.assigned,
+                            batch.in_flight_before + batch.assigned);
             }
 
             /* Stall detection: if queue is empty, in-flight is zero,
@@ -2828,104 +2638,35 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
              * no block data, that aren't failed. Queue them. */
             uint64_t dl_queued = 0, dl_inflight = 0;
             dl_get_stats(dm, NULL, NULL, NULL, &dl_inflight, &dl_queued);
-            int our_h = msg_get_height(mp);
-            if (dl_queued == 0 && dl_inflight == 0 &&
-                node->starting_height > our_h + 10 &&
-                node->state >= PEER_HANDSHAKE_COMPLETE) {
-                static int64_t last_stall_log = 0;
-                if (now_dl - last_stall_log > 10) {
-                    {
-                        /* Count blocks at tip+1 */
-                        size_t at_next = 0, failed_next = 0, data_next = 0;
-                        size_t ci = 0;
-                        struct block_index *cx;
-                        while (block_map_next(&mp->main_state->map_block_index,
-                                               &ci, NULL, &cx)) {
-                            if (cx && cx->nHeight == our_h + 1) {
-                                at_next++;
-                                if (cx->nStatus & BLOCK_FAILED_MASK) failed_next++;
-                                if (cx->nStatus & BLOCK_HAVE_DATA) data_next++;
-                            }
-                        }
-                        printf("STALL: h=%d entries_at_%d=%zu (data=%zu fail=%zu)\n",
-                               our_h, our_h + 1, at_next, data_next, failed_next);
+            struct sync_stall_recovery recovery;
+            if (syncsvc_build_stall_recovery(&recovery, mp->main_state, node,
+                                             dl_queued, dl_inflight, now_dl)) {
+                if (recovery.should_log) {
+                    printf("STALL: h=%d entries_at_%d=%zu (data=%zu fail=%zu)\n",
+                           recovery.chain_height, recovery.next_height,
+                           recovery.entries_at_next, recovery.entries_with_data,
+                           recovery.entries_failed);
+                }
+                {
+                    int cleared = 0;
+                    syncsvc_apply_stall_recovery(&recovery, mp->main_state,
+                                                 dm, &cleared);
+                    if (recovery.alt_count > 0) {
+                        printf("Stall recovery: queued %zu alt blocks\n",
+                               recovery.alt_count);
+                    } else if (cleared > 0) {
+                        printf("Stall recovery: reset %d blocks at h=%d for re-download\n",
+                               cleared, recovery.next_height);
                     }
-                    last_stall_log = now_dl;
-
-                    /* Find alternative blocks at tip+1..tip+512 that
-                     * have headers but no data, and aren't failed.
-                     * These are correct-chain blocks that were never
-                     * queued for download. */
+                }
+                if (recovery.should_recover) {
                     struct block_index *tip = active_chain_tip(
                         &mp->main_state->chain_active);
-                    if (tip) {
-                        /* Look for alternative blocks at tip+1..+512 */
-                        struct uint256 alt_hashes[64];
-                        int32_t alt_heights[64];
-                        size_t alt_count = 0;
-                        size_t iter2 = 0;
-                        struct block_index *alt;
-                        while (block_map_next(&mp->main_state->map_block_index,
-                                               &iter2, NULL, &alt)) {
-                            if (!alt || alt_count >= 64) continue;
-                            if (alt->nHeight <= our_h) continue;
-                            if (alt->nHeight > our_h + 512) continue;
-                            if (alt->nStatus & BLOCK_FAILED_MASK) continue;
-                            if (alt->nStatus & BLOCK_HAVE_DATA) continue;
-                            if (!alt->phashBlock) continue;
-                            struct block_index *w = alt;
-                            while (w && w->nHeight > our_h) w = w->pprev;
-                            if (w == tip ||
-                                (w && tip && w->phashBlock && tip->phashBlock &&
-                                 uint256_eq(w->phashBlock, tip->phashBlock))) {
-                                alt_hashes[alt_count] = *alt->phashBlock;
-                                alt_heights[alt_count] = alt->nHeight;
-                                alt_count++;
-                            }
-                        }
-                        if (alt_count > 0) {
-                            dl_queue_blocks(dm, alt_hashes, alt_heights,
-                                            alt_count);
-                            printf("Stall recovery: queued %zu alt blocks\n",
-                                   alt_count);
-                        } else {
-                            /* No alternatives found. The block at tip+1
-                             * may have BLOCK_HAVE_DATA (downloaded but
-                             * connect_block failed) OR BLOCK_FAILED_MASK.
-                             * Clear both so it gets re-downloaded from
-                             * peers who have the correct version. */
-                            static int64_t last_clear = 0;
-                            if (now_dl - last_clear > 30) {
-                                last_clear = now_dl;
-                                iter2 = 0;
-                                int cleared = 0;
-                                while (block_map_next(
-                                    &mp->main_state->map_block_index,
-                                    &iter2, NULL, &alt)) {
-                                    if (!alt) continue;
-                                    if (alt->nHeight == our_h + 1) {
-                                        alt->nStatus &= ~BLOCK_FAILED_MASK;
-                                        alt->nStatus &= ~BLOCK_HAVE_DATA;
-                                        cleared++;
-                                    }
-                                }
-                                if (cleared > 0)
-                                    printf("Stall recovery: reset %d blocks "
-                                           "at h=%d for re-download\n",
-                                           cleared, our_h + 1);
-                            }
-                        }
-                    }
-                    /* Send getheaders from tip's PARENT, not tip.
-                     * If the peer has our tip, it returns "no new headers"
-                     * (empty response). By starting from tip-1, the peer
-                     * includes our tip AND the block at tip+1 in its
-                     * response — giving us the header we need. */
-                    if (tip && tip->pprev)
-                        push_getheaders_from(mp, node, tip->pprev);
-                    else
-                        push_getheaders(mp, node);
+                    struct sync_getheaders_action action = {0};
+                    syncsvc_plan_recovery_getheaders(&action, &recovery, tip);
+                    exec_getheaders_action(mp, node, &action);
                 }
+                syncsvc_free_stall_recovery(&recovery);
             }
         }
     }
@@ -2938,40 +2679,40 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
             now_prog - last_progress_log >= 30) {
             last_progress_log = now_prog;
             struct download_manager *dm2 = get_download_mgr();
-            uint64_t r = 0, v = 0, t = 0, f = 0, q = 0;
-            dl_get_stats(dm2, &r, &v, &t, &f, &q);
             int h = msg_get_height(mp);
             int header_tip = mp->main_state->pindex_best_header
                 ? mp->main_state->pindex_best_header->nHeight : h;
-            enum sync_state ss = sync_get_state();
-            if (ss != SYNC_IDLE && ss != SYNC_AT_TIP) {
-                uint64_t total_bytes = 0;
-                double mbps = 0.0;
-                dl_get_throughput(dm2, &total_bytes, &mbps);
-                double gb = (double)total_bytes / (1024.0 * 1024.0 * 1024.0);
+            struct sync_progress_snapshot progress;
+            syncsvc_collect_progress(&progress, dm2, sync_get_state(),
+                                     h, header_tip, node->last_block_time,
+                                     now_prog);
+            if (progress.should_log_progress) {
                 printf("IBD: chain=%d headers=%d sync=%s "
                        "dl[req=%llu recv=%llu flight=%llu queue=%llu "
                        "timeout=%llu] %.2f GB @ %.1f MB/s\n",
-                       h, header_tip, sync_state_name(ss),
-                       (unsigned long long)r, (unsigned long long)v,
-                       (unsigned long long)f, (unsigned long long)q,
-                       (unsigned long long)t, gb, mbps);
+                       progress.chain_height, progress.header_height,
+                       sync_state_name(progress.sync_state),
+                       (unsigned long long)progress.requested,
+                       (unsigned long long)progress.received,
+                       (unsigned long long)progress.in_flight,
+                       (unsigned long long)progress.queued,
+                       (unsigned long long)progress.timed_out,
+                       progress.gib_received, progress.mbps_avg);
             }
 
             /* Tip-stale watchdog: if we're at the tip but haven't
              * received a new block in 10 minutes, re-request headers
              * from all outbound peers. Handles the case where all
              * peers went silent or our inv relay is broken. */
-            if (ss == SYNC_AT_TIP && node->last_block_time > 0 &&
-                now_prog - node->last_block_time > 600 &&
-                !node->inbound) {
-                static int64_t last_stale_warn = 0;
-                if (now_prog - last_stale_warn > 300) {
-                    last_stale_warn = now_prog;
+            {
+                struct sync_getheaders_action stale = {0};
+                syncsvc_plan_tip_stale_getheaders(&stale, &progress,
+                                                  node, now_prog);
+                if (stale.should_send) {
                     printf("Tip stale: no new block for %llds, "
                            "re-requesting headers\n",
-                           (long long)(now_prog - node->last_block_time));
-                    push_getheaders(mp, node);
+                           (long long)progress.tip_stale_seconds);
+                    exec_getheaders_action(mp, node, &stale);
                 }
             }
         }
@@ -2995,108 +2736,61 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
         stream_free(&ping);
     }
 
-    /* Stream fast sync UTXO chunks if serving this peer */
+    /* Stream fast sync UTXO chunks if serving this peer.
+     * Zero-copy from in-memory buffer — no file I/O, no SQL.
+     * Snapshot pre-loaded into RAM at startup (~97 MB). */
     if (node->state == PEER_SNAPSHOT_SERVING && g_cached_offer_valid) {
-        /* Send up to 10 chunks per tick (non-blocking) */
-        char db_path[1024];
-        snprintf(db_path, sizeof(db_path), "%s/node.db", mp->datadir);
-        sqlite3 *db = NULL;
-        if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) == SQLITE_OK) {
-            /* Use keyset pagination (WHERE > cursor) instead of OFFSET
-             * to avoid O(n) skip cost on large UTXO sets */
-            sqlite3_stmt *sel_first = NULL, *sel_keyset = NULL;
-            sqlite3_prepare_v2(db,
-                "SELECT txid, vout, value, script, height "
-                "FROM utxos ORDER BY txid, vout LIMIT 500",
-                -1, &sel_first, NULL);
-            sqlite3_prepare_v2(db,
-                "SELECT txid, vout, value, script, height "
-                "FROM utxos WHERE (txid > ?) OR (txid = ? AND vout > ?) "
-                "ORDER BY txid, vout LIMIT 500", -1, &sel_keyset, NULL);
-
-            for (int batch = 0; batch < 10; batch++) {
-                sqlite3_stmt *sel;
-                if (node->zsync_cursor_valid) {
-                    sel = sel_keyset;
-                    sqlite3_reset(sel);
-                    sqlite3_bind_blob(sel, 1, node->zsync_cursor_txid, 32, SQLITE_STATIC);
-                    sqlite3_bind_blob(sel, 2, node->zsync_cursor_txid, 32, SQLITE_STATIC);
-                    sqlite3_bind_int(sel, 3, node->zsync_cursor_vout);
-                } else {
-                    sel = sel_first;
-                    sqlite3_reset(sel);
-                }
-
-                struct byte_stream chunk;
-                stream_init(&chunk, 32768);
-                uint32_t entries = 0;
-                /* Reserve space for entry count */
-                stream_write_u32_le(&chunk, 0);
-
-                while (sqlite3_step(sel) == SQLITE_ROW && entries < 500) {
-                    const void *txid = sqlite3_column_blob(sel, 0);
-                    int32_t vout = sqlite3_column_int(sel, 1);
-                    int64_t value = sqlite3_column_int64(sel, 2);
-                    const void *script = sqlite3_column_blob(sel, 3);
-                    int slen = sqlite3_column_bytes(sel, 3);
-                    int32_t height = sqlite3_column_int(sel, 4);
-
-                    if (txid) stream_write_bytes(&chunk, txid, 32);
-                    else { uint8_t z[32] = {0}; stream_write_bytes(&chunk, z, 32); }
-                    stream_write_i32_le(&chunk, vout);
-                    stream_write_i64_le(&chunk, value);
-                    stream_write_i32_le(&chunk, height);
-                    if (slen > 520) slen = 520;
-                    stream_write_compact_size(&chunk, (uint64_t)slen);
-                    if (script && slen > 0)
-                        stream_write_bytes(&chunk, script, (size_t)slen);
-                    entries++;
-
-                    /* Update keyset cursor for next batch */
-                    if (txid) memcpy(node->zsync_cursor_txid, txid, 32);
-                    node->zsync_cursor_vout = vout;
-                    node->zsync_cursor_valid = true;
-                }
-
-                if (entries == 0) {
-                    /* Done — send end marker */
-                    stream_free(&chunk);
+        int64_t buf_size = 0;
+        const uint8_t *buf = fast_sync_get_snapshot_buf(&buf_size);
+        if (buf && buf_size > 0) {
+            /* Send chunks from memory, respecting TCP flow control.
+             * Stop when send buffer exceeds 2MB to avoid backlog. */
+            for (int batch = 0; batch < 200; batch++) {
+                struct snapsync_serve_step step;
+                if (!snapsync_prepare_serve_step(&step, node, buf, buf_size))
+                    break;
+                if (step.action == SNAPSYNC_SERVE_ACTION_NONE)
+                    break;
+                if (step.action == SNAPSYNC_SERVE_ACTION_SEND_END) {
+                    /* EOF — all UTXOs sent */
+                    struct snapsync_serve_complete complete = {0};
+                    snapsync_build_serve_complete(&complete);
                     p2p_node_begin_message(node, MSG_SNAPSHOT_END,
                                             mp->params->pchMessageStart);
                     p2p_node_end_message(node);
-                    peer_set_state_checked((uint32_t)node->id, &node->state,
-                                           PEER_ACTIVE, "snapshot serve done");
-                    printf("Peer %s: snapshot complete (%llu UTXOs sent)\n",
+                    if (complete.should_update_peer_state) {
+                        peer_set_state_checked((uint32_t)node->id, &node->state,
+                                               complete.peer_state,
+                                               "snapshot serve done");
+                    }
+                    printf("Peer %s: snapshot complete (%llu UTXOs, "
+                           "%llu chunks sent)\n",
                            node->addr_name,
-                           (unsigned long long)node->zsync_offset);
+                           (unsigned long long)node->zsync_offset,
+                           (unsigned long long)node->zsync_sent);
                     break;
                 }
 
-                /* Patch entry count at offset 0 */
-                chunk.data[0] = (uint8_t)(entries & 0xFF);
-                chunk.data[1] = (uint8_t)((entries >> 8) & 0xFF);
-                chunk.data[2] = (uint8_t)((entries >> 16) & 0xFF);
-                chunk.data[3] = (uint8_t)((entries >> 24) & 0xFF);
-
+                /* Send chunk directly from memory — true zero-copy */
                 p2p_node_begin_message(node, MSG_SNAPSHOT_DATA,
                                         mp->params->pchMessageStart);
-                p2p_node_write_message_data(node, chunk.data, chunk.size);
+                p2p_node_write_message_data(node, buf + step.chunk_offset,
+                                            step.chunk_len);
                 p2p_node_end_message(node);
-                stream_free(&chunk);
-
-                node->zsync_offset += entries;
-                node->zsync_sent++;
 
                 if (node->zsync_sent % 100 == 0) {
-                    printf("Peer %s: sent %llu/%llu UTXOs\n",
+                    printf("Peer %s: sent %llu/%llu UTXOs (%.0f%%)\n",
                            node->addr_name,
                            (unsigned long long)node->zsync_offset,
-                           (unsigned long long)node->zsync_total);
+                           (unsigned long long)node->zsync_total,
+                           node->zsync_total > 0 ?
+                               100.0 * (double)node->zsync_offset / (double)node->zsync_total : 0);
                 }
             }
-            sqlite3_finalize(sel_first);
-            sqlite3_finalize(sel_keyset);
-            sqlite3_close(db);
+        } else {
+            fprintf(stderr, "Peer %s: no snapshot in memory\n", node->addr_name);
+            peer_set_state_checked((uint32_t)node->id, &node->state,
+                                   PEER_ACTIVE, "no snapshot buffer");
         }
     }
 

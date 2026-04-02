@@ -44,9 +44,20 @@
 #include <string.h>
 #include <time.h>
 
+static struct wallet_rpc_context *wallet_ctx(void)
+{
+    return wallet_rpc_context_current();
+}
+
+static bool wallet_ctx_db_ready(const struct wallet_rpc_context *ctx)
+{
+    return ctx->node_db && ctx->node_db->open;
+}
+
 static bool rpc_z_getnewaddress(const struct json_value *params, bool help,
                                   struct json_value *result)
 {
+    struct wallet_rpc_context *ctx = wallet_ctx();
     (void)params;
     RPC_HELP(help, result,
         "z_getnewaddress\n"
@@ -58,7 +69,7 @@ static bool rpc_z_getnewaddress(const struct json_value *params, bool help,
 
     uint8_t diversifier[11];
     uint8_t pk_d[32];
-    if (!sapling_keystore_new_address(&g_wallet->sapling_keys,
+    if (!sapling_keystore_new_address(&ctx->wallet->sapling_keys,
                                        diversifier, pk_d)) {
         json_set_str(result, "Failed to generate Sapling address");
         return false;
@@ -74,12 +85,12 @@ static bool rpc_z_getnewaddress(const struct json_value *params, bool help,
     }
 
     /* Persist sapling keys to wallet DB */
-    if (g_wallet_db) {
-        struct sapling_keystore *sks = &g_wallet->sapling_keys;
+    if (ctx->wallet_db) {
+        struct sapling_keystore *sks = &ctx->wallet->sapling_keys;
         if (sks->has_seed)
-            wallet_sqlite_write_sapling_seed(g_wallet_db, sks->seed);
+            wallet_sqlite_write_sapling_seed(ctx->wallet_db, sks->seed);
         if (sks->num_keys > 0)
-            wallet_sqlite_write_sapling_key(g_wallet_db,
+            wallet_sqlite_write_sapling_key(ctx->wallet_db,
                 sks->keys[sks->num_keys - 1].child_index,
                 &sks->keys[sks->num_keys - 1]);
     }
@@ -91,6 +102,7 @@ static bool rpc_z_getnewaddress(const struct json_value *params, bool help,
 static bool rpc_z_listaddresses(const struct json_value *params, bool help,
                                   struct json_value *result)
 {
+    struct wallet_rpc_context *ctx = wallet_ctx();
     (void)params;
     RPC_HELP(help, result,
         "z_listaddresses\n"
@@ -101,12 +113,12 @@ static bool rpc_z_listaddresses(const struct json_value *params, bool help,
     json_set_array(result);
     const struct chain_params *cp = chain_params_get();
 
-    for (size_t i = 0; i < g_wallet->sapling_keys.num_keys; i++) {
-        if (!g_wallet->sapling_keys.keys[i].used) continue;
+    for (size_t i = 0; i < ctx->wallet->sapling_keys.num_keys; i++) {
+        if (!ctx->wallet->sapling_keys.keys[i].used) continue;
         char addr[128];
         if (sapling_encode_payment_address(
-                g_wallet->sapling_keys.keys[i].diversifier,
-                g_wallet->sapling_keys.keys[i].pk_d,
+                ctx->wallet->sapling_keys.keys[i].diversifier,
+                ctx->wallet->sapling_keys.keys[i].pk_d,
                 cp->bech32HRPs[BECH32_SAPLING_PAYMENT_ADDRESS],
                 addr, sizeof(addr))) {
             struct json_value s = {0};
@@ -123,6 +135,7 @@ static bool rpc_z_listaddresses(const struct json_value *params, bool help,
 static bool rpc_z_getbalance(const struct json_value *params, bool help,
                               struct json_value *result)
 {
+    struct wallet_rpc_context *ctx = wallet_ctx();
     RPC_HELP(help, result, "z_getbalance \"address\" ( minconf )\n"
         "\nReturns the balance for a taddr or zaddr.\n");
 
@@ -140,8 +153,8 @@ static bool rpc_z_getbalance(const struct json_value *params, bool help,
     if (sapling_decode_payment_address(addr_str, z_d, z_pkd)) {
         int64_t balance = 0;
         bool found_in_memory = false;
-        for (size_t i = 0; i < g_wallet->num_sapling_notes; i++) {
-            const struct sapling_received_note *n = &g_wallet->sapling_notes[i];
+        for (size_t i = 0; i < ctx->wallet->num_sapling_notes; i++) {
+            const struct sapling_received_note *n = &ctx->wallet->sapling_notes[i];
             if (!n->used || n->spent)
                 continue;
             if (memcmp(n->diversifier, z_d, 11) == 0 &&
@@ -153,11 +166,11 @@ static bool rpc_z_getbalance(const struct json_value *params, bool help,
             }
         }
         /* Fall back to SQLite if no in-memory notes */
-        if (!found_in_memory && g_node_db) {
+        if (!found_in_memory && ctx->node_db) {
             const struct sapling_key_entry *ske =
-                sapling_keystore_find_by_address(&g_wallet->sapling_keys, z_d, z_pkd);
+                sapling_keystore_find_by_address(&ctx->wallet->sapling_keys, z_d, z_pkd);
             if (ske)
-                balance = db_sapling_note_balance_for_ivk(g_node_db, ske->ivk);
+                balance = db_sapling_note_balance_for_ivk(ctx->node_db, ske->ivk);
         }
         char buf[32];
         format_amount(balance, buf, sizeof(buf));
@@ -182,7 +195,7 @@ static bool rpc_z_getbalance(const struct json_value *params, bool help,
     int64_t balance = 0;
     struct coin_entry coins[4096];
     size_t num_coins = 0;
-    wallet_available_coins(g_wallet, coins, &num_coins, 4096,
+    wallet_available_coins(ctx->wallet, coins, &num_coins, 4096,
                             minconf > 0, false);
 
     struct script addr_script;
@@ -209,6 +222,7 @@ static bool rpc_z_getbalance(const struct json_value *params, bool help,
 static bool rpc_z_listunspent(const struct json_value *params, bool help,
                                struct json_value *result)
 {
+    struct wallet_rpc_context *ctx = wallet_ctx();
     RPC_HELP(help, result, "z_listunspent ( minconf maxconf )\n"
         "\nReturns list of unspent shielded notes.\n");
 
@@ -223,15 +237,15 @@ static bool rpc_z_listunspent(const struct json_value *params, bool help,
     json_set_array(result);
 
     /* Always read from SQLite (authoritative source for shielded notes) */
-    if (g_node_db) {
+    if (ctx->node_db) {
         struct db_sapling_note db_notes[256];
-        int count = db_sapling_note_list_unspent(g_node_db, db_notes, 256);
-        int chain_h = g_wallet->best_block_height;
-        if (chain_h == 0 && g_main_state)
-            chain_h = active_chain_height(&g_main_state->chain_active);
-        if (chain_h == 0 && g_node_db && g_node_db->open) {
+        int count = db_sapling_note_list_unspent(ctx->node_db, db_notes, 256);
+        int chain_h = ctx->wallet->best_block_height;
+        if (chain_h == 0 && ctx->main_state)
+            chain_h = active_chain_height(&ctx->main_state->chain_active);
+        if (chain_h == 0 && wallet_ctx_db_ready(ctx)) {
             sqlite3_stmt *hs = NULL;
-            sqlite3_prepare_v2(g_node_db->db,
+            sqlite3_prepare_v2(ctx->node_db->db,
                 "SELECT MAX(height) FROM blocks", -1, &hs, NULL);
             if (hs && sqlite3_step(hs) == SQLITE_ROW)
                 chain_h = sqlite3_column_int(hs, 0);
@@ -305,6 +319,7 @@ static bool rpc_z_listunspent(const struct json_value *params, bool help,
 static bool rpc_z_sendmany(const struct json_value *params, bool help,
                              struct json_value *result)
 {
+    struct wallet_rpc_context *ctx = wallet_ctx();
     RPC_HELP(help, result,
         "z_sendmany \"fromaddress\" [{\"address\":\"...\",\"amount\":...,\"memo\":\"...\"},...]\n"
         "\nSend from a transparent or shielded address to multiple recipients.\n"
@@ -345,7 +360,7 @@ static bool rpc_z_sendmany(const struct json_value *params, bool help,
             return false;
         }
         from_z_key = sapling_keystore_find_by_address(
-            &g_wallet->sapling_keys, from_z_diversifier, from_z_pk_d);
+            &ctx->wallet->sapling_keys, from_z_diversifier, from_z_pk_d);
         if (!from_z_key) {
             json_set_str(result, "Shielded from address not in wallet");
             return false;
@@ -425,12 +440,12 @@ static bool rpc_z_sendmany(const struct json_value *params, bool help,
 
     /* ── Shielded spend path (z→z, z→t) ──────────────────────────── */
     if (from_is_shielded) {
-        int64_t fee = g_wallet->default_fee;
+        int64_t fee = ctx->wallet->default_fee;
 
         /* Select unspent notes for the from z-address */
         struct db_sapling_note notes[256];
         int num_notes = db_sapling_note_list_unspent_for_ivk(
-            g_node_db, from_z_key->ivk, notes, 256);
+            ctx->node_db, from_z_key->ivk, notes, 256);
         if (num_notes <= 0) {
             json_set_str(result, "No unspent shielded notes for this address");
             return false;
@@ -468,7 +483,7 @@ static bool rpc_z_sendmany(const struct json_value *params, bool help,
             uint8_t *wblob = NULL;
             size_t wlen = 0;
             int wheight = 0;
-            if (!db_sapling_note_load_witness(g_node_db,
+            if (!db_sapling_note_load_witness(ctx->node_db,
                     selected_notes[i].txid, selected_notes[i].output_index,
                     &wblob, &wlen, &wheight) || !wblob) {
                 free(witnesses);
@@ -517,7 +532,7 @@ static bool rpc_z_sendmany(const struct json_value *params, bool help,
         memset(&wtx, 0, sizeof(wtx));
         transaction_init(&wtx.tx);
 
-        int height = g_wallet->best_block_height;
+        int height = ctx->wallet->best_block_height;
         wtx.tx.overwintered = true;
         wtx.tx.version = SAPLING_TX_VERSION;
         wtx.tx.version_group_id = SAPLING_VERSION_GROUP_ID;
@@ -706,11 +721,11 @@ shielded_cleanup:
         /* Broadcast */
         transaction_compute_hash(&wtx.tx);
 
-        if (g_mempool) {
+        if (ctx->mempool) {
             struct mempool_entry me;
             mempool_entry_init(&me, &wtx.tx, fee, (int64_t)time(NULL),
                                0.0, (unsigned int)height, true, false, 0);
-            tx_mempool_add_unchecked(g_mempool, &wtx.tx.hash, &me);
+            tx_mempool_add_unchecked(ctx->mempool, &wtx.tx.hash, &me);
         }
 
         char txid_hex[65];
@@ -724,13 +739,13 @@ shielded_cleanup:
     /* ── Transparent spend path (t→t, t→z) ─────────────────────── */
 
     /* Select coins from SQLite model layer — filter to from address */
-    int64_t fee = g_wallet->default_fee;
-    int tip = active_chain_height(&g_main_state->chain_active);
+    int64_t fee = ctx->wallet->default_fee;
+    int tip = active_chain_height(&ctx->main_state->chain_active);
     struct db_wallet_utxo db_utxos[256];
     int n_utxos = 0;
 
-    if (g_node_db && g_node_db->open)
-        n_utxos = db_wallet_utxo_select_coins(g_node_db,
+    if (wallet_ctx_db_ready(ctx))
+        n_utxos = db_wallet_utxo_select_coins(ctx->node_db,
             total_amount + fee, tip, db_utxos, 256);
 
     /* Filter to coins matching the from address */
@@ -807,7 +822,7 @@ shielded_cleanup:
     /* Change output — send back to the FROM address (no keypool needed) */
     if (change > 0) {
         struct pubkey change_pk;
-        bool got_key = wallet_get_key_from_pool(g_wallet, &change_pk);
+        bool got_key = wallet_get_key_from_pool(ctx->wallet, &change_pk);
         if (!got_key) {
             /* Keypool exhausted — use the from_address as change address */
             struct tx_destination change_dest = from_dest;
@@ -845,8 +860,8 @@ shielded_cleanup:
 
         /* Get OVK from sapling keystore */
         uint8_t ovk[32];
-        if (g_wallet->sapling_keys.num_keys > 0)
-            memcpy(ovk, g_wallet->sapling_keys.keys[0].xfvk.fvk.ovk, 32);
+        if (ctx->wallet->sapling_keys.num_keys > 0)
+            memcpy(ovk, ctx->wallet->sapling_keys.keys[0].xfvk.fvk.ovk, 32);
         else
             GetRandBytes(ovk, 32);
 
@@ -889,7 +904,7 @@ shielded_cleanup:
         }
 
         /* Sign transparent inputs */
-        zcl_mutex_lock(&g_wallet->cs);
+        zcl_mutex_lock(&ctx->wallet->cs);
         for (size_t i = 0; i < num_selected; i++) {
             /* Reconstruct prevout script from SQLite data */
             struct script prev_script;
@@ -902,7 +917,7 @@ shielded_cleanup:
 
             struct tx_destination prev_dest;
             if (!script_extract_destination(&prev_script, &prev_dest)) {
-                zcl_mutex_unlock(&g_wallet->cs);
+                zcl_mutex_unlock(&ctx->wallet->cs);
                 transaction_free(&wtx.tx);
                 json_set_str(result, "Cannot determine input destination");
                 for (size_t j = 0; j < num_selected; j++)
@@ -911,8 +926,8 @@ shielded_cleanup:
             }
 
             struct privkey skey;
-            if (!keystore_get_key(&g_wallet->keystore, &prev_dest.id.key, &skey)) {
-                zcl_mutex_unlock(&g_wallet->cs);
+            if (!keystore_get_key(&ctx->wallet->keystore, &prev_dest.id.key, &skey)) {
+                zcl_mutex_unlock(&ctx->wallet->cs);
                 transaction_free(&wtx.tx);
                 json_set_str(result, "Private key not available");
                 for (size_t j = 0; j < num_selected; j++)
@@ -934,7 +949,7 @@ shielded_cleanup:
                                 (unsigned int)i, ht, db_selected[i].value,
                                 branch_id, &txdata, &sighash)) {
                 memory_cleanse(skey.vch, 32);
-                zcl_mutex_unlock(&g_wallet->cs);
+                zcl_mutex_unlock(&ctx->wallet->cs);
                 transaction_free(&wtx.tx);
                 json_set_str(result, "Sighash computation failed");
                 for (size_t j = 0; j < num_selected; j++)
@@ -946,7 +961,7 @@ shielded_cleanup:
             size_t siglen = 0;
             if (!privkey_sign(&skey, &sighash, sig, &siglen)) {
                 memory_cleanse(skey.vch, 32);
-                zcl_mutex_unlock(&g_wallet->cs);
+                zcl_mutex_unlock(&ctx->wallet->cs);
                 transaction_free(&wtx.tx);
                 json_set_str(result, "Signing failed");
                 for (size_t j = 0; j < num_selected; j++)
@@ -966,7 +981,7 @@ shielded_cleanup:
 
             memory_cleanse(skey.vch, 32);
         }
-        zcl_mutex_unlock(&g_wallet->cs);
+        zcl_mutex_unlock(&ctx->wallet->cs);
 
         /* Compute binding signature using Sapling proving context */
         transaction_compute_hash(&wtx.tx);
@@ -1001,7 +1016,7 @@ shielded_cleanup:
             wtx.tx.vin[i].sequence = UINT32_MAX - 1;
         }
 
-        zcl_mutex_lock(&g_wallet->cs);
+        zcl_mutex_lock(&ctx->wallet->cs);
         for (size_t i = 0; i < num_selected; i++) {
             struct script prev_script;
             script_init(&prev_script);
@@ -1013,7 +1028,7 @@ shielded_cleanup:
 
             struct tx_destination prev_dest;
             if (!script_extract_destination(&prev_script, &prev_dest)) {
-                zcl_mutex_unlock(&g_wallet->cs);
+                zcl_mutex_unlock(&ctx->wallet->cs);
                 transaction_free(&wtx.tx);
                 json_set_str(result, "Cannot determine input destination");
                 for (size_t j = 0; j < num_selected; j++)
@@ -1022,8 +1037,8 @@ shielded_cleanup:
             }
 
             struct privkey skey;
-            if (!keystore_get_key(&g_wallet->keystore, &prev_dest.id.key, &skey)) {
-                zcl_mutex_unlock(&g_wallet->cs);
+            if (!keystore_get_key(&ctx->wallet->keystore, &prev_dest.id.key, &skey)) {
+                zcl_mutex_unlock(&ctx->wallet->cs);
                 transaction_free(&wtx.tx);
                 json_set_str(result, "Private key not available");
                 for (size_t j = 0; j < num_selected; j++)
@@ -1048,7 +1063,7 @@ shielded_cleanup:
             size_t siglen = 0;
             if (!privkey_sign(&skey, &sighash, sig, &siglen)) {
                 memory_cleanse(skey.vch, 32);
-                zcl_mutex_unlock(&g_wallet->cs);
+                zcl_mutex_unlock(&ctx->wallet->cs);
                 transaction_free(&wtx.tx);
                 json_set_str(result, "Signing failed");
                 for (size_t j = 0; j < num_selected; j++)
@@ -1068,7 +1083,7 @@ shielded_cleanup:
 
             memory_cleanse(skey.vch, 32);
         }
-        zcl_mutex_unlock(&g_wallet->cs);
+        zcl_mutex_unlock(&ctx->wallet->cs);
     }
 
     /* Free SQLite UTXO data — no longer needed after building inputs */
@@ -1080,20 +1095,20 @@ shielded_cleanup:
     wtx.from_me = true;
     wtx.used = true;
 
-    if (!wallet_commit_transaction(g_wallet, &wtx, g_mempool)) {
+    if (!wallet_commit_transaction(ctx->wallet, &wtx, ctx->mempool)) {
         json_set_str(result, "Error committing transaction");
         transaction_free(&wtx.tx);
         return false;
     }
 
-    if (g_node_db && g_node_db->open)
-        node_db_sync_wallet_tx(g_node_db, &wtx.tx, g_wallet, 0);
+    if (wallet_ctx_db_ready(ctx))
+        node_db_sync_wallet_tx(ctx->node_db, &wtx.tx, ctx->wallet, 0);
 
-    if (g_connman_ptr)
-        connman_relay_transaction(g_connman_ptr, &wtx.tx.hash);
+    if (ctx->connman)
+        connman_relay_transaction(ctx->connman, &wtx.tx.hash);
 
-    if (g_wallet_db)
-        wallet_sqlite_flush(g_wallet_db, g_wallet);
+    if (ctx->wallet_db)
+        wallet_sqlite_flush(ctx->wallet_db, ctx->wallet);
 
     char txid[65];
     uint256_get_hex(&wtx.tx.hash, txid);
@@ -1104,6 +1119,7 @@ shielded_cleanup:
 static bool rpc_z_gettotalbalance(const struct json_value *params, bool help,
                                     struct json_value *result)
 {
+    struct wallet_rpc_context *ctx = wallet_ctx();
     RPC_HELP(help, result, "z_gettotalbalance ( minconf )\n"
         "\nReturn the total value of funds stored in the wallet.\n"
         "\nResult:\n"
@@ -1122,14 +1138,14 @@ static bool rpc_z_gettotalbalance(const struct json_value *params, bool help,
     ENSURE_WALLET(result);
 
     /* Transparent balance from SQLite model layer */
-    int64_t t_balance = (g_node_db && g_node_db->open)
-        ? db_wallet_utxo_balance(g_node_db)
-        : wallet_get_balance(g_wallet);
+    int64_t t_balance = wallet_ctx_db_ready(ctx)
+        ? db_wallet_utxo_balance(ctx->node_db)
+        : wallet_get_balance(ctx->wallet);
 
     /* Shielded balance: always from SQLite (authoritative source) */
     int64_t z_balance = 0;
-    if (g_node_db)
-        z_balance = db_sapling_note_balance(g_node_db);
+    if (ctx->node_db)
+        z_balance = db_sapling_note_balance(ctx->node_db);
 
     int64_t total = t_balance + z_balance;
 
@@ -1148,6 +1164,7 @@ static bool rpc_z_gettotalbalance(const struct json_value *params, bool help,
 static bool rpc_z_listreceivedbyaddress(const struct json_value *params,
                                           bool help, struct json_value *result)
 {
+    struct wallet_rpc_context *ctx = wallet_ctx();
     RPC_HELP(help, result, "z_listreceivedbyaddress \"address\" ( minconf )\n"
         "\nReturn a list of amounts received by a zaddr.\n");
 
@@ -1167,8 +1184,8 @@ static bool rpc_z_listreceivedbyaddress(const struct json_value *params,
     }
 
     json_set_array(result);
-    for (size_t i = 0; i < g_wallet->num_sapling_notes; i++) {
-        const struct sapling_received_note *n = &g_wallet->sapling_notes[i];
+    for (size_t i = 0; i < ctx->wallet->num_sapling_notes; i++) {
+        const struct sapling_received_note *n = &ctx->wallet->sapling_notes[i];
         if (!n->used) continue;
         if (memcmp(n->diversifier, z_d, 11) != 0 ||
             memcmp(n->pk_d, z_pkd, 32) != 0)
@@ -1231,6 +1248,7 @@ static bool rpc_z_listreceivedbyaddress(const struct json_value *params,
 static bool rpc_z_exportkey(const struct json_value *params, bool help,
                              struct json_value *result)
 {
+    struct wallet_rpc_context *ctx = wallet_ctx();
     RPC_HELP(help, result, "z_exportkey \"zaddr\"\n"
         "\nReveals the spending key for a Sapling z-address.\n"
         "The key can be imported into another wallet with z_importkey.\n"
@@ -1254,7 +1272,7 @@ static bool rpc_z_exportkey(const struct json_value *params, bool help,
     }
 
     const struct sapling_key_entry *ke =
-        sapling_keystore_find_by_address(&g_wallet->sapling_keys, z_d, z_pkd);
+        sapling_keystore_find_by_address(&ctx->wallet->sapling_keys, z_d, z_pkd);
     if (!ke) {
         json_set_str(result, "Wallet does not hold spending key for this z-address");
         return false;
@@ -1277,6 +1295,7 @@ static bool rpc_z_exportkey(const struct json_value *params, bool help,
 static bool rpc_z_importkey(const struct json_value *params, bool help,
                               struct json_value *result)
 {
+    struct wallet_rpc_context *ctx = wallet_ctx();
     RPC_HELP(help, result, "z_importkey \"key\" ( rescan startHeight )\n"
         "\nImports a Sapling spending key (as returned by z_exportkey).\n"
         "\nArguments:\n"
@@ -1317,7 +1336,7 @@ static bool rpc_z_importkey(const struct json_value *params, bool help,
     }
 
     /* Import into keystore */
-    if (!sapling_keystore_import_xsk(&g_wallet->sapling_keys, &xsk)) {
+    if (!sapling_keystore_import_xsk(&ctx->wallet->sapling_keys, &xsk)) {
         memory_cleanse(&xsk, sizeof(xsk));
         if (ignore_existing) {
             json_set_null(result);
@@ -1329,18 +1348,18 @@ static bool rpc_z_importkey(const struct json_value *params, bool help,
     memory_cleanse(&xsk, sizeof(xsk));
 
     /* Persist to wallet DB */
-    if (g_wallet_db) {
-        struct sapling_keystore *sks = &g_wallet->sapling_keys;
+    if (ctx->wallet_db) {
+        struct sapling_keystore *sks = &ctx->wallet->sapling_keys;
         if (sks->has_seed)
-            wallet_sqlite_write_sapling_seed(g_wallet_db, sks->seed);
-        wallet_sqlite_write_sapling_key(g_wallet_db,
+            wallet_sqlite_write_sapling_seed(ctx->wallet_db, sks->seed);
+        wallet_sqlite_write_sapling_key(ctx->wallet_db,
             sks->keys[sks->num_keys - 1].child_index,
             &sks->keys[sks->num_keys - 1]);
     }
 
-    if (do_rescan && g_main_state) {
-        wallet_rescan(g_wallet, &g_main_state->chain_active,
-                      start_height, -1, g_datadir);
+    if (do_rescan && ctx->main_state) {
+        wallet_rescan(ctx->wallet, &ctx->main_state->chain_active,
+                      start_height, -1, ctx->datadir);
     }
 
     json_set_null(result);
@@ -1350,6 +1369,7 @@ static bool rpc_z_importkey(const struct json_value *params, bool help,
 static bool rpc_z_exportviewingkey(const struct json_value *params, bool help,
                                      struct json_value *result)
 {
+    struct wallet_rpc_context *ctx = wallet_ctx();
     RPC_HELP(help, result, "z_exportviewingkey \"zaddr\"\n"
         "\nReveals the viewing key for a Sapling z-address.\n"
         "A viewing key allows seeing incoming transactions but not spending.\n"
@@ -1373,7 +1393,7 @@ static bool rpc_z_exportviewingkey(const struct json_value *params, bool help,
     }
 
     const struct sapling_key_entry *ke =
-        sapling_keystore_find_by_address(&g_wallet->sapling_keys, z_d, z_pkd);
+        sapling_keystore_find_by_address(&ctx->wallet->sapling_keys, z_d, z_pkd);
     if (!ke) {
         json_set_str(result,
             "Wallet does not hold key for this z-address");
@@ -1396,6 +1416,7 @@ static bool rpc_z_exportviewingkey(const struct json_value *params, bool help,
 static bool rpc_z_getmemo(const struct json_value *params, bool help,
                             struct json_value *result)
 {
+    struct wallet_rpc_context *ctx = wallet_ctx();
     RPC_HELP(help, result, "z_getmemo \"txid\" ( outindex )\n"
         "\nReturns the memo attached to a shielded note.\n"
         "\nArguments:\n"
@@ -1419,7 +1440,7 @@ static bool rpc_z_getmemo(const struct json_value *params, bool help,
 
     ENSURE_WALLET(result);
 
-    if (!g_node_db) {
+    if (!ctx->node_db) {
         json_set_str(result, "Database not available");
         return false;
     }
@@ -1436,7 +1457,7 @@ static bool rpc_z_getmemo(const struct json_value *params, bool help,
     }
 
     struct db_sapling_note notes[16];
-    int count = db_wallet_tx_notes(g_node_db, txid, notes, 16);
+    int count = db_wallet_tx_notes(ctx->node_db, txid, notes, 16);
     if (count <= 0) {
         json_set_str(result, "No shielded notes found for this txid");
         return false;
@@ -1499,23 +1520,24 @@ static bool rpc_z_getmemo(const struct json_value *params, bool help,
 static bool rpc_z_listallnotes(const struct json_value *params, bool help,
                                  struct json_value *result)
 {
+    struct wallet_rpc_context *ctx = wallet_ctx();
     RPC_HELP(help, result, "z_listallnotes\n"
         "\nReturns all shielded notes (spent and unspent) with memos.\n");
 
     (void)params;
     ENSURE_WALLET(result);
 
-    if (!g_node_db) {
+    if (!ctx->node_db) {
         json_set_str(result, "Database not available");
         return false;
     }
 
     struct db_sapling_note notes[512];
-    int count = db_sapling_note_list_all(g_node_db, notes, 512);
+    int count = db_sapling_note_list_all(ctx->node_db, notes, 512);
 
     int chain_h = 0;
-    if (g_main_state)
-        chain_h = active_chain_height(&g_main_state->chain_active);
+    if (ctx->main_state)
+        chain_h = active_chain_height(&ctx->main_state->chain_active);
 
     json_set_array(result);
     for (int i = 0; i < count; i++) {

@@ -1,0 +1,153 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * MMB Leaf Store — persistent flat file of MMB leaf hashes.
+ * Memory-mapped for FlyClient proof building (mmb_prove).
+ *
+ * 3M blocks × 32 bytes = 96 MB on disk, mmap'd for O(1) access. */
+
+#include "models/mmb_leaf_store.h"
+#include "validation/chainstate.h"
+#include <string.h>
+#include <stdio.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <sys/time.h>
+#include <time.h>
+
+bool mmb_leaf_store_open(struct mmb_leaf_store *store, const char *path)
+{
+    memset(store, 0, sizeof(*store));
+    snprintf(store->path, sizeof(store->path), "%s", path);
+
+    store->fd = open(path, O_RDWR | O_CREAT, 0644);
+    if (store->fd < 0) {
+        fprintf(stderr, "mmb_leaf_store: cannot open %s\n", path);
+        return false;
+    }
+
+    struct stat st;
+    if (fstat(store->fd, &st) == 0 && st.st_size > 0) {
+        store->num_leaves = (uint64_t)st.st_size / 32;
+        store->capacity = store->num_leaves;
+        store->map = mmap(NULL, (size_t)st.st_size, PROT_READ,
+                          MAP_PRIVATE, store->fd, 0);
+        if (store->map == MAP_FAILED) {
+            store->map = NULL;
+            fprintf(stderr, "mmb_leaf_store: mmap failed for %s\n", path);
+        }
+    }
+
+    store->open = true;
+    return true;
+}
+
+void mmb_leaf_store_close(struct mmb_leaf_store *store)
+{
+    if (!store->open) return;
+    if (store->map && store->map != MAP_FAILED) {
+        munmap(store->map, (size_t)(store->num_leaves * 32));
+        store->map = NULL;
+    }
+    if (store->fd >= 0) {
+        close(store->fd);
+        store->fd = -1;
+    }
+    store->open = false;
+}
+
+bool mmb_leaf_store_append(struct mmb_leaf_store *store,
+                           const uint8_t hash[32])
+{
+    if (!store->open || store->fd < 0) return false;
+
+    ssize_t w = write(store->fd, hash, 32);
+    if (w != 32) return false;
+
+    store->num_leaves++;
+    return true;
+}
+
+const uint8_t *mmb_leaf_store_get(const struct mmb_leaf_store *store,
+                                  uint64_t index)
+{
+    if (!store || !store->map || index >= store->num_leaves)
+        return NULL;
+    return store->map + (index * 32);
+}
+
+const uint8_t (*mmb_leaf_store_all(const struct mmb_leaf_store *store))[32]
+{
+    if (!store || !store->map || store->num_leaves == 0)
+        return NULL;
+    return (const uint8_t (*)[32])store->map;
+}
+
+uint64_t mmb_leaf_store_rebuild(struct mmb_leaf_store *store,
+                                const void *chain_active_ptr)
+{
+    if (!store || !store->open || !chain_active_ptr) return 0;
+
+    const struct active_chain *chain =
+        (const struct active_chain *)chain_active_ptr;
+    int height = active_chain_height(chain);
+    if (height < 0) return 0;
+
+    /* Unmap existing data */
+    if (store->map && store->map != MAP_FAILED) {
+        munmap(store->map, (size_t)(store->num_leaves * 32));
+        store->map = NULL;
+    }
+
+    /* Truncate and rewrite */
+    if (ftruncate(store->fd, 0) != 0) return 0;
+    lseek(store->fd, 0, SEEK_SET);
+    store->num_leaves = 0;
+
+    uint64_t count = 0;
+    int64_t t0 = 0;
+    { struct timeval tv; gettimeofday(&tv, NULL);
+      t0 = (int64_t)tv.tv_sec; }
+
+    for (int h = 0; h <= height; h++) {
+        const struct block_index *bi = active_chain_at(chain, h);
+        if (!bi || !bi->phashBlock) continue;
+
+        struct mmb_leaf leaf;
+        mmb_leaf_from_block(&leaf,
+            bi->phashBlock->data,
+            bi->nHeight, bi->nTime, bi->nBits,
+            bi->hashFinalSaplingRoot.data,
+            (const uint8_t *)bi->nChainWork.pn);
+
+        uint8_t hash[32];
+        mmb_hash_leaf(&leaf, hash);
+
+        if (!mmb_leaf_store_append(store, hash))
+            break;
+        count++;
+
+        if (count % 500000 == 0)
+            printf("[mmb_leaf_store] %llu/%d hashes written...\n",
+                   (unsigned long long)count, height + 1);
+    }
+
+    int64_t elapsed = 0;
+    { struct timeval tv; gettimeofday(&tv, NULL);
+      elapsed = (int64_t)tv.tv_sec - t0; }
+
+    printf("[mmb_leaf_store] Built %llu leaf hashes in %llds (%s)\n",
+           (unsigned long long)count, (long long)elapsed, store->path);
+
+    /* Remap for read access */
+    struct stat st;
+    if (fstat(store->fd, &st) == 0 && st.st_size > 0) {
+        store->map = mmap(NULL, (size_t)st.st_size, PROT_READ,
+                          MAP_PRIVATE, store->fd, 0);
+        if (store->map == MAP_FAILED) store->map = NULL;
+        store->capacity = store->num_leaves;
+    }
+
+    return count;
+}

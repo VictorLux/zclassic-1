@@ -14,6 +14,7 @@
 #include "core/serialize.h"
 #include "net/netbase.h"
 #include "net/version.h"
+#include "config/runtime.h"
 #include <netdb.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -26,8 +27,8 @@
 #include <unistd.h>
 #include "core/utiltime.h"
 
-/* Extern from boot.c — used for ZCL23 peer preference */
-extern struct node_db *g_active_node_db;
+/* -connect mode: only connect to specified peers, no seeds */
+bool g_connect_only = false;
 
 static pthread_t g_thread_dns_seed;
 static pthread_t g_thread_socket;
@@ -104,6 +105,11 @@ static void seed_from_fixed(struct connman *cm)
 static void *thread_dns_seed(void *arg)
 {
     struct connman *cm = (struct connman *)arg;
+
+    if (g_connect_only) {
+        printf("Connect-only mode: skipping seeds, connecting to addnodes only\n");
+        return NULL;
+    }
 
     /* Add fixed seeds immediately — don't wait */
     seed_from_fixed(cm);
@@ -202,13 +208,22 @@ static void *thread_open_connections(void *arg)
             continue;
         }
 
+        /* In connect-only mode, only maintain 1 outbound connection
+         * per addnode. Multiple connections cause snapshot serving to
+         * split across connections and stall. */
+        if (g_connect_only && outbound >= 1) {
+            sleep(1);
+            continue;
+        }
+
         /* ZCL23 peer preference: 50% of connection attempts go to known
          * ZCL23 peers (fast sync capable, high bandwidth). This creates
          * a tight mesh of power nodes that find each other quickly. */
         bool tried_zcl23 = false;
-        if (g_active_node_db && (GetRand(2) == 0)) {
+        struct node_db *ndb = app_runtime_node_db();
+        if (ndb && (GetRand(2) == 0)) {
             struct db_peer zcl_peers[8];
-            int nzcl = db_peer_fast_zcl23(g_active_node_db, zcl_peers, 8);
+            int nzcl = db_peer_fast_zcl23(ndb, zcl_peers, 8);
             if (nzcl > 0) {
                 struct db_peer *pick = &zcl_peers[GetRand((uint64_t)nzcl)];
                 /* Check not already connected */
@@ -589,6 +604,10 @@ static void *thread_message_handler(void *arg)
                 bool trickle = (GetRand(cm->manager.num_nodes) == 0);
                 cm->manager.signals.send_messages(
                     cm->manager.signals.ctx, node, trickle);
+                /* Keep tight loop when serving snapshot — don't sleep */
+                if (node->state == PEER_SNAPSHOT_SERVING ||
+                    node->state == PEER_SNAPSHOT_RECEIVING)
+                    did_work = true;
             }
         }
         zcl_mutex_unlock(&cm->manager.cs_nodes);

@@ -77,9 +77,10 @@ bool fs_recv_frame(struct fs_session *s, uint8_t *type_out,
 bool fs_send_chunk(struct fs_session *s, const uint8_t *data, uint32_t size,
                     const uint8_t sha3[32]);
 
-/* High-level: serve files on FS_PORT. Runs in its own thread. */
+/* High-level: serve files on configured port. Runs in its own thread. */
 void fs_server_start(const char *datadir, uint16_t port);
 void fs_server_stop(void);
+uint16_t fs_server_get_port(void);
 
 /* High-level: connect to peer and download all chunks. */
 bool fs_client_sync(const char *peer_addr, uint16_t port,

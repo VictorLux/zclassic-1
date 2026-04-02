@@ -17,6 +17,8 @@
 
 DEFINE_MODEL_CALLBACKS(peer)
 
+/* ── Validation ────────────────────────────────────────────────── */
+
 bool db_peer_validate(const struct db_peer *p, struct ar_errors *errors)
 {
     ar_errors_clear(errors);
@@ -33,25 +35,47 @@ bool db_peer_validate(const struct db_peer *p, struct ar_errors *errors)
     return !ar_errors_any(errors);
 }
 
+/* ── Row Deserialization ──────────────────────────────────────── */
+
+static void row_to_peer(sqlite3_stmt *s, struct db_peer *out, int off)
+{
+    out->id = AR_COL_INT(s, off);
+    AR_READ_BLOB(s, off + 1, out->ip, 16);
+    out->port = (uint16_t)AR_COL_INT(s, off + 2);
+    out->services = (uint64_t)AR_COL_INT(s, off + 3);
+    out->last_seen = AR_COL_INT(s, off + 4);
+    out->last_try = AR_COL_INT(s, off + 5);
+    out->attempts = (int)AR_COL_INT(s, off + 6);
+    const void *src = sqlite3_column_blob(s, off + 7);
+    if (src && sqlite3_column_bytes(s, off + 7) >= 16) {
+        memcpy(out->source, src, 16);
+        out->has_source = true;
+    }
+    out->bandwidth_score = (uint32_t)AR_COL_INT(s, off + 8);
+    out->is_zcl23 = AR_COL_INT(s, off + 9) != 0;
+}
+
+/* ── Save (cached stmt) ──────────────────────────────────────── */
+
 bool db_peer_save(struct node_db *ndb, const struct db_peer *p)
 {
     if (!ndb->open) return false;
+
     /* Auto-timestamp if caller didn't set last_seen */
     if (p->last_seen == 0)
         ((struct db_peer *)p)->last_seen = (int64_t)time(NULL);
+
     struct ar_errors errors;
     if (!db_peer_validate(p, &errors)) {
         AR_LOG_VALIDATION_FAILURE("peer", &errors);
         return false;
     }
+
     struct ar_callbacks *cbs = db_peer_callbacks();
     if (!ar_run_before_save(cbs, (void *)p)) return false;
-    sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(ndb->db,
-        "INSERT OR REPLACE INTO peers"
-        "(ip,port,services,last_seen,last_try,attempts,source)"
-        " VALUES(?,?,?,?,?,?,?)",
-        -1, &s, NULL);
+
+    sqlite3_stmt *s = ndb->stmt_peer_save;
+    AR_RESET(s);
     AR_BIND_BLOB(s, 1, p->ip, 16);
     AR_BIND_INT(s, 2, p->port);
     AR_BIND_INT(s, 3, (int64_t)p->services);
@@ -62,51 +86,34 @@ bool db_peer_save(struct node_db *ndb, const struct db_peer *p)
         AR_BIND_BLOB(s, 7, p->source, 16);
     else
         AR_BIND_NULL(s, 7);
-    int rc = sqlite3_step(s);
-    AR_FINALIZE(s);
-    bool ok = rc == SQLITE_DONE;
+    AR_BIND_INT(s, 8, p->bandwidth_score);
+    AR_BIND_INT(s, 9, p->is_zcl23 ? 1 : 0);
+
+    bool ok = AR_STEP_DONE(s);
     if (ok) ar_run_after_save(cbs, (void *)p);
     return ok;
 }
 
-static void row_to_peer(sqlite3_stmt *s, struct db_peer *out, int col_offset)
-{
-    out->id = sqlite3_column_int64(s, col_offset);
-    const void *ip = sqlite3_column_blob(s, col_offset + 1);
-    if (ip) memcpy(out->ip, ip, 16);
-    out->port = (uint16_t)sqlite3_column_int(s, col_offset + 2);
-    out->services = (uint64_t)sqlite3_column_int64(s, col_offset + 3);
-    out->last_seen = sqlite3_column_int64(s, col_offset + 4);
-    out->last_try = sqlite3_column_int64(s, col_offset + 5);
-    out->attempts = sqlite3_column_int(s, col_offset + 6);
-    const void *src = sqlite3_column_blob(s, col_offset + 7);
-    if (src && sqlite3_column_bytes(s, col_offset + 7) >= 16) {
-        memcpy(out->source, src, 16);
-        out->has_source = true;
-    }
-}
+/* ── Find (cached stmt) ──────────────────────────────────────── */
 
 bool db_peer_find_by_addr(struct node_db *ndb,
                           const uint8_t ip[16], uint16_t port,
                           struct db_peer *out)
 {
     if (!ndb->open) return false;
-    sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(ndb->db,
-        "SELECT id,ip,port,services,last_seen,last_try,attempts,source"
-        " FROM peers WHERE ip=? AND port=?",
-        -1, &s, NULL);
-    sqlite3_bind_blob(s, 1, ip, 16, SQLITE_STATIC);
-    sqlite3_bind_int(s, 2, port);
-    if (sqlite3_step(s) != SQLITE_ROW) {
-        sqlite3_finalize(s);
-        return false;
-    }
+
+    sqlite3_stmt *s = ndb->stmt_peer_find;
+    AR_RESET(s);
+    AR_BIND_BLOB(s, 1, ip, 16);
+    AR_BIND_INT(s, 2, port);
+
+    if (!AR_STEP_ROW(s)) return false;
     memset(out, 0, sizeof(*out));
     row_to_peer(s, out, 0);
-    sqlite3_finalize(s);
     return true;
 }
+
+/* ── Delete (cached stmt) ────────────────────────────────────── */
 
 bool db_peer_delete(struct node_db *ndb, const uint8_t ip[16], uint16_t port)
 {
@@ -119,69 +126,75 @@ bool db_peer_delete(struct node_db *ndb, const uint8_t ip[16], uint16_t port)
     p.port = port;
     if (!ar_run_before_destroy(cbs, &p)) return false;
 
-    sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(ndb->db,
-        "DELETE FROM peers WHERE ip=? AND port=?", -1, &s, NULL);
-    sqlite3_bind_blob(s, 1, ip, 16, SQLITE_STATIC);
-    sqlite3_bind_int(s, 2, port);
-    int rc = sqlite3_step(s);
-    sqlite3_finalize(s);
+    sqlite3_stmt *s = ndb->stmt_peer_delete;
+    AR_RESET(s);
+    AR_BIND_BLOB(s, 1, ip, 16);
+    AR_BIND_INT(s, 2, port);
 
-    bool ok = rc == SQLITE_DONE;
+    bool ok = AR_STEP_DONE(s);
     if (ok) ar_run_after_destroy(cbs, &p);
     return ok;
 }
 
+/* ── Count (cached stmt) ─────────────────────────────────────── */
+
 int db_peer_count(struct node_db *ndb)
 {
     if (!ndb->open) return 0;
-    sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(ndb->db,
-        "SELECT COUNT(*) FROM peers", -1, &s, NULL);
+    AR_RESET(ndb->stmt_peer_count);
     int c = 0;
-    if (sqlite3_step(s) == SQLITE_ROW)
-        c = sqlite3_column_int(s, 0);
-    sqlite3_finalize(s);
+    if (AR_STEP_ROW(ndb->stmt_peer_count))
+        c = (int)AR_COL_INT(ndb->stmt_peer_count, 0);
     return c;
 }
+
+/* ── Recent (ad-hoc query — not on hot path) ─────────────────── */
 
 int db_peer_recent(struct node_db *ndb, struct db_peer *out, size_t max)
 {
     if (!ndb->open) return 0;
     sqlite3_stmt *s = NULL;
     sqlite3_prepare_v2(ndb->db,
-        "SELECT id,ip,port,services,last_seen,last_try,attempts,source"
+        "SELECT id,ip,port,services,last_seen,last_try,attempts,"
+        "source,bandwidth_score,is_zcl23"
         " FROM peers ORDER BY last_seen DESC LIMIT ?",
         -1, &s, NULL);
-    sqlite3_bind_int(s, 1, (int)max);
+    if (!s) return 0;
+    AR_BIND_INT(s, 1, (int)max);
     int count = 0;
-    while (sqlite3_step(s) == SQLITE_ROW && (size_t)count < max) {
+    while (AR_STEP_ROW(s) && (size_t)count < max) {
         memset(&out[count], 0, sizeof(out[count]));
         row_to_peer(s, &out[count], 0);
         count++;
     }
-    sqlite3_finalize(s);
+    AR_FINALIZE(s);
     return count;
 }
+
+/* ── To Try ───────────────────────────────────────────────────── */
 
 int db_peer_to_try(struct node_db *ndb, struct db_peer *out, size_t max)
 {
     if (!ndb->open) return 0;
     sqlite3_stmt *s = NULL;
     sqlite3_prepare_v2(ndb->db,
-        "SELECT id,ip,port,services,last_seen,last_try,attempts,source"
+        "SELECT id,ip,port,services,last_seen,last_try,attempts,"
+        "source,bandwidth_score,is_zcl23"
         " FROM peers ORDER BY last_try ASC, last_seen DESC LIMIT ?",
         -1, &s, NULL);
-    sqlite3_bind_int(s, 1, (int)max);
+    if (!s) return 0;
+    AR_BIND_INT(s, 1, (int)max);
     int count = 0;
-    while (sqlite3_step(s) == SQLITE_ROW && (size_t)count < max) {
+    while (AR_STEP_ROW(s) && (size_t)count < max) {
         memset(&out[count], 0, sizeof(out[count]));
         row_to_peer(s, &out[count], 0);
         count++;
     }
-    sqlite3_finalize(s);
+    AR_FINALIZE(s);
     return count;
 }
+
+/* ── Mark Tried ───────────────────────────────────────────────── */
 
 bool db_peer_mark_tried(struct node_db *ndb,
                         const uint8_t ip[16], uint16_t port)
@@ -192,12 +205,15 @@ bool db_peer_mark_tried(struct node_db *ndb,
         "UPDATE peers SET last_try=strftime('%%s','now'),"
         " attempts=attempts+1 WHERE ip=? AND port=?",
         -1, &s, NULL);
-    sqlite3_bind_blob(s, 1, ip, 16, SQLITE_STATIC);
-    sqlite3_bind_int(s, 2, port);
-    int rc = sqlite3_step(s);
-    sqlite3_finalize(s);
-    return rc == SQLITE_DONE;
+    if (!s) return false;
+    AR_BIND_BLOB(s, 1, ip, 16);
+    AR_BIND_INT(s, 2, port);
+    bool ok = AR_STEP_DONE(s);
+    AR_FINALIZE(s);
+    return ok;
 }
+
+/* ── Mark Seen ────────────────────────────────────────────────── */
 
 bool db_peer_mark_seen(struct node_db *ndb,
                        const uint8_t ip[16], uint16_t port,
@@ -208,13 +224,16 @@ bool db_peer_mark_seen(struct node_db *ndb,
     sqlite3_prepare_v2(ndb->db,
         "UPDATE peers SET last_seen=?,attempts=0 WHERE ip=? AND port=?",
         -1, &s, NULL);
-    sqlite3_bind_int64(s, 1, now);
-    sqlite3_bind_blob(s, 2, ip, 16, SQLITE_STATIC);
-    sqlite3_bind_int(s, 3, port);
-    int rc = sqlite3_step(s);
-    sqlite3_finalize(s);
-    return rc == SQLITE_DONE;
+    if (!s) return false;
+    AR_BIND_INT(s, 1, now);
+    AR_BIND_BLOB(s, 2, ip, 16);
+    AR_BIND_INT(s, 3, port);
+    bool ok = AR_STEP_DONE(s);
+    AR_FINALIZE(s);
+    return ok;
 }
+
+/* ── Update Score ─────────────────────────────────────────────── */
 
 bool db_peer_update_score(struct node_db *ndb,
                           const uint8_t ip[16], uint16_t port,
@@ -226,31 +245,36 @@ bool db_peer_update_score(struct node_db *ndb,
         "UPDATE peers SET bandwidth_score=?,is_zcl23=?"
         " WHERE ip=? AND port=?",
         -1, &s, NULL);
-    sqlite3_bind_int(s, 1, (int)bandwidth_score);
-    sqlite3_bind_int(s, 2, is_zcl23 ? 1 : 0);
-    sqlite3_bind_blob(s, 3, ip, 16, SQLITE_STATIC);
-    sqlite3_bind_int(s, 4, port);
-    int rc = sqlite3_step(s);
-    sqlite3_finalize(s);
-    return rc == SQLITE_DONE;
+    if (!s) return false;
+    AR_BIND_INT(s, 1, (int)bandwidth_score);
+    AR_BIND_INT(s, 2, is_zcl23 ? 1 : 0);
+    AR_BIND_BLOB(s, 3, ip, 16);
+    AR_BIND_INT(s, 4, port);
+    bool ok = AR_STEP_DONE(s);
+    AR_FINALIZE(s);
+    return ok;
 }
+
+/* ── Fast ZCL23 Peers ─────────────────────────────────────────── */
 
 int db_peer_fast_zcl23(struct node_db *ndb, struct db_peer *out, size_t max)
 {
     if (!ndb->open) return 0;
     sqlite3_stmt *s = NULL;
     sqlite3_prepare_v2(ndb->db,
-        "SELECT id,ip,port,services,last_seen,last_try,attempts,source"
+        "SELECT id,ip,port,services,last_seen,last_try,attempts,"
+        "source,bandwidth_score,is_zcl23"
         " FROM peers WHERE is_zcl23=1"
         " ORDER BY bandwidth_score DESC, last_seen DESC LIMIT ?",
         -1, &s, NULL);
-    sqlite3_bind_int(s, 1, (int)max);
+    if (!s) return 0;
+    AR_BIND_INT(s, 1, (int)max);
     int count = 0;
-    while (sqlite3_step(s) == SQLITE_ROW && (size_t)count < max) {
+    while (AR_STEP_ROW(s) && (size_t)count < max) {
         memset(&out[count], 0, sizeof(out[count]));
         row_to_peer(s, &out[count], 0);
         count++;
     }
-    sqlite3_finalize(s);
+    AR_FINALIZE(s);
     return count;
 }

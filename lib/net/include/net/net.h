@@ -201,10 +201,13 @@ struct p2p_node {
     uint64_t zsync_offset;    /* total UTXOs received/sent (progress) */
     uint64_t zsync_total;     /* total UTXOs expected */
     uint64_t zsync_sent;      /* chunks sent so far */
-    uint8_t zsync_cursor_txid[32]; /* keyset cursor: last txid sent */
-    int32_t zsync_cursor_vout;     /* keyset cursor: last vout sent */
-    bool zsync_cursor_valid;       /* true after first batch */
+    uint8_t zsync_cursor_txid[32]; /* keyset cursor: last txid sent (legacy) */
+    int32_t zsync_cursor_vout;     /* keyset cursor: last vout sent (legacy) */
+    bool zsync_cursor_valid;       /* true after first batch (legacy) */
+    int64_t zsync_file_offset;     /* byte offset into pre-serialized snapshot */
+    int64_t zsync_file_size;       /* total bytes in snapshot file */
     uint8_t zsync_offered_root[32]; /* SHA3 root from offer (verify on end) */
+    uint8_t zsync_offered_mmr[32];  /* MMR root from offer (PoW chain proof) */
     int32_t zsync_offered_height;   /* height of offered snapshot */
     uint8_t zsync_offered_block[32]; /* block hash of offered snapshot */
 

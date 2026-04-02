@@ -695,17 +695,25 @@ int main(int argc, char **argv)
         else if (strcmp(argv[i], "-gen") == 0) ctx.gen = true;
         else if (strncmp(argv[i], "-port=", 6) == 0) { ctx.p2p_port = atoi(argv[i]+6); ctx.listen = true; }
         else if (strncmp(argv[i], "-rpcport=", 9) == 0) ctx.rpc_port = atoi(argv[i]+9);
+        else if (strncmp(argv[i], "-httpsport=", 11) == 0) ctx.https_port = atoi(argv[i]+11);
+        else if (strncmp(argv[i], "-fsport=", 8) == 0) ctx.fs_port = atoi(argv[i]+8);
         else if (strncmp(argv[i], "-rpcuser=", 9) == 0) ctx.rpc_user = argv[i]+9;
         else if (strncmp(argv[i], "-rpcpassword=", 13) == 0) ctx.rpc_password = argv[i]+13;
         else if (strcmp(argv[i], "-listen") == 0) ctx.listen = true;
         else if (strncmp(argv[i], "-addnode=", 9) == 0) { /* after init */ }
+        else if (strncmp(argv[i], "-connect=", 9) == 0) { ctx.connect_only = true; /* after init */ }
         else if (strncmp(argv[i], "-mineraddress=", 14) == 0) ctx.miner_address = argv[i]+14;
         else if (strncmp(argv[i], "-genproclimit=", 14) == 0) ctx.gen_threads = atoi(argv[i]+14);
         else if (strncmp(argv[i], "-importlegacy=", 14) == 0) ctx.import_legacy_dir = argv[i]+14;
-        else if (strncmp(argv[i], "-fastsync=", 10) == 0) ctx.fastsync_dir = argv[i]+10;
+        else if (strncmp(argv[i], "-import-from=", 13) == 0) ctx.legacy_import_dir = argv[i]+13;
+        else if (strncmp(argv[i], "-fastsync=", 10) == 0) {
+            fprintf(stderr, "Warning: -fastsync is deprecated, use -import-from=\n");
+            ctx.legacy_import_dir = argv[i]+10;
+        }
         else if (strncmp(argv[i], "-snapshot=", 10) == 0) ctx.snapshot_dir = argv[i]+10;
         else if (strcmp(argv[i], "-saplingscan") == 0) ctx.sapling_scan = true;
         else if (strcmp(argv[i], "-reindex-chainstate") == 0) ctx.reindex_chainstate = true;
+        else if (strcmp(argv[i], "-reimport-utxos") == 0) ctx.reimport_utxos = true;
         else if (strncmp(argv[i], "-showmetrics=", 13) == 0) show_metrics = atoi(argv[i]+13) != 0;
         else if (strcmp(argv[i], "-tor") == 0) ctx.tor = true;
         else if (strncmp(argv[i], "-assumevalid=", 13) == 0) ctx.assume_valid = argv[i]+13;
@@ -747,6 +755,12 @@ int main(int argc, char **argv)
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
 
+    /* -connect mode: only connect to specified peers, no seeds */
+    if (ctx.connect_only) {
+        extern bool g_connect_only;
+        g_connect_only = true;
+    }
+
     printf("zclassic23 starting (datadir=%s)...\n", ctx.datadir);
 
     if (!app_init(&ctx)) {
@@ -755,9 +769,12 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    for (int i = 1; i < argc; i++)
+    for (int i = 1; i < argc; i++) {
         if (strncmp(argv[i], "-addnode=", 9) == 0)
             app_add_node(argv[i] + 9, 0);
+        else if (strncmp(argv[i], "-connect=", 9) == 0)
+            app_add_node(argv[i] + 9, 0);
+    }
 
     if (show_metrics) app_start_metrics(ctx.gen);
 

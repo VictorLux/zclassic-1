@@ -201,6 +201,76 @@ int test_net(void)
         stream_free(&s);
     }
 
+    printf("getdata blocks serialize... ");
+    {
+        struct uint256 hashes[2];
+        struct byte_stream s;
+        struct byte_stream r;
+        uint64_t count = 0;
+        struct inv_item inv1, inv2;
+
+        memset(&hashes, 0, sizeof(hashes));
+        hashes[0].data[0] = 0xAA;
+        hashes[1].data[0] = 0xBB;
+
+        stream_init(&s, 128);
+        if (!getdata_blocks_serialize(&s, hashes, 2)) {
+            printf("FAIL\n");
+            failures++;
+        } else {
+            stream_init_from_data(&r, s.data, s.size);
+            if (!stream_read_compact_size(&r, &count) ||
+                count != 2 ||
+                !inv_item_deserialize(&inv1, &r) ||
+                !inv_item_deserialize(&inv2, &r) ||
+                inv1.type != MSG_BLOCK ||
+                inv2.type != MSG_BLOCK ||
+                inv1.hash.data[0] != 0xAA ||
+                inv2.hash.data[0] != 0xBB) {
+                printf("FAIL\n");
+                failures++;
+            } else {
+                printf("OK\n");
+            }
+        }
+        stream_free(&s);
+    }
+
+    printf("getheaders serialize... ");
+    {
+        struct block_locator loc;
+        struct byte_stream s;
+        struct byte_stream r;
+        uint64_t count = 0;
+        struct uint256 stop = {0};
+
+        block_locator_init(&loc);
+        loc.num_hashes = 2;
+        loc.vhave = calloc(2, sizeof(struct uint256));
+        loc.vhave[0].data[0] = 0x11;
+        loc.vhave[1].data[0] = 0x22;
+
+        stream_init(&s, 128);
+        if (!getheaders_serialize(&s, &loc, NULL)) {
+            printf("FAIL\n");
+            failures++;
+        } else {
+            stream_init_from_data(&r, s.data, s.size);
+            if (!stream_read_compact_size(&r, &count) ||
+                count != 2 ||
+                r.data[r.read_pos] != 0x11 ||
+                r.data[r.read_pos + 32] != 0x22 ||
+                memcmp(s.data + s.size - 32, stop.data, 32) != 0) {
+                printf("FAIL\n");
+                failures++;
+            } else {
+                printf("OK\n");
+            }
+        }
+        block_locator_free(&loc);
+        stream_free(&s);
+    }
+
     printf("split_host_port... ");
     {
         char host[128];

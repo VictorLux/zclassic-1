@@ -15,6 +15,7 @@
 
 #pragma GCC diagnostic ignored "-Wformat-truncation"
 #include "controllers/snapshot_controller.h"
+#include "config/file_ops.h"
 #include "controllers/legacy_import.h"
 #include "controllers/sync_controller.h"
 #include "storage/dbwrapper.h"
@@ -113,53 +114,28 @@ const char *snapshot_create(const char *legacy_datadir,
     snprintf(dst, sizeof(dst), "%s/blocks", snap_dir);
     mkdir(dst, 0700);
 
-    printf("snapshot: linking block files...\n");
+    printf("snapshot: copying block files...\n");
     fflush(stdout);
-    int linked = 0;
-    for (int f = 0; f < 200; f++) {
-        snprintf(src, sizeof(src), "%s/blocks/blk%05d.dat",
-                 legacy_datadir, f);
-        if (access(src, R_OK) != 0) break;
-        snprintf(dst, sizeof(dst), "%s/blocks/blk%05d.dat", snap_dir, f);
-        if (link(src, dst) == 0) linked++;
-        else {
-            /* Fallback to copy if cross-device */
-            char cmd[8192];
-            snprintf(cmd, sizeof(cmd), "cp '%s' '%s'", src, dst);
-            system(cmd);
-            linked++;
-        }
-        /* Also link rev files */
-        snprintf(src, sizeof(src), "%s/blocks/rev%05d.dat",
-                 legacy_datadir, f);
-        snprintf(dst, sizeof(dst), "%s/blocks/rev%05d.dat", snap_dir, f);
-        link(src, dst); /* ok if fails */
-    }
-    printf("snapshot: %d block files linked\n", linked);
+    snprintf(src, sizeof(src), "%s/blocks", legacy_datadir);
+    snprintf(dst, sizeof(dst), "%s/blocks", snap_dir);
+    int copied = block_files_copy(src, dst);
+    printf("snapshot: %d block files copied\n", copied);
 
-    /* Copy block index LevelDB (clean copy, ~3GB) */
+    /* Copy block index LevelDB */
     printf("snapshot: copying blocks/index...\n");
     fflush(stdout);
-    snprintf(dst, sizeof(dst), "%s/blocks/index", snap_dir);
-    mkdir(dst, 0700);
     snprintf(src, sizeof(src), "%s/blocks/index", legacy_datadir);
-    {
-        char cmd[8192];
-        snprintf(cmd, sizeof(cmd), "cp -a '%s'/. '%s'/", src, dst);
-        system(cmd);
-    }
+    snprintf(dst, sizeof(dst), "%s/blocks/index", snap_dir);
+    dir_copy(src, dst);
+    printf(" done\n");
 
-    /* Copy chainstate LevelDB (~387MB) */
+    /* Copy chainstate LevelDB */
     printf("snapshot: copying chainstate...\n");
     fflush(stdout);
-    snprintf(dst, sizeof(dst), "%s/chainstate", snap_dir);
-    mkdir(dst, 0700);
     snprintf(src, sizeof(src), "%s/chainstate", legacy_datadir);
-    {
-        char cmd[8192];
-        snprintf(cmd, sizeof(cmd), "cp -a '%s'/. '%s'/", src, dst);
-        system(cmd);
-    }
+    snprintf(dst, sizeof(dst), "%s/chainstate", snap_dir);
+    dir_copy(src, dst);
+    printf(" done\n");
 
     struct timespec t1;
     clock_gettime(CLOCK_MONOTONIC, &t1);

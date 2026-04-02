@@ -15,6 +15,7 @@
 #include "models/utxo.h"
 #include "models/tx_index.h"
 #include "event/event.h"
+#include "crypto/sha3.h"
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -76,12 +77,9 @@ bool db_utxo_validate(const struct db_utxo *u, struct ar_errors *errors)
     };
     validates_inclusion_of(errors, u, script_type, valid_types, 5);
 
-    if (u->has_address) {
-        static const uint8_t z[20] = {0};
-        validates_custom(errors,
-            memcmp(u->address_hash, z, 20) != 0,
-            "address_hash", "can't be blank when has_address");
-    }
+    /* Note: all-zeros address_hash with has_address=true is valid.
+     * It represents coins sent to the Hash160(0x00...) burn address.
+     * Rare (~7 UTXOs on mainnet) but must be accepted for SHA3 match. */
 
     return !ar_errors_any(errors);
 }
@@ -121,6 +119,26 @@ bool db_utxo_save(struct node_db *ndb, const struct db_utxo *u)
         /* Don't emit per-UTXO events during bulk import — too noisy */
     }
     return ok;
+}
+
+/* ── Bulk Import (fast path) ───────────────────────────────────── */
+
+bool db_utxo_insert_raw(struct node_db *ndb, const struct db_utxo *u)
+{
+    sqlite3_stmt *s = ndb->stmt_utxo_insert;
+    sqlite3_reset(s);
+    AR_BIND_BLOB(s, 1, u->txid, 32);
+    AR_BIND_INT(s, 2, (int)u->vout);
+    AR_BIND_INT(s, 3, u->value);
+    AR_BIND_BLOB(s, 4, u->script, (int)u->script_len);
+    AR_BIND_INT(s, 5, (int)u->script_type);
+    if (u->has_address)
+        AR_BIND_BLOB(s, 6, u->address_hash, 20);
+    else
+        AR_BIND_NULL(s, 6);
+    AR_BIND_INT(s, 7, u->height);
+    AR_BIND_INT(s, 8, u->is_coinbase ? 1 : 0);
+    return AR_STEP_DONE(s);
 }
 
 /* ── Find ──────────────────────────────────────────────────────── */
@@ -257,6 +275,215 @@ void db_utxo_free(struct db_utxo *u)
     free(u->script);
     u->script = NULL;
     u->script_len = 0;
+}
+
+/* ── Iteration ─────────────────────────────────────────────────── */
+
+int64_t db_utxo_each(struct node_db *ndb, db_utxo_each_fn fn, void *ctx)
+{
+    if (!ndb || !ndb->open || !fn) return 0;
+
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(ndb->db,
+            "SELECT txid, vout, value, script, height, is_coinbase, "
+            "script_type, address_hash FROM utxos ORDER BY txid, vout",
+            -1, &s, NULL) != SQLITE_OK)
+        return 0;
+
+    int64_t count = 0;
+    while (sqlite3_step(s) == SQLITE_ROW) {
+        struct db_utxo u;
+        memset(&u, 0, sizeof(u));
+
+        const void *txid = sqlite3_column_blob(s, 0);
+        if (!txid || sqlite3_column_bytes(s, 0) < 32) continue;
+        memcpy(u.txid, txid, 32);
+
+        u.vout = (uint32_t)sqlite3_column_int(s, 1);
+        u.value = sqlite3_column_int64(s, 2);
+
+        u.script = (uint8_t *)sqlite3_column_blob(s, 3);
+        u.script_len = (size_t)sqlite3_column_bytes(s, 3);
+
+        u.height = sqlite3_column_int(s, 4);
+        u.is_coinbase = sqlite3_column_int(s, 5) != 0;
+        u.script_type = (enum script_type)sqlite3_column_int(s, 6);
+
+        const void *ah = sqlite3_column_blob(s, 7);
+        if (ah && sqlite3_column_bytes(s, 7) >= 20) {
+            memcpy(u.address_hash, ah, 20);
+            u.has_address = true;
+        }
+
+        count++;
+        if (!fn(&u, ctx)) break;
+    }
+    sqlite3_finalize(s);
+    return count;
+}
+
+/* ── Snapshot Serialization ────────────────────────────────────── */
+
+struct snapshot_writer {
+    FILE *fp;
+    uint32_t chunk_size;
+    uint32_t entries_in_chunk;
+    long chunk_start_pos;      /* file offset of current chunk's entry_count */
+    int64_t total_written;
+    struct sha3_256_ctx *sha3; /* optional SHA3 context for commitment */
+};
+
+static void snap_flush_chunk_header(struct snapshot_writer *w)
+{
+    if (w->entries_in_chunk == 0) return;
+    /* Seek back and patch the entry count at chunk start */
+    long cur = ftell(w->fp);
+    fseek(w->fp, w->chunk_start_pos, SEEK_SET);
+    uint8_t hdr[4] = {
+        (uint8_t)(w->entries_in_chunk & 0xFF),
+        (uint8_t)((w->entries_in_chunk >> 8) & 0xFF),
+        (uint8_t)((w->entries_in_chunk >> 16) & 0xFF),
+        (uint8_t)((w->entries_in_chunk >> 24) & 0xFF)
+    };
+    fwrite(hdr, 1, 4, w->fp);
+    fseek(w->fp, cur, SEEK_SET);
+}
+
+static void snap_begin_chunk(struct snapshot_writer *w)
+{
+    w->chunk_start_pos = ftell(w->fp);
+    uint8_t placeholder[4] = {0};
+    fwrite(placeholder, 1, 4, w->fp);
+    w->entries_in_chunk = 0;
+}
+
+static bool snap_write_utxo(const struct db_utxo *u, void *ctx)
+{
+    struct snapshot_writer *w = ctx;
+
+    /* Start a new chunk if needed */
+    if (w->entries_in_chunk == 0 && w->chunk_start_pos < 0) {
+        snap_begin_chunk(w);
+    }
+
+    /* Feed to SHA3 commitment (must match utxo_commitment_sha3_compute format):
+     * txid(32) || vout_le(4) || value_le(8) || script_len_le(4) || script ||
+     * height_le(4) || is_coinbase(1) */
+    if (w->sha3) {
+        sha3_256_write(w->sha3, u->txid, 32);
+        uint8_t le4[4];
+        le4[0] = (uint8_t)(u->vout); le4[1] = (uint8_t)(u->vout >> 8);
+        le4[2] = (uint8_t)(u->vout >> 16); le4[3] = (uint8_t)(u->vout >> 24);
+        sha3_256_write(w->sha3, le4, 4);
+        uint8_t le8[8];
+        uint64_t v = (uint64_t)u->value;
+        for (int i = 0; i < 8; i++) le8[i] = (uint8_t)(v >> (8 * i));
+        sha3_256_write(w->sha3, le8, 8);
+        uint32_t slen32 = (uint32_t)u->script_len;
+        le4[0] = (uint8_t)(slen32); le4[1] = (uint8_t)(slen32 >> 8);
+        le4[2] = (uint8_t)(slen32 >> 16); le4[3] = (uint8_t)(slen32 >> 24);
+        sha3_256_write(w->sha3, le4, 4);
+        if (u->script && u->script_len > 0)
+            sha3_256_write(w->sha3, u->script, u->script_len);
+        uint32_t ht = (uint32_t)u->height;
+        le4[0] = (uint8_t)(ht); le4[1] = (uint8_t)(ht >> 8);
+        le4[2] = (uint8_t)(ht >> 16); le4[3] = (uint8_t)(ht >> 24);
+        sha3_256_write(w->sha3, le4, 4);
+        uint8_t cb = u->is_coinbase ? 1 : 0;
+        sha3_256_write(w->sha3, &cb, 1);
+    }
+
+    /* Write entry: txid(32) + vout(4) + value(8) + height(4) + compact + script */
+    fwrite(u->txid, 1, 32, w->fp);
+
+    uint8_t buf[16];
+    buf[0] = (uint8_t)(u->vout & 0xFF);
+    buf[1] = (uint8_t)((u->vout >> 8) & 0xFF);
+    buf[2] = (uint8_t)((u->vout >> 16) & 0xFF);
+    buf[3] = (uint8_t)((u->vout >> 24) & 0xFF);
+    fwrite(buf, 1, 4, w->fp);
+
+    uint64_t v = (uint64_t)u->value;
+    for (int i = 0; i < 8; i++)
+        buf[i] = (uint8_t)((v >> (i * 8)) & 0xFF);
+    fwrite(buf, 1, 8, w->fp);
+
+    uint32_t h = (uint32_t)u->height;
+    buf[0] = (uint8_t)(h & 0xFF);
+    buf[1] = (uint8_t)((h >> 8) & 0xFF);
+    buf[2] = (uint8_t)((h >> 16) & 0xFF);
+    buf[3] = (uint8_t)((h >> 24) & 0xFF);
+    fwrite(buf, 1, 4, w->fp);
+
+    /* is_coinbase (1 byte) — needed for SHA3 match */
+    uint8_t cb = u->is_coinbase ? 1 : 0;
+    fwrite(&cb, 1, 1, w->fp);
+
+    /* Compact size for script length */
+    size_t slen = u->script_len;
+    if (slen > 520) slen = 520;
+    if (slen < 253) {
+        uint8_t b = (uint8_t)slen;
+        fwrite(&b, 1, 1, w->fp);
+    } else {
+        uint8_t b = 253;
+        fwrite(&b, 1, 1, w->fp);
+        buf[0] = (uint8_t)(slen & 0xFF);
+        buf[1] = (uint8_t)((slen >> 8) & 0xFF);
+        fwrite(buf, 1, 2, w->fp);
+    }
+    if (u->script && slen > 0)
+        fwrite(u->script, 1, slen, w->fp);
+
+    w->entries_in_chunk++;
+    w->total_written++;
+
+    if (w->entries_in_chunk >= w->chunk_size) {
+        snap_flush_chunk_header(w);
+        snap_begin_chunk(w);
+    }
+    return true;
+}
+
+int64_t db_utxo_serialize_snapshot(struct node_db *ndb,
+                                    const char *path, uint32_t chunk_size,
+                                    uint8_t sha3_out[32])
+{
+    if (!ndb || !ndb->open || !path) return -1;
+    if (chunk_size == 0) chunk_size = 500;
+
+    FILE *fp = fopen(path, "wb");
+    if (!fp) return -1;
+
+    struct sha3_256_ctx sha3_ctx;
+    struct sha3_256_ctx *sha3_ptr = NULL;
+    if (sha3_out) {
+        sha3_256_init(&sha3_ctx);
+        sha3_ptr = &sha3_ctx;
+    }
+
+    struct snapshot_writer w = {
+        .fp = fp,
+        .chunk_size = chunk_size,
+        .entries_in_chunk = 0,
+        .chunk_start_pos = -1,
+        .total_written = 0,
+        .sha3 = sha3_ptr
+    };
+
+    snap_begin_chunk(&w);
+    db_utxo_each(ndb, snap_write_utxo, &w);
+
+    /* Flush final partial chunk */
+    if (w.entries_in_chunk > 0)
+        snap_flush_chunk_header(&w);
+
+    fclose(fp);
+
+    if (sha3_out)
+        sha3_256_finalize(&sha3_ctx, sha3_out);
+
+    return w.total_written;
 }
 
 /* ── Relationships ─────────────────────────────────────────────── */

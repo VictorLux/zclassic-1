@@ -210,16 +210,16 @@ static bool rpc_downloadstats(const struct json_value *params, bool help,
 static bool rpc_coinsinfo(const struct json_value *params, bool help,
                            struct json_value *result)
 {
+    struct coins_view_cache *tip = wallet_rpc_coins_tip();
     (void)params;
     RPC_HELP(help, result,
         "coinsinfo\n"
         "\nReturn UTXO cache diagnostics.\n");
 
-    if (!g_coins_tip) {
+    if (!tip) {
         json_set_str(result, "coins_tip not initialized");
         return true;
     }
-    struct coins_view_cache *tip = g_coins_tip;
     json_set_object(result);
     json_push_kv_int(result, "cache_size",
                       (int64_t)tip->cache_coins.size);

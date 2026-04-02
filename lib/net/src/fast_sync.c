@@ -112,6 +112,92 @@ bool fast_sync_compute_utxo_root(const char *datadir,
     return true;
 }
 
+/* ── Pre-serialized snapshot for zero-copy serving ───────────── */
+
+void fast_sync_snapshot_path(char *out, size_t max, const char *datadir)
+{
+    snprintf(out, max, "%s/snapshot.bin", datadir);
+}
+
+/* Cached SHA3 hash from pre-serialization — guaranteed to match file contents */
+static uint8_t g_snapshot_sha3[32];
+static uint64_t g_snapshot_count = 0;
+static bool g_snapshot_sha3_valid = false;
+
+/* In-memory snapshot buffer — loaded once at startup for instant serving.
+ * 96 MB for 1.35M UTXOs. Eliminates all file I/O during serving. */
+static uint8_t *g_snapshot_buf = NULL;
+static int64_t  g_snapshot_buf_size = 0;
+
+bool fast_sync_get_snapshot_sha3(uint8_t out[32], uint64_t *count)
+{
+    if (!g_snapshot_sha3_valid) return false;
+    memcpy(out, g_snapshot_sha3, 32);
+    if (count) *count = g_snapshot_count;
+    return true;
+}
+
+int64_t fast_sync_prebuild_snapshot(struct node_db *ndb, const char *datadir)
+{
+    char path[1024];
+    fast_sync_snapshot_path(path, sizeof(path), datadir);
+
+    printf("[snapshot] Pre-serializing UTXOs to %s...\n", path);
+    uint8_t sha3[32];
+    int64_t count = db_utxo_serialize_snapshot(ndb, path, SYNC_CHUNK_SIZE, sha3);
+    if (count > 0) {
+        /* Store SHA3 hash for offer — matches file contents exactly */
+        memcpy(g_snapshot_sha3, sha3, 32);
+        g_snapshot_count = (uint64_t)count;
+        g_snapshot_sha3_valid = true;
+
+        /* Load entire file into memory for instant serving */
+        FILE *fp = fopen(path, "rb");
+        if (fp) {
+            fseek(fp, 0, SEEK_END);
+            long sz = ftell(fp);
+            fseek(fp, 0, SEEK_SET);
+
+            free(g_snapshot_buf);
+            g_snapshot_buf = malloc((size_t)sz);
+            if (g_snapshot_buf) {
+                size_t rd = fread(g_snapshot_buf, 1, (size_t)sz, fp);
+                g_snapshot_buf_size = (int64_t)rd;
+            }
+            fclose(fp);
+
+            char hex[65];
+            for (int i = 0; i < 32; i++)
+                sprintf(hex + i*2, "%02x", sha3[i]);
+            printf("[snapshot] Pre-serialized %lld UTXOs (%.1f MB), "
+                   "SHA3=%s — loaded in RAM for instant serving\n",
+                   (long long)count, (double)sz / (1024.0 * 1024.0), hex);
+        }
+    } else {
+        fprintf(stderr, "[snapshot] Pre-serialization failed\n");
+    }
+    return count;
+}
+
+uint64_t fast_sync_snapshot_file_size(const char *datadir)
+{
+    char path[1024];
+    fast_sync_snapshot_path(path, sizeof(path), datadir);
+    FILE *fp = fopen(path, "rb");
+    if (!fp) return 0;
+    fseek(fp, 0, SEEK_END);
+    long sz = ftell(fp);
+    fclose(fp);
+    return (uint64_t)(sz > 0 ? sz : 0);
+}
+
+/* Get the in-memory snapshot buffer for zero-copy serving */
+const uint8_t *fast_sync_get_snapshot_buf(int64_t *size)
+{
+    if (size) *size = g_snapshot_buf_size;
+    return g_snapshot_buf;
+}
+
 bool fast_sync_serve_snapshot(const char *datadir,
                                int from_height,
                                chunk_callback cb, void *ctx)

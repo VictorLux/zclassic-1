@@ -1136,3 +1136,86 @@ int scan_block_files_mark_data(struct main_state *ms, const char *datadir,
     return marked;
 }
 
+/* ── Boot-time Validation ───────────────────────────────────────
+ *
+ * ActiveRecord-style validation for coins/chain agreement.
+ * Called once at boot after block index load + chain restore.
+ *
+ * Validates: coins_best_block must match active chain tip hash.
+ * Returns: recovery action enum + diagnostic info.
+ * Emits: EV_BOOT_VALIDATION_FAILED on mismatch. */
+
+struct boot_validation_result validate_coins_chain_agreement(
+    struct main_state *ms,
+    struct coins_view_cache *cvtip,
+    const char *datadir)
+{
+    struct boot_validation_result r = {0};
+
+    struct block_index *chain_tip = active_chain_tip(&ms->chain_active);
+    struct uint256 coins_best;
+    coins_view_cache_get_best_block(cvtip, &coins_best);
+
+    r.chain_height = chain_tip ? chain_tip->nHeight : 0;
+    memcpy(&r.coins_hash, &coins_best, sizeof(r.coins_hash));
+    r.coins_height = -1;
+
+    /* Case 1: Chain at genesis or empty — nothing to validate */
+    if (!chain_tip || chain_tip->nHeight <= 0) {
+        r.action = BOOT_OK;
+        return r;
+    }
+
+    /* Case 2: Coins DB empty but chain has blocks */
+    if (uint256_is_null(&coins_best)) {
+        /* Check if LevelDB chainstate exists for reimport */
+        char cs_path[1024];
+        snprintf(cs_path, sizeof(cs_path), "%s/chainstate", datadir);
+        struct stat st;
+        if (stat(cs_path, &st) == 0 && S_ISDIR(st.st_mode)) {
+            r.action = BOOT_RECOVER_REIMPORT;
+        } else {
+            r.action = BOOT_RECOVER_WIPE_WAIT;
+        }
+        event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
+            "coins_empty chain_h=%d action=%s",
+            r.chain_height,
+            r.action == BOOT_RECOVER_REIMPORT ? "reimport" : "wipe_wait");
+        return r;
+    }
+
+    /* Case 3: Coins and chain agree — all good */
+    if (chain_tip->phashBlock &&
+        uint256_cmp(chain_tip->phashBlock, &coins_best) == 0) {
+        r.action = BOOT_OK;
+        r.coins_height = r.chain_height;
+        return r;
+    }
+
+    /* Case 4: Coins and chain disagree — find coins block in index */
+    struct block_index *coins_block = block_map_find(
+        &ms->map_block_index, &coins_best);
+
+    if (coins_block) {
+        r.coins_height = coins_block->nHeight;
+        if (coins_block->nHeight <= chain_tip->nHeight) {
+            /* Coins behind chain — reset chain to coins tip */
+            r.action = BOOT_RECOVER_RESET_CHAIN;
+        } else {
+            /* Coins ahead of chain — unusual, wipe and resync */
+            r.action = BOOT_RECOVER_WIPE_WAIT;
+        }
+    } else {
+        /* Coins best block not in our index — unknown state */
+        r.action = BOOT_RECOVER_WIPE_WAIT;
+    }
+
+    event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
+        "coins_chain_mismatch chain_h=%d coins_h=%d action=%s",
+        r.chain_height, r.coins_height,
+        r.action == BOOT_RECOVER_RESET_CHAIN ? "reset_chain" :
+        r.action == BOOT_RECOVER_REIMPORT ? "reimport" : "wipe_wait");
+
+    return r;
+}
+

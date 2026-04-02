@@ -50,6 +50,8 @@ int main(void)
     failures += test_mining();
     failures += test_utxo_commitment();
     failures += test_mmr();
+    failures += test_mmb();
+    failures += test_flyclient();
     failures += test_scan_util();
     failures += test_tor();
     failures += test_event();
@@ -59,6 +61,9 @@ int main(void)
     failures += test_wallet_view();
     failures += test_fast_sync();
     failures += test_block_scan();
+    failures += test_node_health_service();
+    failures += test_sync_service();
+    failures += test_snapshot_sync_service();
 
     /* Spec-based user story tests */
     failures += spec_wallet_dashboard();

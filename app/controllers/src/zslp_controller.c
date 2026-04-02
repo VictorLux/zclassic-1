@@ -17,6 +17,7 @@
 #include "support/cleanse.h"
 #include "validation/txmempool.h"
 #include "primitives/transaction.h"
+#include "config/runtime.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -29,6 +30,16 @@
 #define ZSLP_MAX_NAME_LEN    64
 #define ZSLP_MAX_DECIMALS    8
 #define ZSLP_MAX_SUPPLY      2100000000000000ULL  /* 21000000 * 1e8 */
+
+static struct wallet *zslp_wallet(void)
+{
+    return app_runtime_wallet();
+}
+
+static struct tx_mempool *zslp_mempool(void)
+{
+    return app_runtime_mempool();
+}
 
 /* Validate that str contains only alphanumeric characters [A-Za-z0-9]. */
 static bool is_alphanumeric(const char *str, size_t len)
@@ -105,12 +116,11 @@ const char *zslp_create_token(const char *datadir,
      *   vout[1]: dust output to our address (receives initial supply)
      *   vout[2]: dust output to our address (mint baton)
      * Sign and broadcast via wallet. */
-    extern struct wallet *g_active_wallet;
-    extern struct tx_mempool *g_mempool;
-
     char *broadcast_txid = NULL; /* set if we successfully broadcast */
+    struct wallet *wallet = zslp_wallet();
+    struct tx_mempool *mempool = zslp_mempool();
 
-    if (!g_active_wallet || !g_mempool) {
+    if (!wallet || !mempool) {
         /* No wallet available (test mode) — skip on-chain broadcast,
          * just track in SQLite below. */
         goto store_sqlite;
@@ -123,7 +133,7 @@ const char *zslp_create_token(const char *datadir,
 
     /* We need our own address for dust outputs (token receiver + mint baton) */
     struct pubkey our_pk;
-    if (!wallet_get_key_from_pool(g_active_wallet, &our_pk)) {
+    if (!wallet_get_key_from_pool(wallet, &our_pk)) {
         fprintf(stderr, "zslp: cannot get address from wallet\n");
         return NULL;
     }
@@ -137,7 +147,7 @@ const char *zslp_create_token(const char *datadir,
     struct tx_destination dests[2] = { our_dest, our_dest };
     int64_t vals[2] = { 546, 546 }; /* dust for token + mint baton */
 
-    if (!wallet_create_transaction_multi(g_active_wallet,
+    if (!wallet_create_transaction_multi(wallet,
             dests, vals, 2, &wtx, &fee_paid, &tx_error)) {
         fprintf(stderr, "zslp: tx build failed: %s\n",
                 tx_error ? tx_error : "unknown");
@@ -171,18 +181,18 @@ const char *zslp_create_token(const char *datadir,
     /* Re-sign: the vout change invalidates the sighash.
      * We need to clear scriptSigs and re-sign. */
     const struct chain_params *cp = chain_params_get();
-    int height = g_active_wallet->best_block_height;
+    int height = wallet->best_block_height;
     uint32_t branch_id = consensus_current_epoch_branch_id(
         height + 1, &cp->consensus);
 
-    zcl_mutex_lock(&g_active_wallet->cs);
+    zcl_mutex_lock(&wallet->cs);
     for (size_t i = 0; i < wtx.tx.num_vin; i++) {
         /* Find the prevout to get the scriptPubKey and amount */
         struct wallet_tx *prev_wtx = NULL;
-        for (size_t j = 0; j < g_active_wallet->num_wallet_tx; j++) {
-            if (uint256_eq(&g_active_wallet->map_wallet[j].tx.hash,
+        for (size_t j = 0; j < wallet->num_wallet_tx; j++) {
+            if (uint256_eq(&wallet->map_wallet[j].tx.hash,
                            &wtx.tx.vin[i].prevout.hash)) {
-                prev_wtx = &g_active_wallet->map_wallet[j];
+                prev_wtx = &wallet->map_wallet[j];
                 break;
             }
         }
@@ -195,7 +205,7 @@ const char *zslp_create_token(const char *datadir,
             continue;
 
         struct privkey skey;
-        if (!keystore_get_key(&g_active_wallet->keystore,
+        if (!keystore_get_key(&wallet->keystore,
                                &prev_dest.id.key, &skey))
             continue;
 
@@ -234,13 +244,13 @@ const char *zslp_create_token(const char *datadir,
 
         memory_cleanse(skey.vch, 32);
     }
-    zcl_mutex_unlock(&g_active_wallet->cs);
+    zcl_mutex_unlock(&wallet->cs);
 
     /* Compute final tx hash — this IS the token_id */
     transaction_compute_hash(&wtx.tx);
 
     /* Commit to mempool + relay */
-    if (!wallet_commit_transaction(g_active_wallet, &wtx, g_mempool)) {
+    if (!wallet_commit_transaction(wallet, &wtx, mempool)) {
         fprintf(stderr, "zslp: commit failed\n");
         transaction_free(&wtx.tx);
         return NULL;
@@ -329,11 +339,11 @@ bool zslp_generate_payment_address(const char *datadir,
 {
     if (!datadir || !z_addr_out || max < 80) return false;
 
-    extern struct wallet *g_active_wallet;
-    if (g_active_wallet && g_active_wallet->sapling_keys.num_keys > 0) {
+    struct wallet *wallet = zslp_wallet();
+    if (wallet && wallet->sapling_keys.num_keys > 0) {
         uint8_t diversifier[ZC_DIVERSIFIER_SIZE];
         uint8_t pk_d[32];
-        if (sapling_keystore_new_address(&g_active_wallet->sapling_keys,
+        if (sapling_keystore_new_address(&wallet->sapling_keys,
                                           diversifier, pk_d)) {
             const struct chain_params *cp = chain_params_get();
             if (sapling_encode_payment_address(diversifier, pk_d,
@@ -490,10 +500,10 @@ bool zslp_send(const char *datadir,
         return false;
     }
 
-    extern struct wallet *g_active_wallet;
-    extern struct tx_mempool *g_mempool;
+    struct wallet *wallet = zslp_wallet();
+    struct tx_mempool *mempool = zslp_mempool();
 
-    if (!g_active_wallet || !g_mempool) {
+    if (!wallet || !mempool) {
         /* No wallet (test mode) — just update SQLite balances */
         return zslp_mint(datadir, token_id_hex, to_addr, amount);
     }
@@ -534,7 +544,7 @@ bool zslp_send(const char *datadir,
     const char *tx_error = NULL;
 
     int64_t vals[1] = { 546 }; /* dust for token output */
-    if (!wallet_create_transaction_multi(g_active_wallet,
+    if (!wallet_create_transaction_multi(wallet,
             &dest, vals, 1, &wtx, &fee_paid, &tx_error)) {
         fprintf(stderr, "zslp: tx build failed: %s\n",
                 tx_error ? tx_error : "unknown");
@@ -556,17 +566,17 @@ bool zslp_send(const char *datadir,
     wtx.tx.num_vout = old_nout + 1;
 
     /* Re-sign (vout change invalidates sighash) */
-    int height = g_active_wallet->best_block_height;
+    int height = wallet->best_block_height;
     uint32_t branch_id = consensus_current_epoch_branch_id(
         height + 1, &cp->consensus);
 
-    zcl_mutex_lock(&g_active_wallet->cs);
+    zcl_mutex_lock(&wallet->cs);
     for (size_t i = 0; i < wtx.tx.num_vin; i++) {
         struct wallet_tx *prev_wtx = NULL;
-        for (size_t j = 0; j < g_active_wallet->num_wallet_tx; j++) {
-            if (uint256_eq(&g_active_wallet->map_wallet[j].tx.hash,
+        for (size_t j = 0; j < wallet->num_wallet_tx; j++) {
+            if (uint256_eq(&wallet->map_wallet[j].tx.hash,
                            &wtx.tx.vin[i].prevout.hash)) {
-                prev_wtx = &g_active_wallet->map_wallet[j];
+                prev_wtx = &wallet->map_wallet[j];
                 break;
             }
         }
@@ -579,7 +589,7 @@ bool zslp_send(const char *datadir,
             continue;
 
         struct privkey skey;
-        if (!keystore_get_key(&g_active_wallet->keystore,
+        if (!keystore_get_key(&wallet->keystore,
                                &prev_dest.id.key, &skey))
             continue;
 
@@ -618,11 +628,11 @@ bool zslp_send(const char *datadir,
 
         memory_cleanse(skey.vch, 32);
     }
-    zcl_mutex_unlock(&g_active_wallet->cs);
+    zcl_mutex_unlock(&wallet->cs);
 
     transaction_compute_hash(&wtx.tx);
 
-    if (!wallet_commit_transaction(g_active_wallet, &wtx, g_mempool)) {
+    if (!wallet_commit_transaction(wallet, &wtx, mempool)) {
         fprintf(stderr, "zslp: commit failed\n");
         transaction_free(&wtx.tx);
         return false;

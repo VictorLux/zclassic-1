@@ -452,7 +452,12 @@ static void *fs_handle_client(void *arg)
                     fs_send_chunk_fast(&session, data, dsz,
                                         fm->chunks[ci].sha3);
                     free(data);
-                } else break;
+                } else {
+                    /* Send empty chunk on read failure so client can
+                     * track progress; don't break entire range */
+                    fprintf(stderr, "file_service: read failed chunk %u\n", ci);
+                    break;
+                }
             }
         } else if (type == FS_REQUEST && plen == 3 &&
                    memcmp(payload, "ALL", 3) == 0 && fm) {
@@ -524,7 +529,7 @@ static void *fs_server_thread(void *arg)
         return NULL;
     }
 
-    listen(listen_fd, 8);
+    listen(listen_fd, 32);
     printf("File service listening on port %d (SHA3 quantum-secure)\n",
            g_fs_port);
 
@@ -568,6 +573,8 @@ static void *fs_server_thread(void *arg)
     close(listen_fd);
     return NULL;
 }
+
+uint16_t fs_server_get_port(void) { return g_fs_port; }
 
 void fs_server_start(const char *datadir, uint16_t port)
 {

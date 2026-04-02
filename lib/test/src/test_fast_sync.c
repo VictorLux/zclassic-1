@@ -868,6 +868,46 @@ static int test_merkle_proof_large(void)
     return failures;
 }
 
+/* ── MMR-secured snapshot offer ──────────────────────────── */
+
+static int test_snapshot_offer_mmr_field(void)
+{
+    int failures = 0;
+    TEST("snapshot_offer includes MMR root field") {
+        /* Verify the struct layout includes mmr_root between
+         * utxo_root and num_utxos — critical for PoW chain binding */
+        struct snapshot_offer offer;
+        memset(&offer, 0, sizeof(offer));
+
+        /* Set distinct values in each field */
+        offer.height = 3000000;
+        memset(offer.block_hash, 0xAA, 32);
+        memset(offer.utxo_root, 0xBB, 32);
+        memset(offer.mmr_root, 0xCC, 32);
+        offer.num_utxos = 1354771;
+        offer.total_bytes = 1354771 * 80;
+
+        /* Verify fields are distinct and correct */
+        ASSERT(offer.height == 3000000);
+        ASSERT(offer.block_hash[0] == 0xAA);
+        ASSERT(offer.utxo_root[0] == 0xBB);
+        ASSERT(offer.mmr_root[0] == 0xCC);
+        ASSERT(offer.num_utxos == 1354771);
+
+        /* Verify MMR root is its own field, not overlapping */
+        ASSERT(memcmp(offer.utxo_root, offer.mmr_root, 32) != 0);
+
+        /* Verify all-zero MMR root detection (no PoW proof) */
+        uint8_t zeros[32] = {0};
+        ASSERT(memcmp(offer.mmr_root, zeros, 32) != 0);
+        memset(offer.mmr_root, 0, 32);
+        ASSERT(memcmp(offer.mmr_root, zeros, 32) == 0);
+
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── Entry point ─────────────────────────────────────────── */
 
 int test_fast_sync(void)
@@ -921,6 +961,9 @@ int test_fast_sync(void)
     /* Bandwidth-adaptive download */
     failures += test_dl_bandwidth_scoring();
     failures += test_dl_adaptive_assignment();
+
+    /* MMR-secured snapshot */
+    failures += test_snapshot_offer_mmr_field();
 
     return failures;
 }

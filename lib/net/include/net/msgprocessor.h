@@ -12,6 +12,7 @@
 #include "validation/txmempool.h"
 #include "coins/coins_view.h"
 #include "chain/chainparams.h"
+#include "config/runtime.h"
 #include <stdbool.h>
 
 struct msg_processor {
@@ -21,6 +22,7 @@ struct msg_processor {
     const struct chain_params *params;
     const char *datadir;
     struct net_manager *net_mgr;
+    const struct app_runtime_context *runtime;
 };
 
 void msg_processor_init(struct msg_processor *mp,
@@ -29,7 +31,8 @@ void msg_processor_init(struct msg_processor *mp,
                          struct coins_view_cache *coins_tip,
                          const struct chain_params *params,
                          const char *datadir,
-                         struct net_manager *net_mgr);
+                         struct net_manager *net_mgr,
+                         const struct app_runtime_context *runtime);
 
 bool msg_process_messages(void *ctx, struct p2p_node *node);
 bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle);

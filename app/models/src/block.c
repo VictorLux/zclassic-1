@@ -103,11 +103,11 @@ bool db_block_save(struct node_db *ndb, const struct db_block *b)
     AR_BIND_INT(s, 18, b->sapling_value);
     AR_BIND_INT(s, 19, b->sprout_value);
 
-    int rc = sqlite3_step(s);
-    bool ok = (rc == SQLITE_DONE);
+    bool ok = AR_STEP_DONE(s);
 
     if (!ok) {
         static int lock_err_count = 0;
+        int rc = sqlite3_errcode(ndb->db);
         if (rc == SQLITE_BUSY || rc == SQLITE_LOCKED) {
             lock_err_count++;
             if (lock_err_count <= 3 || (lock_err_count % 1000 == 0))
@@ -204,7 +204,7 @@ bool db_block_delete(struct node_db *ndb, const uint8_t hash[32])
             "DELETE FROM transactions WHERE block_hash=?",
             -1, &dt, NULL) == SQLITE_OK && dt) {
         AR_BIND_BLOB(dt, 1, hash, 32);
-        sqlite3_step(dt);
+        (void)AR_STEP_DONE(dt);
         AR_FINALIZE(dt);
     }
 
@@ -214,10 +214,8 @@ bool db_block_delete(struct node_db *ndb, const uint8_t hash[32])
             -1, &s, NULL) != SQLITE_OK || !s)
         return false;
     AR_BIND_BLOB(s, 1, hash, 32);
-    int rc = sqlite3_step(s);
+    bool ok = AR_STEP_DONE(s);
     AR_FINALIZE(s);
-
-    bool ok = rc == SQLITE_DONE;
     if (ok) {
         ar_run_after_destroy(cbs, &blk);
         event_emitf(EV_MODEL_DESTROYED, 0, "model=block");
@@ -320,4 +318,28 @@ bool db_block_next(struct node_db *ndb, const struct db_block *b,
                    struct db_block *out)
 {
     return db_block_find_by_height(ndb, b->height + 1, out);
+}
+
+/* ── Scope: hashes in height range ────────────────────────────── */
+
+int db_block_hashes_in_range(struct node_db *ndb,
+                             int start_height, int end_height,
+                             uint8_t (*hashes_out)[32], size_t max)
+{
+    if (!ndb->open) return 0;
+    sqlite3_stmt *s = NULL;
+    sqlite3_prepare_v2(ndb->db,
+        "SELECT hash FROM blocks WHERE height >= ? "
+        "AND height <= ? ORDER BY height ASC",
+        -1, &s, NULL);
+    if (!s) return 0;
+    AR_BIND_INT(s, 1, start_height);
+    AR_BIND_INT(s, 2, end_height);
+    int count = 0;
+    while (AR_STEP_ROW(s) && (size_t)count < max) {
+        AR_READ_BLOB(s, 0, hashes_out[count], 32);
+        count++;
+    }
+    AR_FINALIZE(s);
+    return count;
 }

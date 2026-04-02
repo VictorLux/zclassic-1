@@ -91,9 +91,9 @@ void wallet_view_sync_summary(struct json_value *out,
     int synced, int already_correct, int marked_spent,
     int64_t balance_before, int64_t balance_after);
 
-/* Diagnostic view: fastsync chain snapshot result */
+/* Diagnostic view: legacy import chain snapshot result */
 struct chain_snapshot;
-void wallet_view_fastsync(struct json_value *out,
+void wallet_view_legacy_import(struct json_value *out,
                            const struct chain_snapshot *snap,
                            int keys_recovered, int keys_total,
                            int64_t balance);

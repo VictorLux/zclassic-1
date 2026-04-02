@@ -118,10 +118,11 @@ int test_activerecord(void)
         ok = ok && !db_utxo_validate(&u, &errs);
         u.script_type = SCRIPT_P2PKH;
 
-        /* has_address with blank address_hash */
+        /* has_address with blank address_hash — now ALLOWED.
+         * All-zeros Hash160 is a valid (rare) burn address. */
         u.has_address = true;
         memset(u.address_hash, 0, 20);
-        ok = ok && !db_utxo_validate(&u, &errs);
+        ok = ok && db_utxo_validate(&u, &errs);
         memset(u.address_hash, 0xAA, 20);
         ok = ok && db_utxo_validate(&u, &errs);
         u.has_address = false;

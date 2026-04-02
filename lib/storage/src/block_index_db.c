@@ -43,8 +43,15 @@ bool disk_block_index_serialize(const struct disk_block_index *d,
     if (d->nSolutionSize > 0)
         if (!stream_write_bytes(s, d->nSolution, d->nSolutionSize)) return false;
 
-    if (d->has_sprout_value)
+    /* boost::optional wire format for nSproutValue */
+    if (d->has_sprout_value) {
+        uint8_t present = 1;
+        if (!stream_write_bytes(s, &present, 1)) return false;
         if (!stream_write_i64_le(s, d->nSproutValue)) return false;
+    } else {
+        uint8_t absent = 0;
+        if (!stream_write_bytes(s, &absent, 1)) return false;
+    }
     if (!stream_write_i64_le(s, d->nSaplingValue)) return false;
 
     return true;
@@ -96,9 +103,16 @@ bool disk_block_index_deserialize(struct disk_block_index *d,
     if (d->nSolutionSize > 0)
         if (!stream_read_bytes(s, d->nSolution, d->nSolutionSize)) return false;
 
-    d->has_sprout_value = (stored_version >= SPROUT_VALUE_VERSION);
-    if (d->has_sprout_value) {
-        if (!stream_read_i64_le(s, &d->nSproutValue)) return false;
+    d->has_sprout_value = false;
+    if (stored_version >= SPROUT_VALUE_VERSION) {
+        /* boost::optional wire format: 1-byte discriminant + value.
+         * 0x00 = none, 0x01 = present (followed by int64 LE). */
+        uint8_t sprout_present = 0;
+        if (!stream_read_bytes(s, &sprout_present, 1)) return false;
+        if (sprout_present) {
+            d->has_sprout_value = true;
+            if (!stream_read_i64_le(s, &d->nSproutValue)) return false;
+        }
     }
     if (stored_version >= SAPLING_VALUE_VERSION) {
         if (!stream_read_i64_le(s, &d->nSaplingValue)) return false;

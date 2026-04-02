@@ -20,6 +20,8 @@ struct app_context {
     const char *miner_address;
     int rpc_port;
     int p2p_port;
+    int https_port;
+    int fs_port;
     const char *rpc_user;
     const char *rpc_password;
     bool listen;
@@ -27,13 +29,15 @@ struct app_context {
     bool checkpoints_enabled;
     const char *import_legacy_dir;
     bool sapling_scan;
-    const char *fastsync_dir;
+    const char *legacy_import_dir;
     const char *snapshot_dir;
     bool reindex_chainstate;
+    bool reimport_utxos;
     bool tor;
     const char *assume_valid;  /* block hash: skip Groth16 at/below this height */
     bool no_services;          /* skip P2P, RPC, Tor — boot only (speedrun) */
     const char *file_service_peer; /* -fileservice=addr : download from this peer */
+    bool connect_only;         /* -connect= mode: only connect to addnodes, no seeds */
 };
 
 void app_context_defaults(struct app_context *ctx);

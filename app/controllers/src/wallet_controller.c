@@ -45,27 +45,33 @@ void rpc_wallet_set_state(struct wallet *w, struct main_state *ms,
                           struct tx_mempool *mempool,
                           struct connman *connman)
 {
-    g_wallet = w;
-    g_main_state = ms;
-    g_wallet_db = wdb;
-    g_mempool = mempool;
-    g_connman_ptr = connman;
-    g_datadir = datadir;
+    wallet_rpc_context_set_base(w, ms, datadir, wdb, mempool, connman);
 }
 
 void rpc_wallet_set_node_db(struct node_db *ndb)
 {
-    g_node_db = ndb;
+    wallet_rpc_context_set_node_db(ndb);
 }
 
 void rpc_wallet_set_coins_tip(struct coins_view_cache *tip)
 {
-    g_coins_tip = tip;
+    wallet_rpc_context_set_coins_tip(tip);
+}
+
+static struct wallet_rpc_context *wallet_ctx(void)
+{
+    return wallet_rpc_context_current();
+}
+
+static bool wallet_ctx_db_ready(const struct wallet_rpc_context *ctx)
+{
+    return ctx->node_db && ctx->node_db->open;
 }
 
 static bool rpc_getnewaddress(const struct json_value *params, bool help,
                                struct json_value *result)
 {
+    struct wallet_rpc_context *ctx = wallet_ctx();
     (void)params;
     RPC_HELP(help, result,
         "getnewaddress\n"
@@ -74,14 +80,14 @@ static bool rpc_getnewaddress(const struct json_value *params, bool help,
     ENSURE_WALLET(result);
 
     char addr[128];
-    if (!wallet_get_new_address(g_wallet, addr, sizeof(addr))) {
+    if (!wallet_get_new_address(ctx->wallet, addr, sizeof(addr))) {
         json_set_str(result, "Error: keypool ran out");
         return false;
     }
 
     /* Persist new key to wallet DB */
-    if (g_wallet_db)
-        wallet_sqlite_flush(g_wallet_db, g_wallet);
+    if (ctx->wallet_db)
+        wallet_sqlite_flush(ctx->wallet_db, ctx->wallet);
 
     json_set_str(result, addr);
     return true;
@@ -90,6 +96,7 @@ static bool rpc_getnewaddress(const struct json_value *params, bool help,
 static bool rpc_getbalance(const struct json_value *params, bool help,
                             struct json_value *result)
 {
+    struct wallet_rpc_context *ctx = wallet_ctx();
     (void)params;
     RPC_HELP(help, result,
         "getbalance\n"
@@ -98,9 +105,9 @@ static bool rpc_getbalance(const struct json_value *params, bool help,
     ENSURE_WALLET(result);
 
     /* Use SQLite model layer as authoritative source */
-    int64_t balance = (g_node_db && g_node_db->open)
-        ? db_wallet_utxo_balance(g_node_db)
-        : wallet_get_balance(g_wallet);
+    int64_t balance = wallet_ctx_db_ready(ctx)
+        ? db_wallet_utxo_balance(ctx->node_db)
+        : wallet_get_balance(ctx->wallet);
     char buf[32];
     format_amount(balance, buf, sizeof(buf));
     json_set_real(result, strtod(buf, NULL));
@@ -110,6 +117,7 @@ static bool rpc_getbalance(const struct json_value *params, bool help,
 static bool rpc_getunconfirmedbalance(const struct json_value *params,
                                        bool help, struct json_value *result)
 {
+    struct wallet_rpc_context *ctx = wallet_ctx();
     (void)params;
     RPC_HELP(help, result,
         "getunconfirmedbalance\n"
@@ -117,7 +125,7 @@ static bool rpc_getunconfirmedbalance(const struct json_value *params,
 
     ENSURE_WALLET(result);
 
-    int64_t balance = wallet_get_unconfirmed_balance(g_wallet);
+    int64_t balance = wallet_get_unconfirmed_balance(ctx->wallet);
     char buf[32];
     format_amount(balance, buf, sizeof(buf));
     json_set_real(result, strtod(buf, NULL));
@@ -127,6 +135,7 @@ static bool rpc_getunconfirmedbalance(const struct json_value *params,
 static bool rpc_getwalletinfo(const struct json_value *params, bool help,
                                struct json_value *result)
 {
+    struct wallet_rpc_context *ctx = wallet_ctx();
     (void)params;
     RPC_HELP(help, result,
         "getwalletinfo\n"
@@ -136,18 +145,18 @@ static bool rpc_getwalletinfo(const struct json_value *params, bool help,
 
     json_set_object(result);
     char bal[32], ubal[32], ibal[32], fee[32];
-    int64_t balance = (g_node_db && g_node_db->open)
-        ? db_wallet_utxo_balance(g_node_db)
-        : wallet_get_balance(g_wallet);
+    int64_t balance = wallet_ctx_db_ready(ctx)
+        ? db_wallet_utxo_balance(ctx->node_db)
+        : wallet_get_balance(ctx->wallet);
     format_amount(balance, bal, sizeof(bal));
-    format_amount(wallet_get_unconfirmed_balance(g_wallet), ubal, sizeof(ubal));
-    format_amount(wallet_get_immature_balance(g_wallet), ibal, sizeof(ibal));
-    format_amount(g_wallet->default_fee, fee, sizeof(fee));
+    format_amount(wallet_get_unconfirmed_balance(ctx->wallet), ubal, sizeof(ubal));
+    format_amount(wallet_get_immature_balance(ctx->wallet), ibal, sizeof(ibal));
+    format_amount(ctx->wallet->default_fee, fee, sizeof(fee));
     json_push_kv_real(result, "balance", strtod(bal, NULL));
     json_push_kv_real(result, "unconfirmed_balance", strtod(ubal, NULL));
     json_push_kv_real(result, "immature_balance", strtod(ibal, NULL));
     json_push_kv_int(result, "txcount", (int64_t)wallet_history_count());
-    json_push_kv_int(result, "keypoolsize", (int64_t)g_wallet->key_pool_size);
+    json_push_kv_int(result, "keypoolsize", (int64_t)ctx->wallet->key_pool_size);
     json_push_kv_real(result, "paytxfee", strtod(fee, NULL));
     return true;
 }
@@ -155,6 +164,7 @@ static bool rpc_getwalletinfo(const struct json_value *params, bool help,
 static bool rpc_listunspent(const struct json_value *params, bool help,
                               struct json_value *result)
 {
+    struct wallet_rpc_context *ctx = wallet_ctx();
     RPC_HELP(help, result, "listunspent ( minconf maxconf )\n"
         "Returns array of unspent transaction outputs.");
 
@@ -174,20 +184,20 @@ static bool rpc_listunspent(const struct json_value *params, bool help,
     const unsigned char *sc_pfx = chain_params_base58_prefix(
         cp, B58_SCRIPT_ADDRESS, &sc_pfx_len);
 
-    int tip = active_chain_height(&g_main_state->chain_active);
+    int tip = active_chain_height(&ctx->main_state->chain_active);
 
     json_set_array(result);
 
     /* SQLite model layer — authoritative UTXO source */
-    if (g_node_db && g_node_db->open) {
+    if (wallet_ctx_db_ready(ctx)) {
         struct db_wallet_utxo utxos[4096];
-        int n = db_wallet_utxo_list_unspent(g_node_db, utxos, 4096);
+        int n = db_wallet_utxo_list_unspent(ctx->node_db, utxos, 4096);
         for (int i = 0; i < n; i++) {
             int h = utxos[i].height;
             /* Fix height=0: look up real height from global UTXO index */
             if (h <= 0) {
                 struct db_utxo global;
-                if (db_utxo_find(g_node_db, utxos[i].txid,
+                if (db_utxo_find(ctx->node_db, utxos[i].txid,
                                   utxos[i].vout, &global)) {
                     h = global.height;
                     db_utxo_free(&global);
@@ -244,7 +254,7 @@ static bool rpc_listunspent(const struct json_value *params, bool help,
     /* Fallback: in-memory wallet */
     struct coin_entry coins[4096];
     size_t num_coins = 0;
-    wallet_available_coins(g_wallet, coins, &num_coins, 4096,
+    wallet_available_coins(ctx->wallet, coins, &num_coins, 4096,
                            min_conf > 0, false);
     for (size_t i = 0; i < num_coins; i++) {
         if (coins[i].depth < min_conf || coins[i].depth > max_conf)
@@ -285,6 +295,7 @@ static bool rpc_listunspent(const struct json_value *params, bool help,
 static bool rpc_sendtoaddress(const struct json_value *params, bool help,
                                 struct json_value *result)
 {
+    struct wallet_rpc_context *ctx = wallet_ctx();
     RPC_HELP(help, result, "sendtoaddress \"address\" amount\n"
         "Send an amount to a given address.");
 
@@ -319,28 +330,28 @@ static bool rpc_sendtoaddress(const struct json_value *params, bool help,
     struct wallet_tx wtx;
     int64_t fee = 0;
     const char *error = NULL;
-    if (!wallet_create_transaction(g_wallet, &dest, amount,
+    if (!wallet_create_transaction(ctx->wallet, &dest, amount,
                                     &wtx, &fee, &error)) {
         json_set_str(result, error ? error : "Transaction creation failed");
         return false;
     }
 
-    if (!wallet_commit_transaction(g_wallet, &wtx, g_mempool)) {
+    if (!wallet_commit_transaction(ctx->wallet, &wtx, ctx->mempool)) {
         json_set_str(result, "Error committing transaction");
         transaction_free(&wtx.tx);
         return false;
     }
 
-    if (g_node_db && g_node_db->open)
-        node_db_sync_wallet_tx(g_node_db, &wtx.tx, g_wallet, 0);
+    if (wallet_ctx_db_ready(ctx))
+        node_db_sync_wallet_tx(ctx->node_db, &wtx.tx, ctx->wallet, 0);
 
     /* Relay to peers */
-    if (g_connman_ptr)
-        connman_relay_transaction(g_connman_ptr, &wtx.tx.hash);
+    if (ctx->connman)
+        connman_relay_transaction(ctx->connman, &wtx.tx.hash);
 
     /* Persist wallet state after sending */
-    if (g_wallet_db)
-        wallet_sqlite_flush(g_wallet_db, g_wallet);
+    if (ctx->wallet_db)
+        wallet_sqlite_flush(ctx->wallet_db, ctx->wallet);
 
     char txid[65];
     uint256_get_hex(&wtx.tx.hash, txid);
@@ -354,8 +365,9 @@ bool wallet_direct_sendtoaddress(const char *address, int64_t amount_sat,
                                   char *txid_out, size_t txid_out_size,
                                   char *error_out, size_t error_out_size)
 {
+    struct wallet_rpc_context *ctx = wallet_ctx();
     (void)txid_out_size; /* always 65 bytes for hex txid */
-    if (!g_wallet) {
+    if (!ctx->wallet) {
         snprintf(error_out, error_out_size, "Wallet not loaded");
         return false;
     }
@@ -378,23 +390,23 @@ bool wallet_direct_sendtoaddress(const char *address, int64_t amount_sat,
     struct wallet_tx wtx;
     int64_t fee = 0;
     const char *err = NULL;
-    if (!wallet_create_transaction(g_wallet, &dest, amount_sat, &wtx, &fee, &err)) {
+    if (!wallet_create_transaction(ctx->wallet, &dest, amount_sat, &wtx, &fee, &err)) {
         snprintf(error_out, error_out_size, "%s", err ? err : "Transaction creation failed");
         return false;
     }
 
-    if (!wallet_commit_transaction(g_wallet, &wtx, g_mempool)) {
+    if (!wallet_commit_transaction(ctx->wallet, &wtx, ctx->mempool)) {
         snprintf(error_out, error_out_size, "Error committing transaction");
         transaction_free(&wtx.tx);
         return false;
     }
 
-    if (g_node_db && g_node_db->open)
-        node_db_sync_wallet_tx(g_node_db, &wtx.tx, g_wallet, 0);
-    if (g_connman_ptr)
-        connman_relay_transaction(g_connman_ptr, &wtx.tx.hash);
-    if (g_wallet_db)
-        wallet_sqlite_flush(g_wallet_db, g_wallet);
+    if (wallet_ctx_db_ready(ctx))
+        node_db_sync_wallet_tx(ctx->node_db, &wtx.tx, ctx->wallet, 0);
+    if (ctx->connman)
+        connman_relay_transaction(ctx->connman, &wtx.tx.hash);
+    if (ctx->wallet_db)
+        wallet_sqlite_flush(ctx->wallet_db, ctx->wallet);
 
     uint256_get_hex(&wtx.tx.hash, txid_out);
     return true;
@@ -441,6 +453,7 @@ bool wallet_direct_shield(const char *z_address, int64_t amount_sat,
                            char *opid_out, size_t opid_out_size,
                            char *error_out, size_t error_out_size)
 {
+    struct wallet_rpc_context *ctx = wallet_ctx();
     if (!z_address || z_address[0] != 'z') {
         snprintf(error_out, error_out_size, "Invalid z-address");
         return false;
@@ -450,9 +463,9 @@ bool wallet_direct_shield(const char *z_address, int64_t amount_sat,
      * Derive from pubkey_hash in wallet_keys using Base58Check encoding. */
     char t_addr[128] = "";
 
-    if (g_node_db && g_node_db->open) {
+    if (wallet_ctx_db_ready(ctx)) {
         sqlite3_stmt *s = NULL;
-        if (sqlite3_prepare_v2(g_node_db->db,
+        if (sqlite3_prepare_v2(ctx->node_db->db,
                 "SELECT pubkey_hash FROM wallet_keys ORDER BY rowid LIMIT 1",
                 -1, &s, NULL) == SQLITE_OK && s) {
             if (sqlite3_step(s) == SQLITE_ROW) {
@@ -564,6 +577,7 @@ bool wallet_direct_shield(const char *z_address, int64_t amount_sat,
 static bool rpc_dumpprivkey(const struct json_value *params, bool help,
                               struct json_value *result)
 {
+    struct wallet_rpc_context *ctx = wallet_ctx();
     RPC_HELP(help, result, "dumpprivkey \"address\"\n"
         "Reveals the private key corresponding to 'address'.");
 
@@ -595,7 +609,7 @@ static bool rpc_dumpprivkey(const struct json_value *params, bool help,
     }
 
     struct privkey key;
-    if (!wallet_dump_key(g_wallet, &dest.id.key, &key)) {
+    if (!wallet_dump_key(ctx->wallet, &dest.id.key, &key)) {
         json_set_str(result, "Private key for address is not known");
         return false;
     }
@@ -620,6 +634,7 @@ static bool rpc_dumpprivkey(const struct json_value *params, bool help,
 static bool rpc_importprivkey(const struct json_value *params, bool help,
                                 struct json_value *result)
 {
+    struct wallet_rpc_context *ctx = wallet_ctx();
     RPC_HELP(help, result, "importprivkey \"privkey\" ( \"label\" )\n"
         "\nAdds a private key and instantly indexes UTXOs from SQLite.\n"
         "\nArguments:\n"
@@ -645,14 +660,14 @@ static bool rpc_importprivkey(const struct json_value *params, bool help,
         return false;
     }
 
-    if (!wallet_import_key(g_wallet, &key)) {
+    if (!wallet_import_key(ctx->wallet, &key)) {
         memory_cleanse(key.vch, 32);
         json_set_str(result, "Error adding key to wallet");
         return false;
     }
 
-    if (g_wallet->time_first_key == 0)
-        g_wallet->time_first_key = GetTime();
+    if (ctx->wallet->time_first_key == 0)
+        ctx->wallet->time_first_key = GetTime();
 
     /* Persist key to wallet DB */
     struct pubkey pk;
@@ -661,8 +676,8 @@ static bool rpc_importprivkey(const struct json_value *params, bool help,
         json_set_str(result, "Failed to derive public key");
         return false;
     }
-    if (g_wallet_db)
-        wallet_sqlite_write_key(g_wallet_db, &pk, &key);
+    if (ctx->wallet_db)
+        wallet_sqlite_write_key(ctx->wallet_db, &pk, &key);
 
     memory_cleanse(key.vch, 32);
 
@@ -671,13 +686,13 @@ static bool rpc_importprivkey(const struct json_value *params, bool help,
     uint8_t addr_hash[20];
     hash160(pk.vch, pk.size, addr_hash);
 
-    if (g_node_db) {
+    if (ctx->node_db) {
         struct db_utxo utxos[512];
-        int found = db_utxo_list_for_address(g_node_db, addr_hash,
+        int found = db_utxo_list_for_address(ctx->node_db, addr_hash,
                                               utxos, 512);
         for (int i = 0; i < found; i++) {
             struct db_utxo full;
-            if (!db_utxo_find(g_node_db, utxos[i].txid, utxos[i].vout,
+            if (!db_utxo_find(ctx->node_db, utxos[i].txid, utxos[i].vout,
                               &full))
                 continue;
 
@@ -692,11 +707,11 @@ static bool rpc_importprivkey(const struct json_value *params, bool help,
             wu.height = full.height;
             wu.is_coinbase = full.is_coinbase;
 
-            db_wallet_utxo_save(g_node_db, &wu);
+            db_wallet_utxo_save(ctx->node_db, &wu);
             db_utxo_free(&full);
         }
 
-        int64_t bal = db_utxo_balance_for_address(g_node_db, addr_hash);
+        int64_t bal = db_utxo_balance_for_address(ctx->node_db, addr_hash);
         printf("importprivkey: %d UTXOs, balance %.8f ZCL (instant)\n",
                found, (double)bal / 1e8);
     }
@@ -708,6 +723,7 @@ static bool rpc_importprivkey(const struct json_value *params, bool help,
 static bool rpc_rescanblockchain(const struct json_value *params, bool help,
                                    struct json_value *result)
 {
+    struct wallet_rpc_context *ctx = wallet_ctx();
     RPC_HELP(help, result, "rescanblockchain ( start_height stop_height )\n"
         "\nRescan the local blockchain for wallet transactions.\n"
         "\nArguments:\n"
@@ -728,12 +744,12 @@ static bool rpc_rescanblockchain(const struct json_value *params, bool help,
 
     ENSURE_WALLET(result);
 
-    if (!g_main_state) {
+    if (!ctx->main_state) {
         json_set_str(result, "Chain state not initialized");
         return false;
     }
 
-    int tip = active_chain_height(&g_main_state->chain_active);
+    int tip = active_chain_height(&ctx->main_state->chain_active);
     if (stop_height < 0 || stop_height > tip)
         stop_height = tip;
     if (start_height < 0)
@@ -744,8 +760,8 @@ static bool rpc_rescanblockchain(const struct json_value *params, bool help,
         return false;
     }
 
-    wallet_rescan(g_wallet, &g_main_state->chain_active,
-                  start_height, stop_height, g_datadir);
+    wallet_rescan(ctx->wallet, &ctx->main_state->chain_active,
+                  start_height, stop_height, ctx->datadir);
 
     json_set_object(result);
     json_push_kv_int(result, "start_height", start_height);
@@ -756,6 +772,7 @@ static bool rpc_rescanblockchain(const struct json_value *params, bool help,
 static bool rpc_keypoolrefill(const struct json_value *params, bool help,
                                 struct json_value *result)
 {
+    struct wallet_rpc_context *ctx = wallet_ctx();
     RPC_HELP(help, result, "keypoolrefill ( newsize )\nFills the keypool.");
 
     struct rpc_params p;
@@ -766,7 +783,7 @@ static bool rpc_keypoolrefill(const struct json_value *params, bool help,
 
     ENSURE_WALLET(result);
 
-    if (!wallet_top_up_key_pool(g_wallet, new_size)) {
+    if (!wallet_top_up_key_pool(ctx->wallet, new_size)) {
         json_set_str(result, "Error refilling keypool");
         return false;
     }
@@ -778,6 +795,7 @@ static bool rpc_keypoolrefill(const struct json_value *params, bool help,
 static bool rpc_listtransactions(const struct json_value *params, bool help,
                                    struct json_value *result)
 {
+    struct wallet_rpc_context *ctx = wallet_ctx();
     RPC_HELP(help, result,
         "listtransactions ( \"account\" count skip )\n"
         "Returns up to 'count' most recent transactions.\n"
@@ -821,7 +839,7 @@ static bool rpc_listtransactions(const struct json_value *params, bool help,
             return false;
         }
 
-        int n = db_wallet_tx_list(g_node_db, rows, (size_t)count, (size_t)skip);
+        int n = db_wallet_tx_list(ctx->node_db, rows, (size_t)count, (size_t)skip);
         for (int i = 0; i < n; i++) {
             struct transaction tx;
             if (wallet_db_tx_deserialize(&rows[i], &tx)) {
@@ -839,11 +857,11 @@ static bool rpc_listtransactions(const struct json_value *params, bool help,
     int seen = 0;
     int added = 0;
     for (size_t i = 0; i < MAX_WALLET_TX && added < count; i++) {
-        if (!g_wallet->map_wallet[i].used)
+        if (!ctx->wallet->map_wallet[i].used)
             continue;
         if (seen++ < skip)
             continue;
-        const struct wallet_tx *wtx = &g_wallet->map_wallet[i];
+        const struct wallet_tx *wtx = &ctx->wallet->map_wallet[i];
         wallet_append_tx_entry(&wtx->tx, wtx->from_me, 0, wtx->confirms,
                                wtx->time_received, result);
         added++;
@@ -855,6 +873,7 @@ static bool rpc_listtransactions(const struct json_value *params, bool help,
 static bool rpc_gettransaction(const struct json_value *params, bool help,
                                  struct json_value *result)
 {
+    struct wallet_rpc_context *ctx = wallet_ctx();
     RPC_HELP(help, result, "gettransaction \"txid\"\n"
         "Get detailed information about wallet transaction.");
 
@@ -868,9 +887,9 @@ static bool rpc_gettransaction(const struct json_value *params, bool help,
     struct uint256 txid;
     uint256_set_hex(&txid, txid_str);
 
-    if (g_node_db && g_node_db->open) {
+    if (wallet_ctx_db_ready(ctx)) {
         struct db_wallet_tx dbtx;
-        if (db_wallet_tx_find(g_node_db, txid.data, &dbtx)) {
+        if (db_wallet_tx_find(ctx->node_db, txid.data, &dbtx)) {
             struct transaction tx;
             if (!wallet_db_tx_deserialize(&dbtx, &tx)) {
                 db_wallet_tx_free(&dbtx);
@@ -882,7 +901,7 @@ static bool rpc_gettransaction(const struct json_value *params, bool help,
 
             int64_t credit = 0;
             for (size_t j = 0; j < tx.num_vout; j++) {
-                if (wallet_is_mine(g_wallet, &tx.vout[j]))
+                if (wallet_is_mine(ctx->wallet, &tx.vout[j]))
                     credit += tx.vout[j].value;
             }
             int64_t debit = dbtx.from_me
@@ -922,7 +941,7 @@ static bool rpc_gettransaction(const struct json_value *params, bool help,
         }
     }
 
-    const struct wallet_tx *wtx = wallet_get_tx(g_wallet, &txid);
+    const struct wallet_tx *wtx = wallet_get_tx(ctx->wallet, &txid);
     if (!wtx) {
         json_set_str(result, "Invalid or non-wallet transaction id");
         return false;
@@ -931,9 +950,9 @@ static bool rpc_gettransaction(const struct json_value *params, bool help,
     json_set_object(result);
 
     int64_t credit = 0;
-    int64_t debit = wallet_get_debit(g_wallet, &wtx->tx);
+    int64_t debit = wallet_get_debit(ctx->wallet, &wtx->tx);
     for (size_t j = 0; j < wtx->tx.num_vout; j++) {
-        if (wallet_is_mine(g_wallet, &wtx->tx.vout[j]))
+        if (wallet_is_mine(ctx->wallet, &wtx->tx.vout[j]))
             credit += wtx->tx.vout[j].value;
     }
 
@@ -1044,6 +1063,7 @@ static bool rpc_createmultisig(const struct json_value *params, bool help,
 static bool rpc_sendmany(const struct json_value *params, bool help,
                           struct json_value *result)
 {
+    struct wallet_rpc_context *ctx = wallet_ctx();
     RPC_HELP(help, result,
         "sendmany \"\" {\"address\":amount,...}\n"
         "Send to multiple addresses in one transaction.\n"
@@ -1101,26 +1121,26 @@ static bool rpc_sendmany(const struct json_value *params, bool help,
     struct wallet_tx wtx;
     int64_t fee = 0;
     const char *error = NULL;
-    if (!wallet_create_transaction_multi(g_wallet, dests, values, n,
+    if (!wallet_create_transaction_multi(ctx->wallet, dests, values, n,
                                           &wtx, &fee, &error)) {
         json_set_str(result, error ? error : "Transaction creation failed");
         return false;
     }
 
-    if (!wallet_commit_transaction(g_wallet, &wtx, g_mempool)) {
+    if (!wallet_commit_transaction(ctx->wallet, &wtx, ctx->mempool)) {
         json_set_str(result, "Error committing transaction");
         transaction_free(&wtx.tx);
         return false;
     }
 
-    if (g_node_db && g_node_db->open)
-        node_db_sync_wallet_tx(g_node_db, &wtx.tx, g_wallet, 0);
+    if (wallet_ctx_db_ready(ctx))
+        node_db_sync_wallet_tx(ctx->node_db, &wtx.tx, ctx->wallet, 0);
 
-    if (g_connman_ptr)
-        connman_relay_transaction(g_connman_ptr, &wtx.tx.hash);
+    if (ctx->connman)
+        connman_relay_transaction(ctx->connman, &wtx.tx.hash);
 
-    if (g_wallet_db)
-        wallet_sqlite_flush(g_wallet_db, g_wallet);
+    if (ctx->wallet_db)
+        wallet_sqlite_flush(ctx->wallet_db, ctx->wallet);
 
     char txid[65];
     uint256_get_hex(&wtx.tx.hash, txid);
@@ -1131,6 +1151,7 @@ static bool rpc_sendmany(const struct json_value *params, bool help,
 static bool rpc_addmultisigaddress(const struct json_value *params, bool help,
                                      struct json_value *result)
 {
+    struct wallet_rpc_context *ctx = wallet_ctx();
     RPC_HELP(help, result,
         "addmultisigaddress nrequired [\"key\",...]\n"
         "Add a multisig address to the wallet.\n"
@@ -1183,14 +1204,14 @@ static bool rpc_addmultisigaddress(const struct json_value *params, bool help,
     script_for_multisig(&redeem, n_required, pks, n_keys);
 
     /* Store redeem script in wallet keystore */
-    keystore_add_cscript(&g_wallet->keystore, &redeem);
+    keystore_add_cscript(&ctx->wallet->keystore, &redeem);
 
     struct script_id sid;
     script_id_from_script(&sid, &redeem);
 
     /* Persist script to wallet DB */
-    if (g_wallet_db)
-        wallet_sqlite_write_script(g_wallet_db, &sid.hash, &redeem);
+    if (ctx->wallet_db)
+        wallet_sqlite_write_script(ctx->wallet_db, &sid.hash, &redeem);
 
     const struct chain_params *cp = chain_params_get();
     size_t pk_pfx_len, sc_pfx_len;

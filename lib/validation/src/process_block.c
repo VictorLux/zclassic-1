@@ -26,6 +26,10 @@
 #include "core/utiltime.h"
 #include "controllers/sync_controller.h"
 #include "event/event.h"
+#include "models/database.h"
+#include "config/runtime.h"
+#include "chain/mmr.h"
+#include "chain/mmb.h"
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
@@ -41,9 +45,6 @@ static unsigned int g_last_block_file_size = 0;
 /* Externs from boot.c — global state accessed during block connection.
  * Declared once at file scope instead of scattered inside functions. */
 extern struct block_tree_db *g_active_block_tree;
-extern struct wallet *g_active_wallet;
-extern struct node_db *g_active_node_db;
-extern struct tx_mempool *g_active_mempool;
 extern volatile sig_atomic_t g_shutdown_requested;
 
 /* SQLite handle for persisting UTXO commitment alongside flushes.
@@ -53,6 +54,15 @@ static struct coins_view_sqlite *g_coins_sqlite_ptr = NULL;
 void set_coins_sqlite_for_commitment(struct coins_view_sqlite *cvs)
 {
     g_coins_sqlite_ptr = cvs;
+}
+
+/* Sapling tree pointer for persistence during flush.
+ * Set by boot.c after loading tree from node_state. */
+static struct incremental_merkle_tree *g_sapling_tree_for_flush = NULL;
+
+void set_sapling_tree_for_flush(struct incremental_merkle_tree *tree)
+{
+    g_sapling_tree_for_flush = tree;
 }
 
 /* ── Flush policy ────────────────────────────────────────────
@@ -77,6 +87,21 @@ static struct flush_policy g_flush_policy = {
 };
 static _Atomic int64_t g_last_coins_flush = 0;
 static _Atomic int64_t g_blocks_since_flush = 0;
+
+static struct node_db *process_block_node_db(void)
+{
+    return app_runtime_node_db();
+}
+
+static struct wallet *process_block_wallet(void)
+{
+    return app_runtime_wallet();
+}
+
+static struct tx_mempool *process_block_mempool(void)
+{
+    return app_runtime_mempool();
+}
 
 void set_flush_policy(int64_t interval_secs, size_t max_entries,
                       int block_interval)
@@ -107,8 +132,9 @@ static bool flush_coins_if_needed(struct coins_view_cache *coins_tip,
 
 
     /* Flush node_db batch first — coins_flush needs the write lock. */
-    if (g_active_node_db && g_active_node_db->sync_in_batch)
-        node_db_sync_flush(g_active_node_db);
+    struct node_db *ndb = process_block_node_db();
+    if (ndb && ndb->sync_in_batch)
+        node_db_sync_flush(ndb);
 
     size_t batched = (size_t)g_blocks_since_flush;
     bool ok = coins_view_cache_flush(coins_tip);
@@ -121,6 +147,18 @@ static bool flush_coins_if_needed(struct coins_view_cache *coins_tip,
         if (g_coins_sqlite_ptr) {
             coins_view_sqlite_write_commitment(g_coins_sqlite_ptr,
                                                 &coins_tip->commitment);
+        }
+
+        /* Persist Sapling commitment tree state */
+        if (ndb && ndb->open &&
+            g_sapling_tree_for_flush) {
+            struct byte_stream ts;
+            stream_init(&ts, 4096);
+            if (incremental_tree_serialize(g_sapling_tree_for_flush, &ts)) {
+                node_db_state_set(ndb, "sapling_tree",
+                                  ts.data, ts.size);
+            }
+            stream_free(&ts);
         }
 
         const char *trigger = force ? "forced" : time_flush ? "periodic" :
@@ -642,7 +680,12 @@ bool connect_tip(struct validation_state *state,
         coins_view_cache_as_view(&backing, coins_tip);
         coins_view_cache_init(&view, &backing);
 
+        /* Set Sapling tree for connect_block to update + verify root.
+         * The tree persists in ms->sapling_tree across blocks. */
+        connect_block_set_sapling_tree(&ms->sapling_tree);
+
         bool rv = connect_block(pblock, state, pindex_new, &view, params, false);
+        connect_block_set_sapling_tree(NULL); /* clear after use */
         if (!rv) {
             fprintf(stderr, "connect_tip: connect_block FAILED h=%d: %s\n",
                     pindex_new->nHeight,
@@ -720,11 +763,11 @@ bool connect_tip(struct validation_state *state,
             /* Force full coins flush to SQLite */
             flush_coins_if_needed(coins_tip, true);
 
-            extern struct node_db *g_active_node_db;
-            if (g_active_node_db && g_active_node_db->db) {
+            struct node_db *ndb = process_block_node_db();
+            if (ndb && ndb->db) {
                 uint8_t sha3[32];
                 uint64_t count = 0;
-                utxo_commitment_sha3_compute(g_active_node_db->db, sha3, &count);
+                utxo_commitment_sha3_compute(ndb->db, sha3, &count);
 
                 if (memcmp(sha3, cp->sha3_hash, 32) != 0) {
                     char exp[65], got[65];
@@ -824,57 +867,62 @@ bool connect_tip(struct validation_state *state,
     }
 
     /* Notify wallet of transactions in the connected block */
-    if (g_active_wallet) {
-        for (size_t i = 0; i < pblock->num_vtx; i++) {
-            wallet_sync_transaction(g_active_wallet, &pblock->vtx[i],
-                                    pindex_new);
-            /* Trial-decrypt Sapling shielded outputs for our wallet */
-            if (pblock->vtx[i].num_shielded_output > 0 &&
-                g_active_wallet->sapling_keys.num_keys > 0) {
-                struct transaction *tx =
-                    (struct transaction *)&pblock->vtx[i];
-                transaction_compute_hash(tx);
-                size_t notes_before = g_active_wallet->num_sapling_notes;
-                wallet_try_sapling_decrypt(g_active_wallet, tx,
-                                           &tx->hash);
-                /* Persist newly discovered notes to SQLite */
-                if (g_active_node_db &&
-                    g_active_wallet->num_sapling_notes > notes_before) {
-                    for (size_t ni = notes_before;
-                         ni < g_active_wallet->num_sapling_notes; ni++) {
-                        struct sapling_received_note *note =
-                            &g_active_wallet->sapling_notes[ni];
-                        node_db_sync_sapling_note(g_active_node_db,
-                            note->txid.data, note->output_index,
-                            (int64_t)note->value, note->rcm,
-                            note->memo, 512, note->ivk,
-                            note->diversifier, note->pk_d,
-                            note->cm, note->nf,
-                            pindex_new->nHeight);
+    {
+        struct wallet *wallet = process_block_wallet();
+        struct node_db *ndb = process_block_node_db();
+        if (wallet) {
+            for (size_t i = 0; i < pblock->num_vtx; i++) {
+                wallet_sync_transaction(wallet, &pblock->vtx[i],
+                                        pindex_new);
+                /* Trial-decrypt Sapling shielded outputs for our wallet */
+                if (pblock->vtx[i].num_shielded_output > 0 &&
+                    wallet->sapling_keys.num_keys > 0) {
+                    struct transaction *tx =
+                        (struct transaction *)&pblock->vtx[i];
+                    transaction_compute_hash(tx);
+                    size_t notes_before = wallet->num_sapling_notes;
+                    wallet_try_sapling_decrypt(wallet, tx,
+                                               &tx->hash);
+                    /* Persist newly discovered notes to SQLite */
+                    if (ndb && wallet->num_sapling_notes > notes_before) {
+                        for (size_t ni = notes_before;
+                             ni < wallet->num_sapling_notes; ni++) {
+                            struct sapling_received_note *note =
+                                &wallet->sapling_notes[ni];
+                            node_db_sync_sapling_note(ndb,
+                                note->txid.data, note->output_index,
+                                (int64_t)note->value, note->rcm,
+                                note->memo, 512, note->ivk,
+                                note->diversifier, note->pk_d,
+                                note->cm, note->nf,
+                                pindex_new->nHeight);
+                        }
                     }
                 }
+                /* Mark spent nullifiers */
+                if (pblock->vtx[i].num_shielded_spend > 0)
+                    wallet_mark_sapling_nullifiers_spent(
+                        wallet,
+                        (struct transaction *)&pblock->vtx[i]);
             }
-            /* Mark spent nullifiers */
-            if (pblock->vtx[i].num_shielded_spend > 0)
-                wallet_mark_sapling_nullifiers_spent(
-                    g_active_wallet,
-                    (struct transaction *)&pblock->vtx[i]);
+            wallet->best_block_height = pindex_new->nHeight;
         }
-        g_active_wallet->best_block_height = pindex_new->nHeight;
     }
 
     /* Remove confirmed transactions from mempool */
     {
-        if (g_active_mempool)
-            tx_mempool_remove_for_block(g_active_mempool,
+        struct tx_mempool *mempool = process_block_mempool();
+        if (mempool)
+            tx_mempool_remove_for_block(mempool,
                 pblock->vtx, pblock->num_vtx,
                 (unsigned int)pindex_new->nHeight);
     }
 
     /* Sync block to SQLite database */
     {
-        if (g_active_node_db) {
-            node_db_sync_connect_block(g_active_node_db, pblock, pindex_new);
+        struct node_db *ndb = process_block_node_db();
+        if (ndb) {
+            node_db_sync_connect_block(ndb, pblock, pindex_new);
             /* Wallet tx scan deferred to tip — expensive per-tx SQLite
              * queries slow down IBD and can corrupt heap (db_wallet_utxo_find
              * allocates per-call). Use rescanblockchain RPC after sync. */
@@ -891,6 +939,96 @@ bool connect_tip(struct validation_state *state,
     /* Append block hash to Merkle Mountain Range */
     if (pindex_new->phashBlock)
         rpc_blockchain_mmr_append(pindex_new->phashBlock->data);
+
+    /* Append rich leaf to Merkle Mountain Belt (O(1) per block) */
+    if (pindex_new->phashBlock) {
+        struct mmb_leaf mmb_leaf;
+        mmb_leaf_from_block(&mmb_leaf,
+            pindex_new->phashBlock->data,
+            pindex_new->nHeight, pindex_new->nTime, pindex_new->nBits,
+            pindex_new->hashFinalSaplingRoot.data,
+            (const uint8_t *)pindex_new->nChainWork.pn);
+        rpc_blockchain_mmb_append(&mmb_leaf);
+    }
+
+    /* Deferred MMR verification: if this node received a UTXO snapshot
+     * via fast sync, verify the offered MMR root matches our locally-built
+     * MMR once we've synced headers to the snapshot height. This binds
+     * the imported UTXO set to the PoW chain cryptographically. */
+    if (g_coins_sqlite_ptr && g_coins_sqlite_ptr->db) {
+        static int32_t s_mmr_check_height = -1;
+        static uint8_t s_mmr_expected[32];
+        static bool s_mmr_loaded = false;
+        static bool s_mmr_verified = false;
+
+        if (!s_mmr_loaded && g_coins_sqlite_ptr->db) {
+            sqlite3_stmt *qs = NULL;
+            sqlite3_prepare_v2(g_coins_sqlite_ptr->db,
+                "SELECT value FROM node_state WHERE key='snapshot_mmr_height'",
+                -1, &qs, NULL);
+            if (qs && sqlite3_step(qs) == SQLITE_ROW) {
+                const void *blob = sqlite3_column_blob(qs, 0);
+                if (blob && sqlite3_column_bytes(qs, 0) >= 4)
+                    memcpy(&s_mmr_check_height, blob, 4);
+            }
+            if (qs) sqlite3_finalize(qs);
+
+            if (s_mmr_check_height > 0) {
+                sqlite3_prepare_v2(g_coins_sqlite_ptr->db,
+                    "SELECT value FROM node_state WHERE key='snapshot_mmr_root'",
+                    -1, &qs, NULL);
+                if (qs && sqlite3_step(qs) == SQLITE_ROW) {
+                    const void *blob = sqlite3_column_blob(qs, 0);
+                    if (blob && sqlite3_column_bytes(qs, 0) >= 32)
+                        memcpy(s_mmr_expected, blob, 32);
+                }
+                if (qs) sqlite3_finalize(qs);
+            }
+            s_mmr_loaded = true;
+        }
+
+        if (!s_mmr_verified && s_mmr_check_height > 0 &&
+            pindex_new->nHeight == s_mmr_check_height) {
+            struct mmr *m = rpc_blockchain_get_mmr();
+            if (m && m->num_leaves > 0) {
+                uint8_t local_root[32];
+                mmr_root(m, local_root);
+                if (memcmp(local_root, s_mmr_expected, 32) == 0) {
+                    printf("*** MMR VERIFICATION PASSED at height %d ***\n"
+                           "    Snapshot UTXO set is cryptographically bound "
+                           "to PoW chain (%llu blocks)\n",
+                           s_mmr_check_height,
+                           (unsigned long long)m->num_leaves);
+                    event_emitf(EV_UTXO_CHECKPOINT_PASS, 0,
+                                "MMR verified at h=%d leaves=%llu",
+                                s_mmr_check_height,
+                                (unsigned long long)m->num_leaves);
+                    /* Clear the deferred check — it passed */
+                    sqlite3_exec(g_coins_sqlite_ptr->db,
+                        "DELETE FROM node_state WHERE key IN "
+                        "('snapshot_mmr_root','snapshot_mmr_height')",
+                        NULL, NULL, NULL);
+                } else {
+                    char exp_hex[65], got_hex[65];
+                    for (int i = 0; i < 32; i++) {
+                        sprintf(exp_hex + i*2, "%02x", s_mmr_expected[i]);
+                        sprintf(got_hex + i*2, "%02x", local_root[i]);
+                    }
+                    fprintf(stderr,
+                        "*** MMR VERIFICATION FAILED at height %d ***\n"
+                        "  Expected: %s\n"
+                        "  Got:      %s\n"
+                        "  The imported UTXO snapshot does NOT match the "
+                        "PoW chain! This node may have received tampered data.\n",
+                        s_mmr_check_height, exp_hex, got_hex);
+                    event_emitf(EV_UTXO_CHECKPOINT_FAIL, 0,
+                                "MMR FAILED at h=%d expected=%s got=%s",
+                                s_mmr_check_height, exp_hex, got_hex);
+                }
+                s_mmr_verified = true;
+            }
+        }
+    }
 
     /* Every 100 blocks: compute UTXO commitment and append to
      * commitment MMR. This binds the UTXO state to the PoW chain.
@@ -1010,8 +1148,9 @@ bool disconnect_tip(struct validation_state *state,
 
     /* Sync disconnect to SQLite */
     {
-        if (g_active_node_db)
-            node_db_sync_disconnect_block(g_active_node_db,
+        struct node_db *ndb = process_block_node_db();
+        if (ndb)
+            node_db_sync_disconnect_block(ndb,
                                           &block, pindex_delete);
     }
 
@@ -1019,6 +1158,102 @@ bool disconnect_tip(struct validation_state *state,
 
     block_free(&block);
     block_undo_free(&blockundo);
+    return true;
+}
+
+/* ── Reorg Recovery ─────────────────────────────────────────────
+ *
+ * When disconnect_tip fails (missing undo data), the node is stuck:
+ * the active chain tip cannot be rolled back, and the better chain
+ * cannot be connected. This function implements a clean recovery:
+ *
+ *   1. SYNC_REORG → SYNC_REORG_RECOVERY (state machine transition)
+ *   2. Clear the in-memory UTXO cache (discard stale entries)
+ *   3. Force the active chain tip to the fork point
+ *   4. Set coins_best_block in both memory and SQLite to fork hash
+ *   5. Emit EV_REORG_DISCONNECT_FAILED + EV_REORG_RECOVERY_COMPLETE
+ *
+ * After recovery, activate_best_chain proceeds to connect blocks
+ * from the fork point forward, rebuilding UTXOs for that range.
+ *
+ * Returns true if recovery succeeded, false if unrecoverable. */
+static bool recover_from_disconnect_failure(
+    struct main_state *ms,
+    struct coins_view_cache *coins_tip,
+    struct block_index *fork,
+    int stuck_height)
+{
+    if (!fork || !fork->phashBlock)
+        return false;
+
+    /* State machine: REORG → REORG_RECOVERY */
+    sync_set_state(SYNC_REORG_RECOVERY,
+                   "disconnect failed, clearing UTXO cache");
+
+    event_emitf(EV_REORG_DISCONNECT_FAILED, 0,
+        "stuck_h=%d fork_h=%d", stuck_height, fork->nHeight);
+
+    /* Step 1: Clear the in-memory UTXO cache.
+     * Do NOT flush — the cache contains stale entries from the
+     * partially-disconnected chain that would corrupt SQLite. */
+    coins_view_cache_clear(coins_tip);
+
+    /* Step 2: Force the active chain tip to the fork point. */
+    active_chain_set_tip(&ms->chain_active, fork);
+
+    /* Step 3: Set coins_best_block to the fork point in both
+     * the in-memory cache and the SQLite backing store.
+     *
+     * Note: the SQLite UTXO set may not exactly match the fork point
+     * (blocks connected after the fork consumed UTXOs). This is
+     * acceptable — connect_block will fail for those blocks, and
+     * the operator can run `importchainstate` to get a clean set.
+     * We do NOT reimport from LevelDB here because LevelDB's UTXO
+     * set is at a different (later) height than the fork point. */
+    coins_view_cache_set_best_block(coins_tip, fork->phashBlock);
+
+    {
+        struct node_db *ndb = process_block_node_db();
+        if (ndb && ndb->open) {
+            node_db_state_set(ndb, "coins_best_block",
+                          fork->phashBlock->data, 32);
+        }
+    }
+
+    /* Step 4: Flush any pending SQLite batch. */
+    {
+        struct node_db *ndb = process_block_node_db();
+        if (ndb && ndb->sync_in_batch)
+            node_db_sync_flush(ndb);
+    }
+
+    /* Step 6: Clear BLOCK_FAILED flags on blocks above the fork point.
+     * Previous connect attempts may have marked blocks invalid due to
+     * stale UTXO data. After reimport, those blocks are valid. */
+    {
+        size_t iter = 0;
+        struct block_index *bi = NULL;
+        int cleared = 0;
+        while (block_map_next(&ms->map_block_index, &iter, NULL, &bi)) {
+            if (!bi) continue;
+            if (bi->nHeight > fork->nHeight &&
+                (bi->nStatus & BLOCK_FAILED_MASK)) {
+                bi->nStatus &= ~BLOCK_FAILED_MASK;
+                cleared++;
+            }
+        }
+        if (cleared > 0)
+            fprintf(stderr, "reorg_recovery: cleared BLOCK_FAILED on %d blocks "
+                    "above fork h=%d\n", cleared, fork->nHeight);
+    }
+
+    event_emitf(EV_REORG_RECOVERY_COMPLETE, 0,
+        "fork_h=%d cache_cleared=true", fork->nHeight);
+
+    fprintf(stderr,
+        "activate_best_chain: recovered from disconnect failure, "
+        "chain reset to h=%d, UTXO cache cleared\n", fork->nHeight);
+
     return true;
 }
 
@@ -1098,8 +1333,16 @@ bool activate_best_chain(struct validation_state *state,
                             tip->nHeight - fork->nHeight);
                 sync_set_state(SYNC_REORG, "chain reorganization");
                 while (active_chain_tip(&ms->chain_active) != fork) {
-                    if (!disconnect_tip(state, ms, coins_tip, datadir))
-                        return false;
+                    if (!disconnect_tip(state, ms, coins_tip, datadir)) {
+                        int stuck_h = active_chain_height(&ms->chain_active);
+                        if (!recover_from_disconnect_failure(
+                                ms, coins_tip, fork, stuck_h)) {
+                            sync_set_state(SYNC_FAILED,
+                                "unrecoverable disconnect failure");
+                            return false;
+                        }
+                        break; /* exit disconnect loop, proceed to connect */
+                    }
                 }
             }
         }

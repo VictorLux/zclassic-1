@@ -42,6 +42,9 @@ ZClassic23 is a complete rewrite of zclassicd in pure C23. Every node is simulta
 
 ## Architecture
 
+Detailed refactor target: [ARCHITECTURE.md](ARCHITECTURE.md)
+Execution progress checklist: [REFACTOR_CHECKLIST.md](REFACTOR_CHECKLIST.md)
+
 ```
 zclassic23 binary (26MB, statically linked)
 ├── Full node         P2P port 8033, RPC port 18232

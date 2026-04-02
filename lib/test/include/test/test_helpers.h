@@ -136,6 +136,7 @@
 #include "models/chain_snapshot.h"
 #include "net/connman.h"
 #include "net/tor_integration.h"
+#include "services/node_health_service.h"
 
 /* Shared helper functions */
 int check_hex(const unsigned char *data, size_t len, const char *expected);
@@ -177,6 +178,8 @@ int test_explorer(void);
 int test_mining(void);
 int test_utxo_commitment(void);
 int test_mmr(void);
+int test_mmb(void);
+int test_flyclient(void);
 int test_scan_util(void);
 int test_event(void);
 int test_download(void);
@@ -185,6 +188,9 @@ int test_policy(void);
 int test_wallet_view(void);
 int test_fast_sync(void);
 int test_block_scan(void);
+int test_node_health_service(void);
+int test_sync_service(void);
+int test_snapshot_sync_service(void);
 
 /* Spec-based user story tests (one per feature area) */
 int spec_wallet_dashboard(void);

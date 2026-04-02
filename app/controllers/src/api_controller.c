@@ -9,7 +9,12 @@
 #include "controllers/explorer_internal.h"
 #include "controllers/explorer_factoids.h"
 #include "controllers/file_controller.h"
+#include "services/snapshot_sync_service.h"
+#include "controllers/blockchain_controller.h"
+#include "services/node_health_service.h"
+#include "chain/mmb.h"
 #include "config/boot.h"
+#include "config/runtime.h"
 #include "views/format_helpers.h"
 #include "event/event.h"
 #include "net/download.h"
@@ -17,7 +22,6 @@
 #include "keys/key_io.h"
 #include "models/database.h"
 #include "models/block.h"
-#include <sys/stat.h>
 #include <stdio.h>
 #include <sys/stat.h>
 #include <stdlib.h>
@@ -37,15 +41,26 @@
 
 /* ── State ────────────────────────────────────────────────── */
 
-static struct main_state *g_ms = NULL;
-static struct tx_mempool *g_mp = NULL;
-static struct coins_view_cache *g_coins_tip = NULL;
-static struct node_db *g_ndb = NULL;
-static const char *g_datadir = NULL;
+struct api_context {
+    struct main_state *main_state;
+    struct tx_mempool *mempool;
+    struct coins_view_cache *coins_tip;
+    struct node_db *node_db;
+    const char *datadir;
+};
 
-static char g_rpc_user[128] = "zcluser";
-static char g_rpc_pass[128] = "zclpass";
-static int  g_rpc_port = 8023;
+struct api_rpc_backend {
+    char user[128];
+    char pass[128];
+    int port;
+};
+
+static struct api_context g_api_ctx = {0};
+static struct api_rpc_backend g_api_rpc = {
+    .user = "zcluser",
+    .pass = "zclpass",
+    .port = 8023,
+};
 
 /* ── Background cache ─────────────────────────────────────── */
 
@@ -77,19 +92,22 @@ void api_set_state(struct main_state *ms, struct tx_mempool *mp,
                     struct coins_view_cache *coins_tip,
                     struct node_db *ndb, const char *datadir)
 {
-    g_ms = ms;
-    g_mp = mp;
-    g_coins_tip = coins_tip;
-    g_ndb = ndb;
-    g_datadir = datadir;
+    g_api_ctx.main_state = ms;
+    g_api_ctx.mempool = mp;
+    g_api_ctx.coins_tip = coins_tip;
+    g_api_ctx.node_db = ndb;
+    g_api_ctx.datadir = datadir;
 }
 
 void api_set_rpc_backend(const char *rpc_user, const char *rpc_pass,
                           int rpc_port)
 {
-    if (rpc_user) snprintf(g_rpc_user, sizeof(g_rpc_user), "%s", rpc_user);
-    if (rpc_pass) snprintf(g_rpc_pass, sizeof(g_rpc_pass), "%s", rpc_pass);
-    if (rpc_port > 0) g_rpc_port = rpc_port;
+    if (rpc_user)
+        snprintf(g_api_rpc.user, sizeof(g_api_rpc.user), "%s", rpc_user);
+    if (rpc_pass)
+        snprintf(g_api_rpc.pass, sizeof(g_api_rpc.pass), "%s", rpc_pass);
+    if (rpc_port > 0)
+        g_api_rpc.port = rpc_port;
 }
 
 /* ── RPC call to local zclassicd ─────────────────────────── */
@@ -106,7 +124,7 @@ static int rpc_call(const char *method, const char *params_json,
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    addr.sin_port = htons((uint16_t)g_rpc_port);
+    addr.sin_port = htons((uint16_t)g_api_rpc.port);
 
     struct timeval tv = { .tv_sec = 10, .tv_usec = 0 };
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
@@ -126,7 +144,8 @@ static int rpc_call(const char *method, const char *params_json,
     static const char b64[] =
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     char auth_plain[256];
-    snprintf(auth_plain, sizeof(auth_plain), "%s:%s", g_rpc_user, g_rpc_pass);
+    snprintf(auth_plain, sizeof(auth_plain), "%s:%s",
+             g_api_rpc.user, g_api_rpc.pass);
     char auth_b64[512];
     size_t alen = strlen(auth_plain), bo = 0;
     for (size_t i = 0; i < alen; i += 3) {
@@ -797,10 +816,11 @@ static size_t compute_address(const char *param, uint8_t *r, size_t max)
 
 static size_t compute_deep_stats(uint8_t *r, size_t max)
 {
-    if (!g_datadir) return json_error(r, max, JSON_500_HEADERS, "No datadir");
+    if (!g_api_ctx.datadir)
+        return json_error(r, max, JSON_500_HEADERS, "No datadir");
 
     char dbpath[1024];
-    snprintf(dbpath, sizeof(dbpath), "%s/node.db", g_datadir);
+    snprintf(dbpath, sizeof(dbpath), "%s/node.db", g_api_ctx.datadir);
 
     sqlite3 *db = NULL;
     if (sqlite3_open_v2(dbpath, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
@@ -1230,9 +1250,9 @@ size_t api_handle_request(const char *method, const char *path,
 
     /* Route: /api/factoids — built from SQLite (read-only, safe from handler) */
     if (strcmp(clean_path, "/api/factoids") == 0) {
-        if (!g_datadir)
+        if (!g_api_ctx.datadir)
             return json_error(response, response_max, JSON_500_HEADERS, "No datadir");
-        return explorer_factoids_build_json(response, response_max, g_datadir);
+        return explorer_factoids_build_json(response, response_max, g_api_ctx.datadir);
     }
 
     /* Event log — lock-free atomic reads, safe from any handler thread */
@@ -1333,38 +1353,9 @@ size_t api_handle_request(const char *method, const char *path,
 
     /* Health check — lightweight, machine-readable */
     if (strcmp(clean_path, "/api/health") == 0) {
-        enum sync_state ss = sync_get_state();
-        bool healthy = (ss == SYNC_AT_TIP);
-
-        /* Chain + database state */
-        extern struct node_db *g_active_node_db;
-        int tip_height = -1;
-        if (g_active_node_db && g_active_node_db->open)
-            tip_height = db_block_max_height(g_active_node_db);
-        int64_t utxo_count = 0;
-        int64_t wal_size = 0;
-        if (g_active_node_db && g_active_node_db->open) {
-            utxo_count = node_db_utxo_count(g_active_node_db);
-            /* Check WAL file size */
-            const char *db_path = sqlite3_db_filename(g_active_node_db->db, "main");
-            if (db_path) {
-                char wal_path[1024];
-                snprintf(wal_path, sizeof(wal_path), "%s-wal", db_path);
-                struct stat wal_st;
-                if (stat(wal_path, &wal_st) == 0)
-                    wal_size = wal_st.st_size;
-            }
-        }
-
-        /* Error state */
-        struct error_ring *er = error_ring_global();
-        int err_count = error_ring_total(er);
-        const struct error_entry *last_err = error_ring_last(er);
-
-        /* Uptime */
-        static int64_t s_start_time = 0;
-        if (s_start_time == 0) s_start_time = (int64_t)time(NULL);
-        int64_t uptime = (int64_t)time(NULL) - s_start_time;
+        struct node_health_snapshot health;
+        node_health_collect(&health, g_api_ctx.node_db ?
+            g_api_ctx.node_db : app_runtime_node_db());
 
         char body[4096];
         snprintf(body, sizeof(body),
@@ -1376,21 +1367,28 @@ size_t api_handle_request(const char *method, const char *path,
               "\"wal_size_bytes\":%lld,"
               "\"utxo_count\":%lld"
             "},"
+            "\"network\":{"
+              "\"peer_count\":%zu,"
+              "\"has_peers\":%s"
+            "},"
             "\"boot\":{\"uptime_seconds\":%lld},"
             "\"errors\":{"
               "\"total\":%d,"
               "\"last\":%s%s%s"
             "}"
             "}",
-            healthy ? "true" : "false",
-            sync_state_name(ss),
-            tip_height,
-            (long long)wal_size, (long long)utxo_count,
-            (long long)uptime,
-            err_count,
-            last_err ? "\"" : "null",
-            last_err ? last_err->message : "",
-            last_err ? "\"" : "");
+            health.healthy ? "true" : "false",
+            sync_state_name(health.sync_state),
+            health.tip_height,
+            (long long)health.wal_size_bytes,
+            (long long)health.utxo_count,
+            health.peer_count,
+            health.has_peers ? "true" : "false",
+            (long long)health.uptime_seconds,
+            health.error_total,
+            health.last_error[0] ? "\"" : "null",
+            health.last_error,
+            health.last_error[0] ? "\"" : "");
 
         return (size_t)snprintf((char *)response, response_max,
             "HTTP/1.1 %s\r\n"
@@ -1399,18 +1397,105 @@ size_t api_handle_request(const char *method, const char *path,
             "Cache-Control: no-cache\r\n"
             "Connection: close\r\n\r\n"
             "%s",
-            healthy ? "200 OK" : "503 Service Unavailable",
+            health.healthy ? "200 OK" : "503 Service Unavailable",
             body);
+    }
+
+    /* Route: /api/node/snapshot — snapshot sync service status */
+    if (strcmp(clean_path, "/api/node/snapshot") == 0) {
+        struct snapshot_sync_service *svc = snapsync_global();
+        bool init = snapsync_global_initialized();
+        uint64_t received = 0, total = 0;
+        double rate = 0;
+        if (init) snapsync_get_progress(svc, &received, &total, &rate);
+        return (size_t)snprintf((char *)response, response_max,
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Type: application/json\r\n"
+            "Access-Control-Allow-Origin: *\r\n"
+            "Cache-Control: no-cache\r\n"
+            "Connection: close\r\n\r\n"
+            "{\"state\":\"%s\","
+            "\"received\":%llu,\"total\":%llu,"
+            "\"rate_per_sec\":%.0f,"
+            "\"percent\":%.1f,"
+            "\"serving_peer\":%u,"
+            "\"offered_height\":%d,"
+            "\"turbo_active\":%s}",
+            init ? snapsync_state_name(svc->state) : "not_initialized",
+            (unsigned long long)received, (unsigned long long)total,
+            rate,
+            total > 0 ? 100.0 * (double)received / (double)total : 0,
+            init ? svc->serving_peer_id : 0,
+            init ? svc->offered_height : 0,
+            (init && svc->turbo_active) ? "true" : "false");
+    }
+
+    /* Route: /api/node/mmb — Merkle Mountain Belt status */
+    if (strcmp(clean_path, "/api/node/mmb") == 0) {
+        struct mmb *mb = rpc_blockchain_get_mmb();
+        uint8_t root[32] = {0};
+        if (mb && mb->num_leaves > 0) mmb_root(mb, root);
+        char hex[65];
+        for (int i = 0; i < 32; i++) sprintf(hex + i*2, "%02x", root[i]);
+        return (size_t)snprintf((char *)response, response_max,
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Type: application/json\r\n"
+            "Access-Control-Allow-Origin: *\r\n"
+            "Cache-Control: no-cache\r\n"
+            "Connection: close\r\n\r\n"
+            "{\"mmb_root\":\"%s\","
+            "\"num_leaves\":%llu,"
+            "\"num_peaks\":%u}",
+            hex,
+            (unsigned long long)(mb ? mb->num_leaves : 0),
+            mb ? mb->num_mountains : 0);
+    }
+
+    /* Route: /api/node/status — comprehensive diagnostics */
+    if (strcmp(clean_path, "/api/node/status") == 0) {
+        enum sync_state ss = sync_get_state();
+        struct snapshot_sync_service *svc = snapsync_global();
+        bool snap_init = snapsync_global_initialized();
+        struct mmb *mb = rpc_blockchain_get_mmb();
+        struct error_ring *er = error_ring_global();
+
+        char body[2048];
+        snprintf(body, sizeof(body),
+            "{"
+            "\"sync\":{\"state\":\"%s\","
+              "\"replay_active\":%s,\"replay_height\":%d},"
+            "\"snapshot\":{\"state\":\"%s\","
+              "\"received\":%llu,\"total\":%llu},"
+            "\"mmb\":{\"leaves\":%llu,\"peaks\":%u},"
+            "\"errors\":{\"total\":%d}"
+            "}",
+            sync_state_name(ss),
+            atomic_load(&g_utxo_replay_active) ? "true" : "false",
+            atomic_load(&g_utxo_replay_height),
+            snap_init ? snapsync_state_name(svc->state) : "not_initialized",
+            (unsigned long long)(snap_init ? svc->received_utxos : 0),
+            (unsigned long long)(snap_init ? svc->offered_count : 0),
+            (unsigned long long)(mb ? mb->num_leaves : 0),
+            mb ? mb->num_mountains : 0,
+            error_ring_total(er));
+
+        return (size_t)snprintf((char *)response, response_max,
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Type: application/json\r\n"
+            "Access-Control-Allow-Origin: *\r\n"
+            "Cache-Control: no-cache\r\n"
+            "Connection: close\r\n\r\n%s", body);
     }
 
     /* Wallet data — balance, address, activity */
     if (strcmp(clean_path, "/api/wallet") == 0) {
-        extern struct node_db *g_active_node_db;
-        if (!g_active_node_db || !g_active_node_db->db) {
+        struct node_db *ndb = g_api_ctx.node_db ?
+            g_api_ctx.node_db : app_runtime_node_db();
+        if (!ndb || !ndb->db) {
             return json_error(response, response_max, JSON_500_HEADERS,
                               "No database");
         }
-        sqlite3 *db = g_active_node_db->db;
+        sqlite3 *db = ndb->db;
         sqlite3_stmt *s = NULL;
 
         /* Balance — use wallet_utxos (correct spent tracking) */
@@ -1514,7 +1599,7 @@ size_t api_handle_request(const char *method, const char *path,
         if (!fm) {
             /* Try building on demand */
             extern void file_controller_init(const char *);
-            if (g_datadir) file_controller_init(g_datadir);
+            if (g_api_ctx.datadir) file_controller_init(g_api_ctx.datadir);
             fm = file_controller_get_manifest();
         }
         if (!fm)
@@ -1584,7 +1669,7 @@ size_t api_handle_request(const char *method, const char *path,
                 JSON_404_HEADERS, "Chunk not found");
         uint8_t *data = NULL;
         uint32_t data_size = 0;
-        if (!file_chunk_read(chunk, g_datadir, &data, &data_size))
+        if (!file_chunk_read(chunk, g_api_ctx.datadir, &data, &data_size))
             return json_error(response, response_max,
                 JSON_500_HEADERS, "Failed to read chunk");
 

@@ -47,7 +47,8 @@ enum event_type {
     /* ── Chain ──────────────────────────────────────── */
     EV_TIP_UPDATED,              /* payload: hash[32] + height(i32) */
     EV_REORG_START,              /* payload: fork_height(i32) + new_height(i32) */
-    /* EV_REORG_COMPLETE reserved for future use */
+    EV_REORG_DISCONNECT_FAILED,  /* payload: "stuck_h=N fork_h=N" */
+    EV_REORG_RECOVERY_COMPLETE,  /* payload: "fork_h=N cache_cleared=true" */
     EV_COINS_FLUSH,              /* payload: entries(u64) + blocks_batched(u32) */
     EV_COINS_FLUSH_FAILED,       /* payload: reason string */
 
@@ -70,6 +71,7 @@ enum event_type {
     EV_BOOT_BLOCK_INDEX,         /* payload: "loaded entries=N elapsed=Xs" */
     EV_BOOT_CHAIN_RESTORED,      /* payload: "height=N" */
     EV_BOOT_ACTIVATE,            /* payload: "tip=N most_work=N" or "FAILED ..." */
+    EV_BOOT_VALIDATION_FAILED,   /* payload: "coins_chain_mismatch ..." */
 
     /* ── Validation pipeline (detailed) ────────────── */
     EV_BLOCK_CHECK_PASSED,       /* payload: "height=N checks=header,merkle,txns" */
@@ -92,6 +94,17 @@ enum event_type {
     EV_NODE_SHUTDOWN,            /* payload: reason string */
     EV_CRASH,                    /* payload: signal(i32) */
     EV_DB_ERROR,                 /* payload: operation + errmsg */
+
+    /* ── MMB / FlyClient ───────────────────────────── */
+    EV_MMB_APPEND,               /* payload: "h=N peaks=N leaves=N" */
+    EV_MMB_PROOF_VERIFIED,       /* payload: "leaf=N valid=true|false" */
+    EV_FC_SAMPLE_VERIFIED,       /* payload: "h=N pow=ok proof=ok" */
+    EV_FC_CHAIN_VERIFIED,        /* payload: "samples=N all_valid=true|false" */
+
+    /* ── Snapshot sync service ─────────────────────── */
+    EV_SNAPSYNC_STATE_CHANGE,    /* payload: "idle->receiving: reason" */
+    EV_SNAPSYNC_PROGRESS,        /* payload: "received=N/N rate=N/s" */
+    EV_SNAPSYNC_VERIFIED,        /* payload: "sha3=PASSED mmb=PASSED utxos=N" */
 
     EV_NUM_TYPES                 /* sentinel — must be last */
 };
@@ -126,10 +139,27 @@ enum sync_state {
     SYNC_CONNECTING_BLOCKS,    /* IBD phase 3: validating + connecting */
     SYNC_AT_TIP,               /* caught up, normal relay */
     SYNC_REORG,                /* processing a chain reorganization */
+    SYNC_REORG_RECOVERY,       /* recovering from disconnect failure */
     SYNC_SNAPSHOT_RECEIVE,     /* fast sync from ZCL23 peer */
     SYNC_FAILED,               /* unrecoverable error */
     SYNC_NUM_STATES            /* sentinel */
 };
+
+/* ── Snapshot sync state machine ───────────────────────── */
+
+enum snapshot_sync_state {
+    SNAPSYNC_IDLE = 0,
+    SNAPSYNC_NEGOTIATING,      /* received offer, solving PoW */
+    SNAPSYNC_RECEIVING,        /* streaming chunks from peer */
+    SNAPSYNC_VERIFYING,        /* SHA3 + MMB root verification */
+    SNAPSYNC_COMPLETE,         /* verified, coins_best_block set */
+    SNAPSYNC_FAILED,           /* verification failed, UTXOs wiped */
+    SNAPSYNC_NUM_STATES
+};
+
+enum snapshot_sync_state snapsync_get_state(void);
+bool snapsync_set_state(enum snapshot_sync_state new_state, const char *reason);
+const char *snapsync_state_name(enum snapshot_sync_state state);
 
 /* ── Event structure ────────────────────────────────────── */
 

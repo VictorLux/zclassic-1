@@ -52,9 +52,20 @@
 #include <unistd.h>
 #include <time.h>
 
+static struct wallet_rpc_context *wallet_ctx(void)
+{
+    return wallet_rpc_context_current();
+}
+
+static bool wallet_ctx_db_ready(const struct wallet_rpc_context *ctx)
+{
+    return ctx->node_db && ctx->node_db->open;
+}
+
 static bool rpc_scanblockfiles(const struct json_value *params, bool help,
                                  struct json_value *result)
 {
+    struct wallet_rpc_context *ctx = wallet_ctx();
     (void)params;
     RPC_HELP(help, result,
         "scanblockfiles\n"
@@ -64,24 +75,24 @@ static bool rpc_scanblockfiles(const struct json_value *params, bool help,
 
     ENSURE_WALLET(result);
 
-    const char *dir = g_datadir ? g_datadir : "/home/bob/.zclassic-c23";
-    int found = wallet_scan_blockfiles(g_wallet, dir);
+    const char *dir = ctx->datadir ? ctx->datadir : "/home/bob/.zclassic-c23";
+    int found = wallet_scan_blockfiles(ctx->wallet, dir);
 
     /* Also persist wallet updates */
-    if (g_wallet_db)
-        wallet_sqlite_flush(g_wallet_db, g_wallet);
+    if (ctx->wallet_db)
+        wallet_sqlite_flush(ctx->wallet_db, ctx->wallet);
 
     json_set_object(result);
     json_push_kv_int(result, "wallet_outputs_found", found);
-    json_push_kv_int(result, "spent_outpoints", (int64_t)g_wallet->num_spent);
+    json_push_kv_int(result, "spent_outpoints", (int64_t)ctx->wallet->num_spent);
 
     /* Report corrected balance */
-    int64_t balance = wallet_get_balance(g_wallet);
+    int64_t balance = wallet_get_balance(ctx->wallet);
     char tbal[32], zbal[32];
     format_amount(balance, tbal, sizeof(tbal));
     json_push_kv_real(result, "transparent_balance", strtod(tbal, NULL));
 
-    int64_t z_balance = wallet_get_sapling_balance(g_wallet);
+    int64_t z_balance = wallet_get_sapling_balance(ctx->wallet);
     format_amount(z_balance, zbal, sizeof(zbal));
     json_push_kv_real(result, "shielded_balance", strtod(zbal, NULL));
 
@@ -91,6 +102,7 @@ static bool rpc_scanblockfiles(const struct json_value *params, bool help,
 static bool rpc_reindexdb(const struct json_value *params, bool help,
                           struct json_value *result)
 {
+    struct wallet_rpc_context *ctx = wallet_ctx();
     (void)params;
     RPC_HELP(help, result,
         "reindexdb\n"
@@ -98,39 +110,39 @@ static bool rpc_reindexdb(const struct json_value *params, bool help,
         "then re-scans all blocks from disk to rebuild them.\n"
         "Returns the corrected balance.\n");
 
-    if (!g_node_db || !g_node_db->open) {
+    if (!wallet_ctx_db_ready(ctx)) {
         json_set_str(result, "SQLite database not available");
         return false;
     }
-    if (!g_wallet) {
+    if (!ctx->wallet) {
         json_set_str(result, "Wallet not loaded");
         return false;
     }
-    if (!g_main_state) {
+    if (!ctx->main_state) {
         json_set_str(result, "Chain state not available");
         return false;
     }
 
-    int chain_tip = active_chain_height(&g_main_state->chain_active);
+    int chain_tip = active_chain_height(&ctx->main_state->chain_active);
     printf("reindexdb: fast wallet scan of %d blocks...\n", chain_tip + 1);
     fflush(stdout);
 
-    int found = wallet_scan_blocks(g_node_db,
-        &g_main_state->chain_active, g_wallet, g_datadir,
+    int found = wallet_scan_blocks(ctx->node_db,
+        &ctx->main_state->chain_active, ctx->wallet, ctx->datadir,
         0, chain_tip);
 
-    node_db_sync_wallet_keys(g_node_db, g_wallet);
+    node_db_sync_wallet_keys(ctx->node_db, ctx->wallet);
 
     json_set_object(result);
     json_push_kv_int(result, "blocks_scanned", chain_tip + 1);
     json_push_kv_int(result, "wallet_transactions", found);
 
-    int64_t t_bal = db_wallet_utxo_balance(g_node_db);
+    int64_t t_bal = db_wallet_utxo_balance(ctx->node_db);
     char bal_str[32];
     format_amount(t_bal, bal_str, sizeof(bal_str));
     json_push_kv_str(result, "wallet_t_balance", bal_str);
 
-    int64_t z_bal = db_sapling_note_balance(g_node_db);
+    int64_t z_bal = db_sapling_note_balance(ctx->node_db);
     char zbal_str[32];
     format_amount(z_bal, zbal_str, sizeof(zbal_str));
     json_push_kv_str(result, "wallet_z_balance", zbal_str);
@@ -141,7 +153,7 @@ static bool rpc_reindexdb(const struct json_value *params, bool help,
     json_push_kv_str(result, "total_balance", tot_str);
 
     struct db_wallet_utxo utxos[256];
-    int utxo_count = db_wallet_utxo_list_unspent(g_node_db, utxos, 256);
+    int utxo_count = db_wallet_utxo_list_unspent(ctx->node_db, utxos, 256);
     json_push_kv_int(result, "unspent_utxos", utxo_count);
 
     printf("reindexdb: complete — balance %s ZCL (%d UTXOs)\n",
@@ -154,6 +166,7 @@ static bool rpc_reindexdb(const struct json_value *params, bool help,
 static bool rpc_importlegacy(const struct json_value *params, bool help,
                               struct json_value *result)
 {
+    struct wallet_rpc_context *ctx = wallet_ctx();
     RPC_HELP(help, result,
         "importlegacy ( \"datadir\" )\n"
         "Import wallet data from a stopped legacy C++ node's data directory.\n"
@@ -170,11 +183,11 @@ static bool rpc_importlegacy(const struct json_value *params, bool help,
     const char *legacy_dir = rpc_permit_str(&p, 0, "datadir", NULL);
     if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); return false; }
 
-    if (!g_node_db || !g_node_db->open) {
+    if (!wallet_ctx_db_ready(ctx)) {
         json_set_str(result, "SQLite database not available");
         return false;
     }
-    if (!g_wallet) {
+    if (!ctx->wallet) {
         json_set_str(result, "Wallet not loaded");
         return false;
     }
@@ -190,7 +203,7 @@ static bool rpc_importlegacy(const struct json_value *params, bool help,
     printf("importlegacy: importing from %s...\n", legacy_dir);
     fflush(stdout);
 
-    int found = legacy_import(legacy_dir, g_node_db, g_wallet, true);
+    int found = legacy_import(legacy_dir, ctx->node_db, ctx->wallet, true);
     if (found < 0) {
         json_set_str(result,
             "Import failed — is the legacy node stopped?");
@@ -200,12 +213,12 @@ static bool rpc_importlegacy(const struct json_value *params, bool help,
     json_set_object(result);
     json_push_kv_int(result, "wallet_transactions", found);
 
-    int64_t t_bal = db_wallet_utxo_balance(g_node_db);
+    int64_t t_bal = db_wallet_utxo_balance(ctx->node_db);
     char bal_str[32];
     format_amount(t_bal, bal_str, sizeof(bal_str));
     json_push_kv_str(result, "wallet_t_balance", bal_str);
 
-    int64_t z_bal = db_sapling_note_balance(g_node_db);
+    int64_t z_bal = db_sapling_note_balance(ctx->node_db);
     char zbal_str[32];
     format_amount(z_bal, zbal_str, sizeof(zbal_str));
     json_push_kv_str(result, "wallet_z_balance", zbal_str);
@@ -216,7 +229,7 @@ static bool rpc_importlegacy(const struct json_value *params, bool help,
     json_push_kv_str(result, "total_balance", tot_str);
 
     struct db_wallet_utxo utxos[256];
-    int utxo_count = db_wallet_utxo_list_unspent(g_node_db, utxos, 256);
+    int utxo_count = db_wallet_utxo_list_unspent(ctx->node_db, utxos, 256);
     json_push_kv_int(result, "unspent_utxos", utxo_count);
 
     return true;
@@ -225,6 +238,7 @@ static bool rpc_importlegacy(const struct json_value *params, bool help,
 static bool rpc_getwalletaccounting(const struct json_value *params,
                                     bool help, struct json_value *result)
 {
+    struct wallet_rpc_context *ctx = wallet_ctx();
     (void)params;
     RPC_HELP(help, result,
         "getwalletaccounting\n"
@@ -255,10 +269,10 @@ static bool rpc_getwalletaccounting(const struct json_value *params,
     json_set_array(&tx_list);
 
     for (size_t i = 0; i < MAX_WALLET_TX; i++) {
-        if (!g_wallet->map_wallet[i].used)
+        if (!ctx->wallet->map_wallet[i].used)
             continue;
 
-        const struct wallet_tx *wtx = &g_wallet->map_wallet[i];
+        const struct wallet_tx *wtx = &ctx->wallet->map_wallet[i];
         const struct transaction *tx = &wtx->tx;
 
         char txid[65];
@@ -269,7 +283,7 @@ static bool rpc_getwalletaccounting(const struct json_value *params,
         int64_t out_to_other = 0;    /* outputs to external addresses */
 
         for (size_t j = 0; j < tx->num_vout; j++) {
-            if (wallet_is_mine(g_wallet, &tx->vout[j]))
+            if (wallet_is_mine(ctx->wallet, &tx->vout[j]))
                 out_to_mine += tx->vout[j].value;
             else
                 out_to_other += tx->vout[j].value;
@@ -284,14 +298,14 @@ static bool rpc_getwalletaccounting(const struct json_value *params,
         int missing_inputs = 0;
         if (wtx->from_me) {
             for (size_t j = 0; j < tx->num_vin; j++) {
-                const struct wallet_tx *prev = wallet_get_tx(g_wallet,
+                const struct wallet_tx *prev = wallet_get_tx(ctx->wallet,
                     &tx->vin[j].prevout.hash);
                 if (prev) {
                     uint32_t n = tx->vin[j].prevout.n;
                     if (n < prev->tx.num_vout) {
                         int64_t v = prev->tx.vout[n].value;
                         total_in += v;
-                        if (wallet_is_mine(g_wallet, &prev->tx.vout[n]))
+                        if (wallet_is_mine(ctx->wallet, &prev->tx.vout[n]))
                             in_from_mine += v;
                         else
                             in_from_other += v;
@@ -396,7 +410,7 @@ static bool rpc_getwalletaccounting(const struct json_value *params,
             json_push_kv_int(&entry, "missing_inputs", missing_inputs);
             /* Show first missing input prevout for debugging */
             for (size_t j = 0; j < tx->num_vin && j < 1; j++) {
-                const struct wallet_tx *prev = wallet_get_tx(g_wallet,
+                const struct wallet_tx *prev = wallet_get_tx(ctx->wallet,
                     &tx->vin[j].prevout.hash);
                 if (!prev) {
                     char pi[65];
@@ -411,7 +425,7 @@ static bool rpc_getwalletaccounting(const struct json_value *params,
         json_init(&details);
         json_set_array(&details);
         for (size_t j = 0; j < tx->num_vout; j++) {
-            bool is_mine = wallet_is_mine(g_wallet, &tx->vout[j]);
+            bool is_mine = wallet_is_mine(ctx->wallet, &tx->vout[j]);
             struct tx_destination dest;
             char addr[128];
             addr[0] = '\0';
@@ -449,7 +463,7 @@ static bool rpc_getwalletaccounting(const struct json_value *params,
     {
         struct coin_entry coins[4096];
         size_t nc = 0;
-        wallet_available_coins(g_wallet, coins, &nc, 4096, false, false);
+        wallet_available_coins(ctx->wallet, coins, &nc, 4096, false, false);
         for (size_t i = 0; i < nc; i++)
             utxo_balance += coins[i].wtx->tx.vout[coins[i].i].value;
     }
@@ -493,7 +507,7 @@ static bool rpc_getwalletaccounting(const struct json_value *params,
     json_push_kv_bool(result, "balanced", discrepancy == 0);
 
     json_push_kv_int(result, "tx_count",
-                     (int64_t)g_wallet->num_wallet_tx);
+                     (int64_t)ctx->wallet->num_wallet_tx);
     json_push_kv(&result[0], "transactions", &tx_list);
     json_free(&tx_list);
 
@@ -503,53 +517,54 @@ static bool rpc_getwalletaccounting(const struct json_value *params,
 static bool rpc_db_info(const struct json_value *params, bool help,
                         struct json_value *result)
 {
+    struct wallet_rpc_context *ctx = wallet_ctx();
     (void)params;
     RPC_HELP(help, result,
         "db_info\n"
         "Returns SQLite node database statistics.\n");
 
-    if (!g_node_db || !g_node_db->open) {
+    if (!wallet_ctx_db_ready(ctx)) {
         json_set_str(result, "SQLite database not available");
         return false;
     }
 
     json_set_object(result);
 
-    int tip_h = node_db_sync_get_tip_height(g_node_db);
+    int tip_h = node_db_sync_get_tip_height(ctx->node_db);
     json_push_kv_int(result, "tip_height", tip_h);
 
-    int64_t utxo_count = db_utxo_count(g_node_db);
+    int64_t utxo_count = db_utxo_count(ctx->node_db);
     json_push_kv_int(result, "utxo_count", utxo_count);
 
-    int block_count = db_block_count(g_node_db);
+    int block_count = db_block_count(ctx->node_db);
     json_push_kv_int(result, "blocks_indexed", block_count);
 
-    int max_h = db_block_max_height(g_node_db);
+    int max_h = db_block_max_height(ctx->node_db);
     json_push_kv_int(result, "max_block_height", max_h);
 
-    int64_t wallet_bal = db_wallet_utxo_balance(g_node_db);
+    int64_t wallet_bal = db_wallet_utxo_balance(ctx->node_db);
     char bal_str[32];
     format_amount(wallet_bal, bal_str, sizeof(bal_str));
     json_push_kv_str(result, "wallet_t_balance", bal_str);
 
-    int64_t sapling_bal = db_sapling_note_balance(g_node_db);
+    int64_t sapling_bal = db_sapling_note_balance(ctx->node_db);
     char zbal_str[32];
     format_amount(sapling_bal, zbal_str, sizeof(zbal_str));
     json_push_kv_str(result, "wallet_z_balance", zbal_str);
 
-    int mempool_count = db_mempool_count(g_node_db);
+    int mempool_count = db_mempool_count(ctx->node_db);
     json_push_kv_int(result, "mempool_persisted", mempool_count);
 
-    int peer_count = db_peer_count(g_node_db);
+    int peer_count = db_peer_count(ctx->node_db);
     json_push_kv_int(result, "peers_stored", peer_count);
 
-    int wkey_count = db_wallet_key_count(g_node_db);
+    int wkey_count = db_wallet_key_count(ctx->node_db);
     json_push_kv_int(result, "wallet_keys", wkey_count);
 
-    int skey_count = db_sapling_key_count(g_node_db);
+    int skey_count = db_sapling_key_count(ctx->node_db);
     json_push_kv_int(result, "sapling_keys", skey_count);
 
-    int wtx_count = db_wallet_tx_count(g_node_db);
+    int wtx_count = db_wallet_tx_count(ctx->node_db);
     json_push_kv_int(result, "wallet_transactions", wtx_count);
 
     return true;
@@ -558,6 +573,7 @@ static bool rpc_db_info(const struct json_value *params, bool help,
 static bool rpc_removestalletxs(const struct json_value *params,
                                  bool help, struct json_value *result)
 {
+    struct wallet_rpc_context *ctx = wallet_ctx();
     (void)params;
     RPC_HELP(help, result,
         "removestalletxs\n"
@@ -576,9 +592,9 @@ static bool rpc_removestalletxs(const struct json_value *params,
     json_set_array(&removed_list);
 
     for (size_t i = 0; i < MAX_WALLET_TX; i++) {
-        if (!g_wallet->map_wallet[i].used)
+        if (!ctx->wallet->map_wallet[i].used)
             continue;
-        struct wallet_tx *wtx = &g_wallet->map_wallet[i];
+        struct wallet_tx *wtx = &ctx->wallet->map_wallet[i];
         if (wtx->confirms > 0)
             continue; /* skip confirmed txs */
         if (!wtx->from_me)
@@ -587,11 +603,11 @@ static bool rpc_removestalletxs(const struct json_value *params,
         /* Check if any input's prevout is spent on-chain
          * (i.e., NOT in the current UTXO set) */
         bool any_input_spent = false;
-        if (g_coins_tip) {
+        if (ctx->coins_tip) {
             for (size_t j = 0; j < wtx->tx.num_vin; j++) {
                 struct coins c;
                 coins_init(&c);
-                bool found = coins_view_cache_get_coins(g_coins_tip,
+                bool found = coins_view_cache_get_coins(ctx->coins_tip,
                     &wtx->tx.vin[j].prevout.hash, &c);
                 bool avail = found && coins_is_available(&c,
                     wtx->tx.vin[j].prevout.n);
@@ -610,7 +626,7 @@ static bool rpc_removestalletxs(const struct json_value *params,
          * Sum the value of outputs that were "locked" by this dead tx */
         int64_t locked_val = 0;
         for (size_t j = 0; j < wtx->tx.num_vout; j++) {
-            if (wallet_is_mine(g_wallet, &wtx->tx.vout[j]))
+            if (wallet_is_mine(ctx->wallet, &wtx->tx.vout[j]))
                 locked_val += wtx->tx.vout[j].value;
         }
 
@@ -630,7 +646,7 @@ static bool rpc_removestalletxs(const struct json_value *params,
         /* Remove the dead tx */
         transaction_free(&wtx->tx);
         memset(wtx, 0, sizeof(*wtx));
-        g_wallet->num_wallet_tx--;
+        ctx->wallet->num_wallet_tx--;
         removed++;
         recovered += locked_val;
     }
@@ -640,11 +656,11 @@ static bool rpc_removestalletxs(const struct json_value *params,
      * incomplete and would incorrectly prune valid UTXOs that exist
      * on-chain but are missing from our coins cache. */
     if (removed > 0) {
-        wallet_rebuild_spent_set(g_wallet);
+        wallet_rebuild_spent_set(ctx->wallet);
     }
 
     /* Compute new balance */
-    int64_t new_balance = wallet_get_balance(g_wallet);
+    int64_t new_balance = wallet_get_balance(ctx->wallet);
     char bal_str[32];
     format_amount(new_balance, bal_str, sizeof(bal_str));
 
@@ -654,7 +670,7 @@ static bool rpc_removestalletxs(const struct json_value *params,
     json_push_kv_real(result, "recovered_value", strtod(rec_str, NULL));
     json_push_kv_real(result, "new_balance", strtod(bal_str, NULL));
     json_push_kv_int(result, "wallet_tx_count",
-                     (int64_t)g_wallet->num_wallet_tx);
+                     (int64_t)ctx->wallet->num_wallet_tx);
     json_push_kv(&result[0], "removed_txs", &removed_list);
     json_free(&removed_list);
 
@@ -664,6 +680,7 @@ static bool rpc_removestalletxs(const struct json_value *params,
 static bool rpc_walletaudit(const struct json_value *params, bool help,
                              struct json_value *result)
 {
+    struct wallet_rpc_context *ctx = wallet_ctx();
     (void)params;
     RPC_HELP(help, result,
         "walletaudit\n"
@@ -674,7 +691,7 @@ static bool rpc_walletaudit(const struct json_value *params, bool help,
 
     ENSURE_WALLET(result);
 
-    if (!g_coins_tip) {
+    if (!ctx->coins_tip) {
         json_set_str(result, "Chainstate (coins DB) not available");
         return false;
     }
@@ -686,8 +703,8 @@ static bool rpc_walletaudit(const struct json_value *params, bool help,
     const unsigned char *sc_pfx = chain_params_base58_prefix(
         cp, B58_SCRIPT_ADDRESS, &sc_pfx_len);
 
-    int tip_height = g_main_state
-        ? active_chain_height(&g_main_state->chain_active) : 0;
+    int tip_height = ctx->main_state
+        ? active_chain_height(&ctx->main_state->chain_active) : 0;
 
     json_set_object(result);
     json_push_kv_int(result, "chain_height", tip_height);
@@ -695,7 +712,7 @@ static bool rpc_walletaudit(const struct json_value *params, bool help,
     /* Phase 1: Get all wallet UTXOs and verify each against chainstate */
     struct coin_entry wallet_coins[4096];
     size_t num_wallet_coins = 0;
-    wallet_available_coins(g_wallet, wallet_coins, &num_wallet_coins,
+    wallet_available_coins(ctx->wallet, wallet_coins, &num_wallet_coins,
                             4096, false, false);
 
     int64_t verified_balance = 0;
@@ -734,7 +751,7 @@ static bool rpc_walletaudit(const struct json_value *params, bool help,
         /* Check chainstate: does this UTXO actually exist? */
         struct coins chain_coins;
         coins_init(&chain_coins);
-        bool in_chain = coins_view_cache_get_coins(g_coins_tip,
+        bool in_chain = coins_view_cache_get_coins(ctx->coins_tip,
             &wtx->tx.hash, &chain_coins);
         bool available = in_chain
             && coins_is_available(&chain_coins, vout_n);
@@ -812,10 +829,10 @@ static bool rpc_walletaudit(const struct json_value *params, bool help,
     /* Phase 2: Shielded notes (always from SQLite) */
     int64_t z_balance = 0;
     int z_unspent = 0;
-    if (g_node_db && g_node_db->open) {
-        z_balance = db_sapling_note_balance(g_node_db);
+    if (wallet_ctx_db_ready(ctx)) {
+        z_balance = db_sapling_note_balance(ctx->node_db);
         struct db_sapling_note db_notes[256];
-        z_unspent = db_sapling_note_list_unspent(g_node_db, db_notes, 256);
+        z_unspent = db_sapling_note_list_unspent(ctx->node_db, db_notes, 256);
     }
 
     /* Phase 3: Build summary */
@@ -844,12 +861,12 @@ static bool rpc_walletaudit(const struct json_value *params, bool help,
     format_amount(phantom_balance, s, sizeof(s));
     json_push_kv_str(&summary, "discrepancy", s);
 
-    int64_t wallet_reports = wallet_get_balance(g_wallet);
+    int64_t wallet_reports = wallet_get_balance(ctx->wallet);
     format_amount(wallet_reports, s, sizeof(s));
     json_push_kv_str(&summary, "getbalance_reports", s);
 
-    if (g_node_db && g_node_db->open) {
-        int64_t sqlite_balance = db_wallet_utxo_balance(g_node_db);
+    if (wallet_ctx_db_ready(ctx)) {
+        int64_t sqlite_balance = db_wallet_utxo_balance(ctx->node_db);
         format_amount(sqlite_balance, s, sizeof(s));
         json_push_kv_str(&summary, "sqlite_verified_balance", s);
     }
@@ -894,6 +911,7 @@ static bool rpc_walletaudit(const struct json_value *params, bool help,
 static bool rpc_getchaincoins(const struct json_value *params, bool help,
                                struct json_value *result)
 {
+    struct wallet_rpc_context *ctx = wallet_ctx();
     RPC_HELP(help, result,
         "getchaincoins \"txid\"\n"
         "Raw chainstate lookup for any txid.\n"
@@ -905,7 +923,7 @@ static bool rpc_getchaincoins(const struct json_value *params, bool help,
     const char *txid_str = rpc_require_str(&p, 0, "txid");
     if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); return false; }
 
-    if (!g_coins_tip) {
+    if (!ctx->coins_tip) {
         json_set_str(result, "Chainstate (coins DB) not available");
         return false;
     }
@@ -915,7 +933,7 @@ static bool rpc_getchaincoins(const struct json_value *params, bool help,
 
     struct coins chain_coins;
     coins_init(&chain_coins);
-    bool found = coins_view_cache_get_coins(g_coins_tip, &txid, &chain_coins);
+    bool found = coins_view_cache_get_coins(ctx->coins_tip, &txid, &chain_coins);
 
     json_set_object(result);
     json_push_kv_str(result, "txid", txid_str);
@@ -956,8 +974,8 @@ static bool rpc_getchaincoins(const struct json_value *params, bool help,
         }
 
         bool in_wallet_flag = false;
-        if (g_wallet && available)
-            in_wallet_flag = wallet_is_mine(g_wallet, &chain_coins.vout[i]);
+        if (ctx->wallet && available)
+            in_wallet_flag = wallet_is_mine(ctx->wallet, &chain_coins.vout[i]);
 
         struct json_value entry = {0};
         wallet_view_chain_coin(&entry, (uint32_t)i, val, available,
@@ -987,6 +1005,7 @@ static bool rpc_getchaincoins(const struct json_value *params, bool help,
 static bool rpc_traceutxo(const struct json_value *params, bool help,
                             struct json_value *result)
 {
+    struct wallet_rpc_context *ctx = wallet_ctx();
     RPC_HELP(help, result,
         "traceutxo \"txid\" vout\n"
         "Trace one UTXO's complete lifecycle.\n"
@@ -1011,9 +1030,9 @@ static bool rpc_traceutxo(const struct json_value *params, bool help,
     spent_by_hex[0] = '\0';
 
     /* Check wallet DB */
-    if (g_node_db && g_node_db->open) {
+    if (wallet_ctx_db_ready(ctx)) {
         struct db_wallet_utxo wu;
-        if (db_wallet_utxo_find(g_node_db, txid.data, (uint32_t)vout, &wu)) {
+        if (db_wallet_utxo_find(ctx->node_db, txid.data, (uint32_t)vout, &wu)) {
             in_wallet = true;
             value = wu.value;
             height = wu.height;
@@ -1026,10 +1045,10 @@ static bool rpc_traceutxo(const struct json_value *params, bool help,
     }
 
     /* Check chainstate */
-    if (g_coins_tip) {
+    if (ctx->coins_tip) {
         struct coins chain_coins;
         coins_init(&chain_coins);
-        in_chain = coins_view_cache_get_coins(g_coins_tip, &txid, &chain_coins);
+        in_chain = coins_view_cache_get_coins(ctx->coins_tip, &txid, &chain_coins);
         if (in_chain) {
             chain_available = coins_is_available(&chain_coins,
                                                   (unsigned int)vout);
@@ -1043,9 +1062,9 @@ static bool rpc_traceutxo(const struct json_value *params, bool help,
     }
 
     /* Check wallet tx for creation details */
-    if (g_node_db && g_node_db->open && value == 0) {
+    if (wallet_ctx_db_ready(ctx) && value == 0) {
         struct db_wallet_tx dbtx;
-        if (db_wallet_tx_find(g_node_db, txid.data, &dbtx)) {
+        if (db_wallet_tx_find(ctx->node_db, txid.data, &dbtx)) {
             struct transaction tx;
             if (wallet_db_tx_deserialize(&dbtx, &tx)) {
                 if ((size_t)vout < tx.num_vout)
@@ -1142,6 +1161,7 @@ static void key_balance_cb(const struct db_wallet_key *key, void *ctx)
 static bool rpc_listwalletkeys(const struct json_value *params, bool help,
                                 struct json_value *result)
 {
+    struct wallet_rpc_context *ctx = wallet_ctx();
     RPC_HELP(help, result,
         "listwalletkeys ( include_privkeys )\n"
         "Show every key with per-key verified balance.");
@@ -1153,7 +1173,7 @@ static bool rpc_listwalletkeys(const struct json_value *params, bool help,
     if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); return false; }
 
     ENSURE_WALLET(result);
-    if (!g_node_db || !g_node_db->open) {
+    if (!wallet_ctx_db_ready(ctx)) {
         json_set_str(result, "Wallet database not available");
         return false;
     }
@@ -1173,16 +1193,16 @@ static bool rpc_listwalletkeys(const struct json_value *params, bool help,
 
     struct key_balance_ctx kctx = {
         .arr = &keys_arr,
-        .ndb = g_node_db,
+        .ndb = ctx->node_db,
         .pk_pfx = pk_pfx,
         .pk_pfx_len = pk_pfx_len,
         .sc_pfx = sc_pfx,
         .sc_pfx_len = sc_pfx_len,
-        .coins_tip = g_coins_tip,
+        .coins_tip = ctx->coins_tip,
         .total_balance = 0,
         .total_keys = 0,
     };
-    db_wallet_key_each(g_node_db, key_balance_cb, &kctx);
+    db_wallet_key_each(ctx->node_db, key_balance_cb, &kctx);
 
     json_push_kv(result, "transparent_keys", &keys_arr);
     json_free(&keys_arr);
@@ -1192,13 +1212,13 @@ static bool rpc_listwalletkeys(const struct json_value *params, bool help,
     json_set_array(&z_keys);
     int64_t z_total = 0;
 
-    for (size_t i = 0; i < g_wallet->sapling_keys.num_keys; i++) {
-        if (!g_wallet->sapling_keys.keys[i].used) continue;
-        const struct sapling_key_entry *sk = &g_wallet->sapling_keys.keys[i];
+    for (size_t i = 0; i < ctx->wallet->sapling_keys.num_keys; i++) {
+        if (!ctx->wallet->sapling_keys.keys[i].used) continue;
+        const struct sapling_key_entry *sk = &ctx->wallet->sapling_keys.keys[i];
 
         int64_t z_bal = 0;
-        if (g_node_db && g_node_db->open)
-            z_bal = db_sapling_note_balance_for_ivk(g_node_db, sk->ivk);
+        if (wallet_ctx_db_ready(ctx))
+            z_bal = db_sapling_note_balance_for_ivk(ctx->node_db, sk->ivk);
 
         struct json_value zentry = {0};
         json_set_object(&zentry);
@@ -1241,6 +1261,7 @@ static bool rpc_listwalletkeys(const struct json_value *params, bool help,
 static bool rpc_listwallettxdetail(const struct json_value *params, bool help,
                                     struct json_value *result)
 {
+    struct wallet_rpc_context *ctx = wallet_ctx();
     RPC_HELP(help, result,
         "listwallettxdetail ( count offset )\n"
         "Full transaction history with input/output breakdown.");
@@ -1253,7 +1274,7 @@ static bool rpc_listwallettxdetail(const struct json_value *params, bool help,
     if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); return false; }
 
     ENSURE_WALLET(result);
-    if (!g_node_db || !g_node_db->open) {
+    if (!wallet_ctx_db_ready(ctx)) {
         json_set_str(result, "Wallet database not available");
         return false;
     }
@@ -1273,7 +1294,7 @@ static bool rpc_listwallettxdetail(const struct json_value *params, bool help,
         return false;
     }
 
-    int n = db_wallet_tx_list(g_node_db, rows, (size_t)count, (size_t)offset);
+    int n = db_wallet_tx_list(ctx->node_db, rows, (size_t)count, (size_t)offset);
 
     json_set_array(result);
 
@@ -1309,10 +1330,10 @@ static bool rpc_listwallettxdetail(const struct json_value *params, bool help,
             format_amount(tx.vout[j].value, amt, sizeof(amt));
             json_push_kv_real(&vo, "value", strtod(amt, NULL));
 
-            bool mine = wallet_is_mine(g_wallet, &tx.vout[j]);
+            bool mine = wallet_is_mine(ctx->wallet, &tx.vout[j]);
             json_push_kv_bool(&vo, "is_mine", mine);
             json_push_kv_bool(&vo, "is_change",
-                              wallet_is_change(g_wallet, &tx.vout[j]));
+                              wallet_is_change(ctx->wallet, &tx.vout[j]));
 
             struct tx_destination dest;
             if (script_extract_destination(
@@ -1347,9 +1368,9 @@ static bool rpc_listwallettxdetail(const struct json_value *params, bool help,
             /* Try to resolve the input value from chainstate or wallet */
             int64_t in_val = 0;
             bool in_mine = false;
-            if (g_node_db && g_node_db->open) {
+            if (wallet_ctx_db_ready(ctx)) {
                 struct db_wallet_utxo prev_utxo;
-                if (db_wallet_utxo_find(g_node_db,
+                if (db_wallet_utxo_find(ctx->node_db,
                         tx.vin[j].prevout.hash.data,
                         tx.vin[j].prevout.n, &prev_utxo)) {
                     in_val = prev_utxo.value;
@@ -1410,6 +1431,7 @@ static bool rpc_listwallettxdetail(const struct json_value *params, bool help,
 static bool rpc_getbalanceflow(const struct json_value *params, bool help,
                                 struct json_value *result)
 {
+    struct wallet_rpc_context *ctx = wallet_ctx();
     RPC_HELP(help, result,
         "getbalanceflow ( min_height max_height )\n"
         "Chronological balance flow showing where every satoshi went.");
@@ -1422,7 +1444,7 @@ static bool rpc_getbalanceflow(const struct json_value *params, bool help,
     if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); return false; }
 
     ENSURE_WALLET(result);
-    if (!g_node_db || !g_node_db->open) {
+    if (!wallet_ctx_db_ready(ctx)) {
         json_set_str(result, "Wallet database not available");
         return false;
     }
@@ -1442,7 +1464,7 @@ static bool rpc_getbalanceflow(const struct json_value *params, bool help,
         json_set_str(result, "Out of memory");
         return false;
     }
-    int nutxos = db_wallet_utxo_list_all(g_node_db, all_utxos, 4096);
+    int nutxos = db_wallet_utxo_list_all(ctx->node_db, all_utxos, 4096);
 
     /* Get all wallet txs sorted by time */
     struct db_wallet_tx *txs = calloc(2000, sizeof(struct db_wallet_tx));
@@ -1451,7 +1473,7 @@ static bool rpc_getbalanceflow(const struct json_value *params, bool help,
         json_set_str(result, "Out of memory");
         return false;
     }
-    int ntxs = db_wallet_tx_list(g_node_db, txs, 2000, 0);
+    int ntxs = db_wallet_tx_list(ctx->node_db, txs, 2000, 0);
 
     json_set_object(result);
 
@@ -1481,7 +1503,7 @@ static bool rpc_getbalanceflow(const struct json_value *params, bool help,
         /* Calculate credit: outputs that are mine */
         int64_t credit = 0;
         for (size_t j = 0; j < tx.num_vout; j++) {
-            if (wallet_is_mine(g_wallet, &tx.vout[j]))
+            if (wallet_is_mine(ctx->wallet, &tx.vout[j]))
                 credit += tx.vout[j].value;
         }
 
@@ -1552,16 +1574,16 @@ static bool rpc_getbalanceflow(const struct json_value *params, bool help,
     json_push_kv_real(&summary, "final_balance", strtod(amt, NULL));
 
     /* Cross-verify with chainstate */
-    if (g_coins_tip) {
+    if (ctx->coins_tip) {
         int64_t chain_balance = 0;
         struct db_wallet_utxo unspent[1024];
-        int nu = db_wallet_utxo_list_unspent(g_node_db, unspent, 1024);
+        int nu = db_wallet_utxo_list_unspent(ctx->node_db, unspent, 1024);
         for (int i = 0; i < nu; i++) {
             struct uint256 tid;
             memcpy(tid.data, unspent[i].txid, 32);
             struct coins cc;
             coins_init(&cc);
-            bool found = coins_view_cache_get_coins(g_coins_tip, &tid, &cc);
+            bool found = coins_view_cache_get_coins(ctx->coins_tip, &tid, &cc);
             if (found && coins_is_available(&cc, unspent[i].vout))
                 chain_balance += unspent[i].value;
             coins_free(&cc);
@@ -1582,6 +1604,7 @@ static bool rpc_getbalanceflow(const struct json_value *params, bool help,
 static bool rpc_reconcilewalletutxos(const struct json_value *params,
                                       bool help, struct json_value *result)
 {
+    struct wallet_rpc_context *ctx = wallet_ctx();
     RPC_HELP(help, result,
         "reconcilewalletutxos ( fix )\n"
         "Verify every wallet UTXO against chainstate.\n"
@@ -1592,11 +1615,11 @@ static bool rpc_reconcilewalletutxos(const struct json_value *params,
         "1. fix    (bool, optional, default=false) Fix mismatches\n");
 
     ENSURE_WALLET(result);
-    if (!g_coins_tip) {
+    if (!ctx->coins_tip) {
         json_set_str(result, "Chainstate (coins DB) not available");
         return false;
     }
-    if (!g_node_db || !g_node_db->open) {
+    if (!wallet_ctx_db_ready(ctx)) {
         json_set_str(result, "Node database not available");
         return false;
     }
@@ -1609,10 +1632,10 @@ static bool rpc_reconcilewalletutxos(const struct json_value *params,
         return false;
     }
 
-    int64_t balance_before = db_wallet_utxo_balance(g_node_db);
+    int64_t balance_before = db_wallet_utxo_balance(ctx->node_db);
 
     struct db_wallet_utxo unspent[4096];
-    int count = db_wallet_utxo_list_unspent(g_node_db, unspent, 4096);
+    int count = db_wallet_utxo_list_unspent(ctx->node_db, unspent, 4096);
 
     int verified = 0, phantom = 0, spent_on_chain = 0, mismatched = 0;
     int fixed = 0;
@@ -1631,7 +1654,7 @@ static bool rpc_reconcilewalletutxos(const struct json_value *params,
 
         struct coins c;
         coins_init(&c);
-        bool found = coins_view_cache_get_coins(g_coins_tip, &tid, &c);
+        bool found = coins_view_cache_get_coins(ctx->coins_tip, &tid, &c);
         bool available = found && coins_is_available(&c, unspent[i].vout);
         int64_t chain_val = 0;
         if (available && unspent[i].vout < c.num_vout)
@@ -1669,10 +1692,10 @@ static bool rpc_reconcilewalletutxos(const struct json_value *params,
         json_push_kv_str(&entry, "status", status);
 
         if (fix) {
-            db_wallet_utxo_mark_spent(g_node_db, unspent[i].txid,
+            db_wallet_utxo_mark_spent(ctx->node_db, unspent[i].txid,
                                        unspent[i].vout,
                                        RECONCILE_SENTINEL, 0);
-            wallet_mark_outpoint_spent(g_wallet, &tid, unspent[i].vout);
+            wallet_mark_outpoint_spent(ctx->wallet, &tid, unspent[i].vout);
             json_push_kv_bool(&entry, "fixed", true);
             fixed++;
         }
@@ -1681,13 +1704,13 @@ static bool rpc_reconcilewalletutxos(const struct json_value *params,
         json_free(&entry);
     }
 
-    int64_t balance_after = fix ? db_wallet_utxo_balance(g_node_db)
+    int64_t balance_after = fix ? db_wallet_utxo_balance(ctx->node_db)
                                 : balance_before;
 
     if (fix) {
-        node_db_state_set_int(g_node_db, "last_reconcile_height",
-            g_main_state
-                ? active_chain_height(&g_main_state->chain_active) : 0);
+        node_db_state_set_int(ctx->node_db, "last_reconcile_height",
+            ctx->main_state
+                ? active_chain_height(&ctx->main_state->chain_active) : 0);
     }
 
     wallet_view_reconcile_summary(result, verified, phantom,
@@ -1700,6 +1723,7 @@ static bool rpc_reconcilewalletutxos(const struct json_value *params,
 static bool rpc_purgephantomutxos(const struct json_value *params,
                                    bool help, struct json_value *result)
 {
+    struct wallet_rpc_context *ctx = wallet_ctx();
     RPC_HELP(help, result,
         "purgephantomutxos confirm ( dryrun )\n"
         "Delete phantom UTXOs from the wallet SQLite database.\n"
@@ -1709,11 +1733,11 @@ static bool rpc_purgephantomutxos(const struct json_value *params,
         "2. dryrun   (bool, optional, default=false) Report without deleting\n");
 
     ENSURE_WALLET(result);
-    if (!g_coins_tip) {
+    if (!ctx->coins_tip) {
         json_set_str(result, "Chainstate (coins DB) not available");
         return false;
     }
-    if (!g_node_db || !g_node_db->open) {
+    if (!wallet_ctx_db_ready(ctx)) {
         json_set_str(result, "Node database not available");
         return false;
     }
@@ -1733,16 +1757,16 @@ static bool rpc_purgephantomutxos(const struct json_value *params,
         return false;
     }
 
-    int64_t balance_before = db_wallet_utxo_balance(g_node_db);
+    int64_t balance_before = db_wallet_utxo_balance(ctx->node_db);
 
     struct db_wallet_utxo unspent[4096];
-    int count = db_wallet_utxo_list_unspent(g_node_db, unspent, 4096);
+    int count = db_wallet_utxo_list_unspent(ctx->node_db, unspent, 4096);
 
     int utxos_deleted = 0;
     int txs_deleted = 0;
     int64_t amount_purged = 0;
 
-    node_db_begin(g_node_db);
+    node_db_begin(ctx->node_db);
 
     for (int i = 0; i < count; i++) {
         struct uint256 tid;
@@ -1750,7 +1774,7 @@ static bool rpc_purgephantomutxos(const struct json_value *params,
 
         struct coins c;
         coins_init(&c);
-        bool found = coins_view_cache_get_coins(g_coins_tip, &tid, &c);
+        bool found = coins_view_cache_get_coins(ctx->coins_tip, &tid, &c);
         bool available = found && coins_is_available(&c, unspent[i].vout);
         coins_free(&c);
 
@@ -1760,31 +1784,31 @@ static bool rpc_purgephantomutxos(const struct json_value *params,
         amount_purged += unspent[i].value;
 
         if (!dryrun) {
-            db_wallet_utxo_delete(g_node_db, unspent[i].txid,
+            db_wallet_utxo_delete(ctx->node_db, unspent[i].txid,
                                    unspent[i].vout);
-            wallet_mark_outpoint_spent(g_wallet, &tid, unspent[i].vout);
+            wallet_mark_outpoint_spent(ctx->wallet, &tid, unspent[i].vout);
         }
         utxos_deleted++;
 
         if (!dryrun) {
-            int remaining = db_wallet_utxo_count_for_tx(g_node_db,
+            int remaining = db_wallet_utxo_count_for_tx(ctx->node_db,
                                                          unspent[i].txid);
             if (remaining == 0) {
-                db_wallet_tx_delete(g_node_db, unspent[i].txid);
+                db_wallet_tx_delete(ctx->node_db, unspent[i].txid);
                 txs_deleted++;
             }
         }
     }
 
     if (!dryrun) {
-        node_db_commit(g_node_db);
-        wallet_rebuild_spent_set(g_wallet);
+        node_db_commit(ctx->node_db);
+        wallet_rebuild_spent_set(ctx->wallet);
     } else {
-        node_db_rollback(g_node_db);
+        node_db_rollback(ctx->node_db);
     }
 
     int64_t balance_after = dryrun ? balance_before
-                                   : db_wallet_utxo_balance(g_node_db);
+                                   : db_wallet_utxo_balance(ctx->node_db);
 
     wallet_view_purge_summary(result, utxos_deleted, txs_deleted,
         amount_purged, balance_before, balance_after);
@@ -1796,6 +1820,7 @@ static bool rpc_purgephantomutxos(const struct json_value *params,
 static bool rpc_diagnoseutxos(const struct json_value *params, bool help,
                                struct json_value *result)
 {
+    struct wallet_rpc_context *ctx = wallet_ctx();
     (void)params;
     RPC_HELP(help, result,
         "diagnoseutxos\n"
@@ -1814,7 +1839,7 @@ static bool rpc_diagnoseutxos(const struct json_value *params, bool help,
 
     struct coin_entry coins[4096];
     size_t num_coins = 0;
-    wallet_available_coins(g_wallet, coins, &num_coins, 4096, false, false);
+    wallet_available_coins(ctx->wallet, coins, &num_coins, 4096, false, false);
 
     json_set_object(result);
 
@@ -1879,14 +1904,14 @@ static bool rpc_diagnoseutxos(const struct json_value *params, bool help,
         bool can_get = false;
 
         if (dest.type == DEST_KEY_ID) {
-            have = keystore_have_key(&g_wallet->keystore, &dest.id.key);
+            have = keystore_have_key(&ctx->wallet->keystore, &dest.id.key);
             struct privkey test_key;
-            can_get = keystore_get_key(&g_wallet->keystore,
+            can_get = keystore_get_key(&ctx->wallet->keystore,
                                         &dest.id.key, &test_key);
             if (can_get)
                 memory_cleanse(test_key.vch, 32);
         } else if (dest.type == DEST_SCRIPT_ID) {
-            have = keystore_have_cscript(&g_wallet->keystore,
+            have = keystore_have_cscript(&ctx->wallet->keystore,
                                           &dest.id.script.hash);
             json_push_kv_str(&entry, "note",
                 "p2sh — need underlying keys, not just script");
@@ -1896,10 +1921,10 @@ static bool rpc_diagnoseutxos(const struct json_value *params, bool help,
         json_push_kv_bool(&entry, "can_retrieve_key", can_get);
 
         /* Chainstate check */
-        if (g_coins_tip) {
+        if (ctx->coins_tip) {
             struct coins c;
             coins_init(&c);
-            bool found = coins_view_cache_get_coins(g_coins_tip,
+            bool found = coins_view_cache_get_coins(ctx->coins_tip,
                 &wtx->tx.hash, &c);
             bool avail = found &&
                 coins_is_available(&c, vout_n);
@@ -1939,7 +1964,7 @@ static bool rpc_diagnoseutxos(const struct json_value *params, bool help,
     format_amount(locked_balance, s, sizeof(s));
     json_push_kv_str(&summary, "locked_balance", s);
     json_push_kv_int(&summary, "keystore_keys",
-        (int64_t)g_wallet->keystore.num_keys);
+        (int64_t)ctx->wallet->keystore.num_keys);
 
     json_push_kv(result, "summary", &summary);
     json_free(&summary);
@@ -1957,6 +1982,7 @@ static bool rpc_diagnoseutxos(const struct json_value *params, bool help,
 static bool rpc_walletledger(const struct json_value *params, bool help,
                               struct json_value *result)
 {
+    struct wallet_rpc_context *ctx = wallet_ctx();
     RPC_HELP(help, result,
         "walletledger ( min_height max_height )\n"
         "\nUnified transparent + shielded ledger with double-entry accounting.\n"
@@ -1977,7 +2003,7 @@ static bool rpc_walletledger(const struct json_value *params, bool help,
     int max_h = (int)rpc_permit_int(&p, 1, "max_height", 999999999);
     if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); return false; }
 
-    if (!g_node_db || !g_node_db->open) {
+    if (!wallet_ctx_db_ready(ctx)) {
         json_set_str(result, "Wallet database not available");
         return false;
     }
@@ -1993,13 +2019,13 @@ static bool rpc_walletledger(const struct json_value *params, bool help,
 
     /* Load all data from SQLite */
     struct db_wallet_utxo *all_utxos = calloc(4096, sizeof(*all_utxos));
-    int nutxos = all_utxos ? db_wallet_utxo_list_all(g_node_db, all_utxos, 4096) : 0;
+    int nutxos = all_utxos ? db_wallet_utxo_list_all(ctx->node_db, all_utxos, 4096) : 0;
 
     struct db_sapling_note *all_notes = calloc(1024, sizeof(*all_notes));
-    int nnotes = all_notes ? db_sapling_note_list_all(g_node_db, all_notes, 1024) : 0;
+    int nnotes = all_notes ? db_sapling_note_list_all(ctx->node_db, all_notes, 1024) : 0;
 
     struct db_wallet_tx *all_txs = calloc(2000, sizeof(*all_txs));
-    int ntxs = all_txs ? db_wallet_tx_list(g_node_db, all_txs, 2000, 0) : 0;
+    int ntxs = all_txs ? db_wallet_tx_list(ctx->node_db, all_txs, 2000, 0) : 0;
 
     /* Build a height-sorted list of unique txids */
     struct {
@@ -2207,7 +2233,7 @@ static bool rpc_walletledger(const struct json_value *params, bool help,
     json_set_array(&t_holdings);
 
     struct db_wallet_utxo unspent[1024];
-    int nu = db_wallet_utxo_list_unspent(g_node_db, unspent, 1024);
+    int nu = db_wallet_utxo_list_unspent(ctx->node_db, unspent, 1024);
     int64_t verified_t = 0;
 
     for (int i = 0; i < nu; i++) {
@@ -2257,7 +2283,7 @@ static bool rpc_walletledger(const struct json_value *params, bool help,
     json_set_array(&z_holdings);
 
     struct db_sapling_note unspent_notes[256];
-    int nn = db_sapling_note_list_unspent(g_node_db, unspent_notes, 256);
+    int nn = db_sapling_note_list_unspent(ctx->node_db, unspent_notes, 256);
     int64_t verified_z = 0;
 
     for (int i = 0; i < nn; i++) {

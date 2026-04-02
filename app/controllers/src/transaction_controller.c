@@ -6,6 +6,7 @@
 #include "views/format_helpers.h"
 #include "controllers/transaction_controller.h"
 #include "controllers/strong_params.h"
+#include "controllers/wallet_helpers.h"
 #include "chain/chainparams.h"
 #include "consensus/upgrades.h"
 #include "consensus/validation.h"
@@ -40,7 +41,11 @@ static struct coins_view_cache *g_coins_tip = NULL;
 static const char *g_datadir = NULL;
 static struct basic_keystore *g_keystore = NULL;
 static struct connman *g_connman = NULL;
-extern struct node_db *g_node_db;
+
+static struct node_db *rawtx_node_db(void)
+{
+    return g_wallet_ctx.node_db;
+}
 
 void rpc_rawtx_set_state(struct main_state *ms, struct tx_mempool *mp,
                           struct coins_view_cache *coins_tip,
@@ -698,9 +703,9 @@ static bool rpc_signrawtransaction(const struct json_value *params, bool help,
         }
 
         /* Try SQLite UTXO index first (instant) */
-        if (!prev_script && g_node_db && g_node_db->open) {
+        if (!prev_script && rawtx_node_db() && rawtx_node_db()->open) {
             struct db_utxo u;
-            if (db_utxo_find(g_node_db, tx.vin[i].prevout.hash.data,
+            if (db_utxo_find(rawtx_node_db(), tx.vin[i].prevout.hash.data,
                              tx.vin[i].prevout.n, &u) && num_prevouts < 256) {
                 prevouts[num_prevouts].txid = tx.vin[i].prevout.hash;
                 prevouts[num_prevouts].vout = tx.vin[i].prevout.n;

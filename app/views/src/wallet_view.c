@@ -243,7 +243,7 @@ void wallet_view_sync_summary(struct json_value *out,
     json_push_kv_real(out, "balance_after", strtod(amt, NULL));
 }
 
-void wallet_view_fastsync(struct json_value *out,
+void wallet_view_legacy_import(struct json_value *out,
                            const struct chain_snapshot *snap,
                            int keys_recovered, int keys_total,
                            int64_t balance)

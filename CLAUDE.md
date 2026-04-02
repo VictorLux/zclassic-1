@@ -103,9 +103,12 @@ Defense: 20-bit PoW per snapshot, 5000 chunks/IP/hour, misbehavior scoring.
 |-----------|---------|------|
 | P2P 8033/18033 | Blockchain data + fast sync | None (PoW for sync) |
 | RPC 18232 | JSON-RPC | Cookie or rpcuser:rpcpassword |
+| HTTPS 8443 (→443) | Block explorer, REST API | Public |
+| HTTP 8080 (→80) | Redirect to HTTPS + ACME challenges | Public |
 | Tor .onion | Blog, web apps, directory | Tor anonymity |
 
-No web content over clearnet. Blog and apps are Tor-only.
+Port forwarding: iptables NAT redirects 80→8080 and 443→8443 so the
+binary runs unprivileged (no setcap needed). See deploy/zcl-portfwd.service.
 
 ## Security
 
@@ -276,15 +279,23 @@ zcl-rpc indexlegacy /path/to/.zclassic
 ### Deployment
 ```bash
 # First time (one sudo, then never again):
-sudo deploy/setup.sh
+sudo bash deploy/setup.sh
+# Installs: zcl-portfwd.service (iptables 80→8080, 443→8443),
+#           zclassic23.service (user linger), enables both on boot.
 
-# Every deploy:
+# Copy SSL certs (once, or after renewal):
+sudo cp /etc/letsencrypt/live/zclnet.net/fullchain.pem ~/.zclassic-c23/ssl/
+sudo cp /etc/letsencrypt/live/zclnet.net/privkey.pem ~/.zclassic-c23/ssl/
+sudo chown -R $(whoami):$(whoami) ~/.zclassic-c23/ssl/
+
+# Every deploy (no sudo needed):
 make zclassic23 && make deploy
 systemctl --user status zclassic23
 tail -f ~/.zclassic-c23/node.log
 ```
 SSL certs at `{datadir}/ssl/fullchain.pem` + `privkey.pem`.
 CSS template at `{datadir}/explorer/style.css` (live-editable).
+Port forwarding: `systemctl status zcl-portfwd` (system service, persists across reboots).
 
 ## SHA3 Data Integrity
 

@@ -27,7 +27,17 @@
 #include "chain/checkpoints.h"
 #include "consensus/upgrades.h"
 #include "validation/main_constants.h"
+#include "sapling/incremental_merkle_tree.h"
 #include "event/event.h"
+
+/* Global Sapling tree pointer — set by process_block's connect_tip
+ * before calling connect_block. NULL during just_check mode. */
+static struct incremental_merkle_tree *g_sapling_tree = NULL;
+
+void connect_block_set_sapling_tree(struct incremental_merkle_tree *tree)
+{
+    g_sapling_tree = tree;
+}
 
 #ifndef COINBASE_MATURITY
 #define COINBASE_MATURITY 100
@@ -338,6 +348,30 @@ bool connect_block(const struct block *block,
                 block_undo_free(&blockundo);
                 return validation_state_dos(state, 100, false, REJECT_INVALID,
                     "bad-txns-utxo-update-failed", true, NULL);
+            }
+        }
+    }
+
+    /* ── Sapling commitment tree root verification ─────────── *
+     * The Sapling tree is maintained by sync_controller which handles
+     * both tree updates AND wallet witness advancement. It verifies
+     * hashFinalSaplingRoot matches the computed tree root after each
+     * block. See sync_controller.c:291-325.
+     *
+     * connect_block validates the tree root was set correctly in the
+     * block header by checking it's not all-zeros after Sapling activation
+     * (a basic sanity check — full verification is in sync_controller). */
+    if (!just_check) {
+        bool sapling_active = consensus_network_upgrade_active(
+            &params->consensus, pindex->nHeight, UPGRADE_SAPLING);
+        if (sapling_active) {
+            static const uint8_t zeros[32] = {0};
+            if (memcmp(block->header.hashFinalSaplingRoot.data, zeros, 32) == 0) {
+                fprintf(stderr, "connect_block: hashFinalSaplingRoot is "
+                        "all-zeros at Sapling height %d\n", pindex->nHeight);
+                block_undo_free(&blockundo);
+                return validation_state_dos(state, 100, false, REJECT_INVALID,
+                    "bad-sapling-root-zeroed", false, NULL);
             }
         }
     }

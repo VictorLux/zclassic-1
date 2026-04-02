@@ -22,6 +22,11 @@ void rpc_net_set_connman(struct connman *cm)
     g_cm = cm;
 }
 
+struct connman *rpc_net_get_connman(void)
+{
+    return g_cm;
+}
+
 static bool rpc_getnetworkinfo(const struct json_value *params, bool help,
                                  struct json_value *result)
 {

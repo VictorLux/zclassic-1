@@ -281,6 +281,8 @@ const char *event_type_name(enum event_type type)
         [EV_BLOCK_REJECTED]          = "val.block_rejected",
         [EV_TIP_UPDATED]             = "chain.tip_updated",
         [EV_REORG_START]             = "chain.reorg_start",
+        [EV_REORG_DISCONNECT_FAILED] = "chain.reorg_disconnect_failed",
+        [EV_REORG_RECOVERY_COMPLETE] = "chain.reorg_recovery_complete",
         [EV_COINS_FLUSH]             = "chain.coins_flush",
         [EV_COINS_FLUSH_FAILED]      = "chain.coins_flush_fail",
         [EV_TX_ACCEPTED]             = "tx.accepted",
@@ -296,6 +298,7 @@ const char *event_type_name(enum event_type type)
         [EV_BOOT_BLOCK_INDEX]        = "boot.block_index",
         [EV_BOOT_CHAIN_RESTORED]     = "boot.chain_restored",
         [EV_BOOT_ACTIVATE]           = "boot.activate",
+        [EV_BOOT_VALIDATION_FAILED]  = "boot.validation_failed",
         /* Validation pipeline (detailed) */
         [EV_BLOCK_CHECK_PASSED]      = "val.check_passed",
         [EV_BLOCK_CONNECT_START]     = "val.connect_start",
@@ -315,6 +318,13 @@ const char *event_type_name(enum event_type type)
         [EV_NODE_SHUTDOWN]           = "sys.shutdown",
         [EV_CRASH]                   = "sys.crash",
         [EV_DB_ERROR]                = "sys.db_error",
+        [EV_MMB_APPEND]              = "mmb.append",
+        [EV_MMB_PROOF_VERIFIED]      = "mmb.proof_verified",
+        [EV_FC_SAMPLE_VERIFIED]      = "fc.sample_verified",
+        [EV_FC_CHAIN_VERIFIED]       = "fc.chain_verified",
+        [EV_SNAPSYNC_STATE_CHANGE]   = "snapsync.state",
+        [EV_SNAPSYNC_PROGRESS]       = "snapsync.progress",
+        [EV_SNAPSYNC_VERIFIED]       = "snapsync.verified",
     };
     if (type >= 0 && type < EV_NUM_TYPES && names[type])
         return names[type];
@@ -724,6 +734,7 @@ const char *sync_state_name(enum sync_state state)
         [SYNC_CONNECTING_BLOCKS] = "connecting_blocks",
         [SYNC_AT_TIP]            = "at_tip",
         [SYNC_REORG]             = "reorg",
+        [SYNC_REORG_RECOVERY]    = "reorg_recovery",
         [SYNC_SNAPSHOT_RECEIVE]  = "snapshot_receive",
         [SYNC_FAILED]            = "failed",
     };
@@ -763,7 +774,17 @@ static const bool g_sync_transitions[SYNC_NUM_STATES][SYNC_NUM_STATES] = {
 
     [SYNC_REORG][SYNC_AT_TIP]              = true,
     [SYNC_REORG][SYNC_CONNECTING_BLOCKS]   = true,
+    [SYNC_REORG][SYNC_REORG_RECOVERY]      = true,
+
+    /* Recovery can trigger from any block-processing state */
+    [SYNC_BLOCKS_DOWNLOAD][SYNC_REORG_RECOVERY]    = true,
+    [SYNC_CONNECTING_BLOCKS][SYNC_REORG_RECOVERY]  = true,
+    [SYNC_IDLE][SYNC_REORG_RECOVERY]               = true,
     [SYNC_REORG][SYNC_FAILED]              = true,
+
+    [SYNC_REORG_RECOVERY][SYNC_CONNECTING_BLOCKS] = true,
+    [SYNC_REORG_RECOVERY][SYNC_BLOCKS_DOWNLOAD]   = true,
+    [SYNC_REORG_RECOVERY][SYNC_FAILED]             = true,
 
     [SYNC_SNAPSHOT_RECEIVE][SYNC_CONNECTING_BLOCKS] = true,
     [SYNC_SNAPSHOT_RECEIVE][SYNC_HEADERS_DOWNLOAD]  = true,
@@ -810,6 +831,71 @@ bool sync_set_state(enum sync_state new_state, const char *reason)
            sync_state_name(old), sync_state_name(new_state),
            reason ? reason : "");
 
+    return true;
+}
+
+/* ── Snapshot sync state machine ────────────────────────── */
+
+static _Atomic int g_snapsync_state = SNAPSYNC_IDLE;
+
+const char *snapsync_state_name(enum snapshot_sync_state state)
+{
+    static const char *names[] = {
+        [SNAPSYNC_IDLE]        = "idle",
+        [SNAPSYNC_NEGOTIATING] = "negotiating",
+        [SNAPSYNC_RECEIVING]   = "receiving",
+        [SNAPSYNC_VERIFYING]   = "verifying",
+        [SNAPSYNC_COMPLETE]    = "complete",
+        [SNAPSYNC_FAILED]      = "failed",
+    };
+    if (state >= 0 && state < SNAPSYNC_NUM_STATES)
+        return names[state];
+    return "unknown";
+}
+
+static const bool g_snapsync_transitions[SNAPSYNC_NUM_STATES][SNAPSYNC_NUM_STATES] = {
+    [SNAPSYNC_IDLE][SNAPSYNC_NEGOTIATING]       = true,
+    [SNAPSYNC_NEGOTIATING][SNAPSYNC_RECEIVING]   = true,
+    [SNAPSYNC_NEGOTIATING][SNAPSYNC_FAILED]      = true,
+    [SNAPSYNC_NEGOTIATING][SNAPSYNC_IDLE]        = true,
+    [SNAPSYNC_RECEIVING][SNAPSYNC_VERIFYING]      = true,
+    [SNAPSYNC_RECEIVING][SNAPSYNC_FAILED]         = true,
+    [SNAPSYNC_VERIFYING][SNAPSYNC_COMPLETE]       = true,
+    [SNAPSYNC_VERIFYING][SNAPSYNC_FAILED]         = true,
+    [SNAPSYNC_COMPLETE][SNAPSYNC_IDLE]            = true,
+    [SNAPSYNC_FAILED][SNAPSYNC_IDLE]              = true,
+};
+
+enum snapshot_sync_state snapsync_get_state(void)
+{
+    return (enum snapshot_sync_state)atomic_load(&g_snapsync_state);
+}
+
+bool snapsync_set_state(enum snapshot_sync_state new_state, const char *reason)
+{
+    enum snapshot_sync_state old =
+        (enum snapshot_sync_state)atomic_load(&g_snapsync_state);
+
+    if (old == new_state) return true;
+
+    if (!g_snapsync_transitions[old][new_state]) {
+        fprintf(stderr, "BUG: snapsync illegal %s -> %s (%s)\n",
+                snapsync_state_name(old), snapsync_state_name(new_state),
+                reason ? reason : "");
+        return false;
+    }
+
+    atomic_store(&g_snapsync_state, (int)new_state);
+
+    char buf[EVENT_PAYLOAD_SIZE];
+    snprintf(buf, sizeof(buf), "%s->%s: %s",
+             snapsync_state_name(old), snapsync_state_name(new_state),
+             reason ? reason : "");
+    event_emit(EV_SNAPSYNC_STATE_CHANGE, 0, buf, (uint32_t)strlen(buf));
+
+    printf("[snapsync] %s -> %s (%s)\n",
+           snapsync_state_name(old), snapsync_state_name(new_state),
+           reason ? reason : "");
     return true;
 }
 

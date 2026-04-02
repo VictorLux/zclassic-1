@@ -20,6 +20,11 @@
 #include <string.h>
 #include <stdio.h>
 
+/* ── Callbacks ─────────────────────────────────────────────────── */
+
+DEFINE_MODEL_CALLBACKS(zslp_token)
+DEFINE_MODEL_CALLBACKS(zslp_transfer)
+
 /* ── Token Validation ─────────────────────────────────────────── */
 
 /* Use a temporary struct for validates_* macros */
@@ -110,6 +115,13 @@ bool db_zslp_token_save(struct node_db *ndb, const uint8_t token_id[32],
                         initial_quantity))
         return false;
 
+    struct zslp_token_record rec;
+    memcpy(rec.token_id, token_id, 32);
+    rec.decimals = decimals;
+    rec.genesis_height = genesis_height;
+    rec.initial_quantity = initial_quantity;
+    if (!ar_run_before_save(db_zslp_token_callbacks(), &rec)) return false;
+
     sqlite3_stmt *s = NULL;
     if (sqlite3_prepare_v2(ndb->db,
             "INSERT OR IGNORE INTO zslp_tokens"
@@ -129,8 +141,10 @@ bool db_zslp_token_save(struct node_db *ndb, const uint8_t token_id[32],
     bool ok = AR_STEP_DONE(s);
     AR_FINALIZE(s);
 
-    if (ok)
+    if (ok) {
+        ar_run_after_save(db_zslp_token_callbacks(), &rec);
         event_emitf(EV_MODEL_SAVED, 0, "model=zslp_token ticker=%s", ticker);
+    }
     return ok;
 }
 
@@ -143,6 +157,15 @@ bool db_zslp_transfer_save(struct node_db *ndb, const uint8_t txid[32],
     if (!validate_transfer(txid, block_height, token_id, tx_type,
                            amount, vout))
         return false;
+
+    struct zslp_transfer_record rec;
+    memcpy(rec.txid, txid, 32);
+    memcpy(rec.token_id, token_id, 32);
+    rec.block_height = block_height;
+    rec.tx_type = tx_type;
+    rec.amount = amount;
+    rec.vout = vout;
+    if (!ar_run_before_save(db_zslp_transfer_callbacks(), &rec)) return false;
 
     sqlite3_stmt *s = NULL;
     if (sqlite3_prepare_v2(ndb->db,
@@ -165,6 +188,9 @@ bool db_zslp_transfer_save(struct node_db *ndb, const uint8_t txid[32],
 
     bool ok = AR_STEP_DONE(s);
     AR_FINALIZE(s);
+
+    if (ok)
+        ar_run_after_save(db_zslp_transfer_callbacks(), &rec);
     return ok;
 }
 

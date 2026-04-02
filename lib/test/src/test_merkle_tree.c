@@ -1131,5 +1131,69 @@ static int test_merkle_tree_scale(void)
         else failures++;
     }
 
+    /* ================================================================ */
+    /* Sapling tree root verification (connect_block check)             */
+    /* ================================================================ */
+
+    printf("Sapling tree root verification matches block header... ");
+    {
+        struct incremental_merkle_tree tree;
+        sapling_tree_init(&tree);
+        struct uint256 empty_root;
+        incremental_tree_root(&tree, &empty_root);
+
+        struct uint256 cm;
+        uint256_set_hex(&cm,
+            "5a8d47a74b48efce5841a43ddaccdc75253a4ccda847d67ada8309dcf01d3943");
+        incremental_tree_append(&tree, &cm);
+
+        struct uint256 root_after;
+        incremental_tree_root(&tree, &root_after);
+
+        bool ok = (memcmp(empty_root.data, root_after.data, 32) != 0);
+        /* Correct header would match */
+        ok = ok && (uint256_cmp(&root_after, &root_after) == 0);
+        /* Wrong header would not match */
+        struct uint256 wrong;
+        memset(&wrong, 0xff, 32);
+        ok = ok && (uint256_cmp(&root_after, &wrong) != 0);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("Sapling tree persist + reload preserves root... ");
+    {
+        struct incremental_merkle_tree tree;
+        sapling_tree_init(&tree);
+        for (int i = 0; i < 10; i++) {
+            struct uint256 cm;
+            memset(&cm, 0, sizeof(cm));
+            cm.data[0] = (uint8_t)(0x42 + i);
+            cm.data[31] = (uint8_t)(i);
+            incremental_tree_append(&tree, &cm);
+        }
+        struct uint256 root_before;
+        incremental_tree_root(&tree, &root_before);
+
+        struct byte_stream ws;
+        stream_init(&ws, 4096);
+        bool ok = incremental_tree_serialize(&tree, &ws);
+        struct incremental_merkle_tree loaded;
+        sapling_tree_init(&loaded);
+        struct byte_stream rs;
+        stream_init_from_data(&rs, ws.data, ws.size);
+        ok = ok && incremental_tree_deserialize(&loaded, &rs);
+        struct uint256 root_after;
+        incremental_tree_root(&loaded, &root_after);
+        ok = ok && (memcmp(root_before.data, root_after.data, 32) == 0);
+        ok = ok && (incremental_tree_size(&tree) ==
+                    incremental_tree_size(&loaded));
+        stream_free(&ws);
+        stream_free(&rs);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     return failures;
 }

@@ -357,6 +357,15 @@ bool coins_view_cache_flush(struct coins_view_cache *c)
     return ok;
 }
 
+void coins_view_cache_clear(struct coins_view_cache *c)
+{
+    coins_map_free(&c->cache_coins);
+    coins_map_init(&c->cache_coins);
+    utxo_commitment_init(&c->commitment);
+    /* hash_block intentionally NOT cleared — caller sets it explicitly
+     * via coins_view_cache_set_best_block after clearing. */
+}
+
 const struct tx_out *coins_view_cache_get_output_for(
     struct coins_view_cache *c, const struct tx_in *in)
 {

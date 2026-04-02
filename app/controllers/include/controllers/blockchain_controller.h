@@ -28,6 +28,16 @@ void rpc_blockchain_mmr_catchup(struct main_state *ms);
 void rpc_blockchain_mmr_save(struct node_db *ndb);
 struct mmr *rpc_blockchain_get_mmr(void);
 
+/* MMB (Merkle Mountain Belt) — O(1) append, rich FlyClient leaves.
+ * Runs alongside MMR during transition. */
+struct mmb;
+struct mmb_leaf;
+void rpc_blockchain_mmb_append(const struct mmb_leaf *leaf);
+void rpc_blockchain_mmb_init_from_state(struct node_db *ndb);
+void rpc_blockchain_mmb_catchup(struct main_state *ms);
+void rpc_blockchain_mmb_save(struct node_db *ndb);
+struct mmb *rpc_blockchain_get_mmb(void);
+
 /* Commitment MMR — binds UTXO state to PoW chain every 100 blocks.
  * Each leaf: SHA3(height || block_hash || utxo_root).
  * Used to verify imported UTXO snapshots without replaying history. */

@@ -17,15 +17,32 @@
 #include <stdio.h>
 #include <string.h>
 
-/* Shared wallet state */
-struct wallet *g_wallet = NULL;
-struct main_state *g_main_state = NULL;
-const char *g_datadir = NULL;
-struct wallet_sqlite *g_wallet_db = NULL;
-struct tx_mempool *g_mempool = NULL;
-struct connman *g_connman_ptr = NULL;
-struct node_db *g_node_db = NULL;
-struct coins_view_cache *g_coins_tip = NULL;
+struct wallet_rpc_context g_wallet_ctx = {0};
+
+void wallet_rpc_context_set_base(struct wallet *wallet,
+                                 struct main_state *main_state,
+                                 const char *datadir,
+                                 struct wallet_sqlite *wallet_db,
+                                 struct tx_mempool *mempool,
+                                 struct connman *connman)
+{
+    g_wallet_ctx.wallet = wallet;
+    g_wallet_ctx.main_state = main_state;
+    g_wallet_ctx.datadir = datadir;
+    g_wallet_ctx.wallet_db = wallet_db;
+    g_wallet_ctx.mempool = mempool;
+    g_wallet_ctx.connman = connman;
+}
+
+void wallet_rpc_context_set_node_db(struct node_db *node_db)
+{
+    g_wallet_ctx.node_db = node_db;
+}
+
+void wallet_rpc_context_set_coins_tip(struct coins_view_cache *coins_tip)
+{
+    g_wallet_ctx.coins_tip = coins_tip;
+}
 
 void format_amount(int64_t satoshis, char *out, size_t out_size)
 {
@@ -83,21 +100,26 @@ int64_t parse_amount(const struct json_value *v)
 
 int wallet_history_count(void)
 {
-    int mem_count = g_wallet ? (int)g_wallet->num_wallet_tx : 0;
-    int db_count = (g_node_db && g_node_db->open) ? db_wallet_tx_count(g_node_db) : 0;
+    struct wallet *wallet = wallet_rpc_wallet();
+    struct node_db *node_db = wallet_rpc_node_db();
+    int mem_count = wallet ? (int)wallet->num_wallet_tx : 0;
+    int db_count = (node_db && node_db->open) ? db_wallet_tx_count(node_db) : 0;
     return db_count > mem_count ? db_count : mem_count;
 }
 
 bool wallet_history_db_ready(void)
 {
-    if (!g_wallet || !g_node_db || !g_node_db->open)
+    struct wallet *wallet = wallet_rpc_wallet();
+    struct node_db *node_db = wallet_rpc_node_db();
+
+    if (!wallet || !node_db || !node_db->open)
         return false;
 
-    int db_count = db_wallet_tx_count(g_node_db);
-    if (db_count >= (int)g_wallet->num_wallet_tx)
+    int db_count = db_wallet_tx_count(node_db);
+    if (db_count >= (int)wallet->num_wallet_tx)
         return true;
 
-    return g_wallet->num_wallet_tx >= MAX_WALLET_TX;
+    return wallet->num_wallet_tx >= MAX_WALLET_TX;
 }
 
 bool wallet_db_tx_deserialize(const struct db_wallet_tx *dbtx,
@@ -120,10 +142,12 @@ bool wallet_db_tx_deserialize(const struct db_wallet_tx *dbtx,
 
 int wallet_db_tx_confirmations(const struct db_wallet_tx *dbtx)
 {
-    if (!dbtx || !dbtx->has_block || !g_main_state)
+    struct main_state *main_state = wallet_rpc_main_state();
+
+    if (!dbtx || !dbtx->has_block || !main_state)
         return 0;
 
-    int tip_height = active_chain_height(&g_main_state->chain_active);
+    int tip_height = active_chain_height(&main_state->chain_active);
     if (tip_height < dbtx->block_height)
         return 0;
 
@@ -164,6 +188,7 @@ bool wallet_append_tx_entry(const struct transaction *tx,
                             int confirmations, int64_t time_received,
                             struct json_value *result)
 {
+    struct wallet *wallet = wallet_rpc_wallet();
     const struct chain_params *cp = chain_params_get();
     size_t pk_pfx_len, sc_pfx_len;
     const unsigned char *pk_pfx = chain_params_base58_prefix(
@@ -193,7 +218,7 @@ bool wallet_append_tx_entry(const struct transaction *tx,
                              -(int64_t)tx->vout[j].value, per_fee,
                              confirmations, time_received);
 
-            if (wallet_is_mine(g_wallet, &tx->vout[j])) {
+            if (wallet_is_mine(wallet, &tx->vout[j])) {
                 append_one_entry(result, txid, (int)j, "receive",
                                  addr[0] ? addr : NULL,
                                  (int64_t)tx->vout[j].value, 0,
@@ -202,7 +227,7 @@ bool wallet_append_tx_entry(const struct transaction *tx,
         }
     } else {
         for (size_t j = 0; j < tx->num_vout; j++) {
-            if (!wallet_is_mine(g_wallet, &tx->vout[j]))
+            if (!wallet_is_mine(wallet, &tx->vout[j]))
                 continue;
             struct tx_destination dest;
             char addr[128];
