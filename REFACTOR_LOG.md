@@ -2,6 +2,114 @@
 
 ## 2026-04-02
 
+### Restart Correctness: Validated Tip Authority And Safer AT_TIP Transitions
+
+Completed in this slice:
+
+- removed the snapshot-import behavior in
+  `app/controllers/src/snapshot_controller.c` that set the SQLite sync tip to
+  the highest imported block row before validated chain activation
+- reset the persisted sync tip to `-1` at the start of block-index import so a
+  snapshot refresh cannot leave a stale prior tip behind
+- moved persisted sync-tip authority to validated startup chain activation in
+  `config/src/boot.c`, where the active chain tip is now written to SQLite only
+  after `activate_best_chain` succeeds
+- tightened `syncsvc_note_valid_block` in
+  `app/services/src/block_sync_service.c` so the node will not transition to
+  `SYNC_AT_TIP` or mark a peer active merely because it reached one peer's
+  advertised `starting_height`; headers must also be caught up
+- rewired `lib/net/src/msgprocessor.c` to pass the current best-header height
+  into that block-acceptance decision
+- changed `app/services/src/node_health_service.c` to report tip health from the
+  validated active-chain tip when available, instead of trusting SQLite
+  `db_block_max_height()` as the primary truth
+- changed tip staleness to use local validated chain-tip time instead of newest
+  peer block time, and added a degraded health reason when headers are still
+  ahead of the active chain
+- expanded `lib/test/src/test_sync_service.c` with coverage proving we do not
+  transition to `SYNC_AT_TIP` while headers are still ahead
+
+Why:
+
+- restart correctness was still too optimistic in three places: snapshot import
+  could publish a speculative tip, block acceptance could flip to `AT_TIP` too
+  early, and health could report progress from non-validated signals
+- those gaps matter directly to the operational question of whether `zclassic23`
+  can be trusted to restart, catch up from `zclassicd`, and stay at tip without
+  silently getting stuck in a misleading state
+- the cleanest fix is to make the validated active chain the authority for both
+  persisted tip state and health reporting, while keeping `AT_TIP` transitions
+  gated on both block and header convergence
+
+### Restart Path Cleanup: Recursive Snapshot Deletion And Health Regression Coverage
+
+Completed in this slice:
+
+- added `dir_remove_tree` in `config/src/file_ops.c` and
+  `config/include/config/file_ops.h` so restart/snapshot paths can remove old
+  snapshot directories without shelling out to `rm -rf`
+- rewired `app/controllers/src/snapshot_controller.c` to use that helper for
+  snapshot rotation and for clearing copied `blocks/index` and `chainstate`
+  directories before replacing them
+- expanded `lib/test/src/test_node_health_service.c` with coverage proving that
+  a node in `SYNC_AT_TIP` is still reported degraded when headers remain ahead
+  of the active chain tip
+
+Why:
+
+- the snapshot path still had old shell-based deletion in a restart-sensitive
+  area, which is unnecessary now that `config/file_ops` is the file-lifecycle
+  boundary
+- health needed a regression test for the new `headers_ahead_*` degraded state
+  so the restart fixes do not silently regress later
+
+### Restart Regression: Headers Ahead, Blocks Already On Disk
+
+Completed in this slice:
+
+- expanded `lib/test/src/test_sync_service.c` with a composite
+  `syncsvc_plan_header_processing` regression for the real restart edge case:
+  accepted headers extend the active chain, every needed block is already marked
+  `BLOCK_HAVE_DATA`, and the service must choose activation instead of queueing
+  zero block requests and stalling
+- verified that the plan now:
+  - keeps the sync transition in `SYNC_BLOCKS_DOWNLOAD`
+  - does not queue any missing blocks
+  - explicitly requests chain activation through the service-owned result
+
+Why:
+
+- low-level `should_activate_chain` coverage already existed, but the
+  restart-sensitive behavior lives one level up in the composite header
+  processing plan that `msgprocessor` actually consumes
+- this closes the main service-boundary regression gap behind the
+  “headers ahead, blocks already on disk” fix path before doing live restart
+  validation
+
+### Operator Harness: Restart And Follow Legacy Tip
+
+Completed in this slice:
+
+- added `tools/verify_restart_follow.sh`, a restart-follow validation script that:
+  - reads legacy `zclassicd` tip by RPC
+  - optionally restarts `zclassic23`
+  - waits for `zclassic23` RPC recovery
+  - polls `getblockchaininfo`, `syncstate`, and `healthcheck`
+  - requires repeated healthy samples at or above the legacy tip before passing
+- added `tools/RESTART_VALIDATION.md` to document the procedure and the
+  required success criteria
+- added `make check-restart-follow` in `Makefile`
+- documented the command in `README.md`
+- syntax-checked the script with `bash -n`
+
+Why:
+
+- the service-level restart fixes and regressions are necessary, but operators
+  still need a repeatable end-to-end procedure for proving that a real restart
+  catches up to legacy `zclassicd` and stays healthy
+- this harness turns the restart question from “watch logs manually and guess”
+  into a documented, repeatable pass/fail check
+
 ### Model Lifecycle Hardening: ActiveRecord-First ZSLP And Save Validation
 
 Completed in this slice:
@@ -559,3 +667,10 @@ Recent cleanup and hardening:
 - added `before_save` normalization/defaulting to the peer model so `last_seen`, `last_try`, `attempts`, and empty source state are cleaned up consistently before persistence
 - tightened peer validation to cover `last_seen`, `last_try`, and `bandwidth_score` ranges through the shared ActiveRecord macro path
 - exposed `GET /api/peers` as a REST-style read resource with bounded `limit` validation and added model/API tests for recent peer reads
+- replaced the shell-only restart/follow helper with a compiled `zcl-nodectl` operator utility written in C
+- `zcl-nodectl` now supports `status`, `stop`, `start`, `restart`, and `verify-follow`
+- `zcl-nodectl stop` prefers RPC shutdown when auth is available, falls back to `systemctl --user stop`, and escalates to `SIGKILL` only if the service still hangs
+- `check-restart-follow` now routes through `zcl-nodectl verify-follow --restart`, and the restart-validation docs/README now document the compiled control path instead of the shell helper
+- validated the new control path directly on this node: cold stop worked, start returned RPC readiness, and status exposed the live degraded state without needing the old shell wrapper
+- added open-time SQLite `quick_check` in `database.c`; malformed `node.db` now gets quarantined to a timestamped `node.db.corrupt-*` file and startup continues on a fresh SQLite store
+- validated the recovery path live on this node: startup quarantined `/home/rhett/.zclassic-c23/node.db` after quick-check failure, rebuilt forward from active chain state, and `zcl-nodectl verify-follow` confirmed `zclassic23` returned to the same tip as legacy `zclassicd`

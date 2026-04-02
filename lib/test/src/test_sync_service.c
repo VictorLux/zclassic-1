@@ -494,6 +494,63 @@ static int test_sync_service_plans_header_processing(void)
     return failures;
 }
 
+static int test_sync_service_plans_header_processing_activation_from_disk(void)
+{
+    int failures = 0;
+
+    TEST("sync_service plans activation instead of queueing when header-followed blocks are already on disk") {
+        struct uint256 h0 = {0}, h1 = {0}, h2 = {0}, h3 = {0};
+        struct block_index genesis, tip, next, leaf;
+        struct sync_header_processing_plan plan;
+        struct uint256 hashes[4];
+        int32_t heights[4];
+        struct sync_chain_activation activation;
+
+        memset(&genesis, 0, sizeof(genesis));
+        memset(&tip, 0, sizeof(tip));
+        memset(&next, 0, sizeof(next));
+        memset(&leaf, 0, sizeof(leaf));
+        memset(&plan, 0, sizeof(plan));
+        memset(&activation, 0, sizeof(activation));
+        memset(hashes, 0, sizeof(hashes));
+        memset(heights, 0, sizeof(heights));
+        block_index_init(&genesis);
+        block_index_init(&tip);
+        block_index_init(&next);
+        block_index_init(&leaf);
+
+        h0.data[0] = 43; h1.data[0] = 44; h2.data[0] = 45; h3.data[0] = 46;
+        genesis.phashBlock = &h0; genesis.nHeight = 0;
+        tip.phashBlock = &h1; tip.nHeight = 1; tip.pprev = &genesis;
+        next.phashBlock = &h2; next.nHeight = 2; next.pprev = &tip;
+        leaf.phashBlock = &h3; leaf.nHeight = 3; leaf.pprev = &next;
+        next.nStatus = BLOCK_HAVE_DATA;
+        leaf.nStatus = BLOCK_HAVE_DATA;
+
+        syncsvc_plan_header_processing(&plan, 2, 2, &leaf,
+                                       SYNC_HEADERS_DOWNLOAD,
+                                       &leaf, &tip, 1,
+                                       hashes, heights, 4);
+        ASSERT(plan.batch.should_emit_received);
+        ASSERT(!plan.batch.should_request_more_headers);
+        ASSERT(plan.download.has_candidate);
+        ASSERT(plan.download.should_begin_blocks_download);
+        ASSERT(plan.download.needed_blocks.chains_from_tip);
+        ASSERT(plan.download.needed_blocks.should_activate_chain);
+        ASSERT(plan.download.needed_blocks.count == 0);
+        ASSERT(plan.should_set_sync_state);
+        ASSERT(plan.next_sync_state == SYNC_BLOCKS_DOWNLOAD);
+        ASSERT(!plan.should_queue_needed_blocks);
+        ASSERT(plan.queue_count == 0);
+        ASSERT(plan.should_activate_chain);
+        syncsvc_build_header_processing_activation(&activation, &plan);
+        ASSERT(activation.should_activate);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
 static int test_sync_service_builds_getheaders_locator_from_chain(void)
 {
     int failures = 0;
@@ -753,7 +810,7 @@ static int test_sync_service_valid_block_transition(void)
 {
     int failures = 0;
 
-    TEST("sync_service transitions to at-tip when a valid block catches peer height") {
+    TEST("sync_service transitions to at-tip when blocks and headers catch peer height") {
         struct p2p_node node;
         struct sync_block_acceptance result;
 
@@ -763,7 +820,7 @@ static int test_sync_service_valid_block_transition(void)
         node.state = PEER_SYNCING_BLOCKS;
         node.starting_height = 100;
 
-        syncsvc_note_valid_block(&result, &node, SYNC_BLOCKS_DOWNLOAD, 100);
+        syncsvc_note_valid_block(&result, &node, SYNC_BLOCKS_DOWNLOAD, 100, 100);
         ASSERT(result.reached_peer_tip);
         ASSERT(result.should_emit_tip_updated);
         ASSERT(result.should_set_sync_state);
@@ -771,6 +828,31 @@ static int test_sync_service_valid_block_transition(void)
         ASSERT(result.should_set_flush_policy);
         ASSERT(result.should_update_peer_state);
         ASSERT(result.next_peer_state == PEER_ACTIVE);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+static int test_sync_service_valid_block_waits_for_headers(void)
+{
+    int failures = 0;
+
+    TEST("sync_service does not transition to at-tip while headers are still ahead") {
+        struct p2p_node node;
+        struct sync_block_acceptance result;
+
+        memset(&node, 0, sizeof(node));
+        memset(&result, 0, sizeof(result));
+        node.id = 6;
+        node.state = PEER_SYNCING_BLOCKS;
+        node.starting_height = 100;
+
+        syncsvc_note_valid_block(&result, &node, SYNC_BLOCKS_DOWNLOAD, 100, 125);
+        ASSERT(result.reached_peer_tip);
+        ASSERT(!result.should_set_sync_state);
+        ASSERT(!result.should_emit_tip_updated);
+        ASSERT(!result.should_update_peer_state);
         PASS();
     } _test_next:;
 
@@ -1054,6 +1136,7 @@ int test_sync_service(void)
     failures += test_sync_service_collects_needed_blocks_rejects_forks();
     failures += test_sync_service_plans_header_download();
     failures += test_sync_service_plans_header_processing();
+    failures += test_sync_service_plans_header_processing_activation_from_disk();
     failures += test_sync_service_builds_getheaders_locator_from_chain();
     failures += test_sync_service_builds_getheaders_locator_empty_chain();
     failures += test_sync_service_header_log_policy();
@@ -1064,6 +1147,7 @@ int test_sync_service(void)
     failures += test_sync_service_header_activation_policy();
     failures += test_sync_service_recovery_getheaders_action();
     failures += test_sync_service_valid_block_transition();
+    failures += test_sync_service_valid_block_waits_for_headers();
     failures += test_sync_service_header_chain_policy();
     failures += test_sync_service_builds_alt_recovery_plan();
     failures += test_sync_service_requests_reset_when_no_alts();

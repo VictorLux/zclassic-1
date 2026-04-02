@@ -52,7 +52,7 @@ LIBS = -Lvendor/lib -lsecp256k1 -lleveldb \
 	-lssl -lcrypto -lz \
 	-Wl,--allow-multiple-definition
 
-.PHONY: all test clean deploy
+.PHONY: all test clean deploy check-restart-follow
 
 CLI_SRCS = lib/rpc/src/client.c lib/json/src/json.c
 all: test_zcl zclassic23 zclassic-cli
@@ -131,6 +131,9 @@ speedrun: $(TMPL_GEN) tools/speedrun.c $(ALL_SRCS)
 zcl-rpc: tools/zcl-rpc.c
 	$(CC) -std=c23 -O2 -Wall -o $@ $<
 
+zcl-nodectl: tools/zcl-nodectl.c
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -o $@ $<
+
 zcl-browser: tools/zcl-browser.c $(ALL_SRCS)
 	$(CC) $(CFLAGS) -Wno-deprecated-declarations $$(pkg-config --cflags webkit2gtk-4.1) -o $@ $^ $(TOR_LIBS) $(LIBS) $$(pkg-config --libs webkit2gtk-4.1)
 
@@ -165,3 +168,6 @@ deploy: zclassic23
 
 clean:
 	rm -f test_zcl zclassic23 zclassic-cli $(ALL_OBJS)
+
+check-restart-follow:
+	./zcl-nodectl verify-follow --restart

@@ -63,8 +63,10 @@ zclassic23 binary (26MB, statically linked)
 | `make zclassic23` | Main binary (26MB, zero system deps) |
 | `make test` | Run 1066+ tests |
 | `make zcl-rpc` | Lightweight CLI RPC client |
+| `make zcl-nodectl` | Compiled node lifecycle + follow verifier |
 | `make zcl-browser` | GTK Tor-only browser |
 | `make deploy` | Install systemd user service |
+| `make check-restart-follow` | Restart `zclassic23` and verify it catches legacy `zclassicd` tip |
 
 ## Project Structure
 
@@ -89,7 +91,7 @@ lib/
   test/               1066+ automated tests
   [+ 13 more modules]
 vendor/               Static libs (secp256k1, leveldb, sqlite3, openssl, tor)
-tools/                zcl-browser, zcl-rpc, hodl wave tools, utilities
+tools/                zcl-browser, zcl-rpc, zcl-nodectl, hodl wave tools, utilities
 deploy/               systemd service, setup script
 ```
 
@@ -154,6 +156,14 @@ zcl-rpc healthcheck
 zcl-rpc eventlog 100
 zcl-rpc syncstate
 zcl-rpc downloadstats
+
+# Node control
+make zcl-nodectl
+./zcl-nodectl status
+./zcl-nodectl stop
+./zcl-nodectl start
+./zcl-nodectl restart
+./zcl-nodectl verify-follow --restart
 ```
 
 ## Deployment
@@ -166,6 +176,10 @@ sudo deploy/setup.sh
 make zclassic23 && make deploy
 systemctl --user status zclassic23
 tail -f ~/.zclassic-c23/node.log
+
+# Validate restart + legacy tip following
+make zcl-nodectl
+make check-restart-follow
 ```
 
 ## Performance

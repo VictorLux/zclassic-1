@@ -69,11 +69,9 @@ static void rotate_snapshots(const char *snapshots_dir, int max_keep)
             char path[1024];
             snprintf(path, sizeof(path), "%s/%s",
                      snapshots_dir, entries[i]->d_name);
-            char cmd[8192];
-            snprintf(cmd, sizeof(cmd), "rm -rf '%s'", path);
             printf("snapshot: removing old snapshot %s\n",
                    entries[i]->d_name);
-            system(cmd);
+            dir_remove_tree(path);
             to_remove--;
         }
     }
@@ -196,6 +194,10 @@ static void *import_block_index_thread(void *arg)
     sqlite3_exec(ndb.db, "DROP INDEX IF EXISTS idx_blocks_chainwork",
                  NULL, NULL, NULL);
     sqlite3_exec(ndb.db, "DELETE FROM blocks", NULL, NULL, NULL);
+    {
+        static const uint8_t zero_hash[32] = {0};
+        node_db_sync_set_tip(&ndb, zero_hash, -1);
+    }
 
     /* Iterate all 'b'-prefixed entries */
     struct db_iterator it;
@@ -270,21 +272,6 @@ static void *import_block_index_thread(void *arg)
     }
 
     db_iter_free(&it);
-
-    /* Set tip to highest block */
-    {
-        sqlite3_stmt *st = NULL;
-        sqlite3_prepare_v2(ndb.db,
-            "SELECT hash, height FROM blocks ORDER BY height DESC LIMIT 1",
-            -1, &st, NULL);
-        if (sqlite3_step(st) == SQLITE_ROW) {
-            const void *h = sqlite3_column_blob(st, 0);
-            int height = sqlite3_column_int(st, 1);
-            if (h)
-                node_db_sync_set_tip(&ndb, h, height);
-        }
-        sqlite3_finalize(st);
-    }
 
     node_db_commit(&ndb);
 
@@ -490,16 +477,16 @@ int snapshot_import(const char *snapshot_dir,
 
     /* Block index: clean copy */
     snprintf(dst, sizeof(dst), "%s/blocks/index", c23_datadir);
-    snprintf(cmd, sizeof(cmd), "rm -rf '%s' && mkdir -p '%s'", dst, dst);
-    system(cmd);
+    dir_remove_tree(dst);
+    mkdir(dst, 0700);
     snprintf(src, sizeof(src), "%s/blocks/index", snapshot_dir);
     snprintf(cmd, sizeof(cmd), "cp -a '%s'/. '%s'/", src, dst);
     system(cmd);
 
     /* Chainstate: clean copy */
     snprintf(dst, sizeof(dst), "%s/chainstate", c23_datadir);
-    snprintf(cmd, sizeof(cmd), "rm -rf '%s' && mkdir -p '%s'", dst, dst);
-    system(cmd);
+    dir_remove_tree(dst);
+    mkdir(dst, 0700);
     snprintf(src, sizeof(src), "%s/chainstate", snapshot_dir);
     snprintf(cmd, sizeof(cmd), "cp -a '%s'/. '%s'/", src, dst);
     system(cmd);

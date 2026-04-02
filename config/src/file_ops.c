@@ -115,3 +115,38 @@ void dir_remove_shallow(const char *dir)
     closedir(d);
     rmdir(dir);
 }
+
+void dir_remove_tree(const char *dir)
+{
+    struct stat lst;
+    if (lstat(dir, &lst) != 0)
+        return;
+    if (S_ISLNK(lst.st_mode) || !S_ISDIR(lst.st_mode)) {
+        unlink(dir);
+        return;
+    }
+
+    DIR *d = opendir(dir);
+    if (!d)
+        return;
+
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL) {
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
+            continue;
+
+        char path[1024];
+        snprintf(path, sizeof(path), "%s/%s", dir, ent->d_name);
+
+        struct stat child_st;
+        if (lstat(path, &child_st) != 0)
+            continue;
+        if (S_ISDIR(child_st.st_mode) && !S_ISLNK(child_st.st_mode))
+            dir_remove_tree(path);
+        else
+            unlink(path);
+    }
+
+    closedir(d);
+    rmdir(dir);
+}

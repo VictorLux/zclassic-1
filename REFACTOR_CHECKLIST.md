@@ -191,8 +191,15 @@ Current likely extraction order:
 
 - [ ] define the first sync invariant set and where each invariant is enforced
 - [x] expose a compact sync metrics snapshot suitable for RPC/API/health output
-- [ ] add regression tests for stall recovery and resume-from-disk block activation
+- [x] stop restart/import paths from publishing speculative tip state before validated chain activation
+- [x] block `SYNC_AT_TIP` transitions while headers are still ahead of the active chain
+- [x] expose `headers_ahead_*` as a degraded health condition instead of reporting healthy off peer freshness
+- [ ] add regression tests for stall recovery
+- [x] add regression coverage for resume-from-disk block activation
 - [ ] add a legacy-following integration test plan and fixture strategy
+- [x] add an operator-facing restart-follow validation tool for comparing `zclassic23` against legacy `zclassicd`
+- [x] replace the shell restart-follow helper with a compiled `zcl-nodectl` control surface
+- [x] validate live recovery on this node after quarantining a malformed `node.db`
 - [x] identify the remaining controllers with hidden runtime/composition state
 - [x] document the routing rule: REST-style reads by default, command endpoints for mutating node operations
 

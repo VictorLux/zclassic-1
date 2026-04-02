@@ -1328,6 +1328,9 @@ bool app_init(struct app_context *ctx)
 
     struct block_index *tip = active_chain_tip(&g_state.chain_active);
     if (tip && tip->phashBlock) {
+        if (g_node_db.open)
+            node_db_sync_set_tip(&g_node_db, tip->phashBlock->data,
+                                 tip->nHeight);
         char hex[65];
         uint256_get_hex(tip->phashBlock, hex);
         printf("Chain tip: height=%d hash=%s\n", tip->nHeight, hex);

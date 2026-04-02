@@ -1070,7 +1070,10 @@ static bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
             node->last_block_time = (int64_t)time(NULL);
             node->blocks_received++;
             syncsvc_note_valid_block(&acceptance, node, sync_get_state(),
-                                     new_tip->nHeight);
+                                     new_tip->nHeight,
+                                     mp->main_state->pindex_best_header
+                                         ? mp->main_state->pindex_best_header->nHeight
+                                         : new_tip->nHeight);
             event_emitf(EV_BLOCK_CONNECTED, (uint32_t)node->id,
                         "h=%d", new_tip->nHeight);
 

@@ -77,9 +77,11 @@ void syncsvc_assign_peer_blocks(struct sync_block_batch *batch,
 void syncsvc_note_valid_block(struct sync_block_acceptance *result,
                               const struct p2p_node *node,
                               enum sync_state sync_state,
-                              int new_tip_height)
+                              int new_tip_height,
+                              int best_header_height)
 {
     struct sync_block_acceptance empty = {0};
+    bool headers_caught_up = false;
 
     if (!result) return;
     *result = empty;
@@ -88,18 +90,22 @@ void syncsvc_note_valid_block(struct sync_block_acceptance *result,
     if (node->starting_height <= 0 || new_tip_height < node->starting_height)
         return;
 
+    headers_caught_up =
+        (best_header_height >= 0 && best_header_height <= new_tip_height + 1);
     result->reached_peer_tip = true;
-    if (sync_state == SYNC_BLOCKS_DOWNLOAD ||
-        sync_state == SYNC_CONNECTING_BLOCKS ||
-        sync_state == SYNC_REORG) {
+    if (headers_caught_up &&
+        (sync_state == SYNC_BLOCKS_DOWNLOAD ||
+         sync_state == SYNC_CONNECTING_BLOCKS ||
+         sync_state == SYNC_REORG)) {
         result->should_set_sync_state = true;
         result->next_sync_state = SYNC_AT_TIP;
         result->should_set_flush_policy = true;
         result->should_emit_tip_updated = (sync_state != SYNC_REORG);
     }
 
-    if (node->state == PEER_SYNCING_BLOCKS ||
-        node->state == PEER_SYNCING_HEADERS) {
+    if (headers_caught_up &&
+        (node->state == PEER_SYNCING_BLOCKS ||
+         node->state == PEER_SYNCING_HEADERS)) {
         result->should_update_peer_state = true;
         result->next_peer_state = PEER_ACTIVE;
     }

@@ -7,6 +7,7 @@
 #include "models/block.h"
 #include "models/database.h"
 #include "net/onion_service.h"
+#include "validation/chainstate.h"
 #include "validation/main_state.h"
 #include "net/connman.h"
 #include "net/download.h"
@@ -48,8 +49,23 @@ void node_health_collect(struct node_health_snapshot *snapshot,
     snapshot->peer_count = cm ? connman_get_node_count(cm) : 0;
     snapshot->has_peers = snapshot->peer_count > 0;
 
+    if (ms) {
+        struct block_index *tip = active_chain_tip(&ms->chain_active);
+        if (tip) {
+            snapshot->tip_height = tip->nHeight;
+            if (tip->nTime > 0) {
+                int64_t now = (int64_t)time(NULL);
+                if (now > (int64_t)tip->nTime) {
+                    snapshot->tip_stale_seconds = now - (int64_t)tip->nTime;
+                    snapshot->tip_stale = snapshot->tip_stale_seconds > 600;
+                }
+            }
+        }
+    }
+
     if (ndb && ndb->open) {
-        snapshot->tip_height = db_block_max_height(ndb);
+        if (snapshot->tip_height < 0)
+            snapshot->tip_height = db_block_max_height(ndb);
         snapshot->utxo_count = node_db_utxo_count(ndb);
 
         const char *db_path = sqlite3_db_filename(ndb->db, "main");
@@ -80,13 +96,7 @@ void node_health_collect(struct node_health_snapshot *snapshot,
         }
         zcl_mutex_unlock(&cm->manager.cs_nodes);
 
-        if (newest_peer_block_time > 0) {
-            int64_t now = (int64_t)time(NULL);
-            if (now > newest_peer_block_time) {
-                snapshot->tip_stale_seconds = now - newest_peer_block_time;
-                snapshot->tip_stale = snapshot->tip_stale_seconds > 600;
-            }
-        }
+        (void)newest_peer_block_time;
     }
 
     if (snapshot->peer_best_height >= 0 && snapshot->tip_height >= 0 &&
@@ -123,6 +133,9 @@ void node_health_collect(struct node_health_snapshot *snapshot,
     } else if (!snapshot->synced) {
         snprintf(snapshot->degraded_reason, sizeof(snapshot->degraded_reason),
                  "sync_state_%s", sync_state_name(snapshot->sync_state));
+    } else if (snapshot->header_height > snapshot->tip_height + 1) {
+        snprintf(snapshot->degraded_reason, sizeof(snapshot->degraded_reason),
+                 "headers_ahead_%d", snapshot->header_height - snapshot->tip_height);
     } else if (snapshot->tip_lag > 1) {
         snprintf(snapshot->degraded_reason, sizeof(snapshot->degraded_reason),
                  "tip_lag_%d", snapshot->tip_lag);
@@ -139,6 +152,7 @@ void node_health_collect(struct node_health_snapshot *snapshot,
 
     snapshot->healthy = snapshot->synced &&
                         snapshot->has_peers &&
+                        snapshot->header_height <= snapshot->tip_height + 1 &&
                         !snapshot->tip_stale &&
                         snapshot->tip_lag <= 1;
 }

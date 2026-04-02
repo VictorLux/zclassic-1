@@ -3,8 +3,11 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "models/database.h"
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
+#include <unistd.h>
 
 static const char *SCHEMA[] = {
     /* Blockchain */
@@ -340,6 +343,89 @@ static bool prepare_statements(struct node_db *ndb)
     return true;
 }
 
+static void db_set_pragmas(sqlite3 *db)
+{
+    sqlite3_exec(db,
+        "PRAGMA journal_mode=WAL;"
+        "PRAGMA synchronous=NORMAL;"
+        "PRAGMA cache_size=-65536;"
+        "PRAGMA mmap_size=268435456;"
+        "PRAGMA temp_store=MEMORY;"
+        "PRAGMA foreign_keys=ON",
+        NULL, NULL, NULL);
+    sqlite3_busy_timeout(db, 10000);
+}
+
+static bool db_quick_check_ok(sqlite3 *db)
+{
+    sqlite3_stmt *stmt = NULL;
+    bool ok = false;
+    int rc = sqlite3_prepare_v2(db, "PRAGMA quick_check(1)", -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "db: quick_check prepare failed: %s\n",
+                sqlite3_errmsg(db));
+        return false;
+    }
+    rc = sqlite3_step(stmt);
+    if (rc == SQLITE_ROW) {
+        const unsigned char *txt = sqlite3_column_text(stmt, 0);
+        ok = txt && strcmp((const char *)txt, "ok") == 0;
+        if (!ok && txt) {
+            fprintf(stderr, "db: quick_check failed: %s\n", txt);
+        }
+    } else {
+        fprintf(stderr, "db: quick_check step failed: %s\n",
+                sqlite3_errmsg(db));
+    }
+    sqlite3_finalize(stmt);
+    return ok;
+}
+
+static void db_quarantine_one(const char *path, const char *suffix)
+{
+    char dst[1400];
+    if (access(path, F_OK) != 0) return;
+    snprintf(dst, sizeof(dst), "%s.%s", path, suffix);
+    if (rename(path, dst) == 0) {
+        fprintf(stderr, "db: quarantined %s -> %s\n", path, dst);
+    } else {
+        fprintf(stderr, "db: failed to quarantine %s: %s\n",
+                path, strerror(errno));
+    }
+}
+
+static void db_quarantine_files(const char *path)
+{
+    char wal[1200];
+    char shm[1200];
+    char suffix[64];
+    time_t now = time(NULL);
+    struct tm tmv;
+    gmtime_r(&now, &tmv);
+    strftime(suffix, sizeof(suffix), "corrupt-%Y%m%dT%H%M%SZ", &tmv);
+
+    snprintf(wal, sizeof(wal), "%s-wal", path);
+    snprintf(shm, sizeof(shm), "%s-shm", path);
+
+    db_quarantine_one(path, suffix);
+    db_quarantine_one(wal, suffix);
+    db_quarantine_one(shm, suffix);
+}
+
+static bool db_open_raw(sqlite3 **db_out, const char *path)
+{
+    int rc = sqlite3_open(path, db_out);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "db: cannot open %s: %s\n",
+                path, sqlite3_errmsg(*db_out));
+        sqlite3_close(*db_out);
+        *db_out = NULL;
+        return false;
+    }
+    db_set_pragmas(*db_out);
+    return true;
+}
+
 static void finalize_statements(struct node_db *ndb)
 {
     sqlite3_finalize(ndb->stmt_utxo_insert);
@@ -368,25 +454,18 @@ static void finalize_statements(struct node_db *ndb)
 bool node_db_open(struct node_db *ndb, const char *path)
 {
     memset(ndb, 0, sizeof(*ndb));
-
-    int rc = sqlite3_open(path, &ndb->db);
-    if (rc != SQLITE_OK) {
-        fprintf(stderr, "db: cannot open %s: %s\n",
-                path, sqlite3_errmsg(ndb->db));
-        sqlite3_close(ndb->db);
+    if (!db_open_raw(&ndb->db, path))
         return false;
-    }
 
-    /* Performance pragmas */
-    sqlite3_exec(ndb->db,
-        "PRAGMA journal_mode=WAL;"
-        "PRAGMA synchronous=NORMAL;"
-        "PRAGMA cache_size=-65536;"
-        "PRAGMA mmap_size=268435456;"
-        "PRAGMA temp_store=MEMORY;"
-        "PRAGMA foreign_keys=ON",
-        NULL, NULL, NULL);
-    sqlite3_busy_timeout(ndb->db, 10000);
+    if (!db_quick_check_ok(ndb->db)) {
+        fprintf(stderr, "db: %s is malformed; rebuilding fresh SQLite state\n",
+                path);
+        sqlite3_close(ndb->db);
+        ndb->db = NULL;
+        db_quarantine_files(path);
+        if (!db_open_raw(&ndb->db, path))
+            return false;
+    }
 
     if (!create_schema(ndb)) {
         sqlite3_close(ndb->db);

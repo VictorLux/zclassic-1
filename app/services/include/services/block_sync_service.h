@@ -83,7 +83,8 @@ void syncsvc_assign_peer_blocks(struct sync_block_batch *batch,
 void syncsvc_note_valid_block(struct sync_block_acceptance *result,
                               const struct p2p_node *node,
                               enum sync_state sync_state,
-                              int new_tip_height);
+                              int new_tip_height,
+                              int best_header_height);
 void syncsvc_collect_progress(struct sync_progress_snapshot *snapshot,
                               struct download_manager *dm,
                               enum sync_state sync_state,

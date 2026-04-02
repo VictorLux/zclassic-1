@@ -25,4 +25,7 @@ void block_files_clean(const char *dir);
 /* Remove a directory tree (one level deep). */
 void dir_remove_shallow(const char *dir);
 
+/* Remove a directory tree recursively. */
+void dir_remove_tree(const char *dir);
+
 #endif
