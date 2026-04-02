@@ -140,6 +140,19 @@ struct explorer_utxo_stats {
     int64_t total_value_sat;
 };
 
+struct explorer_op_return_stats {
+    int64_t total;
+    int64_t zslp;
+};
+
+struct explorer_transaction_stats {
+    int64_t total;
+    int64_t coinbase;
+    int64_t inputs;
+    int64_t outputs;
+    int64_t empty_blocks;
+};
+
 static inline bool sql_query_row_i64_2(sqlite3 *db, const char *sql,
                                        struct sql_row_i64_2 *out)
 {
@@ -231,6 +244,29 @@ static inline void explorer_query_utxo_stats(sqlite3 *db,
     out->count = sql_query_i64(db, "SELECT count(*) FROM utxos");
     out->dust_under_0001 = sql_query_i64(db, "SELECT count(*) FROM utxos WHERE value < 100000");
     out->total_value_sat = sql_query_i64(db, "SELECT COALESCE(SUM(value),0) FROM utxos");
+}
+
+static inline void explorer_query_op_return_stats(sqlite3 *db,
+                                                  struct explorer_op_return_stats *out)
+{
+    if (!out)
+        return;
+
+    out->total = sql_query_i64(db, "SELECT count(*) FROM op_returns");
+    out->zslp = sql_query_i64(db, "SELECT count(*) FROM op_returns WHERE is_slp = 1");
+}
+
+static inline void explorer_query_transaction_stats(sqlite3 *db,
+                                                    struct explorer_transaction_stats *out)
+{
+    if (!out)
+        return;
+
+    out->total = sql_query_i64(db, "SELECT count(*) FROM transactions");
+    out->coinbase = sql_query_i64(db, "SELECT count(*) FROM transactions WHERE is_coinbase = 1");
+    out->inputs = sql_query_i64(db, "SELECT count(*) FROM tx_inputs");
+    out->outputs = sql_query_i64(db, "SELECT count(*) FROM tx_outputs");
+    out->empty_blocks = sql_query_i64(db, "SELECT count(*) FROM blocks WHERE num_tx <= 1");
 }
 
 static inline bool sql_query_text(sqlite3 *db, const char *sql,

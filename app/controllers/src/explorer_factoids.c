@@ -1063,8 +1063,10 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
     APPEND(off, r, max,
         "<h2 id='opreturn'>10. OP_RETURN Archaeology</h2>");
 
-    int64_t total_opret = fq_i64(db, "SELECT count(*) FROM op_returns");
-    int64_t slp_opret = fq_i64(db, "SELECT count(*) FROM op_returns WHERE is_slp = 1");
+    struct explorer_op_return_stats op_return_stats = {0};
+    explorer_query_op_return_stats(db, &op_return_stats);
+    int64_t total_opret = op_return_stats.total;
+    int64_t slp_opret = op_return_stats.zslp;
     int64_t nonslp_opret = total_opret - slp_opret;
     int64_t first_opret = fq_i64(db, "SELECT MIN(block_height) FROM op_returns");
     int64_t first_nonslp = fq_i64(db,
@@ -1270,13 +1272,14 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
         "<h2 id='transactions'>14. Transaction Archaeology</h2>");
 
     {
-        int64_t total_txs = fq_i64(db, "SELECT count(*) FROM transactions");
-        int64_t coinbase_txs = fq_i64(db,
-            "SELECT count(*) FROM transactions WHERE is_coinbase = 1");
+        struct explorer_transaction_stats transaction_stats = {0};
+        explorer_query_transaction_stats(db, &transaction_stats);
+        int64_t total_txs = transaction_stats.total;
+        int64_t coinbase_txs = transaction_stats.coinbase;
         int64_t non_coinbase = total_txs - coinbase_txs;
-        int64_t total_inputs = fq_i64(db, "SELECT count(*) FROM tx_inputs");
-        int64_t total_outputs = fq_i64(db, "SELECT count(*) FROM tx_outputs");
-        int64_t total_opret = fq_i64(db, "SELECT count(*) FROM op_returns");
+        int64_t total_inputs = transaction_stats.inputs;
+        int64_t total_outputs = transaction_stats.outputs;
+        int64_t total_opret = op_return_stats.total;
 
         char tx_str[32], cb_str[32], nc_str[32], in_str[32], out_str[32], op_str[32];
         fmt_comma(tx_str, sizeof(tx_str), total_txs);
@@ -1699,25 +1702,26 @@ size_t explorer_factoids_build_json(uint8_t *buf, size_t buf_max,
 
     /* OP_RETURN stats */
     {
-        int64_t total = fq_i64(db, "SELECT count(*) FROM op_returns");
-        int64_t slp = fq_i64(db, "SELECT count(*) FROM op_returns WHERE is_slp = 1");
+        struct explorer_op_return_stats op_return_stats = {0};
+        explorer_query_op_return_stats(db, &op_return_stats);
         APPEND(off, r, max,
             ",\"op_returns\":{\"total\":%" PRId64 ",\"zslp\":%" PRId64
-            ",\"other\":%" PRId64 "}", total, slp, total - slp);
+            ",\"other\":%" PRId64 "}",
+            op_return_stats.total, op_return_stats.zslp,
+            op_return_stats.total - op_return_stats.zslp);
     }
 
     /* Transaction stats */
     {
-        int64_t txs = fq_i64(db, "SELECT count(*) FROM transactions");
-        int64_t cb = fq_i64(db, "SELECT count(*) FROM transactions WHERE is_coinbase = 1");
-        int64_t inputs = fq_i64(db, "SELECT count(*) FROM tx_inputs");
-        int64_t outputs = fq_i64(db, "SELECT count(*) FROM tx_outputs");
-        int64_t empty = fq_i64(db, "SELECT count(*) FROM blocks WHERE num_tx <= 1");
+        struct explorer_transaction_stats transaction_stats = {0};
+        explorer_query_transaction_stats(db, &transaction_stats);
         APPEND(off, r, max,
             ",\"transactions\":{\"total\":%" PRId64 ",\"coinbase\":%" PRId64
             ",\"inputs\":%" PRId64 ",\"outputs\":%" PRId64
             ",\"empty_blocks\":%" PRId64 "}",
-            txs, cb, inputs, outputs, empty);
+            transaction_stats.total, transaction_stats.coinbase,
+            transaction_stats.inputs, transaction_stats.outputs,
+            transaction_stats.empty_blocks);
     }
 
     /* Integrity hash */

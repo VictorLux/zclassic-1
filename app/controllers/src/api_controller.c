@@ -833,7 +833,8 @@ static size_t compute_deep_stats(uint8_t *r, size_t max)
 
     int64_t height = sql_query_i64(db, "SELECT MAX(height) FROM blocks");
     int64_t block_count = sql_query_i64(db, "SELECT count(*) FROM blocks");
-    int64_t tx_count = sql_query_i64(db, "SELECT count(*) FROM transactions");
+    struct explorer_transaction_stats transaction_stats = {0};
+    explorer_query_transaction_stats(db, &transaction_stats);
     struct explorer_utxo_stats utxo_stats = {0};
     explorer_query_utxo_stats(db, &utxo_stats);
     struct explorer_address_stats address_stats = {0};
@@ -879,7 +880,7 @@ static size_t compute_deep_stats(uint8_t *r, size_t max)
             ",\"latest_hash\":\"%s\"}"
         "}",
         JSON_HEADERS,
-        height, block_count, tx_count,
+        height, block_count, transaction_stats.total,
         (double)supply_sat / (double)ZATOSHI_PER_ZCL,
         (double)privacy_stats.net_shielded_sat / (double)ZATOSHI_PER_ZCL,
         privacy_stats.joinsplits, js_first,
