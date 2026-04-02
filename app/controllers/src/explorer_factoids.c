@@ -196,15 +196,10 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
 {
     if (!buf || buf_max < 1024 || !datadir) return 0;
 
-    char dbpath[1024];
-    snprintf(dbpath, sizeof(dbpath), "%s/node.db", datadir);
-
     sqlite3 *db = NULL;
-    if (sqlite3_open_v2(dbpath, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
-        if (db) sqlite3_close(db);
+    if (!explorer_open_readonly_db(datadir, &db)) {
         return 0;
     }
-    sqlite3_busy_timeout(db, 30000);
 
     struct explorer_chain_stats chain_stats = {0};
     explorer_query_chain_stats(db, &chain_stats);
@@ -1585,15 +1580,10 @@ size_t explorer_factoids_build_json(uint8_t *buf, size_t buf_max,
 {
     if (!buf || buf_max < 512 || !datadir) return 0;
 
-    char dbpath[1024];
-    snprintf(dbpath, sizeof(dbpath), "%s/node.db", datadir);
-
     sqlite3 *db = NULL;
-    if (sqlite3_open_v2(dbpath, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
-        if (db) sqlite3_close(db);
+    if (!explorer_open_readonly_db(datadir, &db)) {
         return 0;
     }
-    sqlite3_busy_timeout(db, 30000);
 
     struct explorer_chain_stats chain_stats = {0};
     explorer_query_chain_stats(db, &chain_stats);

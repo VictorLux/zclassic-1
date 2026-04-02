@@ -120,3 +120,4 @@ Recent slices:
 - started consolidating repeated UTXO summaries behind shared helpers
 - started consolidating repeated OP_RETURN and transaction summaries behind shared helpers
 - started consolidating repeated chain height/block-count summaries behind shared helpers
+- started consolidating repeated read-only node DB open/timeout boilerplate behind shared helpers

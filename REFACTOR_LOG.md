@@ -28,6 +28,9 @@ Completed in this slice:
   rewired the duplicated deep-stats / factoids summary counts to consume them
 - added a shared explorer/API chain-summary helper and rewired duplicated
   chain height / block-count reads in deep-stats and factoids to consume it
+- added a shared explorer/API read-only `node.db` open helper and rewired the
+  duplicated open/timeout boilerplate in `api_controller.c` and
+  `explorer_factoids.c` to consume it
 
 Why:
 

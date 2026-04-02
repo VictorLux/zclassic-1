@@ -284,6 +284,28 @@ static inline void explorer_query_chain_stats(sqlite3 *db,
     out->blocks = sql_query_i64(db, "SELECT count(*) FROM blocks");
 }
 
+static inline bool explorer_open_readonly_db(const char *datadir, sqlite3 **db_out)
+{
+    char dbpath[1024];
+
+    if (db_out)
+        *db_out = NULL;
+    if (!datadir || !db_out)
+        return false;
+
+    snprintf(dbpath, sizeof(dbpath), "%s/node.db", datadir);
+    if (sqlite3_open_v2(dbpath, db_out, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
+        if (*db_out) {
+            sqlite3_close(*db_out);
+            *db_out = NULL;
+        }
+        return false;
+    }
+
+    sqlite3_busy_timeout(*db_out, 30000);
+    return true;
+}
+
 static inline bool sql_query_text(sqlite3 *db, const char *sql,
                                    char *out, size_t max)
 {

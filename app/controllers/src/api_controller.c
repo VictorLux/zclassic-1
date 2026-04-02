@@ -821,15 +821,10 @@ static size_t compute_deep_stats(uint8_t *r, size_t max)
     if (!g_api_ctx.datadir)
         return json_error(r, max, JSON_500_HEADERS, "No datadir");
 
-    char dbpath[1024];
-    snprintf(dbpath, sizeof(dbpath), "%s/node.db", g_api_ctx.datadir);
-
     sqlite3 *db = NULL;
-    if (sqlite3_open_v2(dbpath, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
-        if (db) sqlite3_close(db);
+    if (!explorer_open_readonly_db(g_api_ctx.datadir, &db)) {
         return json_error(r, max, JSON_500_HEADERS, "Cannot open database");
     }
-    sqlite3_busy_timeout(db, 30000);
 
     struct explorer_chain_stats chain_stats = {0};
     explorer_query_chain_stats(db, &chain_stats);
