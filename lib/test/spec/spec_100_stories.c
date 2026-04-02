@@ -57,7 +57,7 @@ static bool clean(void) {
 static char _d[256];
 
 static void schema(sqlite3 *db) {
-    sqlite3_exec(db,
+    TEST_DB_EXEC(db,
         "CREATE TABLE blocks(hash BLOB PRIMARY KEY,height INT,time INT,"
         "prev_hash BLOB,version INT,merkle_root BLOB,bits INT,"
         "nonce BLOB,solution BLOB,chain_work BLOB,status INT DEFAULT 0,"
@@ -90,8 +90,8 @@ static void schema(sqlite3 *db) {
         "token_id BLOB,tx_type TEXT,txid BLOB,from_addr BLOB,"
         "to_addr BLOB,amount INT);"
         "CREATE TABLE contacts(address TEXT PRIMARY KEY,name TEXT,"
-        "last_used INT);",
-        NULL, NULL, NULL);
+        "last_used INT);"
+        );
 }
 
 static void add_block(sqlite3 *db, int height) {
@@ -105,95 +105,95 @@ static void add_block(sqlite3 *db, int height) {
         "INSERT OR REPLACE INTO blocks(hash,height,time,prev_hash,version,"
         "merkle_root,bits,status,num_tx) VALUES(?,?,%d,?,4,?,0x1d00ffff,3,5)",
         1700000000 + height * 150);
-    sqlite3_prepare_v2(db, sql, -1, &s, NULL);
-    sqlite3_bind_blob(s,1,h,32,SQLITE_STATIC);
-    sqlite3_bind_int(s,2,height);
-    sqlite3_bind_blob(s,3,p,32,SQLITE_STATIC);
-    sqlite3_bind_blob(s,4,m,32,SQLITE_STATIC);
-    sqlite3_step(s); sqlite3_finalize(s);
+    TEST_DB_RUN(db, s, sql, {
+        sqlite3_bind_blob(s, 1, h, 32, SQLITE_STATIC);
+        sqlite3_bind_int(s, 2, height);
+        sqlite3_bind_blob(s, 3, p, 32, SQLITE_STATIC);
+        sqlite3_bind_blob(s, 4, m, 32, SQLITE_STATIC);
+    });
 }
 
 static void add_utxo(sqlite3 *db, int id, int64_t value) {
     uint8_t tx[32], ah[20];
     memset(tx, (uint8_t)id, 32); memset(ah, 0xA0+(id%10), 20);
     sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(db,
+    TEST_DB_RUN(db, s,
         "INSERT INTO wallet_utxos(txid,vout,value,address_hash,height)"
-        " VALUES(?,0,?,?,100)", -1, &s, NULL);
-    sqlite3_bind_blob(s,1,tx,32,SQLITE_STATIC);
-    sqlite3_bind_int64(s,2,value);
-    sqlite3_bind_blob(s,3,ah,20,SQLITE_STATIC);
-    sqlite3_step(s); sqlite3_finalize(s);
+        " VALUES(?,0,?,?,100)", {
+        sqlite3_bind_blob(s, 1, tx, 32, SQLITE_STATIC);
+        sqlite3_bind_int64(s, 2, value);
+        sqlite3_bind_blob(s, 3, ah, 20, SQLITE_STATIC);
+    });
 }
 
 static void add_note(sqlite3 *db, int id, int64_t value) {
     uint8_t tx[32], nf[32];
     memset(tx, 0x80+id, 32); memset(nf, 0xB0+id, 32);
     sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(db,
+    TEST_DB_RUN(db, s,
         "INSERT INTO wallet_sapling_notes(txid,output_index,value,"
-        "nullifier,block_height) VALUES(?,0,?,?,200)", -1, &s, NULL);
-    sqlite3_bind_blob(s,1,tx,32,SQLITE_STATIC);
-    sqlite3_bind_int64(s,2,value);
-    sqlite3_bind_blob(s,3,nf,32,SQLITE_STATIC);
-    sqlite3_step(s); sqlite3_finalize(s);
+        "nullifier,block_height) VALUES(?,0,?,?,200)", {
+        sqlite3_bind_blob(s, 1, tx, 32, SQLITE_STATIC);
+        sqlite3_bind_int64(s, 2, value);
+        sqlite3_bind_blob(s, 3, nf, 32, SQLITE_STATIC);
+    });
 }
 
 static void add_zaddr(sqlite3 *db) {
     uint8_t ivk[32]={0xCC};
     sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(db,
+    TEST_DB_RUN(db, s,
         "INSERT INTO wallet_sapling_keys(ivk,address,child_index)"
         " VALUES(?,'zs1testaddr0000000000000000000000000000000000"
-        "00000000000000000000000000000000000000test',0)", -1, &s, NULL);
-    sqlite3_bind_blob(s,1,ivk,32,SQLITE_STATIC);
-    sqlite3_step(s); sqlite3_finalize(s);
+        "00000000000000000000000000000000000000test',0)", {
+        sqlite3_bind_blob(s, 1, ivk, 32, SQLITE_STATIC);
+    });
 }
 
 static void add_tx(sqlite3 *db, int id, int from_me) {
     uint8_t tx[32], bh[32];
     memset(tx, 0x30+id, 32); memset(bh, 0xFF, 32);
     sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(db,
+    TEST_DB_RUN(db, s,
         "INSERT INTO wallet_transactions(txid,block_hash,block_height,"
-        "time_received,from_me,fee) VALUES(?,?,?,?,?,10000)", -1, &s, NULL);
-    sqlite3_bind_blob(s,1,tx,32,SQLITE_STATIC);
-    sqlite3_bind_blob(s,2,bh,32,SQLITE_STATIC);
-    sqlite3_bind_int(s,3,3040990+id);
-    sqlite3_bind_int(s,4,1711400000-id*600);
-    sqlite3_bind_int(s,5,from_me);
-    sqlite3_step(s); sqlite3_finalize(s);
+        "time_received,from_me,fee) VALUES(?,?,?,?,?,10000)", {
+        sqlite3_bind_blob(s, 1, tx, 32, SQLITE_STATIC);
+        sqlite3_bind_blob(s, 2, bh, 32, SQLITE_STATIC);
+        sqlite3_bind_int(s, 3, 3040990 + id);
+        sqlite3_bind_int(s, 4, 1711400000 - id * 600);
+        sqlite3_bind_int(s, 5, from_me);
+    });
 }
 
 static void add_peer(sqlite3 *db, int id) {
     char ip[32]; snprintf(ip, sizeof(ip), "10.0.%d.%d", id/256, id%256);
     sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(db,
+    TEST_DB_RUN(db, s,
         "INSERT INTO peers(ip,port,services,last_seen)"
-        " VALUES(?,8033,5,1711400000)", -1, &s, NULL);
-    sqlite3_bind_text(s,1,ip,-1,SQLITE_STATIC);
-    sqlite3_step(s); sqlite3_finalize(s);
+        " VALUES(?,8033,5,1711400000)", {
+        sqlite3_bind_text(s, 1, ip, -1, SQLITE_STATIC);
+    });
 }
 
 static void add_contact(sqlite3 *db, const char *addr, const char *name) {
     sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(db,
+    TEST_DB_RUN(db, s,
         "INSERT INTO contacts(address,name,last_used)"
-        " VALUES(?,?,1711400000)", -1, &s, NULL);
-    sqlite3_bind_text(s,1,addr,-1,SQLITE_STATIC);
-    sqlite3_bind_text(s,2,name,-1,SQLITE_STATIC);
-    sqlite3_step(s); sqlite3_finalize(s);
+        " VALUES(?,?,1711400000)", {
+        sqlite3_bind_text(s, 1, addr, -1, SQLITE_STATIC);
+        sqlite3_bind_text(s, 2, name, -1, SQLITE_STATIC);
+    });
 }
 
 static void add_token(sqlite3 *db) {
     uint8_t tid[32] = {0xDD};
     sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(db,
+    TEST_DB_RUN(db, s,
         "INSERT INTO zslp_tokens(token_id,ticker,name,decimals,"
         "genesis_height) VALUES(?,'TEST','TestToken',8,100)",
-        -1, &s, NULL);
-    sqlite3_bind_blob(s,1,tid,32,SQLITE_STATIC);
-    sqlite3_step(s); sqlite3_finalize(s);
+        {
+            sqlite3_bind_blob(s, 1, tid, 32, SQLITE_STATIC);
+        });
 }
 
 /* Create a wallet in a specific state */

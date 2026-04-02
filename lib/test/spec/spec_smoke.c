@@ -112,20 +112,20 @@ static bool setup_wallet(int64_t t_sat, int64_t z_sat,
         "to_addr BLOB,amount INT);"
         "CREATE TABLE contacts(address TEXT PRIMARY KEY,name TEXT,"
         "last_used INT);";
-    sqlite3_exec(db, schema, NULL, NULL, NULL);
+    TEST_DB_EXEC(db, schema);
 
     /* Tip block */
     uint8_t h[32]={0xFF}, p[32]={0xFE}, m[32]={0xFD};
     sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(db,
+    TEST_DB_RUN(db, s,
         "INSERT INTO blocks(hash,height,time,prev_hash,version,"
         "merkle_root,bits,status,num_tx)"
         " VALUES(?,3041000,1711400000,?,4,?,0x1d00ffff,3,5)",
-        -1, &s, NULL);
-    sqlite3_bind_blob(s,1,h,32,SQLITE_STATIC);
-    sqlite3_bind_blob(s,2,p,32,SQLITE_STATIC);
-    sqlite3_bind_blob(s,3,m,32,SQLITE_STATIC);
-    sqlite3_step(s); sqlite3_finalize(s);
+    {
+        sqlite3_bind_blob(s, 1, h, 32, SQLITE_STATIC);
+        sqlite3_bind_blob(s, 2, p, 32, SQLITE_STATIC);
+        sqlite3_bind_blob(s, 3, m, 32, SQLITE_STATIC);
+    });
 
     /* t-address UTXOs across multiple addresses */
     if (t_sat > 0) {
@@ -134,71 +134,66 @@ static bool setup_wallet(int64_t t_sat, int64_t z_sat,
             int64_t val = (i < 2) ? per_addr : (t_sat - 2*per_addr);
             uint8_t tx[32]; memset(tx, 0x10+i, 32);
             uint8_t ah[20]; memset(ah, 0xA0+i, 20);
-            s = NULL;
-            sqlite3_prepare_v2(db,
+            TEST_DB_RUN(db, s,
                 "INSERT INTO wallet_utxos(txid,vout,value,address_hash,"
                 "height,is_coinbase) VALUES(?,0,?,?,100,0)",
-                -1, &s, NULL);
-            sqlite3_bind_blob(s,1,tx,32,SQLITE_STATIC);
-            sqlite3_bind_int64(s,2,val);
-            sqlite3_bind_blob(s,3,ah,20,SQLITE_STATIC);
-            sqlite3_step(s); sqlite3_finalize(s);
+            {
+                sqlite3_bind_blob(s, 1, tx, 32, SQLITE_STATIC);
+                sqlite3_bind_int64(s, 2, val);
+                sqlite3_bind_blob(s, 3, ah, 20, SQLITE_STATIC);
+            });
         }
     }
 
     /* Shielded notes */
     if (z_sat > 0) {
         uint8_t tx[32]={0x20}, nf[32]={0xBB};
-        s = NULL;
-        sqlite3_prepare_v2(db,
+        TEST_DB_RUN(db, s,
             "INSERT INTO wallet_sapling_notes(txid,output_index,value,"
             "nullifier,block_height) VALUES(?,0,?,?,200)",
-            -1, &s, NULL);
-        sqlite3_bind_blob(s,1,tx,32,SQLITE_STATIC);
-        sqlite3_bind_int64(s,2,z_sat);
-        sqlite3_bind_blob(s,3,nf,32,SQLITE_STATIC);
-        sqlite3_step(s); sqlite3_finalize(s);
+        {
+            sqlite3_bind_blob(s, 1, tx, 32, SQLITE_STATIC);
+            sqlite3_bind_int64(s, 2, z_sat);
+            sqlite3_bind_blob(s, 3, nf, 32, SQLITE_STATIC);
+        });
     }
 
     /* z-address for receive page */
     {
         uint8_t ivk[32]={0xCC};
-        s = NULL;
-        sqlite3_prepare_v2(db,
+        TEST_DB_RUN(db, s,
             "INSERT INTO wallet_sapling_keys(ivk,address,child_index)"
             " VALUES(?,'zs1testaddr00000000000000000000000000000000"
             "000000000000000000000000000000000000000test',0)",
-            -1, &s, NULL);
-        sqlite3_bind_blob(s,1,ivk,32,SQLITE_STATIC);
-        sqlite3_step(s); sqlite3_finalize(s);
+        {
+            sqlite3_bind_blob(s, 1, ivk, 32, SQLITE_STATIC);
+        });
     }
 
     /* Wallet transactions */
     for (int i = 0; i < n_tx; i++) {
         uint8_t tx[32]; memset(tx, 0x30+i, 32);
         uint8_t bh[32]; memset(bh, 0xFF, 32);
-        s = NULL;
-        sqlite3_prepare_v2(db,
+        TEST_DB_RUN(db, s,
             "INSERT INTO wallet_transactions(txid,block_hash,"
             "block_height,time_received,from_me,fee)"
-            " VALUES(?,?,?,?,?,10000)", -1, &s, NULL);
-        sqlite3_bind_blob(s,1,tx,32,SQLITE_STATIC);
-        sqlite3_bind_blob(s,2,bh,32,SQLITE_STATIC);
-        sqlite3_bind_int(s,3,3040990+i);
-        sqlite3_bind_int(s,4,1711400000-i*600);
-        sqlite3_bind_int(s,5,i%2);
-        sqlite3_step(s); sqlite3_finalize(s);
+            " VALUES(?,?,?,?,?,10000)", {
+            sqlite3_bind_blob(s, 1, tx, 32, SQLITE_STATIC);
+            sqlite3_bind_blob(s, 2, bh, 32, SQLITE_STATIC);
+            sqlite3_bind_int(s, 3, 3040990 + i);
+            sqlite3_bind_int(s, 4, 1711400000 - i * 600);
+            sqlite3_bind_int(s, 5, i % 2);
+        });
     }
 
     /* Peers */
     for (int i = 0; i < n_peers; i++) {
         char ip[32]; snprintf(ip, sizeof(ip), "10.0.%d.%d", i/256, i%256);
-        s = NULL;
-        sqlite3_prepare_v2(db,
+        TEST_DB_RUN(db, s,
             "INSERT INTO peers(ip,port,services,last_seen)"
-            " VALUES(?,8033,5,1711400000)", -1, &s, NULL);
-        sqlite3_bind_text(s,1,ip,-1,SQLITE_STATIC);
-        sqlite3_step(s); sqlite3_finalize(s);
+            " VALUES(?,8033,5,1711400000)", {
+            sqlite3_bind_text(s, 1, ip, -1, SQLITE_STATIC);
+        });
     }
 
     sqlite3_close(db);

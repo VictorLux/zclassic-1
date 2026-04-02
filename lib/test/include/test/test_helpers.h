@@ -12,6 +12,7 @@
 #include <inttypes.h>
 #include <sys/time.h>
 #include <sys/stat.h>
+#include <sqlite3.h>
 
 #include "crypto/sha256.h"
 #include "crypto/sha512.h"
@@ -267,5 +268,22 @@ int spec_consensus_compat(void);
         printf("OK\n"); \
     } \
     if (0) { _test_next: ; }
+
+/* SQLite fixture helpers for tests.
+ * Keep setup code focused on the data being created rather than
+ * repeating prepare/step/finalize boilerplate. */
+#define TEST_DB_EXEC(db, sql) \
+    sqlite3_exec((db), (sql), NULL, NULL, NULL)
+
+#define TEST_DB_RUN(db, stmt, sql, bind_code) do { \
+    (stmt) = NULL; \
+    if (sqlite3_prepare_v2((db), (sql), -1, &(stmt), NULL) == SQLITE_OK && \
+        (stmt) != NULL) { \
+        do { bind_code; } while (0); \
+        sqlite3_step(stmt); \
+    } \
+    sqlite3_finalize(stmt); \
+    (stmt) = NULL; \
+} while (0)
 
 #endif /* TEST_HELPERS_H */
