@@ -31,6 +31,9 @@ Completed in this slice:
 - added a shared explorer/API read-only `node.db` open helper and rewired the
   duplicated open/timeout boilerplate in `api_controller.c` and
   `explorer_factoids.c` to consume it
+- added a shared explorer/API first-privacy-height helper and rewired the
+  duplicated first JoinSplit / first Sapling height reads in
+  `api_controller.c` and `explorer_stats.c` to consume it
 
 Why:
 

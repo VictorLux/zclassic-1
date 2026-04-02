@@ -838,11 +838,10 @@ static size_t compute_deep_stats(uint8_t *r, size_t max)
     /* Sprout stats */
     struct explorer_privacy_stats privacy_stats = {0};
     explorer_query_privacy_stats(db, &privacy_stats);
-    int64_t js_first = sql_query_i64(db, "SELECT MIN(block_height) FROM joinsplits");
+    struct explorer_first_privacy_heights first_privacy = {0};
+    explorer_query_first_privacy_heights(db, &first_privacy);
 
     /* Sapling stats */
-    int64_t ss_first = sql_query_i64(db, "SELECT MIN(block_height) FROM sapling_spends");
-
     /* ZSLP stats */
     struct explorer_token_stats token_stats = {0};
     explorer_query_token_stats(db, &token_stats);
@@ -878,8 +877,9 @@ static size_t compute_deep_stats(uint8_t *r, size_t max)
         chain_stats.height, chain_stats.blocks, transaction_stats.total,
         (double)supply_sat / (double)ZATOSHI_PER_ZCL,
         (double)privacy_stats.net_shielded_sat / (double)ZATOSHI_PER_ZCL,
-        privacy_stats.joinsplits, js_first,
-        privacy_stats.sapling_spends, privacy_stats.sapling_outputs, ss_first,
+        privacy_stats.joinsplits, first_privacy.joinsplit_height,
+        privacy_stats.sapling_spends, privacy_stats.sapling_outputs,
+        first_privacy.sapling_height,
         utxo_stats.count, utxo_stats.dust_under_0001,
         address_stats.total, address_stats.nonzero,
         token_stats.token_count, token_stats.transfer_count,

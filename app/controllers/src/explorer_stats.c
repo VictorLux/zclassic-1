@@ -526,10 +526,10 @@ size_t explorer_stats_build(uint8_t *r, size_t buf_max, const char *datadir)
     /* Chain firsts & records */
     int64_t first_noncoinbase = stats_q_i64(db,
         "SELECT MIN(block_height) FROM transactions WHERE is_coinbase=0");
-    int64_t first_joinsplit_h = stats_q_i64(db,
-        "SELECT MIN(block_height) FROM joinsplits");
-    int64_t first_sapling_h = stats_q_i64(db,
-        "SELECT MIN(block_height) FROM sapling_spends");
+    struct explorer_first_privacy_heights first_privacy = {0};
+    explorer_query_first_privacy_heights(db, &first_privacy);
+    int64_t first_joinsplit_h = first_privacy.joinsplit_height;
+    int64_t first_sapling_h = first_privacy.sapling_height;
     int64_t first_opreturn_h = stats_q_i64(db,
         "SELECT MIN(block_height) FROM op_returns");
     int64_t first_zslp_h = stats_q_i64(db,

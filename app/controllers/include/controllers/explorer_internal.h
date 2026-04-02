@@ -158,6 +158,11 @@ struct explorer_chain_stats {
     int64_t blocks;
 };
 
+struct explorer_first_privacy_heights {
+    int64_t joinsplit_height;
+    int64_t sapling_height;
+};
+
 static inline bool sql_query_row_i64_2(sqlite3 *db, const char *sql,
                                        struct sql_row_i64_2 *out)
 {
@@ -282,6 +287,18 @@ static inline void explorer_query_chain_stats(sqlite3 *db,
 
     out->height = sql_query_i64(db, "SELECT MAX(height) FROM blocks");
     out->blocks = sql_query_i64(db, "SELECT count(*) FROM blocks");
+}
+
+static inline void explorer_query_first_privacy_heights(
+    sqlite3 *db, struct explorer_first_privacy_heights *out)
+{
+    if (!out)
+        return;
+
+    out->joinsplit_height = sql_query_i64(db,
+        "SELECT MIN(block_height) FROM joinsplits");
+    out->sapling_height = sql_query_i64(db,
+        "SELECT MIN(block_height) FROM sapling_spends");
 }
 
 static inline bool explorer_open_readonly_db(const char *datadir, sqlite3 **db_out)
