@@ -834,8 +834,8 @@ static size_t compute_deep_stats(uint8_t *r, size_t max)
     int64_t height = sql_query_i64(db, "SELECT MAX(height) FROM blocks");
     int64_t block_count = sql_query_i64(db, "SELECT count(*) FROM blocks");
     int64_t tx_count = sql_query_i64(db, "SELECT count(*) FROM transactions");
-    int64_t utxo_count = sql_query_i64(db, "SELECT count(*) FROM utxos");
-    int64_t dust_count = sql_query_i64(db, "SELECT count(*) FROM utxos WHERE value < 100000");
+    struct explorer_utxo_stats utxo_stats = {0};
+    explorer_query_utxo_stats(db, &utxo_stats);
     struct explorer_address_stats address_stats = {0};
     explorer_query_address_stats(db, &address_stats);
 
@@ -884,7 +884,7 @@ static size_t compute_deep_stats(uint8_t *r, size_t max)
         (double)privacy_stats.net_shielded_sat / (double)ZATOSHI_PER_ZCL,
         privacy_stats.joinsplits, js_first,
         privacy_stats.sapling_spends, privacy_stats.sapling_outputs, ss_first,
-        utxo_count, dust_count,
+        utxo_stats.count, utxo_stats.dust_under_0001,
         address_stats.total, address_stats.nonzero,
         token_stats.token_count, token_stats.transfer_count,
         block_count, latest_hash);

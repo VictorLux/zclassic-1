@@ -1103,10 +1103,12 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
     APPEND(off, r, max,
         "<h2 id='dust'>11. Dust &amp; UTXO Analysis</h2>");
 
-    int64_t utxo_total = fq_i64(db, "SELECT count(*) FROM utxos");
+    struct explorer_utxo_stats utxo_stats = {0};
+    explorer_query_utxo_stats(db, &utxo_stats);
+    int64_t utxo_total = utxo_stats.count;
     int64_t dust_1000 = fq_i64(db, "SELECT count(*) FROM utxos WHERE value < 100000");
     int64_t dust_10000 = fq_i64(db, "SELECT count(*) FROM utxos WHERE value < 1000000");
-    int64_t utxo_value_total = fq_i64(db, "SELECT COALESCE(SUM(value),0) FROM utxos");
+    int64_t utxo_value_total = utxo_stats.total_value_sat;
     int64_t coinbase_utxos = fq_i64(db,
         "SELECT count(*) FROM utxos WHERE is_coinbase = 1");
 
@@ -1686,12 +1688,13 @@ size_t explorer_factoids_build_json(uint8_t *buf, size_t buf_max,
 
     /* UTXO stats */
     {
-        int64_t uc = fq_i64(db, "SELECT count(*) FROM utxos");
-        int64_t dust = fq_i64(db, "SELECT count(*) FROM utxos WHERE value < 100000");
-        int64_t uv = fq_i64(db, "SELECT COALESCE(SUM(value),0) FROM utxos");
+        struct explorer_utxo_stats utxo_stats = {0};
+        explorer_query_utxo_stats(db, &utxo_stats);
         APPEND(off, r, max,
             ",\"utxo\":{\"count\":%" PRId64 ",\"dust_under_0001\":%" PRId64
-            ",\"total_value_sat\":%" PRId64 "}", uc, dust, uv);
+            ",\"total_value_sat\":%" PRId64 "}",
+            utxo_stats.count, utxo_stats.dust_under_0001,
+            utxo_stats.total_value_sat);
     }
 
     /* OP_RETURN stats */

@@ -134,6 +134,12 @@ struct explorer_privacy_stats {
     int64_t net_shielded_sat;
 };
 
+struct explorer_utxo_stats {
+    int64_t count;
+    int64_t dust_under_0001;
+    int64_t total_value_sat;
+};
+
 static inline bool sql_query_row_i64_2(sqlite3 *db, const char *sql,
                                        struct sql_row_i64_2 *out)
 {
@@ -214,6 +220,17 @@ static inline void explorer_query_privacy_stats(sqlite3 *db,
     out->sapling_spends = sql_query_i64(db, "SELECT count(*) FROM sapling_spends");
     out->sapling_outputs = sql_query_i64(db, "SELECT count(*) FROM sapling_outputs");
     out->net_shielded_sat = sql_query_i64(db, "SELECT COALESCE(SUM(sapling_value), 0) FROM blocks");
+}
+
+static inline void explorer_query_utxo_stats(sqlite3 *db,
+                                             struct explorer_utxo_stats *out)
+{
+    if (!out)
+        return;
+
+    out->count = sql_query_i64(db, "SELECT count(*) FROM utxos");
+    out->dust_under_0001 = sql_query_i64(db, "SELECT count(*) FROM utxos WHERE value < 100000");
+    out->total_value_sat = sql_query_i64(db, "SELECT COALESCE(SUM(value),0) FROM utxos");
 }
 
 static inline bool sql_query_text(sqlite3 *db, const char *sql,

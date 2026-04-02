@@ -117,3 +117,4 @@ Recent slices:
   integer row helpers
 - started consolidating repeated ZSLP summary reads behind one shared helper
 - started consolidating repeated address/privacy summaries behind shared helpers
+- started consolidating repeated UTXO summaries behind shared helpers

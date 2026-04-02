@@ -22,6 +22,8 @@ Completed in this slice:
   `explorer_factoids.c` to consume the same domain read
 - added shared explorer/API address and privacy summary helpers and rewired
   the duplicated deep-stats / factoids summary counts to consume them
+- added a shared explorer/API UTXO summary helper and rewired the duplicated
+  deep-stats / factoids UTXO summary counts to consume it
 
 Why:
 
