@@ -313,6 +313,21 @@ static inline void ar_errors_full_messages(const struct ar_errors *e,
     fprintf(stderr, "%s validation FAILED: %s\n", model, _msgs); \
 } while (0)
 
+/* Standard validation lifecycle:
+ * before_validate -> validate -> after_validate
+ * Returns false from the enclosing save when validation fails or a callback
+ * halts the record. */
+#define AR_VALIDATE_RECORD(cbs, model_name, record, validate_fn) do { \
+    struct ar_errors _errors; \
+    ar_errors_clear(&_errors); \
+    if (!ar_run_before_validate((cbs), (void *)(record))) return false; \
+    if (!(validate_fn)((record), &_errors)) { \
+        AR_LOG_VALIDATION_FAILURE((model_name), &_errors); \
+        return false; \
+    } \
+    ar_run_after_validate((cbs), (void *)(record)); \
+} while (0)
+
 /* ── Callback System ───────────────────────────────────────────── */
 
 /* Callback signature: returns false to halt the operation.

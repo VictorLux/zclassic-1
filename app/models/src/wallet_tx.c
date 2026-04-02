@@ -29,6 +29,52 @@
 
 static const uint8_t ZERO_HASH[32] = {0};
 
+static bool db_wallet_query_total_and_count(struct node_db *ndb,
+                                            const char *sql,
+                                            const void *bind_blob,
+                                            size_t bind_blob_len,
+                                            int64_t *total_out,
+                                            int *count_out)
+{
+    sqlite3_stmt *s = NULL;
+    int64_t total = 0;
+    int count = 0;
+
+    if (!ndb || !ndb->open || !sql)
+        return false;
+    sqlite3_prepare_v2(ndb->db, sql, -1, &s, NULL);
+    if (!s)
+        return false;
+    if (bind_blob && bind_blob_len > 0)
+        AR_BIND_BLOB(s, 1, bind_blob, (int)bind_blob_len);
+    if (AR_STEP_ROW(s)) {
+        total = AR_COL_INT(s, 0);
+        count = (int)AR_COL_INT(s, 1);
+    }
+    AR_FINALIZE(s);
+    if (total_out)
+        *total_out = total;
+    if (count_out)
+        *count_out = count;
+    return true;
+}
+
+static int db_wallet_query_max_height(struct node_db *ndb, const char *sql)
+{
+    sqlite3_stmt *s = NULL;
+    int height = 0;
+
+    if (!ndb || !ndb->open || !sql)
+        return 0;
+    sqlite3_prepare_v2(ndb->db, sql, -1, &s, NULL);
+    if (!s)
+        return 0;
+    if (AR_STEP_ROW(s) && sqlite3_column_type(s, 0) != SQLITE_NULL)
+        height = (int)AR_COL_INT(s, 0);
+    AR_FINALIZE(s);
+    return height;
+}
+
 /* ── Callbacks ─────────────────────────────────────────────────── */
 
 DEFINE_MODEL_CALLBACKS(wallet_tx)
@@ -220,13 +266,8 @@ bool db_wallet_tx_save(struct node_db *ndb, const struct db_wallet_tx *t)
     if (t->time_received == 0)
         ((struct db_wallet_tx *)t)->time_received = (int64_t)time(NULL);
 
-    struct ar_errors errors;
-    if (!db_wallet_tx_validate(t, &errors)) {
-        AR_LOG_VALIDATION_FAILURE("wallet_tx", &errors);
-        return false;
-    }
-
     struct ar_callbacks *cbs = db_wallet_tx_callbacks();
+    AR_VALIDATE_RECORD(cbs, "wallet_tx", t, db_wallet_tx_validate);
     if (!ar_run_before_save(cbs, (void *)t)) return false;
 
     sqlite3_stmt *s = NULL;
@@ -396,13 +437,8 @@ int db_wallet_tx_at_height(struct node_db *ndb, int height,
 bool db_wallet_utxo_save(struct node_db *ndb, const struct db_wallet_utxo *u)
 {
     if (!ndb->open) return false;
-    struct ar_errors errors;
-    if (!db_wallet_utxo_validate(u, &errors)) {
-        AR_LOG_VALIDATION_FAILURE("wallet_utxo", &errors);
-        return false;
-    }
-
     struct ar_callbacks *cbs = db_wallet_utxo_callbacks();
+    AR_VALIDATE_RECORD(cbs, "wallet_utxo", u, db_wallet_utxo_validate);
     if (!ar_run_before_save(cbs, (void *)u)) return false;
 
     sqlite3_stmt *s = ndb->stmt_wallet_utxo_insert;
@@ -479,13 +515,50 @@ bool db_wallet_utxo_find(struct node_db *ndb,
 
 int64_t db_wallet_utxo_balance(struct node_db *ndb)
 {
-    if (!ndb->open) return 0;
-    sqlite3_stmt *s = ndb->stmt_wallet_balance;
-    AR_RESET(s);
-    int64_t bal = 0;
-    if (AR_STEP_ROW(s))
-        bal = AR_COL_INT(s, 0);
-    return bal;
+    return db_wallet_utxo_balance_with_count(ndb, NULL);
+}
+
+int64_t db_wallet_utxo_balance_with_count(struct node_db *ndb, int *utxo_count)
+{
+    int64_t total = 0;
+    int count = 0;
+
+    (void)db_wallet_query_total_and_count(ndb,
+        "SELECT COALESCE(SUM(value),0), COUNT(*) "
+        "FROM wallet_utxos WHERE spent_txid IS NULL",
+        NULL, 0, &total, &count);
+    if (utxo_count)
+        *utxo_count = count;
+    return total;
+}
+
+int db_wallet_chain_tip_height(struct node_db *ndb)
+{
+    return db_wallet_query_max_height(ndb, "SELECT MAX(height) FROM blocks");
+}
+
+int db_wallet_effective_tip_height(struct node_db *ndb)
+{
+    int chain_tip = db_wallet_chain_tip_height(ndb);
+    int utxo_tip = db_wallet_query_max_height(ndb,
+        "SELECT MAX(height) FROM wallet_utxos WHERE spent_txid IS NULL");
+    return utxo_tip > chain_tip ? utxo_tip : chain_tip;
+}
+
+bool db_wallet_projection_summary(struct node_db *ndb,
+                                  struct db_wallet_projection_summary *out)
+{
+    if (!ndb || !ndb->open || !out)
+        return false;
+    memset(out, 0, sizeof(*out));
+    out->chain_tip_height = db_wallet_chain_tip_height(ndb);
+    out->effective_tip_height = db_wallet_effective_tip_height(ndb);
+    out->transparent_balance = db_wallet_utxo_balance_with_count(ndb,
+        &out->utxo_count);
+    out->shielded_balance = db_sapling_note_balance_with_count(ndb,
+        &out->note_count);
+    out->speed_balance = out->transparent_balance;
+    return true;
 }
 
 int db_wallet_utxo_list_unspent(struct node_db *ndb,
@@ -616,13 +689,8 @@ bool db_wallet_tx_delete_all(struct node_db *ndb)
 bool db_sapling_note_save(struct node_db *ndb, const struct db_sapling_note *n)
 {
     if (!ndb->open) return false;
-    struct ar_errors errors;
-    if (!db_sapling_note_validate(n, &errors)) {
-        AR_LOG_VALIDATION_FAILURE("sapling_note", &errors);
-        return false;
-    }
-
     struct ar_callbacks *cbs = db_sapling_note_callbacks();
+    AR_VALIDATE_RECORD(cbs, "sapling_note", n, db_sapling_note_validate);
     if (!ar_run_before_save(cbs, (void *)n)) return false;
 
     /* Derive bech32 z-address if not already set */
@@ -705,17 +773,24 @@ bool db_sapling_note_is_nullifier_spent(struct node_db *ndb,
 
 int64_t db_sapling_note_balance(struct node_db *ndb)
 {
-    if (!ndb->open) return 0;
-    sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(ndb->db,
-        "SELECT COALESCE(SUM(value),0) FROM wallet_sapling_notes"
-        " WHERE spent_txid IS NULL",
-        -1, &s, NULL);
-    int64_t bal = 0;
-    if (s && AR_STEP_ROW(s))
-        bal = AR_COL_INT(s, 0);
-    AR_FINALIZE(s);
-    return bal;
+    return db_sapling_note_balance_with_count(ndb, NULL);
+}
+
+int64_t db_sapling_note_balance_with_count(struct node_db *ndb, int *note_count)
+{
+    int64_t total = 0;
+    int count = 0;
+
+    (void)db_wallet_query_total_and_count(ndb,
+        "SELECT COALESCE(SUM(n.value),0), COUNT(*) "
+        "FROM wallet_sapling_notes n "
+        "WHERE NOT EXISTS ("
+        "  SELECT 1 FROM sapling_spends ss "
+        "  WHERE ss.nullifier = n.nullifier)",
+        NULL, 0, &total, &count);
+    if (note_count)
+        *note_count = count;
+    return total;
 }
 
 int64_t db_sapling_note_balance_for_ivk(struct node_db *ndb,

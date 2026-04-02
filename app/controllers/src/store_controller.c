@@ -5,6 +5,9 @@
 #include "views/format_helpers.h"
 #include "controllers/store_controller.h"
 #include "controllers/zslp_controller.h"
+#include "models/database.h"
+#include "models/store.h"
+#include "services/zslp_service.h"
 #include "util/template.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,6 +20,14 @@ static size_t serve_gated_content(sqlite3 *db, const char *customer_addr,
                                    const char *token_id, uint64_t required,
                                    const char *datadir,
                                    uint8_t *resp, size_t max);
+static const char *store_order_status_text(int status);
+static const char *store_order_status_class(int status);
+static bool store_parse_access_query(const char *path,
+                                     char *addr, size_t addr_max,
+                                     char *token, size_t token_max);
+static int64_t store_chain_tip_height(sqlite3 *db);
+static int64_t store_received_payment(sqlite3 *db, const char *pay_addr,
+                                      int64_t min_height);
 
 /* Format ZCL price: trim trailing zeros but keep at least 2 decimals. */
 static void format_zcl_price(char *out, size_t out_len, int64_t zatoshi)
@@ -35,17 +46,6 @@ static void format_zcl_price(char *out, size_t out_len, int64_t zatoshi)
 /* Ensure store tables exist */
 static void store_ensure_schema(sqlite3 *db, const char *datadir)
 {
-    sqlite3_exec(db,
-        "CREATE TABLE IF NOT EXISTS products ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
-        "name TEXT NOT NULL,"
-        "description TEXT,"
-        "price_zatoshi INTEGER NOT NULL,"
-        "token_id TEXT,"
-        "tokens_per_purchase INTEGER NOT NULL DEFAULT 1,"
-        "active INTEGER NOT NULL DEFAULT 1"
-        ")", NULL, NULL, NULL);
-
     /* Load products from {datadir}/store/products.json if it exists,
      * otherwise seed with demo products. This lets node operators
      * customize their store by editing a simple JSON file. */
@@ -122,23 +122,23 @@ static void store_ensure_schema(sqlite3 *db, const char *datadir)
                 }
 
                 if (name[0] && price_zcl > 0) {
-                    int64_t price_sat = (int64_t)(price_zcl * (double)ZATOSHI_PER_ZCL);
-                    sqlite3_stmt *ins = NULL;
-                    if (sqlite3_prepare_v2(db,
-                        "INSERT INTO products (name, description, price_zatoshi, "
-                        "token_id, tokens_per_purchase) VALUES (?,?,?,?,?)",
-                        -1, &ins, NULL) != SQLITE_OK || !ins) {
-                        fprintf(stderr, "store: failed to prepare product insert\n");
+                    struct node_db ndb;
+                    struct db_store_product product;
+                    memset(&ndb, 0, sizeof(ndb));
+                    ndb.db = db;
+                    ndb.open = true;
+                    memset(&product, 0, sizeof(product));
+                    snprintf(product.name, sizeof(product.name), "%s", name);
+                    snprintf(product.description, sizeof(product.description), "%s", desc);
+                    snprintf(product.token_id, sizeof(product.token_id), "%s", token);
+                    product.price_zatoshi =
+                        (int64_t)(price_zcl * (double)ZATOSHI_PER_ZCL);
+                    product.tokens_per_purchase = tokens;
+                    product.active = true;
+                    if (!db_store_product_save(&ndb, &product)) {
                         p = end + 1;
                         continue;
                     }
-                    sqlite3_bind_text(ins, 1, name, -1, SQLITE_STATIC);
-                    sqlite3_bind_text(ins, 2, desc, -1, SQLITE_STATIC);
-                    sqlite3_bind_int64(ins, 3, price_sat);
-                    sqlite3_bind_text(ins, 4, token, -1, SQLITE_STATIC);
-                    sqlite3_bind_int(ins, 5, tokens);
-                    sqlite3_step(ins);
-                    sqlite3_finalize(ins);
                     loaded++;
                 }
                 p = end + 1;
@@ -154,46 +154,46 @@ static void store_ensure_schema(sqlite3 *db, const char *datadir)
 
     /* Fallback: seed demo products if still empty */
     if (empty) {
-        sqlite3_exec(db,
-            "INSERT INTO products (name, description, price_zatoshi, "
-            "token_id, tokens_per_purchase) VALUES "
-            "('ZCL23 Access Token', "
-            "'1 token grants access to premium .onion services on the "
-            "ZClassic23 network. Tokens are ZSLP tokens on the ZClassic "
-            "blockchain.', "
-            "1000000, 'ZCL23ACCESS', 10)",
-            NULL, NULL, NULL);
-        sqlite3_exec(db,
-            "INSERT INTO products (name, description, price_zatoshi, "
-            "token_id, tokens_per_purchase) VALUES "
-            "('VPN Credit (1 month)', "
-            "'Route traffic through the ZClassic23 onion network. "
-            "1 month of encrypted relay service.', "
-            "5000000, 'ZCL23VPN', 1)",
-            NULL, NULL, NULL);
-        sqlite3_exec(db,
-            "INSERT INTO products (name, description, price_zatoshi, "
-            "token_id, tokens_per_purchase) VALUES "
-            "('Storage (1 GB)', "
-            "'Encrypted storage on the ZClassic23 distributed network. "
-            "Data replicated across multiple .onion nodes.', "
-            "2000000, 'ZCL23STORE', 1)",
-            NULL, NULL, NULL);
+        struct node_db ndb;
+        memset(&ndb, 0, sizeof(ndb));
+        ndb.db = db;
+        ndb.open = true;
+        struct db_store_product products[] = {
+            {
+                .name = "ZCL23 Access Token",
+                .description =
+                    "1 token grants access to premium .onion services on the "
+                    "ZClassic23 network. Tokens are ZSLP tokens on the ZClassic "
+                    "blockchain.",
+                .price_zatoshi = 1000000,
+                .token_id = "ZCL23ACCESS",
+                .tokens_per_purchase = 10,
+                .active = true
+            },
+            {
+                .name = "VPN Credit (1 month)",
+                .description =
+                    "Route traffic through the ZClassic23 onion network. "
+                    "1 month of encrypted relay service.",
+                .price_zatoshi = 5000000,
+                .token_id = "ZCL23VPN",
+                .tokens_per_purchase = 1,
+                .active = true
+            },
+            {
+                .name = "Storage (1 GB)",
+                .description =
+                    "Encrypted storage on the ZClassic23 distributed network. "
+                    "Data replicated across multiple .onion nodes.",
+                .price_zatoshi = 2000000,
+                .token_id = "ZCL23STORE",
+                .tokens_per_purchase = 1,
+                .active = true
+            }
+        };
+        for (size_t i = 0; i < sizeof(products) / sizeof(products[0]); i++)
+            (void)db_store_product_save(&ndb, &products[i]);
     }
-
-    sqlite3_exec(db,
-        "CREATE TABLE IF NOT EXISTS orders ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
-        "product_id INTEGER NOT NULL,"
-        "customer_addr TEXT,"
-        "payment_addr TEXT NOT NULL,"
-        "amount_zatoshi INTEGER NOT NULL,"
-        "payment_txid TEXT,"
-        "mint_txid TEXT,"
-        "status INTEGER NOT NULL DEFAULT 0,"
-        "created_at INTEGER NOT NULL,"
-        "paid_at INTEGER"
-        ")", NULL, NULL, NULL);
 }
 
 /* Get the .onion address from the onion service layer (may be NULL). */
@@ -237,7 +237,8 @@ static int html_body_start(char *buf, size_t max, const char *title)
         "<div class='header-nav'>"
         "<h1 style='margin:0'><a href='/store'>ZCL Store</a></h1>"
         "<a href='/'>Home</a>"
-        "<a href='/store'>Products</a>"
+        "<a href='/store/products'>Products</a>"
+        "<a href='/store/orders'>Orders</a>"
         "%s%s%s"
         "</div>",
         title,
@@ -282,15 +283,61 @@ static size_t store_error_response(const char *status_code,
 /* Product card template: {{var}} = HTML-escaped, {{{var}}} = raw. */
 static const char PRODUCT_CARD_TEMPLATE[] =
     "<div class='product'>"
-    "<h3><a href='/store/product/{{id}}'>{{name}}</a></h3>"
+    "<h3><a href='/store/products/{{id}}'>{{name}}</a></h3>"
     "<p>{{description}}</p>"
     "<div class='price'>{{price}} ZCL</div>"
-    "<a href='/store/product/{{id}}' class='btn'>View</a>"
+    "<a href='/store/products/{{id}}' class='btn'>View</a>"
     "</div>";
+
+static size_t serve_order_index(sqlite3 *db, uint8_t *resp, size_t max)
+{
+    struct node_db ndb = { .db = db, .open = true };
+    struct db_store_order_summary orders[50];
+    char body[16384];
+    size_t off = 0;
+    int n = html_body_start(body, sizeof(body), "Orders");
+    if (n > 0) off = (size_t)n;
+
+    n = snprintf(body + off, sizeof(body) - off,
+        "<h2>Recent Orders</h2>");
+    if (n > 0) off += (size_t)n;
+
+    int count = db_store_order_list_recent(&ndb, orders,
+        sizeof(orders) / sizeof(orders[0]));
+    for (int i = 0; i < count && off + 768 < sizeof(body); ++i) {
+        char safe_product[256], price_str[32];
+        html_escape(safe_product, sizeof(safe_product),
+                    orders[i].product_name[0] ? orders[i].product_name
+                                              : "Unknown Product");
+        format_zcl_price(price_str, sizeof(price_str), orders[i].amount_zatoshi);
+        n = snprintf(body + off, sizeof(body) - off,
+            "<div class='product'>"
+            "<h3><a href='/store/orders/%lld'>Order #%lld</a></h3>"
+            "<p>%s</p>"
+            "<div class='price'>%s ZCL</div>"
+            "<p>Status: %s</p>"
+            "</div>",
+            (long long)orders[i].id, (long long)orders[i].id,
+            safe_product, price_str, store_order_status_text(orders[i].status));
+        if (n > 0) off += (size_t)n;
+    }
+
+    if (count == 0) {
+        n = snprintf(body + off, sizeof(body) - off,
+            "<p style='color:#666'>No orders yet.</p>");
+        if (n > 0) off += (size_t)n;
+    }
+
+    n = snprintf(body + off, sizeof(body) - off, "</body></html>");
+    if (n > 0) off += (size_t)n;
+    return store_html_response(body, off, resp, max);
+}
 
 /* GET /store — list products */
 static size_t serve_product_list(sqlite3 *db, uint8_t *resp, size_t max)
 {
+    struct node_db ndb = { .db = db, .open = true };
+    struct db_store_product products[64];
     char body[16384];
     size_t off = 0;
     int n = html_body_start(body, sizeof(body), "ZCL Store");
@@ -300,26 +347,17 @@ static size_t serve_product_list(sqlite3 *db, uint8_t *resp, size_t max)
         "<h2>Products</h2>");
     if (n > 0) off += (size_t)n;
 
-    sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(db,
-        "SELECT id, name, description, price_zatoshi FROM products "
-        "WHERE active=1 ORDER BY id", -1, &s, NULL);
-
-    int count = 0;
-    while (sqlite3_step(s) == SQLITE_ROW && off + 1024 < sizeof(body)) {
-        int64_t id = sqlite3_column_int64(s, 0);
-        const char *name = (const char *)sqlite3_column_text(s, 1);
-        const char *desc = (const char *)sqlite3_column_text(s, 2);
-        int64_t price = sqlite3_column_int64(s, 3);
-
+    int count = db_store_product_list_active(&ndb, products,
+        sizeof(products) / sizeof(products[0]));
+    for (int i = 0; i < count && off + 1024 < sizeof(body); ++i) {
         char id_str[32], price_str[32];
-        snprintf(id_str, sizeof(id_str), "%lld", (long long)id);
-        format_zcl_price(price_str, sizeof(price_str), price);
+        snprintf(id_str, sizeof(id_str), "%lld", (long long)products[i].id);
+        format_zcl_price(price_str, sizeof(price_str), products[i].price_zatoshi);
 
         struct template_var vars[] = {
             { "id",          id_str },
-            { "name",        name ? name : "?" },
-            { "description", desc ? desc : "" },
+            { "name",        products[i].name[0] ? products[i].name : "?" },
+            { "description", products[i].description },
             { "price",       price_str },
         };
 
@@ -327,9 +365,7 @@ static size_t serve_product_list(sqlite3 *db, uint8_t *resp, size_t max)
             vars, sizeof(vars) / sizeof(vars[0]),
             body + off, sizeof(body) - off);
         off += rendered;
-        count++;
     }
-    sqlite3_finalize(s);
 
     if (count == 0) {
         n = snprintf(body + off, sizeof(body) - off,
@@ -348,30 +384,23 @@ static size_t serve_product_list(sqlite3 *db, uint8_t *resp, size_t max)
 static size_t serve_product_detail(sqlite3 *db, int64_t product_id,
                                     uint8_t *resp, size_t max)
 {
-    sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(db,
-        "SELECT name, description, price_zatoshi, token_id, tokens_per_purchase "
-        "FROM products WHERE id=? AND active=1", -1, &s, NULL);
-    sqlite3_bind_int64(s, 1, product_id);
+    struct node_db ndb = { .db = db, .open = true };
+    struct db_store_product product;
+    memset(&product, 0, sizeof(product));
 
-    if (sqlite3_step(s) != SQLITE_ROW) {
-        sqlite3_finalize(s);
+    if (!db_store_product_find_active(&ndb, product_id, &product)) {
         const char *body = "<h1>Product not found</h1>"
-            "<p><a href='/store'>Back to store</a></p>";
+            "<p><a href='/store/products'>Back to store</a></p>";
         return store_error_response("404 Not Found", body, strlen(body),
                                      resp, max);
     }
 
-    const char *name = (const char *)sqlite3_column_text(s, 0);
-    const char *desc = (const char *)sqlite3_column_text(s, 1);
-    int64_t price = sqlite3_column_int64(s, 2);
-    const char *token = (const char *)sqlite3_column_text(s, 3);
-    int64_t tokens = sqlite3_column_int64(s, 4);
-
     char safe_name[256], safe_desc[512], safe_token[128];
-    html_escape(safe_name, sizeof(safe_name), name ? name : "?");
-    html_escape(safe_desc, sizeof(safe_desc), desc ? desc : "");
-    html_escape(safe_token, sizeof(safe_token), token ? token : "TOKENS");
+    html_escape(safe_name, sizeof(safe_name),
+                product.name[0] ? product.name : "?");
+    html_escape(safe_desc, sizeof(safe_desc), product.description);
+    html_escape(safe_token, sizeof(safe_token),
+                product.token_id[0] ? product.token_id : "TOKENS");
 
     char body[8192];
     size_t off = 0;
@@ -379,7 +408,7 @@ static size_t serve_product_detail(sqlite3 *db, int64_t product_id,
     if (n > 0) off = (size_t)n;
 
     char detail_price[32];
-    format_zcl_price(detail_price, sizeof(detail_price), price);
+    format_zcl_price(detail_price, sizeof(detail_price), product.price_zatoshi);
 
     n = snprintf(body + off, sizeof(body) - off,
         "<div class='product'>"
@@ -388,24 +417,24 @@ static size_t serve_product_detail(sqlite3 *db, int64_t product_id,
         "<div class='price'>%s ZCL</div>"
         "<p>You will receive <b>%lld</b> %s tokens.</p>"
         "<h3>Purchase</h3>"
-        "<form method='post' action='/store/buy/%lld'>"
+        "<form method='post' action='/store/orders'>"
+        "<input type='hidden' name='product_id' value='%lld'>"
         "<label>Your t-address (to receive tokens):</label>"
         "<input type='text' name='customer_addr' placeholder='t1...' required>"
         "<br><br>"
         "<button type='submit' class='btn'>Generate Payment Address</button>"
         "</form>"
         "</div>"
-        "<p><a href='/store'>&larr; Back to store</a></p>"
+        "<p><a href='/store/products'>&larr; Back to store</a></p>"
         "</body></html>",
         safe_name,
         safe_desc,
         detail_price,
-        (long long)tokens,
+        (long long)product.tokens_per_purchase,
         safe_token,
         (long long)product_id);
     if (n > 0) off += (size_t)n;
 
-    sqlite3_finalize(s);
     return store_html_response(body, off, resp, max);
 }
 
@@ -415,20 +444,15 @@ static size_t serve_create_order(sqlite3 *db, int64_t product_id,
                                   const char *datadir,
                                   uint8_t *resp, size_t max)
 {
-    /* Look up product */
-    sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(db,
-        "SELECT price_zatoshi FROM products WHERE id=? AND active=1",
-        -1, &s, NULL);
-    sqlite3_bind_int64(s, 1, product_id);
-    if (sqlite3_step(s) != SQLITE_ROW) {
-        sqlite3_finalize(s);
+    struct node_db ndb = { .db = db, .open = true };
+    struct db_store_product product;
+    memset(&product, 0, sizeof(product));
+
+    if (!db_store_product_find_active(&ndb, product_id, &product)) {
         return (size_t)snprintf((char *)resp, max,
             "HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\n"
             "Connection: close\r\n\r\n<h1>Product not found</h1>");
     }
-    int64_t price = sqlite3_column_int64(s, 0);
-    sqlite3_finalize(s);
 
     /* Generate a unique Sapling z-address for this payment.
      * NEVER fall back to a fake address — that loses user funds. */
@@ -444,29 +468,24 @@ static size_t serve_create_order(sqlite3 *db, int64_t product_id,
             "<h1>Payment Temporarily Unavailable</h1>"
             "<p>The node is still loading cryptographic keys. "
             "Please try again in a few minutes.</p>"
-            "<p><a href='/store'>Back to Store</a></p>");
+            "<p><a href='/store/products'>Back to Store</a></p>");
     }
 
-    /* Create order */
-    sqlite3_prepare_v2(db,
-        "INSERT INTO orders (product_id, customer_addr, payment_addr, "
-        "amount_zatoshi, status, created_at) VALUES (?,?,?,?,0,?)",
-        -1, &s, NULL);
-    sqlite3_bind_int64(s, 1, product_id);
-    sqlite3_bind_text(s, 2, customer_addr ? customer_addr : "", -1, SQLITE_STATIC);
-    sqlite3_bind_text(s, 3, payment_addr, -1, SQLITE_STATIC);
-    sqlite3_bind_int64(s, 4, price);
-    sqlite3_bind_int64(s, 5, (int64_t)time(NULL));
-    int rc = sqlite3_step(s);
-    if (rc != SQLITE_DONE) {
+    struct db_store_order order;
+    memset(&order, 0, sizeof(order));
+    order.product_id = product_id;
+    snprintf(order.customer_addr, sizeof(order.customer_addr), "%s",
+             customer_addr ? customer_addr : "");
+    snprintf(order.payment_addr, sizeof(order.payment_addr), "%s", payment_addr);
+    order.amount_zatoshi = product.price_zatoshi;
+    order.status = STORE_ORDER_PENDING;
+    if (!db_store_order_save(&ndb, &order)) {
         printf("store: order INSERT failed: %s\n", sqlite3_errmsg(db));
-        sqlite3_finalize(s);
         return (size_t)snprintf((char *)resp, max,
             "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/html\r\n"
             "Connection: close\r\n\r\n<h1>Order creation failed</h1>");
     }
-    int64_t order_id = sqlite3_last_insert_rowid(db);
-    sqlite3_finalize(s);
+    int64_t order_id = order.id;
 
     /* Show payment page */
     char body[8192];
@@ -480,7 +499,7 @@ static size_t serve_create_order(sqlite3 *db, int64_t product_id,
                 customer_addr ? customer_addr : "(not provided)");
 
     char order_price[32];
-    format_zcl_price(order_price, sizeof(order_price), price);
+    format_zcl_price(order_price, sizeof(order_price), product.price_zatoshi);
 
     n = snprintf(body + off, sizeof(body) - off,
         "<h2>Order #%lld</h2>"
@@ -492,9 +511,9 @@ static size_t serve_create_order(sqlite3 *db, int64_t product_id,
         "this.textContent='Copied!'\">Copy Address</button>"
         "<p>After payment confirms, tokens will be sent to:</p>"
         "<div class='addr'>%s</div>"
-        "<p><a href='/store/order/%lld'>Check payment status</a></p>"
+        "<p><a href='/store/orders/%lld'>Check payment status</a></p>"
         "</div>"
-        "<p><a href='/store'>&larr; Back to store</a></p>"
+        "<p><a href='/store/products'>&larr; Back to store</a></p>"
         "</body></html>",
         (long long)order_id,
         order_price,
@@ -511,36 +530,16 @@ static size_t serve_create_order(sqlite3 *db, int64_t product_id,
 static size_t serve_order_status(sqlite3 *db, int64_t order_id,
                                   uint8_t *resp, size_t max)
 {
-    sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(db,
-        "SELECT o.status, o.amount_zatoshi, o.payment_addr, o.customer_addr, "
-        "o.payment_txid, o.mint_txid, p.name "
-        "FROM orders o LEFT JOIN products p ON o.product_id = p.id "
-        "WHERE o.id=?", -1, &s, NULL);
-    sqlite3_bind_int64(s, 1, order_id);
-    if (sqlite3_step(s) != SQLITE_ROW) {
-        sqlite3_finalize(s);
+    struct node_db ndb = { .db = db, .open = true };
+    struct db_store_order_view order;
+    memset(&order, 0, sizeof(order));
+
+    if (!db_store_order_find_view(&ndb, order_id, &order)) {
         const char *body = "<h1>Order not found</h1>"
-            "<p><a href='/store'>Back to store</a></p>";
+            "<p><a href='/store/orders'>Back to store</a></p>";
         return store_error_response("404 Not Found", body, strlen(body),
                                      resp, max);
     }
-
-    int status = sqlite3_column_int(s, 0);
-    int64_t amount = sqlite3_column_int64(s, 1);
-    const char *pay_addr = (const char *)sqlite3_column_text(s, 2);
-    const char *cust_addr = (const char *)sqlite3_column_text(s, 3);
-    const char *pay_txid = (const char *)sqlite3_column_text(s, 4);
-    const char *mint_txid = (const char *)sqlite3_column_text(s, 5);
-    const char *product_name = (const char *)sqlite3_column_text(s, 6);
-
-    const char *status_text = status == 0 ? "Pending Payment" :
-                               status == 1 ? "Payment Received" :
-                               status == 2 ? "Tokens Sent" :
-                               status == 3 ? "Mint Failed (contact support)" :
-                               "Unknown";
-    const char *status_class = (status == 0) ? "pending" :
-                                (status == 3) ? "failed" : "paid";
 
     char body[8192];
     size_t off = 0;
@@ -548,7 +547,7 @@ static size_t serve_order_status(sqlite3 *db, int64_t order_id,
     if (n > 0) off = (size_t)n;
 
     /* Auto-refresh while pending */
-    if (status == 0) {
+    if (order.status == STORE_ORDER_PENDING) {
         n = snprintf(body + off, sizeof(body) - off,
             "<meta http-equiv='refresh' content='15'>");
         if (n > 0) off += (size_t)n;
@@ -557,15 +556,15 @@ static size_t serve_order_status(sqlite3 *db, int64_t order_id,
     char safe_pay[256], safe_cust[256];
     char safe_ptxid[256], safe_mtxid[256];
     char safe_product[256];
-    html_escape(safe_pay, sizeof(safe_pay), pay_addr ? pay_addr : "?");
-    html_escape(safe_cust, sizeof(safe_cust), cust_addr ? cust_addr : "?");
-    html_escape(safe_ptxid, sizeof(safe_ptxid), pay_txid ? pay_txid : "");
-    html_escape(safe_mtxid, sizeof(safe_mtxid), mint_txid ? mint_txid : "");
+    html_escape(safe_pay, sizeof(safe_pay), order.payment_addr[0] ? order.payment_addr : "?");
+    html_escape(safe_cust, sizeof(safe_cust), order.customer_addr[0] ? order.customer_addr : "?");
+    html_escape(safe_ptxid, sizeof(safe_ptxid), order.payment_txid);
+    html_escape(safe_mtxid, sizeof(safe_mtxid), order.mint_txid);
     html_escape(safe_product, sizeof(safe_product),
-                product_name ? product_name : "Unknown Product");
+                order.product_name[0] ? order.product_name : "Unknown Product");
 
     char status_price[32];
-    format_zcl_price(status_price, sizeof(status_price), amount);
+    format_zcl_price(status_price, sizeof(status_price), order.amount_zatoshi);
 
     n = snprintf(body + off, sizeof(body) - off,
         "<h2>Order #%lld</h2>"
@@ -576,34 +575,86 @@ static size_t serve_order_status(sqlite3 *db, int64_t order_id,
         "<p>Payment address:</p><div class='addr'>%s</div>"
         "<p>Deliver to:</p><div class='addr'>%s</div>"
         "%s%s%s%s%s%s"
-        "<p><a href='/store/order/%lld'>Refresh</a> | "
-        "<a href='/store'>&larr; Back to store</a></p>"
+        "<p><a href='/store/orders/%lld'>Refresh</a> | "
+        "<a href='/store/orders'>&larr; Back to orders</a></p>"
         "</div></body></html>",
         (long long)order_id,
         safe_product,
-        status_class, status_text,
+        store_order_status_class(order.status),
+        store_order_status_text(order.status),
         status_price,
         safe_pay,
         safe_cust,
-        pay_txid ? "<p>Payment: <code>" : "",
-        pay_txid ? safe_ptxid : "",
-        pay_txid ? "</code></p>" : "",
-        mint_txid ? "<p>Mint: <code>" : "",
-        mint_txid ? safe_mtxid : "",
-        mint_txid ? "</code></p>" : "",
+        order.payment_txid[0] ? "<p>Payment: <code>" : "",
+        order.payment_txid[0] ? safe_ptxid : "",
+        order.payment_txid[0] ? "</code></p>" : "",
+        order.mint_txid[0] ? "<p>Mint: <code>" : "",
+        order.mint_txid[0] ? safe_mtxid : "",
+        order.mint_txid[0] ? "</code></p>" : "",
         (long long)order_id);
     if (n > 0) off += (size_t)n;
-    sqlite3_finalize(s);
 
     return store_html_response(body, off, resp, max);
 }
 
-/* Parse URL parameter: extract number after last '/' */
-static int64_t parse_id_from_path(const char *path)
+/* Parse resource id from the last path segment and reject malformed ids. */
+static bool parse_positive_path_id(const char *path, int64_t *id_out)
 {
     const char *last = strrchr(path, '/');
-    if (!last) return -1;
-    return (int64_t)atoll(last + 1);
+    char *end = NULL;
+    long long value;
+
+    if (!id_out)
+        return false;
+    *id_out = -1;
+    if (!last || !last[1])
+        return false;
+    value = strtoll(last + 1, &end, 10);
+    if (!end || *end != '\0' || value <= 0)
+        return false;
+    *id_out = (int64_t)value;
+    return true;
+}
+
+static bool path_eq(const char *path, const char *expected)
+{
+    return path && expected && strcmp(path, expected) == 0;
+}
+
+static bool path_has_prefix(const char *path, const char *prefix)
+{
+    return path && prefix && strncmp(path, prefix, strlen(prefix)) == 0;
+}
+
+static bool route_is_product_index(const char *path)
+{
+    return path_eq(path, "/store") || path_eq(path, "/store/") ||
+           path_eq(path, "/store/products") || path_eq(path, "/store/products/");
+}
+
+static bool route_is_product_show(const char *path)
+{
+    return path_has_prefix(path, "/store/product/") ||
+           path_has_prefix(path, "/store/products/");
+}
+
+static bool route_is_order_show(const char *path)
+{
+    return path_has_prefix(path, "/store/order/") ||
+           path_has_prefix(path, "/store/orders/");
+}
+
+static bool route_is_order_index(const char *path)
+{
+    return path_eq(path, "/store/orders") || path_eq(path, "/store/orders/");
+}
+
+static bool route_is_order_create(const char *method, const char *path)
+{
+    return method && strcmp(method, "POST") == 0 &&
+           (path_eq(path, "/store/orders") ||
+            path_eq(path, "/store/orders/") ||
+            path_has_prefix(path, "/store/buy/"));
 }
 
 /* Validate address: must be a valid ZClassic t-address or z-address.
@@ -633,6 +684,120 @@ static bool validate_address(const char *addr)
     return false;
 }
 
+static bool store_validate_access_addr(const char *addr)
+{
+    return addr && addr[0] &&
+           zslp_service_validate_recipient_addr(addr, false);
+}
+
+static bool store_validate_access_token(const char *token)
+{
+    return token && token[0] &&
+           zslp_service_validate_token_key(token);
+}
+
+static bool store_parse_query_field(const char *path, const char *field,
+                                    char *out, size_t out_max)
+{
+    const char *p;
+    size_t i = 0;
+    char needle[32];
+
+    if (!path || !field || !out || out_max == 0)
+        return false;
+    out[0] = '\0';
+    snprintf(needle, sizeof(needle), "%s=", field);
+    p = strstr(path, needle);
+    if (!p)
+        return false;
+    p += strlen(needle);
+    while (p[i] && p[i] != '&' && i < out_max - 1) {
+        if ((unsigned char)p[i] < 32 || (unsigned char)p[i] > 126)
+            return false;
+        out[i] = p[i];
+        i++;
+    }
+    out[i] = '\0';
+    return i > 0;
+}
+
+static bool store_parse_access_query(const char *path,
+                                     char *addr, size_t addr_max,
+                                     char *token, size_t token_max)
+{
+    if (!addr || !token || addr_max == 0 || token_max == 0)
+        return false;
+    addr[0] = '\0';
+    token[0] = '\0';
+
+    if (!store_parse_query_field(path, "addr", addr, addr_max))
+        return false;
+    if (!store_parse_query_field(path, "token", token, token_max))
+        snprintf(token, token_max, "%s", "ZCL23ACCESS");
+
+    return store_validate_access_addr(addr) &&
+           store_validate_access_token(token);
+}
+
+static int64_t store_chain_tip_height(sqlite3 *db)
+{
+    sqlite3_stmt *s = NULL;
+    int64_t tip_height = 0;
+
+    if (!db)
+        return 0;
+    if (sqlite3_prepare_v2(db, "SELECT MAX(height) FROM blocks",
+                           -1, &s, NULL) != SQLITE_OK || !s)
+        return 0;
+    if (sqlite3_step(s) == SQLITE_ROW)
+        tip_height = sqlite3_column_int64(s, 0);
+    sqlite3_finalize(s);
+    return tip_height;
+}
+
+static int64_t store_received_payment(sqlite3 *db, const char *pay_addr,
+                                      int64_t min_height)
+{
+    sqlite3_stmt *s = NULL;
+    int64_t received = 0;
+
+    if (!db || !pay_addr || !pay_addr[0])
+        return 0;
+    if (sqlite3_prepare_v2(db,
+            "SELECT COALESCE(SUM(value), 0) FROM wallet_sapling_notes "
+            "WHERE spent_txid IS NULL AND address = ? "
+            "AND block_height IS NOT NULL AND block_height <= ?",
+            -1, &s, NULL) != SQLITE_OK || !s)
+        return 0;
+
+    sqlite3_bind_text(s, 1, pay_addr, -1, SQLITE_STATIC);
+    sqlite3_bind_int64(s, 2, min_height);
+    if (sqlite3_step(s) == SQLITE_ROW)
+        received = sqlite3_column_int64(s, 0);
+    sqlite3_finalize(s);
+    return received;
+}
+
+static const char *store_order_status_text(int status)
+{
+    switch (status) {
+    case STORE_ORDER_PENDING: return "Pending Payment";
+    case STORE_ORDER_PAID: return "Payment Received";
+    case STORE_ORDER_SENT: return "Tokens Sent";
+    case STORE_ORDER_FAILED: return "Mint Failed (contact support)";
+    default: return "Unknown";
+    }
+}
+
+static const char *store_order_status_class(int status)
+{
+    switch (status) {
+    case STORE_ORDER_PENDING: return "pending";
+    case STORE_ORDER_FAILED: return "failed";
+    default: return "paid";
+    }
+}
+
 /* Parse POST body for customer_addr=value */
 static const char *parse_form_field(const char *body, size_t len,
                                      const char *field, char *out, size_t outmax)
@@ -654,6 +819,25 @@ static const char *parse_form_field(const char *body, size_t len,
     return out;
 }
 
+static bool parse_positive_form_id(const char *body, size_t body_len,
+                                   const char *field, int64_t *id_out)
+{
+    char raw[32];
+    char *end = NULL;
+    long long value;
+
+    if (!id_out)
+        return false;
+    *id_out = -1;
+    if (!parse_form_field(body, body_len, field, raw, sizeof(raw)))
+        return false;
+    value = strtoll(raw, &end, 10);
+    if (!end || *end != '\0' || value <= 0)
+        return false;
+    *id_out = (int64_t)value;
+    return true;
+}
+
 /* Main request handler */
 size_t store_handle_request(const char *method, const char *path,
                              const uint8_t *body, size_t body_len,
@@ -664,32 +848,57 @@ size_t store_handle_request(const char *method, const char *path,
 
     char db_path[1024];
     snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
-    sqlite3 *db = NULL;
-    if (sqlite3_open(db_path, &db) != SQLITE_OK) return 0;
-    sqlite3_busy_timeout(db, 5000);
+    struct node_db ndb;
+    memset(&ndb, 0, sizeof(ndb));
+    if (!node_db_open(&ndb, db_path)) return 0;
+    sqlite3 *db = ndb.db;
     store_ensure_schema(db, datadir);
 
     size_t result = 0;
 
-    if (strcmp(path, "/store") == 0 || strcmp(path, "/store/") == 0) {
+    if (route_is_product_index(path)) {
         result = serve_product_list(db, response, response_max);
 
-    } else if (strncmp(path, "/store/product/", 15) == 0) {
-        int64_t id = parse_id_from_path(path);
-        result = serve_product_detail(db, id, response, response_max);
+    } else if (route_is_product_show(path)) {
+        int64_t id = -1;
+        if (!parse_positive_path_id(path, &id)) {
+            const char *err_body = "<h1>Invalid product</h1>"
+                "<p>Product id must be a positive integer.</p>"
+                "<p><a href='/store/products'>&larr; Back to store</a></p>";
+            result = store_error_response("400 Bad Request",
+                err_body, strlen(err_body), response, response_max);
+        } else {
+            result = serve_product_detail(db, id, response, response_max);
+        }
 
-    } else if (strncmp(path, "/store/buy/", 11) == 0 &&
-               method && strcmp(method, "POST") == 0) {
-        int64_t id = parse_id_from_path(path);
+    } else if (route_is_order_index(path) &&
+               method && strcmp(method, "GET") == 0) {
+        result = serve_order_index(db, response, response_max);
+
+    } else if (route_is_order_create(method, path)) {
+        int64_t id = -1;
         char addr[128] = "";
         if (body && body_len > 0)
             parse_form_field((const char *)body, body_len,
                              "customer_addr", addr, sizeof(addr));
+        if (path_has_prefix(path, "/store/buy/")) {
+            if (!parse_positive_path_id(path, &id))
+                id = -1;
+        } else if (!parse_positive_form_id((const char *)body, body_len,
+                                           "product_id", &id)) {
+            const char *err_body = "<h1>Invalid product</h1>"
+                "<p>product_id must be a positive integer.</p>"
+                "<p><a href='/store/products'>&larr; Back to store</a></p>";
+            result = store_error_response("400 Bad Request",
+                err_body, strlen(err_body), response, response_max);
+            node_db_close(&ndb);
+            return result;
+        }
         if (!validate_address(addr)) {
             const char *err_body = "<h1>Invalid address</h1>"
                 "<p>Must be a ZClassic t-address (t1.../t3...) or "
                 "z-address (zs1...).</p>"
-                "<p><a href='/store'>&larr; Back to store</a></p>";
+                "<p><a href='/store/products'>&larr; Back to store</a></p>";
             result = store_error_response("400 Bad Request",
                 err_body, strlen(err_body), response, response_max);
         } else {
@@ -697,23 +906,35 @@ size_t store_handle_request(const char *method, const char *path,
                                           response, response_max);
         }
 
-    } else if (strncmp(path, "/store/order/", 13) == 0) {
-        int64_t id = parse_id_from_path(path);
-        result = serve_order_status(db, id, response, response_max);
+    } else if (route_is_order_show(path)) {
+        int64_t id = -1;
+        if (!parse_positive_path_id(path, &id)) {
+            const char *err_body = "<h1>Invalid order</h1>"
+                "<p>Order id must be a positive integer.</p>"
+                "<p><a href='/store/orders'>&larr; Back to orders</a></p>";
+            result = store_error_response("400 Bad Request",
+                err_body, strlen(err_body), response, response_max);
+        } else {
+            result = serve_order_status(db, id, response, response_max);
+        }
 
     } else if (strncmp(path, "/store/access", 13) == 0) {
         /* Token-gated content: /store/access?addr=t1...&token=ZCL23ACCESS */
         char addr[128] = "", token[64] = "";
-        const char *a = strstr(path, "addr=");
-        const char *t = strstr(path, "token=");
-        if (a) { a += 5; size_t i = 0; while (a[i] && a[i] != '&' && i < 127) { addr[i] = a[i]; i++; } addr[i] = '\0'; }
-        if (t) { t += 6; size_t i = 0; while (t[i] && t[i] != '&' && i < 63) { token[i] = t[i]; i++; } token[i] = '\0'; }
-        if (!token[0]) snprintf(token, sizeof(token), "ZCL23ACCESS");
-        result = serve_gated_content(db, addr, token, 1, datadir,
-                                      response, response_max);
+        if (!store_parse_access_query(path, addr, sizeof(addr),
+                                      token, sizeof(token))) {
+            const char *err_body = "<h1>Invalid access request</h1>"
+                "<p>addr must be a valid ZClassic address and token must be a valid token id.</p>"
+                "<p><a href='/store/products'>&larr; Back to store</a></p>";
+            result = store_error_response("400 Bad Request",
+                err_body, strlen(err_body), response, response_max);
+        } else {
+            result = serve_gated_content(db, addr, token, 1, datadir,
+                                          response, response_max);
+        }
     }
 
-    sqlite3_close(db);
+    node_db_close(&ndb);
     return result;
 }
 
@@ -725,59 +946,37 @@ void store_process_payments(const char *datadir)
 
     char db_path[1024];
     snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
-    sqlite3 *db = NULL;
-    if (sqlite3_open(db_path, &db) != SQLITE_OK) return;
-    sqlite3_busy_timeout(db, 5000);
+    struct node_db ndb;
+    memset(&ndb, 0, sizeof(ndb));
+    if (!node_db_open(&ndb, db_path)) return;
+    sqlite3 *db = ndb.db;
 
-    /* Find pending orders */
-    sqlite3_stmt *pending = NULL;
-    sqlite3_prepare_v2(db,
-        "SELECT o.id, o.payment_addr, o.amount_zatoshi, o.customer_addr, "
-        "p.token_id, p.tokens_per_purchase "
-        "FROM orders o JOIN products p ON o.product_id = p.id "
-        "WHERE o.status = 0 AND o.created_at > strftime('%%s','now') - 3600",
-        -1, &pending, NULL);
+    struct db_store_pending_payment pending_orders[64];
+    int pending_count = db_store_order_list_pending_payments(&ndb,
+        pending_orders, sizeof(pending_orders) / sizeof(pending_orders[0]),
+        (int64_t)time(NULL) - 3600);
 
-    while (sqlite3_step(pending) == SQLITE_ROW) {
-        int64_t order_id = sqlite3_column_int64(pending, 0);
-        const char *pay_addr = (const char *)sqlite3_column_text(pending, 1);
-        int64_t expected = sqlite3_column_int64(pending, 2);
-        const char *cust_addr = (const char *)sqlite3_column_text(pending, 3);
-        const char *token_id = (const char *)sqlite3_column_text(pending, 4);
-        int64_t tokens = sqlite3_column_int64(pending, 5);
+    for (int i = 0; i < pending_count; ++i) {
+        int64_t order_id = pending_orders[i].id;
+        const char *pay_addr = pending_orders[i].payment_addr;
+        int64_t expected = pending_orders[i].amount_zatoshi;
+        const char *cust_addr = pending_orders[i].customer_addr;
+        const char *token_id = pending_orders[i].token_id;
+        int64_t tokens = pending_orders[i].tokens_per_purchase;
 
-        if (!pay_addr || !cust_addr || !token_id) continue;
+        if (!pay_addr[0] || !cust_addr[0] || !token_id[0])
+            continue;
 
         /* Check if payment received at the order's z-address.
          * Primary: match notes by address (works with real z-addresses).
          * Fallback: match by exact amount (for placeholder z-addresses). */
-        int64_t received = 0;
-        sqlite3_stmt *check = NULL;
-
         /* Require minimum 3 confirmations to prevent reorg-based
          * double-spend: payment reversed but tokens already minted. */
-        int64_t tip_height = 0;
-        {
-            sqlite3_stmt *th = NULL;
-            sqlite3_prepare_v2(db, "SELECT MAX(height) FROM blocks",
-                               -1, &th, NULL);
-            if (sqlite3_step(th) == SQLITE_ROW)
-                tip_height = sqlite3_column_int64(th, 0);
-            sqlite3_finalize(th);
-        }
+        int64_t tip_height = store_chain_tip_height(db);
         int64_t min_height = tip_height - 3; /* 3 confirmations */
 
         /* Primary: per-address query with confirmation depth */
-        sqlite3_prepare_v2(db,
-            "SELECT COALESCE(SUM(value), 0) FROM wallet_sapling_notes "
-            "WHERE spent_txid IS NULL AND address = ? "
-            "AND block_height IS NOT NULL AND block_height <= ?",
-            -1, &check, NULL);
-        sqlite3_bind_text(check, 1, pay_addr, -1, SQLITE_STATIC);
-        sqlite3_bind_int64(check, 2, min_height);
-        if (sqlite3_step(check) == SQLITE_ROW)
-            received = sqlite3_column_int64(check, 0);
-        sqlite3_finalize(check);
+        int64_t received = store_received_payment(db, pay_addr, min_height);
 
         /* Only match by z-address — never fall back to amount matching.
          * Amount-only matching is dangerous: could match unrelated
@@ -789,15 +988,8 @@ void store_process_payments(const char *datadir)
             bool mint_ok = zslp_mint(datadir, token_id, cust_addr,
                                       (uint64_t)tokens);
 
-            int new_status = mint_ok ? 2 : 3; /* 2=sent, 3=mint_failed */
-            sqlite3_stmt *upd = NULL;
-            sqlite3_prepare_v2(db,
-                "UPDATE orders SET status=?, paid_at=strftime('%%s','now') "
-                "WHERE id=?", -1, &upd, NULL);
-            sqlite3_bind_int(upd, 1, new_status);
-            sqlite3_bind_int64(upd, 2, order_id);
-            sqlite3_step(upd);
-            sqlite3_finalize(upd);
+            int new_status = mint_ok ? STORE_ORDER_SENT : STORE_ORDER_FAILED;
+            (void)db_store_order_mark_paid(&ndb, order_id, new_status);
 
             if (mint_ok) {
                 printf("Store: order #%lld paid, minted %lld %s -> %s\n",
@@ -810,8 +1002,7 @@ void store_process_payments(const char *datadir)
             fflush(stdout);
         }
     }
-    sqlite3_finalize(pending);
-    sqlite3_close(db);
+    node_db_close(&ndb);
 }
 
 /* Check if a customer has enough tokens to access a service.
@@ -821,7 +1012,10 @@ bool store_check_token_access(const char *datadir,
                                const char *token_id,
                                uint64_t required)
 {
-    if (!datadir || !customer_addr || !token_id) return false;
+    if (!datadir ||
+        !store_validate_access_addr(customer_addr) ||
+        !store_validate_access_token(token_id))
+        return false;
 
     uint64_t balance = zslp_balance(datadir, token_id, customer_addr);
     return balance >= required;
@@ -834,6 +1028,7 @@ static size_t serve_gated_content(sqlite3 *db, const char *customer_addr,
                                    uint8_t *resp, size_t max)
 {
     (void)db;
+    uint64_t balance = zslp_balance(datadir, token_id, customer_addr);
 
     char safe_token[128], safe_addr[256];
     html_escape(safe_token, sizeof(safe_token), token_id ? token_id : "");
@@ -855,7 +1050,7 @@ static size_t serve_gated_content(sqlite3 *db, const char *customer_addr,
             "<a href='/'>Home</a></p>"
             "</body></html>",
             (unsigned long long)required, safe_token,
-            (unsigned long long)zslp_balance(datadir, token_id, customer_addr));
+            (unsigned long long)balance);
         if (blen < 0) blen = 0;
         return store_error_response("403 Forbidden",
             body, (size_t)blen, resp, max);
@@ -881,7 +1076,7 @@ static size_t serve_gated_content(sqlite3 *db, const char *customer_addr,
         "<a href='/'>Home</a></p>"
         "</body></html>",
         safe_addr,
-        (unsigned long long)zslp_balance(datadir, token_id, customer_addr),
+        (unsigned long long)balance,
         safe_token);
     if (blen < 0) blen = 0;
     return store_html_response(body, (size_t)blen, resp, max);

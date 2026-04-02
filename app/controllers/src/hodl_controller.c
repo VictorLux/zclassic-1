@@ -24,22 +24,38 @@
 #include <inttypes.h>
 #include <sqlite3.h>
 
-static struct main_state *g_main_state_hodl = NULL;
-static struct coins_view_cache *g_coins_tip_hodl = NULL;
-static struct node_db *g_node_db_hodl = NULL;
-static const char *g_datadir_hodl = NULL;
-/* LevelDB coins_db removed — image/timeline/chart RPCs return error
- * until ported to SQLite scan. gethodlwave already uses SQLite. */
-static struct coins_view_db *g_coins_db = NULL;
+struct hodl_context {
+    struct main_state *main_state;
+    struct coins_view_cache *coins_tip;
+    struct node_db *node_db;
+    const char *datadir;
+};
+
+static struct hodl_context g_hodl_ctx = {0};
+
+static struct hodl_context *hodl_ctx(void)
+{
+    return &g_hodl_ctx;
+}
+
+static struct coins_view_db *hodl_coins_db(struct hodl_context *ctx)
+{
+    if (!ctx || !ctx->coins_tip)
+        return NULL;
+    if (ctx->coins_tip->base.impl == NULL)
+        return NULL;
+    return (struct coins_view_db *)ctx->coins_tip->base.impl;
+}
 
 void rpc_hodl_set_state(struct main_state *ms,
                          struct coins_view_cache *coins_tip,
                          struct node_db *ndb, const char *datadir)
 {
-    g_main_state_hodl = ms;
-    g_coins_tip_hodl = coins_tip;
-    g_node_db_hodl = ndb;
-    g_datadir_hodl = datadir;
+    struct hodl_context *ctx = hodl_ctx();
+    ctx->main_state = ms;
+    ctx->coins_tip = coins_tip;
+    ctx->node_db = ndb;
+    ctx->datadir = datadir;
 }
 
 /* HODL Wave: UTXO age distribution across the entire UTXO set.
@@ -47,6 +63,7 @@ void rpc_hodl_set_state(struct main_state *ms,
 static bool rpc_gethodlwave(const struct json_value *params, bool help,
                               struct json_value *result)
 {
+    struct hodl_context *ctx = hodl_ctx();
     (void)params;
     RPC_HELP(help, result,
         "gethodlwave\n"
@@ -55,20 +72,20 @@ static bool rpc_gethodlwave(const struct json_value *params, bool help,
         "\nBuckets: <1d, 1d-1w, 1w-1m, 1-3m, 3-6m, 6-12m, 1-2y, 2-3y, 3-5y, >5y\n"
         "\nResult: { buckets: [{label, value, pct, utxo_count}], summary }\n");
 
-    if (!g_node_db_hodl || !g_node_db_hodl->open) {
+    if (!ctx->node_db || !ctx->node_db->open) {
         json_set_str(result, "Coins database not available");
         return false;
     }
-    if (!g_main_state_hodl || !active_chain_tip(&g_main_state_hodl->chain_active)) {
+    if (!ctx->main_state || !active_chain_tip(&ctx->main_state->chain_active)) {
         json_set_str(result, "Chain not loaded");
         return false;
     }
 
     /* Flush in-memory UTXO cache to SQLite for accurate totals */
-    if (g_coins_tip_hodl)
-        coins_view_cache_flush(g_coins_tip_hodl);
+    if (ctx->coins_tip)
+        coins_view_cache_flush(ctx->coins_tip);
 
-    int tip_height = active_chain_height(&g_main_state_hodl->chain_active);
+    int tip_height = active_chain_height(&ctx->main_state->chain_active);
 
     /* ZClassic block times: 150s before Buttercup (707000), 75s after.
      * Age is computed in seconds for accurate bucket assignment. */
@@ -116,7 +133,7 @@ static bool rpc_gethodlwave(const struct json_value *params, bool help,
 
     /* Query UTXOs from SQLite for HODL wave analysis */
     sqlite3_stmt *hodl_s = NULL;
-    sqlite3_prepare_v2(g_node_db_hodl->db,
+    sqlite3_prepare_v2(ctx->node_db->db,
         "SELECT height, value FROM utxos",
         -1, &hodl_s, NULL);
 
@@ -275,6 +292,8 @@ static const uint8_t hodl_colors[10][3] = {
 static bool rpc_gethodlwaveimage(const struct json_value *params, bool help,
                                   struct json_value *result)
 {
+    struct hodl_context *ctx = hodl_ctx();
+    struct coins_view_db *coins_db = hodl_coins_db(ctx);
     (void)params;
     RPC_HELP(help, result,
         "gethodlwaveimage\n"
@@ -285,19 +304,19 @@ static bool rpc_gethodlwaveimage(const struct json_value *params, bool help,
         "\nSaves to <datadir>/hodlwave.ppm\n"
         "\nResult: { file, width, height, total_utxos, total_value }\n");
 
-    if (!g_coins_db) {
+    if (!coins_db) {
         json_set_str(result, "Coins database not available");
         return false;
     }
-    if (!g_main_state_hodl || !active_chain_tip(&g_main_state_hodl->chain_active)) {
+    if (!ctx->main_state || !active_chain_tip(&ctx->main_state->chain_active)) {
         json_set_str(result, "Chain not loaded");
         return false;
     }
 
-    if (g_coins_tip_hodl)
-        coins_view_cache_flush(g_coins_tip_hodl);
+    if (ctx->coins_tip)
+        coins_view_cache_flush(ctx->coins_tip);
 
-    int tip_height = active_chain_height(&g_main_state_hodl->chain_active);
+    int tip_height = active_chain_height(&ctx->main_state->chain_active);
     if (tip_height <= 0) {
         json_set_str(result, "No blocks");
         return false;
@@ -361,7 +380,7 @@ static bool rpc_gethodlwaveimage(const struct json_value *params, bool help,
 
     /* Scan UTXO set */
     struct db_iterator it;
-    db_iter_init(&it, &g_coins_db->db);
+    db_iter_init(&it, &coins_db->db);
     char prefix = 'c';
     db_iter_seek(&it, &prefix, 1);
 
@@ -376,7 +395,7 @@ static bool rpc_gethodlwaveimage(const struct json_value *params, bool help,
 
         struct coins c;
         coins_init(&c);
-        if (coins_view_db_get_coins(g_coins_db, &txid, &c)) {
+        if (coins_view_db_get_coins(coins_db, &txid, &c)) {
             int height = c.height;
             if (height < 0) height = 0;
             if (height > tip_height) height = tip_height;
@@ -497,7 +516,7 @@ static bool rpc_gethodlwaveimage(const struct json_value *params, bool help,
     /* Write PNG file */
     char filepath[1024];
     snprintf(filepath, sizeof(filepath), "%s/hodlwave.png",
-             g_datadir_hodl ? g_datadir_hodl : ".");
+             ctx->datadir ? ctx->datadir : ".");
 
     if (!png_write_rgb(filepath, pixels, (uint32_t)IMG_W, (uint32_t)IMG_H)) {
         free(pixels);
@@ -581,6 +600,8 @@ static int64_t height_to_timestamp(int height)
 static bool rpc_gethodlwavetimeline(const struct json_value *params, bool help,
                                      struct json_value *result)
 {
+    struct hodl_context *ctx = hodl_ctx();
+    struct coins_view_db *coins_db = hodl_coins_db(ctx);
     RPC_HELP(help, result,
         "gethodlwavetimeline ( \"granularity\" )\n"
         "\nTime-series of surviving UTXO value by creation date.\n"
@@ -590,27 +611,34 @@ static bool rpc_gethodlwavetimeline(const struct json_value *params, bool help,
         "  1. granularity   (string, optional, default=\"month\") \"day\" or \"month\"\n"
         "\nResult: { periods: [{date, zcl, utxos, cumulative_pct}], chart_file }\n");
 
-    if (!g_coins_db) {
+    if (!coins_db) {
         json_set_str(result, "Coins database not available");
         return false;
     }
-    if (!g_main_state_hodl || !active_chain_tip(&g_main_state_hodl->chain_active)) {
+    if (!ctx->main_state || !active_chain_tip(&ctx->main_state->chain_active)) {
         json_set_str(result, "Chain not loaded");
         return false;
     }
 
     /* Parse granularity */
     bool by_month = true;
-    if (params && params->type == JSON_ARR && params->num_children > 0 &&
-        params->children[0].type == JSON_STR) {
-        if (strcmp(params->children[0].val.s, "day") == 0)
+    if (params && params->type == JSON_ARR && params->num_children > 0) {
+        if (params->children[0].type != JSON_STR) {
+            json_set_str(result, "granularity must be \"day\" or \"month\"");
+            return false;
+        }
+        if (strcmp(params->children[0].val.s, "day") == 0) {
             by_month = false;
+        } else if (strcmp(params->children[0].val.s, "month") != 0) {
+            json_set_str(result, "granularity must be \"day\" or \"month\"");
+            return false;
+        }
     }
 
-    if (g_coins_tip_hodl)
-        coins_view_cache_flush(g_coins_tip_hodl);
+    if (ctx->coins_tip)
+        coins_view_cache_flush(ctx->coins_tip);
 
-    int tip_height = active_chain_height(&g_main_state_hodl->chain_active);
+    int tip_height = active_chain_height(&ctx->main_state->chain_active);
     int64_t tip_ts = height_to_timestamp(tip_height);
 
     /* Compute number of periods.
@@ -652,7 +680,7 @@ static bool rpc_gethodlwavetimeline(const struct json_value *params, bool help,
 
     /* Scan UTXO set */
     struct db_iterator it;
-    db_iter_init(&it, &g_coins_db->db);
+    db_iter_init(&it, &coins_db->db);
     char prefix = 'c';
     db_iter_seek(&it, &prefix, 1);
 
@@ -666,7 +694,7 @@ static bool rpc_gethodlwavetimeline(const struct json_value *params, bool help,
 
         struct coins c;
         coins_init(&c);
-        if (!coins_view_db_get_coins(g_coins_db, &txid, &c)) {
+        if (!coins_view_db_get_coins(coins_db, &txid, &c)) {
             coins_free(&c); db_iter_next(&it); continue;
         }
 
@@ -797,7 +825,7 @@ static bool rpc_gethodlwavetimeline(const struct json_value *params, bool help,
     /* Write PNG */
     char ppm_path[512];
     snprintf(ppm_path, sizeof(ppm_path), "%s/hodlwave_timeline.png",
-             g_datadir_hodl ? g_datadir_hodl : ".");
+             ctx->datadir ? ctx->datadir : ".");
     png_write_rgb(ppm_path, img, (uint32_t)IMG_W, (uint32_t)IMG_H);
     free(img);
 
@@ -885,6 +913,8 @@ static bool rpc_gethodlwavetimeline(const struct json_value *params, bool help,
 static bool rpc_gethodlwavechart(const struct json_value *params, bool help,
                                   struct json_value *result)
 {
+    struct hodl_context *ctx = hodl_ctx();
+    struct coins_view_db *coins_db = hodl_coins_db(ctx);
     (void)params;
     RPC_HELP(help, result,
         "gethodlwavechart\n"
@@ -896,18 +926,18 @@ static bool rpc_gethodlwavechart(const struct json_value *params, bool help,
         "\nSaves to <datadir>/hodlwave_chart.ppm\n"
         "\nResult: { chart_file, total_utxos, total_supply_zcl, num_months }\n");
 
-    if (!g_coins_db) {
+    if (!coins_db) {
         json_set_str(result, "Coins database not available");
         return false;
     }
-    if (!g_main_state_hodl || !active_chain_tip(&g_main_state_hodl->chain_active)) {
+    if (!ctx->main_state || !active_chain_tip(&ctx->main_state->chain_active)) {
         json_set_str(result, "Chain not loaded");
         return false;
     }
-    if (g_coins_tip_hodl)
-        coins_view_cache_flush(g_coins_tip_hodl);
+    if (ctx->coins_tip)
+        coins_view_cache_flush(ctx->coins_tip);
 
-    int tip_height = active_chain_height(&g_main_state_hodl->chain_active);
+    int tip_height = active_chain_height(&ctx->main_state->chain_active);
 
     /* ── Step 1: Scan UTXO set into arrays ──────────────────── */
     size_t cap = 2000000;
@@ -921,7 +951,7 @@ static bool rpc_gethodlwavechart(const struct json_value *params, bool help,
 
     size_t num_utxos = 0;
     struct db_iterator it;
-    db_iter_init(&it, &g_coins_db->db);
+    db_iter_init(&it, &coins_db->db);
     char prefix = 'c';
     db_iter_seek(&it, &prefix, 1);
 
@@ -935,7 +965,7 @@ static bool rpc_gethodlwavechart(const struct json_value *params, bool help,
 
         struct coins c;
         coins_init(&c);
-        if (!coins_view_db_get_coins(g_coins_db, &txid, &c)) {
+        if (!coins_view_db_get_coins(coins_db, &txid, &c)) {
             coins_free(&c); db_iter_next(&it); continue;
         }
 
@@ -1196,7 +1226,7 @@ static bool rpc_gethodlwavechart(const struct json_value *params, bool help,
     /* Write PNG */
     char png_path[512];
     snprintf(png_path, sizeof(png_path), "%s/hodlwave_chart.png",
-             g_datadir_hodl ? g_datadir_hodl : ".");
+             ctx->datadir ? ctx->datadir : ".");
     if (png_write_rgb(png_path, img, (uint32_t)IMG_W, (uint32_t)IMG_H))
         printf("gethodlwavechart: wrote %s\n", png_path);
     free(img);

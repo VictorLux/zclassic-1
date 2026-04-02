@@ -35,13 +35,8 @@ bool db_tx_save(struct node_db *ndb, const struct db_tx_index *t)
 {
     if (!ndb->open) return false;
 
-    struct ar_errors errors;
-    if (!db_tx_validate(t, &errors)) {
-        AR_LOG_VALIDATION_FAILURE("tx_index", &errors);
-        return false;
-    }
-
     struct ar_callbacks *cbs = db_tx_callbacks();
+    AR_VALIDATE_RECORD(cbs, "tx_index", t, db_tx_validate);
     if (!ar_run_before_save(cbs, (void *)t)) return false;
 
     sqlite3_stmt *s = ndb->stmt_tx_insert;

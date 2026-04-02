@@ -90,13 +90,8 @@ bool db_utxo_save(struct node_db *ndb, const struct db_utxo *u)
 {
     if (!ndb->open) return false;
 
-    struct ar_errors errors;
-    if (!db_utxo_validate(u, &errors)) {
-        AR_LOG_VALIDATION_FAILURE("utxo", &errors);
-        return false;
-    }
-
     struct ar_callbacks *cbs = db_utxo_callbacks();
+    AR_VALIDATE_RECORD(cbs, "utxo", u, db_utxo_validate);
     if (!ar_run_before_save(cbs, (void *)u)) return false;
 
     sqlite3_stmt *s = ndb->stmt_utxo_insert;

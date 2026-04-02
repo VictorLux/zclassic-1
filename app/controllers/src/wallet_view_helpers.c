@@ -5,6 +5,8 @@
 
 #include "controllers/wallet_view_internal.h"
 /* CSS is now in app/views/css/wallet.ccss, compiled as CSS_WALLET */
+#include "models/contact.h"
+#include "models/wallet_tx.h"
 #include "crypto/sha256.h"
 #include <sys/time.h>
 #include <sys/socket.h>
@@ -285,30 +287,35 @@ sqlite3 *wv_open_db_rw(void) {
 
 /* ── Contacts (address book) ───────────────────────────────── */
 
-static void ensure_contacts_table(sqlite3 *db) {
-    sqlite3_exec(db,
-        "CREATE TABLE IF NOT EXISTS contacts ("
-        "  address TEXT PRIMARY KEY,"
-        "  name TEXT NOT NULL,"
-        "  last_used INTEGER DEFAULT 0"
-        ")", NULL, NULL, NULL);
-}
-
 void wv_save_contact(const char *address, const char *name) {
     sqlite3 *db = wv_open_db_rw();
+    struct node_db ndb;
+    struct db_contact contact;
     if (!db) return;
-    ensure_contacts_table(db);
-    sqlite3_stmt *s = NULL;
-    if (sqlite3_prepare_v2(db,
-            "INSERT OR REPLACE INTO contacts (address, name, last_used) "
-            "VALUES (?, ?, strftime('%s','now'))",
-            -1, &s, NULL) == SQLITE_OK) {
-        sqlite3_bind_text(s, 1, address, -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(s, 2, name, -1, SQLITE_TRANSIENT);
-        sqlite3_step(s);
-        sqlite3_finalize(s);
-    }
+    memset(&ndb, 0, sizeof(ndb));
+    ndb.db = db;
+    ndb.open = true;
+    memset(&contact, 0, sizeof(contact));
+    snprintf(contact.address, sizeof(contact.address), "%s", address ? address : "");
+    snprintf(contact.name, sizeof(contact.name), "%s", name ? name : "");
+    (void)db_contact_save(&ndb, &contact);
     sqlite3_close(db);
+}
+
+int wv_recent_contacts(struct db_contact *out, size_t max)
+{
+    sqlite3 *db = wv_open_db();
+    struct node_db ndb;
+    int count = 0;
+
+    if (!db || !out || max == 0)
+        return 0;
+    memset(&ndb, 0, sizeof(ndb));
+    ndb.db = db;
+    ndb.open = true;
+    count = db_contact_recent(&ndb, out, max);
+    sqlite3_close(db);
+    return count;
 }
 
 /* ── Hex conversion (internal) ─────────────────────────────── */
@@ -664,10 +671,14 @@ int64_t wv_query_int64(sqlite3 *db, const char *sql) {
 }
 
 int wv_effective_tip(sqlite3 *db) {
-    int t = query_int(db, "SELECT MAX(height) FROM blocks");
-    int u = query_int(db,
-        "SELECT MAX(height) FROM wallet_utxos WHERE spent_txid IS NULL");
-    return u > t ? u : t;
+    struct node_db ndb;
+
+    if (!db)
+        return 0;
+    memset(&ndb, 0, sizeof(ndb));
+    ndb.db = db;
+    ndb.open = true;
+    return db_wallet_effective_tip_height(&ndb);
 }
 
 /* ── Funded z-address lookup ───────────────────────────────── */
@@ -781,50 +792,40 @@ void wv_format_relative_time(int64_t timestamp, char *out, size_t out_max) {
 /* ── Balance queries ───────────────────────────────────────── */
 
 int64_t wv_query_ground_truth_balance(sqlite3 *db, int *utxo_count) {
-    int64_t total = 0;
-    int count = 0;
-    sqlite3_stmt *s = NULL;
+    struct node_db ndb;
 
-    if (sqlite3_prepare_v2(db,
-            "SELECT COALESCE(SUM(value),0), COUNT(*) "
-            "FROM wallet_utxos WHERE spent_txid IS NULL",
-            -1, &s, NULL) == SQLITE_OK && s) {
-        if (sqlite3_step(s) == SQLITE_ROW) {
-            total = sqlite3_column_int64(s, 0);
-            count = sqlite3_column_int(s, 1);
-        }
-        sqlite3_finalize(s);
-    }
-
-    if (utxo_count) *utxo_count = count;
-    return total;
+    if (!db)
+        return 0;
+    memset(&ndb, 0, sizeof(ndb));
+    ndb.db = db;
+    ndb.open = true;
+    return db_wallet_utxo_balance_with_count(&ndb, utxo_count);
 }
 
 int64_t wv_query_shielded_balance(sqlite3 *db, int *note_count) {
-    int64_t total = 0;
-    int count = 0;
-    sqlite3_stmt *s = NULL;
-    if (sqlite3_prepare_v2(db,
-            "SELECT COALESCE(SUM(n.value),0), COUNT(*) "
-            "FROM wallet_sapling_notes n"
-            " WHERE NOT EXISTS ("
-            "   SELECT 1 FROM sapling_spends ss"
-            "   WHERE ss.nullifier = n.nullifier)",
-            -1, &s, NULL) == SQLITE_OK && s) {
-        if (sqlite3_step(s) == SQLITE_ROW) {
-            total = sqlite3_column_int64(s, 0);
-            count = sqlite3_column_int(s, 1);
-        }
-        sqlite3_finalize(s);
-    }
-    if (note_count) *note_count = count;
-    return total;
+    struct node_db ndb;
+
+    if (!db)
+        return 0;
+    memset(&ndb, 0, sizeof(ndb));
+    ndb.db = db;
+    ndb.open = true;
+    return db_sapling_note_balance_with_count(&ndb, note_count);
 }
 
 int64_t wv_query_speed_balance(sqlite3 *db) {
-    return query_int64(db,
-        "SELECT COALESCE(SUM(value),0) FROM wallet_utxos"
-        " WHERE spent_txid IS NULL");
+    struct node_db ndb;
+    struct db_wallet_projection_summary summary;
+
+    if (!db)
+        return 0;
+    memset(&ndb, 0, sizeof(ndb));
+    memset(&summary, 0, sizeof(summary));
+    ndb.db = db;
+    ndb.open = true;
+    if (!db_wallet_projection_summary(&ndb, &summary))
+        return 0;
+    return summary.speed_balance;
 }
 
 /* ── Shield status check ───────────────────────────────────── */

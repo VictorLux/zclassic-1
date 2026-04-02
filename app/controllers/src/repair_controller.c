@@ -20,17 +20,27 @@
 #include <string.h>
 #include <time.h>
 
-static struct main_state *g_main_state_r = NULL;
-static struct coins_view_cache *g_coins_tip_r = NULL;
-static struct node_db *g_node_db_r = NULL;
+struct repair_context {
+    struct main_state *main_state;
+    struct coins_view_cache *coins_tip;
+    struct node_db *node_db;
+};
+
+static struct repair_context g_repair_ctx = {0};
+
+static struct repair_context *repair_ctx(void)
+{
+    return &g_repair_ctx;
+}
 
 void rpc_repair_set_state(struct main_state *ms,
                            struct coins_view_cache *coins_tip,
                            struct node_db *ndb)
 {
-    g_main_state_r = ms;
-    g_coins_tip_r = coins_tip;
-    g_node_db_r = ndb;
+    struct repair_context *ctx = repair_ctx();
+    ctx->main_state = ms;
+    ctx->coins_tip = coins_tip;
+    ctx->node_db = ndb;
 }
 
 /* ── JSON helpers for parsing zclassicd responses ──────────────── */
@@ -199,12 +209,13 @@ static void insert_repaired_utxo(const uint8_t txid_bytes[32], uint32_t vout,
                                   int64_t value, const uint8_t *script_data,
                                   size_t script_len, int height, bool is_coinbase)
 {
+    struct repair_context *ctx = repair_ctx();
     /* Insert into coins cache (for connect_block) */
-    if (g_coins_tip_r) {
+    if (ctx->coins_tip) {
         struct uint256 ptxid;
         memcpy(ptxid.data, txid_bytes, 32);
         struct coins_cache_entry *entry =
-            coins_view_cache_modify_new(g_coins_tip_r, &ptxid);
+            coins_view_cache_modify_new(ctx->coins_tip, &ptxid);
         if (entry) {
             if (entry->coins.num_vout <= vout) {
                 size_t new_size = vout + 1;
@@ -248,7 +259,7 @@ static void insert_repaired_utxo(const uint8_t txid_bytes[32], uint32_t vout,
     if (has_addr) memcpy(u.address_hash, addr_hash, 20);
     u.height = height;
     u.is_coinbase = is_coinbase;
-    db_utxo_save(g_node_db_r, &u);
+    db_utxo_save(ctx->node_db, &u);
     free(u.script);
 }
 
@@ -257,6 +268,7 @@ static void insert_repaired_utxo(const uint8_t txid_bytes[32], uint32_t vout,
 static bool rpc_repairutxos(const struct json_value *params, bool help,
                               struct json_value *result)
 {
+    struct repair_context *ctx = repair_ctx();
     RPC_HELP(help, result,
         "repairutxos ( zclassicd_port zclassicd_creds num_blocks )\n"
         "\nScans forward through blocks on zclassicd, finds inputs whose\n"
@@ -268,11 +280,11 @@ static bool rpc_repairutxos(const struct json_value *params, bool help,
         "\nRequires zclassicd running on localhost with RPC enabled.\n"
         "For spent UTXOs, zclassicd needs txindex=1.\n");
 
-    if (!g_main_state_r) {
+    if (!ctx->main_state) {
         json_set_str(result, "Node not fully initialized");
         return false;
     }
-    if (!g_node_db_r || !g_node_db_r->open) {
+    if (!ctx->node_db || !ctx->node_db->open) {
         json_set_str(result, "Database not available");
         return false;
     }
@@ -286,7 +298,7 @@ static bool rpc_repairutxos(const struct json_value *params, bool help,
     int num_blocks = (int)rpc_permit_int(&p, 2, "num_blocks", 10000);
     if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); return false; }
 
-    int tip_height = active_chain_height(&g_main_state_r->chain_active);
+    int tip_height = active_chain_height(&ctx->main_state->chain_active);
     int scan_end = tip_height + num_blocks;
 
     /* Get zclassicd's chain height as scan limit */
@@ -320,10 +332,10 @@ static bool rpc_repairutxos(const struct json_value *params, bool help,
     int missing_found = 0, repaired_gettxout = 0, repaired_rawtx = 0;
     int repair_failed = 0;
 
-    if (g_coins_tip_r)
-        coins_view_cache_flush(g_coins_tip_r);
+    if (ctx->coins_tip)
+        coins_view_cache_flush(ctx->coins_tip);
 
-    sqlite3_exec(g_node_db_r->db, "BEGIN", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "BEGIN", NULL, NULL, NULL);
 
     size_t blk_buf_size = 4 * 1024 * 1024;
     char *blk_buf = malloc(blk_buf_size);
@@ -414,13 +426,13 @@ static bool rpc_repairutxos(const struct json_value *params, bool help,
 
                 /* Check coins cache */
                 bool exists = false;
-                if (g_coins_tip_r) {
+                if (ctx->coins_tip) {
                     struct uint256 ptxid;
                     memcpy(ptxid.data, prev_txid_bytes, 32);
                     struct coins c;
                     coins_init(&c);
                     bool have = coins_view_cache_get_coins(
-                        g_coins_tip_r, &ptxid, &c);
+                        ctx->coins_tip, &ptxid, &c);
                     if (have && prev_vout < c.num_vout &&
                         !tx_out_is_null(&c.vout[prev_vout]))
                         exists = true;
@@ -428,7 +440,7 @@ static bool rpc_repairutxos(const struct json_value *params, bool help,
                 }
                 /* Check SQLite */
                 if (!exists)
-                    exists = db_utxo_exists(g_node_db_r,
+                    exists = db_utxo_exists(ctx->node_db,
                         prev_txid_bytes, prev_vout);
 
                 if (exists) { vp = tid; continue; }
@@ -484,10 +496,10 @@ static bool rpc_repairutxos(const struct json_value *params, bool help,
     }
 
     free(blk_buf);
-    sqlite3_exec(g_node_db_r->db, "COMMIT", NULL, NULL, NULL);
+    sqlite3_exec(ctx->node_db->db, "COMMIT", NULL, NULL, NULL);
 
-    if (g_coins_tip_r)
-        coins_view_cache_flush(g_coins_tip_r);
+    if (ctx->coins_tip)
+        coins_view_cache_flush(ctx->coins_tip);
 
     int64_t elapsed = (int64_t)time(NULL) - t_start;
 
@@ -516,6 +528,7 @@ static bool rpc_repairutxos(const struct json_value *params, bool help,
 static bool rpc_repairheights(const struct json_value *params, bool help,
                                 struct json_value *result)
 {
+    struct repair_context *ctx = repair_ctx();
     (void)params;
     RPC_HELP(help, result,
         "repairheights\n"
@@ -526,7 +539,7 @@ static bool rpc_repairheights(const struct json_value *params, bool help,
         "varint from coins entries, leaving height=0. This command fixes\n"
         "those entries using the transaction → block_height mapping.\n");
 
-    if (!g_node_db_r || !g_node_db_r->open) {
+    if (!ctx->node_db || !ctx->node_db->open) {
         json_set_str(result, "Database not available");
         return false;
     }
@@ -536,7 +549,7 @@ static bool rpc_repairheights(const struct json_value *params, bool help,
     /* Count before */
     sqlite3_stmt *s = NULL;
     int64_t before = 0;
-    sqlite3_prepare_v2(g_node_db_r->db,
+    sqlite3_prepare_v2(ctx->node_db->db,
         "SELECT COUNT(*) FROM utxos WHERE height = 0 AND value > 0",
         -1, &s, NULL);
     if (s && sqlite3_step(s) == SQLITE_ROW)
@@ -555,7 +568,7 @@ static bool rpc_repairheights(const struct json_value *params, bool help,
     fflush(stdout);
 
     /* Fix heights by joining with transactions table */
-    sqlite3_exec(g_node_db_r->db,
+    sqlite3_exec(ctx->node_db->db,
         "UPDATE utxos SET height = ("
         "  SELECT t.block_height FROM transactions t"
         "  WHERE t.txid = utxos.txid"
@@ -564,12 +577,12 @@ static bool rpc_repairheights(const struct json_value *params, bool help,
         "  WHERE t.txid = utxos.txid AND t.block_height IS NOT NULL"
         ")", NULL, NULL, NULL);
 
-    int changes = sqlite3_changes(g_node_db_r->db);
+    int changes = sqlite3_changes(ctx->node_db->db);
 
     /* Count remaining */
     int64_t after = 0;
     s = NULL;
-    sqlite3_prepare_v2(g_node_db_r->db,
+    sqlite3_prepare_v2(ctx->node_db->db,
         "SELECT COUNT(*) FROM utxos WHERE height = 0 AND value > 0",
         -1, &s, NULL);
     if (s && sqlite3_step(s) == SQLITE_ROW)

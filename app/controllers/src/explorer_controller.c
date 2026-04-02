@@ -49,34 +49,67 @@
 #include "views/explorer_css.h"
 #include "views/format_helpers.h"
 
-static struct main_state *g_ms = NULL;
-static struct tx_mempool *g_mp = NULL;
-static struct coins_view_cache *g_coins_tip = NULL;
-static struct node_db *g_ndb = NULL;
-static const char *g_datadir = NULL;
+struct explorer_context {
+    struct main_state *main_state;
+    struct tx_mempool *mempool;
+    struct coins_view_cache *coins_tip;
+    struct node_db *node_db;
+    const char *datadir;
+};
 
-/* RPC proxy to local zclassicd when our chain is empty */
-static char g_rpc_user[128] = "zcluser";
-static char g_rpc_pass[128] = "zclpass";
-static int g_rpc_proxy_port = 8023;
+struct explorer_rpc_backend {
+    char user[128];
+    char pass[128];
+    int proxy_port;
+};
 
+struct explorer_assets {
+    char explorer_dir[1024];
+    char css_cache[8192];
+    size_t css_len;
+};
+
+static struct explorer_context g_explorer_ctx = {0};
+static struct explorer_rpc_backend g_explorer_rpc = {
+    .user = "zcluser",
+    .pass = "zclpass",
+    .proxy_port = 8023,
+};
+static struct explorer_assets g_explorer_assets = {0};
+
+static struct explorer_context *explorer_ctx(void)
+{
+    return &g_explorer_ctx;
+}
+
+static struct explorer_rpc_backend *explorer_rpc(void)
+{
+    return &g_explorer_rpc;
+}
+
+static struct explorer_assets *explorer_assets(void)
+{
+    return &g_explorer_assets;
+}
+
+/* Transitional aliases while this large controller is moved over in slices. */
 /* ── Template system ───────────────────────────────────────── */
-
-static char g_explorer_dir[1024] = "";
-static char g_css_cache[8192] = "";
-static size_t g_css_len = 0;
 
 static void ensure_explorer_dir(void)
 {
-    if (!g_datadir) return;
-    snprintf(g_explorer_dir, sizeof(g_explorer_dir), "%s/explorer", g_datadir);
-    mkdir(g_explorer_dir, 0755);
+    struct explorer_context *ctx = explorer_ctx();
+    struct explorer_assets *assets = explorer_assets();
+    if (!ctx->datadir) return;
+    snprintf(assets->explorer_dir, sizeof(assets->explorer_dir), "%s/explorer",
+             ctx->datadir);
+    mkdir(assets->explorer_dir, 0755);
 }
 
 static void write_default_file(const char *filename, const char *content)
 {
+    struct explorer_assets *assets = explorer_assets();
     char path[1200];
-    snprintf(path, sizeof(path), "%s/%s", g_explorer_dir, filename);
+    snprintf(path, sizeof(path), "%s/%s", assets->explorer_dir, filename);
     /* Only write if file doesn't exist — don't overwrite customizations */
     FILE *f = fopen(path, "r");
     if (f) { fclose(f); return; }
@@ -90,19 +123,21 @@ static void write_default_file(const char *filename, const char *content)
 
 static void load_css(void)
 {
+    struct explorer_assets *assets = explorer_assets();
     char path[1200];
-    snprintf(path, sizeof(path), "%s/style.css", g_explorer_dir);
+    snprintf(path, sizeof(path), "%s/style.css", assets->explorer_dir);
     FILE *f = fopen(path, "r");
     if (f) {
-        g_css_len = fread(g_css_cache, 1, sizeof(g_css_cache) - 1, f);
-        g_css_cache[g_css_len] = '\0';
+        assets->css_len = fread(assets->css_cache, 1, sizeof(assets->css_cache) - 1, f);
+        assets->css_cache[assets->css_len] = '\0';
         fclose(f);
     } else {
         /* Fallback to compiled-in CSS */
-        g_css_len = strlen(explorer_css);
-        if (g_css_len >= sizeof(g_css_cache)) g_css_len = sizeof(g_css_cache) - 1;
-        memcpy(g_css_cache, explorer_css, g_css_len);
-        g_css_cache[g_css_len] = '\0';
+        assets->css_len = strlen(explorer_css);
+        if (assets->css_len >= sizeof(assets->css_cache))
+            assets->css_len = sizeof(assets->css_cache) - 1;
+        memcpy(assets->css_cache, explorer_css, assets->css_len);
+        assets->css_cache[assets->css_len] = '\0';
     }
 }
 
@@ -192,11 +227,12 @@ void explorer_set_state(struct main_state *ms, struct tx_mempool *mp,
                          struct coins_view_cache *coins_tip,
                          struct node_db *ndb, const char *datadir)
 {
-    g_ms = ms;
-    g_mp = mp;
-    g_coins_tip = coins_tip;
-    g_ndb = ndb;
-    g_datadir = datadir;
+    struct explorer_context *ctx = explorer_ctx();
+    ctx->main_state = ms;
+    ctx->mempool = mp;
+    ctx->coins_tip = coins_tip;
+    ctx->node_db = ndb;
+    ctx->datadir = datadir;
     init_default_templates();
 
     /* Pre-warm caches in background after startup */
@@ -220,7 +256,7 @@ static int rpc_call(const char *method, const char *params_json,
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    addr.sin_port = htons((uint16_t)g_rpc_proxy_port);
+    addr.sin_port = htons((uint16_t)explorer_rpc()->proxy_port);
 
     struct timeval tv = { .tv_sec = 5, .tv_usec = 0 };
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
@@ -238,7 +274,8 @@ static int rpc_call(const char *method, const char *params_json,
 
     /* Base64 encode auth (simple inline for user:pass) */
     char auth_plain[256];
-    snprintf(auth_plain, sizeof(auth_plain), "%s:%s", g_rpc_user, g_rpc_pass);
+    snprintf(auth_plain, sizeof(auth_plain), "%s:%s",
+             explorer_rpc()->user, explorer_rpc()->pass);
     /* Simple base64 */
     static const char b64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     char auth_b64[512];
@@ -313,19 +350,22 @@ static double json_extract_real(const char *json, const char *key)
 
 void explorer_set_rpc(const char *user, const char *pass, int port)
 {
-    if (user) snprintf(g_rpc_user, sizeof(g_rpc_user), "%s", user);
-    if (pass) snprintf(g_rpc_pass, sizeof(g_rpc_pass), "%s", pass);
-    if (port > 0) g_rpc_proxy_port = port;
+    struct explorer_rpc_backend *rpc = explorer_rpc();
+    if (user) snprintf(rpc->user, sizeof(rpc->user), "%s", user);
+    if (pass) snprintf(rpc->pass, sizeof(rpc->pass), "%s", pass);
+    if (port > 0) rpc->proxy_port = port;
 }
 
 static int native_chain_height(void)
 {
-    if (g_ms) return active_chain_height(&g_ms->chain_active);
+    struct explorer_context *ctx = explorer_ctx();
+    if (ctx->main_state)
+        return active_chain_height(&ctx->main_state->chain_active);
     /* Fallback: query SQLite when running without full node (e.g. GTK browser) */
-    if (g_ndb && g_ndb->db) {
+    if (ctx->node_db && ctx->node_db->db) {
         sqlite3_stmt *s = NULL;
         int h = -1;
-        if (sqlite3_prepare_v2(g_ndb->db,
+        if (sqlite3_prepare_v2(ctx->node_db->db,
                 "SELECT MAX(height) FROM blocks", -1, &s, NULL) == SQLITE_OK && s) {
             if (sqlite3_step(s) == SQLITE_ROW)
                 h = sqlite3_column_int(s, 0);
@@ -340,7 +380,7 @@ static bool use_rpc_proxy(void)
 {
     /* Use RPC/SQLite proxy when no main_state (standalone browser)
      * or when chain height is not available */
-    if (!g_ms) return true;
+    if (!explorer_ctx()->main_state) return true;
     return native_chain_height() < 1;
 }
 
@@ -355,6 +395,17 @@ static double get_difficulty(const struct block_index *bi)
 {
     if (!bi) return 1.0;
     return difficulty_from_bits(bi->nBits);
+}
+
+static bool explorer_param_is_printable_ascii(const char *s)
+{
+    if (!s) return false;
+    for (; *s; ++s) {
+        unsigned char c = (unsigned char)*s;
+        if (c < 32 || c > 126)
+            return false;
+    }
+    return true;
 }
 
 static void format_time(char *buf, size_t max, uint32_t t)
@@ -525,16 +576,17 @@ static size_t serve_dashboard_rpc(uint8_t *r, size_t max)
 
 static size_t serve_dashboard_native_page(uint8_t *r, size_t max, int page)
 {
+    struct explorer_context *ctx = explorer_ctx();
     size_t off = 0;
 
-    int tip = active_chain_height(&g_ms->chain_active);
-    const struct block_index *tip_bi = active_chain_tip(&g_ms->chain_active);
+    int tip = active_chain_height(&ctx->main_state->chain_active);
+    const struct block_index *tip_bi = active_chain_tip(&ctx->main_state->chain_active);
 
     APPEND(off, r, max, EXPLORER_HEADER("Dashboard"));
     off += explorer_emit_nav((char *)r + off, max - off, "blocks");
 
-    size_t mp_count = g_mp ? tx_mempool_size(g_mp) : 0;
-    uint64_t mp_bytes = g_mp ? tx_mempool_total_size(g_mp) : 0;
+    size_t mp_count = ctx->mempool ? tx_mempool_size(ctx->mempool) : 0;
+    uint64_t mp_bytes = ctx->mempool ? tx_mempool_total_size(ctx->mempool) : 0;
 
     char ht_fmt[32];
     format_with_commas(ht_fmt, sizeof(ht_fmt), tip);
@@ -559,7 +611,7 @@ static size_t serve_dashboard_native_page(uint8_t *r, size_t max, int page)
     if (end_height < 0) end_height = 0;
 
     for (int h = start_height; h >= end_height && h >= 0; h--) {
-        const struct block_index *bi = active_chain_at(&g_ms->chain_active, h);
+        const struct block_index *bi = active_chain_at(&ctx->main_state->chain_active, h);
         if (!bi) continue;
 
         char hash[65] = "";
@@ -608,8 +660,9 @@ static size_t serve_dashboard_native(uint8_t *r, size_t max)
 
 static size_t serve_dashboard_with_page(uint8_t *r, size_t max, int page)
 {
+    struct explorer_context *ctx = explorer_ctx();
     /* Use native if chain is loaded, otherwise fall back to RPC proxy */
-    if (g_ms && active_chain_height(&g_ms->chain_active) > 0)
+    if (ctx->main_state && active_chain_height(&ctx->main_state->chain_active) > 0)
         return serve_dashboard_native_page(r, max, page);
     return serve_dashboard_rpc(r, max);
 }
@@ -751,23 +804,24 @@ static size_t serve_block_rpc(const char *param, uint8_t *r, size_t max)
 
 static size_t serve_block(const char *param, uint8_t *r, size_t max)
 {
+    struct explorer_context *ctx = explorer_ctx();
     if (use_rpc_proxy())
         return serve_block_rpc(param, r, max);
-    if (!g_ms || !param || !param[0]) return 0;
+    if (!ctx->main_state || !param || !param[0]) return 0;
     size_t off = 0;
 
     const struct block_index *bi = NULL;
 
     if (is_all_digits(param)) {
         int h = atoi(param);
-        int tip = active_chain_height(&g_ms->chain_active);
+        int tip = active_chain_height(&ctx->main_state->chain_active);
         if (h >= 0 && h <= tip)
-            bi = active_chain_at(&g_ms->chain_active, h);
+            bi = active_chain_at(&ctx->main_state->chain_active, h);
     } else if (strlen(param) == 64 && is_all_hex(param, 64)) {
         struct uint256 hash;
         uint256_set_hex(&hash, param);
         bi = (const struct block_index *)block_map_find(
-            &g_ms->map_block_index, &hash);
+            &ctx->main_state->map_block_index, &hash);
     }
 
     if (!bi) {
@@ -782,7 +836,7 @@ static size_t serve_block(const char *param, uint8_t *r, size_t max)
     }
 
     int height = bi->nHeight;
-    int tip = active_chain_height(&g_ms->chain_active);
+    int tip = active_chain_height(&ctx->main_state->chain_active);
 
     char hash[65] = "";
     if (bi->phashBlock) uint256_get_hex(bi->phashBlock, hash);
@@ -790,7 +844,7 @@ static size_t serve_block(const char *param, uint8_t *r, size_t max)
      * The block_index mmap doesn't store these — only the full block has them. */
     struct block blk;
     block_init(&blk);
-    bool loaded = g_datadir && read_block_from_disk_index(&blk, bi, g_datadir);
+    bool loaded = ctx->datadir && read_block_from_disk_index(&blk, bi, ctx->datadir);
 
     char merkle[65], sapling_root[65], nonce[65];
     if (loaded) {
@@ -1107,9 +1161,11 @@ static size_t serve_tx_rpc(const char *param, uint8_t *r, size_t max)
 
 static size_t serve_tx(const char *param, uint8_t *r, size_t max)
 {
+    struct explorer_context *ctx = explorer_ctx();
     if (use_rpc_proxy())
         return serve_tx_rpc(param, r, max);
-    if (!g_ms || !param || strlen(param) != 64 || !is_all_hex(param, 64))
+    if (!ctx->main_state || !param || strlen(param) != 64 ||
+        !is_all_hex(param, 64) || !explorer_param_is_printable_ascii(param))
         return (size_t)snprintf((char *)r, max,
             "HTTP/1.1 400 Bad Request\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n"
             "<!DOCTYPE html><html><head><link rel='stylesheet' href='/explorer/style.css'></head><body>"
@@ -1122,7 +1178,8 @@ static size_t serve_tx(const char *param, uint8_t *r, size_t max)
     /* Try mempool */
     struct transaction tx;
     memset(&tx, 0, sizeof(tx));
-    bool in_mempool = g_mp && tx_mempool_lookup(g_mp, &txhash, &tx);
+    bool in_mempool = ctx->mempool &&
+                      tx_mempool_lookup(ctx->mempool, &txhash, &tx);
 
     /* Try tx index */
     int block_height = -1;
@@ -1131,14 +1188,15 @@ static size_t serve_tx(const char *param, uint8_t *r, size_t max)
     block_init(&blk);
     bool from_block = false;
 
-    if (!in_mempool && g_ndb) {
+    if (!in_mempool && ctx->node_db) {
         struct db_tx_index txi;
-        if (db_tx_find(g_ndb, txhash.data, &txi)) {
+        if (db_tx_find(ctx->node_db, txhash.data, &txi)) {
             block_height = txi.block_height;
 
             /* Load block from disk */
-            const struct block_index *bi = active_chain_at(&g_ms->chain_active, block_height);
-            if (bi && g_datadir && read_block_from_disk_index(&blk, bi, g_datadir)) {
+            const struct block_index *bi =
+                active_chain_at(&ctx->main_state->chain_active, block_height);
+            if (bi && ctx->datadir && read_block_from_disk_index(&blk, bi, ctx->datadir)) {
                 /* Find the tx in the block */
                 for (size_t i = 0; i < blk.num_vtx; i++) {
                     if (uint256_eq(&blk.vtx[i].hash, &txhash)) {
@@ -1169,7 +1227,7 @@ static size_t serve_tx(const char *param, uint8_t *r, size_t max)
     }
 
     size_t off = 0;
-    int tip = active_chain_height(&g_ms->chain_active);
+    int tip = active_chain_height(&ctx->main_state->chain_active);
     int confirmations = in_mempool ? 0 : (block_height >= 0 ? tip - block_height + 1 : 0);
 
     APPEND(off, r, max, EXPLORER_HEADER("Transaction"));
@@ -1251,9 +1309,9 @@ static size_t serve_tx(const char *param, uint8_t *r, size_t max)
 
             /* Look up previous output value from tx_outputs table */
             char in_val[32] = "?";
-            if (g_ndb && g_ndb->db) {
+            if (ctx->node_db && ctx->node_db->db) {
                 sqlite3_stmt *vs = NULL;
-                if (sqlite3_prepare_v2(g_ndb->db,
+                if (sqlite3_prepare_v2(ctx->node_db->db,
                         "SELECT value FROM tx_outputs WHERE txid=? AND vout=?",
                         -1, &vs, NULL) == SQLITE_OK && vs) {
                     sqlite3_bind_blob(vs, 1, tx.vin[i].prevout.hash.data, 32, SQLITE_STATIC);
@@ -1438,7 +1496,10 @@ static size_t serve_tx(const char *param, uint8_t *r, size_t max)
 
 static size_t serve_address(const char *param, uint8_t *r, size_t max)
 {
-    if (!g_ms || !param || !param[0])
+    struct explorer_context *ctx = explorer_ctx();
+    size_t param_len = param ? strlen(param) : 0;
+    if (!ctx->main_state || !param || !param[0] || param_len >= 128 ||
+        !explorer_param_is_printable_ascii(param))
         return 0;
 
     size_t off = 0;
@@ -1474,8 +1535,8 @@ static size_t serve_address(const char *param, uint8_t *r, size_t max)
         safe_addr,
         dest.type == DEST_KEY_ID ? "P2PKH (Pay-to-PubKey-Hash)" : "P2SH (Pay-to-Script-Hash)");
 
-    if (g_ndb && addr_hash) {
-        int64_t balance = db_utxo_balance_for_address(g_ndb, addr_hash);
+    if (ctx->node_db && addr_hash) {
+        int64_t balance = db_utxo_balance_for_address(ctx->node_db, addr_hash);
         char bal[32];
         format_zcl(bal, sizeof(bal), balance);
         APPEND(off, r, max,
@@ -1485,9 +1546,9 @@ static size_t serve_address(const char *param, uint8_t *r, size_t max)
     APPEND(off, r, max, "</div></div>");
 
     /* UTXO list */
-    if (g_ndb && addr_hash) {
+    if (ctx->node_db && addr_hash) {
         struct db_utxo utxos[100];
-        int count = db_utxo_list_for_address(g_ndb, addr_hash, utxos, 100);
+        int count = db_utxo_list_for_address(ctx->node_db, addr_hash, utxos, 100);
 
         APPEND(off, r, max,
             "<h2>Unspent Outputs (%d)</h2>"
@@ -1535,6 +1596,7 @@ static size_t serve_address(const char *param, uint8_t *r, size_t max)
 
 static size_t serve_search(const char *query, uint8_t *r, size_t max)
 {
+    struct explorer_context *ctx = explorer_ctx();
     if (!query) return 0;
 
     /* URL-decode the query ('+' → space, %XX → byte) */
@@ -1544,7 +1606,15 @@ static size_t serve_search(const char *query, uint8_t *r, size_t max)
         for (size_t si = 0; query[si] && di < sizeof(decoded) - 1; si++) {
             if (query[si] == '%' && query[si+1] && query[si+2]) {
                 char hex[3] = { query[si+1], query[si+2], '\0' };
-                decoded[di++] = (char)strtol(hex, NULL, 16);
+                char *endp = NULL;
+                long v = strtol(hex, &endp, 16);
+                if (!endp || *endp != '\0' || v < 0 || v > 255)
+                    return (size_t)snprintf((char *)r, max,
+                        "HTTP/1.1 400 Bad Request\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n"
+                        "<!DOCTYPE html><html><head><link rel='stylesheet' href='/explorer/style.css'></head><body>"
+                        EXPLORER_NAV "<h2>Invalid Search Query</h2>"
+                        "<p>Malformed percent-encoding in query.</p>" EXPLORER_FOOTER);
+                decoded[di++] = (char)v;
                 si += 2;
             } else if (query[si] == '+') {
                 decoded[di++] = ' ';
@@ -1566,6 +1636,12 @@ static size_t serve_search(const char *query, uint8_t *r, size_t max)
     while (qlen > 0 && q[qlen - 1] == ' ') q[--qlen] = '\0';
 
     if (!qlen) return serve_dashboard(r, max);
+    if (!explorer_param_is_printable_ascii(q))
+        return (size_t)snprintf((char *)r, max,
+            "HTTP/1.1 400 Bad Request\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n"
+            "<!DOCTYPE html><html><head><link rel='stylesheet' href='/explorer/style.css'></head><body>"
+            EXPLORER_NAV "<h2>Invalid Search Query</h2>"
+            "<p>Search input contains unsupported characters.</p>" EXPLORER_FOOTER);
 
     /* Block height? Always try — serve_block handles RPC fallback */
     if (is_all_digits(q)) {
@@ -1577,29 +1653,29 @@ static size_t serve_search(const char *query, uint8_t *r, size_t max)
     /* 64-hex: try as block hash first, then txid */
     if (qlen == 64 && is_all_hex(q, 64)) {
         /* Try block hash via native index */
-        if (g_ms) {
+        if (ctx->main_state) {
             struct uint256 hash;
             uint256_set_hex(&hash, q);
             const struct block_index *bi = block_map_find(
-                &g_ms->map_block_index, &hash);
+                &ctx->main_state->map_block_index, &hash);
             if (bi)
                 return serve_block(q, r, max);
         }
 
         /* Try txid via SQLite index */
-        if (g_ndb) {
+        if (ctx->node_db) {
             struct uint256 hash;
             uint256_set_hex(&hash, q);
             struct db_tx_index txi;
-            if (db_tx_find(g_ndb, hash.data, &txi))
+            if (db_tx_find(ctx->node_db, hash.data, &txi))
                 return serve_tx(q, r, max);
         }
 
         /* Try mempool */
-        if (g_mp) {
+        if (ctx->mempool) {
             struct uint256 hash;
             uint256_set_hex(&hash, q);
-            if (tx_mempool_exists(g_mp, &hash))
+            if (tx_mempool_exists(ctx->mempool, &hash))
                 return serve_tx(q, r, max);
         }
 
@@ -1714,20 +1790,22 @@ static size_t g_stats_cache_len = 0;
 
 static void cache_save(const char *name, const char *data, size_t len)
 {
-    if (!g_explorer_dir[0]) ensure_explorer_dir();
-    if (!g_explorer_dir[0] || len == 0) return;
+    struct explorer_assets *assets = explorer_assets();
+    if (!assets->explorer_dir[0]) ensure_explorer_dir();
+    if (!assets->explorer_dir[0] || len == 0) return;
     char path[1200];
-    snprintf(path, sizeof(path), "%s/%s.cache", g_explorer_dir, name);
+    snprintf(path, sizeof(path), "%s/%s.cache", assets->explorer_dir, name);
     FILE *f = fopen(path, "w");
     if (f) { fwrite(data, 1, len, f); fclose(f); }
 }
 
 static size_t cache_load(const char *name, char *buf, size_t max)
 {
-    if (!g_explorer_dir[0]) ensure_explorer_dir();
-    if (!g_explorer_dir[0]) return 0;
+    struct explorer_assets *assets = explorer_assets();
+    if (!assets->explorer_dir[0]) ensure_explorer_dir();
+    if (!assets->explorer_dir[0]) return 0;
     char path[1200];
-    snprintf(path, sizeof(path), "%s/%s.cache", g_explorer_dir, name);
+    snprintf(path, sizeof(path), "%s/%s.cache", assets->explorer_dir, name);
     FILE *f = fopen(path, "r");
     if (!f) return 0;
     size_t len = fread(buf, 1, max - 1, f);
@@ -1741,6 +1819,7 @@ static size_t cache_load(const char *name, char *buf, size_t max)
 static void *stats_compute_thread(void *arg)
 {
     (void)arg;
+    struct explorer_context *ctx = explorer_ctx();
     /* Load previous cache from disk for instant serving while recomputing */
     if (g_stats_cache_len == 0) {
         size_t disk_len = cache_load("stats", g_stats_cache, STATS_CACHE_SIZE);
@@ -1755,7 +1834,7 @@ static void *stats_compute_thread(void *arg)
     /* Compute fresh into a temp buffer so we don't blank the disk-loaded cache */
     char *tmp = malloc(STATS_CACHE_SIZE);
     if (!tmp) { g_stats_computing = 0; return NULL; }
-    size_t len = explorer_stats_build((uint8_t *)tmp, STATS_CACHE_SIZE, g_datadir);
+    size_t len = explorer_stats_build((uint8_t *)tmp, STATS_CACHE_SIZE, ctx->datadir);
     if (len > 0) {
         memcpy(g_stats_cache, tmp, len);
         g_stats_cache_len = len;
@@ -1815,6 +1894,7 @@ static size_t g_factoids_cache_len = 0;
 static void *factoids_compute_thread(void *arg)
 {
     (void)arg;
+    struct explorer_context *ctx = explorer_ctx();
     /* Load previous cache from disk for instant serving */
     if (g_factoids_cache_len == 0) {
         size_t disk_len = cache_load("factoids", g_factoids_cache, FACTOIDS_CACHE_SIZE);
@@ -1827,7 +1907,7 @@ static void *factoids_compute_thread(void *arg)
     printf("Factoids background: computing historian data...\n");
     fflush(stdout);
     size_t len = explorer_factoids_build((uint8_t *)g_factoids_cache,
-                                          FACTOIDS_CACHE_SIZE, g_datadir);
+                                          FACTOIDS_CACHE_SIZE, ctx->datadir);
     if (len > 0) {
         g_factoids_cache_len = len;
         cache_save("factoids", g_factoids_cache, len);
@@ -1882,11 +1962,12 @@ static size_t g_tokens_cache_len = 0;
 static void *tokens_compute_thread(void *arg)
 {
     (void)arg;
+    struct explorer_context *ctx = explorer_ctx();
     printf("Tokens background: computing...\n");
     fflush(stdout);
 
     char db_path[1024];
-    snprintf(db_path, sizeof(db_path), "%s/node.db", g_datadir);
+    snprintf(db_path, sizeof(db_path), "%s/node.db", ctx->datadir);
     sqlite3 *db = NULL;
     if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
         g_tokens_computing = 0;
@@ -2108,12 +2189,14 @@ static size_t serve_tokens(uint8_t *r, size_t max)
 
 static size_t serve_token_detail(const char *token_id_hex, uint8_t *r, size_t max)
 {
-    if (!token_id_hex || strlen(token_id_hex) != 64 || !g_datadir)
+    struct explorer_context *ctx = explorer_ctx();
+    if (!token_id_hex || strlen(token_id_hex) != 64 || !ctx->datadir ||
+        !is_all_hex(token_id_hex, 64) || !explorer_param_is_printable_ascii(token_id_hex))
         return 0;
 
     /* Open our own SQLite connection (called from HTTPS thread) */
     char db_path[1024];
-    snprintf(db_path, sizeof(db_path), "%s/node.db", g_datadir);
+    snprintf(db_path, sizeof(db_path), "%s/node.db", ctx->datadir);
     sqlite3 *db = NULL;
     if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK)
         return 0;
@@ -2358,12 +2441,13 @@ static size_t serve_hodl(uint8_t *r, size_t max)
 static void *hodl_compute_thread(void *arg)
 {
     (void)arg;
+    struct explorer_context *ctx = explorer_ctx();
     printf("HODL background: starting computation...\n");
     fflush(stdout);
 
     /* We need our own SQLite connection for the background thread */
     char db_path[1024];
-    snprintf(db_path, sizeof(db_path), "%s/node.db", g_datadir);
+    snprintf(db_path, sizeof(db_path), "%s/node.db", ctx->datadir);
     sqlite3 *db = NULL;
     if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
         printf("HODL background: failed to open db\n");
@@ -2728,6 +2812,7 @@ static void *hodl_compute_thread(void *arg)
 
 static size_t serve_css(uint8_t *r, size_t max)
 {
+    struct explorer_assets *assets = explorer_assets();
     /* Reload CSS from disk each time (allows live editing) */
     load_css();
     size_t off = 0;
@@ -2737,9 +2822,9 @@ static size_t serve_css(uint8_t *r, size_t max)
         "Cache-Control: public, max-age=60\r\n"
         "Connection: close\r\n\r\n");
     if (n > 0) off = (size_t)n;
-    if (off + g_css_len < max) {
-        memcpy(r + off, g_css_cache, g_css_len);
-        off += g_css_len;
+    if (off + assets->css_len < max) {
+        memcpy(r + off, assets->css_cache, assets->css_len);
+        off += assets->css_len;
     }
     return off;
 }
@@ -2856,8 +2941,9 @@ size_t explorer_handle_request(const char *method, const char *path,
 
     if (strcmp(path, "/explorer/favicon.png") == 0 ||
         strcmp(path, "/favicon.ico") == 0) {
+        struct explorer_context *ctx = explorer_ctx();
         char fpath[1200];
-        snprintf(fpath, sizeof(fpath), "%s/explorer/favicon.png", g_datadir);
+        snprintf(fpath, sizeof(fpath), "%s/explorer/favicon.png", ctx->datadir);
         FILE *f = fopen(fpath, "rb");
         if (f) {
             size_t off = 0;

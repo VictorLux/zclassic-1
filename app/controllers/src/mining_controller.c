@@ -25,36 +25,49 @@
 #include <string.h>
 #include <time.h>
 
-static struct main_state *g_ms = NULL;
-static struct tx_mempool *g_mp = NULL;
-static struct coins_view_cache *g_coins = NULL;
-static const char *g_datadir = NULL;
+struct mining_context {
+    struct main_state *main_state;
+    struct tx_mempool *mempool;
+    struct coins_view_cache *coins_tip;
+    const char *datadir;
+};
+
+static struct mining_context g_mining_ctx = {0};
+
+static struct mining_context *mining_ctx(void)
+{
+    return &g_mining_ctx;
+}
 
 void rpc_mining_set_state(struct main_state *ms, struct tx_mempool *mp,
                            struct coins_view_cache *coins_tip,
                            const char *datadir)
 {
-    g_ms = ms;
-    g_mp = mp;
-    g_coins = coins_tip;
-    g_datadir = datadir;
+    struct mining_context *ctx = mining_ctx();
+    ctx->main_state = ms;
+    ctx->mempool = mp;
+    ctx->coins_tip = coins_tip;
+    ctx->datadir = datadir;
 }
 
 static bool rpc_getmininginfo(const struct json_value *params, bool help,
                                 struct json_value *result)
 {
+    struct mining_context *ctx = mining_ctx();
     (void)params;
     RPC_HELP(help, result,
         "getmininginfo\n"
         "Returns mining-related information.");
 
     const struct chain_params *cp = chain_params_get();
-    struct block_index *tip = active_chain_tip(&g_ms->chain_active);
+    struct block_index *tip = active_chain_tip(&ctx->main_state->chain_active);
 
     json_set_object(result);
     json_push_kv_int(result, "blocks", tip ? tip->nHeight : 0);
-    json_push_kv_int(result, "currentblocksize", (int64_t)g_ms->nLastBlockSize);
-    json_push_kv_int(result, "currentblocktx", (int64_t)g_ms->nLastBlockTx);
+    json_push_kv_int(result, "currentblocksize",
+                      (int64_t)ctx->main_state->nLastBlockSize);
+    json_push_kv_int(result, "currentblocktx",
+                      (int64_t)ctx->main_state->nLastBlockTx);
 
     double difficulty = 0.0;
     if (tip) {
@@ -76,6 +89,7 @@ static bool rpc_getmininginfo(const struct json_value *params, bool help,
 static bool rpc_generate(const struct json_value *params, bool help,
                           struct json_value *result)
 {
+    struct mining_context *ctx = mining_ctx();
     RPC_HELP(help, result,
         "generate numblocks\n"
         "Mine blocks immediately (regtest only).\n"
@@ -103,14 +117,15 @@ static bool rpc_generate(const struct json_value *params, bool help,
 
     for (int64_t i = 0; i < num_blocks; i++) {
         struct block_template *tmpl = create_new_block(
-            &coinbase_script, g_ms, g_coins, g_mp, cp);
+            &coinbase_script, ctx->main_state, ctx->coins_tip, ctx->mempool, cp);
         if (!tmpl) break;
 
-        struct block_index *tip = active_chain_tip(&g_ms->chain_active);
+        struct block_index *tip = active_chain_tip(&ctx->main_state->chain_active);
         unsigned int extra_nonce = 0;
         increment_extra_nonce(&tmpl->block, tip, &extra_nonce);
 
-        if (process_block_found(&tmpl->block, g_ms, g_coins, cp, g_datadir)) {
+        if (process_block_found(&tmpl->block, ctx->main_state,
+                                ctx->coins_tip, cp, ctx->datadir)) {
             struct uint256 hash;
             block_get_hash(&tmpl->block, &hash);
             char hex[65];
@@ -131,6 +146,7 @@ static bool rpc_generate(const struct json_value *params, bool help,
 static bool rpc_submitblock(const struct json_value *params, bool help,
                               struct json_value *result)
 {
+    struct mining_context *ctx = mining_ctx();
     RPC_HELP(help, result,
         "submitblock \"hexdata\"\n"
         "Attempts to submit new block to network.\n"
@@ -175,8 +191,8 @@ static bool rpc_submitblock(const struct json_value *params, bool help,
     struct validation_state state;
     validation_state_init(&state);
 
-    bool ok = process_new_block(&state, g_ms, g_coins, cp, &blk,
-                                 true, g_datadir);
+    bool ok = process_new_block(&state, ctx->main_state, ctx->coins_tip, cp,
+                                 &blk, true, ctx->datadir);
     block_free(&blk);
 
     if (!ok) {
@@ -196,13 +212,14 @@ static bool rpc_submitblock(const struct json_value *params, bool help,
 static bool rpc_getblocktemplate(const struct json_value *params, bool help,
                                   struct json_value *result)
 {
+    struct mining_context *ctx = mining_ctx();
     (void)params;
     RPC_HELP(help, result,
         "getblocktemplate ( \"jsonrequestobject\" )\n"
         "Returns data needed to construct a block to work on.");
 
     const struct chain_params *cp = chain_params_get();
-    struct block_index *tip = active_chain_tip(&g_ms->chain_active);
+    struct block_index *tip = active_chain_tip(&ctx->main_state->chain_active);
     if (!tip) {
         json_set_str(result, "No tip available");
         return false;
@@ -212,7 +229,7 @@ static bool rpc_getblocktemplate(const struct json_value *params, bool help,
     coinbase_script.size = 0;
 
     struct block_template *tmpl = create_new_block(
-        &coinbase_script, g_ms, g_coins, g_mp, cp);
+        &coinbase_script, ctx->main_state, ctx->coins_tip, ctx->mempool, cp);
     if (!tmpl) {
         json_set_str(result, "Could not create block template");
         return false;
@@ -297,11 +314,12 @@ static bool rpc_getblocktemplate(const struct json_value *params, bool help,
 static bool rpc_getblocksubsidy(const struct json_value *params, bool help,
                                   struct json_value *result)
 {
+    struct mining_context *ctx = mining_ctx();
     RPC_HELP(help, result,
         "getblocksubsidy height\n"
         "Returns block subsidy reward of block at given height.");
 
-    struct block_index *tip = active_chain_tip(&g_ms->chain_active);
+    struct block_index *tip = active_chain_tip(&ctx->main_state->chain_active);
     int default_height = tip ? tip->nHeight : 0;
 
     struct rpc_params p;

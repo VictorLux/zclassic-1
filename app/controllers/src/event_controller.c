@@ -89,7 +89,7 @@ static bool rpc_healthcheck(const struct json_value *params, bool help,
     json_set_object(result);
 
     struct node_health_snapshot health;
-    node_health_collect(&health, NULL);
+    node_health_collect(&health, NULL, NULL);
     json_push_kv_str(result, "sync_state", sync_state_name(health.sync_state));
 
     /* Individual health checks */
@@ -98,7 +98,17 @@ static bool rpc_healthcheck(const struct json_value *params, bool help,
 
     json_push_kv_bool(&checks, "synced", health.synced);
     json_push_kv_bool(&checks, "has_peers", health.has_peers);
+    json_push_kv_bool(&checks, "tor_ready", health.tor_ready);
+    json_push_kv_bool(&checks, "onion_service_ready",
+                      health.onion_service_ready);
+    json_push_kv_bool(&checks, "tip_stale", health.tip_stale);
+    json_push_kv_bool(&checks, "queue_backed_up", health.queue_backed_up);
     json_push_kv_int(&checks, "peer_count", (int64_t)health.peer_count);
+    json_push_kv_int(&checks, "tip_lag", (int64_t)health.tip_lag);
+    if (health.onion_address[0])
+        json_push_kv_str(&checks, "onion_address", health.onion_address);
+    if (health.degraded_reason[0])
+        json_push_kv_str(&checks, "degraded_reason", health.degraded_reason);
 
     json_push_kv_bool(result, "healthy", health.healthy);
     json_push_kv(result, "checks", &checks);

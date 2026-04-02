@@ -22,6 +22,7 @@ struct db_wallet_key {
 /* Callbacks and validation */
 struct ar_callbacks *db_wallet_key_callbacks(void);
 struct ar_callbacks *db_sapling_key_callbacks(void);
+struct ar_callbacks *db_wallet_script_callbacks(void);
 bool db_wallet_key_validate(const struct db_wallet_key *k,
                             struct ar_errors *errors);
 
@@ -72,6 +73,8 @@ struct db_wallet_script {
     size_t script_len;
 };
 
+bool db_wallet_script_validate(const struct db_wallet_script *s,
+                               struct ar_errors *errors);
 bool db_wallet_script_save(struct node_db *ndb, const struct db_wallet_script *s);
 bool db_wallet_script_find(struct node_db *ndb, const uint8_t script_hash[20],
                            struct db_wallet_script *out);

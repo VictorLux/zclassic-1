@@ -70,15 +70,9 @@ bool db_block_save(struct node_db *ndb, const struct db_block *b)
 {
     if (!ndb->open) return false;
 
-    /* Validate */
-    struct ar_errors errors;
-    if (!db_block_validate(b, &errors)) {
-        AR_LOG_VALIDATION_FAILURE("block", &errors);
-        return false;
-    }
-
-    /* before_save callbacks */
     struct ar_callbacks *cbs = db_block_callbacks();
+    AR_VALIDATE_RECORD(cbs, "block", b, db_block_validate);
+    /* before_save callbacks */
     if (!ar_run_before_save(cbs, (void *)b)) return false;
 
     sqlite3_stmt *s = ndb->stmt_block_insert;

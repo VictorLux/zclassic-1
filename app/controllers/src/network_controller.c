@@ -15,16 +15,25 @@
 #include <stdlib.h>
 #include <string.h>
 
-static struct connman *g_cm = NULL;
+struct network_context {
+    struct connman *connman;
+};
+
+static struct network_context g_network_ctx = {0};
+
+static struct network_context *network_ctx(void)
+{
+    return &g_network_ctx;
+}
 
 void rpc_net_set_connman(struct connman *cm)
 {
-    g_cm = cm;
+    network_ctx()->connman = cm;
 }
 
 struct connman *rpc_net_get_connman(void)
 {
-    return g_cm;
+    return network_ctx()->connman;
 }
 
 static bool rpc_getnetworkinfo(const struct json_value *params, bool help,
@@ -41,7 +50,8 @@ static bool rpc_getnetworkinfo(const struct json_value *params, bool help,
     json_push_kv_str(result, "subversion", CLIENT_NAME);
     json_push_kv_int(result, "protocolversion", PROTOCOL_VERSION);
 
-    size_t conns = g_cm ? connman_get_node_count(g_cm) : 0;
+    struct network_context *ctx = network_ctx();
+    size_t conns = ctx->connman ? connman_get_node_count(ctx->connman) : 0;
     json_push_kv_int(result, "connections", (int64_t)conns);
 
     struct json_value networks = {0};
@@ -68,11 +78,12 @@ static bool rpc_getpeerinfo(const struct json_value *params, bool help,
         "Returns data about each connected network node.");
 
     json_set_array(result);
-    if (!g_cm) return true;
+    struct network_context *ctx = network_ctx();
+    if (!ctx->connman) return true;
 
-    zcl_mutex_lock(&g_cm->manager.cs_nodes);
-    for (size_t i = 0; i < g_cm->manager.num_nodes; i++) {
-        struct p2p_node *node = g_cm->manager.nodes[i];
+    zcl_mutex_lock(&ctx->connman->manager.cs_nodes);
+    for (size_t i = 0; i < ctx->connman->manager.num_nodes; i++) {
+        struct p2p_node *node = ctx->connman->manager.nodes[i];
         struct json_value entry = {0};
         json_set_object(&entry);
 
@@ -107,7 +118,7 @@ static bool rpc_getpeerinfo(const struct json_value *params, bool help,
         json_push_back(result, &entry);
         json_free(&entry);
     }
-    zcl_mutex_unlock(&g_cm->manager.cs_nodes);
+    zcl_mutex_unlock(&ctx->connman->manager.cs_nodes);
 
     return true;
 }
@@ -120,7 +131,8 @@ static bool rpc_getconnectioncount(const struct json_value *params, bool help,
         "getconnectioncount\n"
         "Returns the number of connections to other nodes.");
 
-    size_t conns = g_cm ? connman_get_node_count(g_cm) : 0;
+    struct network_context *ctx = network_ctx();
+    size_t conns = ctx->connman ? connman_get_node_count(ctx->connman) : 0;
     json_set_int(result, (int64_t)conns);
     return true;
 }
@@ -133,11 +145,12 @@ static bool rpc_ping_rpc(const struct json_value *params, bool help,
         "ping\n"
         "Requests that a ping be sent to all other nodes.");
 
-    if (g_cm) {
-        zcl_mutex_lock(&g_cm->manager.cs_nodes);
-        for (size_t i = 0; i < g_cm->manager.num_nodes; i++)
-            g_cm->manager.nodes[i]->ping_queued = true;
-        zcl_mutex_unlock(&g_cm->manager.cs_nodes);
+    struct network_context *ctx = network_ctx();
+    if (ctx->connman) {
+        zcl_mutex_lock(&ctx->connman->manager.cs_nodes);
+        for (size_t i = 0; i < ctx->connman->manager.num_nodes; i++)
+            ctx->connman->manager.nodes[i]->ping_queued = true;
+        zcl_mutex_unlock(&ctx->connman->manager.cs_nodes);
     }
 
     json_set_null(result);
@@ -158,7 +171,8 @@ static bool rpc_addnode(const struct json_value *params, bool help,
     const char *cmd = rpc_require_str(&p, 1, "command");
     if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); return false; }
 
-    if (!g_cm) {
+    struct network_context *ctx = network_ctx();
+    if (!ctx->connman) {
         json_set_str(result, "P2P not initialized");
         return false;
     }
@@ -166,7 +180,7 @@ static bool rpc_addnode(const struct json_value *params, bool help,
     if (strcmp(cmd, "onetry") == 0 || strcmp(cmd, "add") == 0) {
         /* Parse host:port — split on last colon */
         char host[256];
-        uint16_t port = g_cm->manager.default_port;
+        uint16_t port = ctx->connman->manager.default_port;
         strncpy(host, node_str, sizeof(host) - 1);
         host[sizeof(host) - 1] = '\0';
         char *colon = strrchr(host, ':');
@@ -176,7 +190,7 @@ static bool rpc_addnode(const struct json_value *params, bool help,
             if (p_val > 0 && p_val <= 65535)
                 port = (uint16_t)p_val;
         }
-        connman_add_seed_node(g_cm, host, port);
+        connman_add_seed_node(ctx->connman, host, port);
 
         /* Direct connect — don't rely on addrman random selection */
         struct net_address addr;
@@ -199,7 +213,7 @@ static bool rpc_addnode(const struct json_value *params, bool help,
                 memcpy(addr.svc.addr.ip, &s6->sin6_addr, 16);
             }
             freeaddrinfo(res);
-            connman_open_connection(g_cm, &addr);
+            connman_open_connection(ctx->connman, &addr);
         }
 
         json_set_null(result);

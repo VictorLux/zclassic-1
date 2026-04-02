@@ -4,6 +4,8 @@
 #include "test/test_helpers.h"
 #include "controllers/store_controller.h"
 #include "controllers/zslp_controller.h"
+#include "services/zslp_command_service.h"
+#include "services/zslp_service.h"
 #include "util/template.h"
 #include <unistd.h>
 
@@ -55,6 +57,17 @@ int test_store(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    printf("store: GET /store/products REST index works... ");
+    {
+        size_t n = store_handle_request("GET", "/store/products", NULL, 0,
+                                         resp, sizeof(resp), test_datadir);
+        bool ok = (n > 0);
+        ok = ok && (strstr((char *)resp, "200 OK") != NULL);
+        ok = ok && (strstr((char *)resp, "ZCL23 Access Token") != NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     /* ── Product detail ───────────────────────────────────── */
 
     printf("store: GET /store/product/1 returns detail page... ");
@@ -65,8 +78,21 @@ int test_store(void)
         ok = ok && (strstr((char *)resp, "200 OK") != NULL);
         ok = ok && (strstr((char *)resp, "ZCL23 Access Token") != NULL);
         ok = ok && (strstr((char *)resp, "customer_addr") != NULL);
-        ok = ok && (strstr((char *)resp, "/store/buy/1") != NULL);
+        ok = ok && (strstr((char *)resp, "action='/store/orders'") != NULL);
         if (ok) printf("OK (%zu bytes)\n", n);
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("store: GET /store/products/1 REST show works... ");
+    {
+        size_t n = store_handle_request("GET", "/store/products/1", NULL, 0,
+                                         resp, sizeof(resp), test_datadir);
+        bool ok = (n > 0);
+        ok = ok && (strstr((char *)resp, "200 OK") != NULL);
+        ok = ok && (strstr((char *)resp, "ZCL23 Access Token") != NULL);
+        ok = ok && (strstr((char *)resp, "name='product_id' value='1'") != NULL);
+        ok = ok && (strstr((char *)resp, "action='/store/orders'") != NULL);
+        if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
 
@@ -75,6 +101,15 @@ int test_store(void)
         size_t n = store_handle_request("GET", "/store/product/999", NULL, 0,
                                          resp, sizeof(resp), test_datadir);
         bool ok = (n > 0) && (strstr((char *)resp, "404") != NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("store: GET /store/products/not-a-number returns 400... ");
+    {
+        size_t n = store_handle_request("GET", "/store/products/not-a-number",
+                                         NULL, 0, resp, sizeof(resp), test_datadir);
+        bool ok = (n > 0) && (strstr((char *)resp, "400 Bad Request") != NULL);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
@@ -93,6 +128,21 @@ int test_store(void)
         ok = ok && (strstr((char *)resp, "t1TestAddr1234567890abcdefghijklmn") != NULL);
         ok = ok && (strstr((char *)resp, "0.01") != NULL);
         if (ok) printf("OK (%zu bytes)\n", n);
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("store: POST /store/orders REST create works... ");
+    {
+        const char *body =
+            "product_id=1&customer_addr=t1TestAddr1234567890abcdefghijklmn";
+        size_t n = store_handle_request("POST", "/store/orders",
+                                         (const uint8_t *)body, strlen(body),
+                                         resp, sizeof(resp), test_datadir);
+        bool ok = (n > 0);
+        ok = ok && (strstr((char *)resp, "200 OK") != NULL);
+        ok = ok && (strstr((char *)resp, "Order #") != NULL);
+        ok = ok && (strstr((char *)resp, "t1TestAddr1234567890abcdefghijklmn") != NULL);
+        if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
 
@@ -121,11 +171,43 @@ int test_store(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    printf("store: GET /store/orders/1 REST show works... ");
+    {
+        size_t n = store_handle_request("GET", "/store/orders/1", NULL, 0,
+                                         resp, sizeof(resp), test_datadir);
+        bool ok = (n > 0);
+        ok = ok && (strstr((char *)resp, "200 OK") != NULL);
+        ok = ok && (strstr((char *)resp, "Order #1") != NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("store: GET /store/orders REST index works... ");
+    {
+        size_t n = store_handle_request("GET", "/store/orders", NULL, 0,
+                                         resp, sizeof(resp), test_datadir);
+        bool ok = (n > 0);
+        ok = ok && (strstr((char *)resp, "200 OK") != NULL);
+        ok = ok && (strstr((char *)resp, "Recent Orders") != NULL);
+        ok = ok && (strstr((char *)resp, "Order #1") != NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     printf("store: GET /store/order/999 returns 404... ");
     {
         size_t n = store_handle_request("GET", "/store/order/999", NULL, 0,
                                          resp, sizeof(resp), test_datadir);
         bool ok = (n > 0) && (strstr((char *)resp, "404") != NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("store: GET /store/orders/not-a-number returns 400... ");
+    {
+        size_t n = store_handle_request("GET", "/store/orders/not-a-number",
+                                         NULL, 0, resp, sizeof(resp), test_datadir);
+        bool ok = (n > 0) && (strstr((char *)resp, "400 Bad Request") != NULL);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
@@ -215,6 +297,26 @@ int test_store(void)
         bool ok = (n > 0) && (strstr((char *)resp, "200 OK") != NULL);
         ok = ok && (strstr((char *)resp, "Premium Service") != NULL);
         if (ok) printf("OK (200)\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("store: token-gated access rejects malformed addr... ");
+    {
+        size_t n = store_handle_request("GET",
+            "/store/access?addr=<script>&token=TESTCOIN",
+            NULL, 0, resp, sizeof(resp), test_datadir);
+        bool ok = (n > 0) && (strstr((char *)resp, "400 Bad Request") != NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("store: token-gated access rejects malformed token id... ");
+    {
+        size_t n = store_handle_request("GET",
+            "/store/access?addr=t1Buyer123&token=BAD-TOKEN!",
+            NULL, 0, resp, sizeof(resp), test_datadir);
+        bool ok = (n > 0) && (strstr((char *)resp, "400 Bad Request") != NULL);
+        if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
 
@@ -312,6 +414,61 @@ int test_store(void)
         bool ok = !zslp_mint(test_datadir, "TESTCOIN", "", 100);
         if (ok) printf("OK (rejected)\n");
         else { printf("FAIL (should reject)\n"); failures++; }
+    }
+
+    printf("store: zslp create validator rejects bad ticker... ");
+    {
+        struct zslp_token_create_request req = {
+            .ticker = "BAD-TICKER",
+            .name = "Valid Name",
+            .decimals = 0,
+            .initial_supply = 1000
+        };
+        bool ok = (zslp_service_validate_create_request(&req) != NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("store: zslp transfer validator rejects zero amount... ");
+    {
+        struct zslp_token_transfer_request req = {
+            .token_id = "TESTCOIN",
+            .recipient_addr = "t1Buyer123",
+            .amount = 0,
+            .strict_chain_addr = false
+        };
+        bool ok = (zslp_service_validate_transfer_request(&req) != NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("store: zslp command service finalizes genesis metadata... ");
+    {
+        struct zslp_token_create_request req = {
+            .ticker = "METATEST",
+            .name = "Meta Test",
+            .decimals = 0,
+            .initial_supply = 77
+        };
+        char token_id[ZSLP_TOKEN_KEY_MAX + 1];
+        bool ok = zslp_command_finalize_genesis(test_datadir, NULL, &req, token_id);
+        ok = ok && (strcmp(token_id, "METATEST") == 0);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("store: zslp command service credits transfer balance... ");
+    {
+        struct zslp_token_transfer_request req = {
+            .token_id = "METATEST",
+            .recipient_addr = "t1MetaBuyer",
+            .amount = 12,
+            .strict_chain_addr = false
+        };
+        bool ok = zslp_command_credit_transfer(test_datadir, &req);
+        ok = ok && (zslp_balance(test_datadir, "METATEST", "t1MetaBuyer") == 12);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
     }
 
     /* ── End-to-end purchase flow ────────────────────────────── */

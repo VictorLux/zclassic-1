@@ -16,6 +16,32 @@
 
 DEFINE_MODEL_CALLBACKS(file_service)
 
+static bool file_service_before_save(void *record, void *ctx)
+{
+    struct db_file_service *fs = record;
+
+    (void)ctx;
+    if (!fs)
+        return false;
+    if (fs->p2p_port == 0)
+        fs->p2p_port = fs->port;
+    if (fs->last_seen == 0)
+        fs->last_seen = (int64_t)time(NULL);
+    return true;
+}
+
+static struct ar_callbacks *file_service_callbacks_ready(void)
+{
+    struct ar_callbacks *cbs = db_file_service_callbacks();
+    static bool callbacks_ready = false;
+
+    if (!callbacks_ready) {
+        ar_register_before_save(cbs, file_service_before_save);
+        callbacks_ready = true;
+    }
+    return cbs;
+}
+
 /* ── Validation ────────────────────────────────────────────────── */
 
 bool db_file_service_validate(const struct db_file_service *fs,
@@ -24,6 +50,7 @@ bool db_file_service_validate(const struct db_file_service *fs,
     ar_errors_clear(errors);
     validates_presence_of(errors, fs, ip);
     validates_not_zero(errors, fs, port);
+    validates_non_negative(errors, fs, last_seen);
     return !ar_errors_any(errors);
 }
 
@@ -46,17 +73,8 @@ bool db_file_service_save(struct node_db *ndb,
 {
     if (!ndb->open) return false;
 
-    /* Auto-timestamp */
-    if (fs->last_seen == 0)
-        ((struct db_file_service *)fs)->last_seen = (int64_t)time(NULL);
-
-    struct ar_errors errors;
-    if (!db_file_service_validate(fs, &errors)) {
-        AR_LOG_VALIDATION_FAILURE("file_service", &errors);
-        return false;
-    }
-
-    struct ar_callbacks *cbs = db_file_service_callbacks();
+    struct ar_callbacks *cbs = file_service_callbacks_ready();
+    AR_VALIDATE_RECORD(cbs, "file_service", fs, db_file_service_validate);
     if (!ar_run_before_save(cbs, (void *)fs)) return false;
 
     sqlite3_stmt *s = ndb->stmt_file_service_save;

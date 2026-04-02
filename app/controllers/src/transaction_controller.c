@@ -35,12 +35,21 @@
 #include <string.h>
 #include <time.h>
 
-static struct main_state *g_ms = NULL;
-static struct tx_mempool *g_mp = NULL;
-static struct coins_view_cache *g_coins_tip = NULL;
-static const char *g_datadir = NULL;
-static struct basic_keystore *g_keystore = NULL;
-static struct connman *g_connman = NULL;
+struct rawtx_context {
+    struct main_state *main_state;
+    struct tx_mempool *mempool;
+    struct coins_view_cache *coins_tip;
+    const char *datadir;
+    struct basic_keystore *keystore;
+    struct connman *connman;
+};
+
+static struct rawtx_context g_rawtx_ctx = {0};
+
+static struct rawtx_context *rawtx_ctx(void)
+{
+    return &g_rawtx_ctx;
+}
 
 static struct node_db *rawtx_node_db(void)
 {
@@ -51,25 +60,27 @@ void rpc_rawtx_set_state(struct main_state *ms, struct tx_mempool *mp,
                           struct coins_view_cache *coins_tip,
                           const char *datadir)
 {
-    g_ms = ms;
-    g_mp = mp;
-    g_coins_tip = coins_tip;
-    g_datadir = datadir;
+    struct rawtx_context *ctx = rawtx_ctx();
+    ctx->main_state = ms;
+    ctx->mempool = mp;
+    ctx->coins_tip = coins_tip;
+    ctx->datadir = datadir;
 }
 
 void rpc_rawtx_set_keystore(struct basic_keystore *ks)
 {
-    g_keystore = ks;
+    rawtx_ctx()->keystore = ks;
 }
 
 void rpc_rawtx_set_connman(struct connman *cm)
 {
-    g_connman = cm;
+    rawtx_ctx()->connman = cm;
 }
 
 static bool rpc_getrawtransaction(const struct json_value *params, bool help,
                                    struct json_value *result)
 {
+    struct rawtx_context *ctx = rawtx_ctx();
     RPC_HELP(help, result,
         "getrawtransaction \"txid\" ( verbose )\n"
         "Return the raw transaction data.\n"
@@ -98,16 +109,17 @@ static bool rpc_getrawtransaction(const struct json_value *params, bool help,
     bool found = false;
 
     /* 1. Check mempool */
-    if (g_mp && tx_mempool_lookup(g_mp, &hash, &tx)) {
+    if (ctx->mempool && tx_mempool_lookup(ctx->mempool, &hash, &tx)) {
         found = true;
     }
 
     /* 2. Check txindex for O(1) disk lookup */
     extern struct block_tree_db *g_active_block_tree;
-    if (!found && g_active_block_tree && g_ms && g_ms->fTxIndex) {
+    if (!found && g_active_block_tree && ctx->main_state &&
+        ctx->main_state->fTxIndex) {
         struct disk_tx_pos pos;
         if (block_tree_db_read_tx_index(g_active_block_tree, &hash, &pos)) {
-            FILE *f = open_block_file(g_datadir, &pos.block_pos, true);
+            FILE *f = open_block_file(ctx->datadir, &pos.block_pos, true);
             if (f) {
                 unsigned char hdr_buf[256];
                 size_t hdr_read = fread(hdr_buf, 1, sizeof(hdr_buf), f);
@@ -136,17 +148,17 @@ static bool rpc_getrawtransaction(const struct json_value *params, bool help,
     }
 
     /* 3. Fallback: use coins DB to find block, then scan block */
-    if (!found && g_coins_tip && g_ms && g_datadir) {
+    if (!found && ctx->coins_tip && ctx->main_state && ctx->datadir) {
         struct coins entry;
         coins_init(&entry);
-        if (coins_view_cache_get_coins(g_coins_tip, &hash, &entry)) {
+        if (coins_view_cache_get_coins(ctx->coins_tip, &hash, &entry)) {
             if (entry.height > 0) {
                 struct block_index *bi = active_chain_at(
-                    &g_ms->chain_active, entry.height);
+                    &ctx->main_state->chain_active, entry.height);
                 if (bi) {
                     struct block blk;
                     block_init(&blk);
-                    if (read_block_from_disk_index(&blk, bi, g_datadir)) {
+                    if (read_block_from_disk_index(&blk, bi, ctx->datadir)) {
                         for (size_t i = 0; i < blk.num_vtx; i++) {
                             if (uint256_cmp(&blk.vtx[i].hash, &hash) == 0) {
                                 transaction_free(&tx);
@@ -223,6 +235,7 @@ static bool rpc_decoderawtransaction(const struct json_value *params, bool help,
 static bool rpc_sendrawtransaction(const struct json_value *params, bool help,
                                     struct json_value *result)
 {
+    struct rawtx_context *ctx = rawtx_ctx();
     RPC_HELP(help, result,
         "sendrawtransaction \"hexstring\" ( allowhighfees )\n"
         "Submits raw transaction to local node and network.\n"
@@ -247,10 +260,10 @@ static bool rpc_sendrawtransaction(const struct json_value *params, bool help,
     transaction_compute_hash(&tx);
     struct uint256 hash = tx.hash;
 
-    if (g_mp && tx_mempool_exists(g_mp, &hash)) {
+    if (ctx->mempool && tx_mempool_exists(ctx->mempool, &hash)) {
         /* Already in mempool — re-relay to peers */
-        if (g_connman)
-            connman_relay_transaction(g_connman, &hash);
+        if (ctx->connman)
+            connman_relay_transaction(ctx->connman, &hash);
         char hex[65];
         uint256_get_hex(&hash, hex);
         json_set_str(result, hex);
@@ -269,18 +282,18 @@ static bool rpc_sendrawtransaction(const struct json_value *params, bool help,
         return false;
     }
 
-    if (g_mp) {
-        int tip_height = active_chain_height(&g_ms->chain_active);
+    if (ctx->mempool && ctx->main_state) {
+        int tip_height = active_chain_height(&ctx->main_state->chain_active);
         uint32_t branch_id = consensus_current_epoch_branch_id(
             tip_height + 1, &chain_params_get()->consensus);
 
         struct mempool_entry entry;
         mempool_entry_init(&entry, &tx, 0, (int64_t)time(NULL), 0.0,
                            (unsigned int)(tip_height + 1),
-                           tx_mempool_has_no_inputs_of(g_mp, &tx),
+                           tx_mempool_has_no_inputs_of(ctx->mempool, &tx),
                            false, branch_id);
 
-        if (!tx_mempool_add_unchecked(g_mp, &hash, &entry)) {
+        if (!tx_mempool_add_unchecked(ctx->mempool, &hash, &entry)) {
             mempool_entry_free(&entry);
             json_set_str(result, "Failed to add to mempool");
             transaction_free(&tx);
@@ -289,8 +302,8 @@ static bool rpc_sendrawtransaction(const struct json_value *params, bool help,
     }
 
     /* Relay to peers */
-    if (g_connman)
-        connman_relay_transaction(g_connman, &hash);
+    if (ctx->connman)
+        connman_relay_transaction(ctx->connman, &hash);
 
     char hex[65];
     uint256_get_hex(&hash, hex);
@@ -302,6 +315,7 @@ static bool rpc_sendrawtransaction(const struct json_value *params, bool help,
 static bool rpc_createrawtransaction(const struct json_value *params, bool help,
                                       struct json_value *result)
 {
+    struct rawtx_context *ctx = rawtx_ctx();
     RPC_HELP(help, result,
         "createrawtransaction [{\"txid\":\"id\",\"vout\":n},...] "
         "{\"address\":amount,...}\n"
@@ -327,8 +341,8 @@ static bool rpc_createrawtransaction(const struct json_value *params, bool help,
     struct transaction tx;
     transaction_init(&tx);
 
-    int tip_height = g_ms ?
-        active_chain_height(&g_ms->chain_active) : 0;
+    int tip_height = ctx->main_state ?
+        active_chain_height(&ctx->main_state->chain_active) : 0;
     const struct consensus_params *cp = &chain_params_get()->consensus;
     int epoch = consensus_current_epoch(tip_height + 1, cp);
 
@@ -573,6 +587,7 @@ static bool sign_one_input(struct transaction *tx, unsigned int idx,
 static bool rpc_signrawtransaction(const struct json_value *params, bool help,
                                     struct json_value *result)
 {
+    struct rawtx_context *ctx = rawtx_ctx();
     RPC_HELP(help, result,
         "signrawtransaction \"hexstring\" "
         "( [{\"txid\":\"id\",\"vout\":n,\"scriptPubKey\":\"hex\","
@@ -600,7 +615,7 @@ static bool rpc_signrawtransaction(const struct json_value *params, bool help,
 
     /* Use wallet keystore directly — no copy needed.
      * Extra keys from param 3 are added to the wallet keystore. */
-    struct basic_keystore *sign_ks = g_keystore;
+    struct basic_keystore *sign_ks = ctx->keystore;
 
     if (json_size(params) >= 3) {
         const struct json_value *privkeys = json_at(params, 2);
@@ -678,8 +693,8 @@ static bool rpc_signrawtransaction(const struct json_value *params, bool help,
         }
     }
 
-    int tip_height = g_ms ?
-        active_chain_height(&g_ms->chain_active) : 0;
+    int tip_height = ctx->main_state ?
+        active_chain_height(&ctx->main_state->chain_active) : 0;
     uint32_t branch_id = consensus_current_epoch_branch_id(
         tip_height + 1, &chain_params_get()->consensus);
 
@@ -723,10 +738,10 @@ static bool rpc_signrawtransaction(const struct json_value *params, bool help,
         }
 
         /* Fall back to coins DB (LevelDB) */
-        if (!prev_script && g_coins_tip) {
+        if (!prev_script && ctx->coins_tip) {
             struct coins entry;
             coins_init(&entry);
-            if (coins_view_cache_get_coins(g_coins_tip,
+            if (coins_view_cache_get_coins(ctx->coins_tip,
                     &tx.vin[i].prevout.hash, &entry)) {
                 if (tx.vin[i].prevout.n < entry.num_vout &&
                     !tx_out_is_null(&entry.vout[tx.vin[i].prevout.n])) {

@@ -5,8 +5,10 @@
 #include "test/test_helpers.h"
 #include "controllers/api_controller.h"
 #include "controllers/explorer_internal.h"
+#include "models/file_service.h"
 #include <string.h>
 #include <inttypes.h>
+#include <unistd.h>
 
 int test_api(void)
 {
@@ -189,6 +191,203 @@ int test_api(void)
         /* Should either serve stats (503 if cache empty) or match the route */
         bool ok = (n1 > 0);
         if (ok) printf("OK (%zu bytes)\n", n1);
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: zslp token resources serve REST reads... ");
+    {
+        char dbdir[256];
+        char dbpath[320];
+        uint8_t txid[32];
+        uint8_t token_id[32];
+        uint8_t addr_hash[20];
+        struct node_db ndb;
+        memset(&ndb, 0, sizeof(ndb));
+        memset(txid, 0x44, sizeof(txid));
+        memset(token_id, 0x55, sizeof(token_id));
+        memset(addr_hash, 0x66, sizeof(addr_hash));
+        snprintf(dbdir, sizeof(dbdir), ".zcl_test_api_zslp_%d", (int)getpid());
+        mkdir(dbdir, 0755);
+        snprintf(dbpath, sizeof(dbpath), "%s/node.db", dbdir);
+
+        bool ok = node_db_open(&ndb, dbpath);
+        if (ok) {
+            ok = db_zslp_token_save_key(&ndb, "apitoken", "APITOKEN",
+                                        "API Token", 0, "", 42, 1234);
+            ok = ok && db_zslp_transfer_save(&ndb, txid, 99, token_id, 2, 77, 1, addr_hash);
+            ok = ok && db_zslp_token_save_key(&ndb,
+                "5555555555555555555555555555555555555555555555555555555555555555",
+                "HEX55", "Hex Token", 0, "", 99, 77);
+            api_set_state(NULL, NULL, NULL, &ndb, dbdir);
+
+            size_t n = api_handle_request("GET", "/api/zslp/tokens?limit=10",
+                                          NULL, 0, resp, sizeof(resp));
+            ok = ok && (n > 0) && (strstr((char *)resp, "200 OK") != NULL);
+            ok = ok && (strstr((char *)resp, "\"tokens\"") != NULL);
+            ok = ok && (strstr((char *)resp, "APITOKEN") != NULL);
+
+            n = api_handle_request("GET", "/api/zslp/tokens/APITOKEN",
+                                   NULL, 0, resp, sizeof(resp));
+            ok = ok && (n > 0) && (strstr((char *)resp, "\"token_id\":\"APITOKEN\"") != NULL);
+
+            n = api_handle_request("GET",
+                "/api/zslp/tokens/5555555555555555555555555555555555555555555555555555555555555555/transfers?limit=5",
+                NULL, 0, resp, sizeof(resp));
+            ok = ok && (n > 0) && (strstr((char *)resp, "\"transfers\"") != NULL);
+            ok = ok && (strstr((char *)resp, "\"amount\":77") != NULL);
+
+            n = api_handle_request("GET", "/api/zslp/tokens/BAD-TOKEN!",
+                                   NULL, 0, resp, sizeof(resp));
+            ok = ok && (n > 0) && (strstr((char *)resp, "404") != NULL);
+
+            n = api_handle_request("GET", "/api/zslp/tokens?limit=999",
+                                   NULL, 0, resp, sizeof(resp));
+            ok = ok && (n > 0) && (strstr((char *)resp, "404") != NULL);
+
+            api_set_state(NULL, NULL, NULL, NULL, NULL);
+            node_db_close(&ndb);
+        }
+
+        char cmd[384];
+        snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
+        system(cmd);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: onion announcements serve REST reads... ");
+    {
+        char dbdir[256];
+        char dbpath[320];
+        struct node_db ndb;
+        bool ok;
+        snprintf(dbdir, sizeof(dbdir), ".zcl_test_api_onion_%d", (int)getpid());
+        mkdir(dbdir, 0755);
+        snprintf(dbpath, sizeof(dbpath), "%s/node.db", dbdir);
+        memset(&ndb, 0, sizeof(ndb));
+        ok = node_db_open(&ndb, dbpath);
+
+        if (ok) {
+            struct db_onion_announcement a, b;
+            memset(&a, 0, sizeof(a));
+            memset(&b, 0, sizeof(b));
+            snprintf(a.onion_address, sizeof(a.onion_address),
+                     "%s", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.onion");
+            snprintf(a.script_hex, sizeof(a.script_hex), "%s", "6a01");
+            a.announced_at = 1;
+            snprintf(b.onion_address, sizeof(b.onion_address),
+                     "%s", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.onion");
+            snprintf(b.script_hex, sizeof(b.script_hex), "%s", "6a02");
+            b.announced_at = 2;
+            ok = db_onion_announcement_save(&ndb, &a);
+            ok = ok && db_onion_announcement_save(&ndb, &b);
+            api_set_state(NULL, NULL, NULL, &ndb, dbdir);
+
+            size_t n = api_handle_request("GET", "/api/onion/announcements?limit=2",
+                                          NULL, 0, resp, sizeof(resp));
+            ok = ok && (n > 0) && (strstr((char *)resp, "\"announcements\"") != NULL);
+            ok = ok && (strstr((char *)resp,
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.onion") != NULL);
+
+            n = api_handle_request("GET", "/api/onion/announcements?limit=99",
+                                   NULL, 0, resp, sizeof(resp));
+            ok = ok && (n > 0) && (strstr((char *)resp, "404") != NULL);
+
+            api_set_state(NULL, NULL, NULL, NULL, NULL);
+            node_db_close(&ndb);
+        }
+
+        char cmd[384];
+        snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
+        system(cmd);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: file services serve REST reads... ");
+    {
+        char dbdir[256];
+        char dbpath[320];
+        struct node_db ndb;
+        bool ok;
+        snprintf(dbdir, sizeof(dbdir), ".zcl_test_api_file_services_%d", (int)getpid());
+        mkdir(dbdir, 0755);
+        snprintf(dbpath, sizeof(dbpath), "%s/node.db", dbdir);
+        memset(&ndb, 0, sizeof(ndb));
+        ok = node_db_open(&ndb, dbpath);
+
+        if (ok) {
+            struct db_file_service fs;
+            memset(&fs, 0, sizeof(fs));
+            memset(fs.ip, 0x77, sizeof(fs.ip));
+            fs.port = 8080;
+            fs.is_zcl23 = true;
+            ok = db_file_service_save(&ndb, &fs);
+            api_set_state(NULL, NULL, NULL, &ndb, dbdir);
+
+            size_t n = api_handle_request("GET", "/api/file-services?limit=1",
+                                          NULL, 0, resp, sizeof(resp));
+            ok = ok && (n > 0) && (strstr((char *)resp, "\"file_services\"") != NULL);
+            ok = ok && (strstr((char *)resp, "\"port\":8080") != NULL);
+
+            n = api_handle_request("GET", "/api/file-services?limit=99",
+                                   NULL, 0, resp, sizeof(resp));
+            ok = ok && (n > 0) && (strstr((char *)resp, "404") != NULL);
+
+            api_set_state(NULL, NULL, NULL, NULL, NULL);
+            node_db_close(&ndb);
+        }
+
+        char cmd[384];
+        snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
+        system(cmd);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: peers serve REST reads... ");
+    {
+        char dbdir[256];
+        char dbpath[320];
+        struct node_db ndb;
+        bool ok;
+        snprintf(dbdir, sizeof(dbdir), ".zcl_test_api_peers_%d", (int)getpid());
+        mkdir(dbdir, 0755);
+        snprintf(dbpath, sizeof(dbpath), "%s/node.db", dbdir);
+        memset(&ndb, 0, sizeof(ndb));
+        ok = node_db_open(&ndb, dbpath);
+
+        if (ok) {
+            struct db_peer peer;
+            memset(&peer, 0, sizeof(peer));
+            memset(peer.ip, 0x55, sizeof(peer.ip));
+            peer.port = 8333;
+            peer.services = 5;
+            peer.is_zcl23 = true;
+            ok = db_peer_save(&ndb, &peer);
+            api_set_state(NULL, NULL, NULL, &ndb, dbdir);
+
+            size_t n = api_handle_request("GET", "/api/peers?limit=1",
+                                          NULL, 0, resp, sizeof(resp));
+            ok = ok && (n > 0) && (strstr((char *)resp, "\"peers\"") != NULL);
+            ok = ok && (strstr((char *)resp, "\"port\":8333") != NULL);
+
+            n = api_handle_request("GET", "/api/peers?limit=99",
+                                   NULL, 0, resp, sizeof(resp));
+            ok = ok && (n > 0) && (strstr((char *)resp, "404") != NULL);
+
+            api_set_state(NULL, NULL, NULL, NULL, NULL);
+            node_db_close(&ndb);
+        }
+
+        char cmd[384];
+        snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
+        system(cmd);
+
+        if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
 

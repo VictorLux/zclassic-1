@@ -18,20 +18,31 @@
 #include <unistd.h>
 #include <sqlite3.h>
 
-static const char *g_file_datadir = NULL;
-static struct file_manifest g_manifest;
-static bool g_manifest_valid = false;
+struct file_context {
+    const char *datadir;
+    struct file_manifest manifest;
+    bool manifest_valid;
+};
+
+static struct file_context g_file_ctx = {0};
+
+static struct file_context *file_ctx(void)
+{
+    return &g_file_ctx;
+}
 
 void file_controller_init(const char *datadir)
 {
-    g_file_datadir = datadir;
-    memset(&g_manifest, 0, sizeof(g_manifest));
-    g_manifest_valid = false;
+    struct file_context *ctx = file_ctx();
+    ctx->datadir = datadir;
+    memset(&ctx->manifest, 0, sizeof(ctx->manifest));
+    ctx->manifest_valid = false;
 }
 
 const struct file_manifest *file_controller_get_manifest(void)
 {
-    return g_manifest_valid ? &g_manifest : NULL;
+    struct file_context *ctx = file_ctx();
+    return ctx->manifest_valid ? &ctx->manifest : NULL;
 }
 
 /* ── Build manifest from block files ───────────────────────────── */
@@ -458,6 +469,7 @@ bool file_export_consensus_snapshot(const char *datadir)
 static bool rpc_getfilemanifest(const struct json_value *params, bool help,
                                  struct json_value *result)
 {
+    struct file_context *ctx = file_ctx();
     (void)params;
     RPC_HELP(help, result,
         "getfilemanifest\n"
@@ -466,11 +478,11 @@ static bool rpc_getfilemanifest(const struct json_value *params, bool help,
         "  { root_hash, chain_height, total_bytes, num_chunks, chunks[] }\n");
 
     /* Build manifest on first call if not cached */
-    if (!g_manifest_valid && g_file_datadir) {
-        g_manifest_valid = file_manifest_build(&g_manifest, g_file_datadir);
+    if (!ctx->manifest_valid && ctx->datadir) {
+        ctx->manifest_valid = file_manifest_build(&ctx->manifest, ctx->datadir);
     }
 
-    if (!g_manifest_valid) {
+    if (!ctx->manifest_valid) {
         json_set_str(result, "error: no block files found");
         return true;
     }
@@ -479,28 +491,28 @@ static bool rpc_getfilemanifest(const struct json_value *params, bool help,
 
     char root_hex[65];
     for (int i = 0; i < 32; i++)
-        snprintf(root_hex + i * 2, 3, "%02x", g_manifest.root_hash[i]);
+        snprintf(root_hex + i * 2, 3, "%02x", ctx->manifest.root_hash[i]);
     json_push_kv_str(result, "root_hash", root_hex);
-    json_push_kv_int(result, "num_chunks", (int64_t)g_manifest.num_chunks);
-    json_push_kv_int(result, "total_bytes", (int64_t)g_manifest.total_bytes);
+    json_push_kv_int(result, "num_chunks", (int64_t)ctx->manifest.num_chunks);
+    json_push_kv_int(result, "total_bytes", (int64_t)ctx->manifest.total_bytes);
 
     /* Chunk list */
     struct json_value chunks_arr;
     json_set_array(&chunks_arr);
-    for (uint32_t i = 0; i < g_manifest.num_chunks; i++) {
+    for (uint32_t i = 0; i < ctx->manifest.num_chunks; i++) {
         struct json_value chunk_obj;
         json_set_object(&chunk_obj);
 
         char hex[65];
         for (int j = 0; j < 32; j++)
-            snprintf(hex + j * 2, 3, "%02x", g_manifest.chunks[i].sha3[j]);
+            snprintf(hex + j * 2, 3, "%02x", ctx->manifest.chunks[i].sha3[j]);
         json_push_kv_str(&chunk_obj, "sha3", hex);
         json_push_kv_int(&chunk_obj, "size",
-                          (int64_t)g_manifest.chunks[i].size);
+                          (int64_t)ctx->manifest.chunks[i].size);
         json_push_kv_int(&chunk_obj, "file_index",
-                          (int64_t)g_manifest.chunks[i].file_index);
+                          (int64_t)ctx->manifest.chunks[i].file_index);
         json_push_kv_int(&chunk_obj, "offset",
-                          (int64_t)g_manifest.chunks[i].offset);
+                          (int64_t)ctx->manifest.chunks[i].offset);
 
         json_push_back(&chunks_arr, &chunk_obj);
     }
@@ -512,6 +524,7 @@ static bool rpc_getfilemanifest(const struct json_value *params, bool help,
 static bool rpc_getfilechunk(const struct json_value *params, bool help,
                               struct json_value *result)
 {
+    struct file_context *ctx = file_ctx();
     RPC_HELP(help, result,
         "getfilechunk \"sha3hash\"\n"
         "\nReturn a file chunk by its SHA3-256 hash.\n"
@@ -519,8 +532,10 @@ static bool rpc_getfilechunk(const struct json_value *params, bool help,
         "  1. sha3hash (string, required) — 64-char hex SHA3 hash\n"
         "\nResult: { size, sha3, data_hex } or error\n");
 
-    if (!g_manifest_valid || !params)
-        return false;
+    if (!ctx->manifest_valid || !params) {
+        json_set_str(result, "error: file manifest not initialized");
+        return true;
+    }
 
     const struct json_value *arg0 = json_at(params, 0);
     const char *hex = arg0 ? json_get_str(arg0) : NULL;
@@ -540,7 +555,7 @@ static bool rpc_getfilechunk(const struct json_value *params, bool help,
         sha3[i] = (uint8_t)byte;
     }
 
-    const struct file_chunk *chunk = file_manifest_find(&g_manifest, sha3);
+    const struct file_chunk *chunk = file_manifest_find(&ctx->manifest, sha3);
     if (!chunk) {
         json_set_str(result, "error: chunk not found");
         return true;
@@ -548,7 +563,7 @@ static bool rpc_getfilechunk(const struct json_value *params, bool help,
 
     uint8_t *data = NULL;
     uint32_t data_size = 0;
-    if (!file_chunk_read(chunk, g_file_datadir, &data, &data_size)) {
+    if (!ctx->datadir || !file_chunk_read(chunk, ctx->datadir, &data, &data_size)) {
         json_set_str(result, "error: failed to read chunk from disk");
         return true;
     }

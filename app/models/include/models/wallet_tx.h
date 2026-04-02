@@ -22,6 +22,16 @@ struct db_wallet_tx {
     int64_t fee;
 };
 
+struct db_wallet_projection_summary {
+    int chain_tip_height;
+    int effective_tip_height;
+    int utxo_count;
+    int note_count;
+    int64_t transparent_balance;
+    int64_t shielded_balance;
+    int64_t speed_balance;
+};
+
 /* Callbacks and validation */
 struct ar_callbacks *db_wallet_tx_callbacks(void);
 bool db_wallet_tx_validate(const struct db_wallet_tx *t, struct ar_errors *errors);
@@ -72,6 +82,11 @@ bool db_wallet_utxo_find(struct node_db *ndb,
                          const uint8_t txid[32], uint32_t vout,
                          struct db_wallet_utxo *out);
 int64_t db_wallet_utxo_balance(struct node_db *ndb);
+int64_t db_wallet_utxo_balance_with_count(struct node_db *ndb, int *utxo_count);
+int db_wallet_chain_tip_height(struct node_db *ndb);
+int db_wallet_effective_tip_height(struct node_db *ndb);
+bool db_wallet_projection_summary(struct node_db *ndb,
+                                  struct db_wallet_projection_summary *out);
 
 /* List unspent wallet UTXOs. Returns count. */
 int db_wallet_utxo_list_unspent(struct node_db *ndb,
@@ -136,6 +151,7 @@ bool db_sapling_note_is_nullifier_spent(struct node_db *ndb,
 int64_t db_sapling_note_balance(struct node_db *ndb);
 int64_t db_sapling_note_balance_for_ivk(struct node_db *ndb,
                                         const uint8_t ivk[32]);
+int64_t db_sapling_note_balance_with_count(struct node_db *ndb, int *note_count);
 
 /* List unspent notes. Returns count. */
 int db_sapling_note_list_unspent(struct node_db *ndb,

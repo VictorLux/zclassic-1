@@ -4,6 +4,8 @@
 
 #define _XOPEN_SOURCE 700
 #include "controllers/blog_controller.h"
+#include "models/database.h"
+#include "models/onion_announcement.h"
 #include "zslp/slp.h"
 #include "primitives/transaction.h"
 #include "core/uint256.h"
@@ -13,7 +15,6 @@
 #include <string.h>
 #include <limits.h>
 #include <sys/stat.h>
-#include <sqlite3.h>
 
 /* ── Static file server ─────────────────────────────────────── */
 
@@ -318,42 +319,20 @@ int blog_discover_onion_peers(const char *datadir,
 
 bool blog_auto_announce_onion(const char *datadir, const char *onion_address)
 {
+    struct node_db ndb;
+    struct db_onion_announcement ann;
     if (!datadir || !onion_address || onion_address[0] == '\0')
-        return false;
-
-    /* Validate .onion suffix */
-    size_t alen = strlen(onion_address);
-    if (alen < 7 || strcmp(onion_address + alen - 6, ".onion") != 0)
         return false;
 
     char db_path[1024];
     snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
 
-    sqlite3 *db = NULL;
-    if (sqlite3_open(db_path, &db) != SQLITE_OK)
+    memset(&ndb, 0, sizeof(ndb));
+    if (!node_db_open(&ndb, db_path))
         return false;
-    sqlite3_busy_timeout(db, 5000);
 
-    /* Ensure tracking table exists */
-    sqlite3_exec(db,
-        "CREATE TABLE IF NOT EXISTS onion_announcements ("
-        "onion_address TEXT PRIMARY KEY,"
-        "announced_at INTEGER NOT NULL,"
-        "script_hex TEXT"
-        ")", NULL, NULL, NULL);
-
-    /* Check if already announced */
-    sqlite3_stmt *chk = NULL;
-    int rc = sqlite3_prepare_v2(db,
-        "SELECT 1 FROM onion_announcements WHERE onion_address=?",
-        -1, &chk, NULL);
-    if (rc != SQLITE_OK) { sqlite3_close(db); return false; }
-    sqlite3_bind_text(chk, 1, onion_address, -1, SQLITE_STATIC);
-    bool already = (sqlite3_step(chk) == SQLITE_ROW);
-    sqlite3_finalize(chk);
-
-    if (already) {
-        sqlite3_close(db);
+    if (db_onion_announcement_exists(&ndb, onion_address)) {
+        node_db_close(&ndb);
         return false;
     }
 
@@ -366,20 +345,21 @@ bool blog_auto_announce_onion(const char *datadir, const char *onion_address)
     size_t slen = blog_build_node_announce(script, sizeof(script),
                                             token_id, onion_address);
     if (slen == 0) {
-        sqlite3_close(db);
+        node_db_close(&ndb);
         return false;
     }
 
-    /* Record the announcement so we don't repeat it */
-    sqlite3_stmt *ins = NULL;
-    sqlite3_prepare_v2(db,
-        "INSERT INTO onion_announcements (onion_address, announced_at) "
-        "VALUES (?, strftime('%s','now'))",
-        -1, &ins, NULL);
-    sqlite3_bind_text(ins, 1, onion_address, -1, SQLITE_STATIC);
-    sqlite3_step(ins);
-    sqlite3_finalize(ins);
+    memset(&ann, 0, sizeof(ann));
+    snprintf(ann.onion_address, sizeof(ann.onion_address), "%s", onion_address);
+    {
+        size_t off = 0;
+        for (size_t i = 0; i < slen && off + 2 < sizeof(ann.script_hex); i++)
+            off += (size_t)snprintf(ann.script_hex + off,
+                                    sizeof(ann.script_hex) - off,
+                                    "%02x", script[i]);
+    }
 
-    sqlite3_close(db);
-    return true;
+    bool ok = db_onion_announcement_save(&ndb, &ann);
+    node_db_close(&ndb);
+    return ok;
 }

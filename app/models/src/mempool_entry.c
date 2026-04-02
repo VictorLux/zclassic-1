@@ -46,13 +46,8 @@ bool db_mempool_save(struct node_db *ndb, const struct db_mempool_entry *e)
     if (e->time_added == 0)
         ((struct db_mempool_entry *)e)->time_added = (int64_t)time(NULL);
 
-    struct ar_errors errors;
-    if (!db_mempool_validate(e, &errors)) {
-        AR_LOG_VALIDATION_FAILURE("mempool_entry", &errors);
-        return false;
-    }
-
     struct ar_callbacks *cbs = db_mempool_callbacks();
+    AR_VALIDATE_RECORD(cbs, "mempool_entry", e, db_mempool_validate);
     if (!ar_run_before_save(cbs, (void *)e)) return false;
 
     sqlite3_stmt *s = NULL;

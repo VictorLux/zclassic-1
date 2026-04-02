@@ -905,6 +905,99 @@ int node_db_migrate(struct node_db *ndb, const char *datadir)
         applied++;
     }
 
+    if (current_ver < 12) {
+        /* v12: ZSLP address balances as a first-class model-backed table. */
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS zslp_balances ("
+            "token_id TEXT NOT NULL,"
+            "address TEXT NOT NULL,"
+            "balance INTEGER NOT NULL DEFAULT 0,"
+            "PRIMARY KEY (token_id, address))");
+
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_zslp_balance_token "
+            "ON zslp_balances(token_id)");
+
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_zslp_balance_address "
+            "ON zslp_balances(address)");
+
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('012')");
+        int32_t v = 12;
+        node_db_state_set(ndb, "schema_version", &v, sizeof(v));
+        current_ver = 12;
+        applied++;
+    }
+
+    if (current_ver < 13) {
+        /* v13: App-facing lightweight models for wallet contacts and
+         * onion announcement registry. */
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS contacts ("
+            "address TEXT PRIMARY KEY,"
+            "name TEXT NOT NULL,"
+            "last_used INTEGER NOT NULL DEFAULT 0)");
+
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_contacts_last_used "
+            "ON contacts(last_used DESC)");
+
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS onion_announcements ("
+            "onion_address TEXT PRIMARY KEY,"
+            "announced_at INTEGER NOT NULL,"
+            "script_hex TEXT NOT NULL DEFAULT '')");
+
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_onion_announced_at "
+            "ON onion_announcements(announced_at DESC)");
+
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('013')");
+        int32_t v = 13;
+        node_db_state_set(ndb, "schema_version", &v, sizeof(v));
+        current_ver = 13;
+        applied++;
+    }
+
+    if (current_ver < 14) {
+        /* v14: Store product/order tables as model-owned app schema. */
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS products ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "name TEXT NOT NULL,"
+            "description TEXT,"
+            "price_zatoshi INTEGER NOT NULL,"
+            "token_id TEXT,"
+            "tokens_per_purchase INTEGER NOT NULL DEFAULT 1,"
+            "active INTEGER NOT NULL DEFAULT 1)");
+
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS orders ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "product_id INTEGER NOT NULL,"
+            "customer_addr TEXT,"
+            "payment_addr TEXT NOT NULL,"
+            "amount_zatoshi INTEGER NOT NULL,"
+            "payment_txid TEXT,"
+            "mint_txid TEXT,"
+            "status INTEGER NOT NULL DEFAULT 0,"
+            "created_at INTEGER NOT NULL,"
+            "paid_at INTEGER)");
+
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_orders_status_created "
+            "ON orders(status, created_at DESC)");
+
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('014')");
+        int32_t v = 14;
+        node_db_state_set(ndb, "schema_version", &v, sizeof(v));
+        current_ver = 14;
+        applied++;
+    }
+
     if (applied > 0)
         printf("db: applied %d migration(s), now at version %d\n",
                applied, node_db_schema_version(ndb));

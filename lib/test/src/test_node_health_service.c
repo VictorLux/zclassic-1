@@ -13,13 +13,18 @@ int test_node_health_service(void)
         struct node_health_snapshot health;
         rpc_net_set_connman(NULL);
         sync_set_state(SYNC_IDLE, "reset");
-        node_health_collect(&health, NULL);
+        node_health_collect(&health, NULL, NULL);
 
         bool ok = (health.sync_state == SYNC_IDLE);
         ok = ok && !health.synced;
         ok = ok && !health.has_peers;
         ok = ok && !health.healthy;
+        ok = ok && !health.tor_ready;
+        ok = ok && !health.onion_service_ready;
         ok = ok && health.tip_height == -1;
+        ok = ok && health.header_height == -1;
+        ok = ok && health.tip_lag == 0;
+        ok = ok && strcmp(health.degraded_reason, "no_peers") == 0;
 
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
@@ -34,12 +39,14 @@ int test_node_health_service(void)
         sync_set_state(SYNC_BLOCKS_DOWNLOAD, "test");
         sync_set_state(SYNC_CONNECTING_BLOCKS, "test");
         sync_set_state(SYNC_AT_TIP, "test");
-        node_health_collect(&health, NULL);
+        node_health_collect(&health, NULL, NULL);
 
         bool ok = health.synced;
         ok = ok && !health.has_peers;
         ok = ok && !health.healthy;
         ok = ok && health.peer_count == 0;
+        ok = ok && !health.onion_service_ready;
+        ok = ok && strcmp(health.degraded_reason, "no_peers") == 0;
 
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }

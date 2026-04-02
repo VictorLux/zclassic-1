@@ -10,6 +10,7 @@
 #include "controllers/explorer_factoids.h"
 #include "controllers/file_controller.h"
 #include "services/snapshot_sync_service.h"
+#include "services/zslp_service.h"
 #include "controllers/blockchain_controller.h"
 #include "services/node_health_service.h"
 #include "chain/mmb.h"
@@ -22,6 +23,10 @@
 #include "keys/key_io.h"
 #include "models/database.h"
 #include "models/block.h"
+#include "models/file_service.h"
+#include "models/onion_announcement.h"
+#include "models/peer.h"
+#include "models/zslp.h"
 #include <stdio.h>
 #include <sys/stat.h>
 #include <stdlib.h>
@@ -1176,6 +1181,324 @@ static size_t do_lookup(enum lookup_type type, const char *param,
     return json_error(response, response_max, JSON_500_HEADERS, "RPC unavailable");
 }
 
+static bool api_is_printable_ascii(const char *s)
+{
+    if (!s || !s[0])
+        return false;
+    for (const unsigned char *p = (const unsigned char *)s; *p; ++p) {
+        if (*p < 32 || *p > 126)
+            return false;
+    }
+    return true;
+}
+
+static struct node_db *api_node_db(void)
+{
+    return g_api_ctx.node_db ? g_api_ctx.node_db : app_runtime_node_db();
+}
+
+static bool api_parse_zslp_limit(const char *path, size_t *limit_out)
+{
+    const char *q;
+    const char *lp;
+    char *end = NULL;
+    long value;
+
+    if (!limit_out)
+        return false;
+    *limit_out = 50;
+    q = strchr(path, '?');
+    if (!q)
+        return true;
+    lp = strstr(q, "limit=");
+    if (!lp)
+        return true;
+    value = strtol(lp + 6, &end, 10);
+    if (!end || (*end != '\0' && *end != '&') || value <= 0 || value > 64)
+        return false;
+    *limit_out = (size_t)value;
+    return true;
+}
+
+static bool api_parse_collection_limit(const char *path,
+                                       const char *query_key,
+                                       size_t default_limit,
+                                       size_t max_limit,
+                                       size_t *limit_out)
+{
+    const char *q;
+    const char *lp;
+    char *end = NULL;
+    long value;
+    char needle[64];
+
+    if (!path || !query_key || !limit_out || default_limit == 0 ||
+        max_limit == 0 || default_limit > max_limit)
+        return false;
+    *limit_out = default_limit;
+    q = strchr(path, '?');
+    if (!q)
+        return true;
+    snprintf(needle, sizeof(needle), "%s=", query_key);
+    lp = strstr(q, needle);
+    if (!lp)
+        return true;
+    value = strtol(lp + strlen(needle), &end, 10);
+    if (!end || (*end != '\0' && *end != '&') || value <= 0 ||
+        (size_t)value > max_limit)
+        return false;
+    *limit_out = (size_t)value;
+    return true;
+}
+
+static size_t api_serve_zslp_tokens(const char *path, uint8_t *response,
+                                    size_t response_max)
+{
+    struct node_db *ndb = api_node_db();
+    struct db_zslp_token_info tokens[64];
+    size_t limit = 50;
+    int count;
+    size_t w = 0;
+
+    if (!ndb || !ndb->db)
+        return json_error(response, response_max, JSON_500_HEADERS, "No database");
+    if (!api_parse_zslp_limit(path, &limit))
+        return json_error(response, response_max, JSON_404_HEADERS,
+                          "Invalid limit parameter");
+
+    count = db_zslp_token_list(ndb, tokens, limit);
+    w += (size_t)snprintf((char *)response + w, response_max - w,
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: application/json\r\n"
+        "Access-Control-Allow-Origin: *\r\n"
+        "Cache-Control: no-cache\r\n"
+        "Connection: close\r\n\r\n"
+        "{\"tokens\":[");
+    for (int i = 0; i < count && w + 256 < response_max; i++) {
+        w += (size_t)snprintf((char *)response + w, response_max - w,
+            "%s{\"token_id\":\"%s\",\"ticker\":\"%s\",\"name\":\"%s\","
+            "\"decimals\":%d,\"genesis_height\":%d,\"total_minted\":%lld}",
+            i > 0 ? "," : "",
+            tokens[i].token_id,
+            tokens[i].ticker,
+            tokens[i].name,
+            tokens[i].decimals,
+            tokens[i].genesis_height,
+            (long long)tokens[i].total_minted);
+    }
+    w += (size_t)snprintf((char *)response + w, response_max - w, "]}");
+    return w < response_max ? w : response_max;
+}
+
+static size_t api_serve_zslp_token(const char *token_id, uint8_t *response,
+                                   size_t response_max)
+{
+    struct node_db *ndb = api_node_db();
+    struct db_zslp_token_info token;
+
+    if (!ndb || !ndb->db)
+        return json_error(response, response_max, JSON_500_HEADERS, "No database");
+    if (!api_is_printable_ascii(token_id) ||
+        !zslp_service_validate_token_key(token_id))
+        return json_error(response, response_max, JSON_404_HEADERS,
+                          "Invalid token id");
+    if (!db_zslp_token_find(ndb, token_id, &token))
+        return json_error(response, response_max, JSON_404_HEADERS,
+                          "Token not found");
+
+    return (size_t)snprintf((char *)response, response_max,
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: application/json\r\n"
+        "Access-Control-Allow-Origin: *\r\n"
+        "Cache-Control: no-cache\r\n"
+        "Connection: close\r\n\r\n"
+        "{\"token_id\":\"%s\",\"ticker\":\"%s\",\"name\":\"%s\","
+        "\"decimals\":%d,\"genesis_height\":%d,\"total_minted\":%lld}",
+        token.token_id, token.ticker, token.name, token.decimals,
+        token.genesis_height, (long long)token.total_minted);
+}
+
+static size_t api_serve_zslp_token_transfers(const char *path,
+                                             const char *token_id,
+                                             uint8_t *response,
+                                             size_t response_max)
+{
+    struct node_db *ndb = api_node_db();
+    struct db_zslp_transfer_info transfers[64];
+    size_t limit = 50;
+    int count;
+    size_t w = 0;
+
+    if (!ndb || !ndb->db)
+        return json_error(response, response_max, JSON_500_HEADERS, "No database");
+    if (!api_is_printable_ascii(token_id) ||
+        !zslp_service_validate_token_key(token_id))
+        return json_error(response, response_max, JSON_404_HEADERS,
+                          "Invalid token id");
+    if (!api_parse_zslp_limit(path, &limit))
+        return json_error(response, response_max, JSON_404_HEADERS,
+                          "Invalid limit parameter");
+
+    count = db_zslp_transfer_list_by_token(ndb, token_id, transfers, limit);
+    w += (size_t)snprintf((char *)response + w, response_max - w,
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: application/json\r\n"
+        "Access-Control-Allow-Origin: *\r\n"
+        "Cache-Control: no-cache\r\n"
+        "Connection: close\r\n\r\n"
+        "{\"token_id\":\"%s\",\"transfers\":[",
+        token_id);
+    for (int i = 0; i < count && w + 256 < response_max; i++) {
+        w += (size_t)snprintf((char *)response + w, response_max - w,
+            "%s{\"txid\":\"%s\",\"token_id\":\"%s\",\"block_height\":%d,"
+            "\"tx_type\":%d,\"amount\":%lld,\"vout\":%d%s%s%s}",
+            i > 0 ? "," : "",
+            transfers[i].txid,
+            transfers[i].token_id,
+            transfers[i].block_height,
+            transfers[i].tx_type,
+            (long long)transfers[i].amount,
+            transfers[i].vout,
+            transfers[i].to_addr_hex[0] ? ",\"to_addr_hex\":\"" : "",
+            transfers[i].to_addr_hex,
+            transfers[i].to_addr_hex[0] ? "\"" : "");
+    }
+    w += (size_t)snprintf((char *)response + w, response_max - w, "]}");
+    return w < response_max ? w : response_max;
+}
+
+static size_t api_serve_onion_announcements(const char *path,
+                                            uint8_t *response,
+                                            size_t response_max)
+{
+    struct node_db *ndb = api_node_db();
+    struct db_onion_announcement rows[32];
+    size_t limit = 16;
+    int count;
+    size_t w = 0;
+
+    if (!ndb || !ndb->db)
+        return json_error(response, response_max, JSON_500_HEADERS, "No database");
+    if (!api_parse_collection_limit(path, "limit", 16, 32, &limit))
+        return json_error(response, response_max, JSON_404_HEADERS,
+                          "Invalid limit parameter");
+    memset(rows, 0, sizeof(rows));
+    count = db_onion_announcement_recent(ndb, rows, limit);
+    w += (size_t)snprintf((char *)response + w, response_max - w,
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: application/json\r\n"
+        "Access-Control-Allow-Origin: *\r\n"
+        "Cache-Control: no-cache\r\n"
+        "Connection: close\r\n\r\n"
+        "{\"announcements\":[");
+    for (int i = 0; i < count && w + 256 < response_max; i++) {
+        w += (size_t)snprintf((char *)response + w, response_max - w,
+            "%s{\"onion_address\":\"%s\",\"announced_at\":%" PRId64
+            ",\"script_hex\":\"%s\"}",
+            i > 0 ? "," : "",
+            rows[i].onion_address,
+            rows[i].announced_at,
+            rows[i].script_hex);
+    }
+    w += (size_t)snprintf((char *)response + w, response_max - w, "]}");
+    return w < response_max ? w : response_max;
+}
+
+static size_t api_serve_file_services(const char *path,
+                                      uint8_t *response,
+                                      size_t response_max)
+{
+    struct node_db *ndb = api_node_db();
+    struct db_file_service rows[32];
+    size_t limit = 16;
+    int count;
+    size_t w = 0;
+
+    if (!ndb || !ndb->db)
+        return json_error(response, response_max, JSON_500_HEADERS, "No database");
+    if (!api_parse_collection_limit(path, "limit", 16, 32, &limit))
+        return json_error(response, response_max, JSON_404_HEADERS,
+                          "Invalid limit parameter");
+    memset(rows, 0, sizeof(rows));
+    count = db_file_service_recent(ndb, rows, limit);
+    w += (size_t)snprintf((char *)response + w, response_max - w,
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: application/json\r\n"
+        "Access-Control-Allow-Origin: *\r\n"
+        "Cache-Control: no-cache\r\n"
+        "Connection: close\r\n\r\n"
+        "{\"file_services\":[");
+    for (int i = 0; i < count && w + 256 < response_max; i++) {
+        char ip_hex[33];
+        for (int j = 0; j < 16; j++)
+            snprintf(ip_hex + j * 2, 3, "%02x", rows[i].ip[j]);
+        w += (size_t)snprintf((char *)response + w, response_max - w,
+            "%s{\"ip\":\"%s\",\"port\":%u,\"p2p_port\":%u,"
+            "\"last_seen\":%" PRId64 ",\"is_zcl23\":%s}",
+            i > 0 ? "," : "",
+            ip_hex,
+            (unsigned)rows[i].port,
+            (unsigned)rows[i].p2p_port,
+            rows[i].last_seen,
+            rows[i].is_zcl23 ? "true" : "false");
+    }
+    w += (size_t)snprintf((char *)response + w, response_max - w, "]}");
+    return w < response_max ? w : response_max;
+}
+
+static size_t api_serve_peers(const char *path,
+                              uint8_t *response,
+                              size_t response_max)
+{
+    struct node_db *ndb = api_node_db();
+    struct db_peer rows[32];
+    size_t limit = 16;
+    int count;
+    size_t w = 0;
+
+    if (!ndb || !ndb->db)
+        return json_error(response, response_max, JSON_500_HEADERS, "No database");
+    if (!api_parse_collection_limit(path, "limit", 16, 32, &limit))
+        return json_error(response, response_max, JSON_404_HEADERS,
+                          "Invalid limit parameter");
+    memset(rows, 0, sizeof(rows));
+    count = db_peer_recent(ndb, rows, limit);
+    w += (size_t)snprintf((char *)response + w, response_max - w,
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: application/json\r\n"
+        "Access-Control-Allow-Origin: *\r\n"
+        "Cache-Control: no-cache\r\n"
+        "Connection: close\r\n\r\n"
+        "{\"peers\":[");
+    for (int i = 0; i < count && w + 320 < response_max; i++) {
+        char ip_hex[33];
+        char src_hex[33];
+        for (int j = 0; j < 16; j++) {
+            snprintf(ip_hex + j * 2, 3, "%02x", rows[i].ip[j]);
+            snprintf(src_hex + j * 2, 3, "%02x", rows[i].source[j]);
+        }
+        w += (size_t)snprintf((char *)response + w, response_max - w,
+            "%s{\"ip\":\"%s\",\"port\":%u,\"services\":%llu,"
+            "\"last_seen\":%" PRId64 ",\"last_try\":%" PRId64
+            ",\"attempts\":%d,\"bandwidth_score\":%u,"
+            "\"is_zcl23\":%s%s%s%s}",
+            i > 0 ? "," : "",
+            ip_hex,
+            (unsigned)rows[i].port,
+            (unsigned long long)rows[i].services,
+            rows[i].last_seen,
+            rows[i].last_try,
+            rows[i].attempts,
+            (unsigned)rows[i].bandwidth_score,
+            rows[i].is_zcl23 ? "true" : "false",
+            rows[i].has_source ? ",\"source\":\"" : "",
+            rows[i].has_source ? src_hex : "",
+            rows[i].has_source ? "\"" : "");
+    }
+    w += (size_t)snprintf((char *)response + w, response_max - w, "]}");
+    return w < response_max ? w : response_max;
+}
+
 /* ── Main router ─────────────────────────────────────────── */
 /* IMPORTANT: This function is called from HTTPS handler threads.
  * It must NEVER call rpc_call directly. All data comes from
@@ -1227,6 +1550,46 @@ size_t api_handle_request(const char *method, const char *path,
     /* Route: /api/address/:addr — served via lookup thread */
     if (strncmp(clean_path, "/api/address/", 13) == 0 && clean_path[13])
         return do_lookup(LOOKUP_ADDRESS, clean_path + 13, response, response_max);
+
+    /* Route: /api/zslp/tokens — resource collection */
+    if (strcmp(clean_path, "/api/zslp/tokens") == 0 ||
+        strncmp(clean_path, "/api/zslp/tokens?", 17) == 0)
+        return api_serve_zslp_tokens(path, response, response_max);
+
+    /* Route: /api/zslp/tokens/:id/transfers — member subresource */
+    if (strncmp(clean_path, "/api/zslp/tokens/", 17) == 0 && clean_path[17]) {
+        const char *token_id = clean_path + 17;
+        const char *suffix = strstr(token_id, "/transfers");
+        if (suffix &&
+            (strcmp(suffix, "/transfers") == 0 ||
+             strncmp(suffix, "/transfers?", 11) == 0)) {
+            char token_buf[ZSLP_TOKEN_KEY_MAX + 1];
+            size_t token_len = (size_t)(suffix - token_id);
+            if (token_len == 0 || token_len > ZSLP_TOKEN_KEY_MAX)
+                return json_error(response, response_max, JSON_404_HEADERS,
+                                  "Invalid token id");
+            memcpy(token_buf, token_id, token_len);
+            token_buf[token_len] = '\0';
+            return api_serve_zslp_token_transfers(path, token_buf,
+                                                  response, response_max);
+        }
+        return api_serve_zslp_token(token_id, response, response_max);
+    }
+
+    /* Route: /api/onion/announcements — resource collection */
+    if (strcmp(clean_path, "/api/onion/announcements") == 0 ||
+        strncmp(clean_path, "/api/onion/announcements?", 25) == 0)
+        return api_serve_onion_announcements(path, response, response_max);
+
+    /* Route: /api/file-services — resource collection */
+    if (strcmp(clean_path, "/api/file-services") == 0 ||
+        strncmp(clean_path, "/api/file-services?", 19) == 0)
+        return api_serve_file_services(path, response, response_max);
+
+    /* Route: /api/peers — resource collection */
+    if (strcmp(clean_path, "/api/peers") == 0 ||
+        strncmp(clean_path, "/api/peers?", 11) == 0)
+        return api_serve_peers(path, response, response_max);
 
     /* Route: /api/stats — served from cache */
     if (strcmp(clean_path, "/api/stats") == 0)
@@ -1355,40 +1718,83 @@ size_t api_handle_request(const char *method, const char *path,
     if (strcmp(clean_path, "/api/health") == 0) {
         struct node_health_snapshot health;
         node_health_collect(&health, g_api_ctx.node_db ?
-            g_api_ctx.node_db : app_runtime_node_db());
+            g_api_ctx.node_db : app_runtime_node_db(),
+            g_api_ctx.main_state);
 
         char body[4096];
         snprintf(body, sizeof(body),
             "{"
             "\"healthy\":%s,"
             "\"sync_state\":\"%s\","
-            "\"chain\":{\"tip_height\":%d},"
+            "\"chain\":{"
+              "\"tip_height\":%d,"
+              "\"header_height\":%d,"
+              "\"peer_best_height\":%d,"
+              "\"tip_lag\":%d"
+            "},"
             "\"database\":{"
               "\"wal_size_bytes\":%lld,"
               "\"utxo_count\":%lld"
             "},"
             "\"network\":{"
               "\"peer_count\":%zu,"
-              "\"has_peers\":%s"
+              "\"has_peers\":%s,"
+              "\"tip_stale\":%s,"
+              "\"tip_stale_seconds\":%lld"
+            "},"
+            "\"services\":{"
+              "\"tor_ready\":%s,"
+              "\"onion_service_ready\":%s,"
+              "\"onion_address\":%s%s%s"
+            "},"
+            "\"download\":{"
+              "\"requested\":%llu,"
+              "\"received\":%llu,"
+              "\"timed_out\":%llu,"
+              "\"in_flight\":%llu,"
+              "\"queued\":%llu,"
+              "\"queue_backed_up\":%s"
             "},"
             "\"boot\":{\"uptime_seconds\":%lld},"
             "\"errors\":{"
               "\"total\":%d,"
               "\"last\":%s%s%s"
+            "},"
+            "\"status\":{"
+              "\"degraded_reason\":%s%s%s"
             "}"
             "}",
             health.healthy ? "true" : "false",
             sync_state_name(health.sync_state),
             health.tip_height,
+            health.header_height,
+            health.peer_best_height,
+            health.tip_lag,
             (long long)health.wal_size_bytes,
             (long long)health.utxo_count,
             health.peer_count,
             health.has_peers ? "true" : "false",
+            health.tip_stale ? "true" : "false",
+            (long long)health.tip_stale_seconds,
+            health.tor_ready ? "true" : "false",
+            health.onion_service_ready ? "true" : "false",
+            health.onion_address[0] ? "\"" : "null",
+            health.onion_address,
+            health.onion_address[0] ? "\"" : "",
+            (unsigned long long)health.blocks_requested,
+            (unsigned long long)health.blocks_received,
+            (unsigned long long)health.blocks_timed_out,
+            (unsigned long long)health.in_flight,
+            (unsigned long long)health.queued,
+            health.queue_backed_up ? "true" : "false",
             (long long)health.uptime_seconds,
             health.error_total,
             health.last_error[0] ? "\"" : "null",
             health.last_error,
-            health.last_error[0] ? "\"" : "");
+            health.last_error[0] ? "\"" : "",
+            health.degraded_reason[0] ? "\"" : "null",
+            health.degraded_reason,
+            health.degraded_reason[0] ? "\"" : "");
 
         return (size_t)snprintf((char *)response, response_max,
             "HTTP/1.1 %s\r\n"

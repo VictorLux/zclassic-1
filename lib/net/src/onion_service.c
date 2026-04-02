@@ -4,6 +4,7 @@
  * All .onion traffic flows through here. */
 
 #include "net/onion_service.h"
+#include "net/tor_integration.h"
 #include "controllers/blog_controller.h"
 #include "views/format_helpers.h"
 #include "util/template.h"
@@ -14,9 +15,18 @@
 #include <stdatomic.h>
 #include <sqlite3.h>
 
-static char g_onion_address[128] = "";
-static const char *g_datadir = NULL;
-static time_t g_start_time = 0;
+struct onion_context {
+    char address[128];
+    const char *datadir;
+    time_t start_time;
+};
+
+static struct onion_context g_onion_ctx = {0};
+
+static struct onion_context *onion_ctx(void)
+{
+    return &g_onion_ctx;
+}
 
 /* Simple global rate limiter: max 100 requests/second */
 static _Atomic int64_t g_request_count = 0;
@@ -39,12 +49,13 @@ static bool rate_limit_check(void)
 
 static void query_node_stats(int *out_height, int *out_peers)
 {
+    struct onion_context *ctx = onion_ctx();
     *out_height = 0;
     *out_peers = 0;
-    if (!g_datadir) return;
+    if (!ctx->datadir) return;
 
     char db_path[1024];
-    zcl_node_db_path(db_path, sizeof(db_path), g_datadir);
+    zcl_node_db_path(db_path, sizeof(db_path), ctx->datadir);
     sqlite3 *db = NULL;
     if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK)
         return;
@@ -73,21 +84,22 @@ static void query_node_stats(int *out_height, int *out_peers)
 
 static size_t serve_landing_page(uint8_t *response, size_t max)
 {
+    struct onion_context *ctx = onion_ctx();
     /* Gather node info */
     int height = 0, peer_count = 0;
     query_node_stats(&height, &peer_count);
 
     long uptime = 0;
-    if (g_start_time > 0)
-        uptime = (long)(time(NULL) - g_start_time);
+    if (ctx->start_time > 0)
+        uptime = (long)(time(NULL) - ctx->start_time);
 
     /* Discover registered .onion sites from chain */
     struct onion_peer peers[64];
     int num_peers = 0;
-    if (g_datadir)
-        num_peers = blog_discover_onion_peers(g_datadir, peers, 64);
+    if (ctx->datadir)
+        num_peers = blog_discover_onion_peers(ctx->datadir, peers, 64);
 
-    const char *onion = g_onion_address[0] ? g_onion_address : NULL;
+    const char *onion = ctx->address[0] ? ctx->address : NULL;
 
     /* Build body into a temp buffer, then wrap with Content-Length */
     char body[32768];
@@ -118,6 +130,12 @@ static size_t serve_landing_page(uint8_t *response, size_t max)
         ".nav a{background:#1a1a1a;color:#00aaff;padding:10px 20px;"
         "border-radius:4px;text-decoration:none;border:1px solid #333}"
         ".nav a:hover{border-color:#00ff88;color:#00ff88}"
+        ".apps{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));"
+        "gap:12px;margin:24px 0}"
+        ".app{background:#121212;padding:14px;border-radius:8px;border:1px solid #2a2a2a}"
+        ".app a{color:#00aaff;text-decoration:none;font-size:16px}"
+        ".app a:hover{color:#00ff88}"
+        ".app .desc{color:#888;font-size:13px;margin-top:6px;line-height:1.35}"
         ".site{background:#1a1a1a;padding:15px;margin:10px 0;border-radius:8px;"
         "border-left:3px solid #00ff88}"
         ".site a{color:#00aaff;text-decoration:none;font-size:16px}"
@@ -166,6 +184,23 @@ static size_t serve_landing_page(uint8_t *response, size_t max)
         "<a href='/blog'>Blog</a>"
         "<a href='/search'>Search</a>"
         "<a href='/directory'>Directory</a>"
+        "<a href='/status'>Status API</a>"
+        "</div>");
+    if (n > 0) off += (size_t)n;
+
+    n = snprintf(body + off, sizeof(body) - off,
+        "<h2>Power Node Apps</h2>"
+        "<div class='apps'>"
+        "<div class='app'><a href='/explorer'>Explorer</a>"
+        "<div class='desc'>REST-style chain, block, transaction, address, and token reads.</div></div>"
+        "<div class='app'><a href='/store'>Store</a>"
+        "<div class='desc'>Commerce and token purchase flows hosted directly on the node.</div></div>"
+        "<div class='app'><a href='/blog'>Blog</a>"
+        "<div class='desc'>Static site hosting from your datadir over the onion service.</div></div>"
+        "<div class='app'><a href='/directory'>Directory</a>"
+        "<div class='desc'>On-chain discovered peer/app directory for the Tor-only network.</div></div>"
+        "<div class='app'><a href='/status'>Status API</a>"
+        "<div class='desc'>Machine-readable node, sync, and onion reachability status.</div></div>"
         "</div>");
     if (n > 0) off += (size_t)n;
 
@@ -209,6 +244,7 @@ static size_t serve_landing_page(uint8_t *response, size_t max)
         "<div class='site'>"
         "<div class='desc'>Every zclassic23 node is a .onion web server.<br>"
         "Put HTML in <code>{datadir}/blog/</code> and it's live.<br>"
+        "Explorer, store, blog, and directory are first-class power-node apps.<br>"
         "Register on-chain via ZSLP for network discovery.</div></div>"
         "<footer>ZClassic23 v0.1.0 &mdash; pure C23 full node + Tor</footer>"
         "</body></html>");
@@ -227,10 +263,11 @@ static size_t serve_landing_page(uint8_t *response, size_t max)
 
 static size_t serve_search(const char *query, uint8_t *response, size_t max)
 {
+    struct onion_context *ctx = onion_ctx();
     struct onion_peer peers[64];
     int num_peers = 0;
-    if (g_datadir)
-        num_peers = blog_discover_onion_peers(g_datadir, peers, 64);
+    if (ctx->datadir)
+        num_peers = blog_discover_onion_peers(ctx->datadir, peers, 64);
 
     char safe_query[512];
     html_escape(safe_query, sizeof(safe_query), query ? query : "");
@@ -322,12 +359,13 @@ static void ensure_directory_table(sqlite3 *db)
 /* Populate directory from chain scan (ZSLP .onion announcements) */
 static void populate_directory_from_chain(sqlite3 *db)
 {
+    struct onion_context *ctx = onion_ctx();
     extern int blog_discover_onion_peers(const char *,
                                           struct onion_peer *, size_t);
-    if (!g_datadir) return;
+    if (!ctx->datadir) return;
 
     struct onion_peer peers[256];
-    int found = blog_discover_onion_peers(g_datadir, peers, 256);
+    int found = blog_discover_onion_peers(ctx->datadir, peers, 256);
 
     if (found <= 0) return;
 
@@ -358,7 +396,8 @@ static void populate_directory_from_chain(sqlite3 *db)
 /* Register our own .onion address */
 static void register_self(sqlite3 *db)
 {
-    if (!g_onion_address[0]) return;
+    struct onion_context *ctx = onion_ctx();
+    if (!ctx->address[0]) return;
 
     sqlite3_stmt *ins = NULL;
     if (sqlite3_prepare_v2(db,
@@ -370,7 +409,7 @@ static void register_self(sqlite3 *db)
                 sqlite3_errmsg(db));
         return;
     }
-    sqlite3_bind_text(ins, 1, g_onion_address, -1, SQLITE_STATIC);
+    sqlite3_bind_text(ins, 1, ctx->address, -1, SQLITE_STATIC);
     sqlite3_step(ins);
     sqlite3_finalize(ins);
 }
@@ -379,10 +418,11 @@ static void register_self(sqlite3 *db)
 
 static size_t serve_directory_json(uint8_t *response, size_t max)
 {
-    if (!g_datadir) return 0;
+    struct onion_context *ctx = onion_ctx();
+    if (!ctx->datadir) return 0;
 
     char db_path[1024];
-    zcl_node_db_path(db_path, sizeof(db_path), g_datadir);
+    zcl_node_db_path(db_path, sizeof(db_path), ctx->datadir);
     sqlite3 *db = NULL;
     if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
         if (db) sqlite3_close(db);
@@ -439,10 +479,11 @@ static size_t serve_directory_json(uint8_t *response, size_t max)
 
 static size_t serve_directory_html(uint8_t *response, size_t max)
 {
-    if (!g_datadir) return 0;
+    struct onion_context *ctx = onion_ctx();
+    if (!ctx->datadir) return 0;
 
     char db_path[1024];
-    zcl_node_db_path(db_path, sizeof(db_path), g_datadir);
+    zcl_node_db_path(db_path, sizeof(db_path), ctx->datadir);
     sqlite3 *db = NULL;
     if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
         if (db) sqlite3_close(db);
@@ -542,18 +583,19 @@ static size_t serve_directory_html(uint8_t *response, size_t max)
 
 static size_t serve_status(uint8_t *response, size_t max)
 {
+    struct onion_context *ctx = onion_ctx();
     int height = 0, peers = 0;
     query_node_stats(&height, &peers);
 
     long uptime = 0;
-    if (g_start_time > 0)
-        uptime = (long)(time(NULL) - g_start_time);
+    if (ctx->start_time > 0)
+        uptime = (long)(time(NULL) - ctx->start_time);
 
     /* Query extra stats from SQLite */
     int64_t last_block_time = 0, tx_count = 0;
-    if (g_datadir) {
+    if (ctx->datadir) {
         char db_path[1024];
-        zcl_node_db_path(db_path, sizeof(db_path), g_datadir);
+        zcl_node_db_path(db_path, sizeof(db_path), ctx->datadir);
         sqlite3 *db = NULL;
         if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) == SQLITE_OK) {
             sqlite3_busy_timeout(db, 5000);
@@ -582,7 +624,7 @@ static size_t serve_status(uint8_t *response, size_t max)
     bool is_syncing = (height == 0 && uptime < 600) ||
                       (last_block_age > 600 && uptime > 300);
 
-    const char *onion = g_onion_address[0] ? g_onion_address : NULL;
+    const char *onion = ctx->address[0] ? ctx->address : NULL;
 
     char body[1024];
     int blen = snprintf(body, sizeof(body),
@@ -591,12 +633,16 @@ static size_t serve_status(uint8_t *response, size_t max)
         ",\"version\":\"0.1.0\""
         ",\"uptime\":%ld"
         ",\"syncing\":%s"
+        ",\"tor_ready\":%s"
+        ",\"onion_service_ready\":%s"
         ",\"last_block_age\":%lld"
         ",\"transactions\":%lld"
         "%s%s%s"
         "}",
         height, peers, uptime,
         is_syncing ? "true" : "false",
+        tor_integration_is_ready() ? "true" : "false",
+        onion ? "true" : "false",
         (long long)last_block_age,
         (long long)tx_count,
         onion ? ",\"onion\":\"" : "",
@@ -682,17 +728,19 @@ size_t onion_service_handle_request(const char *method,
     }
 
     /* Store — ZSLP token commerce */
-    if (strncmp(path, "/store", 6) == 0 && g_datadir) {
+    if (strncmp(path, "/store", 6) == 0 && onion_ctx()->datadir) {
         extern size_t store_handle_request(const char *, const char *,
             const uint8_t *, size_t, uint8_t *, size_t, const char *);
         return store_handle_request(method, path, body, body_len,
-                                    response, response_max, g_datadir);
+                                    response, response_max,
+                                    onion_ctx()->datadir);
     }
 
     /* Blog (static files from datadir) */
     if (strncmp(path, "/blog", 5) == 0) {
-        if (g_datadir)
-            return blog_serve(g_datadir, path, (char *)response, response_max);
+        if (onion_ctx()->datadir)
+            return blog_serve(onion_ctx()->datadir, path,
+                              (char *)response, response_max);
     }
 
     /* 404 */
@@ -729,8 +777,9 @@ size_t onion_service_handle_request(const char *method,
 
 const char *onion_service_start(const char *datadir)
 {
-    g_datadir = datadir;
-    g_start_time = time(NULL);
+    struct onion_context *ctx = onion_ctx();
+    ctx->datadir = datadir;
+    ctx->start_time = time(NULL);
 
     /* Initialize peer directory from chain data */
     if (datadir) {
@@ -741,34 +790,35 @@ const char *onion_service_start(const char *datadir)
             sqlite3_busy_timeout(db, 5000);
             ensure_directory_table(db);
             populate_directory_from_chain(db);
-            if (g_onion_address[0])
+            if (ctx->address[0])
                 register_self(db);
             sqlite3_close(db);
         }
     }
 
-    return g_onion_address[0] ? g_onion_address : NULL;
+    return ctx->address[0] ? ctx->address : NULL;
 }
 
 void onion_service_stop(void)
 {
-    g_datadir = NULL;
+    onion_ctx()->datadir = NULL;
 }
 
 const char *onion_service_get_address(void)
 {
-    return g_onion_address[0] ? g_onion_address : NULL;
+    return onion_ctx()->address[0] ? onion_ctx()->address : NULL;
 }
 
 void onion_service_set_address(const char *address)
 {
+    struct onion_context *ctx = onion_ctx();
     if (address) {
-        snprintf(g_onion_address, sizeof(g_onion_address), "%s", address);
+        snprintf(ctx->address, sizeof(ctx->address), "%s", address);
 
         /* Register ourselves in the peer directory */
-        if (g_datadir) {
+        if (ctx->datadir) {
             char db_path[1024];
-            zcl_node_db_path(db_path, sizeof(db_path), g_datadir);
+            zcl_node_db_path(db_path, sizeof(db_path), ctx->datadir);
             sqlite3 *db = NULL;
             if (sqlite3_open(db_path, &db) == SQLITE_OK) {
                 sqlite3_busy_timeout(db, 5000);
@@ -780,7 +830,6 @@ void onion_service_set_address(const char *address)
             }
         }
     } else {
-        g_onion_address[0] = '\0';
+        ctx->address[0] = '\0';
     }
 }
-

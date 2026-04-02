@@ -17,6 +17,37 @@
 
 DEFINE_MODEL_CALLBACKS(peer)
 
+static bool peer_before_save(void *record, void *ctx)
+{
+    struct db_peer *peer = record;
+    static const uint8_t zero_ip[16] = {0};
+
+    (void)ctx;
+    if (!peer)
+        return false;
+    if (peer->last_seen == 0)
+        peer->last_seen = (int64_t)time(NULL);
+    if (peer->last_try < 0)
+        peer->last_try = 0;
+    if (peer->attempts < 0)
+        peer->attempts = 0;
+    if (!peer->has_source)
+        memcpy(peer->source, zero_ip, sizeof(peer->source));
+    return true;
+}
+
+static struct ar_callbacks *peer_callbacks_ready(void)
+{
+    struct ar_callbacks *cbs = db_peer_callbacks();
+    static bool callbacks_ready = false;
+
+    if (!callbacks_ready) {
+        ar_register_before_save(cbs, peer_before_save);
+        callbacks_ready = true;
+    }
+    return cbs;
+}
+
 /* ── Validation ────────────────────────────────────────────────── */
 
 bool db_peer_validate(const struct db_peer *p, struct ar_errors *errors)
@@ -24,8 +55,11 @@ bool db_peer_validate(const struct db_peer *p, struct ar_errors *errors)
     ar_errors_clear(errors);
     validates_presence_of(errors, p, ip);
     validates_not_zero(errors, p, port);
+    validates_non_negative(errors, p, last_seen);
+    validates_non_negative(errors, p, last_try);
     validates_non_negative(errors, p, attempts);
     validates_max(errors, p, attempts, 10000);
+    validates_max(errors, p, bandwidth_score, 255);
     if (p->has_source) {
         static const uint8_t z[16] = {0};
         validates_custom(errors,
@@ -61,17 +95,8 @@ bool db_peer_save(struct node_db *ndb, const struct db_peer *p)
 {
     if (!ndb->open) return false;
 
-    /* Auto-timestamp if caller didn't set last_seen */
-    if (p->last_seen == 0)
-        ((struct db_peer *)p)->last_seen = (int64_t)time(NULL);
-
-    struct ar_errors errors;
-    if (!db_peer_validate(p, &errors)) {
-        AR_LOG_VALIDATION_FAILURE("peer", &errors);
-        return false;
-    }
-
-    struct ar_callbacks *cbs = db_peer_callbacks();
+    struct ar_callbacks *cbs = peer_callbacks_ready();
+    AR_VALIDATE_RECORD(cbs, "peer", p, db_peer_validate);
     if (!ar_run_before_save(cbs, (void *)p)) return false;
 
     sqlite3_stmt *s = ndb->stmt_peer_save;

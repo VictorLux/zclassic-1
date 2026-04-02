@@ -17,6 +17,8 @@
 #include "models/zslp.h"
 #include "models/activerecord.h"
 #include "event/event.h"
+#include <ctype.h>
+#include <limits.h>
 #include <string.h>
 #include <stdio.h>
 
@@ -24,6 +26,80 @@
 
 DEFINE_MODEL_CALLBACKS(zslp_token)
 DEFINE_MODEL_CALLBACKS(zslp_transfer)
+DEFINE_MODEL_CALLBACKS(zslp_balance)
+
+static bool zslp_token_hooks_ready = false;
+static bool zslp_balance_hooks_ready = false;
+static bool zslp_token_before_save(void *record, void *ctx);
+
+static bool zslp_string_is_alnum(const char *str)
+{
+    if (!str || str[0] == '\0')
+        return false;
+    for (const unsigned char *p = (const unsigned char *)str; *p; ++p) {
+        if (!isalnum(*p))
+            return false;
+    }
+    return true;
+}
+
+static bool zslp_string_is_printable(const char *str)
+{
+    if (!str || str[0] == '\0')
+        return false;
+    for (const unsigned char *p = (const unsigned char *)str; *p; ++p) {
+        if (!isprint(*p))
+            return false;
+    }
+    return true;
+}
+
+static bool zslp_string_is_hex(const char *str)
+{
+    if (!str || str[0] == '\0')
+        return false;
+    for (const unsigned char *p = (const unsigned char *)str; *p; ++p) {
+        if (!isxdigit(*p))
+            return false;
+    }
+    return true;
+}
+
+static void zslp_upcase_ascii(char *str)
+{
+    if (!str)
+        return;
+    for (; *str; ++str)
+        *str = (char)toupper((unsigned char)*str);
+}
+
+static bool zslp_balance_before_save(void *record, void *ctx)
+{
+    (void)ctx;
+    struct db_zslp_balance *b = (struct db_zslp_balance *)record;
+    zslp_upcase_ascii(b->token_id);
+    return true;
+}
+
+static struct ar_callbacks *zslp_token_callbacks_ready(void)
+{
+    struct ar_callbacks *cbs = db_zslp_token_callbacks();
+    if (!zslp_token_hooks_ready) {
+        ar_register_before_save(cbs, zslp_token_before_save);
+        zslp_token_hooks_ready = true;
+    }
+    return cbs;
+}
+
+static struct ar_callbacks *zslp_balance_callbacks_ready(void)
+{
+    struct ar_callbacks *cbs = db_zslp_balance_callbacks();
+    if (!zslp_balance_hooks_ready) {
+        ar_register_before_save(cbs, zslp_balance_before_save);
+        zslp_balance_hooks_ready = true;
+    }
+    return cbs;
+}
 
 /* ── Token Validation ─────────────────────────────────────────── */
 
@@ -35,32 +111,82 @@ struct zslp_token_record {
     int64_t initial_quantity;
 };
 
-static bool validate_token(const uint8_t token_id[32], const char *ticker,
-                           int decimals, int genesis_height,
-                           int64_t initial_quantity)
+struct zslp_token_key_record {
+    char token_id[ZSLP_TOKEN_KEY_MAX + 1];
+    int decimals;
+    int genesis_height;
+    int64_t initial_quantity;
+};
+
+static bool zslp_token_before_save(void *record, void *ctx)
 {
-    struct ar_errors errors;
-    ar_errors_clear(&errors);
-
-    struct zslp_token_record rec;
-    memcpy(rec.token_id, token_id, 32);
-    rec.decimals = decimals;
-    rec.genesis_height = genesis_height;
-    rec.initial_quantity = initial_quantity;
-
-    validates_presence_of(&errors, &rec, token_id);
-    validates_string_present(&errors, ticker, "ticker");
-    validates_custom(&errors, !ticker || strlen(ticker) <= 10,
-                     "ticker", "exceeds max length 10");
-    validates_range(&errors, &rec, decimals, 0, 8);
-    validates_non_negative(&errors, &rec, genesis_height);
-    validates_non_negative(&errors, &rec, initial_quantity);
-
-    if (ar_errors_any(&errors)) {
-        AR_LOG_VALIDATION_FAILURE("zslp_token", &errors);
-        return false;
-    }
+    struct zslp_token_key_record *rec = (struct zslp_token_key_record *)record;
+    (void)ctx;
+    zslp_upcase_ascii(rec->token_id);
     return true;
+}
+
+static bool validate_token_record(const struct zslp_token_record *rec,
+                                  struct ar_errors *errors)
+{
+    ar_errors_clear(errors);
+    validates_presence_of(errors, rec, token_id);
+    validates_range(errors, rec, decimals, 0, 8);
+    validates_non_negative(errors, rec, genesis_height);
+    validates_non_negative(errors, rec, initial_quantity);
+    return !ar_errors_any(errors);
+}
+
+static bool validate_token_key_record(const struct zslp_token_key_record *rec,
+                                      struct ar_errors *errors)
+{
+    ar_errors_clear(errors);
+    validates_string_present(errors, rec->token_id, "token_id");
+    validates_custom(errors,
+        strlen(rec->token_id) <= ZSLP_TOKEN_KEY_MAX,
+        "token_id", "exceeds max length 64");
+    validates_custom(errors,
+        zslp_string_is_alnum(rec->token_id) ||
+        (strlen(rec->token_id) == 64 && zslp_string_is_hex(rec->token_id)),
+        "token_id", "must be alphanumeric or 64-char hex");
+    validates_range(errors, rec, decimals, 0, 8);
+    validates_non_negative(errors, rec, genesis_height);
+    validates_non_negative(errors, rec, initial_quantity);
+    return !ar_errors_any(errors);
+}
+
+bool db_zslp_balance_validate(const struct db_zslp_balance *b,
+                              struct ar_errors *errors)
+{
+    ar_errors_clear(errors);
+    validates_string_present(errors, b->token_id, "token_id");
+    validates_string_present(errors, b->address, "address");
+    validates_non_negative(errors, b, balance);
+    validates_custom(errors,
+        strlen(b->token_id) <= ZSLP_TOKEN_KEY_MAX,
+        "token_id", "exceeds max length 64");
+    validates_custom(errors,
+        strlen(b->address) <= ZSLP_ADDRESS_MAX,
+        "address", "exceeds max length 128");
+    validates_custom(errors,
+        zslp_string_is_printable(b->address),
+        "address", "contains non-printable characters");
+    validates_custom(errors,
+        zslp_string_is_alnum(b->token_id) ||
+        (strlen(b->token_id) == 64 && zslp_string_is_hex(b->token_id)),
+        "token_id", "must be alphanumeric or 64-char hex");
+    return !ar_errors_any(errors);
+}
+
+bool db_zslp_token_validate_key(const char *token_key,
+                                struct ar_errors *errors)
+{
+    struct zslp_token_key_record rec;
+
+    memset(&rec, 0, sizeof(rec));
+    if (token_key)
+        snprintf(rec.token_id, sizeof(rec.token_id), "%s", token_key);
+    return validate_token_key_record(&rec, errors);
 }
 
 /* ── Transfer Validation ──────────────────────────────────────── */
@@ -74,33 +200,17 @@ struct zslp_transfer_record {
     int vout;
 };
 
-static bool validate_transfer(const uint8_t txid[32], int block_height,
-                              const uint8_t token_id[32], int tx_type,
-                              int64_t amount, int vout)
+static bool validate_transfer_record(const struct zslp_transfer_record *rec,
+                                     struct ar_errors *errors)
 {
-    struct ar_errors errors;
-    ar_errors_clear(&errors);
-
-    struct zslp_transfer_record rec;
-    memcpy(rec.txid, txid, 32);
-    memcpy(rec.token_id, token_id, 32);
-    rec.block_height = block_height;
-    rec.tx_type = tx_type;
-    rec.amount = amount;
-    rec.vout = vout;
-
-    validates_presence_of(&errors, &rec, txid);
-    validates_presence_of(&errors, &rec, token_id);
-    validates_non_negative(&errors, &rec, block_height);
-    validates_range(&errors, &rec, tx_type, 1, 3);
-    validates_non_negative(&errors, &rec, amount);
-    validates_non_negative(&errors, &rec, vout);
-
-    if (ar_errors_any(&errors)) {
-        AR_LOG_VALIDATION_FAILURE("zslp_transfer", &errors);
-        return false;
-    }
-    return true;
+    ar_errors_clear(errors);
+    validates_presence_of(errors, rec, txid);
+    validates_presence_of(errors, rec, token_id);
+    validates_non_negative(errors, rec, block_height);
+    validates_range(errors, rec, tx_type, 1, 3);
+    validates_non_negative(errors, rec, amount);
+    validates_non_negative(errors, rec, vout);
+    return !ar_errors_any(errors);
 }
 
 /* ── CRUD ──────────────────────────────────────────────────────── */
@@ -111,16 +221,18 @@ bool db_zslp_token_save(struct node_db *ndb, const uint8_t token_id[32],
                          int genesis_height, int64_t initial_quantity)
 {
     if (!ndb || !ndb->open) return false;
-    if (!validate_token(token_id, ticker, decimals, genesis_height,
-                        initial_quantity))
-        return false;
-
     struct zslp_token_record rec;
     memcpy(rec.token_id, token_id, 32);
     rec.decimals = decimals;
     rec.genesis_height = genesis_height;
     rec.initial_quantity = initial_quantity;
-    if (!ar_run_before_save(db_zslp_token_callbacks(), &rec)) return false;
+    struct ar_callbacks *cbs = db_zslp_token_callbacks();
+    if (!ticker || ticker[0] == '\0' || strlen(ticker) > ZSLP_TICKER_MAX) {
+        fprintf(stderr, "zslp_token validation FAILED: ticker invalid\n");
+        return false;
+    }
+    AR_VALIDATE_RECORD(cbs, "zslp_token", &rec, validate_token_record);
+    if (!ar_run_before_save(cbs, &rec)) return false;
 
     sqlite3_stmt *s = NULL;
     if (sqlite3_prepare_v2(ndb->db,
@@ -142,10 +254,61 @@ bool db_zslp_token_save(struct node_db *ndb, const uint8_t token_id[32],
     AR_FINALIZE(s);
 
     if (ok) {
-        ar_run_after_save(db_zslp_token_callbacks(), &rec);
+        ar_run_after_save(cbs, &rec);
         event_emitf(EV_MODEL_SAVED, 0, "model=zslp_token ticker=%s", ticker);
     }
     return ok;
+}
+
+bool db_zslp_token_save_key(struct node_db *ndb, const char *token_key,
+                            const char *ticker, const char *name,
+                            int decimals, const char *document_url,
+                            int genesis_height, int64_t initial_quantity)
+{
+    sqlite3_stmt *s = NULL;
+    struct ar_callbacks *cbs;
+    struct zslp_token_key_record rec;
+
+    if (!ndb || !ndb->open || !token_key)
+        return false;
+
+    memset(&rec, 0, sizeof(rec));
+    snprintf(rec.token_id, sizeof(rec.token_id), "%s", token_key);
+    rec.decimals = decimals;
+    rec.genesis_height = genesis_height;
+    rec.initial_quantity = initial_quantity;
+    cbs = zslp_token_callbacks_ready();
+    if (!ticker || ticker[0] == '\0' || strlen(ticker) > ZSLP_TICKER_MAX) {
+        fprintf(stderr, "zslp_token validation FAILED: ticker invalid\n");
+        return false;
+    }
+    AR_VALIDATE_RECORD(cbs, "zslp_token", &rec, validate_token_key_record);
+    if (!ar_run_before_save(cbs, &rec))
+        return false;
+
+    if (sqlite3_prepare_v2(ndb->db,
+            "INSERT OR REPLACE INTO zslp_tokens"
+            "(token_id,ticker,name,decimals,document_url,"
+            "genesis_height,total_minted) VALUES(?,?,?,?,?,?,?)",
+            -1, &s, NULL) != SQLITE_OK || !s)
+        return false;
+
+    AR_BIND_TEXT(s, 1, rec.token_id);
+    AR_BIND_TEXT(s, 2, ticker);
+    AR_BIND_TEXT(s, 3, name ? name : "");
+    AR_BIND_INT(s, 4, decimals);
+    AR_BIND_TEXT(s, 5, document_url ? document_url : "");
+    AR_BIND_INT(s, 6, genesis_height);
+    AR_BIND_INT(s, 7, initial_quantity);
+
+    if (!AR_STEP_DONE(s)) {
+        AR_FINALIZE(s);
+        return false;
+    }
+    AR_FINALIZE(s);
+    ar_run_after_save(cbs, &rec);
+    event_emitf(EV_MODEL_SAVED, 0, "model=zslp_token token_id=%s", rec.token_id);
+    return true;
 }
 
 bool db_zslp_transfer_save(struct node_db *ndb, const uint8_t txid[32],
@@ -154,10 +317,6 @@ bool db_zslp_transfer_save(struct node_db *ndb, const uint8_t txid[32],
                             const uint8_t *to_addr)
 {
     if (!ndb || !ndb->open) return false;
-    if (!validate_transfer(txid, block_height, token_id, tx_type,
-                           amount, vout))
-        return false;
-
     struct zslp_transfer_record rec;
     memcpy(rec.txid, txid, 32);
     memcpy(rec.token_id, token_id, 32);
@@ -165,7 +324,9 @@ bool db_zslp_transfer_save(struct node_db *ndb, const uint8_t txid[32],
     rec.tx_type = tx_type;
     rec.amount = amount;
     rec.vout = vout;
-    if (!ar_run_before_save(db_zslp_transfer_callbacks(), &rec)) return false;
+    struct ar_callbacks *cbs = db_zslp_transfer_callbacks();
+    AR_VALIDATE_RECORD(cbs, "zslp_transfer", &rec, validate_transfer_record);
+    if (!ar_run_before_save(cbs, &rec)) return false;
 
     sqlite3_stmt *s = NULL;
     if (sqlite3_prepare_v2(ndb->db,
@@ -190,8 +351,225 @@ bool db_zslp_transfer_save(struct node_db *ndb, const uint8_t txid[32],
     AR_FINALIZE(s);
 
     if (ok)
-        ar_run_after_save(db_zslp_transfer_callbacks(), &rec);
+        ar_run_after_save(cbs, &rec);
     return ok;
+}
+
+bool db_zslp_balance_save(struct node_db *ndb, const struct db_zslp_balance *b)
+{
+    sqlite3_stmt *s = NULL;
+    struct ar_callbacks *cbs;
+
+    if (!ndb || !ndb->open || !b)
+        return false;
+
+    cbs = zslp_balance_callbacks_ready();
+
+    AR_VALIDATE_RECORD(cbs, "zslp_balance", b, db_zslp_balance_validate);
+    if (!ar_run_before_save(cbs, (void *)b))
+        return false;
+
+    if (sqlite3_prepare_v2(ndb->db,
+            "INSERT INTO zslp_balances (token_id,address,balance) "
+            "VALUES(?,?,?) "
+            "ON CONFLICT(token_id,address) DO UPDATE SET balance=excluded.balance",
+            -1, &s, NULL) != SQLITE_OK || !s)
+        return false;
+
+    AR_BIND_TEXT(s, 1, b->token_id);
+    AR_BIND_TEXT(s, 2, b->address);
+    AR_BIND_INT(s, 3, b->balance);
+
+    if (!AR_STEP_DONE(s)) {
+        AR_FINALIZE(s);
+        return false;
+    }
+    AR_FINALIZE(s);
+    ar_run_after_save(cbs, (void *)b);
+    event_emitf(EV_MODEL_SAVED, 0, "model=zslp_balance token_id=%s", b->token_id);
+    return true;
+}
+
+bool db_zslp_balance_find(struct node_db *ndb, const char *token_id,
+                          const char *address, struct db_zslp_balance *out)
+{
+    sqlite3_stmt *s = NULL;
+    struct db_zslp_balance lookup;
+
+    if (!ndb || !ndb->open || !token_id || !address || !out)
+        return false;
+
+    memset(&lookup, 0, sizeof(lookup));
+    snprintf(lookup.token_id, sizeof(lookup.token_id), "%s", token_id);
+    snprintf(lookup.address, sizeof(lookup.address), "%s", address);
+    zslp_upcase_ascii(lookup.token_id);
+
+    if (sqlite3_prepare_v2(ndb->db,
+            "SELECT token_id,address,balance FROM zslp_balances "
+            "WHERE token_id=? AND address=?",
+            -1, &s, NULL) != SQLITE_OK || !s)
+        return false;
+
+    AR_BIND_TEXT(s, 1, lookup.token_id);
+    AR_BIND_TEXT(s, 2, lookup.address);
+    if (!AR_STEP_ROW(s)) {
+        AR_FINALIZE(s);
+        return false;
+    }
+
+    memset(out, 0, sizeof(*out));
+    AR_READ_STR(s, 0, out->token_id, sizeof(out->token_id));
+    AR_READ_STR(s, 1, out->address, sizeof(out->address));
+    out->balance = AR_COL_INT(s, 2);
+    AR_FINALIZE(s);
+    return true;
+}
+
+bool db_zslp_token_find(struct node_db *ndb, const char *token_key,
+                        struct db_zslp_token_info *out)
+{
+    sqlite3_stmt *s = NULL;
+    char lookup[ZSLP_TOKEN_KEY_MAX + 1];
+
+    if (!ndb || !ndb->open || !token_key || !out)
+        return false;
+
+    memset(lookup, 0, sizeof(lookup));
+    snprintf(lookup, sizeof(lookup), "%s", token_key);
+    zslp_upcase_ascii(lookup);
+
+    if (sqlite3_prepare_v2(ndb->db,
+            "SELECT CASE WHEN typeof(token_id)='blob' THEN hex(token_id) "
+            "            ELSE upper(CAST(token_id AS TEXT)) END,"
+            "       ticker,name,decimals,genesis_height,total_minted "
+            "FROM zslp_tokens "
+            "WHERE (typeof(token_id)='blob' AND hex(token_id)=?) "
+            "   OR (typeof(token_id)!='blob' AND upper(CAST(token_id AS TEXT))=?) "
+            "LIMIT 1",
+            -1, &s, NULL) != SQLITE_OK || !s)
+        return false;
+
+    AR_BIND_TEXT(s, 1, lookup);
+    AR_BIND_TEXT(s, 2, lookup);
+    if (!AR_STEP_ROW(s)) {
+        AR_FINALIZE(s);
+        return false;
+    }
+
+    memset(out, 0, sizeof(*out));
+    AR_READ_STR(s, 0, out->token_id, sizeof(out->token_id));
+    AR_READ_STR(s, 1, out->ticker, sizeof(out->ticker));
+    AR_READ_STR(s, 2, out->name, sizeof(out->name));
+    out->decimals = (int)AR_COL_INT(s, 3);
+    out->genesis_height = (int)AR_COL_INT(s, 4);
+    out->total_minted = AR_COL_INT(s, 5);
+    AR_FINALIZE(s);
+    return true;
+}
+
+int db_zslp_token_list(struct node_db *ndb,
+                       struct db_zslp_token_info *out, size_t max_out)
+{
+    sqlite3_stmt *s = NULL;
+    int count = 0;
+
+    if (!ndb || !ndb->open || !out || max_out == 0)
+        return 0;
+
+    if (sqlite3_prepare_v2(ndb->db,
+            "SELECT CASE WHEN typeof(token_id)='blob' THEN hex(token_id) "
+            "            ELSE upper(CAST(token_id AS TEXT)) END,"
+            "       ticker,name,decimals,genesis_height,total_minted "
+            "FROM zslp_tokens "
+            "ORDER BY ticker ASC, genesis_height DESC "
+            "LIMIT ?",
+            -1, &s, NULL) != SQLITE_OK || !s)
+        return 0;
+
+    AR_BIND_INT(s, 1, (int)max_out);
+    while (count < (int)max_out && AR_STEP_ROW(s)) {
+        memset(&out[count], 0, sizeof(out[count]));
+        AR_READ_STR(s, 0, out[count].token_id, sizeof(out[count].token_id));
+        AR_READ_STR(s, 1, out[count].ticker, sizeof(out[count].ticker));
+        AR_READ_STR(s, 2, out[count].name, sizeof(out[count].name));
+        out[count].decimals = (int)AR_COL_INT(s, 3);
+        out[count].genesis_height = (int)AR_COL_INT(s, 4);
+        out[count].total_minted = AR_COL_INT(s, 5);
+        count++;
+    }
+    AR_FINALIZE(s);
+    return count;
+}
+
+int db_zslp_transfer_list_by_token(struct node_db *ndb, const char *token_key,
+                                   struct db_zslp_transfer_info *out,
+                                   size_t max_out)
+{
+    sqlite3_stmt *s = NULL;
+    char lookup[ZSLP_TOKEN_KEY_MAX + 1];
+    int count = 0;
+
+    if (!ndb || !ndb->open || !token_key || !out || max_out == 0)
+        return 0;
+
+    memset(lookup, 0, sizeof(lookup));
+    snprintf(lookup, sizeof(lookup), "%s", token_key);
+    zslp_upcase_ascii(lookup);
+
+    if (sqlite3_prepare_v2(ndb->db,
+            "SELECT hex(txid),"
+            "       CASE WHEN typeof(token_id)='blob' THEN hex(token_id) "
+            "            ELSE upper(CAST(token_id AS TEXT)) END,"
+            "       block_height,tx_type,amount,vout,"
+            "       CASE WHEN to_addr IS NULL THEN '' ELSE hex(to_addr) END "
+            "FROM zslp_transfers "
+            "WHERE (typeof(token_id)='blob' AND hex(token_id)=?) "
+            "   OR (typeof(token_id)!='blob' AND upper(CAST(token_id AS TEXT))=?) "
+            "ORDER BY block_height DESC, vout ASC "
+            "LIMIT ?",
+            -1, &s, NULL) != SQLITE_OK || !s)
+        return 0;
+
+    AR_BIND_TEXT(s, 1, lookup);
+    AR_BIND_TEXT(s, 2, lookup);
+    AR_BIND_INT(s, 3, (int)max_out);
+    while (count < (int)max_out && AR_STEP_ROW(s)) {
+        memset(&out[count], 0, sizeof(out[count]));
+        AR_READ_STR(s, 0, out[count].txid, sizeof(out[count].txid));
+        AR_READ_STR(s, 1, out[count].token_id, sizeof(out[count].token_id));
+        out[count].block_height = AR_COL_INT(s, 2);
+        out[count].tx_type = AR_COL_INT(s, 3);
+        out[count].amount = AR_COL_INT(s, 4);
+        out[count].vout = AR_COL_INT(s, 5);
+        AR_READ_STR(s, 6, out[count].to_addr_hex, sizeof(out[count].to_addr_hex));
+        count++;
+    }
+    AR_FINALIZE(s);
+    return count;
+}
+
+bool db_zslp_balance_credit(struct node_db *ndb, const char *token_id,
+                            const char *address, int64_t amount)
+{
+    struct db_zslp_balance rec;
+    struct db_zslp_balance existing;
+
+    if (!ndb || !ndb->open || !token_id || !address || amount <= 0)
+        return false;
+
+    memset(&rec, 0, sizeof(rec));
+    snprintf(rec.token_id, sizeof(rec.token_id), "%s", token_id);
+    snprintf(rec.address, sizeof(rec.address), "%s", address);
+
+    if (db_zslp_balance_find(ndb, rec.token_id, rec.address, &existing)) {
+        if (existing.balance > INT64_MAX - amount)
+            return false;
+        rec.balance = existing.balance + amount;
+    } else {
+        rec.balance = amount;
+    }
+
+    return db_zslp_balance_save(ndb, &rec);
 }
 
 int64_t db_zslp_token_count(struct node_db *ndb)

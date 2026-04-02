@@ -2,6 +2,7 @@
 
 #include "controllers/wallet_view_internal.h"
 #include "controllers/wallet_controller.h"
+#include "models/contact.h"
 
 /* ── Send (/wallet/send) ────────────────────────────────────── */
 
@@ -11,7 +12,7 @@ size_t serve_send(uint8_t *r, size_t max) {
     int64_t balance = 0;
     int64_t shielded_bal = 0;
     /* Contacts for autocomplete (max 20) */
-    struct { char name[64]; char addr[256]; } contacts[20];
+    struct db_contact contacts[20];
     int n_contacts = 0;
     /* ZSLP tokens held (max 10) */
     struct { char token_id[65]; char ticker[16]; int decimals; } tokens[10];
@@ -46,22 +47,7 @@ size_t serve_send(uint8_t *r, size_t max) {
             }
         }
         /* Load contacts */
-        sqlite3_stmt *cs = NULL;
-        if (sqlite3_prepare_v2(db,
-                "SELECT name, address FROM contacts "
-                "ORDER BY last_used DESC LIMIT 20",
-                -1, &cs, NULL) == SQLITE_OK) {
-            while (sqlite3_step(cs) == SQLITE_ROW && n_contacts < 20) {
-                const char *cn = (const char *)sqlite3_column_text(cs, 0);
-                const char *ca = (const char *)sqlite3_column_text(cs, 1);
-                if (cn && ca) {
-                    snprintf(contacts[n_contacts].name, 64, "%s", cn);
-                    snprintf(contacts[n_contacts].addr, 256, "%s", ca);
-                    n_contacts++;
-                }
-            }
-            sqlite3_finalize(cs);
-        }
+        n_contacts = wv_recent_contacts(contacts, 20);
         sqlite3_close(db);
     }
 
@@ -122,7 +108,7 @@ size_t serve_send(uint8_t *r, size_t max) {
         for (int i = 0; i < n_contacts; i++) {
             char esc_name[128], esc_addr[512];
             html_escape(esc_name, sizeof(esc_name), contacts[i].name);
-            html_escape(esc_addr, sizeof(esc_addr), contacts[i].addr);
+            html_escape(esc_addr, sizeof(esc_addr), contacts[i].address);
             cl_off += (size_t)snprintf(contacts_html + cl_off,
                 sizeof(contacts_html) - cl_off,
                 "<option value='%s' label='%s'>",

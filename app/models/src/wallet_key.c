@@ -23,6 +23,7 @@
 
 DEFINE_MODEL_CALLBACKS(wallet_key)
 DEFINE_MODEL_CALLBACKS(sapling_key)
+DEFINE_MODEL_CALLBACKS(wallet_script)
 
 /* ── Validation ────────────────────────────────────────────────── */
 
@@ -42,7 +43,7 @@ bool db_wallet_key_validate(const struct db_wallet_key *k,
 }
 
 bool db_sapling_key_validate(const struct db_sapling_key *k,
-                              struct ar_errors *errors)
+                             struct ar_errors *errors)
 {
     ar_errors_clear(errors);
     validates_presence_of(errors, k, ivk);
@@ -54,6 +55,22 @@ bool db_sapling_key_validate(const struct db_sapling_key *k,
     return !ar_errors_any(errors);
 }
 
+bool db_wallet_script_validate(const struct db_wallet_script *sc,
+                               struct ar_errors *errors)
+{
+    static const uint8_t zero[20] = {0};
+    ar_errors_clear(errors);
+    validates_custom(errors,
+        memcmp(sc->script_hash, zero, 20) != 0,
+        "script_hash", "can't be blank");
+    validates_custom(errors,
+        sc->redeem_script != NULL,
+        "redeem_script", "can't be null");
+    validates_positive(errors, sc, script_len);
+    validates_max(errors, sc, script_len, 10000);
+    return !ar_errors_any(errors);
+}
+
 /* ── WalletKey CRUD ───────────────────────────────────────────── */
 
 bool db_wallet_key_save(struct node_db *ndb, const struct db_wallet_key *k)
@@ -62,13 +79,8 @@ bool db_wallet_key_save(struct node_db *ndb, const struct db_wallet_key *k)
     if (k->created_at == 0)
         ((struct db_wallet_key *)k)->created_at = (int64_t)time(NULL);
 
-    struct ar_errors errors;
-    if (!db_wallet_key_validate(k, &errors)) {
-        AR_LOG_VALIDATION_FAILURE("wallet_key", &errors);
-        return false;
-    }
-
     struct ar_callbacks *cbs = db_wallet_key_callbacks();
+    AR_VALIDATE_RECORD(cbs, "wallet_key", k, db_wallet_key_validate);
     if (!ar_run_before_save(cbs, (void *)k)) return false;
 
     sqlite3_stmt *s = NULL;
@@ -210,13 +222,8 @@ int db_wallet_key_each(struct node_db *ndb, wallet_key_cb cb, void *ctx)
 bool db_sapling_key_save(struct node_db *ndb, const struct db_sapling_key *k)
 {
     if (!ndb->open) return false;
-    struct ar_errors errors;
-    if (!db_sapling_key_validate(k, &errors)) {
-        AR_LOG_VALIDATION_FAILURE("sapling_key", &errors);
-        return false;
-    }
-
     struct ar_callbacks *cbs = db_sapling_key_callbacks();
+    AR_VALIDATE_RECORD(cbs, "sapling_key", k, db_sapling_key_validate);
     if (!ar_run_before_save(cbs, (void *)k)) return false;
 
     sqlite3_stmt *s = NULL;
@@ -366,9 +373,9 @@ bool db_wallet_seed_load(struct node_db *ndb, uint8_t seed[32],
 bool db_wallet_script_save(struct node_db *ndb, const struct db_wallet_script *sc)
 {
     if (!ndb->open) return false;
-    static const uint8_t zero[20] = {0};
-    if (memcmp(sc->script_hash, zero, 20) == 0) return false;
-    if (!sc->redeem_script || sc->script_len == 0) return false;
+    struct ar_callbacks *cbs = db_wallet_script_callbacks();
+    AR_VALIDATE_RECORD(cbs, "wallet_script", sc, db_wallet_script_validate);
+    if (!ar_run_before_save(cbs, (void *)sc)) return false;
 
     sqlite3_stmt *s = NULL;
     sqlite3_prepare_v2(ndb->db,
@@ -380,6 +387,7 @@ bool db_wallet_script_save(struct node_db *ndb, const struct db_wallet_script *s
     AR_BIND_BLOB(s, 2, sc->redeem_script, (int)sc->script_len);
     bool ok = AR_STEP_DONE(s);
     AR_FINALIZE(s);
+    if (ok) ar_run_after_save(cbs, (void *)sc);
     return ok;
 }
 

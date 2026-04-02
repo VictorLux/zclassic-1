@@ -3,10 +3,16 @@
  * Store controller — ZSLP token commerce over .onion.
  *
  * Routes:
- *   GET  /store              List products
- *   GET  /store/product/:id  Product detail + payment address
- *   POST /store/buy/:id      Create order, generate z-address
- *   GET  /store/order/:id    Check payment status
+ *   GET  /store               List products
+ *   GET  /store/products      List products
+ *   GET  /store/products/:id  Product detail
+ *   POST /store/orders        Create order, generate z-address
+ *   GET  /store/orders/:id    Check payment status
+ *
+ * Compatibility aliases:
+ *   GET  /store/product/:id
+ *   POST /store/buy/:id
+ *   GET  /store/order/:id
  *
  * Payment flow:
  *   1. Customer browses products (GET /store)

@@ -11,19 +11,30 @@
 #include <stdint.h>
 
 struct node_db;
+struct main_state;
 
 struct node_health_snapshot {
     enum sync_state sync_state;
     bool healthy;
     bool synced;
     bool has_peers;
+    bool tor_ready;
+    bool onion_service_ready;
+    bool tip_stale;
+    bool queue_backed_up;
     size_t peer_count;
     int tip_height;
+    int header_height;
+    int peer_best_height;
+    int tip_lag;
+    int64_t tip_stale_seconds;
     int64_t utxo_count;
     int64_t wal_size_bytes;
     int64_t uptime_seconds;
     int error_total;
     char last_error[EVENT_PAYLOAD_SIZE + 1];
+    char degraded_reason[128];
+    char onion_address[128];
     uint64_t blocks_requested;
     uint64_t blocks_received;
     uint64_t blocks_timed_out;
@@ -32,6 +43,7 @@ struct node_health_snapshot {
 };
 
 void node_health_collect(struct node_health_snapshot *snapshot,
-                         struct node_db *ndb);
+                         struct node_db *ndb,
+                         const struct main_state *ms);
 
 #endif

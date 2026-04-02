@@ -48,7 +48,7 @@ The result is hard-to-debug sync behavior, especially for stalls and recovery.
 
 `config/` should be the explicit composition root for app-layer dependencies.
 
-Current direction:
+Current state:
 
 - use `app_runtime_context` to pass app-owned resources into long-lived runtime
   components
@@ -58,6 +58,16 @@ Current direction:
   instead of discovering `node_db`, `wallet`, or `mempool` through globals
 - keep startup and shutdown ownership explicit in `config/`, with named phases
   for stop, persist, quiesce, and release
+
+Next hardening targets:
+
+- remove remaining implicit controller/runtime coupling where a controller still
+  behaves like a mini-composition root
+- keep hot-path runtime access explicit and cheap
+- make sync-health, recovery, and operator diagnostics first-class runtime
+  outputs instead of ad hoc log interpretation
+- keep Tor/onion reachability and hosted MVC apps first-class runtime outputs,
+  not side features hidden in startup logs
 
 ## Target Layers
 
@@ -113,6 +123,10 @@ Rules:
 - no RPC route handling
 - no orchestration loops
 - no direct dependency on HTTP or P2P node structs if avoidable
+- prefer model-owned validation and callback lifecycles over raw controller or
+  service SQL
+- keep schema ownership in `app/models/src/database.c` migrations, not hidden
+  inside service helpers
 
 ### 3. Service Layer
 
@@ -152,6 +166,9 @@ Rules:
 - thin
 - stateless where possible
 - no direct chain mutation except through service/core APIs
+- use REST-style routing for read/resource surfaces by default
+- keep command-style endpoints explicit for mutating node workflows
+- fail closed with defensive validation on path params, query params, and RPC args
 
 ### 5. View Layer
 
@@ -203,14 +220,86 @@ Examples:
   `rpc/server` -> `network_controller` -> `network_service` -> `connman`
 - HTTP `/api/health`
   `https_server` -> `api_controller` -> `node_health_service` -> models/events/net
+- Onion `/`
+  `tor dynhost` -> `onion_service` -> controller/view surfaces -> app response
+
+REST rule in practice:
+
+- prefer resource collections and members like `/store/products`,
+  `/store/products/:id`, `/store/orders`, `/store/orders/:id`
+- keep legacy ad hoc routes only as compatibility aliases while the controller
+  migrates toward resource-first CRUD structure
 - Wallet rescan
   `wallet controller` -> `wallet_sync_service` -> wallet/core + models
+
+## Power Node Surface
+
+The power node is not only a sync engine. It also hosts operator-facing and
+user-facing MVC apps over clearnet/HTTPS and Tor/onion:
+
+- explorer
+- store
+- blog/static hosting
+- directory/discovery
+- health/status APIs
+
+Those surfaces should be treated as first-class app capabilities:
+
+- visible in health/status output
+- wired explicitly in `config/`
+- routed through thin controllers or service-owned adapters
+- documented as part of the node, not as sidecar tooling
 
 ### Consensus Path
 
 `connman/msgprocessor -> sync service / download service -> validation -> storage -> events`
 
 Controllers must not sit in this path.
+
+## Routing Pattern
+
+Use REST-style routing where the surface is naturally resource-oriented.
+
+Good fits:
+
+- explorer reads
+- health and sync status
+- peer inspection
+- wallet read models and projections
+- file and manifest lookup
+
+Examples:
+
+- `GET /api/blocks`
+- `GET /api/block/:id`
+- `GET /api/tx/:txid`
+- `GET /api/address/:addr`
+- `GET /api/health`
+- `GET /api/node/status`
+
+Do not force pure REST onto node operations that are inherently commands.
+
+Good command-style endpoints:
+
+- rescans
+- reindex/rebuild operations
+- transaction broadcast
+- repair/reconcile actions
+- snapshot or sync control operations
+
+Examples:
+
+- `POST /api/wallet/rescan`
+- `POST /api/tx/broadcast`
+- `POST /api/chain/reindex`
+- `POST /api/repair/reconcile`
+
+Rule:
+
+- prefer REST for reads and stable resources
+- use explicit command endpoints for mutating node workflows
+- keep both routed into the same service layer so transport shape does not own
+  business logic
 
 ## Service Catalog
 
@@ -248,6 +337,11 @@ Consumes:
 
 This is the most important extraction.
 
+Current state:
+
+- split into `header_sync_service` and `block_sync_service`
+- retained only as a compatibility umbrella during the transition
+
 ### `snapshot_service`
 
 Owns:
@@ -260,7 +354,8 @@ Owns:
 Current candidate:
 
 - `snapshot_sync_service` now lives in `app/services`
-- next step is shrinking `msgprocessor` so snapshot wire follow-up is service-driven
+- snapshot wire follow-up is largely service-driven now
+- next step is stronger validation around snapshot-to-header resume and fallback
 
 ### `wallet_sync_service`
 
@@ -285,6 +380,11 @@ Owns:
 - API/RPC health output normalization
 
 This extraction has already started.
+
+Next step:
+
+- include sync metrics and recovery counters that explain why the node is or is
+  not at tip
 
 ### `explorer_query_service`
 
@@ -411,6 +511,17 @@ This architecture should not regress node performance.
 - `event_projection_service` updates SQLite projections later
 
 That is the upstream-compatible path.
+
+## Current Execution Focus
+
+The architecture work has passed the initial extraction phase. The highest-value
+work now is reliability hardening:
+
+- define and enforce sync invariants
+- expose structured progress/stall metrics
+- add regression and soak coverage against legacy `zclassic` behavior
+- finish the remaining controller/runtime cleanup only where it removes real
+  operational ambiguity
 
 ## Dependency Direction
 

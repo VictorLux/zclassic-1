@@ -48,9 +48,10 @@ Checklist:
 - [x] move more header-processing execution decisions into `sync_service`
 - [x] move valid-block and snapshot-end transition planning to service-owned result structs
 - [x] move header activation and snapshot-offer/serve-start application decisions behind service-owned results
-- [ ] replace remaining direct sync-state mutations with service-owned action/result structs
-- [ ] replace remaining direct peer-state mutations with service-owned action/result structs
-- [ ] move the last `activate_best_chain` execution decisions behind service results
+- [x] replace the main direct sync-state mutations with service-owned action/result structs
+- [x] replace the main direct peer-state mutations with service-owned action/result structs
+- [x] move the last header-path `activate_best_chain` execution decisions behind service results
+- [ ] audit for any residual router-owned state transitions outside the established service boundaries
 
 Exit criteria:
 
@@ -69,9 +70,9 @@ Checklist:
 - [x] move locator building, header continuation, and header-batch planning there
 - [x] introduce `block_sync_service`
 - [x] move queue planning, block assignment, stall recovery, and catch-up transitions there
-- [ ] keep `snapshot_sync_service` as the snapshot state machine
+- [x] keep `snapshot_sync_service` as the snapshot state machine
 - [x] leave `msgprocessor` depending on service interfaces, not mixed sync internals
-- [ ] keep event emission stable during the split
+- [x] keep event emission stable during the split
 
 Exit criteria:
 
@@ -86,7 +87,7 @@ Objective:
 
 Checklist:
 
-- [ ] introduce a clear `app_context` / runtime context for app-layer services
+- [x] introduce a clear `app_context` / runtime context for app-layer services
 - [x] introduce an initial runtime context for `msgprocessor` app-layer dependencies
 - [x] extend runtime-owned dependency access into `boot_services`
 - [x] add a shared runtime registry for core runtime consumers
@@ -99,10 +100,12 @@ Checklist:
 - [x] move `wallet_controller.c` to direct `wallet_rpc_context` access
 - [x] move `wallet_shielded_controller.c` to direct `wallet_rpc_context` access
 - [x] move `wallet_rescan_controller.c` to direct `wallet_rpc_context` access
-- [ ] move ad hoc globals behind runtime-owned state where practical
+- [x] move major ad hoc globals behind runtime-owned or controller-owned state where practical
+- [ ] finish the remaining non-wallet controller/runtime cleanup
 - [ ] make `config/` responsible for composition only
 - [x] document service lifecycle ownership and shutdown ordering
 - [x] make service dependencies explicit in `boot_services`
+- [x] remove the wallet-controller compatibility macro bridge
 
 Exit criteria:
 
@@ -123,6 +126,7 @@ Checklist:
 - [ ] add explicit watchdog coverage for stale tip, repeated header rejection, and block churn
 - [ ] audit timeout and retry thresholds against observed mainnet behavior
 - [ ] document operator-visible failure states and recovery paths
+- [x] expose Tor/onion reachability in the health surface so hosted power-node apps are observable too
 
 Exit criteria:
 
@@ -138,6 +142,20 @@ Objective:
 Checklist:
 
 - [ ] add focused service tests for each remaining action/result type
+- [x] expand model-layer validation/save lifecycle onto shared ActiveRecord macros
+- [x] move ZSLP balances into a first-class model-backed table with tests
+- [x] move ZSLP token metadata reads/writes onto model-backed paths with tests
+- [x] move ZSLP transfer-history reads behind model/service-backed projections
+- [x] expose ZSLP read resources through REST-style API endpoints with defensive validation
+- [x] expose onion-announcement read resources through REST-style API endpoints with defensive validation
+- [x] expose file-service read resources through REST-style API endpoints with defensive validation
+- [x] expose peer read resources through REST-style API endpoints with defensive validation
+- [x] move wallet contacts and onion announcements into first-class model-backed tables
+- [x] move store product/order writes into first-class model-backed tables
+- [x] move store product/order resource reads behind first-class model-backed queries
+- [x] harden store resource and access-route validation with fail-closed id/query parsing
+- [x] move wallet-view balance/tip projection queries behind model-backed wallet projection helpers
+- [x] split oversized model tests into focused files by domain
 - [ ] add integration coverage for legacy-node-following behavior
 - [ ] add restart coverage for “headers ahead, blocks already on disk”
 - [ ] add stall-recovery regression tests
@@ -153,22 +171,95 @@ Exit criteria:
 
 Current phase:
 
-- Phase 3
+- Phase 4
 
 Current coding target:
 
-- keep runtime ownership visible through `app_runtime_context`
-- document and tighten composition/lifecycle boundaries in `config/`
+- turn sync reliability into something observable and testable
+- preserve the cleaner service/runtime boundaries while adding guardrails
+- keep shrinking the remaining implicit controller/runtime coupling as side work
 
 Current likely extraction order:
 
-1. move validation/network/controller access onto explicit runtime or controller state
-2. narrow boot-time logic to direct owned state instead of compatibility aliases
-3. centralize controller-local shared state behind explicit context objects
-4. make runtime ownership visible in more boot/config call sites
-5. document lifecycle and shutdown ordering around runtime-owned services
-6. retire wallet view/controller compatibility macros one surface at a time
-7. keep shrinking remaining implicit composition patterns
+1. add sync invariants around chain tip, header tip, queue depth, and peer sync state
+2. add structured sync metrics and event counters that explain forward progress and stalls
+3. add regression coverage for stale-tip recovery, restart resume, and snapshot-to-header handoff
+4. add an integration harness that compares `zclassic23` progress against legacy `zclassic`
+5. audit remaining non-wallet controller/runtime state and finish the easy cleanup slices
+
+## Immediate Checklist
+
+- [ ] define the first sync invariant set and where each invariant is enforced
+- [x] expose a compact sync metrics snapshot suitable for RPC/API/health output
+- [ ] add regression tests for stall recovery and resume-from-disk block activation
+- [ ] add a legacy-following integration test plan and fixture strategy
+- [x] identify the remaining controllers with hidden runtime/composition state
+- [x] document the routing rule: REST-style reads by default, command endpoints for mutating node operations
+
+## Remaining Controller Cleanup Inventory
+
+Higher-priority runtime/composition cleanup targets:
+
+- `sync_controller.c`: still needs a larger service-oriented split, not just
+  context cleanup
+- `zslp_controller.c`: no longer uses a raw datadir global, but still mixes
+  command-heavy token flows, wallet signing, and SQLite persistence in one
+  large controller and should be split further toward dedicated service/view
+  boundaries even after the new transfer-history read endpoint
+- `store_controller.c`: main CRUD resource paths are model-backed now, but the
+  remaining access-gate and product JSON bootstrap path still contain
+  controller-owned persistence/query logic that should be reduced further
+- `blog_controller.c`: onion announcement writes are model-backed, but the
+  transaction-scan registry discovery path is still controller-heavy and can
+  be split further toward services/read models
+- `file_controller.c`: manifest/chunk APIs are established, but the manifest
+  build/cache workflow is still controller-heavy and could be pushed further
+  toward service/model ownership
+- `network_controller.c`: runtime state is explicit now, but richer peer
+  policy/read models still mostly live below the controller and could be
+  surfaced further through dedicated services/resources
+- `wallet_view_helpers.c`: balance/tip reads now use wallet model projections,
+  but the large zclassicd-to-SQLite rebuild flow is still controller-owned and
+  should be pushed behind wallet-facing services/models incrementally
+
+Lower-risk cleanup completed after the audit:
+
+- `network_controller.c`: moved from a raw file-local `g_cm` pointer to an
+  explicit `network_context`
+- `explorer_controller.c`: moved to explicit explorer context/backend/assets
+  state with stricter read-side validation on tx/address/search/token routes
+- `transaction_controller.c`: moved raw-tx RPCs to explicit `rawtx_context`
+- `mining_controller.c`: moved mining RPCs to explicit `mining_context`
+- `repair_controller.c`: moved repair RPCs to explicit `repair_context`
+- `hodl_controller.c`: moved analytics RPCs to explicit `hodl_context` and now
+  derives the coins DB from the injected cache instead of keeping a stale
+  extra global pointer
+- `misc_controller.c`: moved control/util RPCs to explicit `misc_context` and
+  hardened `validateaddress` input validation
+- `file_controller.c`: moved manifest/datadir state to explicit `file_context`
+  and tightened manifest/chunk read failure handling
+- `onion_service.c`: moved onion runtime state to explicit `onion_context` and
+  brought hosted MVC apps/status forward on the landing and health surfaces
+- `zslp_controller.c`: moved to explicit context/runtime helpers, centralized
+  token/address validation, removed duplicated node.db open/close plumbing,
+  moved token metadata to model-backed persistence, and added resource-style
+  read RPCs for token show/list while keeping create/mint/send as commands;
+  command request validation now lives in `zslp_service` instead of being
+  duplicated across controller and RPC layers; token finalization and
+  transfer-credit side effects now live in `zslp_command_service`; the shared
+  wallet-side OP_RETURN patch/re-sign/commit flow also lives there now, along
+  with the GENESIS and SEND base transaction assembly helpers; shielded
+  payment-address generation and payment detection now live in
+  `zslp_payment_service`; repeated ZSLP RPC request parsing and token JSON
+  rendering are now centralized in controller helpers instead of duplicated
+  across handlers
+
+## Longer-Term Checklist
+
+- [ ] introduce `wallet_sync_service` so wallet replay/indexing is no longer controller-shaped
+- [ ] introduce `peer_policy_service` for legacy-peer preference and recovery selection
+- [ ] introduce `event_projection_service` for asynchronous projection and metrics updates
+- [ ] define operator-facing dashboards or RPCs for sync health and recovery state
 
 ## Progress Notes
 

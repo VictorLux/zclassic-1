@@ -22,22 +22,32 @@
 #include <stdlib.h>
 #include <string.h>
 
-static struct main_state *g_ms = NULL;
-static struct wallet *g_misc_wallet = NULL;
+struct misc_context {
+    struct main_state *main_state;
+    struct wallet *wallet;
+};
+
+static struct misc_context g_misc_ctx = {0};
+
+static struct misc_context *misc_ctx(void)
+{
+    return &g_misc_ctx;
+}
 
 void rpc_misc_set_state(struct main_state *ms)
 {
-    g_ms = ms;
+    misc_ctx()->main_state = ms;
 }
 
 void rpc_misc_set_wallet(struct wallet *w)
 {
-    g_misc_wallet = w;
+    misc_ctx()->wallet = w;
 }
 
 static bool rpc_getinfo(const struct json_value *params, bool help,
                           struct json_value *result)
 {
+    struct misc_context *ctx = misc_ctx();
     (void)params;
     RPC_HELP(help, result,
         "getinfo\n"
@@ -47,8 +57,8 @@ static bool rpc_getinfo(const struct json_value *params, bool help,
     json_push_kv_int(result, "version", CLIENT_VERSION);
     json_push_kv_int(result, "protocolversion", PROTOCOL_VERSION);
 
-    struct block_index *tip = g_ms ?
-        active_chain_tip(&g_ms->chain_active) : NULL;
+    struct block_index *tip = ctx->main_state ?
+        active_chain_tip(&ctx->main_state->chain_active) : NULL;
     json_push_kv_int(result, "blocks", tip ? tip->nHeight : 0);
     json_push_kv_int(result, "timeoffset", 0);
     json_push_kv_int(result, "connections", 0);
@@ -64,6 +74,7 @@ static bool rpc_getinfo(const struct json_value *params, bool help,
 static bool rpc_validateaddress(const struct json_value *params, bool help,
                                   struct json_value *result)
 {
+    struct misc_context *ctx = misc_ctx();
     RPC_HELP(help, result,
         "validateaddress \"address\"\n"
         "Return information about the given ZClassic address.\n"
@@ -74,6 +85,16 @@ static bool rpc_validateaddress(const struct json_value *params, bool help,
     rpc_params_expect(&p, 1, 1);
     const char *addr = rpc_require_str(&p, 0, "address");
     if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); return false; }
+    if (addr[0] == '\0' || strlen(addr) > 128) {
+        json_set_str(result, "address must be 1-128 printable characters");
+        return false;
+    }
+    for (const unsigned char *s = (const unsigned char *)addr; *s; s++) {
+        if (*s < 33 || *s > 126) {
+            json_set_str(result, "address must be 1-128 printable characters");
+            return false;
+        }
+    }
     const struct chain_params *cp = chain_params_get();
 
     json_set_object(result);
@@ -86,11 +107,11 @@ static bool rpc_validateaddress(const struct json_value *params, bool help,
         json_push_kv_bool(result, "isvalid", true);
         json_push_kv_str(result, "type", "sapling");
 
-        if (g_misc_wallet) {
+        if (ctx->wallet) {
             bool is_mine = false;
-            for (size_t i = 0; i < g_misc_wallet->sapling_keys.num_keys; i++) {
+            for (size_t i = 0; i < ctx->wallet->sapling_keys.num_keys; i++) {
                 struct sapling_key_entry *e =
-                    &g_misc_wallet->sapling_keys.keys[i];
+                    &ctx->wallet->sapling_keys.keys[i];
                 if (e->used &&
                     memcmp(e->diversifier, diversifier, 11) == 0 &&
                     memcmp(e->pk_d, pk_d, 32) == 0) {
@@ -122,14 +143,14 @@ static bool rpc_validateaddress(const struct json_value *params, bool help,
         json_push_kv_str(result, "type", "pubkeyhash");
         json_push_kv_bool(result, "isscript", false);
 
-        if (g_misc_wallet) {
-            bool is_mine = keystore_have_key(&g_misc_wallet->keystore,
+        if (ctx->wallet) {
+            bool is_mine = keystore_have_key(&ctx->wallet->keystore,
                                                &dest.id.key);
             json_push_kv_bool(result, "ismine", is_mine);
 
             if (is_mine) {
                 struct pubkey pk;
-                if (keystore_get_pubkey(&g_misc_wallet->keystore,
+                if (keystore_get_pubkey(&ctx->wallet->keystore,
                                          &dest.id.key, &pk)) {
                     char pk_hex[PUBLIC_KEY_SIZE * 2 + 1];
                     HexStr(pk.vch, pk.size, false, pk_hex, sizeof(pk_hex));
@@ -143,8 +164,8 @@ static bool rpc_validateaddress(const struct json_value *params, bool help,
         json_push_kv_str(result, "type", "scripthash");
         json_push_kv_bool(result, "isscript", true);
 
-        if (g_misc_wallet) {
-            bool have = keystore_have_cscript(&g_misc_wallet->keystore,
+        if (ctx->wallet) {
+            bool have = keystore_have_cscript(&ctx->wallet->keystore,
                                                 &dest.id.script.hash);
             json_push_kv_bool(result, "ismine", have);
         }
