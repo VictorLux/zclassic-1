@@ -176,12 +176,20 @@ bool stream_read_u64_le(struct byte_stream *s, uint64_t *v)
 
 bool stream_read_i32_le(struct byte_stream *s, int32_t *v)
 {
-    return stream_read_u32_le(s, (uint32_t *)v);
+    uint32_t tmp = 0;
+    if (!stream_read_u32_le(s, &tmp))
+        return false;
+    *v = (int32_t)tmp;
+    return true;
 }
 
 bool stream_read_i64_le(struct byte_stream *s, int64_t *v)
 {
-    return stream_read_u64_le(s, (uint64_t *)v);
+    uint64_t tmp = 0;
+    if (!stream_read_u64_le(s, &tmp))
+        return false;
+    *v = (int64_t)tmp;
+    return true;
 }
 
 bool stream_write_compact_size(struct byte_stream *s, uint64_t size)

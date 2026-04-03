@@ -241,6 +241,7 @@ int test_net(void)
         struct block_locator loc;
         struct byte_stream s;
         struct byte_stream r;
+        int32_t version = 0;
         uint64_t count = 0;
         struct uint256 stop = {0};
 
@@ -256,7 +257,9 @@ int test_net(void)
             failures++;
         } else {
             stream_init_from_data(&r, s.data, s.size);
-            if (!stream_read_compact_size(&r, &count) ||
+            if (!stream_read_i32_le(&r, &version) ||
+                version != 170011 ||
+                !stream_read_compact_size(&r, &count) ||
                 count != 2 ||
                 r.data[r.read_pos] != 0x11 ||
                 r.data[r.read_pos + 32] != 0x22 ||

@@ -1285,11 +1285,17 @@ int node_db_sync_catchup(struct node_db *ndb,
                          const char *datadir)
 {
     bool interrupted = false;
+    bool tx_open = false;
+    int last_indexed_height = 0;
+    int last_committed_height = -1;
+    const struct block_index *last_indexed_tip = NULL;
 
     if (!ndb->open) return -1;
 
     int db_tip = node_db_sync_get_tip_height(ndb);
     int chain_tip = active_chain_height(chain);
+    last_indexed_height = db_tip;
+    last_committed_height = db_tip;
 
     if (db_tip >= chain_tip)
         return 0;
@@ -1319,10 +1325,21 @@ int node_db_sync_catchup(struct node_db *ndb,
     /* Verify connection works before starting */
     if (!node_db_begin(ndb)) {
         fprintf(stderr, "catchup: BEGIN failed — aborting\n");
+        if (bulk_mode && !sync_db_restore_normal_mode(ndb))
+            fprintf(stderr, "catchup: failed to restore normal mode after BEGIN failure\n");
         sync_job_catchup_finish();
         return -1;
     }
-    node_db_commit(ndb);
+    tx_open = true;
+    if (!node_db_commit(ndb)) {
+        fprintf(stderr, "catchup: initial COMMIT failed — aborting\n");
+        node_db_rollback(ndb);
+        if (bulk_mode && !sync_db_restore_normal_mode(ndb))
+            fprintf(stderr, "catchup: failed to restore normal mode after initial COMMIT failure\n");
+        sync_job_catchup_finish();
+        return -1;
+    }
+    tx_open = false;
 
     int indexed = 0;
     int wallet_hits = 0;
@@ -1349,7 +1366,14 @@ int node_db_sync_catchup(struct node_db *ndb,
         }
     }
 
-    node_db_begin(ndb);
+    if (!node_db_begin(ndb)) {
+        fprintf(stderr, "catchup: failed to open main transaction\n");
+        if (bulk_mode && !sync_db_restore_normal_mode(ndb))
+            fprintf(stderr, "catchup: failed to restore normal mode after tx open failure\n");
+        sync_job_catchup_finish();
+        return -1;
+    }
+    tx_open = true;
 
     for (int h = start; h <= chain_tip; h++) {
         if (g_shutdown_requested) {
@@ -1411,31 +1435,52 @@ int node_db_sync_catchup(struct node_db *ndb,
 
         block_free(&blk);
         indexed++;
+        last_indexed_height = h;
+        last_indexed_tip = pindex;
         sync_job_catchup_progress(h);
 
         if (indexed % batch_size == 0) {
-            node_db_sync_set_tip(ndb,
-                pindex->phashBlock->data, h);
-            node_db_commit(ndb);
+            if (pindex->phashBlock)
+                node_db_sync_set_tip(ndb, pindex->phashBlock->data, h);
+            if (!node_db_commit(ndb)) {
+                fprintf(stderr, "catchup: batch COMMIT failed at height %d\n", h);
+                node_db_rollback(ndb);
+                tx_open = false;
+                interrupted = true;
+                break;
+            }
+            tx_open = false;
+            last_committed_height = h;
             int64_t elapsed = (int64_t)time(NULL) - t_start;
             int rate = elapsed > 0 ? indexed / (int)elapsed : 0;
             printf("SQLite: %d/%d blocks (height %d, %d blk/s, %d wallet txs)\n",
                    indexed, total, h, rate, wallet_hits);
             fflush(stdout);
-            node_db_begin(ndb);
+            if (!node_db_begin(ndb)) {
+                fprintf(stderr, "catchup: failed to reopen transaction after batch commit\n");
+                interrupted = true;
+                break;
+            }
+            tx_open = true;
         }
     }
 
     if (cached_data) munmap(cached_data, cached_size);
 
     /* Final commit */
-    {
-        const struct block_index *tip = active_chain_at(chain, chain_tip);
-        if (tip)
+    if (tx_open) {
+        if (last_indexed_tip && last_indexed_tip->phashBlock)
             node_db_sync_set_tip(ndb,
-                tip->phashBlock->data, chain_tip);
+                last_indexed_tip->phashBlock->data, last_indexed_height);
+        if (!node_db_commit(ndb)) {
+            fprintf(stderr, "catchup: final COMMIT failed\n");
+            node_db_rollback(ndb);
+            interrupted = true;
+            last_indexed_height = last_committed_height;
+        } else {
+            last_committed_height = last_indexed_height;
+        }
     }
-    node_db_commit(ndb);
 
     /* Restore safe pragmas and rebuild indexes */
     if (bulk_mode && !sync_db_restore_normal_mode(ndb)) {
@@ -1445,10 +1490,11 @@ int node_db_sync_catchup(struct node_db *ndb,
     }
 
     int64_t elapsed = (int64_t)time(NULL) - t_start;
-    printf("SQLite catchup %s: %d blocks in %llds (%d blk/s)\n",
+    printf("SQLite catchup %s: %d blocks in %llds (%d blk/s, tip=%d)\n",
            interrupted ? "stopped" : "complete",
            indexed, (long long)elapsed,
-           elapsed > 0 ? indexed / (int)elapsed : indexed);
+           elapsed > 0 ? indexed / (int)elapsed : indexed,
+           last_committed_height);
     fflush(stdout);
     sync_job_catchup_finish();
     return indexed;
