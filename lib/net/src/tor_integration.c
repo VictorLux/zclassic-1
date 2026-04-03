@@ -20,6 +20,7 @@ static _Atomic bool g_tor_running = false;
 static _Atomic bool g_tor_ready = false;
 static _Atomic bool g_tor_started = false;   /* true once pthread_create succeeds */
 static _Atomic bool g_tor_thread_done = false; /* true once tor thread returns */
+static _Atomic bool g_monitor_started = false;
 static char g_onion_address[128];
 static char g_tor_datadir[512];
 
@@ -178,8 +179,13 @@ static void *tor_thread_fn(void *arg)
     printf("Tor: starting embedded (no ports, no SOCKS, dynhost only)\n");
     fflush(stdout);
 
-    /* Monitor for .onion address in parallel (joinable, not detached) */
-    pthread_create(&g_monitor_thread, NULL, tor_onion_monitor, NULL);
+    /* Monitor for .onion address in parallel when the helper thread starts. */
+    if (pthread_create(&g_monitor_thread, NULL, tor_onion_monitor, NULL) == 0) {
+        atomic_store(&g_monitor_started, true);
+    } else {
+        perror("Tor: pthread_create onion monitor");
+        atomic_store(&g_monitor_started, false);
+    }
 
     /* Run Tor in this thread (blocks until exit) */
     tor_main_configuration_t *cfg = tor_main_configuration_new();
@@ -188,11 +194,11 @@ static void *tor_thread_fn(void *arg)
     int result = tor_run_main(cfg);
     tor_main_configuration_free(cfg);
 
-    /* Signal monitor to stop, then join it.
-     * Always join — pthread_create succeeded, so thread is joinable. */
+    /* Signal monitor to stop, then join it if it actually started. */
     atomic_store(&g_tor_running, false);
     atomic_store(&g_tor_ready, false);
-    pthread_join(g_monitor_thread, NULL);
+    if (atomic_exchange(&g_monitor_started, false))
+        pthread_join(g_monitor_thread, NULL);
 
     printf("Tor: exited with code %d\n", result);
     atomic_store(&g_tor_thread_done, true);
@@ -249,6 +255,7 @@ bool tor_integration_start(const char *datadir, uint16_t p2p_port)
 
     atomic_store(&g_tor_running, true);
     atomic_store(&g_tor_thread_done, false);
+    atomic_store(&g_monitor_started, false);
 
     if (pthread_create(&g_tor_thread, NULL, tor_thread_fn, NULL) != 0) {
         atomic_store(&g_tor_running, false);

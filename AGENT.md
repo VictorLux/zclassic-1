@@ -126,6 +126,8 @@ DB-mutating service helpers now also obey the worker boundary:
   longer increments worker state optimistically when `pthread_create` fails
 - metrics thread start/stop is now idempotent and startup failure is surfaced
   instead of assuming the optional metrics worker always starts cleanly
+- embedded Tor now tracks whether the onion-monitor helper thread actually
+  started before trying to join it during shutdown
 - UTXO import is being hardened with explicit cancellation and cleanup so
   shutdown or startup failure does not leave the parallel import pipeline
   running blindly
