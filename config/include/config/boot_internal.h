@@ -112,6 +112,12 @@ struct boot_svc_ctx {
     bool replay_thread_started;
     pthread_t offer_thread;
     bool offer_thread_started;
+    pthread_t address_backfill_thread;
+    bool address_backfill_thread_started;
+    pthread_t tx_index_thread;
+    bool tx_index_thread_started;
+    bool want_address_backfill;
+    bool want_snapshot_tx_index;
     struct {
         struct node_db *ndb;
         const struct active_chain *chain;

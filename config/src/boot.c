@@ -93,9 +93,87 @@ static struct wallet g_wallet;
 static struct gen_context g_gen;
 static struct wallet_sqlite g_wallet_sqlite;
 static struct node_db g_node_db;
+static struct db_service g_db_service;
 static const char *g_datadir = NULL;
 const char *g_blog_datadir = NULL;
 static _Atomic bool g_running = false;
+
+static struct db_service *boot_runtime_db_service(void)
+{
+    return db_service_is_started(&g_db_service) ? &g_db_service : NULL;
+}
+
+static bool boot_db_enter_turbo_mode(void)
+{
+    struct db_service *dbsvc = boot_runtime_db_service();
+
+    if (dbsvc)
+        return db_service_ibd_turbo_mode(dbsvc);
+    return g_node_db.open && node_db_ibd_turbo_mode(&g_node_db);
+}
+
+static bool boot_db_restore_normal_mode(void)
+{
+    struct db_service *dbsvc = boot_runtime_db_service();
+
+    if (dbsvc)
+        return db_service_normal_mode(dbsvc);
+    return g_node_db.open && node_db_normal_mode(&g_node_db);
+}
+
+static bool boot_db_set_sync_batch_size(int batch_size)
+{
+    struct db_service *dbsvc = boot_runtime_db_service();
+
+    if (dbsvc)
+        return db_service_set_sync_batch_size(dbsvc, batch_size);
+    if (!g_node_db.open)
+        return false;
+    node_db_set_sync_batch_size(&g_node_db, batch_size);
+    return true;
+}
+
+struct boot_shielded_backfill_ctx {
+    int updated;
+};
+
+static bool boot_backfill_shielded_values_write(struct node_db *ndb, void *ctx)
+{
+    struct boot_shielded_backfill_ctx *backfill = ctx;
+    size_t iter = 0;
+    struct block_index *bi;
+    int updated = 0;
+    bool tx_open = false;
+
+    if (!ndb || !ndb->open)
+        return false;
+    if (!node_db_begin(ndb))
+        return false;
+    tx_open = true;
+
+    while (block_map_next(&g_state.map_block_index, &iter, NULL, &bi)) {
+        if (!bi) continue;
+        if (bi->nSproutValue == 0 && bi->nSaplingValue == 0) continue;
+        struct db_block blk;
+        if (db_block_find_by_height(ndb, bi->nHeight, &blk)) {
+            blk.sprout_value = bi->nSproutValue;
+            blk.sapling_value = bi->nSaplingValue;
+            db_block_save(ndb, &blk);
+            updated++;
+        }
+    }
+
+    if (!node_db_commit(ndb)) {
+        if (tx_open)
+            node_db_rollback(ndb);
+        return false;
+    }
+    if (!node_db_state_set_int(ndb, "shielded_backfilled", 1))
+        return false;
+    if (backfill)
+        backfill->updated = updated;
+    return true;
+}
 static struct metrics_context g_metrics;
 
 /* Comparator for sorting block_index pointers by height (for qsort). */
@@ -151,6 +229,8 @@ void app_context_defaults(struct app_context *ctx)
 
 bool app_init(struct app_context *ctx)
 {
+    db_service_init(&g_db_service);
+
     /* Initialize event log first — everything after this is observable */
     event_log_init();
     event_install_crash_handler();
@@ -408,8 +488,8 @@ bool app_init(struct app_context *ctx)
             fprintf(stderr, "Warning: Snapshot import had errors\n");
         }
 
-        /* Step 3: Build transaction index in background */
-        snapshot_build_tx_index_bg(ctx->datadir);
+        /* Step 3: Build transaction index after runtime services take
+         * ownership of background jobs, so shutdown can join it cleanly. */
     }
 
     /* -import-from: copy zclassicd's data and start immediately.
@@ -659,7 +739,17 @@ bool app_init(struct app_context *ctx)
                 struct coins_view_db migrate_db;
                 if (coins_view_db_open(&migrate_db, cs_path,
                                        450 << 20, false, false)) {
-                    node_db_sync_import_utxos(&g_node_db, &migrate_db);
+                    struct node_db import_db;
+                    bool imported = false;
+
+                    if (node_db_sync_open_private_db_like(&g_node_db, &import_db)) {
+                        node_db_sync_import_utxos(&import_db, &migrate_db);
+                        node_db_close(&import_db);
+                        imported = true;
+                    } else {
+                        node_db_sync_import_utxos(&g_node_db, &migrate_db);
+                        imported = true;
+                    }
 
                     /* Set coins_best_block from LevelDB's best block.
                      * ALWAYS use the LevelDB hash — UTXOs are valid AT
@@ -688,7 +778,8 @@ bool app_init(struct app_context *ctx)
                     }
 
                     coins_view_db_close(&migrate_db);
-                    node_db_wal_checkpoint(&g_node_db);
+                    if (imported)
+                        node_db_wal_checkpoint(&g_node_db);
 
                     /* SHA3 verification — verify BEFORE marking done */
                     uint8_t imported_root[32];
@@ -1204,8 +1295,10 @@ bool app_init(struct app_context *ctx)
             atomic_store(&g_utxo_commitment_skip, true);
 
             if (g_node_db.open) {
-                node_db_ibd_turbo_mode(&g_node_db);
-                node_db_set_sync_batch_size(&g_node_db, 1000);
+                if (!boot_db_enter_turbo_mode())
+                    fprintf(stderr, "boot: failed to enter turbo mode\n");
+                if (!boot_db_set_sync_batch_size(1000))
+                    fprintf(stderr, "boot: failed to set sync batch size\n");
             }
             set_flush_policy(3600, 1000000, 100000);
             break;
@@ -1319,8 +1412,10 @@ bool app_init(struct app_context *ctx)
 
     /* Restore normal SQLite settings after any IBD replay */
     if (g_node_db.open) {
-        node_db_normal_mode(&g_node_db);
-        node_db_set_sync_batch_size(&g_node_db, 1);
+        if (!boot_db_restore_normal_mode())
+            fprintf(stderr, "boot: failed to restore normal mode\n");
+        if (!boot_db_set_sync_batch_size(1))
+            fprintf(stderr, "boot: failed to reset sync batch size\n");
     }
     /* Flush every 500 blocks during normal sync so crash/kill never
      * loses more than ~500 blocks of connected coins state. */
@@ -1361,48 +1456,23 @@ bool app_init(struct app_context *ctx)
         int64_t has_shielded = 0;
         node_db_state_get_int(&g_node_db, "shielded_backfilled", &has_shielded);
         if (has_shielded == 0) {
+            struct boot_shielded_backfill_ctx backfill = {0};
+            bool ok = false;
             printf("Backfilling shielded values from block_index...\n");
-            node_db_begin(&g_node_db);
-            int updated = 0;
-            size_t iter = 0;
-            struct block_index *bi;
-            while (block_map_next(&g_state.map_block_index, &iter, NULL, &bi)) {
-                if (!bi) continue;
-                if (bi->nSproutValue == 0 && bi->nSaplingValue == 0) continue;
-                struct db_block blk;
-                if (db_block_find_by_height(&g_node_db, bi->nHeight, &blk)) {
-                    blk.sprout_value = bi->nSproutValue;
-                    blk.sapling_value = bi->nSaplingValue;
-                    db_block_save(&g_node_db, &blk);
-                    updated++;
-                }
+            if (boot_runtime_db_service()) {
+                ok = db_service_run_write(boot_runtime_db_service(),
+                                          boot_backfill_shielded_values_write,
+                                          &backfill);
+            } else {
+                ok = boot_backfill_shielded_values_write(&g_node_db, &backfill);
             }
-            node_db_commit(&g_node_db);
-            printf("Backfill: updated %d blocks with shielded values\n", updated);
-            fflush(stdout);
-            node_db_state_set_int(&g_node_db, "shielded_backfilled", 1);
-        }
-    }
-
-    /* Backfill addresses table from UTXOs — runs in background thread
-     * to avoid blocking startup. Uses its own SQLite connection.
-     * Skip in no_services mode (speedrun). */
-    if (g_node_db.open && !ctx->no_services) {
-        int64_t addr_done = 0;
-        node_db_state_get_int(&g_node_db, "addresses_backfilled", &addr_done);
-        if (!addr_done) {
-            static char s_backfill_path[1024];
-            snprintf(s_backfill_path, sizeof(s_backfill_path),
-                     "%s/node.db", ctx->datadir);
-            pthread_t bg;
-            pthread_attr_t attr;
-            pthread_attr_init(&attr);
-            pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-            pthread_create(&bg, &attr, backfill_addresses_thread,
-                           s_backfill_path);
-            pthread_attr_destroy(&attr);
-            printf("Address backfill: started in background thread\n");
-            fflush(stdout);
+            if (ok) {
+                printf("Backfill: updated %d blocks with shielded values\n",
+                       backfill.updated);
+                fflush(stdout);
+            } else {
+                fprintf(stderr, "Backfill: failed to update shielded values\n");
+            }
         }
     }
 
@@ -1427,6 +1497,7 @@ bool app_init(struct app_context *ctx)
         .gen = &g_gen,
         .wallet_sqlite = &g_wallet_sqlite,
         .node_db = &g_node_db,
+        .db_service = &g_db_service,
         .metrics = &g_metrics,
         .running = &g_running,
         .datadir = g_datadir,
@@ -1434,7 +1505,14 @@ bool app_init(struct app_context *ctx)
         .params_loaded = &g_params_loaded,
         .block_tree_open = g_block_tree_open,
         .block_tree = &g_block_tree,
+        .want_address_backfill = false,
+        .want_snapshot_tx_index = ctx->snapshot_dir != NULL,
     };
+    if (g_node_db.open) {
+        int64_t addr_done = 0;
+        node_db_state_get_int(&g_node_db, "addresses_backfilled", &addr_done);
+        svc.want_address_backfill = (addr_done == 0);
+    }
     /* g_svc is stored so app_shutdown can access it */
     g_svc = svc;
     return app_init_services(ctx, params, &g_svc);

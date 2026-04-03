@@ -5,6 +5,7 @@
 
 #include "models/database.h"
 #include <stdbool.h>
+#include <pthread.h>
 
 struct wallet;
 
@@ -36,10 +37,11 @@ int snapshot_import(const char *snapshot_dir,
                     struct node_db *ndb,
                     struct wallet *w);
 
-/* Build transaction index from block files in background.
+/* Build transaction index from block files on a caller-owned thread.
  * Reads block positions from blocks table, parses block files
  * to extract txids, inserts into transactions table.
- * Runs as detached thread. */
-void snapshot_build_tx_index_bg(const char *c23_datadir);
+ * Returns true when the worker thread was started successfully. */
+bool snapshot_start_tx_index_build(const char *c23_datadir,
+                                   pthread_t *thread_out);
 
 #endif

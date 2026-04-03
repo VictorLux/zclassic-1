@@ -662,15 +662,12 @@ static void *build_tx_index_thread(void *arg)
     fflush(stdout);
     int64_t t_start = (int64_t)time(NULL);
 
-    sqlite3_exec(ndb.db, "PRAGMA synchronous=OFF", NULL, NULL, NULL);
-    sqlite3_exec(ndb.db, "PRAGMA cache_size=-524288", NULL, NULL, NULL);
-    sqlite3_exec(ndb.db, "PRAGMA wal_autocheckpoint=0", NULL, NULL, NULL);
-    sqlite3_busy_timeout(ndb.db, 30000);
-    sqlite3_exec(ndb.db, "DROP INDEX IF EXISTS idx_tx_block",
-                 NULL, NULL, NULL);
-    sqlite3_exec(ndb.db, "DROP INDEX IF EXISTS idx_tx_height",
-                 NULL, NULL, NULL);
-    sqlite3_exec(ndb.db, "DELETE FROM transactions", NULL, NULL, NULL);
+    if (!db_tx_prepare_bulk_load(&ndb)) {
+        fprintf(stderr, "tx_index: failed to prepare bulk load\n");
+        node_db_close(&ndb);
+        free(arg);
+        return NULL;
+    }
 
     /* Query blocks ordered by file_num, data_pos for sequential I/O */
     sqlite3_stmt *query = NULL;
@@ -774,19 +771,9 @@ static void *build_tx_index_thread(void *arg)
     sqlite3_finalize(query);
     node_db_commit(&ndb);
 
-    /* Rebuild indexes */
     printf("tx_index: rebuilding indexes...\n");
     fflush(stdout);
-    sqlite3_exec(ndb.db,
-        "CREATE INDEX IF NOT EXISTS idx_tx_block ON transactions(block_hash)",
-        NULL, NULL, NULL);
-    sqlite3_exec(ndb.db,
-        "CREATE INDEX IF NOT EXISTS idx_tx_height ON transactions(block_height)",
-        NULL, NULL, NULL);
-    sqlite3_exec(ndb.db, "PRAGMA synchronous=NORMAL", NULL, NULL, NULL);
-    sqlite3_exec(ndb.db, "PRAGMA wal_autocheckpoint=1000", NULL, NULL, NULL);
-    sqlite3_wal_checkpoint_v2(ndb.db, NULL,
-        SQLITE_CHECKPOINT_TRUNCATE, NULL, NULL);
+    db_tx_finalize_bulk_load(&ndb);
 
     node_db_close(&ndb);
 
@@ -799,16 +786,33 @@ static void *build_tx_index_thread(void *arg)
     return NULL;
 }
 
-void snapshot_build_tx_index_bg(const char *c23_datadir)
+bool snapshot_start_tx_index_build(const char *c23_datadir,
+                                   pthread_t *thread_out)
 {
-    struct tx_index_args *args = malloc(sizeof(*args));
-    args->datadir = c23_datadir;
+    struct tx_index_args *args;
+    char *db_path;
 
-    char *db_path = malloc(1024);
+    if (!c23_datadir || !thread_out)
+        return false;
+
+    args = calloc(1, sizeof(*args));
+    if (!args)
+        return false;
+
+    db_path = malloc(1024);
+    if (!db_path) {
+        free(args);
+        return false;
+    }
+
+    args->datadir = c23_datadir;
     snprintf(db_path, 1024, "%s/node.db", c23_datadir);
     args->db_path = db_path;
 
-    pthread_t thr;
-    pthread_create(&thr, NULL, build_tx_index_thread, args);
-    pthread_detach(thr);
+    if (pthread_create(thread_out, NULL, build_tx_index_thread, args) != 0) {
+        free(db_path);
+        free(args);
+        return false;
+    }
+    return true;
 }

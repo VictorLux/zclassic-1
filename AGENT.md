@@ -107,6 +107,10 @@ DB-mutating service helpers now also obey the worker boundary:
   instead of a detached startup thread
 - snapshot-offer build is now a tracked service thread instead of a detached
   one-shot background thread
+- startup address backfill is now intended to be a tracked service thread
+  instead of a detached one-shot thread
+- snapshot tx-index build is now intended to be a tracked service thread
+  instead of a detached one-shot thread
 
 ### Health / Observability
 

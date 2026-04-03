@@ -93,6 +93,7 @@ static struct wallet *boot_wallet(void)
 static void *payment_processor_thread(void *arg);
 static void *background_utxo_replay(void *arg);
 static void *build_snapshot_offer_thread(void *arg);
+static void *address_backfill_service_thread(void *arg);
 
 static bool boot_running(const struct boot_svc_ctx *svc)
 {
@@ -187,6 +188,44 @@ static void boot_join_offer_service(struct boot_svc_ctx *svc)
     svc->offer_thread_started = false;
 }
 
+static bool boot_start_address_backfill_service(struct boot_svc_ctx *svc)
+{
+    if (!svc || svc->address_backfill_thread_started || !svc->datadir)
+        return false;
+    if (pthread_create(&svc->address_backfill_thread, NULL,
+                       address_backfill_service_thread, svc) != 0) {
+        return false;
+    }
+    svc->address_backfill_thread_started = true;
+    return true;
+}
+
+static void boot_join_address_backfill_service(struct boot_svc_ctx *svc)
+{
+    if (!svc || !svc->address_backfill_thread_started)
+        return;
+    pthread_join(svc->address_backfill_thread, NULL);
+    svc->address_backfill_thread_started = false;
+}
+
+static bool boot_start_tx_index_service(struct boot_svc_ctx *svc)
+{
+    if (!svc || svc->tx_index_thread_started || !svc->datadir)
+        return false;
+    if (!snapshot_start_tx_index_build(svc->datadir, &svc->tx_index_thread))
+        return false;
+    svc->tx_index_thread_started = true;
+    return true;
+}
+
+static void boot_join_tx_index_service(struct boot_svc_ctx *svc)
+{
+    if (!svc || !svc->tx_index_thread_started)
+        return;
+    pthread_join(svc->tx_index_thread, NULL);
+    svc->tx_index_thread_started = false;
+}
+
 /* ── Helper threads ────────────────────────────────────────── */
 
 extern void store_process_payments(const char *datadir);
@@ -201,6 +240,23 @@ static void *payment_processor_thread(void *arg)
             break;
         store_process_payments(svc->datadir);
     }
+    return NULL;
+}
+
+static void *address_backfill_service_thread(void *arg)
+{
+    struct boot_svc_ctx *svc = arg;
+    char *db_path;
+
+    if (!svc || !svc->datadir)
+        return NULL;
+
+    db_path = malloc(1024);
+    if (!db_path)
+        return NULL;
+    snprintf(db_path, 1024, "%s/node.db", svc->datadir);
+    backfill_addresses_thread(db_path);
+    free(db_path);
     return NULL;
 }
 
@@ -1062,6 +1118,23 @@ bool app_init_services(struct app_context *ctx,
         }
     }
 
+    if (svc->want_address_backfill) {
+        if (boot_start_address_backfill_service(svc)) {
+            printf("Address backfill: started in tracked background thread\n");
+            fflush(stdout);
+        } else {
+            fprintf(stderr,
+                    "WARNING: failed to start tracked address backfill thread\n");
+        }
+    }
+
+    if (svc->want_snapshot_tx_index) {
+        if (!boot_start_tx_index_service(svc)) {
+            fprintf(stderr,
+                    "WARNING: failed to start tracked tx-index build thread\n");
+        }
+    }
+
     atomic_store(svc->running, true);
     {
         struct block_index *tip = active_chain_tip(&svc->state->chain_active);
@@ -1168,6 +1241,8 @@ static void shutdown_quiesce_network_and_flush_coins(struct boot_svc_ctx *svc)
 
 static void shutdown_persist_runtime_state(struct boot_svc_ctx *svc)
 {
+    boot_join_address_backfill_service(svc);
+    boot_join_tx_index_service(svc);
     boot_join_offer_service(svc);
     boot_join_catchup_service(svc);
 
