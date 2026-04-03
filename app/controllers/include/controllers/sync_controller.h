@@ -28,9 +28,29 @@ struct block;
 struct block_index;
 struct transaction;
 struct wallet;
+struct node_health_snapshot;
+
+struct node_db_sync_job_status {
+    bool catchup_active;
+    int catchup_height;
+    int catchup_target_height;
+    int64_t catchup_started_at;
+    int64_t catchup_last_progress_at;
+    bool import_active;
+    int import_rows_written;
+    int64_t import_started_at;
+    int64_t import_last_progress_at;
+};
 
 /* Initialize the sync layer. Opens SQLite at datadir/node.db. */
 bool node_db_sync_init(struct node_db *ndb, const char *datadir);
+
+/* Open a dedicated private SQLite handle that points at the same on-disk
+ * database as an existing file-backed node_db. Intended for long-running
+ * maintenance jobs (catchup/import) that should not share the runtime
+ * DB-service write owner. */
+bool node_db_sync_open_private_db_like(const struct node_db *src,
+                                       struct node_db *out);
 
 /* Global flag: set to true while rescanwitnesses is running.
  * Prevents connect_block from overwriting the Sapling tree. */
@@ -144,5 +164,7 @@ int node_db_sync_mempool_save(struct node_db *ndb,
  * Called on startup. Returns count loaded. */
 int node_db_sync_mempool_load(struct node_db *ndb,
                               struct tx_mempool *mempool);
+
+void node_db_sync_get_job_status(struct node_db_sync_job_status *out);
 
 #endif

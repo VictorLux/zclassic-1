@@ -6,6 +6,7 @@
 #define ZCL_BOOT_INTERNAL_H
 
 #include "config/boot.h"
+#include "config/db_service.h"
 #include "config/runtime.h"
 #include "validation/main_state.h"
 #include "storage/coins_view_sqlite.h"
@@ -93,6 +94,7 @@ struct boot_svc_ctx {
     struct gen_context *gen;
     struct wallet_sqlite *wallet_sqlite;
     struct node_db *node_db;
+    struct db_service *db_service;
     struct metrics_context *metrics;
     _Atomic bool *running;
     const char *datadir;
@@ -102,6 +104,20 @@ struct boot_svc_ctx {
     struct block_tree_db *block_tree;
     /* Composition-owned runtime passed into long-lived services. */
     struct app_runtime_context runtime;
+    pthread_t catchup_thread;
+    bool catchup_thread_started;
+    pthread_t payment_thread;
+    bool payment_thread_started;
+    pthread_t replay_thread;
+    bool replay_thread_started;
+    pthread_t offer_thread;
+    bool offer_thread_started;
+    struct {
+        struct node_db *ndb;
+        const struct active_chain *chain;
+        const struct wallet *w;
+        const char *datadir;
+    } catchup_args;
 };
 
 bool app_init_services(struct app_context *ctx,

@@ -178,6 +178,26 @@ static void db_wallet_tx_read_row(sqlite3_stmt *s, int col,
     out->fee = AR_COL_INT(s, col++);
 }
 
+static void db_wallet_tx_raw_view_read_row(sqlite3_stmt *s, int col,
+                                           struct db_wallet_tx_raw_view *out)
+{
+    memset(out, 0, sizeof(*out));
+    out->raw_tx_len = (size_t)AR_COL_BYTES(s, col);
+    if (out->raw_tx_len > 0) {
+        const void *raw = sqlite3_column_blob(s, col);
+        if (raw) {
+            out->raw_tx = malloc(out->raw_tx_len);
+            if (out->raw_tx)
+                memcpy(out->raw_tx, raw, out->raw_tx_len);
+            else
+                out->raw_tx_len = 0;
+        }
+    }
+    col++;
+    out->block_height = sqlite3_column_type(s, col) == SQLITE_NULL
+        ? 0 : (int)AR_COL_INT(s, col);
+}
+
 static void db_wallet_utxo_read_row(sqlite3_stmt *s, int col,
                                      struct db_wallet_utxo *out)
 {
@@ -267,34 +287,25 @@ bool db_wallet_tx_save(struct node_db *ndb, const struct db_wallet_tx *t)
         ((struct db_wallet_tx *)t)->time_received = (int64_t)time(NULL);
 
     struct ar_callbacks *cbs = db_wallet_tx_callbacks();
-    AR_VALIDATE_RECORD(cbs, "wallet_tx", t, db_wallet_tx_validate);
-    if (!ar_run_before_save(cbs, (void *)t)) return false;
-
     sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(ndb->db,
+    AR_ADHOC_SAVE(ndb, s,
         "INSERT OR REPLACE INTO wallet_transactions"
         "(txid,raw_tx,block_hash,block_height,time_received,from_me,fee)"
         " VALUES(?,?,?,?,?,?,?)",
-        -1, &s, NULL);
-    if (!s) return false;
-    AR_BIND_BLOB(s, 1, t->txid, 32);
-    AR_BIND_BLOB(s, 2, t->raw_tx, (int)t->raw_tx_len);
-    if (t->has_block)
-        AR_BIND_BLOB(s, 3, t->block_hash, 32);
-    else
-        AR_BIND_NULL(s, 3);
-    if (t->has_block)
-        AR_BIND_INT(s, 4, t->block_height);
-    else
-        AR_BIND_NULL(s, 4);
-    AR_BIND_INT(s, 5, t->time_received);
-    AR_BIND_INT(s, 6, t->from_me ? 1 : 0);
-    AR_BIND_INT(s, 7, t->fee);
-    bool ok = AR_STEP_DONE(s);
-    AR_FINALIZE(s);
-
-    if (ok) ar_run_after_save(cbs, (void *)t);
-    return ok;
+        cbs, "wallet_tx", t, db_wallet_tx_validate,
+        AR_BIND_BLOB(s, 1, t->txid, 32);
+        AR_BIND_BLOB(s, 2, t->raw_tx, (int)t->raw_tx_len);
+        if (t->has_block)
+            AR_BIND_BLOB(s, 3, t->block_hash, 32);
+        else
+            AR_BIND_NULL(s, 3);
+        if (t->has_block)
+            AR_BIND_INT(s, 4, t->block_height);
+        else
+            AR_BIND_NULL(s, 4);
+        AR_BIND_INT(s, 5, t->time_received);
+        AR_BIND_INT(s, 6, t->from_me ? 1 : 0);
+        AR_BIND_INT(s, 7, t->fee));
 }
 
 bool db_wallet_tx_find(struct node_db *ndb, const uint8_t txid[32],
@@ -302,16 +313,11 @@ bool db_wallet_tx_find(struct node_db *ndb, const uint8_t txid[32],
 {
     if (!ndb->open) return false;
     sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(ndb->db,
+    AR_QUERY_ONE_BOOL(ndb, s,
         "SELECT txid,raw_tx,block_hash,block_height,time_received,from_me,fee"
         " FROM wallet_transactions WHERE txid=?",
-        -1, &s, NULL);
-    if (!s) return false;
-    AR_BIND_BLOB(s, 1, txid, 32);
-    if (!AR_STEP_ROW(s)) { AR_FINALIZE(s); return false; }
-    db_wallet_tx_read_row(s, 0, out);
-    AR_FINALIZE(s);
-    return true;
+        AR_BIND_BLOB(s, 1, txid, 32),
+        db_wallet_tx_read_row(s, 0, out));
 }
 
 bool db_wallet_tx_delete(struct node_db *ndb, const uint8_t txid[32])
@@ -322,7 +328,6 @@ bool db_wallet_tx_delete(struct node_db *ndb, const uint8_t txid[32])
     struct db_wallet_tx t;
     memset(&t, 0, sizeof(t));
     memcpy(t.txid, txid, 32);
-    if (!ar_run_before_destroy(cbs, &t)) return false;
 
     /* dependent: :destroy — delete child wallet_utxos */
     sqlite3_stmt *du = NULL;
@@ -335,28 +340,14 @@ bool db_wallet_tx_delete(struct node_db *ndb, const uint8_t txid[32])
     }
 
     sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(ndb->db,
-        "DELETE FROM wallet_transactions WHERE txid=?", -1, &s, NULL);
-    if (!s) return false;
-    AR_BIND_BLOB(s, 1, txid, 32);
-    bool ok = AR_STEP_DONE(s);
-    AR_FINALIZE(s);
-
-    if (ok) ar_run_after_destroy(cbs, &t);
-    return ok;
+    AR_ADHOC_DESTROY(ndb, s, "DELETE FROM wallet_transactions WHERE txid=?",
+        cbs, &t, AR_BIND_BLOB(s, 1, txid, 32));
 }
 
 int db_wallet_tx_count(struct node_db *ndb)
 {
     if (!ndb->open) return 0;
-    sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(ndb->db,
-        "SELECT COUNT(*) FROM wallet_transactions", -1, &s, NULL);
-    int c = 0;
-    if (s && AR_STEP_ROW(s))
-        c = (int)AR_COL_INT(s, 0);
-    AR_FINALIZE(s);
-    return c;
+    AR_QUERY_COUNT_SQL(ndb, "SELECT COUNT(*) FROM wallet_transactions");
 }
 
 void db_wallet_tx_free(struct db_wallet_tx *t)
@@ -394,22 +385,75 @@ int db_wallet_tx_list(struct node_db *ndb, struct db_wallet_tx *out,
 {
     if (!ndb->open || !out || max == 0) return 0;
     sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(ndb->db,
+    AR_QUERY_LIST(ndb, s,
         "SELECT txid,raw_tx,block_hash,block_height,time_received,from_me,fee"
         " FROM wallet_transactions"
         " ORDER BY time_received DESC, txid DESC"
         " LIMIT ? OFFSET ?",
-        -1, &s, NULL);
-    if (!s) return 0;
-    AR_BIND_INT(s, 1, (int)max);
-    AR_BIND_INT(s, 2, (int64_t)offset);
-    int count = 0;
-    while (AR_STEP_ROW(s) && (size_t)count < max) {
-        db_wallet_tx_read_row(s, 0, &out[count]);
-        count++;
-    }
-    AR_FINALIZE(s);
-    return count;
+        out, max,
+        AR_BIND_INT(s, 1, (int)max);
+        AR_BIND_INT(s, 2, (int64_t)offset),
+        db_wallet_tx_read_row(s, 0, &out[count]));
+}
+
+int db_wallet_tx_recent_raw(struct node_db *ndb,
+                            struct db_wallet_tx_raw_view *out,
+                            size_t max)
+{
+    sqlite3_stmt *s = NULL;
+
+    if (!ndb || !ndb->open || !out || max == 0)
+        return 0;
+    AR_QUERY_LIST(ndb, s,
+        "SELECT raw_tx, block_height "
+        "FROM wallet_transactions "
+        "WHERE raw_tx IS NOT NULL "
+        "ORDER BY block_height DESC, time_received DESC "
+        "LIMIT ?",
+        out, max,
+        AR_BIND_INT(s, 1, (int)max),
+        db_wallet_tx_raw_view_read_row(s, 0, &out[count]));
+}
+
+void db_wallet_tx_raw_view_free(struct db_wallet_tx_raw_view *row)
+{
+    if (!row)
+        return;
+    free(row->raw_tx);
+    row->raw_tx = NULL;
+    row->raw_tx_len = 0;
+}
+
+int db_wallet_tx_list_unconfirmed(struct node_db *ndb,
+                                  struct db_wallet_txid_ref *out,
+                                  size_t max)
+{
+    sqlite3_stmt *s = NULL;
+
+    if (!ndb || !ndb->open || !out || max == 0)
+        return 0;
+    AR_QUERY_LIST(ndb, s,
+        "SELECT txid FROM wallet_transactions "
+        "WHERE block_height = 0 "
+        "ORDER BY time_received DESC, txid DESC "
+        "LIMIT ?",
+        out, max,
+        AR_BIND_INT(s, 1, (int)max),
+        AR_READ_BLOB(s, 0, out[count].txid, 32));
+}
+
+bool db_wallet_tx_update_block_height(struct node_db *ndb,
+                                      const uint8_t txid[32],
+                                      int block_height)
+{
+    sqlite3_stmt *s = NULL;
+
+    if (!ndb || !ndb->open || !txid || block_height <= 0)
+        return false;
+    AR_EXEC_CHANGED_BOOL(ndb, s,
+        "UPDATE wallet_transactions SET block_height=? WHERE txid=?",
+        AR_BIND_INT(s, 1, block_height);
+        AR_BIND_BLOB(s, 2, txid, 32));
 }
 
 int db_wallet_tx_at_height(struct node_db *ndb, int height,
@@ -417,19 +461,12 @@ int db_wallet_tx_at_height(struct node_db *ndb, int height,
 {
     if (!ndb->open) return 0;
     sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(ndb->db,
+    AR_QUERY_LIST(ndb, s,
         "SELECT txid,raw_tx,block_hash,block_height,time_received,from_me,fee"
         " FROM wallet_transactions WHERE block_height=?",
-        -1, &s, NULL);
-    if (!s) return 0;
-    AR_BIND_INT(s, 1, height);
-    int count = 0;
-    while (AR_STEP_ROW(s) && (size_t)count < max) {
-        db_wallet_tx_read_row(s, 0, &out[count]);
-        count++;
-    }
-    AR_FINALIZE(s);
-    return count;
+        out, max,
+        AR_BIND_INT(s, 1, height),
+        db_wallet_tx_read_row(s, 0, &out[count]));
 }
 
 /* ── WalletUTXO CRUD ─────────────────────────────────────────── */
@@ -438,8 +475,7 @@ bool db_wallet_utxo_save(struct node_db *ndb, const struct db_wallet_utxo *u)
 {
     if (!ndb->open) return false;
     struct ar_callbacks *cbs = db_wallet_utxo_callbacks();
-    AR_VALIDATE_RECORD(cbs, "wallet_utxo", u, db_wallet_utxo_validate);
-    if (!ar_run_before_save(cbs, (void *)u)) return false;
+    AR_BEGIN_SAVE(cbs, "wallet_utxo", u, db_wallet_utxo_validate);
 
     sqlite3_stmt *s = ndb->stmt_wallet_utxo_insert;
     AR_RESET(s);
@@ -451,9 +487,7 @@ bool db_wallet_utxo_save(struct node_db *ndb, const struct db_wallet_utxo *u)
     AR_BIND_INT(s, 6, u->height);
     AR_BIND_INT(s, 7, u->is_coinbase ? 1 : 0);
     bool ok = AR_STEP_DONE(s);
-
-    if (ok) ar_run_after_save(cbs, (void *)u);
-    return ok;
+    AR_FINISH_SAVE(cbs, u, ok);
 }
 
 bool db_wallet_utxo_mark_spent(struct node_db *ndb,
@@ -467,8 +501,8 @@ bool db_wallet_utxo_mark_spent(struct node_db *ndb,
     AR_BIND_INT(s, 2, vin);
     AR_BIND_BLOB(s, 3, txid, 32);
     AR_BIND_INT(s, 4, (int)vout);
-    if (!AR_STEP_DONE(s)) return false;
-    return sqlite3_changes(ndb->db) > 0;
+    bool ok = AR_STEP_DONE(s);
+    return ok && sqlite3_changes(ndb->db) > 0;
 }
 
 bool db_wallet_utxo_find(struct node_db *ndb,
@@ -477,40 +511,34 @@ bool db_wallet_utxo_find(struct node_db *ndb,
 {
     if (!ndb->open) return false;
     sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(ndb->db,
+    AR_QUERY_ONE_BOOL(ndb, s,
         "SELECT value,address_hash,script,height,spent_txid,spent_vin,is_coinbase"
         " FROM wallet_utxos WHERE txid=? AND vout=?",
-        -1, &s, NULL);
-    if (!s) return false;
-    AR_BIND_BLOB(s, 1, txid, 32);
-    AR_BIND_INT(s, 2, (int)vout);
-    if (!AR_STEP_ROW(s)) { AR_FINALIZE(s); return false; }
-
-    memset(out, 0, sizeof(*out));
-    memcpy(out->txid, txid, 32);
-    out->vout = vout;
-    out->value = AR_COL_INT(s, 0);
-    AR_READ_BLOB(s, 1, out->address_hash, 20);
-    out->script_len = (size_t)AR_COL_BYTES(s, 2);
-    const void *sc2 = sqlite3_column_blob(s, 2);
-    if (sc2 && out->script_len > 0) {
-        out->script = malloc(out->script_len);
-        if (out->script)
-            memcpy(out->script, sc2, out->script_len);
-    } else {
-        out->script = NULL;
-    }
-    out->height = (int)AR_COL_INT(s, 3);
-    const void *st = sqlite3_column_blob(s, 4);
-    if (st && sqlite3_column_bytes(s, 4) >= 32) {
-        memcpy(out->spent_txid, st, 32);
-        out->is_spent = true;
-    }
-    if (sqlite3_column_type(s, 5) != SQLITE_NULL)
-        out->spent_vin = (int)AR_COL_INT(s, 5);
-    out->is_coinbase = AR_COL_INT(s, 6) != 0;
-    AR_FINALIZE(s);
-    return true;
+        AR_BIND_BLOB(s, 1, txid, 32);
+        AR_BIND_INT(s, 2, (int)vout),
+        memset(out, 0, sizeof(*out));
+        memcpy(out->txid, txid, 32);
+        out->vout = vout;
+        out->value = AR_COL_INT(s, 0);
+        AR_READ_BLOB(s, 1, out->address_hash, 20);
+        out->script_len = (size_t)AR_COL_BYTES(s, 2);
+        const void *sc2 = sqlite3_column_blob(s, 2);
+        if (sc2 && out->script_len > 0) {
+            out->script = malloc(out->script_len);
+            if (out->script)
+                memcpy(out->script, sc2, out->script_len);
+        } else {
+            out->script = NULL;
+        }
+        out->height = (int)AR_COL_INT(s, 3);
+        const void *st = sqlite3_column_blob(s, 4);
+        if (st && sqlite3_column_bytes(s, 4) >= 32) {
+            memcpy(out->spent_txid, st, 32);
+            out->is_spent = true;
+        }
+        if (sqlite3_column_type(s, 5) != SQLITE_NULL)
+            out->spent_vin = (int)AR_COL_INT(s, 5);
+        out->is_coinbase = AR_COL_INT(s, 6) != 0);
 }
 
 int64_t db_wallet_utxo_balance(struct node_db *ndb)
@@ -566,19 +594,13 @@ int db_wallet_utxo_list_unspent(struct node_db *ndb,
 {
     if (!ndb->open) return 0;
     sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(ndb->db,
+    AR_QUERY_LIST(ndb, s,
         "SELECT txid,vout,value,address_hash,script,height,is_coinbase"
         " FROM wallet_utxos WHERE spent_txid IS NULL"
         " ORDER BY value DESC",
-        -1, &s, NULL);
-    if (!s) return 0;
-    int count = 0;
-    while (AR_STEP_ROW(s) && (size_t)count < max) {
-        db_wallet_utxo_read_row(s, 0, &out[count]);
-        count++;
-    }
-    AR_FINALIZE(s);
-    return count;
+        out, max,
+        (void)0,
+        db_wallet_utxo_read_row(s, 0, &out[count]));
 }
 
 int db_wallet_utxo_list_all(struct node_db *ndb,
@@ -586,20 +608,14 @@ int db_wallet_utxo_list_all(struct node_db *ndb,
 {
     if (!ndb->open) return 0;
     sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(ndb->db,
+    AR_QUERY_LIST(ndb, s,
         "SELECT txid,vout,value,address_hash,script,height,is_coinbase,"
         "spent_txid,spent_vin"
         " FROM wallet_utxos ORDER BY height ASC",
-        -1, &s, NULL);
-    if (!s) return 0;
-    int count = 0;
-    while (AR_STEP_ROW(s) && (size_t)count < max) {
+        out, max,
+        (void)0,
         db_wallet_utxo_read_row(s, 0, &out[count]);
-        read_utxo_spent(s, 7, &out[count]);
-        count++;
-    }
-    AR_FINALIZE(s);
-    return count;
+        read_utxo_spent(s, 7, &out[count]));
 }
 
 int db_wallet_utxo_select_coins(struct node_db *ndb, int64_t target,
@@ -639,20 +655,16 @@ bool db_wallet_utxo_delete(struct node_db *ndb,
     memset(&u, 0, sizeof(u));
     memcpy(u.txid, txid, 32);
     u.vout = vout;
-    if (!ar_run_before_destroy(cbs, &u)) return false;
+    AR_BEGIN_DESTROY(cbs, &u);
 
     sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(ndb->db,
-        "DELETE FROM wallet_utxos WHERE txid=? AND vout=?",
-        -1, &s, NULL);
-    if (!s) return false;
+    AR_PREPARE_BOOL(ndb, s, "DELETE FROM wallet_utxos WHERE txid=? AND vout=?");
     AR_BIND_BLOB(s, 1, txid, 32);
     AR_BIND_INT(s, 2, (int)vout);
-    bool ok = AR_STEP_DONE(s) && sqlite3_changes(ndb->db) > 0;
-    AR_FINALIZE(s);
-
-    if (ok) ar_run_after_destroy(cbs, &u);
-    return ok;
+    bool ok = false;
+    AR_FINALIZE_STEP_DONE(s, ok);
+    ok = ok && sqlite3_changes(ndb->db) > 0;
+    AR_FINISH_DESTROY(cbs, &u, ok);
 }
 
 int db_wallet_utxo_count_for_tx(struct node_db *ndb,
@@ -660,22 +672,38 @@ int db_wallet_utxo_count_for_tx(struct node_db *ndb,
 {
     if (!ndb->open) return 0;
     sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(ndb->db,
+    AR_QUERY_COUNT_BOUND(ndb, s,
         "SELECT COUNT(*) FROM wallet_utxos WHERE txid=?",
-        -1, &s, NULL);
-    if (!s) return 0;
-    AR_BIND_BLOB(s, 1, txid, 32);
-    int c = 0;
-    if (AR_STEP_ROW(s))
-        c = (int)AR_COL_INT(s, 0);
-    AR_FINALIZE(s);
-    return c;
+        AR_BIND_BLOB(s, 1, txid, 32));
 }
 
 bool db_wallet_utxo_delete_all(struct node_db *ndb)
 {
     if (!ndb->open) return false;
     return node_db_exec(ndb, "DELETE FROM wallet_utxos");
+}
+
+bool db_wallet_utxo_replace_all(struct node_db *ndb,
+                                const struct db_wallet_utxo *rows,
+                                size_t count)
+{
+    size_t i = 0;
+    bool ok = true;
+
+    if (!ndb || !ndb->open)
+        return false;
+    if (count > 0 && !rows)
+        return false;
+
+    ok = node_db_begin(ndb);
+    ok = ok && db_wallet_utxo_delete_all(ndb);
+    for (i = 0; ok && i < count; i++)
+        ok = db_wallet_utxo_save(ndb, &rows[i]);
+    if (!ok) {
+        node_db_rollback(ndb);
+        return false;
+    }
+    return node_db_commit(ndb);
 }
 
 bool db_wallet_tx_delete_all(struct node_db *ndb)
@@ -690,8 +718,7 @@ bool db_sapling_note_save(struct node_db *ndb, const struct db_sapling_note *n)
 {
     if (!ndb->open) return false;
     struct ar_callbacks *cbs = db_sapling_note_callbacks();
-    AR_VALIDATE_RECORD(cbs, "sapling_note", n, db_sapling_note_validate);
-    if (!ar_run_before_save(cbs, (void *)n)) return false;
+    AR_BEGIN_SAVE(cbs, "sapling_note", n, db_sapling_note_validate);
 
     /* Derive bech32 z-address if not already set */
     struct db_sapling_note *mut = (struct db_sapling_note *)n;
@@ -704,13 +731,11 @@ bool db_sapling_note_save(struct node_db *ndb, const struct db_sapling_note *n)
     }
 
     sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(ndb->db,
+    AR_PREPARE_BOOL(ndb, s,
         "INSERT OR REPLACE INTO wallet_sapling_notes"
         "(txid,output_index,value,rcm,memo,ivk,diversifier,pk_d,cm,"
         "nullifier,block_height,spent_txid,address)"
-        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        -1, &s, NULL);
-    if (!s) return false;
+        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)");
     AR_BIND_BLOB(s, 1, n->txid, 32);
     AR_BIND_INT(s, 2, (int)n->output_index);
     AR_BIND_INT(s, 3, n->value);
@@ -738,27 +763,27 @@ bool db_sapling_note_save(struct node_db *ndb, const struct db_sapling_note *n)
         AR_BIND_NULL(s, 13);
     bool ok = AR_STEP_DONE(s);
     AR_FINALIZE(s);
-
-    if (ok) ar_run_after_save(cbs, (void *)n);
-    return ok;
+    AR_FINISH_SAVE(cbs, n, ok);
 }
 
 bool db_sapling_note_mark_spent(struct node_db *ndb,
                                 const uint8_t nullifier[32],
                                 const uint8_t spent_by[32])
 {
-    if (!ndb->open) return false;
     sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(ndb->db,
+
+    if (!ndb || !ndb->open || !nullifier || !spent_by)
+        return false;
+    AR_PREPARE_BOOL(ndb, s,
         "UPDATE wallet_sapling_notes SET spent_txid=?"
-        " WHERE nullifier=?",
-        -1, &s, NULL);
-    if (!s) return false;
+        " WHERE nullifier=?");
     AR_BIND_BLOB(s, 1, spent_by, 32);
     AR_BIND_BLOB(s, 2, nullifier, 32);
-    bool ok = AR_STEP_DONE(s);
-    AR_FINALIZE(s);
-    return ok;
+    {
+        bool ok = false;
+        AR_FINALIZE_STEP_DONE(s, ok);
+        return ok && sqlite3_changes(ndb->db) > 0;
+    }
 }
 
 bool db_sapling_note_is_nullifier_spent(struct node_db *ndb,
@@ -784,9 +809,7 @@ int64_t db_sapling_note_balance_with_count(struct node_db *ndb, int *note_count)
     (void)db_wallet_query_total_and_count(ndb,
         "SELECT COALESCE(SUM(n.value),0), COUNT(*) "
         "FROM wallet_sapling_notes n "
-        "WHERE NOT EXISTS ("
-        "  SELECT 1 FROM sapling_spends ss "
-        "  WHERE ss.nullifier = n.nullifier)",
+        "WHERE n.spent_txid IS NULL",
         NULL, 0, &total, &count);
     if (note_count)
         *note_count = count;
@@ -798,17 +821,36 @@ int64_t db_sapling_note_balance_for_ivk(struct node_db *ndb,
 {
     if (!ndb->open) return 0;
     sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(ndb->db,
+    AR_QUERY_INT64_BOUND(ndb, s,
         "SELECT COALESCE(SUM(value),0) FROM wallet_sapling_notes"
         " WHERE ivk=? AND spent_txid IS NULL",
-        -1, &s, NULL);
-    if (!s) return 0;
-    AR_BIND_BLOB(s, 1, ivk, 32);
-    int64_t bal = 0;
-    if (AR_STEP_ROW(s))
-        bal = AR_COL_INT(s, 0);
-    AR_FINALIZE(s);
-    return bal;
+        AR_BIND_BLOB(s, 1, ivk, 32));
+}
+
+int64_t db_sapling_note_balance_for_address(struct node_db *ndb,
+                                            const char *address)
+{
+    sqlite3_stmt *s = NULL;
+
+    if (!ndb || !ndb->open || !address || address[0] == '\0')
+        return 0;
+    AR_QUERY_INT64_BOUND(ndb, s,
+        "SELECT COALESCE(SUM(value),0) FROM wallet_sapling_notes "
+        "WHERE spent_txid IS NULL AND address=?",
+        AR_BIND_TEXT(s, 1, address));
+}
+
+int64_t db_sapling_note_balance_for_exact_value(struct node_db *ndb,
+                                                int64_t value)
+{
+    sqlite3_stmt *s = NULL;
+
+    if (!ndb || !ndb->open || value <= 0)
+        return 0;
+    AR_QUERY_INT64_BOUND(ndb, s,
+        "SELECT COALESCE(SUM(value),0) FROM wallet_sapling_notes "
+        "WHERE spent_txid IS NULL AND value=?",
+        AR_BIND_INT(s, 1, value));
 }
 
 int db_sapling_note_list_unspent(struct node_db *ndb,
@@ -816,20 +858,14 @@ int db_sapling_note_list_unspent(struct node_db *ndb,
 {
     if (!ndb->open) return 0;
     sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(ndb->db,
+    AR_QUERY_LIST(ndb, s,
         "SELECT txid,output_index,value,rcm,memo,ivk,diversifier,pk_d,"
         "cm,nullifier,block_height"
         " FROM wallet_sapling_notes WHERE spent_txid IS NULL"
         " ORDER BY value DESC",
-        -1, &s, NULL);
-    if (!s) return 0;
-    int count = 0;
-    while (AR_STEP_ROW(s) && (size_t)count < max) {
-        db_sapling_note_read_row(s, 0, &out[count]);
-        count++;
-    }
-    AR_FINALIZE(s);
-    return count;
+        out, max,
+        (void)0,
+        db_sapling_note_read_row(s, 0, &out[count]));
 }
 
 int db_sapling_note_list_unspent_for_ivk(struct node_db *ndb,
@@ -838,21 +874,14 @@ int db_sapling_note_list_unspent_for_ivk(struct node_db *ndb,
 {
     if (!ndb->open) return 0;
     sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(ndb->db,
+    AR_QUERY_LIST(ndb, s,
         "SELECT txid,output_index,value,rcm,memo,ivk,diversifier,pk_d,"
         "cm,nullifier,block_height"
         " FROM wallet_sapling_notes WHERE spent_txid IS NULL AND ivk=?"
         " ORDER BY value DESC",
-        -1, &s, NULL);
-    if (!s) return 0;
-    AR_BIND_BLOB(s, 1, ivk, 32);
-    int count = 0;
-    while (AR_STEP_ROW(s) && (size_t)count < max) {
-        db_sapling_note_read_row(s, 0, &out[count]);
-        count++;
-    }
-    AR_FINALIZE(s);
-    return count;
+        out, max,
+        AR_BIND_BLOB(s, 1, ivk, 32),
+        db_sapling_note_read_row(s, 0, &out[count]));
 }
 
 int db_sapling_note_list_all(struct node_db *ndb,
@@ -860,20 +889,14 @@ int db_sapling_note_list_all(struct node_db *ndb,
 {
     if (!ndb->open) return 0;
     sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(ndb->db,
+    AR_QUERY_LIST(ndb, s,
         "SELECT txid,output_index,value,rcm,memo,ivk,diversifier,pk_d,"
         "cm,nullifier,block_height,spent_txid"
         " FROM wallet_sapling_notes ORDER BY block_height DESC",
-        -1, &s, NULL);
-    if (!s) return 0;
-    int count = 0;
-    while (AR_STEP_ROW(s) && (size_t)count < max) {
+        out, max,
+        (void)0,
         db_sapling_note_read_row(s, 0, &out[count]);
-        read_spent_txid(s, 11, &out[count]);
-        count++;
-    }
-    AR_FINALIZE(s);
-    return count;
+        read_spent_txid(s, 11, &out[count]));
 }
 
 bool db_sapling_note_save_witness(struct node_db *ndb,
@@ -925,6 +948,36 @@ bool db_sapling_note_load_witness(struct node_db *ndb,
         *height_out = (int)AR_COL_INT(s, 1);
     AR_FINALIZE(s);
     return true;
+}
+
+bool db_sapling_note_delete_all(struct node_db *ndb)
+{
+    if (!ndb || !ndb->open)
+        return false;
+    return node_db_exec(ndb, "DELETE FROM wallet_sapling_notes");
+}
+
+bool db_sapling_note_replace_all(struct node_db *ndb,
+                                 const struct db_sapling_note *rows,
+                                 size_t count)
+{
+    size_t i = 0;
+    bool ok = true;
+
+    if (!ndb || !ndb->open)
+        return false;
+    if (count > 0 && !rows)
+        return false;
+
+    ok = node_db_begin(ndb);
+    ok = ok && db_sapling_note_delete_all(ndb);
+    for (i = 0; ok && i < count; i++)
+        ok = db_sapling_note_save(ndb, &rows[i]);
+    if (!ok) {
+        node_db_rollback(ndb);
+        return false;
+    }
+    return node_db_commit(ndb);
 }
 
 /* ── Relationships ─────────────────────────────────────────────── */

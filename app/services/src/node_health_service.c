@@ -3,6 +3,8 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "services/node_health_service.h"
+#include "config/runtime.h"
+#include "controllers/sync_controller.h"
 #include "controllers/network_controller.h"
 #include "models/block.h"
 #include "models/database.h"
@@ -19,6 +21,41 @@
 #include <time.h>
 
 static int64_t g_health_start_time = 0;
+static const int64_t HEALTH_JOB_STALL_SECONDS = 120;
+
+static bool health_query_int(sqlite3 *db, const char *sql, int *out)
+{
+    sqlite3_stmt *stmt = NULL;
+    bool ok = false;
+
+    if (!db || !sql || !out)
+        return false;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK)
+        return false;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        *out = sqlite3_column_int(stmt, 0);
+        ok = true;
+    }
+    sqlite3_finalize(stmt);
+    return ok;
+}
+
+static bool health_query_int64(sqlite3 *db, const char *sql, int64_t *out)
+{
+    sqlite3_stmt *stmt = NULL;
+    bool ok = false;
+
+    if (!db || !sql || !out)
+        return false;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK)
+        return false;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        *out = sqlite3_column_int64(stmt, 0);
+        ok = true;
+    }
+    sqlite3_finalize(stmt);
+    return ok;
+}
 
 void node_health_collect(struct node_health_snapshot *snapshot,
                          struct node_db *ndb,
@@ -64,9 +101,46 @@ void node_health_collect(struct node_health_snapshot *snapshot,
     }
 
     if (ndb && ndb->open) {
-        if (snapshot->tip_height < 0)
-            snapshot->tip_height = db_block_max_height(ndb);
-        snapshot->utxo_count = node_db_utxo_count(ndb);
+        struct node_db_status dbs = {0};
+        struct db_service *dbsvc = app_runtime_db_service();
+        struct db_service_status svc_status = {0};
+        sqlite3 *query_db = app_runtime_query_db();
+        node_db_get_status(ndb, &dbs);
+        db_service_get_status(dbsvc, &svc_status);
+        snapshot->db_open = dbs.open;
+        snapshot->db_tx_open = dbs.tx_open;
+        snapshot->db_turbo_mode = dbs.turbo_mode;
+        snapshot->db_last_sqlite_rc = dbs.last_sqlite_rc;
+        snapshot->db_service_started = svc_status.started;
+        snapshot->db_service_worker_started = svc_status.worker_started;
+        snapshot->db_service_stop_requested = svc_status.stop_requested;
+        snapshot->db_service_queue_depth = svc_status.queue_depth;
+        if (svc_status.started_at > 0) {
+            int64_t now = (int64_t)time(NULL);
+            if (now >= svc_status.started_at)
+                snapshot->db_service_uptime_seconds =
+                    now - svc_status.started_at;
+        }
+        snprintf(snapshot->db_last_op, sizeof(snapshot->db_last_op),
+                 "%s", dbs.last_op);
+        if (dbs.last_activity_time > 0) {
+            int64_t now = (int64_t)time(NULL);
+            if (now >= dbs.last_activity_time)
+                snapshot->db_last_activity_age_seconds =
+                    now - dbs.last_activity_time;
+        }
+        if (snapshot->tip_height < 0) {
+            if (!health_query_int(query_db,
+                                  "SELECT COALESCE(MAX(height), -1) FROM blocks",
+                                  &snapshot->tip_height)) {
+                snapshot->tip_height = db_block_max_height(ndb);
+            }
+        }
+        if (!health_query_int64(query_db,
+                                "SELECT count(*) FROM utxos",
+                                &snapshot->utxo_count)) {
+            snapshot->utxo_count = node_db_utxo_count(ndb);
+        }
 
         const char *db_path = sqlite3_db_filename(ndb->db, "main");
         if (db_path) {
@@ -114,6 +188,36 @@ void node_health_collect(struct node_health_snapshot *snapshot,
         (snapshot->queued > 256 || snapshot->in_flight > 128);
 
     {
+        struct node_db_sync_job_status jobs = {0};
+        node_db_sync_get_job_status(&jobs);
+        snapshot->catchup_active = jobs.catchup_active;
+        snapshot->catchup_height = jobs.catchup_height;
+        snapshot->catchup_target_height = jobs.catchup_target_height;
+        snapshot->import_active = jobs.import_active;
+        snapshot->import_rows_written = jobs.import_rows_written;
+        if (jobs.catchup_started_at > 0) {
+            int64_t now = (int64_t)time(NULL);
+            if (now >= jobs.catchup_started_at)
+                snapshot->catchup_uptime_seconds = now - jobs.catchup_started_at;
+        }
+        if (jobs.catchup_last_progress_at > 0) {
+            int64_t now = (int64_t)time(NULL);
+            if (now >= jobs.catchup_last_progress_at)
+                snapshot->catchup_progress_age_seconds =
+                    now - jobs.catchup_last_progress_at;
+        }
+        if (jobs.import_started_at > 0) {
+            int64_t now = (int64_t)time(NULL);
+            if (now >= jobs.import_started_at)
+                snapshot->import_uptime_seconds = now - jobs.import_started_at;
+        }
+        if (jobs.import_last_progress_at > 0) {
+            int64_t now = (int64_t)time(NULL);
+            if (now >= jobs.import_last_progress_at)
+                snapshot->import_progress_age_seconds =
+                    now - jobs.import_last_progress_at;
+        }
+
         struct error_ring *er = error_ring_global();
         const struct error_entry *last_err = error_ring_last(er);
         snapshot->error_total = error_ring_total(er);
@@ -130,6 +234,16 @@ void node_health_collect(struct node_health_snapshot *snapshot,
     if (!snapshot->has_peers) {
         snprintf(snapshot->degraded_reason, sizeof(snapshot->degraded_reason),
                  "no_peers");
+    } else if (snapshot->catchup_active &&
+               snapshot->catchup_progress_age_seconds > HEALTH_JOB_STALL_SECONDS) {
+        snprintf(snapshot->degraded_reason, sizeof(snapshot->degraded_reason),
+                 "catchup_stalled_%llds",
+                 (long long)snapshot->catchup_progress_age_seconds);
+    } else if (snapshot->import_active &&
+               snapshot->import_progress_age_seconds > HEALTH_JOB_STALL_SECONDS) {
+        snprintf(snapshot->degraded_reason, sizeof(snapshot->degraded_reason),
+                 "import_stalled_%llds",
+                 (long long)snapshot->import_progress_age_seconds);
     } else if (!snapshot->synced) {
         snprintf(snapshot->degraded_reason, sizeof(snapshot->degraded_reason),
                  "sync_state_%s", sync_state_name(snapshot->sync_state));
@@ -145,6 +259,18 @@ void node_health_collect(struct node_health_snapshot *snapshot,
     } else if (snapshot->queue_backed_up) {
         snprintf(snapshot->degraded_reason, sizeof(snapshot->degraded_reason),
                  "download_queue_backed_up");
+    } else if (snapshot->db_service_started &&
+               !snapshot->db_service_worker_started) {
+        snprintf(snapshot->degraded_reason, sizeof(snapshot->degraded_reason),
+                 "db_service_worker_down");
+    } else if (snapshot->db_service_queue_depth > 32) {
+        snprintf(snapshot->degraded_reason, sizeof(snapshot->degraded_reason),
+                 "db_service_queue_%zu", snapshot->db_service_queue_depth);
+    } else if (snapshot->db_tx_open &&
+               snapshot->db_last_activity_age_seconds > 60) {
+        snprintf(snapshot->degraded_reason, sizeof(snapshot->degraded_reason),
+                 "db_tx_open_%llds",
+                 (long long)snapshot->db_last_activity_age_seconds);
     } else if (snapshot->error_total > 0 && snapshot->last_error[0]) {
         snprintf(snapshot->degraded_reason, sizeof(snapshot->degraded_reason),
                  "recent_error");

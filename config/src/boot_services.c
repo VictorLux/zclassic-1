@@ -51,6 +51,7 @@
 #include <time.h>
 #include <sys/stat.h>
 #include <pthread.h>
+#include <signal.h>
 #include <sqlite3.h>
 
 extern int g_assume_valid_height;
@@ -68,9 +69,17 @@ static struct app_runtime_context *boot_runtime(void)
 static struct node_db *boot_node_db(void)
 {
     struct app_runtime_context *runtime = boot_runtime();
+    if (!runtime || !runtime->db_service)
+        return NULL;
+    return db_service_node_db(runtime->db_service);
+}
+
+static struct db_service *boot_db_service(void)
+{
+    struct app_runtime_context *runtime = boot_runtime();
     if (!runtime)
         return NULL;
-    return runtime->node_db;
+    return runtime->db_service;
 }
 
 static struct wallet *boot_wallet(void)
@@ -81,15 +90,116 @@ static struct wallet *boot_wallet(void)
     return runtime->wallet;
 }
 
+static void *payment_processor_thread(void *arg);
+static void *background_utxo_replay(void *arg);
+static void *build_snapshot_offer_thread(void *arg);
+
+static bool boot_running(const struct boot_svc_ctx *svc)
+{
+    return svc && svc->running && atomic_load(svc->running);
+}
+
+static bool boot_start_catchup_service(struct boot_svc_ctx *svc,
+                                       const char *datadir)
+{
+    if (!svc || svc->catchup_thread_started)
+        return false;
+
+    svc->catchup_args.ndb = boot_node_db();
+    svc->catchup_args.chain = &svc->state->chain_active;
+    svc->catchup_args.w = svc->wallet;
+    svc->catchup_args.datadir = datadir;
+
+    if (pthread_create(&svc->catchup_thread, NULL,
+                       (void *(*)(void *))node_db_sync_catchup_thread,
+                       &svc->catchup_args) != 0) {
+        return false;
+    }
+    svc->catchup_thread_started = true;
+    return true;
+}
+
+static void boot_join_catchup_service(struct boot_svc_ctx *svc)
+{
+    if (!svc || !svc->catchup_thread_started)
+        return;
+    pthread_join(svc->catchup_thread, NULL);
+    svc->catchup_thread_started = false;
+}
+
+static bool boot_start_payment_service(struct boot_svc_ctx *svc)
+{
+    if (!svc || svc->payment_thread_started)
+        return false;
+    if (pthread_create(&svc->payment_thread, NULL,
+                       payment_processor_thread, svc) != 0) {
+        return false;
+    }
+    svc->payment_thread_started = true;
+    return true;
+}
+
+static void boot_join_payment_service(struct boot_svc_ctx *svc)
+{
+    if (!svc || !svc->payment_thread_started)
+        return;
+    pthread_join(svc->payment_thread, NULL);
+    svc->payment_thread_started = false;
+}
+
+static bool boot_start_replay_service(struct boot_svc_ctx *svc)
+{
+    if (!svc || svc->replay_thread_started)
+        return false;
+    if (pthread_create(&svc->replay_thread, NULL,
+                       background_utxo_replay, svc) != 0) {
+        return false;
+    }
+    svc->replay_thread_started = true;
+    return true;
+}
+
+static void boot_join_replay_service(struct boot_svc_ctx *svc)
+{
+    if (!svc || !svc->replay_thread_started)
+        return;
+    pthread_join(svc->replay_thread, NULL);
+    svc->replay_thread_started = false;
+}
+
+static bool boot_start_offer_service(struct boot_svc_ctx *svc)
+{
+    if (!svc || svc->offer_thread_started)
+        return false;
+    if (pthread_create(&svc->offer_thread, NULL,
+                       build_snapshot_offer_thread, svc) != 0) {
+        return false;
+    }
+    svc->offer_thread_started = true;
+    return true;
+}
+
+static void boot_join_offer_service(struct boot_svc_ctx *svc)
+{
+    if (!svc || !svc->offer_thread_started)
+        return;
+    pthread_join(svc->offer_thread, NULL);
+    svc->offer_thread_started = false;
+}
+
 /* ── Helper threads ────────────────────────────────────────── */
 
 extern void store_process_payments(const char *datadir);
 static void *payment_processor_thread(void *arg)
 {
-    const char *datadir = (const char *)arg;
-    while (1) {
-        sleep(30);
-        store_process_payments(datadir);
+    struct boot_svc_ctx *svc = arg;
+
+    while (boot_running(svc)) {
+        for (int i = 0; i < 30 && boot_running(svc); i++)
+            sleep(1);
+        if (!boot_running(svc))
+            break;
+        store_process_payments(svc->datadir);
     }
     return NULL;
 }
@@ -106,12 +216,11 @@ _Atomic int g_utxo_replay_height = 0;
 
 static void *background_utxo_replay(void *arg)
 {
-    struct {
-        struct main_state *state;
-        struct coins_view_cache *coins_tip;
-        const struct chain_params *params;
-        const char *datadir;
-    } *a = arg;
+    struct boot_svc_ctx *svc = arg;
+    const struct chain_params *params = chain_params_get();
+
+    if (!svc || !svc->state || !svc->coins_tip || !params || !svc->datadir)
+        return NULL;
 
     atomic_store(&g_utxo_replay_active, true);
     int64_t t0 = (int64_t)time(NULL);
@@ -120,32 +229,33 @@ static void *background_utxo_replay(void *arg)
     fflush(stdout);
 
     /* IBD turbo: skip non-essential work during replay */
+    struct db_service *dbsvc = boot_db_service();
     struct node_db *ndb = boot_node_db();
-    if (ndb && ndb->open) {
-        sqlite3_exec(ndb->db,
-            "PRAGMA synchronous=OFF", NULL, NULL, NULL);
-        sqlite3_exec(ndb->db,
-            "PRAGMA cache_size=-524288", NULL, NULL, NULL);
+    if (dbsvc) {
+        db_service_ibd_turbo_mode(dbsvc);
+        db_service_set_sync_batch_size(dbsvc, 1000);
+    } else if (ndb && ndb->open) {
+        node_db_ibd_turbo_mode(ndb);
         node_db_set_sync_batch_size(ndb, 1000);
     }
     set_flush_policy(3600, 1000000, 100000);
 
     struct validation_state vs;
     validation_state_init(&vs);
-    activate_best_chain(&vs, a->state, a->coins_tip,
-                         a->params, NULL, a->datadir);
+    activate_best_chain(&vs, svc->state, svc->coins_tip,
+                         params, NULL, svc->datadir);
 
     /* Restore normal flush policy */
     set_flush_policy(3600, 500000, 500);
-    if (ndb && ndb->open) {
-        sqlite3_exec(ndb->db,
-            "PRAGMA synchronous=NORMAL", NULL, NULL, NULL);
-        sqlite3_exec(ndb->db,
-            "PRAGMA cache_size=-65536", NULL, NULL, NULL);
+    if (dbsvc) {
+        db_service_normal_mode(dbsvc);
+        db_service_set_sync_batch_size(dbsvc, 100);
+    } else if (ndb && ndb->open) {
+        node_db_normal_mode(ndb);
         node_db_set_sync_batch_size(ndb, 100);
     }
 
-    int tip = active_chain_height(&a->state->chain_active);
+    int tip = active_chain_height(&svc->state->chain_active);
     int64_t elapsed = (int64_t)time(NULL) - t0;
     atomic_store(&g_utxo_replay_height, tip);
     atomic_store(&g_utxo_replay_active, false);
@@ -175,13 +285,20 @@ static size_t onion_request_adapter(const char *method, const char *path,
 
 static void *build_snapshot_offer_thread(void *arg)
 {
-    const char *datadir = (const char *)arg;
+    struct boot_svc_ctx *svc = arg;
+    const char *datadir = svc ? svc->datadir : NULL;
+
+    if (!datadir || datadir[0] == '\0')
+        return NULL;
 
     /* Export consensus snapshot for file service (no wallet data).
      * This runs first so new peers can get it immediately. */
     printf("Exporting consensus snapshot (no wallet data)...\n");
-    if (file_export_consensus_snapshot(datadir))
+    if (file_export_consensus_snapshot(datadir)) {
+        file_controller_refresh_manifest();
+        fs_server_refresh_manifest();
         printf("Consensus snapshot ready for file service\n");
+    }
 
     printf("Building fast sync snapshot offer...\n");
 
@@ -295,7 +412,11 @@ bool app_init_services(struct app_context *ctx,
                         struct boot_svc_ctx *svc)
 {
     S = svc;
-    svc->runtime.node_db = svc->node_db;
+    if (svc->db_service) {
+        db_service_attach(svc->db_service, svc->node_db);
+        db_service_start(svc->db_service);
+    }
+    svc->runtime.db_service = svc->db_service;
     svc->runtime.mempool = svc->mempool;
     svc->runtime.wallet = svc->wallet;
     app_runtime_set_current(&svc->runtime);
@@ -646,21 +767,10 @@ bool app_init_services(struct app_context *ctx,
                      * service (delta replay). Otherwise, wait for P2P
                      * snapshot which is much faster than full replay. */
                     if (has_utxo_snapshot) {
-                        static struct {
-                            struct main_state *state;
-                            struct coins_view_cache *coins_tip;
-                            const struct chain_params *params;
-                            const char *datadir;
-                        } replay_args;
-                        replay_args.state = svc->state;
-                        replay_args.coins_tip = svc->coins_tip;
-                        replay_args.params = params;
-                        replay_args.datadir = ctx->datadir;
-
-                        static pthread_t replay_thread;
-                        pthread_create(&replay_thread, NULL,
-                            background_utxo_replay, &replay_args);
-                        pthread_detach(replay_thread);
+                        if (!boot_start_replay_service(svc)) {
+                            fprintf(stderr,
+                                    "WARNING: failed to start tracked UTXO replay thread\n");
+                        }
                     }
                 }
             }
@@ -795,12 +905,10 @@ bool app_init_services(struct app_context *ctx,
 
     /* Pre-compute fast sync snapshot offer in background */
     {
-        static char s_offer_datadir[1024];
-        snprintf(s_offer_datadir, sizeof(s_offer_datadir), "%s", ctx->datadir);
-        static pthread_t offer_thread;
-        pthread_create(&offer_thread, NULL, build_snapshot_offer_thread,
-                        s_offer_datadir);
-        pthread_detach(offer_thread);
+        if (!boot_start_offer_service(svc)) {
+            fprintf(stderr,
+                    "WARNING: failed to start tracked snapshot-offer thread\n");
+        }
     }
 
     /* Start RPC HTTP server */
@@ -948,11 +1056,10 @@ bool app_init_services(struct app_context *ctx,
 
     /* Start store payment processor */
     {
-        static char s_pay_datadir[1024];
-        snprintf(s_pay_datadir, sizeof(s_pay_datadir), "%s", ctx->datadir);
-        static pthread_t pt;
-        pthread_create(&pt, NULL, payment_processor_thread, s_pay_datadir);
-        pthread_detach(pt);
+        if (!boot_start_payment_service(svc)) {
+            fprintf(stderr,
+                    "WARNING: failed to start tracked payment processor thread\n");
+        }
     }
 
     atomic_store(svc->running, true);
@@ -973,31 +1080,29 @@ bool app_init_services(struct app_context *ctx,
             printf("SQLite catchup: skipped (no UTXOs, waiting for P2P snapshot)\n");
         } else if (ctx->legacy_import_dir) {
             struct block_index *fs_tip = active_chain_tip(&svc->state->chain_active);
+            struct node_db catchup_db;
             printf("=== SQLite Indexing (%d blocks) ===\n",
                    fs_tip ? fs_tip->nHeight : 0);
             int64_t t_import = (int64_t)time(NULL);
-            node_db_sync_catchup(boot_node_db(),
-                                 &svc->state->chain_active,
-                                 svc->wallet, ctx->datadir);
+            if (node_db_sync_open_private_db_like(boot_node_db(), &catchup_db)) {
+                node_db_sync_catchup(&catchup_db,
+                                     &svc->state->chain_active,
+                                     svc->wallet, ctx->datadir);
+                node_db_close(&catchup_db);
+            } else {
+                node_db_sync_catchup(boot_node_db(),
+                                     &svc->state->chain_active,
+                                     svc->wallet, ctx->datadir);
+            }
             int64_t t_idx_done = (int64_t)time(NULL);
             printf("Block index: %llds\n", (long long)(t_idx_done - t_import));
             printf("=== SQLite complete in %llds ===\n",
                    (long long)(t_idx_done - t_import));
         } else {
-            static pthread_t catchup_thread;
-            static struct {
-                struct node_db *ndb;
-                const struct active_chain *chain;
-                const struct wallet *w;
-                const char *datadir;
-            } catchup_args;
-            catchup_args.ndb = boot_node_db();
-            catchup_args.chain = &svc->state->chain_active;
-            catchup_args.w = svc->wallet;
-            catchup_args.datadir = ctx->datadir;
-            pthread_create(&catchup_thread, NULL, (void *(*)(void *))
-                node_db_sync_catchup_thread, &catchup_args);
-            pthread_detach(catchup_thread);
+            if (!boot_start_catchup_service(svc, ctx->datadir)) {
+                fprintf(stderr,
+                        "WARNING: failed to start tracked SQLite catchup thread\n");
+            }
         }
     }
 
@@ -1020,6 +1125,8 @@ static void shutdown_stop_frontend_services(struct boot_svc_ctx *svc)
 
 static void shutdown_persist_fast_restart_state(struct boot_svc_ctx *svc)
 {
+    boot_join_payment_service(svc);
+
     if (svc->state->map_block_index.size > 1000) {
         printf("Saving block index flat file (%zu entries)...\n",
                svc->state->map_block_index.size);
@@ -1036,6 +1143,7 @@ static void shutdown_quiesce_network_and_flush_coins(struct boot_svc_ctx *svc)
      * in-flight activate_best_chain sees g_shutdown_requested and returns.
      * After signal_stop, no new block processing starts. */
     connman_signal_stop(svc->connman);
+    boot_join_replay_service(svc);
 
     /* Flush coins to SQLite. The message thread is finishing its current
      * iteration. If it was mid-connect_block, it already flushed via the
@@ -1060,6 +1168,9 @@ static void shutdown_quiesce_network_and_flush_coins(struct boot_svc_ctx *svc)
 
 static void shutdown_persist_runtime_state(struct boot_svc_ctx *svc)
 {
+    boot_join_offer_service(svc);
+    boot_join_catchup_service(svc);
+
     rpc_blockchain_mmr_save(boot_node_db());
     rpc_blockchain_mmb_save(boot_node_db());
     rpc_blockchain_commitment_mmr_save(boot_node_db());
@@ -1074,10 +1185,12 @@ static void shutdown_persist_runtime_state(struct boot_svc_ctx *svc)
         wallet_sqlite_close(svc->wallet_sqlite);
     }
     if (svc->node_db->open) {
-        node_db_sync_flush(svc->node_db);
+        db_service_flush_write(svc->db_service);
         node_db_sync_mempool_save(svc->node_db, svc->mempool);
-        node_db_close(svc->node_db);
+        db_service_close_write(svc->db_service);
     }
+    if (svc->db_service)
+        db_service_stop(svc->db_service);
 }
 
 static void shutdown_release_owned_resources(struct boot_svc_ctx *svc)
@@ -1094,7 +1207,10 @@ static void shutdown_release_owned_resources(struct boot_svc_ctx *svc)
 
 void app_shutdown_svc(struct boot_svc_ctx *svc)
 {
+    extern volatile sig_atomic_t g_shutdown_requested;
+
     atomic_store(svc->running, false);
+    g_shutdown_requested = 1;
     event_emitf(EV_NODE_SHUTDOWN, 0, "graceful");
     event_async_stop();
 

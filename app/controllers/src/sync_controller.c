@@ -26,6 +26,7 @@
 #include "sapling/note_encryption.h"
 #include "support/cleanse.h"
 #include "event/event.h"
+#include "config/runtime.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -36,8 +37,185 @@
 #include <unistd.h>
 #include <stdatomic.h>
 #include <pthread.h>
+#include <signal.h>
+
+extern volatile sig_atomic_t g_shutdown_requested;
 
 _Atomic bool g_sapling_rescan_active = false;
+static _Atomic bool g_catchup_active = false;
+static _Atomic int g_catchup_height = -1;
+static _Atomic int g_catchup_target_height = -1;
+static _Atomic int64_t g_catchup_started_at = 0;
+static _Atomic int64_t g_catchup_last_progress_at = 0;
+static _Atomic bool g_import_active = false;
+static _Atomic int g_import_rows_written = 0;
+static _Atomic int64_t g_import_started_at = 0;
+static _Atomic int64_t g_import_last_progress_at = 0;
+
+static int64_t sync_job_now(void)
+{
+    return (int64_t)time(NULL);
+}
+
+static void sync_job_catchup_begin(int start_height, int target_height)
+{
+    int64_t now = sync_job_now();
+
+    atomic_store(&g_catchup_active, true);
+    atomic_store(&g_catchup_height, start_height > 0 ? start_height - 1 : -1);
+    atomic_store(&g_catchup_target_height, target_height);
+    atomic_store(&g_catchup_started_at, now);
+    atomic_store(&g_catchup_last_progress_at, now);
+}
+
+static void sync_job_catchup_progress(int height)
+{
+    atomic_store(&g_catchup_height, height);
+    atomic_store(&g_catchup_last_progress_at, sync_job_now());
+}
+
+static void sync_job_catchup_finish(void)
+{
+    atomic_store(&g_catchup_active, false);
+    atomic_store(&g_catchup_last_progress_at, sync_job_now());
+}
+
+static void sync_job_import_begin(void)
+{
+    int64_t now = sync_job_now();
+
+    atomic_store(&g_import_active, true);
+    atomic_store(&g_import_rows_written, 0);
+    atomic_store(&g_import_started_at, now);
+    atomic_store(&g_import_last_progress_at, now);
+}
+
+static void sync_job_import_progress(int total_rows)
+{
+    atomic_store(&g_import_rows_written, total_rows);
+    atomic_store(&g_import_last_progress_at, sync_job_now());
+}
+
+static void sync_job_import_finish(int total_rows)
+{
+    atomic_store(&g_import_rows_written, total_rows);
+    atomic_store(&g_import_active, false);
+    atomic_store(&g_import_last_progress_at, sync_job_now());
+}
+
+static struct db_service *sync_db_service_for(struct node_db *ndb)
+{
+    struct db_service *dbsvc = app_runtime_db_service();
+
+    if (!ndb || !dbsvc)
+        return NULL;
+    return db_service_node_db(dbsvc) == ndb ? dbsvc : NULL;
+}
+
+static bool sync_db_enter_turbo_mode(struct node_db *ndb)
+{
+    struct db_service *dbsvc = sync_db_service_for(ndb);
+
+    if (dbsvc)
+        return db_service_ibd_turbo_mode(dbsvc);
+    return node_db_ibd_turbo_mode(ndb);
+}
+
+static bool sync_db_restore_normal_mode(struct node_db *ndb)
+{
+    struct db_service *dbsvc = sync_db_service_for(ndb);
+
+    if (dbsvc)
+        return db_service_normal_mode(dbsvc);
+    return node_db_normal_mode(ndb);
+}
+
+struct wallet_keys_sync_ctx {
+    const struct wallet *wallet;
+    int count;
+};
+
+struct mempool_save_ctx {
+    const struct tx_mempool *mempool;
+    int count;
+};
+
+struct mempool_add_ctx {
+    const struct transaction *tx;
+    int64_t fee;
+    int height;
+    bool ok;
+};
+
+struct mempool_remove_ctx {
+    const uint8_t *txid;
+    bool ok;
+};
+
+struct peer_sync_ctx {
+    uint8_t ip[16];
+    uint16_t port;
+    uint64_t services;
+    int64_t last_seen;
+    bool ok;
+};
+
+struct peer_score_ctx {
+    uint8_t ip[16];
+    uint16_t port;
+    uint32_t bandwidth_score;
+    bool is_zcl23;
+    bool ok;
+};
+
+struct tip_set_ctx {
+    uint8_t hash[32];
+    int height;
+    bool ok;
+};
+
+struct sapling_note_sync_ctx {
+    struct db_sapling_note note;
+    bool ok;
+};
+
+struct sapling_spend_sync_ctx {
+    uint8_t nullifier[32];
+    uint8_t spending_txid[32];
+    bool ok;
+};
+
+struct connect_block_sync_ctx {
+    const struct block *blk;
+    const struct block_index *pindex;
+    bool ok;
+};
+
+struct disconnect_block_sync_ctx {
+    const struct block *blk;
+    const struct block_index *pindex;
+    bool ok;
+};
+
+struct wallet_tx_sync_ctx {
+    const struct transaction *tx;
+    const struct wallet *wallet;
+    int block_height;
+    bool ok;
+};
+
+static bool sync_run_write(struct node_db *ndb,
+                           db_service_write_fn fn,
+                           void *ctx)
+{
+    struct db_service *dbsvc = sync_db_service_for(ndb);
+
+    if (!ndb || !fn)
+        return false;
+    if (dbsvc)
+        return db_service_run_write(dbsvc, fn, ctx);
+    return fn(ndb, ctx);
+}
 
 bool node_db_sync_init(struct node_db *ndb, const char *datadir)
 {
@@ -50,6 +228,40 @@ bool node_db_sync_init(struct node_db *ndb, const char *datadir)
     printf("SQLite database opened: %s (schema v%d)\n",
            path, node_db_schema_version(ndb));
     return true;
+}
+
+bool node_db_sync_open_private_db_like(const struct node_db *src,
+                                       struct node_db *out)
+{
+    const char *path;
+
+    if (!src || !out || !src->open || !src->db)
+        return false;
+
+    path = sqlite3_db_filename(src->db, "main");
+    if (!path || !path[0] || strcmp(path, ":memory:") == 0)
+        return false;
+
+    memset(out, 0, sizeof(*out));
+    return node_db_open(out, path);
+}
+
+void node_db_sync_get_job_status(struct node_db_sync_job_status *out)
+{
+    struct node_db_sync_job_status empty = {0};
+
+    if (!out)
+        return;
+    *out = empty;
+    out->catchup_active = atomic_load(&g_catchup_active);
+    out->catchup_height = atomic_load(&g_catchup_height);
+    out->catchup_target_height = atomic_load(&g_catchup_target_height);
+    out->catchup_started_at = atomic_load(&g_catchup_started_at);
+    out->catchup_last_progress_at = atomic_load(&g_catchup_last_progress_at);
+    out->import_active = atomic_load(&g_import_active);
+    out->import_rows_written = atomic_load(&g_import_rows_written);
+    out->import_started_at = atomic_load(&g_import_started_at);
+    out->import_last_progress_at = atomic_load(&g_import_last_progress_at);
 }
 
 /* classify_script: use shared utxo_classify_script() from models/utxo.h */
@@ -186,9 +398,9 @@ static void advance_wallet_witnesses(struct node_db *ndb,
     free(witness_idx);
 }
 
-bool node_db_sync_connect_block(struct node_db *ndb,
-                                const struct block *blk,
-                                const struct block_index *pindex)
+static bool node_db_sync_connect_block_local(struct node_db *ndb,
+                                             const struct block *blk,
+                                             const struct block_index *pindex)
 {
     if (!ndb->open) return false;
 
@@ -362,9 +574,33 @@ bool node_db_sync_connect_block(struct node_db *ndb,
     return true;
 }
 
-bool node_db_sync_disconnect_block(struct node_db *ndb,
-                                   const struct block *blk,
-                                   const struct block_index *pindex)
+static bool node_db_sync_connect_block_write(struct node_db *ndb, void *ctx)
+{
+    struct connect_block_sync_ctx *sync = ctx;
+
+    if (!sync || !sync->blk || !sync->pindex)
+        return false;
+    sync->ok = node_db_sync_connect_block_local(ndb, sync->blk, sync->pindex);
+    return sync->ok;
+}
+
+bool node_db_sync_connect_block(struct node_db *ndb,
+                                const struct block *blk,
+                                const struct block_index *pindex)
+{
+    struct connect_block_sync_ctx ctx = {
+        .blk = blk,
+        .pindex = pindex,
+        .ok = false,
+    };
+
+    return sync_run_write(ndb, node_db_sync_connect_block_write, &ctx) &&
+           ctx.ok;
+}
+
+static bool node_db_sync_disconnect_block_local(struct node_db *ndb,
+                                                const struct block *blk,
+                                                const struct block_index *pindex)
 {
     if (!ndb->open) return false;
 
@@ -464,10 +700,36 @@ bool node_db_sync_disconnect_block(struct node_db *ndb,
     return true;
 }
 
-bool node_db_sync_wallet_tx(struct node_db *ndb,
-                            const struct transaction *tx,
-                            const struct wallet *w,
-                            int block_height)
+static bool node_db_sync_disconnect_block_write(struct node_db *ndb, void *ctx)
+{
+    struct disconnect_block_sync_ctx *sync = ctx;
+
+    if (!sync || !sync->blk || !sync->pindex)
+        return false;
+    sync->ok = node_db_sync_disconnect_block_local(ndb,
+                                                   sync->blk,
+                                                   sync->pindex);
+    return sync->ok;
+}
+
+bool node_db_sync_disconnect_block(struct node_db *ndb,
+                                   const struct block *blk,
+                                   const struct block_index *pindex)
+{
+    struct disconnect_block_sync_ctx ctx = {
+        .blk = blk,
+        .pindex = pindex,
+        .ok = false,
+    };
+
+    return sync_run_write(ndb, node_db_sync_disconnect_block_write, &ctx) &&
+           ctx.ok;
+}
+
+static bool node_db_sync_wallet_tx_local(struct node_db *ndb,
+                                         const struct transaction *tx,
+                                         const struct wallet *w,
+                                         int block_height)
 {
     if (!ndb->open) return false;
 
@@ -574,17 +836,51 @@ bool node_db_sync_wallet_tx(struct node_db *ndb,
     return is_ours;
 }
 
-bool node_db_sync_mempool_add(struct node_db *ndb,
-                              const struct transaction *tx,
-                              int64_t fee, int height)
+static bool node_db_sync_wallet_tx_write(struct node_db *ndb, void *ctx)
 {
-    if (!ndb->open) return false;
+    struct wallet_tx_sync_ctx *sync = ctx;
 
+    if (!sync || !sync->tx || !sync->wallet)
+        return false;
+    sync->ok = node_db_sync_wallet_tx_local(ndb,
+                                            sync->tx,
+                                            sync->wallet,
+                                            sync->block_height);
+    return true;
+}
+
+bool node_db_sync_wallet_tx(struct node_db *ndb,
+                            const struct transaction *tx,
+                            const struct wallet *w,
+                            int block_height)
+{
+    struct wallet_tx_sync_ctx ctx = {
+        .tx = tx,
+        .wallet = w,
+        .block_height = block_height,
+        .ok = false,
+    };
+
+    if (!ndb || !ndb->open || !tx || !w)
+        return false;
+    return sync_run_write(ndb, node_db_sync_wallet_tx_write, &ctx) && ctx.ok;
+}
+
+static bool node_db_sync_mempool_add_local(struct node_db *ndb,
+                                           const struct transaction *tx,
+                                           int64_t fee, int height)
+{
     size_t raw_len = 0;
-    uint8_t *raw = serialize_tx(tx, &raw_len);
-    if (!raw) return false;
-
+    uint8_t *raw = NULL;
     struct db_mempool_entry e;
+
+    if (!ndb || !tx || !ndb->open)
+        return false;
+
+    raw = serialize_tx(tx, &raw_len);
+    if (!raw)
+        return false;
+
     memset(&e, 0, sizeof(e));
     memcpy(e.txid, tx->hash.data, 32);
     e.raw_tx = raw;
@@ -595,23 +891,75 @@ bool node_db_sync_mempool_add(struct node_db *ndb,
     e.height_added = height;
     e.spends_coinbase = false;
 
-    bool ok = db_mempool_save(ndb, &e);
+    {
+        bool ok = db_mempool_save(ndb, &e);
 
-    /* Track outpoint spends for conflict detection */
-    for (size_t i = 0; i < tx->num_vin; i++) {
-        db_mempool_add_spend(ndb, tx->hash.data,
-            tx->vin[i].prevout.hash.data,
-            tx->vin[i].prevout.n);
+        for (size_t i = 0; i < tx->num_vin; i++) {
+            db_mempool_add_spend(ndb, tx->hash.data,
+                tx->vin[i].prevout.hash.data,
+                tx->vin[i].prevout.n);
+        }
+
+        free(raw);
+        return ok;
     }
+}
 
-    free(raw);
-    return ok;
+static bool node_db_sync_mempool_add_write(struct node_db *ndb, void *ctx)
+{
+    struct mempool_add_ctx *add = ctx;
+
+    if (!add)
+        return false;
+    add->ok = node_db_sync_mempool_add_local(ndb, add->tx,
+                                             add->fee, add->height);
+    return add->ok;
+}
+
+bool node_db_sync_mempool_add(struct node_db *ndb,
+                              const struct transaction *tx,
+                              int64_t fee, int height)
+{
+    struct mempool_add_ctx ctx = {
+        .tx = tx,
+        .fee = fee,
+        .height = height,
+        .ok = false,
+    };
+
+    return sync_run_write(ndb, node_db_sync_mempool_add_write, &ctx) && ctx.ok;
+}
+
+static bool node_db_sync_mempool_remove_write(struct node_db *ndb, void *ctx)
+{
+    struct mempool_remove_ctx *remove = ctx;
+
+    if (!remove || !remove->txid)
+        return false;
+    remove->ok = db_mempool_delete(ndb, remove->txid);
+    return remove->ok;
 }
 
 bool node_db_sync_mempool_remove(struct node_db *ndb,
                                  const uint8_t txid[32])
 {
-    return db_mempool_delete(ndb, txid);
+    struct mempool_remove_ctx ctx = {
+        .txid = txid,
+        .ok = false,
+    };
+
+    return sync_run_write(ndb, node_db_sync_mempool_remove_write, &ctx) &&
+           ctx.ok;
+}
+
+static bool node_db_sync_sapling_note_write(struct node_db *ndb, void *ctx)
+{
+    struct sapling_note_sync_ctx *note = ctx;
+
+    if (!note)
+        return false;
+    note->ok = db_sapling_note_save(ndb, &note->note);
+    return note->ok;
 }
 
 bool node_db_sync_sapling_note(struct node_db *ndb,
@@ -628,60 +976,117 @@ bool node_db_sync_sapling_note(struct node_db *ndb,
                                const uint8_t nullifier[32],
                                int block_height)
 {
-    struct db_sapling_note n;
-    memset(&n, 0, sizeof(n));
-    memcpy(n.txid, txid, 32);
-    n.output_index = output_index;
-    n.value = value;
-    memcpy(n.rcm, rcm, 32);
+    struct sapling_note_sync_ctx ctx;
+
+    memset(&ctx, 0, sizeof(ctx));
+    memcpy(ctx.note.txid, txid, 32);
+    ctx.note.output_index = output_index;
+    ctx.note.value = value;
+    memcpy(ctx.note.rcm, rcm, 32);
     if (memo && memo_len > 0) {
         size_t ml = memo_len < 512 ? memo_len : 512;
-        memcpy(n.memo, memo, ml);
-        n.memo_len = ml;
+        memcpy(ctx.note.memo, memo, ml);
+        ctx.note.memo_len = ml;
     }
-    memcpy(n.ivk, ivk, 32);
-    memcpy(n.diversifier, diversifier, 11);
-    memcpy(n.pk_d, pk_d, 32);
-    memcpy(n.cm, cm, 32);
-    memcpy(n.nullifier, nullifier, 32);
-    n.block_height = block_height;
-    return db_sapling_note_save(ndb, &n);
+    memcpy(ctx.note.ivk, ivk, 32);
+    memcpy(ctx.note.diversifier, diversifier, 11);
+    memcpy(ctx.note.pk_d, pk_d, 32);
+    memcpy(ctx.note.cm, cm, 32);
+    memcpy(ctx.note.nullifier, nullifier, 32);
+    ctx.note.block_height = block_height;
+    return sync_run_write(ndb, node_db_sync_sapling_note_write, &ctx) && ctx.ok;
+}
+
+static bool node_db_sync_sapling_spend_write(struct node_db *ndb, void *ctx)
+{
+    struct sapling_spend_sync_ctx *spend = ctx;
+    sqlite3_stmt *s;
+
+    if (!spend || !ndb || !ndb->open)
+        return false;
+
+    s = ndb->stmt_nullifier_insert;
+    sqlite3_reset(s);
+    sqlite3_bind_blob(s, 1,
+                      spend->nullifier,
+                      sizeof(spend->nullifier),
+                      SQLITE_STATIC);
+    sqlite3_step(s);
+
+    spend->ok = db_sapling_note_mark_spent(ndb,
+                                           spend->nullifier,
+                                           spend->spending_txid);
+    return spend->ok;
 }
 
 bool node_db_sync_sapling_spend(struct node_db *ndb,
                                 const uint8_t nullifier[32],
                                 const uint8_t spending_txid[32])
 {
-    /* Add to global nullifier set */
-    sqlite3_stmt *s = ndb->stmt_nullifier_insert;
-    sqlite3_reset(s);
-    sqlite3_bind_blob(s, 1, nullifier, 32, SQLITE_STATIC);
-    sqlite3_step(s);
+    struct sapling_spend_sync_ctx ctx;
 
-    /* Mark wallet note as spent */
-    return db_sapling_note_mark_spent(ndb, nullifier,
-                                      spending_txid);
+    if (!nullifier || !spending_txid)
+        return false;
+    memset(&ctx, 0, sizeof(ctx));
+    memcpy(ctx.nullifier, nullifier, sizeof(ctx.nullifier));
+    memcpy(ctx.spending_txid, spending_txid, sizeof(ctx.spending_txid));
+    return sync_run_write(ndb, node_db_sync_sapling_spend_write, &ctx) && ctx.ok;
+}
+
+static bool node_db_sync_peer_write(struct node_db *ndb, void *ctx)
+{
+    struct peer_sync_ctx *peer = ctx;
+    struct db_peer p;
+
+    if (!peer)
+        return false;
+    memset(&p, 0, sizeof(p));
+    memcpy(p.ip, peer->ip, 16);
+    p.port = peer->port;
+    p.services = peer->services;
+    p.last_seen = peer->last_seen;
+    peer->ok = db_peer_save(ndb, &p);
+    return peer->ok;
 }
 
 bool node_db_sync_peer(struct node_db *ndb,
                        const uint8_t ip[16], uint16_t port,
                        uint64_t services, int64_t last_seen)
 {
-    struct db_peer p;
-    memset(&p, 0, sizeof(p));
-    memcpy(p.ip, ip, 16);
-    p.port = port;
-    p.services = services;
-    p.last_seen = last_seen;
-    return db_peer_save(ndb, &p);
+    struct peer_sync_ctx ctx;
+
+    memset(&ctx, 0, sizeof(ctx));
+    memcpy(ctx.ip, ip, 16);
+    ctx.port = port;
+    ctx.services = services;
+    ctx.last_seen = last_seen;
+    return sync_run_write(ndb, node_db_sync_peer_write, &ctx) && ctx.ok;
+}
+
+static bool node_db_sync_peer_score_write(struct node_db *ndb, void *ctx)
+{
+    struct peer_score_ctx *score = ctx;
+
+    if (!score || !ndb || !ndb->open)
+        return false;
+    score->ok = db_peer_update_score(ndb, score->ip, score->port,
+                                     score->bandwidth_score,
+                                     score->is_zcl23);
+    return score->ok;
 }
 
 bool node_db_sync_peer_score(struct node_db *ndb,
                               const uint8_t ip[16], uint16_t port,
                               uint32_t bandwidth_score, bool is_zcl23)
 {
-    if (!ndb || !ndb->open) return false;
-    return db_peer_update_score(ndb, ip, port, bandwidth_score, is_zcl23);
+    struct peer_score_ctx ctx;
+
+    memset(&ctx, 0, sizeof(ctx));
+    memcpy(ctx.ip, ip, 16);
+    ctx.port = port;
+    ctx.bandwidth_score = bandwidth_score;
+    ctx.is_zcl23 = is_zcl23;
+    return sync_run_write(ndb, node_db_sync_peer_score_write, &ctx) && ctx.ok;
 }
 
 int node_db_sync_get_tip_height(struct node_db *ndb)
@@ -699,12 +1104,28 @@ bool node_db_sync_get_tip_hash(struct node_db *ndb, uint8_t hash_out[32])
     return len == 32;
 }
 
+static bool node_db_sync_set_tip_write(struct node_db *ndb, void *ctx)
+{
+    struct tip_set_ctx *tip = ctx;
+
+    if (!tip)
+        return false;
+    tip->ok = node_db_state_set(ndb, "tip_hash", tip->hash, sizeof(tip->hash)) &&
+              node_db_state_set_int(ndb, "tip_height", (int64_t)tip->height);
+    return tip->ok;
+}
+
 bool node_db_sync_set_tip(struct node_db *ndb,
                           const uint8_t hash[32], int height)
 {
-    node_db_state_set(ndb, "tip_hash", hash, 32);
-    return node_db_state_set_int(ndb, "tip_height",
-                                 (int64_t)height);
+    struct tip_set_ctx ctx;
+
+    if (!hash)
+        return false;
+    memset(&ctx, 0, sizeof(ctx));
+    memcpy(ctx.hash, hash, sizeof(ctx.hash));
+    ctx.height = height;
+    return sync_run_write(ndb, node_db_sync_set_tip_write, &ctx) && ctx.ok;
 }
 
 /* Lean index: block header + txid index only.
@@ -863,6 +1284,8 @@ int node_db_sync_catchup(struct node_db *ndb,
                          const struct wallet *w,
                          const char *datadir)
 {
+    bool interrupted = false;
+
     if (!ndb->open) return -1;
 
     int db_tip = node_db_sync_get_tip_height(ndb);
@@ -874,6 +1297,7 @@ int node_db_sync_catchup(struct node_db *ndb,
     int start = db_tip + 1;
     if (start < 0) start = 0;
     int total = chain_tip - start + 1;
+    sync_job_catchup_begin(start, chain_tip);
 
     int wallet_keys = 0;
     if (w) {
@@ -886,12 +1310,16 @@ int node_db_sync_catchup(struct node_db *ndb,
 
     /* Turbo mode: disable fsync, drop indexes, enlarge cache. */
     bool bulk_mode = (total > 50000);
-    if (bulk_mode)
-        node_db_ibd_turbo_mode(ndb);
+    if (bulk_mode && !sync_db_enter_turbo_mode(ndb)) {
+        fprintf(stderr, "catchup: failed to enter turbo mode\n");
+        sync_job_catchup_finish();
+        return -1;
+    }
 
     /* Verify connection works before starting */
     if (!node_db_begin(ndb)) {
         fprintf(stderr, "catchup: BEGIN failed — aborting\n");
+        sync_job_catchup_finish();
         return -1;
     }
     node_db_commit(ndb);
@@ -924,6 +1352,10 @@ int node_db_sync_catchup(struct node_db *ndb,
     node_db_begin(ndb);
 
     for (int h = start; h <= chain_tip; h++) {
+        if (g_shutdown_requested) {
+            interrupted = true;
+            break;
+        }
         const struct block_index *pindex = active_chain_at(chain, h);
         if (!pindex) continue;
         if (!(pindex->nStatus & BLOCK_HAVE_DATA)) continue;
@@ -979,6 +1411,7 @@ int node_db_sync_catchup(struct node_db *ndb,
 
         block_free(&blk);
         indexed++;
+        sync_job_catchup_progress(h);
 
         if (indexed % batch_size == 0) {
             node_db_sync_set_tip(ndb,
@@ -1005,14 +1438,19 @@ int node_db_sync_catchup(struct node_db *ndb,
     node_db_commit(ndb);
 
     /* Restore safe pragmas and rebuild indexes */
-    if (bulk_mode)
-        node_db_normal_mode(ndb);
+    if (bulk_mode && !sync_db_restore_normal_mode(ndb)) {
+        fprintf(stderr, "catchup: failed to restore normal mode\n");
+        sync_job_catchup_finish();
+        return -1;
+    }
 
     int64_t elapsed = (int64_t)time(NULL) - t_start;
-    printf("SQLite catchup complete: %d blocks in %llds (%d blk/s)\n",
+    printf("SQLite catchup %s: %d blocks in %llds (%d blk/s)\n",
+           interrupted ? "stopped" : "complete",
            indexed, (long long)elapsed,
            elapsed > 0 ? indexed / (int)elapsed : indexed);
     fflush(stdout);
+    sync_job_catchup_finish();
     return indexed;
 }
 
@@ -1050,10 +1488,13 @@ void *node_db_sync_catchup_thread(void *arg)
     return NULL;
 }
 
-int node_db_sync_wallet_keys(struct node_db *ndb,
-                             const struct wallet *w)
+static bool node_db_sync_wallet_keys_write(struct node_db *ndb, void *ctx)
 {
-    if (!ndb->open || !w) return 0;
+    struct wallet_keys_sync_ctx *sync = ctx;
+    const struct wallet *w = sync ? sync->wallet : NULL;
+
+    if (!ndb->open || !w)
+        return true;
 
     /* Skip if counts already match */
     int existing_tkeys = db_wallet_key_count(ndb);
@@ -1067,10 +1508,13 @@ int node_db_sync_wallet_keys(struct node_db *ndb,
 
     if (existing_tkeys >= wallet_tkeys &&
         existing_zkeys >= wallet_zkeys)
-        return 0;
+        return true;
 
     int count = 0;
-    node_db_begin(ndb);
+    bool tx_open = false;
+    if (!node_db_begin(ndb))
+        return false;
+    tx_open = true;
 
     /* Sync transparent keys */
     for (size_t i = 0; i < w->keystore.num_keys; i++) {
@@ -1119,19 +1563,47 @@ int node_db_sync_wallet_keys(struct node_db *ndb,
             count++;
     }
 
-    node_db_commit(ndb);
-    if (count > 0)
-        printf("SQLite: synced %d wallet keys\n", count);
-    return count;
+    if (!node_db_commit(ndb)) {
+        if (tx_open)
+            node_db_rollback(ndb);
+        return false;
+    }
+    if (sync)
+        sync->count = count;
+    return true;
 }
 
-int node_db_sync_mempool_save(struct node_db *ndb,
-                              const struct tx_mempool *mempool)
+int node_db_sync_wallet_keys(struct node_db *ndb,
+                             const struct wallet *w)
 {
-    if (!ndb->open || !mempool) return 0;
+    struct wallet_keys_sync_ctx ctx = {.wallet = w, .count = 0};
+
+    if (!ndb->open || !w)
+        return 0;
+
+    if (!sync_run_write(ndb, node_db_sync_wallet_keys_write, &ctx)) {
+        fprintf(stderr, "SQLite: wallet key sync failed\n");
+        return 0;
+    }
+
+    if (ctx.count > 0)
+        printf("SQLite: synced %d wallet keys\n", ctx.count);
+    return ctx.count;
+}
+
+static bool node_db_sync_mempool_save_write(struct node_db *ndb, void *ctx)
+{
+    struct mempool_save_ctx *save = ctx;
+    const struct tx_mempool *mempool = save ? save->mempool : NULL;
+
+    if (!ndb->open || !mempool)
+        return true;
 
     int count = 0;
-    node_db_begin(ndb);
+    bool tx_open = false;
+    if (!node_db_begin(ndb))
+        return false;
+    tx_open = true;
 
     for (size_t i = 0; i < mempool->num_entries; i++) {
         const struct mempool_entry *me = &mempool->entries[i];
@@ -1156,10 +1628,31 @@ int node_db_sync_mempool_save(struct node_db *ndb,
         free(raw);
     }
 
-    node_db_commit(ndb);
-    if (count > 0)
-        printf("SQLite: saved %d mempool transactions\n", count);
-    return count;
+    if (!node_db_commit(ndb)) {
+        if (tx_open)
+            node_db_rollback(ndb);
+        return false;
+    }
+    if (save)
+        save->count = count;
+    return true;
+}
+
+int node_db_sync_mempool_save(struct node_db *ndb,
+                              const struct tx_mempool *mempool)
+{
+    struct mempool_save_ctx ctx = {.mempool = mempool, .count = 0};
+
+    if (!ndb->open || !mempool) return 0;
+
+    if (!sync_run_write(ndb, node_db_sync_mempool_save_write, &ctx)) {
+        fprintf(stderr, "SQLite: mempool save failed\n");
+        return 0;
+    }
+
+    if (ctx.count > 0)
+        printf("SQLite: saved %d mempool transactions\n", ctx.count);
+    return ctx.count;
 }
 
 struct mempool_load_ctx {
@@ -1573,6 +2066,7 @@ static void *import_writer_thread(void *arg)
         /* Commit every ~100K rows */
         if (total_rows % 100000 < chunk->num_rows) {
             node_db_commit(ndb);
+            sync_job_import_progress(total_rows);
             printf("UTXO import: %d rows written...\n", total_rows);
             fflush(stdout);
             node_db_begin(ndb);
@@ -1590,6 +2084,7 @@ static void *import_writer_thread(void *arg)
     }
 
     node_db_commit(ndb);
+    sync_job_import_progress(total_rows);
     atomic_store(&ctx->total_rows, total_rows);
     return NULL;
 }
@@ -1598,6 +2093,7 @@ int node_db_sync_import_utxos(struct node_db *ndb,
                                struct coins_view_db *cvdb)
 {
     if (!ndb->open || !cvdb) return -1;
+    sync_job_import_begin();
 
     int num_decoders = import_num_decoders();
     printf("UTXO import: parallel pipeline (%d decoders, %d chunks, %ld cores)...\n",
@@ -1608,12 +2104,19 @@ int node_db_sync_import_utxos(struct node_db *ndb,
     clock_gettime(CLOCK_MONOTONIC, &ts_start);
 
     /* ── SQLite turbo mode — delegate to node_db layer ────────────── */
-    node_db_ibd_turbo_mode(ndb);
+    if (!sync_db_enter_turbo_mode(ndb)) {
+        fprintf(stderr, "UTXO import: failed to enter turbo mode\n");
+        sync_job_import_finish(0);
+        return -1;
+    }
     node_db_wipe_utxos(ndb);
 
     /* ── Initialize pipeline context ───────────────────────────────── */
     struct import_context *ctx = calloc(1, sizeof(struct import_context));
-    if (!ctx) return -1;
+    if (!ctx) {
+        sync_job_import_finish(0);
+        return -1;
+    }
     ctx->cvdb = cvdb;
     ctx->ndb = ndb;
     atomic_store(&ctx->reader_done, false);
@@ -1635,6 +2138,7 @@ int node_db_sync_import_utxos(struct node_db *ndb,
     if (num_decoders == 0) {
         fprintf(stderr, "UTXO import: FATAL — no decoder threads started\n");
         free(ctx);
+        sync_job_import_finish(0);
         return -1;
     }
 
@@ -1645,6 +2149,7 @@ int node_db_sync_import_utxos(struct node_db *ndb,
         for (int i = 0; i < num_decoders; i++)
             pthread_join(decoders[i], NULL);
         free(ctx);
+        sync_job_import_finish(0);
         return -1;
     }
 
@@ -1761,6 +2266,7 @@ reader_done:
     /* ── Wait for writer ───────────────────────────────────────────── */
     pthread_join(writer, NULL);
     int total_rows = atomic_load(&ctx->total_rows);
+    sync_job_import_progress(total_rows);
     int decode_fail = atomic_load(&ctx->decode_failures);
     int skip_out = atomic_load(&ctx->skipped_outputs);
     if (decode_fail > 0 || skip_out > 0)
@@ -1810,7 +2316,12 @@ reader_done:
     clock_gettime(CLOCK_MONOTONIC, &ts_idx);
 
     /* Rebuild indexes and restore safe pragmas */
-    node_db_normal_mode(ndb);
+    if (!sync_db_restore_normal_mode(ndb)) {
+        fprintf(stderr, "UTXO import: failed to restore normal mode\n");
+        free(ctx);
+        sync_job_import_finish(total_rows);
+        return -1;
+    }
 
     struct timespec ts_idx_done;
     clock_gettime(CLOCK_MONOTONIC, &ts_idx_done);
@@ -1827,5 +2338,6 @@ reader_done:
     fflush(stdout);
 
     free(ctx);
+    sync_job_import_finish(total_rows);
     return total_rows;
 }

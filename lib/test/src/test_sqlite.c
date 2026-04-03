@@ -2,6 +2,101 @@
  * SQLite ActiveRecord model tests for ZClassic C23. */
 
 #include "test/test_helpers.h"
+#include "controllers/sync_controller.h"
+#include "config/db_service.h"
+#include "config/runtime.h"
+#include "wallet/wallet.h"
+#include "script/standard.h"
+#include <unistd.h>
+
+static struct transaction make_sync_test_tx(void)
+{
+    struct transaction tx;
+    uint8_t sig[] = {0x00, 0x00};
+    uint8_t pk[] = {0x76, 0xa9, 0x14};
+
+    memset(&tx, 0, sizeof(tx));
+    tx.version = 1;
+    tx.overwintered = false;
+    tx.num_vin = 1;
+    tx.vin = calloc(1, sizeof(struct tx_in));
+    memset(tx.vin[0].prevout.hash.data, 0xAA, 32);
+    tx.vin[0].prevout.n = 0;
+    script_set(&tx.vin[0].script_sig, sig, sizeof(sig));
+    tx.vin[0].sequence = 0xFFFFFFFF;
+    tx.num_vout = 1;
+    tx.vout = calloc(1, sizeof(struct tx_out));
+    tx.vout[0].value = 50 * 100000000LL;
+    script_set(&tx.vout[0].script_pub_key, pk, sizeof(pk));
+    transaction_compute_hash(&tx);
+    return tx;
+}
+
+static void free_sync_test_tx(struct transaction *tx)
+{
+    if (!tx)
+        return;
+    free(tx->vin);
+    free(tx->vout);
+    memset(tx, 0, sizeof(*tx));
+}
+
+static void runtime_set_db_service(struct app_runtime_context *runtime,
+                                   struct db_service *svc)
+{
+    memset(runtime, 0, sizeof(*runtime));
+    runtime->db_service = svc;
+    app_runtime_set_current(runtime);
+}
+
+static void cleanup_temp_db_dir(const char *dir_path)
+{
+    char path[1024];
+
+    if (!dir_path || !dir_path[0])
+        return;
+    snprintf(path, sizeof(path), "%s/node.db-wal", dir_path);
+    unlink(path);
+    snprintf(path, sizeof(path), "%s/node.db-shm", dir_path);
+    unlink(path);
+    snprintf(path, sizeof(path), "%s/node.db", dir_path);
+    unlink(path);
+    rmdir(dir_path);
+}
+
+static bool test_db_service_write_callback(struct node_db *ndb, void *ctx)
+{
+    bool *ran = ctx;
+
+    if (ran)
+        *ran = true;
+    return node_db_exec(ndb,
+        "INSERT OR REPLACE INTO node_state(key,value)"
+        " VALUES('db_service_callback', X'02')");
+}
+
+static bool test_db_service_nested_write_callback(struct node_db *ndb, void *ctx)
+{
+    struct db_service *svc = ctx;
+
+    if (!ndb || !svc)
+        return false;
+    if (!db_service_is_worker_thread(svc))
+        return false;
+    if (!db_service_begin_write(svc))
+        return false;
+    if (!db_service_exec_write(svc,
+        "INSERT OR REPLACE INTO node_state(key,value)"
+        " VALUES('db_service_nested', X'03')")) {
+        db_service_rollback_write(svc);
+        return false;
+    }
+    if (!db_service_commit_write(svc)) {
+        db_service_rollback_write(svc);
+        return false;
+    }
+    return true;
+}
 
 int test_sqlite(void) {
     int failures = 0;
@@ -36,6 +131,341 @@ int test_sqlite(void) {
         size_t got_len = 0;
         ok = ok && node_db_state_get(&ndb, "best_hash", got, 32, &got_len);
         ok = ok && (got_len == 32) && (got[0] == 0xde);
+        node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* DB runtime status reporting */
+    {
+        printf("SQLite runtime status tracks tx/turbo/checkpoint state... ");
+        struct node_db ndb;
+        bool ok = node_db_open(&ndb, ":memory:");
+        struct node_db_status st = {0};
+
+        ok = ok && ndb.open;
+        node_db_get_status(&ndb, &st);
+        ok = ok && st.open;
+        ok = ok && !st.tx_open;
+        ok = ok && !st.turbo_mode;
+        ok = ok && strcmp(st.last_op, "open") == 0;
+
+        ok = ok && node_db_begin(&ndb);
+        node_db_get_status(&ndb, &st);
+        ok = ok && st.tx_open;
+        ok = ok && strcmp(st.last_op, "BEGIN TRANSACTION") == 0;
+
+        ok = ok && node_db_commit(&ndb);
+        node_db_get_status(&ndb, &st);
+        ok = ok && !st.tx_open;
+        ok = ok && strcmp(st.last_op, "COMMIT") == 0;
+
+        ok = ok && node_db_ibd_turbo_mode(&ndb);
+        node_db_get_status(&ndb, &st);
+        ok = ok && st.turbo_mode;
+        ok = ok && strcmp(st.last_op, "ibd_turbo_mode") == 0;
+
+        ok = ok && node_db_wal_checkpoint(&ndb);
+        node_db_get_status(&ndb, &st);
+        ok = ok && strcmp(st.last_op, "wal_checkpoint") == 0;
+        ok = ok && st.last_sqlite_rc == SQLITE_OK;
+
+        ok = ok && node_db_normal_mode(&ndb);
+        node_db_get_status(&ndb, &st);
+        ok = ok && !st.turbo_mode;
+        ok = ok && strcmp(st.last_op, "normal_mode") == 0;
+
+        node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* DB service wrapper */
+    {
+        printf("SQLite DB service attaches and gates node_db access... ");
+        struct node_db ndb;
+        struct db_service svc;
+        bool ok = node_db_open(&ndb, ":memory:");
+        db_service_init(&svc);
+        ok = ok && !db_service_is_started(&svc);
+        ok = ok && db_service_node_db(&svc) == NULL;
+        ok = ok && db_service_attach(&svc, &ndb);
+        ok = ok && db_service_start(&svc);
+        ok = ok && db_service_is_started(&svc);
+        ok = ok && db_service_node_db(&svc) == &ndb;
+        ok = ok && db_service_query_db(&svc) != NULL;
+        {
+            struct db_service_status svc_status = {0};
+            db_service_get_status(&svc, &svc_status);
+            ok = ok && svc_status.started;
+            ok = ok && svc_status.worker_started;
+            ok = ok && !svc_status.stop_requested;
+            ok = ok && svc_status.queue_depth == 0;
+        }
+        db_service_stop(&svc);
+        ok = ok && !db_service_is_started(&svc);
+        ok = ok && db_service_node_db(&svc) == NULL;
+        node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* DB service write wrappers */
+    {
+        printf("SQLite DB service write wrappers forward safely... ");
+        struct node_db ndb;
+        struct db_service svc;
+        struct node_db_status st = {0};
+        bool ok = node_db_open(&ndb, ":memory:");
+        db_service_init(&svc);
+        ok = ok && db_service_attach(&svc, &ndb);
+        ok = ok && db_service_start(&svc);
+        ok = ok && db_service_begin_write(&svc);
+        node_db_get_status(&ndb, &st);
+        ok = ok && st.tx_open;
+        ok = ok && db_service_exec_write(&svc,
+            "INSERT OR REPLACE INTO node_state(key,value)"
+            " VALUES('db_service_test', X'01')");
+        ok = ok && db_service_commit_write(&svc);
+        node_db_get_status(&ndb, &st);
+        ok = ok && !st.tx_open;
+        ok = ok && db_service_flush_write(&svc);
+        db_service_stop(&svc);
+        node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* DB service runtime mode helpers */
+    {
+        printf("SQLite DB service runtime mode helpers update DB state... ");
+        struct node_db ndb;
+        struct db_service svc;
+        struct node_db_status st = {0};
+        bool ok = node_db_open(&ndb, ":memory:");
+        db_service_init(&svc);
+        ok = ok && db_service_attach(&svc, &ndb);
+        ok = ok && db_service_start(&svc);
+        ok = ok && db_service_ibd_turbo_mode(&svc);
+        ok = ok && db_service_set_sync_batch_size(&svc, 250);
+        node_db_get_status(&ndb, &st);
+        ok = ok && st.turbo_mode;
+        ok = ok && strcmp(st.last_op, "set_sync_batch_size") == 0;
+        ok = ok && db_service_wal_checkpoint(&svc);
+        ok = ok && db_service_normal_mode(&svc);
+        node_db_get_status(&ndb, &st);
+        ok = ok && !st.turbo_mode;
+        ok = ok && strcmp(st.last_op, "normal_mode") == 0;
+        db_service_stop(&svc);
+        node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* DB service callback writes */
+    {
+        printf("SQLite DB service callback runs whole write on worker... ");
+        struct node_db ndb;
+        struct db_service svc;
+        bool ran = false;
+        uint8_t got[8] = {0};
+        size_t got_len = 0;
+        bool ok = node_db_open(&ndb, ":memory:");
+        db_service_init(&svc);
+        ok = ok && db_service_attach(&svc, &ndb);
+        ok = ok && db_service_start(&svc);
+        ok = ok && db_service_run_write(&svc,
+            test_db_service_write_callback, &ran);
+        ok = ok && ran;
+        ok = ok && node_db_state_get(&ndb, "db_service_callback",
+                                     got, sizeof(got), &got_len);
+        ok = ok && got_len == 1 && got[0] == 0x02;
+        db_service_stop(&svc);
+        node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* DB service nested worker writes */
+    {
+        printf("SQLite DB service nested worker writes stay reentrant... ");
+        struct node_db ndb;
+        struct db_service svc;
+        uint8_t got[8] = {0};
+        size_t got_len = 0;
+        bool ok = node_db_open(&ndb, ":memory:");
+        db_service_init(&svc);
+        ok = ok && db_service_attach(&svc, &ndb);
+        ok = ok && db_service_start(&svc);
+        ok = ok && db_service_run_write(&svc,
+            test_db_service_nested_write_callback, &svc);
+        ok = ok && node_db_state_get(&ndb, "db_service_nested",
+                                     got, sizeof(got), &got_len);
+        ok = ok && got_len == 1 && got[0] == 0x03;
+        db_service_stop(&svc);
+        node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    {
+        printf("SQLite sync_controller opens private file-backed DB handles... ");
+        char dir_template[] = "/tmp/zclassic23-private-db-XXXXXX";
+        char *dir_path = mkdtemp(dir_template);
+        char db_path[1024];
+        struct node_db ndb;
+        struct node_db private_db;
+        int64_t value = 0;
+        bool ok = dir_path != NULL;
+
+        memset(&ndb, 0, sizeof(ndb));
+        memset(&private_db, 0, sizeof(private_db));
+        if (ok) {
+            snprintf(db_path, sizeof(db_path), "%s/node.db", dir_path);
+            ok = node_db_open(&ndb, db_path);
+        }
+        if (ok)
+            ok = node_db_sync_open_private_db_like(&ndb, &private_db);
+        if (ok) {
+            ok = private_db.open;
+            ok = ok && private_db.db != ndb.db;
+            ok = ok && node_db_state_set_int(&private_db,
+                                             "private_handle_test", 77);
+            ok = ok && node_db_state_get_int(&ndb,
+                                             "private_handle_test", &value);
+            ok = ok && value == 77;
+        }
+
+        if (private_db.open)
+            node_db_close(&private_db);
+        if (ndb.open)
+            node_db_close(&ndb);
+        cleanup_temp_db_dir(dir_path);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* sync_controller DB-service wrappers */
+    {
+        printf("SQLite sync_controller wrappers use runtime DB service... ");
+        struct node_db ndb;
+        struct db_service svc;
+        struct app_runtime_context runtime;
+        struct transaction tx;
+        struct transaction wallet_tx;
+        struct wallet *wallet = NULL;
+        struct privkey key;
+        struct pubkey pubkey;
+        struct key_id kid;
+        struct tx_destination dest;
+        struct db_wallet_utxo wallet_utxo = {0};
+        struct db_wallet_tx saved_wallet_tx = {0};
+        struct db_peer peer = {0};
+        struct db_sapling_note note = {0};
+        uint8_t tip_hash[32];
+        uint8_t got_tip_hash[32];
+        size_t got_tip_len = 0;
+        uint8_t nullifier[32];
+        uint8_t spending_txid[32];
+        int64_t tip_height = -1;
+        bool ok = node_db_open(&ndb, ":memory:");
+
+        db_service_init(&svc);
+        ok = ok && db_service_attach(&svc, &ndb);
+        ok = ok && db_service_start(&svc);
+        runtime_set_db_service(&runtime, &svc);
+        wallet = calloc(1, sizeof(*wallet));
+        ok = ok && wallet != NULL;
+
+        tx = make_sync_test_tx();
+        wallet_tx = make_sync_test_tx();
+        ok = ok && node_db_sync_mempool_add(&ndb, &tx, 1234, 777);
+        ok = ok && (db_mempool_count(&ndb) == 1);
+        ok = ok && node_db_sync_mempool_remove(&ndb, tx.hash.data);
+        ok = ok && (db_mempool_count(&ndb) == 0);
+
+        memset(tip_hash, 0xAB, sizeof(tip_hash));
+        ok = ok && node_db_sync_set_tip(&ndb, tip_hash, 12345);
+        ok = ok && node_db_state_get_int(&ndb, "tip_height", &tip_height);
+        ok = ok && (tip_height == 12345);
+        ok = ok && node_db_state_get(&ndb, "tip_hash",
+                                     got_tip_hash, sizeof(got_tip_hash),
+                                     &got_tip_len);
+        ok = ok && got_tip_len == sizeof(got_tip_hash);
+        ok = ok && memcmp(got_tip_hash, tip_hash, sizeof(tip_hash)) == 0;
+
+        memset(peer.ip, 0, sizeof(peer.ip));
+        peer.ip[10] = 0xFF;
+        peer.ip[11] = 0xFF;
+        peer.ip[12] = 127;
+        peer.ip[15] = 1;
+        ok = ok && node_db_sync_peer(&ndb, peer.ip, 8033, 9, 1700000000);
+        ok = ok && db_peer_find_by_addr(&ndb, peer.ip, 8033, &peer);
+        ok = ok && peer.services == 9;
+        ok = ok && node_db_sync_peer_score(&ndb, peer.ip, 8033, 44, true);
+        ok = ok && db_peer_find_by_addr(&ndb, peer.ip, 8033, &peer);
+        ok = ok && peer.bandwidth_score == 44;
+        ok = ok && peer.is_zcl23;
+
+        if (wallet)
+            wallet_init(wallet);
+        privkey_make_new(&key, true);
+        ok = ok && privkey_get_pubkey(&key, &pubkey);
+        ok = ok && wallet && keystore_add_key(&wallet->keystore, &key);
+        kid = pubkey_get_id(&pubkey);
+        dest.type = DEST_KEY_ID;
+        dest.id.key = kid;
+        script_for_destination(&wallet_tx.vout[0].script_pub_key, &dest);
+        transaction_compute_hash(&wallet_tx);
+        ok = ok && wallet &&
+             node_db_sync_wallet_tx(&ndb, &wallet_tx, wallet, 0);
+        ok = ok && db_wallet_utxo_find(&ndb, wallet_tx.hash.data, 0, &wallet_utxo);
+        ok = ok && wallet_utxo.value == wallet_tx.vout[0].value;
+        ok = ok && db_wallet_tx_find(&ndb, wallet_tx.hash.data, &saved_wallet_tx);
+        ok = ok && !saved_wallet_tx.has_block;
+        ok = ok && saved_wallet_tx.block_height == 0;
+        free(wallet_utxo.script);
+        free(saved_wallet_tx.raw_tx);
+        if (wallet) {
+            wallet_free(wallet);
+            free(wallet);
+        }
+
+        memset(&note, 0, sizeof(note));
+        memset(note.txid, 0x01, sizeof(note.txid));
+        note.output_index = 2;
+        note.value = 4200;
+        memset(note.rcm, 0x02, sizeof(note.rcm));
+        memset(note.ivk, 0x03, sizeof(note.ivk));
+        memset(note.diversifier, 0x04, sizeof(note.diversifier));
+        memset(note.pk_d, 0x05, sizeof(note.pk_d));
+        memset(note.cm, 0x06, sizeof(note.cm));
+        memset(note.nullifier, 0x07, sizeof(note.nullifier));
+        note.block_height = 88;
+        ok = ok && node_db_sync_sapling_note(&ndb,
+                                             note.txid,
+                                             note.output_index,
+                                             note.value,
+                                             note.rcm,
+                                             NULL,
+                                             0,
+                                             note.ivk,
+                                             note.diversifier,
+                                             note.pk_d,
+                                             note.cm,
+                                             note.nullifier,
+                                             note.block_height);
+        ok = ok && db_sapling_note_balance_for_ivk(&ndb, note.ivk) == note.value;
+        memcpy(nullifier, note.nullifier, sizeof(nullifier));
+        memset(spending_txid, 0x08, sizeof(spending_txid));
+        ok = ok && node_db_sync_sapling_spend(&ndb, nullifier, spending_txid);
+        ok = ok && db_sapling_note_balance_for_ivk(&ndb, note.ivk) == 0;
+
+        app_runtime_set_current(NULL);
+        db_service_stop(&svc);
+        free_sync_test_tx(&tx);
+        free_sync_test_tx(&wallet_tx);
         node_db_close(&ndb);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
