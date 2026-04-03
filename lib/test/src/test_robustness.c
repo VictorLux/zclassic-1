@@ -8,6 +8,9 @@
 #include "net/net.h"
 #include "rpc/httpserver.h"
 #include "util/template.h"
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
 #include <unistd.h>
 
 static char test_datadir[256];
@@ -24,6 +27,28 @@ static void cleanup_robustness_datadir(void)
     char cmd[512];
     snprintf(cmd, sizeof(cmd), "rm -rf %s", test_datadir);
     system(cmd);
+}
+
+static uint16_t reserve_test_port(void)
+{
+    uint16_t port = 0;
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0)
+        return 0;
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = htons(0);
+
+    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
+        socklen_t len = sizeof(addr);
+        if (getsockname(fd, (struct sockaddr *)&addr, &len) == 0)
+            port = ntohs(addr.sin_port);
+    }
+    close(fd);
+    return port;
 }
 
 int test_robustness(void)
@@ -185,6 +210,22 @@ int test_robustness(void)
     printf("robust: build_offer NULL offer fails... ");
     {
         bool ok = !fast_sync_build_offer(test_datadir, NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ── RPC HTTP lifecycle ─────────────────────────────── */
+
+    printf("robust: rpc_http start/stop is repeatable... ");
+    {
+        uint16_t port = reserve_test_port();
+        bool ok = port != 0;
+        if (ok)
+            ok = rpc_http_start(NULL, port, "user", "pass", NULL);
+        ok = ok && rpc_http_is_running();
+        rpc_http_stop();
+        ok = ok && !rpc_http_is_running();
+        rpc_http_stop();
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }

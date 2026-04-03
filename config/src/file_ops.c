@@ -13,6 +13,10 @@
 
 bool file_copy(const char *src, const char *dst)
 {
+    struct stat st;
+    if (stat(src, &st) != 0 || !S_ISREG(st.st_mode))
+        return false;
+
     unlink(dst);
     FILE *fin = fopen(src, "rb");
     if (!fin) return false;

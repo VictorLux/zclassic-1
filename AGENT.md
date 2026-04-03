@@ -140,6 +140,15 @@ DB-mutating service helpers now also obey the worker boundary:
 - file-copy helper contracts now have direct unit coverage: `dir_copy()`
   success and partial-failure behavior, plus `block_files_copy()` failure on
   bad `rev*.dat` sources, are now exercised in the test suite
+- `file_copy()` itself now refuses non-regular sources, so directory entries
+  cannot be treated as successful file copies on Linux and the stricter
+  fail-closed import/snapshot contracts hold under test
+- RPC HTTP server lifecycle now has direct robustness coverage for
+  start/stop/stop-again behavior on a reserved loopback port so the server
+  shutdown path stays idempotent under test
+- that robustness coverage exposed a real bug, now fixed: the RPC HTTP server
+  tracks listen-thread and worker-start state explicitly, resets auth/runtime
+  state on stop, and refuses a new start while old server state is still live
 - file-service startup manifest build is now tracked and joined instead of
   detached, and file-service start/stop is being hardened toward idempotent
   lifecycle behavior

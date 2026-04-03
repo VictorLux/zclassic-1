@@ -25,13 +25,14 @@
 static int g_listen_fd = -1;
 static const struct rpc_table *g_table = NULL;
 static pthread_t g_listen_thread;
+static bool g_listen_thread_started = false;
 static volatile bool g_running = false;
 static char g_rpc_user[128];
 static char g_rpc_password[128];
 static char g_cookie_file[1024];
 static bool g_auth_required = false;
 static pthread_t g_worker_threads[RPC_HTTP_WORKERS];
-static bool g_workers_started = false;
+static size_t g_workers_started = 0;
 static int g_client_queue[RPC_HTTP_QUEUE_CAP];
 static size_t g_client_queue_head = 0;
 static size_t g_client_queue_tail = 0;
@@ -330,10 +331,17 @@ bool rpc_http_start(const struct rpc_table *table, uint16_t port,
                      const char *rpc_user, const char *rpc_password,
                      const char *datadir)
 {
+    if (g_running || g_listen_thread_started || g_workers_started > 0)
+        return false;
+
     g_client_queue_head = 0;
     g_client_queue_tail = 0;
     g_client_queue_count = 0;
     g_table = table;
+    g_rpc_user[0] = '\0';
+    g_rpc_password[0] = '\0';
+    g_cookie_file[0] = '\0';
+    g_auth_required = false;
     if (rpc_user && rpc_password) {
         snprintf(g_rpc_user, sizeof(g_rpc_user), "%s", rpc_user);
         snprintf(g_rpc_password, sizeof(g_rpc_password), "%s", rpc_password);
@@ -402,10 +410,11 @@ bool rpc_http_start(const struct rpc_table *table, uint16_t port,
             pthread_mutex_unlock(&g_client_queue_mutex);
             for (size_t j = 0; j < i; j++)
                 pthread_join(g_worker_threads[j], NULL);
+            g_workers_started = 0;
             return false;
         }
+        g_workers_started = i + 1;
     }
-    g_workers_started = true;
 
     if (pthread_create(&g_listen_thread, NULL, listen_thread_fn, NULL) != 0) {
         perror("pthread_create");
@@ -413,13 +422,14 @@ bool rpc_http_start(const struct rpc_table *table, uint16_t port,
         pthread_mutex_lock(&g_client_queue_mutex);
         pthread_cond_broadcast(&g_client_queue_cond);
         pthread_mutex_unlock(&g_client_queue_mutex);
-        for (size_t i = 0; i < RPC_HTTP_WORKERS; i++)
+        for (size_t i = 0; i < g_workers_started; i++)
             pthread_join(g_worker_threads[i], NULL);
-        g_workers_started = false;
+        g_workers_started = 0;
         close(g_listen_fd);
         g_listen_fd = -1;
         return false;
     }
+    g_listen_thread_started = true;
 
     return true;
 }
@@ -435,11 +445,14 @@ void rpc_http_stop(void)
     pthread_mutex_lock(&g_client_queue_mutex);
     pthread_cond_broadcast(&g_client_queue_cond);
     pthread_mutex_unlock(&g_client_queue_mutex);
-    pthread_join(g_listen_thread, NULL);
-    if (g_workers_started) {
-        for (size_t i = 0; i < RPC_HTTP_WORKERS; i++)
+    if (g_listen_thread_started) {
+        pthread_join(g_listen_thread, NULL);
+        g_listen_thread_started = false;
+    }
+    if (g_workers_started > 0) {
+        for (size_t i = 0; i < g_workers_started; i++)
             pthread_join(g_worker_threads[i], NULL);
-        g_workers_started = false;
+        g_workers_started = 0;
     }
 
     pthread_mutex_lock(&g_client_queue_mutex);
@@ -458,6 +471,10 @@ void rpc_http_stop(void)
         unlink(g_cookie_file);
         g_cookie_file[0] = '\0';
     }
+    g_table = NULL;
+    g_auth_required = false;
+    g_rpc_user[0] = '\0';
+    g_rpc_password[0] = '\0';
     printf("RPC server stopped.\n");
 }
 
