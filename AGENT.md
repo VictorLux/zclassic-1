@@ -122,6 +122,8 @@ DB-mutating service helpers now also obey the worker boundary:
   worker joins
 - `connman_start()` now has explicit partial-start rollback and per-thread
   lifecycle tracking instead of assuming all P2P thread creation succeeds
+- generic async RPC queue worker startup now returns success/failure and no
+  longer increments worker state optimistically when `pthread_create` fails
 - UTXO import is being hardened with explicit cancellation and cleanup so
   shutdown or startup failure does not leave the parallel import pipeline
   running blindly

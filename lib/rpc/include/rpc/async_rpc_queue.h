@@ -35,7 +35,7 @@ struct async_rpc_queue {
 void async_queue_init(struct async_rpc_queue *q);
 void async_queue_free(struct async_rpc_queue *q);
 
-void async_queue_add_worker(struct async_rpc_queue *q);
+bool async_queue_add_worker(struct async_rpc_queue *q);
 size_t async_queue_num_workers(const struct async_rpc_queue *q);
 
 bool async_queue_is_closed(const struct async_rpc_queue *q);

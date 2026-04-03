@@ -537,11 +537,11 @@ int test_rpc(void) {
         memcpy(saved_id, op.id, ASYNC_OP_ID_SIZE);
 
         async_queue_add_op(&q, &op);
-        async_queue_add_worker(&q);
+        bool ok = async_queue_add_worker(&q);
 
         async_queue_finish_and_wait(&q);
 
-        if (async_op_is_success(&op))
+        if (ok && async_op_is_success(&op))
             printf("OK\n");
         else {
             printf("FAIL (state=%s)\n",
@@ -549,6 +549,20 @@ int test_rpc(void) {
             failures++;
         }
         async_op_free(&op);
+        async_queue_free(&q);
+    }
+
+    printf("async_queue refuses workers after finish... ");
+    {
+        struct async_rpc_queue q;
+        async_queue_init(&q);
+        async_queue_finish(&q);
+        if (!async_queue_add_worker(&q))
+            printf("OK\n");
+        else {
+            printf("FAIL\n");
+            failures++;
+        }
         async_queue_free(&q);
     }
 
