@@ -161,23 +161,44 @@ static void *miner_thread(void *arg)
 
 void gen_start(struct gen_context *ctx)
 {
+    int started = 0;
+
+    if (!ctx)
+        return;
     if (ctx->num_threads <= 0)
         ctx->num_threads = 1;
 
-    ctx->running = true;
+    if (atomic_load(&ctx->running))
+        return;
     g_num_miner_threads = ctx->num_threads;
     g_miner_threads = calloc((size_t)g_num_miner_threads, sizeof(pthread_t));
-    if (!g_miner_threads) return;
+    if (!g_miner_threads)
+        return;
 
-    for (int i = 0; i < g_num_miner_threads; i++)
-        pthread_create(&g_miner_threads[i], NULL, miner_thread, ctx);
+    atomic_store(&ctx->running, true);
+
+    for (int i = 0; i < g_num_miner_threads; i++) {
+        if (pthread_create(&g_miner_threads[i], NULL, miner_thread, ctx) != 0) {
+            fprintf(stderr, "gen_start: failed to start miner thread %d\n", i);
+            atomic_store(&ctx->running, false);
+            for (int j = 0; j < started; j++)
+                pthread_join(g_miner_threads[j], NULL);
+            free(g_miner_threads);
+            g_miner_threads = NULL;
+            g_num_miner_threads = 0;
+            return;
+        }
+        started++;
+    }
 
     printf("Mining started with %d thread(s).\n", g_num_miner_threads);
 }
 
 void gen_stop(struct gen_context *ctx)
 {
-    ctx->running = false;
+    if (!ctx || !g_miner_threads)
+        return;
+    atomic_store(&ctx->running, false);
     for (int i = 0; i < g_num_miner_threads; i++)
         pthread_join(g_miner_threads[i], NULL);
     free(g_miner_threads);

@@ -156,6 +156,9 @@ DB-mutating service helpers now also obey the worker boundary:
 - `indexlegacy` Phase B extraction now fails closed on partial worker startup,
   joining already-started threads and returning a real RPC error instead of
   proceeding with a partially launched extraction pool
+- mining thread startup now fails closed too: `gen_start()` only leaves mining
+  marked running if all miner threads launched, and `gen_stop()` no longer
+  assumes a full thread array exists after partial startup failure
 - startup SQLite catchup is now owned as an explicit `sync_controller`
   catchup job object instead of boot carrying a raw pthread plus argument bag
 - snapshot import now fails cleanly on partial thread-start failure instead of
