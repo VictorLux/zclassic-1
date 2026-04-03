@@ -159,6 +159,9 @@ DB-mutating service helpers now also obey the worker boundary:
 - mining thread startup now fails closed too: `gen_start()` only leaves mining
   marked running if all miner threads launched, and `gen_stop()` no longer
   assumes a full thread array exists after partial startup failure
+- file-service client parallel download startup now fails closed: if any range
+  worker cannot launch, already-started workers are cancelled/joined and the
+  client returns failure instead of continuing with a partial download pool
 - startup SQLite catchup is now owned as an explicit `sync_controller`
   catchup job object instead of boot carrying a raw pthread plus argument bag
 - snapshot import now fails cleanly on partial thread-start failure instead of

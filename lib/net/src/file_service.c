@@ -1087,8 +1087,22 @@ bool fs_client_sync(const char *peer_addr, uint16_t port,
         atomic_store(&workers[nworkers].bytes, 0);
         atomic_store(&workers[nworkers].chunks_ok, 0);
         atomic_store(&workers[nworkers].chunks_fail, 0);
-        pthread_create(&wthreads[nworkers], NULL,
-                        range_worker_fn, &workers[nworkers]);
+        if (pthread_create(&wthreads[nworkers], NULL,
+                           range_worker_fn, &workers[nworkers]) != 0) {
+            fprintf(stderr,
+                    "file_service: failed to start download worker %d\n", w);
+            free(wp);
+            for (int j = 0; j < nworkers; j++) {
+                atomic_store(&workers[j].cancel, true);
+                if (workers[j].fd >= 0)
+                    shutdown(workers[j].fd, SHUT_RDWR);
+            }
+            for (int j = 0; j < nworkers; j++) {
+                pthread_join(wthreads[j], NULL);
+                free((void *)workers[j].out_path);
+            }
+            return false;
+        }
         nworkers++;
     }
 
