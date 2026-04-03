@@ -112,6 +112,9 @@ DB-mutating service helpers now also obey the worker boundary:
 - snapshot tx-index build is now owned through an explicit
   `snapshot_tx_index_job` controller boundary instead of a detached one-shot
   thread or raw boot-managed `pthread_t`
+- snapshot import’s parallel block-index / UTXO / wallet workers are now
+  owned through a single import-job coordinator instead of scattered raw
+  `pthread_create` / `pthread_join` bookkeeping in the orchestrator
 - boot service thread start/join paths for payment, replay, snapshot offer,
   address backfill, and tx-index are now consolidated behind shared helper
   functions so lifecycle handling stays consistent and DRY

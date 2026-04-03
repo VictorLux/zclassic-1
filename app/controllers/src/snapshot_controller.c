@@ -365,6 +365,93 @@ struct wallet_import_args {
     int count;
 };
 
+static void *import_wallet_thread(void *arg);
+
+struct snapshot_import_job {
+    pthread_t block_index_thread;
+    bool block_index_started;
+    pthread_t utxo_thread;
+    bool utxo_started;
+    pthread_t wallet_thread;
+    bool wallet_started;
+    struct block_index_import_args block_index_args;
+    struct utxo_import_args utxo_args;
+    struct wallet_import_args wallet_args;
+};
+
+static void snapshot_import_job_init(struct snapshot_import_job *job,
+                                     const char *snapshot_dir,
+                                     const char *db_path,
+                                     struct wallet *wallet)
+{
+    if (!job)
+        return;
+
+    memset(job, 0, sizeof(*job));
+    job->block_index_args.snapshot_dir = snapshot_dir;
+    job->block_index_args.db_path = db_path;
+    job->utxo_args.snapshot_dir = snapshot_dir;
+    job->utxo_args.db_path = db_path;
+    job->wallet_args.snapshot_dir = snapshot_dir;
+    job->wallet_args.db_path = db_path;
+    job->wallet_args.wallet = wallet;
+}
+
+static void snapshot_import_job_join(struct snapshot_import_job *job)
+{
+    if (!job)
+        return;
+    if (job->block_index_started) {
+        pthread_join(job->block_index_thread, NULL);
+        job->block_index_started = false;
+    }
+    if (job->utxo_started) {
+        pthread_join(job->utxo_thread, NULL);
+        job->utxo_started = false;
+    }
+    if (job->wallet_started) {
+        pthread_join(job->wallet_thread, NULL);
+        job->wallet_started = false;
+    }
+}
+
+static bool snapshot_import_job_start(struct snapshot_import_job *job)
+{
+    if (!job)
+        return false;
+
+    if (pthread_create(&job->block_index_thread, NULL,
+                       import_block_index_thread,
+                       &job->block_index_args) != 0) {
+        fprintf(stderr,
+                "snapshot_import: failed to start block-index import thread\n");
+        return false;
+    }
+    job->block_index_started = true;
+
+    if (pthread_create(&job->utxo_thread, NULL,
+                       import_utxos_thread,
+                       &job->utxo_args) != 0) {
+        fprintf(stderr,
+                "snapshot_import: failed to start UTXO import thread\n");
+        snapshot_import_job_join(job);
+        return false;
+    }
+    job->utxo_started = true;
+
+    if (pthread_create(&job->wallet_thread, NULL,
+                       import_wallet_thread,
+                       &job->wallet_args) != 0) {
+        fprintf(stderr,
+                "snapshot_import: failed to start wallet import thread\n");
+        snapshot_import_job_join(job);
+        return false;
+    }
+    job->wallet_started = true;
+
+    return true;
+}
+
 static void *import_wallet_thread(void *arg)
 {
     struct wallet_import_args *a = arg;
@@ -415,6 +502,7 @@ int snapshot_import(const char *snapshot_dir,
 {
     (void)ndb; /* Each thread opens its own SQLite connection */
     struct timespec t0;
+    struct snapshot_import_job job;
     clock_gettime(CLOCK_MONOTONIC, &t0);
 
     /* SQLite database path */
@@ -427,51 +515,10 @@ int snapshot_import(const char *snapshot_dir,
     printf("  T3: wallet scan         → SQLite wallet_*\n");
     fflush(stdout);
 
-    /* Launch three parallel import threads */
-    struct block_index_import_args bi_args = {
-        .snapshot_dir = snapshot_dir,
-        .db_path = db_path,
-    };
-    struct utxo_import_args utxo_args = {
-        .snapshot_dir = snapshot_dir,
-        .db_path = db_path,
-    };
-    struct wallet_import_args wal_args = {
-        .snapshot_dir = snapshot_dir,
-        .db_path = db_path,
-        .wallet = w,
-    };
-
-    pthread_t t1, t2, t3;
-    bool t1_started = false;
-    bool t2_started = false;
-    bool t3_started = false;
-
-    if (pthread_create(&t1, NULL, import_block_index_thread, &bi_args) != 0) {
-        fprintf(stderr, "snapshot_import: failed to start block-index import thread\n");
+    snapshot_import_job_init(&job, snapshot_dir, db_path, w);
+    if (!snapshot_import_job_start(&job))
         return -1;
-    }
-    t1_started = true;
-    if (pthread_create(&t2, NULL, import_utxos_thread, &utxo_args) != 0) {
-        fprintf(stderr, "snapshot_import: failed to start UTXO import thread\n");
-        pthread_join(t1, NULL);
-        return -1;
-    }
-    t2_started = true;
-    if (pthread_create(&t3, NULL, import_wallet_thread, &wal_args) != 0) {
-        fprintf(stderr, "snapshot_import: failed to start wallet import thread\n");
-        pthread_join(t2, NULL);
-        pthread_join(t1, NULL);
-        return -1;
-    }
-    t3_started = true;
-
-    if (t1_started)
-        pthread_join(t1, NULL);
-    if (t2_started)
-        pthread_join(t2, NULL);
-    if (t3_started)
-        pthread_join(t3, NULL);
+    snapshot_import_job_join(&job);
 
     struct timespec t1_end;
     clock_gettime(CLOCK_MONOTONIC, &t1_end);
@@ -481,7 +528,8 @@ int snapshot_import(const char *snapshot_dir,
     printf("snapshot_import: parallel import complete in %.1fs\n",
            import_time);
     printf("  blocks: %d, utxos: %d, wallet txs: %d\n",
-           bi_args.count, utxo_args.count, wal_args.count);
+           job.block_index_args.count, job.utxo_args.count,
+           job.wallet_args.count);
     fflush(stdout);
 
     /* Copy block files + LevelDB to C23 data dir for consensus engine */
@@ -530,7 +578,9 @@ int snapshot_import(const char *snapshot_dir,
            total_time, import_time, total_time - import_time);
     fflush(stdout);
 
-    return (bi_args.result == 0 && utxo_args.result == 0) ? 0 : -1;
+    return (job.block_index_args.result == 0 &&
+            job.utxo_args.result == 0 &&
+            job.wallet_args.result == 0) ? 0 : -1;
 }
 
 /* ---- Background transaction index builder ---- */
