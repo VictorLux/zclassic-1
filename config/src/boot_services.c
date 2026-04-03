@@ -209,20 +209,17 @@ static void boot_join_address_backfill_service(struct boot_svc_ctx *svc)
 
 static bool boot_start_tx_index_service(struct boot_svc_ctx *svc)
 {
-    if (!svc || svc->tx_index_thread_started || !svc->datadir)
+    if (!svc || !svc->datadir ||
+        snapshot_tx_index_job_is_started(&svc->tx_index_job))
         return false;
-    if (!snapshot_start_tx_index_build(svc->datadir, &svc->tx_index_thread))
-        return false;
-    svc->tx_index_thread_started = true;
-    return true;
+    return snapshot_tx_index_job_start(&svc->tx_index_job, svc->datadir);
 }
 
 static void boot_join_tx_index_service(struct boot_svc_ctx *svc)
 {
     if (!svc)
         return;
-    boot_join_thread_service(&svc->tx_index_thread,
-                             &svc->tx_index_thread_started);
+    snapshot_tx_index_job_join(&svc->tx_index_job, NULL);
 }
 
 /* ── Helper threads ────────────────────────────────────────── */
@@ -468,6 +465,7 @@ bool app_init_services(struct app_context *ctx,
 {
     S = svc;
     node_db_sync_catchup_job_init(&svc->catchup_job);
+    snapshot_tx_index_job_init(&svc->tx_index_job);
     if (svc->db_service) {
         db_service_attach(svc->db_service, svc->node_db);
         db_service_start(svc->db_service);

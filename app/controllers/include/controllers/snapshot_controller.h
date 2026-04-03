@@ -9,6 +9,16 @@
 
 struct wallet;
 
+struct snapshot_tx_index_job {
+    pthread_t thread;
+    bool started;
+    int result;
+    struct {
+        const char *datadir;
+        char db_path[1024];
+    } args;
+};
+
 /* Create a snapshot of a legacy C++ node's data directory.
  * Hard-links blk*.dat/rev*.dat (instant), copies LevelDB dirs.
  * Stores in c23_datadir/snapshots/YYYYMMDD_HHMMSS/.
@@ -41,7 +51,11 @@ int snapshot_import(const char *snapshot_dir,
  * Reads block positions from blocks table, parses block files
  * to extract txids, inserts into transactions table.
  * Returns true when the worker thread was started successfully. */
-bool snapshot_start_tx_index_build(const char *c23_datadir,
-                                   pthread_t *thread_out);
+void snapshot_tx_index_job_init(struct snapshot_tx_index_job *job);
+bool snapshot_tx_index_job_start(struct snapshot_tx_index_job *job,
+                                 const char *c23_datadir);
+bool snapshot_tx_index_job_join(struct snapshot_tx_index_job *job,
+                                int *result_out);
+bool snapshot_tx_index_job_is_started(const struct snapshot_tx_index_job *job);
 
 #endif

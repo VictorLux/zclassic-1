@@ -109,8 +109,9 @@ DB-mutating service helpers now also obey the worker boundary:
   one-shot background thread
 - startup address backfill is now intended to be a tracked service thread
   instead of a detached one-shot thread
-- snapshot tx-index build is now intended to be a tracked service thread
-  instead of a detached one-shot thread
+- snapshot tx-index build is now owned through an explicit
+  `snapshot_tx_index_job` controller boundary instead of a detached one-shot
+  thread or raw boot-managed `pthread_t`
 - boot service thread start/join paths for payment, replay, snapshot offer,
   address backfill, and tx-index are now consolidated behind shared helper
   functions so lifecycle handling stays consistent and DRY

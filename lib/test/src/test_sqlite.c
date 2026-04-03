@@ -2,6 +2,7 @@
  * SQLite ActiveRecord model tests for ZClassic C23. */
 
 #include "test/test_helpers.h"
+#include "controllers/snapshot_controller.h"
 #include "controllers/sync_controller.h"
 #include "config/db_service.h"
 #include "config/runtime.h"
@@ -338,6 +339,42 @@ int test_sqlite(void) {
 
         if (private_db.open)
             node_db_close(&private_db);
+        if (ndb.open)
+            node_db_close(&ndb);
+        cleanup_temp_db_dir(dir_path);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    {
+        printf("SQLite snapshot tx-index job starts and joins cleanly... ");
+        char dir_template[] = "/tmp/zclassic23-tx-index-job-XXXXXX";
+        char *dir_path = mkdtemp(dir_template);
+        char db_path[1024];
+        struct node_db ndb;
+        struct snapshot_tx_index_job job;
+        int result = -1;
+        bool ok = dir_path != NULL;
+
+        memset(&ndb, 0, sizeof(ndb));
+        snapshot_tx_index_job_init(&job);
+        ok = ok && !snapshot_tx_index_job_is_started(&job);
+        if (ok) {
+            snprintf(db_path, sizeof(db_path), "%s/node.db", dir_path);
+            ok = node_db_open(&ndb, db_path);
+        }
+        if (ok) {
+            node_db_close(&ndb);
+            ok = snapshot_tx_index_job_start(&job, dir_path);
+        }
+        if (ok)
+            ok = snapshot_tx_index_job_is_started(&job);
+        if (ok)
+            ok = snapshot_tx_index_job_join(&job, &result);
+        ok = ok && !snapshot_tx_index_job_is_started(&job);
+        ok = ok && result == 0;
+
         if (ndb.open)
             node_db_close(&ndb);
         cleanup_temp_db_dir(dir_path);

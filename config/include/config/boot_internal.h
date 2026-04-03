@@ -22,6 +22,7 @@
 #include "storage/block_index_db.h"
 #include "models/database.h"
 #include "controllers/sync_controller.h"
+#include "controllers/snapshot_controller.h"
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <sqlite3.h>
@@ -114,8 +115,7 @@ struct boot_svc_ctx {
     bool offer_thread_started;
     pthread_t address_backfill_thread;
     bool address_backfill_thread_started;
-    pthread_t tx_index_thread;
-    bool tx_index_thread_started;
+    struct snapshot_tx_index_job tx_index_job;
     bool want_address_backfill;
     bool want_snapshot_tx_index;
 };

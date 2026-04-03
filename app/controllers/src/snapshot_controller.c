@@ -662,19 +662,23 @@ static size_t skip_tx_and_hash(const uint8_t *data, size_t avail,
     return pos;
 }
 
-struct tx_index_args {
-    const char *datadir;
-    const char *db_path;
-};
-
 static void *build_tx_index_thread(void *arg)
 {
-    struct tx_index_args *a = arg;
+    struct snapshot_tx_index_job *job = arg;
+    const char *datadir;
+    const char *db_path;
+
+    if (!job) {
+        return NULL;
+    }
+
+    job->result = -1;
+    datadir = job->args.datadir;
+    db_path = job->args.db_path;
 
     struct node_db ndb;
-    if (!node_db_open(&ndb, a->db_path)) {
+    if (!node_db_open(&ndb, db_path)) {
         fprintf(stderr, "tx_index: failed to open SQLite\n");
-        free(arg);
         return NULL;
     }
 
@@ -684,7 +688,7 @@ static void *build_tx_index_thread(void *arg)
         printf("tx_index: %d transactions already indexed, skipping\n",
                existing);
         node_db_close(&ndb);
-        free(arg);
+        job->result = 0;
         return NULL;
     }
 
@@ -695,7 +699,6 @@ static void *build_tx_index_thread(void *arg)
     if (!db_tx_prepare_bulk_load(&ndb)) {
         fprintf(stderr, "tx_index: failed to prepare bulk load\n");
         node_db_close(&ndb);
-        free(arg);
         return NULL;
     }
 
@@ -728,7 +731,7 @@ static void *build_tx_index_thread(void *arg)
             if (cached_data) munmap(cached_data, cached_size);
             char path[512];
             snprintf(path, sizeof(path), "%s/blocks/blk%05d.dat",
-                     a->datadir, file_num);
+                     datadir, file_num);
             int fd = open(path, O_RDONLY);
             if (fd < 0) { cached_data = NULL; cached_file = -1; continue; }
             struct stat st;
@@ -812,37 +815,57 @@ static void *build_tx_index_thread(void *arg)
            indexed, (long long)elapsed);
     fflush(stdout);
 
-    free(arg);
+    job->result = 0;
     return NULL;
 }
 
-bool snapshot_start_tx_index_build(const char *c23_datadir,
-                                   pthread_t *thread_out)
+void snapshot_tx_index_job_init(struct snapshot_tx_index_job *job)
 {
-    struct tx_index_args *args;
-    char *db_path;
+    if (!job)
+        return;
+    memset(job, 0, sizeof(*job));
+    job->result = -1;
+}
 
-    if (!c23_datadir || !thread_out)
+bool snapshot_tx_index_job_start(struct snapshot_tx_index_job *job,
+                                 const char *c23_datadir)
+{
+    if (!job || job->started || !c23_datadir)
         return false;
 
-    args = calloc(1, sizeof(*args));
-    if (!args)
-        return false;
-
-    db_path = malloc(1024);
-    if (!db_path) {
-        free(args);
-        return false;
-    }
-
-    args->datadir = c23_datadir;
-    snprintf(db_path, 1024, "%s/node.db", c23_datadir);
-    args->db_path = db_path;
-
-    if (pthread_create(thread_out, NULL, build_tx_index_thread, args) != 0) {
-        free(db_path);
-        free(args);
+    if (snprintf(job->args.db_path, sizeof(job->args.db_path),
+                 "%s/node.db", c23_datadir) >=
+        (int)sizeof(job->args.db_path)) {
         return false;
     }
+    job->args.datadir = c23_datadir;
+    job->result = -1;
+    if (pthread_create(&job->thread, NULL, build_tx_index_thread, job) != 0) {
+        return false;
+    }
+    job->started = true;
     return true;
+}
+
+bool snapshot_tx_index_job_join(struct snapshot_tx_index_job *job,
+                                int *result_out)
+{
+    int join_rc;
+
+    if (!job || !job->started)
+        return false;
+
+    join_rc = pthread_join(job->thread, NULL);
+    if (join_rc != 0)
+        return false;
+
+    job->started = false;
+    if (result_out)
+        *result_out = job->result;
+    return true;
+}
+
+bool snapshot_tx_index_job_is_started(const struct snapshot_tx_index_job *job)
+{
+    return job && job->started;
 }
