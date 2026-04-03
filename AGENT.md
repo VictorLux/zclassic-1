@@ -122,6 +122,9 @@ DB-mutating service helpers now also obey the worker boundary:
   unchecked `system("cp ...")`; it now uses checked repo-native copy helpers,
   and `dir_copy()` now returns failure on partial file-copy errors instead of
   printing warnings while reporting success
+- the legacy fast-import copy path in `boot.c` now obeys those checked copy
+  contracts too: partial block/index/chainstate copy failure aborts boot
+  import instead of continuing into a mixed runtime state
 - boot service thread start/join paths for payment, replay, snapshot offer,
   address backfill, and tx-index are now consolidated behind shared helper
   functions so lifecycle handling stays consistent and DRY

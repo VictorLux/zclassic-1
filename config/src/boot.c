@@ -583,6 +583,12 @@ bool app_init(struct app_context *ctx)
         fflush(stdout);
         block_files_clean(dst);
         int copied = block_files_copy(src, dst);
+        if (copied <= 0) {
+            fprintf(stderr, " failed\n");
+            fprintf(stderr, "legacy import: failed to copy block files from %s to %s\n",
+                    src, dst);
+            return false;
+        }
         printf(" %d files copied\n", copied);
 
         /* Block index: byte copy (each node needs its own LevelDB lock) */
@@ -590,7 +596,12 @@ bool app_init(struct app_context *ctx)
         snprintf(src, sizeof(src), "%s/blocks/index", ctx->legacy_import_dir);
         printf("  [2/3] Block index...");
         fflush(stdout);
-        dir_copy(src, dst);
+        if (!dir_copy(src, dst)) {
+            fprintf(stderr, " failed\n");
+            fprintf(stderr, "legacy import: failed to copy block index from %s to %s\n",
+                    src, dst);
+            return false;
+        }
         printf(" done\n");
 
         /* Chainstate: byte copy (each node needs its own LevelDB lock) */
@@ -598,7 +609,12 @@ bool app_init(struct app_context *ctx)
         snprintf(src, sizeof(src), "%s/chainstate", ctx->legacy_import_dir);
         printf("  [3/3] Chainstate...");
         fflush(stdout);
-        dir_copy(src, dst);
+        if (!dir_copy(src, dst)) {
+            fprintf(stderr, " failed\n");
+            fprintf(stderr, "legacy import: failed to copy chainstate from %s to %s\n",
+                    src, dst);
+            return false;
+        }
         printf(" done\n");
 
         /* Copy block_index.bin flat file if available.
