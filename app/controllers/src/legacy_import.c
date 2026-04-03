@@ -640,6 +640,10 @@ int legacy_import(const char *legacy_datadir,
                   struct wallet *w,
                   bool sapling_scan)
 {
+    int ret = -1;
+    struct filter_file_ctx *fctxs = NULL;
+    struct decrypt_file_ctx *dctxs = NULL;
+
     if (!legacy_datadir || !ndb || !ndb->open || !w) return -1;
 
     struct timespec ts_start, ts_p1, ts_p2, ts_p3;
@@ -684,12 +688,21 @@ int legacy_import(const char *legacy_datadir,
         if (n > batch) n = batch;
         struct scan_thread_arg args[8];
         pthread_t threads[8];
+        int started = 0;
         for (int i = 0; i < n; i++) {
             args[i].datadir = legacy_datadir;
             args[i].file_num = base + i;
             args[i].ht = &aht;
             args[i].result = false;
-            pthread_create(&threads[i], NULL, scan_file_thread, &args[i]);
+            if (pthread_create(&threads[i], NULL,
+                               scan_file_thread, &args[i]) != 0) {
+                fprintf(stderr,
+                        "legacy_import: failed to start pass-1 scan thread\n");
+                for (int j = 0; j < started; j++)
+                    pthread_join(threads[j], NULL);
+                goto cleanup;
+            }
+            started++;
         }
         for (int i = 0; i < n; i++) {
             pthread_join(threads[i], NULL);
@@ -811,17 +824,30 @@ int legacy_import(const char *legacy_datadir,
                "(%d files, 8 threads)...\n", num_files);
         fflush(stdout);
 
-        struct filter_file_ctx *fctxs = calloc((size_t)num_files,
-                                                sizeof(struct filter_file_ctx));
+        fctxs = calloc((size_t)num_files, sizeof(struct filter_file_ctx));
+        if (!fctxs) {
+            fprintf(stderr,
+                    "legacy_import: failed to allocate sapling filter contexts\n");
+            goto cleanup;
+        }
         for (int base = 0; base < num_files; base += batch) {
             int n = num_files - base;
             if (n > batch) n = batch;
             pthread_t thr[8];
+            int started = 0;
             for (int i = 0; i < n; i++) {
                 fctxs[base + i].datadir = legacy_datadir;
                 fctxs[base + i].file_num = base + i;
-                pthread_create(&thr[i], NULL,
-                               sapling_filter_thread, &fctxs[base + i]);
+                if (pthread_create(&thr[i], NULL,
+                                   sapling_filter_thread,
+                                   &fctxs[base + i]) != 0) {
+                    fprintf(stderr,
+                            "legacy_import: failed to start sapling filter thread\n");
+                    for (int j = 0; j < started; j++)
+                        pthread_join(thr[j], NULL);
+                    goto cleanup;
+                }
+                started++;
             }
             for (int i = 0; i < n; i++)
                 pthread_join(thr[i], NULL);
@@ -854,8 +880,12 @@ int legacy_import(const char *legacy_datadir,
                total_candidates, w->sapling_keys.num_keys);
         fflush(stdout);
 
-        struct decrypt_file_ctx *dctxs = calloc((size_t)num_files,
-                                                 sizeof(struct decrypt_file_ctx));
+        dctxs = calloc((size_t)num_files, sizeof(struct decrypt_file_ctx));
+        if (!dctxs) {
+            fprintf(stderr,
+                    "legacy_import: failed to allocate sapling decrypt contexts\n");
+            goto cleanup;
+        }
         for (int f = 0; f < num_files; f++) {
             dctxs[f].datadir = legacy_datadir;
             dctxs[f].hits = fctxs[f].hits;
@@ -865,6 +895,11 @@ int legacy_import(const char *legacy_datadir,
             dctxs[f].tw.sapling_keys = w->sapling_keys;
             dctxs[f].result_cap = 64;
             dctxs[f].results = malloc(64 * sizeof(struct db_sapling_note));
+            if (!dctxs[f].results) {
+                fprintf(stderr,
+                        "legacy_import: failed to allocate sapling decrypt results\n");
+                goto cleanup;
+            }
         }
 
         pthread_t thr3[8];
@@ -874,8 +909,16 @@ int legacy_import(const char *legacy_datadir,
             int launched = 0;
             for (int i = 0; i < n; i++) {
                 if (dctxs[base + i].count == 0) continue;
-                pthread_create(&thr3[launched++], NULL,
-                               decrypt_thread, &dctxs[base + i]);
+                if (pthread_create(&thr3[launched], NULL,
+                                   decrypt_thread,
+                                   &dctxs[base + i]) != 0) {
+                    fprintf(stderr,
+                            "legacy_import: failed to start sapling decrypt thread\n");
+                    for (int j = 0; j < launched; j++)
+                        pthread_join(thr3[j], NULL);
+                    goto cleanup;
+                }
+                launched++;
             }
             for (int i = 0; i < launched; i++)
                 pthread_join(thr3[i], NULL);
@@ -907,7 +950,9 @@ int legacy_import(const char *legacy_datadir,
         fflush(stdout);
 
         free(dctxs);
+        dctxs = NULL;
         free(fctxs);
+        fctxs = NULL;
     }
 
     /* Sync wallet keys to SQLite. */
@@ -931,11 +976,27 @@ int legacy_import(const char *legacy_datadir,
     printf("  total:       %.8f ZCL\n", (double)total / 1e8);
     fflush(stdout);
 
+    ret = wl.count;
+
+cleanup:
+    if (dctxs) {
+        for (int f = 0; f < num_files; f++) {
+            free(dctxs[f].results);
+            free(dctxs[f].tw.sapling_notes);
+        }
+        free(dctxs);
+    }
+    if (fctxs) {
+        for (int f = 0; f < num_files; f++)
+            free(fctxs[f].hits);
+        free(fctxs);
+    }
+
     /* Cleanup. */
     aht_free(&aht);
     uset_free(&uset);
     wl_free(&wl);
     free(file_has_match);
 
-    return wl.count;
+    return ret;
 }

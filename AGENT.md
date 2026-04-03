@@ -147,6 +147,9 @@ DB-mutating service helpers now also obey the worker boundary:
 - explorer prewarm and background cache builders now use the same checked
   detached-thread startup pattern with atomic gating, so concurrent requests
   cannot double-launch stats/hodl/tokens/factoids workers
+- legacy wallet import now fails closed on local worker startup errors in its
+  pass-1 scan and sapling filter/decrypt batches, with explicit join/cleanup
+  instead of assuming every helper thread launched
 - startup SQLite catchup is now owned as an explicit `sync_controller`
   catchup job object instead of boot carrying a raw pthread plus argument bag
 - snapshot import now fails cleanly on partial thread-start failure instead of
