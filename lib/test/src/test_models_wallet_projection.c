@@ -34,10 +34,16 @@ int test_model_wallet_projection(void)
             memset(blk.hash, 0x01, 32);
             memset(blk.prev_hash, 0x0b, 32);
             memset(blk.merkle_root, 0x0c, 32);
+            memset(blk.chain_work, 0x0d, 32);
             blk.height = 25;
             blk.time = 12345;
             blk.bits = 0x1d00ffffU;
             blk.status = 3;
+            {
+                static uint8_t blk_solution[] = {0x01, 0x02};
+                blk.solution = blk_solution;
+                blk.solution_len = sizeof(blk_solution);
+            }
             ok = db_block_save(&ndb, &blk);
 
             memset(utxo.txid, 0x02, 32);
@@ -67,6 +73,269 @@ int test_model_wallet_projection(void)
             ok = ok && (summary.transparent_balance == 5000);
             ok = ok && (summary.shielded_balance == 7000);
             ok = ok && (summary.speed_balance == 5000);
+            node_db_close(&ndb);
+        }
+
+        char cmd[384];
+        snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
+        system(cmd);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("Wallet raw tx projection lists recent serialized rows... ");
+    {
+        char dbdir[256];
+        char dbpath[320];
+        struct node_db ndb;
+        bool ok;
+        snprintf(dbdir, sizeof(dbdir),
+                 ".zcl_test_wallet_raw_projection_%d", (int)getpid());
+        mkdir(dbdir, 0755);
+        snprintf(dbpath, sizeof(dbpath), "%s/node.db", dbdir);
+        memset(&ndb, 0, sizeof(ndb));
+        ok = node_db_open(&ndb, dbpath);
+
+        if (ok) {
+            struct db_wallet_tx a;
+            struct db_wallet_tx b;
+            struct db_wallet_tx_raw_view rows[4];
+            memset(&a, 0, sizeof(a));
+            memset(&b, 0, sizeof(b));
+            memset(rows, 0, sizeof(rows));
+
+            memset(a.txid, 0x11, 32);
+            a.raw_tx = (uint8_t *)"\x01\x02\x03";
+            a.raw_tx_len = 3;
+            a.block_height = 10;
+            a.has_block = true;
+            memset(a.block_hash, 0x21, 32);
+            a.time_received = 100;
+            ok = db_wallet_tx_save(&ndb, &a);
+
+            memset(b.txid, 0x12, 32);
+            b.raw_tx = (uint8_t *)"\xaa\xbb\xcc\xdd";
+            b.raw_tx_len = 4;
+            b.block_height = 25;
+            b.has_block = true;
+            memset(b.block_hash, 0x22, 32);
+            b.time_received = 200;
+            ok = ok && db_wallet_tx_save(&ndb, &b);
+
+            if (ok) {
+                int count = db_wallet_tx_recent_raw(&ndb, rows, 4);
+                ok = (count == 2);
+                ok = ok && rows[0].raw_tx && rows[0].raw_tx_len == 4;
+                ok = ok && rows[0].block_height == 25;
+                ok = ok && rows[1].raw_tx && rows[1].raw_tx_len == 3;
+                ok = ok && rows[1].block_height == 10;
+            }
+
+            for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++)
+                db_wallet_tx_raw_view_free(&rows[i]);
+            node_db_close(&ndb);
+        }
+
+        char cmd[384];
+        snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
+        system(cmd);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("Sapling note payment projections summarize by address and amount... ");
+    {
+        char dbdir[256];
+        char dbpath[320];
+        struct node_db ndb;
+        bool ok;
+        snprintf(dbdir, sizeof(dbdir),
+                 ".zcl_test_sapling_payment_projection_%d", (int)getpid());
+        mkdir(dbdir, 0755);
+        snprintf(dbpath, sizeof(dbpath), "%s/node.db", dbdir);
+        memset(&ndb, 0, sizeof(ndb));
+        ok = node_db_open(&ndb, dbpath);
+
+        if (ok) {
+            struct db_sapling_note a;
+            struct db_sapling_note b;
+            struct db_sapling_note c;
+            memset(&a, 0, sizeof(a));
+            memset(&b, 0, sizeof(b));
+            memset(&c, 0, sizeof(c));
+
+            memset(a.txid, 0x31, 32);
+            memset(a.rcm, 0x32, 32);
+            memset(a.ivk, 0x33, 32);
+            memset(a.diversifier, 0x34, 11);
+            memset(a.pk_d, 0x35, 32);
+            memset(a.cm, 0x36, 32);
+            memset(a.nullifier, 0x37, 32);
+            a.value = 5000;
+            a.block_height = 11;
+            snprintf(a.address, sizeof(a.address), "%s", "zs1alpha");
+            ok = db_sapling_note_save(&ndb, &a);
+
+            memset(b.txid, 0x41, 32);
+            memset(b.rcm, 0x42, 32);
+            memset(b.ivk, 0x43, 32);
+            memset(b.diversifier, 0x44, 11);
+            memset(b.pk_d, 0x45, 32);
+            memset(b.cm, 0x46, 32);
+            memset(b.nullifier, 0x47, 32);
+            b.value = 5000;
+            b.block_height = 12;
+            snprintf(b.address, sizeof(b.address), "%s", "zs1alpha");
+            ok = ok && db_sapling_note_save(&ndb, &b);
+
+            memset(c.txid, 0x51, 32);
+            memset(c.rcm, 0x52, 32);
+            memset(c.ivk, 0x53, 32);
+            memset(c.diversifier, 0x54, 11);
+            memset(c.pk_d, 0x55, 32);
+            memset(c.cm, 0x56, 32);
+            memset(c.nullifier, 0x57, 32);
+            c.value = 7000;
+            c.block_height = 13;
+            snprintf(c.address, sizeof(c.address), "%s", "zs1beta");
+            ok = ok && db_sapling_note_save(&ndb, &c);
+
+            ok = ok && (db_sapling_note_balance_for_address(&ndb, "zs1alpha") == 10000);
+            ok = ok && (db_sapling_note_balance_for_address(&ndb, "zs1beta") == 7000);
+            ok = ok && (db_sapling_note_balance_for_exact_value(&ndb, 5000) == 10000);
+            ok = ok && (db_sapling_note_balance_for_exact_value(&ndb, 7000) == 7000);
+            ok = ok && (db_sapling_note_balance_for_exact_value(&ndb, 1234) == 0);
+            node_db_close(&ndb);
+        }
+
+        char cmd[384];
+        snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
+        system(cmd);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("Wallet projection bulk replace and tx height backfill stay model-owned... ");
+    {
+        char dbdir[256];
+        char dbpath[320];
+        struct node_db ndb;
+        bool ok;
+        snprintf(dbdir, sizeof(dbdir),
+                 ".zcl_test_wallet_projection_bulk_%d", (int)getpid());
+        mkdir(dbdir, 0755);
+        snprintf(dbpath, sizeof(dbpath), "%s/node.db", dbdir);
+        memset(&ndb, 0, sizeof(ndb));
+        ok = node_db_open(&ndb, dbpath);
+
+        if (ok) {
+            struct db_wallet_utxo utxos[2];
+            struct db_sapling_note notes[2];
+            struct db_wallet_tx tx;
+            struct db_wallet_txid_ref refs[4];
+            memset(utxos, 0, sizeof(utxos));
+            memset(notes, 0, sizeof(notes));
+            memset(&tx, 0, sizeof(tx));
+            memset(refs, 0, sizeof(refs));
+
+            memset(utxos[0].txid, 0x61, 32);
+            memset(utxos[0].address_hash, 0x62, 20);
+            utxos[0].value = 1111;
+            utxos[0].height = 9;
+            utxos[0].script = (uint8_t *)"\x51";
+            utxos[0].script_len = 1;
+
+            memset(utxos[1].txid, 0x63, 32);
+            memset(utxos[1].address_hash, 0x64, 20);
+            utxos[1].value = 2222;
+            utxos[1].height = 10;
+            utxos[1].script = (uint8_t *)"\x52";
+            utxos[1].script_len = 1;
+
+            memset(notes[0].txid, 0x71, 32);
+            memset(notes[0].rcm, 0x72, 32);
+            memset(notes[0].ivk, 0x73, 32);
+            memset(notes[0].diversifier, 0x74, 11);
+            memset(notes[0].pk_d, 0x75, 32);
+            memset(notes[0].cm, 0x76, 32);
+            memset(notes[0].nullifier, 0x77, 32);
+            notes[0].value = 3333;
+            notes[0].block_height = 12;
+            snprintf(notes[0].address, sizeof(notes[0].address), "%s", "zs1bulk");
+
+            memset(notes[1].txid, 0x78, 32);
+            memset(notes[1].rcm, 0x79, 32);
+            memset(notes[1].ivk, 0x7a, 32);
+            memset(notes[1].diversifier, 0x7b, 11);
+            memset(notes[1].pk_d, 0x7c, 32);
+            memset(notes[1].cm, 0x7d, 32);
+            memset(notes[1].nullifier, 0x7e, 32);
+            notes[1].value = 4444;
+            notes[1].block_height = 13;
+            snprintf(notes[1].address, sizeof(notes[1].address), "%s", "zs1bulk");
+
+            ok = db_wallet_utxo_replace_all(&ndb, utxos, 2);
+            ok = ok && db_sapling_note_replace_all(&ndb, notes, 2);
+            ok = ok && (db_wallet_utxo_balance_with_count(&ndb, NULL) == 3333);
+            ok = ok && (db_sapling_note_balance_for_address(&ndb, "zs1bulk") == 7777);
+
+            memset(tx.txid, 0x81, 32);
+            tx.raw_tx = (uint8_t *)"\xaa\xbb";
+            tx.raw_tx_len = 2;
+            tx.time_received = 123;
+            ok = ok && db_wallet_tx_save(&ndb, &tx);
+            if (ok) {
+                int count = db_wallet_tx_list_unconfirmed(&ndb, refs, 4);
+                ok = (count == 1);
+                ok = ok && memcmp(refs[0].txid, tx.txid, 32) == 0;
+                ok = ok && db_wallet_tx_update_block_height(&ndb, tx.txid, 99);
+                count = db_wallet_tx_list_unconfirmed(&ndb, refs, 4);
+                ok = ok && (count == 0);
+            }
+            node_db_close(&ndb);
+        }
+
+        char cmd[384];
+        snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
+        system(cmd);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("Tx index bulk-load lifecycle stays model-owned... ");
+    {
+        char dbdir[256];
+        char dbpath[320];
+        struct node_db ndb;
+        bool ok;
+        snprintf(dbdir, sizeof(dbdir),
+                 ".zcl_test_tx_index_bulk_%d", (int)getpid());
+        mkdir(dbdir, 0755);
+        snprintf(dbpath, sizeof(dbpath), "%s/node.db", dbdir);
+        memset(&ndb, 0, sizeof(ndb));
+        ok = node_db_open(&ndb, dbpath);
+
+        if (ok) {
+            struct db_tx_index tx;
+            struct db_tx_index found;
+            memset(&tx, 0, sizeof(tx));
+            memset(&found, 0, sizeof(found));
+
+            ok = db_tx_prepare_bulk_load(&ndb);
+            memset(tx.txid, 0x91, 32);
+            memset(tx.block_hash, 0x92, 32);
+            tx.block_height = 21;
+            tx.tx_index = 0;
+            tx.file_num = 4;
+            tx.file_pos = 100;
+            tx.is_coinbase = true;
+            ok = ok && db_tx_save(&ndb, &tx);
+            ok = ok && db_tx_count(&ndb) == 1;
+            ok = ok && db_tx_finalize_bulk_load(&ndb);
+            ok = ok && db_tx_find(&ndb, tx.txid, &found);
+            ok = ok && (found.block_height == 21);
+            ok = ok && db_tx_delete_all(&ndb);
+            ok = ok && (db_tx_count(&ndb) == 0);
             node_db_close(&ndb);
         }
 

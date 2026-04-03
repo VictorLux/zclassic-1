@@ -3,6 +3,68 @@
 #include "controllers/wallet_view_internal.h"
 #include "controllers/wallet_controller.h"
 
+enum history_filter_mode {
+    HISTORY_FILTER_ALL = 0,
+    HISTORY_FILTER_SENT = 1,
+    HISTORY_FILTER_RECV = 2,
+};
+
+static enum history_filter_mode history_filter_parse(const char *filter)
+{
+    if (filter && strcmp(filter, "sent") == 0)
+        return HISTORY_FILTER_SENT;
+    if (filter && strcmp(filter, "recv") == 0)
+        return HISTORY_FILTER_RECV;
+    return HISTORY_FILTER_ALL;
+}
+
+static const char *history_filter_name(enum history_filter_mode mode)
+{
+    switch (mode) {
+    case HISTORY_FILTER_SENT: return "sent";
+    case HISTORY_FILTER_RECV: return "recv";
+    default: return "all";
+    }
+}
+
+static void history_bind_filter_params(sqlite3_stmt *s, int start_index,
+                                       enum history_filter_mode mode,
+                                       const char *search_hex)
+{
+    int restrict_mode = mode == HISTORY_FILTER_ALL ? 0 : 1;
+    int from_me = mode == HISTORY_FILTER_SENT ? 1 : 0;
+    const char *search = (search_hex && search_hex[0]) ? search_hex : "";
+
+    sqlite3_bind_int(s, start_index + 0, restrict_mode);
+    sqlite3_bind_int(s, start_index + 1, from_me);
+    sqlite3_bind_text(s, start_index + 2, search, -1, SQLITE_STATIC);
+}
+
+static int history_query_count(sqlite3 *db, enum history_filter_mode mode,
+                               const char *search_hex)
+{
+    static const char *sql =
+        "SELECT count(*) FROM wallet_transactions wt "
+        "WHERE (?1 = 0 OR wt.from_me = ?2) "
+        "AND (wt.from_me = 1 OR EXISTS ("
+        "  SELECT 1 FROM wallet_utxos wu "
+        "  WHERE wu.txid = wt.txid AND wu.value > 0"
+        ")) "
+        "AND (?3 = '' OR hex(wt.txid) LIKE '%' || ?3 || '%')";
+    sqlite3_stmt *s = NULL;
+    int count = 0;
+
+    if (!db)
+        return 0;
+    if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) != SQLITE_OK || !s)
+        return 0;
+    history_bind_filter_params(s, 1, mode, search_hex);
+    if (sqlite3_step(s) == SQLITE_ROW)
+        count = sqlite3_column_int(s, 0);
+    sqlite3_finalize(s);
+    return count;
+}
+
 /* ── History (/wallet/history) ──────────────────────────────── */
 
 size_t serve_history(uint8_t *r, size_t max, int page,
@@ -21,15 +83,9 @@ size_t serve_history(uint8_t *r, size_t max, int page,
 
     size_t off = wv_emit_header(r, max, "History — ZClassic23", "/wallet/history");
 
-    /* Filter: all, sent, received — always use WHERE 1=1 base */
-    const char *filter_clause = "";
-    if (filter && strcmp(filter, "sent") == 0)
-        filter_clause = " AND wt.from_me = 1";
-    else if (filter && strcmp(filter, "recv") == 0)
-        filter_clause = " AND wt.from_me = 0";
+    enum history_filter_mode filter_mode = history_filter_parse(filter);
 
     /* Search by txid prefix */
-    char search_clause[256] = "";
     char safe_search[65] = "";
     if (search && search[0]) {
         size_t si = 0;
@@ -40,39 +96,18 @@ size_t serve_history(uint8_t *r, size_t max, int page,
                 safe_search[si++] = c;
         }
         safe_search[si] = '\0';
-        if (safe_search[0])
-            snprintf(search_clause, sizeof(search_clause),
-                " AND hex(wt.txid) LIKE '%%%s%%'", safe_search);
     }
 
-    /* Exclude ghost/zero-value entries:
-     * - Must have block, UTXOs, or be a send (no orphans)
-     * - Received entries must have wallet_utxo value > 0 (no zero-value notes) */
-    const char *ghost_filter =
-        " AND (wt.from_me = 1 OR EXISTS "
-        "(SELECT 1 FROM wallet_utxos wu WHERE wu.txid = wt.txid AND wu.value > 0))";
-    char count_sql[1024];
-    snprintf(count_sql, sizeof(count_sql),
-        "SELECT count(*) FROM wallet_transactions wt"
-        " WHERE 1=1%s%s%s",
-        filter_clause, ghost_filter, search_clause);
-    int tx_count = wv_query_int(db, count_sql);
+    int tx_count = history_query_count(db, filter_mode, safe_search);
 
     int total_pages = (tx_count + per_page - 1) / per_page;
     if (page >= total_pages && total_pages > 0) page = total_pages - 1;
 
     /* Filter tabs with counts */
-    const char *f = filter ? filter : "all";
-    char all_sql[512], sent_sql[512], recv_sql[512];
-    snprintf(all_sql, sizeof(all_sql),
-        "SELECT count(*) FROM wallet_transactions wt WHERE 1=1%s", ghost_filter);
-    snprintf(sent_sql, sizeof(sent_sql),
-        "SELECT count(*) FROM wallet_transactions wt WHERE wt.from_me=1%s", ghost_filter);
-    snprintf(recv_sql, sizeof(recv_sql),
-        "SELECT count(*) FROM wallet_transactions wt WHERE wt.from_me=0%s", ghost_filter);
-    int c_all = wv_query_int(db, all_sql);
-    int c_sent = wv_query_int(db, sent_sql);
-    int c_recv = wv_query_int(db, recv_sql);
+    const char *f = history_filter_name(filter_mode);
+    int c_all = history_query_count(db, HISTORY_FILTER_ALL, NULL);
+    int c_sent = history_query_count(db, HISTORY_FILTER_SENT, NULL);
+    int c_recv = history_query_count(db, HISTORY_FILTER_RECV, NULL);
     {
         char ca[16], cs[16], cr[16], cnt[16], pg[16], pgs[16];
         snprintf(ca, sizeof(ca), "%d", c_all);
@@ -104,8 +139,7 @@ size_t serve_history(uint8_t *r, size_t max, int page,
      * Use from_me to determine send vs receive.
      * Compute net value from wallet UTXOs for this txid. */
     sqlite3_stmt *s = NULL;
-    char history_sql[1024];
-    snprintf(history_sql, sizeof(history_sql),
+    static const char *history_sql =
         "SELECT hex(wt.txid), "
         /* Use UTXO height as fallback when wallet_transactions.block_height=0 */
         "COALESCE(NULLIF(wt.block_height,0),"
@@ -131,12 +165,17 @@ size_t serve_history(uint8_t *r, size_t max, int page,
         "LEFT JOIN blocks b ON COALESCE(NULLIF(wt.block_height,0),"
         "  (SELECT MAX(wu0c.height) FROM wallet_utxos wu0c WHERE wu0c.txid = wt.txid)) "
         "  = b.height "
-        "WHERE 1=1%s%s%s"
-        "ORDER BY ht DESC LIMIT ? OFFSET ?",
-        filter_clause, ghost_filter, search_clause);
+        "WHERE (?1 = 0 OR wt.from_me = ?2) "
+        "AND (wt.from_me = 1 OR EXISTS ("
+        "  SELECT 1 FROM wallet_utxos wu "
+        "  WHERE wu.txid = wt.txid AND wu.value > 0"
+        ")) "
+        "AND (?3 = '' OR hex(wt.txid) LIKE '%' || ?3 || '%') "
+        "ORDER BY ht DESC LIMIT ?4 OFFSET ?5";
     if (sqlite3_prepare_v2(db, history_sql, -1, &s, NULL) == SQLITE_OK) {
-        sqlite3_bind_int(s, 1, per_page);
-        sqlite3_bind_int(s, 2, page * per_page);
+        history_bind_filter_params(s, 1, filter_mode, safe_search);
+        sqlite3_bind_int(s, 4, per_page);
+        sqlite3_bind_int(s, 5, page * per_page);
         while (sqlite3_step(s) == SQLITE_ROW && off + 600 < max) {
             const char *txid = (const char *)sqlite3_column_text(s, 0);
             int h = sqlite3_column_int(s, 1);
@@ -391,15 +430,15 @@ size_t serve_tx_detail(uint8_t *r, size_t max, const char *txid_hex) {
     int64_t fee = 0, btime = 0;
 
     sqlite3_stmt *s = NULL;
-    char sql[512];
-    snprintf(sql, sizeof(sql),
+    const char *tx_lookup_sql =
         "SELECT wt.block_height, wt.from_me, wt.fee, "
         "COALESCE(b.time, 0) "
         "FROM wallet_transactions wt "
         "LEFT JOIN blocks b ON wt.block_height = b.height "
-        "WHERE hex(wt.txid) = '%s'", upper_txid);
+        "WHERE hex(wt.txid) = ?";
     bool found = false;
-    if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK) {
+    if (sqlite3_prepare_v2(db, tx_lookup_sql, -1, &s, NULL) == SQLITE_OK) {
+        sqlite3_bind_text(s, 1, upper_txid, -1, SQLITE_STATIC);
         if (sqlite3_step(s) == SQLITE_ROW) {
             block_height = sqlite3_column_int(s, 0);
             from_me = sqlite3_column_int(s, 1);
@@ -443,11 +482,12 @@ size_t serve_tx_detail(uint8_t *r, size_t max, const char *txid_hex) {
     char outputs_section[4096];
     size_t os = 0;
     s = NULL;
-    snprintf(sql, sizeof(sql),
-        "SELECT vout, value, hex(address_hash) "
-        "FROM wallet_utxos WHERE hex(txid) = '%s' "
-        "ORDER BY vout", upper_txid);
-    if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK) {
+    if (sqlite3_prepare_v2(db,
+            "SELECT vout, value, hex(address_hash) "
+            "FROM wallet_utxos WHERE hex(txid) = ? "
+            "ORDER BY vout",
+            -1, &s, NULL) == SQLITE_OK) {
+        sqlite3_bind_text(s, 1, upper_txid, -1, SQLITE_STATIC);
         bool header_shown = false;
         while (sqlite3_step(s) == SQLITE_ROW && os + 300 < sizeof(outputs_section)) {
             if (!header_shown) {

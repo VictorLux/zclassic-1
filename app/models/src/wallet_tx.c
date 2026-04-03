@@ -434,7 +434,7 @@ int db_wallet_tx_list_unconfirmed(struct node_db *ndb,
         return 0;
     AR_QUERY_LIST(ndb, s,
         "SELECT txid FROM wallet_transactions "
-        "WHERE block_height = 0 "
+        "WHERE block_height IS NULL OR block_height = 0 "
         "ORDER BY time_received DESC, txid DESC "
         "LIMIT ?",
         out, max,

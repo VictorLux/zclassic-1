@@ -64,6 +64,7 @@ int main(void)
     failures += test_node_health_service();
     failures += test_sync_service();
     failures += test_snapshot_sync_service();
+    failures += test_file_controller();
 
     /* Spec-based user story tests */
     failures += spec_wallet_dashboard();

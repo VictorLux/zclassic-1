@@ -3,11 +3,11 @@
 
 #include "services/zslp_payment_service.h"
 #include "services/zslp_service.h"
+#include "models/wallet_tx.h"
 #include "chain/chainparams.h"
 #include "sapling/constants.h"
 #include "sapling/address.h"
 #include "wallet/wallet.h"
-#include <sqlite3.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -40,37 +40,24 @@ int64_t zslp_payment_check_received(const char *datadir,
                                     const char *z_addr,
                                     int64_t min_amount)
 {
-    sqlite3 *db = NULL;
-    bool owns_db = false;
+    struct node_db ndb;
+    char db_path[1024];
     int64_t received = 0;
-    sqlite3_stmt *s = NULL;
 
     if (!datadir || !z_addr)
         return 0;
-    if (!zslp_service_open_db(datadir, &db, &owns_db))
+
+    memset(&ndb, 0, sizeof(ndb));
+    snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
+    if (!node_db_open(&ndb, db_path))
         return 0;
 
-    sqlite3_prepare_v2(db,
-        "SELECT COALESCE(SUM(value), 0) FROM wallet_sapling_notes "
-        "WHERE spent_txid IS NULL AND address = ?",
-        -1, &s, NULL);
-    sqlite3_bind_text(s, 1, z_addr, -1, SQLITE_STATIC);
-    if (sqlite3_step(s) == SQLITE_ROW)
-        received = sqlite3_column_int64(s, 0);
-    sqlite3_finalize(s);
+    received = db_sapling_note_balance_for_address(&ndb, z_addr);
 
     if (received < min_amount && min_amount > 0) {
-        s = NULL;
-        sqlite3_prepare_v2(db,
-            "SELECT COALESCE(SUM(value), 0) FROM wallet_sapling_notes "
-            "WHERE spent_txid IS NULL AND value = ?",
-            -1, &s, NULL);
-        sqlite3_bind_int64(s, 1, min_amount);
-        if (sqlite3_step(s) == SQLITE_ROW)
-            received = sqlite3_column_int64(s, 0);
-        sqlite3_finalize(s);
+        received = db_sapling_note_balance_for_exact_value(&ndb, min_amount);
     }
 
-    zslp_service_close_db(db, owns_db);
+    node_db_close(&ndb);
     return received;
 }

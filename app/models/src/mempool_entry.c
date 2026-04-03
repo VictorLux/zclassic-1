@@ -47,8 +47,7 @@ bool db_mempool_save(struct node_db *ndb, const struct db_mempool_entry *e)
         ((struct db_mempool_entry *)e)->time_added = (int64_t)time(NULL);
 
     struct ar_callbacks *cbs = db_mempool_callbacks();
-    AR_VALIDATE_RECORD(cbs, "mempool_entry", e, db_mempool_validate);
-    if (!ar_run_before_save(cbs, (void *)e)) return false;
+    AR_BEGIN_SAVE(cbs, "mempool_entry", e, db_mempool_validate);
 
     sqlite3_stmt *s = NULL;
     sqlite3_prepare_v2(ndb->db,
@@ -66,9 +65,7 @@ bool db_mempool_save(struct node_db *ndb, const struct db_mempool_entry *e)
     AR_BIND_INT(s, 7, e->spends_coinbase ? 1 : 0);
     bool ok = AR_STEP_DONE(s);
     AR_FINALIZE(s);
-
-    if (ok) ar_run_after_save(cbs, (void *)e);
-    return ok;
+    AR_FINISH_SAVE(cbs, e, ok);
 }
 
 /* ── Find ─────────────────────────────────────────────────────── */
@@ -122,19 +119,11 @@ bool db_mempool_delete(struct node_db *ndb, const uint8_t txid[32])
     struct db_mempool_entry e;
     memset(&e, 0, sizeof(e));
     memcpy(e.txid, txid, 32);
-    if (!ar_run_before_destroy(cbs, &e)) return false;
 
     db_mempool_remove_spends(ndb, txid);
     sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(ndb->db,
-        "DELETE FROM mempool WHERE txid=?", -1, &s, NULL);
-    if (!s) return false;
-    AR_BIND_BLOB(s, 1, txid, 32);
-    bool ok = AR_STEP_DONE(s);
-    AR_FINALIZE(s);
-
-    if (ok) ar_run_after_destroy(cbs, &e);
-    return ok;
+    AR_ADHOC_DESTROY(ndb, s, "DELETE FROM mempool WHERE txid=?",
+        cbs, &e, AR_BIND_BLOB(s, 1, txid, 32));
 }
 
 /* ── Count / Aggregate ────────────────────────────────────────── */
@@ -142,27 +131,13 @@ bool db_mempool_delete(struct node_db *ndb, const uint8_t txid[32])
 int db_mempool_count(struct node_db *ndb)
 {
     if (!ndb->open) return 0;
-    sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(ndb->db,
-        "SELECT COUNT(*) FROM mempool", -1, &s, NULL);
-    int c = 0;
-    if (s && AR_STEP_ROW(s))
-        c = (int)AR_COL_INT(s, 0);
-    AR_FINALIZE(s);
-    return c;
+    AR_QUERY_COUNT_SQL(ndb, "SELECT COUNT(*) FROM mempool");
 }
 
 int64_t db_mempool_total_size(struct node_db *ndb)
 {
     if (!ndb->open) return 0;
-    sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(ndb->db,
-        "SELECT COALESCE(SUM(size),0) FROM mempool", -1, &s, NULL);
-    int64_t sz = 0;
-    if (s && AR_STEP_ROW(s))
-        sz = AR_COL_INT(s, 0);
-    AR_FINALIZE(s);
-    return sz;
+    AR_QUERY_INT64_SQL(ndb, "SELECT COALESCE(SUM(size),0) FROM mempool");
 }
 
 bool db_mempool_clear(struct node_db *ndb)

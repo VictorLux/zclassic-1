@@ -29,6 +29,9 @@ bool db_tx_find(struct node_db *ndb, const uint8_t txid[32],
                 struct db_tx_index *out);
 bool db_tx_delete(struct node_db *ndb, const uint8_t txid[32]);
 int db_tx_count(struct node_db *ndb);
+bool db_tx_delete_all(struct node_db *ndb);
+bool db_tx_prepare_bulk_load(struct node_db *ndb);
+bool db_tx_finalize_bulk_load(struct node_db *ndb);
 
 /* Batch insert for block connect. Call within begin/commit. */
 bool db_tx_save_batch(struct node_db *ndb, const struct db_tx_index *txs,

@@ -91,8 +91,7 @@ bool db_utxo_save(struct node_db *ndb, const struct db_utxo *u)
     if (!ndb->open) return false;
 
     struct ar_callbacks *cbs = db_utxo_callbacks();
-    AR_VALIDATE_RECORD(cbs, "utxo", u, db_utxo_validate);
-    if (!ar_run_before_save(cbs, (void *)u)) return false;
+    AR_BEGIN_SAVE(cbs, "utxo", u, db_utxo_validate);
 
     sqlite3_stmt *s = ndb->stmt_utxo_insert;
     sqlite3_reset(s);
@@ -194,16 +193,10 @@ bool db_utxo_delete(struct node_db *ndb, const uint8_t txid[32], uint32_t vout)
     memset(&u, 0, sizeof(u));
     memcpy(u.txid, txid, 32);
     u.vout = vout;
-    if (!ar_run_before_destroy(cbs, &u)) return false;
-
     sqlite3_stmt *s = ndb->stmt_utxo_delete;
-    sqlite3_reset(s);
-    AR_BIND_BLOB(s, 1, txid, 32);
-    AR_BIND_INT(s, 2, (int)vout);
-
-    bool ok = AR_STEP_DONE(s);
-    if (ok) ar_run_after_destroy(cbs, &u);
-    return ok;
+    AR_CACHED_DESTROY(s, cbs, &u,
+        AR_BIND_BLOB(s, 1, txid, 32);
+        AR_BIND_INT(s, 2, (int)vout));
 }
 
 /* ── Queries ───────────────────────────────────────────────────── */
@@ -213,15 +206,9 @@ int64_t db_utxo_balance_for_address(struct node_db *ndb,
 {
     if (!ndb->open) return 0;
     sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(ndb->db,
+    AR_QUERY_INT64_BOUND(ndb, s,
         "SELECT COALESCE(SUM(value),0) FROM utxos WHERE address_hash=?",
-        -1, &s, NULL);
-    AR_BIND_BLOB(s, 1, address_hash, 20);
-    int64_t bal = 0;
-    if (AR_STEP_ROW(s))
-        bal = AR_COL_INT(s, 0);
-    AR_FINALIZE(s);
-    return bal;
+        AR_BIND_BLOB(s, 1, address_hash, 20));
 }
 
 int db_utxo_list_for_address(struct node_db *ndb,
@@ -230,14 +217,11 @@ int db_utxo_list_for_address(struct node_db *ndb,
 {
     if (!ndb->open) return 0;
     sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(ndb->db,
+    AR_QUERY_LIST(ndb, s,
         "SELECT txid,vout,value,script_type,height,is_coinbase"
         " FROM utxos WHERE address_hash=? ORDER BY height",
-        -1, &s, NULL);
-    AR_BIND_BLOB(s, 1, address_hash, 20);
-    int count = 0;
-    while (AR_STEP_ROW(s) && (size_t)count < max) {
-        memset(&out[count], 0, sizeof(out[count]));
+        out, max,
+        AR_BIND_BLOB(s, 1, address_hash, 20),
         AR_READ_BLOB(s, 0, out[count].txid, 32);
         out[count].vout = (uint32_t)AR_COL_INT(s, 1);
         out[count].value = AR_COL_INT(s, 2);
@@ -245,23 +229,14 @@ int db_utxo_list_for_address(struct node_db *ndb,
         memcpy(out[count].address_hash, address_hash, 20);
         out[count].has_address = true;
         out[count].height = (int)AR_COL_INT(s, 4);
-        out[count].is_coinbase = AR_COL_INT(s, 5) != 0;
-        count++;
-    }
-    AR_FINALIZE(s);
-    return count;
+        out[count].is_coinbase = AR_COL_INT(s, 5) != 0);
 }
 
 int64_t db_utxo_count(struct node_db *ndb)
 {
     if (!ndb->open) return 0;
     sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(ndb->db, "SELECT COUNT(*) FROM utxos", -1, &s, NULL);
-    int64_t c = 0;
-    if (AR_STEP_ROW(s))
-        c = AR_COL_INT(s, 0);
-    AR_FINALIZE(s);
-    return c;
+    AR_QUERY_INT64_BOUND(ndb, s, "SELECT COUNT(*) FROM utxos", (void)0);
 }
 
 void db_utxo_free(struct db_utxo *u)
@@ -279,11 +254,10 @@ int64_t db_utxo_each(struct node_db *ndb, db_utxo_each_fn fn, void *ctx)
     if (!ndb || !ndb->open || !fn) return 0;
 
     sqlite3_stmt *s = NULL;
-    if (sqlite3_prepare_v2(ndb->db,
-            "SELECT txid, vout, value, script, height, is_coinbase, "
-            "script_type, address_hash FROM utxos ORDER BY txid, vout",
-            -1, &s, NULL) != SQLITE_OK)
-        return 0;
+    AR_PREPARE_RET(ndb, s,
+        "SELECT txid, vout, value, script, height, is_coinbase, "
+        "script_type, address_hash FROM utxos ORDER BY txid, vout",
+        0);
 
     int64_t count = 0;
     while (sqlite3_step(s) == SQLITE_ROW) {
@@ -313,7 +287,7 @@ int64_t db_utxo_each(struct node_db *ndb, db_utxo_each_fn fn, void *ctx)
         count++;
         if (!fn(&u, ctx)) break;
     }
-    sqlite3_finalize(s);
+    AR_FINALIZE(s);
     return count;
 }
 

@@ -32,7 +32,7 @@ the right step.
 
 Rough status estimate:
 
-- overall architectural completion: ~50%
+- overall architectural completion: ~60%
 - RPC front door refactor: mostly done
 - DB ownership boundary: materially improved, not finished
 - observability: meaningfully improved
@@ -117,6 +117,9 @@ DB-mutating service helpers now also obey the worker boundary:
 - file-service client handling is moving from detached per-connection threads
   toward bounded worker ownership so shutdown can quiesce the network surface
   cleanly
+- HTTPS explorer serving now uses a bounded worker pool instead of detached
+  per-client threads, and start/stop is idempotent with explicit listener and
+  worker joins
 - UTXO import is being hardened with explicit cancellation and cleanup so
   shutdown or startup failure does not leave the parallel import pipeline
   running blindly
@@ -219,6 +222,9 @@ Recent progress:
   lifecycle ownership
 - file-service client acceptance is moving under a bounded worker-pool model
   instead of detached unbounded handler threads
+- HTTPS explorer accept loops no longer spawn detached client threads; they now
+  feed a bounded shared queue drained by a fixed worker pool, so stop/join is
+  deterministic and connection spikes have explicit backpressure
 - UTXO import pipeline is moving toward supervised-job behavior with explicit
   stop handling, rollback/cleanup, and safer failure paths
 
@@ -315,7 +321,7 @@ Passing verification used repeatedly during this refactor:
 
 - `make -j4 zclassic23`
 - `make -j4 test_zcl`
-- targeted `./test_zcl` SQLite smoke sections for recent DB-service work
+- full `./test_zcl`
 - direct runtime-backed wrapper coverage in `lib/test/src/test_sqlite.c`
 
 Most recent targeted signal:
@@ -327,17 +333,12 @@ Most recent targeted signal:
 - runtime-backed wrapper coverage now also exercises `node_db_sync_wallet_tx(...)`
 - snapshot worker-path tests compile into `test_zcl`; bounded monolithic runs
   have not yet reached that test group reliably
-- `SQLite Sapling note save/balance... FAIL` remains part of the existing suite
-  baseline and was not introduced by this refactor
+- full suite currently ends with `ALL TESTS PASSED (0 failures)`
 
 Important baseline fact:
 
-- the repository does not currently have a fully passing `test_zcl` baseline
-- observed failing areas still include:
-  - `getheaders serialize`
-  - `SQLite Sapling note save/balance`
-  - multiple `ZSLP` / `store` / `blog` / `api` tests
-  - one FlyClient verification failure
+- the repository currently has a fully passing `test_zcl` baseline on the
+  working tree
 
 ## Working Rules
 

@@ -17,11 +17,23 @@ const struct app_runtime_context *app_runtime_current(void)
     return g_current_runtime;
 }
 
-struct node_db *app_runtime_node_db(void)
+struct db_service *app_runtime_db_service(void)
 {
     if (!g_current_runtime)
         return NULL;
-    return g_current_runtime->node_db;
+    return g_current_runtime->db_service;
+}
+
+struct node_db *app_runtime_node_db(void)
+{
+    struct db_service *svc = app_runtime_db_service();
+    return db_service_node_db(svc);
+}
+
+sqlite3 *app_runtime_query_db(void)
+{
+    struct db_service *svc = app_runtime_db_service();
+    return db_service_query_db(svc);
 }
 
 struct tx_mempool *app_runtime_mempool(void)

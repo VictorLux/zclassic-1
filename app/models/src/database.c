@@ -9,6 +9,75 @@
 #include <time.h>
 #include <unistd.h>
 
+static int64_t db_now_seconds(void)
+{
+    return (int64_t)time(NULL);
+}
+
+static void node_db_state_init(struct node_db *ndb)
+{
+    if (!ndb)
+        return;
+    zcl_mutex_init(&ndb->state_mutex);
+    ndb->state_mutex_init = true;
+    ndb->tx_open = false;
+    ndb->turbo_mode = false;
+    ndb->last_activity_time = db_now_seconds();
+    ndb->last_sqlite_rc = SQLITE_OK;
+    snprintf(ndb->last_op, sizeof(ndb->last_op), "%s", "open");
+}
+
+static void node_db_state_destroy(struct node_db *ndb)
+{
+    if (!ndb || !ndb->state_mutex_init)
+        return;
+    zcl_mutex_destroy(&ndb->state_mutex);
+    ndb->state_mutex_init = false;
+}
+
+static void node_db_note_activity(struct node_db *ndb, const char *op, int rc)
+{
+    if (!ndb || !ndb->state_mutex_init)
+        return;
+    zcl_mutex_lock(&ndb->state_mutex);
+    ndb->last_activity_time = db_now_seconds();
+    ndb->last_sqlite_rc = rc;
+    if (op && op[0]) {
+        snprintf(ndb->last_op, sizeof(ndb->last_op), "%s", op);
+    }
+    zcl_mutex_unlock(&ndb->state_mutex);
+}
+
+static void node_db_note_tx_state(struct node_db *ndb, bool tx_open,
+                                  const char *op, int rc)
+{
+    if (!ndb || !ndb->state_mutex_init)
+        return;
+    zcl_mutex_lock(&ndb->state_mutex);
+    ndb->tx_open = tx_open;
+    ndb->last_activity_time = db_now_seconds();
+    ndb->last_sqlite_rc = rc;
+    if (op && op[0]) {
+        snprintf(ndb->last_op, sizeof(ndb->last_op), "%s", op);
+    }
+    zcl_mutex_unlock(&ndb->state_mutex);
+}
+
+static void node_db_note_turbo_mode(struct node_db *ndb, bool turbo_mode,
+                                    const char *op, int rc)
+{
+    if (!ndb || !ndb->state_mutex_init)
+        return;
+    zcl_mutex_lock(&ndb->state_mutex);
+    ndb->turbo_mode = turbo_mode;
+    ndb->last_activity_time = db_now_seconds();
+    ndb->last_sqlite_rc = rc;
+    if (op && op[0]) {
+        snprintf(ndb->last_op, sizeof(ndb->last_op), "%s", op);
+    }
+    zcl_mutex_unlock(&ndb->state_mutex);
+}
+
 static const char *SCHEMA[] = {
     /* Blockchain */
     "CREATE TABLE IF NOT EXISTS blocks ("
@@ -454,8 +523,11 @@ static void finalize_statements(struct node_db *ndb)
 bool node_db_open(struct node_db *ndb, const char *path)
 {
     memset(ndb, 0, sizeof(*ndb));
-    if (!db_open_raw(&ndb->db, path))
+    node_db_state_init(ndb);
+    if (!db_open_raw(&ndb->db, path)) {
+        node_db_state_destroy(ndb);
         return false;
+    }
 
     if (!db_quick_check_ok(ndb->db)) {
         fprintf(stderr, "db: %s is malformed; rebuilding fresh SQLite state\n",
@@ -463,30 +535,43 @@ bool node_db_open(struct node_db *ndb, const char *path)
         sqlite3_close(ndb->db);
         ndb->db = NULL;
         db_quarantine_files(path);
-        if (!db_open_raw(&ndb->db, path))
+        if (!db_open_raw(&ndb->db, path)) {
+            node_db_state_destroy(ndb);
             return false;
+        }
     }
 
     if (!create_schema(ndb)) {
         sqlite3_close(ndb->db);
+        node_db_state_destroy(ndb);
         return false;
     }
 
     if (!prepare_statements(ndb)) {
         sqlite3_close(ndb->db);
+        node_db_state_destroy(ndb);
         return false;
     }
 
     ndb->open = true;
+    node_db_migrate(ndb, NULL);
+    node_db_note_activity(ndb, "open", SQLITE_OK);
     return true;
 }
 
 void node_db_close(struct node_db *ndb)
 {
-    if (!ndb->open) return;
+    if (!ndb)
+        return;
+    if (!ndb->open) {
+        node_db_state_destroy(ndb);
+        return;
+    }
+    node_db_note_activity(ndb, "close", SQLITE_OK);
     finalize_statements(ndb);
     sqlite3_close(ndb->db);
     ndb->open = false;
+    node_db_state_destroy(ndb);
 }
 
 bool node_db_exec(struct node_db *ndb, const char *sql)
@@ -496,31 +581,43 @@ bool node_db_exec(struct node_db *ndb, const char *sql)
     int rc = sqlite3_exec(ndb->db, sql, NULL, NULL, &err);
     if (rc != SQLITE_OK) {
         fprintf(stderr, "db: exec failed: %s\n", err);
+        node_db_note_activity(ndb, sql ? sql : "exec", rc);
         sqlite3_free(err);
         return false;
     }
+    node_db_note_activity(ndb, sql ? sql : "exec", rc);
     return true;
 }
 
 bool node_db_begin(struct node_db *ndb)
 {
-    return node_db_exec(ndb, "BEGIN TRANSACTION");
+    bool ok = node_db_exec(ndb, "BEGIN TRANSACTION");
+    node_db_note_tx_state(ndb, ok, "BEGIN TRANSACTION",
+                          ok ? SQLITE_OK : SQLITE_ERROR);
+    return ok;
 }
 
 bool node_db_commit(struct node_db *ndb)
 {
-    return node_db_exec(ndb, "COMMIT");
+    bool ok = node_db_exec(ndb, "COMMIT");
+    node_db_note_tx_state(ndb, false, "COMMIT",
+                          ok ? SQLITE_OK : SQLITE_ERROR);
+    return ok;
 }
 
 bool node_db_rollback(struct node_db *ndb)
 {
-    return node_db_exec(ndb, "ROLLBACK");
+    bool ok = node_db_exec(ndb, "ROLLBACK");
+    node_db_note_tx_state(ndb, false, "ROLLBACK",
+                          ok ? SQLITE_OK : SQLITE_ERROR);
+    return ok;
 }
 
 void node_db_set_sync_batch_size(struct node_db *ndb, int batch_size)
 {
     if (!ndb) return;
     ndb->sync_batch_size = batch_size > 0 ? batch_size : 1;
+    node_db_note_activity(ndb, "set_sync_batch_size", SQLITE_OK);
 }
 
 bool node_db_sync_flush(struct node_db *ndb)
@@ -533,6 +630,30 @@ bool node_db_sync_flush(struct node_db *ndb)
         return ok;
     }
     return true;
+}
+
+void node_db_get_status(struct node_db *ndb, struct node_db_status *out)
+{
+    struct node_db_status empty = {0};
+
+    if (!out)
+        return;
+    *out = empty;
+    if (!ndb)
+        return;
+
+    if (ndb->state_mutex_init)
+        zcl_mutex_lock(&ndb->state_mutex);
+    out->open = ndb->open;
+    out->tx_open = ndb->tx_open;
+    out->turbo_mode = ndb->turbo_mode;
+    out->sync_batch_size = ndb->sync_batch_size;
+    out->sync_pending_blocks = ndb->sync_pending_blocks;
+    out->last_activity_time = ndb->last_activity_time;
+    out->last_sqlite_rc = ndb->last_sqlite_rc;
+    snprintf(out->last_op, sizeof(out->last_op), "%s", ndb->last_op);
+    if (ndb->state_mutex_init)
+        zcl_mutex_unlock(&ndb->state_mutex);
 }
 
 bool node_db_state_set(struct node_db *ndb, const char *key,
@@ -1163,6 +1284,7 @@ bool node_db_ibd_turbo_mode(struct node_db *ndb)
     sqlite3_exec(ndb->db, "PRAGMA wal_autocheckpoint=0", NULL, NULL, NULL);
     sqlite3_busy_timeout(ndb->db, 10000);
     node_db_drop_indexes(ndb);
+    node_db_note_turbo_mode(ndb, true, "ibd_turbo_mode", SQLITE_OK);
     printf("db: IBD turbo mode (synchronous=OFF, indexes dropped)\n");
     return true;
 }
@@ -1175,14 +1297,30 @@ bool node_db_normal_mode(struct node_db *ndb)
     sqlite3_exec(ndb->db, "PRAGMA wal_autocheckpoint=1000", NULL, NULL, NULL);
     node_db_rebuild_indexes(ndb);
     node_db_wal_checkpoint(ndb);
+    node_db_note_turbo_mode(ndb, false, "normal_mode", SQLITE_OK);
     printf("db: normal mode (synchronous=NORMAL, indexes rebuilt)\n");
     return true;
 }
 
 bool node_db_wal_checkpoint(struct node_db *ndb)
 {
+    sqlite3_stmt *stmt = NULL;
+    const char *mode = NULL;
+
     if (!ndb || !ndb->open) return false;
-    sqlite3_wal_checkpoint_v2(ndb->db, NULL, SQLITE_CHECKPOINT_TRUNCATE,
-                              NULL, NULL);
-    return true;
+    if (sqlite3_prepare_v2(ndb->db, "PRAGMA journal_mode", -1, &stmt, NULL) == SQLITE_OK &&
+        stmt && sqlite3_step(stmt) == SQLITE_ROW) {
+        mode = (const char *)sqlite3_column_text(stmt, 0);
+    }
+    if (stmt)
+        sqlite3_finalize(stmt);
+    if (!mode || strcmp(mode, "wal") != 0) {
+        node_db_note_activity(ndb, "wal_checkpoint", SQLITE_OK);
+        return true;
+    }
+    int rc = sqlite3_wal_checkpoint_v2(ndb->db, NULL,
+                                       SQLITE_CHECKPOINT_TRUNCATE,
+                                       NULL, NULL);
+    node_db_note_activity(ndb, "wal_checkpoint", rc);
+    return rc == SQLITE_OK;
 }

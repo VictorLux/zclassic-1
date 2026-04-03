@@ -3,11 +3,42 @@
 
 #include "test/test_helpers.h"
 #include "services/snapshot_sync_service.h"
+#include "config/db_service.h"
+#include "config/runtime.h"
+#include "coins/utxo_commitment.h"
 #include "core/serialize.h"
 #include "net/fast_sync.h"
 #include "net/net.h"
 #include "validation/main_state.h"
 #include <string.h>
+
+static void build_snapshot_chunk(struct byte_stream *s)
+{
+    const uint8_t txid[32] = {
+        0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+        0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+        0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27,
+        0x28, 0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e, 0x2f
+    };
+    const uint8_t script[] = {
+        0x76, 0xa9, 0x14,
+        0x01, 0x02, 0x03, 0x04, 0x05,
+        0x06, 0x07, 0x08, 0x09, 0x0a,
+        0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+        0x10, 0x11, 0x12, 0x13,
+        0x88, 0xac
+    };
+
+    stream_init(s, 128);
+    stream_write_u32_le(s, 1);
+    stream_write_bytes(s, txid, sizeof(txid));
+    stream_write_u32_le(s, 2);
+    stream_write_u64_le(s, 5000000000ULL);
+    stream_write_u32_le(s, 345678);
+    stream_write_u8(s, 0);
+    stream_write_u8(s, (uint8_t)sizeof(script));
+    stream_write_bytes(s, script, sizeof(script));
+}
 
 static int test_snapshot_sync_service_followups(void)
 {
@@ -314,6 +345,121 @@ static int test_snapshot_sync_service_transition_results(void)
     return failures;
 }
 
+static int test_snapshot_sync_service_db_service_runtime(void)
+{
+    int failures = 0;
+
+    TEST("snapshot sync service uses runtime db service for begin/reset") {
+        struct snapshot_sync_service svc;
+        struct node_db ndb;
+        struct db_service dbsvc;
+        struct app_runtime_context runtime;
+        struct node_db_status st;
+
+        memset(&svc, 0, sizeof(svc));
+        memset(&runtime, 0, sizeof(runtime));
+        ASSERT(node_db_open(&ndb, ":memory:"));
+        db_service_init(&dbsvc);
+        ASSERT(db_service_attach(&dbsvc, &ndb));
+        ASSERT(db_service_start(&dbsvc));
+
+        runtime.db_service = &dbsvc;
+        app_runtime_set_current(&runtime);
+
+        snapsync_init(&svc, &ndb);
+        svc.state = SNAPSYNC_NEGOTIATING;
+        ASSERT(snapsync_begin_receive(&svc));
+        ASSERT(svc.state == SNAPSYNC_RECEIVING);
+        ASSERT(svc.turbo_active);
+        node_db_get_status(&ndb, &st);
+        ASSERT(st.turbo_mode);
+        ASSERT(st.tx_open);
+
+        snapsync_reset(&svc);
+        ASSERT(svc.state == SNAPSYNC_IDLE);
+        ASSERT(!svc.turbo_active);
+        node_db_get_status(&ndb, &st);
+        ASSERT(!st.turbo_mode);
+
+        app_runtime_set_current(NULL);
+        db_service_stop(&dbsvc);
+        node_db_close(&ndb);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+static int test_snapshot_sync_service_db_service_chunk_finalize(void)
+{
+    int failures = 0;
+
+    TEST("snapshot sync service applies and finalizes chunks via runtime db service") {
+        struct snapshot_sync_service svc;
+        struct node_db ndb;
+        struct db_service dbsvc;
+        struct app_runtime_context runtime;
+        struct node_db_status st;
+        struct byte_stream chunk;
+        uint8_t root[32];
+        uint8_t coins_best_block[32];
+        size_t best_block_len = 0;
+        uint64_t count = 0;
+
+        memset(&svc, 0, sizeof(svc));
+        memset(&runtime, 0, sizeof(runtime));
+        memset(root, 0, sizeof(root));
+        memset(coins_best_block, 0, sizeof(coins_best_block));
+        ASSERT(node_db_open(&ndb, ":memory:"));
+        db_service_init(&dbsvc);
+        ASSERT(db_service_attach(&dbsvc, &ndb));
+        ASSERT(db_service_start(&dbsvc));
+
+        runtime.db_service = &dbsvc;
+        app_runtime_set_current(&runtime);
+
+        snapsync_init(&svc, &ndb);
+        svc.state = SNAPSYNC_NEGOTIATING;
+        svc.start_time_us = 1;
+        svc.offered_count = 1;
+        svc.serving_peer_id = 9;
+        memset(svc.offered_block_hash, 0x44, sizeof(svc.offered_block_hash));
+
+        ASSERT(snapsync_begin_receive(&svc));
+        build_snapshot_chunk(&chunk);
+        ASSERT(snapsync_apply_chunk(&svc, chunk.data, chunk.size) == 1);
+        ASSERT(svc.received_utxos == 1);
+
+        ASSERT(db_service_commit_write(&dbsvc));
+        utxo_commitment_sha3_compute(ndb.db, root, &count);
+        ASSERT(count == 1);
+        memcpy(svc.offered_utxo_root, root, sizeof(root));
+        ASSERT(db_service_begin_write(&dbsvc));
+
+        ASSERT(snapsync_finalize(&svc));
+        ASSERT(svc.state == SNAPSYNC_COMPLETE);
+        ASSERT(!svc.turbo_active);
+        node_db_get_status(&ndb, &st);
+        ASSERT(!st.turbo_mode);
+        ASSERT(node_db_state_get(&ndb, "coins_best_block",
+                                 coins_best_block,
+                                 sizeof(coins_best_block),
+                                 &best_block_len));
+        ASSERT(best_block_len == sizeof(coins_best_block));
+        ASSERT(memcmp(coins_best_block,
+                      svc.offered_block_hash,
+                      sizeof(coins_best_block)) == 0);
+
+        stream_free(&chunk);
+        app_runtime_set_current(NULL);
+        db_service_stop(&dbsvc);
+        node_db_close(&ndb);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
 int test_snapshot_sync_service(void)
 {
     int failures = 0;
@@ -324,5 +470,7 @@ int test_snapshot_sync_service(void)
     failures += test_snapshot_sync_service_activates_tip();
     failures += test_snapshot_sync_service_prepare_serve_step();
     failures += test_snapshot_sync_service_transition_results();
+    failures += test_snapshot_sync_service_db_service_runtime();
+    failures += test_snapshot_sync_service_db_service_chunk_finalize();
     return failures;
 }

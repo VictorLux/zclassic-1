@@ -32,6 +32,16 @@ struct db_wallet_projection_summary {
     int64_t speed_balance;
 };
 
+struct db_wallet_txid_ref {
+    uint8_t txid[32];
+};
+
+struct db_wallet_tx_raw_view {
+    uint8_t *raw_tx;
+    size_t raw_tx_len;
+    int block_height;
+};
+
 /* Callbacks and validation */
 struct ar_callbacks *db_wallet_tx_callbacks(void);
 bool db_wallet_tx_validate(const struct db_wallet_tx *t, struct ar_errors *errors);
@@ -46,6 +56,21 @@ void db_wallet_tx_free(struct db_wallet_tx *t);
 /* List recent transactions. Returns count. */
 int db_wallet_tx_recent(struct node_db *ndb, struct db_wallet_tx *out,
                         size_t max);
+
+/* Read-only projection for raw wallet transactions ordered by height desc.
+ * Intended for controller/service scans that need deserializable tx blobs
+ * without owning SQL directly. Caller must free rows with
+ * db_wallet_tx_raw_view_free(). */
+int db_wallet_tx_recent_raw(struct node_db *ndb,
+                            struct db_wallet_tx_raw_view *out,
+                            size_t max);
+void db_wallet_tx_raw_view_free(struct db_wallet_tx_raw_view *row);
+int db_wallet_tx_list_unconfirmed(struct node_db *ndb,
+                                  struct db_wallet_txid_ref *out,
+                                  size_t max);
+bool db_wallet_tx_update_block_height(struct node_db *ndb,
+                                      const uint8_t txid[32],
+                                      int block_height);
 
 /* List wallet transactions in descending time order with offset paging. */
 int db_wallet_tx_list(struct node_db *ndb, struct db_wallet_tx *out,
@@ -114,6 +139,9 @@ void db_wallet_utxo_free(struct db_wallet_utxo *u);
 
 /* Delete all wallet UTXOs. */
 bool db_wallet_utxo_delete_all(struct node_db *ndb);
+bool db_wallet_utxo_replace_all(struct node_db *ndb,
+                                const struct db_wallet_utxo *rows,
+                                size_t count);
 
 /* Delete all wallet transactions. */
 bool db_wallet_tx_delete_all(struct node_db *ndb);
@@ -152,6 +180,10 @@ int64_t db_sapling_note_balance(struct node_db *ndb);
 int64_t db_sapling_note_balance_for_ivk(struct node_db *ndb,
                                         const uint8_t ivk[32]);
 int64_t db_sapling_note_balance_with_count(struct node_db *ndb, int *note_count);
+int64_t db_sapling_note_balance_for_address(struct node_db *ndb,
+                                            const char *address);
+int64_t db_sapling_note_balance_for_exact_value(struct node_db *ndb,
+                                                int64_t value);
 
 /* List unspent notes. Returns count. */
 int db_sapling_note_list_unspent(struct node_db *ndb,
@@ -175,6 +207,10 @@ bool db_sapling_note_load_witness(struct node_db *ndb,
                                    const uint8_t txid[32], uint32_t output_index,
                                    uint8_t **witness_blob_out, size_t *blob_len_out,
                                    int *height_out);
+bool db_sapling_note_delete_all(struct node_db *ndb);
+bool db_sapling_note_replace_all(struct node_db *ndb,
+                                 const struct db_sapling_note *rows,
+                                 size_t count);
 
 /* Free malloc'd fields (witness_data) after loading a sapling note. */
 void db_sapling_note_free(struct db_sapling_note *n);

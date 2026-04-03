@@ -6,6 +6,7 @@
 #include "controllers/blog_controller.h"
 #include "models/database.h"
 #include "models/onion_announcement.h"
+#include "models/wallet_tx.h"
 #include "zslp/slp.h"
 #include "primitives/transaction.h"
 #include "core/uint256.h"
@@ -234,33 +235,35 @@ int blog_discover_onion_peers(const char *datadir,
     char db_path[1024];
     snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
 
-    sqlite3 *db = NULL;
-    if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK)
+    struct node_db ndb;
+    struct db_wallet_tx_raw_view rows[256];
+    if (max > sizeof(rows) / sizeof(rows[0]))
+        max = sizeof(rows) / sizeof(rows[0]);
+
+    memset(&ndb, 0, sizeof(ndb));
+    if (!node_db_open(&ndb, db_path))
         return 0;
 
-    /* Scan transactions for OP_RETURN outputs with SLP SEND + .onion data.
-     * Query the wallet_transactions table which has raw serialized tx data. */
-    sqlite3_stmt *stmt = NULL;
-    int rc = sqlite3_prepare_v2(db,
-        "SELECT raw_tx, block_height FROM wallet_transactions "
-        "WHERE raw_tx IS NOT NULL ORDER BY block_height DESC LIMIT 50000",
-        -1, &stmt, NULL);
-    if (rc != SQLITE_OK) { sqlite3_close(db); return 0; }
-
     int found = 0;
-    while (sqlite3_step(stmt) == SQLITE_ROW && found < (int)max) {
-        const void *raw = sqlite3_column_blob(stmt, 0);
-        int raw_len = sqlite3_column_bytes(stmt, 0);
-        int height = sqlite3_column_int(stmt, 1);
-        if (!raw || raw_len < 10) continue;
+    int row_count = db_wallet_tx_recent_raw(&ndb, rows,
+        sizeof(rows) / sizeof(rows[0]));
+    for (int ri = 0; ri < row_count && found < (int)max; ++ri) {
+        const uint8_t *raw = rows[ri].raw_tx;
+        int raw_len = (int)rows[ri].raw_tx_len;
+        int height = rows[ri].block_height;
+        if (!raw || raw_len < 10) {
+            db_wallet_tx_raw_view_free(&rows[ri]);
+            continue;
+        }
 
         /* Deserialize transaction */
         struct transaction tx;
         transaction_init(&tx);
         struct byte_stream bs;
-        stream_init_from_data(&bs, (const uint8_t *)raw, (size_t)raw_len);
+        stream_init_from_data(&bs, raw, (size_t)raw_len);
         if (!transaction_deserialize(&tx, &bs)) {
             transaction_free(&tx);
+            db_wallet_tx_raw_view_free(&rows[ri]);
             continue;
         }
 
@@ -268,6 +271,7 @@ int blog_discover_onion_peers(const char *datadir,
         if (tx.num_vout < 1 || tx.vout[0].script_pub_key.size < 10 ||
             tx.vout[0].script_pub_key.data[0] != 0x6a) {
             transaction_free(&tx);
+            db_wallet_tx_raw_view_free(&rows[ri]);
             continue;
         }
 
@@ -276,6 +280,7 @@ int blog_discover_onion_peers(const char *datadir,
                        tx.vout[0].script_pub_key.size, &msg) ||
             msg.type != SLP_TX_SEND) {
             transaction_free(&tx);
+            db_wallet_tx_raw_view_free(&rows[ri]);
             continue;
         }
 
@@ -308,10 +313,10 @@ int blog_discover_onion_peers(const char *datadir,
             }
         }
         transaction_free(&tx);
+        db_wallet_tx_raw_view_free(&rows[ri]);
     }
 
-    sqlite3_finalize(stmt);
-    sqlite3_close(db);
+    node_db_close(&ndb);
     return found;
 }
 

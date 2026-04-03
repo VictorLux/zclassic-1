@@ -2,6 +2,7 @@
 
 #include "test/test_helpers.h"
 #include "controllers/blog_controller.h"
+#include "models/onion_announcement.h"
 #include <unistd.h>
 
 /* safe_path is static in blog_controller.c, so we replicate
@@ -182,20 +183,12 @@ int test_blog(void)
             memset(&ndb, 0, sizeof(ndb));
             ok = ok && node_db_open(&ndb, db_path);
             if (ok) {
-                sqlite3_stmt *s = NULL;
-                if (sqlite3_prepare_v2(ndb.db,
-                        "SELECT script_hex FROM onion_announcements "
-                        "WHERE onion_address=?",
-                        -1, &s, NULL) == SQLITE_OK && s) {
-                    sqlite3_bind_text(s, 1, addr2, -1, SQLITE_STATIC);
-                    ok = ok && (sqlite3_step(s) == SQLITE_ROW);
-                    const char *script_hex =
-                        (const char *)sqlite3_column_text(s, 0);
-                    ok = ok && script_hex && script_hex[0] != '\0';
-                    sqlite3_finalize(s);
-                } else {
-                    ok = false;
-                }
+                struct db_onion_announcement rows[4];
+                memset(rows, 0, sizeof(rows));
+                int count = db_onion_announcement_recent(&ndb, rows, 4);
+                ok = ok && (count >= 2);
+                ok = ok && db_onion_announcement_exists(&ndb, addr2);
+                ok = ok && rows[0].script_hex[0] != '\0';
                 node_db_close(&ndb);
             }
 

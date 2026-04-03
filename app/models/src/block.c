@@ -71,9 +71,7 @@ bool db_block_save(struct node_db *ndb, const struct db_block *b)
     if (!ndb->open) return false;
 
     struct ar_callbacks *cbs = db_block_callbacks();
-    AR_VALIDATE_RECORD(cbs, "block", b, db_block_validate);
-    /* before_save callbacks */
-    if (!ar_run_before_save(cbs, (void *)b)) return false;
+    AR_BEGIN_SAVE(cbs, "block", b, db_block_validate);
 
     sqlite3_stmt *s = ndb->stmt_block_insert;
     sqlite3_reset(s);
@@ -190,31 +188,25 @@ bool db_block_delete(struct node_db *ndb, const uint8_t hash[32])
     struct db_block blk;
     memset(&blk, 0, sizeof(blk));
     memcpy(blk.hash, hash, 32);
-    if (!ar_run_before_destroy(cbs, &blk)) return false;
+    AR_BEGIN_DESTROY(cbs, &blk);
 
     /* dependent: :destroy — delete child transactions */
     sqlite3_stmt *dt = NULL;
-    if (sqlite3_prepare_v2(ndb->db,
-            "DELETE FROM transactions WHERE block_hash=?",
-            -1, &dt, NULL) == SQLITE_OK && dt) {
+    AR_PREPARE_OR(ndb, dt, "DELETE FROM transactions WHERE block_hash=?", dt = NULL);
+    if (dt) {
         AR_BIND_BLOB(dt, 1, hash, 32);
         (void)AR_STEP_DONE(dt);
         AR_FINALIZE(dt);
     }
 
     sqlite3_stmt *s = NULL;
-    if (sqlite3_prepare_v2(ndb->db,
-            "DELETE FROM blocks WHERE hash=?",
-            -1, &s, NULL) != SQLITE_OK || !s)
-        return false;
+    AR_PREPARE_BOOL(ndb, s, "DELETE FROM blocks WHERE hash=?");
     AR_BIND_BLOB(s, 1, hash, 32);
-    bool ok = AR_STEP_DONE(s);
-    AR_FINALIZE(s);
-    if (ok) {
-        ar_run_after_destroy(cbs, &blk);
+    bool ok = false;
+    AR_FINALIZE_STEP_DONE(s, ok);
+    if (ok)
         event_emitf(EV_MODEL_DESTROYED, 0, "model=block");
-    }
-    return ok;
+    AR_FINISH_DESTROY(cbs, &blk, ok);
 }
 
 /* ── Queries ───────────────────────────────────────────────────── */
@@ -223,9 +215,9 @@ int db_block_max_height(struct node_db *ndb)
 {
     if (!ndb->open) return -1;
     sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(ndb->db,
+    AR_PREPARE_RET(ndb, s,
         "SELECT MAX(height) FROM blocks WHERE status>=3",
-        -1, &s, NULL);
+        -1);
     int h = -1;
     if (AR_STEP_ROW(s))
         h = (int)AR_COL_INT(s, 0);
@@ -236,15 +228,7 @@ int db_block_max_height(struct node_db *ndb)
 int db_block_count(struct node_db *ndb)
 {
     if (!ndb->open) return 0;
-    sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(ndb->db,
-        "SELECT COUNT(*) FROM blocks",
-        -1, &s, NULL);
-    int c = 0;
-    if (AR_STEP_ROW(s))
-        c = (int)AR_COL_INT(s, 0);
-    AR_FINALIZE(s);
-    return c;
+    AR_QUERY_COUNT_SQL(ndb, "SELECT COUNT(*) FROM blocks");
 }
 
 bool db_block_save_batch(struct node_db *ndb,
@@ -273,16 +257,13 @@ int db_block_utxos(struct node_db *ndb, int height,
 {
     if (!ndb->open) return 0;
     sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(ndb->db,
+    AR_QUERY_LIST(ndb, s,
         "SELECT txid,vout,value,script,script_type,"
         "address_hash,is_coinbase FROM utxos WHERE height=?"
         " LIMIT ?",
-        -1, &s, NULL);
-    AR_BIND_INT(s, 1, height);
-    AR_BIND_INT(s, 2, (int)max);
-    int count = 0;
-    while (AR_STEP_ROW(s) && count < (int)max) {
-        memset(&out[count], 0, sizeof(out[count]));
+        out, max,
+        AR_BIND_INT(s, 1, height);
+        AR_BIND_INT(s, 2, (int)max),
         AR_READ_BLOB(s, 0, out[count].txid, 32);
         out[count].vout = (uint32_t)AR_COL_INT(s, 1);
         out[count].value = AR_COL_INT(s, 2);
@@ -293,11 +274,7 @@ int db_block_utxos(struct node_db *ndb, int height,
         if (sqlite3_column_blob(s, 5))
             out[count].has_address = true;
         out[count].is_coinbase = AR_COL_INT(s, 6) != 0;
-        out[count].height = height;
-        count++;
-    }
-    AR_FINALIZE(s);
-    return count;
+        out[count].height = height);
 }
 
 /* belongs_to :prev_block */
@@ -322,18 +299,11 @@ int db_block_hashes_in_range(struct node_db *ndb,
 {
     if (!ndb->open) return 0;
     sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(ndb->db,
+    AR_QUERY_LIST(ndb, s,
         "SELECT hash FROM blocks WHERE height >= ? "
         "AND height <= ? ORDER BY height ASC",
-        -1, &s, NULL);
-    if (!s) return 0;
-    AR_BIND_INT(s, 1, start_height);
-    AR_BIND_INT(s, 2, end_height);
-    int count = 0;
-    while (AR_STEP_ROW(s) && (size_t)count < max) {
-        AR_READ_BLOB(s, 0, hashes_out[count], 32);
-        count++;
-    }
-    AR_FINALIZE(s);
-    return count;
+        hashes_out, max,
+        AR_BIND_INT(s, 1, start_height);
+        AR_BIND_INT(s, 2, end_height),
+        AR_READ_BLOB(s, 0, hashes_out[count], 32));
 }

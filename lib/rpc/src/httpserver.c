@@ -19,6 +19,9 @@
 #include <sys/time.h>
 #include <unistd.h>
 
+#define RPC_HTTP_WORKERS 4
+#define RPC_HTTP_QUEUE_CAP 64
+
 static int g_listen_fd = -1;
 static const struct rpc_table *g_table = NULL;
 static pthread_t g_listen_thread;
@@ -27,6 +30,14 @@ static char g_rpc_user[128];
 static char g_rpc_password[128];
 static char g_cookie_file[1024];
 static bool g_auth_required = false;
+static pthread_t g_worker_threads[RPC_HTTP_WORKERS];
+static bool g_workers_started = false;
+static int g_client_queue[RPC_HTTP_QUEUE_CAP];
+static size_t g_client_queue_head = 0;
+static size_t g_client_queue_tail = 0;
+static size_t g_client_queue_count = 0;
+static pthread_mutex_t g_client_queue_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_client_queue_cond = PTHREAD_COND_INITIALIZER;
 
 static const char base64_chars[] =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -118,6 +129,43 @@ static void send_response(int fd, int status_code, const char *status_text,
     (void)write(fd, header, (size_t)hlen);
     if (body_len > 0)
         (void)write(fd, body, body_len);
+}
+
+static bool enqueue_client_fd(int client_fd)
+{
+    bool ok = false;
+
+    pthread_mutex_lock(&g_client_queue_mutex);
+    if (g_client_queue_count < RPC_HTTP_QUEUE_CAP) {
+        g_client_queue[g_client_queue_tail] = client_fd;
+        g_client_queue_tail =
+            (g_client_queue_tail + 1) % RPC_HTTP_QUEUE_CAP;
+        g_client_queue_count++;
+        ok = true;
+        pthread_cond_signal(&g_client_queue_cond);
+    }
+    pthread_mutex_unlock(&g_client_queue_mutex);
+
+    return ok;
+}
+
+static int dequeue_client_fd(void)
+{
+    int client_fd = -1;
+
+    pthread_mutex_lock(&g_client_queue_mutex);
+    while (g_client_queue_count == 0 && g_running)
+        pthread_cond_wait(&g_client_queue_cond, &g_client_queue_mutex);
+
+    if (g_client_queue_count > 0) {
+        client_fd = g_client_queue[g_client_queue_head];
+        g_client_queue_head =
+            (g_client_queue_head + 1) % RPC_HTTP_QUEUE_CAP;
+        g_client_queue_count--;
+    }
+    pthread_mutex_unlock(&g_client_queue_mutex);
+
+    return client_fd;
 }
 
 static void handle_client(int client_fd)
@@ -241,6 +289,20 @@ done:
     close(client_fd);
 }
 
+static void *rpc_worker_thread_fn(void *arg)
+{
+    (void)arg;
+
+    while (g_running) {
+        int client_fd = dequeue_client_fd();
+        if (client_fd < 0)
+            continue;
+        handle_client(client_fd);
+    }
+
+    return NULL;
+}
+
 static void *listen_thread_fn(void *arg)
 {
     (void)arg;
@@ -254,7 +316,12 @@ static void *listen_thread_fn(void *arg)
                 perror("accept");
             continue;
         }
-        handle_client(client_fd);
+        if (!enqueue_client_fd(client_fd)) {
+            const char *msg = "{\"error\":\"RPC server busy\"}";
+            send_response(client_fd, 503, "Service Unavailable",
+                          msg, strlen(msg));
+            close(client_fd);
+        }
     }
     return NULL;
 }
@@ -263,6 +330,9 @@ bool rpc_http_start(const struct rpc_table *table, uint16_t port,
                      const char *rpc_user, const char *rpc_password,
                      const char *datadir)
 {
+    g_client_queue_head = 0;
+    g_client_queue_tail = 0;
+    g_client_queue_count = 0;
     g_table = table;
     if (rpc_user && rpc_password) {
         snprintf(g_rpc_user, sizeof(g_rpc_user), "%s", rpc_user);
@@ -319,11 +389,35 @@ bool rpc_http_start(const struct rpc_table *table, uint16_t port,
     g_running = true;
     printf("RPC server listening on 127.0.0.1:%u\n", port);
 
+    for (size_t i = 0; i < RPC_HTTP_WORKERS; i++) {
+        if (pthread_create(&g_worker_threads[i], NULL,
+                           rpc_worker_thread_fn, NULL) != 0) {
+            perror("pthread_create");
+            g_running = false;
+            shutdown(g_listen_fd, SHUT_RDWR);
+            close(g_listen_fd);
+            g_listen_fd = -1;
+            pthread_mutex_lock(&g_client_queue_mutex);
+            pthread_cond_broadcast(&g_client_queue_cond);
+            pthread_mutex_unlock(&g_client_queue_mutex);
+            for (size_t j = 0; j < i; j++)
+                pthread_join(g_worker_threads[j], NULL);
+            return false;
+        }
+    }
+    g_workers_started = true;
+
     if (pthread_create(&g_listen_thread, NULL, listen_thread_fn, NULL) != 0) {
         perror("pthread_create");
+        g_running = false;
+        pthread_mutex_lock(&g_client_queue_mutex);
+        pthread_cond_broadcast(&g_client_queue_cond);
+        pthread_mutex_unlock(&g_client_queue_mutex);
+        for (size_t i = 0; i < RPC_HTTP_WORKERS; i++)
+            pthread_join(g_worker_threads[i], NULL);
+        g_workers_started = false;
         close(g_listen_fd);
         g_listen_fd = -1;
-        g_running = false;
         return false;
     }
 
@@ -338,7 +432,27 @@ void rpc_http_stop(void)
         close(g_listen_fd);
         g_listen_fd = -1;
     }
+    pthread_mutex_lock(&g_client_queue_mutex);
+    pthread_cond_broadcast(&g_client_queue_cond);
+    pthread_mutex_unlock(&g_client_queue_mutex);
     pthread_join(g_listen_thread, NULL);
+    if (g_workers_started) {
+        for (size_t i = 0; i < RPC_HTTP_WORKERS; i++)
+            pthread_join(g_worker_threads[i], NULL);
+        g_workers_started = false;
+    }
+
+    pthread_mutex_lock(&g_client_queue_mutex);
+    while (g_client_queue_count > 0) {
+        int client_fd = g_client_queue[g_client_queue_head];
+        g_client_queue_head =
+            (g_client_queue_head + 1) % RPC_HTTP_QUEUE_CAP;
+        g_client_queue_count--;
+        close(client_fd);
+    }
+    g_client_queue_head = 0;
+    g_client_queue_tail = 0;
+    pthread_mutex_unlock(&g_client_queue_mutex);
 
     if (g_cookie_file[0]) {
         unlink(g_cookie_file);

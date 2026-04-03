@@ -20,6 +20,14 @@
  *   validate → before_save → SQL INSERT/UPDATE → after_save
  *   before_destroy → SQL DELETE → after_destroy
  *
+ * Preferred model implementation shape:
+ *   1. DEFINE_MODEL_CALLBACKS(model_name)
+ *   2. Optional DEFINE_MODEL_BEFORE_SAVE_READY(model_name, hook_fn)
+ *   3. validate_* function using validates_* macros
+ *   4. _save() using AR_BEGIN_SAVE / AR_ADHOC_SAVE / AR_FINISH_SAVE
+ *   5. _find() / _list() / _exists() using AR_QUERY_* helpers
+ *   6. _delete() using AR_ADHOC_DESTROY / AR_CACHED_DESTROY
+ *
  * Relationships:
  *   db_block_transactions()  — Block has_many Transactions
  *   db_tx_block()            — Transaction belongs_to Block
@@ -179,6 +187,28 @@ static inline void ar_errors_full_messages(const struct ar_errors *e,
         return &model##_cbs; \
     }
 
+/* Define a lazy callback-registration helper for a single before_save hook.
+ * Usage:
+ *   DEFINE_MODEL_BEFORE_SAVE_READY(contact, contact_before_save)
+ * Produces:
+ *   static struct ar_callbacks *contact_callbacks_ready(void)
+ */
+#define DEFINE_MODEL_BEFORE_SAVE_READY(model, hook_fn) \
+    static struct ar_callbacks *model##_callbacks_ready(void) { \
+        struct ar_callbacks *cbs = db_##model##_callbacks(); \
+        bool hook_present = false; \
+        for (int i = 0; i < cbs->n_before_save; i++) { \
+            if (cbs->before_save[i] == (hook_fn)) { \
+                hook_present = true; \
+                break; \
+            } \
+        } \
+        if (!hook_present) { \
+            ar_register_before_save(cbs, hook_fn); \
+        } \
+        return cbs; \
+    }
+
 /* Safe malloc with NULL check — returns false from enclosing function. */
 #define AR_MALLOC_OR_FAIL(ptr, size) do { \
     (ptr) = malloc(size); \
@@ -279,13 +309,250 @@ static inline void ar_errors_full_messages(const struct ar_errors *e,
     } \
 } while (0)
 
+/* Prepare-or-return helper for query/list functions that return a value.
+ * Usage:
+ *   AR_PREPARE_RET(ndb, s, "SELECT ...", 0);
+ */
+#define AR_PREPARE_RET(ndb, stmt, sql, ret) do { \
+    if (sqlite3_prepare_v2((ndb)->db, sql, -1, &(stmt), NULL) != SQLITE_OK || \
+        !(stmt)) { \
+        fprintf(stderr, "AR_PREPARE_RET failed: %s\n", \
+                sqlite3_errmsg((ndb)->db)); \
+        return (ret); \
+    } \
+} while (0)
+
+#define AR_PREPARE_BOOL(ndb, stmt, sql) \
+    AR_PREPARE_RET(ndb, stmt, sql, false)
+
+/* Standard row-list loop for array outputs.
+ * Usage:
+ *   int count = 0;
+ *   AR_LIST_ROWS(s, out, max, row_reader(out_row, s));
+ *   return count;
+ */
+#define AR_LIST_ROWS(stmt, out, max, row_code) do { \
+    while (AR_STEP_ROW(stmt) && (size_t)count < (max)) { \
+        memset(&(out)[count], 0, sizeof((out)[count])); \
+        row_code; \
+        count++; \
+    } \
+} while (0)
+
+#define AR_FIND_ONE_CACHED(stmt, out, row_code) do { \
+    if (!AR_STEP_ROW(stmt)) \
+        return false; \
+    memset((out), 0, sizeof(*(out))); \
+    row_code; \
+    return true; \
+} while (0)
+
+#define AR_FINALIZE_STEP_DONE(stmt, ok) do { \
+    (ok) = AR_STEP_DONE(stmt); \
+    AR_FINALIZE(stmt); \
+} while (0)
+
 /* ── DRY Query Macros ─────────────────────────────────────────── *
  * Eliminate repetitive count/find patterns across models.
  *
+ * Recommended usage:
+ *   - cached INSERT/REPLACE save:
+ *       AR_BEGIN_SAVE(...); bind cached stmt; AR_FINISH_SAVE(...)
+ *   - ad hoc INSERT/REPLACE save:
+ *       AR_ADHOC_SAVE(...)
+ *   - single-row read:
+ *       AR_QUERY_ONE_BOOL(...)
+ *   - existence read:
+ *       AR_QUERY_EXISTS(...)
+ *   - list read:
+ *       AR_QUERY_LIST(...)
+ *   - ad hoc DELETE:
+ *       AR_ADHOC_DESTROY(...)
+ *   - cached DELETE:
+ *       AR_CACHED_DESTROY(...)
+ *   - simple UPDATE/DELETE execution:
+ *       AR_EXEC_BOOL(...) or AR_EXEC_CHANGED_BOOL(...)
+ *
+ * AR_BEGIN_SAVE: validate + before_save lifecycle
+ * AR_FINISH_SAVE: after_save + return
  * AR_CACHED_SAVE: validate → before_save → bind+step cached stmt → after_save
  * AR_CACHED_COUNT: reset cached count stmt → step → return int
  * AR_CACHED_FIND_RESET: reset + clear bindings on a cached stmt
+ *
+ * Parameter conventions:
+ *   ndb
+ *     `struct node_db *` owning the SQLite handle used by the statement.
+ *   stmt
+ *     local `sqlite3_stmt *` variable for ad hoc statements, or a cached stmt
+ *     field like `ndb->stmt_peer_delete` for cached paths.
+ *   sql
+ *     fixed SQL literal. Do not pass user-built SQL fragments here.
+ *   cbs
+ *     `struct ar_callbacks *` for the current model type.
+ *   model_name
+ *     short string used for validation logging, e.g. `"wallet_tx"`.
+ *   record
+ *     pointer to the model record being saved or destroyed.
+ *   validate_fn
+ *     function with shape `bool validate(const record_type *, struct ar_errors *)`.
+ *   bind_code
+ *     one or more `AR_BIND_*` calls, optionally with small `if/else` branches.
+ *   row_code
+ *     row deserialization logic for the current statement row.
+ *   out
+ *     output array or record filled by query helpers.
+ *   max
+ *     maximum number of rows to write into `out`.
  */
+
+/* AR_BEGIN_SAVE(cbs, model_name, record, validate_fn)
+ * cbs: callbacks for the model
+ * model_name: short log label
+ * record: model pointer being saved
+ * validate_fn: model validation function
+ * Effect: runs before_validate -> validate -> after_validate -> before_save. */
+#define AR_BEGIN_SAVE(cbs, model_name, record, validate_fn) do { \
+    AR_VALIDATE_RECORD((cbs), (model_name), (record), (validate_fn)); \
+    if (!ar_run_before_save((cbs), (void *)(record))) return false; \
+} while (0)
+
+/* AR_FINISH_SAVE(cbs, record, ok)
+ * cbs: callbacks for the model
+ * record: saved model pointer
+ * ok: bool result from SQL execution
+ * Effect: runs after_save when ok, then returns ok from the function. */
+#define AR_FINISH_SAVE(cbs, record, ok) do { \
+    if (ok) ar_run_after_save((cbs), (void *)(record)); \
+    return (ok); \
+} while (0)
+
+/* AR_BEGIN_DESTROY(cbs, record)
+ * cbs: callbacks for the model
+ * record: model pointer being deleted
+ * Effect: runs before_destroy and returns false if it vetoes the delete. */
+#define AR_BEGIN_DESTROY(cbs, record) do { \
+    if (!ar_run_before_destroy((cbs), (void *)(record))) return false; \
+} while (0)
+
+/* AR_FINISH_DESTROY(cbs, record, ok)
+ * cbs: callbacks for the model
+ * record: deleted model pointer
+ * ok: bool result from SQL execution
+ * Effect: runs after_destroy when ok, then returns ok from the function. */
+#define AR_FINISH_DESTROY(cbs, record, ok) do { \
+    if (ok) ar_run_after_destroy((cbs), (void *)(record)); \
+    return (ok); \
+} while (0)
+
+/* AR_ADHOC_SAVE(ndb, stmt, sql, cbs, model_name, record, validate_fn, bind_code)
+ * Use for locally prepared INSERT/REPLACE saves.
+ * bind_code should fill every parameter on stmt before execution. */
+#define AR_ADHOC_SAVE(ndb, stmt, sql, cbs, model_name, record, validate_fn, bind_code) do { \
+    AR_BEGIN_SAVE((cbs), (model_name), (record), (validate_fn)); \
+    AR_PREPARE_BOOL((ndb), (stmt), (sql)); \
+    bind_code; \
+    bool _ok = false; \
+    AR_FINALIZE_STEP_DONE((stmt), _ok); \
+    AR_FINISH_SAVE((cbs), (record), _ok); \
+} while (0)
+
+/* AR_ADHOC_DESTROY(ndb, stmt, sql, cbs, record, bind_code)
+ * Use for locally prepared DELETE statements with destroy callbacks. */
+#define AR_ADHOC_DESTROY(ndb, stmt, sql, cbs, record, bind_code) do { \
+    AR_BEGIN_DESTROY((cbs), (record)); \
+    AR_PREPARE_BOOL((ndb), (stmt), (sql)); \
+    bind_code; \
+    bool _ok = false; \
+    AR_FINALIZE_STEP_DONE((stmt), _ok); \
+    AR_FINISH_DESTROY((cbs), (record), _ok); \
+} while (0)
+
+/* AR_CACHED_DESTROY(stmt, cbs, record, bind_code)
+ * stmt: cached prepared DELETE statement already owned by node_db. */
+#define AR_CACHED_DESTROY(stmt, cbs, record, bind_code) do { \
+    AR_BEGIN_DESTROY((cbs), (record)); \
+    AR_RESET((stmt)); \
+    bind_code; \
+    bool _ok = AR_STEP_DONE((stmt)); \
+    AR_FINISH_DESTROY((cbs), (record), _ok); \
+} while (0)
+
+/* AR_QUERY_EXISTS(ndb, stmt, sql, bind_code)
+ * Returns true when the SELECT yields at least one row. */
+#define AR_QUERY_EXISTS(ndb, stmt, sql, bind_code) do { \
+    AR_PREPARE_BOOL((ndb), (stmt), (sql)); \
+    bind_code; \
+    bool _found = AR_STEP_ROW((stmt)); \
+    AR_FINALIZE((stmt)); \
+    return _found; \
+} while (0)
+
+/* AR_QUERY_ONE_BOOL(ndb, stmt, sql, bind_code, row_code)
+ * Returns false when no row exists; otherwise runs row_code and returns true. */
+#define AR_QUERY_ONE_BOOL(ndb, stmt, sql, bind_code, row_code) do { \
+    AR_PREPARE_BOOL((ndb), (stmt), (sql)); \
+    bind_code; \
+    if (!AR_STEP_ROW((stmt))) { \
+        AR_FINALIZE((stmt)); \
+        return false; \
+    } \
+    row_code; \
+    AR_FINALIZE((stmt)); \
+    return true; \
+} while (0)
+
+/* AR_QUERY_LIST(ndb, stmt, sql, out, max, bind_code, row_code)
+ * out: output array
+ * max: max rows to write
+ * row_code: should populate out[count] for the current row. */
+#define AR_QUERY_LIST(ndb, stmt, sql, out, max, bind_code, row_code) do { \
+    int count = 0; \
+    AR_PREPARE_RET((ndb), (stmt), (sql), 0); \
+    bind_code; \
+    AR_LIST_ROWS((stmt), (out), (max), row_code); \
+    AR_FINALIZE((stmt)); \
+    return count; \
+} while (0)
+
+#define AR_QUERY_COUNT_BOUND(ndb, stmt, sql, bind_code) do { \
+    int _count = 0; \
+    AR_PREPARE_RET((ndb), (stmt), (sql), 0); \
+    bind_code; \
+    if (AR_STEP_ROW((stmt))) \
+        _count = (int)AR_COL_INT((stmt), 0); \
+    AR_FINALIZE((stmt)); \
+    return _count; \
+} while (0)
+
+#define AR_QUERY_INT64_BOUND(ndb, stmt, sql, bind_code) do { \
+    int64_t _value = 0; \
+    AR_PREPARE_RET((ndb), (stmt), (sql), 0); \
+    bind_code; \
+    if (AR_STEP_ROW((stmt))) \
+        _value = AR_COL_INT((stmt), 0); \
+    AR_FINALIZE((stmt)); \
+    return _value; \
+} while (0)
+
+/* AR_EXEC_BOOL(ndb, stmt, sql, bind_code)
+ * Use for UPDATE/DELETE/INSERT statements where SQLITE_DONE is sufficient. */
+#define AR_EXEC_BOOL(ndb, stmt, sql, bind_code) do { \
+    AR_PREPARE_BOOL((ndb), (stmt), (sql)); \
+    bind_code; \
+    bool _ok = false; \
+    AR_FINALIZE_STEP_DONE((stmt), _ok); \
+    return _ok; \
+} while (0)
+
+/* AR_EXEC_CHANGED_BOOL(ndb, stmt, sql, bind_code)
+ * Same as AR_EXEC_BOOL, but also requires sqlite3_changes(ndb->db) > 0. */
+#define AR_EXEC_CHANGED_BOOL(ndb, stmt, sql, bind_code) do { \
+    AR_PREPARE_BOOL((ndb), (stmt), (sql)); \
+    bind_code; \
+    bool _ok = false; \
+    AR_FINALIZE_STEP_DONE((stmt), _ok); \
+    return _ok && sqlite3_changes((ndb)->db) > 0; \
+} while (0)
 
 /* Count via a pre-cached SELECT COUNT(*) statement.
  * Usage: return AR_CACHED_COUNT(ndb->stmt_peer_count); */
@@ -299,6 +566,26 @@ static inline void ar_errors_full_messages(const struct ar_errors *e,
 
 /* Reset a cached statement for reuse (no finalize). */
 #define AR_RESET(stmt) sqlite3_reset(stmt)
+
+#define AR_QUERY_COUNT_SQL(ndb, sql) do { \
+    sqlite3_stmt *_s = NULL; \
+    int _count = 0; \
+    AR_PREPARE_RET((ndb), _s, (sql), 0); \
+    if (AR_STEP_ROW(_s)) \
+        _count = (int)AR_COL_INT(_s, 0); \
+    AR_FINALIZE(_s); \
+    return _count; \
+} while (0)
+
+#define AR_QUERY_INT64_SQL(ndb, sql) do { \
+    sqlite3_stmt *_s = NULL; \
+    int64_t _value = 0; \
+    AR_PREPARE_RET((ndb), _s, (sql), 0); \
+    if (AR_STEP_ROW(_s)) \
+        _value = AR_COL_INT(_s, 0); \
+    AR_FINALIZE(_s); \
+    return _value; \
+} while (0)
 
 /* ── Validate + Save lifecycle macro ──────────────────────────── *
  * Standard Rails-like lifecycle: validate → before_save → SQL → after_save.

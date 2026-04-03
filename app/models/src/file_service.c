@@ -30,17 +30,7 @@ static bool file_service_before_save(void *record, void *ctx)
     return true;
 }
 
-static struct ar_callbacks *file_service_callbacks_ready(void)
-{
-    struct ar_callbacks *cbs = db_file_service_callbacks();
-    static bool callbacks_ready = false;
-
-    if (!callbacks_ready) {
-        ar_register_before_save(cbs, file_service_before_save);
-        callbacks_ready = true;
-    }
-    return cbs;
-}
+DEFINE_MODEL_BEFORE_SAVE_READY(file_service, file_service_before_save)
 
 /* ── Validation ────────────────────────────────────────────────── */
 
@@ -74,8 +64,7 @@ bool db_file_service_save(struct node_db *ndb,
     if (!ndb->open) return false;
 
     struct ar_callbacks *cbs = file_service_callbacks_ready();
-    AR_VALIDATE_RECORD(cbs, "file_service", fs, db_file_service_validate);
-    if (!ar_run_before_save(cbs, (void *)fs)) return false;
+    AR_BEGIN_SAVE(cbs, "file_service", fs, db_file_service_validate);
 
     sqlite3_stmt *s = ndb->stmt_file_service_save;
     AR_RESET(s);
@@ -86,8 +75,7 @@ bool db_file_service_save(struct node_db *ndb,
     AR_BIND_INT(s, 5, fs->is_zcl23 ? 1 : 0);
 
     bool ok = AR_STEP_DONE(s);
-    if (ok) ar_run_after_save(cbs, (void *)fs);
-    return ok;
+    AR_FINISH_SAVE(cbs, fs, ok);
 }
 
 /* ── Find (cached stmt) ──────────────────────────────────────── */
@@ -102,11 +90,7 @@ bool db_file_service_find_by_addr(struct node_db *ndb,
     AR_RESET(s);
     AR_BIND_BLOB(s, 1, ip, 16);
     AR_BIND_INT(s, 2, port);
-
-    if (!AR_STEP_ROW(s)) return false;
-    memset(out, 0, sizeof(*out));
-    row_to_file_service(s, out);
-    return true;
+    AR_FIND_ONE_CACHED(s, out, row_to_file_service(s, out));
 }
 
 /* ── Delete ────────────────────────────────────────────────────── */
@@ -121,20 +105,12 @@ bool db_file_service_delete(struct node_db *ndb,
     memset(&fs, 0, sizeof(fs));
     memcpy(fs.ip, ip, 16);
     fs.port = port;
-    if (!ar_run_before_destroy(cbs, &fs)) return false;
-
     sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(ndb->db,
+    AR_ADHOC_DESTROY(ndb, s,
         "DELETE FROM file_services WHERE ip=? AND port=?",
-        -1, &s, NULL);
-    if (!s) return false;
-    AR_BIND_BLOB(s, 1, ip, 16);
-    AR_BIND_INT(s, 2, port);
-    bool ok = AR_STEP_DONE(s);
-    AR_FINALIZE(s);
-
-    if (ok) ar_run_after_destroy(cbs, &fs);
-    return ok;
+        cbs, &fs,
+        AR_BIND_BLOB(s, 1, ip, 16);
+        AR_BIND_INT(s, 2, port));
 }
 
 /* ── Count ─────────────────────────────────────────────────────── */
@@ -142,14 +118,7 @@ bool db_file_service_delete(struct node_db *ndb,
 int db_file_service_count(struct node_db *ndb)
 {
     if (!ndb->open) return 0;
-    sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(ndb->db,
-        "SELECT COUNT(*) FROM file_services", -1, &s, NULL);
-    int c = 0;
-    if (s && AR_STEP_ROW(s))
-        c = (int)AR_COL_INT(s, 0);
-    AR_FINALIZE(s);
-    return c;
+    AR_QUERY_COUNT_SQL(ndb, "SELECT COUNT(*) FROM file_services");
 }
 
 /* ── Recent ────────────────────────────────────────────────────── */
@@ -159,18 +128,14 @@ int db_file_service_recent(struct node_db *ndb,
 {
     if (!ndb->open) return 0;
     sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(ndb->db,
+    int count = 0;
+
+    AR_PREPARE_RET(ndb, s,
         "SELECT ip, port, p2p_port, last_seen, is_zcl23"
         " FROM file_services ORDER BY last_seen DESC LIMIT ?",
-        -1, &s, NULL);
-    if (!s) return 0;
+        0);
     AR_BIND_INT(s, 1, (int)max);
-    int count = 0;
-    while (AR_STEP_ROW(s) && (size_t)count < max) {
-        memset(&out[count], 0, sizeof(out[count]));
-        row_to_file_service(s, &out[count]);
-        count++;
-    }
+    AR_LIST_ROWS(s, out, max, row_to_file_service(s, &out[count]));
     AR_FINALIZE(s);
     return count;
 }

@@ -28,6 +28,7 @@
 #include "core/random.h"
 #include "crypto/sha3.h"
 #include "event/event.h"
+#include "config/runtime.h"
 #include "validation/main_state.h"
 #include <string.h>
 #include <stdio.h>
@@ -50,11 +51,240 @@ void snapsync_global_ensure_init(struct node_db *ndb)
 
 #define SNAPSYNC_BATCH_COMMIT_ROWS 100000
 
+struct snapsync_apply_chunk_ctx {
+    struct snapshot_sync_service *svc;
+    uint8_t *chunk_data;
+    size_t chunk_len;
+    int applied;
+};
+
+struct snapsync_finalize_ctx {
+    struct snapshot_sync_service *svc;
+    bool ok;
+};
+
 static int64_t now_us(void)
 {
     struct timeval tv;
     gettimeofday(&tv, NULL);
     return (int64_t)tv.tv_sec * 1000000 + tv.tv_usec;
+}
+
+static struct db_service *snapsync_db_service(
+    const struct snapshot_sync_service *svc)
+{
+    struct db_service *dbsvc = app_runtime_db_service();
+
+    if (!svc || !dbsvc)
+        return NULL;
+    return db_service_node_db(dbsvc) == svc->ndb ? dbsvc : NULL;
+}
+
+static bool snapsync_run_write(struct snapshot_sync_service *svc,
+                               db_service_write_fn fn,
+                               void *ctx)
+{
+    struct db_service *dbsvc = snapsync_db_service(svc);
+
+    if (!svc || !svc->ndb || !fn)
+        return false;
+    if (dbsvc)
+        return db_service_run_write(dbsvc, fn, ctx);
+    return fn(svc->ndb, ctx);
+}
+
+static bool snapsync_begin_receive_write(struct node_db *ndb, void *ctx)
+{
+    struct snapshot_sync_service *svc = ctx;
+
+    if (!svc || !ndb || !ndb->open)
+        return false;
+
+    node_db_wipe_utxos(ndb);
+    if (!node_db_begin(ndb))
+        return false;
+    svc->received_utxos = 0;
+    svc->last_commit_at = 0;
+    return true;
+}
+
+static int snapsync_apply_chunk_local(struct snapshot_sync_service *svc,
+                                      const uint8_t *chunk_data,
+                                      size_t chunk_len)
+{
+    size_t pos = 4;
+    int applied = 0;
+    uint32_t entries;
+
+    if (!svc || !svc->ndb || !svc->ndb->open || !chunk_data || chunk_len < 4)
+        return -1;
+
+    entries = chunk_data[0] | ((uint32_t)chunk_data[1] << 8) |
+              ((uint32_t)chunk_data[2] << 16) | ((uint32_t)chunk_data[3] << 24);
+    if (entries == 0 || entries > 1000)
+        return -1;
+
+    for (uint32_t i = 0; i < entries; i++) {
+        if (pos + 48 > chunk_len) return -1;
+
+        struct db_utxo u;
+        memset(&u, 0, sizeof(u));
+
+        memcpy(u.txid, chunk_data + pos, 32); pos += 32;
+
+        u.vout = (uint32_t)(chunk_data[pos] | (chunk_data[pos+1] << 8) |
+                  (chunk_data[pos+2] << 16) | (chunk_data[pos+3] << 24));
+        pos += 4;
+
+        u.value = 0;
+        for (int j = 0; j < 8; j++)
+            u.value |= (int64_t)chunk_data[pos + j] << (j * 8);
+        pos += 8;
+
+        u.height = (int)(chunk_data[pos] | (chunk_data[pos+1] << 8) |
+                    (chunk_data[pos+2] << 16) | (chunk_data[pos+3] << 24));
+        pos += 4;
+
+        if (pos >= chunk_len) return -1;
+        u.is_coinbase = (chunk_data[pos++] != 0);
+
+        if (pos >= chunk_len) return -1;
+        uint64_t slen = chunk_data[pos++];
+        if (slen == 253) {
+            if (pos + 2 > chunk_len) return -1;
+            slen = chunk_data[pos] | (chunk_data[pos+1] << 8);
+            pos += 2;
+        } else if (slen == 254) {
+            if (pos + 4 > chunk_len) return -1;
+            slen = chunk_data[pos] | ((uint32_t)chunk_data[pos+1] << 8) |
+                   ((uint32_t)chunk_data[pos+2] << 16) | ((uint32_t)chunk_data[pos+3] << 24);
+            pos += 4;
+        }
+        if (pos + slen > chunk_len) return -1;
+
+        u.script = (uint8_t *)(chunk_data + pos);
+        u.script_len = (size_t)slen;
+        pos += slen;
+
+        u.script_type = utxo_classify_script(u.script, u.script_len,
+                                             u.address_hash, &u.has_address);
+
+        if (!db_utxo_insert_raw(svc->ndb, &u))
+            continue;
+        applied++;
+    }
+
+    svc->received_utxos += (uint64_t)applied;
+
+    if (svc->received_utxos - svc->last_commit_at >= SNAPSYNC_BATCH_COMMIT_ROWS) {
+        if (!node_db_commit(svc->ndb) || !node_db_begin(svc->ndb))
+            return -1;
+        svc->last_commit_at = svc->received_utxos;
+
+        double elapsed_s = (double)(now_us() - svc->start_time_us) / 1000000.0;
+        double rate = elapsed_s > 0 ? (double)svc->received_utxos / elapsed_s : 0;
+        event_emitf(EV_SNAPSYNC_PROGRESS, svc->serving_peer_id,
+                    "received=%llu/%llu rate=%.0f/s",
+                    (unsigned long long)svc->received_utxos,
+                    (unsigned long long)svc->offered_count, rate);
+    }
+
+    return applied;
+}
+
+static bool snapsync_apply_chunk_write(struct node_db *ndb, void *ctx)
+{
+    struct snapsync_apply_chunk_ctx *apply = ctx;
+
+    (void)ndb;
+    if (!apply || !apply->svc || !apply->chunk_data)
+        return false;
+    apply->applied = snapsync_apply_chunk_local(apply->svc,
+                                                apply->chunk_data,
+                                                apply->chunk_len);
+    return apply->applied >= 0;
+}
+
+static bool snapsync_finalize_write(struct node_db *ndb, void *ctx)
+{
+    struct snapsync_finalize_ctx *finalize = ctx;
+    struct snapshot_sync_service *svc;
+    uint8_t local_root[32];
+    uint64_t local_count = 0;
+    bool sha3_ok;
+    double elapsed_s;
+
+    if (!finalize || !finalize->svc || !ndb || !ndb->open)
+        return false;
+    svc = finalize->svc;
+
+    if (!node_db_commit(ndb))
+        return false;
+
+    svc->state = SNAPSYNC_VERIFYING;
+    snapsync_set_state(SNAPSYNC_VERIFYING, "all chunks received");
+
+    elapsed_s = (double)(now_us() - svc->start_time_us) / 1000000.0;
+    printf("[snapsync] %llu UTXOs in %.1fs (%.0f/s), verifying SHA3...\n",
+           (unsigned long long)svc->received_utxos, elapsed_s,
+           elapsed_s > 0 ? (double)svc->received_utxos / elapsed_s : 0);
+
+    utxo_commitment_sha3_compute(ndb->db, local_root, &local_count);
+    sha3_ok = (memcmp(local_root, svc->offered_utxo_root, 32) == 0);
+
+    if (sha3_ok) {
+        bool has_mmb = false;
+
+        node_db_state_set(ndb, "coins_best_block", svc->offered_block_hash, 32);
+        for (int i = 0; i < 32; i++) {
+            if (svc->offered_mmb_root[i]) {
+                has_mmb = true;
+                break;
+            }
+        }
+        if (has_mmb) {
+            node_db_state_set(ndb, "snapshot_mmb_root",
+                              svc->offered_mmb_root, 32);
+            node_db_state_set(ndb, "snapshot_mmr_height",
+                              &svc->offered_height, 4);
+        }
+        if (!node_db_normal_mode(ndb))
+            return false;
+        svc->turbo_active = false;
+        svc->state = SNAPSYNC_COMPLETE;
+        snapsync_set_state(SNAPSYNC_COMPLETE, "SHA3 verified");
+
+        event_emitf(EV_SNAPSYNC_VERIFIED, svc->serving_peer_id,
+                    "sha3=PASSED flyclient=%s utxos=%llu elapsed=%.1fs",
+                    svc->fc_verified ? "PASSED" : "SKIPPED",
+                    (unsigned long long)local_count, elapsed_s);
+        event_emitf(EV_UTXO_CHECKPOINT_PASS, 0,
+                    "snapshot SHA3 PASSED count=%llu",
+                    (unsigned long long)local_count);
+        printf("*** SNAPSHOT VERIFIED: %llu UTXOs, SHA3 PASSED, %.1fs ***\n",
+               (unsigned long long)local_count, elapsed_s);
+        finalize->ok = true;
+        return true;
+    } else {
+        char exp[65], got[65];
+
+        for (int i = 0; i < 32; i++) {
+            sprintf(exp + i*2, "%02x", svc->offered_utxo_root[i]);
+            sprintf(got + i*2, "%02x", local_root[i]);
+        }
+        fprintf(stderr, "[snapsync] SHA3 FAILED!\n  Expected: %s\n  Got:      %s\n",
+                exp, got);
+
+        node_db_wipe_utxos(ndb);
+        node_db_normal_mode(ndb);
+        svc->turbo_active = false;
+        svc->state = SNAPSYNC_FAILED;
+        snapsync_set_state(SNAPSYNC_FAILED, "SHA3 verification failed");
+        event_emitf(EV_UTXO_CHECKPOINT_FAIL, 0,
+                    "snapshot SHA3 FAILED expected=%s got=%s", exp, got);
+        finalize->ok = false;
+        return false;
+    }
 }
 
 /* ── Init / Reset ────────────────────────────────────────── */
@@ -69,7 +299,11 @@ void snapsync_init(struct snapshot_sync_service *svc, struct node_db *ndb)
 void snapsync_reset(struct snapshot_sync_service *svc)
 {
     if (svc->turbo_active && svc->ndb && svc->ndb->open) {
-        node_db_normal_mode(svc->ndb);
+        struct db_service *dbsvc = snapsync_db_service(svc);
+        if (dbsvc)
+            db_service_normal_mode(dbsvc);
+        else
+            node_db_normal_mode(svc->ndb);
         svc->turbo_active = false;
     }
     svc->state = SNAPSYNC_IDLE;
@@ -135,17 +369,18 @@ bool snapsync_begin_receive(struct snapshot_sync_service *svc)
     }
 
     /* Enter turbo mode via ActiveRecord database helpers */
-    node_db_ibd_turbo_mode(svc->ndb);
+    struct db_service *dbsvc = snapsync_db_service(svc);
+    if (dbsvc) {
+        if (!db_service_ibd_turbo_mode(dbsvc))
+            return false;
+    } else if (!node_db_ibd_turbo_mode(svc->ndb)) {
+        return false;
+    }
     svc->turbo_active = true;
 
-    /* Wipe any stale UTXOs from previous failed attempt */
-    node_db_wipe_utxos(svc->ndb);
-
-    /* Begin batch transaction */
-    node_db_begin(svc->ndb);
-
-    svc->received_utxos = 0;
-    svc->last_commit_at = 0;
+    if (!snapsync_run_write(svc, snapsync_begin_receive_write, svc)) {
+        return false;
+    }
 
     svc->state = SNAPSYNC_RECEIVING;
     snapsync_set_state(SNAPSYNC_RECEIVING, "turbo mode active");
@@ -157,6 +392,8 @@ bool snapsync_begin_receive(struct snapshot_sync_service *svc)
 int snapsync_apply_chunk(struct snapshot_sync_service *svc,
                          const uint8_t *chunk_data, size_t chunk_len)
 {
+    struct snapsync_apply_chunk_ctx ctx;
+
     if (!svc) return -1;
 
     /* Only accept chunks in RECEIVING state.
@@ -166,171 +403,34 @@ int snapsync_apply_chunk(struct snapshot_sync_service *svc,
     if (!svc->ndb || !svc->ndb->open) return -1;
     if (!chunk_data || chunk_len < 4) return -1;
 
-    /* Parse entry count */
-    uint32_t entries = chunk_data[0] | ((uint32_t)chunk_data[1] << 8) |
-                       ((uint32_t)chunk_data[2] << 16) | ((uint32_t)chunk_data[3] << 24);
-    if (entries == 0 || entries > 1000) return -1;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.svc = svc;
+    ctx.chunk_data = malloc(chunk_len);
+    if (!ctx.chunk_data)
+        return -1;
+    memcpy(ctx.chunk_data, chunk_data, chunk_len);
+    ctx.chunk_len = chunk_len;
 
-    size_t pos = 4;
-    int applied = 0;
-
-    for (uint32_t i = 0; i < entries; i++) {
-        if (pos + 48 > chunk_len) return -1;
-
-        /* Parse wire format: txid(32) + vout(4) + value(8) + height(4) +
-         *                    script_len(compact) + script(var) */
-        struct db_utxo u;
-        memset(&u, 0, sizeof(u));
-
-        memcpy(u.txid, chunk_data + pos, 32); pos += 32;
-
-        u.vout = (uint32_t)(chunk_data[pos] | (chunk_data[pos+1] << 8) |
-                  (chunk_data[pos+2] << 16) | (chunk_data[pos+3] << 24));
-        pos += 4;
-
-        u.value = 0;
-        for (int j = 0; j < 8; j++)
-            u.value |= (int64_t)chunk_data[pos + j] << (j * 8);
-        pos += 8;
-
-        u.height = (int)(chunk_data[pos] | (chunk_data[pos+1] << 8) |
-                    (chunk_data[pos+2] << 16) | (chunk_data[pos+3] << 24));
-        pos += 4;
-
-        /* is_coinbase (1 byte) — needed for SHA3 match */
-        if (pos >= chunk_len) return -1;
-        u.is_coinbase = (chunk_data[pos++] != 0);
-
-        /* Compact size for script length */
-        if (pos >= chunk_len) return -1;
-        uint64_t slen = chunk_data[pos++];
-        if (slen == 253) {
-            if (pos + 2 > chunk_len) return -1;
-            slen = chunk_data[pos] | (chunk_data[pos+1] << 8);
-            pos += 2;
-        } else if (slen == 254) {
-            if (pos + 4 > chunk_len) return -1;
-            slen = chunk_data[pos] | ((uint32_t)chunk_data[pos+1] << 8) |
-                   ((uint32_t)chunk_data[pos+2] << 16) | ((uint32_t)chunk_data[pos+3] << 24);
-            pos += 4;
-        }
-        if (pos + slen > chunk_len) return -1;
-
-        /* Set script pointer (no alloc — points into chunk_data buffer) */
-        u.script = (uint8_t *)(chunk_data + pos);
-        u.script_len = (size_t)slen;
-        pos += slen;
-
-        /* Classify script to get script_type and address_hash */
-        u.script_type = utxo_classify_script(u.script, u.script_len,
-                                              u.address_hash, &u.has_address);
-
-        /* Fast bulk insert — no validation, no callbacks.
-         * Data comes from a SHA3-verified peer snapshot; full AR
-         * validation would add ~40% overhead for 1.35M UTXOs. */
-        if (!db_utxo_insert_raw(svc->ndb, &u))
-            continue;
-        applied++;
+    if (!snapsync_run_write(svc, snapsync_apply_chunk_write, &ctx)) {
+        free(ctx.chunk_data);
+        return -1;
     }
-
-    svc->received_utxos += (uint64_t)applied;
-
-    /* Batch COMMIT every 100K rows */
-    if (svc->received_utxos - svc->last_commit_at >= SNAPSYNC_BATCH_COMMIT_ROWS) {
-        node_db_commit(svc->ndb);
-        node_db_begin(svc->ndb);
-        svc->last_commit_at = svc->received_utxos;
-
-        double elapsed_s = (double)(now_us() - svc->start_time_us) / 1000000.0;
-        double rate = elapsed_s > 0 ? (double)svc->received_utxos / elapsed_s : 0;
-        event_emitf(EV_SNAPSYNC_PROGRESS, svc->serving_peer_id,
-                    "received=%llu/%llu rate=%.0f/s",
-                    (unsigned long long)svc->received_utxos,
-                    (unsigned long long)svc->offered_count, rate);
-    }
-
-    return applied;
+    free(ctx.chunk_data);
+    return ctx.applied;
 }
 
 /* ── Finalize ────────────────────────────────────────────── */
 
 bool snapsync_finalize(struct snapshot_sync_service *svc)
 {
+    struct snapsync_finalize_ctx ctx;
+
     if (!svc || svc->state != SNAPSYNC_RECEIVING) return false;
     if (!svc->ndb || !svc->ndb->open) return false;
 
-    /* Final COMMIT */
-    node_db_commit(svc->ndb);
-
-    svc->state = SNAPSYNC_VERIFYING;
-    snapsync_set_state(SNAPSYNC_VERIFYING, "all chunks received");
-
-    double elapsed_s = (double)(now_us() - svc->start_time_us) / 1000000.0;
-    printf("[snapsync] %llu UTXOs in %.1fs (%.0f/s), verifying SHA3...\n",
-           (unsigned long long)svc->received_utxos, elapsed_s,
-           elapsed_s > 0 ? (double)svc->received_utxos / elapsed_s : 0);
-
-    /* SHA3-256 verification */
-    uint8_t local_root[32];
-    uint64_t local_count = 0;
-    utxo_commitment_sha3_compute(svc->ndb->db, local_root, &local_count);
-
-    bool sha3_ok = (memcmp(local_root, svc->offered_utxo_root, 32) == 0);
-
-    if (sha3_ok) {
-        /* Set coins_best_block via node_db state store */
-        node_db_state_set(svc->ndb, "coins_best_block",
-                          svc->offered_block_hash, 32);
-
-        /* Store MMB root for deferred FlyClient verification */
-        bool has_mmb = false;
-        for (int i = 0; i < 32; i++)
-            if (svc->offered_mmb_root[i]) { has_mmb = true; break; }
-        if (has_mmb) {
-            node_db_state_set(svc->ndb, "snapshot_mmb_root",
-                              svc->offered_mmb_root, 32);
-            node_db_state_set(svc->ndb, "snapshot_mmr_height",
-                              &svc->offered_height, 4);
-        }
-
-        /* Rebuild indexes and restore normal mode */
-        node_db_normal_mode(svc->ndb);
-        svc->turbo_active = false;
-
-        svc->state = SNAPSYNC_COMPLETE;
-        snapsync_set_state(SNAPSYNC_COMPLETE, "SHA3 verified");
-
-        event_emitf(EV_SNAPSYNC_VERIFIED, svc->serving_peer_id,
-                    "sha3=PASSED flyclient=%s utxos=%llu elapsed=%.1fs",
-                    svc->fc_verified ? "PASSED" : "SKIPPED",
-                    (unsigned long long)local_count, elapsed_s);
-        event_emitf(EV_UTXO_CHECKPOINT_PASS, 0,
-                    "snapshot SHA3 PASSED count=%llu",
-                    (unsigned long long)local_count);
-
-        printf("*** SNAPSHOT VERIFIED: %llu UTXOs, SHA3 PASSED, %.1fs ***\n",
-               (unsigned long long)local_count, elapsed_s);
-        return true;
-    } else {
-        char exp[65], got[65];
-        for (int i = 0; i < 32; i++) {
-            sprintf(exp + i*2, "%02x", svc->offered_utxo_root[i]);
-            sprintf(got + i*2, "%02x", local_root[i]);
-        }
-        fprintf(stderr, "[snapsync] SHA3 FAILED!\n  Expected: %s\n  Got:      %s\n",
-                exp, got);
-
-        /* Wipe bad UTXOs via database helper */
-        node_db_wipe_utxos(svc->ndb);
-        node_db_normal_mode(svc->ndb);
-        svc->turbo_active = false;
-
-        svc->state = SNAPSYNC_FAILED;
-        snapsync_set_state(SNAPSYNC_FAILED, "SHA3 verification failed");
-        event_emitf(EV_UTXO_CHECKPOINT_FAIL, 0,
-                    "snapshot SHA3 FAILED expected=%s got=%s", exp, got);
-        return false;
-    }
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.svc = svc;
+    return snapsync_run_write(svc, snapsync_finalize_write, &ctx) && ctx.ok;
 }
 
 /* ── Progress Query ──────────────────────────────────────── */

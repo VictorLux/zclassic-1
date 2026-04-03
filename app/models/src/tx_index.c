@@ -36,8 +36,7 @@ bool db_tx_save(struct node_db *ndb, const struct db_tx_index *t)
     if (!ndb->open) return false;
 
     struct ar_callbacks *cbs = db_tx_callbacks();
-    AR_VALIDATE_RECORD(cbs, "tx_index", t, db_tx_validate);
-    if (!ar_run_before_save(cbs, (void *)t)) return false;
+    AR_BEGIN_SAVE(cbs, "tx_index", t, db_tx_validate);
 
     sqlite3_stmt *s = ndb->stmt_tx_insert;
     sqlite3_reset(s);
@@ -50,8 +49,7 @@ bool db_tx_save(struct node_db *ndb, const struct db_tx_index *t)
     AR_BIND_INT(s, 7, t->is_coinbase ? 1 : 0);
 
     bool ok = AR_STEP_DONE(s);
-    if (ok) ar_run_after_save(cbs, (void *)t);
-    return ok;
+    AR_FINISH_SAVE(cbs, t, ok);
 }
 
 /* ── Find ──────────────────────────────────────────────────────── */
@@ -63,16 +61,14 @@ bool db_tx_find(struct node_db *ndb, const uint8_t txid[32],
     sqlite3_stmt *s = ndb->stmt_tx_find;
     sqlite3_reset(s);
     AR_BIND_BLOB(s, 1, txid, 32);
-    if (!AR_STEP_ROW(s)) return false;
-    memset(out, 0, sizeof(*out));
-    memcpy(out->txid, txid, 32);
-    AR_READ_BLOB(s, 0, out->block_hash, 32);
-    out->block_height = (int)AR_COL_INT(s, 1);
-    out->tx_index = (int)AR_COL_INT(s, 2);
-    out->file_num = (int)AR_COL_INT(s, 3);
-    out->file_pos = (int)AR_COL_INT(s, 4);
-    out->is_coinbase = AR_COL_INT(s, 5) != 0;
-    return true;
+    AR_FIND_ONE_CACHED(s, out,
+        memcpy(out->txid, txid, 32);
+        AR_READ_BLOB(s, 0, out->block_hash, 32);
+        out->block_height = (int)AR_COL_INT(s, 1);
+        out->tx_index = (int)AR_COL_INT(s, 2);
+        out->file_num = (int)AR_COL_INT(s, 3);
+        out->file_pos = (int)AR_COL_INT(s, 4);
+        out->is_coinbase = AR_COL_INT(s, 5) != 0);
 }
 
 /* ── Delete ────────────────────────────────────────────────────── */
@@ -84,17 +80,9 @@ bool db_tx_delete(struct node_db *ndb, const uint8_t txid[32])
     struct ar_callbacks *cbs = db_tx_callbacks();
     struct db_tx_index t;
     memcpy(t.txid, txid, 32);
-    if (!ar_run_before_destroy(cbs, &t)) return false;
-
     sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(ndb->db, "DELETE FROM transactions WHERE txid=?",
-                       -1, &s, NULL);
-    if (!s) return false;
-    AR_BIND_BLOB(s, 1, txid, 32);
-    bool ok = AR_STEP_DONE(s);
-    AR_FINALIZE(s);
-    if (ok) ar_run_after_destroy(cbs, &t);
-    return ok;
+    AR_ADHOC_DESTROY(ndb, s, "DELETE FROM transactions WHERE txid=?",
+        cbs, &t, AR_BIND_BLOB(s, 1, txid, 32));
 }
 
 /* ── Queries ───────────────────────────────────────────────────── */
@@ -102,14 +90,46 @@ bool db_tx_delete(struct node_db *ndb, const uint8_t txid[32])
 int db_tx_count(struct node_db *ndb)
 {
     if (!ndb->open) return 0;
-    sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(ndb->db, "SELECT COUNT(*) FROM transactions",
-                       -1, &s, NULL);
-    int count = 0;
-    if (AR_STEP_ROW(s))
-        count = (int)AR_COL_INT(s, 0);
-    AR_FINALIZE(s);
-    return count;
+    AR_QUERY_COUNT_SQL(ndb, "SELECT COUNT(*) FROM transactions");
+}
+
+bool db_tx_delete_all(struct node_db *ndb)
+{
+    if (!ndb || !ndb->open)
+        return false;
+    return node_db_exec(ndb, "DELETE FROM transactions");
+}
+
+bool db_tx_prepare_bulk_load(struct node_db *ndb)
+{
+    if (!ndb || !ndb->open)
+        return false;
+    sqlite3_exec(ndb->db, "PRAGMA synchronous=OFF", NULL, NULL, NULL);
+    sqlite3_exec(ndb->db, "PRAGMA cache_size=-524288", NULL, NULL, NULL);
+    sqlite3_exec(ndb->db, "PRAGMA wal_autocheckpoint=0", NULL, NULL, NULL);
+    sqlite3_busy_timeout(ndb->db, 30000);
+    sqlite3_exec(ndb->db, "DROP INDEX IF EXISTS idx_tx_block",
+                 NULL, NULL, NULL);
+    sqlite3_exec(ndb->db, "DROP INDEX IF EXISTS idx_tx_height",
+                 NULL, NULL, NULL);
+    return db_tx_delete_all(ndb);
+}
+
+bool db_tx_finalize_bulk_load(struct node_db *ndb)
+{
+    if (!ndb || !ndb->open)
+        return false;
+    sqlite3_exec(ndb->db,
+        "CREATE INDEX IF NOT EXISTS idx_tx_block ON transactions(block_hash)",
+        NULL, NULL, NULL);
+    sqlite3_exec(ndb->db,
+        "CREATE INDEX IF NOT EXISTS idx_tx_height ON transactions(block_height)",
+        NULL, NULL, NULL);
+    sqlite3_exec(ndb->db, "PRAGMA synchronous=NORMAL", NULL, NULL, NULL);
+    sqlite3_exec(ndb->db, "PRAGMA wal_autocheckpoint=1000", NULL, NULL, NULL);
+    sqlite3_wal_checkpoint_v2(ndb->db, NULL,
+        SQLITE_CHECKPOINT_TRUNCATE, NULL, NULL);
+    return true;
 }
 
 bool db_tx_save_batch(struct node_db *ndb, const struct db_tx_index *txs,

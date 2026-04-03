@@ -385,249 +385,223 @@ static bool json_next_int(const char **pos, const char *key, int *out) {
     return true;
 }
 
+static void wv_sapling_placeholder_fields(const uint8_t txid_bin[32],
+                                          int outindex,
+                                          uint8_t rcm[32],
+                                          uint8_t ivk[32],
+                                          uint8_t div_full[32],
+                                          uint8_t pkd[32],
+                                          uint8_t cm[32],
+                                          uint8_t nf[32])
+{
+    uint8_t seed[36];
+
+    memcpy(seed, txid_bin, 32);
+    seed[32] = (uint8_t)(outindex & 0xFF);
+    seed[33] = (uint8_t)((outindex >> 8) & 0xFF);
+    seed[34] = 0;
+    seed[35] = 0;
+
+    #define HASH_FIELD(tag, taglen, out) do { \
+        struct sha256_ctx _hc; \
+        sha256_init(&_hc); \
+        sha256_write(&_hc, (const unsigned char *)(tag), (taglen)); \
+        sha256_write(&_hc, seed, 36); \
+        sha256_finalize(&_hc, (out)); \
+    } while (0)
+
+    HASH_FIELD("nf", 2, nf);
+    HASH_FIELD("cm", 2, cm);
+    HASH_FIELD("rcm", 3, rcm);
+    HASH_FIELD("ivk", 3, ivk);
+    HASH_FIELD("pkd", 3, pkd);
+    HASH_FIELD("div", 3, div_full);
+
+    #undef HASH_FIELD
+}
+
 /* ── Sync wallet from zclassicd ────────────────────────────── */
 
 void wv_sync_wallet_from_zclassicd(void) {
     if (!g_wv_datadir) return;
-    sqlite3 *db = wv_open_db_rw();
-    if (!db) return;
+    char dbpath[1024];
+    struct node_db ndb;
+    struct db_wallet_utxo *utxos = NULL;
+    struct db_sapling_note *notes = NULL;
+    size_t utxo_count = 0;
+    size_t utxo_cap = 0;
+    size_t note_count = 0;
+    size_t note_cap = 0;
+
+    snprintf(dbpath, sizeof(dbpath), "%s/node.db", g_wv_datadir);
+    memset(&ndb, 0, sizeof(ndb));
+    if (!node_db_open(&ndb, dbpath))
+        return;
 
     /* Fetch transparent UTXOs from zclassicd */
     char lu[65536] = "";
     int lu_rc = wv_rpc_call("listunspent", "[0]", lu, sizeof(lu));
-    if (lu_rc <= 0) { sqlite3_close(db); return; }
+    if (lu_rc <= 0) { node_db_close(&ndb); return; }
 
     /* Fetch shielded notes from zclassicd.
      * z_listunspent can be large (~1.3KB per note with memo fields).
      * 256KB handles ~200 notes safely. */
     char zlu[262144] = "";
     int zlu_rc = wv_rpc_call("z_listunspent", "[0]", zlu, sizeof(zlu));
-    if (zlu_rc <= 0) { sqlite3_close(db); return; }
+    if (zlu_rc <= 0) { node_db_close(&ndb); return; }
 
     /* Sanity: response must contain "result" and at least one entry.
      * If response is an error or empty, don't wipe the DB. */
     if (!strstr(lu, "\"result\"") || !strstr(lu, "\"txid\"")) {
-        sqlite3_close(db); return;
+        node_db_close(&ndb); return;
     }
 
-    /* Both RPCs succeeded — parse into temp table first, then swap.
-     * If parsing produces 0 results, don't touch the real tables. */
-    sqlite3_exec(db, "BEGIN", NULL, NULL, NULL);
-    sqlite3_exec(db,
-        "CREATE TEMP TABLE new_utxos AS SELECT * FROM wallet_utxos WHERE 0",
-        NULL, NULL, NULL);
-
-    /* Get chain tip for height computation: height = tip - confirmations + 1 */
-    int chain_tip = 0;
-    { sqlite3_stmt *tip_s = NULL;
-      if (sqlite3_prepare_v2(db, "SELECT MAX(height) FROM blocks",
-                              -1, &tip_s, NULL) == SQLITE_OK) {
-          if (sqlite3_step(tip_s) == SQLITE_ROW)
-              chain_tip = sqlite3_column_int(tip_s, 0);
-          sqlite3_finalize(tip_s);
-      }
-    }
-
-    sqlite3_stmt *ins_utxo = NULL;
-    sqlite3_prepare_v2(db,
-        "INSERT INTO new_utxos "
-        "(txid,vout,value,address_hash,script,height,is_coinbase,spent_txid) "
-        "VALUES (?,?,?,?,?,?,0,NULL)", -1, &ins_utxo, NULL);
-
-    if (ins_utxo) {
+    {
+        int chain_tip = db_wallet_chain_tip_height(&ndb);
         const char *p = lu;
-        const char *txid_s; size_t txid_l;
-        while (json_next_str(&p, "txid", &txid_s, &txid_l)) {
-            if (txid_l != 64) continue;
-            uint8_t txid_bin[32];
-            if (hex_to_bin(txid_s, 64, txid_bin, 32) != 32) continue;
+        const char *txid_s;
+        size_t txid_l;
 
-            int vout = 0, confs = 0;
+        while (json_next_str(&p, "txid", &txid_s, &txid_l)) {
+            struct db_wallet_utxo row;
+            int vout = 0;
+            int confs = 0;
+            int height = 0;
             double amt = 0;
-            const char *script_s; size_t script_l;
+            int64_t val = 0;
+            const char *script_s;
+            size_t script_l = 0;
             const char *scan = p;
+            uint8_t script_bin[64];
+            size_t script_bin_len = 0;
+
+            if (txid_l != 64)
+                continue;
+            memset(&row, 0, sizeof(row));
+            if (hex_to_bin(txid_s, 64, row.txid, 32) != 32)
+                continue;
             json_next_int(&scan, "vout", &vout);
             scan = p;
             json_next_num(&scan, "amount", &amt);
             scan = p;
             json_next_int(&scan, "confirmations", &confs);
-            int64_t val = (int64_t)(amt * 1e8 + 0.5);
-            int height = (chain_tip > 0 && confs > 0)
-                ? (chain_tip - confs + 1) : 0;
+            val = (int64_t)(amt * 1e8 + 0.5);
+            height = (chain_tip > 0 && confs > 0) ? (chain_tip - confs + 1) : 0;
 
-            /* Get scriptPubKey for address_hash extraction */
-            uint8_t addr_hash[20] = {0};
-            uint8_t script_bin[64] = {0};
-            size_t script_bin_len = 0;
+            row.vout = (uint32_t)vout;
+            row.value = val;
+            row.height = height;
+
             scan = p;
             if (json_next_str(&scan, "scriptPubKey", &script_s, &script_l)) {
                 script_bin_len = hex_to_bin(script_s, script_l,
-                                             script_bin, sizeof(script_bin));
-                /* P2PKH: 76a914{20}88ac — extract 20-byte hash */
+                                            script_bin, sizeof(script_bin));
                 if (script_bin_len == 25 && script_bin[0] == 0x76 &&
                     script_bin[1] == 0xa9 && script_bin[2] == 0x14) {
-                    memcpy(addr_hash, script_bin + 3, 20);
+                    memcpy(row.address_hash, script_bin + 3, 20);
                 }
             }
+            if (script_bin_len > 0) {
+                row.script = malloc(script_bin_len);
+                if (!row.script)
+                    goto cleanup;
+                memcpy(row.script, script_bin, script_bin_len);
+                row.script_len = script_bin_len;
+            }
 
-            sqlite3_bind_blob(ins_utxo, 1, txid_bin, 32, SQLITE_TRANSIENT);
-            sqlite3_bind_int(ins_utxo, 2, vout);
-            sqlite3_bind_int64(ins_utxo, 3, val);
-            sqlite3_bind_blob(ins_utxo, 4, addr_hash, 20, SQLITE_TRANSIENT);
-            sqlite3_bind_blob(ins_utxo, 5, script_bin,
-                              (int)script_bin_len, SQLITE_TRANSIENT);
-            sqlite3_bind_int(ins_utxo, 6, height);
-            sqlite3_step(ins_utxo);
-            sqlite3_reset(ins_utxo);
+            if (utxo_count == utxo_cap) {
+                size_t new_cap = utxo_cap == 0 ? 64 : utxo_cap * 2;
+                struct db_wallet_utxo *new_rows =
+                    realloc(utxos, new_cap * sizeof(*utxos));
+                if (!new_rows) {
+                    db_wallet_utxo_free(&row);
+                    goto cleanup;
+                }
+                utxos = new_rows;
+                utxo_cap = new_cap;
+            }
+            utxos[utxo_count++] = row;
         }
-        sqlite3_finalize(ins_utxo);
     }
 
-    /* Only replace wallet_utxos if parsing produced results */
-    int new_count = 0;
-    { sqlite3_stmt *cnt = NULL;
-      if (sqlite3_prepare_v2(db, "SELECT count(*) FROM new_utxos",
-                              -1, &cnt, NULL) == SQLITE_OK) {
-          if (sqlite3_step(cnt) == SQLITE_ROW)
-              new_count = sqlite3_column_int(cnt, 0);
-          sqlite3_finalize(cnt);
-      }
-    }
-    if (new_count > 0) {
-        sqlite3_exec(db, "DELETE FROM wallet_utxos", NULL, NULL, NULL);
-        sqlite3_exec(db,
-            "INSERT INTO wallet_utxos SELECT * FROM new_utxos",
-            NULL, NULL, NULL);
-    }
-    sqlite3_exec(db, "DROP TABLE IF EXISTS new_utxos", NULL, NULL, NULL);
-
-    /* 2. Rebuild shielded notes (same safe pattern) */
-    sqlite3_exec(db,
-        "CREATE TEMP TABLE new_notes AS SELECT * FROM wallet_sapling_notes WHERE 0",
-        NULL, NULL, NULL);
-
-    sqlite3_stmt *ins_note = NULL;
-    sqlite3_prepare_v2(db,
-        "INSERT INTO new_notes "
-        "(txid,output_index,value,rcm,ivk,diversifier,pk_d,"
-        "cm,nullifier,block_height,address) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?)", -1, &ins_note, NULL);
-
-    if (ins_note) {
+    {
+        int chain_tip = db_wallet_chain_tip_height(&ndb);
         const char *p = zlu;
-        const char *txid_s; size_t txid_l;
-        while (json_next_str(&p, "txid", &txid_s, &txid_l)) {
-            if (txid_l != 64) continue;
-            uint8_t txid_bin[32];
-            if (hex_to_bin(txid_s, 64, txid_bin, 32) != 32) continue;
+        const char *txid_s;
+        size_t txid_l;
 
-            int outindex = 0, confs = 0;
+        while (json_next_str(&p, "txid", &txid_s, &txid_l)) {
+            struct db_sapling_note row;
+            int outindex = 0;
+            int confs = 0;
+            int note_height = 0;
             double amt = 0;
-            const char *addr_s; size_t addr_l;
+            int64_t val = 0;
+            const char *addr_s;
+            size_t addr_l = 0;
             const char *scan = p;
+            uint8_t div_full[32];
+
+            if (txid_l != 64)
+                continue;
+            memset(&row, 0, sizeof(row));
+            if (hex_to_bin(txid_s, 64, row.txid, 32) != 32)
+                continue;
             json_next_int(&scan, "outindex", &outindex);
             scan = p;
             json_next_num(&scan, "amount", &amt);
             scan = p;
             json_next_int(&scan, "confirmations", &confs);
-            int64_t val = (int64_t)(amt * 1e8 + 0.5);
-            int note_height = (chain_tip > 0 && confs > 0)
+            val = (int64_t)(amt * 1e8 + 0.5);
+            note_height = (chain_tip > 0 && confs > 0)
                 ? (chain_tip - confs + 1) : 0;
 
-            char addr_str[128] = "";
+            row.output_index = (uint32_t)outindex;
+            row.value = val;
+            row.block_height = note_height;
             scan = p;
             if (json_next_str(&scan, "address", &addr_s, &addr_l) &&
-                addr_l < sizeof(addr_str)) {
-                memcpy(addr_str, addr_s, addr_l);
-                addr_str[addr_l] = '\0';
+                addr_l < sizeof(row.address)) {
+                memcpy(row.address, addr_s, addr_l);
+                row.address[addr_l] = '\0';
             }
 
-            /* Deterministic unique placeholder crypto fields.
-             * These are not real Sapling keys — just unique identifiers
-             * so SQLite UNIQUE constraints don't collide. */
-            uint8_t seed[36];
-            memcpy(seed, txid_bin, 32);
-            seed[32] = (uint8_t)(outindex & 0xFF);
-            seed[33] = (uint8_t)((outindex >> 8) & 0xFF);
-            seed[34] = 0; seed[35] = 0;
+            wv_sapling_placeholder_fields(row.txid, outindex, row.rcm, row.ivk,
+                                          div_full, row.pk_d, row.cm,
+                                          row.nullifier);
+            memcpy(row.diversifier, div_full, sizeof(row.diversifier));
 
-            /* Use SHA-256 context API for each field */
-            #define HASH_FIELD(tag, taglen, out) do { \
-                struct sha256_ctx _hc; \
-                sha256_init(&_hc); \
-                sha256_write(&_hc, (const unsigned char *)(tag), (taglen)); \
-                sha256_write(&_hc, seed, 36); \
-                sha256_finalize(&_hc, (out)); \
-            } while(0)
-
-            uint8_t nf[32], cm[32], rcm[32], ivk[32], pkd[32], div_full[32];
-            HASH_FIELD("nf", 2, nf);
-            HASH_FIELD("cm", 2, cm);
-            HASH_FIELD("rcm", 3, rcm);
-            HASH_FIELD("ivk", 3, ivk);
-            HASH_FIELD("pkd", 3, pkd);
-            HASH_FIELD("div", 3, div_full);
-            #undef HASH_FIELD
-
-            sqlite3_bind_blob(ins_note, 1, txid_bin, 32, SQLITE_TRANSIENT);
-            sqlite3_bind_int(ins_note, 2, outindex);
-            sqlite3_bind_int64(ins_note, 3, val);
-            sqlite3_bind_blob(ins_note, 4, rcm, 32, SQLITE_TRANSIENT);
-            sqlite3_bind_blob(ins_note, 5, ivk, 32, SQLITE_TRANSIENT);
-            sqlite3_bind_blob(ins_note, 6, div_full, 11, SQLITE_TRANSIENT);
-            sqlite3_bind_blob(ins_note, 7, pkd, 32, SQLITE_TRANSIENT);
-            sqlite3_bind_blob(ins_note, 8, cm, 32, SQLITE_TRANSIENT);
-            sqlite3_bind_blob(ins_note, 9, nf, 32, SQLITE_TRANSIENT);
-            sqlite3_bind_int(ins_note, 10, note_height);
-            sqlite3_bind_text(ins_note, 11, addr_str, -1, SQLITE_TRANSIENT);
-            sqlite3_step(ins_note);
-            sqlite3_reset(ins_note);
+            if (note_count == note_cap) {
+                size_t new_cap = note_cap == 0 ? 64 : note_cap * 2;
+                struct db_sapling_note *new_rows =
+                    realloc(notes, new_cap * sizeof(*notes));
+                if (!new_rows)
+                    goto cleanup;
+                notes = new_rows;
+                note_cap = new_cap;
+            }
+            notes[note_count++] = row;
         }
-        sqlite3_finalize(ins_note);
     }
 
-    /* Only replace notes if parsing produced results */
-    int note_count = 0;
-    { sqlite3_stmt *cnt = NULL;
-      if (sqlite3_prepare_v2(db, "SELECT count(*) FROM new_notes",
-                              -1, &cnt, NULL) == SQLITE_OK) {
-          if (sqlite3_step(cnt) == SQLITE_ROW)
-              note_count = sqlite3_column_int(cnt, 0);
-          sqlite3_finalize(cnt);
-      }
-    }
-    if (note_count > 0) {
-        sqlite3_exec(db, "DELETE FROM wallet_sapling_notes", NULL, NULL, NULL);
-        sqlite3_exec(db,
-            "INSERT INTO wallet_sapling_notes SELECT * FROM new_notes",
-            NULL, NULL, NULL);
-    }
-    sqlite3_exec(db, "DROP TABLE IF EXISTS new_notes", NULL, NULL, NULL);
-
-    sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
+    if (utxo_count > 0 && !db_wallet_utxo_replace_all(&ndb, utxos, utxo_count))
+        goto cleanup;
+    if (note_count > 0 && !db_sapling_note_replace_all(&ndb, notes, note_count))
+        goto cleanup;
 
     /* Update wallet_transactions: fill in block_height for confirmed txs.
      * Query zclassicd gettransaction for each tx with height=0. */
     {
-        sqlite3_stmt *unconf = NULL;
-        sqlite3_prepare_v2(db,
-            "SELECT txid FROM wallet_transactions WHERE block_height = 0",
-            -1, &unconf, NULL);
-        sqlite3_stmt *upd = NULL;
-        sqlite3_prepare_v2(db,
-            "UPDATE wallet_transactions SET block_height = ? WHERE txid = ?",
-            -1, &upd, NULL);
-
+        struct db_wallet_txid_ref txids[50];
+        int tx_count = db_wallet_tx_list_unconfirmed(&ndb, txids,
+                                                     sizeof(txids) / sizeof(txids[0]));
         int updated = 0;
-        while (unconf && upd && sqlite3_step(unconf) == SQLITE_ROW) {
-            const void *txid_blob = sqlite3_column_blob(unconf, 0);
-            int txid_len = sqlite3_column_bytes(unconf, 0);
-            if (!txid_blob || txid_len != 32) continue;
-
+        int chain_tip = db_wallet_chain_tip_height(&ndb);
+        for (int i = 0; i < tx_count; i++) {
             char txid_hex[65];
-            for (int i = 0; i < 32; i++)
-                snprintf(txid_hex + 2*i, 3, "%02x",
-                         ((const uint8_t *)txid_blob)[i]);
+            for (int j = 0; j < 32; j++)
+                snprintf(txid_hex + 2*j, 3, "%02x",
+                         txids[i].txid[j]);
 
             char params[256];
             snprintf(params, sizeof(params), "[\"%s\"]", txid_hex);
@@ -638,22 +612,31 @@ void wv_sync_wallet_from_zclassicd(void) {
                 json_next_int(&scan, "confirmations", &confs);
                 if (confs > 0 && chain_tip > 0) {
                     int tx_height = chain_tip - confs + 1;
-                    sqlite3_reset(upd);
-                    sqlite3_bind_int(upd, 1, tx_height);
-                    sqlite3_bind_blob(upd, 2, txid_blob, 32, SQLITE_STATIC);
-                    sqlite3_step(upd);
-                    updated++;
+                    if (db_wallet_tx_update_block_height(&ndb, txids[i].txid,
+                                                         tx_height))
+                        updated++;
                 }
             }
             /* Limit RPC calls to avoid slowdown on first sync */
-            if (updated >= 50) break;
+            if (updated >= 50)
+                break;
         }
-        if (unconf) sqlite3_finalize(unconf);
-        if (upd) sqlite3_finalize(upd);
     }
 
-    sqlite3_close(db);
+    node_db_close(&ndb);
+    for (size_t i = 0; i < utxo_count; i++)
+        db_wallet_utxo_free(&utxos[i]);
+    free(utxos);
+    free(notes);
     g_balance_dirty = 1;
+    return;
+
+cleanup:
+    node_db_close(&ndb);
+    for (size_t i = 0; i < utxo_count; i++)
+        db_wallet_utxo_free(&utxos[i]);
+    free(utxos);
+    free(notes);
 }
 
 /* ── Query helpers ─────────────────────────────────────────── */

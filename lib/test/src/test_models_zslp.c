@@ -41,13 +41,27 @@ int test_model_zslp(void)
             snprintf(bal.address, sizeof(bal.address), "%s", "t1Buyer123");
             bal.balance = 42;
             ok = db_zslp_balance_save(&ndb, &bal);
-            ok = ok && (strcmp(bal.token_id, "TESTCOIN") == 0);
-            ok = ok && db_zslp_balance_find(&ndb, "testcoin", "t1Buyer123", &got);
-            ok = ok && (strcmp(got.token_id, "TESTCOIN") == 0);
-            ok = ok && (got.balance == 42);
-            ok = ok && db_zslp_balance_credit(&ndb, "testcoin", "t1Buyer123", 8);
-            ok = ok && db_zslp_balance_find(&ndb, "TESTCOIN", "t1Buyer123", &got);
-            ok = ok && (got.balance == 50);
+            if (ok && strcmp(bal.token_id, "TESTCOIN") != 0) {
+                ok = false;
+            }
+            if (ok && !db_zslp_balance_find(&ndb, "testcoin", "t1Buyer123", &got)) {
+                ok = false;
+            }
+            if (ok && strcmp(got.token_id, "TESTCOIN") != 0) {
+                ok = false;
+            }
+            if (ok && got.balance != 42) {
+                ok = false;
+            }
+            if (ok && !db_zslp_balance_credit(&ndb, "testcoin", "t1Buyer123", 8)) {
+                ok = false;
+            }
+            if (ok && !db_zslp_balance_find(&ndb, "TESTCOIN", "t1Buyer123", &got)) {
+                ok = false;
+            }
+            if (ok && got.balance != 50) {
+                ok = false;
+            }
             node_db_close(&ndb);
         }
 
@@ -78,19 +92,37 @@ int test_model_zslp(void)
             memset(listed, 0, sizeof(listed));
             ar_errors_clear(&e);
             ok = !db_zslp_token_validate_key("", &e) && ar_errors_any(&e);
-            ok = ok && db_zslp_token_save_key(&ndb, "testcoin",
+            if (ok && !db_zslp_token_save_key(&ndb, "testcoin",
                                               "TESTCOIN", "Test Coin",
-                                              2, "", 0, 1000);
-            ok = ok && db_zslp_token_save_key(&ndb, "coinb",
+                                              2, "", 0, 1000)) {
+                ok = false;
+            }
+            if (ok && !db_zslp_token_save_key(&ndb, "coinb",
                                               "COINB", "Coin B",
-                                              0, "", 12, 500);
-            ok = ok && db_zslp_token_find(&ndb, "TESTCOIN", &token);
-            ok = ok && (strcmp(token.token_id, "TESTCOIN") == 0);
-            ok = ok && (strcmp(token.ticker, "TESTCOIN") == 0);
-            ok = ok && (token.total_minted == 1000);
-            ok = ok && (db_zslp_token_list(&ndb, listed, 4) == 2);
-            ok = ok && (strcmp(listed[0].ticker, "COINB") == 0);
-            ok = ok && (strcmp(listed[1].ticker, "TESTCOIN") == 0);
+                                              0, "", 12, 500)) {
+                ok = false;
+            }
+            if (ok && !db_zslp_token_find(&ndb, "TESTCOIN", &token)) {
+                ok = false;
+            }
+            if (ok && strcmp(token.token_id, "TESTCOIN") != 0) {
+                ok = false;
+            }
+            if (ok && strcmp(token.ticker, "TESTCOIN") != 0) {
+                ok = false;
+            }
+            if (ok && token.total_minted != 1000) {
+                ok = false;
+            }
+            if (ok && db_zslp_token_list(&ndb, listed, 4) != 2) {
+                ok = false;
+            }
+            if (ok && strcmp(listed[0].ticker, "COINB") != 0) {
+                ok = false;
+            }
+            if (ok && strcmp(listed[1].ticker, "TESTCOIN") != 0) {
+                ok = false;
+            }
             node_db_close(&ndb);
         }
 
@@ -124,16 +156,30 @@ int test_model_zslp(void)
             memset(addr_hash, 0x33, sizeof(addr_hash));
             memset(listed, 0, sizeof(listed));
             ok = db_zslp_transfer_save(&ndb, txid, 123, token_id, 2, 77, 1, addr_hash);
-            ok = ok && (db_zslp_transfer_list_by_token(&ndb,
+            if (ok && db_zslp_transfer_list_by_token(&ndb,
                     "2222222222222222222222222222222222222222222222222222222222222222",
-                    listed, 4) == 1);
-            ok = ok && (strcmp(listed[0].token_id,
-                    "2222222222222222222222222222222222222222222222222222222222222222") == 0);
-            ok = ok && (listed[0].block_height == 123);
-            ok = ok && (listed[0].tx_type == 2);
-            ok = ok && (listed[0].amount == 77);
-            ok = ok && (listed[0].vout == 1);
-            ok = ok && (strlen(listed[0].to_addr_hex) == 40);
+                    listed, 4) != 1) {
+                ok = false;
+            }
+            if (ok && strcmp(listed[0].token_id,
+                    "2222222222222222222222222222222222222222222222222222222222222222") != 0) {
+                ok = false;
+            }
+            if (ok && listed[0].block_height != 123) {
+                ok = false;
+            }
+            if (ok && listed[0].tx_type != 2) {
+                ok = false;
+            }
+            if (ok && listed[0].amount != 77) {
+                ok = false;
+            }
+            if (ok && listed[0].vout != 1) {
+                ok = false;
+            }
+            if (ok && strlen(listed[0].to_addr_hex) != 40) {
+                ok = false;
+            }
             node_db_close(&ndb);
         }
 

@@ -751,21 +751,25 @@ static const bool g_sync_transitions[SYNC_NUM_STATES][SYNC_NUM_STATES] = {
 
     [SYNC_FINDING_PEERS][SYNC_HEADERS_DOWNLOAD]  = true,
     [SYNC_FINDING_PEERS][SYNC_SNAPSHOT_RECEIVE]   = true,
+    [SYNC_FINDING_PEERS][SYNC_IDLE]               = true,
     [SYNC_FINDING_PEERS][SYNC_FAILED]             = true,
 
     [SYNC_HEADERS_DOWNLOAD][SYNC_BLOCKS_DOWNLOAD]   = true,
     [SYNC_HEADERS_DOWNLOAD][SYNC_CONNECTING_BLOCKS]  = true,
     [SYNC_HEADERS_DOWNLOAD][SYNC_AT_TIP]             = true,
+    [SYNC_HEADERS_DOWNLOAD][SYNC_IDLE]               = true,
     [SYNC_HEADERS_DOWNLOAD][SYNC_FAILED]             = true,
 
     [SYNC_BLOCKS_DOWNLOAD][SYNC_CONNECTING_BLOCKS]   = true,
     [SYNC_BLOCKS_DOWNLOAD][SYNC_AT_TIP]              = true,
     [SYNC_BLOCKS_DOWNLOAD][SYNC_HEADERS_DOWNLOAD]    = true,
+    [SYNC_BLOCKS_DOWNLOAD][SYNC_IDLE]                = true,
     [SYNC_BLOCKS_DOWNLOAD][SYNC_FAILED]              = true,
 
     [SYNC_CONNECTING_BLOCKS][SYNC_AT_TIP]            = true,
     [SYNC_CONNECTING_BLOCKS][SYNC_HEADERS_DOWNLOAD]  = true,
     [SYNC_CONNECTING_BLOCKS][SYNC_BLOCKS_DOWNLOAD]   = true,
+    [SYNC_CONNECTING_BLOCKS][SYNC_IDLE]              = true,
     [SYNC_CONNECTING_BLOCKS][SYNC_FAILED]            = true,
 
     [SYNC_AT_TIP][SYNC_HEADERS_DOWNLOAD]   = true,
@@ -784,11 +788,13 @@ static const bool g_sync_transitions[SYNC_NUM_STATES][SYNC_NUM_STATES] = {
 
     [SYNC_REORG_RECOVERY][SYNC_CONNECTING_BLOCKS] = true,
     [SYNC_REORG_RECOVERY][SYNC_BLOCKS_DOWNLOAD]   = true,
+    [SYNC_REORG_RECOVERY][SYNC_IDLE]              = true,
     [SYNC_REORG_RECOVERY][SYNC_FAILED]             = true,
 
     [SYNC_SNAPSHOT_RECEIVE][SYNC_CONNECTING_BLOCKS] = true,
     [SYNC_SNAPSHOT_RECEIVE][SYNC_HEADERS_DOWNLOAD]  = true,
     [SYNC_SNAPSHOT_RECEIVE][SYNC_AT_TIP]            = true,
+    [SYNC_SNAPSHOT_RECEIVE][SYNC_IDLE]              = true,
     [SYNC_SNAPSHOT_RECEIVE][SYNC_FAILED]            = true,
 
     [SYNC_FAILED][SYNC_IDLE]               = true,

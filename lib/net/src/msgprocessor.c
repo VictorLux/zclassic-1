@@ -104,12 +104,19 @@ int32_t g_manifest_built_at_height = 0; /* height when manifest was last built *
  * Initialized once from msg_processor_init, accessed via pointer. */
 static struct download_manager g_download_mgr;
 static bool g_download_mgr_init = false;
+static pthread_once_t g_download_mgr_once = PTHREAD_ONCE_INIT;
+
+static void msg_download_mgr_init_once(void)
+{
+    dl_init(&g_download_mgr);
+    g_download_mgr_init = true;
+}
 
 static struct node_db *msg_node_db(const struct msg_processor *mp)
 {
     if (!mp || !mp->runtime)
         return NULL;
-    return mp->runtime->node_db;
+    return db_service_node_db(mp->runtime->db_service);
 }
 
 static struct wallet *msg_wallet(const struct msg_processor *mp)
@@ -121,10 +128,7 @@ static struct wallet *msg_wallet(const struct msg_processor *mp)
 
 struct download_manager *msg_get_download_mgr(void)
 {
-    if (!g_download_mgr_init) {
-        dl_init(&g_download_mgr);
-        g_download_mgr_init = true;
-    }
+    pthread_once(&g_download_mgr_once, msg_download_mgr_init_once);
     return &g_download_mgr;
 }
 

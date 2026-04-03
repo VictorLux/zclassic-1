@@ -542,6 +542,26 @@ bool addrman_select(struct addr_man *am, bool new_only,
         }
     }
 
+    /* Fallback for sparse bucket layouts: if randomized bucket probing
+     * failed, return the first eligible address from the random-order set
+     * instead of spuriously reporting an empty addrman. */
+    if (am->random_size > 0) {
+        size_t start = (size_t)GetRandInt((int)am->random_size);
+        for (size_t n = 0; n < am->random_size; n++) {
+            int nId = am->random_order[(start + n) % am->random_size];
+            if (nId < 0 || (size_t)nId >= am->entries_cap)
+                continue;
+            struct addr_info *info = &am->entries[nId];
+            if (!info->used)
+                continue;
+            if (new_only && info->in_tried)
+                continue;
+            *result = *info;
+            zcl_mutex_unlock(&am->cs);
+            return true;
+        }
+    }
+
     zcl_mutex_unlock(&am->cs);
     return false;
 }

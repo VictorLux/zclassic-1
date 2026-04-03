@@ -2,6 +2,153 @@
 
 ## 2026-04-02
 
+### Sync Hardening And Consistency Program: Architecture-Aligned Execution Plan
+
+Completed in this slice:
+
+- expanded `CONSISTENCY_CHECKLIST.md` with explicit layer-ownership rules for
+  controllers, services, models, ActiveRecord usage, events, and `config/`
+- added execution phases and acceptance gates to the consistency program so
+  future refactor slices have a clearer definition of done
+- expanded `SYNC_HARDENING_PLAN.md` from a workstream list into a concrete
+  architecture plan covering:
+  - controller boundary
+  - service-owned fast-sync state-machine ownership
+  - model-owned durable metadata and diagnostics
+  - event-driven observability boundaries
+  - phased implementation checklist and acceptance gates
+
+Why:
+
+- the sync-hardening work is now large enough that a plain bug list is too
+  weak; the repo needs an implementation contract for where each concern
+  should live
+- the architecture already points in the right direction, but the refactor
+  program needed those principles rewritten as operational checklists:
+  what belongs in controllers, what belongs in services, what should persist,
+  and what should be event-observable
+- this makes the next implementation slices easier to evaluate against DRY +
+  MVC + services + state-machine + ActiveRecord principles instead of just
+  local cleanup taste
+
+### Sync Hardening Program: Trusted Peer Fast Sync
+
+Completed in this slice:
+
+- added `SYNC_HARDENING_PLAN.md` to turn the live fresh-node sync probe into an
+  explicit engineering program instead of leaving it as ad hoc runtime notes
+- updated `CONSISTENCY_CHECKLIST.md` with a dedicated fast-sync / snapshot
+  hardening track so the work sits alongside the existing controller/runtime
+  consistency program
+- documented the live probe findings:
+  - fresh local node bootstrap from an existing local `zclassic23`
+  - SHA3-authenticated file-service bootstrap is active
+  - MMB/FlyClient snapshot offer + proof exchange is active
+  - local file-service transfer still failed on the final `block_index.bin`
+    chunk set
+  - cached manifest on the source currently included `file_index=253`
+    (`block_index.bin`) but not `file_index=254`
+    (`consensus_snapshot.db`)
+  - receiver did not complete the secure fast path end-to-end
+
+Why:
+
+- this is no longer just a runtime tuning question; it is a boundary and
+  ownership problem across export artifacts, manifest invalidation, service
+  state machines, events, and operator diagnostics
+- the code already has the right architectural direction in
+  `ARCHITECTURE.md`, but fast sync still needs to be brought under the same
+  MVC + services + event-driven discipline as the rest of the refactor program
+- the next work should be staged and testable: stable export set, manifest
+  ownership, explicit secure-sync progression, and acceptance harnesses
+
+### Sync Hardening: Manifest Coverage And Hot Artifact Guardrails
+
+Completed in this slice:
+
+- refactored `app/controllers/src/file_controller.c` so file-artifact path
+  ownership lives behind one helper instead of repeated file-index branching
+- tightened cached manifest validation so a cached manifest is rejected when
+  `consensus_snapshot.db` exists on disk but the manifest omits
+  `file_index=254`
+- tightened cached manifest freshness checks so special fast-sync artifacts
+  such as `block_index.bin` and `consensus_snapshot.db` are checked against the
+  manifest cache timestamp, not only the last block-file chunk
+- changed fresh manifest generation to skip a recently modified
+  `block_index.bin` instead of advertising a mutable live artifact
+- added `lib/test/src/test_file_controller.c` with regression coverage for:
+  - including `consensus_snapshot.db` in a new manifest
+  - rebuilding a cached manifest when the snapshot artifact appears later
+  - skipping a hot `block_index.bin`
+- wired the new test group into `lib/test/src/test.c` and
+  `lib/test/include/test/test_helpers.h`
+
+Why:
+
+- the live probe showed the first practical fast-sync failure was not missing
+  cryptography but unstable export ownership: a cached manifest could stay
+  valid while omitting the secure snapshot artifact, and a hot
+  `block_index.bin` could still be advertised
+- this first implementation slice keeps the fix narrow and architectural:
+  better manifest ownership and safer export eligibility, without trying to
+  redesign the whole sync pipeline at once
+
+### Sync Hardening: Explicit Manifest Refresh Ownership
+
+Completed in this slice:
+
+- added `file_controller_refresh_manifest()` so manifest rebuild is an explicit
+  operation at the controller/cache boundary instead of an incidental RPC side
+  effect
+- added `fs_server_refresh_manifest()` so the live file-service manifest can be
+  rebuilt after export artifacts change, rather than staying stuck with the
+  startup-time snapshot of the world
+- updated `lib/net/src/file_service.c` to guard the live server manifest behind
+  a mutex and to snapshot it per client request, so refresh and serve paths are
+  less tightly coupled
+- updated `config/src/boot_services.c` so successful consensus snapshot export
+  explicitly refreshes both manifest caches before the rest of the fast-sync
+  offer path proceeds
+- extended `lib/test/src/test_file_controller.c` with coverage for the explicit
+  controller refresh API
+
+Why:
+
+- the first slice fixed manifest validity rules, but the live probe showed a
+  second ownership bug: the serving node could export a new snapshot file while
+  still advertising an old startup-built manifest
+- making refresh explicit is a better fit for the architecture than relying on
+  “first RPC call” or “startup background thread” behavior to eventually make
+  state consistent
+
+### Sync Hardening: Manifest Status Read Model
+
+Completed in this slice:
+
+- added `struct file_manifest_status` plus
+  `file_controller_get_manifest_status()` in the file-controller boundary so
+  manifest/export readiness is queryable as structured state rather than only
+  inferred from logs
+- added `getfilemanifeststatus` RPC in `app/controllers/src/file_controller.c`
+  to expose:
+  - whether a datadir is configured
+  - whether the cached manifest is valid
+  - whether `consensus_snapshot.db` is present and served
+  - whether `block_index.bin` is present and served
+  - current chunk count and total bytes
+- extended `lib/test/src/test_file_controller.c` with regression coverage
+  proving the status surface distinguishes artifact presence from artifact
+  eligibility/serving
+
+Why:
+
+- once refresh became explicit, the next consistency gap was observability:
+  services and operators still had no compact read model answering the real
+  question “is the secure export set actually ready to serve?”
+- this keeps the sync-hardening work aligned with the broader architecture:
+  explicit state surface first, then higher-level orchestration and operator
+  flows build on top of it
+
 ### Explorer/API Consistency: Shared Row Query Helpers
 
 Completed in this slice:

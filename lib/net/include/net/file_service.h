@@ -52,6 +52,7 @@ struct fs_session {
     uint64_t         bytes_sent;
     uint64_t         bytes_received;
     int64_t          start_time;      /* for MB/s calculation */
+    uint8_t          recv_payload[FS_MAX_PAYLOAD];
 };
 
 /* Initialize a session on an existing TCP socket. */
@@ -68,8 +69,9 @@ bool fs_send_frame(struct fs_session *s, uint8_t type,
                     const uint8_t *payload, uint32_t payload_len);
 
 /* Receive a frame (reads 64KB, verifies MAC, decrypts).
- * type_out and payload_out are set. payload_out points into
- * internal buffer — valid until next fs_recv_frame call. */
+ * type_out and payload_out are set. payload_out points into the
+ * session-local receive buffer and is valid until the next
+ * fs_recv_frame call on the same session. */
 bool fs_recv_frame(struct fs_session *s, uint8_t *type_out,
                     const uint8_t **payload_out, uint32_t *payload_len_out);
 
@@ -81,6 +83,7 @@ bool fs_send_chunk(struct fs_session *s, const uint8_t *data, uint32_t size,
 void fs_server_start(const char *datadir, uint16_t port);
 void fs_server_stop(void);
 uint16_t fs_server_get_port(void);
+bool fs_server_refresh_manifest(void);
 
 /* High-level: connect to peer and download all chunks. */
 bool fs_client_sync(const char *peer_addr, uint16_t port,

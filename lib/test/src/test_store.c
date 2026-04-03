@@ -361,12 +361,12 @@ int test_store(void)
 
     printf("store: multiple token types isolated... ");
     {
-        zslp_create_token(test_datadir, "TOKEN_A", "Token A", 0, 1000);
-        zslp_create_token(test_datadir, "TOKEN_B", "Token B", 0, 2000);
-        zslp_mint(test_datadir, "TOKEN_A", "t1Multi", 100);
-        zslp_mint(test_datadir, "TOKEN_B", "t1Multi", 200);
-        uint64_t a = zslp_balance(test_datadir, "TOKEN_A", "t1Multi");
-        uint64_t b = zslp_balance(test_datadir, "TOKEN_B", "t1Multi");
+        zslp_create_token(test_datadir, "TOKENA", "Token A", 0, 1000);
+        zslp_create_token(test_datadir, "TOKENB", "Token B", 0, 2000);
+        zslp_mint(test_datadir, "TOKENA", "t1Multi", 100);
+        zslp_mint(test_datadir, "TOKENB", "t1Multi", 200);
+        uint64_t a = zslp_balance(test_datadir, "TOKENA", "t1Multi");
+        uint64_t b = zslp_balance(test_datadir, "TOKENB", "t1Multi");
         bool ok = (a == 100) && (b == 200);
         if (ok) printf("OK (A=100, B=200)\n");
         else { printf("FAIL (A=%llu, B=%llu)\n",
@@ -577,17 +577,17 @@ int test_store(void)
 
     printf("store: zslp two tokens with different tickers independent... ");
     {
-        zslp_create_token(test_datadir, "COIN_X", "Coin X", 2, 5000);
-        zslp_create_token(test_datadir, "COIN_Y", "Coin Y", 4, 9000);
-        zslp_mint(test_datadir, "COIN_X", "t1Holder", 42);
-        zslp_mint(test_datadir, "COIN_Y", "t1Holder", 99);
-        uint64_t x = zslp_balance(test_datadir, "COIN_X", "t1Holder");
-        uint64_t y = zslp_balance(test_datadir, "COIN_Y", "t1Holder");
+        zslp_create_token(test_datadir, "COINX", "Coin X", 2, 5000);
+        zslp_create_token(test_datadir, "COINY", "Coin Y", 4, 9000);
+        zslp_mint(test_datadir, "COINX", "t1Holder", 42);
+        zslp_mint(test_datadir, "COINY", "t1Holder", 99);
+        uint64_t x = zslp_balance(test_datadir, "COINX", "t1Holder");
+        uint64_t y = zslp_balance(test_datadir, "COINY", "t1Holder");
         bool ok = (x == 42) && (y == 99);
         /* Cross-check: minting one doesn't affect the other */
-        zslp_mint(test_datadir, "COIN_X", "t1Holder", 8);
-        x = zslp_balance(test_datadir, "COIN_X", "t1Holder");
-        y = zslp_balance(test_datadir, "COIN_Y", "t1Holder");
+        zslp_mint(test_datadir, "COINX", "t1Holder", 8);
+        x = zslp_balance(test_datadir, "COINX", "t1Holder");
+        y = zslp_balance(test_datadir, "COINY", "t1Holder");
         ok = ok && (x == 50) && (y == 99);
         if (ok) printf("OK (X=50, Y=99)\n");
         else { printf("FAIL (X=%llu, Y=%llu)\n",

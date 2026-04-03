@@ -36,6 +36,52 @@
  * 1600 gives margin for the compact_size tx count after the header. */
 #define BLOCK_HEADER_READ_SIZE 1600
 
+static struct db_service *boot_index_db_service_for(struct node_db *ndb)
+{
+    struct db_service *dbsvc = app_runtime_db_service();
+
+    if (!ndb || !dbsvc)
+        return NULL;
+    return db_service_node_db(dbsvc) == ndb ? dbsvc : NULL;
+}
+
+static bool boot_index_enter_turbo_mode(struct node_db *ndb)
+{
+    struct db_service *dbsvc = boot_index_db_service_for(ndb);
+
+    if (dbsvc)
+        return db_service_ibd_turbo_mode(dbsvc);
+    return node_db_ibd_turbo_mode(ndb);
+}
+
+static bool boot_index_restore_normal_mode(struct node_db *ndb)
+{
+    struct db_service *dbsvc = boot_index_db_service_for(ndb);
+
+    if (dbsvc)
+        return db_service_normal_mode(dbsvc);
+    return node_db_normal_mode(ndb);
+}
+
+static bool boot_index_set_sync_batch_size(struct node_db *ndb, int batch_size)
+{
+    struct db_service *dbsvc = boot_index_db_service_for(ndb);
+
+    if (dbsvc)
+        return db_service_set_sync_batch_size(dbsvc, batch_size);
+    node_db_set_sync_batch_size(ndb, batch_size);
+    return true;
+}
+
+static bool boot_index_flush_write(struct node_db *ndb)
+{
+    struct db_service *dbsvc = boot_index_db_service_for(ndb);
+
+    if (dbsvc)
+        return db_service_flush_write(dbsvc);
+    return node_db_sync_flush(ndb);
+}
+
 /* ── Flat block_index file: mmap for instant restart ──────── */
 
 /* Compact on-disk format: height-sorted */
@@ -655,13 +701,10 @@ bool reindex_chainstate(struct main_state *ms,
 
     set_flush_policy(3600, 1000000, 100000);
     if (ndb->open) {
-        sqlite3_exec(ndb->db, "PRAGMA synchronous=OFF",
-                     NULL, NULL, NULL);
-        sqlite3_exec(ndb->db, "PRAGMA cache_size=-524288",
-                     NULL, NULL, NULL);
-        sqlite3_exec(ndb->db, "PRAGMA wal_autocheckpoint=0",
-                     NULL, NULL, NULL);
-        node_db_set_sync_batch_size(ndb, 1000);
+        if (!boot_index_enter_turbo_mode(ndb))
+            fprintf(stderr, "reindex-chainstate: failed to enter turbo mode\n");
+        if (!boot_index_set_sync_batch_size(ndb, 1000))
+            fprintf(stderr, "reindex-chainstate: failed to set sync batch size\n");
     }
 
     extern _Atomic bool g_utxo_commitment_skip;
@@ -729,8 +772,12 @@ bool reindex_chainstate(struct main_state *ms,
     /* Restore normal mode — flush every 500 blocks */
     set_flush_policy(3600, 500000, 500);
     if (ndb->open) {
-        node_db_sync_flush(ndb);
-        node_db_set_sync_batch_size(ndb, 1);
+        if (!boot_index_flush_write(ndb))
+            fprintf(stderr, "reindex-chainstate: flush failed\n");
+        if (!boot_index_restore_normal_mode(ndb))
+            fprintf(stderr, "reindex-chainstate: failed to restore normal mode\n");
+        if (!boot_index_set_sync_batch_size(ndb, 1))
+            fprintf(stderr, "reindex-chainstate: failed to reset sync batch size\n");
     }
 
     int64_t elapsed = (int64_t)time(NULL) - t_start;
@@ -1218,4 +1265,3 @@ struct boot_validation_result validate_coins_chain_agreement(
 
     return r;
 }
-

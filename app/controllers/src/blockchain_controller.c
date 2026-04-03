@@ -844,7 +844,14 @@ static bool rpc_importchainstate(const struct json_value *params, bool help,
     memset(&ldb_best_block, 0, sizeof(ldb_best_block));
     coins_view_db_get_best_block(&ext_db, &ldb_best_block);
 
-    int count = node_db_sync_import_utxos(ctx->node_db, &ext_db);
+    struct node_db import_db;
+    struct node_db *import_target = ctx->node_db;
+    if (node_db_sync_open_private_db_like(ctx->node_db, &import_db))
+        import_target = &import_db;
+
+    int count = node_db_sync_import_utxos(import_target, &ext_db);
+    if (import_target == &import_db)
+        node_db_close(&import_db);
     coins_view_db_close(&ext_db);
 
     if (count < 0) {

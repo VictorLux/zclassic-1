@@ -5,10 +5,24 @@
 #ifndef ZCL_DB_H
 #define ZCL_DB_H
 
+#include "util/sync.h"
 #include <sqlite3.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+
+#define NODE_DB_SCHEMA_LATEST 14
+
+struct node_db_status {
+    bool open;
+    bool tx_open;
+    bool turbo_mode;
+    int sync_batch_size;
+    int sync_pending_blocks;
+    int64_t last_activity_time;
+    int last_sqlite_rc;
+    char last_op[64];
+};
 
 struct node_db {
     sqlite3 *db;
@@ -47,6 +61,15 @@ struct node_db {
     int  sync_batch_size;       /* target blocks per COMMIT (default 1) */
     int  sync_pending_blocks;   /* blocks since last COMMIT */
     bool sync_in_batch;         /* true if a batch transaction is open */
+
+    /* Runtime ownership/health state for SQLite access. */
+    zcl_mutex_t state_mutex;
+    bool state_mutex_init;
+    bool tx_open;
+    bool turbo_mode;
+    int64_t last_activity_time;
+    int last_sqlite_rc;
+    char last_op[64];
 };
 
 /* Open or create the node database at path (e.g. ~/.zclassic-c23/node.db).
@@ -68,6 +91,9 @@ void node_db_set_sync_batch_size(struct node_db *ndb, int batch_size);
 
 /* Flush any pending batch transaction (call on shutdown or before reorg). */
 bool node_db_sync_flush(struct node_db *ndb);
+
+/* Runtime state snapshot for health/diagnostics surfaces. */
+void node_db_get_status(struct node_db *ndb, struct node_db_status *out);
 
 /* Key-value state store (replaces misc flags). */
 bool node_db_state_set(struct node_db *ndb, const char *key,

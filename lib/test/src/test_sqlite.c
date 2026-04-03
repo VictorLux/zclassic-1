@@ -108,7 +108,7 @@ int test_sqlite(void) {
         bool ok = node_db_open(&ndb, ":memory:");
         if (ok) {
             int ver = node_db_schema_version(&ndb);
-            ok = ok && (ver == 1);
+            ok = ok && (ver == NODE_DB_SCHEMA_LATEST);
             node_db_close(&ndb);
         }
         if (ok) printf("OK\n");

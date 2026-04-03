@@ -39,9 +39,15 @@ int test_model_app(void)
 
             ok = ok && db_contact_save(&ndb, &a);
             ok = ok && db_contact_save(&ndb, &b);
-            ok = ok && (db_contact_recent(&ndb, out, 2) == 2);
-            ok = ok && (strcmp(out[0].name, "Bob") == 0);
-            ok = ok && (strcmp(out[1].name, "Alice") == 0);
+            if (ok && db_contact_recent(&ndb, out, 2) != 2) {
+                ok = false;
+            }
+            if (ok && strcmp(out[0].name, "Bob") != 0) {
+                ok = false;
+            }
+            if (ok && strcmp(out[1].name, "Alice") != 0) {
+                ok = false;
+            }
             node_db_close(&ndb);
         }
         char cmd[384];
@@ -70,11 +76,21 @@ int test_model_app(void)
             snprintf(c.address, sizeof(c.address), "%s", "  t1TrimMe  ");
             snprintf(c.name, sizeof(c.name), "%s", "  Alice Trim  ");
             ok = db_contact_save(&ndb, &c);
-            ok = ok && (strcmp(c.address, "t1TrimMe") == 0);
-            ok = ok && (strcmp(c.name, "Alice Trim") == 0);
-            ok = ok && (db_contact_recent(&ndb, out, 1) == 1);
-            ok = ok && (strcmp(out[0].address, "t1TrimMe") == 0);
-            ok = ok && (strcmp(out[0].name, "Alice Trim") == 0);
+            if (ok && strcmp(c.address, "t1TrimMe") != 0) {
+                ok = false;
+            }
+            if (ok && strcmp(c.name, "Alice Trim") != 0) {
+                ok = false;
+            }
+            if (ok && db_contact_recent(&ndb, out, 1) != 1) {
+                ok = false;
+            }
+            if (ok && strcmp(out[0].address, "t1TrimMe") != 0) {
+                ok = false;
+            }
+            if (ok && strcmp(out[0].name, "Alice Trim") != 0) {
+                ok = false;
+            }
             node_db_close(&ndb);
         }
         char cmd[384];
@@ -143,20 +159,30 @@ int test_model_app(void)
             snprintf(first.script_hex, sizeof(first.script_hex), "%s", "  6A01AA  ");
             first.announced_at = 10;
             ok = db_onion_announcement_save(&ndb, &first);
-            ok = ok && (strcmp(first.onion_address,
-                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.onion") == 0);
-            ok = ok && (strcmp(first.script_hex, "6a01aa") == 0);
+            if (ok && strcmp(first.onion_address,
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.onion") != 0) {
+                ok = false;
+            }
+            if (ok && strcmp(first.script_hex, "6a01aa") != 0) {
+                ok = false;
+            }
 
             snprintf(second.onion_address, sizeof(second.onion_address),
                      "%s", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.onion");
             snprintf(second.script_hex, sizeof(second.script_hex), "%s", "6a02");
             second.announced_at = 20;
             ok = ok && db_onion_announcement_save(&ndb, &second);
-            ok = ok && (db_onion_announcement_recent(&ndb, listed, 2) == 2);
-            ok = ok && (strcmp(listed[0].onion_address,
-                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.onion") == 0);
-            ok = ok && (strcmp(listed[1].onion_address,
-                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.onion") == 0);
+            if (ok && db_onion_announcement_recent(&ndb, listed, 2) != 2) {
+                ok = false;
+            }
+            if (ok && strcmp(listed[0].onion_address,
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.onion") != 0) {
+                ok = false;
+            }
+            if (ok && strcmp(listed[1].onion_address,
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.onion") != 0) {
+                ok = false;
+            }
             node_db_close(&ndb);
         }
 
@@ -201,13 +227,25 @@ int test_model_app(void)
             p.tokens_per_purchase = 2;
             p.active = true;
             ok = ok && db_store_product_save(&ndb, &p);
-            ok = ok && (strcmp(p.token_id, "WIDGET") == 0);
+            if (ok && strcmp(p.token_id, "WIDGET") != 0) {
+                fprintf(stderr, "store: product token_id='%s'\n", p.token_id);
+                ok = false;
+            }
 
             memset(&got_product, 0, sizeof(got_product));
             memset(active_products, 0, sizeof(active_products));
-            ok = ok && db_store_product_find_active(&ndb, 1, &got_product);
-            ok = ok && (strcmp(got_product.token_id, "WIDGET") == 0);
-            ok = ok && (db_store_product_list_active(&ndb, active_products, 4) == 1);
+            if (ok && !db_store_product_find_active(&ndb, 1, &got_product)) {
+                fprintf(stderr, "store: find active product failed\n");
+                ok = false;
+            }
+            if (ok && strcmp(got_product.token_id, "WIDGET") != 0) {
+                fprintf(stderr, "store: got_product.token_id='%s'\n", got_product.token_id);
+                ok = false;
+            }
+            if (ok && db_store_product_list_active(&ndb, active_products, 4) != 1) {
+                fprintf(stderr, "store: active product count mismatch\n");
+                ok = false;
+            }
 
             memset(&o, 0, sizeof(o));
             o.product_id = 1;
@@ -217,17 +255,39 @@ int test_model_app(void)
             o.status = 0;
             ok = ok && db_store_order_save(&ndb, &o);
             ok = ok && (o.id > 0);
-            ok = ok && (strcmp(o.customer_addr, "t1Buyer") == 0);
-            ok = ok && (strcmp(o.payment_addr, "zs1paymentaddress") == 0);
-            ok = ok && db_store_order_mark_paid(&ndb, o.id, 2);
+            if (ok && strcmp(o.customer_addr, "t1Buyer") != 0) {
+                fprintf(stderr, "store: customer_addr='%s'\n", o.customer_addr);
+                ok = false;
+            }
+            if (ok && strcmp(o.payment_addr, "zs1paymentaddress") != 0) {
+                fprintf(stderr, "store: payment_addr='%s'\n", o.payment_addr);
+                ok = false;
+            }
+            if (ok && !db_store_order_mark_paid(&ndb, o.id, 2)) {
+                fprintf(stderr, "store: mark_paid failed\n");
+                ok = false;
+            }
 
             memset(&order_view, 0, sizeof(order_view));
             memset(order_summaries, 0, sizeof(order_summaries));
             memset(pending, 0, sizeof(pending));
-            ok = ok && db_store_order_find_view(&ndb, o.id, &order_view);
-            ok = ok && (strcmp(order_view.customer_addr, "t1Buyer") == 0);
-            ok = ok && (db_store_order_list_recent(&ndb, order_summaries, 4) == 1);
-            ok = ok && (db_store_order_list_pending_payments(&ndb, pending, 4, 0) == 0);
+            if (ok && !db_store_order_find_view(&ndb, o.id, &order_view)) {
+                fprintf(stderr, "store: order view lookup failed\n");
+                ok = false;
+            }
+            if (ok && strcmp(order_view.customer_addr, "t1Buyer") != 0) {
+                fprintf(stderr, "store: order_view.customer_addr='%s'\n",
+                        order_view.customer_addr);
+                ok = false;
+            }
+            if (ok && db_store_order_list_recent(&ndb, order_summaries, 4) != 1) {
+                fprintf(stderr, "store: order recent count mismatch\n");
+                ok = false;
+            }
+            if (ok && db_store_order_list_pending_payments(&ndb, pending, 4, 0) != 0) {
+                fprintf(stderr, "store: pending payment count mismatch\n");
+                ok = false;
+            }
             node_db_close(&ndb);
         }
         char cmd[384];

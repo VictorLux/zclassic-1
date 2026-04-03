@@ -1,60 +1,21 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "models/store.h"
-#include <ctype.h>
+#include "models/model_text.h"
 #include <string.h>
 #include <time.h>
 
 DEFINE_MODEL_CALLBACKS(store_product)
 DEFINE_MODEL_CALLBACKS(store_order)
 
-static bool store_product_hooks_ready = false;
-static bool store_order_hooks_ready = false;
-
-static bool store_printable(const char *str)
-{
-    if (!str)
-        return false;
-    for (const unsigned char *p = (const unsigned char *)str; *p; ++p) {
-        if (!isprint(*p))
-            return false;
-    }
-    return true;
-}
-
-static void store_trim_ascii(char *str)
-{
-    char *start, *end;
-
-    if (!str || str[0] == '\0')
-        return;
-    start = str;
-    while (*start && isspace((unsigned char)*start))
-        start++;
-    if (start != str)
-        memmove(str, start, strlen(start) + 1);
-    end = str + strlen(str);
-    while (end > str && isspace((unsigned char)end[-1]))
-        --end;
-    *end = '\0';
-}
-
-static void store_upcase_ascii(char *str)
-{
-    if (!str)
-        return;
-    for (; *str; ++str)
-        *str = (char)toupper((unsigned char)*str);
-}
-
 static bool store_product_before_save(void *record, void *ctx)
 {
     struct db_store_product *p = (struct db_store_product *)record;
     (void)ctx;
-    store_trim_ascii(p->name);
-    store_trim_ascii(p->description);
-    store_trim_ascii(p->token_id);
-    store_upcase_ascii(p->token_id);
+    model_trim_ascii(p->name);
+    model_trim_ascii(p->description);
+    model_trim_ascii(p->token_id);
+    model_ascii_upcase(p->token_id);
     return true;
 }
 
@@ -62,32 +23,15 @@ static bool store_order_before_save(void *record, void *ctx)
 {
     struct db_store_order *o = (struct db_store_order *)record;
     (void)ctx;
-    store_trim_ascii(o->customer_addr);
-    store_trim_ascii(o->payment_addr);
-    store_trim_ascii(o->payment_txid);
-    store_trim_ascii(o->mint_txid);
+    model_trim_ascii(o->customer_addr);
+    model_trim_ascii(o->payment_addr);
+    model_trim_ascii(o->payment_txid);
+    model_trim_ascii(o->mint_txid);
     return true;
 }
 
-static struct ar_callbacks *store_product_callbacks_ready(void)
-{
-    struct ar_callbacks *cbs = db_store_product_callbacks();
-    if (!store_product_hooks_ready) {
-        ar_register_before_save(cbs, store_product_before_save);
-        store_product_hooks_ready = true;
-    }
-    return cbs;
-}
-
-static struct ar_callbacks *store_order_callbacks_ready(void)
-{
-    struct ar_callbacks *cbs = db_store_order_callbacks();
-    if (!store_order_hooks_ready) {
-        ar_register_before_save(cbs, store_order_before_save);
-        store_order_hooks_ready = true;
-    }
-    return cbs;
-}
+DEFINE_MODEL_BEFORE_SAVE_READY(store_product, store_product_before_save)
+DEFINE_MODEL_BEFORE_SAVE_READY(store_order, store_order_before_save)
 
 bool db_store_product_validate(const struct db_store_product *p,
                                struct ar_errors *errors)
@@ -106,13 +50,13 @@ bool db_store_product_validate(const struct db_store_product *p,
         strlen(p->token_id) <= STORE_PRODUCT_TOKEN_MAX,
         "token_id", "exceeds max length 63");
     validates_custom(errors,
-        store_printable(p->name),
+        model_string_is_printable(p->name),
         "name", "contains non-printable characters");
     validates_custom(errors,
-        store_printable(p->description),
+        model_string_is_printable(p->description),
         "description", "contains non-printable characters");
     validates_custom(errors,
-        store_printable(p->token_id) || p->token_id[0] == '\0',
+        model_string_is_printable(p->token_id) || p->token_id[0] == '\0',
         "token_id", "contains non-printable characters");
     return !ar_errors_any(errors);
 }
@@ -139,16 +83,16 @@ bool db_store_order_validate(const struct db_store_order *o,
         strlen(o->mint_txid) <= STORE_ORDER_TXID_MAX,
         "mint_txid", "exceeds max length 127");
     validates_custom(errors,
-        store_printable(o->customer_addr),
+        model_string_is_printable(o->customer_addr),
         "customer_addr", "contains non-printable characters");
     validates_custom(errors,
-        store_printable(o->payment_addr),
+        model_string_is_printable(o->payment_addr),
         "payment_addr", "contains non-printable characters");
     validates_custom(errors,
-        store_printable(o->payment_txid) || o->payment_txid[0] == '\0',
+        model_string_is_printable(o->payment_txid) || o->payment_txid[0] == '\0',
         "payment_txid", "contains non-printable characters");
     validates_custom(errors,
-        store_printable(o->mint_txid) || o->mint_txid[0] == '\0',
+        model_string_is_printable(o->mint_txid) || o->mint_txid[0] == '\0',
         "mint_txid", "contains non-printable characters");
     validates_custom(errors,
         o->status >= 0 && o->status <= 3,
@@ -164,16 +108,16 @@ bool db_store_product_save(struct node_db *ndb, const struct db_store_product *p
     if (!ndb || !ndb->open || !p)
         return false;
     cbs = store_product_callbacks_ready();
+    if (!ar_run_before_save(cbs, (void *)p)) {
+        fprintf(stderr, "store_product save vetoed by before_save\n");
+        return false;
+    }
     AR_VALIDATE_RECORD(cbs, "store_product", p, db_store_product_validate);
-    if (!ar_run_before_save(cbs, (void *)p))
-        return false;
 
-    if (sqlite3_prepare_v2(ndb->db,
-            "INSERT INTO products "
-            "(name,description,price_zatoshi,token_id,tokens_per_purchase,active) "
-            "VALUES (?,?,?,?,?,?)",
-            -1, &s, NULL) != SQLITE_OK || !s)
-        return false;
+    AR_PREPARE_BOOL(ndb, s,
+        "INSERT INTO products "
+        "(name,description,price_zatoshi,token_id,tokens_per_purchase,active) "
+        "VALUES (?,?,?,?,?,?)");
 
     AR_BIND_TEXT(s, 1, p->name);
     AR_BIND_TEXT(s, 2, p->description);
@@ -181,13 +125,12 @@ bool db_store_product_save(struct node_db *ndb, const struct db_store_product *p
     AR_BIND_TEXT(s, 4, p->token_id);
     AR_BIND_INT(s, 5, p->tokens_per_purchase);
     AR_BIND_INT(s, 6, p->active ? 1 : 0);
-    if (!AR_STEP_DONE(s)) {
-        AR_FINALIZE(s);
-        return false;
+    bool ok = false;
+    AR_FINALIZE_STEP_DONE(s, ok);
+    if (!ok) {
+        fprintf(stderr, "store_product save failed: %s\n", sqlite3_errmsg(ndb->db));
     }
-    AR_FINALIZE(s);
-    ar_run_after_save(cbs, (void *)p);
-    return true;
+    AR_FINISH_SAVE(cbs, p, ok);
 }
 
 bool db_store_product_find_active(struct node_db *ndb, int64_t id,
@@ -229,24 +172,20 @@ int db_store_product_list_active(struct node_db *ndb,
 
     if (!ndb || !ndb->open || !out || max == 0)
         return 0;
-    if (sqlite3_prepare_v2(ndb->db,
-            "SELECT id,name,description,price_zatoshi,token_id,"
-            "tokens_per_purchase,active "
-            "FROM products WHERE active=1 ORDER BY id",
-            -1, &s, NULL) != SQLITE_OK || !s)
-        return 0;
+    AR_PREPARE_RET(ndb, s,
+        "SELECT id,name,description,price_zatoshi,token_id,"
+        "tokens_per_purchase,active "
+        "FROM products WHERE active=1 ORDER BY id",
+        0);
 
-    while (AR_STEP_ROW(s) && (size_t)count < max) {
-        memset(&out[count], 0, sizeof(out[count]));
+    AR_LIST_ROWS(s, out, max,
         out[count].id = AR_COL_INT(s, 0);
         AR_READ_STR(s, 1, out[count].name, sizeof(out[count].name));
         AR_READ_STR(s, 2, out[count].description, sizeof(out[count].description));
         out[count].price_zatoshi = AR_COL_INT(s, 3);
         AR_READ_STR(s, 4, out[count].token_id, sizeof(out[count].token_id));
         out[count].tokens_per_purchase = AR_COL_INT(s, 5);
-        out[count].active = AR_COL_INT(s, 6) != 0;
-        count++;
-    }
+        out[count].active = AR_COL_INT(s, 6) != 0);
     AR_FINALIZE(s);
     return count;
 }
@@ -262,16 +201,16 @@ bool db_store_order_save(struct node_db *ndb, const struct db_store_order *o)
         ((struct db_store_order *)o)->created_at = (int64_t)time(NULL);
 
     cbs = store_order_callbacks_ready();
+    if (!ar_run_before_save(cbs, (void *)o)) {
+        fprintf(stderr, "store_order save vetoed by before_save\n");
+        return false;
+    }
     AR_VALIDATE_RECORD(cbs, "store_order", o, db_store_order_validate);
-    if (!ar_run_before_save(cbs, (void *)o))
-        return false;
 
-    if (sqlite3_prepare_v2(ndb->db,
-            "INSERT INTO orders "
-            "(product_id,customer_addr,payment_addr,amount_zatoshi,payment_txid,"
-            "mint_txid,status,created_at,paid_at) VALUES (?,?,?,?,?,?,?,?,?)",
-            -1, &s, NULL) != SQLITE_OK || !s)
-        return false;
+    AR_PREPARE_BOOL(ndb, s,
+        "INSERT INTO orders "
+        "(product_id,customer_addr,payment_addr,amount_zatoshi,payment_txid,"
+        "mint_txid,status,created_at,paid_at) VALUES (?,?,?,?,?,?,?,?,?)");
 
     AR_BIND_INT(s, 1, o->product_id);
     AR_BIND_TEXT(s, 2, o->customer_addr);
@@ -285,14 +224,14 @@ bool db_store_order_save(struct node_db *ndb, const struct db_store_order *o)
         AR_BIND_INT(s, 9, o->paid_at);
     else
         AR_BIND_NULL(s, 9);
-    if (!AR_STEP_DONE(s)) {
-        AR_FINALIZE(s);
+    bool ok = false;
+    AR_FINALIZE_STEP_DONE(s, ok);
+    if (!ok) {
+        fprintf(stderr, "store_order save failed: %s\n", sqlite3_errmsg(ndb->db));
         return false;
     }
     ((struct db_store_order *)o)->id = sqlite3_last_insert_rowid(ndb->db);
-    AR_FINALIZE(s);
-    ar_run_after_save(cbs, (void *)o);
-    return true;
+    AR_FINISH_SAVE(cbs, o, true);
 }
 
 bool db_store_order_find_view(struct node_db *ndb, int64_t id,
@@ -336,23 +275,19 @@ int db_store_order_list_recent(struct node_db *ndb,
 
     if (!ndb || !ndb->open || !out || max == 0)
         return 0;
-    if (sqlite3_prepare_v2(ndb->db,
+    AR_PREPARE_RET(ndb, s,
             "SELECT o.id,o.status,o.amount_zatoshi,p.name "
             "FROM orders o LEFT JOIN products p ON o.product_id = p.id "
             "ORDER BY o.created_at DESC LIMIT ?",
-            -1, &s, NULL) != SQLITE_OK || !s)
-        return 0;
+            0);
 
     AR_BIND_INT(s, 1, (int)max);
-    while (AR_STEP_ROW(s) && (size_t)count < max) {
-        memset(&out[count], 0, sizeof(out[count]));
+    AR_LIST_ROWS(s, out, max,
         out[count].id = AR_COL_INT(s, 0);
         out[count].status = AR_COL_INT(s, 1);
         out[count].amount_zatoshi = AR_COL_INT(s, 2);
         AR_READ_STR(s, 3, out[count].product_name,
-                    sizeof(out[count].product_name));
-        count++;
-    }
+                    sizeof(out[count].product_name)));
     AR_FINALIZE(s);
     return count;
 }
@@ -367,26 +302,22 @@ int db_store_order_list_pending_payments(struct node_db *ndb,
 
     if (!ndb || !ndb->open || !out || max == 0)
         return 0;
-    if (sqlite3_prepare_v2(ndb->db,
+    AR_PREPARE_RET(ndb, s,
             "SELECT o.id,o.payment_addr,o.amount_zatoshi,o.customer_addr,"
             "p.token_id,p.tokens_per_purchase "
             "FROM orders o JOIN products p ON o.product_id = p.id "
             "WHERE o.status = ? AND o.created_at > ?",
-            -1, &s, NULL) != SQLITE_OK || !s)
-        return 0;
+            0);
 
     AR_BIND_INT(s, 1, STORE_ORDER_PENDING);
     AR_BIND_INT(s, 2, min_created_at);
-    while (AR_STEP_ROW(s) && (size_t)count < max) {
-        memset(&out[count], 0, sizeof(out[count]));
+    AR_LIST_ROWS(s, out, max,
         out[count].id = AR_COL_INT(s, 0);
         AR_READ_STR(s, 1, out[count].payment_addr, sizeof(out[count].payment_addr));
         out[count].amount_zatoshi = AR_COL_INT(s, 2);
         AR_READ_STR(s, 3, out[count].customer_addr, sizeof(out[count].customer_addr));
         AR_READ_STR(s, 4, out[count].token_id, sizeof(out[count].token_id));
-        out[count].tokens_per_purchase = AR_COL_INT(s, 5);
-        count++;
-    }
+        out[count].tokens_per_purchase = AR_COL_INT(s, 5));
     AR_FINALIZE(s);
     return count;
 }

@@ -196,6 +196,7 @@ int test_block_scan(void);
 int test_node_health_service(void);
 int test_sync_service(void);
 int test_snapshot_sync_service(void);
+int test_file_controller(void);
 
 /* Spec-based user story tests (one per feature area) */
 int spec_wallet_dashboard(void);

@@ -31,6 +31,94 @@ static struct file_context *file_ctx(void)
     return &g_file_ctx;
 }
 
+static bool file_artifact_path(char *path, size_t path_size,
+                               const char *datadir, uint8_t file_index)
+{
+    if (!path || !datadir || path_size == 0)
+        return false;
+
+    if (file_index == 254)
+        snprintf(path, path_size, "%s/consensus_snapshot.db", datadir);
+    else if (file_index == 253)
+        snprintf(path, path_size, "%s/block_index.bin", datadir);
+    else
+        snprintf(path, path_size, "%s/blocks/blk%05d.dat",
+                 datadir, file_index);
+
+    return true;
+}
+
+static bool file_manifest_has_file_index(const struct file_manifest *fm,
+                                         uint8_t file_index)
+{
+    if (!fm)
+        return false;
+
+    for (uint32_t i = 0; i < fm->num_chunks; i++) {
+        if (fm->chunks[i].file_index == file_index)
+            return true;
+    }
+    return false;
+}
+
+static bool file_artifact_exists(const char *datadir, uint8_t file_index,
+                                 off_t min_size, struct stat *st_out)
+{
+    char path[576];
+    struct stat st;
+
+    if (!file_artifact_path(path, sizeof(path), datadir, file_index))
+        return false;
+    if (stat(path, &st) != 0 || st.st_size < min_size)
+        return false;
+
+    if (st_out)
+        *st_out = st;
+    return true;
+}
+
+static bool file_manifest_cache_has_required_exports(const struct file_manifest *fm,
+                                                     const char *datadir)
+{
+    struct stat snap_st;
+
+    if (file_artifact_exists(datadir, 254, 1000000, &snap_st) &&
+        !file_manifest_has_file_index(fm, 254)) {
+        printf("file_manifest: consensus_snapshot.db exists but cached "
+               "manifest omits file_index=254, rebuilding\n");
+        return false;
+    }
+
+    return true;
+}
+
+static bool file_manifest_cache_inputs_are_fresh(const struct file_manifest *fm,
+                                                 const char *datadir,
+                                                 const struct stat *cache_st)
+{
+    if (!fm || !datadir || !cache_st)
+        return false;
+
+    for (uint32_t i = 0; i < fm->num_chunks; i++) {
+        uint8_t file_index = fm->chunks[i].file_index;
+        char path[576];
+        struct stat st;
+
+        if (file_index >= 253 &&
+            !file_artifact_path(path, sizeof(path), datadir, file_index))
+            return false;
+        if (file_index >= 253 &&
+            stat(path, &st) == 0 &&
+            st.st_mtime > cache_st->st_mtime) {
+            printf("file_manifest: artifact file_index=%u modified after "
+                   "cache, rebuilding\n", (unsigned)file_index);
+            return false;
+        }
+    }
+
+    return true;
+}
+
 void file_controller_init(const char *datadir)
 {
     struct file_context *ctx = file_ctx();
@@ -43,6 +131,46 @@ const struct file_manifest *file_controller_get_manifest(void)
 {
     struct file_context *ctx = file_ctx();
     return ctx->manifest_valid ? &ctx->manifest : NULL;
+}
+
+bool file_controller_refresh_manifest(void)
+{
+    struct file_context *ctx = file_ctx();
+
+    if (!ctx->datadir) {
+        ctx->manifest_valid = false;
+        memset(&ctx->manifest, 0, sizeof(ctx->manifest));
+        return false;
+    }
+
+    ctx->manifest_valid = file_manifest_build(&ctx->manifest, ctx->datadir);
+    if (!ctx->manifest_valid)
+        memset(&ctx->manifest, 0, sizeof(ctx->manifest));
+    return ctx->manifest_valid;
+}
+
+void file_controller_get_manifest_status(struct file_manifest_status *out)
+{
+    struct file_context *ctx = file_ctx();
+    struct file_manifest_status status = {0};
+
+    if (!out)
+        return;
+
+    status.datadir_configured = (ctx->datadir != NULL);
+    status.manifest_valid = ctx->manifest_valid;
+    if (ctx->manifest_valid) {
+        status.num_chunks = ctx->manifest.num_chunks;
+        status.total_bytes = ctx->manifest.total_bytes;
+        status.snapshot_served = file_manifest_has_file_index(&ctx->manifest, 254);
+        status.block_index_served = file_manifest_has_file_index(&ctx->manifest, 253);
+    }
+    if (ctx->datadir) {
+        status.snapshot_present = file_artifact_exists(ctx->datadir, 254, 1000000, NULL);
+        status.block_index_present = file_artifact_exists(ctx->datadir, 253, 1000000, NULL);
+    }
+
+    *out = status;
 }
 
 /* ── Build manifest from block files ───────────────────────────── */
@@ -122,6 +250,7 @@ static bool file_manifest_load(struct file_manifest *fm,
                                 const char *datadir)
 {
     char path[512];
+    struct stat cache_st;
     snprintf(path, sizeof(path), "%s/file_manifest.bin", datadir);
     FILE *f = fopen(path, "rb");
     if (!f) return false;
@@ -141,6 +270,10 @@ static bool file_manifest_load(struct file_manifest *fm,
         fread(&fm->chunks[i].file_index, 1, 1, f);
     }
     fclose(f);
+
+    if (!file_manifest_cache_has_required_exports(fm, datadir))
+        return false;
+
     /* Verify block files still match — check first AND last chunk.
      * The last chunk is most likely to be stale (active block file). */
     if (fm->num_chunks > 0) {
@@ -161,24 +294,23 @@ static bool file_manifest_load(struct file_manifest *fm,
             }
             free(data);
         }
-        /* Check if any block file was modified after manifest cache.
-         * If so, the manifest is stale. */
-        struct stat cache_st;
-        char cache_path[512];
-        snprintf(cache_path, sizeof(cache_path),
-                 "%s/file_manifest.bin", datadir);
-        if (stat(cache_path, &cache_st) == 0) {
+        /* Check if any served input artifact changed after the cache. */
+        if (stat(path, &cache_st) == 0) {
             uint8_t last_fi = fm->chunks[fm->num_chunks - 1].file_index;
-            char blk_path[576];
-            snprintf(blk_path, sizeof(blk_path),
-                     "%s/blocks/blk%05d.dat", datadir, last_fi);
-            struct stat blk_st;
-            if (stat(blk_path, &blk_st) == 0 &&
-                blk_st.st_mtime > cache_st.st_mtime) {
-                printf("file_manifest: blk%05d.dat modified after cache, "
-                       "rebuilding\n", last_fi);
-                return false;
+            if (last_fi < 253) {
+                char blk_path[576];
+                struct stat blk_st;
+                snprintf(blk_path, sizeof(blk_path),
+                         "%s/blocks/blk%05d.dat", datadir, last_fi);
+                if (stat(blk_path, &blk_st) == 0 &&
+                    blk_st.st_mtime > cache_st.st_mtime) {
+                    printf("file_manifest: blk%05d.dat modified after cache, "
+                           "rebuilding\n", last_fi);
+                    return false;
+                }
             }
+            if (!file_manifest_cache_inputs_are_fresh(fm, datadir, &cache_st))
+                return false;
         }
     }
     printf("file_manifest: loaded cached manifest (%u chunks, %.1f GB)\n",
@@ -238,9 +370,16 @@ bool file_manifest_build(struct file_manifest *fm, const char *datadir)
         snprintf(flat_path, sizeof(flat_path), "%s/block_index.bin", datadir);
         struct stat flat_st;
         if (stat(flat_path, &flat_st) == 0 && flat_st.st_size > 1000000) {
-            printf("file_manifest: adding block_index.bin (%.0f MB)\n",
-                   (double)flat_st.st_size / (1024.0*1024.0));
-            hash_file_chunks(flat_path, 253, fm);
+            if ((int64_t)flat_st.st_mtime > cutoff) {
+                printf("file_manifest: skipping block_index.bin "
+                       "(modified %llds ago)\n",
+                       (long long)((int64_t)time(NULL) -
+                                   (int64_t)flat_st.st_mtime));
+            } else {
+                printf("file_manifest: adding block_index.bin (%.0f MB)\n",
+                       (double)flat_st.st_size / (1024.0*1024.0));
+                hash_file_chunks(flat_path, 253, fm);
+            }
         }
     }
 
@@ -309,13 +448,8 @@ bool file_chunk_read(const struct file_chunk *chunk, const char *datadir,
                      uint8_t **out, uint32_t *out_size)
 {
     char path[576];
-    if (chunk->file_index == 254)
-        snprintf(path, sizeof(path), "%s/consensus_snapshot.db", datadir);
-    else if (chunk->file_index == 253)
-        snprintf(path, sizeof(path), "%s/block_index.bin", datadir);
-    else
-        snprintf(path, sizeof(path), "%s/blocks/blk%05d.dat",
-                 datadir, chunk->file_index);
+    if (!file_artifact_path(path, sizeof(path), datadir, chunk->file_index))
+        return false;
 
     FILE *f = fopen(path, "rb");
     if (!f) return false;
@@ -387,17 +521,19 @@ bool file_export_consensus_snapshot(const char *datadir)
     sqlite3_exec(dst_db, "PRAGMA cache_size=-262144", NULL, NULL, NULL);
 
     /* Attach source database */
-    char attach_sql[600];
-    snprintf(attach_sql, sizeof(attach_sql),
-             "ATTACH DATABASE '%s' AS src", src_path);
-    if (sqlite3_exec(dst_db, attach_sql, NULL, NULL, NULL) != SQLITE_OK) {
+    char *attach_sql = sqlite3_mprintf("ATTACH DATABASE '%q' AS src", src_path);
+    if (!attach_sql ||
+        sqlite3_exec(dst_db, attach_sql, NULL, NULL, NULL) != SQLITE_OK) {
         fprintf(stderr, "consensus_snapshot: ATTACH failed: %s\n",
                 sqlite3_errmsg(dst_db));
+        if (attach_sql)
+            sqlite3_free(attach_sql);
         sqlite3_close(dst_db);
         sqlite3_close(src_db);
         unlink(dst_path);
         return false;
     }
+    sqlite3_free(attach_sql);
 
     /* Copy ONLY public consensus tables.
      * This whitelist approach is safer than a blacklist — new private
@@ -437,13 +573,26 @@ bool file_export_consensus_snapshot(const char *datadir)
         snap_height = sqlite3_column_int(sel, 0);
     if (sel) sqlite3_finalize(sel);
 
-    char meta_sql[256];
-    snprintf(meta_sql, sizeof(meta_sql),
-        "INSERT INTO _snapshot_meta VALUES('height','%d')", snap_height);
-    sqlite3_exec(dst_db, meta_sql, NULL, NULL, NULL);
-    snprintf(meta_sql, sizeof(meta_sql),
-        "INSERT INTO _snapshot_meta VALUES('tables','%d')", tables_copied);
-    sqlite3_exec(dst_db, meta_sql, NULL, NULL, NULL);
+    {
+        sqlite3_stmt *meta = NULL;
+        if (sqlite3_prepare_v2(dst_db,
+                "INSERT INTO _snapshot_meta(key,value) VALUES(?,?)",
+                -1, &meta, NULL) == SQLITE_OK && meta) {
+            char value_buf[32];
+            sqlite3_bind_text(meta, 1, "height", -1, SQLITE_STATIC);
+            snprintf(value_buf, sizeof(value_buf), "%d", snap_height);
+            sqlite3_bind_text(meta, 2, value_buf, -1, SQLITE_TRANSIENT);
+            sqlite3_step(meta);
+            sqlite3_reset(meta);
+            sqlite3_clear_bindings(meta);
+
+            sqlite3_bind_text(meta, 1, "tables", -1, SQLITE_STATIC);
+            snprintf(value_buf, sizeof(value_buf), "%d", tables_copied);
+            sqlite3_bind_text(meta, 2, value_buf, -1, SQLITE_TRANSIENT);
+            sqlite3_step(meta);
+            sqlite3_finalize(meta);
+        }
+    }
 
     sqlite3_exec(dst_db, "COMMIT", NULL, NULL, NULL);
     sqlite3_exec(dst_db, "DETACH DATABASE src", NULL, NULL, NULL);
@@ -478,9 +627,8 @@ static bool rpc_getfilemanifest(const struct json_value *params, bool help,
         "  { root_hash, chain_height, total_bytes, num_chunks, chunks[] }\n");
 
     /* Build manifest on first call if not cached */
-    if (!ctx->manifest_valid && ctx->datadir) {
-        ctx->manifest_valid = file_manifest_build(&ctx->manifest, ctx->datadir);
-    }
+    if (!ctx->manifest_valid)
+        file_controller_refresh_manifest();
 
     if (!ctx->manifest_valid) {
         json_set_str(result, "error: no block files found");
@@ -518,6 +666,33 @@ static bool rpc_getfilemanifest(const struct json_value *params, bool help,
     }
     json_push_kv(result, "chunks", &chunks_arr);
 
+    return true;
+}
+
+static bool rpc_getfilemanifeststatus(const struct json_value *params, bool help,
+                                       struct json_value *result)
+{
+    struct file_manifest_status status;
+    (void)params;
+    RPC_HELP(help, result,
+        "getfilemanifeststatus\n"
+        "\nReturn current file manifest/export readiness summary.\n"
+        "\nResult:\n"
+        "  { datadir_configured, manifest_valid, snapshot_present,\n"
+        "    snapshot_served, block_index_present, block_index_served,\n"
+        "    num_chunks, total_bytes }\n");
+
+    file_controller_get_manifest_status(&status);
+
+    json_set_object(result);
+    json_push_kv_bool(result, "datadir_configured", status.datadir_configured);
+    json_push_kv_bool(result, "manifest_valid", status.manifest_valid);
+    json_push_kv_bool(result, "snapshot_present", status.snapshot_present);
+    json_push_kv_bool(result, "snapshot_served", status.snapshot_served);
+    json_push_kv_bool(result, "block_index_present", status.block_index_present);
+    json_push_kv_bool(result, "block_index_served", status.block_index_served);
+    json_push_kv_int(result, "num_chunks", (int64_t)status.num_chunks);
+    json_push_kv_int(result, "total_bytes", (int64_t)status.total_bytes);
     return true;
 }
 
@@ -583,6 +758,7 @@ void register_file_rpc_commands(struct rpc_table *t)
 {
     struct rpc_command cmds[] = {
         { "files", "getfilemanifest", rpc_getfilemanifest, true },
+        { "files", "getfilemanifeststatus", rpc_getfilemanifeststatus, true },
         { "files", "getfilechunk",    rpc_getfilechunk,    true },
     };
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++)

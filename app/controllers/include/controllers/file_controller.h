@@ -45,6 +45,17 @@ struct file_manifest {
     uint64_t          total_bytes;   /* total data size */
 };
 
+struct file_manifest_status {
+    bool     datadir_configured;
+    bool     manifest_valid;
+    bool     snapshot_present;
+    bool     snapshot_served;
+    bool     block_index_present;
+    bool     block_index_served;
+    uint32_t num_chunks;
+    uint64_t total_bytes;
+};
+
 /* Build manifest from block files in datadir. */
 bool file_manifest_build(struct file_manifest *fm, const char *datadir);
 
@@ -64,6 +75,12 @@ void file_controller_init(const char *datadir);
 
 /* Get the cached manifest (built in background). */
 const struct file_manifest *file_controller_get_manifest(void);
+
+/* Explicitly rebuild the cached manifest from the current datadir. */
+bool file_controller_refresh_manifest(void);
+
+/* Get the current manifest/export readiness summary. */
+void file_controller_get_manifest_status(struct file_manifest_status *out);
 
 /* Export public consensus tables from node.db to consensus_snapshot.db.
  * SECURITY: excludes wallet_keys, wallet_utxos, wallet_sapling_keys,

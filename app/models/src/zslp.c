@@ -16,8 +16,8 @@
 
 #include "models/zslp.h"
 #include "models/activerecord.h"
+#include "models/model_text.h"
 #include "event/event.h"
-#include <ctype.h>
 #include <limits.h>
 #include <string.h>
 #include <stdio.h>
@@ -27,79 +27,18 @@
 DEFINE_MODEL_CALLBACKS(zslp_token)
 DEFINE_MODEL_CALLBACKS(zslp_transfer)
 DEFINE_MODEL_CALLBACKS(zslp_balance)
-
-static bool zslp_token_hooks_ready = false;
-static bool zslp_balance_hooks_ready = false;
 static bool zslp_token_before_save(void *record, void *ctx);
-
-static bool zslp_string_is_alnum(const char *str)
-{
-    if (!str || str[0] == '\0')
-        return false;
-    for (const unsigned char *p = (const unsigned char *)str; *p; ++p) {
-        if (!isalnum(*p))
-            return false;
-    }
-    return true;
-}
-
-static bool zslp_string_is_printable(const char *str)
-{
-    if (!str || str[0] == '\0')
-        return false;
-    for (const unsigned char *p = (const unsigned char *)str; *p; ++p) {
-        if (!isprint(*p))
-            return false;
-    }
-    return true;
-}
-
-static bool zslp_string_is_hex(const char *str)
-{
-    if (!str || str[0] == '\0')
-        return false;
-    for (const unsigned char *p = (const unsigned char *)str; *p; ++p) {
-        if (!isxdigit(*p))
-            return false;
-    }
-    return true;
-}
-
-static void zslp_upcase_ascii(char *str)
-{
-    if (!str)
-        return;
-    for (; *str; ++str)
-        *str = (char)toupper((unsigned char)*str);
-}
 
 static bool zslp_balance_before_save(void *record, void *ctx)
 {
     (void)ctx;
     struct db_zslp_balance *b = (struct db_zslp_balance *)record;
-    zslp_upcase_ascii(b->token_id);
+    model_ascii_upcase(b->token_id);
     return true;
 }
 
-static struct ar_callbacks *zslp_token_callbacks_ready(void)
-{
-    struct ar_callbacks *cbs = db_zslp_token_callbacks();
-    if (!zslp_token_hooks_ready) {
-        ar_register_before_save(cbs, zslp_token_before_save);
-        zslp_token_hooks_ready = true;
-    }
-    return cbs;
-}
-
-static struct ar_callbacks *zslp_balance_callbacks_ready(void)
-{
-    struct ar_callbacks *cbs = db_zslp_balance_callbacks();
-    if (!zslp_balance_hooks_ready) {
-        ar_register_before_save(cbs, zslp_balance_before_save);
-        zslp_balance_hooks_ready = true;
-    }
-    return cbs;
-}
+DEFINE_MODEL_BEFORE_SAVE_READY(zslp_token, zslp_token_before_save)
+DEFINE_MODEL_BEFORE_SAVE_READY(zslp_balance, zslp_balance_before_save)
 
 /* ── Token Validation ─────────────────────────────────────────── */
 
@@ -122,7 +61,7 @@ static bool zslp_token_before_save(void *record, void *ctx)
 {
     struct zslp_token_key_record *rec = (struct zslp_token_key_record *)record;
     (void)ctx;
-    zslp_upcase_ascii(rec->token_id);
+    model_ascii_upcase(rec->token_id);
     return true;
 }
 
@@ -146,8 +85,8 @@ static bool validate_token_key_record(const struct zslp_token_key_record *rec,
         strlen(rec->token_id) <= ZSLP_TOKEN_KEY_MAX,
         "token_id", "exceeds max length 64");
     validates_custom(errors,
-        zslp_string_is_alnum(rec->token_id) ||
-        (strlen(rec->token_id) == 64 && zslp_string_is_hex(rec->token_id)),
+        model_string_is_alnum(rec->token_id) ||
+        (strlen(rec->token_id) == 64 && model_string_is_hex(rec->token_id)),
         "token_id", "must be alphanumeric or 64-char hex");
     validates_range(errors, rec, decimals, 0, 8);
     validates_non_negative(errors, rec, genesis_height);
@@ -169,11 +108,11 @@ bool db_zslp_balance_validate(const struct db_zslp_balance *b,
         strlen(b->address) <= ZSLP_ADDRESS_MAX,
         "address", "exceeds max length 128");
     validates_custom(errors,
-        zslp_string_is_printable(b->address),
+        model_string_is_printable(b->address),
         "address", "contains non-printable characters");
     validates_custom(errors,
-        zslp_string_is_alnum(b->token_id) ||
-        (strlen(b->token_id) == 64 && zslp_string_is_hex(b->token_id)),
+        model_string_is_alnum(b->token_id) ||
+        (strlen(b->token_id) == 64 && model_string_is_hex(b->token_id)),
         "token_id", "must be alphanumeric or 64-char hex");
     return !ar_errors_any(errors);
 }
@@ -231,8 +170,11 @@ bool db_zslp_token_save(struct node_db *ndb, const uint8_t token_id[32],
         fprintf(stderr, "zslp_token validation FAILED: ticker invalid\n");
         return false;
     }
+    if (!ar_run_before_save(cbs, &rec)) {
+        fprintf(stderr, "zslp_token save vetoed by before_save\n");
+        return false;
+    }
     AR_VALIDATE_RECORD(cbs, "zslp_token", &rec, validate_token_record);
-    if (!ar_run_before_save(cbs, &rec)) return false;
 
     sqlite3_stmt *s = NULL;
     if (sqlite3_prepare_v2(ndb->db,
@@ -256,6 +198,8 @@ bool db_zslp_token_save(struct node_db *ndb, const uint8_t token_id[32],
     if (ok) {
         ar_run_after_save(cbs, &rec);
         event_emitf(EV_MODEL_SAVED, 0, "model=zslp_token ticker=%s", ticker);
+    } else {
+        fprintf(stderr, "zslp_token save failed: %s\n", sqlite3_errmsg(ndb->db));
     }
     return ok;
 }
@@ -282,9 +226,11 @@ bool db_zslp_token_save_key(struct node_db *ndb, const char *token_key,
         fprintf(stderr, "zslp_token validation FAILED: ticker invalid\n");
         return false;
     }
-    AR_VALIDATE_RECORD(cbs, "zslp_token", &rec, validate_token_key_record);
-    if (!ar_run_before_save(cbs, &rec))
+    if (!ar_run_before_save(cbs, &rec)) {
+        fprintf(stderr, "zslp_token save_key vetoed by before_save\n");
         return false;
+    }
+    AR_VALIDATE_RECORD(cbs, "zslp_token", &rec, validate_token_key_record);
 
     if (sqlite3_prepare_v2(ndb->db,
             "INSERT OR REPLACE INTO zslp_tokens"
@@ -302,6 +248,7 @@ bool db_zslp_token_save_key(struct node_db *ndb, const char *token_key,
     AR_BIND_INT(s, 7, initial_quantity);
 
     if (!AR_STEP_DONE(s)) {
+        fprintf(stderr, "zslp_token save_key failed: %s\n", sqlite3_errmsg(ndb->db));
         AR_FINALIZE(s);
         return false;
     }
@@ -352,6 +299,8 @@ bool db_zslp_transfer_save(struct node_db *ndb, const uint8_t txid[32],
 
     if (ok)
         ar_run_after_save(cbs, &rec);
+    else
+        fprintf(stderr, "zslp_transfer save failed: %s\n", sqlite3_errmsg(ndb->db));
     return ok;
 }
 
@@ -365,9 +314,11 @@ bool db_zslp_balance_save(struct node_db *ndb, const struct db_zslp_balance *b)
 
     cbs = zslp_balance_callbacks_ready();
 
-    AR_VALIDATE_RECORD(cbs, "zslp_balance", b, db_zslp_balance_validate);
-    if (!ar_run_before_save(cbs, (void *)b))
+    if (!ar_run_before_save(cbs, (void *)b)) {
+        fprintf(stderr, "zslp_balance save vetoed by before_save\n");
         return false;
+    }
+    AR_VALIDATE_RECORD(cbs, "zslp_balance", b, db_zslp_balance_validate);
 
     if (sqlite3_prepare_v2(ndb->db,
             "INSERT INTO zslp_balances (token_id,address,balance) "
@@ -381,6 +332,7 @@ bool db_zslp_balance_save(struct node_db *ndb, const struct db_zslp_balance *b)
     AR_BIND_INT(s, 3, b->balance);
 
     if (!AR_STEP_DONE(s)) {
+        fprintf(stderr, "zslp_balance save failed: %s\n", sqlite3_errmsg(ndb->db));
         AR_FINALIZE(s);
         return false;
     }
@@ -402,7 +354,7 @@ bool db_zslp_balance_find(struct node_db *ndb, const char *token_id,
     memset(&lookup, 0, sizeof(lookup));
     snprintf(lookup.token_id, sizeof(lookup.token_id), "%s", token_id);
     snprintf(lookup.address, sizeof(lookup.address), "%s", address);
-    zslp_upcase_ascii(lookup.token_id);
+    model_ascii_upcase(lookup.token_id);
 
     if (sqlite3_prepare_v2(ndb->db,
             "SELECT token_id,address,balance FROM zslp_balances "
@@ -436,7 +388,7 @@ bool db_zslp_token_find(struct node_db *ndb, const char *token_key,
 
     memset(lookup, 0, sizeof(lookup));
     snprintf(lookup, sizeof(lookup), "%s", token_key);
-    zslp_upcase_ascii(lookup);
+    model_ascii_upcase(lookup);
 
     if (sqlite3_prepare_v2(ndb->db,
             "SELECT CASE WHEN typeof(token_id)='blob' THEN hex(token_id) "
@@ -514,7 +466,7 @@ int db_zslp_transfer_list_by_token(struct node_db *ndb, const char *token_key,
 
     memset(lookup, 0, sizeof(lookup));
     snprintf(lookup, sizeof(lookup), "%s", token_key);
-    zslp_upcase_ascii(lookup);
+    model_ascii_upcase(lookup);
 
     if (sqlite3_prepare_v2(ndb->db,
             "SELECT hex(txid),"

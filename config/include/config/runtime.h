@@ -5,12 +5,14 @@
 #ifndef ZCL_RUNTIME_H
 #define ZCL_RUNTIME_H
 
+#include "config/db_service.h"
+
 struct node_db;
 struct tx_mempool;
 struct wallet;
 
 struct app_runtime_context {
-    struct node_db *node_db;
+    struct db_service *db_service;
     struct tx_mempool *mempool;
     struct wallet *wallet;
 };
@@ -23,7 +25,9 @@ struct app_runtime_context {
 void app_runtime_set_current(struct app_runtime_context *runtime);
 const struct app_runtime_context *app_runtime_current(void);
 
+struct db_service *app_runtime_db_service(void);
 struct node_db *app_runtime_node_db(void);
+sqlite3 *app_runtime_query_db(void);
 struct tx_mempool *app_runtime_mempool(void);
 struct wallet *app_runtime_wallet(void);
 
