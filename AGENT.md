@@ -140,6 +140,10 @@ DB-mutating service helpers now also obey the worker boundary:
 - background ZK params loading now tracks whether the loader thread actually
   started before boot joins it, so startup failure cannot turn into an
   unconditional join on invalid thread state
+- API cache and lookup helpers now use checked detached-thread startup with
+  atomic first-start gating, so concurrent first requests cannot spawn
+  duplicate workers and startup failure returns a clean 503 instead of
+  pretending the background helper is alive
 - startup SQLite catchup is now owned as an explicit `sync_controller`
   catchup job object instead of boot carrying a raw pthread plus argument bag
 - snapshot import now fails cleanly on partial thread-start failure instead of

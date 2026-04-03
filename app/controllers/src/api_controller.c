@@ -997,23 +997,49 @@ static void *api_cache_refresh_thread(void *arg)
     return NULL;
 }
 
-static void ensure_cache_thread(void)
+static bool api_start_detached_thread(pthread_t *thread_out,
+                                      void *(*entry)(void *),
+                                      void *arg)
 {
-    if (g_api_cache_thread_running) return;
-    g_api_cache_thread_running = 1;
-
-    pthread_t t;
     pthread_attr_t attr;
-    pthread_attr_init(&attr);
-    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-    pthread_attr_setstacksize(&attr, 2 * 1024 * 1024);
-    pthread_create(&t, &attr, api_cache_refresh_thread, NULL);
+    bool ok = false;
+
+    if (!thread_out || !entry)
+        return false;
+    if (pthread_attr_init(&attr) != 0)
+        return false;
+    if (pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED) != 0)
+        goto cleanup;
+    if (pthread_attr_setstacksize(&attr, 2 * 1024 * 1024) != 0)
+        goto cleanup;
+    if (pthread_create(thread_out, &attr, entry, arg) != 0)
+        goto cleanup;
+    ok = true;
+
+cleanup:
     pthread_attr_destroy(&attr);
+    return ok;
+}
+
+static bool ensure_cache_thread(void)
+{
+    int expected = 0;
+    pthread_t t;
+
+    if (!atomic_compare_exchange_strong(&g_api_cache_thread_running,
+                                        &expected, 1))
+        return expected == 1;
+    if (!api_start_detached_thread(&t, api_cache_refresh_thread, NULL)) {
+        atomic_store(&g_api_cache_thread_running, 0);
+        return false;
+    }
+    return true;
 }
 
 void api_start_cache(void)
 {
-    ensure_cache_thread();
+    if (!ensure_cache_thread())
+        fprintf(stderr, "API cache: failed to start background thread\n");
 }
 
 /* ── Serve from cache helpers ────────────────────────────── */
@@ -1100,25 +1126,29 @@ static void *api_lookup_thread(void *arg)
     return NULL;
 }
 
-static void ensure_lookup_thread(void)
+static bool ensure_lookup_thread(void)
 {
-    if (g_lookup_thread_running) return;
-    g_lookup_thread_running = 1;
-
+    int expected = 0;
     pthread_t t;
-    pthread_attr_t attr;
-    pthread_attr_init(&attr);
-    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-    pthread_attr_setstacksize(&attr, 2 * 1024 * 1024);
-    pthread_create(&t, &attr, api_lookup_thread, NULL);
-    pthread_attr_destroy(&attr);
+
+    if (!atomic_compare_exchange_strong(&g_lookup_thread_running,
+                                        &expected, 1))
+        return expected == 1;
+    if (!api_start_detached_thread(&t, api_lookup_thread, NULL)) {
+        atomic_store(&g_lookup_thread_running, 0);
+        return false;
+    }
+    return true;
 }
 
 /* Submit a lookup request and wait for result (with timeout) */
 static size_t do_lookup(enum lookup_type type, const char *param,
                          uint8_t *response, size_t response_max)
 {
-    ensure_lookup_thread();
+    if (!ensure_lookup_thread()) {
+        return json_error(response, response_max, JSON_503_HEADERS,
+                          "Lookup unavailable, please retry");
+    }
 
     pthread_mutex_lock(&g_lookup_mutex);
 
@@ -1492,7 +1522,10 @@ size_t api_handle_request(const char *method, const char *path,
     if (!method || !path || !response || response_max == 0) return 0;
 
     /* Start background cache thread on first request */
-    ensure_cache_thread();
+    if (!ensure_cache_thread()) {
+        return json_error(response, response_max, JSON_503_HEADERS,
+                          "API cache unavailable, please retry");
+    }
 
     /* Handle CORS preflight */
     if (strcmp(method, "OPTIONS") == 0)
