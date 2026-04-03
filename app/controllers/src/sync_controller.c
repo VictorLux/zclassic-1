@@ -2067,6 +2067,19 @@ static void import_job_join_writer(struct import_job *job)
     job->writer_thread_started = false;
 }
 
+static bool import_job_start(struct import_job *job)
+{
+    if (!import_job_start_decoders(job))
+        return false;
+    if (!import_job_start_writer(job)) {
+        if (job && job->ctx)
+            atomic_store(&job->ctx->reader_done, true);
+        import_job_join_decoders(job);
+        return false;
+    }
+    return true;
+}
+
 /* Decode a single raw coins entry into utxo_row structs.
  * Returns number of rows produced. Pure function, no shared state. */
 static int decode_coins_entry(const struct raw_entry *raw,
@@ -2460,23 +2473,11 @@ int node_db_sync_import_utxos(struct node_db *ndb,
     import_job_init(&job, ctx, num_decoders);
 
     /* ── Start decoder + writer threads ────────────────────────────── */
-    if (!import_job_start_decoders(&job)) {
-        fprintf(stderr, "UTXO import: FATAL — no decoder threads started\n");
-        import_job_join_decoders(&job);
+    if (!import_job_start(&job)) {
+        fprintf(stderr, "UTXO import: FATAL — worker pipeline failed to start\n");
         import_context_release_chunks(ctx);
         if (!sync_db_restore_normal_mode(ndb))
-            fprintf(stderr, "UTXO import: failed to restore normal mode after decoder startup failure\n");
-        free(ctx);
-        sync_job_import_finish(0);
-        return -1;
-    }
-
-    if (!import_job_start_writer(&job)) {
-        atomic_store(&ctx->reader_done, true);
-        import_job_join_decoders(&job);
-        import_context_release_chunks(ctx);
-        if (!sync_db_restore_normal_mode(ndb))
-            fprintf(stderr, "UTXO import: failed to restore normal mode after writer startup failure\n");
+            fprintf(stderr, "UTXO import: failed to restore normal mode after worker startup failure\n");
         free(ctx);
         sync_job_import_finish(0);
         return -1;
