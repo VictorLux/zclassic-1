@@ -117,6 +117,13 @@ const char *snapshot_create(const char *legacy_datadir,
     snprintf(src, sizeof(src), "%s/blocks", legacy_datadir);
     snprintf(dst, sizeof(dst), "%s/blocks", snap_dir);
     int copied = block_files_copy(src, dst);
+    if (copied <= 0) {
+        fprintf(stderr,
+                "snapshot: failed to copy block files from %s to %s\n",
+                src, dst);
+        dir_remove_tree(snap_dir);
+        return NULL;
+    }
     printf("snapshot: %d block files copied\n", copied);
 
     /* Copy block index LevelDB */
@@ -124,7 +131,13 @@ const char *snapshot_create(const char *legacy_datadir,
     fflush(stdout);
     snprintf(src, sizeof(src), "%s/blocks/index", legacy_datadir);
     snprintf(dst, sizeof(dst), "%s/blocks/index", snap_dir);
-    dir_copy(src, dst);
+    if (!dir_copy(src, dst)) {
+        fprintf(stderr,
+                "snapshot: failed to copy block index from %s to %s\n",
+                src, dst);
+        dir_remove_tree(snap_dir);
+        return NULL;
+    }
     printf(" done\n");
 
     /* Copy chainstate LevelDB */
@@ -132,7 +145,13 @@ const char *snapshot_create(const char *legacy_datadir,
     fflush(stdout);
     snprintf(src, sizeof(src), "%s/chainstate", legacy_datadir);
     snprintf(dst, sizeof(dst), "%s/chainstate", snap_dir);
-    dir_copy(src, dst);
+    if (!dir_copy(src, dst)) {
+        fprintf(stderr,
+                "snapshot: failed to copy chainstate from %s to %s\n",
+                src, dst);
+        dir_remove_tree(snap_dir);
+        return NULL;
+    }
     printf(" done\n");
 
     struct timespec t1;

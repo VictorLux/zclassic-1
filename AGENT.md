@@ -125,6 +125,9 @@ DB-mutating service helpers now also obey the worker boundary:
 - the legacy fast-import copy path in `boot.c` now obeys those checked copy
   contracts too: partial block/index/chainstate copy failure aborts boot
   import instead of continuing into a mixed runtime state
+- snapshot creation now obeys the same checked copy rules too: if block files,
+  blocks/index, or chainstate fail to copy into the snapshot directory, the
+  partially created snapshot is removed and the operation returns failure
 - boot service thread start/join paths for payment, replay, snapshot offer,
   address backfill, and tx-index are now consolidated behind shared helper
   functions so lifecycle handling stays consistent and DRY
