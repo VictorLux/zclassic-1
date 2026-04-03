@@ -1509,6 +1509,7 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
     struct worker_ctx workers[N_INDEX_THREADS];
     pthread_t threads[N_INDEX_THREADS];
     int heights_per_thread = (max_height + 1 + N_INDEX_THREADS - 1) / N_INDEX_THREADS;
+    int workers_started = 0;
 
     for (int t = 0; t < N_INDEX_THREADS; t++) {
         memset(&workers[t], 0, sizeof(workers[t]));
@@ -1520,7 +1521,18 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
         workers[t].locs = locs;
         workers[t].max_height = max_height;
         workers[t].legacy_dir = legacy_dir;
-        pthread_create(&threads[t], NULL, index_worker, &workers[t]);
+        if (pthread_create(&threads[t], NULL, index_worker, &workers[t]) != 0) {
+            fprintf(stderr,
+                    "indexlegacy: Phase B failed to start extraction worker %d\n",
+                    t);
+            for (int j = 0; j < workers_started; j++)
+                pthread_join(threads[j], NULL);
+            free(locs);
+            json_set_str(result,
+                         "Failed to start Phase B extraction workers");
+            return false;
+        }
+        workers_started++;
     }
 
     for (int t = 0; t < N_INDEX_THREADS; t++)

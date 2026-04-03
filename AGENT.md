@@ -153,6 +153,9 @@ DB-mutating service helpers now also obey the worker boundary:
 - wallet scan now uses the same fail-closed pass-1 scan worker startup
   handling, so a thread-launch failure aborts cleanly instead of leaving the
   scan logic assuming every batch worker exists
+- `indexlegacy` Phase B extraction now fails closed on partial worker startup,
+  joining already-started threads and returning a real RPC error instead of
+  proceeding with a partially launched extraction pool
 - startup SQLite catchup is now owned as an explicit `sync_controller`
   catchup job object instead of boot carrying a raw pthread plus argument bag
 - snapshot import now fails cleanly on partial thread-start failure instead of
