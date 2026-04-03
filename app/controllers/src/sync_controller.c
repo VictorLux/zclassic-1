@@ -2029,8 +2029,7 @@ static bool import_job_start_decoders(struct import_job *job)
                     "UTXO import: pthread_create decoder[%d] failed: %d\n",
                     i, rc);
             import_ctx_request_stop(job->ctx);
-            job->num_decoders = i;
-            return i > 0;
+            return false;
         }
         job->decoder_threads_started++;
     }
@@ -2463,6 +2462,8 @@ int node_db_sync_import_utxos(struct node_db *ndb,
     /* ── Start decoder + writer threads ────────────────────────────── */
     if (!import_job_start_decoders(&job)) {
         fprintf(stderr, "UTXO import: FATAL — no decoder threads started\n");
+        import_job_join_decoders(&job);
+        import_context_release_chunks(ctx);
         if (!sync_db_restore_normal_mode(ndb))
             fprintf(stderr, "UTXO import: failed to restore normal mode after decoder startup failure\n");
         free(ctx);

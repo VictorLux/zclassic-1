@@ -162,6 +162,9 @@ DB-mutating service helpers now also obey the worker boundary:
 - file-service client parallel download startup now fails closed: if any range
   worker cannot launch, already-started workers are cancelled/joined and the
   client returns failure instead of continuing with a partial download pool
+- UTXO import decoder startup is now all-or-nothing: partial decoder launch no
+  longer returns success via a side-effected cancel flag, and startup failure
+  cleans up/joins before the import path restores DB mode and exits
 - startup SQLite catchup is now owned as an explicit `sync_controller`
   catchup job object instead of boot carrying a raw pthread plus argument bag
 - snapshot import now fails cleanly on partial thread-start failure instead of
