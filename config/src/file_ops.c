@@ -70,11 +70,14 @@ int block_files_copy(const char *src_dir, const char *dst_dir)
         snprintf(src, sizeof(src), "%s/blk%05d.dat", src_dir, i);
         if (stat(src, &st) != 0) break;
         snprintf(dst, sizeof(dst), "%s/blk%05d.dat", dst_dir, i);
-        if (file_copy(src, dst)) count++;
+        if (!file_copy(src, dst))
+            return -1;
+        count++;
         snprintf(src, sizeof(src), "%s/rev%05d.dat", src_dir, i);
         if (stat(src, &st) == 0) {
             snprintf(dst, sizeof(dst), "%s/rev%05d.dat", dst_dir, i);
-            file_copy(src, dst);
+            if (!file_copy(src, dst))
+                return -1;
         }
     }
     return count;

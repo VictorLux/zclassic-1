@@ -16,7 +16,7 @@ bool file_copy(const char *src, const char *dst);
 bool dir_copy(const char *src_dir, const char *dst_dir);
 
 /* Copy all blk*.dat and rev*.dat from src_dir to dst_dir.
- * Returns count of files copied. */
+ * Returns count of blk*.dat files copied, or -1 on any copy failure. */
 int block_files_copy(const char *src_dir, const char *dst_dir);
 
 /* Remove all blk*.dat and rev*.dat from a directory. */

@@ -128,6 +128,9 @@ DB-mutating service helpers now also obey the worker boundary:
 - snapshot creation now obeys the same checked copy rules too: if block files,
   blocks/index, or chainstate fail to copy into the snapshot directory, the
   partially created snapshot is removed and the operation returns failure
+- `block_files_copy()` itself now fails closed on `blk*.dat` or `rev*.dat`
+  copy errors instead of silently ignoring reverse-file copy failures, and the
+  snapshot/boot callers distinguish true copy failure from “zero block files”
 - boot service thread start/join paths for payment, replay, snapshot offer,
   address backfill, and tx-index are now consolidated behind shared helper
   functions so lifecycle handling stays consistent and DRY

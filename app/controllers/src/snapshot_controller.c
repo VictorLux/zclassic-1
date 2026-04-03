@@ -117,7 +117,14 @@ const char *snapshot_create(const char *legacy_datadir,
     snprintf(src, sizeof(src), "%s/blocks", legacy_datadir);
     snprintf(dst, sizeof(dst), "%s/blocks", snap_dir);
     int copied = block_files_copy(src, dst);
-    if (copied <= 0) {
+    if (copied < 0) {
+        fprintf(stderr,
+                "snapshot: block file copy failed from %s to %s\n",
+                src, dst);
+        dir_remove_tree(snap_dir);
+        return NULL;
+    }
+    if (copied == 0) {
         fprintf(stderr,
                 "snapshot: failed to copy block files from %s to %s\n",
                 src, dst);
@@ -581,7 +588,14 @@ int snapshot_import(const char *snapshot_dir,
     mkdir(dst, 0700);
     snprintf(src, sizeof(src), "%s/blocks", snapshot_dir);
     block_files_clean(dst);
-    if (block_files_copy(src, dst) <= 0) {
+    int copied = block_files_copy(src, dst);
+    if (copied < 0) {
+        fprintf(stderr,
+                "snapshot_import: block file copy failed from %s to %s\n",
+                src, dst);
+        return -1;
+    }
+    if (copied == 0) {
         fprintf(stderr,
                 "snapshot_import: failed to sync block files from %s to %s\n",
                 src, dst);

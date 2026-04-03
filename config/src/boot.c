@@ -583,7 +583,13 @@ bool app_init(struct app_context *ctx)
         fflush(stdout);
         block_files_clean(dst);
         int copied = block_files_copy(src, dst);
-        if (copied <= 0) {
+        if (copied < 0) {
+            fprintf(stderr, " failed\n");
+            fprintf(stderr, "legacy import: block file copy failed from %s to %s\n",
+                    src, dst);
+            return false;
+        }
+        if (copied == 0) {
             fprintf(stderr, " failed\n");
             fprintf(stderr, "legacy import: failed to copy block files from %s to %s\n",
                     src, dst);
