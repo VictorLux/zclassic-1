@@ -128,6 +128,8 @@ DB-mutating service helpers now also obey the worker boundary:
   instead of assuming the optional metrics worker always starts cleanly
 - embedded Tor now tracks whether the onion-monitor helper thread actually
   started before trying to join it during shutdown
+- startup SQLite catchup is now owned as an explicit `sync_controller`
+  catchup job object instead of boot carrying a raw pthread plus argument bag
 - UTXO import is being hardened with explicit cancellation and cleanup so
   shutdown or startup failure does not leave the parallel import pipeline
   running blindly

@@ -23,12 +23,16 @@
 #include "models/peer.h"
 #include <stdbool.h>
 #include <stdint.h>
+#include <pthread.h>
 
 struct block;
 struct block_index;
 struct transaction;
 struct wallet;
 struct node_health_snapshot;
+struct active_chain;
+struct coins_view_db;
+struct tx_mempool;
 
 struct node_db_sync_job_status {
     bool catchup_active;
@@ -40,6 +44,18 @@ struct node_db_sync_job_status {
     int import_rows_written;
     int64_t import_started_at;
     int64_t import_last_progress_at;
+};
+
+struct node_db_sync_catchup_job {
+    pthread_t thread;
+    bool started;
+    int result;
+    struct {
+        struct node_db *ndb;
+        const struct active_chain *chain;
+        const struct wallet *w;
+        const char *datadir;
+    } args;
 };
 
 /* Initialize the sync layer. Opens SQLite at datadir/node.db. */
@@ -132,7 +148,6 @@ bool node_db_sync_set_tip(struct node_db *ndb,
  * Reads blocks from (sqlite_tip+1) to chain_tip and indexes them.
  * Also scans for wallet transactions if wallet is provided.
  * Called once at startup after chain is loaded. */
-struct active_chain;
 int node_db_sync_catchup(struct node_db *ndb,
                          const struct active_chain *chain,
                          const struct wallet *w,
@@ -151,12 +166,10 @@ void *node_db_sync_catchup_thread(void *arg);
  * Iterates all 'c'-prefixed entries, decodes compressed outputs,
  * and bulk-inserts into the utxos table with address indexing.
  * Returns the number of UTXO outputs imported, or -1 on error. */
-struct coins_view_db;
 int node_db_sync_import_utxos(struct node_db *ndb,
                                struct coins_view_db *cvdb);
 
 /* Save current in-memory mempool to SQLite. Called on shutdown. */
-struct tx_mempool;
 int node_db_sync_mempool_save(struct node_db *ndb,
                               const struct tx_mempool *mempool);
 
@@ -166,5 +179,16 @@ int node_db_sync_mempool_load(struct node_db *ndb,
                               struct tx_mempool *mempool);
 
 void node_db_sync_get_job_status(struct node_db_sync_job_status *out);
+
+void node_db_sync_catchup_job_init(struct node_db_sync_catchup_job *job);
+bool node_db_sync_catchup_job_start(struct node_db_sync_catchup_job *job,
+                                    struct node_db *ndb,
+                                    const struct active_chain *chain,
+                                    const struct wallet *w,
+                                    const char *datadir);
+bool node_db_sync_catchup_job_join(struct node_db_sync_catchup_job *job,
+                                   int *result_out);
+bool node_db_sync_catchup_job_is_started(
+    const struct node_db_sync_catchup_job *job);
 
 #endif

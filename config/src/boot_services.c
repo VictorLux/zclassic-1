@@ -103,29 +103,19 @@ static bool boot_running(const struct boot_svc_ctx *svc)
 static bool boot_start_catchup_service(struct boot_svc_ctx *svc,
                                        const char *datadir)
 {
-    if (!svc || svc->catchup_thread_started)
+    if (!svc || node_db_sync_catchup_job_is_started(&svc->catchup_job))
         return false;
 
-    svc->catchup_args.ndb = boot_node_db();
-    svc->catchup_args.chain = &svc->state->chain_active;
-    svc->catchup_args.w = svc->wallet;
-    svc->catchup_args.datadir = datadir;
-
-    if (pthread_create(&svc->catchup_thread, NULL,
-                       (void *(*)(void *))node_db_sync_catchup_thread,
-                       &svc->catchup_args) != 0) {
-        return false;
-    }
-    svc->catchup_thread_started = true;
-    return true;
+    return node_db_sync_catchup_job_start(&svc->catchup_job, boot_node_db(),
+                                          &svc->state->chain_active,
+                                          svc->wallet, datadir);
 }
 
 static void boot_join_catchup_service(struct boot_svc_ctx *svc)
 {
-    if (!svc || !svc->catchup_thread_started)
+    if (!svc)
         return;
-    pthread_join(svc->catchup_thread, NULL);
-    svc->catchup_thread_started = false;
+    node_db_sync_catchup_job_join(&svc->catchup_job, NULL);
 }
 
 static bool boot_start_payment_service(struct boot_svc_ctx *svc)
@@ -468,6 +458,7 @@ bool app_init_services(struct app_context *ctx,
                         struct boot_svc_ctx *svc)
 {
     S = svc;
+    node_db_sync_catchup_job_init(&svc->catchup_job);
     if (svc->db_service) {
         db_service_attach(svc->db_service, svc->node_db);
         db_service_start(svc->db_service);

@@ -104,8 +104,7 @@ struct boot_svc_ctx {
     struct block_tree_db *block_tree;
     /* Composition-owned runtime passed into long-lived services. */
     struct app_runtime_context runtime;
-    pthread_t catchup_thread;
-    bool catchup_thread_started;
+    struct node_db_sync_catchup_job catchup_job;
     pthread_t payment_thread;
     bool payment_thread_started;
     pthread_t replay_thread;
@@ -118,12 +117,6 @@ struct boot_svc_ctx {
     bool tx_index_thread_started;
     bool want_address_backfill;
     bool want_snapshot_tx_index;
-    struct {
-        struct node_db *ndb;
-        const struct active_chain *chain;
-        const struct wallet *w;
-        const char *datadir;
-    } catchup_args;
 };
 
 bool app_init_services(struct app_context *ctx,

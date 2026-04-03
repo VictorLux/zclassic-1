@@ -1512,26 +1512,101 @@ struct catchup_args {
  * and clear spent_txid on already-spent UTXOs. The catchup block scan
  * already processes wallet transactions with correct heights. */
 
-void *node_db_sync_catchup_thread(void *arg)
+static void *node_db_sync_catchup_job_thread(void *arg)
 {
-    struct catchup_args *a = (struct catchup_args *)arg;
-
-    /* Open a dedicated SQLite connection for the catchup thread.
-     * Sharing the main ndb connection with the RPC thread causes
-     * silent write failures due to WAL locking contention. */
-    char path[1024];
-    snprintf(path, sizeof(path), "%s/node.db", a->datadir);
-
+    struct node_db_sync_catchup_job *job = arg;
     struct node_db catchup_db;
-    if (!node_db_open(&catchup_db, path)) {
-        fprintf(stderr, "catchup: failed to open dedicated connection\n");
+    bool private_open = false;
+
+    if (!job) {
         return NULL;
     }
 
-    node_db_sync_catchup(&catchup_db, a->chain, a->w, a->datadir);
+    memset(&catchup_db, 0, sizeof(catchup_db));
+    private_open = node_db_sync_open_private_db_like(job->args.ndb, &catchup_db);
+    if (!private_open && job->args.datadir) {
+        char path[1024];
+        snprintf(path, sizeof(path), "%s/node.db", job->args.datadir);
+        private_open = node_db_open(&catchup_db, path);
+    }
+
+    if (!private_open) {
+        fprintf(stderr, "catchup: failed to open dedicated connection\n");
+        job->result = -1;
+        return NULL;
+    }
+
+    job->result = node_db_sync_catchup(&catchup_db, job->args.chain,
+                                       job->args.w, job->args.datadir);
 
     node_db_close(&catchup_db);
     return NULL;
+}
+
+void *node_db_sync_catchup_thread(void *arg)
+{
+    struct node_db_sync_catchup_job job;
+    struct catchup_args *args = arg;
+
+    node_db_sync_catchup_job_init(&job);
+    if (!args)
+        return NULL;
+    job.args.ndb = args->ndb;
+    job.args.chain = args->chain;
+    job.args.w = args->w;
+    job.args.datadir = args->datadir;
+    if (!node_db_sync_catchup_job_start(&job, job.args.ndb, job.args.chain,
+                                        job.args.w, job.args.datadir))
+        return NULL;
+    node_db_sync_catchup_job_join(&job, NULL);
+    return NULL;
+}
+
+void node_db_sync_catchup_job_init(struct node_db_sync_catchup_job *job)
+{
+    if (!job)
+        return;
+    memset(job, 0, sizeof(*job));
+    job->result = -1;
+}
+
+bool node_db_sync_catchup_job_start(struct node_db_sync_catchup_job *job,
+                                    struct node_db *ndb,
+                                    const struct active_chain *chain,
+                                    const struct wallet *w,
+                                    const char *datadir)
+{
+    if (!job || job->started || !ndb || !chain || !datadir)
+        return false;
+
+    job->args.ndb = ndb;
+    job->args.chain = chain;
+    job->args.w = w;
+    job->args.datadir = datadir;
+    job->result = -1;
+    if (pthread_create(&job->thread, NULL,
+                       node_db_sync_catchup_job_thread, job) != 0)
+        return false;
+    job->started = true;
+    return true;
+}
+
+bool node_db_sync_catchup_job_join(struct node_db_sync_catchup_job *job,
+                                   int *result_out)
+{
+    if (!job || !job->started)
+        return false;
+    pthread_join(job->thread, NULL);
+    job->started = false;
+    if (result_out)
+        *result_out = job->result;
+    return true;
+}
+
+bool node_db_sync_catchup_job_is_started(
+    const struct node_db_sync_catchup_job *job)
+{
+    return job && job->started;
 }
 
 static bool node_db_sync_wallet_keys_write(struct node_db *ndb, void *ctx)
