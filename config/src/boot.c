@@ -193,6 +193,7 @@ static int cmp_block_index_height(const void *a, const void *b)
 /* Background ZK param loading */
 static char g_params_dir_buf[1024];
 static pthread_t g_params_thread;
+static bool g_params_thread_started = false;
 static _Atomic bool g_params_loaded = false;
 static struct boot_svc_ctx g_svc;
 
@@ -315,9 +316,14 @@ bool app_init(struct app_context *ctx)
 
     /* Defer ZK key loading to background thread — not needed for RPC startup.
      * Keys load in parallel while block index + wallet initialize. */
+    g_params_thread_started = false;
     if (ctx->params_dir) {
         snprintf(g_params_dir_buf, sizeof(g_params_dir_buf), "%s", ctx->params_dir);
-        pthread_create(&g_params_thread, NULL, load_params_thread, NULL);
+        if (pthread_create(&g_params_thread, NULL, load_params_thread, NULL) == 0)
+            g_params_thread_started = true;
+        else
+            fprintf(stderr,
+                    "WARNING: failed to start ZK params loader thread\n");
     }
 
     /* Initialize wallet (before block index — needed for -importlegacy) */
@@ -1503,6 +1509,7 @@ bool app_init(struct app_context *ctx)
         .running = &g_running,
         .datadir = g_datadir,
         .params_thread = g_params_thread,
+        .params_thread_started = g_params_thread_started,
         .params_loaded = &g_params_loaded,
         .block_tree_open = g_block_tree_open,
         .block_tree = &g_block_tree,

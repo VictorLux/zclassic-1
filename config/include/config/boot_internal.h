@@ -101,6 +101,7 @@ struct boot_svc_ctx {
     _Atomic bool *running;
     const char *datadir;
     pthread_t params_thread;
+    bool params_thread_started;
     _Atomic bool *params_loaded;
     bool block_tree_open;
     struct block_tree_db *block_tree;

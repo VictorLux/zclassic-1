@@ -629,7 +629,10 @@ bool app_init_services(struct app_context *ctx,
 
     /* Wait for ZK params before P2P (needed for block verification) */
     if (ctx->params_dir) {
-        pthread_join(svc->params_thread, NULL);
+        if (svc->params_thread_started) {
+            pthread_join(svc->params_thread, NULL);
+            svc->params_thread_started = false;
+        }
         if (!atomic_load(svc->params_loaded))
             fprintf(stderr, "Warning: ZK params not loaded\n");
     }

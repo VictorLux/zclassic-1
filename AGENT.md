@@ -134,6 +134,9 @@ DB-mutating service helpers now also obey the worker boundary:
   started before trying to join it during shutdown
 - async event observer dispatch now starts idempotently, fails closed on
   thread-start errors, and stops safely even if startup never completed
+- background ZK params loading now tracks whether the loader thread actually
+  started before boot joins it, so startup failure cannot turn into an
+  unconditional join on invalid thread state
 - startup SQLite catchup is now owned as an explicit `sync_controller`
   catchup job object instead of boot carrying a raw pthread plus argument bag
 - snapshot import now fails cleanly on partial thread-start failure instead of
