@@ -111,6 +111,9 @@ DB-mutating service helpers now also obey the worker boundary:
   instead of a detached one-shot thread
 - snapshot tx-index build is now intended to be a tracked service thread
   instead of a detached one-shot thread
+- file-service startup manifest build is now tracked and joined instead of
+  detached, and file-service start/stop is being hardened toward idempotent
+  lifecycle behavior
 
 ### Health / Observability
 
@@ -205,6 +208,9 @@ Recent progress:
   longer races `coins_tip` teardown
 - snapshot-offer build now joins before DB/runtime teardown, so it no longer
   outlives the resources it reads
+- file-service startup manifest hashing is no longer detached fire-and-forget;
+  it is now tracked and joined during stop so it does not outlive server
+  lifecycle ownership
 
 ### 3. Fast-Sync Artifact Ownership
 

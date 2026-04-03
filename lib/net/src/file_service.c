@@ -219,21 +219,20 @@ bool fs_send_frame(struct fs_session *s, uint8_t type,
     return send_all(s->fd, frame, FS_FRAME_SIZE);
 }
 
-static uint8_t g_recv_payload[FS_MAX_PAYLOAD];
-
 bool fs_recv_frame(struct fs_session *s, uint8_t *type_out,
                     const uint8_t **payload_out, uint32_t *payload_len_out)
 {
     uint8_t frame[FS_FRAME_SIZE];
+    if (!s) return false;
     if (!recv_all(s->fd, frame, FS_FRAME_SIZE))
         return false;
     s->bytes_received += FS_FRAME_SIZE;
 
-    if (!decrypt_frame(s, frame, type_out, g_recv_payload,
+    if (!decrypt_frame(s, frame, type_out, s->recv_payload,
                         payload_len_out, s->recv_counter))
         return false;
     s->recv_counter++;
-    *payload_out = g_recv_payload;
+    *payload_out = s->recv_payload;
     return true;
 }
 
@@ -383,32 +382,73 @@ static bool fs_recv_chunk_fast(struct fs_session *s, uint8_t **out,
 
 /* ── Server ────────────────────────────────────────────────────── */
 
-static volatile bool g_fs_running = false;
+static _Atomic bool g_fs_running = false;
 static pthread_t g_fs_thread;
+static bool g_fs_thread_started = false;
+static pthread_t g_fs_manifest_thread;
+static bool g_fs_manifest_thread_started = false;
 static const char *g_fs_datadir = NULL;
 static uint16_t g_fs_port = FS_PORT;
+static pthread_mutex_t g_fs_state_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 /* Background manifest builder — hashes all block files (~7 GB). */
 static struct file_manifest g_server_fm;
 static _Atomic bool g_have_manifest = false;
+static pthread_mutex_t g_manifest_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t g_manifest_build_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static bool fs_server_rebuild_manifest_locked(struct file_manifest *out)
+{
+    struct file_manifest next = {0};
+    int64_t t0 = (int64_t)time(NULL);
+    bool ok;
+
+    pthread_mutex_lock(&g_manifest_build_mutex);
+    ok = file_manifest_build(&next, g_fs_datadir);
+    pthread_mutex_unlock(&g_manifest_build_mutex);
+    int64_t elapsed = (int64_t)time(NULL) - t0;
+
+    if (ok) {
+        *out = next;
+        printf("File service: manifest ready — %u chunks, "
+               "%.1f GB (%llds to hash)\n",
+               out->num_chunks,
+               (double)out->total_bytes / (1024.0*1024.0*1024.0),
+               (long long)elapsed);
+    } else {
+        memset(out, 0, sizeof(*out));
+        printf("File service: no block files for manifest\n");
+    }
+
+    return ok;
+}
 
 static void *fs_manifest_thread(void *arg)
 {
     (void)arg;
-    int64_t t0 = (int64_t)time(NULL);
-    bool ok = file_manifest_build(&g_server_fm, g_fs_datadir);
-    int64_t elapsed = (int64_t)time(NULL) - t0;
-    if (ok) {
-        printf("File service: manifest ready — %u chunks, "
-               "%.1f GB (%llds to hash)\n",
-               g_server_fm.num_chunks,
-               (double)g_server_fm.total_bytes / (1024.0*1024.0*1024.0),
-               (long long)elapsed);
-        atomic_store(&g_have_manifest, true);
-    } else {
-        printf("File service: no block files for manifest\n");
-    }
+    struct file_manifest next = {0};
+    bool ok = fs_server_rebuild_manifest_locked(&next);
+    pthread_mutex_lock(&g_manifest_mutex);
+    g_server_fm = next;
+    pthread_mutex_unlock(&g_manifest_mutex);
+    atomic_store(&g_have_manifest, ok);
     return NULL;
+}
+
+bool fs_server_refresh_manifest(void)
+{
+    struct file_manifest next = {0};
+    bool ok;
+
+    if (!g_fs_datadir)
+        return false;
+
+    ok = fs_server_rebuild_manifest_locked(&next);
+    pthread_mutex_lock(&g_manifest_mutex);
+    g_server_fm = next;
+    pthread_mutex_unlock(&g_manifest_mutex);
+    atomic_store(&g_have_manifest, ok);
+    return ok;
 }
 
 /* Per-client handler thread — allows multiple parallel downloads */
@@ -427,30 +467,36 @@ static void *fs_handle_client(void *arg)
         return NULL;
     }
 
-    const struct file_manifest *fm =
-        atomic_load(&g_have_manifest) ? &g_server_fm : NULL;
+    struct file_manifest manifest = {0};
 
     while (g_fs_running) {
+        bool have_manifest = atomic_load(&g_have_manifest);
         uint8_t type;
         const uint8_t *payload;
         uint32_t plen;
         if (!fs_recv_frame(&session, &type, &payload, &plen)) break;
 
+        if (have_manifest) {
+            pthread_mutex_lock(&g_manifest_mutex);
+            manifest = g_server_fm;
+            pthread_mutex_unlock(&g_manifest_mutex);
+        }
+
         if (type == FS_REQUEST && plen >= 8 &&
-            memcmp(payload, "RNG", 3) == 0 && fm) {
+            memcmp(payload, "RNG", 3) == 0 && have_manifest) {
             /* Range: chunks[start..end) */
             uint16_t start = (uint16_t)payload[3] |
                               ((uint16_t)payload[4] << 8);
             uint16_t end = (uint16_t)payload[5] |
                             ((uint16_t)payload[6] << 8);
-            if (end > fm->num_chunks) end = fm->num_chunks;
+            if (end > manifest.num_chunks) end = manifest.num_chunks;
             for (uint32_t ci = start; ci < end && g_fs_running; ci++) {
                 uint8_t *data = NULL;
                 uint32_t dsz = 0;
-                if (file_chunk_read(&fm->chunks[ci], g_fs_datadir,
+                if (file_chunk_read(&manifest.chunks[ci], g_fs_datadir,
                                      &data, &dsz)) {
                     fs_send_chunk_fast(&session, data, dsz,
-                                        fm->chunks[ci].sha3);
+                                        manifest.chunks[ci].sha3);
                     free(data);
                 } else {
                     /* Send empty chunk on read failure so client can
@@ -460,32 +506,32 @@ static void *fs_handle_client(void *arg)
                 }
             }
         } else if (type == FS_REQUEST && plen == 3 &&
-                   memcmp(payload, "ALL", 3) == 0 && fm) {
+                   memcmp(payload, "ALL", 3) == 0 && have_manifest) {
             printf("file_service: streaming %u chunks (%.1f GB)...\n",
-                   fm->num_chunks,
-                   (double)fm->total_bytes / (1024.0*1024.0*1024.0));
-            for (uint32_t ci = 0; ci < fm->num_chunks && g_fs_running; ci++) {
+                   manifest.num_chunks,
+                   (double)manifest.total_bytes / (1024.0*1024.0*1024.0));
+            for (uint32_t ci = 0; ci < manifest.num_chunks && g_fs_running; ci++) {
                 uint8_t *data = NULL;
                 uint32_t dsz = 0;
-                if (file_chunk_read(&fm->chunks[ci], g_fs_datadir,
+                if (file_chunk_read(&manifest.chunks[ci], g_fs_datadir,
                                      &data, &dsz)) {
                     fs_send_chunk_fast(&session, data, dsz,
-                                        fm->chunks[ci].sha3);
+                                        manifest.chunks[ci].sha3);
                     free(data);
                 } else break;
             }
             printf("file_service: streaming done (%.1f MB/s)\n",
                    fs_session_mbps(&session));
-        } else if (type == FS_MANIFEST && fm) {
-            for (uint32_t i = 0; i < fm->num_chunks; i++) {
+        } else if (type == FS_MANIFEST && have_manifest) {
+            for (uint32_t i = 0; i < manifest.num_chunks; i++) {
                 uint8_t entry[45]; /* sha3(32)+size(4)+file_idx(1)+offset(8) */
-                memcpy(entry, fm->chunks[i].sha3, 32);
-                entry[32] = (uint8_t)(fm->chunks[i].size);
-                entry[33] = (uint8_t)(fm->chunks[i].size >> 8);
-                entry[34] = (uint8_t)(fm->chunks[i].size >> 16);
-                entry[35] = (uint8_t)(fm->chunks[i].size >> 24);
-                entry[36] = fm->chunks[i].file_index;
-                memcpy(entry + 37, &fm->chunks[i].offset, 8);
+                memcpy(entry, manifest.chunks[i].sha3, 32);
+                entry[32] = (uint8_t)(manifest.chunks[i].size);
+                entry[33] = (uint8_t)(manifest.chunks[i].size >> 8);
+                entry[34] = (uint8_t)(manifest.chunks[i].size >> 16);
+                entry[35] = (uint8_t)(manifest.chunks[i].size >> 24);
+                entry[36] = manifest.chunks[i].file_index;
+                memcpy(entry + 37, &manifest.chunks[i].offset, 8);
                 fs_send_frame(&session, FS_MANIFEST, entry, 45);
             }
             fs_send_frame(&session, FS_DONE, NULL, 0);
@@ -533,18 +579,11 @@ static void *fs_server_thread(void *arg)
     printf("File service listening on port %d (SHA3 quantum-secure)\n",
            g_fs_port);
 
-    /* Kick off manifest build in background thread */
-    if (g_fs_datadir) {
-        pthread_t mt;
-        pthread_create(&mt, NULL, fs_manifest_thread, NULL);
-        pthread_detach(mt);
-    }
-
     /* Get UTXO root for key derivation */
     uint8_t utxo_root[32];
     memset(utxo_root, 0, 32);
 
-    while (g_fs_running) {
+    while (atomic_load(&g_fs_running)) {
         struct sockaddr_in6 client_addr;
         socklen_t client_len = sizeof(client_addr);
 
@@ -578,16 +617,58 @@ uint16_t fs_server_get_port(void) { return g_fs_port; }
 
 void fs_server_start(const char *datadir, uint16_t port)
 {
+    pthread_mutex_lock(&g_fs_state_mutex);
+    if (atomic_load(&g_fs_running) || g_fs_thread_started) {
+        pthread_mutex_unlock(&g_fs_state_mutex);
+        return;
+    }
     g_fs_datadir = datadir;
     g_fs_port = port;
-    g_fs_running = true;
-    pthread_create(&g_fs_thread, NULL, fs_server_thread, NULL);
+    atomic_store(&g_fs_running, true);
+    atomic_store(&g_have_manifest, false);
+    if (pthread_create(&g_fs_thread, NULL, fs_server_thread, NULL) != 0) {
+        atomic_store(&g_fs_running, false);
+        pthread_mutex_unlock(&g_fs_state_mutex);
+        fprintf(stderr, "file_service: failed to start server thread\n");
+        return;
+    }
+    g_fs_thread_started = true;
+    if (g_fs_datadir) {
+        if (pthread_create(&g_fs_manifest_thread, NULL,
+                           fs_manifest_thread, NULL) == 0) {
+            g_fs_manifest_thread_started = true;
+        } else {
+            fprintf(stderr, "file_service: failed to start manifest thread\n");
+        }
+    }
+    pthread_mutex_unlock(&g_fs_state_mutex);
 }
 
 void fs_server_stop(void)
 {
-    g_fs_running = false;
-    pthread_join(g_fs_thread, NULL);
+    pthread_t server_thread;
+    pthread_t manifest_thread;
+    bool have_server = false;
+    bool have_manifest = false;
+
+    pthread_mutex_lock(&g_fs_state_mutex);
+    atomic_store(&g_fs_running, false);
+    if (g_fs_thread_started) {
+        server_thread = g_fs_thread;
+        g_fs_thread_started = false;
+        have_server = true;
+    }
+    if (g_fs_manifest_thread_started) {
+        manifest_thread = g_fs_manifest_thread;
+        g_fs_manifest_thread_started = false;
+        have_manifest = true;
+    }
+    pthread_mutex_unlock(&g_fs_state_mutex);
+
+    if (have_server)
+        pthread_join(server_thread, NULL);
+    if (have_manifest)
+        pthread_join(manifest_thread, NULL);
 }
 
 /* ── Parallel download worker ──────────────────────────────────── */
