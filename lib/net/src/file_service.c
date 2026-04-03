@@ -387,9 +387,21 @@ static pthread_t g_fs_thread;
 static bool g_fs_thread_started = false;
 static pthread_t g_fs_manifest_thread;
 static bool g_fs_manifest_thread_started = false;
+static int g_fs_listen_fd = -1;
 static const char *g_fs_datadir = NULL;
 static uint16_t g_fs_port = FS_PORT;
 static pthread_mutex_t g_fs_state_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+#define FS_SERVER_WORKERS 8
+#define FS_CLIENT_QUEUE_CAP 64
+static pthread_t g_fs_worker_threads[FS_SERVER_WORKERS];
+static unsigned g_fs_worker_threads_started = 0;
+static int g_fs_client_queue[FS_CLIENT_QUEUE_CAP];
+static unsigned g_fs_client_queue_head = 0;
+static unsigned g_fs_client_queue_tail = 0;
+static unsigned g_fs_client_queue_len = 0;
+static pthread_mutex_t g_fs_client_queue_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_fs_client_queue_cv = PTHREAD_COND_INITIALIZER;
 
 /* Background manifest builder — hashes all block files (~7 GB). */
 static struct file_manifest g_server_fm;
@@ -451,12 +463,63 @@ bool fs_server_refresh_manifest(void)
     return ok;
 }
 
-/* Per-client handler thread — allows multiple parallel downloads */
-static void *fs_handle_client(void *arg)
+static bool fs_client_queue_push(int client_fd)
 {
-    int client_fd = *(int *)arg;
-    free(arg);
+    bool ok = false;
 
+    pthread_mutex_lock(&g_fs_client_queue_mutex);
+    if (g_fs_client_queue_len < FS_CLIENT_QUEUE_CAP) {
+        g_fs_client_queue[g_fs_client_queue_tail] = client_fd;
+        g_fs_client_queue_tail =
+            (g_fs_client_queue_tail + 1U) % FS_CLIENT_QUEUE_CAP;
+        g_fs_client_queue_len++;
+        ok = true;
+        pthread_cond_signal(&g_fs_client_queue_cv);
+    }
+    pthread_mutex_unlock(&g_fs_client_queue_mutex);
+    return ok;
+}
+
+static bool fs_client_queue_pop(int *client_fd_out)
+{
+    if (!client_fd_out)
+        return false;
+
+    pthread_mutex_lock(&g_fs_client_queue_mutex);
+    while (g_fs_client_queue_len == 0 && atomic_load(&g_fs_running))
+        pthread_cond_wait(&g_fs_client_queue_cv, &g_fs_client_queue_mutex);
+
+    if (g_fs_client_queue_len == 0) {
+        pthread_mutex_unlock(&g_fs_client_queue_mutex);
+        return false;
+    }
+
+    *client_fd_out = g_fs_client_queue[g_fs_client_queue_head];
+    g_fs_client_queue_head =
+        (g_fs_client_queue_head + 1U) % FS_CLIENT_QUEUE_CAP;
+    g_fs_client_queue_len--;
+    pthread_mutex_unlock(&g_fs_client_queue_mutex);
+    return true;
+}
+
+static void fs_client_queue_close_all(void)
+{
+    pthread_mutex_lock(&g_fs_client_queue_mutex);
+    while (g_fs_client_queue_len > 0) {
+        int client_fd = g_fs_client_queue[g_fs_client_queue_head];
+        g_fs_client_queue_head =
+            (g_fs_client_queue_head + 1U) % FS_CLIENT_QUEUE_CAP;
+        g_fs_client_queue_len--;
+        close(client_fd);
+    }
+    g_fs_client_queue_head = 0;
+    g_fs_client_queue_tail = 0;
+    pthread_mutex_unlock(&g_fs_client_queue_mutex);
+}
+
+/* Per-client handler run on a bounded worker pool. */
+static void fs_handle_client_fd(int client_fd)
+{
     struct fs_session session;
     fs_session_init(&session, client_fd);
 
@@ -464,12 +527,12 @@ static void *fs_handle_client(void *arg)
     memset(ur, 0, 32);
     if (!fs_handshake(&session, ur, false)) {
         close(client_fd);
-        return NULL;
+        return;
     }
 
     struct file_manifest manifest = {0};
 
-    while (g_fs_running) {
+    while (atomic_load(&g_fs_running)) {
         bool have_manifest = atomic_load(&g_have_manifest);
         uint8_t type;
         const uint8_t *payload;
@@ -490,7 +553,7 @@ static void *fs_handle_client(void *arg)
             uint16_t end = (uint16_t)payload[5] |
                             ((uint16_t)payload[6] << 8);
             if (end > manifest.num_chunks) end = manifest.num_chunks;
-            for (uint32_t ci = start; ci < end && g_fs_running; ci++) {
+            for (uint32_t ci = start; ci < end && atomic_load(&g_fs_running); ci++) {
                 uint8_t *data = NULL;
                 uint32_t dsz = 0;
                 if (file_chunk_read(&manifest.chunks[ci], g_fs_datadir,
@@ -510,7 +573,8 @@ static void *fs_handle_client(void *arg)
             printf("file_service: streaming %u chunks (%.1f GB)...\n",
                    manifest.num_chunks,
                    (double)manifest.total_bytes / (1024.0*1024.0*1024.0));
-            for (uint32_t ci = 0; ci < manifest.num_chunks && g_fs_running; ci++) {
+            for (uint32_t ci = 0; ci < manifest.num_chunks &&
+                                 atomic_load(&g_fs_running); ci++) {
                 uint8_t *data = NULL;
                 uint32_t dsz = 0;
                 if (file_chunk_read(&manifest.chunks[ci], g_fs_datadir,
@@ -544,6 +608,21 @@ static void *fs_handle_client(void *arg)
            fs_session_mbps(&session),
            (unsigned long long)(session.bytes_sent + session.bytes_received));
     close(client_fd);
+}
+
+static void *fs_client_worker_thread(void *arg)
+{
+    (void)arg;
+
+    while (true) {
+        int client_fd = -1;
+
+        if (!fs_client_queue_pop(&client_fd))
+            break;
+        if (client_fd >= 0)
+            fs_handle_client_fd(client_fd);
+    }
+
     return NULL;
 }
 
@@ -579,6 +658,10 @@ static void *fs_server_thread(void *arg)
     printf("File service listening on port %d (SHA3 quantum-secure)\n",
            g_fs_port);
 
+    pthread_mutex_lock(&g_fs_state_mutex);
+    g_fs_listen_fd = listen_fd;
+    pthread_mutex_unlock(&g_fs_state_mutex);
+
     /* Get UTXO root for key derivation */
     uint8_t utxo_root[32];
     memset(utxo_root, 0, 32);
@@ -597,18 +680,16 @@ static void *fs_server_thread(void *arg)
                                 (struct sockaddr *)&client_addr, &client_len);
         if (client_fd < 0) continue;
 
-        /* Spawn handler thread — supports multiple parallel clients */
-        int *cfd = malloc(sizeof(int));
-        if (cfd) {
-            *cfd = client_fd;
-            pthread_t ct;
-            pthread_create(&ct, NULL, fs_handle_client, cfd);
-            pthread_detach(ct);
-        } else {
+        if (!fs_client_queue_push(client_fd)) {
+            fprintf(stderr, "file_service: client queue full, rejecting\n");
             close(client_fd);
         }
     }
 
+    pthread_mutex_lock(&g_fs_state_mutex);
+    if (g_fs_listen_fd == listen_fd)
+        g_fs_listen_fd = -1;
+    pthread_mutex_unlock(&g_fs_state_mutex);
     close(listen_fd);
     return NULL;
 }
@@ -617,6 +698,8 @@ uint16_t fs_server_get_port(void) { return g_fs_port; }
 
 void fs_server_start(const char *datadir, uint16_t port)
 {
+    unsigned started_workers = 0;
+
     pthread_mutex_lock(&g_fs_state_mutex);
     if (atomic_load(&g_fs_running) || g_fs_thread_started) {
         pthread_mutex_unlock(&g_fs_state_mutex);
@@ -626,10 +709,28 @@ void fs_server_start(const char *datadir, uint16_t port)
     g_fs_port = port;
     atomic_store(&g_fs_running, true);
     atomic_store(&g_have_manifest, false);
+    g_fs_client_queue_head = 0;
+    g_fs_client_queue_tail = 0;
+    g_fs_client_queue_len = 0;
+
+    for (unsigned i = 0; i < FS_SERVER_WORKERS; i++) {
+        if (pthread_create(&g_fs_worker_threads[i], NULL,
+                           fs_client_worker_thread, NULL) != 0) {
+            fprintf(stderr, "file_service: failed to start worker %u\n", i);
+            break;
+        }
+        started_workers++;
+    }
+    g_fs_worker_threads_started = started_workers;
+
     if (pthread_create(&g_fs_thread, NULL, fs_server_thread, NULL) != 0) {
         atomic_store(&g_fs_running, false);
+        pthread_cond_broadcast(&g_fs_client_queue_cv);
         pthread_mutex_unlock(&g_fs_state_mutex);
         fprintf(stderr, "file_service: failed to start server thread\n");
+        for (unsigned i = 0; i < started_workers; i++)
+            pthread_join(g_fs_worker_threads[i], NULL);
+        g_fs_worker_threads_started = 0;
         return;
     }
     g_fs_thread_started = true;
@@ -648,11 +749,16 @@ void fs_server_stop(void)
 {
     pthread_t server_thread;
     pthread_t manifest_thread;
+    pthread_t worker_threads[FS_SERVER_WORKERS];
     bool have_server = false;
     bool have_manifest = false;
+    unsigned worker_threads_started = 0;
+    int listen_fd = -1;
 
     pthread_mutex_lock(&g_fs_state_mutex);
     atomic_store(&g_fs_running, false);
+    listen_fd = g_fs_listen_fd;
+    g_fs_listen_fd = -1;
     if (g_fs_thread_started) {
         server_thread = g_fs_thread;
         g_fs_thread_started = false;
@@ -663,12 +769,25 @@ void fs_server_stop(void)
         g_fs_manifest_thread_started = false;
         have_manifest = true;
     }
+    worker_threads_started = g_fs_worker_threads_started;
+    for (unsigned i = 0; i < worker_threads_started; i++)
+        worker_threads[i] = g_fs_worker_threads[i];
+    g_fs_worker_threads_started = 0;
     pthread_mutex_unlock(&g_fs_state_mutex);
+
+    if (listen_fd >= 0) {
+        shutdown(listen_fd, SHUT_RDWR);
+        close(listen_fd);
+    }
+    pthread_cond_broadcast(&g_fs_client_queue_cv);
+    fs_client_queue_close_all();
 
     if (have_server)
         pthread_join(server_thread, NULL);
     if (have_manifest)
         pthread_join(manifest_thread, NULL);
+    for (unsigned i = 0; i < worker_threads_started; i++)
+        pthread_join(worker_threads[i], NULL);
 }
 
 /* ── Parallel download worker ──────────────────────────────────── */

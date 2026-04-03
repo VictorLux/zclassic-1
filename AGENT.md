@@ -114,6 +114,9 @@ DB-mutating service helpers now also obey the worker boundary:
 - file-service startup manifest build is now tracked and joined instead of
   detached, and file-service start/stop is being hardened toward idempotent
   lifecycle behavior
+- file-service client handling is moving from detached per-connection threads
+  toward bounded worker ownership so shutdown can quiesce the network surface
+  cleanly
 
 ### Health / Observability
 
@@ -211,6 +214,8 @@ Recent progress:
 - file-service startup manifest hashing is no longer detached fire-and-forget;
   it is now tracked and joined during stop so it does not outlive server
   lifecycle ownership
+- file-service client acceptance is moving under a bounded worker-pool model
+  instead of detached unbounded handler threads
 
 ### 3. Fast-Sync Artifact Ownership
 
