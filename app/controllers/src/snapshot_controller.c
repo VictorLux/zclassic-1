@@ -313,6 +313,7 @@ struct utxo_import_args {
 static void *import_utxos_thread(void *arg)
 {
     struct utxo_import_args *a = arg;
+    struct node_db_sync_import_job job;
     a->result = -1;
     a->count = 0;
 
@@ -335,7 +336,14 @@ static void *import_utxos_thread(void *arg)
     printf("T2: importing UTXO set...\n");
     fflush(stdout);
 
-    a->count = node_db_sync_import_utxos(&ndb, &cvdb);
+    node_db_sync_import_job_init(&job);
+    if (!node_db_sync_import_job_start(&job, &ndb, &cvdb)) {
+        fprintf(stderr, "T2: failed to start UTXO import job\n");
+        coins_view_db_close(&cvdb);
+        node_db_close(&ndb);
+        return NULL;
+    }
+    node_db_sync_import_job_join(&job, &a->count);
 
     coins_view_db_close(&cvdb);
     node_db_close(&ndb);

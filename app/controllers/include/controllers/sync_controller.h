@@ -58,6 +58,16 @@ struct node_db_sync_catchup_job {
     } args;
 };
 
+struct node_db_sync_import_job {
+    pthread_t thread;
+    bool started;
+    int result;
+    struct {
+        struct node_db *ndb;
+        struct coins_view_db *cvdb;
+    } args;
+};
+
 /* Initialize the sync layer. Opens SQLite at datadir/node.db. */
 bool node_db_sync_init(struct node_db *ndb, const char *datadir);
 
@@ -190,5 +200,14 @@ bool node_db_sync_catchup_job_join(struct node_db_sync_catchup_job *job,
                                    int *result_out);
 bool node_db_sync_catchup_job_is_started(
     const struct node_db_sync_catchup_job *job);
+
+void node_db_sync_import_job_init(struct node_db_sync_import_job *job);
+bool node_db_sync_import_job_start(struct node_db_sync_import_job *job,
+                                   struct node_db *ndb,
+                                   struct coins_view_db *cvdb);
+bool node_db_sync_import_job_join(struct node_db_sync_import_job *job,
+                                  int *result_out);
+bool node_db_sync_import_job_is_started(
+    const struct node_db_sync_import_job *job);
 
 #endif

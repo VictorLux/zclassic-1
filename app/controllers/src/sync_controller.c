@@ -1609,6 +1609,61 @@ bool node_db_sync_catchup_job_is_started(
     return job && job->started;
 }
 
+static void *node_db_sync_import_job_thread(void *arg)
+{
+    struct node_db_sync_import_job *job = arg;
+
+    if (!job) {
+        return NULL;
+    }
+
+    job->result = node_db_sync_import_utxos(job->args.ndb, job->args.cvdb);
+    return NULL;
+}
+
+void node_db_sync_import_job_init(struct node_db_sync_import_job *job)
+{
+    if (!job)
+        return;
+    memset(job, 0, sizeof(*job));
+    job->result = -1;
+}
+
+bool node_db_sync_import_job_start(struct node_db_sync_import_job *job,
+                                   struct node_db *ndb,
+                                   struct coins_view_db *cvdb)
+{
+    if (!job || job->started || !ndb || !cvdb)
+        return false;
+
+    job->args.ndb = ndb;
+    job->args.cvdb = cvdb;
+    job->result = -1;
+    if (pthread_create(&job->thread, NULL,
+                       node_db_sync_import_job_thread, job) != 0)
+        return false;
+    job->started = true;
+    return true;
+}
+
+bool node_db_sync_import_job_join(struct node_db_sync_import_job *job,
+                                  int *result_out)
+{
+    if (!job || !job->started)
+        return false;
+    pthread_join(job->thread, NULL);
+    job->started = false;
+    if (result_out)
+        *result_out = job->result;
+    return true;
+}
+
+bool node_db_sync_import_job_is_started(
+    const struct node_db_sync_import_job *job)
+{
+    return job && job->started;
+}
+
 static bool node_db_sync_wallet_keys_write(struct node_db *ndb, void *ctx)
 {
     struct wallet_keys_sync_ctx *sync = ctx;

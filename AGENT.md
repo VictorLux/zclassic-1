@@ -134,6 +134,8 @@ DB-mutating service helpers now also obey the worker boundary:
   assuming all three parallel import threads always launch successfully
 - UTXO import’s internal decoder/writer pipeline is now owned through an
   explicit import-job object instead of open-coded local thread bookkeeping
+- UTXO import now also has a public sync-job object boundary, and snapshot
+  import uses that API instead of wrapping the heavy import function directly
 - UTXO import is being hardened with explicit cancellation and cleanup so
   shutdown or startup failure does not leave the parallel import pipeline
   running blindly
