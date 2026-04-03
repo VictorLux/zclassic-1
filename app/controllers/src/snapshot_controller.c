@@ -435,13 +435,35 @@ int snapshot_import(const char *snapshot_dir,
     };
 
     pthread_t t1, t2, t3;
-    pthread_create(&t1, NULL, import_block_index_thread, &bi_args);
-    pthread_create(&t2, NULL, import_utxos_thread, &utxo_args);
-    pthread_create(&t3, NULL, import_wallet_thread, &wal_args);
+    bool t1_started = false;
+    bool t2_started = false;
+    bool t3_started = false;
 
-    pthread_join(t1, NULL);
-    pthread_join(t2, NULL);
-    pthread_join(t3, NULL);
+    if (pthread_create(&t1, NULL, import_block_index_thread, &bi_args) != 0) {
+        fprintf(stderr, "snapshot_import: failed to start block-index import thread\n");
+        return -1;
+    }
+    t1_started = true;
+    if (pthread_create(&t2, NULL, import_utxos_thread, &utxo_args) != 0) {
+        fprintf(stderr, "snapshot_import: failed to start UTXO import thread\n");
+        pthread_join(t1, NULL);
+        return -1;
+    }
+    t2_started = true;
+    if (pthread_create(&t3, NULL, import_wallet_thread, &wal_args) != 0) {
+        fprintf(stderr, "snapshot_import: failed to start wallet import thread\n");
+        pthread_join(t2, NULL);
+        pthread_join(t1, NULL);
+        return -1;
+    }
+    t3_started = true;
+
+    if (t1_started)
+        pthread_join(t1, NULL);
+    if (t2_started)
+        pthread_join(t2, NULL);
+    if (t3_started)
+        pthread_join(t3, NULL);
 
     struct timespec t1_end;
     clock_gettime(CLOCK_MONOTONIC, &t1_end);
