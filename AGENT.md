@@ -132,6 +132,8 @@ DB-mutating service helpers now also obey the worker boundary:
   catchup job object instead of boot carrying a raw pthread plus argument bag
 - snapshot import now fails cleanly on partial thread-start failure instead of
   assuming all three parallel import threads always launch successfully
+- UTXO import’s internal decoder/writer pipeline is now owned through an
+  explicit import-job object instead of open-coded local thread bookkeeping
 - UTXO import is being hardened with explicit cancellation and cleanup so
   shutdown or startup failure does not leave the parallel import pipeline
   running blindly

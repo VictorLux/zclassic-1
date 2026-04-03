@@ -1905,6 +1905,18 @@ struct import_context {
     int write_next; /* next chunk index to write (in-order) */
 };
 
+struct import_job {
+    struct import_context *ctx;
+    pthread_t decoders[IMPORT_NUM_DECODERS_MAX];
+    int num_decoders;
+    int decoder_threads_started;
+    pthread_t writer_thread;
+    bool writer_thread_started;
+};
+
+static void *import_decoder_thread(void *arg);
+static void *import_writer_thread(void *arg);
+
 static bool import_ctx_should_stop(const struct import_context *ctx)
 {
     return (ctx && atomic_load(&ctx->cancel_requested)) || g_shutdown_requested;
@@ -1936,6 +1948,69 @@ static void import_context_release_chunks(struct import_context *ctx)
         return;
     for (int i = 0; i < IMPORT_NUM_CHUNKS; i++)
         import_chunk_reset(&ctx->chunks[i]);
+}
+
+static void import_job_init(struct import_job *job,
+                            struct import_context *ctx,
+                            int num_decoders)
+{
+    if (!job)
+        return;
+    memset(job, 0, sizeof(*job));
+    job->ctx = ctx;
+    job->num_decoders = num_decoders;
+}
+
+static bool import_job_start_decoders(struct import_job *job)
+{
+    if (!job || !job->ctx)
+        return false;
+
+    for (int i = 0; i < job->num_decoders; i++) {
+        int rc = pthread_create(&job->decoders[i], NULL,
+                                import_decoder_thread, job->ctx);
+        if (rc != 0) {
+            fprintf(stderr,
+                    "UTXO import: pthread_create decoder[%d] failed: %d\n",
+                    i, rc);
+            import_ctx_request_stop(job->ctx);
+            job->num_decoders = i;
+            return i > 0;
+        }
+        job->decoder_threads_started++;
+    }
+    return job->decoder_threads_started > 0;
+}
+
+static bool import_job_start_writer(struct import_job *job)
+{
+    if (!job || !job->ctx)
+        return false;
+    if (pthread_create(&job->writer_thread, NULL,
+                       import_writer_thread, job->ctx) != 0) {
+        fprintf(stderr, "UTXO import: FATAL — writer thread failed to start\n");
+        import_ctx_request_stop(job->ctx);
+        return false;
+    }
+    job->writer_thread_started = true;
+    return true;
+}
+
+static void import_job_join_decoders(struct import_job *job)
+{
+    if (!job)
+        return;
+    for (int i = 0; i < job->decoder_threads_started; i++)
+        pthread_join(job->decoders[i], NULL);
+    job->decoder_threads_started = 0;
+}
+
+static void import_job_join_writer(struct import_job *job)
+{
+    if (!job || !job->writer_thread_started)
+        return;
+    pthread_join(job->writer_thread, NULL);
+    job->writer_thread_started = false;
 }
 
 /* Decode a single raw coins entry into utxo_row structs.
@@ -2292,6 +2367,8 @@ static void *import_writer_thread(void *arg)
 int node_db_sync_import_utxos(struct node_db *ndb,
                                struct coins_view_db *cvdb)
 {
+    struct import_job job;
+
     if (!ndb->open || !cvdb) return -1;
     sync_job_import_begin();
 
@@ -2326,20 +2403,10 @@ int node_db_sync_import_utxos(struct node_db *ndb,
     atomic_store(&ctx->decoders_done, false);
     for (int i = 0; i < IMPORT_NUM_CHUNKS; i++)
         atomic_store(&ctx->chunks[i].state, 0);
+    import_job_init(&job, ctx, num_decoders);
 
     /* ── Start decoder + writer threads ────────────────────────────── */
-    pthread_t decoders[IMPORT_NUM_DECODERS_MAX];
-    for (int i = 0; i < num_decoders; i++) {
-        int rc = pthread_create(&decoders[i], NULL, import_decoder_thread, ctx);
-        if (rc != 0) {
-            fprintf(stderr, "UTXO import: pthread_create decoder[%d] failed: %d\n",
-                    i, rc);
-            import_ctx_request_stop(ctx);
-            num_decoders = i; /* only join threads we actually started */
-            break;
-        }
-    }
-    if (num_decoders == 0) {
+    if (!import_job_start_decoders(&job)) {
         fprintf(stderr, "UTXO import: FATAL — no decoder threads started\n");
         if (!sync_db_restore_normal_mode(ndb))
             fprintf(stderr, "UTXO import: failed to restore normal mode after decoder startup failure\n");
@@ -2348,13 +2415,9 @@ int node_db_sync_import_utxos(struct node_db *ndb,
         return -1;
     }
 
-    pthread_t writer;
-    if (pthread_create(&writer, NULL, import_writer_thread, ctx) != 0) {
-        fprintf(stderr, "UTXO import: FATAL — writer thread failed to start\n");
-        import_ctx_request_stop(ctx);
+    if (!import_job_start_writer(&job)) {
         atomic_store(&ctx->reader_done, true);
-        for (int i = 0; i < num_decoders; i++)
-            pthread_join(decoders[i], NULL);
+        import_job_join_decoders(&job);
         import_context_release_chunks(ctx);
         if (!sync_db_restore_normal_mode(ndb))
             fprintf(stderr, "UTXO import: failed to restore normal mode after writer startup failure\n");
@@ -2457,8 +2520,7 @@ reader_done:
     fflush(stdout);
 
     /* ── Wait for decoders ────────────────────────────────────────── */
-    for (int i = 0; i < num_decoders; i++)
-        pthread_join(decoders[i], NULL);
+    import_job_join_decoders(&job);
 
     /* ── Wait for ALL chunks to be consumed by writer ──────────── */
     /* After decoders finish, remaining chunks are in state 2 (decoded).
@@ -2482,7 +2544,7 @@ reader_done:
     atomic_store(&ctx->decoders_done, true);
 
     /* ── Wait for writer ───────────────────────────────────────────── */
-    pthread_join(writer, NULL);
+    import_job_join_writer(&job);
     int total_rows = atomic_load(&ctx->total_rows);
     sync_job_import_progress(total_rows);
     int decode_fail = atomic_load(&ctx->decode_failures);
