@@ -566,5 +566,25 @@ int test_rpc(void) {
         async_queue_free(&q);
     }
 
+    printf("async_queue tracks worker count across shutdown... ");
+    {
+        struct async_rpc_queue q;
+        async_queue_init(&q);
+
+        bool ok = async_queue_add_worker(&q);
+        size_t started = async_queue_num_workers(&q);
+        async_queue_finish_and_wait(&q);
+        size_t after = async_queue_num_workers(&q);
+
+        if (ok && started == 1 && after == 0)
+            printf("OK\n");
+        else {
+            printf("FAIL (ok=%d started=%zu after=%zu)\n",
+                   ok ? 1 : 0, started, after);
+            failures++;
+        }
+        async_queue_free(&q);
+    }
+
     return failures;
 }

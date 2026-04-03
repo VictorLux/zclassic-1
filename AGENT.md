@@ -134,6 +134,9 @@ DB-mutating service helpers now also obey the worker boundary:
 - boot service thread start/join paths for payment, replay, snapshot offer,
   address backfill, and tx-index are now consolidated behind shared helper
   functions so lifecycle handling stays consistent and DRY
+- async RPC queue worker startup now uses an explicit checked start path
+  instead of folding `pthread_create()` into a compound condition, and direct
+  RPC tests now assert worker-count state is reset after finish-and-wait
 - file-service startup manifest build is now tracked and joined instead of
   detached, and file-service start/stop is being hardened toward idempotent
   lifecycle behavior

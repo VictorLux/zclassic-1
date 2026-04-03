@@ -92,17 +92,21 @@ static void *worker_thread(void *arg)
 bool async_queue_add_worker(struct async_rpc_queue *q)
 {
     bool started = false;
+    int rc = 0;
 
+    if (!q)
+        return false;
     zcl_mutex_lock(&q->lock);
     if (!async_queue_is_closed(q) && !async_queue_is_finishing(q) &&
-        q->num_workers < MAX_ASYNC_WORKERS &&
-        pthread_create(&q->workers[q->num_workers], NULL,
-                       worker_thread, q) == 0) {
-        q->num_workers++;
-        started = true;
-    } else if (q->num_workers < MAX_ASYNC_WORKERS &&
-               !async_queue_is_closed(q) && !async_queue_is_finishing(q)) {
-        perror("async_queue_add_worker: pthread_create");
+        q->num_workers < MAX_ASYNC_WORKERS) {
+        rc = pthread_create(&q->workers[q->num_workers], NULL,
+                            worker_thread, q);
+        if (rc == 0) {
+            q->num_workers++;
+            started = true;
+        } else {
+            perror("async_queue_add_worker: pthread_create");
+        }
     }
     zcl_mutex_unlock(&q->lock);
     return started;
