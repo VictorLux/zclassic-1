@@ -78,6 +78,8 @@ static struct {
     _Atomic uint64_t   read_pos;
     pthread_t          thread;
     _Atomic bool       running;
+    bool               thread_started;
+    bool               wake_initialized;
     pthread_mutex_t    wake_mutex;
     pthread_cond_t     wake_cond;
 } g_async;
@@ -165,25 +167,53 @@ static void *async_dispatch_thread(void *arg)
     return NULL;
 }
 
-void event_async_start(void)
+bool event_async_start(void)
 {
+    if (atomic_load(&g_async.running))
+        return true;
+
     atomic_store(&g_async.write_pos, 0);
     atomic_store(&g_async.read_pos, 0);
-    pthread_mutex_init(&g_async.wake_mutex, NULL);
-    pthread_cond_init(&g_async.wake_cond, NULL);
+    if (pthread_mutex_init(&g_async.wake_mutex, NULL) != 0)
+        return false;
+    if (pthread_cond_init(&g_async.wake_cond, NULL) != 0) {
+        pthread_mutex_destroy(&g_async.wake_mutex);
+        return false;
+    }
+    g_async.wake_initialized = true;
     atomic_store(&g_async.running, true);
-    pthread_create(&g_async.thread, NULL, async_dispatch_thread, NULL);
+    if (pthread_create(&g_async.thread, NULL, async_dispatch_thread, NULL) != 0) {
+        atomic_store(&g_async.running, false);
+        pthread_cond_destroy(&g_async.wake_cond);
+        pthread_mutex_destroy(&g_async.wake_mutex);
+        g_async.wake_initialized = false;
+        return false;
+    }
+    g_async.thread_started = true;
+    return true;
 }
 
 void event_async_stop(void)
 {
+    if (!g_async.wake_initialized && !g_async.thread_started) {
+        atomic_store(&g_async.running, false);
+        return;
+    }
     atomic_store(&g_async.running, false);
-    pthread_mutex_lock(&g_async.wake_mutex);
-    pthread_cond_signal(&g_async.wake_cond);
-    pthread_mutex_unlock(&g_async.wake_mutex);
-    pthread_join(g_async.thread, NULL);
-    pthread_mutex_destroy(&g_async.wake_mutex);
-    pthread_cond_destroy(&g_async.wake_cond);
+    if (g_async.wake_initialized) {
+        pthread_mutex_lock(&g_async.wake_mutex);
+        pthread_cond_signal(&g_async.wake_cond);
+        pthread_mutex_unlock(&g_async.wake_mutex);
+    }
+    if (g_async.thread_started) {
+        pthread_join(g_async.thread, NULL);
+        g_async.thread_started = false;
+    }
+    if (g_async.wake_initialized) {
+        pthread_mutex_destroy(&g_async.wake_mutex);
+        pthread_cond_destroy(&g_async.wake_cond);
+        g_async.wake_initialized = false;
+    }
 }
 
 static void notify_observers(enum event_type type, uint32_t peer_id,

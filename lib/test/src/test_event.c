@@ -6,6 +6,21 @@
 #include <string.h>
 #include <stdio.h>
 #include <pthread.h>
+#include <time.h>
+
+static _Atomic int g_async_observer_calls = 0;
+
+static void test_async_observer(enum event_type type, uint32_t peer_id,
+                                const void *payload, uint32_t payload_len,
+                                void *ctx)
+{
+    (void)type;
+    (void)peer_id;
+    (void)payload;
+    (void)payload_len;
+    (void)ctx;
+    atomic_fetch_add(&g_async_observer_calls, 1);
+}
 
 static int test_emit_dump_roundtrip(void)
 {
@@ -552,6 +567,37 @@ static int test_concurrent_emit(void)
     return failures;
 }
 
+static int test_async_dispatch_lifecycle(void)
+{
+    int failures = 0;
+
+    TEST("event async dispatcher starts, drains, and stops idempotently") {
+        event_log_init();
+        event_clear_all_observers();
+        atomic_store(&g_async_observer_calls, 0);
+
+        ASSERT(event_observe_async(EV_NODE_READY, test_async_observer, NULL));
+        ASSERT(event_async_start());
+        ASSERT(event_async_start());
+
+        event_emitf(EV_NODE_READY, 7, "ready");
+
+        for (int i = 0; i < 50; i++) {
+            struct timespec pause = {0, 1000000};
+            if (atomic_load(&g_async_observer_calls) > 0)
+                break;
+            nanosleep(&pause, NULL);
+        }
+
+        ASSERT(atomic_load(&g_async_observer_calls) > 0);
+        event_async_stop();
+        event_async_stop();
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
 int test_event(void)
 {
     int failures = 0;
@@ -575,6 +621,7 @@ int test_event(void)
     failures += test_peer_full_lifecycle();
     failures += test_peer_stale_recovery();
     failures += test_concurrent_emit();
+    failures += test_async_dispatch_lifecycle();
 
     return failures;
 }

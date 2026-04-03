@@ -238,7 +238,8 @@ bool app_init(struct app_context *ctx)
     /* Start async observer thread + register error accumulator.
      * Captures DB errors, block rejections, flush failures for
      * instant health queries via /api/health and healthcheck RPC. */
-    event_async_start();
+    if (!event_async_start())
+        fprintf(stderr, "WARNING: failed to start async event dispatcher\n");
     struct error_ring *er = error_ring_global();
     event_observe_async(EV_DB_ERROR, error_ring_observer, er);
     event_observe_async(EV_COINS_FLUSH_FAILED, error_ring_observer, er);

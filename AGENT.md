@@ -132,6 +132,8 @@ DB-mutating service helpers now also obey the worker boundary:
   instead of assuming the optional metrics worker always starts cleanly
 - embedded Tor now tracks whether the onion-monitor helper thread actually
   started before trying to join it during shutdown
+- async event observer dispatch now starts idempotently, fails closed on
+  thread-start errors, and stops safely even if startup never completed
 - startup SQLite catchup is now owned as an explicit `sync_controller`
   catchup job object instead of boot carrying a raw pthread plus argument bag
 - snapshot import now fails cleanly on partial thread-start failure instead of

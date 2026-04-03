@@ -263,7 +263,7 @@ bool event_observe_async(enum event_type type, event_observer_fn fn, void *ctx);
 /* Start/stop the async observer dispatch thread.
  * Call event_async_start() after registering async observers.
  * Call event_async_stop() during shutdown (drains pending events). */
-void event_async_start(void);
+bool event_async_start(void);
 void event_async_stop(void);
 
 /* ── Error accumulator ─────────────────────────────────── */
