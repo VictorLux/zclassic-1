@@ -834,7 +834,10 @@ bool app_init_services(struct app_context *ctx,
         }
     }
 
-    connman_start(svc->connman);
+    if (!connman_start(svc->connman)) {
+        fprintf(stderr, "FATAL: failed to start P2P threads\n");
+        return false;
+    }
     sync_set_state(SYNC_FINDING_PEERS, "P2P started");
 
     /* Initialize RPC */

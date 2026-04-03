@@ -120,6 +120,8 @@ DB-mutating service helpers now also obey the worker boundary:
 - HTTPS explorer serving now uses a bounded worker pool instead of detached
   per-client threads, and start/stop is idempotent with explicit listener and
   worker joins
+- `connman_start()` now has explicit partial-start rollback and per-thread
+  lifecycle tracking instead of assuming all P2P thread creation succeeds
 - UTXO import is being hardened with explicit cancellation and cleanup so
   shutdown or startup failure does not leave the parallel import pipeline
   running blindly

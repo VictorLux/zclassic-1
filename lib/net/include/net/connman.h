@@ -17,6 +17,10 @@ struct connman {
     struct net_manager manager;
     const struct chain_params *params;
     bool started;
+    bool dns_seed_thread_started;
+    bool socket_thread_started;
+    bool open_thread_started;
+    bool message_thread_started;
     struct p2p_node *deferred_free[64];
     size_t num_deferred_free;
     /* Persistent addnode list — reconnected automatically on disconnect */

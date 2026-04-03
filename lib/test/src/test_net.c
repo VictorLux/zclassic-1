@@ -1547,6 +1547,10 @@ int test_net(void)
         memset(&sigs, 0, sizeof(sigs));
         bool ok = connman_init(&cm, params, &sigs);
         ok = ok && !cm.started;
+        ok = ok && !cm.dns_seed_thread_started;
+        ok = ok && !cm.socket_thread_started;
+        ok = ok && !cm.open_thread_started;
+        ok = ok && !cm.message_thread_started;
         ok = ok && (cm.num_deferred_free == 0);
         ok = ok && (cm.manager.default_port == params->nDefaultPort);
         ok = ok && (memcmp(cm.manager.message_start, params->pchMessageStart,

@@ -624,6 +624,10 @@ bool connman_init(struct connman *cm, const struct chain_params *params,
     net_manager_init(&cm->manager);
     cm->params = params;
     cm->started = false;
+    cm->dns_seed_thread_started = false;
+    cm->socket_thread_started = false;
+    cm->open_thread_started = false;
+    cm->message_thread_started = false;
     cm->num_deferred_free = 0;
     cm->manager.signals = *signals;
 
@@ -640,12 +644,52 @@ bool connman_init(struct connman *cm, const struct chain_params *params,
 
 bool connman_start(struct connman *cm)
 {
+    if (!cm)
+        return false;
+    if (cm->started)
+        return true;
+
     g_stop = false;
 
-    pthread_create(&g_thread_dns_seed, NULL, thread_dns_seed, cm);
-    pthread_create(&g_thread_socket, NULL, thread_socket_handler, cm);
-    pthread_create(&g_thread_open, NULL, thread_open_connections, cm);
-    pthread_create(&g_thread_message, NULL, thread_message_handler, cm);
+    if (pthread_create(&g_thread_dns_seed, NULL, thread_dns_seed, cm) != 0) {
+        perror("connman: pthread_create dns_seed");
+        g_stop = true;
+        return false;
+    }
+    cm->dns_seed_thread_started = true;
+
+    if (pthread_create(&g_thread_socket, NULL, thread_socket_handler, cm) != 0) {
+        perror("connman: pthread_create socket");
+        g_stop = true;
+        pthread_join(g_thread_dns_seed, NULL);
+        cm->dns_seed_thread_started = false;
+        return false;
+    }
+    cm->socket_thread_started = true;
+
+    if (pthread_create(&g_thread_open, NULL, thread_open_connections, cm) != 0) {
+        perror("connman: pthread_create open");
+        g_stop = true;
+        pthread_join(g_thread_socket, NULL);
+        pthread_join(g_thread_dns_seed, NULL);
+        cm->socket_thread_started = false;
+        cm->dns_seed_thread_started = false;
+        return false;
+    }
+    cm->open_thread_started = true;
+
+    if (pthread_create(&g_thread_message, NULL, thread_message_handler, cm) != 0) {
+        perror("connman: pthread_create message");
+        g_stop = true;
+        pthread_join(g_thread_open, NULL);
+        pthread_join(g_thread_socket, NULL);
+        pthread_join(g_thread_dns_seed, NULL);
+        cm->open_thread_started = false;
+        cm->socket_thread_started = false;
+        cm->dns_seed_thread_started = false;
+        return false;
+    }
+    cm->message_thread_started = true;
 
     cm->started = true;
     printf("P2P threads started.\n");
@@ -660,11 +704,27 @@ void connman_signal_stop(struct connman *cm)
 
 void connman_join(struct connman *cm)
 {
-    if (cm->started) {
-        pthread_join(g_thread_dns_seed, NULL);
-        pthread_join(g_thread_socket, NULL);
-        pthread_join(g_thread_open, NULL);
-        pthread_join(g_thread_message, NULL);
+    if (!cm)
+        return;
+
+    if (cm->started || cm->dns_seed_thread_started || cm->socket_thread_started ||
+        cm->open_thread_started || cm->message_thread_started) {
+        if (cm->dns_seed_thread_started) {
+            pthread_join(g_thread_dns_seed, NULL);
+            cm->dns_seed_thread_started = false;
+        }
+        if (cm->socket_thread_started) {
+            pthread_join(g_thread_socket, NULL);
+            cm->socket_thread_started = false;
+        }
+        if (cm->open_thread_started) {
+            pthread_join(g_thread_open, NULL);
+            cm->open_thread_started = false;
+        }
+        if (cm->message_thread_started) {
+            pthread_join(g_thread_message, NULL);
+            cm->message_thread_started = false;
+        }
         cm->started = false;
     }
     printf("P2P threads stopped.\n");
