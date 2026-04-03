@@ -65,6 +65,7 @@ int main(void)
     failures += test_sync_service();
     failures += test_snapshot_sync_service();
     failures += test_file_controller();
+    failures += test_file_ops();
 
     /* Spec-based user story tests */
     failures += spec_wallet_dashboard();

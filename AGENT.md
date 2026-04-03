@@ -137,6 +137,9 @@ DB-mutating service helpers now also obey the worker boundary:
 - async RPC queue worker startup now uses an explicit checked start path
   instead of folding `pthread_create()` into a compound condition, and direct
   RPC tests now assert worker-count state is reset after finish-and-wait
+- file-copy helper contracts now have direct unit coverage: `dir_copy()`
+  success and partial-failure behavior, plus `block_files_copy()` failure on
+  bad `rev*.dat` sources, are now exercised in the test suite
 - file-service startup manifest build is now tracked and joined instead of
   detached, and file-service start/stop is being hardened toward idempotent
   lifecycle behavior
