@@ -115,6 +115,9 @@ DB-mutating service helpers now also obey the worker boundary:
 - snapshot import’s parallel block-index / UTXO / wallet workers are now
   owned through a single import-job coordinator instead of scattered raw
   `pthread_create` / `pthread_join` bookkeeping in the orchestrator
+- snapshot import now fails closed before syncing snapshot files into the live
+  datadir: if any import worker fails, the orchestrator returns an error
+  instead of copying blocks/chainstate after a partial import
 - boot service thread start/join paths for payment, replay, snapshot offer,
   address backfill, and tx-index are now consolidated behind shared helper
   functions so lifecycle handling stays consistent and DRY

@@ -415,6 +415,15 @@ static void snapshot_import_job_join(struct snapshot_import_job *job)
     }
 }
 
+static bool snapshot_import_job_succeeded(const struct snapshot_import_job *job)
+{
+    if (!job)
+        return false;
+    return job->block_index_args.result == 0 &&
+           job->utxo_args.result == 0 &&
+           job->wallet_args.result == 0;
+}
+
 static bool snapshot_import_job_start(struct snapshot_import_job *job)
 {
     if (!job)
@@ -532,6 +541,16 @@ int snapshot_import(const char *snapshot_dir,
            job.wallet_args.count);
     fflush(stdout);
 
+    if (!snapshot_import_job_succeeded(&job)) {
+        fprintf(stderr,
+                "snapshot_import: import workers failed "
+                "(blocks=%d utxos=%d wallet=%d); refusing to sync files\n",
+                job.block_index_args.result,
+                job.utxo_args.result,
+                job.wallet_args.result);
+        return -1;
+    }
+
     /* Copy block files + LevelDB to C23 data dir for consensus engine */
     printf("snapshot_import: syncing files to %s...\n", c23_datadir);
     fflush(stdout);
@@ -578,9 +597,7 @@ int snapshot_import(const char *snapshot_dir,
            total_time, import_time, total_time - import_time);
     fflush(stdout);
 
-    return (job.block_index_args.result == 0 &&
-            job.utxo_args.result == 0 &&
-            job.wallet_args.result == 0) ? 0 : -1;
+    return 0;
 }
 
 /* ---- Background transaction index builder ---- */
