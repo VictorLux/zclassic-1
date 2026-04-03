@@ -144,6 +144,9 @@ DB-mutating service helpers now also obey the worker boundary:
   atomic first-start gating, so concurrent first requests cannot spawn
   duplicate workers and startup failure returns a clean 503 instead of
   pretending the background helper is alive
+- explorer prewarm and background cache builders now use the same checked
+  detached-thread startup pattern with atomic gating, so concurrent requests
+  cannot double-launch stats/hodl/tokens/factoids workers
 - startup SQLite catchup is now owned as an explicit `sync_controller`
   catchup job object instead of boot carrying a raw pthread plus argument bag
 - snapshot import now fails cleanly on partial thread-start failure instead of

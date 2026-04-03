@@ -157,6 +157,52 @@ static _Atomic int g_stats_computing;
 static _Atomic int g_tokens_computing;
 static _Atomic int g_hodl_computing;
 static _Atomic int g_factoids_computing;
+static _Atomic int g_prewarm_started;
+
+static bool explorer_start_detached_thread(pthread_t *thread_out,
+                                           void *(*entry)(void *),
+                                           void *arg,
+                                           size_t stack_size)
+{
+    pthread_attr_t attr;
+    bool ok = false;
+
+    if (!thread_out || !entry)
+        return false;
+    if (pthread_attr_init(&attr) != 0)
+        return false;
+    if (pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED) != 0)
+        goto cleanup;
+    if (stack_size > 0 && pthread_attr_setstacksize(&attr, stack_size) != 0)
+        goto cleanup;
+    if (pthread_create(thread_out, &attr, entry, arg) != 0)
+        goto cleanup;
+    ok = true;
+
+cleanup:
+    pthread_attr_destroy(&attr);
+    return ok;
+}
+
+static bool explorer_start_once(_Atomic int *flag,
+                                void *(*entry)(void *),
+                                const char *name)
+{
+    int expected = 0;
+    pthread_t t;
+
+    if (!flag || !entry)
+        return false;
+    if (!atomic_compare_exchange_strong(flag, &expected, 1))
+        return expected == 1;
+    if (!explorer_start_detached_thread(&t, entry, NULL, 2 * 1024 * 1024)) {
+        atomic_store(flag, 0);
+        if (name)
+            fprintf(stderr, "Explorer: failed to start %s thread\n", name);
+        return false;
+    }
+    return true;
+}
 
 static void prewarm_caches(void)
 {
@@ -165,55 +211,23 @@ static void prewarm_caches(void)
 
     printf("Explorer: pre-warming stats cache...\n");
     fflush(stdout);
-    if (!g_stats_computing) {
-        g_stats_computing = 1;
-        pthread_t t;
-        pthread_attr_t attr;
-        pthread_attr_init(&attr);
-        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-        pthread_attr_setstacksize(&attr, 2 * 1024 * 1024);
-        pthread_create(&t, &attr, stats_compute_thread, NULL);
-        pthread_attr_destroy(&attr);
-    }
+    explorer_start_once(&g_stats_computing, stats_compute_thread,
+                        "stats_compute");
 
     printf("Explorer: pre-warming HODL wave cache...\n");
     fflush(stdout);
-    if (!g_hodl_computing) {
-        g_hodl_computing = 1;
-        pthread_t t;
-        pthread_attr_t attr;
-        pthread_attr_init(&attr);
-        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-        pthread_attr_setstacksize(&attr, 2 * 1024 * 1024);
-        pthread_create(&t, &attr, hodl_compute_thread, NULL);
-        pthread_attr_destroy(&attr);
-    }
+    explorer_start_once(&g_hodl_computing, hodl_compute_thread,
+                        "hodl_compute");
 
     printf("Explorer: pre-warming tokens cache...\n");
     fflush(stdout);
-    if (!g_tokens_computing) {
-        g_tokens_computing = 1;
-        pthread_t t;
-        pthread_attr_t attr;
-        pthread_attr_init(&attr);
-        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-        pthread_attr_setstacksize(&attr, 2 * 1024 * 1024);
-        pthread_create(&t, &attr, tokens_compute_thread, NULL);
-        pthread_attr_destroy(&attr);
-    }
+    explorer_start_once(&g_tokens_computing, tokens_compute_thread,
+                        "tokens_compute");
 
     printf("Explorer: pre-warming factoids cache...\n");
     fflush(stdout);
-    if (!g_factoids_computing) {
-        g_factoids_computing = 1;
-        pthread_t t;
-        pthread_attr_t attr;
-        pthread_attr_init(&attr);
-        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-        pthread_attr_setstacksize(&attr, 2 * 1024 * 1024);
-        pthread_create(&t, &attr, factoids_compute_thread, NULL);
-        pthread_attr_destroy(&attr);
-    }
+    explorer_start_once(&g_factoids_computing, factoids_compute_thread,
+                        "factoids_compute");
 }
 
 static void *prewarm_thread(void *arg)
@@ -236,12 +250,7 @@ void explorer_set_state(struct main_state *ms, struct tx_mempool *mp,
     init_default_templates();
 
     /* Pre-warm caches in background after startup */
-    pthread_t t;
-    pthread_attr_t attr;
-    pthread_attr_init(&attr);
-    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-    pthread_create(&t, &attr, prewarm_thread, NULL);
-    pthread_attr_destroy(&attr);
+    explorer_start_once(&g_prewarm_started, prewarm_thread, "prewarm");
 }
 
 /* ── RPC proxy to local zclassicd ─────────────────────────── */
@@ -1858,16 +1867,8 @@ static size_t serve_stats(uint8_t *r, size_t max)
     }
 
     /* Not cached yet — trigger background computation if not running */
-    if (!g_stats_computing) {
-        g_stats_computing = 1;
-        pthread_t t;
-        pthread_attr_t attr;
-        pthread_attr_init(&attr);
-        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-        pthread_attr_setstacksize(&attr, 2 * 1024 * 1024); /* 2MB stack */
-        pthread_create(&t, &attr, stats_compute_thread, NULL);
-        pthread_attr_destroy(&attr);
-    }
+    explorer_start_once(&g_stats_computing, stats_compute_thread,
+                        "stats_compute");
     size_t off = 0;
     APPEND(off, r, max,
         "HTTP/1.1 200 OK\r\n"
@@ -1926,16 +1927,8 @@ static size_t serve_factoids(uint8_t *r, size_t max)
     }
 
     /* Not cached yet -- trigger background computation */
-    if (!g_factoids_computing) {
-        g_factoids_computing = 1;
-        pthread_t t;
-        pthread_attr_t attr;
-        pthread_attr_init(&attr);
-        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-        pthread_attr_setstacksize(&attr, 2 * 1024 * 1024);
-        pthread_create(&t, &attr, factoids_compute_thread, NULL);
-        pthread_attr_destroy(&attr);
-    }
+    explorer_start_once(&g_factoids_computing, factoids_compute_thread,
+                        "factoids_compute");
     size_t off = 0;
     APPEND(off, r, max,
         "HTTP/1.1 200 OK\r\n"
@@ -2156,12 +2149,8 @@ static size_t serve_tokens(uint8_t *r, size_t max)
     }
     if (!g_tokens_computing) {
         g_tokens_computing = 1;
-        pthread_t t;
-        pthread_attr_t attr;
-        pthread_attr_init(&attr);
-        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-        pthread_create(&t, &attr, tokens_compute_thread, NULL);
-        pthread_attr_destroy(&attr);
+        explorer_start_once(&g_tokens_computing, tokens_compute_thread,
+                            "tokens_compute");
     }
     size_t off = 0;
     APPEND(off, r, max,
@@ -2403,12 +2392,8 @@ static size_t serve_hodl(uint8_t *r, size_t max)
     /* If not cached and not computing, start background computation */
     if (!g_hodl_computing) {
         g_hodl_computing = 1;
-        pthread_t t;
-        pthread_attr_t attr;
-        pthread_attr_init(&attr);
-        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-        pthread_create(&t, &attr, hodl_compute_thread, NULL);
-        pthread_attr_destroy(&attr);
+        explorer_start_once(&g_hodl_computing, hodl_compute_thread,
+                            "hodl_compute");
     }
 
     /* Return a "computing" placeholder page */
