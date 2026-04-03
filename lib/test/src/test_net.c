@@ -2568,6 +2568,66 @@ int test_net(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    printf("parallel_sync: manifest cache publishes stable header... ");
+    {
+        struct sync_manifest published;
+        struct sync_manifest header;
+        memset(&published, 0, sizeof(published));
+        memset(&header, 0, sizeof(header));
+        published.height = 321;
+        published.num_utxos = 654;
+        published.num_chunks = 2;
+        published.chunk_size = SYNC_CHUNK_SIZE;
+        published.chunk_hashes = calloc(2, sizeof(*published.chunk_hashes));
+        memset(published.block_hash, 0x11, sizeof(published.block_hash));
+        memset(published.merkle_root, 0x22, sizeof(published.merkle_root));
+
+        bool ok = published.chunk_hashes != NULL;
+        ok = ok && msg_processor_publish_manifest(&published);
+        ok = ok && published.chunk_hashes == NULL;
+        ok = ok && msg_processor_get_manifest_header(&header);
+        ok = ok && header.height == 321;
+        ok = ok && header.num_chunks == 2;
+        ok = ok && header.num_utxos == 654;
+        ok = ok && header.chunk_size == SYNC_CHUNK_SIZE;
+        ok = ok && header.chunk_hashes == NULL;
+        msg_processor_invalidate_manifest();
+        ok = ok && !msg_processor_get_manifest_header(&header);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("parallel_sync: block manifest cache publishes stable header... ");
+    {
+        struct block_piece_manifest published;
+        struct block_piece_manifest header;
+        int32_t built_at = 0;
+        memset(&published, 0, sizeof(published));
+        memset(&header, 0, sizeof(header));
+        published.start_height = 1;
+        published.end_height = 512;
+        published.num_pieces = 4;
+        published.piece_hashes = calloc(4, sizeof(*published.piece_hashes));
+        memset(published.tip_hash, 0x33, sizeof(published.tip_hash));
+        memset(published.merkle_root, 0x44, sizeof(published.merkle_root));
+
+        bool ok = published.piece_hashes != NULL;
+        ok = ok && msg_processor_publish_block_manifest(&published, 512);
+        ok = ok && published.piece_hashes == NULL;
+        ok = ok && msg_processor_get_block_manifest_header(&header, &built_at);
+        ok = ok && header.start_height == 1;
+        ok = ok && header.end_height == 512;
+        ok = ok && header.num_pieces == 4;
+        ok = ok && header.piece_hashes == NULL;
+        ok = ok && built_at == 512;
+        msg_processor_invalidate_block_manifest();
+        ok = ok && !msg_processor_get_block_manifest_header(&header, &built_at);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     /* ── Swarm coordinator tests ─────────────────────────────── */
 
     printf("swarm_sync: init with 10 chunks, all NEEDED... ");

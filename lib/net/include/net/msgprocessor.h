@@ -13,6 +13,7 @@
 #include "coins/coins_view.h"
 #include "chain/chainparams.h"
 #include "config/runtime.h"
+#include "net/fast_sync.h"
 #include <stdbool.h>
 
 struct msg_processor {
@@ -41,6 +42,18 @@ int msg_get_height(void *ctx);
 /* Update the cached snapshot offer (thread-safe). Called from boot.c. */
 struct snapshot_offer;
 void msg_processor_update_offer(const struct snapshot_offer *offer);
+
+/* Publish or invalidate cached fast-sync artifacts. These functions take
+ * ownership of the heap-backed arrays inside the provided manifests. */
+bool msg_processor_publish_manifest(struct sync_manifest *manifest);
+void msg_processor_invalidate_manifest(void);
+bool msg_processor_get_manifest_header(struct sync_manifest *out);
+
+bool msg_processor_publish_block_manifest(struct block_piece_manifest *manifest,
+                                         int32_t built_at_height);
+void msg_processor_invalidate_block_manifest(void);
+bool msg_processor_get_block_manifest_header(struct block_piece_manifest *out,
+                                            int32_t *built_at_height);
 
 /* Test helpers for block relay deduplication. */
 #include "core/uint256.h"

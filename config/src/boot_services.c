@@ -420,35 +420,34 @@ static void *build_snapshot_offer_thread(void *arg)
         printf("Fast sync: no snapshot available yet\n");
     }
 
-    extern struct sync_manifest g_cached_manifest;
-    extern _Atomic bool g_cached_manifest_valid;
-
     printf("Building chunk sync manifest...\n");
-    if (fast_sync_build_manifest(datadir, &g_cached_manifest)) {
-        g_cached_manifest_valid = true;
+    struct sync_manifest chunk_manifest;
+    memset(&chunk_manifest, 0, sizeof(chunk_manifest));
+    if (fast_sync_build_manifest(datadir, &chunk_manifest)) {
+        int32_t manifest_height = chunk_manifest.height;
+        uint32_t num_chunks = chunk_manifest.num_chunks;
+        uint64_t num_utxos = chunk_manifest.num_utxos;
+        msg_processor_publish_manifest(&chunk_manifest);
         printf("Chunk manifest ready: h=%d, %u chunks (%llu UTXOs)\n",
-               g_cached_manifest.height, g_cached_manifest.num_chunks,
-               (unsigned long long)g_cached_manifest.num_utxos);
+               manifest_height, num_chunks, (unsigned long long)num_utxos);
     } else {
         printf("Chunk manifest: not available yet\n");
     }
-
-    extern struct block_piece_manifest g_cached_block_manifest;
-    extern _Atomic bool g_cached_block_manifest_valid;
 
     int32_t tip_h = offer.height;
 
     if (tip_h > BLOCKS_PER_PIECE) {
         printf("Building block piece manifest...\n");
+        struct block_piece_manifest block_manifest;
+        memset(&block_manifest, 0, sizeof(block_manifest));
         if (block_piece_manifest_build(datadir, 1, tip_h,
-                                        &g_cached_block_manifest)) {
-            g_cached_block_manifest_valid = true;
-            extern int32_t g_manifest_built_at_height;
-            g_manifest_built_at_height = tip_h;
+                                        &block_manifest)) {
+            int32_t start_height = block_manifest.start_height;
+            int32_t end_height = block_manifest.end_height;
+            uint32_t num_pieces = block_manifest.num_pieces;
+            msg_processor_publish_block_manifest(&block_manifest, tip_h);
             printf("Block manifest ready: h=%d..%d, %u pieces\n",
-                   g_cached_block_manifest.start_height,
-                   g_cached_block_manifest.end_height,
-                   g_cached_block_manifest.num_pieces);
+                   start_height, end_height, num_pieces);
         } else {
             printf("Block manifest: build failed\n");
         }

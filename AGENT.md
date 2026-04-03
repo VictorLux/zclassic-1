@@ -149,6 +149,10 @@ DB-mutating service helpers now also obey the worker boundary:
 - that robustness coverage exposed a real bug, now fixed: the RPC HTTP server
   tracks listen-thread and worker-start state explicitly, resets auth/runtime
   state on stop, and refuses a new start while old server state is still live
+- fast-sync chunk and block manifests now publish through explicit
+  `msgprocessor` ownership APIs instead of boot and P2P code mutating shared
+  globals directly; readers now consume stable manifest headers under lock,
+  and the cache contracts have direct tests
 - file-service startup manifest build is now tracked and joined instead of
   detached, and file-service start/stop is being hardened toward idempotent
   lifecycle behavior

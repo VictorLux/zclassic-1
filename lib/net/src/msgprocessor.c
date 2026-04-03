@@ -65,6 +65,7 @@ struct fast_sync_rate_limiter g_rate_limiter = {0};
 /* Cached manifest for parallel chunk sync (built in background at startup). */
 struct sync_manifest g_cached_manifest;
 _Atomic bool g_cached_manifest_valid = false;
+static pthread_mutex_t g_manifest_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 /* Global swarm coordinator — manages parallel UTXO chunk download.
  * Only active when we are syncing from multiple ZCL23 peers.
@@ -96,6 +97,7 @@ static int64_t g_block_swarm_last_progress = 0;
 struct block_piece_manifest g_cached_block_manifest;
 _Atomic bool g_cached_block_manifest_valid = false;
 int32_t g_manifest_built_at_height = 0; /* height when manifest was last built */
+static pthread_mutex_t g_block_manifest_mutex = PTHREAD_MUTEX_INITIALIZER;
 /* Rebuild manifest when chain grows this many blocks beyond the cached one.
  * This ensures new peers always get a reasonably fresh manifest. */
 #define MANIFEST_REFRESH_BLOCKS 1000
@@ -110,6 +112,22 @@ static void msg_download_mgr_init_once(void)
 {
     dl_init(&g_download_mgr);
     g_download_mgr_init = true;
+}
+
+static void msg_manifest_reset(struct sync_manifest *manifest)
+{
+    if (!manifest)
+        return;
+    sync_manifest_free(manifest);
+    memset(manifest, 0, sizeof(*manifest));
+}
+
+static void msg_block_manifest_reset(struct block_piece_manifest *manifest)
+{
+    if (!manifest)
+        return;
+    block_piece_manifest_free(manifest);
+    memset(manifest, 0, sizeof(*manifest));
 }
 
 static struct node_db *msg_node_db(const struct msg_processor *mp)
@@ -141,6 +159,96 @@ void msg_processor_update_offer(const struct snapshot_offer *offer)
     g_cached_offer = *offer;
     pthread_mutex_unlock(&g_offer_mutex);
     atomic_store(&g_cached_offer_valid, true);
+}
+
+bool msg_processor_publish_manifest(struct sync_manifest *manifest)
+{
+    if (!manifest)
+        return false;
+
+    pthread_mutex_lock(&g_manifest_mutex);
+    if (atomic_load(&g_cached_manifest_valid))
+        msg_manifest_reset(&g_cached_manifest);
+    g_cached_manifest = *manifest;
+    memset(manifest, 0, sizeof(*manifest));
+    atomic_store(&g_cached_manifest_valid, true);
+    pthread_mutex_unlock(&g_manifest_mutex);
+    return true;
+}
+
+void msg_processor_invalidate_manifest(void)
+{
+    pthread_mutex_lock(&g_manifest_mutex);
+    if (atomic_load(&g_cached_manifest_valid))
+        msg_manifest_reset(&g_cached_manifest);
+    atomic_store(&g_cached_manifest_valid, false);
+    pthread_mutex_unlock(&g_manifest_mutex);
+}
+
+bool msg_processor_get_manifest_header(struct sync_manifest *out)
+{
+    if (!out)
+        return false;
+
+    pthread_mutex_lock(&g_manifest_mutex);
+    bool ok = atomic_load(&g_cached_manifest_valid);
+    if (ok) {
+        *out = g_cached_manifest;
+        out->chunk_hashes = NULL;
+    } else {
+        memset(out, 0, sizeof(*out));
+    }
+    pthread_mutex_unlock(&g_manifest_mutex);
+    return ok;
+}
+
+bool msg_processor_publish_block_manifest(struct block_piece_manifest *manifest,
+                                         int32_t built_at_height)
+{
+    if (!manifest)
+        return false;
+
+    pthread_mutex_lock(&g_block_manifest_mutex);
+    if (atomic_load(&g_cached_block_manifest_valid))
+        msg_block_manifest_reset(&g_cached_block_manifest);
+    g_cached_block_manifest = *manifest;
+    memset(manifest, 0, sizeof(*manifest));
+    g_manifest_built_at_height = built_at_height;
+    atomic_store(&g_cached_block_manifest_valid, true);
+    pthread_mutex_unlock(&g_block_manifest_mutex);
+    return true;
+}
+
+void msg_processor_invalidate_block_manifest(void)
+{
+    pthread_mutex_lock(&g_block_manifest_mutex);
+    if (atomic_load(&g_cached_block_manifest_valid))
+        msg_block_manifest_reset(&g_cached_block_manifest);
+    g_manifest_built_at_height = 0;
+    atomic_store(&g_cached_block_manifest_valid, false);
+    pthread_mutex_unlock(&g_block_manifest_mutex);
+}
+
+bool msg_processor_get_block_manifest_header(struct block_piece_manifest *out,
+                                            int32_t *built_at_height)
+{
+    if (!out)
+        return false;
+
+    pthread_mutex_lock(&g_block_manifest_mutex);
+    bool ok = atomic_load(&g_cached_block_manifest_valid);
+    if (ok) {
+        *out = g_cached_block_manifest;
+        out->piece_hashes = NULL;
+        if (built_at_height)
+            *built_at_height = g_manifest_built_at_height;
+    } else {
+        memset(out, 0, sizeof(*out));
+        if (built_at_height)
+            *built_at_height = 0;
+    }
+    pthread_mutex_unlock(&g_block_manifest_mutex);
+    return ok;
 }
 
 /* Serialize and send a snapshot offer to a peer.
@@ -256,13 +364,16 @@ void msg_processor_init(struct msg_processor *mp,
      * This enables serving block pieces to peers immediately. */
     if (ms && datadir) {
         int tip = active_chain_height(&ms->chain_active);
-        if (tip > 1000 && !g_cached_block_manifest_valid) {
-            if (block_piece_manifest_build(datadir, 1, tip,
-                                            &g_cached_block_manifest)) {
-                g_manifest_built_at_height = tip;
-                g_cached_block_manifest_valid = true;
+        struct block_piece_manifest header;
+        if (tip > 1000 &&
+            !msg_processor_get_block_manifest_header(&header, NULL)) {
+            struct block_piece_manifest manifest;
+            memset(&manifest, 0, sizeof(manifest));
+            if (block_piece_manifest_build(datadir, 1, tip, &manifest)) {
+                uint32_t num_pieces = manifest.num_pieces;
+                msg_processor_publish_block_manifest(&manifest, tip);
                 printf("Block manifest built: h=1..%d (%u pieces, SHA3 verified)\n",
-                       tip, g_cached_block_manifest.num_pieces);
+                       tip, num_pieces);
             }
         }
     }
@@ -277,18 +388,19 @@ int msg_get_height(void *ctx)
 /* Send our manifest to a ZCL23 peer. Called after version/verack handshake. */
 static void push_manifest(struct msg_processor *mp, struct p2p_node *node)
 {
-    if (!g_cached_manifest_valid || node->swarm_manifest_sent)
-        return;
+    struct sync_manifest m;
 
-    struct sync_manifest *m = &g_cached_manifest;
+    if (node->swarm_manifest_sent ||
+        !msg_processor_get_manifest_header(&m))
+        return;
     struct byte_stream s;
     stream_init(&s, 80);
-    stream_write_i32_le(&s, m->height);
-    stream_write_bytes(&s, m->block_hash, 32);
-    stream_write_u64_le(&s, m->num_utxos);
-    stream_write_u32_le(&s, m->num_chunks);
-    stream_write_u32_le(&s, m->chunk_size);
-    stream_write_bytes(&s, m->merkle_root, 32);
+    stream_write_i32_le(&s, m.height);
+    stream_write_bytes(&s, m.block_hash, 32);
+    stream_write_u64_le(&s, m.num_utxos);
+    stream_write_u32_le(&s, m.num_chunks);
+    stream_write_u32_le(&s, m.chunk_size);
+    stream_write_bytes(&s, m.merkle_root, 32);
 
     p2p_node_begin_message(node, MSG_MANIFEST, mp->params->pchMessageStart);
     p2p_node_write_message_data(node, s.data, s.size);
@@ -297,7 +409,7 @@ static void push_manifest(struct msg_processor *mp, struct p2p_node *node)
 
     node->swarm_manifest_sent = true;
     printf("Peer %s: sent manifest (h=%d, %u chunks)\n",
-           node->addr_name, m->height, m->num_chunks);
+           node->addr_name, m.height, m.num_chunks);
 }
 
 /* Send a chunk request to a peer. */
@@ -321,19 +433,20 @@ static void push_chunk_request(struct msg_processor *mp,
 static void push_block_manifest(struct msg_processor *mp,
                                  struct p2p_node *node)
 {
-    if (!g_cached_block_manifest_valid || node->blk_manifest_sent)
+    struct block_piece_manifest m;
+
+    if (node->blk_manifest_sent ||
+        !msg_processor_get_block_manifest_header(&m, NULL))
         return;
     if (!peer_supports_fast_sync(node->services))
         return; /* guard: only send to ZCL23 peers */
-
-    struct block_piece_manifest *m = &g_cached_block_manifest;
     struct byte_stream s;
     stream_init(&s, 80);
-    stream_write_i32_le(&s, m->start_height);
-    stream_write_i32_le(&s, m->end_height);
-    stream_write_u32_le(&s, m->num_pieces);
-    stream_write_bytes(&s, m->tip_hash, 32);
-    stream_write_bytes(&s, m->merkle_root, 32);
+    stream_write_i32_le(&s, m.start_height);
+    stream_write_i32_le(&s, m.end_height);
+    stream_write_u32_le(&s, m.num_pieces);
+    stream_write_bytes(&s, m.tip_hash, 32);
+    stream_write_bytes(&s, m.merkle_root, 32);
 
     p2p_node_begin_message(node, MSG_BLOCK_MANIFEST,
                             mp->params->pchMessageStart);
@@ -343,7 +456,7 @@ static void push_block_manifest(struct msg_processor *mp,
 
     node->blk_manifest_sent = true;
     printf("Peer %s: sent block manifest (h=%d..%d, %u pieces)\n",
-           node->addr_name, m->start_height, m->end_height, m->num_pieces);
+           node->addr_name, m.start_height, m.end_height, m.num_pieces);
 }
 
 /* Send a block piece request to a peer. */
@@ -1108,11 +1221,18 @@ static bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
              * Only at tip — during IBD, SQLite is still catching up and
              * manifest build can crash on partial data. We're a client
              * during IBD, not serving pieces to peers. */
-            if (sync_get_state() == SYNC_AT_TIP &&
-                new_tip->nHeight > 1000 &&
-                (!g_cached_block_manifest_valid ||
-                 new_tip->nHeight - g_manifest_built_at_height
-                    >= MANIFEST_REFRESH_BLOCKS)) {
+            bool should_refresh_manifest = false;
+            if (sync_get_state() == SYNC_AT_TIP && new_tip->nHeight > 1000) {
+                struct block_piece_manifest header;
+                int32_t built_at = 0;
+                bool has_manifest =
+                    msg_processor_get_block_manifest_header(&header,
+                                                            &built_at);
+                should_refresh_manifest =
+                    !has_manifest ||
+                    new_tip->nHeight - built_at >= MANIFEST_REFRESH_BLOCKS;
+            }
+            if (should_refresh_manifest) {
                 /* Rebuild in a detached thread to avoid blocking message processing */
                 static _Atomic bool g_manifest_rebuilding = false;
                 if (!atomic_exchange(&g_manifest_rebuilding, true)) {
@@ -1120,14 +1240,11 @@ static bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
                     memset(&new_m, 0, sizeof(new_m));
                     if (block_piece_manifest_build(mp->datadir, 1,
                             new_tip->nHeight, &new_m)) {
-                        /* Swap atomically: invalidate, swap, re-validate */
-                        g_cached_block_manifest_valid = false;
-                        block_piece_manifest_free(&g_cached_block_manifest);
-                        g_cached_block_manifest = new_m;
-                        g_manifest_built_at_height = new_tip->nHeight;
-                        g_cached_block_manifest_valid = true;
+                        uint32_t num_pieces = new_m.num_pieces;
+                        msg_processor_publish_block_manifest(
+                            &new_m, new_tip->nHeight);
                         event_emitf(EV_SYNC_STATE_CHANGE, 0, "manifest refreshed to h=%d (%u pieces)",
-                                    new_tip->nHeight, new_m.num_pieces);
+                                    new_tip->nHeight, num_pieces);
                     }
                     atomic_store(&g_manifest_rebuilding, false);
                 }
@@ -1999,15 +2116,16 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
         } else if (strcmp(cmd, MSG_CHUNK_REQ) == 0) {
             /* Peer requests a specific chunk by index — serve it. */
             uint32_t chunk_index = 0;
+            struct sync_manifest manifest;
             if (!stream_read_u32_le(&s, &chunk_index)) {
                 printf("Peer %s: bad zchunkreq\n", node->addr_name);
-            } else if (!g_cached_manifest_valid) {
+            } else if (!msg_processor_get_manifest_header(&manifest)) {
                 printf("Peer %s: zchunkreq but no manifest ready\n",
                        node->addr_name);
-            } else if (chunk_index >= g_cached_manifest.num_chunks) {
+            } else if (chunk_index >= manifest.num_chunks) {
                 printf("Peer %s: zchunkreq index %u out of range (%u)\n",
                        node->addr_name, chunk_index,
-                       g_cached_manifest.num_chunks);
+                       manifest.num_chunks);
                 peer_misbehaving(mp->net_mgr, node, 10,
                                  "zchunkreq out of range");
             } else if (!fast_sync_rate_check(&g_rate_limiter,
@@ -2217,15 +2335,16 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
              * SAFETY: only serve if we have a valid manifest and the
              * piece index is in range. Rate-limited like chunk requests. */
             uint32_t piece_index = 0;
+            struct block_piece_manifest bm;
             if (!stream_read_u32_le(&s, &piece_index)) {
                 printf("Peer %s: bad zblkreq\n", node->addr_name);
-            } else if (!g_cached_block_manifest_valid) {
+            } else if (!msg_processor_get_block_manifest_header(&bm, NULL)) {
                 printf("Peer %s: zblkreq but no block manifest\n",
                        node->addr_name);
-            } else if (piece_index >= g_cached_block_manifest.num_pieces) {
+            } else if (piece_index >= bm.num_pieces) {
                 printf("Peer %s: zblkreq %u out of range (%u)\n",
                        node->addr_name, piece_index,
-                       g_cached_block_manifest.num_pieces);
+                       bm.num_pieces);
                 peer_misbehaving(mp->net_mgr, node, 10,
                                  "zblkreq out of range");
             } else if (!fast_sync_rate_check(&g_rate_limiter,
@@ -2235,12 +2354,11 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
             } else {
                 /* Serve the piece: send block hashes for this piece range.
                  * The requester can then verify against their manifest. */
-                struct block_piece_manifest *bm = &g_cached_block_manifest;
-                int32_t piece_start = bm->start_height
+                int32_t piece_start = bm.start_height
                     + (int32_t)(piece_index * BLOCKS_PER_PIECE);
                 int32_t piece_end = piece_start + BLOCKS_PER_PIECE - 1;
-                if (piece_end > bm->end_height)
-                    piece_end = bm->end_height;
+                if (piece_end > bm.end_height)
+                    piece_end = bm.end_height;
 
                 /* Read block hashes via ActiveRecord model */
                 uint8_t piece_hashes[BLOCKS_PER_PIECE][32];
