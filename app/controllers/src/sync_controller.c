@@ -1772,6 +1772,7 @@ struct import_context {
     _Atomic int total_rows;
     _Atomic int decode_failures;
     _Atomic int skipped_outputs;
+    _Atomic bool cancel_requested;
     _Atomic bool reader_done;
     _Atomic bool decoders_done;
     _Atomic int chunks_produced;  /* total chunks filled by reader */
@@ -1782,6 +1783,39 @@ struct import_context {
     struct node_db *ndb;
     int write_next; /* next chunk index to write (in-order) */
 };
+
+static bool import_ctx_should_stop(const struct import_context *ctx)
+{
+    return (ctx && atomic_load(&ctx->cancel_requested)) || g_shutdown_requested;
+}
+
+static void import_ctx_request_stop(struct import_context *ctx)
+{
+    if (!ctx)
+        return;
+    atomic_store(&ctx->cancel_requested, true);
+}
+
+static void import_chunk_reset(struct import_chunk *chunk)
+{
+    if (!chunk)
+        return;
+    for (int ei = 0; ei < chunk->num_entries; ei++)
+        free(chunk->entries[ei].value);
+    for (int ri = 0; ri < chunk->num_rows; ri++)
+        free(chunk->rows[ri].script_overflow);
+    chunk->num_entries = 0;
+    chunk->num_rows = 0;
+    atomic_store(&chunk->state, 0);
+}
+
+static void import_context_release_chunks(struct import_context *ctx)
+{
+    if (!ctx)
+        return;
+    for (int i = 0; i < IMPORT_NUM_CHUNKS; i++)
+        import_chunk_reset(&ctx->chunks[i]);
+}
 
 /* Decode a single raw coins entry into utxo_row structs.
  * Returns number of rows produced. Pure function, no shared state. */
@@ -1940,6 +1974,8 @@ static void *import_decoder_thread(void *arg)
     struct import_context *ctx = (struct import_context *)arg;
 
     for (;;) {
+        if (import_ctx_should_stop(ctx))
+            break;
         /* Find a filled chunk to decode */
         struct import_chunk *chunk = NULL;
         for (int i = 0; i < IMPORT_NUM_CHUNKS; i++) {
@@ -1969,10 +2005,17 @@ static void *import_decoder_thread(void *arg)
             continue;
         }
 
+        if (import_ctx_should_stop(ctx)) {
+            import_chunk_reset(chunk);
+            break;
+        }
+
         /* Decode all entries in this chunk */
         chunk->num_rows = 0;
         int skipped_in_chunk = 0;
         for (int i = 0; i < chunk->num_entries; i++) {
+            if (import_ctx_should_stop(ctx))
+                break;
             int space = IMPORT_MAX_ROWS_PER_CHUNK - chunk->num_rows;
             if (space <= 0) { skipped_in_chunk += chunk->num_entries - i; break; }
             int n = decode_coins_entry(&chunk->entries[i],
@@ -1990,7 +2033,10 @@ static void *import_decoder_thread(void *arg)
                     chunk->num_rows, IMPORT_MAX_ROWS_PER_CHUNK);
         }
 
-        atomic_store(&chunk->state, 2); /* decoded */
+        if (import_ctx_should_stop(ctx))
+            import_chunk_reset(chunk);
+        else
+            atomic_store(&chunk->state, 2); /* decoded */
     }
     return NULL;
 }
@@ -2004,10 +2050,14 @@ static void *import_writer_thread(void *arg)
     int total_rows = 0;
     int next_chunk = 0;
 
-    if (!node_db_begin(ndb))
+    if (!node_db_begin(ndb)) {
         fprintf(stderr, "UTXO import writer: BEGIN failed\n");
+        import_ctx_request_stop(ctx);
+    }
 
     for (;;) {
+        if (import_ctx_should_stop(ctx))
+            break;
         /* Look for any decoded chunk to write */
         struct import_chunk *chunk = NULL;
         for (int i = 0; i < IMPORT_NUM_CHUNKS; i++) {
@@ -2035,8 +2085,15 @@ static void *import_writer_thread(void *arg)
             continue;
         }
 
+        if (import_ctx_should_stop(ctx)) {
+            import_chunk_reset(chunk);
+            break;
+        }
+
         /* Insert all rows from this chunk */
         for (int ri = 0; ri < chunk->num_rows; ri++) {
+            if (import_ctx_should_stop(ctx))
+                break;
             struct utxo_row *r = &chunk->rows[ri];
             const uint8_t *sc = r->script_overflow ?
                                 r->script_overflow : r->script;
@@ -2063,27 +2120,49 @@ static void *import_writer_thread(void *arg)
             total_rows++;
         }
 
+        if (import_ctx_should_stop(ctx)) {
+            import_chunk_reset(chunk);
+            break;
+        }
+
         /* Commit every ~100K rows */
         if (total_rows % 100000 < chunk->num_rows) {
-            node_db_commit(ndb);
+            if (!node_db_commit(ndb)) {
+                fprintf(stderr, "UTXO import writer: COMMIT failed\n");
+                import_ctx_request_stop(ctx);
+                import_chunk_reset(chunk);
+                break;
+            }
             sync_job_import_progress(total_rows);
             printf("UTXO import: %d rows written...\n", total_rows);
             fflush(stdout);
-            node_db_begin(ndb);
+            if (!node_db_begin(ndb)) {
+                fprintf(stderr, "UTXO import writer: BEGIN restart failed\n");
+                import_ctx_request_stop(ctx);
+                import_chunk_reset(chunk);
+                break;
+            }
         }
 
         /* Free buffers and release chunk */
-        for (int ei = 0; ei < chunk->num_entries; ei++)
+        for (int ei = 0; ei < chunk->num_entries; ei++) {
             free(chunk->entries[ei].value);
-        for (int ri = 0; ri < chunk->num_rows; ri++)
+            chunk->entries[ei].value = NULL;
+        }
+        for (int ri = 0; ri < chunk->num_rows; ri++) {
             free(chunk->rows[ri].script_overflow);
+            chunk->rows[ri].script_overflow = NULL;
+        }
         chunk->num_entries = 0;
         chunk->num_rows = 0;
         atomic_fetch_add(&ctx->chunks_consumed, 1);
         atomic_store(&chunk->state, 0); /* free for reuse */
     }
 
-    node_db_commit(ndb);
+    if (!import_ctx_should_stop(ctx))
+        node_db_commit(ndb);
+    else
+        node_db_rollback(ndb);
     sync_job_import_progress(total_rows);
     atomic_store(&ctx->total_rows, total_rows);
     return NULL;
@@ -2114,11 +2193,14 @@ int node_db_sync_import_utxos(struct node_db *ndb,
     /* ── Initialize pipeline context ───────────────────────────────── */
     struct import_context *ctx = calloc(1, sizeof(struct import_context));
     if (!ctx) {
+        if (!sync_db_restore_normal_mode(ndb))
+            fprintf(stderr, "UTXO import: failed to restore normal mode after alloc failure\n");
         sync_job_import_finish(0);
         return -1;
     }
     ctx->cvdb = cvdb;
     ctx->ndb = ndb;
+    atomic_store(&ctx->cancel_requested, false);
     atomic_store(&ctx->reader_done, false);
     atomic_store(&ctx->decoders_done, false);
     for (int i = 0; i < IMPORT_NUM_CHUNKS; i++)
@@ -2131,12 +2213,15 @@ int node_db_sync_import_utxos(struct node_db *ndb,
         if (rc != 0) {
             fprintf(stderr, "UTXO import: pthread_create decoder[%d] failed: %d\n",
                     i, rc);
+            import_ctx_request_stop(ctx);
             num_decoders = i; /* only join threads we actually started */
             break;
         }
     }
     if (num_decoders == 0) {
         fprintf(stderr, "UTXO import: FATAL — no decoder threads started\n");
+        if (!sync_db_restore_normal_mode(ndb))
+            fprintf(stderr, "UTXO import: failed to restore normal mode after decoder startup failure\n");
         free(ctx);
         sync_job_import_finish(0);
         return -1;
@@ -2145,9 +2230,13 @@ int node_db_sync_import_utxos(struct node_db *ndb,
     pthread_t writer;
     if (pthread_create(&writer, NULL, import_writer_thread, ctx) != 0) {
         fprintf(stderr, "UTXO import: FATAL — writer thread failed to start\n");
+        import_ctx_request_stop(ctx);
         atomic_store(&ctx->reader_done, true);
         for (int i = 0; i < num_decoders; i++)
             pthread_join(decoders[i], NULL);
+        import_context_release_chunks(ctx);
+        if (!sync_db_restore_normal_mode(ndb))
+            fprintf(stderr, "UTXO import: failed to restore normal mode after writer startup failure\n");
         free(ctx);
         sync_job_import_finish(0);
         return -1;
@@ -2166,9 +2255,13 @@ int node_db_sync_import_utxos(struct node_db *ndb,
     int skipped_entries = 0;
 
     while (db_iter_valid(&it)) {
+        if (import_ctx_should_stop(ctx))
+            break;
         /* Find a free chunk */
         struct import_chunk *chunk = NULL;
         while (!chunk) {
+            if (import_ctx_should_stop(ctx))
+                goto reader_done;
             for (int i = 0; i < IMPORT_NUM_CHUNKS; i++) {
                 int idx = (chunk_idx + i) % IMPORT_NUM_CHUNKS;
                 int expected = 0;
@@ -2191,6 +2284,8 @@ int node_db_sync_import_utxos(struct node_db *ndb,
 
         while (chunk->num_entries < IMPORT_CHUNK_ENTRIES &&
                db_iter_valid(&it)) {
+            if (import_ctx_should_stop(ctx))
+                goto reader_done;
             size_t key_len;
             const char *key_data = db_iter_key(&it, &key_len);
             if (key_len < 1 || key_data[0] != 'c') goto reader_done;
@@ -2251,6 +2346,8 @@ reader_done:
      * a quick scan, misses state=2 chunks due to timing, and exits
      * early — dropping the last ~219 txids / ~520 UTXOs. */
     for (;;) {
+        if (import_ctx_should_stop(ctx))
+            break;
         bool any_pending = false;
         for (int i = 0; i < IMPORT_NUM_CHUNKS; i++) {
             int s = atomic_load_explicit(&ctx->chunks[i].state,
@@ -2308,6 +2405,17 @@ reader_done:
     printf("UTXO import: %d rows written in %.0fms\n", total_rows, pipe_ms);
     fflush(stdout);
 
+    if (import_ctx_should_stop(ctx)) {
+        fprintf(stderr, "UTXO import: aborted%s\n",
+                g_shutdown_requested ? " on shutdown" : "");
+        import_context_release_chunks(ctx);
+        if (!sync_db_restore_normal_mode(ndb))
+            fprintf(stderr, "UTXO import: failed to restore normal mode after abort\n");
+        free(ctx);
+        sync_job_import_finish(total_rows);
+        return -1;
+    }
+
     /* ── Rebuild all indexes for power-node queries ────────────────── */
     printf("UTXO import: building indexes for fast queries...\n");
     fflush(stdout);
@@ -2318,6 +2426,7 @@ reader_done:
     /* Rebuild indexes and restore safe pragmas */
     if (!sync_db_restore_normal_mode(ndb)) {
         fprintf(stderr, "UTXO import: failed to restore normal mode\n");
+        import_context_release_chunks(ctx);
         free(ctx);
         sync_job_import_finish(total_rows);
         return -1;
@@ -2337,6 +2446,7 @@ reader_done:
            pipe_ms, idx_ms);
     fflush(stdout);
 
+    import_context_release_chunks(ctx);
     free(ctx);
     sync_job_import_finish(total_rows);
     return total_rows;

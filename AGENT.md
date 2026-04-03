@@ -117,6 +117,9 @@ DB-mutating service helpers now also obey the worker boundary:
 - file-service client handling is moving from detached per-connection threads
   toward bounded worker ownership so shutdown can quiesce the network surface
   cleanly
+- UTXO import is being hardened with explicit cancellation and cleanup so
+  shutdown or startup failure does not leave the parallel import pipeline
+  running blindly
 
 ### Health / Observability
 
@@ -216,6 +219,8 @@ Recent progress:
   lifecycle ownership
 - file-service client acceptance is moving under a bounded worker-pool model
   instead of detached unbounded handler threads
+- UTXO import pipeline is moving toward supervised-job behavior with explicit
+  stop handling, rollback/cleanup, and safer failure paths
 
 ### 3. Fast-Sync Artifact Ownership
 
