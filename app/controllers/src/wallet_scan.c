@@ -232,13 +232,24 @@ int wallet_scan_blocks(struct node_db *ndb,
 
         struct scan_thread_arg args[8];
         pthread_t threads[8];
+        int started = 0;
 
         for (int i = 0; i < n; i++) {
             args[i].datadir = datadir;
             args[i].file_num = base + i;
             args[i].ht = &aht;
             args[i].result = false;
-            pthread_create(&threads[i], NULL, scan_file_thread, &args[i]);
+            if (pthread_create(&threads[i], NULL,
+                               scan_file_thread, &args[i]) != 0) {
+                fprintf(stderr,
+                        "wallet_scan: failed to start pass-1 scan thread\n");
+                for (int j = 0; j < started; j++)
+                    pthread_join(threads[j], NULL);
+                aht_free(&aht);
+                free(file_has_match);
+                return -1;
+            }
+            started++;
         }
         for (int i = 0; i < n; i++) {
             pthread_join(threads[i], NULL);

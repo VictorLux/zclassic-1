@@ -150,6 +150,9 @@ DB-mutating service helpers now also obey the worker boundary:
 - legacy wallet import now fails closed on local worker startup errors in its
   pass-1 scan and sapling filter/decrypt batches, with explicit join/cleanup
   instead of assuming every helper thread launched
+- wallet scan now uses the same fail-closed pass-1 scan worker startup
+  handling, so a thread-launch failure aborts cleanly instead of leaving the
+  scan logic assuming every batch worker exists
 - startup SQLite catchup is now owned as an explicit `sync_controller`
   catchup job object instead of boot carrying a raw pthread plus argument bag
 - snapshot import now fails cleanly on partial thread-start failure instead of
