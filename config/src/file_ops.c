@@ -36,6 +36,7 @@ bool dir_copy(const char *src_dir, const char *dst_dir)
     if (mkdir(dst_dir, 0755) != 0 && errno != EEXIST) {
         fprintf(stderr, "Warning: mkdir(%s) failed: %s\n",
                 dst_dir, strerror(errno));
+        return false;
     }
     DIR *d = opendir(src_dir);
     if (!d) return false;
@@ -57,7 +58,7 @@ bool dir_copy(const char *src_dir, const char *dst_dir)
     if (failed > 0)
         fprintf(stderr, "\nWarning: %d files failed to copy in %s\n",
                 failed, dst_dir);
-    return true;
+    return failed == 0;
 }
 
 int block_files_copy(const char *src_dir, const char *dst_dir)

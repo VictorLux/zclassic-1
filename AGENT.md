@@ -118,6 +118,10 @@ DB-mutating service helpers now also obey the worker boundary:
 - snapshot import now fails closed before syncing snapshot files into the live
   datadir: if any import worker fails, the orchestrator returns an error
   instead of copying blocks/chainstate after a partial import
+- snapshot import’s final block/index/chainstate sync no longer shells out via
+  unchecked `system("cp ...")`; it now uses checked repo-native copy helpers,
+  and `dir_copy()` now returns failure on partial file-copy errors instead of
+  printing warnings while reporting success
 - boot service thread start/join paths for payment, replay, snapshot offer,
   address backfill, and tx-index are now consolidated behind shared helper
   functions so lifecycle handling stays consistent and DRY

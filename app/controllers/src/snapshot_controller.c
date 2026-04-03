@@ -555,38 +555,43 @@ int snapshot_import(const char *snapshot_dir,
     printf("snapshot_import: syncing files to %s...\n", c23_datadir);
     fflush(stdout);
 
-    char src[2048], dst[2048], cmd[8192];
+    char src[2048], dst[2048];
 
-    /* Block files: hard-link or update-copy */
+    /* Block files: remove stale then byte-copy through checked helper. */
     snprintf(dst, sizeof(dst), "%s/blocks", c23_datadir);
     mkdir(dst, 0700);
     snprintf(src, sizeof(src), "%s/blocks", snapshot_dir);
-    snprintf(cmd, sizeof(cmd),
-             "cp -aln '%s'/blk*.dat '%s'/ 2>/dev/null || "
-             "cp -au '%s'/blk*.dat '%s'/ 2>/dev/null",
-             src, dst, src, dst);
-    system(cmd);
-    snprintf(cmd, sizeof(cmd),
-             "cp -aln '%s'/rev*.dat '%s'/ 2>/dev/null || "
-             "cp -au '%s'/rev*.dat '%s'/ 2>/dev/null",
-             src, dst, src, dst);
-    system(cmd);
+    block_files_clean(dst);
+    if (block_files_copy(src, dst) <= 0) {
+        fprintf(stderr,
+                "snapshot_import: failed to sync block files from %s to %s\n",
+                src, dst);
+        return -1;
+    }
 
     /* Block index: clean copy */
     snprintf(dst, sizeof(dst), "%s/blocks/index", c23_datadir);
     dir_remove_tree(dst);
     mkdir(dst, 0700);
     snprintf(src, sizeof(src), "%s/blocks/index", snapshot_dir);
-    snprintf(cmd, sizeof(cmd), "cp -a '%s'/. '%s'/", src, dst);
-    system(cmd);
+    if (!dir_copy(src, dst)) {
+        fprintf(stderr,
+                "snapshot_import: failed to sync block index from %s to %s\n",
+                src, dst);
+        return -1;
+    }
 
     /* Chainstate: clean copy */
     snprintf(dst, sizeof(dst), "%s/chainstate", c23_datadir);
     dir_remove_tree(dst);
     mkdir(dst, 0700);
     snprintf(src, sizeof(src), "%s/chainstate", snapshot_dir);
-    snprintf(cmd, sizeof(cmd), "cp -a '%s'/. '%s'/", src, dst);
-    system(cmd);
+    if (!dir_copy(src, dst)) {
+        fprintf(stderr,
+                "snapshot_import: failed to sync chainstate from %s to %s\n",
+                src, dst);
+        return -1;
+    }
 
     struct timespec t2_end;
     clock_gettime(CLOCK_MONOTONIC, &t2_end);
