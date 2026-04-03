@@ -111,6 +111,9 @@ DB-mutating service helpers now also obey the worker boundary:
   instead of a detached one-shot thread
 - snapshot tx-index build is now intended to be a tracked service thread
   instead of a detached one-shot thread
+- boot service thread start/join paths for payment, replay, snapshot offer,
+  address backfill, and tx-index are now consolidated behind shared helper
+  functions so lifecycle handling stays consistent and DRY
 - file-service startup manifest build is now tracked and joined instead of
   detached, and file-service start/stop is being hardened toward idempotent
   lifecycle behavior

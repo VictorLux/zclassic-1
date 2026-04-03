@@ -21,6 +21,7 @@
 #include "metrics/metrics.h"
 #include "storage/block_index_db.h"
 #include "models/database.h"
+#include "controllers/sync_controller.h"
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <sqlite3.h>

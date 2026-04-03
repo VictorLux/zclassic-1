@@ -100,6 +100,27 @@ static bool boot_running(const struct boot_svc_ctx *svc)
     return svc && svc->running && atomic_load(svc->running);
 }
 
+static bool boot_start_thread_service(pthread_t *thread,
+                                      bool *started,
+                                      void *(*entry)(void *),
+                                      void *arg)
+{
+    if (!thread || !started || !entry || *started)
+        return false;
+    if (pthread_create(thread, NULL, entry, arg) != 0)
+        return false;
+    *started = true;
+    return true;
+}
+
+static void boot_join_thread_service(pthread_t *thread, bool *started)
+{
+    if (!thread || !started || !*started)
+        return;
+    pthread_join(*thread, NULL);
+    *started = false;
+}
+
 static bool boot_start_catchup_service(struct boot_svc_ctx *svc,
                                        const char *datadir)
 {
@@ -120,82 +141,70 @@ static void boot_join_catchup_service(struct boot_svc_ctx *svc)
 
 static bool boot_start_payment_service(struct boot_svc_ctx *svc)
 {
-    if (!svc || svc->payment_thread_started)
+    if (!svc)
         return false;
-    if (pthread_create(&svc->payment_thread, NULL,
-                       payment_processor_thread, svc) != 0) {
-        return false;
-    }
-    svc->payment_thread_started = true;
-    return true;
+    return boot_start_thread_service(&svc->payment_thread,
+                                     &svc->payment_thread_started,
+                                     payment_processor_thread, svc);
 }
 
 static void boot_join_payment_service(struct boot_svc_ctx *svc)
 {
-    if (!svc || !svc->payment_thread_started)
+    if (!svc)
         return;
-    pthread_join(svc->payment_thread, NULL);
-    svc->payment_thread_started = false;
+    boot_join_thread_service(&svc->payment_thread,
+                             &svc->payment_thread_started);
 }
 
 static bool boot_start_replay_service(struct boot_svc_ctx *svc)
 {
-    if (!svc || svc->replay_thread_started)
+    if (!svc)
         return false;
-    if (pthread_create(&svc->replay_thread, NULL,
-                       background_utxo_replay, svc) != 0) {
-        return false;
-    }
-    svc->replay_thread_started = true;
-    return true;
+    return boot_start_thread_service(&svc->replay_thread,
+                                     &svc->replay_thread_started,
+                                     background_utxo_replay, svc);
 }
 
 static void boot_join_replay_service(struct boot_svc_ctx *svc)
 {
-    if (!svc || !svc->replay_thread_started)
+    if (!svc)
         return;
-    pthread_join(svc->replay_thread, NULL);
-    svc->replay_thread_started = false;
+    boot_join_thread_service(&svc->replay_thread,
+                             &svc->replay_thread_started);
 }
 
 static bool boot_start_offer_service(struct boot_svc_ctx *svc)
 {
-    if (!svc || svc->offer_thread_started)
+    if (!svc)
         return false;
-    if (pthread_create(&svc->offer_thread, NULL,
-                       build_snapshot_offer_thread, svc) != 0) {
-        return false;
-    }
-    svc->offer_thread_started = true;
-    return true;
+    return boot_start_thread_service(&svc->offer_thread,
+                                     &svc->offer_thread_started,
+                                     build_snapshot_offer_thread, svc);
 }
 
 static void boot_join_offer_service(struct boot_svc_ctx *svc)
 {
-    if (!svc || !svc->offer_thread_started)
+    if (!svc)
         return;
-    pthread_join(svc->offer_thread, NULL);
-    svc->offer_thread_started = false;
+    boot_join_thread_service(&svc->offer_thread,
+                             &svc->offer_thread_started);
 }
 
 static bool boot_start_address_backfill_service(struct boot_svc_ctx *svc)
 {
-    if (!svc || svc->address_backfill_thread_started || !svc->datadir)
+    if (!svc || !svc->datadir)
         return false;
-    if (pthread_create(&svc->address_backfill_thread, NULL,
-                       address_backfill_service_thread, svc) != 0) {
-        return false;
-    }
-    svc->address_backfill_thread_started = true;
-    return true;
+    return boot_start_thread_service(&svc->address_backfill_thread,
+                                     &svc->address_backfill_thread_started,
+                                     address_backfill_service_thread, svc);
 }
 
 static void boot_join_address_backfill_service(struct boot_svc_ctx *svc)
 {
-    if (!svc || !svc->address_backfill_thread_started)
+    if (!svc)
         return;
-    pthread_join(svc->address_backfill_thread, NULL);
-    svc->address_backfill_thread_started = false;
+    boot_join_thread_service(&svc->address_backfill_thread,
+                             &svc->address_backfill_thread_started);
 }
 
 static bool boot_start_tx_index_service(struct boot_svc_ctx *svc)
@@ -210,10 +219,10 @@ static bool boot_start_tx_index_service(struct boot_svc_ctx *svc)
 
 static void boot_join_tx_index_service(struct boot_svc_ctx *svc)
 {
-    if (!svc || !svc->tx_index_thread_started)
+    if (!svc)
         return;
-    pthread_join(svc->tx_index_thread, NULL);
-    svc->tx_index_thread_started = false;
+    boot_join_thread_service(&svc->tx_index_thread,
+                             &svc->tx_index_thread_started);
 }
 
 /* ── Helper threads ────────────────────────────────────────── */
