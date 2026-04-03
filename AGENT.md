@@ -153,6 +153,10 @@ DB-mutating service helpers now also obey the worker boundary:
   `msgprocessor` ownership APIs instead of boot and P2P code mutating shared
   globals directly; readers now consume stable manifest headers under lock,
   and the cache contracts have direct tests
+- snapshot sync now has a runtime-owned service instance wired through
+  `app_runtime_context`; message processing, API status routes, and active-sync
+  gating now prefer that explicit service owner instead of reaching for the
+  lazy global singleton first
 - file-service startup manifest build is now tracked and joined instead of
   detached, and file-service start/stop is being hardened toward idempotent
   lifecycle behavior

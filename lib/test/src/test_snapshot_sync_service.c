@@ -390,6 +390,28 @@ static int test_snapshot_sync_service_db_service_runtime(void)
     return failures;
 }
 
+static int test_snapshot_sync_service_runtime_accessor(void)
+{
+    int failures = 0;
+
+    TEST("snapshot sync service uses runtime-owned instance when present") {
+        struct snapshot_sync_service runtime_svc;
+        struct app_runtime_context runtime = {0};
+
+        memset(&runtime_svc, 0, sizeof(runtime_svc));
+        runtime_svc.state = SNAPSYNC_RECEIVING;
+        runtime.snapshot_sync = &runtime_svc;
+
+        app_runtime_set_current(&runtime);
+        ASSERT(app_runtime_snapshot_sync() == &runtime_svc);
+        ASSERT(snapsync_is_active());
+        app_runtime_set_current(NULL);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
 static int test_snapshot_sync_service_db_service_chunk_finalize(void)
 {
     int failures = 0;
@@ -471,6 +493,7 @@ int test_snapshot_sync_service(void)
     failures += test_snapshot_sync_service_prepare_serve_step();
     failures += test_snapshot_sync_service_transition_results();
     failures += test_snapshot_sync_service_db_service_runtime();
+    failures += test_snapshot_sync_service_runtime_accessor();
     failures += test_snapshot_sync_service_db_service_chunk_finalize();
     return failures;
 }

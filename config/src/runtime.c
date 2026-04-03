@@ -36,6 +36,13 @@ sqlite3 *app_runtime_query_db(void)
     return db_service_query_db(svc);
 }
 
+struct snapshot_sync_service *app_runtime_snapshot_sync(void)
+{
+    if (!g_current_runtime)
+        return NULL;
+    return g_current_runtime->snapshot_sync;
+}
+
 struct tx_mempool *app_runtime_mempool(void)
 {
     if (!g_current_runtime)

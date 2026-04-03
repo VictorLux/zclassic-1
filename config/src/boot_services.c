@@ -465,11 +465,13 @@ bool app_init_services(struct app_context *ctx,
     S = svc;
     node_db_sync_catchup_job_init(&svc->catchup_job);
     snapshot_tx_index_job_init(&svc->tx_index_job);
+    snapsync_init(&svc->snapshot_sync, svc->node_db);
     if (svc->db_service) {
         db_service_attach(svc->db_service, svc->node_db);
         db_service_start(svc->db_service);
     }
     svc->runtime.db_service = svc->db_service;
+    svc->runtime.snapshot_sync = &svc->snapshot_sync;
     svc->runtime.mempool = svc->mempool;
     svc->runtime.wallet = svc->wallet;
     app_runtime_set_current(&svc->runtime);

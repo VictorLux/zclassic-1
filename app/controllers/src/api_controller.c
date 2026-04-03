@@ -67,6 +67,20 @@ static struct api_rpc_backend g_api_rpc = {
     .port = 8023,
 };
 
+static struct snapshot_sync_service *api_snapshot_sync(bool *initialized)
+{
+    struct snapshot_sync_service *svc = app_runtime_snapshot_sync();
+
+    if (svc) {
+        if (initialized)
+            *initialized = true;
+        return svc;
+    }
+    if (initialized)
+        *initialized = snapsync_global_initialized();
+    return snapsync_global_initialized() ? snapsync_global() : NULL;
+}
+
 /* ── Background cache ─────────────────────────────────────── */
 
 #define API_BLOCKS_CACHE_SIZE 131072   /* 128KB */
@@ -1822,8 +1836,8 @@ size_t api_handle_request(const char *method, const char *path,
 
     /* Route: /api/node/snapshot — snapshot sync service status */
     if (strcmp(clean_path, "/api/node/snapshot") == 0) {
-        struct snapshot_sync_service *svc = snapsync_global();
-        bool init = snapsync_global_initialized();
+        bool init = false;
+        struct snapshot_sync_service *svc = api_snapshot_sync(&init);
         uint64_t received = 0, total = 0;
         double rate = 0;
         if (init) snapsync_get_progress(svc, &received, &total, &rate);
@@ -1873,8 +1887,8 @@ size_t api_handle_request(const char *method, const char *path,
     /* Route: /api/node/status — comprehensive diagnostics */
     if (strcmp(clean_path, "/api/node/status") == 0) {
         enum sync_state ss = sync_get_state();
-        struct snapshot_sync_service *svc = snapsync_global();
-        bool snap_init = snapsync_global_initialized();
+        bool snap_init = false;
+        struct snapshot_sync_service *svc = api_snapshot_sync(&snap_init);
         struct mmb *mb = rpc_blockchain_get_mmb();
         struct error_ring *er = error_ring_global();
 

@@ -137,6 +137,31 @@ static struct node_db *msg_node_db(const struct msg_processor *mp)
     return db_service_node_db(mp->runtime->db_service);
 }
 
+static struct snapshot_sync_service *msg_snapshot_sync(
+    const struct msg_processor *mp)
+{
+    if (mp && mp->runtime && mp->runtime->snapshot_sync)
+        return mp->runtime->snapshot_sync;
+    if (snapsync_global_initialized())
+        return snapsync_global();
+    return NULL;
+}
+
+static struct snapshot_sync_service *msg_snapshot_sync_ensure(
+    const struct msg_processor *mp)
+{
+    struct snapshot_sync_service *svc = msg_snapshot_sync(mp);
+    struct node_db *ndb;
+
+    if (svc)
+        return svc;
+    ndb = msg_node_db(mp);
+    if (!ndb)
+        return NULL;
+    snapsync_global_ensure_init(ndb);
+    return snapsync_global();
+}
+
 static struct wallet *msg_wallet(const struct msg_processor *mp)
 {
     if (!mp || !mp->runtime)
@@ -1806,80 +1831,77 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                     sync_get_state() == SYNC_AT_TIP) {
                     /* silently ignore */
                 } else {
-                    {
-                        struct node_db *ndb = msg_node_db(mp);
-                        if (!snapsync_global_initialized() && ndb)
-                            snapsync_global_ensure_init(ndb);
-                    }
+                    struct snapshot_sync_service *svc =
+                        msg_snapshot_sync_ensure(mp);
+                    if (svc) {
+                        enum snapsync_offer_result result =
+                            snapsync_handle_offer(svc, &params);
 
-                    enum snapsync_offer_result result =
-                        snapsync_handle_offer(snapsync_global(), &params);
-
-                    switch (result) {
-                    case SNAPSYNC_OFFER_ACCEPTED: {
-                        struct snapsync_offer_acceptance accepted = {0};
-                        snapsync_build_offer_acceptance(&accepted);
-                        if (accepted.should_store_offer_details) {
-                            memcpy(node->zsync_offered_root, params.utxo_root, 32);
-                            memcpy(node->zsync_offered_mmr, params.mmr_root, 32);
-                            memcpy(node->zsync_offered_block, params.block_hash, 32);
-                            node->zsync_offered_height = params.height;
-                        }
-                        if (accepted.should_reset_offset)
-                            node->zsync_offset = 0;
-                        if (accepted.should_update_peer_state)
-                            peer_set_state_checked((uint32_t)node->id, &node->state,
-                                accepted.peer_state, "accepted snapshot offer");
-                        event_emitf(EV_SNAPSHOT_OFFER_RECEIVED, (uint32_t)node->id,
-                            "h=%d utxos=%llu", params.height,
-                            (unsigned long long)params.num_utxos);
-                        if (accepted.should_set_sync_state)
-                            sync_set_state(accepted.sync_state, "peer snapshot");
-
-                        struct snapshot_sync_service *svc = snapsync_global();
-                        struct snapsync_offer_followup followup = {0};
-                        snapsync_build_offer_followup(&followup, svc);
-                        if (followup.action ==
-                            SNAPSYNC_FOLLOWUP_SEND_FC_CHALLENGE) {
-                            /* Send FlyClient challenge — verify chain
-                             * before requesting snapshot data */
-                            p2p_node_begin_message(node, MSG_FC_CHALLENGE,
-                                mp->params->pchMessageStart);
-                            struct byte_stream fc;
-                            stream_init(&fc, 72);
-                            snapsync_write_fc_challenge(svc, &fc);
-                            p2p_node_write_message_data(node, fc.data, fc.size);
-                            p2p_node_end_message(node);
-                            stream_free(&fc);
-                            printf("[snapsync] Sent FlyClient challenge to %s\n",
-                                   node->addr_name);
-                        } else if (followup.action ==
-                                   SNAPSYNC_FOLLOWUP_SEND_SNAPSHOT_REQ) {
-                            /* No MMB — send zsnapreq directly */
-                            struct byte_stream rq;
-                            stream_init(&rq, 52);
-                            if (snapsync_write_snapshot_request(
-                                    &rq, params.our_height,
-                                    node->addr.svc.addr.ip)) {
-                                p2p_node_begin_message(node, MSG_SNAPSHOT_REQ,
-                                    mp->params->pchMessageStart);
-                                p2p_node_write_message_data(node, rq.data, rq.size);
-                                p2p_node_end_message(node);
+                        switch (result) {
+                        case SNAPSYNC_OFFER_ACCEPTED: {
+                            struct snapsync_offer_acceptance accepted = {0};
+                            snapsync_build_offer_acceptance(&accepted);
+                            if (accepted.should_store_offer_details) {
+                                memcpy(node->zsync_offered_root, params.utxo_root, 32);
+                                memcpy(node->zsync_offered_mmr, params.mmr_root, 32);
+                                memcpy(node->zsync_offered_block, params.block_hash, 32);
+                                node->zsync_offered_height = params.height;
                             }
-                            stream_free(&rq);
+                            if (accepted.should_reset_offset)
+                                node->zsync_offset = 0;
+                            if (accepted.should_update_peer_state)
+                                peer_set_state_checked((uint32_t)node->id, &node->state,
+                                    accepted.peer_state, "accepted snapshot offer");
+                            event_emitf(EV_SNAPSHOT_OFFER_RECEIVED, (uint32_t)node->id,
+                                "h=%d utxos=%llu", params.height,
+                                (unsigned long long)params.num_utxos);
+                            if (accepted.should_set_sync_state)
+                                sync_set_state(accepted.sync_state, "peer snapshot");
+
+                            struct snapsync_offer_followup followup = {0};
+                            snapsync_build_offer_followup(&followup, svc);
+                            if (followup.action ==
+                                SNAPSYNC_FOLLOWUP_SEND_FC_CHALLENGE) {
+                                /* Send FlyClient challenge — verify chain
+                                 * before requesting snapshot data */
+                                p2p_node_begin_message(node, MSG_FC_CHALLENGE,
+                                    mp->params->pchMessageStart);
+                                struct byte_stream fc;
+                                stream_init(&fc, 72);
+                                snapsync_write_fc_challenge(svc, &fc);
+                                p2p_node_write_message_data(node, fc.data, fc.size);
+                                p2p_node_end_message(node);
+                                stream_free(&fc);
+                                printf("[snapsync] Sent FlyClient challenge to %s\n",
+                                       node->addr_name);
+                            } else if (followup.action ==
+                                       SNAPSYNC_FOLLOWUP_SEND_SNAPSHOT_REQ) {
+                                /* No MMB — send zsnapreq directly */
+                                struct byte_stream rq;
+                                stream_init(&rq, 52);
+                                if (snapsync_write_snapshot_request(
+                                        &rq, params.our_height,
+                                        node->addr.svc.addr.ip)) {
+                                    p2p_node_begin_message(node, MSG_SNAPSHOT_REQ,
+                                        mp->params->pchMessageStart);
+                                    p2p_node_write_message_data(node, rq.data, rq.size);
+                                    p2p_node_end_message(node);
+                                }
+                                stream_free(&rq);
+                            }
+                            break;
                         }
-                        break;
-                    }
-                    case SNAPSYNC_OFFER_REJECTED_RANGE:
-                        peer_misbehaving(mp->net_mgr, node, 20,
-                            "snapshot offer out of range");
-                        break;
-                    case SNAPSYNC_OFFER_REJECTED_NO_MMR:
-                        peer_misbehaving(mp->net_mgr, node, 10,
-                            "snapshot without MMR proof");
-                        break;
-                    default:
-                        break; /* not ahead or busy — ignore silently */
+                        case SNAPSYNC_OFFER_REJECTED_RANGE:
+                            peer_misbehaving(mp->net_mgr, node, 20,
+                                "snapshot offer out of range");
+                            break;
+                        case SNAPSYNC_OFFER_REJECTED_NO_MMR:
+                            peer_misbehaving(mp->net_mgr, node, 10,
+                                "snapshot without MMR proof");
+                            break;
+                        default:
+                            break; /* not ahead or busy — ignore silently */
+                        }
                     }
                 }
             }
@@ -1943,13 +1965,9 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
 
         } else if (strcmp(cmd, MSG_SNAPSHOT_DATA) == 0) {
             /* ── Route: zsnapdata → snapsync_apply_chunk ───────── */
-            {
-                struct node_db *ndb = msg_node_db(mp);
-                if (!snapsync_global_initialized() && ndb)
-                    snapsync_global_ensure_init(ndb);
-            }
-            int applied = snapsync_apply_chunk(snapsync_global(),
-                s.data + s.read_pos, s.size - s.read_pos);
+            struct snapshot_sync_service *svc = msg_snapshot_sync_ensure(mp);
+            int applied = svc ? snapsync_apply_chunk(svc,
+                s.data + s.read_pos, s.size - s.read_pos) : -1;
             if (applied < 0)
                 peer_misbehaving(mp->net_mgr, node, 10, "bad snapshot chunk");
             else
@@ -1957,11 +1975,12 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
 
         } else if (strcmp(cmd, MSG_SNAPSHOT_END) == 0) {
             /* ── Route: zsnapend → snapsync_handle_end ─────────── */
-            if (!snapsync_global_initialized()) {
+            struct snapshot_sync_service *svc = msg_snapshot_sync(mp);
+            if (!svc) {
                 /* nothing to finalize */
             } else {
                 struct snapsync_end_result end_result = {0};
-                bool verified = snapsync_handle_end(snapsync_global(),
+                bool verified = snapsync_handle_end(svc,
                                                     (uint32_t)node->id);
                 snapsync_build_end_result(&end_result, verified);
                 if (end_result.verified) {
@@ -1973,7 +1992,7 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                 /* Set chain tip to snapshot height */
                 if (end_result.should_activate_tip) {
                     int activated_height = snapsync_activate_verified_tip(
-                        snapsync_global(), mp->main_state);
+                        svc, mp->main_state);
                     if (activated_height >= 0)
                         printf("[snapshot] Chain tip set to height %d\n",
                                activated_height);
@@ -2040,10 +2059,11 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                     "truncated FlyClient proofs");
             } else {
                 struct snapsync_verify_result verify_result = {0};
-                if (snapsync_global_initialized()) {
+                struct snapshot_sync_service *svc = msg_snapshot_sync(mp);
+                if (svc) {
                     snapsync_build_verify_result(
                         &verify_result,
-                        snapsync_verify_flyclient(snapsync_global(), &resp));
+                        snapsync_verify_flyclient(svc, &resp));
                 }
                 if (verify_result.should_send &&
                     verify_result.action == SNAPSYNC_FOLLOWUP_SEND_SNAPSHOT_REQ) {

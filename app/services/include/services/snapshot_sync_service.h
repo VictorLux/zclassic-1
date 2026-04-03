@@ -24,6 +24,7 @@
 #ifndef ZCL_SNAPSHOT_SYNC_SERVICE_H
 #define ZCL_SNAPSHOT_SYNC_SERVICE_H
 
+#include "config/runtime.h"
 #include "event/event.h"
 #include "net/flyclient.h"
 #include <stdint.h>
@@ -267,8 +268,15 @@ bool snapsync_build_request_pow(const uint8_t peer_ip[16],
  * Use this to suppress block/header processing during snapshot sync. */
 static inline bool snapsync_is_active(void)
 {
-    if (!snapsync_global_initialized()) return false;
-    enum snapshot_sync_state st = snapsync_global()->state;
+    struct snapshot_sync_service *svc = app_runtime_snapshot_sync();
+    enum snapshot_sync_state st;
+
+    if (!svc) {
+        if (!snapsync_global_initialized())
+            return false;
+        svc = snapsync_global();
+    }
+    st = svc->state;
     return st == SNAPSYNC_NEGOTIATING || st == SNAPSYNC_RECEIVING ||
            st == SNAPSYNC_VERIFYING;
 }

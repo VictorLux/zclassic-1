@@ -23,6 +23,7 @@
 #include "models/database.h"
 #include "controllers/sync_controller.h"
 #include "controllers/snapshot_controller.h"
+#include "services/snapshot_sync_service.h"
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <sqlite3.h>
@@ -107,6 +108,7 @@ struct boot_svc_ctx {
     struct block_tree_db *block_tree;
     /* Composition-owned runtime passed into long-lived services. */
     struct app_runtime_context runtime;
+    struct snapshot_sync_service snapshot_sync;
     struct node_db_sync_catchup_job catchup_job;
     pthread_t payment_thread;
     bool payment_thread_started;
