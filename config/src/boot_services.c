@@ -1360,7 +1360,8 @@ void app_start_metrics(bool mining)
     S->metrics->cm = S->connman;
     S->metrics->params = chain_params_get();
     S->metrics->mining = mining;
-    metrics_start(S->metrics);
+    if (!metrics_start(S->metrics))
+        fprintf(stderr, "WARNING: failed to start metrics thread\n");
 }
 
 void app_stop_metrics(void)

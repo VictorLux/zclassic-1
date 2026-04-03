@@ -340,14 +340,28 @@ static void *metrics_thread_fn(void *arg)
     return NULL;
 }
 
-void metrics_start(struct metrics_context *ctx)
+bool metrics_start(struct metrics_context *ctx)
 {
+    if (!ctx)
+        return false;
+    if (ctx->thread_started)
+        return true;
+
     atomic_store(&ctx->running, true);
-    pthread_create(&g_metrics_thread, NULL, metrics_thread_fn, ctx);
+    if (pthread_create(&g_metrics_thread, NULL, metrics_thread_fn, ctx) != 0) {
+        perror("metrics_start: pthread_create");
+        atomic_store(&ctx->running, false);
+        return false;
+    }
+    ctx->thread_started = true;
+    return true;
 }
 
 void metrics_stop(struct metrics_context *ctx)
 {
+    if (!ctx || !ctx->thread_started)
+        return;
     atomic_store(&ctx->running, false);
     pthread_join(g_metrics_thread, NULL);
+    ctx->thread_started = false;
 }

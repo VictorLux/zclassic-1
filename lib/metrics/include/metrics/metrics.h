@@ -24,10 +24,11 @@ struct metrics_context {
     const struct chain_params *params;
     bool mining;
     _Atomic bool running;
+    bool thread_started;
 };
 
 void metrics_print_art(void);
-void metrics_start(struct metrics_context *ctx);
+bool metrics_start(struct metrics_context *ctx);
 void metrics_stop(struct metrics_context *ctx);
 
 static inline void metrics_increment_tx_validated(void)
