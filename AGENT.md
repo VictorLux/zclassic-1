@@ -162,6 +162,19 @@ Next implementation step:
 - next:
   - continue the same pass over the remaining maintenance/import surfaces that still own large SQLite workflows inline, especially where they mix long loops with transaction reopen logic
 
+### Snapshot Plan Update (2026-04-04T04:48:35Z)
+
+- done:
+  - hardened orphan-purge transaction handling in `app/controllers/src/wallet_diagnostic_controller.c`:
+    - purge now checks `BEGIN`, per-row wallet UTXO delete, optional wallet-tx delete, and final `COMMIT`
+    - failures now roll back and return an RPC error instead of partially purging wallet tables and continuing
+    - dry-run rollback now uses the same explicit best-effort path
+  - regression check:
+    - `make -j4 test_zcl`
+    - `./test_zcl` ends with `ALL TESTS PASSED (0 failures)`
+- next:
+  - continue tightening the remaining long-lived inline import/export flows, with `snapshot_controller.c` still the largest remaining direct-SQL maintenance surface
+
 ### Snapshot Plan Update (2026-04-04T03:20:00Z)
 
 - done:

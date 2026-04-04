@@ -62,6 +62,41 @@ static bool wallet_ctx_db_ready(const struct wallet_rpc_context *ctx)
     return ctx->node_db && ctx->node_db->open;
 }
 
+static bool wallet_diag_begin_checked(struct node_db *ndb,
+                                      const char *label)
+{
+    if (!ndb || !ndb->open || !node_db_begin(ndb)) {
+        fprintf(stderr, "wallet_diag: %s failed: %s\n",
+                label, (ndb && ndb->db) ? sqlite3_errmsg(ndb->db)
+                                        : "db unavailable");
+        return false;
+    }
+    return true;
+}
+
+static bool wallet_diag_commit_checked(struct node_db *ndb,
+                                       const char *label)
+{
+    if (!ndb || !ndb->open || !node_db_commit(ndb)) {
+        fprintf(stderr, "wallet_diag: %s failed: %s\n",
+                label, (ndb && ndb->db) ? sqlite3_errmsg(ndb->db)
+                                        : "db unavailable");
+        return false;
+    }
+    return true;
+}
+
+static void wallet_diag_rollback_best_effort(struct node_db *ndb,
+                                             const char *label)
+{
+    if (!ndb || !ndb->open)
+        return;
+    if (!node_db_rollback(ndb)) {
+        fprintf(stderr, "wallet_diag: %s failed: %s\n",
+                label, ndb->db ? sqlite3_errmsg(ndb->db) : "db unavailable");
+    }
+}
+
 static bool rpc_scanblockfiles(const struct json_value *params, bool help,
                                  struct json_value *result)
 {
@@ -1766,7 +1801,10 @@ static bool rpc_purgephantomutxos(const struct json_value *params,
     int txs_deleted = 0;
     int64_t amount_purged = 0;
 
-    node_db_begin(ctx->node_db);
+    if (!wallet_diag_begin_checked(ctx->node_db, "purge-orphans begin")) {
+        json_set_str(result, "Failed to begin orphan purge transaction");
+        return false;
+    }
 
     for (int i = 0; i < count; i++) {
         struct uint256 tid;
@@ -1784,8 +1822,13 @@ static bool rpc_purgephantomutxos(const struct json_value *params,
         amount_purged += unspent[i].value;
 
         if (!dryrun) {
-            db_wallet_utxo_delete(ctx->node_db, unspent[i].txid,
-                                   unspent[i].vout);
+            if (!db_wallet_utxo_delete(ctx->node_db, unspent[i].txid,
+                                       unspent[i].vout)) {
+                wallet_diag_rollback_best_effort(ctx->node_db,
+                                                 "purge-orphans rollback");
+                json_set_str(result, "Failed to delete orphan wallet UTXO");
+                return false;
+            }
             wallet_mark_outpoint_spent(ctx->wallet, &tid, unspent[i].vout);
         }
         utxos_deleted++;
@@ -1794,17 +1837,27 @@ static bool rpc_purgephantomutxos(const struct json_value *params,
             int remaining = db_wallet_utxo_count_for_tx(ctx->node_db,
                                                          unspent[i].txid);
             if (remaining == 0) {
-                db_wallet_tx_delete(ctx->node_db, unspent[i].txid);
+                if (!db_wallet_tx_delete(ctx->node_db, unspent[i].txid)) {
+                    wallet_diag_rollback_best_effort(ctx->node_db,
+                                                     "purge-orphans rollback");
+                    json_set_str(result,
+                                 "Failed to delete orphan wallet transaction");
+                    return false;
+                }
                 txs_deleted++;
             }
         }
     }
 
     if (!dryrun) {
-        node_db_commit(ctx->node_db);
+        if (!wallet_diag_commit_checked(ctx->node_db,
+                                        "purge-orphans commit")) {
+            json_set_str(result, "Failed to commit orphan purge transaction");
+            return false;
+        }
         wallet_rebuild_spent_set(ctx->wallet);
     } else {
-        node_db_rollback(ctx->node_db);
+        wallet_diag_rollback_best_effort(ctx->node_db, "purge-orphans dry-run rollback");
     }
 
     int64_t balance_after = dryrun ? balance_before
