@@ -321,6 +321,46 @@ static int test_snapshot_cache_publish_reset(void)
     return failures;
 }
 
+static int test_snapshot_cache_versioning(void)
+{
+    int failures = 0;
+    TEST("fast_sync snapshot cache versioning") {
+        uint8_t sha1[32], sha2[32];
+        memset(sha1, 0x5a, sizeof(sha1));
+        memset(sha2, 0x5b, sizeof(sha2));
+
+        uint8_t *buf1 = malloc(8);
+        uint8_t *buf2 = malloc(9);
+        uint8_t *invalid = malloc(1);
+        ASSERT(buf1 != NULL);
+        ASSERT(buf2 != NULL);
+        ASSERT(invalid != NULL);
+        memcpy(buf1, "snapshot", 8);
+        memcpy(buf2, "snapshot2", 9);
+
+        fast_sync_reset_snapshot_cache();
+        uint64_t v0 = fast_sync_snapshot_cache_version();
+        ASSERT(fast_sync_publish_snapshot_cache(buf1, 8, sha1, 123));
+        uint64_t v1 = fast_sync_snapshot_cache_version();
+        ASSERT(v1 > v0);
+
+        ASSERT(fast_sync_publish_snapshot_cache(buf2, 9, sha2, 124));
+        uint64_t v2 = fast_sync_snapshot_cache_version();
+        ASSERT(v2 > v1);
+
+        /* Invalid republish does not advance version, only successful paths do. */
+        ASSERT(!fast_sync_publish_snapshot_cache(invalid, 0, sha2, 125));
+        free(invalid);
+        ASSERT(fast_sync_snapshot_cache_version() == v2);
+
+        fast_sync_reset_snapshot_cache();
+        uint64_t v3 = fast_sync_snapshot_cache_version();
+        ASSERT(v3 > v2);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_utxo_root_cache_publish_reset(void)
 {
     int failures = 0;
@@ -347,6 +387,41 @@ static int test_utxo_root_cache_publish_reset(void)
         memset(out, 0, sizeof(out));
         ASSERT(!fast_sync_get_utxo_root_cache(out, &count));
         ASSERT(count == 7);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_utxo_root_cache_versioning(void)
+{
+    int failures = 0;
+    TEST("fast_sync utxo root cache versioning") {
+        uint8_t root1[32], root2[32];
+        uint64_t v0;
+        uint64_t v1;
+        uint64_t v2;
+        uint64_t v3;
+        memset(root1, 0x7c, sizeof(root1));
+        memset(root2, 0x7d, sizeof(root2));
+
+        fast_sync_reset_utxo_root_cache();
+        v0 = fast_sync_utxo_root_cache_version();
+
+        ASSERT(fast_sync_publish_utxo_root_cache(root1, 7));
+        v1 = fast_sync_utxo_root_cache_version();
+        ASSERT(v1 > v0);
+
+        ASSERT(fast_sync_publish_utxo_root_cache(root2, 8));
+        v2 = fast_sync_utxo_root_cache_version();
+        ASSERT(v2 > v1);
+
+        /* Invalid publish does not bump version. */
+        ASSERT(!fast_sync_publish_utxo_root_cache(NULL, 9));
+        ASSERT(fast_sync_utxo_root_cache_version() == v2);
+
+        fast_sync_reset_utxo_root_cache();
+        v3 = fast_sync_utxo_root_cache_version();
+        ASSERT(v3 > v2);
         PASS();
     } _test_next:;
     return failures;
@@ -1006,7 +1081,9 @@ int test_fast_sync(void)
     /* Rate limiting */
     failures += test_rate_limiter();
     failures += test_snapshot_cache_publish_reset();
+    failures += test_snapshot_cache_versioning();
     failures += test_utxo_root_cache_publish_reset();
+    failures += test_utxo_root_cache_versioning();
 
     /* Swarm coordinator */
     failures += test_swarm_init_assign();

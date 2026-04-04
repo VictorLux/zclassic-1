@@ -1092,6 +1092,10 @@ bool node_db_sync_peer_score(struct node_db *ndb,
 int node_db_sync_get_tip_height(struct node_db *ndb)
 {
     int64_t h = -1;
+
+    if (!ndb || !ndb->open)
+        return -1;
+
     node_db_state_get_int(ndb, "tip_height", &h);
     return (int)h;
 }
@@ -1099,6 +1103,9 @@ int node_db_sync_get_tip_height(struct node_db *ndb)
 bool node_db_sync_get_tip_hash(struct node_db *ndb, uint8_t hash_out[32])
 {
     size_t len = 0;
+
+    if (!ndb || !hash_out || !ndb->open)
+        return false;
     if (!node_db_state_get(ndb, "tip_hash", hash_out, 32, &len))
         return false;
     return len == 32;
@@ -1290,7 +1297,7 @@ int node_db_sync_catchup(struct node_db *ndb,
     int last_committed_height = -1;
     const struct block_index *last_indexed_tip = NULL;
 
-    if (!ndb->open) return -1;
+    if (!ndb || !ndb->open) return -1;
 
     int db_tip = node_db_sync_get_tip_height(ndb);
     int chain_tip = active_chain_height(chain);
@@ -1516,7 +1523,9 @@ static void *node_db_sync_catchup_job_thread(void *arg)
 {
     struct node_db_sync_catchup_job *job = arg;
     struct node_db catchup_db;
+    struct node_db *work_db = NULL;
     bool private_open = false;
+    bool owns_db = false;
 
     if (!job) {
         return NULL;
@@ -1524,22 +1533,39 @@ static void *node_db_sync_catchup_job_thread(void *arg)
 
     memset(&catchup_db, 0, sizeof(catchup_db));
     private_open = node_db_sync_open_private_db_like(job->args.ndb, &catchup_db);
-    if (!private_open && job->args.datadir) {
+    if (private_open) {
+        work_db = &catchup_db;
+        owns_db = true;
+    } else if (job->args.datadir) {
         char path[1024];
-        snprintf(path, sizeof(path), "%s/node.db", job->args.datadir);
-        private_open = node_db_open(&catchup_db, path);
+        if (snprintf(path, sizeof(path), "%s/node.db",
+                     job->args.datadir) >= (int)sizeof(path)) {
+            fprintf(stderr, "catchup: datadir path too long: %s\n",
+                    job->args.datadir);
+        } else {
+            private_open = node_db_open(&catchup_db, path);
+            if (private_open) {
+                work_db = &catchup_db;
+                owns_db = true;
+            }
+        }
     }
 
-    if (!private_open) {
-        fprintf(stderr, "catchup: failed to open dedicated connection\n");
+    if (!work_db && job->args.ndb && job->args.ndb->open) {
+        work_db = job->args.ndb;
+    }
+
+    if (!work_db || !work_db->open) {
+        fprintf(stderr, "catchup: no usable database handle\n");
         job->result = -1;
         return NULL;
     }
 
-    job->result = node_db_sync_catchup(&catchup_db, job->args.chain,
+    job->result = node_db_sync_catchup(work_db, job->args.chain,
                                        job->args.w, job->args.datadir);
 
-    node_db_close(&catchup_db);
+    if (owns_db)
+        node_db_close(&catchup_db);
     return NULL;
 }
 
@@ -1576,7 +1602,7 @@ bool node_db_sync_catchup_job_start(struct node_db_sync_catchup_job *job,
                                     const struct wallet *w,
                                     const char *datadir)
 {
-    if (!job || job->started || !ndb || !chain || !datadir)
+    if (!job || job->started || !ndb || !chain)
         return false;
 
     job->args.ndb = ndb;
@@ -1594,9 +1620,13 @@ bool node_db_sync_catchup_job_start(struct node_db_sync_catchup_job *job,
 bool node_db_sync_catchup_job_join(struct node_db_sync_catchup_job *job,
                                    int *result_out)
 {
+    int join_rc;
+
     if (!job || !job->started)
         return false;
-    pthread_join(job->thread, NULL);
+    join_rc = pthread_join(job->thread, NULL);
+    if (join_rc != 0)
+        return false;
     job->started = false;
     if (result_out)
         *result_out = job->result;
@@ -1649,9 +1679,13 @@ bool node_db_sync_import_job_start(struct node_db_sync_import_job *job,
 bool node_db_sync_import_job_join(struct node_db_sync_import_job *job,
                                   int *result_out)
 {
+    int join_rc;
+
     if (!job || !job->started)
         return false;
-    pthread_join(job->thread, NULL);
+    join_rc = pthread_join(job->thread, NULL);
+    if (join_rc != 0)
+        return false;
     job->started = false;
     if (result_out)
         *result_out = job->result;
@@ -1971,6 +2005,7 @@ struct import_job {
 
 static void *import_decoder_thread(void *arg);
 static void *import_writer_thread(void *arg);
+static void import_job_join_decoders(struct import_job *job);
 
 static bool import_ctx_should_stop(const struct import_context *ctx)
 {
@@ -2029,6 +2064,7 @@ static bool import_job_start_decoders(struct import_job *job)
                     "UTXO import: pthread_create decoder[%d] failed: %d\n",
                     i, rc);
             import_ctx_request_stop(job->ctx);
+            import_job_join_decoders(job);
             return false;
         }
         job->decoder_threads_started++;
@@ -2436,7 +2472,7 @@ int node_db_sync_import_utxos(struct node_db *ndb,
 {
     struct import_job job;
 
-    if (!ndb->open || !cvdb) return -1;
+    if (!ndb || !ndb->open || !cvdb) return -1;
     sync_job_import_begin();
 
     int num_decoders = import_num_decoders();

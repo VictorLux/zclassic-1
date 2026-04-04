@@ -23,6 +23,7 @@
 static uint8_t g_cached_utxo_root[32];
 static uint64_t g_cached_utxo_count = 0;
 static bool g_cached_root_valid = false;
+static _Atomic uint64_t g_cached_utxo_root_version = 0;
 static pthread_mutex_t g_utxo_root_cache_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 bool fast_sync_publish_utxo_root_cache(const uint8_t root[32], uint64_t count)
@@ -34,6 +35,7 @@ bool fast_sync_publish_utxo_root_cache(const uint8_t root[32], uint64_t count)
     memcpy(g_cached_utxo_root, root, sizeof(g_cached_utxo_root));
     g_cached_utxo_count = count;
     g_cached_root_valid = true;
+    g_cached_utxo_root_version++;
     pthread_mutex_unlock(&g_utxo_root_cache_mutex);
     return true;
 }
@@ -44,6 +46,7 @@ void fast_sync_reset_utxo_root_cache(void)
     memset(g_cached_utxo_root, 0, sizeof(g_cached_utxo_root));
     g_cached_utxo_count = 0;
     g_cached_root_valid = false;
+    g_cached_utxo_root_version++;
     pthread_mutex_unlock(&g_utxo_root_cache_mutex);
 }
 
@@ -62,6 +65,14 @@ bool fast_sync_get_utxo_root_cache(uint8_t out[32], uint64_t *count)
         *count = g_cached_utxo_count;
     pthread_mutex_unlock(&g_utxo_root_cache_mutex);
     return true;
+}
+
+uint64_t fast_sync_utxo_root_cache_version(void)
+{
+    pthread_mutex_lock(&g_utxo_root_cache_mutex);
+    uint64_t version = g_cached_utxo_root_version;
+    pthread_mutex_unlock(&g_utxo_root_cache_mutex);
+    return version;
 }
 
 bool fast_sync_build_offer(const char *datadir,
@@ -169,6 +180,7 @@ void fast_sync_snapshot_path(char *out, size_t max, const char *datadir)
 static uint8_t g_snapshot_sha3[32];
 static uint64_t g_snapshot_count = 0;
 static bool g_snapshot_sha3_valid = false;
+static _Atomic uint64_t g_snapshot_cache_version = 0;
 
 /* In-memory snapshot buffer — loaded once at startup for instant serving.
  * 96 MB for 1.35M UTXOs. Eliminates all file I/O during serving. */
@@ -181,7 +193,6 @@ bool fast_sync_publish_snapshot_cache(uint8_t *snapshot_buf, int64_t size,
                                       uint64_t count)
 {
     if (!snapshot_buf || size <= 0 || !sha3 || count == 0) {
-        free(snapshot_buf);
         return false;
     }
 
@@ -192,6 +203,7 @@ bool fast_sync_publish_snapshot_cache(uint8_t *snapshot_buf, int64_t size,
     memcpy(g_snapshot_sha3, sha3, 32);
     g_snapshot_count = count;
     g_snapshot_sha3_valid = true;
+    g_snapshot_cache_version++;
     pthread_mutex_unlock(&g_snapshot_cache_mutex);
     return true;
 }
@@ -205,7 +217,16 @@ void fast_sync_reset_snapshot_cache(void)
     memset(g_snapshot_sha3, 0, sizeof(g_snapshot_sha3));
     g_snapshot_count = 0;
     g_snapshot_sha3_valid = false;
+    g_snapshot_cache_version++;
     pthread_mutex_unlock(&g_snapshot_cache_mutex);
+}
+
+uint64_t fast_sync_snapshot_cache_version(void)
+{
+    pthread_mutex_lock(&g_snapshot_cache_mutex);
+    uint64_t version = g_snapshot_cache_version;
+    pthread_mutex_unlock(&g_snapshot_cache_mutex);
+    return version;
 }
 
 bool fast_sync_get_snapshot_sha3(uint8_t out[32], uint64_t *count)
@@ -244,7 +265,7 @@ int64_t fast_sync_prebuild_snapshot(struct node_db *ndb, const char *datadir)
                                                      (int64_t)rd,
                                                      sha3,
                                                      (uint64_t)count)) {
-                    snapshot_buf = NULL;
+                    free(snapshot_buf);
                 }
             }
             fclose(fp);

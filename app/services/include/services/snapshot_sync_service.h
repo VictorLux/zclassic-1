@@ -128,6 +128,14 @@ struct snapshot_sync_service {
     uint64_t last_commit_at;  /* received_utxos at last COMMIT */
 };
 
+struct snapsync_status {
+    enum snapshot_sync_state state;
+    uint64_t offered_count;
+    uint32_t serving_peer_id;
+    int32_t offered_height;
+    bool turbo_active;
+};
+
 /* ── Lifecycle ─────────────────────────────────────────────────── */
 
 /* Initialize (called once at boot) */
@@ -257,6 +265,8 @@ bool snapsync_finalize(struct snapshot_sync_service *svc);
 void snapsync_get_progress(const struct snapshot_sync_service *svc,
                            uint64_t *received, uint64_t *total,
                            double *rate_per_sec);
+void snapsync_get_status_snapshot(const struct snapshot_sync_service *svc,
+                                 struct snapsync_status *out);
 enum snapsync_followup_action snapsync_offer_followup_action(
     const struct snapshot_sync_service *svc);
 enum snapsync_followup_action snapsync_verify_followup_action(
@@ -266,19 +276,6 @@ bool snapsync_build_request_pow(const uint8_t peer_ip[16],
 
 /* True if snapshot sync is in any active state (not IDLE/COMPLETE/FAILED).
  * Use this to suppress block/header processing during snapshot sync. */
-static inline bool snapsync_is_active(void)
-{
-    struct snapshot_sync_service *svc = app_runtime_snapshot_sync();
-    enum snapshot_sync_state st;
-
-    if (!svc) {
-        if (!snapsync_global_initialized())
-            return false;
-        svc = snapsync_global();
-    }
-    st = svc->state;
-    return st == SNAPSYNC_NEGOTIATING || st == SNAPSYNC_RECEIVING ||
-           st == SNAPSYNC_VERIFYING;
-}
+bool snapsync_is_active(void);
 
 #endif

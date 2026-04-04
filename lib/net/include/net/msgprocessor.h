@@ -44,18 +44,25 @@ struct snapshot_offer;
 void msg_processor_update_offer(const struct snapshot_offer *offer);
 bool msg_processor_get_offer(struct snapshot_offer *offer);
 void msg_processor_invalidate_offer(void);
+uint64_t msg_processor_offer_cache_version(void);
 
-/* Publish or invalidate cached fast-sync artifacts. These functions take
- * ownership of the heap-backed arrays inside the provided manifests. */
+/* Publish or invalidate cached fast-sync artifacts.
+ * Ownership of heap-backed arrays transfers on successful publish.
+ * Caller must provide internally consistent manifests:
+ * - sync manifest: num_chunks > 0, chunk_size > 0, non-NULL chunk_hashes
+ * - block manifest: start_height <= end_height, num_pieces > 0,
+ *   non-NULL piece_hashes */
 bool msg_processor_publish_manifest(struct sync_manifest *manifest);
 void msg_processor_invalidate_manifest(void);
 bool msg_processor_get_manifest_header(struct sync_manifest *out);
+uint64_t msg_processor_manifest_cache_version(void);
 
 bool msg_processor_publish_block_manifest(struct block_piece_manifest *manifest,
                                          int32_t built_at_height);
 void msg_processor_invalidate_block_manifest(void);
 bool msg_processor_get_block_manifest_header(struct block_piece_manifest *out,
                                             int32_t *built_at_height);
+uint64_t msg_processor_block_manifest_cache_version(void);
 
 /* Test helpers for block relay deduplication. */
 #include "core/uint256.h"

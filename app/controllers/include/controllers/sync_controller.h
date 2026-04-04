@@ -191,6 +191,8 @@ int node_db_sync_mempool_load(struct node_db *ndb,
 void node_db_sync_get_job_status(struct node_db_sync_job_status *out);
 
 void node_db_sync_catchup_job_init(struct node_db_sync_catchup_job *job);
+/* datadir may be NULL when run against the caller-provided `ndb` handle
+ * (for example in-memory tests); if present it is used for private fallback.*/
 bool node_db_sync_catchup_job_start(struct node_db_sync_catchup_job *job,
                                     struct node_db *ndb,
                                     const struct active_chain *chain,

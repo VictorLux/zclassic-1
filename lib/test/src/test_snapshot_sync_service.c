@@ -9,8 +9,11 @@
 #include "core/serialize.h"
 #include "net/fast_sync.h"
 #include "net/net.h"
+#include "chain/mmb.h"
 #include "validation/main_state.h"
 #include <string.h>
+#include <pthread.h>
+#include <stdatomic.h>
 
 static void build_snapshot_chunk(struct byte_stream *s)
 {
@@ -40,6 +43,28 @@ static void build_snapshot_chunk(struct byte_stream *s)
     stream_write_bytes(s, script, sizeof(script));
 }
 
+static bool build_fc_chain(struct mmb *mmb,
+                          struct mmb_leaf *leaves,
+                          uint8_t (*leaf_hashes)[32],
+                          uint32_t count,
+                          uint32_t nbits)
+{
+    mmb_init(mmb);
+    for (uint32_t i = 0; i < count; i++) {
+        memset(&leaves[i], 0, sizeof(*leaves));
+        memset(leaf_hashes[i], 0, 32);
+        leaves[i].height = i;
+        leaves[i].timestamp = 1000000 + i;
+        leaves[i].nBits = nbits;
+        memset(leaves[i].sapling_root, (uint8_t)(i + 1), 32);
+        memset(leaves[i].chain_work, (uint8_t)(i + 2), 32);
+        if (mmb_append(mmb, &leaves[i]) < 0)
+            return false;
+        mmb_hash_leaf(&leaves[i], leaf_hashes[i]);
+    }
+    return true;
+}
+
 static int test_snapshot_sync_service_followups(void)
 {
     int failures = 0;
@@ -60,6 +85,191 @@ static int test_snapshot_sync_service_followups(void)
                SNAPSYNC_FOLLOWUP_NONE);
         ASSERT(snapsync_verify_followup_action(true) ==
                SNAPSYNC_FOLLOWUP_SEND_SNAPSHOT_REQ);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+static int test_snapshot_sync_service_handle_offer_begin_failure(void)
+{
+    int failures = 0;
+
+    TEST("snapshot sync service rejects no-MMB offer when begin_receive fails") {
+        struct snapshot_sync_service svc;
+        struct snapshot_offer_params params;
+        uint8_t mmr_root[32];
+        uint8_t utxo_root[32];
+        uint8_t block_hash[32];
+
+        memset(&svc, 0, sizeof(svc));
+        memset(&params, 0, sizeof(params));
+        memset(mmr_root, 0xAA, sizeof(mmr_root));
+        memset(utxo_root, 0x11, sizeof(utxo_root));
+        memset(block_hash, 0x22, sizeof(block_hash));
+
+        svc.state = SNAPSYNC_IDLE;
+        svc.ndb = NULL;
+
+        params.height = 10000;
+        params.our_height = 10;
+        params.num_utxos = 1234;
+        params.total_bytes = 12345;
+        memcpy(params.utxo_root, utxo_root, 32);
+        memcpy(params.mmr_root, mmr_root, 32);
+        memcpy(params.block_hash, block_hash, 32);
+
+        ASSERT(snapsync_handle_offer(&svc, &params) ==
+               SNAPSYNC_OFFER_REJECTED_BUSY);
+        ASSERT(svc.state == SNAPSYNC_IDLE);
+        ASSERT(!svc.turbo_active);
+        ASSERT(!svc.fc_verified);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+static int test_snapshot_sync_service_verify_flyclient_begin_failure(void)
+{
+    int failures = 0;
+
+    TEST("snapshot sync service keeps fc unverified when begin fails after FlyClient proof") {
+        struct snapshot_sync_service svc;
+        struct mmb m;
+        struct mmb_leaf leaves[MMB_MAX_MOUNTAINS];
+        uint8_t leaf_hashes[MMB_MAX_MOUNTAINS][32];
+        uint8_t expected_root[32];
+        struct fc_challenge challenge;
+        struct fc_response resp;
+
+        memset(&svc, 0, sizeof(svc));
+        memset(&m, 0, sizeof(m));
+        memset(&challenge, 0, sizeof(challenge));
+        memset(&resp, 0, sizeof(resp));
+
+        ASSERT(build_fc_chain(&m, leaves, leaf_hashes, 16, 0x1d00ffff));
+
+        mmb_root(&m, expected_root);
+        memset(&svc.fc_challenge, 0, sizeof(svc.fc_challenge));
+        memset(challenge.seed, 0x33, sizeof(challenge.seed));
+        challenge.chain_length = 16;
+        memcpy(challenge.mmb_root, expected_root, 32);
+
+        svc.state = SNAPSYNC_NEGOTIATING;
+        svc.ndb = NULL;
+        svc.fc_challenge = challenge;
+
+        ASSERT(fc_build_response(&challenge, &m, leaves,
+                                (const uint8_t (*)[32])leaf_hashes,
+                                &resp));
+        ASSERT(resp.num_samples > 0);
+        ASSERT(!snapsync_verify_flyclient(&svc, &resp));
+        ASSERT(!svc.fc_verified);
+        ASSERT(svc.state == SNAPSYNC_NEGOTIATING);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+struct offer_churn_ctx {
+    struct snapshot_sync_service *svc;
+    atomic_int accepted;
+    int rounds;
+    int peer_base;
+};
+
+static void *offer_churn_worker(void *arg)
+{
+    struct offer_churn_ctx *ctx = (struct offer_churn_ctx *)arg;
+    struct snapshot_offer_params params;
+    uint8_t mmr_root[32];
+    uint8_t mmb_root[32];
+    uint8_t utxo_root[32];
+    uint8_t block_hash[32];
+
+    memset(mmr_root, 1, sizeof(mmr_root));
+    memset(mmb_root, 1, sizeof(mmb_root));
+    memset(utxo_root, 0x11, sizeof(utxo_root));
+    memset(block_hash, 0x22, sizeof(block_hash));
+
+    for (int i = 0; i < ctx->rounds; i++) {
+        memset(&params, 0, sizeof(params));
+        params.height = 10000 + i;
+        params.our_height = 1000;
+        params.num_utxos = (uint64_t)(1000 + i);
+        params.total_bytes = 65536;
+        params.peer_id = (uint32_t)(ctx->peer_base + i);
+        memcpy(params.utxo_root, utxo_root, 32);
+        memcpy(params.mmr_root, mmr_root, 32);
+        memcpy(params.mmb_root, mmb_root, 32);
+        params.block_hash[0] = (uint8_t)i;
+
+        if (snapsync_handle_offer(ctx->svc, &params) ==
+            SNAPSYNC_OFFER_ACCEPTED) {
+            atomic_fetch_add(&ctx->accepted, 1);
+        }
+
+        if ((i % 10) == 0)
+            snapsync_reset(ctx->svc);
+    }
+
+    return NULL;
+}
+
+static int test_snapshot_sync_service_offer_churn(void)
+{
+    int failures = 0;
+    const int threads = 4;
+    const int rounds = 120;
+    struct snapshot_sync_service svc;
+    pthread_t tids[threads];
+    struct offer_churn_ctx ctx[threads];
+
+    memset(&svc, 0, sizeof(svc));
+    snapsync_init(&svc, NULL);
+
+    TEST("snapshot sync service handles concurrent offer churn safely") {
+        atomic_init(&ctx[0].accepted, 0);
+        for (int i = 0; i < threads; i++) {
+            ctx[i].svc = &svc;
+            ctx[i].rounds = rounds;
+            ctx[i].peer_base = 3000 + i * 100;
+            atomic_init(&ctx[i].accepted, 0);
+            pthread_create(&tids[i], NULL, offer_churn_worker, &ctx[i]);
+        }
+
+        for (int i = 0; i < threads; i++) {
+            pthread_join(tids[i], NULL);
+        }
+
+        int accepted_total = atomic_load(&ctx[0].accepted) +
+                            atomic_load(&ctx[1].accepted) +
+                            atomic_load(&ctx[2].accepted) +
+                            atomic_load(&ctx[3].accepted);
+        ASSERT(accepted_total > 0);
+        ASSERT(svc.state == SNAPSYNC_NEGOTIATING ||
+               svc.state == SNAPSYNC_IDLE);
+        snapsync_reset(&svc);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+static int test_snapshot_sync_service_handle_offer_null_inputs(void)
+{
+    int failures = 0;
+
+    TEST("snapshot sync service rejects null offer input") {
+        struct snapshot_sync_service svc;
+
+        memset(&svc, 0, sizeof(svc));
+        ASSERT(snapsync_handle_offer(NULL, NULL) ==
+               SNAPSYNC_OFFER_REJECTED_PARSE);
+        ASSERT(snapsync_handle_offer(&svc, NULL) ==
+               SNAPSYNC_OFFER_REJECTED_PARSE);
         PASS();
     } _test_next:;
 
@@ -492,6 +702,10 @@ int test_snapshot_sync_service(void)
     failures += test_snapshot_sync_service_activates_tip();
     failures += test_snapshot_sync_service_prepare_serve_step();
     failures += test_snapshot_sync_service_transition_results();
+    failures += test_snapshot_sync_service_handle_offer_begin_failure();
+    failures += test_snapshot_sync_service_handle_offer_null_inputs();
+    failures += test_snapshot_sync_service_verify_flyclient_begin_failure();
+    failures += test_snapshot_sync_service_offer_churn();
     failures += test_snapshot_sync_service_db_service_runtime();
     failures += test_snapshot_sync_service_runtime_accessor();
     failures += test_snapshot_sync_service_db_service_chunk_finalize();

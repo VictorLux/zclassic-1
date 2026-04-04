@@ -120,6 +120,7 @@ bool fast_sync_build_offer(const char *datadir,
 bool fast_sync_publish_utxo_root_cache(const uint8_t root[32], uint64_t count);
 void fast_sync_reset_utxo_root_cache(void);
 bool fast_sync_get_utxo_root_cache(uint8_t out[32], uint64_t *count);
+uint64_t fast_sync_utxo_root_cache_version(void);
 
 /* Path to the pre-serialized snapshot file ({datadir}/snapshot.bin).
  * Built by fast_sync_prebuild_snapshot() for zero-copy serving. */
@@ -133,11 +134,13 @@ struct node_db;
 int64_t fast_sync_prebuild_snapshot(struct node_db *ndb, const char *datadir);
 
 /* Publish or clear the in-memory snapshot cache and its matching SHA3
- * metadata. Ownership of snapshot_buf transfers to the cache on success. */
+ * metadata. Ownership of snapshot_buf transfers to the cache on success.
+ * On failure the caller remains responsible for freeing snapshot_buf. */
 bool fast_sync_publish_snapshot_cache(uint8_t *snapshot_buf, int64_t size,
                                       const uint8_t sha3[32],
                                       uint64_t count);
 void fast_sync_reset_snapshot_cache(void);
+uint64_t fast_sync_snapshot_cache_version(void);
 
 /* Get the size of the pre-built snapshot file in bytes. Returns 0 if none. */
 uint64_t fast_sync_snapshot_file_size(const char *datadir);

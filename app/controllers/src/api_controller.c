@@ -1838,8 +1838,10 @@ size_t api_handle_request(const char *method, const char *path,
     if (strcmp(clean_path, "/api/node/snapshot") == 0) {
         bool init = false;
         struct snapshot_sync_service *svc = api_snapshot_sync(&init);
+        struct snapsync_status snap_status = {SNAPSYNC_IDLE, 0, 0, 0, false};
         uint64_t received = 0, total = 0;
         double rate = 0;
+        if (init) snapsync_get_status_snapshot(svc, &snap_status);
         if (init) snapsync_get_progress(svc, &received, &total, &rate);
         return (size_t)snprintf((char *)response, response_max,
             "HTTP/1.1 200 OK\r\n"
@@ -1854,13 +1856,13 @@ size_t api_handle_request(const char *method, const char *path,
             "\"serving_peer\":%u,"
             "\"offered_height\":%d,"
             "\"turbo_active\":%s}",
-            init ? snapsync_state_name(svc->state) : "not_initialized",
+            init ? snapsync_state_name(snap_status.state) : "not_initialized",
             (unsigned long long)received, (unsigned long long)total,
             rate,
             total > 0 ? 100.0 * (double)received / (double)total : 0,
-            init ? svc->serving_peer_id : 0,
-            init ? svc->offered_height : 0,
-            (init && svc->turbo_active) ? "true" : "false");
+            init ? snap_status.serving_peer_id : 0,
+            init ? snap_status.offered_height : 0,
+            (init && snap_status.turbo_active) ? "true" : "false");
     }
 
     /* Route: /api/node/mmb — Merkle Mountain Belt status */
@@ -1889,8 +1891,13 @@ size_t api_handle_request(const char *method, const char *path,
         enum sync_state ss = sync_get_state();
         bool snap_init = false;
         struct snapshot_sync_service *svc = api_snapshot_sync(&snap_init);
+        struct snapsync_status snap_status = {SNAPSYNC_IDLE, 0, 0, 0, false};
         struct mmb *mb = rpc_blockchain_get_mmb();
         struct error_ring *er = error_ring_global();
+        uint64_t snap_received = 0, snap_total = 0;
+        double snap_rate = 0;
+        if (snap_init) snapsync_get_status_snapshot(svc, &snap_status);
+        if (snap_init) snapsync_get_progress(svc, &snap_received, &snap_total, &snap_rate);
 
         char body[2048];
         snprintf(body, sizeof(body),
@@ -1905,9 +1912,9 @@ size_t api_handle_request(const char *method, const char *path,
             sync_state_name(ss),
             atomic_load(&g_utxo_replay_active) ? "true" : "false",
             atomic_load(&g_utxo_replay_height),
-            snap_init ? snapsync_state_name(svc->state) : "not_initialized",
-            (unsigned long long)(snap_init ? svc->received_utxos : 0),
-            (unsigned long long)(snap_init ? svc->offered_count : 0),
+            snap_init ? snapsync_state_name(snap_status.state) : "not_initialized",
+            (unsigned long long)(snap_init ? snap_received : 0),
+            (unsigned long long)(snap_init ? snap_status.offered_count : 0),
             (unsigned long long)(mb ? mb->num_leaves : 0),
             mb ? mb->num_mountains : 0,
             error_ring_total(er));

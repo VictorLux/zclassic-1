@@ -33,20 +33,34 @@
 #include <string.h>
 #include <stdio.h>
 #include <sys/time.h>
+#include <pthread.h>
 
 /* Global singleton */
 static struct snapshot_sync_service g_snapsync_instance;
 static bool g_snapsync_init_done = false;
+static pthread_mutex_t g_snapsync_service_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static void snapsync_service_lock(void)
+{
+    pthread_mutex_lock(&g_snapsync_service_lock);
+}
+
+static void snapsync_service_unlock(void)
+{
+    pthread_mutex_unlock(&g_snapsync_service_lock);
+}
 
 struct snapshot_sync_service *snapsync_global(void) { return &g_snapsync_instance; }
 bool snapsync_global_initialized(void) { return g_snapsync_init_done; }
 
 void snapsync_global_ensure_init(struct node_db *ndb)
 {
+    snapsync_service_lock();
     if (!g_snapsync_init_done) {
         snapsync_init(&g_snapsync_instance, ndb);
         g_snapsync_init_done = true;
     }
+    snapsync_service_unlock();
 }
 
 #define SNAPSYNC_BATCH_COMMIT_ROWS 100000
@@ -115,6 +129,10 @@ static int snapsync_apply_chunk_local(struct snapshot_sync_service *svc,
     size_t pos = 4;
     int applied = 0;
     uint32_t entries;
+    bool commit_batch = false;
+    uint32_t serving_peer_id = 0;
+    uint64_t offered_count = 0;
+    uint64_t received = 0;
 
     if (!svc || !svc->ndb || !svc->ndb->open || !chunk_data || chunk_len < 4)
         return -1;
@@ -174,19 +192,32 @@ static int snapsync_apply_chunk_local(struct snapshot_sync_service *svc,
         applied++;
     }
 
-    svc->received_utxos += (uint64_t)applied;
+    snapsync_service_lock();
+    if (svc->state != SNAPSYNC_RECEIVING) {
+        snapsync_service_unlock();
+        return 0;
+    }
 
-    if (svc->received_utxos - svc->last_commit_at >= SNAPSYNC_BATCH_COMMIT_ROWS) {
+    svc->received_utxos += (uint64_t)applied;
+    received = svc->received_utxos;
+    offered_count = svc->offered_count;
+    serving_peer_id = svc->serving_peer_id;
+    if (received - svc->last_commit_at >= SNAPSYNC_BATCH_COMMIT_ROWS) {
+        commit_batch = true;
+        svc->last_commit_at = received;
+    }
+    snapsync_service_unlock();
+
+    if (commit_batch) {
         if (!node_db_commit(svc->ndb) || !node_db_begin(svc->ndb))
             return -1;
-        svc->last_commit_at = svc->received_utxos;
 
         double elapsed_s = (double)(now_us() - svc->start_time_us) / 1000000.0;
-        double rate = elapsed_s > 0 ? (double)svc->received_utxos / elapsed_s : 0;
-        event_emitf(EV_SNAPSYNC_PROGRESS, svc->serving_peer_id,
+        double rate = elapsed_s > 0 ? (double)received / elapsed_s : 0;
+        event_emitf(EV_SNAPSYNC_PROGRESS, serving_peer_id,
                     "received=%llu/%llu rate=%.0f/s",
-                    (unsigned long long)svc->received_utxos,
-                    (unsigned long long)svc->offered_count, rate);
+                    (unsigned long long)received,
+                    (unsigned long long)offered_count, rate);
     }
 
     return applied;
@@ -211,6 +242,8 @@ static bool snapsync_finalize_write(struct node_db *ndb, void *ctx)
     struct snapshot_sync_service *svc;
     uint8_t local_root[32];
     uint64_t local_count = 0;
+    uint32_t serving_peer_id;
+    bool fc_verified;
     bool sha3_ok;
     double elapsed_s;
 
@@ -221,8 +254,12 @@ static bool snapsync_finalize_write(struct node_db *ndb, void *ctx)
     if (!node_db_commit(ndb))
         return false;
 
+    snapsync_service_lock();
     svc->state = SNAPSYNC_VERIFYING;
     snapsync_set_state(SNAPSYNC_VERIFYING, "all chunks received");
+    serving_peer_id = svc->serving_peer_id;
+    fc_verified = svc->fc_verified;
+    snapsync_service_unlock();
 
     elapsed_s = (double)(now_us() - svc->start_time_us) / 1000000.0;
     printf("[snapsync] %llu UTXOs in %.1fs (%.0f/s), verifying SHA3...\n",
@@ -248,15 +285,17 @@ static bool snapsync_finalize_write(struct node_db *ndb, void *ctx)
             node_db_state_set(ndb, "snapshot_mmr_height",
                               &svc->offered_height, 4);
         }
-        if (!node_db_normal_mode(ndb))
-            return false;
-        svc->turbo_active = false;
-        svc->state = SNAPSYNC_COMPLETE;
-        snapsync_set_state(SNAPSYNC_COMPLETE, "SHA3 verified");
+            if (!node_db_normal_mode(ndb))
+                return false;
+            snapsync_service_lock();
+            svc->turbo_active = false;
+            svc->state = SNAPSYNC_COMPLETE;
+            snapsync_set_state(SNAPSYNC_COMPLETE, "SHA3 verified");
+            snapsync_service_unlock();
 
-        event_emitf(EV_SNAPSYNC_VERIFIED, svc->serving_peer_id,
+        event_emitf(EV_SNAPSYNC_VERIFIED, serving_peer_id,
                     "sha3=PASSED flyclient=%s utxos=%llu elapsed=%.1fs",
-                    svc->fc_verified ? "PASSED" : "SKIPPED",
+                    fc_verified ? "PASSED" : "SKIPPED",
                     (unsigned long long)local_count, elapsed_s);
         event_emitf(EV_UTXO_CHECKPOINT_PASS, 0,
                     "snapshot SHA3 PASSED count=%llu",
@@ -277,9 +316,11 @@ static bool snapsync_finalize_write(struct node_db *ndb, void *ctx)
 
         node_db_wipe_utxos(ndb);
         node_db_normal_mode(ndb);
+        snapsync_service_lock();
         svc->turbo_active = false;
         svc->state = SNAPSYNC_FAILED;
         snapsync_set_state(SNAPSYNC_FAILED, "SHA3 verification failed");
+        snapsync_service_unlock();
         event_emitf(EV_UTXO_CHECKPOINT_FAIL, 0,
                     "snapshot SHA3 FAILED expected=%s got=%s", exp, got);
         finalize->ok = false;
@@ -291,13 +332,21 @@ static bool snapsync_finalize_write(struct node_db *ndb, void *ctx)
 
 void snapsync_init(struct snapshot_sync_service *svc, struct node_db *ndb)
 {
+    if (!svc)
+        return;
+    snapsync_service_lock();
     memset(svc, 0, sizeof(*svc));
     svc->state = SNAPSYNC_IDLE;
     svc->ndb = ndb;
+    snapsync_service_unlock();
 }
 
 void snapsync_reset(struct snapshot_sync_service *svc)
 {
+    if (!svc) {
+        return;
+    }
+    snapsync_service_lock();
     if (svc->turbo_active && svc->ndb && svc->ndb->open) {
         struct db_service *dbsvc = snapsync_db_service(svc);
         if (dbsvc)
@@ -320,6 +369,7 @@ void snapsync_reset(struct snapshot_sync_service *svc)
     svc->offered_count = 0;
     svc->state = SNAPSYNC_IDLE;
     snapsync_set_state(SNAPSYNC_IDLE, "reset");
+    snapsync_service_unlock();
 }
 
 /* ── Accept Offer ────────────────────────────────────────── */
@@ -331,10 +381,12 @@ bool snapsync_accept_offer(struct snapshot_sync_service *svc,
                            const uint8_t block_hash[32],
                            uint32_t peer_id)
 {
-    if (!svc || !utxo_root || !block_hash) return false;
-    if (svc->state != SNAPSYNC_IDLE) return false;
-    if (height <= 0 || num_utxos == 0 || num_utxos > 100000000ULL)
+    snapsync_service_lock();
+    if (!svc || !utxo_root || !block_hash || svc->state != SNAPSYNC_IDLE
+        || height <= 0 || num_utxos == 0 || num_utxos > 100000000ULL) {
+        snapsync_service_unlock();
         return false;
+    }
 
     memcpy(svc->offered_utxo_root, utxo_root, 32);
     memcpy(svc->offered_block_hash, block_hash, 32);
@@ -346,6 +398,7 @@ bool snapsync_accept_offer(struct snapshot_sync_service *svc,
 
     svc->state = SNAPSYNC_NEGOTIATING;
     snapsync_set_state(SNAPSYNC_NEGOTIATING, "accepted offer");
+    snapsync_service_unlock();
     return true;
 }
 
@@ -353,37 +406,57 @@ bool snapsync_accept_offer(struct snapshot_sync_service *svc,
 
 bool snapsync_begin_receive(struct snapshot_sync_service *svc)
 {
-    if (!svc) return false;
+    struct db_service *dbsvc = NULL;
+
+    if (!svc)
+        return false;
+    snapsync_service_lock();
     if (svc->state != SNAPSYNC_NEGOTIATING) {
         fprintf(stderr, "[snapsync] begin_receive: wrong state %s\n",
                 snapsync_state_name(svc->state));
+        snapsync_service_unlock();
         return false;
     }
     if (!svc->ndb) {
         fprintf(stderr, "[snapsync] begin_receive: ndb is NULL\n");
+        snapsync_service_unlock();
         return false;
     }
     if (!svc->ndb->open) {
         fprintf(stderr, "[snapsync] begin_receive: ndb not open\n");
+        snapsync_service_unlock();
         return false;
     }
 
     /* Enter turbo mode via ActiveRecord database helpers */
-    struct db_service *dbsvc = snapsync_db_service(svc);
+    dbsvc = snapsync_db_service(svc);
     if (dbsvc) {
-        if (!db_service_ibd_turbo_mode(dbsvc))
+        if (!db_service_ibd_turbo_mode(dbsvc)) {
+            snapsync_service_unlock();
             return false;
+        }
     } else if (!node_db_ibd_turbo_mode(svc->ndb)) {
+        snapsync_service_unlock();
         return false;
     }
     svc->turbo_active = true;
+    snapsync_service_unlock();
 
     if (!snapsync_run_write(svc, snapsync_begin_receive_write, svc)) {
+        snapsync_service_lock();
+        if (dbsvc)
+            db_service_normal_mode(dbsvc);
+        else
+            node_db_normal_mode(svc->ndb);
+        svc->turbo_active = false;
+        snapsync_service_unlock();
         return false;
     }
 
+    snapsync_service_lock();
     svc->state = SNAPSYNC_RECEIVING;
     snapsync_set_state(SNAPSYNC_RECEIVING, "turbo mode active");
+    snapsync_service_unlock();
     return true;
 }
 
@@ -393,23 +466,33 @@ int snapsync_apply_chunk(struct snapshot_sync_service *svc,
                          const uint8_t *chunk_data, size_t chunk_len)
 {
     struct snapsync_apply_chunk_ctx ctx;
+    if (!svc || !chunk_data || chunk_len < 4)
+        return -1;
 
-    if (!svc) return -1;
+    snapsync_service_lock();
 
     /* Only accept chunks in RECEIVING state.
      * NEGOTIATING means FlyClient verification hasn't completed yet —
      * do NOT auto-transition, that would bypass chain verification. */
-    if (svc->state != SNAPSYNC_RECEIVING) return 0;
-    if (!svc->ndb || !svc->ndb->open) return -1;
-    if (!chunk_data || chunk_len < 4) return -1;
+    if (svc->state != SNAPSYNC_RECEIVING) {
+        snapsync_service_unlock();
+        return 0;
+    }
+    if (!svc->ndb || !svc->ndb->open) {
+        snapsync_service_unlock();
+        return -1;
+    }
 
     memset(&ctx, 0, sizeof(ctx));
     ctx.svc = svc;
     ctx.chunk_data = malloc(chunk_len);
-    if (!ctx.chunk_data)
+    if (!ctx.chunk_data) {
+        snapsync_service_unlock();
         return -1;
+    }
     memcpy(ctx.chunk_data, chunk_data, chunk_len);
     ctx.chunk_len = chunk_len;
+    snapsync_service_unlock();
 
     if (!snapsync_run_write(svc, snapsync_apply_chunk_write, &ctx)) {
         free(ctx.chunk_data);
@@ -424,13 +507,54 @@ int snapsync_apply_chunk(struct snapshot_sync_service *svc,
 bool snapsync_finalize(struct snapshot_sync_service *svc)
 {
     struct snapsync_finalize_ctx ctx;
+    bool finalize_allowed = false;
+    bool turbo_active = false;
 
-    if (!svc || svc->state != SNAPSYNC_RECEIVING) return false;
-    if (!svc->ndb || !svc->ndb->open) return false;
+    if (!svc)
+        return false;
+    snapsync_service_lock();
+    finalize_allowed = (svc->state == SNAPSYNC_RECEIVING &&
+                       svc->ndb && svc->ndb->open);
+    if (finalize_allowed)
+        turbo_active = svc->turbo_active;
+    snapsync_service_unlock();
+
+    if (!finalize_allowed) {
+        return false;
+    }
 
     memset(&ctx, 0, sizeof(ctx));
     ctx.svc = svc;
-    return snapsync_run_write(svc, snapsync_finalize_write, &ctx) && ctx.ok;
+
+    if (!snapsync_run_write(svc, snapsync_finalize_write, &ctx)) {
+        if (turbo_active)
+            snapsync_set_state(SNAPSYNC_FAILED, "finalize write path failed");
+        snapsync_reset(svc);
+        return false;
+    }
+    snapsync_service_lock();
+    if (!ctx.ok) {
+        snapsync_set_state(SNAPSYNC_FAILED,
+                           "snapshot SHA3 verification failed");
+        svc->state = SNAPSYNC_FAILED;
+    }
+    snapsync_service_unlock();
+    return ctx.ok;
+}
+
+bool snapsync_is_active(void)
+{
+    struct snapshot_sync_service *svc = app_runtime_snapshot_sync();
+    struct snapsync_status st;
+    if (!svc) {
+        if (!snapsync_global_initialized())
+            return false;
+        svc = snapsync_global();
+    }
+    snapsync_get_status_snapshot(svc, &st);
+    return st.state == SNAPSYNC_NEGOTIATING ||
+           st.state == SNAPSYNC_RECEIVING ||
+           st.state == SNAPSYNC_VERIFYING;
 }
 
 /* ── Progress Query ──────────────────────────────────────── */
@@ -439,26 +563,51 @@ void snapsync_get_progress(const struct snapshot_sync_service *svc,
                            uint64_t *received, uint64_t *total,
                            double *rate_per_sec)
 {
-    if (received) *received = svc ? svc->received_utxos : 0;
-    if (total) *total = svc ? svc->offered_count : 0;
+    if (!svc || (!received && !total && !rate_per_sec))
+        return;
+
+    snapsync_service_lock();
+    if (received) *received = svc->received_utxos;
+    if (total) *total = svc->offered_count;
     if (rate_per_sec) {
-        if (svc && svc->start_time_us > 0) {
+        if (svc->start_time_us > 0) {
             double elapsed = (double)(now_us() - svc->start_time_us) / 1000000.0;
             *rate_per_sec = elapsed > 0 ? (double)svc->received_utxos / elapsed : 0;
         } else {
             *rate_per_sec = 0;
         }
     }
+    snapsync_service_unlock();
+}
+
+void snapsync_get_status_snapshot(const struct snapshot_sync_service *svc,
+                                 struct snapsync_status *out)
+{
+    if (!svc || !out)
+        return;
+
+    snapsync_service_lock();
+    out->state = svc->state;
+    out->offered_count = svc->offered_count;
+    out->serving_peer_id = svc->serving_peer_id;
+    out->offered_height = svc->offered_height;
+    out->turbo_active = svc->turbo_active;
+    snapsync_service_unlock();
 }
 
 enum snapsync_followup_action snapsync_offer_followup_action(
     const struct snapshot_sync_service *svc)
 {
+    enum snapsync_followup_action action = SNAPSYNC_FOLLOWUP_NONE;
     if (!svc)
         return SNAPSYNC_FOLLOWUP_NONE;
-    return svc->fc_verified
+
+    snapsync_service_lock();
+    action = svc->fc_verified
         ? SNAPSYNC_FOLLOWUP_SEND_SNAPSHOT_REQ
         : SNAPSYNC_FOLLOWUP_SEND_FC_CHALLENGE;
+    snapsync_service_unlock();
+    return action;
 }
 
 enum snapsync_followup_action snapsync_verify_followup_action(bool verified)
@@ -865,6 +1014,14 @@ enum snapsync_offer_result snapsync_handle_offer(
     struct snapshot_sync_service *svc,
     const struct snapshot_offer_params *params)
 {
+    bool reconnect = false;
+    enum snapshot_sync_state current_state = SNAPSYNC_IDLE;
+    uint32_t prior_peer_id = 0;
+    uint64_t prior_received = 0;
+
+    if (!svc || !params)
+        return SNAPSYNC_OFFER_REJECTED_PARSE;
+
     /* Range validation */
     if (params->num_utxos > 100000000ULL ||
         params->total_bytes > 100ULL * 1024 * 1024 * 1024) {
@@ -885,14 +1042,22 @@ enum snapsync_offer_result snapsync_handle_offer(
     /* If we're already receiving from a different peer (reconnect scenario),
      * reset and re-accept from the new peer. This handles the case where
      * the serving connection dropped and node2 reconnected. */
-    if (svc->state == SNAPSYNC_RECEIVING &&
+    snapsync_service_lock();
+    current_state = svc->state;
+    if (current_state == SNAPSYNC_RECEIVING &&
         svc->serving_peer_id != params->peer_id) {
+        reconnect = true;
+        prior_peer_id = svc->serving_peer_id;
+        prior_received = svc->received_utxos;
+    }
+    snapsync_service_unlock();
+    if (reconnect) {
         printf("[snapsync] Reconnect detected: resetting for new peer %u "
                "(was peer %u, had %llu UTXOs)\n",
-               params->peer_id, svc->serving_peer_id,
-               (unsigned long long)svc->received_utxos);
+               params->peer_id, prior_peer_id,
+               (unsigned long long)prior_received);
         snapsync_reset(svc);
-    } else if (svc->state != SNAPSYNC_IDLE) {
+    } else if (current_state != SNAPSYNC_IDLE) {
         return SNAPSYNC_OFFER_REJECTED_BUSY;
     }
 
@@ -910,28 +1075,42 @@ enum snapsync_offer_result snapsync_handle_offer(
      * The router sends zfcchallenge to the peer, who must respond
      * with zfcproofs before we send zsnapreq. */
     bool has_mmb = false;
+    bool begin_after_offer = false;
     for (int i = 0; i < 32; i++)
         if (params->mmb_root[i]) { has_mmb = true; break; }
 
     if (has_mmb) {
-        GetRandBytes(svc->fc_challenge.seed, 32);
+        uint8_t fc_seed[32];
+
+        GetRandBytes(fc_seed, sizeof(fc_seed));
+        snapsync_service_lock();
+        memcpy(svc->fc_challenge.seed, fc_seed, 32);
         svc->fc_challenge.chain_length = (uint64_t)params->height;
         memcpy(svc->fc_challenge.mmb_root, params->mmb_root, 32);
         svc->fc_verified = false;
+        begin_after_offer = false;
+        snapsync_service_unlock();
         printf("[snapsync] FlyClient challenge generated (%u samples, "
                "chain_length=%d)\n", FC_NUM_SAMPLES, params->height);
     } else {
         /* No MMB root — skip FlyClient, accept on SHA3 only.
          * This is weaker security but backward compatible. */
+        snapsync_service_lock();
         svc->fc_verified = true;
+        begin_after_offer = true;
+        snapsync_service_unlock();
         printf("[snapsync] WARNING: no MMB root — skipping FlyClient "
                "chain verification\n");
     }
 
     /* Don't begin receive yet — wait for FlyClient verification
      * (or immediate begin if no MMB). Router handles the flow. */
-    if (svc->fc_verified)
-        snapsync_begin_receive(svc);
+    if (begin_after_offer) {
+        if (!snapsync_begin_receive(svc)) {
+            snapsync_reset(svc);
+            return SNAPSYNC_OFFER_REJECTED_BUSY;
+        }
+    }
 
     return SNAPSYNC_OFFER_ACCEPTED;
 }
@@ -942,17 +1121,28 @@ enum snapsync_offer_result snapsync_handle_offer(
 bool snapsync_verify_flyclient(struct snapshot_sync_service *svc,
                                const struct fc_response *resp)
 {
-    if (!svc || !resp) return false;
-    if (svc->state != SNAPSYNC_NEGOTIATING) {
+    enum snapshot_sync_state state = SNAPSYNC_IDLE;
+    uint32_t serving_peer_id = 0;
+    struct fc_challenge challenge;
+
+    if (!svc || !resp)
+        return false;
+
+    snapsync_service_lock();
+    state = svc->state;
+    serving_peer_id = svc->serving_peer_id;
+    memcpy(&challenge, &svc->fc_challenge, sizeof(challenge));
+    snapsync_service_unlock();
+    if (state != SNAPSYNC_NEGOTIATING) {
         printf("[snapsync] FlyClient: wrong state %s\n",
-               snapsync_state_name(svc->state));
+               snapsync_state_name(state));
         return false;
     }
 
     /* Verify all samples against the challenge */
-    if (!fc_verify_response(resp, &svc->fc_challenge)) {
+    if (!fc_verify_response(resp, &challenge)) {
         printf("[snapsync] FlyClient: MMB proof verification FAILED\n");
-        event_emitf(EV_FC_CHAIN_VERIFIED, svc->serving_peer_id,
+        event_emitf(EV_FC_CHAIN_VERIFIED, serving_peer_id,
                     "flyclient=FAILED samples=%u", resp->num_samples);
         return false;
     }
@@ -981,22 +1171,28 @@ bool snapsync_verify_flyclient(struct snapshot_sync_service *svc,
     if (pow_failures > 0) {
         printf("[snapsync] FlyClient: %u/%u PoW checks FAILED\n",
                pow_failures, resp->num_samples);
-        event_emitf(EV_FC_CHAIN_VERIFIED, svc->serving_peer_id,
+        event_emitf(EV_FC_CHAIN_VERIFIED, serving_peer_id,
                     "flyclient=FAILED pow_failures=%u/%u",
                     pow_failures, resp->num_samples);
         return false;
     }
 
+    snapsync_service_lock();
+    svc->fc_verified = false;
+    snapsync_service_unlock();
+    if (!snapsync_begin_receive(svc))
+        return false;
+
+    snapsync_service_lock();
     svc->fc_verified = true;
+    snapsync_service_unlock();
     printf("*** FlyClient PASSED: %u samples, all PoW targets valid, "
            "MMB proofs verified ***\n", resp->num_samples);
-    event_emitf(EV_FC_CHAIN_VERIFIED, svc->serving_peer_id,
+    event_emitf(EV_FC_CHAIN_VERIFIED, serving_peer_id,
                 "flyclient=PASSED samples=%u chain_length=%llu",
                 resp->num_samples,
-                (unsigned long long)svc->fc_challenge.chain_length);
+                (unsigned long long)challenge.chain_length);
 
-    /* Now safe to begin receiving — chain integrity verified */
-    snapsync_begin_receive(svc);
     return true;
 }
 
@@ -1004,24 +1200,33 @@ bool snapsync_verify_flyclient(struct snapshot_sync_service *svc,
  * Validates peer identity and state, finalizes. */
 bool snapsync_handle_end(struct snapshot_sync_service *svc, uint32_t peer_id)
 {
+    enum snapshot_sync_state state = SNAPSYNC_IDLE;
+    uint32_t serving_peer_id = 0;
+    uint64_t received = 0;
+
     if (!svc) return false;
+    snapsync_service_lock();
+    state = svc->state;
+    serving_peer_id = svc->serving_peer_id;
+    received = svc->received_utxos;
+    snapsync_service_unlock();
 
     /* Only accept from the peer we're syncing from */
-    if (svc->serving_peer_id != peer_id) {
+    if (serving_peer_id != peer_id) {
         printf("[snapsync] Ignoring zsnapend from peer %u "
-               "(serving from %u)\n", peer_id, svc->serving_peer_id);
+               "(serving from %u)\n", peer_id, serving_peer_id);
         return false;
     }
 
-    if (svc->state != SNAPSYNC_RECEIVING) {
+    if (state != SNAPSYNC_RECEIVING) {
         printf("[snapsync] Ignoring zsnapend in state %s\n",
-               snapsync_state_name(svc->state));
+               snapsync_state_name(state));
         return false;
     }
 
     event_emitf(EV_SNAPSHOT_COMPLETE, peer_id,
                 "%llu UTXOs received",
-                (unsigned long long)svc->received_utxos);
+                (unsigned long long)received);
 
     return snapsync_finalize(svc);
 }

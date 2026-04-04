@@ -59,12 +59,14 @@ static void exec_getheaders_action(struct msg_processor *mp,
  * background build thread (boot.c) and the P2P message handler. */
 static struct snapshot_offer g_cached_offer;
 static _Atomic bool g_cached_offer_valid = false;
+static _Atomic uint64_t g_cached_offer_version = 0;
 static pthread_mutex_t g_offer_mutex = PTHREAD_MUTEX_INITIALIZER;
 struct fast_sync_rate_limiter g_rate_limiter = {0};
 
 /* Cached manifest for parallel chunk sync (built in background at startup). */
 struct sync_manifest g_cached_manifest;
 _Atomic bool g_cached_manifest_valid = false;
+static _Atomic uint64_t g_cached_manifest_version = 0;
 static pthread_mutex_t g_manifest_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 /* Global swarm coordinator — manages parallel UTXO chunk download.
@@ -97,6 +99,7 @@ static int64_t g_block_swarm_last_progress = 0;
 struct block_piece_manifest g_cached_block_manifest;
 _Atomic bool g_cached_block_manifest_valid = false;
 int32_t g_manifest_built_at_height = 0; /* height when manifest was last built */
+static _Atomic uint64_t g_cached_block_manifest_version = 0;
 static pthread_mutex_t g_block_manifest_mutex = PTHREAD_MUTEX_INITIALIZER;
 /* Rebuild manifest when chain grows this many blocks beyond the cached one.
  * This ensures new peers always get a reasonably fresh manifest. */
@@ -128,6 +131,33 @@ static void msg_block_manifest_reset(struct block_piece_manifest *manifest)
         return;
     block_piece_manifest_free(manifest);
     memset(manifest, 0, sizeof(*manifest));
+}
+
+static bool msg_manifest_is_reasonable(const struct sync_manifest *manifest)
+{
+    if (!manifest)
+        return false;
+    if (manifest->num_chunks == 0)
+        return false;
+    if (manifest->chunk_size == 0)
+        return false;
+    if (!manifest->chunk_hashes)
+        return false;
+    return true;
+}
+
+static bool msg_block_manifest_is_reasonable(
+    const struct block_piece_manifest *manifest)
+{
+    if (!manifest)
+        return false;
+    if (manifest->num_pieces == 0)
+        return false;
+    if (manifest->start_height > manifest->end_height)
+        return false;
+    if (!manifest->piece_hashes)
+        return false;
+    return true;
 }
 
 static struct node_db *msg_node_db(const struct msg_processor *mp)
@@ -185,6 +215,7 @@ void msg_processor_update_offer(const struct snapshot_offer *offer)
     pthread_mutex_lock(&g_offer_mutex);
     g_cached_offer = *offer;
     atomic_store(&g_cached_offer_valid, true);
+    g_cached_offer_version++;
     pthread_mutex_unlock(&g_offer_mutex);
 }
 
@@ -208,12 +239,21 @@ void msg_processor_invalidate_offer(void)
     pthread_mutex_lock(&g_offer_mutex);
     memset(&g_cached_offer, 0, sizeof(g_cached_offer));
     atomic_store(&g_cached_offer_valid, false);
+    g_cached_offer_version++;
     pthread_mutex_unlock(&g_offer_mutex);
+}
+
+uint64_t msg_processor_offer_cache_version(void)
+{
+    pthread_mutex_lock(&g_offer_mutex);
+    uint64_t version = g_cached_offer_version;
+    pthread_mutex_unlock(&g_offer_mutex);
+    return version;
 }
 
 bool msg_processor_publish_manifest(struct sync_manifest *manifest)
 {
-    if (!manifest)
+    if (!msg_manifest_is_reasonable(manifest))
         return false;
 
     pthread_mutex_lock(&g_manifest_mutex);
@@ -222,6 +262,7 @@ bool msg_processor_publish_manifest(struct sync_manifest *manifest)
     g_cached_manifest = *manifest;
     memset(manifest, 0, sizeof(*manifest));
     atomic_store(&g_cached_manifest_valid, true);
+    g_cached_manifest_version++;
     pthread_mutex_unlock(&g_manifest_mutex);
     return true;
 }
@@ -232,7 +273,16 @@ void msg_processor_invalidate_manifest(void)
     if (atomic_load(&g_cached_manifest_valid))
         msg_manifest_reset(&g_cached_manifest);
     atomic_store(&g_cached_manifest_valid, false);
+    g_cached_manifest_version++;
     pthread_mutex_unlock(&g_manifest_mutex);
+}
+
+uint64_t msg_processor_manifest_cache_version(void)
+{
+    pthread_mutex_lock(&g_manifest_mutex);
+    uint64_t version = g_cached_manifest_version;
+    pthread_mutex_unlock(&g_manifest_mutex);
+    return version;
 }
 
 bool msg_processor_get_manifest_header(struct sync_manifest *out)
@@ -255,7 +305,7 @@ bool msg_processor_get_manifest_header(struct sync_manifest *out)
 bool msg_processor_publish_block_manifest(struct block_piece_manifest *manifest,
                                          int32_t built_at_height)
 {
-    if (!manifest)
+    if (!msg_block_manifest_is_reasonable(manifest))
         return false;
 
     pthread_mutex_lock(&g_block_manifest_mutex);
@@ -265,6 +315,7 @@ bool msg_processor_publish_block_manifest(struct block_piece_manifest *manifest,
     memset(manifest, 0, sizeof(*manifest));
     g_manifest_built_at_height = built_at_height;
     atomic_store(&g_cached_block_manifest_valid, true);
+    g_cached_block_manifest_version++;
     pthread_mutex_unlock(&g_block_manifest_mutex);
     return true;
 }
@@ -276,7 +327,16 @@ void msg_processor_invalidate_block_manifest(void)
         msg_block_manifest_reset(&g_cached_block_manifest);
     g_manifest_built_at_height = 0;
     atomic_store(&g_cached_block_manifest_valid, false);
+    g_cached_block_manifest_version++;
     pthread_mutex_unlock(&g_block_manifest_mutex);
+}
+
+uint64_t msg_processor_block_manifest_cache_version(void)
+{
+    pthread_mutex_lock(&g_block_manifest_mutex);
+    uint64_t version = g_cached_block_manifest_version;
+    pthread_mutex_unlock(&g_block_manifest_mutex);
+    return version;
 }
 
 bool msg_processor_get_block_manifest_header(struct block_piece_manifest *out,

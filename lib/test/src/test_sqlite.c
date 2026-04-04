@@ -8,6 +8,7 @@
 #include "config/runtime.h"
 #include "wallet/wallet.h"
 #include "script/standard.h"
+#include "validation/chainstate.h"
 #include <unistd.h>
 
 static struct transaction make_sync_test_tx(void)
@@ -381,6 +382,40 @@ int test_sqlite(void) {
 
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
+    }
+
+    {
+        printf("SQLite sync job wrappers fail closed and fallback cleanly... ");
+        struct node_db ndb;
+        struct active_chain ac;
+        struct node_db_sync_catchup_job catch_job;
+        struct node_db_sync_import_job import_job;
+        struct coins_view_db cvdb = {0};
+        int result = -1;
+        bool ok = node_db_open(&ndb, ":memory:");
+
+        active_chain_init(&ac);
+        node_db_sync_catchup_job_init(&catch_job);
+        node_db_sync_import_job_init(&import_job);
+
+        ok = ok && !node_db_sync_catchup_job_start(NULL, &ndb, &ac, NULL, NULL);
+        ok = ok && !node_db_sync_catchup_job_start(&catch_job, NULL, &ac, NULL, NULL);
+        ok = ok && !node_db_sync_catchup_job_start(&catch_job, &ndb, NULL, NULL, NULL);
+        ok = ok && !node_db_sync_import_job_start(NULL, &ndb, &cvdb);
+        ok = ok && !node_db_sync_import_job_start(&import_job, &ndb, NULL);
+        ok = ok && !node_db_sync_catchup_job_join(&catch_job, NULL);
+        ok = ok && !node_db_sync_import_job_join(&import_job, NULL);
+
+        if (node_db_sync_catchup_job_start(&catch_job, &ndb, &ac, NULL, NULL))
+            ok = ok && node_db_sync_catchup_job_join(&catch_job, &result) && result == 0;
+
+        ok = ok && !node_db_sync_catchup_job_is_started(&catch_job);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+
+        active_chain_free(&ac);
+        node_db_close(&ndb);
     }
 
     /* sync_controller DB-service wrappers */

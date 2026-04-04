@@ -2970,6 +2970,149 @@ skip_parallel_tests:
         else { printf("FAIL\n"); failures++; }
     }
 
+    printf("msg_processor cache versioning... ");
+    {
+        bool ok = true;
+        uint8_t *manifest1_hashes = NULL;
+        uint8_t *manifest2_hashes = NULL;
+        uint8_t *bmanifest1_hashes = NULL;
+        uint8_t *bmanifest2_hashes = NULL;
+        struct snapshot_offer offer1 = {0};
+        struct snapshot_offer offer2 = {0};
+        struct snapshot_offer got_offer = {0};
+        struct sync_manifest manifest1 = {0};
+        struct sync_manifest manifest2 = {0};
+        struct sync_manifest manifest_out = {0};
+        struct block_piece_manifest bmanifest1 = {0};
+        struct block_piece_manifest bmanifest2 = {0};
+        struct block_piece_manifest bmanifest_out = {0};
+        struct sync_manifest manifest_bad = {0};
+        struct block_piece_manifest bmanifest_bad = {0};
+
+        offer1.height = 100;
+        offer2.height = 200;
+
+        uint64_t offer_v0 = msg_processor_offer_cache_version();
+        msg_processor_update_offer(&offer1);
+        uint64_t offer_v1 = msg_processor_offer_cache_version();
+        ok = ok && offer_v1 > offer_v0;
+        ok = ok && msg_processor_get_offer(&got_offer);
+        ok = ok && got_offer.height == 100;
+
+        msg_processor_update_offer(&offer2);
+        uint64_t offer_v2 = msg_processor_offer_cache_version();
+        ok = ok && offer_v2 > offer_v1;
+        ok = ok && msg_processor_get_offer(&got_offer);
+        ok = ok && got_offer.height == 200;
+        msg_processor_invalidate_offer();
+        ok = ok && msg_processor_offer_cache_version() > offer_v2;
+        ok = ok && !msg_processor_get_offer(&got_offer);
+
+        manifest1_hashes = calloc(1, 32);
+        manifest2_hashes = calloc(2, 32);
+        bmanifest1_hashes = calloc(1, 32);
+        bmanifest2_hashes = calloc(2, 32);
+        if (!manifest1_hashes || !manifest2_hashes || !bmanifest1_hashes ||
+            !bmanifest2_hashes) {
+            ok = false;
+        } else {
+        manifest1.num_chunks = 1;
+        manifest1.chunk_size = 128;
+        manifest1.chunk_hashes = (uint8_t (*)[32]) manifest1_hashes;
+        memset(manifest1.chunk_hashes[0], 0xA0, 32);
+
+            uint64_t manifest_v0 = msg_processor_manifest_cache_version();
+            ok = ok && msg_processor_publish_manifest(&manifest1);
+            manifest1_hashes = NULL;
+            uint64_t manifest_v1 = msg_processor_manifest_cache_version();
+            ok = ok && manifest_v1 > manifest_v0;
+            ok = ok && msg_processor_get_manifest_header(&manifest_out);
+            ok = ok && manifest_out.num_chunks == 1;
+            ok = ok && manifest_out.chunk_size == 128;
+
+            manifest2.num_chunks = 2;
+            manifest2.chunk_size = 64;
+            manifest2.chunk_hashes = (uint8_t (*)[32]) manifest2_hashes;
+            memset(manifest2.chunk_hashes[0], 0xB0, 32);
+            memset(manifest2.chunk_hashes[1], 0xB1, 32);
+            uint64_t manifest_v2 = msg_processor_manifest_cache_version();
+            ok = ok && msg_processor_publish_manifest(&manifest2);
+            manifest2_hashes = NULL;
+            uint64_t manifest_v3 = msg_processor_manifest_cache_version();
+            ok = ok && manifest_v3 > manifest_v2;
+            ok = ok && msg_processor_get_manifest_header(&manifest_out);
+            ok = ok && manifest_out.num_chunks == 2;
+            msg_processor_invalidate_manifest();
+            ok = ok && msg_processor_manifest_cache_version() > manifest_v3;
+            ok = ok && !msg_processor_get_manifest_header(&manifest_out);
+            manifest_bad.num_chunks = 0;
+            manifest_bad.chunk_size = 0;
+            manifest_bad.chunk_hashes = NULL;
+            uint64_t manifest_bad_v0 = msg_processor_manifest_cache_version();
+            ok = ok && !msg_processor_publish_manifest(&manifest_bad);
+            ok = ok && msg_processor_manifest_cache_version() == manifest_bad_v0;
+        }
+
+        if (manifest1_hashes) free(manifest1_hashes);
+        if (manifest2_hashes) free(manifest2_hashes);
+
+        bmanifest1.start_height = 1;
+        bmanifest1.end_height = 100;
+        bmanifest1.num_pieces = 1;
+        bmanifest1.piece_hashes = (uint8_t (*)[32]) bmanifest1_hashes;
+        if (ok) {
+            memset(bmanifest1.piece_hashes[0], 0xC0, 32);
+
+            uint64_t bmanifest_v0 = msg_processor_block_manifest_cache_version();
+            ok = ok && msg_processor_publish_block_manifest(&bmanifest1, 100);
+            bmanifest1_hashes = NULL;
+            uint64_t bmanifest_v1 = msg_processor_block_manifest_cache_version();
+            ok = ok && bmanifest_v1 > bmanifest_v0;
+            int32_t built_at_height = 0;
+            ok = ok && msg_processor_get_block_manifest_header(&bmanifest_out,
+                                                               &built_at_height);
+            ok = ok && built_at_height == 100;
+            ok = ok && bmanifest_out.start_height == 1;
+
+            bmanifest2.start_height = 101;
+            bmanifest2.end_height = 200;
+            bmanifest2.num_pieces = 2;
+            bmanifest2.piece_hashes = (uint8_t (*)[32]) bmanifest2_hashes;
+            memset(bmanifest2.piece_hashes[0], 0xD0, 32);
+            memset(bmanifest2.piece_hashes[1], 0xD1, 32);
+            uint64_t bmanifest_v2 = msg_processor_block_manifest_cache_version();
+            ok = ok && msg_processor_publish_block_manifest(&bmanifest2, 200);
+            bmanifest2_hashes = NULL;
+            uint64_t bmanifest_v3 = msg_processor_block_manifest_cache_version();
+            ok = ok && bmanifest_v3 > bmanifest_v2;
+            ok = ok && msg_processor_get_block_manifest_header(&bmanifest_out,
+                                                               &built_at_height);
+            ok = ok && built_at_height == 200;
+            msg_processor_invalidate_block_manifest();
+            ok = ok && msg_processor_block_manifest_cache_version() > bmanifest_v3;
+            ok = ok && !msg_processor_get_block_manifest_header(&bmanifest_out,
+                                                                &built_at_height);
+            ok = ok && built_at_height == 0;
+            bmanifest_bad.num_pieces = 1;
+            bmanifest_bad.piece_hashes = NULL;
+            uint64_t bmanifest_bad_v0 = msg_processor_block_manifest_cache_version();
+            ok = ok && !msg_processor_publish_block_manifest(&bmanifest_bad,
+                                                             300);
+            ok = ok && msg_processor_block_manifest_cache_version()
+                   == bmanifest_bad_v0;
+        }
+
+        if (bmanifest1_hashes) free(bmanifest1_hashes);
+        if (bmanifest2_hashes) free(bmanifest2_hashes);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+
+        msg_processor_invalidate_offer();
+        msg_processor_invalidate_manifest();
+        msg_processor_invalidate_block_manifest();
+    }
+
     /* ── Robustness: peer_misbehaving accumulates and bans ── */
     printf("net: peer_misbehaving accumulates score... ");
     {

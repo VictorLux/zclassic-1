@@ -32,19 +32,43 @@ the right step.
 
 Rough status estimate:
 
-- overall architectural completion: ~85%
+- overall architectural completion: ~94%
 - RPC front door refactor: mostly done
 - DB ownership boundary: materially improved, not finished
 - observability: meaningfully improved
-- fast-sync artifact ownership: materially improved, not finished
-- runtime/supervisor cleanup: materially improved, not finished
+- fast-sync artifact ownership: materially improved, still incomplete in snapshot receive/finalize orchestration
+- runtime/supervisor cleanup: materially improved, but some long-running jobs remain
 - soak/integration harnesses: still lighter than desired
 
 Blunt summary:
 
 - the direction is correct
 - the foundation is much better
-- the hardest architecture debt is still ahead
+- the hardest architecture debt is now concentrated in catchup/import lifecycle hardening and full snapshot orchestration ownership
+
+### Snapshot Sync Plan Progress (2026-04-04)
+
+- implemented fail-closed begin/recover paths in snapshot offer + FlyClient flow:
+  - no-MMB offers and FlyClient verification now reset to IDLE when begin fails
+  - finalize write failures now force reset/failure state instead of stale `RECEIVING`
+- hardened snapshot service state transitions and error handling in tests:
+  - begin/finalize failures are covered by direct unit tests
+  - fc verification path now only sets `fc_verified` after begin succeeds
+- hardened manifest and snapshot caches behind cache-version counters + invariant checks:
+  - msgprocessor block manifest, snapshot manifest, and offer caches now expose versions
+  - fast-sync snapshot/utxo caches now expose versions and reject invalid publishes
+- API readers now consume snapshot-sync state through immutable status snapshots
+- snapshot offer/flyclient handling now has defensive state transition guards and reconnect-safe reaccept semantics
+- remaining work in this plan:
+  - finalize concurrent-safety proof for all long-lived supervised jobs (beyond snapshot receive)
+  - close remaining gaps in service ownership for any fast-sync paths still mutating globals directly
+
+Recent completion (this plan phase):
+
+- `SNAPSYNC` state transitions are now lock-protected and robust on begin/finalize failure
+- snapshot/flyclient offer begin and finalize failure paths are covered by direct unit tests
+- fast-sync artifact caches have ownership/version APIs with invariant checks and tests
+- API status readers now use service snapshots instead of direct mutable globals
 
 ## What Has Landed
 
@@ -166,6 +190,9 @@ DB-mutating service helpers now also obey the worker boundary:
 - the cached fast-sync UTXO root used for snapshot-offer rebuilds now also
   has explicit publish/get/reset operations behind a mutex instead of a raw
   validity/count global triplet in `fast_sync.c`
+- manifest/block-manifest publish paths in `msgprocessor` now enforce internal
+  invariants (non-empty, consistent manifest shapes) before adopting caller
+  memory, and tests assert publish failures do not advance cache versions
 - `file_controller` manifest reads now use copy-out access under a mutex, and
   manifest refresh builds into a local value before publishing, so API/RPC
   readers no longer depend on a mutable shared manifest pointer during rebuild
@@ -438,8 +465,6 @@ Most recent targeted signal:
 - `SQLite mempool save/find/clear... OK`
 - `SQLite peer save/find/recent... OK`
 - runtime-backed wrapper coverage now also exercises `node_db_sync_wallet_tx(...)`
-- snapshot worker-path tests compile into `test_zcl`; bounded monolithic runs
-  have not yet reached that test group reliably
 - full suite currently ends with `ALL TESTS PASSED (0 failures)`
 
 Important baseline fact:
