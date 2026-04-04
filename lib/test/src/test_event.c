@@ -437,6 +437,25 @@ static int test_sync_snapshot_path(void)
     return failures;
 }
 
+static int test_sync_snapshot_from_headers(void)
+{
+    int failures = 0;
+
+    TEST("sync state machine allows snapshot receive during header sync") {
+        event_log_init();
+
+        ASSERT(sync_set_state(SYNC_FINDING_PEERS, "bootstrap"));
+        ASSERT(sync_set_state(SYNC_HEADERS_DOWNLOAD, "headers"));
+        ASSERT(sync_set_state(SYNC_SNAPSHOT_RECEIVE, "verified snapshot"));
+        ASSERT(sync_get_state() == SYNC_SNAPSHOT_RECEIVE);
+        ASSERT(sync_set_state(SYNC_HEADERS_DOWNLOAD, "resume after snapshot"));
+        ASSERT(sync_set_state(SYNC_IDLE, "done"));
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
 static int test_peer_full_lifecycle(void)
 {
     int failures = 0;
@@ -618,6 +637,7 @@ int test_event(void)
     failures += test_dump_filtered();
     failures += test_sync_full_lifecycle();
     failures += test_sync_snapshot_path();
+    failures += test_sync_snapshot_from_headers();
     failures += test_peer_full_lifecycle();
     failures += test_peer_stale_recovery();
     failures += test_concurrent_emit();

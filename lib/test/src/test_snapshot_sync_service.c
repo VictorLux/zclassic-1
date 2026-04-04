@@ -508,8 +508,8 @@ static int test_snapshot_sync_service_transition_results(void)
         ASSERT(accepted.should_reset_offset);
         ASSERT(accepted.should_update_peer_state);
         ASSERT(accepted.peer_state == PEER_SNAPSHOT_RECEIVING);
-        ASSERT(accepted.should_set_sync_state);
-        ASSERT(accepted.sync_state == SYNC_SNAPSHOT_RECEIVE);
+        ASSERT(!accepted.should_set_sync_state);
+        ASSERT(accepted.sync_state == SYNC_IDLE);
 
         snapsync_build_serve_start(&serve_start, 1234);
         ASSERT(serve_start.should_begin_serving);

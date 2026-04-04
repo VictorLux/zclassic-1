@@ -143,13 +143,28 @@ static bool snapsync_begin_receive_write(struct node_db *ndb, void *ctx)
     if (!svc || !ndb || !ndb->open)
         return false;
 
-    if (!node_db_wipe_utxos(ndb))
-        return false;
     if (!node_db_begin(ndb))
         return false;
+    if (!node_db_wipe_utxos(ndb)) {
+        node_db_rollback(ndb);
+        return false;
+    }
     svc->received_utxos = 0;
     svc->last_commit_at = 0;
     return true;
+}
+
+static bool snapsync_rollback_receive_write(struct node_db *ndb, void *ctx)
+{
+    struct node_db_status status = {0};
+
+    (void)ctx;
+    if (!ndb || !ndb->open)
+        return false;
+    node_db_get_status(ndb, &status);
+    if (!status.tx_open)
+        return true;
+    return node_db_rollback(ndb);
 }
 
 static int snapsync_apply_chunk_local(struct snapshot_sync_service *svc,
@@ -380,12 +395,25 @@ void snapsync_init(struct snapshot_sync_service *svc, struct node_db *ndb)
 
 void snapsync_reset(struct snapshot_sync_service *svc)
 {
+    bool rollback_ok = true;
+
     if (!svc) {
         return;
     }
     snapsync_service_lock();
     bool turbo_active = svc->turbo_active;
     snapsync_service_unlock();
+    rollback_ok = snapsync_run_write(svc, snapsync_rollback_receive_write, NULL);
+    if (!rollback_ok) {
+        struct node_db_status status = {0};
+        if (svc->ndb)
+            node_db_get_status(svc->ndb, &status);
+        if (status.tx_open) {
+            snapsync_service_lock();
+            snapsync_set_state(SNAPSYNC_FAILED, "receive rollback failed");
+            snapsync_service_unlock();
+        }
+    }
     if (turbo_active) {
         bool ok = snapsync_exit_turbo_mode(svc);
         if (!ok) {
@@ -486,6 +514,11 @@ bool snapsync_begin_receive(struct snapshot_sync_service *svc)
 
     if (!snapsync_run_write(svc, snapsync_begin_receive_write, svc)) {
         snapsync_exit_turbo_mode(svc);
+        return false;
+    }
+    if (!sync_set_state(SYNC_SNAPSHOT_RECEIVE, "snapshot receive started")) {
+        snapsync_run_write(svc, snapsync_rollback_receive_write, NULL);
+        snapsync_reset(svc);
         return false;
     }
 
@@ -902,8 +935,8 @@ void snapsync_build_offer_acceptance(struct snapsync_offer_acceptance *result)
     result->should_reset_offset = true;
     result->should_update_peer_state = true;
     result->peer_state = PEER_SNAPSHOT_RECEIVING;
-    result->should_set_sync_state = true;
-    result->sync_state = SYNC_SNAPSHOT_RECEIVE;
+    result->should_set_sync_state = false;
+    result->sync_state = SYNC_IDLE;
 }
 
 void snapsync_build_end_result(struct snapsync_end_result *result,

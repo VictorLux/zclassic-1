@@ -60,6 +60,26 @@ Fresh-node probe results exposed the remaining important runtime bugs:
 That means the current blocking issue is not cryptographic verification.
 It is orchestration and transaction ownership after verification succeeds.
 
+Latest hardening pass:
+
+- snapshot receive setup is now atomic:
+  - `BEGIN` happens before UTXO wipe
+  - setup failure rolls back instead of leaving a half-reset UTXO table
+- snapshot reset now attempts to roll back any still-open receive transaction
+- sync state now enters `snapshot_receive` only when receive actually begins,
+  not earlier at offer-accept time
+- sync transition table now explicitly allows verified snapshot takeover from:
+  - `headers_download`
+  - `blocks_download`
+  - `connecting_blocks`
+- new tests cover:
+  - router contract update for offer acceptance
+  - sync transition into `snapshot_receive` from header sync
+- current verification after this pass:
+  - `make -j4 test_zcl`
+  - `./test_zcl`
+  - result: `ALL TESTS PASSED (0 failures)`
+
 ## Active Priorities
 
 ### Priority 1: Fix Secure Fast-Sync End To End
