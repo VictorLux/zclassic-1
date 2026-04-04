@@ -73,8 +73,8 @@ void register_file_rpc_commands(struct rpc_table *t);
 /* Set state for the file controller. */
 void file_controller_init(const char *datadir);
 
-/* Get the cached manifest (built in background). */
-const struct file_manifest *file_controller_get_manifest(void);
+/* Copy the cached manifest (built in background) into out. */
+bool file_controller_get_manifest_copy(struct file_manifest *out);
 
 /* Explicitly rebuild the cached manifest from the current datadir. */
 bool file_controller_refresh_manifest(void);

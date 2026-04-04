@@ -2028,14 +2028,16 @@ size_t api_handle_request(const char *method, const char *path,
 
     /* GET /api/files/manifest — JSON manifest of all chunks */
     if (strcmp(clean_path, "/api/files/manifest") == 0) {
-        const struct file_manifest *fm = file_controller_get_manifest();
-        if (!fm) {
+        struct file_manifest manifest;
+        if (!file_controller_get_manifest_copy(&manifest)) {
             /* Try building on demand */
             extern void file_controller_init(const char *);
-            if (g_api_ctx.datadir) file_controller_init(g_api_ctx.datadir);
-            fm = file_controller_get_manifest();
+            if (g_api_ctx.datadir) {
+                file_controller_init(g_api_ctx.datadir);
+                file_controller_refresh_manifest();
+            }
         }
-        if (!fm)
+        if (!file_controller_get_manifest_copy(&manifest))
             return json_error(response, response_max, JSON_500_HEADERS,
                               "No block files for manifest");
 
@@ -2046,24 +2048,24 @@ size_t api_handle_request(const char *method, const char *path,
         size_t w = 0;
         char root_hex[65];
         for (int i = 0; i < 32; i++)
-            snprintf(root_hex + i * 2, 3, "%02x", fm->root_hash[i]);
+            snprintf(root_hex + i * 2, 3, "%02x", manifest.root_hash[i]);
 
         w += (size_t)snprintf(buf + w, 131072 - w,
             "{\"root_hash\":\"%s\","
             "\"num_chunks\":%u,"
             "\"total_bytes\":%llu,"
             "\"chunks\":[",
-            root_hex, fm->num_chunks,
-            (unsigned long long)fm->total_bytes);
-        for (uint32_t i = 0; i < fm->num_chunks && w + 256 < 131072; i++) {
+            root_hex, manifest.num_chunks,
+            (unsigned long long)manifest.total_bytes);
+        for (uint32_t i = 0; i < manifest.num_chunks && w + 256 < 131072; i++) {
             char hex[65];
             for (int j = 0; j < 32; j++)
-                snprintf(hex + j * 2, 3, "%02x", fm->chunks[i].sha3[j]);
+                snprintf(hex + j * 2, 3, "%02x", manifest.chunks[i].sha3[j]);
             w += (size_t)snprintf(buf + w, 131072 - w,
                 "%s{\"sha3\":\"%s\",\"size\":%u,\"file\":%d,\"offset\":%llu}",
-                i > 0 ? "," : "", hex, fm->chunks[i].size,
-                fm->chunks[i].file_index,
-                (unsigned long long)fm->chunks[i].offset);
+                i > 0 ? "," : "", hex, manifest.chunks[i].size,
+                manifest.chunks[i].file_index,
+                (unsigned long long)manifest.chunks[i].offset);
         }
         w += (size_t)snprintf(buf + w, 131072 - w, "]}");
 
@@ -2083,6 +2085,7 @@ size_t api_handle_request(const char *method, const char *path,
     /* GET /api/files/:sha3hash — raw chunk bytes by SHA3 hash */
     if (strncmp(clean_path, "/api/files/", 11) == 0 &&
         strlen(clean_path + 11) == 64) {
+        struct file_manifest manifest;
         const char *hex = clean_path + 11;
         uint8_t sha3[32];
         for (int i = 0; i < 32; i++) {
@@ -2092,11 +2095,10 @@ size_t api_handle_request(const char *method, const char *path,
                     JSON_404_HEADERS, "Invalid SHA3 hash");
             sha3[i] = (uint8_t)byte;
         }
-        const struct file_manifest *fm = file_controller_get_manifest();
-        if (!fm)
+        if (!file_controller_get_manifest_copy(&manifest))
             return json_error(response, response_max,
                 JSON_404_HEADERS, "No manifest");
-        const struct file_chunk *chunk = file_manifest_find(fm, sha3);
+        const struct file_chunk *chunk = file_manifest_find(&manifest, sha3);
         if (!chunk)
             return json_error(response, response_max,
                 JSON_404_HEADERS, "Chunk not found");

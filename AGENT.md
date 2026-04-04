@@ -166,6 +166,9 @@ DB-mutating service helpers now also obey the worker boundary:
 - the cached fast-sync UTXO root used for snapshot-offer rebuilds now also
   has explicit publish/get/reset operations behind a mutex instead of a raw
   validity/count global triplet in `fast_sync.c`
+- `file_controller` manifest reads now use copy-out access under a mutex, and
+  manifest refresh builds into a local value before publishing, so API/RPC
+  readers no longer depend on a mutable shared manifest pointer during rebuild
 - file-service startup manifest build is now tracked and joined instead of
   detached, and file-service start/stop is being hardened toward idempotent
   lifecycle behavior

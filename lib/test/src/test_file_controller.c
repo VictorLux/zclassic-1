@@ -164,7 +164,7 @@ static int test_controller_refresh_manifest_api(void)
         char dir[256];
         char blk[320];
         char snap[320];
-        const struct file_manifest *fm = NULL;
+        struct file_manifest fm;
 
         setup_manifest_test_dir(dir, sizeof(dir));
         snprintf(blk, sizeof(blk), "%s/blocks/blk00000.dat", dir);
@@ -176,8 +176,8 @@ static int test_controller_refresh_manifest_api(void)
 
         file_controller_init(dir);
         bool ok = file_controller_refresh_manifest();
-        fm = file_controller_get_manifest();
-        ok = ok && fm != NULL && manifest_has_file_index(fm, 254);
+        ok = ok && file_controller_get_manifest_copy(&fm);
+        ok = ok && manifest_has_file_index(&fm, 254);
 
         cleanup_manifest_test_dir(dir);
         if (ok) printf("OK\n");

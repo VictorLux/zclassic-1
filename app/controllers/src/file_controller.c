@@ -17,14 +17,18 @@
 #include <dirent.h>
 #include <unistd.h>
 #include <sqlite3.h>
+#include <pthread.h>
 
 struct file_context {
     const char *datadir;
     struct file_manifest manifest;
     bool manifest_valid;
+    pthread_mutex_t manifest_mutex;
 };
 
-static struct file_context g_file_ctx = {0};
+static struct file_context g_file_ctx = {
+    .manifest_mutex = PTHREAD_MUTEX_INITIALIZER,
+};
 
 static struct file_context *file_ctx(void)
 {
@@ -122,31 +126,58 @@ static bool file_manifest_cache_inputs_are_fresh(const struct file_manifest *fm,
 void file_controller_init(const char *datadir)
 {
     struct file_context *ctx = file_ctx();
+    pthread_mutex_lock(&ctx->manifest_mutex);
     ctx->datadir = datadir;
     memset(&ctx->manifest, 0, sizeof(ctx->manifest));
     ctx->manifest_valid = false;
+    pthread_mutex_unlock(&ctx->manifest_mutex);
 }
 
-const struct file_manifest *file_controller_get_manifest(void)
+bool file_controller_get_manifest_copy(struct file_manifest *out)
 {
     struct file_context *ctx = file_ctx();
-    return ctx->manifest_valid ? &ctx->manifest : NULL;
+
+    if (!out)
+        return false;
+
+    pthread_mutex_lock(&ctx->manifest_mutex);
+    if (ctx->manifest_valid)
+        *out = ctx->manifest;
+    else
+        memset(out, 0, sizeof(*out));
+    bool ok = ctx->manifest_valid;
+    pthread_mutex_unlock(&ctx->manifest_mutex);
+    return ok;
 }
 
 bool file_controller_refresh_manifest(void)
 {
     struct file_context *ctx = file_ctx();
+    struct file_manifest manifest = {0};
+    bool manifest_valid = false;
 
-    if (!ctx->datadir) {
+    pthread_mutex_lock(&ctx->manifest_mutex);
+    const char *datadir = ctx->datadir;
+    pthread_mutex_unlock(&ctx->manifest_mutex);
+
+    if (!datadir) {
+        pthread_mutex_lock(&ctx->manifest_mutex);
         ctx->manifest_valid = false;
         memset(&ctx->manifest, 0, sizeof(ctx->manifest));
+        pthread_mutex_unlock(&ctx->manifest_mutex);
         return false;
     }
 
-    ctx->manifest_valid = file_manifest_build(&ctx->manifest, ctx->datadir);
-    if (!ctx->manifest_valid)
+    manifest_valid = file_manifest_build(&manifest, datadir);
+
+    pthread_mutex_lock(&ctx->manifest_mutex);
+    ctx->manifest_valid = manifest_valid;
+    if (manifest_valid)
+        ctx->manifest = manifest;
+    else
         memset(&ctx->manifest, 0, sizeof(ctx->manifest));
-    return ctx->manifest_valid;
+    pthread_mutex_unlock(&ctx->manifest_mutex);
+    return manifest_valid;
 }
 
 void file_controller_get_manifest_status(struct file_manifest_status *out)
@@ -157,6 +188,7 @@ void file_controller_get_manifest_status(struct file_manifest_status *out)
     if (!out)
         return;
 
+    pthread_mutex_lock(&ctx->manifest_mutex);
     status.datadir_configured = (ctx->datadir != NULL);
     status.manifest_valid = ctx->manifest_valid;
     if (ctx->manifest_valid) {
@@ -165,9 +197,12 @@ void file_controller_get_manifest_status(struct file_manifest_status *out)
         status.snapshot_served = file_manifest_has_file_index(&ctx->manifest, 254);
         status.block_index_served = file_manifest_has_file_index(&ctx->manifest, 253);
     }
-    if (ctx->datadir) {
-        status.snapshot_present = file_artifact_exists(ctx->datadir, 254, 1000000, NULL);
-        status.block_index_present = file_artifact_exists(ctx->datadir, 253, 1000000, NULL);
+    const char *datadir = ctx->datadir;
+    pthread_mutex_unlock(&ctx->manifest_mutex);
+
+    if (datadir) {
+        status.snapshot_present = file_artifact_exists(datadir, 254, 1000000, NULL);
+        status.block_index_present = file_artifact_exists(datadir, 253, 1000000, NULL);
     }
 
     *out = status;
@@ -618,7 +653,7 @@ bool file_export_consensus_snapshot(const char *datadir)
 static bool rpc_getfilemanifest(const struct json_value *params, bool help,
                                  struct json_value *result)
 {
-    struct file_context *ctx = file_ctx();
+    struct file_manifest manifest;
     (void)params;
     RPC_HELP(help, result,
         "getfilemanifest\n"
@@ -627,10 +662,9 @@ static bool rpc_getfilemanifest(const struct json_value *params, bool help,
         "  { root_hash, chain_height, total_bytes, num_chunks, chunks[] }\n");
 
     /* Build manifest on first call if not cached */
-    if (!ctx->manifest_valid)
+    if (!file_controller_get_manifest_copy(&manifest))
         file_controller_refresh_manifest();
-
-    if (!ctx->manifest_valid) {
+    if (!file_controller_get_manifest_copy(&manifest)) {
         json_set_str(result, "error: no block files found");
         return true;
     }
@@ -639,28 +673,28 @@ static bool rpc_getfilemanifest(const struct json_value *params, bool help,
 
     char root_hex[65];
     for (int i = 0; i < 32; i++)
-        snprintf(root_hex + i * 2, 3, "%02x", ctx->manifest.root_hash[i]);
+        snprintf(root_hex + i * 2, 3, "%02x", manifest.root_hash[i]);
     json_push_kv_str(result, "root_hash", root_hex);
-    json_push_kv_int(result, "num_chunks", (int64_t)ctx->manifest.num_chunks);
-    json_push_kv_int(result, "total_bytes", (int64_t)ctx->manifest.total_bytes);
+    json_push_kv_int(result, "num_chunks", (int64_t)manifest.num_chunks);
+    json_push_kv_int(result, "total_bytes", (int64_t)manifest.total_bytes);
 
     /* Chunk list */
     struct json_value chunks_arr;
     json_set_array(&chunks_arr);
-    for (uint32_t i = 0; i < ctx->manifest.num_chunks; i++) {
+    for (uint32_t i = 0; i < manifest.num_chunks; i++) {
         struct json_value chunk_obj;
         json_set_object(&chunk_obj);
 
         char hex[65];
         for (int j = 0; j < 32; j++)
-            snprintf(hex + j * 2, 3, "%02x", ctx->manifest.chunks[i].sha3[j]);
+            snprintf(hex + j * 2, 3, "%02x", manifest.chunks[i].sha3[j]);
         json_push_kv_str(&chunk_obj, "sha3", hex);
         json_push_kv_int(&chunk_obj, "size",
-                          (int64_t)ctx->manifest.chunks[i].size);
+                          (int64_t)manifest.chunks[i].size);
         json_push_kv_int(&chunk_obj, "file_index",
-                          (int64_t)ctx->manifest.chunks[i].file_index);
+                          (int64_t)manifest.chunks[i].file_index);
         json_push_kv_int(&chunk_obj, "offset",
-                          (int64_t)ctx->manifest.chunks[i].offset);
+                          (int64_t)manifest.chunks[i].offset);
 
         json_push_back(&chunks_arr, &chunk_obj);
     }
@@ -700,6 +734,8 @@ static bool rpc_getfilechunk(const struct json_value *params, bool help,
                               struct json_value *result)
 {
     struct file_context *ctx = file_ctx();
+    struct file_manifest manifest;
+    const char *datadir;
     RPC_HELP(help, result,
         "getfilechunk \"sha3hash\"\n"
         "\nReturn a file chunk by its SHA3-256 hash.\n"
@@ -707,7 +743,7 @@ static bool rpc_getfilechunk(const struct json_value *params, bool help,
         "  1. sha3hash (string, required) — 64-char hex SHA3 hash\n"
         "\nResult: { size, sha3, data_hex } or error\n");
 
-    if (!ctx->manifest_valid || !params) {
+    if (!params || !file_controller_get_manifest_copy(&manifest)) {
         json_set_str(result, "error: file manifest not initialized");
         return true;
     }
@@ -730,15 +766,19 @@ static bool rpc_getfilechunk(const struct json_value *params, bool help,
         sha3[i] = (uint8_t)byte;
     }
 
-    const struct file_chunk *chunk = file_manifest_find(&ctx->manifest, sha3);
+    const struct file_chunk *chunk = file_manifest_find(&manifest, sha3);
     if (!chunk) {
         json_set_str(result, "error: chunk not found");
         return true;
     }
 
+    pthread_mutex_lock(&ctx->manifest_mutex);
+    datadir = ctx->datadir;
+    pthread_mutex_unlock(&ctx->manifest_mutex);
+
     uint8_t *data = NULL;
     uint32_t data_size = 0;
-    if (!ctx->datadir || !file_chunk_read(chunk, ctx->datadir, &data, &data_size)) {
+    if (!datadir || !file_chunk_read(chunk, datadir, &data, &data_size)) {
         json_set_str(result, "error: failed to read chunk from disk");
         return true;
     }
