@@ -664,6 +664,8 @@ Most recent targeted signal:
 - `fast_rebuild_chainstate()` now checks fallback `tip_hash` read and
   `coins_best_block` publish writes instead of silently assuming best-block
   restoration succeeded during boot
+- `boot.c` now fails closed on shielded-value backfill save errors and logs
+  final tip-persist failures instead of silently ignoring them during startup
 - full suite currently ends with `ALL TESTS PASSED (0 failures)`
 
 Important baseline fact:

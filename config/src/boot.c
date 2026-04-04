@@ -158,7 +158,11 @@ static bool boot_backfill_shielded_values_write(struct node_db *ndb, void *ctx)
         if (db_block_find_by_height(ndb, bi->nHeight, &blk)) {
             blk.sprout_value = bi->nSproutValue;
             blk.sapling_value = bi->nSaplingValue;
-            db_block_save(ndb, &blk);
+            if (!db_block_save(ndb, &blk)) {
+                if (tx_open)
+                    node_db_rollback(ndb);
+                return false;
+            }
             updated++;
         }
     }
@@ -1452,9 +1456,11 @@ bool app_init(struct app_context *ctx)
 
     struct block_index *tip = active_chain_tip(&g_state.chain_active);
     if (tip && tip->phashBlock) {
-        if (g_node_db.open)
-            node_db_sync_set_tip(&g_node_db, tip->phashBlock->data,
-                                 tip->nHeight);
+        if (g_node_db.open &&
+            !node_db_sync_set_tip(&g_node_db, tip->phashBlock->data,
+                                  tip->nHeight)) {
+            fprintf(stderr, "boot: failed to persist final chain tip\n");
+        }
         char hex[65];
         uint256_get_hex(tip->phashBlock, hex);
         printf("Chain tip: height=%d hash=%s\n", tip->nHeight, hex);
