@@ -936,8 +936,8 @@ static void *build_tx_index_thread(void *arg)
     uint8_t *cached_data = NULL;
     size_t cached_size = 0;
 
-    if (!node_db_begin(&ndb)) {
-        fprintf(stderr, "tx_index: failed to begin bulk load transaction\n");
+    if (!snapshot_tx_begin_checked(&ndb,
+            "tx_index begin bulk load transaction")) {
         sqlite3_finalize(query);
         node_db_close(&ndb);
         return NULL;
@@ -961,37 +961,76 @@ static void *build_tx_index_thread(void *arg)
             snprintf(path, sizeof(path), "%s/blocks/blk%05d.dat",
                      datadir, file_num);
             int fd = open(path, O_RDONLY);
-            if (fd < 0) { cached_data = NULL; cached_file = -1; continue; }
+            if (fd < 0) {
+                fprintf(stderr, "tx_index: failed to open %s\n", path);
+                ok = false;
+                break;
+            }
             struct stat st;
-            if (fstat(fd, &st) != 0) { close(fd); cached_data = NULL; continue; }
+            if (fstat(fd, &st) != 0) {
+                fprintf(stderr, "tx_index: failed to stat %s\n", path);
+                close(fd);
+                ok = false;
+                break;
+            }
             cached_size = (size_t)st.st_size;
             cached_data = mmap(NULL, cached_size, PROT_READ,
                                MAP_PRIVATE, fd, 0);
             close(fd);
-            if (cached_data == MAP_FAILED) { cached_data = NULL; continue; }
+            if (cached_data == MAP_FAILED) {
+                fprintf(stderr, "tx_index: failed to mmap %s\n", path);
+                cached_data = NULL;
+                ok = false;
+                break;
+            }
             posix_madvise(cached_data, cached_size, POSIX_MADV_SEQUENTIAL);
             cached_file = file_num;
         }
 
-        if (!cached_data || (size_t)data_pos >= cached_size) continue;
+        if (!cached_data || (size_t)data_pos >= cached_size) {
+            fprintf(stderr, "tx_index: invalid block offset for file %d height %d\n",
+                    file_num, height);
+            ok = false;
+            break;
+        }
 
         /* Parse block header to find transaction data */
         const uint8_t *bdata = cached_data + data_pos;
         size_t bavail = cached_size - (size_t)data_pos;
 
         /* Skip header: 140 fixed + varint(solution) + solution */
-        if (bavail < 141) continue;
+        if (bavail < 141) {
+            fprintf(stderr, "tx_index: truncated block header at height %d\n",
+                    height);
+            ok = false;
+            break;
+        }
         size_t pos = 140;
         uint64_t sol_size;
         int n = read_cs(bdata + pos, bavail - pos, &sol_size);
-        if (n == 0) continue;
+        if (n == 0) {
+            fprintf(stderr, "tx_index: failed to read solution size at height %d\n",
+                    height);
+            ok = false;
+            break;
+        }
         pos += (size_t)n + (size_t)sol_size;
 
         /* num_tx */
-        if (pos >= bavail) continue;
+        if (pos >= bavail) {
+            fprintf(stderr, "tx_index: truncated tx-count header at height %d\n",
+                    height);
+            ok = false;
+            break;
+        }
         uint64_t file_num_tx;
         n = read_cs(bdata + pos, bavail - pos, &file_num_tx);
-        if (n == 0) continue;
+        if (n == 0) {
+            fprintf(stderr, "tx_index: failed to read tx count at height %d\n",
+                    height);
+            ok = false;
+            break;
+        }
         pos += (size_t)n;
 
         /* Parse each transaction for its txid */
@@ -1001,7 +1040,12 @@ static void *build_tx_index_thread(void *arg)
         for (int ti = 0; ti < tx_limit && pos < bavail; ti++) {
             uint8_t txid[32];
             size_t tx_size = skip_tx_and_hash(bdata + pos, bavail - pos, txid);
-            if (tx_size == 0) break;
+            if (tx_size == 0) {
+                fprintf(stderr, "tx_index: failed to parse tx %d at height %d\n",
+                        ti, height);
+                ok = false;
+                break;
+            }
 
             struct db_tx_index dt;
             memset(&dt, 0, sizeof(dt));
@@ -1012,15 +1056,23 @@ static void *build_tx_index_thread(void *arg)
             dt.file_num = file_num;
             dt.file_pos = data_pos;
             dt.is_coinbase = (ti == 0);
-            db_tx_save(&ndb, &dt);
+            if (!db_tx_save(&ndb, &dt)) {
+                fprintf(stderr, "tx_index: failed to save tx index at height %d tx %d\n",
+                        height, ti);
+                ok = false;
+                break;
+            }
             indexed++;
 
             pos += tx_size;
         }
+        if (!ok)
+            break;
 
         if (indexed % 500000 == 0 && indexed > 0) {
-            if (!node_db_commit(&ndb)) {
+            if (!snapshot_tx_commit_checked(&ndb, "tx_index batch commit")) {
                 ok = false;
+                tx_open = false;
                 break;
             }
             tx_open = false;
@@ -1028,7 +1080,7 @@ static void *build_tx_index_thread(void *arg)
             int rate = elapsed > 0 ? indexed / (int)elapsed : indexed;
             printf("tx_index: %d transactions (%d/s)\n", indexed, rate);
             fflush(stdout);
-            if (!node_db_begin(&ndb)) {
+            if (!snapshot_tx_begin_checked(&ndb, "tx_index batch reopen")) {
                 ok = false;
                 break;
             }
@@ -1043,10 +1095,10 @@ static void *build_tx_index_thread(void *arg)
     }
 
     if (tx_open && !ok)
-        node_db_rollback(&ndb);
-    else if (tx_open && !node_db_commit(&ndb)) {
+        snapshot_tx_rollback_best_effort(&ndb, "tx_index rollback after failure");
+    else if (tx_open && !snapshot_tx_commit_checked(&ndb, "tx_index final commit")) {
         ok = false;
-        node_db_rollback(&ndb);
+        snapshot_tx_rollback_best_effort(&ndb, "tx_index rollback after final commit failure");
     }
 
     if (cached_data) munmap(cached_data, cached_size);

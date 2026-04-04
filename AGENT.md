@@ -188,6 +188,19 @@ Next implementation step:
 - next:
   - continue the same pass over the remaining snapshot-controller direct-SQL workers, especially the tx-index builder path
 
+### Snapshot Plan Update (2026-04-04T05:06:35Z)
+
+- done:
+  - hardened the snapshot tx-index builder path in `app/controllers/src/snapshot_controller.c`:
+    - tx-index bulk load now uses checked begin/commit/reopen helpers
+    - file open/stat/mmap failures, malformed block offsets, tx-count parsing failures, tx parse failures, and `db_tx_save()` failures now abort the worker instead of silently skipping partial data
+    - rollback on failure is explicit and consistent with the other bulk-import workers
+  - regression check:
+    - `make -j4 test_zcl`
+    - `./test_zcl` ends with `ALL TESTS PASSED (0 failures)`
+- next:
+  - continue the final audit of remaining direct-SQL maintenance flows, but the largest snapshot-controller worker risks are now materially reduced
+
 ### Snapshot Plan Update (2026-04-04T03:20:00Z)
 
 - done:
