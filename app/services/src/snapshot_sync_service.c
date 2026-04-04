@@ -218,7 +218,7 @@ static int snapsync_apply_chunk_local(struct snapshot_sync_service *svc,
                                              u.address_hash, &u.has_address);
 
         if (!db_utxo_insert_raw(svc->ndb, &u))
-            continue;
+            return -1;
         applied++;
     }
 
@@ -304,7 +304,9 @@ static bool snapsync_finalize_write(struct node_db *ndb, void *ctx)
     if (sha3_ok) {
         bool has_mmb = false;
 
-        node_db_state_set(ndb, "coins_best_block", svc->offered_block_hash, 32);
+        if (!node_db_state_set(ndb, "coins_best_block",
+                               svc->offered_block_hash, 32))
+            return false;
         for (int i = 0; i < 32; i++) {
             if (svc->offered_mmb_root[i]) {
                 has_mmb = true;
@@ -312,10 +314,11 @@ static bool snapsync_finalize_write(struct node_db *ndb, void *ctx)
             }
         }
         if (has_mmb) {
-            node_db_state_set(ndb, "snapshot_mmb_root",
-                              svc->offered_mmb_root, 32);
-            node_db_state_set(ndb, "snapshot_mmr_height",
-                              &svc->offered_height, 4);
+            if (!node_db_state_set(ndb, "snapshot_mmb_root",
+                                   svc->offered_mmb_root, 32) ||
+                !node_db_state_set(ndb, "snapshot_mmr_height",
+                                   &svc->offered_height, 4))
+                return false;
         }
         if (!snapsync_exit_turbo_mode(svc))
             return false;
@@ -345,8 +348,12 @@ static bool snapsync_finalize_write(struct node_db *ndb, void *ctx)
         fprintf(stderr, "[snapsync] SHA3 FAILED!\n  Expected: %s\n  Got:      %s\n",
                 exp, got);
 
-        node_db_wipe_utxos(ndb);
-        snapsync_exit_turbo_mode(svc);
+        if (!node_db_wipe_utxos(ndb))
+            fprintf(stderr,
+                    "snapshot finalize: failed to wipe UTXOs after SHA3 mismatch\n");
+        if (!snapsync_exit_turbo_mode(svc))
+            fprintf(stderr,
+                    "snapshot finalize: failed to restore normal mode after SHA3 mismatch\n");
         snapsync_service_lock();
         svc->state = SNAPSYNC_FAILED;
         snapsync_set_state(SNAPSYNC_FAILED, "SHA3 verification failed");
@@ -495,6 +502,7 @@ int snapsync_apply_chunk(struct snapshot_sync_service *svc,
                          const uint8_t *chunk_data, size_t chunk_len)
 {
     struct snapsync_apply_chunk_ctx ctx;
+    bool restore_turbo = false;
     if (!svc || !chunk_data || chunk_len < 4)
         return -1;
 
@@ -511,6 +519,7 @@ int snapsync_apply_chunk(struct snapshot_sync_service *svc,
         snapsync_service_unlock();
         return -1;
     }
+    restore_turbo = svc->turbo_active;
 
     memset(&ctx, 0, sizeof(ctx));
     ctx.svc = svc;
@@ -525,6 +534,12 @@ int snapsync_apply_chunk(struct snapshot_sync_service *svc,
 
     if (!snapsync_run_write(svc, snapsync_apply_chunk_write, &ctx)) {
         free(ctx.chunk_data);
+        snapsync_service_lock();
+        svc->state = SNAPSYNC_FAILED;
+        snapsync_set_state(SNAPSYNC_FAILED, "snapshot chunk apply failed");
+        snapsync_service_unlock();
+        if (restore_turbo && !snapsync_exit_turbo_mode(svc))
+            fprintf(stderr, "snapshot apply: failed to restore normal mode\n");
         return -1;
     }
     free(ctx.chunk_data);

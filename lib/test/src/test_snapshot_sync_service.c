@@ -43,6 +43,13 @@ static void build_snapshot_chunk(struct byte_stream *s)
     stream_write_bytes(s, script, sizeof(script));
 }
 
+static void build_truncated_snapshot_chunk(struct byte_stream *s)
+{
+    build_snapshot_chunk(s);
+    if (s->size > 0)
+        s->size--;
+}
+
 static bool build_fc_chain(struct mmb *mmb,
                           struct mmb_leaf *leaves,
                           uint8_t (*leaf_hashes)[32],
@@ -758,6 +765,52 @@ static int test_snapshot_sync_service_finalize_mismatch(void)
     return failures;
 }
 
+static int test_snapshot_sync_service_chunk_apply_failure_fails_closed(void)
+{
+    int failures = 0;
+
+    TEST("snapshot sync service fails closed on malformed chunk apply") {
+        struct snapshot_sync_service svc;
+        struct node_db ndb;
+        struct db_service dbsvc;
+        struct app_runtime_context runtime;
+        struct node_db_status st;
+        struct byte_stream chunk;
+
+        memset(&svc, 0, sizeof(svc));
+        memset(&runtime, 0, sizeof(runtime));
+        ASSERT(node_db_open(&ndb, ":memory:"));
+        db_service_init(&dbsvc);
+        ASSERT(db_service_attach(&dbsvc, &ndb));
+        ASSERT(db_service_start(&dbsvc));
+
+        runtime.db_service = &dbsvc;
+        app_runtime_set_current(&runtime);
+
+        snapsync_init(&svc, &ndb);
+        svc.state = SNAPSYNC_NEGOTIATING;
+        svc.start_time_us = 1;
+        svc.offered_count = 2;
+        svc.serving_peer_id = 7;
+
+        ASSERT(snapsync_begin_receive(&svc));
+        build_truncated_snapshot_chunk(&chunk);
+        ASSERT(snapsync_apply_chunk(&svc, chunk.data, chunk.size) < 0);
+        ASSERT(svc.state == SNAPSYNC_FAILED);
+        ASSERT(!svc.turbo_active);
+        node_db_get_status(&ndb, &st);
+        ASSERT(!st.turbo_mode);
+
+        stream_free(&chunk);
+        app_runtime_set_current(NULL);
+        db_service_stop(&dbsvc);
+        node_db_close(&ndb);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
 int test_snapshot_sync_service(void)
 {
     int failures = 0;
@@ -776,5 +829,6 @@ int test_snapshot_sync_service(void)
     failures += test_snapshot_sync_service_runtime_accessor();
     failures += test_snapshot_sync_service_db_service_chunk_finalize();
     failures += test_snapshot_sync_service_finalize_mismatch();
+    failures += test_snapshot_sync_service_chunk_apply_failure_fails_closed();
     return failures;
 }

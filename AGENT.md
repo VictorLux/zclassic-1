@@ -652,6 +652,9 @@ Most recent targeted signal:
 - runtime-backed wrapper coverage now also exercises `node_db_sync_wallet_tx(...)`
 - local sync connect/disconnect paths now fail closed on statement/transaction
   errors instead of silently continuing with partial state
+- snapshot receive/finalize now fail closed on malformed chunk apply and on
+  finalize state-write failures, with a regression test covering malformed
+  chunk unwind back to normal mode
 - full suite currently ends with `ALL TESTS PASSED (0 failures)`
 
 Important baseline fact:
