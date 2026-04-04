@@ -2,6 +2,10 @@
 
 ## Overview
 
+This file should describe the current, shipped interfaces only.
+If an endpoint, command, port, or auth mode changes in code, update this file
+in the same change.
+
 ZClassic23 exposes three interfaces:
 
 | Interface | Port | Auth | Format |
@@ -21,7 +25,10 @@ ZClassic23 exposes three interfaces:
 zcl-rpc <method> [params...]
 
 # Using curl
-curl -u $(cat ~/.zclassic-c23/.cookie) -d '{"method":"getinfo","params":[]}' http://localhost:18232/
+curl --user "$(cat ~/.zclassic-c23/.cookie)" \
+  --data-binary '{"jsonrpc":"1.0","id":"req","method":"getinfo","params":[]}' \
+  -H 'content-type: text/plain;' \
+  http://127.0.0.1:18232/
 ```
 
 Cookie file: `~/.zclassic-c23/.cookie` (regenerated each start)

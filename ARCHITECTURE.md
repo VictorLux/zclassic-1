@@ -14,9 +14,9 @@ The main constraint is that this is still a full node. Consensus, chainstate,
 P2P, and storage correctness come first. MVC exists around the node, not in
 place of it.
 
-Execution checklist:
+Current execution tracker:
 
-- see [REFACTOR_CHECKLIST.md](REFACTOR_CHECKLIST.md)
+- see [AGENT.md](AGENT.md)
 
 ## Current Problems
 

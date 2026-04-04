@@ -40,10 +40,13 @@ ZClassic23 is a complete rewrite of zclassicd in pure C23. Every node is simulta
 
 - **A ZSLP token platform** — On-chain tokens for commerce, peer discovery, and decentralized DNS.
 
-## Architecture
+## Docs
 
-Detailed refactor target: [ARCHITECTURE.md](ARCHITECTURE.md)
-Execution progress checklist: [REFACTOR_CHECKLIST.md](REFACTOR_CHECKLIST.md)
+- [README.md](README.md): quick start and operator overview
+- [ARCHITECTURE.md](ARCHITECTURE.md): target runtime shape and boundaries
+- [API.md](API.md): RPC and HTTP interfaces
+- [AGENT.md](AGENT.md): active engineering work and current blockers
+- [VISION.md](VISION.md): longer-term product direction
 
 ```
 zclassic23 binary (26MB, statically linked)
