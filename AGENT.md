@@ -208,6 +208,27 @@ This refactor is done when:
 5. no major boot/sync/import path silently leaves partial DB state
 6. repo docs are reduced to a small, current, high-signal set
 
+## Latest Progress
+
+- secure snapshot receive ownership is tighter:
+  - receive mode no longer drops indexes like generic IBD turbo mode
+  - receive begin/reset now cleanly owns rollback and mode restore
+- fresh bootstrap receivers now defer non-critical background DB work:
+  - local snapshot/export builder
+  - address backfill
+  - store payment processor
+- live probe result on the current working tree:
+  - FlyClient/MMB verification succeeds
+  - `snapshot_receive` starts cleanly
+  - the prior `cannot start a transaction within a transaction` failure is gone
+  - the prior `schema[37] failed: database is locked` failure is gone
+  - `zsnapdata` now streams in repeated bursts after secure handoff
+- current remaining blocker:
+  - fresh receiver still stalls at height `587` during the later snapshot
+    receive/request loop, with no current DB error
+  - next work should focus on snapshot serve/request flow and end-of-stream
+    finalization, not bootstrap DB ownership
+
 ## Current Commands
 
 Useful verification commands:

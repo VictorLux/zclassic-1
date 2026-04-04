@@ -1543,6 +1543,8 @@ bool app_init(struct app_context *ctx)
         .block_tree = &g_block_tree,
         .want_address_backfill = false,
         .want_snapshot_tx_index = ctx->snapshot_dir != NULL,
+        .defer_payment_service = false,
+        .defer_offer_service = false,
     };
     if (g_node_db.open) {
         int64_t addr_done = 0;

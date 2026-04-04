@@ -121,6 +121,8 @@ struct boot_svc_ctx {
     struct snapshot_tx_index_job tx_index_job;
     bool want_address_backfill;
     bool want_snapshot_tx_index;
+    bool defer_payment_service;
+    bool defer_offer_service;
 };
 
 bool app_init_services(struct app_context *ctx,

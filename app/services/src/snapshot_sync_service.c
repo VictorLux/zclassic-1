@@ -67,6 +67,9 @@ void snapsync_global_ensure_init(struct node_db *ndb)
 
 static struct db_service *snapsync_db_service(
     const struct snapshot_sync_service *svc);
+static bool snapsync_run_write(struct snapshot_sync_service *svc,
+                               db_service_write_fn fn,
+                               void *ctx);
 
 struct snapsync_apply_chunk_ctx {
     struct snapshot_sync_service *svc;
@@ -87,10 +90,75 @@ static int64_t now_us(void)
     return (int64_t)tv.tv_sec * 1000000 + tv.tv_usec;
 }
 
+static void snapsync_set_db_mode_flag(struct node_db *ndb, bool turbo_mode)
+{
+    if (!ndb)
+        return;
+    if (ndb->state_mutex_init)
+        zcl_mutex_lock(&ndb->state_mutex);
+    ndb->turbo_mode = turbo_mode;
+    if (ndb->state_mutex_init)
+        zcl_mutex_unlock(&ndb->state_mutex);
+}
+
+static bool snapsync_enter_receive_mode_write(struct node_db *ndb, void *ctx)
+{
+    bool *ok = ctx;
+
+    if (!ndb || !ndb->open) {
+        if (ok)
+            *ok = false;
+        return false;
+    }
+
+    if (!node_db_exec(ndb, "PRAGMA synchronous=OFF") ||
+        !node_db_exec(ndb, "PRAGMA cache_size=-524288") ||
+        !node_db_exec(ndb, "PRAGMA wal_autocheckpoint=0")) {
+        if (ok)
+            *ok = false;
+        return false;
+    }
+    sqlite3_busy_timeout(ndb->db, 10000);
+    snapsync_set_db_mode_flag(ndb, true);
+    printf("db: snapshot receive mode (synchronous=OFF, indexes preserved)\n");
+    if (ok)
+        *ok = true;
+    return true;
+}
+
+static bool snapsync_exit_receive_mode_write(struct node_db *ndb, void *ctx)
+{
+    bool *ok = ctx;
+
+    if (!ndb || !ndb->open) {
+        if (ok)
+            *ok = false;
+        return false;
+    }
+
+    if (!node_db_exec(ndb, "PRAGMA synchronous=NORMAL") ||
+        !node_db_exec(ndb, "PRAGMA cache_size=-65536") ||
+        !node_db_exec(ndb, "PRAGMA wal_autocheckpoint=1000")) {
+        if (ok)
+            *ok = false;
+        return false;
+    }
+    if (!node_db_wal_checkpoint(ndb)) {
+        if (ok)
+            *ok = false;
+        return false;
+    }
+    snapsync_set_db_mode_flag(ndb, false);
+    printf("db: snapshot receive mode cleared (synchronous=NORMAL, indexes preserved)\n");
+    if (ok)
+        *ok = true;
+    return true;
+}
+
 static bool snapsync_exit_turbo_mode(struct snapshot_sync_service *svc)
 {
-    struct db_service *dbsvc = NULL;
     bool turbo_active = false;
+    bool ok = false;
 
     if (!svc || !svc->ndb)
         return false;
@@ -101,10 +169,7 @@ static bool snapsync_exit_turbo_mode(struct snapshot_sync_service *svc)
     if (!turbo_active)
         return true;
 
-    dbsvc = snapsync_db_service(svc);
-    bool ok = dbsvc
-        ? db_service_normal_mode(dbsvc)
-        : node_db_normal_mode(svc->ndb);
+    ok = snapsync_run_write(svc, snapsync_exit_receive_mode_write, &ok) && ok;
 
     snapsync_service_lock();
     svc->turbo_active = false;
@@ -139,10 +204,25 @@ static bool snapsync_run_write(struct snapshot_sync_service *svc,
 static bool snapsync_begin_receive_write(struct node_db *ndb, void *ctx)
 {
     struct snapshot_sync_service *svc = ctx;
+    struct node_db_status status = {0};
 
     if (!svc || !ndb || !ndb->open)
         return false;
 
+    node_db_get_status(ndb, &status);
+    if (status.tx_open) {
+        if (!node_db_sync_flush(ndb)) {
+            fprintf(stderr, "[snapsync] begin_receive: failed to flush stale transaction\n");
+            return false;
+        }
+        node_db_get_status(ndb, &status);
+        if (status.tx_open) {
+            if (!node_db_commit(ndb)) {
+                fprintf(stderr, "[snapsync] begin_receive: failed to close stale transaction\n");
+                return false;
+            }
+        }
+    }
     if (!node_db_begin(ndb))
         return false;
     if (!node_db_wipe_utxos(ndb)) {
@@ -476,8 +556,6 @@ bool snapsync_accept_offer(struct snapshot_sync_service *svc,
 
 bool snapsync_begin_receive(struct snapshot_sync_service *svc)
 {
-    struct db_service *dbsvc = NULL;
-
     if (!svc)
         return false;
     snapsync_service_lock();
@@ -498,14 +576,12 @@ bool snapsync_begin_receive(struct snapshot_sync_service *svc)
         return false;
     }
 
-    /* Enter turbo mode via ActiveRecord database helpers */
-    dbsvc = snapsync_db_service(svc);
-    if (dbsvc) {
-        if (!db_service_ibd_turbo_mode(dbsvc)) {
-            snapsync_service_unlock();
-            return false;
-        }
-    } else if (!node_db_ibd_turbo_mode(svc->ndb)) {
+    /* Snapshot receive is a live-node path after startup. Keep schema stable
+     * and only relax bulk-write pragmas here instead of dropping indexes. */
+    bool receive_mode_ok = false;
+    if (!snapsync_run_write(svc, snapsync_enter_receive_mode_write,
+                            &receive_mode_ok) ||
+        !receive_mode_ok) {
         snapsync_service_unlock();
         return false;
     }
@@ -524,7 +600,7 @@ bool snapsync_begin_receive(struct snapshot_sync_service *svc)
 
     snapsync_service_lock();
     svc->state = SNAPSYNC_RECEIVING;
-    snapsync_set_state(SNAPSYNC_RECEIVING, "turbo mode active");
+    snapsync_set_state(SNAPSYNC_RECEIVING, "receive mode active");
     snapsync_service_unlock();
     return true;
 }
@@ -567,6 +643,8 @@ int snapsync_apply_chunk(struct snapshot_sync_service *svc,
 
     if (!snapsync_run_write(svc, snapsync_apply_chunk_write, &ctx)) {
         free(ctx.chunk_data);
+        if (restore_turbo)
+            snapsync_run_write(svc, snapsync_rollback_receive_write, NULL);
         snapsync_service_lock();
         svc->state = SNAPSYNC_FAILED;
         snapsync_set_state(SNAPSYNC_FAILED, "snapshot chunk apply failed");

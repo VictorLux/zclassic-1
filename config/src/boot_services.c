@@ -300,9 +300,13 @@ static void *background_utxo_replay(void *arg)
     /* Restore normal flush policy */
     set_flush_policy(3600, 500000, 500);
     if (dbsvc) {
+        if (!db_service_flush_write(dbsvc))
+            fprintf(stderr, "UTXO replay: flush before normal mode failed\n");
         db_service_normal_mode(dbsvc);
         db_service_set_sync_batch_size(dbsvc, 100);
     } else if (ndb && ndb->open) {
+        if (!node_db_sync_flush(ndb))
+            fprintf(stderr, "UTXO replay: flush before normal mode failed\n");
         node_db_normal_mode(ndb);
         node_db_set_sync_batch_size(ndb, 100);
     }
@@ -825,6 +829,21 @@ bool app_init_services(struct app_context *ctx,
                          * just the last few hundred blocks. */
                         printf("=== UTXO snapshot imported — "
                                "delta replay only ===\n");
+                        /* Fresh receivers should not also start the store
+                         * payment scanner. It opens a second node.db handle
+                         * and can race the secure snapshot receive path. */
+                        svc->defer_payment_service = true;
+                        /* Fresh receivers should not also start the local
+                         * snapshot/export builder on the shared DB during
+                         * bootstrap. That work contends with secure
+                         * snapshot receive and can lock the node DB right
+                         * when FlyClient verification hands off to receive. */
+                        svc->defer_offer_service = true;
+                        /* Address aggregation is advisory and can be
+                         * rebuilt later; snapshot receive is on the critical
+                         * path. Keep bootstrap receivers single-writer until
+                         * secure snapshot handoff completes. */
+                        svc->want_address_backfill = false;
                     } else {
                         /* Skip full replay — ZCL23 peers will provide
                          * a UTXO snapshot in ~6 seconds. Replaying 3M
@@ -980,7 +999,9 @@ bool app_init_services(struct app_context *ctx,
 
     /* Pre-compute fast sync snapshot offer in background */
     {
-        if (!boot_start_offer_service(svc)) {
+        if (svc->defer_offer_service) {
+            printf("Fast sync offer build deferred during bootstrap receiver mode\n");
+        } else if (!boot_start_offer_service(svc)) {
             fprintf(stderr,
                     "WARNING: failed to start tracked snapshot-offer thread\n");
         }
@@ -1131,7 +1152,9 @@ bool app_init_services(struct app_context *ctx,
 
     /* Start store payment processor */
     {
-        if (!boot_start_payment_service(svc)) {
+        if (svc->defer_payment_service) {
+            printf("Store payment processor deferred during bootstrap receiver mode\n");
+        } else if (!boot_start_payment_service(svc)) {
             fprintf(stderr,
                     "WARNING: failed to start tracked payment processor thread\n");
         }

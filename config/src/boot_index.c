@@ -1152,9 +1152,13 @@ int scan_block_files_mark_data(struct main_state *ms, const char *datadir,
                    file_idx, marked, created);
     }
 
-    /* Also scan blk_sync.dat */
+    /* Also scan blk_sync.dat when it exists.
+     * File-service bootstrap does not always create it, so missing
+     * sync spool should not look like a scan failure. */
     snprintf(path, sizeof(path), "%s/blocks/blk_sync.dat", datadir);
-    marked += scan_one_block_file(ms, path, 255, params, &created);
+    struct stat sync_st;
+    if (stat(path, &sync_st) == 0 && sync_st.st_size > 0)
+        marked += scan_one_block_file(ms, path, 255, params, &created);
 
     /* Pass 2: retry for out-of-order blocks (prevblock now in map).
      * Block files from zclassicd are 99%+ in order, so pass 1 catches
