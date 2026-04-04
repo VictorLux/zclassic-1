@@ -4,6 +4,8 @@
 #include "test/test_helpers.h"
 #include "controllers/file_controller.h"
 #include "net/file_service.h"
+#include <sqlite3.h>
+#include <stdlib.h>
 #include <utime.h>
 #include <unistd.h>
 
@@ -56,6 +58,67 @@ static void cleanup_manifest_test_dir(const char *dir)
     char cmd[512];
     snprintf(cmd, sizeof(cmd), "rm -rf %s", dir);
     system(cmd);
+}
+
+static void cleanup_file_controller_test_dir(const char *dir)
+{
+    cleanup_manifest_test_dir(dir);
+}
+
+static bool build_snapshot_source_db(const char *db_path, bool include_all_tables)
+{
+    sqlite3 *db = NULL;
+    int rc = sqlite3_open_v2(db_path, &db,
+                             SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE,
+                             NULL);
+    if (rc != SQLITE_OK || !db)
+        return false;
+
+    sqlite3_exec(db, "PRAGMA journal_mode=OFF", NULL, NULL, NULL);
+    sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS blocks(height INTEGER PRIMARY KEY, hash BLOB)", NULL, NULL, NULL);
+    sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS addresses(address_hash BLOB, tx_count INTEGER)", NULL, NULL, NULL);
+    sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS chain_stats(height INTEGER)", NULL, NULL, NULL);
+
+    if (include_all_tables) {
+        sqlite3_exec(db,
+            "CREATE TABLE IF NOT EXISTS transactions(txid BLOB, block_height INTEGER)",
+            NULL, NULL, NULL);
+        sqlite3_exec(db,
+            "CREATE TABLE IF NOT EXISTS utxos(txid BLOB, vout INTEGER)",
+            NULL, NULL, NULL);
+        sqlite3_exec(db,
+            "CREATE TABLE IF NOT EXISTS zslp_tokens(ticker TEXT)",
+            NULL, NULL, NULL);
+        sqlite3_exec(db,
+            "CREATE TABLE IF NOT EXISTS zslp_balances(token_id BLOB)",
+            NULL, NULL, NULL);
+    }
+
+    sqlite3_exec(db, "INSERT INTO blocks(height,hash) VALUES(0,x'00')", NULL, NULL, NULL);
+    if (include_all_tables) {
+        sqlite3_exec(db,
+            "INSERT INTO transactions VALUES(x'11',0)",
+            NULL, NULL, NULL);
+        sqlite3_exec(db, "INSERT INTO utxos VALUES(x'11',0)", NULL, NULL, NULL);
+        sqlite3_exec(db, "INSERT INTO addresses VALUES(x'22',1)", NULL, NULL, NULL);
+        sqlite3_exec(db, "INSERT INTO chain_stats VALUES(0)", NULL, NULL, NULL);
+        sqlite3_exec(db, "INSERT INTO zslp_tokens VALUES('TKN')", NULL, NULL, NULL);
+        sqlite3_exec(db, "INSERT INTO zslp_balances VALUES(x'33')", NULL, NULL, NULL);
+    }
+
+    sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
+    sqlite3_close(db);
+
+    return true;
+}
+
+static bool sqlite_has_file(const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f)
+        return false;
+    fclose(f);
+    return true;
 }
 
 static int test_manifest_build_includes_snapshot(void)
@@ -267,6 +330,96 @@ static int test_file_service_start_stop_idempotent(void)
     return failures;
 }
 
+static int test_file_export_snapshot_success(void)
+{
+    int failures = 0;
+
+    printf("file_controller: consensus snapshot export succeeds and is queryable... ");
+    {
+        char dir[320];
+        char db_path[320];
+        char snap_path[320];
+        sqlite3 *snap_db = NULL;
+        sqlite3_stmt *stmt = NULL;
+        int tables_count = 0;
+        bool ok = true;
+
+        snprintf(dir, sizeof(dir), "/tmp/zcl_file_export_success_XXXXXX");
+        ok = ok && mkdtemp(dir) != NULL;
+        snprintf(db_path, sizeof(db_path), "%s/node.db", dir);
+        snprintf(snap_path, sizeof(snap_path), "%s/consensus_snapshot.db", dir);
+        ok = ok && build_snapshot_source_db(db_path, true);
+        ok = ok && truncate(db_path, 1100000) == 0;
+
+        if (ok) {
+            ok = file_export_consensus_snapshot(dir);
+            ok = ok && sqlite_has_file(snap_path);
+            ok = ok && sqlite3_open_v2(snap_path, &snap_db,
+                                       SQLITE_OPEN_READONLY, NULL) == SQLITE_OK;
+        }
+        if (snap_db) {
+            sqlite3_prepare_v2(snap_db,
+                               "SELECT value FROM _snapshot_meta WHERE key='tables'",
+                               -1, &stmt, NULL);
+            if (stmt && sqlite3_step(stmt) == SQLITE_ROW) {
+                tables_count = sqlite3_column_int(stmt, 0);
+            }
+            if (stmt) sqlite3_finalize(stmt);
+            sqlite3_prepare_v2(snap_db,
+                               "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='wallet_utxos'",
+                               -1, &stmt, NULL);
+            int secret_tables = 0;
+            if (stmt && sqlite3_step(stmt) == SQLITE_ROW)
+                secret_tables = sqlite3_column_int(stmt, 0);
+            if (stmt) sqlite3_finalize(stmt);
+            ok = ok && tables_count == 7;
+            ok = ok && secret_tables == 0;
+            sqlite3_close(snap_db);
+        }
+
+        cleanup_file_controller_test_dir(dir);
+        if (ok) {
+            printf("OK\n");
+        } else {
+            printf("FAIL\n");
+            failures++;
+        }
+    }
+
+    return failures;
+}
+
+static int test_file_export_snapshot_fail_closes_partial(void)
+{
+    int failures = 0;
+
+    printf("file_controller: consensus snapshot export removes partial file on failure... ");
+    {
+        char dir[320];
+        char db_path[320];
+        char snap_path[320];
+        bool ok = true;
+
+        snprintf(dir, sizeof(dir), "/tmp/zcl_file_export_fail_XXXXXX");
+        ok = ok && mkdtemp(dir) != NULL;
+        snprintf(db_path, sizeof(db_path), "%s/node.db", dir);
+        snprintf(snap_path, sizeof(snap_path), "%s/consensus_snapshot.db", dir);
+        ok = ok && build_snapshot_source_db(db_path, false);
+        ok = ok && truncate(db_path, 1100000) == 0;
+        ok = ok && file_export_consensus_snapshot(dir) == false;
+        ok = ok && !sqlite_has_file(snap_path);
+
+        cleanup_file_controller_test_dir(dir);
+        if (ok) printf("OK\n");
+        else {
+            printf("FAIL\n");
+            failures++;
+        }
+    }
+
+    return failures;
+}
+
 int test_file_controller(void)
 {
     int failures = 0;
@@ -277,6 +430,8 @@ int test_file_controller(void)
     failures += test_controller_refresh_manifest_api();
     failures += test_manifest_status_reports_export_readiness();
     failures += test_file_service_start_stop_idempotent();
+    failures += test_file_export_snapshot_success();
+    failures += test_file_export_snapshot_fail_closes_partial();
 
     return failures;
 }

@@ -234,12 +234,44 @@ struct disconnect_block_sync_ctx {
     bool ok;
 };
 
+static bool sync_run_write(struct node_db *ndb,
+                           db_service_write_fn fn,
+                           void *ctx);
+static bool node_db_sync_wallet_tx_write(struct node_db *ndb, void *ctx);
+
 struct wallet_tx_sync_ctx {
     const struct transaction *tx;
     const struct wallet *wallet;
     int block_height;
+    bool is_ours;
     bool ok;
 };
+
+static bool node_db_sync_wallet_tx_checked(struct node_db *ndb,
+                                         const struct transaction *tx,
+                                         const struct wallet *w,
+                                         int block_height,
+                                         bool *is_ours_out,
+                                         bool *success_out)
+{
+    struct wallet_tx_sync_ctx ctx = {
+        .tx = tx,
+        .wallet = w,
+        .block_height = block_height,
+        .is_ours = false,
+        .ok = false,
+    };
+
+    if (!ndb || !ndb->open || !tx || !w)
+        return false;
+
+    bool ok = sync_run_write(ndb, node_db_sync_wallet_tx_write, &ctx) && ctx.ok;
+    if (is_ours_out)
+        *is_ours_out = ctx.is_ours;
+    if (success_out)
+        *success_out = ok;
+    return ok;
+}
 
 static bool sync_run_write(struct node_db *ndb,
                            db_service_write_fn fn,
@@ -318,7 +350,7 @@ static uint8_t *serialize_tx(const struct transaction *tx,
 /* Advance Sapling commitment tree and all wallet witnesses for one block.
  * Creates initial witnesses for wallet notes whose cm appears in this block.
  * Saves updated tree and witnesses to SQLite. */
-static void advance_wallet_witnesses(struct node_db *ndb,
+static bool advance_wallet_witnesses(struct node_db *ndb,
                                      const struct block *blk,
                                      struct incremental_merkle_tree *tree,
                                      int height)
@@ -369,6 +401,7 @@ static void advance_wallet_witnesses(struct node_db *ndb,
 
     /* Append each Sapling output commitment */
     bool has_sapling_outputs = false;
+    bool ok = true;
     for (size_t i = 0; i < blk->num_vtx; i++) {
         const struct transaction *tx = &blk->vtx[i];
         for (size_t j = 0; j < tx->num_shielded_output; j++) {
@@ -392,9 +425,10 @@ static void advance_wallet_witnesses(struct node_db *ndb,
                 struct byte_stream iwout;
                 stream_init(&iwout, 2048);
                 incremental_witness_serialize(&iw, &iwout);
-                db_sapling_note_save_witness(ndb,
+                if (!db_sapling_note_save_witness(ndb,
                     wnotes[wi].txid, wnotes[wi].output_index,
-                    iwout.data, iwout.size, height);
+                    iwout.data, iwout.size, height))
+                    ok = false;
                 stream_free(&iwout);
                 has_witness[wi] = true;
                 /* Add to witness advancement array for subsequent cms */
@@ -415,9 +449,10 @@ static void advance_wallet_witnesses(struct node_db *ndb,
             stream_init(&wout, 2048);
             incremental_witness_serialize(&witnesses[wi], &wout);
             int idx = witness_idx[wi];
-            db_sapling_note_save_witness(ndb,
+            if (!db_sapling_note_save_witness(ndb,
                 wnotes[idx].txid, wnotes[idx].output_index,
-                wout.data, wout.size, height);
+                wout.data, wout.size, height))
+                ok = false;
             stream_free(&wout);
         }
     }
@@ -427,12 +462,14 @@ static void advance_wallet_witnesses(struct node_db *ndb,
         struct byte_stream ts;
         stream_init(&ts, 4096);
         incremental_tree_serialize(tree, &ts);
-        node_db_state_set(ndb, "sapling_tree", ts.data, ts.size);
+        if (!node_db_state_set(ndb, "sapling_tree", ts.data, ts.size))
+            ok = false;
         stream_free(&ts);
     }
 
     free(witnesses);
     free(witness_idx);
+    return ok;
 }
 
 static bool node_db_sync_connect_block_local(struct node_db *ndb,
@@ -535,7 +572,9 @@ static bool node_db_sync_connect_block_local(struct node_db *ndb,
             incremental_tree_deserialize(&tree, &ts);
         }
 
-        advance_wallet_witnesses(ndb, blk, &tree, pindex->nHeight);
+    if (!advance_wallet_witnesses(ndb, blk, &tree, pindex->nHeight)) {
+        return false;
+    }
 
         /* Verify tree root matches block header.
          * During catchup from genesis (tree rebuilding), we may not have
@@ -597,8 +636,10 @@ static bool node_db_sync_connect_block_local(struct node_db *ndb,
     }
 
     /* 4. Update chain tip in state table */
-    node_db_sync_set_tip(ndb,
-        pindex->phashBlock->data, pindex->nHeight);
+    if (!node_db_sync_set_tip(ndb,
+            pindex->phashBlock->data, pindex->nHeight)) {
+        return false;
+    }
 
     /* Batch mode: commit only when batch_size reached */
     ndb->sync_pending_blocks++;
@@ -766,12 +807,15 @@ bool node_db_sync_disconnect_block(struct node_db *ndb,
 static bool node_db_sync_wallet_tx_local(struct node_db *ndb,
                                          const struct transaction *tx,
                                          const struct wallet *w,
-                                         int block_height)
+                                         int block_height,
+                                         bool *is_ours_out)
 {
-    if (!ndb->open) return false;
+    if (!ndb || !ndb->open || !tx || !w)
+        return false;
 
     bool is_ours = false;
     bool from_me = false;
+    bool write_ok = true;
     int64_t debit = 0;
 
     /* Track outputs that belong to us */
@@ -813,7 +857,8 @@ static bool node_db_sync_wallet_tx_local(struct node_db *ndb,
         wu.is_coinbase = (tx->num_vin == 1 &&
             tx->vin[0].prevout.n == 0xFFFFFFFF);
 
-        db_wallet_utxo_save(ndb, &wu);
+        if (!db_wallet_utxo_save(ndb, &wu))
+            write_ok = false;
     }
 
     /* Mark inputs that spend our UTXOs.
@@ -829,11 +874,13 @@ static bool node_db_sync_wallet_tx_local(struct node_db *ndb,
             from_me = true;
             free(spent.script);
 
-            if (db_wallet_utxo_mark_spent(ndb,
+            if (!db_wallet_utxo_mark_spent(ndb,
                     tx->vin[i].prevout.hash.data,
                     tx->vin[i].prevout.n,
-                    tx->hash.data, (int)i))
-                is_ours = true;
+                    tx->hash.data, (int)i)) {
+                write_ok = false;
+            }
+            is_ours = true;
         }
     }
 
@@ -865,12 +912,15 @@ static bool node_db_sync_wallet_tx_local(struct node_db *ndb,
                 int64_t value_out = transaction_get_value_out(tx);
                 wtx.fee = debit > value_out ? (debit - value_out) : 0;
             }
-            db_wallet_tx_save(ndb, &wtx);
+            if (!db_wallet_tx_save(ndb, &wtx))
+                write_ok = false;
             free(raw);
         }
     }
 
-    return is_ours;
+    if (is_ours_out)
+        *is_ours_out = is_ours;
+    return write_ok;
 }
 
 static bool node_db_sync_wallet_tx_write(struct node_db *ndb, void *ctx)
@@ -880,9 +930,10 @@ static bool node_db_sync_wallet_tx_write(struct node_db *ndb, void *ctx)
     if (!sync || !sync->tx || !sync->wallet)
         return false;
     sync->ok = node_db_sync_wallet_tx_local(ndb,
-                                            sync->tx,
-                                            sync->wallet,
-                                            sync->block_height);
+                                           sync->tx,
+                                           sync->wallet,
+                                           sync->block_height,
+                                           &sync->is_ours);
     return true;
 }
 
@@ -895,12 +946,14 @@ bool node_db_sync_wallet_tx(struct node_db *ndb,
         .tx = tx,
         .wallet = w,
         .block_height = block_height,
+        .is_ours = false,
         .ok = false,
     };
 
     if (!ndb || !ndb->open || !tx || !w)
         return false;
-    return sync_run_write(ndb, node_db_sync_wallet_tx_write, &ctx) && ctx.ok;
+    return sync_run_write(ndb, node_db_sync_wallet_tx_write, &ctx) &&
+           ctx.ok && ctx.is_ours;
 }
 
 static bool node_db_sync_mempool_add_local(struct node_db *ndb,
@@ -1179,6 +1232,9 @@ static bool sync_block_lean(struct node_db *ndb,
                             const struct block *blk,
                             const struct block_index *pindex)
 {
+    if (!ndb || !ndb->open || !blk || !pindex)
+        return false;
+
     struct db_block db_blk;
     memset(&db_blk, 0, sizeof(db_blk));
     memcpy(db_blk.hash, pindex->phashBlock->data, 32);
@@ -1215,7 +1271,8 @@ static bool sync_block_lean(struct node_db *ndb,
         db_tx.file_num = pindex->nFile;
         db_tx.file_pos = (int)pindex->nDataPos;
         db_tx.is_coinbase = (i == 0);
-        db_tx_save(ndb, &db_tx);
+        if (!db_tx_save(ndb, &db_tx))
+            return false;
     }
 
     return true;
@@ -1249,12 +1306,18 @@ static uint8_t *mmap_block_file(const char *datadir, int file_num,
 static int catchup_try_sapling_decrypt(struct node_db *ndb,
                                         const struct transaction *tx,
                                         const struct wallet *w,
-                                        int height)
+                                        int height,
+                                        bool *ok_out)
 {
-    if (tx->num_shielded_output == 0 || w->sapling_keys.num_keys == 0)
+    if (!ndb || !tx || !w || tx->num_shielded_output == 0 ||
+        w->sapling_keys.num_keys == 0) {
+        if (ok_out)
+            *ok_out = true;
         return 0;
+    }
 
     int found = 0;
+    bool ok = true;
     struct uint256 txid;
     {
         struct transaction *mtx = (struct transaction *)tx;
@@ -1267,7 +1330,8 @@ static int catchup_try_sapling_decrypt(struct node_db *ndb,
 
         for (size_t ki = 0; ki < w->sapling_keys.num_keys; ki++) {
             const struct sapling_key_entry *ke = &w->sapling_keys.keys[ki];
-            if (!ke->used) continue;
+            if (!ke->used)
+                continue;
 
             uint8_t dhsecret[32];
             if (!sapling_ka_agree(od->ephemeral_key.data, ke->ivk, dhsecret))
@@ -1275,35 +1339,39 @@ static int catchup_try_sapling_decrypt(struct node_db *ndb,
 
             uint8_t dec_key[32];
             if (!sapling_kdf(dec_key, dhsecret, od->ephemeral_key.data)) {
-                memory_cleanse(dhsecret, 32);
+                memory_cleanse(dhsecret, sizeof(dhsecret));
                 continue;
             }
-            memory_cleanse(dhsecret, 32);
+            memory_cleanse(dhsecret, sizeof(dhsecret));
 
             uint8_t plaintext[564];
             if (!sapling_note_decrypt(dec_key, od->enc_ciphertext, 580,
-                                       plaintext)) {
-                memory_cleanse(dec_key, 32);
+                                      plaintext)) {
+                memory_cleanse(dec_key, sizeof(dec_key));
                 continue;
             }
-            memory_cleanse(dec_key, 32);
+            memory_cleanse(dec_key, sizeof(dec_key));
 
-            if (plaintext[0] != 0x01) continue;
+            if (plaintext[0] != 0x01)
+                continue;
 
             uint8_t d[11];
-            memcpy(d, plaintext + 1, 11);
+            memcpy(d, plaintext + 1, sizeof(d));
             uint64_t value = 0;
             for (int b = 0; b < 8; b++)
                 value |= ((uint64_t)plaintext[12 + b]) << (8 * b);
             uint8_t rcm[32];
-            memcpy(rcm, plaintext + 20, 32);
+            memcpy(rcm, plaintext + 20, sizeof(rcm));
 
             uint8_t pk_d[32];
-            if (!sapling_ivk_to_pkd(ke->ivk, d, pk_d)) continue;
+            if (!sapling_ivk_to_pkd(ke->ivk, d, pk_d))
+                continue;
 
             uint8_t cm[32];
-            if (!sapling_compute_cm(d, pk_d, value, rcm, cm)) continue;
-            if (memcmp(cm, od->cm.data, 32) != 0) continue;
+            if (!sapling_compute_cm(d, pk_d, value, rcm, cm))
+                continue;
+            if (memcmp(cm, od->cm.data, sizeof(cm)) != 0)
+                continue;
 
             uint8_t ak[32], nk[32];
             sapling_ask_to_ak(ke->xsk.expsk.ask, ak);
@@ -1312,14 +1380,28 @@ static int catchup_try_sapling_decrypt(struct node_db *ndb,
             uint8_t nf[32];
             sapling_compute_nf(d, pk_d, value, rcm, ak, nk, 0, nf);
 
-            node_db_sync_sapling_note(ndb, txid.data, (uint32_t)oi,
-                (int64_t)value, rcm, plaintext + 52, 512,
-                ke->ivk, d, pk_d, cm, nf, height);
-            found++;
+            if (!node_db_sync_sapling_note(ndb, txid.data, (uint32_t)oi,
+                                          (int64_t)value, rcm,
+                                          plaintext + 52, 512,
+                                          ke->ivk, d, pk_d, cm, nf,
+                                          height)) {
+                ok = false;
+            } else {
+                found++;
+            }
+
             memory_cleanse(plaintext, sizeof(plaintext));
+            if (!ok)
+                break;
+
             break;
         }
+
+        if (!ok)
+            break;
     }
+    if (ok_out)
+        *ok_out = ok;
     return found;
 }
 
@@ -1330,21 +1412,24 @@ int node_db_sync_catchup(struct node_db *ndb,
 {
     bool interrupted = false;
     bool tx_open = false;
+    bool failed = false;
     int last_indexed_height = 0;
     int last_committed_height = -1;
     const struct block_index *last_indexed_tip = NULL;
     struct sync_db_turbo_scope turbo_mode = {0};
     bool restore_ok = true;
 
-    if (!ndb || !ndb->open) return -1;
+    if (!ndb || !ndb->open || !chain)
+        return -1;
 
     int db_tip = node_db_sync_get_tip_height(ndb);
     int chain_tip = active_chain_height(chain);
+    if (db_tip >= chain_tip) return 0;
+    if (!datadir) return -1;
+
+    /* Keep pre-existing fast path behavior when there is no catchup work. */
     last_indexed_height = db_tip;
     last_committed_height = db_tip;
-
-    if (db_tip >= chain_tip)
-        return 0;
 
     int start = db_tip + 1;
     if (start < 0) start = 0;
@@ -1439,10 +1524,20 @@ int node_db_sync_catchup(struct node_db *ndb,
             cached_data = mmap_block_file(datadir, pindex->nFile,
                                           &cached_size);
             cached_file = cached_data ? pindex->nFile : -1;
-            if (!cached_data) continue;
+            if (!cached_data) {
+                fprintf(stderr, "catchup: failed to mmap file blk%05d.dat\n",
+                        pindex->nFile);
+                failed = true;
+                break;
+            }
         }
 
-        if (pindex->nDataPos >= cached_size) continue;
+        if (pindex->nDataPos >= cached_size) {
+            fprintf(stderr, "catchup: malformed block data offset at height %d\n",
+                    h);
+            failed = true;
+            break;
+        }
 
         struct block blk;
         block_init(&blk);
@@ -1453,34 +1548,73 @@ int node_db_sync_catchup(struct node_db *ndb,
                               remaining);
         if (!block_deserialize(&blk, &s)) {
             block_free(&blk);
-            continue;
+            failed = true;
+            break;
         }
 
         /* Lean index: block header + txid index */
-        if (!sync_block_lean(ndb, &blk, pindex) && indexed == 0) {
-            fprintf(stderr, "catchup: first lean insert failed! "
-                    "sqlite error: %s\n",
-                    sqlite3_errmsg(ndb->db));
+        if (!sync_block_lean(ndb, &blk, pindex)) {
+            fprintf(stderr, "catchup: lean index failed at height %d (sqlite=%s)\n",
+                    h, sqlite3_errmsg(ndb->db));
+            block_free(&blk);
+            failed = true;
+            break;
         }
 
         /* Wallet scan */
         if (w) {
             for (size_t i = 0; i < blk.num_vtx; i++) {
-                if (node_db_sync_wallet_tx(ndb, &blk.vtx[i], w, h))
+                bool tx_is_ours = false;
+                bool tx_ok = false;
+                if (!node_db_sync_wallet_tx_checked(ndb, &blk.vtx[i], w, h,
+                                                   &tx_is_ours, &tx_ok) || !tx_ok) {
+                    fprintf(stderr, "catchup: wallet tx sync failed at height %d "
+                            "(tx=%d)\n", h, (int)i);
+                    block_free(&blk);
+                    failed = true;
+                    break;
+                }
+                if (tx_is_ours)
                     wallet_hits++;
-                catchup_try_sapling_decrypt(ndb, &blk.vtx[i], w, h);
+                bool decrypt_ok = true;
+                catchup_try_sapling_decrypt(ndb, &blk.vtx[i], w, h,
+                                           &decrypt_ok);
+                if (!decrypt_ok) {
+                    fprintf(stderr, "catchup: sapling decrypt failed at height %d "
+                            "(tx=%d)\n", h, (int)i);
+                    block_free(&blk);
+                    failed = true;
+                    break;
+                }
                 for (size_t si = 0; si < blk.vtx[i].num_shielded_spend; si++) {
                     struct transaction *mtx = (struct transaction *)&blk.vtx[i];
                     transaction_compute_hash(mtx);
-                    node_db_sync_sapling_spend(ndb,
+                    if (!node_db_sync_sapling_spend(
+                        ndb,
                         blk.vtx[i].v_shielded_spend[si].nullifier.data,
-                        mtx->hash.data);
+                        mtx->hash.data)) {
+                        fprintf(stderr,
+                                "catchup: sapling spend update failed at height %d "
+                                "(tx=%d, spend=%zu)\n",
+                                h, (int)i, si);
+                        block_free(&blk);
+                        failed = true;
+                        break;
+                    }
                 }
+                if (failed) break;
             }
         }
+        if (failed) break;
 
         /* Advance Sapling tree + wallet witnesses */
-        advance_wallet_witnesses(ndb, &blk, &sapling_tree, h);
+        if (!advance_wallet_witnesses(ndb, &blk, &sapling_tree, h)) {
+            fprintf(stderr, "catchup: witness/tree advance failed at height %d\n",
+                    h);
+            block_free(&blk);
+            failed = true;
+            break;
+        }
 
         block_free(&blk);
         indexed++;
@@ -1489,13 +1623,24 @@ int node_db_sync_catchup(struct node_db *ndb,
         sync_job_catchup_progress(h);
 
         if (indexed % batch_size == 0) {
-            if (pindex->phashBlock)
-                node_db_sync_set_tip(ndb, pindex->phashBlock->data, h);
+            if (pindex->phashBlock) {
+                if (!node_db_sync_set_tip(ndb, pindex->phashBlock->data, h)) {
+                    fprintf(stderr,
+                            "catchup: failed to set tip at batch commit %d\n",
+                            h);
+                    failed = true;
+                    break;
+                }
+            } else {
+                fprintf(stderr, "catchup: missing hash at batch commit %d\n", h);
+                failed = true;
+                break;
+            }
             if (!node_db_commit(ndb)) {
                 fprintf(stderr, "catchup: batch COMMIT failed at height %d\n", h);
                 node_db_rollback(ndb);
                 tx_open = false;
-                interrupted = true;
+                failed = true;
                 break;
             }
             tx_open = false;
@@ -1507,7 +1652,7 @@ int node_db_sync_catchup(struct node_db *ndb,
             fflush(stdout);
             if (!node_db_begin(ndb)) {
                 fprintf(stderr, "catchup: failed to reopen transaction after batch commit\n");
-                interrupted = true;
+                failed = true;
                 break;
             }
             tx_open = true;
@@ -1516,19 +1661,45 @@ int node_db_sync_catchup(struct node_db *ndb,
 
     if (cached_data) munmap(cached_data, cached_size);
 
+    if (failed) {
+        if (tx_open && !node_db_rollback(ndb))
+            fprintf(stderr, "catchup: rollback failed after failure\n");
+        tx_open = false;
+    }
+
     /* Final commit */
-    if (tx_open) {
-        if (last_indexed_tip && last_indexed_tip->phashBlock)
-            node_db_sync_set_tip(ndb,
-                last_indexed_tip->phashBlock->data, last_indexed_height);
-        if (!node_db_commit(ndb)) {
-            fprintf(stderr, "catchup: final COMMIT failed\n");
-            node_db_rollback(ndb);
-            interrupted = true;
-            last_indexed_height = last_committed_height;
+    if (tx_open && !failed) {
+        if (last_indexed_tip && last_indexed_tip->phashBlock) {
+            if (!node_db_sync_set_tip(ndb,
+                                      last_indexed_tip->phashBlock->data,
+                                      last_indexed_height)) {
+                fprintf(stderr,
+                        "catchup: failed to set tip before final commit\n");
+                failed = true;
+            }
         } else {
-            last_committed_height = last_indexed_height;
+            fprintf(stderr, "catchup: final commit missing tip hash\n");
+            failed = true;
         }
+        if (!failed) {
+            if (!node_db_commit(ndb)) {
+                fprintf(stderr, "catchup: final COMMIT failed\n");
+                if (!node_db_rollback(ndb))
+                    fprintf(stderr, "catchup: final ROLLBACK failed\n");
+                tx_open = false;
+                failed = true;
+                last_indexed_height = last_committed_height;
+            } else {
+                tx_open = false;
+                last_committed_height = last_indexed_height;
+            }
+        }
+    }
+
+    if (failed) {
+        if (tx_open && !node_db_rollback(ndb))
+            fprintf(stderr, "catchup: final rollback path failed\n");
+        interrupted = false;
     }
 
     /* Restore safe pragmas and rebuild indexes */
@@ -1537,7 +1708,7 @@ int node_db_sync_catchup(struct node_db *ndb,
         restore_ok = false;
     }
 
-    if (!restore_ok) {
+    if (failed || !restore_ok) {
         sync_job_catchup_finish();
         return -1;
     }
@@ -2022,6 +2193,38 @@ static int import_num_decoders(void) {
 }
 #define IMPORT_NUM_DECODERS_MAX 32
 
+static bool import_writer_bind_checked(sqlite3_stmt *stmt,
+                                      const char *label,
+                                      int rc,
+                                      const struct node_db *ndb,
+                                      int row_no)
+{
+    if (!stmt) return false;
+    if (rc != SQLITE_OK) {
+        fprintf(stderr,
+                "UTXO import writer: %s failed at row %d (rc=%d): %s\n",
+                label, row_no, rc,
+                ndb ? sqlite3_errmsg(ndb->db) : "db unavailable");
+        return false;
+    }
+    return true;
+}
+
+static bool import_writer_step_checked(sqlite3_stmt *stmt,
+                                      const struct node_db *ndb,
+                                      int row_no)
+{
+    int step_rc = sqlite3_step(stmt);
+    if (step_rc != SQLITE_DONE) {
+        fprintf(stderr,
+                "UTXO import writer: sqlite3_step failed at row %d (rc=%d): %s\n",
+                row_no, step_rc,
+                ndb ? sqlite3_errmsg(ndb->db) : "db unavailable");
+        return false;
+    }
+    return true;
+}
+
 struct import_context {
     struct import_chunk chunks[IMPORT_NUM_CHUNKS];
     _Atomic int total_txids;
@@ -2390,7 +2593,13 @@ static void *import_decoder_thread(void *arg)
 static void *import_writer_thread(void *arg)
 {
     struct import_context *ctx = (struct import_context *)arg;
+    if (!ctx) return NULL;
     struct node_db *ndb = ctx->ndb;
+    if (!ndb || !ndb->open || !ndb->stmt_utxo_insert) {
+        fprintf(stderr, "UTXO import writer: invalid node_db statement/db state\n");
+        import_ctx_request_stop(ctx);
+        return NULL;
+    }
     sqlite3_stmt *ins = ndb->stmt_utxo_insert;
     int total_rows = 0;
     int next_chunk = 0;
@@ -2442,25 +2651,44 @@ static void *import_writer_thread(void *arg)
             struct utxo_row *r = &chunk->rows[ri];
             const uint8_t *sc = r->script_overflow ?
                                 r->script_overflow : r->script;
+            bool row_ok = true;
 
-            sqlite3_reset(ins);
-            sqlite3_bind_blob(ins, 1, r->txid, 32, SQLITE_STATIC);
-            sqlite3_bind_int(ins, 2, (int)r->vout);
-            sqlite3_bind_int64(ins, 3, r->value);
-            sqlite3_bind_blob(ins, 4, sc, (int)r->script_len, SQLITE_STATIC);
-            sqlite3_bind_int(ins, 5, r->script_type);
+            row_ok &= import_writer_bind_checked(ins, "sqlite3_reset",
+                                                sqlite3_reset(ins), ndb,
+                                                total_rows);
+            row_ok &= import_writer_bind_checked(ins, "sqlite3_bind_blob(txid)",
+                                                sqlite3_bind_blob(ins, 1, r->txid, 32, SQLITE_STATIC), ndb,
+                                                total_rows);
+            row_ok &= import_writer_bind_checked(ins, "sqlite3_bind_int(vout)",
+                                                sqlite3_bind_int(ins, 2, (int)r->vout), ndb,
+                                                total_rows);
+            row_ok &= import_writer_bind_checked(ins, "sqlite3_bind_int64(value)",
+                                                sqlite3_bind_int64(ins, 3, r->value), ndb,
+                                                total_rows);
+            row_ok &= import_writer_bind_checked(ins, "sqlite3_bind_blob(script)",
+                                                sqlite3_bind_blob(ins, 4, sc, (int)r->script_len, SQLITE_STATIC), ndb,
+                                                total_rows);
+            row_ok &= import_writer_bind_checked(ins, "sqlite3_bind_int(script_type)",
+                                                sqlite3_bind_int(ins, 5, r->script_type), ndb,
+                                                total_rows);
             if (r->has_address)
-                sqlite3_bind_blob(ins, 6, r->address_hash, 20, SQLITE_STATIC);
+                row_ok &= import_writer_bind_checked(ins, "sqlite3_bind_blob(address_hash)",
+                                                    sqlite3_bind_blob(ins, 6, r->address_hash, 20, SQLITE_STATIC), ndb,
+                                                    total_rows);
             else
-                sqlite3_bind_null(ins, 6);
-            sqlite3_bind_int(ins, 7, r->height);
-            sqlite3_bind_int(ins, 8, r->is_coinbase);
-            int step_rc = sqlite3_step(ins);
-            if (step_rc != SQLITE_DONE && step_rc != SQLITE_ROW) {
-                if (total_rows < 5 || total_rows % 100000 == 0)
-                    fprintf(stderr, "UTXO import: sqlite3_step failed rc=%d "
-                            "at row %d: %s\n", step_rc, total_rows,
-                            sqlite3_errmsg(ndb->db));
+                row_ok &= import_writer_bind_checked(ins, "sqlite3_bind_null(address_hash)",
+                                                    sqlite3_bind_null(ins, 6), ndb,
+                                                    total_rows);
+            row_ok &= import_writer_bind_checked(ins, "sqlite3_bind_int(height)",
+                                                sqlite3_bind_int(ins, 7, r->height), ndb,
+                                                total_rows);
+            row_ok &= import_writer_bind_checked(ins, "sqlite3_bind_int(is_coinbase)",
+                                                sqlite3_bind_int(ins, 8, r->is_coinbase), ndb,
+                                                total_rows);
+            row_ok &= import_writer_step_checked(ins, ndb, total_rows);
+            if (!row_ok) {
+                import_ctx_request_stop(ctx);
+                break;
             }
             total_rows++;
         }
@@ -2474,6 +2702,8 @@ static void *import_writer_thread(void *arg)
         if (total_rows % 100000 < chunk->num_rows) {
             if (!node_db_commit(ndb)) {
                 fprintf(stderr, "UTXO import writer: COMMIT failed\n");
+                if (!node_db_rollback(ndb))
+                    fprintf(stderr, "UTXO import writer: ROLLBACK failed after commit failure\n");
                 import_ctx_request_stop(ctx);
                 import_chunk_reset(chunk);
                 break;
@@ -2483,6 +2713,8 @@ static void *import_writer_thread(void *arg)
             fflush(stdout);
             if (!node_db_begin(ndb)) {
                 fprintf(stderr, "UTXO import writer: BEGIN restart failed\n");
+                if (!node_db_rollback(ndb))
+                    fprintf(stderr, "UTXO import writer: rollback after BEGIN restart failure failed\n");
                 import_ctx_request_stop(ctx);
                 import_chunk_reset(chunk);
                 break;
@@ -2504,10 +2736,13 @@ static void *import_writer_thread(void *arg)
         atomic_store(&chunk->state, 0); /* free for reuse */
     }
 
-    if (!import_ctx_should_stop(ctx))
-        node_db_commit(ndb);
-    else
-        node_db_rollback(ndb);
+    if (!import_ctx_should_stop(ctx)) {
+        if (!node_db_commit(ndb))
+            fprintf(stderr, "UTXO import writer: final COMMIT failed\n");
+    } else {
+        if (!node_db_rollback(ndb))
+            fprintf(stderr, "UTXO import writer: rollback requested by stop flag failed\n");
+    }
     sync_job_import_progress(total_rows);
     atomic_store(&ctx->total_rows, total_rows);
     return NULL;

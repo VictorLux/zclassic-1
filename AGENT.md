@@ -79,6 +79,51 @@ Next implementation step:
 
 - continue auditing remaining asynchronous DB mutation sites (beyond snapshot receive) for identical unwind semantics
 
+### Snapshot Plan Update (2026-04-04T03:27:41Z)
+
+- done:
+  - hardened fast-import UTXO writer path in `app/controllers/src/sync_controller.c` with fail-closed statement execution:
+    - added checked helpers for `sqlite3_reset`, all `sqlite3_bind_*`, and `sqlite3_step` in `import_writer_thread`
+    - writer errors now request stop and force rollback, preventing silent partial chunk retention and partial DB writes
+    - commit/restart failure now rolls back before aborting and exits deterministically
+    - invalid writer context/db state now exits with explicit error
+    - final commit/rollback paths now log failure outcomes instead of silently dropping them
+  - validated the change with full suite:
+    - `make -j4 test_zcl` passes
+    - `./test_zcl` ends with `ALL TESTS PASSED (0 failures)`
+- next:
+  - continue auditing `node_db_sync_catchup` for equivalent per-batch unwind semantics
+  - add lightweight observability of import writer abort reasons so operators can distinguish parser errors from DB faults
+
+### Snapshot Plan Update (2026-04-04T03:58:10Z)
+
+- done:
+  - completed full fail-closed pass for `node_db_sync_catchup`:
+    - all critical persistence and catchup sub-steps now fail and unwind deterministically on first error
+    - final catchup `commit`, `set_tip`, `tx rollback`, and `set_tip` failure paths now enforce safe abort semantics
+    - added early guard so empty/no-op chains still return success even if `datadir` is null
+    - node-db-catchup-wrapper tests (`test_sqlite` sync wrappers) now pass
+  - fixed a secondary correctness issue in wallet witness persistence:
+    - witness advances now fail-closed when witness/tree writes cannot be completed
+  - test status:
+    - `make -j4 test_zcl`
+    - `./test_zcl` now ends with `ALL TESTS PASSED (0 failures)`
+- next:
+  - continue hardening remaining asynchronous workflows to use the same "single ownership + fail-closed" contract in a consistent way
+
+### Snapshot Plan Update (2026-04-04T04:12:30Z)
+
+- done:
+  - hardened `indexlegacy` Phase A in `app/controllers/src/blockchain_controller.c`:
+    - block, tx-index, and ZSLP writes now fail closed instead of continuing after a SQLite error
+    - Phase A `BEGIN` / batch `COMMIT` / reopen / final `COMMIT` now use checked transaction helpers with explicit rollback on failure
+    - Phase A now aborts cleanly with a concrete RPC error string instead of silently mixing partial DB state into later phases
+  - regression check:
+    - `make -j4 test_zcl`
+    - `./test_zcl` ends with `ALL TESTS PASSED (0 failures)`
+- next:
+  - continue the same pass over remaining import/rescan flows that still perform large direct SQLite transactions outside the runtime DB-worker ownership model
+
 ### Snapshot Plan Update (2026-04-04T03:20:00Z)
 
 - done:
@@ -86,6 +131,26 @@ Next implementation step:
   - completed pass on begin/finalize transaction safety in snapshot sync flow
 - next:
   - audit legacy `indexlegacy` path and other long-lived maintenance flows for unhandled SQLite prepare/commit error propagation
+
+### Snapshot Plan Update (2026-04-04T03:17:49Z)
+
+- done:
+  - hardened `indexlegacy` phase-B SQL execution path:
+    - checked helpers for every PRAGMA/prepare/step
+    - fail-closed cleanup and rollback on first SQL bind/step failure
+    - no implicit continuation after partial transaction work
+  - hardened snapshot export in `app/controllers/src/file_controller.c`:
+    - checked attach/detach and commit flow
+    - fail-closed partial snapshot cleanup
+    - direct ownership checks for partial writes and table filtering behavior
+  - added direct unit coverage in `lib/test/src/test_file_controller.c`:
+    - snapshot export produces queryable snapshot artifact and valid metadata
+    - failure path deletes partial snapshot file and returns false
+  - confirmed no regressions with complete suite:
+    - `./test_zcl` ended `ALL TESTS PASSED (0 failures)`
+- next:
+  - move fast-sync artifact creation/publishing behind a dedicated owner service
+  - reduce remaining manual lifecycle handling in long-running sync/import workflows
 
 ### Snapshot Plan Update (2026-04-04T02:52:00Z)
 
@@ -397,6 +462,10 @@ Still largely untouched architecturally:
 - manifest generation
 - block-piece publication
 - freshness / invalidation / versioning
+
+`snapshot export` has new fail-closed semantics in `file_controller` with direct tests,
+but ownership remains partial and still needs one dedicated owner service for the full
+fast-sync artifact lifecycle.
 
 This still needs one dedicated owner service.
 

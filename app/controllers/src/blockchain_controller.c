@@ -588,6 +588,89 @@ struct worker_ctx {
     }                                                 \
 } while (0)
 
+static bool indexlegacy_exec_checked(sqlite3 *db, const char *sql,
+                                   const char *label)
+{
+    if (!db || !sql)
+        return false;
+
+    if (sqlite3_exec(db, sql, NULL, NULL, NULL) != SQLITE_OK) {
+        fprintf(stderr, "indexlegacy: %s failed: %s\n",
+                label, sqlite3_errmsg(db));
+        return false;
+    }
+    return true;
+}
+
+static bool indexlegacy_prepare_checked(sqlite3 *db, const char *sql,
+                                      sqlite3_stmt **stmt,
+                                      const char *label)
+{
+    if (!db || !sql || !stmt)
+        return false;
+
+    if (sqlite3_prepare_v2(db, sql, -1, stmt, NULL) != SQLITE_OK ||
+        !*stmt) {
+        fprintf(stderr, "indexlegacy: %s failed: %s\n",
+                label, sqlite3_errmsg(db));
+        return false;
+    }
+    return true;
+}
+
+static bool indexlegacy_step_checked(sqlite3_stmt *stmt, sqlite3 *db,
+                                   const char *label)
+{
+    int rc;
+
+    if (!stmt || !db)
+        return false;
+
+    rc = sqlite3_step(stmt);
+    if (rc != SQLITE_DONE && rc != SQLITE_ROW) {
+        fprintf(stderr, "indexlegacy: %s failed: rc=%d err=%s\n",
+                label, rc, sqlite3_errmsg(db));
+        return false;
+    }
+    return true;
+}
+
+static bool indexlegacy_node_tx_begin_checked(struct node_db *ndb,
+                                              const char *label)
+{
+    if (!ndb || !ndb->open || !node_db_begin(ndb)) {
+        fprintf(stderr, "indexlegacy: %s failed: %s\n",
+                label, (ndb && ndb->db) ? sqlite3_errmsg(ndb->db)
+                                        : "db unavailable");
+        return false;
+    }
+    return true;
+}
+
+static bool indexlegacy_node_tx_commit_checked(struct node_db *ndb,
+                                               const char *label)
+{
+    if (!ndb || !ndb->open || !node_db_commit(ndb)) {
+        fprintf(stderr, "indexlegacy: %s failed: %s\n",
+                label, (ndb && ndb->db) ? sqlite3_errmsg(ndb->db)
+                                        : "db unavailable");
+        return false;
+    }
+    return true;
+}
+
+static bool indexlegacy_node_tx_rollback_checked(struct node_db *ndb,
+                                                 const char *label)
+{
+    if (!ndb || !ndb->open || !node_db_rollback(ndb)) {
+        fprintf(stderr, "indexlegacy: %s failed: %s\n",
+                label, (ndb && ndb->db) ? sqlite3_errmsg(ndb->db)
+                                        : "db unavailable");
+        return false;
+    }
+    return true;
+}
+
 static void *index_worker(void *arg) {
     struct worker_ctx *ctx = arg;
 
@@ -1283,8 +1366,16 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
     int last_file = -1;
     uint8_t *mmap_data = NULL;
     size_t mmap_size = 0;
+    bool phase_a_ok = true;
+    bool phase_a_tx_open = false;
+    const char *phase_a_error = "Phase A failed";
 
-    node_db_begin(ctx->node_db);
+    if (!indexlegacy_node_tx_begin_checked(ctx->node_db, "phase A begin")) {
+        free(locs);
+        json_set_str(result, "Phase A failed to open transaction");
+        return false;
+    }
+    phase_a_tx_open = true;
 
     for (int h = 0; h <= max_height; h++) {
         if (locs[h].size == 0) continue;
@@ -1343,7 +1434,12 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
         db_blk.solution_len = blk.header.nSolutionSize;
         db_blk.status = 29; /* BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA */
 
-        db_block_save(ctx->node_db, &db_blk);
+        if (!db_block_save(ctx->node_db, &db_blk)) {
+            phase_a_error = "Phase A block save failed";
+            block_free(&blk);
+            phase_a_ok = false;
+            break;
+        }
         blocks_indexed++;
 
         /* Index transactions + UTXOs */
@@ -1359,7 +1455,12 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
             db_tx.file_num = locs[h].file;
             db_tx.file_pos = (int)locs[h].offset;
             db_tx.is_coinbase = (i == 0);
-            db_tx_save(ctx->node_db, &db_tx);
+            if (!db_tx_save(ctx->node_db, &db_tx)) {
+                phase_a_error = "Phase A transaction index save failed";
+                block_free(&blk);
+                phase_a_ok = false;
+                break;
+            }
             txs_indexed++;
 
             /* Count spent inputs (but don't modify utxos table —
@@ -1389,11 +1490,16 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
                             tok_id[b] = slp.token_id.data[31 - b];
                     }
 
-                    if (slp.type == SLP_TX_GENESIS)
-                        db_zslp_token_save(ctx->node_db, tok_id,
+                    if (slp.type == SLP_TX_GENESIS &&
+                        !db_zslp_token_save(ctx->node_db, tok_id,
                             slp.ticker, slp.name, slp.decimals,
                             slp.document_url, h,
-                            (int64_t)slp.initial_quantity);
+                            (int64_t)slp.initial_quantity)) {
+                        phase_a_error = "Phase A ZSLP token save failed";
+                        block_free(&blk);
+                        phase_a_ok = false;
+                        break;
+                    }
 
                     int num_outputs_slp = (slp.type == SLP_TX_SEND)
                         ? slp.num_outputs : 1;
@@ -1421,8 +1527,13 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
                             }
                         }
 
-                        db_zslp_transfer_save(ctx->node_db, tx->hash.data,
-                            h, tok_id, (int)slp.type, amount, q, to);
+                        if (!db_zslp_transfer_save(ctx->node_db, tx->hash.data,
+                                h, tok_id, (int)slp.type, amount, q, to)) {
+                            phase_a_error = "Phase A ZSLP transfer save failed";
+                            block_free(&blk);
+                            phase_a_ok = false;
+                            break;
+                        }
                     }
                 }
             }
@@ -1461,12 +1572,25 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
                 /* db_utxo_save removed: utxos table is canonical */
                 utxos_created++;
             }
+
+            if (!phase_a_ok)
+                break;
         }
+
+        if (!phase_a_ok)
+            break;
 
         block_free(&blk);
 
         if (blocks_indexed % 100000 == 0 && blocks_indexed > 0) {
-            node_db_commit(ctx->node_db);
+            if (!indexlegacy_node_tx_commit_checked(ctx->node_db,
+                    "phase A batch commit")) {
+                phase_a_error = "Phase A batch commit failed";
+                phase_a_ok = false;
+                phase_a_tx_open = false;
+                break;
+            }
+            phase_a_tx_open = false;
             int64_t elapsed = (int64_t)time(NULL) - t_pass2;
             double rate = elapsed > 0 ?
                 (double)blocks_indexed / (double)elapsed : 0;
@@ -1478,12 +1602,36 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
                    utxos_created, utxos_spent,
                    rate, eta / 60, eta % 60);
             fflush(stdout);
-            node_db_begin(ctx->node_db);
+            if (!indexlegacy_node_tx_begin_checked(ctx->node_db,
+                    "phase A batch reopen")) {
+                phase_a_error = "Phase A failed to reopen transaction";
+                phase_a_ok = false;
+                break;
+            }
+            phase_a_tx_open = true;
         }
     }
 
     if (mmap_data) munmap(mmap_data, mmap_size);
-    node_db_commit(ctx->node_db);
+    if (!phase_a_ok) {
+        if (phase_a_tx_open &&
+            !indexlegacy_node_tx_rollback_checked(ctx->node_db,
+                "phase A rollback")) {
+            fprintf(stderr,
+                    "indexlegacy: phase A rollback failed after error\n");
+        }
+        free(locs);
+        json_set_str(result, phase_a_error);
+        return false;
+    }
+    if (phase_a_tx_open &&
+        !indexlegacy_node_tx_commit_checked(ctx->node_db,
+            "phase A final commit")) {
+        free(locs);
+        json_set_str(result, "Phase A final commit failed");
+        return false;
+    }
+    phase_a_tx_open = false;
 
     int64_t phase_a_time = (int64_t)time(NULL) - t_pass2;
     printf("indexlegacy: Phase A complete — %d blocks, %d txs, %d net UTXOs "
@@ -1563,67 +1711,124 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
      * a 60-second busy timeout so Phase B waits for the write lock. */
     const char *phase_b_path = sqlite3_db_filename(ctx->node_db->db, "main");
     sqlite3 *phase_b_db = NULL;
+    bool phase_b_db_opened = false;
+    bool phase_b_ok = true;
+    bool phase_b_own_txn = false;
     if (sqlite3_open(phase_b_path, &phase_b_db) != SQLITE_OK || !phase_b_db) {
-        printf("indexlegacy: Phase B FATAL: cannot open DB: %s\n",
-               phase_b_db ? sqlite3_errmsg(phase_b_db) : "null");
-        fflush(stdout);
-        /* Fall through with empty tables rather than crash */
-        phase_b_db = ctx->node_db->db; /* fallback */
+        fprintf(stderr, "indexlegacy: Phase B FATAL: cannot open DB: %s\n",
+                phase_b_db ? sqlite3_errmsg(phase_b_db) : "null");
+        phase_b_ok = false;
+        phase_b_db = NULL;
+        goto phase_b_cleanup;
     }
-    sqlite3_exec(phase_b_db, "PRAGMA journal_mode=WAL", NULL, NULL, NULL);
-    sqlite3_exec(phase_b_db, "PRAGMA synchronous=OFF", NULL, NULL, NULL);
+    phase_b_db_opened = true;
+    if (!indexlegacy_exec_checked(phase_b_db, "PRAGMA journal_mode=WAL",
+                                 "phase B pragma journal_mode=WAL") ||
+        !indexlegacy_exec_checked(phase_b_db, "PRAGMA synchronous=OFF",
+                                 "phase B pragma synchronous") ||
+        !indexlegacy_exec_checked(phase_b_db, "PRAGMA wal_autocheckpoint=10000",
+                                 "phase B pragma wal_autocheckpoint") ||
+        !indexlegacy_exec_checked(phase_b_db, "PRAGMA cache_size=-524288",
+                                 "phase B pragma cache_size") ||
+        !indexlegacy_exec_checked(phase_b_db, "PRAGMA temp_store=MEMORY",
+                                 "phase B pragma temp_store") ||
+        !indexlegacy_exec_checked(phase_b_db, "PRAGMA mmap_size=1073741824",
+                                 "phase B pragma mmap_size")) {
+        phase_b_ok = false;
+        goto phase_b_cleanup;
+    }
     sqlite3_busy_timeout(phase_b_db, 60000); /* 60s wait for write lock */
-    bool phase_b_own_txn = true;
-    sqlite3_exec(phase_b_db, "BEGIN IMMEDIATE", NULL, NULL, NULL);
+    if (!indexlegacy_exec_checked(phase_b_db, "BEGIN IMMEDIATE",
+                                 "phase B begin transaction")) {
+        phase_b_ok = false;
+        goto phase_b_cleanup;
+    }
+    phase_b_own_txn = true;
 
     sqlite3_stmt *stmt_txo = NULL, *stmt_txi = NULL, *stmt_js = NULL;
     sqlite3_stmt *stmt_ss = NULL, *stmt_so = NULL, *stmt_spnf = NULL;
     sqlite3_stmt *stmt_opret = NULL, *stmt_integrity = NULL;
     sqlite3_stmt *stmt_update_shielded = NULL;
 
-    sqlite3_prepare_v2(phase_b_db,
-        "INSERT OR IGNORE INTO tx_outputs"
-        "(txid,vout,value,script_type,address_hash,block_height)"
-        " VALUES(?,?,?,?,?,?)",
-        -1, &stmt_txo, NULL);
-    sqlite3_prepare_v2(phase_b_db,
-        "INSERT OR IGNORE INTO tx_inputs"
-        "(txid,vin_index,prev_txid,prev_vout,block_height)"
-        " VALUES(?,?,?,?,?)",
-        -1, &stmt_txi, NULL);
-    sqlite3_prepare_v2(phase_b_db,
-        "INSERT OR IGNORE INTO joinsplits"
-        "(txid,js_index,vpub_old,vpub_new,anchor,block_height)"
-        " VALUES(?,?,?,?,?,?)",
-        -1, &stmt_js, NULL);
-    sqlite3_prepare_v2(phase_b_db,
-        "INSERT OR IGNORE INTO sapling_spends"
-        "(txid,spend_index,cv,anchor,nullifier,rk,block_height)"
-        " VALUES(?,?,?,?,?,?,?)",
-        -1, &stmt_ss, NULL);
-    sqlite3_prepare_v2(phase_b_db,
-        "INSERT OR IGNORE INTO sapling_outputs"
-        "(txid,output_index,cv,cm,ephemeral_key,block_height)"
-        " VALUES(?,?,?,?,?,?)",
-        -1, &stmt_so, NULL);
-    sqlite3_prepare_v2(phase_b_db,
-        "INSERT OR IGNORE INTO sprout_nullifiers"
-        "(nullifier,txid,block_height)"
-        " VALUES(?,?,?)",
-        -1, &stmt_spnf, NULL);
-    sqlite3_prepare_v2(phase_b_db,
-        "INSERT OR IGNORE INTO op_returns"
-        "(txid,block_height,script,is_slp)"
-        " VALUES(?,?,?,?)",
-        -1, &stmt_opret, NULL);
-    sqlite3_prepare_v2(phase_b_db,
-        "INSERT OR REPLACE INTO view_integrity"
-        "(height,sha3_hash) VALUES(?,?)",
-        -1, &stmt_integrity, NULL);
-    sqlite3_prepare_v2(phase_b_db,
-        "UPDATE blocks SET sprout_value=?,sapling_value=?"
-        " WHERE height=?",
-        -1, &stmt_update_shielded, NULL);
+    if (!indexlegacy_prepare_checked(
+            phase_b_db,
+            "INSERT OR IGNORE INTO tx_outputs"
+            "(txid,vout,value,script_type,address_hash,block_height)"
+            " VALUES(?,?,?,?,?,?)",
+            &stmt_txo, "phase B prepare tx_outputs")) {
+        phase_b_ok = false;
+        goto phase_b_cleanup;
+    }
+    if (!indexlegacy_prepare_checked(
+            phase_b_db,
+            "INSERT OR IGNORE INTO tx_inputs"
+            "(txid,vin_index,prev_txid,prev_vout,block_height)"
+            " VALUES(?,?,?,?,?)",
+            &stmt_txi, "phase B prepare tx_inputs")) {
+        phase_b_ok = false;
+        goto phase_b_cleanup;
+    }
+    if (!indexlegacy_prepare_checked(
+            phase_b_db,
+            "INSERT OR IGNORE INTO joinsplits"
+            "(txid,js_index,vpub_old,vpub_new,anchor,block_height)"
+            " VALUES(?,?,?,?,?,?)",
+            &stmt_js, "phase B prepare joinsplits")) {
+        phase_b_ok = false;
+        goto phase_b_cleanup;
+    }
+    if (!indexlegacy_prepare_checked(
+            phase_b_db,
+            "INSERT OR IGNORE INTO sapling_spends"
+            "(txid,spend_index,cv,anchor,nullifier,rk,block_height)"
+            " VALUES(?,?,?,?,?,?,?)",
+            &stmt_ss, "phase B prepare sapling_spends")) {
+        phase_b_ok = false;
+        goto phase_b_cleanup;
+    }
+    if (!indexlegacy_prepare_checked(
+            phase_b_db,
+            "INSERT OR IGNORE INTO sapling_outputs"
+            "(txid,output_index,cv,cm,ephemeral_key,block_height)"
+            " VALUES(?,?,?,?,?,?)",
+            &stmt_so, "phase B prepare sapling_outputs")) {
+        phase_b_ok = false;
+        goto phase_b_cleanup;
+    }
+    if (!indexlegacy_prepare_checked(
+            phase_b_db,
+            "INSERT OR IGNORE INTO sprout_nullifiers"
+            "(nullifier,txid,block_height)"
+            " VALUES(?,?,?)",
+            &stmt_spnf, "phase B prepare sprout_nullifiers")) {
+        phase_b_ok = false;
+        goto phase_b_cleanup;
+    }
+    if (!indexlegacy_prepare_checked(
+            phase_b_db,
+            "INSERT OR IGNORE INTO op_returns"
+            "(txid,block_height,script,is_slp)"
+            " VALUES(?,?,?,?)",
+            &stmt_opret, "phase B prepare op_returns")) {
+        phase_b_ok = false;
+        goto phase_b_cleanup;
+    }
+    if (!indexlegacy_prepare_checked(
+            phase_b_db,
+            "INSERT OR REPLACE INTO view_integrity"
+            "(height,sha3_hash) VALUES(?,?)",
+            &stmt_integrity, "phase B prepare view_integrity")) {
+        phase_b_ok = false;
+        goto phase_b_cleanup;
+    }
+    if (!indexlegacy_prepare_checked(
+            phase_b_db,
+            "UPDATE blocks SET sprout_value=?,sapling_value=?"
+            " WHERE height=?",
+            &stmt_update_shielded, "phase B prepare update shielded")) {
+        phase_b_ok = false;
+        goto phase_b_cleanup;
+    }
 
     /* Phase B BEGIN on separate connection */
 
@@ -1632,23 +1837,29 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
         for (int k = 0; k < workers[t].num_inputs; k++) {
             struct idx_tx_input *inp = &workers[t].inputs[k];
             sqlite3_reset(stmt_txi);
-            sqlite3_bind_blob(stmt_txi, 1, inp->txid, 32, SQLITE_STATIC);
-            sqlite3_bind_int(stmt_txi, 2, (int)inp->vin_index);
-            sqlite3_bind_blob(stmt_txi, 3, inp->prev_txid, 32, SQLITE_STATIC);
-            sqlite3_bind_int(stmt_txi, 4, (int)inp->prev_vout);
-            sqlite3_bind_int(stmt_txi, 5, inp->height);
-            {
-                int rc = sqlite3_step(stmt_txi);
-                if (rc != SQLITE_DONE && rc != SQLITE_ROW && total_inputs == 0)
-                    printf("Phase B: first INSERT rc=%d (%s) autocommit=%d\n",
-                           rc, sqlite3_errmsg(phase_b_db),
-                           sqlite3_get_autocommit(phase_b_db));
+            if (sqlite3_bind_blob(stmt_txi, 1, inp->txid, 32, SQLITE_STATIC) != SQLITE_OK ||
+                sqlite3_bind_int(stmt_txi, 2, (int)inp->vin_index) != SQLITE_OK ||
+                sqlite3_bind_blob(stmt_txi, 3, inp->prev_txid, 32, SQLITE_STATIC) != SQLITE_OK ||
+                sqlite3_bind_int(stmt_txi, 4, (int)inp->prev_vout) != SQLITE_OK ||
+                sqlite3_bind_int(stmt_txi, 5, inp->height) != SQLITE_OK ||
+                !indexlegacy_step_checked(stmt_txi, phase_b_db, "phase B insert tx_inputs")) {
+                phase_b_ok = false;
+                goto phase_b_cleanup;
             }
+            sqlite3_reset(stmt_txi);
             total_inputs++;
             if (++batch_rows % 500000 == 0) {
                 if (phase_b_own_txn) {
-                    sqlite3_exec(phase_b_db, "COMMIT", NULL, NULL, NULL);
-                    sqlite3_exec(phase_b_db, "BEGIN", NULL, NULL, NULL);
+                    if (!indexlegacy_exec_checked(phase_b_db, "COMMIT",
+                        "phase B commit batch")) {
+                        phase_b_ok = false;
+                        goto phase_b_cleanup;
+                    }
+                    if (!indexlegacy_exec_checked(phase_b_db, "BEGIN",
+                        "phase B begin batch")) {
+                        phase_b_ok = false;
+                        goto phase_b_cleanup;
+                    }
                 }
                 printf("  Phase B write: %lld rows...\n", (long long)batch_rows);
                 fflush(stdout);
@@ -1661,16 +1872,19 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
         for (int k = 0; k < workers[t].num_outputs; k++) {
             struct idx_tx_output *ot = &workers[t].outputs[k];
             sqlite3_reset(stmt_txo);
-            sqlite3_bind_blob(stmt_txo, 1, ot->txid, 32, SQLITE_STATIC);
-            sqlite3_bind_int(stmt_txo, 2, (int)ot->vout);
-            sqlite3_bind_int64(stmt_txo, 3, ot->value);
-            sqlite3_bind_int(stmt_txo, 4, ot->script_type);
-            if (ot->has_addr)
-                sqlite3_bind_blob(stmt_txo, 5, ot->addr_hash, 20, SQLITE_STATIC);
-            else
-                sqlite3_bind_null(stmt_txo, 5);
-            sqlite3_bind_int(stmt_txo, 6, ot->height);
-            sqlite3_step(stmt_txo);
+            if (sqlite3_bind_blob(stmt_txo, 1, ot->txid, 32, SQLITE_STATIC) != SQLITE_OK ||
+                sqlite3_bind_int(stmt_txo, 2, (int)ot->vout) != SQLITE_OK ||
+                sqlite3_bind_int64(stmt_txo, 3, ot->value) != SQLITE_OK ||
+                sqlite3_bind_int(stmt_txo, 4, ot->script_type) != SQLITE_OK ||
+                (ot->has_addr ?
+                sqlite3_bind_blob(stmt_txo, 5, ot->addr_hash, 20, SQLITE_STATIC) :
+                 sqlite3_bind_null(stmt_txo, 5)) != SQLITE_OK ||
+                sqlite3_bind_int(stmt_txo, 6, ot->height) != SQLITE_OK ||
+                !indexlegacy_step_checked(stmt_txo, phase_b_db, "phase B insert tx_outputs")) {
+                phase_b_ok = false;
+                goto phase_b_cleanup;
+            }
+            sqlite3_reset(stmt_txo);
             total_outputs++;
         }
     }
@@ -1680,22 +1894,29 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
         for (int k = 0; k < workers[t].num_joinsplits; k++) {
             struct idx_joinsplit *ij = &workers[t].joinsplits[k];
             sqlite3_reset(stmt_js);
-            sqlite3_bind_blob(stmt_js, 1, ij->txid, 32, SQLITE_STATIC);
-            sqlite3_bind_int(stmt_js, 2, (int)ij->js_index);
-            sqlite3_bind_int64(stmt_js, 3, ij->vpub_old);
-            sqlite3_bind_int64(stmt_js, 4, ij->vpub_new);
-            sqlite3_bind_blob(stmt_js, 5, ij->anchor, 32, SQLITE_STATIC);
-            sqlite3_bind_int(stmt_js, 6, ij->height);
-            sqlite3_step(stmt_js);
+            if (sqlite3_bind_blob(stmt_js, 1, ij->txid, 32, SQLITE_STATIC) != SQLITE_OK ||
+                sqlite3_bind_int(stmt_js, 2, (int)ij->js_index) != SQLITE_OK ||
+                sqlite3_bind_int64(stmt_js, 3, ij->vpub_old) != SQLITE_OK ||
+                sqlite3_bind_int64(stmt_js, 4, ij->vpub_new) != SQLITE_OK ||
+                sqlite3_bind_blob(stmt_js, 5, ij->anchor, 32, SQLITE_STATIC) != SQLITE_OK ||
+                sqlite3_bind_int(stmt_js, 6, ij->height) != SQLITE_OK ||
+                !indexlegacy_step_checked(stmt_js, phase_b_db, "phase B insert joinsplits")) {
+                phase_b_ok = false;
+                goto phase_b_cleanup;
+            }
             joinsplits_indexed++;
 
             /* Write both sprout nullifiers */
             for (int nf = 0; nf < 2; nf++) {
                 sqlite3_reset(stmt_spnf);
-                sqlite3_bind_blob(stmt_spnf, 1, ij->nullifiers[nf], 32, SQLITE_STATIC);
-                sqlite3_bind_blob(stmt_spnf, 2, ij->txid, 32, SQLITE_STATIC);
-                sqlite3_bind_int(stmt_spnf, 3, ij->height);
-                sqlite3_step(stmt_spnf);
+                if (sqlite3_bind_blob(stmt_spnf, 1, ij->nullifiers[nf], 32, SQLITE_STATIC) != SQLITE_OK ||
+                    sqlite3_bind_blob(stmt_spnf, 2, ij->txid, 32, SQLITE_STATIC) != SQLITE_OK ||
+                    sqlite3_bind_int(stmt_spnf, 3, ij->height) != SQLITE_OK ||
+                    !indexlegacy_step_checked(stmt_spnf, phase_b_db,
+                        "phase B insert sprout nullifier")) {
+                    phase_b_ok = false;
+                    goto phase_b_cleanup;
+                }
                 sprout_nullifiers_indexed++;
             }
         }
@@ -1706,14 +1927,18 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
         for (int k = 0; k < workers[t].num_sspends; k++) {
             struct idx_sapling_spend *is2 = &workers[t].sspends[k];
             sqlite3_reset(stmt_ss);
-            sqlite3_bind_blob(stmt_ss, 1, is2->txid, 32, SQLITE_STATIC);
-            sqlite3_bind_int(stmt_ss, 2, (int)is2->spend_index);
-            sqlite3_bind_blob(stmt_ss, 3, is2->cv, 32, SQLITE_STATIC);
-            sqlite3_bind_blob(stmt_ss, 4, is2->anchor, 32, SQLITE_STATIC);
-            sqlite3_bind_blob(stmt_ss, 5, is2->nullifier, 32, SQLITE_STATIC);
-            sqlite3_bind_blob(stmt_ss, 6, is2->rk, 32, SQLITE_STATIC);
-            sqlite3_bind_int(stmt_ss, 7, is2->height);
-            sqlite3_step(stmt_ss);
+            if (sqlite3_bind_blob(stmt_ss, 1, is2->txid, 32, SQLITE_STATIC) != SQLITE_OK ||
+                sqlite3_bind_int(stmt_ss, 2, (int)is2->spend_index) != SQLITE_OK ||
+                sqlite3_bind_blob(stmt_ss, 3, is2->cv, 32, SQLITE_STATIC) != SQLITE_OK ||
+                sqlite3_bind_blob(stmt_ss, 4, is2->anchor, 32, SQLITE_STATIC) != SQLITE_OK ||
+                sqlite3_bind_blob(stmt_ss, 5, is2->nullifier, 32, SQLITE_STATIC) != SQLITE_OK ||
+                sqlite3_bind_blob(stmt_ss, 6, is2->rk, 32, SQLITE_STATIC) != SQLITE_OK ||
+                sqlite3_bind_int(stmt_ss, 7, is2->height) != SQLITE_OK ||
+                !indexlegacy_step_checked(stmt_ss, phase_b_db,
+                    "phase B insert sapling_spend")) {
+                phase_b_ok = false;
+                goto phase_b_cleanup;
+            }
             sapling_spends_indexed++;
         }
     }
@@ -1723,13 +1948,17 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
         for (int k = 0; k < workers[t].num_soutputs; k++) {
             struct idx_sapling_output *io = &workers[t].soutputs[k];
             sqlite3_reset(stmt_so);
-            sqlite3_bind_blob(stmt_so, 1, io->txid, 32, SQLITE_STATIC);
-            sqlite3_bind_int(stmt_so, 2, (int)io->output_index);
-            sqlite3_bind_blob(stmt_so, 3, io->cv, 32, SQLITE_STATIC);
-            sqlite3_bind_blob(stmt_so, 4, io->cm, 32, SQLITE_STATIC);
-            sqlite3_bind_blob(stmt_so, 5, io->ephemeral_key, 32, SQLITE_STATIC);
-            sqlite3_bind_int(stmt_so, 6, io->height);
-            sqlite3_step(stmt_so);
+            if (sqlite3_bind_blob(stmt_so, 1, io->txid, 32, SQLITE_STATIC) != SQLITE_OK ||
+                sqlite3_bind_int(stmt_so, 2, (int)io->output_index) != SQLITE_OK ||
+                sqlite3_bind_blob(stmt_so, 3, io->cv, 32, SQLITE_STATIC) != SQLITE_OK ||
+                sqlite3_bind_blob(stmt_so, 4, io->cm, 32, SQLITE_STATIC) != SQLITE_OK ||
+                sqlite3_bind_blob(stmt_so, 5, io->ephemeral_key, 32, SQLITE_STATIC) != SQLITE_OK ||
+                sqlite3_bind_int(stmt_so, 6, io->height) != SQLITE_OK ||
+                !indexlegacy_step_checked(stmt_so, phase_b_db,
+                    "phase B insert sapling_output")) {
+                phase_b_ok = false;
+                goto phase_b_cleanup;
+            }
             sapling_outputs_indexed++;
         }
     }
@@ -1739,11 +1968,16 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
         for (int k = 0; k < workers[t].num_oprets; k++) {
             struct idx_opret *op = &workers[t].oprets[k];
             sqlite3_reset(stmt_opret);
-            sqlite3_bind_blob(stmt_opret, 1, op->txid, 32, SQLITE_STATIC);
-            sqlite3_bind_int(stmt_opret, 2, op->height);
-            sqlite3_bind_blob(stmt_opret, 3, op->script, (int)op->script_len, SQLITE_STATIC);
-            sqlite3_bind_int(stmt_opret, 4, op->is_slp);
-            sqlite3_step(stmt_opret);
+            if (sqlite3_bind_blob(stmt_opret, 1, op->txid, 32, SQLITE_STATIC) != SQLITE_OK ||
+                sqlite3_bind_int(stmt_opret, 2, op->height) != SQLITE_OK ||
+                sqlite3_bind_blob(stmt_opret, 3, op->script, (int)op->script_len,
+                                 SQLITE_STATIC) != SQLITE_OK ||
+                sqlite3_bind_int(stmt_opret, 4, op->is_slp) != SQLITE_OK ||
+                !indexlegacy_step_checked(stmt_opret, phase_b_db,
+                    "phase B insert op_return")) {
+                phase_b_ok = false;
+                goto phase_b_cleanup;
+            }
             op_returns_indexed++;
         }
     }
@@ -1754,6 +1988,10 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
         total_bsh += workers[t].num_blocks_sh;
 
     all_bsh = malloc((size_t)total_bsh * sizeof(*all_bsh));
+    if (!all_bsh && total_bsh > 0) {
+        phase_b_ok = false;
+        goto phase_b_cleanup;
+    }
     int bsh_idx = 0;
     for (int t = 0; t < N_INDEX_THREADS; t++) {
         if (workers[t].num_blocks_sh > 0) {
@@ -1786,10 +2024,14 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
 
         if (b->sprout_value != 0 || b->sapling_value != 0) {
             sqlite3_reset(stmt_update_shielded);
-            sqlite3_bind_int64(stmt_update_shielded, 1, b->sprout_value);
-            sqlite3_bind_int64(stmt_update_shielded, 2, b->sapling_value);
-            sqlite3_bind_int(stmt_update_shielded, 3, b->height);
-            sqlite3_step(stmt_update_shielded);
+            if (sqlite3_bind_int64(stmt_update_shielded, 1, b->sprout_value) != SQLITE_OK ||
+                sqlite3_bind_int64(stmt_update_shielded, 2, b->sapling_value) != SQLITE_OK ||
+                sqlite3_bind_int(stmt_update_shielded, 3, b->height) != SQLITE_OK ||
+                !indexlegacy_step_checked(stmt_update_shielded, phase_b_db,
+                    "phase B update shielded values")) {
+                phase_b_ok = false;
+                goto phase_b_cleanup;
+            }
         }
 
         /* SHA3-256 integrity hash chain */
@@ -1816,15 +2058,39 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
         memcpy(sha3_prev, sha3_out, 32);
 
         sqlite3_reset(stmt_integrity);
-        sqlite3_bind_int(stmt_integrity, 1, b->height);
-        sqlite3_bind_blob(stmt_integrity, 2, sha3_out, 32, SQLITE_STATIC);
-        sqlite3_step(stmt_integrity);
+        if (sqlite3_bind_int(stmt_integrity, 1, b->height) != SQLITE_OK ||
+            sqlite3_bind_blob(stmt_integrity, 2, sha3_out, 32, SQLITE_STATIC) != SQLITE_OK) {
+            phase_b_ok = false;
+            goto phase_b_cleanup;
+        }
+        if (!indexlegacy_step_checked(stmt_integrity, phase_b_db,
+                "phase B insert integrity")) {
+            phase_b_ok = false;
+            goto phase_b_cleanup;
+        }
     }
 
-    sqlite3_exec(phase_b_db, "COMMIT", NULL, NULL, NULL);
-    if (phase_b_db != ctx->node_db->db)
-        sqlite3_close(phase_b_db);
-    phase_b_db = NULL;
+    if (phase_b_own_txn &&
+        !indexlegacy_exec_checked(phase_b_db, "COMMIT", "phase B commit")) {
+        phase_b_ok = false;
+        goto phase_b_cleanup;
+    }
+
+phase_b_cleanup:
+    if (!phase_b_ok) {
+        json_set_str(result, "Phase B failed and rolled back");
+        if (phase_b_own_txn &&
+            phase_b_db &&
+            !sqlite3_get_autocommit(phase_b_db) &&
+            !indexlegacy_exec_checked(phase_b_db, "ROLLBACK", "phase B rollback")) {
+            /* rollback failure is already logged by helper */
+        }
+    }
+    if (phase_b_db_opened && phase_b_db &&
+        !sqlite3_get_autocommit(phase_b_db) &&
+        !indexlegacy_exec_checked(phase_b_db, "ROLLBACK", "phase B pre-close rollback")) {
+        /* rollback failure is already logged by helper */
+    }
 
     /* Free all thread buffers */
     for (int t = 0; t < N_INDEX_THREADS; t++) {
@@ -1847,6 +2113,13 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
     sqlite3_finalize(stmt_opret);
     sqlite3_finalize(stmt_integrity);
     sqlite3_finalize(stmt_update_shielded);
+    if (phase_b_db_opened && phase_b_db) {
+        sqlite3_close(phase_b_db);
+        phase_b_db = NULL;
+    }
+    if (!phase_b_ok) {
+        return false;
+    }
 
     int64_t write_time = (int64_t)time(NULL) - t_write;
     printf("indexlegacy: Phase B wrote %" PRId64 " inputs, %" PRId64 " outputs, "

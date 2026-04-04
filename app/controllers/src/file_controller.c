@@ -30,6 +30,51 @@ static struct file_context g_file_ctx = {
     .manifest_mutex = PTHREAD_MUTEX_INITIALIZER,
 };
 
+static bool file_export_exec_checked(sqlite3 *db, const char *sql,
+                                    const char *label)
+{
+    if (!db || !sql)
+        return false;
+
+    if (sqlite3_exec(db, sql, NULL, NULL, NULL) != SQLITE_OK) {
+        fprintf(stderr, "file_export_snapshot: %s failed: %s\n",
+                label, sqlite3_errmsg(db));
+        return false;
+    }
+    return true;
+}
+
+static bool file_export_prepare_checked(sqlite3 *db, const char *sql,
+                                      sqlite3_stmt **stmt,
+                                      const char *label)
+{
+    if (!db || !sql || !stmt)
+        return false;
+
+    if (sqlite3_prepare_v2(db, sql, -1, stmt, NULL) != SQLITE_OK ||
+        !*stmt) {
+        fprintf(stderr, "file_export_snapshot: %s failed: %s\n",
+                label, sqlite3_errmsg(db));
+        return false;
+    }
+    return true;
+}
+
+static bool file_export_step_checked(sqlite3_stmt *stmt, sqlite3 *db,
+                                    const char *label)
+{
+    if (!stmt || !db)
+        return false;
+
+    int rc = sqlite3_step(stmt);
+    if (rc != SQLITE_DONE && rc != SQLITE_ROW) {
+        fprintf(stderr, "file_export_snapshot: %s failed: rc=%d err=%s\n",
+                label, rc, sqlite3_errmsg(db));
+        return false;
+    }
+    return true;
+}
+
 static struct file_context *file_ctx(void)
 {
     return &g_file_ctx;
@@ -526,6 +571,9 @@ bool file_chunk_read(const struct file_chunk *chunk, const char *datadir,
 
 bool file_export_consensus_snapshot(const char *datadir)
 {
+    if (!datadir)
+        return false;
+
     char src_path[576], dst_path[576];
     snprintf(src_path, sizeof(src_path), "%s/node.db", datadir);
     snprintf(dst_path, sizeof(dst_path), "%s/consensus_snapshot.db", datadir);
@@ -539,8 +587,17 @@ bool file_export_consensus_snapshot(const char *datadir)
 
     /* Open source read-only */
     sqlite3 *src_db = NULL;
+    bool src_db_opened = false;
+    bool dst_db_opened = false;
+    bool dst_txn_open = false;
+    bool src_attached = false;
+    bool ok = true;
+
     if (sqlite3_open_v2(src_path, &src_db, SQLITE_OPEN_READONLY, NULL)
-        != SQLITE_OK) return false;
+        != SQLITE_OK || !src_db) {
+        return false;
+    }
+    src_db_opened = true;
 
     /* Create destination and copy only consensus tables via ATTACH */
     sqlite3 *dst_db = NULL;
@@ -549,26 +606,33 @@ bool file_export_consensus_snapshot(const char *datadir)
         sqlite3_close(src_db);
         return false;
     }
+    dst_db_opened = true;
 
     /* Performance: batch everything in one transaction */
-    sqlite3_exec(dst_db, "PRAGMA journal_mode=WAL", NULL, NULL, NULL);
-    sqlite3_exec(dst_db, "PRAGMA synchronous=OFF", NULL, NULL, NULL);
-    sqlite3_exec(dst_db, "PRAGMA cache_size=-262144", NULL, NULL, NULL);
+    if (!file_export_exec_checked(dst_db, "PRAGMA journal_mode=WAL",
+                                 "set journal_mode WAL") ||
+        !file_export_exec_checked(dst_db, "PRAGMA synchronous=OFF",
+                                 "set synchronous OFF") ||
+        !file_export_exec_checked(dst_db, "PRAGMA cache_size=-262144",
+                                 "set cache_size")) {
+        ok = false;
+        goto export_cleanup;
+    }
 
     /* Attach source database */
     char *attach_sql = sqlite3_mprintf("ATTACH DATABASE '%q' AS src", src_path);
-    if (!attach_sql ||
-        sqlite3_exec(dst_db, attach_sql, NULL, NULL, NULL) != SQLITE_OK) {
-        fprintf(stderr, "consensus_snapshot: ATTACH failed: %s\n",
-                sqlite3_errmsg(dst_db));
-        if (attach_sql)
-            sqlite3_free(attach_sql);
-        sqlite3_close(dst_db);
-        sqlite3_close(src_db);
-        unlink(dst_path);
-        return false;
+    if (!attach_sql) {
+        fprintf(stderr, "file_export_snapshot: out of memory building ATTACH SQL\n");
+        ok = false;
+        goto export_cleanup;
     }
+    bool attach_ok = file_export_exec_checked(dst_db, attach_sql, "attach source db");
     sqlite3_free(attach_sql);
+    if (!attach_ok) {
+        ok = false;
+        goto export_cleanup;
+    }
+    src_attached = true;
 
     /* Copy ONLY public consensus tables.
      * This whitelist approach is safer than a blacklist — new private
@@ -579,7 +643,12 @@ bool file_export_consensus_snapshot(const char *datadir)
         NULL
     };
 
-    sqlite3_exec(dst_db, "BEGIN", NULL, NULL, NULL);
+    if (!file_export_exec_checked(dst_db, "BEGIN", "begin snapshot transaction")) {
+        ok = false;
+        goto export_cleanup;
+    }
+    dst_txn_open = true;
+
     int tables_copied = 0;
     for (int i = 0; safe_tables[i]; i++) {
         /* Create table with same schema */
@@ -587,65 +656,128 @@ bool file_export_consensus_snapshot(const char *datadir)
         snprintf(create_sql, sizeof(create_sql),
             "CREATE TABLE IF NOT EXISTS %s AS SELECT * FROM src.%s",
             safe_tables[i], safe_tables[i]);
-        int rc = sqlite3_exec(dst_db, create_sql, NULL, NULL, NULL);
-        if (rc == SQLITE_OK) {
+        if (file_export_exec_checked(dst_db, create_sql,
+                                    "copy consensus table")) {
             tables_copied++;
+        } else {
+            ok = false;
+            goto export_cleanup;
         }
-        /* Silently skip tables that don't exist in source */
     }
 
     /* Store snapshot metadata */
-    sqlite3_exec(dst_db,
+    if (!file_export_exec_checked(dst_db,
         "CREATE TABLE IF NOT EXISTS _snapshot_meta "
-        "(key TEXT PRIMARY KEY, value TEXT)", NULL, NULL, NULL);
+        "(key TEXT PRIMARY KEY, value TEXT)",
+        "create metadata table")) {
+        ok = false;
+        goto export_cleanup;
+    }
 
     /* Get source chain height */
     sqlite3_stmt *sel = NULL;
-    sqlite3_prepare_v2(dst_db,
-        "SELECT MAX(height) FROM blocks", -1, &sel, NULL);
+    if (!file_export_prepare_checked(dst_db,
+            "SELECT MAX(height) FROM blocks",
+            &sel, "read snapshot height")) {
+        ok = false;
+        goto export_cleanup;
+    }
     int snap_height = 0;
-    if (sel && sqlite3_step(sel) == SQLITE_ROW)
+    if (!file_export_step_checked(sel, dst_db, "read snapshot height"))
+        ok = false;
+    else if (sqlite3_column_type(sel, 0) != SQLITE_NULL)
         snap_height = sqlite3_column_int(sel, 0);
     if (sel) sqlite3_finalize(sel);
+    if (!ok) goto export_cleanup;
 
     {
         sqlite3_stmt *meta = NULL;
-        if (sqlite3_prepare_v2(dst_db,
+        if (!file_export_prepare_checked(
+                dst_db,
                 "INSERT INTO _snapshot_meta(key,value) VALUES(?,?)",
-                -1, &meta, NULL) == SQLITE_OK && meta) {
-            char value_buf[32];
-            sqlite3_bind_text(meta, 1, "height", -1, SQLITE_STATIC);
-            snprintf(value_buf, sizeof(value_buf), "%d", snap_height);
-            sqlite3_bind_text(meta, 2, value_buf, -1, SQLITE_TRANSIENT);
-            sqlite3_step(meta);
-            sqlite3_reset(meta);
-            sqlite3_clear_bindings(meta);
-
-            sqlite3_bind_text(meta, 1, "tables", -1, SQLITE_STATIC);
-            snprintf(value_buf, sizeof(value_buf), "%d", tables_copied);
-            sqlite3_bind_text(meta, 2, value_buf, -1, SQLITE_TRANSIENT);
-            sqlite3_step(meta);
-            sqlite3_finalize(meta);
+                &meta, "prepare metadata insert")) {
+            ok = false;
+            goto export_cleanup;
         }
+        char value_buf[32];
+        snprintf(value_buf, sizeof(value_buf), "%d", snap_height);
+        if (sqlite3_bind_text(meta, 1, "height", -1, SQLITE_STATIC) != SQLITE_OK ||
+            sqlite3_bind_text(meta, 2, value_buf, -1, SQLITE_TRANSIENT) != SQLITE_OK ||
+            !file_export_step_checked(meta, dst_db, "insert metadata height")) {
+            ok = false;
+            sqlite3_finalize(meta);
+            goto export_cleanup;
+        }
+
+        sqlite3_reset(meta);
+        sqlite3_clear_bindings(meta);
+
+        snprintf(value_buf, sizeof(value_buf), "%d", tables_copied);
+        if (sqlite3_bind_text(meta, 1, "tables", -1, SQLITE_STATIC) != SQLITE_OK ||
+            sqlite3_bind_text(meta, 2, value_buf, -1, SQLITE_TRANSIENT) != SQLITE_OK ||
+            !file_export_step_checked(meta, dst_db, "insert metadata table count")) {
+            ok = false;
+            sqlite3_finalize(meta);
+            goto export_cleanup;
+        }
+        sqlite3_finalize(meta);
     }
 
-    sqlite3_exec(dst_db, "COMMIT", NULL, NULL, NULL);
-    sqlite3_exec(dst_db, "DETACH DATABASE src", NULL, NULL, NULL);
+    if (!file_export_exec_checked(dst_db, "COMMIT", "commit snapshot transaction")) {
+        ok = false;
+        goto export_cleanup;
+    }
+    dst_txn_open = false;
+    src_attached = false;
+    if (!file_export_exec_checked(dst_db, "DETACH DATABASE src", "detach source db")) {
+        ok = false;
+        goto export_cleanup;
+    }
 
     /* Compact */
-    sqlite3_exec(dst_db, "PRAGMA synchronous=NORMAL", NULL, NULL, NULL);
-    sqlite3_exec(dst_db, "VACUUM", NULL, NULL, NULL);
-
-    sqlite3_close(dst_db);
-    sqlite3_close(src_db);
+    if (!file_export_exec_checked(dst_db, "PRAGMA synchronous=NORMAL",
+                                 "restore sync NORMAL") ||
+        !file_export_exec_checked(dst_db, "VACUUM", "vacuum snapshot")) {
+        ok = false;
+        goto export_cleanup;
+    }
 
     struct stat dst_st;
-    stat(dst_path, &dst_st);
+    if (stat(dst_path, &dst_st) != 0) {
+        ok = false;
+        goto export_cleanup;
+    }
+
     printf("Consensus snapshot: %d tables, height %d, %.0f MB\n",
            tables_copied, snap_height,
            (double)dst_st.st_size / (1024.0*1024.0));
+    if (tables_copied == 0) {
+        fprintf(stderr, "file_export_snapshot: no tables exported\n");
+        ok = false;
+        goto export_cleanup;
+    }
 
-    return tables_copied > 0;
+export_cleanup:
+    if (dst_db_opened && dst_db) {
+        if (dst_txn_open && !sqlite3_get_autocommit(dst_db) &&
+            !file_export_exec_checked(dst_db, "ROLLBACK", "rollback snapshot tx")) {
+            /* best-effort rollback logged by helper */
+        }
+        if (src_attached)
+            file_export_exec_checked(dst_db, "DETACH DATABASE src", "detach source db");
+        sqlite3_close(dst_db);
+        dst_db = NULL;
+        dst_db_opened = false;
+    }
+    if (src_db_opened && src_db) {
+        sqlite3_close(src_db);
+        src_db = NULL;
+        src_db_opened = false;
+    }
+    if (!ok)
+        unlink(dst_path);
+
+    return ok;
 }
 
 /* ── RPC handlers ──────────────────────────────────────────────── */
