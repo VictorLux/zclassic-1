@@ -661,6 +661,9 @@ Most recent targeted signal:
 - boot-time `wallet_utxos` rebuild now checks `BEGIN` / bulk insert / `COMMIT`
   and rolls back on failure instead of silently leaving partial wallet UTXO
   state during startup
+- `fast_rebuild_chainstate()` now checks fallback `tip_hash` read and
+  `coins_best_block` publish writes instead of silently assuming best-block
+  restoration succeeded during boot
 - full suite currently ends with `ALL TESTS PASSED (0 failures)`
 
 Important baseline fact:

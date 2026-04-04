@@ -665,9 +665,15 @@ bool fast_rebuild_chainstate(struct coins_view_sqlite *cvs,
     if (!cvs->db) return false;
 
     sqlite3_stmt *cnt = NULL;
-    sqlite3_prepare_v2(cvs->db, "SELECT count(*) FROM utxos", -1, &cnt, NULL);
+    if (sqlite3_prepare_v2(cvs->db, "SELECT count(*) FROM utxos",
+                           -1, &cnt, NULL) != SQLITE_OK || !cnt) {
+        fprintf(stderr, "fast_rebuild_chainstate: count prepare failed: %s\n",
+                sqlite3_errmsg(cvs->db));
+        return false;
+    }
     int64_t total = 0;
-    if (sqlite3_step(cnt) == SQLITE_ROW) total = sqlite3_column_int64(cnt, 0);
+    if (sqlite3_step(cnt) == SQLITE_ROW)
+        total = sqlite3_column_int64(cnt, 0);
     sqlite3_finalize(cnt);
 
     if (total == 0) return false;
@@ -677,23 +683,46 @@ bool fast_rebuild_chainstate(struct coins_view_sqlite *cvs,
     struct uint256 best;
     if (!coins_view_sqlite_get_best_block(cvs, &best) || uint256_is_null(&best)) {
         sqlite3_stmt *th = NULL;
-        sqlite3_prepare_v2(cvs->db,
+        if (sqlite3_prepare_v2(cvs->db,
             "SELECT value FROM node_state WHERE key='tip_hash'",
-            -1, &th, NULL);
-        if (sqlite3_step(th) == SQLITE_ROW) {
+            -1, &th, NULL) != SQLITE_OK || !th) {
+            fprintf(stderr, "fast_rebuild_chainstate: tip_hash prepare failed: %s\n",
+                    sqlite3_errmsg(cvs->db));
+            return false;
+        }
+        int th_rc = sqlite3_step(th);
+        if (th_rc == SQLITE_ROW) {
             const void *h = sqlite3_column_blob(th, 0);
             if (h && sqlite3_column_bytes(th, 0) >= 32) {
                 memcpy(best.data, h, 32);
                 sqlite3_stmt *set = NULL;
-                sqlite3_prepare_v2(cvs->db,
+                if (sqlite3_prepare_v2(cvs->db,
                     "INSERT OR REPLACE INTO node_state(key,value)"
-                    " VALUES('coins_best_block',?)", -1, &set, NULL);
-                sqlite3_bind_blob(set, 1, best.data, 32, SQLITE_STATIC);
-                sqlite3_step(set);
+                    " VALUES('coins_best_block',?)", -1, &set, NULL) != SQLITE_OK || !set) {
+                    sqlite3_finalize(th);
+                    fprintf(stderr, "fast_rebuild_chainstate: coins_best_block prepare failed: %s\n",
+                            sqlite3_errmsg(cvs->db));
+                    return false;
+                }
+                if (sqlite3_bind_blob(set, 1, best.data, 32, SQLITE_STATIC) != SQLITE_OK ||
+                    sqlite3_step(set) != SQLITE_DONE) {
+                    sqlite3_finalize(set);
+                    sqlite3_finalize(th);
+                    fprintf(stderr, "fast_rebuild_chainstate: coins_best_block write failed: %s\n",
+                            sqlite3_errmsg(cvs->db));
+                    return false;
+                }
                 sqlite3_finalize(set);
             }
+        } else if (th_rc != SQLITE_DONE) {
+            sqlite3_finalize(th);
+            fprintf(stderr, "fast_rebuild_chainstate: tip_hash read failed: %s\n",
+                    sqlite3_errmsg(cvs->db));
+            return false;
         }
         sqlite3_finalize(th);
+        if (uint256_is_null(&best))
+            return false;
         coins_view_cache_set_best_block(cvtip, &best);
     }
 
