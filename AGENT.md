@@ -349,6 +349,24 @@ This refactor is done when:
   - `make -j4 test_zcl`
   - `./test_zcl`
   - result: `ALL TESTS PASSED (0 failures)`
+- fresh bootstrap startup is now leaner:
+  - a node with no usable local chain data now defers local file-service
+    serving, snapshot-offer building, store payment scanning, and address
+    backfill during bootstrap receiver mode
+  - this removes wasted first-minute work from the secure fast-sync path and
+    avoids the old `bind port 18034 failed` / local snapshot export churn on
+    brand-new receivers
+  - live probe on the rebuilt `zclassic23` binary now shows:
+    - `Fresh bootstrap receiver mode: deferring local serve/build work`
+    - `File service server deferred during fresh bootstrap receiver mode`
+    - `Fast sync offer build deferred during bootstrap receiver mode`
+    - `Store payment processor deferred during bootstrap receiver mode`
+    - secure `zsnapshot`/FlyClient negotiation still starts normally
+- current verification after the bootstrap deferral pass:
+  - `make -j4 zclassic23`
+  - `make -j4 test_zcl`
+  - `./test_zcl`
+  - result: `ALL TESTS PASSED (0 failures)`
 - current remaining blocker:
   - fresh-node convergence to the real live tip is still not finished
   - the remaining work is in the later live sync path after secure handoff,

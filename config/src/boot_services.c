@@ -863,6 +863,14 @@ bool app_init_services(struct app_context *ctx,
                                     "WARNING: failed to start tracked UTXO replay thread\n");
                         }
                     }
+                } else if (active_chain_height(&svc->state->chain_active) <= 1) {
+                    /* Fresh bootstrap receivers with no usable local chain
+                     * data should consume secure sync, not waste startup time
+                     * building local export/serve state they cannot use yet. */
+                    svc->defer_payment_service = true;
+                    svc->defer_offer_service = true;
+                    svc->want_address_backfill = false;
+                    printf("Fresh bootstrap receiver mode: deferring local serve/build work\n");
                 }
             }
         skip_block_scan: ;
@@ -983,9 +991,13 @@ bool app_init_services(struct app_context *ctx,
      * The deferred scanner was causing crashes (SIGABRT from concurrent
      * block_index access) and isn't worth the complexity. */
 
-    /* Start file service server on dedicated port.
-     * Auto-serves blockchain data to any ZCL23 peer that connects. */
-    fs_server_start(ctx->datadir, (uint16_t)ctx->fs_port);
+    /* Start file service server only once we have meaningful local chain data.
+     * Fresh bootstrap receivers are consumers first; serving can wait. */
+    if (svc->defer_offer_service) {
+        printf("File service server deferred during fresh bootstrap receiver mode\n");
+    } else {
+        fs_server_start(ctx->datadir, (uint16_t)ctx->fs_port);
+    }
 
     rpc_wallet_set_state(svc->wallet, svc->state, ctx->datadir, svc->wallet_sqlite,
                          svc->mempool, svc->connman);

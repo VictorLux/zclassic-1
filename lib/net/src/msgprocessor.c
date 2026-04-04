@@ -2786,6 +2786,7 @@ static void exec_getheaders_action(struct msg_processor *mp,
 bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
 {
     struct msg_processor *mp = (struct msg_processor *)ctx;
+    bool snapshot_active = snapsync_is_active();
 
     /* Outbound nodes: send version to initiate handshake */
     if (node->state < PEER_HANDSHAKE_COMPLETE) {
@@ -2838,11 +2839,11 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
          * getheaders response — for a 3M block chain, we need ~1500 rounds. */
         int64_t now_send = (int64_t)time(NULL);
         syncsvc_plan_periodic_getheaders(&periodic, node, our_height, now_send);
-        if (periodic.should_send && !snapsync_is_active()) {
+        if (periodic.should_send && !snapshot_active) {
             should_sync = true;
             syncsvc_note_headers_requested(node, now_send);
         }
-        if (should_sync) {
+        if (should_sync && !snapshot_active) {
             struct block_index *tip = active_chain_tip(
                 &mp->main_state->chain_active);
             switch (syncsvc_header_log_mode(node, tip, in_ibd)) {
@@ -2877,8 +2878,10 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
             event_emitf(EV_BLOCK_REQUESTED, 0,
                         "timeouts=%zu reassigned to queue", timed_out);
 
-        /* Assign blocks from queue to this peer if they have capacity */
-        {
+        /* Snapshot receive owns catch-up while active. Normal block assignment,
+         * stall recovery, and recovery getheaders only add churn until the
+         * verified snapshot handoff is complete. */
+        if (!snapshot_active) {
             struct uint256 assign_hashes[DL_WINDOW_SIZE];
             struct sync_block_batch batch;
             syncsvc_assign_peer_blocks(&batch, dm, node, assign_hashes,
