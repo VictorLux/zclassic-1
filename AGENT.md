@@ -160,6 +160,9 @@ DB-mutating service helpers now also obey the worker boundary:
 - the prebuilt fast-sync snapshot cache now has an explicit publish/reset
   contract in `fast_sync.c` instead of ad hoc raw globals, and direct tests
   cover cache ownership and getter/reset behavior
+- the cached snapshot offer in `msgprocessor` now also has explicit get and
+  invalidate operations, and the offer/send/serve paths read through that
+  cache boundary instead of peeking at raw validity globals
 - file-service startup manifest build is now tracked and joined instead of
   detached, and file-service start/stop is being hardened toward idempotent
   lifecycle behavior

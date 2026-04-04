@@ -42,6 +42,8 @@ int msg_get_height(void *ctx);
 /* Update the cached snapshot offer (thread-safe). Called from boot.c. */
 struct snapshot_offer;
 void msg_processor_update_offer(const struct snapshot_offer *offer);
+bool msg_processor_get_offer(struct snapshot_offer *offer);
+void msg_processor_invalidate_offer(void);
 
 /* Publish or invalidate cached fast-sync artifacts. These functions take
  * ownership of the heap-backed arrays inside the provided manifests. */

@@ -2628,6 +2628,38 @@ int test_net(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    printf("parallel_sync: snapshot offer cache publishes stable copy... ");
+    {
+        struct snapshot_offer published;
+        struct snapshot_offer cached;
+        memset(&published, 0, sizeof(published));
+        memset(&cached, 0, sizeof(cached));
+        published.height = 777;
+        published.num_utxos = 123456;
+        published.total_bytes = 987654;
+        memset(published.block_hash, 0x11, sizeof(published.block_hash));
+        memset(published.utxo_root, 0x22, sizeof(published.utxo_root));
+        memset(published.mmr_root, 0x33, sizeof(published.mmr_root));
+        memset(published.mmb_root, 0x44, sizeof(published.mmb_root));
+
+        msg_processor_invalidate_offer();
+        bool ok = !msg_processor_get_offer(&cached);
+        msg_processor_update_offer(&published);
+        ok = ok && msg_processor_get_offer(&cached);
+        ok = ok && cached.height == 777;
+        ok = ok && cached.num_utxos == 123456;
+        ok = ok && cached.total_bytes == 987654;
+        ok = ok && cached.block_hash[0] == 0x11;
+        ok = ok && cached.utxo_root[0] == 0x22;
+        ok = ok && cached.mmr_root[0] == 0x33;
+        ok = ok && cached.mmb_root[0] == 0x44;
+        msg_processor_invalidate_offer();
+        ok = ok && !msg_processor_get_offer(&cached);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     /* ── Swarm coordinator tests ─────────────────────────────── */
 
     printf("swarm_sync: init with 10 chunks, all NEEDED... ");

@@ -180,10 +180,35 @@ struct download_manager *msg_get_download_mgr(void)
 /* Thread-safe accessor: update cached snapshot offer from boot.c */
 void msg_processor_update_offer(const struct snapshot_offer *offer)
 {
+    if (!offer)
+        return;
     pthread_mutex_lock(&g_offer_mutex);
     g_cached_offer = *offer;
-    pthread_mutex_unlock(&g_offer_mutex);
     atomic_store(&g_cached_offer_valid, true);
+    pthread_mutex_unlock(&g_offer_mutex);
+}
+
+bool msg_processor_get_offer(struct snapshot_offer *offer)
+{
+    if (!offer)
+        return false;
+
+    pthread_mutex_lock(&g_offer_mutex);
+    bool ok = atomic_load(&g_cached_offer_valid);
+    if (ok)
+        *offer = g_cached_offer;
+    else
+        memset(offer, 0, sizeof(*offer));
+    pthread_mutex_unlock(&g_offer_mutex);
+    return ok;
+}
+
+void msg_processor_invalidate_offer(void)
+{
+    pthread_mutex_lock(&g_offer_mutex);
+    memset(&g_cached_offer, 0, sizeof(g_cached_offer));
+    atomic_store(&g_cached_offer_valid, false);
+    pthread_mutex_unlock(&g_offer_mutex);
 }
 
 bool msg_processor_publish_manifest(struct sync_manifest *manifest)
@@ -300,14 +325,6 @@ static void send_snapshot_offer_msg(struct p2p_node *node,
 }
 
 /* Take a thread-safe local copy of the cached offer */
-static struct snapshot_offer get_cached_offer(void)
-{
-    pthread_mutex_lock(&g_offer_mutex);
-    struct snapshot_offer offer = g_cached_offer;
-    pthread_mutex_unlock(&g_offer_mutex);
-    return offer;
-}
-
 /* Ring buffers for duplicate detection of recently seen blocks and txs. */
 #define MAX_RECENT_BLOCKS 128
 #define MAX_RECENT_TXS 4096
@@ -1923,8 +1940,9 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
 
             switch (srv) {
             case SNAPSYNC_SERVE_OK:
-                if (g_cached_offer_valid) {
-                    struct snapshot_offer offer = get_cached_offer();
+                {
+                    struct snapshot_offer offer;
+                    if (msg_processor_get_offer(&offer)) {
                     struct snapsync_serve_start serve = {0};
                     snapsync_build_serve_start(&serve, offer.num_utxos);
                     if (serve.should_reset_progress) {
@@ -1947,9 +1965,10 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                            (unsigned long long)offer.num_utxos);
                     send_snapshot_offer_msg(node, &offer,
                                             mp->params->pchMessageStart);
-                } else {
-                    printf("Peer %s: snapshot not ready yet\n",
-                           node->addr_name);
+                    } else {
+                        printf("Peer %s: snapshot not ready yet\n",
+                               node->addr_name);
+                    }
                 }
                 break;
             case SNAPSYNC_SERVE_BAD_POW:
@@ -2676,21 +2695,22 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
     if (peer_supports_fast_sync(node->services) &&
         node->state != PEER_SNAPSHOT_SERVING &&
         node->state != PEER_SNAPSHOT_RECEIVING &&
-        node->zsync_sent == 0 && /* only offer once */
-        g_cached_offer_valid) {
+        node->zsync_sent == 0) { /* only offer once */
         int our_h = msg_get_height(mp);
         if (our_h > 100 &&
             (node->starting_height < 0 ||
              our_h > node->starting_height + 100)) {
-            struct snapshot_offer offer = get_cached_offer();
-            node->zsync_sent = UINT64_MAX; /* mark: offered */
-            event_emitf(EV_SNAPSHOT_OFFER_SENT, (uint32_t)node->id,
-                        "h=%d utxos=%llu", offer.height,
-                        (unsigned long long)offer.num_utxos);
-            printf("Peer %s: offering snapshot (us=%d, peer=%d)\n",
-                   node->addr_name, our_h, node->starting_height);
-            send_snapshot_offer_msg(node, &offer,
-                                    mp->params->pchMessageStart);
+            struct snapshot_offer offer;
+            if (msg_processor_get_offer(&offer)) {
+                node->zsync_sent = UINT64_MAX; /* mark: offered */
+                event_emitf(EV_SNAPSHOT_OFFER_SENT, (uint32_t)node->id,
+                            "h=%d utxos=%llu", offer.height,
+                            (unsigned long long)offer.num_utxos);
+                printf("Peer %s: offering snapshot (us=%d, peer=%d)\n",
+                       node->addr_name, our_h, node->starting_height);
+                send_snapshot_offer_msg(node, &offer,
+                                        mp->params->pchMessageStart);
+            }
         }
     }
 
@@ -2884,10 +2904,11 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
     /* Stream fast sync UTXO chunks if serving this peer.
      * Zero-copy from in-memory buffer — no file I/O, no SQL.
      * Snapshot pre-loaded into RAM at startup (~97 MB). */
-    if (node->state == PEER_SNAPSHOT_SERVING && g_cached_offer_valid) {
+    if (node->state == PEER_SNAPSHOT_SERVING) {
+        struct snapshot_offer offer;
         int64_t buf_size = 0;
         const uint8_t *buf = fast_sync_get_snapshot_buf(&buf_size);
-        if (buf && buf_size > 0) {
+        if (buf && buf_size > 0 && msg_processor_get_offer(&offer)) {
             /* Send chunks from memory, respecting TCP flow control.
              * Stop when send buffer exceeds 2MB to avoid backlog. */
             for (int batch = 0; batch < 200; batch++) {
