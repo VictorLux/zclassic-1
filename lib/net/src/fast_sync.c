@@ -15,6 +15,7 @@
 #include <string.h>
 #include <time.h>
 #include <sqlite3.h>
+#include <pthread.h>
 
 /* Cached UTXO root: the O(n) rolling SHA-256 is computed once at startup.
  * The incremental XOR commitment (maintained per-block) can verify the
@@ -128,12 +129,50 @@ static bool g_snapshot_sha3_valid = false;
  * 96 MB for 1.35M UTXOs. Eliminates all file I/O during serving. */
 static uint8_t *g_snapshot_buf = NULL;
 static int64_t  g_snapshot_buf_size = 0;
+static pthread_mutex_t g_snapshot_cache_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+bool fast_sync_publish_snapshot_cache(uint8_t *snapshot_buf, int64_t size,
+                                      const uint8_t sha3[32],
+                                      uint64_t count)
+{
+    if (!snapshot_buf || size <= 0 || !sha3 || count == 0) {
+        free(snapshot_buf);
+        return false;
+    }
+
+    pthread_mutex_lock(&g_snapshot_cache_mutex);
+    free(g_snapshot_buf);
+    g_snapshot_buf = snapshot_buf;
+    g_snapshot_buf_size = size;
+    memcpy(g_snapshot_sha3, sha3, 32);
+    g_snapshot_count = count;
+    g_snapshot_sha3_valid = true;
+    pthread_mutex_unlock(&g_snapshot_cache_mutex);
+    return true;
+}
+
+void fast_sync_reset_snapshot_cache(void)
+{
+    pthread_mutex_lock(&g_snapshot_cache_mutex);
+    free(g_snapshot_buf);
+    g_snapshot_buf = NULL;
+    g_snapshot_buf_size = 0;
+    memset(g_snapshot_sha3, 0, sizeof(g_snapshot_sha3));
+    g_snapshot_count = 0;
+    g_snapshot_sha3_valid = false;
+    pthread_mutex_unlock(&g_snapshot_cache_mutex);
+}
 
 bool fast_sync_get_snapshot_sha3(uint8_t out[32], uint64_t *count)
 {
-    if (!g_snapshot_sha3_valid) return false;
+    pthread_mutex_lock(&g_snapshot_cache_mutex);
+    if (!g_snapshot_sha3_valid) {
+        pthread_mutex_unlock(&g_snapshot_cache_mutex);
+        return false;
+    }
     memcpy(out, g_snapshot_sha3, 32);
     if (count) *count = g_snapshot_count;
+    pthread_mutex_unlock(&g_snapshot_cache_mutex);
     return true;
 }
 
@@ -146,11 +185,6 @@ int64_t fast_sync_prebuild_snapshot(struct node_db *ndb, const char *datadir)
     uint8_t sha3[32];
     int64_t count = db_utxo_serialize_snapshot(ndb, path, SYNC_CHUNK_SIZE, sha3);
     if (count > 0) {
-        /* Store SHA3 hash for offer — matches file contents exactly */
-        memcpy(g_snapshot_sha3, sha3, 32);
-        g_snapshot_count = (uint64_t)count;
-        g_snapshot_sha3_valid = true;
-
         /* Load entire file into memory for instant serving */
         FILE *fp = fopen(path, "rb");
         if (fp) {
@@ -158,11 +192,15 @@ int64_t fast_sync_prebuild_snapshot(struct node_db *ndb, const char *datadir)
             long sz = ftell(fp);
             fseek(fp, 0, SEEK_SET);
 
-            free(g_snapshot_buf);
-            g_snapshot_buf = malloc((size_t)sz);
-            if (g_snapshot_buf) {
-                size_t rd = fread(g_snapshot_buf, 1, (size_t)sz, fp);
-                g_snapshot_buf_size = (int64_t)rd;
+            uint8_t *snapshot_buf = malloc((size_t)sz);
+            if (snapshot_buf) {
+                size_t rd = fread(snapshot_buf, 1, (size_t)sz, fp);
+                if (!fast_sync_publish_snapshot_cache(snapshot_buf,
+                                                     (int64_t)rd,
+                                                     sha3,
+                                                     (uint64_t)count)) {
+                    snapshot_buf = NULL;
+                }
             }
             fclose(fp);
 
@@ -194,8 +232,13 @@ uint64_t fast_sync_snapshot_file_size(const char *datadir)
 /* Get the in-memory snapshot buffer for zero-copy serving */
 const uint8_t *fast_sync_get_snapshot_buf(int64_t *size)
 {
+    const uint8_t *buf;
+
+    pthread_mutex_lock(&g_snapshot_cache_mutex);
+    buf = g_snapshot_buf;
     if (size) *size = g_snapshot_buf_size;
-    return g_snapshot_buf;
+    pthread_mutex_unlock(&g_snapshot_cache_mutex);
+    return buf;
 }
 
 bool fast_sync_serve_snapshot(const char *datadir,

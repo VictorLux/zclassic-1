@@ -283,6 +283,44 @@ static int test_rate_limiter(void)
     return failures;
 }
 
+static int test_snapshot_cache_publish_reset(void)
+{
+    int failures = 0;
+    TEST("fast_sync snapshot cache publish/get/reset") {
+        uint8_t *buf = malloc(8);
+        uint8_t sha3[32];
+        uint8_t out[32];
+        uint64_t count = 0;
+        int64_t size = -1;
+        const uint8_t *cached = NULL;
+
+        ASSERT(buf != NULL);
+        memcpy(buf, "snapshot", 8);
+        memset(sha3, 0x5a, sizeof(sha3));
+
+        fast_sync_reset_snapshot_cache();
+        ASSERT(!fast_sync_get_snapshot_sha3(out, &count));
+        ASSERT(fast_sync_get_snapshot_buf(&size) == NULL);
+        ASSERT(size == 0);
+
+        ASSERT(fast_sync_publish_snapshot_cache(buf, 8, sha3, 123));
+        cached = fast_sync_get_snapshot_buf(&size);
+        ASSERT(cached != NULL);
+        ASSERT(size == 8);
+        ASSERT(memcmp(cached, "snapshot", 8) == 0);
+        ASSERT(fast_sync_get_snapshot_sha3(out, &count));
+        ASSERT(count == 123);
+        ASSERT(memcmp(out, sha3, 32) == 0);
+
+        fast_sync_reset_snapshot_cache();
+        ASSERT(!fast_sync_get_snapshot_sha3(out, &count));
+        ASSERT(fast_sync_get_snapshot_buf(&size) == NULL);
+        ASSERT(size == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── Swarm sync coordinator tests ────────────────────────── */
 
 static int test_swarm_init_assign(void)
@@ -936,6 +974,7 @@ int test_fast_sync(void)
 
     /* Rate limiting */
     failures += test_rate_limiter();
+    failures += test_snapshot_cache_publish_reset();
 
     /* Swarm coordinator */
     failures += test_swarm_init_assign();

@@ -126,6 +126,13 @@ void fast_sync_snapshot_path(char *out, size_t max, const char *datadir);
 struct node_db;
 int64_t fast_sync_prebuild_snapshot(struct node_db *ndb, const char *datadir);
 
+/* Publish or clear the in-memory snapshot cache and its matching SHA3
+ * metadata. Ownership of snapshot_buf transfers to the cache on success. */
+bool fast_sync_publish_snapshot_cache(uint8_t *snapshot_buf, int64_t size,
+                                      const uint8_t sha3[32],
+                                      uint64_t count);
+void fast_sync_reset_snapshot_cache(void);
+
 /* Get the size of the pre-built snapshot file in bytes. Returns 0 if none. */
 uint64_t fast_sync_snapshot_file_size(const char *datadir);
 

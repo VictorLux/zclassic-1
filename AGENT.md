@@ -157,6 +157,9 @@ DB-mutating service helpers now also obey the worker boundary:
   `app_runtime_context`; message processing, API status routes, and active-sync
   gating now prefer that explicit service owner instead of reaching for the
   lazy global singleton first
+- the prebuilt fast-sync snapshot cache now has an explicit publish/reset
+  contract in `fast_sync.c` instead of ad hoc raw globals, and direct tests
+  cover cache ownership and getter/reset behavior
 - file-service startup manifest build is now tracked and joined instead of
   detached, and file-service start/stop is being hardened toward idempotent
   lifecycle behavior
