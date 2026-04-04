@@ -650,6 +650,8 @@ Most recent targeted signal:
 - `SQLite mempool save/find/clear... OK`
 - `SQLite peer save/find/recent... OK`
 - runtime-backed wrapper coverage now also exercises `node_db_sync_wallet_tx(...)`
+- local sync connect/disconnect paths now fail closed on statement/transaction
+  errors instead of silently continuing with partial state
 - full suite currently ends with `ALL TESTS PASSED (0 failures)`
 
 Important baseline fact:

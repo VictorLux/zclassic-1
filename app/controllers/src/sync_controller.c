@@ -476,13 +476,20 @@ static bool node_db_sync_connect_block_local(struct node_db *ndb,
                                              const struct block *blk,
                                              const struct block_index *pindex)
 {
-    if (!ndb->open) return false;
+    bool tx_active = false;
+
+    if (!ndb || !ndb->open || !blk || !pindex || !pindex->phashBlock)
+        return false;
 
     /* Batch mode: start transaction if not already in one */
     if (!ndb->sync_in_batch) {
-        node_db_begin(ndb);
+        if (!node_db_begin(ndb))
+            return false;
         ndb->sync_in_batch = true;
         ndb->sync_pending_blocks = 0;
+        tx_active = true;
+    } else {
+        tx_active = true;
     }
 
     /* 1. Index the block header */
@@ -516,11 +523,8 @@ static bool node_db_sync_connect_block_local(struct node_db *ndb,
         db_blk.sapling_value += tx->value_balance;
     }
 
-    if (!db_block_save(ndb, &db_blk)) {
-        /* Don't rollback — continue with tx/UTXO indexing.
-         * Block header save can fail due to SQLite lock contention
-         * with the catchup thread. UTXOs are more important. */
-    }
+    if (!db_block_save(ndb, &db_blk))
+        goto fail;
 
     /* 2. Index each transaction and update UTXOs */
     for (size_t i = 0; i < blk->num_vtx; i++) {
@@ -550,11 +554,15 @@ static bool node_db_sync_connect_block_local(struct node_db *ndb,
         /* Track Sapling nullifiers (spends) */
         for (size_t j = 0; j < tx->num_shielded_spend; j++) {
             sqlite3_stmt *ns = ndb->stmt_nullifier_insert;
+            if (!ns)
+                goto fail;
             sqlite3_reset(ns);
-            sqlite3_bind_blob(ns, 1,
-                tx->v_shielded_spend[j].nullifier.data,
-                32, SQLITE_STATIC);
-            sqlite3_step(ns);
+            if (sqlite3_bind_blob(ns, 1,
+                    tx->v_shielded_spend[j].nullifier.data,
+                    32, SQLITE_STATIC) != SQLITE_OK)
+                goto fail;
+            if (sqlite3_step(ns) != SQLITE_DONE)
+                goto fail;
         }
     }
 
@@ -572,9 +580,8 @@ static bool node_db_sync_connect_block_local(struct node_db *ndb,
             incremental_tree_deserialize(&tree, &ts);
         }
 
-    if (!advance_wallet_witnesses(ndb, blk, &tree, pindex->nHeight)) {
-        return false;
-    }
+        if (!advance_wallet_witnesses(ndb, blk, &tree, pindex->nHeight))
+            goto fail;
 
         /* Verify tree root matches block header.
          * During catchup from genesis (tree rebuilding), we may not have
@@ -607,7 +614,7 @@ static bool node_db_sync_connect_block_local(struct node_db *ndb,
                 event_emitf(EV_BLOCK_REJECTED, 0,
                             "bad-sapling-root h=%d mismatches=%d",
                             pindex->nHeight, mismatch_count);
-                return false;
+                goto fail;
             }
             if (!is_ibd && mismatch_count <= 50) {
                 fprintf(stderr, "WARNING: Sapling tree root mismatch "
@@ -625,12 +632,19 @@ static bool node_db_sync_connect_block_local(struct node_db *ndb,
         stream_init(&ts, 4096);
         incremental_tree_serialize(&tree, &ts);
         sqlite3_stmt *upd = NULL;
-        sqlite3_prepare_v2(ndb->db,
+        if (sqlite3_prepare_v2(ndb->db,
             "UPDATE blocks SET sapling_tree_data=? WHERE hash=?",
-            -1, &upd, NULL);
-        sqlite3_bind_blob(upd, 1, ts.data, (int)ts.size, SQLITE_STATIC);
-        sqlite3_bind_blob(upd, 2, pindex->phashBlock->data, 32, SQLITE_STATIC);
-        sqlite3_step(upd);
+            -1, &upd, NULL) != SQLITE_OK || !upd) {
+            stream_free(&ts);
+            goto fail;
+        }
+        if (sqlite3_bind_blob(upd, 1, ts.data, (int)ts.size, SQLITE_STATIC) != SQLITE_OK ||
+            sqlite3_bind_blob(upd, 2, pindex->phashBlock->data, 32, SQLITE_STATIC) != SQLITE_OK ||
+            sqlite3_step(upd) != SQLITE_DONE) {
+            sqlite3_finalize(upd);
+            stream_free(&ts);
+            goto fail;
+        }
         sqlite3_finalize(upd);
         stream_free(&ts);
     }
@@ -638,18 +652,27 @@ static bool node_db_sync_connect_block_local(struct node_db *ndb,
     /* 4. Update chain tip in state table */
     if (!node_db_sync_set_tip(ndb,
             pindex->phashBlock->data, pindex->nHeight)) {
-        return false;
+        goto fail;
     }
 
     /* Batch mode: commit only when batch_size reached */
     ndb->sync_pending_blocks++;
     int batch = ndb->sync_batch_size > 0 ? ndb->sync_batch_size : 1;
     if (ndb->sync_pending_blocks >= batch) {
-        node_db_commit(ndb);
+        if (!node_db_commit(ndb))
+            goto fail;
         ndb->sync_in_batch = false;
         ndb->sync_pending_blocks = 0;
+        tx_active = false;
     }
     return true;
+
+fail:
+    if (tx_active)
+        node_db_rollback(ndb);
+    ndb->sync_in_batch = false;
+    ndb->sync_pending_blocks = 0;
+    return false;
 }
 
 static bool node_db_sync_connect_block_write(struct node_db *ndb, void *ctx)
@@ -680,13 +703,16 @@ static bool node_db_sync_disconnect_block_local(struct node_db *ndb,
                                                 const struct block *blk,
                                                 const struct block_index *pindex)
 {
-    if (!ndb->open) return false;
+    if (!ndb || !ndb->open || !blk || !pindex || !pindex->phashBlock)
+        return false;
 
     /* Flush any pending batch before disconnecting — disconnect needs
      * accurate SQLite state for UTXO restoration */
-    node_db_sync_flush(ndb);
+    if (!node_db_sync_flush(ndb))
+        return false;
 
-    node_db_begin(ndb);
+    if (!node_db_begin(ndb))
+        return false;
 
     /* Remove transactions in reverse order */
     for (size_t i = blk->num_vtx; i > 0; i--) {
@@ -696,7 +722,8 @@ static bool node_db_sync_disconnect_block_local(struct node_db *ndb,
          * Note: consensus UTXOs are handled by coins_view_sqlite,
          * not sync_controller. */
         for (size_t j = 0; j < tx->num_vout; j++) {
-            db_wallet_utxo_delete(ndb, tx->hash.data, (uint32_t)j);
+            if (!db_wallet_utxo_delete(ndb, tx->hash.data, (uint32_t)j))
+                goto fail;
         }
 
         /* Unmark any wallet_utxos that this tx spent.
@@ -704,32 +731,39 @@ static bool node_db_sync_disconnect_block_local(struct node_db *ndb,
          * unspent again (the spending tx is being reverted). */
         for (size_t j = 0; j < tx->num_vin; j++) {
             sqlite3_stmt *us = NULL;
-            sqlite3_prepare_v2(ndb->db,
+            if (sqlite3_prepare_v2(ndb->db,
                 "UPDATE wallet_utxos SET spent_txid=NULL, spent_vin=NULL"
                 " WHERE spent_txid=? AND spent_vin=?",
-                -1, &us, NULL);
-            if (us) {
-                sqlite3_bind_blob(us, 1, tx->hash.data, 32, SQLITE_STATIC);
-                sqlite3_bind_int(us, 2, (int)j);
-                sqlite3_step(us);
+                -1, &us, NULL) != SQLITE_OK || !us)
+                goto fail;
+            if (sqlite3_bind_blob(us, 1, tx->hash.data, 32, SQLITE_STATIC) != SQLITE_OK ||
+                sqlite3_bind_int(us, 2, (int)j) != SQLITE_OK ||
+                sqlite3_step(us) != SQLITE_DONE) {
                 sqlite3_finalize(us);
+                goto fail;
             }
+            sqlite3_finalize(us);
         }
 
         /* Remove tx index entry */
-        db_tx_delete(ndb, tx->hash.data);
+        if (!db_tx_delete(ndb, tx->hash.data))
+            goto fail;
 
         /* Remove Sapling nullifiers */
         for (size_t j = 0; j < tx->num_shielded_spend; j++) {
             sqlite3_stmt *s = NULL;
-            sqlite3_prepare_v2(ndb->db,
+            if (sqlite3_prepare_v2(ndb->db,
                 "DELETE FROM sapling_nullifiers"
                 " WHERE nullifier=?",
-                -1, &s, NULL);
-            sqlite3_bind_blob(s, 1,
-                tx->v_shielded_spend[j].nullifier.data,
-                32, SQLITE_STATIC);
-            sqlite3_step(s);
+                -1, &s, NULL) != SQLITE_OK || !s)
+                goto fail;
+            if (sqlite3_bind_blob(s, 1,
+                    tx->v_shielded_spend[j].nullifier.data,
+                    32, SQLITE_STATIC) != SQLITE_OK ||
+                sqlite3_step(s) != SQLITE_DONE) {
+                sqlite3_finalize(s);
+                goto fail;
+            }
             sqlite3_finalize(s);
         }
 
@@ -742,15 +776,26 @@ static bool node_db_sync_disconnect_block_local(struct node_db *ndb,
     /* Restore Sapling tree from previous block */
     if (pindex->pprev) {
         sqlite3_stmt *tq = NULL;
-        sqlite3_prepare_v2(ndb->db,
+        if (sqlite3_prepare_v2(ndb->db,
             "SELECT sapling_tree_data FROM blocks WHERE hash=?",
-            -1, &tq, NULL);
-        sqlite3_bind_blob(tq, 1, pindex->pprev->phashBlock->data, 32, SQLITE_STATIC);
-        if (sqlite3_step(tq) == SQLITE_ROW) {
+            -1, &tq, NULL) != SQLITE_OK || !tq)
+            goto fail;
+        if (sqlite3_bind_blob(tq, 1, pindex->pprev->phashBlock->data, 32, SQLITE_STATIC) != SQLITE_OK) {
+            sqlite3_finalize(tq);
+            goto fail;
+        }
+        int tq_rc = sqlite3_step(tq);
+        if (tq_rc == SQLITE_ROW) {
             int tlen = sqlite3_column_bytes(tq, 0);
             const void *tdata = sqlite3_column_blob(tq, 0);
             if (tdata && tlen > 0)
-                node_db_state_set(ndb, "sapling_tree", tdata, (size_t)tlen);
+                if (!node_db_state_set(ndb, "sapling_tree", tdata, (size_t)tlen)) {
+                    sqlite3_finalize(tq);
+                    goto fail;
+                }
+        } else if (tq_rc != SQLITE_DONE) {
+            sqlite3_finalize(tq);
+            goto fail;
         }
         sqlite3_finalize(tq);
     } else {
@@ -760,22 +805,30 @@ static bool node_db_sync_disconnect_block_local(struct node_db *ndb,
         struct byte_stream es;
         stream_init(&es, 256);
         incremental_tree_serialize(&empty, &es);
-        node_db_state_set(ndb, "sapling_tree", es.data, es.size);
+        if (!node_db_state_set(ndb, "sapling_tree", es.data, es.size)) {
+            stream_free(&es);
+            goto fail;
+        }
         stream_free(&es);
     }
 
     /* Remove block */
-    db_block_delete(ndb, pindex->phashBlock->data);
+    if (!db_block_delete(ndb, pindex->phashBlock->data))
+        goto fail;
 
     /* Update tip to previous block */
     if (pindex->pprev) {
-        node_db_sync_set_tip(ndb,
-            pindex->pprev->phashBlock->data,
-            pindex->pprev->nHeight);
+        if (!node_db_sync_set_tip(ndb,
+                pindex->pprev->phashBlock->data,
+                pindex->pprev->nHeight))
+            goto fail;
     }
 
-    node_db_commit(ndb);
-    return true;
+    return node_db_commit(ndb);
+
+fail:
+    node_db_rollback(ndb);
+    return false;
 }
 
 static bool node_db_sync_disconnect_block_write(struct node_db *ndb, void *ctx)
