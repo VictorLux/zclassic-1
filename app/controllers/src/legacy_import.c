@@ -32,6 +32,56 @@
 
 static const uint8_t ZCL_MAGIC[4] = {0x24, 0xe9, 0x27, 0x64};
 
+static bool legacy_import_exec_checked(struct node_db *ndb,
+                                       const char *sql,
+                                       const char *label)
+{
+    if (!ndb || !ndb->open || !sql)
+        return false;
+    if (sqlite3_exec(ndb->db, sql, NULL, NULL, NULL) != SQLITE_OK) {
+        fprintf(stderr, "legacy_import: %s failed: %s\n",
+                label, sqlite3_errmsg(ndb->db));
+        return false;
+    }
+    return true;
+}
+
+static bool legacy_import_begin_checked(struct node_db *ndb,
+                                        const char *label)
+{
+    if (!ndb || !ndb->open || !node_db_begin(ndb)) {
+        fprintf(stderr, "legacy_import: %s failed: %s\n",
+                label, (ndb && ndb->db) ? sqlite3_errmsg(ndb->db)
+                                        : "db unavailable");
+        return false;
+    }
+    return true;
+}
+
+static bool legacy_import_commit_checked(struct node_db *ndb,
+                                         const char *label)
+{
+    if (!ndb || !ndb->open || !node_db_commit(ndb)) {
+        fprintf(stderr, "legacy_import: %s failed: %s\n",
+                label, (ndb && ndb->db) ? sqlite3_errmsg(ndb->db)
+                                        : "db unavailable");
+        return false;
+    }
+    return true;
+}
+
+static bool legacy_import_rollback_checked(struct node_db *ndb,
+                                           const char *label)
+{
+    if (!ndb || !ndb->open || !node_db_rollback(ndb)) {
+        fprintf(stderr, "legacy_import: %s failed: %s\n",
+                label, (ndb && ndb->db) ? sqlite3_errmsg(ndb->db)
+                                        : "db unavailable");
+        return false;
+    }
+    return true;
+}
+
 static uint8_t *ser_tx(const struct transaction *tx, size_t *len)
 {
     struct byte_stream s;
@@ -773,46 +823,84 @@ int legacy_import(const char *legacy_datadir,
     fflush(stdout);
 
     /* Write transparent results to SQLite. */
-    node_db_begin(ndb);
-    sqlite3_exec(ndb->db, "DELETE FROM wallet_utxos", NULL, NULL, NULL);
-    sqlite3_exec(ndb->db, "DELETE FROM wallet_transactions",
-                 NULL, NULL, NULL);
-    sqlite3_exec(ndb->db, "DELETE FROM wallet_sapling_notes",
-                 NULL, NULL, NULL);
+    {
+        bool import_tx_open = false;
+        if (!legacy_import_begin_checked(ndb, "pass 2 begin")) {
+            goto cleanup;
+        }
+        import_tx_open = true;
+        if (!legacy_import_exec_checked(ndb, "DELETE FROM wallet_utxos",
+                                        "pass 2 clear wallet_utxos") ||
+            !legacy_import_exec_checked(ndb,
+                                        "DELETE FROM wallet_transactions",
+                                        "pass 2 clear wallet_transactions") ||
+            !legacy_import_exec_checked(ndb,
+                                        "DELETE FROM wallet_sapling_notes",
+                                        "pass 2 clear wallet_sapling_notes")) {
+            goto pass2_db_fail;
+        }
 
-    for (int i = 0; i < uset.count; i++) {
-        struct mem_utxo *u = &uset.items[i];
-        struct db_wallet_utxo du;
-        memset(&du, 0, sizeof(du));
-        memcpy(du.txid, u->txid, 32);
-        du.vout = u->vout;
-        du.value = u->value;
-        memcpy(du.address_hash, u->addr_hash, 20);
-        du.script = u->script;
-        du.script_len = u->script_len;
-        du.height = u->height;
-        du.is_coinbase = u->is_coinbase;
-        db_wallet_utxo_save(ndb, &du);
-        if (u->spent)
-            db_wallet_utxo_mark_spent(ndb, u->txid, u->vout,
-                                       u->spent_txid, u->spent_vin);
-    }
+        for (int i = 0; i < uset.count; i++) {
+            struct mem_utxo *u = &uset.items[i];
+            struct db_wallet_utxo du;
+            memset(&du, 0, sizeof(du));
+            memcpy(du.txid, u->txid, 32);
+            du.vout = u->vout;
+            du.value = u->value;
+            memcpy(du.address_hash, u->addr_hash, 20);
+            du.script = u->script;
+            du.script_len = u->script_len;
+            du.height = u->height;
+            du.is_coinbase = u->is_coinbase;
+            if (!db_wallet_utxo_save(ndb, &du)) {
+                fprintf(stderr,
+                        "legacy_import: pass 2 wallet_utxo save failed\n");
+                goto pass2_db_fail;
+            }
+            if (u->spent &&
+                !db_wallet_utxo_mark_spent(ndb, u->txid, u->vout,
+                                           u->spent_txid, u->spent_vin)) {
+                fprintf(stderr,
+                        "legacy_import: pass 2 wallet_utxo mark_spent failed\n");
+                goto pass2_db_fail;
+            }
+        }
 
-    for (int i = 0; i < wl.count; i++) {
-        struct mem_wtx *t = &wl.items[i];
-        struct db_wallet_tx dt;
-        memset(&dt, 0, sizeof(dt));
-        memcpy(dt.txid, t->txid, 32);
-        dt.raw_tx = t->raw;
-        dt.raw_tx_len = t->raw_len;
-        dt.has_block = true;
-        dt.block_height = t->height;
-        dt.time_received = (int64_t)t->time;
-        dt.from_me = t->from_me;
-        dt.fee = t->fee;
-        db_wallet_tx_save(ndb, &dt);
+        for (int i = 0; i < wl.count; i++) {
+            struct mem_wtx *t = &wl.items[i];
+            struct db_wallet_tx dt;
+            memset(&dt, 0, sizeof(dt));
+            memcpy(dt.txid, t->txid, 32);
+            dt.raw_tx = t->raw;
+            dt.raw_tx_len = t->raw_len;
+            dt.has_block = true;
+            dt.block_height = t->height;
+            dt.time_received = (int64_t)t->time;
+            dt.from_me = t->from_me;
+            dt.fee = t->fee;
+            if (!db_wallet_tx_save(ndb, &dt)) {
+                fprintf(stderr,
+                        "legacy_import: pass 2 wallet_tx save failed\n");
+                goto pass2_db_fail;
+            }
+        }
+        if (!legacy_import_commit_checked(ndb, "pass 2 commit")) {
+            import_tx_open = false;
+            goto cleanup;
+        }
+        import_tx_open = false;
+        goto pass2_db_done;
+
+pass2_db_fail:
+        if (import_tx_open &&
+            !legacy_import_rollback_checked(ndb, "pass 2 rollback")) {
+            fprintf(stderr,
+                    "legacy_import: pass 2 rollback failed after DB error\n");
+        }
+        goto cleanup;
+pass2_db_done:
+        ;
     }
-    node_db_commit(ndb);
 
     /* ========== PASS 3: Sapling trial decryption ========== */
     /* Phase A: parallel filter (8 threads) — lightweight height + size
@@ -927,17 +1015,38 @@ int legacy_import(const char *legacy_datadir,
         /* Merge results and write to SQLite. */
         int shielded_outputs_seen = 0;
         int sapling_notes = 0;
-        node_db_begin(ndb);
-        for (int f = 0; f < num_files; f++) {
-            shielded_outputs_seen += dctxs[f].outputs_seen;
-            sapling_notes += dctxs[f].notes_found;
-            for (int i = 0; i < dctxs[f].result_count; i++)
-                db_sapling_note_save(ndb, &dctxs[f].results[i]);
-            free(dctxs[f].results);
-            free(fctxs[f].hits);
-            free(dctxs[f].tw.sapling_notes);
+        {
+            bool sapling_tx_open = false;
+            if (!legacy_import_begin_checked(ndb, "pass 3 commit begin")) {
+                goto cleanup;
+            }
+            sapling_tx_open = true;
+            for (int f = 0; f < num_files; f++) {
+                shielded_outputs_seen += dctxs[f].outputs_seen;
+                sapling_notes += dctxs[f].notes_found;
+                for (int i = 0; i < dctxs[f].result_count; i++) {
+                    if (!db_sapling_note_save(ndb, &dctxs[f].results[i])) {
+                        fprintf(stderr,
+                                "legacy_import: pass 3 sapling note save failed\n");
+                        if (sapling_tx_open &&
+                            !legacy_import_rollback_checked(ndb,
+                                "pass 3 rollback")) {
+                            fprintf(stderr,
+                                    "legacy_import: pass 3 rollback failed after DB error\n");
+                        }
+                        goto cleanup;
+                    }
+                }
+                free(dctxs[f].results);
+                free(fctxs[f].hits);
+                free(dctxs[f].tw.sapling_notes);
+            }
+            if (!legacy_import_commit_checked(ndb, "pass 3 commit")) {
+                sapling_tx_open = false;
+                goto cleanup;
+            }
+            sapling_tx_open = false;
         }
-        node_db_commit(ndb);
 
         z_found = sapling_notes;
         clock_gettime(CLOCK_MONOTONIC, &ts_p3);

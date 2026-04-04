@@ -124,6 +124,19 @@ Next implementation step:
 - next:
   - continue the same pass over remaining import/rescan flows that still perform large direct SQLite transactions outside the runtime DB-worker ownership model
 
+### Snapshot Plan Update (2026-04-04T04:23:20Z)
+
+- done:
+  - hardened `legacy_import` SQLite write phases in `app/controllers/src/legacy_import.c`:
+    - transparent wallet import rewrite now uses checked `BEGIN` / `DELETE` / row-save / `COMMIT`
+    - first wallet UTXO, spend-mark, or wallet-tx persistence failure now rolls back and aborts the import instead of silently leaving mixed wallet tables behind
+    - Sapling note merge now also fails closed with checked transaction handling and rollback on first note-save failure
+  - regression check:
+    - `make -j4 test_zcl`
+    - `./test_zcl` ends with `ALL TESTS PASSED (0 failures)`
+- next:
+  - continue reducing remaining large direct-SQL workflows, especially wallet rescan/import surfaces that still own multi-step write transactions inline
+
 ### Snapshot Plan Update (2026-04-04T03:20:00Z)
 
 - done:
