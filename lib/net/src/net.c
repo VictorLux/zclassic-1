@@ -691,15 +691,18 @@ struct p2p_node *connect_node(struct net_manager *nm,
                                struct net_address *addr_connect,
                                const char *dest)
 {
-    if (!dest) {
-        if (is_local(nm, &addr_connect->svc))
-            return NULL;
+    if (!dest && is_local(nm, &addr_connect->svc))
+        return NULL;
 
-        struct p2p_node *existing = find_node_by_service(nm, &addr_connect->svc);
-        if (existing) {
-            p2p_node_add_ref(existing);
-            return existing;
-        }
+    /* Always dedupe by remote service, even for addnode/localhost connects.
+     * The dest override exists to skip the localhost rejection, not to allow
+     * parallel duplicate sockets to the same peer. Duplicate addnode sockets
+     * cause repeated getheaders loops and can split one-shot fast-sync offers
+     * across multiple connections. */
+    struct p2p_node *existing = find_node_by_service(nm, &addr_connect->svc);
+    if (existing) {
+        p2p_node_add_ref(existing);
+        return existing;
     }
 
     zcl_socket_t sock;

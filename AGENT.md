@@ -5,6 +5,7 @@
 Make `zclassic23` a reliable, secure, fast full node that can:
 
 - follow `zclassicd` at tip
+- bring a fresh node to the real network tip head block quickly
 - restart cleanly under systemd user services
 - bring up a fresh peer quickly and safely
 - use secure fast-sync paths deterministically
@@ -147,6 +148,88 @@ Concrete work:
 3. log and fail closed on persistence failures
 4. avoid nested transaction assumptions
 
+## Tip Convergence Checklist
+
+Requirement:
+
+- a brand-new node must reach the live network tip quickly after bootstrap,
+  not just replay to height `587`
+
+Current live reference:
+
+- `zclassic23` observed at `3066276`
+- `zclassicd-rhett` observed at `3066276`
+
+Checklist:
+
+- [x] Main service must run the current repo-built binary
+  Evidence: `/proc/<pid>/exe` now matches the current on-disk inode after each
+  controlled restart.
+
+- [x] Fresh bootstrap receiver must complete secure file sync quickly
+  Evidence: recent probes downloaded `6.3 GB` in `10s` to `15s` over the
+  SHA3-secured file-service path.
+
+- [x] Fresh bootstrap receiver must replay to the post-snapshot local tip
+  Evidence: recent probes consistently replay to `587` in `6s` to `7s`.
+
+- [x] Peer-state takeover into snapshot receive must be legal during live sync
+  Evidence: the earlier `syncing_headers -> snapshot_receiving` peer-state bug
+  is fixed and regression-tested.
+
+- [x] Verified snapshot activation must tolerate missing exact tip-index entry
+  Evidence: activation now falls back to the highest indexed block at or below
+  the offered height; regression-tested.
+
+- [x] Shared SQLite read statements must not poison later `coins_flush`
+  Evidence: the earlier `SAVEPOINT coins_flush failed ... SQL statements in
+  progress` failure is gone after explicit statement resets; regression-tested.
+
+- [x] Receiver must actually process inbound `zsnapshot` offers after replay
+  Evidence:
+  - fresh `probe12` logs `completed msg 'zsnapshot'`
+  - it enters `negotiating` and generates a FlyClient challenge
+
+- [x] Receiver must complete FlyClient/MMB verification after replay handoff
+  Evidence:
+  - fresh probes now reach the verified snapshot path reliably enough to begin
+    secure receive instead of stalling before offer handling
+  Close condition tightened:
+  - continue keeping an eye on end-to-end replay handoff after verification
+
+- [x] Receiver must request and consume snapshot data after verification
+  Evidence:
+  - fresh `probe12` reaches repeated `zsnapdata` and `zsnapend`
+
+- [x] Receiver must advance from replay tip `587` toward live tip after
+  snapshot handoff
+  Evidence:
+  - fresh `probe12` advanced past the old ceiling and reached `800`
+  - after the stale-offer guard pass, the same probe continued further to
+    `2080`
+
+- [ ] Fresh receiver must converge all the way to current network tip
+  Evidence:
+  - latest stable reference tip was `3066276`
+  - no fresh probe has yet demonstrated complete automatic convergence on the
+    current build lineage
+  Close when:
+  - fresh probe reaches the same height and best block as `zclassic23` and
+    `zclassicd-rhett`
+  - no local errors or illegal transitions occur during the run
+
+- [ ] Fast-sync path needs a deterministic regression harness
+  Evidence:
+  - current validation still depends on manual systemd probe runs
+  Close when:
+  - there is a repeatable automated or scripted fresh-node matrix covering:
+    - file sync only
+    - file sync plus replay
+    - snapshot offer receipt
+    - FlyClient/MMB verification
+    - snapshot receive/finalize
+    - convergence to current tip
+
 ## Documentation Cleanup Plan
 
 ### Keep And Improve
@@ -210,6 +293,12 @@ This refactor is done when:
 
 ## Latest Progress
 
+- connection ownership is cleaner:
+  - `connect_node()` now de-dupes by remote service even for addnode and
+    localhost connects
+  - this removes the old duplicate localhost socket storm that was polluting
+    fresh sync probes and splitting one-shot fast-sync negotiation across
+    multiple connections
 - secure snapshot receive ownership is tighter:
   - receive mode no longer drops indexes like generic IBD turbo mode
   - receive begin/reset now cleanly owns rollback and mode restore
@@ -235,29 +324,27 @@ This refactor is done when:
   - `make -j4 test_zcl`
   - `./test_zcl`
   - result: `ALL TESTS PASSED (0 failures)`
+- live probe progress is now materially better:
+  - fresh `probe12` no longer dies at `587`
+  - it processes `zsnapshot`, generates a FlyClient challenge, receives
+    `zsnapdata`, reaches `zsnapend`, and advances to `800`
+  - the prior `SHA3 FAILED` after secure snapshot receive pointed to a stale
+    offer/cache race on the serving side
+  - sender-side serving now binds each peer to the exact snapshot generation
+    it was offered, and stale requests/serve sessions are re-offered instead
+    of serving bytes for a newer cache generation
+  - after that guard, `probe12` continued further to `2080` without the old
+    `SHA3 FAILED` / `bad-txns-inputs-missingorspent` signature reappearing in
+    the latest journal sweep
 - current remaining blocker:
-  - fresh receiver still stalls at height `587` during the later snapshot
-    serve/request/finalize loop, with no current DB error
-  - next work should focus on snapshot serve/request flow and end-of-stream
-    finalization, not receive-mode bootstrap ownership or verified-tip
-    activation
-  - fresh probe on the current binary moved the stall earlier to height `128`
-    and exposed a remaining peer-state bug:
-    `BUG: peer 1 illegal transition syncing_headers -> snapshot_receiving`
-  - that peer-state transition is now allowed and covered by test so snapshot
-    takeover from live header/block sync is no longer treated as illegal
-  - a later fresh probe exposed another local SQLite blocker at the replay
-    handoff:
-    `coins_flush: SAVEPOINT coins_flush failed ... SQL statements in progress`
-  - that came from shared-handle `coins_view_sqlite` readers leaving prepared
-    statements active across returns; the readers now explicitly reset before
-    returning and a regression test covers read-then-flush on the shared
-    connection
-  - latest live result after that fix:
-    - fresh probe still stalls at `587`
-    - the prior `coins_flush` savepoint failure is gone
-    - next work is no longer statement-reset cleanup; it is why the receiver
-      still does not accept or process the offered snapshot after replay
+  - fresh-node convergence to the real live tip is still not finished
+  - the remaining work is in the later live sync path after secure handoff,
+    not in the earlier offer/transaction/SQLite ownership failures that were
+    blocking progress before
+    - the receiver log still shows no `zsnapshot`, `zfcproofs`, `zsnapreq`,
+      or `snapshot_receive` activity
+    - the next blocker is now squarely in inbound snapshot-offer reception or
+      routing after replay, not in local transaction/savepoint hygiene
 
 ## Current Commands
 

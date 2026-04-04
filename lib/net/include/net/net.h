@@ -210,6 +210,9 @@ struct p2p_node {
     uint8_t zsync_offered_mmr[32];  /* MMR root from offer (PoW chain proof) */
     int32_t zsync_offered_height;   /* height of offered snapshot */
     uint8_t zsync_offered_block[32]; /* block hash of offered snapshot */
+    uint64_t zsync_offered_count;   /* UTXO count in offered snapshot */
+    uint64_t zsync_offer_version;   /* offer cache generation sent to peer */
+    uint64_t zsync_snapshot_version; /* snapshot buffer generation sent to peer */
 
     /* Swarm parallel chunk sync state (UTXO) */
     bool swarm_manifest_sent;     /* true if we sent our manifest to this peer */

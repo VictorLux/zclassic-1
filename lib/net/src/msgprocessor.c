@@ -369,6 +369,9 @@ static void send_snapshot_offer_msg(struct p2p_node *node,
                                      const struct snapshot_offer *offer,
                                      const unsigned char *msg_start)
 {
+    uint64_t offer_version = msg_processor_offer_cache_version();
+    uint64_t snapshot_version = fast_sync_snapshot_cache_version();
+
     p2p_node_begin_message(node, MSG_SNAPSHOT_OFFER, msg_start);
     struct byte_stream os;
     stream_init(&os, 152);
@@ -382,6 +385,14 @@ static void send_snapshot_offer_msg(struct p2p_node *node,
     p2p_node_write_message_data(node, os.data, os.size);
     p2p_node_end_message(node);
     stream_free(&os);
+
+    memcpy(node->zsync_offered_root, offer->utxo_root, 32);
+    memcpy(node->zsync_offered_mmr, offer->mmr_root, 32);
+    memcpy(node->zsync_offered_block, offer->block_hash, 32);
+    node->zsync_offered_height = offer->height;
+    node->zsync_offered_count = offer->num_utxos;
+    node->zsync_offer_version = offer_version;
+    node->zsync_snapshot_version = snapshot_version;
 }
 
 /* Take a thread-safe local copy of the cached offer */
@@ -2003,8 +2014,39 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                 {
                     struct snapshot_offer offer;
                     if (msg_processor_get_offer(&offer)) {
+                    uint64_t current_offer_version =
+                        msg_processor_offer_cache_version();
+                    uint64_t current_snapshot_version =
+                        fast_sync_snapshot_cache_version();
+                    bool stale_offer =
+                        node->zsync_offered_height <= 0 ||
+                        node->zsync_offered_count == 0 ||
+                        node->zsync_offer_version != current_offer_version ||
+                        node->zsync_snapshot_version != current_snapshot_version ||
+                        node->zsync_offered_height != offer.height ||
+                        node->zsync_offered_count != offer.num_utxos ||
+                        memcmp(node->zsync_offered_root, offer.utxo_root, 32) != 0 ||
+                        memcmp(node->zsync_offered_block, offer.block_hash, 32) != 0;
+                    if (stale_offer) {
+                        printf("Peer %s: stale snapshot request "
+                               "(offered h=%d/%llu offer_v=%llu snap_v=%llu, "
+                               "current h=%d/%llu offer_v=%llu snap_v=%llu); "
+                               "re-offering latest snapshot\n",
+                               node->addr_name,
+                               node->zsync_offered_height,
+                               (unsigned long long)node->zsync_offered_count,
+                               (unsigned long long)node->zsync_offer_version,
+                               (unsigned long long)node->zsync_snapshot_version,
+                               offer.height,
+                               (unsigned long long)offer.num_utxos,
+                               (unsigned long long)current_offer_version,
+                               (unsigned long long)current_snapshot_version);
+                        send_snapshot_offer_msg(node, &offer,
+                                                mp->params->pchMessageStart);
+                        break;
+                    }
                     struct snapsync_serve_start serve = {0};
-                    snapsync_build_serve_start(&serve, offer.num_utxos);
+                    snapsync_build_serve_start(&serve, node->zsync_offered_count);
                     if (serve.should_reset_progress) {
                         node->zsync_offset = 0;
                         node->zsync_sent = 0;
@@ -2019,12 +2061,10 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                         memset(node->zsync_cursor_txid, 0, 32);
                         node->zsync_cursor_vout = 0;
                     }
-                    node->zsync_total = serve.total_utxos;
+                    node->zsync_total = node->zsync_offered_count;
                     printf("Peer %s: serving snapshot (h=%d, %llu UTXOs)\n",
-                           node->addr_name, offer.height,
-                           (unsigned long long)offer.num_utxos);
-                    send_snapshot_offer_msg(node, &offer,
-                                            mp->params->pchMessageStart);
+                           node->addr_name, node->zsync_offered_height,
+                           (unsigned long long)node->zsync_offered_count);
                     } else {
                         printf("Peer %s: snapshot not ready yet\n",
                                node->addr_name);
@@ -2969,6 +3009,31 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
         int64_t buf_size = 0;
         const uint8_t *buf = fast_sync_get_snapshot_buf(&buf_size);
         if (buf && buf_size > 0 && msg_processor_get_offer(&offer)) {
+            uint64_t current_offer_version = msg_processor_offer_cache_version();
+            uint64_t current_snapshot_version =
+                fast_sync_snapshot_cache_version();
+            bool stale_offer =
+                node->zsync_offered_height <= 0 ||
+                node->zsync_offered_count == 0 ||
+                node->zsync_offer_version != current_offer_version ||
+                node->zsync_snapshot_version != current_snapshot_version ||
+                node->zsync_offered_height != offer.height ||
+                node->zsync_offered_count != offer.num_utxos ||
+                memcmp(node->zsync_offered_root, offer.utxo_root, 32) != 0 ||
+                memcmp(node->zsync_offered_block, offer.block_hash, 32) != 0;
+            if (stale_offer) {
+                printf("Peer %s: snapshot changed while serving; "
+                       "resetting to re-offer latest snapshot\n",
+                       node->addr_name);
+                node->zsync_offset = 0;
+                node->zsync_sent = 0;
+                node->zsync_file_offset = 0;
+                node->zsync_file_size = 0;
+                peer_set_state_checked((uint32_t)node->id, &node->state,
+                                       PEER_ACTIVE,
+                                       "snapshot serve stale offer");
+                return true;
+            }
             /* Send chunks from memory, respecting TCP flow control.
              * Stop when send buffer exceeds 2MB to avoid backlog. */
             for (int batch = 0; batch < 200; batch++) {
