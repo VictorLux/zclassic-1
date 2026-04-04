@@ -149,6 +149,19 @@ Next implementation step:
 - next:
   - keep shrinking the remaining inline long-running write orchestration so more maintenance flows converge on the same fail-closed job/ownership model
 
+### Snapshot Plan Update (2026-04-04T04:40:05Z)
+
+- done:
+  - hardened `wallet_scan` SQLite reset/write phases in `app/controllers/src/wallet_scan.c`:
+    - empty-result cleanup now uses checked `BEGIN` / delete-all / `COMMIT`
+    - bulk wallet UTXO + wallet-tx rewrite now rolls back on first delete/save/mark-spent/commit failure
+    - write failure now returns `-1` instead of reporting stale success after a partial DB rewrite
+  - regression check:
+    - `make -j4 test_zcl`
+    - `./test_zcl` ends with `ALL TESTS PASSED (0 failures)`
+- next:
+  - continue the same pass over the remaining maintenance/import surfaces that still own large SQLite workflows inline, especially where they mix long loops with transaction reopen logic
+
 ### Snapshot Plan Update (2026-04-04T03:20:00Z)
 
 - done:
