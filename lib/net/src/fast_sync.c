@@ -23,6 +23,46 @@
 static uint8_t g_cached_utxo_root[32];
 static uint64_t g_cached_utxo_count = 0;
 static bool g_cached_root_valid = false;
+static pthread_mutex_t g_utxo_root_cache_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+bool fast_sync_publish_utxo_root_cache(const uint8_t root[32], uint64_t count)
+{
+    if (!root || count == 0)
+        return false;
+
+    pthread_mutex_lock(&g_utxo_root_cache_mutex);
+    memcpy(g_cached_utxo_root, root, sizeof(g_cached_utxo_root));
+    g_cached_utxo_count = count;
+    g_cached_root_valid = true;
+    pthread_mutex_unlock(&g_utxo_root_cache_mutex);
+    return true;
+}
+
+void fast_sync_reset_utxo_root_cache(void)
+{
+    pthread_mutex_lock(&g_utxo_root_cache_mutex);
+    memset(g_cached_utxo_root, 0, sizeof(g_cached_utxo_root));
+    g_cached_utxo_count = 0;
+    g_cached_root_valid = false;
+    pthread_mutex_unlock(&g_utxo_root_cache_mutex);
+}
+
+bool fast_sync_get_utxo_root_cache(uint8_t out[32], uint64_t *count)
+{
+    if (!out)
+        return false;
+
+    pthread_mutex_lock(&g_utxo_root_cache_mutex);
+    if (!g_cached_root_valid) {
+        pthread_mutex_unlock(&g_utxo_root_cache_mutex);
+        return false;
+    }
+    memcpy(out, g_cached_utxo_root, sizeof(g_cached_utxo_root));
+    if (count)
+        *count = g_cached_utxo_count;
+    pthread_mutex_unlock(&g_utxo_root_cache_mutex);
+    return true;
+}
 
 bool fast_sync_build_offer(const char *datadir,
                             struct snapshot_offer *offer)
@@ -75,13 +115,18 @@ bool fast_sync_build_offer(const char *datadir,
     /* Compute UTXO root: use cache if available, else O(n) scan.
      * The root is cached after first computation; subsequent calls
      * reuse it since the offer is rebuilt only at startup. */
-    if (g_cached_root_valid && g_cached_utxo_count == offer->num_utxos) {
-        memcpy(offer->utxo_root, g_cached_utxo_root, 32);
+    uint8_t cached_root[32];
+    uint64_t cached_count = 0;
+    if (fast_sync_get_utxo_root_cache(cached_root, &cached_count) &&
+        cached_count == offer->num_utxos) {
+        memcpy(offer->utxo_root, cached_root, sizeof(cached_root));
     } else {
         fast_sync_compute_utxo_root_db(db, offer->utxo_root);
-        memcpy(g_cached_utxo_root, offer->utxo_root, 32);
-        g_cached_utxo_count = offer->num_utxos;
-        g_cached_root_valid = true;
+        if (!fast_sync_publish_utxo_root_cache(offer->utxo_root,
+                                               offer->num_utxos)) {
+            sqlite3_close(db);
+            return false;
+        }
     }
 
     sqlite3_close(db);

@@ -115,6 +115,12 @@ static inline bool peer_supports_fast_sync(uint64_t services)
 bool fast_sync_build_offer(const char *datadir,
                             struct snapshot_offer *offer);
 
+/* Publish, clear, or read the cached UTXO root used when rebuilding
+ * snapshot offers. The cached root is keyed by the matching UTXO count. */
+bool fast_sync_publish_utxo_root_cache(const uint8_t root[32], uint64_t count);
+void fast_sync_reset_utxo_root_cache(void);
+bool fast_sync_get_utxo_root_cache(uint8_t out[32], uint64_t *count);
+
 /* Path to the pre-serialized snapshot file ({datadir}/snapshot.bin).
  * Built by fast_sync_prebuild_snapshot() for zero-copy serving. */
 void fast_sync_snapshot_path(char *out, size_t max, const char *datadir);

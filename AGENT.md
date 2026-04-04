@@ -32,13 +32,13 @@ the right step.
 
 Rough status estimate:
 
-- overall architectural completion: ~60%
+- overall architectural completion: ~85%
 - RPC front door refactor: mostly done
 - DB ownership boundary: materially improved, not finished
 - observability: meaningfully improved
-- fast-sync artifact ownership: mostly not done
-- runtime/supervisor cleanup: mostly not done
-- soak/integration harnesses: mostly not done
+- fast-sync artifact ownership: materially improved, not finished
+- runtime/supervisor cleanup: materially improved, not finished
+- soak/integration harnesses: still lighter than desired
 
 Blunt summary:
 
@@ -163,6 +163,9 @@ DB-mutating service helpers now also obey the worker boundary:
 - the cached snapshot offer in `msgprocessor` now also has explicit get and
   invalidate operations, and the offer/send/serve paths read through that
   cache boundary instead of peeking at raw validity globals
+- the cached fast-sync UTXO root used for snapshot-offer rebuilds now also
+  has explicit publish/get/reset operations behind a mutex instead of a raw
+  validity/count global triplet in `fast_sync.c`
 - file-service startup manifest build is now tracked and joined instead of
   detached, and file-service start/stop is being hardened toward idempotent
   lifecycle behavior

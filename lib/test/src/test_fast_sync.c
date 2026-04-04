@@ -321,6 +321,37 @@ static int test_snapshot_cache_publish_reset(void)
     return failures;
 }
 
+static int test_utxo_root_cache_publish_reset(void)
+{
+    int failures = 0;
+    TEST("fast_sync utxo root cache publish/get/reset") {
+        uint8_t root[32];
+        uint8_t out[32];
+        uint64_t count = 0;
+
+        memset(root, 0x7c, sizeof(root));
+        memset(out, 0, sizeof(out));
+
+        fast_sync_reset_utxo_root_cache();
+        ASSERT(!fast_sync_get_utxo_root_cache(out, &count));
+        ASSERT(count == 0);
+
+        ASSERT(!fast_sync_publish_utxo_root_cache(NULL, 7));
+        ASSERT(!fast_sync_publish_utxo_root_cache(root, 0));
+        ASSERT(fast_sync_publish_utxo_root_cache(root, 7));
+        ASSERT(fast_sync_get_utxo_root_cache(out, &count));
+        ASSERT(count == 7);
+        ASSERT(memcmp(out, root, sizeof(root)) == 0);
+
+        fast_sync_reset_utxo_root_cache();
+        memset(out, 0, sizeof(out));
+        ASSERT(!fast_sync_get_utxo_root_cache(out, &count));
+        ASSERT(count == 7);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── Swarm sync coordinator tests ────────────────────────── */
 
 static int test_swarm_init_assign(void)
@@ -975,6 +1006,7 @@ int test_fast_sync(void)
     /* Rate limiting */
     failures += test_rate_limiter();
     failures += test_snapshot_cache_publish_reset();
+    failures += test_utxo_root_cache_publish_reset();
 
     /* Swarm coordinator */
     failures += test_swarm_init_assign();
