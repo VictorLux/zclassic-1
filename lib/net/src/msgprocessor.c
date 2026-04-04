@@ -439,6 +439,17 @@ bool msgprocessor_test_block_already_seen(const struct uint256 *hash) {
 void msgprocessor_test_block_mark_seen(const struct uint256 *hash) {
     block_mark_seen(hash);
 }
+bool msgprocessor_test_accept_block_for_processing(const struct uint256 *hash,
+                                                   bool snapshot_active) {
+    if (!hash)
+        return false;
+    if (snapshot_active)
+        return false;
+    if (block_already_seen(hash))
+        return false;
+    block_mark_seen(hash);
+    return true;
+}
 void msgprocessor_test_reset_recent_blocks(void) {
     g_recent_block_count = 0;
     memset(g_recent_blocks, 0, sizeof(g_recent_blocks));
@@ -1254,12 +1265,6 @@ static bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
     /* Track block bytes for MB/s throughput reporting */
     dl_add_bytes_received(dm, s->size);
 
-    if (block_already_seen(&hash)) {
-        block_free(&blk);
-        return true;
-    }
-    block_mark_seen(&hash);
-
     /* Defer block processing while snapshot sync is active (any state).
      * During NEGOTIATING: blocks fail at height 0, accumulate dos points.
      * During RECEIVING: starves P2P socket reads.
@@ -1268,6 +1273,12 @@ static bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
         block_free(&blk);
         return true;
     }
+
+    if (block_already_seen(&hash)) {
+        block_free(&blk);
+        return true;
+    }
+    block_mark_seen(&hash);
 
     struct validation_state state;
     validation_state_init(&state);

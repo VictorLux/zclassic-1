@@ -336,15 +336,28 @@ This refactor is done when:
   - after that guard, `probe12` continued further to `2080` without the old
     `SHA3 FAILED` / `bad-txns-inputs-missingorspent` signature reappearing in
     the latest journal sweep
+- block relay dedupe is now safer during snapshot handoff:
+  - `process_block_msg()` now defers block dedupe until after snapshot-sync
+    suppression instead of marking a block as "seen" while it is still being
+    intentionally ignored
+  - this closes a real late-sync hazard where a block first received during
+    `snapshot_receive` could be cleared from in-flight, dropped, and then
+    ignored forever when re-requested after the handoff
+  - a dedicated regression test now proves a snapshot-deferred block is still
+    accepted when replayed later
+- current verification after the block-dedupe fix:
+  - `make -j4 test_zcl`
+  - `./test_zcl`
+  - result: `ALL TESTS PASSED (0 failures)`
 - current remaining blocker:
   - fresh-node convergence to the real live tip is still not finished
   - the remaining work is in the later live sync path after secure handoff,
     not in the earlier offer/transaction/SQLite ownership failures that were
     blocking progress before
-    - the receiver log still shows no `zsnapshot`, `zfcproofs`, `zsnapreq`,
-      or `snapshot_receive` activity
-    - the next blocker is now squarely in inbound snapshot-offer reception or
-      routing after replay, not in local transaction/savepoint hygiene
+    - the remaining stall is now later and narrower: a fresh node can still
+      get stranded after secure handoff without reaching the real network tip
+    - the next work is continuing live probe iteration from the post-handoff
+      block-processing path, not undoing earlier snapshot ownership fixes
 
 ## Current Commands
 

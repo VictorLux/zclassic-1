@@ -2279,6 +2279,19 @@ int test_net(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    printf("block dedupe: snapshot defer does not poison replayed block... ");
+    {
+        msgprocessor_test_reset_recent_blocks();
+        struct uint256 h;
+        memset(h.data, 0x5A, 32);
+        bool ok = !msgprocessor_test_accept_block_for_processing(&h, true);
+        ok = ok && !msgprocessor_test_block_already_seen(&h);
+        ok = ok && msgprocessor_test_accept_block_for_processing(&h, false);
+        ok = ok && msgprocessor_test_block_already_seen(&h);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     /* ── BitTorrent-style parallel chunk sync tests ──────── */
 
     /* Helper: create a test UTXO database with N entries */

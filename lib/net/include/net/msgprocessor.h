@@ -68,6 +68,8 @@ uint64_t msg_processor_block_manifest_cache_version(void);
 #include "core/uint256.h"
 bool msgprocessor_test_block_already_seen(const struct uint256 *hash);
 void msgprocessor_test_block_mark_seen(const struct uint256 *hash);
+bool msgprocessor_test_accept_block_for_processing(const struct uint256 *hash,
+                                                   bool snapshot_active);
 void msgprocessor_test_reset_recent_blocks(void);
 int msgprocessor_test_get_recent_block_count(void);
 
