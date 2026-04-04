@@ -655,6 +655,9 @@ Most recent targeted signal:
 - snapshot receive/finalize now fail closed on malformed chunk apply and on
   finalize state-write failures, with a regression test covering malformed
   chunk unwind back to normal mode
+- boot-time block-index cache persistence now checks clear/begin/bind/step and
+  batch/final commit results, aborting cleanly instead of silently leaving a
+  partial cache table behind
 - full suite currently ends with `ALL TESTS PASSED (0 failures)`
 
 Important baseline fact:

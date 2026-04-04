@@ -371,17 +371,35 @@ void save_block_index_recent(struct node_db *ndb, struct main_state *ms)
     if (total == 0) return;
 
     int64_t t0 = (int64_t)time(NULL);
-    sqlite3_exec(ndb->db, "DELETE FROM block_index_cache", NULL, NULL, NULL);
-    sqlite3_exec(ndb->db, "BEGIN", NULL, NULL, NULL);
+    bool tx_open = false;
+    int exec_rc = sqlite3_exec(ndb->db, "DELETE FROM block_index_cache",
+                               NULL, NULL, NULL);
+    if (exec_rc != SQLITE_OK) {
+        fprintf(stderr, "boot-index: failed to clear block_index_cache: %s\n",
+                sqlite3_errmsg(ndb->db));
+        return;
+    }
+    exec_rc = sqlite3_exec(ndb->db, "BEGIN", NULL, NULL, NULL);
+    if (exec_rc != SQLITE_OK) {
+        fprintf(stderr, "boot-index: failed to begin block_index_cache save: %s\n",
+                sqlite3_errmsg(ndb->db));
+        return;
+    }
+    tx_open = true;
 
     sqlite3_stmt *ins = NULL;
-    sqlite3_prepare_v2(ndb->db,
+    if (sqlite3_prepare_v2(ndb->db,
         "INSERT OR REPLACE INTO block_index_cache "
         "(hash,prev_hash,height,n_bits,n_time,n_version,n_status,"
         "n_file,n_data_pos,n_undo_pos,n_tx,chain_work,"
         "n_cached_branch_id,n_chain_tx) "
         "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        -1, &ins, NULL);
+        -1, &ins, NULL) != SQLITE_OK || !ins) {
+        fprintf(stderr, "boot-index: failed to prepare block_index_cache insert: %s\n",
+                sqlite3_errmsg(ndb->db));
+        sqlite3_exec(ndb->db, "ROLLBACK", NULL, NULL, NULL);
+        return;
+    }
 
     static const unsigned char zero32[32] = {0};
     size_t iter = 0, count = 0;
@@ -390,36 +408,57 @@ void save_block_index_recent(struct node_db *ndb, struct main_state *ms)
         if (!p || !p->phashBlock) continue;
 
         sqlite3_reset(ins);
-        sqlite3_bind_blob(ins, 1, p->phashBlock->data, 32, SQLITE_STATIC);
+        if (sqlite3_bind_blob(ins, 1, p->phashBlock->data, 32, SQLITE_STATIC) != SQLITE_OK)
+            goto fail;
         const unsigned char *prev = (p->pprev && p->pprev->phashBlock)
             ? p->pprev->phashBlock->data : zero32;
-        sqlite3_bind_blob(ins, 2, prev, 32, SQLITE_STATIC);
-        sqlite3_bind_int(ins, 3, p->nHeight);
-        sqlite3_bind_int(ins, 4, (int)p->nBits);
-        sqlite3_bind_int(ins, 5, (int)p->nTime);
-        sqlite3_bind_int(ins, 6, p->nVersion);
-        sqlite3_bind_int(ins, 7, (int)p->nStatus);
-        sqlite3_bind_int(ins, 8, p->nFile);
-        sqlite3_bind_int(ins, 9, (int)p->nDataPos);
-        sqlite3_bind_int(ins, 10, (int)p->nUndoPos);
-        sqlite3_bind_int(ins, 11, (int)p->nTx);
-        sqlite3_bind_blob(ins, 12, p->nChainWork.pn, 32, SQLITE_STATIC);
-        sqlite3_bind_int(ins, 13, (int)p->nCachedBranchId);
-        sqlite3_bind_int(ins, 14, (int)p->nChainTx);
-        sqlite3_step(ins);
+        if (sqlite3_bind_blob(ins, 2, prev, 32, SQLITE_STATIC) != SQLITE_OK ||
+            sqlite3_bind_int(ins, 3, p->nHeight) != SQLITE_OK ||
+            sqlite3_bind_int(ins, 4, (int)p->nBits) != SQLITE_OK ||
+            sqlite3_bind_int(ins, 5, (int)p->nTime) != SQLITE_OK ||
+            sqlite3_bind_int(ins, 6, p->nVersion) != SQLITE_OK ||
+            sqlite3_bind_int(ins, 7, (int)p->nStatus) != SQLITE_OK ||
+            sqlite3_bind_int(ins, 8, p->nFile) != SQLITE_OK ||
+            sqlite3_bind_int(ins, 9, (int)p->nDataPos) != SQLITE_OK ||
+            sqlite3_bind_int(ins, 10, (int)p->nUndoPos) != SQLITE_OK ||
+            sqlite3_bind_int(ins, 11, (int)p->nTx) != SQLITE_OK ||
+            sqlite3_bind_blob(ins, 12, p->nChainWork.pn, 32, SQLITE_STATIC) != SQLITE_OK ||
+            sqlite3_bind_int(ins, 13, (int)p->nCachedBranchId) != SQLITE_OK ||
+            sqlite3_bind_int(ins, 14, (int)p->nChainTx) != SQLITE_OK ||
+            sqlite3_step(ins) != SQLITE_DONE)
+            goto fail;
         count++;
 
         if (count % 50000 == 0) {
-            sqlite3_exec(ndb->db, "COMMIT", NULL, NULL, NULL);
-            sqlite3_exec(ndb->db, "BEGIN", NULL, NULL, NULL);
+            if (sqlite3_exec(ndb->db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK)
+                goto fail;
+            tx_open = false;
+            if (sqlite3_exec(ndb->db, "BEGIN", NULL, NULL, NULL) != SQLITE_OK)
+                goto fail;
+            tx_open = true;
         }
     }
     sqlite3_finalize(ins);
-    sqlite3_exec(ndb->db, "COMMIT", NULL, NULL, NULL);
+    ins = NULL;
+    if (sqlite3_exec(ndb->db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK) {
+        fprintf(stderr, "boot-index: failed to commit block_index_cache save: %s\n",
+                sqlite3_errmsg(ndb->db));
+        sqlite3_exec(ndb->db, "ROLLBACK", NULL, NULL, NULL);
+        return;
+    }
 
     int64_t elapsed = (int64_t)time(NULL) - t0;
     printf("Block index: cached %zu/%zu entries in SQLite (%llds)\n",
            count, total, (long long)elapsed);
+    return;
+
+fail:
+    fprintf(stderr, "boot-index: block_index_cache save aborted: %s\n",
+            sqlite3_errmsg(ndb->db));
+    if (ins)
+        sqlite3_finalize(ins);
+    if (tx_open)
+        sqlite3_exec(ndb->db, "ROLLBACK", NULL, NULL, NULL);
 }
 
 /* Load ALL block_index entries from SQLite. */
