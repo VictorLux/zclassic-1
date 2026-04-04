@@ -137,6 +137,18 @@ Next implementation step:
 - next:
   - continue reducing remaining large direct-SQL workflows, especially wallet rescan/import surfaces that still own multi-step write transactions inline
 
+### Snapshot Plan Update (2026-04-04T04:31:40Z)
+
+- done:
+  - hardened wallet reset transactions in `app/controllers/src/wallet_rescan_controller.c`:
+    - `replaywalletfromchain` and `rescanwallet` now use checked `BEGIN` / delete-all / `COMMIT`
+    - failed wallet-table resets now roll back explicitly and return RPC errors instead of proceeding into rescans with partially cleared wallet state
+  - regression check:
+    - `make -j4 test_zcl`
+    - `./test_zcl` ends with `ALL TESTS PASSED (0 failures)`
+- next:
+  - keep shrinking the remaining inline long-running write orchestration so more maintenance flows converge on the same fail-closed job/ownership model
+
 ### Snapshot Plan Update (2026-04-04T03:20:00Z)
 
 - done:
