@@ -152,6 +152,8 @@ bool coins_view_sqlite_get_coins(struct coins_view_sqlite *cvs,
                                   const struct uint256 *txid,
                                   struct coins *out)
 {
+    bool found = false;
+
     coins_init(out);
     if (!cvs || !cvs->db || !cvs->stmt_get || !txid) return false;
 
@@ -177,12 +179,17 @@ bool coins_view_sqlite_get_coins(struct coins_view_sqlite *cvs,
         nrows++;
     }
 
-    if (nrows == 0)
+    if (nrows == 0) {
+        sqlite3_reset(s);
         return false;
+    }
+    found = true;
 
     /* Allocate once */
-    if (!coins_alloc(out, (size_t)(max_vout + 1)))
+    if (!coins_alloc(out, (size_t)(max_vout + 1))) {
+        sqlite3_reset(s);
         return false;
+    }
     out->version = 1;
     out->height = height;
     out->is_coinbase = (is_coinbase != 0);
@@ -207,7 +214,8 @@ bool coins_view_sqlite_get_coins(struct coins_view_sqlite *cvs,
     }
 
     coins_cleanup(out);
-    return true;
+    sqlite3_reset(s);
+    return found;
 }
 
 /* ── have_coins: existence check ───────────────────────────────── */
@@ -215,11 +223,15 @@ bool coins_view_sqlite_get_coins(struct coins_view_sqlite *cvs,
 bool coins_view_sqlite_have_coins(struct coins_view_sqlite *cvs,
                                    const struct uint256 *txid)
 {
+    bool found;
+
     if (!cvs || !cvs->stmt_have || !txid) return false;
     sqlite3_stmt *s = cvs->stmt_have;
     sqlite3_reset(s);
     sqlite3_bind_blob(s, 1, txid->data, 32, SQLITE_STATIC);
-    return sqlite3_step(s) == SQLITE_ROW;
+    found = sqlite3_step(s) == SQLITE_ROW;
+    sqlite3_reset(s);
+    return found;
 }
 
 /* ── get_best_block ────────────────────────────────────────────── */
@@ -227,6 +239,8 @@ bool coins_view_sqlite_have_coins(struct coins_view_sqlite *cvs,
 bool coins_view_sqlite_get_best_block(struct coins_view_sqlite *cvs,
                                        struct uint256 *hash)
 {
+    bool found = false;
+
     if (!cvs || !cvs->db || !hash) return false;
     if (!cvs->stmt_best_get) { uint256_set_null(hash); return false; }
     sqlite3_stmt *s = cvs->stmt_best_get;
@@ -236,9 +250,12 @@ bool coins_view_sqlite_get_best_block(struct coins_view_sqlite *cvs,
         const void *data = sqlite3_column_blob(s, 0);
         if (data && len >= 32) {
             memcpy(hash->data, data, 32);
-            return true;
+            found = true;
         }
     }
+    sqlite3_reset(s);
+    if (found)
+        return true;
     uint256_set_null(hash);
     return false;
 }

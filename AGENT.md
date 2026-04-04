@@ -246,6 +246,18 @@ This refactor is done when:
     `BUG: peer 1 illegal transition syncing_headers -> snapshot_receiving`
   - that peer-state transition is now allowed and covered by test so snapshot
     takeover from live header/block sync is no longer treated as illegal
+  - a later fresh probe exposed another local SQLite blocker at the replay
+    handoff:
+    `coins_flush: SAVEPOINT coins_flush failed ... SQL statements in progress`
+  - that came from shared-handle `coins_view_sqlite` readers leaving prepared
+    statements active across returns; the readers now explicitly reset before
+    returning and a regression test covers read-then-flush on the shared
+    connection
+  - latest live result after that fix:
+    - fresh probe still stalls at `587`
+    - the prior `coins_flush` savepoint failure is gone
+    - next work is no longer statement-reset cleanup; it is why the receiver
+      still does not accept or process the offered snapshot after replay
 
 ## Current Commands
 

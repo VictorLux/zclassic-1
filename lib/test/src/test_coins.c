@@ -904,6 +904,68 @@ int test_coins(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    printf("coins_view_sqlite: read helpers reset statements before flush... ");
+    {
+        sqlite3 *db = NULL;
+        int rc = sqlite3_open(":memory:", &db);
+        bool ok = (rc == SQLITE_OK && db != NULL);
+        if (ok) {
+            TEST_DB_EXEC(db,
+                "CREATE TABLE IF NOT EXISTS utxos ("
+                " txid BLOB NOT NULL, vout INTEGER NOT NULL,"
+                " value INTEGER, script BLOB, script_type INTEGER,"
+                " address_hash BLOB, height INTEGER, is_coinbase INTEGER,"
+                " PRIMARY KEY(txid, vout))");
+            TEST_DB_EXEC(db,
+                "CREATE TABLE IF NOT EXISTS node_state ("
+                " key TEXT PRIMARY KEY, value BLOB)");
+
+            struct coins_view_sqlite cvs;
+            ok = coins_view_sqlite_open(&cvs, db);
+            if (ok) {
+                uint8_t p2pkh[] = {0x76, 0xa9, 0x14,
+                    1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,
+                    0x88, 0xac};
+                struct coins_map cm;
+                struct uint256 txid, best, read_best;
+                struct coins readback;
+
+                coins_map_init(&cm);
+                memset(txid.data, 0x66, 32);
+                memset(best.data, 0xAB, 32);
+                uint256_set_null(&read_best);
+
+                struct coins_cache_entry *e = coins_map_insert(&cm, &txid);
+                coins_alloc(&e->coins, 1);
+                e->coins.vout[0].value = 424242;
+                script_set(&e->coins.vout[0].script_pub_key,
+                           p2pkh, sizeof(p2pkh));
+                e->coins.height = 321;
+                e->flags = COINS_CACHE_DIRTY;
+
+                ok = coins_view_sqlite_batch_write(&cvs, &cm, &best);
+                ok = ok && coins_view_sqlite_have_coins(&cvs, &txid);
+                coins_init(&readback);
+                ok = ok && coins_view_sqlite_get_coins(&cvs, &txid, &readback);
+                ok = ok && readback.vout[0].value == 424242;
+                coins_free(&readback);
+                ok = ok && coins_view_sqlite_get_best_block(&cvs, &read_best);
+                ok = ok && uint256_eq(&best, &read_best);
+
+                TEST_DB_BEGIN_TXN(db);
+                memset(best.data, 0xBC, 32);
+                ok = ok && coins_view_sqlite_batch_write(&cvs, &cm, &best);
+                TEST_DB_COMMIT(db);
+
+                coins_map_free(&cm);
+                coins_view_sqlite_close(&cvs);
+            }
+            sqlite3_close(db);
+        }
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     printf("coins_view_sqlite: spend-after-flush roundtrip... ");
     {
         /* Test the exact failure mode: create UTXO, flush, spend UTXO,
