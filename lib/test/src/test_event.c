@@ -115,6 +115,34 @@ static int test_peer_state_legal(void)
     return failures;
 }
 
+static int test_peer_state_snapshot_takeover(void)
+{
+    int failures = 0;
+
+    TEST("peer_set_state_checked allows snapshot takeover during sync") {
+        event_log_init();
+        enum peer_state state = PEER_SYNCING_HEADERS;
+
+        ASSERT(peer_set_state_checked(1, &state, PEER_SNAPSHOT_RECEIVING,
+                                      "accepted snapshot offer"));
+        ASSERT(state == PEER_SNAPSHOT_RECEIVING);
+        ASSERT(peer_set_state_checked(1, &state, PEER_ACTIVE,
+                                      "snapshot complete"));
+        ASSERT(state == PEER_ACTIVE);
+
+        state = PEER_SYNCING_BLOCKS;
+        ASSERT(peer_set_state_checked(1, &state, PEER_SNAPSHOT_RECEIVING,
+                                      "accepted snapshot offer"));
+        ASSERT(state == PEER_SNAPSHOT_RECEIVING);
+        ASSERT(peer_set_state_checked(1, &state, PEER_ACTIVE,
+                                      "snapshot complete"));
+        ASSERT(state == PEER_ACTIVE);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
 static int test_peer_state_illegal(void)
 {
     int failures = 0;
@@ -624,6 +652,7 @@ int test_event(void)
     failures += test_emit_dump_roundtrip();
     failures += test_dump_count();
     failures += test_peer_state_legal();
+    failures += test_peer_state_snapshot_takeover();
     failures += test_peer_state_illegal();
     failures += test_peer_transition_valid();
     failures += test_peer_state_name();

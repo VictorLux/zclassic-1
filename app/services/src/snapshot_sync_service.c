@@ -987,14 +987,40 @@ int snapsync_activate_verified_tip(const struct snapshot_sync_service *svc,
 {
     struct uint256 snap_hash;
     struct block_index *snap_bi;
+    struct block_index *fallback = NULL;
+    size_t iter = 0;
 
     if (!svc || !ms)
         return -1;
 
     memcpy(snap_hash.data, svc->offered_block_hash, 32);
     snap_bi = block_map_find(&ms->map_block_index, &snap_hash);
-    if (!snap_bi)
-        return -1;
+    if (!snap_bi) {
+        struct block_index *bi = NULL;
+
+        while (block_map_next(&ms->map_block_index, &iter, NULL, &bi)) {
+            if (!bi || !bi->phashBlock)
+                continue;
+            if ((bi->nStatus & BLOCK_HAVE_DATA) == 0)
+                continue;
+            if (bi->nChainTx <= 0)
+                continue;
+            if (bi->nHeight > svc->offered_height)
+                continue;
+            if (!fallback || bi->nHeight > fallback->nHeight)
+                fallback = bi;
+        }
+
+        if (!fallback)
+            return -1;
+
+        active_chain_set_tip(&ms->chain_active, fallback);
+        ms->pindex_best_header = fallback;
+        printf("[snapshot] Verified tip hash not in block index yet; "
+               "falling back to local indexed height %d\n",
+               fallback->nHeight);
+        return fallback->nHeight;
+    }
 
     active_chain_set_tip(&ms->chain_active, snap_bi);
     ms->pindex_best_header = snap_bi;

@@ -438,6 +438,74 @@ static int test_snapshot_sync_service_activates_tip(void)
     return failures;
 }
 
+static int test_snapshot_sync_service_activates_fallback_tip(void)
+{
+    int failures = 0;
+
+    TEST("snapshot sync service falls back to highest indexed local tip") {
+        struct snapshot_sync_service svc;
+        struct main_state ms;
+        struct block_index genesis, indexed, unindexed, too_high;
+        struct uint256 h0 = {0}, h1 = {0}, h2 = {0}, h3 = {0}, missing = {0};
+
+        memset(&svc, 0, sizeof(svc));
+        memset(&genesis, 0, sizeof(genesis));
+        memset(&indexed, 0, sizeof(indexed));
+        memset(&unindexed, 0, sizeof(unindexed));
+        memset(&too_high, 0, sizeof(too_high));
+        main_state_init(&ms);
+        block_index_init(&genesis);
+        block_index_init(&indexed);
+        block_index_init(&unindexed);
+        block_index_init(&too_high);
+
+        h0.data[0] = 1;
+        h1.data[0] = 2;
+        h2.data[0] = 3;
+        h3.data[0] = 4;
+        missing.data[0] = 9;
+
+        genesis.phashBlock = &h0;
+        genesis.nHeight = 0;
+        genesis.nStatus = BLOCK_HAVE_DATA;
+        genesis.nChainTx = 1;
+
+        indexed.phashBlock = &h1;
+        indexed.nHeight = 1000;
+        indexed.nStatus = BLOCK_HAVE_DATA;
+        indexed.nChainTx = 1;
+        indexed.pprev = &genesis;
+
+        unindexed.phashBlock = &h2;
+        unindexed.nHeight = 1500;
+        unindexed.nChainTx = 1;
+        unindexed.pprev = &indexed;
+
+        too_high.phashBlock = &h3;
+        too_high.nHeight = 2500;
+        too_high.nStatus = BLOCK_HAVE_DATA;
+        too_high.nChainTx = 1;
+        too_high.pprev = &indexed;
+
+        block_map_insert(&ms.map_block_index, &h0, &genesis);
+        block_map_insert(&ms.map_block_index, &h1, &indexed);
+        block_map_insert(&ms.map_block_index, &h2, &unindexed);
+        block_map_insert(&ms.map_block_index, &h3, &too_high);
+
+        memcpy(svc.offered_block_hash, missing.data, 32);
+        svc.offered_height = 2000;
+
+        ASSERT(snapsync_activate_verified_tip(&svc, &ms) == 1000);
+        ASSERT(active_chain_tip(&ms.chain_active) == &indexed);
+        ASSERT(ms.pindex_best_header == &indexed);
+
+        main_state_free(&ms);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
 static int test_snapshot_sync_service_prepare_serve_step(void)
 {
     int failures = 0;
@@ -819,6 +887,7 @@ int test_snapshot_sync_service(void)
     failures += test_snapshot_sync_service_stream_helpers();
     failures += test_snapshot_sync_service_fc_roundtrip();
     failures += test_snapshot_sync_service_activates_tip();
+    failures += test_snapshot_sync_service_activates_fallback_tip();
     failures += test_snapshot_sync_service_prepare_serve_step();
     failures += test_snapshot_sync_service_transition_results();
     failures += test_snapshot_sync_service_handle_offer_begin_failure();

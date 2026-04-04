@@ -223,11 +223,29 @@ This refactor is done when:
   - the prior `cannot start a transaction within a transaction` failure is gone
   - the prior `schema[37] failed: database is locked` failure is gone
   - `zsnapdata` now streams in repeated bursts after secure handoff
+- verified snapshot activation is now more robust:
+  - if the offered snapshot-tip hash is not in `map_block_index` yet,
+    activation now falls back to the highest local indexed block at or below
+    the offered height
+  - this mirrors the existing boot-time chainstate fallback pattern instead of
+    leaving the node pinned at height `587`
+  - a dedicated unit test now covers the fallback activation path
+- current verification after this pass:
+  - `make -j4 zclassic23`
+  - `make -j4 test_zcl`
+  - `./test_zcl`
+  - result: `ALL TESTS PASSED (0 failures)`
 - current remaining blocker:
   - fresh receiver still stalls at height `587` during the later snapshot
-    receive/request loop, with no current DB error
+    serve/request/finalize loop, with no current DB error
   - next work should focus on snapshot serve/request flow and end-of-stream
-    finalization, not bootstrap DB ownership
+    finalization, not receive-mode bootstrap ownership or verified-tip
+    activation
+  - fresh probe on the current binary moved the stall earlier to height `128`
+    and exposed a remaining peer-state bug:
+    `BUG: peer 1 illegal transition syncing_headers -> snapshot_receiving`
+  - that peer-state transition is now allowed and covered by test so snapshot
+    takeover from live header/block sync is no longer treated as illegal
 
 ## Current Commands
 
