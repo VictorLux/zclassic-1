@@ -432,6 +432,27 @@ static void tx_mark_seen(const struct uint256 *hash) {
     g_recent_tx_count++;
 }
 
+static bool msg_should_ignore_snapshot_offer(enum snapshot_sync_state snapsync_state,
+                                             uint32_t serving_peer_id,
+                                             enum peer_state peer_state,
+                                             uint32_t peer_id,
+                                             enum sync_state sync_state)
+{
+    (void)serving_peer_id;
+
+    if (sync_state == SYNC_AT_TIP)
+        return true;
+    if (peer_state == PEER_SNAPSHOT_RECEIVING)
+        return true;
+    if (snapsync_state == SNAPSYNC_NEGOTIATING ||
+        snapsync_state == SNAPSYNC_RECEIVING ||
+        snapsync_state == SNAPSYNC_VERIFYING)
+        return true;
+    if (peer_id == 0)
+        return false;
+    return false;
+}
+
 /* Expose internals for unit testing via weak-linked test helpers. */
 bool msgprocessor_test_block_already_seen(const struct uint256 *hash) {
     return block_already_seen(hash);
@@ -449,6 +470,15 @@ bool msgprocessor_test_accept_block_for_processing(const struct uint256 *hash,
         return false;
     block_mark_seen(hash);
     return true;
+}
+bool msgprocessor_test_should_ignore_snapshot_offer(
+    enum snapshot_sync_state snapsync_state,
+    uint32_t serving_peer_id,
+    enum peer_state peer_state,
+    uint32_t peer_id,
+    enum sync_state sync_state) {
+    return msg_should_ignore_snapshot_offer(snapsync_state, serving_peer_id,
+                                            peer_state, peer_id, sync_state);
 }
 void msgprocessor_test_reset_recent_blocks(void) {
     g_recent_block_count = 0;
@@ -1920,14 +1950,27 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
             /* ── Route: zsnapshot → snapsync_handle_offer ──────── */
             struct snapshot_offer_params params;
             if (snapsync_parse_offer_params(&params, &s)) {
+                struct snapsync_status snap_status = {0};
                 params.peer_id = (uint32_t)node->id;
                 params.our_height = active_chain_height(
                     &mp->main_state->chain_active);
 
-                /* Additional gate: must not already be receiving, must
-                 * not be at tip, peer state must be compatible */
-                if (node->state == PEER_SNAPSHOT_RECEIVING ||
-                    sync_get_state() == SYNC_AT_TIP) {
+                {
+                    struct snapshot_sync_service *svc =
+                        msg_snapshot_sync_ensure(mp);
+                    if (svc)
+                        snapsync_get_status_snapshot(svc, &snap_status);
+                }
+
+                /* Additional gate: once snapshot sync already owns the
+                 * receiver lifecycle, duplicate offers should be ignored in
+                 * the router instead of trying to re-enter negotiation. */
+                if (msg_should_ignore_snapshot_offer(
+                        snap_status.state,
+                        snap_status.serving_peer_id,
+                        node->state,
+                        (uint32_t)node->id,
+                        sync_get_state())) {
                     /* silently ignore */
                 } else {
                     struct snapshot_sync_service *svc =

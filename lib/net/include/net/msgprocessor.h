@@ -14,6 +14,7 @@
 #include "chain/chainparams.h"
 #include "config/runtime.h"
 #include "net/fast_sync.h"
+#include "event/event.h"
 #include <stdbool.h>
 
 struct msg_processor {
@@ -70,6 +71,12 @@ bool msgprocessor_test_block_already_seen(const struct uint256 *hash);
 void msgprocessor_test_block_mark_seen(const struct uint256 *hash);
 bool msgprocessor_test_accept_block_for_processing(const struct uint256 *hash,
                                                    bool snapshot_active);
+bool msgprocessor_test_should_ignore_snapshot_offer(
+    enum snapshot_sync_state snapsync_state,
+    uint32_t serving_peer_id,
+    enum peer_state peer_state,
+    uint32_t peer_id,
+    enum sync_state sync_state);
 void msgprocessor_test_reset_recent_blocks(void);
 int msgprocessor_test_get_recent_block_count(void);
 

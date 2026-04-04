@@ -2292,6 +2292,25 @@ int test_net(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    printf("snapshot offer gate: ignore duplicate offers while snapshot owns sync... ");
+    {
+        bool ok = true;
+        ok = ok && msgprocessor_test_should_ignore_snapshot_offer(
+            SNAPSYNC_RECEIVING, 7, PEER_ACTIVE, 7, SYNC_SNAPSHOT_RECEIVE);
+        ok = ok && msgprocessor_test_should_ignore_snapshot_offer(
+            SNAPSYNC_NEGOTIATING, 7, PEER_ACTIVE, 8, SYNC_BLOCKS_DOWNLOAD);
+        ok = ok && msgprocessor_test_should_ignore_snapshot_offer(
+            SNAPSYNC_VERIFYING, 7, PEER_ACTIVE, 8, SYNC_SNAPSHOT_RECEIVE);
+        ok = ok && msgprocessor_test_should_ignore_snapshot_offer(
+            SNAPSYNC_IDLE, 0, PEER_SNAPSHOT_RECEIVING, 8, SYNC_BLOCKS_DOWNLOAD);
+        ok = ok && msgprocessor_test_should_ignore_snapshot_offer(
+            SNAPSYNC_IDLE, 0, PEER_ACTIVE, 8, SYNC_AT_TIP);
+        ok = ok && !msgprocessor_test_should_ignore_snapshot_offer(
+            SNAPSYNC_IDLE, 0, PEER_ACTIVE, 8, SYNC_BLOCKS_DOWNLOAD);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     /* ── BitTorrent-style parallel chunk sync tests ──────── */
 
     /* Helper: create a test UTXO database with N entries */

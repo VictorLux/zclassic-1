@@ -367,6 +367,17 @@ This refactor is done when:
   - `make -j4 test_zcl`
   - `./test_zcl`
   - result: `ALL TESTS PASSED (0 failures)`
+- duplicate snapshot offers are now gated more cleanly:
+  - the message router now ignores fresh `zsnapshot` offers while snapshot
+    negotiation/receive/verify already owns the receiver lifecycle
+  - this removes the earlier live bug where a later offer could try to drive
+    the service back from `receiving` into `negotiating`
+  - a direct unit test now covers the ignore policy for duplicate offers
+- live probe result after the offer-gate fix:
+  - fresh probe still shows normal `zsnapshot` and `zfcproofs` flow
+  - secure receive still begins normally
+  - the earlier `BUG: snapsync illegal receiving -> negotiating (accepted offer)`
+    line no longer appears in the recent probe log
 - current remaining blocker:
   - fresh-node convergence to the real live tip is still not finished
   - the remaining work is in the later live sync path after secure handoff,
