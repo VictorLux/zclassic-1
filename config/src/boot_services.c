@@ -547,8 +547,12 @@ bool app_init_services(struct app_context *ctx,
                     existing);
             } else {
                 char *err = NULL;
-                sqlite3_exec(ndb->db, "BEGIN", NULL, NULL, NULL);
-                int rc = sqlite3_exec(ndb->db,
+                int rc = sqlite3_exec(ndb->db, "BEGIN", NULL, NULL, NULL);
+                if (rc != SQLITE_OK) {
+                    fprintf(stderr, "wallet_utxos: BEGIN failed: %s\n",
+                            sqlite3_errmsg(ndb->db));
+                } else {
+                    rc = sqlite3_exec(ndb->db,
                     "INSERT OR IGNORE INTO wallet_utxos "
                     "(txid, vout, value, address_hash, script, height, is_coinbase) "
                     "SELECT u.txid, u.vout, u.value, u.address_hash, u.script, "
@@ -556,15 +560,25 @@ bool app_init_services(struct app_context *ctx,
                     "FROM utxos u INNER JOIN wallet_keys wk "
                     "ON u.address_hash = wk.pubkey_hash",
                     NULL, NULL, &err);
+                }
                 if (err) {
                     printf("wallet_utxos INSERT: %s\n", err);
                     sqlite3_free(err);
                     err = NULL;
                 }
-                if (rc != SQLITE_OK)
-                    sqlite3_exec(ndb->db, "ROLLBACK", NULL, NULL, NULL);
-                else
-                    sqlite3_exec(ndb->db, "COMMIT", NULL, NULL, NULL);
+                if (rc != SQLITE_OK) {
+                    if (sqlite3_exec(ndb->db, "ROLLBACK", NULL, NULL, NULL) != SQLITE_OK) {
+                        fprintf(stderr, "wallet_utxos: ROLLBACK failed: %s\n",
+                                sqlite3_errmsg(ndb->db));
+                    }
+                } else if (sqlite3_exec(ndb->db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK) {
+                    fprintf(stderr, "wallet_utxos: COMMIT failed: %s\n",
+                            sqlite3_errmsg(ndb->db));
+                    if (sqlite3_exec(ndb->db, "ROLLBACK", NULL, NULL, NULL) != SQLITE_OK) {
+                        fprintf(stderr, "wallet_utxos: ROLLBACK after COMMIT failure failed: %s\n",
+                                sqlite3_errmsg(ndb->db));
+                    }
+                }
             }
             int64_t bal = 0;
             sqlite3_stmt *s = NULL;

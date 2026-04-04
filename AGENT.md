@@ -658,6 +658,9 @@ Most recent targeted signal:
 - boot-time block-index cache persistence now checks clear/begin/bind/step and
   batch/final commit results, aborting cleanly instead of silently leaving a
   partial cache table behind
+- boot-time `wallet_utxos` rebuild now checks `BEGIN` / bulk insert / `COMMIT`
+  and rolls back on failure instead of silently leaving partial wallet UTXO
+  state during startup
 - full suite currently ends with `ALL TESTS PASSED (0 failures)`
 
 Important baseline fact:
