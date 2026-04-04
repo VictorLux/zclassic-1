@@ -692,6 +692,72 @@ static int test_snapshot_sync_service_db_service_chunk_finalize(void)
     return failures;
 }
 
+static int test_snapshot_sync_service_finalize_mismatch(void)
+{
+    int failures = 0;
+
+    TEST("snapshot sync service finalize SHA3 mismatch clears turbo and fails") {
+        struct snapshot_sync_service svc;
+        struct node_db ndb;
+        struct db_service dbsvc;
+        struct app_runtime_context runtime;
+        struct node_db_status st;
+        struct byte_stream chunk;
+        uint8_t actual_root[32];
+        uint8_t bad_root[32];
+        uint64_t count = 0;
+
+        memset(&svc, 0, sizeof(svc));
+        memset(&runtime, 0, sizeof(runtime));
+        memset(actual_root, 0, sizeof(actual_root));
+        memset(bad_root, 0xAA, sizeof(bad_root));
+        ASSERT(node_db_open(&ndb, ":memory:"));
+        db_service_init(&dbsvc);
+        ASSERT(db_service_attach(&dbsvc, &ndb));
+        ASSERT(db_service_start(&dbsvc));
+
+        runtime.db_service = &dbsvc;
+        app_runtime_set_current(&runtime);
+
+        snapsync_init(&svc, &ndb);
+        svc.state = SNAPSYNC_NEGOTIATING;
+        svc.start_time_us = 1;
+        svc.offered_count = 1;
+        svc.serving_peer_id = 12;
+        memset(svc.offered_block_hash, 0x44, sizeof(svc.offered_block_hash));
+
+        ASSERT(snapsync_begin_receive(&svc));
+        build_snapshot_chunk(&chunk);
+        ASSERT(snapsync_apply_chunk(&svc, chunk.data, chunk.size) == 1);
+
+        ASSERT(db_service_commit_write(&dbsvc));
+        utxo_commitment_sha3_compute(ndb.db, actual_root, &count);
+        ASSERT(count == 1);
+        memcpy(svc.offered_utxo_root, bad_root, sizeof(bad_root));
+        memcpy(bad_root, actual_root, sizeof(bad_root));
+        if (bad_root[0] == 0xFF) {
+            bad_root[0] = 0xFE;
+        } else {
+            bad_root[0] ^= 0xFF;
+        }
+        memcpy(svc.offered_utxo_root, bad_root, sizeof(bad_root));
+
+        ASSERT(!snapsync_finalize(&svc));
+        ASSERT(svc.state == SNAPSYNC_FAILED);
+        ASSERT(!svc.turbo_active);
+        node_db_get_status(&ndb, &st);
+        ASSERT(!st.turbo_mode);
+
+        stream_free(&chunk);
+        app_runtime_set_current(NULL);
+        db_service_stop(&dbsvc);
+        node_db_close(&ndb);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
 int test_snapshot_sync_service(void)
 {
     int failures = 0;
@@ -709,5 +775,6 @@ int test_snapshot_sync_service(void)
     failures += test_snapshot_sync_service_db_service_runtime();
     failures += test_snapshot_sync_service_runtime_accessor();
     failures += test_snapshot_sync_service_db_service_chunk_finalize();
+    failures += test_snapshot_sync_service_finalize_mismatch();
     return failures;
 }

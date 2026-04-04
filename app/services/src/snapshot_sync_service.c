@@ -84,6 +84,32 @@ static int64_t now_us(void)
     return (int64_t)tv.tv_sec * 1000000 + tv.tv_usec;
 }
 
+static bool snapsync_exit_turbo_mode(struct snapshot_sync_service *svc)
+{
+    struct db_service *dbsvc = NULL;
+    bool turbo_active = false;
+
+    if (!svc || !svc->ndb)
+        return false;
+
+    snapsync_service_lock();
+    turbo_active = svc->turbo_active;
+    snapsync_service_unlock();
+    if (!turbo_active)
+        return true;
+
+    dbsvc = snapsync_db_service(svc);
+    bool ok = dbsvc
+        ? db_service_normal_mode(dbsvc)
+        : node_db_normal_mode(svc->ndb);
+
+    snapsync_service_lock();
+    svc->turbo_active = false;
+    snapsync_service_unlock();
+
+    return ok;
+}
+
 static struct db_service *snapsync_db_service(
     const struct snapshot_sync_service *svc)
 {
@@ -285,13 +311,12 @@ static bool snapsync_finalize_write(struct node_db *ndb, void *ctx)
             node_db_state_set(ndb, "snapshot_mmr_height",
                               &svc->offered_height, 4);
         }
-            if (!node_db_normal_mode(ndb))
-                return false;
-            snapsync_service_lock();
-            svc->turbo_active = false;
-            svc->state = SNAPSYNC_COMPLETE;
-            snapsync_set_state(SNAPSYNC_COMPLETE, "SHA3 verified");
-            snapsync_service_unlock();
+        if (!snapsync_exit_turbo_mode(svc))
+            return false;
+        snapsync_service_lock();
+        svc->state = SNAPSYNC_COMPLETE;
+        snapsync_set_state(SNAPSYNC_COMPLETE, "SHA3 verified");
+        snapsync_service_unlock();
 
         event_emitf(EV_SNAPSYNC_VERIFIED, serving_peer_id,
                     "sha3=PASSED flyclient=%s utxos=%llu elapsed=%.1fs",
@@ -315,9 +340,8 @@ static bool snapsync_finalize_write(struct node_db *ndb, void *ctx)
                 exp, got);
 
         node_db_wipe_utxos(ndb);
-        node_db_normal_mode(ndb);
+        snapsync_exit_turbo_mode(svc);
         snapsync_service_lock();
-        svc->turbo_active = false;
         svc->state = SNAPSYNC_FAILED;
         snapsync_set_state(SNAPSYNC_FAILED, "SHA3 verification failed");
         snapsync_service_unlock();
@@ -347,14 +371,19 @@ void snapsync_reset(struct snapshot_sync_service *svc)
         return;
     }
     snapsync_service_lock();
-    if (svc->turbo_active && svc->ndb && svc->ndb->open) {
-        struct db_service *dbsvc = snapsync_db_service(svc);
-        if (dbsvc)
-            db_service_normal_mode(dbsvc);
-        else
-            node_db_normal_mode(svc->ndb);
-        svc->turbo_active = false;
+    bool turbo_active = svc->turbo_active;
+    snapsync_service_unlock();
+    if (turbo_active) {
+        bool ok = snapsync_exit_turbo_mode(svc);
+        if (!ok) {
+            snapsync_service_lock();
+            snapsync_set_state(SNAPSYNC_FAILED, "normal mode reset failed");
+            snapsync_service_unlock();
+        }
     }
+
+    snapsync_service_lock();
+    svc->turbo_active = false;
     svc->state = SNAPSYNC_IDLE;
     svc->received_utxos = 0;
     svc->start_time_us = 0;
@@ -443,13 +472,7 @@ bool snapsync_begin_receive(struct snapshot_sync_service *svc)
     snapsync_service_unlock();
 
     if (!snapsync_run_write(svc, snapsync_begin_receive_write, svc)) {
-        snapsync_service_lock();
-        if (dbsvc)
-            db_service_normal_mode(dbsvc);
-        else
-            node_db_normal_mode(svc->ndb);
-        svc->turbo_active = false;
-        snapsync_service_unlock();
+        snapsync_exit_turbo_mode(svc);
         return false;
     }
 

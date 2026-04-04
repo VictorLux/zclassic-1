@@ -32,7 +32,7 @@ the right step.
 
 Rough status estimate:
 
-- overall architectural completion: ~94%
+- overall architectural completion: ~95%
 - RPC front door refactor: mostly done
 - DB ownership boundary: materially improved, not finished
 - observability: meaningfully improved
@@ -67,8 +67,14 @@ Recent completion (this plan phase):
 
 - `SNAPSYNC` state transitions are now lock-protected and robust on begin/finalize failure
 - snapshot/flyclient offer begin and finalize failure paths are covered by direct unit tests
+- snapshot finalize failure path now uses a shared turbo-mode unwind helper and cannot leave `turbo_active` latched
 - fast-sync artifact caches have ownership/version APIs with invariant checks and tests
 - API status readers now use service snapshots instead of direct mutable globals
+- added direct coverage for SHA3 mismatch finalize to verify `SNAPSYNC_FAILED` + turbo unwind
+
+Next implementation step:
+
+- continue auditing remaining asynchronous DB mutation sites (beyond snapshot receive) for identical unwind semantics
 
 ## What Has Landed
 
