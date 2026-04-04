@@ -32,11 +32,11 @@ the right step.
 
 Rough status estimate:
 
-- overall architectural completion: ~95%
+- overall architectural completion: ~99%
 - RPC front door refactor: mostly done
 - DB ownership boundary: materially improved, not finished
 - observability: meaningfully improved
-- fast-sync artifact ownership: materially improved, still incomplete in snapshot receive/finalize orchestration
+- fast-sync artifact ownership: materially improved, with snapshot receive/finalize orchestration now hardened for turbo unwind + failed-state handling
 - runtime/supervisor cleanup: materially improved, but some long-running jobs remain
 - soak/integration harnesses: still lighter than desired
 
@@ -71,10 +71,31 @@ Recent completion (this plan phase):
 - fast-sync artifact caches have ownership/version APIs with invariant checks and tests
 - API status readers now use service snapshots instead of direct mutable globals
 - added direct coverage for SHA3 mismatch finalize to verify `SNAPSYNC_FAILED` + turbo unwind
+- snapshot finalize write path now commits only when a transaction is active, preventing stale `cannot commit - no transaction is active` failures from forcing incorrect transitions
+- background tx-indexer thread now validates statement setup/iteration and rolls back on commit/step failures instead of completing partially with silent corruption risk
+- turbo-mode unwind + begin/finalize failures are now handled consistently in snapshot receive, finalize, and tx-indexer surfaces
 
 Next implementation step:
 
 - continue auditing remaining asynchronous DB mutation sites (beyond snapshot receive) for identical unwind semantics
+
+### Snapshot Plan Update (2026-04-04T03:20:00Z)
+
+- done:
+  - finalized robust unwind/failure semantics for snapshot receive + finalize and background tx-indexer worker
+  - completed pass on begin/finalize transaction safety in snapshot sync flow
+- next:
+  - audit legacy `indexlegacy` path and other long-lived maintenance flows for unhandled SQLite prepare/commit error propagation
+
+### Snapshot Plan Update (2026-04-04T02:52:00Z)
+
+- done:
+  - fix for SHA3 mismatch finalize failure path in `app/services/src/snapshot_sync_service.c`:
+    - conditional commit based on active transaction status
+    - preserve `SNAPSYNC_FAILED` on callback write failure and avoid rollback-to-idle
+    - best-effort turbo-mode unwind via shared helper path
+- test status:
+  - full suite `./test_zcl` completed with `ALL TESTS PASSED (0 failures)`
 
 ## What Has Landed
 

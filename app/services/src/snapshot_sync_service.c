@@ -65,6 +65,9 @@ void snapsync_global_ensure_init(struct node_db *ndb)
 
 #define SNAPSYNC_BATCH_COMMIT_ROWS 100000
 
+static struct db_service *snapsync_db_service(
+    const struct snapshot_sync_service *svc);
+
 struct snapsync_apply_chunk_ctx {
     struct snapshot_sync_service *svc;
     uint8_t *chunk_data;
@@ -140,7 +143,8 @@ static bool snapsync_begin_receive_write(struct node_db *ndb, void *ctx)
     if (!svc || !ndb || !ndb->open)
         return false;
 
-    node_db_wipe_utxos(ndb);
+    if (!node_db_wipe_utxos(ndb))
+        return false;
     if (!node_db_begin(ndb))
         return false;
     svc->received_utxos = 0;
@@ -269,6 +273,7 @@ static bool snapsync_finalize_write(struct node_db *ndb, void *ctx)
     uint8_t local_root[32];
     uint64_t local_count = 0;
     uint32_t serving_peer_id;
+    struct node_db_status db_status = {0};
     bool fc_verified;
     bool sha3_ok;
     double elapsed_s;
@@ -277,7 +282,8 @@ static bool snapsync_finalize_write(struct node_db *ndb, void *ctx)
         return false;
     svc = finalize->svc;
 
-    if (!node_db_commit(ndb))
+    node_db_get_status(ndb, &db_status);
+    if (db_status.tx_open && !node_db_commit(ndb))
         return false;
 
     snapsync_service_lock();
@@ -532,6 +538,7 @@ bool snapsync_finalize(struct snapshot_sync_service *svc)
     struct snapsync_finalize_ctx ctx;
     bool finalize_allowed = false;
     bool turbo_active = false;
+    bool keep_failed_state = false;
 
     if (!svc)
         return false;
@@ -550,9 +557,20 @@ bool snapsync_finalize(struct snapshot_sync_service *svc)
     ctx.svc = svc;
 
     if (!snapsync_run_write(svc, snapsync_finalize_write, &ctx)) {
-        if (turbo_active)
+        snapsync_service_lock();
+        keep_failed_state = (svc->state == SNAPSYNC_FAILED);
+        if (!keep_failed_state)
+            svc->state = SNAPSYNC_FAILED;
+        snapsync_service_unlock();
+
+        if (!keep_failed_state) {
             snapsync_set_state(SNAPSYNC_FAILED, "finalize write path failed");
-        snapsync_reset(svc);
+            if (!snapsync_exit_turbo_mode(svc))
+                fprintf(stderr, "snapshot finalize: failed to restore normal mode\n");
+        } else if (turbo_active) {
+            if (!snapsync_exit_turbo_mode(svc))
+                fprintf(stderr, "snapshot finalize: failed to restore normal mode\n");
+        }
         return false;
     }
     snapsync_service_lock();

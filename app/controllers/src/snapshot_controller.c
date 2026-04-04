@@ -772,6 +772,9 @@ static void *build_tx_index_thread(void *arg)
     struct snapshot_tx_index_job *job = arg;
     const char *datadir;
     const char *db_path;
+    bool ok = false;
+    bool tx_open = false;
+    int rc;
 
     if (!job) {
         return NULL;
@@ -809,20 +812,33 @@ static void *build_tx_index_thread(void *arg)
 
     /* Query blocks ordered by file_num, data_pos for sequential I/O */
     sqlite3_stmt *query = NULL;
-    sqlite3_prepare_v2(ndb.db,
+    int query_rc = sqlite3_prepare_v2(ndb.db,
         "SELECT hash, height, file_num, data_pos, num_tx"
         " FROM blocks WHERE file_num >= 0"
         " ORDER BY file_num, data_pos",
         -1, &query, NULL);
+    if (query_rc != SQLITE_OK || !query) {
+        fprintf(stderr, "tx_index: failed to prepare block query: %s\n",
+                sqlite3_errmsg(ndb.db));
+        node_db_close(&ndb);
+        return NULL;
+    }
 
     int indexed = 0;
     int cached_file = -1;
     uint8_t *cached_data = NULL;
     size_t cached_size = 0;
 
-    node_db_begin(&ndb);
+    if (!node_db_begin(&ndb)) {
+        fprintf(stderr, "tx_index: failed to begin bulk load transaction\n");
+        sqlite3_finalize(query);
+        node_db_close(&ndb);
+        return NULL;
+    }
+    tx_open = true;
+    ok = true;
 
-    while (sqlite3_step(query) == SQLITE_ROW) {
+    for (rc = sqlite3_step(query); rc == SQLITE_ROW; rc = sqlite3_step(query)) {
         const uint8_t *block_hash = sqlite3_column_blob(query, 0);
         int height = sqlite3_column_int(query, 1);
         int file_num = sqlite3_column_int(query, 2);
@@ -896,31 +912,60 @@ static void *build_tx_index_thread(void *arg)
         }
 
         if (indexed % 500000 == 0 && indexed > 0) {
-            node_db_commit(&ndb);
+            if (!node_db_commit(&ndb)) {
+                ok = false;
+                break;
+            }
+            tx_open = false;
             int64_t elapsed = (int64_t)time(NULL) - t_start;
             int rate = elapsed > 0 ? indexed / (int)elapsed : indexed;
             printf("tx_index: %d transactions (%d/s)\n", indexed, rate);
             fflush(stdout);
-            node_db_begin(&ndb);
+            if (!node_db_begin(&ndb)) {
+                ok = false;
+                break;
+            }
+            tx_open = true;
         }
+    }
+
+    if (rc != SQLITE_DONE && ok) {
+        fprintf(stderr, "tx_index: block query failed: %s\n",
+                sqlite3_errmsg(ndb.db));
+        ok = false;
+    }
+
+    if (tx_open && !ok)
+        node_db_rollback(&ndb);
+    else if (tx_open && !node_db_commit(&ndb)) {
+        ok = false;
+        node_db_rollback(&ndb);
     }
 
     if (cached_data) munmap(cached_data, cached_size);
     sqlite3_finalize(query);
-    node_db_commit(&ndb);
+    query = NULL;
+    cached_data = NULL;
+    tx_open = false;
 
-    printf("tx_index: rebuilding indexes...\n");
-    fflush(stdout);
-    db_tx_finalize_bulk_load(&ndb);
+    if (ok && !db_tx_finalize_bulk_load(&ndb)) {
+        fprintf(stderr, "tx_index: failed to finalize bulk load indexes\n");
+        ok = false;
+    }
 
     node_db_close(&ndb);
 
     int64_t elapsed = (int64_t)time(NULL) - t_start;
-    printf("tx_index: complete — %d transactions in %llds\n",
-           indexed, (long long)elapsed);
-    fflush(stdout);
-
-    job->result = 0;
+    if (ok) {
+        printf("tx_index: complete — %d transactions in %llds\n",
+               indexed, (long long)elapsed);
+        fflush(stdout);
+        job->result = 0;
+    } else {
+        printf("tx_index: failed after %d transactions in %llds\n",
+               indexed, (long long)elapsed);
+        fflush(stdout);
+    }
     return NULL;
 }
 

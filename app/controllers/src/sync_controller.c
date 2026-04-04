@@ -130,6 +130,43 @@ static bool sync_db_restore_normal_mode(struct node_db *ndb)
     return node_db_normal_mode(ndb);
 }
 
+struct sync_db_turbo_scope {
+    struct node_db *ndb;
+    bool entered;
+};
+
+static bool sync_db_turbo_scope_begin(struct sync_db_turbo_scope *scope,
+                                     struct node_db *ndb,
+                                     bool enabled)
+{
+    if (!scope)
+        return false;
+
+    scope->ndb = (enabled ? ndb : NULL);
+    scope->entered = false;
+    if (!enabled)
+        return true;
+
+    if (!sync_db_enter_turbo_mode(ndb))
+        return false;
+
+    scope->entered = true;
+    return true;
+}
+
+static bool sync_db_turbo_scope_end(struct sync_db_turbo_scope *scope)
+{
+    if (!scope || !scope->entered || !scope->ndb)
+        return true;
+
+    if (!sync_db_restore_normal_mode(scope->ndb))
+        return false;
+
+    scope->entered = false;
+    scope->ndb = NULL;
+    return true;
+}
+
 struct wallet_keys_sync_ctx {
     const struct wallet *wallet;
     int count;
@@ -1296,6 +1333,8 @@ int node_db_sync_catchup(struct node_db *ndb,
     int last_indexed_height = 0;
     int last_committed_height = -1;
     const struct block_index *last_indexed_tip = NULL;
+    struct sync_db_turbo_scope turbo_mode = {0};
+    bool restore_ok = true;
 
     if (!ndb || !ndb->open) return -1;
 
@@ -1323,7 +1362,7 @@ int node_db_sync_catchup(struct node_db *ndb,
 
     /* Turbo mode: disable fsync, drop indexes, enlarge cache. */
     bool bulk_mode = (total > 50000);
-    if (bulk_mode && !sync_db_enter_turbo_mode(ndb)) {
+    if (!sync_db_turbo_scope_begin(&turbo_mode, ndb, bulk_mode)) {
         fprintf(stderr, "catchup: failed to enter turbo mode\n");
         sync_job_catchup_finish();
         return -1;
@@ -1332,8 +1371,9 @@ int node_db_sync_catchup(struct node_db *ndb,
     /* Verify connection works before starting */
     if (!node_db_begin(ndb)) {
         fprintf(stderr, "catchup: BEGIN failed — aborting\n");
-        if (bulk_mode && !sync_db_restore_normal_mode(ndb))
+        if (!sync_db_turbo_scope_end(&turbo_mode))
             fprintf(stderr, "catchup: failed to restore normal mode after BEGIN failure\n");
+        restore_ok = false;
         sync_job_catchup_finish();
         return -1;
     }
@@ -1341,8 +1381,9 @@ int node_db_sync_catchup(struct node_db *ndb,
     if (!node_db_commit(ndb)) {
         fprintf(stderr, "catchup: initial COMMIT failed — aborting\n");
         node_db_rollback(ndb);
-        if (bulk_mode && !sync_db_restore_normal_mode(ndb))
+        if (!sync_db_turbo_scope_end(&turbo_mode))
             fprintf(stderr, "catchup: failed to restore normal mode after initial COMMIT failure\n");
+        restore_ok = false;
         sync_job_catchup_finish();
         return -1;
     }
@@ -1375,8 +1416,9 @@ int node_db_sync_catchup(struct node_db *ndb,
 
     if (!node_db_begin(ndb)) {
         fprintf(stderr, "catchup: failed to open main transaction\n");
-        if (bulk_mode && !sync_db_restore_normal_mode(ndb))
+        if (!sync_db_turbo_scope_end(&turbo_mode))
             fprintf(stderr, "catchup: failed to restore normal mode after tx open failure\n");
+        restore_ok = false;
         sync_job_catchup_finish();
         return -1;
     }
@@ -1490,8 +1532,12 @@ int node_db_sync_catchup(struct node_db *ndb,
     }
 
     /* Restore safe pragmas and rebuild indexes */
-    if (bulk_mode && !sync_db_restore_normal_mode(ndb)) {
+    if (!sync_db_turbo_scope_end(&turbo_mode)) {
         fprintf(stderr, "catchup: failed to restore normal mode\n");
+        restore_ok = false;
+    }
+
+    if (!restore_ok) {
         sync_job_catchup_finish();
         return -1;
     }
@@ -2471,6 +2517,8 @@ int node_db_sync_import_utxos(struct node_db *ndb,
                                struct coins_view_db *cvdb)
 {
     struct import_job job;
+    struct sync_db_turbo_scope turbo_mode = {0};
+    bool restore_ok = true;
 
     if (!ndb || !ndb->open || !cvdb) return -1;
     sync_job_import_begin();
@@ -2484,17 +2532,23 @@ int node_db_sync_import_utxos(struct node_db *ndb,
     clock_gettime(CLOCK_MONOTONIC, &ts_start);
 
     /* ── SQLite turbo mode — delegate to node_db layer ────────────── */
-    if (!sync_db_enter_turbo_mode(ndb)) {
+    if (!sync_db_turbo_scope_begin(&turbo_mode, ndb, true)) {
         fprintf(stderr, "UTXO import: failed to enter turbo mode\n");
         sync_job_import_finish(0);
         return -1;
     }
-    node_db_wipe_utxos(ndb);
+    if (!node_db_wipe_utxos(ndb)) {
+        fprintf(stderr, "UTXO import: failed to wipe utxos table\n");
+        if (!sync_db_turbo_scope_end(&turbo_mode))
+            fprintf(stderr, "UTXO import: failed to restore normal mode after wipe failure\n");
+        sync_job_import_finish(0);
+        return -1;
+    }
 
     /* ── Initialize pipeline context ───────────────────────────────── */
     struct import_context *ctx = calloc(1, sizeof(struct import_context));
     if (!ctx) {
-        if (!sync_db_restore_normal_mode(ndb))
+        if (!sync_db_turbo_scope_end(&turbo_mode))
             fprintf(stderr, "UTXO import: failed to restore normal mode after alloc failure\n");
         sync_job_import_finish(0);
         return -1;
@@ -2512,7 +2566,7 @@ int node_db_sync_import_utxos(struct node_db *ndb,
     if (!import_job_start(&job)) {
         fprintf(stderr, "UTXO import: FATAL — worker pipeline failed to start\n");
         import_context_release_chunks(ctx);
-        if (!sync_db_restore_normal_mode(ndb))
+        if (!sync_db_turbo_scope_end(&turbo_mode))
             fprintf(stderr, "UTXO import: failed to restore normal mode after worker startup failure\n");
         free(ctx);
         sync_job_import_finish(0);
@@ -2684,9 +2738,10 @@ reader_done:
     if (import_ctx_should_stop(ctx)) {
         fprintf(stderr, "UTXO import: aborted%s\n",
                 g_shutdown_requested ? " on shutdown" : "");
-        import_context_release_chunks(ctx);
-        if (!sync_db_restore_normal_mode(ndb))
+        if (!sync_db_turbo_scope_end(&turbo_mode))
             fprintf(stderr, "UTXO import: failed to restore normal mode after abort\n");
+        restore_ok = false;
+        import_context_release_chunks(ctx);
         free(ctx);
         sync_job_import_finish(total_rows);
         return -1;
@@ -2700,8 +2755,11 @@ reader_done:
     clock_gettime(CLOCK_MONOTONIC, &ts_idx);
 
     /* Rebuild indexes and restore safe pragmas */
-    if (!sync_db_restore_normal_mode(ndb)) {
+    if (!sync_db_turbo_scope_end(&turbo_mode)) {
+        restore_ok = false;
         fprintf(stderr, "UTXO import: failed to restore normal mode\n");
+    }
+    if (!restore_ok) {
         import_context_release_chunks(ctx);
         free(ctx);
         sync_job_import_finish(total_rows);
