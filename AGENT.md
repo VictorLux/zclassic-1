@@ -201,6 +201,18 @@ Next implementation step:
 - next:
   - continue the final audit of remaining direct-SQL maintenance flows, but the largest snapshot-controller worker risks are now materially reduced
 
+### Snapshot Plan Update (2026-04-04T05:15:05Z)
+
+- done:
+  - tightened remaining partial-success behavior in `app/controllers/src/sync_controller.c`:
+    - wallet-key sync now fails closed on the first transparent or Sapling key persistence failure instead of committing a partial key set
+    - mempool-save now fails closed on the first row-save failure instead of returning a partial persisted mempool as success
+  - regression check:
+    - `make -j4 test_zcl`
+    - `./test_zcl` ends with `ALL TESTS PASSED (0 failures)`
+- next:
+  - continue the final consistency audit, but the remaining work is now mostly smaller cleanup rather than major-risk bulk workflows
+
 ### Snapshot Plan Update (2026-04-04T03:20:00Z)
 
 - done:

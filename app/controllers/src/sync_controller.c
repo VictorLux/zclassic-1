@@ -1939,6 +1939,7 @@ static bool node_db_sync_wallet_keys_write(struct node_db *ndb, void *ctx)
 
     int count = 0;
     bool tx_open = false;
+    bool ok = true;
     if (!node_db_begin(ndb))
         return false;
     tx_open = true;
@@ -1965,12 +1966,16 @@ static bool node_db_sync_wallet_keys_write(struct node_db *ndb, void *ctx)
         dbk.compressed = ke->key.fCompressed;
         dbk.created_at = (int64_t)time(NULL);
 
-        if (db_wallet_key_save(ndb, &dbk))
+        if (db_wallet_key_save(ndb, &dbk)) {
             count++;
+        } else {
+            ok = false;
+            break;
+        }
     }
 
     /* Sync Sapling keys */
-    for (size_t i = 0; i < w->sapling_keys.num_keys; i++) {
+    for (size_t i = 0; ok && i < w->sapling_keys.num_keys; i++) {
         const struct sapling_key_entry *sk = &w->sapling_keys.keys[i];
         if (!sk->used) continue;
 
@@ -1986,8 +1991,18 @@ static bool node_db_sync_wallet_keys_write(struct node_db *ndb, void *ctx)
         memcpy(dbsk.pk_d, sk->pk_d, 32);
         dbsk.child_index = sk->child_index;
 
-        if (db_sapling_key_save(ndb, &dbsk))
+        if (db_sapling_key_save(ndb, &dbsk)) {
             count++;
+        } else {
+            ok = false;
+            break;
+        }
+    }
+
+    if (!ok) {
+        if (tx_open)
+            node_db_rollback(ndb);
+        return false;
     }
 
     if (!node_db_commit(ndb)) {
@@ -2028,6 +2043,7 @@ static bool node_db_sync_mempool_save_write(struct node_db *ndb, void *ctx)
 
     int count = 0;
     bool tx_open = false;
+    bool ok = true;
     if (!node_db_begin(ndb))
         return false;
     tx_open = true;
@@ -2050,9 +2066,20 @@ static bool node_db_sync_mempool_save_write(struct node_db *ndb, void *ctx)
         e.height_added = (int)me->height;
         e.spends_coinbase = me->spends_coinbase;
 
-        if (db_mempool_save(ndb, &e))
+        if (db_mempool_save(ndb, &e)) {
             count++;
+        } else {
+            ok = false;
+        }
         free(raw);
+        if (!ok)
+            break;
+    }
+
+    if (!ok) {
+        if (tx_open)
+            node_db_rollback(ndb);
+        return false;
     }
 
     if (!node_db_commit(ndb)) {
