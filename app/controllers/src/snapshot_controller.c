@@ -44,6 +44,55 @@
 
 /* ZCL_MAGIC used in legacy_import.c, not needed here. */
 
+static bool snapshot_sql_exec_checked(sqlite3 *db,
+                                      const char *sql,
+                                      const char *label)
+{
+    if (!db || !sql)
+        return false;
+    if (sqlite3_exec(db, sql, NULL, NULL, NULL) != SQLITE_OK) {
+        fprintf(stderr, "snapshot: %s failed: %s\n",
+                label, sqlite3_errmsg(db));
+        return false;
+    }
+    return true;
+}
+
+static bool snapshot_tx_begin_checked(struct node_db *ndb,
+                                      const char *label)
+{
+    if (!ndb || !ndb->open || !node_db_begin(ndb)) {
+        fprintf(stderr, "snapshot: %s failed: %s\n",
+                label, (ndb && ndb->db) ? sqlite3_errmsg(ndb->db)
+                                        : "db unavailable");
+        return false;
+    }
+    return true;
+}
+
+static bool snapshot_tx_commit_checked(struct node_db *ndb,
+                                       const char *label)
+{
+    if (!ndb || !ndb->open || !node_db_commit(ndb)) {
+        fprintf(stderr, "snapshot: %s failed: %s\n",
+                label, (ndb && ndb->db) ? sqlite3_errmsg(ndb->db)
+                                        : "db unavailable");
+        return false;
+    }
+    return true;
+}
+
+static void snapshot_tx_rollback_best_effort(struct node_db *ndb,
+                                             const char *label)
+{
+    if (!ndb || !ndb->open)
+        return;
+    if (!node_db_rollback(ndb)) {
+        fprintf(stderr, "snapshot: %s failed: %s\n",
+                label, ndb->db ? sqlite3_errmsg(ndb->db) : "db unavailable");
+    }
+}
+
 /* ---- Snapshot directory management ---- */
 
 static void rotate_snapshots(const char *snapshots_dir, int max_keep)
@@ -207,22 +256,43 @@ static void *import_block_index_thread(void *arg)
     printf("T1: importing block index...\n");
     fflush(stdout);
     int64_t t_start = (int64_t)time(NULL);
+    bool tx_open = false;
+    bool ok = true;
 
     /* Turbo mode */
-    sqlite3_exec(ndb.db, "PRAGMA synchronous=OFF", NULL, NULL, NULL);
-    sqlite3_exec(ndb.db, "PRAGMA cache_size=-524288", NULL, NULL, NULL);
-    sqlite3_exec(ndb.db, "PRAGMA wal_autocheckpoint=0", NULL, NULL, NULL);
+    if (!snapshot_sql_exec_checked(ndb.db, "PRAGMA synchronous=OFF",
+                                   "T1 set synchronous=OFF") ||
+        !snapshot_sql_exec_checked(ndb.db, "PRAGMA cache_size=-524288",
+                                   "T1 set cache_size") ||
+        !snapshot_sql_exec_checked(ndb.db, "PRAGMA wal_autocheckpoint=0",
+                                   "T1 disable wal_autocheckpoint")) {
+        db_wrapper_close(&dbw);
+        node_db_close(&ndb);
+        return NULL;
+    }
     sqlite3_busy_timeout(ndb.db, 30000);
 
     /* Drop block indexes for bulk load */
-    sqlite3_exec(ndb.db, "DROP INDEX IF EXISTS idx_blocks_prev",
-                 NULL, NULL, NULL);
-    sqlite3_exec(ndb.db, "DROP INDEX IF EXISTS idx_blocks_chainwork",
-                 NULL, NULL, NULL);
-    sqlite3_exec(ndb.db, "DELETE FROM blocks", NULL, NULL, NULL);
+    if (!snapshot_sql_exec_checked(ndb.db,
+            "DROP INDEX IF EXISTS idx_blocks_prev",
+            "T1 drop idx_blocks_prev") ||
+        !snapshot_sql_exec_checked(ndb.db,
+            "DROP INDEX IF EXISTS idx_blocks_chainwork",
+            "T1 drop idx_blocks_chainwork") ||
+        !snapshot_sql_exec_checked(ndb.db, "DELETE FROM blocks",
+            "T1 clear blocks")) {
+        db_wrapper_close(&dbw);
+        node_db_close(&ndb);
+        return NULL;
+    }
     {
         static const uint8_t zero_hash[32] = {0};
-        node_db_sync_set_tip(&ndb, zero_hash, -1);
+        if (!node_db_sync_set_tip(&ndb, zero_hash, -1)) {
+            fprintf(stderr, "T1: failed to reset tip state\n");
+            db_wrapper_close(&dbw);
+            node_db_close(&ndb);
+            return NULL;
+        }
     }
 
     /* Iterate all 'b'-prefixed entries */
@@ -234,7 +304,13 @@ static void *import_block_index_thread(void *arg)
     memset(seek_key + 1, 0, 32);
     db_iter_seek(&it, seek_key, 33);
 
-    node_db_begin(&ndb);
+    if (!snapshot_tx_begin_checked(&ndb, "T1 begin bulk load transaction")) {
+        db_iter_free(&it);
+        db_wrapper_close(&dbw);
+        node_db_close(&ndb);
+        return NULL;
+    }
+    tx_open = true;
 
     while (db_iter_valid(&it)) {
         size_t key_len;
@@ -282,16 +358,30 @@ static void *import_block_index_thread(void *arg)
         db_blk.undo_pos = (int)dbi.nUndoPos;
         db_blk.num_tx = (int)dbi.nTx;
 
-        db_block_save(&ndb, &db_blk);
+        if (!db_block_save(&ndb, &db_blk)) {
+            fprintf(stderr, "T1: block save failed at height %d\n",
+                    db_blk.height);
+            ok = false;
+            break;
+        }
         a->count++;
 
         if (a->count % 100000 == 0) {
-            node_db_commit(&ndb);
+            if (!snapshot_tx_commit_checked(&ndb, "T1 batch commit")) {
+                ok = false;
+                tx_open = false;
+                break;
+            }
+            tx_open = false;
             int64_t elapsed = (int64_t)time(NULL) - t_start;
             int rate = elapsed > 0 ? a->count / (int)elapsed : a->count;
             printf("T1: %d blocks (%d/s)\n", a->count, rate);
             fflush(stdout);
-            node_db_begin(&ndb);
+            if (!snapshot_tx_begin_checked(&ndb, "T1 batch reopen")) {
+                ok = false;
+                break;
+            }
+            tx_open = true;
         }
 
         db_iter_next(&it);
@@ -299,21 +389,38 @@ static void *import_block_index_thread(void *arg)
 
     db_iter_free(&it);
 
-    node_db_commit(&ndb);
+    if (!ok) {
+        if (tx_open)
+            snapshot_tx_rollback_best_effort(&ndb, "T1 rollback after failure");
+        db_wrapper_close(&dbw);
+        node_db_close(&ndb);
+        return NULL;
+    }
+    if (tx_open && !snapshot_tx_commit_checked(&ndb, "T1 final commit")) {
+        db_wrapper_close(&dbw);
+        node_db_close(&ndb);
+        return NULL;
+    }
+    tx_open = false;
 
     /* Rebuild indexes */
     printf("T1: rebuilding block indexes...\n");
     fflush(stdout);
-    sqlite3_exec(ndb.db,
-        "CREATE INDEX IF NOT EXISTS idx_blocks_prev ON blocks(prev_hash)",
-        NULL, NULL, NULL);
-    sqlite3_exec(ndb.db,
-        "CREATE INDEX IF NOT EXISTS idx_blocks_chainwork"
-        " ON blocks(chain_work DESC)",
-        NULL, NULL, NULL);
-
-    sqlite3_exec(ndb.db, "PRAGMA synchronous=NORMAL", NULL, NULL, NULL);
-    sqlite3_exec(ndb.db, "PRAGMA wal_autocheckpoint=1000", NULL, NULL, NULL);
+    if (!snapshot_sql_exec_checked(ndb.db,
+            "CREATE INDEX IF NOT EXISTS idx_blocks_prev ON blocks(prev_hash)",
+            "T1 rebuild idx_blocks_prev") ||
+        !snapshot_sql_exec_checked(ndb.db,
+            "CREATE INDEX IF NOT EXISTS idx_blocks_chainwork"
+            " ON blocks(chain_work DESC)",
+            "T1 rebuild idx_blocks_chainwork") ||
+        !snapshot_sql_exec_checked(ndb.db, "PRAGMA synchronous=NORMAL",
+            "T1 restore synchronous=NORMAL") ||
+        !snapshot_sql_exec_checked(ndb.db, "PRAGMA wal_autocheckpoint=1000",
+            "T1 restore wal_autocheckpoint")) {
+        db_wrapper_close(&dbw);
+        node_db_close(&ndb);
+        return NULL;
+    }
 
     db_wrapper_close(&dbw);
     node_db_close(&ndb);

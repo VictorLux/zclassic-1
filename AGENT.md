@@ -175,6 +175,19 @@ Next implementation step:
 - next:
   - continue tightening the remaining long-lived inline import/export flows, with `snapshot_controller.c` still the largest remaining direct-SQL maintenance surface
 
+### Snapshot Plan Update (2026-04-04T04:57:45Z)
+
+- done:
+  - hardened the snapshot block-index import worker in `app/controllers/src/snapshot_controller.c`:
+    - checked turbo-mode/setup SQL, index drop/reset SQL, tip reset, block saves, batch commit/reopen, final commit, and index rebuild/restore SQL
+    - the worker now aborts on first persistence/setup failure instead of silently continuing through partial block-index imports
+    - rollback handling is explicit on mid-import transaction failure
+  - regression check:
+    - `make -j4 test_zcl`
+    - `./test_zcl` ends with `ALL TESTS PASSED (0 failures)`
+- next:
+  - continue the same pass over the remaining snapshot-controller direct-SQL workers, especially the tx-index builder path
+
 ### Snapshot Plan Update (2026-04-04T03:20:00Z)
 
 - done:
