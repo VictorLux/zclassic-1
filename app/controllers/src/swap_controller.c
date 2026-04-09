@@ -265,9 +265,16 @@ static bool rpc_swap_participate(const struct json_value *params, bool help,
     struct htlc_params hp;
     memset(&hp, 0, sizeof(hp));
     memcpy(hp.secret_hash, secret_hash, 32);
-    memset(hp.recipient_pkh, 0xCC, 20);
-    memset(hp.refunder_pkh, 0xDD, 20);
     hp.locktime = (uint32_t)locktime;
+
+    if (!htlc_address_to_pkh(counter_addr, chain, hp.recipient_pkh)) {
+        json_set_str(result, "Cannot decode counter_address");
+        return false;
+    }
+    if (!htlc_address_to_pkh(my_addr, chain, hp.refunder_pkh)) {
+        json_set_str(result, "Cannot decode my_address");
+        return false;
+    }
 
     uint8_t script[256];
     size_t script_len = htlc_build_script(&hp, script, sizeof(script));
