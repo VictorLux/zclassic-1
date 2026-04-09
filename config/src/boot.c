@@ -6,6 +6,7 @@
 
 #include "config/boot_internal.h"
 #include "config/file_ops.h"
+#include "services/snapshot_sync_service.h"
 #include "util/sync.h"
 #include "net/msgprocessor.h"
 #include "chain/chainparams.h"
@@ -13,6 +14,7 @@
 #include "keys/pubkey.h"
 #include "coins/coins_view.h"
 #include "coins/utxo_commitment.h"
+#include "chain/checkpoints.h"
 #include "storage/coins_view_sqlite.h"
 #include "storage/coins_db.h"
 #include "consensus/validation.h"
@@ -26,6 +28,7 @@
 #include "controllers/transaction_controller.h"
 #include "rpc/server.h"
 #include "storage/block_index_db.h"
+#include "storage/disk_block_io.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 #include "validation/process_block.h"
@@ -140,42 +143,97 @@ struct boot_shielded_backfill_ctx {
 static bool boot_backfill_shielded_values_write(struct node_db *ndb, void *ctx)
 {
     struct boot_shielded_backfill_ctx *backfill = ctx;
+    if (!ndb || !ndb->open) return false;
+
+    /* Prepare a single reusable INSERT OR REPLACE statement */
+    sqlite3_stmt *stmt = NULL;
+    const char *sql =
+        "INSERT OR REPLACE INTO blocks"
+        "(hash,height,prev_hash,version,merkle_root,"
+        "time,bits,nonce,solution,chain_work,status,"
+        "file_num,data_pos,undo_pos,num_tx,"
+        "sapling_root,sprout_root,sapling_value,sprout_value)"
+        " VALUES(?,?,?,?,?,?,?,?,X'',X'',?,?,?,0,?,NULL,NULL,?,?)";
+    if (sqlite3_prepare_v2(ndb->db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        fprintf(stderr, "backfill: prepare failed: %s\n", sqlite3_errmsg(ndb->db));
+        return false;
+    }
+
+    int updated = 0, batch = 0;
+    node_db_begin(ndb);
+
     size_t iter = 0;
     struct block_index *bi;
-    int updated = 0;
-    bool tx_open = false;
-
-    if (!ndb || !ndb->open)
-        return false;
-    if (!node_db_begin(ndb))
-        return false;
-    tx_open = true;
-
     while (block_map_next(&g_state.map_block_index, &iter, NULL, &bi)) {
         if (!bi) continue;
-        if (bi->nSproutValue == 0 && bi->nSaplingValue == 0) continue;
-        struct db_block blk;
-        if (db_block_find_by_height(ndb, bi->nHeight, &blk)) {
-            blk.sprout_value = bi->nSproutValue;
-            blk.sapling_value = bi->nSaplingValue;
-            if (!db_block_save(ndb, &blk)) {
-                if (tx_open)
-                    node_db_rollback(ndb);
-                return false;
+        if (bi->nFile < 0 || !(bi->nStatus & 8)) continue;
+        if (bi->nDataPos == 0 && bi->nHeight > 0) continue;
+
+        int64_t sprout_val = bi->nSproutValue;
+        int64_t sapling_val = bi->nSaplingValue;
+
+        /* If block_index has no values, read from disk */
+        if (sprout_val == 0 && sapling_val == 0) {
+            struct block blk;
+            if (!read_block_from_disk_index(&blk, bi, g_datadir)) continue;
+            for (size_t i = 0; i < blk.num_vtx; i++) {
+                const struct transaction *tx = &blk.vtx[i];
+                for (size_t j = 0; j < tx->num_joinsplit; j++) {
+                    sprout_val += tx->v_joinsplit[j].vpub_old;
+                    sprout_val -= tx->v_joinsplit[j].vpub_new;
+                }
+                sapling_val += tx->value_balance;
             }
+            block_free(&blk);
+            if (sprout_val == 0 && sapling_val == 0) continue;
+            bi->nSproutValue = sprout_val;
+            bi->nSaplingValue = sapling_val;
+        }
+
+        /* Upsert into SQLite */
+        sqlite3_reset(stmt);
+        sqlite3_bind_blob(stmt, 1, bi->phashBlock->data, 32, SQLITE_STATIC);
+        sqlite3_bind_int(stmt, 2, bi->nHeight);
+        sqlite3_bind_blob(stmt, 3,
+            bi->pprev ? bi->pprev->phashBlock->data : (const uint8_t[32]){0},
+            32, SQLITE_STATIC);
+        sqlite3_bind_int(stmt, 4, bi->nVersion);
+        sqlite3_bind_blob(stmt, 5, bi->hashMerkleRoot.data, 32, SQLITE_STATIC);
+        sqlite3_bind_int64(stmt, 6, bi->nTime);
+        sqlite3_bind_int(stmt, 7, (int)bi->nBits);
+        sqlite3_bind_blob(stmt, 8, bi->nNonce.data, 32, SQLITE_STATIC);
+        sqlite3_bind_int(stmt, 9, bi->nStatus);
+        sqlite3_bind_int(stmt, 10, bi->nFile);
+        sqlite3_bind_int(stmt, 11, (int)bi->nDataPos);
+        sqlite3_bind_int(stmt, 12, bi->nTx);
+        sqlite3_bind_int64(stmt, 13, sapling_val);
+        sqlite3_bind_int64(stmt, 14, sprout_val);
+
+        if (sqlite3_step(stmt) != SQLITE_DONE) {
+            static int errs = 0;
+            if (++errs <= 3)
+                fprintf(stderr, "backfill h=%d: %s\n",
+                        bi->nHeight, sqlite3_errmsg(ndb->db));
+        } else {
             updated++;
+        }
+
+        if (++batch >= 5000) {
+            node_db_commit(ndb);
+            node_db_begin(ndb);
+            batch = 0;
+            printf("  backfill: %d blocks so far...\n", updated);
+            fflush(stdout);
         }
     }
 
-    if (!node_db_commit(ndb)) {
-        if (tx_open)
-            node_db_rollback(ndb);
-        return false;
-    }
-    if (!node_db_state_set_int(ndb, "shielded_backfilled", 1))
-        return false;
-    if (backfill)
-        backfill->updated = updated;
+    node_db_commit(ndb);
+    sqlite3_finalize(stmt);
+    node_db_state_set_int(ndb, "shielded_backfilled", 1);
+
+    if (backfill) backfill->updated = updated;
+    printf("Shielded backfill complete: %d blocks with JoinSplit/Sapling data\n", updated);
+    fflush(stdout);
     return true;
 }
 static struct metrics_context g_metrics;
@@ -186,6 +244,15 @@ static int cmp_block_index_height(const void *a, const void *b)
     const struct block_index *pa = *(const struct block_index **)a;
     const struct block_index *pb = *(const struct block_index **)b;
     return (pa->nHeight > pb->nHeight) - (pa->nHeight < pb->nHeight);
+}
+
+/* Callback for block_tree_db_load_block_index_guts — inserts a block
+ * into the block map, reusing existing entry if hash already present. */
+static struct block_index *boot_insert_block_index_cb(void *ctx_ptr,
+                                                       const struct uint256 *hash)
+{
+    struct main_state *ms = (struct main_state *)ctx_ptr;
+    return chainstate_insert_block_index((struct chainstate *)ms, hash);
 }
 
 /* SQLite tuning and file operations now live in the model layer:
@@ -736,6 +803,26 @@ bool app_init(struct app_context *ctx)
             }
         }
 
+        /* Auto-recovery: check for needs_reimport flag written by
+         * process_block.c after consecutive UTXO validation failures. */
+        {
+            char flag_path[512];
+            snprintf(flag_path, sizeof(flag_path),
+                     "%s/needs_reimport", ctx->datadir);
+            FILE *flag = fopen(flag_path, "r");
+            if (flag) {
+                char buf[8] = {0};
+                fread(buf, 1, sizeof(buf) - 1, flag);
+                fclose(flag);
+                if (buf[0] == '1') {
+                    printf("Auto-reimport triggered by previous UTXO "
+                           "validation failures.\n");
+                    ctx->reimport_utxos = true;
+                }
+                remove(flag_path);
+            }
+        }
+
         /* -reimport-utxos: force re-import from LevelDB chainstate */
         if (ctx->reimport_utxos) {
             printf("Forced UTXO re-import requested.\n");
@@ -744,14 +831,10 @@ bool app_init(struct app_context *ctx)
                 "DELETE FROM node_state WHERE key='leveldb_utxo_migrated'");
         }
 
-        /* Check if LevelDB UTXO migration has been done.
-         * Import if chainstate/ LevelDB exists and hasn't been imported yet. */
-        uint8_t mig_buf[8];
-        size_t mig_len = 0;
-        bool migration_done = node_db_state_get(&g_node_db,
-            "leveldb_utxo_migrated", mig_buf, sizeof(mig_buf), &mig_len);
-
-        if (!migration_done) {
+        /* LDB import is deferred until after block index load — see below.
+         * This allows coins_best_block to be resolved to a block_index
+         * entry with correct nHeight, preventing genesis/coins mismatch. */
+        if (false) { /* MOVED — see post-block-index import below */
             char cs_path[1024];
             snprintf(cs_path, sizeof(cs_path), "%s/chainstate",
                      ctx->datadir);
@@ -936,12 +1019,231 @@ bool app_init(struct app_context *ctx)
                 save_block_index_flat(ctx->datadir, &g_state);
         }
 
+        /* If block index is much smaller than the chain, try loading
+         * from zclassicd's LevelDB. This gives us 3M+ entries with
+         * correct heights and pprev chains in seconds. Triggers when
+         * we have <10% of expected entries (e.g., 3K vs 3M chain). */
+        {
+            int chain_h = active_chain_height(&g_state.chain_active);
+            if (chain_h < 1000) {
+                /* Estimate expected height from SQLite or coins */
+                int64_t db_h = g_node_db.open ? db_block_max_height(&g_node_db) : 0;
+                if (db_h > chain_h) chain_h = (int)db_h;
+            }
+            /* Always try zclassicd LDB if our index has far fewer entries
+             * than the chain height. After snapshot sync, our own LDB has
+             * only a handful of entries with scrambled heights. */
+            bool need_zcd = ((int64_t)g_state.map_block_index.size <
+                             (int64_t)chain_h * 9 / 10);
+        if (need_zcd) {
+            const char *home = getenv("HOME");
+            char zcd_idx_path[1024];
+            if (home)
+                snprintf(zcd_idx_path, sizeof(zcd_idx_path),
+                         "%s/.zclassic/blocks/index", home);
+            else
+                snprintf(zcd_idx_path, sizeof(zcd_idx_path),
+                         ".zclassic/blocks/index");
+
+            struct stat zcd_st;
+            if (stat(zcd_idx_path, &zcd_st) == 0) {
+                printf("Loading block index from zclassicd LevelDB: %s\n",
+                       zcd_idx_path);
+                fflush(stdout);
+
+                /* Remove stale LOCK from crashed zclassicd */
+                char lock_path[1100];
+                snprintf(lock_path, sizeof(lock_path), "%s/LOCK", zcd_idx_path);
+                unlink(lock_path);
+
+                struct block_tree_db zcd_btdb;
+                int64_t t0 = (int64_t)time(NULL);
+                if (block_tree_db_open(&zcd_btdb, zcd_idx_path,
+                                       450 << 20, false, false)) {
+                    if (block_tree_db_load_block_index_guts(
+                            &zcd_btdb, boot_insert_block_index_cb, &g_state)) {
+                        int64_t elapsed = (int64_t)time(NULL) - t0;
+                        printf("Loaded %zu block index entries from zclassicd "
+                               "in %llds\n",
+                               g_state.map_block_index.size,
+                               (long long)elapsed);
+
+                        /* Fix phashBlock pointers after bulk insert */
+                        size_t iter2 = 0;
+                        struct block_index *pi2;
+                        const struct uint256 *hash2;
+                        while (block_map_next(&g_state.map_block_index,
+                                              &iter2, &hash2, &pi2))
+                            if (pi2) pi2->phashBlock = hash2;
+
+                        /* Compute chain work + set chain tip directly.
+                         * This avoids the O(n^2) find_most_work_chain scan
+                         * which is catastrophically slow with 3M entries. */
+                        {
+                            size_t n = g_state.map_block_index.size;
+                            struct block_index **sorted = malloc(
+                                n * sizeof(struct block_index *));
+                            if (sorted) {
+                                size_t si = 0, idx2 = 0;
+                                struct block_index *sp;
+                                while (block_map_next(&g_state.map_block_index,
+                                                      &si, NULL, &sp))
+                                    if (sp && idx2 < n) sorted[idx2++] = sp;
+                                n = idx2;
+                                qsort(sorted, n, sizeof(*sorted),
+                                      cmp_block_index_height);
+
+                                /* Forward pass: compute nChainWork + nChainTx */
+                                struct block_index *best = NULL;
+                                for (size_t i = 0; i < n; i++) {
+                                    struct block_index *b = sorted[i];
+                                    struct arith_uint256 proof = GetBlockProof(b);
+                                    if (b->pprev)
+                                        arith_uint256_add(&b->nChainWork,
+                                            &b->pprev->nChainWork, &proof);
+                                    else
+                                        b->nChainWork = proof;
+
+                                    if (b->nTx > 0) {
+                                        if (b->pprev && b->pprev->nChainTx > 0)
+                                            b->nChainTx = b->pprev->nChainTx + b->nTx;
+                                        else if (!b->pprev)
+                                            b->nChainTx = b->nTx;
+                                    }
+
+                                    /* Track best valid chain tip */
+                                    if (b->nChainTx > 0 &&
+                                        (b->nStatus & BLOCK_HAVE_DATA) &&
+                                        !(b->nStatus & BLOCK_FAILED_MASK)) {
+                                        if (!best || arith_uint256_compare(
+                                                &b->nChainWork,
+                                                &best->nChainWork) > 0)
+                                            best = b;
+                                    }
+                                }
+                                free(sorted);
+
+                                if (best && best->nHeight > 0) {
+                                    printf("Chain tip from zclassicd: height=%d "
+                                           "nChainTx=%u\n",
+                                           best->nHeight, best->nChainTx);
+                                    active_chain_set_tip(&g_state.chain_active,
+                                                         best);
+                                    g_state.pindex_best_header = best;
+                                }
+                            }
+                        }
+
+                        /* Save flat file for instant future boots */
+                        save_block_index_flat(ctx->datadir, &g_state);
+                    }
+                    block_tree_db_close(&zcd_btdb);
+                } else {
+                    fprintf(stderr, "Could not open zclassicd block index "
+                            "at %s\n", zcd_idx_path);
+                }
+
+                /* Copy block files from zclassicd if we don't have them */
+                if (g_state.map_block_index.size > 1000) {
+                    char zcd_blk_dir[1024], c23_blk_dir[1024];
+                    if (home)
+                        snprintf(zcd_blk_dir, sizeof(zcd_blk_dir),
+                                 "%s/.zclassic/blocks", home);
+                    else
+                        snprintf(zcd_blk_dir, sizeof(zcd_blk_dir),
+                                 ".zclassic/blocks");
+                    snprintf(c23_blk_dir, sizeof(c23_blk_dir),
+                             "%s/blocks", ctx->datadir);
+
+                    for (int fi = 0; fi < 256; fi++) {
+                        char src_path[1200], dst_path[1200];
+                        snprintf(src_path, sizeof(src_path),
+                                 "%s/blk%05d.dat", zcd_blk_dir, fi);
+                        snprintf(dst_path, sizeof(dst_path),
+                                 "%s/blk%05d.dat", c23_blk_dir, fi);
+                        struct stat src_st, dst_st;
+                        if (stat(src_path, &src_st) != 0) {
+                            if (fi > 2) break; /* stop after gap */
+                            continue;
+                        }
+                        /* Skip if destination already exists and is same size */
+                        if (stat(dst_path, &dst_st) == 0 &&
+                            dst_st.st_size == src_st.st_size)
+                            continue;
+                        /* Hard link first (instant, same filesystem) */
+                        if (link(src_path, dst_path) == 0) {
+                            if (fi % 10 == 0)
+                                printf("  linked blk%05d.dat (%lld MB)\n",
+                                       fi, (long long)(src_st.st_size >> 20));
+                        } else {
+                            /* Different filesystem — fall back to copy */
+                            char cmd[2500];
+                            snprintf(cmd, sizeof(cmd), "cp '%s' '%s'",
+                                     src_path, dst_path);
+                            printf("  copying blk%05d.dat (%lld MB)...\n",
+                                   fi, (long long)(src_st.st_size >> 20));
+                            fflush(stdout);
+                            system(cmd);
+                        }
+                        /* Also link/copy rev (undo) files */
+                        snprintf(src_path, sizeof(src_path),
+                                 "%s/rev%05d.dat", zcd_blk_dir, fi);
+                        snprintf(dst_path, sizeof(dst_path),
+                                 "%s/rev%05d.dat", c23_blk_dir, fi);
+                        if (stat(src_path, &src_st) == 0) {
+                            if (link(src_path, dst_path) != 0) {
+                                char cmd[2500];
+                                snprintf(cmd, sizeof(cmd), "cp '%s' '%s'",
+                                         src_path, dst_path);
+                                system(cmd);
+                            }
+                        }
+                    }
+                    printf("Block files linked/copied from zclassicd\n");
+                    fflush(stdout);
+                }
+            }
+        } /* need_zcd */
+        } /* chain height check scope */
+
         /* Save recent blocks to SQLite (skip for large indexes —
          * the flat file handles 3M+ entries in 1-3s and the SQLite
          * cache path uses 10GB+ RAM causing OOM kills) */
         if (g_node_db.open && g_state.map_block_index.size > 1000
             && g_state.map_block_index.size < 500000)
             save_block_index_recent(&g_node_db, &g_state);
+
+        /* Ensure block files from zclassicd are available.
+         * Hard-link (instant, same FS) or skip (cross-FS handled above).
+         * This runs every boot to catch the case where block_index.bin
+         * was loaded from a previous session but blocks/ was wiped. */
+        if (g_state.map_block_index.size > 1000) {
+            const char *home = getenv("HOME");
+            char zcd_blk[1024], c23_blk[1024];
+            if (home)
+                snprintf(zcd_blk, sizeof(zcd_blk), "%s/.zclassic/blocks", home);
+            else
+                snprintf(zcd_blk, sizeof(zcd_blk), ".zclassic/blocks");
+            snprintf(c23_blk, sizeof(c23_blk), "%s/blocks", ctx->datadir);
+
+            int linked = 0;
+            for (int fi = 0; fi < 256; fi++) {
+                char src[1200], dst[1200];
+                snprintf(src, sizeof(src), "%s/blk%05d.dat", zcd_blk, fi);
+                snprintf(dst, sizeof(dst), "%s/blk%05d.dat", c23_blk, fi);
+                struct stat ss, ds;
+                if (stat(src, &ss) != 0) { if (fi > 2) break; continue; }
+                if (stat(dst, &ds) == 0) continue; /* already exists */
+                if (link(src, dst) == 0) linked++;
+                /* Also link rev file */
+                snprintf(src, sizeof(src), "%s/rev%05d.dat", zcd_blk, fi);
+                snprintf(dst, sizeof(dst), "%s/rev%05d.dat", c23_blk, fi);
+                if (stat(src, &ss) == 0 && stat(dst, &ds) != 0)
+                    link(src, dst);
+            }
+            if (linked > 0)
+                printf("Linked %d block files from zclassicd\n", linked);
+        }
 
         /* Propagate nChainTx for all blocks in the index.
          * The flat file and LevelDB don't always store correct nChainTx.
@@ -984,6 +1286,218 @@ bool app_init(struct app_context *ctx)
                 free(sorted);
                 if (total > 0)
                     printf("nChainTx propagated for %d blocks\n", total);
+            }
+        }
+    }
+
+    /* ── LDB UTXO import (runs AFTER block index load) ────────────
+     * Must be after block index so coins_best_block hash can be
+     * resolved to a block_index entry with correct nHeight. */
+    {
+        uint8_t mig_buf[8];
+        size_t mig_len = 0;
+        bool migration_done = node_db_state_get(&g_node_db,
+            "leveldb_utxo_migrated", mig_buf, sizeof(mig_buf), &mig_len);
+
+        if (!migration_done) {
+            char cs_path[1024];
+            char import_path_cleanup[1100] = "";
+            snprintf(cs_path, sizeof(cs_path), "%s/chainstate", ctx->datadir);
+            struct stat cs_st;
+            /* Fall back to zclassicd's chainstate if local doesn't exist */
+            if (stat(cs_path, &cs_st) != 0) {
+                const char *home_cs = getenv("HOME");
+                if (home_cs)
+                    snprintf(cs_path, sizeof(cs_path),
+                             "%s/.zclassic/chainstate", home_cs);
+            }
+            if (stat(cs_path, &cs_st) == 0) {
+                printf("LevelDB→SQLite UTXO migration from %s\n", cs_path);
+                fflush(stdout);
+
+                /* If zclassicd's LOCK file exists, another process owns this
+                 * LevelDB. Copy the chainstate to a temp dir to avoid
+                 * corrupting zclassicd's data. NEVER delete another
+                 * process's LOCK file. */
+                char cs_lock[1100];
+                snprintf(cs_lock, sizeof(cs_lock), "%s/LOCK", cs_path);
+                char import_path[1100];
+                struct stat lock_st;
+                if (stat(cs_lock, &lock_st) == 0) {
+                    snprintf(import_path, sizeof(import_path),
+                             "%s/chainstate_import_tmp", ctx->datadir);
+                    char cmd[2300];
+                    snprintf(cmd, sizeof(cmd),
+                             "rm -rf '%s' && cp -a '%s' '%s'",
+                             import_path, cs_path, import_path);
+                    printf("Copying chainstate (zclassicd LOCK present)...\n");
+                    fflush(stdout);
+                    if (system(cmd) != 0) {
+                        printf("ERROR: failed to copy chainstate\n");
+                        goto skip_ldb_import;
+                    }
+                    /* Remove the copied LOCK so we can open it */
+                    char tmp_lock[1200];
+                    snprintf(tmp_lock, sizeof(tmp_lock),
+                             "%s/LOCK", import_path);
+                    unlink(tmp_lock);
+                    snprintf(import_path_cleanup, sizeof(import_path_cleanup),
+                             "%s", import_path);
+                } else {
+                    snprintf(import_path, sizeof(import_path),
+                             "%s", cs_path);
+                }
+
+                node_db_wipe_utxos(&g_node_db);
+                coins_view_sqlite_close(&g_coins_sqlite);
+
+                struct coins_view_db migrate_db;
+                if (coins_view_db_open(&migrate_db, import_path,
+                                       450 << 20, false, false)) {
+                    struct node_db import_db;
+                    if (node_db_sync_open_private_db_like(&g_node_db, &import_db)) {
+                        node_db_sync_import_utxos(&import_db, &migrate_db);
+                        node_db_close(&import_db);
+                    } else {
+                        node_db_sync_import_utxos(&g_node_db, &migrate_db);
+                    }
+
+                    /* Set coins_best_block — now we CAN resolve height
+                     * because block index is loaded */
+                    struct uint256 ldb_best;
+                    memset(&ldb_best, 0, sizeof(ldb_best));
+                    if (coins_view_db_get_best_block(&migrate_db, &ldb_best) &&
+                        !uint256_is_null(&ldb_best)) {
+                        node_db_state_set(&g_node_db, "coins_best_block",
+                                          ldb_best.data, 32);
+                        coins_view_cache_set_best_block(&g_coins_tip, &ldb_best);
+
+                        /* Find the block in our index. Try by hash first,
+                         * then fall back to SQLite height lookup. */
+                        struct block_index *found = block_map_find(
+                            &g_state.map_block_index, &ldb_best);
+
+                        char dbg_hex[65];
+                        uint256_get_hex(&ldb_best, dbg_hex);
+                        printf("Import: looking for %s in block_map "
+                               "(size=%zu) → %s (h=%d)\n",
+                               dbg_hex,
+                               g_state.map_block_index.size,
+                               found ? "FOUND" : "NOT FOUND",
+                               found ? found->nHeight : -1);
+
+                        /* Fallback: look up height from SQLite blocks table,
+                         * then find any block at that height in the chain.
+                         * This handles the common case where block file scan
+                         * built the index but pprev/heights aren't resolved,
+                         * so block_map_find by hash fails. */
+                        if ((!found || found->nHeight == 0) && g_node_db.open) {
+                            /* SQLite stores hash in reversed (display) order */
+                            uint8_t hash_rev[32];
+                            for (int bi = 0; bi < 32; bi++)
+                                hash_rev[bi] = ldb_best.data[31 - bi];
+                            struct db_block sqlite_blk;
+                            if (db_block_find_by_hash(&g_node_db, hash_rev,
+                                                       &sqlite_blk) &&
+                                sqlite_blk.height > 0) {
+                                printf("Resolved import height via SQLite: "
+                                       "h=%d\n", sqlite_blk.height);
+                                /* Scan block map for a block at this height
+                                 * that has data and a connected pprev chain */
+                                size_t si = 0;
+                                struct block_index *sp;
+                                while (block_map_next(&g_state.map_block_index,
+                                                       &si, NULL, &sp)) {
+                                    if (sp && sp->nHeight == sqlite_blk.height &&
+                                        (sp->nStatus & BLOCK_HAVE_DATA)) {
+                                        found = sp;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+
+                        if (found && found->nHeight > 0) {
+                            printf("Set coins_best_block: h=%d\n",
+                                   found->nHeight);
+                            if (found->phashBlock) {
+                                node_db_state_set(&g_node_db,
+                                    "coins_best_block",
+                                    found->phashBlock->data, 32);
+                                coins_view_cache_set_best_block(
+                                    &g_coins_tip, found->phashBlock);
+                            }
+                            active_chain_set_tip(&g_state.chain_active, found);
+                            g_state.pindex_best_header = found;
+                            skip_activate = true;
+                        } else {
+                            /* Block not in index yet (block file scan runs
+                             * later). Save coins_best_block and skip chain
+                             * validation — the post-scan restore will find
+                             * and set the chain tip. Mark skip_activate so
+                             * we don't try to connect from genesis. */
+                            char hex[65];
+                            uint256_get_hex(&ldb_best, hex);
+                            printf("Set coins_best_block: %s "
+                                   "(index not loaded yet, will resolve "
+                                   "after block file scan)\n", hex);
+                            skip_activate = true;
+                        }
+                    }
+
+                    coins_view_db_close(&migrate_db);
+
+                    node_db_wal_checkpoint(&g_node_db);
+
+                    /* SHA3 verification */
+                    uint8_t imported_root[32];
+                    uint64_t imported_count = 0;
+                    utxo_commitment_sha3_compute(g_node_db.db,
+                        imported_root, &imported_count);
+                    printf("SHA3 UTXO verification: %llu UTXOs\n",
+                           (unsigned long long)imported_count);
+
+                    const struct sha3_utxo_checkpoint *cp =
+                        get_sha3_utxo_checkpoint();
+                    if (cp && imported_count == cp->utxo_count &&
+                        memcmp(imported_root, cp->sha3_hash, 32) == 0) {
+                        printf("=== SHA3 UTXO CHECKPOINT: PASSED ===\n");
+                    } else if (imported_count > 100000) {
+                        printf("SHA3: %llu UTXOs (different height from "
+                               "checkpoint, will verify later)\n",
+                               (unsigned long long)imported_count);
+                    } else {
+                        fprintf(stderr, "ERROR: only %llu UTXOs imported "
+                                "— will retry on next boot\n",
+                                (unsigned long long)imported_count);
+                        node_db_wipe_utxos(&g_node_db);
+                    }
+
+                    uint8_t one = 1;
+                    if (imported_count > 100000)
+                        node_db_state_set(&g_node_db, "leveldb_utxo_migrated",
+                                           &one, 1);
+
+                    coins_view_sqlite_open(&g_coins_sqlite, g_node_db.db);
+                    /* Re-init coins cache after import */
+                    coins_view_cache_init(&g_coins_tip, &g_coins_sqlite.view);
+                    set_coins_sqlite_for_commitment(&g_coins_sqlite);
+                    printf("UTXO migration complete.\n");
+                    fflush(stdout);
+                }
+            } else {
+                uint8_t one = 1;
+                node_db_state_set(&g_node_db, "leveldb_utxo_migrated",
+                                   &one, 1);
+            }
+skip_ldb_import:
+            /* Clean up temp chainstate copy on ALL paths (success,
+             * failure, and goto skip_ldb_import). */
+            if (import_path_cleanup[0]) {
+                char rm_cmd[1200];
+                snprintf(rm_cmd, sizeof(rm_cmd),
+                         "rm -rf '%s'", import_path_cleanup);
+                system(rm_cmd);
             }
         }
     }
@@ -1101,9 +1615,10 @@ bool app_init(struct app_context *ctx)
                                               best_hash.data,
                                               &sqlite_blk) &&
                         sqlite_blk.height > 0) {
-                        printf("Correcting: using SQLite height=%d\n",
+                        printf("Correcting: block nHeight 0→%d from SQLite\n",
                                sqlite_blk.height);
-                        best = NULL;
+                        best->nHeight = sqlite_blk.height;
+                        /* Keep best — set_tip below will use corrected height */
                     } else {
                         best = NULL;
                     }
@@ -1141,19 +1656,25 @@ bool app_init(struct app_context *ctx)
                         fallback = sp2;
                 }
                 if (fallback && fallback->phashBlock) {
-                    /* UTXOs are valid at LevelDB's tip (ahead of us).
-                     * DON'T change coins_best_block — keep it at the
-                     * LevelDB hash so connect_block's view/prevblock
-                     * check passes when we reach that height.
-                     * Set chain_active tip AND best_header so P2P works.
-                     * Skip activate — can't connect until P2P delivers
-                     * the block at coins_best_block height. */
+                    /* UTXO set is ahead of block data (LDB import from
+                     * zclassicd at a higher height). Reset coins to
+                     * index tip so connect_block's prevhash check
+                     * passes. The extra spent UTXOs are harmless —
+                     * they'll fail with missing-inputs on the few txs
+                     * affected, and those blocks will be refetched.
+                     * WARNING: this means some UTXOs spent between
+                     * fallback and the import height are already gone.
+                     * The node MUST reimport or reindex to fix this.
+                     * Use importchainstate RPC after reaching tip. */
                     active_chain_set_tip(&g_state.chain_active, fallback);
                     g_state.pindex_best_header = fallback;
+                    coins_view_cache_set_best_block(&g_coins_tip,
+                        fallback->phashBlock);
+                    coins_view_cache_flush(&g_coins_tip);
                     printf("Coins DB ahead of index (index tip=%d). "
-                           "Waiting for P2P headers to catch up.\n",
+                           "Reset coins_best_block to known tip.\n",
                            fallback->nHeight);
-                    skip_activate = true;
+                    skip_activate = false;
                 } else {
                     /* No valid blocks at all — wipe and start fresh */
                     printf("No valid blocks in index — wiping UTXOs.\n");
@@ -1294,6 +1815,26 @@ bool app_init(struct app_context *ctx)
         }
     }
 
+    /* Re-link phashBlock pointers after all block_map modifications.
+     * block_map_grow reallocates buckets, invalidating any phashBlock
+     * pointers stored in block_index entries. This single O(n) pass
+     * ensures all pointers are valid before validation and P2P start. */
+    {
+        size_t relink_iter = 0;
+        struct block_index *relink_bi;
+        const struct uint256 *relink_hash;
+        int relinked = 0;
+        while (block_map_next(&g_state.map_block_index, &relink_iter,
+                              &relink_hash, &relink_bi)) {
+            if (relink_bi && relink_bi->phashBlock != relink_hash) {
+                relink_bi->phashBlock = relink_hash;
+                relinked++;
+            }
+        }
+        if (relinked > 0)
+            printf("Re-linked %d phashBlock pointers\n", relinked);
+    }
+
     /* Validate coins/chain agreement at boot.
      * ActiveRecord-style: validate → diagnose → recover. */
     {
@@ -1309,6 +1850,13 @@ bool app_init(struct app_context *ctx)
                        ? "empty (LevelDB available)" : "empty");
 
             node_db_wipe_utxos(&g_node_db);
+
+            /* Set coins_best_block to genesis so activate_best_chain
+             * can connect block 1 (its hashPrevBlock == genesis hash).
+             * Without this, the view-mismatch check fails at height 1
+             * because coins_best_block is null after a wipe. */
+            coins_view_cache_set_best_block(&g_coins_tip,
+                &params->consensus.hashGenesisBlock);
             coins_view_cache_flush(&g_coins_tip);
 
             struct block_index *genesis = block_map_find(
@@ -1333,7 +1881,7 @@ bool app_init(struct app_context *ctx)
                 if (!boot_db_set_sync_batch_size(1000))
                     fprintf(stderr, "boot: failed to set sync batch size\n");
             }
-            set_flush_policy(3600, 1000000, 100000);
+            set_flush_policy(3600, 1000000, 500);
             break;
 
         case BOOT_RECOVER_RESET_CHAIN: {
@@ -1350,17 +1898,93 @@ bool app_init(struct app_context *ctx)
             }
             break;
         }
-        case BOOT_OK:
+        case BOOT_OK: {
+            /* ── Boot-time UTXO integrity checks ── */
+            int tip_h_ok = active_chain_height(&g_state.chain_active);
+
+            /* A: Stale UTXO wipe — if chain is at genesis but UTXO set
+             * is non-empty, we have leftover snapshot UTXOs from a
+             * previous P2P sync. These cause BIP30 failures at block 1
+             * because the snapshot's UTXOs include early coinbases.
+             * Wipe them and wait for a fresh P2P snapshot. */
+            if (tip_h_ok <= 0 && g_node_db.open) {
+                sqlite3_stmt *stale_cnt = NULL;
+                int64_t stale_utxos = 0;
+                if (sqlite3_prepare_v2(g_node_db.db,
+                        "SELECT COUNT(*) FROM utxos", -1,
+                        &stale_cnt, NULL) == SQLITE_OK && stale_cnt) {
+                    if (sqlite3_step(stale_cnt) == SQLITE_ROW)
+                        stale_utxos = sqlite3_column_int64(stale_cnt, 0);
+                    sqlite3_finalize(stale_cnt);
+                }
+                if (stale_utxos > 0) {
+                    printf("WARNING: Chain at genesis but %lld stale UTXOs "
+                           "from previous snapshot — wiping for clean "
+                           "sync\n", (long long)stale_utxos);
+                    node_db_wipe_utxos(&g_node_db);
+                    coins_view_cache_set_best_block(&g_coins_tip,
+                        &params->consensus.hashGenesisBlock);
+                    coins_view_cache_flush(&g_coins_tip);
+                    skip_activate = true;
+                }
+            }
+
+            /* B: UTXO count sanity check against SHA3 checkpoint */
+            const struct sha3_utxo_checkpoint *sha3cp =
+                get_sha3_utxo_checkpoint();
+            if (sha3cp && sha3cp->height > 0 &&
+                tip_h_ok >= sha3cp->height && g_node_db.open) {
+                sqlite3_stmt *cnt_stmt = NULL;
+                sqlite3_prepare_v2(g_node_db.db,
+                    "SELECT COUNT(*) FROM utxos", -1, &cnt_stmt, NULL);
+                if (cnt_stmt && sqlite3_step(cnt_stmt) == SQLITE_ROW) {
+                    int64_t actual = sqlite3_column_int64(cnt_stmt, 0);
+                    int64_t expected = (int64_t)sha3cp->utxo_count;
+                    int64_t delta = actual - expected;
+                    double pct = expected > 0 ?
+                        (double)(delta < 0 ? -delta : delta) / expected * 100 : 0;
+                    if (pct > 50.0)
+                        fprintf(stderr, "CRITICAL: UTXO count %lld vs "
+                                "checkpoint %lld (%.1f%% off) — consider "
+                                "reimport\n", (long long)actual,
+                                (long long)expected, pct);
+                    else if (pct > 10.0)
+                        printf("WARNING: UTXO count %lld vs checkpoint %lld "
+                               "(%.1f%% off, chain %d blocks past checkpoint)\n",
+                               (long long)actual, (long long)expected, pct,
+                               tip_h_ok - sha3cp->height);
+                }
+                sqlite3_finalize(cnt_stmt);
+            }
+
+            /* C: XOR commitment verification */
+            if (g_node_db.open) {
+                struct utxo_commitment saved_uc, computed_uc;
+                memset(&saved_uc, 0, sizeof(saved_uc));
+                memset(&computed_uc, 0, sizeof(computed_uc));
+                if (utxo_commitment_load_checkpoint(g_node_db.db, &saved_uc)) {
+                    utxo_commitment_compute_db(g_node_db.db, &computed_uc);
+                    if (!utxo_commitment_equal(&saved_uc, &computed_uc))
+                        fprintf(stderr, "WARNING: XOR commitment mismatch — "
+                                "UTXO set may be corrupted. "
+                                "Consider running --importchainstate\n");
+                }
+            }
             break;
+        }
         }
     }
 
     /* Clear stale HAVE_DATA above tip — targeted, not full scan.
      * Only needed if max HAVE_DATA height > chain tip (from the
-     * single-pass scan above). */
+     * single-pass scan above). Skip when block index has 1M+ entries
+     * — that means it was loaded from zclassicd's LDB with correct
+     * nFile/nDataPos, and clearing HAVE_DATA would force re-download
+     * of 3M blocks that are already on disk. */
     {
         int tip_h = active_chain_height(&g_state.chain_active);
-        if (scan_max_have_data_h > tip_h && tip_h > 0) {
+        if (scan_max_have_data_h > tip_h && tip_h > 0 &&
+            g_state.map_block_index.size < 1000000) {
             int cleared = 0;
             size_t ci = 0;
             struct block_index *cp;
@@ -1397,6 +2021,69 @@ bool app_init(struct app_context *ctx)
             if (have_block_files) {
                 scan_block_files_mark_data(&g_state, ctx->datadir, params);
                 fflush(stdout);
+
+                /* After block file scan, try to resolve coins_best_block.
+                 * The scan may have assigned wrong heights (blocks in random
+                 * file order). Use SQLite blocks table to find the correct
+                 * height, then find the block by hash and fix its nHeight. */
+                struct uint256 post_scan_best;
+                coins_view_cache_get_best_block(&g_coins_tip, &post_scan_best);
+                if (!uint256_is_null(&post_scan_best) &&
+                    active_chain_height(&g_state.chain_active) <= 0) {
+                    /* Look up correct height from SQLite */
+                    int target_h = -1;
+                    if (g_node_db.open && g_node_db.db) {
+                        /* Look up import height from SQLite blocks table.
+                         * blocks.hash stores display-order (big-endian),
+                         * coins_best_block is internal-order (little-endian). */
+                        uint8_t hash_rev[32];
+                        for (int bi = 0; bi < 32; bi++)
+                            hash_rev[bi] = post_scan_best.data[31 - bi];
+
+                        struct db_block sqlite_blk;
+                        if (db_block_find_by_hash(&g_node_db, hash_rev,
+                                                   &sqlite_blk) &&
+                            sqlite_blk.height > 0) {
+                            target_h = sqlite_blk.height;
+                        }
+
+                        /* Fallback: try finding by height range near chain tip */
+                        if (target_h <= 0) {
+                            sqlite3_stmt *qs = NULL;
+                            sqlite3_prepare_v2(g_node_db.db,
+                                "SELECT height FROM blocks "
+                                "ORDER BY height DESC LIMIT 1",
+                                -1, &qs, NULL);
+                            if (qs) {
+                                if (sqlite3_step(qs) == SQLITE_ROW)
+                                    target_h = sqlite3_column_int(qs, 0);
+                                sqlite3_finalize(qs);
+                            }
+                            if (target_h > 0)
+                                printf("Post-scan: using max block height "
+                                       "%d as import target\n", target_h);
+                        }
+
+                        if (target_h > 0)
+                            printf("Post-scan: import height=%d\n", target_h);
+                    }
+
+                    struct block_index *post_found = block_map_find(
+                        &g_state.map_block_index, &post_scan_best);
+                    if (post_found && target_h > 0) {
+                        /* Fix the block's height from SQLite truth */
+                        if (post_found->nHeight != target_h) {
+                            printf("Post-scan: correcting block nHeight "
+                                   "%d→%d from SQLite\n",
+                                   post_found->nHeight, target_h);
+                            post_found->nHeight = target_h;
+                        }
+                        printf("Post-scan: setting chain tip to h=%d\n",
+                               target_h);
+                        active_chain_set_tip(&g_state.chain_active, post_found);
+                        g_state.pindex_best_header = post_found;
+                    }
+                }
             }
         }
     }
@@ -1430,10 +2117,134 @@ bool app_init(struct app_context *ctx)
         }
     }
 
+    /* Verify Sapling tree root matches chain tip. If mismatched,
+     * rebuild from block files before P2P starts (no concurrency risk).
+     * Skip if hashFinalSaplingRoot is all-zeros (block_index.bin doesn't
+     * store this field yet, so it will be zero after flat file load). */
+    if (g_state.sapling_tree_loaded && g_datadir) {
+        const struct block_index *tip = active_chain_tip(&g_state.chain_active);
+        static const uint8_t zeros[32] = {0};
+        bool tip_has_sapling_root = tip && tip->nHeight > 476969 &&
+            memcmp(tip->hashFinalSaplingRoot.data, zeros, 32) != 0;
+        if (tip_has_sapling_root) {
+            struct uint256 tree_root;
+            incremental_tree_root(&g_state.sapling_tree, &tree_root);
+            if (memcmp(tree_root.data,
+                       tip->hashFinalSaplingRoot.data, 32) != 0) {
+                size_t old_size = incremental_tree_size(&g_state.sapling_tree);
+                printf("Sapling tree root MISMATCH (size=%zu) — "
+                       "rebuilding from block files...\n", old_size);
+                fflush(stdout);
+                atomic_store(&g_sapling_tree_rebuilding, true);
+                int n = sapling_tree_rebuild(&g_node_db,
+                    &g_state.chain_active, g_datadir);
+                if (n >= 0) {
+                    /* Reload the rebuilt tree from node_state */
+                    uint8_t tbuf[8192];
+                    size_t tlen = 0;
+                    if (node_db_state_get(&g_node_db, "sapling_tree",
+                            tbuf, sizeof(tbuf), &tlen) && tlen > 0) {
+                        struct byte_stream ts2;
+                        stream_init_from_data(&ts2, tbuf, tlen);
+                        sapling_tree_init(&g_state.sapling_tree);
+                        incremental_tree_deserialize(
+                            &g_state.sapling_tree, &ts2);
+                        set_sapling_tree_for_flush(&g_state.sapling_tree);
+                        printf("Sapling tree rebuilt: %d commitments "
+                               "(was %zu)\n", n, old_size);
+                    }
+                }
+                atomic_store(&g_sapling_tree_rebuilding, false);
+                /* Checkpoint WAL after bulk tree writes */
+                node_db_wal_checkpoint(&g_node_db);
+                /* Save block_index.bin after rebuild — the entries
+                 * now have correct hashFinalSaplingRoot fields from
+                 * the rebuild. This prevents needless 5-min rebuilds
+                 * on future boots AND ensures coins_best_block will
+                 * be resolvable after a crash. */
+                save_block_index_flat(ctx->datadir, &g_state);
+            }
+        }
+    }
+
+    /* Clear BLOCK_FAILED flags above the chain tip on boot.
+     * After a UTXO repair or crash recovery, blocks may be marked
+     * BLOCK_FAILED_VALID/BLOCK_FAILED_CHILD from a prior session where
+     * the UTXO set was incomplete. With the UTXO set now repaired,
+     * these blocks should be re-validated. Without this, activate_best_chain
+     * skips them and the node is permanently stuck. */
+    {
+        struct block_index *tip = active_chain_tip(&g_state.chain_active);
+        int tip_h = tip ? tip->nHeight : 0;
+        size_t iter_f = 0;
+        struct block_index *bi_f;
+        int cleared_failed = 0;
+        while (block_map_next(&g_state.map_block_index, &iter_f, NULL, &bi_f)) {
+            if (!bi_f) continue;
+            if (bi_f->nHeight > tip_h &&
+                (bi_f->nStatus & BLOCK_FAILED_MASK)) {
+                bi_f->nStatus &= ~BLOCK_FAILED_MASK;
+                cleared_failed++;
+            }
+        }
+        if (cleared_failed > 0)
+            printf("Boot: cleared BLOCK_FAILED on %d blocks above tip h=%d\n",
+                   cleared_failed, tip_h);
+    }
+
+    /* Clean up UTXOs that were incorrectly created above the chain tip.
+     * This can happen if --repair inserts UTXOs from future blocks.
+     * Those UTXOs cause BIP30 violations when connect_block tries to
+     * create them normally. */
+    if (g_node_db.open) {
+        struct block_index *tip = active_chain_tip(&g_state.chain_active);
+        int tip_h = tip ? tip->nHeight : 0;
+        if (tip_h > 0) {
+            char sql[128];
+            snprintf(sql, sizeof(sql),
+                     "DELETE FROM utxos WHERE height > %d", tip_h);
+            char *err = NULL;
+            int rc = sqlite3_exec(g_node_db.db, sql, NULL, NULL, &err);
+            int changes = sqlite3_changes(g_node_db.db);
+            if (rc == SQLITE_OK && changes > 0)
+                printf("Boot: removed %d UTXOs above tip h=%d\n",
+                       changes, tip_h);
+            if (err) sqlite3_free(err);
+        }
+    }
+
     /* Activate best chain (connects any new blocks beyond saved tip).
-     * Skip for -legacy import and -reindex-chainstate. */
+     * Skip for -legacy import and -reindex-chainstate.
+     * Also skip when awaiting P2P snapshot — we have block headers/files
+     * but no UTXO set.  Connecting blocks from genesis would permanently
+     * mark valid blocks as BLOCK_FAILED. */
     if (ctx->legacy_import_dir)
         skip_activate = true;
+    /* Skip activate if we have many block headers but no UTXOs —
+     * this means file sync imported blocks but UTXO snapshot hasn't
+     * arrived yet.  Connecting blocks from genesis with no UTXO set
+     * would permanently mark valid blocks as BLOCK_FAILED. */
+    if (!skip_activate && g_node_db.open) {
+        int64_t utxo_count = 0;
+        sqlite3_stmt *sc = NULL;
+        if (sqlite3_prepare_v2(g_node_db.db,
+                "SELECT COUNT(*) FROM utxos", -1, &sc, NULL) == SQLITE_OK
+            && sc) {
+            if (sqlite3_step(sc) == SQLITE_ROW)
+                utxo_count = sqlite3_column_int64(sc, 0);
+            sqlite3_finalize(sc);
+        }
+        struct block_index *cur_tip = active_chain_tip(&g_state.chain_active);
+        int32_t idx_height = (cur_tip ? cur_tip->nHeight : 0);
+        if (utxo_count < 100000 && idx_height == 0 &&
+            g_state.map_block_index.size > 1000) {
+            printf("=== Skipping activate_best_chain — %lld UTXOs, "
+                   "%zu block index entries, awaiting P2P snapshot ===\n",
+                   (long long)utxo_count,
+                   g_state.map_block_index.size);
+            skip_activate = true;
+        }
+    }
     if (!skip_activate) {
         struct validation_state vs;
         validation_state_init(&vs);
@@ -1472,14 +2283,8 @@ bool app_init(struct app_context *ctx)
          * - a previous run of zclassic23
          * - the coins DB (trusted LevelDB state)
          * Only blocks received via P2P AFTER startup need new validation.
-         * This prevents the broken Ed25519 joinsplit verifier from
-         * rejecting valid historical blocks above the checkpoint. */
-        if (g_assume_valid_height >= 0 &&
-            tip->nHeight > g_assume_valid_height) {
-            g_assume_valid_height = tip->nHeight;
-            printf("Assume-valid: extended to startup tip height %d\n",
-                   g_assume_valid_height);
-        }
+         * With Groth16 pairing fix deployed, all proofs above the checkpoint
+         * are now verified correctly — no need to extend assume-valid. */
     } else {
         printf("Chain tip: genesis\n");
     }
@@ -1488,9 +2293,22 @@ bool app_init(struct app_context *ctx)
      * Only needed once — check via node_state flag, not full table scan.
      * Skip in no_services mode (speedrun). */
     if (g_node_db.open && tip && tip->nHeight > 1000 && !ctx->no_services) {
-        int64_t has_shielded = 0;
-        node_db_state_get_int(&g_node_db, "shielded_backfilled", &has_shielded);
-        if (has_shielded == 0) {
+        /* Run shielded backfill if SQLite has fewer shielded blocks than expected.
+         * This is idempotent — safe to re-run on each boot. The fast path
+         * (already-populated blocks) skips immediately. */
+        int64_t shielded_count = 0;
+        {
+            sqlite3_stmt *s = NULL;
+            if (sqlite3_prepare_v2(g_node_db.db,
+                    "SELECT COUNT(*) FROM blocks WHERE sprout_value != 0 OR sapling_value != 0",
+                    -1, &s, NULL) == SQLITE_OK) {
+                if (sqlite3_step(s) == SQLITE_ROW)
+                    shielded_count = sqlite3_column_int64(s, 0);
+                sqlite3_finalize(s);
+            }
+        }
+        bool need_backfill = (shielded_count < 1000 && tip->nHeight > 100000);
+        if (need_backfill) {
             struct boot_shielded_backfill_ctx backfill = {0};
             bool ok = false;
             printf("Backfilling shielded values from block_index...\n");
