@@ -1803,9 +1803,16 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
         free(heights);
     }
 
-    /* Request more headers if we accepted any */
-    if (header_plan.batch.should_request_more_headers)
-        push_getheaders_from(mp, node, pindex_last);
+    /* Request more headers if we accepted any.
+     * Use the chain tip instead of pindex_last when pindex_last is far
+     * behind (scrambled block index from snapshot sync). */
+    if (header_plan.batch.should_request_more_headers) {
+        struct block_index *tip = active_chain_tip(&mp->main_state->chain_active);
+        if (pindex_last && tip && pindex_last->nHeight < tip->nHeight)
+            push_getheaders_from(mp, node, tip);
+        else
+            push_getheaders_from(mp, node, pindex_last);
+    }
 
     return true;
 }
@@ -3300,11 +3307,24 @@ static void push_getheaders_from(struct msg_processor *mp,
     if (snapsync_is_active())
         return;
 
+    /* Build a minimal 2-hash locator: [from_hash, genesis].
+     * The full pprev-walking locator is broken after snapshot sync because
+     * block index entries imported from LDB have scrambled heights/pprev.
+     * A 2-hash locator always works — peers find our hash and respond
+     * with headers starting right after it. */
     struct block_locator loc;
-    if (!syncsvc_build_getheaders_locator(&loc, &mp->main_state->chain_active,
-                                          from,
-                                          &mp->params->consensus.hashGenesisBlock))
+    block_locator_init(&loc);
+    if (from && from->phashBlock) {
+        loc.vhave = malloc(2 * sizeof(struct uint256));
+        if (!loc.vhave) return;
+        loc.vhave[0] = *from->phashBlock;
+        loc.vhave[1] = mp->params->consensus.hashGenesisBlock;
+        loc.num_hashes = 2;
+    } else if (!syncsvc_build_getheaders_locator(&loc, &mp->main_state->chain_active,
+                                                  NULL,
+                                                  &mp->params->consensus.hashGenesisBlock)) {
         return;
+    }
 
     struct byte_stream s;
     stream_init(&s, 512);
@@ -3312,6 +3332,15 @@ static void push_getheaders_from(struct msg_processor *mp,
         stream_free(&s);
         block_locator_free(&loc);
         return;
+    }
+
+    /* Debug: log locator hashes to diagnose sync stall */
+    if (loc.num_hashes > 0 && loc.num_hashes <= 20) {
+        for (size_t li = 0; li < loc.num_hashes && li < 3; li++) {
+            char lhex[65];
+            uint256_get_hex(&loc.vhave[li], lhex);
+            fprintf(stderr, "getheaders locator[%zu]: %s\n", li, lhex);
+        }
     }
 
     p2p_node_begin_message(node, "getheaders", mp->params->pchMessageStart);
@@ -3323,9 +3352,37 @@ static void push_getheaders_from(struct msg_processor *mp,
 
 static void push_getheaders(struct msg_processor *mp, struct p2p_node *node)
 {
-    /* After snapshot sync, use the snapshot anchor as the locator start.
-     * This makes getheaders request headers from snapshot height instead
-     * of from the (much lower) locally-indexed chain tip. */
+    /* Use minimal locator: just tip hash + genesis.
+     * After snapshot sync, pprev chains may be incomplete, causing the
+     * full locator to contain wrong hashes. A 2-hash locator (tip + genesis)
+     * always works correctly — peers respond with headers from our tip. */
+    {
+        struct block_index *tip = active_chain_tip(&mp->main_state->chain_active);
+        if (tip && tip->phashBlock) {
+            struct block_locator loc;
+            block_locator_init(&loc);
+            loc.vhave = malloc(2 * sizeof(struct uint256));
+            if (loc.vhave) {
+                loc.vhave[0] = *tip->phashBlock;
+                loc.vhave[1] = mp->params->consensus.hashGenesisBlock;
+                loc.num_hashes = 2;
+
+                struct byte_stream s;
+                stream_init(&s, 256);
+                if (getheaders_serialize(&s, &loc, NULL)) {
+                    p2p_node_begin_message(node, "getheaders",
+                                           mp->params->pchMessageStart);
+                    p2p_node_write_message_data(node, s.data, s.size);
+                    p2p_node_end_message(node);
+                }
+                stream_free(&s);
+                block_locator_free(&loc);
+                return;
+            }
+        }
+    }
+
+    /* After snapshot sync, use the snapshot anchor as the locator start. */
     struct block_index *anchor = snapsync_get_anchor();
     if (anchor && anchor->phashBlock)
         push_getheaders_from(mp, node, anchor);

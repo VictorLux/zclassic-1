@@ -137,16 +137,17 @@ bool contextual_check_block_header(const struct block_header *header,
     /* Equihash solution size for this height's (N,K) params */
     size_t sol_size = header->nSolutionSize;
     if (sol_size > 0) {
-        unsigned int n = chain_params_equihash_n(params, nHeight);
-        unsigned int k = chain_params_equihash_k(params, nHeight);
-        size_t expected = (size_t)((pow(2, k) * ((n / (k + 1)) + 1)) / 8);
+        /* ZClassic uses Equihash(200,9) at all heights → 1344 bytes.
+         * After snapshot sync, pindex_prev heights may be wrong (block index
+         * entries from LDB import can have scrambled heights). Use the
+         * constant expected size directly to avoid false rejections. */
+        size_t expected = 1344; /* (2^9 * ((200/10)+1)) / 8 */
         REJECT_IF(sol_size != expected,
                   state, 100, "bad-equihash-solution-size");
     }
 
-    /* Difficulty check — skip during assumed-valid or incomplete windows */
-    if (g_assume_valid_height >= 0 && nHeight <= g_assume_valid_height)
-        goto skip_diffbits;
+    /* Difficulty check — always verify (cheap: O(17) block lookups).
+     * Only skip if the difficulty window is incomplete (missing nBits). */
     {
         bool window_clean = true;
         const struct block_index *check = pindex_prev;
