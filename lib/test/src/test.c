@@ -33,6 +33,7 @@ int main(void)
     failures += test_validation();
     failures += test_sapling();
     failures += test_sapling_crypto();
+    failures += test_bn254();
     failures += test_merkle_tree();
     failures += test_slp();
     failures += test_models();
@@ -66,6 +67,8 @@ int main(void)
     failures += test_snapshot_sync_service();
     failures += test_file_controller();
     failures += test_file_ops();
+    failures += test_integrity();
+    failures += test_protocols();
 
     /* Spec-based user story tests */
     failures += spec_wallet_dashboard();

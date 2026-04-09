@@ -142,6 +142,29 @@
 #include "net/connman.h"
 #include "net/tor_integration.h"
 #include "services/node_health_service.h"
+#include <dirent.h>
+#include <unistd.h>
+
+/* Remove a test temp directory and any files inside it.
+ * Handles the common case where SQLite leaves node.db, -wal, -shm behind. */
+static inline void test_cleanup_tmpdir(const char *path)
+{
+    if (!path) return;
+    DIR *d = opendir(path);
+    if (!d) return;
+    struct dirent *ent;
+    char fpath[512];
+    while ((ent = readdir(d)) != NULL) {
+        if (ent->d_name[0] == '.' &&
+            (ent->d_name[1] == '\0' ||
+             (ent->d_name[1] == '.' && ent->d_name[2] == '\0')))
+            continue;
+        snprintf(fpath, sizeof(fpath), "%s/%s", path, ent->d_name);
+        unlink(fpath);
+    }
+    closedir(d);
+    rmdir(path);
+}
 
 /* Shared helper functions */
 int check_hex(const unsigned char *data, size_t len, const char *expected);
@@ -162,6 +185,7 @@ int test_transaction(void);
 int test_net(void);
 int test_activerecord(void);
 int test_sapling_crypto(void);
+int test_bn254(void);
 int test_merkle_tree(void);
 int test_slp(void);
 int test_models(void);
@@ -198,6 +222,8 @@ int test_sync_service(void);
 int test_snapshot_sync_service(void);
 int test_file_controller(void);
 int test_file_ops(void);
+int test_integrity(void);
+int test_protocols(void);
 
 /* Spec-based user story tests (one per feature area) */
 int spec_wallet_dashboard(void);
