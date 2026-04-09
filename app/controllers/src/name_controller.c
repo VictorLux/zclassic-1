@@ -11,6 +11,9 @@
 #include "json/json.h"
 #include "rpc/server.h"
 #include "models/database.h"
+#include "wallet/wallet.h"
+#include "validation/txmempool.h"
+#include "services/zslp_command_service.h"
 #include <string.h>
 #include <stdio.h>
 #include <inttypes.h>
@@ -18,10 +21,18 @@
 /* ── Context ────────────────────────────────────────────────────── */
 
 static struct node_db *g_name_ndb = NULL;
+static struct wallet *g_name_wallet = NULL;
+static struct tx_mempool *g_name_mempool = NULL;
 
 void rpc_name_set_state(struct node_db *ndb)
 {
     g_name_ndb = ndb;
+}
+
+void rpc_name_set_wallet(struct wallet *w, struct tx_mempool *mp)
+{
+    g_name_wallet = w;
+    g_name_mempool = mp;
 }
 
 /* ── Helper ─────────────────────────────────────────────────────── */
@@ -190,7 +201,47 @@ static bool rpc_name_register(const struct json_value *params, bool help,
         return false;
     }
 
-    /* Return the script hex for inclusion in a transaction */
+    /* If wallet is available, build and broadcast the transaction */
+    if (g_name_wallet && g_name_mempool) {
+        struct wallet_tx wtx;
+        memset(&wtx, 0, sizeof(wtx));
+        int64_t fee_paid = 0;
+        const char *tx_error = NULL;
+
+        /* Build base tx with a dust output (546 satoshi) */
+        if (!zslp_command_build_genesis_base_tx(g_name_wallet, &wtx,
+                                                &fee_paid, &tx_error)) {
+            json_set_str(result, tx_error ? tx_error : "Failed to build transaction");
+            return false;
+        }
+
+        /* Prepend OP_RETURN, re-sign, broadcast */
+        if (!zslp_command_commit_with_op_return(g_name_wallet, g_name_mempool,
+                                                &wtx, script, script_len)) {
+            json_set_str(result, "Failed to broadcast transaction");
+            return false;
+        }
+
+        /* Return success with txid */
+        json_set_object(result);
+        json_push_kv_str(result, "name", name);
+        json_push_kv_str(result, "type", type_name(target_type));
+        json_push_kv_str(result, "value", value);
+
+        char txid_hex[65];
+        for (int i = 0; i < 32; i++)
+            sprintf(txid_hex + i * 2, "%02x", wtx.tx.hash.data[31 - i]);
+        txid_hex[64] = '\0';
+        json_push_kv_str(result, "txid", txid_hex);
+        json_push_kv_int(result, "fee", fee_paid);
+        json_push_kv_str(result, "status", "broadcast");
+
+        printf("znam: registered '%s' -> %s (txid: %s)\n",
+               name, value, txid_hex);
+        return true;
+    }
+
+    /* No wallet — return the OP_RETURN hex for manual inclusion */
     json_set_object(result);
     json_push_kv_str(result, "name", name);
     json_push_kv_str(result, "type", type_name(target_type));
@@ -204,8 +255,7 @@ static bool rpc_name_register(const struct json_value *params, bool help,
     json_push_kv_int(result, "op_return_size", (int64_t)script_len);
     json_push_kv_str(result, "status", "ready");
     json_push_kv_str(result, "note",
-        "Include this OP_RETURN as vout[0] in a transaction to register the name. "
-        "The sender address becomes the owner.");
+        "Wallet not loaded. Include this OP_RETURN as vout[0] manually.");
 
     return true;
 }

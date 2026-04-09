@@ -14,7 +14,11 @@
 #include "models/database.h"
 
 void rpc_name_set_state(struct node_db *ndb);
+void rpc_name_set_wallet(struct wallet *w, struct tx_mempool *mp);
 void register_name_rpc_commands(struct rpc_table *t);
+
+struct wallet;
+struct tx_mempool;
 
 /* REST API */
 #include "json/json.h"

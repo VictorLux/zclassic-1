@@ -1119,6 +1119,7 @@ bool app_init_services(struct app_context *ctx,
 
     /* ZCL Names — on-chain name registry */
     rpc_name_set_state(boot_node_db());
+    rpc_name_set_wallet(svc->wallet, svc->mempool);
     register_name_rpc_commands(svc->rpc_table);
 
     /* ZCL Messaging — encrypted P2P messages */
