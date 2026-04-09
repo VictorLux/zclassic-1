@@ -267,6 +267,15 @@ bool api_name_list(struct json_value *result)
     return rpc_name_list(NULL, false, result);
 }
 
+bool rpc_name_resolve_api(const char *name, struct json_value *result)
+{
+    if (!name || !g_name_ndb) return false;
+    struct znam_entry entry;
+    if (!db_znam_find(g_name_ndb, name, &entry)) return false;
+    entry_to_json(&entry, result);
+    return true;
+}
+
 /* ── Registration ───────────────────────────────────────────────── */
 
 void register_name_rpc_commands(struct rpc_table *t)

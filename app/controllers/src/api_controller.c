@@ -2305,6 +2305,29 @@ size_t api_handle_request(const char *method, const char *path,
     API_JSON_ROUTE("/api/latency",     api_getpeerlatency)
     API_JSON_ROUTE("/api/games",       api_gametypes)
     API_JSON_ROUTE("/api/names",       api_name_list)
+
+    /* Route: /api/name/:name — resolve single name */
+    if (strncmp(clean_path, "/api/name/", 10) == 0 && clean_path[10]) {
+        extern bool rpc_name_resolve_api(const char *name, struct json_value *result);
+        struct json_value jr = {0};
+        if (rpc_name_resolve_api(clean_path + 10, &jr)) {
+            char body[4096];
+            size_t blen = json_write(&jr, body, sizeof(body));
+            json_free(&jr);
+            size_t off = (size_t)snprintf((char *)response, response_max,
+                "HTTP/1.1 200 OK\r\n"
+                "Content-Type: application/json\r\n"
+                "Access-Control-Allow-Origin: *\r\n"
+                "Cache-Control: no-cache\r\n"
+                "Connection: close\r\n"
+                "Content-Length: %zu\r\n\r\n", blen);
+            if (off + blen <= response_max)
+                memcpy(response + off, body, blen);
+            return off + blen < response_max ? off + blen : response_max;
+        }
+        json_free(&jr);
+        return json_error(response, response_max, JSON_404_HEADERS, "Name not found");
+    }
     API_JSON_ROUTE("/api/market",      api_market_list)
     API_JSON_ROUTE("/api/swaps",       api_swap_list)
     API_JSON_ROUTE("/api/swap_chains", api_swap_chains)
