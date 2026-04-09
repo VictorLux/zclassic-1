@@ -1,0 +1,253 @@
+# ZClassic23 — AI-Integrated Power Node
+
+## MCP Server (Model Context Protocol)
+
+ZClassic23 has a built-in MCP server for AI development. Claude Code can query the node directly via typed tools — no curl, no token waste.
+
+### Setup
+
+```bash
+claude mcp add zcl23 -- zclassic23 -mcp
+```
+
+Or with custom datadir/port:
+```bash
+claude mcp add zcl23 -- zclassic23 -mcp -datadir=/path/to/data -rpcport=18232
+```
+
+Restart Claude Code after adding. The tools appear automatically.
+
+### Quick Reference
+
+| Tool | Description |
+|------|-------------|
+| `zcl_status` | **Start here.** Height, peers, sync, onion address, health — one call |
+| `zcl_getblockcount` | Current block height |
+| `zcl_getblock` | Block by height or hash |
+| `zcl_getblockchaininfo` | Chain state, difficulty, value pools |
+| `zcl_peers` | Connected peers with latency and services |
+| `zcl_networkinfo` | Version, connections, relay fee |
+| `zcl_addnode` | Connect to a peer (add/remove/onetry) |
+| `zcl_onion_status` | Tor .onion address, bootstrap state |
+| `zcl_syncstate` | Sync phase: headers, blocks, UTXO replay |
+| `zcl_validationstatus` | bg-validation: height, sigs, proofs, speed |
+| `zcl_dataintegrity` | SHA3-256 hashes of all consensus tables |
+| `zcl_mmb` | Merkle Mountain Belt root (FlyClient, 150-bit security) |
+| `zcl_utxocommitment` | SHA3-256 of entire UTXO set |
+| `zcl_gametypes` | P2P games: Ping (latency), TicTacToe |
+| `zcl_pingpeer` | Measure round-trip latency to a peer |
+| `zcl_peerlatency` | All peer latency measurements |
+| `zcl_balance` | Wallet balance (transparent + shielded) |
+| `zcl_getnewaddress` | Generate transparent (t-addr) address |
+| `zcl_z_getnewaddress` | Generate shielded Sapling (z-addr) address |
+| `zcl_send` | Send ZCL (from, to, amount) |
+| `zcl_hodlwave` | UTXO age distribution (10 buckets) |
+| `zcl_filemanifest` | File service: chunks, SHA3 hashes, size |
+| `zcl_tokens` | ZSLP tokens on the network |
+| `zcl_events` | Recent event log |
+| `zcl_health` | Pass/fail health check |
+| `zcl_name_resolve` | Resolve a ZCL Name to .onion / z-addr / t-addr |
+| `zcl_name_register` | Build OP_RETURN to register a name on-chain |
+| `zcl_name_list` | List registered ZCL Names |
+| `zcl_msg_send` | Send P2P message to a connected peer |
+| `zcl_msg_send_named` | Send message to a ZCL Name (resolves name first) |
+| `zcl_msg_inbox` | List messages (all or unread) |
+| `zcl_msg_read` | Mark message as read |
+| `zcl_market_list` | List files on ZCL Market |
+| `zcl_market_offer` | Announce a file for sale |
+| `zcl_market_status` | Market status and stats |
+| `zcl_swap_chains` | Supported swap chains: ZCL, BTC, LTC, DOGE |
+| `zcl_swap_initiate` | Create HTLC atomic swap contract |
+| `zcl_swap_participate` | Join a swap with counter-HTLC |
+| `zcl_swap_list` | List swap contracts |
+| `zcl_rpc` | **Escape hatch.** Any of 100+ RPC methods directly |
+
+### Example: Check Everything
+
+Call `zcl_status` — returns height, peer count, sync state, validation progress, onion address, and health in one response.
+
+### Example: Raw RPC
+
+For commands without a dedicated tool, use `zcl_rpc`:
+- `zcl_rpc(method="getmempoolinfo")`
+- `zcl_rpc(method="z_listaddresses")`
+- `zcl_rpc(method="getblock", params="[\"hash\", 2]")`
+
+---
+
+## Node Architecture
+
+ZClassic23 is a single 26MB C23 binary that includes:
+
+- Full ZClassic blockchain node (PoW, Equihash 200,9)
+- Block explorer with charts and HODL wave analysis
+- Embedded Tor with .onion hidden service (dynhost)
+- P2P fast sync via FlyClient + SHA3 UTXO snapshots
+- MVC web framework served over .onion
+- ZSLP token protocol
+- Shielded transactions (Sapling zk-SNARKs)
+- P2P game framework with latency measurement
+- E-commerce store with shielded payments
+- MCP server for AI agent integration
+
+### Running
+
+```bash
+# Main node (linger service)
+systemctl --user start zclassic23
+
+# Flags
+-datadir=DIR          Data directory (default: ~/.zclassic-c23)
+-port=N               P2P port (default: 8033)
+-rpcport=N            RPC port (default: 18232)
+-tor                  Enable embedded Tor onion service
+-nobgvalidation       Skip background proof verification (saves RAM)
+-mcp                  Run as MCP server on stdio (for Claude Code)
+-txindex              Enable full transaction index
+-addnode=IP:PORT      Connect to specific peer
+```
+
+---
+
+## Key Features
+
+### Onion Hidden Service Hosting
+
+When `-tor` is enabled, zclassic23 embeds a modified Tor (RhettCreighton/tor fork with dynhost). The node:
+
+1. Bootstraps Tor as a pthread inside the process
+2. Generates an ephemeral .onion address (with optional vanity prefix)
+3. Serves the full REST API + block explorer over .onion
+4. Handles requests via direct C function calls — no SOCKS, no ports, no HTTP parsing overhead
+
+The .onion address is visible via `zcl_status` → `health.checks.onion_address`.
+
+Architecture: `Client → Tor network → dynhost_webserver.c → onion_service_handle_request() → same controllers as HTTPS`
+
+### Peer Discovery via Onion Directory
+
+Each node with Tor enabled serves `/directory.json` on its .onion address, containing:
+- Node's .onion address
+- Clearnet IP and port (for fast direct connections)
+- Block height, version
+
+A fresh node can:
+1. Bootstrap Tor (~10 seconds)
+2. Fetch `/directory.json` from hardcoded .onion seeds
+3. Extract clearnet IPs from the response
+4. Connect directly for fast P2P sync
+
+This enables fully decentralized peer discovery even when DNS seeds are unavailable.
+
+### Fast Sync (FlyClient + MMB + SHA3)
+
+A fresh node syncs 3M+ blocks in ~60 seconds:
+
+1. **FlyClient** — 50 random block samples with MMB (Merkle Mountain Belt) inclusion proofs. Each sample verified for PoW. Security: ≥150 bits against any minority adversary.
+
+2. **SHA3 UTXO Snapshot** — Complete UTXO set transferred and verified against SHA3-256 commitment. 1.3M UTXOs in canonical order.
+
+3. **Delta sync** — Headers + blocks from snapshot height to tip via standard P2P.
+
+The node is fully operational after step 2 (~60s). Background validation optionally re-verifies every historical signature and proof.
+
+Key MCP tools: `zcl_mmb`, `zcl_utxocommitment`, `zcl_syncstate`, `zcl_validationstatus`
+
+### P2P Game Service
+
+Built-in P2P game framework for latency measurement and gameplay:
+
+**Ping (Type 0)** — Measures round-trip latency in microseconds. Used by:
+- `zcl_pingpeer(peer_id=N)` — Ping specific peer
+- `zcl_peerlatency` — All peer latencies
+
+**TicTacToe (Type 1)** — Extensible game framework demonstrating P2P messaging:
+- Binary wire protocol over `zgame` P2P message
+- Move validation, state sync, win detection
+- Actions: INVITE, ACCEPT, MOVE, STATE, RESIGN, RESULT
+
+Wire format: `[1 game_type] [1 action] [variable data]`
+
+### ZCL Names (ZNAM) — On-Chain Name Registry
+
+Human-readable names registered on-chain via OP_RETURN. Inspired by ENS (Ethereum Name Service).
+
+- **OP_RETURN protocol** with "ZNAM" lokad ID, same pattern as ZSLP tokens
+- Names: 1-63 chars, lowercase alphanumeric + hyphens, first-come-first-served
+- **Multi-coin resolution**: a single name can have addresses for ZCL, BTC, LTC, DOGE
+- **Text records**: arbitrary key-value metadata (email, url, avatar) — ENS TextResolver pattern
+- **Content hash**: link names to file market content
+- Commands: REGISTER, UPDATE, TRANSFER, RENEW, SET_RECORD, SET_TEXT
+- RPC: `name_register`, `name_resolve`, `name_list`
+
+### ZCL Messaging (ZMSG) — Encrypted P2P Messages
+
+Two-mode messaging: off-chain (instant, free) and on-chain (permanent, shielded).
+
+- **Off-chain**: P2P messages (`zmsg`/`zmsgack`) between connected nodes
+- **On-chain**: structured data in Sapling 512-byte encrypted memo field
+- Messages stored in SQLite, delivery acknowledgment
+- RPC: `msg_send`, `msg_inbox`, `msg_read`
+
+### ZCL Market — Crypto-Incentivized File Sharing
+
+BitTorrent-style file distribution with shielded ZCL payments instead of ratio.
+
+- P2P gossip of file offers with price per MB
+- Chunk challenges for sybil resistance (prove you have the data)
+- Payment-gated downloads via Sapling shielded transactions
+- RPC: `zmarket_list`, `zmarket_offer`, `zmarket_buy`, `zmarket_status`
+
+### Atomic Swaps (ZSWP) — Cross-Chain HTLC Trading
+
+P2SH-wrapped hash time-locked contracts. Compatible with dcrdex.
+
+- **Chains**: ZCL, BTC, LTC, DOGE (same 97-byte contract as dcrdex)
+- Script: OP_IF/OP_SHA256/OP_CLTV with shared OP_CHECKSIG
+- Secret extraction from redeem transactions
+- RPC: `swap_chains`, `swap_initiate`, `swap_participate`, `swap_list`
+- Reference: `vendor/dcrdex/` (Blue Oak License 1.0.0)
+
+### Background Validation
+
+Optional (`-nobgvalidation` to disable). Walks every block from genesis verifying:
+- Equihash PoW solutions
+- ECDSA script signatures (every input)
+- Ed25519 JoinSplit signatures
+- Sapling Groth16 spend/output proofs
+- Sprout Groth16/PHGR13 proofs
+- Merkle root integrity
+
+RAM-aware: auto-detects system memory, caps script batch size on <8GB machines.
+
+Progress via: `zcl_validationstatus`
+
+---
+
+## Development
+
+### Build
+```bash
+make -j$(nproc)     # Builds zclassic23, test_zcl, zclassic-cli
+make test           # Run 1500+ tests
+make deploy         # Build + setcap + restart service
+```
+
+### Test
+```bash
+./test_zcl          # All tests
+```
+
+### RPC (without MCP)
+```bash
+./tools/zcl-rpc getblockcount
+./tools/zcl-rpc getpeerinfo
+./tools/zcl-rpc z_gettotalbalance
+```
+
+### Services
+```bash
+systemctl --user status zclassic23        # Main node
+systemctl --user status zclassicd-rhett   # C++ dev peer
+systemctl --user status zclassic23-test   # Test instance
+```

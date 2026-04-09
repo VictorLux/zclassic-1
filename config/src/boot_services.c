@@ -3,6 +3,7 @@
  * mining, wallet sync, shutdown, and utility functions. */
 
 #include "config/boot_internal.h"
+#include "storage/disk_block_io.h"
 #include "models/utxo.h"
 #include "models/mmb_leaf_store.h"
 #include "chain/chainparams.h"
@@ -28,6 +29,12 @@
 #include "controllers/sync_controller.h"
 #include "controllers/event_controller.h"
 #include "controllers/snapshot_controller.h"
+#include "controllers/game_controller.h"
+#include "controllers/health_controller.h"
+#include "controllers/file_market_controller.h"
+#include "controllers/name_controller.h"
+#include "controllers/messaging_controller.h"
+#include "controllers/swap_controller.h"
 #include "rpc/httpserver.h"
 #include "rpc/server.h"
 #include "net/https_server.h"
@@ -225,6 +232,52 @@ static void boot_join_tx_index_service(struct boot_svc_ctx *svc)
 /* ── Helper threads ────────────────────────────────────────── */
 
 extern void store_process_payments(const char *datadir);
+
+/* Watchdog: detect stuck chain and clear BLOCK_FAILED to allow retry. */
+static void watchdog_check_stuck(struct boot_svc_ctx *svc)
+{
+    static int64_t last_height_change = 0;
+    static int last_height = -1;
+
+    int h = active_chain_height(&svc->state->chain_active);
+    int64_t now = (int64_t)time(NULL);
+
+    if (h != last_height) {
+        last_height = h;
+        last_height_change = now;
+        return;
+    }
+
+    /* No progress for 5 minutes — try clearing BLOCK_FAILED on next block */
+    if (last_height_change > 0 && now - last_height_change > 300 && h > 100) {
+        fprintf(stderr, "WATCHDOG: stuck at h=%d for %lld seconds. "
+                "Clearing BLOCK_FAILED on h=%d to retry.\n",
+                h, (long long)(now - last_height_change), h + 1);
+
+        struct block_index *next = active_chain_at(
+            &svc->state->chain_active, h + 1);
+        if (!next) {
+            /* Not in active chain — scan block map for height h+1 */
+            size_t iter = 0;
+            struct block_index *bi = NULL;
+            while (block_map_next(&svc->state->map_block_index,
+                                   &iter, NULL, &bi)) {
+                if (bi && bi->nHeight == h + 1 &&
+                    (bi->nStatus & BLOCK_FAILED_MASK)) {
+                    bi->nStatus &= ~BLOCK_FAILED_MASK;
+                    fprintf(stderr, "WATCHDOG: cleared BLOCK_FAILED on "
+                            "h=%d\n", bi->nHeight);
+                }
+            }
+        } else if (next->nStatus & BLOCK_FAILED_MASK) {
+            next->nStatus &= ~BLOCK_FAILED_MASK;
+            fprintf(stderr, "WATCHDOG: cleared BLOCK_FAILED on h=%d\n",
+                    next->nHeight);
+        }
+        last_height_change = now; /* don't spam — wait another 5 min */
+    }
+}
+
 static void *payment_processor_thread(void *arg)
 {
     struct boot_svc_ctx *svc = arg;
@@ -235,6 +288,7 @@ static void *payment_processor_thread(void *arg)
         if (!boot_running(svc))
             break;
         store_process_payments(svc->datadir);
+        watchdog_check_stuck(svc);
     }
     return NULL;
 }
@@ -280,6 +334,39 @@ static void *background_utxo_replay(void *arg)
     printf("UTXO replay: starting background chain validation...\n");
     fflush(stdout);
 
+    /* ── Restore chain state from coins_best_block ──────────────
+     * After snapshot import (file or P2P), coins_best_block in SQLite
+     * points to the snapshot height, but the in-memory g_coins_tip and
+     * active chain are still at genesis. We must advance both so that
+     * activate_best_chain starts from the snapshot height, not genesis.
+     * Without this, connect_block fails at height 1 with BIP30 because
+     * the snapshot's UTXOs include block 1's unspent coinbase. */
+    struct node_db *ndb_restore = boot_node_db();
+    if (ndb_restore && ndb_restore->open) {
+        uint8_t cb_buf[32] = {0};
+        size_t cb_len = 0;
+        if (node_db_state_get(ndb_restore, "coins_best_block",
+                              cb_buf, sizeof(cb_buf), &cb_len) && cb_len == 32) {
+            struct uint256 cb_hash;
+            memcpy(cb_hash.data, cb_buf, 32);
+            if (!uint256_is_null(&cb_hash)) {
+                struct block_index *snap_block = block_map_find(
+                    &svc->state->map_block_index, &cb_hash);
+                if (snap_block && snap_block->nHeight > 0) {
+                    /* Set in-memory coins view best block */
+                    coins_view_cache_set_best_block(svc->coins_tip, &cb_hash);
+                    /* Advance active chain tip to snapshot height */
+                    active_chain_set_tip(&svc->state->chain_active, snap_block);
+                    printf("UTXO replay: restored chain state from snapshot "
+                           "at h=%d\n", snap_block->nHeight);
+                } else if (!snap_block) {
+                    printf("UTXO replay: coins_best_block not in index "
+                           "(waiting for P2P headers)\n");
+                }
+            }
+        }
+    }
+
     /* IBD turbo: skip non-essential work during replay */
     struct db_service *dbsvc = boot_db_service();
     struct node_db *ndb = boot_node_db();
@@ -290,7 +377,10 @@ static void *background_utxo_replay(void *arg)
         node_db_ibd_turbo_mode(ndb);
         node_db_set_sync_batch_size(ndb, 1000);
     }
-    set_flush_policy(3600, 1000000, 100000);
+    /* Flush every 500 blocks even during IBD to limit UTXO loss on
+     * SIGKILL. Previous value of 100000 meant a SIGKILL during boot
+     * could lose 100K blocks of UTXO state, requiring full re-sync. */
+    set_flush_policy(3600, 1000000, 500);
 
     struct validation_state vs;
     validation_state_init(&vs);
@@ -661,6 +751,11 @@ bool app_init_services(struct app_context *ctx,
      * both writing to blk*.dat caused crashes). */
     {
         int chain_height = active_chain_height(&svc->state->chain_active);
+        if (chain_height <= 0 && ctx->no_file_sync) {
+            printf("=== Fresh node — file sync disabled (-nofilesync), "
+                   "using P2P snapshot sync ===\n");
+            goto skip_file_sync;
+        }
         if (chain_height <= 0) {
             printf("=== Fresh node — trying fast file sync ===\n");
             uint8_t utxo_root[32];
@@ -808,12 +903,34 @@ bool app_init_services(struct app_context *ctx,
                     struct stat db_st;
                     if (stat(db_check, &db_st) == 0 &&
                         db_st.st_size > 10000000) {
-                        /* node.db was downloaded — UTXO set is ready.
-                         * Verify SHA3 checkpoint if available. */
-                        printf("=== UTXO snapshot received: %.0f MB "
-                               "(SHA3 verified) ===\n",
-                               (double)db_st.st_size / (1024.0*1024.0));
-                        has_utxo_snapshot = true;
+                        /* consensus_snapshot.db was downloaded — but verify
+                         * it actually has UTXOs. After a stale UTXO wipe
+                         * the file remains on disk but UTXOs are gone. */
+                        int64_t snap_utxo_count = 0;
+                        if (svc->node_db && svc->node_db->open &&
+                            svc->node_db->db) {
+                            sqlite3_stmt *sc = NULL;
+                            if (sqlite3_prepare_v2(svc->node_db->db,
+                                    "SELECT COUNT(*) FROM utxos", -1,
+                                    &sc, NULL) == SQLITE_OK && sc) {
+                                if (sqlite3_step(sc) == SQLITE_ROW)
+                                    snap_utxo_count =
+                                        sqlite3_column_int64(sc, 0);
+                                sqlite3_finalize(sc);
+                            }
+                        }
+                        if (snap_utxo_count > 0) {
+                            printf("=== UTXO snapshot received: %.0f MB "
+                                   "(%lld UTXOs, SHA3 verified) ===\n",
+                                   (double)db_st.st_size / (1024.0*1024.0),
+                                   (long long)snap_utxo_count);
+                            has_utxo_snapshot = true;
+                        } else {
+                            printf("=== consensus_snapshot.db exists "
+                                   "(%.0f MB) but UTXOs empty — waiting "
+                                   "for P2P snapshot ===\n",
+                                   (double)db_st.st_size / (1024.0*1024.0));
+                        }
                     }
                 }
 
@@ -876,6 +993,7 @@ bool app_init_services(struct app_context *ctx,
         skip_block_scan: ;
         }
     }
+    skip_file_sync: ;
 
     if (!connman_start(svc->connman)) {
         fprintf(stderr, "FATAL: failed to start P2P threads\n");
@@ -941,7 +1059,8 @@ bool app_init_services(struct app_context *ctx,
             if (bi && bi->phashBlock && bi->nHeight == commit_h) {
                 rpc_blockchain_maybe_commit(
                     commit_h, bi->phashBlock->data,
-                    boot_node_db()->db);
+                    svc->coins_tip->commitment.accumulator,
+                    svc->coins_tip->commitment.count);
                 rpc_blockchain_commitment_mmr_save(boot_node_db());
                 printf("Bootstrap commitment at height %d saved\n",
                        commit_h);
@@ -981,9 +1100,34 @@ bool app_init_services(struct app_context *ctx,
     rpc_net_set_connman(svc->connman);
     register_net_rpc_commands(svc->rpc_table);
 
+    /* Game platform RPC — latency measurement, game types */
+    rpc_game_set_connman(svc->connman);
+    register_game_rpc_commands(svc->rpc_table);
+
+    /* Service health and sync detail RPCs */
+    rpc_health_set_state(svc->state, &svc->bg_validation,
+                         &svc->bg_hash_verify, svc->connman);
+    register_health_rpc_commands(svc->rpc_table);
+
     /* File transfer service — SHA3-verified chunk serving */
     file_controller_init(ctx->datadir);
     register_file_rpc_commands(svc->rpc_table);
+
+    /* ZCL Market — crypto-incentivized file sharing */
+    rpc_market_set_state(boot_node_db());
+    register_market_rpc_commands(svc->rpc_table);
+
+    /* ZCL Names — on-chain name registry */
+    rpc_name_set_state(boot_node_db());
+    register_name_rpc_commands(svc->rpc_table);
+
+    /* ZCL Messaging — encrypted P2P messages */
+    rpc_msg_set_state(boot_node_db(), svc->connman);
+    register_msg_rpc_commands(svc->rpc_table);
+
+    /* Atomic Swaps — HTLC contracts for BTC/LTC/DOGE */
+    rpc_swap_set_state(boot_node_db());
+    register_swap_rpc_commands(svc->rpc_table);
 
     /* blk_sync.dat from file service is on disk. P2P will re-request
      * blocks it needs — the OS disk cache serves them fast since the
@@ -1173,7 +1317,12 @@ bool app_init_services(struct app_context *ctx,
     }
 
     if (svc->want_address_backfill) {
-        if (boot_start_address_backfill_service(svc)) {
+        /* DISABLED: address backfill causes SIGSEGV after processing
+         * ~64K addresses. The crash corrupts P2P state and prevents
+         * block download. Needs ASAN investigation. */
+        printf("Address backfill: DISABLED (SIGSEGV bug — needs ASAN)\n");
+        svc->want_address_backfill = false;
+        if (false && boot_start_address_backfill_service(svc)) {
             printf("Address backfill: started in tracked background thread\n");
             fflush(stdout);
         } else {
@@ -1187,6 +1336,33 @@ bool app_init_services(struct app_context *ctx,
             fprintf(stderr,
                     "WARNING: failed to start tracked tx-index build thread\n");
         }
+    }
+
+    /* Background full validation — verify every historical signature/proof
+     * in a low-priority thread after fast sync. Resumes across restarts.
+     * Skip with -nobgvalidation (FlyClient+SHA3 already provides ≥150-bit
+     * security for the chain binding; this is belt-and-suspenders). */
+    bg_validation_init(&svc->bg_validation, svc->state, svc->node_db,
+                       ctx->datadir, params);
+    g_bg_validation = &svc->bg_validation;
+    if (ctx->no_bg_validation) {
+        printf("[bg-valid] Disabled via -nobgvalidation\n");
+    } else if (bg_validation_start(&svc->bg_validation)) {
+        printf("[bg-valid] Started background full validation\n");
+    } else {
+        printf("[bg-valid] Deferred — already complete or chain not ready\n");
+    }
+
+    /* Background block hash verification — recomputes SHA256d from disk
+     * and compares against stored hashes. */
+    bg_hash_verify_init(&svc->bg_hash_verify, svc->state, svc->node_db,
+                        ctx->datadir, params);
+    if (ctx->no_bg_validation) {
+        printf("[bg-hash] Disabled via -nobgvalidation\n");
+    } else if (bg_hash_verify_start(&svc->bg_hash_verify)) {
+        printf("[bg-hash] Started background hash verification\n");
+    } else {
+        printf("[bg-hash] Deferred — already complete or chain not ready\n");
     }
 
     atomic_store(svc->running, true);
@@ -1291,10 +1467,15 @@ static void shutdown_quiesce_network_and_flush_coins(struct boot_svc_ctx *svc)
     coins_view_cache_flush(svc->coins_tip);
     coins_view_cache_free(svc->coins_tip);
     coins_view_sqlite_close(svc->coins_sqlite);
+
+    /* Close cached block file handles */
+    disk_block_io_close_cache();
 }
 
 static void shutdown_persist_runtime_state(struct boot_svc_ctx *svc)
 {
+    bg_validation_stop(&svc->bg_validation);
+    bg_hash_verify_stop(&svc->bg_hash_verify);
     boot_join_address_backfill_service(svc);
     boot_join_tx_index_service(svc);
     boot_join_offer_service(svc);
@@ -1344,6 +1525,16 @@ void app_shutdown_svc(struct boot_svc_ctx *svc)
     event_async_stop();
 
     printf("Shutting down...\n");
+
+    /* Emergency coins flush FIRST — minimize UTXO loss window.
+     * SIGKILL from OOM killer / systemd timeout can arrive at any time
+     * during shutdown. Flushing coins before anything else ensures the
+     * UTXO state is safe even if the rest of shutdown is interrupted. */
+    if (svc->coins_tip) {
+        printf("Emergency coins flush...\n");
+        coins_view_cache_flush(svc->coins_tip);
+        printf("Emergency flush done.\n");
+    }
 
     shutdown_stop_frontend_services(svc);
     shutdown_persist_fast_restart_state(svc);

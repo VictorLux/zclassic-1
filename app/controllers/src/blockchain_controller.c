@@ -35,6 +35,8 @@
 /* png_writer.h moved to hodl_controller.c */
 #include "storage/block_index_db.h"
 #include "zslp/slp.h"
+#include "znam/znam.h"
+#include "encoding/base58.h"
 #include "crypto/sha3.h"
 #include "models/block.h"
 #include "models/tx_index.h"
@@ -1536,6 +1538,88 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
                         }
                     }
                 }
+
+                /* ZNAM: index name registrations from OP_RETURN */
+                struct znam_message znam;
+                if (znam_parse(script, script_len, &znam)) {
+                    struct znam_entry entry;
+                    memset(&entry, 0, sizeof(entry));
+                    snprintf(entry.name, sizeof(entry.name), "%s", znam.name);
+                    entry.target_type = znam.target_type;
+                    snprintf(entry.target_value, sizeof(entry.target_value),
+                             "%s", znam.target_value);
+                    memcpy(entry.reg_txid, tx->hash.data, 32);
+                    entry.reg_height = h;
+                    memcpy(entry.last_update_txid, tx->hash.data, 32);
+
+                    /* Owner = P2PKH address from vout[1] (change output) */
+                    if (tx->num_vout > 1) {
+                        const uint8_t *sd2 = tx->vout[1].script_pub_key.data;
+                        size_t sl2 = tx->vout[1].script_pub_key.size;
+                        if (sl2 == 25 && sd2[0] == 0x76 && sd2[1] == 0xa9 &&
+                            sd2[2] == 0x14 && sd2[23] == 0x88 && sd2[24] == 0xac) {
+                            /* Base58Check encode the pubkey hash */
+                            char addr[64];
+                            uint8_t payload[22];
+                            payload[0] = 0x1c; payload[1] = 0xb8; /* ZClassic t1 prefix */
+                            memcpy(payload + 2, sd2 + 3, 20);
+                            size_t addr_len = 0;
+                            base58check_encode(payload, 22, addr, sizeof(addr), &addr_len);
+                            snprintf(entry.owner_address, sizeof(entry.owner_address),
+                                     "%s", addr);
+                        }
+                    }
+
+                    if (znam.command == ZNAM_CMD_REGISTER) {
+                        /* Only register if name doesn't exist yet */
+                        struct znam_entry existing;
+                        if (!db_znam_find(ctx->node_db, znam.name, &existing)) {
+                            db_znam_save(ctx->node_db, &entry);
+                            printf("znam: registered '%s' -> %s (height %d)\n",
+                                   entry.name, entry.target_value, h);
+                        }
+                    } else if (znam.command == ZNAM_CMD_UPDATE) {
+                        struct znam_entry existing;
+                        if (db_znam_find(ctx->node_db, znam.name, &existing) &&
+                            strcmp(existing.owner_address, entry.owner_address) == 0) {
+                            existing.target_type = znam.target_type;
+                            snprintf(existing.target_value, sizeof(existing.target_value),
+                                     "%s", znam.target_value);
+                            memcpy(existing.last_update_txid, tx->hash.data, 32);
+                            db_znam_save(ctx->node_db, &existing);
+                        }
+                    } else if (znam.command == ZNAM_CMD_TRANSFER) {
+                        struct znam_entry existing;
+                        if (db_znam_find(ctx->node_db, znam.name, &existing) &&
+                            strcmp(existing.owner_address, entry.owner_address) == 0) {
+                            snprintf(existing.owner_address, sizeof(existing.owner_address),
+                                     "%s", znam.new_owner);
+                            memcpy(existing.last_update_txid, tx->hash.data, 32);
+                            db_znam_save(ctx->node_db, &existing);
+                        }
+                    } else if (znam.command == ZNAM_CMD_RENEW) {
+                        struct znam_entry existing;
+                        if (db_znam_find(ctx->node_db, znam.name, &existing) &&
+                            strcmp(existing.owner_address, entry.owner_address) == 0) {
+                            memcpy(existing.last_update_txid, tx->hash.data, 32);
+                            db_znam_save(ctx->node_db, &existing);
+                        }
+                    } else if (znam.command == ZNAM_CMD_SET_RECORD) {
+                        struct znam_entry existing;
+                        if (db_znam_find(ctx->node_db, znam.name, &existing) &&
+                            strcmp(existing.owner_address, entry.owner_address) == 0) {
+                            db_znam_addr_save(ctx->node_db, znam.name,
+                                              znam.target_type, znam.target_value);
+                        }
+                    } else if (znam.command == ZNAM_CMD_SET_TEXT) {
+                        struct znam_entry existing;
+                        if (db_znam_find(ctx->node_db, znam.name, &existing) &&
+                            strcmp(existing.owner_address, entry.owner_address) == 0) {
+                            db_znam_text_save(ctx->node_db, znam.name,
+                                              znam.text_key, znam.text_value);
+                        }
+                    }
+                }
             }
 
             /* Create output UTXOs */
@@ -2457,32 +2541,33 @@ void rpc_blockchain_commitment_mmr_save(struct node_db *ndb)
 
 void rpc_blockchain_maybe_commit(int32_t height,
                                   const uint8_t block_hash[32],
-                                  void *utxo_db)
+                                  const uint8_t xor_accumulator[32],
+                                  uint64_t utxo_count)
 {
     if (height <= 0 || height % MMR_COMMITMENT_INTERVAL != 0)
         return;
-    if (!utxo_db) return;
-    sqlite3 *db = (sqlite3 *)utxo_db;
+
+    /* Skip commitment during assume-valid IBD — the MMR will be built
+     * from scratch once we pass assume-valid height. */
+    extern int g_assume_valid_height;
+    if (g_assume_valid_height >= 0 && height <= g_assume_valid_height)
+        return;
 
     if (!g_commitment_mmr_initialized) {
         mmr_init(&g_commitment_mmr);
         g_commitment_mmr_initialized = true;
     }
 
-    /* Compute SHA3 UTXO root from SQLite */
-    uint8_t utxo_root[32];
-    uint64_t utxo_count = 0;
-    utxo_commitment_sha3_compute(db, utxo_root, &utxo_count);
-
-    /* Build commitment leaf */
+    /* Use the incremental XOR accumulator (O(1)) instead of the O(N)
+     * SHA3 full-table scan that was killing sync performance. */
     struct mmr_commitment c = { .height = height };
     memcpy(c.block_hash, block_hash, 32);
-    memcpy(c.utxo_root, utxo_root, 32);
-    memset(c.data_root, 0, 32); /* data_root populated by file service */
+    memcpy(c.utxo_root, xor_accumulator, 32);
+    memset(c.data_root, 0, 32);
 
     mmr_append_commitment(&g_commitment_mmr, &c);
 
-    if (height % 10000 == 0 || height % MMR_COMMITMENT_INTERVAL == 0) {
+    if (height % 10000 == 0) {
         uint8_t root[32];
         mmr_root(&g_commitment_mmr, root);
         printf("MMR commitment: h=%d utxos=%llu root=",
@@ -2779,6 +2864,78 @@ static bool rpc_auditchain(const struct json_value *params, bool help,
     return true;
 }
 
+/* ── rebuildsaplingtree — replay Sapling outputs, rebuild tree ─── */
+
+static bool rpc_rebuildsaplingtree(const struct json_value *params,
+                                    bool help, struct json_value *result)
+{
+    struct blockchain_context *ctx = blockchain_ctx();
+    (void)params;
+    RPC_HELP(help, result,
+        "rebuildsaplingtree\n"
+        "\nRebuild the Sapling commitment tree by replaying every shielded\n"
+        "output from Sapling activation (height 476969) to chain tip.\n"
+        "Verifies computed root matches hashFinalSaplingRoot in each header.\n"
+        "Fixes tree divergence caused by corrupted persisted state.\n"
+        "This may take several minutes for the full chain.\n");
+
+    if (!ctx->main_state || !ctx->datadir || !ctx->node_db) {
+        json_set_str(result, "error: node not fully initialized");
+        return false;
+    }
+
+    struct main_state *ms = ctx->main_state;
+    struct node_db *ndb = ctx->node_db;
+    const char *datadir = ctx->datadir;
+
+    extern _Atomic bool g_sapling_tree_rebuilding;
+    atomic_store(&g_sapling_tree_rebuilding, true);
+    int n = sapling_tree_rebuild(ndb, &ms->chain_active, datadir);
+    atomic_store(&g_sapling_tree_rebuilding, false);
+
+    if (n < 0) {
+        json_set_str(result, "error: rebuild failed");
+        return false;
+    }
+
+    /* Reload rebuilt tree into main_state */
+    uint8_t tbuf[8192];
+    size_t tlen = 0;
+    if (node_db_state_get(ndb, "sapling_tree", tbuf, sizeof(tbuf), &tlen)
+        && tlen > 0) {
+        struct byte_stream ts;
+        stream_init_from_data(&ts, tbuf, tlen);
+        sapling_tree_init(&ms->sapling_tree);
+        incremental_tree_deserialize(&ms->sapling_tree, &ts);
+        ms->sapling_tree_loaded = true;
+    }
+
+    /* Verify against chain tip */
+    struct uint256 final_root;
+    incremental_tree_root(&ms->sapling_tree, &final_root);
+    char root_hex[65];
+    uint256_get_hex(&final_root, root_hex);
+
+    const struct block_index *tip = active_chain_tip(&ms->chain_active);
+    char expected_hex[65] = "n/a";
+    bool roots_match = false;
+    if (tip) {
+        uint256_get_hex(&tip->hashFinalSaplingRoot, expected_hex);
+        roots_match = (memcmp(final_root.data,
+                              tip->hashFinalSaplingRoot.data, 32) == 0);
+    }
+
+    json_set_object(result);
+    json_push_kv_str(result, "status", roots_match ? "success" : "mismatch");
+    json_push_kv_int(result, "total_commitments", (int64_t)n);
+    json_push_kv_int(result, "tree_size",
+        (int64_t)incremental_tree_size(&ms->sapling_tree));
+    json_push_kv_str(result, "computed_root", root_hex);
+    json_push_kv_str(result, "expected_root", expected_hex);
+    json_push_kv_bool(result, "roots_match", roots_match);
+    return true;
+}
+
 void register_blockchain_rpc_commands(struct rpc_table *t)
 {
     struct rpc_command cmds[] = {
@@ -2801,6 +2958,7 @@ void register_blockchain_rpc_commands(struct rpc_table *t)
         { "blockchain", "auditchain",          rpc_auditchain,            true },
         { "blockchain", "verifycheckpoint",    rpc_verifycheckpoint,      true },
         { "blockchain", "getdataintegrity",    rpc_getdataintegrity,      true },
+        { "blockchain", "rebuildsaplingtree", rpc_rebuildsaplingtree,    false },
     };
 
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++)

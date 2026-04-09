@@ -2896,6 +2896,230 @@ static size_t serve_events(uint8_t *r, size_t max)
     return off;
 }
 
+/* ── Names Page ──────────────────────────────────────────── */
+
+static size_t serve_names(uint8_t *r, size_t max)
+{
+    size_t off = 0;
+    char *response = (char *)r;
+
+    APPEND(off, response, max, EXPLORER_HEADER("ZCL Names — ZClassic23"));
+    off += explorer_emit_nav(response + off, max - off, "names");
+
+    APPEND(off, response, max,
+        "<div class='content'>"
+        "<h1>ZCL Names</h1>"
+        "<p style='color:#888'>On-chain name registry (ZNAM protocol). "
+        "Names map to .onion addresses, z-addresses, t-addresses, "
+        "and multi-coin records.</p>"
+        "<table class='block-table'>"
+        "<thead><tr>"
+        "<th>Name</th>"
+        "<th>Type</th>"
+        "<th>Target</th>"
+        "<th>Owner</th>"
+        "<th>Height</th>"
+        "</tr></thead>"
+        "<tbody id='names-body'><tr><td colspan='5' style='color:#555'>"
+        "Loading...</td></tr></tbody></table></div>"
+        "<script>"
+        "async function load(){"
+        "try{"
+        "const r=await fetch('/api/names');"
+        "const names=await r.json();"
+        "const tb=document.getElementById('names-body');"
+        "if(!names.length){tb.innerHTML='<tr><td colspan=5 style=\"color:#555\">"
+        "No names registered yet</td></tr>';return}"
+        "let h='';"
+        "for(const n of names){"
+        "h+='<tr><td style=\"color:#33ff99;font-weight:600\">'+n.name+'</td>"
+        "<td>'+n.type+'</td>"
+        "<td style=\"font-family:monospace;font-size:12px;word-break:break-all\">"
+        "'+n.value+'</td>"
+        "<td style=\"font-family:monospace;font-size:11px\">'+n.owner.slice(0,16)+'...</td>"
+        "<td>'+n.reg_height+'</td></tr>'}"
+        "tb.innerHTML=h"
+        "}catch(e){document.getElementById('names-body').innerHTML="
+        "'<tr><td colspan=5 style=\"color:#f66\">Error: '+e.message+'</td></tr>'}}"
+        "load()"
+        "</script>");
+
+    APPEND(off, response, max, EXPLORER_FOOTER);
+    return off;
+}
+
+/* ── Market Page ─────────────────────────────────────────── */
+
+static size_t serve_market(uint8_t *r, size_t max)
+{
+    size_t off = 0;
+    char *response = (char *)r;
+
+    APPEND(off, response, max, EXPLORER_HEADER("ZCL Market — ZClassic23"));
+    off += explorer_emit_nav(response + off, max - off, "market");
+
+    APPEND(off, response, max,
+        "<div class='content'>"
+        "<h1>ZCL Market</h1>"
+        "<p style='color:#888'>Decentralized file marketplace. "
+        "Seeders announce files, downloaders pay in shielded ZCL per chunk.</p>"
+        "<table class='block-table'>"
+        "<thead><tr>"
+        "<th>Filename</th>"
+        "<th>Size</th>"
+        "<th>Price/MB</th>"
+        "<th>Chunks</th>"
+        "<th>Last Seen</th>"
+        "</tr></thead>"
+        "<tbody id='market-body'><tr><td colspan='5' style='color:#555'>"
+        "Loading...</td></tr></tbody></table></div>"
+        "<script>"
+        "async function load(){"
+        "try{"
+        "const r=await fetch('/api/market');"
+        "const files=await r.json();"
+        "const tb=document.getElementById('market-body');"
+        "if(!files.length){tb.innerHTML='<tr><td colspan=5 style=\"color:#555\">"
+        "No files available</td></tr>';return}"
+        "let h='';"
+        "for(const f of files){"
+        "const sz=f.size_mb?f.size_mb.toFixed(1)+' MB':Math.round(f.size_bytes/1024)+' KB';"
+        "const pr=f.price_per_mb_zcl?f.price_per_mb_zcl.toFixed(4)+' ZCL':'free';"
+        "const t=f.last_seen?new Date(f.last_seen*1000).toLocaleString():'—';"
+        "h+='<tr><td style=\"color:#33ff99\">'+f.filename+'</td>"
+        "<td>'+sz+'</td><td>'+pr+'</td>"
+        "<td>'+f.num_chunks+'</td><td>'+t+'</td></tr>'}"
+        "tb.innerHTML=h"
+        "}catch(e){document.getElementById('market-body').innerHTML="
+        "'<tr><td colspan=5 style=\"color:#f66\">Error: '+e.message+'</td></tr>'}}"
+        "load();setInterval(load,10000)"
+        "</script>");
+
+    APPEND(off, response, max, EXPLORER_FOOTER);
+    return off;
+}
+
+/* ── Swaps Page ──────────────────────────────────────────── */
+
+static size_t serve_swaps(uint8_t *r, size_t max)
+{
+    size_t off = 0;
+    char *response = (char *)r;
+
+    APPEND(off, response, max, EXPLORER_HEADER("Atomic Swaps — ZClassic23"));
+    off += explorer_emit_nav(response + off, max - off, "swaps");
+
+    APPEND(off, response, max,
+        "<div class='content'>"
+        "<h1>Atomic Swaps</h1>"
+        "<p style='color:#888'>HTLC cross-chain contracts (dcrdex-compatible). "
+        "Supports ZCL, BTC, LTC, DOGE.</p>"
+        "<div style='margin:10px 0'>"
+        "<span id='chains' style='color:#555'>Loading chains...</span></div>"
+        "<table class='block-table'>"
+        "<thead><tr>"
+        "<th>Swap ID</th>"
+        "<th>Chain</th>"
+        "<th>Role</th>"
+        "<th>State</th>"
+        "<th>Amount</th>"
+        "<th>Locktime</th>"
+        "<th>P2SH Address</th>"
+        "</tr></thead>"
+        "<tbody id='swaps-body'><tr><td colspan='7' style='color:#555'>"
+        "Loading...</td></tr></tbody></table></div>"
+        "<script>"
+        "async function load(){"
+        "try{"
+        "const[sr,cr]=await Promise.all(["
+        "fetch('/api/swaps'),fetch('/api/swap_chains')]);"
+        "const swaps=await sr.json();"
+        "const chains=await cr.json();"
+        "document.getElementById('chains').innerHTML="
+        "'Supported: '+chains.map(c=>"
+        "'<span style=\"color:#33ff99;margin-right:8px\">'+c.ticker+'</span>').join('');"
+        "const tb=document.getElementById('swaps-body');"
+        "if(!swaps.length){tb.innerHTML='<tr><td colspan=7 style=\"color:#555\">"
+        "No swaps yet</td></tr>';return}"
+        "let h='';"
+        "for(const s of swaps){"
+        "const st=s.state==='pending'?'color:#ffd93d':s.state==='funded'?'color:#6bcb77':"
+        "s.state==='redeemed'?'color:#33ff99':'color:#888';"
+        "h+='<tr><td style=\"font-family:monospace;font-size:11px\">"
+        "'+s.swap_id.slice(0,12)+'...</td>"
+        "<td style=\"font-weight:600\">'+s.chain+'</td>"
+        "<td>'+s.role+'</td>"
+        "<td style=\"'+st+'\">'+s.state+'</td>"
+        "<td>'+s.amount+' '+s.chain+'</td>"
+        "<td>'+s.locktime+' blocks</td>"
+        "<td style=\"font-family:monospace;font-size:11px\">"
+        "'+s.p2sh_address.slice(0,16)+'...</td></tr>'}"
+        "tb.innerHTML=h"
+        "}catch(e){document.getElementById('swaps-body').innerHTML="
+        "'<tr><td colspan=7 style=\"color:#f66\">Error: '+e.message+'</td></tr>'}}"
+        "load()"
+        "</script>");
+
+    APPEND(off, response, max, EXPLORER_FOOTER);
+    return off;
+}
+
+/* ── Messages Page ───────────────────────────────────────── */
+
+static size_t serve_messages(uint8_t *r, size_t max)
+{
+    size_t off = 0;
+    char *response = (char *)r;
+
+    APPEND(off, response, max, EXPLORER_HEADER("Messages — ZClassic23"));
+    off += explorer_emit_nav(response + off, max - off, NULL);
+
+    APPEND(off, response, max,
+        "<div class='content'>"
+        "<h1>Messages</h1>"
+        "<p style='color:#888'>P2P encrypted messaging (ZMSG protocol). "
+        "Send messages to peers by ID or by ZCL Name.</p>"
+        "<table class='block-table'>"
+        "<thead><tr>"
+        "<th>Direction</th>"
+        "<th>Channel</th>"
+        "<th>From/To</th>"
+        "<th>Message</th>"
+        "<th>Time</th>"
+        "</tr></thead>"
+        "<tbody id='msg-body'><tr><td colspan='5' style='color:#555'>"
+        "Loading...</td></tr></tbody></table></div>"
+        "<script>"
+        "async function load(){"
+        "try{"
+        "const r=await fetch('/api/messages');"
+        "const msgs=await r.json();"
+        "const tb=document.getElementById('msg-body');"
+        "if(!msgs.length){tb.innerHTML='<tr><td colspan=5 style=\"color:#555\">"
+        "No messages yet</td></tr>';return}"
+        "let h='';"
+        "for(const m of msgs){"
+        "const dir=m.direction==='outbound'?"
+        "'<span style=\"color:#4d96ff\">&#x2191; sent</span>':"
+        "'<span style=\"color:#6bcb77\">&#x2193; received</span>';"
+        "const who=m.direction==='outbound'?m.recipient:m.sender;"
+        "const body=m.body.length>80?m.body.slice(0,80)+'...':m.body;"
+        "const t=new Date(m.timestamp*1000).toLocaleString();"
+        "h+='<tr><td>'+dir+'</td>"
+        "<td>'+m.channel+'</td>"
+        "<td style=\"font-size:12px\">'+who+'</td>"
+        "<td>'+body+'</td>"
+        "<td style=\"font-size:12px;color:#888\">'+t+'</td></tr>'}"
+        "tb.innerHTML=h"
+        "}catch(e){document.getElementById('msg-body').innerHTML="
+        "'<tr><td colspan=5 style=\"color:#f66\">Error: '+e.message+'</td></tr>'}}"
+        "load();setInterval(load,5000)"
+        "</script>");
+
+    APPEND(off, response, max, EXPLORER_FOOTER);
+    return off;
+}
+
 /* ── Main Request Handler ─────────────────────────────────── */
 
 size_t explorer_handle_request(const char *method, const char *path,
@@ -2963,6 +3187,18 @@ size_t explorer_handle_request(const char *method, const char *path,
 
     if (strcmp(path, "/explorer/factoids") == 0 || strcmp(path, "/explorer/factoids/") == 0)
         return serve_factoids(response, response_max);
+
+    if (strcmp(path, "/explorer/names") == 0 || strcmp(path, "/explorer/names/") == 0)
+        return serve_names(response, response_max);
+
+    if (strcmp(path, "/explorer/market") == 0 || strcmp(path, "/explorer/market/") == 0)
+        return serve_market(response, response_max);
+
+    if (strcmp(path, "/explorer/swaps") == 0 || strcmp(path, "/explorer/swaps/") == 0)
+        return serve_swaps(response, response_max);
+
+    if (strcmp(path, "/explorer/messages") == 0 || strcmp(path, "/explorer/messages/") == 0)
+        return serve_messages(response, response_max);
 
     if (strncmp(path, "/explorer/block/", 16) == 0)
         return serve_block(path + 16, response, response_max);

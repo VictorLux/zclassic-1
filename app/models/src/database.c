@@ -1198,6 +1198,135 @@ int node_db_migrate(struct node_db *ndb, const char *datadir)
         applied++;
     }
 
+    if (current_ver < 15) {
+        /* v15: ZCL Market — file offers for crypto-incentivized sharing */
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS file_offers ("
+            "root_hash BLOB NOT NULL PRIMARY KEY,"
+            "filename TEXT NOT NULL,"
+            "size_bytes INTEGER NOT NULL,"
+            "num_chunks INTEGER NOT NULL,"
+            "price_per_mb INTEGER NOT NULL,"
+            "z_addr BLOB,"
+            "peer_ip BLOB,"
+            "peer_port INTEGER,"
+            "last_seen INTEGER,"
+            "ttl INTEGER DEFAULT 4)");
+
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_file_offers_last_seen "
+            "ON file_offers(last_seen DESC)");
+
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('015')");
+        int32_t v = 15;
+        node_db_state_set(ndb, "schema_version", &v, sizeof(v));
+        current_ver = 15;
+        applied++;
+    }
+
+    if (current_ver < 16) {
+        /* v16: ZCL Names (ZNAM) — on-chain name registry */
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS znam_names ("
+            "name TEXT PRIMARY KEY,"
+            "owner_address TEXT NOT NULL,"
+            "target_type INTEGER NOT NULL,"
+            "target_value TEXT NOT NULL,"
+            "reg_txid BLOB NOT NULL,"
+            "reg_height INTEGER NOT NULL,"
+            "last_update_txid BLOB NOT NULL)");
+
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_znam_owner "
+            "ON znam_names(owner_address)");
+
+        /* ENS-inspired text records (TextResolver) */
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS znam_text_records ("
+            "name TEXT NOT NULL,"
+            "key TEXT NOT NULL,"
+            "value TEXT,"
+            "PRIMARY KEY(name, key))");
+
+        /* ENS-inspired multi-coin address records (AddrResolver) */
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS znam_addr_records ("
+            "name TEXT NOT NULL,"
+            "coin_type INTEGER NOT NULL,"
+            "address TEXT NOT NULL,"
+            "PRIMARY KEY(name, coin_type))");
+
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('016')");
+        int32_t v = 16;
+        node_db_state_set(ndb, "schema_version", &v, sizeof(v));
+        current_ver = 16;
+        applied++;
+    }
+
+    if (current_ver < 17) {
+        /* v17: ZCL Messaging (ZMSG) — encrypted P2P messages */
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS zmsg_messages ("
+            "msg_id BLOB PRIMARY KEY,"
+            "direction INTEGER NOT NULL,"
+            "channel INTEGER NOT NULL,"
+            "sender TEXT NOT NULL,"
+            "recipient TEXT NOT NULL,"
+            "body TEXT NOT NULL,"
+            "timestamp INTEGER NOT NULL,"
+            "txid BLOB,"
+            "read INTEGER NOT NULL DEFAULT 0)");
+
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_zmsg_time "
+            "ON zmsg_messages(timestamp DESC)");
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_zmsg_unread "
+            "ON zmsg_messages(read) WHERE read=0");
+
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('017')");
+        int32_t v = 17;
+        node_db_state_set(ndb, "schema_version", &v, sizeof(v));
+        current_ver = 17;
+        applied++;
+    }
+
+    if (current_ver < 18) {
+        /* v18: Atomic swaps (ZSWP) — HTLC contracts for BTC/LTC/DOGE */
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS zswp_contracts ("
+            "swap_id TEXT PRIMARY KEY,"
+            "role INTEGER NOT NULL,"
+            "state INTEGER NOT NULL,"
+            "chain INTEGER NOT NULL DEFAULT 0,"
+            "secret_hash BLOB NOT NULL,"
+            "secret BLOB,"
+            "amount INTEGER NOT NULL,"
+            "locktime INTEGER NOT NULL,"
+            "my_address TEXT NOT NULL,"
+            "counter_address TEXT NOT NULL,"
+            "funding_txid BLOB,"
+            "funding_vout INTEGER,"
+            "redeem_script BLOB NOT NULL,"
+            "redeem_script_len INTEGER NOT NULL,"
+            "p2sh_address TEXT NOT NULL,"
+            "created_at INTEGER NOT NULL)");
+
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_zswp_state "
+            "ON zswp_contracts(state)");
+
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('018')");
+        int32_t v = 18;
+        node_db_state_set(ndb, "schema_version", &v, sizeof(v));
+        current_ver = 18;
+        applied++;
+    }
+
     if (applied > 0)
         printf("db: applied %d migration(s), now at version %d\n",
                applied, node_db_schema_version(ndb));

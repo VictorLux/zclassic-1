@@ -12,6 +12,12 @@
 #include "services/snapshot_sync_service.h"
 #include "services/zslp_service.h"
 #include "controllers/blockchain_controller.h"
+#include "controllers/game_controller.h"
+#include "controllers/name_controller.h"
+#include "controllers/file_market_controller.h"
+#include "controllers/swap_controller.h"
+#include "controllers/messaging_controller.h"
+#include "controllers/health_controller.h"
 #include "services/node_health_service.h"
 #include "chain/mmb.h"
 #include "config/boot.h"
@@ -20,6 +26,8 @@
 #include "event/event.h"
 #include "net/download.h"
 #include "validation/contextual_check_tx.h"
+#include "validation/main_state.h"
+#include "sapling/incremental_merkle_tree.h"
 #include "keys/key_io.h"
 #include "models/database.h"
 #include "models/block.h"
@@ -1886,7 +1894,7 @@ size_t api_handle_request(const char *method, const char *path,
             mb ? mb->num_mountains : 0);
     }
 
-    /* Route: /api/node/status — comprehensive diagnostics */
+    /* Route: /api/node/status — comprehensive one-stop diagnostics */
     if (strcmp(clean_path, "/api/node/status") == 0) {
         enum sync_state ss = sync_get_state();
         bool snap_init = false;
@@ -1899,32 +1907,169 @@ size_t api_handle_request(const char *method, const char *path,
         if (snap_init) snapsync_get_status_snapshot(svc, &snap_status);
         if (snap_init) snapsync_get_progress(svc, &snap_received, &snap_total, &snap_rate);
 
-        char body[2048];
-        snprintf(body, sizeof(body),
+        /* Collect health for peer/network data */
+        struct node_health_snapshot health;
+        node_health_collect(&health, g_api_ctx.node_db ?
+            g_api_ctx.node_db : app_runtime_node_db(),
+            g_api_ctx.main_state);
+
+        /* Chain tip info */
+        char tip_hash_hex[65] = "null";
+        char sapling_root_hex[65] = "null";
+        char best_header_hex[65] = "null";
+        int tip_height = -1;
+        int header_height = -1;
+        int64_t tip_time = 0;
+        size_t sapling_tree_size = 0;
+
+        struct main_state *ms = g_api_ctx.main_state;
+        if (ms) {
+            const struct block_index *tip =
+                active_chain_tip(&ms->chain_active);
+            if (tip) {
+                tip_height = tip->nHeight;
+                tip_time = (int64_t)tip->nTime;
+                if (tip->phashBlock) {
+                    uint256_get_hex(tip->phashBlock, tip_hash_hex);
+                }
+                uint256_get_hex(&tip->hashFinalSaplingRoot, sapling_root_hex);
+            }
+            if (ms->pindex_best_header) {
+                header_height = ms->pindex_best_header->nHeight;
+                if (ms->pindex_best_header->phashBlock)
+                    uint256_get_hex(ms->pindex_best_header->phashBlock,
+                                    best_header_hex);
+            }
+        }
+        /* Read current sapling tree from node_state (authoritative source,
+         * updated by sync_controller on every block connection). */
+        char sapling_tree_root_hex[65] = "null";
+        {
+            struct node_db *ndb = g_api_ctx.node_db ?
+                g_api_ctx.node_db : app_runtime_node_db();
+            if (ndb && ndb->db) {
+                uint8_t tree_buf[8192];
+                size_t tree_len = 0;
+                if (node_db_state_get(ndb, "sapling_tree",
+                        tree_buf, sizeof(tree_buf), &tree_len)
+                    && tree_len > 0) {
+                    struct incremental_merkle_tree api_tree;
+                    sapling_tree_init(&api_tree);
+                    struct byte_stream tbs;
+                    stream_init_from_data(&tbs, tree_buf, tree_len);
+                    if (incremental_tree_deserialize(&api_tree, &tbs)) {
+                        sapling_tree_size = incremental_tree_size(&api_tree);
+                        if (sapling_tree_size > 0) {
+                            struct uint256 tree_root;
+                            incremental_tree_root(&api_tree, &tree_root);
+                            uint256_get_hex(&tree_root,
+                                            sapling_tree_root_hex);
+                        }
+                    }
+                }
+            }
+        }
+
+        /* Recent errors (up to last 8) */
+        char errors_json[2048];
+        size_t elen = error_ring_dump_json(er, errors_json, sizeof(errors_json));
+        if (elen == 0) {
+            errors_json[0] = '['; errors_json[1] = ']'; errors_json[2] = '\0';
+        }
+
+        /* Download stats */
+        struct download_manager *dm = msg_get_download_mgr();
+        uint64_t dl_req = 0, dl_recv = 0, dl_tout = 0, dl_inflight = 0, dl_queued = 0;
+        dl_get_stats(dm, &dl_req, &dl_recv, &dl_tout, &dl_inflight, &dl_queued);
+
+        char *body = malloc(8192);
+        if (!body)
+            return json_error(response, response_max, JSON_500_HEADERS, "OOM");
+
+        snprintf(body, 8192,
             "{"
             "\"sync\":{\"state\":\"%s\","
               "\"replay_active\":%s,\"replay_height\":%d},"
+            "\"chain\":{"
+              "\"tip_height\":%d,"
+              "\"tip_hash\":\"%s\","
+              "\"tip_time\":%lld,"
+              "\"header_height\":%d,"
+              "\"best_header_hash\":\"%s\","
+              "\"peer_best_height\":%d,"
+              "\"tip_lag\":%d,"
+              "\"blocks_behind\":%d"
+            "},"
+            "\"sapling\":{"
+              "\"tree_size\":%zu,"
+              "\"tree_root\":\"%s\","
+              "\"header_root\":\"%s\","
+              "\"roots_match\":%s"
+            "},"
+            "\"network\":{"
+              "\"peer_count\":%zu,"
+              "\"tip_stale\":%s,"
+              "\"tip_stale_seconds\":%lld"
+            "},"
+            "\"download\":{"
+              "\"requested\":%llu,\"received\":%llu,"
+              "\"timed_out\":%llu,\"in_flight\":%llu,\"queued\":%llu"
+            "},"
             "\"snapshot\":{\"state\":\"%s\","
-              "\"received\":%llu,\"total\":%llu},"
+              "\"received\":%llu,\"total\":%llu,\"rate\":%.0f},"
             "\"mmb\":{\"leaves\":%llu,\"peaks\":%u},"
-            "\"errors\":{\"total\":%d}"
+            "\"database\":{"
+              "\"wal_size_bytes\":%lld,"
+              "\"utxo_count\":%lld"
+            "},"
+            "\"errors\":{\"total\":%d,\"recent\":%s},"
+            "\"assume_valid_height\":%d,"
+            "\"uptime_seconds\":%lld"
             "}",
             sync_state_name(ss),
             atomic_load(&g_utxo_replay_active) ? "true" : "false",
             atomic_load(&g_utxo_replay_height),
+            tip_height,
+            tip_hash_hex,
+            (long long)tip_time,
+            header_height,
+            best_header_hex,
+            health.peer_best_height,
+            health.tip_lag,
+            health.peer_best_height > tip_height ?
+                health.peer_best_height - tip_height : 0,
+            sapling_tree_size,
+            sapling_tree_root_hex,
+            sapling_root_hex,
+            (sapling_tree_size > 0 &&
+             strcmp(sapling_tree_root_hex, sapling_root_hex) == 0) ?
+                "true" : "false",
+            health.peer_count,
+            health.tip_stale ? "true" : "false",
+            (long long)health.tip_stale_seconds,
+            (unsigned long long)dl_req, (unsigned long long)dl_recv,
+            (unsigned long long)dl_tout, (unsigned long long)dl_inflight,
+            (unsigned long long)dl_queued,
             snap_init ? snapsync_state_name(snap_status.state) : "not_initialized",
             (unsigned long long)(snap_init ? snap_received : 0),
-            (unsigned long long)(snap_init ? snap_status.offered_count : 0),
+            (unsigned long long)(snap_init ? snap_total : 0),
+            snap_rate,
             (unsigned long long)(mb ? mb->num_leaves : 0),
             mb ? mb->num_mountains : 0,
-            error_ring_total(er));
+            (long long)health.wal_size_bytes,
+            (long long)health.utxo_count,
+            error_ring_total(er), errors_json,
+            g_assume_valid_height,
+            (long long)health.uptime_seconds);
 
-        return (size_t)snprintf((char *)response, response_max,
+        size_t n = (size_t)snprintf((char *)response, response_max,
             "HTTP/1.1 200 OK\r\n"
             "Content-Type: application/json\r\n"
             "Access-Control-Allow-Origin: *\r\n"
             "Cache-Control: no-cache\r\n"
             "Connection: close\r\n\r\n%s", body);
+        free(body);
+        return n;
     }
 
     /* Wallet data — balance, address, activity */
@@ -2128,6 +2273,44 @@ size_t api_handle_request(const char *method, const char *path,
         free(data);
         return off + data_size < response_max ? off + data_size : response_max;
     }
+
+    /* ── P2P Services Platform REST API ─────────────────────── */
+
+    /* Helper: call an API function and return its JSON as HTTP response */
+    #define API_JSON_ROUTE(path_str, api_fn) \
+    if (strcmp(clean_path, path_str) == 0) { \
+        struct json_value jr = {0}; \
+        if (api_fn(&jr)) { \
+            char body[16384]; \
+            size_t blen = json_write(&jr, body, sizeof(body)); \
+            json_free(&jr); \
+            size_t off = (size_t)snprintf((char *)response, response_max, \
+                "HTTP/1.1 200 OK\r\n" \
+                "Content-Type: application/json\r\n" \
+                "Access-Control-Allow-Origin: *\r\n" \
+                "Cache-Control: no-cache\r\n" \
+                "Connection: close\r\n" \
+                "Content-Length: %zu\r\n\r\n", blen); \
+            if (off + blen <= response_max) \
+                memcpy(response + off, body, blen); \
+            return off + blen < response_max ? off + blen : response_max; \
+        } \
+        json_free(&jr); \
+        return json_error(response, response_max, JSON_500_HEADERS, \
+                          "Internal error"); \
+    }
+
+    API_JSON_ROUTE("/api/sync/detail", api_getsyncdetail)
+    API_JSON_ROUTE("/api/services",    api_getservicehealth)
+    API_JSON_ROUTE("/api/latency",     api_getpeerlatency)
+    API_JSON_ROUTE("/api/games",       api_gametypes)
+    API_JSON_ROUTE("/api/names",       api_name_list)
+    API_JSON_ROUTE("/api/market",      api_market_list)
+    API_JSON_ROUTE("/api/swaps",       api_swap_list)
+    API_JSON_ROUTE("/api/swap_chains", api_swap_chains)
+    API_JSON_ROUTE("/api/messages",    api_msg_inbox)
+
+    #undef API_JSON_ROUTE
 
     return json_error(response, response_max, JSON_404_HEADERS,
                       "Unknown API endpoint");

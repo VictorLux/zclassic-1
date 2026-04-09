@@ -15,7 +15,7 @@ CONFIG_SRCS = $(wildcard config/src/*.c)
 # Library layer
 LIB_MODULES = bloom chain coins consensus core crypto encoding event json \
 	keys metrics mining net policy primitives rpc script storage \
-	support util validation wallet sapling zslp
+	support util validation wallet sapling zslp znam
 LIB_INCLUDES = $(foreach m,$(LIB_MODULES),-Ilib/$(m)/include)
 LIB_SRCS = $(foreach m,$(LIB_MODULES),$(wildcard lib/$(m)/src/*.c))
 
@@ -49,8 +49,7 @@ TOR_LIBS = $(if $(TOR_FULL),$(TOR_FULL),-Lvendor/lib -ltor_stub)
 LIBS = -Lvendor/lib -lsecp256k1 -lleveldb \
 	-lstdc++ -lm -lsqlite3 -ldl -lpthread \
 	-levent -levent_openssl -levent_pthreads \
-	-lssl -lcrypto -lz \
-	-Wl,--allow-multiple-definition
+	-lssl -lcrypto -lz
 
 .PHONY: all test clean deploy check-restart-follow
 
@@ -116,7 +115,7 @@ check-wallet: wallet_check
 spec: spec_zcl
 	ulimit -s unlimited && ./spec_zcl
 
-zclassic23: $(TMPL_GEN) main.c $(ALL_SRCS)
+zclassic23: $(TMPL_GEN) main.c tools/mcp_server.c $(ALL_SRCS)
 	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o $@ $(filter-out $(TMPL_GEN),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)
 
 zclassic-cli: cli.c $(CLI_SRCS)
@@ -155,6 +154,13 @@ explorer-css: app/views/src/explorer_css.css
 
 test: test_zcl
 	ulimit -s unlimited && ./test_zcl
+
+.PHONY: bench-sync
+bench-sync: zclassic23 bench_fresh_sync
+	./bench_fresh_sync
+
+bench_fresh_sync: tools/bench_fresh_sync.c
+	$(CC) -O2 -o $@ $<
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<

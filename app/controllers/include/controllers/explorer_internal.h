@@ -50,6 +50,9 @@ static inline size_t explorer_emit_nav(char *buf, size_t max, const char *active
         { "/explorer/tokens",   "Tokens",    "tokens"   },
         { "/explorer/events",   "Events",    "events"   },
         { "/explorer/factoids", "Factoids",  "factoids" },
+        { "/explorer/names",    "Names",     "names"    },
+        { "/explorer/market",   "Market",    "market"   },
+        { "/explorer/swaps",    "Swaps",     "swaps"    },
     };
     size_t off = 0;
     APPEND(off, buf, max, "<nav class='nav'>");
@@ -78,6 +81,9 @@ static inline size_t explorer_emit_nav(char *buf, size_t max, const char *active
     "<a href='/explorer/tokens'>Tokens</a>" \
     "<a href='/explorer/events'>Events</a>" \
     "<a href='/explorer/factoids'>Factoids</a>" \
+    "<a href='/explorer/names'>Names</a>" \
+    "<a href='/explorer/market'>Market</a>" \
+    "<a href='/explorer/swaps'>Swaps</a>" \
     "<div class='search'>" \
     "<form action='/explorer/search' method='get'>" \
     "<input name='q' placeholder='Search block, tx, or address...'>" \
@@ -93,9 +99,19 @@ static inline int64_t sql_query_i64(sqlite3 *db, const char *sql)
 {
     int64_t val = 0;
     sqlite3_stmt *s = NULL;
-    if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
-        if (sqlite3_step(s) == SQLITE_ROW)
+    int rc = sqlite3_prepare_v2(db, sql, -1, &s, NULL);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "sql_query_i64: prepare failed (%d): %s [%s]\n",
+                rc, sqlite3_errmsg(db), sql);
+        return -1;
+    }
+    if (s) {
+        rc = sqlite3_step(s);
+        if (rc == SQLITE_ROW)
             val = sqlite3_column_int64(s, 0);
+        else if (rc != SQLITE_DONE)
+            fprintf(stderr, "sql_query_i64: step failed (%d): %s [%s]\n",
+                    rc, sqlite3_errmsg(db), sql);
         sqlite3_finalize(s);
     }
     return val;
@@ -242,7 +258,9 @@ static inline void explorer_query_privacy_stats(sqlite3 *db,
     out->joinsplits = sql_query_i64(db, "SELECT count(*) FROM joinsplits");
     out->sapling_spends = sql_query_i64(db, "SELECT count(*) FROM sapling_spends");
     out->sapling_outputs = sql_query_i64(db, "SELECT count(*) FROM sapling_outputs");
-    out->net_shielded_sat = sql_query_i64(db, "SELECT COALESCE(SUM(sapling_value), 0) FROM blocks");
+    /* Negate: negative sapling_value = shielding (value entering pool),
+       so pool balance = -SUM(sapling_value) */
+    out->net_shielded_sat = -sql_query_i64(db, "SELECT COALESCE(SUM(sapling_value), 0) FROM blocks");
 }
 
 static inline void explorer_query_utxo_stats(sqlite3 *db,

@@ -11,7 +11,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define NODE_DB_SCHEMA_LATEST 14
+#define NODE_DB_SCHEMA_LATEST 18
 
 struct node_db_status {
     bool open;

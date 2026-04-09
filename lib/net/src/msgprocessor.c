@@ -6,6 +6,9 @@
 
 #include "net/msgprocessor.h"
 #include "net/addrman.h"
+#include "storage/disk_block_io.h"
+#include <signal.h>
+extern volatile sig_atomic_t g_shutdown_requested;
 #include "net/file_service.h"
 #include "models/peer.h"
 #include "models/block.h"
@@ -418,6 +421,17 @@ static void block_mark_seen(const struct uint256 *hash) {
     g_recent_block_count++;
 }
 
+static void block_clear_seen(const struct uint256 *hash) {
+    int limit = g_recent_block_count < MAX_RECENT_BLOCKS
+                ? g_recent_block_count : MAX_RECENT_BLOCKS;
+    for (int i = 0; i < limit; i++) {
+        if (uint256_eq(hash, &g_recent_blocks[i])) {
+            memset(&g_recent_blocks[i], 0, sizeof(struct uint256));
+            return;
+        }
+    }
+}
+
 static bool tx_already_seen(const struct uint256 *hash) {
     int limit = g_recent_tx_count < MAX_RECENT_TXS
                 ? g_recent_tx_count : MAX_RECENT_TXS;
@@ -479,6 +493,9 @@ bool msgprocessor_test_should_ignore_snapshot_offer(
     enum sync_state sync_state) {
     return msg_should_ignore_snapshot_offer(snapsync_state, serving_peer_id,
                                             peer_state, peer_id, sync_state);
+}
+void msgprocessor_block_clear_seen(const struct uint256 *hash) {
+    block_clear_seen(hash);
 }
 void msgprocessor_test_reset_recent_blocks(void) {
     g_recent_block_count = 0;
@@ -1067,8 +1084,20 @@ static bool process_getheaders(struct msg_processor *mp, struct p2p_node *node,
         hdr.nTime = iter->nTime;
         hdr.nBits = iter->nBits;
         hdr.nNonce = iter->nNonce;
-        memcpy(hdr.nSolution, iter->nSolution, iter->nSolutionSize);
-        hdr.nSolutionSize = iter->nSolutionSize;
+        if (iter->nSolution && iter->nSolutionSize > 0) {
+            memcpy(hdr.nSolution, iter->nSolution, iter->nSolutionSize);
+            hdr.nSolutionSize = iter->nSolutionSize;
+        } else {
+            /* Solution not in memory — read from disk */
+            struct block blk_tmp;
+            if (read_block_from_disk_index(&blk_tmp, iter, mp->datadir)) {
+                memcpy(hdr.nSolution, blk_tmp.header.nSolution, blk_tmp.header.nSolutionSize);
+                hdr.nSolutionSize = blk_tmp.header.nSolutionSize;
+                block_free(&blk_tmp);
+            } else {
+                hdr.nSolutionSize = 0;
+            }
+        }
 
         block_header_serialize(&hdr, &headers);
         stream_write_compact_size(&headers, 0);
@@ -1122,12 +1151,22 @@ static bool process_inv(struct msg_processor *mp, struct p2p_node *node,
                 &mp->main_state->map_block_index, &inv.hash);
             struct block_index *tip = active_chain_tip(
                 &mp->main_state->chain_active);
-            /* Only request blocks via inv if we're close to the tip;
-             * during IBD, rely on headers-first sync. */
-            bool in_ibd = !tip || (node->starting_height > 0 &&
-                          tip->nHeight < node->starting_height - 1000);
+            /* Match ZClassic C++ IsInitialBlockDownload + inv handling:
+             * Request blocks directly when our tip is recent (within
+             * PoWTargetSpacing*20 = 75*20 = 1500s of now). During IBD,
+             * rely on headers-first sync instead.
+             *
+             * Old logic used node->starting_height - 1000 which kept
+             * the node in headers-only mode too long after catchup. */
+            bool in_ibd = !tip || !tip->nTime ||
+                          ((int64_t)tip->nTime <
+                           (int64_t)time(NULL) - 75 * 20);
             bool need_data = !bi || !(bi->nStatus & BLOCK_HAVE_DATA);
             if (need_data && !in_ibd) {
+                /* ZClassic C++: send getheaders FIRST, then getdata.
+                 * Headers arrive before (or with) the block, preventing
+                 * orphan rejection if the block's parent is unknown. */
+                push_getheaders_from(mp, node, tip);
                 inv_item_serialize(&inv, &getdata);
                 request_count++;
             } else if (need_data && in_ibd) {
@@ -1344,7 +1383,8 @@ static bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
                                      new_tip->nHeight,
                                      mp->main_state->pindex_best_header
                                          ? mp->main_state->pindex_best_header->nHeight
-                                         : new_tip->nHeight);
+                                         : new_tip->nHeight,
+                                     new_tip->nTime);
             event_emitf(EV_BLOCK_CONNECTED, (uint32_t)node->id,
                         "h=%d", new_tip->nHeight);
 
@@ -1406,19 +1446,57 @@ static bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
 
             /* Relay accepted block to all connected peers (not during IBD).
              * At the tip, we act as a full relay node. During IBD, relaying
-             * would flood peers with old blocks they already have. */
+             * would flood peers with old blocks they already have.
+             * BIP 130: peers that sent "sendheaders" get a direct headers
+             * message (saves an inv→getheaders round-trip at the tip). */
             if (sync_get_state() == SYNC_AT_TIP && new_tip->phashBlock) {
                 struct inv_item blk_inv;
                 inv_item_init_typed(&blk_inv, MSG_BLOCK, new_tip->phashBlock);
-                /* Push to all peers except the one who sent it */
                 if (mp->net_mgr) {
                     zcl_mutex_lock(&mp->net_mgr->cs_nodes);
                     for (size_t pi = 0; pi < mp->net_mgr->num_nodes; pi++) {
                         struct p2p_node *peer = mp->net_mgr->nodes[pi];
                         if (peer->id != node->id &&
                             peer->state >= PEER_HANDSHAKE_COMPLETE &&
-                            !peer->disconnect)
-                            p2p_node_push_inventory(peer, &blk_inv);
+                            !peer->disconnect) {
+                            if (peer->prefer_headers) {
+                                /* BIP 130: send headers directly */
+                                struct block_header hdr;
+                                block_header_init(&hdr);
+                                hdr.nVersion = new_tip->nVersion;
+                                if (new_tip->pprev && new_tip->pprev->phashBlock)
+                                    hdr.hashPrevBlock = *new_tip->pprev->phashBlock;
+                                hdr.hashMerkleRoot = new_tip->hashMerkleRoot;
+                                hdr.hashFinalSaplingRoot = new_tip->hashFinalSaplingRoot;
+                                hdr.nTime = new_tip->nTime;
+                                hdr.nBits = new_tip->nBits;
+                                hdr.nNonce = new_tip->nNonce;
+                                if (new_tip->nSolution && new_tip->nSolutionSize > 0) {
+                                    memcpy(hdr.nSolution, new_tip->nSolution, new_tip->nSolutionSize);
+                                    hdr.nSolutionSize = new_tip->nSolutionSize;
+                                } else {
+                                    struct block blk_tip;
+                                    if (read_block_from_disk_index(&blk_tip, new_tip, mp->datadir)) {
+                                        memcpy(hdr.nSolution, blk_tip.header.nSolution, blk_tip.header.nSolutionSize);
+                                        hdr.nSolutionSize = blk_tip.header.nSolutionSize;
+                                        block_free(&blk_tip);
+                                    }
+                                }
+
+                                struct byte_stream hs;
+                                stream_init(&hs, 2048);
+                                stream_write_compact_size(&hs, 1);
+                                block_header_serialize(&hdr, &hs);
+                                stream_write_compact_size(&hs, 0); /* tx count */
+                                p2p_node_begin_message(peer, "headers",
+                                                       mp->params->pchMessageStart);
+                                p2p_node_write_message_data(peer, hs.data, hs.size);
+                                p2p_node_end_message(peer);
+                                stream_free(&hs);
+                            } else {
+                                p2p_node_push_inventory(peer, &blk_inv);
+                            }
+                        }
                     }
                     zcl_mutex_unlock(&mp->net_mgr->cs_nodes);
                 }
@@ -1654,6 +1732,15 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                        node->starting_height);
         }
 
+        /* Update pindex_best_header if we received headers ahead of it.
+         * Without this, the node's view of "how far ahead peers are"
+         * stays stale after catching up, breaking sync progress tracking
+         * and periodic getheaders decisions. */
+        if (pindex_last &&
+            (!mp->main_state->pindex_best_header ||
+             pindex_last->nHeight > mp->main_state->pindex_best_header->nHeight))
+            mp->main_state->pindex_best_header = pindex_last;
+
         /* One-shot block file scan: if block files exist on disk (from
          * file_service) but weren't scanned at boot (empty index at boot),
          * scan them now that we have headers. This marks downloaded blocks
@@ -1668,7 +1755,7 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                     mp->main_state, mp->datadir, mp->params);
                 struct sync_chain_activation activation = {0};
                 syncsvc_build_block_file_scan_activation(&activation, scan_m);
-                if (activation.should_activate) {
+                if (activation.should_activate && !g_shutdown_requested) {
                     printf("P2P block file scan: %d blocks marked\n", scan_m);
                     struct validation_state vs;
                     validation_state_init(&vs);
@@ -1699,7 +1786,7 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                 struct sync_chain_activation activation = {0};
                 syncsvc_build_header_processing_activation(&activation,
                                                           &header_plan);
-                if (activation.should_activate) {
+                if (activation.should_activate && !g_shutdown_requested) {
                 /* All blocks already have data — trigger chain activation.
                  * This happens after restart: blocks on disk from before,
                  * headers re-received, but activate_best_chain only runs
@@ -1825,6 +1912,497 @@ static bool process_notfound(struct p2p_node *node, struct byte_stream *s)
     return true;
 }
 
+/* ── Dispatch table handler wrappers ──────────────────────────────
+ * Standard handlers have varying signatures; these thin wrappers
+ * adapt them to the uniform (mp, node, s) dispatch signature. */
+
+static bool handle_version(struct msg_processor *mp, struct p2p_node *node,
+                           struct byte_stream *s)
+{
+    return process_version(mp, node, s);
+}
+
+static bool handle_verack(struct msg_processor *mp, struct p2p_node *node,
+                          struct byte_stream *s)
+{
+    (void)s;
+    return process_verack(mp, node);
+}
+
+static bool handle_ping(struct msg_processor *mp, struct p2p_node *node,
+                        struct byte_stream *s)
+{
+    return process_ping(mp, node, s);
+}
+
+static bool handle_pong(struct msg_processor *mp, struct p2p_node *node,
+                        struct byte_stream *s)
+{
+    (void)mp;
+    return process_pong(node, s);
+}
+
+static bool handle_addr(struct msg_processor *mp, struct p2p_node *node,
+                        struct byte_stream *s)
+{
+    return process_addr(mp, node, s);
+}
+
+static bool handle_inv(struct msg_processor *mp, struct p2p_node *node,
+                       struct byte_stream *s)
+{
+    return process_inv(mp, node, s);
+}
+
+static bool handle_getdata(struct msg_processor *mp, struct p2p_node *node,
+                           struct byte_stream *s)
+{
+    return process_getdata(mp, node, s);
+}
+
+static bool handle_getblocks(struct msg_processor *mp, struct p2p_node *node,
+                             struct byte_stream *s)
+{
+    return process_getblocks(mp, node, s);
+}
+
+static bool handle_getheaders(struct msg_processor *mp, struct p2p_node *node,
+                              struct byte_stream *s)
+{
+    return process_getheaders(mp, node, s);
+}
+
+static bool handle_block_msg(struct msg_processor *mp, struct p2p_node *node,
+                             struct byte_stream *s)
+{
+    return process_block_msg(mp, node, s);
+}
+
+static bool handle_tx_msg(struct msg_processor *mp, struct p2p_node *node,
+                          struct byte_stream *s)
+{
+    return process_tx_msg(mp, node, s);
+}
+
+static bool handle_headers(struct msg_processor *mp, struct p2p_node *node,
+                           struct byte_stream *s)
+{
+    return process_headers(mp, node, s);
+}
+
+static bool handle_getaddr(struct msg_processor *mp, struct p2p_node *node,
+                           struct byte_stream *s)
+{
+    (void)s;
+    return process_getaddr(mp, node);
+}
+
+static bool handle_mempool(struct msg_processor *mp, struct p2p_node *node,
+                           struct byte_stream *s)
+{
+    (void)s;
+    return process_mempool(mp, node);
+}
+
+static bool handle_sendheaders(struct msg_processor *mp, struct p2p_node *node,
+                               struct byte_stream *s)
+{
+    (void)mp; (void)s;
+    return process_sendheaders(node);
+}
+
+static bool handle_reject(struct msg_processor *mp, struct p2p_node *node,
+                          struct byte_stream *s)
+{
+    (void)mp;
+    return process_reject(node, s);
+}
+
+static bool handle_feefilter(struct msg_processor *mp, struct p2p_node *node,
+                             struct byte_stream *s)
+{
+    (void)mp;
+    return process_feefilter(node, s);
+}
+
+static bool handle_notfound(struct msg_processor *mp, struct p2p_node *node,
+                            struct byte_stream *s)
+{
+    (void)mp;
+    return process_notfound(node, s);
+}
+
+/* ── ZCL Messaging handlers ───────────────────────────────────── */
+
+#include "net/zmsg.h"
+
+static bool handle_zmsg(struct msg_processor *mp, struct p2p_node *node,
+                        struct byte_stream *s)
+{
+    struct zmsg_message msg;
+    if (!zmsg_deserialize(&msg, s))
+        return true;
+
+    msg.direction = ZMSG_INBOUND;
+    msg.channel = ZMSG_CHANNEL_P2P;
+
+    /* Store locally */
+    bool is_new = zmsg_store_add(&msg);
+
+    /* Persist to SQLite */
+    struct node_db *ndb = msg_node_db(mp);
+    if (ndb)
+        db_zmsg_save(ndb, &msg);
+
+    /* Send acknowledgment */
+    struct byte_stream os;
+    stream_init(&os, 64);
+    stream_write(&os, msg.msg_id, 32);
+    p2p_node_begin_message(node, MSG_ZMSG_ACK,
+                           mp->params->pchMessageStart);
+    p2p_node_write_message_data(node, os.data, os.size);
+    p2p_node_end_message(node);
+    stream_free(&os);
+
+    if (is_new) {
+        printf("zmsg: received message from %s via peer %s\n",
+               msg.sender, node->addr_name);
+    }
+    return true;
+}
+
+static bool handle_zmsgack(struct msg_processor *mp, struct p2p_node *node,
+                           struct byte_stream *s)
+{
+    (void)mp;
+    uint8_t ack_id[32];
+    if (!stream_read(s, ack_id, 32))
+        return true;
+
+    printf("zmsg: delivery ack from peer %s\n", node->addr_name);
+    return true;
+}
+
+/* ── ZCL Market: file sharing handlers ─────────────────────────── */
+
+#include "net/file_market.h"
+#include "crypto/sha3.h"
+
+static bool handle_zfilelist(struct msg_processor *mp, struct p2p_node *node,
+                             struct byte_stream *s)
+{
+    /* Deserialize one or more file offers from the message */
+    uint64_t count = 0;
+    if (!stream_read_compact_size(s, &count))
+        return true;
+    if (count > 50) count = 50; /* limit per message */
+
+    for (uint64_t i = 0; i < count; i++) {
+        struct file_offer offer;
+        if (!file_offer_deserialize(&offer, s))
+            break;
+
+        /* Reject expired TTL */
+        if (offer.ttl == 0) continue;
+
+        /* Store locally */
+        bool is_new = file_market_add_offer(&offer);
+
+        /* Persist to SQLite */
+        struct node_db *ndb = msg_node_db(mp);
+        if (ndb)
+            db_file_offer_save(ndb, &offer);
+
+        /* Re-gossip to other peers if new and TTL > 1 */
+        if (is_new && offer.ttl > 1 && mp->net_mgr) {
+            struct file_offer fwd = offer;
+            fwd.ttl--;
+
+            struct byte_stream os;
+            stream_init(&os, 512);
+            stream_write_compact_size(&os, 1);
+            file_offer_serialize(&fwd, &os);
+
+            zcl_mutex_lock(&mp->net_mgr->cs_nodes);
+            for (size_t pi = 0; pi < mp->net_mgr->num_nodes; pi++) {
+                struct p2p_node *peer = mp->net_mgr->nodes[pi];
+                if (peer->id != node->id &&
+                    peer->state >= PEER_HANDSHAKE_COMPLETE &&
+                    !peer->disconnect &&
+                    peer_supports_fast_sync(peer->services)) {
+                    p2p_node_begin_message(peer, MSG_FILE_LIST,
+                                           mp->params->pchMessageStart);
+                    p2p_node_write_message_data(peer, os.data, os.size);
+                    p2p_node_end_message(peer);
+                }
+            }
+            zcl_mutex_unlock(&mp->net_mgr->cs_nodes);
+            stream_free(&os);
+        }
+
+        printf("market: %s offer '%s' (%.1f MB, %lld zat/MB) from peer %s\n",
+               is_new ? "new" : "updated",
+               offer.filename,
+               offer.size_bytes / (1024.0 * 1024.0),
+               (long long)offer.price_per_mb,
+               node->addr_name);
+    }
+    return true;
+}
+
+static bool handle_zfilechal(struct msg_processor *mp, struct p2p_node *node,
+                             struct byte_stream *s)
+{
+    struct file_challenge chal;
+    if (!file_challenge_deserialize(&chal, s))
+        return true;
+
+    /* Check if we're offering this file */
+    struct file_offer offer;
+    if (!file_market_find_offer(chal.root_hash, &offer)) {
+        printf("market: challenge for unknown file from peer %s\n",
+               node->addr_name);
+        return true;
+    }
+
+    if (chal.chunk_index >= offer.num_chunks) {
+        printf("market: challenge for invalid chunk %u/%u from peer %s\n",
+               chal.chunk_index, offer.num_chunks, node->addr_name);
+        return true;
+    }
+
+    /* Compute SHA3-256 of the chunk data.
+     * For now, read chunk from the file on disk and hash it. */
+    /* TODO Phase 3: read actual file chunks and hash them.
+     * For now, respond with a hash derived from root_hash + chunk_index
+     * so the protocol can be tested end-to-end. */
+    struct file_proof proof;
+    memset(&proof, 0, sizeof(proof));
+    memcpy(proof.root_hash, chal.root_hash, 32);
+    proof.chunk_index = chal.chunk_index;
+
+    /* Hash: SHA3(root_hash || chunk_index) as placeholder */
+    uint8_t preimage[36];
+    memcpy(preimage, chal.root_hash, 32);
+    memcpy(preimage + 32, &chal.chunk_index, 4);
+    struct sha3_256_ctx sha3;
+    sha3_256_init(&sha3);
+    sha3_256_write(&sha3, preimage, 36);
+    sha3_256_finalize(&sha3, proof.chunk_hash);
+
+    struct byte_stream os;
+    stream_init(&os, 128);
+    file_proof_serialize(&proof, &os);
+    p2p_node_begin_message(node, MSG_FILE_PROOF,
+                           mp->params->pchMessageStart);
+    p2p_node_write_message_data(node, os.data, os.size);
+    p2p_node_end_message(node);
+    stream_free(&os);
+
+    printf("market: responded to chunk challenge %u for '%s' from peer %s\n",
+           chal.chunk_index, offer.filename, node->addr_name);
+    return true;
+}
+
+static bool handle_zfileproof(struct msg_processor *mp, struct p2p_node *node,
+                              struct byte_stream *s)
+{
+    (void)mp;
+    struct file_proof proof;
+    if (!file_proof_deserialize(&proof, s))
+        return true;
+
+    /* Verify the proof matches our expected hash for this chunk.
+     * This is checked by the download session manager. */
+    printf("market: received chunk proof %u from peer %s\n",
+           proof.chunk_index, node->addr_name);
+
+    /* TODO Phase 3: verify against download session, advance state */
+    return true;
+}
+
+static bool handle_zfilepay(struct msg_processor *mp, struct p2p_node *node,
+                            struct byte_stream *s)
+{
+    struct file_payment pay;
+    if (!file_payment_deserialize(&pay, s))
+        return true;
+
+    /* Verify the payment is in our mempool */
+    struct uint256 txid_hash;
+    memcpy(txid_hash.data, pay.txid, 32);
+    bool in_mempool = tx_mempool_exists(mp->mempool, &txid_hash);
+
+    printf("market: payment from peer %s for %u chunks (txid in mempool: %s)\n",
+           node->addr_name, pay.chunks_paid,
+           in_mempool ? "yes" : "NO");
+
+    if (!in_mempool) {
+        printf("market: rejecting payment — txid not found in mempool\n");
+        return true;
+    }
+
+    /* TODO Phase 3: unlock chunks for this peer's download,
+     * track payment state, begin serving file data */
+    printf("market: payment verified, unlocking chunks %u-%u\n",
+           pay.chunk_start, pay.chunk_start + pay.chunks_paid - 1);
+    return true;
+}
+
+/* ── Extracted inline handlers ─────────────────────────────────── */
+
+static bool handle_zfileaddr(struct msg_processor *mp, struct p2p_node *node,
+                             struct byte_stream *s)
+{
+    uint8_t faddr[2];
+    if (stream_read_bytes(s, faddr, 2)) {
+        uint16_t fport;
+        memcpy(&fport, faddr, 2);
+        uint8_t fip[16];
+        memcpy(fip, node->addr.svc.addr.ip, 16);
+
+        struct node_db *ndb = msg_node_db(mp);
+        if (ndb && ndb->open) {
+            struct db_file_service fs;
+            memset(&fs, 0, sizeof(fs));
+            memcpy(fs.ip, fip, 16);
+            fs.port = fport;
+            fs.p2p_port = node->addr.svc.port;
+            fs.last_seen = (int64_t)time(NULL);
+            fs.is_zcl23 = true;
+            db_file_service_save(ndb, &fs);
+        }
+        char ipbuf[64];
+        net_addr_to_string(&node->addr.svc.addr, ipbuf, sizeof(ipbuf));
+        printf("Peer %s: file service at port %d (saved)\n",
+               ipbuf, fport);
+    }
+    return true;
+}
+
+static bool handle_game_msg(struct msg_processor *mp, struct p2p_node *node,
+                            struct byte_stream *s)
+{
+    (void)mp;
+    uint8_t game_type = 0, position = 0;
+    struct ttt_state peer_state;
+    memset(&peer_state, 0, sizeof(peer_state));
+    enum game_action action = game_deserialize(
+        s->data + s->read_pos, s->size - s->read_pos,
+        &game_type, &position, &peer_state);
+
+    switch (action) {
+    case GAME_INVITE:
+        printf("Peer %s: game invite (type=%d)\n",
+               node->addr_name, game_type);
+        /* Auto-accept for now */
+        {
+            uint8_t resp[8];
+            size_t rn = game_serialize_accept(resp, sizeof(resp), 2);
+            p2p_node_begin_message(node, MSG_GAME,
+                                    mp->params->pchMessageStart);
+            p2p_node_write_message_data(node, resp, rn);
+            p2p_node_end_message(node);
+            printf("Peer %s: auto-accepted game as O\n",
+                   node->addr_name);
+        }
+        break;
+    case GAME_ACCEPT:
+        printf("Peer %s: game accepted\n", node->addr_name);
+        break;
+    case GAME_MOVE:
+        printf("Peer %s: game move position=%d\n",
+               node->addr_name, position);
+        /* Measure latency from timestamp in message */
+        if (s->size - s->read_pos >= 11) {
+            int64_t send_ts = 0;
+            memcpy(&send_ts, s->data + s->read_pos + 3, 8);
+            struct timeval tv;
+            gettimeofday(&tv, NULL);
+            int64_t now_us = (int64_t)tv.tv_sec * 1000000 + tv.tv_usec;
+            int64_t latency = now_us - send_ts;
+            if (latency > 0 && latency < 60000000)
+                printf("Peer %s: P2P latency = %lld us (%.1f ms)\n",
+                       node->addr_name, (long long)latency,
+                       (double)latency / 1000.0);
+        }
+        break;
+    case GAME_STATE:
+        {
+            char board[256];
+            ttt_render(&peer_state, board, sizeof(board));
+            printf("Peer %s: game state\n%s\n",
+                   node->addr_name, board);
+        }
+        break;
+    case GAME_RESULT:
+        printf("Peer %s: game result\n", node->addr_name);
+        break;
+    default:
+        break;
+    }
+    return true;
+}
+
+/* Forward declaration — handles all snapshot/chunk/block/flyclient
+ * messages. These remain as one function for now because they share
+ * complex state (g_swarm, g_block_swarm) and control flow. */
+static bool handle_zcl23_sync(struct msg_processor *mp,
+                              struct p2p_node *node,
+                              struct byte_stream *s,
+                              const char *cmd);
+
+/* ── P2P Message Dispatch Table ──────────────────────────────────
+ * Maps command strings to handler functions. Replaces the 30-deep
+ * strcmp chain. Table is NULL-terminated (empty command). */
+
+static const struct msg_dispatch_entry g_msg_dispatch[] = {
+    /* ── Bitcoin P2P ── */
+    { "version",      handle_version,      false, false, "p2p" },
+    { "verack",       handle_verack,       false, false, "p2p" },
+    { "ping",         handle_ping,         true,  false, "p2p" },
+    { "pong",         handle_pong,         true,  false, "p2p" },
+    { "addr",         handle_addr,         true,  false, "p2p" },
+    { "inv",          handle_inv,          true,  false, "sync" },
+    { "getdata",      handle_getdata,      true,  false, "sync" },
+    { "getblocks",    handle_getblocks,    true,  false, "sync" },
+    { "getheaders",   handle_getheaders,   true,  false, "sync" },
+    { "block",        handle_block_msg,    true,  false, "sync" },
+    { "tx",           handle_tx_msg,       true,  false, "mempool" },
+    { "headers",      handle_headers,      true,  false, "sync" },
+    { "getaddr",      handle_getaddr,      true,  false, "p2p" },
+    { "mempool",      handle_mempool,      true,  false, "mempool" },
+    { "sendheaders",  handle_sendheaders,  true,  false, "p2p" },
+    { "reject",       handle_reject,       true,  false, "p2p" },
+    { "feefilter",    handle_feefilter,    true,  false, "mempool" },
+    { "notfound",     handle_notfound,     true,  false, "sync" },
+    /* ── ZCL23 File Service ── */
+    { "zfileaddr",    handle_zfileaddr,    true,  true,  "filesvc" },
+    /* ── ZCL Messaging ── */
+    { "zmsg",         handle_zmsg,         true,  true,  "msg" },
+    { "zmsgack",      handle_zmsgack,      true,  true,  "msg" },
+    /* ── ZCL Market ── */
+    { "zfilelist",    handle_zfilelist,    true,  true,  "market" },
+    { "zfilechal",    handle_zfilechal,    true,  true,  "market" },
+    { "zfileproof",   handle_zfileproof,   true,  true,  "market" },
+    { "zfilepay",     handle_zfilepay,     true,  true,  "market" },
+    /* ── ZCL23 Game ── */
+    { "zgame",        handle_game_msg,     true,  true,  "game" },
+    /* sentinel */
+    { "",             NULL,                false, false, NULL }
+};
+
+/* Snapshot/chunk/block/flyclient messages are dispatched separately
+ * via handle_zcl23_sync() because they share complex state.
+ * Commands: zsnapshot, zsnapreq, zsnapdata, zsnapend,
+ *           zfcchallenge, zfcproofs, zmanifest, zchunkreq, zchunkdata,
+ *           zblkmanfst, zblkreq, zblkdata, zblkbitmap */
+
+const struct msg_dispatch_entry *msg_get_dispatch_table(void)
+{
+    return g_msg_dispatch;
+}
+
 bool msg_process_messages(void *ctx, struct p2p_node *node)
 {
     struct msg_processor *mp = (struct msg_processor *)ctx;
@@ -1875,81 +2453,76 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
 
         bool ok = true;
 
-        if (strcmp(cmd, "version") == 0) {
-            ok = process_version(mp, node, &s);
-        } else if (strcmp(cmd, "verack") == 0) {
-            ok = process_verack(mp, node);
-        } else if (node->version == 0) {
+        /* ── Dispatch via table ──────────────────────────────── */
+        bool dispatched = false;
+        for (const struct msg_dispatch_entry *e = g_msg_dispatch;
+             e->handler; e++) {
+            if (strcmp(cmd, e->command) != 0)
+                continue;
+
+            if (e->requires_handshake && node->version == 0) {
+                printf("Peer %s: received %s before version\n",
+                       node->addr_name, cmd);
+                node->disconnect = true;
+                stream_free(&s);
+                net_message_free(&msg);
+                goto _msg_loop_exit;
+            }
+
+            ok = e->handler(mp, node, &s);
+            dispatched = true;
+            break;
+        }
+
+        /* ZCL23 sync messages handled by a combined handler */
+        if (!dispatched && cmd[0] == 'z') {
+            if (node->version == 0) {
+                printf("Peer %s: received %s before version\n",
+                       node->addr_name, cmd);
+                node->disconnect = true;
+                stream_free(&s);
+                net_message_free(&msg);
+                goto _msg_loop_exit;
+            }
+            ok = handle_zcl23_sync(mp, node, &s, cmd);
+            dispatched = true;
+        }
+
+        /* Reject any pre-handshake message not in the table */
+        if (!dispatched && node->version == 0) {
             printf("Peer %s: received %s before version\n",
                    node->addr_name, cmd);
             node->disconnect = true;
             stream_free(&s);
             net_message_free(&msg);
-            break;
-        } else if (strcmp(cmd, "ping") == 0) {
-            ok = process_ping(mp, node, &s);
-        } else if (strcmp(cmd, "pong") == 0) {
-            ok = process_pong(node, &s);
-        } else if (strcmp(cmd, "addr") == 0) {
-            ok = process_addr(mp, node, &s);
-        } else if (strcmp(cmd, "inv") == 0) {
-            ok = process_inv(mp, node, &s);
-        } else if (strcmp(cmd, "getdata") == 0) {
-            ok = process_getdata(mp, node, &s);
-        } else if (strcmp(cmd, "getblocks") == 0) {
-            ok = process_getblocks(mp, node, &s);
-        } else if (strcmp(cmd, "getheaders") == 0) {
-            ok = process_getheaders(mp, node, &s);
-        } else if (strcmp(cmd, "block") == 0) {
-            ok = process_block_msg(mp, node, &s);
-        } else if (strcmp(cmd, "tx") == 0) {
-            ok = process_tx_msg(mp, node, &s);
-        } else if (strcmp(cmd, "headers") == 0) {
-            ok = process_headers(mp, node, &s);
-        } else if (strcmp(cmd, "getaddr") == 0) {
-            ok = process_getaddr(mp, node);
-        } else if (strcmp(cmd, "mempool") == 0) {
-            ok = process_mempool(mp, node);
-        } else if (strcmp(cmd, "sendheaders") == 0) {
-            ok = process_sendheaders(node);
-        } else if (strcmp(cmd, "reject") == 0) {
-            ok = process_reject(node, &s);
-        } else if (strcmp(cmd, "feefilter") == 0) {
-            ok = process_feefilter(node, &s);
-        } else if (strcmp(cmd, "notfound") == 0) {
-            ok = process_notfound(node, &s);
-        } else if (strcmp(cmd, "zfileaddr") == 0) {
-            /* Peer advertises their file service port.
-             * We know their IP from the TCP connection.
-             * Save to SQLite for sticky reconnection. */
-            uint8_t faddr[2];
-            if (stream_read_bytes(&s, faddr, 2)) {
-                uint16_t fport;
-                memcpy(&fport, faddr, 2);
-                /* Use peer's IP from the P2P connection */
-                uint8_t fip[16];
-                memcpy(fip, node->addr.svc.addr.ip, 16);
+            goto _msg_loop_exit;
+        }
 
-                struct node_db *ndb = msg_node_db(mp);
-                if (ndb && ndb->open) {
-                    struct db_file_service fs;
-                    memset(&fs, 0, sizeof(fs));
-                    memcpy(fs.ip, fip, 16);
-                    fs.port = fport;
-                    fs.p2p_port = node->addr.svc.port;
-                    fs.last_seen = (int64_t)time(NULL);
-                    fs.is_zcl23 = true;
-                    db_file_service_save(ndb, &fs);
-                }
-                char ipbuf[64];
-                net_addr_to_string(&node->addr.svc.addr, ipbuf, sizeof(ipbuf));
-                printf("Peer %s: file service at port %d (saved)\n",
-                       ipbuf, fport);
-            }
-        } else if (strcmp(cmd, MSG_SNAPSHOT_OFFER) == 0) {
+        stream_free(&s);
+        net_message_free(&msg);
+
+        if (!ok) {
+            printf("Peer %s: error processing %s\n", node->addr_name, cmd);
+        }
+    }
+    _msg_loop_exit:
+    return true;
+}
+
+/* ── ZCL23 Sync Message Handler ──────────────────────────────────
+ * Handles all snapshot, chunk, block-piece, and FlyClient messages.
+ * These share complex state (g_swarm, g_block_swarm) and are kept
+ * in one function for clarity. Will be split into individual
+ * handlers as the protocol matures. */
+static bool handle_zcl23_sync(struct msg_processor *mp,
+                              struct p2p_node *node,
+                              struct byte_stream *s,
+                              const char *cmd)
+{
+    if (strcmp(cmd, MSG_SNAPSHOT_OFFER) == 0) {
             /* ── Route: zsnapshot → snapsync_handle_offer ──────── */
             struct snapshot_offer_params params;
-            if (snapsync_parse_offer_params(&params, &s)) {
+            if (snapsync_parse_offer_params(&params, s)) {
                 struct snapsync_status snap_status = {0};
                 params.peer_id = (uint32_t)node->id;
                 params.our_height = active_chain_height(
@@ -2041,8 +2614,16 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                             peer_misbehaving(mp->net_mgr, node, 10,
                                 "snapshot without MMR proof");
                             break;
+                        case SNAPSYNC_OFFER_REJECTED_BLACKLISTED:
+                            printf("[snapsync] Rejected offer from %s "
+                                   "(peer %u): blacklisted after stall\n",
+                                   node->addr_name, (uint32_t)node->id);
+                            break;
+                        case SNAPSYNC_OFFER_REJECTED_NOT_AHEAD:
+                        case SNAPSYNC_OFFER_REJECTED_BUSY:
+                            break; /* expected, no log needed */
                         default:
-                            break; /* not ahead or busy — ignore silently */
+                            break;
                         }
                     }
                 }
@@ -2051,15 +2632,14 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
         } else if (strcmp(cmd, MSG_SNAPSHOT_REQ) == 0) {
             /* ── Route: zsnapreq → snapsync_validate_serve_request ─ */
             int32_t from_h = 0;
-            if (!stream_read_i32_le(&s, &from_h)) {
+            if (!stream_read_i32_le(s, &from_h)) {
                 peer_misbehaving(mp->net_mgr, node, 10, "truncated zsnapreq");
-                net_message_free(&msg);
-                continue;
+                return true; /* skip — caller frees msg */
             }
 
             /* Pass remaining bytes (PoW data) to controller */
-            size_t pow_len = s.size - s.read_pos;
-            const uint8_t *pow_data = pow_len > 0 ? s.data + s.read_pos : NULL;
+            size_t pow_len = s->size - s->read_pos;
+            const uint8_t *pow_data = pow_len > 0 ? s->data + s->read_pos : NULL;
             enum snapsync_serve_result srv = snapsync_validate_serve_request(
                 pow_data, pow_len, node->addr.svc.addr.ip);
 
@@ -2140,7 +2720,7 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
             /* ── Route: zsnapdata → snapsync_apply_chunk ───────── */
             struct snapshot_sync_service *svc = msg_snapshot_sync_ensure(mp);
             int applied = svc ? snapsync_apply_chunk(svc,
-                s.data + s.read_pos, s.size - s.read_pos) : -1;
+                s->data + s->read_pos, s->size - s->read_pos) : -1;
             if (applied < 0)
                 peer_misbehaving(mp->net_mgr, node, 10, "bad snapshot chunk");
             else
@@ -2166,9 +2746,21 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                 if (end_result.should_activate_tip) {
                     int activated_height = snapsync_activate_verified_tip(
                         svc, mp->main_state);
-                    if (activated_height >= 0)
+                    if (activated_height >= 0) {
                         printf("[snapshot] Chain tip set to height %d\n",
                                activated_height);
+                        /* Update in-memory coins view to match snapshot.
+                         * snapsync_finalize already wrote coins_best_block
+                         * to SQLite; now sync the in-memory cache so
+                         * connect_block's view/prevblock check passes. */
+                        if (mp->coins_tip) {
+                            struct uint256 snap_hash;
+                            memcpy(snap_hash.data,
+                                   svc->offered_block_hash, 32);
+                            coins_view_cache_set_best_block(
+                                mp->coins_tip, &snap_hash);
+                        }
+                    }
                 }
                 if (end_result.should_set_sync_state) {
                     sync_set_state(end_result.sync_state,
@@ -2186,9 +2778,9 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
             /* ── Route: zfcchallenge → build and send proofs ───── */
             struct fc_challenge challenge;
             memset(&challenge, 0, sizeof(challenge));
-            if (stream_read_bytes(&s, challenge.seed, 32) &&
-                stream_read_u64_le(&s, &challenge.chain_length) &&
-                stream_read_bytes(&s, challenge.mmb_root, 32)) {
+            if (stream_read_bytes(s, challenge.seed, 32) &&
+                stream_read_u64_le(s, &challenge.chain_length) &&
+                stream_read_bytes(s, challenge.mmb_root, 32)) {
 
                 /* Build FlyClient response with real MMB proofs.
                  * Uses mmb_leaf_store (mmap'd flat file of all leaf
@@ -2227,7 +2819,7 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
         } else if (strcmp(cmd, MSG_FC_PROOFS) == 0) {
             /* ── Route: zfcproofs → snapsync_verify_flyclient ──── */
             struct fc_response resp;
-            if (!snapsync_parse_fc_response(&resp, &s)) {
+            if (!snapsync_parse_fc_response(&resp, s)) {
                 peer_misbehaving(mp->net_mgr, node, 20,
                     "truncated FlyClient proofs");
             } else {
@@ -2268,12 +2860,12 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
             uint64_t num_utxos = 0;
             uint32_t num_chunks = 0, chunk_size = 0;
 
-            if (stream_read_i32_le(&s, &height) &&
-                stream_read_bytes(&s, block_hash, 32) &&
-                stream_read_u64_le(&s, &num_utxos) &&
-                stream_read_u32_le(&s, &num_chunks) &&
-                stream_read_u32_le(&s, &chunk_size) &&
-                stream_read_bytes(&s, merkle_root, 32)) {
+            if (stream_read_i32_le(s, &height) &&
+                stream_read_bytes(s, block_hash, 32) &&
+                stream_read_u64_le(s, &num_utxos) &&
+                stream_read_u32_le(s, &num_chunks) &&
+                stream_read_u32_le(s, &chunk_size) &&
+                stream_read_bytes(s, merkle_root, 32)) {
 
                 node->swarm_manifest_received = true;
                 int our_h = active_chain_height(&mp->main_state->chain_active);
@@ -2310,7 +2902,7 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
             /* Peer requests a specific chunk by index — serve it. */
             uint32_t chunk_index = 0;
             struct sync_manifest manifest;
-            if (!stream_read_u32_le(&s, &chunk_index)) {
+            if (!stream_read_u32_le(s, &chunk_index)) {
                 printf("Peer %s: bad zchunkreq\n", node->addr_name);
             } else if (!msg_processor_get_manifest_header(&manifest)) {
                 printf("Peer %s: zchunkreq but no manifest ready\n",
@@ -2357,8 +2949,8 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
         } else if (strcmp(cmd, MSG_CHUNK_DATA) == 0) {
             /* Peer sends chunk data in response to our request. */
             uint32_t chunk_index = 0, num_entries = 0;
-            if (!stream_read_u32_le(&s, &chunk_index) ||
-                !stream_read_u32_le(&s, &num_entries) ||
+            if (!stream_read_u32_le(s, &chunk_index) ||
+                !stream_read_u32_le(s, &num_entries) ||
                 num_entries > 1000) {
                 printf("Peer %s: bad zchunkdata header\n", node->addr_name);
                 peer_misbehaving(mp->net_mgr, node, 20, "bad zchunkdata");
@@ -2373,18 +2965,18 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                     bool parse_ok = true;
 
                     for (uint32_t i = 0; i < num_entries && parse_ok; i++) {
-                        if (!stream_read_bytes(&s, chunk->entries[i].txid, 32))
+                        if (!stream_read_bytes(s, chunk->entries[i].txid, 32))
                             { parse_ok = false; break; }
                         int32_t vout = 0;
-                        if (!stream_read_i32_le(&s, &vout))
+                        if (!stream_read_i32_le(s, &vout))
                             { parse_ok = false; break; }
                         chunk->entries[i].vout = (uint32_t)vout;
-                        if (!stream_read_i64_le(&s, &chunk->entries[i].value))
+                        if (!stream_read_i64_le(s, &chunk->entries[i].value))
                             { parse_ok = false; break; }
-                        if (!stream_read_i32_le(&s, &chunk->entries[i].height))
+                        if (!stream_read_i32_le(s, &chunk->entries[i].height))
                             { parse_ok = false; break; }
                         uint16_t slen = 0;
-                        if (!stream_read_u16_le(&s, &slen))
+                        if (!stream_read_u16_le(s, &slen))
                             { parse_ok = false; break; }
                         if (slen > 128) {
                             /* Script too large for entry — reject chunk.
@@ -2393,7 +2985,7 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                         }
                         chunk->entries[i].script_len = slen;
                         if (slen > 0 &&
-                            !stream_read_bytes(&s, chunk->entries[i].script, slen))
+                            !stream_read_bytes(s, chunk->entries[i].script, slen))
                             { parse_ok = false; break; }
                     }
 
@@ -2463,11 +3055,11 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
             uint32_t num_pieces = 0;
             uint8_t tip_hash[32], merkle_root[32];
 
-            if (stream_read_i32_le(&s, &start_h) &&
-                stream_read_i32_le(&s, &end_h) &&
-                stream_read_u32_le(&s, &num_pieces) &&
-                stream_read_bytes(&s, tip_hash, 32) &&
-                stream_read_bytes(&s, merkle_root, 32)) {
+            if (stream_read_i32_le(s, &start_h) &&
+                stream_read_i32_le(s, &end_h) &&
+                stream_read_u32_le(s, &num_pieces) &&
+                stream_read_bytes(s, tip_hash, 32) &&
+                stream_read_bytes(s, merkle_root, 32)) {
 
                 /* Sanity: heights must be positive and consistent */
                 if (start_h < 0 || end_h < start_h || num_pieces == 0 ||
@@ -2529,7 +3121,7 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
              * piece index is in range. Rate-limited like chunk requests. */
             uint32_t piece_index = 0;
             struct block_piece_manifest bm;
-            if (!stream_read_u32_le(&s, &piece_index)) {
+            if (!stream_read_u32_le(s, &piece_index)) {
                 printf("Peer %s: bad zblkreq\n", node->addr_name);
             } else if (!msg_processor_get_block_manifest_header(&bm, NULL)) {
                 printf("Peer %s: zblkreq but no block manifest\n",
@@ -2577,8 +3169,8 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
             /* Peer sends block piece data (block hashes for a piece).
              * DEFENSIVE: validate piece_index, block_count, and hash. */
             uint32_t piece_index = 0, block_count = 0;
-            if (!stream_read_u32_le(&s, &piece_index) ||
-                !stream_read_u32_le(&s, &block_count) ||
+            if (!stream_read_u32_le(s, &piece_index) ||
+                !stream_read_u32_le(s, &block_count) ||
                 block_count == 0 || block_count > BLOCKS_PER_PIECE) {
                 printf("Peer %s: bad zblkdata (piece=%u count=%u)\n",
                        node->addr_name, piece_index, block_count);
@@ -2593,7 +3185,7 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                 bool parse_ok = true;
                 if (blk_hashes) {
                     for (uint32_t i = 0; i < block_count && parse_ok; i++) {
-                        if (!stream_read_bytes(&s, blk_hashes[i], 32))
+                        if (!stream_read_bytes(s, blk_hashes[i], 32))
                             parse_ok = false;
                     }
                 }
@@ -2668,13 +3260,13 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
             /* Peer sends their piece availability bitmap.
              * DEFENSIVE: validate length is reasonable. */
             uint32_t bitmap_len = 0;
-            if (!stream_read_u32_le(&s, &bitmap_len) ||
+            if (!stream_read_u32_le(s, &bitmap_len) ||
                 bitmap_len == 0 || bitmap_len > 65536) {
                 printf("Peer %s: bad zblkbitmap len=%u\n",
                        node->addr_name, bitmap_len);
             } else {
                 uint8_t *bitmap = calloc(bitmap_len, 1);
-                if (bitmap && stream_read_bytes(&s, bitmap, bitmap_len)) {
+                if (bitmap && stream_read_bytes(s, bitmap, bitmap_len)) {
                     /* Store on peer for rarest-first selection */
                     free(node->blk_bitmap);
                     node->blk_bitmap = bitmap;
@@ -2694,74 +3286,7 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                 }
             }
 
-        } else if (strcmp(cmd, MSG_GAME) == 0) {
-            /* P2P game message */
-            uint8_t game_type = 0, position = 0;
-            struct ttt_state peer_state;
-            memset(&peer_state, 0, sizeof(peer_state));
-            enum game_action action = game_deserialize(
-                s.data + s.read_pos, s.size - s.read_pos,
-                &game_type, &position, &peer_state);
-
-            switch (action) {
-            case GAME_INVITE:
-                printf("Peer %s: game invite (type=%d)\n",
-                       node->addr_name, game_type);
-                /* Auto-accept for now */
-                {
-                    uint8_t resp[8];
-                    size_t rn = game_serialize_accept(resp, sizeof(resp), 2);
-                    p2p_node_begin_message(node, MSG_GAME,
-                                            mp->params->pchMessageStart);
-                    p2p_node_write_message_data(node, resp, rn);
-                    p2p_node_end_message(node);
-                    printf("Peer %s: auto-accepted game as O\n",
-                           node->addr_name);
-                }
-                break;
-            case GAME_ACCEPT:
-                printf("Peer %s: game accepted\n", node->addr_name);
-                break;
-            case GAME_MOVE:
-                printf("Peer %s: game move position=%d\n",
-                       node->addr_name, position);
-                /* Measure latency from timestamp in message */
-                if (s.size - s.read_pos >= 11) {
-                    int64_t send_ts = 0;
-                    memcpy(&send_ts, s.data + s.read_pos + 3, 8);
-                    struct timeval tv;
-                    gettimeofday(&tv, NULL);
-                    int64_t now_us = (int64_t)tv.tv_sec * 1000000 + tv.tv_usec;
-                    int64_t latency = now_us - send_ts;
-                    if (latency > 0 && latency < 60000000)
-                        printf("Peer %s: P2P latency = %lld us (%.1f ms)\n",
-                               node->addr_name, (long long)latency,
-                               (double)latency / 1000.0);
-                }
-                break;
-            case GAME_STATE:
-                {
-                    char board[256];
-                    ttt_render(&peer_state, board, sizeof(board));
-                    printf("Peer %s: game state\n%s\n",
-                           node->addr_name, board);
-                }
-                break;
-            case GAME_RESULT:
-                printf("Peer %s: game result\n", node->addr_name);
-                break;
-            default:
-                break;
-            }
         }
-
-        stream_free(&s);
-        net_message_free(&msg);
-
-        if (!ok) {
-            printf("Peer %s: error processing %s\n", node->addr_name, cmd);
-        }
-    }
     return true;
 }
 
@@ -2798,7 +3323,14 @@ static void push_getheaders_from(struct msg_processor *mp,
 
 static void push_getheaders(struct msg_processor *mp, struct p2p_node *node)
 {
-    push_getheaders_from(mp, node, NULL);
+    /* After snapshot sync, use the snapshot anchor as the locator start.
+     * This makes getheaders request headers from snapshot height instead
+     * of from the (much lower) locally-indexed chain tip. */
+    struct block_index *anchor = snapsync_get_anchor();
+    if (anchor && anchor->phashBlock)
+        push_getheaders_from(mp, node, anchor);
+    else
+        push_getheaders_from(mp, node, NULL);
 }
 
 static void exec_getheaders_action(struct msg_processor *mp,
@@ -2867,6 +3399,11 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
                                         mp->params->pchMessageStart);
             }
         }
+    }
+
+    /* Snapshot stall detection — if no chunk for 60s, reset and accept new peer */
+    if (snapsync_check_stall()) {
+        printf("[sync] Snapshot stall detected — will accept new offer\n");
     }
 
     /* Initiate sync, and periodically re-request if behind. */
@@ -2974,6 +3511,13 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
                     syncsvc_apply_stall_recovery(&recovery, mp->main_state,
                                                  dm, &cleared);
                     if (recovery.alt_count > 0) {
+                        /* Clear re-queued blocks from the "recently seen"
+                         * dedup buffer. Without this, blocks that were
+                         * received but failed validation are permanently
+                         * stuck: stall recovery re-downloads them, but
+                         * block_already_seen silently drops them. */
+                        for (size_t ri = 0; ri < recovery.alt_count; ri++)
+                            block_clear_seen(&recovery.alt_hashes[ri]);
                         printf("Stall recovery: queued %zu alt blocks\n",
                                recovery.alt_count);
                     } else if (cleared > 0) {
@@ -2997,9 +3541,13 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
     {
         static int64_t last_progress_log = 0;
         int64_t now_prog = (int64_t)time(NULL);
-        if (!node->inbound && node->id == 0 &&
+        bool is_progress_peer = !node->inbound && node->id == 0;
+        bool is_watchdog_peer = !node->inbound;
+
+        if ((is_progress_peer || is_watchdog_peer) &&
             now_prog - last_progress_log >= 30) {
-            last_progress_log = now_prog;
+            if (is_progress_peer)
+                last_progress_log = now_prog;
             struct download_manager *dm2 = get_download_mgr();
             int h = msg_get_height(mp);
             int header_tip = mp->main_state->pindex_best_header
@@ -3008,7 +3556,7 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
             syncsvc_collect_progress(&progress, dm2, sync_get_state(),
                                      h, header_tip, node->last_block_time,
                                      now_prog);
-            if (progress.should_log_progress) {
+            if (is_progress_peer && progress.should_log_progress) {
                 printf("IBD: chain=%d headers=%d sync=%s "
                        "dl[req=%llu recv=%llu flight=%llu queue=%llu "
                        "timeout=%llu] %.2f GB @ %.1f MB/s\n",
@@ -3023,17 +3571,18 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
             }
 
             /* Tip-stale watchdog: if we're at the tip but haven't
-             * received a new block in 10 minutes, re-request headers
-             * from all outbound peers. Handles the case where all
-             * peers went silent or our inv relay is broken. */
+             * received a new block in 10 minutes, re-request headers.
+             * Runs on ALL outbound peers, not just id==0, so recovery
+             * works even if the first peer disconnected. */
             {
                 struct sync_getheaders_action stale = {0};
                 syncsvc_plan_tip_stale_getheaders(&stale, &progress,
                                                   node, now_prog);
                 if (stale.should_send) {
                     printf("Tip stale: no new block for %llds, "
-                           "re-requesting headers\n",
-                           (long long)progress.tip_stale_seconds);
+                           "re-requesting headers from %s\n",
+                           (long long)progress.tip_stale_seconds,
+                           node->addr_name);
                     exec_getheaders_action(mp, node, &stale);
                 }
             }
@@ -3092,8 +3641,13 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
                 return true;
             }
             /* Send chunks from memory, respecting TCP flow control.
-             * Stop when send buffer exceeds 2MB to avoid backlog. */
+             * Stop when send buffer exceeds 8MB to avoid unbounded
+             * backlog that stalls the receiver.  The receiver's stall
+             * detector fires at 120s — we must not queue more than
+             * the receiver can process in that window. */
             for (int batch = 0; batch < 200; batch++) {
+                if (node->send_size > 8 * 1024 * 1024)
+                    break;  /* backpressure: wait for drain */
                 struct snapsync_serve_step step;
                 if (!snapsync_prepare_serve_step(&step, node, buf, buf_size))
                     break;
