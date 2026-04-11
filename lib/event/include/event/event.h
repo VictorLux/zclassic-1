@@ -51,6 +51,8 @@ enum event_type {
     EV_REORG_RECOVERY_COMPLETE,  /* payload: "fork_h=N cache_cleared=true" */
     EV_COINS_FLUSH,              /* payload: entries(u64) + blocks_batched(u32) */
     EV_COINS_FLUSH_FAILED,       /* payload: reason string */
+    EV_CHAIN_TIP_COMMIT,         /* payload: "from=H to=H reason=..." */
+    EV_CHAIN_TIP_REJECTED,       /* payload: "code=... from=H to=H reason=..." */
 
     /* ── Transaction ────────────────────────────────── */
     EV_TX_ACCEPTED,              /* payload: txid[32] */
