@@ -3,6 +3,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "controllers/sync_controller.h"
+#include "services/recovery_policy.h"
 #include "models/wallet_key.h"
 #include "models/wallet_tx.h"
 #include "primitives/block.h"
@@ -2989,6 +2990,32 @@ int node_db_sync_import_utxos(struct node_db *ndb,
         sync_job_import_finish(0);
         return -1;
     }
+
+    /* ── Recovery policy gate ──────────────────────────────────────
+     * The wipe below is a reimport prelude, not a reorg rollback — in
+     * normal operation the table is empty or nearly empty. Historically
+     * this call site is *not* the one that caused 2026-04-10, but it
+     * shares a primitive with the paths that did, so we gate it the
+     * same way: ask the policy, refuse if over cap, abort cleanly.
+     * The cap is deliberately generous here (reimport is legitimate)
+     * but an operator can still raise ZCL_MAX_UTXO_WIPE_ROWS if a
+     * partial import is being resumed. */
+    struct recovery_policy rp;
+    policy_load_from_env(&rp);
+    int64_t existing = node_db_utxo_count(ndb);
+    if (existing < 0) existing = 0;
+    enum policy_decision pd = policy_check_utxo_wipe(
+        &rp, existing, "sync_controller.import_utxos_reimport");
+    if (pd != POLICY_ALLOW) {
+        fprintf(stderr,
+                "UTXO import: recovery_policy refused wipe (code=%s, rows=%lld)\n",
+                policy_decision_name(pd), (long long)existing);
+        if (!sync_db_turbo_scope_end(&turbo_mode))
+            fprintf(stderr, "UTXO import: failed to restore normal mode after policy refusal\n");
+        sync_job_import_finish(0);
+        return -1;
+    }
+
     if (!node_db_wipe_utxos(ndb)) {
         fprintf(stderr, "UTXO import: failed to wipe utxos table\n");
         if (!sync_db_turbo_scope_end(&turbo_mode))
