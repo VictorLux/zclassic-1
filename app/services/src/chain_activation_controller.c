@@ -1,0 +1,324 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * Chain Activation Controller — single authority for block connection.
+ * See chain_activation_controller.h for architecture overview. */
+
+#include "services/chain_activation_controller.h"
+#include "validation/main_state.h"
+#include "validation/chainstate.h"
+#include "validation/process_block.h"
+#include "event/event.h"
+#include "services/snapshot_sync_service.h"
+#include "core/utiltime.h"
+#include <stdio.h>
+#include <string.h>
+#include <signal.h>
+
+/* ── State names ───────────────────────────────────────────────── */
+
+static const char *g_activation_state_names[] = {
+    [ACTIVATION_IDLE]             = "idle",
+    [ACTIVATION_BOOT_PENDING]     = "boot_pending",
+    [ACTIVATION_ANCHOR_ACTIVE]    = "anchor_active",
+    [ACTIVATION_ANCHOR_CLEARING]  = "anchor_clearing",
+    [ACTIVATION_READY]            = "ready",
+    [ACTIVATION_CONNECTING]       = "connecting",
+    [ACTIVATION_AT_TIP]           = "at_tip",
+    [ACTIVATION_FAILED]           = "failed",
+};
+
+const char *activation_state_name(enum activation_state state)
+{
+    if (state < 0 || state >= ACTIVATION_NUM_STATES) return "unknown";
+    return g_activation_state_names[state];
+}
+
+/* ── Transition table ──────────────────────────────────────────── */
+
+static const bool g_activation_transitions[ACTIVATION_NUM_STATES][ACTIVATION_NUM_STATES] = {
+    [ACTIVATION_IDLE][ACTIVATION_BOOT_PENDING]             = true,
+    [ACTIVATION_IDLE][ACTIVATION_FAILED]                   = true,
+
+    [ACTIVATION_BOOT_PENDING][ACTIVATION_ANCHOR_ACTIVE]    = true,
+    [ACTIVATION_BOOT_PENDING][ACTIVATION_READY]            = true,
+    [ACTIVATION_BOOT_PENDING][ACTIVATION_FAILED]           = true,
+
+    [ACTIVATION_ANCHOR_ACTIVE][ACTIVATION_ANCHOR_CLEARING] = true,
+    [ACTIVATION_ANCHOR_ACTIVE][ACTIVATION_FAILED]          = true,
+
+    [ACTIVATION_ANCHOR_CLEARING][ACTIVATION_READY]         = true,
+    [ACTIVATION_ANCHOR_CLEARING][ACTIVATION_FAILED]        = true,
+
+    [ACTIVATION_READY][ACTIVATION_CONNECTING]              = true,
+    [ACTIVATION_READY][ACTIVATION_FAILED]                  = true,
+
+    [ACTIVATION_CONNECTING][ACTIVATION_AT_TIP]             = true,
+    [ACTIVATION_CONNECTING][ACTIVATION_READY]              = true,
+    [ACTIVATION_CONNECTING][ACTIVATION_FAILED]             = true,
+
+    [ACTIVATION_AT_TIP][ACTIVATION_CONNECTING]             = true,
+    [ACTIVATION_AT_TIP][ACTIVATION_READY]                  = true,
+
+    [ACTIVATION_FAILED][ACTIVATION_IDLE]                   = true,
+};
+
+bool activation_transition_valid(enum activation_state from,
+                                 enum activation_state to)
+{
+    if (from < 0 || from >= ACTIVATION_NUM_STATES) return false;
+    if (to < 0 || to >= ACTIVATION_NUM_STATES) return false;
+    return g_activation_transitions[from][to];
+}
+
+/* ── Lifecycle ─────────────────────────────────────────────────── */
+
+void activation_controller_init(struct chain_activation_controller *ctl,
+                                struct main_state *ms,
+                                struct coins_view_cache *coins_tip,
+                                const struct chain_params *params,
+                                const char *datadir)
+{
+    memset(ctl, 0, sizeof(*ctl));
+    atomic_store(&ctl->state, ACTIVATION_IDLE);
+    zcl_mutex_init(&ctl->mutex);
+    ctl->ms = ms;
+    ctl->coins_tip = coins_tip;
+    ctl->params = params;
+    ctl->datadir = datadir;
+}
+
+void activation_controller_destroy(struct chain_activation_controller *ctl)
+{
+    if (!ctl) return;
+    zcl_mutex_destroy(&ctl->mutex);
+}
+
+/* ── State machine ─────────────────────────────────────────────── */
+
+enum activation_state activation_get_state(
+    const struct chain_activation_controller *ctl)
+{
+    return (enum activation_state)atomic_load(&ctl->state);
+}
+
+bool activation_set_state(struct chain_activation_controller *ctl,
+                          enum activation_state new_state,
+                          const char *reason)
+{
+    enum activation_state old =
+        (enum activation_state)atomic_load(&ctl->state);
+
+    if (old == new_state)
+        return true;
+
+    if (!activation_transition_valid(old, new_state)) {
+        fprintf(stderr, "BUG: activation ILLEGAL transition %s->%s (%s)\n",
+                activation_state_name(old),
+                activation_state_name(new_state),
+                reason ? reason : "");
+        event_emitf(EV_ACTIVATION_STATE_CHANGE, 0,
+                    "ILLEGAL %s->%s: %s",
+                    activation_state_name(old),
+                    activation_state_name(new_state),
+                    reason ? reason : "");
+        return false;
+    }
+
+    atomic_store(&ctl->state, (int)new_state);
+    printf("activation: %s->%s (%s)\n",
+           activation_state_name(old),
+           activation_state_name(new_state),
+           reason ? reason : "");
+    event_emitf(EV_ACTIVATION_STATE_CHANGE, 0,
+                "%s->%s: %s",
+                activation_state_name(old),
+                activation_state_name(new_state),
+                reason ? reason : "");
+    return true;
+}
+
+void activation_set_anchor_active(struct chain_activation_controller *ctl,
+                                  const char *reason)
+{
+    activation_set_state(ctl, ACTIVATION_ANCHOR_ACTIVE, reason);
+}
+
+void activation_clear_anchor(struct chain_activation_controller *ctl,
+                             const char *reason)
+{
+    if (activation_get_state(ctl) != ACTIVATION_ANCHOR_ACTIVE)
+        return;
+    activation_set_state(ctl, ACTIVATION_ANCHOR_CLEARING, reason);
+    activation_set_state(ctl, ACTIVATION_READY, "anchor_cleared");
+}
+
+void activation_boot_complete(struct chain_activation_controller *ctl,
+                              const char *reason)
+{
+    enum activation_state cur = activation_get_state(ctl);
+    if (cur == ACTIVATION_BOOT_PENDING)
+        activation_set_state(ctl, ACTIVATION_READY, reason);
+}
+
+/* ── Planning (pure) ───────────────────────────────────────────── */
+
+void activation_should_connect(struct activation_decision *out,
+                               const struct activation_request *req)
+{
+    memset(out, 0, sizeof(*out));
+
+    if (req->shutdown_requested) {
+        out->result = ACTIVATION_SKIP_SHUTDOWN;
+        snprintf(out->reason, sizeof(out->reason), "shutdown requested");
+        return;
+    }
+
+    if (req->current_state == ACTIVATION_ANCHOR_ACTIVE ||
+        req->anchor_active) {
+        out->result = ACTIVATION_SKIP_ANCHOR_BLOCKS;
+        snprintf(out->reason, sizeof(out->reason),
+                 "anchor active — block connection forbidden");
+        return;
+    }
+
+    if (req->current_state == ACTIVATION_ANCHOR_CLEARING) {
+        out->result = ACTIVATION_SKIP_ANCHOR_BLOCKS;
+        snprintf(out->reason, sizeof(out->reason),
+                 "anchor clearing in progress");
+        return;
+    }
+
+    if (req->awaiting_utxos) {
+        out->result = ACTIVATION_SKIP_AWAITING_UTXOS;
+        snprintf(out->reason, sizeof(out->reason),
+                 "awaiting UTXO set from P2P");
+        return;
+    }
+
+    if (req->current_state == ACTIVATION_CONNECTING) {
+        out->result = ACTIVATION_SKIP_ALREADY_RUNNING;
+        snprintf(out->reason, sizeof(out->reason),
+                 "activate_best_chain already running");
+        return;
+    }
+
+    if (req->current_state != ACTIVATION_READY &&
+        req->current_state != ACTIVATION_AT_TIP) {
+        out->result = ACTIVATION_SKIP_WRONG_STATE;
+        snprintf(out->reason, sizeof(out->reason),
+                 "state=%s, need ready or at_tip",
+                 activation_state_name(req->current_state));
+        return;
+    }
+
+    out->result = ACTIVATION_DO_CONNECT;
+    out->should_activate = true;
+    snprintf(out->reason, sizeof(out->reason), "approved (tip=%d)",
+             req->chain_tip_height);
+}
+
+/* ── Execution ─────────────────────────────────────────────────── */
+
+void activation_request_connect(struct chain_activation_controller *ctl,
+                                enum activation_request_source source,
+                                struct block *pblock,
+                                struct activation_exec_outcome *out)
+{
+    memset(out, 0, sizeof(*out));
+
+    /* Build request from current state */
+    struct activation_request req = {
+        .source = source,
+        .current_state = activation_get_state(ctl),
+        .shutdown_requested = false, /* caller can check externally */
+        .anchor_active = (snapsync_get_anchor() != NULL),
+        .awaiting_utxos = snapsync_awaiting_utxos(),
+        .chain_tip_height = active_chain_height(&ctl->ms->chain_active),
+    };
+
+    /* Check external shutdown flag */
+    extern volatile sig_atomic_t g_shutdown_requested;
+    req.shutdown_requested = (g_shutdown_requested != 0);
+
+    /* Plan */
+    struct activation_decision dec;
+    activation_should_connect(&dec, &req);
+
+    if (!dec.should_activate) {
+        out->result = ACTIVATION_EXEC_SKIPPED;
+        snprintf(out->reason, sizeof(out->reason), "%s", dec.reason);
+        ctl->skip_count++;
+        return;
+    }
+
+    /* Acquire mutex — only one thread connects at a time */
+    zcl_mutex_lock(&ctl->mutex);
+
+    /* Re-check state under mutex (another thread may have changed it) */
+    enum activation_state cur = activation_get_state(ctl);
+    if (cur != ACTIVATION_READY && cur != ACTIVATION_AT_TIP) {
+        zcl_mutex_unlock(&ctl->mutex);
+        out->result = ACTIVATION_EXEC_SKIPPED;
+        snprintf(out->reason, sizeof(out->reason),
+                 "state changed to %s under contention",
+                 activation_state_name(cur));
+        return;
+    }
+
+    /* Transition to CONNECTING */
+    activation_set_state(ctl, ACTIVATION_CONNECTING,
+                         source == ACTIVATION_SRC_BOOT ? "boot" :
+                         source == ACTIVATION_SRC_UTXO_REPLAY ? "replay" :
+                         source == ACTIVATION_SRC_NEW_BLOCK ? "new_block" :
+                         "p2p_trigger");
+
+    /* Execute */
+    struct validation_state vs;
+    validation_state_init(&vs);
+    bool ok = activate_best_chain(&vs, ctl->ms, ctl->coins_tip,
+                                  ctl->params, pblock, ctl->datadir);
+
+    struct block_index *tip = active_chain_tip(&ctl->ms->chain_active);
+    int tip_h = tip ? tip->nHeight : 0;
+
+    ctl->last_activation_us = GetTimeMicros();
+    ctl->last_tip_height = tip_h;
+    ctl->activation_count++;
+
+    /* Transition out of CONNECTING */
+    if (!ok) {
+        activation_set_state(ctl, ACTIVATION_READY, "activation_failed");
+        out->result = ACTIVATION_EXEC_FAILED;
+        snprintf(out->reason, sizeof(out->reason),
+                 "activate_best_chain failed at h=%d", tip_h);
+    } else {
+        activation_set_state(ctl, ACTIVATION_AT_TIP, "at_tip");
+        out->result = ACTIVATION_EXEC_OK;
+        out->new_tip_height = tip_h;
+        out->reached_tip = true;
+        snprintf(out->reason, sizeof(out->reason), "tip=%d", tip_h);
+    }
+
+    zcl_mutex_unlock(&ctl->mutex);
+}
+
+/* ── UTXO Wipe Protection ──────────────────────────────────────── */
+
+void activation_should_allow_utxo_wipe(struct utxo_wipe_decision *out,
+                                       enum activation_state state,
+                                       bool anchor_active)
+{
+    memset(out, 0, sizeof(*out));
+
+    if (state == ACTIVATION_ANCHOR_ACTIVE ||
+        state == ACTIVATION_ANCHOR_CLEARING ||
+        anchor_active) {
+        out->safe_to_wipe = false;
+        snprintf(out->reason, sizeof(out->reason),
+                 "anchor active — imported UTXOs must be preserved");
+        return;
+    }
+
+    out->safe_to_wipe = true;
+    snprintf(out->reason, sizeof(out->reason), "no anchor, wipe allowed");
+}
