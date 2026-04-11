@@ -17,8 +17,15 @@ here. AGENT1 batch-applies the queue once per wave cycle.
       Refuse-to-boot on non-OK verdict unless ZCL_ALLOW_CORRUPT_INDEX=1
 - [ ] agent2: wire `wallet_backup_start(&g_wallet_backup_cfg, &g_wallet)` after wallet_init
       Default config: backup_dir=~/wallet_backups, interval=3600, max_versions=168
-- [ ] agent2: replay 7 remaining node_db_wipe_utxos call sites through recovery_policy
-      Each site needs a reason string; refuse if policy_check_utxo_wipe returns non-ALLOW
+- [x] agent2: replay all 8 node_db_wipe_utxos call sites through recovery_policy
+      **DONE** in `e60925314` — new `boot_policy_wipe_utxos(reason)` helper
+      at the top of boot.c counts rows, loads policy from env, calls
+      `policy_check_utxo_wipe(cap, reason)`, refuses loudly when over cap.
+      Every site now carries a grep-able reason: `boot.reimport_utxos_flag`,
+      `boot.ldb_import_{legacy,underrun,prepare,failed_retry}`,
+      `boot.restore_no_utxos`, `boot.reset_to_genesis`,
+      `boot.stale_utxos_at_genesis`. This is the gate that would have
+      saved the 1.3M UTXOs on 2026-04-10. `./test_zcl` green.
 - [ ] agent2: wire block_index_loader/chain_state_validator/utxo_recovery_service
       (Depends on those services landing — wave 5 items #3/#4/#5)
 - [ ] agent2: wire `disk_monitor_start(&g_disk_monitor_cfg)` early in boot (wave 5 #7)
