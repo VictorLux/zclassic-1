@@ -44,9 +44,8 @@ static const char *const k_destructive[] = {
     "zcl_market_buy",
     "zcl_swap_initiate",
     "zcl_swap_participate",
-    /* meta-tools (avoid recursive / expensive calls) */
-    "zcl_self_test",
-    "zcl_logtail",
+    /* meta-tools */
+    "zcl_self_test",             /* avoid recursion */
     "zcl_rpc",                   /* arbitrary RPC — skip by default */
 };
 
@@ -56,6 +55,32 @@ static bool is_destructive(const char *name)
         if (strcmp(k_destructive[i], name) == 0)
             return true;
     return false;
+}
+
+/* ── Self-test argument overrides ─────────────────────────────── */
+/* Some tools have a required param the router has no default for, but
+ * a well-known, safe value still exercises the code path.  self_test
+ * looks up this table before skipping.  The overrides are strings so
+ * they survive router validation (values are re-parsed per call). */
+static const struct {
+    const char *tool;
+    const char *args_json;
+} k_self_test_overrides[] = {
+    /* Block 1 exists on every synced node; verbosity defaults to JSON. */
+    { "zcl_getblock",    "{\"block_id\":\"1\"}" },
+    /* Safe: returns a "not found" body for an unregistered name. */
+    { "zcl_name_resolve", "{\"name\":\"__self_test_probe__\"}" },
+};
+
+static const char *self_test_override_args(const char *tool)
+{
+    for (size_t i = 0;
+         i < sizeof(k_self_test_overrides)/sizeof(k_self_test_overrides[0]);
+         i++) {
+        if (strcmp(k_self_test_overrides[i].tool, tool) == 0)
+            return k_self_test_overrides[i].args_json;
+    }
+    return NULL;
 }
 
 /* True if any required param has no default value we can synthesize. */
@@ -109,18 +134,26 @@ static int h_zcl_self_test(const struct mcp_request *req,
         const char *status;
         const char *reason = NULL;
 
+        const char *override = self_test_override_args(r->name);
+        struct json_value override_val = {0};
+        bool have_override = false;
+        if (override && json_read(&override_val, override, strlen(override)))
+            have_override = true;
+
         if (is_destructive(r->name)) {
             status = "skipped";
             reason = "destructive";
             skipped++;
-        } else if (has_unfillable_required(r)) {
+        } else if (!have_override && has_unfillable_required(r)) {
             status = "skipped";
             reason = "required-param-without-default";
             skipped++;
         } else {
-            /* Call the tool with empty args — optional-default params
-             * will fall through to router defaults. */
-            char *body = mcp_router_dispatch(r->name, NULL);
+            /* Call the tool with the override args if we have one;
+             * otherwise empty args — optional-default params will fall
+             * through to router defaults. */
+            char *body = mcp_router_dispatch(
+                r->name, have_override ? &override_val : NULL);
             if (!body) {
                 status = "fail";
                 reason = "no-body";
@@ -135,6 +168,8 @@ static int h_zcl_self_test(const struct mcp_request *req,
             }
             free(body);
         }
+
+        if (have_override) json_free(&override_val);
 
         if (pos + 256 >= cap) break;
         if (!first) out[pos++] = ',';
