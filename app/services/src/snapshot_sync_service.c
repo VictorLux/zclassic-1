@@ -14,6 +14,7 @@
 
 #include "services/snapshot_sync_service.h"
 #include "services/chain_state_repository.h"
+#include "services/recovery_policy.h"
 #include "chain/chain.h"
 #include "core/serialize.h"
 #include "models/database.h"
@@ -240,6 +241,30 @@ static bool snapsync_begin_receive_write(struct node_db *ndb, void *ctx)
     }
     if (!node_db_begin(ndb))
         return false;
+
+    /* ── Recovery policy gate ──────────────────────────────────────
+     * This is THE call site from the 2026-04-10 incident. A bad boot
+     * path offered a synthetic anchor, triggered snapsync_begin_receive,
+     * and the raw primitive below wiped 1.3M UTXOs. The policy is the
+     * last line of defence — a healthy node with significant UTXO
+     * content should not silently drop everything to accept a
+     * snapshot. An operator who wants to reset does so explicitly by
+     * raising ZCL_MAX_UTXO_WIPE_ROWS. */
+    struct recovery_policy rp;
+    policy_load_from_env(&rp);
+    int64_t existing = node_db_utxo_count(ndb);
+    if (existing < 0) existing = 0;
+    enum policy_decision pd = policy_check_utxo_wipe(
+        &rp, existing, "snapsync.begin_receive");
+    if (pd != POLICY_ALLOW) {
+        fprintf(stderr,
+                "[snapsync] begin_receive: recovery_policy refused wipe "
+                "(code=%s rows=%lld) — snapshot rejected\n",
+                policy_decision_name(pd), (long long)existing);
+        node_db_rollback(ndb);
+        return false;
+    }
+
     if (!node_db_wipe_utxos(ndb)) {
         node_db_rollback(ndb);
         return false;
@@ -459,9 +484,29 @@ static bool snapsync_finalize_write(struct node_db *ndb, void *ctx)
         fprintf(stderr, "[snapsync] SHA3 FAILED!\n  Expected: %s\n  Got:      %s\n",
                 exp, got);
 
-        if (!node_db_wipe_utxos(ndb))
+        /* ── Recovery policy gate ──────────────────────────────────
+         * The rows about to be wiped are the partial receive buffer
+         * — data we just loaded from a peer that failed SHA3. Amount
+         * is received_utxos (what this receive session wrote). If
+         * the policy refuses we leave the bad data in place and log
+         * loudly: the state machine is already SNAPSYNC_FAILED so
+         * nothing will serve it, and an operator can raise the cap
+         * to force cleanup. */
+        int64_t partial = (int64_t)svc->received_utxos;
+        struct recovery_policy rp;
+        policy_load_from_env(&rp);
+        enum policy_decision pd = policy_check_utxo_wipe(
+            &rp, partial, "snapsync.finalize_sha3_fail");
+        if (pd != POLICY_ALLOW) {
+            fprintf(stderr,
+                    "snapshot finalize: recovery_policy refused cleanup wipe "
+                    "(code=%s rows=%lld) — corrupt partial state retained "
+                    "until operator raises cap\n",
+                    policy_decision_name(pd), (long long)partial);
+        } else if (!node_db_wipe_utxos(ndb)) {
             fprintf(stderr,
                     "snapshot finalize: failed to wipe UTXOs after SHA3 mismatch\n");
+        }
         if (!snapsync_exit_turbo_mode(svc))
             fprintf(stderr,
                     "snapshot finalize: failed to restore normal mode after SHA3 mismatch\n");
@@ -949,10 +994,27 @@ bool snapsync_check_stall(void)
     snapsync_reset(svc);
 
     /* Wipe partial UTXOs so the next offer isn't rejected.
-     * Committed batches (every 100K) survive the rollback in reset. */
+     * Committed batches (every 100K) survive the rollback in reset.
+     *
+     * Same gating as the SHA3-fail path — the rows here are the
+     * partial receive buffer from the stalling peer. Amount is
+     * received_utxos (at the time of stall). If the policy refuses,
+     * the partial data stays and the operator can raise the cap. */
     if (svc->ndb && svc->ndb->open) {
-        node_db_wipe_utxos(svc->ndb);
-        printf("[snapsync] Wiped partial UTXOs after stall reset\n");
+        int64_t partial = (int64_t)received;
+        struct recovery_policy rp;
+        policy_load_from_env(&rp);
+        enum policy_decision pd = policy_check_utxo_wipe(
+            &rp, partial, "snapsync.stall_cleanup");
+        if (pd != POLICY_ALLOW) {
+            fprintf(stderr,
+                    "[snapsync] stall cleanup: recovery_policy refused wipe "
+                    "(code=%s rows=%lld) — partial data retained\n",
+                    policy_decision_name(pd), (long long)partial);
+        } else {
+            node_db_wipe_utxos(svc->ndb);
+            printf("[snapsync] Wiped partial UTXOs after stall reset\n");
+        }
     }
 
     /* Reset sync state so the node can accept a new snapshot offer.
