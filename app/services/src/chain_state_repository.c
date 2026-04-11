@@ -214,6 +214,29 @@ static void csr_emit_rejected_event(struct chain_state_repository *csr,
 
 /* ── Public API ─────────────────────────────────────────────── */
 
+/* Process-lifetime singleton. Storage is zero-initialized by the C
+ * runtime; the mutex is brought to life exactly once by pthread_once
+ * the first time csr_instance() is called. Boot wires real pointers
+ * later via csr_init(csr_instance(), ...). */
+static struct chain_state_repository g_csr_singleton;
+static pthread_once_t g_csr_singleton_once = PTHREAD_ONCE_INIT;
+
+static void csr_singleton_once_init(void)
+{
+    pthread_mutex_init(&g_csr_singleton.lock, NULL);
+    g_csr_singleton.max_utxo_orphan_rows  = CSR_DEFAULT_MAX_ORPHAN_ROWS;
+    g_csr_singleton.stale_index_height_gap = CSR_DEFAULT_STALE_INDEX_GAP;
+    /* initialized stays false until csr_init is called with real
+     * pointers — any commit attempt before that returns
+     * CSR_REJECTED_NOT_INITIALIZED with no side effects. */
+}
+
+struct chain_state_repository *csr_instance(void)
+{
+    pthread_once(&g_csr_singleton_once, csr_singleton_once_init);
+    return &g_csr_singleton;
+}
+
 void csr_init(struct chain_state_repository *csr,
               struct block_map        *block_map,
               struct active_chain     *chain_active,
@@ -223,8 +246,18 @@ void csr_init(struct chain_state_repository *csr,
               int64_t                 *wallet_scan_h)
 {
     if (!csr) return;
-    memset(csr, 0, sizeof(*csr));
-    pthread_mutex_init(&csr->lock, NULL);
+
+    /* Stack-allocated repositories (tests, short-lived helpers) need
+     * a full reset and a fresh mutex. The singleton already has its
+     * mutex set up by pthread_once — never touch it here, just assign
+     * the field pointers under the existing lock so callers that are
+     * mid-commit observe a consistent view. */
+    if (csr != &g_csr_singleton) {
+        memset(csr, 0, sizeof(*csr));
+        pthread_mutex_init(&csr->lock, NULL);
+    }
+
+    pthread_mutex_lock(&csr->lock);
     csr->block_map        = block_map;
     csr->chain_active     = chain_active;
     csr->pindex_best_hdr  = pindex_best_hdr;
@@ -233,13 +266,21 @@ void csr_init(struct chain_state_repository *csr,
     csr->wallet_scan_h    = wallet_scan_h;
     csr->max_utxo_orphan_rows  = CSR_DEFAULT_MAX_ORPHAN_ROWS;
     csr->stale_index_height_gap = CSR_DEFAULT_STALE_INDEX_GAP;
+    csr->commits_ok = 0;
+    memset(csr->commits_rejected, 0, sizeof(csr->commits_rejected));
     csr->initialized = true;
+    pthread_mutex_unlock(&csr->lock);
 }
 
 void csr_free(struct chain_state_repository *csr)
 {
     if (!csr || !csr->initialized) return;
-    pthread_mutex_destroy(&csr->lock);
+    /* Singleton lives for the whole process — its mutex is owned by
+     * pthread_once and must not be destroyed. Just clear the flag so
+     * subsequent commits are rejected cleanly. */
+    if (csr != &g_csr_singleton) {
+        pthread_mutex_destroy(&csr->lock);
+    }
     csr->initialized = false;
 }
 

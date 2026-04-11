@@ -772,6 +772,86 @@ static int t_result_names(void)
     return failures;
 }
 
+/* ── Singleton tests ─────────────────────────────────────────
+ * These exercise the process-lifetime singleton that call-site
+ * migrations reach through csr_instance(). The tests intentionally
+ * wire and unwire the singleton to keep the suite reentrant. */
+
+static int t_singleton_identity(void)
+{
+    int failures = 0;
+    struct chain_state_repository *a = csr_instance();
+    struct chain_state_repository *b = csr_instance();
+    bool ok = (a != NULL) && (a == b);
+    CSR_RUN("csr: csr_instance returns stable singleton", ok);
+    return failures;
+}
+
+static int t_singleton_uninitialized_rejects(void)
+{
+    /* The singleton starts its life before boot wires pointers.
+     * Any commit attempt in that window must be rejected cleanly
+     * with CSR_REJECTED_NOT_INITIALIZED and no side effects. */
+    int failures = 0;
+    struct chain_state_repository *csr = csr_instance();
+
+    /* Guarantee a pristine state for this test even if an earlier
+     * test already wired the singleton: flip initialized off so the
+     * NOT_INITIALIZED path runs; we'll restore anything we changed. */
+    bool was_initialized = csr->initialized;
+    csr->initialized = false;
+
+    struct chain_state_commit c = {0};
+    /* new_tip is NULL; result must be NOT_INITIALIZED (not NULL_INPUT)
+     * because the initialized gate runs before NULL validation. */
+    enum csr_result rc = csr_commit_tip(csr, &c);
+    bool ok = (rc == CSR_REJECTED_NOT_INITIALIZED);
+
+    csr->initialized = was_initialized;
+    CSR_RUN("csr: singleton rejects commits before csr_init", ok);
+    return failures;
+}
+
+static int t_singleton_init_wires_fixture(void)
+{
+    /* Wire the singleton to a local fixture, commit a genesis tip,
+     * and verify the event + counter fire. Afterwards restore the
+     * singleton to uninitialized so the rest of the suite isn't
+     * affected by our dangling pointers. */
+    int failures = 0;
+    csr_test_install_observer();
+    struct csr_fixture f; csr_fix_init(&f);
+    struct chain_state_repository *csr = csr_instance();
+    csr_init(csr, &f.bm, &f.chain, &f.header_tip, &f.coins_tip, NULL, NULL);
+
+    uint64_t before_ok = csr->commits_ok;
+    int before_events = atomic_load(&g_commit_events);
+
+    struct block_index *g = csr_fix_add(&f, 0xf1);
+    struct chain_state_commit c = csr_make_commit(g, "singleton.test");
+    enum csr_result rc = csr_commit_tip(csr, &c);
+
+    bool ok = (rc == CSR_OK)
+           && (csr->commits_ok == before_ok + 1u)
+           && (atomic_load(&g_commit_events) == before_events + 1);
+    CSR_RUN("csr: singleton wired via csr_init commits cleanly", ok);
+
+    /* Unwire: csr_free on the singleton clears `initialized` without
+     * touching its pthread_once-owned mutex. Also null the dangling
+     * field pointers so any post-test access is obviously wrong
+     * rather than quietly reading freed fixture memory. */
+    csr_free(csr);
+    csr->block_map = NULL;
+    csr->chain_active = NULL;
+    csr->pindex_best_hdr = NULL;
+    csr->coins_tip = NULL;
+    csr->ndb = NULL;
+    csr->wallet_scan_h = NULL;
+
+    csr_fix_free(&f);
+    return failures;
+}
+
 /* ── Test runner ─────────────────────────────────────────── */
 
 int test_chain_state_repo(void)
@@ -806,6 +886,9 @@ int test_chain_state_repo(void)
     failures += t_tunables();
     failures += t_concurrent();
     failures += t_result_names();
+    failures += t_singleton_identity();
+    failures += t_singleton_uninitialized_rejects();
+    failures += t_singleton_init_wires_fixture();
 
     /* Reset observers so we don't interfere with the rest of the suite. */
     event_clear_observers(EV_CHAIN_TIP_COMMIT);

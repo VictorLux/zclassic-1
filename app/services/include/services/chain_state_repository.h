@@ -130,6 +130,20 @@ void csr_init(struct chain_state_repository *csr,
 
 void csr_free(struct chain_state_repository *csr);
 
+/* ── Process-lifetime singleton ─────────────────────────────────
+ * Call-site migrations reach the repository through this accessor
+ * rather than threading a pointer through every function. The
+ * singleton's mutex is lazily initialized on first access (via
+ * pthread_once) so callers never hit an uninitialized lock, but
+ * `initialized` stays false until boot wires real pointers with
+ * csr_init(csr_instance(), ...). Any commit attempt before that
+ * returns CSR_REJECTED_NOT_INITIALIZED with no side effects.
+ *
+ * Never pass this pointer to csr_free() in normal operation — the
+ * singleton lives for the entire process. csr_free is a no-op on
+ * the singleton in any case (its mutex is owned by pthread_once). */
+struct chain_state_repository *csr_instance(void);
+
 /* ── Mutation entry point ─────────────────────────────────────── */
 enum csr_result csr_commit_tip(struct chain_state_repository *csr,
                                 const struct chain_state_commit *commit);
