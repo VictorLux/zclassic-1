@@ -134,6 +134,11 @@ enum event_type {
     EV_DISK_CRITICAL,            /* payload: "path=... free=N refuse_thr=N" */
     EV_DISK_OK,                  /* payload: "path=... free=N (recovered)"  */
 
+    /* ── Database maintenance ──────────────────────── */
+    EV_DB_MAINTENANCE_START,     /* payload: "op=wal|analyze|vacuum" */
+    EV_DB_MAINTENANCE_DONE,      /* payload: "op=... elapsed_ms=N ..." */
+    EV_DB_MAINTENANCE_FAILED,    /* payload: "op=... reason=..." */
+
     EV_NUM_TYPES                 /* sentinel — must be last */
 };
 

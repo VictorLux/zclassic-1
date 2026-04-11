@@ -372,6 +372,9 @@ const char *event_type_name(enum event_type type)
         [EV_DISK_LOW]                = "disk.low",
         [EV_DISK_CRITICAL]           = "disk.critical",
         [EV_DISK_OK]                 = "disk.ok",
+        [EV_DB_MAINTENANCE_START]    = "db.maint_start",
+        [EV_DB_MAINTENANCE_DONE]     = "db.maint_done",
+        [EV_DB_MAINTENANCE_FAILED]   = "db.maint_failed",
     };
     if (type >= 0 && type < EV_NUM_TYPES && names[type])
         return names[type];

@@ -21,6 +21,13 @@ here. AGENT1 batch-applies the queue once per wave cycle.
       Each site needs a reason string; refuse if policy_check_utxo_wipe returns non-ALLOW
 - [ ] agent2: wire block_index_loader/chain_state_validator/utxo_recovery_service
       (Depends on those services landing — wave 5 items #3/#4/#5)
+- [ ] agent2: wire `disk_monitor_start(&g_disk_monitor_cfg)` early in boot (wave 5 #7)
+      Location: after datadir resolution, before any SQLite opens so the
+      refuse-when-critical flag is armed before the first write can happen.
+      Default cfg: datadir = resolved datadir path, env overrides for
+      ZCL_DISK_WARN_BYTES / ZCL_DISK_REFUSE_BYTES / ZCL_DISK_POLL.
+      Read `disk_monitor_is_critical()` in: mempool accept path,
+      process_block write path, wallet_backup_run_once (skip backup if critical).
 
 ## History
 
