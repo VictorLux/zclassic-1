@@ -40,6 +40,7 @@ zcl_persist_*/
 zclassic23-asan
 speedrun
 export_snapshot
+crash_recovery_test
 
 # Editor / OS
 .DS_Store

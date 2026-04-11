@@ -160,6 +160,17 @@ explorer-css: app/views/src/explorer_css.css
 test: test_zcl
 	ulimit -s unlimited && ./test_zcl
 
+# Crash recovery harness: fork zclassic23, SIGKILL at random points,
+# restart, and assert data-integrity invariants. Needs a pre-seeded
+# datadir (skips trivially if none exists — see tool header). Build
+# depends on the node binary and the CLI RPC helper.
+crash_recovery_test: tools/crash_recovery_test.c
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pthread -o $@ $<
+
+.PHONY: test-crash
+test-crash: crash_recovery_test zclassic23 zcl-rpc
+	./crash_recovery_test
+
 .PHONY: bench-sync
 bench-sync: zclassic23 bench_fresh_sync
 	./bench_fresh_sync
