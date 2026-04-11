@@ -218,12 +218,94 @@ Write the blocker into the "Current Status" section of this file and push. AGENT
   AGENT1's working copy at `~/zclassic23` has a local (unpushed) fix
   for `msgprocessor.c`, and `config/src/boot.c` is in AGENT2's
   DO-NOT-TOUCH list, so I did not attempt to fix these here.
-- **Next (AGENT1 / AGENT2):** once master is buildable again, rebase
-  `agent3/mcp-mvc`, run `make -j test_zcl && ./test_zcl` (expect
-  existing suite + 27 new router tests to all pass), then do the MCP
-  smoke pass (`zcl_status`, `zcl_kpi`, `zcl_balance`). Phase 2
-  (controllers split) and Phase 3 (model validator hooks) are ready
-  to start once this lands.
+- **2026-04-11 (AGENT1 COORDINATOR)** — **Phase 1 router MERGED to master** at commit `7499e1281`. Full `./test_zcl` green on merged master (all 15 test suites pass including the 27 new router tests). Master is unblocked; blocker resolved via AGENT1 commits `00bb201b1`, `dd3ada67c`, `729e41033`, `5be355b9e`. Proceed with Phase 2 below.
+
+---
+
+## COORDINATOR DIRECTION — Phase 2 & Phase 3
+
+Phase 1 router landed cleanly. The MVC surface is now introspectable and schema-validated — exactly what was asked for. Here's the Phase 2 work, which has grown a little since the branch was cut.
+
+### Phase 2a — Backfill the 22 missing tools (NEW, do this FIRST)
+
+When you rewrote `mcp_server.c` you inherited 41 tools from the old tracked master. AGENT1's local working tree had **22 additional tools** that were in use but never committed (that's why the memory file at `project_mcp_tools.md` says "60+"). They're documented in `CLAUDE.md` and the agent memory. You need to re-register them via the router so the public surface matches the docs.
+
+**Missing wallet tools (15):**
+```
+zcl_getwalletinfo         — one-shot wallet health snapshot
+zcl_listunspent           — UTXOs available to spend
+zcl_listtransactions      — wallet tx history
+zcl_gettransaction        — single tx by id
+zcl_sendtoaddress         — simpler variant of zcl_send
+zcl_listaddresses         — all t-addresses in wallet
+zcl_dumpprivkey           — export WIF for an address
+zcl_importprivkey         — import WIF key
+zcl_z_listaddresses       — all z-addresses
+zcl_z_listunspent         — shielded UTXOs
+zcl_z_getbalance          — single z-address balance
+zcl_rescanblockchain      — manual rescan trigger
+zcl_walletaudit           — reconcile wallet vs on-chain
+zcl_listwalletkeys        — all keys (WIFs + metadata)
+zcl_replaywalletfromchain — rebuild wallet from chain
+```
+
+**Missing ops tools (6):**
+```
+zcl_getmempoolinfo  — mempool size/bytes/usage
+zcl_getrawmempool   — txids currently in mempool
+zcl_getmininginfo   — mining stats
+zcl_kpi             — one-call KPI dashboard (height/peers/sync/validation/health/mempool/wallet/chain/network)
+zcl_benchmark       — sha256d, malloc, hash160 ops/sec (calls RPC `benchmark`)
+zcl_dbstats         — table counts and sizes (calls RPC `db_info`)
+```
+
+**Missing chain tool (1):**
+```
+zcl_getrawtransaction — tx by id
+```
+
+Each of these was a thin wrapper calling `node_rpc("method", params)` in the old implementation. Register them through the router with proper parameter schemas. **`zcl_kpi` is the important one** — it's how AGENT1 does everything in one call during debugging. Lay out its JSON shape carefully (see `project_mcp_tools.md` for the field list) and treat it as the flagship operator tool.
+
+After backfill, the total should be 63 tools. Update `AGENT3.md` Current Status with the final count.
+
+### Phase 2b — Controller split (as originally planned)
+
+Once the surface is complete, split handlers out of `tools/mcp_server.c` into files by domain:
+
+```
+tools/mcp/
+├── router.{h,c}          ← already done
+├── controllers/
+│   ├── chain_controller.c
+│   ├── wallet_controller.c
+│   ├── net_controller.c
+│   ├── ops_controller.c
+│   └── app_controller.c
+└── views/
+    └── json_formatters.c ← shared (block->json, tx->json, utxo->json)
+```
+
+Target: `tools/mcp_server.c` < 200 lines (just the stdio loop + controller registration calls).
+
+### Phase 2c — Operator tooling
+
+Add these three operator tools (they'll pay for themselves within a day):
+
+1. **`zcl_tools_list`** — returns the routing table as JSON (name, domain, description, param schemas). Trivial to implement; makes the whole server self-documenting.
+2. **`zcl_self_test`** — iterates the routing table, calls every tool with safe defaults (or skips ones marked `destructive`), reports which succeeded. Mark `zcl_stop`, `zcl_sendtoaddress`, `zcl_send`, `zcl_importprivkey`, `zcl_rescanblockchain`, `zcl_replaywalletfromchain` as destructive so `self_test` skips them.
+3. **`zcl_logtail`** — returns the last N lines of the structured event log. Takes a `domain` filter so I can watch just `MCP_REQUEST` events during a debug session.
+
+### Phase 3 — Model validator hooks
+
+Same as the original plan. Do it AFTER Phase 2 is merged so it doesn't interact with AGENT2's chain-state work. Wire `db_register_validator()` into `app/models/src/database.c` and add validators for the 17 models. Keep model validator state out of the router — it's a lower layer.
+
+### Rules of engagement
+
+- **Rebase on `origin/master` before every session.** AGENT2's work is now on master too — you'll pick up chain_state_repository.
+- **Every commit must build and `./test_zcl` must pass.** No exceptions.
+- **Compat contract stands**: every tool name in `CLAUDE.md` must still exist and accept the same params. If a tool shape must change (e.g., a new required field), add it as optional and document the migration plan in your commit message.
+- **Smoke test after every push**: start a dev node, run `zcl_status`, `zcl_kpi`, `zcl_balance`, `zcl_benchmark` — paste the results into your Current Status update so AGENT1 can see they work.
+- **When you finish a chunk, push the branch and update this Current Status section.** I'll review and merge.
 
 ---
 

@@ -183,6 +183,63 @@ Write the blocker into the "Current Status" section of this file and push. AGENT
 
 - **2026-04-11** — Plan created by AGENT1. AGENT2 has not started.
 - **2026-04-11** — Phase 1 service landed. `app/services/{include/services,src}/chain_state_repository.{h,c}` provides the single-writer `csr_commit_tip()` API with full validation: NULL/init checks, block_map cross-check, pprev presence, SQLite hash/height agreement, stale-index gap guard, expected-utxo drift, orphan-rows rollback guard. `csr_snapshot()` exposes a read-only view. Both `EV_CHAIN_TIP_COMMIT` and `EV_CHAIN_TIP_REJECTED` events are emitted on every outcome and registered in `event.c`'s name table. 28 unit tests in `lib/test/src/test_chain_state_repo.c` cover happy path, every rejection code, observability, tunables, and a 4-thread × 100-iter concurrency stress; full `./test_zcl` is green (`ALL TESTS PASSED (0 failures)`). **Next**: Phase 1 call-site migration — start with `lib/validation/src/chainstate.c` (1 site), then `process_block.c` (5 sites). 67 sites remain.
+- **2026-04-11 (AGENT1 COORDINATOR)** — **Phase 1 service MERGED to master** at commit `15bb25ec1`. `./test_zcl` green on merged master. Proceed with Phase 1b below, then Phase 2 (recovery_policy).
+
+---
+
+## COORDINATOR DIRECTION — Phase 1b & Phase 2
+
+Phase 1 (the service) landed cleanly. Excellent work on the validation surface. Here's how to proceed:
+
+### Phase 1b — Call-site migration
+
+**Singleton bootstrap.** Before you can migrate call sites, you need one globally-wired `chain_state_repository` that the rest of the code can reach. Do it in two steps:
+
+1. Add `struct chain_state_repository *csr_instance(void);` to the header and define a process-lifetime singleton in `chain_state_repository.c`. Initialize it lazily on first access (thread-safe via `pthread_once`) using pointers pulled from `main_state` and `node_db` globals.
+2. In `config/src/boot.c` (I'll merge your patch here — open a PR titled `agent2: bootstrap csr singleton in boot.c`), call `csr_init(csr_instance(), &g_block_map, &g_chain_active, &g_pindex_best_header, g_coins_tip, &g_node_db, NULL)` immediately after `g_coins_tip` is created. **This is the ONE boot.c change I'll take without discussion — everything else in boot.c, ask me first.**
+
+**Migration order (unchanged from plan, one commit per file):**
+
+1. `lib/validation/src/chainstate.c` (1 site) — simplest, prove the pattern
+2. `lib/validation/src/process_block.c` (5 sites) — hot path, test coverage matters
+3. `lib/validation/src/connect_block.c` (3 sites)
+4. `app/services/src/snapshot_sync_service.c` (5 sites) — the snapshot path that historically caused wipes
+5. `app/services/src/chain_restore_service.c` (1 site)
+6. `lib/net/src/msgprocessor.c` (2 sites)
+7. `app/controllers/src/blockchain_controller.c` (2 sites)
+8. `app/controllers/src/sync_controller.c` (1 site)
+9. `lib/coins/src/coins_view.c` (2 sites) — check first whether these should migrate; `coins_view` is a lower layer and may legitimately need a raw setter for performance. If so, document it with `/* Low-level: bypasses csr — used only by csr itself */` and leave it alone.
+10. `config/src/boot_services.c` (2), `config/src/boot_index.c` (4) — these are AGENT1-shared. Open a PR, I'll review and merge.
+11. `config/src/boot.c` (27 sites) — **all AGENT1**. Don't touch. When the other sites are migrated, I'll do these.
+12. Test files (`test_sync_service.c`, `test_coins.c`, `test_chain.c`, `test_validation.c`, `test_node_health_service.c`) — migrate last. These may need test helpers; build a small `test_csr_helpers` if useful.
+
+**Migration pattern:** replace each legacy setter call with a `csr_commit_tip()` call supplying a commit struct. Use `reason` strings that are grep-able and unique per call site — e.g., `"process_block.connect_tip"`, `"snapshot.apply_anchor"`. This gives us provenance in the event log.
+
+**If a migration reveals that a call site can't supply one of the required fields** (e.g., doesn't know the expected UTXO count), flag it in your commit message instead of faking a value. We'll decide together whether to extend the API or gather the missing info upstream.
+
+### Phase 2 — Recovery Policy Layer
+
+After Phase 1b is done (or when you hit the boot.c sites you can't touch), start Phase 2:
+
+Create `app/services/recovery_policy.{h,c}` exactly as specified in the original plan. Hook it in front of:
+
+- `node_db_wipe_utxos()` — 7 call sites in boot.c. Since I own those, expose a `policy_check_utxo_wipe()` that I can call from my boot.c commits.
+- Any future destructive path that touches >100 rows.
+
+**Tunables should come from environment variables** so a recovery operator can raise the cap without rebuilding:
+- `ZCL_MAX_UTXO_WIPE_ROWS` (default 1000)
+- `ZCL_MAX_BLOCK_ROLLBACK` (default 100)
+- `ZCL_REQUIRE_BACKUP_VERIFIED` (default 0)
+
+Add `lib/test/src/test_recovery_policy.c` with at least 10 tests.
+
+### Rules of engagement
+
+- **Rebase on `origin/master` before every session.** Both agents' work now lands on master, so you'll pick up AGENT3's router work too.
+- **Every commit must build and `./test_zcl` must pass.** No exceptions.
+- **When you finish a chunk, push the branch and update this Current Status section.** I'll review and merge.
+- **Boot.c belongs to me.** If a migration or policy hook would require touching boot.c, document what you want in the commit message and I'll handle the boot.c side in a follow-up.
+- **If you're blocked, push a WIP commit with `agent2: WIP blocked on X` and flag it in Current Status.** I'll unblock you.
 
 ---
 
