@@ -80,7 +80,6 @@ These are mine. Listing here for transparency so AGENT2/AGENT3 can see what's co
 - [ ] **Sapling key scrubbing** — audit every code path that touches spending keys (`sk`, `ask`, `nsk`, `ovk`). `explicit_bzero` on free/scope-exit. Write `test_key_scrub.c` that verifies freed key memory is zeroed.
 - [ ] **Watch-only address support** — `zcl_importaddress` RPC + MCP tool. Track balance and transactions for addresses without private keys. No spending capability.
 - [ ] **MCP replay recorder** — `tools/mcp/replay.{h,c}` — ring buffer of last 100 MCP requests+responses. `zcl_replay_dump` tool to retrieve. `zcl_replay_exec` to replay one recorded request.
-- [ ] **Dockerfile + docker-compose** — reproducible dev environment. `Dockerfile` builds from source, `docker-compose.yml` with node + test runner services.
 - [ ] **Architecture diagrams** — `docs/ARCHITECTURE_DIAGRAMS.md` with ASCII/mermaid diagrams: boot sequence, P2P message flow, block validation pipeline, wallet tx lifecycle, MCP request routing.
 
 ### Stretch

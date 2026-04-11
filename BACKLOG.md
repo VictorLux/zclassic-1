@@ -43,7 +43,6 @@ Long-running queue of unscheduled work. When an agent clears its wave priority l
 | observability  | MCP request/response recording for replay                     | M     |        | for debugging + regression |
 | tooling        | `make ci` target that runs test + fuzz-ci + coverage          | S     |        |       |
 | tooling        | `zcl-cli` subcommand for common ops                           | M     |        | wrap the important RPC calls |
-| tooling        | Dockerfile + docker-compose for reproducible dev env          | S     |        |       |
 | tooling        | Release builder: tagged binary + SHA3 + signature             | M     |        |       |
 | tests          | 1000-iteration fuzzer CI run (weekly)                         | S     |        | catch rare bugs after merge |
 | tests          | Property-based tests for tx validation                        | M     |        | quickcheck-style |
