@@ -378,6 +378,7 @@ const char *event_type_name(enum event_type type)
         [EV_MEMPOOL_EVICT]           = "mempool.evict",
         [EV_MEMPOOL_EXPIRE]          = "mempool.expire",
         [EV_ADDRMAN_CORRUPT]         = "addrman.corrupt",
+        [EV_PEER_THROTTLED]          = "peer.throttled",
     };
     if (type >= 0 && type < EV_NUM_TYPES && names[type])
         return names[type];

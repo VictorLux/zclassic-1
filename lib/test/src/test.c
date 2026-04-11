@@ -81,6 +81,7 @@ int main(void)
     failures += test_mcp_e2e();
     failures += test_db_validators();
     failures += test_peer_scoring();
+    failures += test_peer_bandwidth();
     failures += test_secrets_hygiene();
     failures += test_block_index_integrity();
     failures += test_wallet_backup();

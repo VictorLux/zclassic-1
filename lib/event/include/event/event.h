@@ -146,6 +146,9 @@ enum event_type {
     /* ── Addrman integrity ─────────────────────────── */
     EV_ADDRMAN_CORRUPT,          /* payload: "verdict=NAME body_size=N ..." */
 
+    /* ── Peer bandwidth (wave 6 #6) ────────────────── */
+    EV_PEER_THROTTLED,           /* payload: "peer=N dir=up|down bytes=N bucket=N/N" */
+
     EV_NUM_TYPES                 /* sentinel — must be last */
 };
 

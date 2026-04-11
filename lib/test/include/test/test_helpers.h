@@ -237,6 +237,7 @@ int test_mcp_metrics(void);
 int test_mcp_e2e(void);
 int test_db_validators(void);
 int test_peer_scoring(void);
+int test_peer_bandwidth(void);
 int test_secrets_hygiene(void);
 int test_block_index_integrity(void);
 int test_wallet_backup(void);
