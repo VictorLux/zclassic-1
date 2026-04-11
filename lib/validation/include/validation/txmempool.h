@@ -134,6 +134,42 @@ void tx_mempool_query_hashes(struct tx_mempool *pool,
                               struct uint256 *out, size_t max_out,
                               size_t *num_out);
 
+/* ── Lightweight view snapshot (hash + fee + size + time) ──
+ *
+ * Policy modules (mempool_limits, fee estimation) need a stable
+ * read-only snapshot of the fields they care about without
+ * copying whole transactions. This accessor copies at most
+ * `max_out` tuples while holding `pool->cs` and returns how
+ * many were actually copied. Callers sort/filter in userspace
+ * and re-issue removals via `tx_mempool_remove(hash)` — which
+ * re-acquires the lock, so the snapshot is a point-in-time view
+ * and may be stale by the time a removal runs. That is safe:
+ * `tx_mempool_remove` is a no-op if the hash is gone. */
+struct tx_mempool_entry_view {
+    struct uint256 hash;
+    int64_t fee;
+    size_t  tx_size;
+    int64_t time;
+};
+
+size_t tx_mempool_collect_views(struct tx_mempool *pool,
+                                 struct tx_mempool_entry_view *out,
+                                 size_t max_out);
+
+/* ── Post-add hook ───────────────────────────────────────────
+ *
+ * `tx_mempool_add_unchecked` calls the registered hook (if any)
+ * after a successful add, with the pool lock released. This is
+ * the seam `mempool_limits_start` uses to enforce size/count
+ * caps on every acceptance without introducing a reverse
+ * dependency from lib/validation into app/services. The hook
+ * may re-enter mempool operations (remove, collect_views, etc.)
+ * but must not itself call `tx_mempool_add_unchecked` — that
+ * would recurse forever. A NULL hook disables the feature.
+ */
+typedef void (*tx_mempool_post_add_hook_fn)(struct tx_mempool *pool);
+void tx_mempool_set_post_add_hook(tx_mempool_post_add_hook_fn fn);
+
 void tx_mempool_prioritise(struct tx_mempool *pool,
                             const struct uint256 *hash,
                             double priority_delta, int64_t fee_delta);

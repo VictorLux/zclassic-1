@@ -28,6 +28,15 @@ here. AGENT1 batch-applies the queue once per wave cycle.
       ZCL_DISK_WARN_BYTES / ZCL_DISK_REFUSE_BYTES / ZCL_DISK_POLL.
       Read `disk_monitor_is_critical()` in: mempool accept path,
       process_block write path, wallet_backup_run_once (skip backup if critical).
+- [ ] agent2: wire `mempool_limits_start(g_mempool, &g_mempool_limits_cfg)` (wave 6 #6)
+      Location: after `tx_mempool_init` on the global mempool.
+      Default cfg: `mempool_limits_config_defaults(&g_mempool_limits_cfg)`
+      which reads ZCL_MEMPOOL_MAX_BYTES / ZCL_MEMPOOL_MAX_TXS /
+      ZCL_MEMPOOL_EXPIRY_SECONDS / ZCL_MIN_RELAY_FEE_ZAT /
+      ZCL_MEMPOOL_LIMITS_TICK_SEC. Pair with `mempool_limits_stop()`
+      in the shutdown path next to the other service teardown calls.
+      Registers a post-add hook on tx_mempool, so acceptance-path
+      enforcement happens automatically — no call sites to change.
 
 ## History
 

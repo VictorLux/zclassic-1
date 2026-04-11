@@ -11,7 +11,7 @@
 ### Carry-over from wave 5
 
 - [ ] **#2 PHGR13 sync stall investigation** — `lib/sapling/src/sprout.c`, produce `PHGR13_INVESTIGATION.md` with reproduction + diff vs `~/zclassic-cpp` + hypothesis + fix sketch. Don't commit the fix in the same session.
-- [ ] **#6 mempool_limits** — `app/services/mempool_limits.{h,c}` with env-tunable caps, eviction by fee-per-byte, expiry sweep, `EV_MEMPOOL_EVICT`/`EV_MEMPOOL_EXPIRE`. 10+ tests.
+- [x] **#6 mempool_limits** — `app/services/mempool_limits.{h,c}` with env-tunable caps, eviction by fee-per-byte, expiry sweep, `EV_MEMPOOL_EVICT`/`EV_MEMPOOL_EXPIRE`. 12 tests. Post-add hook installed via `tx_mempool_set_post_add_hook`, background expiry pthread. Boot wiring queued.
 - [ ] **#3/#4/#5 boot decomposition** — **UNBLOCKED** after AGENT1's upcoming boot.c session. Extract in order: `block_index_loader.{h,c}`, `chain_state_validator.{h,c}`, `utxo_recovery_service.{h,c}`. Each extraction is one commit; `./test_zcl` green; `boot.c` shrinks monotonically. Target: `boot.c` < 1400 lines.
 - [ ] **#9/#10 stretch** — snapshot automation service; drive CSR migration site count toward zero.
 

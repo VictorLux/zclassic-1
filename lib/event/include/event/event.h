@@ -139,6 +139,10 @@ enum event_type {
     EV_DB_MAINTENANCE_DONE,      /* payload: "op=... elapsed_ms=N ..." */
     EV_DB_MAINTENANCE_FAILED,    /* payload: "op=... reason=..." */
 
+    /* ── Mempool limits ────────────────────────────── */
+    EV_MEMPOOL_EVICT,            /* payload: "reason=size|count evicted=N bytes_before=N bytes_after=N" */
+    EV_MEMPOOL_EXPIRE,           /* payload: "expired=N cutoff_unix=N" */
+
     EV_NUM_TYPES                 /* sentinel — must be last */
 };
 

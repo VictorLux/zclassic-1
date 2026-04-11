@@ -375,6 +375,8 @@ const char *event_type_name(enum event_type type)
         [EV_DB_MAINTENANCE_START]    = "db.maint_start",
         [EV_DB_MAINTENANCE_DONE]     = "db.maint_done",
         [EV_DB_MAINTENANCE_FAILED]   = "db.maint_failed",
+        [EV_MEMPOOL_EVICT]           = "mempool.evict",
+        [EV_MEMPOOL_EXPIRE]          = "mempool.expire",
     };
     if (type >= 0 && type < EV_NUM_TYPES && names[type])
         return names[type];

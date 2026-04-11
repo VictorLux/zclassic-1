@@ -245,6 +245,7 @@ int test_http_middleware(void);
 int test_wallet_keystore(void);
 int test_disk_monitor(void);
 int test_db_maintenance(void);
+int test_mempool_limits(void);
 
 /* Spec-based user story tests (one per feature area) */
 int spec_wallet_dashboard(void);

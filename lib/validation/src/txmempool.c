@@ -10,6 +10,16 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Post-add hook (registered by app/services/mempool_limits).
+ * Simple scalar — no lock needed, adds race at most with
+ * unregister which happens only at shutdown. */
+static tx_mempool_post_add_hook_fn g_post_add_hook = NULL;
+
+void tx_mempool_set_post_add_hook(tx_mempool_post_add_hook_fn fn)
+{
+    g_post_add_hook = fn;
+}
+
 /* --- mempool_entry --- */
 
 void mempool_entry_init(struct mempool_entry *e, const struct transaction *tx,
@@ -268,6 +278,14 @@ bool tx_mempool_add_unchecked(struct tx_mempool *pool,
 
     (void)hash;
     zcl_mutex_unlock(&pool->cs);
+
+    /* Fire the policy hook *after* releasing the lock so the
+     * hook is free to call `tx_mempool_remove`/`collect_views`
+     * without deadlocking. Read the pointer once to avoid a
+     * TOCTOU where unregister runs between check and call. */
+    tx_mempool_post_add_hook_fn hook = g_post_add_hook;
+    if (hook) hook(pool);
+
     return true;
 }
 
@@ -404,6 +422,23 @@ void tx_mempool_query_hashes(struct tx_mempool *pool,
         out[i] = pool->entries[i].tx.hash;
     *num_out = n;
     zcl_mutex_unlock(&pool->cs);
+}
+
+size_t tx_mempool_collect_views(struct tx_mempool *pool,
+                                 struct tx_mempool_entry_view *out,
+                                 size_t max_out)
+{
+    if (!pool || !out || max_out == 0) return 0;
+    zcl_mutex_lock(&pool->cs);
+    size_t n = pool->num_entries < max_out ? pool->num_entries : max_out;
+    for (size_t i = 0; i < n; i++) {
+        out[i].hash    = pool->entries[i].tx.hash;
+        out[i].fee     = pool->entries[i].fee;
+        out[i].tx_size = pool->entries[i].tx_size;
+        out[i].time    = pool->entries[i].time;
+    }
+    zcl_mutex_unlock(&pool->cs);
+    return n;
 }
 
 /* --- priority deltas --- */
