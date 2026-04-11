@@ -5,7 +5,7 @@
 **Coordinator:** AGENT1 (main `~/zclassic23`)
 **Peer:** AGENT3 (`~/zclassic23-3`) — RPC/wallet encryption/tracing, different files
 
-> **⇒ Active plan: [`WAVE_8.md`](./WAVE_8.md).** Wave 7 carry-over + new wave 8 items. When wave 8 clears, pull from [`BACKLOG.md`](./BACKLOG.md). AGENT1 does not edit the `Current Status` section below — it is yours. Items needing AGENT1 review go in [`REVIEW_QUEUE.md`](./REVIEW_QUEUE.md).
+> **⇒ Active plan: [`WAVE_9.md`](./WAVE_9.md).** 11 items: PHGR13 fix (self-certify), reorg safety test, consensus parity, boot decomposition A/B/C, script parallelism, BIP113/65, mempool orphans, chain rollback stress, fuzzer fix #2. When wave 9 clears, pull from [`BACKLOG.md`](./BACKLOG.md). Items needing AGENT1 review go in [`REVIEW_QUEUE.md`](./REVIEW_QUEUE.md).
 
 ---
 
