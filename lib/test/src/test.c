@@ -97,6 +97,7 @@ int main(void)
     failures += test_ibd_throttle();
     failures += test_consensus_reject_events();
     failures += test_consensus_reject_index();
+    failures += test_chain_rollback();
 
     /* Spec-based user story tests */
     failures += spec_wallet_dashboard();
