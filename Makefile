@@ -56,7 +56,8 @@ LIBS = -Lvendor/lib -lsecp256k1 -lleveldb \
 	-levent -levent_openssl -levent_pthreads \
 	-lssl -lcrypto -lz
 
-.PHONY: all test test-e2e clean deploy check-restart-follow
+.PHONY: all test test-e2e clean deploy check-restart-follow \
+        coverage coverage-clean
 
 CLI_SRCS = lib/rpc/src/client.c lib/json/src/json.c
 all: test_zcl zclassic23 zclassic-cli
@@ -301,6 +302,129 @@ deploy: zclassic23
 
 clean:
 	rm -f test_zcl zclassic23 zclassic-cli $(ALL_OBJS)
+
+# ── Coverage (wave 5 #8) ──────────────────────────────────────
+#
+# Establishes a measurement path.  This is NOT targeted at a specific
+# percentage yet — it exists so future commits can track whether they
+# move the needle up or down.
+#
+# Builds a separate `test_zcl_cov` binary with gcov instrumentation
+# instead of clobbering the main `test_zcl` (which uses -flto and -O3,
+# both of which fight with coverage instrumentation).  Running the
+# coverage binary emits .gcda files next to each translation unit;
+# we then render them with either lcov+genhtml or gcovr — whichever
+# is installed — and leave the tooling path permissive so a developer
+# without coverage utilities still gets a useful message.
+#
+# Normal `make` / `make test` paths are untouched.
+#
+# NB: `-Werror` gets stripped alongside `-flto -O3` because -O0/-O1 +
+# gcov produces a different set of lints (unused-static,
+# format-truncation at different inlining thresholds) that fire
+# cleanly in the main build but trip -Werror here.  Coverage is an
+# observability tool, not a production build — warnings still print,
+# they just don't block the binary.
+#
+# Two things have to be right before the numbers are meaningful:
+#
+# 1. Optimisation level.  -O0 + gcov drives one of the recursive
+#    JSON tests into stack overflow in ~11 minutes wall-clock; -O1
+#    keeps the instrumentation accurate (lcov/gcov handle it fine)
+#    while cutting runtime roughly in half and eliminating the
+#    regression.
+#
+# 2. Object-file layout.  The main `test_zcl` target compiles all
+#    sources in ONE `cc` invocation — that's fast for LTO but ruinous
+#    for gcov, because files like `lib/net/src/protocol.c` and
+#    `lib/rpc/src/protocol.c` share a basename and collide at .gcda
+#    write time ("overwriting an existing profile data with a
+#    different checksum").  For the coverage build we therefore
+#    compile each source into its own `build/cov/<same/path>/file.o`
+#    FIRST, then link — this way each .gcda lives next to its .o and
+#    the directory structure guarantees uniqueness.  Slower than the
+#    single-command build, but sound.
+COV_BUILD_DIR = build/cov
+COV_CFLAGS = $(filter-out -flto -O3 -march=native -Werror,$(CFLAGS)) \
+             --coverage -O1 -g -DCOVERAGE_BUILD
+COV_LDFLAGS = $(filter-out -flto,$(LDFLAGS)) --coverage
+
+COV_OBJS := $(patsubst %.c,$(COV_BUILD_DIR)/%.o,$(TEST_SRCS) $(SPEC_SRCS) $(ALL_SRCS))
+
+$(COV_BUILD_DIR)/%.o: %.c $(TMPL_GEN)
+	@mkdir -p $(dir $@)
+	$(CC) $(COV_CFLAGS) -Wno-deprecated-declarations -c -o $@ $<
+
+test_zcl_cov: $(COV_OBJS)
+	$(CC) $(COV_CFLAGS) $(COV_LDFLAGS) -o $@ $(COV_OBJS) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)
+
+coverage: test_zcl_cov
+	@echo "== Resetting gcov counters =="
+	@find $(COV_BUILD_DIR) -name '*.gcda' -delete 2>/dev/null || true
+	@echo "== Running test_zcl_cov =="
+	@# Match the `test` target — some json/recursion tests need
+	@# unlimited stack.  If the binary still crashes we continue
+	@# anyway so the partial coverage data is still flushed for any
+	@# test that ran to completion before the crash (cov_flush.c
+	@# installs a SIGSEGV handler that calls __gcov_dump).
+	@ulimit -s unlimited && ./test_zcl_cov || true
+	@if command -v lcov >/dev/null 2>&1; then \
+		echo "== Rendering coverage via lcov =="; \
+		lcov --capture --directory $(COV_BUILD_DIR) --output-file coverage.info \
+		     --rc geninfo_unexecuted_blocks=1 --quiet || true; \
+		lcov --remove coverage.info \
+		     '*/lib/test/*' '*/vendor/*' '*/tools/fuzz/*' '/usr/*' \
+		     --output-file coverage.info --quiet || true; \
+		lcov --summary coverage.info; \
+		if command -v genhtml >/dev/null 2>&1; then \
+			genhtml --quiet coverage.info --output-directory coverage_html; \
+			echo "== HTML report: coverage_html/index.html =="; \
+		else \
+			echo "(genhtml not installed — summary only)"; \
+		fi; \
+	elif command -v gcovr >/dev/null 2>&1; then \
+		echo "== Rendering coverage via gcovr =="; \
+		gcovr --root . --filter 'app/' --filter 'lib/' --filter 'tools/' \
+		      --exclude 'lib/test/.*' --exclude 'vendor/.*' \
+		      --exclude 'tools/fuzz/.*' --print-summary; \
+	elif command -v gcov >/dev/null 2>&1; then \
+		echo "== Rendering coverage via plain gcov (install lcov or gcovr for full report) =="; \
+		gcov_sum=$$(mktemp); \
+		find $(COV_BUILD_DIR) -name '*.gcda' \
+		    -not -path '*/lib/test/*' -not -path '*/tools/fuzz/*' \
+		    -print0 2>/dev/null \
+		    | xargs -0 -r gcov -n 2>/dev/null \
+		    > $$gcov_sum || true; \
+		awk ' \
+		    /^File / { cur=$$2; gsub(/'\''/, "", cur); \
+		               sysheader = (index(cur, "/usr/") == 1 || index(cur, "vendor/") > 0 || index(cur, "lib/test/") > 0); \
+		               next } \
+		    /^Lines executed:/ { \
+		        if (sysheader) next; \
+		        split($$2, p, ":"); pct = p[2]; gsub(/%.*$$/, "", pct); \
+		        total = $$4 + 0; \
+		        exec = total * (pct+0) / 100.0; \
+		        sum_exec += exec; sum_total += total; n++ \
+		    } \
+		    END { \
+		        if (n > 0 && sum_total > 0) { \
+		            printf "coverage: %d translation units, %d / %d lines executed (%.1f%%)\n", \
+		                n, sum_exec, sum_total, 100.0 * sum_exec / sum_total; \
+		            printf "(install lcov or gcovr for per-file breakdown + HTML report)\n" \
+		        } else { \
+		            printf "coverage: no .gcda data — did the test binary fail to run?\n" \
+		        } \
+		    }' $$gcov_sum; \
+		rm -f $$gcov_sum *.gcov 2>/dev/null || true; \
+	else \
+		echo "WARN: install lcov, gcovr, or gcc's gcov to render the report."; \
+		echo "Raw .gcda files are left in place for manual inspection."; \
+	fi
+
+coverage-clean:
+	@rm -rf $(COV_BUILD_DIR) coverage.info coverage_html test_zcl_cov
+	@find . \( -name '*.gcda' -o -name '*.gcno' \) -delete 2>/dev/null || true
+	@echo "Coverage artifacts removed."
 
 check-restart-follow:
 	./zcl-nodectl verify-follow --restart

@@ -47,6 +47,15 @@ fuzz_p2p
 test-tmp/
 leak-*
 
+# Coverage (wave 5 #8)
+test_zcl_cov
+build/
+coverage.info
+coverage_html/
+*.gcda
+*.gcno
+*.gcov
+
 # Editor / OS
 .DS_Store
 .vscode/
