@@ -57,7 +57,7 @@ LIBS = -Lvendor/lib -lsecp256k1 -lleveldb \
 	-lssl -lcrypto -lz
 
 .PHONY: all test test-e2e clean deploy check-restart-follow \
-        coverage coverage-clean
+        coverage coverage-clean docs-mcp docs-mcp-check
 
 CLI_SRCS = lib/rpc/src/client.c lib/json/src/json.c
 all: test_zcl zclassic23 zclassic-cli
@@ -425,6 +425,34 @@ coverage-clean:
 	@rm -rf $(COV_BUILD_DIR) coverage.info coverage_html test_zcl_cov
 	@find . \( -name '*.gcda' -o -name '*.gcno' \) -delete 2>/dev/null || true
 	@echo "Coverage artifacts removed."
+
+# ── docs-mcp ───────────────────────────────────────────────────
+# Regenerate MCP_REFERENCE.md by running the MCP server in stdio
+# mode and piping the tools/list JSON response through a small
+# Python formatter.  The formatter uses stdlib only — no pip install
+# required.  Use `make docs-mcp-check` in CI to fail when the
+# checked-in reference drifts from what the live router emits.
+docs-mcp: zclassic23
+	@echo "== Generating MCP_REFERENCE.md =="
+	@echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
+		| ./zclassic23 -mcp 2>/dev/null \
+		| python3 tools/gen_mcp_reference.py > MCP_REFERENCE.md
+	@wc -l MCP_REFERENCE.md
+
+docs-mcp-check: zclassic23
+	@echo "== Verifying MCP_REFERENCE.md is up to date =="
+	@tmp=$$(mktemp); \
+	 echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
+		| ./zclassic23 -mcp 2>/dev/null \
+		| python3 tools/gen_mcp_reference.py > "$$tmp"; \
+	 if ! diff -q MCP_REFERENCE.md "$$tmp" >/dev/null; then \
+		echo "MCP_REFERENCE.md is STALE. Run: make docs-mcp"; \
+		diff -u MCP_REFERENCE.md "$$tmp" | head -40; \
+		rm -f "$$tmp"; \
+		exit 1; \
+	 fi; \
+	 rm -f "$$tmp"; \
+	 echo "MCP_REFERENCE.md is up to date."
 
 check-restart-follow:
 	./zcl-nodectl verify-follow --restart
