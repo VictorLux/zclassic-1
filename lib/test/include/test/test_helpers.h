@@ -20,6 +20,7 @@
 #include "crypto/ripemd160.h"
 #include "crypto/hmac_sha256.h"
 #include "crypto/hmac_sha512.h"
+#include "crypto/pbkdf2_sha256.h"
 #include "crypto/sha3.h"
 #include "net/secure_channel.h"
 #include "crypto/blake2b.h"

@@ -166,6 +166,48 @@ int test_crypto(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    /* PBKDF2-HMAC-SHA256 RFC 6070 test vectors. */
+    printf("PBKDF2-HMAC-SHA256 RFC 6070 c=1 dkLen=32... ");
+    {
+        uint8_t dk[32];
+        pbkdf2_hmac_sha256((const uint8_t *)"password", 8,
+                            (const uint8_t *)"salt", 4,
+                            1, dk, 32);
+        failures += check_hex(dk, 32,
+            "120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b");
+    }
+
+    printf("PBKDF2-HMAC-SHA256 RFC 6070 c=2 dkLen=32... ");
+    {
+        uint8_t dk[32];
+        pbkdf2_hmac_sha256((const uint8_t *)"password", 8,
+                            (const uint8_t *)"salt", 4,
+                            2, dk, 32);
+        failures += check_hex(dk, 32,
+            "ae4d0c95af6b46d32d0adff928f06dd02a303f8ef3c251dfd6e2d85a95474c43");
+    }
+
+    printf("PBKDF2-HMAC-SHA256 RFC 6070 c=4096 dkLen=32... ");
+    {
+        uint8_t dk[32];
+        pbkdf2_hmac_sha256((const uint8_t *)"password", 8,
+                            (const uint8_t *)"salt", 4,
+                            4096, dk, 32);
+        failures += check_hex(dk, 32,
+            "c5e478d59288c841aa530db6845c4c8d962893a001ce4e11a4963873aa98134a");
+    }
+
+    printf("PBKDF2-HMAC-SHA256 RFC 6070 c=4096 dkLen=40 (multi-block)... ");
+    {
+        uint8_t dk[40];
+        pbkdf2_hmac_sha256(
+            (const uint8_t *)"passwordPASSWORDpassword", 24,
+            (const uint8_t *)"saltSALTsaltSALTsaltSALTsaltSALTsalt", 36,
+            4096, dk, 40);
+        failures += check_hex(dk, 40,
+            "348c89dbcbd32b2f32d814b8116e84cf2b17347ebc1800181c4e2a1fb8dd53e1c635518c7dac47e9");
+    }
+
     /* Benchmark: SHA-256 throughput */
     printf("SHA-256 benchmark (%s)... ", sha256_implementation());
     {
