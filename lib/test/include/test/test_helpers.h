@@ -241,6 +241,7 @@ int test_block_index_integrity(void);
 int test_wallet_backup(void);
 int test_log_json(void);
 int test_http_middleware(void);
+int test_wallet_keystore(void);
 
 /* Spec-based user story tests (one per feature area) */
 int spec_wallet_dashboard(void);
