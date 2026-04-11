@@ -45,7 +45,7 @@
 
 ### New for wave 6
 
-- [ ] **Prometheus `/metrics` HTTP endpoint** — today `zcl_metrics` is only reachable via MCP. Add an HTTP handler at `/metrics` that returns the same Prometheus text, so off-the-shelf scrapers (Prometheus server, Grafana Agent) can hit the node directly. Reuse the `metrics.c` render function. Add a config flag `ZCL_METRICS_HTTP_ENABLE` (default off).
+- [x] **Prometheus `/metrics` HTTP endpoint** — `lib/rpc/src/httpserver.c` now routes `GET /metrics` to `mcp_metrics_render_prometheus()` behind `ZCL_METRICS_HTTP_ENABLE=1`, returning `text/plain; version=0.0.4` so off-the-shelf Prometheus/Grafana scrapers work out of the box. Gated by the existing rate-limit + ban middleware (no auth — scrapers don't speak Basic). Disabled path returns 404 with a clear "set ZCL_METRICS_HTTP_ENABLE=1" hint.
 - [ ] **MCP TLS transport** — today MCP is stdio-only, which means AI agents on the same machine only. Add an optional TLS listener on a configurable port that speaks the same JSON-RPC protocol. Env: `ZCL_MCP_TLS_PORT`, `ZCL_MCP_TLS_CERT`, `ZCL_MCP_TLS_KEY`. Reuse `lib/net/src/https_server.c` infra. The existing middleware gates still apply.
 - [ ] **Chaos fault injection** — `tools/mcp/chaos.{h,c}` + `zcl_chaos_*` tools. Under `#ifdef ZCL_CHAOS`, expose tools to inject faults: drop-N-peers, fail-next-sqlite-write, delay-csr-commit-by-ms, etc. Only compiled into test builds. Used by AGENT2's reorg safety test and the crash harness.
 - [ ] **Config hot-reload** — `app/services/config_reload.{h,c}` — SIGHUP handler that re-reads env vars and propagates updates to the live middleware tunables (rate limits, bucket sizes). Audit which env vars are safe to change at runtime. Emit `EV_CONFIG_RELOADED`.

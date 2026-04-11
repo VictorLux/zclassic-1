@@ -8,6 +8,7 @@
 #include "rpc/protocol.h"
 #include "core/random.h"
 #include "encoding/utilstrencodings.h"
+#include "mcp/metrics.h"
 #include <arpa/inet.h>
 #include <errno.h>
 #include <netinet/in.h>
@@ -34,6 +35,13 @@ static char g_rpc_user[128];
 static char g_rpc_password[128];
 static char g_cookie_file[1024];
 static bool g_auth_required = false;
+/* Wave 6: Prometheus /metrics HTTP endpoint.  Off by default; an
+ * operator sets ZCL_METRICS_HTTP_ENABLE=1 to expose the same text
+ * that `zcl_metrics` returns via MCP.  Gated separately from the
+ * RPC auth layer because Prometheus scrapers don't speak Basic
+ * auth; the HTTP middleware (rate-limit + ban + loopback bypass)
+ * still applies so the surface isn't a free-for-all. */
+static bool g_metrics_http_enable = false;
 static pthread_t g_worker_threads[RPC_HTTP_WORKERS];
 static size_t g_workers_started = 0;
 static int g_client_queue[RPC_HTTP_QUEUE_CAP];
@@ -119,20 +127,29 @@ static bool read_exact(int fd, char *buf, size_t len)
     return true;
 }
 
-static void send_response(int fd, int status_code, const char *status_text,
-                            const char *body, size_t body_len)
+static void send_response_with_type(int fd, int status_code,
+                                     const char *status_text,
+                                     const char *content_type,
+                                     const char *body, size_t body_len)
 {
     char header[512];
     int hlen = snprintf(header, sizeof(header),
         "HTTP/1.1 %d %s\r\n"
-        "Content-Type: application/json\r\n"
+        "Content-Type: %s\r\n"
         "Content-Length: %zu\r\n"
         "Connection: close\r\n"
         "\r\n",
-        status_code, status_text, body_len);
+        status_code, status_text, content_type, body_len);
     (void)write(fd, header, (size_t)hlen);
     if (body_len > 0)
         (void)write(fd, body, body_len);
+}
+
+static void send_response(int fd, int status_code, const char *status_text,
+                            const char *body, size_t body_len)
+{
+    send_response_with_type(fd, status_code, status_text,
+                            "application/json", body, body_len);
 }
 
 static bool enqueue_client_fd(int client_fd)
@@ -224,6 +241,40 @@ static void handle_client(int client_fd)
 
     if (sscanf(line, "%15s %255s", method, path) != 2)
         goto done;
+
+    /* Wave 6: GET /metrics serves Prometheus text when enabled via
+     * ZCL_METRICS_HTTP_ENABLE=1.  No auth by design — Prometheus
+     * scrapers don't speak Basic auth — but rate limit + ban layer
+     * already applied above. Drain the remaining headers so the
+     * socket closes cleanly. */
+    if (strcmp(method, "GET") == 0 && strcmp(path, "/metrics") == 0) {
+        if (!g_metrics_http_enable) {
+            const char *msg = "metrics endpoint disabled "
+                              "(set ZCL_METRICS_HTTP_ENABLE=1)";
+            send_response_with_type(client_fd, 404, "Not Found",
+                                    "text/plain; charset=utf-8",
+                                    msg, strlen(msg));
+            goto done;
+        }
+        while (read_line(client_fd, line, sizeof(line)))
+            if (line[0] == '\0') break;
+        size_t cap = 131072;
+        char *buf = malloc(cap);
+        if (!buf) {
+            const char *oom = "out of memory";
+            send_response_with_type(client_fd, 500, "Internal Server Error",
+                                    "text/plain; charset=utf-8",
+                                    oom, strlen(oom));
+            goto done;
+        }
+        size_t n = mcp_metrics_render_prometheus(buf, cap);
+        /* Prometheus exposition format 0.0.4 */
+        send_response_with_type(client_fd, 200, "OK",
+            "text/plain; version=0.0.4; charset=utf-8",
+            buf, n);
+        free(buf);
+        goto done;
+    }
 
     /* No blog over clearnet. Blog is Tor-only via dynhost.
      * Clearnet serves ONLY authenticated RPC (POST). */
@@ -448,6 +499,20 @@ bool rpc_http_start(const struct rpc_table *table, uint16_t port,
     /* Publish the global handle so metrics.c + zcl_rpc_report can read
      * the live config and stats without reaching into httpserver.c. */
     rpc_http_middleware_set_global(&g_middleware);
+
+    /* Wave 6: optional GET /metrics Prometheus endpoint.  Accept "1",
+     * "true", "yes", "on" as truthy; anything else leaves it off. */
+    g_metrics_http_enable = false;
+    const char *mx = getenv("ZCL_METRICS_HTTP_ENABLE");
+    if (mx && *mx) {
+        if (strcmp(mx, "1") == 0 ||
+            strcasecmp(mx, "true") == 0 ||
+            strcasecmp(mx, "yes")  == 0 ||
+            strcasecmp(mx, "on")   == 0) {
+            g_metrics_http_enable = true;
+            printf("RPC server: GET /metrics Prometheus endpoint enabled\n");
+        }
+    }
 
     g_running = true;
     printf("RPC server listening on 127.0.0.1:%u\n", port);
