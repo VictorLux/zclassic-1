@@ -65,6 +65,7 @@ int main(void)
     failures += test_node_health_service();
     failures += test_chain_state_repo();
     failures += test_recovery_policy();
+    failures += test_db_txn();
     failures += test_sync_service();
     failures += test_snapshot_sync_service();
     failures += test_file_controller();

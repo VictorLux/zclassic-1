@@ -56,6 +56,11 @@ enum event_type {
     EV_RECOVERY_POLICY_ALLOW,    /* payload: "op=... amount=N reason=..." */
     EV_RECOVERY_POLICY_REFUSED,  /* payload: "op=... code=... amount=N cap=N reason=..." */
     EV_RECOVERY_POLICY_PROMPT,   /* payload: "op=... amount=N ack=... reason=..." */
+    EV_DB_TXN_BEGIN,             /* payload: "label=..." */
+    EV_DB_TXN_COMMIT,            /* payload: "label=... elapsed_us=N" */
+    EV_DB_TXN_ROLLBACK,          /* payload: "label=... reason=..." */
+    EV_DB_TXN_REJECTED,          /* payload: "label=... reason=..." */
+    EV_DB_TXN_LEAKED,            /* payload: "label=..." */
 
     /* ── Transaction ────────────────────────────────── */
     EV_TX_ACCEPTED,              /* payload: txid[32] */
