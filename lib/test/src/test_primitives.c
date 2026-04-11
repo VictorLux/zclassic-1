@@ -49,6 +49,49 @@ int test_primitives(void)
         transaction_free(&tx);
     }
 
+    printf("transaction_alloc zero-size leaves pointers NULL (no calloc(0) stub leak)... ");
+    {
+        /* Regression for fuzz_block-discovered 1-byte leak in
+         * transaction_deserialize: calling transaction_alloc(_, _, 0)
+         * previously left tx->vout = calloc(0,_) as a glibc-unique
+         * 1-byte pointer, which the deserializer then overwrote
+         * unconditionally at the "read num_vout" step — leaking the
+         * stub. Zero-size must mean "no array", not "1-byte dummy". */
+        struct transaction a;
+        transaction_init(&a);
+        bool ok_a = transaction_alloc(&a, 0, 0);
+        bool clean_a = ok_a && a.vin == NULL && a.vout == NULL &&
+                       a.num_vin == 0 && a.num_vout == 0;
+
+        struct transaction b;
+        transaction_init(&b);
+        bool ok_b = transaction_alloc(&b, 0, 2);
+        bool clean_b = ok_b && b.vin == NULL && b.vout != NULL &&
+                       b.num_vin == 0 && b.num_vout == 2;
+
+        struct transaction c;
+        transaction_init(&c);
+        bool ok_c = transaction_alloc(&c, 3, 0);
+        bool clean_c = ok_c && c.vin != NULL && c.vout == NULL &&
+                       c.num_vin == 3 && c.num_vout == 0;
+
+        /* Simulate the deserializer overwrite: previously this step
+         * leaked the prior 1-byte stub at a.vout. With the fix it's
+         * a NULL→new assignment, which is allocation-neutral. */
+        a.vout = calloc(2, sizeof(struct tx_out));
+        a.num_vout = 2;
+
+        if (clean_a && clean_b && clean_c && a.vout != NULL)
+            printf("OK\n");
+        else {
+            printf("FAIL (a=%d b=%d c=%d)\n", clean_a, clean_b, clean_c);
+            failures++;
+        }
+        transaction_free(&a);
+        transaction_free(&b);
+        transaction_free(&c);
+    }
+
     printf("transaction_is_coinbase true for coinbase tx... ");
     {
         struct transaction tx;

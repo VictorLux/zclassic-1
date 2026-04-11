@@ -58,8 +58,13 @@ bool transaction_alloc(struct transaction *tx, size_t num_vin, size_t num_vout)
     if (num_vin > MAX_TX_INPUTS || num_vout > MAX_TX_OUTPUTS)
         return false;
 
-    tx->vin = calloc(num_vin, sizeof(struct tx_in));
-    tx->vout = calloc(num_vout, sizeof(struct tx_out));
+    /* Zero-size calls must not allocate. glibc's calloc(0, n) returns a
+     * unique 1-byte pointer that must be freed; callers that later replace
+     * tx->vin/tx->vout with a fresh allocation (e.g. transaction_deserialize
+     * partial paths) would silently leak that stub. Treat zero as "no
+     * array" and leave the pointer NULL so transaction_free is a no-op. */
+    tx->vin  = num_vin  ? calloc(num_vin,  sizeof(struct tx_in))  : NULL;
+    tx->vout = num_vout ? calloc(num_vout, sizeof(struct tx_out)) : NULL;
     if ((num_vin && !tx->vin) || (num_vout && !tx->vout)) {
         fprintf(stderr, "transaction_alloc FAILED: vin=%zu (need %zu MB) vout=%zu\n",
                 num_vin, num_vin * sizeof(struct tx_in) / (1024*1024), num_vout);
