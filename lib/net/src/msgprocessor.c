@@ -20,6 +20,7 @@ extern volatile sig_atomic_t g_shutdown_requested;
 #include "net/p2p_game.h"
 #include "net/version.h"
 #include "net/p2p_message.h"
+#include "net/peer_scoring.h"
 #include "services/chain_state_repository.h"
 #include "services/header_sync_service.h"
 #include "services/block_sync_service.h"
@@ -1313,7 +1314,8 @@ static bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
     if (s->size > 2000000) {
         event_emitf(EV_PEER_MISBEHAVE, (uint32_t)node->id,
                     "oversized block msg %zu bytes", s->size);
-        peer_misbehaving(mp->net_mgr, node, 100, "oversized block");
+        peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_INVALID_BLOCK,
+                            "oversized block msg");
         return false;
     }
 
@@ -1321,7 +1323,8 @@ static bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
     block_init(&blk);
     if (!block_deserialize(&blk, s)) {
         event_emitf(EV_MSG_DESERIALIZATION_FAIL, (uint32_t)node->id, "block");
-        peer_misbehaving(mp->net_mgr, node, 20, "malformed block");
+        peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_FLOOD,
+                            "malformed block");
         block_free(&blk);
         return false;
     }
@@ -1375,6 +1378,11 @@ static bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
     }
 
     if (validation_state_is_valid(&state)) {
+        /* Block accepted — give the peer a decay tick. Peers that mostly
+         * behave can work off earlier strikes; peers that only feed valid
+         * blocks stay at score 0 forever. Safe on trusted peers. */
+        peer_scoring_on_good_interaction(node, peer_scoring_now_ms());
+
         struct block_index *new_tip = active_chain_tip(
             &mp->main_state->chain_active);
         if (new_tip) {
@@ -1511,9 +1519,22 @@ static bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
                         "dos=%d %s", dos, state.reject_reason);
             printf("Peer %s: invalid block (dos=%d): %s\n",
                    node->addr_name, dos, state.reject_reason);
-            peer_misbehaving(mp->net_mgr, node, dos,
-                             state.reject_reason[0] ? state.reject_reason
-                                                    : "invalid block");
+            /* DoS from validation is graded: treat the common [50, 100]
+             * range as the two typed categories so the enum values
+             * drive the score increment. Anything else falls through to
+             * the raw peer_misbehaving() path so we still honour the
+             * caller's intent without losing precision. */
+            const char *rr = state.reject_reason[0] ? state.reject_reason
+                                                    : "invalid block";
+            if (dos >= 100) {
+                peer_scoring_record(mp->net_mgr, node,
+                                    PEER_OFFENCE_INVALID_BLOCK, rr);
+            } else if (dos >= 50) {
+                peer_scoring_record(mp->net_mgr, node,
+                                    PEER_OFFENCE_INVALID_HEADER, rr);
+            } else {
+                peer_misbehaving(mp->net_mgr, node, dos, rr);
+            }
         } else if (!validation_state_is_valid(&state)) {
             /* DoS=0 but invalid: orphan block or parent-failed.
              * Don't penalize peer — this is normal during sync. */
@@ -1568,7 +1589,8 @@ static bool process_tx_msg(struct msg_processor *mp, struct p2p_node *node,
     transaction_init(&tx);
     if (!transaction_deserialize(&tx, s)) {
         event_emitf(EV_MSG_DESERIALIZATION_FAIL, (uint32_t)node->id, "tx");
-        peer_misbehaving(mp->net_mgr, node, 10, "malformed tx");
+        peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_INVALID_MESSAGE,
+                            "malformed tx");
         transaction_free(&tx);
         return false;
     }
@@ -1640,7 +1662,8 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
         event_emitf(EV_PEER_MISBEHAVE, (uint32_t)node->id,
                     "headers count %llu exceeds 2000 from %s",
                     (unsigned long long)count, node->addr_name);
-        peer_misbehaving(mp->net_mgr, node, 20, "too many headers");
+        peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_FLOOD,
+                            "too many headers");
         node->disconnect = true;
         return false;
     }
@@ -1658,13 +1681,15 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
             event_emitf(EV_HEADERS_REJECTED, (uint32_t)node->id,
                         "malformed header[%llu] from %s",
                         (unsigned long long)i, node->addr_name);
-            peer_misbehaving(mp->net_mgr, node, 20, "malformed header");
+            peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_FLOOD,
+                                "malformed header");
             return false;
         }
 
         uint64_t dummy;
         if (!stream_read_compact_size(s, &dummy)) {
-            peer_misbehaving(mp->net_mgr, node, 20, "truncated header tx count");
+            peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_FLOOD,
+                                "truncated header tx count");
             return false;
         }
 

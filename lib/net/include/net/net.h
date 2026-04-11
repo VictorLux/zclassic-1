@@ -191,6 +191,12 @@ struct p2p_node {
     int64_t last_getheaders_time;
 
     _Atomic int misbehavior;  /* cumulative misbehavior score; banned at 100 */
+    /* Monotonic timestamp (ms since UNIX epoch) of last accepted / valid
+     * message from this peer. Used by peer_scoring.c to decay `misbehavior`
+     * when a peer has been behaving. 0 means "never" — treated as "now"
+     * on first decay call so freshly-connected peers don't get a free
+     * score drop. */
+    _Atomic int_least64_t peer_score_last_good_ms;
 
     /* connection quality metrics */
     int64_t last_block_time;  /* timestamp of last valid block received */

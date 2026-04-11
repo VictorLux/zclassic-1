@@ -7,6 +7,7 @@
 #define _DEFAULT_SOURCE
 #include "net/connman.h"
 #include "net/addrman.h"
+#include "net/peer_scoring.h"
 #include "net/download.h"
 #include "net/tor_integration.h"
 #include "controllers/blog_controller.h"
@@ -726,6 +727,12 @@ static void *thread_message_handler(void *arg)
 bool connman_init(struct connman *cm, const struct chain_params *params,
                    struct node_signals *signals)
 {
+    /* Load peer-scoring config from environment. Safe to call multiple
+     * times; late env-var changes don't matter since connman_init runs
+     * once per process startup. Done here so every binary that spins up
+     * a connman (node, test, tool) honours the operator's settings. */
+    peer_scoring_init();
+
     net_manager_init(&cm->manager);
     cm->params = params;
     cm->started = false;

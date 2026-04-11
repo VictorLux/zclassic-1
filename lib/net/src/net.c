@@ -5,6 +5,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "net/net.h"
+#include "net/peer_scoring.h"
 #include "core/hash.h"
 #include "core/random.h"
 #include "core/utiltime.h"
@@ -815,14 +816,19 @@ void peer_misbehaving(struct net_manager *nm, struct p2p_node *node,
                 "+%d=%d %s", howmuch, new_score,
                 reason ? reason : "");
 
-    if (new_score >= 100) {
+    /* Thresholds are operator-configurable via peer_scoring_init() / env;
+     * we default to 100 score / 24h ban to match historical behaviour. */
+    int threshold = peer_scoring_ban_threshold();
+    int hours = peer_scoring_ban_hours();
+    if (new_score >= threshold) {
         event_emitf(EV_PEER_BANNED, (uint32_t)node->id,
                     "score=%d %s", new_score,
                     reason ? reason : "threshold");
         printf("Banning %s (score=%d): %s\n",
                node->addr_name, new_score,
                reason ? reason : "threshold reached");
-        ban_addr(nm, &node->addr.svc.addr, 24 * 60 * 60, false);
+        ban_addr(nm, &node->addr.svc.addr,
+                 (int64_t)hours * 60 * 60, false);
         node->disconnect = true;
     }
 }
