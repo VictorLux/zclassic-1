@@ -315,6 +315,8 @@ const char *event_type_name(enum event_type type)
         [EV_REORG_RECOVERY_COMPLETE] = "chain.reorg_recovery_complete",
         [EV_COINS_FLUSH]             = "chain.coins_flush",
         [EV_COINS_FLUSH_FAILED]      = "chain.coins_flush_fail",
+        [EV_CHAIN_TIP_COMMIT]        = "chain.tip_commit",
+        [EV_CHAIN_TIP_REJECTED]      = "chain.tip_rejected",
         [EV_TX_ACCEPTED]             = "tx.accepted",
         [EV_TX_REJECTED]             = "tx.rejected",
         [EV_SNAPSHOT_OFFER_SENT]     = "snap.offer_sent",

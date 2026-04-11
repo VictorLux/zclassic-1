@@ -63,6 +63,7 @@ int main(void)
     failures += test_fast_sync();
     failures += test_block_scan();
     failures += test_node_health_service();
+    failures += test_chain_state_repo();
     failures += test_sync_service();
     failures += test_snapshot_sync_service();
     failures += test_file_controller();

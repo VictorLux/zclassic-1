@@ -1,0 +1,815 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * Tests for the chain_state_repository — single writer for chain-tip
+ * mutations. The repository must (a) keep the six sources of truth in
+ * sync atomically, (b) refuse commits whose validation fails, and
+ * (c) emit observable events on every outcome.
+ *
+ * Each test lives in its own static helper that returns a failure
+ * count. The top-level test_chain_state_repo() aggregates them. */
+
+#include "test/test_helpers.h"
+#include "services/chain_state_repository.h"
+#include "validation/chainstate.h"
+#include "coins/coins_view.h"
+#include "models/database.h"
+#include "event/event.h"
+
+#include <pthread.h>
+#include <stdatomic.h>
+#include <string.h>
+
+/* ── Tiny block_index fixture ─────────────────────────────────
+ * Build a single-link chain of block_index records. Hashes are
+ * stored in the fixture so the addresses are stable. */
+
+#define MAX_FIXTURE_BLOCKS 16
+
+struct csr_fixture {
+    struct block_map        bm;
+    struct active_chain     chain;
+    struct block_index     *header_tip;
+    struct coins_view_cache coins_tip;
+
+    struct uint256       hashes[MAX_FIXTURE_BLOCKS];
+    struct block_index   blocks[MAX_FIXTURE_BLOCKS];
+    int                  count;
+};
+
+static void csr_fix_init(struct csr_fixture *f)
+{
+    memset(f, 0, sizeof(*f));
+    block_map_init(&f->bm);
+    active_chain_init(&f->chain);
+    /* coins_view_cache_init dereferences its backing argument; pass a
+     * zeroed view so it has something safe to copy from. */
+    struct coins_view null_view;
+    memset(&null_view, 0, sizeof(null_view));
+    coins_view_cache_init(&f->coins_tip, &null_view);
+    f->header_tip = NULL;
+    f->count = 0;
+}
+
+static void csr_fix_free(struct csr_fixture *f)
+{
+    coins_view_cache_free(&f->coins_tip);
+    active_chain_free(&f->chain);
+    block_map_free(&f->bm);
+}
+
+/* Append one block at height = previous + 1. Each block hash is the
+ * `seed` byte repeated 32 times so callers can give every block a
+ * unique seed and reason about identity. */
+static struct block_index *csr_fix_add(struct csr_fixture *f, uint8_t seed)
+{
+    if (f->count >= MAX_FIXTURE_BLOCKS) return NULL;
+    int idx = f->count++;
+
+    memset(&f->hashes[idx], seed, sizeof(struct uint256));
+    block_index_init(&f->blocks[idx]);
+    f->blocks[idx].phashBlock = &f->hashes[idx];
+    f->blocks[idx].nHeight = idx;
+    f->blocks[idx].pprev = (idx > 0) ? &f->blocks[idx - 1] : NULL;
+
+    block_map_insert(&f->bm, &f->hashes[idx], &f->blocks[idx]);
+    /* block_map_insert keeps the index pointer but a future grow
+     * could relocate the bucket; re-point phashBlock so identity
+     * stays stable across rehashes. */
+    const struct uint256 *canon = block_map_find_hash(&f->bm, &f->hashes[idx]);
+    if (canon) f->blocks[idx].phashBlock = canon;
+    return &f->blocks[idx];
+}
+
+/* ── SQLite block-row helper ───────────────────────────────── */
+
+static bool csr_sql_insert_block(struct node_db *ndb,
+                                  const struct uint256 *hash,
+                                  int height)
+{
+    if (!ndb || !ndb->db) return false;
+    sqlite3_stmt *st = NULL;
+    const char *sql =
+        "INSERT OR REPLACE INTO blocks"
+        "(hash,height,prev_hash,version,merkle_root,time,bits,nonce,"
+        " solution,chain_work,status,num_tx)"
+        " VALUES(?,?,?,4,?,?,0,?,?,?,3,0)";
+    if (sqlite3_prepare_v2(ndb->db, sql, -1, &st, NULL) != SQLITE_OK)
+        return false;
+    static const uint8_t zeros[32] = {0};
+    static const uint8_t solution[1] = {0};
+    sqlite3_bind_blob(st, 1, hash->data, 32, SQLITE_STATIC);
+    sqlite3_bind_int64(st, 2, height);
+    sqlite3_bind_blob(st, 3, zeros, 32, SQLITE_STATIC);
+    sqlite3_bind_blob(st, 4, zeros, 32, SQLITE_STATIC);
+    sqlite3_bind_int64(st, 5, 1700000000 + height);
+    sqlite3_bind_blob(st, 6, zeros, 32, SQLITE_STATIC);
+    sqlite3_bind_blob(st, 7, solution, sizeof(solution), SQLITE_STATIC);
+    sqlite3_bind_blob(st, 8, zeros, 32, SQLITE_STATIC);
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    return rc == SQLITE_DONE;
+}
+
+static bool csr_sql_insert_utxos(struct node_db *ndb, int n)
+{
+    if (!ndb || !ndb->db) return false;
+    sqlite3_exec(ndb->db, "BEGIN", NULL, NULL, NULL);
+    sqlite3_stmt *st = NULL;
+    const char *sql =
+        "INSERT OR REPLACE INTO utxos"
+        "(txid,vout,value,script,script_type,address_hash,"
+        " height,is_coinbase)"
+        " VALUES(?,?,?,?,0,?,0,0)";
+    if (sqlite3_prepare_v2(ndb->db, sql, -1, &st, NULL) != SQLITE_OK) {
+        sqlite3_exec(ndb->db, "ROLLBACK", NULL, NULL, NULL);
+        return false;
+    }
+    static const uint8_t script[1] = {0x6a};
+    static const uint8_t addr[20] = {0};
+    bool ok = true;
+    for (int i = 0; i < n && ok; i++) {
+        uint8_t txid[32] = {0};
+        memcpy(txid, &i, sizeof(i));
+        sqlite3_reset(st);
+        sqlite3_bind_blob(st, 1, txid, 32, SQLITE_TRANSIENT);
+        sqlite3_bind_int(st, 2, 0);
+        sqlite3_bind_int64(st, 3, 1000);
+        sqlite3_bind_blob(st, 4, script, sizeof(script), SQLITE_STATIC);
+        sqlite3_bind_blob(st, 5, addr, sizeof(addr), SQLITE_STATIC);
+        if (sqlite3_step(st) != SQLITE_DONE) ok = false;
+    }
+    sqlite3_finalize(st);
+    sqlite3_exec(ndb->db, ok ? "COMMIT" : "ROLLBACK", NULL, NULL, NULL);
+    return ok;
+}
+
+/* ── Event observer for assertions ────────────────────────── */
+
+static _Atomic int g_commit_events;
+static _Atomic int g_rejected_events;
+
+static void csr_test_observer(enum event_type type, uint32_t peer_id,
+                               const void *payload, uint32_t payload_len,
+                               void *ctx)
+{
+    (void)peer_id; (void)payload; (void)payload_len; (void)ctx;
+    if (type == EV_CHAIN_TIP_COMMIT)
+        atomic_fetch_add(&g_commit_events, 1);
+    else if (type == EV_CHAIN_TIP_REJECTED)
+        atomic_fetch_add(&g_rejected_events, 1);
+}
+
+static void csr_test_install_observer(void)
+{
+    event_clear_observers(EV_CHAIN_TIP_COMMIT);
+    event_clear_observers(EV_CHAIN_TIP_REJECTED);
+    atomic_store(&g_commit_events, 0);
+    atomic_store(&g_rejected_events, 0);
+    event_observe(EV_CHAIN_TIP_COMMIT, csr_test_observer, NULL);
+    event_observe(EV_CHAIN_TIP_REJECTED, csr_test_observer, NULL);
+}
+
+/* ── Helper: build a commit pointing at one of the fixture blocks. */
+static struct chain_state_commit csr_make_commit(struct block_index *bi,
+                                                  const char *reason)
+{
+    struct chain_state_commit c;
+    memset(&c, 0, sizeof(c));
+    c.new_tip = bi;
+    if (bi && bi->phashBlock) c.new_coins_best = *bi->phashBlock;
+    c.reason = reason;
+    c.wallet_scan_height = -1;
+    return c;
+}
+
+/* Tiny pass/fail wrapper to keep tests visually consistent. */
+#define CSR_RUN(name, expr) do { \
+    printf("%s... ", (name));    \
+    bool _ok = (expr);           \
+    if (_ok) printf("OK\n");     \
+    else { printf("FAIL\n"); failures++; } \
+} while (0)
+
+/* ── Concurrency stress fixture ────────────────────────────── */
+
+struct csr_concurrency_args {
+    struct chain_state_repository *csr;
+    struct block_index *tip;
+    int iterations;
+    _Atomic int oks;
+};
+
+static void *csr_thread_commit(void *p)
+{
+    struct csr_concurrency_args *a = p;
+    for (int i = 0; i < a->iterations; i++) {
+        struct chain_state_commit c = csr_make_commit(a->tip, "stress");
+        if (csr_commit_tip(a->csr, &c) == CSR_OK)
+            atomic_fetch_add(&a->oks, 1);
+    }
+    return NULL;
+}
+
+/* ── Tests ─────────────────────────────────────────────────── */
+
+static int t_init_defaults(void)
+{
+    int failures = 0;
+    struct chain_state_repository csr;
+    struct csr_fixture f; csr_fix_init(&f);
+    csr_init(&csr, &f.bm, &f.chain, &f.header_tip, &f.coins_tip, NULL, NULL);
+    bool ok = csr.initialized
+           && csr.block_map == &f.bm
+           && csr.chain_active == &f.chain
+           && csr.coins_tip == &f.coins_tip
+           && csr.max_utxo_orphan_rows == 1000
+           && csr.stale_index_height_gap == 100;
+    CSR_RUN("csr: init populates fields and sets defaults", ok);
+    csr_free(&csr);
+    csr_fix_free(&f);
+    return failures;
+}
+
+static int t_null_repo(void)
+{
+    int failures = 0;
+    struct chain_state_commit c = {0};
+    bool ok = csr_commit_tip(NULL, &c) == CSR_REJECTED_NULL_INPUT;
+    CSR_RUN("csr: NULL repository returns NULL_INPUT", ok);
+    return failures;
+}
+
+static int t_uninitialised(void)
+{
+    int failures = 0;
+    struct chain_state_repository csr;
+    memset(&csr, 0, sizeof(csr));
+    struct chain_state_commit c = {0};
+    bool ok = csr_commit_tip(&csr, &c) == CSR_REJECTED_NOT_INITIALIZED;
+    CSR_RUN("csr: uninitialised returns NOT_INITIALIZED", ok);
+    return failures;
+}
+
+static int t_null_commit(void)
+{
+    int failures = 0;
+    struct chain_state_repository csr;
+    struct csr_fixture f; csr_fix_init(&f);
+    csr_init(&csr, &f.bm, &f.chain, &f.header_tip, &f.coins_tip, NULL, NULL);
+    bool ok = csr_commit_tip(&csr, NULL) == CSR_REJECTED_NULL_INPUT;
+    CSR_RUN("csr: NULL commit returns NULL_INPUT", ok);
+    csr_free(&csr);
+    csr_fix_free(&f);
+    return failures;
+}
+
+static int t_null_new_tip(void)
+{
+    int failures = 0;
+    struct chain_state_repository csr;
+    struct csr_fixture f; csr_fix_init(&f);
+    csr_init(&csr, &f.bm, &f.chain, &f.header_tip, &f.coins_tip, NULL, NULL);
+    struct chain_state_commit c = {0};
+    c.reason = "test";
+    bool ok = csr_commit_tip(&csr, &c) == CSR_REJECTED_NULL_INPUT;
+    CSR_RUN("csr: NULL new_tip returns NULL_INPUT", ok);
+    csr_free(&csr);
+    csr_fix_free(&f);
+    return failures;
+}
+
+static int t_null_reason(void)
+{
+    int failures = 0;
+    struct chain_state_repository csr;
+    struct csr_fixture f; csr_fix_init(&f);
+    csr_init(&csr, &f.bm, &f.chain, &f.header_tip, &f.coins_tip, NULL, NULL);
+    struct block_index *b = csr_fix_add(&f, 0xa1);
+    struct chain_state_commit c = csr_make_commit(b, NULL);
+    bool ok = csr_commit_tip(&csr, &c) == CSR_REJECTED_NULL_INPUT;
+    CSR_RUN("csr: NULL reason returns NULL_INPUT", ok);
+    csr_free(&csr);
+    csr_fix_free(&f);
+    return failures;
+}
+
+static int t_coins_mismatch(void)
+{
+    int failures = 0;
+    struct chain_state_repository csr;
+    struct csr_fixture f; csr_fix_init(&f);
+    csr_init(&csr, &f.bm, &f.chain, &f.header_tip, &f.coins_tip, NULL, NULL);
+    struct block_index *b = csr_fix_add(&f, 0xa2);
+    struct chain_state_commit c = csr_make_commit(b, "test");
+    c.new_coins_best.data[0] ^= 0xff;
+    bool ok = csr_commit_tip(&csr, &c) == CSR_REJECTED_COINS_MISMATCH;
+    CSR_RUN("csr: coins_best != tip hash returns COINS_MISMATCH", ok);
+    csr_free(&csr);
+    csr_fix_free(&f);
+    return failures;
+}
+
+static int t_tip_not_in_index(void)
+{
+    int failures = 0;
+    struct chain_state_repository csr;
+    struct csr_fixture f; csr_fix_init(&f);
+    csr_init(&csr, &f.bm, &f.chain, &f.header_tip, &f.coins_tip, NULL, NULL);
+    struct uint256 h; memset(&h, 0xee, sizeof(h));
+    struct block_index orphan; block_index_init(&orphan);
+    orphan.phashBlock = &h;
+    orphan.nHeight = 5;
+    struct chain_state_commit c = csr_make_commit(&orphan, "test");
+    bool ok = csr_commit_tip(&csr, &c) == CSR_REJECTED_TIP_NOT_IN_INDEX;
+    CSR_RUN("csr: tip not in block_map returns TIP_NOT_IN_INDEX", ok);
+    csr_free(&csr);
+    csr_fix_free(&f);
+    return failures;
+}
+
+static int t_stale_block_map_pointer(void)
+{
+    int failures = 0;
+    struct chain_state_repository csr;
+    struct csr_fixture f; csr_fix_init(&f);
+    csr_init(&csr, &f.bm, &f.chain, &f.header_tip, &f.coins_tip, NULL, NULL);
+    struct block_index *b = csr_fix_add(&f, 0xa3);
+    struct block_index doppel; block_index_init(&doppel);
+    doppel.phashBlock = b->phashBlock;
+    doppel.nHeight = b->nHeight;
+    struct chain_state_commit c = csr_make_commit(&doppel, "test");
+    bool ok = csr_commit_tip(&csr, &c) == CSR_REJECTED_HASH_MISMATCH;
+    CSR_RUN("csr: stale block_map pointer returns HASH_MISMATCH", ok);
+    csr_free(&csr);
+    csr_fix_free(&f);
+    return failures;
+}
+
+static int t_missing_prev(void)
+{
+    int failures = 0;
+    struct chain_state_repository csr;
+    struct csr_fixture f; csr_fix_init(&f);
+    csr_init(&csr, &f.bm, &f.chain, &f.header_tip, &f.coins_tip, NULL, NULL);
+    struct block_index *b = csr_fix_add(&f, 0xa4);
+    struct uint256 fake_hash; memset(&fake_hash, 0xcc, sizeof(fake_hash));
+    struct block_index fake_prev; block_index_init(&fake_prev);
+    fake_prev.phashBlock = &fake_hash;
+    fake_prev.nHeight = 0;
+    b->pprev = &fake_prev;
+    struct chain_state_commit c = csr_make_commit(b, "test");
+    bool ok = csr_commit_tip(&csr, &c) == CSR_REJECTED_MISSING_PREV;
+    CSR_RUN("csr: pprev missing from block_map returns MISSING_PREV", ok);
+    csr_free(&csr);
+    csr_fix_free(&f);
+    return failures;
+}
+
+static int t_happy_genesis(void)
+{
+    int failures = 0;
+    struct chain_state_repository csr;
+    struct csr_fixture f; csr_fix_init(&f);
+    csr_init(&csr, &f.bm, &f.chain, &f.header_tip, &f.coins_tip, NULL, NULL);
+    struct block_index *g = csr_fix_add(&f, 0x01);
+    struct chain_state_commit c = csr_make_commit(g, "genesis");
+    bool ok = csr_commit_tip(&csr, &c) == CSR_OK;
+    ok = ok && active_chain_height(&f.chain) == 0;
+    ok = ok && active_chain_tip(&f.chain) == g;
+    struct uint256 best;
+    coins_view_cache_get_best_block(&f.coins_tip, &best);
+    ok = ok && memcmp(best.data, g->phashBlock->data, 32) == 0;
+    ok = ok && csr.commits_ok == 1u;
+    CSR_RUN("csr: happy-path genesis commit updates active chain and coins", ok);
+    csr_free(&csr);
+    csr_fix_free(&f);
+    return failures;
+}
+
+static int t_update_header(void)
+{
+    int failures = 0;
+    struct chain_state_repository csr;
+    struct csr_fixture f; csr_fix_init(&f);
+    csr_init(&csr, &f.bm, &f.chain, &f.header_tip, &f.coins_tip, NULL, NULL);
+    struct block_index *g = csr_fix_add(&f, 0x10);
+    struct chain_state_commit c = csr_make_commit(g, "boot");
+    c.update_header_tip = true;
+    bool ok = csr_commit_tip(&csr, &c) == CSR_OK && f.header_tip == g;
+    CSR_RUN("csr: update_header_tip raises pindex_best_header", ok);
+    csr_free(&csr);
+    csr_fix_free(&f);
+    return failures;
+}
+
+static int t_no_update_header(void)
+{
+    int failures = 0;
+    struct chain_state_repository csr;
+    struct csr_fixture f; csr_fix_init(&f);
+    csr_init(&csr, &f.bm, &f.chain, &f.header_tip, &f.coins_tip, NULL, NULL);
+    struct block_index *g = csr_fix_add(&f, 0x11);
+    f.header_tip = g; /* simulate prior knowledge */
+    struct block_index *b1 = csr_fix_add(&f, 0x12);
+    struct chain_state_commit c = csr_make_commit(b1, "extend");
+    bool ok = csr_commit_tip(&csr, &c) == CSR_OK && f.header_tip == g;
+    CSR_RUN("csr: without update_header_tip, header pointer is preserved", ok);
+    csr_free(&csr);
+    csr_fix_free(&f);
+    return failures;
+}
+
+static int t_header_no_regress(void)
+{
+    int failures = 0;
+    struct chain_state_repository csr;
+    struct csr_fixture f; csr_fix_init(&f);
+    csr_init(&csr, &f.bm, &f.chain, &f.header_tip, &f.coins_tip, NULL, NULL);
+    struct block_index *g  = csr_fix_add(&f, 0x20);
+    struct block_index *b1 = csr_fix_add(&f, 0x21);
+    struct block_index *b2 = csr_fix_add(&f, 0x22);
+    (void)g;
+    struct chain_state_commit c = csr_make_commit(b2, "boot");
+    c.update_header_tip = true;
+    bool ok = csr_commit_tip(&csr, &c) == CSR_OK && f.header_tip == b2;
+
+    struct chain_state_commit c2 = csr_make_commit(b1, "rewind");
+    c2.update_header_tip = true;
+    c2.allow_rollback = true;
+    ok = ok && csr_commit_tip(&csr, &c2) == CSR_OK && f.header_tip == b2;
+    CSR_RUN("csr: header tip never regresses", ok);
+    csr_free(&csr);
+    csr_fix_free(&f);
+    return failures;
+}
+
+static int t_extend_chain(void)
+{
+    int failures = 0;
+    struct chain_state_repository csr;
+    struct csr_fixture f; csr_fix_init(&f);
+    csr_init(&csr, &f.bm, &f.chain, &f.header_tip, &f.coins_tip, NULL, NULL);
+    bool ok = true;
+    for (int i = 0; i < 5 && ok; i++) {
+        struct block_index *b = csr_fix_add(&f, (uint8_t)(0x30 + i));
+        struct chain_state_commit c = csr_make_commit(b, "extend");
+        ok = csr_commit_tip(&csr, &c) == CSR_OK;
+        ok = ok && active_chain_height(&f.chain) == i;
+    }
+    ok = ok && csr.commits_ok == 5u;
+    CSR_RUN("csr: extending chain across many commits", ok);
+    csr_free(&csr);
+    csr_fix_free(&f);
+    return failures;
+}
+
+static int t_sql_stale_index(void)
+{
+    int failures = 0;
+    struct node_db ndb;
+    bool dbok = node_db_open(&ndb, ":memory:");
+    if (!dbok) {
+        CSR_RUN("csr: SQLite stale-index gap returns STALE_INDEX (skipped: db open failed)", false);
+        return failures;
+    }
+    struct chain_state_repository csr;
+    struct csr_fixture f; csr_fix_init(&f);
+    csr_init(&csr, &f.bm, &f.chain, &f.header_tip, &f.coins_tip, &ndb, NULL);
+
+    struct block_index *g = csr_fix_add(&f, 0x40);
+    struct uint256 high_hash; memset(&high_hash, 0x41, sizeof(high_hash));
+    bool ok = csr_sql_insert_block(&ndb, g->phashBlock, 0)
+           && csr_sql_insert_block(&ndb, &high_hash, 5000)
+           && csr_sql_insert_utxos(&ndb, 2000);
+
+    struct chain_state_commit c = csr_make_commit(g, "stale-index");
+    ok = ok && csr_commit_tip(&csr, &c) == CSR_REJECTED_STALE_INDEX;
+    ok = ok && active_chain_height(&f.chain) == -1;
+    CSR_RUN("csr: SQLite stale-index gap returns STALE_INDEX", ok);
+
+    csr_free(&csr);
+    csr_fix_free(&f);
+    node_db_close(&ndb);
+    return failures;
+}
+
+static int t_sql_hash_height_conflict(void)
+{
+    int failures = 0;
+    struct node_db ndb;
+    bool dbok = node_db_open(&ndb, ":memory:");
+    if (!dbok) {
+        CSR_RUN("csr: SQLite hash/height conflict returns HASH_MISMATCH (skipped)", false);
+        return failures;
+    }
+    struct chain_state_repository csr;
+    struct csr_fixture f; csr_fix_init(&f);
+    csr_init(&csr, &f.bm, &f.chain, &f.header_tip, &f.coins_tip, &ndb, NULL);
+
+    struct block_index *g = csr_fix_add(&f, 0x50);
+    bool ok = csr_sql_insert_block(&ndb, g->phashBlock, 999);
+
+    struct chain_state_commit c = csr_make_commit(g, "hash-mismatch");
+    ok = ok && csr_commit_tip(&csr, &c) == CSR_REJECTED_HASH_MISMATCH;
+    CSR_RUN("csr: SQLite hash/height conflict returns HASH_MISMATCH", ok);
+
+    csr_free(&csr);
+    csr_fix_free(&f);
+    node_db_close(&ndb);
+    return failures;
+}
+
+static int t_allow_rollback(void)
+{
+    int failures = 0;
+    struct node_db ndb;
+    bool dbok = node_db_open(&ndb, ":memory:");
+    if (!dbok) {
+        CSR_RUN("csr: allow_rollback bypasses orphan guard (skipped)", false);
+        return failures;
+    }
+    struct chain_state_repository csr;
+    struct csr_fixture f; csr_fix_init(&f);
+    csr_init(&csr, &f.bm, &f.chain, &f.header_tip, &f.coins_tip, &ndb, NULL);
+
+    struct block_index *g  = csr_fix_add(&f, 0x60);
+    struct block_index *b1 = csr_fix_add(&f, 0x61);
+    struct block_index *b2 = csr_fix_add(&f, 0x62);
+    bool ok = csr_sql_insert_block(&ndb, g->phashBlock, 0)
+           && csr_sql_insert_block(&ndb, b1->phashBlock, 1)
+           && csr_sql_insert_block(&ndb, b2->phashBlock, 2)
+           && csr_sql_insert_utxos(&ndb, 2000);
+
+    struct chain_state_commit c2 = csr_make_commit(b2, "advance");
+    c2.allow_rollback = true;
+    ok = ok && csr_commit_tip(&csr, &c2) == CSR_OK;
+    ok = ok && active_chain_height(&f.chain) == 2;
+
+    struct chain_state_commit cback = csr_make_commit(g, "rollback");
+    ok = ok && csr_commit_tip(&csr, &cback) == CSR_REJECTED_UTXO_DELTA_TOO_BIG;
+
+    cback.allow_rollback = true;
+    ok = ok && csr_commit_tip(&csr, &cback) == CSR_OK;
+    ok = ok && active_chain_height(&f.chain) == 0;
+    CSR_RUN("csr: allow_rollback bypasses orphan guard", ok);
+
+    csr_free(&csr);
+    csr_fix_free(&f);
+    node_db_close(&ndb);
+    return failures;
+}
+
+static int t_expected_utxo_drift(void)
+{
+    int failures = 0;
+    struct node_db ndb;
+    bool dbok = node_db_open(&ndb, ":memory:");
+    if (!dbok) {
+        CSR_RUN("csr: expected_utxo_count drift returns UTXO_DELTA_TOO_BIG (skipped)", false);
+        return failures;
+    }
+    struct chain_state_repository csr;
+    struct csr_fixture f; csr_fix_init(&f);
+    csr_init(&csr, &f.bm, &f.chain, &f.header_tip, &f.coins_tip, &ndb, NULL);
+
+    struct block_index *g = csr_fix_add(&f, 0x70);
+    bool ok = csr_sql_insert_block(&ndb, g->phashBlock, 0)
+           && csr_sql_insert_utxos(&ndb, 100);
+
+    struct chain_state_commit c = csr_make_commit(g, "drift");
+    c.expected_utxo_count = 500; /* 80% drift */
+    ok = ok && csr_commit_tip(&csr, &c) == CSR_REJECTED_UTXO_DELTA_TOO_BIG;
+    CSR_RUN("csr: expected_utxo_count drift > 50% returns UTXO_DELTA_TOO_BIG", ok);
+
+    csr_free(&csr);
+    csr_fix_free(&f);
+    node_db_close(&ndb);
+    return failures;
+}
+
+static int t_expected_utxo_close(void)
+{
+    int failures = 0;
+    struct node_db ndb;
+    bool dbok = node_db_open(&ndb, ":memory:");
+    if (!dbok) {
+        CSR_RUN("csr: expected_utxo_count close to actual returns OK (skipped)", false);
+        return failures;
+    }
+    struct chain_state_repository csr;
+    struct csr_fixture f; csr_fix_init(&f);
+    csr_init(&csr, &f.bm, &f.chain, &f.header_tip, &f.coins_tip, &ndb, NULL);
+
+    struct block_index *g = csr_fix_add(&f, 0x80);
+    bool ok = csr_sql_insert_block(&ndb, g->phashBlock, 0)
+           && csr_sql_insert_utxos(&ndb, 100);
+
+    struct chain_state_commit c = csr_make_commit(g, "close");
+    c.expected_utxo_count = 90; /* drift 10% */
+    ok = ok && csr_commit_tip(&csr, &c) == CSR_OK;
+    CSR_RUN("csr: expected_utxo_count close to actual returns OK", ok);
+
+    csr_free(&csr);
+    csr_fix_free(&f);
+    node_db_close(&ndb);
+    return failures;
+}
+
+static int t_snapshot_after_commit(void)
+{
+    int failures = 0;
+    struct chain_state_repository csr;
+    struct csr_fixture f; csr_fix_init(&f);
+    csr_init(&csr, &f.bm, &f.chain, &f.header_tip, &f.coins_tip, NULL, NULL);
+    struct block_index *g = csr_fix_add(&f, 0x90);
+    struct block_index *b = csr_fix_add(&f, 0x91);
+    struct chain_state_commit c1 = csr_make_commit(g, "init");
+    c1.update_header_tip = true;
+    csr_commit_tip(&csr, &c1);
+    struct chain_state_commit c2 = csr_make_commit(b, "extend");
+    c2.update_header_tip = true;
+    csr_commit_tip(&csr, &c2);
+
+    struct chain_state_view v;
+    csr_snapshot(&csr, &v);
+    bool ok = v.tip_height == 1
+           && v.header_height == 1
+           && v.consistent
+           && v.commits_ok == 2u;
+    CSR_RUN("csr: snapshot reflects committed state", ok);
+    csr_free(&csr);
+    csr_fix_free(&f);
+    return failures;
+}
+
+static int t_snapshot_uninitialised(void)
+{
+    int failures = 0;
+    struct chain_state_repository csr;
+    memset(&csr, 0, sizeof(csr));
+    struct chain_state_view v;
+    csr_snapshot(&csr, &v);
+    bool ok = v.tip_height == -1
+           && v.header_height == -1
+           && v.utxo_count == -1;
+    CSR_RUN("csr: snapshot of uninitialised repo is empty", ok);
+    return failures;
+}
+
+static int t_counters_increment(void)
+{
+    int failures = 0;
+    struct chain_state_repository csr;
+    struct csr_fixture f; csr_fix_init(&f);
+    csr_init(&csr, &f.bm, &f.chain, &f.header_tip, &f.coins_tip, NULL, NULL);
+    struct block_index *g = csr_fix_add(&f, 0xb0);
+    struct chain_state_commit c = csr_make_commit(g, "test");
+    c.new_coins_best.data[0] ^= 0xff;
+    csr_commit_tip(&csr, &c);
+    csr_commit_tip(&csr, &c);
+    bool ok = csr.commits_rejected[CSR_REJECTED_COINS_MISMATCH] == 2u
+           && csr.commits_ok == 0u;
+    CSR_RUN("csr: per-result counters increment on rejection", ok);
+    csr_free(&csr);
+    csr_fix_free(&f);
+    return failures;
+}
+
+static int t_events_fire(void)
+{
+    int failures = 0;
+    csr_test_install_observer();
+    struct chain_state_repository csr;
+    struct csr_fixture f; csr_fix_init(&f);
+    csr_init(&csr, &f.bm, &f.chain, &f.header_tip, &f.coins_tip, NULL, NULL);
+    struct block_index *g = csr_fix_add(&f, 0xc0);
+    struct chain_state_commit good = csr_make_commit(g, "ok");
+    struct chain_state_commit bad = csr_make_commit(g, "bad");
+    bad.new_coins_best.data[0] ^= 0xff;
+    csr_commit_tip(&csr, &good);
+    csr_commit_tip(&csr, &bad);
+    bool ok = atomic_load(&g_commit_events) == 1
+           && atomic_load(&g_rejected_events) == 1;
+    CSR_RUN("csr: events fire on success and rejection", ok);
+    csr_free(&csr);
+    csr_fix_free(&f);
+    return failures;
+}
+
+static int t_wallet_scan(void)
+{
+    int failures = 0;
+    struct chain_state_repository csr;
+    struct csr_fixture f; csr_fix_init(&f);
+    int64_t scan = -1;
+    csr_init(&csr, &f.bm, &f.chain, &f.header_tip, &f.coins_tip, NULL, &scan);
+    struct block_index *g = csr_fix_add(&f, 0xd0);
+    struct chain_state_commit c = csr_make_commit(g, "wallet");
+    c.wallet_scan_height = 42;
+    bool ok = csr_commit_tip(&csr, &c) == CSR_OK && scan == 42;
+    CSR_RUN("csr: wallet scan height applied", ok);
+    csr_free(&csr);
+    csr_fix_free(&f);
+    return failures;
+}
+
+static int t_tunables(void)
+{
+    int failures = 0;
+    struct chain_state_repository csr;
+    struct csr_fixture f; csr_fix_init(&f);
+    csr_init(&csr, &f.bm, &f.chain, &f.header_tip, &f.coins_tip, NULL, NULL);
+    csr_set_max_utxo_orphan_rows(&csr, 999999);
+    csr_set_stale_index_gap(&csr, 50);
+    bool ok = csr.max_utxo_orphan_rows == 999999
+           && csr.stale_index_height_gap == 50;
+    CSR_RUN("csr: tunable thresholds update", ok);
+    csr_free(&csr);
+    csr_fix_free(&f);
+    return failures;
+}
+
+static int t_concurrent(void)
+{
+    int failures = 0;
+    struct chain_state_repository csr;
+    struct csr_fixture f; csr_fix_init(&f);
+    csr_init(&csr, &f.bm, &f.chain, &f.header_tip, &f.coins_tip, NULL, NULL);
+    struct block_index *g = csr_fix_add(&f, 0xe0);
+
+    const int N_THREADS = 4;
+    const int ITERS = 100;
+    pthread_t th[4];
+    struct csr_concurrency_args args;
+    args.csr = &csr;
+    args.tip = g;
+    args.iterations = ITERS;
+    atomic_store(&args.oks, 0);
+
+    for (int i = 0; i < N_THREADS; i++)
+        pthread_create(&th[i], NULL, csr_thread_commit, &args);
+    for (int i = 0; i < N_THREADS; i++)
+        pthread_join(th[i], NULL);
+
+    bool ok = atomic_load(&args.oks) == N_THREADS * ITERS
+           && csr.commits_ok == (uint64_t)(N_THREADS * ITERS);
+    CSR_RUN("csr: concurrent commits are serialised", ok);
+    csr_free(&csr);
+    csr_fix_free(&f);
+    return failures;
+}
+
+static int t_result_names(void)
+{
+    int failures = 0;
+    bool ok = true;
+    for (int i = 0; i < CSR_NUM_RESULTS && ok; i++) {
+        const char *n = csr_result_name((enum csr_result)i);
+        if (!n || strcmp(n, "unknown") == 0) ok = false;
+    }
+    ok = ok && strcmp(csr_result_name(CSR_OK), "ok") == 0;
+    CSR_RUN("csr: result_name covers every result code", ok);
+    return failures;
+}
+
+/* ── Test runner ─────────────────────────────────────────── */
+
+int test_chain_state_repo(void)
+{
+    int failures = 0;
+
+    failures += t_init_defaults();
+    failures += t_null_repo();
+    failures += t_uninitialised();
+    failures += t_null_commit();
+    failures += t_null_new_tip();
+    failures += t_null_reason();
+    failures += t_coins_mismatch();
+    failures += t_tip_not_in_index();
+    failures += t_stale_block_map_pointer();
+    failures += t_missing_prev();
+    failures += t_happy_genesis();
+    failures += t_update_header();
+    failures += t_no_update_header();
+    failures += t_header_no_regress();
+    failures += t_extend_chain();
+    failures += t_sql_stale_index();
+    failures += t_sql_hash_height_conflict();
+    failures += t_allow_rollback();
+    failures += t_expected_utxo_drift();
+    failures += t_expected_utxo_close();
+    failures += t_snapshot_after_commit();
+    failures += t_snapshot_uninitialised();
+    failures += t_counters_increment();
+    failures += t_events_fire();
+    failures += t_wallet_scan();
+    failures += t_tunables();
+    failures += t_concurrent();
+    failures += t_result_names();
+
+    /* Reset observers so we don't interfere with the rest of the suite. */
+    event_clear_observers(EV_CHAIN_TIP_COMMIT);
+    event_clear_observers(EV_CHAIN_TIP_REJECTED);
+
+    return failures;
+}

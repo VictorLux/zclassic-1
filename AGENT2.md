@@ -182,6 +182,7 @@ Write the blocker into the "Current Status" section of this file and push. AGENT
 *(Update this every session with what you did and what's next. Keep it short.)*
 
 - **2026-04-11** — Plan created by AGENT1. AGENT2 has not started.
+- **2026-04-11** — Phase 1 service landed. `app/services/{include/services,src}/chain_state_repository.{h,c}` provides the single-writer `csr_commit_tip()` API with full validation: NULL/init checks, block_map cross-check, pprev presence, SQLite hash/height agreement, stale-index gap guard, expected-utxo drift, orphan-rows rollback guard. `csr_snapshot()` exposes a read-only view. Both `EV_CHAIN_TIP_COMMIT` and `EV_CHAIN_TIP_REJECTED` events are emitted on every outcome and registered in `event.c`'s name table. 28 unit tests in `lib/test/src/test_chain_state_repo.c` cover happy path, every rejection code, observability, tunables, and a 4-thread × 100-iter concurrency stress; full `./test_zcl` is green (`ALL TESTS PASSED (0 failures)`). **Next**: Phase 1 call-site migration — start with `lib/validation/src/chainstate.c` (1 site), then `process_block.c` (5 sites). 67 sites remain.
 
 ---
 
