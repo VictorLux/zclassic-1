@@ -8,6 +8,7 @@
 #include "config/file_ops.h"
 #include "services/snapshot_sync_service.h"
 #include "services/chain_activation_controller.h"
+#include "services/chain_state_repository.h"
 #include "controllers/wallet_scan.h"
 #include "util/sync.h"
 #include "net/msgprocessor.h"
@@ -1006,6 +1007,21 @@ bool app_init(struct app_context *ctx)
     }
 
     coins_view_cache_init(&g_coins_tip, &g_coins_sqlite.view);
+
+    /* Wire the process-lifetime chain_state_repository singleton now
+     * that g_coins_tip is alive. From this point on, call-site
+     * migrations can go through csr_commit_tip() and get all six
+     * sources of truth updated atomically under one mutex. Wallet
+     * scan height is unwired (NULL) — the wallet manages its own
+     * scan state and we don't want to tempt callers into driving it
+     * through the repository until Phase 3. */
+    csr_init(csr_instance(),
+             &g_state.map_block_index,
+             &g_state.chain_active,
+             &g_state.pindex_best_header,
+             &g_coins_tip,
+             &g_node_db,
+             NULL);
 
     /* Wire UTXO commitment: load from SQLite and set pointer for
      * persistence on flush. */
