@@ -13,6 +13,7 @@
  * State machine: IDLE → NEGOTIATING → RECEIVING → VERIFYING → COMPLETE */
 
 #include "services/snapshot_sync_service.h"
+#include "services/chain_state_repository.h"
 #include "chain/chain.h"
 #include "core/serialize.h"
 #include "models/database.h"
@@ -1224,6 +1225,50 @@ bool snapsync_write_fc_response(struct byte_stream *s,
     return true;
 }
 
+/* Single-writer tip commit for snapshot activation. Routes through
+ * the chain_state_repository so block_map, active_chain, coins_tip,
+ * and pindex_best_header move together — the exact failure mode that
+ * caused the 2026-04-10 UTXO wipe was a snapshot path updating these
+ * out of order. Falls back to raw setters when the csr singleton was
+ * never wired (unit tests that call this function without boot). */
+static bool snapsync_commit_tip(struct main_state *ms,
+                                 struct block_index *new_tip,
+                                 const char *reason)
+{
+    if (!new_tip || !new_tip->phashBlock) return false;
+
+    struct chain_state_commit commit = {
+        .new_tip             = new_tip,
+        .new_coins_best      = *new_tip->phashBlock,
+        .expected_utxo_count = 0,
+        .update_header_tip   = true,
+        /* Snapshot sync legitimately installs a tip at a different
+         * height (a synthetic anchor on the fast-sync path). Bypass
+         * the orphan-rows guard; Phase 2 recovery_policy will gate
+         * this kind of move explicitly. */
+        .allow_rollback      = true,
+        .wallet_scan_height  = -1,
+        .reason              = reason,
+    };
+
+    enum csr_result rc = csr_commit_tip(csr_instance(), &commit);
+    if (rc == CSR_OK) return true;
+
+    if (rc == CSR_REJECTED_NOT_INITIALIZED) {
+        /* Test harness path: singleton was never wired. Fall back to
+         * the raw setters so existing unit tests still exercise the
+         * snapshot activation logic end-to-end. */
+        active_chain_set_tip(&ms->chain_active, new_tip);
+        ms->pindex_best_header = new_tip;
+        return true;
+    }
+
+    fprintf(stderr,
+            "snapsync: csr rejected tip commit (%s) reason=%s h=%d\n",
+            csr_result_name(rc), reason, new_tip->nHeight);
+    return false;
+}
+
 int snapsync_activate_verified_tip(const struct snapshot_sync_service *svc,
                                    struct main_state *ms)
 {
@@ -1294,16 +1339,15 @@ int snapsync_activate_verified_tip(const struct snapshot_sync_service *svc,
          * blocks from snapshot+1 to tip. The pprev=NULL means the
          * chain array below anchor height will be NULL, but we only
          * need to connect blocks ABOVE the anchor. */
-        active_chain_set_tip(&ms->chain_active, snap_bi);
-        ms->pindex_best_header = snap_bi;
+        snapsync_commit_tip(ms, snap_bi,
+                            "snapshot.apply_synthetic_anchor");
 
         printf("[snapshot] Anchor at height %d set as chain tip "
                "(FlyClient+SHA3 verified)\n", svc->offered_height);
         return svc->offered_height;
     }
 
-    active_chain_set_tip(&ms->chain_active, snap_bi);
-    ms->pindex_best_header = snap_bi;
+    snapsync_commit_tip(ms, snap_bi, "snapshot.apply_anchor");
     return snap_bi->nHeight;
 }
 
