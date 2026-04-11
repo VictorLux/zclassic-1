@@ -122,6 +122,9 @@ enum event_type {
     /* ── MCP server (AI agent surface) ─────────────── */
     EV_MCP_REQUEST,              /* payload: "tool=NAME code=CODE [param=P] dur_us=N" */
 
+    /* ── Block index integrity ─────────────────────── */
+    EV_BLOCK_INDEX_CORRUPT,      /* payload: "verdict=NAME body_size=N ..." */
+
     EV_NUM_TYPES                 /* sentinel — must be last */
 };
 

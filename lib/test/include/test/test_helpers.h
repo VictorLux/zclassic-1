@@ -237,6 +237,7 @@ int test_mcp_e2e(void);
 int test_db_validators(void);
 int test_peer_scoring(void);
 int test_secrets_hygiene(void);
+int test_block_index_integrity(void);
 
 /* Spec-based user story tests (one per feature area) */
 int spec_wallet_dashboard(void);
