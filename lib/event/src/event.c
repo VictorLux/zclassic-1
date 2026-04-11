@@ -357,6 +357,7 @@ const char *event_type_name(enum event_type type)
         [EV_SNAPSYNC_STATE_CHANGE]   = "snapsync.state",
         [EV_SNAPSYNC_PROGRESS]       = "snapsync.progress",
         [EV_SNAPSYNC_VERIFIED]       = "snapsync.verified",
+        [EV_MCP_REQUEST]             = "mcp.request",
     };
     if (type >= 0 && type < EV_NUM_TYPES && names[type])
         return names[type];

@@ -1,14 +1,20 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * ZClassic23 MCP Server — Model Context Protocol for AI agents.
- * Built into zclassic23 binary. Speaks JSON-RPC over stdio.
+ * Built into zclassic23 binary.  Speaks JSON-RPC over stdio.
  *
  * Install:  claude mcp add zcl23 -- zclassic23 -mcp
  * Usage:    Claude calls tools like zcl_status, zcl_getblock, zcl_peers
  *
  * Architecture:
  *   Claude Code <--stdio--> zclassic23 -mcp <--HTTP--> zclassic23 RPC
- */
+ *
+ * This file is thin: it boots the router, registers every tool via the
+ * routing table in tools/mcp/router.{h,c}, and runs the stdio loop.
+ * All parameter validation, schema emission and error enveloping
+ * happens inside the router — handlers here see pre-validated args. */
+
+#include "mcp/router.h"
 
 #include "json/json.h"
 #include <stdio.h>
@@ -57,7 +63,7 @@ static void base64_encode(const char *in, size_t len, char *out)
     out[j] = 0;
 }
 
-/* ── Cookie auth ────────────────────────────────────���───────── */
+/* ── Cookie auth ───────────────────────────────────────────── */
 
 static bool read_cookie(void)
 {
@@ -75,7 +81,7 @@ static bool read_cookie(void)
 
 /* ── RPC call ───────────────────────────────────────────────── */
 
-/* Returns malloc'd JSON string or NULL. Caller frees. */
+/* Returns malloc'd JSON string or NULL.  Caller frees. */
 static char *node_rpc(const char *method, const char *params_json)
 {
     read_cookie();
@@ -164,549 +170,581 @@ static char *node_rpc(const char *method, const char *params_json)
     return buf;
 }
 
-/* ── Tool definitions ───────────────────────────────────────── */
+/* ── Handler helpers ────────────────────────────────────────── */
 
-struct mcp_tool {
-    const char *name;
-    const char *description;
-    const char *schema;  /* JSON inputSchema string */
-};
+#define H_SET_BODY(res, s) do { (res)->body = (s); } while (0)
 
-static const struct mcp_tool tools[] = {
-    {"zcl_status",
-     "Node status: block height, peers, sync state, onion address, "
-     "bg-validation progress, health checks. The single command to "
-     "check if everything is working.",
-     "{\"type\":\"object\",\"properties\":{}}"},
+/* Pass-through: "no args, single RPC method". */
+#define DEFINE_PASSTHROUGH(fn_name, rpc_method)                                \
+    static int fn_name(const struct mcp_request *req,                          \
+                       struct mcp_response *res)                               \
+    {                                                                          \
+        (void)req;                                                             \
+        char *out = node_rpc(rpc_method, NULL);                                \
+        if (!out) return -1;                                                   \
+        res->body = out;                                                       \
+        return 0;                                                              \
+    }
 
-    {"zcl_getblockcount",
-     "Current block height.",
-     "{\"type\":\"object\",\"properties\":{}}"},
-
-    {"zcl_getblock",
-     "Get block by height or hash.",
-     "{\"type\":\"object\",\"properties\":{"
-     "\"block_id\":{\"type\":\"string\",\"description\":\"Height or hash\"},"
-     "\"verbosity\":{\"type\":\"integer\",\"description\":\"0=hex 1=JSON 2=JSON+tx\",\"default\":1}"
-     "},\"required\":[\"block_id\"]}"},
-
-    {"zcl_getblockchaininfo",
-     "Chain state: height, best block, difficulty, chain work, value pools.",
-     "{\"type\":\"object\",\"properties\":{}}"},
-
-    {"zcl_peers",
-     "Connected peers with addresses, latency, services, heights.",
-     "{\"type\":\"object\",\"properties\":{}}"},
-
-    {"zcl_networkinfo",
-     "Network info: version, connections, relay fee.",
-     "{\"type\":\"object\",\"properties\":{}}"},
-
-    {"zcl_addnode",
-     "Add/remove peer. Actions: add, remove, onetry.",
-     "{\"type\":\"object\",\"properties\":{"
-     "\"addr\":{\"type\":\"string\",\"description\":\"IP:port\"},"
-     "\"action\":{\"type\":\"string\",\"enum\":[\"add\",\"remove\",\"onetry\"]}"
-     "},\"required\":[\"addr\"]}"},
-
-    {"zcl_onion_status",
-     "Tor onion service: .onion address, bootstrap state, "
-     "directory peers, dynhost status.",
-     "{\"type\":\"object\",\"properties\":{}}"},
-
-    {"zcl_syncstate",
-     "Sync state machine: phase, progress, header/block/UTXO status.",
-     "{\"type\":\"object\",\"properties\":{}}"},
-
-    {"zcl_validationstatus",
-     "Background validation: verified height, sigs, proofs, blocks/sec.",
-     "{\"type\":\"object\",\"properties\":{}}"},
-
-    {"zcl_dataintegrity",
-     "SHA3-256 hashes over all consensus tables. Database integrity check.",
-     "{\"type\":\"object\",\"properties\":{}}"},
-
-    {"zcl_mmb",
-     "Merkle Mountain Belt root. FlyClient chain verification "
-     "(50 samples, ≥150-bit security).",
-     "{\"type\":\"object\",\"properties\":{}}"},
-
-    {"zcl_utxocommitment",
-     "SHA3-256 over entire UTXO set in canonical order.",
-     "{\"type\":\"object\",\"properties\":{}}"},
-
-    {"zcl_gametypes",
-     "P2P game types: Ping (latency measurement), TicTacToe.",
-     "{\"type\":\"object\",\"properties\":{}}"},
-
-    {"zcl_pingpeer",
-     "Measure round-trip latency to a connected peer.",
-     "{\"type\":\"object\",\"properties\":{"
-     "\"peer_id\":{\"type\":\"integer\",\"description\":\"Peer ID from zcl_peers\"}"
-     "},\"required\":[\"peer_id\"]}"},
-
-    {"zcl_peerlatency",
-     "Latency for all peers: ping_ms, min_ping_ms, avg_latency_ms.",
-     "{\"type\":\"object\",\"properties\":{}}"},
-
-    {"zcl_balance",
-     "Total wallet balance: transparent + shielded.",
-     "{\"type\":\"object\",\"properties\":{}}"},
-
-    {"zcl_getnewaddress",
-     "Generate new transparent (t-addr) receiving address.",
-     "{\"type\":\"object\",\"properties\":{}}"},
-
-    {"zcl_z_getnewaddress",
-     "Generate new shielded Sapling (z-addr) receiving address.",
-     "{\"type\":\"object\",\"properties\":{}}"},
-
-    {"zcl_send",
-     "Send ZCL (transparent or shielded).",
-     "{\"type\":\"object\",\"properties\":{"
-     "\"from\":{\"type\":\"string\",\"description\":\"Source address\"},"
-     "\"to\":{\"type\":\"string\",\"description\":\"Destination address\"},"
-     "\"amount\":{\"type\":\"number\",\"description\":\"Amount in ZCL\"}"
-     "},\"required\":[\"from\",\"to\",\"amount\"]}"},
-
-    {"zcl_hodlwave",
-     "UTXO age distribution: 10 buckets from 24h to 5y+.",
-     "{\"type\":\"object\",\"properties\":{}}"},
-
-    {"zcl_filemanifest",
-     "File service status: chunks, SHA3 hashes, total size.",
-     "{\"type\":\"object\",\"properties\":{}}"},
-
-    {"zcl_tokens",
-     "List all ZSLP tokens on the network.",
-     "{\"type\":\"object\",\"properties\":{}}"},
-
-    {"zcl_events",
-     "Recent event log: sync events, peer connections, blocks.",
-     "{\"type\":\"object\",\"properties\":{"
-     "\"count\":{\"type\":\"integer\",\"description\":\"Number of events\",\"default\":20}"
-     "}}"},
-
-    {"zcl_health",
-     "Health check: pass/fail, chain height, peers, sync, onion.",
-     "{\"type\":\"object\",\"properties\":{}}"},
-
-    {"zcl_swap_chains",
-     "List supported chains for atomic swaps: ZCL, BTC, LTC, DOGE.",
-     "{\"type\":\"object\",\"properties\":{}}"},
-
-    {"zcl_swap_initiate",
-     "Initiate an atomic swap. Generates secret, builds HTLC, returns P2SH address to fund.",
-     "{\"type\":\"object\",\"properties\":{"
-     "\"my_address\":{\"type\":\"string\",\"description\":\"Your address (refund path)\"},"
-     "\"counter_address\":{\"type\":\"string\",\"description\":\"Counterparty address (claim path)\"},"
-     "\"amount\":{\"type\":\"number\",\"description\":\"Amount in coins\"},"
-     "\"locktime_blocks\":{\"type\":\"integer\",\"description\":\"Lock duration in blocks\"},"
-     "\"chain\":{\"type\":\"string\",\"description\":\"Chain: zcl, btc, ltc, doge\",\"default\":\"zcl\"}"
-     "},\"required\":[\"my_address\",\"counter_address\",\"amount\",\"locktime_blocks\"]}"},
-
-    {"zcl_swap_participate",
-     "Participate in an atomic swap (counter-HTLC with shorter locktime).",
-     "{\"type\":\"object\",\"properties\":{"
-     "\"my_address\":{\"type\":\"string\",\"description\":\"Your address\"},"
-     "\"counter_address\":{\"type\":\"string\",\"description\":\"Initiator address\"},"
-     "\"amount\":{\"type\":\"number\",\"description\":\"Amount\"},"
-     "\"locktime_blocks\":{\"type\":\"integer\",\"description\":\"Lock blocks (shorter than initiator)\"},"
-     "\"secret_hash\":{\"type\":\"string\",\"description\":\"64-char hex secret hash from initiator\"},"
-     "\"chain\":{\"type\":\"string\",\"description\":\"Chain: zcl, btc, ltc, doge\",\"default\":\"zcl\"}"
-     "},\"required\":[\"my_address\",\"counter_address\",\"amount\",\"locktime_blocks\",\"secret_hash\"]}"},
-
-    {"zcl_swap_list",
-     "List atomic swap contracts. Filter by state: pending, funded, redeemed, refunded.",
-     "{\"type\":\"object\",\"properties\":{"
-     "\"state\":{\"type\":\"string\",\"description\":\"Filter: pending, funded, redeemed, refunded\"}"
-     "}}"},
-
-    {"zcl_msg_send_named",
-     "Send a message to a ZCL Name. Resolves the name, then delivers the message.",
-     "{\"type\":\"object\",\"properties\":{"
-     "\"name\":{\"type\":\"string\",\"description\":\"ZCL Name (e.g. alice)\"},"
-     "\"message\":{\"type\":\"string\",\"description\":\"Message text\"}"
-     "},\"required\":[\"name\",\"message\"]}"},
-
-    {"zcl_msg_send",
-     "Send a P2P message to a connected peer.",
-     "{\"type\":\"object\",\"properties\":{"
-     "\"peer_id\":{\"type\":\"integer\",\"description\":\"Connected peer ID\"},"
-     "\"message\":{\"type\":\"string\",\"description\":\"Message text\"}"
-     "},\"required\":[\"peer_id\",\"message\"]}"},
-
-    {"zcl_msg_inbox",
-     "List messages in the inbox. Returns recent messages, newest first.",
-     "{\"type\":\"object\",\"properties\":{"
-     "\"unread_only\":{\"type\":\"boolean\",\"description\":\"Only unread\",\"default\":false}"
-     "}}"},
-
-    {"zcl_msg_read",
-     "Mark a message as read and return its content.",
-     "{\"type\":\"object\",\"properties\":{"
-     "\"msg_id\":{\"type\":\"string\",\"description\":\"64-char hex message ID\"}"
-     "},\"required\":[\"msg_id\"]}"},
-
-    {"zcl_name_resolve",
-     "Resolve a ZCL Name to its target (.onion address, z-addr, or t-addr).",
-     "{\"type\":\"object\",\"properties\":{"
-     "\"name\":{\"type\":\"string\",\"description\":\"Name to resolve (e.g. alice)\"}"
-     "},\"required\":[\"name\"]}"},
-
-    {"zcl_name_register",
-     "Build an OP_RETURN script to register a ZCL Name on-chain.",
-     "{\"type\":\"object\",\"properties\":{"
-     "\"name\":{\"type\":\"string\",\"description\":\"Name (1-63 chars, lowercase+hyphens)\"},"
-     "\"type\":{\"type\":\"string\",\"description\":\"Target type: onion, zaddr, taddr\"},"
-     "\"value\":{\"type\":\"string\",\"description\":\"Target value (.onion, z-addr, t-addr)\"}"
-     "},\"required\":[\"name\",\"type\",\"value\"]}"},
-
-    {"zcl_name_list",
-     "List all registered ZCL Names on the network.",
-     "{\"type\":\"object\",\"properties\":{}}"},
-
-    {"zcl_market_list",
-     "List files available on the ZCL Market P2P file sharing network.",
-     "{\"type\":\"object\",\"properties\":{}}"},
-
-    {"zcl_market_offer",
-     "Announce a file for sale on the ZCL Market. Requires filepath and price.",
-     "{\"type\":\"object\",\"properties\":{"
-     "\"filepath\":{\"type\":\"string\",\"description\":\"Path to file to share\"},"
-     "\"price_per_mb_zat\":{\"type\":\"integer\",\"description\":\"Price per MB in zatoshis\"}"
-     "},\"required\":[\"filepath\",\"price_per_mb_zat\"]}"},
-
-    {"zcl_market_buy",
-     "Initiate purchase and download of a file from the ZCL Market.",
-     "{\"type\":\"object\",\"properties\":{"
-     "\"root_hash\":{\"type\":\"string\",\"description\":\"SHA3 hash of file offer (64-char hex)\"}"
-     "},\"required\":[\"root_hash\"]}"},
-
-    {"zcl_market_status",
-     "ZCL Market status: cached offers, persisted offers, active downloads.",
-     "{\"type\":\"object\",\"properties\":{}}"},
-
-    {"zcl_rpc",
-     "Call any RPC method directly. 85+ commands available including "
-     "getblock, getrawtransaction, z_sendmany, getmininginfo, etc.",
-     "{\"type\":\"object\",\"properties\":{"
-     "\"method\":{\"type\":\"string\",\"description\":\"RPC method name\"},"
-     "\"params\":{\"type\":\"string\",\"description\":\"JSON params array\",\"default\":\"[]\"}"
-     "},\"required\":[\"method\"]}"},
-};
-
-#define NUM_TOOLS (sizeof(tools) / sizeof(tools[0]))
-
-/* ── Tool dispatch ──────────────────────────────────────────── */
-
-static char *dispatch_tool(const char *name, const struct json_value *args)
+static int h_zcl_status(const struct mcp_request *req, struct mcp_response *res)
 {
-    if (strcmp(name, "zcl_status") == 0) {
-        char *h = node_rpc("getblockcount", NULL);
-        char *p = node_rpc("getpeerinfo", NULL);
-        char *s = node_rpc("syncstate", NULL);
-        char *v = node_rpc("validationstatus", NULL);
-        char *hc = node_rpc("healthcheck", NULL);
+    (void)req;
+    char *h  = node_rpc("getblockcount", NULL);
+    char *p  = node_rpc("getpeerinfo", NULL);
+    char *s  = node_rpc("syncstate", NULL);
+    char *v  = node_rpc("validationstatus", NULL);
+    char *hc = node_rpc("healthcheck", NULL);
 
-        /* Count peers */
-        int pc = 0;
-        if (p) { for (char *c = p; *c; c++) if (*c == '{') pc++; }
+    int pc = 0;
+    if (p) { for (char *c = p; *c; c++) if (*c == '{') pc++; }
 
-        char *out = malloc(32768);
-        snprintf(out, 32768,
-            "{\"height\":%s,\"peers\":%d,\"sync\":%s,"
-            "\"validation\":%s,\"health\":%s}",
-            h ? h : "null", pc, s ? s : "null",
-            v ? v : "null", hc ? hc : "null");
-        free(h); free(p); free(s); free(v); free(hc);
-        return out;
-    }
-
-    if (strcmp(name, "zcl_getblockcount") == 0)
-        return node_rpc("getblockcount", NULL);
-
-    if (strcmp(name, "zcl_getblock") == 0) {
-        const struct json_value *bid = args ? json_get(args, "block_id") : NULL;
-        const struct json_value *verb = args ? json_get(args, "verbosity") : NULL;
-        if (!bid) return strdup("{\"error\":\"block_id required\"}");
-        const char *id_str = json_get_str(bid);
-        int verbosity = verb ? (int)json_get_int(verb) : 1;
-
-        /* If numeric, get hash first */
-        bool is_num = true;
-        for (const char *c = id_str; *c; c++)
-            if (*c < '0' || *c > '9') { is_num = false; break; }
-
-        char params[256];
-        if (is_num) {
-            snprintf(params, sizeof(params), "[%s]", id_str);
-            char *hash = node_rpc("getblockhash", params);
-            if (!hash) return strdup("{\"error\":\"getblockhash failed\"}");
-            /* hash may have quotes or not */
-            char clean[128];
-            size_t ci = 0;
-            for (size_t i = 0; hash[i] && ci < 127; i++)
-                if (hash[i] != '"' && hash[i] != '\n') clean[ci++] = hash[i];
-            clean[ci] = 0;
-            free(hash);
-            snprintf(params, sizeof(params), "[\"%s\",%d]", clean, verbosity);
-        } else {
-            snprintf(params, sizeof(params), "[\"%s\",%d]", id_str, verbosity);
-        }
-        return node_rpc("getblock", params);
-    }
-
-    if (strcmp(name, "zcl_getblockchaininfo") == 0)
-        return node_rpc("getblockchaininfo", NULL);
-
-    if (strcmp(name, "zcl_peers") == 0)
-        return node_rpc("getpeerinfo", NULL);
-
-    if (strcmp(name, "zcl_networkinfo") == 0)
-        return node_rpc("getnetworkinfo", NULL);
-
-    if (strcmp(name, "zcl_addnode") == 0) {
-        const struct json_value *a = args ? json_get(args, "addr") : NULL;
-        const struct json_value *act = args ? json_get(args, "action") : NULL;
-        if (!a) return strdup("{\"error\":\"addr required\"}");
-        char params[256];
-        snprintf(params, sizeof(params), "[\"%s\",\"%s\"]",
-                 json_get_str(a), act ? json_get_str(act) : "onetry");
-        return node_rpc("addnode", params);
-    }
-
-    if (strcmp(name, "zcl_onion_status") == 0)
-        return node_rpc("healthcheck", NULL);
-
-    if (strcmp(name, "zcl_syncstate") == 0)
-        return node_rpc("syncstate", NULL);
-
-    if (strcmp(name, "zcl_validationstatus") == 0)
-        return node_rpc("validationstatus", NULL);
-
-    if (strcmp(name, "zcl_dataintegrity") == 0)
-        return node_rpc("getdataintegrity", NULL);
-
-    if (strcmp(name, "zcl_mmb") == 0)
-        return node_rpc("getmmrroot", NULL);
-
-    if (strcmp(name, "zcl_utxocommitment") == 0)
-        return node_rpc("getutxocommitment", NULL);
-
-    if (strcmp(name, "zcl_gametypes") == 0)
-        return node_rpc("gametypes", NULL);
-
-    if (strcmp(name, "zcl_pingpeer") == 0) {
-        const struct json_value *pid = args ? json_get(args, "peer_id") : NULL;
-        if (!pid) return strdup("{\"error\":\"peer_id required\"}");
-        char params[64];
-        snprintf(params, sizeof(params), "[%lld]", (long long)json_get_int(pid));
-        return node_rpc("pingpeer", params);
-    }
-
-    if (strcmp(name, "zcl_peerlatency") == 0)
-        return node_rpc("getpeerlatency", NULL);
-
-    if (strcmp(name, "zcl_balance") == 0)
-        return node_rpc("z_gettotalbalance", NULL);
-
-    if (strcmp(name, "zcl_getnewaddress") == 0)
-        return node_rpc("getnewaddress", NULL);
-
-    if (strcmp(name, "zcl_z_getnewaddress") == 0)
-        return node_rpc("z_getnewaddress", NULL);
-
-    if (strcmp(name, "zcl_send") == 0) {
-        const struct json_value *from = args ? json_get(args, "from") : NULL;
-        const struct json_value *to = args ? json_get(args, "to") : NULL;
-        const struct json_value *amt = args ? json_get(args, "amount") : NULL;
-        if (!from || !to || !amt)
-            return strdup("{\"error\":\"from, to, amount required\"}");
-        char params[512];
-        snprintf(params, sizeof(params),
-            "[\"%s\",[{\"address\":\"%s\",\"amount\":%.8f}]]",
-            json_get_str(from), json_get_str(to),
-            amt->type == JSON_REAL ? json_get_real(amt) : (double)json_get_int(amt));
-        return node_rpc("z_sendmany", params);
-    }
-
-    if (strcmp(name, "zcl_hodlwave") == 0)
-        return node_rpc("gethodlwave", NULL);
-
-    if (strcmp(name, "zcl_filemanifest") == 0)
-        return node_rpc("getfilemanifeststatus", NULL);
-
-    if (strcmp(name, "zcl_tokens") == 0)
-        return node_rpc("zslp_listtokens", NULL);
-
-    if (strcmp(name, "zcl_events") == 0) {
-        const struct json_value *cnt = args ? json_get(args, "count") : NULL;
-        char params[64];
-        snprintf(params, sizeof(params), "[%lld]",
-                 cnt ? (long long)json_get_int(cnt) : 20LL);
-        return node_rpc("eventlog", params);
-    }
-
-    if (strcmp(name, "zcl_health") == 0)
-        return node_rpc("healthcheck", NULL);
-
-    if (strcmp(name, "zcl_swap_chains") == 0)
-        return node_rpc("swap_chains", NULL);
-
-    if (strcmp(name, "zcl_swap_initiate") == 0) {
-        const struct json_value *ma = args ? json_get(args, "my_address") : NULL;
-        const struct json_value *ca = args ? json_get(args, "counter_address") : NULL;
-        const struct json_value *am = args ? json_get(args, "amount") : NULL;
-        const struct json_value *lt = args ? json_get(args, "locktime_blocks") : NULL;
-        const struct json_value *ch = args ? json_get(args, "chain") : NULL;
-        if (!ma || !ca || !am || !lt)
-            return strdup("{\"error\":\"my_address, counter_address, amount, locktime_blocks required\"}");
-        char params[1024];
-        if (ch)
-            snprintf(params, sizeof(params), "[\"%s\",\"%s\",%lld,%lld,\"%s\"]",
-                     json_get_str(ma), json_get_str(ca),
-                     (long long)json_get_int(am), (long long)json_get_int(lt),
-                     json_get_str(ch));
-        else
-            snprintf(params, sizeof(params), "[\"%s\",\"%s\",%lld,%lld]",
-                     json_get_str(ma), json_get_str(ca),
-                     (long long)json_get_int(am), (long long)json_get_int(lt));
-        return node_rpc("swap_initiate", params);
-    }
-
-    if (strcmp(name, "zcl_swap_participate") == 0) {
-        const struct json_value *ma = args ? json_get(args, "my_address") : NULL;
-        const struct json_value *ca = args ? json_get(args, "counter_address") : NULL;
-        const struct json_value *am = args ? json_get(args, "amount") : NULL;
-        const struct json_value *lt = args ? json_get(args, "locktime_blocks") : NULL;
-        const struct json_value *sh = args ? json_get(args, "secret_hash") : NULL;
-        const struct json_value *ch = args ? json_get(args, "chain") : NULL;
-        if (!ma || !ca || !am || !lt || !sh)
-            return strdup("{\"error\":\"all fields required\"}");
-        char params[1024];
-        if (ch)
-            snprintf(params, sizeof(params), "[\"%s\",\"%s\",%lld,%lld,\"%s\",\"%s\"]",
-                     json_get_str(ma), json_get_str(ca),
-                     (long long)json_get_int(am), (long long)json_get_int(lt),
-                     json_get_str(sh), json_get_str(ch));
-        else
-            snprintf(params, sizeof(params), "[\"%s\",\"%s\",%lld,%lld,\"%s\"]",
-                     json_get_str(ma), json_get_str(ca),
-                     (long long)json_get_int(am), (long long)json_get_int(lt),
-                     json_get_str(sh));
-        return node_rpc("swap_participate", params);
-    }
-
-    if (strcmp(name, "zcl_swap_list") == 0) {
-        const struct json_value *st = args ? json_get(args, "state") : NULL;
-        if (st) {
-            char params[64];
-            snprintf(params, sizeof(params), "[\"%s\"]", json_get_str(st));
-            return node_rpc("swap_list", params);
-        }
-        return node_rpc("swap_list", NULL);
-    }
-
-    if (strcmp(name, "zcl_msg_send_named") == 0) {
-        const struct json_value *n = args ? json_get(args, "name") : NULL;
-        const struct json_value *m = args ? json_get(args, "message") : NULL;
-        if (!n || !m)
-            return strdup("{\"error\":\"name and message required\"}");
-        char params[4200];
-        snprintf(params, sizeof(params), "[\"%s\", \"%s\"]",
-                 json_get_str(n), json_get_str(m));
-        return node_rpc("msg_send_named", params);
-    }
-
-    if (strcmp(name, "zcl_msg_send") == 0) {
-        const struct json_value *pid = args ? json_get(args, "peer_id") : NULL;
-        const struct json_value *msg = args ? json_get(args, "message") : NULL;
-        if (!pid || !msg)
-            return strdup("{\"error\":\"peer_id and message required\"}");
-        char params[4200];
-        snprintf(params, sizeof(params), "[%lld, \"%s\"]",
-                 (long long)json_get_int(pid), json_get_str(msg));
-        return node_rpc("msg_send", params);
-    }
-
-    if (strcmp(name, "zcl_msg_inbox") == 0) {
-        const struct json_value *uo = args ? json_get(args, "unread_only") : NULL;
-        if (uo && json_get_int(uo))
-            return node_rpc("msg_inbox", "[true]");
-        return node_rpc("msg_inbox", NULL);
-    }
-
-    if (strcmp(name, "zcl_msg_read") == 0) {
-        const struct json_value *mid = args ? json_get(args, "msg_id") : NULL;
-        if (!mid) return strdup("{\"error\":\"msg_id required\"}");
-        char params[128];
-        snprintf(params, sizeof(params), "[\"%s\"]", json_get_str(mid));
-        return node_rpc("msg_read", params);
-    }
-
-    if (strcmp(name, "zcl_name_resolve") == 0) {
-        const struct json_value *n = args ? json_get(args, "name") : NULL;
-        if (!n) return strdup("{\"error\":\"name required\"}");
-        char params[256];
-        snprintf(params, sizeof(params), "[\"%s\"]", json_get_str(n));
-        return node_rpc("name_resolve", params);
-    }
-
-    if (strcmp(name, "zcl_name_register") == 0) {
-        const struct json_value *n = args ? json_get(args, "name") : NULL;
-        const struct json_value *t = args ? json_get(args, "type") : NULL;
-        const struct json_value *v = args ? json_get(args, "value") : NULL;
-        if (!n || !t || !v)
-            return strdup("{\"error\":\"name, type, and value required\"}");
-        char params[1024];
-        snprintf(params, sizeof(params), "[\"%s\", \"%s\", \"%s\"]",
-                 json_get_str(n), json_get_str(t), json_get_str(v));
-        return node_rpc("name_register", params);
-    }
-
-    if (strcmp(name, "zcl_name_list") == 0)
-        return node_rpc("name_list", NULL);
-
-    if (strcmp(name, "zcl_market_list") == 0)
-        return node_rpc("zmarket_list", NULL);
-
-    if (strcmp(name, "zcl_market_offer") == 0) {
-        const struct json_value *fp = args ? json_get(args, "filepath") : NULL;
-        const struct json_value *pr = args ? json_get(args, "price_per_mb_zat") : NULL;
-        if (!fp || !pr)
-            return strdup("{\"error\":\"filepath and price_per_mb_zat required\"}");
-        char params[1024];
-        snprintf(params, sizeof(params), "[\"%s\", %lld]",
-                 json_get_str(fp), (long long)json_get_int(pr));
-        return node_rpc("zmarket_offer", params);
-    }
-
-    if (strcmp(name, "zcl_market_buy") == 0) {
-        const struct json_value *rh = args ? json_get(args, "root_hash") : NULL;
-        if (!rh) return strdup("{\"error\":\"root_hash required\"}");
-        char params[128];
-        snprintf(params, sizeof(params), "[\"%s\"]", json_get_str(rh));
-        return node_rpc("zmarket_buy", params);
-    }
-
-    if (strcmp(name, "zcl_market_status") == 0)
-        return node_rpc("zmarket_status", NULL);
-
-    if (strcmp(name, "zcl_rpc") == 0) {
-        const struct json_value *m = args ? json_get(args, "method") : NULL;
-        const struct json_value *p = args ? json_get(args, "params") : NULL;
-        if (!m) return strdup("{\"error\":\"method required\"}");
-        return node_rpc(json_get_str(m),
-                        p ? json_get_str(p) : NULL);
-    }
-
-    char err[128];
-    snprintf(err, sizeof(err), "{\"error\":\"unknown tool: %s\"}", name);
-    return strdup(err);
+    char *out = malloc(32768);
+    if (!out) { free(h); free(p); free(s); free(v); free(hc); return -1; }
+    snprintf(out, 32768,
+             "{\"height\":%s,\"peers\":%d,\"sync\":%s,"
+             "\"validation\":%s,\"health\":%s}",
+             h ? h : "null", pc, s ? s : "null",
+             v ? v : "null", hc ? hc : "null");
+    free(h); free(p); free(s); free(v); free(hc);
+    res->body = out;
+    return 0;
 }
 
-/* ── MCP protocol ──────────────���────────────────────────────── */
+DEFINE_PASSTHROUGH(h_zcl_getblockcount,     "getblockcount")
+DEFINE_PASSTHROUGH(h_zcl_getblockchaininfo, "getblockchaininfo")
+DEFINE_PASSTHROUGH(h_zcl_peers,             "getpeerinfo")
+DEFINE_PASSTHROUGH(h_zcl_networkinfo,       "getnetworkinfo")
+DEFINE_PASSTHROUGH(h_zcl_onion_status,      "healthcheck")
+DEFINE_PASSTHROUGH(h_zcl_syncstate,         "syncstate")
+DEFINE_PASSTHROUGH(h_zcl_validationstatus,  "validationstatus")
+DEFINE_PASSTHROUGH(h_zcl_dataintegrity,     "getdataintegrity")
+DEFINE_PASSTHROUGH(h_zcl_mmb,               "getmmrroot")
+DEFINE_PASSTHROUGH(h_zcl_utxocommitment,    "getutxocommitment")
+DEFINE_PASSTHROUGH(h_zcl_gametypes,         "gametypes")
+DEFINE_PASSTHROUGH(h_zcl_peerlatency,       "getpeerlatency")
+DEFINE_PASSTHROUGH(h_zcl_balance,           "z_gettotalbalance")
+DEFINE_PASSTHROUGH(h_zcl_getnewaddress,     "getnewaddress")
+DEFINE_PASSTHROUGH(h_zcl_z_getnewaddress,   "z_getnewaddress")
+DEFINE_PASSTHROUGH(h_zcl_hodlwave,          "gethodlwave")
+DEFINE_PASSTHROUGH(h_zcl_filemanifest,      "getfilemanifeststatus")
+DEFINE_PASSTHROUGH(h_zcl_tokens,            "zslp_listtokens")
+DEFINE_PASSTHROUGH(h_zcl_health,            "healthcheck")
+DEFINE_PASSTHROUGH(h_zcl_swap_chains,       "swap_chains")
+DEFINE_PASSTHROUGH(h_zcl_name_list,         "name_list")
+DEFINE_PASSTHROUGH(h_zcl_market_list,       "zmarket_list")
+DEFINE_PASSTHROUGH(h_zcl_market_status,     "zmarket_status")
+
+static int h_zcl_getblock(const struct mcp_request *req, struct mcp_response *res)
+{
+    const char *id_str = json_get_str(json_get(req->args, "block_id"));
+    const struct json_value *verb = json_get(req->args, "verbosity");
+    int verbosity = verb ? (int)json_get_int(verb) : 1;
+
+    bool is_num = id_str && id_str[0];
+    for (const char *c = id_str; is_num && *c; c++)
+        if (*c < '0' || *c > '9') is_num = false;
+
+    char params[256];
+    if (is_num) {
+        snprintf(params, sizeof(params), "[%s]", id_str);
+        char *hash = node_rpc("getblockhash", params);
+        if (!hash) return -1;
+        char clean[128];
+        size_t ci = 0;
+        for (size_t i = 0; hash[i] && ci < 127; i++)
+            if (hash[i] != '"' && hash[i] != '\n') clean[ci++] = hash[i];
+        clean[ci] = 0;
+        free(hash);
+        snprintf(params, sizeof(params), "[\"%s\",%d]", clean, verbosity);
+    } else {
+        snprintf(params, sizeof(params), "[\"%s\",%d]", id_str, verbosity);
+    }
+    char *out = node_rpc("getblock", params);
+    if (!out) return -1;
+    res->body = out;
+    return 0;
+}
+
+static int h_zcl_addnode(const struct mcp_request *req, struct mcp_response *res)
+{
+    const char *addr = json_get_str(json_get(req->args, "addr"));
+    const struct json_value *act = json_get(req->args, "action");
+    char params[256];
+    snprintf(params, sizeof(params), "[\"%s\",\"%s\"]",
+             addr, act ? json_get_str(act) : "onetry");
+    char *out = node_rpc("addnode", params);
+    if (!out) return -1;
+    res->body = out;
+    return 0;
+}
+
+static int h_zcl_pingpeer(const struct mcp_request *req, struct mcp_response *res)
+{
+    int64_t peer_id = json_get_int(json_get(req->args, "peer_id"));
+    char params[64];
+    snprintf(params, sizeof(params), "[%lld]", (long long)peer_id);
+    char *out = node_rpc("pingpeer", params);
+    if (!out) return -1;
+    res->body = out;
+    return 0;
+}
+
+static int h_zcl_send(const struct mcp_request *req, struct mcp_response *res)
+{
+    const char *from = json_get_str(json_get(req->args, "from"));
+    const char *to   = json_get_str(json_get(req->args, "to"));
+    const struct json_value *amt = json_get(req->args, "amount");
+    double amount = (amt && amt->type == JSON_REAL) ? json_get_real(amt)
+                                                    : (double)json_get_int(amt);
+    char params[512];
+    snprintf(params, sizeof(params),
+             "[\"%s\",[{\"address\":\"%s\",\"amount\":%.8f}]]",
+             from, to, amount);
+    char *out = node_rpc("z_sendmany", params);
+    if (!out) return -1;
+    res->body = out;
+    return 0;
+}
+
+static int h_zcl_events(const struct mcp_request *req, struct mcp_response *res)
+{
+    const struct json_value *cnt = json_get(req->args, "count");
+    char params[64];
+    snprintf(params, sizeof(params), "[%lld]",
+             cnt ? (long long)json_get_int(cnt) : 20LL);
+    char *out = node_rpc("eventlog", params);
+    if (!out) return -1;
+    res->body = out;
+    return 0;
+}
+
+static int h_zcl_swap_initiate(const struct mcp_request *req, struct mcp_response *res)
+{
+    const char *ma = json_get_str(json_get(req->args, "my_address"));
+    const char *ca = json_get_str(json_get(req->args, "counter_address"));
+    int64_t amount  = json_get_int(json_get(req->args, "amount"));
+    int64_t locktime = json_get_int(json_get(req->args, "locktime_blocks"));
+    const struct json_value *chain_v = json_get(req->args, "chain");
+    const char *chain = chain_v ? json_get_str(chain_v) : NULL;
+    char params[1024];
+    if (chain)
+        snprintf(params, sizeof(params), "[\"%s\",\"%s\",%lld,%lld,\"%s\"]",
+                 ma, ca, (long long)amount, (long long)locktime, chain);
+    else
+        snprintf(params, sizeof(params), "[\"%s\",\"%s\",%lld,%lld]",
+                 ma, ca, (long long)amount, (long long)locktime);
+    char *out = node_rpc("swap_initiate", params);
+    if (!out) return -1;
+    res->body = out;
+    return 0;
+}
+
+static int h_zcl_swap_participate(const struct mcp_request *req, struct mcp_response *res)
+{
+    const char *ma = json_get_str(json_get(req->args, "my_address"));
+    const char *ca = json_get_str(json_get(req->args, "counter_address"));
+    int64_t amount  = json_get_int(json_get(req->args, "amount"));
+    int64_t locktime = json_get_int(json_get(req->args, "locktime_blocks"));
+    const char *sh = json_get_str(json_get(req->args, "secret_hash"));
+    const struct json_value *chain_v = json_get(req->args, "chain");
+    const char *chain = chain_v ? json_get_str(chain_v) : NULL;
+    char params[1024];
+    if (chain)
+        snprintf(params, sizeof(params),
+                 "[\"%s\",\"%s\",%lld,%lld,\"%s\",\"%s\"]",
+                 ma, ca, (long long)amount, (long long)locktime, sh, chain);
+    else
+        snprintf(params, sizeof(params),
+                 "[\"%s\",\"%s\",%lld,%lld,\"%s\"]",
+                 ma, ca, (long long)amount, (long long)locktime, sh);
+    char *out = node_rpc("swap_participate", params);
+    if (!out) return -1;
+    res->body = out;
+    return 0;
+}
+
+static int h_zcl_swap_list(const struct mcp_request *req, struct mcp_response *res)
+{
+    const struct json_value *st = json_get(req->args, "state");
+    char *out;
+    if (st) {
+        char params[64];
+        snprintf(params, sizeof(params), "[\"%s\"]", json_get_str(st));
+        out = node_rpc("swap_list", params);
+    } else {
+        out = node_rpc("swap_list", NULL);
+    }
+    if (!out) return -1;
+    res->body = out;
+    return 0;
+}
+
+static int h_zcl_msg_send_named(const struct mcp_request *req, struct mcp_response *res)
+{
+    const char *n = json_get_str(json_get(req->args, "name"));
+    const char *m = json_get_str(json_get(req->args, "message"));
+    char params[4200];
+    snprintf(params, sizeof(params), "[\"%s\", \"%s\"]", n, m);
+    char *out = node_rpc("msg_send_named", params);
+    if (!out) return -1;
+    res->body = out;
+    return 0;
+}
+
+static int h_zcl_msg_send(const struct mcp_request *req, struct mcp_response *res)
+{
+    int64_t pid = json_get_int(json_get(req->args, "peer_id"));
+    const char *m = json_get_str(json_get(req->args, "message"));
+    char params[4200];
+    snprintf(params, sizeof(params), "[%lld, \"%s\"]", (long long)pid, m);
+    char *out = node_rpc("msg_send", params);
+    if (!out) return -1;
+    res->body = out;
+    return 0;
+}
+
+static int h_zcl_msg_inbox(const struct mcp_request *req, struct mcp_response *res)
+{
+    const struct json_value *uo = json_get(req->args, "unread_only");
+    char *out = (uo && json_get_bool(uo))
+                 ? node_rpc("msg_inbox", "[true]")
+                 : node_rpc("msg_inbox", NULL);
+    if (!out) return -1;
+    res->body = out;
+    return 0;
+}
+
+static int h_zcl_msg_read(const struct mcp_request *req, struct mcp_response *res)
+{
+    const char *mid = json_get_str(json_get(req->args, "msg_id"));
+    char params[128];
+    snprintf(params, sizeof(params), "[\"%s\"]", mid);
+    char *out = node_rpc("msg_read", params);
+    if (!out) return -1;
+    res->body = out;
+    return 0;
+}
+
+static int h_zcl_name_resolve(const struct mcp_request *req, struct mcp_response *res)
+{
+    const char *n = json_get_str(json_get(req->args, "name"));
+    char params[256];
+    snprintf(params, sizeof(params), "[\"%s\"]", n);
+    char *out = node_rpc("name_resolve", params);
+    if (!out) return -1;
+    res->body = out;
+    return 0;
+}
+
+static int h_zcl_name_register(const struct mcp_request *req, struct mcp_response *res)
+{
+    const char *n = json_get_str(json_get(req->args, "name"));
+    const char *t = json_get_str(json_get(req->args, "type"));
+    const char *v = json_get_str(json_get(req->args, "value"));
+    char params[1024];
+    snprintf(params, sizeof(params), "[\"%s\", \"%s\", \"%s\"]", n, t, v);
+    char *out = node_rpc("name_register", params);
+    if (!out) return -1;
+    res->body = out;
+    return 0;
+}
+
+static int h_zcl_market_offer(const struct mcp_request *req, struct mcp_response *res)
+{
+    const char *fp = json_get_str(json_get(req->args, "filepath"));
+    int64_t price  = json_get_int(json_get(req->args, "price_per_mb_zat"));
+    char params[1024];
+    snprintf(params, sizeof(params), "[\"%s\", %lld]", fp, (long long)price);
+    char *out = node_rpc("zmarket_offer", params);
+    if (!out) return -1;
+    res->body = out;
+    return 0;
+}
+
+static int h_zcl_market_buy(const struct mcp_request *req, struct mcp_response *res)
+{
+    const char *rh = json_get_str(json_get(req->args, "root_hash"));
+    char params[128];
+    snprintf(params, sizeof(params), "[\"%s\"]", rh);
+    char *out = node_rpc("zmarket_buy", params);
+    if (!out) return -1;
+    res->body = out;
+    return 0;
+}
+
+static int h_zcl_rpc(const struct mcp_request *req, struct mcp_response *res)
+{
+    const char *m = json_get_str(json_get(req->args, "method"));
+    const struct json_value *p = json_get(req->args, "params");
+    char *out = node_rpc(m, p ? json_get_str(p) : NULL);
+    if (!out) return -1;
+    res->body = out;
+    return 0;
+}
+
+/* ── Route table ─────────────────────────────────────────────── */
+
+#define NO_PARAMS NULL, 0
+
+static const struct mcp_param_spec p_getblock[] = {
+    { "block_id", MCP_PARAM_STR, true, "Height or hash",
+      0, 0, 1, 128, NULL, NULL },
+    { "verbosity", MCP_PARAM_INT, false, "0=hex, 1=JSON, 2=JSON+tx",
+      0, 2, 0, 0, NULL, "1" },
+};
+static const struct mcp_param_spec p_addnode[] = {
+    { "addr", MCP_PARAM_STR, true, "IP:port",
+      0, 0, 1, 128, NULL, NULL },
+    { "action", MCP_PARAM_STR, false, "add | remove | onetry",
+      0, 0, 0, 0, "add,remove,onetry", "\"onetry\"" },
+};
+static const struct mcp_param_spec p_pingpeer[] = {
+    { "peer_id", MCP_PARAM_INT, true, "Peer ID from zcl_peers",
+      0, 1000000, 0, 0, NULL, NULL },
+};
+static const struct mcp_param_spec p_send[] = {
+    { "from",   MCP_PARAM_STR,  true, "Source address",
+      0, 0, 1, 128, NULL, NULL },
+    { "to",     MCP_PARAM_STR,  true, "Destination address",
+      0, 0, 1, 128, NULL, NULL },
+    { "amount", MCP_PARAM_REAL, true, "Amount in ZCL",
+      0, 0, 0, 0, NULL, NULL },
+};
+static const struct mcp_param_spec p_events[] = {
+    { "count", MCP_PARAM_INT, false, "Number of events",
+      1, 1000, 0, 0, NULL, "20" },
+};
+static const struct mcp_param_spec p_swap_initiate[] = {
+    { "my_address",      MCP_PARAM_STR, true,  "Your address (refund path)",
+      0, 0, 1, 128, NULL, NULL },
+    { "counter_address", MCP_PARAM_STR, true,  "Counterparty address",
+      0, 0, 1, 128, NULL, NULL },
+    { "amount",          MCP_PARAM_INT, true,  "Amount in coins",
+      1, 21000000LL, 0, 0, NULL, NULL },
+    { "locktime_blocks", MCP_PARAM_INT, true,  "Lock duration in blocks",
+      1, 1000000, 0, 0, NULL, NULL },
+    { "chain",           MCP_PARAM_STR, false, "Chain",
+      0, 0, 0, 0, "zcl,btc,ltc,doge", "\"zcl\"" },
+};
+static const struct mcp_param_spec p_swap_participate[] = {
+    { "my_address",      MCP_PARAM_STR, true,  "Your address",
+      0, 0, 1, 128, NULL, NULL },
+    { "counter_address", MCP_PARAM_STR, true,  "Initiator address",
+      0, 0, 1, 128, NULL, NULL },
+    { "amount",          MCP_PARAM_INT, true,  "Amount",
+      1, 21000000LL, 0, 0, NULL, NULL },
+    { "locktime_blocks", MCP_PARAM_INT, true,  "Lock blocks (shorter than initiator)",
+      1, 1000000, 0, 0, NULL, NULL },
+    { "secret_hash",     MCP_PARAM_STR, true,  "64-char hex secret hash",
+      0, 0, 64, 64, NULL, NULL },
+    { "chain",           MCP_PARAM_STR, false, "Chain",
+      0, 0, 0, 0, "zcl,btc,ltc,doge", "\"zcl\"" },
+};
+static const struct mcp_param_spec p_swap_list[] = {
+    { "state", MCP_PARAM_STR, false, "Filter by state",
+      0, 0, 0, 0, "pending,funded,redeemed,refunded", NULL },
+};
+static const struct mcp_param_spec p_msg_send_named[] = {
+    { "name",    MCP_PARAM_STR, true, "ZCL Name (e.g. alice)",
+      0, 0, 1, 63, NULL, NULL },
+    { "message", MCP_PARAM_STR, true, "Message text",
+      0, 0, 1, 4000, NULL, NULL },
+};
+static const struct mcp_param_spec p_msg_send[] = {
+    { "peer_id", MCP_PARAM_INT, true, "Connected peer ID",
+      0, 1000000, 0, 0, NULL, NULL },
+    { "message", MCP_PARAM_STR, true, "Message text",
+      0, 0, 1, 4000, NULL, NULL },
+};
+static const struct mcp_param_spec p_msg_inbox[] = {
+    { "unread_only", MCP_PARAM_BOOL, false, "Only unread",
+      0, 0, 0, 0, NULL, "false" },
+};
+static const struct mcp_param_spec p_msg_read[] = {
+    { "msg_id", MCP_PARAM_STR, true, "64-char hex message ID",
+      0, 0, 64, 64, NULL, NULL },
+};
+static const struct mcp_param_spec p_name_resolve[] = {
+    { "name", MCP_PARAM_STR, true, "Name to resolve",
+      0, 0, 1, 63, NULL, NULL },
+};
+static const struct mcp_param_spec p_name_register[] = {
+    { "name",  MCP_PARAM_STR, true, "Name (1-63 chars)",
+      0, 0, 1, 63, NULL, NULL },
+    { "type",  MCP_PARAM_STR, true, "Target type",
+      0, 0, 0, 0, "onion,zaddr,taddr", NULL },
+    { "value", MCP_PARAM_STR, true, "Target value",
+      0, 0, 1, 256, NULL, NULL },
+};
+static const struct mcp_param_spec p_market_offer[] = {
+    { "filepath",          MCP_PARAM_STR, true, "Path to file to share",
+      0, 0, 1, 1024, NULL, NULL },
+    { "price_per_mb_zat",  MCP_PARAM_INT, true, "Price per MB in zatoshis",
+      0, 1000000000LL, 0, 0, NULL, NULL },
+};
+static const struct mcp_param_spec p_market_buy[] = {
+    { "root_hash", MCP_PARAM_STR, true, "64-char hex SHA3 of offer",
+      0, 0, 64, 64, NULL, NULL },
+};
+static const struct mcp_param_spec p_rpc[] = {
+    { "method", MCP_PARAM_STR, true,  "RPC method name",
+      0, 0, 1, 128, NULL, NULL },
+    { "params", MCP_PARAM_STR, false, "JSON params array",
+      0, 0, 0, 0, NULL, "\"[]\"" },
+};
+
+#define ROUTE(nm, dom, desc, ps, handler) \
+    { nm, dom, desc, ps, sizeof(ps)/sizeof(ps[0]), handler }
+#define ROUTE0(nm, dom, desc, handler) \
+    { nm, dom, desc, NULL, 0, handler }
+
+static const struct mcp_tool_route k_routes[] = {
+    /* ── ops ───────────────────────────────────────── */
+    ROUTE0("zcl_status", "ops",
+           "Node status: block height, peers, sync state, onion address, "
+           "bg-validation progress, health checks. The single command to "
+           "check if everything is working.",
+           h_zcl_status),
+    ROUTE0("zcl_health", "ops",
+           "Health check: pass/fail, chain height, peers, sync, onion.",
+           h_zcl_health),
+    ROUTE0("zcl_filemanifest", "ops",
+           "File service status: chunks, SHA3 hashes, total size.",
+           h_zcl_filemanifest),
+    ROUTE("zcl_events", "ops",
+          "Recent event log: sync events, peer connections, blocks.",
+          p_events, h_zcl_events),
+    ROUTE("zcl_rpc", "ops",
+          "Call any RPC method directly. 85+ commands available.",
+          p_rpc, h_zcl_rpc),
+
+    /* ── chain ─────────────────────────────────────── */
+    ROUTE0("zcl_getblockcount", "chain",
+           "Current block height.",
+           h_zcl_getblockcount),
+    ROUTE("zcl_getblock", "chain",
+          "Get block by height or hash.",
+          p_getblock, h_zcl_getblock),
+    ROUTE0("zcl_getblockchaininfo", "chain",
+           "Chain state: height, best block, difficulty, chain work, value pools.",
+           h_zcl_getblockchaininfo),
+    ROUTE0("zcl_syncstate", "chain",
+           "Sync state machine: phase, progress, header/block/UTXO status.",
+           h_zcl_syncstate),
+    ROUTE0("zcl_validationstatus", "chain",
+           "Background validation: verified height, sigs, proofs, blocks/sec.",
+           h_zcl_validationstatus),
+    ROUTE0("zcl_dataintegrity", "chain",
+           "SHA3-256 hashes over all consensus tables.",
+           h_zcl_dataintegrity),
+    ROUTE0("zcl_mmb", "chain",
+           "Merkle Mountain Belt root. FlyClient chain verification.",
+           h_zcl_mmb),
+    ROUTE0("zcl_utxocommitment", "chain",
+           "SHA3-256 over entire UTXO set in canonical order.",
+           h_zcl_utxocommitment),
+    ROUTE0("zcl_hodlwave", "chain",
+           "UTXO age distribution: 10 buckets from 24h to 5y+.",
+           h_zcl_hodlwave),
+
+    /* ── net ───────────────────────────────────────── */
+    ROUTE0("zcl_peers", "net",
+           "Connected peers with addresses, latency, services, heights.",
+           h_zcl_peers),
+    ROUTE0("zcl_networkinfo", "net",
+           "Network info: version, connections, relay fee.",
+           h_zcl_networkinfo),
+    ROUTE("zcl_addnode", "net",
+          "Add/remove peer. Actions: add, remove, onetry.",
+          p_addnode, h_zcl_addnode),
+    ROUTE0("zcl_onion_status", "net",
+           "Tor onion service: .onion address, bootstrap state.",
+           h_zcl_onion_status),
+    ROUTE0("zcl_gametypes", "net",
+           "P2P game types: Ping (latency measurement), TicTacToe.",
+           h_zcl_gametypes),
+    ROUTE("zcl_pingpeer", "net",
+          "Measure round-trip latency to a connected peer.",
+          p_pingpeer, h_zcl_pingpeer),
+    ROUTE0("zcl_peerlatency", "net",
+           "Latency for all peers: ping_ms, min_ping_ms, avg_latency_ms.",
+           h_zcl_peerlatency),
+
+    /* ── wallet ────────────────────────────────────── */
+    ROUTE0("zcl_balance", "wallet",
+           "Total wallet balance: transparent + shielded.",
+           h_zcl_balance),
+    ROUTE0("zcl_getnewaddress", "wallet",
+           "Generate new transparent (t-addr) receiving address.",
+           h_zcl_getnewaddress),
+    ROUTE0("zcl_z_getnewaddress", "wallet",
+           "Generate new shielded Sapling (z-addr) receiving address.",
+           h_zcl_z_getnewaddress),
+    ROUTE("zcl_send", "wallet",
+          "Send ZCL (transparent or shielded).",
+          p_send, h_zcl_send),
+
+    /* ── app (names, messages, tokens, market, swaps) ── */
+    ROUTE0("zcl_tokens", "app",
+           "List all ZSLP tokens on the network.",
+           h_zcl_tokens),
+    ROUTE("zcl_name_resolve", "app",
+          "Resolve a ZCL Name to its target (.onion, z-addr, or t-addr).",
+          p_name_resolve, h_zcl_name_resolve),
+    ROUTE("zcl_name_register", "app",
+          "Build an OP_RETURN script to register a ZCL Name on-chain.",
+          p_name_register, h_zcl_name_register),
+    ROUTE0("zcl_name_list", "app",
+           "List all registered ZCL Names on the network.",
+           h_zcl_name_list),
+    ROUTE("zcl_msg_send_named", "app",
+          "Send a message to a ZCL Name. Resolves the name first.",
+          p_msg_send_named, h_zcl_msg_send_named),
+    ROUTE("zcl_msg_send", "app",
+          "Send a P2P message to a connected peer.",
+          p_msg_send, h_zcl_msg_send),
+    ROUTE("zcl_msg_inbox", "app",
+          "List messages in the inbox. Newest first.",
+          p_msg_inbox, h_zcl_msg_inbox),
+    ROUTE("zcl_msg_read", "app",
+          "Mark a message as read and return its content.",
+          p_msg_read, h_zcl_msg_read),
+    ROUTE0("zcl_market_list", "app",
+           "List files available on the ZCL Market P2P file sharing network.",
+           h_zcl_market_list),
+    ROUTE("zcl_market_offer", "app",
+          "Announce a file for sale on the ZCL Market.",
+          p_market_offer, h_zcl_market_offer),
+    ROUTE("zcl_market_buy", "app",
+          "Initiate purchase and download of a file from the ZCL Market.",
+          p_market_buy, h_zcl_market_buy),
+    ROUTE0("zcl_market_status", "app",
+           "ZCL Market status: cached offers, persisted offers, active downloads.",
+           h_zcl_market_status),
+    ROUTE0("zcl_swap_chains", "app",
+           "List supported chains for atomic swaps: ZCL, BTC, LTC, DOGE.",
+           h_zcl_swap_chains),
+    ROUTE("zcl_swap_initiate", "app",
+          "Initiate an atomic swap. Generates secret, builds HTLC, returns P2SH.",
+          p_swap_initiate, h_zcl_swap_initiate),
+    ROUTE("zcl_swap_participate", "app",
+          "Participate in an atomic swap (counter-HTLC with shorter locktime).",
+          p_swap_participate, h_zcl_swap_participate),
+    ROUTE("zcl_swap_list", "app",
+          "List atomic swap contracts.",
+          p_swap_list, h_zcl_swap_list),
+};
+
+#define NUM_ROUTES (sizeof(k_routes) / sizeof(k_routes[0]))
+
+static void register_all_routes(void)
+{
+    mcp_router_reset();
+    for (size_t i = 0; i < NUM_ROUTES; i++)
+        mcp_router_register(&k_routes[i]);
+}
+
+/* ── MCP protocol ────────────────────────────────────────────── */
 
 static void mcp_send(const char *json)
 {
@@ -731,22 +769,17 @@ static void handle_initialize(const struct json_value *req)
 static void handle_tools_list(const struct json_value *req)
 {
     const struct json_value *id = json_get(req, "id");
-
-    /* Build tools array JSON */
-    size_t cap = 32768;
+    size_t cap = 65536;
     char *buf = malloc(cap);
+    if (!buf) return;
+
     int pos = snprintf(buf, cap,
-        "{\"jsonrpc\":\"2.0\",\"id\":%lld,\"result\":{\"tools\":[",
+        "{\"jsonrpc\":\"2.0\",\"id\":%lld,\"result\":{\"tools\":",
         id ? (long long)json_get_int(id) : 0LL);
 
-    for (size_t i = 0; i < NUM_TOOLS; i++) {
-        if (i > 0) buf[pos++] = ',';
-        pos += snprintf(buf + pos, cap - (size_t)pos,
-            "{\"name\":\"%s\",\"description\":\"%s\",\"inputSchema\":%s}",
-            tools[i].name, tools[i].description, tools[i].schema);
-    }
-
-    pos += snprintf(buf + pos, cap - (size_t)pos, "]}}");
+    size_t written = mcp_router_tools_list_json(buf + pos, cap - (size_t)pos);
+    pos += (int)written;
+    pos += snprintf(buf + pos, cap - (size_t)pos, "}}");
     mcp_send(buf);
     free(buf);
 }
@@ -768,16 +801,13 @@ static void handle_tools_call(const struct json_value *req)
         return;
     }
 
-    char *result = dispatch_tool(json_get_str(name_v), args);
+    char *result = mcp_router_dispatch(json_get_str(name_v), args);
     if (!result) result = strdup("null");
 
-    /* Escape result for embedding in JSON string.
-     * Since result is already JSON, we embed it directly as text content. */
+    /* Embed result as JSON text content. */
     size_t rlen = strlen(result);
     size_t cap = rlen * 2 + 512;
     char *resp = malloc(cap);
-
-    /* Escape the result string for JSON text field */
     char *escaped = malloc(rlen * 2 + 1);
     size_t ei = 0;
     for (size_t i = 0; i < rlen; i++) {
@@ -802,16 +832,17 @@ static void handle_tools_call(const struct json_value *req)
     free(result);
 }
 
-/* ── Main loop ─���───────────────────────────���────────────────── */
+/* ── Main loop ──────────────────────────────────────────────── */
 
 int mcp_server_main(const char *datadir, int rpc_port)
 {
     snprintf(g_datadir, sizeof(g_datadir), "%s", datadir);
     g_port = rpc_port;
 
+    register_all_routes();
+
     char line[65536];
     while (fgets(line, sizeof(line), stdin)) {
-        /* Strip trailing whitespace */
         size_t len = strlen(line);
         while (len > 0 && (line[len-1] == '\n' || line[len-1] == '\r'))
             line[--len] = 0;
