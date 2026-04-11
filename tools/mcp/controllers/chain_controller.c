@@ -37,6 +37,20 @@ DEFINE_PT(h_zcl_mmb,               "getmmrroot")
 DEFINE_PT(h_zcl_utxocommitment,    "getutxocommitment")
 DEFINE_PT(h_zcl_hodlwave,          "gethodlwave")
 
+static int h_zcl_getrawtransaction(const struct mcp_request *req,
+                                    struct mcp_response *res)
+{
+    const char *txid = json_get_str(json_get(req->args, "txid"));
+    const struct json_value *verb = json_get(req->args, "verbose");
+    int verbose = verb ? (int)json_get_int(verb) : 1;
+    char params[256];
+    snprintf(params, sizeof(params), "[\"%s\",%d]", txid ? txid : "", verbose);
+    char *out = mcp_node_rpc("getrawtransaction", params);
+    if (!out) return -1;
+    res->body = out;
+    return 0;
+}
+
 static int h_zcl_getblock(const struct mcp_request *req, struct mcp_response *res)
 {
     const char *id_str = json_get_str(json_get(req->args, "block_id"));
@@ -77,12 +91,23 @@ static const struct mcp_param_spec p_getblock[] = {
       0, 2, 0, 0, NULL, "1" },
 };
 
+static const struct mcp_param_spec p_getrawtx[] = {
+    { "txid",    MCP_PARAM_STR, true,  "Transaction id (hex)",
+      0, 0, 1, 128, NULL, NULL },
+    { "verbose", MCP_PARAM_INT, false, "0=hex, 1=JSON",
+      0, 1, 0, 0, NULL, "1" },
+};
+
 static const struct mcp_tool_route k_routes[] = {
     { "zcl_getblockcount", "chain",
       "Current block height.", NULL, 0, h_zcl_getblockcount },
     { "zcl_getblock", "chain",
       "Get block by height or hash.",
       p_getblock, sizeof(p_getblock) / sizeof(p_getblock[0]), h_zcl_getblock },
+    { "zcl_getrawtransaction", "chain",
+      "Transaction by id. verbose=1 decodes, verbose=0 returns hex.",
+      p_getrawtx, sizeof(p_getrawtx) / sizeof(p_getrawtx[0]),
+      h_zcl_getrawtransaction },
     { "zcl_getblockchaininfo", "chain",
       "Chain state: height, best block, difficulty, chain work, value pools.",
       NULL, 0, h_zcl_getblockchaininfo },
