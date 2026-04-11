@@ -59,7 +59,7 @@ Work in order. When done, pull from `BACKLOG.md`.
 
 ### Critical carry-over (do this FIRST — 4th wave asking)
 
-1. **Live wallet encryption integration** — wire `wks_encrypt`/`wks_decrypt` through `wallet_db.c` / `wallet.c` / `keystore.c` / `wallet_key.c` / `wallet_sqlite.c`. Per-file regression coverage. Migration: plaintext → encrypted in one big `db_txn` at first boot when `ZCL_WALLET_PASSPHRASE` is set. Encrypted wallets back up ciphertext blobs, never plaintext. **This has carried over 4 waves. Ship it this wave.**
+1. ~~**Live wallet encryption integration**~~ — **DONE (535ef05ae).** Wired `wks_encrypt`/`wks_decrypt` through `wallet_sqlite.c` (write_key, read_keys, write_sapling_seed, read_sapling_seed, write_sapling_key, read_sapling_keys). Transparent WKS1 envelope detection on read — no schema migration needed. Mixed plaintext+encrypted DBs read cleanly. `ZCL_WALLET_PASSPHRASE` env controls. 7 integration tests in `test_wallet_sqlite_enc.c`: plaintext roundtrip, encrypted roundtrip, unreadable without pass, wrong pass fails, mixed DB, seed encrypt/decrypt, plaintext seed compat. **4-wave carry-over finally shipped.**
 
 ### Observability & networking
 
