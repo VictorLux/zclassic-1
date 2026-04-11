@@ -15,6 +15,7 @@
 #include "services/snapshot_sync_service.h"
 #include "services/chain_state_repository.h"
 #include "services/recovery_policy.h"
+#include "models/db_txn.h"
 #include "chain/chain.h"
 #include "core/serialize.h"
 #include "models/database.h"
@@ -239,36 +240,47 @@ static bool snapsync_begin_receive_write(struct node_db *ndb, void *ctx)
             }
         }
     }
+    /* ── Scoped destructive transaction ───────────────────────────
+     * This is THE call site from the 2026-04-10 incident. A bad boot
+     * path offered a synthetic anchor, triggered snapsync_begin_receive,
+     * and the raw primitive below wiped 1.3M UTXOs. Two things now
+     * guard it: (1) recovery_policy caps the wipe size so an operator
+     * must explicitly opt in, and (2) db_txn's RAII scope rolls back
+     * automatically on any early return so a crash or unexpected
+     * failure mid-sequence cannot leave a half-wiped UTXO table. */
+    {
+        DB_TXN_SCOPE(txn, ndb, "snapsync.begin_receive");
+        if (!txn)
+            return false;
+
+        struct recovery_policy rp;
+        policy_load_from_env(&rp);
+        int64_t existing = node_db_utxo_count(ndb);
+        if (existing < 0) existing = 0;
+        enum policy_decision pd = policy_check_utxo_wipe(
+            &rp, existing, "snapsync.begin_receive");
+        if (pd != POLICY_ALLOW) {
+            fprintf(stderr,
+                    "[snapsync] begin_receive: recovery_policy refused wipe "
+                    "(code=%s rows=%lld) — snapshot rejected\n",
+                    policy_decision_name(pd), (long long)existing);
+            return false;  /* scope auto-rollback */
+        }
+
+        if (!node_db_wipe_utxos(ndb))
+            return false;  /* scope auto-rollback */
+
+        if (!db_txn_commit(txn))
+            return false;
+    }
+
+    /* Reopen a plain transaction for the chunk receive loop. The
+     * chunk writer batches node_db_commit/node_db_begin pairs every
+     * SNAPSYNC_BATCH_COMMIT_ROWS rows and relies on having an open
+     * transaction at entry. */
     if (!node_db_begin(ndb))
         return false;
 
-    /* ── Recovery policy gate ──────────────────────────────────────
-     * This is THE call site from the 2026-04-10 incident. A bad boot
-     * path offered a synthetic anchor, triggered snapsync_begin_receive,
-     * and the raw primitive below wiped 1.3M UTXOs. The policy is the
-     * last line of defence — a healthy node with significant UTXO
-     * content should not silently drop everything to accept a
-     * snapshot. An operator who wants to reset does so explicitly by
-     * raising ZCL_MAX_UTXO_WIPE_ROWS. */
-    struct recovery_policy rp;
-    policy_load_from_env(&rp);
-    int64_t existing = node_db_utxo_count(ndb);
-    if (existing < 0) existing = 0;
-    enum policy_decision pd = policy_check_utxo_wipe(
-        &rp, existing, "snapsync.begin_receive");
-    if (pd != POLICY_ALLOW) {
-        fprintf(stderr,
-                "[snapsync] begin_receive: recovery_policy refused wipe "
-                "(code=%s rows=%lld) — snapshot rejected\n",
-                policy_decision_name(pd), (long long)existing);
-        node_db_rollback(ndb);
-        return false;
-    }
-
-    if (!node_db_wipe_utxos(ndb)) {
-        node_db_rollback(ndb);
-        return false;
-    }
     svc->received_utxos = 0;
     svc->last_commit_at = 0;
     return true;
@@ -440,20 +452,38 @@ static bool snapsync_finalize_write(struct node_db *ndb, void *ctx)
     if (sha3_ok) {
         bool has_mmb = false;
 
-        if (!node_db_state_set(ndb, "coins_best_block",
-                               svc->offered_block_hash, 32))
-            return false;
-        for (int i = 0; i < 32; i++) {
-            if (svc->offered_mmb_root[i]) {
-                has_mmb = true;
-                break;
+        /* ── Scoped commitment update ──────────────────────────
+         * The coins_best_block / snapshot MMB / MMR height writes
+         * must land as a single atomic unit: a partially-written
+         * set of these three rows would point coins_best_block at
+         * a height whose MMB root never landed, making the next
+         * boot think UTXO state is authoritative without a valid
+         * FlyClient anchor. DB_TXN_SCOPE auto-rolls-back any
+         * partial writes on early return or db_txn_commit
+         * failure. */
+        {
+            DB_TXN_SCOPE(txn, ndb, "snapsync.finalize");
+            if (!txn)
+                return false;
+
+            if (!node_db_state_set(ndb, "coins_best_block",
+                                   svc->offered_block_hash, 32))
+                return false;  /* scope auto-rollback */
+            for (int i = 0; i < 32; i++) {
+                if (svc->offered_mmb_root[i]) {
+                    has_mmb = true;
+                    break;
+                }
             }
-        }
-        if (has_mmb) {
-            if (!node_db_state_set(ndb, "snapshot_mmb_root",
-                                   svc->offered_mmb_root, 32) ||
-                !node_db_state_set(ndb, "snapshot_mmr_height",
-                                   &svc->offered_height, 4))
+            if (has_mmb) {
+                if (!node_db_state_set(ndb, "snapshot_mmb_root",
+                                       svc->offered_mmb_root, 32) ||
+                    !node_db_state_set(ndb, "snapshot_mmr_height",
+                                       &svc->offered_height, 4))
+                    return false;  /* scope auto-rollback */
+            }
+
+            if (!db_txn_commit(txn))
                 return false;
         }
         if (!snapsync_exit_turbo_mode(svc))
@@ -503,9 +533,24 @@ static bool snapsync_finalize_write(struct node_db *ndb, void *ctx)
                     "(code=%s rows=%lld) — corrupt partial state retained "
                     "until operator raises cap\n",
                     policy_decision_name(pd), (long long)partial);
-        } else if (!node_db_wipe_utxos(ndb)) {
-            fprintf(stderr,
-                    "snapshot finalize: failed to wipe UTXOs after SHA3 mismatch\n");
+        } else {
+            /* Cleanup wipe runs inside its own scoped transaction:
+             * if the DELETE cannot complete cleanly we'd rather
+             * leave the partial UTXOs in place (SNAPSYNC_FAILED
+             * already blocks them from being served) than hand
+             * back control with a half-wiped table. */
+            DB_TXN_SCOPE(txn, ndb, "snapsync.finalize_sha3_fail");
+            if (!txn) {
+                fprintf(stderr,
+                        "snapshot finalize: failed to open db_txn for cleanup wipe\n");
+            } else if (!node_db_wipe_utxos(ndb)) {
+                fprintf(stderr,
+                        "snapshot finalize: failed to wipe UTXOs after SHA3 mismatch\n");
+                /* leave scope → auto-rollback */
+            } else if (!db_txn_commit(txn)) {
+                fprintf(stderr,
+                        "snapshot finalize: commit of cleanup wipe failed\n");
+            }
         }
         if (!snapsync_exit_turbo_mode(svc))
             fprintf(stderr,

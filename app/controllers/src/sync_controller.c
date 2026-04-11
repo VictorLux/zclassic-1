@@ -4,6 +4,7 @@
 
 #include "controllers/sync_controller.h"
 #include "services/recovery_policy.h"
+#include "models/db_txn.h"
 #include "models/wallet_key.h"
 #include "models/wallet_tx.h"
 #include "primitives/block.h"
@@ -2991,7 +2992,7 @@ int node_db_sync_import_utxos(struct node_db *ndb,
         return -1;
     }
 
-    /* ── Recovery policy gate ──────────────────────────────────────
+    /* ── Recovery policy gate + scoped wipe ────────────────────────
      * The wipe below is a reimport prelude, not a reorg rollback — in
      * normal operation the table is empty or nearly empty. Historically
      * this call site is *not* the one that caused 2026-04-10, but it
@@ -2999,7 +3000,12 @@ int node_db_sync_import_utxos(struct node_db *ndb,
      * same way: ask the policy, refuse if over cap, abort cleanly.
      * The cap is deliberately generous here (reimport is legitimate)
      * but an operator can still raise ZCL_MAX_UTXO_WIPE_ROWS if a
-     * partial import is being resumed. */
+     * partial import is being resumed.
+     *
+     * The DELETE + initial state are wrapped in a DB_TXN_SCOPE so a
+     * mid-wipe crash or early-return rolls back cleanly: the pipeline
+     * below starts from a fully-wiped-and-committed table, not a
+     * half-deleted one. */
     struct recovery_policy rp;
     policy_load_from_env(&rp);
     int64_t existing = node_db_utxo_count(ndb);
@@ -3016,12 +3022,30 @@ int node_db_sync_import_utxos(struct node_db *ndb,
         return -1;
     }
 
-    if (!node_db_wipe_utxos(ndb)) {
-        fprintf(stderr, "UTXO import: failed to wipe utxos table\n");
-        if (!sync_db_turbo_scope_end(&turbo_mode))
-            fprintf(stderr, "UTXO import: failed to restore normal mode after wipe failure\n");
-        sync_job_import_finish(0);
-        return -1;
+    {
+        DB_TXN_SCOPE(txn, ndb, "sync_controller.import_utxos_reimport");
+        if (!txn) {
+            fprintf(stderr, "UTXO import: failed to open db_txn for wipe\n");
+            if (!sync_db_turbo_scope_end(&turbo_mode))
+                fprintf(stderr, "UTXO import: failed to restore normal mode after db_txn failure\n");
+            sync_job_import_finish(0);
+            return -1;
+        }
+        if (!node_db_wipe_utxos(ndb)) {
+            fprintf(stderr, "UTXO import: failed to wipe utxos table\n");
+            /* leave scope → auto-rollback */
+            if (!sync_db_turbo_scope_end(&turbo_mode))
+                fprintf(stderr, "UTXO import: failed to restore normal mode after wipe failure\n");
+            sync_job_import_finish(0);
+            return -1;
+        }
+        if (!db_txn_commit(txn)) {
+            fprintf(stderr, "UTXO import: commit of wipe failed\n");
+            if (!sync_db_turbo_scope_end(&turbo_mode))
+                fprintf(stderr, "UTXO import: failed to restore normal mode after commit failure\n");
+            sync_job_import_finish(0);
+            return -1;
+        }
     }
 
     /* ── Initialize pipeline context ───────────────────────────────── */
