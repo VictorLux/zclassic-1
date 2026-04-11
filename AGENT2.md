@@ -153,3 +153,18 @@ Target: reduce `boot.c` to **<800 lines** — pure orchestration, zero business 
 
 - **2026-04-11 wave 1** — Phase 1 service + singleton + boot bootstrap + `process_block.c` (5/65 sites) + 3 singleton tests. Site count corrected to 65 real sites (2 false hits in appendix).
 - **2026-04-11 wave 2** — **New plan, five deliverables above.** Start with priority 1: `snapshot_sync_service.c` (5 sites). That's the path the 2026-04-10 incident ran through — migrating it is the highest ROI move on the list.
+- **2026-04-11 wave 2 (session 1 on master)** — Pushed through commit `1fd764b03`. Five commits landed:
+  1. `snapshot_sync_service.c` — 2 tip sites migrated to `csr_commit_tip` via `snapsync_commit_tip()` helper; synthetic-anchor and happy-path branches both route through CSR now.
+  2. `chain_restore_service.c` — 1 site migrated; `chain_restore.execute` fuses the prior tip+header writes into one commit.
+  3. `msgprocessor.c` — 1 site migrated (`msgprocessor.headers_past_anchor` re-anchor); 1 documented as defensively-redundant post-snapsync resync.
+  4. `connect_block.c` (3 sites) + `blockchain_controller.c` (2 sites) documented in-place as scratchpad-view / bulk-replay and not migrated; outer tip owners go through CSR.
+  5. **Deliverable #2 landed**: `app/services/{include/services,src}/recovery_policy.{h,c}` + 21 tests (`lib/test/src/test_recovery_policy.c`). Env-tunable caps (`ZCL_MAX_UTXO_WIPE_ROWS`, `ZCL_MAX_BLOCK_ROLLBACK`, `ZCL_MAX_HEADER_REWIND`, `ZCL_REQUIRE_BACKUP_VERIFIED`, `ZCL_DRY_RUN`, `ZCL_OPERATOR_ACK_FILE`), six decision codes (ALLOW, REFUSE_TOO_LARGE, REFUSE_NO_BACKUP, REFUSE_DRY_RUN, PROMPT_OPERATOR, REFUSE_INVALID), three entry points (`policy_check_utxo_wipe`, `policy_check_block_rollback`, `policy_check_header_rewind`), backup-verified + operator-prompt function hooks, and three new events (`EV_RECOVERY_POLICY_{ALLOW,REFUSED,PROMPT}`). The spec's `struct event_bus *eb` parameter was dropped — the project's events go through the global `event_emitf` ring and the API now matches that convention.
+  6. **Recovery policy wired in front of 4 `node_db_wipe_utxos` call sites**:
+     - `app/controllers/src/sync_controller.c` (1 site) — reason `sync_controller.import_utxos_reimport`. Operator-triggered reimport path (-reimport-utxos flag, reindexchainstate RPC); fails closed on populated nodes until `ZCL_MAX_UTXO_WIPE_ROWS` is raised.
+     - `app/services/src/snapshot_sync_service.c` (3 sites) — reasons `snapsync.begin_receive`, `snapsync.finalize_sha3_fail`, `snapsync.stall_cleanup`. The begin_receive gate is THE 2026-04-10 defence surface; the other two guard partial-receive cleanup with row counts drawn from `svc->received_utxos`.
+  7. Running migration tally: 9 real `csr_commit_tip` sites + 4 `node_db_wipe_utxos` sites now behind `recovery_policy`. Remaining wipe sites (7) all live in `config/src/boot.c` — AGENT1's territory, header is exposed for their follow-up commits.
+  8. Full `./test_zcl` green (0 failures) on every commit. All 21 new recovery_policy tests passing, 28 existing CSR tests still green.
+  **Next session candidates** (wave 2 deliverables 3–5):
+  - Deliverable #3 — `app/models/db_txn.{h,c}` transaction wrapper + `DB_TXN_SCOPE` RAII macro, wrap destructive recovery sequences.
+  - Deliverable #4 — `app/services/block_index_integrity.{h,c}` magic+version+SHA3 on `block_index.bin` load, reverse cross-check against SQLite, refuse-to-boot on mismatch, rename-on-corrupt.
+  - Remaining Phase 1b test-file migrations (test_sync_service, test_coins, test_chain, test_validation, test_node_health_service) — low priority, pure test hygiene.
