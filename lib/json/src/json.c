@@ -192,7 +192,7 @@ bool json_empty(const struct json_value *v)
 
 const struct json_value *json_get(const struct json_value *obj, const char *key)
 {
-    if (obj->type != JSON_OBJ) return NULL;
+    if (!obj || !key || obj->type != JSON_OBJ) return NULL;
     for (size_t i = 0; i < obj->num_children; i++)
         if (obj->keys[i] && strcmp(obj->keys[i], key) == 0)
             return &obj->children[i];
