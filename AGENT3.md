@@ -235,6 +235,60 @@ Write the blocker into the "Current Status" section of this file and push. AGENT
   ```
   `tools/mcp_server.c` is now **183 lines** (target: <300) — just the stdio loop and three JSON-RPC method handlers; it calls `mcp_router_reset()` + `mcp_register_ops/chain/net/wallet/app()` in `register_all_controllers()`. `test_zcl` still green; smoke tests against the live node still pass. Phase 2b deliverables (controllers split) complete.
 - **Still pending:** Phase 2a (backfill 22 missing tools — per AGENT1 coordinator direction below) and Phase 2c (operator tooling: `zcl_tools_list`, `zcl_self_test`, `zcl_logtail`). Phase 3 (model validator hooks) waits for AGENT2's chain-state call-site migration.
+- **2026-04-11 (AGENT3) — Phase 2a + Phase 2c complete. Total MCP tools: 66.**
+  - **Phase 2a backfill (22 tools)** landed across existing controllers:
+    - **chain** (1): `zcl_getrawtransaction`
+    - **ops** (6): `zcl_kpi` (flagship one-shot dashboard combining
+      height / peer_count / sync / validation / health / mempool /
+      wallet / chain / network), `zcl_getmempoolinfo`,
+      `zcl_getrawmempool`, `zcl_getmininginfo`, `zcl_benchmark`,
+      `zcl_dbstats`.
+    - **wallet** (15): `zcl_getwalletinfo`, `zcl_listunspent`,
+      `zcl_listtransactions`, `zcl_gettransaction`,
+      `zcl_sendtoaddress`, `zcl_listaddresses` (projects
+      `listwalletkeys` into `{t_addresses, z_addresses}`),
+      `zcl_dumpprivkey`, `zcl_importprivkey`, `zcl_z_listaddresses`,
+      `zcl_z_listunspent`, `zcl_z_getbalance`, `zcl_rescanblockchain`,
+      `zcl_walletaudit`, `zcl_listwalletkeys`,
+      `zcl_replaywalletfromchain` (guarded — requires confirm=true).
+  - **Phase 2c operator tools** (`tools/mcp/controllers/meta_controller.c`, 253 lines):
+    - `zcl_tools_list` — dumps the full routing table as JSON via
+      `mcp_router_tools_list_json`. Self-documenting MCP surface.
+    - `zcl_self_test` — iterates every registered tool, calls it with
+      empty args, skips destructive or required-param-without-default,
+      reports `{tool, domain, status, reason}` plus
+      `{total, pass, fail, skip}` summary. **Live result against the
+      running node: 66 total / 42 pass / 0 fail / 24 skip.**
+    - `zcl_logtail` — wraps `eventlog` RPC, optional `domain` prefix
+      filter on event `type` field, returns
+      `{sync_state, filter, events, matched}`. Verified filtering
+      works (`domain=msg` → 34 matches, types all start with
+      "msg.").
+  - **Defensive fix in `lib/json/src/json.c`:** `json_get(obj, key)`
+    now null-checks `obj` and `key` instead of crashing. This fixes a
+    real SIGSEGV discovered by `zcl_self_test`: handlers that call
+    `json_get(req->args, ...)` would crash when the router passed
+    `args=NULL`. The router already tolerates NULL; the individual
+    handlers do not, and this one-line change makes the whole surface
+    NULL-safe.
+  - **Current line counts:** `tools/mcp_server.c` 184, `router.c` 549,
+    `rpc_client.c` 159, `controllers/app_controller.c` 349,
+    `chain_controller.c` 138, `meta_controller.c` 253,
+    `net_controller.c` 94, `ops_controller.c` 216,
+    `wallet_controller.c` 443. Target (`mcp_server.c` < 200) met.
+  - **Build / tests:** `./test_zcl` — 15 suites green, 0 failures,
+    ~2000 individual test cases. Full `-O3 -flto -Werror -pedantic`
+    build of both `test_zcl` and `zclassic23` clean.
+  - **Smoke tests against live node (height 2014948, 9 peers):**
+    `zcl_status`, `zcl_kpi`, `zcl_balance`, `zcl_benchmark`,
+    `zcl_getwalletinfo`, `zcl_getmempoolinfo`, `zcl_dbstats`,
+    `zcl_listaddresses`, `zcl_tools_list`, `zcl_self_test`,
+    `zcl_logtail` — all return success and produce well-formed
+    bodies. Validation error envelopes (`MISSING_PARAM`, `INVALID_TYPE`,
+    `OUT_OF_RANGE`, `ENUM_MISMATCH`, `UNKNOWN_TOOL`) all shape-correct.
+- **Still pending:** Phase 3 (model validator hooks on 17 models).
+  Waits for AGENT2's next chain-state milestone to avoid conflicts in
+  `app/models/src/database.c`.
 
 ---
 

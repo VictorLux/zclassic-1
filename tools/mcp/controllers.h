@@ -12,5 +12,6 @@ void mcp_register_chain(void);    /* zcl_getblock, zcl_mmb, zcl_syncstate, ...  
 void mcp_register_net(void);      /* zcl_peers, zcl_addnode, zcl_pingpeer, ...        */
 void mcp_register_wallet(void);   /* zcl_balance, zcl_send, zcl_getnewaddress, ...    */
 void mcp_register_app(void);      /* zcl_name_*, zcl_msg_*, zcl_market_*, zcl_swap_*  */
+void mcp_register_meta(void);     /* zcl_tools_list, zcl_self_test, zcl_logtail       */
 
 #endif

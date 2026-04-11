@@ -129,6 +129,7 @@ static void register_all_controllers(void)
     mcp_register_net();
     mcp_register_wallet();
     mcp_register_app();
+    mcp_register_meta();
 }
 
 int mcp_server_main(const char *datadir, int rpc_port)
