@@ -73,6 +73,7 @@ int main(void)
     failures += test_chain_restore_service();
     failures += test_chain_activation_controller();
     failures += test_mcp_router();
+    failures += test_mcp_controllers();
 
     /* Spec-based user story tests */
     failures += spec_wallet_dashboard();
