@@ -55,7 +55,7 @@ These are mine. Listing here for transparency so AGENT2/AGENT3 can see what's co
 ### Carry-over from wave 7
 
 - [ ] **Live wallet encryption integration** — wire `wks_encrypt`/`wks_decrypt` through `wallet_db.c` / `wallet.c` / `keystore.c` / `wallet_key.c` / `wallet_sqlite.c`. This has been carry-over for 3 waves now — **do it this wave**. Per-file regression coverage, migration path in one big `db_txn`, encrypted wallets back up ciphertext blobs.
-- [ ] **RPC timeout layer** — `ZCL_RPC_TIMEOUT_MS` watchdog thread, emit `EV_RPC_TIMEOUT`, 5+ tests.
+- [x] **RPC timeout layer** — `lib/rpc/{include/rpc,src}/rpc_timeout.{h,c}` with 128-slot in-flight table + watchdog pthread. `ZCL_RPC_TIMEOUT_MS` / `ZCL_RPC_TIMEOUT_SWEEP_MS` env knobs. New `EV_RPC_TIMEOUT` event. 14 tests in `test_rpc_timeout.c`. Wired into `httpserver.c` `handle_client()`. Pushed at `1eebebc6c`.
 - [ ] **WebSocket event stream** — `lib/net/ws_events.{h,c}` with `/events?domain=…` filter.
 - [ ] **OpenTelemetry-compat tracing** — `lib/util/trace.{h,c}` + 5 migrated hot paths.
 - [ ] **peer_bandwidth wire-in** — primitives exist; wire into `connman.c` send/recv, pause/resume on bucket state.
@@ -63,14 +63,14 @@ These are mine. Listing here for transparency so AGENT2/AGENT3 can see what's co
 - [ ] **Alert routing** — `lib/util/alerts.{h,c}` with webhook/email/log sinks.
 - [ ] **Chaos fault injection** — `tools/mcp/chaos.{h,c}` under `#ifdef ZCL_CHAOS`.
 - [ ] **Coverage 26% → 35%** — audit highest-LOC uncovered files, targeted tests.
-- [ ] **`zcl_consensus_report`** — surface AGENT2's new `EV_CONSENSUS_REJECT_*` events as Prometheus counters + histogram. Companion to AGENT2's `zcl_explain_reject`.
+- [x] **`zcl_consensus_report`** — bounded (kind, reason) → count table (48-slot cap + per-kind totals + overflow buckets) in `tools/mcp/metrics.c`. Observer parses `reason=…` off AGENT2's `EV_CONSENSUS_REJECT_*` events. Surfaces via new `zcl_consensus_report` ops MCP tool and `zcl_consensus_rejects_total{kind,reason}` Prometheus family (with per-kind `all` + global `all` + `__other__` rows). 8 new tests. Surface: 75 → 76 tools. Pushed at `609638590`.
 
 ### New for wave 8
 
 - [ ] **`zcl_explain_reject` MCP tool wrapper** — wrap AGENT2's `consensus_reject_index` service in a router entry under ops domain. Schema: `{block_or_txid: string, verbose: bool}`. Coordinate with AGENT2 on the service API.
 - [ ] **Grafana dashboard JSON** — `docs/grafana/zclassic23.json`. Panels for chain height, peer count, UTXO count, mempool size, RPC RPS, CSR commits, recovery_policy decisions, coverage, disk free, consensus rejects by reason.
 - [ ] **Operator `RUNBOOK.md`** — `docs/RUNBOOK.md`. Symptom → diagnostic tool → fix command. Scenarios: "99% disk", "peer misbehaving", "backup failed", "tip regressed", "node stuck at height X", "RPC returning 429".
-- [ ] **Auto-generated `MCP_REFERENCE.md`** — Makefile target `docs-mcp` dumps `./zclassic23 -mcp` → `tools/list` → markdown.
+- [x] **Auto-generated `MCP_REFERENCE.md`** — `make docs-mcp` pipes `./zclassic23 -mcp` `tools/list` through `tools/gen_mcp_reference.py` (pure Python stdlib) → grouped by domain + GFM parameter tables. `make docs-mcp-check` for CI drift detection. Initial reference at 586 lines. Pushed at `7d1d966d3`.
 - [ ] **HTTP RPC error envelope audit** — today errors are `{error: {code, message}}`. Audit every RPC response path, ensure consistent shape, add missing fields (method, request_id). One commit per category (wallet, chain, net, ops).
 
 ### Stretch
