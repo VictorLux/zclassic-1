@@ -78,6 +78,7 @@ int main(void)
     failures += test_mcp_controllers();
     failures += test_mcp_middleware();
     failures += test_mcp_metrics();
+    failures += test_mcp_e2e();
     failures += test_db_validators();
 
     /* Spec-based user story tests */
