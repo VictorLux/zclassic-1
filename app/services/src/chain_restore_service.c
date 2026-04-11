@@ -5,6 +5,7 @@
 
 #include "services/chain_restore_service.h"
 #include "services/chain_state_repository.h"
+#include "models/db_txn.h"
 #include "validation/main_state.h"
 #include "validation/chainstate.h"
 #include "chain/chain.h"
@@ -174,21 +175,53 @@ struct block_index *chain_restore_execute(
             .reason              = "chain_restore.execute",
         };
 
-        enum csr_result rc = csr_commit_tip(csr_instance(), &commit);
-        if (rc != CSR_OK) {
-            if (rc == CSR_REJECTED_NOT_INITIALIZED) {
-                /* Unit-test path: singleton was never wired. Keep the
-                 * legacy raw-setter behaviour so the existing
-                 * test_chain_restore_service suite continues to
-                 * exercise the end-to-end flow. */
-                active_chain_set_tip(&ms->chain_active, target);
-                if (plan->should_set_best_header)
-                    ms->pindex_best_header = target;
-            } else {
+        /* Wrap the CSR commit in a scoped db transaction when the
+         * singleton is wired to a real node_db. csr_commit_tip itself
+         * only mutates in-memory state today, but csr_validate_locked
+         * issues SQLite reads and any future write path here would be
+         * silently leak-prone without the scope. The scope also gives
+         * operators a BEGIN/COMMIT event pair bracketing the tip move,
+         * which is the single highest-signal event from the 2026-04-10
+         * incident. Unit-test paths that stub csr with a NULL ndb fall
+         * through to the legacy raw-setter branch below. */
+        struct chain_state_repository *csr = csr_instance();
+        struct node_db *cr_ndb = (csr && csr->initialized) ? csr->ndb : NULL;
+        enum csr_result rc;
+
+        if (cr_ndb && cr_ndb->open) {
+            DB_TXN_SCOPE(txn, cr_ndb, "chain_restore.execute");
+            if (!txn) {
+                fprintf(stderr,
+                    "chain_restore: failed to open db_txn scope\n");
+                return NULL;
+            }
+            rc = csr_commit_tip(csr, &commit);
+            if (rc != CSR_OK) {
+                /* Scope auto-rollback fires on return. */
                 fprintf(stderr,
                     "chain_restore: csr rejected tip commit (%s) h=%d\n",
                     csr_result_name(rc), target->nHeight);
                 return NULL;
+            }
+            if (!db_txn_commit(txn))
+                return NULL;
+        } else {
+            rc = csr_commit_tip(csr, &commit);
+            if (rc != CSR_OK) {
+                if (rc == CSR_REJECTED_NOT_INITIALIZED) {
+                    /* Unit-test path: singleton was never wired. Keep
+                     * the legacy raw-setter behaviour so the existing
+                     * test_chain_restore_service suite continues to
+                     * exercise the end-to-end flow. */
+                    active_chain_set_tip(&ms->chain_active, target);
+                    if (plan->should_set_best_header)
+                        ms->pindex_best_header = target;
+                } else {
+                    fprintf(stderr,
+                        "chain_restore: csr rejected tip commit (%s) h=%d\n",
+                        csr_result_name(rc), target->nHeight);
+                    return NULL;
+                }
             }
         }
     } else if (plan->should_set_best_header) {
