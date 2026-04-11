@@ -232,6 +232,7 @@ int test_chain_activation_controller(void);
 int test_mcp_router(void);
 int test_mcp_controllers(void);
 int test_mcp_middleware(void);
+int test_mcp_metrics(void);
 int test_db_validators(void);
 
 /* Spec-based user story tests (one per feature area) */

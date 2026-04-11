@@ -12,6 +12,7 @@
 #include "../controllers.h"
 #include "../router.h"
 #include "../rpc_client.h"
+#include "../metrics.h"
 
 #include "json/json.h"
 
@@ -47,6 +48,7 @@ static const char *const k_destructive[] = {
     /* meta-tools */
     "zcl_self_test",             /* avoid recursion */
     "zcl_rpc",                   /* arbitrary RPC — skip by default */
+    "zcl_metrics_reset",         /* resets metric counters — treat as destructive */
 };
 
 static bool is_destructive(const char *name)
@@ -257,6 +259,137 @@ static int h_zcl_logtail(const struct mcp_request *req,
     return 0;
 }
 
+/* ── Schema export (OpenAPI-ish) ─────────────────────────────── */
+
+static int h_zcl_openapi(const struct mcp_request *req,
+                          struct mcp_response *res)
+{
+    (void)req;
+    size_t cap = 262144;
+    char *out = malloc(cap);
+    if (!out) return -1;
+    size_t pos = 0;
+
+    pos += (size_t)snprintf(out + pos, cap - pos,
+        "{"
+        "\"openapi\":\"3.0.0\","
+        "\"info\":{\"title\":\"zclassic23 MCP surface\","
+                 "\"version\":\"1.0.0\","
+                 "\"description\":\"Auto-derived from the MCP router table.\"},"
+        "\"paths\":{");
+
+    bool first = true;
+    for (size_t i = 0; i < mcp_router_count(); i++) {
+        const struct mcp_tool_route *r = mcp_router_at(i);
+        if (!r || !r->name) continue;
+
+        if (pos + 4096 >= cap) break;
+        if (!first) out[pos++] = ',';
+        first = false;
+
+        /* Path entry: "/tools/<name>": { post: { summary, tags, requestBody:
+         * { content: { application/json: { schema: <inputSchema> } } },
+         * responses: { 200, 4xx } } } */
+        pos += (size_t)snprintf(out + pos, cap - pos,
+            "\"/tools/%s\":{\"post\":{"
+            "\"summary\":\"", r->name);
+
+        /* description (JSON-escape) */
+        const char *desc = r->description ? r->description : "";
+        for (size_t k = 0; desc[k] && pos + 4 < cap; k++) {
+            char c = desc[k];
+            if (c == '"' || c == '\\') out[pos++] = '\\';
+            if (c == '\n') { out[pos++] = '\\'; c = 'n'; }
+            out[pos++] = c;
+        }
+
+        pos += (size_t)snprintf(out + pos, cap - pos,
+            "\",\"tags\":[\"%s\"],"
+            "\"operationId\":\"%s\","
+            "\"requestBody\":{\"content\":{\"application/json\":{\"schema\":",
+            r->domain ? r->domain : "default", r->name);
+
+        /* inputSchema object */
+        pos += mcp_router_input_schema_json(r, out + pos, cap - pos);
+
+        pos += (size_t)snprintf(out + pos, cap - pos,
+            "}}},"
+            "\"responses\":{"
+            "\"200\":{\"description\":\"Success — JSON body from handler\"},"
+            "\"400\":{\"description\":\"Validation error envelope\"},"
+            "\"401\":{\"description\":\"AUTH_REQUIRED envelope\"},"
+            "\"429\":{\"description\":\"RATE_LIMITED envelope\"},"
+            "\"504\":{\"description\":\"TOOL_TIMEOUT envelope\"}"
+            "}}}");
+    }
+
+    pos += (size_t)snprintf(out + pos, cap - pos,
+        "},"
+        "\"components\":{\"schemas\":{"
+        "\"ErrorEnvelope\":{\"type\":\"object\",\"properties\":{"
+        "\"error\":{\"type\":\"object\",\"properties\":{"
+        "\"code\":{\"type\":\"string\"},"
+        "\"message\":{\"type\":\"string\"},"
+        "\"tool\":{\"type\":\"string\"},"
+        "\"param\":{\"type\":\"string\"}"
+        "}}}}"
+        "}}}");
+
+    if (pos < cap) out[pos] = 0;
+    res->body = out;
+    return 0;
+}
+
+/* ── Prometheus metrics ─────────────────────────────────────── */
+
+static int h_zcl_metrics(const struct mcp_request *req,
+                          struct mcp_response *res)
+{
+    (void)req;
+    size_t cap = 131072;
+    char *raw = malloc(cap);
+    if (!raw) return -1;
+    size_t n = mcp_metrics_render_prometheus(raw, cap);
+
+    /* Wrap the Prometheus text in a JSON envelope so the stdio layer
+     * can shuttle it as a tool result.  Escape quotes + newlines. */
+    size_t out_cap = n * 2 + 128;
+    char *out = malloc(out_cap);
+    if (!out) { free(raw); return -1; }
+    size_t pos = 0;
+    pos += (size_t)snprintf(out + pos, out_cap - pos,
+        "{\"format\":\"prometheus\",\"text\":\"");
+    for (size_t i = 0; i < n && pos + 4 < out_cap; i++) {
+        char c = raw[i];
+        if (c == '"')       { out[pos++] = '\\'; out[pos++] = '"'; }
+        else if (c == '\\') { out[pos++] = '\\'; out[pos++] = '\\'; }
+        else if (c == '\n') { out[pos++] = '\\'; out[pos++] = 'n'; }
+        else if (c == '\r') { out[pos++] = '\\'; out[pos++] = 'r'; }
+        else if (c == '\t') { out[pos++] = '\\'; out[pos++] = 't'; }
+        else                { out[pos++] = c; }
+    }
+    pos += (size_t)snprintf(out + pos, out_cap - pos,
+        "\",\"total_requests\":%llu,\"total_errors\":%llu,\"counter_count\":%zu}",
+        (unsigned long long)mcp_metrics_total_requests(),
+        (unsigned long long)mcp_metrics_total_errors(),
+        mcp_metrics_counter_count());
+
+    free(raw);
+    res->body = out;
+    return 0;
+}
+
+static int h_zcl_metrics_reset(const struct mcp_request *req,
+                                struct mcp_response *res)
+{
+    (void)req;
+    mcp_metrics_reset();
+    char *out = strdup("{\"ok\":true,\"reset\":\"mcp_metrics\"}");
+    if (!out) return -1;
+    res->body = out;
+    return 0;
+}
+
 /* ── Route table ─────────────────────────────────────────────── */
 
 static const struct mcp_param_spec p_logtail[] = {
@@ -279,6 +412,19 @@ static const struct mcp_tool_route k_routes[] = {
     { "zcl_logtail", "ops",
       "Tail the structured event log. Optional domain prefix filter.",
       p_logtail, sizeof(p_logtail) / sizeof(p_logtail[0]), h_zcl_logtail },
+    { "zcl_openapi", "ops",
+      "Emit an OpenAPI 3.0-flavored schema document derived from the "
+      "MCP routing table. Clients can use it for type generation or "
+      "auto-test harnesses.",
+      NULL, 0, h_zcl_openapi },
+    { "zcl_metrics", "ops",
+      "Prometheus-text metrics dump: request counters, latency histogram, "
+      "and summary totals accumulated in-process.",
+      NULL, 0, h_zcl_metrics },
+    { "zcl_metrics_reset", "ops",
+      "Reset all MCP metric counters. Destructive — gated by the "
+      "middleware rate limiter.",
+      NULL, 0, h_zcl_metrics_reset },
 };
 
 void mcp_register_meta(void)
