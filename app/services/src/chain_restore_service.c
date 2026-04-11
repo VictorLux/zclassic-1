@@ -4,6 +4,7 @@
  * See chain_restore_service.h for architecture overview. */
 
 #include "services/chain_restore_service.h"
+#include "services/chain_state_repository.h"
 #include "validation/main_state.h"
 #include "validation/chainstate.h"
 #include "chain/chain.h"
@@ -152,11 +153,49 @@ struct block_index *chain_restore_execute(
     if (!target)
         return NULL;
 
-    if (plan->should_set_chain_tip)
-        active_chain_set_tip(&ms->chain_active, target);
+    /* Route the tip/header mutations through the chain_state_repository
+     * so block_map, active_chain, coins_tip and pindex_best_header
+     * move atomically. The chain restore path is exactly the scenario
+     * that caused 2026-04-10: boot detected a "best hash" and shoved
+     * it into active_chain without cross-checking SQLite state. */
+    if (plan->should_set_chain_tip && target->phashBlock) {
+        struct chain_state_commit commit = {
+            .new_tip             = target,
+            .new_coins_best      = *target->phashBlock,
+            .expected_utxo_count = 0,
+            .update_header_tip   = plan->should_set_best_header,
+            /* Chain restore is explicitly a "snap to where UTXOs
+             * actually live" operation, which can legitimately look
+             * like a backward move from csr's perspective. Bypass the
+             * orphan-rows guard; Phase 2 recovery_policy will gate
+             * this class of move via the operator-visible policy. */
+            .allow_rollback      = true,
+            .wallet_scan_height  = -1,
+            .reason              = "chain_restore.execute",
+        };
 
-    if (plan->should_set_best_header)
+        enum csr_result rc = csr_commit_tip(csr_instance(), &commit);
+        if (rc != CSR_OK) {
+            if (rc == CSR_REJECTED_NOT_INITIALIZED) {
+                /* Unit-test path: singleton was never wired. Keep the
+                 * legacy raw-setter behaviour so the existing
+                 * test_chain_restore_service suite continues to
+                 * exercise the end-to-end flow. */
+                active_chain_set_tip(&ms->chain_active, target);
+                if (plan->should_set_best_header)
+                    ms->pindex_best_header = target;
+            } else {
+                fprintf(stderr,
+                    "chain_restore: csr rejected tip commit (%s) h=%d\n",
+                    csr_result_name(rc), target->nHeight);
+                return NULL;
+            }
+        }
+    } else if (plan->should_set_best_header) {
+        /* Extremely rare: plan asked for header-only update with no
+         * chain tip change. Preserve legacy behaviour. */
         ms->pindex_best_header = target;
+    }
 
     if (plan->should_set_snapshot_anchor)
         snapsync_set_anchor(target);
