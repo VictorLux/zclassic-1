@@ -4,6 +4,7 @@
 
 #include "rpc/httpserver.h"
 #include "rpc/http_middleware.h"
+#include "rpc/rpc_timeout.h"
 #include "json/json.h"
 #include "rpc/protocol.h"
 #include "core/random.h"
@@ -31,6 +32,8 @@ static bool g_listen_thread_started = false;
 static volatile bool g_running = false;
 static struct rpc_http_middleware g_middleware;
 static bool g_middleware_active = false;
+static struct rpc_timeout_mgr g_rpc_timeout;
+static bool g_rpc_timeout_active = false;
 static char g_rpc_user[128];
 static char g_rpc_password[128];
 static char g_cookie_file[1024];
@@ -210,6 +213,16 @@ static void handle_client(int client_fd)
         }
     }
 
+    /* Wave 6 #1: register this request with the timeout watchdog.
+     * The watchdog will shutdown() our fd if the dispatch phase runs
+     * past ZCL_RPC_TIMEOUT_MS — our in-flight read/write then fails
+     * and we unwind cleanly.  slot == -1 means table full or module
+     * disabled; either way we just proceed without tracking. */
+    int tmo_slot = -1;
+    if (g_rpc_timeout_active) {
+        tmo_slot = rpc_timeout_register(&g_rpc_timeout, client_fd, client_ip_be);
+    }
+
     /* Pre-flight: ban + rate limit BEFORE we touch the request.
      * The middleware is loopback-aware and will exempt 127.0.0.0/8
      * from ban + per-IP buckets. */
@@ -349,6 +362,13 @@ static void handle_client(int client_fd)
     }
     json_free(&request);
 
+    /* Wave 6 #1: now that we know the method name, label the timeout
+     * slot so EV_RPC_TIMEOUT carries useful context if the watchdog
+     * kills us during dispatch. */
+    if (tmo_slot >= 0) {
+        rpc_timeout_set_method(&g_rpc_timeout, tmo_slot, req.method);
+    }
+
     struct json_value result;
     json_init(&result);
     rpc_table_execute(g_table, req.method, &req.params, &result);
@@ -380,6 +400,9 @@ static void handle_client(int client_fd)
     json_request_free(&req);
 
 done:
+    if (tmo_slot >= 0) {
+        rpc_timeout_unregister(&g_rpc_timeout, tmo_slot);
+    }
     close(client_fd);
 }
 
@@ -500,6 +523,19 @@ bool rpc_http_start(const struct rpc_table *table, uint16_t port,
      * the live config and stats without reaching into httpserver.c. */
     rpc_http_middleware_set_global(&g_middleware);
 
+    /* Wave 6 #1: per-request timeout watchdog.  ZCL_RPC_TIMEOUT_MS=0
+     * disables entirely so existing operators who prefer the old
+     * behaviour can opt out.  Watchdog thread is dormant in that case. */
+    if (!g_rpc_timeout_active) {
+        rpc_timeout_init(&g_rpc_timeout);
+        rpc_timeout_load_from_env(&g_rpc_timeout);
+        g_rpc_timeout_active = true;
+    }
+    rpc_timeout_set_global(&g_rpc_timeout);
+    if (!rpc_timeout_start_watchdog(&g_rpc_timeout)) {
+        fprintf(stderr, "RPC server: rpc_timeout watchdog start failed\n");
+    }
+
     /* Wave 6: optional GET /metrics Prometheus endpoint.  Accept "1",
      * "true", "yes", "on" as truthy; anything else leaves it off. */
     g_metrics_http_enable = false;
@@ -595,6 +631,12 @@ void rpc_http_stop(void)
     g_auth_required = false;
     g_rpc_user[0] = '\0';
     g_rpc_password[0] = '\0';
+    if (g_rpc_timeout_active) {
+        rpc_timeout_stop_watchdog(&g_rpc_timeout);
+        rpc_timeout_set_global(NULL);
+        rpc_timeout_destroy(&g_rpc_timeout);
+        g_rpc_timeout_active = false;
+    }
     if (g_middleware_active) {
         rpc_http_middleware_set_global(NULL);
         rpc_http_middleware_destroy(&g_middleware);

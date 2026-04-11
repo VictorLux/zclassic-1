@@ -156,6 +156,9 @@ enum event_type {
     EV_CONSENSUS_REJECT_TX,      /* payload: "reason=... dos=N" */
     EV_CONSENSUS_REJECT_BLOCK,   /* payload: "reason=... dos=N [height=N]" */
 
+    /* ── HTTP RPC request timeout (wave 6 #1) ──────── */
+    EV_RPC_TIMEOUT,              /* payload: "method=NAME elapsed_ms=N ip=A.B.C.D" */
+
     EV_NUM_TYPES                 /* sentinel — must be last */
 };
 

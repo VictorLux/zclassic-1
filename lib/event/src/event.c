@@ -382,6 +382,7 @@ const char *event_type_name(enum event_type type)
         [EV_IBD_THROTTLED]           = "ibd.throttled",
         [EV_CONSENSUS_REJECT_TX]     = "consensus.reject_tx",
         [EV_CONSENSUS_REJECT_BLOCK]  = "consensus.reject_block",
+        [EV_RPC_TIMEOUT]             = "rpc.timeout",
     };
     if (type >= 0 && type < EV_NUM_TYPES && names[type])
         return names[type];

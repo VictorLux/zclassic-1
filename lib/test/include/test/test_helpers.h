@@ -243,6 +243,7 @@ int test_block_index_integrity(void);
 int test_wallet_backup(void);
 int test_log_json(void);
 int test_http_middleware(void);
+int test_rpc_timeout(void);
 int test_wallet_keystore(void);
 int test_disk_monitor(void);
 int test_db_maintenance(void);
