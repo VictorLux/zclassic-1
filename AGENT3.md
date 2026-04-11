@@ -5,7 +5,7 @@
 **Coordinator:** AGENT1 (main `~/zclassic23`)
 **Peer:** AGENT2 (`~/zclassic23-2`) — boot decomposition / consensus / resource controls, different files
 
-> **⇒ Active plan: [`WAVE_7.md`](./WAVE_7.md).** Wave 6 carry-over + new wave 7 items. When wave 7 clears, pull from [`BACKLOG.md`](./BACKLOG.md). AGENT1 does not edit the `Current Status` section below — it is yours.
+> **⇒ Active plan: [`WAVE_8.md`](./WAVE_8.md).** Wave 7 carry-over + new wave 8 items. When wave 8 clears, pull from [`BACKLOG.md`](./BACKLOG.md). AGENT1 does not edit the `Current Status` section below — it is yours. Items needing AGENT1 review go in [`REVIEW_QUEUE.md`](./REVIEW_QUEUE.md).
 
 ---
 
