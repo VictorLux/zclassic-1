@@ -15,6 +15,8 @@
 #include "../metrics.h"
 
 #include "json/json.h"
+#include "net/peer_scoring.h"
+#include "rpc/http_middleware.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -51,6 +53,7 @@ static const char *const k_destructive[] = {
     "zcl_self_test",             /* avoid recursion */
     "zcl_rpc",                   /* arbitrary RPC — skip by default */
     "zcl_metrics_reset",         /* resets metric counters — treat as destructive */
+    "zcl_config_reload",         /* re-applies env vars to live subsystems */
 };
 
 static bool is_destructive(const char *name)
@@ -487,6 +490,85 @@ static long long scan_int_field(const char *body, const char *key)
     return v;
 }
 
+/* zcl_config_reload — on-demand re-read of env-tunable config
+ * without restarting the node.  Applies to the live HTTP RPC
+ * middleware and the peer scoring layer; emits a summary of the
+ * new active values so an operator can verify the change took
+ * effect in a single call.
+ *
+ * This is the manual alternative to a SIGHUP handler — a future
+ * session can add a signal trampoline that calls into the same
+ * reload path, but even just the MCP tool is enough to tune a
+ * live node without downtime. */
+static int h_zcl_config_reload(const struct mcp_request *req,
+                                struct mcp_response *res)
+{
+    (void)req;
+
+    /* Peer scoring: re-reads ZCL_PEER_BAN_THRESHOLD /
+     * ZCL_PEER_BAN_HOURS / ZCL_PEER_SCORE_DECAY_PER_MIN. */
+    peer_scoring_init();
+
+    /* HTTP RPC middleware: re-read ZCL_RPC_* via the live handle.
+     * load_from_env preserves the token-bucket state and only
+     * replaces config fields, so in-flight rate-limit decisions
+     * don't reset under the caller's feet. */
+    bool rpc_active = false;
+    int  rpc_global_rps = 0,     rpc_global_burst = 0;
+    int  rpc_per_ip_rps = 0,     rpc_per_ip_burst = 0;
+    int  rpc_auth_thresh = 0,    rpc_ban_seconds = 0;
+    struct rpc_http_middleware *mw = rpc_http_middleware_get_global();
+    if (mw) {
+        rpc_http_middleware_load_from_env(mw);
+        struct rpc_http_stats_snapshot s;
+        rpc_http_middleware_stats_snapshot(mw, &s);
+        rpc_active        = true;
+        rpc_global_rps    = s.global_rps;
+        rpc_global_burst  = s.global_burst;
+        rpc_per_ip_rps    = s.per_ip_rps;
+        rpc_per_ip_burst  = s.per_ip_burst;
+        rpc_auth_thresh   = s.auth_fail_threshold;
+        rpc_ban_seconds   = s.ban_seconds;
+    }
+
+    size_t cap = 1024;
+    char *out = malloc(cap);
+    if (!out) return -1;
+    snprintf(out, cap,
+        "{\"ok\":true,"
+         "\"peer_scoring\":{"
+            "\"ban_threshold\":%d,"
+            "\"ban_hours\":%d,"
+            "\"decay_per_min\":%d"
+         "},"
+         "\"rpc_middleware\":%s",
+        peer_scoring_ban_threshold(),
+        peer_scoring_ban_hours(),
+        peer_scoring_decay_rate(),
+        rpc_active ? "{" : "null");
+
+    if (rpc_active) {
+        size_t pos = strlen(out);
+        snprintf(out + pos, cap - pos,
+            "\"global_rps\":%d,"
+            "\"global_burst\":%d,"
+            "\"per_ip_rps\":%d,"
+            "\"per_ip_burst\":%d,"
+            "\"auth_fail_threshold\":%d,"
+            "\"ban_seconds\":%d"
+            "}}",
+            rpc_global_rps, rpc_global_burst,
+            rpc_per_ip_rps, rpc_per_ip_burst,
+            rpc_auth_thresh, rpc_ban_seconds);
+    } else {
+        size_t pos = strlen(out);
+        snprintf(out + pos, cap - pos, "}");
+    }
+
+    res->body = out;
+    return 0;
+}
+
 static int h_zcl_admin(const struct mcp_request *req,
                         struct mcp_response *res)
 {
@@ -623,6 +705,12 @@ static const struct mcp_tool_route k_routes[] = {
       "tracked-IP and active-ban gauges. Parallel to zcl_peer_report "
       "for the RPC surface.",
       NULL, 0, h_zcl_rpc_report },
+    { "zcl_config_reload", "ops",
+      "Re-read env-tunable config for live subsystems (peer_scoring, "
+      "rpc_middleware) without restarting the node. Returns the new "
+      "effective values so an operator can verify the change took "
+      "effect.",
+      NULL, 0, h_zcl_config_reload },
     { "zcl_admin", "ops",
       "Admin dashboard: aggregates zcl_kpi + zcl_peer_report + "
       "zcl_rpc_report + zcl_events into one snapshot and derives "
