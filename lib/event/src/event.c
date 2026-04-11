@@ -367,6 +367,8 @@ const char *event_type_name(enum event_type type)
         [EV_SNAPSYNC_VERIFIED]       = "snapsync.verified",
         [EV_MCP_REQUEST]             = "mcp.request",
         [EV_BLOCK_INDEX_CORRUPT]     = "boot.block_index_corrupt",
+        [EV_WALLET_BACKUP]           = "wallet.backup",
+        [EV_WALLET_BACKUP_FAILED]    = "wallet.backup_failed",
     };
     if (type >= 0 && type < EV_NUM_TYPES && names[type])
         return names[type];

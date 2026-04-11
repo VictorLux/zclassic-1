@@ -83,6 +83,7 @@ int main(void)
     failures += test_peer_scoring();
     failures += test_secrets_hygiene();
     failures += test_block_index_integrity();
+    failures += test_wallet_backup();
 
     /* Spec-based user story tests */
     failures += spec_wallet_dashboard();

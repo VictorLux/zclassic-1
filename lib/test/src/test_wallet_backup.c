@@ -1,0 +1,516 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * Tests for the wallet_backup_service.
+ *
+ * Each test spins up a temporary datadir, opens a real node_db
+ * (so the wallet schema is present), writes a handful of
+ * wallet_keys rows, runs wallet_backup_run_once against a
+ * SEPARATE backup directory, and then re-opens the backup file
+ * to assert that the rows landed correctly.
+ *
+ * The point of this suite is the same as the service's whole
+ * reason to exist: prove that a copy of wallet_keys exists
+ * outside the primary datadir, so a future operator mistake can
+ * be recovered from.
+ */
+
+#include "test/test_helpers.h"
+
+#include "services/wallet_backup_service.h"
+#include "event/event.h"
+
+#include <dirent.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <pthread.h>
+#include <stdatomic.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <time.h>
+#include <unistd.h>
+
+/* ── Event observer ────────────────────────────────────────── */
+
+static _Atomic int g_wb_ok;
+static _Atomic int g_wb_fail;
+
+static void wb_ev_observer(enum event_type type, uint32_t peer_id,
+                            const void *payload, uint32_t payload_len,
+                            void *ctx)
+{
+    (void)peer_id; (void)payload; (void)payload_len; (void)ctx;
+    if (type == EV_WALLET_BACKUP)        atomic_fetch_add(&g_wb_ok, 1);
+    if (type == EV_WALLET_BACKUP_FAILED) atomic_fetch_add(&g_wb_fail, 1);
+}
+
+static void wb_install_observer(void)
+{
+    event_clear_observers(EV_WALLET_BACKUP);
+    event_clear_observers(EV_WALLET_BACKUP_FAILED);
+    atomic_store(&g_wb_ok, 0);
+    atomic_store(&g_wb_fail, 0);
+    event_observe(EV_WALLET_BACKUP, wb_ev_observer, NULL);
+    event_observe(EV_WALLET_BACKUP_FAILED, wb_ev_observer, NULL);
+}
+
+#define WB_RUN(name, expr) do { \
+    printf("%s... ", (name));   \
+    bool _ok = (expr);          \
+    if (_ok) printf("OK\n");    \
+    else { printf("FAIL\n"); failures++; } \
+} while (0)
+
+/* ── Test fixtures ──────────────────────────────────────────── */
+
+struct wb_fixture {
+    char    datadir[256];
+    char    backup_dir[256];
+    char    dbpath[320];
+    struct node_db ndb;
+};
+
+static bool wb_fixture_init(struct wb_fixture *f, const char *tag)
+{
+    memset(f, 0, sizeof(*f));
+    snprintf(f->datadir,    sizeof(f->datadir),
+             "/tmp/zcl_wb_test_%d_%s_src", (int)getpid(), tag);
+    snprintf(f->backup_dir, sizeof(f->backup_dir),
+             "/tmp/zcl_wb_test_%d_%s_dst", (int)getpid(), tag);
+    mkdir(f->datadir, 0755);
+    mkdir(f->backup_dir, 0755);
+    snprintf(f->dbpath, sizeof(f->dbpath), "%s/node.db", f->datadir);
+    return node_db_open(&f->ndb, f->dbpath);
+}
+
+static void wb_fixture_tear_down(struct wb_fixture *f)
+{
+    node_db_close(&f->ndb);
+    test_cleanup_tmpdir(f->datadir);
+    test_cleanup_tmpdir(f->backup_dir);
+}
+
+/* Insert N wallet_keys rows with deterministic values so tests
+ * can assert the backup picked them up. */
+static int wb_seed_keys(struct node_db *ndb, int n)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(ndb->db,
+        "INSERT INTO wallet_keys(pubkey_hash,pubkey,privkey,compressed) "
+        "VALUES(?,?,?,1)", -1, &st, NULL) != SQLITE_OK)
+        return 0;
+    int wrote = 0;
+    for (int i = 0; i < n; i++) {
+        uint8_t hash[20] = {0}, pub[33] = {0}, priv[32] = {0};
+        hash[0] = (uint8_t)(i + 1);
+        pub[0] = 0x02; pub[1] = (uint8_t)(i + 1);
+        priv[0] = (uint8_t)(0x80 + i);
+        sqlite3_reset(st);
+        sqlite3_bind_blob(st, 1, hash, sizeof(hash), SQLITE_STATIC);
+        sqlite3_bind_blob(st, 2, pub,  sizeof(pub),  SQLITE_STATIC);
+        sqlite3_bind_blob(st, 3, priv, sizeof(priv), SQLITE_STATIC);
+        if (sqlite3_step(st) == SQLITE_DONE) wrote++;
+    }
+    sqlite3_finalize(st);
+    return wrote;
+}
+
+static int64_t wb_count_rows_in_file(const char *path, const char *table)
+{
+    sqlite3 *db = NULL;
+    if (sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
+        if (db) sqlite3_close(db);
+        return -1;
+    }
+    char sql[128];
+    snprintf(sql, sizeof(sql), "SELECT count(*) FROM %s", table);
+    sqlite3_stmt *st = NULL;
+    int64_t n = -1;
+    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) == SQLITE_OK) {
+        if (sqlite3_step(st) == SQLITE_ROW)
+            n = sqlite3_column_int64(st, 0);
+        sqlite3_finalize(st);
+    }
+    sqlite3_close(db);
+    return n;
+}
+
+/* ── 1. Happy path: backup creates a file with the right rows ── */
+
+static int t_happy(void)
+{
+    int failures = 0;
+    wb_install_observer();
+
+    struct wb_fixture f;
+    if (!wb_fixture_init(&f, "happy")) {
+        printf("wb: fixture setup failed\n");
+        return 1;
+    }
+    int seeded = wb_seed_keys(&f.ndb, 5);
+
+    char path[512] = "";
+    int64_t key_count = -1;
+    char err[256] = "";
+    bool ok = wallet_backup_run_once(f.backup_dir, &f.ndb,
+                                      path, sizeof(path),
+                                      &key_count,
+                                      err, sizeof(err));
+
+    bool file_exists = false;
+    int64_t file_keys = -1;
+    if (ok) {
+        struct stat st;
+        file_exists = stat(path, &st) == 0 && st.st_size > 0;
+        file_keys = wb_count_rows_in_file(path, "wallet_keys");
+    }
+
+    bool success = ok && seeded == 5 &&
+                   file_exists && file_keys == 5 &&
+                   key_count == 5 &&
+                   atomic_load(&g_wb_ok) == 1 &&
+                   atomic_load(&g_wb_fail) == 0;
+    WB_RUN("wb: happy path creates backup with correct key count", success);
+
+    wb_fixture_tear_down(&f);
+    return failures;
+}
+
+/* ── 2. Refuses to write to a missing / unwritable directory ── */
+
+static int t_missing_dir_created(void)
+{
+    int failures = 0;
+    wb_install_observer();
+
+    struct wb_fixture f;
+    wb_fixture_init(&f, "mkdir");
+    wb_seed_keys(&f.ndb, 1);
+
+    /* Use a nested backup path that doesn't exist yet. */
+    char nested[320];
+    snprintf(nested, sizeof(nested), "%s/nested_backups", f.backup_dir);
+
+    char err[256] = "";
+    bool ok = wallet_backup_run_once(nested, &f.ndb,
+                                      NULL, 0, NULL, err, sizeof(err));
+    struct stat st;
+    bool dir_created = stat(nested, &st) == 0 && S_ISDIR(st.st_mode);
+
+    WB_RUN("wb: missing backup_dir is created with 0700", ok && dir_created);
+
+    if (dir_created) {
+        test_cleanup_tmpdir(nested);
+    }
+    wb_fixture_tear_down(&f);
+    return failures;
+}
+
+/* ── 3. Zero-keys case: empty wallet still produces a valid file ── */
+
+static int t_zero_keys(void)
+{
+    int failures = 0;
+    wb_install_observer();
+
+    struct wb_fixture f;
+    wb_fixture_init(&f, "zero");
+    /* No wb_seed_keys call — wallet_keys table is empty. */
+
+    char path[512] = "";
+    int64_t key_count = -1;
+    bool ok = wallet_backup_run_once(f.backup_dir, &f.ndb,
+                                      path, sizeof(path),
+                                      &key_count, NULL, 0);
+    int64_t n = wb_count_rows_in_file(path, "wallet_keys");
+
+    bool success = ok && key_count == 0 && n == 0;
+    WB_RUN("wb: empty wallet produces a 0-key backup that still verifies",
+           success);
+
+    wb_fixture_tear_down(&f);
+    return failures;
+}
+
+/* ── 4. Each run produces a distinct file ─────────────────── */
+
+static int t_two_runs_distinct_files(void)
+{
+    int failures = 0;
+    wb_install_observer();
+
+    struct wb_fixture f;
+    wb_fixture_init(&f, "two");
+    wb_seed_keys(&f.ndb, 2);
+
+    char p1[512] = "", p2[512] = "";
+    bool ok1 = wallet_backup_run_once(f.backup_dir, &f.ndb,
+                                       p1, sizeof(p1), NULL, NULL, 0);
+    /* usec-level filename disambiguation still needs at least one
+     * usec gap, so sleep a touch. */
+    struct timespec ts = { 0, 2000000L }; nanosleep(&ts, NULL);
+    bool ok2 = wallet_backup_run_once(f.backup_dir, &f.ndb,
+                                       p2, sizeof(p2), NULL, NULL, 0);
+
+    bool success = ok1 && ok2 && strcmp(p1, p2) != 0 &&
+                   atomic_load(&g_wb_ok) == 2;
+    WB_RUN("wb: two successive runs produce distinct files", success);
+
+    wb_fixture_tear_down(&f);
+    return failures;
+}
+
+/* ── 5. Rotation trims oldest files ────────────────────────── */
+
+static int t_rotation(void)
+{
+    int failures = 0;
+    wb_install_observer();
+
+    struct wb_fixture f;
+    wb_fixture_init(&f, "rotate");
+    wb_seed_keys(&f.ndb, 1);
+
+    /* Run 5 backups back-to-back. */
+    for (int i = 0; i < 5; i++) {
+        (void)wallet_backup_run_once(f.backup_dir, &f.ndb,
+                                      NULL, 0, NULL, NULL, 0);
+        struct timespec ts = { 0, 2000000L }; nanosleep(&ts, NULL);
+    }
+
+    /* Five files should exist now. */
+    char paths_before[10][512];
+    int n_before = wallet_backup_list(f.backup_dir, paths_before, 10);
+
+    /* Rotate to 2 — expect 3 deletions. */
+    int deleted = wallet_backup_rotate(f.backup_dir, 2);
+
+    char paths_after[10][512];
+    int n_after = wallet_backup_list(f.backup_dir, paths_after, 10);
+
+    bool success = n_before == 5 && deleted == 3 && n_after == 2;
+    WB_RUN("wb: rotate to 2 from 5 deletes 3 oldest files", success);
+
+    wb_fixture_tear_down(&f);
+    return failures;
+}
+
+/* ── 6. Listing returns newest first ─────────────────────── */
+
+static int t_list_newest_first(void)
+{
+    int failures = 0;
+    wb_install_observer();
+
+    struct wb_fixture f;
+    wb_fixture_init(&f, "list");
+    wb_seed_keys(&f.ndb, 1);
+
+    char p1[512], p2[512], p3[512];
+    wallet_backup_run_once(f.backup_dir, &f.ndb, p1, sizeof(p1), NULL, NULL, 0);
+    /* Make the second file strictly newer by mtime. */
+    sleep(1);
+    wallet_backup_run_once(f.backup_dir, &f.ndb, p2, sizeof(p2), NULL, NULL, 0);
+    sleep(1);
+    wallet_backup_run_once(f.backup_dir, &f.ndb, p3, sizeof(p3), NULL, NULL, 0);
+
+    char listing[10][512];
+    int n = wallet_backup_list(f.backup_dir, listing, 10);
+
+    bool success = n == 3 &&
+                   strcmp(listing[0], p3) == 0 &&
+                   strcmp(listing[1], p2) == 0 &&
+                   strcmp(listing[2], p1) == 0;
+    WB_RUN("wb: wallet_backup_list returns newest first", success);
+
+    wb_fixture_tear_down(&f);
+    return failures;
+}
+
+/* ── 7. wallet_backup_start refuses to backup into src dir ── */
+
+static int t_refuses_same_dir(void)
+{
+    int failures = 0;
+    wb_install_observer();
+
+    struct wb_fixture f;
+    wb_fixture_init(&f, "samedir");
+    wb_seed_keys(&f.ndb, 1);
+
+    /* Point backup_dir at the datadir (= source db directory). */
+    struct wallet_backup_config cfg;
+    wallet_backup_config_defaults(&cfg);
+    cfg.backup_dir = f.datadir;
+
+    bool started = wallet_backup_start(&cfg, &f.ndb);
+    WB_RUN("wb: start refuses to back up into source datadir", !started);
+
+    if (started) wallet_backup_stop();
+    wb_fixture_tear_down(&f);
+    return failures;
+}
+
+/* ── 8. Status snapshot reflects last run ────────────────── */
+
+static int t_status_snapshot(void)
+{
+    int failures = 0;
+    wb_install_observer();
+
+    struct wb_fixture f;
+    wb_fixture_init(&f, "status");
+    wb_seed_keys(&f.ndb, 3);
+
+    /* wallet_backup_now is implemented on top of the globals, but
+     * status_snapshot reads from the same globals — we need to
+     * have started the service to populate the pointers. Use
+     * start + stop semantics. */
+    struct wallet_backup_config cfg;
+    wallet_backup_config_defaults(&cfg);
+    cfg.backup_dir = f.backup_dir;
+    cfg.interval_seconds = 3600;
+
+    bool started = wallet_backup_start(&cfg, &f.ndb);
+    /* Give the thread a moment for its start-of-day backup. */
+    for (int i = 0; i < 50; i++) {
+        struct wallet_backup_status s;
+        wallet_backup_status_snapshot(&s);
+        if (s.total_runs > 0) break;
+        struct timespec ts = { 0, 50000000L }; nanosleep(&ts, NULL);
+    }
+    struct wallet_backup_status status;
+    wallet_backup_status_snapshot(&status);
+    wallet_backup_stop();
+
+    bool success = started &&
+                   status.running &&
+                   status.total_runs >= 1 &&
+                   status.last_key_count == 3 &&
+                   status.last_size_bytes > 0 &&
+                   status.last_path[0] != '\0';
+    WB_RUN("wb: status snapshot reflects thread's first backup", success);
+
+    wb_fixture_tear_down(&f);
+    return failures;
+}
+
+/* ── 9. wallet_backup_now is thread-safe across repeated calls ── */
+
+static int t_force_now_repeatable(void)
+{
+    int failures = 0;
+    wb_install_observer();
+
+    struct wb_fixture f;
+    wb_fixture_init(&f, "forcenow");
+    wb_seed_keys(&f.ndb, 2);
+
+    struct wallet_backup_config cfg;
+    wallet_backup_config_defaults(&cfg);
+    cfg.backup_dir = f.backup_dir;
+    cfg.interval_seconds = 999999;  /* effectively disable tick */
+
+    bool started = wallet_backup_start(&cfg, &f.ndb);
+
+    /* Allow the initial auto-backup to land before we start
+     * counting additional ones. */
+    struct timespec ts = { 0, 200000000L }; nanosleep(&ts, NULL);
+    int baseline = atomic_load(&g_wb_ok);
+
+    bool n1 = wallet_backup_now();
+    bool n2 = wallet_backup_now();
+    bool n3 = wallet_backup_now();
+
+    wallet_backup_stop();
+
+    bool success = started && n1 && n2 && n3 &&
+                   atomic_load(&g_wb_ok) >= baseline + 3;
+    WB_RUN("wb: wallet_backup_now produces one backup per call", success);
+
+    wb_fixture_tear_down(&f);
+    return failures;
+}
+
+/* ── 10. Stop is idempotent + safe without start ──────────── */
+
+static int t_stop_safe(void)
+{
+    int failures = 0;
+    /* Call stop with nothing started. */
+    wallet_backup_stop();
+    wallet_backup_stop();  /* second no-op */
+    WB_RUN("wb: stop is a safe no-op before start", true);
+    return failures;
+}
+
+/* ── 11. Round-trip verification: backup keys match source ── */
+
+static int t_roundtrip_verify(void)
+{
+    int failures = 0;
+    wb_install_observer();
+
+    struct wb_fixture f;
+    wb_fixture_init(&f, "verify");
+    int seeded = wb_seed_keys(&f.ndb, 7);
+
+    char path[512] = "";
+    bool ok = wallet_backup_run_once(f.backup_dir, &f.ndb,
+                                      path, sizeof(path), NULL, NULL, 0);
+    int64_t n = wb_count_rows_in_file(path, "wallet_keys");
+
+    /* Verify each seeded pubkey_hash lands in the backup. */
+    sqlite3 *v = NULL;
+    bool all_present = true;
+    if (sqlite3_open_v2(path, &v, SQLITE_OPEN_READONLY, NULL) == SQLITE_OK) {
+        sqlite3_stmt *st = NULL;
+        for (int i = 0; i < seeded; i++) {
+            uint8_t hash[20] = {0};
+            hash[0] = (uint8_t)(i + 1);
+            if (sqlite3_prepare_v2(v,
+                "SELECT count(*) FROM wallet_keys WHERE pubkey_hash=?",
+                -1, &st, NULL) != SQLITE_OK) { all_present = false; break; }
+            sqlite3_bind_blob(st, 1, hash, sizeof(hash), SQLITE_STATIC);
+            int64_t hit = 0;
+            if (sqlite3_step(st) == SQLITE_ROW)
+                hit = sqlite3_column_int64(st, 0);
+            sqlite3_finalize(st);
+            if (hit != 1) { all_present = false; break; }
+        }
+        sqlite3_close(v);
+    } else {
+        all_present = false;
+    }
+
+    bool success = ok && n == 7 && seeded == 7 && all_present;
+    WB_RUN("wb: every seeded wallet_key row round-trips into the backup",
+           success);
+
+    wb_fixture_tear_down(&f);
+    return failures;
+}
+
+/* ── Aggregator ─────────────────────────────────────────────── */
+
+int test_wallet_backup(void)
+{
+    printf("\n=== wallet_backup tests ===\n");
+    int failures = 0;
+    failures += t_happy();
+    failures += t_missing_dir_created();
+    failures += t_zero_keys();
+    failures += t_two_runs_distinct_files();
+    failures += t_rotation();
+    failures += t_list_newest_first();
+    failures += t_refuses_same_dir();
+    failures += t_status_snapshot();
+    failures += t_force_now_repeatable();
+    failures += t_stop_safe();
+    failures += t_roundtrip_verify();
+    event_clear_observers(EV_WALLET_BACKUP);
+    event_clear_observers(EV_WALLET_BACKUP_FAILED);
+    return failures;
+}

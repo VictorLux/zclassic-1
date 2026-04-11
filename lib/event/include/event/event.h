@@ -125,6 +125,10 @@ enum event_type {
     /* ── Block index integrity ─────────────────────── */
     EV_BLOCK_INDEX_CORRUPT,      /* payload: "verdict=NAME body_size=N ..." */
 
+    /* ── Wallet backup service ─────────────────────── */
+    EV_WALLET_BACKUP,            /* payload: "path=... bytes=N keys=N" */
+    EV_WALLET_BACKUP_FAILED,     /* payload: "path=... reason=..." */
+
     EV_NUM_TYPES                 /* sentinel — must be last */
 };
 
