@@ -5,6 +5,7 @@
 
 #include "net/onion_service.h"
 #include "net/tor_integration.h"
+#include "util/log_json.h"
 #include "controllers/blog_controller.h"
 #include "views/format_helpers.h"
 #include "util/template.h"
@@ -396,8 +397,8 @@ static void populate_directory_from_chain(sqlite3 *db)
     }
     sqlite3_finalize(ins);
 
-    printf("Directory: loaded %d .onion peers from chain\n", found);
-    fflush(stdout);
+    log_jsonf(LOG_JSON_INFO, "onion_directory_loaded",
+              "\"peers_loaded\":%d", found);
 }
 
 /* Register our own .onion address with clearnet IP if known */
@@ -853,8 +854,10 @@ void onion_service_set_address(const char *address)
                 ensure_directory_table(db);
                 register_self(db);
                 sqlite3_close(db);
-                printf("Directory: registered self as %s\n", address);
-                fflush(stdout);
+                char addr_safe[96];
+                log_json_escape(addr_safe, sizeof(addr_safe), address);
+                log_jsonf(LOG_JSON_INFO, "onion_self_registered",
+                          "\"address\":\"%s\"", addr_safe);
             }
         }
     } else {

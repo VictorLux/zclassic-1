@@ -16,6 +16,7 @@
 
 #define _POSIX_C_SOURCE 200809L
 #include "net/nat.h"
+#include "util/log_json.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -127,8 +128,9 @@ static bool natpmp_get_public_ip(const uint8_t gw[4], uint8_t ip_out[4])
 
     if (resp.opcode != 128) return false;
     memcpy(ip_out, resp.external_ip, 4);
-    printf("NAT-PMP: public IP %d.%d.%d.%d\n",
-           ip_out[0], ip_out[1], ip_out[2], ip_out[3]);
+    log_jsonf(LOG_JSON_INFO, "nat_public_ip",
+              "\"protocol\":\"natpmp\",\"ip\":\"%d.%d.%d.%d\"",
+              ip_out[0], ip_out[1], ip_out[2], ip_out[3]);
     return true;
 }
 
@@ -151,8 +153,11 @@ static bool natpmp_map_port(const uint8_t gw[4], uint16_t internal, uint16_t ext
 
     uint16_t mapped = ntohs(resp.mapping.mapped_port);
     uint32_t granted = ntohl(resp.mapping.lifetime);
-    printf("NAT-PMP: mapped %s %d → %d (lifetime %u s)\n",
-           tcp ? "TCP" : "UDP", internal, mapped, granted);
+    log_jsonf(LOG_JSON_INFO, "nat_port_mapped",
+              "\"protocol\":\"natpmp\",\"transport\":\"%s\","
+              "\"internal\":%u,\"external\":%u,\"lifetime_s\":%u",
+              tcp ? "tcp" : "udp",
+              (unsigned)internal, (unsigned)mapped, (unsigned)granted);
     return true;
 }
 
@@ -366,11 +371,21 @@ static bool upnp_add_mapping(const char *ctrl_url, uint16_t external,
 
     bool ok = (strstr(resp, "AddPortMappingResponse") != NULL) ||
               (strstr(resp, "200 OK") != NULL);
-    if (ok)
-        printf("UPnP: mapped %s %d → %s:%d (lifetime %u s)\n",
-               protocol, external, local_ip, internal, lifetime);
-    else
-        printf("UPnP: AddPortMapping failed\n");
+    if (ok) {
+        char proto_safe[8];
+        char ip_safe[64];
+        log_json_escape(proto_safe, sizeof(proto_safe), protocol);
+        log_json_escape(ip_safe, sizeof(ip_safe), local_ip);
+        log_jsonf(LOG_JSON_INFO, "nat_port_mapped",
+                  "\"protocol\":\"upnp\",\"transport\":\"%s\","
+                  "\"internal\":%u,\"external\":%u,"
+                  "\"local_ip\":\"%s\",\"lifetime_s\":%u",
+                  proto_safe, (unsigned)internal, (unsigned)external,
+                  ip_safe, (unsigned)lifetime);
+    } else {
+        log_jsonf(LOG_JSON_WARN, "nat_port_map_failed",
+                  "\"protocol\":\"upnp\"");
+    }
 
     free(resp);
     return ok;

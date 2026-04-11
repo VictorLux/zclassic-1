@@ -84,6 +84,7 @@ int main(void)
     failures += test_secrets_hygiene();
     failures += test_block_index_integrity();
     failures += test_wallet_backup();
+    failures += test_log_json();
 
     /* Spec-based user story tests */
     failures += spec_wallet_dashboard();

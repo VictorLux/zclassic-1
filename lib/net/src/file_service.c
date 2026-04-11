@@ -5,6 +5,7 @@
  * overhead visible to observers, wire-speed on gigabit links. */
 
 #include "net/file_service.h"
+#include "util/log_json.h"
 #include "crypto/sha3_crypt.h"
 #include "crypto/sha3.h"
 #include "core/random.h"
@@ -422,14 +423,14 @@ static bool fs_server_rebuild_manifest_locked(struct file_manifest *out)
 
     if (ok) {
         *out = next;
-        printf("File service: manifest ready — %u chunks, "
-               "%.1f GB (%llds to hash)\n",
-               out->num_chunks,
-               (double)out->total_bytes / (1024.0*1024.0*1024.0),
-               (long long)elapsed);
+        log_jsonf(LOG_JSON_INFO, "file_service_manifest_ready",
+                  "\"chunks\":%u,\"total_bytes\":%llu,\"hash_seconds\":%lld",
+                  out->num_chunks,
+                  (unsigned long long)out->total_bytes,
+                  (long long)elapsed);
     } else {
         memset(out, 0, sizeof(*out));
-        printf("File service: no block files for manifest\n");
+        log_jsonf(LOG_JSON_WARN, "file_service_manifest_empty", NULL);
     }
 
     return ok;
@@ -655,8 +656,9 @@ static void *fs_server_thread(void *arg)
     }
 
     listen(listen_fd, 32);
-    printf("File service listening on port %d (SHA3 quantum-secure)\n",
-           g_fs_port);
+    log_jsonf(LOG_JSON_INFO, "file_service_listening",
+              "\"port\":%d,\"transport\":\"sha3_quantum_secure\"",
+              g_fs_port);
 
     pthread_mutex_lock(&g_fs_state_mutex);
     g_fs_listen_fd = listen_fd;

@@ -6,6 +6,7 @@
 
 #include "net/net.h"
 #include "net/peer_scoring.h"
+#include "util/log_json.h"
 #include "core/hash.h"
 #include "core/random.h"
 #include "core/utiltime.h"
@@ -711,7 +712,10 @@ struct p2p_node *connect_node(struct net_manager *nm,
     if (!connect_socket_directly(&addr_connect->svc, &sock, DEFAULT_CONNECT_TIMEOUT)) {
         char addr_str[64];
         net_service_to_string(&addr_connect->svc, addr_str, sizeof(addr_str));
-        printf("connect_node: failed to connect to %s\n", addr_str);
+        char addr_safe[96];
+        log_json_escape(addr_safe, sizeof(addr_safe), addr_str);
+        log_jsonf(LOG_JSON_WARN, "peer_connect_failed",
+                  "\"addr\":\"%s\"", addr_safe);
         return NULL;
     }
 
@@ -731,7 +735,11 @@ struct p2p_node *connect_node(struct net_manager *nm,
 
     char addr_str[64];
     net_service_to_string(&addr_connect->svc, addr_str, sizeof(addr_str));
-    printf("Connected to %s\n", addr_str);
+    char addr_safe[96];
+    log_json_escape(addr_safe, sizeof(addr_safe), addr_str);
+    log_jsonf(LOG_JSON_INFO, "peer_connected",
+              "\"addr\":\"%s\",\"peer_id\":%d",
+              addr_safe, (int)node->id);
     return node;
 }
 
@@ -824,9 +832,15 @@ void peer_misbehaving(struct net_manager *nm, struct p2p_node *node,
         event_emitf(EV_PEER_BANNED, (uint32_t)node->id,
                     "score=%d %s", new_score,
                     reason ? reason : "threshold");
-        printf("Banning %s (score=%d): %s\n",
-               node->addr_name, new_score,
-               reason ? reason : "threshold reached");
+        char addr_safe[96];
+        char reason_safe[160];
+        log_json_escape(addr_safe, sizeof(addr_safe), node->addr_name);
+        log_json_escape(reason_safe, sizeof(reason_safe),
+                         reason ? reason : "threshold reached");
+        log_jsonf(LOG_JSON_WARN, "peer_banned",
+                  "\"addr\":\"%s\",\"score\":%d,\"reason\":\"%s\","
+                  "\"ban_hours\":%d",
+                  addr_safe, new_score, reason_safe, hours);
         ban_addr(nm, &node->addr.svc.addr,
                  (int64_t)hours * 60 * 60, false);
         node->disconnect = true;
