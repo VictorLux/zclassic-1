@@ -129,6 +129,11 @@ enum event_type {
     EV_WALLET_BACKUP,            /* payload: "path=... bytes=N keys=N" */
     EV_WALLET_BACKUP_FAILED,     /* payload: "path=... reason=..." */
 
+    /* ── Disk monitor ──────────────────────────────── */
+    EV_DISK_LOW,                 /* payload: "path=... free=N warn_thr=N" */
+    EV_DISK_CRITICAL,            /* payload: "path=... free=N refuse_thr=N" */
+    EV_DISK_OK,                  /* payload: "path=... free=N (recovered)"  */
+
     EV_NUM_TYPES                 /* sentinel — must be last */
 };
 

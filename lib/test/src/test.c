@@ -87,6 +87,7 @@ int main(void)
     failures += test_log_json();
     failures += test_http_middleware();
     failures += test_wallet_keystore();
+    failures += test_disk_monitor();
 
     /* Spec-based user story tests */
     failures += spec_wallet_dashboard();
