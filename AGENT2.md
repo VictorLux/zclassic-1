@@ -1,282 +1,155 @@
-# AGENT2 — Chain State & Recovery Hardening
+# AGENT2 — Chain State, Recovery & Database Hardening
 
 **Worktree:** `~/zclassic23-2`
-**Branch:** `agent2/chain-state-repo` (create from `origin/master`)
+**Workflow:** push directly to `master` after `./test_zcl` passes
 **Coordinator:** AGENT1 (main `~/zclassic23`)
-**Peer:** AGENT3 (`~/zclassic23-3`) — working on MCP/controllers, different files
+**Peer:** AGENT3 (`~/zclassic23-3`) — working on MCP/models, different files
 
 ---
 
 ## Mission
 
-Eliminate the root cause of catastrophic UTXO loss: **fragmented chain-tip state** across six independent sources of truth. Build a single-writer chain state repository and a recovery policy layer that refuses destructive operations when the blast radius is large.
+Make every destructive operation in zclassic23 **fail closed**. The 2026-04-10 incident (1.3M UTXOs wiped) happened because multiple code paths had independent authority to delete data based on inconsistent metadata. The chain_state_repository closed the chain-tip side of that hole. This plan closes the remaining holes: call-site migration, the recovery policy layer, database transaction discipline, and the boot-time integrity checks that stop the node before it can hurt itself.
 
-## Why this matters
+## Already done (don't redo)
 
-On 2026-04-10 two different boot paths wiped 1.3M UTXOs because `block_index.bin` had a stale `h=60` entry but the SQLite `utxos` table held the real data at `h=3,073,476`. The code trusted whichever metadata it happened to read first and deleted everything "above tip." AGENT1 patched the two smoking guns in `config/src/boot.c` (lines ~2010 and ~2333), but the architecture that allowed it is still there.
+- `app/services/src/chain_state_repository.{h,c}` — single-writer tip API with 9 rejection codes, 28 unit tests, concurrency coverage
+- `csr_instance()` singleton + `boot.c` bootstrap
+- `process_block.c` migrated (5 of 65 sites)
+- AGENT2.md "Current Status" reflects the migration tally
 
-There are **67 call sites across 21 files** that mutate chain-tip state (`active_chain_set_tip`, `coins_view_cache_set_best_block`, `node_db_wipe_utxos`). Any one of them can desynchronize the six sources:
+## Next wave — ordered by impact
 
-1. `block_index.bin` (in-memory + flushed)
-2. SQLite `blocks` table
-3. `coins_best_block` hash
-4. `chain_active` tip pointer
-5. `pindexBestHeader`
-6. wallet's notion of scan height
+### 1. Finish Phase 1b call-site migration (60 sites remaining)
 
-## Deliverables
+Same pattern as `process_block.c`. One commit per file. Build green after each.
 
-### Phase 1 — Chain State Repository (primary)
+**Priority order** (reordered by blast radius, not file count):
 
-Create `app/services/chain_state_repository.{h,c}` (~600 lines) with:
+| Order | File                                           | Sites | Why it matters                                                          |
+|-------|-----------------------------------------------|-------|--------------------------------------------------------------------------|
+| 1     | `app/services/src/snapshot_sync_service.c`    | 5     | The historical snapshot path that caused the 2026-04-10 wipe             |
+| 2     | `lib/validation/src/connect_block.c`           | 3     | Hot validation path; every reorg goes through here                       |
+| 3     | `app/services/src/chain_restore_service.c`     | 1     | Boot-time restore — the last thing you want to be wrong                  |
+| 4     | `config/src/boot_services.c` + `boot_index.c`  | 2 + 4 | AGENT1 shared — open a PR, I'll review                                   |
+| 5     | `lib/net/src/msgprocessor.c`                   | 2     | Net-side tip updates during sync                                          |
+| 6     | `app/controllers/src/blockchain_controller.c`  | 2     | RPC-driven state mutations                                                |
+| 7     | `app/controllers/src/sync_controller.c`        | 1     | RPC-driven                                                                |
+| 8     | `lib/coins/src/coins_view.c`                   | 2     | **Check first** — this is a lower layer CSR itself depends on. If it must bypass, document with a `/* Low-level: CSR-internal */` comment and leave it. |
+| 9     | `app/models/src/database.c` + header           | 2     | Model layer — AGENT3 may be touching this soon, coordinate via commit timing |
+| 10    | `config/src/boot.c` (27 sites)                 | 27    | **All AGENT1.** Don't touch — I'll do these in a series of review-first commits once you flag them in the appendix. |
+| 11    | Test files (5 files, 8 sites)                  | 8     | Migrate last; may need a small `test_csr_helpers`                         |
 
-```c
-/* Single entry point for any tip mutation. All 67 existing call sites
- * must go through this. Internal locks guarantee the six sources stay
- * consistent or the commit fails and NOTHING changes. */
-struct chain_state_commit {
-    struct block_index *new_tip;     /* must be in block_map */
-    struct uint256 new_coins_best;   /* must match new_tip->hash */
-    int64_t expected_utxo_count;     /* refuse if actual differs by >X% */
-    const char *reason;              /* logged, shown in events */
-};
+### 2. Recovery Policy Layer — `app/services/recovery_policy.{h,c}`
 
-enum csr_result {
-    CSR_OK,
-    CSR_REJECTED_STALE_INDEX,        /* block_index.bin disagrees with SQLite */
-    CSR_REJECTED_UTXO_DELTA_TOO_BIG, /* would delete too many rows */
-    CSR_REJECTED_MISSING_PREV,       /* new_tip->pprev not in block_map */
-    CSR_REJECTED_HASH_MISMATCH,      /* SQLite blocks.hash != new_tip->hash */
-};
-
-enum csr_result csr_commit_tip(struct chain_state_repository *csr,
-                                const struct chain_state_commit *commit);
-
-/* Read-only introspection — never mutates */
-void csr_snapshot(const struct chain_state_repository *csr,
-                   struct chain_state_view *out);
-```
-
-Requirements:
-
-- **Atomic**: the six sources are updated inside one mutex and either all succeed or none do
-- **Validated**: every commit cross-checks `block_index.bin` against the SQLite `blocks` table (this catches the h=60 vs h=3M bug)
-- **Observable**: every commit emits an event (`EV_CHAIN_TIP_COMMIT` / `EV_CHAIN_TIP_REJECTED`) with before/after heights and the reason
-- **Logged**: structured log line on every commit and every rejection
-- **Test-covered**: at least 20 tests in `lib/test/src/test_chain_state_repo.c` covering happy path, each rejection code, and concurrency
-
-Then migrate call sites in this order (small PRs, one per file):
-
-1. `lib/validation/src/chainstate.c` (1 site)
-2. `lib/validation/src/process_block.c` (5 sites)
-3. `lib/validation/src/connect_block.c` (3 sites)
-4. `app/services/src/snapshot_sync_service.c` (5 sites)
-5. `app/services/src/chain_restore_service.c` (1 site)
-6. `config/src/boot.c` (27 sites — biggest, do last)
-7. Remaining files (see `Grep` results in appendix)
-
-### Phase 2 — Recovery Policy Layer (after Phase 1 lands)
-
-Create `app/services/recovery_policy.{h,c}` (~400 lines) that gates all destructive operations:
+The chain_state_repository stops tip *updates* that are inconsistent. It does **not** stop the UTXO wipes themselves. Build the policy layer so destructive operations ask permission:
 
 ```c
 struct recovery_policy {
-    int64_t max_utxo_wipe_rows;      /* default 1000 */
-    int64_t max_block_rollback;      /* default 100 */
-    bool    require_backup_verified; /* refuse destructive ops without backup */
+    int64_t max_utxo_wipe_rows;      /* default 1000  — env ZCL_MAX_UTXO_WIPE_ROWS */
+    int64_t max_block_rollback;      /* default 100   — env ZCL_MAX_BLOCK_ROLLBACK */
+    int64_t max_header_rewind;       /* default 1000  — env ZCL_MAX_HEADER_REWIND */
+    bool    require_backup_verified; /* default false — env ZCL_REQUIRE_BACKUP_VERIFIED */
+    bool    dry_run;                 /* default false — env ZCL_DRY_RUN */
+    const char *operator_ack_file;   /* default /var/tmp/zcl-operator-ack */
 };
 
 enum policy_decision {
     POLICY_ALLOW,
     POLICY_REFUSE_TOO_LARGE,
     POLICY_REFUSE_NO_BACKUP,
-    POLICY_PROMPT_OPERATOR,  /* writes a marker file, waits for human ack */
+    POLICY_REFUSE_DRY_RUN,
+    POLICY_PROMPT_OPERATOR,  /* writes reason to operator_ack_file, waits for mtime change */
 };
 
 enum policy_decision policy_check_utxo_wipe(
     const struct recovery_policy *p,
-    int64_t proposed_row_count,
+    int64_t proposed_rows,
+    const char *reason,        /* grep-able, e.g. "boot.validate_coins_chain_agreement.reimport" */
+    struct event_bus *eb);
+
+enum policy_decision policy_check_block_rollback(
+    const struct recovery_policy *p,
+    int64_t from_height,
+    int64_t to_height,
     const char *reason,
     struct event_bus *eb);
+
+void policy_load_from_env(struct recovery_policy *p);
 ```
 
-Then move the 7 existing `node_db_wipe_utxos()` call sites in `boot.c` behind this gate. Each one must supply a reason string.
+Tests in `lib/test/src/test_recovery_policy.c` — at least 15 cases (each decision, env override, missing ack file, prompt-operator path with a fake ack file, concurrent calls).
 
-### Phase 3 — Boot Decomposition (stretch)
+Then wire it in front of the 7 `node_db_wipe_utxos()` call sites in `boot.c`. Since boot.c is AGENT1's pen, expose `policy_check_utxo_wipe()` in the header and I'll call it from my boot.c commits — your job is to build the policy module and its tests.
 
-`config/src/boot.c` is **2,624 lines**. Extract:
+### 3. Database transaction discipline — `app/models/db_txn.{h,c}`
 
-- `app/services/block_index_loader.{h,c}` — owns `block_index.bin` load/validate
-- `app/services/chain_state_validator.{h,c}` — pre-boot sanity checks
-- `app/services/utxo_recovery_service.{h,c}` — orchestrates wipe/recover decisions via `recovery_policy`
+Every destructive multi-table operation today runs as individual SQL statements. A crash mid-sequence leaves partial state. Build a lightweight transaction wrapper:
 
-Target: reduce `boot.c` to <800 lines. Do not touch boot code AGENT1 hasn't signed off on — boot is the most dangerous file in the repo.
+```c
+struct db_txn;
+
+struct db_txn *db_txn_begin(struct node_db *db, const char *label);
+bool           db_txn_commit(struct db_txn *txn);
+void           db_txn_rollback(struct db_txn *txn);  /* idempotent */
+
+/* RAII-style: if the txn is still open when the caller exits without
+ * committing, rollback and log EV_DB_TXN_LEAKED. Implement via a
+ * sentinel field + a wrapper macro. */
+#define DB_TXN_SCOPE(db, label) \
+    __attribute__((cleanup(db_txn_auto_rollback))) struct db_txn *_txn = db_txn_begin((db), (label))
+```
+
+Then wrap every destructive sequence in `snapshot_sync_service.c`, `chain_restore_service.c`, and `boot.c`'s recovery paths in a `DB_TXN_SCOPE`. One txn per logical recovery step, committed only if all cross-checks pass.
+
+Tests in `lib/test/src/test_db_txn.c` — commit, rollback, leak detection, nested (reject nesting), concurrent txns on different databases.
+
+### 4. Block-index integrity — `app/services/block_index_integrity.{h,c}`
+
+`block_index.bin` is the single file most likely to betray the node. Give it a deterministic format with self-checks:
+
+- **Magic + version + SHA3-256** over the body, verified on load
+- **Reverse cross-check**: for the declared tip hash, look it up in the SQLite `blocks` table and verify `height` matches. This is exactly the bug class that nuked the UTXOs on 2026-04-10 — the on-disk index said `h=60` but SQLite said `h=3,073,476`.
+- On mismatch, emit `EV_BLOCK_INDEX_CORRUPT` with both heights and **refuse to boot** unless `ZCL_ALLOW_CORRUPT_INDEX=1` is set. Better to fail loudly at boot than to hand a bad tip to the wipe paths.
+- **Don't auto-delete the file on corruption** — rename it to `block_index.bin.corrupt.<timestamp>` so an operator (or AGENT1) can inspect.
+
+Tests: simulate corruption in each field (magic, version, hash, tip entry), verify the refusal behavior, verify the rename-on-corrupt path.
+
+### 5. Boot decomposition (stretch, only after 1–4 land)
+
+`config/src/boot.c` is **2,640 lines**. Once the above are in place, extract these services (I'll pair with you on the boot.c edits):
+
+- `block_index_loader.{h,c}` — owns `block_index.bin` load and validation (uses #4)
+- `chain_state_validator.{h,c}` — the cross-check pass before any tip mutation
+- `utxo_recovery_service.{h,c}` — orchestrates wipe/recover decisions via `recovery_policy` (uses #2)
+
+Target: reduce `boot.c` to **<800 lines** — pure orchestration, zero business logic.
 
 ---
 
-## Coordination rules
+## Rules (unchanged)
 
-### Syncing with main
+- Rebase/pull before every session. Push directly to `master` when `./test_zcl` is green.
+- One commit per logical step. `agent2:` prefix. Clean reason strings in event emissions.
+- **Never touch** `tools/mcp_server.c`, `tools/mcp/**`, or `app/models/*` validators (AGENT3's pen).
+- **Never touch** `config/src/boot.c` unless AGENT1 has signed off (singleton bootstrap was the one exception).
+- If a migration reveals that a call site can't supply a required field, flag it in the commit message — don't fake a value.
+- Update "Current Status" each session.
 
-You work on a separate clone at `~/zclassic23-2`. Your workflow:
+## Definition of done for this wave
 
-```bash
-cd ~/zclassic23-2
-git fetch origin
-git rebase origin/master        # before starting any session
-# ... work ...
-make -j$(nproc) test_zcl && ./test_zcl   # MUST pass before push
-git push origin agent2/chain-state-repo
-```
-
-**Never force-push to `master`.** Open PRs into master or let AGENT1 merge your branch manually.
-
-### Files you own (safe to edit freely)
-
-- `app/services/chain_state_repository.{h,c}` (new)
-- `app/services/recovery_policy.{h,c}` (new)
-- `app/services/block_index_loader.{h,c}` (new, phase 3)
-- `app/services/chain_state_validator.{h,c}` (new, phase 3)
-- `app/services/utxo_recovery_service.{h,c}` (new, phase 3)
-- `lib/test/src/test_chain_state_repo.c` (new)
-- `lib/test/src/test_recovery_policy.c` (new)
-- `AGENT2.md` — update "Current Status" at the bottom each session
-
-### Files you share with AGENT1 (coordinate in commits)
-
-- `config/src/boot.c` — AGENT1 holds the pen here. Ask before editing.
-- `lib/validation/src/chainstate.c`, `process_block.c`, `connect_block.c` — migrate these *one at a time*, each in its own commit
-
-### Files AGENT3 owns — DO NOT TOUCH
-
-- `tools/mcp_server.c`
-- `app/controllers/**`
-- `app/models/**`
-
-### Commit discipline
-
-- **One commit per logical step.** Migrating a call site is one commit. Adding the service is another.
-- **Every commit must build and pass `./test_zcl`.** No exceptions.
-- **Commit messages start with `agent2:`** — e.g., `agent2: add chain_state_repository service`
-- **Never commit generated binaries** (`zclassic23`, `test_zcl`, `speedrun`, `export_snapshot`).
-
-### When you're blocked
-
-Write the blocker into the "Current Status" section of this file and push. AGENT1 will pick it up on the next coordination pass.
-
----
-
-## Definition of done for Phase 1
-
-- [ ] `chain_state_repository.{h,c}` exists, compiles, has 20+ passing tests
-- [ ] All 67 call sites migrated (track in a checklist below)
-- [ ] `./test_zcl` passes (1500+ tests, 0 failures)
-- [ ] `make deploy` brings up a node that survives 10 consecutive reboots with no UTXO loss
-- [ ] Events `EV_CHAIN_TIP_COMMIT` and `EV_CHAIN_TIP_REJECTED` appear in `zcl_events` output
-- [ ] New MCP view of chain-state health (coordinate with AGENT3 for the MCP tool name)
+- [ ] All 65 chain-tip call sites migrated through `csr_commit_tip()`
+- [ ] `recovery_policy` service + tests, 7 wipe sites behind the gate
+- [ ] `db_txn` wrapper + all destructive recovery paths inside a scope
+- [ ] `block_index_integrity` validation on load + refusal-to-boot on mismatch
+- [ ] `./test_zcl` still green — now with 28 + new policy/txn/integrity tests
+- [ ] A deliberately-corrupted `block_index.bin` causes a clean boot refusal, not a UTXO wipe
 
 ---
 
 ## Current Status
 
-*(Update this every session with what you did and what's next. Keep it short.)*
+*(Update each session. Keep it short.)*
 
-- **2026-04-11** — Plan created by AGENT1. AGENT2 has not started.
-- **2026-04-11** — Phase 1 service landed. `app/services/{include/services,src}/chain_state_repository.{h,c}` provides the single-writer `csr_commit_tip()` API with full validation: NULL/init checks, block_map cross-check, pprev presence, SQLite hash/height agreement, stale-index gap guard, expected-utxo drift, orphan-rows rollback guard. `csr_snapshot()` exposes a read-only view. Both `EV_CHAIN_TIP_COMMIT` and `EV_CHAIN_TIP_REJECTED` events are emitted on every outcome and registered in `event.c`'s name table. 28 unit tests in `lib/test/src/test_chain_state_repo.c` cover happy path, every rejection code, observability, tunables, and a 4-thread × 100-iter concurrency stress; full `./test_zcl` is green (`ALL TESTS PASSED (0 failures)`). **Next**: Phase 1 call-site migration — start with `lib/validation/src/chainstate.c` (1 site), then `process_block.c` (5 sites). 67 sites remain.
-- **2026-04-11 (AGENT1 COORDINATOR)** — **Phase 1 service MERGED to master** at commit `15bb25ec1`. `./test_zcl` green on merged master. Proceed with Phase 1b below, then Phase 2 (recovery_policy).
-- **2026-04-11 (AGENT2, Phase 1b kickoff)** — Singleton + first real call-site migration landed on `agent2/chain-state-repo`:
-  1. `csr_instance()` singleton with pthread_once-owned mutex, `csr_init`/`csr_free` now detect and preserve the singleton.
-  2. `boot.c` wires the singleton immediately after `g_coins_tip` is created (the one coordinator-approved boot.c edit).
-  3. `lib/validation/src/process_block.c` — all 5 raw mutation sites replaced with `csr_commit_tip()` via a local `process_block_commit_tip()` helper. Reason strings are grep-able and unique: `process_block.update_tip`, `process_block.connect_tip.genesis_no_disk`, `process_block.recover_from_disconnect_failure`, `process_block.activate_best_chain.no_fork_reset`. Helper falls back to raw setters only on `CSR_REJECTED_NOT_INITIALIZED` (tests that bypass boot); all other rejections log loudly via stderr in addition to the `EV_CHAIN_TIP_REJECTED` event.
-  4. **`lib/validation/src/chainstate.c` correction**: the appendix "1 site" was a false match on the `active_chain_set_tip` function *definition*. chainstate.c is the lower-layer primitive CSR itself calls — no migration needed. The header counter entry is likewise a false hit on the declaration. Net change to the 67-site counter: −2 (now 65 real sites, of which 5 are migrated this session, leaving 60).
-  5. Full `./test_zcl` green on every intermediate commit. Three new singleton tests in `test_chain_state_repo.c` cover identity, the pre-wire rejection window, and a round-trip `csr_init`/commit/`csr_free` on the singleton.
-  **Next**: `connect_block.c` (3 sites — all `coins_view_cache_set_best_block`), then `snapshot_sync_service.c` (5 sites — historically the snapshot path that caused the 2026-04-10 wipe), then `chain_restore_service.c` (1 site).
-
----
-
-## COORDINATOR DIRECTION — Phase 1b & Phase 2
-
-Phase 1 (the service) landed cleanly. Excellent work on the validation surface. Here's how to proceed:
-
-### Phase 1b — Call-site migration
-
-**Singleton bootstrap.** Before you can migrate call sites, you need one globally-wired `chain_state_repository` that the rest of the code can reach. Do it in two steps:
-
-1. Add `struct chain_state_repository *csr_instance(void);` to the header and define a process-lifetime singleton in `chain_state_repository.c`. Initialize it lazily on first access (thread-safe via `pthread_once`) using pointers pulled from `main_state` and `node_db` globals.
-2. In `config/src/boot.c` (I'll merge your patch here — open a PR titled `agent2: bootstrap csr singleton in boot.c`), call `csr_init(csr_instance(), &g_block_map, &g_chain_active, &g_pindex_best_header, g_coins_tip, &g_node_db, NULL)` immediately after `g_coins_tip` is created. **This is the ONE boot.c change I'll take without discussion — everything else in boot.c, ask me first.**
-
-**Migration order (unchanged from plan, one commit per file):**
-
-1. `lib/validation/src/chainstate.c` (1 site) — simplest, prove the pattern
-2. `lib/validation/src/process_block.c` (5 sites) — hot path, test coverage matters
-3. `lib/validation/src/connect_block.c` (3 sites)
-4. `app/services/src/snapshot_sync_service.c` (5 sites) — the snapshot path that historically caused wipes
-5. `app/services/src/chain_restore_service.c` (1 site)
-6. `lib/net/src/msgprocessor.c` (2 sites)
-7. `app/controllers/src/blockchain_controller.c` (2 sites)
-8. `app/controllers/src/sync_controller.c` (1 site)
-9. `lib/coins/src/coins_view.c` (2 sites) — check first whether these should migrate; `coins_view` is a lower layer and may legitimately need a raw setter for performance. If so, document it with `/* Low-level: bypasses csr — used only by csr itself */` and leave it alone.
-10. `config/src/boot_services.c` (2), `config/src/boot_index.c` (4) — these are AGENT1-shared. Open a PR, I'll review and merge.
-11. `config/src/boot.c` (27 sites) — **all AGENT1**. Don't touch. When the other sites are migrated, I'll do these.
-12. Test files (`test_sync_service.c`, `test_coins.c`, `test_chain.c`, `test_validation.c`, `test_node_health_service.c`) — migrate last. These may need test helpers; build a small `test_csr_helpers` if useful.
-
-**Migration pattern:** replace each legacy setter call with a `csr_commit_tip()` call supplying a commit struct. Use `reason` strings that are grep-able and unique per call site — e.g., `"process_block.connect_tip"`, `"snapshot.apply_anchor"`. This gives us provenance in the event log.
-
-**If a migration reveals that a call site can't supply one of the required fields** (e.g., doesn't know the expected UTXO count), flag it in your commit message instead of faking a value. We'll decide together whether to extend the API or gather the missing info upstream.
-
-### Phase 2 — Recovery Policy Layer
-
-After Phase 1b is done (or when you hit the boot.c sites you can't touch), start Phase 2:
-
-Create `app/services/recovery_policy.{h,c}` exactly as specified in the original plan. Hook it in front of:
-
-- `node_db_wipe_utxos()` — 7 call sites in boot.c. Since I own those, expose a `policy_check_utxo_wipe()` that I can call from my boot.c commits.
-- Any future destructive path that touches >100 rows.
-
-**Tunables should come from environment variables** so a recovery operator can raise the cap without rebuilding:
-- `ZCL_MAX_UTXO_WIPE_ROWS` (default 1000)
-- `ZCL_MAX_BLOCK_ROLLBACK` (default 100)
-- `ZCL_REQUIRE_BACKUP_VERIFIED` (default 0)
-
-Add `lib/test/src/test_recovery_policy.c` with at least 10 tests.
-
-### Rules of engagement
-
-- **Rebase on `origin/master` before every session.** Both agents' work now lands on master, so you'll pick up AGENT3's router work too.
-- **Every commit must build and `./test_zcl` must pass.** No exceptions.
-- **When you finish a chunk, push the branch and update this Current Status section.** I'll review and merge.
-- **Boot.c belongs to me.** If a migration or policy hook would require touching boot.c, document what you want in the commit message and I'll handle the boot.c side in a follow-up.
-- **If you're blocked, push a WIP commit with `agent2: WIP blocked on X` and flag it in Current Status.** I'll unblock you.
-
----
-
-## Appendix — call sites to migrate
-
-```
-app/models/include/models/database.h       1
-app/models/src/database.c                   1
-app/services/src/snapshot_sync_service.c    5
-app/services/src/chain_restore_service.c    1
-config/src/boot_services.c                  2
-config/src/boot_index.c                     4
-config/src/boot.c                          27
-app/controllers/src/blockchain_controller.c 2
-app/controllers/src/sync_controller.c       1
-lib/coins/include/coins/coins_view.h        1
-lib/coins/src/coins_view.c                  2
-lib/test/src/test_sync_service.c            3
-lib/net/src/msgprocessor.c                  2
-lib/test/src/test_coins.c                   2
-lib/test/src/test_chain.c                   1
-lib/test/src/test_validation.c              1
-lib/test/src/test_node_health_service.c     1
-lib/validation/include/validation/chainstate.h   1
-lib/validation/src/chainstate.c             1
-lib/validation/src/process_block.c          5
-lib/validation/src/connect_block.c          3
-                                           ──
-                                           67
-```
-
-Grep pattern used:
-`active_chain_set_tip|coins_view_cache_set_best_block|node_db_wipe_utxos`
+- **2026-04-11 wave 1** — Phase 1 service + singleton + boot bootstrap + `process_block.c` (5/65 sites) + 3 singleton tests. Site count corrected to 65 real sites (2 false hits in appendix).
+- **2026-04-11 wave 2** — **New plan, five deliverables above.** Start with priority 1: `snapshot_sync_service.c` (5 sites). That's the path the 2026-04-10 incident ran through — migrating it is the highest ROI move on the list.
