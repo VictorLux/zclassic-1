@@ -8,10 +8,12 @@
 
 #include "json/json.h"
 #include "mcp/metrics.h"
+#include "net/onion_service.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #define DEFINE_PT(name, rpc)                                                   \
     static int name(const struct mcp_request *req, struct mcp_response *res)  \
@@ -68,6 +70,69 @@ static int h_zcl_peer_report(const struct mcp_request *req,
     return res->body ? 0 : -1;
 }
 
+/* zcl_onion_health — probe the in-process onion service by calling
+ * `onion_service_handle_request()` directly and measuring the
+ * response size + wall-clock latency.  Synchronous: one call per
+ * invocation.  Bypasses Tor and the SOCKS layer entirely (dynhost
+ * has no SOCKS per the project memory), so this is a cheap
+ * liveness check, not a full end-to-end test — the latter would
+ * require an actual Tor circuit roundtrip and can't run from a
+ * trusted-peer tool.
+ *
+ * Returns:
+ *   { onion_address, path, ok, latency_ms, response_bytes, error? }
+ * When onion service is not started:
+ *   { ok: false, error: "not_started" }
+ */
+static int h_zcl_onion_health(const struct mcp_request *req,
+                               struct mcp_response *res)
+{
+    const struct json_value *pv = json_get(req->args, "path");
+    const char *probe_path = pv ? json_get_str(pv) : "/directory.json";
+    if (!probe_path || !*probe_path) probe_path = "/directory.json";
+
+    const char *addr = onion_service_get_address();
+
+    char *body = malloc(512);
+    if (!body) return -1;
+
+    if (!addr) {
+        snprintf(body, 512,
+            "{\"ok\":false,\"error\":\"not_started\","
+             "\"onion_address\":null,\"path\":\"%s\","
+             "\"latency_ms\":0,\"response_bytes\":0}",
+            probe_path);
+        res->body = body;
+        return 0;
+    }
+
+    struct timespec t0, t1;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+
+    static uint8_t resp[65536];
+    size_t n = onion_service_handle_request("GET", probe_path, NULL, 0,
+                                              resp, sizeof(resp));
+
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    int64_t latency_us =
+        (t1.tv_sec - t0.tv_sec) * 1000000LL +
+        (t1.tv_nsec - t0.tv_nsec) / 1000LL;
+    int64_t latency_ms = latency_us / 1000;
+
+    bool ok = (n > 0);
+
+    snprintf(body, 512,
+        "{\"ok\":%s,\"onion_address\":\"%s\",\"path\":\"%s\","
+         "\"latency_ms\":%lld,\"response_bytes\":%zu%s}",
+        ok ? "true" : "false",
+        addr, probe_path,
+        (long long)latency_ms, n,
+        ok ? "" : ",\"error\":\"empty_response\"");
+
+    res->body = body;
+    return 0;
+}
+
 static const struct mcp_param_spec p_addnode[] = {
     { "addr",   MCP_PARAM_STR, true,  "IP:port",
       0, 0, 1, 128, NULL, NULL },
@@ -77,6 +142,11 @@ static const struct mcp_param_spec p_addnode[] = {
 static const struct mcp_param_spec p_pingpeer[] = {
     { "peer_id", MCP_PARAM_INT, true, "Peer ID from zcl_peers",
       0, 1000000, 0, 0, NULL, NULL },
+};
+static const struct mcp_param_spec p_onion_health[] = {
+    { "path", MCP_PARAM_STR, false,
+      "URL path to probe (default /directory.json)",
+      0, 0, 0, 256, NULL, "\"/directory.json\"" },
 };
 
 static const struct mcp_tool_route k_routes[] = {
@@ -105,6 +175,13 @@ static const struct mcp_tool_route k_routes[] = {
       "Peer scoring report: live ban threshold/hours/decay config plus "
       "per-kind offence counts and total bans observed since boot.",
       NULL, 0, h_zcl_peer_report },
+    { "zcl_onion_health", "net",
+      "Probe the in-process onion service via direct function call "
+      "(no Tor circuit, no SOCKS). Returns {ok, onion_address, path, "
+      "latency_ms, response_bytes}. Liveness check, not an e2e reach "
+      "test.",
+      p_onion_health, sizeof(p_onion_health) / sizeof(p_onion_health[0]),
+      h_zcl_onion_health },
 };
 
 void mcp_register_net(void)

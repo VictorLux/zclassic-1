@@ -40,7 +40,7 @@
 - [ ] **#3 WebSocket event stream** — `lib/net/ws_events.{h,c}` with `/events?domain=…` filter, per-client ring buffer, overflow frame, heartbeat, max 100 subscribers.
 - [ ] **#4 OpenTelemetry-compat tracing** — `lib/util/trace.{h,c}` + 5 migrated hot paths (MCP dispatch, HTTP RPC dispatch, `connect_tip`, `csr_commit_tip`, `snapsync_begin_receive`).
 - [ ] **#6 peer bandwidth quotas** — `lib/net/peer_bandwidth.{h,c}` with token buckets per direction, localhost exemption, `EV_PEER_THROTTLED`.
-- [ ] **#7 onion service health probe** — `zcl_onion_health` tool + background pthread using direct in-process `onion_service_handle_request()`.
+- [x] **#7 onion service health probe** — `zcl_onion_health` MCP tool in `net_controller.c` does a **synchronous** probe via direct `onion_service_handle_request("GET", path, ...)` (no background pthread — one call per invocation, measures wall-clock latency, returns `{ok, onion_address, path, latency_ms, response_bytes}`). Bypasses Tor/SOCKS entirely per the dynhost architecture. Default path `/directory.json`; operator can override. When onion service isn't started, returns `{ok: false, error: "not_started"}` rather than crashing. Surface: 74 tools (net 8 → 9).
 - [x] **#8 `make coverage`** — 54c434730. Per-source object tree under `build/cov/` to dodge `.gcda` basename collisions (lib/net vs lib/rpc `protocol.c`, etc.), `-O1`+`-DCOVERAGE_BUILD`, `cov_flush.c` SIGSEGV→`__gcov_dump` handler, lcov/gcovr/plain-gcov render fallback. Baseline: **26.0% line coverage** (298 TUs, 35,535/136,714 lines). test_json segfault under gcov logged as `FUZZER_FINDINGS.md` #2.
 
 ### New for wave 6
