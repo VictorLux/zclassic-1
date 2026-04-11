@@ -5,6 +5,8 @@
 **Coordinator:** AGENT1 (main `~/zclassic23`)
 **Peer:** AGENT3 (`~/zclassic23-3`) — RPC/wallet encryption/tracing, different files
 
+> **⇒ Active plan: [`WAVE_6.md`](./WAVE_6.md).** The priority queue, carry-over, and new items are there now. When wave 6 clears, pull from [`BACKLOG.md`](./BACKLOG.md). AGENT1 no longer edits the `Current Status` section below — it is yours.
+
 ---
 
 ## Mission
