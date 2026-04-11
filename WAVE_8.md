@@ -73,11 +73,20 @@ These are mine. Listing here for transparency so AGENT2/AGENT3 can see what's co
 - [x] **Auto-generated `MCP_REFERENCE.md`** — `make docs-mcp` pipes `./zclassic23 -mcp` `tools/list` through `tools/gen_mcp_reference.py` (pure Python stdlib) → grouped by domain + GFM parameter tables. `make docs-mcp-check` for CI drift detection. Initial reference at 586 lines. Pushed at `7d1d966d3`.
 - [ ] **HTTP RPC error envelope audit** — today errors are `{error: {code, message}}`. Audit every RPC response path, ensure consistent shape, add missing fields (method, request_id). One commit per category (wallet, chain, net, ops).
 
+### Promoted from backlog (wave 8 additions)
+
+- [ ] **`make ci` target** — single command that runs `make test`, `make fuzz-ci`, `make coverage`. Fail-fast on first error. Add to `Makefile`.
+- [ ] **RPC cookie rotation** — cookies are generated per-boot; add timed rotation (default 24h, env `ZCL_RPC_COOKIE_ROTATE_SEC`). Existing connections stay valid until next rotation window.
+- [ ] **Sapling key scrubbing** — audit every code path that touches spending keys (`sk`, `ask`, `nsk`, `ovk`). `explicit_bzero` on free/scope-exit. Write `test_key_scrub.c` that verifies freed key memory is zeroed.
+- [ ] **Watch-only address support** — `zcl_importaddress` RPC + MCP tool. Track balance and transactions for addresses without private keys. No spending capability.
+- [ ] **MCP replay recorder** — `tools/mcp/replay.{h,c}` — ring buffer of last 100 MCP requests+responses. `zcl_replay_dump` tool to retrieve. `zcl_replay_exec` to replay one recorded request.
+- [ ] **Dockerfile + docker-compose** — reproducible dev environment. `Dockerfile` builds from source, `docker-compose.yml` with node + test runner services.
+- [ ] **Architecture diagrams** — `docs/ARCHITECTURE_DIAGRAMS.md` with ASCII/mermaid diagrams: boot sequence, P2P message flow, block validation pipeline, wallet tx lifecycle, MCP request routing.
+
 ### Stretch
 
 - [ ] **gRPC alternative interface**.
 - [ ] **WebAuthn/passkey auth**.
-- [ ] **MCP replay recorder** (deferred from wave 7).
 - [ ] **Continue tool backfill** to 85+ RPC parity.
 
 ---
