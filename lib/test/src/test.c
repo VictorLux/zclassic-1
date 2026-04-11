@@ -92,6 +92,7 @@ int main(void)
     failures += test_db_maintenance();
     failures += test_mempool_limits();
     failures += test_addrman_integrity();
+    failures += test_ibd_throttle();
 
     /* Spec-based user story tests */
     failures += spec_wallet_dashboard();

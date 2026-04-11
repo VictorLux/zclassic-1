@@ -149,6 +149,9 @@ enum event_type {
     /* ── Peer bandwidth (wave 6 #6) ────────────────── */
     EV_PEER_THROTTLED,           /* payload: "peer=N dir=up|down bytes=N bucket=N/N" */
 
+    /* ── IBD throttle ──────────────────────────────── */
+    EV_IBD_THROTTLED,            /* payload: "blocked=N total_wait_ms=N rate=N burst=N" */
+
     EV_NUM_TYPES                 /* sentinel — must be last */
 };
 

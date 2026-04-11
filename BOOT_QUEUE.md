@@ -35,6 +35,15 @@ here. AGENT1 batch-applies the queue once per wave cycle.
       ZCL_DISK_WARN_BYTES / ZCL_DISK_REFUSE_BYTES / ZCL_DISK_POLL.
       Read `disk_monitor_is_critical()` in: mempool accept path,
       process_block write path, wallet_backup_run_once (skip backup if critical).
+- [ ] agent2: wire `ibd_throttle_start(NULL)` early in boot (wave 6)
+      Location: after datadir resolution, before any sync/peer code.
+      `NULL` tells the service to read `ZCL_IBD_BLOCKS_PER_SEC` /
+      `ZCL_IBD_BURST` from env with defaults 500/50. Pair with
+      `ibd_throttle_stop()` in the shutdown path. Hot-path call:
+      `ibd_throttle_acquire()` in `process_block.c` immediately
+      before the `update_coins`/commit path (just before taking
+      the DB write lock on the tip commit). Pass-through when
+      not running so operators can disable entirely with no env.
 - [ ] agent2: wire `mempool_limits_start(g_mempool, &g_mempool_limits_cfg)` (wave 6 #6)
       Location: after `tx_mempool_init` on the global mempool.
       Default cfg: `mempool_limits_config_defaults(&g_mempool_limits_cfg)`
