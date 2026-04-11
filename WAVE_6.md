@@ -41,7 +41,7 @@
 - [ ] **#4 OpenTelemetry-compat tracing** — `lib/util/trace.{h,c}` + 5 migrated hot paths (MCP dispatch, HTTP RPC dispatch, `connect_tip`, `csr_commit_tip`, `snapsync_begin_receive`).
 - [ ] **#6 peer bandwidth quotas** — `lib/net/peer_bandwidth.{h,c}` with token buckets per direction, localhost exemption, `EV_PEER_THROTTLED`.
 - [ ] **#7 onion service health probe** — `zcl_onion_health` tool + background pthread using direct in-process `onion_service_handle_request()`.
-- [ ] **#8 `make coverage`** — gcov + lcov, post baseline percentage in Current Status.
+- [x] **#8 `make coverage`** — 54c434730. Per-source object tree under `build/cov/` to dodge `.gcda` basename collisions (lib/net vs lib/rpc `protocol.c`, etc.), `-O1`+`-DCOVERAGE_BUILD`, `cov_flush.c` SIGSEGV→`__gcov_dump` handler, lcov/gcovr/plain-gcov render fallback. Baseline: **26.0% line coverage** (298 TUs, 35,535/136,714 lines). test_json segfault under gcov logged as `FUZZER_FINDINGS.md` #2.
 
 ### New for wave 6
 
