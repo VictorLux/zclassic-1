@@ -1,149 +1,145 @@
-# AGENT2 — Chain State, Recovery & Database Hardening
+# AGENT2 — Disaster Recovery, Fuzz Testing & Boot Decomposition
 
 **Worktree:** `~/zclassic23-2`
 **Workflow:** push directly to `master` after `./test_zcl` passes
 **Coordinator:** AGENT1 (main `~/zclassic23`)
-**Peer:** AGENT3 (`~/zclassic23-3`) — working on MCP/models, different files
+**Peer:** AGENT3 (`~/zclassic23-3`) — MCP/security/observability, different files
 
 ---
 
 ## Mission
 
-Make every destructive operation in zclassic23 **fail closed**. The 2026-04-10 incident (1.3M UTXOs wiped) happened because multiple code paths had independent authority to delete data based on inconsistent metadata. The chain_state_repository closed the chain-tip side of that hole. This plan closes the remaining holes: call-site migration, the recovery policy layer, database transaction discipline, and the boot-time integrity checks that stop the node before it can hurt itself.
+The safety rails are now in place — `chain_state_repository` validates tip mutations, `recovery_policy` caps destructive operations, `db_txn` gives scoped transactions, the validator registry fails bad rows. **Wave 3 proves the rails actually work under stress.** Kill the node at random points during sync and see if it recovers. Throw garbage at the block parser until something crashes. Pull the 2,640-line `boot.c` apart so it stops being a landmine.
 
 ## Already done (don't redo)
 
-- `app/services/src/chain_state_repository.{h,c}` — single-writer tip API with 9 rejection codes, 28 unit tests, concurrency coverage
-- `csr_instance()` singleton + `boot.c` bootstrap
-- `process_block.c` migrated (5 of 65 sites)
-- AGENT2.md "Current Status" reflects the migration tally
+- `chain_state_repository` — 9 CSR call sites migrated, rejection codes cover stale index + UTXO drift
+- `recovery_policy` — env tunables, 4 wipe sites gated (3 in snapshot_sync, 1 in sync_controller)
+- `db_txn` — RAII scope wrapper, 5 events, 14 tests. **Still unwired in production paths.**
+- `process_block.c` (5 sites), `snapshot_sync_service.c` (2 tip sites + 3 wipe gates), `chain_restore_service.c` (1 site), `msgprocessor.c` (1 site)
 
-## Next wave — ordered by impact
+## Wave 3 — ordered by impact
 
-### 1. Finish Phase 1b call-site migration (60 sites remaining)
+### 1. Wire `db_txn` into destructive recovery paths (carry-over)
 
-Same pattern as `process_block.c`. One commit per file. Build green after each.
+The wrapper is sitting unused. Start here — it's small, high-impact, and unblocks everything else.
 
-**Priority order** (reordered by blast radius, not file count):
+**Target paths** (each gets one `DB_TXN_SCOPE` wrapping the destructive sequence):
 
-| Order | File                                           | Sites | Why it matters                                                          |
-|-------|-----------------------------------------------|-------|--------------------------------------------------------------------------|
-| 1     | `app/services/src/snapshot_sync_service.c`    | 5     | The historical snapshot path that caused the 2026-04-10 wipe             |
-| 2     | `lib/validation/src/connect_block.c`           | 3     | Hot validation path; every reorg goes through here                       |
-| 3     | `app/services/src/chain_restore_service.c`     | 1     | Boot-time restore — the last thing you want to be wrong                  |
-| 4     | `config/src/boot_services.c` + `boot_index.c`  | 2 + 4 | AGENT1 shared — open a PR, I'll review                                   |
-| 5     | `lib/net/src/msgprocessor.c`                   | 2     | Net-side tip updates during sync                                          |
-| 6     | `app/controllers/src/blockchain_controller.c`  | 2     | RPC-driven state mutations                                                |
-| 7     | `app/controllers/src/sync_controller.c`        | 1     | RPC-driven                                                                |
-| 8     | `lib/coins/src/coins_view.c`                   | 2     | **Check first** — this is a lower layer CSR itself depends on. If it must bypass, document with a `/* Low-level: CSR-internal */` comment and leave it. |
-| 9     | `app/models/src/database.c` + header           | 2     | Model layer — AGENT3 may be touching this soon, coordinate via commit timing |
-| 10    | `config/src/boot.c` (27 sites)                 | 27    | **All AGENT1.** Don't touch — I'll do these in a series of review-first commits once you flag them in the appendix. |
-| 11    | Test files (5 files, 8 sites)                  | 8     | Migrate last; may need a small `test_csr_helpers`                         |
+- `app/services/src/snapshot_sync_service.c::snapsync_begin_receive` — drop-utxos + seed-chain writes must be atomic. Label: `"snapsync.begin_receive"`.
+- `app/services/src/snapshot_sync_service.c::snapsync_finalize` — final UTXO batch writes + commitment update. Label: `"snapsync.finalize"`.
+- `app/services/src/chain_restore_service.c::chain_restore_execute` — tip + header rewrite. Label: `"chain_restore.execute"`.
+- `app/controllers/src/sync_controller.c::import_utxos_reimport` — the path gated by `policy_check_utxo_wipe`. Label: `"sync_controller.import_utxos_reimport"`.
 
-### 2. Recovery Policy Layer — `app/services/recovery_policy.{h,c}`
+For each: commit on success; let the cleanup handler roll back on any error path. Verify via a new test that an induced mid-sequence failure rolls back cleanly (write to an in-memory sqlite, abort halfway, assert no partial rows).
 
-The chain_state_repository stops tip *updates* that are inconsistent. It does **not** stop the UTXO wipes themselves. Build the policy layer so destructive operations ask permission:
+### 2. Block-index integrity — `app/services/block_index_integrity.{h,c}` (carry-over, critical)
+
+This is the single largest remaining gap in boot-time safety. `block_index.bin` can still silently disagree with SQLite, and that's exactly what caused the 2026-04-10 incident.
+
+**Format** (use a sidecar `block_index.bin.sha3` for backward compat):
 
 ```c
-struct recovery_policy {
-    int64_t max_utxo_wipe_rows;      /* default 1000  — env ZCL_MAX_UTXO_WIPE_ROWS */
-    int64_t max_block_rollback;      /* default 100   — env ZCL_MAX_BLOCK_ROLLBACK */
-    int64_t max_header_rewind;       /* default 1000  — env ZCL_MAX_HEADER_REWIND */
-    bool    require_backup_verified; /* default false — env ZCL_REQUIRE_BACKUP_VERIFIED */
-    bool    dry_run;                 /* default false — env ZCL_DRY_RUN */
-    const char *operator_ack_file;   /* default /var/tmp/zcl-operator-ack */
+/* 48 bytes at the start of block_index.bin.sha3: */
+struct block_index_sidecar {
+    uint8_t  magic[4];         /* "BIIX" */
+    uint32_t version;          /* 1 */
+    uint64_t body_size;        /* size of block_index.bin at write time */
+    uint8_t  body_sha3[32];    /* SHA3-256 of block_index.bin contents */
 };
 
-enum policy_decision {
-    POLICY_ALLOW,
-    POLICY_REFUSE_TOO_LARGE,
-    POLICY_REFUSE_NO_BACKUP,
-    POLICY_REFUSE_DRY_RUN,
-    POLICY_PROMPT_OPERATOR,  /* writes reason to operator_ack_file, waits for mtime change */
+enum bii_verdict {
+    BII_OK,
+    BII_SIDECAR_MISSING,       /* first-run after upgrade — warn, accept */
+    BII_SIDECAR_STALE,         /* body_size differs */
+    BII_HASH_MISMATCH,         /* corruption or truncation */
+    BII_TIP_HEIGHT_MISMATCH,   /* block_map tip hash → SQLite height disagrees */
+    BII_TIP_MISSING_IN_SQL,    /* block_map tip hash not in SQLite `blocks` */
 };
 
-enum policy_decision policy_check_utxo_wipe(
-    const struct recovery_policy *p,
-    int64_t proposed_rows,
-    const char *reason,        /* grep-able, e.g. "boot.validate_coins_chain_agreement.reimport" */
-    struct event_bus *eb);
+enum bii_verdict bii_verify(const char *datadir, struct node_db *db,
+                             const struct block_index *declared_tip,
+                             char *err_out, size_t err_cap);
 
-enum policy_decision policy_check_block_rollback(
-    const struct recovery_policy *p,
-    int64_t from_height,
-    int64_t to_height,
-    const char *reason,
-    struct event_bus *eb);
-
-void policy_load_from_env(struct recovery_policy *p);
+bool bii_write_sidecar(const char *datadir);
+void bii_quarantine_corrupt(const char *datadir, enum bii_verdict v);
 ```
 
-Tests in `lib/test/src/test_recovery_policy.c` — at least 15 cases (each decision, env override, missing ack file, prompt-operator path with a fake ack file, concurrent calls).
+**Quarantine behavior**: on `BII_HASH_MISMATCH` or `BII_TIP_*_MISMATCH`, rename both files to `block_index.bin.corrupt.<unix_ts>` and `block_index.bin.sha3.corrupt.<unix_ts>` — **do not delete**. Emit `EV_BLOCK_INDEX_CORRUPT` with the verdict and heights.
 
-Then wire it in front of the 7 `node_db_wipe_utxos()` call sites in `boot.c`. Since boot.c is AGENT1's pen, expose `policy_check_utxo_wipe()` in the header and I'll call it from my boot.c commits — your job is to build the policy module and its tests.
+**Boot behavior**: refuse to boot unless `ZCL_ALLOW_CORRUPT_INDEX=1` is set. Better to fail loudly than to hand a stale tip to code that can wipe UTXOs.
 
-### 3. Database transaction discipline — `app/models/db_txn.{h,c}`
+Tests: `lib/test/src/test_block_index_integrity.c` — simulate each verdict (missing, stale size, hash flip, height mismatch, SQLite-missing), verify quarantine rename, verify refuse-to-boot.
 
-Every destructive multi-table operation today runs as individual SQL statements. A crash mid-sequence leaves partial state. Build a lightweight transaction wrapper:
+**Boot.c wiring**: expose `bii_verify()` in the header. I'll call it from `boot.c` in a follow-up commit — you build the service + tests only.
 
-```c
-struct db_txn;
+### 3. Crash recovery test harness — `tools/crash_recovery_test.c`
 
-struct db_txn *db_txn_begin(struct node_db *db, const char *label);
-bool           db_txn_commit(struct db_txn *txn);
-void           db_txn_rollback(struct db_txn *txn);  /* idempotent */
+The recovery policy, db_txn, and CSR are all defensive mechanisms we *believe* work. Prove it by forking the node and SIGKILLing it at random points, then rebooting and asserting integrity.
 
-/* RAII-style: if the txn is still open when the caller exits without
- * committing, rollback and log EV_DB_TXN_LEAKED. Implement via a
- * sentinel field + a wrapper macro. */
-#define DB_TXN_SCOPE(db, label) \
-    __attribute__((cleanup(db_txn_auto_rollback))) struct db_txn *_txn = db_txn_begin((db), (label))
+```
+tools/crash_recovery_test.c:
+  1. Start zclassic23 with a small isolated datadir
+  2. Drive it through a sync scenario (via addnode or pre-staged data)
+  3. Sleep N ms where N is a uniformly random value
+  4. SIGKILL the process
+  5. Restart the process
+  6. Run `zcl_dataintegrity`, `zcl_utxocommitment`, `zcl_getblockcount`
+  7. Assert: no UTXO count decrease, no tip regression, commitment matches
+  8. Loop 100 iterations with different delays
+  9. Report pass/fail distribution
 ```
 
-Then wrap every destructive sequence in `snapshot_sync_service.c`, `chain_restore_service.c`, and `boot.c`'s recovery paths in a `DB_TXN_SCOPE`. One txn per logical recovery step, committed only if all cross-checks pass.
+Run it against a pre-seeded `~/.zclassic-c23-crashtest` datadir so iterations are fast. Add a `make test-crash` target.
 
-Tests in `lib/test/src/test_db_txn.c` — commit, rollback, leak detection, nested (reject nesting), concurrent txns on different databases.
+This is the test that would catch a regression where, say, someone refactored `db_txn` to skip a rollback on SIGTERM and we lose recovery safety.
 
-### 4. Block-index integrity — `app/services/block_index_integrity.{h,c}`
+### 4. Block / script / P2P message fuzz harness — `tools/fuzz/*.c`
 
-`block_index.bin` is the single file most likely to betray the node. Give it a deterministic format with self-checks:
+libFuzzer-compatible entry points for the three biggest attack surfaces:
 
-- **Magic + version + SHA3-256** over the body, verified on load
-- **Reverse cross-check**: for the declared tip hash, look it up in the SQLite `blocks` table and verify `height` matches. This is exactly the bug class that nuked the UTXOs on 2026-04-10 — the on-disk index said `h=60` but SQLite said `h=3,073,476`.
-- On mismatch, emit `EV_BLOCK_INDEX_CORRUPT` with both heights and **refuse to boot** unless `ZCL_ALLOW_CORRUPT_INDEX=1` is set. Better to fail loudly at boot than to hand a bad tip to the wipe paths.
-- **Don't auto-delete the file on corruption** — rename it to `block_index.bin.corrupt.<timestamp>` so an operator (or AGENT1) can inspect.
+- `tools/fuzz/fuzz_block.c` — `check_block()` / `contextual_check_block_header()` on the input bytes
+- `tools/fuzz/fuzz_script.c` — `eval_script()` on a random script + stack
+- `tools/fuzz/fuzz_p2p.c` — `msg_process()` on a random net message buffer
 
-Tests: simulate corruption in each field (magic, version, hash, tip entry), verify the refusal behavior, verify the rename-on-corrupt path.
+Build target: `make fuzz` produces `fuzz_block`, `fuzz_script`, `fuzz_p2p` binaries linked against `-fsanitize=fuzzer,address,undefined`. Seed corpuses from `lib/test/fuzz_seeds/*.bin` — include a few real mainnet blocks and p2p captures so the fuzzer starts from realistic inputs.
 
-### 5. Boot decomposition (stretch, only after 1–4 land)
+Add a `make fuzz-ci` target that runs each fuzzer for 60 seconds with a small timeout. CI never discovers new bugs with zero-second fuzzing; 60s × 3 = 3 minutes of cheap coverage.
 
-`config/src/boot.c` is **2,640 lines**. Once the above are in place, extract these services (I'll pair with you on the boot.c edits):
+Don't panic over existing bugs the fuzzer finds — just file them under the `Current Status` "known issues" section and fix the most dangerous ones in Wave 4.
 
-- `block_index_loader.{h,c}` — owns `block_index.bin` load and validation (uses #4)
-- `chain_state_validator.{h,c}` — the cross-check pass before any tip mutation
-- `utxo_recovery_service.{h,c}` — orchestrates wipe/recover decisions via `recovery_policy` (uses #2)
+### 5. Boot decomposition — `boot.c` to <1000 lines (carry-over, stretch)
 
-Target: reduce `boot.c` to **<800 lines** — pure orchestration, zero business logic.
+Once items 1–4 land, tackle `boot.c` (currently **2,640 lines**). Extract these services, one commit each. Each extraction must leave `./test_zcl` green:
+
+- `app/services/block_index_loader.{h,c}` — owns `block_index.bin` + sidecar load, calls `bii_verify()`
+- `app/services/chain_state_validator.{h,c}` — the pre-boot cross-check pass (SQLite tip vs in-memory tip vs coins_best)
+- `app/services/utxo_recovery_service.{h,c}` — orchestrates wipe/recover decisions via `recovery_policy`
+- `app/services/wallet_bootstrap_service.{h,c}` — the wallet-side boot steps (key load, scan height reconciliation)
+
+Each extraction: move functions into the new file, declare the entry point in the header, replace the boot.c call site with the single entry point, add service-level tests. I'll review each PR before you push to master.
+
+Target: `boot.c` to orchestration only, **<1000 lines**, zero business logic.
 
 ---
 
-## Rules (unchanged)
+## Rules
 
-- Rebase/pull before every session. Push directly to `master` when `./test_zcl` is green.
-- One commit per logical step. `agent2:` prefix. Clean reason strings in event emissions.
-- **Never touch** `tools/mcp_server.c`, `tools/mcp/**`, or `app/models/*` validators (AGENT3's pen).
-- **Never touch** `config/src/boot.c` unless AGENT1 has signed off (singleton bootstrap was the one exception).
-- If a migration reveals that a call site can't supply a required field, flag it in the commit message — don't fake a value.
+- Rebase/pull before every session. Push direct to `master` after `./test_zcl` green.
+- One commit per logical step. `agent2:` prefix.
+- **Never touch** AGENT3 territory: `tools/mcp/**`, `app/models/database_validators.*`, any `tools/mcp/controllers/*`.
+- **Boot.c edits** for wiring (`bii_verify` call site, service extractions) — open one commit at a time and ping me in the commit message with `(AGENT1 review)` in the subject. I'll merge if it's clean.
+- When the crash-recovery harness finds a real bug, log it in Current Status under "known issues" — don't silently fix it in the same commit. Separate bug discovery from bug repair.
 - Update "Current Status" each session.
 
-## Definition of done for this wave
+## Definition of done for wave 3
 
-- [ ] All 65 chain-tip call sites migrated through `csr_commit_tip()`
-- [ ] `recovery_policy` service + tests, 7 wipe sites behind the gate
-- [ ] `db_txn` wrapper + all destructive recovery paths inside a scope
-- [ ] `block_index_integrity` validation on load + refusal-to-boot on mismatch
-- [ ] `./test_zcl` still green — now with 28 + new policy/txn/integrity tests
-- [ ] A deliberately-corrupted `block_index.bin` causes a clean boot refusal, not a UTXO wipe
+- [ ] All 4 destructive recovery paths wrapped in `DB_TXN_SCOPE`
+- [ ] `block_index_integrity` service + tests, boot refuses on mismatch (AGENT1 wires the boot.c call site)
+- [ ] `tools/crash_recovery_test` + `make test-crash` target, passes 100 iterations
+- [ ] `tools/fuzz/fuzz_{block,script,p2p}` + `make fuzz-ci`, runs for 60s each in CI without crashing
+- [ ] `config/src/boot.c` under **1000 lines**
+- [ ] `./test_zcl` still green on every commit
 
 ---
 
@@ -151,27 +147,6 @@ Target: reduce `boot.c` to **<800 lines** — pure orchestration, zero business 
 
 *(Update each session. Keep it short.)*
 
-- **2026-04-11 wave 1** — Phase 1 service + singleton + boot bootstrap + `process_block.c` (5/65 sites) + 3 singleton tests. Site count corrected to 65 real sites (2 false hits in appendix).
-- **2026-04-11 wave 2** — **New plan, five deliverables above.** Start with priority 1: `snapshot_sync_service.c` (5 sites). That's the path the 2026-04-10 incident ran through — migrating it is the highest ROI move on the list.
-- **2026-04-11 wave 2 (session 1 on master)** — Pushed through commit `1fd764b03`. Five commits landed:
-  1. `snapshot_sync_service.c` — 2 tip sites migrated to `csr_commit_tip` via `snapsync_commit_tip()` helper; synthetic-anchor and happy-path branches both route through CSR now.
-  2. `chain_restore_service.c` — 1 site migrated; `chain_restore.execute` fuses the prior tip+header writes into one commit.
-  3. `msgprocessor.c` — 1 site migrated (`msgprocessor.headers_past_anchor` re-anchor); 1 documented as defensively-redundant post-snapsync resync.
-  4. `connect_block.c` (3 sites) + `blockchain_controller.c` (2 sites) documented in-place as scratchpad-view / bulk-replay and not migrated; outer tip owners go through CSR.
-  5. **Deliverable #2 landed**: `app/services/{include/services,src}/recovery_policy.{h,c}` + 21 tests (`lib/test/src/test_recovery_policy.c`). Env-tunable caps (`ZCL_MAX_UTXO_WIPE_ROWS`, `ZCL_MAX_BLOCK_ROLLBACK`, `ZCL_MAX_HEADER_REWIND`, `ZCL_REQUIRE_BACKUP_VERIFIED`, `ZCL_DRY_RUN`, `ZCL_OPERATOR_ACK_FILE`), six decision codes (ALLOW, REFUSE_TOO_LARGE, REFUSE_NO_BACKUP, REFUSE_DRY_RUN, PROMPT_OPERATOR, REFUSE_INVALID), three entry points (`policy_check_utxo_wipe`, `policy_check_block_rollback`, `policy_check_header_rewind`), backup-verified + operator-prompt function hooks, and three new events (`EV_RECOVERY_POLICY_{ALLOW,REFUSED,PROMPT}`). The spec's `struct event_bus *eb` parameter was dropped — the project's events go through the global `event_emitf` ring and the API now matches that convention.
-  6. **Recovery policy wired in front of 4 `node_db_wipe_utxos` call sites**:
-     - `app/controllers/src/sync_controller.c` (1 site) — reason `sync_controller.import_utxos_reimport`. Operator-triggered reimport path (-reimport-utxos flag, reindexchainstate RPC); fails closed on populated nodes until `ZCL_MAX_UTXO_WIPE_ROWS` is raised.
-     - `app/services/src/snapshot_sync_service.c` (3 sites) — reasons `snapsync.begin_receive`, `snapsync.finalize_sha3_fail`, `snapsync.stall_cleanup`. The begin_receive gate is THE 2026-04-10 defence surface; the other two guard partial-receive cleanup with row counts drawn from `svc->received_utxos`.
-  7. Running migration tally: 9 real `csr_commit_tip` sites + 4 `node_db_wipe_utxos` sites now behind `recovery_policy`. Remaining wipe sites (7) all live in `config/src/boot.c` — AGENT1's territory, header is exposed for their follow-up commits.
-  8. Full `./test_zcl` green (0 failures) on every commit. All 21 new recovery_policy tests passing, 28 existing CSR tests still green.
-- **2026-04-11 wave 2 (session 1 continued — deliverable #3 landed)** — `app/models/{include/models,src}/db_txn.{h,c}` + 14 tests (`lib/test/src/test_db_txn.c`) at commit `85397d0c4`. Scoped transaction wrapper on top of `node_db_{begin,commit,rollback}` with:
-  1. `db_txn_begin(db, label)` / `db_txn_commit(txn)` / `db_txn_rollback(txn)` API — rollback is idempotent; rollback-after-commit is a harmless no-op; double-commit emits `EV_DB_TXN_LEAKED`.
-  2. `DB_TXN_SCOPE(name, db, label)` RAII macro via `__attribute__((cleanup))` — fires `db_txn_auto_rollback` on scope exit. If the scope ends without a commit, the wrapper rolls back AND emits `EV_DB_TXN_LEAKED` so the programmer error is observable in the event ring instead of silently swallowed.
-  3. Nesting is refused — if `node_db.tx_open` is already true when `db_txn_begin` is called, returns NULL + `EV_DB_TXN_REJECTED` with reason `already_open`. The node_db layer only supports one concurrent transaction per handle; silent nesting was the 2026-04-10 recovery-path anti-pattern.
-  4. Five new events: `EV_DB_TXN_{BEGIN,COMMIT,ROLLBACK,REJECTED,LEAKED}` registered as `db.txn_*` in `event.c` name table.
-  5. Ownership model: commit/rollback set state flags but DO NOT free the handle; `db_txn_auto_rollback` is the sole deallocator (invoked by the cleanup attribute or called manually by non-scope callers).
-  6. 14 tests cover every state transition: commit path, explicit rollback, scope leak detection, scope + explicit commit (no leak), nesting rejection, NULL/empty/closed-db rejection, idempotent rollback, rollback-after-commit no-op, double-commit LEAKED, long-label truncation, NULL auto-rollback, and a 2×50 concurrent-on-different-databases stress run.
-  **Next session candidates** (wave 2 deliverables 4–5):
-  - Deliverable #4 — `app/services/block_index_integrity.{h,c}` — magic + version + SHA3-256 over `block_index.bin` body, reverse cross-check the declared tip hash against the SQLite `blocks` table, refuse-to-boot on mismatch, rename-on-corrupt to `block_index.bin.corrupt.<timestamp>`. File-format change: either bump the existing magic (forces rebuild) or add a separate `.sha3` sidecar (backward compatible). Recommend sidecar — existing deployments keep working and the sidecar becomes required after a grace window.
-  - Wire `db_txn` + `DB_TXN_SCOPE` around destructive sequences in `snapshot_sync_service.snapsync_begin_receive` and related recovery paths — the module itself landed unwired this session.
-  - Remaining Phase 1b test-file migrations (test_sync_service, test_coins, test_chain, test_validation, test_node_health_service) — low priority, pure test hygiene.
+- **2026-04-11 wave 1** — Phase 1 CSR + singleton + boot bootstrap + `process_block.c` (5 sites). Site count corrected to 65.
+- **2026-04-11 wave 2** — `recovery_policy` + 21 tests; wipe gates on `sync_controller` (1) + `snapshot_sync_service` (3). `db_txn` service + 14 tests (unwired). CSR migrations continued (snapshot_sync 2, chain_restore 1, msgprocessor 1). Full `./test_zcl` green.
+- **2026-04-11 wave 3** — **New plan, five deliverables above.** Start with #1 (wire `db_txn` into the four recovery paths). Then #2 (block_index_integrity) since that's the remaining hole between boot and the wipe gates. #3 and #4 (crash harness + fuzzers) can run in parallel once #2 lands.

@@ -1,177 +1,175 @@
-# AGENT3 — MCP Security, Model Validation & Operational Observability
+# AGENT3 — Security Hardening, Observability & Integration Testing
 
 **Worktree:** `~/zclassic23-3`
 **Workflow:** push directly to `master` after `./test_zcl` passes
 **Coordinator:** AGENT1 (main `~/zclassic23`)
-**Peer:** AGENT2 (`~/zclassic23-2`) — working on chain-state / recovery, different files
+**Peer:** AGENT2 (`~/zclassic23-2`) — disaster recovery / boot decomposition, different files
 
 ---
 
 ## Mission
 
-The MCP surface is now the primary control plane for zclassic23 — AI agents, operators, and automation all reach the node through it. That makes it the attack surface **and** the observability surface. This wave hardens both sides: model validation hooks (data integrity), MCP middleware (security + rate limiting + timeouts), end-to-end integration tests (real-binary coverage), and structured metrics (operational visibility).
+The MCP surface is now 66 tools, schema-validated, middleware-gated, and operator-instrumented. **Wave 3 proves that surface is actually safe and observable in production.** Fork the real binary and hammer it with an end-to-end test that catches envelope regressions. Wire up Prometheus metrics so operators can see what's happening. Audit the node's secrets hygiene so we're sure private keys and seeds never leak into logs. Then tackle the P2P-side misbehavior surface — which is the attack vector no one has looked at yet.
 
 ## Already done (don't redo)
 
-- Phase 1: router + 41 tools behind schemas, EV_MCP_REQUEST logging, 27 unit tests
-- Phase 2a: 22 backfill tools — total now **66 tools**
-- Phase 2b: handlers split into `tools/mcp/controllers/*.c`, `mcp_server.c` down to 184 lines
-- Phase 2c: `zcl_tools_list`, `zcl_self_test`, `zcl_logtail` operator tooling
-- Defensive `json_get(obj, key)` null check in `lib/json/src/json.c`
-- Live smoke test result: **66 total / 42 pass / 0 fail / 24 skip**
+- Router + schema validation + error envelope + EV_MCP_REQUEST (Phase 1)
+- Controller split into 6 files; `mcp_server.c` at 199 lines (Phase 2b)
+- 22-tool backfill; total **66 tools** (Phase 2a)
+- `zcl_tools_list` / `zcl_self_test` / `zcl_logtail` (Phase 2c)
+- `database_validators.{h,c}` + 17-model registry + 28 tests
+- `tools/mcp/middleware.{h,c}` — auth + rate-limit + timeout + tests
+- Live `zcl_self_test`: 45 pass / 21 skip / 0 fail
 
-## Next wave — ordered by impact
+## Wave 3 — ordered by impact
 
-### 1. Phase 3 — Model validator hooks
+### 1. End-to-end integration test — `tools/mcp/test_mcp_e2e.c` (carry-over)
 
-Every model has a `_validate()` function that's never called automatically. This is the "no validation on save" problem that lets bad data into SQLite without anyone noticing.
-
-Build the validator registry in `app/models/src/database.c`:
+Today's router tests are in-process. Nothing forks the real binary. A regression like "Phase 2b renamed a JSON field and nobody noticed" would slip through. Build a proper e2e harness:
 
 ```c
-typedef bool (*db_validator_fn)(const void *row, char *err_out, size_t err_cap);
+/* Fork zclassic23 -mcp -datadir=<temp> with pipes to stdin/stdout.
+ * Speak MCP over the pipes. Assert on real envelope shapes. */
 
-struct db_validator_entry {
-    const char     *table;
-    db_validator_fn fn;
-};
-
-void db_register_validator(const char *table, db_validator_fn fn);
-
-/* Called by every db_<model>_save() before the SQL INSERT/UPDATE runs.
- * Returns false and populates err_out on failure; the save aborts. */
-bool db_run_validators_for(const char *table, const void *row,
-                            char *err_out, size_t err_cap);
+struct mcp_e2e_session;
+struct mcp_e2e_session *mcp_e2e_start(const char *zclassic23_bin,
+                                       const char *env[],
+                                       char *err_out, size_t err_cap);
+struct json_value *mcp_e2e_call(struct mcp_e2e_session *s,
+                                 const char *tool,
+                                 const char *args_json);
+void mcp_e2e_stop(struct mcp_e2e_session *s);
 ```
 
-Then wire validators for all 17 models:
+Test cases (all required):
 
-`block`, `block_data`, `chain_snapshot`, `contact`, `file_service`, `leveldb_store`, `mempool_entry`, `mmb_leaf_store`, `onion_announcement`, `peer`, `store`, `tx_index`, `utxo`, `wallet_key`, `wallet_tx`, `zslp`, + `database` itself (the meta-row).
+1. **`tools/list` shape** — iterate, assert exactly 66 tool names, each has `name`/`description`/`inputSchema`
+2. **`zcl_status` / `zcl_kpi` / `zcl_health` required fields** — if any of these lose a field, break the build
+3. **Envelope: MISSING_PARAM** — call `zcl_getblock` with no args, assert shape `{error:{code,message,tool,param}}`
+4. **Envelope: INVALID_TYPE** — call `zcl_getblock` with `height: "abc"`, assert
+5. **Envelope: UNKNOWN_TOOL** — call `zcl_nonexistent`, assert `UNKNOWN_TOOL`
+6. **Envelope: ENUM_MISMATCH** — call `zcl_addnode` with `command: "bogus"`, assert
+7. **Auth required** — start with `ZCL_MCP_BEARER_TOKEN=secret` in env, call any tool without token, assert `AUTH_REQUIRED`
+8. **Auth success** — same, but with correct token in request metadata
+9. **Rate limit** — rapid-fire 200 calls to a non-destructive tool, assert at least 1 `RATE_LIMITED`
+10. **Timeout** — add a `#ifdef ZCL_TESTING zcl_testsleep(ms: 10000)` tool gated by a build flag, set `ZCL_MCP_TIMEOUT_MS=100`, assert `TOOL_TIMEOUT`
 
-Each validator should enforce the **structural invariants** that the model's existing `_validate()` function already knows but never runs. Audit each one and write the validator to call it.
+New `make test-e2e` target that builds a fresh `zclassic23` and runs the harness. Add to CI.
 
-When validation fails, emit `EV_DB_VALIDATION_FAILED` with the table name and error message and **fail the save**. Do not silently pass through.
+### 2. Prometheus metrics — `tools/mcp/metrics.{h,c}` (carry-over)
 
-Tests: `lib/test/src/test_db_validators.c` — at least one positive and one negative test per table (so 34+ cases). Use in-memory sqlite.
+Expose operational counters in the Prometheus text format. New tool `zcl_metrics` returns the full text as a JSON string.
 
-**Coordination with AGENT2**: AGENT2 may touch `app/models/src/database.c` for their chain-state migration. Check their last commit before you start, and if they're mid-flight, do your work in a separate file (`database_validators.c`) that `database.c` `#include`s at the bottom. Small commits, frequent pulls.
+**Counters** (at minimum):
 
-### 2. MCP middleware — security + rate limiting + timeouts
+```
+# Counters
+zcl_mcp_requests_total{tool="…",code="OK|MISSING_PARAM|…"} N
+zcl_mcp_rate_limited_total{kind="global|destructive"} N
+zcl_mcp_timeouts_total{tool="…"} N
+zcl_mcp_auth_failures_total N
 
-Right now any MCP caller can:
-- spam the node with unbounded request volume
-- make a handler hang forever (no timeout)
-- call destructive tools without auth
+# Histograms
+zcl_mcp_request_duration_seconds_bucket{tool="…",le="0.001|0.005|0.01|…"} N
 
-Build middleware that runs between `mcp_router_dispatch()` and the handler:
+# Gauges (sampled from live state)
+zcl_chain_height N
+zcl_chain_utxo_count N
+zcl_chain_peer_count N
+zcl_chain_sync_state{state="idle|headers|blocks|snapshot|tip"} 1
+zcl_wallet_balance_zatoshi N
+zcl_mempool_tx_count N
 
-```c
-struct mcp_middleware {
-    /* Auth: if non-empty, require Bearer token in request metadata */
-    const char *required_bearer_token;    /* env ZCL_MCP_BEARER_TOKEN */
-
-    /* Rate limiting: token bucket per-tool */
-    int64_t global_rps;                   /* env ZCL_MCP_GLOBAL_RPS, default 100 */
-    int64_t destructive_rps;              /* env ZCL_MCP_DESTRUCTIVE_RPS, default 1 */
-
-    /* Per-tool execution timeout */
-    int64_t default_timeout_ms;           /* env ZCL_MCP_TIMEOUT_MS, default 5000 */
-
-    /* Destructive tool marker (already partially modeled in zcl_self_test) */
-    const char **destructive_tools;       /* {"zcl_sendtoaddress", "zcl_importprivkey", ...} */
-    size_t       num_destructive_tools;
-};
-
-/* Middleware wraps the dispatch. Returns the same envelope shapes the
- * router already produces. New error codes: AUTH_REQUIRED, RATE_LIMITED,
- * TOOL_TIMEOUT. */
-int mcp_middleware_dispatch(struct mcp_middleware *mw,
-                             const struct mcp_request *req,
-                             struct mcp_response *res);
+# Counters from AGENT2's events
+zcl_chain_state_commits_total{code="OK|REJECTED_STALE_INDEX|…"} N
+zcl_recovery_policy_decisions_total{kind="wipe|rollback|rewind",decision="ALLOW|REFUSE_…"} N
+zcl_db_txn_total{state="BEGIN|COMMIT|ROLLBACK|LEAKED"} N
 ```
 
 Implementation:
-- **Timeout**: run handler on a worker thread with a `pthread_cond_timedwait` on a completion semaphore. If timeout fires, mark the request abandoned (do not cancel the thread — C doesn't do safe thread cancellation for general code; let it finish and discard). Log `EV_MCP_TIMEOUT` with tool + elapsed_ms.
-- **Rate limit**: two token buckets — global and destructive — refilled by `clock_gettime`, no `sleep`.
-- **Auth**: compare `req->metadata["authorization"]` against the env token. Constant-time compare.
+- Subscribe to `EV_MCP_REQUEST`, `EV_CHAIN_TIP_*`, `EV_RECOVERY_POLICY_*`, `EV_DB_TXN_*`, `EV_MCP_TIMEOUT`, `EV_MCP_RATE_LIMITED` via an event observer that updates counters in-process. **Do not poll** — the events already fire at the right times.
+- Histograms use a fixed bucket layout: `[0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5, +Inf]`.
+- Label cardinality guard: refuse to record a label value if the tool doesn't exist (prevents an attacker flooding labels).
 
-Mark these tools as destructive (use the same list `zcl_self_test` already skips):
-`zcl_sendtoaddress`, `zcl_send`, `zcl_importprivkey`, `zcl_rescanblockchain`, `zcl_replaywalletfromchain`, `zcl_addnode`, `zcl_swap_initiate`, `zcl_swap_participate`, `zcl_market_buy`, `zcl_market_offer`, `zcl_msg_send`, `zcl_msg_send_named`, `zcl_name_register`.
+Tests in `lib/test/src/test_mcp_metrics.c`: histogram bucketing, counter increment per event, label guard, text format conformance, reset behavior.
 
-Tests in `lib/test/src/test_mcp_middleware.c`: at least 12 cases covering every path (auth pass/fail, global limit, destructive limit, timeout fire, destructive marker matching, env-var loading, concurrent bucket refills).
+### 3. Secrets hygiene audit — `lib/test/src/test_secrets_hygiene.c`
 
-### 3. End-to-end MCP integration test — `tools/mcp/test_mcp_e2e.c`
+The single most embarrassing bug we could ship is logging a private key or seed phrase. Build a test that actively looks for it:
 
-Today `test_mcp_router` tests the router in isolation. There's no test that **forks the real `zclassic23 -mcp` binary, writes JSON-RPC over stdio, and asserts on the response**. Build one:
+1. **Build a golden corpus** of secrets that should NEVER appear in logs / events / RPC responses:
+   - Test wallet WIF keys
+   - Sapling viewing keys
+   - Seed phrases (BIP39 words)
+   - RPC cookie contents
+   - Onion HS private keys
+2. **Exercise the node** with a test wallet containing those secrets — boot, generate addresses, send transactions, hit every RPC endpoint, every MCP tool.
+3. **Scan all output** (stdout, stderr, event log, MCP envelopes, RPC responses) for substring matches. Any hit fails the test.
+4. **Grep the codebase** for direct `printf("%s", priv_key)` patterns and forbid them via a `tools/scripts/check_no_secret_printf.sh` that runs in CI.
+
+Expected outcome: you'll find at least one leak. Document it in Current Status, fix the most obvious, open issues for the rest.
+
+### 4. P2P misbehavior scoring — `lib/net/peer_scoring.{h,c}`
+
+Today bad peer messages are mostly logged and forgotten. Add scoring:
 
 ```c
-/* Start zclassic23 -mcp -datadir=<tempdir>, speak MCP over its stdin/stdout,
- * run every non-destructive tool, assert envelope shape and required fields.
- * Cleanup on exit. */
+enum peer_offence {
+    PEER_OFFENCE_INVALID_MESSAGE = 10,
+    PEER_OFFENCE_INVALID_BLOCK   = 100,
+    PEER_OFFENCE_INVALID_HEADER  = 50,
+    PEER_OFFENCE_TIMEOUT         = 5,
+    PEER_OFFENCE_FLOOD           = 20,
+    PEER_OFFENCE_UNREQUESTED     = 10,
+};
+
+void peer_scoring_record(struct net_peer *p, enum peer_offence o,
+                          const char *context);
+bool peer_scoring_should_ban(const struct net_peer *p);
+void peer_scoring_reset(struct net_peer *p);  /* on successful interaction */
 ```
 
-This is the test that would catch a regression like "Phase 2b renamed a field and nobody noticed because the router test doesn't touch JSON shapes". Include:
+Rules:
+- Ban threshold: 100 score (configurable via `ZCL_PEER_BAN_THRESHOLD`)
+- Ban duration: 24h (configurable via `ZCL_PEER_BAN_HOURS`)
+- **Never ban localhost / trusted peers** — guard via existing `is_trusted_peer()` (memory says this is sacred, enforced in `is_trusted_peer()`)
+- Score decays linearly at 1 point per minute of good behavior
+- Emit `EV_PEER_MISBEHAVING` / `EV_PEER_BANNED` events with the offence + context
 
-- `initialize`, `tools/list` → exact 66 tool names
-- `zcl_status`, `zcl_health`, `zcl_kpi` → required fields present
-- error envelope: send malformed JSON-RPC, assert `-32700` parse error
-- validation envelope: call `zcl_getblock` with no args, assert `MISSING_PARAM` envelope with correct `tool` and `param`
-- auth: if `ZCL_MCP_BEARER_TOKEN` is set in the child env, unauth'd call returns `AUTH_REQUIRED`
-- timeout: call a tool that sleeps (add a `zcl_testsleep` tool under `#ifdef ZCL_TESTING` just for this test) and assert `TOOL_TIMEOUT`
+Wire into:
+- `lib/net/src/msgprocessor.c` — every rejected message path calls `peer_scoring_record`
+- `lib/validation/src/process_block.c` — invalid block from a peer → `PEER_OFFENCE_INVALID_BLOCK`
+- `lib/net/src/connman.c` — ban check on every new inbound connection
 
-Add a `make test-e2e` target that builds a fresh `zclassic23` binary and runs this test against it. CI should run it.
+Tests in `lib/test/src/test_peer_scoring.c`: 12+ cases covering increment, decay, ban threshold, localhost guard, persistence across disconnect/reconnect.
 
-### 4. Structured metrics — `tools/mcp/metrics.{h,c}`
+### 5. OpenAPI-ish schema export — `zcl_openapi` tool (carry-over, small)
 
-Expose a Prometheus-style text endpoint over MCP so an operator can scrape live stats:
+New MCP tool `zcl_openapi` returns a pseudo-OpenAPI JSON document derived from the routing table. Walk `mcp_router_tools_list_json()` and wrap each tool in `paths[/tool_name].post.requestBody.content["application/json"].schema`. Not a real spec — just give it that flavor for client-side code generation.
 
-```
-zcl_mcp_requests_total{tool="zcl_status",code="OK"} 412
-zcl_mcp_request_duration_seconds_bucket{tool="zcl_getblock",le="0.005"} 183
-zcl_mcp_rate_limited_total{kind="destructive"} 2
-zcl_chain_state_commits_total{code="OK"} 3481
-zcl_chain_state_commits_total{code="REJECTED_STALE_INDEX"} 0
-zcl_utxo_count 1268980
-zcl_peer_count 9
-zcl_sync_height 2014948
-```
-
-Implementation:
-- Hook into `EV_MCP_REQUEST` (already emitted) to build the histogram buckets in-process
-- Hook into `EV_CHAIN_TIP_COMMIT` / `EV_CHAIN_TIP_REJECTED` (AGENT2's events) for chain-state counters
-- Expose two new MCP tools:
-  - `zcl_metrics` — returns the full Prometheus text as a JSON string
-  - `zcl_metrics_reset` — clears counters (gated by the destructive-tool marker from wave 2)
-
-Tests: `lib/test/src/test_mcp_metrics.c` — at least 8 cases (counter increment, histogram bucketing, label cardinality limit, reset behavior, text-format conformance).
-
-### 5. Self-documenting schema export — `zcl_openapi`
-
-Add a new tool `zcl_openapi` that returns a pseudo-OpenAPI JSON document derived from the routing table. This lets a client (Claude Code, a TypeScript type generator, an auto-test harness) know every tool's parameters and expected shape without hitting a second endpoint. Build it by walking `mcp_router_tools_list_json()` and wrapping each tool in an OpenAPI-style `paths` entry.
-
-Don't make it a real OpenAPI spec — just give it the same flavor. One commit, ~150 lines.
+One commit, ~150 lines including tests.
 
 ---
 
-## Rules (unchanged)
+## Rules
 
-- Rebase/pull before every session. Push directly to `master` when `./test_zcl` is green.
+- Rebase/pull before every session. Push direct to `master` after `./test_zcl` green.
 - One commit per logical step. `agent3:` prefix.
-- **Preserve all existing tool names and argument shapes.** New tools: any name, but document them in `CLAUDE.md` in the same commit.
-- **Never touch** `config/src/boot.c`, `app/services/chain_state_repository.*`, `app/services/recovery_policy.*`, `app/services/block_index_integrity.*`, `app/services/db_txn.*` (AGENT2's pen).
-- **Coordinate with AGENT2 on `app/models/src/database.c`** — if they're mid-flight, put your validator wiring in a separate file.
-- Smoke-test after every push (`zcl_status`, `zcl_kpi`, `zcl_self_test`). Paste `zcl_self_test` results into Current Status — that's our regression trip-wire.
+- **Never touch** AGENT2 territory: `config/src/boot.c`, `app/services/chain_state_repository.*`, `recovery_policy.*`, `block_index_integrity.*`, `app/models/db_txn.*`.
+- `app/models/src/database_validators.c` stays yours (Phase 3 landed here).
+- Smoke-test `zcl_self_test` after every push — paste the `{total, pass, fail, skip}` line into Current Status so any regression is immediately visible.
+- When the secrets audit finds a real leak, log it in Current Status and fix it in a **separate** commit. Separate discovery from repair.
 - Update "Current Status" each session.
 
-## Definition of done for this wave
+## Definition of done for wave 3
 
-- [ ] All 17 models have validators wired via `db_register_validator`
-- [ ] `mcp_middleware` with auth, rate limiting, per-tool timeout
-- [ ] `test_mcp_e2e` runs the real `-mcp` binary and asserts envelope shapes
-- [ ] `zcl_metrics` returns Prometheus text with request/chain-state counters
-- [ ] `zcl_openapi` emits a schema document derived from the routing table
-- [ ] `./test_zcl` still green — now with validators + middleware + metrics + e2e tests
-- [ ] Live `zcl_self_test` still shows **0 fail** after all changes
+- [ ] `test_mcp_e2e` runs the real `-mcp` binary, 10 required test cases green
+- [ ] `zcl_metrics` returns Prometheus text with all 14 counter/histogram/gauge families
+- [ ] `test_secrets_hygiene` + `check_no_secret_printf.sh` CI check, any discovered leaks logged
+- [ ] `peer_scoring` service + wired into msgprocessor + process_block + connman
+- [ ] `zcl_openapi` schema export tool
+- [ ] `./test_zcl` still green
+- [ ] `zcl_self_test` still **0 fail** after all changes
 
 ---
 
@@ -179,5 +177,6 @@ Don't make it a real OpenAPI spec — just give it the same flavor. One commit, 
 
 *(Update each session. Keep it short.)*
 
-- **2026-04-11 wave 1** — Phase 1 + 2a + 2b + 2c landed. 66 tools. `zcl_self_test`: 42 pass / 0 fail / 24 skip.
-- **2026-04-11 wave 2** — **New plan, five deliverables above.** Start with #1 (validator hooks). Confirm with the latest master commit on `app/models/src/database.c` that AGENT2 isn't mid-flight there; if they are, land your wiring in a separate `database_validators.c` that `database.c` includes.
+- **2026-04-11 wave 1** — Router + 41 tools + operator tooling (Phases 1, 2a, 2b, 2c).
+- **2026-04-11 wave 2** — `database_validators` + 28 tests (Phase 3); `mcp/middleware` (auth + rate-limit + timeout) + tests. `zcl_self_test`: **45 pass / 21 skip / 0 fail**.
+- **2026-04-11 wave 3** — **New plan, five deliverables above.** Start with #1 (e2e test harness) — it's the regression trip-wire that makes every subsequent change safer. Then #2 (metrics) is mostly wiring into existing events from AGENT2. #3 (secrets audit) is where real bugs live. #4 (peer scoring) is net-layer and conflict-free.
