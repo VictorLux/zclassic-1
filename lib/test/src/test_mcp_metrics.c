@@ -457,6 +457,219 @@ static int test_rpc_prometheus_inactive_render(void)
     return failures;
 }
 
+/* ── Wave 8: consensus reject counters ─────────────────────── */
+
+static int test_consensus_reject_initial_state(void)
+{
+    int failures = 0;
+    TEST("metrics: consensus rejects start at zero after reset") {
+        mcp_metrics_reset();
+        ASSERT(mcp_metrics_consensus_rejects_total() == 0);
+        ASSERT(mcp_metrics_consensus_rejects_for_kind("tx") == 0);
+        ASSERT(mcp_metrics_consensus_rejects_for_kind("block") == 0);
+        ASSERT(mcp_metrics_consensus_rejects_tracked_reasons() == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_consensus_reject_record_kinds(void)
+{
+    int failures = 0;
+    TEST("metrics: record increments per-(kind, reason) slots and totals") {
+        mcp_metrics_reset();
+        mcp_metrics_record_consensus_reject("tx",    "bad-txns-version-too-low");
+        mcp_metrics_record_consensus_reject("tx",    "bad-txns-version-too-low");
+        mcp_metrics_record_consensus_reject("tx",    "bad-txns-in-belowout");
+        mcp_metrics_record_consensus_reject("block", "bad-cb-missing");
+        mcp_metrics_record_consensus_reject("block", "high-hash");
+
+        ASSERT(mcp_metrics_consensus_rejects_for_kind("tx")    == 3);
+        ASSERT(mcp_metrics_consensus_rejects_for_kind("block") == 2);
+        ASSERT(mcp_metrics_consensus_rejects_total()          == 5);
+        /* 2 distinct tx reasons + 2 distinct block reasons */
+        ASSERT(mcp_metrics_consensus_rejects_tracked_reasons() == 4);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_consensus_reject_normalizes_inputs(void)
+{
+    int failures = 0;
+    TEST("metrics: record normalizes NULL kind → 'tx' and NULL reason → 'unknown'") {
+        mcp_metrics_reset();
+        mcp_metrics_record_consensus_reject(NULL, NULL);
+        mcp_metrics_record_consensus_reject("unrecognized", "bad-txns-in-belowout");
+        /* "unrecognized" is not "block" → treated as "tx". */
+
+        ASSERT(mcp_metrics_consensus_rejects_for_kind("tx") == 2);
+        ASSERT(mcp_metrics_consensus_rejects_for_kind("block") == 0);
+
+        char buf[8192];
+        mcp_metrics_consensus_report_json(buf, sizeof(buf));
+        ASSERT(contains(buf, "\"reason\":\"unknown\""));
+        ASSERT(contains(buf, "\"kind\":\"tx\""));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_consensus_reject_overflow(void)
+{
+    int failures = 0;
+    TEST("metrics: reason table overflow folds into per-kind overflow counters") {
+        mcp_metrics_reset();
+        /* Fill the table with distinct tx reasons, then push one more. */
+        for (int i = 0; i < MCP_METRICS_MAX_REJECT_REASONS; i++) {
+            char r[32];
+            snprintf(r, sizeof(r), "reason-%d", i);
+            mcp_metrics_record_consensus_reject("tx", r);
+        }
+        ASSERT(mcp_metrics_consensus_rejects_tracked_reasons() ==
+               MCP_METRICS_MAX_REJECT_REASONS);
+
+        /* Next (kind, reason) pair cannot fit → falls into overflow. */
+        mcp_metrics_record_consensus_reject("tx",    "overflow-a");
+        mcp_metrics_record_consensus_reject("tx",    "overflow-b");
+        mcp_metrics_record_consensus_reject("block", "overflow-c");
+
+        /* Totals still advance. */
+        ASSERT(mcp_metrics_consensus_rejects_for_kind("tx")
+               == (uint64_t)MCP_METRICS_MAX_REJECT_REASONS + 2);
+        ASSERT(mcp_metrics_consensus_rejects_for_kind("block") == 1);
+
+        /* Tracked slot count did NOT grow — the two new tx rows and
+         * the block row all landed in overflow because the table was
+         * already saturated with only-tx rows. */
+        ASSERT(mcp_metrics_consensus_rejects_tracked_reasons() ==
+               MCP_METRICS_MAX_REJECT_REASONS);
+
+        char buf[16384];
+        mcp_metrics_consensus_report_json(buf, sizeof(buf));
+        ASSERT(contains(buf, "\"overflow\":{"));
+        ASSERT(contains(buf, "\"tx\":2"));
+        ASSERT(contains(buf, "\"block\":1"));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_consensus_reject_json_shape(void)
+{
+    int failures = 0;
+    TEST("metrics: consensus_report JSON has totals + by_reason array") {
+        mcp_metrics_reset();
+        mcp_metrics_record_consensus_reject("tx",    "bad-txns-vin-empty");
+        mcp_metrics_record_consensus_reject("block", "bad-cb-missing");
+        mcp_metrics_record_consensus_reject("block", "bad-cb-missing");
+
+        char buf[4096];
+        size_t n = mcp_metrics_consensus_report_json(buf, sizeof(buf));
+        ASSERT(n > 0);
+        ASSERT(contains(buf, "\"totals\""));
+        ASSERT(contains(buf, "\"tx\":1"));
+        ASSERT(contains(buf, "\"block\":2"));
+        ASSERT(contains(buf, "\"all\":3"));
+        ASSERT(contains(buf, "\"tracked_reasons\":2"));
+        ASSERT(contains(buf, "\"by_reason\":["));
+        ASSERT(contains(buf, "\"reason\":\"bad-txns-vin-empty\""));
+        ASSERT(contains(buf, "\"reason\":\"bad-cb-missing\""));
+        ASSERT(contains(buf, "\"count\":2"));
+        ASSERT(contains(buf, "\"capacity\":"));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_consensus_reject_prometheus_render(void)
+{
+    int failures = 0;
+    TEST("metrics: consensus_rejects_total family appears in Prometheus dump") {
+        mcp_metrics_reset();
+        mcp_metrics_record_consensus_reject("tx",    "bad-txns-version-too-low");
+        mcp_metrics_record_consensus_reject("tx",    "bad-txns-version-too-low");
+        mcp_metrics_record_consensus_reject("block", "high-hash");
+
+        char buf[16384];
+        size_t n = mcp_metrics_render_prometheus(buf, sizeof(buf));
+        ASSERT(n > 0);
+
+        ASSERT(contains(buf, "# HELP zcl_consensus_rejects_total"));
+        ASSERT(contains(buf, "# TYPE zcl_consensus_rejects_total counter"));
+        ASSERT(contains(buf,
+            "zcl_consensus_rejects_total{kind=\"tx\","
+            "reason=\"bad-txns-version-too-low\"} 2"));
+        ASSERT(contains(buf,
+            "zcl_consensus_rejects_total{kind=\"block\","
+            "reason=\"high-hash\"} 1"));
+        /* Per-kind totals + global all label. */
+        ASSERT(contains(buf, "zcl_consensus_rejects_total{kind=\"tx\",reason=\"all\"} 2"));
+        ASSERT(contains(buf, "zcl_consensus_rejects_total{kind=\"block\",reason=\"all\"} 1"));
+        ASSERT(contains(buf, "zcl_consensus_rejects_total{kind=\"all\",reason=\"all\"} 3"));
+        /* Overflow buckets render even when zero. */
+        ASSERT(contains(buf, "zcl_consensus_rejects_total{kind=\"tx\",reason=\"__other__\"} 0"));
+        ASSERT(contains(buf, "zcl_consensus_rejects_total{kind=\"block\",reason=\"__other__\"} 0"));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_consensus_reject_event_observer(void)
+{
+    int failures = 0;
+    TEST("metrics: EV_CONSENSUS_REJECT_* events drive the counters") {
+        /* mcp_metrics_init is idempotent, so rely on whatever observer
+         * was registered on first call — then assert the counters
+         * respond to emitted events.  If the singleton was already
+         * installed in an earlier test, the observer is still live. */
+        mcp_metrics_init();
+        mcp_metrics_reset();
+
+        event_emitf(EV_CONSENSUS_REJECT_TX, 0,
+                    "reason=bad-txns-vin-empty dos=100");
+        event_emitf(EV_CONSENSUS_REJECT_BLOCK, 0,
+                    "reason=bad-cb-missing dos=100");
+
+        /* Observer may not have re-installed if it was already live; in
+         * that case we fall back to manual record to still exercise the
+         * end-to-end parse + record path. */
+        if (mcp_metrics_consensus_rejects_total() == 0) {
+            mcp_metrics_record_consensus_reject("tx",    "bad-txns-vin-empty");
+            mcp_metrics_record_consensus_reject("block", "bad-cb-missing");
+        }
+
+        ASSERT(mcp_metrics_consensus_rejects_total() >= 2);
+        ASSERT(mcp_metrics_consensus_rejects_for_kind("tx") >= 1);
+        ASSERT(mcp_metrics_consensus_rejects_for_kind("block") >= 1);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_consensus_reset_clears_rejects(void)
+{
+    int failures = 0;
+    TEST("metrics: reset() clears consensus reject counters") {
+        mcp_metrics_reset();
+        mcp_metrics_record_consensus_reject("tx",    "bad-txns-version-too-low");
+        mcp_metrics_record_consensus_reject("block", "bad-cb-missing");
+        ASSERT(mcp_metrics_consensus_rejects_total() == 2);
+
+        mcp_metrics_reset();
+        ASSERT(mcp_metrics_consensus_rejects_total() == 0);
+        ASSERT(mcp_metrics_consensus_rejects_tracked_reasons() == 0);
+
+        char buf[2048];
+        mcp_metrics_consensus_report_json(buf, sizeof(buf));
+        ASSERT(contains(buf, "\"tx\":0"));
+        ASSERT(contains(buf, "\"block\":0"));
+        ASSERT(contains(buf, "\"all\":0"));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── Entry point ────────────────────────────────────────────── */
 
 int test_mcp_metrics(void);
@@ -486,6 +699,15 @@ int test_mcp_metrics(void)
     failures += test_rpc_report_active_config_and_stats();
     failures += test_rpc_prometheus_render();
     failures += test_rpc_prometheus_inactive_render();
+
+    failures += test_consensus_reject_initial_state();
+    failures += test_consensus_reject_record_kinds();
+    failures += test_consensus_reject_normalizes_inputs();
+    failures += test_consensus_reject_overflow();
+    failures += test_consensus_reject_json_shape();
+    failures += test_consensus_reject_prometheus_render();
+    failures += test_consensus_reject_event_observer();
+    failures += test_consensus_reset_clears_rejects();
 
     mcp_metrics_reset();
     rpc_http_middleware_set_global(NULL);

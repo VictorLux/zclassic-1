@@ -35,6 +35,13 @@ extern "C" {
 /* Histogram bucket count. */
 #define MCP_METRICS_HIST_BUCKETS 6
 
+/* Max distinct (kind, reason) pairs tracked for consensus rejects.
+ * Beyond this limit, rejects still count toward the per-kind totals but
+ * their reason is folded into a "__other__" bucket.  The REJECT_IF/UNLESS
+ * reason strings are a closed set defined by the consensus code, so the
+ * practical upper bound is known, but we cap cardinality defensively. */
+#define MCP_METRICS_MAX_REJECT_REASONS 48
+
 /* Register the EV_MCP_REQUEST observer.  Idempotent — calling twice does
  * nothing on the second call. */
 void mcp_metrics_init(void);
@@ -119,6 +126,53 @@ size_t mcp_metrics_peer_report_json(char *buf, size_t cap);
  * The Prometheus dump (mcp_metrics_render_prometheus) also emits a
  * `zcl_rpc_*` block derived from the same snapshot. */
 size_t mcp_metrics_rpc_report_json(char *buf, size_t cap);
+
+/* ── Consensus reject counters (wave 8) ───────────────────────
+ *
+ * Subscribed to EV_CONSENSUS_REJECT_TX and EV_CONSENSUS_REJECT_BLOCK
+ * via `mcp_metrics_init()`.  The handler extracts the `reason=...`
+ * field from the event payload and records it against a bounded
+ * (kind, reason) table — where kind is "tx" or "block".  Reasons
+ * beyond `MCP_METRICS_MAX_REJECT_REASONS` fold into "__other__" so
+ * cardinality stays bounded under unexpected payloads.
+ *
+ * The Prometheus dump exposes:
+ *
+ *   zcl_consensus_rejects_total{kind="tx",reason="..."}     N
+ *   zcl_consensus_rejects_total{kind="block",reason="..."}  N
+ *   zcl_consensus_rejects_total{kind="tx",reason="__other__"} N
+ *   zcl_consensus_rejects_total{kind="block",reason="__other__"} N
+ *   zcl_consensus_rejects_total{kind="all",reason="all"}    N
+ *
+ * The `zcl_consensus_report` MCP tool wraps the counters in a small
+ * JSON envelope for operators who want a single-call snapshot.  This
+ * is the observability counterpart to AGENT2's upcoming
+ * `zcl_explain_reject` lookup tool. */
+
+/* Manual record helper — used by tests and the in-process observer. */
+void mcp_metrics_record_consensus_reject(const char *kind, const char *reason);
+
+/* Query helpers (tests + zcl_consensus_report). */
+uint64_t mcp_metrics_consensus_rejects_total(void);
+uint64_t mcp_metrics_consensus_rejects_for_kind(const char *kind);
+uint64_t mcp_metrics_consensus_rejects_tracked_reasons(void);
+
+/* JSON snapshot for `zcl_consensus_report`.
+ *
+ * Shape:
+ *   {
+ *     "totals": { "tx": N, "block": N, "all": N },
+ *     "overflow": { "tx": N, "block": N },
+ *     "tracked_reasons": N,
+ *     "capacity": N,
+ *     "by_reason": [
+ *       { "kind": "tx|block", "reason": "...", "count": N }, ...
+ *     ]
+ *   }
+ *
+ * Returns bytes written (excluding NUL); silently truncates on
+ * too-small buffers just like the other JSON snapshots. */
+size_t mcp_metrics_consensus_report_json(char *buf, size_t cap);
 
 #ifdef __cplusplus
 }

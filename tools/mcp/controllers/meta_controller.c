@@ -416,6 +416,25 @@ static int h_zcl_rpc_report(const struct mcp_request *req,
     return res->body ? 0 : -1;
 }
 
+/* zcl_consensus_report — consensus-reject counter snapshot (wave 8).
+ * Surfaces the `EV_CONSENSUS_REJECT_TX`/`_BLOCK` ring AGENT2 plumbed
+ * in wave 7 as a bounded (kind, reason) → count table plus per-kind
+ * totals and overflow buckets.  Companion to AGENT2's upcoming
+ * `zcl_explain_reject` lookup tool — this one is for dashboards and
+ * alerting; the other one resolves a specific hash. */
+static int h_zcl_consensus_report(const struct mcp_request *req,
+                                   struct mcp_response *res)
+{
+    (void)req;
+    /* Cap large enough for the full 48-slot table plus overflow +
+     * totals envelope (worst case ≈ 48 × 80 bytes per entry). */
+    char body[8192];
+    size_t n = mcp_metrics_consensus_report_json(body, sizeof(body));
+    if (n == 0) return -1;
+    res->body = strdup(body);
+    return res->body ? 0 : -1;
+}
+
 /* ── Admin dashboard (wave 5 #5) ──────────────────────────────
  *
  * zcl_admin is a composite snapshot tool: it dispatches the existing
@@ -705,6 +724,12 @@ static const struct mcp_tool_route k_routes[] = {
       "tracked-IP and active-ban gauges. Parallel to zcl_peer_report "
       "for the RPC surface.",
       NULL, 0, h_zcl_rpc_report },
+    { "zcl_consensus_report", "ops",
+      "Consensus-reject snapshot: per-(kind, reason) counts plus "
+      "tx/block totals and overflow buckets for the in-process "
+      "EV_CONSENSUS_REJECT_TX / EV_CONSENSUS_REJECT_BLOCK stream. "
+      "Dashboard companion to AGENT2's zcl_explain_reject.",
+      NULL, 0, h_zcl_consensus_report },
     { "zcl_config_reload", "ops",
       "Re-read env-tunable config for live subsystems (peer_scoring, "
       "rpc_middleware) without restarting the node. Returns the new "

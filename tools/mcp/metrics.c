@@ -75,6 +75,25 @@ static uint64_t             g_peer_offences[MCP_METRICS_PEER_KINDS];
 static uint64_t             g_peer_offences_total;
 static uint64_t             g_peer_bans_total;
 
+/* Consensus reject registry — bounded (kind, reason) → count table.
+ * `kind` is "tx" or "block"; reason is a kebab-case string emitted by
+ * the REJECT_IF/UNLESS macros in lib/validation/src/check_*.c.  Beyond
+ * `MCP_METRICS_MAX_REJECT_REASONS` distinct (kind, reason) pairs we fold
+ * into the per-kind overflow counters so cardinality stays bounded.
+ * The per-kind totals are incremented unconditionally — they stay
+ * consistent with the sum of slot counts + overflow counts. */
+struct reject_reason_slot {
+    char     reason[48];
+    char     kind[8];  /* "tx" or "block" */
+    uint64_t count;
+};
+static struct reject_reason_slot g_reject_slots[MCP_METRICS_MAX_REJECT_REASONS];
+static size_t                    g_reject_slot_count;
+static uint64_t                  g_reject_total_tx;
+static uint64_t                  g_reject_total_block;
+static uint64_t                  g_reject_overflow_tx;
+static uint64_t                  g_reject_overflow_block;
+
 static pthread_mutex_t      g_lock = PTHREAD_MUTEX_INITIALIZER;
 static bool                 g_observer_installed = false;
 
@@ -195,6 +214,12 @@ void mcp_metrics_reset(void)
     memset(g_peer_offences, 0, sizeof(g_peer_offences));
     g_peer_offences_total = 0;
     g_peer_bans_total = 0;
+    memset(g_reject_slots, 0, sizeof(g_reject_slots));
+    g_reject_slot_count = 0;
+    g_reject_total_tx = 0;
+    g_reject_total_block = 0;
+    g_reject_overflow_tx = 0;
+    g_reject_overflow_block = 0;
     pthread_mutex_unlock(&g_lock);
 }
 
@@ -244,6 +269,76 @@ uint64_t mcp_metrics_peer_bans_total(void)
 {
     pthread_mutex_lock(&g_lock);
     uint64_t v = g_peer_bans_total;
+    pthread_mutex_unlock(&g_lock);
+    return v;
+}
+
+/* ── Consensus reject counters (wave 8) ─────────────────────── */
+
+/* Find an existing (kind, reason) slot or create a new one.  Returns
+ * -1 when the table is full so the caller can fall back to overflow.
+ * Must be called with g_lock held. */
+static int reject_slot_locked(const char *kind, const char *reason)
+{
+    for (size_t i = 0; i < g_reject_slot_count; i++) {
+        if (strcmp(g_reject_slots[i].kind, kind) == 0 &&
+            strcmp(g_reject_slots[i].reason, reason) == 0)
+            return (int)i;
+    }
+    if (g_reject_slot_count >= MCP_METRICS_MAX_REJECT_REASONS)
+        return -1;
+    size_t idx = g_reject_slot_count++;
+    memset(&g_reject_slots[idx], 0, sizeof(g_reject_slots[idx]));
+    snprintf(g_reject_slots[idx].reason,
+             sizeof(g_reject_slots[idx].reason), "%s", reason);
+    snprintf(g_reject_slots[idx].kind,
+             sizeof(g_reject_slots[idx].kind), "%s", kind);
+    return (int)idx;
+}
+
+void mcp_metrics_record_consensus_reject(const char *kind, const char *reason)
+{
+    /* Normalise inputs so the table is predictable regardless of
+     * observer call path. */
+    bool is_block = (kind && strcmp(kind, "block") == 0);
+    const char *k = is_block ? "block" : "tx";
+    if (!reason || !*reason) reason = "unknown";
+
+    pthread_mutex_lock(&g_lock);
+    int idx = reject_slot_locked(k, reason);
+    if (idx >= 0) {
+        g_reject_slots[idx].count++;
+    } else if (is_block) {
+        g_reject_overflow_block++;
+    } else {
+        g_reject_overflow_tx++;
+    }
+    if (is_block) g_reject_total_block++;
+    else          g_reject_total_tx++;
+    pthread_mutex_unlock(&g_lock);
+}
+
+uint64_t mcp_metrics_consensus_rejects_total(void)
+{
+    pthread_mutex_lock(&g_lock);
+    uint64_t v = g_reject_total_tx + g_reject_total_block;
+    pthread_mutex_unlock(&g_lock);
+    return v;
+}
+
+uint64_t mcp_metrics_consensus_rejects_for_kind(const char *kind)
+{
+    pthread_mutex_lock(&g_lock);
+    uint64_t v = (kind && strcmp(kind, "block") == 0)
+                   ? g_reject_total_block : g_reject_total_tx;
+    pthread_mutex_unlock(&g_lock);
+    return v;
+}
+
+uint64_t mcp_metrics_consensus_rejects_tracked_reasons(void)
+{
+    pthread_mutex_lock(&g_lock);
+    uint64_t v = (uint64_t)g_reject_slot_count;
     pthread_mutex_unlock(&g_lock);
     return v;
 }
@@ -320,6 +415,22 @@ static void mcp_peer_observer(enum event_type type, uint32_t peer_id,
     }
 }
 
+static void mcp_consensus_observer(enum event_type type, uint32_t peer_id,
+                                    const void *payload, uint32_t payload_len,
+                                    void *ctx)
+{
+    (void)peer_id; (void)ctx;
+    const char *kind;
+    if      (type == EV_CONSENSUS_REJECT_TX)    kind = "tx";
+    else if (type == EV_CONSENSUS_REJECT_BLOCK) kind = "block";
+    else return;
+
+    char reason[48] = {0};
+    if (payload && payload_len > 0)
+        parse_kv(payload, payload_len, "reason", reason, sizeof(reason));
+    mcp_metrics_record_consensus_reject(kind, reason);
+}
+
 void mcp_metrics_init(void)
 {
     pthread_mutex_lock(&g_lock);
@@ -330,6 +441,8 @@ void mcp_metrics_init(void)
     event_observe(EV_MCP_REQUEST, mcp_request_observer, NULL);
     event_observe(EV_PEER_MISBEHAVE, mcp_peer_observer, NULL);
     event_observe(EV_PEER_BANNED, mcp_peer_observer, NULL);
+    event_observe(EV_CONSENSUS_REJECT_TX, mcp_consensus_observer, NULL);
+    event_observe(EV_CONSENSUS_REJECT_BLOCK, mcp_consensus_observer, NULL);
     g_observer_installed = true;
     pthread_mutex_unlock(&g_lock);
 }
@@ -497,6 +610,29 @@ size_t mcp_metrics_render_prometheus(char *buf, size_t cap)
         "zcl_rpc_tracked_ips %llu\n",
         (unsigned long long)snap.tracked_ips);
 
+    /* ── Consensus reject block ─────────────────────────────── */
+    pos = append(buf, cap, pos,
+        "# HELP zcl_consensus_rejects_total Consensus rejects by kind + reason\n"
+        "# TYPE zcl_consensus_rejects_total counter\n");
+    for (size_t i = 0; i < g_reject_slot_count; i++) {
+        pos = append(buf, cap, pos,
+            "zcl_consensus_rejects_total{kind=\"%s\",reason=\"%s\"} %llu\n",
+            g_reject_slots[i].kind,
+            g_reject_slots[i].reason,
+            (unsigned long long)g_reject_slots[i].count);
+    }
+    pos = append(buf, cap, pos,
+        "zcl_consensus_rejects_total{kind=\"tx\",reason=\"__other__\"} %llu\n"
+        "zcl_consensus_rejects_total{kind=\"block\",reason=\"__other__\"} %llu\n"
+        "zcl_consensus_rejects_total{kind=\"tx\",reason=\"all\"} %llu\n"
+        "zcl_consensus_rejects_total{kind=\"block\",reason=\"all\"} %llu\n"
+        "zcl_consensus_rejects_total{kind=\"all\",reason=\"all\"} %llu\n",
+        (unsigned long long)g_reject_overflow_tx,
+        (unsigned long long)g_reject_overflow_block,
+        (unsigned long long)g_reject_total_tx,
+        (unsigned long long)g_reject_total_block,
+        (unsigned long long)(g_reject_total_tx + g_reject_total_block));
+
     if (pos < cap) buf[pos] = '\0';
     pthread_mutex_unlock(&g_lock);
     return pos;
@@ -579,5 +715,43 @@ size_t mcp_metrics_rpc_report_json(char *buf, size_t cap)
         snap.tracked_ips, snap.active_bans);
 
     if (pos < cap) buf[pos] = '\0';
+    return pos;
+}
+
+size_t mcp_metrics_consensus_report_json(char *buf, size_t cap)
+{
+    if (!buf || cap == 0) return 0;
+    pthread_mutex_lock(&g_lock);
+
+    size_t pos = 0;
+    pos = append(buf, cap, pos,
+        "{\"totals\":{"
+            "\"tx\":%llu,"
+            "\"block\":%llu,"
+            "\"all\":%llu"
+         "},\"overflow\":{"
+            "\"tx\":%llu,"
+            "\"block\":%llu"
+         "},\"tracked_reasons\":%zu,\"capacity\":%d,\"by_reason\":[",
+        (unsigned long long)g_reject_total_tx,
+        (unsigned long long)g_reject_total_block,
+        (unsigned long long)(g_reject_total_tx + g_reject_total_block),
+        (unsigned long long)g_reject_overflow_tx,
+        (unsigned long long)g_reject_overflow_block,
+        g_reject_slot_count,
+        MCP_METRICS_MAX_REJECT_REASONS);
+
+    for (size_t i = 0; i < g_reject_slot_count; i++) {
+        pos = append(buf, cap, pos,
+            "%s{\"kind\":\"%s\",\"reason\":\"%s\",\"count\":%llu}",
+            i == 0 ? "" : ",",
+            g_reject_slots[i].kind,
+            g_reject_slots[i].reason,
+            (unsigned long long)g_reject_slots[i].count);
+    }
+    pos = append(buf, cap, pos, "]}");
+
+    if (pos < cap) buf[pos] = '\0';
+    pthread_mutex_unlock(&g_lock);
     return pos;
 }
