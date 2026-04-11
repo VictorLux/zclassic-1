@@ -21,6 +21,7 @@
  * controller file — not this file. */
 
 #include "mcp/router.h"
+#include "mcp/middleware.h"
 #include "mcp/controllers.h"
 #include "mcp/rpc_client.h"
 
@@ -30,6 +31,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+
+/* Process-wide middleware.  Populated from environment at boot. */
+static struct mcp_middleware g_middleware;
 
 /* ── MCP protocol ────────────────────────────────────────────── */
 
@@ -88,7 +92,16 @@ static void handle_tools_call(const struct json_value *req)
         return;
     }
 
-    char *result = mcp_router_dispatch(json_get_str(name_v), args);
+    /* Bearer token, if the caller embedded one in the request metadata. */
+    const char *bearer = NULL;
+    const struct json_value *meta = params ? json_get(params, "_meta") : NULL;
+    if (meta) {
+        const struct json_value *auth = json_get(meta, "authorization");
+        if (auth && auth->type == JSON_STR) bearer = json_get_str(auth);
+    }
+
+    char *result = mcp_middleware_dispatch(&g_middleware,
+                                            json_get_str(name_v), args, bearer);
     if (!result) result = strdup("null");
 
     /* Embed result as MCP text content, escaping for JSON. */
@@ -136,6 +149,8 @@ int mcp_server_main(const char *datadir, int rpc_port)
 {
     mcp_rpc_client_init(datadir, rpc_port);
     register_all_controllers();
+    mcp_middleware_init(&g_middleware);
+    mcp_middleware_load_from_env(&g_middleware);
 
     char line[65536];
     while (fgets(line, sizeof(line), stdin)) {

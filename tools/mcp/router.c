@@ -154,6 +154,9 @@ const char *mcp_error_code_name(enum mcp_error_code c)
     case MCP_ERR_ENUM_MISMATCH:    return "ENUM_MISMATCH";
     case MCP_ERR_HANDLER_FAILED:   return "HANDLER_FAILED";
     case MCP_ERR_INTERNAL:         return "INTERNAL";
+    case MCP_ERR_AUTH_REQUIRED:    return "AUTH_REQUIRED";
+    case MCP_ERR_RATE_LIMITED:     return "RATE_LIMITED";
+    case MCP_ERR_TOOL_TIMEOUT:     return "TOOL_TIMEOUT";
     }
     return "UNKNOWN";
 }
