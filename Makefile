@@ -57,7 +57,7 @@ LIBS = -Lvendor/lib -lsecp256k1 -lleveldb \
 	-lssl -lcrypto -lz
 
 .PHONY: all test test-e2e clean deploy check-restart-follow \
-        coverage coverage-clean docs-mcp docs-mcp-check
+        coverage coverage-clean docs-mcp docs-mcp-check ci
 
 CLI_SRCS = lib/rpc/src/client.c lib/json/src/json.c
 all: test_zcl zclassic23 zclassic-cli
@@ -453,6 +453,35 @@ docs-mcp-check: zclassic23
 	 fi; \
 	 rm -f "$$tmp"; \
 	 echo "MCP_REFERENCE.md is up to date."
+
+# ── ci ─────────────────────────────────────────────────────────
+# Single command for full verification: build, test, fuzz (short),
+# and coverage.  Fail-fast — stops at the first broken stage so
+# you don't waste minutes on coverage when tests don't pass.
+#
+# Usage:
+#   make ci                 # full pipeline
+#   make ci SKIP_FUZZ=1     # skip the fuzz stage (faster)
+#   make ci SKIP_COV=1      # skip coverage (faster)
+ci: zclassic23 test_zcl
+	@echo "══ CI: test ══"
+	ulimit -s unlimited && ./test_zcl
+	@echo ""
+	@if [ "$(SKIP_FUZZ)" != "1" ]; then \
+		echo "══ CI: fuzz-ci ══"; \
+		$(MAKE) fuzz-ci || exit 1; \
+		echo ""; \
+	else \
+		echo "══ CI: fuzz-ci (SKIPPED — SKIP_FUZZ=1) ══"; \
+	fi
+	@if [ "$(SKIP_COV)" != "1" ]; then \
+		echo "══ CI: coverage ══"; \
+		$(MAKE) coverage || exit 1; \
+	else \
+		echo "══ CI: coverage (SKIPPED — SKIP_COV=1) ══"; \
+	fi
+	@echo ""
+	@echo "══ CI: ALL STAGES PASSED ══"
 
 check-restart-follow:
 	./zcl-nodectl verify-follow --restart
