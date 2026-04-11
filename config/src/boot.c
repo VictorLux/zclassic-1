@@ -9,6 +9,7 @@
 #include "services/snapshot_sync_service.h"
 #include "services/chain_activation_controller.h"
 #include "services/chain_state_repository.h"
+#include "services/recovery_policy.h"
 #include "controllers/wallet_scan.h"
 #include "util/sync.h"
 #include "net/msgprocessor.h"
@@ -113,6 +114,39 @@ static _Atomic bool g_running = false;
 static struct db_service *boot_runtime_db_service(void)
 {
     return db_service_is_started(&g_db_service) ? &g_db_service : NULL;
+}
+
+/* ── Policy-gated UTXO wipe ─────────────────────────────────────
+ *
+ * Every destructive UTXO wipe in boot.c must go through this helper.
+ * It counts the rows first, asks recovery_policy for permission with
+ * a grep-able reason string, and refuses loudly if the proposed wipe
+ * is larger than `ZCL_MAX_UTXO_WIPE_ROWS` (default 1000).
+ *
+ * Returns true on ALLOW (caller may proceed / helper performed the
+ * wipe), false on any REFUSE (caller must NOT fall back to a raw
+ * wipe — the policy has spoken).
+ *
+ * This is the gate that would have saved the 1.3M UTXOs on
+ * 2026-04-10. Do not bypass. */
+static bool boot_policy_wipe_utxos(const char *reason)
+{
+    int64_t proposed = node_db_utxo_count(&g_node_db);
+
+    struct recovery_policy pol;
+    policy_load_from_env(&pol);
+
+    enum policy_decision d = policy_check_utxo_wipe(&pol, proposed, reason);
+    if (d != POLICY_ALLOW) {
+        fprintf(stderr,
+                "boot: REFUSING UTXO wipe at \"%s\" — would drop %lld rows, "
+                "policy=%s (override with ZCL_MAX_UTXO_WIPE_ROWS=%lld)\n",
+                reason, (long long)proposed,
+                policy_decision_name(d), (long long)(proposed + 1));
+        return false;
+    }
+    node_db_wipe_utxos(&g_node_db);
+    return true;
 }
 
 static bool boot_db_enter_turbo_mode(void)
@@ -871,9 +905,12 @@ bool app_init(struct app_context *ctx)
         /* -reimport-utxos: force re-import from LevelDB chainstate */
         if (ctx->reimport_utxos) {
             printf("Forced UTXO re-import requested.\n");
-            node_db_wipe_utxos(&g_node_db);
-            node_db_exec(&g_node_db,
-                "DELETE FROM node_state WHERE key='leveldb_utxo_migrated'");
+            if (!boot_policy_wipe_utxos("boot.reimport_utxos_flag")) {
+                ctx->reimport_utxos = false; /* policy refused — don't import */
+            } else {
+                node_db_exec(&g_node_db,
+                    "DELETE FROM node_state WHERE key='leveldb_utxo_migrated'");
+            }
         }
 
         /* LDB import is deferred until after block index load — see below.
@@ -889,8 +926,9 @@ bool app_init(struct app_context *ctx)
                 event_emitf(EV_BOOT_UTXO_IMPORT, 0, "start path=%s", cs_path);
                 fflush(stdout);
 
-                /* Wipe any residual UTXOs first — clean slate */
-                node_db_wipe_utxos(&g_node_db);
+                /* Dead code (if (false) above), but left policy-gated for
+                 * symmetry if ever revived. */
+                (void)boot_policy_wipe_utxos("boot.ldb_import_legacy");
 
                 /* Close coins_view_sqlite during import — its dedicated
                  * connection holds a WAL read lock that prevents the
@@ -984,7 +1022,7 @@ bool app_init(struct app_context *ctx)
                                 "%llu UTXOs (expected >100K). "
                                 "Will retry on next boot.\n",
                                 (unsigned long long)imported_count);
-                        node_db_wipe_utxos(&g_node_db);
+                        (void)boot_policy_wipe_utxos("boot.ldb_import_underrun");
                     }
 
                     /* Reopen coins_view_sqlite after import */
@@ -1433,7 +1471,7 @@ bool app_init(struct app_context *ctx)
                              "%s", cs_path);
                 }
 
-                node_db_wipe_utxos(&g_node_db);
+                (void)boot_policy_wipe_utxos("boot.ldb_import_prepare");
                 coins_view_sqlite_close(&g_coins_sqlite);
 
                 struct coins_view_db migrate_db;
@@ -1598,7 +1636,7 @@ bool app_init(struct app_context *ctx)
                         fprintf(stderr, "ERROR: only %llu UTXOs imported "
                                 "— will retry on next boot\n",
                                 (unsigned long long)imported_count);
-                        node_db_wipe_utxos(&g_node_db);
+                        (void)boot_policy_wipe_utxos("boot.ldb_import_failed_retry");
                     }
 
                     uint8_t one = 1;
@@ -1840,7 +1878,7 @@ skip_ldb_import:
                 } else {
                     /* No UTXOs — wipe and start fresh */
                     printf("No UTXOs found — wiping coins state.\n");
-                    node_db_wipe_utxos(&g_node_db);
+                    (void)boot_policy_wipe_utxos("boot.restore_no_utxos");
                     coins_view_cache_set_best_block(&g_coins_tip,
                         &params->consensus.hashGenesisBlock);
                     coins_view_cache_flush(&g_coins_tip);
@@ -2073,7 +2111,7 @@ skip_ldb_import:
                 }
             }
 
-            node_db_wipe_utxos(&g_node_db);
+            (void)boot_policy_wipe_utxos("boot.reset_to_genesis");
 
             /* Set coins_best_block to genesis so activate_best_chain
              * can connect block 1 (its hashPrevBlock == genesis hash).
@@ -2145,7 +2183,7 @@ skip_ldb_import:
                     printf("WARNING: Chain at genesis but %lld stale UTXOs "
                            "from previous snapshot — wiping for clean "
                            "sync\n", (long long)stale_utxos);
-                    node_db_wipe_utxos(&g_node_db);
+                    (void)boot_policy_wipe_utxos("boot.stale_utxos_at_genesis");
                     coins_view_cache_set_best_block(&g_coins_tip,
                         &params->consensus.hashGenesisBlock);
                     coins_view_cache_flush(&g_coins_tip);
