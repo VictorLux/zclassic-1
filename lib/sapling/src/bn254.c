@@ -1052,6 +1052,103 @@ void bn_g2_to_affine(struct bn_fq2 *ax, struct bn_fq2 *ay, const struct bn_g2 *p
     bn_fq2_mul(ay, &p->y, &zi3);
 }
 
+/* ── FE2IP decoding for CompressedG2 (wave 9 PHGR13 fix, bug #2) ───
+ *
+ * Zcash's CompressedG2 wire format encodes the Fq2 x-coordinate as
+ * a single 512-bit big-endian integer: combined = c1*q + c0 (FE2IP).
+ * To decode: c0 = combined mod q, c1 = combined div q, assert c1 < q.
+ *
+ * The previous code incorrectly read the 64 bytes as two independent
+ * 32-byte big-endian Fq elements (c1 || c0), which is only correct
+ * when c1*q < 2^256 — i.e. essentially never for real curve points.
+ *
+ * Reference: zclassic-cpp/src/zcash/Proof.cpp:85-96 (Fq2::to_libsnark_fq2).
+ */
+
+/* Divide a 512-bit unsigned integer by a 256-bit divisor.
+ * Returns quotient (256-bit) and remainder (256-bit).
+ * Uses binary long division — O(512) iterations. Correct for all inputs.
+ * Not performance-critical: called once per G2 decompression. */
+static void u512_divmod_u256(const uint64_t dividend[8],
+                              const uint64_t divisor[4],
+                              uint64_t quotient[4],
+                              uint64_t remainder[4])
+{
+    /* Accumulator for remainder — needs 257 bits during processing. */
+    uint64_t rem[5] = {0};
+    memset(quotient, 0, 32);
+
+    for (int i = 511; i >= 0; i--) {
+        /* Left-shift remainder by 1 */
+        rem[4] = (rem[4] << 1) | (rem[3] >> 63);
+        rem[3] = (rem[3] << 1) | (rem[2] >> 63);
+        rem[2] = (rem[2] << 1) | (rem[1] >> 63);
+        rem[1] = (rem[1] << 1) | (rem[0] >> 63);
+        rem[0] = rem[0] << 1;
+
+        /* Bring down bit i of dividend */
+        if (dividend[i / 64] & (1ULL << (i % 64)))
+            rem[0] |= 1;
+
+        /* Compare rem[4..0] >= divisor[3..0] */
+        bool ge = false;
+        if (rem[4] > 0) {
+            ge = true;
+        } else {
+            ge = true;
+            for (int j = 3; j >= 0; j--) {
+                if (rem[j] > divisor[j]) break;
+                if (rem[j] < divisor[j]) { ge = false; break; }
+            }
+        }
+
+        if (ge) {
+            /* Subtract divisor from rem */
+            __int128_t borrow = 0;
+            for (int j = 0; j < 4; j++) {
+                borrow += (__int128_t)rem[j] - divisor[j];
+                rem[j] = (uint64_t)borrow;
+                borrow >>= 64;
+            }
+            rem[4] += (uint64_t)borrow;
+
+            /* Set quotient bit (only bits 0..255 matter) */
+            if (i < 256)
+                quotient[i / 64] |= (1ULL << (i % 64));
+        }
+    }
+
+    memcpy(remainder, rem, 32);
+}
+
+/* Decode a CompressedG2 Fq2 x-coordinate from 64-byte FE2IP encoding.
+ * combined (512-bit BE) = c1*q + c0 where c0, c1 < q.
+ * Returns false if c1 >= q (invalid encoding). */
+bool fq2_decode_fe2ip(struct bn_fq *c0, struct bn_fq *c1,
+                      const uint8_t data[64])
+{
+    /* Read 64 bytes big-endian into 8 uint64 limbs (little-endian order) */
+    uint64_t combined[8] = {0};
+    for (int i = 0; i < 64; i++) {
+        int limb = (63 - i) / 8;
+        int shift = ((63 - i) % 8) * 8;
+        combined[limb] |= (uint64_t)data[i] << shift;
+    }
+
+    uint64_t q_raw[4], r_raw[4];
+    u512_divmod_u256(combined, FQ_Q, q_raw, r_raw);
+
+    /* c1 = quotient, must be < q */
+    if (u256_ge(q_raw, FQ_Q) && memcmp(q_raw, FQ_Q, 32) != 0)
+        return false;
+
+    /* c0 = remainder (already < q by definition of mod) */
+    /* Convert canonical → Montgomery form */
+    bn_fq_mont_mul(c0->d, r_raw, FQ_R2);
+    bn_fq_mont_mul(c1->d, q_raw, FQ_R2);
+    return true;
+}
+
 bool bn_g2_decompress(struct bn_g2 *p, const uint8_t data[65])
 {
     uint8_t flags = data[0];
@@ -1062,10 +1159,10 @@ bool bn_g2_decompress(struct bn_g2 *p, const uint8_t data[65])
     for (int i = 1; i < 65; i++) if (data[i] != 0) { all_zero = false; break; }
     if (all_zero && (flags & 0x04)) { bn_g2_identity(p); return true; }
 
-    /* G2 x-coordinate is in Fq2: serialized as c1 (32 bytes) then c0 (32 bytes) */
-    if (!bn_fq_from_bytes_be(&p->x.c1, data + 1))
-        return false;
-    if (!bn_fq_from_bytes_be(&p->x.c0, data + 33))
+    /* G2 x-coordinate: 64-byte FE2IP encoding → (c0, c1) in Fq2.
+     * Previous code (WRONG): read as c1(32 BE) || c0(32 BE).
+     * Correct: 64 bytes form a single 512-bit BE integer = c1*q + c0. */
+    if (!fq2_decode_fe2ip(&p->x.c0, &p->x.c1, data + 1))
         return false;
 
     /* y^2 = x^3 + b_twist */
@@ -1660,82 +1757,189 @@ bool ppzksnark_proof_read(struct ppzksnark_proof *proof, const uint8_t data[296]
     return (off == 296);
 }
 
-/* Helpers for VK reading */
-static bool vk_read_g1(struct bn_g1 *pt, const uint8_t *data, size_t len, size_t *off)
+/* ── libsnark VK file parser (wave 9 PHGR13 fix, bug #1) ───────
+ *
+ * The sprout-verifying.key file is in libsnark's native binary format,
+ * NOT the flat big-endian concat the previous code assumed. The format:
+ *
+ *   - Fp values: 32 bytes, Montgomery-form limbs in native (LE) byte order
+ *   - G1 points: X(Fp:32) + Y(Fp:32) = 64 bytes (affine, uncompressed)
+ *   - G2 points: X.c0(32) + X.c1(32) + Y.c0(32) + Y.c1(32) = 128 bytes
+ *   - '\n' (0x0A) separator between top-level VK fields
+ *   - accumulation_vector: first(G1) + '\n' + sparse_vector + '\n'
+ *   - sparse_vector: domain_size(decimal text + '\n') + count(decimal + '\n')
+ *     + count indices (each decimal + '\n') + count G1 values (each binary + '\n')
+ *
+ * Total for ZCash PHGR13 (ic_len=10): 1449 bytes.
+ *
+ * Reference: PHGR13_INVESTIGATION.md (wave 7), sections "Reproduction" and
+ * "Why the VK parser assumed the wrong format".
+ */
+
+/* Read one Fp value from libsnark BINARY_OUTPUT format.
+ * 32 bytes, 4 × uint64_t in LE byte order, Montgomery form.
+ * Goes directly into bn_fq.d[] since our internal format is also Montgomery. */
+static bool vk_read_fq_mont_le(struct bn_fq *r, const uint8_t *data,
+                                 size_t len, size_t *off)
 {
-    if (*off + 64 > len) return false;
-    if (!bn_fq_from_bytes_be(&pt->x, data + *off)) return false;
-    if (!bn_fq_from_bytes_be(&pt->y, data + *off + 32)) return false;
+    if (*off + 32 > len) return false;
+    for (int i = 0; i < 4; i++) {
+        r->d[i] = 0;
+        for (int j = 0; j < 8; j++)
+            r->d[i] |= (uint64_t)data[*off + i * 8 + j] << (j * 8);
+    }
+    *off += 32;
+    return true;
+}
+
+/* Read a decimal-encoded integer followed by '\n'.
+ * In libsnark's sparse_vector, domain_size/count/indices are written via
+ * `out << val << "\n"` (hardcoded newline, not OUTPUT_NEWLINE), so they
+ * are always text even in BINARY_OUTPUT mode. */
+static bool vk_read_text_int(uint64_t *out, const uint8_t *data,
+                               size_t len, size_t *off)
+{
+    uint64_t val = 0;
+    bool any = false;
+    while (*off < len && data[*off] >= '0' && data[*off] <= '9') {
+        val = val * 10 + (data[*off] - '0');
+        (*off)++;
+        any = true;
+    }
+    if (!any) return false;
+    if (*off < len && data[*off] == '\n') (*off)++;
+    *out = val;
+    return true;
+}
+
+/* Read a G1 affine point in libsnark BINARY_OUTPUT + NO_PT_COMPRESSION format.
+ * Layout: is_zero('0'/'1', 1 byte) + X(Fp, 32) + Y(Fp, 32) = 65 bytes.
+ * OUTPUT_SEPARATOR = "" between fields (BINARY_OUTPUT mode). */
+static bool vk_read_g1_libsnark(struct bn_g1 *pt, const uint8_t *data,
+                                  size_t len, size_t *off)
+{
+    if (*off >= len) return false;
+    uint8_t is_zero = data[*off] - '0';
+    (*off)++;
+    if (is_zero == 1) {
+        /* Point at infinity */
+        bn_fq_zero(&pt->x);
+        bn_fq_zero(&pt->y);
+        bn_fq_zero(&pt->z);
+        /* Still consume 64 bytes of X,Y even for zero point */
+        if (*off + 64 > len) return false;
+        *off += 64;
+        return true;
+    }
+    if (!vk_read_fq_mont_le(&pt->x, data, len, off)) return false;
+    if (!vk_read_fq_mont_le(&pt->y, data, len, off)) return false;
     bn_fq_one(&pt->z);
-    *off += 64;
     return true;
 }
 
-static bool vk_read_g2(struct bn_g2 *pt, const uint8_t *data, size_t len, size_t *off)
+/* Read a G2 affine point in libsnark BINARY_OUTPUT + NO_PT_COMPRESSION format.
+ * Layout: is_zero('0'/'1', 1 byte) + X(Fp2=c0+c1, 64) + Y(Fp2, 64) = 129 bytes.
+ * Fp2 component order: c0 first, c1 second. */
+static bool vk_read_g2_libsnark(struct bn_g2 *pt, const uint8_t *data,
+                                  size_t len, size_t *off)
 {
-    if (*off + 128 > len) return false;
-    if (!bn_fq_from_bytes_be(&pt->x.c0, data + *off)) return false;
-    if (!bn_fq_from_bytes_be(&pt->x.c1, data + *off + 32)) return false;
-    if (!bn_fq_from_bytes_be(&pt->y.c0, data + *off + 64)) return false;
-    if (!bn_fq_from_bytes_be(&pt->y.c1, data + *off + 96)) return false;
+    if (*off >= len) return false;
+    uint8_t is_zero = data[*off] - '0';
+    (*off)++;
+    if (is_zero == 1) {
+        bn_fq_zero(&pt->x.c0); bn_fq_zero(&pt->x.c1);
+        bn_fq_zero(&pt->y.c0); bn_fq_zero(&pt->y.c1);
+        bn_fq_zero(&pt->z.c0); bn_fq_zero(&pt->z.c1);
+        if (*off + 128 > len) return false;
+        *off += 128;
+        return true;
+    }
+    if (!vk_read_fq_mont_le(&pt->x.c0, data, len, off)) return false;
+    if (!vk_read_fq_mont_le(&pt->x.c1, data, len, off)) return false;
+    if (!vk_read_fq_mont_le(&pt->y.c0, data, len, off)) return false;
+    if (!vk_read_fq_mont_le(&pt->y.c1, data, len, off)) return false;
     bn_fq2_one(&pt->z);
-    *off += 128;
     return true;
 }
 
-/* Read verification key from libsnark serialized format */
+/* Parse sprout-verifying.key in libsnark BINARY_OUTPUT + NO_PT_COMPRESSION format.
+ *
+ * The zcash fork of libsnark uses -DBINARY_OUTPUT -DNO_PT_COMPRESSION:
+ *   OUTPUT_NEWLINE = ""  (no separators between VK fields)
+ *   OUTPUT_SEPARATOR = "" (no separators within fields)
+ *   NO_PT_COMPRESSION:   affine (X, Y) for each point
+ *   is_zero flag:         1-byte text ('0' or '1') before each point
+ *
+ * Layout: 7 curve points (G1=65 bytes, G2=129 bytes), concatenated,
+ * followed by an accumulation_vector<G1>. The accumulation_vector has
+ * a "first" G1 point then a sparse_vector<G1> whose integer fields
+ * (domain_size, counts, indices) use hardcoded "\n" separators (not
+ * OUTPUT_NEWLINE), so they're always text-encoded even in binary mode.
+ *
+ * Verified against the real 1449-byte sprout-verifying.key file:
+ *   5×129 + 2×65 = 775 (VK points)
+ *   + 65 (IC first) + 24 (text) + 9×65 (IC values) = 1449.
+ *
+ * Returns true on success. On failure, vk is zeroed. */
 bool ppzksnark_vk_read(struct ppzksnark_vk *vk, const uint8_t *data, size_t len)
 {
-    /* The sprout-verifying.key format from libsnark:
-     * Each G1 point: 64 bytes (Fq x, Fq y as 32-byte BE each)
-     * Each G2 point: 128 bytes (Fq2 x=(c0,c1), Fq2 y=(c0,c1) as 32-byte BE each)
-     *
-     * Layout:
-     *   alphaA_g2 (128)
-     *   alphaB_g1 (64)
-     *   alphaC_g2 (128)
-     *   gamma_g2 (128)
-     *   gamma_beta_g1 (64)
-     *   gamma_beta_g2 (128)
-     *   rC_Z_g2 (128)
-     *   ic_len as uint32_t LE (4)
-     *   ic[0..ic_len-1] (64 each, G1 uncompressed) */
-
     memset(vk, 0, sizeof(*vk));
-
-    size_t min = 128 + 64 + 128 + 128 + 64 + 128 + 128 + 4;
-    if (len < min)
-        return false;
-
     size_t off = 0;
 
-    if (!vk_read_g2(&vk->alpha_a_g2, data, len, &off)) return false;
-    if (!vk_read_g1(&vk->alpha_b_g1, data, len, &off)) return false;
-    if (!vk_read_g2(&vk->alpha_c_g2, data, len, &off)) return false;
-    if (!vk_read_g2(&vk->gamma_g2, data, len, &off)) return false;
-    if (!vk_read_g1(&vk->gamma_beta_g1, data, len, &off)) return false;
-    if (!vk_read_g2(&vk->gamma_beta_g2, data, len, &off)) return false;
-    if (!vk_read_g2(&vk->rc_z_g2, data, len, &off)) return false;
+    /* 7 VK fields — no separators (BINARY_OUTPUT) */
+    if (!vk_read_g2_libsnark(&vk->alpha_a_g2, data, len, &off)) return false;
+    if (!vk_read_g1_libsnark(&vk->alpha_b_g1, data, len, &off)) return false;
+    if (!vk_read_g2_libsnark(&vk->alpha_c_g2, data, len, &off)) return false;
+    if (!vk_read_g2_libsnark(&vk->gamma_g2, data, len, &off)) return false;
+    if (!vk_read_g1_libsnark(&vk->gamma_beta_g1, data, len, &off)) return false;
+    if (!vk_read_g2_libsnark(&vk->gamma_beta_g2, data, len, &off)) return false;
+    if (!vk_read_g2_libsnark(&vk->rc_z_g2, data, len, &off)) return false;
 
-    if (off + 4 > len) return false;
-    uint32_t ic_count = (uint32_t)data[off] | ((uint32_t)data[off+1] << 8) |
-                        ((uint32_t)data[off+2] << 16) | ((uint32_t)data[off+3] << 24);
-    off += 4;
+    /* accumulation_vector<G1>: first(G1) + rest(sparse_vector) */
+    struct bn_g1 first;
+    if (!vk_read_g1_libsnark(&first, data, len, &off)) return false;
 
-    if (off + (size_t)ic_count * 64 > len) return false;
+    /* sparse_vector text fields: domain_size, indices_count, indices[],
+     * values_count, then binary G1 values. */
+    uint64_t domain_size, idx_count;
+    if (!vk_read_text_int(&domain_size, data, len, &off)) return false;
+    if (!vk_read_text_int(&idx_count, data, len, &off)) return false;
+    if (idx_count > 1000 || idx_count > domain_size) return false;
 
-    vk->ic = calloc(ic_count, sizeof(struct bn_g1));
-    if (!vk->ic) return false;
-    vk->ic_len = ic_count;
-
-    for (uint32_t i = 0; i < ic_count; i++) {
-        if (!vk_read_g1(&vk->ic[i], data, len, &off)) {
-            free(vk->ic);
-            vk->ic = NULL;
-            return false;
+    uint64_t *indices = calloc(idx_count, sizeof(uint64_t));
+    if (!indices && idx_count > 0) return false;
+    for (uint64_t i = 0; i < idx_count; i++) {
+        if (!vk_read_text_int(&indices[i], data, len, &off)) {
+            free(indices); return false;
         }
     }
 
+    /* values_count (same as idx_count for a well-formed sparse_vector) */
+    uint64_t val_count;
+    if (!vk_read_text_int(&val_count, data, len, &off)) {
+        free(indices); return false;
+    }
+    if (val_count != idx_count) { free(indices); return false; }
+
+    /* Allocate IC: first + domain_size entries */
+    uint32_t ic_len = (uint32_t)(domain_size + 1);
+    vk->ic = calloc(ic_len, sizeof(struct bn_g1));
+    if (!vk->ic) { free(indices); return false; }
+    vk->ic_len = ic_len;
+    vk->ic[0] = first;
+
+    /* Read G1 values in order, placed at indices[i]+1 in ic[] */
+    for (uint64_t i = 0; i < val_count; i++) {
+        uint64_t idx = indices[i];
+        if (idx + 1 >= ic_len) {
+            free(indices); free(vk->ic); vk->ic = NULL; return false;
+        }
+        if (!vk_read_g1_libsnark(&vk->ic[idx + 1], data, len, &off)) {
+            free(indices); free(vk->ic); vk->ic = NULL; return false;
+        }
+    }
+
+    free(indices);
     return true;
 }
 
