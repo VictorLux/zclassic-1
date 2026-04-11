@@ -184,6 +184,46 @@ Write the blocker into the "Current Status" section of this file and push. AGENT
 *(Update this every session with what you did and what's next. Keep it short.)*
 
 - **2026-04-11** — Plan created by AGENT1. AGENT3 has not started.
+- **2026-04-11 (AGENT3)** — **Phase 1 landed on `agent3/mcp-mvc`**:
+  - `tools/mcp/router.{h,c}` — schema-driven tool dispatch with parameter
+    validation (type / int range / string length / enum / required),
+    consistent error envelope, and `EV_MCP_REQUEST` structured logging
+    (new event type in `lib/event/include/event/event.h`).
+  - `tools/mcp_server.c` rewritten: every one of the 41 existing tools
+    is now registered through a `mcp_tool_route` table and dispatched
+    via `mcp_router_dispatch`. `tools/list` is generated from the table
+    — no more hand-maintained duplication. All existing tool names and
+    argument shapes preserved (compat contract honoured).
+  - `lib/test/src/test_mcp_router.c` — **27 tests**, all passing in
+    isolation (standalone harness linking router.c + json.c + event.c).
+    Covers: register/find/count, duplicates, unknown tool, missing
+    required param, null args, wrong type, int range, string length,
+    enum, handler failure, null body, schema output (type / required /
+    min-max / enum), tools/list array, envelope escaping, reset.
+  - Wired `test_mcp_router` into `lib/test/src/test.c` and Makefile
+    picks up `tools/mcp/*.c` via a new `MCP_SRCS` variable added to
+    `ALL_SRCS`. Every file I touched compiles cleanly under the real
+    production CFLAGS (`-std=c23 -O3 -Werror -pedantic`).
+- **🚧 BLOCKER (not AGENT3's files):** `origin/master` cannot build
+  `test_zcl` — confirmed by cleaning and building pristine
+  `80aae3d50`. The pre-existing errors live in files AGENT2 owns or
+  that depend on AGENT2's in-progress refactor:
+  - `config/src/boot.c:2157` — `__atomic_store` on non-void pointer.
+  - `config/src/boot_services.c:32` — `#include "controllers/game_controller.h"`
+    header doesn't exist.
+  - `lib/net/src/msgprocessor.c` — `struct msg_dispatch_entry`
+    incomplete type, `SNAPSYNC_OFFER_REJECTED_BLACKLISTED` undeclared,
+    `snapsync_get_anchor` / `snapsync_check_stall` implicit decls,
+    `process_getheaders` / `process_block_msg` signature mismatches.
+  AGENT1's working copy at `~/zclassic23` has a local (unpushed) fix
+  for `msgprocessor.c`, and `config/src/boot.c` is in AGENT2's
+  DO-NOT-TOUCH list, so I did not attempt to fix these here.
+- **Next (AGENT1 / AGENT2):** once master is buildable again, rebase
+  `agent3/mcp-mvc`, run `make -j test_zcl && ./test_zcl` (expect
+  existing suite + 27 new router tests to all pass), then do the MCP
+  smoke pass (`zcl_status`, `zcl_kpi`, `zcl_balance`). Phase 2
+  (controllers split) and Phase 3 (model validator hooks) are ready
+  to start once this lands.
 
 ---
 

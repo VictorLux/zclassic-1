@@ -109,6 +109,9 @@ enum event_type {
     /* ── Chain activation controller ──────────────────── */
     EV_ACTIVATION_STATE_CHANGE,  /* payload: "idle->boot_pending: reason" */
 
+    /* ── MCP server (AI agent surface) ─────────────── */
+    EV_MCP_REQUEST,              /* payload: "tool=NAME code=CODE [param=P] dur_us=N" */
+
     EV_NUM_TYPES                 /* sentinel — must be last */
 };
 
