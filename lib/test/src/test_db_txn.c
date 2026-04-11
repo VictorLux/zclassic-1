@@ -437,6 +437,139 @@ static int t_concurrent_different_dbs(void)
     return failures;
 }
 
+/* ── 15. Induced mid-sequence failure rolls rows back ──────── */
+
+/* This is the test that backs the wave 3 wiring: we write several
+ * rows inside a DB_TXN_SCOPE, "abort" by returning before the
+ * explicit commit, and then assert that none of the writes are
+ * visible to a subsequent read. It is the end-to-end check that the
+ * scope actually rolls back real data, not just the event ledger.
+ *
+ * The helper writes three keys, commits zero of them, and falls out
+ * of scope so auto_rollback fires. The caller then verifies every
+ * key is absent. */
+static void induced_failure_scope(struct node_db *ndb)
+{
+    DB_TXN_SCOPE(txn, ndb, "test.induced_failure");
+    if (!txn) return;
+
+    /* Write three rows. All should disappear on scope exit. */
+    (void)node_db_state_set(ndb, "induced.k1", "v1", 2);
+    (void)node_db_state_set(ndb, "induced.k2", "v2-longer", 9);
+    (void)node_db_state_set(ndb, "induced.k3", "v3", 2);
+
+    /* Simulate a mid-sequence failure: early return WITHOUT
+     * committing. The cleanup attribute runs auto_rollback and the
+     * three rows above should never reach the final table. */
+    return;
+}
+
+static int t_rollback_on_induced_failure(void)
+{
+    int failures = 0;
+    dt_install_observer();
+
+    struct node_db ndb;
+    memset(&ndb, 0, sizeof(ndb));
+    bool opened = node_db_open(&ndb, ":memory:");
+    if (!opened) {
+        printf("dt: open failed for induced_failure test\n");
+        return 1;
+    }
+
+    /* Sanity: none of the keys exist yet. */
+    char buf[64];
+    size_t got = 0;
+    bool absent_before =
+        !node_db_state_get(&ndb, "induced.k1", buf, sizeof(buf), &got) &&
+        !node_db_state_get(&ndb, "induced.k2", buf, sizeof(buf), &got) &&
+        !node_db_state_get(&ndb, "induced.k3", buf, sizeof(buf), &got);
+
+    /* Run the aborted scope. */
+    induced_failure_scope(&ndb);
+
+    /* All three keys must still be absent — auto_rollback dropped
+     * the partial writes. */
+    bool absent_after =
+        !node_db_state_get(&ndb, "induced.k1", buf, sizeof(buf), &got) &&
+        !node_db_state_get(&ndb, "induced.k2", buf, sizeof(buf), &got) &&
+        !node_db_state_get(&ndb, "induced.k3", buf, sizeof(buf), &got);
+
+    /* And the event trail shows exactly the leak pattern: one begin,
+     * one LEAKED, one rollback(leaked), zero commits. */
+    bool events_ok = atomic_load(&g_ev_begin)    == 1 &&
+                     atomic_load(&g_ev_leaked)   == 1 &&
+                     atomic_load(&g_ev_rollback) == 1 &&
+                     atomic_load(&g_ev_commit)   == 0;
+
+    /* Cross-check: a follow-up committed write IS visible, proving
+     * the db itself is still healthy after the rollback. */
+    struct db_txn *good = db_txn_begin(&ndb, "test.induced_followup");
+    bool follow_ok = good != NULL &&
+                     node_db_state_set(&ndb, "induced.k4", "v4", 2) &&
+                     db_txn_commit(good);
+    db_txn_auto_rollback(&good);
+    bool follow_visible =
+        node_db_state_get(&ndb, "induced.k4", buf, sizeof(buf), &got) &&
+        got == 2 && memcmp(buf, "v4", 2) == 0;
+
+    bool ok = absent_before && absent_after && events_ok &&
+              follow_ok && follow_visible;
+    DT_RUN("dt: induced mid-sequence failure rolls written rows back", ok);
+
+    node_db_close(&ndb);
+    return failures;
+}
+
+/* ── 16. Scoped multi-row wipe rollback (recovery path shape) ── */
+
+/* Mirrors the shape of snapsync_begin_receive after wave-3 wiring:
+ * a scoped wipe of an existing set of rows, followed by a simulated
+ * mid-sequence abort before commit. The expected behaviour is that
+ * the pre-existing rows are still there after rollback — the DELETE
+ * never landed. */
+static int t_rollback_preserves_pre_existing_rows(void)
+{
+    int failures = 0;
+    dt_install_observer();
+
+    struct node_db ndb;
+    memset(&ndb, 0, sizeof(ndb));
+    node_db_open(&ndb, ":memory:");
+
+    /* Seed two rows that must survive the aborted wipe. */
+    (void)node_db_state_set(&ndb, "preexisting.a", "alpha", 5);
+    (void)node_db_state_set(&ndb, "preexisting.b", "bravo", 5);
+
+    /* Scoped wipe that fails halfway — scope exits without
+     * committing, auto_rollback restores the rows. */
+    {
+        DB_TXN_SCOPE(txn, &ndb, "test.wipe_abort");
+        if (!txn) {
+            node_db_close(&ndb);
+            return 1;
+        }
+        (void)node_db_exec(&ndb, "DELETE FROM node_state");
+        /* Fall out of scope without db_txn_commit. */
+    }
+
+    char buf[64];
+    size_t got = 0;
+    bool a_present =
+        node_db_state_get(&ndb, "preexisting.a", buf, sizeof(buf), &got) &&
+        got == 5 && memcmp(buf, "alpha", 5) == 0;
+    bool b_present =
+        node_db_state_get(&ndb, "preexisting.b", buf, sizeof(buf), &got) &&
+        got == 5 && memcmp(buf, "bravo", 5) == 0;
+
+    bool ok = a_present && b_present &&
+              atomic_load(&g_ev_leaked) == 1;
+    DT_RUN("dt: aborted scoped wipe preserves pre-existing rows", ok);
+
+    node_db_close(&ndb);
+    return failures;
+}
+
 /* ── Aggregator ─────────────────────────────────────────────── */
 
 int test_db_txn(void)
@@ -457,6 +590,8 @@ int test_db_txn(void)
     failures += t_label_truncation();
     failures += t_auto_rollback_null();
     failures += t_concurrent_different_dbs();
+    failures += t_rollback_on_induced_failure();
+    failures += t_rollback_preserves_pre_existing_rows();
 
     event_clear_observers(EV_DB_TXN_BEGIN);
     event_clear_observers(EV_DB_TXN_COMMIT);
