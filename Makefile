@@ -56,7 +56,7 @@ LIBS = -Lvendor/lib -lsecp256k1 -lleveldb \
 	-levent -levent_openssl -levent_pthreads \
 	-lssl -lcrypto -lz
 
-.PHONY: all test clean deploy check-restart-follow
+.PHONY: all test test-e2e clean deploy check-restart-follow
 
 CLI_SRCS = lib/rpc/src/client.c lib/json/src/json.c
 all: test_zcl zclassic23 zclassic-cli
@@ -170,6 +170,19 @@ crash_recovery_test: tools/crash_recovery_test.c
 .PHONY: test-crash
 test-crash: crash_recovery_test zclassic23 zcl-rpc
 	./crash_recovery_test
+
+# Always-fresh end-to-end MCP test.
+#
+# `test_mcp_e2e` forks the real `./zclassic23 -mcp` binary and asserts
+# wire-level envelope shapes.  If the binary is older than the MCP
+# source files the in-suite test SKIPs with a clear message rather
+# than failing with a confusing tool-count mismatch — but that means a
+# bare `./test_zcl` after editing MCP code can silently skip the e2e
+# coverage.  Use `make test-e2e` to force a rebuild of zclassic23 (and
+# test_zcl) before running, so the e2e suite always runs against the
+# current source.
+test-e2e: zclassic23 test_zcl
+	ulimit -s unlimited && ./test_zcl
 
 # ── libFuzzer harnesses ───────────────────────────────────────
 #

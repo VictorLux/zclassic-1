@@ -8,7 +8,7 @@
  *
  * Coverage:
  *   - `initialize`   → JSON-RPC result with protocolVersion + serverInfo
- *   - `tools/list`   → exactly 69 tools (surface contract)
+ *   - `tools/list`   → tool count matches the in-process router exactly
  *   - `tools/call zcl_tools_list`  → self-describing tool body
  *   - `tools/call zcl_openapi`     → OpenAPI-ish body with paths
  *   - `tools/call zcl_metrics`     → Prometheus text in body
@@ -20,14 +20,26 @@
  * tools would try to reach the HTTP RPC server and fail with curl
  * errors, which is fine but not what this suite verifies.
  *
- * If `./zclassic23` is not present in the working directory the test
- * reports `SKIP` and exits cleanly so the full `./test_zcl` stays
- * green on a fresh checkout where the main binary hasn't been built
- * yet.
+ * Robustness:
+ *   - Tool counts are read live from `mcp_router_count()` in the
+ *     test_zcl process, not hard-coded.  Adding a new MCP tool does
+ *     not require touching this file.
+ *   - The harness compares `./zclassic23` mtime against the MCP
+ *     source files.  If the binary is stale (older than any router
+ *     or controller source) the test reports `SKIP (stale binary —
+ *     run \`make test-e2e\` to rebuild)` instead of failing with a
+ *     confusing tool-count mismatch.
+ *   - If `./zclassic23` is not present at all (fresh checkout), the
+ *     test reports `SKIP` and `./test_zcl` stays green.
+ *
+ * To always run the e2e suite against a fresh binary, use:
+ *   $ make test-e2e
  */
 
 #include "test/test_helpers.h"
 #include "json/json.h"
+#include "mcp/router.h"
+#include "mcp/controllers.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -46,6 +58,68 @@ static bool file_exists(const char *path)
 {
     struct stat st;
     return stat(path, &st) == 0;
+}
+
+/* Returns mtime in seconds, or -1 if path is missing. */
+static long file_mtime(const char *path)
+{
+    struct stat st;
+    if (stat(path, &st) != 0) return -1;
+    return (long)st.st_mtime;
+}
+
+/* The MCP source files that, when newer than ./zclassic23, mean the
+ * binary's tool surface has drifted from what test_zcl knows about.
+ * If any of these is newer than the binary the e2e test will SKIP
+ * with a clear message rather than fail with a confusing tool count
+ * mismatch.  Glob expansion is intentionally avoided — every file
+ * here is checked individually so a missing file (e.g. on a slim
+ * checkout) is harmless. */
+static const char *const stale_witnesses[] = {
+    "tools/mcp/router.c",
+    "tools/mcp/controllers/meta_controller.c",
+    "tools/mcp/controllers/chain_controller.c",
+    "tools/mcp/controllers/wallet_controller.c",
+    "tools/mcp/controllers/net_controller.c",
+    "tools/mcp/controllers/ops_controller.c",
+    "tools/mcp/controllers/app_controller.c",
+    "tools/mcp/metrics.c",
+    "tools/mcp/middleware.c",
+    "tools/mcp_server.c",
+    "main.c",
+    NULL,
+};
+
+/* Returns true when ./zclassic23 looks newer than every witness
+ * source file we know about. */
+static bool zclassic23_is_fresh(const char *bin_path,
+                                 const char **stale_path_out)
+{
+    long bin_mt = file_mtime(bin_path);
+    if (bin_mt < 0) return false;
+    for (size_t i = 0; stale_witnesses[i]; i++) {
+        long src_mt = file_mtime(stale_witnesses[i]);
+        if (src_mt < 0) continue;             /* missing → ignore */
+        if (src_mt > bin_mt) {
+            if (stale_path_out) *stale_path_out = stale_witnesses[i];
+            return false;
+        }
+    }
+    return true;
+}
+
+/* Count occurrences of `needle` in `hay` (no overlap). */
+static size_t count_substring(const char *hay, const char *needle)
+{
+    size_t n = 0;
+    size_t nlen = strlen(needle);
+    if (!nlen) return 0;
+    const char *p = hay;
+    while ((p = strstr(p, needle)) != NULL) {
+        n++;
+        p += nlen;
+    }
+    return n;
 }
 
 /* ── Child process harness ─────────────────────────────────── */
@@ -209,14 +283,29 @@ static int test_initialize(struct mcp_child *ch)
 static int test_tools_list(struct mcp_child *ch)
 {
     int failures = 0;
-    TEST("e2e: tools/list returns all 69 tools") {
+    TEST("e2e: tools/list reports the same tool count as the in-process router") {
         char resp[262144];
         ASSERT(child_rpc(ch,
             "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}",
             resp, sizeof(resp)));
         ASSERT(contains(resp, "\"tools\":["));
 
-        /* Spot-check a handful of key tools */
+        /* Compare the wire-level tool count to mcp_router_count() in
+         * THIS process.  Both are built from the same source, so any
+         * mismatch means the binary is stale (or the router was
+         * mutated by something else).  We've already early-returned
+         * via SKIP in the entry point on stale binaries, so reaching
+         * here with a mismatch is a real bug. */
+        size_t expected = mcp_router_count();
+        size_t observed = count_substring(resp, "\"name\":\"zcl_");
+        if (expected != observed) {
+            printf("e2e tool count: expected=%zu observed=%zu\n",
+                   expected, observed);
+        }
+        ASSERT(expected == observed);
+
+        /* Spot-check a handful of key tools that have been around
+         * since wave 1 — these names are part of the surface contract. */
         ASSERT(contains(resp, "\"zcl_status\""));
         ASSERT(contains(resp, "\"zcl_kpi\""));
         ASSERT(contains(resp, "\"zcl_getblock\""));
@@ -239,9 +328,16 @@ static int test_tools_call_tools_list(struct mcp_child *ch)
             "\"params\":{\"name\":\"zcl_tools_list\",\"arguments\":{}}}",
             resp, sizeof(resp)));
         ASSERT(contains(resp, "\"content\""));
-        /* Inner text body mentions "count":69 (escaped) and spot tools */
         ASSERT(contains(resp, "count"));
-        ASSERT(contains(resp, "69"));
+        /* The inner body emits "count":N — match it dynamically against
+         * the in-process router so adding tools doesn't break this test. */
+        char count_needle[64];
+        snprintf(count_needle, sizeof(count_needle),
+                 "count\\\":%zu", mcp_router_count());
+        if (!contains(resp, count_needle)) {
+            printf("e2e: did not find %s in tools/list body\n", count_needle);
+        }
+        ASSERT(contains(resp, count_needle));
         ASSERT(contains(resp, "zcl_getblock"));
         PASS();
     } _test_next:;
@@ -337,9 +433,34 @@ int test_mcp_e2e(void)
     int failures = 0;
 
     if (!file_exists("./zclassic23")) {
-        printf("e2e: ./zclassic23 not built — SKIP\n");
+        printf("e2e: ./zclassic23 not built — SKIP "
+               "(run `make test-e2e` to rebuild and run)\n");
         return 0;
     }
+
+    /* Refuse to run against a stale binary.  Without this guard the
+     * tool-count assertion would fail with a message that looks like
+     * a real regression but is in fact just an old build, which has
+     * burned multiple sessions of debugging time. */
+    const char *stale_path = NULL;
+    if (!zclassic23_is_fresh("./zclassic23", &stale_path)) {
+        printf("e2e: ./zclassic23 is stale — newer source: %s — SKIP "
+               "(run `make test-e2e` to rebuild and run)\n",
+               stale_path ? stale_path : "(unknown)");
+        return 0;
+    }
+
+    /* Populate this process's router with the same tool surface the
+     * forked binary will register, so the test can compare counts
+     * dynamically (instead of hard-coding 69 / 70 / …).  We reset
+     * before AND after so we don't pollute later tests. */
+    mcp_router_reset();
+    mcp_register_ops();
+    mcp_register_chain();
+    mcp_register_net();
+    mcp_register_wallet();
+    mcp_register_app();
+    mcp_register_meta();
 
     struct mcp_child ch;
     if (!child_start(&ch)) {
@@ -357,5 +478,6 @@ int test_mcp_e2e(void)
     failures += test_unknown_tool(&ch);
 
     child_stop(&ch);
+    mcp_router_reset();
     return failures;
 }
