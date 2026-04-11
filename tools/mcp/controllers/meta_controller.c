@@ -16,6 +16,8 @@
 
 #include "json/json.h"
 
+#include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -390,7 +392,7 @@ static int h_zcl_metrics_reset(const struct mcp_request *req,
     return 0;
 }
 
-/* zcl_rpc_report — HTTP RPC middleware summary (wave 5 #1).
+/* zcl_rpc_report — HTTP RPC middleware summary (wave 5 session 1).
  * Live config + stat counters + tracked IPs + active bans from the
  * global rpc_http_middleware registered by httpserver.c.  The report
  * also appears in the Prometheus dump emitted by zcl_metrics, but
@@ -407,6 +409,167 @@ static int h_zcl_rpc_report(const struct mcp_request *req,
     return res->body ? 0 : -1;
 }
 
+/* ── Admin dashboard (wave 5 #5) ──────────────────────────────
+ *
+ * zcl_admin is a composite snapshot tool: it dispatches the existing
+ * observability tools (zcl_kpi / zcl_peer_report / zcl_rpc_report /
+ * zcl_events) in-process, stitches the raw bodies into one envelope,
+ * and derives a small "alerts" array from threshold conditions over
+ * the nested counters.
+ *
+ * "Handles missing subsystems gracefully" means: if any sub-dispatch
+ * returns an error envelope (tool missing, handler failed, RPC node
+ * offline in test mode), that slot is rendered as JSON null and the
+ * other slots still populate.  Tests rely on this — they exercise
+ * zcl_admin with no live RPC backend and still get back a parseable
+ * document.
+ *
+ * The `since` parameter is accepted for API stability but currently
+ * has no runtime effect: the nested counters are cumulative since
+ * boot, not windowed.  A future session can add a baseline-snapshot
+ * layer to make `since` meaningful.
+ */
+
+/* Write `body` into dst as an embedded JSON value.  If body is NULL,
+ * looks like an error envelope ({"error":{...}}), or fails to parse
+ * as JSON (some legacy sub-tools splice raw "Unauthorized"-style RPC
+ * error strings into their output — that's valid for their own
+ * downstream consumers but not for embedding inside a composite
+ * envelope), writes "null" instead.  Returns bytes written. */
+static size_t embed_or_null(const char *body, char *dst, size_t cap)
+{
+    if (cap == 0) return 0;
+    if (!body || strncmp(body, "{\"error\":", 9) == 0) {
+        if (cap < 5) return 0;
+        memcpy(dst, "null", 4);
+        return 4;
+    }
+    /* Validate as JSON first — reject bare-word "Unauthorized" etc.
+     * json_read is forgiving about trailing whitespace and returns
+     * false only on a real parse error, so this is a structural
+     * guard rather than a strict dialect check. */
+    struct json_value probe = {0};
+    if (!json_read(&probe, body, strlen(body))) {
+        if (cap < 5) return 0;
+        memcpy(dst, "null", 4);
+        return 4;
+    }
+    json_free(&probe);
+
+    size_t n = strlen(body);
+    if (n >= cap) n = cap - 1;
+    memcpy(dst, body, n);
+    return n;
+}
+
+/* Quick substring lookup on a JSON body to pull an integer out for
+ * the alerts heuristics.  Returns -1 if the key isn't present or can't
+ * be parsed as an integer.  Intentionally lightweight — we don't need
+ * a full parser here because we only read counters we emit ourselves. */
+static long long scan_int_field(const char *body, const char *key)
+{
+    if (!body || !key) return -1;
+    char needle[64];
+    int n = snprintf(needle, sizeof(needle), "\"%s\":", key);
+    if (n <= 0 || (size_t)n >= sizeof(needle)) return -1;
+    const char *p = strstr(body, needle);
+    if (!p) return -1;
+    p += (size_t)n;
+    while (*p == ' ') p++;
+    if (*p == '\0') return -1;
+    char *end = NULL;
+    long long v = strtoll(p, &end, 10);
+    if (end == p) return -1;
+    return v;
+}
+
+static int h_zcl_admin(const struct mcp_request *req,
+                        struct mcp_response *res)
+{
+    const struct json_value *since_val = json_get(req->args, "since");
+    int64_t since = since_val ? json_get_int(since_val) : 0;
+
+    /* Dispatch each sub-tool.  Each returns a malloc'd body or an
+     * error envelope — we treat both identically via embed_or_null. */
+    char *kpi   = mcp_router_dispatch("zcl_kpi",        NULL);
+    char *peer  = mcp_router_dispatch("zcl_peer_report", NULL);
+    char *rpc   = mcp_router_dispatch("zcl_rpc_report",  NULL);
+
+    /* zcl_events requires its args as a JSON value, not a string. */
+    struct json_value ev_args = {0};
+    const char *ev_args_src = "{\"count\":10}";
+    bool have_ev_args = json_read(&ev_args, ev_args_src, strlen(ev_args_src));
+    char *events = mcp_router_dispatch("zcl_events",
+                                        have_ev_args ? &ev_args : NULL);
+    if (have_ev_args) json_free(&ev_args);
+
+    /* Compose the composite envelope. */
+    size_t cap = 131072;
+    char *out = malloc(cap);
+    if (!out) {
+        free(kpi); free(peer); free(rpc); free(events);
+        return -1;
+    }
+    size_t pos = 0;
+
+    pos += (size_t)snprintf(out + pos, cap - pos,
+        "{\"since\":%lld,\"kpi\":", (long long)since);
+    pos += embed_or_null(kpi,   out + pos, cap - pos);
+    pos += (size_t)snprintf(out + pos, cap - pos, ",\"peer_report\":");
+    pos += embed_or_null(peer,  out + pos, cap - pos);
+    pos += (size_t)snprintf(out + pos, cap - pos, ",\"rpc_report\":");
+    pos += embed_or_null(rpc,   out + pos, cap - pos);
+    pos += (size_t)snprintf(out + pos, cap - pos, ",\"events\":");
+    pos += embed_or_null(events, out + pos, cap - pos);
+
+    /* ── Alerts: simple threshold heuristics over the embedded JSON
+     * counters.  Anything flagged as a non-zero problem gets a
+     * short human-readable string pushed onto the array.  Keep the
+     * surface small — operators can still scrape the nested bodies
+     * for full detail. */
+    pos += (size_t)snprintf(out + pos, cap - pos, ",\"alerts\":[");
+    bool first_alert = true;
+    #define PUSH_ALERT(fmt, ...)                                           \
+        do {                                                                \
+            if (!first_alert) out[pos++] = ',';                             \
+            first_alert = false;                                            \
+            pos += (size_t)snprintf(out + pos, cap - pos,                   \
+                                    "\"" fmt "\"", __VA_ARGS__);            \
+        } while (0)
+
+    long long rpc_rl_global = scan_int_field(rpc, "rate_limited_global");
+    long long rpc_rl_per_ip = scan_int_field(rpc, "rate_limited_per_ip");
+    long long rpc_banned    = scan_int_field(rpc, "banned_rejected");
+    long long rpc_active    = scan_int_field(rpc, "active_bans");
+    long long rpc_auth_fail = scan_int_field(rpc, "auth_failures");
+    if (rpc_rl_global > 0)
+        PUSH_ALERT("rpc_rate_limited_global=%lld", rpc_rl_global);
+    if (rpc_rl_per_ip > 0)
+        PUSH_ALERT("rpc_rate_limited_per_ip=%lld", rpc_rl_per_ip);
+    if (rpc_banned > 0)
+        PUSH_ALERT("rpc_banned_rejected=%lld", rpc_banned);
+    if (rpc_active > 0)
+        PUSH_ALERT("rpc_active_bans=%lld", rpc_active);
+    if (rpc_auth_fail > 0)
+        PUSH_ALERT("rpc_auth_failures=%lld", rpc_auth_fail);
+
+    long long peer_bans     = scan_int_field(peer, "bans_total");
+    long long peer_offences = scan_int_field(peer, "offences_total");
+    if (peer_bans > 0)
+        PUSH_ALERT("peer_bans_total=%lld", peer_bans);
+    if (peer_offences > 100)
+        PUSH_ALERT("peer_offences_total=%lld", peer_offences);
+
+    #undef PUSH_ALERT
+    pos += (size_t)snprintf(out + pos, cap - pos, "]}");
+
+    free(kpi); free(peer); free(rpc); free(events);
+
+    if (pos < cap) out[pos] = '\0';
+    res->body = out;
+    return 0;
+}
+
 /* ── Route table ─────────────────────────────────────────────── */
 
 static const struct mcp_param_spec p_logtail[] = {
@@ -415,6 +578,14 @@ static const struct mcp_param_spec p_logtail[] = {
     { "domain", MCP_PARAM_STR, false,
       "Event type prefix filter (e.g. \"MCP\", \"VAL.\", \"NET.\")",
       0, 0, 0, 64, NULL, NULL },
+};
+
+static const struct mcp_param_spec p_admin[] = {
+    /* Accepted for API stability; currently echoed back but the
+     * embedded counters are cumulative since boot. */
+    { "since", MCP_PARAM_INT, false,
+      "Unix-seconds baseline for future windowed counters (unused).",
+      0, INT64_MAX, 0, 0, NULL, "0" },
 };
 
 static const struct mcp_tool_route k_routes[] = {
@@ -448,6 +619,12 @@ static const struct mcp_tool_route k_routes[] = {
       "tracked-IP and active-ban gauges. Parallel to zcl_peer_report "
       "for the RPC surface.",
       NULL, 0, h_zcl_rpc_report },
+    { "zcl_admin", "ops",
+      "Admin dashboard: aggregates zcl_kpi + zcl_peer_report + "
+      "zcl_rpc_report + zcl_events into one snapshot and derives "
+      "threshold-based alerts from the nested counters. Missing "
+      "subsystems render as null; flagship single-call operator tool.",
+      p_admin, sizeof(p_admin) / sizeof(p_admin[0]), h_zcl_admin },
 };
 
 void mcp_register_meta(void)

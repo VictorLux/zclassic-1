@@ -36,12 +36,13 @@
 /* Expected tool counts.  If a future commit intentionally adds or
  * removes tools, bump these numbers in the same commit — they are the
  * contract for "how big is the MCP surface." */
-#define EXPECTED_TOTAL      71
-#define EXPECTED_OPS        18  /* status, health, kpi, mempool*, mininginfo,
+#define EXPECTED_TOTAL      72
+#define EXPECTED_OPS        19  /* status, health, kpi, mempool*, mininginfo,
                                  * benchmark, dbstats, filemanifest, events,
                                  * rpc, tools_list, self_test, logtail,
                                  * openapi, metrics, metrics_reset,
-                                 * rpc_report (wave 5 #1) */
+                                 * rpc_report (wave 5 sess 1),
+                                 * admin (wave 5 #5) */
 #define EXPECTED_CHAIN      10
 #define EXPECTED_NET         8  /* + zcl_peer_report (wave 4 #5) */
 #define EXPECTED_WALLET     19
@@ -106,7 +107,7 @@ static int test_register_total_count(void)
 static int test_ops_domain_count(void)
 {
     int failures = 0;
-    TEST("controllers: ops domain has 17 tools") {
+    TEST("controllers: ops domain has 19 tools (wave 5 adds rpc_report + admin)") {
         register_all();
         size_t n = count_by_domain("ops");
         if (n != EXPECTED_OPS) {
@@ -535,6 +536,102 @@ static int test_required_params_have_no_default(void)
     return failures;
 }
 
+/* ── Wave 5 #5: zcl_admin composite tool ────────────────────── */
+
+static int test_zcl_admin_dispatch_shape(void)
+{
+    int failures = 0;
+    TEST("controllers: zcl_admin composes sub-tools into one envelope") {
+        register_all();
+        const struct mcp_tool_route *r = mcp_router_find("zcl_admin");
+        ASSERT(r != NULL);
+        ASSERT(strcmp(r->domain, "ops") == 0);
+        ASSERT(r->num_params == 1);
+        ASSERT(strcmp(r->params[0].name, "since") == 0);
+        ASSERT(r->params[0].required == false);
+
+        /* Dispatch with empty args — `since` falls through to default 0. */
+        char *body = mcp_router_dispatch("zcl_admin", NULL);
+        ASSERT(body != NULL);
+        /* Not an error envelope — graceful handling even with no live RPC. */
+        ASSERT(strstr(body, "\"error\":{") == NULL);
+        /* Top-level fields. */
+        ASSERT(contains(body, "\"since\":0"));
+        ASSERT(contains(body, "\"kpi\":"));
+        ASSERT(contains(body, "\"peer_report\":"));
+        ASSERT(contains(body, "\"rpc_report\":"));
+        ASSERT(contains(body, "\"events\":"));
+        ASSERT(contains(body, "\"alerts\":["));
+        /* rpc_report is always produced in-process, so it should
+         * embed as an object (not null). */
+        ASSERT(contains(body, "\"rpc_server\":\"inactive\"") ||
+               contains(body, "\"rpc_server\":\"active\""));
+        free(body);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_zcl_admin_since_param_accepted(void)
+{
+    int failures = 0;
+    TEST("controllers: zcl_admin echoes `since` back in the envelope") {
+        register_all();
+        const char *args_src = "{\"since\":1700000000}";
+        struct json_value args = {0};
+        ASSERT(json_read(&args, args_src, strlen(args_src)));
+
+        char *body = mcp_router_dispatch("zcl_admin", &args);
+        ASSERT(body != NULL);
+        ASSERT(contains(body, "\"since\":1700000000"));
+        free(body);
+        json_free(&args);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_zcl_admin_graceful_never_propagates_error(void)
+{
+    int failures = 0;
+    TEST("controllers: zcl_admin never propagates a sub-tool error envelope") {
+        register_all();
+        /* Whether or not a sub-tool returns a valid body vs an error
+         * envelope in this test context, zcl_admin must wrap the
+         * response as its own object — never surface a top-level
+         * `{"error":...}`.  embed_or_null is the policy; this test
+         * catches any regression that bypasses it. */
+        char *body = mcp_router_dispatch("zcl_admin", NULL);
+        ASSERT(body != NULL);
+
+        /* The top level is an object, not an error envelope. */
+        ASSERT(body[0] == '{');
+        ASSERT(strncmp(body, "{\"error\":", 9) != 0);
+
+        /* Parse to make sure it's structurally valid JSON. */
+        struct json_value root = {0};
+        ASSERT(json_read(&root, body, strlen(body)));
+        ASSERT(root.type == JSON_OBJ);
+
+        /* Each expected top-level key is present. */
+        ASSERT(json_get(&root, "since")       != NULL);
+        ASSERT(json_get(&root, "kpi")         != NULL);
+        ASSERT(json_get(&root, "peer_report") != NULL);
+        ASSERT(json_get(&root, "rpc_report")  != NULL);
+        ASSERT(json_get(&root, "events")      != NULL);
+        ASSERT(json_get(&root, "alerts")      != NULL);
+
+        /* alerts is an array. */
+        const struct json_value *alerts = json_get(&root, "alerts");
+        ASSERT(alerts->type == JSON_ARR);
+
+        json_free(&root);
+        free(body);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_final_reset_leaves_clean_table(void)
 {
     int failures = 0;
@@ -578,6 +675,9 @@ int test_mcp_controllers(void)
     failures += test_wallet_shielded_tools_registered();
     failures += test_app_protocol_tools_registered();
     failures += test_required_params_have_no_default();
+    failures += test_zcl_admin_dispatch_shape();
+    failures += test_zcl_admin_since_param_accepted();
+    failures += test_zcl_admin_graceful_never_propagates_error();
     failures += test_final_reset_leaves_clean_table();
 
     return failures;
