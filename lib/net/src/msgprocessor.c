@@ -20,6 +20,7 @@ extern volatile sig_atomic_t g_shutdown_requested;
 #include "net/p2p_game.h"
 #include "net/version.h"
 #include "net/p2p_message.h"
+#include "services/chain_state_repository.h"
 #include "services/header_sync_service.h"
 #include "services/block_sync_service.h"
 #include "core/hash.h"
@@ -1765,7 +1766,42 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                            "anchor h=%d — enabling block connection\n",
                            pindex_last->nHeight - anc->nHeight,
                            anc->nHeight);
-                    active_chain_set_tip(&mp->main_state->chain_active, anc);
+                    /* Re-anchor active_chain at the snapshot anchor via
+                     * csr so block_map/coins_tip/header agree. In
+                     * production this is typically a no-op move
+                     * (active_chain is already at `anc`), but routing
+                     * it through csr_commit_tip gives the transition a
+                     * structured event and guards against any drift
+                     * that snuck in since snapsync_activate_verified_tip
+                     * ran. */
+                    if (anc->phashBlock) {
+                        struct chain_state_commit commit = {
+                            .new_tip             = anc,
+                            .new_coins_best      = *anc->phashBlock,
+                            .expected_utxo_count = 0,
+                            .update_header_tip   = false,
+                            .allow_rollback      = true,
+                            .wallet_scan_height  = -1,
+                            .reason              = "msgprocessor.headers_past_anchor",
+                        };
+                        enum csr_result rc = csr_commit_tip(
+                            csr_instance(), &commit);
+                        if (rc != CSR_OK && rc != CSR_REJECTED_NOT_INITIALIZED) {
+                            fprintf(stderr,
+                                "msgprocessor: csr rejected anchor re-commit "
+                                "(%s) h=%d\n",
+                                csr_result_name(rc), anc->nHeight);
+                        }
+                        if (rc == CSR_REJECTED_NOT_INITIALIZED) {
+                            /* Test harness path: preserve legacy
+                             * raw-setter behaviour. */
+                            active_chain_set_tip(
+                                &mp->main_state->chain_active, anc);
+                        }
+                    } else {
+                        active_chain_set_tip(
+                            &mp->main_state->chain_active, anc);
+                    }
                     snapsync_set_anchor(NULL);
                     activation_clear_anchor(boot_activation_controller(),
                                             "headers_past_anchor");
@@ -2784,9 +2820,14 @@ static bool handle_zcl23_sync(struct msg_processor *mp,
                         printf("[snapshot] Chain tip set to height %d\n",
                                activated_height);
                         /* Update in-memory coins view to match snapshot.
-                         * snapsync_finalize already wrote coins_best_block
-                         * to SQLite; now sync the in-memory cache so
-                         * connect_block's view/prevblock check passes. */
+                         * snapsync_activate_verified_tip → csr_commit_tip
+                         * already set coins_best_block on the singleton's
+                         * coins_tip in production. This raw setter stays
+                         * as a defensive fallback for the test-harness
+                         * path (CSR_REJECTED_NOT_INITIALIZED — csr
+                         * singleton not wired), where snapsync's helper
+                         * only touches active_chain / pindex_best_header.
+                         * Low-level: bypasses csr on purpose. */
                         if (mp->coins_tip) {
                             struct uint256 snap_hash;
                             memcpy(snap_hash.data,

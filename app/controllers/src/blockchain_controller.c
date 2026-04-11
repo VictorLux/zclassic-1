@@ -465,6 +465,13 @@ static bool rpc_reindexchainstate(const struct json_value *params, bool help,
         if (h == 0) {
             struct uint256 block_hash;
             block_header_get_hash(&blk.header, &block_hash);
+            /* Low-level: bypasses csr — reindexchainstate is an
+             * operator-invoked UTXO replay across every block from
+             * genesis to the current tip. active_chain never moves
+             * during the replay; only coins_tip's hash_block is being
+             * resynced one block at a time. Routing each iteration
+             * through csr_commit_tip would require O(N) full
+             * cross-checks and would report spurious backward moves. */
             coins_view_cache_set_best_block(ctx->coins_tip, &block_hash);
             block_free(&blk);
             if (h % 10000 == 0) {
@@ -479,7 +486,10 @@ static bool rpc_reindexchainstate(const struct json_value *params, bool help,
             update_coins(&blk.vtx[i], ctx->coins_tip, pindex->nHeight);
         }
 
-        /* Set best block hash */
+        /* Set best block hash.
+         * Low-level: bypasses csr (see genesis branch above for the
+         * rationale) — this is inside the reindexchainstate replay
+         * loop, not a tip-commit operation. */
         struct uint256 block_hash;
         block_header_get_hash(&blk.header, &block_hash);
         coins_view_cache_set_best_block(ctx->coins_tip, &block_hash);
