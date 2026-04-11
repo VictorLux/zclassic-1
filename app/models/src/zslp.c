@@ -65,8 +65,11 @@ static bool zslp_token_before_save(void *record, void *ctx)
     return true;
 }
 
-static bool validate_token_record(const struct zslp_token_record *rec,
-                                  struct ar_errors *errors)
+bool db_zslp_token_validate_record(const struct zslp_token_record *rec,
+                                    struct ar_errors *errors);
+
+bool db_zslp_token_validate_record(const struct zslp_token_record *rec,
+                                    struct ar_errors *errors)
 {
     ar_errors_clear(errors);
     validates_presence_of(errors, rec, token_id);
@@ -76,8 +79,11 @@ static bool validate_token_record(const struct zslp_token_record *rec,
     return !ar_errors_any(errors);
 }
 
-static bool validate_token_key_record(const struct zslp_token_key_record *rec,
-                                      struct ar_errors *errors)
+bool db_zslp_token_key_validate_record(const struct zslp_token_key_record *rec,
+                                        struct ar_errors *errors);
+
+bool db_zslp_token_key_validate_record(const struct zslp_token_key_record *rec,
+                                        struct ar_errors *errors)
 {
     ar_errors_clear(errors);
     validates_string_present(errors, rec->token_id, "token_id");
@@ -125,7 +131,7 @@ bool db_zslp_token_validate_key(const char *token_key,
     memset(&rec, 0, sizeof(rec));
     if (token_key)
         snprintf(rec.token_id, sizeof(rec.token_id), "%s", token_key);
-    return validate_token_key_record(&rec, errors);
+    return db_zslp_token_key_validate_record(&rec, errors);
 }
 
 /* ── Transfer Validation ──────────────────────────────────────── */
@@ -139,8 +145,11 @@ struct zslp_transfer_record {
     int vout;
 };
 
-static bool validate_transfer_record(const struct zslp_transfer_record *rec,
-                                     struct ar_errors *errors)
+bool db_zslp_transfer_validate_record(const struct zslp_transfer_record *rec,
+                                       struct ar_errors *errors);
+
+bool db_zslp_transfer_validate_record(const struct zslp_transfer_record *rec,
+                                       struct ar_errors *errors)
 {
     ar_errors_clear(errors);
     validates_presence_of(errors, rec, txid);
@@ -174,7 +183,7 @@ bool db_zslp_token_save(struct node_db *ndb, const uint8_t token_id[32],
         fprintf(stderr, "zslp_token save vetoed by before_save\n");
         return false;
     }
-    AR_VALIDATE_RECORD(cbs, "zslp_token", &rec, validate_token_record);
+    AR_VALIDATE_RECORD(cbs, "zslp_token", &rec, db_zslp_token_validate_record);
 
     sqlite3_stmt *s = NULL;
     if (sqlite3_prepare_v2(ndb->db,
@@ -230,7 +239,7 @@ bool db_zslp_token_save_key(struct node_db *ndb, const char *token_key,
         fprintf(stderr, "zslp_token save_key vetoed by before_save\n");
         return false;
     }
-    AR_VALIDATE_RECORD(cbs, "zslp_token", &rec, validate_token_key_record);
+    AR_VALIDATE_RECORD(cbs, "zslp_token", &rec, db_zslp_token_key_validate_record);
 
     if (sqlite3_prepare_v2(ndb->db,
             "INSERT OR REPLACE INTO zslp_tokens"
@@ -272,7 +281,7 @@ bool db_zslp_transfer_save(struct node_db *ndb, const uint8_t txid[32],
     rec.amount = amount;
     rec.vout = vout;
     struct ar_callbacks *cbs = db_zslp_transfer_callbacks();
-    AR_VALIDATE_RECORD(cbs, "zslp_transfer", &rec, validate_transfer_record);
+    AR_VALIDATE_RECORD(cbs, "zslp_transfer", &rec, db_zslp_transfer_validate_record);
     if (!ar_run_before_save(cbs, &rec)) return false;
 
     sqlite3_stmt *s = NULL;

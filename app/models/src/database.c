@@ -3,6 +3,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "models/database.h"
+#include "models/database_validators.h"
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
@@ -555,6 +556,8 @@ bool node_db_open(struct node_db *ndb, const char *path)
 
     ndb->open = true;
     node_db_migrate(ndb, NULL);
+    /* Register model validators once per process.  Idempotent. */
+    db_register_all_validators();
     node_db_note_activity(ndb, "open", SQLITE_OK);
     return true;
 }

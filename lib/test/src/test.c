@@ -75,6 +75,7 @@ int main(void)
     failures += test_chain_activation_controller();
     failures += test_mcp_router();
     failures += test_mcp_controllers();
+    failures += test_db_validators();
 
     /* Spec-based user story tests */
     failures += spec_wallet_dashboard();

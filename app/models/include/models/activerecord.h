@@ -39,6 +39,7 @@
 #ifndef ZCL_DB_ACTIVERECORD_H
 #define ZCL_DB_ACTIVERECORD_H
 
+#include "event/event.h"
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -598,6 +599,8 @@ static inline void ar_errors_full_messages(const struct ar_errors *e,
     char _msgs[512]; \
     ar_errors_full_messages(errors, _msgs, sizeof(_msgs)); \
     fprintf(stderr, "%s validation FAILED: %s\n", model, _msgs); \
+    event_emitf(EV_MODEL_VALIDATION_FAILED, 0, \
+                "model=%s errors=%s", (model), _msgs); \
 } while (0)
 
 /* Standard validation lifecycle:
