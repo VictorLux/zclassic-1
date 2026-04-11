@@ -171,6 +171,95 @@ crash_recovery_test: tools/crash_recovery_test.c
 test-crash: crash_recovery_test zclassic23 zcl-rpc
 	./crash_recovery_test
 
+# ── libFuzzer harnesses ───────────────────────────────────────
+#
+# Fuzz targets use clang + libFuzzer + ASan + UBSan. They compile
+# the same ALL_SRCS as the main build (minus main.c), so the same
+# code paths the node exercises are the code paths the fuzzer
+# exercises. -O1 + -g because aggressive optimisation confuses
+# sanitizer reports.
+#
+# `make fuzz` builds the three binaries. `make fuzz-ci` runs each
+# for 60 seconds as a smoke test; CI uses this to detect already-
+# latent crashes without chasing exhaustive coverage. If clang is
+# unavailable, both targets print a skip message and exit 0 so
+# gcc-only hosts never fail the build.
+FUZZ_CC ?= clang
+FUZZ_CFLAGS = -std=c23 -O1 -g -Wall -Wextra -Wno-unused-result \
+	-Wno-deprecated-declarations \
+	$(APP_INCLUDES) $(CONFIG_INCLUDES) $(LIB_INCLUDES) $(MCP_INCLUDES) \
+	-Ilib/test/include -D_POSIX_C_SOURCE=200809L -Ivendor/include \
+	-fsanitize=fuzzer,address,undefined \
+	-fno-sanitize=alignment
+FUZZ_LIBS = $(TOR_LIBS) $(LIBS)
+
+FUZZ_TARGETS = fuzz_block fuzz_script fuzz_p2p
+
+.PHONY: fuzz fuzz-ci
+fuzz: $(FUZZ_TARGETS)
+
+fuzz_block: tools/fuzz/fuzz_block.c $(TMPL_GEN) $(ALL_SRCS)
+	@if ! command -v $(FUZZ_CC) >/dev/null 2>&1; then \
+		echo "fuzz_block: $(FUZZ_CC) not found — SKIP (install clang for fuzzing)"; \
+		touch $@; \
+	else \
+		echo "$(FUZZ_CC) ... -o $@"; \
+		$(FUZZ_CC) $(FUZZ_CFLAGS) -o $@ tools/fuzz/fuzz_block.c $(ALL_SRCS) $(FUZZ_LIBS); \
+	fi
+
+fuzz_script: tools/fuzz/fuzz_script.c $(TMPL_GEN) $(ALL_SRCS)
+	@if ! command -v $(FUZZ_CC) >/dev/null 2>&1; then \
+		echo "fuzz_script: $(FUZZ_CC) not found — SKIP"; \
+		touch $@; \
+	else \
+		echo "$(FUZZ_CC) ... -o $@"; \
+		$(FUZZ_CC) $(FUZZ_CFLAGS) -o $@ tools/fuzz/fuzz_script.c $(ALL_SRCS) $(FUZZ_LIBS); \
+	fi
+
+fuzz_p2p: tools/fuzz/fuzz_p2p.c $(TMPL_GEN) $(ALL_SRCS)
+	@if ! command -v $(FUZZ_CC) >/dev/null 2>&1; then \
+		echo "fuzz_p2p: $(FUZZ_CC) not found — SKIP"; \
+		touch $@; \
+	else \
+		echo "$(FUZZ_CC) ... -o $@"; \
+		$(FUZZ_CC) $(FUZZ_CFLAGS) -o $@ tools/fuzz/fuzz_p2p.c $(ALL_SRCS) $(FUZZ_LIBS); \
+	fi
+
+fuzz-ci: $(FUZZ_TARGETS)
+	@if ! command -v $(FUZZ_CC) >/dev/null 2>&1; then \
+		echo "fuzz-ci: $(FUZZ_CC) not found — SKIP"; \
+		exit 0; \
+	fi; \
+	set -e; \
+	for t in $(FUZZ_TARGETS); do \
+		echo "=== $$t (60s) ==="; \
+		seed_dir="lib/test/fuzz_seeds/$${t#fuzz_}"; \
+		work_dir="/tmp/zcl_fuzz_$${t#fuzz_}"; \
+		rm -rf "$$work_dir"; mkdir -p "$$work_dir"; \
+		ASAN_OPTIONS=detect_leaks=0 ./$$t -max_total_time=60 \
+			-timeout=1 -print_final_stats=1 "$$work_dir" "$$seed_dir"; \
+		rm -rf "$$work_dir"; \
+	done
+
+# Same binaries with leak detection ON. Separate target so CI stays
+# green while known-pre-existing leaks are being triaged; developers
+# and Wave 4+ commits that fix leaks opt into this stricter run.
+fuzz-ci-leaks: $(FUZZ_TARGETS)
+	@if ! command -v $(FUZZ_CC) >/dev/null 2>&1; then \
+		echo "fuzz-ci-leaks: $(FUZZ_CC) not found — SKIP"; \
+		exit 0; \
+	fi; \
+	set -e; \
+	for t in $(FUZZ_TARGETS); do \
+		echo "=== $$t (60s, leak detection ON) ==="; \
+		seed_dir="lib/test/fuzz_seeds/$${t#fuzz_}"; \
+		work_dir="/tmp/zcl_fuzz_$${t#fuzz_}_leaks"; \
+		rm -rf "$$work_dir"; mkdir -p "$$work_dir"; \
+		./$$t -max_total_time=60 -timeout=1 -print_final_stats=1 \
+			"$$work_dir" "$$seed_dir"; \
+		rm -rf "$$work_dir"; \
+	done
+
 .PHONY: bench-sync
 bench-sync: zclassic23 bench_fresh_sync
 	./bench_fresh_sync
