@@ -380,6 +380,8 @@ const char *event_type_name(enum event_type type)
         [EV_ADDRMAN_CORRUPT]         = "addrman.corrupt",
         [EV_PEER_THROTTLED]          = "peer.throttled",
         [EV_IBD_THROTTLED]           = "ibd.throttled",
+        [EV_CONSENSUS_REJECT_TX]     = "consensus.reject_tx",
+        [EV_CONSENSUS_REJECT_BLOCK]  = "consensus.reject_block",
     };
     if (type >= 0 && type < EV_NUM_TYPES && names[type])
         return names[type];

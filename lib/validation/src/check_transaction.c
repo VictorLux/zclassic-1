@@ -14,9 +14,28 @@
 #include "core/amount.h"
 #include "consensus/consensus.h"
 #include "metrics/metrics.h"
+#include "event/event.h"
+
+static bool check_transaction_impl(const struct transaction *tx,
+                                    struct validation_state *state);
 
 bool check_transaction(const struct transaction *tx,
                        struct validation_state *state)
+{
+    bool ok = check_transaction_impl(tx, state);
+    /* Emit on invalid (DoS-able) rejections. Skip MODE_ERROR (fatal,
+     * internal failures unrelated to consensus) and successful runs. */
+    if (!ok && state && state->mode == MODE_INVALID &&
+        state->reject_reason[0] != '\0') {
+        event_emitf(EV_CONSENSUS_REJECT_TX, 0,
+                    "reason=%s dos=%d",
+                    state->reject_reason, state->dos);
+    }
+    return ok;
+}
+
+static bool check_transaction_impl(const struct transaction *tx,
+                                    struct validation_state *state)
 {
     if (!transaction_is_coinbase(tx))
         metrics_increment_tx_validated();

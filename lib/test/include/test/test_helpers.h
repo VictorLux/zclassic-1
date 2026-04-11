@@ -249,6 +249,7 @@ int test_db_maintenance(void);
 int test_mempool_limits(void);
 int test_addrman_integrity(void);
 int test_ibd_throttle(void);
+int test_consensus_reject_events(void);
 
 /* Spec-based user story tests (one per feature area) */
 int spec_wallet_dashboard(void);

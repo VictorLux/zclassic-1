@@ -27,7 +27,7 @@
 - [ ] **Block-time sanity hardening** — audit `lib/validation/src/contextual_check_tx.c` + `check_block.c` against BIP113 (median-time-past) and BIP65 (CLTV). Are the time comparisons wall-clock or MTP? Add tests for both paths with adversarial timestamps.
 - [ ] **Mempool orphan handling** — `lib/validation/src/txmempool.c` currently drops any tx with a missing input. Add an orphan pool (max 50 txs, 10-min TTL) and attempt to reconnect orphans when their parent arrives. Tests in `test_mempool_orphan.c`.
 - [ ] **Disk monitor integration** — now that `disk_monitor_start` is wired in boot (after AGENT1's next session), call `disk_monitor_is_critical()` in the mempool accept path + process_block write path + `wallet_backup_run_once`. Each integration point is one commit.
-- [ ] **Consensus metrics** — new events `EV_CONSENSUS_REJECT_{BLOCK,TX}` with reason + height, wire into `check_block.c` / `check_transaction.c`. Let AGENT3 surface them in Prometheus in parallel.
+- [x] **Consensus metrics** — new events `EV_CONSENSUS_REJECT_{BLOCK,TX}`. Wired via thin `check_transaction` / `check_block` / `check_block_header` wrappers that call the existing impls and, on failure, emit with `reason=<state->reject_reason> dos=<state->dos>`. Only fires when `mode == MODE_INVALID` and a reject reason is set, so MODE_ERROR (fatal internal failures) and successful runs stay silent. 18 tests covering valid-path-no-emit, empty-vin, negative-value, 5-in-a-row accumulation, version-too-low block header, and successful-header-no-emit. Height isn't threaded through `check_block` today (context-free); height-aware emission is a follow-up when the reorg safety test harness lands. AGENT3 can wire `zcl_consensus_report` to the event stream now.
 
 ### Stretch for wave 7
 

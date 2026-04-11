@@ -152,6 +152,10 @@ enum event_type {
     /* ── IBD throttle ──────────────────────────────── */
     EV_IBD_THROTTLED,            /* payload: "blocked=N total_wait_ms=N rate=N burst=N" */
 
+    /* ── Consensus rejects (wave 7) ────────────────── */
+    EV_CONSENSUS_REJECT_TX,      /* payload: "reason=... dos=N" */
+    EV_CONSENSUS_REJECT_BLOCK,   /* payload: "reason=... dos=N [height=N]" */
+
     EV_NUM_TYPES                 /* sentinel — must be last */
 };
 

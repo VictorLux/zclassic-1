@@ -14,6 +14,7 @@
 #include "chain/chainparams.h"
 #include "chain/equihash.h"
 #include "chain/pow.h"
+#include "event/event.h"
 #include "validation/check_transaction.h"
 #include "validation/contextual_check_tx.h"
 #include "validation/main_constants.h"
@@ -24,12 +25,43 @@
 #include <math.h>
 #include <string.h>
 
+static void consensus_reject_block_emit(const struct validation_state *state)
+{
+    if (!state || state->mode != MODE_INVALID ||
+        state->reject_reason[0] == '\0') return;
+    event_emitf(EV_CONSENSUS_REJECT_BLOCK, 0,
+                "reason=%s dos=%d",
+                state->reject_reason, state->dos);
+}
+
+static bool check_block_header_impl(const struct block_header *header,
+                                     struct validation_state *state,
+                                     const struct chain_params *params,
+                                     bool check_pow);
+
+static bool check_block_impl(const struct block *block,
+                              struct validation_state *state,
+                              const struct chain_params *params,
+                              bool check_pow,
+                              bool check_merkle_root,
+                              bool check_size_limits);
+
 /* ── CheckBlockHeader (4 checks) ──────────────────────────────── */
 
 bool check_block_header(const struct block_header *header,
                         struct validation_state *state,
                         const struct chain_params *params,
                         bool check_pow)
+{
+    bool ok = check_block_header_impl(header, state, params, check_pow);
+    if (!ok) consensus_reject_block_emit(state);
+    return ok;
+}
+
+static bool check_block_header_impl(const struct block_header *header,
+                                     struct validation_state *state,
+                                     const struct chain_params *params,
+                                     bool check_pow)
 {
     REJECT_IF(header->nVersion < MIN_BLOCK_VERSION,
               state, 100, "version-too-low");
@@ -59,6 +91,30 @@ bool check_block(const struct block *block,
                  bool check_pow,
                  bool check_merkle_root,
                  bool check_size_limits)
+{
+    bool ok = check_block_impl(block, state, params,
+                                check_pow, check_merkle_root,
+                                check_size_limits);
+    /* check_block_impl calls check_transaction and check_block_header
+     * internally, both of which already emit their own rejection event
+     * on failure. Emit the outer block-level event only when the
+     * failure arose directly inside check_block_impl (not forwarded
+     * from a nested emission) — detectable by the reason string being
+     * set to a block-scoped reason rather than a tx-scoped one. The
+     * cheap proxy: emit unconditionally here and accept the small risk
+     * of a duplicate event under `consensus.reject_tx` + `consensus.reject_block`
+     * for txs inside blocks, which is actually useful diagnostic data
+     * (tells us whether the rejected tx is in-mempool or in-block). */
+    if (!ok) consensus_reject_block_emit(state);
+    return ok;
+}
+
+static bool check_block_impl(const struct block *block,
+                              struct validation_state *state,
+                              const struct chain_params *params,
+                              bool check_pow,
+                              bool check_merkle_root,
+                              bool check_size_limits)
 {
     if (!check_block_header(&block->header, state, params, check_pow))
         return false;
