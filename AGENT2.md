@@ -1,157 +1,235 @@
-# AGENT2 — Boot Integrity, Crash Safety & Wallet Resilience
+# AGENT2 — Boot Decomposition, Consensus Hardening & Resource Controls
 
 **Worktree:** `~/zclassic23-2`
 **Workflow:** push directly to `master` after `./test_zcl` passes
 **Coordinator:** AGENT1 (main `~/zclassic23`)
-**Peer:** AGENT3 (`~/zclassic23-3`) — MCP/security/observability, different files
+**Peer:** AGENT3 (`~/zclassic23-3`) — RPC/wallet encryption/tracing, different files
 
 ---
 
 ## Mission
 
-Three layers of safety already landed (CSR → recovery_policy → db_txn). **Wave 4 makes the node self-healing.** Give `block_index.bin` a tamper-evident sidecar so boot fails loud instead of silently wiping UTXOs. Build a crash test harness that actually SIGKILLs the node mid-sync and proves it recovers. Stand up libFuzzer harnesses on the three biggest attack surfaces. Then build the wallet backup service that memory file `feedback_never_destroy_wallet.md` has been screaming for since the 0.4 ZCL loss.
+Five waves of safety infrastructure are now in place — CSR, recovery_policy, db_txn, block_index_integrity, wallet_backup, crash harness, fuzzers, peer scoring. **Wave 5 hardens the parts of the node nothing has touched yet.** Fix the live fuzzer finding before it rots. Investigate the PHGR13 consensus bug that's kept the node stuck at h=2,014,948 for days. Pull `boot.c` apart now that the services it depends on are all in place. Then protect the mempool, disk, and database from resource exhaustion.
 
 ## Already done (don't redo)
 
-- **CSR** — 9 call sites migrated; `process_block.c`, `snapshot_sync_service.c`, `chain_restore_service.c`, `msgprocessor.c`
-- **recovery_policy** — 4 wipe sites gated (3 in snapshot_sync, 1 in sync_controller)
-- **db_txn** — wrapper + tests landed; **3 of 4** destructive paths now in `DB_TXN_SCOPE` (only `chain_restore_service.execute` remains)
-- AGENT2 Current Status reflects the session-by-session log
+- **CSR** 9 call sites; **recovery_policy** 4 wipe gates; **db_txn** 4 recovery paths (all wrapped)
+- **block_index_integrity** with SHA3 sidecar + SQLite cross-check + quarantine + 11 tests
+- **wallet_backup_service** hourly rotation + 11 tests + `wallet_backup_now()`
+- **crash_recovery_test** harness + `make test-crash`
+- **fuzz_block/script/p2p** libFuzzer harnesses + seeds + `make fuzz-ci`
+- `./test_zcl` green on every push
 
-## Wave 4 — ordered by impact
+## Wave 5 — 10 items, reach for stretch in the same session
 
-### 1. Finish the last `db_txn` wiring (quickest win)
+### 1. Fix fuzzer finding #1 — `transaction_deserialize` vin leak
 
-One remaining path: `app/services/src/chain_restore_service.c::chain_restore_execute`. Wrap its destructive sequence (tip + header rewrite) in `DB_TXN_SCOPE("chain_restore.execute", ...)`. Add an induced-failure test that aborts the fn mid-sequence and asserts no partial rows.
+`lib/primitives/src/transaction.c:451` leaks `tx->vin` on partial-parse failures. `transaction_free` doesn't walk a partially-initialised vin array, so fuzzer input that fails in the middle of vin parsing leaks the N-1 already-parsed inputs.
 
-This closes the db_txn wiring story and means every destructive recovery path is now transactional.
+Separate commit: `agent2: fix transaction_deserialize vin leak (fuzzer finding #1)`. Add a regression test in `lib/test/src/test_transaction.c` that synthesises a short-buffer-in-the-middle-of-vin and asserts no leak via `__sanitizer_print_memory_profile` or a simple before/after free counter.
 
-### 2. Block-index integrity — `app/services/block_index_integrity.{h,c}` (critical carry-over)
+Add to new `FUZZER_FINDINGS.md` (format below). Mark this one as **fixed**.
 
-This is the single largest remaining gap in boot-time safety. `block_index.bin` can still silently disagree with SQLite, which is exactly the bug that wiped 1.3M UTXOs on 2026-04-10.
+### 2. PHGR13 sync stall investigation — `lib/sapling/src/sprout.c`
 
-**Sidecar format** (new file: `block_index.bin.sha3`, 48 bytes):
+The node has been stuck at **h=2,014,948** because peers reject historical blocks with `bad-txns-joinsplit-phgr13-invalid`. This is a known consensus regression in the Sprout PHGR13 verifier that nobody has debugged.
 
-```c
-struct block_index_sidecar {
-    uint8_t  magic[4];         /* "BIIX" */
-    uint32_t version;          /* 1 */
-    uint64_t body_size;        /* bytes of block_index.bin at write time */
-    uint8_t  body_sha3[32];    /* SHA3-256 of block_index.bin contents */
-};
+Your job: investigate, don't fix yet. Produce a dated `PHGR13_INVESTIGATION.md` at the repo root with:
 
-enum bii_verdict {
-    BII_OK,
-    BII_SIDECAR_MISSING,       /* first-run after upgrade — warn, accept */
-    BII_SIDECAR_STALE,         /* body_size differs from measured */
-    BII_HASH_MISMATCH,         /* corruption or truncation */
-    BII_TIP_HEIGHT_MISMATCH,   /* block_map tip hash → SQLite height disagrees */
-    BII_TIP_MISSING_IN_SQL,    /* block_map tip hash absent from SQLite blocks */
-};
+1. **Reproduction**: pick one rejected block (suggestion: whatever block follows h=2,014,948) and run it through `verify_joinsplit()` in isolation with debug logging. Show the exact intermediate state where verification diverges.
+2. **Diff against zclassicd**: use `~/zclassic-cpp` as reference. Compare the PHGR13 verifier path — which struct fields differ, which operation ordering, which field-arithmetic loops?
+3. **Hypothesis**: one sentence. "Field reduction in X is wrong because Y."
+4. **Fix sketch**: 5-line patch or pseudocode. Don't commit the fix in the same session — flag it in Current Status and I'll review.
 
-enum bii_verdict bii_verify(const char *datadir,
-                             struct node_db *db,
-                             const struct block_index *declared_tip,
-                             char *err_out, size_t err_cap);
-bool bii_write_sidecar(const char *datadir);
-void bii_quarantine_corrupt(const char *datadir, enum bii_verdict v);
-```
+This is open-ended research work. Spend up to one session on it; if you can't reach a hypothesis in a session, write down what you ruled out and move on.
 
-**Semantics:**
-- On `BII_HASH_MISMATCH` or `BII_TIP_*_MISMATCH`: rename both `block_index.bin` and `block_index.bin.sha3` to `*.corrupt.<unix_ts>` — **never delete**. Emit `EV_BLOCK_INDEX_CORRUPT` with verdict + heights.
-- On `BII_SIDECAR_MISSING`: emit warning event, write a fresh sidecar using current body, continue boot.
-- Boot wiring (I'll handle the `boot.c` call site): refuse to boot on any non-OK verdict unless `ZCL_ALLOW_CORRUPT_INDEX=1`. Loud failure > silent destruction.
+### 3. Boot decomposition Phase A — `block_index_loader`
 
-Tests in `lib/test/src/test_block_index_integrity.c`: simulate each verdict (missing, stale size, hash flip, height mismatch, SQLite-missing), verify quarantine rename, verify refuse-to-boot path via a harness that checks exit code.
+`boot.c` is **2640 lines**. AGENT1 is wiring the three queued services (`block_index_integrity`, `wallet_backup_service`, and replaying the 7 remaining `node_db_wipe_utxos` sites through `recovery_policy`) in a dedicated boot.c session. Once that lands (commit subject will start with `agent1: wire wave 4 services into boot`), pull your next rebase and start extracting:
 
-Expose `bii_verify()` and `bii_write_sidecar()` in the header. Don't touch `boot.c` — I'll wire the call site in a follow-up commit you can `(AGENT1 review)` flag in your commit message.
-
-### 3. Crash recovery test harness — `tools/crash_recovery_test.c`
-
-The three safety layers are untested under real crash conditions. Prove they work:
-
-```
-1. Seed an isolated datadir with a small real chain (~200 blocks)
-2. Start zclassic23 with that datadir
-3. Drive it through a recovery scenario (snapshot import, reorg, UTXO rebuild)
-4. sleep N ms where N is uniformly random in [0, 5000]
-5. SIGKILL -9 the process
-6. Restart
-7. Run zcl_dataintegrity, zcl_utxocommitment, zcl_getblockcount
-8. Assert:
-   - zcl_getblockcount did NOT decrease
-   - zcl_utxocommitment matches the count before the crash OR before the previous commit
-   - zcl_dataintegrity passes
-9. Loop 100 iterations with different random delays
-10. Report pass/fail distribution with delay histogram
-```
-
-Add a `make test-crash` target. Run it against `~/.zclassic-c23-crashtest`. Use the MCP stdio protocol directly (not HTTP RPC) so the test is self-contained.
-
-**Expected outcome:** you'll find at least one bug. Log discoveries in Current Status. Fix the most dangerous one in a separate commit. The less-dangerous ones get issues under "known issues from crash fuzzer".
-
-### 4. libFuzzer harnesses — `tools/fuzz/*.c`
-
-libFuzzer entry points for the three biggest attack surfaces:
-
-- `tools/fuzz/fuzz_block.c` — `check_block()` / `contextual_check_block_header()` on raw block bytes
-- `tools/fuzz/fuzz_script.c` — `eval_script()` on a random script + random stack state
-- `tools/fuzz/fuzz_p2p.c` — `msg_process()` on a random P2P message buffer
-
-**Build**: new Makefile target `fuzz` producing `fuzz_block`, `fuzz_script`, `fuzz_p2p`, all linked with `-fsanitize=fuzzer,address,undefined`. Use `$(CC) -g -O1` not `-O3` for sanitizer sanity.
-
-**Seeds**: `lib/test/fuzz_seeds/block/*.bin`, `lib/test/fuzz_seeds/script/*.bin`, `lib/test/fuzz_seeds/p2p/*.bin`. Seed with 3–5 real mainnet samples per corpus — the fuzzer finds far more bugs starting from realistic inputs.
-
-**CI target**: `make fuzz-ci` runs each fuzzer for 60 seconds with `-timeout=1 -max_total_time=60`. Zero new bug discoveries in 60s is fine — we're looking for already-latent crashes, not exhaustive coverage.
-
-Document any discovered bugs in Current Status under "known issues from fuzzers". Do **not** fix them in the same commit — separate discovery from repair.
-
-### 5. Wallet backup service — `app/services/wallet_backup_service.{h,c}`
-
-Memory file `feedback_never_destroy_wallet.md` is explicit: the user has already lost 0.4 ZCL to wallet destruction. The fix is an always-on, always-external, always-versioned backup.
+Create `app/services/block_index_loader.{h,c}`:
 
 ```c
-struct wallet_backup_config {
-    const char *backup_dir;        /* default ~/wallet_backups */
-    int         interval_seconds;  /* default 3600 (hourly) */
-    int         max_versions;      /* default 168 (1 week hourly) */
-    bool        encrypt;           /* default false until phase 2 */
-    const char *encrypt_password;  /* from env WALLET_BACKUP_PASSWORD if encrypt */
+struct block_index_load_result {
+    bool          ok;
+    int           num_loaded;
+    int64_t       tip_height;
+    struct uint256 tip_hash;
+    enum bii_verdict sidecar_verdict;
+    char          error[256];
 };
 
-/* Starts a background thread that every `interval_seconds`:
- *   1. Acquires a read lock on the wallet SQLite DB
- *   2. Copies wallet_keys, wallet_tx, wallet_utxo tables into a
- *      `wallet_backup_<ISO8601>.sqlite` file in `backup_dir`
- *   3. (optional) Encrypts to AES-256-GCM with scrypt-derived key
- *   4. Verifies the backup round-trips (read keys, compare counts)
- *   5. Rotates: deletes the oldest when count > max_versions
- *   6. Emits EV_WALLET_BACKUP with path, size, key_count, duration_ms
- * Failures emit EV_WALLET_BACKUP_FAILED and DO NOT crash the node.
- */
-bool wallet_backup_start(struct wallet_backup_config *cfg,
-                          struct wallet *w);
-void wallet_backup_stop(void);
-bool wallet_backup_now(void);  /* force an immediate backup */
+struct block_index_load_result
+block_index_loader_load(const char *datadir,
+                         struct node_db *db,
+                         struct block_map *out_map);
+
+bool block_index_loader_save(const char *datadir,
+                              const struct block_map *map);
 ```
 
-Integration:
-- Start in `boot.c` after `wallet_init` (I'll wire the call site — you build the service)
-- Expose `zcl_wallet_backup_now` via AGENT3's MCP surface (coordinate via commit message — AGENT3 can add the tool wrapper in a follow-up)
-- If `backup_dir` doesn't exist, create it with mode 0700
-- Refuse to start if the datadir is the same as `backup_dir` (don't back up to yourself)
+Move every `block_index.bin` read/write call in `boot.c` into the new service, plus the `bii_verify()` call that I'll have just wired in. Replace the boot.c site with a single `block_index_loader_load(...)` call. Commit: `agent2: extract block_index_loader from boot.c`.
 
-Tests: `lib/test/src/test_wallet_backup.c` — 10+ cases covering interval trigger, rotation, round-trip verify, backup-to-missing-dir, backup-failure event emission, force-now, concurrent stops.
+Tests in `lib/test/src/test_block_index_loader.c` — 6+ cases (happy path, sidecar missing, hash mismatch, empty file, truncated file, write round-trip).
 
-### 6. Boot decomposition (stretch)
+### 4. Boot decomposition Phase B — `chain_state_validator`
 
-`config/src/boot.c` is still **2,640 lines** with 8 `node_db_wipe_utxos` call sites. Once items 1–5 land, we can start decomposing. I'll pair on the boot.c edits. Your part: extract these services (one commit each):
+Create `app/services/chain_state_validator.{h,c}` owning the cross-check pass between `block_map`, SQLite `blocks`, `coins_best_block`, and `active_chain`:
 
-- `app/services/block_index_loader.{h,c}` — owns `block_index.bin` + sidecar load, calls `bii_verify()`
-- `app/services/chain_state_validator.{h,c}` — the pre-boot cross-check pass
-- `app/services/utxo_recovery_service.{h,c}` — orchestrates wipe decisions via `recovery_policy` + `db_txn`
+```c
+enum csv_verdict {
+    CSV_CONSISTENT,
+    CSV_TIP_UNREACHABLE,      /* tip hash not in block_map */
+    CSV_HEIGHT_MISMATCH,      /* block_map vs SQLite blocks differ */
+    CSV_COINS_DRIFT,          /* coins_best_block not in block_map */
+    CSV_ACTIVE_CHAIN_STALE,   /* active_chain tip differs from best */
+};
 
-Target: `boot.c` < **1000 lines**, zero business logic.
+enum csv_verdict csv_validate(struct node_db *db,
+                               struct block_map *bm,
+                               struct active_chain *ac,
+                               struct coins_view_cache *coins_tip,
+                               char *err_out, size_t err_cap);
+```
+
+This replaces the scattered consistency checks currently inlined in `boot.c`'s `validate_coins_chain_agreement` path. Call it after `block_index_loader_load` and before any write. On any verdict ≠ `CSV_CONSISTENT`, emit `EV_CHAIN_STATE_INVALID` and refuse to boot unless `ZCL_ALLOW_INCONSISTENT_CHAIN=1`.
+
+Tests: one per verdict + happy path = 5+ tests.
+
+### 5. Boot decomposition Phase C — `utxo_recovery_service`
+
+Create `app/services/utxo_recovery_service.{h,c}` owning the wipe/recover decision logic that currently lives in `boot.c`'s `validate_coins_chain_agreement` REIMPORT/WIPE_WAIT branch:
+
+```c
+enum urs_action {
+    URS_NOTHING,              /* UTXOs and tip agree */
+    URS_RESTORE_TIP,          /* use max(utxo.height) as tip */
+    URS_WIPE_UTXOS,           /* only if recovery_policy allows */
+    URS_REFUSE_AMBIGUOUS,     /* neither is clearly right */
+};
+
+enum urs_action urs_decide(struct node_db *db,
+                            int64_t tip_height,
+                            const struct uint256 *tip_hash);
+
+/* Executes the chosen action inside a DB_TXN_SCOPE. */
+bool urs_execute(struct node_db *db,
+                  enum urs_action action,
+                  struct recovery_policy *policy);
+```
+
+This is the service that should have existed on 2026-04-10 when `boot.c` unconditionally wiped 1.3M UTXOs. Now it makes the decision explicitly and gates it through `recovery_policy`.
+
+Tests: each action path + policy refusal path = 8+ tests.
+
+**Target after Phases A/B/C: `boot.c` under 1400 lines.** Every extraction must leave `./test_zcl` green.
+
+### 6. Mempool DoS hardening — `app/services/mempool_limits.{h,c}`
+
+Today the mempool has no size cap, no eviction policy, no tx expiry. A malicious peer can exhaust memory by flooding low-fee txs.
+
+```c
+struct mempool_limits {
+    int64_t max_bytes;              /* env ZCL_MEMPOOL_MAX_BYTES, default 300MB */
+    int64_t max_tx_count;           /* env ZCL_MEMPOOL_MAX_TXS, default 50000 */
+    int64_t expiry_seconds;         /* env ZCL_MEMPOOL_EXPIRY, default 72 hours */
+    int64_t min_relay_fee_zatoshi;  /* env ZCL_MIN_RELAY_FEE, default 100 */
+};
+
+/* Called after every mempool_add. Evicts lowest-fee-per-byte txs
+ * until we're under max_bytes and max_tx_count. */
+int mempool_limits_enforce(struct txmempool *pool,
+                            const struct mempool_limits *lim);
+
+/* Called periodically (scheduler tick). Drops txs older than expiry. */
+int mempool_limits_expire(struct txmempool *pool,
+                           const struct mempool_limits *lim);
+```
+
+Wire into `lib/validation/src/txmempool.c` acceptance path and add a scheduler tick. Emit `EV_MEMPOOL_EVICT` / `EV_MEMPOOL_EXPIRE`.
+
+Tests in `lib/test/src/test_mempool_limits.c` — 10+ cases (overflow eviction, expiry sweep, lowest-fee-first, exact-limit boundary, min-relay-fee rejection).
+
+### 7. Disk space monitor — `app/services/disk_monitor.{h,c}`
+
+A full disk is the second-most-common operational failure mode. Today nothing notices until SQLite starts returning errors.
+
+```c
+struct disk_monitor {
+    const char *datadir;
+    int64_t     warn_free_bytes;   /* env ZCL_DISK_WARN_BYTES, default 5GB */
+    int64_t     refuse_free_bytes; /* env ZCL_DISK_REFUSE_BYTES, default 1GB */
+    int         poll_seconds;      /* env ZCL_DISK_POLL, default 60 */
+};
+
+void disk_monitor_start(const struct disk_monitor *cfg);
+void disk_monitor_stop(void);
+int64_t disk_monitor_free_bytes(const char *path);
+```
+
+Background thread polls `statvfs()` every N seconds. Below `warn_free_bytes`: emit `EV_DISK_LOW`. Below `refuse_free_bytes`: emit `EV_DISK_CRITICAL` and tell the mempool to reject new txs, tell the block processor to pause new block acceptance.
+
+Tests in `lib/test/src/test_disk_monitor.c` — 6+ cases (threshold triggers, recovery, stop/start, poll interval).
+
+### 8. Database maintenance scheduler — `app/services/db_maintenance.{h,c}`
+
+SQLite databases degrade without periodic VACUUM, ANALYZE, WAL checkpoint. Build a scheduler that runs these on a schedule tuned for the node's traffic pattern.
+
+```c
+struct db_maintenance_schedule {
+    int wal_checkpoint_minutes;     /* default 15 */
+    int analyze_hours;              /* default 24 */
+    int vacuum_days;                /* default 7 */
+};
+
+void db_maintenance_start(struct node_db *db,
+                           const struct db_maintenance_schedule *s);
+void db_maintenance_stop(void);
+bool db_maintenance_run_now(struct node_db *db,
+                             const char *op);  /* "wal"|"analyze"|"vacuum" */
+```
+
+VACUUM holds the whole DB lock — only run it when the node is at-tip and idle (check sync state first). ANALYZE and WAL checkpoint are cheap and always OK.
+
+Emit `EV_DB_MAINTENANCE_{START,DONE,FAILED}` with operation name and duration.
+
+Tests in `lib/test/src/test_db_maintenance.c` — 6+ cases.
+
+### 9. (Stretch) Snapshot exporter automation
+
+`export_snapshot` is a separate binary today. Make it a service that auto-generates snapshots nightly if the node is at-tip, stores them in `~/snapshots/`, rotates (keep last 7), and publishes over the file service so other nodes can fetch via fast-sync. Big ticket — only attempt if items 1–8 are done.
+
+### 10. (Stretch) Continue CSR migration
+
+Drive the remaining ~56 unmigrated call sites to resolution. Most are test files or documented no-ops; audit each one and either migrate or add a `/* CSR-internal: low-level, bypass intentional */` comment with justification. Target: the appendix site count goes to **zero**.
+
+---
+
+## New coordination artifacts
+
+### BOOT_QUEUE.md
+
+When you want a `boot.c` edit, add an entry here instead of flagging it in a commit message. I batch-apply the queue once per wave cycle.
+
+```
+## Queue
+- [ ] agent2: wire `wallet_backup_start(&g_wallet_backup_cfg, &g_wallet)` after `wallet_init` in boot.c:~1420
+- [ ] agent2: replace `bii_verify` call site with the new `block_index_loader_load` result type
+```
+
+Create the file with a skeleton if it doesn't exist. Never commit a `boot.c` edit yourself.
+
+### FUZZER_FINDINGS.md
+
+One row per discovery. Format:
+
+```
+| ID | Location | Severity | Found by | Owner | Fix commit |
+|----|----------|----------|----------|-------|------------|
+| 1  | lib/primitives/src/transaction.c:451 | MED leak | agent2 fuzz_block run 2 | agent2 | agent2: fix ... |
+```
+
+Add the transaction leak as row 1 in the same commit as item #1 above (once fixed).
 
 ---
 
@@ -159,20 +237,22 @@ Target: `boot.c` < **1000 lines**, zero business logic.
 
 - Rebase/pull before every session. Push direct to `master` after `./test_zcl` green.
 - One commit per logical step. `agent2:` prefix.
-- **Never touch** AGENT3 territory: `tools/mcp/**`, `lib/net/peer_scoring.*`, `lib/test/src/test_mcp_*.c`, `lib/test/src/test_secrets_hygiene.c`, `app/models/database_validators.*`.
-- **Never touch** `config/src/boot.c` unless I've signed off. Expose service entry points via headers and I'll wire them.
-- **Separate discovery from repair.** When the fuzzer or crash harness finds a bug, log it in Current Status and fix it in a separate commit with its own `agent2: fix` prefix.
+- **Never touch** AGENT3 territory: `tools/mcp/**`, `lib/net/peer_scoring.*`, `lib/wallet/wallet_encrypted.*` (upcoming), `lib/util/log_json.*`, `lib/rpc/rpc_middleware.*` (upcoming), `app/models/database_validators.*`.
+- **Never touch** `config/src/boot.c` unless I've signed off. Use `BOOT_QUEUE.md`.
+- **Separate discovery from repair.** Fuzzer/crash-harness findings go in `FUZZER_FINDINGS.md`, fixes are separate commits.
+- **Reach down for stretch.** When you finish the priority list, work items #9 and #10 in the same session. Don't wait for a new plan.
+- **Trade work.** If you finish everything and AGENT3 is still grinding, take on anything from their plan in files you don't collide on. Test files are always safe.
 - Update "Current Status" each session.
 
-## Definition of done for wave 4
+## Definition of done for wave 5
 
-- [ ] `chain_restore_service.execute` wrapped in `DB_TXN_SCOPE`
-- [ ] `block_index_integrity` service + 5+ tests, boot refuses on any non-OK verdict (AGENT1 wires)
-- [ ] `crash_recovery_test` passes 100 iterations, bug discoveries logged
-- [ ] `fuzz_block` + `fuzz_script` + `fuzz_p2p` each run 60s in CI without crashing
-- [ ] `wallet_backup_service` + tests, backups created every hour, rotated at 168 versions
-- [ ] `config/src/boot.c` under **1500 lines** (stretch: 1000)
-- [ ] `./test_zcl` still green on every commit
+- [ ] Fuzzer finding #1 fixed + regression test
+- [ ] `PHGR13_INVESTIGATION.md` with reproduction, diff, hypothesis, fix sketch
+- [ ] `block_index_loader`, `chain_state_validator`, `utxo_recovery_service` extracted from boot.c
+- [ ] `boot.c` under **1400 lines**
+- [ ] `mempool_limits`, `disk_monitor`, `db_maintenance` services + tests
+- [ ] `BOOT_QUEUE.md` and `FUZZER_FINDINGS.md` in use
+- [ ] `./test_zcl` still green
 
 ---
 
@@ -181,10 +261,10 @@ Target: `boot.c` < **1000 lines**, zero business logic.
 *(Update each session. Keep it short.)*
 
 - **2026-04-11 wave 1** — Phase 1 CSR + singleton + boot bootstrap + `process_block.c` (5 sites). Site count corrected to 65.
-- **2026-04-11 wave 2** — `recovery_policy` + 21 tests; wipe gates on `sync_controller` (1) + `snapshot_sync_service` (3). `db_txn` service + 14 tests (unwired). CSR migrations continued (snapshot_sync 2, chain_restore 1, msgprocessor 1). Full `./test_zcl` green.
-- **2026-04-11 wave 3** — `db_txn` wired into 3 of 4 recovery paths (`snapsync_begin_receive`, `snapshot_sync.finalize`, `sync_controller.import_utxos_reimport`); db_txn rollback verification tests landed.
-- **2026-04-11 wave 3 session 1** — Wave 4 items #1 and #2 **already done**: `chain_restore_execute` flagged as not applicable (it only mutates in-memory state via `csr_commit_tip`, does no SQLite writes, db_txn wrap would be cosmetic — flagged in commit for AGENT1 review). `block_index_integrity` service landed (sidecar SHA3 + SQLite cross-check + quarantine) with **11 tests** covering every verdict, plus `EV_BLOCK_INDEX_CORRUPT` event. Boot wiring deferred to a follow-up commit for AGENT1 review. `./test_zcl` green on every commit.
-- **2026-04-11 wave 4 (AGENT1 COORDINATOR)** — **Plan landed.** You've already finished #1 and #2 (nice). Next targets per the plan below: **#3 crash recovery harness**, **#4 libFuzzer harnesses**, **#5 wallet backup service** (memory file `feedback_never_destroy_wallet.md` has been asking for this since the 0.4 ZCL loss — the plan's most user-impact-positive item). #6 boot decomposition is stretch.
-- **2026-04-11 wave 4 session 1** — #1 done for real this time: wrapped `chain_restore_execute` in `DB_TXN_SCOPE` via `csr_instance()->ndb` (unit-test path falls through to legacy raw-setter when csr stub has NULL ndb). #3 done: `tools/crash_recovery_test.c` + `make test-crash` with graceful skip when no seeded datadir. #4 done: `tools/fuzz/fuzz_{block,script,p2p}.c` libFuzzer harnesses + `make fuzz` + `make fuzz-ci` (60s×3 smoke test with ephemeral /tmp workdir and leak suppression; `make fuzz-ci-leaks` variant keeps leak detection on for triage). **Known issue from fuzzers**: `transaction_deserialize` at `lib/primitives/src/transaction.c:451` leaks `tx->vin` on partial-parse failures — `transaction_free` may not walk partially-initialised vin contents. Filed here; fix is a separate commit per the plan rule. `./test_zcl` green.
-- **2026-04-11 wave 4 session 2** — #5 done: `wallet_backup_service` + 11 tests. Background pthread that copies the seven wallet_* tables via ATTACH + CREATE TABLE AS SELECT into `wallet_backup_<unix_ts>.sqlite` files in an external backup_dir, with round-trip row-count verification, rotation at `max_versions`, refuses to back up into the source datadir, and exposes `wallet_backup_now()` for forced one-shots. Phase 1 is unencrypted; the config struct already carries `encrypt`/`encrypt_password` hooks for phase 2 AES-GCM. Boot wiring flagged for AGENT1. New `EV_WALLET_BACKUP` / `EV_WALLET_BACKUP_FAILED` events. Five of six wave-4 items now done; #6 (boot decomposition) is the remaining stretch target and is gated on AGENT1 signoff per the rules. `./test_zcl` green on every commit.
-- **2026-04-11 wave 4 session 3** — **known fuzz leak fixed.** `transaction_alloc(_, _, 0)` used to leak a 1-byte `calloc(0, sizeof(tx_out))` stub because `transaction_deserialize` later overwrote `tx->vout` with a fresh calloc. Treated zero-size as "no array" (pointer stays NULL). Regression test added in `test_primitives.c`. Verified under ASAN+LSAN: all three fuzzers (`fuzz_block` 395k execs / `fuzz_script` 1.47M execs / `fuzz_p2p` 38k execs, each ~20s) now run **zero leaks, zero crashes**. `make fuzz-ci-leaks` is therefore green for the first time — developers fixing new leaks can now opt into the stricter target without wading through a pre-existing baseline. `./test_zcl` green.
+- **2026-04-11 wave 2** — `recovery_policy` + 21 tests; wipe gates on `sync_controller` (1) + `snapshot_sync_service` (3). `db_txn` service + 14 tests (unwired). CSR migrations continued. Full `./test_zcl` green.
+- **2026-04-11 wave 3** — `db_txn` wired into 3 of 4 recovery paths; db_txn rollback verification tests landed.
+- **2026-04-11 wave 3 session 1** — `chain_restore_execute` flagged N/A (in-memory only). `block_index_integrity` service landed (sidecar SHA3 + SQLite cross-check + quarantine) with 11 tests + `EV_BLOCK_INDEX_CORRUPT`. Boot wiring deferred to AGENT1.
+- **2026-04-11 wave 4 session 1** — #1 done for real (chain_restore_execute DB_TXN_SCOPE via csr_instance). #3 done: `tools/crash_recovery_test.c` + `make test-crash`. #4 done: `tools/fuzz/fuzz_{block,script,p2p}.c` + `make fuzz` + `make fuzz-ci` + `make fuzz-ci-leaks`. **Fuzzer finding #1**: `transaction_deserialize` vin leak at `lib/primitives/src/transaction.c:451` filed for separate fix.
+- **2026-04-11 wave 4 session 2** — #5 done: `wallet_backup_service` + 11 tests. Background pthread copies wallet_* tables via ATTACH + CREATE TABLE AS SELECT, round-trip row-count verify, rotation, refuses source-datadir backup, `wallet_backup_now()` exposed. Encryption hooks ready for phase 2. Boot wiring flagged for AGENT1.
+- **2026-04-11 wave 4 session 3** — **Fuzzer finding #1 FIXED.** `transaction_alloc(_, _, 0)` used to leak a 1-byte calloc stub overwritten by `transaction_deserialize`. Zero-size now means NULL. Regression test added. All three fuzzers run **zero leaks, zero crashes** under ASAN+LSAN (395k + 1.47M + 38k execs each ~20s). `make fuzz-ci-leaks` green for the first time.
+- **2026-04-11 wave 5 (AGENT1 COORDINATOR)** — **New plan, 10 deliverables above + new `BOOT_QUEUE.md` and `FUZZER_FINDINGS.md` artifacts.** Wave 5 items **already done**: #1 (fuzzer fix — landed in wave 4 session 3, nice). Remaining priority: **#2 PHGR13 investigation** (the consensus bug that's been staring at us since wave 1). #3/#4/#5 (boot decomposition) wait for AGENT1's boot.c wire-up session. #6–#8 (mempool_limits, disk_monitor, db_maintenance) are independent and can run any time. Reach for #9 (snapshot automation) and #10 (CSR migration to zero). Update `FUZZER_FINDINGS.md` to mark finding #1 as FIXED with the commit hash.
