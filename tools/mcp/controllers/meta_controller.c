@@ -74,6 +74,10 @@ static const struct {
     { "zcl_getblock",    "{\"block_id\":\"1\"}" },
     /* Safe: returns a "not found" body for an unregistered name. */
     { "zcl_name_resolve", "{\"name\":\"__self_test_probe__\"}" },
+    /* zcl_profile sleeps duration_ms per call — clamp to 100ms in
+     * self_test so the whole sweep doesn't balloon by a second on
+     * every run. */
+    { "zcl_profile",     "{\"duration_ms\":100,\"top_n\":3}" },
 };
 
 static const char *self_test_override_args(const char *tool)

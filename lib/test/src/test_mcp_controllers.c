@@ -36,13 +36,14 @@
 /* Expected tool counts.  If a future commit intentionally adds or
  * removes tools, bump these numbers in the same commit — they are the
  * contract for "how big is the MCP surface." */
-#define EXPECTED_TOTAL      72
-#define EXPECTED_OPS        19  /* status, health, kpi, mempool*, mininginfo,
+#define EXPECTED_TOTAL      73
+#define EXPECTED_OPS        20  /* status, health, kpi, mempool*, mininginfo,
                                  * benchmark, dbstats, filemanifest, events,
                                  * rpc, tools_list, self_test, logtail,
                                  * openapi, metrics, metrics_reset,
                                  * rpc_report (wave 5 sess 1),
-                                 * admin (wave 5 #5) */
+                                 * admin (wave 5 #5),
+                                 * profile (wave 6) */
 #define EXPECTED_CHAIN      10
 #define EXPECTED_NET         8  /* + zcl_peer_report (wave 4 #5) */
 #define EXPECTED_WALLET     19
@@ -107,7 +108,7 @@ static int test_register_total_count(void)
 static int test_ops_domain_count(void)
 {
     int failures = 0;
-    TEST("controllers: ops domain has 19 tools (wave 5 adds rpc_report + admin)") {
+    TEST("controllers: ops domain has 20 tools (wave 5+6 additions)") {
         register_all();
         size_t n = count_by_domain("ops");
         if (n != EXPECTED_OPS) {
@@ -632,6 +633,79 @@ static int test_zcl_admin_graceful_never_propagates_error(void)
     return failures;
 }
 
+/* ── Wave 6: zcl_profile ────────────────────────────────────── */
+
+static int test_zcl_profile_shape(void)
+{
+    int failures = 0;
+    TEST("controllers: zcl_profile returns top_threads + duration_ms") {
+        register_all();
+        const struct mcp_tool_route *r = mcp_router_find("zcl_profile");
+        ASSERT(r != NULL);
+        ASSERT(strcmp(r->domain, "ops") == 0);
+        ASSERT(r->num_params == 2);
+
+        /* Use a small duration to keep the test fast. */
+        const char *args_src = "{\"duration_ms\":100,\"top_n\":5}";
+        struct json_value args = {0};
+        ASSERT(json_read(&args, args_src, strlen(args_src)));
+
+        char *body = mcp_router_dispatch("zcl_profile", &args);
+        ASSERT(body != NULL);
+        ASSERT(strstr(body, "\"error\":{") == NULL);
+        ASSERT(contains(body, "\"duration_ms\":100"));
+        ASSERT(contains(body, "\"sampled_threads\""));
+        ASSERT(contains(body, "\"top_threads\":["));
+
+        /* The process always has at least one thread (the test runner). */
+        struct json_value root = {0};
+        ASSERT(json_read(&root, body, strlen(body)));
+        const struct json_value *st = json_get(&root, "sampled_threads");
+        ASSERT(st != NULL);
+        ASSERT(json_get_int(st) >= 1);
+
+        const struct json_value *tt = json_get(&root, "top_threads");
+        ASSERT(tt != NULL);
+        ASSERT(tt->type == JSON_ARR);
+        ASSERT(tt->num_children >= 1);
+        ASSERT(tt->num_children <= 5);
+
+        /* Each top_threads entry has tid, name, user_ms, sys_ms, cpu_pct. */
+        const struct json_value *first = &tt->children[0];
+        ASSERT(json_get(first, "tid")     != NULL);
+        ASSERT(json_get(first, "name")    != NULL);
+        ASSERT(json_get(first, "user_ms") != NULL);
+        ASSERT(json_get(first, "sys_ms")  != NULL);
+        ASSERT(json_get(first, "cpu_pct") != NULL);
+
+        json_free(&root);
+        json_free(&args);
+        free(body);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_zcl_profile_clamps(void)
+{
+    int failures = 0;
+    TEST("controllers: zcl_profile clamps duration_ms to [100, 10000]") {
+        register_all();
+        /* The router enforces the min/max from p_profile spec, so a
+         * value below 100 should be rejected with an error envelope. */
+        const char *args_src = "{\"duration_ms\":50}";
+        struct json_value args = {0};
+        ASSERT(json_read(&args, args_src, strlen(args_src)));
+        char *body = mcp_router_dispatch("zcl_profile", &args);
+        ASSERT(body != NULL);
+        ASSERT(contains(body, "\"error\":{"));
+        free(body);
+        json_free(&args);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_final_reset_leaves_clean_table(void)
 {
     int failures = 0;
@@ -678,6 +752,8 @@ int test_mcp_controllers(void)
     failures += test_zcl_admin_dispatch_shape();
     failures += test_zcl_admin_since_param_accepted();
     failures += test_zcl_admin_graceful_never_propagates_error();
+    failures += test_zcl_profile_shape();
+    failures += test_zcl_profile_clamps();
     failures += test_final_reset_leaves_clean_table();
 
     return failures;

@@ -11,9 +11,12 @@
 
 #include "json/json.h"
 
+#include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include <unistd.h>
 
 #define DEFINE_PT(name, rpc)                                                   \
     static int name(const struct mcp_request *req, struct mcp_response *res)  \
@@ -155,6 +158,195 @@ static int h_zcl_kpi(const struct mcp_request *req, struct mcp_response *res)
     return 0;
 }
 
+/* ── zcl_profile (wave 6): per-thread CPU sampler ────────────
+ *
+ * Reads /proc/self/task/<tid>/stat for every live thread, sleeps
+ * `duration_ms`, reads again, diffs utime + stime, sorts descending,
+ * returns the top N.  Designed for "why is this node slow at 3am"
+ * — an operator runs one MCP call and gets a hot-thread list
+ * without needing gdb/perf/strace on the live process.
+ *
+ * Blocking: the handler sleeps the calling MCP worker for duration_ms.
+ * Clamped to 10 seconds max so a runaway caller can't wedge the stdio
+ * loop forever.
+ */
+#define PROFILE_MAX_THREADS 256
+
+struct profile_sample {
+    int      tid;
+    char     name[16];
+    uint64_t utime;   /* clock ticks */
+    uint64_t stime;
+};
+
+/* Parse utime (field 14) and stime (field 15) from /proc/<pid>/stat.
+ * The `comm` field at position 2 can contain spaces and parens, so we
+ * skip everything up to the LAST ')' before counting tokens. */
+static bool parse_task_stat(const char *buf, uint64_t *utime, uint64_t *stime)
+{
+    const char *p = strrchr(buf, ')');
+    if (!p) return false;
+    p++;
+    /* After the ')', the next token is state (field 3).  utime is
+     * field 14, stime field 15 — 11 and 12 tokens ahead. */
+    int fields_to_skip = 11; /* 3 -> 14 is 11 steps */
+    for (int i = 0; i < fields_to_skip; i++) {
+        while (*p == ' ') p++;
+        while (*p && *p != ' ') p++;
+    }
+    while (*p == ' ') p++;
+    char *end = NULL;
+    *utime = strtoull(p, &end, 10);
+    if (end == p) return false;
+    p = end;
+    while (*p == ' ') p++;
+    *stime = strtoull(p, &end, 10);
+    return end != p;
+}
+
+static size_t read_task_snapshot(struct profile_sample *out, size_t cap)
+{
+    DIR *d = opendir("/proc/self/task");
+    if (!d) return 0;
+    size_t n = 0;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL && n < cap) {
+        if (e->d_name[0] < '0' || e->d_name[0] > '9') continue;
+        int tid = atoi(e->d_name);
+        if (tid <= 0) continue;
+
+        char path[128];
+        snprintf(path, sizeof(path), "/proc/self/task/%d/stat", tid);
+        FILE *f = fopen(path, "r");
+        if (!f) continue;
+        char buf[1024];
+        size_t r = fread(buf, 1, sizeof(buf) - 1, f);
+        fclose(f);
+        if (r == 0) continue;
+        buf[r] = '\0';
+
+        uint64_t u = 0, s = 0;
+        if (!parse_task_stat(buf, &u, &s)) continue;
+
+        out[n].tid = tid;
+        out[n].utime = u;
+        out[n].stime = s;
+
+        snprintf(path, sizeof(path), "/proc/self/task/%d/comm", tid);
+        FILE *cf = fopen(path, "r");
+        out[n].name[0] = '\0';
+        if (cf) {
+            if (fgets(out[n].name, sizeof(out[n].name), cf)) {
+                size_t L = strlen(out[n].name);
+                if (L > 0 && out[n].name[L - 1] == '\n')
+                    out[n].name[L - 1] = '\0';
+            }
+            fclose(cf);
+        }
+        n++;
+    }
+    closedir(d);
+    return n;
+}
+
+struct profile_delta {
+    int      tid;
+    char     name[16];
+    int64_t  utime_ticks;
+    int64_t  stime_ticks;
+    int64_t  total_ticks;
+};
+
+static int profile_delta_cmp(const void *a, const void *b)
+{
+    const struct profile_delta *pa = a;
+    const struct profile_delta *pb = b;
+    if (pb->total_ticks != pa->total_ticks)
+        return (pb->total_ticks > pa->total_ticks) ? 1 : -1;
+    return 0;
+}
+
+static int h_zcl_profile(const struct mcp_request *req,
+                          struct mcp_response *res)
+{
+    const struct json_value *dv = json_get(req->args, "duration_ms");
+    const struct json_value *nv = json_get(req->args, "top_n");
+
+    int64_t duration_ms = dv ? json_get_int(dv) : 1000;
+    int64_t top_n       = nv ? json_get_int(nv) : 10;
+    if (duration_ms < 100)   duration_ms = 100;
+    if (duration_ms > 10000) duration_ms = 10000;
+    if (top_n < 1)           top_n = 1;
+    if (top_n > 64)          top_n = 64;
+
+    static struct profile_sample s1[PROFILE_MAX_THREADS];
+    static struct profile_sample s2[PROFILE_MAX_THREADS];
+    size_t n1 = read_task_snapshot(s1, PROFILE_MAX_THREADS);
+    if (n1 == 0) return -1;
+
+    struct timespec ts = {
+        .tv_sec  = duration_ms / 1000,
+        .tv_nsec = (duration_ms % 1000) * 1000000L,
+    };
+    nanosleep(&ts, NULL);
+
+    size_t n2 = read_task_snapshot(s2, PROFILE_MAX_THREADS);
+    if (n2 == 0) return -1;
+
+    /* Compute deltas for threads present in both samples. */
+    static struct profile_delta deltas[PROFILE_MAX_THREADS];
+    size_t nd = 0;
+    for (size_t i = 0; i < n2; i++) {
+        const struct profile_sample *a = NULL;
+        for (size_t j = 0; j < n1; j++) {
+            if (s1[j].tid == s2[i].tid) { a = &s1[j]; break; }
+        }
+        if (!a) continue;
+        int64_t du = (int64_t)s2[i].utime - (int64_t)a->utime;
+        int64_t dss = (int64_t)s2[i].stime - (int64_t)a->stime;
+        if (du < 0) du = 0;
+        if (dss < 0) dss = 0;
+        deltas[nd].tid = s2[i].tid;
+        snprintf(deltas[nd].name, sizeof(deltas[nd].name), "%s", s2[i].name);
+        deltas[nd].utime_ticks = du;
+        deltas[nd].stime_ticks = dss;
+        deltas[nd].total_ticks = du + dss;
+        nd++;
+    }
+
+    qsort(deltas, nd, sizeof(deltas[0]), profile_delta_cmp);
+
+    long clk_tck = sysconf(_SC_CLK_TCK);
+    if (clk_tck <= 0) clk_tck = 100;
+
+    size_t cap = 16384;
+    char *out = malloc(cap);
+    if (!out) return -1;
+    size_t pos = 0;
+    pos += (size_t)snprintf(out + pos, cap - pos,
+        "{\"duration_ms\":%lld,\"sampled_threads\":%zu,\"top_threads\":[",
+        (long long)duration_ms, nd);
+
+    size_t emit = (nd < (size_t)top_n) ? nd : (size_t)top_n;
+    for (size_t i = 0; i < emit; i++) {
+        int64_t user_ms = deltas[i].utime_ticks * 1000 / clk_tck;
+        int64_t sys_ms  = deltas[i].stime_ticks * 1000 / clk_tck;
+        if (pos + 256 >= cap) break;
+        pos += (size_t)snprintf(out + pos, cap - pos,
+            "%s{\"tid\":%d,\"name\":\"%s\","
+            "\"user_ms\":%lld,\"sys_ms\":%lld,"
+            "\"cpu_pct\":%.1f}",
+            i == 0 ? "" : ",",
+            deltas[i].tid, deltas[i].name,
+            (long long)user_ms, (long long)sys_ms,
+            100.0 * (double)(user_ms + sys_ms) / (double)duration_ms);
+    }
+    pos += (size_t)snprintf(out + pos, cap - pos, "]}");
+
+    res->body = out;
+    return 0;
+}
+
 /* ── Route table ─────────────────────────────────────────────── */
 
 static const struct mcp_param_spec p_events[] = {
@@ -166,6 +358,14 @@ static const struct mcp_param_spec p_rpc[] = {
       0, 0, 1, 128, NULL, NULL },
     { "params", MCP_PARAM_STR, false, "JSON params array",
       0, 0, 0, 0, NULL, "\"[]\"" },
+};
+static const struct mcp_param_spec p_profile[] = {
+    { "duration_ms", MCP_PARAM_INT, false,
+      "Sample window in ms (clamped to [100, 10000])",
+      100, 10000, 0, 0, NULL, "1000" },
+    { "top_n", MCP_PARAM_INT, false,
+      "Max threads returned, sorted by CPU (clamped to [1, 64])",
+      1, 64, 0, 0, NULL, "10" },
 };
 
 static const struct mcp_tool_route k_routes[] = {
@@ -207,6 +407,12 @@ static const struct mcp_tool_route k_routes[] = {
     { "zcl_rpc", "ops",
       "Call any RPC method directly. 85+ commands available.",
       p_rpc, sizeof(p_rpc) / sizeof(p_rpc[0]), h_zcl_rpc },
+    { "zcl_profile", "ops",
+      "Per-thread CPU sampler: reads /proc/self/task/*/stat before "
+      "and after `duration_ms`, returns top N threads by CPU delta "
+      "with name, user_ms, sys_ms, cpu_pct. For diagnosing slow "
+      "nodes without attaching gdb.",
+      p_profile, sizeof(p_profile) / sizeof(p_profile[0]), h_zcl_profile },
 };
 
 void mcp_register_ops(void)
