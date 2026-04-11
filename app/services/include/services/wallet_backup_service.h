@@ -71,6 +71,32 @@
 #define WALLET_BACKUP_DEFAULT_MAX_VERSIONS 168    /* 1 week @ hourly */
 #define WALLET_BACKUP_FILENAME_PREFIX "wallet_backup_"
 #define WALLET_BACKUP_FILENAME_SUFFIX ".sqlite"
+#define WALLET_BACKUP_FILENAME_SUFFIX_ENC ".sqlite.enc"
+
+/* Encrypted file format (phase 2):
+ *
+ *   offset   len  field
+ *   ------   ---  -----
+ *        0     4  magic  "WBE1"
+ *        4     4  version (u32 LE, = 1)
+ *        8     4  iterations (u32 LE, PBKDF2 rounds)
+ *       12     4  reserved (u32 LE, 0)
+ *       16    16  salt (PBKDF2)
+ *       32    12  nonce (ChaCha20-Poly1305)
+ *       44     N  ciphertext
+ *     44+N    16  Poly1305 tag
+ *
+ * The 44-byte header is also the AAD for the AEAD, so any
+ * tampering with magic, version, iterations, reserved, salt,
+ * or nonce fails decryption (tag mismatch). */
+#define WALLET_BACKUP_ENC_MAGIC       "WBE1"
+#define WALLET_BACKUP_ENC_VERSION     1u
+#define WALLET_BACKUP_ENC_HEADER_LEN  44
+#define WALLET_BACKUP_ENC_TAG_LEN     16
+#define WALLET_BACKUP_ENC_SALT_LEN    16
+#define WALLET_BACKUP_ENC_NONCE_LEN   12
+#define WALLET_BACKUP_ENC_KEY_LEN     32
+#define WALLET_BACKUP_ENC_ITERATIONS  200000u /* PBKDF2 rounds */
 
 /* ── Config ─────────────────────────────────────────────────── */
 
@@ -147,5 +173,25 @@ int wallet_backup_rotate(const char *backup_dir, int max_versions);
  * each `path_cap` bytes wide. Returns the number written. */
 int wallet_backup_list(const char *backup_dir,
                         char (*out_paths)[512], int max);
+
+/* ── Phase 2: encryption helpers ────────────────────────────── */
+
+/* Encrypt `src_path` to `dst_path` using PBKDF2-HMAC-SHA256 to
+ * derive a 256-bit ChaCha20-Poly1305 key from `password`. Generates
+ * a fresh random salt + nonce and writes the header described
+ * above followed by the ciphertext + tag. Returns true on success;
+ * on failure the partial dst file (if any) is removed. Passing
+ * NULL or empty `password` is rejected. */
+bool wallet_backup_encrypt_file(const char *src_path,
+                                 const char *dst_path,
+                                 const char *password);
+
+/* Decrypt `src_path` to `dst_path`. Returns true only when the
+ * header magic, version, AEAD tag, and AAD all verify. On any
+ * failure the partial dst file is removed so callers never see
+ * half-decrypted bytes. */
+bool wallet_backup_decrypt_file(const char *src_path,
+                                 const char *dst_path,
+                                 const char *password);
 
 #endif /* ZCL_SERVICES_WALLET_BACKUP_SERVICE_H */

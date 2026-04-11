@@ -44,6 +44,8 @@ crash_recovery_test
 fuzz_block
 fuzz_script
 fuzz_p2p
+test-tmp/
+leak-*
 
 # Editor / OS
 .DS_Store

@@ -493,6 +493,182 @@ static int t_roundtrip_verify(void)
     return failures;
 }
 
+/* ── 12. Phase 2 encryption: file round-trip ─────────────────── */
+
+/* Helpers that write a deterministic plaintext file and read it
+ * back for byte-level comparison — the point is to prove that
+ * whatever we send through wallet_backup_encrypt_file comes back
+ * out of wallet_backup_decrypt_file bit-for-bit identical, with
+ * the wrong password rejected and header tampering detected. */
+static bool wb_write_blob(const char *path, const uint8_t *buf, size_t n)
+{
+    FILE *f = fopen(path, "wb");
+    if (!f) return false;
+    bool ok = n == 0 || fwrite(buf, 1, n, f) == n;
+    fclose(f);
+    return ok;
+}
+
+static bool wb_read_blob(const char *path, uint8_t **out, size_t *outlen)
+{
+    *out = NULL; *outlen = 0;
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    rewind(f);
+    if (sz < 0) { fclose(f); return false; }
+    uint8_t *buf = malloc((size_t)sz);
+    if (!buf && sz > 0) { fclose(f); return false; }
+    if (sz > 0 && fread(buf, 1, (size_t)sz, f) != (size_t)sz) {
+        free(buf); fclose(f); return false;
+    }
+    fclose(f);
+    *out = buf;
+    *outlen = (size_t)sz;
+    return true;
+}
+
+/* Local scratch dir for encryption tests — avoids /tmp (user
+ * preference) and keeps files inside the working tree so parallel
+ * agents in separate worktrees don't collide. */
+#define WB_ENC_SCRATCH_DIR "./test-tmp"
+
+static void wb_enc_ensure_scratch(void)
+{
+    mkdir(WB_ENC_SCRATCH_DIR, 0755);
+}
+
+static int t_encrypt_roundtrip(void)
+{
+    int failures = 0;
+    wb_enc_ensure_scratch();
+
+    /* Deterministic plaintext large enough to span many ChaCha20
+     * blocks (and far larger than the old 2KB stack limit). */
+    size_t plain_len = 32 * 1024;
+    uint8_t *plain = malloc(plain_len);
+    for (size_t i = 0; i < plain_len; i++)
+        plain[i] = (uint8_t)((i * 37 + 11) & 0xff);
+
+    char src[256], enc[256], dst[256];
+    snprintf(src, sizeof(src), WB_ENC_SCRATCH_DIR "/wbenc_%d_src.bin",   (int)getpid());
+    snprintf(enc, sizeof(enc), WB_ENC_SCRATCH_DIR "/wbenc_%d_enc.bin",   (int)getpid());
+    snprintf(dst, sizeof(dst), WB_ENC_SCRATCH_DIR "/wbenc_%d_plain.bin", (int)getpid());
+
+    wb_write_blob(src, plain, plain_len);
+
+    bool enc_ok = wallet_backup_encrypt_file(src, enc, "correct horse battery staple");
+    WB_RUN("wbenc: encrypt_file succeeds on a 32KB plaintext", enc_ok);
+
+    bool dec_ok = wallet_backup_decrypt_file(enc, dst, "correct horse battery staple");
+    WB_RUN("wbenc: decrypt_file succeeds with correct password", dec_ok);
+
+    uint8_t *round = NULL; size_t round_len = 0;
+    bool read_ok = wb_read_blob(dst, &round, &round_len);
+    bool match = read_ok && round_len == plain_len &&
+                 memcmp(round, plain, plain_len) == 0;
+    WB_RUN("wbenc: plaintext round-trips byte-for-byte through the AEAD",
+           match);
+    free(round);
+
+    /* Ciphertext file size == header + plaintext + tag, and the
+     * first 4 bytes must be the "WBE1" magic. */
+    uint8_t *ct = NULL; size_t clen = 0;
+    wb_read_blob(enc, &ct, &clen);
+    bool sized = ct != NULL &&
+                 clen == (size_t)WALLET_BACKUP_ENC_HEADER_LEN +
+                          plain_len + WALLET_BACKUP_ENC_TAG_LEN &&
+                 memcmp(ct, WALLET_BACKUP_ENC_MAGIC, 4) == 0;
+    WB_RUN("wbenc: encrypted file has WBE1 magic + correct length", sized);
+    free(ct);
+
+    unlink(src); unlink(enc); unlink(dst);
+    free(plain);
+    return failures;
+}
+
+static int t_encrypt_wrong_password(void)
+{
+    int failures = 0;
+    wb_enc_ensure_scratch();
+
+    const char *plain = "attack at dawn";
+    char src[256], enc[256], dst[256];
+    snprintf(src, sizeof(src), WB_ENC_SCRATCH_DIR "/wbenc_%d_wrong_src.bin",   (int)getpid());
+    snprintf(enc, sizeof(enc), WB_ENC_SCRATCH_DIR "/wbenc_%d_wrong_enc.bin",   (int)getpid());
+    snprintf(dst, sizeof(dst), WB_ENC_SCRATCH_DIR "/wbenc_%d_wrong_plain.bin", (int)getpid());
+
+    wb_write_blob(src, (const uint8_t *)plain, strlen(plain));
+
+    bool enc_ok = wallet_backup_encrypt_file(src, enc, "password-a");
+    bool dec_wrong = !wallet_backup_decrypt_file(enc, dst, "password-b");
+    WB_RUN("wbenc: encrypt under one password", enc_ok);
+    WB_RUN("wbenc: decrypt with wrong password is rejected (tag mismatch)",
+           dec_wrong);
+
+    /* Decrypt with empty/NULL password is also rejected. */
+    bool rej_empty = !wallet_backup_decrypt_file(enc, dst, "");
+    bool rej_null  = !wallet_backup_decrypt_file(enc, dst, NULL);
+    WB_RUN("wbenc: decrypt rejects empty password", rej_empty);
+    WB_RUN("wbenc: decrypt rejects NULL password",  rej_null);
+
+    unlink(src); unlink(enc); unlink(dst);
+    return failures;
+}
+
+static int t_encrypt_tamper_detected(void)
+{
+    int failures = 0;
+    wb_enc_ensure_scratch();
+
+    const char *plain = "every byte of the header is authenticated";
+    char src[256], enc[256], dst[256];
+    snprintf(src, sizeof(src), WB_ENC_SCRATCH_DIR "/wbenc_%d_tamper_src.bin",   (int)getpid());
+    snprintf(enc, sizeof(enc), WB_ENC_SCRATCH_DIR "/wbenc_%d_tamper_enc.bin",   (int)getpid());
+    snprintf(dst, sizeof(dst), WB_ENC_SCRATCH_DIR "/wbenc_%d_tamper_plain.bin", (int)getpid());
+
+    wb_write_blob(src, (const uint8_t *)plain, strlen(plain));
+    wallet_backup_encrypt_file(src, enc, "pw");
+
+    /* Read the encrypted file, flip a bit in the salt region
+     * (still a valid header structurally), write it back, and
+     * confirm that decryption fails — proof that the header is
+     * bound into the AAD. */
+    uint8_t *ct = NULL; size_t clen = 0;
+    wb_read_blob(enc, &ct, &clen);
+    bool setup_ok = ct != NULL && clen > 20;
+    if (setup_ok) ct[20] ^= 0x01; /* flip a bit in the salt */
+    wb_write_blob(enc, ct, clen);
+    bool rejected_salt = !wallet_backup_decrypt_file(enc, dst, "pw");
+    WB_RUN("wbenc: flipped salt byte fails tag verification",
+           setup_ok && rejected_salt);
+
+    /* Restore salt, flip a ciphertext byte instead — still must
+     * fail (ciphertext is part of the MAC input). */
+    if (setup_ok) ct[20] ^= 0x01;
+    if (clen > (size_t)WALLET_BACKUP_ENC_HEADER_LEN)
+        ct[WALLET_BACKUP_ENC_HEADER_LEN] ^= 0x01;
+    wb_write_blob(enc, ct, clen);
+    bool rejected_ct = !wallet_backup_decrypt_file(enc, dst, "pw");
+    WB_RUN("wbenc: flipped ciphertext byte fails tag verification",
+           rejected_ct);
+
+    /* Restore and confirm the file is once again readable — this
+     * proves the tamper detections above were specific, not a
+     * side-effect of our round-trip being broken in general. */
+    if (clen > (size_t)WALLET_BACKUP_ENC_HEADER_LEN)
+        ct[WALLET_BACKUP_ENC_HEADER_LEN] ^= 0x01;
+    wb_write_blob(enc, ct, clen);
+    bool restored_ok = wallet_backup_decrypt_file(enc, dst, "pw");
+    WB_RUN("wbenc: restoring the flipped byte lets decrypt succeed again",
+           restored_ok);
+    free(ct);
+
+    unlink(src); unlink(enc); unlink(dst);
+    return failures;
+}
+
 /* ── Aggregator ─────────────────────────────────────────────── */
 
 int test_wallet_backup(void)
@@ -510,6 +686,9 @@ int test_wallet_backup(void)
     failures += t_force_now_repeatable();
     failures += t_stop_safe();
     failures += t_roundtrip_verify();
+    failures += t_encrypt_roundtrip();
+    failures += t_encrypt_wrong_password();
+    failures += t_encrypt_tamper_detected();
     event_clear_observers(EV_WALLET_BACKUP);
     event_clear_observers(EV_WALLET_BACKUP_FAILED);
     return failures;
