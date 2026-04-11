@@ -30,6 +30,7 @@
 #include "config/runtime.h"
 #include "services/snapshot_sync_service.h"
 #include "services/chain_activation_controller.h"
+#include "services/chain_state_repository.h"
 #include "chain/mmr.h"
 #include "chain/mmb.h"
 #include <signal.h>
@@ -375,11 +376,90 @@ static struct block_index *find_most_work_chain(struct main_state *ms)
     return best;
 }
 
+/* ── csr-migration helper ────────────────────────────────────
+ * process_block.c mutates the chain tip from five different places
+ * (forward extend, disconnect rollback, genesis connect without
+ * disk, reorg recovery, no-fork reset). All of them route through
+ * this helper so the cross-source validation and observability
+ * live in one place.
+ *
+ * When the csr singleton is wired (normal boot) this performs the
+ * full atomic update and returns true. When the singleton is not
+ * wired (unit tests that bypass boot) we fall back to raw setters
+ * so test harnesses continue to advance their chains — that's the
+ * only way NOT_INITIALIZED is returned, any other non-OK result
+ * is a real validation failure and is logged loudly.
+ *
+ * coins_tip may be NULL for callers that don't need to touch the
+ * coins_best_block in the fallback path (update_tip is one — the
+ * old code there never set coins_best_block, connect_block did).
+ * Fork-recovery callers pass a real pointer so both legacy and
+ * csr-driven paths end up with the same coins_best_block.
+ *
+ * update_header_tip controls whether pindex_best_header moves.
+ * Callers that only touch the active chain (e.g. fork reset)
+ * pass false. */
+static bool process_block_commit_tip(struct main_state *ms,
+                                      struct coins_view_cache *coins_tip,
+                                      struct block_index *new_tip,
+                                      const char *reason,
+                                      bool update_header_tip)
+{
+    if (!new_tip || !new_tip->phashBlock) return false;
+
+    struct chain_state_commit commit = {
+        .new_tip             = new_tip,
+        .new_coins_best      = *new_tip->phashBlock,
+        .expected_utxo_count = 0,
+        .update_header_tip   = update_header_tip,
+        /* Reorg disconnects, forks and fast-sync roll-forwards can
+         * all look like backward or sideways moves from the csr's
+         * perspective. The validation machinery in process_block.c
+         * has already vetted the move, so we bypass the orphan-rows
+         * guard here. Recovery policy gating is Phase 2 territory. */
+        .allow_rollback      = true,
+        .wallet_scan_height  = -1,
+        .reason              = reason,
+    };
+
+    enum csr_result rc = csr_commit_tip(csr_instance(), &commit);
+    if (rc == CSR_OK) return true;
+
+    if (rc == CSR_REJECTED_NOT_INITIALIZED) {
+        /* Test harness path: the singleton was never wired. Fall
+         * back to the raw setters so existing test coverage still
+         * drives the active chain forward. */
+        active_chain_set_tip(&ms->chain_active, new_tip);
+        if (update_header_tip) ms->pindex_best_header = new_tip;
+        if (coins_tip) coins_view_cache_set_best_block(coins_tip,
+                                                        new_tip->phashBlock);
+        return true;
+    }
+
+    /* Real validation failure. The csr has already emitted
+     * EV_CHAIN_TIP_REJECTED; shout too so this shows up in the
+     * node log even when events are disabled. */
+    fprintf(stderr,
+            "process_block: csr rejected tip commit (%s) reason=%s h=%d\n",
+            csr_result_name(rc), reason, new_tip->nHeight);
+    return false;
+}
+
 static void update_tip(struct main_state *ms, struct block_index *pindex_new)
 {
-    active_chain_set_tip(&ms->chain_active, pindex_new);
-    if (pindex_new)
-        ms->pindex_best_header = pindex_new;
+    if (pindex_new) {
+        /* coins_tip is NULL here on purpose: the pre-migration
+         * update_tip never set coins_best_block (connect_block had
+         * already done it while building the new tip), and the
+         * fallback path should preserve that behaviour. */
+        process_block_commit_tip(ms, NULL, pindex_new,
+                                 "process_block.update_tip", true);
+    } else {
+        /* Disconnect past genesis — empty the chain. No commit to
+         * make; the active_chain primitive handles a NULL tip as
+         * "height=-1". */
+        active_chain_set_tip(&ms->chain_active, NULL);
+    }
 
     char hex[65];
     if (pindex_new && pindex_new->phashBlock)
@@ -652,7 +732,8 @@ bool connect_tip(struct validation_state *state,
                                        | BLOCK_VALID_SCRIPTS;
                 pindex_new->nTx = 1;
                 pindex_new->nChainTx = 1;
-                active_chain_set_tip(&ms->chain_active, pindex_new);
+                process_block_commit_tip(ms, coins_tip, pindex_new,
+                    "process_block.connect_tip.genesis_no_disk", true);
                 printf("Genesis block: connected (no disk data needed)\n");
                 return true;
             }
@@ -1417,11 +1498,12 @@ static bool recover_from_disconnect_failure(
      * partially-disconnected chain that would corrupt SQLite. */
     coins_view_cache_clear(coins_tip);
 
-    /* Step 2: Force the active chain tip to the fork point. */
-    active_chain_set_tip(&ms->chain_active, fork);
-
-    /* Step 3: Set coins_best_block to the fork point in both
-     * the in-memory cache and the SQLite backing store.
+    /* Steps 2 + 3: Force the active chain tip to the fork point AND
+     * set coins_best_block to the fork hash in one atomic csr
+     * commit. Previously these were two separate mutations that
+     * could leave the six sources of truth briefly inconsistent —
+     * exactly the shape of bug the chain_state_repository exists
+     * to prevent.
      *
      * Note: the SQLite UTXO set may not exactly match the fork point
      * (blocks connected after the fork consumed UTXOs). This is
@@ -1429,7 +1511,8 @@ static bool recover_from_disconnect_failure(
      * the operator can run `importchainstate` to get a clean set.
      * We do NOT reimport from LevelDB here because LevelDB's UTXO
      * set is at a different (later) height than the fork point. */
-    coins_view_cache_set_best_block(coins_tip, fork->phashBlock);
+    process_block_commit_tip(ms, coins_tip, fork,
+        "process_block.recover_from_disconnect_failure", false);
 
     {
         struct node_db *ndb = process_block_node_db();
@@ -1557,11 +1640,18 @@ bool activate_best_chain(struct validation_state *state,
             /* Disconnect blocks from current tip to fork point */
             if (!fork) {
                 /* No common ancestor found — chains are completely
-                 * divergent (broken pprev links). Reset to genesis. */
+                 * divergent (broken pprev links). Reset to genesis.
+                 * This is a clear rollback, so the csr commit uses
+                 * allow_rollback (via the helper) and does not move
+                 * pindex_best_header — the header tip stays put so
+                 * accept_block_header's retry logic can rebuild the
+                 * chain upward. */
                 struct block_index *genesis = active_chain_at(
                     &ms->chain_active, 0);
                 if (genesis) {
-                    active_chain_set_tip(&ms->chain_active, genesis);
+                    process_block_commit_tip(ms, coins_tip, genesis,
+                        "process_block.activate_best_chain.no_fork_reset",
+                        false);
                     printf("activate_best_chain: no fork point, "
                            "reset to genesis\n");
                 }
