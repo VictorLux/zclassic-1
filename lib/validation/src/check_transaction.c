@@ -12,6 +12,7 @@
 
 #include "validation/check_transaction.h"
 #include "core/amount.h"
+#include "core/uint256.h"
 #include "consensus/consensus.h"
 #include "metrics/metrics.h"
 #include "event/event.h"
@@ -24,12 +25,17 @@ bool check_transaction(const struct transaction *tx,
 {
     bool ok = check_transaction_impl(tx, state);
     /* Emit on invalid (DoS-able) rejections. Skip MODE_ERROR (fatal,
-     * internal failures unrelated to consensus) and successful runs. */
+     * internal failures unrelated to consensus) and successful runs.
+     * Payload format (wave 8): "hash=<64hex> reason=<name> dos=<n>".
+     * Hash lets consensus_reject_index key rejections by txid so
+     * zcl_explain_reject can answer "why was this txid rejected?". */
     if (!ok && state && state->mode == MODE_INVALID &&
         state->reject_reason[0] != '\0') {
+        char hex[65];
+        uint256_get_hex(&tx->hash, hex);
         event_emitf(EV_CONSENSUS_REJECT_TX, 0,
-                    "reason=%s dos=%d",
-                    state->reject_reason, state->dos);
+                    "hash=%s reason=%s dos=%d",
+                    hex, state->reject_reason, state->dos);
     }
     return ok;
 }

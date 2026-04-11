@@ -14,6 +14,7 @@
 #include "chain/chainparams.h"
 #include "chain/equihash.h"
 #include "chain/pow.h"
+#include "core/uint256.h"
 #include "event/event.h"
 #include "validation/check_transaction.h"
 #include "validation/contextual_check_tx.h"
@@ -25,13 +26,27 @@
 #include <math.h>
 #include <string.h>
 
-static void consensus_reject_block_emit(const struct validation_state *state)
+/* Emit EV_CONSENSUS_REJECT_BLOCK with block hash in the payload.
+ * Payload format (wave 8): "hash=<64hex> reason=<name> dos=<n>".
+ * The hash is computed from the supplied header (must be non-NULL).
+ * Hash lets consensus_reject_index key rejections by block hash so
+ * zcl_explain_reject can answer "why was this block rejected?". */
+static void consensus_reject_block_emit(const struct block_header *header,
+                                         const struct validation_state *state)
 {
     if (!state || state->mode != MODE_INVALID ||
         state->reject_reason[0] == '\0') return;
+    struct uint256 hash;
+    if (header) {
+        block_header_get_hash(header, &hash);
+    } else {
+        uint256_set_null(&hash);
+    }
+    char hex[65];
+    uint256_get_hex(&hash, hex);
     event_emitf(EV_CONSENSUS_REJECT_BLOCK, 0,
-                "reason=%s dos=%d",
-                state->reject_reason, state->dos);
+                "hash=%s reason=%s dos=%d",
+                hex, state->reject_reason, state->dos);
 }
 
 static bool check_block_header_impl(const struct block_header *header,
@@ -54,7 +69,7 @@ bool check_block_header(const struct block_header *header,
                         bool check_pow)
 {
     bool ok = check_block_header_impl(header, state, params, check_pow);
-    if (!ok) consensus_reject_block_emit(state);
+    if (!ok) consensus_reject_block_emit(header, state);
     return ok;
 }
 
@@ -105,7 +120,7 @@ bool check_block(const struct block *block,
      * of a duplicate event under `consensus.reject_tx` + `consensus.reject_block`
      * for txs inside blocks, which is actually useful diagnostic data
      * (tells us whether the rejected tx is in-mempool or in-block). */
-    if (!ok) consensus_reject_block_emit(state);
+    if (!ok) consensus_reject_block_emit(&block->header, state);
     return ok;
 }
 

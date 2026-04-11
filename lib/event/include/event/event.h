@@ -152,9 +152,9 @@ enum event_type {
     /* ── IBD throttle ──────────────────────────────── */
     EV_IBD_THROTTLED,            /* payload: "blocked=N total_wait_ms=N rate=N burst=N" */
 
-    /* ── Consensus rejects (wave 7) ────────────────── */
-    EV_CONSENSUS_REJECT_TX,      /* payload: "reason=... dos=N" */
-    EV_CONSENSUS_REJECT_BLOCK,   /* payload: "reason=... dos=N [height=N]" */
+    /* ── Consensus rejects (wave 7, hash added wave 8) ─ */
+    EV_CONSENSUS_REJECT_TX,      /* payload: "hash=<64hex> reason=... dos=N" */
+    EV_CONSENSUS_REJECT_BLOCK,   /* payload: "hash=<64hex> reason=... dos=N" */
 
     /* ── HTTP RPC request timeout (wave 6 #1) ──────── */
     EV_RPC_TIMEOUT,              /* payload: "method=NAME elapsed_ms=N ip=A.B.C.D" */
@@ -216,7 +216,7 @@ const char *snapsync_state_name(enum snapshot_sync_state state);
 
 /* ── Event structure ────────────────────────────────────── */
 
-#define EVENT_PAYLOAD_SIZE 120
+#define EVENT_PAYLOAD_SIZE 160
 
 struct event {
     _Atomic uint64_t  sequence;      /* monotonic, publish marker */

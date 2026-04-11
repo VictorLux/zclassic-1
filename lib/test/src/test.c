@@ -95,6 +95,7 @@ int main(void)
     failures += test_addrman_integrity();
     failures += test_ibd_throttle();
     failures += test_consensus_reject_events();
+    failures += test_consensus_reject_index();
 
     /* Spec-based user story tests */
     failures += spec_wallet_dashboard();
