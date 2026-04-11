@@ -7,6 +7,7 @@
 #include "../rpc_client.h"
 
 #include "json/json.h"
+#include "mcp/metrics.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -52,6 +53,21 @@ static int h_zcl_pingpeer(const struct mcp_request *req, struct mcp_response *re
     return 0;
 }
 
+/* zcl_peer_report — peer scoring summary derived from in-process
+ * metrics counters that subscribe to EV_PEER_MISBEHAVE / EV_PEER_BANNED.
+ * Returns the live ban threshold/hours/decay config plus offence
+ * counts since boot, bucketed by canonical offence kind. */
+static int h_zcl_peer_report(const struct mcp_request *req,
+                              struct mcp_response *res)
+{
+    (void)req;
+    char body[2048];
+    size_t n = mcp_metrics_peer_report_json(body, sizeof(body));
+    if (n == 0) return -1;
+    res->body = strdup(body);
+    return res->body ? 0 : -1;
+}
+
 static const struct mcp_param_spec p_addnode[] = {
     { "addr",   MCP_PARAM_STR, true,  "IP:port",
       0, 0, 1, 128, NULL, NULL },
@@ -85,6 +101,10 @@ static const struct mcp_tool_route k_routes[] = {
     { "zcl_peerlatency", "net",
       "Latency for all peers: ping_ms, min_ping_ms, avg_latency_ms.",
       NULL, 0, h_zcl_peerlatency },
+    { "zcl_peer_report", "net",
+      "Peer scoring report: live ban threshold/hours/decay config plus "
+      "per-kind offence counts and total bans observed since boot.",
+      NULL, 0, h_zcl_peer_report },
 };
 
 void mcp_register_net(void)

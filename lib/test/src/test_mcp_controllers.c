@@ -36,13 +36,13 @@
 /* Expected tool counts.  If a future commit intentionally adds or
  * removes tools, bump these numbers in the same commit — they are the
  * contract for "how big is the MCP surface." */
-#define EXPECTED_TOTAL      69
+#define EXPECTED_TOTAL      70
 #define EXPECTED_OPS        17  /* status, health, kpi, mempool*, mininginfo,
                                  * benchmark, dbstats, filemanifest, events,
                                  * rpc, tools_list, self_test, logtail,
                                  * openapi, metrics, metrics_reset */
 #define EXPECTED_CHAIN      10
-#define EXPECTED_NET         7
+#define EXPECTED_NET         8  /* + zcl_peer_report (wave 4 #5) */
 #define EXPECTED_WALLET     19
 #define EXPECTED_APP        16
 
@@ -135,7 +135,7 @@ static int test_chain_domain_count(void)
 static int test_net_domain_count(void)
 {
     int failures = 0;
-    TEST("controllers: net domain has 7 tools") {
+    TEST("controllers: net domain has 8 tools") {
         register_all();
         size_t n = count_by_domain("net");
         if (n != EXPECTED_NET) {

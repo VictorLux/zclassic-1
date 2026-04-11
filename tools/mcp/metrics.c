@@ -5,6 +5,7 @@
 
 #include "mcp/metrics.h"
 #include "event/event.h"
+#include "net/peer_scoring.h"
 
 #include <pthread.h>
 #include <stdarg.h>
@@ -53,6 +54,25 @@ static size_t               g_hist_count;
 
 static uint64_t             g_total_requests;
 static uint64_t             g_total_errors;
+
+/* Peer scoring counters.  Bucketed by offence kind so cardinality is
+ * bounded by the allowlist below; anything not on the list goes into
+ * "other".  Bans are a single counter — splitting them by kind would
+ * be misleading because peer_misbehaving() bans on cumulative score,
+ * not on the offence that crossed the threshold. */
+#define MCP_METRICS_PEER_KINDS 7
+static const char *const k_peer_kind_names[MCP_METRICS_PEER_KINDS] = {
+    "timeout",
+    "invalid_message",
+    "flood",
+    "invalid_header",
+    "invalid_block",
+    "unrequested",
+    "other",
+};
+static uint64_t             g_peer_offences[MCP_METRICS_PEER_KINDS];
+static uint64_t             g_peer_offences_total;
+static uint64_t             g_peer_bans_total;
 
 static pthread_mutex_t      g_lock = PTHREAD_MUTEX_INITIALIZER;
 static bool                 g_observer_installed = false;
@@ -171,7 +191,60 @@ void mcp_metrics_reset(void)
     g_total_errors = 0;
     memset(g_counters, 0, sizeof(g_counters));
     memset(g_hists, 0, sizeof(g_hists));
+    memset(g_peer_offences, 0, sizeof(g_peer_offences));
+    g_peer_offences_total = 0;
+    g_peer_bans_total = 0;
     pthread_mutex_unlock(&g_lock);
+}
+
+/* ── Peer scoring counters ──────────────────────────────────── */
+
+static int peer_kind_slot(const char *kind)
+{
+    if (!kind || !*kind) return MCP_METRICS_PEER_KINDS - 1; /* "other" */
+    for (int i = 0; i < MCP_METRICS_PEER_KINDS; i++) {
+        if (strcmp(k_peer_kind_names[i], kind) == 0) return i;
+    }
+    return MCP_METRICS_PEER_KINDS - 1; /* "other" */
+}
+
+void mcp_metrics_record_peer_offence(const char *kind)
+{
+    pthread_mutex_lock(&g_lock);
+    g_peer_offences[peer_kind_slot(kind)]++;
+    g_peer_offences_total++;
+    pthread_mutex_unlock(&g_lock);
+}
+
+void mcp_metrics_record_peer_ban(void)
+{
+    pthread_mutex_lock(&g_lock);
+    g_peer_bans_total++;
+    pthread_mutex_unlock(&g_lock);
+}
+
+uint64_t mcp_metrics_peer_offences_total(void)
+{
+    pthread_mutex_lock(&g_lock);
+    uint64_t v = g_peer_offences_total;
+    pthread_mutex_unlock(&g_lock);
+    return v;
+}
+
+uint64_t mcp_metrics_peer_offences_for_kind(const char *kind)
+{
+    pthread_mutex_lock(&g_lock);
+    uint64_t v = g_peer_offences[peer_kind_slot(kind)];
+    pthread_mutex_unlock(&g_lock);
+    return v;
+}
+
+uint64_t mcp_metrics_peer_bans_total(void)
+{
+    pthread_mutex_lock(&g_lock);
+    uint64_t v = g_peer_bans_total;
+    pthread_mutex_unlock(&g_lock);
+    return v;
 }
 
 /* ── Event observer ─────────────────────────────────────────── */
@@ -195,6 +268,57 @@ static void mcp_request_observer(enum event_type type, uint32_t peer_id,
     mcp_metrics_record(tool, code, dur);
 }
 
+/* Extract the offence kind from an EV_PEER_MISBEHAVE / EV_PEER_BANNED
+ * payload.  The shapes used by net.c are:
+ *   misbehave: "+10=50 invalid_message: bad header"
+ *   banned:    "score=100 invalid_block: bad consensus"
+ * In both cases the kind is the FIRST whitespace-separated word that
+ * (a) is not the score header (no '=' inside) and (b) optionally has
+ * a trailing ':'.  We strip the colon and return the bare name. */
+static void parse_peer_kind(const char *payload, size_t payload_len,
+                             char *out, size_t cap)
+{
+    if (cap == 0) return;
+    out[0] = '\0';
+    size_t i = 0;
+    /* Skip the score header token (the one with '=') */
+    while (i < payload_len) {
+        size_t tok_start = i;
+        while (i < payload_len && payload[i] != ' ') i++;
+        size_t tok_len = i - tok_start;
+        bool has_eq = false;
+        for (size_t j = tok_start; j < tok_start + tok_len; j++) {
+            if (payload[j] == '=') { has_eq = true; break; }
+        }
+        if (!has_eq && tok_len > 0) {
+            size_t copy_len = tok_len;
+            /* Strip a trailing ':' so we get the bare kind name. */
+            if (copy_len > 0 && payload[tok_start + copy_len - 1] == ':')
+                copy_len--;
+            if (copy_len >= cap) copy_len = cap - 1;
+            memcpy(out, payload + tok_start, copy_len);
+            out[copy_len] = '\0';
+            return;
+        }
+        while (i < payload_len && payload[i] == ' ') i++;
+    }
+}
+
+static void mcp_peer_observer(enum event_type type, uint32_t peer_id,
+                               const void *payload, uint32_t payload_len,
+                               void *ctx)
+{
+    (void)peer_id; (void)ctx;
+    if (type == EV_PEER_MISBEHAVE) {
+        char kind[32] = {0};
+        if (payload && payload_len > 0)
+            parse_peer_kind(payload, payload_len, kind, sizeof(kind));
+        mcp_metrics_record_peer_offence(kind);
+    } else if (type == EV_PEER_BANNED) {
+        mcp_metrics_record_peer_ban();
+    }
+}
+
 void mcp_metrics_init(void)
 {
     pthread_mutex_lock(&g_lock);
@@ -203,6 +327,8 @@ void mcp_metrics_init(void)
         return;
     }
     event_observe(EV_MCP_REQUEST, mcp_request_observer, NULL);
+    event_observe(EV_PEER_MISBEHAVE, mcp_peer_observer, NULL);
+    event_observe(EV_PEER_BANNED, mcp_peer_observer, NULL);
     g_observer_installed = true;
     pthread_mutex_unlock(&g_lock);
 }
@@ -310,6 +436,58 @@ size_t mcp_metrics_render_prometheus(char *buf, size_t cap)
         "zcl_mcp_requests_summary_total{kind=\"error\"} %llu\n",
         (unsigned long long)g_total_requests,
         (unsigned long long)g_total_errors);
+
+    pos = append(buf, cap, pos,
+        "# HELP zcl_peer_offences_total Peer scoring offences observed since boot\n"
+        "# TYPE zcl_peer_offences_total counter\n");
+    for (int i = 0; i < MCP_METRICS_PEER_KINDS; i++) {
+        pos = append(buf, cap, pos,
+            "zcl_peer_offences_total{kind=\"%s\"} %llu\n",
+            k_peer_kind_names[i], (unsigned long long)g_peer_offences[i]);
+    }
+    pos = append(buf, cap, pos,
+        "zcl_peer_offences_total{kind=\"all\"} %llu\n",
+        (unsigned long long)g_peer_offences_total);
+
+    pos = append(buf, cap, pos,
+        "# HELP zcl_peer_bans_total Peers banned (score crossed threshold)\n"
+        "# TYPE zcl_peer_bans_total counter\n"
+        "zcl_peer_bans_total %llu\n",
+        (unsigned long long)g_peer_bans_total);
+
+    if (pos < cap) buf[pos] = '\0';
+    pthread_mutex_unlock(&g_lock);
+    return pos;
+}
+
+size_t mcp_metrics_peer_report_json(char *buf, size_t cap)
+{
+    if (!buf || cap == 0) return 0;
+    pthread_mutex_lock(&g_lock);
+
+    size_t pos = 0;
+    pos = append(buf, cap, pos,
+        "{\"config\":{"
+            "\"ban_threshold\":%d,"
+            "\"ban_hours\":%d,"
+            "\"decay_per_min\":%d"
+        "},\"offences\":{",
+        peer_scoring_ban_threshold(),
+        peer_scoring_ban_hours(),
+        peer_scoring_decay_rate());
+
+    for (int i = 0; i < MCP_METRICS_PEER_KINDS; i++) {
+        pos = append(buf, cap, pos,
+            "%s\"%s\":%llu",
+            i == 0 ? "" : ",",
+            k_peer_kind_names[i],
+            (unsigned long long)g_peer_offences[i]);
+    }
+
+    pos = append(buf, cap, pos,
+        "},\"offences_total\":%llu,\"bans_total\":%llu}",
+        (unsigned long long)g_peer_offences_total,
+        (unsigned long long)g_peer_bans_total);
 
     if (pos < cap) buf[pos] = '\0';
     pthread_mutex_unlock(&g_lock);

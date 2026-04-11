@@ -57,6 +57,44 @@ uint64_t mcp_metrics_get(const char *tool, const char *code);
 uint64_t mcp_metrics_total_requests(void);
 uint64_t mcp_metrics_total_errors(void);
 
+/* ── Peer scoring counters ────────────────────────────────────
+ *
+ * Subscribed to EV_PEER_MISBEHAVE and EV_PEER_BANNED via the same
+ * observer install path as the MCP request counters.  The handler
+ * extracts the offence kind from the event payload (the first
+ * whitespace-separated word after the score header) and buckets it
+ * into a small allowlisted set; anything unrecognised goes into
+ * "other".  Counts are exposed in the Prometheus dump as:
+ *
+ *   zcl_peer_offences_total{kind="..."} N
+ *   zcl_peer_offences_total{kind="all"} N         # convenience aggregate
+ *   zcl_peer_bans_total N
+ *
+ * The `zcl_peer_report` MCP tool wraps these in a small JSON object
+ * with the live peer-scoring config so an operator can see the
+ * threshold/decay/bans-since-boot in one call.
+ */
+
+/* Manual record helpers — used by tests and by the in-process event
+ * observer.  `kind` should be one of the names returned by
+ * peer_offence_name() (timeout, invalid_message, flood,
+ * invalid_header, invalid_block) — anything else is folded into
+ * "other" rather than expanding the cardinality. */
+void mcp_metrics_record_peer_offence(const char *kind);
+void mcp_metrics_record_peer_ban(void);
+
+/* Aggregate query helpers (tests + zcl_peer_report). */
+uint64_t mcp_metrics_peer_offences_total(void);
+uint64_t mcp_metrics_peer_offences_for_kind(const char *kind);
+uint64_t mcp_metrics_peer_bans_total(void);
+
+/* Render the peer-scoring summary as a small JSON object suitable
+ * for embedding in an MCP response body.  Includes the live config
+ * (threshold / ban_hours / decay_per_min) and the per-kind counters.
+ * Returns bytes written (excluding NUL); silently truncates on a
+ * too-small buffer the same way the Prometheus dump does. */
+size_t mcp_metrics_peer_report_json(char *buf, size_t cap);
+
 #ifdef __cplusplus
 }
 #endif
