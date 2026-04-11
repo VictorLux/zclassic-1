@@ -245,6 +245,7 @@ int test_log_json(void);
 int test_http_middleware(void);
 int test_rpc_timeout(void);
 int test_wallet_keystore(void);
+int test_wallet_sqlite_enc(void);
 int test_disk_monitor(void);
 int test_db_maintenance(void);
 int test_mempool_limits(void);

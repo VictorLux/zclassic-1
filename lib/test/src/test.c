@@ -89,6 +89,7 @@ int main(void)
     failures += test_http_middleware();
     failures += test_rpc_timeout();
     failures += test_wallet_keystore();
+    failures += test_wallet_sqlite_enc();
     failures += test_disk_monitor();
     failures += test_db_maintenance();
     failures += test_mempool_limits();

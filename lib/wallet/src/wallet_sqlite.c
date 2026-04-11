@@ -4,6 +4,7 @@
  * Replaces wallet_db.c (LevelDB) for all runtime wallet operations. */
 
 #include "wallet/wallet_sqlite.h"
+#include "wallet/wallet_keystore.h"
 #include "wallet/keystore.h"
 #include "keys/key.h"
 #include "core/serialize.h"
@@ -11,6 +12,75 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* ── Encryption helpers (wave 8 wallet-at-rest) ──────────────── */
+
+/* Returns the wallet passphrase if set, NULL otherwise.  When the
+ * env var is empty we treat it as "no encryption" — a conscious
+ * operator decision must supply a non-empty string. */
+static const char *wallet_passphrase(void)
+{
+    const char *p = getenv("ZCL_WALLET_PASSPHRASE");
+    return (p && *p) ? p : NULL;
+}
+
+/* Detect a WKS1 envelope header in a blob.  Safe with NULL. */
+static bool is_wks1_blob(const void *data, size_t len)
+{
+    return data && len >= WKS_HEADER_LEN &&
+           memcmp(data, WKS_MAGIC, WKS_MAGIC_LEN) == 0;
+}
+
+/* Encrypt `plain` (plen bytes) into a malloc'd envelope.  Sets
+ * *out and *out_len on success; caller must free *out.  Returns
+ * false on any encryption failure (out stays NULL). */
+static bool wallet_encrypt_blob(const uint8_t *plain, size_t plen,
+                                 uint8_t **out, size_t *out_len)
+{
+    *out = NULL;
+    *out_len = 0;
+    const char *pass = wallet_passphrase();
+    if (!pass) return false;
+
+    size_t cap = wks_envelope_size(plen);
+    uint8_t *buf = malloc(cap);
+    if (!buf) return false;
+
+    size_t elen = 0;
+    if (!wks_encrypt(plain, plen, pass, wks_default_iterations(),
+                     buf, cap, &elen)) {
+        free(buf);
+        return false;
+    }
+    *out = buf;
+    *out_len = elen;
+    return true;
+}
+
+/* Decrypt a WKS1 envelope into a malloc'd plaintext.  Sets *out
+ * and *out_len on success; caller must memory_cleanse+free *out.
+ * Returns false on wrong passphrase / tampered data. */
+static bool wallet_decrypt_blob(const uint8_t *envelope, size_t env_len,
+                                 uint8_t **out, size_t *out_len)
+{
+    *out = NULL;
+    *out_len = 0;
+    const char *pass = wallet_passphrase();
+    if (!pass) return false;
+
+    /* Plaintext can never be longer than the envelope. */
+    uint8_t *buf = malloc(env_len);
+    if (!buf) return false;
+
+    size_t plen = 0;
+    if (!wks_decrypt(envelope, env_len, pass, buf, env_len, &plen)) {
+        free(buf);
+        return false;
+    }
+    *out = buf;
+    *out_len = plen;
+    return true;
+}
 
 /* ── Open / Close ──────────────────────────────────────────────── */
 
@@ -119,14 +189,25 @@ bool wallet_sqlite_write_key(struct wallet_sqlite *ws, const struct pubkey *pk,
 
     struct key_id kid = pubkey_get_id(pk);
 
+    /* Encrypt the private key if a passphrase is configured. */
+    uint8_t *enc_blob = NULL;
+    size_t enc_len = 0;
+    bool encrypted = wallet_encrypt_blob(key->vch, 32, &enc_blob, &enc_len);
+
     sqlite3_stmt *s = ws->stmt_key_write;
     sqlite3_reset(s);
     sqlite3_bind_blob(s, 1, kid.id.data, 20, SQLITE_STATIC);
     sqlite3_bind_blob(s, 2, pk->vch, (int)pk->size, SQLITE_STATIC);
-    sqlite3_bind_blob(s, 3, key->vch, 32, SQLITE_STATIC);
+
+    if (encrypted) {
+        sqlite3_bind_blob(s, 3, enc_blob, (int)enc_len, SQLITE_TRANSIENT);
+    } else {
+        sqlite3_bind_blob(s, 3, key->vch, 32, SQLITE_STATIC);
+    }
     sqlite3_bind_int(s, 4, key->fCompressed ? 1 : 0);
 
     bool ok = sqlite3_step(s) == SQLITE_DONE;
+    if (enc_blob) { memory_cleanse(enc_blob, enc_len); free(enc_blob); }
     return ok;
 }
 
@@ -152,7 +233,25 @@ bool wallet_sqlite_read_keys(struct wallet_sqlite *ws, struct wallet *w)
 
         struct privkey key;
         privkey_init(&key);
-        memcpy(key.vch, priv_data, 32);
+
+        if (is_wks1_blob(priv_data, (size_t)priv_len)) {
+            /* Encrypted-at-rest: decrypt to a temp buffer. */
+            uint8_t *plain = NULL;
+            size_t plain_len = 0;
+            if (!wallet_decrypt_blob(priv_data, (size_t)priv_len,
+                                     &plain, &plain_len) ||
+                plain_len < 32) {
+                /* Wrong passphrase or tampered blob — skip key. */
+                if (plain) { memory_cleanse(plain, plain_len); free(plain); }
+                continue;
+            }
+            memcpy(key.vch, plain, 32);
+            memory_cleanse(plain, plain_len);
+            free(plain);
+        } else {
+            /* Plaintext legacy blob. */
+            memcpy(key.vch, priv_data, 32);
+        }
         key.fValid = true;
         key.fCompressed = (compressed != 0);
 
@@ -316,10 +415,23 @@ bool wallet_sqlite_write_sapling_seed(struct wallet_sqlite *ws,
     if (sqlite3_step(ws->stmt_seed_read) == SQLITE_ROW)
         next_child = sqlite3_column_int(ws->stmt_seed_read, 1);
 
+    /* Encrypt the seed if a passphrase is configured. */
+    uint8_t *enc_blob = NULL;
+    size_t enc_len = 0;
+    bool encrypted = wallet_encrypt_blob(seed, 32, &enc_blob, &enc_len);
+
     sqlite3_reset(ws->stmt_seed_write);
-    sqlite3_bind_blob(ws->stmt_seed_write, 1, seed, 32, SQLITE_STATIC);
+    if (encrypted) {
+        sqlite3_bind_blob(ws->stmt_seed_write, 1,
+                          enc_blob, (int)enc_len, SQLITE_TRANSIENT);
+    } else {
+        sqlite3_bind_blob(ws->stmt_seed_write, 1, seed, 32, SQLITE_STATIC);
+    }
     sqlite3_bind_int(ws->stmt_seed_write, 2, next_child);
-    return sqlite3_step(ws->stmt_seed_write) == SQLITE_DONE;
+
+    bool ok = sqlite3_step(ws->stmt_seed_write) == SQLITE_DONE;
+    if (enc_blob) { memory_cleanse(enc_blob, enc_len); free(enc_blob); }
+    return ok;
 }
 
 bool wallet_sqlite_read_sapling_seed(struct wallet_sqlite *ws,
@@ -329,10 +441,25 @@ bool wallet_sqlite_read_sapling_seed(struct wallet_sqlite *ws,
     sqlite3_reset(ws->stmt_seed_read);
     if (sqlite3_step(ws->stmt_seed_read) == SQLITE_ROW) {
         const void *data = sqlite3_column_blob(ws->stmt_seed_read, 0);
-        if (data && sqlite3_column_bytes(ws->stmt_seed_read, 0) >= 32) {
-            memcpy(seed, data, 32);
+        int data_len = sqlite3_column_bytes(ws->stmt_seed_read, 0);
+        if (!data || data_len < 32) return false;
+
+        if (is_wks1_blob(data, (size_t)data_len)) {
+            uint8_t *plain = NULL;
+            size_t plain_len = 0;
+            if (!wallet_decrypt_blob(data, (size_t)data_len,
+                                     &plain, &plain_len) ||
+                plain_len < 32) {
+                if (plain) { memory_cleanse(plain, plain_len); free(plain); }
+                return false;
+            }
+            memcpy(seed, plain, 32);
+            memory_cleanse(plain, plain_len);
+            free(plain);
             return true;
         }
+        memcpy(seed, data, 32);
+        return true;
     }
     return false;
 }
@@ -343,11 +470,25 @@ bool wallet_sqlite_write_sapling_key(struct wallet_sqlite *ws,
 {
     if (!ws->open) return false;
 
+    /* Encrypt the extended spending key (xsk) — this is the secret
+     * material that controls coin spending.  The xfvk, ivk, pk_d,
+     * and diversifier are view-only and stored in plaintext so the
+     * wallet can scan without the passphrase. */
+    uint8_t *enc_xsk = NULL;
+    size_t enc_xsk_len = 0;
+    size_t xsk_raw_len = sizeof(struct zip32_xsk);
+    bool encrypted = wallet_encrypt_blob((const uint8_t *)&entry->xsk,
+                                          xsk_raw_len,
+                                          &enc_xsk, &enc_xsk_len);
+
     sqlite3_stmt *s = ws->stmt_zkey_write;
     sqlite3_reset(s);
     sqlite3_bind_blob(s, 1, entry->ivk, 32, SQLITE_STATIC);
-    sqlite3_bind_blob(s, 2, &entry->xsk, (int)sizeof(struct zip32_xsk),
-                      SQLITE_STATIC);
+    if (encrypted) {
+        sqlite3_bind_blob(s, 2, enc_xsk, (int)enc_xsk_len, SQLITE_TRANSIENT);
+    } else {
+        sqlite3_bind_blob(s, 2, &entry->xsk, (int)xsk_raw_len, SQLITE_STATIC);
+    }
     sqlite3_bind_blob(s, 3, &entry->xfvk, (int)sizeof(struct zip32_xfvk),
                       SQLITE_STATIC);
     sqlite3_bind_blob(s, 4, entry->diversifier, 11, SQLITE_STATIC);
@@ -355,6 +496,7 @@ bool wallet_sqlite_write_sapling_key(struct wallet_sqlite *ws,
     sqlite3_bind_int(s, 6, (int)child_index);
 
     bool ok = sqlite3_step(s) == SQLITE_DONE;
+    if (enc_xsk) { memory_cleanse(enc_xsk, enc_xsk_len); free(enc_xsk); }
 
     /* Update seed's next_child */
     sqlite3_stmt *upd = NULL;
@@ -391,20 +533,47 @@ bool wallet_sqlite_read_sapling_keys(struct wallet_sqlite *ws,
         if (sks->num_keys >= MAX_SAPLING_KEYS) break;
 
         const void *ivk = sqlite3_column_blob(s, 0);
-        const void *xsk = sqlite3_column_blob(s, 1);
+        const void *xsk_blob = sqlite3_column_blob(s, 1);
         const void *xfvk = sqlite3_column_blob(s, 2);
         const void *div = sqlite3_column_blob(s, 3);
         const void *pkd = sqlite3_column_blob(s, 4);
         int child = sqlite3_column_int(s, 5);
 
-        int xsk_len = sqlite3_column_bytes(s, 1);
+        int xsk_blob_len = sqlite3_column_bytes(s, 1);
 
-        if (!ivk || !xsk || !div || !pkd) continue;
-        if (xsk_len < (int)sizeof(struct zip32_xsk)) continue;
+        if (!ivk || !xsk_blob || !div || !pkd) continue;
+
+        /* Resolve xsk: may be an encrypted WKS1 envelope or raw. */
+        const void *xsk_data = xsk_blob;
+        size_t xsk_data_len = (size_t)xsk_blob_len;
+        uint8_t *xsk_decrypted = NULL;
+        size_t xsk_plain_len = 0;
+
+        if (is_wks1_blob(xsk_blob, (size_t)xsk_blob_len)) {
+            if (!wallet_decrypt_blob(xsk_blob, (size_t)xsk_blob_len,
+                                     &xsk_decrypted, &xsk_plain_len) ||
+                xsk_plain_len < sizeof(struct zip32_xsk)) {
+                if (xsk_decrypted) {
+                    memory_cleanse(xsk_decrypted, xsk_plain_len);
+                    free(xsk_decrypted);
+                }
+                continue;  /* wrong passphrase or corrupt — skip key */
+            }
+            xsk_data = xsk_decrypted;
+            xsk_data_len = xsk_plain_len;
+        }
+
+        if (xsk_data_len < sizeof(struct zip32_xsk)) {
+            if (xsk_decrypted) {
+                memory_cleanse(xsk_decrypted, xsk_plain_len);
+                free(xsk_decrypted);
+            }
+            continue;
+        }
 
         struct sapling_key_entry *entry = &sks->keys[sks->num_keys];
         memcpy(entry->ivk, ivk, 32);
-        memcpy(&entry->xsk, xsk, sizeof(struct zip32_xsk));
+        memcpy(&entry->xsk, xsk_data, sizeof(struct zip32_xsk));
         if (xfvk && sqlite3_column_bytes(s, 2) >= (int)sizeof(struct zip32_xfvk))
             memcpy(&entry->xfvk, xfvk, sizeof(struct zip32_xfvk));
         else
@@ -417,6 +586,11 @@ bool wallet_sqlite_read_sapling_keys(struct wallet_sqlite *ws,
 
         if ((uint32_t)child >= sks->next_child_index)
             sks->next_child_index = (uint32_t)child + 1;
+
+        if (xsk_decrypted) {
+            memory_cleanse(xsk_decrypted, xsk_plain_len);
+            free(xsk_decrypted);
+        }
     }
 
     return true;
