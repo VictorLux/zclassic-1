@@ -143,6 +143,9 @@ enum event_type {
     EV_MEMPOOL_EVICT,            /* payload: "reason=size|count evicted=N bytes_before=N bytes_after=N" */
     EV_MEMPOOL_EXPIRE,           /* payload: "expired=N cutoff_unix=N" */
 
+    /* ── Addrman integrity ─────────────────────────── */
+    EV_ADDRMAN_CORRUPT,          /* payload: "verdict=NAME body_size=N ..." */
+
     EV_NUM_TYPES                 /* sentinel — must be last */
 };
 

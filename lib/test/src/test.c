@@ -90,6 +90,7 @@ int main(void)
     failures += test_disk_monitor();
     failures += test_db_maintenance();
     failures += test_mempool_limits();
+    failures += test_addrman_integrity();
 
     /* Spec-based user story tests */
     failures += spec_wallet_dashboard();

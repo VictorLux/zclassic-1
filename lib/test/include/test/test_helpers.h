@@ -246,6 +246,7 @@ int test_wallet_keystore(void);
 int test_disk_monitor(void);
 int test_db_maintenance(void);
 int test_mempool_limits(void);
+int test_addrman_integrity(void);
 
 /* Spec-based user story tests (one per feature area) */
 int spec_wallet_dashboard(void);

@@ -8,6 +8,7 @@
 #include "net/connman.h"
 #include "net/addrman.h"
 #include "net/peer_scoring.h"
+#include "services/addrman_integrity.h"
 #include "net/download.h"
 #include "net/tor_integration.h"
 #include "controllers/blog_controller.h"
@@ -913,9 +914,18 @@ void connman_save_addrman(struct connman *cm)
         FILE *f = fopen(tmp_path, "wb");
         if (f) {
             size_t written = fwrite(s.data, 1, s.size, f);
+            fflush(f);
+            int fd = fileno(f);
+            if (fd >= 0) (void)fsync(fd);
             fclose(f);
             if (written == s.size) {
                 rename(tmp_path, path);
+                /* Write the SHA3 sidecar so the next boot can
+                 * detect tampering or partial corruption. Best-
+                 * effort — a sidecar write failure is logged but
+                 * not fatal; the next load will see
+                 * AII_SIDECAR_MISSING and accept the body. */
+                (void)aii_write_sidecar(cm->datadir);
                 printf("Saved %zu peers to %s (%zu bytes)\n",
                        addrman_size(&cm->manager.addrman), path, s.size);
             } else {
@@ -933,6 +943,26 @@ void connman_load_addrman(struct connman *cm)
     if (!cm->datadir) return;
     char path[512];
     snprintf(path, sizeof(path), "%s/peers.dat", cm->datadir);
+
+    /* Integrity check before we deserialize. On any non-OK,
+     * non-MISSING verdict we quarantine the file (rename aside)
+     * and return — the caller ends up with an empty addrman and
+     * must re-learn from DNS seeds / hardcoded peers. A corrupt
+     * peers.dat is always safer discarded than deserialized:
+     * the contents directly influence outbound peer selection,
+     * which is exactly what an attacker would target. The
+     * `SIDECAR_MISSING` verdict is expected on the first boot
+     * after this service ships (the body has no companion yet);
+     * we accept it. */
+    char aii_err[256];
+    enum aii_verdict verdict = aii_verify(cm->datadir, aii_err, sizeof(aii_err));
+    if (verdict != AII_OK && verdict != AII_SIDECAR_MISSING &&
+        verdict != AII_BODY_MISSING) {
+        fprintf(stderr, "addrman load: integrity check failed (%s): %s\n",
+                aii_verdict_name(verdict), aii_err);
+        aii_quarantine_corrupt(cm->datadir, verdict);
+        return;
+    }
 
     FILE *f = fopen(path, "rb");
     if (!f) return; /* no saved peers — normal on first run */
