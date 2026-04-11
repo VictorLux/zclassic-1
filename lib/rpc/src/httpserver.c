@@ -3,6 +3,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "rpc/httpserver.h"
+#include "rpc/http_middleware.h"
 #include "json/json.h"
 #include "rpc/protocol.h"
 #include "core/random.h"
@@ -27,6 +28,8 @@ static const struct rpc_table *g_table = NULL;
 static pthread_t g_listen_thread;
 static bool g_listen_thread_started = false;
 static volatile bool g_running = false;
+static struct rpc_http_middleware g_middleware;
+static bool g_middleware_active = false;
 static char g_rpc_user[128];
 static char g_rpc_password[128];
 static char g_cookie_file[1024];
@@ -177,6 +180,41 @@ static void handle_client(int client_fd)
     struct timeval tv = { .tv_sec = 5, .tv_usec = 0 };
     setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
+    /* Look up the source IP via getpeername() so we can drive the
+     * middleware (rate limit + ban check) without changing the queue
+     * shape. */
+    uint32_t client_ip_be = 0x0100007Fu; /* fall back to 127.0.0.1 */
+    {
+        struct sockaddr_in peer;
+        socklen_t peer_len = sizeof(peer);
+        if (getpeername(client_fd, (struct sockaddr *)&peer, &peer_len) == 0
+            && peer.sin_family == AF_INET) {
+            client_ip_be = peer.sin_addr.s_addr;
+        }
+    }
+
+    /* Pre-flight: ban + rate limit BEFORE we touch the request.
+     * The middleware is loopback-aware and will exempt 127.0.0.0/8
+     * from ban + per-IP buckets. */
+    if (g_middleware_active) {
+        enum rpc_http_decision d =
+            rpc_http_middleware_check(&g_middleware, client_ip_be);
+        if (d == RPC_HTTP_BANNED) {
+            const char *msg = "{\"error\":{\"code\":-32003,"
+                              "\"message\":\"IP banned\"}}";
+            send_response(client_fd, 403, "Forbidden", msg, strlen(msg));
+            goto done;
+        }
+        if (d == RPC_HTTP_RATE_LIMITED_GLOBAL ||
+            d == RPC_HTTP_RATE_LIMITED_PER_IP) {
+            const char *msg = "{\"error\":{\"code\":-32005,"
+                              "\"message\":\"Rate limit exceeded\"}}";
+            send_response(client_fd, 429, "Too Many Requests",
+                          msg, strlen(msg));
+            goto done;
+        }
+    }
+
     char method[16];
     char path[256];
     char line[4096];
@@ -212,10 +250,14 @@ static void handle_client(int client_fd)
     }
 
     if (!check_auth(auth_value[0] ? auth_value : NULL)) {
+        if (g_middleware_active)
+            rpc_http_middleware_record_auth_fail(&g_middleware, client_ip_be);
         const char *msg = "Unauthorized";
         send_response(client_fd, 401, "Unauthorized", msg, strlen(msg));
         goto done;
     }
+    if (g_middleware_active)
+        rpc_http_middleware_record_success(&g_middleware, client_ip_be);
 
     if (content_length == 0 || content_length > 10 * 1024 * 1024) {
         if (content_length > 10 * 1024 * 1024) {
@@ -394,6 +436,16 @@ bool rpc_http_start(const struct rpc_table *table, uint16_t port,
         return false;
     }
 
+    /* Wave 4 #2: rate limit + per-IP bucket + IP ban for the HTTP RPC
+     * surface.  Init once on first start; load env config so operators
+     * can tune via ZCL_RPC_RPS / ZCL_RPC_PER_IP_RPS / ZCL_RPC_BAN_*
+     * without a rebuild. */
+    if (!g_middleware_active) {
+        rpc_http_middleware_init(&g_middleware);
+        rpc_http_middleware_load_from_env(&g_middleware);
+        g_middleware_active = true;
+    }
+
     g_running = true;
     printf("RPC server listening on 127.0.0.1:%u\n", port);
 
@@ -475,6 +527,10 @@ void rpc_http_stop(void)
     g_auth_required = false;
     g_rpc_user[0] = '\0';
     g_rpc_password[0] = '\0';
+    if (g_middleware_active) {
+        rpc_http_middleware_destroy(&g_middleware);
+        g_middleware_active = false;
+    }
     printf("RPC server stopped.\n");
 }
 
