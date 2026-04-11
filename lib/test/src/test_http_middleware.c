@@ -307,6 +307,91 @@ static int test_stats_increment(void)
     return failures;
 }
 
+/* ── Wave 5 #1: global handle + stats snapshot ─────────────── */
+
+static int test_global_handle(void)
+{
+    int failures = 0;
+    TEST("rpc_http_mw: global handle starts NULL, set/get is symmetric") {
+        /* Pristine state before the RPC server (or any test) has
+         * published the global handle. */
+        rpc_http_middleware_set_global(NULL);
+        ASSERT(rpc_http_middleware_get_global() == NULL);
+
+        fresh();
+        rpc_http_middleware_set_global(&mw);
+        ASSERT(rpc_http_middleware_get_global() == &mw);
+
+        rpc_http_middleware_set_global(NULL);
+        ASSERT(rpc_http_middleware_get_global() == NULL);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_stats_snapshot_null_safe(void)
+{
+    int failures = 0;
+    TEST("rpc_http_mw: stats_snapshot on NULL middleware is zeroed") {
+        struct rpc_http_stats_snapshot s;
+        /* Pre-fill to detect leaked bytes. */
+        memset(&s, 0xAB, sizeof(s));
+        rpc_http_middleware_stats_snapshot(NULL, &s);
+        ASSERT(s.global_rps == 0);
+        ASSERT(s.allowed == 0);
+        ASSERT(s.active_bans == 0);
+        ASSERT(s.tracked_ips == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_stats_snapshot_mirrors_struct(void)
+{
+    int failures = 0;
+    TEST("rpc_http_mw: stats_snapshot mirrors live config + counters") {
+        fresh();
+
+        /* Drive a few allows + one per-IP rate-limit + one ban. */
+        uint32_t lo = ip_be(127, 0, 0, 1);      /* loopback — always allowed */
+        uint32_t c  = ip_be(203, 0, 113, 7);   /* per-IP target */
+
+        for (int i = 0; i < 3; i++)
+            rpc_http_middleware_check(&mw, lo);
+
+        for (int i = 0; i < 20; i++)
+            rpc_http_middleware_check(&mw, c);
+
+        for (int i = 0; i < mw.auth_fail_threshold; i++)
+            rpc_http_middleware_record_auth_fail(&mw, c);
+
+        struct rpc_http_stats_snapshot s;
+        rpc_http_middleware_stats_snapshot(&mw, &s);
+
+        /* Config mirrors live fields. */
+        ASSERT(s.global_rps == mw.global_rps);
+        ASSERT(s.global_burst == mw.global_burst);
+        ASSERT(s.per_ip_rps == mw.per_ip_rps);
+        ASSERT(s.per_ip_burst == mw.per_ip_burst);
+        ASSERT(s.auth_fail_threshold == mw.auth_fail_threshold);
+        ASSERT(s.ban_seconds == mw.ban_seconds);
+
+        /* Counters mirror live stats. */
+        ASSERT(s.allowed == mw.stat_allowed);
+        ASSERT(s.rate_limited_per_ip == mw.stat_rate_limited_per_ip);
+        ASSERT(s.bans_issued == mw.stat_bans_issued);
+        ASSERT(s.auth_failures == mw.stat_auth_failures);
+
+        /* Gauges reflect the table state. */
+        ASSERT(s.tracked_ips >= 1);
+        ASSERT(s.active_bans == 1);
+        ASSERT(s.bans_issued == 1);
+        ASSERT(s.rate_limited_per_ip >= 1);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── Entry point ────────────────────────────────────────────── */
 
 int test_http_middleware(void);
@@ -327,7 +412,13 @@ int test_http_middleware(void)
     failures += test_lru_eviction();
     failures += test_reset_state();
     failures += test_stats_increment();
+    failures += test_global_handle();
+    failures += test_stats_snapshot_null_safe();
+    failures += test_stats_snapshot_mirrors_struct();
 
     if (mw.initialized) rpc_http_middleware_destroy(&mw);
+    /* Leave the global pointer NULL so downstream tests (test_mcp_metrics)
+     * observe the "inactive" rendering path by default. */
+    rpc_http_middleware_set_global(NULL);
     return failures;
 }

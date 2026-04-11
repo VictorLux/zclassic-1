@@ -445,6 +445,9 @@ bool rpc_http_start(const struct rpc_table *table, uint16_t port,
         rpc_http_middleware_load_from_env(&g_middleware);
         g_middleware_active = true;
     }
+    /* Publish the global handle so metrics.c + zcl_rpc_report can read
+     * the live config and stats without reaching into httpserver.c. */
+    rpc_http_middleware_set_global(&g_middleware);
 
     g_running = true;
     printf("RPC server listening on 127.0.0.1:%u\n", port);
@@ -528,6 +531,7 @@ void rpc_http_stop(void)
     g_rpc_user[0] = '\0';
     g_rpc_password[0] = '\0';
     if (g_middleware_active) {
+        rpc_http_middleware_set_global(NULL);
         rpc_http_middleware_destroy(&g_middleware);
         g_middleware_active = false;
     }

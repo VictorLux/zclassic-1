@@ -95,6 +95,31 @@ uint64_t mcp_metrics_peer_bans_total(void);
  * too-small buffer the same way the Prometheus dump does. */
 size_t mcp_metrics_peer_report_json(char *buf, size_t cap);
 
+/* ── HTTP RPC middleware report ───────────────────────────────
+ *
+ * Snapshots the live RPC middleware stats (from the global handle
+ * registered by httpserver.c via rpc_http_middleware_set_global) and
+ * renders a small JSON object suitable for embedding in an MCP
+ * response body.  Shape:
+ *
+ *   {
+ *     "config": { global_rps, global_burst, per_ip_rps, per_ip_burst,
+ *                 auth_fail_threshold, ban_seconds },
+ *     "stats":  { allowed, rate_limited_global, rate_limited_per_ip,
+ *                 banned_rejected, bans_issued, auth_failures },
+ *     "tracked_ips": N,
+ *     "active_bans": N
+ *   }
+ *
+ * When the RPC server hasn't started (or is in the middle of shutdown),
+ * the global pointer is NULL and the report returns an empty-stats
+ * envelope with `"rpc_server":"inactive"` set so operators can tell
+ * the difference between "no traffic yet" and "no server at all".
+ *
+ * The Prometheus dump (mcp_metrics_render_prometheus) also emits a
+ * `zcl_rpc_*` block derived from the same snapshot. */
+size_t mcp_metrics_rpc_report_json(char *buf, size_t cap);
+
 #ifdef __cplusplus
 }
 #endif

@@ -8,6 +8,7 @@
 #include "test/test_helpers.h"
 #include "mcp/metrics.h"
 #include "event/event.h"
+#include "rpc/http_middleware.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -331,6 +332,131 @@ static int test_peer_report_json(void)
     return failures;
 }
 
+/* ── Wave 5 #1: HTTP RPC middleware surface ────────────────── */
+
+static uint32_t make_ip_be(uint8_t a, uint8_t b, uint8_t c, uint8_t d)
+{
+    return ((uint32_t)a) | ((uint32_t)b << 8) |
+           ((uint32_t)c << 16) | ((uint32_t)d << 24);
+}
+
+static int test_rpc_report_inactive_when_unregistered(void)
+{
+    int failures = 0;
+    TEST("metrics: rpc_report reports 'inactive' when no global handle") {
+        /* Force a clean slate — no RPC server registered. */
+        rpc_http_middleware_set_global(NULL);
+
+        char buf[2048];
+        size_t n = mcp_metrics_rpc_report_json(buf, sizeof(buf));
+        ASSERT(n > 0);
+        ASSERT(contains(buf, "\"rpc_server\":\"inactive\""));
+        ASSERT(contains(buf, "\"config\""));
+        ASSERT(contains(buf, "\"stats\""));
+        /* Zeroed fields when no middleware is registered. */
+        ASSERT(contains(buf, "\"allowed\":0"));
+        ASSERT(contains(buf, "\"active_bans\":0"));
+        ASSERT(contains(buf, "\"tracked_ips\":0"));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_rpc_report_active_config_and_stats(void)
+{
+    int failures = 0;
+    TEST("metrics: rpc_report exposes live config + stats from global mw") {
+        struct rpc_http_middleware mw;
+        rpc_http_middleware_init(&mw);
+        rpc_http_middleware_set_global(&mw);
+
+        /* Drive a few allows and one auth failure so stats are non-zero. */
+        uint32_t client = make_ip_be(198, 51, 100, 9);
+        for (int i = 0; i < 5; i++)
+            rpc_http_middleware_check(&mw, client);
+        rpc_http_middleware_record_auth_fail(&mw, client);
+
+        char buf[2048];
+        size_t n = mcp_metrics_rpc_report_json(buf, sizeof(buf));
+        ASSERT(n > 0);
+        ASSERT(contains(buf, "\"rpc_server\":\"active\""));
+        ASSERT(contains(buf, "\"global_rps\":50"));
+        ASSERT(contains(buf, "\"global_burst\":100"));
+        ASSERT(contains(buf, "\"per_ip_rps\":5"));
+        ASSERT(contains(buf, "\"auth_fail_threshold\":5"));
+        ASSERT(contains(buf, "\"ban_seconds\":3600"));
+        ASSERT(contains(buf, "\"allowed\":5"));
+        ASSERT(contains(buf, "\"auth_failures\":1"));
+        ASSERT(contains(buf, "\"tracked_ips\":1"));
+
+        rpc_http_middleware_set_global(NULL);
+        rpc_http_middleware_destroy(&mw);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_rpc_prometheus_render(void)
+{
+    int failures = 0;
+    TEST("metrics: rpc_* families appear in Prometheus dump") {
+        struct rpc_http_middleware mw;
+        rpc_http_middleware_init(&mw);
+        rpc_http_middleware_set_global(&mw);
+
+        uint32_t c = make_ip_be(192, 0, 2, 11);
+        for (int i = 0; i < 3; i++)
+            rpc_http_middleware_check(&mw, c);
+        rpc_http_middleware_record_auth_fail(&mw, c);
+
+        mcp_metrics_reset();
+        char buf[16384];
+        size_t n = mcp_metrics_render_prometheus(buf, sizeof(buf));
+        ASSERT(n > 0);
+
+        /* Counter families + labels. */
+        ASSERT(contains(buf, "# HELP zcl_rpc_requests_total"));
+        ASSERT(contains(buf, "# TYPE zcl_rpc_requests_total counter"));
+        ASSERT(contains(buf, "zcl_rpc_requests_total{result=\"allowed\"} 3"));
+        ASSERT(contains(buf, "zcl_rpc_requests_total{result=\"rate_limited_global\"} 0"));
+        ASSERT(contains(buf, "zcl_rpc_requests_total{result=\"rate_limited_per_ip\"} 0"));
+        ASSERT(contains(buf, "zcl_rpc_requests_total{result=\"banned\"} 0"));
+
+        /* Auth + ban counters + gauges. */
+        ASSERT(contains(buf, "# HELP zcl_rpc_auth_failures_total"));
+        ASSERT(contains(buf, "zcl_rpc_auth_failures_total 1"));
+        ASSERT(contains(buf, "# HELP zcl_rpc_bans_issued_total"));
+        ASSERT(contains(buf, "zcl_rpc_bans_issued_total 0"));
+        ASSERT(contains(buf, "# TYPE zcl_rpc_bans_active gauge"));
+        ASSERT(contains(buf, "zcl_rpc_bans_active 0"));
+        ASSERT(contains(buf, "# TYPE zcl_rpc_tracked_ips gauge"));
+        ASSERT(contains(buf, "zcl_rpc_tracked_ips 1"));
+
+        rpc_http_middleware_set_global(NULL);
+        rpc_http_middleware_destroy(&mw);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_rpc_prometheus_inactive_render(void)
+{
+    int failures = 0;
+    TEST("metrics: rpc_* families render zeros when no global handle") {
+        rpc_http_middleware_set_global(NULL);
+        mcp_metrics_reset();
+        char buf[16384];
+        size_t n = mcp_metrics_render_prometheus(buf, sizeof(buf));
+        ASSERT(n > 0);
+        ASSERT(contains(buf, "zcl_rpc_requests_total{result=\"allowed\"} 0"));
+        ASSERT(contains(buf, "zcl_rpc_auth_failures_total 0"));
+        ASSERT(contains(buf, "zcl_rpc_bans_active 0"));
+        ASSERT(contains(buf, "zcl_rpc_tracked_ips 0"));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── Entry point ────────────────────────────────────────────── */
 
 int test_mcp_metrics(void);
@@ -356,6 +482,12 @@ int test_mcp_metrics(void)
     failures += test_peer_prometheus_render();
     failures += test_peer_report_json();
 
+    failures += test_rpc_report_inactive_when_unregistered();
+    failures += test_rpc_report_active_config_and_stats();
+    failures += test_rpc_prometheus_render();
+    failures += test_rpc_prometheus_inactive_render();
+
     mcp_metrics_reset();
+    rpc_http_middleware_set_global(NULL);
     return failures;
 }

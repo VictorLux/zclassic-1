@@ -340,3 +340,58 @@ void rpc_http_middleware_reset_state(struct rpc_http_middleware *mw)
     mw->stat_auth_failures         = 0;
     pthread_mutex_unlock(&mw->lock);
 }
+
+/* ── Global handle ─────────────────────────────────────────────
+ *
+ * Guarded by its own mutex so the setter/getter don't race with the
+ * RPC server's init/destroy path.  The pointer itself is never
+ * dereferenced under this lock — observers read the stats via the
+ * middleware's own internal mutex inside rpc_http_middleware_stats_snapshot.
+ */
+static struct rpc_http_middleware *g_global_mw = NULL;
+static pthread_mutex_t              g_global_mw_lock = PTHREAD_MUTEX_INITIALIZER;
+
+void rpc_http_middleware_set_global(struct rpc_http_middleware *mw)
+{
+    pthread_mutex_lock(&g_global_mw_lock);
+    g_global_mw = mw;
+    pthread_mutex_unlock(&g_global_mw_lock);
+}
+
+struct rpc_http_middleware *rpc_http_middleware_get_global(void)
+{
+    pthread_mutex_lock(&g_global_mw_lock);
+    struct rpc_http_middleware *mw = g_global_mw;
+    pthread_mutex_unlock(&g_global_mw_lock);
+    return mw;
+}
+
+void rpc_http_middleware_stats_snapshot(struct rpc_http_middleware *mw,
+                                         struct rpc_http_stats_snapshot *out)
+{
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    if (!mw || !mw->initialized) return;
+
+    pthread_mutex_lock(&mw->lock);
+    /* Prune expired bans inside the lock so active_bans is accurate. */
+    prune_expired_bans_locked(mw, now_unix());
+
+    out->global_rps           = mw->global_rps;
+    out->global_burst         = mw->global_burst;
+    out->per_ip_rps           = mw->per_ip_rps;
+    out->per_ip_burst         = mw->per_ip_burst;
+    out->auth_fail_threshold  = mw->auth_fail_threshold;
+    out->ban_seconds          = mw->ban_seconds;
+
+    out->allowed              = mw->stat_allowed;
+    out->rate_limited_global  = mw->stat_rate_limited_global;
+    out->rate_limited_per_ip  = mw->stat_rate_limited_per_ip;
+    out->banned_rejected      = mw->stat_banned_rejected;
+    out->bans_issued          = mw->stat_bans_issued;
+    out->auth_failures        = mw->stat_auth_failures;
+
+    out->tracked_ips          = mw->num_ips;
+    out->active_bans          = mw->num_bans;
+    pthread_mutex_unlock(&mw->lock);
+}

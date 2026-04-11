@@ -390,6 +390,23 @@ static int h_zcl_metrics_reset(const struct mcp_request *req,
     return 0;
 }
 
+/* zcl_rpc_report — HTTP RPC middleware summary (wave 5 #1).
+ * Live config + stat counters + tracked IPs + active bans from the
+ * global rpc_http_middleware registered by httpserver.c.  The report
+ * also appears in the Prometheus dump emitted by zcl_metrics, but
+ * this tool returns a smaller structured JSON object for operators
+ * who want a single-call snapshot instead of a full text scrape. */
+static int h_zcl_rpc_report(const struct mcp_request *req,
+                             struct mcp_response *res)
+{
+    (void)req;
+    char body[2048];
+    size_t n = mcp_metrics_rpc_report_json(body, sizeof(body));
+    if (n == 0) return -1;
+    res->body = strdup(body);
+    return res->body ? 0 : -1;
+}
+
 /* ── Route table ─────────────────────────────────────────────── */
 
 static const struct mcp_param_spec p_logtail[] = {
@@ -425,6 +442,12 @@ static const struct mcp_tool_route k_routes[] = {
       "Reset all MCP metric counters. Destructive — gated by the "
       "middleware rate limiter.",
       NULL, 0, h_zcl_metrics_reset },
+    { "zcl_rpc_report", "ops",
+      "HTTP RPC middleware report: live rate-limit / ban config plus "
+      "allowed/rate-limited/banned/auth-failure counters and current "
+      "tracked-IP and active-ban gauges. Parallel to zcl_peer_report "
+      "for the RPC surface.",
+      NULL, 0, h_zcl_rpc_report },
 };
 
 void mcp_register_meta(void)

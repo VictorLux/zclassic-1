@@ -36,11 +36,12 @@
 /* Expected tool counts.  If a future commit intentionally adds or
  * removes tools, bump these numbers in the same commit — they are the
  * contract for "how big is the MCP surface." */
-#define EXPECTED_TOTAL      70
-#define EXPECTED_OPS        17  /* status, health, kpi, mempool*, mininginfo,
+#define EXPECTED_TOTAL      71
+#define EXPECTED_OPS        18  /* status, health, kpi, mempool*, mininginfo,
                                  * benchmark, dbstats, filemanifest, events,
                                  * rpc, tools_list, self_test, logtail,
-                                 * openapi, metrics, metrics_reset */
+                                 * openapi, metrics, metrics_reset,
+                                 * rpc_report (wave 5 #1) */
 #define EXPECTED_CHAIN      10
 #define EXPECTED_NET         8  /* + zcl_peer_report (wave 4 #5) */
 #define EXPECTED_WALLET     19

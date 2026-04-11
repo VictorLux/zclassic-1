@@ -6,6 +6,7 @@
 #include "mcp/metrics.h"
 #include "event/event.h"
 #include "net/peer_scoring.h"
+#include "rpc/http_middleware.h"
 
 #include <pthread.h>
 #include <stdarg.h>
@@ -455,6 +456,47 @@ size_t mcp_metrics_render_prometheus(char *buf, size_t cap)
         "zcl_peer_bans_total %llu\n",
         (unsigned long long)g_peer_bans_total);
 
+    /* ── HTTP RPC middleware block ───────────────────────────── */
+    struct rpc_http_middleware *rpc_mw = rpc_http_middleware_get_global();
+    struct rpc_http_stats_snapshot snap;
+    rpc_http_middleware_stats_snapshot(rpc_mw, &snap);
+
+    pos = append(buf, cap, pos,
+        "# HELP zcl_rpc_requests_total HTTP RPC middleware decisions by result\n"
+        "# TYPE zcl_rpc_requests_total counter\n"
+        "zcl_rpc_requests_total{result=\"allowed\"} %llu\n"
+        "zcl_rpc_requests_total{result=\"rate_limited_global\"} %llu\n"
+        "zcl_rpc_requests_total{result=\"rate_limited_per_ip\"} %llu\n"
+        "zcl_rpc_requests_total{result=\"banned\"} %llu\n",
+        (unsigned long long)snap.allowed,
+        (unsigned long long)snap.rate_limited_global,
+        (unsigned long long)snap.rate_limited_per_ip,
+        (unsigned long long)snap.banned_rejected);
+
+    pos = append(buf, cap, pos,
+        "# HELP zcl_rpc_auth_failures_total HTTP RPC auth (401) failures\n"
+        "# TYPE zcl_rpc_auth_failures_total counter\n"
+        "zcl_rpc_auth_failures_total %llu\n",
+        (unsigned long long)snap.auth_failures);
+
+    pos = append(buf, cap, pos,
+        "# HELP zcl_rpc_bans_issued_total IP bans issued by HTTP RPC middleware\n"
+        "# TYPE zcl_rpc_bans_issued_total counter\n"
+        "zcl_rpc_bans_issued_total %llu\n",
+        (unsigned long long)snap.bans_issued);
+
+    pos = append(buf, cap, pos,
+        "# HELP zcl_rpc_bans_active Currently-active HTTP RPC IP bans\n"
+        "# TYPE zcl_rpc_bans_active gauge\n"
+        "zcl_rpc_bans_active %llu\n",
+        (unsigned long long)snap.active_bans);
+
+    pos = append(buf, cap, pos,
+        "# HELP zcl_rpc_tracked_ips IPs currently in the per-IP bucket table\n"
+        "# TYPE zcl_rpc_tracked_ips gauge\n"
+        "zcl_rpc_tracked_ips %llu\n",
+        (unsigned long long)snap.tracked_ips);
+
     if (pos < cap) buf[pos] = '\0';
     pthread_mutex_unlock(&g_lock);
     return pos;
@@ -491,5 +533,51 @@ size_t mcp_metrics_peer_report_json(char *buf, size_t cap)
 
     if (pos < cap) buf[pos] = '\0';
     pthread_mutex_unlock(&g_lock);
+    return pos;
+}
+
+size_t mcp_metrics_rpc_report_json(char *buf, size_t cap)
+{
+    if (!buf || cap == 0) return 0;
+
+    /* NB: we do NOT hold g_lock here — the RPC middleware has its own
+     * mutex and we want the snapshot to be consistent with itself, not
+     * with the MCP counter registry. */
+    struct rpc_http_middleware *mw = rpc_http_middleware_get_global();
+    struct rpc_http_stats_snapshot snap;
+    rpc_http_middleware_stats_snapshot(mw, &snap);
+    const char *server_state = mw ? "active" : "inactive";
+
+    size_t pos = 0;
+    pos = append(buf, cap, pos,
+        "{\"rpc_server\":\"%s\","
+         "\"config\":{"
+            "\"global_rps\":%d,"
+            "\"global_burst\":%d,"
+            "\"per_ip_rps\":%d,"
+            "\"per_ip_burst\":%d,"
+            "\"auth_fail_threshold\":%d,"
+            "\"ban_seconds\":%d"
+         "},\"stats\":{"
+            "\"allowed\":%llu,"
+            "\"rate_limited_global\":%llu,"
+            "\"rate_limited_per_ip\":%llu,"
+            "\"banned_rejected\":%llu,"
+            "\"bans_issued\":%llu,"
+            "\"auth_failures\":%llu"
+         "},\"tracked_ips\":%zu,\"active_bans\":%zu}",
+        server_state,
+        snap.global_rps, snap.global_burst,
+        snap.per_ip_rps, snap.per_ip_burst,
+        snap.auth_fail_threshold, snap.ban_seconds,
+        (unsigned long long)snap.allowed,
+        (unsigned long long)snap.rate_limited_global,
+        (unsigned long long)snap.rate_limited_per_ip,
+        (unsigned long long)snap.banned_rejected,
+        (unsigned long long)snap.bans_issued,
+        (unsigned long long)snap.auth_failures,
+        snap.tracked_ips, snap.active_bans);
+
+    if (pos < cap) buf[pos] = '\0';
     return pos;
 }

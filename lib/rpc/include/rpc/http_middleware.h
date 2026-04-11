@@ -148,7 +148,7 @@ void rpc_http_middleware_record_auth_fail(
 void rpc_http_middleware_record_success(
     struct rpc_http_middleware *mw, uint32_t client_ip_be);
 
-/* Inspection helpers (for tests + future zcl_rpc_report). */
+/* Inspection helpers (for tests + zcl_rpc_report). */
 bool   rpc_http_middleware_is_banned(struct rpc_http_middleware *mw,
                                       uint32_t client_ip_be);
 size_t rpc_http_middleware_active_bans(struct rpc_http_middleware *mw);
@@ -158,6 +158,50 @@ int    rpc_http_middleware_ip_auth_fails(struct rpc_http_middleware *mw,
 
 /* Reset all state (config preserved).  Tests use this between cases. */
 void rpc_http_middleware_reset_state(struct rpc_http_middleware *mw);
+
+/* Global middleware handle.  The RPC server owns the singleton (a
+ * file-scope struct in httpserver.c) and registers its pointer here at
+ * startup so observability code (metrics.c, zcl_rpc_report) can read
+ * the live config + counters without having to reach into httpserver.c.
+ *
+ * `rpc_http_middleware_set_global(NULL)` at shutdown clears the pointer
+ * so read paths see a clean "not initialized" state.  Thread-safe: the
+ * getter/setter are guarded by an internal mutex, and the returned
+ * pointer is stable for the lifetime of the RPC server.
+ */
+void                        rpc_http_middleware_set_global(
+    struct rpc_http_middleware *mw);
+struct rpc_http_middleware *rpc_http_middleware_get_global(void);
+
+/* A lock-consistent snapshot of the live stats + config, for rendering
+ * into Prometheus text or a JSON report.  Reads all fields under the
+ * middleware mutex so counters and config can't shear.  `tracked_ips`
+ * and `active_bans` are computed after pruning expired bans. */
+struct rpc_http_stats_snapshot {
+    /* Config */
+    int      global_rps;
+    int      global_burst;
+    int      per_ip_rps;
+    int      per_ip_burst;
+    int      auth_fail_threshold;
+    int      ban_seconds;
+
+    /* Counters since last reset_state */
+    uint64_t allowed;
+    uint64_t rate_limited_global;
+    uint64_t rate_limited_per_ip;
+    uint64_t banned_rejected;
+    uint64_t bans_issued;
+    uint64_t auth_failures;
+
+    /* Gauges */
+    size_t   tracked_ips;
+    size_t   active_bans;
+};
+
+void rpc_http_middleware_stats_snapshot(
+    struct rpc_http_middleware *mw,
+    struct rpc_http_stats_snapshot *out);
 
 #ifdef __cplusplus
 }
