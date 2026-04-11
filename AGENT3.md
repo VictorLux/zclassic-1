@@ -163,13 +163,13 @@ One commit, ~150 lines including tests.
 
 ## Definition of done for wave 3
 
-- [ ] `test_mcp_e2e` runs the real `-mcp` binary, 10 required test cases green
-- [ ] `zcl_metrics` returns Prometheus text with all 14 counter/histogram/gauge families
-- [ ] `test_secrets_hygiene` + `check_no_secret_printf.sh` CI check, any discovered leaks logged
-- [ ] `peer_scoring` service + wired into msgprocessor + process_block + connman
-- [ ] `zcl_openapi` schema export tool
-- [ ] `./test_zcl` still green
-- [ ] `zcl_self_test` still **0 fail** after all changes
+- [x] `test_mcp_e2e` runs the real `-mcp` binary, 10 required test cases green
+- [x] `zcl_metrics` returns Prometheus text with all 14 counter/histogram/gauge families
+- [x] `test_secrets_hygiene` + `check_no_secret_printf.sh` CI check, any discovered leaks logged
+- [x] `peer_scoring` service + wired into msgprocessor + connman (process_block DoS grading flows through msgprocessor; accept_block's validation_state DoS is graded at the msg handler call-site)
+- [x] `zcl_openapi` schema export tool
+- [x] `./test_zcl` still green
+- [ ] `zcl_self_test` still **0 fail** after all changes *(requires a live node; last known: 45 pass / 21 skip / 0 fail)*
 
 ---
 
@@ -180,3 +180,7 @@ One commit, ~150 lines including tests.
 - **2026-04-11 wave 1** — Router + 41 tools + operator tooling (Phases 1, 2a, 2b, 2c).
 - **2026-04-11 wave 2** — `database_validators` + 28 tests (Phase 3); `mcp/middleware` (auth + rate-limit + timeout) + tests. `zcl_self_test`: **45 pass / 21 skip / 0 fail**.
 - **2026-04-11 wave 3** — **New plan, five deliverables above.** Start with #1 (e2e test harness) — it's the regression trip-wire that makes every subsequent change safer. Then #2 (metrics) is mostly wiring into existing events from AGENT2. #3 (secrets audit) is where real bugs live. #4 (peer scoring) is net-layer and conflict-free.
+- **2026-04-11 wave 3 session 2** — Items #1/#2/#5 had already landed in the wave-2 catch-up commits (e2e + metrics + openapi). This session shipped the two remaining items:
+  - **#4 peer_scoring** — `lib/net/{include/net,src}/peer_scoring.{h,c}` typed offence layer over `peer_misbehaving()`. Env-configurable threshold/ban hours/decay rate (`ZCL_PEER_BAN_THRESHOLD`, `ZCL_PEER_BAN_HOURS`, `ZCL_PEER_SCORE_DECAY_PER_MIN`). `peer_misbehaving()` updated to honour the new config (defaults unchanged: 100 / 24h / 1 pt/min). Wired into 6 msgprocessor rejection paths plus a good-interaction tick on block accept. `connman_init()` calls `peer_scoring_init()` so every binary honours env overrides. 18 unit tests in `lib/test/src/test_peer_scoring.c`.
+  - **#3 secrets_hygiene** — Two-layer audit. `tools/scripts/check_no_secret_printf.sh` grep-scan for printf-family calls that reference key-shaped variable names (priv_key / mnemonic / wif / spending_key / …). `lib/test/src/test_secrets_hygiene.c` runs a golden-corpus scan against the MCP tools/list JSON and error envelopes, plus a positive control and a script-shape audit. **Known findings**: `tools/wallet_recover.c` and `tools/wallet_dump.c` intentionally print WIF material; both allowlisted with justification since they are explicit operator-invoked recovery utilities. No unintentional leaks found in the audit surface — follow-up sessions should widen the runtime scan to include real wallet controllers once a lightweight fixture wallet is available.
+- **`./test_zcl`**: ALL TESTS PASSED (includes 18 peer_scoring + 6 secrets_hygiene cases).
