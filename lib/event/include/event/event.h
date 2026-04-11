@@ -53,6 +53,9 @@ enum event_type {
     EV_COINS_FLUSH_FAILED,       /* payload: reason string */
     EV_CHAIN_TIP_COMMIT,         /* payload: "from=H to=H reason=..." */
     EV_CHAIN_TIP_REJECTED,       /* payload: "code=... from=H to=H reason=..." */
+    EV_RECOVERY_POLICY_ALLOW,    /* payload: "op=... amount=N reason=..." */
+    EV_RECOVERY_POLICY_REFUSED,  /* payload: "op=... code=... amount=N cap=N reason=..." */
+    EV_RECOVERY_POLICY_PROMPT,   /* payload: "op=... amount=N ack=... reason=..." */
 
     /* ── Transaction ────────────────────────────────── */
     EV_TX_ACCEPTED,              /* payload: txid[32] */
