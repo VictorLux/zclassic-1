@@ -4,6 +4,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "chain/checkpoints.h"
+#include <stddef.h>
 #include <time.h>
 
 static const double SIGCHECK_VERIFICATION_FACTOR = 5.0;
@@ -44,6 +45,52 @@ double checkpoints_guess_verification_progress(
     }
 
     return fWorkBefore / (fWorkBefore + fWorkAfter);
+}
+
+/* ── Enforcement helpers ───────────────────────────────────
+ *
+ * The active checkpoint list is tiny (≤10 entries on mainnet)
+ * so linear scans are fine here. If that ever grows, convert
+ * to a binary search keyed on `height`.
+ */
+
+bool checkpoints_hash_at_height(const struct checkpoint_data *data,
+                                 int height,
+                                 struct uint256 *out_hash)
+{
+    if (!data || !out_hash) return false;
+    for (int i = 0; i < data->nEntries; i++) {
+        if (data->entries[i].height == height) {
+            *out_hash = data->entries[i].hash;
+            return true;
+        }
+    }
+    return false;
+}
+
+int checkpoints_last_height(const struct checkpoint_data *data)
+{
+    if (!data || data->nEntries == 0) return -1;
+    /* The list is ascending-height in practice (see
+     * chainparams.c), so the final entry is the deepest.
+     * Defensive scan in case that ever gets shuffled. */
+    int best = -1;
+    for (int i = 0; i < data->nEntries; i++) {
+        if (data->entries[i].height > best)
+            best = data->entries[i].height;
+    }
+    return best;
+}
+
+bool checkpoints_validate_header(const struct checkpoint_data *data,
+                                  int height,
+                                  const struct uint256 *hash)
+{
+    if (!data || !hash) return true;  /* degenerate: nothing to check */
+    struct uint256 expected;
+    if (!checkpoints_hash_at_height(data, height, &expected))
+        return true;  /* no checkpoint at this height */
+    return uint256_cmp(hash, &expected) == 0;
 }
 
 /* ── SHA3 UTXO checkpoint ──────────────────────────────── */

@@ -184,16 +184,14 @@ bool contextual_check_block_header(const struct block_header *header,
             block_index_get_median_time_past(pindex_prev),
         state, "time-too-old");
 
-    /* Checkpoint enforcement */
+    /* Checkpoint enforcement — see checkpoints.h for the policy
+     * (exact-height match at known heights; silent pass for heights
+     * with no checkpoint). */
     if (checkpoints_enabled) {
-        const struct checkpoint_data *cpdata = &params->checkpointData;
-        for (int i = 0; i < cpdata->nEntries; i++) {
-            if (nHeight == cpdata->entries[i].height) {
-                REJECT_CHECKPOINT_IF(
-                    uint256_cmp(&hash, &cpdata->entries[i].hash) != 0,
-                    state, 100, "bad-fork-at-checkpoint");
-            }
-        }
+        REJECT_CHECKPOINT_IF(
+            !checkpoints_validate_header(&params->checkpointData,
+                                          nHeight, &hash),
+            state, 100, "bad-fork-at-checkpoint");
     }
 
     REJECT_OBSOLETE_IF(header->nVersion < 4, state, "bad-version");

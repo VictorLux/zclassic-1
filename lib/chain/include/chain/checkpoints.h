@@ -30,6 +30,40 @@ double checkpoints_guess_verification_progress(
     const struct checkpoint_data *data,
     const struct block_index *pindex, bool fSigchecks);
 
+/* ── Enforcement helpers ────────────────────────────────────
+ *
+ * These wrap the exact-height checkpoint policy in a testable
+ * API. Callers in `contextual_check_block_header` use
+ * `checkpoints_validate_header()`; other code (RPC, tests)
+ * can use the lower-level lookups.
+ */
+
+/* Returns true and writes `*out_hash` if a checkpoint exists
+ * at `height`. Returns false if there is no checkpoint at that
+ * height. O(nEntries) linear scan — the list is tiny (single
+ * digits). */
+bool checkpoints_hash_at_height(const struct checkpoint_data *data,
+                                 int height,
+                                 struct uint256 *out_hash);
+
+/* Returns the highest checkpoint height, or -1 if there are
+ * no checkpoints. Used by the "IsInitialBlockDownload" and
+ * "deep reorg refusal" predicates. */
+int checkpoints_last_height(const struct checkpoint_data *data);
+
+/* Header-validation entry point. Returns true if (height, hash)
+ * is consistent with the checkpoint data:
+ *   - if no checkpoint exists at `height` → true (nothing to
+ *     check)
+ *   - if a checkpoint exists and `hash` matches → true
+ *   - otherwise → false (fork attempt)
+ *
+ * Callers are free to ignore this when `fCheckpointsEnabled`
+ * is false (e.g. in test fixtures or explicit re-scan modes). */
+bool checkpoints_validate_header(const struct checkpoint_data *data,
+                                  int height,
+                                  const struct uint256 *hash);
+
 /* SHA3 UTXO checkpoint — compiled-in commitment that a new node
  * can verify its UTXO set against without trusting any peer.
  * Verified bit-for-bit against zclassicd reference implementation. */

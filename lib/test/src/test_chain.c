@@ -1616,5 +1616,136 @@ int test_chain(void)
         (void)rmdir("/tmp/test_boot_fallback2");
     }
 
+    /* ── Checkpoint helpers (testable API over the inlined scan) ── */
+    printf("checkpoints_hash_at_height: exact match... ");
+    {
+        struct checkpoint_entry entries[3];
+        entries[0].height = 100;
+        memset(entries[0].hash.data, 0xAA, 32);
+        entries[1].height = 2000;
+        memset(entries[1].hash.data, 0xBB, 32);
+        entries[2].height = 3054000;
+        memset(entries[2].hash.data, 0xCC, 32);
+        struct checkpoint_data data = {
+            .entries = entries,
+            .nEntries = 3,
+            .nTimeLastCheckpoint = 0,
+            .nTransactionsLastCheckpoint = 0,
+            .fTransactionsPerDay = 0,
+        };
+        struct uint256 got;
+        bool found = checkpoints_hash_at_height(&data, 2000, &got);
+        bool ok = found && got.data[0] == 0xBB && got.data[31] == 0xBB;
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("checkpoints_hash_at_height: miss... ");
+    {
+        struct checkpoint_entry entries[2] = {
+            { .height = 100 }, { .height = 200 },
+        };
+        memset(entries[0].hash.data, 0x11, 32);
+        memset(entries[1].hash.data, 0x22, 32);
+        struct checkpoint_data data = {
+            .entries = entries, .nEntries = 2, 0, 0, 0,
+        };
+        struct uint256 got = {0};
+        bool found = checkpoints_hash_at_height(&data, 150, &got);
+        bool ok = !found;
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("checkpoints_last_height... ");
+    {
+        struct checkpoint_entry entries[4];
+        memset(entries, 0, sizeof(entries));
+        entries[0].height = 0;
+        entries[1].height = 100;
+        entries[2].height = 5000;
+        entries[3].height = 3054000;
+        struct checkpoint_data data = {
+            .entries = entries, .nEntries = 4, 0, 0, 0,
+        };
+        int last = checkpoints_last_height(&data);
+        bool ok = last == 3054000;
+
+        struct checkpoint_data empty = {NULL, 0, 0, 0, 0};
+        ok = ok && checkpoints_last_height(&empty) == -1;
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("checkpoints_validate_header: pass through (no checkpoint)... ");
+    {
+        struct checkpoint_entry entries[2] = {
+            { .height = 100 }, { .height = 200 },
+        };
+        memset(entries[0].hash.data, 0xAA, 32);
+        memset(entries[1].hash.data, 0xBB, 32);
+        struct checkpoint_data data = {
+            .entries = entries, .nEntries = 2, 0, 0, 0,
+        };
+        struct uint256 any_hash;
+        memset(any_hash.data, 0x99, 32);
+        bool ok = checkpoints_validate_header(&data, 150, &any_hash);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("checkpoints_validate_header: accept matching hash... ");
+    {
+        struct checkpoint_entry entries[1] = {{ .height = 2013514 }};
+        memset(entries[0].hash.data, 0x77, 32);
+        struct checkpoint_data data = {
+            .entries = entries, .nEntries = 1, 0, 0, 0,
+        };
+        struct uint256 match;
+        memset(match.data, 0x77, 32);
+        bool ok = checkpoints_validate_header(&data, 2013514, &match);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("checkpoints_validate_header: reject fork at checkpoint... ");
+    {
+        struct checkpoint_entry entries[1] = {{ .height = 2013514 }};
+        memset(entries[0].hash.data, 0x77, 32);
+        struct checkpoint_data data = {
+            .entries = entries, .nEntries = 1, 0, 0, 0,
+        };
+        struct uint256 wrong;
+        memset(wrong.data, 0x88, 32);
+        bool rejected = !checkpoints_validate_header(&data, 2013514, &wrong);
+        if (rejected) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("checkpoints: mainnet chainparams are loaded + non-zero... ");
+    {
+        chain_params_select(CHAIN_MAIN);
+        const struct chain_params *p = chain_params_get();
+        const struct checkpoint_data *cp = &p->checkpointData;
+        bool ok = cp->nEntries >= 1 && cp->entries != NULL;
+        /* Spot-check a few that init_main_params hard-codes. */
+        bool any_nonzero = false;
+        for (int i = 0; i < cp->nEntries; i++) {
+            for (int b = 0; b < 32; b++) {
+                if (cp->entries[i].hash.data[b] != 0) {
+                    any_nonzero = true;
+                    break;
+                }
+            }
+        }
+        ok = ok && any_nonzero;
+        ok = ok && checkpoints_last_height(cp) >= 3054000;
+        if (ok) printf("OK\n"); else { printf("FAIL (entries=%d)\n", cp->nEntries); failures++; }
+    }
+
+    printf("checkpoints: NULL-safe... ");
+    {
+        bool ok = true;
+        struct uint256 h = {0};
+        ok = ok && !checkpoints_hash_at_height(NULL, 0, &h);
+        ok = ok && checkpoints_last_height(NULL) == -1;
+        ok = ok && checkpoints_validate_header(NULL, 0, &h);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
     return failures;
 }
