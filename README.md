@@ -10,7 +10,7 @@ One binary. Zero dependencies. 26MB.
 git clone https://github.com/ArcadiaOS/zclassic23.git
 cd zclassic23
 make zclassic23    # build (requires only gcc/clang with C23 support)
-make test          # run 1066+ tests
+make test          # run 2131+ tests
 ```
 
 ## Run
@@ -43,6 +43,7 @@ ZClassic23 is a complete rewrite of zclassicd in pure C23. Every node is simulta
 ## Docs
 
 - [README.md](README.md): quick start and operator overview
+- [SYNC.md](SYNC.md): sync methods, verification layers, self-healing, operator runbook
 - [ARCHITECTURE.md](ARCHITECTURE.md): target runtime shape and boundaries
 - [API.md](API.md): RPC and HTTP interfaces
 - [AGENT.md](AGENT.md): active engineering work and current blockers

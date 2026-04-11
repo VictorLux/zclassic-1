@@ -162,6 +162,15 @@ bench-sync: zclassic23 bench_fresh_sync
 bench_fresh_sync: tools/bench_fresh_sync.c
 	$(CC) -O2 -o $@ $<
 
+zcl-watchdog: tools/zcl-watchdog.c
+	$(CC) -std=c23 -O2 -Wall -o $@ $<
+
+deploy-watchdog: zcl-watchdog
+	@install -m 644 deploy/zcl-watchdog.service $(HOME)/.config/systemd/user/zcl-watchdog.service
+	@systemctl --user daemon-reload
+	systemctl --user restart zcl-watchdog
+	@sleep 2 && systemctl --user is-active zcl-watchdog && echo "Watchdog deployed."
+
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 

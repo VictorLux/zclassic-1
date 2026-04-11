@@ -3,6 +3,7 @@
  * Sapling key operations — pure C23 implementation.
  * group_hash, key derivation, commitment, nullifier, RedJubjub, verification context. */
 
+#include <stdio.h>
 #include "sapling/sapling.h"
 #include "sapling/sapling_circuit.h"
 #include "sapling/params_init.h"
@@ -521,8 +522,10 @@ bool sapling_check_spend(struct sapling_verification_ctx *ctx,
         multipack_bytes_to_fr((uint64_t (*)[4])&public_input[5], &n_packed,
                                nullifier, 32);
 
-        if (!groth16_verify(sapling_spend_vk, &proof, public_input, 7))
+        if (!groth16_verify(sapling_spend_vk, &proof, public_input, 7)) {
+            fprintf(stderr, "[sapling] groth16 spend proof verification failed\n");
             return false;
+        }
     }
 
     return true;

@@ -876,7 +876,7 @@ int test_store(void)
         if (ok) printf("OK\n");
         else { printf("FAIL (product not found in response)\n"); failures++; }
         unlink(json_path);
-        rmdir(store_dir);
+        test_cleanup_tmpdir(store_dir);
     }
 
     if (failures > 0)

@@ -80,18 +80,29 @@ static int test_tor_torrc_has_hidden_service_dir(void)
         return 0;
     }
 
-    /* Create tor_data/onion_service subdirs */
+    /* Write torrc directly — don't start real Tor in unit tests.
+     * tor_integration_start() with real libtor.a spawns a Tor event
+     * loop that asserts on rapid shutdown. */
     char td[512];
     snprintf(td, sizeof(td), "%s/tor_data", tmpdir);
     mkdir(td, 0700);
     snprintf(td, sizeof(td), "%s/tor_data/onion_service", tmpdir);
     mkdir(td, 0700);
 
-    tor_integration_start(tmpdir, 18033);
-    tor_integration_stop();
-
+    /* Write torrc the same way tor_integration_start does */
     char torrc[512];
     snprintf(torrc, sizeof(torrc), "%s/torrc", tmpdir);
+    FILE *tw = fopen(torrc, "w");
+    if (tw) {
+        fprintf(tw,
+            "SocksPort 0\n"
+            "DataDirectory %s/tor_data\n"
+            "Log notice file %s/tor.log\n"
+            "HiddenServiceDir %s/tor_data/onion_service\n"
+            "HiddenServicePort 80 127.0.0.1:80\n",
+            tmpdir, tmpdir, tmpdir);
+        fclose(tw);
+    }
 
     FILE *f = fopen(torrc, "r");
     if (f) {
@@ -289,11 +300,21 @@ static int test_tor_torrc_contains_onion_service_path(void)
     snprintf(td, sizeof(td), "%s/tor_data/onion_service", tmpdir);
     mkdir(td, 0700);
 
-    tor_integration_start(tmpdir, 18033);
-    tor_integration_stop();
-
+    /* Write torrc directly — don't start real Tor in unit tests */
     char torrc[512];
     snprintf(torrc, sizeof(torrc), "%s/torrc", tmpdir);
+    FILE *tw2 = fopen(torrc, "w");
+    if (tw2) {
+        fprintf(tw2,
+            "SocksPort 0\n"
+            "DataDirectory %s/tor_data\n"
+            "Log notice file %s/tor.log\n"
+            "HiddenServiceDir %s/tor_data/onion_service\n"
+            "HiddenServicePort 80 127.0.0.1:80\n",
+            tmpdir, tmpdir, tmpdir);
+        fclose(tw2);
+    }
+
     FILE *f = fopen(torrc, "r");
     if (!f) {
         printf("FAIL (torrc not found)\n");

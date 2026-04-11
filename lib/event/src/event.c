@@ -903,6 +903,7 @@ static const bool g_snapsync_transitions[SNAPSYNC_NUM_STATES][SNAPSYNC_NUM_STATE
     [SNAPSYNC_NEGOTIATING][SNAPSYNC_IDLE]        = true,
     [SNAPSYNC_RECEIVING][SNAPSYNC_VERIFYING]      = true,
     [SNAPSYNC_RECEIVING][SNAPSYNC_FAILED]         = true,
+    [SNAPSYNC_RECEIVING][SNAPSYNC_IDLE]           = true,  /* stall reset */
     [SNAPSYNC_VERIFYING][SNAPSYNC_COMPLETE]       = true,
     [SNAPSYNC_VERIFYING][SNAPSYNC_FAILED]         = true,
     [SNAPSYNC_COMPLETE][SNAPSYNC_IDLE]            = true,

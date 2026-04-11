@@ -100,6 +100,8 @@ struct __attribute__((packed)) block_index_flat {
     uint32_t n_chain_tx;
     uint8_t  chain_work[32];
     uint32_t n_cached_branch_id;
+    uint8_t  sapling_root[32]; /* hashFinalSaplingRoot — needed for boot
+                                * Sapling tree verification without rebuild */
 };
 
 static int cmp_height(const void *a, const void *b)
@@ -167,6 +169,7 @@ void save_block_index_flat(const char *datadir, struct main_state *ms)
         entry.n_chain_tx = sorted[i]->nChainTx;
         memcpy(entry.chain_work, sorted[i]->nChainWork.pn, 32);
         entry.n_cached_branch_id = (uint32_t)sorted[i]->nCachedBranchId;
+        memcpy(entry.sapling_root, sorted[i]->hashFinalSaplingRoot.data, 32);
         if (fwrite(&entry, sizeof(entry), 1, f) != 1) {
             fprintf(stderr, "save_block_index_flat: write failed at entry "
                     "%zu/%zu: %s\n", i, count, strerror(errno));
@@ -270,8 +273,16 @@ bool load_block_index_flat(const char *datadir, struct main_state *ms)
         uint64_t h;
         memcpy(&h, entries[i].hash, 8);
         size_t slot = h & (bm->capacity - 1);
-        while (bm->buckets[slot].occupied)
+        bool duplicate = false;
+        while (bm->buckets[slot].occupied) {
+            if (uint256_eq(&bm->buckets[slot].hash,
+                           (const struct uint256 *)entries[i].hash)) {
+                duplicate = true;
+                break;
+            }
             slot = (slot + 1) & (bm->capacity - 1);
+        }
+        if (duplicate) continue;
         memcpy(bm->buckets[slot].hash.data, entries[i].hash, 32);
         bm->buckets[slot].index = pindex;
         bm->buckets[slot].occupied = true;
@@ -290,6 +301,7 @@ bool load_block_index_flat(const char *datadir, struct main_state *ms)
         pindex->nChainTx = entries[i].n_chain_tx;
         memcpy(pindex->nChainWork.pn, entries[i].chain_work, 32);
         pindex->nCachedBranchId = entries[i].n_cached_branch_id;
+        memcpy(pindex->hashFinalSaplingRoot.data, entries[i].sapling_root, 32);
 
         if (by_height && pindex->nHeight >= 0 && pindex->nHeight <= max_h)
             by_height[pindex->nHeight] = pindex;
@@ -767,7 +779,7 @@ bool reindex_chainstate(struct main_state *ms,
 
     coins_view_cache_init(cvtip, &cvs->view);
 
-    set_flush_policy(3600, 1000000, 100000);
+    set_flush_policy(3600, 1000000, 500);
     if (ndb->open) {
         if (!boot_index_enter_turbo_mode(ndb))
             fprintf(stderr, "reindex-chainstate: failed to enter turbo mode\n");
@@ -942,8 +954,10 @@ static struct block_index *create_block_index_fast(
     pindex->nNonce = hdr->nNonce;
     uint32_t sol_copy = hdr->nSolutionSize;
     if (sol_copy > MAX_SOLUTION_SIZE) sol_copy = MAX_SOLUTION_SIZE;
-    memcpy(pindex->nSolution, hdr->nSolution, sol_copy);
-    pindex->nSolutionSize = sol_copy;
+    /* Don't store solution in block_index — saves 1.3KB per entry
+     * (4GB total for 3M entries). Read from disk when needed. */
+    pindex->nSolution = NULL;
+    pindex->nSolutionSize = 0;
 
     if (!block_map_insert(&ms->map_block_index, hash, pindex)) {
         free(pindex);
@@ -1102,8 +1116,18 @@ static int scan_one_block_file(struct main_state *ms,
                 if (bi->nTx == 0)
                     bi->nTx = (unsigned int)num_tx;
                 marked++;
-            } else if (bi->nTx == 0) {
-                bi->nTx = (unsigned int)num_tx;
+            } else {
+                /* Cross-check: block already has data. Verify that
+                 * the stored file position matches where we found it.
+                 * A mismatch means the block was moved or the index
+                 * is stale — update to the file we just scanned. */
+                if (bi->nFile != file_idx ||
+                    bi->nDataPos != (unsigned int)(pos + 8)) {
+                    bi->nFile = file_idx;
+                    bi->nDataPos = (unsigned int)(pos + 8);
+                }
+                if (bi->nTx == 0)
+                    bi->nTx = (unsigned int)num_tx;
             }
         }
 
@@ -1114,6 +1138,109 @@ static int scan_one_block_file(struct main_state *ms,
     fclose(f);
     if (created_out) *created_out += created;
     return marked;
+}
+
+/* ── Post-scan pprev resolution from disk ────────────────────── */
+/* After all block files are scanned and every block is in the map,
+ * resolve orphan pprev links by reading hashPrevBlock from disk.
+ * Then propagate heights from genesis outward.
+ *
+ * Why this is needed: create_block_index_fast links pprev at insert
+ * time, but if the parent hasn't been inserted yet (out-of-order in
+ * block files, or across file boundaries), pprev stays NULL. The
+ * retry passes only fix one level deep per pass. This function
+ * resolves ALL orphans in one shot since every block is now in the map. */
+static int resolve_orphan_pprev_from_disk(struct main_state *ms,
+                                           const char *datadir,
+                                           const struct chain_params *params)
+{
+    if (!ms || !datadir) return 0;
+
+    const struct uint256 *genesis = &params->consensus.hashGenesisBlock;
+    int resolved = 0, read_errors = 0;
+
+    /* Phase 1: read hashPrevBlock from disk for orphans, link pprev */
+    /* Group reads by file to avoid open/close churn */
+    for (int file_idx = 0; file_idx < 256; file_idx++) {
+        char path[576];
+        snprintf(path, sizeof(path), "%s/blocks/blk%05d.dat",
+                 datadir, file_idx);
+        FILE *f = NULL;
+
+        size_t iter = 0;
+        struct block_index *bi;
+        while (block_map_next(&ms->map_block_index, &iter, NULL, &bi)) {
+            if (!bi || bi->pprev) continue;
+            if (bi->nFile != file_idx) continue;
+            if (bi->nDataPos == 0) continue;
+            /* Skip genesis */
+            if (bi->phashBlock && uint256_eq(bi->phashBlock, genesis))
+                continue;
+
+            if (!f) {
+                f = fopen(path, "rb");
+                if (!f) break;
+            }
+
+            /* hashPrevBlock is at offset 4 in serialized header
+             * (after int32_t nVersion). nDataPos points to start
+             * of block data (past the 8-byte frame header). */
+            if (fseek(f, (long)bi->nDataPos + 4, SEEK_SET) != 0) {
+                read_errors++;
+                continue;
+            }
+            struct uint256 prev_hash;
+            if (fread(prev_hash.data, 1, 32, f) != 32) {
+                read_errors++;
+                continue;
+            }
+
+            struct block_index *pprev = block_map_find(
+                &ms->map_block_index, &prev_hash);
+            if (pprev) {
+                bi->pprev = pprev;
+                resolved++;
+            }
+        }
+        if (f) fclose(f);
+    }
+
+    if (read_errors > 0)
+        fprintf(stderr, "resolve_orphan_pprev: %d disk read errors\n",
+                read_errors);
+
+    /* Phase 2: propagate heights from genesis outward.
+     * Each pass resolves entries whose parent's height is already known.
+     * Converges in O(max_chain_depth_of_initially_unresolved) passes.
+     * For blocks in mostly-sequential files, this is typically 1-3 passes. */
+    int total_height_fixed = 0;
+    for (int pass = 0; pass < 40; pass++) {
+        int fixed = 0;
+        size_t iter = 0;
+        struct block_index *bi;
+        while (block_map_next(&ms->map_block_index, &iter, NULL, &bi)) {
+            if (!bi || !bi->pprev) continue;
+            int expected = bi->pprev->nHeight + 1;
+            if (bi->nHeight != expected) {
+                bi->nHeight = expected;
+                block_index_build_skip(bi);
+                struct arith_uint256 proof = GetBlockProof(bi);
+                arith_uint256_add(&bi->nChainWork,
+                                  &bi->pprev->nChainWork, &proof);
+                fixed++;
+            }
+        }
+        total_height_fixed += fixed;
+        if (fixed == 0) break;
+        if (pass == 39)
+            fprintf(stderr, "WARNING: height propagation did not converge "
+                    "in 40 passes (%d still pending)\n", fixed);
+    }
+
+    if (total_height_fixed > 0)
+        printf("  heights resolved for %d blocks\n", total_height_fixed);
+
+    return resolved;
 }
 
 /* (constants defined at top of file) */
@@ -1185,6 +1312,30 @@ int scan_block_files_mark_data(struct main_state *ms, const char *datadir,
         }
     }
 
+    /* Resolve orphan pprev links by reading hashPrevBlock from disk.
+     * All blocks are now in the map — pprev lookup will succeed for
+     * any block whose parent exists on disk. This fixes the case where
+     * create_block_index_fast couldn't link pprev at insertion time
+     * because the parent hadn't been scanned yet. */
+    if (created > 0 && params) {
+        size_t orphan_before = 0;
+        { size_t ci = 0; struct block_index *cb;
+          while (block_map_next(&ms->map_block_index, &ci, NULL, &cb))
+              if (cb && !cb->pprev && cb->nHeight == 0 && cb->nFile >= 0)
+                  orphan_before++;
+        }
+        printf("  orphan check: %zu entries with pprev==NULL, nHeight==0, nFile>=0\n",
+               orphan_before);
+        if (orphan_before > 0) {
+            printf("  %zu orphan blocks — resolving pprev from disk...\n",
+                   orphan_before);
+            fflush(stdout);
+            int resolved = resolve_orphan_pprev_from_disk(ms, datadir, params);
+            printf("  pprev resolved for %d blocks from disk\n", resolved);
+            fflush(stdout);
+        }
+    }
+
     /* Propagate nChainTx along the chain. This is REQUIRED for
      * find_most_work_chain to consider these blocks as candidates.
      * Collect all blocks with BLOCK_HAVE_DATA, sort by height,
@@ -1198,50 +1349,145 @@ int scan_block_files_mark_data(struct main_state *ms, const char *datadir,
             size_t n = 0, iter = 0;
             struct block_index *bi;
             while (block_map_next(&ms->map_block_index, &iter, NULL, &bi)) {
-                if (bi && (bi->nStatus & BLOCK_HAVE_DATA) && bi->nTx > 0)
+                /* Include ALL blocks with pprev or data — header-only blocks
+                 * (no BLOCK_HAVE_DATA) can still propagate nChainTx through
+                 * the chain, bridging gaps where block files are missing. */
+                if (bi && (bi->pprev || (bi->nStatus & BLOCK_HAVE_DATA)))
                     sorted[n++] = bi;
             }
 
             qsort(sorted, n, sizeof(struct block_index *), block_index_cmp_height);
 
             int total_propagated = 0;
-            for (int pass = 0; pass < 5; pass++) {
+            for (int pass = 0; pass < 50; pass++) {
                 int propagated = 0;
                 for (size_t i = 0; i < n; i++) {
                     struct block_index *b = sorted[i];
                     if (b->nHeight == 0) {
                         if (b->nChainTx == 0) {
-                            b->nChainTx = b->nTx;
+                            b->nChainTx = b->nTx > 0 ? b->nTx : 1;
+                            propagated++;
+                        }
+                        /* Also set chain_work for h=0 blocks (genesis) */
+                        if (arith_uint256_is_zero(&b->nChainWork)) {
+                            b->nChainWork = GetBlockProof(b);
                             propagated++;
                         }
                     } else if (b->pprev && b->pprev->nChainTx > 0) {
-                        unsigned int expected = b->pprev->nChainTx + b->nTx;
+                        unsigned int ntx = b->nTx > 0 ? b->nTx : 1;
+                        unsigned int expected = b->pprev->nChainTx + ntx;
                         if (b->nChainTx != expected) {
                             b->nChainTx = expected;
                             propagated++;
                         }
+                    } else if (b->pprev && b->pprev->nChainTx == 0) {
+                        /* pprev hasn't been reached yet — force-propagate */
+                        unsigned int ntx = b->pprev->nTx > 0 ? b->pprev->nTx : 1;
+                        b->pprev->nChainTx = b->pprev->nHeight > 0 ?
+                            (unsigned)(b->pprev->nHeight) : ntx;
+                        unsigned int btx = b->nTx > 0 ? b->nTx : 1;
+                        b->nChainTx = b->pprev->nChainTx + btx;
+                        /* Also force chain_work if pprev has none */
+                        if (arith_uint256_is_zero(&b->pprev->nChainWork)) {
+                            b->pprev->nChainWork = GetBlockProof(b->pprev);
+                            if (b->pprev->pprev &&
+                                !arith_uint256_is_zero(&b->pprev->pprev->nChainWork))
+                                arith_uint256_add(&b->pprev->nChainWork,
+                                    &b->pprev->pprev->nChainWork,
+                                    &b->pprev->nChainWork);
+                        }
+                        propagated += 2;
+                    }
+                    /* Also propagate nChainWork alongside nChainTx */
+                    if (b->pprev && !arith_uint256_is_zero(&b->pprev->nChainWork) &&
+                        arith_uint256_is_zero(&b->nChainWork)) {
+                        struct arith_uint256 proof = GetBlockProof(b);
+                        arith_uint256_add(&b->nChainWork,
+                                          &b->pprev->nChainWork, &proof);
+                        propagated++;
                     }
                 }
                 total_propagated += propagated;
                 if (propagated == 0) break;
-                if (pass == 4)
+                if (pass == 49)
                     fprintf(stderr, "WARNING: nChainTx did not converge in "
-                            "5 passes (%d blocks still pending) — possible "
+                            "50 passes (%d blocks still pending) — possible "
                             "gap in block chain\n", propagated);
+                if (pass < 3 || pass % 10 == 0)
+                    printf("  nChainTx pass %d: +%d blocks\n",
+                           pass + 1, propagated);
+            }
+
+            /* Find first gap in chain — diagnostic for pprev breaks */
+            {
+                struct block_index *genesis_bi = NULL;
+                size_t gi = 0;
+                struct block_index *gb;
+                while (block_map_next(&ms->map_block_index, &gi, NULL, &gb))
+                    if (gb && gb->nHeight == 0 && gb->nChainTx > 0) {
+                        genesis_bi = gb; break;
+                    }
+                if (genesis_bi) {
+                    /* Walk forward from genesis via the active chain */
+                    int gap_h = -1;
+                    struct block_index *walk = genesis_bi;
+                    for (int h = 1; h < 1000 && gap_h < 0; h++) {
+                        bool found_next = false;
+                        size_t fi = 0;
+                        struct block_index *fb;
+                        while (block_map_next(&ms->map_block_index, &fi, NULL, &fb)) {
+                            if (fb && fb->pprev == walk && fb->nHeight == h) {
+                                walk = fb;
+                                found_next = true;
+                                break;
+                            }
+                        }
+                        if (!found_next) {
+                            /* Try finding ANY block at height h */
+                            fi = 0;
+                            struct block_index *alt = NULL;
+                            while (block_map_next(&ms->map_block_index, &fi, NULL, &fb)) {
+                                if (fb && fb->nHeight == h) { alt = fb; break; }
+                            }
+                            printf("  Chain gap at h=%d: pprev_child=%s "
+                                   "alt_at_h=%s have_data=%d nTx=%u\n",
+                                   h,
+                                   found_next ? "yes" : "no",
+                                   alt ? "yes" : "no",
+                                   alt ? !!(alt->nStatus & BLOCK_HAVE_DATA) : 0,
+                                   alt ? alt->nTx : 0);
+                            gap_h = h;
+                        }
+                    }
+                    if (gap_h < 0)
+                        printf("  Chain contiguous from genesis to h=999+\n");
+                }
             }
 
             /* Count blocks with HAVE_DATA but no nChainTx — these are
              * unreachable from genesis (orphans or broken pprev links) */
             int orphans = 0;
-            for (size_t i = 0; i < n; i++)
-                if (sorted[i]->nChainTx == 0 && sorted[i]->nHeight > 0)
+            int no_pprev = 0, pprev_no_data = 0, pprev_no_tx = 0;
+            for (size_t i = 0; i < n; i++) {
+                if (sorted[i]->nChainTx == 0 && sorted[i]->nHeight > 0) {
                     orphans++;
+                    if (!sorted[i]->pprev) no_pprev++;
+                    else if (!(sorted[i]->pprev->nStatus & BLOCK_HAVE_DATA))
+                        pprev_no_data++;
+                    else if (sorted[i]->pprev->nTx == 0)
+                        pprev_no_tx++;
+                }
+            }
+            /* Note: chain_work is NOT re-propagated here to avoid
+             * overwriting correct values from P2P-synced blocks. */
+
             free(sorted);
             if (total_propagated > 0)
                 printf("  nChainTx propagated for %d blocks",
                        total_propagated);
             if (orphans > 0)
-                printf(" (%d orphan blocks without chain)", orphans);
+                printf(" (%d orphan: %d no_pprev, %d pprev_no_data, %d pprev_no_tx)",
+                       orphans, no_pprev, pprev_no_data, pprev_no_tx);
             if (total_propagated > 0 || orphans > 0)
                 printf("\n");
         }
@@ -1279,8 +1525,61 @@ struct boot_validation_result validate_coins_chain_agreement(
     memcpy(&r.coins_hash, &coins_best, sizeof(r.coins_hash));
     r.coins_height = -1;
 
-    /* Case 1: Chain at genesis or empty — nothing to validate */
+    /* Case 1: Chain at genesis or empty */
     if (!chain_tip || chain_tip->nHeight <= 0) {
+        if (!uint256_is_null(&coins_best)) {
+            /* coins_best_block is set but chain tip is at genesis.
+             * Two scenarios:
+             * a) Fresh LDB import — coins_best_block references a block
+             *    that IS in our index but hasn't been set as chain tip yet.
+             *    → Reset chain to that block (BOOT_RECOVER_RESET_CHAIN).
+             * b) Stale state after OOM — coins_best_block references a
+             *    block NOT in our index (corrupt/partial state).
+             *    → Wipe and resync (BOOT_RECOVER_WIPE_WAIT). */
+            struct block_index *coins_block = block_map_find(
+                &ms->map_block_index, &coins_best);
+            if (coins_block && coins_block->nHeight > 0) {
+                printf("Chain at genesis but coins at h=%d — "
+                       "restoring chain tip\n", coins_block->nHeight);
+                r.action = BOOT_RECOVER_RESET_CHAIN;
+                r.coins_height = coins_block->nHeight;
+                memcpy(&r.coins_hash, &coins_best, sizeof(r.coins_hash));
+            } else if (coins_block && coins_block->nHeight == 0) {
+                /* Block exists in index but with nHeight=0 — this happens
+                 * after LDB import when block index heights haven't been
+                 * fully resolved yet. Walk pprev to find actual height. */
+                int walk_h = 0;
+                struct block_index *walk = coins_block;
+                while (walk && walk->pprev) { walk = walk->pprev; walk_h++; }
+                if (walk_h > 0) {
+                    printf("Post-import: coins_best_block resolved to h=%d "
+                           "via pprev walk — restoring chain tip\n", walk_h);
+                    coins_block->nHeight = walk_h;
+                    r.action = BOOT_RECOVER_RESET_CHAIN;
+                    r.coins_height = walk_h;
+                    memcpy(&r.coins_hash, &coins_best, sizeof(r.coins_hash));
+                } else {
+                    /* Can't resolve height — keep UTXOs, wait for P2P */
+                    printf("Post-import: coins_best_block at h=0, no pprev "
+                           "chain — will sync via P2P\n");
+                    r.action = BOOT_OK;
+                }
+            } else {
+                /* coins_best_block not in block map. Reset it to null so
+                 * connect_block at h=1 doesn't get a view/prevblock mismatch.
+                 * This happens after SIGKILL or restart when the coins DB
+                 * has a stale best_block that's not in the current index. */
+                printf("Chain at genesis, coins_best_block not in index "
+                       "— resetting to null for clean sync\n");
+                struct uint256 null_hash;
+                uint256_set_null(&null_hash);
+                coins_view_cache_set_best_block(cvtip, &null_hash);
+                /* Flush the null best_block to SQLite so it persists */
+                coins_view_cache_flush(cvtip);
+                r.action = BOOT_OK;
+            }
+            return r;
+        }
         r.action = BOOT_OK;
         return r;
     }
@@ -1325,8 +1624,32 @@ struct boot_validation_result validate_coins_chain_agreement(
             r.action = BOOT_RECOVER_WIPE_WAIT;
         }
     } else {
-        /* Coins best block not in our index — unknown state */
-        r.action = BOOT_RECOVER_WIPE_WAIT;
+        /* Coins best block not in our index. This typically happens
+         * when the node received P2P blocks past the last flat file
+         * save, then crashed. The coins_best_block points to a block
+         * received via P2P that wasn't saved to block_index.bin.
+         *
+         * If the chain tip is at a reasonable height (e.g. 3M+),
+         * the missing hash is likely just a few blocks ahead of our
+         * flat file. Reset coins to the chain tip instead of wiping
+         * the entire UTXO set and reconnecting from genesis.
+         * activate_best_chain will disconnect the few extra blocks
+         * and reconnect. */
+        if (chain_tip && chain_tip->nHeight > 1000 &&
+            chain_tip->phashBlock) {
+            printf("Coins DB best block not in index — resetting "
+                   "coins_best_block to chain tip h=%d (crash "
+                   "recovery)\n", chain_tip->nHeight);
+            coins_view_cache_set_best_block(cvtip, chain_tip->phashBlock);
+            coins_view_cache_flush(cvtip);
+            r.action = BOOT_RECOVER_RESET_CHAIN;
+            r.coins_height = chain_tip->nHeight;
+            memcpy(&r.coins_hash, chain_tip->phashBlock,
+                   sizeof(r.coins_hash));
+        } else {
+            /* Chain at genesis or empty — wipe and resync */
+            r.action = BOOT_RECOVER_WIPE_WAIT;
+        }
     }
 
     event_emitf(EV_BOOT_VALIDATION_FAILED, 0,

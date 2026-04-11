@@ -122,6 +122,27 @@ bool block_tree_db_read_reindexing(struct block_tree_db *btdb, bool *reindexing)
     return true;
 }
 
+/* Decode a Bitcoin-style varint from a byte buffer.
+ * Returns number of bytes consumed, or 0 on error. */
+static size_t decode_varint(const uint8_t *buf, size_t len, uint64_t *out)
+{
+    uint64_t n = 0;
+    size_t i = 0;
+    while (i < len) {
+        uint8_t ch = buf[i];
+        if (n > (UINT64_MAX >> 7)) return 0; /* overflow */
+        n = (n << 7) | (ch & 0x7F);
+        i++;
+        if (ch & 0x80) {
+            n++; /* Bitcoin varint: high bit = more bytes, add 1 */
+        } else {
+            *out = n;
+            return i;
+        }
+    }
+    return 0; /* truncated */
+}
+
 bool block_tree_db_read_tx_index(struct block_tree_db *btdb,
                                   const struct uint256 *txid,
                                   struct disk_tx_pos *pos)
@@ -135,10 +156,35 @@ bool block_tree_db_read_tx_index(struct block_tree_db *btdb,
     if (!db_read(&btdb->db, key, keylen, &val, &vallen))
         return false;
 
-    if (vallen >= sizeof(struct disk_tx_pos))
+    /* Try raw struct format first (written by zclassic23) */
+    if (vallen == sizeof(struct disk_tx_pos)) {
         memcpy(pos, val, sizeof(struct disk_tx_pos));
-    else
-        disk_tx_pos_init(pos);
+        free(val);
+        return true;
+    }
+
+    /* Decode varint format (written by zclassicd/Bitcoin Core):
+     * CDiskTxPos inherits CDiskBlockPos: varint(nFile) + varint(nDataPos)
+     * then adds varint(nTxOffset) */
+    disk_tx_pos_init(pos);
+    const uint8_t *p = (const uint8_t *)val;
+    size_t off = 0;
+    uint64_t v;
+
+    size_t consumed = decode_varint(p + off, vallen - off, &v);
+    if (!consumed) { free(val); return true; }
+    pos->block_pos.nFile = (int)v;
+    off += consumed;
+
+    consumed = decode_varint(p + off, vallen - off, &v);
+    if (!consumed) { free(val); return true; }
+    pos->block_pos.nPos = (unsigned int)v;
+    off += consumed;
+
+    consumed = decode_varint(p + off, vallen - off, &v);
+    if (!consumed) { free(val); return true; }
+    pos->nTxOffset = (unsigned int)v;
+    off += consumed;
 
     free(val);
     return true;

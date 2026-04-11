@@ -1484,7 +1484,9 @@ static void ell(struct fp12 *f, const struct fp2 *c0_coeff, const struct fp2 *c1
     fp12_mul_by_014(f, c2_coeff, &c1_eval, &c0_eval);
 }
 
-void bls12_381_pairing(struct fp12 *result, const struct g1_point *p, const struct g2_point *q)
+/* Miller loop only (no final exponentiation).
+ * Returns the Miller loop result f for pairing(P, Q). */
+static void bls12_381_miller_loop(struct fp12 *result, const struct g1_point *p, const struct g2_point *q)
 {
     if (g1_is_identity(p) || g2_is_identity(q)) {
         fp12_one(result);
@@ -1540,6 +1542,13 @@ void bls12_381_pairing(struct fp12 *result, const struct g1_point *p, const stru
 
     /* BLS_X is negative, so conjugate */
     fp12_conjugate(&f);
+    *result = f;
+}
+
+/* Final exponentiation: f^((q^12 - 1) / r) */
+static void bls12_381_final_exp(struct fp12 *result, const struct fp12 *f_in)
+{
+    struct fp12 f = *f_in;
 
     /* Final exponentiation */
     /* Easy part: f = f^(q^6-1) * f^(q^2+1) */
@@ -1657,25 +1666,40 @@ void bls12_381_pairing(struct fp12 *result, const struct g1_point *p, const stru
     *result = y1;
 }
 
-/* Multi-pairing: computes product of pairings and checks if result == 1 */
+void bls12_381_pairing(struct fp12 *result, const struct g1_point *p, const struct g2_point *q)
+{
+    struct fp12 ml;
+    bls12_381_miller_loop(&ml, p, q);
+    bls12_381_final_exp(result, &ml);
+}
+
+/* Multi-pairing: product of Miller loops, single final exponentiation.
+ * Checks if product of pairings equals 1 in GT.
+ * This is both faster and more numerically robust than computing
+ * individual pairings and multiplying in GT. */
 bool bls12_381_multi_pairing_check(const struct g1_point *a_pts, const struct g2_point *b_pts,
                                     size_t n_pairs)
 {
     struct fp12 acc;
     fp12_one(&acc);
 
+    /* Accumulate Miller loop products (before final exponentiation) */
     for (size_t i = 0; i < n_pairs; i++) {
-        struct fp12 pairing_result;
-        bls12_381_pairing(&pairing_result, &a_pts[i], &b_pts[i]);
-        fp12_mul(&acc, &acc, &pairing_result);
+        if (g1_is_identity(&a_pts[i]) || g2_is_identity(&b_pts[i]))
+            continue;
+
+        struct fp12 ml;
+        bls12_381_miller_loop(&ml, &a_pts[i], &b_pts[i]);
+        fp12_mul(&acc, &acc, &ml);
     }
+
+    /* Single final exponentiation over the accumulated product */
+    struct fp12 result;
+    bls12_381_final_exp(&result, &acc);
 
     struct fp12 one;
     fp12_one(&one);
-    return fp12_is_zero(&acc) || /* degenerate case */
-           (fp6_is_zero(&acc.c1) &&
-            fp2_is_zero(&acc.c0.c1) && fp2_is_zero(&acc.c0.c2) &&
-            fp_eq(&acc.c0.c0.c0, &one.c0.c0.c0) && fp_is_zero(&acc.c0.c0.c1));
+    return memcmp(&result, &one, sizeof(struct fp12)) == 0;
 }
 
 /* G1 scalar multiplication: r = scalar * p (double-and-add, 256 bits) */
@@ -1708,18 +1732,21 @@ bool groth16_proof_read(struct groth16_proof *proof, const uint8_t data[192])
 void multipack_bytes_to_fr(uint64_t (*out)[4], size_t *n_out,
                            const uint8_t *bytes, size_t n_bytes)
 {
+    /* BLS12-381 Fr::CAPACITY = 254 (modulus is 255 bits).
+     * Previously hardcoded to 253 (BN-254) — caused Sapling Groth16
+     * verification to fail because bit 253 of the nullifier ended up
+     * in the wrong packed scalar. */
+    const size_t capacity = 254;  /* BLS12-381 */
     size_t n_bits = n_bytes * 8;
-    size_t n_scalars = (n_bits + 252) / 253; /* Fr::CAPACITY = 253 */
+    size_t n_scalars = (n_bits + capacity - 1) / capacity;
 
     for (size_t s = 0; s < n_scalars; s++) {
         memset(out[s], 0, 32);
-        /* Accumulate bits: cur += bit * 2^i */
-        /* We accumulate using Fr add/double */
         uint64_t cur[4] = {0, 0, 0, 0};
-        uint64_t coeff[4] = {1, 0, 0, 0}; /* = 1 in raw form */
+        uint64_t coeff[4] = {1, 0, 0, 0};
 
-        size_t bit_start = s * 253;
-        size_t bit_end = bit_start + 253;
+        size_t bit_start = s * capacity;
+        size_t bit_end = bit_start + capacity;
         if (bit_end > n_bits) bit_end = n_bits;
 
         for (size_t b = bit_start; b < bit_end; b++) {
@@ -1755,15 +1782,18 @@ void multipack_bytes_to_fr(uint64_t (*out)[4], size_t *n_out,
 void multipack_bytes_to_fr_be(uint64_t (*out)[4], size_t *n_out,
                                const uint8_t *bytes, size_t n_bytes)
 {
+    /* BLS12-381 Fr::CAPACITY = 254 (same as LE version above).
+     * Sprout Groth16 uses BLS12-381, BE bit order. */
+    const size_t capacity = 254;
     size_t n_bits = n_bytes * 8;
-    size_t n_scalars = (n_bits + 252) / 253;
+    size_t n_scalars = (n_bits + capacity - 1) / capacity;
 
     for (size_t s = 0; s < n_scalars; s++) {
         uint64_t cur[4] = {0, 0, 0, 0};
         uint64_t coeff[4] = {1, 0, 0, 0};
 
-        size_t bit_start = s * 253;
-        size_t bit_end = bit_start + 253;
+        size_t bit_start = s * capacity;
+        size_t bit_end = bit_start + capacity;
         if (bit_end > n_bits) bit_end = n_bits;
 
         for (size_t b = bit_start; b < bit_end; b++) {
@@ -1807,6 +1837,10 @@ bool groth16_verify(const struct groth16_vk *vk,
     struct g1_point vk_x = vk->ic[0];
 
     for (size_t i = 0; i < n_inputs; i++) {
+        /* Skip zero inputs (optimization + avoids identity issues) */
+        if (public_inputs[i][0] == 0 && public_inputs[i][1] == 0 &&
+            public_inputs[i][2] == 0 && public_inputs[i][3] == 0)
+            continue;
         struct g1_point term;
         g1_scalar_mul(&term, &vk->ic[i + 1], public_inputs[i]);
         g1_add(&vk_x, &vk_x, &term);
@@ -1817,12 +1851,13 @@ bool groth16_verify(const struct groth16_vk *vk,
     g2_neg(&neg_gamma, &vk->gamma_g2);
     g2_neg(&neg_delta, &vk->delta_g2);
 
-    /* Check: e(A, B) * e(vk_x, -gamma) * e(C, -delta) == e(alpha, beta) */
-    struct g1_point pts[4] = { proof->a, vk_x, proof->c, vk->alpha_g1 };
-    struct g2_point qts[4] = { proof->b, neg_gamma, neg_delta, vk->beta_g2 };
+    /* Check: e(A, B) * e(vk_x, -gamma) * e(C, -delta) * e(-alpha, beta) == 1
+     * Equivalent to: e(A, B) == e(alpha, beta) * e(vk_x, gamma) * e(C, delta) */
+    struct g1_point neg_alpha;
+    g1_neg(&neg_alpha, &vk->alpha_g1);
 
-    /* For the RHS, we negate alpha so: e(-alpha, beta) goes on the LHS */
-    g1_neg(&pts[3], &vk->alpha_g1);
+    struct g1_point pts[4] = { proof->a, vk_x, proof->c, neg_alpha };
+    struct g2_point qts[4] = { proof->b, neg_gamma, neg_delta, vk->beta_g2 };
 
     return bls12_381_multi_pairing_check(pts, qts, 4);
 }

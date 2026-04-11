@@ -23,6 +23,7 @@ struct db_wrapper {
     void *sync_options;
     void *filter_policy;
     void *cache;
+    const void *snapshot;  /* leveldb_snapshot_t for atomic iteration */
     uint8_t obfuscate_key[32];
     size_t obfuscate_key_len;
 };
@@ -44,6 +45,13 @@ bool db_wrapper_open(struct db_wrapper *w, const char *path,
 void db_wrapper_close(struct db_wrapper *w);
 bool db_wrapper_repair(const char *path);
 size_t db_wrapper_count(struct db_wrapper *w);
+
+/* Snapshot support: creates a frozen point-in-time view of the database.
+ * All iterators created after snapshot_begin see a consistent state,
+ * even if the database is being written to concurrently by another process
+ * sharing the same LevelDB instance. Call snapshot_end when done. */
+bool db_wrapper_snapshot_begin(struct db_wrapper *w);
+void db_wrapper_snapshot_end(struct db_wrapper *w);
 
 bool db_read(struct db_wrapper *w, const char *key, size_t keylen,
              char **val, size_t *vallen);

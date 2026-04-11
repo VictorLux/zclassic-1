@@ -925,11 +925,43 @@ bool fs_client_sync(const char *peer_addr, uint16_t port,
     int fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
     if (fd < 0) { freeaddrinfo(res); return false; }
 
-    if (connect(fd, res->ai_addr, res->ai_addrlen) < 0) {
-        fprintf(stderr, "file_service: connect failed: %s\n", strerror(errno));
-        close(fd);
-        freeaddrinfo(res);
-        return false;
+    /* Non-blocking connect with 10s timeout — don't block boot on
+     * unreachable file service peers. */
+    {
+        int flags = fcntl(fd, F_GETFL, 0);
+        fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+        int rc = connect(fd, res->ai_addr, res->ai_addrlen);
+        if (rc < 0 && errno == EINPROGRESS) {
+            struct timeval tv = { .tv_sec = 10, .tv_usec = 0 };
+            fd_set wfds;
+            FD_ZERO(&wfds);
+            FD_SET(fd, &wfds);
+            rc = select(fd + 1, NULL, &wfds, NULL, &tv);
+            if (rc <= 0) {
+                fprintf(stderr, "file_service: connect timeout to %s:%d\n",
+                        peer_addr, port);
+                close(fd);
+                freeaddrinfo(res);
+                return false;
+            }
+            int err = 0;
+            socklen_t elen = sizeof(err);
+            getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &elen);
+            if (err) {
+                fprintf(stderr, "file_service: connect failed: %s\n",
+                        strerror(err));
+                close(fd);
+                freeaddrinfo(res);
+                return false;
+            }
+        } else if (rc < 0) {
+            fprintf(stderr, "file_service: connect failed: %s\n",
+                    strerror(errno));
+            close(fd);
+            freeaddrinfo(res);
+            return false;
+        }
+        fcntl(fd, F_SETFL, flags);  /* restore blocking mode */
     }
     freeaddrinfo(res);
 

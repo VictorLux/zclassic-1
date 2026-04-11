@@ -119,6 +119,7 @@ static bool rpc_getrawtransaction(const struct json_value *params, bool help,
         ctx->main_state->fTxIndex) {
         struct disk_tx_pos pos;
         if (block_tree_db_read_tx_index(g_active_block_tree, &hash, &pos)) {
+            disk_block_io_lock();
             FILE *f = open_block_file(ctx->datadir, &pos.block_pos, true);
             if (f) {
                 unsigned char hdr_buf[256];
@@ -134,7 +135,8 @@ static bool rpc_getrawtransaction(const struct json_value *params, bool help,
                       SEEK_SET);
                 unsigned char tx_buf[2 * 1024 * 1024];
                 size_t tx_read = fread(tx_buf, 1, sizeof(tx_buf), f);
-                fclose(f);
+                disk_block_io_release_handle(f);
+                disk_block_io_unlock();
                 if (tx_read > 0) {
                     struct byte_stream ts;
                     stream_init_from_data(&ts, tx_buf, tx_read);
@@ -143,6 +145,8 @@ static bool rpc_getrawtransaction(const struct json_value *params, bool help,
                     if (transaction_deserialize(&tx, &ts))
                         found = true;
                 }
+            } else {
+                disk_block_io_unlock();
             }
         }
     }

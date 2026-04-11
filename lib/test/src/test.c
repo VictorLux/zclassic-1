@@ -69,6 +69,8 @@ int main(void)
     failures += test_file_ops();
     failures += test_integrity();
     failures += test_protocols();
+    failures += test_chain_restore_service();
+    failures += test_chain_activation_controller();
 
     /* Spec-based user story tests */
     failures += spec_wallet_dashboard();

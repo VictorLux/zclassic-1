@@ -7,6 +7,8 @@
 #include "config/boot_internal.h"
 #include "config/file_ops.h"
 #include "services/snapshot_sync_service.h"
+#include "services/chain_activation_controller.h"
+#include "controllers/wallet_scan.h"
 #include "util/sync.h"
 #include "net/msgprocessor.h"
 #include "chain/chainparams.h"
@@ -85,6 +87,12 @@
 static struct main_state g_state;
 static struct coins_view_sqlite g_coins_sqlite;
 static struct coins_view_cache g_coins_tip;
+static struct chain_activation_controller g_activation_ctl;
+
+struct chain_activation_controller *boot_activation_controller(void)
+{
+    return &g_activation_ctl;
+}
 static struct block_tree_db g_block_tree;
 struct block_tree_db *g_active_block_tree = NULL;
 static bool g_block_tree_open = false;
@@ -364,6 +372,13 @@ bool app_init(struct app_context *ctx)
     g_state.fTxIndex = ctx->tx_index;
     g_state.fCheckpointsEnabled = ctx->checkpoints_enabled;
 
+    /* Initialize chain activation controller — single authority for
+     * when activate_best_chain can run. Must be before any chain work. */
+    activation_controller_init(&g_activation_ctl, &g_state, &g_coins_tip,
+                               params, ctx->datadir);
+    activation_set_state(&g_activation_ctl, ACTIVATION_BOOT_PENDING,
+                         "boot_start");
+
     /* -assumevalid: skip Groth16/Sapling proof verification for blocks
      * at or below the specified hash's height. Default: latest checkpoint.
      * Pass -assumevalid=0 to disable (verify everything). */
@@ -452,8 +467,37 @@ bool app_init(struct app_context *ctx)
         }
     }
 
-    if (g_wallet.keystore.num_keys == 0)
+    if (g_wallet.keystore.num_keys == 0) {
+        /* Safety check: if wallet_keys table exists but is empty, this
+         * might be WAL corruption (keys were in WAL, WAL was deleted).
+         * Log a prominent warning but still create keys — the node
+         * needs a wallet to function. The lost keys are unrecoverable
+         * but we must not silently pretend nothing happened. */
+        if (g_node_db.open) {
+            sqlite3_stmt *wk_check = NULL;
+            if (sqlite3_prepare_v2(g_node_db.db,
+                    "SELECT COUNT(*) FROM sqlite_master "
+                    "WHERE type='table' AND name='wallet_keys'",
+                    -1, &wk_check, NULL) == SQLITE_OK && wk_check) {
+                if (sqlite3_step(wk_check) == SQLITE_ROW &&
+                    sqlite3_column_int(wk_check, 0) > 0) {
+                    fprintf(stderr,
+                        "WARNING: wallet_keys table exists but has 0 keys.\n"
+                        "  This may indicate key loss from WAL/SHM deletion.\n"
+                        "  Generating fresh keys — old addresses are LOST.\n");
+                }
+                sqlite3_finalize(wk_check);
+            }
+        }
         wallet_top_up_key_pool(&g_wallet, DEFAULT_KEYPOOL_SIZE);
+        /* Persist keys to SQLite immediately — do NOT leave in WAL only.
+         * WAL deletion (crash, manual cleanup) would destroy private keys. */
+        if (g_wallet_sqlite.open)
+            wallet_sqlite_flush(&g_wallet_sqlite, &g_wallet);
+        if (g_node_db.open)
+            node_db_wal_checkpoint(&g_node_db);
+        printf("New wallet created.\n");
+    }
     printf("Wallet has %zu keys.\n", g_wallet.keystore.num_keys);
 
     /* Pre-flight: check for stale lock files from crashed processes */
@@ -971,7 +1015,7 @@ bool app_init(struct app_context *ctx)
                (unsigned long long)g_coins_tip.commitment.count);
     }
 
-    bool skip_activate = false;
+    bool skip_activate = false;  /* DEPRECATED: use g_activation_ctl instead */
     bool fast_restart = false;
 
     /* Block index is now cached in SQLite (load_block_index_sqlite).
@@ -999,6 +1043,31 @@ bool app_init(struct app_context *ctx)
                        flat_count, (long long)db_height);
                 fflush(stdout);
                 loaded = false;  /* fall through to LevelDB */
+            }
+
+            /* Consistency check: the SQLite tip block must exist in
+             * the loaded flat block index AT THE CORRECT HEIGHT.
+             * If not, the flat file is corrupted (e.g., a stale h=60
+             * placeholder for the current tip hash). Reload from SQLite. */
+            if (loaded && db_height > 0) {
+                struct db_block tip_blk;
+                if (db_block_find_by_height(&g_node_db, (int)db_height,
+                                             &tip_blk)) {
+                    struct uint256 tip_hash;
+                    memcpy(tip_hash.data, tip_blk.hash, 32);
+                    struct block_index *flat_tip = block_map_find(
+                        &g_state.map_block_index, &tip_hash);
+                    if (!flat_tip ||
+                        (int64_t)flat_tip->nHeight != db_height) {
+                        fprintf(stderr,
+                            "Block index flat: tip hash maps to wrong "
+                            "height (%d vs SQLite %lld). Corrupt flat "
+                            "file — reloading from SQLite.\n",
+                            flat_tip ? flat_tip->nHeight : -1,
+                            (long long)db_height);
+                        loaded = false;
+                    }
+                }
             }
         }
 
@@ -1362,8 +1431,23 @@ bool app_init(struct app_context *ctx)
                         node_db_sync_import_utxos(&g_node_db, &migrate_db);
                     }
 
-                    /* Set coins_best_block — now we CAN resolve height
-                     * because block index is loaded */
+                    /* Discover LDB height from imported UTXOs.
+                     * MAX(height) = height of the most recent coinbase. */
+                    int ldb_height = 0;
+                    if (g_node_db.open) {
+                        sqlite3_stmt *hstmt = NULL;
+                        sqlite3_prepare_v2(g_node_db.db,
+                            "SELECT MAX(height) FROM utxos",
+                            -1, &hstmt, NULL);
+                        if (hstmt && sqlite3_step(hstmt) == SQLITE_ROW)
+                            ldb_height = sqlite3_column_int(hstmt, 0);
+                        if (hstmt) sqlite3_finalize(hstmt);
+                        if (ldb_height > 0)
+                            printf("LDB import: height %d "
+                                   "(from UTXO heights)\n", ldb_height);
+                    }
+
+                    /* Set coins_best_block from LDB */
                     struct uint256 ldb_best;
                     memset(&ldb_best, 0, sizeof(ldb_best));
                     if (coins_view_db_get_best_block(&migrate_db, &ldb_best) &&
@@ -1372,54 +1456,15 @@ bool app_init(struct app_context *ctx)
                                           ldb_best.data, 32);
                         coins_view_cache_set_best_block(&g_coins_tip, &ldb_best);
 
-                        /* Find the block in our index. Try by hash first,
-                         * then fall back to SQLite height lookup. */
+                        /* Try to find the LDB best block in our index */
                         struct block_index *found = block_map_find(
                             &g_state.map_block_index, &ldb_best);
 
                         char dbg_hex[65];
                         uint256_get_hex(&ldb_best, dbg_hex);
-                        printf("Import: looking for %s in block_map "
-                               "(size=%zu) → %s (h=%d)\n",
-                               dbg_hex,
-                               g_state.map_block_index.size,
-                               found ? "FOUND" : "NOT FOUND",
-                               found ? found->nHeight : -1);
-
-                        /* Fallback: look up height from SQLite blocks table,
-                         * then find any block at that height in the chain.
-                         * This handles the common case where block file scan
-                         * built the index but pprev/heights aren't resolved,
-                         * so block_map_find by hash fails. */
-                        if ((!found || found->nHeight == 0) && g_node_db.open) {
-                            /* SQLite stores hash in reversed (display) order */
-                            uint8_t hash_rev[32];
-                            for (int bi = 0; bi < 32; bi++)
-                                hash_rev[bi] = ldb_best.data[31 - bi];
-                            struct db_block sqlite_blk;
-                            if (db_block_find_by_hash(&g_node_db, hash_rev,
-                                                       &sqlite_blk) &&
-                                sqlite_blk.height > 0) {
-                                printf("Resolved import height via SQLite: "
-                                       "h=%d\n", sqlite_blk.height);
-                                /* Scan block map for a block at this height
-                                 * that has data and a connected pprev chain */
-                                size_t si = 0;
-                                struct block_index *sp;
-                                while (block_map_next(&g_state.map_block_index,
-                                                       &si, NULL, &sp)) {
-                                    if (sp && sp->nHeight == sqlite_blk.height &&
-                                        (sp->nStatus & BLOCK_HAVE_DATA)) {
-                                        found = sp;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
 
                         if (found && found->nHeight > 0) {
-                            printf("Set coins_best_block: h=%d\n",
-                                   found->nHeight);
+                            /* Block found in index — set as chain tip */
                             if (found->phashBlock) {
                                 node_db_state_set(&g_node_db,
                                     "coins_best_block",
@@ -1429,19 +1474,86 @@ bool app_init(struct app_context *ctx)
                             }
                             active_chain_set_tip(&g_state.chain_active, found);
                             g_state.pindex_best_header = found;
+                            printf("LDB import: chain tip at h=%d "
+                                   "hash=%s\n", found->nHeight, dbg_hex);
                             skip_activate = true;
+                            activation_set_anchor_active(&g_activation_ctl,
+                                                         "ldb_import_found");
+                        } else if (ldb_height > 0) {
+                            /* LDB best block NOT in our index (common when
+                             * zclassicd is ahead of our block data).
+                             * Create a placeholder block_index — same
+                             * pattern as snapsync_activate_verified_tip().
+                             * P2P will sync headers from here forward. */
+                            struct block_index *anchor = calloc(1,
+                                sizeof(struct block_index));
+                            if (anchor) {
+                                block_index_init(anchor);
+                                anchor->nHeight = ldb_height;
+                                anchor->nStatus = BLOCK_VALID_TREE
+                                                | BLOCK_HAVE_DATA;
+                                anchor->nChainTx = 1;
+                                anchor->nTx = 1;
+
+                                /* Set nChainWork higher than any existing
+                                 * entry AND any chain the single-pass scan
+                                 * might compute. Use max + large margin so
+                                 * find_most_work_chain always prefers chains
+                                 * building on this anchor. Also zero out
+                                 * nChainTx on old entries at heights above
+                                 * our anchor to prevent them from being
+                                 * selected (they connect through the old
+                                 * chain, not through our anchor). */
+                                {
+                                    struct arith_uint256 max_work;
+                                    arith_uint256_set_u64(&max_work, 0);
+                                    size_t mwi = 0;
+                                    struct block_index *mwp;
+                                    while (block_map_next(
+                                        &g_state.map_block_index,
+                                        &mwi, NULL, &mwp)) {
+                                        if (!mwp) continue;
+                                        if (arith_uint256_compare(
+                                            &mwp->nChainWork,
+                                            &max_work) > 0)
+                                            max_work = mwp->nChainWork;
+                                    }
+                                    struct arith_uint256 margin;
+                                    arith_uint256_set_u64(&margin,
+                                        4096ULL * (uint64_t)ldb_height);
+                                    arith_uint256_add(
+                                        &anchor->nChainWork,
+                                        &max_work, &margin);
+                                }
+
+                                block_map_insert(
+                                    &g_state.map_block_index,
+                                    &ldb_best, anchor);
+                                anchor->phashBlock =
+                                    block_map_find_hash(
+                                        &g_state.map_block_index,
+                                        &ldb_best);
+
+                                snapsync_set_anchor(anchor);
+                                active_chain_set_tip(
+                                    &g_state.chain_active, anchor);
+                                g_state.pindex_best_header = anchor;
+
+                                printf("LDB import: anchor at h=%d "
+                                       "hash=%s — syncing forward.\n",
+                                       ldb_height, dbg_hex);
+                            }
+                            skip_activate = true;
+                            activation_set_anchor_active(&g_activation_ctl,
+                                                         "ldb_import_anchor");
                         } else {
-                            /* Block not in index yet (block file scan runs
-                             * later). Save coins_best_block and skip chain
-                             * validation — the post-scan restore will find
-                             * and set the chain tip. Mark skip_activate so
-                             * we don't try to connect from genesis. */
-                            char hex[65];
-                            uint256_get_hex(&ldb_best, hex);
-                            printf("Set coins_best_block: %s "
-                                   "(index not loaded yet, will resolve "
-                                   "after block file scan)\n", hex);
+                            /* No height info — save hash, will resolve
+                             * after header sync from peers. */
+                            printf("LDB import: coins_best_block=%s "
+                                   "(height unknown)\n", dbg_hex);
                             skip_activate = true;
+                            activation_set_anchor_active(&g_activation_ctl,
+                                                         "ldb_import_unknown");
                         }
                     }
 
@@ -1639,46 +1751,82 @@ skip_ldb_import:
                 printf("Coins DB best block %s not in index "
                        "(block_map size=%zu).\n",
                        hex, g_state.map_block_index.size);
-                /* Coins DB points to a block ahead of our index
-                 * (e.g., LevelDB import from zclassicd at higher height).
-                 * UTXOs are valid — find highest block we DO have and
-                 * set that as coins_best_block + chain tip.
-                 * activate_best_chain will connect forward from there. */
-                struct block_index *fallback = NULL;
-                size_t si2 = 0;
-                struct block_index *sp2;
-                while (block_map_next(&g_state.map_block_index,
-                                       &si2, NULL, &sp2)) {
-                    if (!sp2) continue;
-                    if ((sp2->nStatus & BLOCK_HAVE_DATA) &&
-                        sp2->nChainTx > 0 && sp2->phashBlock &&
-                        (!fallback || sp2->nHeight > fallback->nHeight))
-                        fallback = sp2;
+                /* coins_best_block hash not in block_map — this happens
+                 * after LDB import from zclassicd at a height we don't
+                 * have in our index. Create a placeholder block_index
+                 * (same pattern as snapsync_activate_verified_tip) so
+                 * the node can sync headers and blocks from this point
+                 * forward without trying to connect the gap. */
+                int utxo_max_height = 0;
+                if (g_node_db.open) {
+                    sqlite3_stmt *hstmt = NULL;
+                    sqlite3_prepare_v2(g_node_db.db,
+                        "SELECT MAX(height) FROM utxos",
+                        -1, &hstmt, NULL);
+                    if (hstmt && sqlite3_step(hstmt) == SQLITE_ROW)
+                        utxo_max_height = sqlite3_column_int(hstmt, 0);
+                    if (hstmt) sqlite3_finalize(hstmt);
                 }
-                if (fallback && fallback->phashBlock) {
-                    /* UTXO set is ahead of block data (LDB import from
-                     * zclassicd at a higher height). Reset coins to
-                     * index tip so connect_block's prevhash check
-                     * passes. The extra spent UTXOs are harmless —
-                     * they'll fail with missing-inputs on the few txs
-                     * affected, and those blocks will be refetched.
-                     * WARNING: this means some UTXOs spent between
-                     * fallback and the import height are already gone.
-                     * The node MUST reimport or reindex to fix this.
-                     * Use importchainstate RPC after reaching tip. */
-                    active_chain_set_tip(&g_state.chain_active, fallback);
-                    g_state.pindex_best_header = fallback;
-                    coins_view_cache_set_best_block(&g_coins_tip,
-                        fallback->phashBlock);
-                    coins_view_cache_flush(&g_coins_tip);
-                    printf("Coins DB ahead of index (index tip=%d). "
-                           "Reset coins_best_block to known tip.\n",
-                           fallback->nHeight);
-                    skip_activate = false;
+
+                if (utxo_max_height > 0) {
+                    struct block_index *anchor = calloc(1,
+                        sizeof(struct block_index));
+                    if (anchor) {
+                        block_index_init(anchor);
+                        anchor->nHeight = utxo_max_height;
+                        anchor->nStatus = BLOCK_VALID_TREE
+                                        | BLOCK_HAVE_DATA;
+                        anchor->nChainTx = 1;
+                        anchor->nTx = 1;
+
+                        /* nChainWork must exceed all existing entries.
+                         * Also zero nChainTx on old entries at heights
+                         * below anchor to prevent find_most_work_chain
+                         * from choosing them (they'd cause gap failures). */
+                        {
+                            struct arith_uint256 max_work;
+                            arith_uint256_set_u64(&max_work, 0);
+                            size_t mwi = 0;
+                            struct block_index *mwp;
+                            while (block_map_next(
+                                &g_state.map_block_index,
+                                &mwi, NULL, &mwp)) {
+                                if (!mwp) continue;
+                                if (arith_uint256_compare(
+                                    &mwp->nChainWork,
+                                    &max_work) > 0)
+                                    max_work = mwp->nChainWork;
+                            }
+                            struct arith_uint256 margin;
+                            arith_uint256_set_u64(&margin,
+                                4096ULL * (uint64_t)utxo_max_height);
+                            arith_uint256_add(&anchor->nChainWork,
+                                              &max_work, &margin);
+                        }
+
+                        block_map_insert(&g_state.map_block_index,
+                                          &best_hash, anchor);
+                        anchor->phashBlock = block_map_find_hash(
+                            &g_state.map_block_index, &best_hash);
+
+                        snapsync_set_anchor(anchor);
+                        active_chain_set_tip(
+                            &g_state.chain_active, anchor);
+                        g_state.pindex_best_header = anchor;
+
+                        printf("Chain restore: anchor at h=%d "
+                               "hash=%s — syncing forward.\n",
+                               utxo_max_height, hex);
+                    }
+                    skip_activate = true;
+                    activation_set_anchor_active(&g_activation_ctl,
+                                                 "chain_restore_anchor");
                 } else {
-                    /* No valid blocks at all — wipe and start fresh */
-                    printf("No valid blocks in index — wiping UTXOs.\n");
+                    /* No UTXOs — wipe and start fresh */
+                    printf("No UTXOs found — wiping coins state.\n");
                     node_db_wipe_utxos(&g_node_db);
+                    coins_view_cache_set_best_block(&g_coins_tip,
+                        &params->consensus.hashGenesisBlock);
                     coins_view_cache_flush(&g_coins_tip);
                     skip_activate = false;
                 }
@@ -1836,8 +1984,18 @@ skip_ldb_import:
     }
 
     /* Validate coins/chain agreement at boot.
-     * ActiveRecord-style: validate → diagnose → recover. */
+     * ActiveRecord-style: validate → diagnose → recover.
+     * Skip when activation controller is in ANCHOR_ACTIVE — the anchor
+     * IS the validated agreement. Running recovery would destroy imported
+     * UTXOs (wipe + reset to genesis). */
     {
+        struct utxo_wipe_decision wd;
+        activation_should_allow_utxo_wipe(&wd,
+            activation_get_state(&g_activation_ctl),
+            snapsync_get_anchor() != NULL);
+        if (!wd.safe_to_wipe) {
+            printf("Skipping coins/chain validation — %s\n", wd.reason);
+        } else {
         struct boot_validation_result vr =
             validate_coins_chain_agreement(&g_state, &g_coins_tip,
                                            ctx->datadir);
@@ -1848,6 +2006,56 @@ skip_ldb_import:
                    vr.chain_height,
                    vr.action == BOOT_RECOVER_REIMPORT
                        ? "empty (LevelDB available)" : "empty");
+
+            /* SAFETY: validate_coins_chain_agreement checks if coins
+             * are "empty" via coins_view_get_best_block returning null.
+             * But UTXOs may still exist in SQLite — that means
+             * coins_best_block was reset but utxos weren't. Wiping
+             * here would destroy 1.3M+ UTXOs. Don't trust the
+             * "empty" verdict — check the actual UTXO count. */
+            {
+                int64_t actual_utxos = node_db_utxo_count(&g_node_db);
+                if (actual_utxos > 1000) {
+                    fprintf(stderr,
+                        "ABORT WIPE: validation says 'empty' but utxos "
+                        "table has %lld rows. coins_best_block may be "
+                        "stale, NOT the UTXOs. Refusing to destroy data.\n",
+                        (long long)actual_utxos);
+                    /* Fix the metadata instead: find the tip height
+                     * from the UTXO set and update node_state. */
+                    int max_h = 0;
+                    sqlite3_stmt *st = NULL;
+                    if (sqlite3_prepare_v2(g_node_db.db,
+                            "SELECT MAX(height) FROM utxos",
+                            -1, &st, NULL) == SQLITE_OK) {
+                        if (sqlite3_step(st) == SQLITE_ROW)
+                            max_h = sqlite3_column_int(st, 0);
+                        sqlite3_finalize(st);
+                    }
+                    if (max_h > 0) {
+                        struct db_block tip_blk;
+                        if (db_block_find_by_height(&g_node_db, max_h,
+                                                     &tip_blk)) {
+                            struct uint256 tip_hash;
+                            memcpy(tip_hash.data, tip_blk.hash, 32);
+                            coins_view_cache_set_best_block(
+                                &g_coins_tip, &tip_hash);
+                            coins_view_cache_flush(&g_coins_tip);
+                            struct block_index *bi = block_map_find(
+                                &g_state.map_block_index, &tip_hash);
+                            if (bi) {
+                                active_chain_set_tip(
+                                    &g_state.chain_active, bi);
+                                g_state.pindex_best_header = bi;
+                                printf("RECOVERY: restored chain tip "
+                                       "from UTXO set: h=%d\n", max_h);
+                            }
+                        }
+                    }
+                    skip_activate = false;
+                    break;
+                }
+            }
 
             node_db_wipe_utxos(&g_node_db);
 
@@ -1973,7 +2181,8 @@ skip_ldb_import:
             break;
         }
         }
-    }
+    } /* end else (safe to validate) */
+    } /* end wipe decision block */
 
     /* Clear stale HAVE_DATA above tip — targeted, not full scan.
      * Only needed if max HAVE_DATA height > chain tip (from the
@@ -2194,63 +2403,97 @@ skip_ldb_import:
 
     /* Clean up UTXOs that were incorrectly created above the chain tip.
      * This can happen if --repair inserts UTXOs from future blocks.
-     * Those UTXOs cause BIP30 violations when connect_block tries to
-     * create them normally. */
+     *
+     * SAFETY: Only wipe a SMALL number of stragglers. If the gap is large
+     * (>1000 UTXOs above tip), the chain tip is wrong, not the UTXOs.
+     * Deleting 1.3M UTXOs because tip is misreported as h=60 is catastrophic.
+     * Bail out and let the user investigate. */
     if (g_node_db.open) {
         struct block_index *tip = active_chain_tip(&g_state.chain_active);
         int tip_h = tip ? tip->nHeight : 0;
         if (tip_h > 0) {
-            char sql[128];
-            snprintf(sql, sizeof(sql),
-                     "DELETE FROM utxos WHERE height > %d", tip_h);
-            char *err = NULL;
-            int rc = sqlite3_exec(g_node_db.db, sql, NULL, NULL, &err);
-            int changes = sqlite3_changes(g_node_db.db);
-            if (rc == SQLITE_OK && changes > 0)
-                printf("Boot: removed %d UTXOs above tip h=%d\n",
-                       changes, tip_h);
-            if (err) sqlite3_free(err);
+            /* First count how many UTXOs would be wiped */
+            int64_t would_wipe = 0;
+            {
+                sqlite3_stmt *st = NULL;
+                char count_sql[128];
+                snprintf(count_sql, sizeof(count_sql),
+                         "SELECT count(*) FROM utxos WHERE height > %d", tip_h);
+                if (sqlite3_prepare_v2(g_node_db.db, count_sql, -1,
+                                       &st, NULL) == SQLITE_OK) {
+                    if (sqlite3_step(st) == SQLITE_ROW)
+                        would_wipe = sqlite3_column_int64(st, 0);
+                    sqlite3_finalize(st);
+                }
+            }
+
+            if (would_wipe > 1000) {
+                fprintf(stderr,
+                    "ABORT: would wipe %lld UTXOs above tip h=%d. "
+                    "Chain tip is likely wrong, not the UTXOs. "
+                    "Refusing to destroy data. "
+                    "Investigate block_index.bin corruption.\n",
+                    (long long)would_wipe, tip_h);
+                event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
+                    "wipe_blocked count=%lld tip=%d",
+                    (long long)would_wipe, tip_h);
+                /* Don't exit — let the node continue, but skip the wipe.
+                 * The activation controller will handle the inconsistency. */
+            } else if (would_wipe > 0) {
+                char sql[128];
+                snprintf(sql, sizeof(sql),
+                         "DELETE FROM utxos WHERE height > %d", tip_h);
+                char *err = NULL;
+                int rc = sqlite3_exec(g_node_db.db, sql, NULL, NULL, &err);
+                int changes = sqlite3_changes(g_node_db.db);
+                if (rc == SQLITE_OK && changes > 0)
+                    printf("Boot: removed %d UTXOs above tip h=%d\n",
+                           changes, tip_h);
+                if (err) sqlite3_free(err);
+            }
         }
     }
 
-    /* Activate best chain (connects any new blocks beyond saved tip).
-     * Skip for -legacy import and -reindex-chainstate.
-     * Also skip when awaiting P2P snapshot — we have block headers/files
-     * but no UTXO set.  Connecting blocks from genesis would permanently
-     * mark valid blocks as BLOCK_FAILED. */
-    if (ctx->legacy_import_dir)
-        skip_activate = true;
-    /* Skip activate if we have many block headers but no UTXOs —
-     * this means file sync imported blocks but UTXO snapshot hasn't
-     * arrived yet.  Connecting blocks from genesis with no UTXO set
-     * would permanently mark valid blocks as BLOCK_FAILED. */
-    if (!skip_activate && g_node_db.open) {
-        int64_t utxo_count = 0;
-        sqlite3_stmt *sc = NULL;
-        if (sqlite3_prepare_v2(g_node_db.db,
-                "SELECT COUNT(*) FROM utxos", -1, &sc, NULL) == SQLITE_OK
-            && sc) {
-            if (sqlite3_step(sc) == SQLITE_ROW)
-                utxo_count = sqlite3_column_int64(sc, 0);
-            sqlite3_finalize(sc);
-        }
-        struct block_index *cur_tip = active_chain_tip(&g_state.chain_active);
-        int32_t idx_height = (cur_tip ? cur_tip->nHeight : 0);
-        if (utxo_count < 100000 && idx_height == 0 &&
-            g_state.map_block_index.size > 1000) {
-            printf("=== Skipping activate_best_chain — %lld UTXOs, "
-                   "%zu block index entries, awaiting P2P snapshot ===\n",
-                   (long long)utxo_count,
-                   g_state.map_block_index.size);
-            skip_activate = true;
+    /* Activate best chain via controller (single authority).
+     * The controller checks: anchor state, shutdown, UTXO availability.
+     * Replaces the old skip_activate boolean with state machine. */
+    if (activation_get_state(&g_activation_ctl) == ACTIVATION_BOOT_PENDING)
+        activation_boot_complete(&g_activation_ctl, "boot_done");
+
+    /* If anchor exists but chain tip is already past it (previous boot
+     * synced successfully), clear the anchor so blocks can connect. */
+    if (activation_get_state(&g_activation_ctl) == ACTIVATION_ANCHOR_ACTIVE) {
+        struct block_index *tip = active_chain_tip(&g_state.chain_active);
+        struct block_index *anc = snapsync_get_anchor();
+        if (tip && anc && tip->nHeight > anc->nHeight) {
+            printf("Anchor at h=%d below chain tip h=%d — clearing\n",
+                   anc->nHeight, tip->nHeight);
+            snapsync_set_anchor(NULL);
+            activation_clear_anchor(&g_activation_ctl, "tip_past_anchor");
         }
     }
-    if (!skip_activate) {
-        struct validation_state vs;
-        validation_state_init(&vs);
-        if (!activate_best_chain(&vs, &g_state, &g_coins_tip, params, NULL,
-                                 ctx->datadir)) {
-            fprintf(stderr, "Warning: Failed to activate best chain\n");
+    {
+        struct activation_exec_outcome outcome;
+        activation_request_connect(&g_activation_ctl, ACTIVATION_SRC_BOOT,
+                                   NULL, &outcome);
+        if (outcome.result == ACTIVATION_EXEC_FAILED)
+            fprintf(stderr, "Warning: Failed to activate best chain: %s\n",
+                    outcome.reason);
+    }
+
+    /* Auto-scan wallet for transactions in connected blocks.
+     * This ensures balance shows immediately after LDB import or
+     * snapshot sync — no manual replaywalletfromchain needed.
+     * A power node should just work. */
+    {
+        int tip_h = active_chain_height(&g_state.chain_active);
+        if (tip_h > 0 && g_node_db.open) {
+            int found = wallet_scan_blocks(&g_node_db,
+                &g_state.chain_active, &g_wallet, ctx->datadir,
+                0, tip_h);
+            if (found > 0)
+                printf("Wallet: auto-discovered %d transactions "
+                       "(blocks 0-%d)\n", found, tip_h);
         }
     }
 

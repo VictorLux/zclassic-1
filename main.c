@@ -14,12 +14,15 @@
 #include "models/database.h"
 #include "controllers/sync_controller.h"
 #include "storage/coins_db.h"
+#include "chain/checkpoints.h"
+#include "coins/utxo_commitment.h"
 #include "controllers/explorer_internal.h"
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <pthread.h>
 #include <time.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
@@ -209,10 +212,28 @@ static int cli_main(int argc, char **argv)
 
 volatile sig_atomic_t g_shutdown_requested = 0;
 
+static void *shutdown_watchdog(void *arg)
+{
+    (void)arg;
+    sleep(60);
+    fprintf(stderr, "Shutdown watchdog: 60s timeout — forcing exit\n");
+    fflush(stderr);
+    _exit(1);
+    return NULL;
+}
+
 static void signal_handler(int sig)
 {
     (void)sig;
+    if (g_shutdown_requested) {
+        /* Second signal: force immediate exit */
+        _exit(1);
+    }
     g_shutdown_requested = 1;
+    /* Start watchdog thread to force exit if shutdown hangs */
+    pthread_t wd;
+    pthread_create(&wd, NULL, shutdown_watchdog, NULL);
+    pthread_detach(wd);
 }
 
 static void print_usage(const char *prog)
@@ -462,6 +483,13 @@ int main(int argc, char **argv)
                                             }
                                         }
 
+                                        /* Only insert UTXOs created at or below
+                                         * our tip. UTXOs from blocks above the
+                                         * tip will be created by connect_block
+                                         * when those blocks are connected.
+                                         * Inserting them early causes BIP30
+                                         * violations (duplicate txid). */
+                                        if (txht > 0 && txht <= tip) {
                                         sqlite3_reset(ins);
                                         sqlite3_bind_blob(ins, 1, txid_bin, 32, SQLITE_STATIC);
                                         sqlite3_bind_int(ins, 2, vout);
@@ -472,6 +500,7 @@ int main(int argc, char **argv)
                                         sqlite3_bind_int(ins, 7, txht);
                                         sqlite3_step(ins);
                                         fixed++;
+                                        }
                                     }
                                 }
                             }
@@ -645,8 +674,52 @@ int main(int argc, char **argv)
         printf("Addresses: %lld with balance\n", (long long)addr_count);
         printf("Time:      %llds\n", (long long)(t1 - t0));
 
+        /* ── SHA3 UTXO integrity verification ── */
+        const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
+        if (cp && cp->height > 0) {
+            printf("\nVerifying UTXO set against SHA3 checkpoint "
+                   "(h=%d, %llu expected UTXOs)...\n",
+                   cp->height, (unsigned long long)cp->utxo_count);
+            uint8_t sha3[32];
+            uint64_t sha3_count = 0;
+            utxo_commitment_sha3_compute(ndb.db, sha3, &sha3_count);
+            if (memcmp(sha3, cp->sha3_hash, 32) == 0 &&
+                sha3_count == cp->utxo_count) {
+                printf("SHA3 UTXO verification PASSED (%llu UTXOs match)\n",
+                       (unsigned long long)sha3_count);
+            } else {
+                fprintf(stderr,
+                    "SHA3 UTXO MISMATCH — imported UTXO set is corrupt!\n"
+                    "  Expected: %llu UTXOs, got %llu\n",
+                    (unsigned long long)cp->utxo_count,
+                    (unsigned long long)sha3_count);
+                if (sha3_count != cp->utxo_count)
+                    fprintf(stderr, "  Count delta: %lld\n",
+                            (long long)sha3_count - (long long)cp->utxo_count);
+                node_db_close(&ndb);
+                return 1;
+            }
+        }
+
         node_db_close(&ndb);
         return 0;
+    }
+
+    /* MCP server mode: speaks Model Context Protocol on stdio.
+     * Install: claude mcp add zcl23 -- zclassic23 -mcp */
+    extern int mcp_server_main(const char *datadir, int rpc_port);
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-mcp") == 0) {
+            const char *h = getenv("HOME");
+            char dd[512] = ".zclassic-c23";
+            int port = 18232;
+            if (h) snprintf(dd, sizeof(dd), "%s/.zclassic-c23", h);
+            for (int j = 1; j < argc; j++) {
+                if (strncmp(argv[j], "-datadir=", 9) == 0) snprintf(dd, sizeof(dd), "%s", argv[j]+9);
+                if (strncmp(argv[j], "-rpcport=", 9) == 0) port = atoi(argv[j]+9);
+            }
+            return mcp_server_main(dd, port);
+        }
     }
 
     /* Default: headless node. GUI only with explicit --gui flag.
@@ -719,6 +792,8 @@ int main(int argc, char **argv)
         else if (strncmp(argv[i], "-assumevalid=", 13) == 0) ctx.assume_valid = argv[i]+13;
         else if (strncmp(argv[i], "-filesync=", 10) == 0) { /* handled above */ }
         else if (strncmp(argv[i], "-fileservice=", 13) == 0) ctx.file_service_peer = argv[i]+13;
+        else if (strcmp(argv[i], "-nofilesync") == 0) ctx.no_file_sync = true;
+        else if (strcmp(argv[i], "-nobgvalidation") == 0) ctx.no_bg_validation = true;
         else if (strcmp(argv[i], "-daemon") == 0) { /* legacy compat */ }
         else if (strcmp(argv[i], "-help") == 0 || strcmp(argv[i], "--help") == 0) {
             print_usage(argv[0]); return 0;

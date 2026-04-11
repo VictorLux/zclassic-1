@@ -55,4 +55,37 @@ bool tor_integration_is_ready(void);
  * 3 chars ≈ instant, 4 chars ≈ seconds, 5 chars ≈ minutes. */
 void tor_integration_set_vanity_prefix(const char *prefix);
 
+/* ── Outbound .onion fetch API ─────────────────────────────── */
+
+/* Callback for onion fetch results. Invoked from Tor's thread —
+ * the caller must use atomic flags or mutexes for thread safety. */
+typedef void (*tor_fetch_callback_fn)(int status,
+                                       const uint8_t *body,
+                                       size_t body_len,
+                                       void *ctx);
+
+/* Fetch a URL from a .onion address via embedded Tor circuits.
+ * Thread-safe: queues the request for Tor's event loop.
+ * Returns 0 if queued, -1 if Tor not initialized. */
+int tor_integration_fetch_onion(const char *onion_address,
+                                 const char *path,
+                                 tor_fetch_callback_fn callback,
+                                 void *ctx,
+                                 int timeout_secs);
+
+/* Thread-safe result structure for blocking callers. */
+struct onion_fetch_result {
+    _Atomic int complete;   /* 0=pending, 1=done, -1=error */
+    int status;
+    uint8_t *body;          /* caller must free() */
+    size_t body_len;
+};
+
+/* Helper: blocking fetch with timeout. Allocates and copies body.
+ * Returns 0 on success, -1 on error/timeout. */
+int tor_integration_fetch_onion_blocking(const char *onion_address,
+                                          const char *path,
+                                          struct onion_fetch_result *result,
+                                          int timeout_secs);
+
 #endif

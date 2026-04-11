@@ -66,9 +66,11 @@ bool connect_block(const struct block *block,
     if (g_assume_valid_height >= 0 && pindex->nHeight <= g_assume_valid_height)
         expensive_checks = false;
 
-    /* Re-validate block (with proofs enabled post-checkpoint) */
+    /* Re-validate block. Merkle root is always checked (cheap SHA256d
+     * over txids — catches data corruption even below assume-valid).
+     * PoW and size limits gated by expensive_checks. */
     if (!check_block(block, state, params, expensive_checks,
-                     !just_check, expensive_checks))
+                     !just_check, true))
         return false;
 
     /* Use pre-computed hash from block_index */
@@ -221,20 +223,22 @@ bool connect_block(const struct block *block,
 
             /* ── All inputs must exist and be unspent ── */
             if (!coins_view_cache_have_inputs(view, tx)) {
-                if (tx->num_vin > 0) {
-                    char prevhex[65];
-                    uint256_get_hex(&tx->vin[0].prevout.hash, prevhex);
-                    char rawbytes[20];
-                    snprintf(rawbytes, sizeof(rawbytes),
-                             "%02x%02x%02x%02x",
-                             tx->vin[0].prevout.hash.data[0],
-                             tx->vin[0].prevout.hash.data[1],
-                             tx->vin[0].prevout.hash.data[2],
-                             tx->vin[0].prevout.hash.data[3]);
-                    printf("missing-input: h=%d tx[%zu] vin[0]=%s:%u "
-                           "cache=%zu raw4=%s\n", pindex->nHeight, i,
-                           prevhex, tx->vin[0].prevout.n,
-                           view->cache_coins.size, rawbytes);
+                /* Find the specific missing input for self-healing recovery */
+                for (size_t vi = 0; vi < tx->num_vin; vi++) {
+                    const struct tx_out *out =
+                        coins_view_cache_get_output_for(view, &tx->vin[vi]);
+                    if (!out) {
+                        char prevhex[65];
+                        uint256_get_hex(&tx->vin[vi].prevout.hash, prevhex);
+                        printf("missing-input: h=%d tx[%zu] vin[%zu]=%s:%u "
+                               "cache=%zu\n", pindex->nHeight, i, vi,
+                               prevhex, tx->vin[vi].prevout.n,
+                               view->cache_coins.size);
+                        state->missing_txid = tx->vin[vi].prevout.hash;
+                        state->missing_vout = tx->vin[vi].prevout.n;
+                        state->has_missing_utxo = true;
+                        break;
+                    }
                 }
                 block_undo_free(&blockundo);
                 return validation_state_dos(state, 100, false, REJECT_INVALID,

@@ -415,10 +415,17 @@ bool fast_sync_rate_check(struct fast_sync_rate_limiter *rl,
 {
     int64_t now = (int64_t)time(NULL);
 
-    /* Find or create entry for this IP */
+    /* Global rate limit — prevents distributed DoS from many IPs */
+    if (now - rl->global_window_start > 3600) {
+        rl->global_window_start = now;
+        rl->global_chunks_sent = 0;
+    }
+    if (rl->global_chunks_sent >= FAST_SYNC_MAX_GLOBAL_CHUNKS_PER_HOUR)
+        return false;
+
+    /* Per-IP rate limit */
     for (size_t i = 0; i < rl->num_entries; i++) {
         if (memcmp(rl->entries[i].ip, ip, 16) == 0) {
-            /* Reset window if >1 hour old */
             if (now - rl->entries[i].window_start > 3600) {
                 rl->entries[i].window_start = now;
                 rl->entries[i].chunks_sent = 0;
@@ -426,16 +433,18 @@ bool fast_sync_rate_check(struct fast_sync_rate_limiter *rl,
             if (rl->entries[i].chunks_sent >= FAST_SYNC_MAX_CHUNKS_PER_HOUR)
                 return false;
             rl->entries[i].chunks_sent++;
+            rl->global_chunks_sent++;
             return true;
         }
     }
 
     /* New IP */
-    if (rl->num_entries < 256) {
+    if (rl->num_entries < 1024) {
         size_t idx = rl->num_entries++;
         memcpy(rl->entries[idx].ip, ip, 16);
         rl->entries[idx].window_start = now;
         rl->entries[idx].chunks_sent = 1;
+        rl->global_chunks_sent++;
         return true;
     }
 
@@ -448,6 +457,7 @@ bool fast_sync_rate_check(struct fast_sync_rate_limiter *rl,
     memcpy(rl->entries[oldest].ip, ip, 16);
     rl->entries[oldest].window_start = now;
     rl->entries[oldest].chunks_sent = 1;
+    rl->global_chunks_sent++;
     return true;
 }
 

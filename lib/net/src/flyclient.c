@@ -5,11 +5,34 @@
  * O(log n) random headers with MMB inclusion proofs. */
 
 #include "net/flyclient.h"
+#include "core/uint256.h"
+#include "core/arith_uint256.h"
 #include "crypto/sha3.h"
 #include "event/event.h"
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
+
+/* Lightweight PoW check: block_hash < target(nBits).
+ * Unlike CheckProofOfWork(), does NOT check against powLimit — that's
+ * a consensus rule for miners, not relevant for FlyClient verification.
+ * FlyClient only needs: "this hash was hard to produce." */
+static bool fc_check_pow(const uint8_t block_hash[32], uint32_t nBits)
+{
+    bool fNegative = false, fOverflow = false;
+    struct arith_uint256 target;
+    arith_uint256_set_compact(&target, nBits, &fNegative, &fOverflow);
+
+    if (fNegative || arith_uint256_is_zero(&target) || fOverflow)
+        return false;
+
+    struct uint256 hash;
+    memcpy(hash.data, block_hash, 32);
+    struct arith_uint256 hash_arith;
+    uint256_to_arith(&hash_arith, &hash);
+
+    return arith_uint256_compare(&hash_arith, &target) <= 0;
+}
 
 /* ── Index generation (weighted toward recent blocks) ──── */
 
@@ -65,6 +88,36 @@ void fc_generate_indices(const uint8_t seed[32], uint64_t chain_length,
         /* Map to block index: weighted near 1 → near tip (recent) */
         uint64_t idx = (uint64_t)((double)(chain_length - 1) * weighted);
         if (idx >= chain_length) idx = chain_length - 1;
+
+        /* Deduplicate: if this index was already sampled, rehash with
+         * an extra counter byte until we get a unique one.  With 20
+         * samples from a 3M chain collisions are rare, but with short
+         * chains this matters for security (each sample must verify a
+         * distinct block). */
+        bool dup = false;
+        for (uint32_t j = 0; j < i; j++) {
+            if (indices[j] == idx) { dup = true; break; }
+        }
+        if (dup && chain_length > count) {
+            uint8_t retry_input[37];
+            memcpy(retry_input, hash_input, 36);
+            for (uint16_t r = 1; r <= 255; r++) {
+                retry_input[36] = (uint8_t)r;
+                sha3_256(retry_input, 37, h);
+                raw = 0;
+                for (int j = 0; j < 8; j++)
+                    raw = (raw << 8) | h[j];
+                x = (double)raw / (double)UINT64_MAX;
+                weighted = pow(x, exponent);
+                idx = (uint64_t)((double)(chain_length - 1) * weighted);
+                if (idx >= chain_length) idx = chain_length - 1;
+                dup = false;
+                for (uint32_t j = 0; j < i; j++) {
+                    if (indices[j] == idx) { dup = true; break; }
+                }
+                if (!dup) break;
+            }
+        }
 
         indices[i] = idx;
     }
@@ -164,21 +217,26 @@ bool fc_verify_response(const struct fc_response *resp,
             continue;
         }
 
-        /* PoW verification note: The leaf contains block_hash and nBits.
-         * Full PoW verification (Equihash solution check) requires the
-         * complete block header with nonce + solution, which is too large
-         * to include in every sample. Instead, we verify:
-         * 1. The block_hash meets the nBits difficulty target
-         * 2. The MMB proof is valid (binds hash to the chain)
-         * This is sufficient because forging a block_hash that meets
-         * the difficulty target IS the PoW. */
-        /* Check: block_hash < target(nBits) */
-        /* For now we trust the hash-to-target relationship is enforced
-         * by the MMB structure. A full implementation would check
-         * SetCompact(nBits) and compare. */
+        /* PoW verification: block_hash must meet the nBits difficulty
+         * target.  Full Equihash solution verification requires the
+         * complete header (with nonce + 1344-byte solution), which is
+         * too large for every sample.  But checking block_hash < target
+         * is sufficient: forging such a hash IS the proof of work. */
+        {
+            if (!fc_check_pow(s->leaf.block_hash, s->leaf.nBits)) {
+                event_emitf(EV_FC_SAMPLE_VERIFIED, 0,
+                            "sample=%u h=%u valid=false pow_failed "
+                            "nBits=%08x",
+                            i, s->leaf.height, s->leaf.nBits);
+                fprintf(stderr, "FlyClient: sample %u (h=%u) FAILED PoW "
+                        "check (nBits=0x%08x)\n",
+                        i, s->leaf.height, s->leaf.nBits);
+                continue;
+            }
+        }
 
         event_emitf(EV_FC_SAMPLE_VERIFIED, 0,
-                    "sample=%u h=%u valid=true proof=ok",
+                    "sample=%u h=%u valid=true proof=ok pow=ok",
                     i, s->leaf.height);
         valid_count++;
     }

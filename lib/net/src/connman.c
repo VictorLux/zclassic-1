@@ -8,6 +8,7 @@
 #include "net/connman.h"
 #include "net/addrman.h"
 #include "net/download.h"
+#include "net/tor_integration.h"
 #include "controllers/blog_controller.h"
 #include "models/peer.h"
 #include "core/random.h"
@@ -102,6 +103,79 @@ static void seed_from_fixed(struct connman *cm)
         printf("Added %zu hardcoded seed nodes\n", p->nFixedSeeds);
 }
 
+/* Fetch /directory.json from a .onion seed and add clearnet IPs */
+static void try_onion_seed_fetch(struct connman *cm, const char *onion)
+{
+    extern int tor_integration_fetch_onion_blocking(const char *, const char *,
+        struct onion_fetch_result *, int);
+
+    printf("Onion seed: fetching /directory.json from %s...\n", onion);
+    fflush(stdout);
+
+    struct onion_fetch_result result = {0};
+    int rc = tor_integration_fetch_onion_blocking(onion, "/directory.json",
+                                                    &result, 60);
+    if (rc < 0 || result.status != 200 || !result.body) {
+        printf("Onion seed: fetch failed (rc=%d status=%d)\n",
+               rc, result.status);
+        if (result.body) free(result.body);
+        return;
+    }
+
+    /* Parse minimal JSON: extract clearnet_ip and clearnet_port fields */
+    const char *p = (const char *)result.body;
+    int added = 0;
+    while ((p = strstr(p, "\"clearnet_ip\":\"")) != NULL) {
+        p += 15; /* skip "clearnet_ip":" */
+        const char *end = strchr(p, '"');
+        if (!end || end == p) { p++; continue; }
+
+        char ip[64];
+        size_t iplen = (size_t)(end - p);
+        if (iplen >= sizeof(ip)) { p = end; continue; }
+        memcpy(ip, p, iplen);
+        ip[iplen] = '\0';
+        p = end + 1;
+
+        /* Find clearnet_port */
+        uint16_t port = 8033;
+        const char *pp = strstr(p, "\"clearnet_port\":");
+        if (pp && pp - p < 50) {
+            port = (uint16_t)atoi(pp + 16);
+            if (port == 0) port = 8033;
+        }
+
+        /* Add to address manager */
+        if (ip[0] && strcmp(ip, "0.0.0.0") != 0) {
+            struct net_address addr;
+            memset(&addr, 0, sizeof(addr));
+            /* Parse IPv4 */
+            unsigned a, b, c, d;
+            if (sscanf(ip, "%u.%u.%u.%u", &a, &b, &c, &d) == 4) {
+                /* IPv4-mapped IPv6 */
+                memset(addr.svc.addr.ip, 0, 10);
+                addr.svc.addr.ip[10] = 0xff;
+                addr.svc.addr.ip[11] = 0xff;
+                addr.svc.addr.ip[12] = (uint8_t)a;
+                addr.svc.addr.ip[13] = (uint8_t)b;
+                addr.svc.addr.ip[14] = (uint8_t)c;
+                addr.svc.addr.ip[15] = (uint8_t)d;
+                addr.svc.port = port;
+                addr.nServices = NODE_NETWORK;
+                struct net_addr src;
+                net_addr_init(&src);
+                addrman_add(&cm->manager.addrman, &addr, &src, 0);
+                added++;
+                printf("Onion seed: discovered clearnet peer %s:%d\n",
+                       ip, port);
+            }
+        }
+    }
+
+    printf("Onion seed: added %d clearnet peers from %s\n", added, onion);
+    free(result.body);
+}
+
 static void *thread_dns_seed(void *arg)
 {
     struct connman *cm = (struct connman *)arg;
@@ -132,8 +206,30 @@ static void *thread_dns_seed(void *arg)
                     printf("  .onion peer: %s (h=%d)\n",
                            peers[i].hostname, peers[i].height);
             }
-            /* TODO: connect to discovered .onion peers via Tor SOCKS
-             * or direct dynhost connection */
+            /* Try fetching clearnet IPs from discovered .onion peers */
+            extern bool tor_integration_is_ready(void);
+            if (tor_integration_is_ready()) {
+                for (int i = 0; i < found && i < 3 && !g_stop; i++) {
+                    try_onion_seed_fetch(cm, peers[i].hostname);
+                }
+            }
+        }
+    }
+
+    /* Also try hardcoded onion seeds if Tor is ready and few peers */
+    if (!g_stop && cm->manager.num_nodes < 3) {
+        extern bool tor_integration_is_ready(void);
+        if (tor_integration_is_ready()) {
+            /* Hardcoded .onion seeds for ZClassic23 network.
+             * These are known nodes that serve /directory.json with
+             * clearnet IPs for fast direct P2P connections. */
+            static const char *onion_seeds[] = {
+                /* Add seed .onion addresses here as they become known.
+                 * This server's .onion gets populated after first Tor boot. */
+                NULL
+            };
+            for (int i = 0; onion_seeds[i] && !g_stop; i++)
+                try_onion_seed_fetch(cm, onion_seeds[i]);
         }
     }
 
@@ -409,6 +505,14 @@ static void *thread_socket_handler(void *arg)
 
             if ((rev & POLLIN) && !node->disconnect) {
                 zcl_mutex_lock(&node->cs_recv);
+                /* Backpressure: if the message queue is full, skip recv
+                 * until the processing thread drains it. This prevents
+                 * disconnecting fast senders (e.g. snapshot serving over
+                 * localhost) just because we can't parse fast enough. */
+                if (node->recv_msg_count >= MAX_RECV_MESSAGES) {
+                    zcl_mutex_unlock(&node->cs_recv);
+                    goto skip_recv;
+                }
                 char buf[0x10000];
                 ssize_t n = recv(target_fd, buf, sizeof(buf), MSG_DONTWAIT);
                 if (n > 0) {
@@ -433,6 +537,7 @@ static void *thread_socket_handler(void *arg)
                 }
                 zcl_mutex_unlock(&node->cs_recv);
             }
+            skip_recv: ;
 
             if ((rev & POLLOUT) && !node->disconnect) {
                 zcl_mutex_lock(&node->cs_send);
@@ -702,27 +807,74 @@ void connman_signal_stop(struct connman *cm)
     g_stop = true;
 }
 
+/* Join a thread with a timeout using a cancel-based approach.
+ * Spawns a helper that joins the target; if it takes too long,
+ * we detach and move on. */
+static volatile bool g_join_done = false;
+static pthread_t g_join_target;
+
+static void *join_helper(void *arg)
+{
+    (void)arg;
+    pthread_join(g_join_target, NULL);
+    g_join_done = true;
+    return NULL;
+}
+
+static bool timed_join(pthread_t thread, int timeout_sec)
+{
+    g_join_done = false;
+    g_join_target = thread;
+
+    pthread_t helper;
+    if (pthread_create(&helper, NULL, join_helper, NULL) != 0) {
+        /* Fallback: blocking join */
+        pthread_join(thread, NULL);
+        return true;
+    }
+
+    for (int i = 0; i < timeout_sec * 10; i++) {
+        if (g_join_done) {
+            pthread_join(helper, NULL);
+            return true;
+        }
+        usleep(100000); /* 100ms */
+    }
+
+    /* Timeout — detach both threads */
+    pthread_detach(helper);
+    pthread_detach(thread);
+    return false;
+}
+
 void connman_join(struct connman *cm)
 {
     if (!cm)
         return;
 
+    /* Use 30-second timeout per thread to prevent SIGKILL from systemd.
+     * If a thread is stuck (e.g., message thread in activate_best_chain),
+     * detach it rather than blocking shutdown indefinitely. */
     if (cm->started || cm->dns_seed_thread_started || cm->socket_thread_started ||
         cm->open_thread_started || cm->message_thread_started) {
         if (cm->dns_seed_thread_started) {
-            pthread_join(g_thread_dns_seed, NULL);
+            if (!timed_join(g_thread_dns_seed, 30))
+                fprintf(stderr, "connman: dns_seed thread join timed out\n");
             cm->dns_seed_thread_started = false;
         }
         if (cm->socket_thread_started) {
-            pthread_join(g_thread_socket, NULL);
+            if (!timed_join(g_thread_socket, 30))
+                fprintf(stderr, "connman: socket thread join timed out\n");
             cm->socket_thread_started = false;
         }
         if (cm->open_thread_started) {
-            pthread_join(g_thread_open, NULL);
+            if (!timed_join(g_thread_open, 30))
+                fprintf(stderr, "connman: open thread join timed out\n");
             cm->open_thread_started = false;
         }
         if (cm->message_thread_started) {
-            pthread_join(g_thread_message, NULL);
+            if (!timed_join(g_thread_message, 30))
+                fprintf(stderr, "connman: message thread join timed out\n");
             cm->message_thread_started = false;
         }
         cm->started = false;

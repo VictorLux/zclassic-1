@@ -189,5 +189,112 @@ int test_game(void)
         else { printf("FAIL (ts=%lld)\n", (long long)ts); failures++; }
     }
 
+    /* ── Ping game tests ──────────────────────────────────── */
+
+    printf("game: ping_init defaults to 10 rounds... ");
+    {
+        struct ping_state p;
+        ping_init(&p);
+        bool ok = (p.rounds_total == 10 && p.rounds_done == 0 &&
+                   p.sum_us == 0 && p.min_us == INT64_MAX);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("game: ping_init_rounds custom count... ");
+    {
+        struct ping_state p;
+        ping_init_rounds(&p, 5);
+        bool ok = (p.rounds_total == 5);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("game: ping_record_rtt tracks min/avg/max... ");
+    {
+        struct ping_state p;
+        ping_init_rounds(&p, 3);
+        ping_record_rtt(&p, 1000);  /* 1ms */
+        ping_record_rtt(&p, 3000);  /* 3ms */
+        bool done = ping_record_rtt(&p, 2000);  /* 2ms */
+        bool ok = done && p.min_us == 1000 && p.max_us == 3000 &&
+                  ping_avg_latency(&p) == 2000;
+        if (ok) printf("OK (avg=%lld us)\n", (long long)ping_avg_latency(&p));
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("game: ping_record_rtt rejects bad values... ");
+    {
+        struct ping_state p;
+        ping_init_rounds(&p, 10);
+        ping_record_rtt(&p, -1);       /* negative */
+        ping_record_rtt(&p, 0);        /* zero */
+        ping_record_rtt(&p, 70000000); /* >60s */
+        bool ok = (p.rounds_done == 0);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("game: ping_render output... ");
+    {
+        struct ping_state p;
+        ping_init_rounds(&p, 2);
+        ping_record_rtt(&p, 1500);
+        ping_record_rtt(&p, 2500);
+        char buf[256];
+        ping_render(&p, buf, sizeof(buf));
+        bool ok = (strstr(buf, "2/2") != NULL &&
+                   strstr(buf, "min=1.5ms") != NULL);
+        if (ok) printf("OK (%s)\n", buf);
+        else { printf("FAIL (%s)\n", buf); failures++; }
+    }
+
+    /* ── Game type registry tests ────────────────────────── */
+
+    printf("game: registry has 2 game types... ");
+    {
+        bool ok = (game_type_count() == 2);
+        if (ok) printf("OK\n");
+        else { printf("FAIL (count=%d)\n", game_type_count()); failures++; }
+    }
+
+    printf("game: registry lookup tictactoe... ");
+    {
+        const struct game_type_def *g = game_type_lookup(GAME_TICTACTOE);
+        bool ok = (g != NULL && strcmp(g->name, "tictactoe") == 0 &&
+                   g->state_size == sizeof(struct ttt_state));
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("game: registry lookup ping... ");
+    {
+        const struct game_type_def *g = game_type_lookup(GAME_PING);
+        bool ok = (g != NULL && strcmp(g->name, "ping") == 0 &&
+                   g->state_size == sizeof(struct ping_state));
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("game: registry lookup unknown returns NULL... ");
+    {
+        const struct game_type_def *g = game_type_lookup(0xFE);
+        bool ok = (g == NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("game: ttt via registry init/is_finished... ");
+    {
+        const struct game_type_def *g = game_type_lookup(GAME_TICTACTOE);
+        struct ttt_state t;
+        g->init(&t);
+        bool ok = !g->is_finished(&t); /* new game not finished */
+        t.winner = 1;
+        ok = ok && g->is_finished(&t); /* game with winner is finished */
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     return failures;
 }

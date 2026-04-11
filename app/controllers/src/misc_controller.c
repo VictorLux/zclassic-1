@@ -12,6 +12,7 @@
 #include "chain/chainparams.h"
 #include "encoding/utilstrencodings.h"
 #include "json/json.h"
+#include "core/hash.h"
 #include "keys/key_io.h"
 #include "net/version.h"
 #include "util/clientversion.h"
@@ -21,6 +22,7 @@
 #include "wallet/sapling_keys.h"
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 struct misc_context {
     struct main_state *main_state;
@@ -264,6 +266,72 @@ static bool rpc_coinsinfo(const struct json_value *params, bool help,
     return true;
 }
 
+/* ── Benchmark RPC ─────────────────────────────────────────── */
+
+static bool rpc_benchmark(const struct json_value *params, bool help,
+                          struct json_value *result)
+{
+    (void)params;
+    RPC_HELP(help, result,
+        "benchmark\n"
+        "\nRun performance benchmarks: SHA256 hash, UTXO lookup speed,\n"
+        "JSON parse, memory allocation.\n"
+        "\nResult: ops/sec for each benchmark.\n");
+
+    json_set_object(result);
+
+    /* SHA256 benchmark - 10000 iterations */
+    {
+        struct timespec t0, t1;
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        uint8_t buf[64] = {0};
+        for (int i = 0; i < 10000; i++) {
+            uint8_t out[32];
+            hash256(buf, sizeof(buf), out);
+            memcpy(buf, out, 32);
+        }
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        double elapsed = (t1.tv_sec - t0.tv_sec) +
+                         (t1.tv_nsec - t0.tv_nsec) / 1e9;
+        int64_t ops = (int64_t)(10000.0 / elapsed);
+        json_push_kv_int(result, "sha256d_ops_per_sec", ops);
+    }
+
+    /* Memory alloc+free benchmark - 10000 iterations */
+    {
+        struct timespec t0, t1;
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        for (int i = 0; i < 10000; i++) {
+            void *p = malloc(4096);
+            if (p) { memset(p, 0, 4096); free(p); }
+        }
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        double elapsed = (t1.tv_sec - t0.tv_sec) +
+                         (t1.tv_nsec - t0.tv_nsec) / 1e9;
+        int64_t ops = (int64_t)(10000.0 / elapsed);
+        json_push_kv_int(result, "malloc_4k_ops_per_sec", ops);
+    }
+
+    /* RIPEMD160 benchmark */
+    {
+        struct timespec t0, t1;
+        uint8_t buf2[32] = {1,2,3};
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        for (int i = 0; i < 10000; i++) {
+            uint8_t out[20];
+            hash160(buf2, sizeof(buf2), out);
+            memcpy(buf2, out, 20);
+        }
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        double elapsed = (t1.tv_sec - t0.tv_sec) +
+                         (t1.tv_nsec - t0.tv_nsec) / 1e9;
+        int64_t ops = (int64_t)(10000.0 / elapsed);
+        json_push_kv_int(result, "hash160_ops_per_sec", ops);
+    }
+
+    return true;
+}
+
 void register_misc_rpc_commands(struct rpc_table *t)
 {
     struct rpc_command cmds[] = {
@@ -272,6 +340,7 @@ void register_misc_rpc_commands(struct rpc_table *t)
         { "control", "stop",             rpc_stop,             true },
         { "control", "downloadstats",    rpc_downloadstats,    true },
         { "control", "coinsinfo",        rpc_coinsinfo,        true },
+        { "control", "benchmark",        rpc_benchmark,        true },
     };
 
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++)

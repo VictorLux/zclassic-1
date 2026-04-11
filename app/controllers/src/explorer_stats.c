@@ -60,8 +60,8 @@ static bool stats_addr_encode(char *out, size_t outmax,
 
 struct shielded_stats {
     int64_t block_count;
-    int64_t sum_pos;        /* total shielded (t->z) */
-    int64_t sum_neg;        /* total unshielded (z->t), negative */
+    int64_t sum_pos;        /* total unshielded (z->t), positive */
+    int64_t sum_neg;        /* total shielded (t->z), negative */
     int64_t first_height;
     int64_t last_height;
     int64_t first_time;
@@ -125,20 +125,40 @@ static void query_shielded_stats(sqlite3 *db, const char *col,
     }
 }
 
-/* Render shielded section HTML (sprout or sapling) */
+/* Render shielded section HTML (sprout or sapling).
+ * pos_is_shielding: true for Sprout (positive sprout_value = shielding),
+ *                   false for Sapling (positive value_balance = unshielding). */
 static void render_shielded_section(char *r, size_t max, size_t *off,
     const char *title, const char *desc, const struct shielded_stats *ss,
     int64_t nullifier_count, /* -1 to skip */
-    sqlite3 *db, const char *col, int start_year)
+    sqlite3 *db, const char *col, int start_year, bool pos_is_shielding)
 {
     char in_str[32], out_str[32], peak_str[32], peak_neg_str[32], net_str[32];
-    explorer_format_zcl(in_str, sizeof(in_str), ss->sum_pos);
-    explorer_format_zcl(out_str, sizeof(out_str),
-        ss->sum_neg < 0 ? -ss->sum_neg : ss->sum_neg);
-    explorer_format_zcl(peak_str, sizeof(peak_str), ss->peak_pos_value);
-    explorer_format_zcl(peak_neg_str, sizeof(peak_neg_str),
-        ss->peak_neg_value < 0 ? -ss->peak_neg_value : ss->peak_neg_value);
-    int64_t net = ss->sum_pos + ss->sum_neg;
+    /* Sign conventions differ: Sprout pos=shielding, Sapling pos=unshielding */
+    int64_t total_shielded, total_unshielded, peak_shield_val, peak_unshield_val;
+    int64_t peak_shield_h, peak_unshield_h;
+    if (pos_is_shielding) {
+        /* Sprout: positive = shielding, negative = unshielding */
+        total_shielded = ss->sum_pos;
+        total_unshielded = ss->sum_neg < 0 ? -ss->sum_neg : ss->sum_neg;
+        peak_shield_val = ss->peak_pos_value;
+        peak_shield_h = ss->peak_pos_height;
+        peak_unshield_val = ss->peak_neg_value < 0 ? -ss->peak_neg_value : ss->peak_neg_value;
+        peak_unshield_h = ss->peak_neg_height;
+    } else {
+        /* Sapling: positive = unshielding, negative = shielding */
+        total_shielded = ss->sum_neg < 0 ? -ss->sum_neg : ss->sum_neg;
+        total_unshielded = ss->sum_pos;
+        peak_shield_val = ss->peak_neg_value < 0 ? -ss->peak_neg_value : ss->peak_neg_value;
+        peak_shield_h = ss->peak_neg_height;
+        peak_unshield_val = ss->peak_pos_value;
+        peak_unshield_h = ss->peak_pos_height;
+    }
+    explorer_format_zcl(in_str, sizeof(in_str), total_shielded);
+    explorer_format_zcl(out_str, sizeof(out_str), total_unshielded);
+    explorer_format_zcl(peak_str, sizeof(peak_str), peak_shield_val);
+    explorer_format_zcl(peak_neg_str, sizeof(peak_neg_str), peak_unshield_val);
+    int64_t net = (int64_t)total_shielded - (int64_t)total_unshielded;
     explorer_format_zcl(net_str, sizeof(net_str), net);
 
     char first_ts[32] = "N/A", last_ts[32] = "N/A";
@@ -178,19 +198,19 @@ static void render_shielded_section(char *r, size_t max, size_t *off,
         ss->first_height, ss->first_height, first_ts,
         ss->last_height, ss->last_height, last_ts);
 
-    if (ss->peak_pos_value > 0) {
+    if (peak_shield_val > 0) {
         APPEND(*off, r, max,
             "<div class='label'>Largest Single Shielding</div>"
             "<div class='val'><a href='/explorer/block/%" PRId64 "'>Block %" PRId64 "</a>"
             " &mdash; %s ZCL</div>",
-            ss->peak_pos_height, ss->peak_pos_height, peak_str);
+            peak_shield_h, peak_shield_h, peak_str);
     }
-    if (ss->peak_neg_value < 0) {
+    if (peak_unshield_val > 0) {
         APPEND(*off, r, max,
             "<div class='label'>Largest Single Unshielding</div>"
             "<div class='val'><a href='/explorer/block/%" PRId64 "'>Block %" PRId64 "</a>"
             " &mdash; %s ZCL</div>",
-            ss->peak_neg_height, ss->peak_neg_height, peak_neg_str);
+            peak_unshield_h, peak_unshield_h, peak_neg_str);
     }
     APPEND(*off, r, max, "</div></div>");
 
@@ -219,9 +239,17 @@ static void render_shielded_section(char *r, size_t max, size_t *off,
                 int64_t unshield = sqlite3_column_int64(s, 3);
                 if (cnt > 0 && year >= start_year) {
                     char sh[32], un[32], nt[32];
-                    explorer_format_zcl(sh, sizeof(sh), shield);
-                    explorer_format_zcl(un, sizeof(un), unshield < 0 ? -unshield : unshield);
-                    explorer_format_zcl(nt, sizeof(nt), shield + unshield);
+                    int64_t yr_shield, yr_unshield;
+                    if (pos_is_shielding) {
+                        yr_shield = shield;
+                        yr_unshield = unshield < 0 ? -unshield : unshield;
+                    } else {
+                        yr_shield = unshield < 0 ? -unshield : unshield;
+                        yr_unshield = shield;
+                    }
+                    explorer_format_zcl(sh, sizeof(sh), yr_shield);
+                    explorer_format_zcl(un, sizeof(un), yr_unshield);
+                    explorer_format_zcl(nt, sizeof(nt), yr_shield - yr_unshield);
                     APPEND(*off, r, max,
                         "<tr><td>%d</td><td>%" PRId64 "</td>"
                         "<td class='amount'>%s</td>"
@@ -260,8 +288,9 @@ static void render_shielded_section(char *r, size_t max, size_t *off,
                     "<td>%s</td><td class='amount'>%s ZCL</td>"
                     "<td>%s</td></tr>",
                     h, h, ts, vs,
-                    v > 0 ? "<span style='color:#33ff99'>Shielding</span>"
-                           : "<span style='color:#ff6666'>Unshielding</span>");
+                    (pos_is_shielding ? v > 0 : v < 0)
+                        ? "<span style='color:#33ff99'>Shielding</span>"
+                        : "<span style='color:#ff6666'>Unshielding</span>");
             }
             sqlite3_finalize(s);
         }
@@ -643,8 +672,10 @@ size_t explorer_stats_build(uint8_t *r, size_t buf_max, const char *datadir)
                     all_diff[ri][bucket] = explorer_difficulty_from_bits(bits);
                     all_hr[ri][bucket] = all_diff[ri][bucket] * 8192.0 / 150.0;
                 }
+                /* Sprout: positive=shielding, show as positive on chart (pool inflow)
+                 * Sapling: negative=shielding, negate to show inflow as positive */
                 all_sprout_c[ri][bucket]  = (double)sqlite3_column_int64(s, 2) / 1e8;
-                all_sapling_c[ri][bucket] = (double)sqlite3_column_int64(s, 3) / 1e8;
+                all_sapling_c[ri][bucket] = -(double)sqlite3_column_int64(s, 3) / 1e8;
                 all_txcount[ri][bucket]   = (double)sqlite3_column_int64(s, 4);
             }
             sqlite3_finalize(s);
@@ -778,16 +809,17 @@ size_t explorer_stats_build(uint8_t *r, size_t buf_max, const char *datadir)
     render_shielded_section((char *)r, max, &off,
         "Sprout Pool (JoinSplit Privacy)",
         "Sprout was ZClassic's original shielded pool using JoinSplit proofs. "
-        "vpub_old = transparent&rarr;shielded (positive), "
-        "vpub_new = shielded&rarr;transparent (negative).",
-        &sprout, -1, db, "sprout_value", 2016);
+        "vpub_old = value entering Sprout pool from transparent (shielding), "
+        "vpub_new = value leaving Sprout pool to transparent (unshielding).",
+        &sprout, -1, db, "sprout_value", 2016, true);
 
     /* Section 5: Sapling */
     render_shielded_section((char *)r, max, &off,
         "Sapling Pool (Modern Privacy)",
         "Sapling uses Groth16 proofs. Activated at block 382168. "
-        "Positive value_balance = shielding, negative = unshielding.",
-        &sapling, nullifier_count, db, "sapling_value", 2018);
+        "Positive value_balance = unshielding (z&rarr;t), "
+        "negative = shielding (t&rarr;z).",
+        &sapling, nullifier_count, db, "sapling_value", 2018, false);
 
     /* Section 6: UTXO Distribution */
     {

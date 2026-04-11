@@ -31,6 +31,7 @@
 
 /* Game types */
 enum game_type {
+    GAME_PING      = 0,  /* latency measurement (not a real game) */
     GAME_TICTACTOE = 1,
 };
 
@@ -54,18 +55,67 @@ struct ttt_state {
     int64_t game_start_us;
 };
 
+/* Ping game state — measures P2P round-trip latency */
+struct ping_state {
+    uint32_t rounds_done;
+    uint32_t rounds_total;    /* default 10 */
+    int64_t min_us;
+    int64_t max_us;
+    int64_t sum_us;
+    int64_t last_send_us;     /* timestamp of last outgoing ping */
+};
+
 /* Game session between two peers */
 struct game_session {
     uint8_t game_type;
     uint8_t my_side;     /* 1=X, 2=O */
     bool active;
     bool my_turn;
-    struct ttt_state state;
+    union {
+        struct ttt_state ttt;
+        struct ping_state ping;
+    } state;
     uint8_t peer_pubkey[33]; /* peer's compressed pubkey */
     int64_t latency_us;      /* measured round-trip latency */
     int64_t total_latency_us; /* cumulative for average */
     uint32_t latency_samples;
 };
+
+/* ── Game Type Registry ──────────────────────────────────────────
+ * Each game type implements this interface. Tic-tac-toe and ping are
+ * built-in; new game types can be added by extending the table. */
+
+struct game_type_def {
+    uint8_t type_id;            /* wire ID: GAME_PING=0, GAME_TICTACTOE=1 */
+    const char *name;           /* "ping", "tictactoe" */
+    size_t state_size;
+    void (*init)(void *state);
+    bool (*is_finished)(const void *state);
+    uint8_t (*get_winner)(const void *state);
+    void (*render)(const void *state, char *out, size_t max);
+};
+
+/* Get the game type definition, or NULL if unknown. */
+const struct game_type_def *game_type_lookup(uint8_t type_id);
+
+/* Get all registered game types (NULL-terminated). */
+const struct game_type_def *game_type_list(void);
+
+/* Number of registered game types. */
+int game_type_count(void);
+
+/* Initialize a new ping game (default 10 rounds) */
+void ping_init(struct ping_state *s);
+void ping_init_rounds(struct ping_state *s, uint32_t rounds);
+
+/* Record a ping round-trip. Returns true if game is complete. */
+bool ping_record_rtt(struct ping_state *s, int64_t rtt_us);
+
+/* Get average latency in microseconds. Returns -1 if no samples. */
+int64_t ping_avg_latency(const struct ping_state *s);
+
+/* Render ping results to string. */
+void ping_render(const struct ping_state *s, char *out, size_t max);
 
 /* Initialize a new tic-tac-toe game */
 void ttt_init(struct ttt_state *s);

@@ -52,13 +52,17 @@ static bool write_torrc(const char *datadir)
     FILE *f = fopen(torrc_path, "w");
     if (!f) return false;
 
+    /* SocksPort on localhost-only high port — gives Tor a reason to
+     * build circuits. Without at least one listener or hidden service,
+     * Tor won't bootstrap. The dynhost ephemeral service is created
+     * AFTER bootstrap, so we need this to get to that point.
+     * No HiddenServiceDir — it causes key validation assertion
+     * failures that prevent scheduler_init from running. */
     fprintf(f,
-        "SocksPort 0\n"
+        "SocksPort 127.0.0.1:19999\n"
         "DataDirectory %s/tor_data\n"
-        "Log notice file %s/tor.log\n"
-        "HiddenServiceDir %s/tor_data/onion_service\n"
-        "HiddenServicePort 80 127.0.0.1:80\n",
-        datadir, datadir, datadir);
+        "Log notice file %s/tor.log\n",
+        datadir, datadir);
 
     fclose(f);
     return true;
@@ -303,4 +307,74 @@ void tor_integration_set_vanity_prefix(const char *prefix)
     extern void dynhost_set_vanity_prefix(const char *) __attribute__((weak));
     if (dynhost_set_vanity_prefix && prefix && prefix[0])
         dynhost_set_vanity_prefix(prefix);
+}
+
+/* ── Outbound .onion fetch ─────────────────────────────────── */
+
+/* Weak reference to dynhost_client_fetch — resolved at link time.
+ * When linked against libtor_stub.a, this is NULL. */
+extern int dynhost_client_fetch(const char *, uint16_t, const char *,
+    void (*)(int, const uint8_t *, size_t, void *), void *, int)
+    __attribute__((weak));
+
+int tor_integration_fetch_onion(const char *onion_address,
+                                 const char *path,
+                                 tor_fetch_callback_fn callback,
+                                 void *ctx,
+                                 int timeout_secs)
+{
+    if (!dynhost_client_fetch)
+        return -1; /* stub linked, no Tor */
+    if (!atomic_load(&g_tor_running))
+        return -1; /* Tor not started */
+
+    return dynhost_client_fetch(onion_address, 80, path,
+        (void (*)(int, const uint8_t *, size_t, void *))callback,
+        ctx, timeout_secs);
+}
+
+/* Callback for blocking fetch — sets result and signals completion */
+static void blocking_fetch_cb(int status, const uint8_t *body,
+                                size_t body_len, void *ctx)
+{
+    struct onion_fetch_result *r = (struct onion_fetch_result *)ctx;
+    r->status = status;
+    if (body && body_len > 0) {
+        r->body = malloc(body_len + 1);
+        if (r->body) {
+            memcpy(r->body, body, body_len);
+            r->body[body_len] = '\0';
+        }
+        r->body_len = body_len;
+    }
+    atomic_store(&r->complete, status >= 200 ? 1 : -1);
+}
+
+int tor_integration_fetch_onion_blocking(const char *onion_address,
+                                          const char *path,
+                                          struct onion_fetch_result *result,
+                                          int timeout_secs)
+{
+    if (!result) return -1;
+    memset(result, 0, sizeof(*result));
+
+    int rc = tor_integration_fetch_onion(onion_address, path,
+                                          blocking_fetch_cb, result,
+                                          timeout_secs);
+    if (rc < 0) {
+        atomic_store(&result->complete, -1);
+        return -1;
+    }
+
+    /* Poll for completion */
+    int wait_ms = (timeout_secs > 0 ? timeout_secs : 60) * 1000;
+    for (int elapsed = 0; elapsed < wait_ms; elapsed += 100) {
+        int c = atomic_load(&result->complete);
+        if (c != 0) return (c == 1) ? 0 : -1;
+        usleep(100000); /* 100ms */
+    }
+
+    /* Timeout */
+    atomic_store(&result->complete, -1);
+    return -1;
 }

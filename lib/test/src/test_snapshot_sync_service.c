@@ -13,6 +13,7 @@
 #include "validation/main_state.h"
 #include <string.h>
 #include <pthread.h>
+#include <sqlite3.h>
 #include <stdatomic.h>
 
 static void build_snapshot_chunk(struct byte_stream *s)
@@ -442,7 +443,7 @@ static int test_snapshot_sync_service_activates_fallback_tip(void)
 {
     int failures = 0;
 
-    TEST("snapshot sync service falls back to highest indexed local tip") {
+    TEST("snapshot sync creates anchor when tip hash not in block index") {
         struct snapshot_sync_service svc;
         struct main_state ms;
         struct block_index genesis, indexed, unindexed, too_high;
@@ -495,9 +496,16 @@ static int test_snapshot_sync_service_activates_fallback_tip(void)
         memcpy(svc.offered_block_hash, missing.data, 32);
         svc.offered_height = 2000;
 
-        ASSERT(snapsync_activate_verified_tip(&svc, &ms) == 1000);
-        ASSERT(active_chain_tip(&ms.chain_active) == &indexed);
-        ASSERT(ms.pindex_best_header == &indexed);
+        /* After FlyClient+SHA3 verified snapshot, the function inserts a
+         * placeholder anchor at snapshot height and returns offered_height.
+         * The active chain is NOT modified (no pprev chain available). */
+        ASSERT(snapsync_activate_verified_tip(&svc, &ms) == 2000);
+        /* Anchor should be findable in block map */
+        ASSERT(block_map_find(&ms.map_block_index, &missing) != NULL);
+        ASSERT(block_map_find(&ms.map_block_index, &missing)->nHeight == 2000);
+        /* Snapshot anchor getter should return the placeholder */
+        ASSERT(snapsync_get_anchor() != NULL);
+        ASSERT(snapsync_get_anchor()->nHeight == 2000);
 
         main_state_free(&ms);
         PASS();
@@ -879,6 +887,222 @@ static int test_snapshot_sync_service_chunk_apply_failure_fails_closed(void)
     return failures;
 }
 
+static int test_snapshot_accept_offer_with_few_utxos(void)
+{
+    int failures = 0;
+
+    TEST("snapshot accept_offer allows offer when UTXO count is low") {
+        /* Simulates the bug: a partial block connect from genesis sets
+         * coins_best_block but produces very few UTXOs (<100K).  The
+         * old code rejected all offers because coins_best_block was
+         * non-null.  The fix checks UTXO count instead. */
+        struct snapshot_sync_service svc;
+        struct node_db ndb;
+        ASSERT(node_db_open(&ndb, ":memory:"));
+        snapsync_init(&svc, &ndb);
+
+        /* Set coins_best_block to a non-null value (simulating partial connect) */
+        uint8_t fake_best[32];
+        memset(fake_best, 0x11, 32);
+        node_db_state_set(&ndb, "coins_best_block", fake_best, 32);
+
+        /* UTXOs table exists but has 0 rows — should NOT block offer */
+        uint8_t utxo_root[32], mmb_root[32], block_hash[32];
+        memset(utxo_root, 0x22, 32);
+        memset(mmb_root, 0x33, 32);
+        memset(block_hash, 0x44, 32);
+
+        bool accepted = snapsync_accept_offer(&svc, 3000000, 1350000,
+                                               utxo_root, mmb_root,
+                                               block_hash, 42);
+        ASSERT(accepted);
+        ASSERT(svc.state == SNAPSYNC_NEGOTIATING);
+
+        snapsync_reset(&svc);
+        node_db_close(&ndb);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+static int test_snapshot_accept_offer_with_real_utxos(void)
+{
+    int failures = 0;
+
+    TEST("snapshot accept_offer rejects offer when UTXO count is high") {
+        /* If we already have 100K+ UTXOs, we should NOT accept another
+         * snapshot — we already have a real UTXO set. */
+        struct snapshot_sync_service svc;
+        struct node_db ndb;
+        ASSERT(node_db_open(&ndb, ":memory:"));
+        snapsync_init(&svc, &ndb);
+
+        /* Insert >100K fake UTXOs to simulate a real import */
+        node_db_exec(&ndb, "BEGIN");
+        sqlite3_stmt *ins = NULL;
+        sqlite3_prepare_v2(ndb.db,
+            "INSERT INTO utxos (txid,vout,value,script,script_type,height) "
+            "VALUES (?,0,100,X'00',0,1)", -1, &ins, NULL);
+        for (int i = 0; i < 100001; i++) {
+            uint8_t txid[32];
+            memset(txid, 0, 32);
+            memcpy(txid, &i, sizeof(i));
+            sqlite3_reset(ins);
+            sqlite3_bind_blob(ins, 1, txid, 32, SQLITE_STATIC);
+            sqlite3_step(ins);
+        }
+        sqlite3_finalize(ins);
+        node_db_exec(&ndb, "COMMIT");
+
+        uint8_t utxo_root[32], mmb_root[32], block_hash[32];
+        memset(utxo_root, 0x22, 32);
+        memset(mmb_root, 0x33, 32);
+        memset(block_hash, 0x44, 32);
+
+        bool accepted = snapsync_accept_offer(&svc, 3000000, 1350000,
+                                               utxo_root, mmb_root,
+                                               block_hash, 42);
+        ASSERT(!accepted);
+        ASSERT(svc.state == SNAPSYNC_IDLE);
+
+        node_db_close(&ndb);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+static int test_snapshot_blacklist_add_query(void)
+{
+    int failures = 0;
+    TEST("snapshot blacklist_peer adds and queries correctly") {
+        struct snapshot_sync_service svc;
+        memset(&svc, 0, sizeof(svc));
+        svc.state = SNAPSYNC_IDLE;
+
+        ASSERT(!snapsync_is_peer_blacklisted(&svc, 42));
+        snapsync_blacklist_peer(&svc, 42);
+        ASSERT(snapsync_is_peer_blacklisted(&svc, 42));
+        ASSERT(!snapsync_is_peer_blacklisted(&svc, 99));
+        ASSERT(svc.blacklist_count == 1);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_snapshot_blacklist_zero_peer(void)
+{
+    int failures = 0;
+    TEST("snapshot blacklist rejects zero peer_id") {
+        struct snapshot_sync_service svc;
+        memset(&svc, 0, sizeof(svc));
+
+        snapsync_blacklist_peer(&svc, 0);
+        ASSERT(svc.blacklist_count == 0);
+        ASSERT(!snapsync_is_peer_blacklisted(&svc, 0));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_snapshot_blacklist_refresh(void)
+{
+    int failures = 0;
+    TEST("snapshot blacklist refreshes timestamp on re-add") {
+        struct snapshot_sync_service svc;
+        memset(&svc, 0, sizeof(svc));
+
+        snapsync_blacklist_peer(&svc, 42);
+        ASSERT(svc.blacklist_count == 1);
+        int64_t first_ts = svc.blacklist[0].blacklisted_at_us;
+
+        snapsync_blacklist_peer(&svc, 42);
+        ASSERT(svc.blacklist_count == 1);
+        ASSERT(svc.blacklist[0].blacklisted_at_us >= first_ts);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_snapshot_blacklist_multiple(void)
+{
+    int failures = 0;
+    TEST("snapshot blacklist multiple peers") {
+        struct snapshot_sync_service svc;
+        memset(&svc, 0, sizeof(svc));
+
+        snapsync_blacklist_peer(&svc, 10);
+        snapsync_blacklist_peer(&svc, 20);
+        snapsync_blacklist_peer(&svc, 30);
+        ASSERT(svc.blacklist_count == 3);
+        ASSERT(snapsync_is_peer_blacklisted(&svc, 10));
+        ASSERT(snapsync_is_peer_blacklisted(&svc, 20));
+        ASSERT(snapsync_is_peer_blacklisted(&svc, 30));
+        ASSERT(!snapsync_is_peer_blacklisted(&svc, 40));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_snapshot_blacklist_rejects_offer(void)
+{
+    int failures = 0;
+    TEST("snapshot handle_offer rejects blacklisted peer") {
+        struct snapshot_sync_service svc;
+        struct node_db ndb;
+        ASSERT(node_db_open(&ndb, ":memory:"));
+        snapsync_init(&svc, &ndb);
+
+        snapsync_blacklist_peer(&svc, 5);
+
+        struct snapshot_offer_params params = {0};
+        params.height = 3000000;
+        params.num_utxos = 1350000;
+        params.total_bytes = 200000000;
+        params.peer_id = 5;
+        params.our_height = 0;
+        memset(params.mmr_root, 0x11, 32);
+        memset(params.mmb_root, 0x22, 32);
+        memset(params.utxo_root, 0x33, 32);
+        memset(params.block_hash, 0x44, 32);
+
+        enum snapsync_offer_result result = snapsync_handle_offer(&svc, &params);
+        ASSERT(result == SNAPSYNC_OFFER_REJECTED_BLACKLISTED);
+
+        params.peer_id = 7;
+        result = snapsync_handle_offer(&svc, &params);
+        ASSERT(result == SNAPSYNC_OFFER_ACCEPTED);
+
+        node_db_close(&ndb);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_snapshot_blacklist_survives_reset(void)
+{
+    int failures = 0;
+    TEST("snapshot reset preserves blacklist") {
+        struct snapshot_sync_service svc;
+        struct node_db ndb;
+        ASSERT(node_db_open(&ndb, ":memory:"));
+        snapsync_init(&svc, &ndb);
+
+        snapsync_blacklist_peer(&svc, 42);
+        ASSERT(svc.blacklist_count == 1);
+
+        snapsync_reset(&svc);
+        ASSERT(svc.state == SNAPSYNC_IDLE);
+        ASSERT(svc.blacklist_count == 1);
+        ASSERT(snapsync_is_peer_blacklisted(&svc, 42));
+
+        node_db_close(&ndb);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_snapshot_sync_service(void)
 {
     int failures = 0;
@@ -899,5 +1123,13 @@ int test_snapshot_sync_service(void)
     failures += test_snapshot_sync_service_db_service_chunk_finalize();
     failures += test_snapshot_sync_service_finalize_mismatch();
     failures += test_snapshot_sync_service_chunk_apply_failure_fails_closed();
+    failures += test_snapshot_accept_offer_with_few_utxos();
+    failures += test_snapshot_accept_offer_with_real_utxos();
+    failures += test_snapshot_blacklist_add_query();
+    failures += test_snapshot_blacklist_zero_peer();
+    failures += test_snapshot_blacklist_refresh();
+    failures += test_snapshot_blacklist_multiple();
+    failures += test_snapshot_blacklist_rejects_offer();
+    failures += test_snapshot_blacklist_survives_reset();
     return failures;
 }

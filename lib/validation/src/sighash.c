@@ -1,5 +1,6 @@
 /* Copyright (c) 2009-2010 Satoshi Nakamoto
  * Copyright (c) 2009-2014 The Bitcoin Core developers
+ * Copyright (c) 2014-2017 The Zcash developers
  * Copyright 2026 Rhett Creighton - Apache License 2.0
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
@@ -369,12 +370,20 @@ static bool sighash_sprout(
 
     stream_write_u32_le(&s, tx->lock_time);
 
-    /* Include JoinSplit data (required for Sprout JoinSplit signature) */
-    if (tx->num_joinsplit > 0) {
+    /* Include JoinSplit data (required for Sprout JoinSplit signature).
+     * Must match zclassicd CTransactionSignatureSerializer::Serialize
+     * exactly: serialize vjoinsplit for version >= 2, then pubkey,
+     * then a 64-byte null signature placeholder. */
+    if (tx->version >= 2) {
         stream_write_compact_size(&s, tx->num_joinsplit);
         for (size_t i = 0; i < tx->num_joinsplit; i++)
             js_description_serialize(&tx->v_joinsplit[i], &s);
-        stream_write_bytes(&s, tx->joinsplit_pubkey.data, 32);
+        if (tx->num_joinsplit > 0) {
+            stream_write_bytes(&s, tx->joinsplit_pubkey.data, 32);
+            /* Null signature — 64 zero bytes placeholder */
+            uint8_t null_sig[64] = {0};
+            stream_write_bytes(&s, null_sig, 64);
+        }
     }
 
     stream_write_u32_le(&s, hash_type.raw);

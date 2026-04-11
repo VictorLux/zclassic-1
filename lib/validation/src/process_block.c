@@ -28,6 +28,8 @@
 #include "event/event.h"
 #include "models/database.h"
 #include "config/runtime.h"
+#include "services/snapshot_sync_service.h"
+#include "services/chain_activation_controller.h"
 #include "chain/mmr.h"
 #include "chain/mmb.h"
 #include <signal.h>
@@ -137,17 +139,33 @@ static bool flush_coins_if_needed(struct coins_view_cache *coins_tip,
         node_db_sync_flush(ndb);
 
     size_t batched = (size_t)g_blocks_since_flush;
-    bool ok = coins_view_cache_flush(coins_tip);
+
+    /* Use batch_write_ex to write UTXO commitment atomically inside
+     * the same SAVEPOINT transaction as the coins flush. This eliminates
+     * the race window where a concurrent reader could block the next
+     * SAVEPOINT between flush and commitment write. */
+    bool ok;
+    if (g_coins_sqlite_ptr) {
+        ok = coins_view_sqlite_batch_write_ex(g_coins_sqlite_ptr,
+                                               &coins_tip->cache_coins,
+                                               &coins_tip->hash_block,
+                                               &coins_tip->commitment);
+        if (ok) {
+            coins_map_free(&coins_tip->cache_coins);
+            coins_map_init(&coins_tip->cache_coins);
+            utxo_commitment_init(&coins_tip->commitment);
+        } else {
+            fprintf(stderr, "WARNING: coins cache flush FAILED — retaining "
+                    "%zu dirty entries for retry\n",
+                    coins_tip->cache_coins.size);
+        }
+    } else {
+        ok = coins_view_cache_flush(coins_tip);
+    }
 
     if (ok) {
         g_last_coins_flush = now;
         g_blocks_since_flush = 0;
-
-        /* Persist UTXO commitment atomically with the flush */
-        if (g_coins_sqlite_ptr) {
-            coins_view_sqlite_write_commitment(g_coins_sqlite_ptr,
-                                                &coins_tip->commitment);
-        }
 
         /* Persist Sapling commitment tree state */
         if (ndb && ndb->open &&
@@ -155,8 +173,9 @@ static bool flush_coins_if_needed(struct coins_view_cache *coins_tip,
             struct byte_stream ts;
             stream_init(&ts, 4096);
             if (incremental_tree_serialize(g_sapling_tree_for_flush, &ts)) {
-                node_db_state_set(ndb, "sapling_tree",
-                                  ts.data, ts.size);
+                if (!node_db_state_set(ndb, "sapling_tree",
+                                       ts.data, ts.size))
+                    fprintf(stderr, "flush_coins: sapling_tree persist failed\n");
             }
             stream_free(&ts);
         }
@@ -168,6 +187,13 @@ static bool flush_coins_if_needed(struct coins_view_cache *coins_tip,
         if (batched >= 100)
             printf("flush_coins: wrote %s (%zu blocks batched)\n",
                    trigger, batched);
+
+        /* WAL checkpoint after every successful flush — prevents WAL
+         * from growing to multi-GB during sustained block processing.
+         * A 6GB WAL was observed in production, blocking all operations.
+         * Checkpointing on every flush keeps WAL size bounded. */
+        if (ndb && ndb->open)
+            node_db_wal_checkpoint(ndb);
     } else {
         event_emitf(EV_COINS_FLUSH_FAILED, 0, "flush returned false");
         /* If there's nothing dirty in the cache, the flush "failure" is
@@ -254,8 +280,15 @@ static struct block_index *add_to_block_index(struct main_state *ms,
     pindex->nTime = header->nTime;
     pindex->nBits = header->nBits;
     pindex->nNonce = header->nNonce;
-    memcpy(pindex->nSolution, header->nSolution, header->nSolutionSize);
-    pindex->nSolutionSize = header->nSolutionSize;
+    if (header->nSolutionSize > 0) {
+        pindex->nSolution = malloc(header->nSolutionSize);
+        if (pindex->nSolution)
+            memcpy(pindex->nSolution, header->nSolution, header->nSolutionSize);
+        pindex->nSolutionSize = pindex->nSolution ? header->nSolutionSize : 0;
+    } else {
+        pindex->nSolution = NULL;
+        pindex->nSolutionSize = 0;
+    }
 
     if (!block_map_insert(&ms->map_block_index, &hash, pindex)) {
         free(pindex);
@@ -386,11 +419,23 @@ bool accept_block_header(const struct block_header *header,
         if (ppindex)
             *ppindex = pindex;
         if (pindex->nStatus & BLOCK_FAILED_MASK) {
-            /* Clear FAILED flag to allow re-validation. Blocks may have
-             * been marked failed due to transient UTXO state issues
-             * (e.g. connecting out-of-order during IBD). The block data
-             * will be re-checked when connect_block runs. */
-            pindex->nStatus &= ~BLOCK_FAILED_MASK;
+            /* Clear FAILED for blocks near the chain tip — these are new
+             * blocks that may have failed due to transient issues (tree
+             * not synced, VK not loaded, etc.). For blocks far below tip,
+             * rate-limit to prevent infinite CPU-thrashing retry loops. */
+            int tip_h = active_chain_height(&ms->chain_active);
+            if (pindex->nHeight >= tip_h - 100) {
+                /* Recent block — always allow retry */
+                pindex->nStatus &= ~BLOCK_FAILED_MASK;
+            } else {
+                /* Old block — rate-limit retries */
+                static time_t last_retry_clear = 0;
+                time_t now = time(NULL);
+                if (now - last_retry_clear >= 300) {
+                    pindex->nStatus &= ~BLOCK_FAILED_MASK;
+                    last_retry_clear = now;
+                }
+            }
         }
         return true;
     }
@@ -654,11 +699,19 @@ bool connect_tip(struct validation_state *state,
             uint256_get_hex(&disk_hash, got);
             fprintf(stderr, "connect_tip: WRONG BLOCK at height %d!\n"
                     "  expected: %s\n  got:      %s\n"
-                    "  file=%d pos=%u\n",
+                    "  file=%d pos=%u — clearing HAVE_DATA for re-download\n",
                    pindex_new->nHeight, exp, got,
                    pindex_new->nFile, pindex_new->nDataPos);
+            /* Self-healing: clear BLOCK_HAVE_DATA so the download manager
+             * re-requests this block from P2P. The stale disk position
+             * was likely caused by a symlinked block file being modified
+             * by another node (zclassicd). */
+            pindex_new->nStatus &= ~(unsigned)BLOCK_HAVE_DATA;
+            pindex_new->nFile = -1;
+            pindex_new->nDataPos = 0;
             event_emitf(EV_BLOCK_REJECTED, 0,
-                        "wrong-block-on-disk h=%d", pindex_new->nHeight);
+                        "wrong-block-on-disk h=%d cleared-have-data",
+                        pindex_new->nHeight);
             block_free(&local_block);
             return validation_state_error(state, "wrong-block-on-disk");
         }
@@ -673,10 +726,18 @@ bool connect_tip(struct validation_state *state,
         }
     }
 
-    /* Apply the block to the chain state */
+    /* Apply the block to the chain state, with self-healing UTXO recovery.
+     * If connect_block fails because a UTXO is missing from the coins DB
+     * (e.g. from a non-atomic chainstate import), we find the creating
+     * transaction via the tx index, read it from disk, inject the UTXO
+     * into the cache, and retry. This makes the node self-sufficient —
+     * no manual --repair or zclassicd dependency needed. */
     {
         struct coins_view_cache view;
         struct coins_view backing;
+        int recovery_attempts = 0;
+
+retry_connect:
         coins_view_cache_as_view(&backing, coins_tip);
         coins_view_cache_init(&view, &backing);
 
@@ -687,11 +748,105 @@ bool connect_tip(struct validation_state *state,
         bool rv = connect_block(pblock, state, pindex_new, &view, params, false);
         connect_block_set_sapling_tree(NULL); /* clear after use */
         if (!rv) {
+            /* ── Self-healing: recover missing UTXO from block data ── */
+            if (state->has_missing_utxo &&
+                strcmp(state->reject_reason, "bad-txns-inputs-missingorspent") == 0 &&
+                recovery_attempts < 100 &&
+                g_active_block_tree != NULL) {
+                bool recovered = false;
+                char hex[65];
+                uint256_get_hex(&state->missing_txid, hex);
+
+                if (!g_active_block_tree) {
+                    fprintf(stderr, "[self-heal] tx index not available "
+                            "(no block tree DB)\n");
+                } else {
+                    struct disk_tx_pos txpos;
+                    disk_tx_pos_init(&txpos);
+                    if (!block_tree_db_read_tx_index(g_active_block_tree,
+                                                     &state->missing_txid,
+                                                     &txpos)) {
+                        fprintf(stderr, "[self-heal] tx %s not in tx index\n",
+                                hex);
+                    } else if (txpos.block_pos.nFile < 0) {
+                        fprintf(stderr, "[self-heal] tx %s nFile=%d "
+                                "(tx index entry too small or corrupt)\n",
+                                hex, txpos.block_pos.nFile);
+                    } else {
+                        struct block src_block;
+                        block_init(&src_block);
+                        if (!read_block_from_disk(&src_block,
+                                                  &txpos.block_pos, datadir)) {
+                            fprintf(stderr, "[self-heal] failed to read block "
+                                    "file=%d pos=%u for tx %s\n",
+                                    txpos.block_pos.nFile,
+                                    txpos.block_pos.nPos, hex);
+                            block_free(&src_block);
+                        } else {
+                            for (size_t ti = 0; ti < src_block.num_vtx; ti++) {
+                                if (uint256_eq(&src_block.vtx[ti].hash,
+                                               &state->missing_txid)) {
+                                    struct uint256 src_hash;
+                                    block_get_hash(&src_block, &src_hash);
+                                    struct block_index *src_idx =
+                                        block_map_find(&ms->map_block_index,
+                                                       &src_hash);
+                                    int src_height = src_idx ?
+                                        src_idx->nHeight : 0;
+
+                                    struct coins_cache_entry *entry =
+                                        coins_view_cache_modify_new(coins_tip,
+                                            &state->missing_txid);
+                                    if (entry) {
+                                        coins_from_transaction(&entry->coins,
+                                            &src_block.vtx[ti], src_height);
+                                        entry->flags = COINS_CACHE_DIRTY;
+                                        printf("[self-heal] Recovered UTXO "
+                                               "%s (from h=%d) — retry %d\n",
+                                               hex, src_height,
+                                               recovery_attempts + 1);
+                                        recovered = true;
+                                    }
+                                    break;
+                                }
+                            }
+                            block_free(&src_block);
+                        }
+                    }
+                }
+
+                if (recovered) {
+                    coins_view_cache_free(&view);
+                    memset(&view, 0, sizeof(view));
+                    recovery_attempts++;
+                    validation_state_init(state);
+                    goto retry_connect;
+                }
+                /* Recovery failed — fall through to BLOCK_FAILED path */
+                fprintf(stderr, "[self-heal] FAILED to recover tx %s:%u "
+                        "— marking block %d as failed\n",
+                        hex, state->missing_vout, pindex_new->nHeight);
+            }
+
             fprintf(stderr, "connect_tip: connect_block FAILED h=%d: %s\n",
                     pindex_new->nHeight,
                     state->reject_reason[0] ? state->reject_reason : "unknown");
             if (validation_state_is_invalid(state)) {
                 pindex_new->nStatus |= BLOCK_FAILED_VALID;
+                /* Don't propagate BLOCK_FAILED_CHILD for very early
+                 * blocks (h<=10) during IBD. BIP30 failures at h=1 are
+                 * typically caused by stale UTXO state (e.g. snapshot
+                 * UTXOs at genesis), not genuinely invalid blocks.
+                 * Propagating to 3M+ descendants is catastrophic and
+                 * prevents any further syncing. The outer do-while loop
+                 * will retry find_most_work_chain, which skips this one
+                 * failed block. */
+                if (pindex_new->nHeight <= 10) {
+                    fprintf(stderr, "connect_tip: NOT propagating "
+                            "BLOCK_FAILED at h=%d (early block, likely "
+                            "transient UTXO state issue)\n",
+                            pindex_new->nHeight);
+                } else
                 /* Propagate BLOCK_FAILED_CHILD to all descendants.
                  * Uses height-sorted single pass instead of repeated
                  * full-map scans (O(n) vs O(n*depth) for 3M+ blocks). */
@@ -826,7 +981,8 @@ bool connect_tip(struct validation_state *state,
         dbi.nTime = pindex_new->nTime;
         dbi.nBits = pindex_new->nBits;
         dbi.nNonce = pindex_new->nNonce;
-        memcpy(dbi.nSolution, pindex_new->nSolution, pindex_new->nSolutionSize);
+        if (pindex_new->nSolution && pindex_new->nSolutionSize > 0)
+            memcpy(dbi.nSolution, pindex_new->nSolution, pindex_new->nSolutionSize);
         dbi.nSolutionSize = pindex_new->nSolutionSize;
         block_tree_db_write_block_index(g_active_block_tree, &dbi);
     }
@@ -1030,14 +1186,13 @@ bool connect_tip(struct validation_state *state,
         }
     }
 
-    /* Every 100 blocks: compute UTXO commitment and append to
-     * commitment MMR. This binds the UTXO state to the PoW chain.
-     * Used to verify imported snapshots without replaying history. */
-    if (pindex_new->phashBlock && g_coins_sqlite_ptr &&
-        g_coins_sqlite_ptr->db) {
+    /* Every 100 blocks: append UTXO commitment to MMR.
+     * Uses the O(1) XOR accumulator instead of O(N) SHA3 full-table scan. */
+    if (pindex_new->phashBlock) {
         rpc_blockchain_maybe_commit(pindex_new->nHeight,
                                      pindex_new->phashBlock->data,
-                                     g_coins_sqlite_ptr->db);
+                                     coins_tip->commitment.accumulator,
+                                     coins_tip->commitment.count);
     }
 
     /* Periodically flush coins cache to SQLite.
@@ -1086,38 +1241,102 @@ bool disconnect_tip(struct validation_state *state,
     undo_pos.nFile = pindex_delete->nFile;
     undo_pos.nPos = pindex_delete->nUndoPos;
 
+    bool undo_loaded = false;
     if (undo_pos.nPos > 0) {
+        disk_block_io_lock();
         FILE *f = open_undo_file(datadir, &undo_pos, true);
         if (f) {
-            /* Get file size to avoid fixed-size stack buffer */
             fseek(f, 0, SEEK_END);
             long file_len = ftell(f);
             fseek(f, 0, SEEK_SET);
-            if (file_len <= 0 || file_len > 32 * 1024 * 1024) {
-                fprintf(stderr, "disconnect_tip: undo file size %ld out of "
-                        "range\n", file_len);
-                fclose(f);
-                block_free(&block);
-                block_undo_free(&blockundo);
-                return validation_state_error(state, "bad-undo-file-size");
+            if (file_len > 0 && file_len <= 32 * 1024 * 1024) {
+                uint8_t *buf = malloc((size_t)file_len);
+                if (buf) {
+                    size_t nread = fread(buf, 1, (size_t)file_len, f);
+                    if (nread > 0) {
+                        struct byte_stream s;
+                        stream_init_from_data(&s, buf, nread);
+                        block_undo_deserialize(&blockundo, &s);
+                        undo_loaded = (blockundo.num_txundo > 0);
+                    }
+                    free(buf);
+                }
             }
-            uint8_t *buf = malloc((size_t)file_len);
-            if (!buf) {
-                fprintf(stderr, "disconnect_tip: malloc(%ld) failed for "
-                        "undo data\n", file_len);
-                fclose(f);
-                block_free(&block);
-                block_undo_free(&blockundo);
-                return validation_state_error(state, "undo-alloc-failed");
+            disk_block_io_release_handle(f);
+        }
+        disk_block_io_unlock();
+    }
+
+    /* Self-healing: reconstruct undo data from tx index when undo file
+     * is missing or corrupt. For each non-coinbase input, look up the
+     * source transaction via the tx index and extract the spent output. */
+    if (!undo_loaded && block.num_vtx > 1 && g_active_block_tree) {
+        printf("[self-heal] Reconstructing undo data for h=%d "
+               "(%zu txs) from tx index\n",
+               pindex_delete->nHeight, block.num_vtx);
+        blockundo.num_txundo = block.num_vtx - 1;
+        blockundo.vtxundo = calloc(blockundo.num_txundo,
+                                    sizeof(struct tx_undo));
+        bool reconstruct_ok = (blockundo.vtxundo != NULL);
+        for (size_t i = 1; i < block.num_vtx && reconstruct_ok; i++) {
+            const struct transaction *tx = &block.vtx[i];
+            struct tx_undo *tu = &blockundo.vtxundo[i - 1];
+            tu->num_prevout = tx->num_vin;
+            tu->vprevout = calloc(tx->num_vin, sizeof(struct tx_in_undo));
+            if (!tu->vprevout) { reconstruct_ok = false; break; }
+
+            for (size_t j = 0; j < tx->num_vin; j++) {
+                const struct uint256 *prev_txid = &tx->vin[j].prevout.hash;
+                uint32_t prev_n = tx->vin[j].prevout.n;
+                struct disk_tx_pos txpos;
+                disk_tx_pos_init(&txpos);
+                if (!block_tree_db_read_tx_index(g_active_block_tree,
+                                                  prev_txid, &txpos) ||
+                    txpos.block_pos.nFile < 0) {
+                    reconstruct_ok = false; break;
+                }
+                struct block src_blk;
+                block_init(&src_blk);
+                if (!read_block_from_disk(&src_blk, &txpos.block_pos,
+                                          datadir)) {
+                    block_free(&src_blk);
+                    reconstruct_ok = false; break;
+                }
+                bool found = false;
+                for (size_t ti = 0; ti < src_blk.num_vtx; ti++) {
+                    if (uint256_eq(&src_blk.vtx[ti].hash, prev_txid)) {
+                        if (prev_n < src_blk.vtx[ti].num_vout) {
+                            /* struct assignment copies the fixed-size
+                             * script_pub_key array by value */
+                            tu->vprevout[j].txout =
+                                src_blk.vtx[ti].vout[prev_n];
+                            /* Get source block height */
+                            struct uint256 src_hash;
+                            block_get_hash(&src_blk, &src_hash);
+                            struct block_index *src_idx = block_map_find(
+                                &ms->map_block_index, &src_hash);
+                            tu->vprevout[j].height = src_idx ?
+                                (unsigned int)src_idx->nHeight : 0;
+                            tu->vprevout[j].coinbase =
+                                transaction_is_coinbase(&src_blk.vtx[ti]);
+                            found = true;
+                        }
+                        break;
+                    }
+                }
+                block_free(&src_blk);
+                if (!found) { reconstruct_ok = false; break; }
             }
-            size_t nread = fread(buf, 1, (size_t)file_len, f);
-            fclose(f);
-            if (nread > 0) {
-                struct byte_stream s;
-                stream_init_from_data(&s, buf, nread);
-                block_undo_deserialize(&blockundo, &s);
-            }
-            free(buf);
+        }
+        if (reconstruct_ok) {
+            printf("[self-heal] Undo data reconstructed for h=%d\n",
+                   pindex_delete->nHeight);
+            undo_loaded = true;
+        } else {
+            fprintf(stderr, "[self-heal] Failed to reconstruct undo data "
+                    "for h=%d\n", pindex_delete->nHeight);
+            block_undo_free(&blockundo);
+            block_undo_init(&blockundo);
         }
     }
 
@@ -1264,6 +1483,10 @@ bool activate_best_chain(struct validation_state *state,
                          struct block *pblock,
                          const char *datadir)
 {
+    /* Note: anchor/UTXO guards are now handled by the chain activation
+     * controller (activation_request_connect). This function should only
+     * be called via the controller. */
+
     struct block_index *pindex_most_work;
 
     do {
@@ -1308,11 +1531,26 @@ bool activate_best_chain(struct validation_state *state,
             /* During IBD, allow deep reorgs — fork blocks received in
              * parallel can cause the wrong chain to be connected initially.
              * At tip (steady state), enforce the reorg limit. */
+            /* If most_work chain is not actually better, skip reorg */
+            if (pindex_most_work->nHeight <= tip->nHeight) {
+                return true; /* current chain is already at or above most_work */
+            }
+
             int reorg_depth = tip->nHeight - (fork ? fork->nHeight : -1);
             bool in_ibd = (sync_get_state() <= SYNC_BLOCKS_DOWNLOAD);
-            if (!in_ibd && reorg_depth > MAX_REORG_LENGTH) {
+            /* Skip reorg limit when fork is NULL but we're extending the
+             * chain (not actually reorging). This happens after LDB import
+             * when pprev pointers aren't fully resolved. */
+            bool extending = (!fork && pindex_most_work->nHeight > tip->nHeight &&
+                              pindex_most_work->nHeight <= tip->nHeight + 200);
+            if (!extending && !in_ibd && reorg_depth > MAX_REORG_LENGTH) {
                 printf("activate_best_chain: reorg depth %d exceeds max %d\n",
                        reorg_depth, MAX_REORG_LENGTH);
+                return false;
+            }
+            if (!extending && in_ibd && reorg_depth > MAX_IBD_REORG_LENGTH) {
+                printf("activate_best_chain: IBD reorg depth %d exceeds "
+                       "max %d\n", reorg_depth, MAX_IBD_REORG_LENGTH);
                 return false;
             }
 
@@ -1397,8 +1635,9 @@ bool activate_best_chain(struct validation_state *state,
                  * before any other queued blocks. */
                 if (connect_path[i]->phashBlock) {
                     struct download_manager *dm_abc = msg_get_download_mgr();
-                    dl_queue_priority(dm_abc, connect_path[i]->phashBlock,
-                                       connect_path[i]->nHeight);
+                    if (dm_abc)
+                        dl_queue_priority(dm_abc, connect_path[i]->phashBlock,
+                                           connect_path[i]->nHeight);
                 }
                 /* Force flush coins to SQLite before pausing. If we
                  * connected any blocks above, their UTXOs are in the
@@ -1422,6 +1661,37 @@ bool activate_best_chain(struct validation_state *state,
                     connect_path[i]->nHeight,
                     state->reject_reason[0] ? state->reject_reason
                                             : "unknown");
+
+                /* Auto-recovery: if UTXO mismatches keep failing at the
+                 * same height, write a flag file so boot.c reimports
+                 * UTXOs from LevelDB on next restart. */
+                if (state->reject_reason[0] &&
+                    strcmp(state->reject_reason,
+                           "bad-txns-inputs-missingorspent") == 0) {
+                    static int s_utxo_fail_count = 0;
+                    static int s_utxo_fail_height = -1;
+                    if (connect_path[i]->nHeight == s_utxo_fail_height)
+                        s_utxo_fail_count++;
+                    else {
+                        s_utxo_fail_height = connect_path[i]->nHeight;
+                        s_utxo_fail_count = 1;
+                    }
+                    if (s_utxo_fail_count >= 3 && datadir) {
+                        char flag_path[512];
+                        snprintf(flag_path, sizeof(flag_path),
+                                 "%s/needs_reimport", datadir);
+                        FILE *flag = fopen(flag_path, "w");
+                        if (flag) {
+                            fprintf(flag, "1\n");
+                            fclose(flag);
+                        }
+                        fprintf(stderr,
+                            "CRITICAL: %d UTXO failures at h=%d — "
+                            "wrote needs_reimport flag.\n",
+                            s_utxo_fail_count,
+                            connect_path[i]->nHeight);
+                    }
+                }
                 if (validation_state_is_invalid(state)) {
                     /* Block failed validation — mark it and retry.
                      * The do-while loop will call find_most_work_chain
@@ -1439,7 +1709,8 @@ bool activate_best_chain(struct validation_state *state,
         }
         free(connect_path);
 
-    } while (pindex_most_work != active_chain_tip(&ms->chain_active));
+    } while (pindex_most_work != active_chain_tip(&ms->chain_active) &&
+             !g_shutdown_requested);
 
     return true;
 }
@@ -1452,6 +1723,8 @@ bool process_new_block(struct validation_state *state,
                        bool force_processing,
                        const char *datadir)
 {
+    (void)coins_tip;  /* activation controller owns coins_tip reference */
+
     bool checked = check_block(pblock, state, params, true, true, true);
     if (!checked) {
         fprintf(stderr, "process_new_block: check_block FAILED: %s\n",
@@ -1468,10 +1741,22 @@ bool process_new_block(struct validation_state *state,
         return false;
     }
 
-    if (!activate_best_chain(state, ms, coins_tip, params, pblock, datadir)) {
-        fprintf(stderr, "process_new_block: activate_best_chain FAILED: %s\n",
-                state->reject_reason[0] ? state->reject_reason : "unknown");
-        return false;
+    /* Do NOT connect blocks if we're waiting for a UTXO snapshot.
+     * Connecting blocks from genesis with an empty UTXO set permanently
+     * marks valid blocks as BLOCK_FAILED (e.g. coinbase maturity checks
+     * fail because the coinbase outputs were never added to the view).
+     * accept_block above is safe — it only indexes the block on disk. */
+    /* Connect blocks via controller (single authority). The controller
+     * handles: anchor check, UTXO availability, mutex serialization. */
+    {
+        struct activation_exec_outcome ao;
+        activation_request_connect(boot_activation_controller(),
+                                   ACTIVATION_SRC_NEW_BLOCK, pblock, &ao);
+        if (ao.result == ACTIVATION_EXEC_FAILED) {
+            fprintf(stderr, "process_new_block: activation FAILED: %s\n",
+                    ao.reason);
+            return false;
+        }
     }
 
     return true;

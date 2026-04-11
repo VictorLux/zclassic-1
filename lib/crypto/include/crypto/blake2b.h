@@ -51,4 +51,19 @@ int blake2b_final(struct blake2b_ctx *ctx, void *out, size_t outlen);
 int blake2b(void *out, size_t outlen, const void *in, size_t inlen,
             const void *key, size_t keylen);
 
+/* Vectorized BLAKE2b for Equihash batch hashing.
+ * 3-tier dispatch: AVX-512 (8-way) -> AVX2 (4-way) -> scalar */
+bool blake2b_avx2_available(void);
+void equihash_generate_hash_batch4(
+    const struct blake2b_ctx *base_state,
+    const uint32_t indices[4],
+    unsigned char *hash0, unsigned char *hash1,
+    unsigned char *hash2, unsigned char *hash3,
+    size_t hash_len);
+void equihash_generate_hash_batch8(
+    const struct blake2b_ctx *base_state,
+    const uint32_t indices[8],
+    unsigned char *hashes[8],
+    size_t hash_len);
+
 #endif

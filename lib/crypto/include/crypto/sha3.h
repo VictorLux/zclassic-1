@@ -44,9 +44,12 @@ void sha3_512_write(struct sha3_512_ctx *ctx, const unsigned char *data, size_t 
 void sha3_512_finalize(struct sha3_512_ctx *ctx, unsigned char output[64]);
 void sha3_512_reset(struct sha3_512_ctx *ctx);
 
-/* One-shot convenience */
-void sha3_256(const unsigned char *data, size_t len, unsigned char output[32]);
-void sha3_512(const unsigned char *data, size_t len, unsigned char output[64]);
+/* One-shot convenience — prefixed to avoid conflict with Tor's keccak-tiny
+ * which exports sha3_256/sha3_512 with different signatures. */
+void zcl_sha3_256(const unsigned char *data, size_t len, unsigned char output[32]);
+void zcl_sha3_512(const unsigned char *data, size_t len, unsigned char output[64]);
+#define sha3_256 zcl_sha3_256
+#define sha3_512 zcl_sha3_512
 
 /* HMAC-SHA3-512 for keyed authentication */
 void hmac_sha3_512(const unsigned char *key, size_t key_len,

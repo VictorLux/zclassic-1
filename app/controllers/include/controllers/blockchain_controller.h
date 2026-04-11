@@ -47,10 +47,10 @@ void rpc_blockchain_commitment_mmr_save(struct node_db *ndb);
 
 /* Append commitment at current height if it's a commitment interval.
  * Called from connect_block after UTXO set is updated.
- * Computes SHA3 UTXO root and appends to commitment MMR. */
-/* utxo_db is a sqlite3* handle — passed as void* to avoid sqlite3.h dep */
+ * Uses the incremental XOR accumulator (O(1)) instead of full SHA3 scan. */
 void rpc_blockchain_maybe_commit(int32_t height,
                                   const uint8_t block_hash[32],
-                                  void *utxo_db);
+                                  const uint8_t xor_accumulator[32],
+                                  uint64_t utxo_count);
 
 #endif

@@ -347,13 +347,20 @@ static void ensure_directory_table(sqlite3 *db)
         "height INTEGER NOT NULL DEFAULT 0,"
         "last_seen INTEGER NOT NULL,"
         "version TEXT,"
-        "self INTEGER NOT NULL DEFAULT 0"
+        "self INTEGER NOT NULL DEFAULT 0,"
+        "clearnet_ip TEXT DEFAULT '',"
+        "clearnet_port INTEGER DEFAULT 0"
         ")", NULL, NULL, &err);
     if (rc != SQLITE_OK) {
         fprintf(stderr, "onion_service: failed to create directory table: %s\n",
                 err ? err : "unknown");
         sqlite3_free(err);
     }
+    /* Add clearnet columns to existing databases */
+    sqlite3_exec(db, "ALTER TABLE peer_directory ADD COLUMN clearnet_ip TEXT DEFAULT ''",
+                 NULL, NULL, NULL);
+    sqlite3_exec(db, "ALTER TABLE peer_directory ADD COLUMN clearnet_port INTEGER DEFAULT 0",
+                 NULL, NULL, NULL);
 }
 
 /* Populate directory from chain scan (ZSLP .onion announcements) */
@@ -393,23 +400,40 @@ static void populate_directory_from_chain(sqlite3 *db)
     fflush(stdout);
 }
 
-/* Register our own .onion address */
+/* Register our own .onion address with clearnet IP if known */
 static void register_self(sqlite3 *db)
 {
     struct onion_context *ctx = onion_ctx();
     if (!ctx->address[0]) return;
 
+    /* Discover our public IP */
+    extern void peer_strategy_discover_self(void *profile, uint16_t port);
+    struct { bool has_public_ip; bool nat; bool upnp; bool tor;
+             uint8_t public_ip[4]; uint16_t public_port;
+             char onion_address[68]; } profile = {0};
+    peer_strategy_discover_self(&profile, 8033);
+
+    char ip_str[64] = "";
+    if (profile.has_public_ip) {
+        snprintf(ip_str, sizeof(ip_str), "%u.%u.%u.%u",
+                 profile.public_ip[0], profile.public_ip[1],
+                 profile.public_ip[2], profile.public_ip[3]);
+    }
+
     sqlite3_stmt *ins = NULL;
     if (sqlite3_prepare_v2(db,
         "INSERT OR REPLACE INTO peer_directory "
-        "(onion_address, port, services, height, last_seen, version, self) "
-        "VALUES (?, 8033, 1029, 0, strftime('%s','now'), '0.1.0', 1)",
+        "(onion_address, port, services, height, last_seen, version, self,"
+        " clearnet_ip, clearnet_port) "
+        "VALUES (?, 8033, 1029, 0, strftime('%s','now'), '0.1.0', 1, ?, ?)",
         -1, &ins, NULL) != SQLITE_OK || !ins) {
         fprintf(stderr, "onion_service: failed to prepare self-register: %s\n",
                 sqlite3_errmsg(db));
         return;
     }
     sqlite3_bind_text(ins, 1, ctx->address, -1, SQLITE_STATIC);
+    sqlite3_bind_text(ins, 2, ip_str[0] ? ip_str : "", -1, SQLITE_STATIC);
+    sqlite3_bind_int(ins, 3, ip_str[0] ? 8033 : 0);
     sqlite3_step(ins);
     sqlite3_finalize(ins);
 }
@@ -438,12 +462,12 @@ static size_t serve_directory_json(uint8_t *response, size_t max)
     sqlite3_stmt *s = NULL;
     sqlite3_prepare_v2(db,
         "SELECT onion_address, port, services, height, last_seen, "
-        "version, self FROM peer_directory "
+        "version, self, clearnet_ip, clearnet_port FROM peer_directory "
         "ORDER BY self DESC, last_seen DESC LIMIT 500",
         -1, &s, NULL);
 
     int count = 0;
-    while (sqlite3_step(s) == SQLITE_ROW && off + 256 < sizeof(body)) {
+    while (sqlite3_step(s) == SQLITE_ROW && off + 512 < sizeof(body)) {
         const char *addr = (const char *)sqlite3_column_text(s, 0);
         int port = sqlite3_column_int(s, 1);
         int svc = sqlite3_column_int(s, 2);
@@ -451,15 +475,19 @@ static size_t serve_directory_json(uint8_t *response, size_t max)
         int64_t ls = sqlite3_column_int64(s, 4);
         const char *ver = (const char *)sqlite3_column_text(s, 5);
         int self = sqlite3_column_int(s, 6);
+        const char *cip = (const char *)sqlite3_column_text(s, 7);
+        int cport = sqlite3_column_int(s, 8);
 
         if (count > 0) off += (size_t)snprintf(body + off, sizeof(body) - off, ",");
         off += (size_t)snprintf(body + off, sizeof(body) - off,
             "{\"onion\":\"%s\",\"port\":%d,\"services\":%d,"
             "\"height\":%d,\"last_seen\":%lld,"
-            "\"version\":\"%s\",\"self\":%s}",
+            "\"version\":\"%s\",\"self\":%s,"
+            "\"clearnet_ip\":\"%s\",\"clearnet_port\":%d}",
             addr ? addr : "", port, svc, h,
             (long long)ls, ver ? ver : "",
-            self ? "true" : "false");
+            self ? "true" : "false",
+            cip ? cip : "", cport);
         count++;
     }
     sqlite3_finalize(s);

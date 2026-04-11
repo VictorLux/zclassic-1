@@ -70,7 +70,7 @@ int test_blog(void)
         if (dir) {
             found = blog_discover_onion_peers(dir, peers, 10);
             ok = ok && (found == 0);
-            rmdir(dir);
+            test_cleanup_tmpdir(dir);
         }
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
@@ -98,7 +98,7 @@ int test_blog(void)
             ok = ok && (len > 0);
             ok = ok && (strstr(out, "404") != NULL);
 
-            rmdir(dir);
+            test_cleanup_tmpdir(dir);
         }
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
@@ -117,7 +117,7 @@ int test_blog(void)
             if (len < sizeof(out)) out[len] = '\0';
             ok = ok && (len > 0);
             ok = ok && (strstr(out, "403") != NULL);
-            rmdir(dir);
+            test_cleanup_tmpdir(dir);
         }
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
@@ -193,8 +193,7 @@ int test_blog(void)
             }
 
             /* Clean up: remove node.db and tmpdir */
-            unlink(db_path);
-            rmdir(dir);
+            test_cleanup_tmpdir(dir);
         }
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }

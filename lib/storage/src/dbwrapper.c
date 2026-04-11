@@ -148,6 +148,29 @@ bool db_wrapper_open(struct db_wrapper *w, const char *path,
     return true;
 }
 
+bool db_wrapper_snapshot_begin(struct db_wrapper *w)
+{
+    if (!w || !w->db) return false;
+    if (w->snapshot) return true; /* already active */
+
+    w->snapshot = leveldb_create_snapshot(w->db);
+    if (!w->snapshot) return false;
+
+    /* Point iter_options at the snapshot so all new iterators see a
+     * frozen, consistent view of the database. */
+    leveldb_readoptions_set_snapshot(w->iter_options, w->snapshot);
+    return true;
+}
+
+void db_wrapper_snapshot_end(struct db_wrapper *w)
+{
+    if (!w || !w->db || !w->snapshot) return;
+
+    leveldb_readoptions_set_snapshot(w->iter_options, NULL);
+    leveldb_release_snapshot(w->db, w->snapshot);
+    w->snapshot = NULL;
+}
+
 bool db_wrapper_repair(const char *path)
 {
     leveldb_options_t *opts = leveldb_options_create();
@@ -178,6 +201,11 @@ size_t db_wrapper_count(struct db_wrapper *w)
 
 void db_wrapper_close(struct db_wrapper *w)
 {
+    if (w->snapshot && w->db) {
+        leveldb_readoptions_set_snapshot(w->iter_options, NULL);
+        leveldb_release_snapshot(w->db, w->snapshot);
+        w->snapshot = NULL;
+    }
     if (w->db) leveldb_close(w->db);
     if (w->read_options) leveldb_readoptions_destroy(w->read_options);
     if (w->iter_options) leveldb_readoptions_destroy(w->iter_options);

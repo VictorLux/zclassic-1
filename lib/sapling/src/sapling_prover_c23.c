@@ -78,41 +78,19 @@ bool zclassic_sapling_check_spend(
     const uint8_t *zkproof, const uint8_t *spend_auth_sig,
     const uint8_t *sighash_value)
 {
-    (void)anchor; (void)nullifier; (void)zkproof;
-    (void)spend_auth_sig; (void)sighash_value;
-
-    /* Structural validation: cv and rk must be valid Jubjub points.
-     * Full Groth16 proof verification is expensive and blocks were
-     * already validated by the network. Skip proof check for sync. */
-    struct sapling_verification_ctx *vctx = ctx;
-    if (!vctx) return false;
-
-    struct jub_point cv_point;
-    if (!jub_from_bytes(&cv_point, cv)) return false;
-    jub_add(&vctx->bvk, &vctx->bvk, &cv_point);
-
-    struct jub_point rk_point;
-    if (!jub_from_bytes(&rk_point, rk)) return false;
-
-    return true;
+    /* Full Groth16 + SpendAuth + binding sig accumulation.
+     * Delegates to sapling.c which handles bvk accumulation internally. */
+    return sapling_check_spend(ctx, cv, anchor, nullifier, rk,
+                                zkproof, spend_auth_sig, sighash_value);
 }
 
 bool zclassic_sapling_check_output(
     void *ctx, const uint8_t *cv, const uint8_t *cm,
     const uint8_t *epk, const uint8_t *zkproof)
 {
-    (void)cm; (void)epk; (void)zkproof;
-
-    struct sapling_verification_ctx *vctx = ctx;
-    if (!vctx) return false;
-
-    struct jub_point cv_point;
-    if (!jub_from_bytes(&cv_point, cv)) return false;
-    struct jub_point neg_cv;
-    jub_neg(&neg_cv, &cv_point);
-    jub_add(&vctx->bvk, &vctx->bvk, &neg_cv);
-
-    return true;
+    /* Full Groth16 + binding sig accumulation.
+     * Delegates to sapling.c which handles bvk accumulation internally. */
+    return sapling_check_output(ctx, cv, cm, epk, zkproof);
 }
 
 bool zclassic_sapling_final_check(

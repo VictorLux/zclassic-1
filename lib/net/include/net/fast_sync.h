@@ -64,14 +64,20 @@ bool fast_sync_verify_pow(const struct fast_sync_pow *pow);
 /* Solve a PoW challenge (blocking, ~0.5s). */
 bool fast_sync_solve_pow(const uint8_t peer_id[32], struct fast_sync_pow *pow);
 
-/* Rate limiter state (per node, tracks IPs) */
+/* Max total chunks across all IPs per hour (global cap) */
+#define FAST_SYNC_MAX_GLOBAL_CHUNKS_PER_HOUR 50000
+
+/* Rate limiter state (per node, tracks IPs + global) */
 struct fast_sync_rate_limiter {
     struct {
         uint8_t ip[16];
         int64_t window_start;
         uint32_t chunks_sent;
-    } entries[256];
+    } entries[1024];
     size_t num_entries;
+    /* Global rate tracking */
+    int64_t global_window_start;
+    uint64_t global_chunks_sent;
 };
 
 /* Check if an IP is rate-limited. Returns true if OK to serve. */

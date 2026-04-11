@@ -21,7 +21,7 @@ static int64_t win_time_ms(void)
     return (int64_t)(t / 10000);
 }
 
-void scheduler_init(struct scheduler *s)
+void zcl_scheduler_init(struct scheduler *s)
 {
     memset(s, 0, sizeof(*s));
     InitializeCriticalSection(&s->mutex);
@@ -124,7 +124,7 @@ static int timespec_cmp(struct timespec a, struct timespec b)
     return 0;
 }
 
-void scheduler_init(struct scheduler *s)
+void zcl_scheduler_init(struct scheduler *s)
 {
     memset(s, 0, sizeof(*s));
     pthread_mutex_init(&s->mutex, NULL);

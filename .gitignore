@@ -33,6 +33,13 @@ zcl_torrc_hs_*/
 zcl_torrc_path_*/
 zcl_hostname_*/
 zcl_persist_*/
+.zcl_test_*/
+.zcl_blog_*/
+
+# Build artifacts (additional)
+zclassic23-asan
+speedrun
+export_snapshot
 
 # Editor / OS
 .DS_Store

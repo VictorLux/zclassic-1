@@ -226,6 +226,11 @@ bool block_tree_db_load_block_index_guts(struct block_tree_db *btdb,
         pindex->nHeight = dbi.nHeight;
         pindex->nFile = dbi.nFile;
         pindex->nDataPos = dbi.nDataPos;
+        /* Fix file 0 offset: zclassicd's LDB positions for blk00000.dat
+         * exclude the genesis block (1695 bytes + 8-byte header = 1703).
+         * Our block files include it, so add the offset for file 0. */
+        if (dbi.nFile == 0 && dbi.nDataPos > 0 && dbi.nHeight > 0)
+            pindex->nDataPos += 1703;
         pindex->nUndoPos = dbi.nUndoPos;
         pindex->hashSproutAnchor = dbi.hashSproutAnchor;
         pindex->nVersion = dbi.nVersion;
@@ -234,8 +239,9 @@ bool block_tree_db_load_block_index_guts(struct block_tree_db *btdb,
         pindex->nTime = dbi.nTime;
         pindex->nBits = dbi.nBits;
         pindex->nNonce = dbi.nNonce;
-        memcpy(pindex->nSolution, dbi.nSolution, dbi.nSolutionSize);
-        pindex->nSolutionSize = dbi.nSolutionSize;
+        /* Don't store solution in block_index to save RAM */
+        pindex->nSolution = NULL;
+        pindex->nSolutionSize = 0;
         pindex->nStatus = dbi.nStatus;
         pindex->nCachedBranchId = dbi.nCachedBranchId;
         pindex->nTx = dbi.nTx;

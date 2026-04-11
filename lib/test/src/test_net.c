@@ -2319,8 +2319,7 @@ int test_net(void)
 
     /* Clean up and create test directory */
     {
-        (void)remove(TEST_SYNC_DB);
-        (void)rmdir(TEST_SYNC_DIR);
+        test_cleanup_tmpdir(TEST_SYNC_DIR);
         mkdir(TEST_SYNC_DIR, 0755);
     }
 
@@ -2889,8 +2888,7 @@ int test_net(void)
 
     /* Clean up test database */
     sqlite3_close(test_db);
-    (void)remove(TEST_SYNC_DB);
-    (void)rmdir(TEST_SYNC_DIR);
+    test_cleanup_tmpdir(TEST_SYNC_DIR);
 
 skip_parallel_tests:
 
@@ -3178,6 +3176,80 @@ skip_parallel_tests:
         bool ok = (node.misbehavior == 100 && node.disconnect);
         if (ok) printf("OK\n");
         else { printf("FAIL (score=%d)\n", node.misbehavior); failures++; }
+    }
+
+    /* ── P2P dispatch table tests ────────────────────────── */
+
+    printf("dispatch: table has no duplicate commands... ");
+    {
+        const struct msg_dispatch_entry *table = msg_get_dispatch_table();
+        bool ok = true;
+        for (const struct msg_dispatch_entry *a = table; a->handler; a++) {
+            for (const struct msg_dispatch_entry *b = a + 1; b->handler; b++) {
+                if (strcmp(a->command, b->command) == 0) {
+                    printf("DUPLICATE: %s\n", a->command);
+                    ok = false;
+                }
+            }
+        }
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("dispatch: all commands <= 12 bytes... ");
+    {
+        const struct msg_dispatch_entry *table = msg_get_dispatch_table();
+        bool ok = true;
+        for (const struct msg_dispatch_entry *e = table; e->handler; e++) {
+            if (strlen(e->command) > 12) {
+                printf("TOO LONG: %s (%zu)\n", e->command, strlen(e->command));
+                ok = false;
+            }
+        }
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("dispatch: all handlers non-NULL... ");
+    {
+        const struct msg_dispatch_entry *table = msg_get_dispatch_table();
+        bool ok = true;
+        int count = 0;
+        for (const struct msg_dispatch_entry *e = table; e->handler; e++) {
+            if (!e->handler) { ok = false; break; }
+            count++;
+        }
+        ok = ok && (count >= 18); /* at least 18 standard + z* handlers */
+        if (ok) printf("OK (%d entries)\n", count);
+        else { printf("FAIL (count=%d)\n", count); failures++; }
+    }
+
+    printf("dispatch: version does not require handshake... ");
+    {
+        const struct msg_dispatch_entry *table = msg_get_dispatch_table();
+        bool found = false;
+        for (const struct msg_dispatch_entry *e = table; e->handler; e++) {
+            if (strcmp(e->command, "version") == 0) {
+                found = !e->requires_handshake;
+                break;
+            }
+        }
+        if (found) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("dispatch: zgame requires handshake and is zcl23_only... ");
+    {
+        const struct msg_dispatch_entry *table = msg_get_dispatch_table();
+        bool found = false;
+        for (const struct msg_dispatch_entry *e = table; e->handler; e++) {
+            if (strcmp(e->command, "zgame") == 0) {
+                found = e->requires_handshake && e->zcl23_only;
+                break;
+            }
+        }
+        if (found) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
     }
 
     return failures;

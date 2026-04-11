@@ -52,7 +52,8 @@ bool contextual_check_transaction(const struct transaction *tx,
 
 /* Skip Groth16 proof verification for blocks at or below this height.
  * Set via -assumevalid=<hash>. Default: latest checkpoint height.
- * Value of -1 disables (verify everything). */
-extern int g_assume_valid_height;
+ * Value of -1 disables (verify everything).
+ * Atomic: read from validation threads, written by bg_validation + boot. */
+extern _Atomic int g_assume_valid_height;
 
 #endif

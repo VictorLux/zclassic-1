@@ -11,6 +11,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "core/uint256.h"
 
 #define REJECT_MALFORMED        0x01
 #define REJECT_INVALID          0x10
@@ -36,6 +37,12 @@ struct validation_state {
     unsigned int reject_code;
     bool corruption_possible;
     char debug_message[MAX_REJECT_REASON];
+    /* Self-healing: when connect_block fails with "bad-txns-inputs-missingorspent",
+     * these fields identify the first missing UTXO so the caller can recover it
+     * from block data on disk instead of permanently marking the block failed. */
+    struct uint256 missing_txid;
+    uint32_t missing_vout;
+    bool has_missing_utxo;
 };
 
 static inline void validation_state_init(struct validation_state *s)
@@ -46,6 +53,9 @@ static inline void validation_state_init(struct validation_state *s)
     s->corruption_possible = false;
     s->reject_reason[0] = '\0';
     s->debug_message[0] = '\0';
+    memset(&s->missing_txid, 0, sizeof(s->missing_txid));
+    s->missing_vout = 0;
+    s->has_missing_utxo = false;
 }
 
 static inline bool validation_state_dos(struct validation_state *s,

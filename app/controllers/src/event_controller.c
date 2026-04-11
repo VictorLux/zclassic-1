@@ -7,6 +7,7 @@
 #include "controllers/strong_params.h"
 #include "config/boot.h"
 #include "services/node_health_service.h"
+#include "services/bg_validation_service.h"
 #include "event/event.h"
 #include "json/json.h"
 #include "rpc/server.h"
@@ -117,12 +118,76 @@ static bool rpc_healthcheck(const struct json_value *params, bool help,
     return true;
 }
 
+static bool rpc_validationstatus(const struct json_value *params, bool help,
+                                 struct json_value *result)
+{
+    (void)params;
+    RPC_HELP(help, result,
+        "validationstatus\n"
+        "\nReturn background full validation progress.\n"
+        "\nAfter fast sync (FlyClient + SHA3), the node verifies every\n"
+        "historical signature, zk-SNARK proof, and Equihash solution\n"
+        "in a background thread using parallel script verification.\n"
+        "\nResult:\n"
+        "  { \"state\": \"...\", \"verified_height\": N, \"chain_height\": N,\n"
+        "    \"percent\": N.N, \"sigs_verified\": N, \"proofs_verified\": N,\n"
+        "    \"blocks_per_sec\": N }\n");
+
+    json_set_object(result);
+
+    if (!g_bg_validation) {
+        json_push_kv_str(result, "state", "not_initialized");
+        return true;
+    }
+
+    struct bg_validation_progress p = bg_validation_get_progress(g_bg_validation);
+    json_push_kv_str(result, "state",
+                     bg_validation_state_name((enum bg_validation_state)p.state));
+    json_push_kv_int(result, "verified_height", (int64_t)p.verified_height);
+    json_push_kv_int(result, "chain_height", (int64_t)p.chain_height);
+
+    double pct = 0.0;
+    if (p.chain_height > 0)
+        pct = 100.0 * (double)(p.verified_height + 1) / (double)(p.chain_height + 1);
+    /* Format as fixed-point integer (10x percent) for JSON compatibility */
+    json_push_kv_int(result, "percent_x10", (int64_t)(pct * 10.0));
+
+    json_push_kv_int(result, "sigs_verified", p.sigs_verified);
+    json_push_kv_int(result, "proofs_verified", p.proofs_verified);
+    json_push_kv_int(result, "blocks_per_sec", p.blocks_per_sec);
+
+    return true;
+}
+
+static bool rpc_resetvalidation(const struct json_value *params, bool help,
+                                struct json_value *result)
+{
+    (void)params;
+    RPC_HELP(help, result,
+        "resetvalidation\n"
+        "\nReset background validation and re-verify all blocks from genesis.\n"
+        "\nResult:\n"
+        "  { \"reset\": true }\n");
+
+    json_set_object(result);
+    if (g_bg_validation) {
+        bg_validation_reset(g_bg_validation);
+        json_push_kv_bool(result, "reset", true);
+    } else {
+        json_push_kv_bool(result, "reset", false);
+        json_push_kv_str(result, "error", "bg_validation not initialized");
+    }
+    return true;
+}
+
 void register_event_rpc_commands(struct rpc_table *t)
 {
     struct rpc_command cmds[] = {
-        { "control", "eventlog",     rpc_eventlog,     true },
-        { "control", "syncstate",    rpc_syncstate,    true },
-        { "control", "healthcheck",  rpc_healthcheck,  true },
+        { "control", "eventlog",          rpc_eventlog,          true },
+        { "control", "syncstate",         rpc_syncstate,         true },
+        { "control", "healthcheck",       rpc_healthcheck,       true },
+        { "control", "validationstatus",  rpc_validationstatus,  true },
+        { "control", "resetvalidation",   rpc_resetvalidation,   true },
     };
 
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++)

@@ -82,7 +82,7 @@ struct block_index {
     uint32_t nTime;
     uint32_t nBits;
     struct uint256 nNonce;
-    unsigned char nSolution[MAX_SOLUTION_SIZE];
+    unsigned char *nSolution;      /* heap-allocated, NULL if not loaded */
     size_t nSolutionSize;
 
     uint32_t nSequenceId;

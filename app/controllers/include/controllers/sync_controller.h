@@ -82,6 +82,18 @@ bool node_db_sync_open_private_db_like(const struct node_db *src,
  * Prevents connect_block from overwriting the Sapling tree. */
 extern _Atomic bool g_sapling_rescan_active;
 
+/* Global flag: set to true while rebuildsaplingtree RPC is running.
+ * Suppresses fatal Sapling tree root mismatch rejection so the node
+ * can keep accepting blocks while the tree is being rebuilt. */
+extern _Atomic bool g_sapling_tree_rebuilding;
+
+/* Rebuild the Sapling commitment tree by replaying all shielded outputs
+ * from block files (mmap-based, thread-safe). Returns total commitments
+ * appended, or -1 on error. Persists result to node_state["sapling_tree"]. */
+int sapling_tree_rebuild(struct node_db *ndb,
+                         const struct active_chain *chain,
+                         const char *datadir);
+
 /* Called after a block is successfully connected to the active chain.
  * Indexes the block header, all transactions, and updates the UTXO set.
  * Runs inside a SQLite transaction for atomicity. */

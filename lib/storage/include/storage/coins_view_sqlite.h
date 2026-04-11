@@ -7,13 +7,15 @@
 #include "coins/utxo_commitment.h"
 #include <sqlite3.h>
 #include <stdbool.h>
+#include <pthread.h>
 
 struct coins_view_sqlite {
     struct coins_view view;          /* vtable-based polymorphism */
-    sqlite3 *db;                     /* dedicated handle for coins (reads+writes) */
+    sqlite3 *db;                     /* shared handle for coins (reads+writes) */
     bool owns_db;                    /* true = we opened db, must close it */
+    pthread_mutex_t mutex;           /* serialize all statement access */
 
-    /* Prepared statements (all on dedicated db handle) */
+    /* Prepared statements (all on shared db handle) */
     sqlite3_stmt *stmt_get;          /* all vouts for a txid */
     sqlite3_stmt *stmt_have;         /* existence check */
     sqlite3_stmt *stmt_insert;       /* upsert single UTXO */
@@ -41,6 +43,12 @@ bool coins_view_sqlite_get_best_block(struct coins_view_sqlite *cvs,
 bool coins_view_sqlite_batch_write(struct coins_view_sqlite *cvs,
                                     struct coins_map *map_coins,
                                     const struct uint256 *hash_block);
+/* Extended version: writes UTXO commitment atomically inside the
+ * same SAVEPOINT transaction as the coins flush. Pass NULL to skip. */
+bool coins_view_sqlite_batch_write_ex(struct coins_view_sqlite *cvs,
+                                       struct coins_map *map_coins,
+                                       const struct uint256 *hash_block,
+                                       const struct utxo_commitment *commit);
 
 /* UTXO commitment persistence */
 bool coins_view_sqlite_write_commitment(struct coins_view_sqlite *cvs,

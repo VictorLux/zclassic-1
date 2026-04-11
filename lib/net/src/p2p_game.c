@@ -5,6 +5,7 @@
 #include "net/p2p_game.h"
 #include <stdio.h>
 #include <string.h>
+#include <stdint.h>
 #include <time.h>
 #include <sys/time.h>
 
@@ -133,6 +134,131 @@ size_t game_serialize_state(uint8_t *out, size_t max,
     out[13] = (uint8_t)state->move_count;
     return 14;
 }
+
+/* ── Ping game logic ────────────────────────────────────── */
+
+void ping_init(struct ping_state *s)
+{
+    memset(s, 0, sizeof(*s));
+    s->rounds_total = 10;
+    s->min_us = INT64_MAX;
+}
+
+void ping_init_rounds(struct ping_state *s, uint32_t rounds)
+{
+    ping_init(s);
+    if (rounds > 0 && rounds <= 1000)
+        s->rounds_total = rounds;
+}
+
+bool ping_record_rtt(struct ping_state *s, int64_t rtt_us)
+{
+    if (rtt_us <= 0 || rtt_us > 60000000) /* reject >60s */
+        return s->rounds_done >= s->rounds_total;
+
+    s->sum_us += rtt_us;
+    if (rtt_us < s->min_us) s->min_us = rtt_us;
+    if (rtt_us > s->max_us) s->max_us = rtt_us;
+    s->rounds_done++;
+    return s->rounds_done >= s->rounds_total;
+}
+
+int64_t ping_avg_latency(const struct ping_state *s)
+{
+    if (s->rounds_done == 0) return -1;
+    return s->sum_us / (int64_t)s->rounds_done;
+}
+
+void ping_render(const struct ping_state *s, char *out, size_t max)
+{
+    if (s->rounds_done == 0) {
+        snprintf(out, max, "Ping: 0/%u rounds", s->rounds_total);
+        return;
+    }
+    int64_t avg = ping_avg_latency(s);
+    snprintf(out, max,
+        "Ping: %u/%u rounds  min=%.1fms  avg=%.1fms  max=%.1fms",
+        s->rounds_done, s->rounds_total,
+        (double)s->min_us / 1000.0,
+        (double)avg / 1000.0,
+        (double)s->max_us / 1000.0);
+}
+
+/* ── Game Type Registry ─────────────────────────────────── */
+
+static void ping_init_void(void *s) { ping_init(s); }
+static bool ping_is_finished(const void *s)
+{
+    const struct ping_state *p = s;
+    return p->rounds_done >= p->rounds_total;
+}
+static uint8_t ping_get_winner(const void *s) { (void)s; return 3; /* draw */ }
+static void ping_render_void(const void *s, char *out, size_t max)
+{
+    ping_render(s, out, max);
+}
+
+static void ttt_init_void(void *s) { ttt_init(s); }
+static bool ttt_is_finished(const void *s)
+{
+    const struct ttt_state *t = s;
+    return t->winner != 0;
+}
+static uint8_t ttt_get_winner(const void *s)
+{
+    const struct ttt_state *t = s;
+    return t->winner;
+}
+static void ttt_render_void(const void *s, char *out, size_t max)
+{
+    ttt_render(s, out, max);
+}
+
+static const struct game_type_def g_game_types[] = {
+    {
+        .type_id = GAME_PING,
+        .name = "ping",
+        .state_size = sizeof(struct ping_state),
+        .init = ping_init_void,
+        .is_finished = ping_is_finished,
+        .get_winner = ping_get_winner,
+        .render = ping_render_void,
+    },
+    {
+        .type_id = GAME_TICTACTOE,
+        .name = "tictactoe",
+        .state_size = sizeof(struct ttt_state),
+        .init = ttt_init_void,
+        .is_finished = ttt_is_finished,
+        .get_winner = ttt_get_winner,
+        .render = ttt_render_void,
+    },
+    { .type_id = 0xFF, .name = NULL } /* sentinel */
+};
+
+const struct game_type_def *game_type_lookup(uint8_t type_id)
+{
+    for (const struct game_type_def *g = g_game_types; g->name; g++) {
+        if (g->type_id == type_id)
+            return g;
+    }
+    return NULL;
+}
+
+const struct game_type_def *game_type_list(void)
+{
+    return g_game_types;
+}
+
+int game_type_count(void)
+{
+    int n = 0;
+    for (const struct game_type_def *g = g_game_types; g->name; g++)
+        n++;
+    return n;
+}
+
+/* ── Wire format serialization ───────────────────────────── */
 
 enum game_action game_deserialize(const uint8_t *data, size_t len,
                                    uint8_t *game_type_out,

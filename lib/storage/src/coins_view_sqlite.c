@@ -59,6 +59,7 @@ bool coins_view_sqlite_open(struct coins_view_sqlite *cvs, sqlite3 *db)
     memset(cvs, 0, sizeof(*cvs));
     cvs->view.vtable = &cvs_vtable;
     cvs->view.impl = cvs;
+    pthread_mutex_init(&cvs->mutex, NULL);
 
     /* Use the shared database handle with SAVEPOINT nesting.
      * A dedicated connection causes WAL lock contention: when node_db
@@ -68,9 +69,10 @@ bool coins_view_sqlite_open(struct coins_view_sqlite *cvs, sqlite3 *db)
     cvs->db = db;
     cvs->owns_db = false;
     printf("coins_view_sqlite: using shared connection (SAVEPOINT mode)\n");
-    {
-        (void)0; /* placeholder for removed dedicated connection code */
-    }
+
+    /* Cap WAL size to 100MB to prevent unbounded growth.
+     * A 6GB WAL was observed when flush failures accumulated. */
+    sqlite3_exec(db, "PRAGMA journal_size_limit = 104857600", NULL, NULL, NULL);
 
     int rc;
 
@@ -131,6 +133,7 @@ fail:
 
 void coins_view_sqlite_close(struct coins_view_sqlite *cvs)
 {
+    pthread_mutex_lock(&cvs->mutex);
     if (cvs->stmt_get)        { sqlite3_finalize(cvs->stmt_get);        cvs->stmt_get = NULL; }
     if (cvs->stmt_have)       { sqlite3_finalize(cvs->stmt_have);       cvs->stmt_have = NULL; }
     if (cvs->stmt_insert)     { sqlite3_finalize(cvs->stmt_insert);     cvs->stmt_insert = NULL; }
@@ -144,6 +147,8 @@ void coins_view_sqlite_close(struct coins_view_sqlite *cvs)
     }
     cvs->db = NULL;
     cvs->owns_db = false;
+    pthread_mutex_unlock(&cvs->mutex);
+    pthread_mutex_destroy(&cvs->mutex);
 }
 
 /* ── get_coins: build struct coins from SQLite rows ────────────── */
@@ -157,6 +162,7 @@ bool coins_view_sqlite_get_coins(struct coins_view_sqlite *cvs,
     coins_init(out);
     if (!cvs || !cvs->db || !cvs->stmt_get || !txid) return false;
 
+    pthread_mutex_lock(&cvs->mutex);
     sqlite3_stmt *s = cvs->stmt_get;
     sqlite3_reset(s);
     sqlite3_bind_blob(s, 1, txid->data, 32, SQLITE_STATIC);
@@ -181,6 +187,7 @@ bool coins_view_sqlite_get_coins(struct coins_view_sqlite *cvs,
 
     if (nrows == 0) {
         sqlite3_reset(s);
+        pthread_mutex_unlock(&cvs->mutex);
         return false;
     }
     found = true;
@@ -188,6 +195,7 @@ bool coins_view_sqlite_get_coins(struct coins_view_sqlite *cvs,
     /* Allocate once */
     if (!coins_alloc(out, (size_t)(max_vout + 1))) {
         sqlite3_reset(s);
+        pthread_mutex_unlock(&cvs->mutex);
         return false;
     }
     out->version = 1;
@@ -215,6 +223,7 @@ bool coins_view_sqlite_get_coins(struct coins_view_sqlite *cvs,
 
     coins_cleanup(out);
     sqlite3_reset(s);
+    pthread_mutex_unlock(&cvs->mutex);
     return found;
 }
 
@@ -223,14 +232,14 @@ bool coins_view_sqlite_get_coins(struct coins_view_sqlite *cvs,
 bool coins_view_sqlite_have_coins(struct coins_view_sqlite *cvs,
                                    const struct uint256 *txid)
 {
-    bool found;
-
     if (!cvs || !cvs->stmt_have || !txid) return false;
+    pthread_mutex_lock(&cvs->mutex);
     sqlite3_stmt *s = cvs->stmt_have;
     sqlite3_reset(s);
     sqlite3_bind_blob(s, 1, txid->data, 32, SQLITE_STATIC);
-    found = sqlite3_step(s) == SQLITE_ROW;
+    bool found = sqlite3_step(s) == SQLITE_ROW;
     sqlite3_reset(s);
+    pthread_mutex_unlock(&cvs->mutex);
     return found;
 }
 
@@ -243,6 +252,7 @@ bool coins_view_sqlite_get_best_block(struct coins_view_sqlite *cvs,
 
     if (!cvs || !cvs->db || !hash) return false;
     if (!cvs->stmt_best_get) { uint256_set_null(hash); return false; }
+    pthread_mutex_lock(&cvs->mutex);
     sqlite3_stmt *s = cvs->stmt_best_get;
     sqlite3_reset(s);
     if (sqlite3_step(s) == SQLITE_ROW) {
@@ -254,6 +264,7 @@ bool coins_view_sqlite_get_best_block(struct coins_view_sqlite *cvs,
         }
     }
     sqlite3_reset(s);
+    pthread_mutex_unlock(&cvs->mutex);
     if (found)
         return true;
     uint256_set_null(hash);
@@ -266,6 +277,14 @@ bool coins_view_sqlite_batch_write(struct coins_view_sqlite *cvs,
                                     struct coins_map *map_coins,
                                     const struct uint256 *hash_block)
 {
+    return coins_view_sqlite_batch_write_ex(cvs, map_coins, hash_block, NULL);
+}
+
+bool coins_view_sqlite_batch_write_ex(struct coins_view_sqlite *cvs,
+                                       struct coins_map *map_coins,
+                                       const struct uint256 *hash_block,
+                                       const struct utxo_commitment *commit)
+{
     if (!cvs->db) return false;
 
     /* Transaction control: dedicated connection uses BEGIN IMMEDIATE.
@@ -277,6 +296,25 @@ bool coins_view_sqlite_batch_write(struct coins_view_sqlite *cvs,
                                            : "RELEASE coins_flush";
     const char *txn_rollback = cvs->owns_db ? "ROLLBACK"
                                 : "ROLLBACK TO SAVEPOINT coins_flush";
+
+    pthread_mutex_lock(&cvs->mutex);
+
+    /* Reset ALL prepared statements BEFORE starting the transaction.
+     * Without this, any reader thread that left a statement in
+     * SQLITE_ROW state prevents SAVEPOINT from opening (rc=5:
+     * "cannot open savepoint - SQL statements in progress").
+     * This was the root cause of the 6GB WAL / 15GB RAM death loop. */
+    {
+        sqlite3_stmt *stmt = NULL;
+        while ((stmt = sqlite3_next_stmt(cvs->db, stmt)) != NULL)
+            sqlite3_reset(stmt);
+    }
+
+    /* Bump busy timeout for the flush — during IBD, WAL contention
+     * from background readers/checkpointers makes SQLITE_BUSY common.
+     * Without adequate timeout, flush failures cause unbounded memory
+     * growth (71GB WAL observed in production). */
+    sqlite3_busy_timeout(cvs->db, 30000); /* 30s for flush */
     {
         char *txn_err = NULL;
         int txn_rc = sqlite3_exec(cvs->db, txn_begin,
@@ -285,6 +323,8 @@ bool coins_view_sqlite_batch_write(struct coins_view_sqlite *cvs,
             fprintf(stderr, "coins_flush: %s failed rc=%d: %s\n",
                     txn_begin, txn_rc, txn_err ? txn_err : "unknown");
             if (txn_err) sqlite3_free(txn_err);
+            sqlite3_busy_timeout(cvs->db, 10000); /* restore */
+            pthread_mutex_unlock(&cvs->mutex);
             return false;
         }
     }
@@ -373,16 +413,25 @@ bool coins_view_sqlite_batch_write(struct coins_view_sqlite *cvs,
                     "write_errors=%d wrote=%zu deleted=%zu",
                     write_errors, entries_written, entries_deleted);
         sqlite3_exec(cvs->db, txn_rollback, NULL, NULL, NULL);
+        pthread_mutex_unlock(&cvs->mutex);
         return false;
     }
 
-    /* Verify: at least one operation should have occurred if map was dirty.
-     * Zero operations with a non-empty map indicates a silent failure. */
-    if (entries_written == 0 && entries_deleted == 0 &&
-        map_coins->size > 0) {
-        fprintf(stderr, "coins_flush: WARNING zero operations with "
-                "%zu dirty entries — possible silent failure\n",
-                map_coins->size);
+    /* Verify: at least one operation should have occurred if map had dirty
+     * entries. Count actual dirty entries — map_coins->size includes clean
+     * (read-only) entries that don't need flushing. */
+    if (entries_written == 0 && entries_deleted == 0) {
+        size_t dirty_count = 0;
+        for (size_t di = 0; di < map_coins->num_buckets; di++) {
+            struct coins_map_entry *de = &map_coins->buckets[di];
+            if (de->occupied && (de->entry.flags & COINS_CACHE_DIRTY))
+                dirty_count++;
+        }
+        if (dirty_count > 0) {
+            fprintf(stderr, "coins_flush: WARNING zero operations with "
+                    "%zu dirty entries (total=%zu) — possible silent failure\n",
+                    dirty_count, map_coins->size);
+        }
     }
 
     /* Update best block hash */
@@ -395,7 +444,26 @@ bool coins_view_sqlite_batch_write(struct coins_view_sqlite *cvs,
             fprintf(stderr, "coins_flush: best_block UPDATE failed rc=%d: "
                     "%s\n", rc, sqlite3_errmsg(cvs->db));
             sqlite3_exec(cvs->db, txn_rollback, NULL, NULL, NULL);
+            pthread_mutex_unlock(&cvs->mutex);
             return false;
+        }
+    }
+
+    /* Write UTXO commitment inside the same transaction (atomic with
+     * the coins flush). Previously this was a separate call after flush,
+     * creating a window where concurrent readers could block the next
+     * SAVEPOINT. */
+    if (commit) {
+        uint8_t buf[UTXO_COMMITMENT_SERIALIZED_SIZE];
+        utxo_commitment_serialize(commit, buf);
+        sqlite3_reset(cvs->stmt_commit_set);
+        sqlite3_bind_blob(cvs->stmt_commit_set, 1,
+                          buf, UTXO_COMMITMENT_SERIALIZED_SIZE, SQLITE_STATIC);
+        int rc = sqlite3_step(cvs->stmt_commit_set);
+        if (rc != SQLITE_DONE && rc != SQLITE_ROW) {
+            fprintf(stderr, "coins_flush: commitment UPDATE failed rc=%d: "
+                    "%s\n", rc, sqlite3_errmsg(cvs->db));
+            /* Non-fatal: commitment is optional, don't rollback coins */
         }
     }
 
@@ -414,9 +482,13 @@ bool coins_view_sqlite_batch_write(struct coins_view_sqlite *cvs,
                     txn_commit, errmsg ? errmsg : "unknown");
             if (errmsg) sqlite3_free(errmsg);
             sqlite3_exec(cvs->db, txn_rollback, NULL, NULL, NULL);
+            sqlite3_busy_timeout(cvs->db, 10000); /* restore */
+            pthread_mutex_unlock(&cvs->mutex);
             return false;
         }
     }
+    sqlite3_busy_timeout(cvs->db, 10000); /* restore default */
+    pthread_mutex_unlock(&cvs->mutex);
     return true;
 }
 
@@ -426,13 +498,17 @@ bool coins_view_sqlite_write_commitment(struct coins_view_sqlite *cvs,
                                          const struct utxo_commitment *uc)
 {
     if (!cvs || !cvs->db || !uc || !cvs->stmt_commit_set) return false;
+    pthread_mutex_lock(&cvs->mutex);
     uint8_t buf[UTXO_COMMITMENT_SERIALIZED_SIZE];
     utxo_commitment_serialize(uc, buf);
 
     sqlite3_reset(cvs->stmt_commit_set);
     sqlite3_bind_blob(cvs->stmt_commit_set, 1,
                       buf, UTXO_COMMITMENT_SERIALIZED_SIZE, SQLITE_STATIC);
-    return sqlite3_step(cvs->stmt_commit_set) == SQLITE_DONE;
+    bool ok = sqlite3_step(cvs->stmt_commit_set) == SQLITE_DONE;
+    sqlite3_reset(cvs->stmt_commit_set);
+    pthread_mutex_unlock(&cvs->mutex);
+    return ok;
 }
 
 bool coins_view_sqlite_read_commitment(struct coins_view_sqlite *cvs,
@@ -440,13 +516,20 @@ bool coins_view_sqlite_read_commitment(struct coins_view_sqlite *cvs,
 {
     if (!cvs || !cvs->db || !uc) { if (uc) utxo_commitment_init(uc); return false; }
     if (!cvs->stmt_commit_get) { utxo_commitment_init(uc); return false; }
+    pthread_mutex_lock(&cvs->mutex);
     sqlite3_reset(cvs->stmt_commit_get);
     if (sqlite3_step(cvs->stmt_commit_get) == SQLITE_ROW) {
         int len = sqlite3_column_bytes(cvs->stmt_commit_get, 0);
         const void *data = sqlite3_column_blob(cvs->stmt_commit_get, 0);
+        sqlite3_reset(cvs->stmt_commit_get);
+        pthread_mutex_unlock(&cvs->mutex);
         if (data && len >= UTXO_COMMITMENT_SERIALIZED_SIZE)
             return utxo_commitment_deserialize(uc, data, (size_t)len);
+        utxo_commitment_init(uc);
+        return false;
     }
+    sqlite3_reset(cvs->stmt_commit_get);
+    pthread_mutex_unlock(&cvs->mutex);
     utxo_commitment_init(uc);
     return false;
 }

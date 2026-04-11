@@ -44,7 +44,8 @@ struct scheduler {
     bool stop_when_empty;
 };
 
-void scheduler_init(struct scheduler *s);
+void zcl_scheduler_init(struct scheduler *s);
+#define scheduler_init zcl_scheduler_init
 void scheduler_destroy(struct scheduler *s);
 void scheduler_service_queue(struct scheduler *s);
 void scheduler_stop(struct scheduler *s, bool drain);

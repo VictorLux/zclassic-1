@@ -17,11 +17,12 @@
 #include "crypto/ed25519.h"
 #include "sapling/sapling.h"
 #include "sapling/sprout.h"
+#include "sapling/bn254.h"
 #include "core/serialize.h"
 #include "sapling/sapling_prover.h"
 
 /* Default: -1 (verify everything). Set by boot.c from -assumevalid flag. */
-int g_assume_valid_height = -1;
+_Atomic int g_assume_valid_height = -1;
 
 /* Convenience: REJECT_IF with variable DoS level (many checks use dosLevel) */
 #define REJECT_IF_DOS(cond, state, dos, reason) \
@@ -156,24 +157,32 @@ bool contextual_check_transaction(const struct transaction *tx,
         zclassic_sapling_verification_ctx_free(sctx);
     }
 
-    /* ── Sprout JoinSplit Groth16 proofs ─────────────────────── */
+    /* ── Sprout JoinSplit zk-SNARK proofs (Groth16 + PHGR13) ── */
     for (size_t i = 0; !skip_proofs && i < tx->num_joinsplit; i++) {
         const struct js_description *js = &tx->v_joinsplit[i];
-        if (!js->use_groth)
-            continue; /* Pre-Sapling PHGR proofs not verified in pure C23 */
 
         uint8_t h_sig[32];
         sprout_h_sig(js->random_seed.data, js->nullifiers[0].data,
                      js->nullifiers[1].data, tx->joinsplit_pubkey.data,
                      h_sig);
 
-        REJECT_UNLESS(sprout_verify_groth16(js->proof,
-                js->anchor.data, h_sig,
-                js->macs[0].data, js->macs[1].data,
-                js->nullifiers[0].data, js->nullifiers[1].data,
-                js->commitments[0].data, js->commitments[1].data,
-                (uint64_t)js->vpub_old, (uint64_t)js->vpub_new),
-                      state, 100, "bad-txns-joinsplit-proof-invalid");
+        if (js->use_groth) {
+            REJECT_UNLESS(sprout_verify_groth16(js->proof,
+                    js->anchor.data, h_sig,
+                    js->macs[0].data, js->macs[1].data,
+                    js->nullifiers[0].data, js->nullifiers[1].data,
+                    js->commitments[0].data, js->commitments[1].data,
+                    (uint64_t)js->vpub_old, (uint64_t)js->vpub_new),
+                          state, 100, "bad-txns-joinsplit-proof-invalid");
+        } else {
+            REJECT_UNLESS(sprout_verify_phgr13(js->proof,
+                    js->anchor.data, h_sig,
+                    js->macs[0].data, js->macs[1].data,
+                    js->nullifiers[0].data, js->nullifiers[1].data,
+                    js->commitments[0].data, js->commitments[1].data,
+                    (uint64_t)js->vpub_old, (uint64_t)js->vpub_new),
+                          state, 100, "bad-txns-joinsplit-phgr13-invalid");
+        }
     }
 
     return true;

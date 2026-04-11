@@ -78,7 +78,8 @@ void syncsvc_note_valid_block(struct sync_block_acceptance *result,
                               const struct p2p_node *node,
                               enum sync_state sync_state,
                               int new_tip_height,
-                              int best_header_height)
+                              int best_header_height,
+                              uint32_t new_tip_time)
 {
     struct sync_block_acceptance empty = {0};
     bool headers_caught_up = false;
@@ -87,13 +88,26 @@ void syncsvc_note_valid_block(struct sync_block_acceptance *result,
     *result = empty;
     if (!node) return;
 
-    if (node->starting_height <= 0 || new_tip_height < node->starting_height)
+    /* Match ZClassic C++ tip detection: consider "at tip" when EITHER:
+     * (a) our height >= peer's starting_height AND headers caught up, OR
+     * (b) our tip's block time is within PoWTargetSpacing*2 of now
+     *     (tip is recent, we're receiving blocks in real-time).
+     *
+     * (b) handles the edge case where peer's starting_height from
+     * handshake is stale — the peer advanced while we were syncing,
+     * so new_tip_height never reaches the old starting_height. */
+    bool tip_is_recent = (new_tip_time > 0 &&
+        (int64_t)new_tip_time > (int64_t)time(NULL) - 75 * 2);
+    bool reached_peer = (node->starting_height > 0 &&
+                         new_tip_height >= node->starting_height);
+
+    if (!reached_peer && !tip_is_recent)
         return;
 
     headers_caught_up =
         (best_header_height >= 0 && best_header_height <= new_tip_height + 1);
     result->reached_peer_tip = true;
-    if (headers_caught_up &&
+    if ((headers_caught_up || tip_is_recent) &&
         (sync_state == SYNC_BLOCKS_DOWNLOAD ||
          sync_state == SYNC_CONNECTING_BLOCKS ||
          sync_state == SYNC_REORG)) {
@@ -175,13 +189,28 @@ bool syncsvc_build_stall_recovery(struct sync_stall_recovery *recovery,
     recovery->chain_height = our_h;
     recovery->next_height = our_h + 1;
 
-    size_t ci = 0;
-    struct block_index *cx;
-    while (block_map_next(&ms->map_block_index, &ci, NULL, &cx)) {
-        if (cx && cx->nHeight == recovery->next_height) {
-            recovery->entries_at_next++;
-            if (cx->nStatus & BLOCK_FAILED_MASK) recovery->entries_failed++;
-            if (cx->nStatus & BLOCK_HAVE_DATA) recovery->entries_with_data++;
+    /* Scan a window of heights (not just +1) to find the first gap.
+     * This handles cases where height+1 has an orphan block but
+     * the real chain continues at height+2..+10. */
+    for (int probe = 1; probe <= 10; probe++) {
+        int check_h = our_h + probe;
+        bool found_data = false;
+        size_t pi = 0;
+        struct block_index *px;
+        while (block_map_next(&ms->map_block_index, &pi, NULL, &px)) {
+            if (px && px->nHeight == check_h) {
+                if (probe == 1) {
+                    recovery->entries_at_next++;
+                    if (px->nStatus & BLOCK_FAILED_MASK) recovery->entries_failed++;
+                    if (px->nStatus & BLOCK_HAVE_DATA) recovery->entries_with_data++;
+                }
+                if (px->nStatus & BLOCK_HAVE_DATA)
+                    found_data = true;
+            }
+        }
+        if (!found_data) {
+            recovery->next_height = check_h;
+            break;
         }
     }
 

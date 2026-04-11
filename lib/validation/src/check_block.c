@@ -134,24 +134,31 @@ bool contextual_check_block_header(const struct block_header *header,
 
     int nHeight = pindex_prev->nHeight + 1;
 
-    /* Equihash solution size for this height's (N,K) params */
+    /* Equihash solution size for this height's (N,K) params.
+     * Pre-Bubbles (h<585318): Equihash(200,9) → 1344 bytes.
+     * Post-Bubbles:           Equihash(192,7) → 400 bytes.
+     * Accept headers with no solution (sol_size==0) — the full solution
+     * is verified when the block is downloaded. */
     size_t sol_size = header->nSolutionSize;
     if (sol_size > 0) {
-        /* ZClassic uses Equihash(200,9) at all heights → 1344 bytes.
-         * After snapshot sync, pindex_prev heights may be wrong (block index
-         * entries from LDB import can have scrambled heights). Use the
-         * constant expected size directly to avoid false rejections. */
-        size_t expected = 1344; /* (2^9 * ((200/10)+1)) / 8 */
+        unsigned int eh_n = chain_params_equihash_n(params, nHeight);
+        unsigned int eh_k = chain_params_equihash_k(params, nHeight);
+        size_t expected = ((size_t)1 << eh_k) * (eh_n / (eh_k + 1) + 1) / 8;
         REJECT_IF(sol_size != expected,
                   state, 100, "bad-equihash-solution-size");
     }
 
     /* Difficulty check — always verify (cheap: O(17) block lookups).
-     * Only skip if the difficulty window is incomplete (missing nBits). */
+     * Skip if the difficulty window is incomplete: missing nBits,
+     * pprev chain broken, or GetNextWorkRequired would hit NULL.
+     * GetNextWorkRequired walks nPowAveragingWindow (17) blocks +
+     * median time past (11 more) = 28 blocks with valid pprev + nBits.
+     * After a snapshot anchor (pprev=NULL), skip until chain grows. */
     {
         bool window_clean = true;
         const struct block_index *check = pindex_prev;
-        for (int w = 0; w < 17 && check; w++) {
+        for (int w = 0; w < 28; w++) {
+            if (!check) { window_clean = false; break; }
             if (check->nBits == 0) { window_clean = false; break; }
             check = check->pprev;
         }

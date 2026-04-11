@@ -3,6 +3,7 @@
  * mining, wallet sync, shutdown, and utility functions. */
 
 #include "config/boot_internal.h"
+#include "services/chain_activation_controller.h"
 #include "storage/disk_block_io.h"
 #include "models/utxo.h"
 #include "models/mmb_leaf_store.h"
@@ -382,10 +383,12 @@ static void *background_utxo_replay(void *arg)
      * could lose 100K blocks of UTXO state, requiring full re-sync. */
     set_flush_policy(3600, 1000000, 500);
 
-    struct validation_state vs;
-    validation_state_init(&vs);
-    activate_best_chain(&vs, svc->state, svc->coins_tip,
-                         params, NULL, svc->datadir);
+    {
+        struct activation_exec_outcome outcome;
+        activation_request_connect(boot_activation_controller(),
+                                   ACTIVATION_SRC_UTXO_REPLAY,
+                                   NULL, &outcome);
+    }
 
     /* Restore normal flush policy */
     set_flush_policy(3600, 500000, 500);

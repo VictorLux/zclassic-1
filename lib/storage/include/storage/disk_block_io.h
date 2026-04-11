@@ -46,4 +46,48 @@ bool read_block_from_disk_index(struct block *b,
                                 const struct block_index *pindex,
                                 const char *datadir);
 
+/* Close the read-only file handle cache (call on shutdown). */
+void disk_block_io_close_cache(void);
+
+/* ── Thread-safe pread()-based I/O for background threads ──────
+ * These functions use POSIX open()/pread()/close() instead of the
+ * shared FILE* cache. They are stateless and fully thread-safe
+ * without any mutex — safe to call from bg_validation, bg_hash_verify,
+ * or any other thread concurrently with the main P2P message loop.
+ *
+ * Use these for any background thread that reads block/undo files.
+ * The main thread should continue using the cached FILE* path for
+ * performance (sequential IBD benefits from the cache). */
+
+/* Read raw bytes from a block/undo file at a given position.
+ * Returns bytes read, or -1 on error. Thread-safe, no shared state. */
+ssize_t disk_block_pread(const char *datadir, const struct disk_block_pos *pos,
+                         const char *prefix, uint8_t *buf, size_t len);
+
+/* Read and deserialize a block using pread(). Thread-safe.
+ * Equivalent to read_block_from_disk() but without the FILE* cache. */
+bool read_block_from_disk_pread(struct block *b,
+                                const struct disk_block_pos *pos,
+                                const char *datadir);
+
+/* Read and deserialize a block by index using pread(). Thread-safe.
+ * Equivalent to read_block_from_disk_index() but without the FILE* cache. */
+bool read_block_from_disk_index_pread(struct block *b,
+                                      const struct block_index *pindex,
+                                      const char *datadir);
+
+/* Lock/unlock the block I/O mutex. Callers that read block or undo
+ * files directly (not through read_block_from_disk) MUST wrap their
+ * fopen/fread/fseek/fclose in lock/unlock to prevent SIGSEGV from
+ * concurrent FILE* access across threads. */
+void disk_block_io_lock(void);
+void disk_block_io_unlock(void);
+
+/* Safely release a FILE* obtained from open_block_file/open_undo_file.
+ * If the handle is the cached g_cached_file, does nothing (cache owns it).
+ * If it's a different handle, calls fclose(). This prevents dangling
+ * g_cached_file pointers that cause SIGSEGV in subsequent readers.
+ * MUST be called while holding disk_block_io_lock(). */
+void disk_block_io_release_handle(FILE *f);
+
 #endif

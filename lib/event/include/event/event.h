@@ -106,6 +106,9 @@ enum event_type {
     EV_SNAPSYNC_PROGRESS,        /* payload: "received=N/N rate=N/s" */
     EV_SNAPSYNC_VERIFIED,        /* payload: "sha3=PASSED mmb=PASSED utxos=N" */
 
+    /* ── Chain activation controller ──────────────────── */
+    EV_ACTIVATION_STATE_CHANGE,  /* payload: "idle->boot_pending: reason" */
+
     EV_NUM_TYPES                 /* sentinel — must be last */
 };
 

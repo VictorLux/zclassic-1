@@ -24,6 +24,8 @@
 #include "controllers/sync_controller.h"
 #include "controllers/snapshot_controller.h"
 #include "services/snapshot_sync_service.h"
+#include "services/bg_validation_service.h"
+#include "services/bg_hash_verification_service.h"
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <sqlite3.h>
@@ -123,6 +125,8 @@ struct boot_svc_ctx {
     bool want_snapshot_tx_index;
     bool defer_payment_service;
     bool defer_offer_service;
+    struct bg_validation_service bg_validation;
+    struct bg_hash_verification_service bg_hash_verify;
 };
 
 bool app_init_services(struct app_context *ctx,

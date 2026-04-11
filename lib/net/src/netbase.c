@@ -241,7 +241,7 @@ bool close_socket(zcl_socket_t *sock)
     return ret != ZCL_SOCKET_ERROR;
 }
 
-bool set_socket_nonblocking(zcl_socket_t sock, bool nonblocking)
+bool zcl_set_socket_nonblocking(zcl_socket_t sock, bool nonblocking)
 {
 #ifdef _WIN32
     u_long mode = nonblocking ? 1 : 0;

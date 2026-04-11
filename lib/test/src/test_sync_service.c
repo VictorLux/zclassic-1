@@ -62,13 +62,21 @@ static int test_sync_service_request_policy(void)
         node.starting_height = 1000;
         node.last_getheaders_time = 100;
 
+        /* IBD: 10s interval */
         ASSERT(syncsvc_is_initial_block_download(&node, 500));
         ASSERT(!syncsvc_should_request_headers(&node, 500, 109));
         ASSERT(syncsvc_should_request_headers(&node, 500, 111));
 
+        /* Catching up (not IBD, but behind peer): 60s interval */
         ASSERT(!syncsvc_is_initial_block_download(&node, 900));
         ASSERT(!syncsvc_should_request_headers(&node, 900, 159));
         ASSERT(syncsvc_should_request_headers(&node, 900, 161));
+
+        /* At tip (caught up to peer starting_height): 120s interval */
+        ASSERT(!syncsvc_should_request_headers(&node, 1000, 219));
+        ASSERT(syncsvc_should_request_headers(&node, 1000, 221));
+        ASSERT(!syncsvc_should_request_headers(&node, 1500, 219));
+        ASSERT(syncsvc_should_request_headers(&node, 1500, 221));
         PASS();
     } _test_next:;
 
@@ -820,7 +828,7 @@ static int test_sync_service_valid_block_transition(void)
         node.state = PEER_SYNCING_BLOCKS;
         node.starting_height = 100;
 
-        syncsvc_note_valid_block(&result, &node, SYNC_BLOCKS_DOWNLOAD, 100, 100);
+        syncsvc_note_valid_block(&result, &node, SYNC_BLOCKS_DOWNLOAD, 100, 100, 0);
         ASSERT(result.reached_peer_tip);
         ASSERT(result.should_emit_tip_updated);
         ASSERT(result.should_set_sync_state);
@@ -848,7 +856,7 @@ static int test_sync_service_valid_block_waits_for_headers(void)
         node.state = PEER_SYNCING_BLOCKS;
         node.starting_height = 100;
 
-        syncsvc_note_valid_block(&result, &node, SYNC_BLOCKS_DOWNLOAD, 100, 125);
+        syncsvc_note_valid_block(&result, &node, SYNC_BLOCKS_DOWNLOAD, 100, 125, 0);
         ASSERT(result.reached_peer_tip);
         ASSERT(!result.should_set_sync_state);
         ASSERT(!result.should_emit_tip_updated);

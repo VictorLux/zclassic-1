@@ -201,7 +201,7 @@ void sha3_512_reset(struct sha3_512_ctx *ctx)
     sha3_512_init(ctx);
 }
 
-void sha3_256(const unsigned char *data, size_t len, unsigned char output[32])
+void zcl_sha3_256(const unsigned char *data, size_t len, unsigned char output[32])
 {
     struct sha3_256_ctx ctx;
     sha3_256_init(&ctx);
@@ -209,7 +209,7 @@ void sha3_256(const unsigned char *data, size_t len, unsigned char output[32])
     sha3_256_finalize(&ctx, output);
 }
 
-void sha3_512(const unsigned char *data, size_t len, unsigned char output[64])
+void zcl_sha3_512(const unsigned char *data, size_t len, unsigned char output[64])
 {
     struct sha3_512_ctx ctx;
     sha3_512_init(&ctx);

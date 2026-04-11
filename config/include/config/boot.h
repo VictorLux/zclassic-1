@@ -38,6 +38,8 @@ struct app_context {
     bool no_services;          /* skip P2P, RPC, Tor — boot only (speedrun) */
     const char *file_service_peer; /* -fileservice=addr : download from this peer */
     bool connect_only;         /* -connect= mode: only connect to addnodes, no seeds */
+    bool no_file_sync;         /* -nofilesync : skip file service download, use P2P only */
+    bool no_bg_validation;     /* -nobgvalidation : skip background proof verification */
 };
 
 void app_context_defaults(struct app_context *ctx);

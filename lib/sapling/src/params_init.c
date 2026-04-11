@@ -4,6 +4,7 @@
 
 #include "sapling/params_init.h"
 #include "sapling/bls12_381.h"
+#include "sapling/bn254.h"
 #include "sapling/sapling.h"
 #include "sapling/sprout.h"
 #include <stdio.h>
@@ -76,6 +77,26 @@ bool sapling_init_params(const char *params_dir)
     sapling_set_spend_vk(&spend_vk);
     sapling_set_output_vk(&output_vk);
     sprout_set_vk(&sprout_groth16_vk);
+
+    /* Sprout PHGR13 VK (pre-Sapling proofs, blocks 0-581876) */
+    {
+        static struct ppzksnark_vk phgr_vk;
+        char phgr_path[1024];
+        snprintf(phgr_path, sizeof(phgr_path),
+                 "%s/sprout-verifying.key", params_dir);
+        uint8_t *phgr_data = read_file(phgr_path, &len);
+        if (phgr_data) {
+            if (ppzksnark_vk_read(&phgr_vk, phgr_data, len)) {
+                sprout_phgr_set_vk(&phgr_vk);
+                printf("Loaded Sprout PHGR13 verification key: %zu bytes "
+                       "(%zu IC points)\n", len, phgr_vk.ic_len);
+            } else {
+                fprintf(stderr, "WARNING: Failed to parse sprout-verifying.key\n");
+            }
+            free(phgr_data);
+        }
+        /* Non-fatal if missing — PHGR13 proofs just won't be verified */
+    }
 
     /* Keep raw PK data for proving (VK is a subset of PK data) */
     snprintf(path, sizeof(path), "%s/sapling-spend.params", params_dir);

@@ -24,9 +24,14 @@
 #include <stdbool.h>
 
 /* Security parameter: number of random samples.
- * 20 samples gives 2^-20 forgery probability per sample ≈ 2^-80 total
- * for a chain of length n. Sufficient for practical security. */
-#define FC_NUM_SAMPLES  20
+ * Under the FlyClient weighted distribution, an adversary with <50%
+ * hashpower must forge PoW for each sampled block independently.
+ * With k samples and difficulty d, forgery probability ≤ (1/d)^k.
+ * ZClassic minimum difficulty ≈ 2^-13; 50 samples gives security:
+ *   50 * 13 = 650 bits against full-difficulty chain
+ *   50 * 3  = 150 bits against adversary with 1/8 hashpower
+ * This exceeds the 150-bit target for all realistic adversaries. */
+#define FC_NUM_SAMPLES  50
 #define FC_MAX_SAMPLES  64
 
 /* P2P message names (≤12 chars for ZCL P2P protocol) */

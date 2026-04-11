@@ -52,7 +52,9 @@ bool connect_socket_directly(const struct net_service *addr,
 
 bool close_socket(zcl_socket_t *sock);
 
-bool set_socket_nonblocking(zcl_socket_t sock, bool nonblocking);
+/* Prefixed to avoid conflict with Tor's socket.c */
+bool zcl_set_socket_nonblocking(zcl_socket_t sock, bool nonblocking);
+#define set_socket_nonblocking zcl_set_socket_nonblocking
 
 void split_host_port(const char *in, char *host_out, size_t host_size,
                      int *port_out);

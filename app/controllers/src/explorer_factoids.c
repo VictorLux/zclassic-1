@@ -695,24 +695,24 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
         }
     }
 
-    /* Largest single shielding (t→z) */
+    /* Largest single shielding (t→z): negative sapling_value = value entering pool */
     {
         struct sql_row_i64_3 row;
         const char *sql = "SELECT height, sapling_value, time FROM blocks "
-                          "WHERE sapling_value > 0 ORDER BY sapling_value DESC LIMIT 1";
+                          "WHERE sapling_value < 0 ORDER BY sapling_value ASC LIMIT 1";
         if (sql_query_row_i64_3(db, sql, &row)) {
             char vstr[64];
-            fmt_zcl(vstr, sizeof(vstr), row.v1);
+            fmt_zcl(vstr, sizeof(vstr), -row.v1);
             RECORD_ROW("Largest single-block shielding (t\xe2\x86\x92z)",
                 "%s ZCL", vstr, row.v0, row.v2);
         }
     }
 
-    /* Largest single unshielding (z→t) */
+    /* Largest single unshielding (z→t): positive sapling_value = value leaving pool */
     {
         struct sql_row_i64_3 row;
         const char *sql = "SELECT height, sapling_value, time FROM blocks "
-                          "WHERE sapling_value < 0 ORDER BY sapling_value ASC LIMIT 1";
+                          "WHERE sapling_value > 0 ORDER BY sapling_value DESC LIMIT 1";
         if (sql_query_row_i64_3(db, sql, &row)) {
             char vstr[64];
             fmt_zcl(vstr, sizeof(vstr), row.v1);

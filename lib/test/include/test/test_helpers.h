@@ -224,6 +224,8 @@ int test_file_controller(void);
 int test_file_ops(void);
 int test_integrity(void);
 int test_protocols(void);
+int test_chain_restore_service(void);
+int test_chain_activation_controller(void);
 
 /* Spec-based user story tests (one per feature area) */
 int spec_wallet_dashboard(void);

@@ -314,15 +314,65 @@ bool equihash_is_valid_solution(const struct equihash_params *p,
     struct eh_row *X = malloc(num_indices * sizeof(struct eh_row));
     if (!X) { free(indices); return false; }
 
-    unsigned char *tmp_hash = malloc(p->hash_output);
+    unsigned char *tmp_hash = malloc(p->hash_output * 8);
     if (!tmp_hash) { free(indices); free(X); return false; }
+    unsigned char *th0 = tmp_hash;
+    unsigned char *th1 = tmp_hash + p->hash_output;
+    unsigned char *th2 = tmp_hash + p->hash_output * 2;
+    unsigned char *th3 = tmp_hash + p->hash_output * 3;
 
-    for (size_t i = 0; i < num_indices; i++) {
-        generate_hash(base_state,
-                      indices[i] / (unsigned int)p->indices_per_hash_output,
-                      tmp_hash, p->hash_output);
-        size_t offset = (indices[i] % p->indices_per_hash_output) * p->N / 8;
-        eh_row_from_hash(&X[i], tmp_hash + offset,
+    /* 8-way batch hash generation (AVX-512 -> AVX2 -> scalar) */
+    size_t i = 0;
+    unsigned int iph = (unsigned int)p->indices_per_hash_output;
+    unsigned char *th_arr[8] = {th0, th1, th2, th3,
+                                tmp_hash + p->hash_output * 4,
+                                tmp_hash + p->hash_output * 5,
+                                tmp_hash + p->hash_output * 6,
+                                tmp_hash + p->hash_output * 7};
+    for (; i + 8 <= num_indices; i += 8) {
+        uint32_t gi[8];
+        for (int k = 0; k < 8; k++)
+            gi[k] = indices[i+k] / iph;
+        equihash_generate_hash_batch8(base_state, gi, th_arr,
+                                       p->hash_output);
+        for (int k = 0; k < 8; k++) {
+            size_t offset = (indices[i+k] % iph) * p->N / 8;
+            eh_row_from_hash(&X[i+k], th_arr[k] + offset,
+                             p->N / 8, p->hash_length,
+                             p->collision_bit_length, indices[i+k], width);
+            if (!X[i+k].data) {
+                for (size_t j = 0; j < i+k; j++) free(X[j].data);
+                free(X); free(indices); free(tmp_hash);
+                return false;
+            }
+        }
+    }
+    /* Handle remaining indices with 4-way or scalar */
+    for (; i + 4 <= num_indices; i += 4) {
+        uint32_t gi[4] = {
+            indices[i]/iph, indices[i+1]/iph,
+            indices[i+2]/iph, indices[i+3]/iph
+        };
+        equihash_generate_hash_batch4(base_state, gi,
+                                       th0, th1, th2, th3,
+                                       p->hash_output);
+        for (int k = 0; k < 4; k++) {
+            unsigned char *th = tmp_hash + (size_t)k * p->hash_output;
+            size_t offset = (indices[i+k] % iph) * p->N / 8;
+            eh_row_from_hash(&X[i+k], th + offset,
+                             p->N / 8, p->hash_length,
+                             p->collision_bit_length, indices[i+k], width);
+            if (!X[i+k].data) {
+                for (size_t j = 0; j < i+k; j++) free(X[j].data);
+                free(X); free(indices); free(tmp_hash);
+                return false;
+            }
+        }
+    }
+    for (; i < num_indices; i++) {
+        generate_hash(base_state, indices[i] / iph, th0, p->hash_output);
+        size_t offset = (indices[i] % iph) * p->N / 8;
+        eh_row_from_hash(&X[i], th0 + offset,
                          p->N / 8, p->hash_length,
                          p->collision_bit_length, indices[i], width);
         if (!X[i].data) {
