@@ -69,7 +69,7 @@ Work in order. When done, pull from `BACKLOG.md`.
 
 4. **peer_bandwidth wire-in** — primitives exist in `lib/net/src/peer_bandwidth.c`. Wire token-bucket calls into `connman.c` send/recv. Pause starved peers, resume on refill. Emit `EV_PEER_THROTTLED`.
 
-5. **Alert routing** — `lib/util/alerts.{h,c}` — threshold rules on `EV_*` events, dispatch to webhook (`ZCL_ALERT_WEBHOOK_URL`), email sink, log sink. Seed with 4 rules: disk_low, peer_bans_high, rpc_ratelimit_spike, chain_tip_rejected.
+5. ~~**Alert routing**~~ — **DONE.** `lib/util/{include/util/alerts.h,src/alerts.c}` — threshold rules on `EV_*` events, rolling-window counter + cooldown suppression, dispatch to log sink (always on) + webhook sink (fork+curl to `ZCL_ALERT_WEBHOOK_URL`). `ZCL_ALERTS_DISABLE=1` kills all alerting. 4 seed rules: `disk_low` (threshold=1), `peer_bans_high` (5 in 5min), `rpc_ratelimit_spike` (10 in 5min), `chain_tip_rejected` (threshold=1). Runtime `alerts_add_rule()` for custom rules. `alerts_report_json()` snapshot. 9 tests in `test_alerts.c`.
 
 ### Security
 
@@ -91,7 +91,7 @@ Work in order. When done, pull from `BACKLOG.md`.
 
 12. **Watch-only address support** — `zcl_importaddress` RPC + MCP tool. Track balance/transactions for addresses without private keys.
 
-13. **`make ci` target** — single command: `make test` + `make fuzz-ci` + `make coverage`. Fail-fast.
+13. ~~**`make ci` target**~~ — **DONE (6452a39e6).** `make ci` runs build → test → fuzz-ci → coverage, fail-fast. `SKIP_FUZZ=1` / `SKIP_COV=1` flags for local iteration.
 
 14. **MCP replay recorder** — `tools/mcp/replay.{h,c}` — ring buffer of last 100 requests+responses. `zcl_replay_dump` + `zcl_replay_exec` tools.
 

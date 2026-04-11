@@ -254,6 +254,7 @@ int test_ibd_throttle(void);
 int test_consensus_reject_events(void);
 int test_consensus_reject_index(void);
 int test_chain_rollback(void);
+int test_alerts(void);
 
 /* Spec-based user story tests (one per feature area) */
 int spec_wallet_dashboard(void);

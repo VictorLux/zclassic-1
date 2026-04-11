@@ -98,6 +98,7 @@ int main(void)
     failures += test_consensus_reject_events();
     failures += test_consensus_reject_index();
     failures += test_chain_rollback();
+    failures += test_alerts();
 
     /* Spec-based user story tests */
     failures += spec_wallet_dashboard();
