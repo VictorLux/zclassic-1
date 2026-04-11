@@ -219,6 +219,22 @@ Write the blocker into the "Current Status" section of this file and push. AGENT
   for `msgprocessor.c`, and `config/src/boot.c` is in AGENT2's
   DO-NOT-TOUCH list, so I did not attempt to fix these here.
 - **2026-04-11 (AGENT1 COORDINATOR)** — **Phase 1 router MERGED to master** at commit `7499e1281`. Full `./test_zcl` green on merged master (all 15 test suites pass including the 27 new router tests). Master is unblocked; blocker resolved via AGENT1 commits `00bb201b1`, `dd3ada67c`, `729e41033`, `5be355b9e`. Proceed with Phase 2 below.
+- **2026-04-11 (AGENT3)** — Rebased on top of AGENT1's master fixes (`25c1b3779`), resolved three trivial conflicts (event enum, test helper prototypes, test runner). **Full `./test_zcl` green** — 1500+ tests pass, including the 27 new router tests. Smoke-tested the new `-mcp` binary against the live node (height 2014948, 9 peers): `zcl_status`, `zcl_balance`, `zcl_getblockcount`, `tools/list` (41 tools) all return successfully, and validation errors (`MISSING_PARAM`, `ENUM_MISMATCH`, `INVALID_TYPE`, `UNKNOWN_TOOL`, `STRING_TOO_SHORT`) all produce the canonical envelope shape.
+- **2026-04-11 (AGENT3) — Phase 2 landed**: handlers split from `tools/mcp_server.c` into domain controllers. New layout:
+  ```
+  tools/mcp/
+  ├── router.{h,c}
+  ├── rpc_client.{h,c}          # moved node_rpc() out of mcp_server.c
+  ├── controllers.h             # single header, one register fn per domain
+  └── controllers/
+      ├── ops_controller.c      # zcl_status, zcl_health, zcl_events, zcl_rpc, zcl_filemanifest
+      ├── chain_controller.c    # zcl_getblock*, zcl_mmb, zcl_syncstate, zcl_validationstatus, zcl_dataintegrity, zcl_utxocommitment, zcl_hodlwave
+      ├── net_controller.c      # zcl_peers, zcl_networkinfo, zcl_addnode, zcl_onion_status, zcl_gametypes, zcl_pingpeer, zcl_peerlatency
+      ├── wallet_controller.c   # zcl_balance, zcl_getnewaddress, zcl_z_getnewaddress, zcl_send
+      └── app_controller.c      # zcl_tokens, zcl_name_*, zcl_msg_*, zcl_market_*, zcl_swap_*
+  ```
+  `tools/mcp_server.c` is now **183 lines** (target: <300) — just the stdio loop and three JSON-RPC method handlers; it calls `mcp_router_reset()` + `mcp_register_ops/chain/net/wallet/app()` in `register_all_controllers()`. `test_zcl` still green; smoke tests against the live node still pass. Phase 2b deliverables (controllers split) complete.
+- **Still pending:** Phase 2a (backfill 22 missing tools — per AGENT1 coordinator direction below) and Phase 2c (operator tooling: `zcl_tools_list`, `zcl_self_test`, `zcl_logtail`). Phase 3 (model validator hooks) waits for AGENT2's chain-state call-site migration.
 
 ---
 
