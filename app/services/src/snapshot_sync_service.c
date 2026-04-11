@@ -3,8 +3,8 @@
  * Snapshot Sync Service — high-performance UTXO snapshot sync.
  *
  * Two-phase cryptographic verification:
- *   Phase 1: FlyClient — 20 random block samples with MMB proofs
- *            + PoW target checks (2^-80 forgery probability)
+ *   Phase 1: FlyClient — 50 random block samples with MMB proofs
+ *            + PoW target checks (≥150-bit forgery security)
  *   Phase 2: SHA3-256 over all UTXOs in canonical order
  *
  * Uses ActiveRecord models, shared node_db connection with turbo
@@ -30,6 +30,7 @@
 #include "event/event.h"
 #include "config/runtime.h"
 #include "validation/main_state.h"
+#include "validation/contextual_check_tx.h"
 #include <string.h>
 #include <stdio.h>
 #include <sys/time.h>
@@ -39,6 +40,11 @@
 static struct snapshot_sync_service g_snapsync_instance;
 static bool g_snapsync_init_done = false;
 static pthread_mutex_t g_snapsync_service_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/* Snapshot anchor: placeholder block_index at verified snapshot height.
+ * Used by getheaders locator to resume header sync from snapshot height
+ * instead of from the (much lower) locally-indexed chain tip. */
+static struct block_index *g_snapshot_anchor = NULL;
 
 static void snapsync_service_lock(void)
 {
@@ -63,7 +69,11 @@ void snapsync_global_ensure_init(struct node_db *ndb)
     snapsync_service_unlock();
 }
 
-#define SNAPSYNC_BATCH_COMMIT_ROWS 100000
+/* Batch commit interval.  Smaller batches (25K) produce shorter WAL
+ * checkpoints (~3-5s), reducing TCP backpressure pauses that trigger
+ * false stall detections.  The tradeoff is slightly more total I/O,
+ * but snapshot sync is I/O-bound anyway. */
+#define SNAPSYNC_BATCH_COMMIT_ROWS 25000
 
 static struct db_service *snapsync_db_service(
     const struct snapshot_sync_service *svc);
@@ -111,7 +121,11 @@ static bool snapsync_enter_receive_mode_write(struct node_db *ndb, void *ctx)
         return false;
     }
 
-    if (!node_db_exec(ndb, "PRAGMA synchronous=OFF") ||
+    /* Use synchronous=NORMAL (not OFF) for crash safety.  In WAL mode,
+     * NORMAL only fsyncs at WAL checkpoint, not every write — nearly as
+     * fast as OFF but the database survives a process crash.  With OFF,
+     * a crash during receive leaves the DB in an indeterminate state. */
+    if (!node_db_exec(ndb, "PRAGMA synchronous=NORMAL") ||
         !node_db_exec(ndb, "PRAGMA cache_size=-524288") ||
         !node_db_exec(ndb, "PRAGMA wal_autocheckpoint=0")) {
         if (ok)
@@ -120,7 +134,7 @@ static bool snapsync_enter_receive_mode_write(struct node_db *ndb, void *ctx)
     }
     sqlite3_busy_timeout(ndb->db, 10000);
     snapsync_set_db_mode_flag(ndb, true);
-    printf("db: snapshot receive mode (synchronous=OFF, indexes preserved)\n");
+    printf("db: snapshot receive mode (synchronous=NORMAL, WAL deferred, 512MB cache)\n");
     if (ok)
         *ok = true;
     return true;
@@ -324,6 +338,7 @@ static int snapsync_apply_chunk_local(struct snapshot_sync_service *svc,
     }
 
     svc->received_utxos += (uint64_t)applied;
+    svc->last_progress_time_us = now_us();
     received = svc->received_utxos;
     offered_count = svc->offered_count;
     serving_peer_id = svc->serving_peer_id;
@@ -460,6 +475,59 @@ static bool snapsync_finalize_write(struct node_db *ndb, void *ctx)
     }
 }
 
+/* ── Peer Blacklist ──────────────────────────────────────── */
+
+bool snapsync_is_peer_blacklisted(const struct snapshot_sync_service *svc,
+                                  uint32_t peer_id)
+{
+    if (!svc || peer_id == 0)
+        return false;
+
+    int64_t now = now_us();
+    int64_t expiry_us = SNAPSYNC_BLACKLIST_SECS * 1000000LL;
+
+    for (int i = 0; i < svc->blacklist_count; i++) {
+        if (svc->blacklist[i].peer_id == peer_id &&
+            (now - svc->blacklist[i].blacklisted_at_us) < expiry_us)
+            return true;
+    }
+    return false;
+}
+
+void snapsync_blacklist_peer(struct snapshot_sync_service *svc,
+                             uint32_t peer_id)
+{
+    if (!svc || peer_id == 0)
+        return;
+
+    int64_t now = now_us();
+    int64_t expiry_us = SNAPSYNC_BLACKLIST_SECS * 1000000LL;
+
+    /* Check if already blacklisted — refresh timestamp */
+    for (int i = 0; i < svc->blacklist_count; i++) {
+        if (svc->blacklist[i].peer_id == peer_id) {
+            svc->blacklist[i].blacklisted_at_us = now;
+            return;
+        }
+    }
+
+    /* Evict expired entries first */
+    for (int i = 0; i < svc->blacklist_count; ) {
+        if ((now - svc->blacklist[i].blacklisted_at_us) >= expiry_us) {
+            svc->blacklist[i] = svc->blacklist[--svc->blacklist_count];
+        } else {
+            i++;
+        }
+    }
+
+    /* Add new entry */
+    if (svc->blacklist_count < SNAPSYNC_MAX_BLACKLIST) {
+        svc->blacklist[svc->blacklist_count].peer_id = peer_id;
+        svc->blacklist[svc->blacklist_count].blacklisted_at_us = now;
+        svc->blacklist_count++;
+    }
+}
+
 /* ── Init / Reset ────────────────────────────────────────── */
 
 void snapsync_init(struct snapshot_sync_service *svc, struct node_db *ndb)
@@ -517,6 +585,14 @@ void snapsync_reset(struct snapshot_sync_service *svc)
     svc->fc_verified = false;
     svc->offered_height = 0;
     svc->offered_count = 0;
+    svc->last_progress_time_us = 0;
+    svc->last_progress_utxos = 0;
+    /* Clear snapshot anchor — its pprev=NULL blocks backward chain
+     * walks in header_sync_service after snapshot completes. */
+    if (g_snapshot_anchor) {
+        free(g_snapshot_anchor);
+        g_snapshot_anchor = NULL;
+    }
     svc->state = SNAPSYNC_IDLE;
     snapsync_set_state(SNAPSYNC_IDLE, "reset");
     snapsync_service_unlock();
@@ -536,6 +612,31 @@ bool snapsync_accept_offer(struct snapshot_sync_service *svc,
         || height <= 0 || num_utxos == 0 || num_utxos > 100000000ULL) {
         snapsync_service_unlock();
         return false;
+    }
+
+    /* Skip P2P snapshot if we already have a real UTXO set.
+     *
+     * IMPORTANT: Do NOT skip just because coins_best_block is non-null.
+     * A partial block connect from genesis (e.g. h=587) sets
+     * coins_best_block but produces very few UTXOs — not a real set.
+     * Only skip if the UTXO count indicates a genuine snapshot import
+     * (100K+ UTXOs from file sync or a previous P2P snapshot). */
+    if (svc->ndb && svc->ndb->open) {
+        int64_t utxo_count = 0;
+        sqlite3_stmt *sc = NULL;
+        if (sqlite3_prepare_v2(svc->ndb->db,
+                "SELECT COUNT(*) FROM utxos", -1, &sc, NULL) == SQLITE_OK
+            && sc) {
+            if (sqlite3_step(sc) == SQLITE_ROW)
+                utxo_count = sqlite3_column_int64(sc, 0);
+            sqlite3_finalize(sc);
+        }
+        if (utxo_count > 100000) {
+            printf("[snapsync] Skipping P2P snapshot — %lld UTXOs already "
+                   "imported\n", (long long)utxo_count);
+            snapsync_service_unlock();
+            return false;
+        }
     }
 
     memcpy(svc->offered_utxo_root, utxo_root, 32);
@@ -600,6 +701,8 @@ bool snapsync_begin_receive(struct snapshot_sync_service *svc)
 
     snapsync_service_lock();
     svc->state = SNAPSYNC_RECEIVING;
+    svc->last_progress_time_us = now_us();  /* start stall timer */
+    svc->last_progress_utxos = 0;
     snapsync_set_state(SNAPSYNC_RECEIVING, "receive mode active");
     snapsync_service_unlock();
     return true;
@@ -723,6 +826,145 @@ bool snapsync_is_active(void)
            st.state == SNAPSYNC_RECEIVING ||
            st.state == SNAPSYNC_VERIFYING;
 }
+
+bool snapsync_awaiting_utxos(void)
+{
+    struct snapshot_sync_service *svc = app_runtime_snapshot_sync();
+    if (!svc) {
+        if (!snapsync_global_initialized()) {
+            /* Service not yet initialized.  Check UTXO count directly
+             * via the global node_db.  If UTXOs are low, we're likely
+             * awaiting a P2P snapshot — do NOT connect blocks. */
+            struct node_db *ndb = app_runtime_node_db();
+            if (ndb && ndb->open) {
+                int64_t utxo_count = 0;
+                sqlite3_stmt *sc = NULL;
+                if (sqlite3_prepare_v2(ndb->db,
+                        "SELECT COUNT(*) FROM utxos", -1, &sc, NULL)
+                    == SQLITE_OK && sc) {
+                    if (sqlite3_step(sc) == SQLITE_ROW)
+                        utxo_count = sqlite3_column_int64(sc, 0);
+                    sqlite3_finalize(sc);
+                }
+                if (utxo_count < 100000)
+                    return true;
+            }
+            return false;
+        }
+        svc = snapsync_global();
+    }
+    if (!svc || !svc->ndb || !svc->ndb->open)
+        return false;
+
+    /* If snapshot sync already completed or failed with recovery, not waiting */
+    struct snapsync_status st;
+    snapsync_get_status_snapshot(svc, &st);
+    if (st.state == SNAPSYNC_COMPLETE)
+        return false;
+
+    /* Check coins_best_block — if set to a meaningful height, UTXOs exist */
+    uint8_t cb_buf[32] = {0};
+    size_t cb_len = 0;
+    if (node_db_state_get(svc->ndb, "coins_best_block",
+                          cb_buf, sizeof(cb_buf), &cb_len) && cb_len == 32) {
+        bool all_zero = true;
+        for (int i = 0; i < 32; i++)
+            if (cb_buf[i]) { all_zero = false; break; }
+        if (!all_zero) {
+            /* coins_best_block is set.  Check that it points to a block
+             * at a meaningful height (not just h=587 from a failed partial
+             * connect).  If the height is below the snapshot offer height
+             * and below a safety threshold, we're still waiting. */
+            int64_t utxo_count = 0;
+            sqlite3_stmt *sc = NULL;
+            if (sqlite3_prepare_v2(svc->ndb->db,
+                    "SELECT COUNT(*) FROM utxos", -1, &sc, NULL) == SQLITE_OK
+                && sc) {
+                if (sqlite3_step(sc) == SQLITE_ROW)
+                    utxo_count = sqlite3_column_int64(sc, 0);
+                sqlite3_finalize(sc);
+            }
+            /* A real snapshot import produces 1M+ UTXOs.  A partial
+             * block connect from genesis produces very few. */
+            if (utxo_count > 100000)
+                return false;  /* real UTXO set exists */
+        }
+    }
+
+    /* If we get here, UTXO count is low (<100K) — check if snapshot
+     * sync is still a possibility (not yet completed or permanently failed
+     * with no hope of recovery). */
+    if (st.state != SNAPSYNC_FAILED)
+        return true;  /* still waiting for snapshot */
+
+    return false;
+}
+
+bool snapsync_check_stall(void)
+{
+    struct snapshot_sync_service *svc = app_runtime_snapshot_sync();
+    if (!svc) {
+        if (!snapsync_global_initialized())
+            return false;
+        svc = snapsync_global();
+    }
+
+    snapsync_service_lock();
+    if (svc->state != SNAPSYNC_RECEIVING || svc->last_progress_time_us == 0) {
+        snapsync_service_unlock();
+        return false;
+    }
+
+    uint64_t received = svc->received_utxos;
+    uint64_t offered = svc->offered_count;
+    uint32_t peer_id = svc->serving_peer_id;
+
+    /* If progress has been made since last check, update timer */
+    if (received > svc->last_progress_utxos) {
+        svc->last_progress_time_us = now_us();
+        svc->last_progress_utxos = received;
+        snapsync_service_unlock();
+        return false;
+    }
+
+    int64_t elapsed_us = now_us() - svc->last_progress_time_us;
+    int64_t timeout_us = SNAPSYNC_STALL_TIMEOUT_SECS * 1000000LL;
+    if (elapsed_us < timeout_us) {
+        snapsync_service_unlock();
+        return false;
+    }
+
+    snapsync_service_unlock();
+
+    fprintf(stderr, "[snapsync] STALL DETECTED: no chunk for %llds "
+            "(%llu/%llu UTXOs from peer %u) — blacklisting peer, resetting\n",
+            (long long)(elapsed_us / 1000000),
+            (unsigned long long)received,
+            (unsigned long long)offered, peer_id);
+
+    /* Blacklist the stalling peer before reset (reset clears serving_peer_id) */
+    snapsync_blacklist_peer(svc, peer_id);
+
+    snapsync_reset(svc);
+
+    /* Wipe partial UTXOs so the next offer isn't rejected.
+     * Committed batches (every 100K) survive the rollback in reset. */
+    if (svc->ndb && svc->ndb->open) {
+        node_db_wipe_utxos(svc->ndb);
+        printf("[snapsync] Wiped partial UTXOs after stall reset\n");
+    }
+
+    /* Reset sync state so the node can accept a new snapshot offer.
+     * SYNC_SNAPSHOT_RECEIVE → SYNC_HEADERS_DOWNLOAD allows re-entry
+     * into the snapshot path when the next peer offers. */
+    if (sync_get_state() == SYNC_SNAPSHOT_RECEIVE)
+        sync_set_state(SYNC_HEADERS_DOWNLOAD, "snapshot stall reset");
+
+    return true;
+}
+
+struct block_index *snapsync_get_anchor(void) { return g_snapshot_anchor; }
+void snapsync_set_anchor(struct block_index *anchor) { g_snapshot_anchor = anchor; }
 
 /* ── Progress Query ──────────────────────────────────────── */
 
@@ -987,8 +1229,6 @@ int snapsync_activate_verified_tip(const struct snapshot_sync_service *svc,
 {
     struct uint256 snap_hash;
     struct block_index *snap_bi;
-    struct block_index *fallback = NULL;
-    size_t iter = 0;
 
     if (!svc || !ms)
         return -1;
@@ -996,30 +1236,70 @@ int snapsync_activate_verified_tip(const struct snapshot_sync_service *svc,
     memcpy(snap_hash.data, svc->offered_block_hash, 32);
     snap_bi = block_map_find(&ms->map_block_index, &snap_hash);
     if (!snap_bi) {
-        struct block_index *bi = NULL;
+        /* Snapshot block hash not in local block index — expected for fresh
+         * nodes that received a UTXO snapshot via fast sync. FlyClient has
+         * verified the chain of work (≥150-bit security) and SHA3 has verified
+         * the UTXO set integrity, so we trust this block hash.
+         *
+         * Insert a placeholder block_index at the snapshot height. This
+         * serves as the anchor for getheaders locator — header sync will
+         * resume from this height instead of from the local chain tip.
+         *
+         * We do NOT set this as the active chain tip because active_chain
+         * requires a full pprev chain. Instead, we store it as a snapshot
+         * anchor that push_getheaders uses as its locator starting point. */
+        snap_bi = calloc(1, sizeof(struct block_index));
+        if (!snap_bi)
+            return -1;
+        block_index_init(snap_bi);
+        snap_bi->nHeight = svc->offered_height;
+        snap_bi->nStatus = BLOCK_VALID_TREE | BLOCK_HAVE_DATA;
 
-        while (block_map_next(&ms->map_block_index, &iter, NULL, &bi)) {
-            if (!bi || !bi->phashBlock)
-                continue;
-            if ((bi->nStatus & BLOCK_HAVE_DATA) == 0)
-                continue;
-            if (bi->nChainTx <= 0)
-                continue;
-            if (bi->nHeight > svc->offered_height)
-                continue;
-            if (!fallback || bi->nHeight > fallback->nHeight)
-                fallback = bi;
+        /* Set nChainTx non-zero so find_most_work_chain considers blocks
+         * building on this anchor. The UTXO set at this height is
+         * cryptographically verified — we don't need actual block data. */
+        snap_bi->nChainTx = 1;
+
+        /* Set chain work higher than any entry in the block index.
+         * The file-synced block_index.bin has real chain_work values —
+         * if our fake chain_work is too low, find_most_work_chain picks
+         * a locally-indexed block instead of the snapshot chain. */
+        {
+            struct arith_uint256 max_work;
+            arith_uint256_set_u64(&max_work, 0);
+            size_t iter = 0;
+            struct block_index *bi;
+            while (block_map_next(&ms->map_block_index, &iter, NULL, &bi)) {
+                if (bi && arith_uint256_compare(&bi->nChainWork, &max_work) > 0)
+                    max_work = bi->nChainWork;
+            }
+            /* Snapshot chain_work = max existing + generous margin */
+            struct arith_uint256 margin;
+            arith_uint256_set_u64(&margin, (uint64_t)svc->offered_height * 4096ULL);
+            arith_uint256_add(&snap_bi->nChainWork, &max_work, &margin);
         }
 
-        if (!fallback)
-            return -1;
+        block_map_insert(&ms->map_block_index, &snap_hash, snap_bi);
+        snap_bi->phashBlock = block_map_find_hash(&ms->map_block_index,
+                                                   &snap_hash);
+        g_snapshot_anchor = snap_bi;
 
-        active_chain_set_tip(&ms->chain_active, fallback);
-        ms->pindex_best_header = fallback;
-        printf("[snapshot] Verified tip hash not in block index yet; "
-               "falling back to local indexed height %d\n",
-               fallback->nHeight);
-        return fallback->nHeight;
+        /* Set assume-valid to snapshot height — all blocks at or below
+         * this height skip expensive script/proof verification since the
+         * UTXO set at this point is cryptographically verified. */
+        g_assume_valid_height = svc->offered_height;
+
+        /* Set the active chain tip to the anchor. This allows
+         * activate_best_chain to find a fork point and connect delta
+         * blocks from snapshot+1 to tip. The pprev=NULL means the
+         * chain array below anchor height will be NULL, but we only
+         * need to connect blocks ABOVE the anchor. */
+        active_chain_set_tip(&ms->chain_active, snap_bi);
+        ms->pindex_best_header = snap_bi;
+
+        printf("[snapshot] Anchor at height %d set as chain tip "
+               "(FlyClient+SHA3 verified)\n", svc->offered_height);
+        return svc->offered_height;
     }
 
     active_chain_set_tip(&ms->chain_active, snap_bi);
@@ -1134,7 +1414,12 @@ bool snapsync_prepare_serve_step(struct snapsync_serve_step *step,
     memset(step, 0, sizeof(*step));
     if (node->zsync_file_size == 0)
         node->zsync_file_size = buf_size;
-    if (node->send_size > 2 * 1024 * 1024)
+    /* Allow up to 8MB of send buffer during snapshot serving.
+     * The previous 2MB limit caused stalls: the receiver's SQLite writes
+     * slow TCP drainage, the 2MB fills in ~50 chunks, and the sender's
+     * message loop moves on to other peers before returning to pump more.
+     * 8MB gives ~200 chunks of headroom. */
+    if (node->send_size > 8 * 1024 * 1024)
         return true;
 
     pos = node->zsync_file_offset;
@@ -1231,6 +1516,10 @@ enum snapsync_offer_result snapsync_handle_offer(
     /* Must be significantly ahead */
     if (params->height <= params->our_height + 5000)
         return SNAPSYNC_OFFER_REJECTED_NOT_AHEAD;
+
+    /* Reject peers that previously stalled during snapshot transfer */
+    if (snapsync_is_peer_blacklisted(svc, params->peer_id))
+        return SNAPSYNC_OFFER_REJECTED_BLACKLISTED;
 
     /* If we're already receiving from a different peer (reconnect scenario),
      * reset and re-accept from the new peer. This handles the case where

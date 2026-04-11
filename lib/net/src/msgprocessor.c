@@ -7,6 +7,7 @@
 #include "net/msgprocessor.h"
 #include "net/addrman.h"
 #include "storage/disk_block_io.h"
+#include "services/chain_activation_controller.h"
 #include <signal.h>
 extern volatile sig_atomic_t g_shutdown_requested;
 #include "net/file_service.h"
@@ -1676,10 +1677,15 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
             if (pindex && pindex->phashBlock)
                 last_hash = *pindex->phashBlock;
         } else if (i < 3) {
-            char hex[65];
+            char hex[65], prevhex[65];
             struct uint256 hh;
             block_header_get_hash(&hdr, &hh);
             uint256_get_hex(&hh, hex);
+            uint256_get_hex(&hdr.hashPrevBlock, prevhex);
+            printf("HEADER REJECT[%llu]: hash=%s prev=%s reason=%s\n",
+                   (unsigned long long)i, hex, prevhex,
+                   state.reject_reason[0] ? state.reject_reason
+                                          : "unknown");
             event_emitf(EV_HEADERS_REJECTED, (uint32_t)node->id,
                         "header[%llu] %s reason=%s",
                         (unsigned long long)i, hex,
@@ -1741,6 +1747,32 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
              pindex_last->nHeight > mp->main_state->pindex_best_header->nHeight))
             mp->main_state->pindex_best_header = pindex_last;
 
+        /* Clear snapshot anchor once headers extend 28+ blocks past it.
+         * The anchor blocks activate_best_chain. Once the header chain
+         * has enough depth for difficulty validation, clear it so blocks
+         * can be connected. Set chain tip to the anchor so connect_tip
+         * starts from the right UTXO state. */
+        {
+            struct block_index *anc = snapsync_get_anchor();
+            if (anc && pindex_last &&
+                pindex_last->nHeight >= anc->nHeight + 28) {
+                /* Verify the header chain reaches the anchor via pprev */
+                struct block_index *walk = pindex_last;
+                while (walk && walk->nHeight > anc->nHeight)
+                    walk = walk->pprev;
+                if (walk == anc) {
+                    printf("Anchor cleared: headers extend %d blocks past "
+                           "anchor h=%d — enabling block connection\n",
+                           pindex_last->nHeight - anc->nHeight,
+                           anc->nHeight);
+                    active_chain_set_tip(&mp->main_state->chain_active, anc);
+                    snapsync_set_anchor(NULL);
+                    activation_clear_anchor(boot_activation_controller(),
+                                            "headers_past_anchor");
+                }
+            }
+        }
+
         /* One-shot block file scan: if block files exist on disk (from
          * file_service) but weren't scanned at boot (empty index at boot),
          * scan them now that we have headers. This marks downloaded blocks
@@ -1757,10 +1789,9 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                 syncsvc_build_block_file_scan_activation(&activation, scan_m);
                 if (activation.should_activate && !g_shutdown_requested) {
                     printf("P2P block file scan: %d blocks marked\n", scan_m);
-                    struct validation_state vs;
-                    validation_state_init(&vs);
-                    activate_best_chain(&vs, mp->main_state, mp->coins_tip,
-                                        mp->params, NULL, mp->datadir);
+                    struct activation_exec_outcome ao;
+                    activation_request_connect(boot_activation_controller(),
+                        ACTIVATION_SRC_BLOCK_FILE_SCAN, NULL, &ao);
                 }
             }
         }
@@ -1787,15 +1818,11 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                 syncsvc_build_header_processing_activation(&activation,
                                                           &header_plan);
                 if (activation.should_activate && !g_shutdown_requested) {
-                /* All blocks already have data — trigger chain activation.
-                 * This happens after restart: blocks on disk from before,
-                 * headers re-received, but activate_best_chain only runs
-                 * on block receipt. Without this, the node stalls with
-                 * headers ahead but no block requests (all HAVE_DATA). */
-                struct validation_state vs;
-                validation_state_init(&vs);
-                activate_best_chain(&vs, mp->main_state, mp->coins_tip,
-                                    mp->params, NULL, mp->datadir);
+                /* All blocks already have data — trigger chain activation
+                 * via controller (single authority). */
+                struct activation_exec_outcome ao;
+                activation_request_connect(boot_activation_controller(),
+                    ACTIVATION_SRC_HEADERS_ALL_DATA, NULL, &ao);
                 }
             }
         }

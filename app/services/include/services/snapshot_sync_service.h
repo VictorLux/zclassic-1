@@ -10,9 +10,9 @@
  *   validate_serve_request — check PoW + rate limit for serving
  *
  * Security: Two-phase verification
- *   Phase 1 (pre-download): FlyClient — 20 random block samples
+ *   Phase 1 (pre-download): FlyClient — 50 random block samples
  *     with MMB inclusion proofs + PoW target checks. Proves the
- *     peer's chain has valid cumulative work (2^-80 forgery prob).
+ *     peer's chain has valid cumulative work (≥150-bit security).
  *   Phase 2 (post-download): SHA3-256 over all UTXOs in canonical
  *     order. Proves data integrity (hash matches offered root).
  *
@@ -122,6 +122,20 @@ struct snapshot_sync_service {
     int64_t  start_time_us;
     uint32_t serving_peer_id;
 
+    /* Stall detection */
+    int64_t  last_progress_time_us;  /* timestamp of last progress (chunk or commit) */
+    uint64_t last_progress_utxos;    /* received_utxos at last progress check */
+
+    /* Per-peer stall blacklist: peers that stalled are rejected for
+     * SNAPSYNC_BLACKLIST_SECS.  Prevents the same slow peer from winning
+     * the offer race repeatedly after each stall reset. */
+#define SNAPSYNC_MAX_BLACKLIST 16
+    struct {
+        uint32_t peer_id;
+        int64_t  blacklisted_at_us;
+    } blacklist[SNAPSYNC_MAX_BLACKLIST];
+    int blacklist_count;
+
     /* Database — shared connection, turbo mode during receive */
     struct node_db *ndb;
     bool     turbo_active;
@@ -158,6 +172,7 @@ enum snapsync_offer_result {
     SNAPSYNC_OFFER_REJECTED_NO_MMR,    /* no MMR root — can't verify chain */
     SNAPSYNC_OFFER_REJECTED_NOT_AHEAD, /* peer not far enough ahead */
     SNAPSYNC_OFFER_REJECTED_BUSY,      /* already receiving a snapshot */
+    SNAPSYNC_OFFER_REJECTED_BLACKLISTED, /* peer stalled before */
     SNAPSYNC_OFFER_REJECTED_PARSE,     /* malformed wire data */
 };
 
@@ -277,5 +292,49 @@ bool snapsync_build_request_pow(const uint8_t peer_ip[16],
 /* True if snapshot sync is in any active state (not IDLE/COMPLETE/FAILED).
  * Use this to suppress block/header processing during snapshot sync. */
 bool snapsync_is_active(void);
+
+/* True if this node has blocks on disk but no UTXO set and is waiting for
+ * a P2P snapshot to arrive.  When true, activate_best_chain MUST NOT run
+ * because the UTXO set is empty — connecting blocks from genesis would
+ * permanently mark valid blocks as BLOCK_FAILED.
+ *
+ * Becomes false once a snapshot is received (SNAPSYNC_COMPLETE) or if
+ * coins_best_block is set at a meaningful height. */
+bool snapsync_awaiting_utxos(void);
+
+/* Check if snapshot receive has stalled (no chunk for >60s while RECEIVING).
+ * If stalled, resets the service to IDLE so a new offer can be accepted.
+ * Returns true if a stall was detected and reset was performed. */
+bool snapsync_check_stall(void);
+
+/* Stall timeout: seconds without any progress (new UTXOs received)
+ * before resetting.  Must be long enough for TCP backpressure during
+ * SQLite batch writes.  300s is conservative — typical localhost
+ * snapshot takes 25-30s, but slow peers + disk I/O can extend it. */
+/* Stall timeout: seconds without any new UTXOs received before resetting.
+ * Must be long enough for SQLite batch commits (~10-30s) + TCP backpressure
+ * during WAL checkpoint.  120s balances fast recovery vs false positives. */
+#define SNAPSYNC_STALL_TIMEOUT_SECS 120
+
+/* Blacklist duration: seconds a peer is rejected after stalling.
+ * Long enough to let other peers serve, short enough to retry if
+ * the peer was temporarily slow (e.g., disk I/O spike). */
+#define SNAPSYNC_BLACKLIST_SECS 600
+
+/* Check if a peer is blacklisted for snapshot serving. */
+bool snapsync_is_peer_blacklisted(const struct snapshot_sync_service *svc,
+                                  uint32_t peer_id);
+
+/* Add a peer to the stall blacklist. */
+void snapsync_blacklist_peer(struct snapshot_sync_service *svc,
+                             uint32_t peer_id);
+
+/* Snapshot anchor: after verified snapshot sync, this points to a placeholder
+ * block_index at the snapshot height. The getheaders locator should use this
+ * as the starting point so header sync resumes from snapshot height, not
+ * from the (much lower) locally-indexed chain tip. Returns NULL if no
+ * snapshot anchor is set. */
+struct block_index *snapsync_get_anchor(void);
+void snapsync_set_anchor(struct block_index *anchor);
 
 #endif

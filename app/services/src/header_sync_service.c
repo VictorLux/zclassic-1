@@ -3,6 +3,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "services/header_sync_service.h"
+#include "services/snapshot_sync_service.h"
 #include "net/net.h"
 #include "validation/chainstate.h"
 #include <stdlib.h>
@@ -119,8 +120,10 @@ void syncsvc_evaluate_header_batch(struct sync_header_batch *result,
     result->should_warn_all_rejected =
         (accepted == 0 && total_count > 0);
     result->should_emit_received = (accepted > 0);
+    /* ZClassic/Zcash MAX_HEADERS_RESULTS is 160, not Bitcoin's 2000.
+     * Request more headers if the batch was full (peer likely has more). */
     result->should_request_more_headers =
-        (accepted > 0 && total_count >= 2000 &&
+        (accepted > 0 && total_count >= 160 &&
          last_header && last_header->phashBlock);
 }
 
@@ -237,10 +240,17 @@ bool syncsvc_should_request_headers(const struct p2p_node *node,
 {
     if (!node || node->inbound) return false;
     if (node->state < PEER_SYNCING_HEADERS) return false;
-    if (node->starting_height <= our_height) return false;
 
-    int64_t interval = syncsvc_is_initial_block_download(node, our_height)
-        ? 10 : 60;
+    /* Interval: 10s during IBD, 60s while catching up, 120s at tip.
+     * Never stop requesting headers entirely — starting_height is frozen
+     * at handshake time and the peer's chain keeps growing. */
+    int64_t interval;
+    if (syncsvc_is_initial_block_download(node, our_height))
+        interval = 10;
+    else if (node->starting_height > 0 && our_height < node->starting_height)
+        interval = 60;
+    else
+        interval = 120;
     return (now_seconds - node->last_getheaders_time) > interval;
 }
 
@@ -375,9 +385,12 @@ bool syncsvc_headers_chain_from_tip(const struct block_index *candidate,
                                     int our_height)
 {
     const struct block_index *verify = candidate;
+    const struct block_index *last_valid = NULL;
 
-    while (verify && verify->nHeight > our_height)
+    while (verify && verify->nHeight > our_height) {
+        last_valid = verify;
         verify = verify->pprev;
+    }
 
     if (verify == tip)
         return true;
@@ -388,6 +401,20 @@ bool syncsvc_headers_chain_from_tip(const struct block_index *candidate,
     }
     if (verify && tip && verify->nHeight == tip->nHeight)
         return true;
+
+    /* After snapshot sync, the chain walks back to the snapshot anchor
+     * (pprev=NULL at high height). If the walk stopped at a verified
+     * anchor (non-null last_valid with NULL pprev above our_height),
+     * accept this as a valid chain root. The anchor was verified by
+     * FlyClient + SHA3 and represents a trusted chain point. */
+    struct block_index *anchor = snapsync_get_anchor();
+    if (!verify && anchor && last_valid) {
+        const struct block_index *check = last_valid;
+        while (check && check != anchor)
+            check = check->pprev;
+        if (check == anchor)
+            return true;
+    }
 
     return false;
 }

@@ -27,6 +27,28 @@ struct msg_processor {
     const struct app_runtime_context *runtime;
 };
 
+/* ── P2P message dispatch table ──────────────────────────────────
+ * Each entry maps a P2P command string to a handler function.
+ * The dispatch table replaces the strcmp chain in msg_process_messages.
+ * Handlers return true on success, false on protocol error. */
+
+struct byte_stream;  /* forward decl */
+
+typedef bool (*msg_handler_fn)(struct msg_processor *mp,
+                               struct p2p_node *node,
+                               struct byte_stream *s);
+
+struct msg_dispatch_entry {
+    char command[13];           /* P2P command (max 12 bytes + NUL) */
+    msg_handler_fn handler;
+    bool requires_handshake;   /* must have completed version/verack? */
+    bool zcl23_only;           /* requires NODE_ZCL23 service bit? */
+    const char *service_name;  /* for logging: "p2p", "sync", "game", etc. */
+};
+
+/* Get the dispatch table (NULL-terminated). For testing. */
+const struct msg_dispatch_entry *msg_get_dispatch_table(void);
+
 void msg_processor_init(struct msg_processor *mp,
                          struct main_state *ms,
                          struct tx_mempool *mempool,
@@ -65,8 +87,13 @@ bool msg_processor_get_block_manifest_header(struct block_piece_manifest *out,
                                             int32_t *built_at_height);
 uint64_t msg_processor_block_manifest_cache_version(void);
 
-/* Test helpers for block relay deduplication. */
+/* Clear a block hash from the "recently seen" dedup buffer, allowing
+ * it to be reprocessed. Used by stall recovery to unblock re-downloads
+ * of blocks that were received but failed their first validation. */
 #include "core/uint256.h"
+void msgprocessor_block_clear_seen(const struct uint256 *hash);
+
+/* Test helpers for block relay deduplication. */
 bool msgprocessor_test_block_already_seen(const struct uint256 *hash);
 void msgprocessor_test_block_mark_seen(const struct uint256 *hash);
 bool msgprocessor_test_accept_block_for_processing(const struct uint256 *hash,
