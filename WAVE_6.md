@@ -22,7 +22,7 @@
 - [ ] **Compact block (BIP152) — investigate only** — write `BIP152_INVESTIGATION.md`: does `zclassicd` advertise `sendcmpct`? what's the wire format? what's the delta to our current `getdata`/`block` path? hypothesis for implementation cost. No code yet.
 - [x] **Addrman persistence robustness** — `app/services/addrman_integrity.{h,c}` with 48-byte ADIX sidecar (SHA3-256 + magic + version + body_size). Wired into `connman_save_addrman` (write sidecar after atomic rename) and `connman_load_addrman` (verify before deserialize; quarantine + start fresh on mismatch). 11 tests + `EV_ADDRMAN_CORRUPT` event.
 - [ ] **IBD throttle** — initial block download can saturate the DB write path. Add a simple token-bucket between `process_block` and `update_coins` so a firehose peer can't starve the rest of the node. Env: `ZCL_IBD_BLOCKS_PER_SEC` (default 500).
-- [ ] **Checkpoint enforcement audit** — walk `lib/chain/src/checkpoints.c`. Are checkpoints actually consulted? If not, wire them into `contextual_check_block_header` as a defense against deep reorg attacks. Tests.
+- [x] **Checkpoint enforcement audit** — finding: checkpoints ARE consulted in `contextual_check_block_header` (exact-height match) and enabled by default. Extracted `checkpoints_hash_at_height`, `checkpoints_last_height`, `checkpoints_validate_header` from inlined loop; refactored `check_block.c` call site; 8 unit tests in `test_chain.c` covering match/miss/reject/NULL-safety/chainparams-loaded.
 
 ### Stretch for wave 6
 
