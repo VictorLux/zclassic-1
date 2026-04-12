@@ -5,7 +5,7 @@
 **Coordinator:** AGENT1 (main `~/zclassic23`)
 **Peer:** AGENT3 (`~/zclassic23-3`) — RPC/wallet encryption/tracing, different files
 
-> **⇒ Active plan: [`WAVE_9.md`](./WAVE_9.md).** 11 items: PHGR13 fix (self-certify), reorg safety test, consensus parity, boot decomposition A/B/C, script parallelism, BIP113/65, mempool orphans, chain rollback stress, fuzzer fix #2. When wave 9 clears, pull from [`BACKLOG.md`](./BACKLOG.md). Items needing AGENT1 review go in [`REVIEW_QUEUE.md`](./REVIEW_QUEUE.md).
+> **⇒ Active plan: [`WAVE_10.md`](./WAVE_10.md).** 13 items: reorg safety test (#1 priority), consensus parity, PHGR13 live verify, boot decomposition A/B/C, script parallelism, BIP113/65, mempool orphans, fuzzer fix #2, WAL size cap, fee estimation, headers-first refinement. When done, pull from [`BACKLOG.md`](./BACKLOG.md).
 
 ---
 

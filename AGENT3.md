@@ -5,7 +5,7 @@
 **Coordinator:** AGENT1 (main `~/zclassic23`)
 **Peer:** AGENT2 (`~/zclassic23-2`) — boot decomposition / consensus / resource controls, different files
 
-> **⇒ Active plan: [`WAVE_9.md`](./WAVE_9.md).** 15 items: wallet encryption (4th-wave carry-over, DO IT FIRST), WebSocket events, tracing, peer_bandwidth wire-in, alerts, RPC cookie rotation, key scrubbing, coverage 35%, Grafana dashboard, RUNBOOK, RPC envelope audit, watch-only addresses, make ci, MCP replay, architecture diagrams. When wave 9 clears, pull from [`BACKLOG.md`](./BACKLOG.md). Items needing AGENT1 review go in [`REVIEW_QUEUE.md`](./REVIEW_QUEUE.md).
+> **⇒ Active plan: [`WAVE_10.md`](./WAVE_10.md).** 15 items: WebSocket events (#1), tracing, peer_bandwidth wire-in, RPC cookie rotation, key scrubbing, dep vulnerability scan, coverage 35%, RPC envelope audit, property-based tx tests, Grafana dashboard, RUNBOOK, architecture diagrams, watch-only addresses, MCP replay, coin selection audit. When done, pull from [`BACKLOG.md`](./BACKLOG.md).
 
 ---
 
