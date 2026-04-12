@@ -5,7 +5,7 @@
 **Coordinator:** AGENT1 (main `~/zclassic23`)
 **Peer:** AGENT3 (`~/zclassic23-3`) — RPC/wallet encryption/tracing, different files
 
-> **⇒ Active plan: [`WAVE_10.md`](./WAVE_10.md).** BOOT_QUEUE IS CLEARED — boot decomposition A/B/C is fully unblocked. Priority: (1) reorg safety test, (2) boot decomposition A/B/C (target boot.c < 1400 lines), (3) consensus parity audit. Read `DEFENSIVE_CODING.md` — use `LOG_FAIL`/`GUARD`/`zcl_malloc` in all new code. When done, pull from [`BACKLOG.md`](./BACKLOG.md).
+> **⇒ Active plan: [`WAVE_11.md`](./WAVE_11.md).** Wave 10 COMPLETE (13/13). Wave 11 theme: defensive migration + production hardening. Priority: (1) LOG_FAIL migration across validation/consensus/storage layers, (2) zcl_malloc migration, (3) make lint fatal, (4) compact blocks BIP152, (5) block pruning. **Rule 10: migrate on touch** — every file you modify gets its bare returns and mallocs migrated. Read `DEFENSIVE_CODING.md`.
 
 ---
 

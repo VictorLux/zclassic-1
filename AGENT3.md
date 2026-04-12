@@ -5,7 +5,7 @@
 **Coordinator:** AGENT1 (main `~/zclassic23`)
 **Peer:** AGENT2 (`~/zclassic23-2`) — boot decomposition / consensus / resource controls, different files
 
-> **⇒ Active plan: [`WAVE_10.md`](./WAVE_10.md).** WebSocket events DONE. Next priority: (1) OpenTelemetry tracing, (2) peer_bandwidth wire-in, (3) RPC cookie rotation, (4) Sapling key scrubbing. Read `DEFENSIVE_CODING.md` — use `LOG_FAIL`/`GUARD`/`zcl_malloc` in all new code. When done, pull from [`BACKLOG.md`](./BACKLOG.md).
+> **⇒ Active plan: [`WAVE_11.md`](./WAVE_11.md).** Wave 10 COMPLETE (15/15). Wave 11 theme: defensive migration + production hardening. Priority: (1) LOG_FAIL migration across MCP handlers/app controllers/app services/net layer, (2) zcl_malloc migration, (3) TLS for RPC, (4) HD wallet BIP32/39/44. **Rule 10: migrate on touch** — every file you modify gets its bare returns and mallocs migrated. Read `DEFENSIVE_CODING.md`.
 
 ---
 
