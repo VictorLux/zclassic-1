@@ -7,6 +7,7 @@
 #include "storage/disk_block_io.h"
 #include "core/serialize.h"
 #include "core/hash.h"
+#include "util/log_macros.h"
 #include <errno.h>
 #include <stdint.h>
 #include <string.h>
@@ -153,7 +154,7 @@ bool write_block_to_disk(struct block *b, struct disk_block_pos *pos,
     stream_init(&s, 4096);
     if (!block_serialize(b, &s)) {
         stream_free(&s);
-        return false;
+        LOG_FAIL("disk_block_io", "write_block: block serialization failed");
     }
     uint32_t nSize = (uint32_t)s.size;
 
@@ -165,7 +166,7 @@ bool write_block_to_disk(struct block *b, struct disk_block_pos *pos,
     if (!file) {
         pthread_mutex_unlock(&g_file_cache_mutex);
         stream_free(&s);
-        return false;
+        LOG_FAIL("disk_block_io", "write_block: open_block_file failed for file=%d", pos->nFile);
     }
 
     long file_pos = ftell(file);
@@ -173,7 +174,7 @@ bool write_block_to_disk(struct block *b, struct disk_block_pos *pos,
         fclose(file);
         pthread_mutex_unlock(&g_file_cache_mutex);
         stream_free(&s);
-        return false;
+        LOG_FAIL("disk_block_io", "write_block: ftell failed");
     }
 
     if (fwrite(message_start, 1, 4, file) != 4 ||
@@ -181,7 +182,7 @@ bool write_block_to_disk(struct block *b, struct disk_block_pos *pos,
         fclose(file);
         pthread_mutex_unlock(&g_file_cache_mutex);
         stream_free(&s);
-        return false;
+        LOG_FAIL("disk_block_io", "write_block: fwrite header failed for file=%d", pos->nFile);
     }
 
     long data_pos = ftell(file);
@@ -189,14 +190,14 @@ bool write_block_to_disk(struct block *b, struct disk_block_pos *pos,
         fclose(file);
         pthread_mutex_unlock(&g_file_cache_mutex);
         stream_free(&s);
-        return false;
+        LOG_FAIL("disk_block_io", "write_block: data position out of range (pos=%ld)", data_pos);
     }
 
     if (fwrite(s.data, 1, s.size, file) != s.size) {
         fclose(file);
         pthread_mutex_unlock(&g_file_cache_mutex);
         stream_free(&s);
-        return false;
+        LOG_FAIL("disk_block_io", "write_block: fwrite block data failed (size=%zu)", s.size);
     }
 
     /* Flush to disk before reporting success — prevents silent data loss
@@ -229,7 +230,8 @@ bool read_block_from_disk(struct block *b, const struct disk_block_pos *pos,
     FILE *file = open_block_file(datadir, pos, true);
     if (!file) {
         pthread_mutex_unlock(&g_file_cache_mutex);
-        return false;
+        LOG_FAIL("disk_block_io", "read_block: open_block_file failed for file=%d pos=%u",
+                 pos->nFile, pos->nPos);
     }
 
     /* Read magic + block size from the 8-byte header preceding block data.
@@ -318,7 +320,8 @@ bool read_block_from_disk_index(struct block *b,
                                 const struct block_index *pindex,
                                 const char *datadir)
 {
-    if (!pindex) return false;
+    if (!pindex)
+        LOG_FAIL("disk_block_io", "read_block_from_disk_index: pindex is NULL");
     struct disk_block_pos pos;
     disk_block_pos_init(&pos);
     if (pindex->nStatus & BLOCK_HAVE_DATA) {
@@ -373,14 +376,15 @@ ssize_t disk_block_pread(const char *datadir, const struct disk_block_pos *pos,
                          const char *prefix, uint8_t *buf, size_t len)
 {
     if (!datadir || !pos || !buf || pos->nFile < 0)
-        return -1;
+        LOG_ERR("disk_block_io", "pread: invalid arguments (datadir=%p pos=%p buf=%p)",
+                (const void *)datadir, (const void *)pos, (const void *)buf);
 
     char path[512];
     get_block_pos_filename(path, sizeof(path), datadir, pos, prefix);
 
     int fd = open(path, O_RDONLY);
     if (fd < 0)
-        return -1;
+        LOG_ERR("disk_block_io", "pread: cannot open %s", path);
 
     ssize_t nread = pread(fd, buf, len, (off_t)pos->nPos);
     close(fd);
@@ -394,14 +398,15 @@ bool read_block_from_disk_pread(struct block *b,
     block_init(b);
 
     if (!datadir || !pos || pos->nFile < 0)
-        return false;
+        LOG_FAIL("disk_block_io", "read_block_pread: invalid arguments (datadir=%p pos=%p)",
+                 (const void *)datadir, (const void *)pos);
 
     char path[512];
     get_block_pos_filename(path, sizeof(path), datadir, pos, "blk");
 
     int fd = open(path, O_RDONLY);
     if (fd < 0)
-        return false;
+        LOG_FAIL("disk_block_io", "read_block_pread: cannot open %s", path);
 
     /* Read the 8-byte header (magic + size) preceding block data */
     size_t bufsize = 0;
@@ -427,7 +432,7 @@ bool read_block_from_disk_pread(struct block *b,
     unsigned char *buf = malloc(bufsize);
     if (!buf) {
         close(fd);
-        return false;
+        LOG_FAIL("disk_block_io", "read_block_pread: malloc(%zu) failed", bufsize);
     }
 
     ssize_t nread = pread(fd, buf, bufsize, (off_t)pos->nPos);
@@ -435,7 +440,8 @@ bool read_block_from_disk_pread(struct block *b,
 
     if (nread <= 0) {
         free(buf);
-        return false;
+        LOG_FAIL("disk_block_io", "read_block_pread: pread returned %zd for file=%d pos=%u",
+                 nread, pos->nFile, pos->nPos);
     }
 
     struct byte_stream s;
@@ -450,7 +456,8 @@ bool read_block_from_disk_index_pread(struct block *b,
                                       const struct block_index *pindex,
                                       const char *datadir)
 {
-    if (!pindex) return false;
+    if (!pindex)
+        LOG_FAIL("disk_block_io", "read_block_from_disk_index_pread: pindex is NULL");
     struct disk_block_pos pos;
     disk_block_pos_init(&pos);
     if (pindex->nStatus & BLOCK_HAVE_DATA) {

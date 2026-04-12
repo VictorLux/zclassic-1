@@ -10,6 +10,7 @@
  * Uses REJECT_IF / REJECT_UNLESS / REJECT_CORRUPT_IF macros. */
 
 #include "validation/check_block.h"
+#include "util/log_macros.h"
 #include "bloom/merkle.h"
 #include "chain/chainparams.h"
 #include "chain/equihash.h"
@@ -132,7 +133,7 @@ static bool check_block_impl(const struct block *block,
                               bool check_size_limits)
 {
     if (!check_block_header(&block->header, state, params, check_pow))
-        return false;
+        LOG_FAIL("check_block", "check_block_header failed");
 
     if (check_merkle_root) {
         struct uint256 *txids = malloc(block->num_vtx * sizeof(struct uint256));
@@ -171,7 +172,7 @@ static bool check_block_impl(const struct block *block,
 
         for (size_t i = 0; i < block->num_vtx; i++) {
             if (!check_transaction(&block->vtx[i], state))
-                return false;
+                LOG_FAIL("check_block", "check_transaction failed for tx[%zu]", i);
         }
 
         unsigned int nSigOps = 0;
@@ -276,13 +277,13 @@ static bool bip34_check_coinbase_height(const struct transaction *coinbase,
                                         int nHeight)
 {
     if (coinbase->num_vin == 0)
-        return false;
+        LOG_FAIL("check_block", "coinbase has no inputs");
 
     const struct script *sig = &coinbase->vin[0].script_sig;
     if (nHeight <= 0)
         return true;
     if (sig->size == 0)
-        return false;
+        LOG_FAIL("check_block", "coinbase script_sig is empty at height %d", nHeight);
 
     /* Early blocks (height 1-16) may use OP_N (0x51-0x60) encoding */
     if (nHeight >= 1 && nHeight <= 16) {
@@ -310,7 +311,8 @@ static bool bip34_check_coinbase_height(const struct transaction *coinbase,
     }
 
     if (sig->size < expect_len)
-        return false;
+        LOG_FAIL("check_block", "coinbase sig data too short: size=%zu expected=%zu at height %d",
+                 sig->size, expect_len, nHeight);
     return memcmp(sig->data, expect, expect_len) == 0;
 }
 
@@ -326,7 +328,7 @@ bool contextual_check_block(const struct block *block,
     for (size_t i = 0; i < block->num_vtx; i++) {
         if (!contextual_check_transaction(&block->vtx[i], state,
                                           &params->consensus, nHeight, 100))
-            return false;
+            LOG_FAIL("check_block", "contextual_check_transaction failed for tx[%zu] at height %d", i, nHeight);
 
         /* BIP113: use median-time-past for time-based nLockTime checks,
          * not the block's wall-clock timestamp. Fall back to header time

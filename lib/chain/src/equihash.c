@@ -8,6 +8,7 @@
 #include "chain/equihash.h"
 #include "crypto/equihash.h"
 #include "core/serialize.h"
+#include "util/log_macros.h"
 #include <string.h>
 
 bool check_equihash_solution(const struct block_header *header,
@@ -15,7 +16,7 @@ bool check_equihash_solution(const struct block_header *header,
 {
     size_t sol_size = header->nSolutionSize;
     if (sol_size == 0)
-        return false;
+        LOG_FAIL("equihash", "solution size is zero");
 
     unsigned int n, k;
     if (sol_size == 1344) {
@@ -27,7 +28,7 @@ bool check_equihash_solution(const struct block_header *header,
     } else if (sol_size == 400) {
         n = 192; k = 7;
     } else {
-        return false;
+        LOG_FAIL("equihash", "unrecognized solution size %zu", sol_size);
     }
 
     (void)params;

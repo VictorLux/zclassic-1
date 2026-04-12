@@ -5,6 +5,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "validation/validationinterface.h"
+#include "util/log_macros.h"
 #include <string.h>
 
 static struct validation_signals g_signals;
@@ -23,7 +24,8 @@ bool validation_register(struct validation_signals *vs,
                           const struct validation_callbacks *cb)
 {
     if (vs->num_listeners >= MAX_VALIDATION_LISTENERS)
-        return false;
+        LOG_FAIL("validation", "listener registration failed: max %d listeners reached",
+                 MAX_VALIDATION_LISTENERS);
     vs->listeners[vs->num_listeners++] = *cb;
     return true;
 }
@@ -37,7 +39,7 @@ bool validation_unregister(struct validation_signals *vs, void *ctx)
             return true;
         }
     }
-    return false;
+    LOG_FAIL("validation", "unregister failed: listener ctx=%p not found", ctx);
 }
 
 void validation_unregister_all(struct validation_signals *vs)

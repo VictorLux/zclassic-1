@@ -5,6 +5,7 @@
 
 #include "chain/mmr.h"
 #include "crypto/sha3.h"
+#include "util/log_macros.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -106,7 +107,8 @@ size_t mmr_serialize(const struct mmr *m, uint8_t *buf, size_t buflen)
 
 bool mmr_deserialize(struct mmr *m, const uint8_t *buf, size_t len)
 {
-    if (len < 12) return false;
+    if (len < 12)
+        LOG_FAIL("mmr", "deserialize: buffer too short (%zu < 12)", len);
 
     mmr_init(m);
 
@@ -118,8 +120,10 @@ bool mmr_deserialize(struct mmr *m, const uint8_t *buf, size_t len)
     for (int i = 3; i >= 0; i--)
         np = (np << 8) | buf[8 + i];
 
-    if (np > MMR_MAX_PEAKS) return false;
-    if (len < 12 + (size_t)np * 32) return false;
+    if (np > MMR_MAX_PEAKS)
+        LOG_FAIL("mmr", "deserialize: peak count %u exceeds max %d", np, MMR_MAX_PEAKS);
+    if (len < 12 + (size_t)np * 32)
+        LOG_FAIL("mmr", "deserialize: buffer too short for %u peaks", np);
 
     m->num_peaks = np;
     memcpy(m->peaks, buf + 12, (size_t)np * 32);
@@ -137,7 +141,9 @@ bool mmr_prove_from_leaves(const uint8_t (*all_leaves)[32],
                            struct mmr_proof *proof)
 {
     if (!all_leaves || !proof || leaf_index >= num_leaves)
-        return false;
+        LOG_FAIL("mmr", "prove_from_leaves: invalid args (leaves=%p, proof=%p, index=%lu/%lu)",
+                 (const void *)all_leaves, (const void *)proof,
+                 (unsigned long)leaf_index, (unsigned long)num_leaves);
 
     memset(proof, 0, sizeof(*proof));
     proof->leaf_index = leaf_index;
@@ -251,7 +257,8 @@ int mmr_append_commitment(struct mmr *m, const struct mmr_commitment *c)
 bool mmr_verify(const struct mmr_proof *proof,
                 const uint8_t expected_root[32])
 {
-    if (!proof) return false;
+    if (!proof)
+        LOG_FAIL("mmr", "verify: proof is NULL");
 
     /* Reconstruct the peak hash from the leaf + siblings */
     uint8_t current[32];
@@ -281,7 +288,8 @@ bool mmr_verify(const struct mmr_proof *proof,
             break;
         }
     }
-    if (!found_peak) return false;
+    if (!found_peak)
+        LOG_FAIL("mmr", "verify: reconstructed hash does not match any peak");
 
     /* Bag the peaks and verify root */
     uint8_t root[32];

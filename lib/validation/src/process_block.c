@@ -28,6 +28,7 @@
 #include "event/event.h"
 #include "models/database.h"
 #include "config/runtime.h"
+#include "util/log_macros.h"
 #include "services/snapshot_sync_service.h"
 #include "services/chain_activation_controller.h"
 #include "services/chain_state_repository.h"
@@ -414,7 +415,7 @@ static bool process_block_commit_tip(struct main_state *ms,
         trace_set_status(csr_span, TRACE_STATUS_ERROR);
         trace_attr_str(csr_span, "error", "null_tip");
         trace_end(csr_span);
-        return false;
+        LOG_FAIL("validation", "commit_chain_state_tip called with null tip or null phashBlock");
     }
 
     struct chain_state_commit commit = {
@@ -539,7 +540,7 @@ bool accept_block_header(const struct block_header *header,
     }
 
     if (!check_block_header(header, state, params, true))
-        return false;
+        LOG_FAIL("validation", "check_block_header failed for accepted header");
 
     /* Get prev block index */
     struct block_index *pindex_prev = NULL;
@@ -566,7 +567,8 @@ bool accept_block_header(const struct block_header *header,
     if (pindex_prev &&
         !contextual_check_block_header(header, state, params, pindex_prev,
                                         ms->fCheckpointsEnabled))
-        return false;
+        LOG_FAIL("validation", "contextual_check_block_header failed for header at height %d",
+                 pindex_prev->nHeight + 1);
 
     pindex = add_to_block_index(ms, header);
     if (!pindex)
@@ -592,7 +594,7 @@ bool accept_block(struct block *block,
 {
     struct block_index *pindex = NULL;
     if (!accept_block_header(&block->header, state, ms, params, &pindex))
-        return false;
+        LOG_FAIL("validation", "accept_block_header failed in accept_block");
     if (ppindex)
         *ppindex = pindex;
 
@@ -620,7 +622,8 @@ bool accept_block(struct block *block,
         if (validation_state_is_invalid(state) && !state->corruption_possible) {
             pindex->nStatus |= BLOCK_FAILED_VALID;
         }
-        return false;
+        LOG_FAIL("validation", "check_block or contextual_check_block failed at height %d",
+                 pindex->nHeight);
     }
 
     event_emitf(EV_BLOCK_CHECK_PASSED, 0,
@@ -1341,10 +1344,10 @@ bool disconnect_tip(struct validation_state *state,
 {
     struct block_index *pindex_delete = active_chain_tip(&ms->chain_active);
     if (!pindex_delete)
-        return false;
+        LOG_FAIL("validation", "disconnect_tip called with no active chain tip");
     /* Never disconnect genesis (pprev is NULL) */
     if (!pindex_delete->pprev)
-        return false;
+        LOG_FAIL("validation", "disconnect_tip refused to disconnect genesis block");
 
     struct block block;
     block_init(&block);
@@ -1471,7 +1474,8 @@ bool disconnect_tip(struct validation_state *state,
             block_free(&block);
             block_undo_free(&blockundo);
             coins_view_cache_free(&view);
-            return false;
+            LOG_FAIL("validation", "disconnect_block failed at height %d",
+                     pindex_delete->nHeight);
         }
 
         if (!coins_view_cache_flush(&view)) {
@@ -1523,7 +1527,7 @@ static bool recover_from_disconnect_failure(
     int stuck_height)
 {
     if (!fork || !fork->phashBlock)
-        return false;
+        LOG_FAIL("validation", "recover_from_disconnect_failure called with null fork or null phashBlock");
 
     /* State machine: REORG → REORG_RECOVERY */
     sync_set_state(SYNC_REORG_RECOVERY,
@@ -1706,7 +1710,8 @@ bool activate_best_chain(struct validation_state *state,
                                 ms, coins_tip, fork, stuck_h)) {
                             sync_set_state(SYNC_FAILED,
                                 "unrecoverable disconnect failure");
-                            return false;
+                            LOG_FAIL("validation", "unrecoverable disconnect failure during reorg at height %d",
+                                     active_chain_height(&ms->chain_active));
                         }
                         break; /* exit disconnect loop, proceed to connect */
                     }
@@ -1725,7 +1730,7 @@ bool activate_best_chain(struct validation_state *state,
         struct block_index **connect_path = malloc(
             (size_t)total_depth * sizeof(struct block_index *));
         if (!connect_path)
-            return false;
+            LOG_FAIL("validation", "malloc failed for connect_path (%d entries)", total_depth);
 
         int path_len = 0;
         for (struct block_index *w = pindex_most_work;
@@ -1910,19 +1915,19 @@ bool test_block_validity(struct validation_state *state,
     if (!contextual_check_block_header(&block->header, state, params,
                                         pindex_prev, true)) {
         coins_view_cache_free(&view);
-        return false;
+        LOG_FAIL("validation", "test_block_validity: contextual_check_block_header failed");
     }
     if (!check_block(block, state, params, true, true, true)) {
         coins_view_cache_free(&view);
-        return false;
+        LOG_FAIL("validation", "test_block_validity: check_block failed");
     }
     if (!contextual_check_block(block, state, params, pindex_prev)) {
         coins_view_cache_free(&view);
-        return false;
+        LOG_FAIL("validation", "test_block_validity: contextual_check_block failed");
     }
     if (!connect_block(block, state, &index_dummy, &view, params, true)) {
         coins_view_cache_free(&view);
-        return false;
+        LOG_FAIL("validation", "test_block_validity: connect_block failed");
     }
 
     coins_view_cache_free(&view);

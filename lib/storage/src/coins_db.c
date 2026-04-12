@@ -7,6 +7,7 @@
 #include "storage/coins_db.h"
 #include "coins/undo.h"
 #include "core/serialize.h"
+#include "util/log_macros.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -89,13 +90,15 @@ bool coins_view_db_get_coins(struct coins_view_db *cvdb,
 
     uint64_t nVersion = 0;
     if (!stream_read_varint(&s, &nVersion)) {
-        stream_free(&s); free(val); return false;
+        stream_free(&s); free(val);
+        LOG_FAIL("coins_db", "get_coins: read nVersion varint failed");
     }
     out->version = (int)nVersion;
 
     uint64_t nCode = 0;
     if (!stream_read_varint(&s, &nCode)) {
-        stream_free(&s); free(val); return false;
+        stream_free(&s); free(val);
+        LOG_FAIL("coins_db", "get_coins: read nCode varint failed");
     }
     out->is_coinbase = (nCode & 1) != 0;
     bool vout0_present = (nCode & 2) != 0;
@@ -104,7 +107,8 @@ bool coins_view_db_get_coins(struct coins_view_db *cvdb,
         ((vout0_present || vout1_present) ? 0 : 1);
 
     if (nMaskCode > 10000) {
-        stream_free(&s); free(val); return false;
+        stream_free(&s); free(val);
+        LOG_FAIL("coins_db", "get_coins: nMaskCode %u exceeds limit", nMaskCode);
     }
 
     /* Build availability vector: vAvail[0..1] from flags, rest from mask bytes */
@@ -117,7 +121,8 @@ bool coins_view_db_get_coins(struct coins_view_db *cvdb,
     while (mask_remaining > 0) {
         unsigned char ch = 0;
         if (!stream_read_bytes(&s, &ch, 1)) {
-            stream_free(&s); free(val); return false;
+            stream_free(&s); free(val);
+            LOG_FAIL("coins_db", "get_coins: read mask byte failed");
         }
         for (unsigned int p = 0; p < 8 && num_avail < 4096; p++)
             avail_stack[num_avail++] = (ch & (1 << p)) != 0;
@@ -129,14 +134,16 @@ bool coins_view_db_get_coins(struct coins_view_db *cvdb,
     for (size_t i = 0; i < num_avail; i++) {
         if (avail_stack[i]) {
             if (!compressed_txout_deserialize(&out->vout[i], &s)) {
-                stream_free(&s); free(val); return false;
+                stream_free(&s); free(val);
+                LOG_FAIL("coins_db", "get_coins: compressed txout deserialize failed at vout %zu", i);
             }
         }
     }
 
     uint64_t h = 0;
     if (!stream_read_varint(&s, &h)) {
-        stream_free(&s); free(val); return false;
+        stream_free(&s); free(val);
+        LOG_FAIL("coins_db", "get_coins: read height varint failed");
     }
     out->height = (int)h;
 

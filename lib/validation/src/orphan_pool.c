@@ -2,6 +2,7 @@
  * Orphan transaction pool implementation. */
 
 #include "validation/orphan_pool.h"
+#include "util/log_macros.h"
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -51,7 +52,8 @@ static void remove_at(struct orphan_pool *pool, size_t idx)
 bool orphan_pool_add(struct orphan_pool *pool, const struct transaction *tx)
 {
     if (!pool || !tx || tx->num_vin == 0)
-        return false;
+        LOG_FAIL("orphan", "invalid input: pool=%p tx=%p num_vin=%zu",
+                 (void *)pool, (void *)tx, tx ? tx->num_vin : 0);
 
     zcl_mutex_lock(&pool->cs);
 
@@ -64,13 +66,13 @@ bool orphan_pool_add(struct orphan_pool *pool, const struct transaction *tx)
     /* Pool full */
     if (pool->count >= ORPHAN_MAX_ENTRIES) {
         zcl_mutex_unlock(&pool->cs);
-        return false;
+        LOG_FAIL("orphan", "pool full: count=%zu max=%d", pool->count, ORPHAN_MAX_ENTRIES);
     }
 
     int slot = find_free_slot(pool);
     if (slot < 0) {
         zcl_mutex_unlock(&pool->cs);
-        return false;
+        LOG_FAIL("orphan", "no free slot despite count=%zu < max=%d", pool->count, ORPHAN_MAX_ENTRIES);
     }
 
     transaction_copy(&pool->entries[slot].tx, tx);

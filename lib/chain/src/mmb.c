@@ -5,6 +5,7 @@
 
 #include "chain/mmb.h"
 #include "crypto/sha3.h"
+#include "util/log_macros.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -126,7 +127,8 @@ static int mmb_merge_after_insert(struct mmb *m)
 
 int mmb_append(struct mmb *m, const struct mmb_leaf *leaf)
 {
-    if (m->num_mountains >= MMB_MAX_MOUNTAINS) return -1;
+    if (m->num_mountains >= MMB_MAX_MOUNTAINS)
+        LOG_ERR("mmb", "append: mountain count at max (%d)", MMB_MAX_MOUNTAINS);
 
     struct mmb_mountain *mt = &m->mountains[m->num_mountains];
     mmb_hash_leaf(leaf, mt->peak);
@@ -140,7 +142,8 @@ int mmb_append(struct mmb *m, const struct mmb_leaf *leaf)
 
 int mmb_append_hash(struct mmb *m, const uint8_t leaf_hash[32])
 {
-    if (m->num_mountains >= MMB_MAX_MOUNTAINS) return -1;
+    if (m->num_mountains >= MMB_MAX_MOUNTAINS)
+        LOG_ERR("mmb", "append_hash: mountain count at max (%d)", MMB_MAX_MOUNTAINS);
 
     struct mmb_mountain *mt = &m->mountains[m->num_mountains];
     memcpy(mt->peak, leaf_hash, 32);
@@ -220,12 +223,15 @@ size_t mmb_serialize(const struct mmb *m, uint8_t *buf, size_t buflen)
 bool mmb_deserialize(struct mmb *m, const uint8_t *buf, size_t len)
 {
     mmb_init(m);
-    if (len < 13) return false;  /* version + num_leaves + num_mountains */
+    if (len < 13)
+        LOG_FAIL("mmb", "deserialize: buffer too short (%zu < 13)", len);
 
     size_t pos = 0;
 
     /* Version check */
-    if (buf[pos++] != 0x01) return false;
+    if (buf[pos] != 0x01)
+        LOG_FAIL("mmb", "deserialize: unsupported version 0x%02x", buf[pos]);
+    pos++;
 
     /* num_leaves */
     m->num_leaves = 0;
@@ -239,8 +245,10 @@ bool mmb_deserialize(struct mmb *m, const uint8_t *buf, size_t len)
         nm = (nm << 8) | buf[pos + i];
     pos += 4;
 
-    if (nm > MMB_MAX_MOUNTAINS) return false;
-    if (len < pos + nm * 36) return false;
+    if (nm > MMB_MAX_MOUNTAINS)
+        LOG_FAIL("mmb", "deserialize: mountain count %u exceeds max %d", nm, MMB_MAX_MOUNTAINS);
+    if (len < pos + nm * 36)
+        LOG_FAIL("mmb", "deserialize: buffer too short for %u mountains", nm);
 
     m->num_mountains = nm;
     for (uint32_t i = 0; i < nm; i++) {
@@ -264,7 +272,9 @@ bool mmb_prove(const uint8_t (*all_leaf_hashes)[32],
                struct mmb_proof *proof)
 {
     if (!all_leaf_hashes || !proof || leaf_index >= num_leaves)
-        return false;
+        LOG_FAIL("mmb", "prove: invalid args (hashes=%p, proof=%p, index=%lu/%lu)",
+                 (const void *)all_leaf_hashes, (const void *)proof,
+                 (unsigned long)leaf_index, (unsigned long)num_leaves);
 
     memset(proof, 0, sizeof(*proof));
     proof->leaf_index = leaf_index;
@@ -383,8 +393,11 @@ bool mmb_prove(const uint8_t (*all_leaf_hashes)[32],
 bool mmb_verify(const struct mmb_proof *proof,
                 const uint8_t expected_root[32])
 {
-    if (!proof || !expected_root) return false;
-    if (proof->num_peaks == 0) return false;
+    if (!proof || !expected_root)
+        LOG_FAIL("mmb", "verify: NULL argument (proof=%p, root=%p)",
+                 (const void *)proof, (const void *)expected_root);
+    if (proof->num_peaks == 0)
+        LOG_FAIL("mmb", "verify: proof has zero peaks");
 
     /* Unpack lr_bits from mmb_size (low 40 = num_leaves, bits 40+ = lr) */
     uint64_t lr_bits = (proof->mmb_size >> 40) & 0xFFFFFFULL;
@@ -413,7 +426,8 @@ bool mmb_verify(const struct mmb_proof *proof,
             break;
         }
     }
-    if (!peak_found) return false;
+    if (!peak_found)
+        LOG_FAIL("mmb", "verify: reconstructed hash does not match any peak");
 
     /* Bag all peaks and verify root */
     uint8_t computed_root[32];

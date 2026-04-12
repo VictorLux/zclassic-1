@@ -4,6 +4,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "chain/checkpoints.h"
+#include "util/log_macros.h"
 #include <stddef.h>
 #include <time.h>
 
@@ -58,19 +59,22 @@ bool checkpoints_hash_at_height(const struct checkpoint_data *data,
                                  int height,
                                  struct uint256 *out_hash)
 {
-    if (!data || !out_hash) return false;
+    if (!data || !out_hash)
+        LOG_FAIL("checkpoints", "hash_at_height: NULL argument (data=%p, out_hash=%p)",
+                 (const void *)data, (const void *)out_hash);
     for (int i = 0; i < data->nEntries; i++) {
         if (data->entries[i].height == height) {
             *out_hash = data->entries[i].hash;
             return true;
         }
     }
-    return false;
+    LOG_FAIL("checkpoints", "hash_at_height: no checkpoint at height %d", height);
 }
 
 int checkpoints_last_height(const struct checkpoint_data *data)
 {
-    if (!data || data->nEntries == 0) return -1;
+    if (!data || data->nEntries == 0)
+        LOG_ERR("checkpoints", "last_height: no checkpoint data (data=%p)", (const void *)data);
     /* The list is ascending-height in practice (see
      * chainparams.c), so the final entry is the deepest.
      * Defensive scan in case that ever gets shuffled. */

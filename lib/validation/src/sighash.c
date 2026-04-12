@@ -9,6 +9,7 @@
 #include "crypto/blake2b.h"
 #include "core/hash.h"
 #include "core/serialize.h"
+#include "util/log_macros.h"
 #include <string.h>
 
 static const unsigned char PREVOUTS_PERSONAL[16] =
@@ -404,7 +405,7 @@ bool signature_hash(const struct script *script_code,
                     struct uint256 *result)
 {
     if (nIn >= tx->num_vin && nIn != NOT_AN_INPUT)
-        return false;
+        LOG_FAIL("sighash", "nIn=%u out of range (num_vin=%zu)", nIn, tx->num_vin);
 
     enum sig_version sigver = signature_hash_version(tx);
 
@@ -416,7 +417,7 @@ bool signature_hash(const struct script *script_code,
 
     if (sighash_get_base_type(hash_type) == BASE_SIGHASH_SINGLE &&
         nIn >= tx->num_vout)
-        return false;
+        LOG_FAIL("sighash", "SIGHASH_SINGLE nIn=%u >= num_vout=%zu", nIn, tx->num_vout);
 
     return sighash_sprout(script_code, tx, nIn, hash_type, result);
 }

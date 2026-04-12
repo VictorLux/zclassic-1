@@ -4,6 +4,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "consensus/upgrades.h"
+#include "util/log_macros.h"
 #include <assert.h>
 
 const struct nu_info NetworkUpgradeInfo[MAX_NETWORK_UPGRADES] = {
@@ -63,7 +64,7 @@ bool consensus_is_branch_id(int branchId)
         if ((uint32_t)branchId == NetworkUpgradeInfo[i].nBranchId)
             return true;
     }
-    return false;
+    LOG_FAIL("consensus", "unrecognized branch id 0x%08x", branchId);
 }
 
 bool consensus_is_activation_height(int nHeight, const struct consensus_params *params,
@@ -71,30 +72,30 @@ bool consensus_is_activation_height(int nHeight, const struct consensus_params *
 {
     assert(idx >= BASE_SPROUT && idx < MAX_NETWORK_UPGRADES);
     if (idx == BASE_SPROUT)
-        return false;
+        LOG_FAIL("consensus", "BASE_SPROUT has no activation height");
     return nHeight >= 0 && nHeight == params->vUpgrades[idx].nActivationHeight;
 }
 
 bool consensus_is_activation_height_any(int nHeight, const struct consensus_params *params)
 {
     if (nHeight < 0)
-        return false;
+        LOG_FAIL("consensus", "is_activation_height_any: negative height %d", nHeight);
     for (int i = BASE_SPROUT + 1; i < MAX_NETWORK_UPGRADES; i++) {
         if (nHeight == params->vUpgrades[i].nActivationHeight)
             return true;
     }
-    return false;
+    LOG_FAIL("consensus", "height %d is not an activation height for any upgrade", nHeight);
 }
 
 int consensus_next_epoch(int nHeight, const struct consensus_params *params)
 {
     if (nHeight < 0)
-        return -1;
+        LOG_ERR("consensus", "next_epoch: negative height %d", nHeight);
     for (int i = BASE_SPROUT + 1; i < MAX_NETWORK_UPGRADES; i++) {
         if (consensus_upgrade_state(nHeight, params, (enum upgrade_index)i) == UPGRADE_PENDING)
             return i;
     }
-    return -1;
+    LOG_ERR("consensus", "next_epoch: no pending upgrade at height %d", nHeight);
 }
 
 int consensus_next_activation_height(int nHeight, const struct consensus_params *params)
@@ -102,5 +103,5 @@ int consensus_next_activation_height(int nHeight, const struct consensus_params 
     int idx = consensus_next_epoch(nHeight, params);
     if (idx >= 0)
         return params->vUpgrades[idx].nActivationHeight;
-    return -1;
+    LOG_ERR("consensus", "next_activation_height: no next epoch at height %d", nHeight);
 }

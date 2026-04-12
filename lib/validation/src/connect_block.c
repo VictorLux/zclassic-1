@@ -15,6 +15,7 @@
  *   - Input value < output check (bad-txns-in-belowout) */
 
 #include <stdio.h>
+#include "util/log_macros.h"
 #include "validation/connect_block.h"
 #include "validation/check_block.h"
 #include "validation/check_transaction.h"
@@ -114,7 +115,7 @@ bool connect_block(const struct block *block,
      * PoW and size limits gated by expensive_checks. */
     if (!check_block(block, state, params, expensive_checks,
                      !just_check, true))
-        return false;
+        LOG_FAIL("connect", "check_block failed at height %d", pindex->nHeight);
 
     /* Use pre-computed hash from block_index */
     struct uint256 block_hash;

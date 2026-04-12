@@ -4,6 +4,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "validation/checkqueue.h"
+#include "util/log_macros.h"
 #include <stdlib.h>
 
 bool check_queue_loop(struct check_queue *cq, bool is_master)
@@ -14,7 +15,7 @@ bool check_queue_loop(struct check_queue *cq, bool is_master)
 
     void **local_batch = malloc(cq->nBatchSize * sizeof(void *));
     if (!local_batch)
-        return false;
+        LOG_FAIL("checkqueue", "malloc failed for batch (size=%u)", cq->nBatchSize);
 
     for (;;) {
         zcl_mutex_lock(&cq->mutex);

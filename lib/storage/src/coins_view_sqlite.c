@@ -11,6 +11,7 @@
 #include "event/event.h"
 #include "models/utxo.h"
 #include "script/standard.h"
+#include "util/log_macros.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -55,7 +56,8 @@ static struct coins_view_vtable cvs_vtable = {
 
 bool coins_view_sqlite_open(struct coins_view_sqlite *cvs, sqlite3 *db)
 {
-    if (!db) return false;
+    if (!db)
+        LOG_FAIL("coins_view", "open: db handle is NULL");
     memset(cvs, 0, sizeof(*cvs));
     cvs->view.vtable = &cvs_vtable;
     cvs->view.impl = cvs;
@@ -160,7 +162,9 @@ bool coins_view_sqlite_get_coins(struct coins_view_sqlite *cvs,
     bool found = false;
 
     coins_init(out);
-    if (!cvs || !cvs->db || !cvs->stmt_get || !txid) return false;
+    if (!cvs || !cvs->db || !cvs->stmt_get || !txid)
+        LOG_FAIL("coins_view", "get_coins: invalid arguments (cvs=%p txid=%p)",
+                 (const void *)cvs, (const void *)txid);
 
     pthread_mutex_lock(&cvs->mutex);
     sqlite3_stmt *s = cvs->stmt_get;
@@ -196,7 +200,7 @@ bool coins_view_sqlite_get_coins(struct coins_view_sqlite *cvs,
     if (!coins_alloc(out, (size_t)(max_vout + 1))) {
         sqlite3_reset(s);
         pthread_mutex_unlock(&cvs->mutex);
-        return false;
+        LOG_FAIL("coins_view", "get_coins: coins_alloc failed for %u vouts", max_vout + 1);
     }
     out->version = 1;
     out->height = height;
@@ -232,7 +236,8 @@ bool coins_view_sqlite_get_coins(struct coins_view_sqlite *cvs,
 bool coins_view_sqlite_have_coins(struct coins_view_sqlite *cvs,
                                    const struct uint256 *txid)
 {
-    if (!cvs || !cvs->stmt_have || !txid) return false;
+    if (!cvs || !cvs->stmt_have || !txid)
+        LOG_FAIL("coins_view", "have_coins: invalid arguments");
     pthread_mutex_lock(&cvs->mutex);
     sqlite3_stmt *s = cvs->stmt_have;
     sqlite3_reset(s);
@@ -250,8 +255,10 @@ bool coins_view_sqlite_get_best_block(struct coins_view_sqlite *cvs,
 {
     bool found = false;
 
-    if (!cvs || !cvs->db || !hash) return false;
-    if (!cvs->stmt_best_get) { uint256_set_null(hash); return false; }
+    if (!cvs || !cvs->db || !hash)
+        LOG_FAIL("coins_view", "get_best_block: invalid arguments");
+    if (!cvs->stmt_best_get) { uint256_set_null(hash);
+        LOG_FAIL("coins_view", "get_best_block: stmt_best_get not prepared"); }
     pthread_mutex_lock(&cvs->mutex);
     sqlite3_stmt *s = cvs->stmt_best_get;
     sqlite3_reset(s);
@@ -285,7 +292,8 @@ bool coins_view_sqlite_batch_write_ex(struct coins_view_sqlite *cvs,
                                        const struct uint256 *hash_block,
                                        const struct utxo_commitment *commit)
 {
-    if (!cvs->db) return false;
+    if (!cvs->db)
+        LOG_FAIL("coins_view", "batch_write: db handle is NULL");
 
     /* Transaction control: dedicated connection uses BEGIN IMMEDIATE.
      * Shared handle (in-memory or fallback) uses SAVEPOINT to nest
@@ -497,7 +505,8 @@ bool coins_view_sqlite_batch_write_ex(struct coins_view_sqlite *cvs,
 bool coins_view_sqlite_write_commitment(struct coins_view_sqlite *cvs,
                                          const struct utxo_commitment *uc)
 {
-    if (!cvs || !cvs->db || !uc || !cvs->stmt_commit_set) return false;
+    if (!cvs || !cvs->db || !uc || !cvs->stmt_commit_set)
+        LOG_FAIL("coins_view", "write_commitment: invalid arguments or stmt not prepared");
     pthread_mutex_lock(&cvs->mutex);
     uint8_t buf[UTXO_COMMITMENT_SERIALIZED_SIZE];
     utxo_commitment_serialize(uc, buf);
@@ -514,8 +523,10 @@ bool coins_view_sqlite_write_commitment(struct coins_view_sqlite *cvs,
 bool coins_view_sqlite_read_commitment(struct coins_view_sqlite *cvs,
                                         struct utxo_commitment *uc)
 {
-    if (!cvs || !cvs->db || !uc) { if (uc) utxo_commitment_init(uc); return false; }
-    if (!cvs->stmt_commit_get) { utxo_commitment_init(uc); return false; }
+    if (!cvs || !cvs->db || !uc) { if (uc) utxo_commitment_init(uc);
+        LOG_FAIL("coins_view", "read_commitment: invalid arguments"); }
+    if (!cvs->stmt_commit_get) { utxo_commitment_init(uc);
+        LOG_FAIL("coins_view", "read_commitment: stmt_commit_get not prepared"); }
     pthread_mutex_lock(&cvs->mutex);
     sqlite3_reset(cvs->stmt_commit_get);
     if (sqlite3_step(cvs->stmt_commit_get) == SQLITE_ROW) {

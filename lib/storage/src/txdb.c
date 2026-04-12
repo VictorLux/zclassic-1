@@ -6,6 +6,7 @@
 
 #include "storage/txdb.h"
 #include "core/serialize.h"
+#include "util/log_macros.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -202,7 +203,7 @@ bool block_tree_db_write_tx_index(struct block_tree_db *btdb,
         if (!db_write(&btdb->db, key, keylen,
                       (const char *)&positions[i], sizeof(struct disk_tx_pos),
                       false))
-            return false;
+            LOG_FAIL("txdb", "write_tx_index: db_write failed at index %zu", i);
     }
     return true;
 }

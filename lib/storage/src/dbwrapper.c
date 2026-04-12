@@ -5,6 +5,7 @@
 
 #include "storage/dbwrapper.h"
 #include "util/util.h"
+#include "util/log_macros.h"
 #include <leveldb/c.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -150,11 +151,13 @@ bool db_wrapper_open(struct db_wrapper *w, const char *path,
 
 bool db_wrapper_snapshot_begin(struct db_wrapper *w)
 {
-    if (!w || !w->db) return false;
+    if (!w || !w->db)
+        LOG_FAIL("dbwrapper", "snapshot_begin: wrapper or db is NULL");
     if (w->snapshot) return true; /* already active */
 
     w->snapshot = leveldb_create_snapshot(w->db);
-    if (!w->snapshot) return false;
+    if (!w->snapshot)
+        LOG_FAIL("dbwrapper", "snapshot_begin: leveldb_create_snapshot returned NULL");
 
     /* Point iter_options at the snapshot so all new iterators see a
      * frozen, consistent view of the database. */

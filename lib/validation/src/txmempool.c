@@ -7,6 +7,7 @@
 #include "validation/txmempool.h"
 #include "validation/contextual_check_tx.h"
 #include "core/serialize.h"
+#include "util/log_macros.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -110,7 +111,7 @@ static bool outpoint_insert(struct outpoint_map_entry *map, size_t cap,
             return true;
         }
     }
-    return false;
+    LOG_FAIL("mempool", "outpoint_insert: hash table full (cap=%zu)", cap);
 }
 
 static void outpoint_remove(struct outpoint_map_entry *map, size_t cap,
@@ -227,7 +228,8 @@ bool tx_mempool_add_unchecked(struct tx_mempool *pool,
      * Matches Bitcoin Core's default -maxmempool=300. */
     if (pool->total_tx_size + entry->tx_size > 300 * 1024 * 1024) {
         zcl_mutex_unlock(&pool->cs);
-        return false;
+        LOG_FAIL("mempool", "mempool full: total_size=%zu + tx_size=%zu exceeds 300MB limit",
+                 (size_t)pool->total_tx_size, (size_t)entry->tx_size);
     }
 
     /* Double-spend detection: reject if any input is already spent
@@ -244,7 +246,7 @@ bool tx_mempool_add_unchecked(struct tx_mempool *pool,
                 pool->next_tx[pos].key.n == op.n) {
                 /* Input already spent by another mempool tx */
                 zcl_mutex_unlock(&pool->cs);
-                return false;
+                LOG_FAIL("mempool", "double-spend detected: input already spent by mempool tx");
             }
         }
     }
@@ -253,7 +255,7 @@ bool tx_mempool_add_unchecked(struct tx_mempool *pool,
         size_t newcap = pool->entries_cap * 2;
         struct mempool_entry *tmp = realloc(pool->entries,
                                              newcap * sizeof(*tmp));
-        if (!tmp) { zcl_mutex_unlock(&pool->cs); return false; }
+        if (!tmp) { zcl_mutex_unlock(&pool->cs); LOG_FAIL("mempool", "realloc failed expanding entries from %zu", pool->entries_cap); }
         pool->entries = tmp;
         pool->entries_cap = newcap;
     }

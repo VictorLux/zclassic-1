@@ -5,6 +5,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "validation/chainstate.h"
+#include "util/log_macros.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -80,9 +81,9 @@ static bool block_map_insert_internal(struct block_map *m,
             return true;
         }
         if (uint256_eq(&m->buckets[slot].hash, hash))
-            return false;
+            LOG_FAIL("chainstate", "block_map_insert_internal: duplicate hash in slot %zu", slot);
     }
-    return false;
+    LOG_FAIL("chainstate", "block_map_insert_internal: hash table full (capacity=%zu)", m->capacity);
 }
 
 /* Pre-allocate hash map to avoid repeated rehashing during bulk load.
@@ -99,7 +100,11 @@ bool block_map_reserve(struct block_map *m, size_t expected_count)
     size_t old_cap = m->capacity;
 
     m->buckets = calloc(cap, sizeof(struct block_map_entry));
-    if (!m->buckets) { m->buckets = old; pthread_rwlock_unlock(&m->rwlock); return false; }
+    if (!m->buckets) {
+        m->buckets = old;
+        pthread_rwlock_unlock(&m->rwlock);
+        LOG_FAIL("chainstate", "block_map_reserve: calloc failed for %zu entries", cap);
+    }
     m->capacity = cap;
 
     for (size_t i = 0; i < old_cap; i++) {
@@ -122,7 +127,10 @@ static bool block_map_grow(struct block_map *m)
     size_t old_cap = m->capacity;
 
     m->buckets = calloc(new_cap, sizeof(struct block_map_entry));
-    if (!m->buckets) { m->buckets = old; return false; }
+    if (!m->buckets) {
+        m->buckets = old;
+        LOG_FAIL("chainstate", "block_map_grow: calloc failed for %zu entries", new_cap);
+    }
     m->capacity = new_cap;
 
     for (size_t i = 0; i < old_cap; i++) {
@@ -148,12 +156,12 @@ bool block_map_insert(struct block_map *m, const struct uint256 *hash,
     if (m->size * 4 >= m->capacity * 3) {
         if (!block_map_grow(m)) {
             pthread_rwlock_unlock(&m->rwlock);
-            return false;
+            LOG_FAIL("chainstate", "block_map_insert: grow failed (size=%zu)", m->size);
         }
     }
     if (!block_map_insert_internal(m, hash, index)) {
         pthread_rwlock_unlock(&m->rwlock);
-        return false;
+        LOG_FAIL("chainstate", "block_map_insert: duplicate block hash (size=%zu)", m->size);
     }
     m->size++;
     pthread_rwlock_unlock(&m->rwlock);
@@ -252,7 +260,8 @@ bool active_chain_set_tip(struct active_chain *c, struct block_index *bi)
         int new_cap = new_height + 1024;
         struct block_index **nc = realloc(c->chain,
             (size_t)new_cap * sizeof(struct block_index *));
-        if (!nc) return false;
+        if (!nc)
+            LOG_FAIL("chainstate", "active_chain_set_tip: realloc failed for height %d", new_height);
         c->chain = nc;
         c->capacity = new_cap;
     }

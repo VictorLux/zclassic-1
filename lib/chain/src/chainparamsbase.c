@@ -5,6 +5,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "chain/chainparamsbase.h"
+#include "util/log_macros.h"
 #include <assert.h>
 #include <stddef.h>
 
@@ -59,7 +60,7 @@ bool SelectBaseParamsFromCommandLine(void)
 {
     enum chain_network network = NetworkIdFromCommandLine();
     if (network == CHAIN_MAX_NETWORK_TYPES)
-        return false;
+        LOG_FAIL("chainparams", "conflicting -testnet and -regtest flags");
     SelectBaseParams(network);
     return true;
 }
