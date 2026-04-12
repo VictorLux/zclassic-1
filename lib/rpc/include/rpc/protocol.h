@@ -77,6 +77,19 @@ size_t json_rpc_reply(const struct json_value *result,
 
 void json_rpc_error(struct json_value *out, int code, const char *message);
 
+/* Extended error object: {code, message, method}.
+ * method may be NULL (omitted from output). */
+void json_rpc_error_full(struct json_value *out, int code,
+                         const char *message, const char *method);
+
+/* Write a complete JSON-RPC error response string:
+ *   {"result":null,"error":{"code":N,"message":"...","method":"..."},"id":V}
+ * method may be NULL.  id_json may be NULL (emits "null").
+ * Returns bytes written (excluding NUL). */
+size_t json_rpc_error_response(char *buf, size_t buflen, int code,
+                               const char *message, const char *method,
+                               const char *id_json);
+
 void get_auth_cookie_file(char *out, size_t out_size);
 bool generate_auth_cookie(char *cookie_out, size_t cookie_size);
 bool get_auth_cookie(char *cookie_out, size_t cookie_size);

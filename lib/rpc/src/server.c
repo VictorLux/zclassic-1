@@ -104,12 +104,13 @@ bool rpc_table_execute(const struct rpc_table *t, const char *method,
 {
     char status[256];
     if (rpc_is_in_warmup(status, sizeof(status))) {
-        json_rpc_error(result, RPC_IN_WARMUP, status);
+        json_rpc_error_full(result, RPC_IN_WARMUP, status, method);
         return false;
     }
     const struct rpc_command *cmd = rpc_table_find(t, method);
     if (!cmd) {
-        json_rpc_error(result, RPC_METHOD_NOT_FOUND, "Method not found");
+        json_rpc_error_full(result, RPC_METHOD_NOT_FOUND,
+                            "Method not found", method);
         return false;
     }
     return cmd->actor(params, false, result);

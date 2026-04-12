@@ -254,17 +254,19 @@ static void handle_client(int client_fd)
         enum rpc_http_decision d =
             rpc_http_middleware_check(&g_middleware, client_ip_be);
         if (d == RPC_HTTP_BANNED) {
-            const char *msg = "{\"error\":{\"code\":-32003,"
-                              "\"message\":\"IP banned\"}}";
-            send_response(client_fd, 403, "Forbidden", msg, strlen(msg));
+            char errbuf[256];
+            size_t elen = json_rpc_error_response(errbuf, sizeof(errbuf),
+                -32003, "IP banned", NULL, NULL);
+            send_response(client_fd, 403, "Forbidden", errbuf, elen);
             goto done;
         }
         if (d == RPC_HTTP_RATE_LIMITED_GLOBAL ||
             d == RPC_HTTP_RATE_LIMITED_PER_IP) {
-            const char *msg = "{\"error\":{\"code\":-32005,"
-                              "\"message\":\"Rate limit exceeded\"}}";
+            char errbuf[256];
+            size_t elen = json_rpc_error_response(errbuf, sizeof(errbuf),
+                -32005, "Rate limit exceeded", NULL, NULL);
             send_response(client_fd, 429, "Too Many Requests",
-                          msg, strlen(msg));
+                          errbuf, elen);
             goto done;
         }
     }
@@ -347,9 +349,11 @@ static void handle_client(int client_fd)
                 return;  /* skip done: label which closes fd */
             }
             /* Upgrade failed — fall through to 503 */
-            const char *msg = "{\"error\":\"WebSocket capacity full (max 100)\"}";
+            char errbuf[256];
+            size_t elen = json_rpc_error_response(errbuf, sizeof(errbuf),
+                -32006, "WebSocket capacity full (max 100)", NULL, NULL);
             send_response(client_fd, 503, "Service Unavailable",
-                          msg, strlen(msg));
+                          errbuf, elen);
             goto done;
         }
         /* Not a WebSocket upgrade — fall through to reject */
@@ -358,8 +362,10 @@ static void handle_client(int client_fd)
     /* No blog over clearnet. Blog is Tor-only via dynhost.
      * Clearnet serves ONLY authenticated RPC (POST). */
     if (strcmp(method, "POST") != 0) {
-        const char *msg = "Method not allowed";
-        send_response(client_fd, 405, "Method Not Allowed", msg, strlen(msg));
+        char errbuf[256];
+        size_t elen = json_rpc_error_response(errbuf, sizeof(errbuf),
+            RPC_INVALID_REQUEST, "Method not allowed", NULL, NULL);
+        send_response(client_fd, 405, "Method Not Allowed", errbuf, elen);
         goto done;
     }
 
@@ -382,8 +388,10 @@ static void handle_client(int client_fd)
     if (!check_auth(auth_value[0] ? auth_value : NULL)) {
         if (g_middleware_active)
             rpc_http_middleware_record_auth_fail(&g_middleware, client_ip_be);
-        const char *msg = "Unauthorized";
-        send_response(client_fd, 401, "Unauthorized", msg, strlen(msg));
+        char errbuf[256];
+        size_t elen = json_rpc_error_response(errbuf, sizeof(errbuf),
+            HTTP_UNAUTHORIZED, "Unauthorized", NULL, NULL);
+        send_response(client_fd, 401, "Unauthorized", errbuf, elen);
         goto done;
     }
     if (g_middleware_active)
@@ -391,8 +399,10 @@ static void handle_client(int client_fd)
 
     if (content_length == 0 || content_length > 10 * 1024 * 1024) {
         if (content_length > 10 * 1024 * 1024) {
-            const char *msg = "{\"error\":\"Request body too large\"}";
-            send_response(client_fd, 413, "Payload Too Large", msg, strlen(msg));
+            char errbuf[256];
+            size_t elen = json_rpc_error_response(errbuf, sizeof(errbuf),
+                RPC_INVALID_REQUEST, "Request body too large", NULL, NULL);
+            send_response(client_fd, 413, "Payload Too Large", errbuf, elen);
         }
         goto done;
     }
@@ -411,8 +421,10 @@ static void handle_client(int client_fd)
     if (!json_read(&request, body, content_length)) {
         free(body);
         json_free(&request);
-        const char *err = "{\"error\":{\"code\":-32700,\"message\":\"Parse error\"}}";
-        send_response(client_fd, 200, "OK", err, strlen(err));
+        char errbuf[256];
+        size_t elen = json_rpc_error_response(errbuf, sizeof(errbuf),
+            RPC_PARSE_ERROR, "Parse error", NULL, NULL);
+        send_response(client_fd, 200, "OK", errbuf, elen);
         goto done;
     }
     free(body);
@@ -422,8 +434,10 @@ static void handle_client(int client_fd)
     if (!json_request_parse(&req, &request)) {
         json_free(&request);
         json_request_free(&req);
-        const char *err = "{\"error\":{\"code\":-32600,\"message\":\"Invalid request\"}}";
-        send_response(client_fd, 200, "OK", err, strlen(err));
+        char errbuf[256];
+        size_t elen = json_rpc_error_response(errbuf, sizeof(errbuf),
+            RPC_INVALID_REQUEST, "Invalid request", NULL, NULL);
+        send_response(client_fd, 200, "OK", errbuf, elen);
         goto done;
     }
     json_free(&request);
@@ -438,17 +452,32 @@ static void handle_client(int client_fd)
 
     struct json_value result;
     json_init(&result);
-    rpc_table_execute(g_table, req.method, &req.params, &result);
+    bool rpc_ok = rpc_table_execute(g_table, req.method, &req.params, &result);
 
+    /* Build standard JSON-RPC response:
+     *   success: {result: <data>, error: null, id: <id>}
+     *   failure: {result: null, error: {code, message, method}, id: <id>}
+     * On failure, rpc_table_execute stores {code, message} in result —
+     * move it to the error field and inject the method name. */
     struct json_value response;
     json_set_object(&response);
 
-    json_push_kv(&response, "result", &result);
-
-    struct json_value null_err;
-    json_set_null(&null_err);
-    json_push_kv(&response, "error", &null_err);
-    json_free(&null_err);
+    if (rpc_ok) {
+        json_push_kv(&response, "result", &result);
+        struct json_value null_err;
+        json_set_null(&null_err);
+        json_push_kv(&response, "error", &null_err);
+        json_free(&null_err);
+    } else {
+        struct json_value null_res;
+        json_set_null(&null_res);
+        json_push_kv(&response, "result", &null_res);
+        json_free(&null_res);
+        /* Inject method into the error object */
+        if (result.type == JSON_OBJ)
+            json_push_kv_str(&result, "method", req.method);
+        json_push_kv(&response, "error", &result);
+    }
 
     json_push_kv(&response, "id", &req.id);
 
@@ -458,8 +487,12 @@ static void handle_client(int client_fd)
         send_response(client_fd, 200, "OK", resp_buf, resp_len);
         free(resp_buf);
     } else {
-        const char *oom = "{\"error\":\"Internal error: out of memory\"}";
-        send_response(client_fd, 500, "Internal Server Error", oom, strlen(oom));
+        char errbuf[256];
+        size_t elen = json_rpc_error_response(errbuf, sizeof(errbuf),
+            RPC_OUT_OF_MEMORY, "Internal error: out of memory",
+            req.method, NULL);
+        send_response(client_fd, 500, "Internal Server Error",
+                      errbuf, elen);
     }
 
     json_free(&result);
@@ -502,9 +535,11 @@ static void *listen_thread_fn(void *arg)
             continue;
         }
         if (!enqueue_client_fd(client_fd)) {
-            const char *msg = "{\"error\":\"RPC server busy\"}";
+            char errbuf[256];
+            size_t elen = json_rpc_error_response(errbuf, sizeof(errbuf),
+                RPC_INTERNAL_ERROR, "RPC server busy", NULL, NULL);
             send_response(client_fd, 503, "Service Unavailable",
-                          msg, strlen(msg));
+                          errbuf, elen);
             close(client_fd);
         }
     }

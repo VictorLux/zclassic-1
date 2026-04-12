@@ -84,9 +84,9 @@ Work in order. `./test_zcl` green on every push.
 
 7. ~~**Coverage 26% → 35%**~~ — **DONE (42.3%).** 4 new test files: `test_znam.c` (32 tests), `test_htlc.c` (30 tests), `test_file_market.c` (22 tests), `test_strong_params.c` (30 tests). Fixed coverage crash: `test_json` segfaults under `-O1+gcov`, isolated in `fork()` child under `COVERAGE_BUILD` — recovered ~17pp of previously-lost coverage. Before: 25.3%, after: 42.3%.
 
-8. **HTTP RPC error envelope audit** — consistent `{error: {code, message, method, request_id}}` shape everywhere. One commit per category (wallet, chain, net, ops).
+8. ~~**HTTP RPC error envelope audit**~~ — **DONE.** Consistent `{result:null, error:{code, message, method}, id:<id>}` shape everywhere. Core: added `json_rpc_error_full()` and `json_rpc_error_response()` to protocol.h/c. HTTP server: all 10 error paths (ban, rate-limit, WS full, method-not-allowed, unauthorized, payload-too-large, parse-error, invalid-request, OOM, server-busy) now produce proper JSON-RPC envelopes with numeric codes. RPC dispatch: warmup and method-not-found errors now include `method` field. MCP rpc_client: connection errors use structured `{code, message}`. Fixed critical bug: `rpc_table_execute()` errors were placed in `result` field instead of `error` field. 15 tests in `test_rpc_error_envelope.c`.
 
-9. **Property-based tests for tx validation** — quickcheck-style randomized inputs to `check_transaction`, assert no crashes and correct accept/reject.
+9. ~~**Property-based tests for tx validation**~~ — **DONE.** `lib/test/src/test_tx_property.c` — 18 QuickCheck-style property tests with deterministic PRNG (xoshiro128+). Properties: valid tx acceptance (sprout/overwinter/sapling), negative output rejection, MAX_MONEY overflow, total overflow, empty inputs/outputs, duplicate inputs, version 0 rejection, bad versionGroupId, expiry height threshold, coinbase+joinsplit rejection, non-coinbase null prevout, non-zero value_balance without shielded, value_balance out of range, coinbase script bounds, 500-round random mutation crash test, duplicate sapling nullifiers, MAX_MONEY boundary, overwinter version bounds.
 
 ### Docs & operator experience
 

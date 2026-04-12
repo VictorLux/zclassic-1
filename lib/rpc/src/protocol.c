@@ -71,6 +71,41 @@ void json_rpc_error(struct json_value *out, int code, const char *message)
     json_push_kv_str(out, "message", message);
 }
 
+void json_rpc_error_full(struct json_value *out, int code,
+                         const char *message, const char *method)
+{
+    json_init(out);
+    json_set_object(out);
+    json_push_kv_int(out, "code", code);
+    json_push_kv_str(out, "message", message);
+    if (method)
+        json_push_kv_str(out, "method", method);
+}
+
+size_t json_rpc_error_response(char *buf, size_t buflen, int code,
+                               const char *message, const char *method,
+                               const char *id_json)
+{
+    if (!buf || buflen == 0) return 0;
+    size_t pos = 0;
+    int n;
+    if (method) {
+        n = snprintf(buf + pos, buflen - pos,
+                     "{\"result\":null,\"error\":{\"code\":%d,"
+                     "\"message\":\"%s\",\"method\":\"%s\"},\"id\":%s}",
+                     code, message ? message : "",
+                     method, id_json ? id_json : "null");
+    } else {
+        n = snprintf(buf + pos, buflen - pos,
+                     "{\"result\":null,\"error\":{\"code\":%d,"
+                     "\"message\":\"%s\"},\"id\":%s}",
+                     code, message ? message : "",
+                     id_json ? id_json : "null");
+    }
+    if (n < 0) return 0;
+    return (size_t)n < buflen ? (size_t)n : buflen - 1;
+}
+
 void get_auth_cookie_file(char *out, size_t out_size)
 {
     const char *custom = GetArg("-rpccookiefile", COOKIEAUTH_FILE);

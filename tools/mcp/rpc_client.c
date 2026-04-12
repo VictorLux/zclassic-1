@@ -86,7 +86,9 @@ char *mcp_node_rpc(const char *method, const char *params_json)
             method);
 
     int sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (sock < 0) return strdup("{\"error\":\"socket failed\"}");
+    if (sock < 0)
+        return strdup("{\"error\":{\"code\":-32603,"
+                      "\"message\":\"socket failed\"}}");
 
     struct sockaddr_in addr = {
         .sin_family = AF_INET,
@@ -96,7 +98,8 @@ char *mcp_node_rpc(const char *method, const char *params_json)
 
     if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         close(sock);
-        return strdup("{\"error\":\"cannot connect to node\"}");
+        return strdup("{\"error\":{\"code\":-32603,"
+                      "\"message\":\"cannot connect to node\"}}");
     }
 
     char auth_b64[512];

@@ -264,6 +264,8 @@ int test_key_scrub(void);
 int test_block_index_loader(void);
 int test_chain_state_validator(void);
 int test_utxo_recovery_service(void);
+int test_rpc_error_envelope(void);
+int test_tx_property(void);
 int test_znam(void);
 int test_htlc(void);
 int test_file_market(void);
