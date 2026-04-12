@@ -8,8 +8,8 @@
 
 ## AGENT1 self-assignment
 
-- [ ] Batch-apply BOOT_QUEUE: `bii_verify`, `wallet_backup_start`, `disk_monitor_start`, `mempool_limits_start`, `ibd_throttle_start`.
-- [ ] Verify PHGR13 fix: confirm live node passed h=2,014,948.
+- [x] Batch-apply BOOT_QUEUE: `bii_verify`, `wallet_backup_start`, `disk_monitor_start`, `mempool_limits_start`, `ibd_throttle_start`.
+- [ ] Verify PHGR13 fix: confirm live node passed h=2,014,948 (node restarted with height propagation fix, syncing).
 
 ---
 

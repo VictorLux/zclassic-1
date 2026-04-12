@@ -10,6 +10,10 @@
 #include "services/chain_activation_controller.h"
 #include "services/chain_state_repository.h"
 #include "services/recovery_policy.h"
+#include "services/block_index_integrity.h"
+#include "services/wallet_backup_service.h"
+#include "services/disk_monitor.h"
+#include "services/ibd_throttle.h"
 #include "controllers/wallet_scan.h"
 #include "util/sync.h"
 #include "net/msgprocessor.h"
@@ -110,6 +114,9 @@ static struct db_service g_db_service;
 static const char *g_datadir = NULL;
 const char *g_blog_datadir = NULL;
 static _Atomic bool g_running = false;
+static struct wallet_backup_config g_wallet_backup_cfg;
+static struct disk_monitor_config g_disk_monitor_cfg;
+static struct ibd_throttle_config g_ibd_throttle_cfg;
 
 static struct db_service *boot_runtime_db_service(void)
 {
@@ -386,6 +393,25 @@ bool app_init(struct app_context *ctx)
         }
     }
 
+    /* Disk monitor — armed before first SQLite open so the
+     * refuse-when-critical flag blocks writes before damage. */
+    disk_monitor_config_defaults(&g_disk_monitor_cfg);
+    g_disk_monitor_cfg.datadir = ctx->datadir;
+    if (disk_monitor_start(&g_disk_monitor_cfg))
+        printf("Disk monitor started (warn=%lldGB refuse=%lldGB)\n",
+               (long long)(g_disk_monitor_cfg.warn_free_bytes >> 30),
+               (long long)(g_disk_monitor_cfg.refuse_free_bytes >> 30));
+
+    /* IBD throttle — rate-limits block processing during initial sync.
+     * NULL config reads ZCL_IBD_BLOCKS_PER_SEC / ZCL_IBD_BURST from env
+     * with defaults 500/50. Pass-through when not running. */
+    ibd_throttle_config_defaults(&g_ibd_throttle_cfg);
+    ibd_throttle_config_from_env(&g_ibd_throttle_cfg);
+    if (ibd_throttle_start(&g_ibd_throttle_cfg))
+        printf("IBD throttle started (rate=%lld/s burst=%lld)\n",
+               (long long)g_ibd_throttle_cfg.blocks_per_sec,
+               (long long)g_ibd_throttle_cfg.burst);
+
     /* Assumevalid is set after block index loads (see ~line 1275).
      * The remote dev's implementation in contextual_check_tx.c handles
      * both script verification (connect_block.c) and Sapling proof
@@ -534,6 +560,14 @@ bool app_init(struct app_context *ctx)
         printf("New wallet created.\n");
     }
     printf("Wallet has %zu keys.\n", g_wallet.keystore.num_keys);
+
+    /* Wallet backup service — hourly backup rotation after wallet is loaded.
+     * Default: ~/wallet_backups, interval=3600s, max_versions=168. */
+    wallet_backup_config_defaults(&g_wallet_backup_cfg);
+    if (wallet_backup_start(&g_wallet_backup_cfg, &g_node_db))
+        printf("Wallet backup started (interval=%ds max=%d)\n",
+               g_wallet_backup_cfg.interval_seconds,
+               g_wallet_backup_cfg.max_versions);
 
     /* Pre-flight: check for stale lock files from crashed processes */
     {
@@ -1409,6 +1443,33 @@ bool app_init(struct app_context *ctx)
                 free(sorted);
                 if (total > 0)
                     printf("nChainTx propagated for %d blocks\n", total);
+            }
+        }
+    }
+
+    /* Block index integrity — verify sidecar SHA3 after all loads.
+     * Refuse to boot on mismatch unless ZCL_ALLOW_CORRUPT_INDEX=1. */
+    {
+        struct block_index *tip = active_chain_tip(&g_state.chain_active);
+        if (tip) {
+            char err[256] = "";
+            enum bii_verdict v = bii_verify(ctx->datadir, &g_node_db,
+                                             tip, err, sizeof(err));
+            if (v == BII_OK) {
+                /* sidecar matches — good */
+            } else if (v == BII_SIDECAR_MISSING || v == BII_BODY_MISSING) {
+                /* first run or index will be rebuilt — acceptable */
+            } else {
+                const char *allow = getenv("ZCL_ALLOW_CORRUPT_INDEX");
+                if (allow && allow[0] == '1') {
+                    fprintf(stderr, "WARNING: block index integrity: %s "
+                            "(continuing — ZCL_ALLOW_CORRUPT_INDEX=1)\n", err);
+                } else {
+                    fprintf(stderr, "FATAL: block index integrity: %s\n"
+                            "Set ZCL_ALLOW_CORRUPT_INDEX=1 to override.\n", err);
+                    bii_quarantine_corrupt(ctx->datadir, v);
+                    return false;
+                }
             }
         }
     }

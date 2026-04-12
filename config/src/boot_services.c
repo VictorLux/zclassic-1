@@ -61,6 +61,10 @@
 #include <pthread.h>
 #include <signal.h>
 #include <sqlite3.h>
+#include "services/mempool_limits.h"
+#include "services/wallet_backup_service.h"
+#include "services/disk_monitor.h"
+#include "services/ibd_throttle.h"
 
 extern int g_assume_valid_height;
 
@@ -585,6 +589,18 @@ bool app_init_services(struct app_context *ctx,
 
     /* Initialize mempool */
     tx_mempool_init(svc->mempool, 1000);
+
+    /* Mempool limits — enforce size caps, fee floors, expiry.
+     * Registers a post-add hook on tx_mempool so enforcement
+     * happens automatically — no call sites to change. */
+    {
+        struct mempool_limits_config ml_cfg;
+        mempool_limits_config_defaults(&ml_cfg);
+        if (mempool_limits_start(svc->mempool, &ml_cfg))
+            printf("Mempool limits started (max=%lldMB max_tx=%lld)\n",
+                   (long long)(ml_cfg.max_bytes >> 20),
+                   (long long)ml_cfg.max_tx_count);
+    }
 
     if (boot_node_db())
         node_db_sync_mempool_load(boot_node_db(), svc->mempool);
@@ -1478,6 +1494,12 @@ static void shutdown_quiesce_network_and_flush_coins(struct boot_svc_ctx *svc)
 
 static void shutdown_persist_runtime_state(struct boot_svc_ctx *svc)
 {
+    /* Stop services wired from BOOT_QUEUE */
+    mempool_limits_stop();
+    wallet_backup_stop();
+    disk_monitor_stop();
+    ibd_throttle_stop();
+
     bg_validation_stop(&svc->bg_validation);
     bg_hash_verify_stop(&svc->bg_hash_verify);
     boot_join_address_backfill_service(svc);
