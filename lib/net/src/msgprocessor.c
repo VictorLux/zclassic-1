@@ -1864,16 +1864,50 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                  * short fork.  This happens when nChainTx propagation has
                  * a gap (broken pprev chain at h=1) and find_most_work_chain
                  * selects a fork with ~2K blocks instead of the 2M+ main chain
-                 * whose UTXO state is already loaded. */
+                 * whose UTXO state is already loaded.
+                 *
+                 * Also fix heights along the pprev chain: the scan assigns
+                 * heights that are internally consistent (each = pprev+1) but
+                 * globally wrong — they trace back to a wrong starting point
+                 * near genesis instead of the real chain height.  Walk DOWN
+                 * from the coins tip, assigning correct heights. */
                 int post_scan_h = active_chain_height(
                     &mp->main_state->chain_active);
                 if (pre_scan_coins_h > 100000 && post_scan_h < 100000) {
                     struct block_index *coins_bi = block_map_find(
                         &mp->main_state->map_block_index, &pre_scan_coins_hash);
                     if (coins_bi) {
+                        /* Fix coins tip height first */
+                        if (coins_bi->nHeight != pre_scan_coins_h) {
+                            printf("Post-scan: fixing coins tip height "
+                                   "%d→%d\n",
+                                   coins_bi->nHeight, pre_scan_coins_h);
+                            coins_bi->nHeight = pre_scan_coins_h;
+                        }
+                        /* Walk DOWN the pprev chain fixing heights.
+                         * Each block should be pprev->nHeight + 1, but the
+                         * scan may have assigned wrong heights globally.
+                         * Fix from the coins tip (known correct) downward. */
+                        {
+                            int fixed = 0;
+                            struct block_index *cur = coins_bi;
+                            while (cur && cur->pprev) {
+                                int expected = cur->nHeight - 1;
+                                if (cur->pprev->nHeight != expected) {
+                                    cur->pprev->nHeight = expected;
+                                    fixed++;
+                                }
+                                cur = cur->pprev;
+                                /* Safety: stop after walking the full chain */
+                                if (expected <= 0) break;
+                            }
+                            if (fixed > 0)
+                                printf("Post-scan: fixed %d pprev heights "
+                                       "from coins anchor\n", fixed);
+                        }
                         printf("Post-scan: restoring coins tip h=%d "
                                "(scan picked h=%d)\n",
-                               coins_bi->nHeight, post_scan_h);
+                               pre_scan_coins_h, post_scan_h);
                         active_chain_set_tip(&mp->main_state->chain_active,
                                               coins_bi);
                         mp->main_state->pindex_best_header = coins_bi;
