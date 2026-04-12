@@ -70,7 +70,7 @@ Work in order. `./test_zcl` green on every push.
 
 2. ~~**OpenTelemetry-compat tracing**~~ — **DONE.** `lib/util/{include/util/trace.h,src/trace.c}` — W3C Trace Context compatible spans with thread-local parent-child stack, /dev/urandom trace/span IDs, OTLP-compatible JSON output via log_jsonf. 5 hot paths instrumented: MCP dispatch (router.c), HTTP RPC dispatch (httpserver.c), connect_tip (process_block.c), csr_commit_tip via process_block_commit_tip (process_block.c), snapsync_begin_receive (snapshot_sync_service.c). 10 tests in `test_trace.c`.
 
-3. **peer_bandwidth wire-in** — primitives in `lib/net/src/peer_bandwidth.c`. Wire token-bucket into `connman.c` send/recv. Pause starved peers, resume on refill. `EV_PEER_THROTTLED`.
+3. ~~**peer_bandwidth wire-in**~~ — **DONE.** Existing token-bucket primitives wired into `connman.c` socket handler: download budget checked before recv (caps recv size), upload budget checked before socket_send_data, post-operation consume. Throttled peers skipped for that poll cycle (50ms), resume on refill. `EV_PEER_THROTTLED` emitted. Global instance init from env at `connman_start()`, `connman_peer_bandwidth()` getter exposed.
 
 ### Security
 
