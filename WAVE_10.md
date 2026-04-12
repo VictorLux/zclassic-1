@@ -76,7 +76,7 @@ Work in order. `./test_zcl` green on every push.
 
 4. ~~**RPC cookie rotation**~~ — **DONE.** `lib/rpc/src/httpserver.c` — timed rotation (default 24h, env `ZCL_RPC_COOKIE_ROTATE_SEC`). Background pthread rotates cookie on interval, writes new `.cookie` to disk. Dual-password auth: current + previous cookie both valid during transition window; previous invalidated on next rotation. `memory_cleanse` scrubs old passwords. `rpc_http_cookie_rotate()` exposed for manual/test use. `ZCL_RPC_COOKIE_ROTATE_SEC=0` disables rotation. Explicit `rpcuser`/`rpcpassword` mode unaffected. 8 tests in `test_cookie_rotation.c`.
 
-5. **Sapling key scrubbing** — audit every path touching spending keys (`sk`, `ask`, `nsk`, `ovk`). `explicit_bzero` on free/scope-exit. `test_key_scrub.c`.
+5. ~~**Sapling key scrubbing**~~ — **DONE.** Audited all paths touching spending keys (`sk`, `ask`, `nsk`, `ovk`). `memory_cleanse()` added to 16 uncleansed stack buffers in `lib/sapling/src/prf.c` (5 buffers: `sprout_prf` blob, `prf_expand` blob, `prf_ask`/`prf_nsk`/`prf_ovk` tmp) and `lib/sapling/src/zip32.c` (11 buffers: `expsk_from_spending_key` digest+scalars, `expsk_derive_child` digest+6 Fs scalars, `dk_master` digest, `dk_derive_child` digest, `zip32_xsk_master` i_master, `zip32_xsk_derive` tmp+expsk_bytes+fvk, `fvk_derive_child` digest+4 scalar buffers, `zip32_xfvk_derive` tmp, `zip32_xfvk_address` ivk). Wallet layer (`sapling_keys.c`, `wallet_sqlite.c`, `wallet.c`, `wallet_db.c`) already properly cleansed — no changes needed. 10 tests in `test_key_scrub.c`.
 
 6. **Dependency vulnerability scan** — CI job: audit OpenSSL, libevent, SQLite, leveldb versions against known CVEs. `tools/dep_audit.sh` script + `make audit`.
 

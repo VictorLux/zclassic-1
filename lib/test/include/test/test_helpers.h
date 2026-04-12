@@ -260,6 +260,7 @@ int test_trace(void);
 int test_phgr13_fix(void);
 int test_cookie_rotation(void);
 int test_reorg_safety(void);
+int test_key_scrub(void);
 
 /* Spec-based user story tests (one per feature area) */
 int spec_wallet_dashboard(void);

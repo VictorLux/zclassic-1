@@ -9,6 +9,7 @@
 #include "sapling/jubjub.h"
 #include "crypto/sha256.h"
 #include "crypto/blake2b.h"
+#include "support/cleanse.h"
 #include <string.h>
 
 /* Sprout PRF: SHA256Compress(x || y) with control bits in x[0] */
@@ -29,6 +30,7 @@ static void sprout_prf(bool a, bool b, bool c, bool d,
     sha256_init(&hasher);
     sha256_write(&hasher, blob, 64);
     sha256_finalize_no_padding(&hasher, out->data, 0);
+    memory_cleanse(blob, sizeof(blob));
 }
 
 static void sprout_prf_addr(const unsigned char *a_sk, unsigned char t,
@@ -85,6 +87,7 @@ void prf_expand(const struct uint256 *sk, unsigned char t,
                                EXPAND_SEED_PERSONAL);
     blake2b_update(&state, blob, 33);
     blake2b_final(&state, out, 64);
+    memory_cleanse(blob, sizeof(blob));
 }
 
 void prf_ask(const struct uint256 *sk, struct uint256 *out)
@@ -92,6 +95,7 @@ void prf_ask(const struct uint256 *sk, struct uint256 *out)
     unsigned char tmp[64];
     prf_expand(sk, 0, tmp);
     jubjub_to_scalar(tmp, out->data);
+    memory_cleanse(tmp, sizeof(tmp));
 }
 
 void prf_nsk(const struct uint256 *sk, struct uint256 *out)
@@ -99,6 +103,7 @@ void prf_nsk(const struct uint256 *sk, struct uint256 *out)
     unsigned char tmp[64];
     prf_expand(sk, 1, tmp);
     jubjub_to_scalar(tmp, out->data);
+    memory_cleanse(tmp, sizeof(tmp));
 }
 
 void prf_ovk(const struct uint256 *sk, struct uint256 *out)
@@ -106,4 +111,5 @@ void prf_ovk(const struct uint256 *sk, struct uint256 *out)
     unsigned char tmp[64];
     prf_expand(sk, 2, tmp);
     memcpy(out->data, tmp, 32);
+    memory_cleanse(tmp, sizeof(tmp));
 }

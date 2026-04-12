@@ -7,6 +7,7 @@
 #include "sapling/fr.h"
 #include "sapling/ff1.h"
 #include "crypto/blake2b.h"
+#include "support/cleanse.h"
 #include <string.h>
 
 static const uint8_t ZIP32_MASTER_PERSONAL[16] =
@@ -66,6 +67,10 @@ static void expsk_from_spending_key(struct zip32_expsk *expsk,
     uint8_t tag2 = 0x02;
     prf_expand(digest, sk, 32, &tag2, 1);
     memcpy(expsk->ovk, digest, 32);
+
+    memory_cleanse(digest, sizeof(digest));
+    memory_cleanse(&ask_fs, sizeof(ask_fs));
+    memory_cleanse(&nsk_fs, sizeof(nsk_fs));
 }
 
 /* Derive FVK from expanded spending key */
@@ -131,6 +136,14 @@ static void expsk_derive_child(struct zip32_expsk *child,
     memcpy(tag15_ovk + 1, parent->ovk, 32);
     prf_expand(digest, i_l, 32, tag15_ovk, 33);
     memcpy(child->ovk, digest, 32);
+
+    memory_cleanse(digest, sizeof(digest));
+    memory_cleanse(&i_ask, sizeof(i_ask));
+    memory_cleanse(&parent_ask, sizeof(parent_ask));
+    memory_cleanse(&child_ask, sizeof(child_ask));
+    memory_cleanse(&i_nsk, sizeof(i_nsk));
+    memory_cleanse(&parent_nsk, sizeof(parent_nsk));
+    memory_cleanse(&child_nsk, sizeof(child_nsk));
 }
 
 /* Derive diversifier key: dk = prf(sk, 0x10)[0..32] */
@@ -140,6 +153,7 @@ static void dk_master(uint8_t dk[32], const uint8_t sk[32])
     uint8_t tag = 0x10;
     prf_expand(digest, sk, 32, &tag, 1);
     memcpy(dk, digest, 32);
+    memory_cleanse(digest, sizeof(digest));
 }
 
 static void dk_derive_child(uint8_t child_dk[32], const uint8_t *i_l,
@@ -151,6 +165,7 @@ static void dk_derive_child(uint8_t child_dk[32], const uint8_t *i_l,
     uint8_t digest[64];
     prf_expand(digest, i_l, 32, tag_dk, 33);
     memcpy(child_dk, digest, 32);
+    memory_cleanse(digest, sizeof(digest));
 }
 
 /* Serialize FVK to 96 bytes: ak(32) || nk(32) || ovk(32) */
@@ -189,6 +204,7 @@ void zip32_xsk_master(struct zip32_xsk *xsk,
     memcpy(xsk->chain_code, i_master + 32, 32);
     expsk_from_spending_key(&xsk->expsk, sk_m);
     dk_master(xsk->dk, sk_m);
+    memory_cleanse(i_master, sizeof(i_master));
 }
 
 void zip32_xsk_derive(struct zip32_xsk *child,
@@ -213,6 +229,7 @@ void zip32_xsk_derive(struct zip32_xsk *child,
         const uint8_t *parts[] = { &tag, expsk_bytes, parent->dk, le_i };
         size_t lens[] = { 1, 96, 32, 4 };
         prf_expand_vec(tmp, parent->chain_code, 32, parts, lens, 4);
+        memory_cleanse(expsk_bytes, sizeof(expsk_bytes));
     } else {
         /* Non-hardened: PRF^expand(chain_code, 0x12 || fvk_bytes || dk || le_i) */
         uint8_t fvk_bytes[96];
@@ -232,6 +249,8 @@ void zip32_xsk_derive(struct zip32_xsk *child,
     memcpy(child->chain_code, tmp + 32, 32);
     expsk_derive_child(&child->expsk, &parent->expsk, i_l);
     dk_derive_child(child->dk, i_l, parent->dk);
+    memory_cleanse(tmp, sizeof(tmp));
+    memory_cleanse(&fvk, sizeof(fvk));
 }
 
 void zip32_xsk_to_xfvk(struct zip32_xfvk *xfvk,
@@ -292,6 +311,12 @@ static void fvk_derive_child(struct zip32_fvk *child,
     memcpy(tag15_ovk + 1, parent->ovk, 32);
     prf_expand(digest, i_l, 32, tag15_ovk, 33);
     memcpy(child->ovk, digest, 32);
+
+    memory_cleanse(digest, sizeof(digest));
+    memory_cleanse(&i_ask, sizeof(i_ask));
+    memory_cleanse(i_ask_bytes, sizeof(i_ask_bytes));
+    memory_cleanse(&i_nsk, sizeof(i_nsk));
+    memory_cleanse(i_nsk_bytes, sizeof(i_nsk_bytes));
 }
 
 bool zip32_xfvk_derive(struct zip32_xfvk *child,
@@ -323,6 +348,7 @@ bool zip32_xfvk_derive(struct zip32_xfvk *child,
     memcpy(child->chain_code, tmp + 32, 32);
     fvk_derive_child(&child->fvk, &parent->fvk, i_l);
     dk_derive_child(child->dk, i_l, parent->dk);
+    memory_cleanse(tmp, sizeof(tmp));
 
     return true;
 }
@@ -372,5 +398,7 @@ bool zip32_xfvk_address(const struct zip32_xfvk *xfvk,
     sapling_crh_ivk(xfvk->fvk.ak, xfvk->fvk.nk, ivk);
 
     /* pk_d = ivk * g_d(diversifier) */
-    return sapling_ivk_to_pkd(ivk, diversifier, pk_d);
+    bool ok = sapling_ivk_to_pkd(ivk, diversifier, pk_d);
+    memory_cleanse(ivk, sizeof(ivk));
+    return ok;
 }
