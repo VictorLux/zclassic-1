@@ -2348,12 +2348,18 @@ skip_ldb_import:
 
                 /* After block file scan, try to resolve coins_best_block.
                  * The scan may have assigned wrong heights (blocks in random
-                 * file order). Use SQLite blocks table to find the correct
-                 * height, then find the block by hash and fix its nHeight. */
+                 * file order) or picked a wrong "most work" chain due to
+                 * incomplete nChainTx propagation.  Use SQLite blocks table
+                 * to find the correct height, then set the active chain tip
+                 * to the coins-tip block.  This fires when:
+                 *   (a) active_chain is empty (no HAVE_DATA blocks), OR
+                 *   (b) active_chain tip is far below the coins tip
+                 *       (scan picked a wrong short fork). */
                 struct uint256 post_scan_best;
                 coins_view_cache_get_best_block(&g_coins_tip, &post_scan_best);
+                int scan_chain_h = active_chain_height(&g_state.chain_active);
                 if (!uint256_is_null(&post_scan_best) &&
-                    active_chain_height(&g_state.chain_active) <= 0) {
+                    (scan_chain_h <= 0 || scan_chain_h < 100000)) {
                     /* Look up correct height from SQLite */
                     int target_h = -1;
                     if (g_node_db.open && g_node_db.db) {
