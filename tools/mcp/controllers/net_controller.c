@@ -9,6 +9,8 @@
 #include "json/json.h"
 #include "mcp/metrics.h"
 #include "net/onion_service.h"
+#include "util/log_macros.h"
+#include "util/safe_alloc.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -20,7 +22,12 @@
     {                                                                          \
         (void)req;                                                             \
         char *out = mcp_node_rpc(rpc, NULL);                                   \
-        if (!out) return -1;                                                   \
+        if (!out) {                                                            \
+            res->error = MCP_ERR_HANDLER_FAILED;                               \
+            snprintf(res->error_message, sizeof(res->error_message),           \
+                     "RPC %s returned null", rpc);                             \
+            LOG_ERR("mcp.net", "RPC %s returned null", rpc);                   \
+        }                                                                      \
         res->body = out;                                                       \
         return 0;                                                              \
     }
@@ -39,7 +46,12 @@ static int h_zcl_addnode(const struct mcp_request *req, struct mcp_response *res
     snprintf(params, sizeof(params), "[\"%s\",\"%s\"]",
              addr, act ? json_get_str(act) : "onetry");
     char *out = mcp_node_rpc("addnode", params);
-    if (!out) return -1;
+    if (!out) {
+        res->error = MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "RPC addnode failed: addr=%s", addr ? addr : "(null)");
+        LOG_ERR("mcp.net", "addnode failed: addr=%s", addr ? addr : "(null)");
+    }
     res->body = out;
     return 0;
 }
@@ -50,7 +62,12 @@ static int h_zcl_pingpeer(const struct mcp_request *req, struct mcp_response *re
     char params[64];
     snprintf(params, sizeof(params), "[%lld]", (long long)peer_id);
     char *out = mcp_node_rpc("pingpeer", params);
-    if (!out) return -1;
+    if (!out) {
+        res->error = MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "RPC pingpeer failed: peer_id=%lld", (long long)peer_id);
+        LOG_ERR("mcp.net", "pingpeer failed: peer_id=%lld", (long long)peer_id);
+    }
     res->body = out;
     return 0;
 }
@@ -65,9 +82,20 @@ static int h_zcl_peer_report(const struct mcp_request *req,
     (void)req;
     char body[2048];
     size_t n = mcp_metrics_peer_report_json(body, sizeof(body));
-    if (n == 0) return -1;
+    if (n == 0) {
+        res->error = MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "peer report generation returned empty");
+        LOG_ERR("mcp.net", "peer_report_json returned 0 bytes");
+    }
     res->body = strdup(body);
-    return res->body ? 0 : -1;
+    if (!res->body) {
+        res->error = MCP_ERR_INTERNAL;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "strdup failed for peer report");
+        LOG_ERR("mcp.net", "strdup failed for peer report (%zu bytes)", n);
+    }
+    return 0;
 }
 
 /* zcl_onion_health — probe the in-process onion service by calling
@@ -93,8 +121,13 @@ static int h_zcl_onion_health(const struct mcp_request *req,
 
     const char *addr = onion_service_get_address();
 
-    char *body = malloc(512);
-    if (!body) return -1;
+    char *body = zcl_malloc(512, "onion_health_body");
+    if (!body) {
+        res->error = MCP_ERR_INTERNAL;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "malloc failed for onion health response");
+        LOG_ERR("mcp.net", "malloc failed for onion_health body (512 bytes)");
+    }
 
     if (!addr) {
         snprintf(body, 512,

@@ -17,6 +17,8 @@
 #include "json/json.h"
 #include "net/peer_scoring.h"
 #include "rpc/http_middleware.h"
+#include "util/log_macros.h"
+#include "util/safe_alloc.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -112,8 +114,13 @@ static int h_zcl_tools_list(const struct mcp_request *req,
 {
     (void)req;
     size_t cap = 131072;
-    char *out = malloc(cap);
-    if (!out) return -1;
+    char *out = zcl_malloc(cap, "tools_list_body");
+    if (!out) {
+        res->error = MCP_ERR_INTERNAL;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "malloc failed for tools list response");
+        LOG_ERR("mcp.meta", "malloc failed for tools_list body (%zu bytes)", cap);
+    }
     int pos = snprintf(out, cap, "{\"count\":%zu,\"tools\":",
                        mcp_router_count());
     pos += (int)mcp_router_tools_list_json(out + pos, cap - (size_t)pos);
@@ -128,8 +135,13 @@ static int h_zcl_self_test(const struct mcp_request *req,
     (void)req;
 
     size_t cap = 131072;
-    char *out = malloc(cap);
-    if (!out) return -1;
+    char *out = zcl_malloc(cap, "self_test_body");
+    if (!out) {
+        res->error = MCP_ERR_INTERNAL;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "malloc failed for self-test response");
+        LOG_ERR("mcp.meta", "malloc failed for self_test body (%zu bytes)", cap);
+    }
     size_t pos = 0;
     pos += (size_t)snprintf(out + pos, cap - pos,
                             "{\"results\":[");
@@ -214,7 +226,12 @@ static int h_zcl_logtail(const struct mcp_request *req,
     char params[64];
     snprintf(params, sizeof(params), "[%d]", count);
     char *raw = mcp_node_rpc("eventlog", params);
-    if (!raw) return -1;
+    if (!raw) {
+        res->error = MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "RPC eventlog returned null");
+        LOG_ERR("mcp.meta", "logtail: eventlog returned null");
+    }
     if (!dom || !dom[0]) { res->body = raw; return 0; }
 
     /* Parse the eventlog response and filter events[] by type prefix. */
@@ -230,8 +247,14 @@ static int h_zcl_logtail(const struct mcp_request *req,
     const char *sstate = ss ? json_get_str(ss) : "";
 
     size_t out_cap = 65536;
-    char *out = malloc(out_cap);
-    if (!out) { json_free(&root); return -1; }
+    char *out = zcl_malloc(out_cap, "logtail_filtered_body");
+    if (!out) {
+        json_free(&root);
+        res->error = MCP_ERR_INTERNAL;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "malloc failed for logtail filtered response");
+        LOG_ERR("mcp.meta", "malloc failed for logtail filtered body (%zu bytes)", out_cap);
+    }
     size_t pos = 0;
     pos += (size_t)snprintf(out + pos, out_cap - pos,
                             "{\"sync_state\":\"%s\",\"filter\":\"", sstate);
@@ -275,8 +298,13 @@ static int h_zcl_openapi(const struct mcp_request *req,
 {
     (void)req;
     size_t cap = 262144;
-    char *out = malloc(cap);
-    if (!out) return -1;
+    char *out = zcl_malloc(cap, "openapi_body");
+    if (!out) {
+        res->error = MCP_ERR_INTERNAL;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "malloc failed for OpenAPI response");
+        LOG_ERR("mcp.meta", "malloc failed for openapi body (%zu bytes)", cap);
+    }
     size_t pos = 0;
 
     pos += (size_t)snprintf(out + pos, cap - pos,
@@ -356,15 +384,26 @@ static int h_zcl_metrics(const struct mcp_request *req,
 {
     (void)req;
     size_t cap = 131072;
-    char *raw = malloc(cap);
-    if (!raw) return -1;
+    char *raw = zcl_malloc(cap, "metrics_raw");
+    if (!raw) {
+        res->error = MCP_ERR_INTERNAL;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "malloc failed for metrics buffer");
+        LOG_ERR("mcp.meta", "malloc failed for metrics raw buffer (%zu bytes)", cap);
+    }
     size_t n = mcp_metrics_render_prometheus(raw, cap);
 
     /* Wrap the Prometheus text in a JSON envelope so the stdio layer
      * can shuttle it as a tool result.  Escape quotes + newlines. */
     size_t out_cap = n * 2 + 128;
-    char *out = malloc(out_cap);
-    if (!out) { free(raw); return -1; }
+    char *out = zcl_malloc(out_cap, "metrics_json_body");
+    if (!out) {
+        free(raw);
+        res->error = MCP_ERR_INTERNAL;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "malloc failed for metrics JSON envelope");
+        LOG_ERR("mcp.meta", "malloc failed for metrics json body (%zu bytes)", out_cap);
+    }
     size_t pos = 0;
     pos += (size_t)snprintf(out + pos, out_cap - pos,
         "{\"format\":\"prometheus\",\"text\":\"");
@@ -394,7 +433,12 @@ static int h_zcl_metrics_reset(const struct mcp_request *req,
     (void)req;
     mcp_metrics_reset();
     char *out = strdup("{\"ok\":true,\"reset\":\"mcp_metrics\"}");
-    if (!out) return -1;
+    if (!out) {
+        res->error = MCP_ERR_INTERNAL;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "strdup failed for metrics_reset response");
+        LOG_ERR("mcp.meta", "strdup failed for metrics_reset response");
+    }
     res->body = out;
     return 0;
 }
@@ -411,9 +455,20 @@ static int h_zcl_rpc_report(const struct mcp_request *req,
     (void)req;
     char body[2048];
     size_t n = mcp_metrics_rpc_report_json(body, sizeof(body));
-    if (n == 0) return -1;
+    if (n == 0) {
+        res->error = MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "RPC report generation returned empty");
+        LOG_ERR("mcp.meta", "rpc_report_json returned 0 bytes");
+    }
     res->body = strdup(body);
-    return res->body ? 0 : -1;
+    if (!res->body) {
+        res->error = MCP_ERR_INTERNAL;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "strdup failed for RPC report");
+        LOG_ERR("mcp.meta", "strdup failed for rpc_report (%zu bytes)", n);
+    }
+    return 0;
 }
 
 /* zcl_consensus_report — consensus-reject counter snapshot (wave 8).
@@ -430,9 +485,20 @@ static int h_zcl_consensus_report(const struct mcp_request *req,
      * totals envelope (worst case ≈ 48 × 80 bytes per entry). */
     char body[8192];
     size_t n = mcp_metrics_consensus_report_json(body, sizeof(body));
-    if (n == 0) return -1;
+    if (n == 0) {
+        res->error = MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "consensus report generation returned empty");
+        LOG_ERR("mcp.meta", "consensus_report_json returned 0 bytes");
+    }
     res->body = strdup(body);
-    return res->body ? 0 : -1;
+    if (!res->body) {
+        res->error = MCP_ERR_INTERNAL;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "strdup failed for consensus report");
+        LOG_ERR("mcp.meta", "strdup failed for consensus_report (%zu bytes)", n);
+    }
+    return 0;
 }
 
 /* ── Admin dashboard (wave 5 #5) ──────────────────────────────
@@ -551,8 +617,13 @@ static int h_zcl_config_reload(const struct mcp_request *req,
     }
 
     size_t cap = 1024;
-    char *out = malloc(cap);
-    if (!out) return -1;
+    char *out = zcl_malloc(cap, "config_reload_body");
+    if (!out) {
+        res->error = MCP_ERR_INTERNAL;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "malloc failed for config reload response");
+        LOG_ERR("mcp.meta", "malloc failed for config_reload body (%zu bytes)", cap);
+    }
     snprintf(out, cap,
         "{\"ok\":true,"
          "\"peer_scoring\":{"
@@ -610,10 +681,13 @@ static int h_zcl_admin(const struct mcp_request *req,
 
     /* Compose the composite envelope. */
     size_t cap = 131072;
-    char *out = malloc(cap);
+    char *out = zcl_malloc(cap, "admin_body");
     if (!out) {
         free(kpi); free(peer); free(rpc); free(events);
-        return -1;
+        res->error = MCP_ERR_INTERNAL;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "malloc failed for admin dashboard response");
+        LOG_ERR("mcp.meta", "malloc failed for admin body (%zu bytes)", cap);
     }
     size_t pos = 0;
 

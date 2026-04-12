@@ -11,6 +11,8 @@
 #include "../replay.h"
 
 #include "json/json.h"
+#include "util/log_macros.h"
+#include "util/safe_alloc.h"
 
 #include <dirent.h>
 #include <stdio.h>
@@ -24,7 +26,12 @@
     {                                                                          \
         (void)req;                                                             \
         char *out = mcp_node_rpc(rpc, NULL);                                   \
-        if (!out) return -1;                                                   \
+        if (!out) {                                                            \
+            res->error = MCP_ERR_HANDLER_FAILED;                               \
+            snprintf(res->error_message, sizeof(res->error_message),           \
+                     "RPC %s returned null", rpc);                             \
+            LOG_ERR("mcp.ops", "RPC %s returned null", rpc);                   \
+        }                                                                      \
         res->body = out;                                                       \
         return 0;                                                              \
     }
@@ -49,8 +56,14 @@ static int h_zcl_status(const struct mcp_request *req, struct mcp_response *res)
     int pc = 0;
     if (p) { for (char *c = p; *c; c++) if (*c == '{') pc++; }
 
-    char *out = malloc(32768);
-    if (!out) { free(h); free(p); free(s); free(v); free(hc); return -1; }
+    char *out = zcl_malloc(32768, "status_body");
+    if (!out) {
+        free(h); free(p); free(s); free(v); free(hc);
+        res->error = MCP_ERR_INTERNAL;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "malloc failed for status response");
+        LOG_ERR("mcp.ops", "malloc failed for status body (32768 bytes)");
+    }
     snprintf(out, 32768,
              "{\"height\":%s,\"peers\":%d,\"sync\":%s,"
              "\"validation\":%s,\"health\":%s}",
@@ -65,7 +78,12 @@ static int h_zcl_health(const struct mcp_request *req, struct mcp_response *res)
 {
     (void)req;
     char *out = mcp_node_rpc("healthcheck", NULL);
-    if (!out) return -1;
+    if (!out) {
+        res->error = MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "RPC healthcheck returned null");
+        LOG_ERR("mcp.ops", "healthcheck returned null");
+    }
     res->body = out;
     return 0;
 }
@@ -74,7 +92,12 @@ static int h_zcl_filemanifest(const struct mcp_request *req, struct mcp_response
 {
     (void)req;
     char *out = mcp_node_rpc("getfilemanifeststatus", NULL);
-    if (!out) return -1;
+    if (!out) {
+        res->error = MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "RPC getfilemanifeststatus returned null");
+        LOG_ERR("mcp.ops", "getfilemanifeststatus returned null");
+    }
     res->body = out;
     return 0;
 }
@@ -86,7 +109,12 @@ static int h_zcl_events(const struct mcp_request *req, struct mcp_response *res)
     snprintf(params, sizeof(params), "[%lld]",
              cnt ? (long long)json_get_int(cnt) : 20LL);
     char *out = mcp_node_rpc("eventlog", params);
-    if (!out) return -1;
+    if (!out) {
+        res->error = MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "RPC eventlog returned null");
+        LOG_ERR("mcp.ops", "eventlog returned null");
+    }
     res->body = out;
     return 0;
 }
@@ -96,7 +124,12 @@ static int h_zcl_rpc(const struct mcp_request *req, struct mcp_response *res)
     const char *m = json_get_str(json_get(req->args, "method"));
     const struct json_value *p = json_get(req->args, "params");
     char *out = mcp_node_rpc(m, p ? json_get_str(p) : NULL);
-    if (!out) return -1;
+    if (!out) {
+        res->error = MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "RPC %s returned null", m ? m : "(null)");
+        LOG_ERR("mcp.ops", "RPC %s returned null", m ? m : "(null)");
+    }
     res->body = out;
     return 0;
 }
@@ -124,11 +157,14 @@ static int h_zcl_kpi(const struct mcp_request *req, struct mcp_response *res)
     }
 
     size_t cap = 65536;
-    char *out = malloc(cap);
+    char *out = zcl_malloc(cap, "kpi_body");
     if (!out) {
         free(height); free(peers); free(sync); free(val); free(health);
         free(mempool); free(wallet); free(chain); free(network);
-        return -1;
+        res->error = MCP_ERR_INTERNAL;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "malloc failed for KPI response");
+        LOG_ERR("mcp.ops", "malloc failed for kpi body (%zu bytes)", cap);
     }
 
     snprintf(out, cap,
@@ -283,7 +319,12 @@ static int h_zcl_profile(const struct mcp_request *req,
     static struct profile_sample s1[PROFILE_MAX_THREADS];
     static struct profile_sample s2[PROFILE_MAX_THREADS];
     size_t n1 = read_task_snapshot(s1, PROFILE_MAX_THREADS);
-    if (n1 == 0) return -1;
+    if (n1 == 0) {
+        res->error = MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "failed to read /proc/self/task (no threads found)");
+        LOG_ERR("mcp.ops", "profile: read_task_snapshot returned 0 (pre-sample)");
+    }
 
     struct timespec ts = {
         .tv_sec  = duration_ms / 1000,
@@ -292,7 +333,12 @@ static int h_zcl_profile(const struct mcp_request *req,
     nanosleep(&ts, NULL);
 
     size_t n2 = read_task_snapshot(s2, PROFILE_MAX_THREADS);
-    if (n2 == 0) return -1;
+    if (n2 == 0) {
+        res->error = MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "failed to read /proc/self/task (no threads found post-sample)");
+        LOG_ERR("mcp.ops", "profile: read_task_snapshot returned 0 (post-sample)");
+    }
 
     /* Compute deltas for threads present in both samples. */
     static struct profile_delta deltas[PROFILE_MAX_THREADS];
@@ -321,8 +367,13 @@ static int h_zcl_profile(const struct mcp_request *req,
     if (clk_tck <= 0) clk_tck = 100;
 
     size_t cap = 16384;
-    char *out = malloc(cap);
-    if (!out) return -1;
+    char *out = zcl_malloc(cap, "profile_body");
+    if (!out) {
+        res->error = MCP_ERR_INTERNAL;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "malloc failed for profile response");
+        LOG_ERR("mcp.ops", "malloc failed for profile body (%zu bytes)", cap);
+    }
     size_t pos = 0;
     pos += (size_t)snprintf(out + pos, cap - pos,
         "{\"duration_ms\":%lld,\"sampled_threads\":%zu,\"top_threads\":[",
@@ -356,7 +407,12 @@ static int h_zcl_replay_dump(const struct mcp_request *req,
     const struct json_value *cnt = json_get(req->args, "count");
     size_t count = cnt ? (size_t)json_get_int(cnt) : 0;
     char *out = mcp_replay_dump(count);
-    if (!out) return -1;
+    if (!out) {
+        res->error = MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "replay dump returned null");
+        LOG_ERR("mcp.ops", "mcp_replay_dump returned null (count=%zu)", count);
+    }
     res->body = out;
     return 0;
 }
@@ -369,7 +425,7 @@ static int h_zcl_replay_exec(const struct mcp_request *req,
         snprintf(res->error_message, sizeof(res->error_message),
                  "index is required");
         res->error = MCP_ERR_MISSING_PARAM;
-        return -1;
+        LOG_ERR("mcp.ops", "replay_exec: index param missing");
     }
     int64_t idx = json_get_int(idx_v);
     size_t total = mcp_replay_count();
@@ -378,12 +434,18 @@ static int h_zcl_replay_exec(const struct mcp_request *req,
                  "index %lld out of range [0, %zu)",
                  (long long)idx, total);
         res->error = MCP_ERR_OUT_OF_RANGE;
-        return -1;
+        LOG_ERR("mcp.ops", "replay_exec: index %lld out of range [0, %zu)",
+                (long long)idx, total);
     }
 
     /* Dump to get the entry, parse tool name, then re-dispatch. */
     char *dump = mcp_replay_dump(0);
-    if (!dump) return -1;
+    if (!dump) {
+        res->error = MCP_ERR_INTERNAL;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "replay dump failed during exec");
+        LOG_ERR("mcp.ops", "replay_exec: mcp_replay_dump returned null");
+    }
 
     struct json_value arr;
     if (!json_read(&arr, dump, strlen(dump)) || arr.type != JSON_ARR ||
@@ -392,7 +454,8 @@ static int h_zcl_replay_exec(const struct mcp_request *req,
         snprintf(res->error_message, sizeof(res->error_message),
                  "replay parse failed");
         res->error = MCP_ERR_INTERNAL;
-        return -1;
+        LOG_ERR("mcp.ops", "replay_exec: json parse failed for index %lld",
+                (long long)idx);
     }
 
     const struct json_value *entry = &arr.children[idx];
@@ -404,7 +467,8 @@ static int h_zcl_replay_exec(const struct mcp_request *req,
         snprintf(res->error_message, sizeof(res->error_message),
                  "entry has no tool name");
         res->error = MCP_ERR_INTERNAL;
-        return -1;
+        LOG_ERR("mcp.ops", "replay_exec: entry %lld has no tool name",
+                (long long)idx);
     }
 
     /* Re-dispatch with no args (the original args are stored as escaped
@@ -413,7 +477,12 @@ static int h_zcl_replay_exec(const struct mcp_request *req,
     json_free(&arr);
     free(dump);
 
-    if (!result) return -1;
+    if (!result) {
+        res->error = MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "replay re-dispatch failed: tool=%s", tool);
+        LOG_ERR("mcp.ops", "replay_exec re-dispatch failed: tool=%s", tool);
+    }
     res->body = result;
     return 0;
 }

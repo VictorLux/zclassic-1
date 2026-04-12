@@ -8,6 +8,7 @@
 #include "../rpc_client.h"
 
 #include "json/json.h"
+#include "util/log_macros.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,7 +22,12 @@
     {                                                                          \
         (void)req;                                                             \
         char *out = mcp_node_rpc(rpc, NULL);                                   \
-        if (!out) return -1;                                                   \
+        if (!out) {                                                            \
+            res->error = MCP_ERR_HANDLER_FAILED;                               \
+            snprintf(res->error_message, sizeof(res->error_message),           \
+                     "RPC %s returned null", rpc);                             \
+            LOG_ERR("mcp.chain", "RPC %s returned null", rpc);                 \
+        }                                                                      \
         res->body = out;                                                       \
         return 0;                                                              \
     }
@@ -46,7 +52,12 @@ static int h_zcl_getrawtransaction(const struct mcp_request *req,
     char params[256];
     snprintf(params, sizeof(params), "[\"%s\",%d]", txid ? txid : "", verbose);
     char *out = mcp_node_rpc("getrawtransaction", params);
-    if (!out) return -1;
+    if (!out) {
+        res->error = MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "RPC getrawtransaction failed: txid=%s", txid ? txid : "(null)");
+        LOG_ERR("mcp.chain", "getrawtransaction failed: txid=%s", txid ? txid : "(null)");
+    }
     res->body = out;
     return 0;
 }
@@ -65,7 +76,12 @@ static int h_zcl_getblock(const struct mcp_request *req, struct mcp_response *re
     if (is_num) {
         snprintf(params, sizeof(params), "[%s]", id_str);
         char *hash = mcp_node_rpc("getblockhash", params);
-        if (!hash) return -1;
+        if (!hash) {
+            res->error = MCP_ERR_HANDLER_FAILED;
+            snprintf(res->error_message, sizeof(res->error_message),
+                     "RPC getblockhash failed: height=%s", id_str);
+            LOG_ERR("mcp.chain", "getblockhash failed: height=%s", id_str);
+        }
         char clean[128];
         size_t ci = 0;
         for (size_t i = 0; hash[i] && ci < 127; i++)
@@ -77,7 +93,12 @@ static int h_zcl_getblock(const struct mcp_request *req, struct mcp_response *re
         snprintf(params, sizeof(params), "[\"%s\",%d]", id_str, verbosity);
     }
     char *out = mcp_node_rpc("getblock", params);
-    if (!out) return -1;
+    if (!out) {
+        res->error = MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "RPC getblock failed: id=%s", id_str ? id_str : "(null)");
+        LOG_ERR("mcp.chain", "getblock failed: id=%s", id_str ? id_str : "(null)");
+    }
     res->body = out;
     return 0;
 }
