@@ -2,6 +2,7 @@
 
 #include "controllers/wallet_view_internal.h"
 #include "controllers/wallet_controller.h"
+#include "util/log_macros.h"
 
 /* ── Coins (/wallet/coins) — Full UTXO audit view ──────────── */
 

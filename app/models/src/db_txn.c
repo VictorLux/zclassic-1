@@ -23,6 +23,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/time.h>
+#include "util/safe_alloc.h"
 
 /* ── Time helper ────────────────────────────────────────────────
  * Local static to keep this module's dependency footprint tiny. */
@@ -97,7 +98,7 @@ struct db_txn *db_txn_begin(struct node_db *db, const char *label)
         return NULL;
     }
 
-    struct db_txn *txn = calloc(1, sizeof(*txn));
+    struct db_txn *txn = zcl_calloc(1, sizeof(*txn), "db_txn handle");
     if (!txn) {
         /* begin() succeeded — unwind it so the db isn't left with an
          * unreachable open transaction. */

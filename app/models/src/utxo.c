@@ -19,6 +19,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include "util/safe_alloc.h"
 
 /* ── Script Classification (single shared implementation) ──────── */
 
@@ -153,7 +154,7 @@ bool db_utxo_find(struct node_db *ndb, const uint8_t txid[32], uint32_t vout,
     out->script_len = (size_t)AR_COL_BYTES(s, 1);
     const void *sc = sqlite3_column_blob(s, 1);
     if (sc && out->script_len > 0) {
-        out->script = malloc(out->script_len);
+        out->script = zcl_malloc(out->script_len, "utxo find script");
         if (out->script)
             memcpy(out->script, sc, out->script_len);
     } else {

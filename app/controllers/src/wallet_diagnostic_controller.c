@@ -45,6 +45,8 @@
 #include "views/wallet_view.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include "util/log_macros.h"
+#include "util/safe_alloc.h"
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
@@ -1323,7 +1325,7 @@ static bool rpc_listwallettxdetail(const struct json_value *params, bool help,
     const unsigned char *sc_pfx = chain_params_base58_prefix(
         cp, B58_SCRIPT_ADDRESS, &sc_pfx_len);
 
-    struct db_wallet_tx *rows = calloc((size_t)count, sizeof(struct db_wallet_tx));
+    struct db_wallet_tx *rows = zcl_calloc((size_t)count, sizeof(struct db_wallet_tx), "wallet_tx_rows");
     if (!rows) {
         json_set_str(result, "Out of memory");
         return false;
@@ -1494,7 +1496,7 @@ static bool rpc_getbalanceflow(const struct json_value *params, bool help,
     (void)sc_pfx; (void)sc_pfx_len;
 
     /* Get all wallet UTXOs (spent + unspent) sorted by height */
-    struct db_wallet_utxo *all_utxos = calloc(4096, sizeof(struct db_wallet_utxo));
+    struct db_wallet_utxo *all_utxos = zcl_calloc(4096, sizeof(struct db_wallet_utxo), "wallet_utxos");
     if (!all_utxos) {
         json_set_str(result, "Out of memory");
         return false;
@@ -1502,7 +1504,7 @@ static bool rpc_getbalanceflow(const struct json_value *params, bool help,
     int nutxos = db_wallet_utxo_list_all(ctx->node_db, all_utxos, 4096);
 
     /* Get all wallet txs sorted by time */
-    struct db_wallet_tx *txs = calloc(2000, sizeof(struct db_wallet_tx));
+    struct db_wallet_tx *txs = zcl_calloc(2000, sizeof(struct db_wallet_tx), "wallet_txs");
     if (!txs) {
         free(all_utxos);
         json_set_str(result, "Out of memory");
@@ -2071,13 +2073,13 @@ static bool rpc_walletledger(const struct json_value *params, bool help,
         cp, B58_SCRIPT_ADDRESS, &sc_pfx_len);
 
     /* Load all data from SQLite */
-    struct db_wallet_utxo *all_utxos = calloc(4096, sizeof(*all_utxos));
+    struct db_wallet_utxo *all_utxos = zcl_calloc(4096, sizeof(*all_utxos), "diag_utxos");
     int nutxos = all_utxos ? db_wallet_utxo_list_all(ctx->node_db, all_utxos, 4096) : 0;
 
-    struct db_sapling_note *all_notes = calloc(1024, sizeof(*all_notes));
+    struct db_sapling_note *all_notes = zcl_calloc(1024, sizeof(*all_notes), "diag_notes");
     int nnotes = all_notes ? db_sapling_note_list_all(ctx->node_db, all_notes, 1024) : 0;
 
-    struct db_wallet_tx *all_txs = calloc(2000, sizeof(*all_txs));
+    struct db_wallet_tx *all_txs = zcl_calloc(2000, sizeof(*all_txs), "diag_txs");
     int ntxs = all_txs ? db_wallet_tx_list(ctx->node_db, all_txs, 2000, 0) : 0;
 
     /* Build a height-sorted list of unique txids */
@@ -2086,7 +2088,7 @@ static bool rpc_walletledger(const struct json_value *params, bool help,
         int height;
         bool from_me;
         int64_t fee;
-    } *events = calloc(4096, sizeof(*events));
+    } *events = zcl_calloc(4096, sizeof(*events), "diag_events");
     int nevents = 0;
 
     /* Collect events from wallet transactions */

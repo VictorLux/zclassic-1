@@ -8,6 +8,7 @@
 #include "sapling/constants.h"
 #include "sapling/address.h"
 #include "wallet/wallet.h"
+#include "util/log_macros.h"
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -16,7 +17,7 @@ bool zslp_payment_generate_address(struct wallet *wallet,
                                    char *z_addr_out, size_t max)
 {
     if (!z_addr_out || max < 80)
-        return false;
+        LOG_FAIL("zslp_payment", "generate_address: NULL output or max too small (%zu)", max);
 
     if (wallet && wallet->sapling_keys.num_keys > 0) {
         uint8_t diversifier[ZC_DIVERSIFIER_SIZE];

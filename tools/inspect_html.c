@@ -15,6 +15,8 @@
 #include <string.h>
 #include <stdbool.h>
 
+#include "util/safe_alloc.h"
+
 static char *read_file(const char *path, size_t *len_out) {
     FILE *f = fopen(path, "r");
     if (!f) return NULL;
@@ -22,7 +24,7 @@ static char *read_file(const char *path, size_t *len_out) {
     long sz = ftell(f);
     fseek(f, 0, SEEK_SET);
     if (sz <= 0) { fclose(f); return NULL; }
-    char *buf = malloc((size_t)sz + 1);
+    char *buf = zcl_malloc((size_t)sz + 1, "inspect_html read_file buf");
     if (!buf) { fclose(f); return NULL; }
     *len_out = fread(buf, 1, (size_t)sz, f);
     buf[*len_out] = '\0';

@@ -14,6 +14,7 @@
 #include <string.h>
 #include <time.h>
 #include <sqlite3.h>
+#include "util/log_macros.h"
 
 /* Forward declarations */
 static size_t serve_gated_content(sqlite3 *db, const char *customer_addr,
@@ -802,7 +803,9 @@ static const char *store_order_status_class(int status)
 static const char *parse_form_field(const char *body, size_t len,
                                      const char *field, char *out, size_t outmax)
 {
-    if (!body || !len || !field || !out || outmax == 0) return NULL;
+    if (!body || !len || !field || !out || outmax == 0)
+        LOG_NULL("store", "parse_form_field: null args body=%p len=%zu field=%s",
+                 (void *)body, len, field ? field : "(null)");
     char search[128];
     snprintf(search, sizeof(search), "%s=", field);
     const char *p = strstr(body, search);
@@ -1015,7 +1018,10 @@ bool store_check_token_access(const char *datadir,
     if (!datadir ||
         !store_validate_access_addr(customer_addr) ||
         !store_validate_access_token(token_id))
-        return false;
+        LOG_FAIL("store", "check_token_access: invalid args datadir=%p addr=%s token=%s",
+                 (void *)datadir,
+                 customer_addr ? customer_addr : "(null)",
+                 token_id ? token_id : "(null)");
 
     uint64_t balance = zslp_balance(datadir, token_id, customer_addr);
     return balance >= required;

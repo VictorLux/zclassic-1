@@ -14,6 +14,8 @@
 #include <string.h>
 #include <signal.h>
 
+#include "util/log_macros.h"
+
 /* ── State names ───────────────────────────────────────────────── */
 
 static const char *g_activation_state_names[] = {

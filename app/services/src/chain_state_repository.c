@@ -10,6 +10,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "util/log_macros.h"
+
 /* ── Default tunables ───────────────────────────────────────── */
 #define CSR_DEFAULT_MAX_ORPHAN_ROWS   1000
 #define CSR_DEFAULT_STALE_INDEX_GAP   100

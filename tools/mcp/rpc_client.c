@@ -17,6 +17,8 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
+#include "util/safe_alloc.h"
+
 static char g_cookie[256];
 static int g_port = 18232;
 static char g_datadir[512];
@@ -118,7 +120,7 @@ char *mcp_node_rpc(const char *method, const char *params_json)
     send(sock, body, (size_t)blen, 0);
 
     size_t cap = 65536, len = 0;
-    char *buf = malloc(cap);
+    char *buf = zcl_malloc(cap, "mcp rpc response buf");
     if (!buf) { close(sock); return NULL; }
     for (;;) {
         if (len + 4096 > cap) { cap *= 2; buf = realloc(buf, cap); }
@@ -143,14 +145,14 @@ char *mcp_node_rpc(const char *method, const char *params_json)
         const struct json_value *res = json_get(&v, "result");
         const struct json_value *err = json_get(&v, "error");
         if (err && err->type != JSON_NULL) {
-            char *out = malloc(4096);
+            char *out = zcl_malloc(4096, "mcp rpc error json");
             json_write(err, out, 4096);
             json_free(&v);
             free(buf);
             return out;
         }
         if (res) {
-            char *out = malloc(cap);
+            char *out = zcl_malloc(cap, "mcp rpc result json");
             json_write(res, out, cap);
             json_free(&v);
             free(buf);

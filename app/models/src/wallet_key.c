@@ -18,6 +18,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <time.h>
+#include "util/safe_alloc.h"
 
 /* ── Callbacks ─────────────────────────────────────────────────── */
 
@@ -323,7 +324,7 @@ bool db_wallet_script_find(struct node_db *ndb, const uint8_t script_hash[20],
         out->script_len = (size_t)AR_COL_BYTES(s, 0);
         const void *rs = sqlite3_column_blob(s, 0);
         if (rs && out->script_len > 0) {
-            out->redeem_script = malloc(out->script_len);
+            out->redeem_script = zcl_malloc(out->script_len, "wallet_key redeem_script find");
             if (out->redeem_script)
                 memcpy(out->redeem_script, rs, out->script_len);
         });
@@ -345,7 +346,7 @@ int db_wallet_script_each(struct node_db *ndb, wallet_script_cb cb, void *ctx)
         sc.script_len = (size_t)AR_COL_BYTES(s, 1);
         const void *rs = sqlite3_column_blob(s, 1);
         if (rs && sc.script_len > 0) {
-            sc.redeem_script = malloc(sc.script_len);
+            sc.redeem_script = zcl_malloc(sc.script_len, "wallet_key redeem_script each");
             if (sc.redeem_script)
                 memcpy(sc.redeem_script, rs, sc.script_len);
         }

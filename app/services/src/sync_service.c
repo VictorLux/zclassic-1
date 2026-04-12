@@ -5,4 +5,6 @@
 /* Compatibility umbrella for sync services.
  * Concrete logic now lives in header_sync_service and block_sync_service. */
 
+#include "util/log_macros.h"
+
 int zcl_sync_service_compat_anchor = 0;

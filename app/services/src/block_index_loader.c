@@ -27,6 +27,9 @@
 #include <errno.h>
 #include <sqlite3.h>
 
+#include "util/log_macros.h"
+#include "util/safe_alloc.h"
+
 /* ── Flat file format ────────────────────────────────────── */
 
 /* Compact on-disk format: height-sorted, 192 bytes per entry */
@@ -65,7 +68,7 @@ void save_block_index_flat(const char *datadir, struct main_state *ms)
     snprintf(path, sizeof(path), "%s/block_index.bin", datadir);
 
     size_t count = ms->map_block_index.size;
-    struct block_index **sorted = malloc(count * sizeof(void *));
+    struct block_index **sorted = zcl_malloc(count * sizeof(void *), "block_index sorted save");
     if (!sorted) {
         fprintf(stderr, "save_block_index_flat: malloc failed for %zu entries\n",
                 count);
@@ -191,7 +194,7 @@ bool load_block_index_flat(const char *datadir, struct main_state *ms)
 
     /* Pre-size hash map + arena. Pre-fault memory. */
     block_map_reserve(&ms->map_block_index, count);
-    struct block_index *arena = calloc(count, sizeof(struct block_index));
+    struct block_index *arena = zcl_calloc(count, sizeof(struct block_index), "block_index arena");
     if (!arena) {
         fprintf(stderr, "block_index_flat: calloc failed for %u entries "
                 "(%zu bytes)\n", count, (size_t)count * sizeof(struct block_index));
@@ -203,7 +206,7 @@ bool load_block_index_flat(const char *datadir, struct main_state *ms)
     int32_t max_h = entries[count - 1].height;
     struct block_index **by_height = NULL;
     if (max_h > 0 && max_h < 10000000) {
-        by_height = calloc((size_t)(max_h + 1), sizeof(struct block_index *));
+        by_height = zcl_calloc((size_t)(max_h + 1), sizeof(struct block_index *), "block_index by_height");
         if (!by_height)
             fprintf(stderr, "block_index_flat: by_height calloc failed "
                     "(%d entries) — pprev linking will be slow\n", max_h + 1);
@@ -426,7 +429,7 @@ fail:
 
 bool load_block_index_sqlite(struct node_db *ndb, struct main_state *ms)
 {
-    if (!ndb || !ndb->open) return false;
+    if (!ndb || !ndb->open) LOG_FAIL("block_index", "load_block_index_sqlite called with null or closed db");
 
     int64_t cached_count = 0;
     sqlite3_stmt *cnt = NULL;
@@ -436,7 +439,7 @@ bool load_block_index_sqlite(struct node_db *ndb, struct main_state *ms)
             cached_count = sqlite3_column_int64(cnt, 0);
         sqlite3_finalize(cnt);
     }
-    if (cached_count < 1000) return false;
+    if (cached_count < 1000) LOG_FAIL("block_index", "SQLite block_index_cache too small: %lld entries", (long long)cached_count);
 
     int64_t t0 = (int64_t)time(NULL);
     printf("Loading block index from SQLite (%lld entries)...\n",
@@ -449,7 +452,7 @@ bool load_block_index_sqlite(struct node_db *ndb, struct main_state *ms)
             "n_cached_branch_id,n_chain_tx "
             "FROM block_index_cache ORDER BY height",
             -1, &sel, NULL) != SQLITE_OK || !sel)
-        return false;
+        LOG_FAIL("block_index", "failed to prepare SQLite SELECT for block_index_cache");
 
     size_t loaded = 0;
     while (sqlite3_step(sel) == SQLITE_ROW) {
@@ -564,9 +567,9 @@ bool load_block_index(struct main_state *ms,
 
     /* Post-load: compute nChainWork, nChainTx, skip links */
     size_t count = ms->map_block_index.size;
-    struct block_index **sorted = malloc(count * sizeof(struct block_index *));
+    struct block_index **sorted = zcl_malloc(count * sizeof(struct block_index *), "block_index sorted load");
     if (!sorted)
-        return false;
+        LOG_FAIL("block_index", "malloc failed for %zu sorted block_index pointers", count);
 
     size_t idx = 0;
     size_t iter = 0;

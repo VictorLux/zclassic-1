@@ -15,6 +15,8 @@
 #include <string.h>
 #include <sys/stat.h>
 
+#include "util/log_macros.h"
+
 /* ActiveRecord-style validation for coins/chain agreement at boot.
  * Detects mismatch between coins_best_block and active chain tip,
  * returns the appropriate recovery action.

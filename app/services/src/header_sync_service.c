@@ -8,6 +8,8 @@
 #include "validation/chainstate.h"
 #include <stdlib.h>
 #include <time.h>
+#include "util/log_macros.h"
+#include "util/safe_alloc.h"
 
 static int g_getheaders_log_count = 0;
 static bool g_block_file_scan_triggered = false;
@@ -15,7 +17,8 @@ static bool g_block_file_scan_triggered = false;
 bool syncsvc_begin_peer_sync(struct p2p_node *node)
 {
     if (!node || node->inbound || node->state != PEER_ACTIVE)
-        return false;
+        LOG_FAIL("header_sync", "begin_peer_sync: invalid node (null=%d inbound=%d state=%d)",
+                 !node, node ? node->inbound : 0, node ? (int)node->state : -1);
 
     peer_set_state_checked((uint32_t)node->id, &node->state,
                            PEER_SYNCING_HEADERS, "IBD start");
@@ -43,7 +46,7 @@ static void syncsvc_build_locator_from_chain(struct block_locator *loc,
         return;
 
     alloc = 32;
-    loc->vhave = malloc(alloc * sizeof(struct uint256));
+    loc->vhave = zcl_malloc(alloc * sizeof(struct uint256), "header_sync locator chain");
     if (!loc->vhave)
         return;
 
@@ -84,7 +87,7 @@ static void syncsvc_build_locator_from_index(struct block_locator *loc,
         return;
 
     alloc = 32;
-    loc->vhave = malloc(alloc * sizeof(struct uint256));
+    loc->vhave = zcl_malloc(alloc * sizeof(struct uint256), "header_sync locator index");
     if (!loc->vhave)
         return;
 
@@ -333,7 +336,8 @@ bool syncsvc_build_getheaders_locator(struct block_locator *loc,
     size_t i;
 
     if (!loc || !genesis_hash)
-        return false;
+        LOG_FAIL("header_sync", "build_getheaders_locator: null loc=%d genesis_hash=%d",
+                 !loc, !genesis_hash);
 
     block_locator_init(loc);
     if (from)
@@ -342,9 +346,9 @@ bool syncsvc_build_getheaders_locator(struct block_locator *loc,
         syncsvc_build_locator_from_chain(loc, chain);
 
     if (loc->num_hashes == 0) {
-        loc->vhave = malloc(sizeof(struct uint256));
+        loc->vhave = zcl_malloc(sizeof(struct uint256), "header_sync genesis locator");
         if (!loc->vhave)
-            return false;
+            LOG_FAIL("header_sync", "build_getheaders_locator: malloc failed for genesis-only locator");
         loc->vhave[0] = *genesis_hash;
         loc->num_hashes = 1;
         return true;
@@ -362,7 +366,8 @@ bool syncsvc_build_getheaders_locator(struct block_locator *loc,
             (loc->num_hashes + 1) * sizeof(struct uint256));
         if (!new_vhave) {
             block_locator_free(loc);
-            return false;
+            LOG_FAIL("header_sync", "build_getheaders_locator: realloc failed for %zu hashes",
+                     loc->num_hashes + 1);
         }
         loc->vhave = new_vhave;
         loc->vhave[loc->num_hashes] = *genesis_hash;

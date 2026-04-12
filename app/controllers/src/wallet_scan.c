@@ -34,6 +34,8 @@
 #include <unistd.h>
 #include <pthread.h>
 #include "controllers/scan_util.h"
+#include "util/log_macros.h"
+#include "util/safe_alloc.h"
 
 static bool wallet_scan_begin_checked(struct node_db *ndb,
                                       const char *label)
@@ -75,7 +77,7 @@ static bool wallet_scan_exec_checked(struct node_db *ndb,
                                      const char *label)
 {
     if (!ndb || !ndb->open || !sql)
-        return false;
+        LOG_FAIL("wallet_scan", "exec_checked: invalid args (ndb=%p sql=%p)", (void *)ndb, (void *)sql);
     if (sqlite3_exec(ndb->db, sql, NULL, NULL, NULL) != SQLITE_OK) {
         fprintf(stderr, "wallet_scan: %s failed: %s\n",
                 label, sqlite3_errmsg(ndb->db));
@@ -140,13 +142,13 @@ static void *scan_file_thread(void *arg)
     snprintf(path, sizeof(path), "%s/blocks/blk%05d.dat",
              a->datadir, a->file_num);
     int fd = open(path, O_RDONLY);
-    if (fd < 0) { a->result = false; return NULL; }
+    if (fd < 0) { a->result = false; LOG_NULL("wallet_scan", "open failed for blk%05d.dat", a->file_num); }
     struct stat st;
-    if (fstat(fd, &st) != 0) { close(fd); a->result = false; return NULL; }
+    if (fstat(fd, &st) != 0) { close(fd); a->result = false; LOG_NULL("wallet_scan", "fstat failed for blk%05d.dat", a->file_num); }
     size_t sz = (size_t)st.st_size;
     uint8_t *data = mmap(NULL, sz, PROT_READ, MAP_PRIVATE, fd, 0);
     close(fd);
-    if (data == MAP_FAILED) { a->result = false; return NULL; }
+    if (data == MAP_FAILED) { a->result = false; LOG_NULL("wallet_scan", "mmap failed for blk%05d.dat (size=%zu)", a->file_num, sz); }
     posix_madvise(data, sz, POSIX_MADV_SEQUENTIAL);
 
     a->result = scan_file_raw(data, sz, a->ht);
@@ -238,7 +240,9 @@ int wallet_scan_blocks(struct node_db *ndb,
                        int start_height,
                        int end_height)
 {
-    if (!ndb || !ndb->open || !chain || !w || !datadir) return -1;
+    if (!ndb || !ndb->open || !chain || !w || !datadir)
+        LOG_ERR("wallet_scan", "scan_blocks: invalid args (ndb=%p chain=%p w=%p datadir=%p)",
+                (void *)ndb, (void *)chain, (void *)w, (void *)datadir);
 
     struct timespec ts_start, ts_p1, ts_p2;
     clock_gettime(CLOCK_MONOTONIC, &ts_start);
@@ -272,7 +276,7 @@ int wallet_scan_blocks(struct node_db *ndb,
     fflush(stdout);
 
     /* Launch threads — up to 8 at a time */
-    bool *file_has_match = calloc((size_t)num_files, sizeof(bool));
+    bool *file_has_match = zcl_calloc((size_t)num_files, sizeof(bool), "wallet scan file match");
     int batch = 8;
 
     for (int base = 0; base < num_files; base += batch) {
@@ -324,17 +328,17 @@ int wallet_scan_blocks(struct node_db *ndb,
         free(file_has_match);
         /* Still write empty results to clear any stale data */
         if (!wallet_scan_begin_checked(ndb, "empty-result reset begin"))
-            return -1;
+            LOG_ERR("wallet_scan", "empty-result: failed to begin db transaction");
         if (!wallet_scan_exec_checked(ndb, "DELETE FROM wallet_utxos",
                                       "empty-result clear wallet_utxos") ||
             !wallet_scan_exec_checked(ndb, "DELETE FROM wallet_transactions",
                                       "empty-result clear wallet_transactions")) {
             wallet_scan_rollback_best_effort(ndb,
                                              "empty-result reset rollback");
-            return -1;
+            LOG_ERR("wallet_scan", "empty-result: failed to clear wallet tables");
         }
         if (!wallet_scan_commit_checked(ndb, "empty-result reset commit"))
-            return -1;
+            LOG_ERR("wallet_scan", "empty-result: failed to commit db transaction");
         return 0;
     }
 

@@ -23,6 +23,7 @@
 #include "models/wallet_key.h"
 #include "wallet/sapling_keys.h"
 #include "chain/chainparams.h"
+#include "util/safe_alloc.h"
 #include <string.h>
 #include <stdlib.h>
 #include <time.h>
@@ -158,7 +159,7 @@ static void db_wallet_tx_read_row(sqlite3_stmt *s, int col,
     out->raw_tx_len = (size_t)AR_COL_BYTES(s, col);
     const void *rt = sqlite3_column_blob(s, col++);
     if (rt && out->raw_tx_len > 0) {
-        out->raw_tx = malloc(out->raw_tx_len);
+        out->raw_tx = zcl_malloc(out->raw_tx_len, "wallet_tx raw_tx");
         if (!out->raw_tx) { out->raw_tx_len = 0; return; }
         memcpy(out->raw_tx, rt, out->raw_tx_len);
     }
@@ -186,7 +187,7 @@ static void db_wallet_tx_raw_view_read_row(sqlite3_stmt *s, int col,
     if (out->raw_tx_len > 0) {
         const void *raw = sqlite3_column_blob(s, col);
         if (raw) {
-            out->raw_tx = malloc(out->raw_tx_len);
+            out->raw_tx = zcl_malloc(out->raw_tx_len, "wallet_tx raw_view");
             if (out->raw_tx)
                 memcpy(out->raw_tx, raw, out->raw_tx_len);
             else
@@ -210,7 +211,7 @@ static void db_wallet_utxo_read_row(sqlite3_stmt *s, int col,
     out->script_len = (size_t)AR_COL_BYTES(s, col);
     const void *sc = sqlite3_column_blob(s, col);
     if (sc && out->script_len > 0) {
-        out->script = malloc(out->script_len);
+        out->script = zcl_malloc(out->script_len, "wallet_tx utxo script");
         if (out->script)
             memcpy(out->script, sc, out->script_len);
     } else {
@@ -524,7 +525,7 @@ bool db_wallet_utxo_find(struct node_db *ndb,
         out->script_len = (size_t)AR_COL_BYTES(s, 2);
         const void *sc2 = sqlite3_column_blob(s, 2);
         if (sc2 && out->script_len > 0) {
-            out->script = malloc(out->script_len);
+            out->script = zcl_malloc(out->script_len, "wallet_tx utxo_find script");
             if (out->script)
                 memcpy(out->script, sc2, out->script_len);
         } else {
@@ -940,7 +941,7 @@ bool db_sapling_note_load_witness(struct node_db *ndb,
     const void *wdata = sqlite3_column_blob(s, 0);
     if (!wdata || wlen <= 0 || wlen > 8192) { AR_FINALIZE(s); return false; }
 
-    *witness_blob_out = malloc((size_t)wlen);
+    *witness_blob_out = zcl_malloc((size_t)wlen, "wallet_tx witness blob");
     if (!*witness_blob_out) { AR_FINALIZE(s); return false; }
     memcpy(*witness_blob_out, wdata, (size_t)wlen);
     *blob_len_out = (size_t)wlen;

@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <time.h>
+#include "util/log_macros.h"
 
 #define SAVE_INTERVAL 1000
 #define LOG_INTERVAL  10000
@@ -181,7 +182,9 @@ void bg_hash_verify_init(struct bg_hash_verification_service *svc,
 
 bool bg_hash_verify_start(struct bg_hash_verification_service *svc)
 {
-    if (!svc || !svc->ms || svc->thread_started) return false;
+    if (!svc || !svc->ms || svc->thread_started)
+        LOG_FAIL("bg_hash", "bg_hash_verify_start: null svc=%d ms=%d or already started=%d",
+                 !svc, svc ? !svc->ms : 1, svc ? svc->thread_started : 0);
 
     if (pthread_create(&svc->thread, NULL, bg_hash_verify_thread, svc) != 0) {
         fprintf(stderr, "[bg-hash-verify] Failed to create thread\n");

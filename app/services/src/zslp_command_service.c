@@ -14,6 +14,8 @@
 #include "validation/txmempool.h"
 #include "wallet/keystore.h"
 #include "wallet/wallet.h"
+#include "util/log_macros.h"
+#include "util/safe_alloc.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -31,12 +33,12 @@ bool zslp_command_commit_with_op_return(struct wallet *wallet,
     uint32_t branch_id;
 
     if (!wallet || !mempool || !wtx || !op_script || script_len == 0)
-        return false;
+        LOG_FAIL("zslp_cmd", "commit_with_op_return: NULL argument or empty script");
 
     old_nout = wtx->tx.num_vout;
-    new_vout = calloc(old_nout + 1, sizeof(struct tx_out));
+    new_vout = zcl_calloc(old_nout + 1, sizeof(struct tx_out), "zslp op_return vouts");
     if (!new_vout)
-        return false;
+        LOG_FAIL("zslp_cmd", "commit_with_op_return: calloc failed for %zu vouts", old_nout + 1);
 
     new_vout[0].value = 0;
     new_vout[0].script_pub_key.size = script_len;
@@ -124,9 +126,9 @@ bool zslp_command_build_genesis_base_tx(struct wallet *wallet,
     int64_t vals[2] = { 546, 546 };
 
     if (!wallet || !wtx || !fee_paid)
-        return false;
+        LOG_FAIL("zslp_cmd", "build_genesis_base_tx: NULL argument");
     if (!wallet_get_key_from_pool(wallet, &our_pk))
-        return false;
+        LOG_FAIL("zslp_cmd", "build_genesis_base_tx: wallet_get_key_from_pool failed");
 
     our_kid = pubkey_get_id(&our_pk);
     our_dest.type = DEST_KEY_ID;
@@ -147,9 +149,9 @@ bool zslp_command_build_send_base_tx(struct wallet *wallet,
     int64_t vals[1] = { 546 };
 
     if (!wallet || !to_addr || !wtx || !fee_paid)
-        return false;
+        LOG_FAIL("zslp_cmd", "build_send_base_tx: NULL argument");
     if (!zslp_service_decode_transparent_destination(to_addr, &dest))
-        return false;
+        LOG_FAIL("zslp_cmd", "build_send_base_tx: invalid address %s", to_addr);
     return wallet_create_transaction_multi(wallet, &dest, vals, 1, wtx,
                                            fee_paid, tx_error);
 }
@@ -161,11 +163,11 @@ static bool zslp_command_pick_token_id(const char *broadcast_txid,
     const char *token_id = broadcast_txid;
 
     if (!req || !token_id_out)
-        return false;
+        LOG_FAIL("zslp_cmd", "pick_token_id: NULL argument");
     if (!token_id || token_id[0] == '\0')
         token_id = req->ticker;
     if (!token_id || token_id[0] == '\0')
-        return false;
+        LOG_FAIL("zslp_cmd", "pick_token_id: no txid and no ticker fallback");
 
     snprintf(token_id_out, ZSLP_TOKEN_KEY_MAX + 1, "%s", token_id);
     return true;
@@ -181,20 +183,20 @@ bool zslp_command_finalize_genesis(const char *datadir,
     const char *validation_error;
 
     if (!datadir || !req || !token_id_out)
-        return false;
+        LOG_FAIL("zslp_cmd", "finalize_genesis: NULL argument");
 
     validation_error = zslp_service_validate_create_request(req);
     if (validation_error)
-        return false;
+        LOG_FAIL("zslp_cmd", "finalize_genesis: validation failed: %s", validation_error);
     if (!zslp_command_pick_token_id(broadcast_txid, req, token_id_out))
-        return false;
+        LOG_FAIL("zslp_cmd", "finalize_genesis: pick_token_id failed");
     if (!zslp_service_open_db(datadir, &db, &owns_db))
-        return false;
+        LOG_FAIL("zslp_cmd", "finalize_genesis: open_db failed for %s", datadir);
 
     if (!zslp_service_store_token(db, token_id_out, req->ticker, req->name,
                                   req->decimals, (int64_t)req->initial_supply)) {
         zslp_service_close_db(db, owns_db);
-        return false;
+        LOG_FAIL("zslp_cmd", "finalize_genesis: store_token failed for %s", token_id_out);
     }
     zslp_service_close_db(db, owns_db);
     return true;
@@ -208,17 +210,18 @@ bool zslp_command_credit_transfer(const char *datadir,
     const char *validation_error;
 
     if (!datadir || !req)
-        return false;
+        LOG_FAIL("zslp_cmd", "credit_transfer: NULL argument");
 
     validation_error = zslp_service_validate_transfer_request(req);
     if (validation_error)
-        return false;
+        LOG_FAIL("zslp_cmd", "credit_transfer: validation failed: %s", validation_error);
     if (!zslp_service_open_db(datadir, &db, &owns_db))
-        return false;
+        LOG_FAIL("zslp_cmd", "credit_transfer: open_db failed for %s", datadir);
     if (!zslp_service_credit_balance(db, req->token_id,
                                      req->recipient_addr, req->amount)) {
         zslp_service_close_db(db, owns_db);
-        return false;
+        LOG_FAIL("zslp_cmd", "credit_transfer: credit_balance failed for token %s",
+                 req->token_id ? req->token_id : "NULL");
     }
     zslp_service_close_db(db, owns_db);
     return true;

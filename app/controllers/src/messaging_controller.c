@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include <time.h>
 #include <inttypes.h>
+#include "util/log_macros.h"
 
 /* ── Context ────────────────────────────────────────────────────── */
 

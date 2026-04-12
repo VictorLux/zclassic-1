@@ -14,6 +14,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "util/log_macros.h"
+#include "util/safe_alloc.h"
+
 /* ── Planning (pure function) ──────────────────────────────────── */
 
 void chain_restore_plan(struct chain_restore_plan *out,
@@ -77,11 +80,11 @@ struct block_index *chain_restore_create_anchor(
     int height)
 {
     if (!ms || !hash || height <= 0)
-        return NULL;
+        LOG_NULL("chain_restore", "create_anchor called with null ms/hash or height=%d", height);
 
-    struct block_index *anchor = calloc(1, sizeof(struct block_index));
+    struct block_index *anchor = zcl_calloc(1, sizeof(struct block_index), "chain_restore anchor");
     if (!anchor)
-        return NULL;
+        LOG_NULL("chain_restore", "calloc failed for anchor block_index at h=%d", height);
 
     block_index_init(anchor);
     anchor->nHeight = height;
@@ -128,7 +131,7 @@ struct block_index *chain_restore_execute(
     struct main_state *ms)
 {
     if (!plan || !ms)
-        return NULL;
+        LOG_NULL("chain_restore", "execute called with null plan or main_state");
 
     if (plan->next_state == CHAIN_RESTORE_FAILED)
         return NULL;

@@ -15,6 +15,8 @@
 #include <stdarg.h>
 #include <time.h>
 
+#include "util/safe_alloc.h"
+
 #define MCP_ROUTER_MAX_ROUTES 128
 
 static const struct mcp_tool_route *g_routes[MCP_ROUTER_MAX_ROUTES];
@@ -488,7 +490,7 @@ static char *envelope_strdup(enum mcp_error_code code, const char *tool,
             "{\"error\":{\"code\":\"INTERNAL\",\"message\":\"envelope build failed\"}}";
         return strdup(fallback);
     }
-    char *out = malloc(n + 1);
+    char *out = zcl_malloc(n + 1, "mcp router error envelope");
     if (!out) return NULL;
     memcpy(out, tmp, n);
     out[n] = 0;

@@ -8,6 +8,8 @@
 #include "models/contact.h"
 #include "models/wallet_tx.h"
 #include "crypto/sha256.h"
+#include "util/log_macros.h"
+#include "util/safe_alloc.h"
 #include <sys/time.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -93,7 +95,8 @@ int wv_rpc_call(const char *method, const char *params_json,
     if (auth_cookie && auth_cookie[0]) {
         snprintf(cookie, sizeof(cookie), "%s", auth_cookie);
     } else {
-        if (!g_wv_datadir) return -1;
+        if (!g_wv_datadir)
+            LOG_ERR("wallet_view", "rpc_call(%s): no datadir set", method);
 
         /* Read auth cookie */
         char cookie_path[1024];
@@ -105,7 +108,8 @@ int wv_rpc_call(const char *method, const char *params_json,
             snprintf(conf_path, sizeof(conf_path), "%s/zclassic.conf",
                      g_wv_datadir);
             f = fopen(conf_path, "r");
-            if (!f) return -1;
+            if (!f)
+                LOG_ERR("wallet_view", "rpc_call(%s): cannot open cookie or conf at %s", method, g_wv_datadir);
             char user[64] = "", pass[64] = "";
             char line[256];
             while (fgets(line, sizeof(line), f)) {
@@ -119,7 +123,8 @@ int wv_rpc_call(const char *method, const char *params_json,
                 }
             }
             fclose(f);
-            if (!user[0] || !pass[0]) return -1;
+            if (!user[0] || !pass[0])
+                LOG_ERR("wallet_view", "rpc_call(%s): missing rpcuser/rpcpassword in conf", method);
             snprintf(cookie, sizeof(cookie), "%s:%s", user, pass);
         } else {
             size_t n = fread(cookie, 1, sizeof(cookie) - 1, f);
@@ -130,7 +135,8 @@ int wv_rpc_call(const char *method, const char *params_json,
     }
 
     int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) return -1;
+    if (fd < 0)
+        LOG_ERR("wallet_view", "rpc_call(%s): socket() failed", method);
 
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
@@ -144,14 +150,17 @@ int wv_rpc_call(const char *method, const char *params_json,
 
     if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         close(fd);
-        return -1;
+        LOG_ERR("wallet_view", "rpc_call(%s): connect to port %d failed", method, ZCLASSICD_PORT);
     }
 
     char body[1024];
     int blen = snprintf(body, sizeof(body),
         "{\"jsonrpc\":\"1.0\",\"id\":1,\"method\":\"%s\",\"params\":%s}",
         method, params_json);
-    if (blen < 0 || (size_t)blen >= sizeof(body)) { close(fd); return -1; }
+    if (blen < 0 || (size_t)blen >= sizeof(body)) {
+        close(fd);
+        LOG_ERR("wallet_view", "rpc_call(%s): request body too large (%d bytes)", method, blen);
+    }
 
     static const char b64[] =
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -176,7 +185,10 @@ int wv_rpc_call(const char *method, const char *params_json,
         "Content-Length: %d\r\nConnection: close\r\n\r\n%s",
         auth_b64, blen, body);
 
-    if (write(fd, req, (size_t)rlen) != rlen) { close(fd); return -1; }
+    if (write(fd, req, (size_t)rlen) != rlen) {
+        close(fd);
+        LOG_ERR("wallet_view", "rpc_call(%s): write failed (expected %d bytes)", method, rlen);
+    }
 
     size_t total = 0;
     while (total < outmax - 1) {
@@ -260,26 +272,28 @@ void wv_get_funded_taddr(char *out, size_t max) {
 /* ── DB helpers ────────────────────────────────────────────── */
 
 sqlite3 *wv_open_db(void) {
-    if (!g_wv_datadir) return NULL;
+    if (!g_wv_datadir)
+        LOG_NULL("wallet_view", "open_db: no datadir set");
     char path[1024];
     snprintf(path, sizeof(path), "%s/node.db", g_wv_datadir);
     sqlite3 *db = NULL;
     if (sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
         if (db) sqlite3_close(db);
-        return NULL;
+        LOG_NULL("wallet_view", "open_db: cannot open %s", path);
     }
     sqlite3_busy_timeout(db, 3000);
     return db;
 }
 
 sqlite3 *wv_open_db_rw(void) {
-    if (!g_wv_datadir) return NULL;
+    if (!g_wv_datadir)
+        LOG_NULL("wallet_view", "open_db_rw: no datadir set");
     char path[1024];
     snprintf(path, sizeof(path), "%s/node.db", g_wv_datadir);
     sqlite3 *db = NULL;
     if (sqlite3_open_v2(path, &db, SQLITE_OPEN_READWRITE, NULL) != SQLITE_OK) {
         if (db) sqlite3_close(db);
-        return NULL;
+        LOG_NULL("wallet_view", "open_db_rw: cannot open %s", path);
     }
     sqlite3_busy_timeout(db, 5000);
     return db;
@@ -502,7 +516,7 @@ void wv_sync_wallet_from_zclassicd(void) {
                 }
             }
             if (script_bin_len > 0) {
-                row.script = malloc(script_bin_len);
+                row.script = zcl_malloc(script_bin_len, "utxo script");
                 if (!row.script)
                     goto cleanup;
                 memcpy(row.script, script_bin, script_bin_len);
@@ -512,7 +526,7 @@ void wv_sync_wallet_from_zclassicd(void) {
             if (utxo_count == utxo_cap) {
                 size_t new_cap = utxo_cap == 0 ? 64 : utxo_cap * 2;
                 struct db_wallet_utxo *new_rows =
-                    realloc(utxos, new_cap * sizeof(*utxos));
+                    zcl_realloc(utxos, new_cap * sizeof(*utxos), "utxo list grow");
                 if (!new_rows) {
                     db_wallet_utxo_free(&row);
                     goto cleanup;
@@ -574,7 +588,7 @@ void wv_sync_wallet_from_zclassicd(void) {
             if (note_count == note_cap) {
                 size_t new_cap = note_cap == 0 ? 64 : note_cap * 2;
                 struct db_sapling_note *new_rows =
-                    realloc(notes, new_cap * sizeof(*notes));
+                    zcl_realloc(notes, new_cap * sizeof(*notes), "sapling notes grow");
                 if (!new_rows)
                     goto cleanup;
                 notes = new_rows;
@@ -944,7 +958,8 @@ static void bb_append(qr_bitbuf *bb, uint32_t val, int nbits) {
 
 static int qr_encode_bytes(const char *str, uint8_t *codewords) {
     size_t len = strlen(str);
-    if (len > 106) return -1;
+    if (len > 106)
+        LOG_ERR("wallet_view", "qr_encode_bytes: input too long (%zu > 106)", len);
 
     qr_bitbuf bb;
     memset(&bb, 0, sizeof(bb));
@@ -1186,7 +1201,9 @@ static void url_decode(char *dst, size_t dstmax, const char *src) {
 
 bool wv_parse_form_field(const uint8_t *body, size_t body_len,
                           const char *key, char *out, size_t outmax) {
-    if (!body || !key || !out || outmax == 0) return false;
+    if (!body || !key || !out || outmax == 0)
+        LOG_FAIL("wallet_view", "parse_form_field: NULL arg (body=%p key=%p out=%p outmax=%zu)",
+                 (const void *)body, (const void *)key, (void *)out, outmax);
     size_t klen = strlen(key);
     const char *p = (const char *)body;
     const char *end = p + body_len;
@@ -1208,13 +1225,14 @@ bool wv_parse_form_field(const uint8_t *body, size_t body_len,
         if (p < end) p++;
     }
     out[0] = '\0';
-    return false;
+    LOG_FAIL("wallet_view", "parse_form_field: key '%s' not found in body (%zu bytes)", key, body_len);
 }
 
 /* ── Address validation ────────────────────────────────────── */
 
 bool wv_validate_zcl_address(const char *addr) {
-    if (!addr || !addr[0]) return false;
+    if (!addr || !addr[0])
+        LOG_FAIL("wallet_view", "validate_zcl_address: NULL or empty address");
     size_t alen = strlen(addr);
 
     /* t1 or t3: Base58Check with 2-byte version prefix */
@@ -1233,9 +1251,9 @@ bool wv_validate_zcl_address(const char *addr) {
         size_t data_len = 0;
         if (!bech32_decode(hrp, sizeof(hrp), data, sizeof(data),
                            &data_len, addr))
-            return false;
+            LOG_FAIL("wallet_view", "validate_zcl_address: bech32 decode failed for '%s'", addr);
         return (strcmp(hrp, "zs") == 0 && data_len > 0);
     }
 
-    return false;
+    LOG_FAIL("wallet_view", "validate_zcl_address: unrecognized format (len=%zu)", alen);
 }

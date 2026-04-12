@@ -9,6 +9,7 @@
 #include "json/json.h"
 #include <string.h>
 #include <time.h>
+#include "util/log_macros.h"
 
 /* ── Controller context ──────────────────────────────────────── */
 

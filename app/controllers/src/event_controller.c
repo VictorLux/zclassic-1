@@ -13,6 +13,8 @@
 #include "rpc/server.h"
 #include <stdlib.h>
 #include <string.h>
+#include "util/log_macros.h"
+#include "util/safe_alloc.h"
 
 static bool rpc_eventlog(const struct json_value *params, bool help,
                          struct json_value *result)
@@ -38,7 +40,7 @@ static bool rpc_eventlog(const struct json_value *params, bool help,
 
     size_t buf_size = (size_t)count * 256 + 256;
     if (buf_size > 16 * 1024 * 1024) buf_size = 16 * 1024 * 1024;
-    char *buf = malloc(buf_size);
+    char *buf = zcl_malloc(buf_size, "eventlog json buf");
     if (!buf) {
         json_set_str(result, "out of memory");
         return false;

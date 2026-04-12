@@ -28,6 +28,7 @@
 #include "services/block_index_integrity.h"
 
 #include "crypto/sha3.h"
+#include "util/safe_alloc.h"
 #include "event/event.h"
 #include "core/uint256.h"
 
@@ -42,6 +43,8 @@
 #include <unistd.h>
 
 #include <sqlite3.h>
+
+#include "util/log_macros.h"
 
 /* ── Layout check ───────────────────────────────────────────── */
 
@@ -99,8 +102,8 @@ static bool bii_hash_body(const char *body_path,
     sha3_256_init(&ctx);
 
     enum { BUF_SIZE = 1u << 20 };  /* 1 MiB */
-    uint8_t *buf = malloc(BUF_SIZE);
-    if (!buf) { fclose(f); return false; }
+    uint8_t *buf = zcl_malloc(BUF_SIZE, "integrity_hash_buf");
+    if (!buf) { fclose(f); LOG_FAIL("block_integrity", "hash_block_body: malloc(%u) failed", (unsigned)BUF_SIZE); }
 
     uint64_t total = 0;
     size_t n;

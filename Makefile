@@ -71,7 +71,7 @@ TMPL_SRC = $(wildcard app/views/templates/*.chtml) $(wildcard app/views/css/*.cc
 TMPL_TOOL = tools/gen_templates
 
 $(TMPL_TOOL): tools/gen_templates.c
-	$(CC) -std=c23 -O2 -Wall -Wextra -o $@ $<
+	$(CC) -std=c23 -O2 -Wall -Wextra -Ilib/util/include -o $@ $<
 
 tools/inspect_html: tools/inspect_html.c
 	$(CC) -std=c23 -O2 -Wall -Wextra -o $@ $<

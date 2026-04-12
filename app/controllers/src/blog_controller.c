@@ -16,6 +16,8 @@
 #include <string.h>
 #include <limits.h>
 #include <sys/stat.h>
+#include "util/log_macros.h"
+#include "util/safe_alloc.h"
 
 /* ── Static file server ─────────────────────────────────────── */
 
@@ -156,7 +158,7 @@ size_t blog_serve(const char *datadir, const char *path,
                              body, strlen(body));
     }
 
-    char *body = malloc((size_t)fsize);
+    char *body = zcl_malloc((size_t)fsize, "blog file body");
     if (!body) { fclose(f); return 0; }
     size_t nread = fread(body, 1, (size_t)fsize, f);
     fclose(f);
@@ -327,18 +329,18 @@ bool blog_auto_announce_onion(const char *datadir, const char *onion_address)
     struct node_db ndb;
     struct db_onion_announcement ann;
     if (!datadir || !onion_address || onion_address[0] == '\0')
-        return false;
+        LOG_FAIL("blog", "auto_announce_onion: missing datadir or onion_address");
 
     char db_path[1024];
     snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
 
     memset(&ndb, 0, sizeof(ndb));
     if (!node_db_open(&ndb, db_path))
-        return false;
+        LOG_FAIL("blog", "auto_announce_onion: failed to open db at %s", db_path);
 
     if (db_onion_announcement_exists(&ndb, onion_address)) {
         node_db_close(&ndb);
-        return false;
+        LOG_FAIL("blog", "auto_announce_onion: announcement already exists for %s", onion_address);
     }
 
     /* Build the ZSLP SEND script with .onion hostname.
@@ -351,7 +353,7 @@ bool blog_auto_announce_onion(const char *datadir, const char *onion_address)
                                             token_id, onion_address);
     if (slen == 0) {
         node_db_close(&ndb);
-        return false;
+        LOG_FAIL("blog", "auto_announce_onion: failed to build node announce script for %s", onion_address);
     }
 
     memset(&ann, 0, sizeof(ann));

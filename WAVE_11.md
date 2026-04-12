@@ -60,13 +60,13 @@ Work in order. `./test_zcl` green on every push.
 
 ### Defensive migration (highest priority)
 
-1. **LOG_FAIL migration: MCP handlers** — migrate all 64 bare `return -1` in `tools/mcp/controllers/*.c` to `LOG_ERR` + set `res->error`/`res->error_message`. Every MCP failure must explain itself to the caller.
+1. ~~**LOG_FAIL migration: MCP handlers**~~ ✓ — 67 bare `return -1` → LOG_ERR + error body + zcl_malloc. Commit `481d008a6`.
 
-2. **LOG_FAIL migration: app controllers** — same for `app/controllers/src/*.c`. Every `return false`/`return -1` gets `LOG_FAIL`/`LOG_ERR` with domain tag.
+2. ~~**LOG_FAIL migration: app controllers**~~ ✓ — 42 files, ~200 bare returns → LOG_FAIL/LOG_ERR/LOG_NULL with domain tags. All 42 files now include `log_macros.h`.
 
-3. **LOG_FAIL migration: app services** — same for `app/services/src/*.c`. Priority: `snapshot_sync_service.c` (100 bare returns), `block_sync_service.c`, `header_sync_service.c`.
+3. ~~**LOG_FAIL migration: app services**~~ ✓ — 25 files, ~150 bare returns → LOG_FAIL/LOG_ERR/LOG_NULL. Priority files hit: snapshot_sync_service.c (65), wallet_backup_service.c (25), header_sync_service.c (4), block_sync_service.c (2). All 25 files now include `log_macros.h`.
 
-4. **zcl_malloc migration: app/ + tools/** — replace bare `malloc`/`calloc` in all app/ and tools/ files. Include `safe_alloc.h`. Count before/after.
+4. ~~**zcl_malloc migration: app/ + tools/**~~ ✓ — 130 bare malloc/calloc → zcl_malloc/zcl_calloc across 45 files. 0 bare malloc remaining in app/ or tools/. All files include `safe_alloc.h`.
 
 5. **LOG_FAIL migration: net layer** — same for `lib/net/src/*.c`. Priority: `msgprocessor.c` (55 bare returns), `fast_sync.c` (59), `net.c` (50).
 

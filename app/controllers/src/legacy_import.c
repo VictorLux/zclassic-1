@@ -29,6 +29,8 @@
 #include <time.h>
 #include <pthread.h>
 #include "controllers/scan_util.h"
+#include "util/log_macros.h"
+#include "util/safe_alloc.h"
 
 static const uint8_t ZCL_MAGIC[4] = {0x24, 0xe9, 0x27, 0x64};
 
@@ -543,7 +545,7 @@ static void *sapling_filter_thread(void *arg)
     posix_madvise(fdata, fsize, POSIX_MADV_SEQUENTIAL);
 
     ctx->hit_cap = 256;
-    ctx->hits = malloc((size_t)ctx->hit_cap * sizeof(struct blk_pos));
+    ctx->hits = zcl_malloc((size_t)ctx->hit_cap * sizeof(struct blk_pos), "legacy scan hits");
 
     size_t pos = 0;
     while (pos + 8 <= fsize) {
@@ -573,8 +575,8 @@ static void *sapling_filter_thread(void *arg)
         /* Record this block for trial decryption. */
         if (ctx->hit_count >= ctx->hit_cap) {
             ctx->hit_cap *= 2;
-            ctx->hits = realloc(ctx->hits,
-                (size_t)ctx->hit_cap * sizeof(struct blk_pos));
+            ctx->hits = zcl_realloc(ctx->hits,
+                (size_t)ctx->hit_cap * sizeof(struct blk_pos), "legacy scan hits grow");
         }
         ctx->hits[ctx->hit_count++] = (struct blk_pos){
             .file_num = ctx->file_num,
@@ -655,9 +657,9 @@ static void *decrypt_thread(void *arg)
                         continue;
                     if (c->result_count >= c->result_cap) {
                         c->result_cap *= 2;
-                        c->results = realloc(c->results,
+                        c->results = zcl_realloc(c->results,
                             (size_t)c->result_cap *
-                            sizeof(struct db_sapling_note));
+                            sizeof(struct db_sapling_note), "sapling decrypt results grow");
                     }
                     struct db_sapling_note *dn =
                         &c->results[c->result_count++];
@@ -694,7 +696,10 @@ int legacy_import(const char *legacy_datadir,
     struct filter_file_ctx *fctxs = NULL;
     struct decrypt_file_ctx *dctxs = NULL;
 
-    if (!legacy_datadir || !ndb || !ndb->open || !w) return -1;
+    if (!legacy_datadir || !ndb || !ndb->open || !w)
+        LOG_ERR("legacy_import", "invalid args: datadir=%p ndb=%p open=%d wallet=%p",
+                (const void *)legacy_datadir, (const void *)ndb,
+                (ndb ? ndb->open : 0), (const void *)w);
 
     struct timespec ts_start, ts_p1, ts_p2, ts_p3;
     clock_gettime(CLOCK_MONOTONIC, &ts_start);
@@ -730,7 +735,7 @@ int legacy_import(const char *legacy_datadir,
     printf("legacy_import: pass 1 — parallel raw byte scan...\n");
     fflush(stdout);
 
-    bool *file_has_match = calloc((size_t)num_files, sizeof(bool));
+    bool *file_has_match = zcl_calloc((size_t)num_files, sizeof(bool), "legacy file match flags");
     int batch = 8;
 
     for (int base = 0; base < num_files; base += batch) {
@@ -912,7 +917,7 @@ pass2_db_done:
                "(%d files, 8 threads)...\n", num_files);
         fflush(stdout);
 
-        fctxs = calloc((size_t)num_files, sizeof(struct filter_file_ctx));
+        fctxs = zcl_calloc((size_t)num_files, sizeof(struct filter_file_ctx), "sapling filter contexts");
         if (!fctxs) {
             fprintf(stderr,
                     "legacy_import: failed to allocate sapling filter contexts\n");
@@ -968,7 +973,7 @@ pass2_db_done:
                total_candidates, w->sapling_keys.num_keys);
         fflush(stdout);
 
-        dctxs = calloc((size_t)num_files, sizeof(struct decrypt_file_ctx));
+        dctxs = zcl_calloc((size_t)num_files, sizeof(struct decrypt_file_ctx), "sapling decrypt contexts");
         if (!dctxs) {
             fprintf(stderr,
                     "legacy_import: failed to allocate sapling decrypt contexts\n");
@@ -982,7 +987,7 @@ pass2_db_done:
             wallet_init(&dctxs[f].tw);
             dctxs[f].tw.sapling_keys = w->sapling_keys;
             dctxs[f].result_cap = 64;
-            dctxs[f].results = malloc(64 * sizeof(struct db_sapling_note));
+            dctxs[f].results = zcl_malloc(64 * sizeof(struct db_sapling_note), "sapling decrypt results");
             if (!dctxs[f].results) {
                 fprintf(stderr,
                         "legacy_import: failed to allocate sapling decrypt results\n");

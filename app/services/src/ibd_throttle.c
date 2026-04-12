@@ -35,6 +35,8 @@
 #include <string.h>
 #include <time.h>
 
+#include "util/log_macros.h"
+
 /* ── Module state ───────────────────────────────────────────── */
 
 struct ibd_throttle_state {
@@ -179,7 +181,7 @@ bool ibd_throttle_start(const struct ibd_throttle_config *cfg)
     pthread_mutex_lock(&g_it.lock);
     if (g_it.running) {
         pthread_mutex_unlock(&g_it.lock);
-        return false;
+        LOG_FAIL("ibd_throttle", "start called but throttle already running");
     }
     g_it.running        = true;
     g_it.blocks_per_sec = resolved.blocks_per_sec;

@@ -54,6 +54,9 @@
 
 #include <sqlite3.h>
 
+#include "util/log_macros.h"
+#include "util/safe_alloc.h"
+
 /* ── Wallet table list ──────────────────────────────────────── */
 
 static const char *const WALLET_TABLES[] = {
@@ -138,7 +141,7 @@ void wallet_backup_status_snapshot(struct wallet_backup_status *out)
  * directory exists on successful return. */
 static bool wbs_ensure_backup_dir(const char *dir)
 {
-    if (!dir || !*dir) return false;
+    if (!dir || !*dir) LOG_FAIL("wallet_backup", "backup dir is NULL or empty");
     struct stat st;
     if (stat(dir, &st) == 0)
         return S_ISDIR(st.st_mode);
@@ -154,9 +157,9 @@ static bool wbs_ensure_backup_dir(const char *dir)
  * Returns NULL for memory databases. */
 static const char *wbs_source_path(sqlite3 *src)
 {
-    if (!src) return NULL;
+    if (!src) LOG_NULL("wallet_backup", "source_path: NULL db handle");
     const char *p = sqlite3_db_filename(src, "main");
-    if (!p || !*p) return NULL;
+    if (!p || !*p) LOG_NULL("wallet_backup", "source_path: db has no file path (in-memory?)");
     return p;
 }
 
@@ -179,7 +182,7 @@ static void wbs_build_backup_path(const char *dir, char *out, size_t cap)
 
 static int64_t wbs_count_rows(sqlite3 *db, const char *table)
 {
-    if (!db || !table) return -1;
+    if (!db || !table) LOG_ERR("wallet_backup", "count_rows: NULL db or table");
     char sql[128];
     snprintf(sql, sizeof(sql), "SELECT count(*) FROM %s", table);
     sqlite3_stmt *st = NULL;
@@ -397,10 +400,10 @@ static bool wbs_aead_encrypt(const uint8_t *plain, size_t plain_len,
     wbs_pad16_len(plain_len,  &pad_ct);
 
     size_t mac_len = aad_len + pad_aad + plain_len + pad_ct + 16;
-    uint8_t *mac_buf = calloc(1, mac_len > 0 ? mac_len : 1);
+    uint8_t *mac_buf = zcl_calloc(1, mac_len > 0 ? mac_len : 1, "aead_encrypt mac_buf");
     if (!mac_buf) {
         memset(poly_block, 0, sizeof(poly_block));
-        return false;
+        LOG_FAIL("wallet_backup", "aead_encrypt: mac_buf alloc failed (%zu bytes)", mac_len);
     }
     size_t pos = 0;
     if (aad_len)    { memcpy(mac_buf + pos, aad, aad_len); pos += aad_len; }
@@ -432,10 +435,10 @@ static bool wbs_aead_decrypt(const uint8_t *ciphertext, size_t plain_len,
     wbs_pad16_len(aad_len,   &pad_aad);
     wbs_pad16_len(plain_len, &pad_ct);
     size_t mac_len = aad_len + pad_aad + plain_len + pad_ct + 16;
-    uint8_t *mac_buf = calloc(1, mac_len > 0 ? mac_len : 1);
+    uint8_t *mac_buf = zcl_calloc(1, mac_len > 0 ? mac_len : 1, "aead_decrypt mac_buf");
     if (!mac_buf) {
         memset(poly_block, 0, sizeof(poly_block));
-        return false;
+        LOG_FAIL("wallet_backup", "aead_decrypt: mac_buf alloc failed (%zu bytes)", mac_len);
     }
     size_t pos = 0;
     if (aad_len)   { memcpy(mac_buf + pos, aad, aad_len); pos += aad_len; }
@@ -456,7 +459,7 @@ static bool wbs_aead_decrypt(const uint8_t *ciphertext, size_t plain_len,
     uint8_t diff = 0;
     for (int i = 0; i < 16; i++) diff |= tag[i] ^ computed[i];
     memset(computed, 0, sizeof(computed));
-    if (diff != 0) return false;
+    if (diff != 0) LOG_FAIL("wallet_backup", "aead_decrypt: tag verification failed");
 
     /* Tag verified — now decrypt. */
     chacha20_encrypt(key, 1, nonce, ciphertext, plain_len, plain_out);
@@ -471,24 +474,25 @@ static bool wbs_read_whole_file(const char *path,
 {
     if (out_buf) *out_buf = NULL;
     if (out_len) *out_len = 0;
-    if (!path || !out_buf || !out_len) return false;
+    if (!path || !out_buf || !out_len)
+        LOG_FAIL("wallet_backup", "read_whole_file: NULL argument");
 
     FILE *f = fopen(path, "rb");
-    if (!f) return false;
-    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return false; }
+    if (!f) LOG_FAIL("wallet_backup", "read_whole_file: fopen failed for %s", path);
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); LOG_FAIL("wallet_backup", "read_whole_file: fseek failed for %s", path); }
     long ls = ftell(f);
-    if (ls < 0) { fclose(f); return false; }
+    if (ls < 0) { fclose(f); LOG_FAIL("wallet_backup", "read_whole_file: ftell failed for %s", path); }
     rewind(f);
 
     size_t n = (size_t)ls;
     uint8_t *buf = NULL;
     if (n > 0) {
-        buf = malloc(n);
-        if (!buf) { fclose(f); return false; }
+        buf = zcl_malloc(n, "wallet_backup read_file");
+        if (!buf) { fclose(f); LOG_FAIL("wallet_backup", "read_whole_file: malloc failed (%zu bytes) for %s", n, path); }
         if (fread(buf, 1, n, f) != n) {
             free(buf);
             fclose(f);
-            return false;
+            LOG_FAIL("wallet_backup", "read_whole_file: short fread for %s (%zu bytes)", path, n);
         }
     }
     fclose(f);
@@ -503,23 +507,25 @@ static bool wbs_read_whole_file(const char *path,
 static bool wbs_write_file_atomic(const char *path,
                                    const uint8_t *buf, size_t len)
 {
-    if (!path || (!buf && len > 0)) return false;
+    if (!path || (!buf && len > 0))
+        LOG_FAIL("wallet_backup", "write_file_atomic: NULL path or buf");
 
     char tmp[1024];
     int n = snprintf(tmp, sizeof(tmp), "%s.tmp", path);
-    if (n < 0 || (size_t)n >= sizeof(tmp)) return false;
+    if (n < 0 || (size_t)n >= sizeof(tmp))
+        LOG_FAIL("wallet_backup", "write_file_atomic: path too long (%s)", path);
 
     FILE *f = fopen(tmp, "wb");
-    if (!f) return false;
+    if (!f) LOG_FAIL("wallet_backup", "write_file_atomic: fopen failed for %s", tmp);
     if (len > 0 && fwrite(buf, 1, len, f) != len) {
-        fclose(f); unlink(tmp); return false;
+        fclose(f); unlink(tmp); LOG_FAIL("wallet_backup", "write_file_atomic: short fwrite for %s (%zu bytes)", tmp, len);
     }
-    if (fflush(f) != 0) { fclose(f); unlink(tmp); return false; }
+    if (fflush(f) != 0) { fclose(f); unlink(tmp); LOG_FAIL("wallet_backup", "write_file_atomic: fflush failed for %s", tmp); }
     int fd = fileno(f);
     if (fd >= 0) (void)fsync(fd);
     fclose(f);
 
-    if (rename(tmp, path) != 0) { unlink(tmp); return false; }
+    if (rename(tmp, path) != 0) { unlink(tmp); LOG_FAIL("wallet_backup", "write_file_atomic: rename %s -> %s failed", tmp, path); }
     return true;
 }
 
@@ -528,12 +534,12 @@ bool wallet_backup_encrypt_file(const char *src_path,
                                  const char *password)
 {
     if (!src_path || !dst_path || !password || !*password)
-        return false;
+        LOG_FAIL("wallet_backup", "encrypt_file: NULL or empty argument");
 
     uint8_t *plain = NULL;
     size_t   plen  = 0;
     if (!wbs_read_whole_file(src_path, &plain, &plen))
-        return false;
+        LOG_FAIL("wallet_backup", "encrypt_file: failed to read %s", src_path);
 
     /* Fresh salt + nonce from the system CSPRNG. */
     uint8_t salt[WALLET_BACKUP_ENC_SALT_LEN];
@@ -568,11 +574,11 @@ bool wallet_backup_encrypt_file(const char *src_path,
 
     /* Allocate the output buffer: header + ciphertext + tag. */
     size_t out_len = sizeof(header) + plen + WALLET_BACKUP_ENC_TAG_LEN;
-    uint8_t *out = malloc(out_len);
+    uint8_t *out = zcl_malloc(out_len, "wallet_backup encrypt_buf");
     if (!out) {
         free(plain);
         memset(key, 0, sizeof(key));
-        return false;
+        LOG_FAIL("wallet_backup", "encrypt_file: malloc failed (%zu bytes) for %s", out_len, src_path);
     }
     memcpy(out, header, sizeof(header));
 
@@ -589,7 +595,7 @@ bool wallet_backup_encrypt_file(const char *src_path,
 
     if (!ok) {
         free(out);
-        return false;
+        LOG_FAIL("wallet_backup", "encrypt_file: AEAD encryption failed for %s", src_path);
     }
 
     bool wrote = wbs_write_file_atomic(dst_path, out, out_len);
@@ -602,20 +608,20 @@ bool wallet_backup_decrypt_file(const char *src_path,
                                  const char *password)
 {
     if (!src_path || !dst_path || !password || !*password)
-        return false;
+        LOG_FAIL("wallet_backup", "decrypt_file: NULL or empty argument");
 
     uint8_t *enc = NULL;
     size_t   elen = 0;
     if (!wbs_read_whole_file(src_path, &enc, &elen))
-        return false;
+        LOG_FAIL("wallet_backup", "decrypt_file: failed to read %s", src_path);
 
     if (elen < (size_t)(WALLET_BACKUP_ENC_HEADER_LEN +
                          WALLET_BACKUP_ENC_TAG_LEN)) {
-        free(enc); return false;
+        free(enc); LOG_FAIL("wallet_backup", "decrypt_file: %s too short (%zu bytes)", src_path, elen);
     }
 
     if (memcmp(enc, WALLET_BACKUP_ENC_MAGIC, 4) != 0) {
-        free(enc); return false;
+        free(enc); LOG_FAIL("wallet_backup", "decrypt_file: bad magic in %s", src_path);
     }
 
     uint32_t ver = (uint32_t)enc[4]       |
@@ -623,14 +629,14 @@ bool wallet_backup_decrypt_file(const char *src_path,
                    ((uint32_t)enc[6] << 16) |
                    ((uint32_t)enc[7] << 24);
     if (ver != WALLET_BACKUP_ENC_VERSION) {
-        free(enc); return false;
+        free(enc); LOG_FAIL("wallet_backup", "decrypt_file: unsupported version %u in %s", ver, src_path);
     }
     uint32_t its = (uint32_t)enc[8]       |
                    ((uint32_t)enc[9]  <<  8) |
                    ((uint32_t)enc[10] << 16) |
                    ((uint32_t)enc[11] << 24);
     if (its == 0 || its > (1u << 24)) { /* sanity cap */
-        free(enc); return false;
+        free(enc); LOG_FAIL("wallet_backup", "decrypt_file: bad iteration count %u in %s", its, src_path);
     }
 
     const uint8_t *salt  = enc + 16;
@@ -646,11 +652,11 @@ bool wallet_backup_decrypt_file(const char *src_path,
 
     uint8_t *plain = NULL;
     if (plain_len > 0) {
-        plain = malloc(plain_len);
+        plain = zcl_malloc(plain_len, "wallet_backup decrypt_buf");
         if (!plain) {
             free(enc);
             memset(key, 0, sizeof(key));
-            return false;
+            LOG_FAIL("wallet_backup", "decrypt_file: malloc failed (%zu bytes) for %s", plain_len, src_path);
         }
     }
 
@@ -665,7 +671,7 @@ bool wallet_backup_decrypt_file(const char *src_path,
     if (!ok) {
         if (plain) memset(plain, 0, plain_len);
         free(plain);
-        return false;
+        LOG_FAIL("wallet_backup", "decrypt_file: AEAD decryption failed for %s", src_path);
     }
 
     bool wrote = wbs_write_file_atomic(dst_path, plain, plain_len);
@@ -788,7 +794,8 @@ bool wallet_backup_now(void)
     pthread_mutex_lock(&g_wbs.lock);
     if (!g_wbs.db || !g_wbs.cfg.backup_dir) {
         pthread_mutex_unlock(&g_wbs.lock);
-        return false;
+        LOG_FAIL("wallet_backup", "backup_now: service not initialized (db=%p dir=%s)",
+                 (void *)g_wbs.db, g_wbs.cfg.backup_dir ? g_wbs.cfg.backup_dir : "NULL");
     }
     bool ok = wbs_run_one_locked();
     pthread_mutex_unlock(&g_wbs.lock);
@@ -848,7 +855,8 @@ static void *wbs_thread_fn(void *arg)
 bool wallet_backup_start(const struct wallet_backup_config *cfg,
                           struct node_db *db)
 {
-    if (!cfg || !db || !cfg->backup_dir) return false;
+    if (!cfg || !db || !cfg->backup_dir)
+        LOG_FAIL("wallet_backup", "start: NULL config, db, or backup_dir");
 
     pthread_mutex_lock(&g_wbs.lock);
     if (g_wbs.thread_running) {
@@ -877,7 +885,7 @@ bool wallet_backup_start(const struct wallet_backup_config *cfg,
 
     if (!wbs_ensure_backup_dir(cfg->backup_dir)) {
         pthread_mutex_unlock(&g_wbs.lock);
-        return false;
+        LOG_FAIL("wallet_backup", "start: cannot create backup dir %s", cfg->backup_dir);
     }
 
     g_wbs.cfg = *cfg;

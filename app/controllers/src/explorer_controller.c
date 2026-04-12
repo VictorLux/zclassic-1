@@ -42,6 +42,8 @@
 #include <sys/stat.h>
 #include <pthread.h>
 #include <math.h>
+#include "util/log_macros.h"
+#include "util/safe_alloc.h"
 
 #include "controllers/explorer_internal.h"
 #include "util/template.h"
@@ -168,9 +170,9 @@ static bool explorer_start_detached_thread(pthread_t *thread_out,
     bool ok = false;
 
     if (!thread_out || !entry)
-        return false;
+        LOG_FAIL("explorer", "explorer_start_detached_thread: NULL thread_out or entry");
     if (pthread_attr_init(&attr) != 0)
-        return false;
+        LOG_FAIL("explorer", "explorer_start_detached_thread: pthread_attr_init failed");
     if (pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED) != 0)
         goto cleanup;
     if (stack_size > 0 && pthread_attr_setstacksize(&attr, stack_size) != 0)
@@ -192,7 +194,7 @@ static bool explorer_start_once(_Atomic int *flag,
     pthread_t t;
 
     if (!flag || !entry)
-        return false;
+        LOG_FAIL("explorer", "explorer_start_once: NULL flag or entry for %s", name ? name : "unknown");
     if (!atomic_compare_exchange_strong(flag, &expected, 1))
         return expected == 1;
     if (!explorer_start_detached_thread(&t, entry, NULL, 2 * 1024 * 1024)) {
@@ -259,7 +261,7 @@ static int rpc_call(const char *method, const char *params_json,
                      char *out, size_t outmax)
 {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) return -1;
+    if (fd < 0) LOG_ERR("explorer", "rpc_call(%s): socket() failed", method);
 
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
@@ -273,7 +275,7 @@ static int rpc_call(const char *method, const char *params_json,
 
     if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         close(fd);
-        return -1;
+        LOG_ERR("explorer", "rpc_call(%s): connect to port %d failed", method, explorer_rpc()->proxy_port);
     }
 
     char body[4096];
@@ -310,7 +312,7 @@ static int rpc_call(const char *method, const char *params_json,
         "Connection: close\r\n\r\n%s",
         auth_b64, blen, body);
 
-    if (write(fd, req, (size_t)rlen) != rlen) { close(fd); return -1; }
+    if (write(fd, req, (size_t)rlen) != rlen) { close(fd); LOG_ERR("explorer", "rpc_call(%s): write failed", method); }
 
     /* Read response */
     size_t total = 0;
@@ -382,7 +384,7 @@ static int native_chain_height(void)
         }
         return h;
     }
-    return -1;
+    LOG_ERR("explorer", "native_chain_height: no main_state or node_db available");
 }
 
 static bool use_rpc_proxy(void)
@@ -457,7 +459,7 @@ static bool addr_encode(char *out, size_t outmax,
                          const struct tx_destination *dest)
 {
     const struct chain_params *cp = chain_params_get();
-    if (!cp) return false;
+    if (!cp) LOG_FAIL("explorer", "addr_encode: chain_params_get returned NULL");
     size_t pk_len = 0, sh_len = 0;
     const unsigned char *pk_pfx = chain_params_base58_prefix(cp, B58_PUBKEY_ADDRESS, &pk_len);
     const unsigned char *sh_pfx = chain_params_base58_prefix(cp, B58_SCRIPT_ADDRESS, &sh_len);
@@ -467,7 +469,7 @@ static bool addr_encode(char *out, size_t outmax,
 static bool addr_decode(const char *str, struct tx_destination *dest)
 {
     const struct chain_params *cp = chain_params_get();
-    if (!cp) return false;
+    if (!cp) LOG_FAIL("explorer", "addr_decode: chain_params_get returned NULL");
     size_t pk_len = 0, sh_len = 0;
     const unsigned char *pk_pfx = chain_params_base58_prefix(cp, B58_PUBKEY_ADDRESS, &pk_len);
     const unsigned char *sh_pfx = chain_params_base58_prefix(cp, B58_SCRIPT_ADDRESS, &sh_len);
@@ -1841,8 +1843,8 @@ static void *stats_compute_thread(void *arg)
     printf("Stats background: computing comprehensive stats...\n");
     fflush(stdout);
     /* Compute fresh into a temp buffer so we don't blank the disk-loaded cache */
-    char *tmp = malloc(STATS_CACHE_SIZE);
-    if (!tmp) { g_stats_computing = 0; return NULL; }
+    char *tmp = zcl_malloc(STATS_CACHE_SIZE, "stats_cache_tmp");
+    if (!tmp) { g_stats_computing = 0; LOG_NULL("explorer", "stats_compute_thread: malloc(%d) failed", STATS_CACHE_SIZE); }
     size_t len = explorer_stats_build((uint8_t *)tmp, STATS_CACHE_SIZE, ctx->datadir);
     if (len > 0) {
         memcpy(g_stats_cache, tmp, len);
@@ -1964,12 +1966,12 @@ static void *tokens_compute_thread(void *arg)
     sqlite3 *db = NULL;
     if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
         g_tokens_computing = 0;
-        return NULL;
+        LOG_NULL("explorer", "tokens_compute_thread: failed to open db %s", db_path);
     }
     sqlite3_exec(db, "PRAGMA mmap_size=268435456", NULL, NULL, NULL);
 
-    uint8_t *r = malloc(131072);
-    if (!r) { sqlite3_close(db); g_tokens_computing = 0; return NULL; }
+    uint8_t *r = zcl_malloc(131072, "tokens_html_buf");
+    if (!r) { sqlite3_close(db); g_tokens_computing = 0; LOG_NULL("explorer", "tokens_compute_thread: malloc(131072) failed"); }
     size_t max = 131072;
     size_t off = 0;
 
@@ -2434,9 +2436,9 @@ static void *hodl_compute_thread(void *arg)
     sqlite3_exec(db, "PRAGMA mmap_size=268435456", NULL, NULL, NULL);
 
     size_t off = 0;
-    uint8_t *r = (uint8_t *)malloc(65536);
+    uint8_t *r = (uint8_t *)zcl_malloc(65536, "hodl_html_buf");
     size_t max = 65536;
-    if (!r) { sqlite3_close(db); g_hodl_computing = 0; return NULL; }
+    if (!r) { sqlite3_close(db); g_hodl_computing = 0; LOG_NULL("explorer", "hodl_compute_thread: malloc(65536) failed"); }
     char buf[65536];
 
     /* Get current tip from SQLite (our indexed data) */

@@ -32,6 +32,9 @@
 #include <stdatomic.h>
 #include <sqlite3.h>
 
+#include "util/log_macros.h"
+#include "util/safe_alloc.h"
+
 /* ── Policy-gated UTXO wipe ──────────────────────────────────────
  *
  * Every destructive UTXO wipe must go through this function.
@@ -223,8 +226,8 @@ struct utxo_import_result utxo_recovery_import_ldb(
             } else if (ldb_height > 0) {
                 /* LDB best block NOT in our index — create placeholder
                  * anchor (same pattern as snapsync). */
-                struct block_index *anchor = calloc(1,
-                    sizeof(struct block_index));
+                struct block_index *anchor = zcl_calloc(1,
+                    sizeof(struct block_index), "utxo_recovery ldb anchor");
                 if (anchor) {
                     block_index_init(anchor);
                     anchor->nHeight = ldb_height;
@@ -419,7 +422,7 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
     }
 
     if (utxo_max_height > 0) {
-        struct block_index *anchor = calloc(1, sizeof(struct block_index));
+        struct block_index *anchor = zcl_calloc(1, sizeof(struct block_index), "utxo_recovery anchor");
         if (anchor) {
             block_index_init(anchor);
             anchor->nHeight = utxo_max_height;
@@ -744,7 +747,7 @@ extern const char *g_datadir;
 static bool backfill_shielded_write(struct node_db *ndb, void *ctx_ptr)
 {
     struct shielded_backfill_ctx *bctx = ctx_ptr;
-    if (!ndb || !ndb->open) return false;
+    if (!ndb || !ndb->open) LOG_FAIL("utxo_recovery", "backfill_shielded called with null or closed db");
 
     sqlite3_stmt *stmt = NULL;
     const char *sql =

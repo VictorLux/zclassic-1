@@ -212,7 +212,7 @@ static inline void ar_errors_full_messages(const struct ar_errors *e,
 
 /* Safe malloc with NULL check — returns false from enclosing function. */
 #define AR_MALLOC_OR_FAIL(ptr, size) do { \
-    (ptr) = malloc(size); \
+    (ptr) = malloc(size); /* raw-alloc-ok: AR framework macro */ \
     if (!(ptr)) return false; \
 } while (0)
 

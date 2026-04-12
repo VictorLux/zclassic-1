@@ -16,6 +16,8 @@
 #include <sys/time.h>
 #include <time.h>
 
+#include "util/safe_alloc.h"
+
 /* ── Canonical destructive tool list ─────────────────────────── *
  *
  * Any tool that changes wallet, network, or chain state goes here.  Kept
@@ -292,7 +294,7 @@ static char *make_envelope(enum mcp_error_code code, const char *tool,
     if (n == 0) {
         return strdup("{\"error\":{\"code\":\"INTERNAL\",\"message\":\"envelope build failed\"}}");
     }
-    char *out = malloc(n + 1);
+    char *out = zcl_malloc(n + 1, "mcp middleware error envelope");
     if (!out) return NULL;
     memcpy(out, tmp, n);
     out[n] = 0;

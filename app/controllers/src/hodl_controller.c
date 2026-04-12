@@ -23,6 +23,8 @@
 #include <time.h>
 #include <inttypes.h>
 #include <sqlite3.h>
+#include "util/log_macros.h"
+#include "util/safe_alloc.h"
 
 struct hodl_context {
     struct main_state *main_state;
@@ -41,9 +43,9 @@ static struct hodl_context *hodl_ctx(void)
 static struct coins_view_db *hodl_coins_db(struct hodl_context *ctx)
 {
     if (!ctx || !ctx->coins_tip)
-        return NULL;
+        LOG_NULL("hodl", "hodl_coins_db: ctx or coins_tip is NULL");
     if (ctx->coins_tip->base.impl == NULL)
-        return NULL;
+        LOG_NULL("hodl", "hodl_coins_db: coins_view base impl is NULL");
     return (struct coins_view_db *)ctx->coins_tip->base.impl;
 }
 
@@ -339,7 +341,7 @@ static bool rpc_gethodlwaveimage(const struct json_value *params, bool help,
     const double LOG_MAX = 13.0;
 
     /* Allocate grid: grid[row][col] = count of UTXOs */
-    int64_t *grid = calloc((size_t)(HEATMAP_H * IMG_W), sizeof(int64_t));
+    int64_t *grid = zcl_calloc((size_t)(HEATMAP_H * IMG_W), sizeof(int64_t), "heatmap_grid");
     if (!grid) {
         json_set_str(result, "Out of memory");
         return false;
@@ -441,7 +443,7 @@ static bool rpc_gethodlwaveimage(const struct json_value *params, bool help,
         if (grid[i] > grid_max) grid_max = grid[i];
 
     /* Allocate pixel buffer */
-    uint8_t *pixels = calloc((size_t)(IMG_W * IMG_H * 3), 1);
+    uint8_t *pixels = zcl_calloc((size_t)(IMG_W * IMG_H * 3), 1, "heatmap_pixels");
     if (!pixels) {
         free(grid);
         json_set_str(result, "Out of memory for image");
@@ -660,8 +662,8 @@ static bool rpc_gethodlwavetimeline(const struct json_value *params, bool help,
     if (num_periods > 10000) num_periods = 10000;
 
     /* Allocate per-period accumulators */
-    int64_t *period_value = calloc((size_t)num_periods, sizeof(int64_t));
-    int64_t *period_count = calloc((size_t)num_periods, sizeof(int64_t));
+    int64_t *period_value = zcl_calloc((size_t)num_periods, sizeof(int64_t), "period_value");
+    int64_t *period_count = zcl_calloc((size_t)num_periods, sizeof(int64_t), "period_count");
     if (!period_value || !period_count) {
         free(period_value); free(period_count);
         json_set_str(result, "Out of memory");
@@ -737,7 +739,7 @@ static bool rpc_gethodlwavetimeline(const struct json_value *params, bool help,
     /* ── Generate PPM chart ─────────────────────────────────── */
     const int IMG_W = 1920;
     const int IMG_H = 600;
-    uint8_t *img = calloc((size_t)(IMG_W * IMG_H * 3), 1);
+    uint8_t *img = zcl_calloc((size_t)(IMG_W * IMG_H * 3), 1, "chart_pixels");
     if (!img) {
         free(period_value); free(period_count);
         json_set_str(result, "Out of memory for image");
@@ -941,8 +943,8 @@ static bool rpc_gethodlwavechart(const struct json_value *params, bool help,
 
     /* ── Step 1: Scan UTXO set into arrays ──────────────────── */
     size_t cap = 2000000;
-    int64_t *utxo_ts = malloc(cap * sizeof(int64_t));
-    int64_t *utxo_val = malloc(cap * sizeof(int64_t));
+    int64_t *utxo_ts = zcl_malloc(cap * sizeof(int64_t), "hodl_utxo_ts");
+    int64_t *utxo_val = zcl_malloc(cap * sizeof(int64_t), "hodl_utxo_val");
     if (!utxo_ts || !utxo_val) {
         free(utxo_ts); free(utxo_val);
         json_set_str(result, "Out of memory");
@@ -980,7 +982,7 @@ static bool rpc_gethodlwavechart(const struct json_value *params, bool help,
             if (!tx_out_is_null(&c.vout[i]) && c.vout[i].value > 0) {
                 if (num_utxos >= cap) {
                     size_t new_cap = cap * 2;
-                    int64_t *new_ts = realloc(utxo_ts, new_cap * sizeof(int64_t));
+                    int64_t *new_ts = zcl_realloc(utxo_ts, new_cap * sizeof(int64_t), "hodl_utxo_ts");
                     if (!new_ts) {
                         free(utxo_ts); free(utxo_val);
                         coins_free(&c); db_iter_free(&it);
@@ -988,7 +990,7 @@ static bool rpc_gethodlwavechart(const struct json_value *params, bool help,
                         return false;
                     }
                     utxo_ts = new_ts;
-                    int64_t *new_val = realloc(utxo_val, new_cap * sizeof(int64_t));
+                    int64_t *new_val = zcl_realloc(utxo_val, new_cap * sizeof(int64_t), "hodl_utxo_val");
                     if (!new_val) {
                         free(utxo_ts); free(utxo_val);
                         coins_free(&c); db_iter_free(&it);
@@ -1045,7 +1047,7 @@ static bool rpc_gethodlwavechart(const struct json_value *params, bool help,
     };
 
     /* grid[month][bucket] = total satoshi value */
-    int64_t *grid = calloc((size_t)(num_months * NBUCKETS), sizeof(int64_t));
+    int64_t *grid = zcl_calloc((size_t)(num_months * NBUCKETS), sizeof(int64_t), "hodl_wave_grid");
     if (!grid) {
         free(utxo_ts); free(utxo_val);
         json_set_str(result, "Out of memory");
@@ -1053,7 +1055,7 @@ static bool rpc_gethodlwavechart(const struct json_value *params, bool help,
     }
 
     /* For each month, compute the timestamp at the 1st of that month */
-    int64_t *month_ts = malloc((size_t)num_months * sizeof(int64_t));
+    int64_t *month_ts = zcl_malloc((size_t)num_months * sizeof(int64_t), "hodl_month_ts");
     if (!month_ts) {
         free(grid); free(utxo_ts); free(utxo_val);
         json_set_str(result, "Out of memory");
@@ -1115,7 +1117,7 @@ static bool rpc_gethodlwavechart(const struct json_value *params, bool help,
     const int PLOT_W = IMG_W - MARGIN_L - MARGIN_R;
     const int PLOT_H = IMG_H - MARGIN_T - MARGIN_B;
 
-    uint8_t *img = calloc((size_t)(IMG_W * IMG_H * 3), 1);
+    uint8_t *img = zcl_calloc((size_t)(IMG_W * IMG_H * 3), 1, "hodl_wave_img");
     if (!img) {
         free(grid); free(month_ts);
         json_set_str(result, "Out of memory");

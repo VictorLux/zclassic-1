@@ -34,6 +34,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include "util/log_macros.h"
+#include "util/safe_alloc.h"
 
 struct rawtx_context {
     struct main_state *main_state;
@@ -189,10 +191,10 @@ static bool rpc_getrawtransaction(const struct json_value *params, bool help,
     }
 
     if (verbose == 0) {
-        char *hex = malloc(2 * 1024 * 1024);
+        char *hex = zcl_malloc(2 * 1024 * 1024, "tx_hex_buf");
         if (!hex) {
             transaction_free(&tx);
-            return false;
+            LOG_FAIL("tx", "getrawtransaction: malloc failed for hex buffer");
         }
         size_t hex_len = encode_hex_tx(&tx, hex, 2 * 1024 * 1024);
         hex[hex_len] = '\0';
@@ -381,8 +383,8 @@ static bool rpc_createrawtransaction(const struct json_value *params, bool help,
         if (seq_v) vin.sequence = (uint32_t)json_get_int(seq_v);
 
         size_t new_count = tx.num_vin + 1;
-        struct tx_in *new_vin = realloc(tx.vin, new_count * sizeof(struct tx_in));
-        if (!new_vin) { transaction_free(&tx); return false; }
+        struct tx_in *new_vin = zcl_realloc(tx.vin, new_count * sizeof(struct tx_in), "tx_vin");
+        if (!new_vin) { transaction_free(&tx); LOG_FAIL("tx", "createrawtransaction: realloc vin failed at input %zu", i); }
         tx.vin = new_vin;
         tx.vin[tx.num_vin] = vin;
         tx.num_vin = new_count;
@@ -428,16 +430,16 @@ static bool rpc_createrawtransaction(const struct json_value *params, bool help,
         }
 
         size_t new_count = tx.num_vout + 1;
-        struct tx_out *new_vout = realloc(tx.vout,
-                                          new_count * sizeof(struct tx_out));
-        if (!new_vout) { transaction_free(&tx); return false; }
+        struct tx_out *new_vout = zcl_realloc(tx.vout,
+                                          new_count * sizeof(struct tx_out), "tx_vout");
+        if (!new_vout) { transaction_free(&tx); LOG_FAIL("tx", "createrawtransaction: realloc vout failed at output %zu", i); }
         tx.vout = new_vout;
         tx.vout[tx.num_vout] = vout;
         tx.num_vout = new_count;
     }
 
-    char *hex = malloc(2 * 1024 * 1024);
-    if (!hex) { transaction_free(&tx); return false; }
+    char *hex = zcl_malloc(2 * 1024 * 1024, "tx_hex_buf");
+    if (!hex) { transaction_free(&tx); LOG_FAIL("tx", "createrawtransaction: malloc failed for hex buffer"); }
     size_t hex_len = encode_hex_tx(&tx, hex, 2 * 1024 * 1024);
     hex[hex_len] = '\0';
     json_set_str(result, hex);
@@ -462,18 +464,18 @@ static bool sign_one_input(struct transaction *tx, unsigned int idx,
 
     if (!script_solver(script_pub_key, &type, solutions, solution_sizes,
                        &num_solutions))
-        return false;
+        LOG_FAIL("tx", "sign_one_input: script_solver failed for input %u", idx);
 
     if (type == TX_SCRIPTHASH) {
         struct uint160 script_hash;
         memcpy(script_hash.data, solutions[0], 20);
         if (!keystore_get_cscript(ks, &script_hash, &redeem))
-            return false;
+            LOG_FAIL("tx", "sign_one_input: P2SH redeem script not found for input %u", idx);
         is_p2sh = true;
         signing_script = &redeem;
         if (!script_solver(&redeem, &type, solutions, solution_sizes,
                            &num_solutions))
-            return false;
+            LOG_FAIL("tx", "sign_one_input: script_solver failed on redeem script for input %u", idx);
     }
 
     struct sighash_type ht;
@@ -484,7 +486,7 @@ static bool sign_one_input(struct transaction *tx, unsigned int idx,
     struct uint256 sighash;
     if (!signature_hash(signing_script, tx, idx, ht, amount,
                         branch_id, &txdata, &sighash))
-        return false;
+        LOG_FAIL("tx", "sign_one_input: signature_hash failed for input %u", idx);
 
     struct script *ss = &tx->vin[idx].script_sig;
     ss->size = 0;
@@ -494,7 +496,7 @@ static bool sign_one_input(struct transaction *tx, unsigned int idx,
         memcpy(kid.id.data, solutions[0], 20);
         struct privkey skey;
         if (!keystore_get_key(ks, &kid, &skey))
-            return false;
+            LOG_FAIL("tx", "sign_one_input: private key not found for P2PKH input %u", idx);
         struct pubkey spk;
         privkey_get_pubkey(&skey, &spk);
 
@@ -502,7 +504,7 @@ static bool sign_one_input(struct transaction *tx, unsigned int idx,
         size_t siglen = 0;
         if (!privkey_sign(&skey, &sighash, sig, &siglen)) {
             memory_cleanse(skey.vch, 32);
-            return false;
+            LOG_FAIL("tx", "sign_one_input: privkey_sign failed for P2PKH input %u", idx);
         }
         memory_cleanse(skey.vch, 32);
         sig[siglen++] = 0x01; /* SIGHASH_ALL */
@@ -544,20 +546,20 @@ static bool sign_one_input(struct transaction *tx, unsigned int idx,
         }
 
         if (sigs_added < n_required)
-            return false;
+            LOG_FAIL("tx", "sign_one_input: multisig needs %d sigs but only got %d for input %u", n_required, sigs_added, idx);
     } else if (type == TX_PUBKEY) {
         struct pubkey pk;
         pubkey_set(&pk, solutions[0], solution_sizes[0]);
         struct key_id kid = pubkey_get_id(&pk);
         struct privkey skey;
         if (!keystore_get_key(ks, &kid, &skey))
-            return false;
+            LOG_FAIL("tx", "sign_one_input: private key not found for P2PK input %u", idx);
 
         unsigned char sig[SIGNATURE_SIZE + 1];
         size_t siglen = 0;
         if (!privkey_sign(&skey, &sighash, sig, &siglen)) {
             memory_cleanse(skey.vch, 32);
-            return false;
+            LOG_FAIL("tx", "sign_one_input: privkey_sign failed for P2PK input %u", idx);
         }
         memory_cleanse(skey.vch, 32);
         sig[siglen++] = 0x01;
@@ -566,7 +568,7 @@ static bool sign_one_input(struct transaction *tx, unsigned int idx,
         memcpy(&ss->data[ss->size], sig, siglen);
         ss->size += siglen;
     } else {
-        return false;
+        LOG_FAIL("tx", "sign_one_input: unsupported script type %d for input %u", (int)type, idx);
     }
 
     if (is_p2sh) {
@@ -793,7 +795,7 @@ static bool rpc_signrawtransaction(const struct json_value *params, bool help,
     transaction_compute_hash(&tx);
 
     json_set_object(result);
-    char *hex = malloc(2 * 1024 * 1024);
+    char *hex = zcl_malloc(2 * 1024 * 1024, "tx_hex_buf");
     if (hex) {
         size_t hex_len = encode_hex_tx(&tx, hex, 2 * 1024 * 1024);
         hex[hex_len] = '\0';

@@ -31,6 +31,8 @@
 #include "coins/coins_view.h"
 #include "core/serialize.h"
 #include "encoding/base58.h"
+#include "util/log_macros.h"
+#include "util/safe_alloc.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -82,7 +84,7 @@ static bool rpc_getnewaddress(const struct json_value *params, bool help,
     char addr[128];
     if (!wallet_get_new_address(ctx->wallet, addr, sizeof(addr))) {
         json_set_str(result, "Error: keypool ran out");
-        return false;
+        LOG_FAIL("wallet", "getnewaddress: keypool ran out");
     }
 
     /* Persist new key to wallet DB */
@@ -173,7 +175,7 @@ static bool rpc_listunspent(const struct json_value *params, bool help,
     rpc_params_expect(&p, 0, 2);
     int min_conf = (int)rpc_permit_int(&p, 0, "minconf", 1);
     int max_conf = (int)rpc_permit_int(&p, 1, "maxconf", 9999999);
-    if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); return false; }
+    if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); LOG_FAIL("wallet", "listunspent: invalid params"); }
 
     ENSURE_WALLET(result);
 
@@ -304,13 +306,13 @@ static bool rpc_sendtoaddress(const struct json_value *params, bool help,
     rpc_params_expect(&p, 2, 2);
     const char *addr_str = rpc_require_str(&p, 0, "address");
     int64_t amount = rpc_require_amount(&p, 1, "amount");
-    if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); return false; }
+    if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); LOG_FAIL("wallet", "sendtoaddress: invalid params"); }
 
     ENSURE_WALLET(result);
 
     if (amount <= 0) {
         json_set_str(result, "Invalid amount");
-        return false;
+        LOG_FAIL("wallet", "sendtoaddress: invalid amount %lld", (long long)amount);
     }
 
     const struct chain_params *cp = chain_params_get();
@@ -324,7 +326,7 @@ static bool rpc_sendtoaddress(const struct json_value *params, bool help,
     if (!decode_destination(addr_str, pk_pfx, pk_pfx_len,
                             sc_pfx, sc_pfx_len, &dest)) {
         json_set_str(result, "Invalid address");
-        return false;
+        LOG_FAIL("wallet", "sendtoaddress: invalid address %s", addr_str);
     }
 
     struct wallet_tx wtx;
@@ -333,13 +335,13 @@ static bool rpc_sendtoaddress(const struct json_value *params, bool help,
     if (!wallet_create_transaction(ctx->wallet, &dest, amount,
                                     &wtx, &fee, &error)) {
         json_set_str(result, error ? error : "Transaction creation failed");
-        return false;
+        LOG_FAIL("wallet", "sendtoaddress: create tx failed: %s", error ? error : "unknown");
     }
 
     if (!wallet_commit_transaction(ctx->wallet, &wtx, ctx->mempool)) {
         json_set_str(result, "Error committing transaction");
         transaction_free(&wtx.tx);
-        return false;
+        LOG_FAIL("wallet", "sendtoaddress: commit transaction failed");
     }
 
     if (wallet_ctx_db_ready(ctx))
@@ -369,11 +371,11 @@ bool wallet_direct_sendtoaddress(const char *address, int64_t amount_sat,
     (void)txid_out_size; /* always 65 bytes for hex txid */
     if (!ctx->wallet) {
         snprintf(error_out, error_out_size, "Wallet not loaded");
-        return false;
+        LOG_FAIL("wallet", "direct_sendtoaddress: wallet not loaded");
     }
     if (amount_sat <= 0) {
         snprintf(error_out, error_out_size, "Invalid amount");
-        return false;
+        LOG_FAIL("wallet", "direct_sendtoaddress: invalid amount %lld", (long long)amount_sat);
     }
 
     const struct chain_params *cp = chain_params_get();
@@ -384,7 +386,7 @@ bool wallet_direct_sendtoaddress(const char *address, int64_t amount_sat,
     struct tx_destination dest;
     if (!decode_destination(address, pk, pk_len, sc, sc_len, &dest)) {
         snprintf(error_out, error_out_size, "Invalid address");
-        return false;
+        LOG_FAIL("wallet", "direct_sendtoaddress: invalid address %s", address);
     }
 
     struct wallet_tx wtx;
@@ -392,13 +394,13 @@ bool wallet_direct_sendtoaddress(const char *address, int64_t amount_sat,
     const char *err = NULL;
     if (!wallet_create_transaction(ctx->wallet, &dest, amount_sat, &wtx, &fee, &err)) {
         snprintf(error_out, error_out_size, "%s", err ? err : "Transaction creation failed");
-        return false;
+        LOG_FAIL("wallet", "direct_sendtoaddress: create tx failed: %s", err ? err : "unknown");
     }
 
     if (!wallet_commit_transaction(ctx->wallet, &wtx, ctx->mempool)) {
         snprintf(error_out, error_out_size, "Error committing transaction");
         transaction_free(&wtx.tx);
-        return false;
+        LOG_FAIL("wallet", "direct_sendtoaddress: commit transaction failed");
     }
 
     if (wallet_ctx_db_ready(ctx))
@@ -427,7 +429,7 @@ static bool shield_json_extract(const char *json, const char *key,
     char pattern[128];
     snprintf(pattern, sizeof(pattern), "\"%s\"", key);
     const char *p = strstr(json, pattern);
-    if (!p) return false;
+    if (!p) LOG_FAIL("wallet", "shield_json_extract: key '%s' not found", key);
     p += strlen(pattern);
     while (*p == ' ' || *p == ':') p++;
     if (*p == '"') {
@@ -456,7 +458,7 @@ bool wallet_direct_shield(const char *z_address, int64_t amount_sat,
     struct wallet_rpc_context *ctx = wallet_ctx();
     if (!z_address || z_address[0] != 'z') {
         snprintf(error_out, error_out_size, "Invalid z-address");
-        return false;
+        LOG_FAIL("wallet", "direct_shield: invalid z-address");
     }
 
     /* Get the wallet's transparent address.
@@ -514,7 +516,7 @@ bool wallet_direct_shield(const char *z_address, int64_t amount_sat,
     if (!t_addr[0]) {
         snprintf(error_out, error_out_size,
             "No transparent address found in wallet");
-        return false;
+        LOG_FAIL("wallet", "direct_shield: no transparent address found");
     }
 
     /* Build z_sendmany params:
@@ -532,7 +534,7 @@ bool wallet_direct_shield(const char *z_address, int64_t amount_sat,
         snprintf(error_out, error_out_size,
             "Could not connect to zclassicd (port 8232). "
             "Start it with: zclassicd -daemon");
-        return false;
+        LOG_FAIL("wallet", "direct_shield: z_sendmany RPC call failed (rc=%d)", rc);
     }
 
     /* Check for error in response */
@@ -551,7 +553,7 @@ bool wallet_direct_shield(const char *z_address, int64_t amount_sat,
             snprintf(error_out, error_out_size,
                 "zclassicd returned an error");
         }
-        return false;
+        LOG_FAIL("wallet", "direct_shield: z_sendmany returned error");
     }
 
     /* Success — result contains the opid */
@@ -585,7 +587,7 @@ static bool rpc_dumpprivkey(const struct json_value *params, bool help,
     rpc_params_init(&p, params);
     rpc_params_expect(&p, 1, 1);
     const char *addr_str = rpc_require_str(&p, 0, "address");
-    if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); return false; }
+    if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); LOG_FAIL("wallet", "dumpprivkey: invalid params"); }
 
     ENSURE_WALLET(result);
 
@@ -600,18 +602,18 @@ static bool rpc_dumpprivkey(const struct json_value *params, bool help,
     if (!decode_destination(addr_str, pk_pfx, pk_pfx_len,
                             sc_pfx, sc_pfx_len, &dest)) {
         json_set_str(result, "Invalid address");
-        return false;
+        LOG_FAIL("wallet", "dumpprivkey: invalid address %s", addr_str);
     }
 
     if (dest.type != DEST_KEY_ID) {
         json_set_str(result, "Address does not refer to a key");
-        return false;
+        LOG_FAIL("wallet", "dumpprivkey: address %s is not a key (type=%d)", addr_str, dest.type);
     }
 
     struct privkey key;
     if (!wallet_dump_key(ctx->wallet, &dest.id.key, &key)) {
         json_set_str(result, "Private key for address is not known");
-        return false;
+        LOG_FAIL("wallet", "dumpprivkey: private key not found for %s", addr_str);
     }
 
     size_t sec_pfx_len;
@@ -624,7 +626,7 @@ static bool rpc_dumpprivkey(const struct json_value *params, bool help,
 
     if (!ok) {
         json_set_str(result, "Encoding failed");
-        return false;
+        LOG_FAIL("wallet", "dumpprivkey: WIF encoding failed for %s", addr_str);
     }
 
     json_set_str(result, wif);
@@ -645,7 +647,7 @@ static bool rpc_importprivkey(const struct json_value *params, bool help,
     rpc_params_init(&p, params);
     rpc_params_expect(&p, 1, 2);
     const char *wif = rpc_require_str(&p, 0, "privkey");
-    if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); return false; }
+    if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); LOG_FAIL("wallet", "importprivkey: invalid params"); }
 
     ENSURE_WALLET(result);
 
@@ -657,13 +659,13 @@ static bool rpc_importprivkey(const struct json_value *params, bool help,
     struct privkey key;
     if (!decode_secret(wif, sec_pfx, sec_pfx_len, &key)) {
         json_set_str(result, "Invalid private key encoding");
-        return false;
+        LOG_FAIL("wallet", "importprivkey: invalid WIF encoding");
     }
 
     if (!wallet_import_key(ctx->wallet, &key)) {
         memory_cleanse(key.vch, 32);
         json_set_str(result, "Error adding key to wallet");
-        return false;
+        LOG_FAIL("wallet", "importprivkey: failed to add key to wallet");
     }
 
     if (ctx->wallet->time_first_key == 0)
@@ -674,7 +676,7 @@ static bool rpc_importprivkey(const struct json_value *params, bool help,
     if (!privkey_get_pubkey(&key, &pk)) {
         memory_cleanse(key.vch, 32);
         json_set_str(result, "Failed to derive public key");
-        return false;
+        LOG_FAIL("wallet", "importprivkey: failed to derive pubkey from privkey");
     }
     if (ctx->wallet_db)
         wallet_sqlite_write_key(ctx->wallet_db, &pk, &key);
@@ -734,7 +736,7 @@ static bool rpc_importaddress(const struct json_value *params, bool help,
     rpc_params_init(&p, params);
     rpc_params_expect(&p, 1, 1);
     const char *addr_str = rpc_require_str(&p, 0, "address");
-    if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); return false; }
+    if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); LOG_FAIL("wallet", "importaddress: invalid params"); }
 
     ENSURE_WALLET(result);
 
@@ -749,18 +751,18 @@ static bool rpc_importaddress(const struct json_value *params, bool help,
     if (!decode_destination(addr_str, pk_pfx, pk_pfx_len,
                             sc_pfx, sc_pfx_len, &dest)) {
         json_set_str(result, "Invalid address");
-        return false;
+        LOG_FAIL("wallet", "importaddress: invalid address %s", addr_str);
     }
 
     if (dest.type != DEST_KEY_ID) {
         json_set_str(result, "Only transparent P2PKH addresses supported");
-        return false;
+        LOG_FAIL("wallet", "importaddress: address %s is not P2PKH (type=%d)", addr_str, dest.type);
     }
 
     /* Already have the private key? Skip — nothing to do. */
     if (keystore_have_key(&ctx->wallet->keystore, &dest.id.key)) {
         json_set_str(result, "Address already in wallet with private key");
-        return false;
+        LOG_FAIL("wallet", "importaddress: address %s already has private key", addr_str);
     }
 
     /* Add as watch-only to keystore. */
@@ -770,7 +772,7 @@ static bool rpc_importaddress(const struct json_value *params, bool help,
 
     if (!ok) {
         json_set_str(result, "Error: watch-only keystore full");
-        return false;
+        LOG_FAIL("wallet", "importaddress: watch-only keystore full for %s", addr_str);
     }
 
     /* Persist to wallet DB. */
@@ -843,13 +845,13 @@ static bool rpc_rescanblockchain(const struct json_value *params, bool help,
     rpc_params_expect(&p, 0, 2);
     int start_height = (int)rpc_permit_int(&p, 0, "start_height", 0);
     int stop_height = (int)rpc_permit_int(&p, 1, "stop_height", -1);
-    if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); return false; }
+    if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); LOG_FAIL("wallet", "rescanblockchain: invalid params"); }
 
     ENSURE_WALLET(result);
 
     if (!ctx->main_state) {
         json_set_str(result, "Chain state not initialized");
-        return false;
+        LOG_FAIL("wallet", "rescanblockchain: chain state not initialized");
     }
 
     int tip = active_chain_height(&ctx->main_state->chain_active);
@@ -860,7 +862,7 @@ static bool rpc_rescanblockchain(const struct json_value *params, bool help,
 
     if (start_height > tip) {
         json_set_str(result, "start_height exceeds chain tip");
-        return false;
+        LOG_FAIL("wallet", "rescanblockchain: start_height %d exceeds tip %d", start_height, tip);
     }
 
     wallet_rescan(ctx->wallet, &ctx->main_state->chain_active,
@@ -882,13 +884,13 @@ static bool rpc_keypoolrefill(const struct json_value *params, bool help,
     rpc_params_init(&p, params);
     rpc_params_expect(&p, 0, 1);
     unsigned int new_size = (unsigned int)rpc_permit_int(&p, 0, "newsize", DEFAULT_KEYPOOL_SIZE);
-    if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); return false; }
+    if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); LOG_FAIL("wallet", "keypoolrefill: invalid params"); }
 
     ENSURE_WALLET(result);
 
     if (!wallet_top_up_key_pool(ctx->wallet, new_size)) {
         json_set_str(result, "Error refilling keypool");
-        return false;
+        LOG_FAIL("wallet", "keypoolrefill: failed to refill keypool (size=%u)", new_size);
     }
 
     json_set_null(result);
@@ -936,10 +938,10 @@ static bool rpc_listtransactions(const struct json_value *params, bool help,
 
     if (wallet_history_db_ready()) {
         struct db_wallet_tx *rows =
-            calloc((size_t)count, sizeof(struct db_wallet_tx));
+            zcl_calloc((size_t)count, sizeof(struct db_wallet_tx), "listtransactions rows");
         if (!rows) {
             json_set_str(result, "Out of memory");
-            return false;
+            LOG_FAIL("wallet", "listtransactions: alloc failed for %d rows", count);
         }
 
         int n = db_wallet_tx_list(ctx->node_db, rows, (size_t)count, (size_t)skip);
@@ -984,7 +986,7 @@ static bool rpc_gettransaction(const struct json_value *params, bool help,
     rpc_params_init(&p, params);
     rpc_params_expect(&p, 1, 1);
     const char *txid_str = rpc_require_str(&p, 0, "txid");
-    if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); return false; }
+    if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); LOG_FAIL("wallet", "gettransaction: invalid params"); }
 
     ENSURE_WALLET(result);
     struct uint256 txid;
@@ -997,7 +999,7 @@ static bool rpc_gettransaction(const struct json_value *params, bool help,
             if (!wallet_db_tx_deserialize(&dbtx, &tx)) {
                 db_wallet_tx_free(&dbtx);
                 json_set_str(result, "Failed to decode wallet transaction");
-                return false;
+                LOG_FAIL("wallet", "gettransaction: failed to deserialize tx %s", txid_str);
             }
 
             json_set_object(result);
@@ -1047,7 +1049,7 @@ static bool rpc_gettransaction(const struct json_value *params, bool help,
     const struct wallet_tx *wtx = wallet_get_tx(ctx->wallet, &txid);
     if (!wtx) {
         json_set_str(result, "Invalid or non-wallet transaction id");
-        return false;
+        LOG_FAIL("wallet", "gettransaction: tx %s not found in wallet", txid_str);
     }
 
     json_set_object(result);
@@ -1091,7 +1093,7 @@ static bool rpc_createmultisig(const struct json_value *params, bool help,
 
     if (json_size(params) < 2) {
         json_set_str(result, "Expected at least 2 parameter(s)");
-        return false;
+        LOG_FAIL("wallet", "createmultisig: expected at least 2 params, got %zu", json_size(params));
     }
 
     struct rpc_params p;
@@ -1100,13 +1102,13 @@ static bool rpc_createmultisig(const struct json_value *params, bool help,
     const struct json_value *keys_arr = json_at(params, 1);
     if (!keys_arr || keys_arr->type != JSON_ARR || json_size(keys_arr) == 0) {
         json_set_str(result, "keys must be a non-empty array");
-        return false;
+        LOG_FAIL("wallet", "createmultisig: keys must be a non-empty array");
     }
 
     size_t n_keys = json_size(keys_arr);
     if (n_required < 1 || n_required > (int)n_keys || n_keys > 16) {
         json_set_str(result, "Invalid nrequired or too many keys");
-        return false;
+        LOG_FAIL("wallet", "createmultisig: invalid nrequired=%d for %zu keys", n_required, n_keys);
     }
 
     struct pubkey pks[16];
@@ -1114,23 +1116,23 @@ static bool rpc_createmultisig(const struct json_value *params, bool help,
         const char *hex = json_get_str(json_at(keys_arr, i));
         if (!hex) {
             json_set_str(result, "Invalid key in array");
-            return false;
+            LOG_FAIL("wallet", "createmultisig: NULL key at index %zu", i);
         }
         size_t hex_len = strlen(hex);
         if (hex_len != 66 && hex_len != 130) {
             json_set_str(result, "Invalid public key length");
-            return false;
+            LOG_FAIL("wallet", "createmultisig: bad key length %zu at index %zu", hex_len, i);
         }
         unsigned char buf[65];
         size_t buf_len = ParseHex(hex, buf, sizeof(buf));
         if (buf_len != 33 && buf_len != 65) {
             json_set_str(result, "Invalid hex in key");
-            return false;
+            LOG_FAIL("wallet", "createmultisig: invalid hex at index %zu", i);
         }
         pubkey_set(&pks[i], buf, buf_len);
         if (!pubkey_is_valid(&pks[i])) {
             json_set_str(result, "Invalid public key (not a valid EC point)");
-            return false;
+            LOG_FAIL("wallet", "createmultisig: invalid EC point at index %zu", i);
         }
     }
 
@@ -1175,7 +1177,7 @@ static bool rpc_sendmany(const struct json_value *params, bool help,
 
     if (json_size(params) < 2) {
         json_set_str(result, "Expected at least 2 parameter(s)");
-        return false;
+        LOG_FAIL("wallet", "sendmany: expected at least 2 params, got %zu", json_size(params));
     }
 
     ENSURE_WALLET(result);
@@ -1183,7 +1185,7 @@ static bool rpc_sendmany(const struct json_value *params, bool help,
     const struct json_value *amounts = json_at(params, 1);
     if (!amounts || amounts->type != JSON_OBJ) {
         json_set_str(result, "amounts must be a JSON object");
-        return false;
+        LOG_FAIL("wallet", "sendmany: amounts param is not a JSON object");
     }
 
     const struct chain_params *cp = chain_params_get();
@@ -1205,20 +1207,20 @@ static bool rpc_sendmany(const struct json_value *params, bool help,
         if (!decode_destination(addr, pk_pfx, pk_pfx_len,
                                 sc_pfx, sc_pfx_len, &dests[n])) {
             json_set_str(result, "Invalid address");
-            return false;
+            LOG_FAIL("wallet", "sendmany: invalid address at index %zu", i);
         }
 
         values[n] = parse_amount(val);
         if (values[n] <= 0) {
             json_set_str(result, "Invalid amount");
-            return false;
+            LOG_FAIL("wallet", "sendmany: invalid amount at index %zu", i);
         }
         n++;
     }
 
     if (n == 0) {
         json_set_str(result, "No recipients");
-        return false;
+        LOG_FAIL("wallet", "sendmany: no recipients specified");
     }
 
     struct wallet_tx wtx;
@@ -1227,13 +1229,13 @@ static bool rpc_sendmany(const struct json_value *params, bool help,
     if (!wallet_create_transaction_multi(ctx->wallet, dests, values, n,
                                           &wtx, &fee, &error)) {
         json_set_str(result, error ? error : "Transaction creation failed");
-        return false;
+        LOG_FAIL("wallet", "sendmany: create multi-tx failed (%zu recipients): %s", n, error ? error : "unknown");
     }
 
     if (!wallet_commit_transaction(ctx->wallet, &wtx, ctx->mempool)) {
         json_set_str(result, "Error committing transaction");
         transaction_free(&wtx.tx);
-        return false;
+        LOG_FAIL("wallet", "sendmany: commit transaction failed (%zu recipients)", n);
     }
 
     if (wallet_ctx_db_ready(ctx))
@@ -1263,7 +1265,7 @@ static bool rpc_addmultisigaddress(const struct json_value *params, bool help,
 
     if (json_size(params) < 2) {
         json_set_str(result, "Expected at least 2 parameter(s)");
-        return false;
+        LOG_FAIL("wallet", "addmultisigaddress: expected at least 2 params, got %zu", json_size(params));
     }
 
     ENSURE_WALLET(result);
@@ -1274,13 +1276,13 @@ static bool rpc_addmultisigaddress(const struct json_value *params, bool help,
     const struct json_value *keys_arr = json_at(params, 1);
     if (!keys_arr || keys_arr->type != JSON_ARR || json_size(keys_arr) == 0) {
         json_set_str(result, "keys must be a non-empty array");
-        return false;
+        LOG_FAIL("wallet", "addmultisigaddress: keys must be a non-empty array");
     }
 
     size_t n_keys = json_size(keys_arr);
     if (n_required < 1 || n_required > (int)n_keys || n_keys > 16) {
         json_set_str(result, "Invalid nrequired or too many keys");
-        return false;
+        LOG_FAIL("wallet", "addmultisigaddress: invalid nrequired=%d for %zu keys", n_required, n_keys);
     }
 
     struct pubkey pks[16];
@@ -1288,18 +1290,18 @@ static bool rpc_addmultisigaddress(const struct json_value *params, bool help,
         const char *hex = json_get_str(json_at(keys_arr, i));
         if (!hex) {
             json_set_str(result, "Invalid key in array");
-            return false;
+            LOG_FAIL("wallet", "addmultisigaddress: NULL key at index %zu", i);
         }
         unsigned char buf[65];
         size_t buf_len = ParseHex(hex, buf, sizeof(buf));
         if (buf_len != 33 && buf_len != 65) {
             json_set_str(result, "Invalid public key");
-            return false;
+            LOG_FAIL("wallet", "addmultisigaddress: bad key length %zu at index %zu", buf_len, i);
         }
         pubkey_set(&pks[i], buf, buf_len);
         if (!pubkey_is_valid(&pks[i])) {
             json_set_str(result, "Invalid public key (not a valid EC point)");
-            return false;
+            LOG_FAIL("wallet", "addmultisigaddress: invalid EC point at index %zu", i);
         }
     }
 

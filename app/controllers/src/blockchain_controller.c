@@ -38,6 +38,8 @@
 #include "znam/znam.h"
 #include "encoding/base58.h"
 #include "crypto/sha3.h"
+#include "util/log_macros.h"
+#include "util/safe_alloc.h"
 #include "models/block.h"
 #include "models/tx_index.h"
 #include "models/utxo.h"
@@ -97,7 +99,7 @@ static bool rpc_getblockcount(const struct json_value *params, bool help,
     RPC_HELP(help, result, "getblockcount\nReturns the number of blocks.");
     if (!ctx->main_state) {
         json_set_str(result, "Not initialized");
-        return false;
+        LOG_FAIL("blockchain", "getblockcount: main_state not initialized");
     }
     json_set_int(result, active_chain_height(&ctx->main_state->chain_active));
     return true;
@@ -111,12 +113,12 @@ static bool rpc_getbestblockhash(const struct json_value *params, bool help,
     RPC_HELP(help, result, "getbestblockhash\nReturns the hash of the best block.");
     if (!ctx->main_state) {
         json_set_str(result, "Not initialized");
-        return false;
+        LOG_FAIL("blockchain", "getbestblockhash: main_state not initialized");
     }
     struct block_index *tip = active_chain_tip(&ctx->main_state->chain_active);
     if (!tip || !tip->phashBlock) {
         json_set_str(result, "No tip");
-        return false;
+        LOG_FAIL("blockchain", "getbestblockhash: chain tip or phashBlock is NULL");
     }
     char hex[65];
     uint256_get_hex(tip->phashBlock, hex);
@@ -132,7 +134,7 @@ static bool rpc_getdifficulty(const struct json_value *params, bool help,
     RPC_HELP(help, result, "getdifficulty\nReturns proof-of-work difficulty.");
     if (!ctx->main_state) {
         json_set_str(result, "Not initialized");
-        return false;
+        LOG_FAIL("blockchain", "getdifficulty: main_state not initialized");
     }
     struct block_index *tip = active_chain_tip(&ctx->main_state->chain_active);
     json_set_real(result, get_difficulty(tip));
@@ -151,16 +153,16 @@ static bool rpc_getblockhash(const struct json_value *params, bool help,
     int height = (int)rpc_require_int(&p, 0, "height");
     if (rpc_params_invalid(&p)) {
         rpc_params_error(&p, result);
-        return false;
+        LOG_FAIL("blockchain", "getblockhash: invalid params");
     }
     if (!ctx->main_state) {
         json_set_str(result, "Not initialized");
-        return false;
+        LOG_FAIL("blockchain", "getblockhash: main_state not initialized");
     }
     struct block_index *bi = active_chain_at(&ctx->main_state->chain_active, height);
     if (!bi || !bi->phashBlock) {
         json_set_str(result, "Block height out of range");
-        return false;
+        LOG_FAIL("blockchain", "getblockhash: height %d out of range", height);
     }
     char hex[65];
     uint256_get_hex(bi->phashBlock, hex);
@@ -213,11 +215,11 @@ static bool rpc_getblockheader(const struct json_value *params, bool help,
     const char *hash_str = rpc_require_str(&p, 0, "hash");
     if (rpc_params_invalid(&p)) {
         rpc_params_error(&p, result);
-        return false;
+        LOG_FAIL("blockchain", "getblockheader: invalid params");
     }
     if (!ctx->main_state) {
         json_set_str(result, "Not initialized");
-        return false;
+        LOG_FAIL("blockchain", "getblockheader: main_state not initialized");
     }
     struct uint256 hash;
     uint256_set_hex(&hash, hash_str);
@@ -225,7 +227,7 @@ static bool rpc_getblockheader(const struct json_value *params, bool help,
     struct block_index *bi = block_map_find(&ctx->main_state->map_block_index, &hash);
     if (!bi) {
         json_set_str(result, "Block not found");
-        return false;
+        LOG_FAIL("blockchain", "getblockheader: block %s not found", hash_str);
     }
 
     block_header_to_json(bi, result);
@@ -245,11 +247,11 @@ static bool rpc_getblock(const struct json_value *params, bool help,
     const char *hash_str = rpc_require_str(&p, 0, "hash");
     if (rpc_params_invalid(&p)) {
         rpc_params_error(&p, result);
-        return false;
+        LOG_FAIL("blockchain", "getblock: invalid params");
     }
     if (!ctx->main_state) {
         json_set_str(result, "Not initialized");
-        return false;
+        LOG_FAIL("blockchain", "getblock: main_state not initialized");
     }
     struct uint256 hash;
     uint256_set_hex(&hash, hash_str);
@@ -257,7 +259,7 @@ static bool rpc_getblock(const struct json_value *params, bool help,
     struct block_index *bi = block_map_find(&ctx->main_state->map_block_index, &hash);
     if (!bi) {
         json_set_str(result, "Block not found");
-        return false;
+        LOG_FAIL("blockchain", "getblock: block %s not found", hash_str);
     }
 
     block_header_to_json(bi, result);
@@ -276,7 +278,7 @@ static bool rpc_getblockchaininfo(const struct json_value *params, bool help,
     RPC_HELP(help, result, "getblockchaininfo\nReturns blockchain state info.");
     if (!ctx->main_state) {
         json_set_str(result, "Not initialized");
-        return false;
+        LOG_FAIL("blockchain", "getblockchaininfo: main_state not initialized");
     }
 
     const struct chain_params *cp = chain_params_get();
@@ -333,11 +335,11 @@ static bool rpc_gettxoutsetinfo(const struct json_value *params, bool help,
 
     if (!ctx->node_db || !ctx->node_db->open) {
         json_set_str(result, "Coins database not available");
-        return false;
+        LOG_FAIL("blockchain", "gettxoutsetinfo: coins database not available");
     }
     if (!ctx->main_state || !active_chain_tip(&ctx->main_state->chain_active)) {
         json_set_str(result, "Chain not loaded");
-        return false;
+        LOG_FAIL("blockchain", "gettxoutsetinfo: chain not loaded or no tip");
     }
 
     /* Flush in-memory UTXO cache to SQLite for accurate totals */
@@ -400,13 +402,14 @@ static bool rpc_reindexchainstate(const struct json_value *params, bool help,
 
     if (!ctx->coins_db || !ctx->coins_tip || !ctx->main_state || !ctx->datadir) {
         json_set_str(result, "Node not fully initialized");
-        return false;
+        LOG_FAIL("blockchain", "reindexchainstate: node not fully initialized (coins_db=%p coins_tip=%p main_state=%p datadir=%p)",
+                 (void *)ctx->coins_db, (void *)ctx->coins_tip, (void *)ctx->main_state, (void *)ctx->datadir);
     }
 
     int tip_height = active_chain_height(&ctx->main_state->chain_active);
     if (tip_height < 0) {
         json_set_str(result, "No active chain");
-        return false;
+        LOG_FAIL("blockchain", "reindexchainstate: no active chain (tip_height=%d)", tip_height);
     }
 
     printf("reindexchainstate: rebuilding UTXO set for %d blocks...\n",
@@ -425,7 +428,7 @@ static bool rpc_reindexchainstate(const struct json_value *params, bool help,
     if (!coins_view_db_open(ctx->coins_db, coins_path,
                             450 << 20, false, true)) {
         json_set_str(result, "Failed to reopen coins database");
-        return false;
+        LOG_FAIL("blockchain", "reindexchainstate: failed to reopen coins database at %s", coins_path);
     }
 
     /* Step 3: Reinitialize coins cache */
@@ -695,13 +698,13 @@ static void *index_worker(void *arg) {
     ctx->cap_oprets = IDX_BATCH_CAP / 8;
     ctx->cap_blocks_sh = (ctx->height_to - ctx->height_from + 2);
 
-    ctx->inputs    = malloc((size_t)ctx->cap_inputs    * sizeof(*ctx->inputs));
-    ctx->outputs   = malloc((size_t)ctx->cap_outputs   * sizeof(*ctx->outputs));
-    ctx->joinsplits= malloc((size_t)ctx->cap_joinsplits* sizeof(*ctx->joinsplits));
-    ctx->sspends   = malloc((size_t)ctx->cap_sspends   * sizeof(*ctx->sspends));
-    ctx->soutputs  = malloc((size_t)ctx->cap_soutputs  * sizeof(*ctx->soutputs));
-    ctx->oprets    = malloc((size_t)ctx->cap_oprets    * sizeof(*ctx->oprets));
-    ctx->blocks_sh = malloc((size_t)ctx->cap_blocks_sh * sizeof(*ctx->blocks_sh));
+    ctx->inputs    = zcl_malloc((size_t)ctx->cap_inputs    * sizeof(*ctx->inputs), "idx_inputs");
+    ctx->outputs   = zcl_malloc((size_t)ctx->cap_outputs   * sizeof(*ctx->outputs), "idx_outputs");
+    ctx->joinsplits= zcl_malloc((size_t)ctx->cap_joinsplits* sizeof(*ctx->joinsplits), "idx_joinsplits");
+    ctx->sspends   = zcl_malloc((size_t)ctx->cap_sspends   * sizeof(*ctx->sspends), "idx_sspends");
+    ctx->soutputs  = zcl_malloc((size_t)ctx->cap_soutputs  * sizeof(*ctx->soutputs), "idx_soutputs");
+    ctx->oprets    = zcl_malloc((size_t)ctx->cap_oprets    * sizeof(*ctx->oprets), "idx_oprets");
+    ctx->blocks_sh = zcl_malloc((size_t)ctx->cap_blocks_sh * sizeof(*ctx->blocks_sh), "idx_blocks_sh");
 
     ctx->num_inputs = ctx->num_outputs = ctx->num_joinsplits = 0;
     ctx->num_sspends = ctx->num_soutputs = ctx->num_oprets = 0;
@@ -916,11 +919,11 @@ static bool rpc_importchainstate(const struct json_value *params, bool help,
     rpc_params_init(&p, params);
     rpc_params_expect(&p, 1, 1);
     const char *cs_path = rpc_require_str(&p, 0, "chainstate_path");
-    if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); return false; }
+    if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); LOG_FAIL("blockchain", "importchainstate: invalid params"); }
 
     if (!ctx->node_db || !ctx->node_db->open) {
         json_set_str(result, "Node database not open");
-        return false;
+        LOG_FAIL("blockchain", "importchainstate: node database not open");
     }
 
     printf("importchainstate: opening %s...\n", cs_path);
@@ -930,7 +933,7 @@ static bool rpc_importchainstate(const struct json_value *params, bool help,
     memset(&ext_db, 0, sizeof(ext_db));
     if (!coins_view_db_open(&ext_db, cs_path, 256, false, false)) {
         json_set_str(result, "Cannot open chainstate LevelDB");
-        return false;
+        LOG_FAIL("blockchain", "importchainstate: cannot open LevelDB at %s", cs_path);
     }
 
     /* Read best block hash from LevelDB before importing.
@@ -951,7 +954,7 @@ static bool rpc_importchainstate(const struct json_value *params, bool help,
 
     if (count < 0) {
         json_set_str(result, "Import failed");
-        return false;
+        LOG_FAIL("blockchain", "importchainstate: UTXO import failed (count=%d)", count);
     }
 
     /* Fix height=0 UTXOs from transaction index (LevelDB decoder can
@@ -1072,7 +1075,7 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
     rpc_params_init(&p, params);
     rpc_params_expect(&p, 0, 1);
     const char *legacy_dir = rpc_permit_str(&p, 0, "legacy_datadir", NULL);
-    if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); return false; }
+    if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); LOG_FAIL("blockchain", "indexlegacy: invalid params"); }
 
     char default_dir[512];
     if (!legacy_dir || legacy_dir[0] == '\0') {
@@ -1084,7 +1087,7 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
 
     if (!ctx->node_db || !ctx->node_db->open) {
         json_set_str(result, "SQLite database not available");
-        return false;
+        LOG_FAIL("blockchain", "indexlegacy: SQLite database not available");
     }
 
     printf("indexlegacy: scanning block files from %s/blocks/\n", legacy_dir);
@@ -1098,8 +1101,8 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
      * height-indexed array that grows dynamically. */
 
     int locs_cap = 4000000; /* initial, grows as needed */
-    struct blk_loc *locs = calloc((size_t)locs_cap, sizeof(struct blk_loc));
-    if (!locs) { json_set_str(result, "Out of memory"); return false; }
+    struct blk_loc *locs = zcl_calloc((size_t)locs_cap, sizeof(struct blk_loc), "idx_blk_locs");
+    if (!locs) { json_set_str(result, "Out of memory"); LOG_FAIL("blockchain", "indexlegacy: failed to allocate locs array (%d entries)", locs_cap); }
 
     int max_height = -1;
     int total_found = 0;
@@ -1177,8 +1180,8 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
         uint32_t size;
     };
     int raw_cap = 4000000;
-    struct raw_blk *raw = calloc((size_t)raw_cap, sizeof(struct raw_blk));
-    if (!raw) { free(locs); json_set_str(result, "OOM"); return false; }
+    struct raw_blk *raw = zcl_calloc((size_t)raw_cap, sizeof(struct raw_blk), "idx_raw_blks");
+    if (!raw) { free(locs); json_set_str(result, "OOM"); LOG_FAIL("blockchain", "indexlegacy: failed to allocate raw block array (%d entries)", raw_cap); }
     int raw_count = 0;
 
     for (int file_num = 0; file_num < 1000; file_num++) {
@@ -1215,7 +1218,7 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
             if (ok) {
                 if (raw_count >= raw_cap) {
                     raw_cap *= 2;
-                    raw = realloc(raw, (size_t)raw_cap * sizeof(struct raw_blk));
+                    raw = zcl_realloc(raw, (size_t)raw_cap * sizeof(struct raw_blk), "idx_raw_blks");
                 }
                 struct uint256 bh;
                 block_header_get_hash(&blk.header, &bh);
@@ -1244,11 +1247,11 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
     /* Build hash→index lookup (simple hash table) */
     #define HASH_BUCKETS 4194304  /* 4M buckets */
     struct hash_entry { int idx; int next; };
-    int *hash_heads = malloc((size_t)HASH_BUCKETS * sizeof(int));
-    struct hash_entry *hash_nodes = malloc((size_t)raw_count * sizeof(struct hash_entry));
+    int *hash_heads = zcl_malloc((size_t)HASH_BUCKETS * sizeof(int), "idx_hash_heads");
+    struct hash_entry *hash_nodes = zcl_malloc((size_t)raw_count * sizeof(struct hash_entry), "idx_hash_nodes");
     if (!hash_heads || !hash_nodes) {
         free(raw); free(locs); free(hash_heads); free(hash_nodes);
-        json_set_str(result, "OOM"); return false;
+        json_set_str(result, "OOM"); LOG_FAIL("blockchain", "indexlegacy: failed to allocate hash table (%d buckets)", HASH_BUCKETS);
     }
     memset(hash_heads, -1, (size_t)HASH_BUCKETS * sizeof(int));
 
@@ -1274,20 +1277,20 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
     if (genesis_idx < 0) {
         free(raw); free(locs); free(hash_heads); free(hash_nodes);
         json_set_str(result, "Genesis block not found");
-        return false;
+        LOG_FAIL("blockchain", "indexlegacy: genesis block not found in %d raw blocks", raw_count);
     }
 
     /* Walk the chain from genesis, assigning heights.
      * For each block, find the next block whose prev_hash matches our hash. */
-    int *height_map = calloc((size_t)raw_count, sizeof(int));
+    int *height_map = zcl_calloc((size_t)raw_count, sizeof(int), "idx_height_map");
     for (int i = 0; i < raw_count; i++) height_map[i] = -1;
     height_map[genesis_idx] = 0;
 
     /* Build child→parent index (reverse: for each hash, find blocks pointing to it) */
     /* Actually simpler: walk forward. Start at genesis, find who points to us. */
     /* Better approach: build prev_hash→index map, then walk from genesis forward */
-    int *prev_heads = malloc((size_t)HASH_BUCKETS * sizeof(int));
-    struct hash_entry *prev_nodes = malloc((size_t)raw_count * sizeof(struct hash_entry));
+    int *prev_heads = zcl_malloc((size_t)HASH_BUCKETS * sizeof(int), "idx_prev_heads");
+    struct hash_entry *prev_nodes = zcl_malloc((size_t)raw_count * sizeof(struct hash_entry), "idx_prev_nodes");
     memset(prev_heads, -1, (size_t)HASH_BUCKETS * sizeof(int));
     for (int i = 0; i < raw_count; i++) {
         uint32_t bucket;
@@ -1299,7 +1302,7 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
     }
 
     /* BFS from genesis: find children (blocks whose prev_hash = our hash) */
-    int *queue = malloc((size_t)raw_count * sizeof(int));
+    int *queue = zcl_malloc((size_t)raw_count * sizeof(int), "idx_bfs_queue");
     int q_head = 0, q_tail = 0;
     queue[q_tail++] = genesis_idx;
     int assigned = 0;
@@ -1311,8 +1314,8 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
         /* Store in height→location array */
         while (cur_height >= locs_cap) {
             int new_cap = locs_cap * 2;
-            struct blk_loc *tmp = realloc(locs,
-                (size_t)new_cap * sizeof(struct blk_loc));
+            struct blk_loc *tmp = zcl_realloc(locs,
+                (size_t)new_cap * sizeof(struct blk_loc), "idx_blk_locs");
             if (!tmp) break;
             memset(tmp + locs_cap, 0,
                    (size_t)(new_cap - locs_cap) * sizeof(struct blk_loc));
@@ -1359,7 +1362,7 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
     if (max_height < 0) {
         free(locs);
         json_set_str(result, "No blocks found");
-        return false;
+        LOG_FAIL("blockchain", "indexlegacy: no blocks found after chain walk");
     }
 
     /* ================================================================
@@ -1385,7 +1388,7 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
     if (!indexlegacy_node_tx_begin_checked(ctx->node_db, "phase A begin")) {
         free(locs);
         json_set_str(result, "Phase A failed to open transaction");
-        return false;
+        LOG_FAIL("blockchain", "indexlegacy: phase A failed to begin transaction");
     }
     phase_a_tx_open = true;
 
@@ -1716,14 +1719,14 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
         }
         free(locs);
         json_set_str(result, phase_a_error);
-        return false;
+        LOG_FAIL("blockchain", "indexlegacy: %s", phase_a_error);
     }
     if (phase_a_tx_open &&
         !indexlegacy_node_tx_commit_checked(ctx->node_db,
             "phase A final commit")) {
         free(locs);
         json_set_str(result, "Phase A final commit failed");
-        return false;
+        LOG_FAIL("blockchain", "indexlegacy: phase A final commit failed");
     }
     phase_a_tx_open = false;
 
@@ -1772,7 +1775,7 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
             free(locs);
             json_set_str(result,
                          "Failed to start Phase B extraction workers");
-            return false;
+            LOG_FAIL("blockchain", "indexlegacy: failed to start Phase B worker thread %d", t);
         }
         workers_started++;
     }
@@ -2081,7 +2084,7 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
     for (int t = 0; t < N_INDEX_THREADS; t++)
         total_bsh += workers[t].num_blocks_sh;
 
-    all_bsh = malloc((size_t)total_bsh * sizeof(*all_bsh));
+    all_bsh = zcl_malloc((size_t)total_bsh * sizeof(*all_bsh), "idx_all_bsh");
     if (!all_bsh && total_bsh > 0) {
         phase_b_ok = false;
         goto phase_b_cleanup;
@@ -2212,7 +2215,7 @@ phase_b_cleanup:
         phase_b_db = NULL;
     }
     if (!phase_b_ok) {
-        return false;
+        LOG_FAIL("blockchain", "indexlegacy: Phase B failed and rolled back");
     }
 
     int64_t write_time = (int64_t)time(NULL) - t_write;
@@ -2602,11 +2605,11 @@ static bool rpc_getutxocommitment(const struct json_value *params, bool help,
 
     if (!ctx->node_db || !ctx->node_db->open) {
         json_set_str(result, "Database not available");
-        return false;
+        LOG_FAIL("blockchain", "getutxocommitment: database not available");
     }
     if (!ctx->main_state) {
         json_set_str(result, "Chain not loaded");
-        return false;
+        LOG_FAIL("blockchain", "getutxocommitment: chain not loaded");
     }
 
     /* Flush coins cache first */
@@ -2651,15 +2654,15 @@ static bool rpc_verifycheckpoint(const struct json_value *params, bool help,
     const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
     if (!cp) {
         json_set_str(result, "No checkpoint available");
-        return false;
+        LOG_FAIL("blockchain", "verifycheckpoint: no SHA3 checkpoint available");
     }
     if (!ctx->node_db || !ctx->node_db->open) {
         json_set_str(result, "Database not available");
-        return false;
+        LOG_FAIL("blockchain", "verifycheckpoint: database not available");
     }
     if (!ctx->main_state) {
         json_set_str(result, "Chain not loaded");
-        return false;
+        LOG_FAIL("blockchain", "verifycheckpoint: chain not loaded");
     }
 
     int tip = active_chain_height(&ctx->main_state->chain_active);
@@ -2723,7 +2726,7 @@ static bool rpc_getdataintegrity(const struct json_value *params, bool help,
 
     if (!ctx->node_db || !ctx->node_db->open) {
         json_set_str(result, "Database not available");
-        return false;
+        LOG_FAIL("blockchain", "getdataintegrity: database not available");
     }
 
     if (ctx->coins_tip)
@@ -2779,7 +2782,7 @@ static bool rpc_getmmrroot(const struct json_value *params, bool help,
 
     if (!g_mmr_initialized) {
         json_set_str(result, "MMR not initialized");
-        return false;
+        LOG_FAIL("blockchain", "getmmrroot: MMR not initialized");
     }
 
     uint8_t root[32];
@@ -2891,7 +2894,8 @@ static bool rpc_rebuildsaplingtree(const struct json_value *params,
 
     if (!ctx->main_state || !ctx->datadir || !ctx->node_db) {
         json_set_str(result, "error: node not fully initialized");
-        return false;
+        LOG_FAIL("blockchain", "rebuildsaplingtree: node not fully initialized (main_state=%p datadir=%p node_db=%p)",
+                 (void *)ctx->main_state, (void *)ctx->datadir, (void *)ctx->node_db);
     }
 
     struct main_state *ms = ctx->main_state;
@@ -2905,7 +2909,7 @@ static bool rpc_rebuildsaplingtree(const struct json_value *params,
 
     if (n < 0) {
         json_set_str(result, "error: rebuild failed");
-        return false;
+        LOG_FAIL("blockchain", "rebuildsaplingtree: sapling_tree_rebuild returned %d", n);
     }
 
     /* Reload rebuilt tree into main_state */

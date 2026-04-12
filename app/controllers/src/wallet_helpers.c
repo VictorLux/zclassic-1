@@ -16,6 +16,7 @@
 #include "core/serialize.h"
 #include <stdio.h>
 #include <string.h>
+#include "util/log_macros.h"
 
 struct wallet_rpc_context g_wallet_ctx = {0};
 
@@ -51,7 +52,7 @@ void format_amount(int64_t satoshis, char *out, size_t out_size)
 
 int64_t parse_amount(const struct json_value *v)
 {
-    if (!v) return -1;
+    if (!v) LOG_ERR("wallet", "parse_amount called with NULL json value");
 
     if (v->type == JSON_INT) {
         int64_t val = json_get_int(v);
@@ -66,7 +67,7 @@ int64_t parse_amount(const struct json_value *v)
         snprintf(tmp, sizeof(tmp), "%.8f", json_get_real(v));
         str = tmp;
     }
-    if (!str) return -1;
+    if (!str) LOG_ERR("wallet", "parse_amount: unsupported json type %d", v->type);
 
     const char *p = str;
     while (*p == ' ') p++;
@@ -126,14 +127,16 @@ bool wallet_db_tx_deserialize(const struct db_wallet_tx *dbtx,
                               struct transaction *tx)
 {
     if (!dbtx || !dbtx->raw_tx || dbtx->raw_tx_len == 0)
-        return false;
+        LOG_FAIL("wallet", "wallet_db_tx_deserialize: invalid dbtx (null=%d, raw_null=%d, len=%zu)",
+                 (dbtx == NULL), (dbtx ? (dbtx->raw_tx == NULL) : 1),
+                 (dbtx ? dbtx->raw_tx_len : (size_t)0));
 
     struct byte_stream s;
     stream_init_from_data(&s, dbtx->raw_tx, dbtx->raw_tx_len);
     transaction_init(tx);
     if (!transaction_deserialize(tx, &s)) {
         transaction_free(tx);
-        return false;
+        LOG_FAIL("wallet", "wallet_db_tx_deserialize: deserialize failed (raw_tx_len=%zu)", dbtx->raw_tx_len);
     }
 
     transaction_compute_hash(tx);

@@ -51,6 +51,8 @@
 #include <pthread.h>
 #include <time.h>
 #include <sqlite3.h>
+#include "util/log_macros.h"
+#include "util/safe_alloc.h"
 
 /* ── State ────────────────────────────────────────────────── */
 
@@ -145,7 +147,7 @@ static int rpc_call(const char *method, const char *params_json,
                      char *out, size_t outmax)
 {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) return -1;
+    if (fd < 0) LOG_ERR("api", "rpc_call(%s): socket() failed", method);
 
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
@@ -159,7 +161,7 @@ static int rpc_call(const char *method, const char *params_json,
 
     if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         close(fd);
-        return -1;
+        LOG_ERR("api", "rpc_call(%s): connect to port %d failed", method, g_api_rpc.port);
     }
 
     char body[4096];
@@ -196,7 +198,7 @@ static int rpc_call(const char *method, const char *params_json,
         "Connection: close\r\n\r\n%s",
         auth_b64, blen, body);
 
-    if (write(fd, req, (size_t)rlen) != rlen) { close(fd); return -1; }
+    if (write(fd, req, (size_t)rlen) != rlen) { close(fd); LOG_ERR("api", "rpc_call(%s): write failed (len=%d)", method, rlen); }
 
     size_t total = 0;
     while (total < outmax - 1) {
@@ -450,7 +452,7 @@ static size_t compute_supply(uint8_t *r, size_t max)
 /* Compute /api/hodl — HODL wave data via gethodlwave RPC */
 static size_t compute_hodl(uint8_t *r, size_t max)
 {
-    char *buf = malloc(262144);
+    char *buf = zcl_malloc(262144, "api_hodl_buf");
     if (!buf) return json_error(r, max, JSON_500_HEADERS, "Out of memory");
 
     if (rpc_call("gethodlwave", "[]", buf, 262144) <= 0) {
@@ -929,7 +931,7 @@ static void *api_cache_refresh_thread(void *arg)
     while (g_api_cache_thread_running) {
         /* Refresh /api/blocks every 30 seconds */
         if (iteration % 3 == 0) {
-            uint8_t *tmp = malloc(API_BLOCKS_CACHE_SIZE);
+            uint8_t *tmp = zcl_malloc(API_BLOCKS_CACHE_SIZE, "api_blocks_tmp");
             if (tmp) {
                 size_t len = compute_blocks(tmp, API_BLOCKS_CACHE_SIZE);
                 if (len > 0 && len < API_BLOCKS_CACHE_SIZE) {
@@ -944,7 +946,7 @@ static void *api_cache_refresh_thread(void *arg)
 
         /* Refresh /api/stats every 60 seconds */
         if (iteration % 6 == 0) {
-            uint8_t *tmp = malloc(API_STATS_CACHE_SIZE);
+            uint8_t *tmp = zcl_malloc(API_STATS_CACHE_SIZE, "api_stats_tmp");
             if (tmp) {
                 size_t len = compute_stats(tmp, API_STATS_CACHE_SIZE);
                 if (len > 0 && len < API_STATS_CACHE_SIZE) {
@@ -959,7 +961,7 @@ static void *api_cache_refresh_thread(void *arg)
 
         /* Refresh /api/supply every 60 seconds */
         if (iteration % 6 == 0) {
-            uint8_t *tmp = malloc(API_SUPPLY_CACHE_SIZE);
+            uint8_t *tmp = zcl_malloc(API_SUPPLY_CACHE_SIZE, "api_supply_tmp");
             if (tmp) {
                 size_t len = compute_supply(tmp, API_SUPPLY_CACHE_SIZE);
                 if (len > 0 && len < API_SUPPLY_CACHE_SIZE) {
@@ -974,7 +976,7 @@ static void *api_cache_refresh_thread(void *arg)
 
         /* Refresh /api/hodl every 60 seconds */
         if (iteration % 6 == 0) {
-            uint8_t *tmp = malloc(API_HODL_CACHE_SIZE);
+            uint8_t *tmp = zcl_malloc(API_HODL_CACHE_SIZE, "api_hodl_tmp");
             if (tmp) {
                 size_t len = compute_hodl(tmp, API_HODL_CACHE_SIZE);
                 if (len > 0 && len < API_HODL_CACHE_SIZE) {
@@ -989,7 +991,7 @@ static void *api_cache_refresh_thread(void *arg)
 
         /* Refresh /api/stats/deep every 300 seconds (30 iterations) */
         if (iteration % 30 == 0) {
-            uint8_t *tmp = malloc(API_DEEP_STATS_CACHE_SIZE);
+            uint8_t *tmp = zcl_malloc(API_DEEP_STATS_CACHE_SIZE, "api_deep_stats_tmp");
             if (tmp) {
                 size_t len = compute_deep_stats(tmp, API_DEEP_STATS_CACHE_SIZE);
                 if (len > 0 && len < API_DEEP_STATS_CACHE_SIZE) {
@@ -1027,9 +1029,9 @@ static bool api_start_detached_thread(pthread_t *thread_out,
     bool ok = false;
 
     if (!thread_out || !entry)
-        return false;
+        LOG_FAIL("api", "start_detached_thread: NULL thread_out or entry");
     if (pthread_attr_init(&attr) != 0)
-        return false;
+        LOG_FAIL("api", "start_detached_thread: pthread_attr_init failed");
     if (pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED) != 0)
         goto cleanup;
     if (pthread_attr_setstacksize(&attr, 2 * 1024 * 1024) != 0)
@@ -1053,7 +1055,7 @@ static bool ensure_cache_thread(void)
         return expected == 1;
     if (!api_start_detached_thread(&t, api_cache_refresh_thread, NULL)) {
         atomic_store(&g_api_cache_thread_running, 0);
-        return false;
+        LOG_FAIL("api", "ensure_cache_thread: failed to start cache refresh thread");
     }
     return true;
 }
@@ -1158,7 +1160,7 @@ static bool ensure_lookup_thread(void)
         return expected == 1;
     if (!api_start_detached_thread(&t, api_lookup_thread, NULL)) {
         atomic_store(&g_lookup_thread_running, 0);
-        return false;
+        LOG_FAIL("api", "ensure_lookup_thread: failed to start lookup thread");
     }
     return true;
 }
@@ -1237,7 +1239,7 @@ static bool api_parse_zslp_limit(const char *path, size_t *limit_out)
     long value;
 
     if (!limit_out)
-        return false;
+        LOG_FAIL("api", "parse_zslp_limit: NULL limit_out");
     *limit_out = 50;
     q = strchr(path, '?');
     if (!q)
@@ -1247,7 +1249,7 @@ static bool api_parse_zslp_limit(const char *path, size_t *limit_out)
         return true;
     value = strtol(lp + 6, &end, 10);
     if (!end || (*end != '\0' && *end != '&') || value <= 0 || value > 64)
-        return false;
+        LOG_FAIL("api", "parse_zslp_limit: invalid limit value");
     *limit_out = (size_t)value;
     return true;
 }
@@ -1266,7 +1268,7 @@ static bool api_parse_collection_limit(const char *path,
 
     if (!path || !query_key || !limit_out || default_limit == 0 ||
         max_limit == 0 || default_limit > max_limit)
-        return false;
+        LOG_FAIL("api", "parse_collection_limit: invalid parameters (key=%s)", query_key ? query_key : "NULL");
     *limit_out = default_limit;
     q = strchr(path, '?');
     if (!q)
@@ -1278,7 +1280,7 @@ static bool api_parse_collection_limit(const char *path,
     value = strtol(lp + strlen(needle), &end, 10);
     if (!end || (*end != '\0' && *end != '&') || value <= 0 ||
         (size_t)value > max_limit)
-        return false;
+        LOG_FAIL("api", "parse_collection_limit: invalid %s value (max=%zu)", query_key, max_limit);
     *limit_out = (size_t)value;
     return true;
 }
@@ -1666,7 +1668,7 @@ size_t api_handle_request(const char *method, const char *path,
             }
         }
         /* Build JSON body: {"sync_state":"...","events":[...]} */
-        char *buf = malloc(524288);
+        char *buf = zcl_malloc(524288, "api_events_buf");
         if (!buf)
             return json_error(response, response_max, JSON_500_HEADERS,
                               "Out of memory");
@@ -1982,7 +1984,7 @@ size_t api_handle_request(const char *method, const char *path,
         uint64_t dl_req = 0, dl_recv = 0, dl_tout = 0, dl_inflight = 0, dl_queued = 0;
         dl_get_stats(dm, &dl_req, &dl_recv, &dl_tout, &dl_inflight, &dl_queued);
 
-        char *body = malloc(8192);
+        char *body = zcl_malloc(8192, "api_sync_body");
         if (!body)
             return json_error(response, response_max, JSON_500_HEADERS, "OOM");
 
@@ -2194,7 +2196,7 @@ size_t api_handle_request(const char *method, const char *path,
                               "No block files for manifest");
 
         /* Build JSON response */
-        char *buf = malloc(131072);
+        char *buf = zcl_malloc(131072, "api_manifest_buf");
         if (!buf)
             return json_error(response, response_max, JSON_500_HEADERS, "OOM");
         size_t w = 0;

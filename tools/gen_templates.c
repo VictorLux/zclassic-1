@@ -15,6 +15,8 @@
 #include <dirent.h>
 #include <ctype.h>
 
+#include "util/safe_alloc.h"
+
 #define MAX_KEY_LEN 64
 #define MAX_FILE_SIZE (256 * 1024)
 
@@ -47,7 +49,7 @@ static char *read_file(const char *path, size_t *len_out) {
     long fsize = ftell(f);
     fseek(f, 0, SEEK_SET);
     if (fsize <= 0 || fsize > MAX_FILE_SIZE) { fclose(f); return NULL; }
-    char *buf = malloc((size_t)fsize + 1);
+    char *buf = zcl_malloc((size_t)fsize + 1, "gen_templates read_file buf");
     if (!buf) { fclose(f); return NULL; }
     size_t nread = fread(buf, 1, (size_t)fsize, f);
     buf[nread] = '\0';
@@ -94,7 +96,7 @@ static void write_c_string(FILE *out, const char *buf, size_t len) {
 /* Minify CSS: strip comments, collapse whitespace, remove spaces around
  * structural characters. Output goes to malloc'd buffer. */
 static char *minify_css(const char *src, size_t src_len, size_t *out_len) {
-    char *out = malloc(src_len + 1);
+    char *out = zcl_malloc(src_len + 1, "gen_templates minify_css buf");
     if (!out) return NULL;
     size_t w = 0;
     bool in_string = false;

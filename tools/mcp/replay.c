@@ -9,6 +9,8 @@
 #include <string.h>
 #include <time.h>
 
+#include "util/safe_alloc.h"
+
 static struct mcp_replay_entry g_ring[MCP_REPLAY_RING_SIZE];
 static size_t g_head = 0;    /* next write position */
 static size_t g_count = 0;   /* total recorded (may exceed ring size) */
@@ -90,7 +92,7 @@ char *mcp_replay_dump(size_t count)
 
     /* Each entry can be up to ~6KB of JSON. Allocate generously. */
     size_t cap = 64 + count * (MCP_REPLAY_MAX_BODY + 2048);
-    char *buf = malloc(cap);
+    char *buf = zcl_malloc(cap, "mcp replay dump buf");
     if (!buf) return strdup("[]");
 
     size_t pos = 0;

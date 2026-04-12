@@ -33,6 +33,9 @@
 #include <string.h>
 #include <time.h>
 
+#include "util/log_macros.h"
+#include "util/safe_alloc.h"
+
 /* ── Module state ───────────────────────────────────────────── */
 
 struct mempool_limits_state {
@@ -141,7 +144,7 @@ static struct mempool_limits_config ml_resolve_cfg(
 bool mempool_limits_passes_min_relay(const struct mempool_limits_config *cfg,
                                       int64_t fee, size_t tx_size)
 {
-    if (tx_size == 0) return false;
+    if (tx_size == 0) LOG_FAIL("mempool_limits", "min relay check with tx_size=0");
     struct mempool_limits_config r = ml_resolve_cfg(cfg);
     return fee >= r.min_relay_fee_zat;
 }
@@ -191,7 +194,7 @@ int mempool_limits_enforce(struct tx_mempool *pool,
     /* Need to evict. Allocate a snapshot buffer. */
     size_t cap = cur_count;
     struct tx_mempool_entry_view *views =
-        calloc(cap, sizeof(*views));
+        zcl_calloc(cap, sizeof(*views), "mempool enforce views");
     if (!views) return 0;
 
     size_t n = tx_mempool_collect_views(pool, views, cap);
@@ -257,7 +260,7 @@ int mempool_limits_expire(struct tx_mempool *pool,
     }
 
     struct tx_mempool_entry_view *views =
-        calloc(cur_count, sizeof(*views));
+        zcl_calloc(cur_count, sizeof(*views), "mempool expire views");
     if (!views) return 0;
     size_t n = tx_mempool_collect_views(pool, views, cur_count);
 
@@ -389,12 +392,12 @@ static void *ml_thread_fn(void *arg)
 bool mempool_limits_start(struct tx_mempool *pool,
                            const struct mempool_limits_config *cfg_in)
 {
-    if (!pool) return false;
+    if (!pool) LOG_FAIL("mempool_limits", "start called with null pool");
 
     pthread_mutex_lock(&g_ml.lock);
     if (g_ml.thread_running) {
         pthread_mutex_unlock(&g_ml.lock);
-        return false;
+        LOG_FAIL("mempool_limits", "start called but thread already running");
     }
     g_ml.pool = pool;
     g_ml.cfg  = ml_resolve_cfg(cfg_in);

@@ -19,6 +19,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include "util/log_macros.h"
+#include "util/safe_alloc.h"
 
 struct repair_context {
     struct main_state *main_state;
@@ -71,32 +73,32 @@ static bool fetch_utxo_gettxout(int port, const char *creds,
     char resp[65536];
     int rc = rpc_call_local(port, creds, "gettxout", params,
                              resp, sizeof(resp));
-    if (rc <= 0) return false;
+    if (rc <= 0) LOG_FAIL("repair", "gettxout RPC failed for %s:%u", txid_hex, vout);
 
     const char *body = rpc_http_body(resp);
     const char *res = strstr(body, "\"result\"");
-    if (!res) return false;
+    if (!res) LOG_FAIL("repair", "gettxout response missing \"result\" for %s:%u", txid_hex, vout);
     res += 8;
     while (*res == ' ' || *res == ':') res++;
-    if (*res == 'n') return false; /* null = already spent */
+    if (*res == 'n') return false; /* null = already spent — expected, not an error */
 
     /* Extract value (ZCL → zatoshi) */
     const char *vp = strstr(res, "\"value\"");
-    if (!vp) return false;
+    if (!vp) LOG_FAIL("repair", "gettxout missing \"value\" field for %s:%u", txid_hex, vout);
     vp += 7;
     while (*vp == ' ' || *vp == ':') vp++;
     *value = (int64_t)(strtod(vp, NULL) * 100000000.0 + 0.5);
 
     /* Extract scriptPubKey hex */
     const char *sph = strstr(res, "\"hex\"");
-    if (!sph) return false;
+    if (!sph) LOG_FAIL("repair", "gettxout missing scriptPubKey hex for %s:%u", txid_hex, vout);
     sph += 5;
     while (*sph == ' ' || *sph == ':' || *sph == '"') sph++;
     const char *sp = sph;
     size_t slen = 0;
     while (*sp && *sp != '"') { slen++; sp++; }
     slen /= 2;
-    if (slen > 10000) return false;
+    if (slen > 10000) LOG_FAIL("repair", "gettxout script too large (%zu bytes) for %s:%u", slen, txid_hex, vout);
     for (size_t i = 0; i < slen; i++) {
         char hx[3] = { sph[i*2], sph[i*2+1], '\0' };
         script[i] = (uint8_t)strtoul(hx, NULL, 16);
@@ -133,23 +135,23 @@ static bool fetch_utxo_rawtx(int port, const char *creds,
     char params[256];
     snprintf(params, sizeof(params), "[\"%s\", 1]", txid_hex);
 
-    char *resp = malloc(1024 * 1024);
-    if (!resp) return false;
+    char *resp = zcl_malloc(1024 * 1024, "repair_rawtx_buf");
+    if (!resp) LOG_FAIL("repair", "malloc failed for getrawtransaction response buffer");
 
     int rc = rpc_call_local(port, creds, "getrawtransaction", params,
                              resp, 1024 * 1024);
-    if (rc <= 0) { free(resp); return false; }
+    if (rc <= 0) { free(resp); LOG_FAIL("repair", "getrawtransaction RPC failed for %s", txid_hex); }
 
     const char *body = rpc_http_body(resp);
     const char *res = strstr(body, "\"result\"");
-    if (!res) { free(resp); return false; }
+    if (!res) { free(resp); LOG_FAIL("repair", "getrawtransaction missing \"result\" for %s", txid_hex); }
     res += 8;
     while (*res == ' ' || *res == ':') res++;
-    if (*res == 'n') { free(resp); return false; }
+    if (*res == 'n') { free(resp); LOG_FAIL("repair", "getrawtransaction returned null for %s", txid_hex); }
 
     /* Find matching vout entry */
     const char *vout_arr = strstr(res, "\"vout\"");
-    if (!vout_arr) { free(resp); return false; }
+    if (!vout_arr) { free(resp); LOG_FAIL("repair", "getrawtransaction missing \"vout\" array for %s", txid_hex); }
 
     char n_pat[64];
     snprintf(n_pat, sizeof(n_pat), "\"n\": %u", vout);
@@ -158,7 +160,7 @@ static bool fetch_utxo_rawtx(int port, const char *creds,
         snprintf(n_pat, sizeof(n_pat), "\"n\":%u", vout);
         ventry = strstr(vout_arr, n_pat);
     }
-    if (!ventry) { free(resp); return false; }
+    if (!ventry) { free(resp); LOG_FAIL("repair", "getrawtransaction vout %u not found for %s", vout, txid_hex); }
 
     /* Find opening { of this vout object */
     const char *obj = ventry;
@@ -171,21 +173,21 @@ static bool fetch_utxo_rawtx(int port, const char *creds,
 
     /* Extract value */
     const char *vp = strstr(obj, "\"value\"");
-    if (!vp || vp > ventry + 200) { free(resp); return false; }
+    if (!vp || vp > ventry + 200) { free(resp); LOG_FAIL("repair", "getrawtransaction missing \"value\" for %s:%u", txid_hex, vout); }
     vp += 7;
     while (*vp == ' ' || *vp == ':') vp++;
     *value = (int64_t)(strtod(vp, NULL) * 100000000.0 + 0.5);
 
     /* Extract scriptPubKey hex */
     const char *sph = strstr(obj, "\"hex\"");
-    if (!sph || sph > ventry + 2000) { free(resp); return false; }
+    if (!sph || sph > ventry + 2000) { free(resp); LOG_FAIL("repair", "getrawtransaction missing scriptPubKey hex for %s:%u", txid_hex, vout); }
     sph += 5;
     while (*sph == ' ' || *sph == ':' || *sph == '"') sph++;
     const char *sp = sph;
     size_t slen = 0;
     while (*sp && *sp != '"') { slen++; sp++; }
     slen /= 2;
-    if (slen > 10000) { free(resp); return false; }
+    if (slen > 10000) { free(resp); LOG_FAIL("repair", "getrawtransaction script too large (%zu bytes) for %s:%u", slen, txid_hex, vout); }
     for (size_t i = 0; i < slen; i++) {
         char hx[3] = { sph[i*2], sph[i*2+1], '\0' };
         script[i] = (uint8_t)strtoul(hx, NULL, 16);
@@ -219,8 +221,8 @@ static void insert_repaired_utxo(const uint8_t txid_bytes[32], uint32_t vout,
         if (entry) {
             if (entry->coins.num_vout <= vout) {
                 size_t new_size = vout + 1;
-                struct tx_out *nv = realloc(entry->coins.vout,
-                    new_size * sizeof(struct tx_out));
+                struct tx_out *nv = zcl_realloc(entry->coins.vout,
+                    new_size * sizeof(struct tx_out), "repair_coin_vout");
                 if (nv) {
                     for (size_t k = entry->coins.num_vout; k < new_size; k++)
                         tx_out_set_null(&nv[k]);
@@ -251,7 +253,7 @@ static void insert_repaired_utxo(const uint8_t txid_bytes[32], uint32_t vout,
     memcpy(u.txid, txid_bytes, 32);
     u.vout = vout;
     u.value = value;
-    u.script = malloc(script_len);
+    u.script = zcl_malloc(script_len, "repair_utxo_script");
     if (u.script) memcpy(u.script, script_data, script_len);
     u.script_len = script_len;
     u.script_type = stype;
@@ -338,7 +340,7 @@ static bool rpc_repairutxos(const struct json_value *params, bool help,
     sqlite3_exec(ctx->node_db->db, "BEGIN", NULL, NULL, NULL);
 
     size_t blk_buf_size = 4 * 1024 * 1024;
-    char *blk_buf = malloc(blk_buf_size);
+    char *blk_buf = zcl_malloc(blk_buf_size, "repair_blk_buf");
     if (!blk_buf) {
         json_set_str(result, "Out of memory");
         return false;

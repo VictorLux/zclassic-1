@@ -30,6 +30,9 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "util/log_macros.h"
+#include "util/safe_alloc.h"
+
 /* ── Layout check ───────────────────────────────────────────── */
 
 struct aii_sidecar_header {
@@ -84,7 +87,7 @@ static bool aii_hash_body(const char *body_path,
     sha3_256_init(&ctx);
 
     enum { BUF_SIZE = 1u << 20 };  /* 1 MiB */
-    uint8_t *buf = malloc(BUF_SIZE);
+    uint8_t *buf = zcl_malloc(BUF_SIZE, "aii hash body buf");
     if (!buf) { fclose(f); return false; }
 
     uint64_t total = 0;

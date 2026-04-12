@@ -9,6 +9,7 @@
  *   zmarket_status  — show active downloads/uploads */
 
 #include "net/file_market.h"
+#include "util/log_macros.h"
 #include "json/json.h"
 #include "rpc/server.h"
 #include "models/database.h"

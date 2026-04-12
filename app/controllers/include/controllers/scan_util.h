@@ -15,6 +15,7 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
+#include "util/safe_alloc.h"
 
 /* ── Address hash table ────────────────────────────────────── */
 
@@ -47,7 +48,7 @@ static inline void scan_aht_insert(struct scan_addr_ht *t, const uint8_t hash[20
     unsigned b = scan_fnv20(hash);
     for (struct scan_addr_entry *e = t->buckets[b]; e; e = e->next)
         if (memcmp(e->hash, hash, 20) == 0) return;
-    struct scan_addr_entry *e = malloc(sizeof(*e));
+    struct scan_addr_entry *e = zcl_malloc(sizeof(*e), "scan_addr_entry");
     if (!e) return;
     memcpy(e->hash, hash, 20);
     e->next = t->buckets[b];
@@ -112,7 +113,7 @@ static inline void scan_uset_init(struct scan_utxo_set *s)
 {
     memset(s, 0, sizeof(*s));
     s->cap = 4096;
-    s->items = calloc((size_t)s->cap, sizeof(struct scan_mem_utxo));
+    s->items = zcl_calloc((size_t)s->cap, sizeof(struct scan_mem_utxo), "scan utxo set");
 }
 
 static inline void scan_uset_add(struct scan_utxo_set *s, const struct scan_mem_utxo *u)
@@ -125,7 +126,7 @@ static inline void scan_uset_add(struct scan_utxo_set *s, const struct scan_mem_
     int i = s->count++;
     s->items[i] = *u;
     unsigned b = scan_outpoint_hash(u->txid, u->vout);
-    struct scan_utxo_ht_entry *e = malloc(sizeof(*e));
+    struct scan_utxo_ht_entry *e = zcl_malloc(sizeof(*e), "scan_utxo_ht_entry");
     if (!e) return;
     e->idx = i;
     e->next = s->buckets[b];
@@ -174,7 +175,7 @@ static inline void scan_wl_init(struct scan_wtx_list *l)
 {
     memset(l, 0, sizeof(*l));
     l->cap = 256;
-    l->items = calloc((size_t)l->cap, sizeof(struct scan_mem_wtx));
+    l->items = zcl_calloc((size_t)l->cap, sizeof(struct scan_mem_wtx), "scan wtx list");
 }
 
 static inline void scan_wl_add(struct scan_wtx_list *l, const struct scan_mem_wtx *t)

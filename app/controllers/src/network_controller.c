@@ -3,6 +3,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "controllers/network_controller.h"
+#include "util/log_macros.h"
 #include "controllers/strong_params.h"
 #include "event/event.h"
 #include "json/json.h"

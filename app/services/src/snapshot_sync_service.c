@@ -33,6 +33,8 @@
 #include "event/event.h"
 #include "config/runtime.h"
 #include "util/trace.h"
+#include "util/log_macros.h"
+#include "util/safe_alloc.h"
 #include "validation/main_state.h"
 #include "validation/contextual_check_tx.h"
 #include <string.h>
@@ -122,7 +124,7 @@ static bool snapsync_enter_receive_mode_write(struct node_db *ndb, void *ctx)
     if (!ndb || !ndb->open) {
         if (ok)
             *ok = false;
-        return false;
+        LOG_FAIL("snapshot_sync", "enter_receive_mode: ndb null or not open");
     }
 
     /* Use synchronous=NORMAL (not OFF) for crash safety.  In WAL mode,
@@ -134,7 +136,7 @@ static bool snapsync_enter_receive_mode_write(struct node_db *ndb, void *ctx)
         !node_db_exec(ndb, "PRAGMA wal_autocheckpoint=0")) {
         if (ok)
             *ok = false;
-        return false;
+        LOG_FAIL("snapshot_sync", "enter_receive_mode: PRAGMA setup failed");
     }
     sqlite3_busy_timeout(ndb->db, 10000);
     snapsync_set_db_mode_flag(ndb, true);
@@ -151,7 +153,7 @@ static bool snapsync_exit_receive_mode_write(struct node_db *ndb, void *ctx)
     if (!ndb || !ndb->open) {
         if (ok)
             *ok = false;
-        return false;
+        LOG_FAIL("snapshot_sync", "exit_receive_mode: ndb null or not open");
     }
 
     if (!node_db_exec(ndb, "PRAGMA synchronous=NORMAL") ||
@@ -159,12 +161,12 @@ static bool snapsync_exit_receive_mode_write(struct node_db *ndb, void *ctx)
         !node_db_exec(ndb, "PRAGMA wal_autocheckpoint=1000")) {
         if (ok)
             *ok = false;
-        return false;
+        LOG_FAIL("snapshot_sync", "exit_receive_mode: PRAGMA restore failed");
     }
     if (!node_db_wal_checkpoint(ndb)) {
         if (ok)
             *ok = false;
-        return false;
+        LOG_FAIL("snapshot_sync", "exit_receive_mode: WAL checkpoint failed");
     }
     snapsync_set_db_mode_flag(ndb, false);
     printf("db: snapshot receive mode cleared (synchronous=NORMAL, indexes preserved)\n");
@@ -179,7 +181,7 @@ static bool snapsync_exit_turbo_mode(struct snapshot_sync_service *svc)
     bool ok = false;
 
     if (!svc || !svc->ndb)
-        return false;
+        LOG_FAIL("snapshot_sync", "exit_turbo_mode: svc or ndb is NULL");
 
     snapsync_service_lock();
     turbo_active = svc->turbo_active;
@@ -202,7 +204,7 @@ static struct db_service *snapsync_db_service(
     struct db_service *dbsvc = app_runtime_db_service();
 
     if (!svc || !dbsvc)
-        return NULL;
+        return NULL;  /* normal: db_service may not be wired yet */
     return db_service_node_db(dbsvc) == svc->ndb ? dbsvc : NULL;
 }
 
@@ -213,7 +215,7 @@ static bool snapsync_run_write(struct snapshot_sync_service *svc,
     struct db_service *dbsvc = snapsync_db_service(svc);
 
     if (!svc || !svc->ndb || !fn)
-        return false;
+        LOG_FAIL("snapshot_sync", "run_write: null svc, ndb, or fn pointer");
     if (dbsvc)
         return db_service_run_write(dbsvc, fn, ctx);
     return fn(svc->ndb, ctx);
@@ -225,7 +227,8 @@ static bool snapsync_begin_receive_write(struct node_db *ndb, void *ctx)
     struct node_db_status status = {0};
 
     if (!svc || !ndb || !ndb->open)
-        return false;
+        LOG_FAIL("snapshot_sync", "begin_receive_write: svc=%p ndb=%p open=%d",
+                 (void*)svc, (void*)ndb, ndb ? ndb->open : 0);
 
     node_db_get_status(ndb, &status);
     if (status.tx_open) {
@@ -252,7 +255,7 @@ static bool snapsync_begin_receive_write(struct node_db *ndb, void *ctx)
     {
         DB_TXN_SCOPE(txn, ndb, "snapsync.begin_receive");
         if (!txn)
-            return false;
+            LOG_FAIL("snapshot_sync", "begin_receive_write: failed to open db_txn scope");
 
         struct recovery_policy rp;
         policy_load_from_env(&rp);
@@ -269,10 +272,10 @@ static bool snapsync_begin_receive_write(struct node_db *ndb, void *ctx)
         }
 
         if (!node_db_wipe_utxos(ndb))
-            return false;  /* scope auto-rollback */
+            LOG_FAIL("snapshot_sync", "begin_receive_write: node_db_wipe_utxos failed");
 
         if (!db_txn_commit(txn))
-            return false;
+            LOG_FAIL("snapshot_sync", "begin_receive_write: db_txn_commit failed after wipe");
     }
 
     /* Reopen a plain transaction for the chunk receive loop. The
@@ -280,7 +283,7 @@ static bool snapsync_begin_receive_write(struct node_db *ndb, void *ctx)
      * SNAPSYNC_BATCH_COMMIT_ROWS rows and relies on having an open
      * transaction at entry. */
     if (!node_db_begin(ndb))
-        return false;
+        LOG_FAIL("snapshot_sync", "begin_receive_write: node_db_begin failed for chunk loop");
 
     svc->received_utxos = 0;
     svc->last_commit_at = 0;
@@ -293,7 +296,7 @@ static bool snapsync_rollback_receive_write(struct node_db *ndb, void *ctx)
 
     (void)ctx;
     if (!ndb || !ndb->open)
-        return false;
+        LOG_FAIL("snapshot_sync", "rollback_receive_write: ndb null or not open");
     node_db_get_status(ndb, &status);
     if (!status.tx_open)
         return true;
@@ -313,15 +316,16 @@ static int snapsync_apply_chunk_local(struct snapshot_sync_service *svc,
     uint64_t received = 0;
 
     if (!svc || !svc->ndb || !svc->ndb->open || !chunk_data || chunk_len < 4)
-        return -1;
+        LOG_ERR("snapshot_sync", "apply_chunk: invalid args svc=%p chunk=%p len=%zu",
+                (void*)svc, (void*)chunk_data, chunk_len);
 
     entries = chunk_data[0] | ((uint32_t)chunk_data[1] << 8) |
               ((uint32_t)chunk_data[2] << 16) | ((uint32_t)chunk_data[3] << 24);
     if (entries == 0 || entries > 1000)
-        return -1;
+        LOG_ERR("snapshot_sync", "apply_chunk: bad entry count %u", entries);
 
     for (uint32_t i = 0; i < entries; i++) {
-        if (pos + 48 > chunk_len) return -1;
+        if (pos + 48 > chunk_len) LOG_ERR("snapshot_sync", "apply_chunk: truncated entry %u at pos %zu (need 48, have %zu)", i, pos, chunk_len);
 
         struct db_utxo u;
         memset(&u, 0, sizeof(u));
@@ -341,22 +345,22 @@ static int snapsync_apply_chunk_local(struct snapshot_sync_service *svc,
                     (chunk_data[pos+2] << 16) | (chunk_data[pos+3] << 24));
         pos += 4;
 
-        if (pos >= chunk_len) return -1;
+        if (pos >= chunk_len) LOG_ERR("snapshot_sync", "apply_chunk: truncated at coinbase flag, entry %u pos %zu", i, pos);
         u.is_coinbase = (chunk_data[pos++] != 0);
 
-        if (pos >= chunk_len) return -1;
+        if (pos >= chunk_len) LOG_ERR("snapshot_sync", "apply_chunk: truncated at script varint, entry %u pos %zu", i, pos);
         uint64_t slen = chunk_data[pos++];
         if (slen == 253) {
-            if (pos + 2 > chunk_len) return -1;
+            if (pos + 2 > chunk_len) LOG_ERR("snapshot_sync", "apply_chunk: truncated at 2-byte varint, entry %u pos %zu", i, pos);
             slen = chunk_data[pos] | (chunk_data[pos+1] << 8);
             pos += 2;
         } else if (slen == 254) {
-            if (pos + 4 > chunk_len) return -1;
+            if (pos + 4 > chunk_len) LOG_ERR("snapshot_sync", "apply_chunk: truncated at 4-byte varint, entry %u pos %zu", i, pos);
             slen = chunk_data[pos] | ((uint32_t)chunk_data[pos+1] << 8) |
                    ((uint32_t)chunk_data[pos+2] << 16) | ((uint32_t)chunk_data[pos+3] << 24);
             pos += 4;
         }
-        if (pos + slen > chunk_len) return -1;
+        if (pos + slen > chunk_len) LOG_ERR("snapshot_sync", "apply_chunk: script overflows chunk, entry %u pos %zu slen %llu", i, pos, (unsigned long long)slen);
 
         u.script = (uint8_t *)(chunk_data + pos);
         u.script_len = (size_t)slen;
@@ -366,7 +370,7 @@ static int snapsync_apply_chunk_local(struct snapshot_sync_service *svc,
                                              u.address_hash, &u.has_address);
 
         if (!db_utxo_insert_raw(svc->ndb, &u))
-            return -1;
+            LOG_ERR("snapshot_sync", "apply_chunk: db_utxo_insert_raw failed at entry %u vout=%u", i, u.vout);
         applied++;
     }
 
@@ -389,7 +393,7 @@ static int snapsync_apply_chunk_local(struct snapshot_sync_service *svc,
 
     if (commit_batch) {
         if (!node_db_commit(svc->ndb) || !node_db_begin(svc->ndb))
-            return -1;
+            LOG_ERR("snapshot_sync", "apply_chunk: batch commit/begin failed at %llu UTXOs", (unsigned long long)received);
 
         double elapsed_s = (double)(now_us() - svc->start_time_us) / 1000000.0;
         double rate = elapsed_s > 0 ? (double)received / elapsed_s : 0;
@@ -408,7 +412,7 @@ static bool snapsync_apply_chunk_write(struct node_db *ndb, void *ctx)
 
     (void)ndb;
     if (!apply || !apply->svc || !apply->chunk_data)
-        return false;
+        LOG_FAIL("snapshot_sync", "apply_chunk_write: null context apply=%p", (void*)apply);
     apply->applied = snapsync_apply_chunk_local(apply->svc,
                                                 apply->chunk_data,
                                                 apply->chunk_len);
@@ -428,12 +432,12 @@ static bool snapsync_finalize_write(struct node_db *ndb, void *ctx)
     double elapsed_s;
 
     if (!finalize || !finalize->svc || !ndb || !ndb->open)
-        return false;
+        LOG_FAIL("snapshot_sync", "finalize_write: null args finalize=%p ndb=%p", (void*)finalize, (void*)ndb);
     svc = finalize->svc;
 
     node_db_get_status(ndb, &db_status);
     if (db_status.tx_open && !node_db_commit(ndb))
-        return false;
+        LOG_FAIL("snapshot_sync", "finalize_write: failed to commit open transaction");
 
     snapsync_service_lock();
     svc->state = SNAPSYNC_VERIFYING;
@@ -465,11 +469,11 @@ static bool snapsync_finalize_write(struct node_db *ndb, void *ctx)
         {
             DB_TXN_SCOPE(txn, ndb, "snapsync.finalize");
             if (!txn)
-                return false;
+                LOG_FAIL("snapshot_sync", "finalize_write: failed to open db_txn for commitment update");
 
             if (!node_db_state_set(ndb, "coins_best_block",
                                    svc->offered_block_hash, 32))
-                return false;  /* scope auto-rollback */
+                LOG_FAIL("snapshot_sync", "finalize_write: failed to set coins_best_block");
             for (int i = 0; i < 32; i++) {
                 if (svc->offered_mmb_root[i]) {
                     has_mmb = true;
@@ -481,14 +485,14 @@ static bool snapsync_finalize_write(struct node_db *ndb, void *ctx)
                                        svc->offered_mmb_root, 32) ||
                     !node_db_state_set(ndb, "snapshot_mmr_height",
                                        &svc->offered_height, 4))
-                    return false;  /* scope auto-rollback */
+                    LOG_FAIL("snapshot_sync", "finalize_write: failed to set snapshot_mmb_root/mmr_height");
             }
 
             if (!db_txn_commit(txn))
-                return false;
+                LOG_FAIL("snapshot_sync", "finalize_write: db_txn_commit failed for commitment update");
         }
         if (!snapsync_exit_turbo_mode(svc))
-            return false;
+            LOG_FAIL("snapshot_sync", "finalize_write: exit_turbo_mode failed after SHA3 pass");
         snapsync_service_lock();
         svc->state = SNAPSYNC_COMPLETE;
         snapsync_set_state(SNAPSYNC_COMPLETE, "SHA3 verified");
@@ -833,7 +837,8 @@ int snapsync_apply_chunk(struct snapshot_sync_service *svc,
     struct snapsync_apply_chunk_ctx ctx;
     bool restore_turbo = false;
     if (!svc || !chunk_data || chunk_len < 4)
-        return -1;
+        LOG_ERR("snapshot_sync", "apply_chunk: invalid args svc=%p chunk=%p len=%zu",
+                (void*)svc, (void*)chunk_data, chunk_len);
 
     snapsync_service_lock();
 
@@ -846,16 +851,16 @@ int snapsync_apply_chunk(struct snapshot_sync_service *svc,
     }
     if (!svc->ndb || !svc->ndb->open) {
         snapsync_service_unlock();
-        return -1;
+        LOG_ERR("snapshot_sync", "apply_chunk: ndb null or not open during RECEIVING");
     }
     restore_turbo = svc->turbo_active;
 
     memset(&ctx, 0, sizeof(ctx));
     ctx.svc = svc;
-    ctx.chunk_data = malloc(chunk_len);
+    ctx.chunk_data = zcl_malloc(chunk_len, "snapsync chunk copy");
     if (!ctx.chunk_data) {
         snapsync_service_unlock();
-        return -1;
+        LOG_ERR("snapshot_sync", "apply_chunk: malloc(%zu) failed for chunk copy", chunk_len);
     }
     memcpy(ctx.chunk_data, chunk_data, chunk_len);
     ctx.chunk_len = chunk_len;
@@ -887,7 +892,7 @@ bool snapsync_finalize(struct snapshot_sync_service *svc)
     bool keep_failed_state = false;
 
     if (!svc)
-        return false;
+        LOG_FAIL("snapshot_sync", "finalize: svc is NULL");
     snapsync_service_lock();
     finalize_allowed = (svc->state == SNAPSYNC_RECEIVING &&
                        svc->ndb && svc->ndb->open);
@@ -896,7 +901,7 @@ bool snapsync_finalize(struct snapshot_sync_service *svc)
     snapsync_service_unlock();
 
     if (!finalize_allowed) {
-        return false;
+        LOG_FAIL("snapshot_sync", "finalize: not allowed (state != RECEIVING or ndb not open)");
     }
 
     memset(&ctx, 0, sizeof(ctx));
@@ -1165,7 +1170,7 @@ bool snapsync_build_request_pow(const uint8_t peer_ip[16],
     uint8_t peer_id[32];
 
     if (!peer_ip || !pow)
-        return false;
+        LOG_FAIL("snapshot_sync", "build_request_pow: peer_ip=%p pow=%p", (void*)peer_ip, (void*)pow);
 
     memset(pow, 0, sizeof(*pow));
     sha3_256(peer_ip, 16, peer_id);
@@ -1176,7 +1181,7 @@ bool snapsync_parse_offer_params(struct snapshot_offer_params *params,
                                  struct byte_stream *s)
 {
     if (!params || !s)
-        return false;
+        LOG_FAIL("snapshot_sync", "parse_offer_params: params=%p stream=%p", (void*)params, (void*)s);
 
     memset(params, 0, sizeof(*params));
     if (!stream_read_i32_le(s, &params->height) ||
@@ -1185,7 +1190,8 @@ bool snapsync_parse_offer_params(struct snapshot_offer_params *params,
         !stream_read_bytes(s, params->mmr_root, 32) ||
         !stream_read_u64_le(s, &params->num_utxos) ||
         !stream_read_u64_le(s, &params->total_bytes)) {
-        return false;
+        LOG_FAIL("snapshot_sync", "parse_offer_params: truncated stream at pos %zu/%zu",
+                 s->read_pos, s->size);
     }
 
     if (s->size - s->read_pos >= 32)
@@ -1199,12 +1205,13 @@ bool snapsync_parse_fc_response(struct fc_response *resp,
     uint32_t num_samples = 0;
 
     if (!resp || !s)
-        return false;
+        LOG_FAIL("snapshot_sync", "parse_fc_response: resp=%p stream=%p", (void*)resp, (void*)s);
 
     memset(resp, 0, sizeof(*resp));
     if (!stream_read_u32_le(s, &num_samples) ||
         num_samples == 0 || num_samples > FC_MAX_SAMPLES) {
-        return false;
+        LOG_FAIL("snapshot_sync", "parse_fc_response: bad num_samples=%u (max=%d)",
+                 num_samples, FC_MAX_SAMPLES);
     }
 
     resp->num_samples = num_samples;
@@ -1220,26 +1227,30 @@ bool snapsync_parse_fc_response(struct fc_response *resp,
             !stream_read_bytes(s, sample->proof.leaf_hash, 32) ||
             !stream_read_u32_le(s, &sample->proof.num_siblings) ||
             sample->proof.num_siblings > MMB_MAX_MOUNTAINS) {
-            return false;
+            LOG_FAIL("snapshot_sync", "parse_fc_response: truncated sample %u at pos %zu/%zu",
+                     i, s->read_pos, s->size);
         }
 
         for (uint32_t j = 0; j < sample->proof.num_siblings; j++) {
             if (!stream_read_bytes(s, sample->proof.siblings[j], 32))
-                return false;
+                LOG_FAIL("snapshot_sync", "parse_fc_response: truncated sibling %u/%u in sample %u",
+                         j, sample->proof.num_siblings, i);
         }
 
         if (!stream_read_u32_le(s, &sample->proof.num_peaks) ||
             sample->proof.num_peaks > MMB_MAX_MOUNTAINS) {
-            return false;
+            LOG_FAIL("snapshot_sync", "parse_fc_response: bad num_peaks=%u in sample %u",
+                     sample->proof.num_peaks, i);
         }
 
         for (uint32_t j = 0; j < sample->proof.num_peaks; j++) {
             if (!stream_read_bytes(s, sample->proof.peaks[j], 32))
-                return false;
+                LOG_FAIL("snapshot_sync", "parse_fc_response: truncated peak %u/%u in sample %u",
+                         j, sample->proof.num_peaks, i);
         }
 
         if (!stream_read_u64_le(s, &sample->proof.mmb_size))
-            return false;
+            LOG_FAIL("snapshot_sync", "parse_fc_response: truncated mmb_size in sample %u", i);
     }
 
     return true;
@@ -1249,7 +1260,7 @@ bool snapsync_write_fc_challenge(const struct snapshot_sync_service *svc,
                                  struct byte_stream *s)
 {
     if (!svc || !s)
-        return false;
+        LOG_FAIL("snapshot_sync", "write_fc_challenge: svc=%p stream=%p", (void*)svc, (void*)s);
 
     stream_write_bytes(s, svc->fc_challenge.seed, 32);
     stream_write_u64_le(s, svc->fc_challenge.chain_length);
@@ -1264,9 +1275,9 @@ bool snapsync_write_snapshot_request(struct byte_stream *s,
     struct fast_sync_pow pow;
 
     if (!s || !peer_ip)
-        return false;
+        LOG_FAIL("snapshot_sync", "write_snapshot_request: s=%p peer_ip=%p", (void*)s, (void*)peer_ip);
     if (!snapsync_build_request_pow(peer_ip, &pow))
-        return false;
+        LOG_FAIL("snapshot_sync", "write_snapshot_request: build_request_pow failed");
 
     stream_write_i32_le(s, our_height);
     stream_write_bytes(s, pow.peer_id, 32);
@@ -1286,12 +1297,14 @@ bool snapsync_build_fc_response(struct fc_response *resp,
 
     if (!resp || !challenge || !chain_active || !leaf_store ||
         !leaf_store->open || leaf_store->num_leaves == 0) {
-        return false;
+        LOG_FAIL("snapshot_sync", "build_fc_response: invalid args resp=%p challenge=%p chain=%p leaves=%llu",
+                 (void*)resp, (void*)challenge, (void*)chain_active,
+                 leaf_store ? (unsigned long long)leaf_store->num_leaves : 0ULL);
     }
 
     all_hashes = mmb_leaf_store_all(leaf_store);
     if (!all_hashes)
-        return false;
+        LOG_FAIL("snapshot_sync", "build_fc_response: mmb_leaf_store_all returned NULL");
 
     memset(resp, 0, sizeof(*resp));
     fc_generate_indices(challenge->seed, challenge->chain_length,
@@ -1305,7 +1318,7 @@ bool snapsync_build_fc_response(struct fc_response *resp,
         struct fc_sample *sample = &resp->samples[i];
 
         if (!bi || !bi->phashBlock)
-            return false;
+            LOG_FAIL("snapshot_sync", "build_fc_response: no block_index at height %d for sample %u", h, i);
 
         mmb_leaf_from_block(&sample->leaf,
                             bi->phashBlock->data,
@@ -1316,12 +1329,12 @@ bool snapsync_build_fc_response(struct fc_response *resp,
         if (prove_len > leaf_store->num_leaves)
             prove_len = leaf_store->num_leaves;
         if (!mmb_prove(all_hashes, prove_len, (uint64_t)h, &sample->proof))
-            return false;
+            LOG_FAIL("snapshot_sync", "build_fc_response: mmb_prove failed for height %d sample %u", h, i);
     }
 
     for (uint32_t i = 0; i < count; i++) {
         if (!mmb_verify(&resp->samples[i].proof, challenge->mmb_root))
-            return false;
+            LOG_FAIL("snapshot_sync", "build_fc_response: mmb_verify failed for sample %u", i);
     }
 
     return true;
@@ -1332,7 +1345,8 @@ bool snapsync_write_fc_response(struct byte_stream *s,
 {
     if (!s || !resp || resp->num_samples == 0 ||
         resp->num_samples > FC_MAX_SAMPLES) {
-        return false;
+        LOG_FAIL("snapshot_sync", "write_fc_response: invalid args s=%p resp=%p samples=%u",
+                 (void*)s, (void*)resp, resp ? resp->num_samples : 0);
     }
 
     stream_write_u32_le(s, resp->num_samples);
@@ -1368,7 +1382,7 @@ static bool snapsync_commit_tip(struct main_state *ms,
                                  struct block_index *new_tip,
                                  const char *reason)
 {
-    if (!new_tip || !new_tip->phashBlock) return false;
+    if (!new_tip || !new_tip->phashBlock) LOG_FAIL("snapshot_sync", "commit_tip: new_tip=%p phashBlock=%p", (void*)new_tip, new_tip ? (void*)new_tip->phashBlock : NULL);
 
     struct chain_state_commit commit = {
         .new_tip             = new_tip,
@@ -1409,7 +1423,7 @@ int snapsync_activate_verified_tip(const struct snapshot_sync_service *svc,
     struct block_index *snap_bi;
 
     if (!svc || !ms)
-        return -1;
+        LOG_ERR("snapshot_sync", "activate_verified_tip: svc=%p ms=%p", (void*)svc, (void*)ms);
 
     memcpy(snap_hash.data, svc->offered_block_hash, 32);
     snap_bi = block_map_find(&ms->map_block_index, &snap_hash);
@@ -1426,9 +1440,9 @@ int snapsync_activate_verified_tip(const struct snapshot_sync_service *svc,
          * We do NOT set this as the active chain tip because active_chain
          * requires a full pprev chain. Instead, we store it as a snapshot
          * anchor that push_getheaders uses as its locator starting point. */
-        snap_bi = calloc(1, sizeof(struct block_index));
+        snap_bi = zcl_calloc(1, sizeof(struct block_index), "snapsync anchor block_index");
         if (!snap_bi)
-            return -1;
+            LOG_ERR("snapshot_sync", "activate_verified_tip: calloc block_index failed (%zu bytes)", sizeof(struct block_index));
         block_index_init(snap_bi);
         snap_bi->nHeight = svc->offered_height;
         snap_bi->nStatus = BLOCK_VALID_TREE | BLOCK_HAVE_DATA;
@@ -1586,7 +1600,8 @@ bool snapsync_prepare_serve_step(struct snapsync_serve_step *step,
     bool ok = true;
 
     if (!step || !node || !buf || buf_size <= 0)
-        return false;
+        LOG_FAIL("snapshot_sync", "prepare_serve_step: invalid args step=%p node=%p buf=%p size=%lld",
+                 (void*)step, (void*)node, (void*)buf, (long long)buf_size);
 
     memset(step, 0, sizeof(*step));
     if (node->zsync_file_size == 0)
@@ -1606,13 +1621,13 @@ bool snapsync_prepare_serve_step(struct snapsync_serve_step *step,
     }
 
     if (pos + 4 > buf_size)
-        return false;
+        LOG_FAIL("snapshot_sync", "prepare_serve_step: pos %lld + 4 > buf_size %lld", (long long)pos, (long long)buf_size);
 
     entries = buf[pos] | ((uint32_t)buf[pos + 1] << 8) |
               ((uint32_t)buf[pos + 2] << 16) |
               ((uint32_t)buf[pos + 3] << 24);
     if (entries == 0 || entries > 1000)
-        return false;
+        LOG_FAIL("snapshot_sync", "prepare_serve_step: bad entry count %u at pos %lld", entries, (long long)pos);
 
     scan = pos + 4;
     for (uint32_t i = 0; i < entries && ok; i++) {
@@ -1646,7 +1661,8 @@ bool snapsync_prepare_serve_step(struct snapsync_serve_step *step,
     }
 
     if (!ok || scan > buf_size)
-        return false;
+        LOG_FAIL("snapshot_sync", "prepare_serve_step: scan overflow scan=%lld buf_size=%lld entries=%u",
+                 (long long)scan, (long long)buf_size, entries);
 
     step->action = SNAPSYNC_SERVE_ACTION_SEND_CHUNK;
     step->chunk_offset = pos;
@@ -1785,7 +1801,7 @@ bool snapsync_verify_flyclient(struct snapshot_sync_service *svc,
     struct fc_challenge challenge;
 
     if (!svc || !resp)
-        return false;
+        LOG_FAIL("snapshot_sync", "verify_flyclient: svc=%p resp=%p", (void*)svc, (void*)resp);
 
     snapsync_service_lock();
     state = svc->state;
@@ -1795,7 +1811,7 @@ bool snapsync_verify_flyclient(struct snapshot_sync_service *svc,
     if (state != SNAPSYNC_NEGOTIATING) {
         printf("[snapsync] FlyClient: wrong state %s\n",
                snapsync_state_name(state));
-        return false;
+        return false;  /* already logged */
     }
 
     /* Verify all samples against the challenge */
@@ -1840,7 +1856,7 @@ bool snapsync_verify_flyclient(struct snapshot_sync_service *svc,
     svc->fc_verified = false;
     snapsync_service_unlock();
     if (!snapsync_begin_receive(svc))
-        return false;
+        LOG_FAIL("snapshot_sync", "verify_flyclient: begin_receive failed after FlyClient pass");
 
     snapsync_service_lock();
     svc->fc_verified = true;
@@ -1863,7 +1879,7 @@ bool snapsync_handle_end(struct snapshot_sync_service *svc, uint32_t peer_id)
     uint32_t serving_peer_id = 0;
     uint64_t received = 0;
 
-    if (!svc) return false;
+    if (!svc) LOG_FAIL("snapshot_sync", "handle_end: svc is NULL");
     snapsync_service_lock();
     state = svc->state;
     serving_peer_id = svc->serving_peer_id;

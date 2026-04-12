@@ -34,6 +34,8 @@
 #include <string.h>
 #include <stdbool.h>
 
+#include "util/safe_alloc.h"
+
 /* Process-wide middleware.  Populated from environment at boot. */
 static struct mcp_middleware g_middleware;
 
@@ -63,7 +65,7 @@ static void handle_tools_list(const struct json_value *req)
 {
     const struct json_value *id = json_get(req, "id");
     size_t cap = 65536;
-    char *buf = malloc(cap);
+    char *buf = zcl_malloc(cap, "mcp tools list buf");
     if (!buf) return;
 
     int pos = snprintf(buf, cap,
@@ -109,8 +111,8 @@ static void handle_tools_call(const struct json_value *req)
     /* Embed result as MCP text content, escaping for JSON. */
     size_t rlen = strlen(result);
     size_t cap = rlen * 2 + 512;
-    char *resp = malloc(cap);
-    char *escaped = malloc(rlen * 2 + 1);
+    char *resp = zcl_malloc(cap, "mcp tools call response");
+    char *escaped = zcl_malloc(rlen * 2 + 1, "mcp tools call escaped");
     size_t ei = 0;
     for (size_t i = 0; i < rlen; i++) {
         char c = result[i];

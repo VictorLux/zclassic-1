@@ -40,6 +40,8 @@
 #include <stdatomic.h>
 #include <pthread.h>
 #include <signal.h>
+#include "util/log_macros.h"
+#include "util/safe_alloc.h"
 
 extern volatile sig_atomic_t g_shutdown_requested;
 
@@ -111,7 +113,7 @@ static struct db_service *sync_db_service_for(struct node_db *ndb)
     struct db_service *dbsvc = app_runtime_db_service();
 
     if (!ndb || !dbsvc)
-        return NULL;
+        LOG_NULL("sync", "ndb or dbsvc is NULL");
     return db_service_node_db(dbsvc) == ndb ? dbsvc : NULL;
 }
 
@@ -143,7 +145,7 @@ static bool sync_db_turbo_scope_begin(struct sync_db_turbo_scope *scope,
                                      bool enabled)
 {
     if (!scope)
-        return false;
+        LOG_FAIL("sync", "turbo scope is NULL");
 
     scope->ndb = (enabled ? ndb : NULL);
     scope->entered = false;
@@ -151,7 +153,7 @@ static bool sync_db_turbo_scope_begin(struct sync_db_turbo_scope *scope,
         return true;
 
     if (!sync_db_enter_turbo_mode(ndb))
-        return false;
+        LOG_FAIL("sync", "failed to enter turbo mode on ndb");
 
     scope->entered = true;
     return true;
@@ -163,7 +165,7 @@ static bool sync_db_turbo_scope_end(struct sync_db_turbo_scope *scope)
         return true;
 
     if (!sync_db_restore_normal_mode(scope->ndb))
-        return false;
+        LOG_FAIL("sync", "failed to restore normal mode on ndb");
 
     scope->entered = false;
     scope->ndb = NULL;
@@ -266,7 +268,8 @@ static bool node_db_sync_wallet_tx_checked(struct node_db *ndb,
     };
 
     if (!ndb || !ndb->open || !tx || !w)
-        return false;
+        LOG_FAIL("sync", "wallet_tx_checked: invalid args (ndb=%p, tx=%p, w=%p)",
+                 (void *)ndb, (void *)tx, (void *)w);
 
     bool ok = sync_run_write(ndb, node_db_sync_wallet_tx_write, &ctx) && ctx.ok;
     if (is_ours_out)
@@ -283,7 +286,7 @@ static bool sync_run_write(struct node_db *ndb,
     struct db_service *dbsvc = sync_db_service_for(ndb);
 
     if (!ndb || !fn)
-        return false;
+        LOG_FAIL("sync", "sync_run_write: ndb=%p fn is NULL=%d", (void *)ndb, fn == NULL);
     if (dbsvc)
         return db_service_run_write(dbsvc, fn, ctx);
     return fn(ndb, ctx);
@@ -308,11 +311,13 @@ bool node_db_sync_open_private_db_like(const struct node_db *src,
     const char *path;
 
     if (!src || !out || !src->open || !src->db)
-        return false;
+        LOG_FAIL("sync", "open_private_db_like: invalid args (src=%p, out=%p)",
+                 (void *)src, (void *)out);
 
     path = sqlite3_db_filename(src->db, "main");
     if (!path || !path[0] || strcmp(path, ":memory:") == 0)
-        return false;
+        LOG_FAIL("sync", "open_private_db_like: no valid filename (path=%s)",
+                 path ? path : "NULL");
 
     memset(out, 0, sizeof(*out));
     return node_db_open(out, path);
@@ -379,8 +384,8 @@ static bool advance_wallet_witnesses(struct node_db *ndb,
     int num_with_witness = 0;
     int *witness_idx = NULL; /* maps witness array → wnotes index */
     if (nw > 0) {
-        witnesses = calloc((size_t)nw, sizeof(struct incremental_witness));
-        witness_idx = calloc((size_t)nw, sizeof(int));
+        witnesses = zcl_calloc((size_t)nw, sizeof(struct incremental_witness), "sync witnesses");
+        witness_idx = zcl_calloc((size_t)nw, sizeof(int), "sync witness_idx");
         for (int i = 0; i < nw; i++) {
             if (!has_witness[i]) continue;
             uint8_t *wblob = NULL;
@@ -482,12 +487,13 @@ static bool node_db_sync_connect_block_local(struct node_db *ndb,
     bool tx_active = false;
 
     if (!ndb || !ndb->open || !blk || !pindex || !pindex->phashBlock)
-        return false;
+        LOG_FAIL("sync", "connect_block_local: invalid args (ndb=%p, blk=%p, pindex=%p)",
+                 (void *)ndb, (void *)blk, (void *)pindex);
 
     /* Batch mode: start transaction if not already in one */
     if (!ndb->sync_in_batch) {
         if (!node_db_begin(ndb))
-            return false;
+            LOG_FAIL("sync", "connect_block_local: BEGIN failed");
         ndb->sync_in_batch = true;
         ndb->sync_pending_blocks = 0;
         tx_active = true;
@@ -547,7 +553,8 @@ static bool node_db_sync_connect_block_local(struct node_db *ndb,
 
         if (!db_tx_save(ndb, &db_tx)) {
             node_db_rollback(ndb);
-            return false;
+            LOG_FAIL("sync", "connect_block: db_tx_save failed at height %d tx %zu",
+                     pindex->nHeight, i);
         }
 
         /* UTXOs are managed by coins_view_sqlite (the canonical UTXO store).
@@ -682,7 +689,7 @@ fail:
         node_db_rollback(ndb);
     ndb->sync_in_batch = false;
     ndb->sync_pending_blocks = 0;
-    return false;
+    LOG_FAIL("sync", "connect_block_local: failed at height %d", pindex->nHeight);
 }
 
 static bool node_db_sync_connect_block_write(struct node_db *ndb, void *ctx)
@@ -690,7 +697,7 @@ static bool node_db_sync_connect_block_write(struct node_db *ndb, void *ctx)
     struct connect_block_sync_ctx *sync = ctx;
 
     if (!sync || !sync->blk || !sync->pindex)
-        return false;
+        LOG_FAIL("sync", "connect_block_write: invalid ctx (sync=%p)", (void *)sync);
     sync->ok = node_db_sync_connect_block_local(ndb, sync->blk, sync->pindex);
     return sync->ok;
 }
@@ -714,15 +721,16 @@ static bool node_db_sync_disconnect_block_local(struct node_db *ndb,
                                                 const struct block_index *pindex)
 {
     if (!ndb || !ndb->open || !blk || !pindex || !pindex->phashBlock)
-        return false;
+        LOG_FAIL("sync", "disconnect_block_local: invalid args (ndb=%p, blk=%p, pindex=%p)",
+                 (void *)ndb, (void *)blk, (void *)pindex);
 
     /* Flush any pending batch before disconnecting — disconnect needs
      * accurate SQLite state for UTXO restoration */
     if (!node_db_sync_flush(ndb))
-        return false;
+        LOG_FAIL("sync", "disconnect_block: flush failed before disconnect");
 
     if (!node_db_begin(ndb))
-        return false;
+        LOG_FAIL("sync", "disconnect_block: BEGIN failed");
 
     /* Remove transactions in reverse order */
     for (size_t i = blk->num_vtx; i > 0; i--) {
@@ -838,7 +846,7 @@ static bool node_db_sync_disconnect_block_local(struct node_db *ndb,
 
 fail:
     node_db_rollback(ndb);
-    return false;
+    LOG_FAIL("sync", "disconnect_block_local: failed (rolled back)");
 }
 
 static bool node_db_sync_disconnect_block_write(struct node_db *ndb, void *ctx)
@@ -846,7 +854,7 @@ static bool node_db_sync_disconnect_block_write(struct node_db *ndb, void *ctx)
     struct disconnect_block_sync_ctx *sync = ctx;
 
     if (!sync || !sync->blk || !sync->pindex)
-        return false;
+        LOG_FAIL("sync", "disconnect_block_write: invalid ctx (sync=%p)", (void *)sync);
     sync->ok = node_db_sync_disconnect_block_local(ndb,
                                                    sync->blk,
                                                    sync->pindex);
@@ -874,7 +882,8 @@ static bool node_db_sync_wallet_tx_local(struct node_db *ndb,
                                          bool *is_ours_out)
 {
     if (!ndb || !ndb->open || !tx || !w)
-        return false;
+        LOG_FAIL("sync", "wallet_tx_local: invalid args (ndb=%p, tx=%p, w=%p)",
+                 (void *)ndb, (void *)tx, (void *)w);
 
     bool is_ours = false;
     bool from_me = false;
@@ -991,7 +1000,7 @@ static bool node_db_sync_wallet_tx_write(struct node_db *ndb, void *ctx)
     struct wallet_tx_sync_ctx *sync = ctx;
 
     if (!sync || !sync->tx || !sync->wallet)
-        return false;
+        LOG_FAIL("sync", "wallet_tx_write: invalid ctx (sync=%p)", (void *)sync);
     sync->ok = node_db_sync_wallet_tx_local(ndb,
                                            sync->tx,
                                            sync->wallet,
@@ -1014,7 +1023,8 @@ bool node_db_sync_wallet_tx(struct node_db *ndb,
     };
 
     if (!ndb || !ndb->open || !tx || !w)
-        return false;
+        LOG_FAIL("sync", "sync_wallet_tx: invalid args (ndb=%p, tx=%p, w=%p)",
+                 (void *)ndb, (void *)tx, (void *)w);
     return sync_run_write(ndb, node_db_sync_wallet_tx_write, &ctx) &&
            ctx.ok && ctx.is_ours;
 }
@@ -1028,11 +1038,11 @@ static bool node_db_sync_mempool_add_local(struct node_db *ndb,
     struct db_mempool_entry e;
 
     if (!ndb || !tx || !ndb->open)
-        return false;
+        LOG_FAIL("sync", "mempool_add_local: invalid args (ndb=%p, tx=%p)", (void *)ndb, (void *)tx);
 
     raw = serialize_tx(tx, &raw_len);
     if (!raw)
-        return false;
+        LOG_FAIL("sync", "mempool_add_local: serialize_tx returned NULL");
 
     memset(&e, 0, sizeof(e));
     memcpy(e.txid, tx->hash.data, 32);
@@ -1063,7 +1073,7 @@ static bool node_db_sync_mempool_add_write(struct node_db *ndb, void *ctx)
     struct mempool_add_ctx *add = ctx;
 
     if (!add)
-        return false;
+        LOG_FAIL("sync", "mempool_add_write: ctx is NULL");
     add->ok = node_db_sync_mempool_add_local(ndb, add->tx,
                                              add->fee, add->height);
     return add->ok;
@@ -1088,7 +1098,7 @@ static bool node_db_sync_mempool_remove_write(struct node_db *ndb, void *ctx)
     struct mempool_remove_ctx *remove = ctx;
 
     if (!remove || !remove->txid)
-        return false;
+        LOG_FAIL("sync", "mempool_remove_write: invalid ctx (remove=%p)", (void *)remove);
     remove->ok = db_mempool_delete(ndb, remove->txid);
     return remove->ok;
 }
@@ -1110,7 +1120,7 @@ static bool node_db_sync_sapling_note_write(struct node_db *ndb, void *ctx)
     struct sapling_note_sync_ctx *note = ctx;
 
     if (!note)
-        return false;
+        LOG_FAIL("sync", "sapling_note_write: ctx is NULL");
     note->ok = db_sapling_note_save(ndb, &note->note);
     return note->ok;
 }
@@ -1156,7 +1166,8 @@ static bool node_db_sync_sapling_spend_write(struct node_db *ndb, void *ctx)
     sqlite3_stmt *s;
 
     if (!spend || !ndb || !ndb->open)
-        return false;
+        LOG_FAIL("sync", "sapling_spend_write: invalid args (spend=%p, ndb=%p)",
+                 (void *)spend, (void *)ndb);
 
     s = ndb->stmt_nullifier_insert;
     sqlite3_reset(s);
@@ -1179,7 +1190,8 @@ bool node_db_sync_sapling_spend(struct node_db *ndb,
     struct sapling_spend_sync_ctx ctx;
 
     if (!nullifier || !spending_txid)
-        return false;
+        LOG_FAIL("sync", "sapling_spend: nullifier=%p spending_txid=%p",
+                 (void *)nullifier, (void *)spending_txid);
     memset(&ctx, 0, sizeof(ctx));
     memcpy(ctx.nullifier, nullifier, sizeof(ctx.nullifier));
     memcpy(ctx.spending_txid, spending_txid, sizeof(ctx.spending_txid));
@@ -1192,7 +1204,7 @@ static bool node_db_sync_peer_write(struct node_db *ndb, void *ctx)
     struct db_peer p;
 
     if (!peer)
-        return false;
+        LOG_FAIL("sync", "sync_peer_write: ctx is NULL");
     memset(&p, 0, sizeof(p));
     memcpy(p.ip, peer->ip, 16);
     p.port = peer->port;
@@ -1221,7 +1233,8 @@ static bool node_db_sync_peer_score_write(struct node_db *ndb, void *ctx)
     struct peer_score_ctx *score = ctx;
 
     if (!score || !ndb || !ndb->open)
-        return false;
+        LOG_FAIL("sync", "peer_score_write: invalid args (score=%p, ndb=%p)",
+                 (void *)score, (void *)ndb);
     score->ok = db_peer_update_score(ndb, score->ip, score->port,
                                      score->bandwidth_score,
                                      score->is_zcl23);
@@ -1247,7 +1260,7 @@ int node_db_sync_get_tip_height(struct node_db *ndb)
     int64_t h = -1;
 
     if (!ndb || !ndb->open)
-        return -1;
+        LOG_ERR("sync", "get_tip_height: ndb invalid (ndb=%p)", (void *)ndb);
 
     node_db_state_get_int(ndb, "tip_height", &h);
     return (int)h;
@@ -1258,9 +1271,10 @@ bool node_db_sync_get_tip_hash(struct node_db *ndb, uint8_t hash_out[32])
     size_t len = 0;
 
     if (!ndb || !hash_out || !ndb->open)
-        return false;
+        LOG_FAIL("sync", "get_tip_hash: invalid args (ndb=%p, hash_out=%p)",
+                 (void *)ndb, (void *)hash_out);
     if (!node_db_state_get(ndb, "tip_hash", hash_out, 32, &len))
-        return false;
+        LOG_FAIL("sync", "get_tip_hash: node_db_state_get failed for tip_hash");
     return len == 32;
 }
 
@@ -1269,7 +1283,7 @@ static bool node_db_sync_set_tip_write(struct node_db *ndb, void *ctx)
     struct tip_set_ctx *tip = ctx;
 
     if (!tip)
-        return false;
+        LOG_FAIL("sync", "set_tip_write: ctx is NULL");
     tip->ok = node_db_state_set(ndb, "tip_hash", tip->hash, sizeof(tip->hash)) &&
               node_db_state_set_int(ndb, "tip_height", (int64_t)tip->height);
     return tip->ok;
@@ -1281,7 +1295,7 @@ bool node_db_sync_set_tip(struct node_db *ndb,
     struct tip_set_ctx ctx;
 
     if (!hash)
-        return false;
+        LOG_FAIL("sync", "sync_set_tip: hash is NULL");
     memset(&ctx, 0, sizeof(ctx));
     memcpy(ctx.hash, hash, sizeof(ctx.hash));
     ctx.height = height;
@@ -1296,7 +1310,8 @@ static bool sync_block_lean(struct node_db *ndb,
                             const struct block_index *pindex)
 {
     if (!ndb || !ndb->open || !blk || !pindex)
-        return false;
+        LOG_FAIL("sync", "sync_block_lean: invalid args (ndb=%p, blk=%p, pindex=%p)",
+                 (void *)ndb, (void *)blk, (void *)pindex);
 
     struct db_block db_blk;
     memset(&db_blk, 0, sizeof(db_blk));
@@ -1320,7 +1335,8 @@ static bool sync_block_lean(struct node_db *ndb,
     db_blk.num_tx = (int)blk->num_vtx;
 
     if (!db_block_save(ndb, &db_blk))
-        return false;
+        LOG_FAIL("sync", "sync_block_lean: db_block_save failed at height %d",
+                 pindex->nHeight);
 
     for (size_t i = 0; i < blk->num_vtx; i++) {
         const struct transaction *tx = &blk->vtx[i];
@@ -1335,7 +1351,8 @@ static bool sync_block_lean(struct node_db *ndb,
         db_tx.file_pos = (int)pindex->nDataPos;
         db_tx.is_coinbase = (i == 0);
         if (!db_tx_save(ndb, &db_tx))
-            return false;
+            LOG_FAIL("sync", "sync_block_lean: db_tx_save failed at height %d tx %zu",
+                     pindex->nHeight, i);
     }
 
     return true;
@@ -1351,13 +1368,13 @@ static uint8_t *mmap_block_file(const char *datadir, int file_num,
     snprintf(path, sizeof(path), "%s/blocks/blk%05d.dat",
              datadir, file_num);
     int fd = open(path, O_RDONLY);
-    if (fd < 0) return NULL;
+    if (fd < 0) LOG_NULL("sync", "mmap_block_file: open failed for %s", path);
     struct stat fst;
-    if (fstat(fd, &fst) != 0) { close(fd); return NULL; }
+    if (fstat(fd, &fst) != 0) { close(fd); LOG_NULL("sync", "mmap_block_file: fstat failed for %s", path); }
     uint8_t *data = mmap(NULL, (size_t)fst.st_size,
                          PROT_READ, MAP_PRIVATE, fd, 0);
     close(fd);
-    if (data == MAP_FAILED) return NULL;
+    if (data == MAP_FAILED) LOG_NULL("sync", "mmap_block_file: mmap failed for file %d", file_num);
     *out_size = (size_t)fst.st_size;
     posix_madvise(data, *out_size, POSIX_MADV_SEQUENTIAL);
     posix_madvise(data, *out_size, POSIX_MADV_WILLNEED);
@@ -1474,7 +1491,9 @@ int sapling_tree_rebuild(struct node_db *ndb,
                          const struct active_chain *chain,
                          const char *datadir)
 {
-    if (!ndb || !chain || !datadir) return -1;
+    if (!ndb || !chain || !datadir)
+        LOG_ERR("sync", "sapling_tree_rebuild: invalid args (ndb=%p, chain=%p, datadir=%p)",
+                (void *)ndb, (void *)chain, (void *)datadir);
 
     int chain_tip = active_chain_height(chain);
     int sapling_height = 476969; /* ZClassic Sapling activation */
@@ -1607,12 +1626,14 @@ int node_db_sync_catchup(struct node_db *ndb,
     bool restore_ok = true;
 
     if (!ndb || !ndb->open || !chain)
-        return -1;
+        LOG_ERR("sync", "catchup: invalid args (ndb=%p, chain=%p)", (void *)ndb, (void *)chain);
 
     int db_tip = node_db_sync_get_tip_height(ndb);
     int chain_tip = active_chain_height(chain);
     if (db_tip >= chain_tip) return 0;
-    if (!datadir) return -1;
+    if (!datadir)
+        LOG_ERR("sync", "catchup: datadir is NULL (db_tip=%d, chain_tip=%d)",
+                db_tip, chain_tip);
 
     /* Keep pre-existing fast path behavior when there is no catchup work. */
     last_indexed_height = db_tip;
@@ -1897,7 +1918,8 @@ int node_db_sync_catchup(struct node_db *ndb,
 
     if (failed || !restore_ok) {
         sync_job_catchup_finish();
-        return -1;
+        LOG_ERR("sync", "catchup: aborting (failed=%d, restore_ok=%d, indexed=%d)",
+                failed, restore_ok, indexed);
     }
 
     int64_t elapsed = (int64_t)time(NULL) - t_start;
@@ -1937,7 +1959,7 @@ static void *node_db_sync_catchup_job_thread(void *arg)
     bool owns_db = false;
 
     if (!job) {
-        return NULL;
+        LOG_NULL("sync", "catchup_job_thread: job is NULL");
     }
 
     memset(&catchup_db, 0, sizeof(catchup_db));
@@ -1985,14 +2007,14 @@ void *node_db_sync_catchup_thread(void *arg)
 
     node_db_sync_catchup_job_init(&job);
     if (!args)
-        return NULL;
+        LOG_NULL("sync", "catchup_thread: args is NULL");
     job.args.ndb = args->ndb;
     job.args.chain = args->chain;
     job.args.w = args->w;
     job.args.datadir = args->datadir;
     if (!node_db_sync_catchup_job_start(&job, job.args.ndb, job.args.chain,
                                         job.args.w, job.args.datadir))
-        return NULL;
+        LOG_NULL("sync", "catchup_thread: job_start failed");
     node_db_sync_catchup_job_join(&job, NULL);
     return NULL;
 }
@@ -2012,7 +2034,8 @@ bool node_db_sync_catchup_job_start(struct node_db_sync_catchup_job *job,
                                     const char *datadir)
 {
     if (!job || job->started || !ndb || !chain)
-        return false;
+        LOG_FAIL("sync", "catchup_job_start: invalid args (job=%p, ndb=%p, chain=%p)",
+                 (void *)job, (void *)ndb, (void *)chain);
 
     job->args.ndb = ndb;
     job->args.chain = chain;
@@ -2021,7 +2044,7 @@ bool node_db_sync_catchup_job_start(struct node_db_sync_catchup_job *job,
     job->result = -1;
     if (pthread_create(&job->thread, NULL,
                        node_db_sync_catchup_job_thread, job) != 0)
-        return false;
+        LOG_FAIL("sync", "catchup_job_start: pthread_create failed");
     job->started = true;
     return true;
 }
@@ -2032,10 +2055,11 @@ bool node_db_sync_catchup_job_join(struct node_db_sync_catchup_job *job,
     int join_rc;
 
     if (!job || !job->started)
-        return false;
+        LOG_FAIL("sync", "catchup_job_join: invalid args (job=%p, started=%d)",
+                 (void *)job, job ? job->started : 0);
     join_rc = pthread_join(job->thread, NULL);
     if (join_rc != 0)
-        return false;
+        LOG_FAIL("sync", "catchup_job_join: pthread_join failed (rc=%d)", join_rc);
     job->started = false;
     if (result_out)
         *result_out = job->result;
@@ -2053,7 +2077,7 @@ static void *node_db_sync_import_job_thread(void *arg)
     struct node_db_sync_import_job *job = arg;
 
     if (!job) {
-        return NULL;
+        LOG_NULL("sync", "import_job_thread: job is NULL");
     }
 
     job->result = node_db_sync_import_utxos(job->args.ndb, job->args.cvdb);
@@ -2073,14 +2097,15 @@ bool node_db_sync_import_job_start(struct node_db_sync_import_job *job,
                                    struct coins_view_db *cvdb)
 {
     if (!job || job->started || !ndb || !cvdb)
-        return false;
+        LOG_FAIL("sync", "import_job_start: invalid args (job=%p, ndb=%p, cvdb=%p)",
+                 (void *)job, (void *)ndb, (void *)cvdb);
 
     job->args.ndb = ndb;
     job->args.cvdb = cvdb;
     job->result = -1;
     if (pthread_create(&job->thread, NULL,
                        node_db_sync_import_job_thread, job) != 0)
-        return false;
+        LOG_FAIL("sync", "import_job_start: pthread_create failed");
     job->started = true;
     return true;
 }
@@ -2091,10 +2116,11 @@ bool node_db_sync_import_job_join(struct node_db_sync_import_job *job,
     int join_rc;
 
     if (!job || !job->started)
-        return false;
+        LOG_FAIL("sync", "import_job_join: invalid args (job=%p, started=%d)",
+                 (void *)job, job ? job->started : 0);
     join_rc = pthread_join(job->thread, NULL);
     if (join_rc != 0)
-        return false;
+        LOG_FAIL("sync", "import_job_join: pthread_join failed (rc=%d)", join_rc);
     job->started = false;
     if (result_out)
         *result_out = job->result;
@@ -2133,7 +2159,7 @@ static bool node_db_sync_wallet_keys_write(struct node_db *ndb, void *ctx)
     bool tx_open = false;
     bool ok = true;
     if (!node_db_begin(ndb))
-        return false;
+        LOG_FAIL("sync", "wallet_keys_write: BEGIN failed");
     tx_open = true;
 
     /* Sync transparent keys */
@@ -2194,13 +2220,13 @@ static bool node_db_sync_wallet_keys_write(struct node_db *ndb, void *ctx)
     if (!ok) {
         if (tx_open)
             node_db_rollback(ndb);
-        return false;
+        LOG_FAIL("sync", "wallet_keys_write: key save failed (count=%d)", count);
     }
 
     if (!node_db_commit(ndb)) {
         if (tx_open)
             node_db_rollback(ndb);
-        return false;
+        LOG_FAIL("sync", "wallet_keys_write: COMMIT failed (count=%d)", count);
     }
     if (sync)
         sync->count = count;
@@ -2237,7 +2263,7 @@ static bool node_db_sync_mempool_save_write(struct node_db *ndb, void *ctx)
     bool tx_open = false;
     bool ok = true;
     if (!node_db_begin(ndb))
-        return false;
+        LOG_FAIL("sync", "mempool_save_write: BEGIN failed");
     tx_open = true;
 
     for (size_t i = 0; i < mempool->num_entries; i++) {
@@ -2271,13 +2297,13 @@ static bool node_db_sync_mempool_save_write(struct node_db *ndb, void *ctx)
     if (!ok) {
         if (tx_open)
             node_db_rollback(ndb);
-        return false;
+        LOG_FAIL("sync", "mempool_save_write: save failed (count=%d)", count);
     }
 
     if (!node_db_commit(ndb)) {
         if (tx_open)
             node_db_rollback(ndb);
-        return false;
+        LOG_FAIL("sync", "mempool_save_write: COMMIT failed (count=%d)", count);
     }
     if (save)
         save->count = count;
@@ -2418,7 +2444,7 @@ static bool import_writer_bind_checked(sqlite3_stmt *stmt,
                                       const struct node_db *ndb,
                                       int row_no)
 {
-    if (!stmt) return false;
+    if (!stmt) LOG_FAIL("sync", "import_writer_bind: stmt is NULL for %s", label);
     if (rc != SQLITE_OK) {
         fprintf(stderr,
                 "UTXO import writer: %s failed at row %d (rc=%d): %s\n",
@@ -2522,7 +2548,7 @@ static void import_job_init(struct import_job *job,
 static bool import_job_start_decoders(struct import_job *job)
 {
     if (!job || !job->ctx)
-        return false;
+        LOG_FAIL("sync", "import_start_decoders: invalid args (job=%p)", (void *)job);
 
     for (int i = 0; i < job->num_decoders; i++) {
         int rc = pthread_create(&job->decoders[i], NULL,
@@ -2543,7 +2569,7 @@ static bool import_job_start_decoders(struct import_job *job)
 static bool import_job_start_writer(struct import_job *job)
 {
     if (!job || !job->ctx)
-        return false;
+        LOG_FAIL("sync", "import_start_writer: invalid args (job=%p)", (void *)job);
     if (pthread_create(&job->writer_thread, NULL,
                        import_writer_thread, job->ctx) != 0) {
         fprintf(stderr, "UTXO import: FATAL — writer thread failed to start\n");
@@ -2574,12 +2600,12 @@ static void import_job_join_writer(struct import_job *job)
 static bool import_job_start(struct import_job *job)
 {
     if (!import_job_start_decoders(job))
-        return false;
+        LOG_FAIL("sync", "import_job_start: decoders failed to start");
     if (!import_job_start_writer(job)) {
         if (job && job->ctx)
             atomic_store(&job->ctx->reader_done, true);
         import_job_join_decoders(job);
-        return false;
+        LOG_FAIL("sync", "import_job_start: writer failed to start");
     }
     return true;
 }
@@ -2696,7 +2722,7 @@ static int decode_coins_entry(const struct raw_entry *raw,
             if (slen <= sizeof(r->script)) {
                 memcpy(r->script, raw_script, slen);
             } else {
-                r->script_overflow = malloc(slen);
+                r->script_overflow = zcl_malloc(slen, "script overflow");
                 if (r->script_overflow) {
                     memcpy(r->script_overflow, raw_script, slen);
                 } else {
@@ -2812,7 +2838,7 @@ static void *import_decoder_thread(void *arg)
 static void *import_writer_thread(void *arg)
 {
     struct import_context *ctx = (struct import_context *)arg;
-    if (!ctx) return NULL;
+    if (!ctx) LOG_NULL("sync", "import_writer_thread: ctx is NULL");
     struct node_db *ndb = ctx->ndb;
     if (!ndb || !ndb->open || !ndb->stmt_utxo_insert) {
         fprintf(stderr, "UTXO import writer: invalid node_db statement/db state\n");
@@ -2974,7 +3000,8 @@ int node_db_sync_import_utxos(struct node_db *ndb,
     struct sync_db_turbo_scope turbo_mode = {0};
     bool restore_ok = true;
 
-    if (!ndb || !ndb->open || !cvdb) return -1;
+    if (!ndb || !ndb->open || !cvdb)
+        LOG_ERR("sync", "import_utxos: invalid args (ndb=%p, cvdb=%p)", (void *)ndb, (void *)cvdb);
     sync_job_import_begin();
 
     int num_decoders = import_num_decoders();
@@ -3049,7 +3076,7 @@ int node_db_sync_import_utxos(struct node_db *ndb,
     }
 
     /* ── Initialize pipeline context ───────────────────────────────── */
-    struct import_context *ctx = calloc(1, sizeof(struct import_context));
+    struct import_context *ctx = zcl_calloc(1, sizeof(struct import_context), "import context");
     if (!ctx) {
         if (!sync_db_turbo_scope_end(&turbo_mode))
             fprintf(stderr, "UTXO import: failed to restore normal mode after alloc failure\n");
@@ -3136,7 +3163,7 @@ int node_db_sync_import_utxos(struct node_db *ndb,
             size_t val_len;
             const char *val_data = db_iter_value(&it, &val_len);
             if (val_len > 65535) val_len = 65535;
-            e->value = malloc(val_len);
+            e->value = zcl_malloc(val_len, "import entry value");
             if (e->value) {
                 memcpy(e->value, val_data, val_len);
                 /* db_iter_value() already deobfuscates values using the

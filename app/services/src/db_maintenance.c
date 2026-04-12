@@ -52,6 +52,8 @@
 
 #include <sqlite3.h>
 
+#include "util/log_macros.h"
+
 /* ── Module state ───────────────────────────────────────────── */
 
 struct db_maintenance_state {
@@ -173,9 +175,9 @@ static void dbm_note_run_locked(const char *op,
 
 bool db_maintenance_run_now(struct node_db *db, const char *op)
 {
-    if (!db || !db->open || !db->db) return false;
+    if (!db || !db->open || !db->db) LOG_FAIL("db_maint", "run_now called with null or closed db");
     const char *sql = dbm_sql_for_op(op);
-    if (!sql) return false;
+    if (!sql) LOG_FAIL("db_maint", "unknown maintenance op: %s", op ? op : "(null)");
 
     pthread_mutex_lock(&g_dbm.lock);
 
@@ -298,12 +300,12 @@ static void *dbm_thread_fn(void *arg)
 bool db_maintenance_start(struct node_db *db,
                            const struct db_maintenance_schedule *s)
 {
-    if (!db || !db->open || !db->db || !s) return false;
+    if (!db || !db->open || !db->db || !s) LOG_FAIL("db_maint", "start called with null db or schedule");
 
     pthread_mutex_lock(&g_dbm.lock);
     if (g_dbm.thread_running) {
         pthread_mutex_unlock(&g_dbm.lock);
-        return false;
+        LOG_FAIL("db_maint", "start called but maintenance thread already running");
     }
 
     g_dbm.db    = db;

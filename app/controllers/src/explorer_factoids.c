@@ -13,6 +13,7 @@
  * Also provides explorer_factoids_build_json() for /api/factoids. */
 
 #include "controllers/explorer_factoids.h"
+#include "util/log_macros.h"
 #include "controllers/explorer_internal.h"
 #include "crypto/sha3.h"
 #include "util/template.h"

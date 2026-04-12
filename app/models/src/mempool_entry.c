@@ -12,6 +12,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <time.h>
+#include "util/safe_alloc.h"
 
 /* ── Callbacks ─────────────────────────────────────────────────── */
 
@@ -88,7 +89,7 @@ bool db_mempool_find(struct node_db *ndb, const uint8_t txid[32],
     out->raw_tx_len = (size_t)AR_COL_BYTES(s, 0);
     const void *rt = sqlite3_column_blob(s, 0);
     if (rt && out->raw_tx_len > 0) {
-        out->raw_tx = malloc(out->raw_tx_len);
+        out->raw_tx = zcl_malloc(out->raw_tx_len, "mempool_entry raw_tx find");
         if (out->raw_tx)
             memcpy(out->raw_tx, rt, out->raw_tx_len);
     }
@@ -216,7 +217,7 @@ int db_mempool_each(struct node_db *ndb, mempool_entry_cb cb, void *ctx)
         e.raw_tx_len = (size_t)AR_COL_BYTES(s, 1);
         const void *rt = sqlite3_column_blob(s, 1);
         if (rt && e.raw_tx_len > 0) {
-            e.raw_tx = malloc(e.raw_tx_len);
+            e.raw_tx = zcl_malloc(e.raw_tx_len, "mempool_entry raw_tx each");
             if (e.raw_tx)
                 memcpy(e.raw_tx, rt, e.raw_tx_len);
         }

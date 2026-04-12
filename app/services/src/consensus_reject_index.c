@@ -29,6 +29,9 @@
 #include <string.h>
 #include <sys/time.h>
 
+#include "util/log_macros.h"
+#include "util/safe_alloc.h"
+
 /* ── Module state ───────────────────────────────────────────── */
 
 struct cri_state {
@@ -189,10 +192,10 @@ bool consensus_reject_index_start(size_t capacity)
         return true;
     }
     size_t cap = capacity == 0 ? CRI_DEFAULT_CAPACITY : round_pow2(capacity);
-    struct cri_entry *ring = calloc(cap, sizeof(*ring));
+    struct cri_entry *ring = zcl_calloc(cap, sizeof(*ring), "cri ring buffer");
     if (!ring) {
         pthread_mutex_unlock(&g_cri.lock);
-        return false;
+        LOG_FAIL("consensus_reject", "calloc failed for ring capacity %zu", cap);
     }
     g_cri.ring       = ring;
     g_cri.capacity   = cap;
@@ -278,7 +281,7 @@ bool consensus_reject_index_lookup(const struct uint256 *hash,
                                     const enum cri_kind *kind,
                                     struct cri_entry *out)
 {
-    if (!hash || !out) return false;
+    if (!hash || !out) LOG_FAIL("consensus_reject", "lookup called with null hash or out pointer");
     bool found = false;
     pthread_mutex_lock(&g_cri.lock);
     if (g_cri.running && g_cri.count > 0) {

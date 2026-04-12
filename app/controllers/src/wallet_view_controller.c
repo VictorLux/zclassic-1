@@ -4,6 +4,7 @@
  * Each page handler lives in its own file (wallet_view_*.c). */
 
 #include "controllers/wallet_view_internal.h"
+#include "util/log_macros.h"
 
 size_t wallet_view_handle_request(const char *method, const char *path,
                                   const uint8_t *body, size_t body_len,

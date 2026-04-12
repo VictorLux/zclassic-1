@@ -18,6 +18,8 @@
 #include <unistd.h>
 #include <sqlite3.h>
 #include <pthread.h>
+#include "util/log_macros.h"
+#include "util/safe_alloc.h"
 
 struct file_context {
     const char *datadir;
@@ -34,7 +36,7 @@ static bool file_export_exec_checked(sqlite3 *db, const char *sql,
                                     const char *label)
 {
     if (!db || !sql)
-        return false;
+        LOG_FAIL("file", "exec_checked: NULL %s", !db ? "db" : "sql");
 
     if (sqlite3_exec(db, sql, NULL, NULL, NULL) != SQLITE_OK) {
         fprintf(stderr, "file_export_snapshot: %s failed: %s\n",
@@ -49,7 +51,7 @@ static bool file_export_prepare_checked(sqlite3 *db, const char *sql,
                                       const char *label)
 {
     if (!db || !sql || !stmt)
-        return false;
+        LOG_FAIL("file", "prepare_checked: NULL %s", !db ? "db" : !sql ? "sql" : "stmt");
 
     if (sqlite3_prepare_v2(db, sql, -1, stmt, NULL) != SQLITE_OK ||
         !*stmt) {
@@ -64,7 +66,7 @@ static bool file_export_step_checked(sqlite3_stmt *stmt, sqlite3 *db,
                                     const char *label)
 {
     if (!stmt || !db)
-        return false;
+        LOG_FAIL("file", "step_checked: NULL %s", !stmt ? "stmt" : "db");
 
     int rc = sqlite3_step(stmt);
     if (rc != SQLITE_DONE && rc != SQLITE_ROW) {
@@ -84,7 +86,7 @@ static bool file_artifact_path(char *path, size_t path_size,
                                const char *datadir, uint8_t file_index)
 {
     if (!path || !datadir || path_size == 0)
-        return false;
+        LOG_FAIL("file", "artifact_path: NULL %s", !path ? "path" : !datadir ? "datadir" : "path_size=0");
 
     if (file_index == 254)
         snprintf(path, path_size, "%s/consensus_snapshot.db", datadir);
@@ -101,7 +103,7 @@ static bool file_manifest_has_file_index(const struct file_manifest *fm,
                                          uint8_t file_index)
 {
     if (!fm)
-        return false;
+        LOG_FAIL("file", "manifest_has_file_index: NULL manifest");
 
     for (uint32_t i = 0; i < fm->num_chunks; i++) {
         if (fm->chunks[i].file_index == file_index)
@@ -117,9 +119,9 @@ static bool file_artifact_exists(const char *datadir, uint8_t file_index,
     struct stat st;
 
     if (!file_artifact_path(path, sizeof(path), datadir, file_index))
-        return false;
+        LOG_FAIL("file", "artifact_exists: cannot build path for file_index=%u", (unsigned)file_index);
     if (stat(path, &st) != 0 || st.st_size < min_size)
-        return false;
+        LOG_FAIL("file", "artifact_exists: %s missing or too small (min=%lld)", path, (long long)min_size);
 
     if (st_out)
         *st_out = st;
@@ -146,7 +148,7 @@ static bool file_manifest_cache_inputs_are_fresh(const struct file_manifest *fm,
                                                  const struct stat *cache_st)
 {
     if (!fm || !datadir || !cache_st)
-        return false;
+        LOG_FAIL("file", "cache_inputs_fresh: NULL %s", !fm ? "fm" : !datadir ? "datadir" : "cache_st");
 
     for (uint32_t i = 0; i < fm->num_chunks; i++) {
         uint8_t file_index = fm->chunks[i].file_index;
@@ -155,7 +157,7 @@ static bool file_manifest_cache_inputs_are_fresh(const struct file_manifest *fm,
 
         if (file_index >= 253 &&
             !file_artifact_path(path, sizeof(path), datadir, file_index))
-            return false;
+            LOG_FAIL("file", "cache_inputs_fresh: cannot build path for file_index=%u", (unsigned)file_index);
         if (file_index >= 253 &&
             stat(path, &st) == 0 &&
             st.st_mtime > cache_st->st_mtime) {
@@ -183,7 +185,7 @@ bool file_controller_get_manifest_copy(struct file_manifest *out)
     struct file_context *ctx = file_ctx();
 
     if (!out)
-        return false;
+        LOG_FAIL("file", "get_manifest_copy: NULL output pointer");
 
     pthread_mutex_lock(&ctx->manifest_mutex);
     if (ctx->manifest_valid)
@@ -210,7 +212,7 @@ bool file_controller_refresh_manifest(void)
         ctx->manifest_valid = false;
         memset(&ctx->manifest, 0, sizeof(ctx->manifest));
         pthread_mutex_unlock(&ctx->manifest_mutex);
-        return false;
+        LOG_FAIL("file", "refresh_manifest: datadir not configured");
     }
 
     manifest_valid = file_manifest_build(&manifest, datadir);
@@ -259,7 +261,7 @@ static bool hash_file_chunks(const char *path, uint8_t file_index,
                               struct file_manifest *fm)
 {
     FILE *f = fopen(path, "rb");
-    if (!f) return false;
+    if (!f) LOG_FAIL("file", "hash_file_chunks: cannot open %s", path);
 
     fseek(f, 0, SEEK_END);
     long file_size = ftell(f);
@@ -267,8 +269,8 @@ static bool hash_file_chunks(const char *path, uint8_t file_index,
 
     if (file_size <= 0) { fclose(f); return true; }
 
-    uint8_t *buf = malloc(FILE_CHUNK_SIZE);
-    if (!buf) { fclose(f); return false; }
+    uint8_t *buf = zcl_malloc(FILE_CHUNK_SIZE, "file chunk hash buf");
+    if (!buf) { fclose(f); LOG_FAIL("file", "hash_file_chunks: alloc(%d) failed for %s", FILE_CHUNK_SIZE, path); }
 
     uint64_t offset = 0;
     while (offset < (uint64_t)file_size &&
@@ -278,7 +280,7 @@ static bool hash_file_chunks(const char *path, uint8_t file_index,
             to_read = (uint32_t)((uint64_t)file_size - offset);
 
         size_t got = fread(buf, 1, to_read, f);
-        if (got != to_read) { free(buf); fclose(f); return false; }
+        if (got != to_read) { free(buf); fclose(f); LOG_FAIL("file", "hash_file_chunks: short read at offset %llu in %s (got %zu, expected %u)", (unsigned long long)offset, path, got, to_read); }
 
         struct file_chunk *chunk = &fm->chunks[fm->num_chunks];
         chunk->offset = offset;
@@ -305,7 +307,7 @@ static bool file_manifest_save(const struct file_manifest *fm,
     char path[512];
     snprintf(path, sizeof(path), "%s/file_manifest.bin", datadir);
     FILE *f = fopen(path, "wb");
-    if (!f) return false;
+    if (!f) LOG_FAIL("file", "manifest_save: cannot create %s", path);
     /* Write header: magic + num_chunks + total_bytes + root_hash */
     uint32_t magic = 0x464D414E; /* "FMAN" */
     fwrite(&magic, 4, 1, f);
@@ -333,16 +335,16 @@ static bool file_manifest_load(struct file_manifest *fm,
     struct stat cache_st;
     snprintf(path, sizeof(path), "%s/file_manifest.bin", datadir);
     FILE *f = fopen(path, "rb");
-    if (!f) return false;
+    if (!f) LOG_FAIL("file", "manifest_load: cannot open %s", path);
     memset(fm, 0, sizeof(*fm));
     uint32_t magic = 0;
     if (fread(&magic, 4, 1, f) != 1 || magic != 0x464D414E) {
-        fclose(f); return false;
+        fclose(f); LOG_FAIL("file", "manifest_load: bad magic in %s (got 0x%08x)", path, magic);
     }
     fread(&fm->num_chunks, 4, 1, f);
     fread(&fm->total_bytes, 8, 1, f);
     fread(fm->root_hash, 32, 1, f);
-    if (fm->num_chunks > FILE_MAX_CHUNKS) { fclose(f); return false; }
+    if (fm->num_chunks > FILE_MAX_CHUNKS) { fclose(f); LOG_FAIL("file", "manifest_load: num_chunks %u exceeds max %d", fm->num_chunks, FILE_MAX_CHUNKS); }
     for (uint32_t i = 0; i < fm->num_chunks; i++) {
         fread(fm->chunks[i].sha3, 32, 1, f);
         fread(&fm->chunks[i].offset, 8, 1, f);
@@ -352,7 +354,7 @@ static bool file_manifest_load(struct file_manifest *fm,
     fclose(f);
 
     if (!file_manifest_cache_has_required_exports(fm, datadir))
-        return false;
+        LOG_FAIL("file", "manifest_load: cache missing required exports");
 
     /* Verify block files still match — check first AND last chunk.
      * The last chunk is most likely to be stale (active block file). */
@@ -390,7 +392,7 @@ static bool file_manifest_load(struct file_manifest *fm,
                 }
             }
             if (!file_manifest_cache_inputs_are_fresh(fm, datadir, &cache_st))
-                return false;
+                LOG_FAIL("file", "manifest_load: cache inputs are stale");
         }
     }
     printf("file_manifest: loaded cached manifest (%u chunks, %.1f GB)\n",
@@ -439,7 +441,7 @@ bool file_manifest_build(struct file_manifest *fm, const char *datadir)
         }
 
         if (!hash_file_chunks(path, (uint8_t)i, fm))
-            return false;
+            LOG_FAIL("file", "manifest_build: hash_file_chunks failed for %s", path);
     }
 
     /* Serve block_index.bin (flat file, ~409MB) as file_index=253.
@@ -480,7 +482,7 @@ bool file_manifest_build(struct file_manifest *fm, const char *datadir)
         }
     }
 
-    if (fm->num_chunks == 0) return false;
+    if (fm->num_chunks == 0) LOG_FAIL("file", "manifest_build: no chunks found in %s", datadir);
 
     /* Compute root hash: SHA3-256 of all chunk hashes concatenated */
     struct sha3_256_ctx ctx;
@@ -521,7 +523,7 @@ const struct file_chunk *file_manifest_find(const struct file_manifest *fm,
         if (memcmp(fm->chunks[i].sha3, sha3, 32) == 0)
             return &fm->chunks[i];
     }
-    return NULL;
+    LOG_NULL("file", "manifest_find: chunk not found among %u chunks", fm->num_chunks);
 }
 
 bool file_chunk_read(const struct file_chunk *chunk, const char *datadir,
@@ -529,23 +531,23 @@ bool file_chunk_read(const struct file_chunk *chunk, const char *datadir,
 {
     char path[576];
     if (!file_artifact_path(path, sizeof(path), datadir, chunk->file_index))
-        return false;
+        LOG_FAIL("file", "chunk_read: cannot build path for file_index=%u", (unsigned)chunk->file_index);
 
     FILE *f = fopen(path, "rb");
-    if (!f) return false;
+    if (!f) LOG_FAIL("file", "chunk_read: cannot open %s", path);
 
     if (fseek(f, (long)chunk->offset, SEEK_SET) != 0) {
         fclose(f);
-        return false;
+        LOG_FAIL("file", "chunk_read: fseek to offset %llu failed in %s", (unsigned long long)chunk->offset, path);
     }
 
-    uint8_t *buf = malloc(chunk->size);
-    if (!buf) { fclose(f); return false; }
+    uint8_t *buf = zcl_malloc(chunk->size, "file chunk read buf");
+    if (!buf) { fclose(f); LOG_FAIL("file", "chunk_read: alloc(%u) failed for %s", chunk->size, path); }
 
     size_t got = fread(buf, 1, chunk->size, f);
     fclose(f);
 
-    if (got != chunk->size) { free(buf); return false; }
+    if (got != chunk->size) { free(buf); LOG_FAIL("file", "chunk_read: short read in %s (got %zu, expected %u)", path, got, chunk->size); }
 
     /* Verify SHA3 hash matches manifest */
     uint8_t hash[32];
@@ -572,7 +574,7 @@ bool file_chunk_read(const struct file_chunk *chunk, const char *datadir,
 bool file_export_consensus_snapshot(const char *datadir)
 {
     if (!datadir)
-        return false;
+        LOG_FAIL("file", "export_snapshot: NULL datadir");
 
     char src_path[576], dst_path[576];
     snprintf(src_path, sizeof(src_path), "%s/node.db", datadir);
@@ -580,7 +582,7 @@ bool file_export_consensus_snapshot(const char *datadir)
 
     struct stat src_st;
     if (stat(src_path, &src_st) != 0 || src_st.st_size < 1000000)
-        return false;
+        LOG_FAIL("file", "export_snapshot: %s missing or too small", src_path);
 
     /* Remove old snapshot */
     unlink(dst_path);
@@ -595,7 +597,7 @@ bool file_export_consensus_snapshot(const char *datadir)
 
     if (sqlite3_open_v2(src_path, &src_db, SQLITE_OPEN_READONLY, NULL)
         != SQLITE_OK || !src_db) {
-        return false;
+        LOG_FAIL("file", "export_snapshot: cannot open source db %s", src_path);
     }
     src_db_opened = true;
 
@@ -604,7 +606,7 @@ bool file_export_consensus_snapshot(const char *datadir)
     if (sqlite3_open_v2(dst_path, &dst_db,
         SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL) != SQLITE_OK) {
         sqlite3_close(src_db);
-        return false;
+        LOG_FAIL("file", "export_snapshot: cannot create destination db %s", dst_path);
     }
     dst_db_opened = true;
 

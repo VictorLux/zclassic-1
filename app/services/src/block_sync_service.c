@@ -9,6 +9,8 @@
 #include "validation/main_state.h"
 #include <stdlib.h>
 #include <string.h>
+#include "util/log_macros.h"
+#include "util/safe_alloc.h"
 
 static int64_t g_last_stall_log = 0;
 static int64_t g_last_stall_reset = 0;
@@ -172,10 +174,10 @@ bool syncsvc_build_stall_recovery(struct sync_stall_recovery *recovery,
                                   int64_t now_seconds)
 {
     struct sync_stall_recovery empty = {0};
-    if (!recovery) return false;
+    if (!recovery) LOG_FAIL("block_sync", "build_stall_recovery: null recovery pointer");
     *recovery = empty;
 
-    if (!ms || !node) return false;
+    if (!ms || !node) LOG_FAIL("block_sync", "build_stall_recovery: null ms=%d node=%d", !ms, !node);
 
     int our_h = active_chain_height(&ms->chain_active);
     if (queued != 0 || in_flight != 0) return false;
@@ -217,8 +219,8 @@ bool syncsvc_build_stall_recovery(struct sync_stall_recovery *recovery,
     struct block_index *tip = active_chain_tip(&ms->chain_active);
     if (!tip) return true;
 
-    struct uint256 *alt_hashes = calloc(64, sizeof(struct uint256));
-    int32_t *alt_heights = calloc(64, sizeof(int32_t));
+    struct uint256 *alt_hashes = zcl_calloc(64, sizeof(struct uint256), "stall recovery hashes");
+    int32_t *alt_heights = zcl_calloc(64, sizeof(int32_t), "stall recovery heights");
     if (!alt_hashes || !alt_heights) {
         free(alt_hashes);
         free(alt_heights);

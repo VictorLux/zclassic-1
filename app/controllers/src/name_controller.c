@@ -17,6 +17,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <inttypes.h>
+#include "util/log_macros.h"
 
 /* ── Context ────────────────────────────────────────────────────── */
 
@@ -269,9 +270,10 @@ bool api_name_list(struct json_value *result)
 
 bool rpc_name_resolve_api(const char *name, struct json_value *result)
 {
-    if (!name || !g_name_ndb) return false;
+    if (!name) LOG_FAIL("name", "rpc_name_resolve_api called with NULL name");
+    if (!g_name_ndb) LOG_FAIL("name", "rpc_name_resolve_api: name database not initialized");
     struct znam_entry entry;
-    if (!db_znam_find(g_name_ndb, name, &entry)) return false;
+    if (!db_znam_find(g_name_ndb, name, &entry)) LOG_FAIL("name", "name '%s' not found in database", name);
     entry_to_json(&entry, result);
     return true;
 }

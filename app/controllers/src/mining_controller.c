@@ -24,6 +24,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include "util/log_macros.h"
+#include "util/safe_alloc.h"
 
 struct mining_context {
     struct main_state *main_state;
@@ -162,8 +164,8 @@ static bool rpc_submitblock(const struct json_value *params, bool help,
     }
     size_t hex_len = strlen(hex);
     size_t bin_len = hex_len / 2;
-    unsigned char *bin = malloc(bin_len);
-    if (!bin) return false;
+    unsigned char *bin = zcl_malloc(bin_len, "submitblock_bin");
+    if (!bin) LOG_FAIL("mining", "malloc failed for submitblock hex decode (%zu bytes)", bin_len);
 
     size_t parsed = ParseHex(hex, bin, bin_len);
     if (parsed == 0) {
@@ -250,7 +252,7 @@ static bool rpc_getblocktemplate(const struct json_value *params, bool help,
         struct json_value txobj = {0};
         json_set_object(&txobj);
 
-        char *hex = malloc(2 * 1024 * 1024);
+        char *hex = zcl_malloc(2 * 1024 * 1024, "template_tx_hex");
         if (hex) {
             size_t hlen = encode_hex_tx(&tmpl->block.vtx[i], hex,
                                         2 * 1024 * 1024);
@@ -279,7 +281,7 @@ static bool rpc_getblocktemplate(const struct json_value *params, bool help,
     /* Coinbase */
     struct json_value coinbase_obj = {0};
     json_set_object(&coinbase_obj);
-    char *cb_hex = malloc(2 * 1024 * 1024);
+    char *cb_hex = zcl_malloc(2 * 1024 * 1024, "template_cb_hex");
     if (cb_hex && tmpl->block.num_vtx > 0) {
         size_t hlen = encode_hex_tx(&tmpl->block.vtx[0], cb_hex,
                                     2 * 1024 * 1024);

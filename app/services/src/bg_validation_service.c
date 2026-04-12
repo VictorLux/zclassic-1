@@ -48,6 +48,8 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <sched.h>
+#include "util/log_macros.h"
+#include "util/safe_alloc.h"
 
 /* Global instance for RPC access */
 struct bg_validation_service *g_bg_validation = NULL;
@@ -130,9 +132,9 @@ static bool verify_scripts_parallel(struct script_check_item *items,
     if ((size_t)nthreads > count)
         nthreads = (int)count;
 
-    struct worker_ctx *workers = calloc((size_t)nthreads,
-                                        sizeof(struct worker_ctx));
-    pthread_t *threads = calloc((size_t)nthreads, sizeof(pthread_t));
+    struct worker_ctx *workers = zcl_calloc((size_t)nthreads,
+                                        sizeof(struct worker_ctx), "bg_valid workers");
+    pthread_t *threads = zcl_calloc((size_t)nthreads, sizeof(pthread_t), "bg_valid threads");
     if (!workers || !threads) {
         free(workers);
         free(threads);
@@ -187,19 +189,19 @@ static bool read_block_undo(struct block_undo *undo,
     undo_pos.nPos = pindex->nUndoPos;
 
     if (undo_pos.nPos == 0)
-        return false;
+        LOG_FAIL("bg_validation", "read_block_undo: undo pos is 0 for file %d", pindex->nFile);
 
     char path[512];
     get_block_pos_filename(path, sizeof(path), datadir, &undo_pos, "rev");
 
     int fd = open(path, O_RDONLY);
     if (fd < 0)
-        return false;
+        LOG_FAIL("bg_validation", "read_block_undo: cannot open %s", path);
 
     struct stat st;
     if (fstat(fd, &st) != 0 || st.st_size <= 0) {
         close(fd);
-        return false;
+        LOG_FAIL("bg_validation", "read_block_undo: fstat failed or empty file %s", path);
     }
 
     /* Read from undo_pos.nPos, capped at MAX_UNDO_READ.
@@ -208,14 +210,15 @@ static bool read_block_undo(struct block_undo *undo,
     size_t avail = (size_t)(st.st_size - (off_t)undo_pos.nPos);
     if (avail == 0) {
         close(fd);
-        return false;
+        LOG_FAIL("bg_validation", "read_block_undo: no data available at pos %u in %s",
+                 undo_pos.nPos, path);
     }
     size_t read_len = avail < MAX_UNDO_READ ? avail : MAX_UNDO_READ;
 
-    uint8_t *buf = malloc(read_len);
+    uint8_t *buf = zcl_malloc(read_len, "bg_valid undo buf");
     if (!buf) {
         close(fd);
-        return false;
+        LOG_FAIL("bg_validation", "read_block_undo: malloc failed for %zu bytes", read_len);
     }
 
     ssize_t nread = pread(fd, buf, read_len, (off_t)undo_pos.nPos);
@@ -223,7 +226,7 @@ static bool read_block_undo(struct block_undo *undo,
 
     if (nread <= 0) {
         free(buf);
-        return false;
+        LOG_FAIL("bg_validation", "read_block_undo: pread returned %zd for %s", nread, path);
     }
 
     struct byte_stream s;
@@ -313,7 +316,8 @@ static bool verify_shielded_proofs(const struct transaction *tx,
 
     void *sctx = zclassic_sapling_verification_ctx_init();
     if (!sctx)
-        return false;
+        LOG_FAIL("bg_validation", "verify_shielded_proofs: sapling ctx init failed h=%d tx=%zu",
+                 height, tx_idx);
 
     for (size_t j = 0; j < tx->num_shielded_spend; j++) {
         const struct spend_description *sd = &tx->v_shielded_spend[j];
@@ -421,7 +425,7 @@ static bool validate_block_proofs(const struct block *block,
         alloc_size = max_script_batch;
 
     if (alloc_size > 0) {
-        check_items = calloc(alloc_size, sizeof(struct script_check_item));
+        check_items = zcl_calloc(alloc_size, sizeof(struct script_check_item), "bg_valid script checks");
         if (!check_items)
             goto out;
     }
@@ -694,7 +698,7 @@ void bg_validation_init(struct bg_validation_service *svc,
 bool bg_validation_start(struct bg_validation_service *svc)
 {
     if (!svc || svc->thread_started)
-        return false;
+        LOG_FAIL("bg_validation", "bg_validation_start: null svc or thread already started");
 
     /* Don't start if already fully validated */
     int saved = load_progress(svc->ndb);

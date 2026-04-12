@@ -23,6 +23,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include "util/log_macros.h"
+#include "util/safe_alloc.h"
 
 struct misc_context {
     struct main_state *main_state;
@@ -302,7 +304,7 @@ static bool rpc_benchmark(const struct json_value *params, bool help,
         struct timespec t0, t1;
         clock_gettime(CLOCK_MONOTONIC, &t0);
         for (int i = 0; i < 10000; i++) {
-            void *p = malloc(4096);
+            void *p = zcl_malloc(4096, "benchmark alloc");
             if (p) { memset(p, 0, 4096); free(p); }
         }
         clock_gettime(CLOCK_MONOTONIC, &t1);

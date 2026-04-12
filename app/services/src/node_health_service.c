@@ -20,6 +20,8 @@
 #include <sys/stat.h>
 #include <time.h>
 
+#include "util/log_macros.h"
+
 static int64_t g_health_start_time = 0;
 static const int64_t HEALTH_JOB_STALL_SECONDS = 120;
 

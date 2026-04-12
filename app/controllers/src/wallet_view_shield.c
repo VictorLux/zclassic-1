@@ -2,6 +2,7 @@
 
 #include "controllers/wallet_view_internal.h"
 #include "controllers/wallet_controller.h"
+#include "util/log_macros.h"
 
 /* Shield: one-click fund securing. User confirms the amount. */
 

@@ -34,6 +34,8 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <time.h>
+#include "util/log_macros.h"
+#include "util/safe_alloc.h"
 
 struct chain_inspect_context {
     struct main_state *main_state;
@@ -678,7 +680,7 @@ static bool rpc_hodltimeseries(const struct json_value *params, bool help,
      * Max bins: tip/1000 + 1 ≈ 3050 */
     #define BIN_SIZE 1000
     int nbins = tip / BIN_SIZE + 2;
-    int64_t *bin_value = calloc((size_t)nbins, sizeof(int64_t));
+    int64_t *bin_value = zcl_calloc((size_t)nbins, sizeof(int64_t), "hodl wave bins");
     if (!bin_value) { json_set_str(result, "OOM"); return false; }
 
     int64_t total_value = 0;
@@ -719,7 +721,7 @@ static bool rpc_hodltimeseries(const struct json_value *params, bool help,
     db_iter_free(&it);
 
     /* Compute cumulative: cum[b] = sum of bin_value[0..b] (value created at or before bin b) */
-    int64_t *cum = calloc((size_t)nbins, sizeof(int64_t));
+    int64_t *cum = zcl_calloc((size_t)nbins, sizeof(int64_t), "hodl wave cumulative");
     if (!cum) { free(bin_value); json_set_str(result, "OOM"); return false; }
     cum[0] = bin_value[0];
     for (int b = 1; b < nbins; b++)

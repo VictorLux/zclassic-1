@@ -27,6 +27,8 @@
 #include <string.h>
 #include <strings.h>  /* strcasecmp */
 
+#include "util/log_macros.h"
+
 /* ── Decision names ─────────────────────────────────────────────── */
 const char *policy_decision_name(enum policy_decision d)
 {

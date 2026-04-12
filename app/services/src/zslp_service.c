@@ -8,6 +8,7 @@
 #include "chain/chainparams.h"
 #include "keys/key_io.h"
 #include "script/standard.h"
+#include "util/log_macros.h"
 #include <ctype.h>
 #include <limits.h>
 #include <stdio.h>
@@ -62,10 +63,10 @@ bool zslp_service_validate_token_key(const char *token_key)
 {
     size_t len;
     if (!token_key)
-        return false;
+        LOG_FAIL("zslp_svc", "validate_token_key: NULL token_key");
     len = strlen(token_key);
     if (len == 0 || len > ZSLP_MAX_TOKEN_KEY_LEN)
-        return false;
+        LOG_FAIL("zslp_svc", "validate_token_key: bad length %zu", len);
     return zslp_service_is_alphanumeric(token_key, len) ||
            (len == 64 && zslp_service_is_hex_string(token_key, len));
 }
@@ -79,7 +80,7 @@ bool zslp_service_decode_transparent_destination(const char *addr,
     const unsigned char *sc_pfx;
 
     if (!addr || !dest)
-        return false;
+        LOG_FAIL("zslp_svc", "decode_transparent_destination: NULL addr or dest");
 
     cp = chain_params_get();
     pk_pfx = chain_params_base58_prefix(cp, B58_PUBKEY_ADDRESS, &pk_len);
@@ -94,10 +95,10 @@ bool zslp_service_validate_recipient_addr(const char *addr,
     struct tx_destination dest;
 
     if (!addr)
-        return false;
+        LOG_FAIL("zslp_svc", "validate_recipient_addr: NULL addr");
     len = strlen(addr);
     if (len == 0 || len > 128)
-        return false;
+        LOG_FAIL("zslp_svc", "validate_recipient_addr: bad length %zu", len);
     if (strict_chain_addr)
         return zslp_service_decode_transparent_destination(addr, &dest);
     return zslp_service_is_alphanumeric(addr, len) ||
@@ -157,7 +158,7 @@ bool zslp_service_open_db(const char *datadir, sqlite3 **db_out, bool *owns_db)
 {
     struct node_db *ndb = app_runtime_node_db();
 
-    if (!db_out || !owns_db) return false;
+    if (!db_out || !owns_db) LOG_FAIL("zslp_svc", "open_db: NULL output pointer");
     *db_out = NULL;
     *owns_db = false;
 
@@ -166,7 +167,7 @@ bool zslp_service_open_db(const char *datadir, sqlite3 **db_out, bool *owns_db)
         return true;
     }
     if (!datadir)
-        return false;
+        LOG_FAIL("zslp_svc", "open_db: NULL datadir and no runtime db");
 
     char db_path[1024];
     snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
@@ -175,7 +176,7 @@ bool zslp_service_open_db(const char *datadir, sqlite3 **db_out, bool *owns_db)
             sqlite3_close(*db_out);
             *db_out = NULL;
         }
-        return false;
+        LOG_FAIL("zslp_svc", "open_db: sqlite3_open failed for %s", db_path);
     }
     sqlite3_busy_timeout(*db_out, 5000);
     sqlite3_exec(*db_out,
@@ -220,7 +221,8 @@ bool zslp_service_get_token(sqlite3 *db, const char *token_id,
     char token_key[ZSLP_MAX_TOKEN_KEY_LEN + 1];
 
     if (!db || !out || !zslp_service_validate_token_key(token_id))
-        return false;
+        LOG_FAIL("zslp_svc", "get_token: invalid args (db=%p out=%p token_id=%s)",
+                 (void *)db, (void *)out, token_id ? token_id : "NULL");
 
     zslp_service_canonicalize_token_key(token_id, token_key);
     zslp_service_wrap_sqlite(db, &ndb);
@@ -263,9 +265,12 @@ bool zslp_service_credit_balance(sqlite3 *db, const char *token_id,
 
     if (!db || amount == 0 || !zslp_service_validate_token_key(token_id) ||
         !zslp_service_validate_recipient_addr(recipient_addr, false))
-        return false;
+        LOG_FAIL("zslp_svc", "credit_balance: invalid args (token=%s addr=%s amount=%llu)",
+                 token_id ? token_id : "NULL", recipient_addr ? recipient_addr : "NULL",
+                 (unsigned long long)amount);
     if (amount > (uint64_t)INT64_MAX)
-        return false;
+        LOG_FAIL("zslp_svc", "credit_balance: amount %llu exceeds INT64_MAX",
+                 (unsigned long long)amount);
     zslp_service_canonicalize_token_key(token_id, token_key);
     zslp_service_wrap_sqlite(db, &ndb);
     return db_zslp_balance_credit(&ndb, token_key, recipient_addr, (int64_t)amount);
@@ -279,7 +284,8 @@ bool zslp_service_store_token(sqlite3 *db, const char *token_id,
     char token_key[ZSLP_MAX_TOKEN_KEY_LEN + 1];
 
     if (!db || !token_id || !ticker || !name)
-        return false;
+        LOG_FAIL("zslp_svc", "store_token: NULL argument (db=%p token_id=%s)",
+                 (void *)db, token_id ? token_id : "NULL");
 
     zslp_service_canonicalize_token_key(token_id, token_key);
     zslp_service_wrap_sqlite(db, &ndb);

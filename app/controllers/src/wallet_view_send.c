@@ -3,6 +3,7 @@
 #include "controllers/wallet_view_internal.h"
 #include "controllers/wallet_controller.h"
 #include "models/contact.h"
+#include "util/log_macros.h"
 
 /* ── Send (/wallet/send) ────────────────────────────────────── */
 

@@ -39,6 +39,8 @@
 #include "controllers/wallet_scan.h"
 #include "coins/coins.h"
 #include "coins/coins_view.h"
+#include "util/log_macros.h"
+#include "util/safe_alloc.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -72,7 +74,7 @@ static bool rpc_z_getnewaddress(const struct json_value *params, bool help,
     if (!sapling_keystore_new_address(&ctx->wallet->sapling_keys,
                                        diversifier, pk_d)) {
         json_set_str(result, "Failed to generate Sapling address");
-        return false;
+        LOG_FAIL("wallet_shielded", "sapling_keystore_new_address failed");
     }
 
     const struct chain_params *cp = chain_params_get();
@@ -81,7 +83,8 @@ static bool rpc_z_getnewaddress(const struct json_value *params, bool help,
             cp->bech32HRPs[BECH32_SAPLING_PAYMENT_ADDRESS],
             addr, sizeof(addr))) {
         json_set_str(result, "Failed to encode address");
-        return false;
+        LOG_FAIL("wallet_shielded", "sapling_encode_payment_address failed for HRP=%s",
+                 cp->bech32HRPs[BECH32_SAPLING_PAYMENT_ADDRESS]);
     }
 
     /* Persist sapling keys to wallet DB */
@@ -144,7 +147,7 @@ static bool rpc_z_getbalance(const struct json_value *params, bool help,
     rpc_params_expect(&p, 1, 2);
     const char *addr_str = rpc_require_str(&p, 0, "address");
     int minconf = (int)rpc_permit_int(&p, 1, "minconf", 1);
-    if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); return false; }
+    if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); LOG_FAIL("wallet_shielded", "z_getbalance: invalid params"); }
 
     ENSURE_WALLET(result);
 
@@ -189,7 +192,7 @@ static bool rpc_z_getbalance(const struct json_value *params, bool help,
     if (!decode_destination(addr_str, pk_pfx, pk_pfx_len,
                              sc_pfx, sc_pfx_len, &dest)) {
         json_set_str(result, "Invalid address");
-        return false;
+        LOG_FAIL("wallet_shielded", "z_getbalance: decode_destination failed for addr=%s", addr_str);
     }
 
     int64_t balance = 0;
@@ -230,7 +233,7 @@ static bool rpc_z_listunspent(const struct json_value *params, bool help,
     rpc_params_init(&p, params);
     rpc_params_expect(&p, 0, 1);
     int minconf = (int)rpc_permit_int(&p, 0, "minconf", 0);
-    if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); return false; }
+    if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); LOG_FAIL("wallet_shielded", "z_listunspent: invalid params"); }
 
     ENSURE_WALLET(result);
 
@@ -327,7 +330,7 @@ static bool rpc_z_sendmany(const struct json_value *params, bool help,
 
     if (json_size(params) < 2) {
         json_set_str(result, "Expected at least 2 parameter(s)");
-        return false;
+        LOG_FAIL("wallet_shielded", "z_sendmany: expected 2+ params, got %zu", json_size(params));
     }
 
     ENSURE_WALLET(result);
@@ -336,7 +339,7 @@ static bool rpc_z_sendmany(const struct json_value *params, bool help,
     const struct json_value *recipients = json_at(params, 1);
     if (!from_addr || !recipients || recipients->type != JSON_ARR || json_size(recipients) == 0) {
         json_set_str(result, "Invalid parameters");
-        return false;
+        LOG_FAIL("wallet_shielded", "z_sendmany: invalid from_addr or recipients array");
     }
 
     /* Check if from address is transparent (t1/t3) or shielded (zs1) */
@@ -357,25 +360,25 @@ static bool rpc_z_sendmany(const struct json_value *params, bool help,
     if (from_is_shielded) {
         if (!sapling_decode_payment_address(from_addr, from_z_diversifier, from_z_pk_d)) {
             json_set_str(result, "Invalid shielded from address");
-            return false;
+            LOG_FAIL("wallet_shielded", "z_sendmany: cannot decode shielded from address %s", from_addr);
         }
         from_z_key = sapling_keystore_find_by_address(
             &ctx->wallet->sapling_keys, from_z_diversifier, from_z_pk_d);
         if (!from_z_key) {
             json_set_str(result, "Shielded from address not in wallet");
-            return false;
+            LOG_FAIL("wallet_shielded", "z_sendmany: shielded from addr not found in keystore");
         }
         memset(&from_dest, 0, sizeof(from_dest));
     } else if (!decode_destination(from_addr, pk_pfx, pk_pfx_len, sc_pfx, sc_pfx_len, &from_dest)) {
         json_set_str(result, "Invalid from address");
-        return false;
+        LOG_FAIL("wallet_shielded", "z_sendmany: decode_destination failed for from=%s", from_addr);
     }
 
     /* Parse recipients */
     size_t num_recip = json_size(recipients);
     if (num_recip > 50) {
         json_set_str(result, "Too many recipients");
-        return false;
+        LOG_FAIL("wallet_shielded", "z_sendmany: too many recipients (%zu > 50)", num_recip);
     }
 
     /* Separate into transparent and shielded outputs */
@@ -395,13 +398,13 @@ static bool rpc_z_sendmany(const struct json_value *params, bool help,
         const struct json_value *r = json_at(recipients, i);
         if (!r || r->type != JSON_OBJ) {
             json_set_str(result, "Invalid recipient");
-            return false;
+            LOG_FAIL("wallet_shielded", "z_sendmany: recipient %zu is not a JSON object", i);
         }
         const char *addr = json_get_str(json_get(r, "address"));
         int64_t amount = parse_amount(json_get(r, "amount"));
         if (!addr || amount <= 0) {
             json_set_str(result, "Invalid recipient address or amount");
-            return false;
+            LOG_FAIL("wallet_shielded", "z_sendmany: recipient %zu has invalid addr or amount=%lld", i, (long long)amount);
         }
         total_amount += amount;
 
@@ -410,7 +413,7 @@ static bool rpc_z_sendmany(const struct json_value *params, bool help,
             if (!sapling_decode_payment_address(addr,
                     z_diversifiers[num_z_out], z_pk_ds[num_z_out])) {
                 json_set_str(result, "Invalid Sapling address");
-                return false;
+                LOG_FAIL("wallet_shielded", "z_sendmany: cannot decode sapling recipient addr=%s", addr);
             }
             z_amounts[num_z_out] = amount;
             /* Parse memo if present */
@@ -431,7 +434,7 @@ static bool rpc_z_sendmany(const struct json_value *params, bool help,
             if (!decode_destination(addr, pk_pfx, pk_pfx_len,
                                      sc_pfx, sc_pfx_len, &t_dests[num_t_out])) {
                 json_set_str(result, "Invalid transparent address");
-                return false;
+                LOG_FAIL("wallet_shielded", "z_sendmany: cannot decode transparent recipient addr=%s", addr);
             }
             t_amounts[num_t_out] = amount;
             num_t_out++;
@@ -448,7 +451,7 @@ static bool rpc_z_sendmany(const struct json_value *params, bool help,
             ctx->node_db, from_z_key->ivk, notes, 256);
         if (num_notes <= 0) {
             json_set_str(result, "No unspent shielded notes for this address");
-            return false;
+            LOG_FAIL("wallet_shielded", "z_sendmany: no unspent notes for from z-address");
         }
 
         /* Coin selection: pick notes until we have enough */
@@ -462,17 +465,18 @@ static bool rpc_z_sendmany(const struct json_value *params, bool help,
         }
         if (notes_total < total_amount + fee) {
             json_set_str(result, "Insufficient shielded funds");
-            return false;
+            LOG_FAIL("wallet_shielded", "z_sendmany: insufficient shielded funds: have=%lld need=%lld",
+                     (long long)notes_total, (long long)(total_amount + fee));
         }
 
         /* Witnesses are maintained incrementally by connect_block and bulk_blocks.
          * Load them directly — they are already at chain tip. */
         uint8_t anchor[32];
-        struct incremental_witness *witnesses = calloc(num_sel_notes,
-            sizeof(struct incremental_witness));
+        struct incremental_witness *witnesses = zcl_calloc(num_sel_notes,
+            sizeof(struct incremental_witness), "sapling_witnesses");
         if (!witnesses) {
             json_set_str(result, "Out of memory");
-            return false;
+            LOG_FAIL("wallet_shielded", "z_sendmany: calloc witnesses failed for %zu notes", num_sel_notes);
         }
         struct incremental_merkle_tree dummy_tree;
         sapling_tree_init(&dummy_tree);
@@ -488,7 +492,7 @@ static bool rpc_z_sendmany(const struct json_value *params, bool help,
                     &wblob, &wlen, &wheight) || !wblob) {
                 free(witnesses);
                 json_set_str(result, "Witness not available (run rescanwitnesses)");
-                return false;
+                LOG_FAIL("wallet_shielded", "z_sendmany: witness not available for note %zu", i);
             }
             if (i == 0) witness_height = wheight;
             struct byte_stream ws;
@@ -498,7 +502,7 @@ static bool rpc_z_sendmany(const struct json_value *params, bool help,
                     dummy_tree.combine, dummy_tree.uncommitted)) {
                 free(wblob); free(witnesses);
                 json_set_str(result, "Failed to deserialize witness");
-                return false;
+                LOG_FAIL("wallet_shielded", "z_sendmany: witness deserialize failed for note %zu", i);
             }
             free(wblob);
         }
@@ -544,7 +548,7 @@ static bool rpc_z_sendmany(const struct json_value *params, bool help,
             if (!transaction_alloc(&wtx.tx, 0, total_t_out_shielded)) {
                 free(witnesses);
                 json_set_str(result, "Transaction allocation failed");
-                return false;
+                LOG_FAIL("wallet_shielded", "z_sendmany: transaction_alloc failed for %zu t-outputs (shielded path)", total_t_out_shielded);
             }
         }
 
@@ -562,11 +566,11 @@ static bool rpc_z_sendmany(const struct json_value *params, bool help,
             free(witnesses);
             transaction_free(&wtx.tx);
             json_set_str(result, "Failed to init proving context");
-            return false;
+            LOG_FAIL("wallet_shielded", "z_sendmany: sapling_proving_ctx_init failed (shielded spend path)");
         }
 
         /* Build spend descriptions */
-        wtx.tx.v_shielded_spend = calloc(num_sel_notes, sizeof(struct spend_description));
+        wtx.tx.v_shielded_spend = zcl_calloc(num_sel_notes, sizeof(struct spend_description), "shielded_spends");
         wtx.tx.num_shielded_spend = num_sel_notes;
 
         uint8_t spend_ars[256][32]; /* ar values for spend_auth_sig */
@@ -614,8 +618,8 @@ static bool rpc_z_sendmany(const struct json_value *params, bool help,
         size_t total_z_outs = num_z_out + (shielded_change > 0 ? 1 : 0);
 
         if (total_z_outs > 0) {
-            wtx.tx.v_shielded_output = calloc(total_z_outs,
-                sizeof(struct output_description));
+            wtx.tx.v_shielded_output = zcl_calloc(total_z_outs,
+                sizeof(struct output_description), "shielded_outputs");
             wtx.tx.num_shielded_output = total_z_outs;
 
             uint8_t ovk[32];
@@ -713,7 +717,7 @@ shielded_cleanup:
             free(witnesses);
             transaction_free(&wtx.tx);
             json_set_str(result, spend_err);
-            return false;
+            LOG_FAIL("wallet_shielded", "z_sendmany: shielded spend failed: %s", spend_err);
         }
 
         free(witnesses);
@@ -788,7 +792,8 @@ shielded_cleanup:
         for (size_t i = 0; i < num_selected; i++)
             db_wallet_utxo_free(&db_selected[i]);
         json_set_str(result, "Insufficient funds from specified address");
-        return false;
+        LOG_FAIL("wallet_shielded", "z_sendmany: insufficient transparent funds: have=%lld need=%lld",
+                 (long long)selected_value, (long long)(total_amount + fee));
     }
 
     /* Build transaction */
@@ -808,7 +813,8 @@ shielded_cleanup:
 
     if (!transaction_alloc(&wtx.tx, num_selected, total_t_out)) {
         json_set_str(result, "Transaction allocation failed");
-        return false;
+        LOG_FAIL("wallet_shielded", "z_sendmany: transaction_alloc failed for %zu inputs, %zu outputs",
+                 num_selected, total_t_out);
     }
 
     /* Fill transparent outputs */
@@ -850,11 +856,11 @@ shielded_cleanup:
 
     /* Build Sapling output descriptions */
     if (num_z_out > 0) {
-        wtx.tx.v_shielded_output = calloc(num_z_out, sizeof(struct output_description));
+        wtx.tx.v_shielded_output = zcl_calloc(num_z_out, sizeof(struct output_description), "shielded_outputs");
         if (!wtx.tx.v_shielded_output) {
             transaction_free(&wtx.tx);
             json_set_str(result, "Allocation failed");
-            return false;
+            LOG_FAIL("wallet_shielded", "z_sendmany: calloc shielded_output failed for %zu outputs", num_z_out);
         }
         wtx.tx.num_shielded_output = num_z_out;
 
@@ -876,7 +882,7 @@ shielded_cleanup:
         if (!proving_ctx) {
             transaction_free(&wtx.tx);
             json_set_str(result, "Failed to init proving context");
-            return false;
+            LOG_FAIL("wallet_shielded", "z_sendmany: sapling_proving_ctx_init failed (transparent spend path)");
         }
 
         for (size_t i = 0; i < num_z_out; i++) {
@@ -892,7 +898,7 @@ shielded_cleanup:
                 zclassic_sapling_proving_ctx_free(proving_ctx);
                 transaction_free(&wtx.tx);
                 json_set_str(result, "Failed to build Sapling output");
-                return false;
+                LOG_FAIL("wallet_shielded", "z_sendmany: sapling_build_output failed for output %zu", i);
             }
         }
 
@@ -922,7 +928,7 @@ shielded_cleanup:
                 json_set_str(result, "Cannot determine input destination");
                 for (size_t j = 0; j < num_selected; j++)
                     db_wallet_utxo_free(&db_selected[j]);
-                return false;
+                LOG_FAIL("wallet_shielded", "z_sendmany: script_extract_destination failed for input %zu (t->z path)", i);
             }
 
             struct privkey skey;
@@ -932,7 +938,7 @@ shielded_cleanup:
                 json_set_str(result, "Private key not available");
                 for (size_t j = 0; j < num_selected; j++)
                     db_wallet_utxo_free(&db_selected[j]);
-                return false;
+                LOG_FAIL("wallet_shielded", "z_sendmany: private key not found for input %zu (t->z path)", i);
             }
 
             struct pubkey spk;
@@ -954,7 +960,7 @@ shielded_cleanup:
                 json_set_str(result, "Sighash computation failed");
                 for (size_t j = 0; j < num_selected; j++)
                     db_wallet_utxo_free(&db_selected[j]);
-                return false;
+                LOG_FAIL("wallet_shielded", "z_sendmany: signature_hash failed for input %zu (t->z path)", i);
             }
 
             unsigned char sig[SIGNATURE_SIZE + 1];
@@ -966,7 +972,7 @@ shielded_cleanup:
                 json_set_str(result, "Signing failed");
                 for (size_t j = 0; j < num_selected; j++)
                     db_wallet_utxo_free(&db_selected[j]);
-                return false;
+                LOG_FAIL("wallet_shielded", "z_sendmany: privkey_sign failed for input %zu (t->z path)", i);
             }
             sig[siglen++] = 0x01;
 
@@ -1005,7 +1011,7 @@ shielded_cleanup:
             zclassic_sapling_proving_ctx_free(proving_ctx);
             transaction_free(&wtx.tx);
             json_set_str(result, "Binding signature failed");
-            return false;
+            LOG_FAIL("wallet_shielded", "z_sendmany: binding_sig failed, value_balance=%lld", (long long)wtx.tx.value_balance);
         }
         zclassic_sapling_proving_ctx_free(proving_ctx);
     } else {
@@ -1033,7 +1039,7 @@ shielded_cleanup:
                 json_set_str(result, "Cannot determine input destination");
                 for (size_t j = 0; j < num_selected; j++)
                     db_wallet_utxo_free(&db_selected[j]);
-                return false;
+                LOG_FAIL("wallet_shielded", "z_sendmany: script_extract_destination failed for input %zu (t->t path)", i);
             }
 
             struct privkey skey;
@@ -1043,7 +1049,7 @@ shielded_cleanup:
                 json_set_str(result, "Private key not available");
                 for (size_t j = 0; j < num_selected; j++)
                     db_wallet_utxo_free(&db_selected[j]);
-                return false;
+                LOG_FAIL("wallet_shielded", "z_sendmany: private key not found for input %zu (t->t path)", i);
             }
 
             struct pubkey spk;
@@ -1068,7 +1074,7 @@ shielded_cleanup:
                 json_set_str(result, "Signing failed");
                 for (size_t j = 0; j < num_selected; j++)
                     db_wallet_utxo_free(&db_selected[j]);
-                return false;
+                LOG_FAIL("wallet_shielded", "z_sendmany: privkey_sign failed for input %zu (t->t path)", i);
             }
             sig[siglen++] = 0x01;
 
@@ -1098,7 +1104,7 @@ shielded_cleanup:
     if (!wallet_commit_transaction(ctx->wallet, &wtx, ctx->mempool)) {
         json_set_str(result, "Error committing transaction");
         transaction_free(&wtx.tx);
-        return false;
+        LOG_FAIL("wallet_shielded", "z_sendmany: wallet_commit_transaction failed");
     }
 
     if (wallet_ctx_db_ready(ctx))
@@ -1133,7 +1139,7 @@ static bool rpc_z_gettotalbalance(const struct json_value *params, bool help,
     rpc_params_init(&p, params);
     rpc_params_expect(&p, 0, 1);
     (void)rpc_permit_int(&p, 0, "minconf", 1);
-    if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); return false; }
+    if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); LOG_FAIL("wallet_shielded", "z_gettotalbalance: invalid params"); }
 
     ENSURE_WALLET(result);
 
@@ -1173,14 +1179,14 @@ static bool rpc_z_listreceivedbyaddress(const struct json_value *params,
     rpc_params_expect(&p, 1, 2);
     const char *addr_str = rpc_require_str(&p, 0, "address");
     int minconf = (int)rpc_permit_int(&p, 1, "minconf", 1);
-    if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); return false; }
+    if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); LOG_FAIL("wallet_shielded", "z_listreceivedbyaddress: invalid params"); }
 
     ENSURE_WALLET(result);
 
     uint8_t z_d[11], z_pkd[32];
     if (!sapling_decode_payment_address(addr_str, z_d, z_pkd)) {
         json_set_str(result, "Not a valid Sapling address");
-        return false;
+        LOG_FAIL("wallet_shielded", "z_listreceivedbyaddress: invalid sapling address %s", addr_str);
     }
 
     json_set_array(result);
@@ -1261,21 +1267,21 @@ static bool rpc_z_exportkey(const struct json_value *params, bool help,
     rpc_params_init(&p, params);
     rpc_params_expect(&p, 1, 1);
     const char *addr_str = rpc_require_str(&p, 0, "zaddr");
-    if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); return false; }
+    if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); LOG_FAIL("wallet_shielded", "z_exportkey: invalid params"); }
 
     ENSURE_WALLET(result);
 
     uint8_t z_d[11], z_pkd[32];
     if (!sapling_decode_payment_address(addr_str, z_d, z_pkd)) {
         json_set_str(result, "Invalid Sapling address");
-        return false;
+        LOG_FAIL("wallet_shielded", "z_exportkey: invalid sapling address %s", addr_str);
     }
 
     const struct sapling_key_entry *ke =
         sapling_keystore_find_by_address(&ctx->wallet->sapling_keys, z_d, z_pkd);
     if (!ke) {
         json_set_str(result, "Wallet does not hold spending key for this z-address");
-        return false;
+        LOG_FAIL("wallet_shielded", "z_exportkey: spending key not found for address %s", addr_str);
     }
 
     const struct chain_params *cp = chain_params_get();
@@ -1284,7 +1290,7 @@ static bool rpc_z_exportkey(const struct json_value *params, bool help,
             cp->bech32HRPs[BECH32_SAPLING_EXTENDED_SPEND_KEY],
             encoded, sizeof(encoded))) {
         json_set_str(result, "Failed to encode spending key");
-        return false;
+        LOG_FAIL("wallet_shielded", "z_exportkey: sapling_encode_extended_spending_key failed");
     }
 
     json_set_str(result, encoded);
@@ -1313,7 +1319,7 @@ static bool rpc_z_importkey(const struct json_value *params, bool help,
     const char *key_str = rpc_require_str(&p, 0, "key");
     const char *rescan_str = rpc_permit_str(&p, 1, "rescan", "whenkeyisnew");
     int start_height = (int)rpc_permit_int(&p, 2, "startHeight", 0);
-    if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); return false; }
+    if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); LOG_FAIL("wallet_shielded", "z_importkey: invalid params"); }
 
     ENSURE_WALLET(result);
 
@@ -1332,7 +1338,7 @@ static bool rpc_z_importkey(const struct json_value *params, bool help,
     struct zip32_xsk xsk;
     if (!sapling_decode_extended_spending_key(key_str, &xsk)) {
         json_set_str(result, "Invalid spending key");
-        return false;
+        LOG_FAIL("wallet_shielded", "z_importkey: failed to decode spending key");
     }
 
     /* Import into keystore */
@@ -1343,7 +1349,7 @@ static bool rpc_z_importkey(const struct json_value *params, bool help,
             return true;
         }
         json_set_str(result, "Key already exists in wallet");
-        return false;
+        LOG_FAIL("wallet_shielded", "z_importkey: key already exists in wallet");
     }
     memory_cleanse(&xsk, sizeof(xsk));
 
@@ -1382,14 +1388,14 @@ static bool rpc_z_exportviewingkey(const struct json_value *params, bool help,
     rpc_params_init(&p, params);
     rpc_params_expect(&p, 1, 1);
     const char *addr_str = rpc_require_str(&p, 0, "zaddr");
-    if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); return false; }
+    if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); LOG_FAIL("wallet_shielded", "z_exportviewingkey: invalid params"); }
 
     ENSURE_WALLET(result);
 
     uint8_t z_d[11], z_pkd[32];
     if (!sapling_decode_payment_address(addr_str, z_d, z_pkd)) {
         json_set_str(result, "Invalid Sapling address");
-        return false;
+        LOG_FAIL("wallet_shielded", "z_exportviewingkey: invalid sapling address %s", addr_str);
     }
 
     const struct sapling_key_entry *ke =
@@ -1397,7 +1403,7 @@ static bool rpc_z_exportviewingkey(const struct json_value *params, bool help,
     if (!ke) {
         json_set_str(result,
             "Wallet does not hold key for this z-address");
-        return false;
+        LOG_FAIL("wallet_shielded", "z_exportviewingkey: key not found for address %s", addr_str);
     }
 
     const struct chain_params *cp = chain_params_get();
@@ -1406,7 +1412,7 @@ static bool rpc_z_exportviewingkey(const struct json_value *params, bool help,
             cp->bech32HRPs[BECH32_SAPLING_FULL_VIEWING_KEY],
             encoded, sizeof(encoded))) {
         json_set_str(result, "Failed to encode viewing key");
-        return false;
+        LOG_FAIL("wallet_shielded", "z_exportviewingkey: sapling_encode_extended_full_viewing_key failed");
     }
 
     json_set_str(result, encoded);
@@ -1436,19 +1442,19 @@ static bool rpc_z_getmemo(const struct json_value *params, bool help,
     rpc_params_expect(&p, 1, 2);
     const char *txid_str = rpc_require_str(&p, 0, "txid");
     int outindex = (int)rpc_permit_int(&p, 1, "outindex", 0);
-    if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); return false; }
+    if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); LOG_FAIL("wallet_shielded", "z_getmemo: invalid params"); }
 
     ENSURE_WALLET(result);
 
     if (!ctx->node_db) {
         json_set_str(result, "Database not available");
-        return false;
+        LOG_FAIL("wallet_shielded", "z_getmemo: node_db is NULL");
     }
 
     uint8_t txid[32];
     if (strlen(txid_str) != 64) {
         json_set_str(result, "Invalid txid length");
-        return false;
+        LOG_FAIL("wallet_shielded", "z_getmemo: txid length %zu != 64", strlen(txid_str));
     }
     for (int i = 0; i < 32; i++) {
         unsigned int b;
@@ -1460,7 +1466,7 @@ static bool rpc_z_getmemo(const struct json_value *params, bool help,
     int count = db_wallet_tx_notes(ctx->node_db, txid, notes, 16);
     if (count <= 0) {
         json_set_str(result, "No shielded notes found for this txid");
-        return false;
+        LOG_FAIL("wallet_shielded", "z_getmemo: no notes found for txid=%s", txid_str);
     }
 
     struct db_sapling_note *found = NULL;
@@ -1472,7 +1478,7 @@ static bool rpc_z_getmemo(const struct json_value *params, bool help,
     }
     if (!found) {
         json_set_str(result, "No note at specified output index");
-        return false;
+        LOG_FAIL("wallet_shielded", "z_getmemo: no note at outindex=%d for txid=%s", outindex, txid_str);
     }
 
     json_set_object(result);
@@ -1529,7 +1535,7 @@ static bool rpc_z_listallnotes(const struct json_value *params, bool help,
 
     if (!ctx->node_db) {
         json_set_str(result, "Database not available");
-        return false;
+        LOG_FAIL("wallet_shielded", "z_listallnotes: node_db is NULL");
     }
 
     struct db_sapling_note notes[512];

@@ -45,6 +45,8 @@
 #include "coins/coins.h"
 #include "coins/coins_view.h"
 #include "views/wallet_view.h"
+#include "util/log_macros.h"
+#include "util/safe_alloc.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -738,9 +740,9 @@ static bool rpc_rescanwitnesses(const struct json_value *params, bool help,
     struct incremental_merkle_tree tree;
     sapling_tree_init(&tree);
 
-    struct incremental_witness *witnesses = calloc((size_t)n_notes,
-        sizeof(struct incremental_witness));
-    bool *witness_active = calloc((size_t)n_notes, sizeof(bool));
+    struct incremental_witness *witnesses = zcl_calloc((size_t)n_notes,
+        sizeof(struct incremental_witness), "rescan witnesses");
+    bool *witness_active = zcl_calloc((size_t)n_notes, sizeof(bool), "rescan witness active");
     int witnesses_built = 0;
 
     /* mmap cache */

@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <inttypes.h>
+#include "util/log_macros.h"
 
 /* sql_query_i64() provided by controllers/explorer_internal.h */
 #define stats_q_i64 sql_query_i64
@@ -47,9 +48,9 @@ static void stats_tab_css(char *r, size_t max, size_t *off,
 static bool stats_addr_encode(char *out, size_t outmax,
                               const struct tx_destination *dest)
 {
-    if (!out || outmax == 0 || !dest) return false;
+    if (!out || outmax == 0 || !dest) LOG_FAIL("explorer_stats", "stats_addr_encode: NULL out, zero outmax, or NULL dest");
     const struct chain_params *cp = chain_params_get();
-    if (!cp) return false;
+    if (!cp) LOG_FAIL("explorer_stats", "stats_addr_encode: chain_params_get returned NULL");
     size_t pk_len = 0, sh_len = 0;
     const unsigned char *pk_pfx = chain_params_base58_prefix(cp, B58_PUBKEY_ADDRESS, &pk_len);
     const unsigned char *sh_pfx = chain_params_base58_prefix(cp, B58_SCRIPT_ADDRESS, &sh_len);

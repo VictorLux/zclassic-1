@@ -24,6 +24,8 @@
 #include <sys/statvfs.h>
 #include <time.h>
 
+#include "util/log_macros.h"
+
 /* ── Module state ───────────────────────────────────────────── */
 
 struct disk_monitor_state {
@@ -198,12 +200,12 @@ static void *dm_thread_fn(void *arg)
 
 bool disk_monitor_start(const struct disk_monitor_config *cfg)
 {
-    if (!cfg || !cfg->datadir) return false;
+    if (!cfg || !cfg->datadir) LOG_FAIL("disk_monitor", "start called with null config or datadir");
 
     pthread_mutex_lock(&g_dm.lock);
     if (g_dm.thread_running) {
         pthread_mutex_unlock(&g_dm.lock);
-        return false; /* already running */
+        LOG_FAIL("disk_monitor", "start called but monitor thread already running");
     }
 
     g_dm.cfg = *cfg;
@@ -221,7 +223,7 @@ bool disk_monitor_start(const struct disk_monitor_config *cfg)
      * thread that will just emit -1 forever. */
     if (disk_monitor_free_bytes(cfg->datadir) < 0) {
         pthread_mutex_unlock(&g_dm.lock);
-        return false;
+        LOG_FAIL("disk_monitor", "cannot stat datadir %s", cfg->datadir);
     }
 
     /* Synchronous first poll so callers know the level before

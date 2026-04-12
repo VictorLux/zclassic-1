@@ -12,6 +12,7 @@
 #include <string.h>
 #include <time.h>
 #include <sys/time.h>
+#include "util/log_macros.h"
 
 /* ── Controller context ──────────────────────────────────────── */
 

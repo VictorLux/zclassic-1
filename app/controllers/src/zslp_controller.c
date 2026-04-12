@@ -30,6 +30,7 @@
 #include <stdint.h>
 #include <time.h>
 #include <sqlite3.h>
+#include "util/log_macros.h"
 
 struct zslp_context {
     const char *datadir;
@@ -98,7 +99,9 @@ const char *zslp_create_token(const char *datadir,
         .initial_supply = initial_supply
     };
     const char *validation_error = NULL;
-    if (!effective_datadir || !ticker || !name) return NULL;
+    if (!effective_datadir || !ticker || !name)
+        LOG_NULL("zslp", "create_token: missing required param (datadir=%p ticker=%p name=%p)",
+                 (const void *)effective_datadir, (const void *)ticker, (const void *)name);
 
     validation_error = zslp_service_validate_create_request(&req);
     if (validation_error) {
@@ -163,7 +166,7 @@ store_sqlite:
     static char result[128];
     if (!zslp_command_finalize_genesis(effective_datadir, broadcast_txid, &req,
                                        result))
-        return NULL;
+        LOG_NULL("zslp", "finalize_genesis failed for ticker=%s", ticker);
     return result;
 }
 
@@ -194,7 +197,7 @@ bool zslp_generate_payment_address(const char *datadir,
                                     char *z_addr_out, size_t max)
 {
     if (!zslp_effective_datadir(datadir))
-        return false;
+        LOG_FAIL("zslp", "generate_payment_address: datadir not initialized");
     return zslp_payment_generate_address(zslp_wallet(), z_addr_out, max);
 }
 
@@ -227,7 +230,10 @@ bool zslp_mint(const char *datadir,
     const char *validation_error = NULL;
     if (!zslp_effective_datadir(datadir) ||
         !zslp_service_validate_token_key(token_id_hex) ||
-        !recipient_addr) return false;
+        !recipient_addr)
+        LOG_FAIL("zslp", "mint: invalid params (datadir=%p token=%p recipient=%p)",
+                 (const void *)zslp_effective_datadir(datadir),
+                 (const void *)token_id_hex, (const void *)recipient_addr);
 
     validation_error = zslp_service_validate_transfer_request(&req);
     if (validation_error) {
@@ -261,7 +267,10 @@ bool zslp_send(const char *datadir,
     const char *validation_error = NULL;
     if (!zslp_effective_datadir(datadir) ||
         !zslp_service_validate_token_key(token_id_hex) ||
-        !to_addr) return false;
+        !to_addr)
+        LOG_FAIL("zslp", "send: invalid params (datadir=%p token=%p to=%p)",
+                 (const void *)zslp_effective_datadir(datadir),
+                 (const void *)token_id_hex, (const void *)to_addr);
     validation_error = zslp_service_validate_transfer_request(&req);
     if (validation_error) {
         fprintf(stderr, "zslp: %s\n", validation_error);
@@ -331,10 +340,11 @@ static bool zslp_parse_amount(const struct json_value *value, uint64_t *amount_o
 {
     int64_t raw;
     if (!value || !amount_out)
-        return false;
+        LOG_FAIL("zslp", "parse_amount: null value=%p or amount_out=%p",
+                 (const void *)value, (const void *)amount_out);
     raw = json_get_int(value);
     if (raw <= 0)
-        return false;
+        LOG_FAIL("zslp", "parse_amount: non-positive amount %lld", (long long)raw);
     *amount_out = (uint64_t)raw;
     return true;
 }

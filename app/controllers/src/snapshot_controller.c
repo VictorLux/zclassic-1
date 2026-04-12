@@ -41,6 +41,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <pthread.h>
+#include "util/log_macros.h"
 
 /* ZCL_MAGIC used in legacy_import.c, not needed here. */
 
@@ -49,7 +50,7 @@ static bool snapshot_sql_exec_checked(sqlite3 *db,
                                       const char *label)
 {
     if (!db || !sql)
-        return false;
+        LOG_FAIL("snapshot", "sql_exec_checked: db=%p sql=%p", (void *)db, (void *)sql);
     if (sqlite3_exec(db, sql, NULL, NULL, NULL) != SQLITE_OK) {
         fprintf(stderr, "snapshot: %s failed: %s\n",
                 label, sqlite3_errmsg(db));
@@ -659,7 +660,7 @@ int snapshot_import(const char *snapshot_dir,
 
     snapshot_import_job_init(&job, snapshot_dir, db_path, w);
     if (!snapshot_import_job_start(&job))
-        return -1;
+        LOG_ERR("snapshot", "failed to start parallel import from %s", snapshot_dir);
     snapshot_import_job_join(&job);
 
     struct timespec t1_end;
@@ -884,7 +885,7 @@ static void *build_tx_index_thread(void *arg)
     int rc;
 
     if (!job) {
-        return NULL;
+        LOG_NULL("snapshot", "build_tx_index_thread called with NULL job");
     }
 
     job->result = -1;
@@ -1140,17 +1141,18 @@ bool snapshot_tx_index_job_start(struct snapshot_tx_index_job *job,
                                  const char *c23_datadir)
 {
     if (!job || job->started || !c23_datadir)
-        return false;
+        LOG_FAIL("snapshot", "tx_index_job_start: invalid args job=%p started=%d datadir=%p",
+                 (void *)job, job ? job->started : 0, (void *)c23_datadir);
 
     if (snprintf(job->args.db_path, sizeof(job->args.db_path),
                  "%s/node.db", c23_datadir) >=
         (int)sizeof(job->args.db_path)) {
-        return false;
+        LOG_FAIL("snapshot", "tx_index_job_start: db_path truncated for datadir %s", c23_datadir);
     }
     job->args.datadir = c23_datadir;
     job->result = -1;
     if (pthread_create(&job->thread, NULL, build_tx_index_thread, job) != 0) {
-        return false;
+        LOG_FAIL("snapshot", "tx_index_job_start: pthread_create failed for datadir %s", c23_datadir);
     }
     job->started = true;
     return true;
@@ -1162,11 +1164,12 @@ bool snapshot_tx_index_job_join(struct snapshot_tx_index_job *job,
     int join_rc;
 
     if (!job || !job->started)
-        return false;
+        LOG_FAIL("snapshot", "tx_index_job_join: invalid state job=%p started=%d",
+                 (void *)job, job ? job->started : 0);
 
     join_rc = pthread_join(job->thread, NULL);
     if (join_rc != 0)
-        return false;
+        LOG_FAIL("snapshot", "tx_index_job_join: pthread_join failed rc=%d", join_rc);
 
     job->started = false;
     if (result_out)
