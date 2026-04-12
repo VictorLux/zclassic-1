@@ -78,11 +78,11 @@ Work in order. `./test_zcl` green on every push.
 
 5. ~~**Sapling key scrubbing**~~ — **DONE.** Audited all paths touching spending keys (`sk`, `ask`, `nsk`, `ovk`). `memory_cleanse()` added to 16 uncleansed stack buffers in `lib/sapling/src/prf.c` (5 buffers: `sprout_prf` blob, `prf_expand` blob, `prf_ask`/`prf_nsk`/`prf_ovk` tmp) and `lib/sapling/src/zip32.c` (11 buffers: `expsk_from_spending_key` digest+scalars, `expsk_derive_child` digest+6 Fs scalars, `dk_master` digest, `dk_derive_child` digest, `zip32_xsk_master` i_master, `zip32_xsk_derive` tmp+expsk_bytes+fvk, `fvk_derive_child` digest+4 scalar buffers, `zip32_xfvk_derive` tmp, `zip32_xfvk_address` ivk). Wallet layer (`sapling_keys.c`, `wallet_sqlite.c`, `wallet.c`, `wallet_db.c`) already properly cleansed — no changes needed. 10 tests in `test_key_scrub.c`.
 
-6. **Dependency vulnerability scan** — CI job: audit OpenSSL, libevent, SQLite, leveldb versions against known CVEs. `tools/dep_audit.sh` script + `make audit`.
+6. ~~**Dependency vulnerability scan**~~ — **DONE.** `tools/dep_audit.sh` audits vendored OpenSSL (3.0.13→needs ≥3.0.16), SQLite (3.49.0 ✓), libevent (2.1.12 ✓), leveldb (1.18 ✓), zlib (1.3 ✓), libsecp256k1 (present ✓). Supports `--json` for CI. `make audit` target wired.
 
 ### Coverage & quality
 
-7. **Coverage 26% → 35%** — audit highest-LOC 0% files, write targeted tests. Post before/after in Current Status.
+7. ~~**Coverage 26% → 35%**~~ — **DONE (42.3%).** 4 new test files: `test_znam.c` (32 tests), `test_htlc.c` (30 tests), `test_file_market.c` (22 tests), `test_strong_params.c` (30 tests). Fixed coverage crash: `test_json` segfaults under `-O1+gcov`, isolated in `fork()` child under `COVERAGE_BUILD` — recovered ~17pp of previously-lost coverage. Before: 25.3%, after: 42.3%.
 
 8. **HTTP RPC error envelope audit** — consistent `{error: {code, message, method, request_id}}` shape everywhere. One commit per category (wallet, chain, net, ops).
 
