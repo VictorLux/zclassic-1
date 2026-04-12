@@ -21,15 +21,15 @@ Work in order. `./test_zcl` green on every push.
 
 1. ~~**Reorg safety test**~~ — **DONE.** `lib/test/src/test_reorg_safety.c` — 23 tests: synthesizes 50-block reorg with conflicting fork. Exercises disconnect_block + update_coins for both chains. Asserts no UTXO loss, no orphan rows, CSR commit acceptance, recovery_policy allow/reject, db_txn scoped commit/rollback, non-coinbase spend undo, partial reorg (25/50), 5 rapid reorg cycles, commitment tracking. All safety infrastructure verified together.
 
-2. **Consensus parity audit** — 10 mainnet blocks through both `zclassic23` and `zclassic-cpp`, assert matching `coins_best_block` hashes. Write `CONSENSUS_PARITY.md`.
+2. ~~**Consensus parity audit**~~ — **IN PROGRESS.** `CONSENSUS_PARITY.md` + `tools/consensus_parity_audit.sh`. C23 internal consistency verified (coins_best_block matches chain tip at h=2,014,988). C++ node syncing — cross-node comparison pending.
 
-3. **PHGR13 live verification** — if the live node has NOT advanced past h=2,014,948, debug why, fix, and re-test. If it HAS advanced, document the final height reached in `AGENT2.md` Current Status and mark wave 9 #1 fully closed.
+3. ~~**PHGR13 live verification**~~ — **DONE.** Live node at h=2,014,988, past the h=2,014,948 barrier. Wave 9 #1 fully closed. Documented in AGENT2.md Current Status.
 
 ### Architecture
 
-4. **Boot decomposition Phase A** — extract `block_index_loader.{h,c}` from boot.c. All `block_index.bin` read/write + `bii_verify()` into new service. 6+ tests.
+4. ~~**Boot decomposition Phase A**~~ — **DONE.** `app/services/{include/services/block_index_loader.h,src/block_index_loader.c}` extracted from `boot_index.c`. 5 functions moved (save/load_block_index_flat, save/load_block_index_recent, load_block_index). 577 lines extracted (boot_index.c 1709→1132). 8 tests in `test_block_index_loader.c`: flat round-trip, pprev linking, bad magic, truncated file, SQLite round-trip, small cache rejection, chain_work preservation, missing file.
 
-5. **Boot decomposition Phase B** — extract `chain_state_validator.{h,c}`. Cross-check block_map vs SQLite vs coins_best_block vs active_chain. 5+ tests.
+5. ~~**Boot decomposition Phase B**~~ — **DONE.** `app/services/{include/services/chain_state_validator.h,src/chain_state_validator.c}` extracted from `boot_index.c`. `validate_coins_chain_agreement()` (159 lines) handles 4 recovery cases: BOOT_OK, REIMPORT, WIPE_WAIT, RESET_CHAIN. 6 tests in `test_chain_state_validator.c`. boot_index.c 1132→973 lines.
 
 6. **Boot decomposition Phase C** — extract `utxo_recovery_service.{h,c}`. Wipe/recover gated through recovery_policy. 8+ tests. **Target: boot.c < 1400 lines.**
 

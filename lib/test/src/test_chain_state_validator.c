@@ -1,0 +1,265 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * Tests for chain_state_validator service — boot-time cross-check
+ * between coins_best_block and active chain tip.
+ */
+
+#include "test/test_helpers.h"
+#include "services/chain_state_validator.h"
+#include "validation/main_state.h"
+
+#define CSV_CHECK(name, expr) do {          \
+    printf("%s... ", (name));              \
+    if ((expr)) printf("OK\n");            \
+    else { printf("FAIL\n"); failures++; } \
+} while (0)
+
+/* Build a minimal chain of n blocks in main_state with matching
+ * active_chain tip. */
+static void csv_build_chain(struct main_state *ms, int n)
+{
+    struct uint256 hashes[256];
+    int limit = n < 256 ? n : 256;
+
+    for (int h = 0; h < limit; h++) {
+        memset(&hashes[h], 0, sizeof(hashes[h]));
+        hashes[h].data[0] = (uint8_t)(h & 0xFF);
+        hashes[h].data[1] = (uint8_t)((h >> 8) & 0xFF);
+        hashes[h].data[3] = 0xBB;
+
+        struct block_index *pi = chainstate_insert_block_index(
+            (struct chainstate *)ms, &hashes[h]);
+        if (!pi) continue;
+
+        pi->nHeight = h;
+        pi->nBits = 0x1f07ffff;
+        pi->nTime = 1000000 + (uint32_t)h * 150;
+        pi->nVersion = 4;
+        pi->nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+        pi->nTx = 1;
+        pi->nChainTx = (uint32_t)(h + 1);
+        arith_uint256_set_u64(&pi->nChainWork, (uint64_t)(h + 1));
+
+        if (h > 0) {
+            struct block_index *prev = block_map_find(
+                &ms->map_block_index, &hashes[h - 1]);
+            if (prev) pi->pprev = prev;
+        }
+    }
+    /* Set active chain tip to last block */
+    if (limit > 0) {
+        struct block_index *tip = block_map_find(
+            &ms->map_block_index, &hashes[limit - 1]);
+        if (tip) active_chain_set_tip(&ms->chain_active, tip);
+    }
+}
+
+int test_chain_state_validator(void)
+{
+    printf("\n=== chain state validator tests ===\n");
+    int failures = 0;
+
+    /* ── 1. Coins and chain agree → BOOT_OK ──────────── */
+
+    {
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        block_map_init(&ms.map_block_index);
+        active_chain_init(&ms.chain_active);
+        csv_build_chain(&ms, 100);
+
+        struct coins_view_cache cache;
+        struct coins_view nv;
+        memset(&nv, 0, sizeof(nv));
+        coins_view_cache_init(&cache, &nv);
+
+        /* Set coins_best_block to chain tip hash */
+        struct block_index *tip = active_chain_tip(&ms.chain_active);
+        coins_view_cache_set_best_block(&cache, tip->phashBlock);
+
+        struct boot_validation_result r =
+            validate_coins_chain_agreement(&ms, &cache, "/tmp");
+
+        CSV_CHECK("csv: coins == chain tip → BOOT_OK",
+                  r.action == BOOT_OK && r.coins_height == 99);
+
+        coins_view_cache_free(&cache);
+        block_map_free(&ms.map_block_index);
+    }
+
+    /* ── 2. Empty coins, chain with blocks → reimport/wipe ── */
+
+    {
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        block_map_init(&ms.map_block_index);
+        active_chain_init(&ms.chain_active);
+        csv_build_chain(&ms, 50);
+
+        struct coins_view_cache cache;
+        struct coins_view nv;
+        memset(&nv, 0, sizeof(nv));
+        coins_view_cache_init(&cache, &nv);
+        /* coins_best_block is null (default) */
+
+        struct boot_validation_result r =
+            validate_coins_chain_agreement(&ms, &cache, "/nonexistent");
+
+        CSV_CHECK("csv: null coins + chain at h=49 → WIPE_WAIT",
+                  r.action == BOOT_RECOVER_WIPE_WAIT);
+
+        coins_view_cache_free(&cache);
+        block_map_free(&ms.map_block_index);
+    }
+
+    /* ── 3. Chain at genesis, null coins → BOOT_OK ─────── */
+
+    {
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        block_map_init(&ms.map_block_index);
+        active_chain_init(&ms.chain_active);
+        /* No chain built — tip is NULL */
+
+        struct coins_view_cache cache;
+        struct coins_view nv;
+        memset(&nv, 0, sizeof(nv));
+        coins_view_cache_init(&cache, &nv);
+
+        struct boot_validation_result r =
+            validate_coins_chain_agreement(&ms, &cache, "/tmp");
+
+        CSV_CHECK("csv: genesis + null coins → BOOT_OK",
+                  r.action == BOOT_OK);
+
+        coins_view_cache_free(&cache);
+        block_map_free(&ms.map_block_index);
+    }
+
+    /* ── 4. Coins behind chain → RESET_CHAIN ─────────── */
+
+    {
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        block_map_init(&ms.map_block_index);
+        active_chain_init(&ms.chain_active);
+        csv_build_chain(&ms, 100);
+
+        struct coins_view_cache cache;
+        struct coins_view nv;
+        memset(&nv, 0, sizeof(nv));
+        coins_view_cache_init(&cache, &nv);
+
+        /* Set coins_best_block to block at h=50 (behind tip at h=99) */
+        struct uint256 h50;
+        memset(&h50, 0, sizeof(h50));
+        h50.data[0] = 50;
+        h50.data[3] = 0xBB;
+        coins_view_cache_set_best_block(&cache, &h50);
+
+        struct boot_validation_result r =
+            validate_coins_chain_agreement(&ms, &cache, "/tmp");
+
+        CSV_CHECK("csv: coins at h=50, chain at h=99 → RESET_CHAIN",
+                  r.action == BOOT_RECOVER_RESET_CHAIN &&
+                  r.coins_height == 50);
+
+        coins_view_cache_free(&cache);
+        block_map_free(&ms.map_block_index);
+    }
+
+    /* ── 5. Coins not in index, chain > 1000 → RESET_CHAIN ── */
+
+    {
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        block_map_init(&ms.map_block_index);
+        active_chain_init(&ms.chain_active);
+
+        /* Build a chain longer than 1000 using a compact range */
+        struct uint256 hashes[2];
+        /* Genesis */
+        memset(&hashes[0], 0, sizeof(hashes[0]));
+        hashes[0].data[0] = 0xF0;
+        hashes[0].data[3] = 0xCC;
+        struct block_index *genesis = chainstate_insert_block_index(
+            (struct chainstate *)&ms, &hashes[0]);
+        genesis->nHeight = 0;
+        genesis->nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+        genesis->nTx = 1;
+        genesis->nChainTx = 1;
+        arith_uint256_set_u64(&genesis->nChainWork, 1);
+
+        /* Tip at h=2000 */
+        memset(&hashes[1], 0, sizeof(hashes[1]));
+        hashes[1].data[0] = 0xF1;
+        hashes[1].data[3] = 0xCC;
+        struct block_index *tip = chainstate_insert_block_index(
+            (struct chainstate *)&ms, &hashes[1]);
+        tip->nHeight = 2000;
+        tip->pprev = genesis;
+        tip->nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+        tip->nTx = 1;
+        tip->nChainTx = 2001;
+        arith_uint256_set_u64(&tip->nChainWork, 2001);
+        active_chain_set_tip(&ms.chain_active, tip);
+
+        struct coins_view_cache cache;
+        struct coins_view nv;
+        memset(&nv, 0, sizeof(nv));
+        coins_view_cache_init(&cache, &nv);
+
+        /* Set coins_best_block to hash NOT in block_map */
+        struct uint256 unknown;
+        memset(&unknown, 0xDE, sizeof(unknown));
+        coins_view_cache_set_best_block(&cache, &unknown);
+
+        struct boot_validation_result r =
+            validate_coins_chain_agreement(&ms, &cache, "/tmp");
+
+        CSV_CHECK("csv: coins hash not in index, chain > 1000 → RESET_CHAIN",
+                  r.action == BOOT_RECOVER_RESET_CHAIN);
+
+        coins_view_cache_free(&cache);
+        block_map_free(&ms.map_block_index);
+    }
+
+    /* ── 6. Chain at genesis, coins set to known block → RESET ── */
+
+    {
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        block_map_init(&ms.map_block_index);
+        active_chain_init(&ms.chain_active);
+
+        /* Insert a block at h=500 but don't set it as active tip */
+        struct uint256 hash;
+        memset(&hash, 0, sizeof(hash));
+        hash.data[0] = 0x42;
+        hash.data[3] = 0xDD;
+        struct block_index *bi = chainstate_insert_block_index(
+            (struct chainstate *)&ms, &hash);
+        bi->nHeight = 500;
+        bi->nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+        bi->nTx = 1;
+
+        struct coins_view_cache cache;
+        struct coins_view nv;
+        memset(&nv, 0, sizeof(nv));
+        coins_view_cache_init(&cache, &nv);
+        coins_view_cache_set_best_block(&cache, &hash);
+
+        struct boot_validation_result r =
+            validate_coins_chain_agreement(&ms, &cache, "/tmp");
+
+        CSV_CHECK("csv: genesis tip + coins at known h=500 → RESET_CHAIN",
+                  r.action == BOOT_RECOVER_RESET_CHAIN &&
+                  r.coins_height == 500);
+
+        coins_view_cache_free(&cache);
+        block_map_free(&ms.map_block_index);
+    }
+
+    printf("=== chain state validator: %d failures ===\n", failures);
+    return failures;
+}

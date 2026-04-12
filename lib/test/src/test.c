@@ -106,6 +106,7 @@ int main(void)
     failures += test_reorg_safety();
     failures += test_key_scrub();
     failures += test_block_index_loader();
+    failures += test_chain_state_validator();
 
     /* Spec-based user story tests */
     failures += spec_wallet_dashboard();

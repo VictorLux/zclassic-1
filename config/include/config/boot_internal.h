@@ -27,6 +27,7 @@
 #include "services/bg_validation_service.h"
 #include "services/bg_hash_verification_service.h"
 #include "services/block_index_loader.h"
+#include "services/chain_state_validator.h"
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <sqlite3.h>
@@ -38,6 +39,7 @@
 /* ── boot_index.c ───────────────────────────────────────────── */
 
 /* Block index load/save moved to services/block_index_loader.{h,c}.
+ * Coins/chain validation moved to services/chain_state_validator.{h,c}.
  * Remaining boot_index.c functions: chainstate rebuild, reindex,
  * address backfill, block file scanning. */
 
@@ -57,31 +59,6 @@ void *backfill_addresses_thread(void *arg);
  * blocks already in the index (no creation). */
 int scan_block_files_mark_data(struct main_state *ms, const char *datadir,
                                 const struct chain_params *params);
-
-/* ── Boot-time Validation ────────────────────────────────────── */
-
-/* ActiveRecord-style validation for coins/chain agreement at boot.
- * Detects mismatch between coins_best_block and active chain tip,
- * returns the appropriate recovery action. Emits EV_BOOT_VALIDATION_FAILED. */
-
-enum boot_recovery_action {
-    BOOT_OK = 0,               /* coins and chain agree */
-    BOOT_RECOVER_REIMPORT,     /* LevelDB chainstate exists, reimport */
-    BOOT_RECOVER_WIPE_WAIT,    /* wipe UTXOs, wait for P2P snapshot */
-    BOOT_RECOVER_RESET_CHAIN,  /* coins behind chain, reset chain tip */
-};
-
-struct boot_validation_result {
-    enum boot_recovery_action action;
-    int chain_height;
-    int coins_height;      /* -1 if coins_best_block not found in index */
-    struct uint256 coins_hash;
-};
-
-struct boot_validation_result validate_coins_chain_agreement(
-    struct main_state *ms,
-    struct coins_view_cache *cvtip,
-    const char *datadir);
 
 /* ── boot_services.c ────────────────────────────────────────── */
 
