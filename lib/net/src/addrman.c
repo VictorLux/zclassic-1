@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include "util/safe_alloc.h"
 
 int addr_info_get_tried_bucket(const struct addr_info *info,
                                const struct uint256 *nKey)
@@ -134,7 +135,7 @@ void addrman_init(struct addr_man *am)
     am->random_size = 0;
     am->random_cap = 0;
     am->entries_cap = 4096;
-    am->entries = calloc(am->entries_cap, sizeof(struct addr_info));
+    am->entries = zcl_calloc(am->entries_cap, sizeof(struct addr_info), "addr_entries");
     for (int i = 0; i < ADDRMAN_NEW_BUCKET_COUNT; i++)
         for (int j = 0; j < ADDRMAN_BUCKET_SIZE; j++)
             am->vvNew[i][j] = -1;
@@ -181,7 +182,7 @@ static void random_push(struct addr_man *am, int id)
 {
     if (am->random_size >= am->random_cap) {
         size_t new_cap = am->random_cap ? am->random_cap * 2 : 256;
-        int *p = realloc(am->random_order, new_cap * sizeof(int));
+        int *p = zcl_realloc(am->random_order, new_cap * sizeof(int), "addr_random_order");
         if (!p) return;
         am->random_order = p;
         am->random_cap = new_cap;
@@ -226,8 +227,8 @@ static struct addr_info *create_entry(struct addr_man *am,
         size_t new_cap = am->entries_cap * 2;
         if (new_cap > ADDRMAN_MAX_ENTRIES) new_cap = ADDRMAN_MAX_ENTRIES;
         if ((size_t)id >= new_cap) return NULL;
-        struct addr_info *p = realloc(am->entries,
-                                       new_cap * sizeof(struct addr_info));
+        struct addr_info *p = zcl_realloc(am->entries,
+                                       new_cap * sizeof(struct addr_info), "addr_entries");
         if (!p) return NULL;
         memset(p + am->entries_cap, 0,
                (new_cap - am->entries_cap) * sizeof(struct addr_info));
@@ -617,7 +618,7 @@ bool addrman_serialize(const struct addr_man *am, struct byte_stream *s)
     int nUBuckets = ADDRMAN_NEW_BUCKET_COUNT ^ (1 << 30);
     if (!stream_write_i32_le(s, nUBuckets)) return false;
 
-    int *mapUnkIds = calloc((size_t)am->id_count > 0 ? (size_t)am->id_count : 1, sizeof(int));
+    int *mapUnkIds = zcl_calloc((size_t)am->id_count > 0 ? (size_t)am->id_count : 1, sizeof(int), "addr_unk_ids");
     if (!mapUnkIds) return false;
 
     int nIds = 0;
@@ -687,8 +688,8 @@ bool addrman_deserialize(struct addr_man *am, struct byte_stream *s)
 
     size_t need = (size_t)(nNew + nTried);
     if (need > am->entries_cap) {
-        struct addr_info *p = realloc(am->entries,
-                                       need * sizeof(struct addr_info));
+        struct addr_info *p = zcl_realloc(am->entries,
+                                       need * sizeof(struct addr_info), "addr_entries");
         if (!p) return false;
         memset(p + am->entries_cap, 0,
                (need - am->entries_cap) * sizeof(struct addr_info));
@@ -754,8 +755,8 @@ bool addrman_deserialize(struct addr_man *am, struct byte_stream *s)
             if ((size_t)id >= am->entries_cap) {
                 size_t new_cap = am->entries_cap * 2;
                 while (new_cap <= (size_t)id) new_cap *= 2;
-                struct addr_info *p = realloc(am->entries,
-                    new_cap * sizeof(struct addr_info));
+                struct addr_info *p = zcl_realloc(am->entries,
+                    new_cap * sizeof(struct addr_info), "addr_entries");
                 if (!p) continue;
                 memset(p + am->entries_cap, 0,
                     (new_cap - am->entries_cap) * sizeof(struct addr_info));

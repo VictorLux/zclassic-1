@@ -12,6 +12,7 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include "util/safe_alloc.h"
 
 static char test_datadir[256];
 
@@ -380,9 +381,9 @@ int test_robustness(void)
         struct transaction tx;
         memset(&tx, 0, sizeof(tx));
         tx.num_vin = 1;
-        tx.vin = calloc(1, sizeof(struct tx_in));
+        tx.vin = zcl_calloc(1, sizeof(struct tx_in), "test_vin");
         tx.num_vout = 1;
-        tx.vout = calloc(1, sizeof(struct tx_out));
+        tx.vout = zcl_calloc(1, sizeof(struct tx_out), "test_vout");
         tx.vout[0].value = -1;
         struct validation_state state;
         validation_state_init(&state);

@@ -10,6 +10,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <time.h>
+#include "util/safe_alloc.h"
 
 #define INITIAL_SLOTS 2048
 #define INITIAL_QUEUE 4096
@@ -30,10 +31,10 @@ void dl_init(struct download_manager *dm)
     memset(dm, 0, sizeof(*dm));
     zcl_mutex_init(&dm->cs);
     dm->num_slots = INITIAL_SLOTS;
-    dm->slots = calloc(dm->num_slots, sizeof(struct dl_in_flight));
+    dm->slots = zcl_calloc(dm->num_slots, sizeof(struct dl_in_flight), "dl_slots");
     dm->queue_cap = INITIAL_QUEUE;
-    dm->queue = malloc(dm->queue_cap * sizeof(struct uint256));
-    dm->queue_heights = malloc(dm->queue_cap * sizeof(int32_t));
+    dm->queue = zcl_malloc(dm->queue_cap * sizeof(struct uint256), "dl_queue");
+    dm->queue_heights = zcl_malloc(dm->queue_cap * sizeof(int32_t), "dl_queue_heights");
     if (!dm->slots || !dm->queue || !dm->queue_heights) {
         free(dm->slots); free(dm->queue); free(dm->queue_heights);
         dm->slots = NULL; dm->queue = NULL; dm->queue_heights = NULL;
@@ -56,8 +57,8 @@ static bool dl_queue_grow(struct download_manager *dm)
 {
     if (dm->queue_cap >= 65536) return false;
     size_t new_cap = dm->queue_cap * 2;
-    struct uint256 *nq = realloc(dm->queue, new_cap * sizeof(struct uint256));
-    int32_t *nh = realloc(dm->queue_heights, new_cap * sizeof(int32_t));
+    struct uint256 *nq = zcl_realloc(dm->queue, new_cap * sizeof(struct uint256), "dl_queue");
+    int32_t *nh = zcl_realloc(dm->queue_heights, new_cap * sizeof(int32_t), "dl_queue_heights");
     if (!nq || !nh) {
         /* If one succeeded, keep the old pointer valid */
         if (nq) dm->queue = nq;
@@ -130,7 +131,7 @@ static struct dl_in_flight *find_slot(struct download_manager *dm,
 /* Rehash into a table of given size (must be power of 2). */
 static void dl_rehash(struct download_manager *dm, size_t new_size)
 {
-    struct dl_in_flight *new_slots = calloc(new_size, sizeof(struct dl_in_flight));
+    struct dl_in_flight *new_slots = zcl_calloc(new_size, sizeof(struct dl_in_flight), "dl_slots");
     if (!new_slots) return;
 
     size_t new_mask = new_size - 1;
@@ -410,8 +411,8 @@ void dl_queue_priority(struct download_manager *dm,
     /* Ensure capacity */
     if (dm->queue_len >= dm->queue_cap) {
         size_t nc = dm->queue_cap * 2;
-        struct uint256 *nq = realloc(dm->queue, nc * sizeof(struct uint256));
-        int32_t *nh = realloc(dm->queue_heights, nc * sizeof(int32_t));
+        struct uint256 *nq = zcl_realloc(dm->queue, nc * sizeof(struct uint256), "dl_queue");
+        int32_t *nh = zcl_realloc(dm->queue_heights, nc * sizeof(int32_t), "dl_queue_heights");
         if (!nq || !nh) { zcl_mutex_unlock(&dm->cs); return; }
         dm->queue = nq;
         dm->queue_heights = nh;

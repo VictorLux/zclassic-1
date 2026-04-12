@@ -7,6 +7,7 @@
 #include "services/sync_service.h"
 #include "validation/main_state.h"
 #include "net/download.h"
+#include "util/safe_alloc.h"
 #include <string.h>
 
 static int test_sync_service_begin_sync(void)
@@ -1014,8 +1015,8 @@ static int test_sync_service_applies_alt_recovery(void)
         main_state_init(&ms);
         dl_init(&dm);
 
-        recovery.alt_hashes = calloc(2, sizeof(struct uint256));
-        recovery.alt_heights = calloc(2, sizeof(int32_t));
+        recovery.alt_hashes = zcl_calloc(2, sizeof(struct uint256), "test_alt_hashes");
+        recovery.alt_heights = zcl_calloc(2, sizeof(int32_t), "test_alt_heights");
         ASSERT(recovery.alt_hashes != NULL);
         ASSERT(recovery.alt_heights != NULL);
         recovery.alt_hashes[0] = h1;

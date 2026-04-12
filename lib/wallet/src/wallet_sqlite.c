@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include "util/safe_alloc.h"
 
 /* ── Encryption helpers (wave 8 wallet-at-rest) ──────────────── */
 
@@ -44,7 +45,7 @@ static bool wallet_encrypt_blob(const uint8_t *plain, size_t plen,
     if (!pass) return false;
 
     size_t cap = wks_envelope_size(plen);
-    uint8_t *buf = malloc(cap);
+    uint8_t *buf = zcl_malloc(cap, "wallet_encrypt_buf");
     if (!buf) return false;
 
     size_t elen = 0;
@@ -70,7 +71,7 @@ static bool wallet_decrypt_blob(const uint8_t *envelope, size_t env_len,
     if (!pass) return false;
 
     /* Plaintext can never be longer than the envelope. */
-    uint8_t *buf = malloc(env_len);
+    uint8_t *buf = zcl_malloc(env_len, "wallet_decrypt_buf");
     if (!buf) return false;
 
     size_t plen = 0;

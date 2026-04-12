@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
+#include "util/safe_alloc.h"
 
 /* --- tx_confirm_stats --- */
 
@@ -44,24 +45,24 @@ void tx_confirm_stats_setup(struct tx_confirm_stats *s,
     s->num_buckets = num_defaults + 1;
     s->max_confirms = max_confirms;
 
-    s->buckets = calloc(s->num_buckets, sizeof(double));
+    s->buckets = zcl_calloc(s->num_buckets, sizeof(double), "fee_buckets");
     for (size_t i = 0; i < num_defaults; i++)
         s->buckets[i] = default_buckets[i];
     s->buckets[num_defaults] = INFINITY;
 
-    s->tx_ct_avg = calloc(s->num_buckets, sizeof(double));
-    s->cur_block_tx_ct = calloc(s->num_buckets, sizeof(int));
-    s->avg = calloc(s->num_buckets, sizeof(double));
-    s->cur_block_val = calloc(s->num_buckets, sizeof(double));
-    s->old_unconf_txs = calloc(s->num_buckets, sizeof(int));
+    s->tx_ct_avg = zcl_calloc(s->num_buckets, sizeof(double), "fee_tx_ct_avg");
+    s->cur_block_tx_ct = zcl_calloc(s->num_buckets, sizeof(int), "fee_block_tx_ct");
+    s->avg = zcl_calloc(s->num_buckets, sizeof(double), "fee_avg");
+    s->cur_block_val = zcl_calloc(s->num_buckets, sizeof(double), "fee_block_val");
+    s->old_unconf_txs = zcl_calloc(s->num_buckets, sizeof(int), "fee_old_unconf");
 
-    s->conf_avg = calloc(max_confirms, sizeof(double *));
-    s->cur_block_conf = calloc(max_confirms, sizeof(int *));
-    s->unconf_txs = calloc(max_confirms, sizeof(int *));
+    s->conf_avg = zcl_calloc(max_confirms, sizeof(double *), "fee_conf_avg");
+    s->cur_block_conf = zcl_calloc(max_confirms, sizeof(int *), "fee_block_conf");
+    s->unconf_txs = zcl_calloc(max_confirms, sizeof(int *), "fee_unconf_txs");
     for (unsigned int i = 0; i < max_confirms; i++) {
-        s->conf_avg[i] = calloc(s->num_buckets, sizeof(double));
-        s->cur_block_conf[i] = calloc(s->num_buckets, sizeof(int));
-        s->unconf_txs[i] = calloc(s->num_buckets, sizeof(int));
+        s->conf_avg[i] = zcl_calloc(s->num_buckets, sizeof(double), "fee_conf_avg_row");
+        s->cur_block_conf[i] = zcl_calloc(s->num_buckets, sizeof(int), "fee_block_conf_row");
+        s->unconf_txs[i] = zcl_calloc(s->num_buckets, sizeof(int), "fee_unconf_row");
     }
 }
 
@@ -231,13 +232,13 @@ void block_policy_estimator_init(struct block_policy_estimator *e,
                                   ? MIN_PRIORITY_VAL : free_thresh;
 
     size_t fee_cap = 128;
-    double *fee_list = malloc(fee_cap * sizeof(double));
+    double *fee_list = zcl_malloc(fee_cap * sizeof(double), "fee_list");
     size_t fee_count = 0;
     for (double b = (double)fee_rate_get_fee_per_k(&e->min_tracked_fee);
          b <= MAX_FEERATE_VAL; b *= FEE_SPACING) {
         if (fee_count >= fee_cap) {
             fee_cap *= 2;
-            fee_list = realloc(fee_list, fee_cap * sizeof(double));
+            fee_list = zcl_realloc(fee_list, fee_cap * sizeof(double), "fee_list");
         }
         fee_list[fee_count++] = b;
     }
@@ -247,13 +248,13 @@ void block_policy_estimator_init(struct block_policy_estimator *e,
     free(fee_list);
 
     size_t pri_cap = 128;
-    double *pri_list = malloc(pri_cap * sizeof(double));
+    double *pri_list = zcl_malloc(pri_cap * sizeof(double), "pri_list");
     size_t pri_count = 0;
     for (double b = e->min_tracked_priority;
          b <= MAX_PRIORITY_VAL; b *= PRI_SPACING) {
         if (pri_count >= pri_cap) {
             pri_cap *= 2;
-            pri_list = realloc(pri_list, pri_cap * sizeof(double));
+            pri_list = zcl_realloc(pri_list, pri_cap * sizeof(double), "pri_list");
         }
         pri_list[pri_count++] = b;
     }
@@ -268,7 +269,7 @@ void block_policy_estimator_init(struct block_policy_estimator *e,
     e->pri_likely = INF_PRIORITY_VAL;
 
     e->map_cap = TX_STATS_MAP_INITIAL_CAP;
-    e->map_entries = calloc(e->map_cap, sizeof(*e->map_entries));
+    e->map_entries = zcl_calloc(e->map_cap, sizeof(*e->map_entries), "fee_map_entries");
 }
 
 void block_policy_estimator_free(struct block_policy_estimator *e)
@@ -293,8 +294,8 @@ static struct tx_stats_entry *insert_stats_entry(
 {
     if (e->num_map_entries >= e->map_cap) {
         size_t newcap = e->map_cap * 2;
-        e->map_entries = realloc(e->map_entries,
-                                 newcap * sizeof(*e->map_entries));
+        e->map_entries = zcl_realloc(e->map_entries,
+                                 newcap * sizeof(*e->map_entries), "fee_map_entries");
         memset(e->map_entries + e->map_cap, 0,
                (newcap - e->map_cap) * sizeof(*e->map_entries));
         e->map_cap = newcap;

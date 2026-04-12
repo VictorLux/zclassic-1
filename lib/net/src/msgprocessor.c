@@ -49,6 +49,7 @@ extern volatile sig_atomic_t g_shutdown_requested;
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "util/safe_alloc.h"
 #include <time.h>
 #include <sys/time.h>
 #include <sys/stat.h>
@@ -1731,8 +1732,8 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
         struct block_index *bi = block_map_find(
             &mp->main_state->map_block_index, &last_hash);
         size_t max_collect = 512;
-        struct uint256 *hashes = malloc(max_collect * sizeof(struct uint256));
-        int32_t *heights = malloc(max_collect * sizeof(int32_t));
+        struct uint256 *hashes = zcl_malloc(max_collect * sizeof(struct uint256), "blk_req_hashes");
+        int32_t *heights = zcl_malloc(max_collect * sizeof(int32_t), "blk_req_heights");
 
         if (!hashes || !heights) {
             fprintf(stderr, "msgprocessor: malloc failed for block request "
@@ -3116,7 +3117,7 @@ static bool handle_zcl23_sync(struct msg_processor *mp,
                 printf("Peer %s: rate limited on chunk request\n",
                        node->addr_name);
             } else {
-                struct utxo_chunk *chunk = calloc(1, sizeof(struct utxo_chunk));
+                struct utxo_chunk *chunk = zcl_calloc(1, sizeof(struct utxo_chunk), "utxo_chunk");
                 if (chunk &&
                     fast_sync_serve_chunk(mp->datadir, chunk_index, chunk)) {
                     /* Serialize chunk data into message. */
@@ -3156,7 +3157,7 @@ static bool handle_zcl23_sync(struct msg_processor *mp,
                 printf("Peer %s: zchunkdata but no swarm active\n",
                        node->addr_name);
             } else {
-                struct utxo_chunk *chunk = calloc(1, sizeof(struct utxo_chunk));
+                struct utxo_chunk *chunk = zcl_calloc(1, sizeof(struct utxo_chunk), "utxo_chunk");
                 if (chunk) {
                     chunk->chunk_index = chunk_index;
                     chunk->num_entries = num_entries;
@@ -3379,7 +3380,7 @@ static bool handle_zcl23_sync(struct msg_processor *mp,
                        node->addr_name, piece_index);
             } else {
                 /* Read block hashes */
-                uint8_t (*blk_hashes)[32] = calloc(block_count, 32);
+                uint8_t (*blk_hashes)[32] = zcl_calloc(block_count, 32, "blk_piece_hashes");
                 bool parse_ok = true;
                 if (blk_hashes) {
                     for (uint32_t i = 0; i < block_count && parse_ok; i++) {
@@ -3463,7 +3464,7 @@ static bool handle_zcl23_sync(struct msg_processor *mp,
                 printf("Peer %s: bad zblkbitmap len=%u\n",
                        node->addr_name, bitmap_len);
             } else {
-                uint8_t *bitmap = calloc(bitmap_len, 1);
+                uint8_t *bitmap = zcl_calloc(bitmap_len, 1, "blk_bitmap");
                 if (bitmap && stream_read_bytes(s, bitmap, bitmap_len)) {
                     /* Store on peer for rarest-first selection */
                     free(node->blk_bitmap);
@@ -3506,7 +3507,7 @@ static void push_getheaders_from(struct msg_processor *mp,
     struct block_locator loc;
     block_locator_init(&loc);
     if (from && from->phashBlock) {
-        loc.vhave = malloc(2 * sizeof(struct uint256));
+        loc.vhave = zcl_malloc(2 * sizeof(struct uint256), "block_locator");
         if (!loc.vhave) return;
         loc.vhave[0] = *from->phashBlock;
         loc.vhave[1] = mp->params->consensus.hashGenesisBlock;
@@ -3552,7 +3553,7 @@ static void push_getheaders(struct msg_processor *mp, struct p2p_node *node)
         if (tip && tip->phashBlock) {
             struct block_locator loc;
             block_locator_init(&loc);
-            loc.vhave = malloc(2 * sizeof(struct uint256));
+            loc.vhave = zcl_malloc(2 * sizeof(struct uint256), "block_locator");
             if (loc.vhave) {
                 loc.vhave[0] = *tip->phashBlock;
                 loc.vhave[1] = mp->params->consensus.hashGenesisBlock;

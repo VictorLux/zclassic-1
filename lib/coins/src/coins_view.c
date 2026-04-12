@@ -7,6 +7,7 @@
 #include "coins/coins_view.h"
 #include <stdio.h>
 #include <string.h>
+#include "util/safe_alloc.h"
 
 #define COINS_MAP_INITIAL_BUCKETS 4096
 #define COINS_MAP_LOAD_FACTOR_NUM 3
@@ -113,7 +114,7 @@ static void coins_map_rehash(struct coins_map *m, size_t new_num_buckets)
     struct coins_map_entry *old = m->buckets;
     size_t old_num = m->num_buckets;
 
-    m->buckets = calloc(new_num_buckets, sizeof(struct coins_map_entry));
+    m->buckets = zcl_calloc(new_num_buckets, sizeof(struct coins_map_entry), "coins_map_buckets");
     if (!m->buckets) {
         m->buckets = old;
         return;

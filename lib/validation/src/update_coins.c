@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "util/safe_alloc.h"
 
 bool update_coins_with_undo(const struct transaction *tx,
                             struct coins_view_cache *inputs,
@@ -44,8 +45,8 @@ bool update_coins_with_undo(const struct transaction *tx,
             /* Grow vout array if needed */
             if (nPos >= entry->coins.num_vout) {
                 size_t new_size = nPos + 1;
-                struct tx_out *nv = realloc(entry->coins.vout,
-                    new_size * sizeof(struct tx_out));
+                struct tx_out *nv = zcl_realloc(entry->coins.vout,
+                    new_size * sizeof(struct tx_out), "coins_vout_grow");
                 if (!nv) {
                     fprintf(stderr, "update_coins: realloc FAILED "
                             "new_size=%zu h=%d\n", new_size, nHeight);

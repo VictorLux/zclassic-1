@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include "util/safe_alloc.h"
 
 bool db_wrapper_open(struct db_wrapper *w, const char *path,
                      size_t cache_size, bool memory, bool wipe)
@@ -396,7 +397,7 @@ const char *db_iter_value(struct db_iterator *it, size_t *vallen)
     if (*vallen > it->deobf_cap) {
         free(it->deobf_buf);
         it->deobf_cap = *vallen + 256;
-        it->deobf_buf = malloc(it->deobf_cap);
+        it->deobf_buf = zcl_malloc(it->deobf_cap, "dbwrapper_deobf_buf");
     }
     for (size_t i = 0; i < *vallen; i++)
         it->deobf_buf[i] = raw[i] ^

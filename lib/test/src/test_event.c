@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <pthread.h>
 #include <time.h>
+#include "util/safe_alloc.h"
 
 static _Atomic int g_async_observer_calls = 0;
 
@@ -292,7 +293,7 @@ static int test_ring_buffer_wrapping(void)
         ASSERT(strstr(buf, "\"e0\"") == NULL);
         ASSERT(strstr(buf, "\"e1\"") == NULL);
 
-        char *big = malloc(64 * 1024 * 1024);
+        char *big = zcl_malloc(64 * 1024 * 1024, "test_event_buf");
         ASSERT(big != NULL);
         len = event_dump_json(big, 64 * 1024 * 1024, 70000);
         ASSERT(len > 0);
@@ -591,7 +592,7 @@ static int test_concurrent_emit(void)
         ASSERT(strstr(buf, "msg.received") != NULL);
 
         /* Dump large to verify no corruption */
-        char *big = malloc(16 * 1024 * 1024);
+        char *big = zcl_malloc(16 * 1024 * 1024, "test_event_buf");
         ASSERT(big != NULL);
         len = event_dump_json(big, 16 * 1024 * 1024, 20000);
         ASSERT(len > 0);

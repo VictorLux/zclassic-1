@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "util/safe_alloc.h"
 
 void coins_init(struct coins *c)
 {
@@ -27,7 +28,7 @@ void coins_free(struct coins *c)
 
 bool coins_alloc(struct coins *c, size_t num_outputs)
 {
-    c->vout = calloc(num_outputs, sizeof(struct tx_out));
+    c->vout = zcl_calloc(num_outputs, sizeof(struct tx_out), "coins_vout");
     if (num_outputs && !c->vout)
         return false;
     c->num_vout = num_outputs;
@@ -102,7 +103,7 @@ void coins_copy(struct coins *dst, const struct coins *src)
     dst->version = src->version;
     dst->num_vout = src->num_vout;
     if (src->num_vout > 0 && src->vout) {
-        dst->vout = malloc(src->num_vout * sizeof(struct tx_out));
+        dst->vout = zcl_malloc(src->num_vout * sizeof(struct tx_out), "coins_vout_copy");
         if (dst->vout)
             memcpy(dst->vout, src->vout, src->num_vout * sizeof(struct tx_out));
         else

@@ -13,6 +13,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include "util/safe_alloc.h"
 
 #define SCRIPT_COMPRESS_SPECIAL_SCRIPTS 6
 
@@ -128,7 +129,7 @@ static inline void tx_undo_init(struct tx_undo *u)
 
 static inline bool tx_undo_alloc(struct tx_undo *u, size_t n)
 {
-    u->vprevout = calloc(n, sizeof(struct tx_in_undo));
+    u->vprevout = zcl_calloc(n, sizeof(struct tx_in_undo), "tx_undo_prevout");
     if (!u->vprevout && n > 0)
         return false;
     u->num_prevout = n;
@@ -186,7 +187,7 @@ static inline void block_undo_init(struct block_undo *u)
 
 static inline bool block_undo_alloc(struct block_undo *u, size_t n)
 {
-    u->vtxundo = calloc(n, sizeof(struct tx_undo));
+    u->vtxundo = zcl_calloc(n, sizeof(struct tx_undo), "block_undo_txs");
     if (!u->vtxundo && n > 0)
         return false;
     u->num_txundo = n;

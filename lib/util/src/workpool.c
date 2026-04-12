@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include "util/safe_alloc.h"
 
 /* Avoid pulling in util.h just for GetNumCores */
 static int workpool_num_cpus(void)
@@ -87,7 +88,7 @@ bool workpool_init(struct workpool *wp, int num_threads, size_t queue_cap,
 
     wp->fn = fn;
     wp->capacity = queue_cap + 1; /* ring buffer needs +1 slot */
-    wp->items = calloc(wp->capacity, sizeof(void *));
+    wp->items = zcl_calloc(wp->capacity, sizeof(void *), "workpool_items");
     if (!wp->items)
         return false;
 

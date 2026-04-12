@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "util/safe_alloc.h"
 
 /* ── Helper: convert bytes to Fr ────────────────────────────────── */
 
@@ -283,7 +284,7 @@ bool sapling_output_synthesize(struct constraint_system *cs,
 
     /* note_contents accumulates boolean variable indices:
      * value(64) + g_d_repr(256) + pk_d_repr(256) = 576 bits */
-    size_t *note_contents = malloc(576 * sizeof(size_t));
+    size_t *note_contents = zcl_malloc(576 * sizeof(size_t), "note_contents");
     if (!note_contents) return false;
     size_t nc_idx = 0;
 

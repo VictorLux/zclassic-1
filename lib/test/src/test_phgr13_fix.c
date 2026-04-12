@@ -29,6 +29,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "util/safe_alloc.h"
 
 #define PHGR_CHECK(name, expr) do {        \
     printf("%s... ", (name));              \
@@ -44,7 +45,7 @@ static uint8_t *read_file_raw(const char *path, size_t *out_len)
     long len = ftell(f);
     fseek(f, 0, SEEK_SET);
     if (len <= 0) { fclose(f); return NULL; }
-    uint8_t *buf = malloc((size_t)len);
+    uint8_t *buf = zcl_malloc((size_t)len, "vk_file_buf");
     if (!buf) { fclose(f); return NULL; }
     size_t n = fread(buf, 1, (size_t)len, f);
     fclose(f);

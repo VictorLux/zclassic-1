@@ -25,6 +25,7 @@
 #include <stdatomic.h>
 #include <sys/time.h>
 #include "util/log_macros.h"
+#include "util/safe_alloc.h"
 
 static SSL_CTX *g_ssl_ctx = NULL;
 static int g_https_fd = -1;
@@ -188,7 +189,7 @@ static void handle_https_client(SSL *ssl)
         extern size_t explorer_handle_request(const char *, const char *,
             const unsigned char *, size_t, unsigned char *, size_t);
 
-        unsigned char *buf = malloc(512 * 1024); /* 512 KB response buffer */
+        unsigned char *buf = zcl_malloc(512 * 1024, "https_resp_buf"); /* 512 KB response buffer */
         if (!buf) return;
 
         size_t n = explorer_handle_request(method, path, NULL, 0, buf, 512 * 1024);

@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include "util/safe_alloc.h"
 
 static pthread_t *g_miner_threads = NULL;
 static int g_num_miner_threads = 0;
@@ -171,7 +172,7 @@ void gen_start(struct gen_context *ctx)
     if (atomic_load(&ctx->running))
         return;
     g_num_miner_threads = ctx->num_threads;
-    g_miner_threads = calloc((size_t)g_num_miner_threads, sizeof(pthread_t));
+    g_miner_threads = zcl_calloc((size_t)g_num_miner_threads, sizeof(pthread_t), "miner_threads");
     if (!g_miner_threads)
         return;
 

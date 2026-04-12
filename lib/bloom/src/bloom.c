@@ -9,6 +9,7 @@
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
+#include "util/safe_alloc.h"
 
 #define LN2SQUARED 0.4804530139182014246671025263266649717305529515945455
 #define LN2 0.6931471805599453094172321214581765680755001343602552
@@ -35,7 +36,7 @@ static bool bloom_filter_init_internal(struct bloom_filter *f, unsigned int num_
 
     f->data_size = filter_bits / 8;
     if (f->data_size == 0) f->data_size = 1;
-    f->data = calloc(f->data_size, 1);
+    f->data = zcl_calloc(f->data_size, 1, "bloom_data");
     if (!f->data) return false;
 
     f->is_full = false;

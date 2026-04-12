@@ -3,6 +3,7 @@
 
 #include "test/test_helpers.h"
 #include "controllers/scan_util.h"
+#include "util/safe_alloc.h"
 
 int test_scan_util(void)
 {
@@ -73,7 +74,7 @@ int test_scan_util(void)
         scan_wl_init(&wl);
         struct scan_mem_wtx w = {0};
         w.height = 100;
-        w.raw = malloc(4);
+        w.raw = zcl_malloc(4, "test_wtx_raw");
         w.raw_len = 4;
         memcpy(w.raw, "test", 4);
         scan_wl_add(&wl, &w);

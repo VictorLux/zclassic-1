@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "util/safe_alloc.h"
 
 /* ── R1CS Constraint System ─────────────────────────────────────── */
 
@@ -34,8 +35,8 @@ void lc_add_term(struct linear_combination *lc, size_t var,
 {
     if (lc->num_terms >= lc->cap) {
         size_t new_cap = lc->cap ? lc->cap * 2 : 8;
-        struct lc_term *new_terms = realloc(lc->terms,
-                                             new_cap * sizeof(struct lc_term));
+        struct lc_term *new_terms = zcl_realloc(lc->terms,
+                                             new_cap * sizeof(struct lc_term), "lc_terms");
         if (!new_terms) return;
         lc->terms = new_terms;
         lc->cap = new_cap;
@@ -62,14 +63,14 @@ void cs_init(struct constraint_system *cs)
 
     /* Variable 0 is always ONE */
     cs->cap_vars = 256;
-    cs->witness = calloc(cs->cap_vars, sizeof(struct fr));
+    cs->witness = zcl_calloc(cs->cap_vars, sizeof(struct fr), "cs_witness");
     fr_one(&cs->witness[0]);
     cs->num_vars = 1;
     cs->num_inputs = 0;
 
     cs->cap_constraints = 256;
-    cs->constraints = calloc(cs->cap_constraints,
-                              sizeof(struct r1cs_constraint));
+    cs->constraints = zcl_calloc(cs->cap_constraints,
+                              sizeof(struct r1cs_constraint), "cs_constraints");
     cs->num_constraints = 0;
 }
 
@@ -89,7 +90,7 @@ static size_t cs_alloc_var(struct constraint_system *cs, const struct fr *value)
 {
     if (cs->num_vars >= cs->cap_vars) {
         size_t new_cap = cs->cap_vars * 2;
-        struct fr *new_w = realloc(cs->witness, new_cap * sizeof(struct fr));
+        struct fr *new_w = zcl_realloc(cs->witness, new_cap * sizeof(struct fr), "cs_witness");
         if (!new_w) return 0;
         cs->witness = new_w;
         cs->cap_vars = new_cap;
@@ -118,8 +119,8 @@ void cs_enforce(struct constraint_system *cs,
 {
     if (cs->num_constraints >= cs->cap_constraints) {
         size_t new_cap = cs->cap_constraints * 2;
-        struct r1cs_constraint *new_c = realloc(cs->constraints,
-            new_cap * sizeof(struct r1cs_constraint));
+        struct r1cs_constraint *new_c = zcl_realloc(cs->constraints,
+            new_cap * sizeof(struct r1cs_constraint), "cs_constraints");
         if (!new_c) return;
         cs->constraints = new_c;
         cs->cap_constraints = new_cap;
@@ -278,10 +279,10 @@ void g1_msm(struct g1_point *result,
     if (c < 4 && n > 16) c = 4;
 
     size_t num_buckets = ((size_t)1 << c) - 1;
-    struct g1_point *buckets = calloc(num_buckets, sizeof(struct g1_point));
+    struct g1_point *buckets = zcl_calloc(num_buckets, sizeof(struct g1_point), "g1_msm_buckets");
     if (!buckets) { g1_identity(result); return; }
 
-    uint64_t (*raw_scalars)[4] = calloc(n, sizeof(uint64_t[4]));
+    uint64_t (*raw_scalars)[4] = zcl_calloc(n, sizeof(uint64_t[4]), "g1_msm_scalars");
     if (!raw_scalars) { free(buckets); g1_identity(result); return; }
 
     for (size_t i = 0; i < n; i++)
@@ -336,10 +337,10 @@ void g2_msm(struct g2_point *result,
     if (c < 4 && n > 16) c = 4;
 
     size_t num_buckets = ((size_t)1 << c) - 1;
-    struct g2_point *buckets = calloc(num_buckets, sizeof(struct g2_point));
+    struct g2_point *buckets = zcl_calloc(num_buckets, sizeof(struct g2_point), "g2_msm_buckets");
     if (!buckets) { g2_identity(result); return; }
 
-    uint64_t (*raw_scalars)[4] = calloc(n, sizeof(uint64_t[4]));
+    uint64_t (*raw_scalars)[4] = zcl_calloc(n, sizeof(uint64_t[4]), "g2_msm_scalars");
     if (!raw_scalars) { free(buckets); g2_identity(result); return; }
 
     for (size_t i = 0; i < n; i++)
@@ -453,7 +454,7 @@ static bool pkr_g2(struct pk_reader *r, struct g2_point *p)
 
 static struct g1_point *pkr_g1_array(struct pk_reader *r, uint32_t count)
 {
-    struct g1_point *arr = calloc(count, sizeof(struct g1_point));
+    struct g1_point *arr = zcl_calloc(count, sizeof(struct g1_point), "pk_g1_array");
     if (!arr) return NULL;
     for (uint32_t i = 0; i < count; i++) {
         if (!pkr_g1(r, &arr[i])) { free(arr); return NULL; }
@@ -463,7 +464,7 @@ static struct g1_point *pkr_g1_array(struct pk_reader *r, uint32_t count)
 
 static struct g2_point *pkr_g2_array(struct pk_reader *r, uint32_t count)
 {
-    struct g2_point *arr = calloc(count, sizeof(struct g2_point));
+    struct g2_point *arr = zcl_calloc(count, sizeof(struct g2_point), "pk_g2_array");
     if (!arr) return NULL;
     for (uint32_t i = 0; i < count; i++) {
         if (!pkr_g2(r, &arr[i])) { free(arr); return NULL; }
@@ -598,9 +599,9 @@ bool groth16_prove(const struct groth16_pk *pk,
     }
 
     /* ── Step 1: Evaluate constraints to get a[], b[], c[] coefficient vectors ── */
-    struct fr *a_eval = calloc(domain, sizeof(struct fr));
-    struct fr *b_eval = calloc(domain, sizeof(struct fr));
-    struct fr *c_eval = calloc(domain, sizeof(struct fr));
+    struct fr *a_eval = zcl_calloc(domain, sizeof(struct fr), "groth16_a_eval");
+    struct fr *b_eval = zcl_calloc(domain, sizeof(struct fr), "groth16_b_eval");
+    struct fr *c_eval = zcl_calloc(domain, sizeof(struct fr), "groth16_c_eval");
     if (!a_eval || !b_eval || !c_eval) {
         free(a_eval); free(b_eval); free(c_eval);
         return false;
@@ -642,7 +643,7 @@ bool groth16_prove(const struct groth16_pk *pk,
     fr_fft(c_eval, domain, false);
 
     /* Compute (a*b - c) pointwise on coset */
-    struct fr *h_eval = calloc(domain, sizeof(struct fr));
+    struct fr *h_eval = zcl_calloc(domain, sizeof(struct fr), "groth16_h_eval");
     if (!h_eval) {
         free(a_eval); free(b_eval); free(c_eval);
         return false;

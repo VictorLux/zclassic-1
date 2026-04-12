@@ -7,6 +7,7 @@
 #include "crypto/equihash_solver.h"
 #include <stdlib.h>
 #include <string.h>
+#include "util/safe_alloc.h"
 
 /* Slot layout: word[0] = tree attr, word[1..] = hash data.
  * Tree packing: (bucket_id << 12) | (slot0 << 6) | slot1 */
@@ -385,15 +386,15 @@ static void digitK(struct eh_solver *s)
 
 struct eh_solver *eh_solver_new(void)
 {
-    struct eh_solver *s = calloc(1, sizeof(struct eh_solver));
+    struct eh_solver *s = zcl_calloc(1, sizeof(struct eh_solver), "eh_solver");
     if (!s) return NULL;
 
     size_t heap0_size = (size_t)EH_NBUCKETS * EH_NSLOTS * EH_SLOT0_WORDS;
     size_t heap1_size = (size_t)EH_NBUCKETS * EH_NSLOTS * EH_SLOT1_WORDS;
 
-    s->heap0 = calloc(heap0_size, sizeof(uint32_t));
-    s->heap1 = calloc(heap1_size, sizeof(uint32_t));
-    s->nslot_counts = calloc(2 * (size_t)EH_NBUCKETS, sizeof(uint32_t));
+    s->heap0 = zcl_calloc(heap0_size, sizeof(uint32_t), "eh_heap0");
+    s->heap1 = zcl_calloc(heap1_size, sizeof(uint32_t), "eh_heap1");
+    s->nslot_counts = zcl_calloc(2 * (size_t)EH_NBUCKETS, sizeof(uint32_t), "eh_nslot_counts");
 
     if (!s->heap0 || !s->heap1 || !s->nslot_counts) {
         free(s->heap0);

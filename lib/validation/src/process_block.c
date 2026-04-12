@@ -43,6 +43,7 @@
 
 #include "validation/main_constants.h"
 #include "storage/coins_view_sqlite.h"
+#include "util/safe_alloc.h"
 
 static int g_last_block_file = -1;
 static unsigned int g_last_block_file_size = 0;
@@ -272,7 +273,7 @@ static struct block_index *add_to_block_index(struct main_state *ms,
     struct uint256 hash;
     block_header_get_hash(header, &hash);
 
-    struct block_index *pindex = calloc(1, sizeof(struct block_index));
+    struct block_index *pindex = zcl_calloc(1, sizeof(struct block_index), "process_block_index");
     if (!pindex)
         return NULL;
     block_index_init(pindex);
@@ -284,7 +285,7 @@ static struct block_index *add_to_block_index(struct main_state *ms,
     pindex->nBits = header->nBits;
     pindex->nNonce = header->nNonce;
     if (header->nSolutionSize > 0) {
-        pindex->nSolution = malloc(header->nSolutionSize);
+        pindex->nSolution = zcl_malloc(header->nSolutionSize, "block_solution");
         if (pindex->nSolution)
             memcpy(pindex->nSolution, header->nSolution, header->nSolutionSize);
         pindex->nSolutionSize = pindex->nSolution ? header->nSolutionSize : 0;
@@ -689,7 +690,7 @@ bool accept_block(struct block *block,
      * Walk forward through the block index and fix any chain that
      * leads from this block. Uses a queue for BFS. */
     {
-        struct block_index **queue = malloc(4096 * sizeof(struct block_index *));
+        struct block_index **queue = zcl_malloc(4096 * sizeof(struct block_index *), "chaintx_queue");
         if (!queue) {
             fprintf(stderr, "process_block: nChainTx propagation skipped "
                     "— malloc(4096) failed\n");
@@ -714,8 +715,8 @@ bool accept_block(struct block *block,
                         /* Queue child to propagate further */
                         if (qlen >= qcap && qcap < 65536) {
                             size_t nc = qcap * 2;
-                            struct block_index **nq = realloc(queue,
-                                nc * sizeof(struct block_index *));
+                            struct block_index **nq = zcl_realloc(queue,
+                                nc * sizeof(struct block_index *), "chaintx_queue_grow");
                             if (nq) { queue = nq; qcap = nc; }
                         }
                         if (qlen < qcap)
@@ -966,8 +967,8 @@ retry_connect:
                  * full-map scans (O(n) vs O(n*depth) for 3M+ blocks). */
                 {
                     size_t map_sz = ms->map_block_index.size;
-                    struct block_index **all = malloc(
-                        map_sz * sizeof(struct block_index *));
+                    struct block_index **all = zcl_malloc(
+                        map_sz * sizeof(struct block_index *), "failed_child_all");
                     size_t propagated = 0;
                     if (!all) {
                         fprintf(stderr, "BLOCK_FAILED_CHILD: malloc failed "
@@ -1109,9 +1110,9 @@ retry_connect:
 
     /* Write transaction index if enabled */
     if (g_active_block_tree && ms->fTxIndex && pblock->num_vtx > 0) {
-        struct uint256 *txids = malloc(pblock->num_vtx * sizeof(struct uint256));
-        struct disk_tx_pos *positions = malloc(
-            pblock->num_vtx * sizeof(struct disk_tx_pos));
+        struct uint256 *txids = zcl_malloc(pblock->num_vtx * sizeof(struct uint256), "connect_tip_txids");
+        struct disk_tx_pos *positions = zcl_malloc(
+            pblock->num_vtx * sizeof(struct disk_tx_pos), "connect_tip_txpos");
         if (!txids || !positions) {
             fprintf(stderr, "connect_tip: tx index alloc failed at height %d "
                     "(%zu txs)\n", pindex_new->nHeight, pblock->num_vtx);
@@ -1373,7 +1374,7 @@ bool disconnect_tip(struct validation_state *state,
             long file_len = ftell(f);
             fseek(f, 0, SEEK_SET);
             if (file_len > 0 && file_len <= 32 * 1024 * 1024) {
-                uint8_t *buf = malloc((size_t)file_len);
+                uint8_t *buf = zcl_malloc((size_t)file_len, "undo_file_buf");
                 if (buf) {
                     size_t nread = fread(buf, 1, (size_t)file_len, f);
                     if (nread > 0) {
@@ -1398,14 +1399,14 @@ bool disconnect_tip(struct validation_state *state,
                "(%zu txs) from tx index\n",
                pindex_delete->nHeight, block.num_vtx);
         blockundo.num_txundo = block.num_vtx - 1;
-        blockundo.vtxundo = calloc(blockundo.num_txundo,
-                                    sizeof(struct tx_undo));
+        blockundo.vtxundo = zcl_calloc(blockundo.num_txundo,
+                                    sizeof(struct tx_undo), "undo_vtxundo");
         bool reconstruct_ok = (blockundo.vtxundo != NULL);
         for (size_t i = 1; i < block.num_vtx && reconstruct_ok; i++) {
             const struct transaction *tx = &block.vtx[i];
             struct tx_undo *tu = &blockundo.vtxundo[i - 1];
             tu->num_prevout = tx->num_vin;
-            tu->vprevout = calloc(tx->num_vin, sizeof(struct tx_in_undo));
+            tu->vprevout = zcl_calloc(tx->num_vin, sizeof(struct tx_in_undo), "undo_vprevout");
             if (!tu->vprevout) { reconstruct_ok = false; break; }
 
             for (size_t j = 0; j < tx->num_vin; j++) {
@@ -1727,8 +1728,8 @@ bool activate_best_chain(struct validation_state *state,
              w && w != current_tip; w = w->pprev)
             total_depth++;
 
-        struct block_index **connect_path = malloc(
-            (size_t)total_depth * sizeof(struct block_index *));
+        struct block_index **connect_path = zcl_malloc(
+            (size_t)total_depth * sizeof(struct block_index *), "connect_path");
         if (!connect_path)
             LOG_FAIL("validation", "malloc failed for connect_path (%d entries)", total_depth);
 

@@ -7,6 +7,7 @@
 #include "validation/validationinterface.h"
 #include "validation/sighash.h"
 #include "validation/tx_verifier.h"
+#include "util/safe_alloc.h"
 
 /* From consensus/consensus.h - avoid re-include due to triple MAX_BLOCK_SIZE definitions */
 #ifndef TX_EXPIRY_HEIGHT_THRESHOLD
@@ -47,14 +48,14 @@ static struct transaction make_simple_tx(void)
     tx.version = 1;
     tx.overwintered = false;
     tx.num_vin = 1;
-    tx.vin = calloc(1, sizeof(struct tx_in));
+    tx.vin = zcl_calloc(1, sizeof(struct tx_in), "test_tx_vin");
     memset(tx.vin[0].prevout.hash.data, 0xAA, 32);
     tx.vin[0].prevout.n = 0;
     uint8_t sig[] = {0x00, 0x00};
     script_set(&tx.vin[0].script_sig, sig, 2);
     tx.vin[0].sequence = 0xFFFFFFFF;
     tx.num_vout = 1;
-    tx.vout = calloc(1, sizeof(struct tx_out));
+    tx.vout = zcl_calloc(1, sizeof(struct tx_out), "test_tx_vout");
     tx.vout[0].value = 50 * 100000000LL;
     uint8_t pk[] = {0x76, 0xa9, 0x14};
     script_set(&tx.vout[0].script_pub_key, pk, 3);
@@ -89,7 +90,7 @@ int test_validation(void)
         tx.version = 1;
         tx.num_vin = 0;
         tx.num_vout = 1;
-        tx.vout = calloc(1, sizeof(struct tx_out));
+        tx.vout = zcl_calloc(1, sizeof(struct tx_out), "test_tx_vout");
         tx.vout[0].value = 100;
         uint8_t pk1[] = {0x00};
         script_set(&tx.vout[0].script_pub_key, pk1, 1);
@@ -109,7 +110,7 @@ int test_validation(void)
         memset(&tx, 0, sizeof(tx));
         tx.version = 1;
         tx.num_vin = 1;
-        tx.vin = calloc(1, sizeof(struct tx_in));
+        tx.vin = zcl_calloc(1, sizeof(struct tx_in), "test_tx_vin");
         memset(tx.vin[0].prevout.hash.data, 0xAA, 32);
         uint8_t sig2[] = {0x00, 0x00};
         script_set(&tx.vin[0].script_sig, sig2, 2);
@@ -156,14 +157,14 @@ int test_validation(void)
         memset(&tx, 0, sizeof(tx));
         tx.version = 1;
         tx.num_vin = 2;
-        tx.vin = calloc(2, sizeof(struct tx_in));
+        tx.vin = zcl_calloc(2, sizeof(struct tx_in), "test_tx_vin");
         memset(tx.vin[0].prevout.hash.data, 0xDD, 32);
         tx.vin[0].prevout.n = 0;
         uint8_t sig3[] = {0x00, 0x00};
         script_set(&tx.vin[0].script_sig, sig3, 2);
         tx.vin[1] = tx.vin[0];
         tx.num_vout = 1;
-        tx.vout = calloc(1, sizeof(struct tx_out));
+        tx.vout = zcl_calloc(1, sizeof(struct tx_out), "test_tx_vout");
         tx.vout[0].value = 100;
         uint8_t pk2[] = {0x00};
         script_set(&tx.vout[0].script_pub_key, pk2, 1);
@@ -218,12 +219,12 @@ int test_validation(void)
         tx.version_group_id = SAPLING_VERSION_GROUP_ID;
         tx.num_vin = 0;
         tx.num_vout = 1;
-        tx.vout = calloc(1, sizeof(struct tx_out));
+        tx.vout = zcl_calloc(1, sizeof(struct tx_out), "test_tx_vout");
         tx.vout[0].value = 100;
         uint8_t pk3[] = {0x00};
         script_set(&tx.vout[0].script_pub_key, pk3, 1);
         tx.num_shielded_spend = 1;
-        tx.v_shielded_spend = calloc(1, sizeof(struct spend_description));
+        tx.v_shielded_spend = zcl_calloc(1, sizeof(struct spend_description), "test_shielded_spend");
         tx.value_balance = 100;
 
         struct validation_state vs;
@@ -241,18 +242,18 @@ int test_validation(void)
         memset(&tx, 0, sizeof(tx));
         tx.version = 1;
         tx.num_vin = 1;
-        tx.vin = calloc(1, sizeof(struct tx_in));
+        tx.vin = zcl_calloc(1, sizeof(struct tx_in), "test_tx_vin");
         memset(tx.vin[0].prevout.hash.data, 0, 32);
         tx.vin[0].prevout.n = 0xFFFFFFFF;
         uint8_t cb[] = {0x04, 0xff, 0xff, 0xff};
         script_set(&tx.vin[0].script_sig, cb, 4);
         tx.num_vout = 1;
-        tx.vout = calloc(1, sizeof(struct tx_out));
+        tx.vout = zcl_calloc(1, sizeof(struct tx_out), "test_tx_vout");
         tx.vout[0].value = 1000000000LL;
         uint8_t pk4[] = {0x00};
         script_set(&tx.vout[0].script_pub_key, pk4, 1);
         tx.num_joinsplit = 1;
-        tx.v_joinsplit = calloc(1, sizeof(struct js_description));
+        tx.v_joinsplit = zcl_calloc(1, sizeof(struct js_description), "test_joinsplit");
 
         struct validation_state vs;
         validation_state_init(&vs);
@@ -298,12 +299,12 @@ int test_validation(void)
         tx.version_group_id = SAPLING_VERSION_GROUP_ID;
         tx.num_vin = 0;
         tx.num_vout = 1;
-        tx.vout = calloc(1, sizeof(struct tx_out));
+        tx.vout = zcl_calloc(1, sizeof(struct tx_out), "test_tx_vout");
         tx.vout[0].value = 100;
         uint8_t pk5[] = {0x00};
         script_set(&tx.vout[0].script_pub_key, pk5, 1);
         tx.num_shielded_spend = 2;
-        tx.v_shielded_spend = calloc(2, sizeof(struct spend_description));
+        tx.v_shielded_spend = zcl_calloc(2, sizeof(struct spend_description), "test_shielded_spend");
         /* Same nullifier in both spend descriptions */
         memset(tx.v_shielded_spend[0].nullifier.data, 0xBB, 32);
         memset(tx.v_shielded_spend[1].nullifier.data, 0xBB, 32);
@@ -330,18 +331,18 @@ int test_validation(void)
         tx.version = 4;
         tx.version_group_id = SAPLING_VERSION_GROUP_ID;
         tx.num_vin = 1;
-        tx.vin = calloc(1, sizeof(struct tx_in));
+        tx.vin = zcl_calloc(1, sizeof(struct tx_in), "test_tx_vin");
         memset(tx.vin[0].prevout.hash.data, 0, 32);
         tx.vin[0].prevout.n = 0xFFFFFFFF;
         uint8_t cb2[] = {0x04, 0xff, 0xff, 0xff};
         script_set(&tx.vin[0].script_sig, cb2, 4);
         tx.num_vout = 1;
-        tx.vout = calloc(1, sizeof(struct tx_out));
+        tx.vout = zcl_calloc(1, sizeof(struct tx_out), "test_tx_vout");
         tx.vout[0].value = 1000000000LL;
         uint8_t pk6[] = {0x00};
         script_set(&tx.vout[0].script_pub_key, pk6, 1);
         tx.num_shielded_spend = 1;
-        tx.v_shielded_spend = calloc(1, sizeof(struct spend_description));
+        tx.v_shielded_spend = zcl_calloc(1, sizeof(struct spend_description), "test_shielded_spend");
         tx.value_balance = 1000;
 
         struct validation_state vs;
@@ -366,18 +367,18 @@ int test_validation(void)
         tx.version = 4;
         tx.version_group_id = SAPLING_VERSION_GROUP_ID;
         tx.num_vin = 1;
-        tx.vin = calloc(1, sizeof(struct tx_in));
+        tx.vin = zcl_calloc(1, sizeof(struct tx_in), "test_tx_vin");
         memset(tx.vin[0].prevout.hash.data, 0, 32);
         tx.vin[0].prevout.n = 0xFFFFFFFF;
         uint8_t cb3[] = {0x04, 0xff, 0xff, 0xff};
         script_set(&tx.vin[0].script_sig, cb3, 4);
         tx.num_vout = 1;
-        tx.vout = calloc(1, sizeof(struct tx_out));
+        tx.vout = zcl_calloc(1, sizeof(struct tx_out), "test_tx_vout");
         tx.vout[0].value = 1000000000LL;
         uint8_t pk7[] = {0x00};
         script_set(&tx.vout[0].script_pub_key, pk7, 1);
         tx.num_shielded_output = 1;
-        tx.v_shielded_output = calloc(1, sizeof(struct output_description));
+        tx.v_shielded_output = zcl_calloc(1, sizeof(struct output_description), "test_shielded_output");
 
         struct validation_state vs;
         validation_state_init(&vs);
@@ -397,7 +398,7 @@ int test_validation(void)
     {
         struct transaction tx = make_simple_tx();
         tx.num_joinsplit = 1;
-        tx.v_joinsplit = calloc(1, sizeof(struct js_description));
+        tx.v_joinsplit = zcl_calloc(1, sizeof(struct js_description), "test_joinsplit");
         tx.v_joinsplit[0].vpub_old = 1000;
         tx.v_joinsplit[0].vpub_new = 2000;
 
@@ -418,7 +419,7 @@ int test_validation(void)
     {
         struct transaction tx = make_simple_tx();
         tx.num_joinsplit = 1;
-        tx.v_joinsplit = calloc(1, sizeof(struct js_description));
+        tx.v_joinsplit = zcl_calloc(1, sizeof(struct js_description), "test_joinsplit");
         tx.v_joinsplit[0].vpub_old = MAX_MONEY + 1;
         tx.v_joinsplit[0].vpub_new = 0;
 
@@ -444,12 +445,12 @@ int test_validation(void)
         tx.version_group_id = SAPLING_VERSION_GROUP_ID;
         tx.num_vin = 0;
         tx.num_vout = 1;
-        tx.vout = calloc(1, sizeof(struct tx_out));
+        tx.vout = zcl_calloc(1, sizeof(struct tx_out), "test_tx_vout");
         tx.vout[0].value = 100;
         uint8_t pk8[] = {0x00};
         script_set(&tx.vout[0].script_pub_key, pk8, 1);
         tx.num_shielded_spend = 1;
-        tx.v_shielded_spend = calloc(1, sizeof(struct spend_description));
+        tx.v_shielded_spend = zcl_calloc(1, sizeof(struct spend_description), "test_shielded_spend");
         tx.value_balance = MAX_MONEY + 1;
 
         struct validation_state vs;
@@ -526,13 +527,13 @@ int test_validation(void)
         memset(&tx, 0, sizeof(tx));
         tx.version = 1;
         tx.num_vin = 1;
-        tx.vin = calloc(1, sizeof(struct tx_in));
+        tx.vin = zcl_calloc(1, sizeof(struct tx_in), "test_tx_vin");
         memset(tx.vin[0].prevout.hash.data, 0, 32);
         tx.vin[0].prevout.n = 0xFFFFFFFF;
         uint8_t cb4[] = {0x04};
         script_set(&tx.vin[0].script_sig, cb4, 1);
         tx.num_vout = 1;
-        tx.vout = calloc(1, sizeof(struct tx_out));
+        tx.vout = zcl_calloc(1, sizeof(struct tx_out), "test_tx_vout");
         tx.vout[0].value = 1000000000LL;
         uint8_t pk9[] = {0x00};
         script_set(&tx.vout[0].script_pub_key, pk9, 1);
@@ -556,7 +557,7 @@ int test_validation(void)
         memset(&tx, 0, sizeof(tx));
         tx.version = 1;
         tx.num_vin = 1;
-        tx.vin = calloc(1, sizeof(struct tx_in));
+        tx.vin = zcl_calloc(1, sizeof(struct tx_in), "test_tx_vin");
         /* null outpoint = hash all zeros + n = UINT32_MAX */
         memset(tx.vin[0].prevout.hash.data, 0, 32);
         tx.vin[0].prevout.n = 0xFFFFFFFF;
@@ -566,14 +567,14 @@ int test_validation(void)
          * Actually with hash=0, n=0xFFFFFFFF, and 1 input, this IS a coinbase.
          * Use 2 inputs so it's not a coinbase (coinbase must have exactly 1 input). */
         tx.num_vin = 2;
-        tx.vin = realloc(tx.vin, 2 * sizeof(struct tx_in));
+        tx.vin = zcl_realloc(tx.vin, 2 * sizeof(struct tx_in), "test_tx_vin");
         memset(&tx.vin[1], 0, sizeof(struct tx_in));
         memset(tx.vin[1].prevout.hash.data, 0xAA, 32);
         tx.vin[1].prevout.n = 0;
         uint8_t sig4b[] = {0x00, 0x00};
         script_set(&tx.vin[1].script_sig, sig4b, 2);
         tx.num_vout = 1;
-        tx.vout = calloc(1, sizeof(struct tx_out));
+        tx.vout = zcl_calloc(1, sizeof(struct tx_out), "test_tx_vout");
         tx.vout[0].value = 100;
         uint8_t pk10[] = {0x00};
         script_set(&tx.vout[0].script_pub_key, pk10, 1);
@@ -699,13 +700,13 @@ int test_validation(void)
         tx.version_group_id = SAPLING_VERSION_GROUP_ID;
         tx.expiry_height = 500001;
         tx.num_vin = 1;
-        tx.vin = calloc(1, sizeof(struct tx_in));
+        tx.vin = zcl_calloc(1, sizeof(struct tx_in), "test_tx_vin");
         memset(tx.vin[0].prevout.hash.data, 0xAA, 32);
         uint8_t sig5[] = {0x00, 0x00};
         script_set(&tx.vin[0].script_sig, sig5, 2);
         /* ~3000 outputs * ~34 bytes each ≈ 102000 > MAX_TX_SIZE_BEFORE_SAPLING */
         tx.num_vout = 3000;
-        tx.vout = calloc(tx.num_vout, sizeof(struct tx_out));
+        tx.vout = zcl_calloc(tx.num_vout, sizeof(struct tx_out), "test_tx_vout");
         for (size_t i = 0; i < tx.num_vout; i++) {
             tx.vout[i].value = 1;
             uint8_t pk11[] = {0x76,0xa9,0x14,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0x88,0xac};
@@ -731,12 +732,12 @@ int test_validation(void)
         tx.version = 1;
         tx.num_vin = 0;
         tx.num_vout = 1;
-        tx.vout = calloc(1, sizeof(struct tx_out));
+        tx.vout = zcl_calloc(1, sizeof(struct tx_out), "test_tx_vout");
         tx.vout[0].value = 100;
         uint8_t pk12[] = {0x00};
         script_set(&tx.vout[0].script_pub_key, pk12, 1);
         tx.num_joinsplit = 1;
-        tx.v_joinsplit = calloc(1, sizeof(struct js_description));
+        tx.v_joinsplit = zcl_calloc(1, sizeof(struct js_description), "test_joinsplit");
         tx.v_joinsplit[0].vpub_new = 100;
         /* Set distinct nullifiers to avoid duplicate nullifier rejection */
         memset(tx.v_joinsplit[0].nullifiers[0].data, 0x11, 32);
@@ -758,7 +759,7 @@ int test_validation(void)
     {
         struct transaction tx = make_simple_tx();
         tx.num_joinsplit = 2;
-        tx.v_joinsplit = calloc(2, sizeof(struct js_description));
+        tx.v_joinsplit = zcl_calloc(2, sizeof(struct js_description), "test_joinsplit");
         /* Set same nullifier in both joinsplits */
         memset(tx.v_joinsplit[0].nullifiers[0].data, 0xCC, 32);
         memset(tx.v_joinsplit[1].nullifiers[0].data, 0xCC, 32);
@@ -842,18 +843,18 @@ int test_validation(void)
         block_init(&blk);
         blk.header.nVersion = 4;
         blk.num_vtx = 2;
-        blk.vtx = calloc(2, sizeof(struct transaction));
+        blk.vtx = zcl_calloc(2, sizeof(struct transaction), "test_blk_vtx");
         /* tx[0]: coinbase */
         transaction_init(&blk.vtx[0]);
         blk.vtx[0].version = 1;
         blk.vtx[0].num_vin = 1;
-        blk.vtx[0].vin = calloc(1, sizeof(struct tx_in));
+        blk.vtx[0].vin = zcl_calloc(1, sizeof(struct tx_in), "test_blk_vin");
         memset(blk.vtx[0].vin[0].prevout.hash.data, 0, 32);
         blk.vtx[0].vin[0].prevout.n = 0xFFFFFFFF;
         uint8_t cb_sig[] = {0x03, 0x01, 0x00, 0x00};
         script_set(&blk.vtx[0].vin[0].script_sig, cb_sig, 4);
         blk.vtx[0].num_vout = 1;
-        blk.vtx[0].vout = calloc(1, sizeof(struct tx_out));
+        blk.vtx[0].vout = zcl_calloc(1, sizeof(struct tx_out), "test_blk_vout");
         blk.vtx[0].vout[0].value = 1000;
         uint8_t cb_pk[] = {0x00};
         script_set(&blk.vtx[0].vout[0].script_pub_key, cb_pk, 1);
@@ -861,13 +862,13 @@ int test_validation(void)
         transaction_init(&blk.vtx[1]);
         blk.vtx[1].version = 1;
         blk.vtx[1].num_vin = 1;
-        blk.vtx[1].vin = calloc(1, sizeof(struct tx_in));
+        blk.vtx[1].vin = zcl_calloc(1, sizeof(struct tx_in), "test_blk_vin");
         memset(blk.vtx[1].vin[0].prevout.hash.data, 0, 32);
         blk.vtx[1].vin[0].prevout.n = 0xFFFFFFFF;
         uint8_t cb2_sig[] = {0x03, 0x02, 0x00, 0x00};
         script_set(&blk.vtx[1].vin[0].script_sig, cb2_sig, 4);
         blk.vtx[1].num_vout = 1;
-        blk.vtx[1].vout = calloc(1, sizeof(struct tx_out));
+        blk.vtx[1].vout = zcl_calloc(1, sizeof(struct tx_out), "test_blk_vout");
         blk.vtx[1].vout[0].value = 500;
         uint8_t cb2_pk[] = {0x00};
         script_set(&blk.vtx[1].vout[0].script_pub_key, cb2_pk, 1);
@@ -891,18 +892,18 @@ int test_validation(void)
         block_init(&blk);
         blk.header.nVersion = 4;
         blk.num_vtx = 1;
-        blk.vtx = calloc(1, sizeof(struct transaction));
+        blk.vtx = zcl_calloc(1, sizeof(struct transaction), "test_blk_vtx");
         /* tx[0]: not a coinbase */
         transaction_init(&blk.vtx[0]);
         blk.vtx[0].version = 1;
         blk.vtx[0].num_vin = 1;
-        blk.vtx[0].vin = calloc(1, sizeof(struct tx_in));
+        blk.vtx[0].vin = zcl_calloc(1, sizeof(struct tx_in), "test_blk_vin");
         memset(blk.vtx[0].vin[0].prevout.hash.data, 0xAA, 32);
         blk.vtx[0].vin[0].prevout.n = 0;
         uint8_t noncb_sig[] = {0x00, 0x00};
         script_set(&blk.vtx[0].vin[0].script_sig, noncb_sig, 2);
         blk.vtx[0].num_vout = 1;
-        blk.vtx[0].vout = calloc(1, sizeof(struct tx_out));
+        blk.vtx[0].vout = zcl_calloc(1, sizeof(struct tx_out), "test_blk_vout");
         blk.vtx[0].vout[0].value = 100;
         uint8_t noncb_pk[] = {0x00};
         script_set(&blk.vtx[0].vout[0].script_pub_key, noncb_pk, 1);
@@ -924,17 +925,17 @@ int test_validation(void)
         block_init(&blk);
         blk.header.nVersion = 4;
         blk.num_vtx = 1;
-        blk.vtx = calloc(1, sizeof(struct transaction));
+        blk.vtx = zcl_calloc(1, sizeof(struct transaction), "test_blk_vtx");
         transaction_init(&blk.vtx[0]);
         blk.vtx[0].version = 1;
         blk.vtx[0].num_vin = 1;
-        blk.vtx[0].vin = calloc(1, sizeof(struct tx_in));
+        blk.vtx[0].vin = zcl_calloc(1, sizeof(struct tx_in), "test_blk_vin");
         memset(blk.vtx[0].vin[0].prevout.hash.data, 0, 32);
         blk.vtx[0].vin[0].prevout.n = 0xFFFFFFFF;
         uint8_t valid_cb[] = {0x03, 0x01, 0x00, 0x00};
         script_set(&blk.vtx[0].vin[0].script_sig, valid_cb, 4);
         blk.vtx[0].num_vout = 1;
-        blk.vtx[0].vout = calloc(1, sizeof(struct tx_out));
+        blk.vtx[0].vout = zcl_calloc(1, sizeof(struct tx_out), "test_blk_vout");
         blk.vtx[0].vout[0].value = 1000000000LL;
         uint8_t valid_pk[] = {0x76, 0xa9, 0x14};
         script_set(&blk.vtx[0].vout[0].script_pub_key, valid_pk, 3);
@@ -982,7 +983,7 @@ int test_validation(void)
         memset(&tx, 0, sizeof(tx));
         tx.lock_time = 1000; /* block height lock */
         tx.num_vin = 1;
-        tx.vin = calloc(1, sizeof(struct tx_in));
+        tx.vin = zcl_calloc(1, sizeof(struct tx_in), "test_tx_vin");
         tx.vin[0].sequence = 0; /* not final */
         bool ok = !is_final_tx(&tx, 999, 0); /* height < locktime */
         free(tx.vin);
@@ -1006,7 +1007,7 @@ int test_validation(void)
         memset(&tx, 0, sizeof(tx));
         tx.lock_time = 999999;
         tx.num_vin = 2;
-        tx.vin = calloc(2, sizeof(struct tx_in));
+        tx.vin = zcl_calloc(2, sizeof(struct tx_in), "test_tx_vin");
         tx.vin[0].sequence = UINT32_MAX; /* final */
         tx.vin[1].sequence = UINT32_MAX; /* final */
         bool ok = is_final_tx(&tx, 1, 0);
@@ -1023,7 +1024,7 @@ int test_validation(void)
         struct block blk;
         block_init(&blk);
         blk.num_vtx = 3; /* coinbase + 2 txs = 2 tx_undos needed */
-        blk.vtx = calloc(3, sizeof(struct transaction));
+        blk.vtx = zcl_calloc(3, sizeof(struct transaction), "test_blk_vtx");
         for (int i = 0; i < 3; i++) transaction_init(&blk.vtx[i]);
 
         struct block_undo bu;
@@ -1063,13 +1064,13 @@ int test_validation(void)
         memset(&tx, 0, sizeof(tx));
         tx.version = 1;
         tx.num_vin = 1;
-        tx.vin = calloc(1, sizeof(struct tx_in));
+        tx.vin = zcl_calloc(1, sizeof(struct tx_in), "test_tx_vin");
         memset(tx.vin[0].prevout.hash.data, 0xAA, 32);
         tx.vin[0].prevout.n = 0;
         uint8_t sig_of[] = {0x00, 0x00};
         script_set(&tx.vin[0].script_sig, sig_of, 2);
         tx.num_vout = 2;
-        tx.vout = calloc(2, sizeof(struct tx_out));
+        tx.vout = zcl_calloc(2, sizeof(struct tx_out), "test_tx_vout");
         tx.vout[0].value = MAX_MONEY;
         tx.vout[1].value = 1; /* sum overflows MAX_MONEY */
         uint8_t pk_of[] = {0x00};
@@ -1093,7 +1094,7 @@ int test_validation(void)
     {
         struct transaction tx = make_simple_tx();
         tx.num_joinsplit = 1;
-        tx.v_joinsplit = calloc(1, sizeof(struct js_description));
+        tx.v_joinsplit = zcl_calloc(1, sizeof(struct js_description), "test_joinsplit");
         tx.v_joinsplit[0].vpub_new = MAX_MONEY + 1;
         tx.v_joinsplit[0].vpub_old = 0;
 
@@ -1153,18 +1154,18 @@ int test_validation(void)
         tx.version = 4;
         tx.version_group_id = SAPLING_VERSION_GROUP_ID;
         tx.num_vin = 1;
-        tx.vin = calloc(1, sizeof(struct tx_in));
+        tx.vin = zcl_calloc(1, sizeof(struct tx_in), "test_tx_vin");
         memset(tx.vin[0].prevout.hash.data, 0xAA, 32);
         tx.vin[0].prevout.n = 0;
         uint8_t sig_nb[] = {0x00, 0x00};
         script_set(&tx.vin[0].script_sig, sig_nb, 2);
         tx.num_vout = 1;
-        tx.vout = calloc(1, sizeof(struct tx_out));
+        tx.vout = zcl_calloc(1, sizeof(struct tx_out), "test_tx_vout");
         tx.vout[0].value = 100;
         uint8_t pk_nb[] = {0x00};
         script_set(&tx.vout[0].script_pub_key, pk_nb, 1);
         tx.num_shielded_output = 1;
-        tx.v_shielded_output = calloc(1, sizeof(struct output_description));
+        tx.v_shielded_output = zcl_calloc(1, sizeof(struct output_description), "test_shielded_output");
         tx.value_balance = -100; /* negative: transparent → shielded */
 
         struct validation_state vs;
@@ -1188,18 +1189,18 @@ int test_validation(void)
         tx.version = 4;
         tx.version_group_id = SAPLING_VERSION_GROUP_ID;
         tx.num_vin = 1;
-        tx.vin = calloc(1, sizeof(struct tx_in));
+        tx.vin = zcl_calloc(1, sizeof(struct tx_in), "test_tx_vin");
         memset(tx.vin[0].prevout.hash.data, 0xAA, 32);
         tx.vin[0].prevout.n = 0;
         uint8_t sig_vb[] = {0x00, 0x00};
         script_set(&tx.vin[0].script_sig, sig_vb, 2);
         tx.num_vout = 1;
-        tx.vout = calloc(1, sizeof(struct tx_out));
+        tx.vout = zcl_calloc(1, sizeof(struct tx_out), "test_tx_vout");
         tx.vout[0].value = 100;
         uint8_t pk_vb[] = {0x00};
         script_set(&tx.vout[0].script_pub_key, pk_vb, 1);
         tx.num_shielded_output = 1;
-        tx.v_shielded_output = calloc(1, sizeof(struct output_description));
+        tx.v_shielded_output = zcl_calloc(1, sizeof(struct output_description), "test_shielded_output");
         tx.value_balance = -(MAX_MONEY + 1);
 
         struct validation_state vs;
@@ -1222,7 +1223,7 @@ int test_validation(void)
         memset(&tx, 0, sizeof(tx));
         tx.lock_time = 1700000000; /* above LOCKTIME_THRESHOLD = 500000000 */
         tx.num_vin = 1;
-        tx.vin = calloc(1, sizeof(struct tx_in));
+        tx.vin = zcl_calloc(1, sizeof(struct tx_in), "test_tx_vin");
         tx.vin[0].sequence = 0;
         bool ok = !is_final_tx(&tx, 999999, 1699999999LL);
         free(tx.vin);
@@ -1292,12 +1293,12 @@ int test_validation(void)
         tx.version_group_id = OVERWINTER_VERSION_GROUP_ID;
         tx.expiry_height = 500000;
         tx.num_vin = 1;
-        tx.vin = calloc(1, sizeof(struct tx_in));
+        tx.vin = zcl_calloc(1, sizeof(struct tx_in), "test_tx_vin");
         memset(tx.vin[0].prevout.hash.data, 0xAA, 32);
         uint8_t sig_os[] = {0x00, 0x00};
         script_set(&tx.vin[0].script_sig, sig_os, 2);
         tx.num_vout = 3000;
-        tx.vout = calloc(tx.num_vout, sizeof(struct tx_out));
+        tx.vout = zcl_calloc(tx.num_vout, sizeof(struct tx_out), "test_tx_vout");
         for (size_t i = 0; i < tx.num_vout; i++) {
             tx.vout[i].value = 1;
             uint8_t pk_os[] = {0x76,0xa9,0x14,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0x88,0xac};
@@ -1323,14 +1324,14 @@ int test_validation(void)
         memset(&tx, 0, sizeof(tx));
         tx.version = 1;
         tx.num_vin = 1;
-        tx.vin = calloc(1, sizeof(struct tx_in));
+        tx.vin = zcl_calloc(1, sizeof(struct tx_in), "test_tx_vin");
         memset(tx.vin[0].prevout.hash.data, 0, 32);
         tx.vin[0].prevout.n = 0xFFFFFFFF;
         uint8_t cb_max[100];
         memset(cb_max, 0x42, 100);
         script_set(&tx.vin[0].script_sig, cb_max, 100);
         tx.num_vout = 1;
-        tx.vout = calloc(1, sizeof(struct tx_out));
+        tx.vout = zcl_calloc(1, sizeof(struct tx_out), "test_tx_vout");
         tx.vout[0].value = 1000000000LL;
         uint8_t pk_cb[] = {0x00};
         script_set(&tx.vout[0].script_pub_key, pk_cb, 1);
@@ -1350,14 +1351,14 @@ int test_validation(void)
         memset(&tx, 0, sizeof(tx));
         tx.version = 1;
         tx.num_vin = 1;
-        tx.vin = calloc(1, sizeof(struct tx_in));
+        tx.vin = zcl_calloc(1, sizeof(struct tx_in), "test_tx_vin");
         memset(tx.vin[0].prevout.hash.data, 0, 32);
         tx.vin[0].prevout.n = 0xFFFFFFFF;
         uint8_t cb_toolong[101];
         memset(cb_toolong, 0x42, 101);
         script_set(&tx.vin[0].script_sig, cb_toolong, 101);
         tx.num_vout = 1;
-        tx.vout = calloc(1, sizeof(struct tx_out));
+        tx.vout = zcl_calloc(1, sizeof(struct tx_out), "test_tx_vout");
         tx.vout[0].value = 1000000000LL;
         uint8_t pk_cbtl[] = {0x00};
         script_set(&tx.vout[0].script_pub_key, pk_cbtl, 1);
@@ -1379,7 +1380,7 @@ int test_validation(void)
     {
         struct transaction tx = make_simple_tx();
         tx.num_joinsplit = 1;
-        tx.v_joinsplit = calloc(1, sizeof(struct js_description));
+        tx.v_joinsplit = zcl_calloc(1, sizeof(struct js_description), "test_joinsplit");
         tx.v_joinsplit[0].vpub_new = -1;
         tx.v_joinsplit[0].vpub_old = 0;
 
@@ -1400,7 +1401,7 @@ int test_validation(void)
     {
         struct transaction tx = make_simple_tx();
         tx.num_joinsplit = 1;
-        tx.v_joinsplit = calloc(1, sizeof(struct js_description));
+        tx.v_joinsplit = zcl_calloc(1, sizeof(struct js_description), "test_joinsplit");
         tx.v_joinsplit[0].vpub_old = -1;
         tx.v_joinsplit[0].vpub_new = 0;
 
@@ -1426,7 +1427,7 @@ int test_validation(void)
         tx.version = 1;
         tx.num_vin = 0;
         tx.num_vout = 1;
-        tx.vout = calloc(1, sizeof(struct tx_out));
+        tx.vout = zcl_calloc(1, sizeof(struct tx_out), "test_tx_vout");
         tx.vout[0].value = 100;
         /* OP_CHECKSIG = 0xac */
         uint8_t pk_sigop[] = {0xac, 0xac, 0xac};
@@ -1462,7 +1463,7 @@ int test_validation(void)
         memset(&tx, 0, sizeof(tx));
         tx.version = 1;
         tx.num_vin = 1;
-        tx.vin = calloc(1, sizeof(struct tx_in));
+        tx.vin = zcl_calloc(1, sizeof(struct tx_in), "test_tx_vin");
         memset(tx.vin[0].prevout.hash.data, 0, 32);
         tx.vin[0].prevout.n = 0xFFFFFFFF;
         tx.expiry_height = 100;
@@ -1481,7 +1482,7 @@ int test_validation(void)
         check_queue_init(&cq, 128, sizeof(int), cq_check_positive);
         void *items[10];
         for (int i = 0; i < 10; i++) {
-            items[i] = malloc(sizeof(int));
+            items[i] = zcl_malloc(sizeof(int), "test_check_item");
             *(int *)items[i] = i + 1;
         }
         check_queue_add(&cq, items, 10);
@@ -1500,7 +1501,7 @@ int test_validation(void)
         check_queue_init(&cq, 128, sizeof(int), cq_check_nonzero);
         void *items[5];
         for (int i = 0; i < 5; i++) {
-            items[i] = malloc(sizeof(int));
+            items[i] = zcl_malloc(sizeof(int), "test_check_item");
             *(int *)items[i] = i; /* item[0] = 0 → fails check */
         }
         check_queue_add(&cq, items, 5);
@@ -1533,14 +1534,14 @@ int test_validation(void)
         memset(&tx, 0, sizeof(tx));
         tx.version = 1;
         tx.num_vin = 1;
-        tx.vin = calloc(1, sizeof(struct tx_in));
+        tx.vin = zcl_calloc(1, sizeof(struct tx_in), "test_tx_vin");
         memset(tx.vin[0].prevout.hash.data, 0xAA, 32);
         tx.vin[0].prevout.n = 0;
         uint8_t sig_big[] = {0x00, 0x00};
         script_set(&tx.vin[0].script_sig, sig_big, 2);
         /* ~60K outputs * ~34 bytes ≈ 2MB > MAX_TX_SIZE_AFTER_SAPLING */
         tx.num_vout = 60000;
-        tx.vout = calloc(tx.num_vout, sizeof(struct tx_out));
+        tx.vout = zcl_calloc(tx.num_vout, sizeof(struct tx_out), "test_tx_vout");
         for (size_t i = 0; i < tx.num_vout; i++) {
             tx.vout[i].value = 1;
             uint8_t pk_big[] = {0x76,0xa9,0x14,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0x88,0xac};
@@ -1615,8 +1616,8 @@ int test_validation(void)
         memset(h3.data, 0x33, 32);
 
         /* block_map_free calls free() on each index, so heap-allocate */
-        struct block_index *bi1 = calloc(1, sizeof(struct block_index));
-        struct block_index *bi2 = calloc(1, sizeof(struct block_index));
+        struct block_index *bi1 = zcl_calloc(1, sizeof(struct block_index), "test_block_index");
+        struct block_index *bi2 = zcl_calloc(1, sizeof(struct block_index), "test_block_index");
         bi1->nHeight = 100;
         bi2->nHeight = 200;
 
@@ -1640,8 +1641,8 @@ int test_validation(void)
         struct uint256 h1, h2;
         memset(h1.data, 0xAA, 32);
         memset(h2.data, 0xBB, 32);
-        struct block_index *bi1 = calloc(1, sizeof(struct block_index));
-        struct block_index *bi2 = calloc(1, sizeof(struct block_index));
+        struct block_index *bi1 = zcl_calloc(1, sizeof(struct block_index), "test_block_index");
+        struct block_index *bi2 = zcl_calloc(1, sizeof(struct block_index), "test_block_index");
 
         block_map_insert(&m, &h1, bi1);
         block_map_insert(&m, &h2, bi2);
@@ -2608,7 +2609,7 @@ int test_validation(void)
 
         /* Allocate a dummy JoinSplit */
         tx.num_joinsplit = 1;
-        tx.v_joinsplit = calloc(1, sizeof(struct js_description));
+        tx.v_joinsplit = zcl_calloc(1, sizeof(struct js_description), "test_joinsplit");
         tx.v_joinsplit[0].vpub_old = 0;
         tx.v_joinsplit[0].vpub_new = 1000;
         memset(tx.joinsplit_pubkey.data, 0xBB, 32);

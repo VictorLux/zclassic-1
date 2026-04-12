@@ -17,6 +17,7 @@
 #include <sqlite3.h>
 #include <pthread.h>
 #include "util/log_macros.h"
+#include "util/safe_alloc.h"
 
 /* Cached UTXO root: the O(n) rolling SHA-256 is computed once at startup.
  * The incremental XOR commitment (maintained per-block) can verify the
@@ -261,7 +262,7 @@ int64_t fast_sync_prebuild_snapshot(struct node_db *ndb, const char *datadir)
             long sz = ftell(fp);
             fseek(fp, 0, SEEK_SET);
 
-            uint8_t *snapshot_buf = malloc((size_t)sz);
+            uint8_t *snapshot_buf = zcl_malloc((size_t)sz, "snapshot_buf");
             if (snapshot_buf) {
                 size_t rd = fread(snapshot_buf, 1, (size_t)sz, fp);
                 if (!fast_sync_publish_snapshot_cache(snapshot_buf,
@@ -327,7 +328,7 @@ bool fast_sync_serve_snapshot(const char *datadir,
         "FROM utxos ORDER BY txid, vout",
         -1, &s, NULL);
 
-    struct utxo_chunk *chunk = calloc(1, sizeof(struct utxo_chunk));
+    struct utxo_chunk *chunk = zcl_calloc(1, sizeof(struct utxo_chunk), "utxo_chunk");
     if (!chunk) { sqlite3_finalize(s); sqlite3_close(db); LOG_FAIL("fast_sync", "serve_snapshot: failed to allocate utxo_chunk"); }
 
     (void)from_height;
@@ -607,7 +608,7 @@ void fast_sync_merkle_root(const uint8_t (*hashes)[32],
 
     /* Pad to power of two with copies of last hash */
     uint32_t padded = next_pow2(count);
-    uint8_t (*layer)[32] = calloc(padded, 32);
+    uint8_t (*layer)[32] = zcl_calloc(padded, 32, "merkle_layer");
     if (!layer) { memset(root_out, 0, 32); return; }
 
     for (uint32_t i = 0; i < padded; i++) {
@@ -647,8 +648,8 @@ uint32_t fast_sync_build_proof(const uint8_t (*hashes)[32],
     uint32_t depth = 0;
     for (uint32_t v = padded; v > 1; v >>= 1) depth++;
 
-    uint8_t (*layer)[32] = calloc(padded, 32);
-    uint8_t (*proof)[32] = calloc(depth, 32);
+    uint8_t (*layer)[32] = zcl_calloc(padded, 32, "merkle_layer");
+    uint8_t (*proof)[32] = zcl_calloc(depth, 32, "merkle_proof");
     if (!layer || !proof) {
         free(layer); free(proof);
         *proof_out = NULL;
@@ -835,11 +836,11 @@ bool fast_sync_build_manifest_db(sqlite3 *db, struct sync_manifest *out)
                                   / out->chunk_size);
 
     /* Allocate chunk hashes array */
-    out->chunk_hashes = calloc(out->num_chunks, 32);
+    out->chunk_hashes = zcl_calloc(out->num_chunks, 32, "chunk_hashes");
     if (!out->chunk_hashes) LOG_FAIL("fast_sync", "build_manifest_db: failed to allocate %u chunk hashes", out->num_chunks);
 
     /* Compute hash for each chunk */
-    struct utxo_chunk *chunk = calloc(1, sizeof(struct utxo_chunk));
+    struct utxo_chunk *chunk = zcl_calloc(1, sizeof(struct utxo_chunk), "utxo_chunk");
     if (!chunk) { free(out->chunk_hashes); out->chunk_hashes = NULL; LOG_FAIL("fast_sync", "build_manifest_db: failed to allocate utxo_chunk"); }
 
     for (uint32_t ci = 0; ci < out->num_chunks; ci++) {
@@ -895,15 +896,15 @@ bool swarm_sync_init(struct swarm_sync *ss, const struct sync_manifest *manifest
 
     /* Deep-copy manifest */
     ss->manifest = *manifest;
-    ss->manifest.chunk_hashes = calloc(n, 32);
+    ss->manifest.chunk_hashes = zcl_calloc(n, 32, "chunk_hashes");
     if (!ss->manifest.chunk_hashes) LOG_FAIL("fast_sync", "swarm_sync_init: failed to allocate %u chunk hashes", n);
     if (manifest->chunk_hashes)
         memcpy(ss->manifest.chunk_hashes, manifest->chunk_hashes, (size_t)n * 32);
 
-    ss->chunk_states = calloc(n, sizeof(enum chunk_state));
-    ss->chunk_peer = calloc(n, sizeof(int));
-    ss->chunk_request_time = calloc(n, sizeof(int64_t));
-    ss->chunk_retries = calloc(n, sizeof(int));
+    ss->chunk_states = zcl_calloc(n, sizeof(enum chunk_state), "chunk_states");
+    ss->chunk_peer = zcl_calloc(n, sizeof(int), "chunk_peer");
+    ss->chunk_request_time = zcl_calloc(n, sizeof(int64_t), "chunk_req_time");
+    ss->chunk_retries = zcl_calloc(n, sizeof(int), "chunk_retries");
 
     if (!ss->chunk_states || !ss->chunk_peer || !ss->chunk_request_time
         || !ss->chunk_retries) {
@@ -1123,7 +1124,7 @@ bool block_piece_manifest_build(const char *datadir,
     sqlite3_finalize(s);
 
     /* Allocate piece hashes */
-    out->piece_hashes = calloc(out->num_pieces, 32);
+    out->piece_hashes = zcl_calloc(out->num_pieces, 32, "piece_hashes");
     if (!out->piece_hashes) { sqlite3_close(db); LOG_FAIL("fast_sync", "block_piece_manifest_build: failed to allocate %u piece hashes", out->num_pieces); }
 
     /* Fetch all block hashes in range, compute piece hashes */
@@ -1141,7 +1142,7 @@ bool block_piece_manifest_build(const char *datadir,
     sqlite3_bind_int(s, 1, start_height);
     sqlite3_bind_int(s, 2, end_height);
 
-    uint8_t (*piece_block_hashes)[32] = calloc(BLOCKS_PER_PIECE, 32);
+    uint8_t (*piece_block_hashes)[32] = zcl_calloc(BLOCKS_PER_PIECE, 32, "piece_block_hashes");
     if (!piece_block_hashes) {
         sqlite3_finalize(s);
         sqlite3_close(db);
@@ -1200,16 +1201,16 @@ bool block_swarm_init(struct block_swarm *bs,
 
     /* Deep-copy manifest */
     bs->manifest = *manifest;
-    bs->manifest.piece_hashes = calloc(n, 32);
+    bs->manifest.piece_hashes = zcl_calloc(n, 32, "piece_hashes");
     if (!bs->manifest.piece_hashes) LOG_FAIL("fast_sync", "block_swarm_init: failed to allocate %u piece hashes", n);
     if (manifest->piece_hashes)
         memcpy(bs->manifest.piece_hashes, manifest->piece_hashes,
                (size_t)n * 32);
 
-    bs->piece_states = calloc(n, sizeof(enum chunk_state));
-    bs->piece_peer = calloc(n, sizeof(int));
-    bs->piece_request_time = calloc(n, sizeof(int64_t));
-    bs->piece_availability = calloc(n, sizeof(uint32_t));
+    bs->piece_states = zcl_calloc(n, sizeof(enum chunk_state), "piece_states");
+    bs->piece_peer = zcl_calloc(n, sizeof(int), "piece_peer");
+    bs->piece_request_time = zcl_calloc(n, sizeof(int64_t), "piece_req_time");
+    bs->piece_availability = zcl_calloc(n, sizeof(uint32_t), "piece_availability");
 
     if (!bs->piece_states || !bs->piece_peer ||
         !bs->piece_request_time || !bs->piece_availability) {

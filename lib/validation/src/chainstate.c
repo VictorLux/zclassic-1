@@ -8,6 +8,7 @@
 #include "util/log_macros.h"
 #include <stdlib.h>
 #include <string.h>
+#include "util/safe_alloc.h"
 
 /* --- Block Map (open-addressing hash table) --- */
 
@@ -99,7 +100,7 @@ bool block_map_reserve(struct block_map *m, size_t expected_count)
     struct block_map_entry *old = m->buckets;
     size_t old_cap = m->capacity;
 
-    m->buckets = calloc(cap, sizeof(struct block_map_entry));
+    m->buckets = zcl_calloc(cap, sizeof(struct block_map_entry), "block_map_buckets");
     if (!m->buckets) {
         m->buckets = old;
         pthread_rwlock_unlock(&m->rwlock);
@@ -126,7 +127,7 @@ static bool block_map_grow(struct block_map *m)
     struct block_map_entry *old = m->buckets;
     size_t old_cap = m->capacity;
 
-    m->buckets = calloc(new_cap, sizeof(struct block_map_entry));
+    m->buckets = zcl_calloc(new_cap, sizeof(struct block_map_entry), "block_map_buckets_grow");
     if (!m->buckets) {
         m->buckets = old;
         LOG_FAIL("chainstate", "block_map_grow: calloc failed for %zu entries", new_cap);
@@ -258,8 +259,8 @@ bool active_chain_set_tip(struct active_chain *c, struct block_index *bi)
     int new_height = bi->nHeight;
     if (new_height >= c->capacity) {
         int new_cap = new_height + 1024;
-        struct block_index **nc = realloc(c->chain,
-            (size_t)new_cap * sizeof(struct block_index *));
+        struct block_index **nc = zcl_realloc(c->chain,
+            (size_t)new_cap * sizeof(struct block_index *), "active_chain");
         if (!nc)
             LOG_FAIL("chainstate", "active_chain_set_tip: realloc failed for height %d", new_height);
         c->chain = nc;
@@ -316,7 +317,7 @@ struct block_index *chainstate_insert_block_index(struct chainstate *cs,
     struct block_index *existing = block_map_find(&cs->map_block_index, hash);
     if (existing) return existing;
 
-    struct block_index *bi = calloc(1, sizeof(struct block_index));
+    struct block_index *bi = zcl_calloc(1, sizeof(struct block_index), "block_index");
     if (!bi) return NULL;
     block_index_init(bi);
     block_map_insert(&cs->map_block_index, hash, bi);

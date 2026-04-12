@@ -7,6 +7,7 @@
 #include "bloom/merkleblock.h"
 #include <stdlib.h>
 #include <string.h>
+#include "util/safe_alloc.h"
 
 bool merkle_tree_serialize(const struct partial_merkle_tree *t,
                            struct byte_stream *s)
@@ -18,7 +19,7 @@ bool merkle_tree_serialize(const struct partial_merkle_tree *t,
         if (!stream_write_bytes(s, t->hashes[i].data, 32)) return false;
 
     size_t num_bytes = (t->num_bits + 7) / 8;
-    unsigned char *packed = calloc(num_bytes > 0 ? num_bytes : 1, 1);
+    unsigned char *packed = zcl_calloc(num_bytes > 0 ? num_bytes : 1, 1, "merkle_packed_bits");
     if (!packed) return false;
     for (size_t p = 0; p < t->num_bits; p++)
         packed[p / 8] |= (unsigned char)(t->bits[p] << (p % 8));
@@ -39,8 +40,8 @@ bool merkle_tree_deserialize(struct partial_merkle_tree *t,
     if (!stream_read_compact_size(s, &num_hashes)) return false;
     if (num_hashes > MAX_MERKLE_HASHES) return false;
     t->num_hashes = (size_t)num_hashes;
-    t->hashes = calloc(t->num_hashes > 0 ? t->num_hashes : 1,
-                       sizeof(struct uint256));
+    t->hashes = zcl_calloc(t->num_hashes > 0 ? t->num_hashes : 1,
+                           sizeof(struct uint256), "merkle_hashes");
     if (!t->hashes) return false;
     for (size_t i = 0; i < t->num_hashes; i++)
         if (!stream_read_bytes(s, t->hashes[i].data, 32)) return false;
@@ -48,12 +49,12 @@ bool merkle_tree_deserialize(struct partial_merkle_tree *t,
     uint64_t num_bytes;
     if (!stream_read_compact_size(s, &num_bytes)) return false;
     if (num_bytes > MAX_MERKLE_BITS / 8) return false;
-    unsigned char *packed = calloc((size_t)num_bytes > 0 ? (size_t)num_bytes : 1, 1);
+    unsigned char *packed = zcl_calloc((size_t)num_bytes > 0 ? (size_t)num_bytes : 1, 1, "merkle_packed_read");
     if (!packed) return false;
     if (!stream_read_bytes(s, packed, (size_t)num_bytes)) { free(packed); return false; }
 
     t->num_bits = (size_t)num_bytes * 8;
-    t->bits = calloc(t->num_bits > 0 ? t->num_bits : 1, 1);
+    t->bits = zcl_calloc(t->num_bits > 0 ? t->num_bits : 1, 1, "merkle_bits");
     if (!t->bits) { free(packed); return false; }
     for (size_t p = 0; p < t->num_bits; p++)
         t->bits[p] = (packed[p / 8] >> (p % 8)) & 1;

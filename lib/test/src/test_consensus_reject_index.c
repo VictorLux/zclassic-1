@@ -43,6 +43,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "util/safe_alloc.h"
 
 #define CRI_CHECK(name, expr) do {         \
     printf("%s... ", (name));              \
@@ -66,13 +67,13 @@ static struct transaction cri_valid_tx(void)
     memset(&tx, 0, sizeof(tx));
     tx.version = 1;
     tx.num_vin = 1;
-    tx.vin = calloc(1, sizeof(struct tx_in));
+    tx.vin = zcl_calloc(1, sizeof(struct tx_in), "test_vin");
     memset(tx.vin[0].prevout.hash.data, 0xAA, 32);
     tx.vin[0].sequence = 0xFFFFFFFF;
     uint8_t sig[] = {0x00, 0x00};
     script_set(&tx.vin[0].script_sig, sig, 2);
     tx.num_vout = 1;
-    tx.vout = calloc(1, sizeof(struct tx_out));
+    tx.vout = zcl_calloc(1, sizeof(struct tx_out), "test_vout");
     tx.vout[0].value = 50 * 100000000LL;
     uint8_t pk[] = {0x76, 0xa9, 0x14};
     script_set(&tx.vout[0].script_pub_key, pk, 3);

@@ -24,6 +24,7 @@
 #include "sapling/bn254.h"
 #include <string.h>
 #include <stdlib.h>
+#include "util/safe_alloc.h"
 
 /* ══════════════════════════════════════════════════════════════
  *  Fq: 254-bit prime field arithmetic (Montgomery form)
@@ -1906,7 +1907,7 @@ bool ppzksnark_vk_read(struct ppzksnark_vk *vk, const uint8_t *data, size_t len)
     if (!vk_read_text_int(&idx_count, data, len, &off)) return false;
     if (idx_count > 1000 || idx_count > domain_size) return false;
 
-    uint64_t *indices = calloc(idx_count, sizeof(uint64_t));
+    uint64_t *indices = zcl_calloc(idx_count, sizeof(uint64_t), "phgr_vk_indices");
     if (!indices && idx_count > 0) return false;
     for (uint64_t i = 0; i < idx_count; i++) {
         if (!vk_read_text_int(&indices[i], data, len, &off)) {
@@ -1923,7 +1924,7 @@ bool ppzksnark_vk_read(struct ppzksnark_vk *vk, const uint8_t *data, size_t len)
 
     /* Allocate IC: first + domain_size entries */
     uint32_t ic_len = (uint32_t)(domain_size + 1);
-    vk->ic = calloc(ic_len, sizeof(struct bn_g1));
+    vk->ic = zcl_calloc(ic_len, sizeof(struct bn_g1), "phgr_vk_ic");
     if (!vk->ic) { free(indices); return false; }
     vk->ic_len = ic_len;
     vk->ic[0] = first;

@@ -27,6 +27,7 @@
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
+#include "util/safe_alloc.h"
 
 #define RPC_HTTP_WORKERS 4
 #define RPC_HTTP_QUEUE_CAP 64
@@ -346,7 +347,7 @@ static void handle_client(struct rpc_conn conn)
         while (read_line(&conn, line, sizeof(line)))
             if (line[0] == '\0') break;
         size_t cap = 131072;
-        char *buf = malloc(cap); // raw-alloc-ok
+        char *buf = zcl_malloc(cap, "http_read_buf"); // raw-alloc-ok
         if (!buf) {
             const char *oom = "out of memory";
             send_response_with_type(&conn, 500, "Internal Server Error",
@@ -455,7 +456,7 @@ static void handle_client(struct rpc_conn conn)
         goto done;
     }
 
-    char *body = malloc(content_length + 1); // raw-alloc-ok
+    char *body = zcl_malloc(content_length + 1, "http_body"); // raw-alloc-ok
     if (!body) goto done;
 
     if (!read_exact(&conn, body, content_length)) {
@@ -529,7 +530,7 @@ static void handle_client(struct rpc_conn conn)
 
     json_push_kv(&response, "id", &req.id);
 
-    char *resp_buf = malloc(4 * 1024 * 1024); // raw-alloc-ok
+    char *resp_buf = zcl_malloc(4 * 1024 * 1024, "http_resp_buf"); // raw-alloc-ok
     if (resp_buf) {
         size_t resp_len = json_write(&response, resp_buf, 4 * 1024 * 1024);
         send_response(&conn, 200, "OK", resp_buf, resp_len);

@@ -8,6 +8,7 @@
 #include "core/hash.h"
 #include <stdlib.h>
 #include <string.h>
+#include "util/safe_alloc.h"
 
 void merkle_tree_init(struct partial_merkle_tree *t)
 {
@@ -119,10 +120,10 @@ bool merkle_tree_build(struct partial_merkle_tree *t,
 
     struct build_state s;
     s.bits_cap = MAX_MERKLE_BITS;
-    s.bits = calloc(s.bits_cap, 1);
+    s.bits = zcl_calloc(s.bits_cap, 1, "merkle_build_bits");
     s.num_bits = 0;
     s.hashes_cap = num_txids;
-    s.hashes = calloc(s.hashes_cap, sizeof(struct uint256));
+    s.hashes = zcl_calloc(s.hashes_cap, sizeof(struct uint256), "merkle_build_hashes");
     s.num_hashes = 0;
 
     if (!s.bits || !s.hashes) {
@@ -235,7 +236,7 @@ struct uint256 compute_merkle_root_mutated(const struct uint256 *txids,
     if (count == 1) return txids[0];
 
     size_t level_size = count;
-    struct uint256 *level = malloc(level_size * sizeof(struct uint256));
+    struct uint256 *level = zcl_malloc(level_size * sizeof(struct uint256), "merkle_level");
     if (!level) return zero;
     memcpy(level, txids, count * sizeof(struct uint256));
 

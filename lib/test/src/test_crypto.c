@@ -3,6 +3,7 @@
  * BLAKE2b, Hash256, Hash160. */
 
 #include "test/test_helpers.h"
+#include "util/safe_alloc.h"
 
 int test_crypto(void)
 {
@@ -76,7 +77,7 @@ int test_crypto(void)
     /* Stress test: SHA-256 1MB of data — verify both paths agree */
     printf("SHA-256 1MB stress test... ");
     {
-        unsigned char *big = malloc(1024 * 1024);
+        unsigned char *big = zcl_malloc(1024 * 1024, "test_hash_buf");
         for (int i = 0; i < 1024 * 1024; i++)
             big[i] = (unsigned char)(i * 137 + 73);
 

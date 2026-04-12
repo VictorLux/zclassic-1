@@ -4,6 +4,7 @@
 #include "wallet/keystore.h"
 #include "wallet/sapling_keys.h"
 #include "wallet/wallet.h"
+#include "util/safe_alloc.h"
 
 /* basic_keystore is ~40MB (4096 script entries * 10KB each).
  * Must be heap-allocated to avoid stack overflow. */
@@ -14,7 +15,7 @@ int test_wallet(void)
 
     printf("keystore_init zeroes state... ");
     {
-        struct basic_keystore *ks = calloc(1, sizeof(struct basic_keystore));
+        struct basic_keystore *ks = zcl_calloc(1, sizeof(struct basic_keystore), "test_keystore");
         if (!ks) { printf("FAIL (alloc)\n"); failures++; goto skip_ks; }
         keystore_init(ks);
         if (ks->num_keys == 0 && ks->num_scripts == 0 && ks->num_watching == 0)
@@ -30,7 +31,7 @@ skip_ks:
 
     printf("keystore_add_key + keystore_have_key... ");
     {
-        struct basic_keystore *ks = calloc(1, sizeof(struct basic_keystore));
+        struct basic_keystore *ks = zcl_calloc(1, sizeof(struct basic_keystore), "test_keystore");
         if (!ks) { printf("FAIL (alloc)\n"); failures++; goto skip_add; }
         keystore_init(ks);
 
@@ -57,7 +58,7 @@ skip_add:
 
     printf("keystore_have_key returns false for unknown key... ");
     {
-        struct basic_keystore *ks = calloc(1, sizeof(struct basic_keystore));
+        struct basic_keystore *ks = zcl_calloc(1, sizeof(struct basic_keystore), "test_keystore");
         if (!ks) { printf("FAIL (alloc)\n"); failures++; goto skip_unknown; }
         keystore_init(ks);
 
@@ -77,7 +78,7 @@ skip_unknown:
 
     printf("keystore_get_key retrieves added key... ");
     {
-        struct basic_keystore *ks = calloc(1, sizeof(struct basic_keystore));
+        struct basic_keystore *ks = zcl_calloc(1, sizeof(struct basic_keystore), "test_keystore");
         if (!ks) { printf("FAIL (alloc)\n"); failures++; goto skip_get; }
         keystore_init(ks);
 
@@ -104,7 +105,7 @@ skip_get:
 
     printf("keystore_get_pubkey retrieves pubkey... ");
     {
-        struct basic_keystore *ks = calloc(1, sizeof(struct basic_keystore));
+        struct basic_keystore *ks = zcl_calloc(1, sizeof(struct basic_keystore), "test_keystore");
         if (!ks) { printf("FAIL (alloc)\n"); failures++; goto skip_pubkey; }
         keystore_init(ks);
 
@@ -132,7 +133,7 @@ skip_pubkey:
 
     printf("wallet_is_mine false for unknown script... ");
     {
-        struct wallet *w = calloc(1, sizeof(struct wallet));
+        struct wallet *w = zcl_calloc(1, sizeof(struct wallet), "test_wallet");
         if (!w) { printf("FAIL (alloc)\n"); failures++; goto skip_mine1; }
         wallet_init(w);
 
@@ -156,7 +157,7 @@ skip_mine1:
 
     printf("wallet_is_mine true for own P2PKH output... ");
     {
-        struct wallet *w = calloc(1, sizeof(struct wallet));
+        struct wallet *w = zcl_calloc(1, sizeof(struct wallet), "test_wallet");
         if (!w) { printf("FAIL (alloc)\n"); failures++; goto skip_mine2; }
         wallet_init(w);
 
@@ -191,7 +192,7 @@ skip_mine2:
 
     printf("wallet_get_balance empty wallet returns 0... ");
     {
-        struct wallet *w = calloc(1, sizeof(struct wallet));
+        struct wallet *w = zcl_calloc(1, sizeof(struct wallet), "test_wallet");
         if (!w) { printf("FAIL (alloc)\n"); failures++; goto skip_bal; }
         wallet_init(w);
 
@@ -209,7 +210,7 @@ skip_bal:
 
     printf("wallet_get_unconfirmed_balance empty wallet returns 0... ");
     {
-        struct wallet *w = calloc(1, sizeof(struct wallet));
+        struct wallet *w = zcl_calloc(1, sizeof(struct wallet), "test_wallet");
         if (!w) { printf("FAIL (alloc)\n"); failures++; goto skip_ubal; }
         wallet_init(w);
 

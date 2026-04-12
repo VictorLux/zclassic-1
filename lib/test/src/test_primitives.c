@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "test/test_helpers.h"
+#include "util/safe_alloc.h"
 
 int test_primitives(void)
 {
@@ -78,7 +79,7 @@ int test_primitives(void)
         /* Simulate the deserializer overwrite: previously this step
          * leaked the prior 1-byte stub at a.vout. With the fix it's
          * a NULL→new assignment, which is allocation-neutral. */
-        a.vout = calloc(2, sizeof(struct tx_out));
+        a.vout = zcl_calloc(2, sizeof(struct tx_out), "test_vout");
         a.num_vout = 2;
 
         if (clean_a && clean_b && clean_c && a.vout != NULL)
@@ -350,7 +351,7 @@ int test_primitives(void)
         struct block_locator loc;
         block_locator_init(&loc);
         loc.num_hashes = 3;
-        loc.vhave = calloc(3, sizeof(struct uint256));
+        loc.vhave = zcl_calloc(3, sizeof(struct uint256), "test_locator_hashes");
         memset(loc.vhave[0].data, 0x11, 32);
         memset(loc.vhave[1].data, 0x22, 32);
         memset(loc.vhave[2].data, 0x33, 32);

@@ -15,6 +15,7 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <pthread.h>
+#include "util/safe_alloc.h"
 
 void get_block_pos_filename(char *buf, size_t buflen,
                             const char *datadir,
@@ -286,7 +287,7 @@ bool read_block_from_disk(struct block *b, const struct disk_block_pos *pos,
     if (bufsize == 0)
         bufsize = 2000000;
 
-    unsigned char *buf = malloc(bufsize);
+    unsigned char *buf = zcl_malloc(bufsize, "read_block_buf");
     if (!buf) {
         fprintf(stderr, "read_block_from_disk: malloc(%zu) failed\n", bufsize);
         if (file != g_cached_file) fclose(file);
@@ -429,7 +430,7 @@ bool read_block_from_disk_pread(struct block *b,
     if (bufsize == 0)
         bufsize = 2000000;
 
-    unsigned char *buf = malloc(bufsize);
+    unsigned char *buf = zcl_malloc(bufsize, "read_block_pread_buf");
     if (!buf) {
         close(fd);
         LOG_FAIL("disk_block_io", "read_block_pread: malloc(%zu) failed", bufsize);

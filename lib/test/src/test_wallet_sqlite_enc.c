@@ -24,6 +24,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "util/safe_alloc.h"
 
 /* ── Helpers ─────────────────────────────────────────────────── */
 
@@ -80,7 +81,7 @@ static void make_test_key(struct privkey *key, struct pubkey *pk, uint8_t seed)
 /* Allocate a wallet for reading keys back. */
 static struct wallet *alloc_wallet(void)
 {
-    struct wallet *w = calloc(1, sizeof(struct wallet));
+    struct wallet *w = zcl_calloc(1, sizeof(struct wallet), "test_wallet");
     if (w) {
         keystore_init(&w->keystore);
         sapling_keystore_init(&w->sapling_keys);

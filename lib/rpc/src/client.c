@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "util/safe_alloc.h"
 
 struct convert_param {
     const char *method;
@@ -144,7 +145,7 @@ bool rpc_convert_values(const char *method, const char **str_params,
         } else {
             struct json_value parsed;
             size_t len = strlen(str_params[i]);
-            char *wrapped = malloc(len + 3);
+            char *wrapped = zcl_malloc(len + 3, "rpc_wrapped_param");
             if (!wrapped) return false;
             wrapped[0] = '[';
             memcpy(wrapped + 1, str_params[i], len);

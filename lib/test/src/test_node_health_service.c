@@ -8,6 +8,7 @@
 #include "net/connman.h"
 #include "net/net.h"
 #include "validation/main_state.h"
+#include "util/safe_alloc.h"
 
 int test_node_health_service(void)
 {
@@ -93,7 +94,7 @@ int test_node_health_service(void)
         bool ok = active_chain_set_tip(&ms.chain_active, &tip);
         ms.pindex_best_header = &header;
 
-        cm.manager.nodes = calloc(1, sizeof(*cm.manager.nodes));
+        cm.manager.nodes = zcl_calloc(1, sizeof(*cm.manager.nodes), "test_nodes");
         ok = ok && (cm.manager.nodes != NULL);
         node = p2p_node_create(&cm.manager, ZCL_INVALID_SOCKET, &addr,
                                "test-peer", false);
@@ -140,7 +141,7 @@ int test_node_health_service(void)
         memset(&cm, 0, sizeof(cm));
         memset(&addr, 0, sizeof(addr));
         net_manager_init(&cm.manager);
-        cm.manager.nodes = calloc(1, sizeof(*cm.manager.nodes));
+        cm.manager.nodes = zcl_calloc(1, sizeof(*cm.manager.nodes), "test_nodes");
         ok = ok && (cm.manager.nodes != NULL);
         if (ok) {
             node = p2p_node_create(&cm.manager, ZCL_INVALID_SOCKET, &addr,

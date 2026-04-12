@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+#include "util/safe_alloc.h"
 
 /* ── Stub handlers ──────────────────────────────────────────── */
 
@@ -22,7 +23,7 @@ static int g_echo_calls = 0;
 static int h_echo(const struct mcp_request *req, struct mcp_response *res)
 {
     g_echo_calls++;
-    char *buf = malloc(2048);
+    char *buf = zcl_malloc(2048, "mcp_echo_buf");
     if (!buf) return -1;
     snprintf(buf, 2048, "{\"tool\":\"%s\",\"args_present\":%s}",
              req->tool, req->args ? "true" : "false");

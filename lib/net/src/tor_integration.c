@@ -14,6 +14,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include "util/log_macros.h"
+#include "util/safe_alloc.h"
 
 static pthread_t g_tor_thread;
 static pthread_t g_monitor_thread;
@@ -341,7 +342,7 @@ static void blocking_fetch_cb(int status, const uint8_t *body,
     struct onion_fetch_result *r = (struct onion_fetch_result *)ctx;
     r->status = status;
     if (body && body_len > 0) {
-        r->body = malloc(body_len + 1);
+        r->body = zcl_malloc(body_len + 1, "onion_fetch_body");
         if (r->body) {
             memcpy(r->body, body, body_len);
             r->body[body_len] = '\0';

@@ -11,6 +11,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <time.h>
+#include "util/safe_alloc.h"
 
 /* ── Merkle tree tests ─────────────────────────────────────── */
 
@@ -155,7 +156,7 @@ static int test_chunk_hash_deterministic(void)
 {
     int failures = 0;
     TEST("fast_sync_chunk_hash deterministic") {
-        struct utxo_chunk *chunk = calloc(1, sizeof(struct utxo_chunk));
+        struct utxo_chunk *chunk = zcl_calloc(1, sizeof(struct utxo_chunk), "test_chunk");
         ASSERT(chunk != NULL);
         chunk->chunk_index = 0;
         chunk->num_entries = 2;
@@ -189,7 +190,7 @@ static int test_chunk_verify(void)
 {
     int failures = 0;
     TEST("fast_sync_verify_chunk correct/incorrect") {
-        struct utxo_chunk *chunk = calloc(1, sizeof(struct utxo_chunk));
+        struct utxo_chunk *chunk = zcl_calloc(1, sizeof(struct utxo_chunk), "test_chunk");
         ASSERT(chunk != NULL);
         chunk->chunk_index = 5;
         chunk->num_entries = 1;
@@ -287,7 +288,7 @@ static int test_snapshot_cache_publish_reset(void)
 {
     int failures = 0;
     TEST("fast_sync snapshot cache publish/get/reset") {
-        uint8_t *buf = malloc(8);
+        uint8_t *buf = zcl_malloc(8, "test_snapshot_buf");
         uint8_t sha3[32];
         uint8_t out[32];
         uint64_t count = 0;
@@ -329,9 +330,9 @@ static int test_snapshot_cache_versioning(void)
         memset(sha1, 0x5a, sizeof(sha1));
         memset(sha2, 0x5b, sizeof(sha2));
 
-        uint8_t *buf1 = malloc(8);
-        uint8_t *buf2 = malloc(9);
-        uint8_t *invalid = malloc(1);
+        uint8_t *buf1 = zcl_malloc(8, "test_snapshot_buf");
+        uint8_t *buf2 = zcl_malloc(9, "test_snapshot_buf");
+        uint8_t *invalid = zcl_malloc(1, "test_snapshot_buf");
         ASSERT(buf1 != NULL);
         ASSERT(buf2 != NULL);
         ASSERT(invalid != NULL);
@@ -437,7 +438,7 @@ static int test_swarm_init_assign(void)
         memset(&manifest, 0, sizeof(manifest));
         manifest.num_chunks = 10;
         manifest.chunk_size = 500;
-        manifest.chunk_hashes = calloc(10, 32);
+        manifest.chunk_hashes = zcl_calloc(10, 32, "test_chunk_hashes");
         ASSERT(manifest.chunk_hashes != NULL);
 
         struct swarm_sync ss;
@@ -469,7 +470,7 @@ static int test_swarm_timeout_reassign(void)
         memset(&manifest, 0, sizeof(manifest));
         manifest.num_chunks = 5;
         manifest.chunk_size = 500;
-        manifest.chunk_hashes = calloc(5, 32);
+        manifest.chunk_hashes = zcl_calloc(5, 32, "test_chunk_hashes");
         ASSERT(manifest.chunk_hashes != NULL);
 
         struct swarm_sync ss;
@@ -511,7 +512,7 @@ static int test_block_swarm_rarest_first(void)
         manifest.start_height = 0;
         manifest.end_height = 511; /* 4 pieces of 128 blocks */
         manifest.num_pieces = 4;
-        manifest.piece_hashes = calloc(4, 32);
+        manifest.piece_hashes = zcl_calloc(4, 32, "test_piece_hashes");
         ASSERT(manifest.piece_hashes != NULL);
 
         struct block_swarm bs;
@@ -547,7 +548,7 @@ static int test_block_swarm_endgame(void)
         manifest.start_height = 0;
         manifest.end_height = 1279; /* 10 pieces */
         manifest.num_pieces = 10;
-        manifest.piece_hashes = calloc(10, 32);
+        manifest.piece_hashes = zcl_calloc(10, 32, "test_piece_hashes");
         ASSERT(manifest.piece_hashes != NULL);
 
         struct block_swarm bs;
@@ -580,7 +581,7 @@ static int test_block_swarm_bitmap(void)
         struct block_piece_manifest manifest;
         memset(&manifest, 0, sizeof(manifest));
         manifest.num_pieces = 16;
-        manifest.piece_hashes = calloc(16, 32);
+        manifest.piece_hashes = zcl_calloc(16, 32, "test_piece_hashes");
         ASSERT(manifest.piece_hashes != NULL);
 
         struct block_swarm bs;
@@ -848,7 +849,7 @@ static int test_chunk_to_merkle_pipeline(void)
         struct utxo_chunk *chunks[4];
         uint8_t chunk_hashes[4][32];
         for (int i = 0; i < 4; i++) {
-            chunks[i] = calloc(1, sizeof(struct utxo_chunk));
+            chunks[i] = zcl_calloc(1, sizeof(struct utxo_chunk), "test_chunk");
             ASSERT(chunks[i] != NULL);
             chunks[i]->chunk_index = (uint32_t)i;
             chunks[i]->num_entries = 1;
@@ -894,7 +895,7 @@ static int test_block_swarm_lifecycle(void)
         manifest.start_height = 0;
         manifest.end_height = 639; /* 5 pieces */
         manifest.num_pieces = 5;
-        manifest.piece_hashes = calloc(5, 32);
+        manifest.piece_hashes = zcl_calloc(5, 32, "test_piece_hashes");
         ASSERT(manifest.piece_hashes != NULL);
 
         struct block_swarm bs;
@@ -937,7 +938,7 @@ static int test_block_swarm_fail_retry(void)
         struct block_piece_manifest manifest;
         memset(&manifest, 0, sizeof(manifest));
         manifest.num_pieces = 3;
-        manifest.piece_hashes = calloc(3, 32);
+        manifest.piece_hashes = zcl_calloc(3, 32, "test_piece_hashes");
         ASSERT(manifest.piece_hashes != NULL);
 
         struct block_swarm bs;
@@ -968,7 +969,7 @@ static int test_merkle_proof_large(void)
 {
     int failures = 0;
     TEST("merkle proof with 1000 leaves") {
-        uint8_t (*hashes)[32] = calloc(1000, 32);
+        uint8_t (*hashes)[32] = zcl_calloc(1000, 32, "test_hashes");
         ASSERT(hashes != NULL);
 
         for (int i = 0; i < 1000; i++) {

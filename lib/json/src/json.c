@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <math.h>
 #include <inttypes.h>
+#include "util/safe_alloc.h"
 
 void json_init(struct json_value *v)
 {
@@ -84,11 +85,11 @@ static bool json_grow(struct json_value *v)
 {
     if (v->num_children >= v->children_cap) {
         size_t newcap = v->children_cap == 0 ? 8 : v->children_cap * 2;
-        struct json_value *nc = realloc(v->children,
-                                        newcap * sizeof(*nc));
+        struct json_value *nc = zcl_realloc(v->children,
+                                        newcap * sizeof(*nc), "json_children");
         if (!nc) return false;
         v->children = nc;
-        char **nk = realloc(v->keys, newcap * sizeof(*nk));
+        char **nk = zcl_realloc(v->keys, newcap * sizeof(*nk), "json_keys");
         if (!nk) return false;
         v->keys = nk;
         v->children_cap = newcap;
@@ -109,8 +110,8 @@ void json_copy(struct json_value *dst, const struct json_value *src)
     }
     if (src->num_children > 0) {
         dst->children_cap = src->num_children;
-        dst->children = malloc(dst->children_cap * sizeof(*dst->children));
-        dst->keys = malloc(dst->children_cap * sizeof(*dst->keys));
+        dst->children = zcl_malloc(dst->children_cap * sizeof(*dst->children), "json_copy_children");
+        dst->keys = zcl_malloc(dst->children_cap * sizeof(*dst->keys), "json_copy_keys");
         dst->num_children = src->num_children;
         for (size_t i = 0; i < src->num_children; i++) {
             json_copy(&dst->children[i], &src->children[i]);
@@ -357,7 +358,7 @@ static bool parse_string(char **out, const char **pp, const char *end)
     if (p >= end || *p != '"') return false;
     p++;
     size_t cap = 64, len = 0;
-    char *s = malloc(cap);
+    char *s = zcl_malloc(cap, "json_string");
     while (p < end && *p != '"') {
         if (*p == '\\') {
             p++;
@@ -380,7 +381,7 @@ static bool parse_string(char **out, const char **pp, const char *end)
             }
             if (len >= cap - 1) {
                 cap *= 2;
-                char *ns = realloc(s, cap);
+                char *ns = zcl_realloc(s, cap, "json_string");
                 if (!ns) { free(s); return false; }
                 s = ns;
             }
@@ -388,7 +389,7 @@ static bool parse_string(char **out, const char **pp, const char *end)
         } else {
             if (len >= cap - 1) {
                 cap *= 2;
-                char *ns = realloc(s, cap);
+                char *ns = zcl_realloc(s, cap, "json_string");
                 if (!ns) { free(s); return false; }
                 s = ns;
             }

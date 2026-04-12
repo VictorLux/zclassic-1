@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "util/safe_alloc.h"
 
 #define ZCL_COIN   100000000LL  /* 1 ZCL = 1e8 zatoshi */
 #define ZCL_DUST   546LL        /* dust threshold */
@@ -24,12 +25,12 @@
  * Allocated on heap — caller must free each wtx. */
 static struct wallet_tx *make_wtx(int64_t value, int confirms)
 {
-    struct wallet_tx *wtx = calloc(1, sizeof(*wtx));
+    struct wallet_tx *wtx = zcl_calloc(1, sizeof(*wtx), "test_wtx");
     if (!wtx) return NULL;
     wtx->used = true;
     wtx->confirms = confirms;
     wtx->tx.num_vout = 1;
-    wtx->tx.vout = calloc(1, sizeof(struct tx_out));
+    wtx->tx.vout = zcl_calloc(1, sizeof(struct tx_out), "test_vout");
     if (!wtx->tx.vout) { free(wtx); return NULL; }
     wtx->tx.vout[0].value = value;
     return wtx;
@@ -49,8 +50,8 @@ static size_t make_utxo_set(const int64_t *values, size_t n,
                               struct coin_entry **coins_out,
                               struct wallet_tx ***wtxs_out)
 {
-    struct coin_entry *coins = calloc(n, sizeof(struct coin_entry));
-    struct wallet_tx **wtxs = calloc(n, sizeof(struct wallet_tx *));
+    struct coin_entry *coins = zcl_calloc(n, sizeof(struct coin_entry), "test_coins");
+    struct wallet_tx **wtxs = zcl_calloc(n, sizeof(struct wallet_tx *), "test_wtxs");
     for (size_t i = 0; i < n; i++) {
         wtxs[i] = make_wtx(values[i], 6);
         coins[i].wtx = wtxs[i];

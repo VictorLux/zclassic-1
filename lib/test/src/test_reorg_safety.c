@@ -50,6 +50,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdatomic.h>
+#include "util/safe_alloc.h"
 
 #define CHAIN_LEN    50   /* blocks per chain (after genesis) */
 #define FORK_HEIGHT  1    /* height where chain B diverges */
@@ -69,7 +70,7 @@ static struct transaction make_coinbase_seeded(int height, uint8_t seed)
     memset(&tx, 0, sizeof(tx));
     tx.version = 1;
     tx.num_vin = 1;
-    tx.vin = calloc(1, sizeof(struct tx_in));
+    tx.vin = zcl_calloc(1, sizeof(struct tx_in), "coinbase_vin");
 
     uint8_t sig[6];
     sig[0] = 4;
@@ -85,7 +86,7 @@ static struct transaction make_coinbase_seeded(int height, uint8_t seed)
     tx.vin[0].sequence = 0xFFFFFFFF;
 
     tx.num_vout = 1;
-    tx.vout = calloc(1, sizeof(struct tx_out));
+    tx.vout = zcl_calloc(1, sizeof(struct tx_out), "coinbase_vout");
     tx.vout[0].value = 1000000000LL;
     uint8_t pk[] = {0x76, 0xa9, 0x14};
     script_set(&tx.vout[0].script_pub_key, pk, 3);
@@ -106,7 +107,7 @@ static void make_block_seeded(struct block *blk, int height,
 {
     memset(blk, 0, sizeof(*blk));
     blk->num_vtx = 1;
-    blk->vtx = calloc(1, sizeof(struct transaction));
+    blk->vtx = zcl_calloc(1, sizeof(struct transaction), "block_vtx");
     blk->vtx[0] = make_coinbase_seeded(height, seed);
     blk->header.nVersion = 4;
     if (prev_hash)
@@ -508,14 +509,14 @@ int test_reorg_safety(void)
         memset(&spend, 0, sizeof(spend));
         spend.version = 1;
         spend.num_vin = 1;
-        spend.vin = calloc(1, sizeof(struct tx_in));
+        spend.vin = zcl_calloc(1, sizeof(struct tx_in), "spend_vin");
         spend.vin[0].prevout.hash = a_blocks[0].vtx[0].hash;
         spend.vin[0].prevout.n = 0;
         uint8_t sig[] = {0x48};
         script_set(&spend.vin[0].script_sig, sig, 1);
         spend.vin[0].sequence = 0xFFFFFFFF;
         spend.num_vout = 1;
-        spend.vout = calloc(1, sizeof(struct tx_out));
+        spend.vout = zcl_calloc(1, sizeof(struct tx_out), "spend_vout");
         spend.vout[0].value = 999999000LL;
         uint8_t pk[] = {0x76, 0xa9, 0x14};
         script_set(&spend.vout[0].script_pub_key, pk, 3);
@@ -530,7 +531,7 @@ int test_reorg_safety(void)
         struct block sblk;
         memset(&sblk, 0, sizeof(sblk));
         sblk.num_vtx = 2;
-        sblk.vtx = calloc(2, sizeof(struct transaction));
+        sblk.vtx = zcl_calloc(2, sizeof(struct transaction), "spend_block_vtx");
         sblk.vtx[0] = cb1;
         sblk.vtx[1] = spend;
 

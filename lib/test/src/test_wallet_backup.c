@@ -31,6 +31,7 @@
 #include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
+#include "util/safe_alloc.h"
 
 /* ── Event observer ────────────────────────────────────────── */
 
@@ -518,7 +519,7 @@ static bool wb_read_blob(const char *path, uint8_t **out, size_t *outlen)
     long sz = ftell(f);
     rewind(f);
     if (sz < 0) { fclose(f); return false; }
-    uint8_t *buf = malloc((size_t)sz);
+    uint8_t *buf = zcl_malloc((size_t)sz, "test_read_blob");
     if (!buf && sz > 0) { fclose(f); return false; }
     if (sz > 0 && fread(buf, 1, (size_t)sz, f) != (size_t)sz) {
         free(buf); fclose(f); return false;
@@ -547,7 +548,7 @@ static int t_encrypt_roundtrip(void)
     /* Deterministic plaintext large enough to span many ChaCha20
      * blocks (and far larger than the old 2KB stack limit). */
     size_t plain_len = 32 * 1024;
-    uint8_t *plain = malloc(plain_len);
+    uint8_t *plain = zcl_malloc(plain_len, "test_enc_plain");
     for (size_t i = 0; i < plain_len; i++)
         plain[i] = (uint8_t)((i * 37 + 11) & 0xff);
 

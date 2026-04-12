@@ -41,6 +41,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "util/safe_alloc.h"
 
 #define CR_CHECK(name, expr) do {          \
     printf("%s... ", (name));              \
@@ -57,7 +58,7 @@ static struct transaction make_coinbase(int height)
     memset(&tx, 0, sizeof(tx));
     tx.version = 1;
     tx.num_vin = 1;
-    tx.vin = calloc(1, sizeof(struct tx_in));
+    tx.vin = zcl_calloc(1, sizeof(struct tx_in), "test_vin");
     /* coinbase scriptSig: height-encoding (BIP34 style) */
     uint8_t sig[5];
     sig[0] = 4; /* push 4 bytes */
@@ -71,7 +72,7 @@ static struct transaction make_coinbase(int height)
     tx.vin[0].prevout.n = 0xFFFFFFFF;
     tx.vin[0].sequence = 0xFFFFFFFF;
     tx.num_vout = 1;
-    tx.vout = calloc(1, sizeof(struct tx_out));
+    tx.vout = zcl_calloc(1, sizeof(struct tx_out), "test_vout");
     tx.vout[0].value = 1000000000LL; /* 10 ZCL */
     uint8_t pk[] = {0x76, 0xa9, 0x14}; /* minimal P2PKH prefix */
     script_set(&tx.vout[0].script_pub_key, pk, 3);
@@ -91,7 +92,7 @@ static void make_block(struct block *blk, int height,
 {
     memset(blk, 0, sizeof(*blk));
     blk->num_vtx = 1;
-    blk->vtx = calloc(1, sizeof(struct transaction));
+    blk->vtx = zcl_calloc(1, sizeof(struct transaction), "test_vtx");
     blk->vtx[0] = make_coinbase(height);
     blk->header.nVersion = 4;
     if (prev_hash)
@@ -251,14 +252,14 @@ int test_chain_rollback(void)
         memset(&spend_tx, 0, sizeof(spend_tx));
         spend_tx.version = 1;
         spend_tx.num_vin = 1;
-        spend_tx.vin = calloc(1, sizeof(struct tx_in));
+        spend_tx.vin = zcl_calloc(1, sizeof(struct tx_in), "test_vin");
         spend_tx.vin[0].prevout.hash = blocks[0].vtx[0].hash;
         spend_tx.vin[0].prevout.n = 0;
         uint8_t sig[] = {0x48};
         script_set(&spend_tx.vin[0].script_sig, sig, 1);
         spend_tx.vin[0].sequence = 0xFFFFFFFF;
         spend_tx.num_vout = 1;
-        spend_tx.vout = calloc(1, sizeof(struct tx_out));
+        spend_tx.vout = zcl_calloc(1, sizeof(struct tx_out), "test_vout");
         spend_tx.vout[0].value = 999999000LL;
         uint8_t pk[] = {0x76, 0xa9, 0x14};
         script_set(&spend_tx.vout[0].script_pub_key, pk, 3);
@@ -283,7 +284,7 @@ int test_chain_rollback(void)
         spend_blk.num_vtx = 2; /* coinbase + spend */
 
         struct transaction coinbase1 = make_coinbase(1);
-        spend_blk.vtx = calloc(2, sizeof(struct transaction));
+        spend_blk.vtx = zcl_calloc(2, sizeof(struct transaction), "test_vtx");
         spend_blk.vtx[0] = coinbase1;
         spend_blk.vtx[1] = spend_tx;
 

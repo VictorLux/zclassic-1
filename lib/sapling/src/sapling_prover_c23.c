@@ -17,6 +17,7 @@
 #include <sys/mman.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include "util/safe_alloc.h"
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wpedantic"
@@ -65,7 +66,7 @@ static bool ensure_output_pk(void)
 void *zclassic_sapling_verification_ctx_init(void)
 {
     struct sapling_verification_ctx *ctx =
-        calloc(1, sizeof(struct sapling_verification_ctx));
+        zcl_calloc(1, sizeof(struct sapling_verification_ctx), "sapling_verify_ctx");
     if (ctx) sapling_verification_ctx_init(ctx);
     return ctx;
 }
@@ -109,7 +110,7 @@ struct zclassic_proving_ctx {
 
 void *zclassic_sapling_proving_ctx_init(void)
 {
-    return calloc(1, sizeof(struct zclassic_proving_ctx));
+    return zcl_calloc(1, sizeof(struct zclassic_proving_ctx), "sapling_proving_ctx");
 }
 
 void zclassic_sapling_proving_ctx_free(void *ctx) { free(ctx); }

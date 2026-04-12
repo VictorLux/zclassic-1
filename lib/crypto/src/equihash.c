@@ -10,6 +10,7 @@
 #include <assert.h>
 #include <string.h>
 #include <stdlib.h>
+#include "util/safe_alloc.h"
 
 void equihash_params_init(struct equihash_params *p,
                           unsigned int N, unsigned int K)
@@ -161,7 +162,7 @@ size_t eh_get_indices_from_minimal(const unsigned char *minimal,
                          (collision_bit_len + 1);
     size_t byte_pad = sizeof(eh_index) - ((collision_bit_len + 1) + 7) / 8;
 
-    unsigned char *array = malloc(len_indices);
+    unsigned char *array = zcl_malloc(len_indices, "eh_expand_indices");
     if (!array) return 0;
     eh_expand_array(minimal, minimal_len,
                     array, len_indices,
@@ -190,7 +191,7 @@ size_t eh_get_minimal_from_indices(const eh_index *indices,
 
     if (min_len > max_len) return 0;
 
-    unsigned char *array = malloc(len_indices);
+    unsigned char *array = zcl_malloc(len_indices, "eh_compress_indices");
     if (!array) return 0;
     for (size_t i = 0; i < num_indices; i++)
         eh_index_to_array(indices[i], array + i * sizeof(eh_index));
@@ -216,7 +217,7 @@ static void eh_row_from_hash(struct eh_row *row,
                               eh_index idx,
                               size_t width)
 {
-    row->data = calloc(1, width);
+    row->data = zcl_calloc(1, width, "eh_row_data");
     if (!row->data) return;
     eh_expand_array(hash_in, h_in_len, row->data, h_len,
                     collision_bit_len, 0);
@@ -271,7 +272,7 @@ static void eh_row_xor_merge(struct eh_row *out,
                                size_t collision_byte_len,
                                size_t width)
 {
-    out->data = calloc(1, width);
+    out->data = zcl_calloc(1, width, "eh_row_xor");
     if (!out->data) return;
 
     size_t trim = collision_byte_len;
@@ -299,7 +300,7 @@ bool equihash_is_valid_solution(const struct equihash_params *p,
         return false;
 
     size_t num_indices = (size_t)1 << p->K;
-    eh_index *indices = malloc(num_indices * sizeof(eh_index));
+    eh_index *indices = zcl_malloc(num_indices * sizeof(eh_index), "equihash_indices");
     if (!indices) return false;
 
     size_t got = eh_get_indices_from_minimal(soln, soln_len,
@@ -311,10 +312,10 @@ bool equihash_is_valid_solution(const struct equihash_params *p,
     }
 
     size_t width = p->final_full_width;
-    struct eh_row *X = malloc(num_indices * sizeof(struct eh_row));
+    struct eh_row *X = zcl_malloc(num_indices * sizeof(struct eh_row), "equihash_rows");
     if (!X) { free(indices); return false; }
 
-    unsigned char *tmp_hash = malloc(p->hash_output * 8);
+    unsigned char *tmp_hash = zcl_malloc(p->hash_output * 8, "equihash_tmp_hash");
     if (!tmp_hash) { free(indices); free(X); return false; }
     unsigned char *th0 = tmp_hash;
     unsigned char *th1 = tmp_hash + p->hash_output;
@@ -389,7 +390,7 @@ bool equihash_is_valid_solution(const struct equihash_params *p,
     size_t count = num_indices;
 
     while (count > 1) {
-        struct eh_row *Xc = malloc((count / 2) * sizeof(struct eh_row));
+        struct eh_row *Xc = zcl_malloc((count / 2) * sizeof(struct eh_row), "equihash_collision_rows");
         if (!Xc) {
             for (size_t i = 0; i < count; i++) free(X[i].data);
             free(X);

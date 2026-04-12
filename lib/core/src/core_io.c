@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include "util/safe_alloc.h"
 
 static bool script_push_num(struct script *s, int64_t n)
 {
@@ -303,7 +304,7 @@ bool decode_hex_tx(struct transaction *tx, const char *hex_str)
     if (!IsHex(hex_str)) return false;
     size_t hex_len = strlen(hex_str);
     size_t byte_len = hex_len / 2;
-    unsigned char *raw = malloc(byte_len);
+    unsigned char *raw = zcl_malloc(byte_len, "decode_hex_tx");
     if (!raw) return false;
     ParseHex(hex_str, raw, byte_len);
 
@@ -501,7 +502,7 @@ void tx_to_json(const struct transaction *tx,
         json_push_kv_str(entry, "blockhash", bh);
     }
 
-    char *hex_buf = malloc(transaction_serialize_size(tx) * 2 + 1);
+    char *hex_buf = zcl_malloc(transaction_serialize_size(tx) * 2 + 1, "tx_hex_buf");
     if (hex_buf) {
         encode_hex_tx(tx, hex_buf, transaction_serialize_size(tx) * 2 + 1);
         json_push_kv_str(entry, "hex", hex_buf);

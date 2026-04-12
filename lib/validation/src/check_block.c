@@ -26,6 +26,7 @@
 #include <assert.h>
 #include <math.h>
 #include <string.h>
+#include "util/safe_alloc.h"
 
 /* Emit EV_CONSENSUS_REJECT_BLOCK with block hash in the payload.
  * Payload format (wave 8): "hash=<64hex> reason=<name> dos=<n>".
@@ -136,7 +137,7 @@ static bool check_block_impl(const struct block *block,
         LOG_FAIL("check_block", "check_block_header failed");
 
     if (check_merkle_root) {
-        struct uint256 *txids = malloc(block->num_vtx * sizeof(struct uint256));
+        struct uint256 *txids = zcl_malloc(block->num_vtx * sizeof(struct uint256), "check_block_txids");
         if (!txids && block->num_vtx > 0)
             REJECT_FATAL(state, "out-of-memory");
 

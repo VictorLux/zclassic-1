@@ -10,6 +10,7 @@
 #include "util/log_macros.h"
 #include <stdlib.h>
 #include <string.h>
+#include "util/safe_alloc.h"
 
 /* Post-add hook (registered by app/services/mempool_limits).
  * Simple scalar — no lock needed, adds race at most with
@@ -147,13 +148,13 @@ void tx_mempool_init(struct tx_mempool *pool, int64_t min_relay_fee)
     pool->min_relay_fee = min_relay_fee;
 
     pool->entries_cap = MEMPOOL_INITIAL_CAP;
-    pool->entries = calloc(pool->entries_cap, sizeof(*pool->entries));
+    pool->entries = zcl_calloc(pool->entries_cap, sizeof(*pool->entries), "mempool_entries");
 
     pool->next_tx_cap = OUTPOINT_MAP_CAP;
-    pool->next_tx = calloc(pool->next_tx_cap, sizeof(*pool->next_tx));
+    pool->next_tx = zcl_calloc(pool->next_tx_cap, sizeof(*pool->next_tx), "mempool_next_tx");
 
     pool->deltas_cap = PRIORITY_MAP_CAP;
-    pool->deltas = calloc(pool->deltas_cap, sizeof(*pool->deltas));
+    pool->deltas = zcl_calloc(pool->deltas_cap, sizeof(*pool->deltas), "mempool_deltas");
 }
 
 void tx_mempool_free(struct tx_mempool *pool)
@@ -253,8 +254,8 @@ bool tx_mempool_add_unchecked(struct tx_mempool *pool,
 
     if (pool->num_entries >= pool->entries_cap) {
         size_t newcap = pool->entries_cap * 2;
-        struct mempool_entry *tmp = realloc(pool->entries,
-                                             newcap * sizeof(*tmp));
+        struct mempool_entry *tmp = zcl_realloc(pool->entries,
+                                             newcap * sizeof(*tmp), "mempool_entries_grow");
         if (!tmp) { zcl_mutex_unlock(&pool->cs); LOG_FAIL("mempool", "realloc failed expanding entries from %zu", pool->entries_cap); }
         pool->entries = tmp;
         pool->entries_cap = newcap;
@@ -465,8 +466,8 @@ void tx_mempool_prioritise(struct tx_mempool *pool,
     } else {
         if (pool->num_deltas >= pool->deltas_cap) {
             size_t newcap = pool->deltas_cap * 2;
-            struct priority_delta *tmp = realloc(pool->deltas,
-                                                   newcap * sizeof(*tmp));
+            struct priority_delta *tmp = zcl_realloc(pool->deltas,
+                                                   newcap * sizeof(*tmp), "mempool_deltas_grow");
             if (!tmp) { zcl_mutex_unlock(&pool->cs); return; }
             memset(tmp + pool->deltas_cap, 0,
                    (newcap - pool->deltas_cap) * sizeof(*tmp));

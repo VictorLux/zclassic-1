@@ -2,6 +2,7 @@
  * Sapling/Zcash test suite for ZClassic C23. */
 
 #include "test/test_helpers.h"
+#include "util/safe_alloc.h"
 
 int test_sapling(void)
 {
@@ -403,7 +404,7 @@ int test_sapling(void)
         tx.vout[0].script_pub_key.data[1] = 0xa9;
         tx.vout[0].script_pub_key.size = 2;
 
-        tx.v_shielded_spend = calloc(1, sizeof(struct spend_description));
+        tx.v_shielded_spend = zcl_calloc(1, sizeof(struct spend_description), "test_spend_desc");
         tx.num_shielded_spend = 1;
         memset(tx.v_shielded_spend[0].cv.data, 0x11, 32);
         memset(tx.v_shielded_spend[0].anchor.data, 0x22, 32);
@@ -412,7 +413,7 @@ int test_sapling(void)
         memset(tx.v_shielded_spend[0].zkproof, 0x55, GROTH_PROOF_SIZE);
         memset(tx.v_shielded_spend[0].spend_auth_sig, 0x66, 64);
 
-        tx.v_shielded_output = calloc(1, sizeof(struct output_description));
+        tx.v_shielded_output = zcl_calloc(1, sizeof(struct output_description), "test_output_desc");
         tx.num_shielded_output = 1;
         memset(tx.v_shielded_output[0].cv.data, 0x77, 32);
         memset(tx.v_shielded_output[0].cm.data, 0x88, 32);
@@ -421,7 +422,7 @@ int test_sapling(void)
         memset(tx.v_shielded_output[0].out_ciphertext, 0xbb, ZC_SAPLING_OUTCIPHERTEXT_SIZE);
         memset(tx.v_shielded_output[0].zkproof, 0xcc, GROTH_PROOF_SIZE);
 
-        tx.v_joinsplit = calloc(1, sizeof(struct js_description));
+        tx.v_joinsplit = zcl_calloc(1, sizeof(struct js_description), "test_joinsplit");
         tx.num_joinsplit = 1;
         tx.v_joinsplit[0].vpub_old = 1000;
         tx.v_joinsplit[0].vpub_new = 2000;
@@ -563,7 +564,7 @@ int test_sapling(void)
         tx.expiry_height = 0;
         transaction_alloc(&tx, 0, 0);
 
-        tx.v_shielded_output = calloc(2, sizeof(struct output_description));
+        tx.v_shielded_output = zcl_calloc(2, sizeof(struct output_description), "test_output_desc");
         tx.num_shielded_output = 2;
         for (int i = 0; i < 2; i++) {
             memset(tx.v_shielded_output[i].cv.data, 0x10 + i, 32);
@@ -617,7 +618,7 @@ int test_sapling(void)
         tx.vout[0].value = 50000;
         tx.value_balance = -10000;
 
-        tx.v_joinsplit = calloc(1, sizeof(struct js_description));
+        tx.v_joinsplit = zcl_calloc(1, sizeof(struct js_description), "test_joinsplit");
         tx.num_joinsplit = 1;
         tx.v_joinsplit[0].vpub_old = 5000;
 
@@ -636,7 +637,7 @@ int test_sapling(void)
         struct transaction tx;
         transaction_init(&tx);
         tx.value_balance = 20000;
-        tx.v_joinsplit = calloc(1, sizeof(struct js_description));
+        tx.v_joinsplit = zcl_calloc(1, sizeof(struct js_description), "test_joinsplit");
         tx.num_joinsplit = 1;
         tx.v_joinsplit[0].vpub_new = 3000;
 
@@ -659,15 +660,15 @@ int test_sapling(void)
         src.version_group_id = SAPLING_VERSION_GROUP_ID;
         transaction_alloc(&src, 0, 0);
 
-        src.v_shielded_spend = calloc(1, sizeof(struct spend_description));
+        src.v_shielded_spend = zcl_calloc(1, sizeof(struct spend_description), "test_spend_desc");
         src.num_shielded_spend = 1;
         memset(src.v_shielded_spend[0].cv.data, 0xab, 32);
 
-        src.v_shielded_output = calloc(1, sizeof(struct output_description));
+        src.v_shielded_output = zcl_calloc(1, sizeof(struct output_description), "test_output_desc");
         src.num_shielded_output = 1;
         memset(src.v_shielded_output[0].cm.data, 0xcd, 32);
 
-        src.v_joinsplit = calloc(1, sizeof(struct js_description));
+        src.v_joinsplit = zcl_calloc(1, sizeof(struct js_description), "test_joinsplit");
         src.num_joinsplit = 1;
         src.v_joinsplit[0].vpub_old = 42;
         memset(src.joinsplit_pubkey.data, 0xef, 32);
@@ -2666,7 +2667,7 @@ int test_sapling(void)
             fseek(f, 0, SEEK_SET);
             /* Only read first 200KB — VK is at the start */
             size_t read_sz = sz < 200000 ? (size_t)sz : 200000;
-            uint8_t *buf = malloc(read_sz);
+            uint8_t *buf = zcl_malloc(read_sz, "vk_file_buf");
             if (buf && fread(buf, 1, read_sz, f) == read_sz) {
                 struct groth16_vk vk = {0};
                 ok = groth16_vk_read(&vk, buf, read_sz);
@@ -2698,7 +2699,7 @@ int test_sapling(void)
             long sz = ftell(f);
             fseek(f, 0, SEEK_SET);
             size_t read_sz = sz < 200000 ? (size_t)sz : 200000;
-            uint8_t *buf = malloc(read_sz);
+            uint8_t *buf = zcl_malloc(read_sz, "vk_file_buf");
             if (buf && fread(buf, 1, read_sz, f) == read_sz) {
                 struct groth16_vk vk = {0};
                 ok = groth16_vk_read(&vk, buf, read_sz);
@@ -2788,7 +2789,7 @@ int test_sapling(void)
             long sz = ftell(f);
             fseek(f, 0, SEEK_SET);
             size_t read_sz = sz < 200000 ? (size_t)sz : 200000;
-            uint8_t *buf = malloc(read_sz);
+            uint8_t *buf = zcl_malloc(read_sz, "vk_file_buf");
             if (buf && fread(buf, 1, read_sz, f) == read_sz) {
                 struct groth16_vk vk = {0};
                 ok = groth16_vk_read(&vk, buf, read_sz);
@@ -4196,7 +4197,7 @@ int test_sapling(void)
     /* ---- Wallet spent-outpoint index ---- */
     printf("Wallet spent-set: mark, query, no false positives... ");
     {
-        struct wallet *wp = calloc(1, sizeof(struct wallet));
+        struct wallet *wp = zcl_calloc(1, sizeof(struct wallet), "test_wallet");
         wallet_init(wp);
         struct wallet *w = wp;  /* shorthand */
 

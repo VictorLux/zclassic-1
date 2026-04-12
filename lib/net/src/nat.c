@@ -29,6 +29,7 @@
 #include <poll.h>
 #include <errno.h>
 #include "util/log_macros.h"
+#include "util/safe_alloc.h"
 
 /* ════════════════════════════════════════════════════════════════
  *  Gateway discovery via /proc/net/route
@@ -234,7 +235,7 @@ static char *http_request(const char *host, uint16_t port, const char *method,
         send(sock, body, body_len, 0);
 
     size_t cap = 8192, len = 0;
-    char *buf = malloc(cap);
+    char *buf = zcl_malloc(cap, "nat_recv_buf");
     if (!buf) { close(sock); LOG_NULL("nat", "malloc failed for HTTP response buffer (%zu bytes)", cap); }
     for (;;) {
         ssize_t n = recv(sock, buf + len, cap - len - 1, 0);
@@ -242,7 +243,7 @@ static char *http_request(const char *host, uint16_t port, const char *method,
         len += (size_t)n;
         if (len + 1024 > cap) {
             cap *= 2;
-            char *nb = realloc(buf, cap);
+            char *nb = zcl_realloc(buf, cap, "nat_recv_buf");
             if (!nb) { free(buf); LOG_NULL("nat", "realloc failed for HTTP response (%zu bytes)", cap); }
             buf = nb;
         }

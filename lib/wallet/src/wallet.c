@@ -26,6 +26,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "util/safe_alloc.h"
 
 static size_t wallet_find_slot(const struct wallet *w, const struct uint256 *hash);
 
@@ -342,7 +343,7 @@ bool wallet_add_to_wallet(struct wallet *w, const struct wallet_tx *wtx)
 
     if (wtx->tx.num_vin > 0 && wtx->tx.vin) {
         struct transaction *dst = &w->map_wallet[idx].tx;
-        dst->vin = malloc(wtx->tx.num_vin * sizeof(struct tx_in));
+        dst->vin = zcl_malloc(wtx->tx.num_vin * sizeof(struct tx_in), "wallet_tx_vin");
         if (!dst->vin) {
             w->map_wallet[idx].used = false;
             zcl_mutex_unlock(&w->cs);
@@ -353,7 +354,7 @@ bool wallet_add_to_wallet(struct wallet *w, const struct wallet_tx *wtx)
     }
     if (wtx->tx.num_vout > 0 && wtx->tx.vout) {
         struct transaction *dst = &w->map_wallet[idx].tx;
-        dst->vout = malloc(wtx->tx.num_vout * sizeof(struct tx_out));
+        dst->vout = zcl_malloc(wtx->tx.num_vout * sizeof(struct tx_out), "wallet_tx_vout");
         if (!dst->vout) {
             free(dst->vin);
             dst->vin = NULL;
@@ -372,7 +373,7 @@ bool wallet_add_to_wallet(struct wallet *w, const struct wallet_tx *wtx)
         if (dst->num_shielded_spend > 0 && dst->v_shielded_spend) {
             size_t sz = dst->num_shielded_spend *
                         sizeof(struct spend_description);
-            struct spend_description *copy = malloc(sz);
+            struct spend_description *copy = zcl_malloc(sz, "wallet_spend_desc");
             if (copy) {
                 memcpy(copy, dst->v_shielded_spend, sz);
                 dst->v_shielded_spend = copy;
@@ -384,7 +385,7 @@ bool wallet_add_to_wallet(struct wallet *w, const struct wallet_tx *wtx)
         if (dst->num_shielded_output > 0 && dst->v_shielded_output) {
             size_t sz = dst->num_shielded_output *
                         sizeof(struct output_description);
-            struct output_description *copy = malloc(sz);
+            struct output_description *copy = zcl_malloc(sz, "wallet_output_desc");
             if (copy) {
                 memcpy(copy, dst->v_shielded_output, sz);
                 dst->v_shielded_output = copy;
@@ -396,7 +397,7 @@ bool wallet_add_to_wallet(struct wallet *w, const struct wallet_tx *wtx)
         if (dst->num_joinsplit > 0 && dst->v_joinsplit) {
             size_t sz = dst->num_joinsplit *
                         sizeof(struct js_description);
-            struct js_description *copy = malloc(sz);
+            struct js_description *copy = zcl_malloc(sz, "wallet_joinsplit_desc");
             if (copy) {
                 memcpy(copy, dst->v_joinsplit, sz);
                 dst->v_joinsplit = copy;
@@ -1266,7 +1267,7 @@ int wallet_scan_blockfiles(struct wallet *w, const char *datadir)
         long file_size = ftell(f);
         fseek(f, 0, SEEK_SET);
 
-        unsigned char *buf = malloc((size_t)file_size);
+        unsigned char *buf = zcl_malloc((size_t)file_size, "wallet_block_file_buf");
         if (!buf) { fclose(f); break; }
 
         size_t nread = fread(buf, 1, (size_t)file_size, f);
@@ -1335,8 +1336,8 @@ static bool wallet_add_sapling_note(struct wallet *w,
 
     if (w->num_sapling_notes >= w->sapling_notes_cap) {
         size_t new_cap = w->sapling_notes_cap == 0 ? 64 : w->sapling_notes_cap * 2;
-        struct sapling_received_note *new_buf = realloc(
-            w->sapling_notes, new_cap * sizeof(*new_buf));
+        struct sapling_received_note *new_buf = zcl_realloc(
+            w->sapling_notes, new_cap * sizeof(*new_buf), "sapling_notes");
         if (!new_buf)
             return false;
         w->sapling_notes = new_buf;

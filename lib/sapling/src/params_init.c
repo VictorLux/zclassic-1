@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "util/safe_alloc.h"
 
 static struct groth16_vk spend_vk;
 static struct groth16_vk output_vk;
@@ -31,7 +32,7 @@ static uint8_t *read_file(const char *path, size_t *len)
     if (sz <= 0) { fclose(f); return NULL; }
     fseek(f, 0, SEEK_SET);
 
-    uint8_t *buf = malloc((size_t)sz);
+    uint8_t *buf = zcl_malloc((size_t)sz, "params_file_buf");
     if (!buf) { fclose(f); return NULL; }
 
     size_t rd = fread(buf, 1, (size_t)sz, f);

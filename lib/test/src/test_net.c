@@ -10,6 +10,7 @@
 #include "net/peer_strategy.h"
 #include <sqlite3.h>
 #include <unistd.h>
+#include "util/safe_alloc.h"
 
 static int test_tip_count = 0;
 static int test_tip_height = 0;
@@ -140,7 +141,7 @@ int test_net(void)
         struct block_locator loc;
         block_locator_init(&loc);
         loc.num_hashes = 3;
-        loc.vhave = calloc(3, sizeof(struct uint256));
+        loc.vhave = zcl_calloc(3, sizeof(struct uint256), "test_locator_hashes");
         memset(loc.vhave[0].data, 0x11, 32);
         memset(loc.vhave[1].data, 0x22, 32);
         memset(loc.vhave[2].data, 0x33, 32);
@@ -247,7 +248,7 @@ int test_net(void)
 
         block_locator_init(&loc);
         loc.num_hashes = 2;
-        loc.vhave = calloc(2, sizeof(struct uint256));
+        loc.vhave = zcl_calloc(2, sizeof(struct uint256), "test_locator_hashes");
         loc.vhave[0].data[0] = 0x11;
         loc.vhave[1].data[0] = 0x22;
 
@@ -2411,7 +2412,7 @@ int test_net(void)
 
     printf("parallel_sync: chunk hash deterministic... ");
     {
-        struct utxo_chunk *c = calloc(1, sizeof(struct utxo_chunk));
+        struct utxo_chunk *c = zcl_calloc(1, sizeof(struct utxo_chunk), "test_chunk");
         bool ok = fast_sync_serve_chunk_db(test_db, 0, SYNC_CHUNK_SIZE, c);
 
         uint8_t h1[32], h2[32];
@@ -2431,7 +2432,7 @@ int test_net(void)
 
     printf("parallel_sync: verify_chunk matches expected hash... ");
     {
-        struct utxo_chunk *c = calloc(1, sizeof(struct utxo_chunk));
+        struct utxo_chunk *c = zcl_calloc(1, sizeof(struct utxo_chunk), "test_chunk");
         fast_sync_serve_chunk_db(test_db, 0, SYNC_CHUNK_SIZE, c);
 
         uint8_t expected[32];
@@ -2445,7 +2446,7 @@ int test_net(void)
 
     printf("parallel_sync: bad chunk data fails verification... ");
     {
-        struct utxo_chunk *c = calloc(1, sizeof(struct utxo_chunk));
+        struct utxo_chunk *c = zcl_calloc(1, sizeof(struct utxo_chunk), "test_chunk");
         fast_sync_serve_chunk_db(test_db, 0, SYNC_CHUNK_SIZE, c);
 
         uint8_t expected[32];
@@ -2462,7 +2463,7 @@ int test_net(void)
 
     printf("parallel_sync: serve_chunk contents match DB... ");
     {
-        struct utxo_chunk *c = calloc(1, sizeof(struct utxo_chunk));
+        struct utxo_chunk *c = zcl_calloc(1, sizeof(struct utxo_chunk), "test_chunk");
         bool ok = fast_sync_serve_chunk_db(test_db, 0, SYNC_CHUNK_SIZE, c);
         ok = ok && (c->num_entries == 100);
         ok = ok && (c->chunk_index == 0);
@@ -2579,7 +2580,7 @@ int test_net(void)
 
     printf("parallel_sync: serve_chunk from file path... ");
     {
-        struct utxo_chunk *c = calloc(1, sizeof(struct utxo_chunk));
+        struct utxo_chunk *c = zcl_calloc(1, sizeof(struct utxo_chunk), "test_chunk");
         bool ok = fast_sync_serve_chunk(TEST_SYNC_DIR, 0, c);
         ok = ok && (c->num_entries == 100);
 
@@ -2609,7 +2610,7 @@ int test_net(void)
         published.num_utxos = 654;
         published.num_chunks = 2;
         published.chunk_size = SYNC_CHUNK_SIZE;
-        published.chunk_hashes = calloc(2, sizeof(*published.chunk_hashes));
+        published.chunk_hashes = zcl_calloc(2, sizeof(*published.chunk_hashes), "test_chunk_hashes");
         memset(published.block_hash, 0x11, sizeof(published.block_hash));
         memset(published.merkle_root, 0x22, sizeof(published.merkle_root));
 
@@ -2639,7 +2640,7 @@ int test_net(void)
         published.start_height = 1;
         published.end_height = 512;
         published.num_pieces = 4;
-        published.piece_hashes = calloc(4, sizeof(*published.piece_hashes));
+        published.piece_hashes = zcl_calloc(4, sizeof(*published.piece_hashes), "test_piece_hashes");
         memset(published.tip_hash, 0x33, sizeof(published.tip_hash));
         memset(published.merkle_root, 0x44, sizeof(published.merkle_root));
 
@@ -2702,7 +2703,7 @@ int test_net(void)
         m.num_utxos = 5000;
         m.num_chunks = 10;
         m.chunk_size = 500;
-        m.chunk_hashes = calloc(10, 32);
+        m.chunk_hashes = zcl_calloc(10, 32, "test_chunk_hashes");
 
         /* Fill chunk hashes with deterministic values */
         for (uint32_t i = 0; i < 10; i++)
@@ -2732,7 +2733,7 @@ int test_net(void)
         m.num_chunks = 10;
         m.num_utxos = 5000;
         m.chunk_size = 500;
-        m.chunk_hashes = calloc(10, 32);
+        m.chunk_hashes = zcl_calloc(10, 32, "test_chunk_hashes");
         for (uint32_t i = 0; i < 10; i++)
             memset(m.chunk_hashes[i], (int)(i + 1), 32);
 
@@ -2768,7 +2769,7 @@ int test_net(void)
         m.num_chunks = 2;
         m.num_utxos = 1000;
         m.chunk_size = 500;
-        m.chunk_hashes = calloc(2, 32);
+        m.chunk_hashes = zcl_calloc(2, 32, "test_chunk_hashes");
 
         struct swarm_sync ss;
         swarm_sync_init(&ss, &m, NULL);
@@ -2793,7 +2794,7 @@ int test_net(void)
         m.num_chunks = 3;
         m.num_utxos = 1500;
         m.chunk_size = 500;
-        m.chunk_hashes = calloc(3, 32);
+        m.chunk_hashes = zcl_calloc(3, 32, "test_chunk_hashes");
 
         struct swarm_sync ss;
         swarm_sync_init(&ss, &m, NULL);
@@ -2829,7 +2830,7 @@ int test_net(void)
         m.num_chunks = 4;
         m.num_utxos = 2000;
         m.chunk_size = 500;
-        m.chunk_hashes = calloc(4, 32);
+        m.chunk_hashes = zcl_calloc(4, 32, "test_chunk_hashes");
 
         struct swarm_sync ss;
         swarm_sync_init(&ss, &m, NULL);
@@ -2866,7 +2867,7 @@ int test_net(void)
         m.num_chunks = 3;
         m.num_utxos = 1500;
         m.chunk_size = 500;
-        m.chunk_hashes = calloc(3, 32);
+        m.chunk_hashes = zcl_calloc(3, 32, "test_chunk_hashes");
 
         struct swarm_sync ss;
         swarm_sync_init(&ss, &m, NULL);
@@ -3038,10 +3039,10 @@ skip_parallel_tests:
         ok = ok && msg_processor_offer_cache_version() > offer_v2;
         ok = ok && !msg_processor_get_offer(&got_offer);
 
-        manifest1_hashes = calloc(1, 32);
-        manifest2_hashes = calloc(2, 32);
-        bmanifest1_hashes = calloc(1, 32);
-        bmanifest2_hashes = calloc(2, 32);
+        manifest1_hashes = zcl_calloc(1, 32, "test_manifest_hashes");
+        manifest2_hashes = zcl_calloc(2, 32, "test_manifest_hashes");
+        bmanifest1_hashes = zcl_calloc(1, 32, "test_bmanifest_hashes");
+        bmanifest2_hashes = zcl_calloc(2, 32, "test_bmanifest_hashes");
         if (!manifest1_hashes || !manifest2_hashes || !bmanifest1_hashes ||
             !bmanifest2_hashes) {
             ok = false;

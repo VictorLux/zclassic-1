@@ -37,6 +37,7 @@
 #include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
+#include "util/safe_alloc.h"
 
 static _Atomic int g_rej_tx;
 static _Atomic int g_rej_block;
@@ -89,14 +90,14 @@ static struct transaction cre_make_valid_tx(void)
     tx.version = 1;
     tx.overwintered = false;
     tx.num_vin = 1;
-    tx.vin = calloc(1, sizeof(struct tx_in));
+    tx.vin = zcl_calloc(1, sizeof(struct tx_in), "test_vin");
     memset(tx.vin[0].prevout.hash.data, 0xAA, 32);
     tx.vin[0].prevout.n = 0;
     uint8_t sig[] = {0x00, 0x00};
     script_set(&tx.vin[0].script_sig, sig, 2);
     tx.vin[0].sequence = 0xFFFFFFFF;
     tx.num_vout = 1;
-    tx.vout = calloc(1, sizeof(struct tx_out));
+    tx.vout = zcl_calloc(1, sizeof(struct tx_out), "test_vout");
     tx.vout[0].value = 50 * 100000000LL;
     uint8_t pk[] = {0x76, 0xa9, 0x14};
     script_set(&tx.vout[0].script_pub_key, pk, 3);
@@ -136,7 +137,7 @@ int test_consensus_reject_events(void)
         tx.version = 1;
         tx.num_vin = 0;
         tx.num_vout = 1;
-        tx.vout = calloc(1, sizeof(struct tx_out));
+        tx.vout = zcl_calloc(1, sizeof(struct tx_out), "test_vout");
         tx.vout[0].value = 100;
         uint8_t pk[] = {0x00};
         script_set(&tx.vout[0].script_pub_key, pk, 1);

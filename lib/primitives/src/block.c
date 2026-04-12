@@ -9,6 +9,7 @@
 #include "core/hash.h"
 #include "core/serialize.h"
 #include <stdlib.h>
+#include "util/safe_alloc.h"
 
 bool block_header_serialize(const struct block_header *h, struct byte_stream *s)
 {
@@ -71,7 +72,7 @@ bool block_deserialize(struct block *b, struct byte_stream *s)
     if (!stream_read_compact_size(s, &count)) return false;
     if (count > MAX_BLOCK_TRANSACTIONS) return false;
     b->num_vtx = (size_t)count;
-    b->vtx = calloc(b->num_vtx, sizeof(struct transaction));
+    b->vtx = zcl_calloc(b->num_vtx, sizeof(struct transaction), "block_vtx");
     if (!b->vtx && b->num_vtx > 0) return false;
     for (size_t i = 0; i < b->num_vtx; i++) {
         transaction_init(&b->vtx[i]);
@@ -107,7 +108,7 @@ bool block_locator_deserialize(struct block_locator *loc,
     if (!stream_read_compact_size(s, &count)) return false;
     if (count > MAX_LOCATOR_HASHES) return false;
     loc->num_hashes = (size_t)count;
-    loc->vhave = calloc(loc->num_hashes, sizeof(struct uint256));
+    loc->vhave = zcl_calloc(loc->num_hashes, sizeof(struct uint256), "locator_hashes");
     if (!loc->vhave && loc->num_hashes > 0) return false;
     for (size_t i = 0; i < loc->num_hashes; i++) {
         if (!stream_read_bytes(s, loc->vhave[i].data, 32)) return false;

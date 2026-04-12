@@ -9,6 +9,7 @@
 #include "core/serialize.h"
 #include <stdlib.h>
 #include <stdio.h>
+#include "util/safe_alloc.h"
 
 void transaction_init(struct transaction *tx)
 {
@@ -63,8 +64,8 @@ bool transaction_alloc(struct transaction *tx, size_t num_vin, size_t num_vout)
      * tx->vin/tx->vout with a fresh allocation (e.g. transaction_deserialize
      * partial paths) would silently leak that stub. Treat zero as "no
      * array" and leave the pointer NULL so transaction_free is a no-op. */
-    tx->vin  = num_vin  ? calloc(num_vin,  sizeof(struct tx_in))  : NULL;
-    tx->vout = num_vout ? calloc(num_vout, sizeof(struct tx_out)) : NULL;
+    tx->vin  = num_vin  ? zcl_calloc(num_vin,  sizeof(struct tx_in),  "tx_vin")  : NULL;
+    tx->vout = num_vout ? zcl_calloc(num_vout, sizeof(struct tx_out), "tx_vout") : NULL;
     if ((num_vin && !tx->vin) || (num_vout && !tx->vout)) {
         fprintf(stderr, "transaction_alloc FAILED: vin=%zu (need %zu MB) vout=%zu\n",
                 num_vin, num_vin * sizeof(struct tx_in) / (1024*1024), num_vout);
@@ -118,8 +119,8 @@ bool transaction_copy(struct transaction *dst, const struct transaction *src)
     }
 
     if (src->num_shielded_spend > 0) {
-        dst->v_shielded_spend = calloc(src->num_shielded_spend,
-                                        sizeof(struct spend_description));
+        dst->v_shielded_spend = zcl_calloc(src->num_shielded_spend,
+                                        sizeof(struct spend_description), "tx_shielded_spend");
         if (!dst->v_shielded_spend) { transaction_free(dst); return false; }
         dst->num_shielded_spend = src->num_shielded_spend;
         memcpy(dst->v_shielded_spend, src->v_shielded_spend,
@@ -127,8 +128,8 @@ bool transaction_copy(struct transaction *dst, const struct transaction *src)
     }
 
     if (src->num_shielded_output > 0) {
-        dst->v_shielded_output = calloc(src->num_shielded_output,
-                                         sizeof(struct output_description));
+        dst->v_shielded_output = zcl_calloc(src->num_shielded_output,
+                                         sizeof(struct output_description), "tx_shielded_output");
         if (!dst->v_shielded_output) { transaction_free(dst); return false; }
         dst->num_shielded_output = src->num_shielded_output;
         memcpy(dst->v_shielded_output, src->v_shielded_output,
@@ -136,8 +137,8 @@ bool transaction_copy(struct transaction *dst, const struct transaction *src)
     }
 
     if (src->num_joinsplit > 0) {
-        dst->v_joinsplit = calloc(src->num_joinsplit,
-                                   sizeof(struct js_description));
+        dst->v_joinsplit = zcl_calloc(src->num_joinsplit,
+                                   sizeof(struct js_description), "tx_joinsplit");
         if (!dst->v_joinsplit) { transaction_free(dst); return false; }
         dst->num_joinsplit = src->num_joinsplit;
         memcpy(dst->v_joinsplit, src->v_joinsplit,
@@ -461,7 +462,7 @@ bool transaction_deserialize(struct transaction *tx, struct byte_stream *s)
     uint64_t num_vout;
     if (!stream_read_compact_size(s, &num_vout)) return false;
     if (num_vout > MAX_TX_OUTPUTS) return false;
-    tx->vout = calloc((size_t)num_vout, sizeof(struct tx_out));
+    tx->vout = zcl_calloc((size_t)num_vout, sizeof(struct tx_out), "tx_vout");
     if (num_vout > 0 && !tx->vout) return false;
     tx->num_vout = (size_t)num_vout;
     for (size_t i = 0; i < tx->num_vout; i++) {
@@ -482,8 +483,8 @@ bool transaction_deserialize(struct transaction *tx, struct byte_stream *s)
         if (!stream_read_compact_size(s, &num_spend)) return false;
         if (num_spend > MAX_SHIELDED_SPENDS) return false;
         if (num_spend > 0) {
-            tx->v_shielded_spend = calloc((size_t)num_spend,
-                                           sizeof(struct spend_description));
+            tx->v_shielded_spend = zcl_calloc((size_t)num_spend,
+                                           sizeof(struct spend_description), "tx_shielded_spend");
             if (!tx->v_shielded_spend) return false;
             tx->num_shielded_spend = (size_t)num_spend;
             for (size_t i = 0; i < tx->num_shielded_spend; i++)
@@ -495,8 +496,8 @@ bool transaction_deserialize(struct transaction *tx, struct byte_stream *s)
         if (!stream_read_compact_size(s, &num_output)) return false;
         if (num_output > MAX_SHIELDED_OUTPUTS) return false;
         if (num_output > 0) {
-            tx->v_shielded_output = calloc((size_t)num_output,
-                                            sizeof(struct output_description));
+            tx->v_shielded_output = zcl_calloc((size_t)num_output,
+                                            sizeof(struct output_description), "tx_shielded_output");
             if (!tx->v_shielded_output) return false;
             tx->num_shielded_output = (size_t)num_output;
             for (size_t i = 0; i < tx->num_shielded_output; i++)
@@ -511,8 +512,8 @@ bool transaction_deserialize(struct transaction *tx, struct byte_stream *s)
         if (!stream_read_compact_size(s, &num_js)) return false;
         if (num_js > MAX_JOINSPLITS) return false;
         if (num_js > 0) {
-            tx->v_joinsplit = calloc((size_t)num_js,
-                                      sizeof(struct js_description));
+            tx->v_joinsplit = zcl_calloc((size_t)num_js,
+                                      sizeof(struct js_description), "tx_joinsplit");
             if (!tx->v_joinsplit) return false;
             tx->num_joinsplit = (size_t)num_js;
             for (size_t i = 0; i < tx->num_joinsplit; i++)

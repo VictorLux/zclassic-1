@@ -27,6 +27,7 @@
 #include <stdatomic.h>
 #include <sys/time.h>
 #include <sys/stat.h>
+#include "util/safe_alloc.h"
 
 /* ── Session management ────────────────────────────────────────── */
 
@@ -339,7 +340,7 @@ static bool fs_recv_chunk_fast(struct fs_session *s, uint8_t **out,
     if (size == 0 || size > 60 * 1024 * 1024) LOG_FAIL("file_svc", "recv_chunk_fast: invalid size %u", size);
 
     /* Read data */
-    uint8_t *buf = malloc(size);
+    uint8_t *buf = zcl_malloc(size, "file_recv_buf");
     if (!buf) LOG_FAIL("file_svc", "recv_chunk_fast: malloc(%u) failed", size);
     if (!recv_all(s->fd, buf, size)) { free(buf); LOG_FAIL("file_svc", "recv_chunk_fast: data recv failed fd=%d size=%u", s->fd, size); }
 
@@ -1058,7 +1059,7 @@ bool fs_client_sync(const char *peer_addr, uint16_t port,
             if (j == 0 || j % 20 == 0) {
                 int fd2 = open(blk_path, O_RDONLY);
                 if (fd2 < 0) break;
-                uint8_t *vbuf = malloc(chunks[j].size);
+                uint8_t *vbuf = zcl_malloc(chunks[j].size, "file_verify_buf");
                 if (!vbuf) { close(fd2); break; }
                 ssize_t got = pread(fd2, vbuf, chunks[j].size,
                                      (off_t)chunks[j].offset);
@@ -1104,7 +1105,7 @@ bool fs_client_sync(const char *peer_addr, uint16_t port,
         if (we > num_chunks) we = num_chunks;
         if (ws >= num_chunks) break;
 
-        char *wp = malloc(600);
+        char *wp = zcl_malloc(600, "file_worker_path");
         snprintf(wp, 600, "%s/blocks/.part%d", datadir, w);
 
         workers[nworkers].peer_addr = peer_addr;

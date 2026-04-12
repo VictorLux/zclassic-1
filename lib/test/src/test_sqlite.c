@@ -9,6 +9,7 @@
 #include "wallet/wallet.h"
 #include "script/standard.h"
 #include "validation/chainstate.h"
+#include "util/safe_alloc.h"
 #include <unistd.h>
 
 static struct transaction make_sync_test_tx(void)
@@ -21,13 +22,13 @@ static struct transaction make_sync_test_tx(void)
     tx.version = 1;
     tx.overwintered = false;
     tx.num_vin = 1;
-    tx.vin = calloc(1, sizeof(struct tx_in));
+    tx.vin = zcl_calloc(1, sizeof(struct tx_in), "test_tx_vin");
     memset(tx.vin[0].prevout.hash.data, 0xAA, 32);
     tx.vin[0].prevout.n = 0;
     script_set(&tx.vin[0].script_sig, sig, sizeof(sig));
     tx.vin[0].sequence = 0xFFFFFFFF;
     tx.num_vout = 1;
-    tx.vout = calloc(1, sizeof(struct tx_out));
+    tx.vout = zcl_calloc(1, sizeof(struct tx_out), "test_tx_vout");
     tx.vout[0].value = 50 * 100000000LL;
     script_set(&tx.vout[0].script_pub_key, pk, sizeof(pk));
     transaction_compute_hash(&tx);
@@ -447,7 +448,7 @@ int test_sqlite(void) {
         ok = ok && db_service_attach(&svc, &ndb);
         ok = ok && db_service_start(&svc);
         runtime_set_db_service(&runtime, &svc);
-        wallet = calloc(1, sizeof(*wallet));
+        wallet = zcl_calloc(1, sizeof(*wallet), "test_wallet");
         ok = ok && wallet != NULL;
 
         tx = make_sync_test_tx();

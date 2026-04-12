@@ -2,6 +2,7 @@
  * Incremental Merkle tree and witness tests for Sapling. */
 
 #include "test/test_helpers.h"
+#include "util/safe_alloc.h"
 
 static int test_merkle_tree_scale(void);
 
@@ -963,12 +964,12 @@ static int test_merkle_tree_scale(void)
 
     printf("Witness root == tree root at 50K elements (stress)... ");
     {
-        struct incremental_merkle_tree *t = malloc(sizeof(*t));
+        struct incremental_merkle_tree *t = zcl_malloc(sizeof(*t), "merkle_tree");
         sapling_tree_init(t);
         struct uint256 cm;
         memset(cm.data, 0, 32);
 
-        struct incremental_witness *w = malloc(sizeof(*w));
+        struct incremental_witness *w = zcl_malloc(sizeof(*w), "merkle_witness");
         bool w_init = false;
 
         for (int i = 0; i < 50000; i++) {

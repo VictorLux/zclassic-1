@@ -7,6 +7,7 @@
 #include "core/serialize.h"
 #include <stdlib.h>
 #include <string.h>
+#include "util/safe_alloc.h"
 
 void stream_init(struct byte_stream *s, size_t initial_capacity)
 {
@@ -17,7 +18,7 @@ void stream_init(struct byte_stream *s, size_t initial_capacity)
     s->error = false;
     s->owns_data = true;
     if (initial_capacity > 0) {
-        s->data = malloc(initial_capacity);
+        s->data = zcl_malloc(initial_capacity, "stream_data");
         if (s->data)
             s->capacity = initial_capacity;
         else
@@ -66,7 +67,7 @@ static bool stream_grow(struct byte_stream *s, size_t needed)
         }
         new_cap *= 2;
     }
-    unsigned char *p = realloc(s->data, new_cap);
+    unsigned char *p = zcl_realloc(s->data, new_cap, "stream_grow");
     if (!p) {
         s->error = true;
         return false;

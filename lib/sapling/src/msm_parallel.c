@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
+#include "util/safe_alloc.h"
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wpedantic"
@@ -49,7 +50,7 @@ static void *g1_msm_window_thread(void *arg)
     size_t n = a->n;
     size_t num_buckets = ((size_t)1 << c) - 1;
 
-    struct g1_point *buckets = calloc(num_buckets, sizeof(struct g1_point));
+    struct g1_point *buckets = zcl_calloc(num_buckets, sizeof(struct g1_point), "g1_par_buckets");
     if (!buckets) { g1_identity(&a->result); return NULL; }
 
     for (size_t b = 0; b < num_buckets; b++)
@@ -102,15 +103,15 @@ void g1_msm_parallel(struct g1_point *result,
     unsigned int num_windows = (255 + c - 1) / c;
 
     /* Convert scalars from Montgomery form */
-    uint64_t (*raw_scalars)[4] = calloc(n, sizeof(uint64_t[4]));
+    uint64_t (*raw_scalars)[4] = zcl_calloc(n, sizeof(uint64_t[4]), "g1_par_scalars");
     if (!raw_scalars) { g1_identity(result); return; }
     for (size_t i = 0; i < n; i++)
         msm_fr_to_raw(raw_scalars[i], &scalars[i]);
 
     /* Launch one thread per window (up to num_threads at a time) */
-    struct g1_msm_window_args *args = calloc(num_windows,
-                                              sizeof(struct g1_msm_window_args));
-    pthread_t *threads = calloc(num_windows, sizeof(pthread_t));
+    struct g1_msm_window_args *args = zcl_calloc(num_windows,
+                                              sizeof(struct g1_msm_window_args), "g1_par_args");
+    pthread_t *threads = zcl_calloc(num_windows, sizeof(pthread_t), "g1_par_threads");
     if (!args || !threads) {
         free(raw_scalars); free(args); free(threads);
         g1_identity(result);
@@ -170,7 +171,7 @@ static void *g2_msm_window_thread(void *arg)
     size_t n = a->n;
     size_t num_buckets = ((size_t)1 << c) - 1;
 
-    struct g2_point *buckets = calloc(num_buckets, sizeof(struct g2_point));
+    struct g2_point *buckets = zcl_calloc(num_buckets, sizeof(struct g2_point), "g2_par_buckets");
     if (!buckets) { g2_identity(&a->result); return NULL; }
 
     for (size_t b = 0; b < num_buckets; b++)
@@ -219,14 +220,14 @@ void g2_msm_parallel(struct g2_point *result,
 
     unsigned int num_windows = (255 + c - 1) / c;
 
-    uint64_t (*raw_scalars)[4] = calloc(n, sizeof(uint64_t[4]));
+    uint64_t (*raw_scalars)[4] = zcl_calloc(n, sizeof(uint64_t[4]), "g2_par_scalars");
     if (!raw_scalars) { g2_identity(result); return; }
     for (size_t i = 0; i < n; i++)
         msm_fr_to_raw(raw_scalars[i], &scalars[i]);
 
-    struct g2_msm_window_args *args = calloc(num_windows,
-                                              sizeof(struct g2_msm_window_args));
-    pthread_t *threads = calloc(num_windows, sizeof(pthread_t));
+    struct g2_msm_window_args *args = zcl_calloc(num_windows,
+                                              sizeof(struct g2_msm_window_args), "g2_par_args");
+    pthread_t *threads = zcl_calloc(num_windows, sizeof(pthread_t), "g2_par_threads");
     if (!args || !threads) {
         free(raw_scalars); free(args); free(threads);
         g2_identity(result);
@@ -395,9 +396,9 @@ void fr_fft_parallel(struct fr *coeffs, size_t n, bool inverse, int num_threads)
             if ((size_t)actual_threads > num_groups)
                 actual_threads = (int)num_groups;
 
-            struct fft_butterfly_args *args = calloc((size_t)actual_threads,
-                sizeof(struct fft_butterfly_args));
-            pthread_t *tids = calloc((size_t)actual_threads, sizeof(pthread_t));
+            struct fft_butterfly_args *args = zcl_calloc((size_t)actual_threads,
+                sizeof(struct fft_butterfly_args), "fft_par_args");
+            pthread_t *tids = zcl_calloc((size_t)actual_threads, sizeof(pthread_t), "fft_par_threads");
 
             size_t groups_per_thread = num_groups / (size_t)actual_threads;
             size_t remainder = num_groups % (size_t)actual_threads;

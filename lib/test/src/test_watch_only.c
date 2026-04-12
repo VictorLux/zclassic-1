@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include "util/safe_alloc.h"
 
 /* ── keystore_add_watch_only_id ──────────────────────────── */
 
@@ -21,7 +22,7 @@ static int test_add_watch_only_id(void)
 {
     int failures = 0;
     TEST("watch-only: add by key_id and have_watch_only") {
-        struct basic_keystore *ks = calloc(1, sizeof(*ks));
+        struct basic_keystore *ks = zcl_calloc(1, sizeof(*ks), "test_keystore");
         ASSERT(ks);
         keystore_init(ks);
 
@@ -44,7 +45,7 @@ static int test_add_watch_only_id_dedup(void)
 {
     int failures = 0;
     TEST("watch-only: add same key_id twice is idempotent") {
-        struct basic_keystore *ks = calloc(1, sizeof(*ks));
+        struct basic_keystore *ks = zcl_calloc(1, sizeof(*ks), "test_keystore");
         ASSERT(ks);
         keystore_init(ks);
 
@@ -66,7 +67,7 @@ static int test_add_watch_only_with_pubkey(void)
 {
     int failures = 0;
     TEST("watch-only: add by pubkey, then have_watch_only works") {
-        struct basic_keystore *ks = calloc(1, sizeof(*ks));
+        struct basic_keystore *ks = zcl_calloc(1, sizeof(*ks), "test_keystore");
         ASSERT(ks);
         keystore_init(ks);
 
@@ -93,7 +94,7 @@ static int test_remove_watch_only(void)
 {
     int failures = 0;
     TEST("watch-only: remove works") {
-        struct basic_keystore *ks = calloc(1, sizeof(*ks));
+        struct basic_keystore *ks = zcl_calloc(1, sizeof(*ks), "test_keystore");
         ASSERT(ks);
         keystore_init(ks);
 
@@ -118,7 +119,7 @@ static int test_wallet_is_mine_watch_only(void)
 {
     int failures = 0;
     TEST("watch-only: wallet_is_mine returns true for watch-only output") {
-        struct wallet *w = calloc(1, sizeof(*w));
+        struct wallet *w = zcl_calloc(1, sizeof(*w), "test_wallet");
         ASSERT(w);
         wallet_init(w);
 
@@ -158,7 +159,7 @@ static int test_wallet_is_watch_only_false_for_full_key(void)
 {
     int failures = 0;
     TEST("watch-only: wallet_is_watch_only false when we have private key") {
-        struct wallet *w = calloc(1, sizeof(*w));
+        struct wallet *w = zcl_calloc(1, sizeof(*w), "test_wallet");
         ASSERT(w);
         wallet_init(w);
 
@@ -199,7 +200,7 @@ static int test_wallet_is_mine_false_for_unknown(void)
 {
     int failures = 0;
     TEST("watch-only: wallet_is_mine false for unknown address") {
-        struct wallet *w = calloc(1, sizeof(*w));
+        struct wallet *w = zcl_calloc(1, sizeof(*w), "test_wallet");
         ASSERT(w);
         wallet_init(w);
 
@@ -270,7 +271,7 @@ static int test_sqlite_round_trip(void)
         ASSERT(wallet_sqlite_write_watch_only(&ws, hash1, "t1TestAddr111"));
         ASSERT(wallet_sqlite_write_watch_only(&ws, hash2, "t1TestAddr222"));
 
-        struct wallet *w = calloc(1, sizeof(*w));
+        struct wallet *w = zcl_calloc(1, sizeof(*w), "test_wallet");
         ASSERT(w);
         wallet_init(w);
         ASSERT(wallet_sqlite_read_watch_only(&ws, w));

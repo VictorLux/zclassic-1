@@ -8,6 +8,7 @@
 #include "validation/main_state.h"
 #include "chain/chain.h"
 #include <string.h>
+#include "util/safe_alloc.h"
 
 /* ── Plan tests ────────────────────────────────────────────────── */
 
@@ -190,7 +191,7 @@ static int test_execute_found_in_index(void) {
         /* Pre-insert a block_index */
         struct uint256 hash;
         uint256_set_hex(&hash, "0000abcdef1234567890");
-        struct block_index *existing = calloc(1, sizeof(struct block_index));
+        struct block_index *existing = zcl_calloc(1, sizeof(struct block_index), "test_block_index");
         block_index_init(existing);
         existing->nHeight = 300000;
         existing->nStatus = BLOCK_VALID_TREE | BLOCK_HAVE_DATA;

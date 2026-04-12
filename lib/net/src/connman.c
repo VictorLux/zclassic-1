@@ -31,6 +31,7 @@
 #include <unistd.h>
 #include "core/utiltime.h"
 #include "util/log_macros.h"
+#include "util/safe_alloc.h"
 
 /* -connect mode: only connect to specified peers, no seeds */
 bool g_connect_only = false;
@@ -1023,7 +1024,7 @@ void connman_load_addrman(struct connman *cm)
         return;
     }
 
-    uint8_t *buf = malloc((size_t)sz);
+    uint8_t *buf = zcl_malloc((size_t)sz, "connman_read_buf");
     if (!buf) { fclose(f); return; }
     size_t rd = fread(buf, 1, (size_t)sz, f);
     fclose(f);

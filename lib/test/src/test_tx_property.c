@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include "util/safe_alloc.h"
 
 /* Avoid re-including consensus.h which conflicts with main_constants.h
  * pulled in by test_helpers.h.  Guard the constants we need. */
@@ -82,7 +83,7 @@ static struct transaction make_valid_tx(void)
     int nin = rng_range(1, 4);
     int nout = rng_range(1, 4);
     tx.num_vin = (size_t)nin;
-    tx.vin = calloc((size_t)nin, sizeof(struct tx_in));
+    tx.vin = zcl_calloc((size_t)nin, sizeof(struct tx_in), "test_tx_vin");
     for (int i = 0; i < nin; i++) {
         make_random_prevout(&tx.vin[i].prevout);
         tx.vin[i].sequence = 0xFFFFFFFF;
@@ -90,7 +91,7 @@ static struct transaction make_valid_tx(void)
         script_set(&tx.vin[i].script_sig, sig, 2);
     }
     tx.num_vout = (size_t)nout;
-    tx.vout = calloc((size_t)nout, sizeof(struct tx_out));
+    tx.vout = zcl_calloc((size_t)nout, sizeof(struct tx_out), "test_tx_vout");
     for (int i = 0; i < nout; i++) {
         tx.vout[i].value = (int64_t)(rng_next() % 1000000) * COIN / 100;
         uint8_t pk[] = {0x76, 0xa9, 0x14};
@@ -108,13 +109,13 @@ static struct transaction make_valid_overwinter_tx(void)
     tx.version_group_id = OVERWINTER_VERSION_GROUP_ID;
     tx.expiry_height = rng_next() % 499999999;
     tx.num_vin = 1;
-    tx.vin = calloc(1, sizeof(struct tx_in));
+    tx.vin = zcl_calloc(1, sizeof(struct tx_in), "test_tx_vin");
     make_random_prevout(&tx.vin[0].prevout);
     tx.vin[0].sequence = 0xFFFFFFFF;
     uint8_t sig[] = {0x00, 0x00};
     script_set(&tx.vin[0].script_sig, sig, 2);
     tx.num_vout = 1;
-    tx.vout = calloc(1, sizeof(struct tx_out));
+    tx.vout = zcl_calloc(1, sizeof(struct tx_out), "test_tx_vout");
     tx.vout[0].value = 10 * COIN;
     uint8_t pk[] = {0x76, 0xa9, 0x14};
     script_set(&tx.vout[0].script_pub_key, pk, 3);
@@ -130,13 +131,13 @@ static struct transaction make_valid_sapling_tx(void)
     tx.version_group_id = SAPLING_VERSION_GROUP_ID;
     tx.expiry_height = rng_next() % 499999999;
     tx.num_vin = 1;
-    tx.vin = calloc(1, sizeof(struct tx_in));
+    tx.vin = zcl_calloc(1, sizeof(struct tx_in), "test_tx_vin");
     make_random_prevout(&tx.vin[0].prevout);
     tx.vin[0].sequence = 0xFFFFFFFF;
     uint8_t sig[] = {0x00, 0x00};
     script_set(&tx.vin[0].script_sig, sig, 2);
     tx.num_vout = 1;
-    tx.vout = calloc(1, sizeof(struct tx_out));
+    tx.vout = zcl_calloc(1, sizeof(struct tx_out), "test_tx_vout");
     tx.vout[0].value = 10 * COIN;
     uint8_t pk[] = {0x76, 0xa9, 0x14};
     script_set(&tx.vout[0].script_pub_key, pk, 3);
@@ -255,13 +256,13 @@ int test_tx_property(void)
             memset(&tx, 0, sizeof(tx));
             tx.version = 1;
             tx.num_vin = 1;
-            tx.vin = calloc(1, sizeof(struct tx_in));
+            tx.vin = zcl_calloc(1, sizeof(struct tx_in), "test_tx_vin");
             make_random_prevout(&tx.vin[0].prevout);
             uint8_t sig[] = {0x00, 0x00};
             script_set(&tx.vin[0].script_sig, sig, 2);
             /* 3 outputs each at MAX_MONEY — total overflows */
             tx.num_vout = 3;
-            tx.vout = calloc(3, sizeof(struct tx_out));
+            tx.vout = zcl_calloc(3, sizeof(struct tx_out), "test_tx_vout");
             for (int j = 0; j < 3; j++) {
                 tx.vout[j].value = MAX_MONEY;
                 uint8_t pk[] = {0x76};
@@ -289,7 +290,7 @@ int test_tx_property(void)
             tx.num_vin = 0;
             tx.vin = NULL;
             tx.num_vout = rng_range(1, 3);
-            tx.vout = calloc(tx.num_vout, sizeof(struct tx_out));
+            tx.vout = zcl_calloc(tx.num_vout, sizeof(struct tx_out), "test_tx_vout");
             for (size_t j = 0; j < tx.num_vout; j++) {
                 tx.vout[j].value = COIN;
                 uint8_t pk[] = {0x76};
@@ -314,7 +315,7 @@ int test_tx_property(void)
             memset(&tx, 0, sizeof(tx));
             tx.version = 1;
             tx.num_vin = 1;
-            tx.vin = calloc(1, sizeof(struct tx_in));
+            tx.vin = zcl_calloc(1, sizeof(struct tx_in), "test_tx_vin");
             make_random_prevout(&tx.vin[0].prevout);
             uint8_t sig[] = {0x00, 0x00};
             script_set(&tx.vin[0].script_sig, sig, 2);
@@ -422,19 +423,19 @@ int test_tx_property(void)
             memset(&tx, 0, sizeof(tx));
             tx.version = 1;
             tx.num_vin = 1;
-            tx.vin = calloc(1, sizeof(struct tx_in));
+            tx.vin = zcl_calloc(1, sizeof(struct tx_in), "test_tx_vin");
             memset(&tx.vin[0].prevout.hash, 0, 32);
             tx.vin[0].prevout.n = UINT32_MAX;
             uint8_t sig[] = {0x04, 0x01, 0x01, 0x01, 0x01};
             script_set(&tx.vin[0].script_sig, sig, 5);
             tx.num_vout = 1;
-            tx.vout = calloc(1, sizeof(struct tx_out));
+            tx.vout = zcl_calloc(1, sizeof(struct tx_out), "test_tx_vout");
             tx.vout[0].value = 10 * COIN;
             uint8_t pk[] = {0x76, 0xa9, 0x14};
             script_set(&tx.vout[0].script_pub_key, pk, 3);
             tx.num_joinsplit = 1 + rng_next() % 3;
-            tx.v_joinsplit = calloc(tx.num_joinsplit,
-                                    sizeof(struct js_description));
+            tx.v_joinsplit = zcl_calloc(tx.num_joinsplit,
+                                    sizeof(struct js_description), "test_joinsplit");
             struct validation_state vs;
             validation_state_init(&vs);
             if (check_transaction(&tx, &vs)) {
@@ -495,7 +496,7 @@ int test_tx_property(void)
             struct transaction tx = make_valid_sapling_tx();
             /* Need shielded ops to avoid the "non-zero without shielded" check */
             tx.num_shielded_spend = 1;
-            tx.v_shielded_spend = calloc(1, sizeof(struct spend_description));
+            tx.v_shielded_spend = zcl_calloc(1, sizeof(struct spend_description), "test_shielded_spend");
             /* Set random unique nullifier */
             for (int b = 0; b < 32; b++)
                 tx.v_shielded_spend[0].nullifier.data[b] = (uint8_t)rng_next();
@@ -523,14 +524,14 @@ int test_tx_property(void)
             memset(&tx, 0, sizeof(tx));
             tx.version = 1;
             tx.num_vin = 1;
-            tx.vin = calloc(1, sizeof(struct tx_in));
+            tx.vin = zcl_calloc(1, sizeof(struct tx_in), "test_tx_vin");
             memset(&tx.vin[0].prevout.hash, 0, 32);
             tx.vin[0].prevout.n = UINT32_MAX;
             /* Script of length 0 or 1 */
             uint8_t sig[] = {0x01};
             script_set(&tx.vin[0].script_sig, sig, rng_next() & 1);
             tx.num_vout = 1;
-            tx.vout = calloc(1, sizeof(struct tx_out));
+            tx.vout = zcl_calloc(1, sizeof(struct tx_out), "test_tx_vout");
             tx.vout[0].value = 10 * COIN;
             uint8_t pk[] = {0x76};
             script_set(&tx.vout[0].script_pub_key, pk, 1);
@@ -553,16 +554,16 @@ int test_tx_property(void)
             memset(&tx, 0, sizeof(tx));
             tx.version = 1;
             tx.num_vin = 1;
-            tx.vin = calloc(1, sizeof(struct tx_in));
+            tx.vin = zcl_calloc(1, sizeof(struct tx_in), "test_tx_vin");
             memset(&tx.vin[0].prevout.hash, 0, 32);
             tx.vin[0].prevout.n = UINT32_MAX;
             size_t slen = 101 + rng_next() % 200;
-            uint8_t *sig = calloc(slen, 1);
+            uint8_t *sig = zcl_calloc(slen, 1, "test_cb_sig");
             for (size_t j = 0; j < slen; j++) sig[j] = (uint8_t)rng_next();
             script_set(&tx.vin[0].script_sig, sig, slen);
             free(sig);
             tx.num_vout = 1;
-            tx.vout = calloc(1, sizeof(struct tx_out));
+            tx.vout = zcl_calloc(1, sizeof(struct tx_out), "test_tx_vout");
             tx.vout[0].value = 10 * COIN;
             uint8_t pk[] = {0x76};
             script_set(&tx.vout[0].script_pub_key, pk, 1);
@@ -627,7 +628,7 @@ int test_tx_property(void)
         for (int i = 0; i < 100 && ok; i++) {
             struct transaction tx = make_valid_sapling_tx();
             tx.num_shielded_spend = 2;
-            tx.v_shielded_spend = calloc(2, sizeof(struct spend_description));
+            tx.v_shielded_spend = zcl_calloc(2, sizeof(struct spend_description), "test_shielded_spend");
             /* Same nullifier for both */
             for (int b = 0; b < 32; b++) {
                 uint8_t v = (uint8_t)rng_next();
@@ -656,12 +657,12 @@ int test_tx_property(void)
         memset(&tx, 0, sizeof(tx));
         tx.version = 1;
         tx.num_vin = 1;
-        tx.vin = calloc(1, sizeof(struct tx_in));
+        tx.vin = zcl_calloc(1, sizeof(struct tx_in), "test_tx_vin");
         make_random_prevout(&tx.vin[0].prevout);
         uint8_t sig[] = {0x00, 0x00};
         script_set(&tx.vin[0].script_sig, sig, 2);
         tx.num_vout = 1;
-        tx.vout = calloc(1, sizeof(struct tx_out));
+        tx.vout = zcl_calloc(1, sizeof(struct tx_out), "test_tx_vout");
         tx.vout[0].value = MAX_MONEY;
         uint8_t pk[] = {0x76};
         script_set(&tx.vout[0].script_pub_key, pk, 1);

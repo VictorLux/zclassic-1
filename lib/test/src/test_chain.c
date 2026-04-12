@@ -3,6 +3,7 @@
 #include "test/test_helpers.h"
 #include "controllers/explorer_internal.h"
 #include <unistd.h>
+#include "util/safe_alloc.h"
 
 int test_chain(void)
 {
@@ -179,11 +180,11 @@ int test_chain(void)
         uint256_set_null(&h2);
         h2.data[0] = 2;
 
-        struct block_index *bi1 = calloc(1, sizeof(struct block_index));
+        struct block_index *bi1 = zcl_calloc(1, sizeof(struct block_index), "test_block_index");
         block_index_init(bi1);
         bi1->nHeight = 100;
 
-        struct block_index *bi2 = calloc(1, sizeof(struct block_index));
+        struct block_index *bi2 = zcl_calloc(1, sizeof(struct block_index), "test_block_index");
         block_index_init(bi2);
         bi2->nHeight = 200;
 
@@ -375,7 +376,7 @@ int test_chain(void)
         b.header.nTime = 9999;
         b.header.nBits = 0x1d00ffff;
         b.num_vtx = 1;
-        b.vtx = calloc(1, sizeof(struct transaction));
+        b.vtx = zcl_calloc(1, sizeof(struct transaction), "test_vtx");
         transaction_init(&b.vtx[0]);
         transaction_alloc(&b.vtx[0], 1, 1);
         b.vtx[0].vin[0].sequence = 0xffffffff;
@@ -442,9 +443,9 @@ int test_chain(void)
         check_queue_init(&cq, 128, sizeof(int), NULL);
         bool idle = check_queue_is_idle(&cq);
         if (idle) {
-            int *item1 = malloc(sizeof(int));
+            int *item1 = zcl_malloc(sizeof(int), "test_item");
             *item1 = 42;
-            int *item2 = malloc(sizeof(int));
+            int *item2 = zcl_malloc(sizeof(int), "test_item");
             *item2 = 99;
             void *items[2] = { item1, item2 };
             cq.check = NULL;
@@ -618,7 +619,7 @@ int test_chain(void)
         memset(b.header.hashPrevBlock.data, 0xaa, 32);
         memset(b.header.hashMerkleRoot.data, 0xbb, 32);
         b.num_vtx = 1;
-        b.vtx = calloc(1, sizeof(struct transaction));
+        b.vtx = zcl_calloc(1, sizeof(struct transaction), "test_vtx");
         transaction_init(&b.vtx[0]);
         transaction_alloc(&b.vtx[0], 1, 1);
         b.vtx[0].vin[0].sequence = 0xffffffff;
@@ -856,7 +857,7 @@ int test_chain(void)
         b.header.nVersion = 4;
         b.header.nTime = (uint32_t)GetAdjustedTime();
         b.num_vtx = 1;
-        b.vtx = calloc(1, sizeof(struct transaction));
+        b.vtx = zcl_calloc(1, sizeof(struct transaction), "test_vtx");
         transaction_init(&b.vtx[0]);
         transaction_alloc(&b.vtx[0], 1, 1);
         b.vtx[0].vin[0].prevout.n = UINT32_MAX;
@@ -883,7 +884,7 @@ int test_chain(void)
         b.header.nVersion = 4;
         b.header.nTime = (uint32_t)GetAdjustedTime();
         b.num_vtx = 1;
-        b.vtx = calloc(1, sizeof(struct transaction));
+        b.vtx = zcl_calloc(1, sizeof(struct transaction), "test_vtx");
         transaction_init(&b.vtx[0]);
         transaction_alloc(&b.vtx[0], 1, 1);
         b.vtx[0].vin[0].prevout.n = UINT32_MAX;
@@ -913,7 +914,7 @@ int test_chain(void)
         b.header.nVersion = 4;
         b.header.nTime = (uint32_t)GetAdjustedTime();
         b.num_vtx = 1;
-        b.vtx = calloc(1, sizeof(struct transaction));
+        b.vtx = zcl_calloc(1, sizeof(struct transaction), "test_vtx");
         transaction_init(&b.vtx[0]);
         transaction_alloc(&b.vtx[0], 1, 1);
         b.vtx[0].vin[0].prevout.n = 0;
@@ -987,7 +988,7 @@ int test_chain(void)
         b.header.nVersion = 4;
         b.header.nTime = (uint32_t)GetAdjustedTime();
         b.num_vtx = 1;
-        b.vtx = calloc(1, sizeof(struct transaction));
+        b.vtx = zcl_calloc(1, sizeof(struct transaction), "test_vtx");
         transaction_init(&b.vtx[0]);
         transaction_alloc(&b.vtx[0], 1, 1);
         b.vtx[0].vin[0].prevout.n = UINT32_MAX;
@@ -1019,7 +1020,7 @@ int test_chain(void)
         b.header.nVersion = 4;
         b.header.nTime = (uint32_t)GetAdjustedTime();
         b.num_vtx = 1;
-        b.vtx = calloc(1, sizeof(struct transaction));
+        b.vtx = zcl_calloc(1, sizeof(struct transaction), "test_vtx");
         transaction_init(&b.vtx[0]);
         transaction_alloc(&b.vtx[0], 1, 1);
         b.vtx[0].vin[0].prevout.n = UINT32_MAX;
@@ -1457,7 +1458,7 @@ int test_chain(void)
         struct uint256 fake_hash;
         memset(fake_hash.data, 0xAB, 32); /* definitely not genesis */
 
-        struct block_index *bi = calloc(1, sizeof(struct block_index));
+        struct block_index *bi = zcl_calloc(1, sizeof(struct block_index), "test_block_index");
         block_index_init(bi);
         bi->nHeight = 0;  /* wrong! should be e.g. 3,056,896 */
         block_map_insert(&bm, &fake_hash, bi);
@@ -1491,7 +1492,7 @@ int test_chain(void)
         const struct chain_params *p = chain_params_get();
         struct uint256 genesis = p->consensus.hashGenesisBlock;
 
-        struct block_index *bi = calloc(1, sizeof(struct block_index));
+        struct block_index *bi = zcl_calloc(1, sizeof(struct block_index), "test_block_index");
         block_index_init(bi);
         bi->nHeight = 0;  /* correct for genesis */
         block_map_insert(&bm, &genesis, bi);
@@ -1521,7 +1522,7 @@ int test_chain(void)
         struct uint256 tip_hash;
         memset(tip_hash.data, 0xCD, 32);
 
-        struct block_index *bi = calloc(1, sizeof(struct block_index));
+        struct block_index *bi = zcl_calloc(1, sizeof(struct block_index), "test_block_index");
         block_index_init(bi);
         bi->nHeight = 3056896;  /* correct mapping */
         block_map_insert(&bm, &tip_hash, bi);

@@ -7,6 +7,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <time.h>
+#include "util/safe_alloc.h"
 
 int test_utxo_commitment(void)
 {
@@ -239,7 +240,7 @@ int test_utxo_commitment(void)
         struct block_piece_manifest m = {
             .start_height = 1, .end_height = 256,
             .num_pieces = 2,
-            .piece_hashes = calloc(2, 32)
+            .piece_hashes = zcl_calloc(2, 32, "test_piece_hashes")
         };
         memset(m.piece_hashes[0], 0x11, 32);
         memset(m.piece_hashes[1], 0x22, 32);
@@ -260,7 +261,7 @@ int test_utxo_commitment(void)
         struct block_piece_manifest m = {
             .start_height = 1, .end_height = 384,
             .num_pieces = 3,
-            .piece_hashes = calloc(3, 32)
+            .piece_hashes = zcl_calloc(3, 32, "test_piece_hashes")
         };
         struct block_swarm bs;
         block_swarm_init(&bs, &m, "/tmp");
@@ -286,7 +287,7 @@ int test_utxo_commitment(void)
         struct block_piece_manifest m = {
             .start_height = 1, .end_height = 128,
             .num_pieces = 1,
-            .piece_hashes = calloc(1, 32)
+            .piece_hashes = zcl_calloc(1, 32, "test_piece_hashes")
         };
         struct block_swarm bs;
         block_swarm_init(&bs, &m, "/tmp");
@@ -308,7 +309,7 @@ int test_utxo_commitment(void)
         struct block_piece_manifest m = {
             .start_height = 1, .end_height = 256,
             .num_pieces = 2,
-            .piece_hashes = calloc(2, 32)
+            .piece_hashes = zcl_calloc(2, 32, "test_piece_hashes")
         };
         struct block_swarm bs;
         block_swarm_init(&bs, &m, "/tmp");
@@ -334,7 +335,7 @@ int test_utxo_commitment(void)
         struct block_piece_manifest m = {
             .start_height = 1, .end_height = 128,
             .num_pieces = 1,
-            .piece_hashes = calloc(1, 32)
+            .piece_hashes = zcl_calloc(1, 32, "test_piece_hashes")
         };
         struct block_swarm bs;
         block_swarm_init(&bs, &m, "/tmp");
@@ -358,7 +359,7 @@ int test_utxo_commitment(void)
         struct block_piece_manifest m = {
             .start_height = 1, .end_height = 1024,
             .num_pieces = 8,
-            .piece_hashes = calloc(8, 32)
+            .piece_hashes = zcl_calloc(8, 32, "test_piece_hashes")
         };
         struct block_swarm bs;
         block_swarm_init(&bs, &m, "/tmp");
@@ -383,7 +384,7 @@ int test_utxo_commitment(void)
         struct block_piece_manifest m = {
             .start_height = 1, .end_height = 512,
             .num_pieces = 4,
-            .piece_hashes = calloc(4, 32)
+            .piece_hashes = zcl_calloc(4, 32, "test_piece_hashes")
         };
         struct block_swarm bs;
         block_swarm_init(&bs, &m, "/tmp");
@@ -407,7 +408,7 @@ int test_utxo_commitment(void)
         struct block_piece_manifest m = {
             .start_height = 1, .end_height = 512,
             .num_pieces = 4,
-            .piece_hashes = calloc(4, 32)
+            .piece_hashes = zcl_calloc(4, 32, "test_piece_hashes")
         };
         struct block_swarm bs;
         block_swarm_init(&bs, &m, "/tmp");
@@ -434,7 +435,7 @@ int test_utxo_commitment(void)
         struct block_piece_manifest m = {
             .start_height = 1, .end_height = 512,
             .num_pieces = 4,
-            .piece_hashes = calloc(4, 32)
+            .piece_hashes = zcl_calloc(4, 32, "test_piece_hashes")
         };
         struct block_swarm bs;
         block_swarm_init(&bs, &m, "/tmp");

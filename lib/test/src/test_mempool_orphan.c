@@ -5,6 +5,7 @@
 #include "test/test_helpers.h"
 #include "validation/orphan_pool.h"
 #include "validation/txmempool.h"
+#include "util/safe_alloc.h"
 
 /* ── helpers ────────────────────────────────────────────── */
 
@@ -13,14 +14,14 @@ static void init_orphan_tx(struct transaction *tx, uint8_t id, uint8_t parent_id
     memset(tx, 0, sizeof(*tx));
     tx->version = 1;
     tx->num_vin = 1;
-    tx->vin = calloc(1, sizeof(struct tx_in));
+    tx->vin = zcl_calloc(1, sizeof(struct tx_in), "orphan_vin");
     memset(tx->vin[0].prevout.hash.data, parent_id, 32);
     tx->vin[0].prevout.n = 0;
     uint8_t sig[] = {0x00};
     script_set(&tx->vin[0].script_sig, sig, 1);
     tx->vin[0].sequence = 0xFFFFFFFF;
     tx->num_vout = 1;
-    tx->vout = calloc(1, sizeof(struct tx_out));
+    tx->vout = zcl_calloc(1, sizeof(struct tx_out), "orphan_vout");
     tx->vout[0].value = 50000;
     uint8_t pk[] = {0x76, 0xa9, 0x14};
     script_set(&tx->vout[0].script_pub_key, pk, 3);
@@ -33,7 +34,7 @@ static void init_multi_input_orphan(struct transaction *tx, uint8_t id,
     memset(tx, 0, sizeof(*tx));
     tx->version = 1;
     tx->num_vin = 2;
-    tx->vin = calloc(2, sizeof(struct tx_in));
+    tx->vin = zcl_calloc(2, sizeof(struct tx_in), "orphan_multi_vin");
     memset(tx->vin[0].prevout.hash.data, parent1, 32);
     tx->vin[0].prevout.n = 0;
     tx->vin[0].sequence = 0xFFFFFFFF;
@@ -44,7 +45,7 @@ static void init_multi_input_orphan(struct transaction *tx, uint8_t id,
     tx->vin[1].sequence = 0xFFFFFFFF;
     script_set(&tx->vin[1].script_sig, sig, 1);
     tx->num_vout = 1;
-    tx->vout = calloc(1, sizeof(struct tx_out));
+    tx->vout = zcl_calloc(1, sizeof(struct tx_out), "orphan_multi_vout");
     tx->vout[0].value = 50000;
     uint8_t pk[] = {0x76, 0xa9, 0x14};
     script_set(&tx->vout[0].script_pub_key, pk, 3);

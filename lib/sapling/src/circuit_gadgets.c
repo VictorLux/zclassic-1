@@ -11,6 +11,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include "util/safe_alloc.h"
 
 #define CS_ONE 0
 
@@ -1351,7 +1352,7 @@ size_t gadget_note_commitment(struct constraint_system *cs,
                               size_t *rcm_bits)
 {
     size_t total_bits = n_gd_bits + n_pkd_bits + 64 + 256;
-    size_t *all_bits = malloc(total_bits * sizeof(size_t));
+    size_t *all_bits = zcl_malloc(total_bits * sizeof(size_t), "circuit_note_bits");
     if (!all_bits) return 0;
     size_t offset = 0;
     memcpy(all_bits + offset, gd_bits, n_gd_bits * sizeof(size_t)); offset += n_gd_bits;

@@ -7,6 +7,7 @@
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
+#include "util/safe_alloc.h"
 
 #ifdef _WIN32
 
@@ -92,7 +93,7 @@ void scheduler_stop(struct scheduler *s, bool drain)
 
 void scheduler_schedule(struct scheduler *s, scheduler_func f, void *ctx, int64_t when_ms)
 {
-    struct scheduler_task *task = malloc(sizeof(*task));
+    struct scheduler_task *task = zcl_malloc(sizeof(*task), "scheduler_task");
     task->func = f;
     task->ctx = ctx;
     task->when_ms = when_ms;
@@ -195,7 +196,7 @@ void scheduler_stop(struct scheduler *s, bool drain)
 
 void scheduler_schedule(struct scheduler *s, scheduler_func f, void *ctx, int64_t when_ms)
 {
-    struct scheduler_task *task = malloc(sizeof(*task));
+    struct scheduler_task *task = zcl_malloc(sizeof(*task), "scheduler_task");
     task->func = f;
     task->ctx = ctx;
     task->when.tv_sec = when_ms / 1000;

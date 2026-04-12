@@ -22,10 +22,11 @@
 #include "util/timedata.h"
 #include <string.h>
 #include <stdlib.h>
+#include "util/safe_alloc.h"
 
 static void block_compute_merkle_root(struct block *b)
 {
-    struct uint256 *txids = malloc(b->num_vtx * sizeof(struct uint256));
+    struct uint256 *txids = zcl_malloc(b->num_vtx * sizeof(struct uint256), "merkle_txids");
     if (!txids)
         return;
     for (size_t i = 0; i < b->num_vtx; i++)
@@ -58,7 +59,7 @@ struct block_template *create_new_block(const struct script *coinbase_script,
                                          struct tx_mempool *mempool,
                                          const struct chain_params *params)
 {
-    struct block_template *bt = malloc(sizeof(struct block_template));
+    struct block_template *bt = zcl_malloc(sizeof(struct block_template), "block_template");
     if (!bt)
         return NULL;
     block_template_init(bt);
@@ -74,14 +75,14 @@ struct block_template *create_new_block(const struct script *coinbase_script,
 
     /* Collect transactions from mempool */
     size_t max_txs = 1 + mempool->num_entries;
-    bt->block.vtx = calloc(max_txs, sizeof(struct transaction));
+    bt->block.vtx = zcl_calloc(max_txs, sizeof(struct transaction), "block_transactions");
     if (!bt->block.vtx) {
         block_template_free(bt);
         free(bt);
         return NULL;
     }
-    bt->tx_fees = calloc(max_txs, sizeof(int64_t));
-    bt->tx_sig_ops = calloc(max_txs, sizeof(unsigned int));
+    bt->tx_fees = zcl_calloc(max_txs, sizeof(int64_t), "tx_fees");
+    bt->tx_sig_ops = zcl_calloc(max_txs, sizeof(unsigned int), "tx_sig_ops");
     if (!bt->tx_fees || !bt->tx_sig_ops) {
         block_template_free(bt);
         free(bt);
@@ -141,7 +142,7 @@ struct block_template *create_new_block(const struct script *coinbase_script,
     transaction_init(coinbase);
 
     coinbase->num_vin = 1;
-    coinbase->vin = calloc(1, sizeof(struct tx_in));
+    coinbase->vin = zcl_calloc(1, sizeof(struct tx_in), "coinbase_vin");
     if (!coinbase->vin) return NULL;
     tx_in_init(&coinbase->vin[0]);
     uint256_set_null(&coinbase->vin[0].prevout.hash);
@@ -156,7 +157,7 @@ struct block_template *create_new_block(const struct script *coinbase_script,
     coinbase->vin[0].script_sig.size = 5;
 
     coinbase->num_vout = 1;
-    coinbase->vout = calloc(1, sizeof(struct tx_out));
+    coinbase->vout = zcl_calloc(1, sizeof(struct tx_out), "coinbase_vout");
     if (!coinbase->vout) return NULL;
     tx_out_set_null(&coinbase->vout[0]);
     coinbase->vout[0].script_pub_key = *coinbase_script;

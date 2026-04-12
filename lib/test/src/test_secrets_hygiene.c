@@ -36,6 +36,7 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include "util/safe_alloc.h"
 
 /* ── Golden corpus ─────────────────────────────────────────── */
 
@@ -151,7 +152,7 @@ static int test_mcp_tools_list_clean(void)
         /* The tools/list surface is public and the most widely inspected
          * JSON in the MCP surface. A leak here would be the loudest
          * possible bug. */
-        char *buf = malloc(256 * 1024);
+        char *buf = zcl_malloc(256 * 1024, "test_tools_list_buf");
         ASSERT(buf != NULL);
         size_t n = mcp_router_tools_list_json(buf, 256 * 1024);
         ASSERT(n > 0);

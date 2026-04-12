@@ -32,6 +32,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+#include "util/safe_alloc.h"
 
 /* Expected tool counts.  If a future commit intentionally adds or
  * removes tools, bump these numbers in the same commit — they are the
@@ -364,7 +365,7 @@ static int test_tools_list_json_well_formed(void)
     TEST("controllers: mcp_router_tools_list_json produces parseable array") {
         register_all();
         size_t cap = 131072;
-        char *buf = malloc(cap);
+        char *buf = zcl_malloc(cap, "test_json_buf");
         ASSERT(buf != NULL);
         size_t wrote = mcp_router_tools_list_json(buf, cap);
         ASSERT(wrote > 0);

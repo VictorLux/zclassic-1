@@ -88,6 +88,7 @@ void connect_block_set_sapling_tree(struct incremental_merkle_tree *tree)
 #endif
 #include "script/interpreter.h"
 #include <string.h>
+#include "util/safe_alloc.h"
 
 static bool checkpoint_covers(const struct checkpoint_data *cpdata,
                               int height)
@@ -368,8 +369,8 @@ bool connect_block(const struct block *block,
             if (expensive_checks) {
                 if (num_txdatas >= txdatas_cap) {
                     txdatas_cap = txdatas_cap ? txdatas_cap * 2 : 64;
-                    txdatas = realloc(txdatas,
-                                      txdatas_cap * sizeof(*txdatas));
+                    txdatas = zcl_realloc(txdatas,
+                                      txdatas_cap * sizeof(*txdatas), "connect_txdatas");
                 }
                 precompute_tx_data(tx, &txdatas[num_txdatas]);
                 num_txdatas++;
@@ -401,10 +402,10 @@ bool connect_block(const struct block *block,
 
                     if (num_checks >= checks_cap) {
                         checks_cap = checks_cap ? checks_cap * 2 : 256;
-                        checks = realloc(checks,
-                                         checks_cap * sizeof(*checks));
-                        check_ptrs = realloc(check_ptrs,
-                                             checks_cap * sizeof(*check_ptrs));
+                        checks = zcl_realloc(checks,
+                                         checks_cap * sizeof(*checks), "connect_checks");
+                        check_ptrs = zcl_realloc(check_ptrs,
+                                             checks_cap * sizeof(*check_ptrs), "connect_check_ptrs");
                     }
 
                     struct script_check *sc = &checks[num_checks];
@@ -580,8 +581,8 @@ bool disconnect_block(const struct block *block,
                 if (tx->vin[j].prevout.n >= entry->coins.num_vout) {
                     size_t new_size = tx->vin[j].prevout.n + 1;
                     struct tx_out *new_vout =
-                        realloc(entry->coins.vout,
-                                new_size * sizeof(struct tx_out));
+                        zcl_realloc(entry->coins.vout,
+                                new_size * sizeof(struct tx_out), "disconnect_vout");
                     if (!new_vout) {
                         fprintf(stderr, "disconnect_block: realloc failed "
                                 "tx=%zu vin=%zu new_size=%zu\n", i, j, new_size);

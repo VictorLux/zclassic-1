@@ -6,6 +6,7 @@
 #include "validation/checkqueue.h"
 #include "util/log_macros.h"
 #include <stdlib.h>
+#include "util/safe_alloc.h"
 
 bool check_queue_loop(struct check_queue *cq, bool is_master)
 {
@@ -13,7 +14,7 @@ bool check_queue_loop(struct check_queue *cq, bool is_master)
     unsigned int nNow = 0;
     bool fOk = true;
 
-    void **local_batch = malloc(cq->nBatchSize * sizeof(void *));
+    void **local_batch = zcl_malloc(cq->nBatchSize * sizeof(void *), "checkqueue_batch");
     if (!local_batch)
         LOG_FAIL("checkqueue", "malloc failed for batch (size=%u)", cq->nBatchSize);
 
@@ -75,7 +76,7 @@ void check_queue_add(struct check_queue *cq, void **items, size_t count)
     if (needed > cq->queue_cap) {
         size_t new_cap = needed * 2;
         if (new_cap < 64) new_cap = 64;
-        cq->queue = realloc(cq->queue, new_cap * sizeof(void *));
+        cq->queue = zcl_realloc(cq->queue, new_cap * sizeof(void *), "checkqueue_queue");
         cq->queue_cap = new_cap;
     }
 

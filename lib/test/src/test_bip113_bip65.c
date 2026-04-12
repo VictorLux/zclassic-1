@@ -7,6 +7,7 @@
 #include "validation/contextual_check_tx.h"
 #include "chain/chain.h"
 #include "script/script_error.h"
+#include "util/safe_alloc.h"
 
 /* ── helpers ─────────────────────────────────────────────── */
 
@@ -31,11 +32,11 @@ static void make_locktime_block(struct block *blk, uint32_t header_time,
     blk->header.nTime = header_time;
 
     blk->num_vtx = 2;
-    blk->vtx = calloc(2, sizeof(struct transaction));
+    blk->vtx = zcl_calloc(2, sizeof(struct transaction), "test_vtx");
 
     blk->vtx[0].version = 1;
     blk->vtx[0].num_vin = 1;
-    blk->vtx[0].vin = calloc(1, sizeof(struct tx_in));
+    blk->vtx[0].vin = zcl_calloc(1, sizeof(struct tx_in), "test_vin");
     memset(blk->vtx[0].vin[0].prevout.hash.data, 0, 32);
     blk->vtx[0].vin[0].prevout.n = 0xFFFFFFFF;
     /* BIP34: encode height as minimal CScriptNum */
@@ -58,7 +59,7 @@ static void make_locktime_block(struct block *blk, uint32_t header_time,
     script_set(&blk->vtx[0].vin[0].script_sig, cb_sig, cb_len);
     blk->vtx[0].vin[0].sequence = 0xFFFFFFFF;
     blk->vtx[0].num_vout = 1;
-    blk->vtx[0].vout = calloc(1, sizeof(struct tx_out));
+    blk->vtx[0].vout = zcl_calloc(1, sizeof(struct tx_out), "test_vout");
     blk->vtx[0].vout[0].value = 1000000;
     uint8_t pk[] = {0x76, 0xa9, 0x14};
     script_set(&blk->vtx[0].vout[0].script_pub_key, pk, 3);
@@ -66,14 +67,14 @@ static void make_locktime_block(struct block *blk, uint32_t header_time,
     blk->vtx[1].version = 1;
     blk->vtx[1].lock_time = lock_time;
     blk->vtx[1].num_vin = 1;
-    blk->vtx[1].vin = calloc(1, sizeof(struct tx_in));
+    blk->vtx[1].vin = zcl_calloc(1, sizeof(struct tx_in), "test_vin");
     memset(blk->vtx[1].vin[0].prevout.hash.data, 0xBB, 32);
     blk->vtx[1].vin[0].prevout.n = 0;
     uint8_t sig[] = {0x00, 0x00};
     script_set(&blk->vtx[1].vin[0].script_sig, sig, 2);
     blk->vtx[1].vin[0].sequence = sequence;
     blk->vtx[1].num_vout = 1;
-    blk->vtx[1].vout = calloc(1, sizeof(struct tx_out));
+    blk->vtx[1].vout = zcl_calloc(1, sizeof(struct tx_out), "test_vout");
     blk->vtx[1].vout[0].value = 500000;
     script_set(&blk->vtx[1].vout[0].script_pub_key, pk, 3);
 }
@@ -143,7 +144,7 @@ int test_bip113_bip65(void)
         struct transaction tx;
         memset(&tx, 0, sizeof(tx));
         tx.num_vin = 1;
-        tx.vin = calloc(1, sizeof(struct tx_in));
+        tx.vin = zcl_calloc(1, sizeof(struct tx_in), "test_vin");
         tx.vin[0].sequence = 0;
         bool ok = is_final_tx(&tx, 100, 1000000);
         free(tx.vin);
@@ -157,7 +158,7 @@ int test_bip113_bip65(void)
         memset(&tx, 0, sizeof(tx));
         tx.lock_time = 100;
         tx.num_vin = 1;
-        tx.vin = calloc(1, sizeof(struct tx_in));
+        tx.vin = zcl_calloc(1, sizeof(struct tx_in), "test_vin");
         tx.vin[0].sequence = 0;
         bool ok = is_final_tx(&tx, 200, 0);
         free(tx.vin);
@@ -171,7 +172,7 @@ int test_bip113_bip65(void)
         memset(&tx, 0, sizeof(tx));
         tx.lock_time = 100;
         tx.num_vin = 1;
-        tx.vin = calloc(1, sizeof(struct tx_in));
+        tx.vin = zcl_calloc(1, sizeof(struct tx_in), "test_vin");
         tx.vin[0].sequence = 0;
         bool ok = is_final_tx(&tx, 100, 0);
         free(tx.vin);
@@ -185,7 +186,7 @@ int test_bip113_bip65(void)
         memset(&tx, 0, sizeof(tx));
         tx.lock_time = 500000100;
         tx.num_vin = 1;
-        tx.vin = calloc(1, sizeof(struct tx_in));
+        tx.vin = zcl_calloc(1, sizeof(struct tx_in), "test_vin");
         tx.vin[0].sequence = 0;
         bool ok = is_final_tx(&tx, 100, 500000200);
         free(tx.vin);
@@ -199,7 +200,7 @@ int test_bip113_bip65(void)
         memset(&tx, 0, sizeof(tx));
         tx.lock_time = 500000100;
         tx.num_vin = 1;
-        tx.vin = calloc(1, sizeof(struct tx_in));
+        tx.vin = zcl_calloc(1, sizeof(struct tx_in), "test_vin");
         tx.vin[0].sequence = 0;
         bool ok = is_final_tx(&tx, 100, 500000100);
         free(tx.vin);
@@ -213,7 +214,7 @@ int test_bip113_bip65(void)
         memset(&tx, 0, sizeof(tx));
         tx.lock_time = 999999;
         tx.num_vin = 2;
-        tx.vin = calloc(2, sizeof(struct tx_in));
+        tx.vin = zcl_calloc(2, sizeof(struct tx_in), "test_vin");
         tx.vin[0].sequence = 0xFFFFFFFF;
         tx.vin[1].sequence = 0xFFFFFFFF;
         bool ok = is_final_tx(&tx, 100, 0);
@@ -239,7 +240,7 @@ int test_bip113_bip65(void)
         memset(&tx, 0, sizeof(tx));
         tx.lock_time = 500000050;
         tx.num_vin = 1;
-        tx.vin = calloc(1, sizeof(struct tx_in));
+        tx.vin = zcl_calloc(1, sizeof(struct tx_in), "test_vin");
         tx.vin[0].sequence = 0;
 
         bool fail = false;
@@ -421,9 +422,9 @@ int test_bip113_bip65(void)
         struct transaction tx;
         memset(&tx, 0, sizeof(tx));
         tx.version = 1; tx.lock_time = 100;
-        tx.num_vin = 1; tx.vin = calloc(1, sizeof(struct tx_in));
+        tx.num_vin = 1; tx.vin = zcl_calloc(1, sizeof(struct tx_in), "test_vin");
         tx.vin[0].sequence = 0;
-        tx.num_vout = 1; tx.vout = calloc(1, sizeof(struct tx_out));
+        tx.num_vout = 1; tx.vout = zcl_calloc(1, sizeof(struct tx_out), "test_vout");
         tx.vout[0].value = 1000;
         struct tx_sig_checker txc;
         memset(&txc, 0, sizeof(txc));
@@ -449,9 +450,9 @@ int test_bip113_bip65(void)
         struct transaction tx;
         memset(&tx, 0, sizeof(tx));
         tx.version = 1; tx.lock_time = 100;
-        tx.num_vin = 1; tx.vin = calloc(1, sizeof(struct tx_in));
+        tx.num_vin = 1; tx.vin = zcl_calloc(1, sizeof(struct tx_in), "test_vin");
         tx.vin[0].sequence = 0;
-        tx.num_vout = 1; tx.vout = calloc(1, sizeof(struct tx_out));
+        tx.num_vout = 1; tx.vout = zcl_calloc(1, sizeof(struct tx_out), "test_vout");
         tx.vout[0].value = 1000;
         struct tx_sig_checker txc;
         memset(&txc, 0, sizeof(txc));
@@ -477,9 +478,9 @@ int test_bip113_bip65(void)
         struct transaction tx;
         memset(&tx, 0, sizeof(tx));
         tx.version = 1; tx.lock_time = 100;
-        tx.num_vin = 1; tx.vin = calloc(1, sizeof(struct tx_in));
+        tx.num_vin = 1; tx.vin = zcl_calloc(1, sizeof(struct tx_in), "test_vin");
         tx.vin[0].sequence = 0;
-        tx.num_vout = 1; tx.vout = calloc(1, sizeof(struct tx_out));
+        tx.num_vout = 1; tx.vout = zcl_calloc(1, sizeof(struct tx_out), "test_vout");
         tx.vout[0].value = 1000;
         struct tx_sig_checker txc;
         memset(&txc, 0, sizeof(txc));
@@ -504,9 +505,9 @@ int test_bip113_bip65(void)
         struct transaction tx;
         memset(&tx, 0, sizeof(tx));
         tx.version = 1; tx.lock_time = 200;
-        tx.num_vin = 1; tx.vin = calloc(1, sizeof(struct tx_in));
+        tx.num_vin = 1; tx.vin = zcl_calloc(1, sizeof(struct tx_in), "test_vin");
         tx.vin[0].sequence = 0xFFFFFFFF;
-        tx.num_vout = 1; tx.vout = calloc(1, sizeof(struct tx_out));
+        tx.num_vout = 1; tx.vout = zcl_calloc(1, sizeof(struct tx_out), "test_vout");
         tx.vout[0].value = 1000;
         struct tx_sig_checker txc;
         memset(&txc, 0, sizeof(txc));
@@ -532,9 +533,9 @@ int test_bip113_bip65(void)
         struct transaction tx;
         memset(&tx, 0, sizeof(tx));
         tx.version = 1; tx.lock_time = 999999;
-        tx.num_vin = 1; tx.vin = calloc(1, sizeof(struct tx_in));
+        tx.num_vin = 1; tx.vin = zcl_calloc(1, sizeof(struct tx_in), "test_vin");
         tx.vin[0].sequence = 0;
-        tx.num_vout = 1; tx.vout = calloc(1, sizeof(struct tx_out));
+        tx.num_vout = 1; tx.vout = zcl_calloc(1, sizeof(struct tx_out), "test_vout");
         tx.vout[0].value = 1000;
         struct tx_sig_checker txc;
         memset(&txc, 0, sizeof(txc));

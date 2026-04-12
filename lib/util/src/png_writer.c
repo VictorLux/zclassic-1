@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "util/safe_alloc.h"
 
 /* ── CRC32 (PNG uses ISO 3309 / ITU-T V.42 polynomial) ─────── */
 
@@ -104,7 +105,7 @@ static uint8_t *build_idat(const uint8_t *pixels, uint32_t w, uint32_t h,
     size_t row_bytes = (size_t)w * 3;
     size_t filtered_len = (size_t)h * (1 + row_bytes);
 
-    uint8_t *filtered = malloc(filtered_len);
+    uint8_t *filtered = zcl_malloc(filtered_len, "png_filtered");
     if (!filtered) return NULL;
 
     for (uint32_t y = 0; y < h; y++) {
@@ -124,7 +125,7 @@ static uint8_t *build_idat(const uint8_t *pixels, uint32_t w, uint32_t h,
     /* Total IDAT size: 2 (zlib header) + blocks + 4 (adler32)
      * Each block: 1 (bfinal/btype) + 2 (len) + 2 (nlen) + payload */
     size_t idat_len = 2 + num_blocks * 5 + filtered_len + 4;
-    uint8_t *idat = malloc(idat_len);
+    uint8_t *idat = zcl_malloc(idat_len, "png_idat");
     if (!idat) { free(filtered); return NULL; }
 
     size_t pos = 0;

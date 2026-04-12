@@ -7,6 +7,7 @@
 #include "sapling/bls12_381.h"
 #include <string.h>
 #include <stdlib.h>
+#include "util/safe_alloc.h"
 
 /* Runtime-dispatched Montgomery multiply (CPUID → BMI2+ADX or portable) */
 extern void fp_mont_mul_accel(uint64_t r[6], const uint64_t a[6], const uint64_t b[6]);
@@ -1911,7 +1912,7 @@ bool groth16_vk_read_raw(struct groth16_vk *vk, const uint8_t *data, size_t len)
     if (ic_len > 1000000) return false;  /* sanity check */
     if (len < (size_t)ic_len * 96) return false;
 
-    vk->ic = malloc(ic_len * sizeof(struct g1_point));
+    vk->ic = zcl_malloc(ic_len * sizeof(struct g1_point), "groth16_vk_ic");
     if (!vk->ic) return false;
     vk->ic_len = ic_len;
 

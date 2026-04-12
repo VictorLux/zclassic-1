@@ -25,6 +25,7 @@
 #include <netinet/tcp.h>
 #include <ifaddrs.h>
 #include <net/if.h>
+#include "util/safe_alloc.h"
 #ifndef MSG_NOSIGNAL
 #define MSG_NOSIGNAL 0
 #endif
@@ -107,7 +108,7 @@ int net_message_read_data(struct net_message *msg,
     size_t needed = msg->data_pos + copy;
     if (msg->recv_alloc < needed) {
         size_t alloc = msg->hdr.nMessageSize;
-        uint8_t *tmp = realloc(msg->recv_data, alloc);
+        uint8_t *tmp = zcl_realloc(msg->recv_data, alloc, "msg_recv_data");
         if (!tmp) LOG_ERR("net", "realloc failed for recv_data, needed %zu bytes", alloc);
         msg->recv_data = tmp;
         msg->recv_alloc = alloc;
@@ -122,9 +123,9 @@ int net_message_read_data(struct net_message *msg,
 
 static struct send_segment *send_segment_create(const uint8_t *data, size_t size)
 {
-    struct send_segment *seg = malloc(sizeof(*seg));
+    struct send_segment *seg = zcl_malloc(sizeof(*seg), "send_segment");
     if (!seg) LOG_NULL("net", "malloc failed for send_segment (%zu bytes)", size);
-    seg->data = malloc(size);
+    seg->data = zcl_malloc(size, "send_segment_data");
     if (!seg->data) { free(seg); LOG_NULL("net", "malloc failed for send_segment data (%zu bytes)", size); }
     memcpy(seg->data, data, size);
     seg->size = size;
@@ -144,7 +145,7 @@ struct p2p_node *p2p_node_create(struct net_manager *nm, zcl_socket_t sock,
                                   const struct net_address *addr,
                                   const char *name, bool inbound)
 {
-    struct p2p_node *node = calloc(1, sizeof(*node));
+    struct p2p_node *node = zcl_calloc(1, sizeof(*node), "p2p_node");
     if (!node) LOG_NULL("net", "calloc failed for p2p_node");
 
     node->socket = sock;
@@ -173,7 +174,7 @@ struct p2p_node *p2p_node_create(struct net_manager *nm, zcl_socket_t sock,
 
     rolling_bloom_init(&node->addr_known, 5000, 0.001);
 
-    node->pfilter = calloc(1, sizeof(*node->pfilter));
+    node->pfilter = zcl_calloc(1, sizeof(*node->pfilter), "bloom_filter");
     if (node->pfilter)
         bloom_filter_init(node->pfilter, 1, 0.0001, 0, BLOOM_UPDATE_NONE);
 
@@ -286,8 +287,8 @@ bool p2p_node_receive_bytes(struct p2p_node *node, const char *data,
             if (node->recv_msg_count >= node->recv_msg_cap) {
                 size_t newcap = node->recv_msg_cap ? node->recv_msg_cap * 2 : 16;
                 if (newcap > MAX_RECV_MESSAGES) newcap = MAX_RECV_MESSAGES;
-                struct net_message *tmp = realloc(node->recv_msgs,
-                                                   newcap * sizeof(*tmp));
+                struct net_message *tmp = zcl_realloc(node->recv_msgs,
+                                                   newcap * sizeof(*tmp), "recv_msgs");
                 if (!tmp) LOG_FAIL("net", "realloc failed for recv_msgs, newcap=%zu", newcap);
                 node->recv_msgs = tmp;
                 node->recv_msg_cap = newcap;
@@ -390,8 +391,8 @@ void p2p_node_push_address(struct p2p_node *node, const struct net_address *addr
     } else {
         if (node->addr_to_send_count >= node->addr_to_send_cap) {
             size_t newcap = node->addr_to_send_cap ? node->addr_to_send_cap * 2 : 64;
-            struct net_address *tmp = realloc(node->addr_to_send,
-                                               newcap * sizeof(*tmp));
+            struct net_address *tmp = zcl_realloc(node->addr_to_send,
+                                               newcap * sizeof(*tmp), "addr_to_send");
             if (!tmp) return;
             node->addr_to_send = tmp;
             node->addr_to_send_cap = newcap;
@@ -412,8 +413,8 @@ void p2p_node_add_inventory_known(struct p2p_node *node, const struct inv_item *
                     (newcap / 2) * sizeof(struct uint256));
             node->inventory_known_count = newcap / 2;
         } else {
-            struct uint256 *tmp = realloc(node->inventory_known_hashes,
-                                           newcap * sizeof(*tmp));
+            struct uint256 *tmp = zcl_realloc(node->inventory_known_hashes,
+                                           newcap * sizeof(*tmp), "inv_known_hashes");
             if (!tmp) { zcl_mutex_unlock(&node->cs_inventory); return; }
             node->inventory_known_hashes = tmp;
             node->inventory_known_cap = newcap;
@@ -439,8 +440,8 @@ void p2p_node_push_inventory(struct p2p_node *node, const struct inv_item *inv)
         if (node->inventory_to_send_count >= node->inventory_to_send_cap) {
             size_t newcap = node->inventory_to_send_cap ?
                             node->inventory_to_send_cap * 2 : 256;
-            struct inv_item *tmp = realloc(node->inventory_to_send,
-                                            newcap * sizeof(*tmp));
+            struct inv_item *tmp = zcl_realloc(node->inventory_to_send,
+                                            newcap * sizeof(*tmp), "inv_to_send");
             if (!tmp) { zcl_mutex_unlock(&node->cs_inventory); return; }
             node->inventory_to_send = tmp;
             node->inventory_to_send_cap = newcap;
@@ -680,7 +681,7 @@ static bool nm_add_node(struct net_manager *nm, struct p2p_node *node)
 {
     if (nm->num_nodes >= nm->nodes_cap) {
         size_t newcap = nm->nodes_cap ? nm->nodes_cap * 2 : 32;
-        struct p2p_node **tmp = realloc(nm->nodes, newcap * sizeof(*tmp));
+        struct p2p_node **tmp = zcl_realloc(nm->nodes, newcap * sizeof(*tmp), "node_list");
         if (!tmp) LOG_FAIL("net", "realloc failed for nodes array, newcap=%zu", newcap);
         nm->nodes = tmp;
         nm->nodes_cap = newcap;
@@ -785,7 +786,7 @@ void ban_addr(struct net_manager *nm, const struct net_addr *addr,
 
     if (nm->num_banned >= nm->banned_cap) {
         size_t newcap = nm->banned_cap ? nm->banned_cap * 2 : 64;
-        struct ban_entry *tmp = realloc(nm->banned, newcap * sizeof(*tmp));
+        struct ban_entry *tmp = zcl_realloc(nm->banned, newcap * sizeof(*tmp), "ban_list");
         if (!tmp) { zcl_mutex_unlock(&nm->cs_banned); return; }
         nm->banned = tmp;
         nm->banned_cap = newcap;
@@ -906,9 +907,9 @@ bool add_local(struct net_manager *nm, const struct net_service *addr, int score
     } else {
         if (nm->num_local_hosts >= nm->local_hosts_cap) {
             size_t newcap = nm->local_hosts_cap ? nm->local_hosts_cap * 2 : 8;
-            struct net_addr *ha = realloc(nm->local_hosts, newcap * sizeof(*ha));
-            struct local_service_info *hi = realloc(nm->local_host_info,
-                                                      newcap * sizeof(*hi));
+            struct net_addr *ha = zcl_realloc(nm->local_hosts, newcap * sizeof(*ha), "local_hosts");
+            struct local_service_info *hi = zcl_realloc(nm->local_host_info,
+                                                      newcap * sizeof(*hi), "local_host_info");
             if (!ha || !hi) {
                 zcl_mutex_unlock(&nm->cs_local_host);
                 LOG_FAIL("net", "realloc failed for local_hosts, newcap=%zu", newcap);
@@ -1034,7 +1035,7 @@ bool bind_listen_port(struct net_manager *nm, const struct net_service *addr,
 
     if (nm->num_listen_sockets >= nm->listen_sockets_cap) {
         size_t newcap = nm->listen_sockets_cap ? nm->listen_sockets_cap * 2 : 4;
-        struct listen_socket *tmp = realloc(nm->listen_sockets, newcap * sizeof(*tmp));
+        struct listen_socket *tmp = zcl_realloc(nm->listen_sockets, newcap * sizeof(*tmp), "listen_sockets");
         if (!tmp) { close_socket(&sock); LOG_FAIL("net", "realloc failed for listen_sockets, newcap=%zu", newcap); }
         nm->listen_sockets = tmp;
         nm->listen_sockets_cap = newcap;
@@ -1147,8 +1148,8 @@ void net_socket_handler_step(struct net_manager *nm)
             if (nm->num_disconnected >= nm->disconnected_cap) {
                 size_t newcap = nm->disconnected_cap ?
                                 nm->disconnected_cap * 2 : 32;
-                struct p2p_node **tmp = realloc(nm->nodes_disconnected,
-                                                 newcap * sizeof(*tmp));
+                struct p2p_node **tmp = zcl_realloc(nm->nodes_disconnected,
+                                                 newcap * sizeof(*tmp), "nodes_disconnected");
                 if (tmp) {
                     nm->nodes_disconnected = tmp;
                     nm->disconnected_cap = newcap;
@@ -1237,7 +1238,7 @@ void net_socket_handler_step(struct net_manager *nm)
     /* service each socket */
     zcl_mutex_lock(&nm->cs_nodes);
     size_t n = nm->num_nodes;
-    struct p2p_node **copy = malloc(n * sizeof(*copy));
+    struct p2p_node **copy = zcl_malloc(n * sizeof(*copy), "node_list_copy");
     if (copy) {
         memcpy(copy, nm->nodes, n * sizeof(*copy));
         for (size_t i = 0; i < n; i++)
@@ -1363,7 +1364,7 @@ bool addr_db_read(struct net_manager *nm, const char *datadir)
         LOG_FAIL("net", "peers.dat too small: %ld bytes", file_size);
     }
 
-    uint8_t *buf = malloc((size_t)file_size);
+    uint8_t *buf = zcl_malloc((size_t)file_size, "net_file_buf");
     if (!buf) { fclose(f); LOG_FAIL("net", "malloc failed for peers.dat, size=%ld", file_size); }
     if (fread(buf, 1, (size_t)file_size, f) != (size_t)file_size) {
         free(buf);
