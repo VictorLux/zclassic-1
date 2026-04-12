@@ -189,6 +189,7 @@ struct p2p_node {
     bool prefer_headers;
     bool send_compact;
     int64_t last_getheaders_time;
+    int     getheaders_stale_count;   /* consecutive empty header batches */
 
     _Atomic int misbehavior;  /* cumulative misbehavior score; banned at 100 */
     /* Monotonic timestamp (ms since UNIX epoch) of last accepted / valid

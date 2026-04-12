@@ -62,7 +62,9 @@ static void syncsvc_build_locator_from_chain(struct block_locator *loc,
         for (int i = 0; i < step && walk; i++)
             walk = walk->pprev;
 
-        if (++counter > 10)
+        /* Keep the first 12 hashes dense (step=1) for better fork
+         * detection near the tip, then double every step after. */
+        if (++counter > 12)
             step *= 2;
     }
 
@@ -100,7 +102,7 @@ static void syncsvc_build_locator_from_index(struct block_locator *loc,
         for (int i = 0; i < step && walk; i++)
             walk = walk->pprev;
 
-        if (++counter > 10)
+        if (++counter > 12)
             step *= 2;
     }
 
@@ -234,6 +236,34 @@ bool syncsvc_is_initial_block_download(const struct p2p_node *node,
             our_height < node->starting_height - 144);
 }
 
+/* Compute getheaders interval with exponential backoff for stale peers.
+ * Base interval depends on sync phase; each consecutive empty header
+ * response doubles the interval up to a cap of 600s. */
+static int64_t syncsvc_getheaders_interval(const struct p2p_node *node,
+                                           int our_height)
+{
+    int64_t base;
+    if (syncsvc_is_initial_block_download(node, our_height))
+        base = 10;
+    else if (node->starting_height > 0 && our_height < node->starting_height)
+        base = 30;   /* tighter than old 60s for faster catch-up */
+    else
+        base = 120;
+
+    /* Exponential backoff based on consecutive stale responses */
+    int stale = node->getheaders_stale_count;
+    if (stale > 0) {
+        int shift = stale > 5 ? 5 : stale;  /* cap at 2^5 = 32x */
+        base <<= shift;
+    }
+
+    /* Hard cap: never wait more than 600s */
+    if (base > 600)
+        base = 600;
+
+    return base;
+}
+
 bool syncsvc_should_request_headers(const struct p2p_node *node,
                                     int our_height,
                                     int64_t now_seconds)
@@ -241,16 +271,7 @@ bool syncsvc_should_request_headers(const struct p2p_node *node,
     if (!node || node->inbound) return false;
     if (node->state < PEER_SYNCING_HEADERS) return false;
 
-    /* Interval: 10s during IBD, 60s while catching up, 120s at tip.
-     * Never stop requesting headers entirely — starting_height is frozen
-     * at handshake time and the peer's chain keeps growing. */
-    int64_t interval;
-    if (syncsvc_is_initial_block_download(node, our_height))
-        interval = 10;
-    else if (node->starting_height > 0 && our_height < node->starting_height)
-        interval = 60;
-    else
-        interval = 120;
+    int64_t interval = syncsvc_getheaders_interval(node, our_height);
     return (now_seconds - node->last_getheaders_time) > interval;
 }
 
@@ -277,6 +298,16 @@ void syncsvc_note_headers_requested(struct p2p_node *node,
 {
     if (!node) return;
     node->last_getheaders_time = now_seconds;
+}
+
+void syncsvc_note_headers_received(struct p2p_node *node,
+                                   size_t accepted)
+{
+    if (!node) return;
+    if (accepted > 0)
+        node->getheaders_stale_count = 0;
+    else
+        node->getheaders_stale_count++;
 }
 
 bool syncsvc_should_scan_block_files_after_headers(size_t accepted,

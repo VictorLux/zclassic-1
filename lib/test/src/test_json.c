@@ -254,6 +254,34 @@ int test_json(void)
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
+    printf("json reject nesting beyond depth limit... ");
+    {
+        /* Build a string with 300 nested arrays — exceeds JSON_MAX_DEPTH (256) */
+        char deep[700];
+        memset(deep, '[', 300);
+        memcpy(deep + 300, "42", 2);
+        memset(deep + 302, ']', 300);
+        deep[602] = '\0';
+        struct json_value v;
+        bool ok = !json_read(&v, deep, 602);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); json_free(&v); failures++; }
+    }
+
+    printf("json accept nesting at depth limit... ");
+    {
+        /* 256 levels deep — exactly at the limit, should succeed */
+        char at_limit[600];
+        memset(at_limit, '[', 256);
+        memcpy(at_limit + 256, "1", 1);
+        memset(at_limit + 257, ']', 256);
+        at_limit[513] = '\0';
+        struct json_value v;
+        bool ok = json_read(&v, at_limit, 513);
+        ok = ok && (v.type == JSON_ARR);
+        json_free(&v);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
     printf("json copy deep equality... ");
     {
         const char *s = "{\"a\":[1,2,{\"b\":true}],\"c\":\"hello\"}";

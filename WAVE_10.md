@@ -41,15 +41,15 @@ Work in order. `./test_zcl` green on every push.
 
 9. ~~**Mempool orphan pool**~~ — **DONE.** `lib/validation/{include/validation/orphan_pool.h,src/orphan_pool.c}`. Fixed-size pool (50 entries), 10-minute TTL. `orphan_pool_add/remove/exists/clear/expire/size` + `find_children/extract_children` for parent-arrival reconnection. Mutex-protected. 18 tests in `test_mempool_orphan.c`: empty/add/duplicate/full-reject/remove/clear/expire/non-expire/find-children/extract-children/multi-input/no-match/null/non-existent/zero-inputs/readd/expire-all/max-out.
 
-10. **Fix fuzzer finding #2** — `test_json.c` segfaults under `-O1 + gcov`. Valgrind, diagnose, fix in separate commit.
+10. ~~**Fix fuzzer finding #2**~~ — **DONE.** Root cause: `parse_value()` in `lib/json/src/json.c` uses recursive descent — stack overflows under `-O1+gcov` instrumentation overhead. Fix: added `JSON_MAX_DEPTH` (256) limit to `parse_value_r()`, rejecting JSON nested beyond 256 levels. Removed AGENT3's `fork()` workaround from `test.c` — `test_json` now runs normally in all build modes. 2 new tests: depth-limit rejection (300 levels), at-limit acceptance (256 levels).
 
 ### New for wave 10
 
-11. **SQLite WAL size cap** — prevent unbounded WAL on slow checkpoints. Cap at env `ZCL_WAL_MAX_BYTES` (default 100MB), force checkpoint when exceeded.
+11. ~~**SQLite WAL size cap**~~ — **DONE.** `app/services/{include/services/db_maintenance.h,src/db_maintenance.c}`. New `wal_max_bytes` field in schedule config + `DB_MAINT_DEFAULT_WAL_MAX_BYTES` (100MB). Background thread checks WAL file size via `stat()` each tick; forces `PRAGMA wal_checkpoint(TRUNCATE)` when WAL exceeds the cap regardless of normal interval. Env override: `ZCL_WAL_MAX_BYTES` (0 disables cap). Integrates with existing `db_maintenance` service — no new threads or complexity.
 
-12. **Fee estimation robustness** — protect fee estimation against manipulation. Audit current fee calculation, add tests with adversarial fee distributions.
+12. ~~**Fee estimation robustness**~~ — **DONE.** `lib/test/src/test_fee_estimation.c` — 15 adversarial tests: all-zero fees (no estimate), MAX_MONEY fees (no overflow), single-satoshi fees, bimodal distribution (half low/half high), spam flood followed by normal blocks, sudden fee spike, empty blocks, duplicate block heights, decay convergence, varying tx sizes per-kB consistency, high conf_target with sparse data, monotonicity across targets, remove/re-add same hash, negative fees, rapid height jumps. Audited `fees.c`: no manipulation vectors found beyond expected decay-weighted behavior.
 
-13. **Headers-first sync refinement** — tighter getheaders loop, exponential backoff on stale peers, better locator construction.
+13. ~~**Headers-first sync refinement**~~ — **DONE.** `app/services/{include/services/header_sync_service.h,src/header_sync_service.c}`, `lib/net/include/net/net.h`. Three improvements: (1) **Tighter catching-up interval**: 60s → 30s for faster convergence when behind peer. (2) **Exponential backoff on stale peers**: new `getheaders_stale_count` field on `p2p_node`; each consecutive empty header response doubles the interval (cap 600s). `syncsvc_note_headers_received()` resets on good headers. (3) **Denser locator construction**: first 12 hashes kept at step=1 (was 10) for better fork detection near tip. 16 tests in `test_header_sync.c`.
 
 ### Stretch
 

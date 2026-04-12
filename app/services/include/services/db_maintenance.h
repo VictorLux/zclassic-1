@@ -61,6 +61,11 @@
 #define DB_MAINT_DEFAULT_ANALYZE_HOURS  24
 #define DB_MAINT_DEFAULT_VACUUM_DAYS    7
 
+/* WAL size cap: force a checkpoint if the WAL file exceeds this many
+ * bytes, regardless of the normal interval.  Overridable via env
+ * ZCL_WAL_MAX_BYTES.  Default 100 MB. */
+#define DB_MAINT_DEFAULT_WAL_MAX_BYTES  (100 * 1024 * 1024)
+
 /* ── Config ─────────────────────────────────────────────────── */
 
 struct db_maintenance_schedule {
@@ -68,6 +73,7 @@ struct db_maintenance_schedule {
     int analyze_hours;            /* 0 = use default  */
     int vacuum_days;              /* 0 = use default  */
     int tick_seconds;             /* 0 = 60 s (poll)  */
+    int64_t wal_max_bytes;        /* 0 = use default (100MB) */
 };
 
 void db_maintenance_schedule_defaults(struct db_maintenance_schedule *s);

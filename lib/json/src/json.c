@@ -336,6 +336,11 @@ size_t json_write(const struct json_value *v, char *buf, size_t buflen)
 
 /* --- JSON reader --- */
 
+/* Maximum nesting depth for arrays/objects.  Prevents stack overflow
+ * under -O1+gcov where each recursive frame is larger due to
+ * instrumentation overhead. 256 is generous for any real-world JSON. */
+#define JSON_MAX_DEPTH 256
+
 static const char *skip_ws(const char *p, const char *end)
 {
     while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r'))
@@ -343,7 +348,8 @@ static const char *skip_ws(const char *p, const char *end)
     return p;
 }
 
-static bool parse_value(struct json_value *v, const char **pp, const char *end);
+static bool parse_value_r(struct json_value *v, const char **pp,
+                          const char *end, int depth);
 
 static bool parse_string(char **out, const char **pp, const char *end)
 {
@@ -430,7 +436,8 @@ static bool parse_number(struct json_value *v, const char **pp, const char *end)
     return true;
 }
 
-static bool parse_value(struct json_value *v, const char **pp, const char *end)
+static bool parse_value_r(struct json_value *v, const char **pp,
+                          const char *end, int depth)
 {
     const char *p = skip_ws(*pp, end);
     if (p >= end) return false;
@@ -446,6 +453,7 @@ static bool parse_value(struct json_value *v, const char **pp, const char *end)
         return true;
     }
     if (*p == '{') {
+        if (depth >= JSON_MAX_DEPTH) return false;
         p++;
         json_set_object(v);
         p = skip_ws(p, end);
@@ -458,7 +466,7 @@ static bool parse_value(struct json_value *v, const char **pp, const char *end)
             if (p >= end || *p != ':') { free(key); return false; }
             p++;
             struct json_value child;
-            if (!parse_value(&child, &p, end)) { free(key); return false; }
+            if (!parse_value_r(&child, &p, end, depth + 1)) { free(key); return false; }
             if (!json_grow(v)) { free(key); json_free(&child); return false; }
             v->keys[v->num_children] = key;
             v->children[v->num_children] = child;
@@ -471,13 +479,14 @@ static bool parse_value(struct json_value *v, const char **pp, const char *end)
         return false;
     }
     if (*p == '[') {
+        if (depth >= JSON_MAX_DEPTH) return false;
         p++;
         json_set_array(v);
         p = skip_ws(p, end);
         if (p < end && *p == ']') { *pp = p + 1; return true; }
         while (p < end) {
             struct json_value child;
-            if (!parse_value(&child, &p, end)) return false;
+            if (!parse_value_r(&child, &p, end, depth + 1)) return false;
             if (!json_grow(v)) { json_free(&child); return false; }
             v->keys[v->num_children] = NULL;
             v->children[v->num_children] = child;
@@ -518,7 +527,7 @@ bool json_read(struct json_value *v, const char *raw, size_t len)
     json_init(v);
     const char *p = raw;
     const char *end = raw + len;
-    if (!parse_value(v, &p, end)) {
+    if (!parse_value_r(v, &p, end, 0)) {
         json_free(v);
         json_init(v);
         return false;

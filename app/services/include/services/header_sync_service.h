@@ -116,6 +116,10 @@ void syncsvc_plan_periodic_getheaders(struct sync_getheaders_action *action,
                                       int64_t now_seconds);
 void syncsvc_note_headers_requested(struct p2p_node *node,
                                     int64_t now_seconds);
+/* Update backoff state after receiving a headers response.
+ * accepted > 0 resets the stale counter; 0 increments it. */
+void syncsvc_note_headers_received(struct p2p_node *node,
+                                   size_t accepted);
 bool syncsvc_should_scan_block_files_after_headers(size_t accepted,
                                                    const struct block_index *header_tip);
 enum sync_header_log_mode syncsvc_header_log_mode(

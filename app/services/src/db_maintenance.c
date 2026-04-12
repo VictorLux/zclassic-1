@@ -48,6 +48,8 @@
 #include <sys/time.h>
 #include <time.h>
 
+#include <sys/stat.h>
+
 #include <sqlite3.h>
 
 /* ── Module state ───────────────────────────────────────────── */
@@ -66,6 +68,7 @@ struct db_maintenance_state {
     int analyze_hours;
     int vacuum_days;
     int tick_seconds;
+    int64_t wal_max_bytes;
 
     /* Last-run timestamps (UNIX seconds). 0 = never run. */
     int64_t wal_last_unix;
@@ -222,6 +225,19 @@ static bool dbm_due(int64_t last_unix, int64_t interval_seconds)
     return (dbm_now_unix() - last_unix) >= interval_seconds;
 }
 
+/* Returns the WAL file size in bytes, or 0 if unavailable. */
+static int64_t dbm_wal_size(struct node_db *db)
+{
+    if (!db || !db->open || !db->db) return 0;
+    const char *db_path = sqlite3_db_filename(db->db, "main");
+    if (!db_path) return 0;
+    char wal_path[1024];
+    snprintf(wal_path, sizeof(wal_path), "%s-wal", db_path);
+    struct stat st;
+    if (stat(wal_path, &st) != 0) return 0;
+    return (int64_t)st.st_size;
+}
+
 static void *dbm_thread_fn(void *arg)
 {
     (void)arg;
@@ -237,12 +253,16 @@ static void *dbm_thread_fn(void *arg)
         int64_t vacuum_last  = g_dbm.vacuum_last_unix;
         db_maintenance_vacuum_gate_fn gate = g_dbm.vacuum_gate;
         int tick = g_dbm.tick_seconds;
+        int64_t wal_cap = g_dbm.wal_max_bytes;
         pthread_mutex_unlock(&g_dbm.lock);
 
         if (stop) break;
 
         if (db) {
-            if (dbm_due(wal_last, wal_sec))
+            /* WAL size cap: force checkpoint regardless of interval
+             * when WAL exceeds the configured byte limit. */
+            bool wal_over_cap = (wal_cap > 0 && dbm_wal_size(db) > wal_cap);
+            if (wal_over_cap || dbm_due(wal_last, wal_sec))
                 (void)db_maintenance_run_now(db, "wal");
             if (dbm_due(analyze_last, analyze_sec))
                 (void)db_maintenance_run_now(db, "analyze");
@@ -295,6 +315,19 @@ bool db_maintenance_start(struct node_db *db,
     g_dbm.vacuum_days   = s->vacuum_days > 0
         ? s->vacuum_days : DB_MAINT_DEFAULT_VACUUM_DAYS;
     g_dbm.tick_seconds  = s->tick_seconds > 0 ? s->tick_seconds : 60;
+
+    /* WAL size cap: schedule value, env override, then default. */
+    g_dbm.wal_max_bytes = s->wal_max_bytes > 0
+        ? s->wal_max_bytes : DB_MAINT_DEFAULT_WAL_MAX_BYTES;
+    const char *env_wal = getenv("ZCL_WAL_MAX_BYTES");
+    if (env_wal) {
+        int64_t v = strtoll(env_wal, NULL, 10);
+        if (v > 0)
+            g_dbm.wal_max_bytes = v;
+        else if (v == 0)
+            g_dbm.wal_max_bytes = 0;  /* disable cap */
+    }
+
     g_dbm.stop_requested = false;
     g_dbm.thread_running = true;
 

@@ -67,10 +67,10 @@ static int test_sync_service_request_policy(void)
         ASSERT(!syncsvc_should_request_headers(&node, 500, 109));
         ASSERT(syncsvc_should_request_headers(&node, 500, 111));
 
-        /* Catching up (not IBD, but behind peer): 60s interval */
+        /* Catching up (not IBD, but behind peer): 30s interval */
         ASSERT(!syncsvc_is_initial_block_download(&node, 900));
-        ASSERT(!syncsvc_should_request_headers(&node, 900, 159));
-        ASSERT(syncsvc_should_request_headers(&node, 900, 161));
+        ASSERT(!syncsvc_should_request_headers(&node, 900, 129));
+        ASSERT(syncsvc_should_request_headers(&node, 900, 131));
 
         /* At tip (caught up to peer starting_height): 120s interval */
         ASSERT(!syncsvc_should_request_headers(&node, 1000, 219));
