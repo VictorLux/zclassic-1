@@ -1,0 +1,869 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * UTXO Recovery Service — extracted from boot.c (Phase C).
+ * All destructive UTXO operations gated through recovery_policy.
+ */
+
+#include "services/utxo_recovery_service.h"
+#include "services/recovery_policy.h"
+#include "services/chain_activation_controller.h"
+#include "services/snapshot_sync_service.h"
+#include "config/boot_internal.h"
+#include "config/db_service.h"
+#include "validation/main_state.h"
+#include "validation/process_block.h"
+#include "chain/chainparams.h"
+#include "storage/coins_view_sqlite.h"
+#include "storage/coins_db.h"
+#include "coins/coins_view.h"
+#include "coins/utxo_commitment.h"
+#include "chain/checkpoints.h"
+#include "chain/chain.h"
+#include "chain/pow.h"
+#include "models/database.h"
+#include "models/block.h"
+#include "storage/disk_block_io.h"
+#include "event/event.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <stdatomic.h>
+#include <sqlite3.h>
+
+/* ── Policy-gated UTXO wipe ──────────────────────────────────────
+ *
+ * Every destructive UTXO wipe must go through this function.
+ * It counts the rows first, asks recovery_policy for permission with
+ * a grep-able reason string, and refuses loudly if the proposed wipe
+ * is larger than ZCL_MAX_UTXO_WIPE_ROWS (default 1000).
+ *
+ * This is the gate that would have saved the 1.3M UTXOs on
+ * 2026-04-10. Do not bypass. */
+bool utxo_recovery_wipe(struct node_db *ndb, const char *reason)
+{
+    int64_t proposed = node_db_utxo_count(ndb);
+
+    struct recovery_policy pol;
+    policy_load_from_env(&pol);
+
+    enum policy_decision d = policy_check_utxo_wipe(&pol, proposed, reason);
+    if (d != POLICY_ALLOW) {
+        fprintf(stderr,
+                "utxo_recovery: REFUSING wipe at \"%s\" — would drop %lld rows, "
+                "policy=%s (override with ZCL_MAX_UTXO_WIPE_ROWS=%lld)\n",
+                reason, (long long)proposed,
+                policy_decision_name(d), (long long)(proposed + 1));
+        return false;
+    }
+    node_db_wipe_utxos(ndb);
+    return true;
+}
+
+/* ── Auto-reimport flag ──────────────────────────────────────── */
+
+bool utxo_recovery_check_reimport_flag(const char *datadir)
+{
+    char flag_path[512];
+    snprintf(flag_path, sizeof(flag_path), "%s/needs_reimport", datadir);
+    FILE *flag = fopen(flag_path, "r");
+    if (!flag) return false;
+
+    char buf[8] = {0};
+    fread(buf, 1, sizeof(buf) - 1, flag);
+    fclose(flag);
+    remove(flag_path);
+
+    if (buf[0] == '1') {
+        printf("Auto-reimport triggered by previous UTXO "
+               "validation failures.\n");
+        return true;
+    }
+    return false;
+}
+
+bool utxo_recovery_prepare_reimport(struct node_db *ndb)
+{
+    printf("Forced UTXO re-import requested.\n");
+    if (!utxo_recovery_wipe(ndb, "boot.reimport_utxos_flag"))
+        return false;
+    node_db_exec(ndb, "DELETE FROM node_state WHERE key='leveldb_utxo_migrated'");
+    return true;
+}
+
+/* ── LDB→SQLite UTXO import ─────────────────────────────────── */
+
+struct utxo_import_result utxo_recovery_import_ldb(
+    struct utxo_recovery_ctx *ctx)
+{
+    struct utxo_import_result res = {0};
+
+    uint8_t mig_buf[8];
+    size_t mig_len = 0;
+    bool migration_done = node_db_state_get(ctx->ndb,
+        "leveldb_utxo_migrated", mig_buf, sizeof(mig_buf), &mig_len);
+
+    if (migration_done)
+        return res;
+
+    char cs_path[1024];
+    char import_path_cleanup[1100] = "";
+    snprintf(cs_path, sizeof(cs_path), "%s/chainstate", ctx->datadir);
+    struct stat cs_st;
+
+    /* Fall back to zclassicd's chainstate if local doesn't exist */
+    if (stat(cs_path, &cs_st) != 0) {
+        const char *home_cs = getenv("HOME");
+        if (home_cs)
+            snprintf(cs_path, sizeof(cs_path),
+                     "%s/.zclassic/chainstate", home_cs);
+    }
+    if (stat(cs_path, &cs_st) != 0) {
+        /* No chainstate dir — mark as done (fresh node) */
+        uint8_t one = 1;
+        node_db_state_set(ctx->ndb, "leveldb_utxo_migrated", &one, 1);
+        return res;
+    }
+
+    printf("LevelDB→SQLite UTXO migration from %s\n", cs_path);
+    fflush(stdout);
+
+    /* If zclassicd's LOCK file exists, another process owns this
+     * LevelDB. Copy the chainstate to a temp dir to avoid
+     * corrupting zclassicd's data. NEVER delete another
+     * process's LOCK file. */
+    char cs_lock[1100];
+    snprintf(cs_lock, sizeof(cs_lock), "%s/LOCK", cs_path);
+    char import_path[1100];
+    struct stat lock_st;
+    if (stat(cs_lock, &lock_st) == 0) {
+        snprintf(import_path, sizeof(import_path),
+                 "%s/chainstate_import_tmp", ctx->datadir);
+        char cmd[2300];
+        snprintf(cmd, sizeof(cmd),
+                 "rm -rf '%s' && cp -a '%s' '%s'",
+                 import_path, cs_path, import_path);
+        printf("Copying chainstate (zclassicd LOCK present)...\n");
+        fflush(stdout);
+        if (system(cmd) != 0) {
+            printf("ERROR: failed to copy chainstate\n");
+            goto cleanup;
+        }
+        /* Remove the copied LOCK so we can open it */
+        char tmp_lock[1200];
+        snprintf(tmp_lock, sizeof(tmp_lock), "%s/LOCK", import_path);
+        unlink(tmp_lock);
+        snprintf(import_path_cleanup, sizeof(import_path_cleanup),
+                 "%s", import_path);
+    } else {
+        snprintf(import_path, sizeof(import_path), "%s", cs_path);
+    }
+
+    (void)utxo_recovery_wipe(ctx->ndb, "boot.ldb_import_prepare");
+    coins_view_sqlite_close(ctx->coins_sqlite);
+
+    struct coins_view_db migrate_db;
+    if (coins_view_db_open(&migrate_db, import_path,
+                           450 << 20, false, false)) {
+        struct node_db import_db;
+        if (node_db_sync_open_private_db_like(ctx->ndb, &import_db)) {
+            node_db_sync_import_utxos(&import_db, &migrate_db);
+            node_db_close(&import_db);
+        } else {
+            node_db_sync_import_utxos(ctx->ndb, &migrate_db);
+        }
+
+        /* Discover LDB height from imported UTXOs */
+        int ldb_height = 0;
+        if (ctx->ndb->open) {
+            sqlite3_stmt *hstmt = NULL;
+            sqlite3_prepare_v2(ctx->ndb->db,
+                "SELECT MAX(height) FROM utxos",
+                -1, &hstmt, NULL);
+            if (hstmt && sqlite3_step(hstmt) == SQLITE_ROW)
+                ldb_height = sqlite3_column_int(hstmt, 0);
+            if (hstmt) sqlite3_finalize(hstmt);
+            if (ldb_height > 0)
+                printf("LDB import: height %d (from UTXO heights)\n",
+                       ldb_height);
+        }
+        res.height = ldb_height;
+
+        /* Set coins_best_block from LDB */
+        struct uint256 ldb_best;
+        memset(&ldb_best, 0, sizeof(ldb_best));
+        if (coins_view_db_get_best_block(&migrate_db, &ldb_best) &&
+            !uint256_is_null(&ldb_best)) {
+            node_db_state_set(ctx->ndb, "coins_best_block",
+                              ldb_best.data, 32);
+            coins_view_cache_set_best_block(ctx->coins_tip, &ldb_best);
+
+            struct block_index *found = block_map_find(
+                &ctx->state->map_block_index, &ldb_best);
+
+            char dbg_hex[65];
+            uint256_get_hex(&ldb_best, dbg_hex);
+
+            if (found && found->nHeight > 0) {
+                /* Block found in index — set as chain tip */
+                if (found->phashBlock) {
+                    node_db_state_set(ctx->ndb, "coins_best_block",
+                        found->phashBlock->data, 32);
+                    coins_view_cache_set_best_block(
+                        ctx->coins_tip, found->phashBlock);
+                }
+                active_chain_set_tip(&ctx->state->chain_active, found);
+                ctx->state->pindex_best_header = found;
+                printf("LDB import: chain tip at h=%d hash=%s\n",
+                       found->nHeight, dbg_hex);
+                res.skip_activate = true;
+                snprintf(res.anchor_reason, sizeof(res.anchor_reason),
+                         "ldb_import_found");
+            } else if (ldb_height > 0) {
+                /* LDB best block NOT in our index — create placeholder
+                 * anchor (same pattern as snapsync). */
+                struct block_index *anchor = calloc(1,
+                    sizeof(struct block_index));
+                if (anchor) {
+                    block_index_init(anchor);
+                    anchor->nHeight = ldb_height;
+                    anchor->nStatus = BLOCK_VALID_TREE | BLOCK_HAVE_DATA;
+                    anchor->nChainTx = 1;
+                    anchor->nTx = 1;
+
+                    /* nChainWork must exceed all existing entries */
+                    {
+                        struct arith_uint256 max_work;
+                        arith_uint256_set_u64(&max_work, 0);
+                        size_t mwi = 0;
+                        struct block_index *mwp;
+                        while (block_map_next(
+                            &ctx->state->map_block_index,
+                            &mwi, NULL, &mwp)) {
+                            if (!mwp) continue;
+                            if (arith_uint256_compare(
+                                &mwp->nChainWork, &max_work) > 0)
+                                max_work = mwp->nChainWork;
+                        }
+                        struct arith_uint256 margin;
+                        arith_uint256_set_u64(&margin,
+                            4096ULL * (uint64_t)ldb_height);
+                        arith_uint256_add(&anchor->nChainWork,
+                                          &max_work, &margin);
+                    }
+
+                    block_map_insert(&ctx->state->map_block_index,
+                                      &ldb_best, anchor);
+                    anchor->phashBlock = block_map_find_hash(
+                        &ctx->state->map_block_index, &ldb_best);
+
+                    snapsync_set_anchor(anchor);
+                    active_chain_set_tip(&ctx->state->chain_active, anchor);
+                    ctx->state->pindex_best_header = anchor;
+
+                    printf("LDB import: anchor at h=%d hash=%s "
+                           "— syncing forward.\n", ldb_height, dbg_hex);
+                }
+                res.skip_activate = true;
+                snprintf(res.anchor_reason, sizeof(res.anchor_reason),
+                         "ldb_import_anchor");
+            } else {
+                char dbg_hex2[65];
+                uint256_get_hex(&ldb_best, dbg_hex2);
+                printf("LDB import: coins_best_block=%s "
+                       "(height unknown)\n", dbg_hex2);
+                res.skip_activate = true;
+                snprintf(res.anchor_reason, sizeof(res.anchor_reason),
+                         "ldb_import_unknown");
+            }
+        }
+
+        coins_view_db_close(&migrate_db);
+        node_db_wal_checkpoint(ctx->ndb);
+
+        /* SHA3 verification */
+        uint8_t imported_root[32];
+        uint64_t imported_count = 0;
+        utxo_commitment_sha3_compute(ctx->ndb->db,
+            imported_root, &imported_count);
+        printf("SHA3 UTXO verification: %llu UTXOs\n",
+               (unsigned long long)imported_count);
+        res.utxo_count = imported_count;
+
+        const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
+        if (cp && imported_count == cp->utxo_count &&
+            memcmp(imported_root, cp->sha3_hash, 32) == 0) {
+            printf("=== SHA3 UTXO CHECKPOINT: PASSED ===\n");
+        } else if (imported_count > 100000) {
+            printf("SHA3: %llu UTXOs (different height from "
+                   "checkpoint, will verify later)\n",
+                   (unsigned long long)imported_count);
+        } else {
+            fprintf(stderr, "ERROR: only %llu UTXOs imported "
+                    "— will retry on next boot\n",
+                    (unsigned long long)imported_count);
+            (void)utxo_recovery_wipe(ctx->ndb, "boot.ldb_import_failed_retry");
+        }
+
+        uint8_t one = 1;
+        if (imported_count > 100000)
+            node_db_state_set(ctx->ndb, "leveldb_utxo_migrated", &one, 1);
+
+        coins_view_sqlite_open(ctx->coins_sqlite, ctx->ndb->db);
+        /* Re-init coins cache after import */
+        coins_view_cache_init(ctx->coins_tip, &ctx->coins_sqlite->view);
+        set_coins_sqlite_for_commitment(ctx->coins_sqlite);
+        printf("UTXO migration complete.\n");
+        fflush(stdout);
+        res.imported = true;
+    }
+
+cleanup:
+    if (import_path_cleanup[0]) {
+        char rm_cmd[1200];
+        snprintf(rm_cmd, sizeof(rm_cmd), "rm -rf '%s'", import_path_cleanup);
+        system(rm_cmd);
+    }
+
+    /* Mark done for fresh node if no chainstate was found */
+    if (!res.imported && !migration_done) {
+        uint8_t one = 1;
+        node_db_state_set(ctx->ndb, "leveldb_utxo_migrated", &one, 1);
+    }
+
+    return res;
+}
+
+/* ── Chain tip restoration ──────────────────────────────────── */
+
+struct chain_restore_result utxo_recovery_restore_chain_tip(
+    struct utxo_recovery_ctx *ctx,
+    struct block_index *scan_fallback)
+{
+    struct chain_restore_result res = {0};
+
+    struct uint256 best_hash;
+    coins_view_cache_get_best_block(ctx->coins_tip, &best_hash);
+
+    if (uint256_is_null(&best_hash)) {
+        /* No best block — try fast rebuild if fallback available */
+        if (scan_fallback) {
+            active_chain_set_tip(&ctx->state->chain_active, scan_fallback);
+            ctx->state->pindex_best_header = scan_fallback;
+            printf("WARNING: Chain tip at height %d but coins DB is empty!\n",
+                   scan_fallback->nHeight);
+            printf("Attempting fast chainstate rebuild from SQLite...\n");
+            if (fast_rebuild_chainstate(ctx->coins_sqlite, ctx->coins_tip,
+                                         ctx->datadir))
+                printf("Fast rebuild complete — will activate chain.\n");
+            else
+                printf("Fast rebuild unavailable — will activate from genesis.\n");
+            res.restored = true;
+        }
+        return res;
+    }
+
+    struct block_index *best = block_map_find(
+        &ctx->state->map_block_index, &best_hash);
+
+    /* SQLite fallback: if block_map maps the hash to height 0
+     * but it's not actually the genesis block */
+    if (best && best->nHeight == 0 &&
+        !uint256_eq(&best_hash, &ctx->params->consensus.hashGenesisBlock)) {
+        char hex[65];
+        uint256_get_hex(&best_hash, hex);
+        fprintf(stderr,
+            "WARNING: coins DB best block %s mapped to height=0 "
+            "in block_index (not genesis)\n", hex);
+        if (ctx->ndb->open) {
+            struct db_block sqlite_blk;
+            if (db_block_find_by_hash(ctx->ndb, best_hash.data,
+                                       &sqlite_blk) &&
+                sqlite_blk.height > 0) {
+                printf("Correcting: block nHeight 0→%d from SQLite\n",
+                       sqlite_blk.height);
+                best->nHeight = sqlite_blk.height;
+            } else {
+                best = NULL;
+            }
+        } else {
+            best = NULL;
+        }
+    }
+
+    if (best) {
+        active_chain_set_tip(&ctx->state->chain_active, best);
+        ctx->state->pindex_best_header = best;
+        printf("Restored chain tip from coins DB: height=%d\n",
+               best->nHeight);
+        event_emitf(EV_BOOT_CHAIN_RESTORED, 0, "height=%d", best->nHeight);
+        res.restored = true;
+        return res;
+    }
+
+    /* coins_best_block not in block_map — create placeholder anchor */
+    char hex[65];
+    uint256_get_hex(&best_hash, hex);
+    printf("Coins DB best block %s not in index (block_map size=%zu).\n",
+           hex, ctx->state->map_block_index.size);
+
+    int utxo_max_height = 0;
+    if (ctx->ndb->open) {
+        sqlite3_stmt *hstmt = NULL;
+        sqlite3_prepare_v2(ctx->ndb->db,
+            "SELECT MAX(height) FROM utxos", -1, &hstmt, NULL);
+        if (hstmt && sqlite3_step(hstmt) == SQLITE_ROW)
+            utxo_max_height = sqlite3_column_int(hstmt, 0);
+        if (hstmt) sqlite3_finalize(hstmt);
+    }
+
+    if (utxo_max_height > 0) {
+        struct block_index *anchor = calloc(1, sizeof(struct block_index));
+        if (anchor) {
+            block_index_init(anchor);
+            anchor->nHeight = utxo_max_height;
+            anchor->nStatus = BLOCK_VALID_TREE | BLOCK_HAVE_DATA;
+            anchor->nChainTx = 1;
+            anchor->nTx = 1;
+
+            /* nChainWork must exceed all existing entries */
+            {
+                struct arith_uint256 max_work;
+                arith_uint256_set_u64(&max_work, 0);
+                size_t mwi = 0;
+                struct block_index *mwp;
+                while (block_map_next(&ctx->state->map_block_index,
+                                      &mwi, NULL, &mwp)) {
+                    if (!mwp) continue;
+                    if (arith_uint256_compare(&mwp->nChainWork,
+                                              &max_work) > 0)
+                        max_work = mwp->nChainWork;
+                }
+                struct arith_uint256 margin;
+                arith_uint256_set_u64(&margin,
+                    4096ULL * (uint64_t)utxo_max_height);
+                arith_uint256_add(&anchor->nChainWork, &max_work, &margin);
+            }
+
+            block_map_insert(&ctx->state->map_block_index,
+                              &best_hash, anchor);
+            anchor->phashBlock = block_map_find_hash(
+                &ctx->state->map_block_index, &best_hash);
+
+            snapsync_set_anchor(anchor);
+            active_chain_set_tip(&ctx->state->chain_active, anchor);
+            ctx->state->pindex_best_header = anchor;
+
+            printf("Chain restore: anchor at h=%d hash=%s "
+                   "— syncing forward.\n", utxo_max_height, hex);
+        }
+        res.skip_activate = true;
+        snprintf(res.anchor_reason, sizeof(res.anchor_reason),
+                 "chain_restore_anchor");
+    } else {
+        /* No UTXOs — wipe and start fresh */
+        printf("No UTXOs found — wiping coins state.\n");
+        (void)utxo_recovery_wipe(ctx->ndb, "boot.restore_no_utxos");
+        coins_view_cache_set_best_block(ctx->coins_tip,
+            &ctx->params->consensus.hashGenesisBlock);
+        coins_view_cache_flush(ctx->coins_tip);
+    }
+
+    res.restored = true;
+    return res;
+}
+
+/* ── Validation recovery execution ──────────────────────────── */
+
+/* Helper: recover from stale metadata by fixing coins_best_block
+ * from UTXO set heights instead of wiping. */
+static bool recover_stale_metadata(struct utxo_recovery_ctx *ctx)
+{
+    int64_t actual_utxos = node_db_utxo_count(ctx->ndb);
+    if (actual_utxos <= 1000)
+        return false;
+
+    fprintf(stderr,
+        "ABORT WIPE: validation says 'empty' but utxos "
+        "table has %lld rows. coins_best_block may be "
+        "stale, NOT the UTXOs. Refusing to destroy data.\n",
+        (long long)actual_utxos);
+
+    int max_h = 0;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(ctx->ndb->db,
+            "SELECT MAX(height) FROM utxos",
+            -1, &st, NULL) == SQLITE_OK) {
+        if (sqlite3_step(st) == SQLITE_ROW)
+            max_h = sqlite3_column_int(st, 0);
+        sqlite3_finalize(st);
+    }
+    if (max_h > 0) {
+        struct db_block tip_blk;
+        if (db_block_find_by_height(ctx->ndb, max_h, &tip_blk)) {
+            struct uint256 tip_hash;
+            memcpy(tip_hash.data, tip_blk.hash, 32);
+            coins_view_cache_set_best_block(ctx->coins_tip, &tip_hash);
+            coins_view_cache_flush(ctx->coins_tip);
+            struct block_index *bi = block_map_find(
+                &ctx->state->map_block_index, &tip_hash);
+            if (bi) {
+                active_chain_set_tip(&ctx->state->chain_active, bi);
+                ctx->state->pindex_best_header = bi;
+                printf("RECOVERY: restored chain tip from UTXO set: h=%d\n",
+                       max_h);
+            }
+        }
+    }
+    return true;
+}
+
+/* Helper: wipe UTXOs and reset to genesis for clean re-sync */
+static void reset_to_genesis(struct utxo_recovery_ctx *ctx)
+{
+    (void)utxo_recovery_wipe(ctx->ndb, "boot.reset_to_genesis");
+
+    coins_view_cache_set_best_block(ctx->coins_tip,
+        &ctx->params->consensus.hashGenesisBlock);
+    coins_view_cache_flush(ctx->coins_tip);
+
+    struct block_index *genesis = block_map_find(
+        &ctx->state->map_block_index,
+        &ctx->params->consensus.hashGenesisBlock);
+    if (genesis) {
+        active_chain_set_tip(&ctx->state->chain_active, genesis);
+        ctx->state->pindex_best_header = genesis;
+    }
+
+    /* Clear migration flag for LevelDB re-import on next boot */
+    node_db_exec(ctx->ndb,
+        "DELETE FROM node_state WHERE key='leveldb_utxo_migrated'");
+
+    extern _Atomic bool g_utxo_commitment_skip;
+    atomic_store(&g_utxo_commitment_skip, true);
+
+    set_flush_policy(3600, 1000000, 500);
+}
+
+/* Helper: boot-time integrity checks when BOOT_OK */
+static bool integrity_checks_boot_ok(struct utxo_recovery_ctx *ctx,
+                                      bool *out_skip_activate)
+{
+    int tip_h = active_chain_height(&ctx->state->chain_active);
+
+    /* A: Stale UTXO wipe — chain at genesis but UTXO set non-empty */
+    if (tip_h <= 0 && ctx->ndb->open) {
+        sqlite3_stmt *stale_cnt = NULL;
+        int64_t stale_utxos = 0;
+        if (sqlite3_prepare_v2(ctx->ndb->db,
+                "SELECT COUNT(*) FROM utxos", -1,
+                &stale_cnt, NULL) == SQLITE_OK && stale_cnt) {
+            if (sqlite3_step(stale_cnt) == SQLITE_ROW)
+                stale_utxos = sqlite3_column_int64(stale_cnt, 0);
+            sqlite3_finalize(stale_cnt);
+        }
+        if (stale_utxos > 0) {
+            printf("WARNING: Chain at genesis but %lld stale UTXOs "
+                   "from previous snapshot — wiping for clean sync\n",
+                   (long long)stale_utxos);
+            (void)utxo_recovery_wipe(ctx->ndb,
+                                      "boot.stale_utxos_at_genesis");
+            coins_view_cache_set_best_block(ctx->coins_tip,
+                &ctx->params->consensus.hashGenesisBlock);
+            coins_view_cache_flush(ctx->coins_tip);
+            *out_skip_activate = true;
+        }
+    }
+
+    /* B: UTXO count sanity check against SHA3 checkpoint */
+    const struct sha3_utxo_checkpoint *sha3cp = get_sha3_utxo_checkpoint();
+    if (sha3cp && sha3cp->height > 0 &&
+        tip_h >= sha3cp->height && ctx->ndb->open) {
+        sqlite3_stmt *cnt_stmt = NULL;
+        sqlite3_prepare_v2(ctx->ndb->db,
+            "SELECT COUNT(*) FROM utxos", -1, &cnt_stmt, NULL);
+        if (cnt_stmt && sqlite3_step(cnt_stmt) == SQLITE_ROW) {
+            int64_t actual = sqlite3_column_int64(cnt_stmt, 0);
+            int64_t expected = (int64_t)sha3cp->utxo_count;
+            int64_t delta = actual - expected;
+            double pct = expected > 0 ?
+                (double)(delta < 0 ? -delta : delta) / expected * 100 : 0;
+            if (pct > 50.0)
+                fprintf(stderr, "CRITICAL: UTXO count %lld vs "
+                        "checkpoint %lld (%.1f%% off) — consider "
+                        "reimport\n", (long long)actual,
+                        (long long)expected, pct);
+            else if (pct > 10.0)
+                printf("WARNING: UTXO count %lld vs checkpoint %lld "
+                       "(%.1f%% off, chain %d blocks past checkpoint)\n",
+                       (long long)actual, (long long)expected, pct,
+                       tip_h - sha3cp->height);
+        }
+        sqlite3_finalize(cnt_stmt);
+    }
+
+    /* C: XOR commitment verification */
+    if (ctx->ndb->open) {
+        struct utxo_commitment saved_uc, computed_uc;
+        memset(&saved_uc, 0, sizeof(saved_uc));
+        memset(&computed_uc, 0, sizeof(computed_uc));
+        if (utxo_commitment_load_checkpoint(ctx->ndb->db, &saved_uc)) {
+            utxo_commitment_compute_db(ctx->ndb->db, &computed_uc);
+            if (!utxo_commitment_equal(&saved_uc, &computed_uc))
+                fprintf(stderr, "WARNING: XOR commitment mismatch — "
+                        "UTXO set may be corrupted. "
+                        "Consider running --importchainstate\n");
+        }
+    }
+
+    return true;
+}
+
+struct recovery_exec_result utxo_recovery_execute(
+    struct utxo_recovery_ctx *ctx,
+    struct boot_validation_result *vr)
+{
+    struct recovery_exec_result res = {0};
+
+    /* Check activation controller — skip when ANCHOR_ACTIVE */
+    struct utxo_wipe_decision wd;
+    activation_should_allow_utxo_wipe(&wd,
+        activation_get_state(ctx->activation_ctl),
+        snapsync_get_anchor() != NULL);
+    if (!wd.safe_to_wipe) {
+        printf("Skipping coins/chain validation — %s\n", wd.reason);
+        return res;
+    }
+
+    switch (vr->action) {
+    case BOOT_RECOVER_REIMPORT:
+    case BOOT_RECOVER_WIPE_WAIT:
+        printf("WARNING: Chain tip at h=%d but coins DB %s!\n",
+               vr->chain_height,
+               vr->action == BOOT_RECOVER_REIMPORT
+                   ? "empty (LevelDB available)" : "empty");
+
+        /* SAFETY: check actual UTXO count before wiping */
+        if (recover_stale_metadata(ctx)) {
+            res.recovered = true;
+            break;
+        }
+
+        reset_to_genesis(ctx);
+        res.recovered = true;
+        break;
+
+    case BOOT_RECOVER_RESET_CHAIN: {
+        struct block_index *coins_block = block_map_find(
+            &ctx->state->map_block_index, &vr->coins_hash);
+        if (coins_block) {
+            printf("Chain tip/coins mismatch: chain=%d coins=%d\n"
+                   "  Resetting chain to coins tip — "
+                   "will replay %d blocks.\n",
+                   vr->chain_height, vr->coins_height,
+                   vr->chain_height - vr->coins_height);
+            active_chain_set_tip(&ctx->state->chain_active, coins_block);
+        }
+        res.recovered = true;
+        break;
+    }
+    case BOOT_OK:
+        integrity_checks_boot_ok(ctx, &res.skip_activate);
+        break;
+    }
+
+    return res;
+}
+
+/* ── UTXO cleanup ───────────────────────────────────────────── */
+
+int utxo_recovery_clean_above_tip(struct node_db *ndb,
+                                   struct main_state *state)
+{
+    if (!ndb->open) return 0;
+
+    struct block_index *tip = active_chain_tip(&state->chain_active);
+    int tip_h = tip ? tip->nHeight : 0;
+    if (tip_h <= 0) return 0;
+
+    /* Count how many UTXOs would be wiped */
+    int64_t would_wipe = 0;
+    {
+        sqlite3_stmt *st = NULL;
+        char count_sql[128];
+        snprintf(count_sql, sizeof(count_sql),
+                 "SELECT count(*) FROM utxos WHERE height > %d", tip_h);
+        if (sqlite3_prepare_v2(ndb->db, count_sql, -1, &st, NULL) == SQLITE_OK) {
+            if (sqlite3_step(st) == SQLITE_ROW)
+                would_wipe = sqlite3_column_int64(st, 0);
+            sqlite3_finalize(st);
+        }
+    }
+
+    if (would_wipe > 1000) {
+        fprintf(stderr,
+            "ABORT: would wipe %lld UTXOs above tip h=%d. "
+            "Chain tip is likely wrong, not the UTXOs. "
+            "Refusing to destroy data. "
+            "Investigate block_index.bin corruption.\n",
+            (long long)would_wipe, tip_h);
+        event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
+            "wipe_blocked count=%lld tip=%d",
+            (long long)would_wipe, tip_h);
+        return 0;
+    }
+
+    if (would_wipe > 0) {
+        char sql[128];
+        snprintf(sql, sizeof(sql),
+                 "DELETE FROM utxos WHERE height > %d", tip_h);
+        char *err = NULL;
+        int rc = sqlite3_exec(ndb->db, sql, NULL, NULL, &err);
+        int changes = sqlite3_changes(ndb->db);
+        if (rc == SQLITE_OK && changes > 0)
+            printf("Boot: removed %d UTXOs above tip h=%d\n",
+                   changes, tip_h);
+        if (err) sqlite3_free(err);
+        return changes;
+    }
+
+    return 0;
+}
+
+/* ── Shielded value backfill ────────────────────────────────── */
+
+struct shielded_backfill_ctx {
+    int updated;
+    struct main_state *state;
+    const char *datadir;
+};
+
+extern const char *g_datadir;
+
+static bool backfill_shielded_write(struct node_db *ndb, void *ctx_ptr)
+{
+    struct shielded_backfill_ctx *bctx = ctx_ptr;
+    if (!ndb || !ndb->open) return false;
+
+    sqlite3_stmt *stmt = NULL;
+    const char *sql =
+        "INSERT OR REPLACE INTO blocks"
+        "(hash,height,prev_hash,version,merkle_root,"
+        "time,bits,nonce,solution,chain_work,status,"
+        "file_num,data_pos,undo_pos,num_tx,"
+        "sapling_root,sprout_root,sapling_value,sprout_value)"
+        " VALUES(?,?,?,?,?,?,?,?,X'',X'',?,?,?,0,?,NULL,NULL,?,?)";
+    if (sqlite3_prepare_v2(ndb->db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        fprintf(stderr, "backfill: prepare failed: %s\n",
+                sqlite3_errmsg(ndb->db));
+        return false;
+    }
+
+    int updated = 0, batch = 0;
+    node_db_begin(ndb);
+
+    size_t iter = 0;
+    struct block_index *bi;
+    while (block_map_next(&bctx->state->map_block_index, &iter, NULL, &bi)) {
+        if (!bi) continue;
+        if (bi->nFile < 0 || !(bi->nStatus & 8)) continue;
+        if (bi->nDataPos == 0 && bi->nHeight > 0) continue;
+
+        int64_t sprout_val = bi->nSproutValue;
+        int64_t sapling_val = bi->nSaplingValue;
+
+        /* If block_index has no values, read from disk */
+        if (sprout_val == 0 && sapling_val == 0) {
+            struct block blk;
+            if (!read_block_from_disk_index(&blk, bi, bctx->datadir))
+                continue;
+            for (size_t i = 0; i < blk.num_vtx; i++) {
+                const struct transaction *tx = &blk.vtx[i];
+                for (size_t j = 0; j < tx->num_joinsplit; j++) {
+                    sprout_val += tx->v_joinsplit[j].vpub_old;
+                    sprout_val -= tx->v_joinsplit[j].vpub_new;
+                }
+                sapling_val += tx->value_balance;
+            }
+            block_free(&blk);
+            if (sprout_val == 0 && sapling_val == 0) continue;
+            bi->nSproutValue = sprout_val;
+            bi->nSaplingValue = sapling_val;
+        }
+
+        sqlite3_reset(stmt);
+        sqlite3_bind_blob(stmt, 1, bi->phashBlock->data, 32, SQLITE_STATIC);
+        sqlite3_bind_int(stmt, 2, bi->nHeight);
+        sqlite3_bind_blob(stmt, 3,
+            bi->pprev ? bi->pprev->phashBlock->data : (const uint8_t[32]){0},
+            32, SQLITE_STATIC);
+        sqlite3_bind_int(stmt, 4, bi->nVersion);
+        sqlite3_bind_blob(stmt, 5, bi->hashMerkleRoot.data, 32, SQLITE_STATIC);
+        sqlite3_bind_int64(stmt, 6, bi->nTime);
+        sqlite3_bind_int(stmt, 7, (int)bi->nBits);
+        sqlite3_bind_blob(stmt, 8, bi->nNonce.data, 32, SQLITE_STATIC);
+        sqlite3_bind_int(stmt, 9, bi->nStatus);
+        sqlite3_bind_int(stmt, 10, bi->nFile);
+        sqlite3_bind_int(stmt, 11, (int)bi->nDataPos);
+        sqlite3_bind_int(stmt, 12, bi->nTx);
+        sqlite3_bind_int64(stmt, 13, sapling_val);
+        sqlite3_bind_int64(stmt, 14, sprout_val);
+
+        if (sqlite3_step(stmt) != SQLITE_DONE) {
+            static int errs = 0;
+            if (++errs <= 3)
+                fprintf(stderr, "backfill h=%d: %s\n",
+                        bi->nHeight, sqlite3_errmsg(ndb->db));
+        } else {
+            updated++;
+        }
+
+        if (++batch >= 5000) {
+            node_db_commit(ndb);
+            node_db_begin(ndb);
+            batch = 0;
+            printf("  backfill: %d blocks so far...\n", updated);
+            fflush(stdout);
+        }
+    }
+
+    node_db_commit(ndb);
+    sqlite3_finalize(stmt);
+    node_db_state_set_int(ndb, "shielded_backfilled", 1);
+
+    bctx->updated = updated;
+    printf("Shielded backfill complete: %d blocks with "
+           "JoinSplit/Sapling data\n", updated);
+    fflush(stdout);
+    return true;
+}
+
+int utxo_recovery_backfill_shielded(struct node_db *ndb,
+                                     struct db_service *dbsvc,
+                                     struct main_state *state,
+                                     const char *datadir)
+{
+    struct shielded_backfill_ctx bctx = {
+        .updated = 0,
+        .state = state,
+        .datadir = datadir,
+    };
+    bool ok = false;
+
+    printf("Backfilling shielded values from block_index...\n");
+    if (dbsvc)
+        ok = db_service_run_write(dbsvc, backfill_shielded_write, &bctx);
+    else
+        ok = backfill_shielded_write(ndb, &bctx);
+
+    if (ok) {
+        printf("Backfill: updated %d blocks with shielded values\n",
+               bctx.updated);
+        fflush(stdout);
+        return bctx.updated;
+    }
+
+    fprintf(stderr, "Backfill: failed to update shielded values\n");
+    return -1;
+}

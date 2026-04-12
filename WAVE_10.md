@@ -31,7 +31,7 @@ Work in order. `./test_zcl` green on every push.
 
 5. ~~**Boot decomposition Phase B**~~ — **DONE.** `app/services/{include/services/chain_state_validator.h,src/chain_state_validator.c}` extracted from `boot_index.c`. `validate_coins_chain_agreement()` (159 lines) handles 4 recovery cases: BOOT_OK, REIMPORT, WIPE_WAIT, RESET_CHAIN. 6 tests in `test_chain_state_validator.c`. boot_index.c 1132→973 lines.
 
-6. **Boot decomposition Phase C** — extract `utxo_recovery_service.{h,c}`. Wipe/recover gated through recovery_policy. 8+ tests. **Target: boot.c < 1400 lines.**
+6. ~~**Boot decomposition Phase C**~~ — **DONE.** `app/services/{include/services/utxo_recovery_service.h,src/utxo_recovery_service.c}` extracted from `boot.c`. 7 public functions: `utxo_recovery_wipe`, `check_reimport_flag`, `prepare_reimport`, `import_ldb`, `restore_chain_tip`, `execute` (validation recovery), `clean_above_tip`, `backfill_shielded`. All wipe/recover paths gated through recovery_policy. 867 lines extracted + 126 lines dead code removed. boot.c 2745→1856 lines. 10 tests in `test_utxo_recovery_service.c`: policy-gated wipe allow/refuse, reimport flag detect/absent/zero-value, prepare reimport, clean above tip (stragglers/refuse>1000/no-op), LDB import skip.
 
 ### Hardening
 

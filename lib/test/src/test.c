@@ -107,6 +107,7 @@ int main(void)
     failures += test_key_scrub();
     failures += test_block_index_loader();
     failures += test_chain_state_validator();
+    failures += test_utxo_recovery_service();
 
     /* Spec-based user story tests */
     failures += spec_wallet_dashboard();
