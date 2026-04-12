@@ -256,6 +256,7 @@ int test_consensus_reject_index(void);
 int test_chain_rollback(void);
 int test_alerts(void);
 int test_ws_events(void);
+int test_trace(void);
 int test_phgr13_fix(void);
 
 /* Spec-based user story tests (one per feature area) */

@@ -33,6 +33,7 @@
 #include "services/chain_state_repository.h"
 #include "chain/mmr.h"
 #include "chain/mmb.h"
+#include "util/trace.h"
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
@@ -405,7 +406,16 @@ static bool process_block_commit_tip(struct main_state *ms,
                                       const char *reason,
                                       bool update_header_tip)
 {
-    if (!new_tip || !new_tip->phashBlock) return false;
+    struct trace_span *csr_span = trace_start("csr.commit_tip");
+    trace_attr_int(csr_span, "height", new_tip ? new_tip->nHeight : -1);
+    trace_attr_str(csr_span, "reason", reason ? reason : "");
+
+    if (!new_tip || !new_tip->phashBlock) {
+        trace_set_status(csr_span, TRACE_STATUS_ERROR);
+        trace_attr_str(csr_span, "error", "null_tip");
+        trace_end(csr_span);
+        return false;
+    }
 
     struct chain_state_commit commit = {
         .new_tip             = new_tip,
@@ -423,7 +433,10 @@ static bool process_block_commit_tip(struct main_state *ms,
     };
 
     enum csr_result rc = csr_commit_tip(csr_instance(), &commit);
-    if (rc == CSR_OK) return true;
+    if (rc == CSR_OK) {
+        trace_end(csr_span);
+        return true;
+    }
 
     if (rc == CSR_REJECTED_NOT_INITIALIZED) {
         /* Test harness path: the singleton was never wired. Fall
@@ -433,6 +446,8 @@ static bool process_block_commit_tip(struct main_state *ms,
         if (update_header_tip) ms->pindex_best_header = new_tip;
         if (coins_tip) coins_view_cache_set_best_block(coins_tip,
                                                         new_tip->phashBlock);
+        trace_attr_str(csr_span, "fallback", "raw_setters");
+        trace_end(csr_span);
         return true;
     }
 
@@ -442,6 +457,9 @@ static bool process_block_commit_tip(struct main_state *ms,
     fprintf(stderr,
             "process_block: csr rejected tip commit (%s) reason=%s h=%d\n",
             csr_result_name(rc), reason, new_tip->nHeight);
+    trace_set_status(csr_span, TRACE_STATUS_ERROR);
+    trace_attr_str(csr_span, "error", csr_result_name(rc));
+    trace_end(csr_span);
     return false;
 }
 
@@ -717,6 +735,9 @@ bool connect_tip(struct validation_state *state,
                  const struct chain_params *params,
                  const char *datadir)
 {
+    struct trace_span *ct_span = trace_start("chain.connect_tip");
+    trace_attr_int(ct_span, "height", pindex_new ? pindex_new->nHeight : -1);
+
     struct block local_block;
     block_init(&local_block);
 
@@ -735,6 +756,7 @@ bool connect_tip(struct validation_state *state,
                 process_block_commit_tip(ms, coins_tip, pindex_new,
                     "process_block.connect_tip.genesis_no_disk", true);
                 printf("Genesis block: connected (no disk data needed)\n");
+                trace_end(ct_span);
                 return true;
             }
             /* Retry: pindex_new may be a stale copy (from mmap or header
@@ -759,6 +781,8 @@ bool connect_tip(struct validation_state *state,
                     pindex_new->nDataPos, pindex_new->nStatus);
             pindex_new->nStatus &= ~BLOCK_HAVE_DATA;
             block_free(&local_block);
+            trace_set_status(ct_span, TRACE_STATUS_ERROR);
+            trace_end(ct_span);
             return validation_state_error(state, "failed-to-read-block");
         }
         block_read_ok:
@@ -772,6 +796,8 @@ bool connect_tip(struct validation_state *state,
                     "hash pointer — cannot verify disk block integrity\n",
                     pindex_new->nHeight);
             block_free(&local_block);
+            trace_set_status(ct_span, TRACE_STATUS_ERROR);
+            trace_end(ct_span);
             return validation_state_error(state, "block-index-no-hash");
         }
         if (uint256_cmp(&disk_hash, pindex_new->phashBlock) != 0) {
@@ -794,6 +820,8 @@ bool connect_tip(struct validation_state *state,
                         "wrong-block-on-disk h=%d cleared-have-data",
                         pindex_new->nHeight);
             block_free(&local_block);
+            trace_set_status(ct_span, TRACE_STATUS_ERROR);
+            trace_end(ct_span);
             return validation_state_error(state, "wrong-block-on-disk");
         }
 
@@ -803,6 +831,8 @@ bool connect_tip(struct validation_state *state,
             fprintf(stderr, "connect_tip: empty block at h=%d "
                     "(deserialization or disk error)\n", pindex_new->nHeight);
             block_free(&local_block);
+            trace_set_status(ct_span, TRACE_STATUS_ERROR);
+            trace_end(ct_span);
             return validation_state_error(state, "empty-block-from-disk");
         }
     }
@@ -974,6 +1004,8 @@ retry_connect:
             memset(&view, 0, sizeof(view));
             if (pblock == &local_block)
                 block_free(&local_block);
+            trace_set_status(ct_span, TRACE_STATUS_ERROR);
+            trace_end(ct_span);
             return false;
         }
 
@@ -983,6 +1015,8 @@ retry_connect:
             coins_view_cache_free(&view);
             if (pblock == &local_block)
                 block_free(&local_block);
+            trace_set_status(ct_span, TRACE_STATUS_ERROR);
+            trace_end(ct_span);
             return validation_state_error(state, "coins-flush-failed");
         }
         coins_view_cache_free(&view);
@@ -1025,6 +1059,8 @@ retry_connect:
                     event_emitf(EV_UTXO_CHECKPOINT_FAIL, 0,
                                 "height=%d expected=%s got=%s",
                                 cp->height, exp, got);
+                    trace_set_status(ct_span, TRACE_STATUS_ERROR);
+                    trace_end(ct_span);
                     return validation_state_error(state,
                         "sha3-utxo-checkpoint-failed");
                 }
@@ -1287,11 +1323,14 @@ retry_connect:
                 pindex_new->nHeight);
         if (pblock == &local_block)
             block_free(&local_block);
+        trace_set_status(ct_span, TRACE_STATUS_ERROR);
+        trace_end(ct_span);
         return false;
     }
 
     if (pblock == &local_block)
         block_free(&local_block);
+    trace_end(ct_span);
     return true;
 }
 

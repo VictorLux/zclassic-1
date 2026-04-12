@@ -32,6 +32,7 @@
 #include "crypto/sha3.h"
 #include "event/event.h"
 #include "config/runtime.h"
+#include "util/trace.h"
 #include "validation/main_state.h"
 #include "validation/contextual_check_tx.h"
 #include <string.h>
@@ -748,23 +749,38 @@ bool snapsync_accept_offer(struct snapshot_sync_service *svc,
 
 bool snapsync_begin_receive(struct snapshot_sync_service *svc)
 {
-    if (!svc)
+    struct trace_span *ss_span = trace_start("snapsync.begin_receive");
+
+    if (!svc) {
+        trace_set_status(ss_span, TRACE_STATUS_ERROR);
+        trace_attr_str(ss_span, "error", "null_svc");
+        trace_end(ss_span);
         return false;
+    }
+    trace_attr_int(ss_span, "snap_height", svc->offered_height);
+
     snapsync_service_lock();
     if (svc->state != SNAPSYNC_NEGOTIATING) {
         fprintf(stderr, "[snapsync] begin_receive: wrong state %s\n",
                 snapsync_state_name(svc->state));
         snapsync_service_unlock();
+        trace_set_status(ss_span, TRACE_STATUS_ERROR);
+        trace_attr_str(ss_span, "error", "wrong_state");
+        trace_end(ss_span);
         return false;
     }
     if (!svc->ndb) {
         fprintf(stderr, "[snapsync] begin_receive: ndb is NULL\n");
         snapsync_service_unlock();
+        trace_set_status(ss_span, TRACE_STATUS_ERROR);
+        trace_end(ss_span);
         return false;
     }
     if (!svc->ndb->open) {
         fprintf(stderr, "[snapsync] begin_receive: ndb not open\n");
         snapsync_service_unlock();
+        trace_set_status(ss_span, TRACE_STATUS_ERROR);
+        trace_end(ss_span);
         return false;
     }
 
@@ -775,6 +791,9 @@ bool snapsync_begin_receive(struct snapshot_sync_service *svc)
                             &receive_mode_ok) ||
         !receive_mode_ok) {
         snapsync_service_unlock();
+        trace_set_status(ss_span, TRACE_STATUS_ERROR);
+        trace_attr_str(ss_span, "error", "enter_receive_mode");
+        trace_end(ss_span);
         return false;
     }
     svc->turbo_active = true;
@@ -782,11 +801,17 @@ bool snapsync_begin_receive(struct snapshot_sync_service *svc)
 
     if (!snapsync_run_write(svc, snapsync_begin_receive_write, svc)) {
         snapsync_exit_turbo_mode(svc);
+        trace_set_status(ss_span, TRACE_STATUS_ERROR);
+        trace_attr_str(ss_span, "error", "begin_receive_write");
+        trace_end(ss_span);
         return false;
     }
     if (!sync_set_state(SYNC_SNAPSHOT_RECEIVE, "snapshot receive started")) {
         snapsync_run_write(svc, snapsync_rollback_receive_write, NULL);
         snapsync_reset(svc);
+        trace_set_status(ss_span, TRACE_STATUS_ERROR);
+        trace_attr_str(ss_span, "error", "sync_set_state");
+        trace_end(ss_span);
         return false;
     }
 
@@ -796,6 +821,7 @@ bool snapsync_begin_receive(struct snapshot_sync_service *svc)
     svc->last_progress_utxos = 0;
     snapsync_set_state(SNAPSYNC_RECEIVING, "receive mode active");
     snapsync_service_unlock();
+    trace_end(ss_span);
     return true;
 }
 

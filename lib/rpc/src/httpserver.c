@@ -11,6 +11,7 @@
 #include "core/random.h"
 #include "encoding/utilstrencodings.h"
 #include "mcp/metrics.h"
+#include "util/trace.h"
 #include <arpa/inet.h>
 #include <errno.h>
 #include <netinet/in.h>
@@ -195,6 +196,8 @@ static int dequeue_client_fd(void)
 
 static void handle_client(int client_fd)
 {
+    struct trace_span *rpc_span = trace_start("rpc.dispatch");
+
     /* Set socket timeout to prevent slowloris attacks.
      * 5 seconds to send complete request — generous for local RPC,
      * fatal for attackers trying to hold connections open. */
@@ -411,6 +414,7 @@ static void handle_client(int client_fd)
     if (tmo_slot >= 0) {
         rpc_timeout_set_method(&g_rpc_timeout, tmo_slot, req.method);
     }
+    trace_attr_str(rpc_span, "method", req.method);
 
     struct json_value result;
     json_init(&result);
@@ -446,6 +450,7 @@ done:
     if (tmo_slot >= 0) {
         rpc_timeout_unregister(&g_rpc_timeout, tmo_slot);
     }
+    trace_end(rpc_span);
     close(client_fd);
 }
 

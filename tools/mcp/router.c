@@ -6,6 +6,7 @@
 
 #include "event/event.h"
 #include "json/json.h"
+#include "util/trace.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -497,6 +498,9 @@ char *mcp_router_dispatch(const char *tool_name,
                           const struct json_value *args)
 {
     uint64_t t0 = now_us();
+    struct trace_span *span = trace_start("mcp.dispatch");
+    trace_attr_str(span, "tool", tool_name ? tool_name : "(null)");
+
     const struct mcp_tool_route *route = mcp_router_find(tool_name);
     if (!route) {
         char msg[200];
@@ -508,6 +512,9 @@ char *mcp_router_dispatch(const char *tool_name,
                     "tool=%s code=UNKNOWN_TOOL dur_us=%lld",
                     tool_name ? tool_name : "-",
                     (long long)(now_us() - t0));
+        trace_set_status(span, TRACE_STATUS_ERROR);
+        trace_attr_str(span, "error", "unknown_tool");
+        trace_end(span);
         return out ? out : strdup("{\"error\":{\"code\":\"INTERNAL\"}}");
     }
 
@@ -524,6 +531,9 @@ char *mcp_router_dispatch(const char *tool_name,
                     tool_name, mcp_error_code_name(vcode),
                     err_param[0] ? err_param : "-",
                     (long long)(now_us() - t0));
+        trace_set_status(span, TRACE_STATUS_ERROR);
+        trace_attr_str(span, "error", mcp_error_code_name(vcode));
+        trace_end(span);
         return out ? out : strdup("{\"error\":{\"code\":\"INTERNAL\"}}");
     }
 
@@ -542,11 +552,16 @@ char *mcp_router_dispatch(const char *tool_name,
         event_emitf(EV_MCP_REQUEST, 0,
                     "tool=%s code=%s dur_us=%lld",
                     tool_name, mcp_error_code_name(ec), (long long)dur);
+        trace_set_status(span, TRACE_STATUS_ERROR);
+        trace_attr_str(span, "error", mcp_error_code_name(ec));
+        trace_end(span);
         return out ? out : strdup("{\"error\":{\"code\":\"INTERNAL\"}}");
     }
 
     event_emitf(EV_MCP_REQUEST, 0,
                 "tool=%s code=OK dur_us=%lld",
                 tool_name, (long long)dur);
+    trace_attr_int(span, "dur_us", (int64_t)dur);
+    trace_end(span);
     return res.body;
 }
