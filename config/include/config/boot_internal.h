@@ -26,6 +26,7 @@
 #include "services/snapshot_sync_service.h"
 #include "services/bg_validation_service.h"
 #include "services/bg_hash_verification_service.h"
+#include "services/block_index_loader.h"
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <sqlite3.h>
@@ -36,13 +37,10 @@
 
 /* ── boot_index.c ───────────────────────────────────────────── */
 
-void save_block_index_flat(const char *datadir, struct main_state *ms);
-bool load_block_index_flat(const char *datadir, struct main_state *ms);
-void save_block_index_recent(struct node_db *ndb, struct main_state *ms);
-bool load_block_index_sqlite(struct node_db *ndb, struct main_state *ms);
-bool load_block_index(struct main_state *ms,
-                       const struct chain_params *params,
-                       struct block_tree_db *btdb, bool btdb_open);
+/* Block index load/save moved to services/block_index_loader.{h,c}.
+ * Remaining boot_index.c functions: chainstate rebuild, reindex,
+ * address backfill, block file scanning. */
+
 bool fast_rebuild_chainstate(struct coins_view_sqlite *cvs,
                               struct coins_view_cache *cvtip,
                               const char *datadir);
