@@ -1,5 +1,18 @@
 # ZClassic23 — AI-Integrated Power Node
 
+## Defensive Coding Standards (MANDATORY)
+
+**Read [`DEFENSIVE_CODING.md`](./DEFENSIVE_CODING.md) before writing any code.**
+
+Key rules enforced by the compiler and CI:
+- **Every write goes through `AR_BEGIN_SAVE`** — no raw `sqlite3_step()` in app code
+- **Every error return must log context** — use `LOG_FAIL()`, `LOG_ERR()`, `LOG_NULL()` from `util/log_macros.h`
+- **Every malloc must be checked** — use `zcl_malloc(size, "label")` from `util/safe_alloc.h`
+- **Every MCP handler must set an error body** — never `return -1;` without explaining why
+- **Before/after save hooks** — wire them for wallet keys, UTXOs, blocks
+
+`make lint` checks for violations. `make ci` runs lint before tests.
+
 ## MCP Server (Model Context Protocol)
 
 ZClassic23 has a built-in MCP server for AI development. Claude Code can query the node directly via typed tools — no curl, no token waste.

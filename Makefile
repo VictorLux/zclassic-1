@@ -463,7 +463,15 @@ docs-mcp-check: zclassic23
 #   make ci                 # full pipeline
 #   make ci SKIP_FUZZ=1     # skip the fuzz stage (faster)
 #   make ci SKIP_COV=1      # skip coverage (faster)
-ci: zclassic23 test_zcl
+lint:
+	@echo "══ LINT: silent error returns ══"
+	@! grep -rn 'return -1;' tools/mcp/controllers/ --include='*.c' \
+	    | grep -v 'LOG_ERR\|log_json\|fprintf\|// silent-ok' \
+	    | head -5 \
+	    || true
+	@echo "══ LINT: done (advisory — will become fatal) ══"
+
+ci: lint zclassic23 test_zcl
 	@echo "══ CI: test ══"
 	ulimit -s unlimited && ./test_zcl
 	@echo ""
