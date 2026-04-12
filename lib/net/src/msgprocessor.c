@@ -1860,34 +1860,35 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                 int scan_m = scan_block_files_mark_data(
                     mp->main_state, mp->datadir, mp->params);
 
-                /* Restore coins-based chain tip if the scan picked a wrong
-                 * short fork.  This happens when nChainTx propagation has
-                 * a gap (broken pprev chain at h=1) and find_most_work_chain
-                 * selects a fork with ~2K blocks instead of the 2M+ main chain
-                 * whose UTXO state is already loaded.
-                 *
-                 * Also fix heights along the pprev chain: the scan assigns
-                 * heights that are internally consistent (each = pprev+1) but
-                 * globally wrong — they trace back to a wrong starting point
-                 * near genesis instead of the real chain height.  Walk DOWN
-                 * from the coins tip, assigning correct heights. */
-                int post_scan_h = active_chain_height(
+                struct sync_chain_activation activation = {0};
+                syncsvc_build_block_file_scan_activation(&activation, scan_m);
+                if (activation.should_activate && !g_shutdown_requested) {
+                    printf("P2P block file scan: %d blocks marked\n", scan_m);
+                    struct activation_exec_outcome ao;
+                    activation_request_connect(boot_activation_controller(),
+                        ACTIVATION_SRC_BLOCK_FILE_SCAN, NULL, &ao);
+                }
+
+                /* Restore coins-based chain tip if activation picked a
+                 * wrong fork.  This check must run AFTER activation (which
+                 * calls activate_best_chain and may set tip=2340 due to
+                 * incomplete nChainTx propagation).  If the coins tip is
+                 * at a much higher height, fix heights from the anchor
+                 * and restore. */
+                int post_act_h = active_chain_height(
                     &mp->main_state->chain_active);
-                if (pre_scan_coins_h > 100000 && post_scan_h < 100000) {
+                if (pre_scan_coins_h > 100000 && post_act_h < pre_scan_coins_h) {
                     struct block_index *coins_bi = block_map_find(
                         &mp->main_state->map_block_index, &pre_scan_coins_hash);
                     if (coins_bi) {
-                        /* Fix coins tip height first */
+                        /* Fix coins tip height from known UTXO import */
                         if (coins_bi->nHeight != pre_scan_coins_h) {
-                            printf("Post-scan: fixing coins tip height "
+                            printf("Post-activation: fixing coins tip "
                                    "%d→%d\n",
                                    coins_bi->nHeight, pre_scan_coins_h);
                             coins_bi->nHeight = pre_scan_coins_h;
                         }
-                        /* Walk DOWN the pprev chain fixing heights.
-                         * Each block should be pprev->nHeight + 1, but the
-                         * scan may have assigned wrong heights globally.
-                         * Fix from the coins tip (known correct) downward. */
+                        /* Walk DOWN pprev chain fixing heights */
                         {
                             int fixed = 0;
                             struct block_index *cur = coins_bi;
@@ -1898,72 +1899,44 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                                     fixed++;
                                 }
                                 cur = cur->pprev;
-                                /* Safety: stop after walking the full chain */
                                 if (expected <= 0) break;
                             }
                             if (fixed > 0)
-                                printf("Post-scan: fixed %d pprev heights "
-                                       "from coins anchor\n", fixed);
+                                printf("Post-activation: fixed %d pprev "
+                                       "heights from anchor\n", fixed);
                         }
-                        /* Re-propagate heights for ALL entries now that
-                         * the coins tip chain has correct heights.  Entries
-                         * ABOVE the coins tip (h=2,014,949+) were created
-                         * by the scan with wrong heights; their pprev now
-                         * has the correct height so they can be fixed. */
+                        /* Re-propagate ALL heights (multi-pass for hash
+                         * order iteration — fixes blocks ABOVE anchor) */
                         {
-                            int global_fixed = 0;
-                            size_t giter = 0;
-                            struct block_index *gbi;
-                            while (block_map_next(
-                                &mp->main_state->map_block_index,
-                                &giter, NULL, &gbi)) {
-                                if (!gbi || !gbi->pprev) continue;
-                                int exp = gbi->pprev->nHeight + 1;
-                                if (gbi->nHeight != exp) {
-                                    gbi->nHeight = exp;
-                                    global_fixed++;
-                                }
-                            }
-                            /* May need multiple passes since we iterate
-                             * in hash order, not height order. */
-                            for (int pass = 1; pass < 20 && global_fixed > 0;
-                                 pass++) {
+                            int total = 0;
+                            for (int pass = 0; pass < 20; pass++) {
                                 int pf = 0;
-                                giter = 0;
+                                size_t gi = 0;
+                                struct block_index *gb;
                                 while (block_map_next(
                                     &mp->main_state->map_block_index,
-                                    &giter, NULL, &gbi)) {
-                                    if (!gbi || !gbi->pprev) continue;
-                                    int exp = gbi->pprev->nHeight + 1;
-                                    if (gbi->nHeight != exp) {
-                                        gbi->nHeight = exp;
+                                    &gi, NULL, &gb)) {
+                                    if (!gb || !gb->pprev) continue;
+                                    int exp = gb->pprev->nHeight + 1;
+                                    if (gb->nHeight != exp) {
+                                        gb->nHeight = exp;
                                         pf++;
                                     }
                                 }
-                                global_fixed += pf;
+                                total += pf;
                                 if (pf == 0) break;
                             }
-                            if (global_fixed > 0)
-                                printf("Post-scan: re-propagated %d heights "
-                                       "from coins anchor\n", global_fixed);
+                            if (total > 0)
+                                printf("Post-activation: re-propagated "
+                                       "%d heights\n", total);
                         }
-
-                        printf("Post-scan: restoring coins tip h=%d "
-                               "(scan picked h=%d)\n",
-                               pre_scan_coins_h, post_scan_h);
+                        printf("Post-activation: restoring coins tip "
+                               "h=%d (activation picked h=%d)\n",
+                               pre_scan_coins_h, post_act_h);
                         active_chain_set_tip(&mp->main_state->chain_active,
                                               coins_bi);
                         mp->main_state->pindex_best_header = coins_bi;
                     }
-                }
-
-                struct sync_chain_activation activation = {0};
-                syncsvc_build_block_file_scan_activation(&activation, scan_m);
-                if (activation.should_activate && !g_shutdown_requested) {
-                    printf("P2P block file scan: %d blocks marked\n", scan_m);
-                    struct activation_exec_outcome ao;
-                    activation_request_connect(boot_activation_controller(),
-                        ACTIVATION_SRC_BLOCK_FILE_SCAN, NULL, &ao);
                 }
             }
         }
