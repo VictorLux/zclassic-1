@@ -68,7 +68,7 @@ Work in order. `./test_zcl` green on every push.
 
 1. ~~**WebSocket event stream**~~ — **DONE.** `lib/net/{include/net/ws_events.h,src/ws_events.c}` — RFC 6455 WebSocket endpoint at `GET /events?domain=chain,peer`. Internal 4096-slot lock-free event queue fed by per-type observers. Background pump thread writes JSON text frames at 100ms intervals. Per-client domain prefix filter, heartbeat ping every 30s, idle timeout 90s, max 100 subscribers. `ws_events_upgrade()` handles the full handshake (SHA-1 + base64 Sec-WebSocket-Accept). Hooked into `httpserver.c` — detects `Upgrade: websocket` header on `GET /events`. 5 tests in `test_ws_events.c`.
 
-2. **OpenTelemetry-compat tracing** — `lib/util/trace.{h,c}` W3C Trace Context format. Migrate 5 hot paths: MCP dispatch, HTTP RPC dispatch, `connect_tip`, `csr_commit_tip`, `snapsync_begin_receive`.
+2. ~~**OpenTelemetry-compat tracing**~~ — **DONE.** `lib/util/{include/util/trace.h,src/trace.c}` — W3C Trace Context compatible spans with thread-local parent-child stack, /dev/urandom trace/span IDs, OTLP-compatible JSON output via log_jsonf. 5 hot paths instrumented: MCP dispatch (router.c), HTTP RPC dispatch (httpserver.c), connect_tip (process_block.c), csr_commit_tip via process_block_commit_tip (process_block.c), snapsync_begin_receive (snapshot_sync_service.c). 10 tests in `test_trace.c`.
 
 3. **peer_bandwidth wire-in** — primitives in `lib/net/src/peer_bandwidth.c`. Wire token-bucket into `connman.c` send/recv. Pause starved peers, resume on refill. `EV_PEER_THROTTLED`.
 
