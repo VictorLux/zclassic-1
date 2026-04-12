@@ -11,6 +11,7 @@
 #include "core/random.h"
 #include "encoding/utilstrencodings.h"
 #include "mcp/metrics.h"
+#include "support/cleanse.h"
 #include "util/trace.h"
 #include <arpa/inet.h>
 #include <errno.h>
@@ -38,8 +39,14 @@ static struct rpc_timeout_mgr g_rpc_timeout;
 static bool g_rpc_timeout_active = false;
 static char g_rpc_user[128];
 static char g_rpc_password[128];
+static char g_rpc_password_prev[128];  /* previous cookie — valid until next rotation */
 static char g_cookie_file[1024];
 static bool g_auth_required = false;
+static bool g_cookie_mode = false;     /* true when using generated cookie (not explicit user/pass) */
+static pthread_mutex_t g_cookie_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_t g_cookie_rotate_thread;
+static bool g_cookie_rotate_started = false;
+static int g_cookie_rotate_sec = 86400; /* default 24h, env ZCL_RPC_COOKIE_ROTATE_SEC */
 /* Wave 6: Prometheus /metrics HTTP endpoint.  Off by default; an
  * operator sets ZCL_METRICS_HTTP_ENABLE=1 to expose the same text
  * that `zcl_metrics` returns via MCP.  Gated separately from the
@@ -98,8 +105,21 @@ static bool check_auth(const char *auth_header)
     decoded[dlen] = '\0';
 
     char expected[512];
+    pthread_mutex_lock(&g_cookie_mutex);
     snprintf(expected, sizeof(expected), "%s:%s", g_rpc_user, g_rpc_password);
-    return strcmp((const char *)decoded, expected) == 0;
+    bool ok = (strcmp((const char *)decoded, expected) == 0);
+
+    /* Accept previous cookie during rotation transition window */
+    if (!ok && g_cookie_mode && g_rpc_password_prev[0]) {
+        snprintf(expected, sizeof(expected), "%s:%s",
+                 g_rpc_user, g_rpc_password_prev);
+        ok = (strcmp((const char *)decoded, expected) == 0);
+    }
+    pthread_mutex_unlock(&g_cookie_mutex);
+
+    memory_cleanse(expected, sizeof(expected));
+    memory_cleanse(decoded, sizeof(decoded));
+    return ok;
 }
 
 static bool read_line(int fd, char *buf, size_t buflen)
@@ -491,6 +511,59 @@ static void *listen_thread_fn(void *arg)
     return NULL;
 }
 
+/* ── Cookie rotation ────────────────────────────────────────────── */
+
+void rpc_http_cookie_rotate(void)
+{
+    pthread_mutex_lock(&g_cookie_mutex);
+    if (!g_cookie_mode || !g_auth_required) {
+        pthread_mutex_unlock(&g_cookie_mutex);
+        return;
+    }
+
+    /* Shift current → previous */
+    memory_cleanse(g_rpc_password_prev, sizeof(g_rpc_password_prev));
+    memcpy(g_rpc_password_prev, g_rpc_password, sizeof(g_rpc_password));
+
+    /* Generate new password */
+    uint64_t r1 = GetRand(UINT64_MAX);
+    uint64_t r2 = GetRand(UINT64_MAX);
+    snprintf(g_rpc_password, sizeof(g_rpc_password),
+             "%016llx%016llx",
+             (unsigned long long)r1, (unsigned long long)r2);
+
+    /* Write new cookie to disk */
+    if (g_cookie_file[0]) {
+        FILE *f = fopen(g_cookie_file, "w");
+        if (f) {
+            fprintf(f, "%s:%s", g_rpc_user, g_rpc_password);
+            fclose(f);
+        }
+    }
+    pthread_mutex_unlock(&g_cookie_mutex);
+    printf("RPC cookie rotated\n");
+}
+
+static void *cookie_rotate_thread_fn(void *arg)
+{
+    (void)arg;
+    while (g_running) {
+        /* Sleep in 1-second ticks so we notice shutdown promptly */
+        for (int i = 0; i < g_cookie_rotate_sec && g_running; i++)
+            sleep(1);
+        if (g_running)
+            rpc_http_cookie_rotate();
+    }
+    return NULL;
+}
+
+int rpc_http_cookie_rotate_sec(void)
+{
+    return g_cookie_rotate_sec;
+}
+
+/* ── Server start/stop ──────────────────────────────────────────── */
+
 bool rpc_http_start(const struct rpc_table *table, uint16_t port,
                      const char *rpc_user, const char *rpc_password,
                      const char *datadir)
@@ -504,8 +577,10 @@ bool rpc_http_start(const struct rpc_table *table, uint16_t port,
     g_table = table;
     g_rpc_user[0] = '\0';
     g_rpc_password[0] = '\0';
+    memory_cleanse(g_rpc_password_prev, sizeof(g_rpc_password_prev));
     g_cookie_file[0] = '\0';
     g_auth_required = false;
+    g_cookie_mode = false;
     if (rpc_user && rpc_password) {
         snprintf(g_rpc_user, sizeof(g_rpc_user), "%s", rpc_user);
         snprintf(g_rpc_password, sizeof(g_rpc_password), "%s", rpc_password);
@@ -518,6 +593,7 @@ bool rpc_http_start(const struct rpc_table *table, uint16_t port,
                  "%016llx%016llx",
                  (unsigned long long)r1, (unsigned long long)r2);
         g_auth_required = true;
+        g_cookie_mode = true;
 
         snprintf(g_cookie_file, sizeof(g_cookie_file),
                  "%s/.cookie", datadir);
@@ -598,6 +674,21 @@ bool rpc_http_start(const struct rpc_table *table, uint16_t port,
         }
     }
 
+    /* Wave 10 #4: RPC cookie rotation.  Default 24h; operators tune via
+     * ZCL_RPC_COOKIE_ROTATE_SEC.  Set to 0 to disable rotation.
+     * Only active in cookie mode (no explicit rpcuser/rpcpassword). */
+    g_cookie_rotate_sec = 86400;
+    const char *rot_env = getenv("ZCL_RPC_COOKIE_ROTATE_SEC");
+    if (rot_env && *rot_env) {
+        int v = atoi(rot_env);
+        if (v >= 0)
+            g_cookie_rotate_sec = v;
+    }
+    g_cookie_rotate_started = false;
+    if (g_cookie_mode && g_cookie_rotate_sec > 0) {
+        /* Thread created after g_running is set (below) */
+    }
+
     g_running = true;
     printf("RPC server listening on 127.0.0.1:%u\n", port);
 
@@ -635,6 +726,16 @@ bool rpc_http_start(const struct rpc_table *table, uint16_t port,
     }
     g_listen_thread_started = true;
 
+    /* Start cookie rotation background thread */
+    if (g_cookie_mode && g_cookie_rotate_sec > 0) {
+        if (pthread_create(&g_cookie_rotate_thread, NULL,
+                           cookie_rotate_thread_fn, NULL) == 0) {
+            g_cookie_rotate_started = true;
+            printf("RPC cookie rotation: every %d seconds\n",
+                   g_cookie_rotate_sec);
+        }
+    }
+
     return true;
 }
 
@@ -671,14 +772,21 @@ void rpc_http_stop(void)
     g_client_queue_tail = 0;
     pthread_mutex_unlock(&g_client_queue_mutex);
 
+    if (g_cookie_rotate_started) {
+        pthread_join(g_cookie_rotate_thread, NULL);
+        g_cookie_rotate_started = false;
+    }
+
     if (g_cookie_file[0]) {
         unlink(g_cookie_file);
         g_cookie_file[0] = '\0';
     }
     g_table = NULL;
     g_auth_required = false;
-    g_rpc_user[0] = '\0';
-    g_rpc_password[0] = '\0';
+    g_cookie_mode = false;
+    memory_cleanse(g_rpc_user, sizeof(g_rpc_user));
+    memory_cleanse(g_rpc_password, sizeof(g_rpc_password));
+    memory_cleanse(g_rpc_password_prev, sizeof(g_rpc_password_prev));
     if (g_rpc_timeout_active) {
         rpc_timeout_stop_watchdog(&g_rpc_timeout);
         rpc_timeout_set_global(NULL);

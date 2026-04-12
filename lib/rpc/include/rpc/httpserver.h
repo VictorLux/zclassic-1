@@ -15,4 +15,9 @@ bool rpc_http_start(const struct rpc_table *table, uint16_t port,
 void rpc_http_stop(void);
 bool rpc_http_is_running(void);
 
+/* Cookie rotation — call manually for testing; background thread calls
+ * automatically every ZCL_RPC_COOKIE_ROTATE_SEC seconds (default 24h). */
+void rpc_http_cookie_rotate(void);
+int  rpc_http_cookie_rotate_sec(void);
+
 #endif

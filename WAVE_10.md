@@ -74,7 +74,7 @@ Work in order. `./test_zcl` green on every push.
 
 ### Security
 
-4. **RPC cookie rotation** — timed rotation (default 24h, env `ZCL_RPC_COOKIE_ROTATE_SEC`). Existing connections valid until next window.
+4. ~~**RPC cookie rotation**~~ — **DONE.** `lib/rpc/src/httpserver.c` — timed rotation (default 24h, env `ZCL_RPC_COOKIE_ROTATE_SEC`). Background pthread rotates cookie on interval, writes new `.cookie` to disk. Dual-password auth: current + previous cookie both valid during transition window; previous invalidated on next rotation. `memory_cleanse` scrubs old passwords. `rpc_http_cookie_rotate()` exposed for manual/test use. `ZCL_RPC_COOKIE_ROTATE_SEC=0` disables rotation. Explicit `rpcuser`/`rpcpassword` mode unaffected. 8 tests in `test_cookie_rotation.c`.
 
 5. **Sapling key scrubbing** — audit every path touching spending keys (`sk`, `ask`, `nsk`, `ovk`). `explicit_bzero` on free/scope-exit. `test_key_scrub.c`.
 

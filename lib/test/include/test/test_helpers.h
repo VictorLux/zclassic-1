@@ -258,6 +258,7 @@ int test_alerts(void);
 int test_ws_events(void);
 int test_trace(void);
 int test_phgr13_fix(void);
+int test_cookie_rotation(void);
 
 /* Spec-based user story tests (one per feature area) */
 int spec_wallet_dashboard(void);
