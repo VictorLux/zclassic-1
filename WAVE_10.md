@@ -21,7 +21,7 @@ Work in order. `./test_zcl` green on every push.
 
 1. ~~**Reorg safety test**~~ — **DONE.** `lib/test/src/test_reorg_safety.c` — 23 tests: synthesizes 50-block reorg with conflicting fork. Exercises disconnect_block + update_coins for both chains. Asserts no UTXO loss, no orphan rows, CSR commit acceptance, recovery_policy allow/reject, db_txn scoped commit/rollback, non-coinbase spend undo, partial reorg (25/50), 5 rapid reorg cycles, commitment tracking. All safety infrastructure verified together.
 
-2. ~~**Consensus parity audit**~~ — **IN PROGRESS.** `CONSENSUS_PARITY.md` + `tools/consensus_parity_audit.sh`. C23 internal consistency verified (coins_best_block matches chain tip at h=2,014,988). C++ node syncing — cross-node comparison pending.
+2. ~~**Consensus parity audit**~~ — **DONE.** `CONSENSUS_PARITY.md` + `tools/consensus_parity_audit.sh`. 10/10 block hashes match between C23 (h=2,014,988) and C++ (h=2,015,541). Full chain consensus parity confirmed from genesis to h=2,014,988.
 
 3. ~~**PHGR13 live verification**~~ — **DONE.** Live node at h=2,014,988, past the h=2,014,948 barrier. Wave 9 #1 fully closed. Documented in AGENT2.md Current Status.
 
