@@ -7,6 +7,7 @@
 #define _DEFAULT_SOURCE
 #include "net/connman.h"
 #include "net/addrman.h"
+#include "net/peer_bandwidth.h"
 #include "net/peer_scoring.h"
 #include "services/addrman_integrity.h"
 #include "net/download.h"
@@ -32,6 +33,10 @@
 
 /* -connect mode: only connect to specified peers, no seeds */
 bool g_connect_only = false;
+
+/* Per-peer bandwidth quotas (wave 10 #3). */
+static struct peer_bandwidth g_peer_bw;
+static bool g_peer_bw_active = false;
 
 static pthread_t g_thread_dns_seed;
 static pthread_t g_thread_socket;
@@ -506,6 +511,14 @@ static void *thread_socket_handler(void *arg)
             if (!node) continue; /* node was removed between poll and now */
 
             if ((rev & POLLIN) && !node->disconnect) {
+                /* Bandwidth quota: check download budget before recv.
+                 * If no tokens available, skip this peer until refill. */
+                uint32_t bw_id = (uint32_t)node->id;
+                size_t bw_avail = g_peer_bw_active
+                    ? peer_bandwidth_available(&g_peer_bw, bw_id, PEER_BW_DOWN)
+                    : SIZE_MAX;
+                if (bw_avail == 0) goto skip_recv;
+
                 zcl_mutex_lock(&node->cs_recv);
                 /* Backpressure: if the message queue is full, skip recv
                  * until the processing thread drains it. This prevents
@@ -516,7 +529,10 @@ static void *thread_socket_handler(void *arg)
                     goto skip_recv;
                 }
                 char buf[0x10000];
-                ssize_t n = recv(target_fd, buf, sizeof(buf), MSG_DONTWAIT);
+                /* Cap recv size to bandwidth budget. */
+                size_t recv_cap = sizeof(buf);
+                if (bw_avail < recv_cap) recv_cap = bw_avail;
+                ssize_t n = recv(target_fd, buf, recv_cap, MSG_DONTWAIT);
                 if (n > 0) {
                     if (!p2p_node_receive_bytes(node, buf, (unsigned int)n,
                                                 cm->manager.message_start)) {
@@ -524,6 +540,10 @@ static void *thread_socket_handler(void *arg)
                     }
                     node->last_recv = GetTime();
                     node->recv_bytes += (uint64_t)n;
+                    /* Consume download tokens post-recv. */
+                    if (g_peer_bw_active)
+                        peer_bandwidth_consume(&g_peer_bw, bw_id,
+                                               PEER_BW_DOWN, (size_t)n);
                 } else if (n == 0) {
                     node->disconnect = true;
                 } else {
@@ -542,9 +562,23 @@ static void *thread_socket_handler(void *arg)
             skip_recv: ;
 
             if ((rev & POLLOUT) && !node->disconnect) {
-                zcl_mutex_lock(&node->cs_send);
-                socket_send_data(node);
-                zcl_mutex_unlock(&node->cs_send);
+                /* Bandwidth quota: check upload budget before send. */
+                uint32_t bw_id_s = (uint32_t)node->id;
+                size_t up_avail = g_peer_bw_active
+                    ? peer_bandwidth_available(&g_peer_bw, bw_id_s, PEER_BW_UP)
+                    : SIZE_MAX;
+                if (up_avail > 0) {
+                    zcl_mutex_lock(&node->cs_send);
+                    uint64_t before = node->send_bytes;
+                    socket_send_data(node);
+                    uint64_t sent = node->send_bytes - before;
+                    zcl_mutex_unlock(&node->cs_send);
+                    /* Consume upload tokens for actual bytes sent. */
+                    if (g_peer_bw_active && sent > 0)
+                        peer_bandwidth_consume(&g_peer_bw, bw_id_s,
+                                               PEER_BW_UP, (size_t)sent);
+                }
+                /* If up_avail == 0, skip send — peer is throttled. */
             }
 
             /* POLLHUP/POLLERR — peer disconnected or socket error */
@@ -762,6 +796,13 @@ bool connman_start(struct connman *cm)
     if (cm->started)
         return true;
 
+    /* Initialize per-peer bandwidth quotas from env vars. */
+    if (!g_peer_bw_active) {
+        peer_bandwidth_init(&g_peer_bw);
+        peer_bandwidth_load_from_env(&g_peer_bw);
+        g_peer_bw_active = true;
+    }
+
     g_stop = false;
 
     if (pthread_create(&g_thread_dns_seed, NULL, thread_dns_seed, cm) != 0) {
@@ -894,6 +935,12 @@ void connman_stop(struct connman *cm)
 {
     connman_signal_stop(cm);
     connman_join(cm);
+
+    /* Tear down bandwidth quotas. */
+    if (g_peer_bw_active) {
+        peer_bandwidth_destroy(&g_peer_bw);
+        g_peer_bw_active = false;
+    }
 }
 
 void connman_save_addrman(struct connman *cm)
@@ -1085,4 +1132,9 @@ void connman_open_connection(struct connman *cm,
 size_t connman_get_node_count(const struct connman *cm)
 {
     return cm->manager.num_nodes;
+}
+
+struct peer_bandwidth *connman_peer_bandwidth(void)
+{
+    return g_peer_bw_active ? &g_peer_bw : NULL;
 }

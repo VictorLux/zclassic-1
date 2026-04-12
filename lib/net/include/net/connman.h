@@ -54,4 +54,9 @@ size_t connman_get_node_count(const struct connman *cm);
 void connman_relay_transaction(struct connman *cm,
                                 const struct uint256 *txid);
 
+/* Access the connman's per-peer bandwidth state (wave 10 #3).
+ * Returns NULL if bandwidth quotas are not active. */
+struct peer_bandwidth;
+struct peer_bandwidth *connman_peer_bandwidth(void);
+
 #endif
