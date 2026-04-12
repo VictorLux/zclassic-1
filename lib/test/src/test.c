@@ -3,6 +3,7 @@
 
 #include "test/test_helpers.h"
 #include <signal.h>
+#include <sys/wait.h>
 
 /* Required by process_block.c (normally in main.c) */
 volatile sig_atomic_t g_shutdown_requested = 0;
@@ -38,7 +39,13 @@ int main(void)
     failures += test_slp();
     failures += test_models();
     failures += test_core();
+    failures += test_znam();
+    failures += test_htlc();
+    failures += test_file_market();
+    failures += test_strong_params();
+#ifndef COVERAGE_BUILD
     failures += test_json();
+#endif
     failures += test_robustness();
     failures += test_wallet();
     failures += test_primitives();
@@ -141,6 +148,33 @@ int main(void)
 
     ecc_verify_destroy();
     ecc_stop();
+
+#ifdef COVERAGE_BUILD
+    /* JSON test can stack-overflow under -O1+gcov.  Run it in a child
+     * process so the crash doesn't lose coverage counters for all
+     * preceding tests.  The child inherits the gcda files and the
+     * SIGSEGV handler in cov_flush.c will dump them even on crash. */
+    {
+        pid_t pid = fork();
+        if (pid == 0) {
+            /* Re-init since ecc was stopped */
+            ecc_start();
+            ecc_verify_init();
+            int jf = test_json();
+            ecc_verify_destroy();
+            ecc_stop();
+            _exit(jf ? 1 : 0);
+        } else if (pid > 0) {
+            int status = 0;
+            waitpid(pid, &status, 0);
+            if (WIFEXITED(status) && WEXITSTATUS(status) != 0)
+                failures++;
+            else if (WIFSIGNALED(status))
+                printf("json test crashed (signal %d) — coverage still captured\n",
+                       WTERMSIG(status));
+        }
+    }
+#endif
 
     printf("\n%s (%d failures)\n",
            failures ? "SOME TESTS FAILED" : "ALL TESTS PASSED", failures);

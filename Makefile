@@ -57,7 +57,7 @@ LIBS = -Lvendor/lib -lsecp256k1 -lleveldb \
 	-lssl -lcrypto -lz
 
 .PHONY: all test test-e2e clean deploy check-restart-follow \
-        coverage coverage-clean docs-mcp docs-mcp-check ci
+        coverage coverage-clean docs-mcp docs-mcp-check ci audit
 
 CLI_SRCS = lib/rpc/src/client.c lib/json/src/json.c
 all: test_zcl zclassic23 zclassic-cli
@@ -490,6 +490,9 @@ ci: lint zclassic23 test_zcl
 	fi
 	@echo ""
 	@echo "══ CI: ALL STAGES PASSED ══"
+
+audit:
+	@tools/dep_audit.sh
 
 check-restart-follow:
 	./zcl-nodectl verify-follow --restart
