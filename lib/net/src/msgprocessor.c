@@ -1905,6 +1905,49 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                                 printf("Post-scan: fixed %d pprev heights "
                                        "from coins anchor\n", fixed);
                         }
+                        /* Re-propagate heights for ALL entries now that
+                         * the coins tip chain has correct heights.  Entries
+                         * ABOVE the coins tip (h=2,014,949+) were created
+                         * by the scan with wrong heights; their pprev now
+                         * has the correct height so they can be fixed. */
+                        {
+                            int global_fixed = 0;
+                            size_t giter = 0;
+                            struct block_index *gbi;
+                            while (block_map_next(
+                                &mp->main_state->map_block_index,
+                                &giter, NULL, &gbi)) {
+                                if (!gbi || !gbi->pprev) continue;
+                                int exp = gbi->pprev->nHeight + 1;
+                                if (gbi->nHeight != exp) {
+                                    gbi->nHeight = exp;
+                                    global_fixed++;
+                                }
+                            }
+                            /* May need multiple passes since we iterate
+                             * in hash order, not height order. */
+                            for (int pass = 1; pass < 20 && global_fixed > 0;
+                                 pass++) {
+                                int pf = 0;
+                                giter = 0;
+                                while (block_map_next(
+                                    &mp->main_state->map_block_index,
+                                    &giter, NULL, &gbi)) {
+                                    if (!gbi || !gbi->pprev) continue;
+                                    int exp = gbi->pprev->nHeight + 1;
+                                    if (gbi->nHeight != exp) {
+                                        gbi->nHeight = exp;
+                                        pf++;
+                                    }
+                                }
+                                global_fixed += pf;
+                                if (pf == 0) break;
+                            }
+                            if (global_fixed > 0)
+                                printf("Post-scan: re-propagated %d heights "
+                                       "from coins anchor\n", global_fixed);
+                        }
+
                         printf("Post-scan: restoring coins tip h=%d "
                                "(scan picked h=%d)\n",
                                pre_scan_coins_h, post_scan_h);
