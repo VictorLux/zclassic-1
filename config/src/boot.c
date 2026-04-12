@@ -356,14 +356,16 @@ bool app_init(struct app_context *ctx)
         wallet_rebuild_spent_set(&g_wallet);
         wallet_sqlite_read_sapling_keys(&g_wallet_sqlite, &g_wallet);
         wallet_sqlite_read_scripts(&g_wallet_sqlite, &g_wallet);
+        wallet_sqlite_read_watch_only(&g_wallet_sqlite, &g_wallet);
         int saved_height = 0;
         if (wallet_sqlite_read_scan_height(&g_wallet_sqlite, &saved_height))
             g_wallet.best_block_height = saved_height;
         printf("Wallet loaded: %zu keys, %zu sapling keys, %zu scripts, "
-               "%zu txs, scan height %d.\n",
+               "%zu watch-only, %zu txs, scan height %d.\n",
                g_wallet.keystore.num_keys,
                g_wallet.sapling_keys.num_keys,
                g_wallet.keystore.num_scripts,
+               g_wallet.keystore.num_watching,
                g_wallet.num_wallet_tx,
                g_wallet.best_block_height);
     } else {

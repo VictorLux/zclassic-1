@@ -199,6 +199,32 @@ bool keystore_add_watch_only(struct basic_keystore *ks,
     return true;
 }
 
+bool keystore_add_watch_only_id(struct basic_keystore *ks,
+                                  const struct key_id *keyid)
+{
+    zcl_mutex_lock(&ks->cs);
+
+    for (size_t i = 0; i < ks->num_watching; i++) {
+        if (ks->watching[i].used && key_id_eq(&ks->watching[i].keyid, keyid)) {
+            zcl_mutex_unlock(&ks->cs);
+            return true;
+        }
+    }
+
+    if (ks->num_watching >= MAX_KEYSTORE_WATCHING) {
+        zcl_mutex_unlock(&ks->cs);
+        return false;
+    }
+
+    struct watching_entry *e = &ks->watching[ks->num_watching++];
+    e->keyid = *keyid;
+    memset(&e->key, 0, sizeof(e->key));
+    e->used = true;
+
+    zcl_mutex_unlock(&ks->cs);
+    return true;
+}
+
 bool keystore_have_watch_only(const struct basic_keystore *ks,
                                 const struct key_id *keyid)
 {

@@ -30,6 +30,8 @@ struct wallet_sqlite {
     sqlite3_stmt *stmt_zkey_read;
     sqlite3_stmt *stmt_script_write;
     sqlite3_stmt *stmt_script_read;
+    sqlite3_stmt *stmt_watch_write;
+    sqlite3_stmt *stmt_watch_read;
 };
 
 bool wallet_sqlite_open(struct wallet_sqlite *ws, sqlite3 *db);
@@ -65,6 +67,11 @@ bool wallet_sqlite_write_script(struct wallet_sqlite *ws,
                                   const struct uint160 *script_id,
                                   const struct script *redeem_script);
 bool wallet_sqlite_read_scripts(struct wallet_sqlite *ws, struct wallet *w);
+
+bool wallet_sqlite_write_watch_only(struct wallet_sqlite *ws,
+                                      const uint8_t address_hash[20],
+                                      const char *address);
+bool wallet_sqlite_read_watch_only(struct wallet_sqlite *ws, struct wallet *w);
 
 bool wallet_sqlite_flush(struct wallet_sqlite *ws, struct wallet *w);
 

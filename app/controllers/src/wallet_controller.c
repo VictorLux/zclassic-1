@@ -720,6 +720,109 @@ static bool rpc_importprivkey(const struct json_value *params, bool help,
     return true;
 }
 
+static bool rpc_importaddress(const struct json_value *params, bool help,
+                                struct json_value *result)
+{
+    struct wallet_rpc_context *ctx = wallet_ctx();
+    RPC_HELP(help, result, "importaddress \"address\"\n"
+        "\nWatch a transparent address without importing its private key.\n"
+        "Tracks balance and transactions but cannot spend.\n"
+        "\nArguments:\n"
+        "1. \"address\"     (string, required) The transparent address\n");
+
+    struct rpc_params p;
+    rpc_params_init(&p, params);
+    rpc_params_expect(&p, 1, 1);
+    const char *addr_str = rpc_require_str(&p, 0, "address");
+    if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); return false; }
+
+    ENSURE_WALLET(result);
+
+    const struct chain_params *cp = chain_params_get();
+    size_t pk_pfx_len, sc_pfx_len;
+    const unsigned char *pk_pfx = chain_params_base58_prefix(
+        cp, B58_PUBKEY_ADDRESS, &pk_pfx_len);
+    const unsigned char *sc_pfx = chain_params_base58_prefix(
+        cp, B58_SCRIPT_ADDRESS, &sc_pfx_len);
+
+    struct tx_destination dest;
+    if (!decode_destination(addr_str, pk_pfx, pk_pfx_len,
+                            sc_pfx, sc_pfx_len, &dest)) {
+        json_set_str(result, "Invalid address");
+        return false;
+    }
+
+    if (dest.type != DEST_KEY_ID) {
+        json_set_str(result, "Only transparent P2PKH addresses supported");
+        return false;
+    }
+
+    /* Already have the private key? Skip — nothing to do. */
+    if (keystore_have_key(&ctx->wallet->keystore, &dest.id.key)) {
+        json_set_str(result, "Address already in wallet with private key");
+        return false;
+    }
+
+    /* Add as watch-only to keystore. */
+    zcl_mutex_lock(&ctx->wallet->cs);
+    bool ok = keystore_add_watch_only_id(&ctx->wallet->keystore, &dest.id.key);
+    zcl_mutex_unlock(&ctx->wallet->cs);
+
+    if (!ok) {
+        json_set_str(result, "Error: watch-only keystore full");
+        return false;
+    }
+
+    /* Persist to wallet DB. */
+    if (ctx->wallet_db)
+        wallet_sqlite_write_watch_only(ctx->wallet_db,
+                                        dest.id.key.id.data, addr_str);
+
+    /* Instant UTXO index lookup — same as importprivkey. */
+    uint8_t addr_hash[20];
+    memcpy(addr_hash, dest.id.key.id.data, 20);
+
+    int found = 0;
+    int64_t bal = 0;
+    if (ctx->node_db) {
+        struct db_utxo utxos[512];
+        found = db_utxo_list_for_address(ctx->node_db, addr_hash,
+                                          utxos, 512);
+        for (int i = 0; i < found; i++) {
+            struct db_utxo full;
+            if (!db_utxo_find(ctx->node_db, utxos[i].txid, utxos[i].vout,
+                              &full))
+                continue;
+
+            struct db_wallet_utxo wu;
+            memset(&wu, 0, sizeof(wu));
+            memcpy(wu.txid, full.txid, 32);
+            wu.vout = full.vout;
+            wu.value = full.value;
+            memcpy(wu.address_hash, addr_hash, 20);
+            wu.script = full.script;
+            wu.script_len = full.script_len;
+            wu.height = full.height;
+            wu.is_coinbase = full.is_coinbase;
+
+            db_wallet_utxo_save(ctx->node_db, &wu);
+            db_utxo_free(&full);
+        }
+
+        bal = db_utxo_balance_for_address(ctx->node_db, addr_hash);
+    }
+
+    printf("importaddress: %s watch-only, %d UTXOs, balance %.8f ZCL\n",
+           addr_str, found, (double)bal / 1e8);
+
+    json_set_object(result);
+    json_push_kv_str(result, "address", addr_str);
+    json_push_kv_bool(result, "watch_only", true);
+    json_push_kv_int(result, "utxos", found);
+    json_push_kv_real(result, "balance", (double)bal / 1e8);
+    return true;
+}
+
 static bool rpc_rescanblockchain(const struct json_value *params, bool help,
                                    struct json_value *result)
 {
@@ -1248,6 +1351,7 @@ void register_wallet_rpc_commands(struct rpc_table *t)
         { "wallet", "sendtoaddress",        rpc_sendtoaddress,        false },
         { "wallet", "dumpprivkey",          rpc_dumpprivkey,          false },
         { "wallet", "importprivkey",        rpc_importprivkey,        false },
+        { "wallet", "importaddress",       rpc_importaddress,        false },
         { "wallet", "keypoolrefill",        rpc_keypoolrefill,        false },
         { "wallet", "listtransactions",     rpc_listtransactions,     false },
         { "wallet", "gettransaction",       rpc_gettransaction,       false },

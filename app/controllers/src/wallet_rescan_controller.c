@@ -233,6 +233,7 @@ static bool rpc_import_from(const struct json_value *params, bool help,
         wallet_sqlite_read_txs(ctx->wallet_db, ctx->wallet);
         wallet_sqlite_read_sapling_keys(ctx->wallet_db, ctx->wallet);
         wallet_sqlite_read_scripts(ctx->wallet_db, ctx->wallet);
+        wallet_sqlite_read_watch_only(ctx->wallet_db, ctx->wallet);
     }
 
     size_t keys_after = ctx->wallet->keystore.num_keys;

@@ -200,6 +200,18 @@ static int h_zcl_importprivkey(const struct mcp_request *req,
     return 0;
 }
 
+static int h_zcl_importaddress(const struct mcp_request *req,
+                                 struct mcp_response *res)
+{
+    const char *addr = json_get_str(json_get(req->args, "address"));
+    char params[256];
+    snprintf(params, sizeof(params), "[\"%s\"]", addr ? addr : "");
+    char *out = mcp_node_rpc("importaddress", params);
+    if (!out) return -1;
+    res->body = out;
+    return 0;
+}
+
 static int h_zcl_z_listunspent(const struct mcp_request *req,
                                  struct mcp_response *res)
 {
@@ -323,6 +335,11 @@ static const struct mcp_param_spec p_addr[] = {
       0, 0, 1, 128, NULL, NULL },
 };
 
+static const struct mcp_param_spec p_importaddr[] = {
+    { "address", MCP_PARAM_STR, true, "Transparent address to watch",
+      0, 0, 1, 128, NULL, NULL },
+};
+
 static const struct mcp_param_spec p_importkey[] = {
     { "privkey", MCP_PARAM_STR,  true,  "WIF-encoded private key",
       0, 0, 1, 128, NULL, NULL },
@@ -407,6 +424,11 @@ static const struct mcp_tool_route k_routes[] = {
       "Import a WIF private key into the wallet.",
       p_importkey, sizeof(p_importkey) / sizeof(p_importkey[0]),
       h_zcl_importprivkey },
+    { "zcl_importaddress", "wallet",
+      "Watch a transparent address without private key. Tracks balance and "
+      "transactions but cannot spend.",
+      p_importaddr, sizeof(p_importaddr) / sizeof(p_importaddr[0]),
+      h_zcl_importaddress },
     { "zcl_z_listaddresses", "wallet",
       "All shielded Sapling (z-addr) addresses in the wallet.",
       NULL, 0, h_zcl_z_listaddresses },

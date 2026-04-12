@@ -73,6 +73,8 @@ bool keystore_get_cscript(const struct basic_keystore *ks,
 
 bool keystore_add_watch_only(struct basic_keystore *ks,
                                const struct pubkey *pk);
+bool keystore_add_watch_only_id(struct basic_keystore *ks,
+                                  const struct key_id *keyid);
 bool keystore_have_watch_only(const struct basic_keystore *ks,
                                 const struct key_id *keyid);
 bool keystore_remove_watch_only(struct basic_keystore *ks,

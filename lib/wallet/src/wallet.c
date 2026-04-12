@@ -441,9 +441,22 @@ bool wallet_is_mine(const struct wallet *w, const struct tx_out *txout)
         return false;
 
     if (dest.type == DEST_KEY_ID)
-        return keystore_have_key(&w->keystore, &dest.id.key);
+        return keystore_have_key(&w->keystore, &dest.id.key) ||
+               keystore_have_watch_only(&w->keystore, &dest.id.key);
     if (dest.type == DEST_SCRIPT_ID)
         return keystore_have_cscript(&w->keystore, &dest.id.script.hash);
+    return false;
+}
+
+bool wallet_is_watch_only(const struct wallet *w, const struct tx_out *txout)
+{
+    struct tx_destination dest;
+    if (!script_extract_destination(&txout->script_pub_key, &dest))
+        return false;
+
+    if (dest.type == DEST_KEY_ID)
+        return !keystore_have_key(&w->keystore, &dest.id.key) &&
+                keystore_have_watch_only(&w->keystore, &dest.id.key);
     return false;
 }
 

@@ -142,6 +142,7 @@ const struct wallet_tx *wallet_get_tx(const struct wallet *w,
 
 void wallet_mark_dirty(struct wallet_tx *wtx);
 bool wallet_is_mine(const struct wallet *w, const struct tx_out *txout);
+bool wallet_is_watch_only(const struct wallet *w, const struct tx_out *txout);
 bool wallet_is_from_me(const struct wallet *w, const struct transaction *tx);
 bool wallet_is_change(const struct wallet *w, const struct tx_out *txout);
 

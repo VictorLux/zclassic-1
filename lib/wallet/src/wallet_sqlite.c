@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 /* ── Encryption helpers (wave 8 wallet-at-rest) ──────────────── */
 
@@ -154,6 +155,17 @@ bool wallet_sqlite_open(struct wallet_sqlite *ws, sqlite3 *db)
         -1, &ws->stmt_script_read, NULL);
     if (rc != SQLITE_OK) goto fail;
 
+    rc = sqlite3_prepare_v2(db,
+        "INSERT OR REPLACE INTO wallet_watch_only"
+        " (address_hash, address, created_at) VALUES(?,?,?)",
+        -1, &ws->stmt_watch_write, NULL);
+    if (rc != SQLITE_OK) goto fail;
+
+    rc = sqlite3_prepare_v2(db,
+        "SELECT address_hash, address FROM wallet_watch_only",
+        -1, &ws->stmt_watch_read, NULL);
+    if (rc != SQLITE_OK) goto fail;
+
     ws->open = true;
     return true;
 
@@ -176,6 +188,8 @@ void wallet_sqlite_close(struct wallet_sqlite *ws)
     if (ws->stmt_zkey_read)    { sqlite3_finalize(ws->stmt_zkey_read);    ws->stmt_zkey_read = NULL; }
     if (ws->stmt_script_write) { sqlite3_finalize(ws->stmt_script_write); ws->stmt_script_write = NULL; }
     if (ws->stmt_script_read)  { sqlite3_finalize(ws->stmt_script_read);  ws->stmt_script_read = NULL; }
+    if (ws->stmt_watch_write)  { sqlite3_finalize(ws->stmt_watch_write);  ws->stmt_watch_write = NULL; }
+    if (ws->stmt_watch_read)   { sqlite3_finalize(ws->stmt_watch_read);   ws->stmt_watch_read = NULL; }
     ws->db = NULL;
     ws->open = false;
 }
@@ -632,6 +646,42 @@ bool wallet_sqlite_read_scripts(struct wallet_sqlite *ws, struct wallet *w)
         memcpy(scr.data, data, (size_t)data_len);
         scr.size = (size_t)data_len;
         keystore_add_cscript(&w->keystore, &scr);
+    }
+
+    return true;
+}
+
+/* ── Watch-only addresses ──────────────────────────────────────── */
+
+bool wallet_sqlite_write_watch_only(struct wallet_sqlite *ws,
+                                      const uint8_t address_hash[20],
+                                      const char *address)
+{
+    if (!ws->open) return false;
+
+    sqlite3_stmt *s = ws->stmt_watch_write;
+    sqlite3_reset(s);
+    sqlite3_bind_blob(s, 1, address_hash, 20, SQLITE_STATIC);
+    sqlite3_bind_text(s, 2, address, -1, SQLITE_STATIC);
+    sqlite3_bind_int64(s, 3, (int64_t)time(NULL));
+    return sqlite3_step(s) == SQLITE_DONE;
+}
+
+bool wallet_sqlite_read_watch_only(struct wallet_sqlite *ws, struct wallet *w)
+{
+    if (!ws->open) return false;
+
+    sqlite3_stmt *s = ws->stmt_watch_read;
+    sqlite3_reset(s);
+
+    while (sqlite3_step(s) == SQLITE_ROW) {
+        const void *hash = sqlite3_column_blob(s, 0);
+        if (!hash || sqlite3_column_bytes(s, 0) != 20)
+            continue;
+
+        struct key_id kid;
+        memcpy(kid.id.data, hash, 20);
+        keystore_add_watch_only_id(&w->keystore, &kid);
     }
 
     return true;

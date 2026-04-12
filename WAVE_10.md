@@ -98,7 +98,7 @@ Work in order. `./test_zcl` green on every push.
 
 ### Features
 
-13. **Watch-only address support** — `zcl_importaddress` RPC + MCP tool. Track balance/transactions without private keys. No spending.
+13. ~~**Watch-only address support**~~ — **DONE.** `importaddress` RPC + `zcl_importaddress` MCP tool. Full stack: `keystore_add_watch_only_id()` for address-only import (no pubkey needed), `wallet_is_mine()` now checks watch-only keys, `wallet_is_watch_only()` distinguishes watch-only from spendable. New `wallet_watch_only` SQLite table with persistence via `wallet_sqlite_write_watch_only()`/`wallet_sqlite_read_watch_only()`. Loaded at boot and rescan. Instant UTXO indexing (same as `importprivkey`). Returns `{address, watch_only, utxos, balance}`. Rejects if private key already in wallet. 9 tests in `test_watch_only.c`: add_by_id, dedup, add_by_pubkey, remove, wallet_is_mine_watch_only, wallet_is_watch_only_false_for_full_key, unknown_address, sqlite_round_trip, sqlite_overwrite.
 
 14. **MCP replay recorder** — `tools/mcp/replay.{h,c}` — ring buffer of last 100 requests+responses. `zcl_replay_dump` + `zcl_replay_exec` tools.
 
