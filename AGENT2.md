@@ -5,7 +5,7 @@
 **Coordinator:** AGENT1 (main `~/zclassic23`)
 **Peer:** AGENT3 (`~/zclassic23-3`) — RPC/wallet encryption/tracing, different files
 
-> **⇒ Active plan: [`WAVE_10.md`](./WAVE_10.md).** 13 items: reorg safety test (#1 priority), consensus parity, PHGR13 live verify, boot decomposition A/B/C, script parallelism, BIP113/65, mempool orphans, fuzzer fix #2, WAL size cap, fee estimation, headers-first refinement. When done, pull from [`BACKLOG.md`](./BACKLOG.md).
+> **⇒ Active plan: [`WAVE_10.md`](./WAVE_10.md).** BOOT_QUEUE IS CLEARED — boot decomposition A/B/C is fully unblocked. Priority: (1) reorg safety test, (2) boot decomposition A/B/C (target boot.c < 1400 lines), (3) consensus parity audit. Read `DEFENSIVE_CODING.md` — use `LOG_FAIL`/`GUARD`/`zcl_malloc` in all new code. When done, pull from [`BACKLOG.md`](./BACKLOG.md).
 
 ---
 

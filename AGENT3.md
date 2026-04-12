@@ -5,7 +5,7 @@
 **Coordinator:** AGENT1 (main `~/zclassic23`)
 **Peer:** AGENT2 (`~/zclassic23-2`) — boot decomposition / consensus / resource controls, different files
 
-> **⇒ Active plan: [`WAVE_10.md`](./WAVE_10.md).** 15 items: WebSocket events (#1), tracing, peer_bandwidth wire-in, RPC cookie rotation, key scrubbing, dep vulnerability scan, coverage 35%, RPC envelope audit, property-based tx tests, Grafana dashboard, RUNBOOK, architecture diagrams, watch-only addresses, MCP replay, coin selection audit. When done, pull from [`BACKLOG.md`](./BACKLOG.md).
+> **⇒ Active plan: [`WAVE_10.md`](./WAVE_10.md).** WebSocket events DONE. Next priority: (1) OpenTelemetry tracing, (2) peer_bandwidth wire-in, (3) RPC cookie rotation, (4) Sapling key scrubbing. Read `DEFENSIVE_CODING.md` — use `LOG_FAIL`/`GUARD`/`zcl_malloc` in all new code. When done, pull from [`BACKLOG.md`](./BACKLOG.md).
 
 ---
 
