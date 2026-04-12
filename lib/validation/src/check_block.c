@@ -328,7 +328,12 @@ bool contextual_check_block(const struct block *block,
                                           &params->consensus, nHeight, 100))
             return false;
 
-        int64_t nLockTimeCutoff = block_header_get_time(&block->header);
+        /* BIP113: use median-time-past for time-based nLockTime checks,
+         * not the block's wall-clock timestamp. Fall back to header time
+         * only at genesis (no previous block). */
+        int64_t nLockTimeCutoff = pindex_prev
+            ? block_index_get_median_time_past(pindex_prev)
+            : block_header_get_time(&block->header);
         REJECT_UNLESS(is_final_tx(&block->vtx[i], nHeight, nLockTimeCutoff),
                       state, 10, "bad-txns-nonfinal");
     }

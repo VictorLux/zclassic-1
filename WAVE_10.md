@@ -37,9 +37,9 @@ Work in order. `./test_zcl` green on every push.
 
 7. ~~**Script/sigcache parallelism**~~ — **DONE.** `lib/util/{include/util/workpool.h,src/workpool.c}` — fixed-size thread pool (lazy-init, persistent workers, ring-buffer queue). `connect_block.c` refactored to two-phase script verification: Phase 1 collects all inputs' script checks and precomputed tx data on the main thread; Phase 2 dispatches them to the workpool for parallel `verify_script()`. Sequential fallback for <4 inputs or pool init failure. Early-out on first failure. 3.8× measured speedup at 4 threads. 15 tests in `test_workpool.c`: init/destroy, auto threads, bad args, single/multi item, failure propagation, mixed pass/fail, atomic counter, data modification, multiple batches, single-thread, parallel speedup, empty batch, reset after failure.
 
-8. **BIP113/BIP65 time hardening** — audit `contextual_check_tx.c` + `check_block.c` against MTP semantics. Adversarial-timestamp tests.
+8. ~~**BIP113/BIP65 time hardening**~~ — **DONE.** Fixed BIP113 bug: `contextual_check_block` was using wall-clock block timestamp instead of MTP for time-based nLockTime checks. `check_block.c` now uses `block_index_get_median_time_past(pindex_prev)`. 24 tests in `test_bip113_bip65.c`: MTP calculation (ascending/out-of-order/short-chain/single-block), `is_final_tx` (height/time/boundary/final-sequence), adversarial timestamps (miner-advance/backdate), `contextual_check_block` MTP enforcement (reject/accept/height/boundary/final-sequence), block header MTP validation, BIP65 OP_CHECKLOCKTIMEVERIFY (negative locktime/stack-exceeds/pass/final-sequence/mixed-domain).
 
-9. **Mempool orphan pool** — max 50 txs, 10-min TTL, reconnect on parent arrival. `test_mempool_orphan.c`.
+9. ~~**Mempool orphan pool**~~ — **DONE.** `lib/validation/{include/validation/orphan_pool.h,src/orphan_pool.c}`. Fixed-size pool (50 entries), 10-minute TTL. `orphan_pool_add/remove/exists/clear/expire/size` + `find_children/extract_children` for parent-arrival reconnection. Mutex-protected. 18 tests in `test_mempool_orphan.c`: empty/add/duplicate/full-reject/remove/clear/expire/non-expire/find-children/extract-children/multi-input/no-match/null/non-existent/zero-inputs/readd/expire-all/max-out.
 
 10. **Fix fuzzer finding #2** — `test_json.c` segfaults under `-O1 + gcov`. Valgrind, diagnose, fix in separate commit.
 
