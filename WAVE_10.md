@@ -102,7 +102,7 @@ Work in order. `./test_zcl` green on every push.
 
 14. ~~**MCP replay recorder**~~ — **DONE.** `tools/mcp/replay.{h,c}` — 100-slot ring buffer recording every MCP request/response pair with timestamp, duration, error status. Hooked into `mcp_router_dispatch()` — zero-config, automatic recording. Self-referential calls (`zcl_replay_*`) excluded to prevent recursion. Args serialized via `json_write()`, responses truncated at 4KB. `mcp_replay_init()` called at MCP server startup. `zcl_replay_dump(count)` returns oldest-to-newest JSON array. `zcl_replay_exec(index)` re-dispatches a recorded tool by name. Both registered as ops-domain MCP tools.
 
-15. **Transaction coin selection audit** — review BnB vs knapsack algorithm in wallet send path. Add tests with adversarial UTXO distributions (dust, many small, few large).
+15. ~~**Transaction coin selection audit**~~ — **DONE.** Reviewed `wallet_select_coins()` (wallet.c:622-643): uses naive first-fit greedy, no BnB or knapsack. Documented findings: order-dependent selection, no dust avoidance, no change minimization, target=0 suboptimality. 15 tests in `test_coin_selection.c` with adversarial UTXO distributions: exact single coin, 100 dust UTXOs (insufficient), dust+large (all-dust-then-large pathology), large-before-dust (single select), few large coins, empty set, all unspendable, target=0, exact sum of two, 200 small coins (0.01 ZCL), max_selected limit, mixed spendable/unspendable, single satoshi, change overshoot (8.5 ZCL on 1.5 target), order-dependence proof ([1,2,3]→2 inputs vs [3,2,1]→1 input).
 
 ### Stretch
 

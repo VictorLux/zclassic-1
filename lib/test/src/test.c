@@ -98,6 +98,7 @@ int main(void)
     failures += test_wallet_keystore();
     failures += test_wallet_sqlite_enc();
     { extern int test_watch_only(void); failures += test_watch_only(); }
+    { extern int test_coin_selection(void); failures += test_coin_selection(); }
     failures += test_disk_monitor();
     failures += test_db_maintenance();
     failures += test_mempool_limits();
