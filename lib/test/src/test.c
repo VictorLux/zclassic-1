@@ -103,6 +103,7 @@ int main(void)
     failures += test_trace();
     failures += test_phgr13_fix();
     failures += test_cookie_rotation();
+    failures += test_reorg_safety();
 
     /* Spec-based user story tests */
     failures += spec_wallet_dashboard();

@@ -19,7 +19,7 @@ Work in order. `./test_zcl` green on every push.
 
 ### Critical (do first)
 
-1. **Reorg safety test** — `lib/test/src/test_reorg_safety.c`. Synthesize 50-block reorg with conflicting fork through `activate_best_chain`. Assert no UTXO loss, no orphan rows, CSR + recovery_policy + db_txn hold. This is the test that proves all the safety infrastructure works together.
+1. ~~**Reorg safety test**~~ — **DONE.** `lib/test/src/test_reorg_safety.c` — 23 tests: synthesizes 50-block reorg with conflicting fork. Exercises disconnect_block + update_coins for both chains. Asserts no UTXO loss, no orphan rows, CSR commit acceptance, recovery_policy allow/reject, db_txn scoped commit/rollback, non-coinbase spend undo, partial reorg (25/50), 5 rapid reorg cycles, commitment tracking. All safety infrastructure verified together.
 
 2. **Consensus parity audit** — 10 mainnet blocks through both `zclassic23` and `zclassic-cpp`, assert matching `coins_best_block` hashes. Write `CONSENSUS_PARITY.md`.
 
