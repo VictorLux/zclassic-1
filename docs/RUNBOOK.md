@@ -1,0 +1,308 @@
+# ZClassic23 Operator Runbook
+
+Symptom-driven troubleshooting. Each section: what you see, how to diagnose, how to fix.
+
+---
+
+## Disk > 99% Full
+
+**Symptoms:** `EV_DISK_CRITICAL` events, node may refuse new blocks, SQLite writes fail.
+
+**Diagnose:**
+```bash
+df -h $(zclassic23 -datadir 2>/dev/null || echo ~/.zclassic-c23)
+du -sh ~/.zclassic-c23/*
+./tools/zcl-rpc healthcheck | jq '.disk'
+```
+
+**Fix:**
+1. Prune old debug logs: `rm -f ~/.zclassic-c23/debug.log.old*`
+2. Remove stale peer data: `rm -f ~/.zclassic-c23/peers.dat.bak`
+3. If WAL is bloated (>100MB), force checkpoint:
+   ```bash
+   sqlite3 ~/.zclassic-c23/blocks.db 'PRAGMA wal_checkpoint(TRUNCATE);'
+   sqlite3 ~/.zclassic-c23/coins.db 'PRAGMA wal_checkpoint(TRUNCATE);'
+   ```
+4. If block files are consuming >5GB and you don't need full history, consider block pruning (stretch feature — not yet available).
+5. Move datadir to larger volume: stop node, `mv ~/.zclassic-c23 /mnt/bigger/`, symlink or use `-datadir=`.
+
+**Prevention:** Set `ZCL_WAL_MAX_BYTES=104857600` (100MB cap, auto-checkpoint). Monitor `zcl_disk_free_bytes` in Grafana with alert at 1GB.
+
+---
+
+## Peer Misbehaving / Banned
+
+**Symptoms:** `EV_PEER_MISBEHAVE` or `EV_PEER_BANNED` events. Peer count dropping.
+
+**Diagnose:**
+```bash
+./tools/zcl-rpc getpeerinfo | jq '.[] | {id, addr, banscore, subver}'
+# Via MCP:
+# zcl_peers → check banscore field
+# zcl_peer_report → offence breakdown by kind
+# zcl_events → filter for peer.misbehave, peer.banned
+```
+
+**Fix:**
+1. If a specific peer is spamming bad blocks/txs, disconnect:
+   ```bash
+   ./tools/zcl-rpc addnode "IP:PORT" "remove"
+   ```
+2. If legitimate peers are getting banned (false positive), check whether the node's chain is correct:
+   ```bash
+   ./tools/zcl-rpc getblockchaininfo | jq '{blocks, bestblockhash}'
+   # Compare height with a known-good explorer
+   ```
+3. If your node is on a stale fork, see **Tip Regressed / Stuck on Wrong Fork** below.
+
+**Prevention:** Monitor `zcl_peer_offences_total` rate in Grafana. A sudden spike in `invalid_block` offences usually means your node or the peers are on a bad chain.
+
+---
+
+## Wallet Backup Failed
+
+**Symptoms:** `EV_WALLET_BACKUP_FAILED` event. `zcl_status` health check shows wallet backup warning.
+
+**Diagnose:**
+```bash
+./tools/zcl-rpc healthcheck | jq '.wallet'
+ls -la ~/.zclassic-c23/wallet.db*
+# Check if backup destination is writable
+ls -la ~/.zclassic-c23/backups/
+```
+
+**Fix:**
+1. If backup directory doesn't exist: `mkdir -p ~/.zclassic-c23/backups`
+2. If permissions: `chmod 700 ~/.zclassic-c23/backups`
+3. If disk full: see **Disk > 99% Full** above.
+4. Manual backup while node is running (SQLite online backup is safe):
+   ```bash
+   sqlite3 ~/.zclassic-c23/wallet.db ".backup '~/.zclassic-c23/backups/wallet-$(date +%Y%m%d).db'"
+   ```
+
+**Prevention:** The node's built-in backup service runs automatically. Verify it works after first boot by checking for `EV_WALLET_BACKUP` events.
+
+---
+
+## Tip Regressed / Stuck on Wrong Fork
+
+**Symptoms:** Chain height decreases or lags significantly behind network. `EV_REORG_START` with large depth. Peers disconnecting because of chain mismatch.
+
+**Diagnose:**
+```bash
+./tools/zcl-rpc getblockchaininfo | jq '{blocks, headers, bestblockhash, difficulty}'
+./tools/zcl-rpc getpeerinfo | jq '.[0:3] | .[] | {addr, startingheight, synced_headers}'
+# Compare your tip hash against a trusted peer or explorer
+# Via MCP: zcl_syncstate, zcl_dataintegrity
+```
+
+**Fix:**
+1. If tip is just behind (node is syncing): wait. Check `zcl_syncstate` — if state is `BLOCKS_DOWNLOAD` or `CONNECTING_BLOCKS`, sync is in progress.
+2. If tip regressed after a reorg:
+   - Small reorg (<10 blocks): normal, node should recover automatically. Watch `EV_REORG_RECOVERY_COMPLETE`.
+   - Large reorg (>10 blocks): investigate. Check if peers agree on the fork:
+     ```bash
+     ./tools/zcl-rpc getpeerinfo | jq '.[] | {addr, startingheight}'
+     ```
+3. If node is stuck on a dead fork (no peers agree):
+   - Invalidate the bad block:
+     ```bash
+     ./tools/zcl-rpc invalidateblock "BADBLOCKHASH"
+     ```
+   - Reconsider a previously-invalidated good block:
+     ```bash
+     ./tools/zcl-rpc reconsiderblock "GOODBLOCKHASH"
+     ```
+4. Nuclear option (last resort): stop node, delete chainstate, resync:
+   ```bash
+   systemctl --user stop zclassic23
+   rm -rf ~/.zclassic-c23/coins.db*
+   systemctl --user start zclassic23
+   # Node will rebuild chainstate from block files or snapshot sync
+   ```
+
+**Prevention:** Run background validation (`-nobgvalidation` NOT set). Monitor `zcl_chain_height` derivative — alert if zero for >10 minutes while peers show higher heights.
+
+---
+
+## Node Stuck (Not Syncing)
+
+**Symptoms:** Chain height frozen. `zcl_syncstate` returns `IDLE` or `FAILED`. No blocks connecting.
+
+**Diagnose:**
+```bash
+./tools/zcl-rpc getpeerinfo | jq 'length'        # Any peers?
+./tools/zcl-rpc getpeerinfo | jq '.[] | .addr'    # Who's connected?
+./tools/zcl-rpc getnetworkinfo | jq '{connections, localservices}'
+# Via MCP: zcl_syncstate, zcl_peers
+```
+
+**Fix:**
+1. **Zero peers:** Network issue or all seeds down.
+   ```bash
+   # Add a known peer manually
+   ./tools/zcl-rpc addnode "IP:PORT" "onetry"
+   # Check firewall — P2P port 8033 must be reachable
+   ss -tlnp | grep 8033
+   ```
+2. **Has peers but no blocks:** Peers may be stale or node is rejecting valid blocks.
+   ```bash
+   # Check recent events for reject reasons
+   ./tools/zcl-rpc eventlog | grep -i reject
+   # Via MCP: zcl_events, zcl_consensus_report
+   ```
+3. **Sync state is FAILED:**
+   ```bash
+   # Restart the node — transient failures often clear on restart
+   systemctl --user restart zclassic23
+   ```
+4. **Stuck in SNAPSHOT_RECEIVE:** Snapshot peer may have disconnected.
+   ```bash
+   # Restart to retry snapshot from another peer
+   systemctl --user restart zclassic23
+   ```
+
+**Prevention:** Monitor sync state. Alert on `FAILED` state or height stalled >10 min.
+
+---
+
+## RPC 429 (Rate Limited)
+
+**Symptoms:** RPC clients receive HTTP 429 responses. `EV_RPC_TIMEOUT` events. `zcl_rpc_rate_limited_*` counters climbing.
+
+**Diagnose:**
+```bash
+# Via MCP: zcl_metrics → look at rpc_rate_limited_global, rpc_rate_limited_per_ip
+# Check current limits
+echo "Global: ${ZCL_RPC_RPS:-50} rps, burst ${ZCL_RPC_BURST:-100}"
+echo "Per-IP: ${ZCL_RPC_PER_IP_RPS:-5} rps, burst ${ZCL_RPC_PER_IP_BURST:-10}"
+```
+
+**Fix:**
+1. If your own tooling is hitting per-IP limits, increase per-IP budget:
+   ```bash
+   export ZCL_RPC_PER_IP_RPS=20
+   export ZCL_RPC_PER_IP_BURST=40
+   systemctl --user restart zclassic23
+   ```
+2. If global limit is hit by many clients, raise global:
+   ```bash
+   export ZCL_RPC_RPS=200
+   export ZCL_RPC_BURST=400
+   systemctl --user restart zclassic23
+   ```
+3. If a specific IP is flooding, it will auto-ban after `ZCL_RPC_AUTH_FAIL_THRESHOLD` (default 5) auth failures. For non-auth flooding, the per-IP rate limit handles it.
+4. Loopback (127.0.0.1) bypasses per-IP limits but still counts against global. If your local tools are fighting each other for global budget, raise `ZCL_RPC_RPS`.
+
+**Prevention:** Monitor `zcl_rpc_rate_limited_*` in Grafana. Right-size limits for your deployment.
+
+---
+
+## RPC Auth Failures / Unexpected Bans
+
+**Symptoms:** Legitimate clients get 403. `EV_PEER_BANNED` on RPC layer. `zcl_rpc_auth_failures` climbing.
+
+**Diagnose:**
+```bash
+# Check if cookie file exists and is readable
+ls -la ~/.zclassic-c23/.cookie
+cat ~/.zclassic-c23/.cookie
+# Check if client is using the current cookie (rotates every 24h by default)
+echo "Rotation interval: ${ZCL_RPC_COOKIE_ROTATE_SEC:-86400}s"
+```
+
+**Fix:**
+1. If cookie file is stale or missing: restart node to regenerate.
+2. If client caches the cookie: client must re-read `.cookie` file on 401 response. During rotation, both current and previous cookies are valid.
+3. If IP is banned from too many auth failures:
+   - Ban auto-expires after `ZCL_RPC_BAN_SECONDS` (default 3600s = 1hr).
+   - To clear immediately: restart the node (ban table is in-memory).
+4. If using `rpcuser`/`rpcpassword` instead of cookie: rotation doesn't apply, check credentials.
+
+**Prevention:** Ensure clients re-read the `.cookie` file periodically (at least once per rotation interval).
+
+---
+
+## High Memory Usage
+
+**Symptoms:** Process RSS growing unbounded. OOM killer risk.
+
+**Diagnose:**
+```bash
+ps aux | grep zclassic23 | grep -v grep
+cat /proc/$(pgrep zclassic23)/status | grep -E 'VmRSS|VmPeak'
+# Via MCP: zcl_dbstats → check cache sizes
+```
+
+**Fix:**
+1. If background validation is consuming too much: disable with `-nobgvalidation` or restart (it auto-detects <8GB machines and reduces batch size).
+2. If UTXO cache is large: the node batches flushes. A restart forces a flush and reclaims memory.
+3. If mempool is bloated:
+   ```bash
+   ./tools/zcl-rpc getmempoolinfo | jq '{size, bytes}'
+   # Mempool has configurable limits — check environment
+   ```
+
+**Prevention:** Monitor RSS via external tool (e.g., `node_exporter` for Prometheus). Background validation is the biggest consumer — disable on RAM-constrained machines.
+
+---
+
+## Boot Failure (Node Won't Start)
+
+**Symptoms:** Service fails to start. `journalctl --user -u zclassic23` shows errors.
+
+**Diagnose:**
+```bash
+journalctl --user -u zclassic23 --since "5 min ago" --no-pager
+# Look for EV_BOOT_VALIDATION_FAILED or specific error messages
+```
+
+**Fix by error type:**
+
+| Error | Fix |
+|-------|-----|
+| `database is locked` | Another instance is running. `pgrep zclassic23`. Kill stale process. |
+| `block index corrupt` | `EV_BLOCK_INDEX_CORRUPT`. Delete and rebuild: `rm ~/.zclassic-c23/blocks_index.flat; restart` |
+| `coins db corrupt` | Delete `coins.db*`, restart — will rebuild from blocks or snapshot. |
+| `schema version mismatch` | Node was downgraded. Use the matching binary version or delete+resync. |
+| `permission denied` | `chmod 700 ~/.zclassic-c23; chown -R $USER ~/.zclassic-c23` |
+| `address already in use` | Port conflict. `ss -tlnp | grep 8033`. Change with `-port=` or stop conflicting service. |
+
+**Prevention:** Don't run multiple instances against the same datadir. Use `-datadir=` for test instances.
+
+---
+
+## Quick Reference: Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ZCL_RPC_RPS` | 50 | Global RPC rate limit (requests/sec) |
+| `ZCL_RPC_BURST` | 100 | Global RPC burst bucket |
+| `ZCL_RPC_PER_IP_RPS` | 5 | Per-IP RPC rate limit |
+| `ZCL_RPC_PER_IP_BURST` | 10 | Per-IP burst bucket |
+| `ZCL_RPC_AUTH_FAIL_THRESHOLD` | 5 | Auth failures before auto-ban |
+| `ZCL_RPC_BAN_SECONDS` | 3600 | Ban duration (seconds) |
+| `ZCL_RPC_COOKIE_ROTATE_SEC` | 86400 | Cookie rotation interval (0=disable) |
+| `ZCL_MCP_GLOBAL_RPS` | 100 | MCP global rate limit |
+| `ZCL_MCP_DESTRUCTIVE_RPS` | 1 | MCP write-op rate limit |
+| `ZCL_MCP_TIMEOUT_MS` | 5000 | MCP per-tool timeout |
+| `ZCL_MCP_BEARER_TOKEN` | (none) | MCP auth token (optional) |
+| `ZCL_WAL_MAX_BYTES` | 104857600 | SQLite WAL size cap (bytes) |
+| `ZCL_METRICS_HTTP_ENABLE` | 0 | Expose /metrics Prometheus endpoint |
+
+## Quick Reference: Key Events
+
+| Event | Severity | Meaning |
+|-------|----------|---------|
+| `EV_DISK_CRITICAL` | Critical | Disk usage above critical threshold |
+| `EV_BOOT_VALIDATION_FAILED` | Critical | Boot aborted — data corruption or config error |
+| `EV_REORG_DISCONNECT_FAILED` | Critical | Reorg stuck — manual intervention likely needed |
+| `EV_DB_TXN_LEAKED` | High | Database transaction not committed or rolled back |
+| `EV_COINS_FLUSH_FAILED` | High | UTXO persistence failed — data loss risk |
+| `EV_WALLET_BACKUP_FAILED` | High | Wallet backup did not complete |
+| `EV_PEER_BANNED` | Medium | Peer auto-banned for misbehavior |
+| `EV_CONSENSUS_REJECT_BLOCK` | Medium | Received invalid block from peer |
+| `EV_REORG_START` | Medium | Chain reorganization in progress |
+| `EV_DISK_LOW` | Warning | Disk usage approaching limit |
+| `EV_IBD_THROTTLED` | Info | Initial block download rate-limited (saves bandwidth) |
+| `EV_PEER_THROTTLED` | Info | Peer bandwidth throttled by token bucket |

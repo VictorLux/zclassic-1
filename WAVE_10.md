@@ -90,11 +90,11 @@ Work in order. `./test_zcl` green on every push.
 
 ### Docs & operator experience
 
-10. **Grafana dashboard JSON** — `docs/grafana/zclassic23.json`. Panels: chain height, peer count, UTXO count, mempool size, RPC RPS, disk free, consensus rejects.
+10. ~~**Grafana dashboard JSON**~~ — **DONE.** `docs/grafana/zclassic23.json`. 4 row sections (Node Overview, Chain & Validation, Network, RPC & MCP, Disk & System), 19 panels: chain height, peer count, UTXO count, mempool size/bytes, disk free, chain height over time, blocks connected/min, consensus rejects (stacked bars), bg validation gauge, coins flush lag, peer count over time, peer offences by kind, bans issued/active, RPC rps (allowed/rate-limited/banned), MCP tool latency p50/p99, MCP tool error rate, auth failures, top tools by request count, MCP timeouts, tracked IPs, disk free over time, WAL size. Prometheus datasource variable, 10s auto-refresh, threshold coloring throughout.
 
-11. **Operator RUNBOOK.md** — `docs/RUNBOOK.md`. Symptom → diagnostic tool → fix. Scenarios: 99% disk, peer misbehaving, backup failed, tip regressed, node stuck, RPC 429.
+11. ~~**Operator RUNBOOK.md**~~ — **DONE.** `docs/RUNBOOK.md`. 9 symptom-driven scenarios: disk >99% full, peer misbehaving/banned, wallet backup failed, tip regressed/wrong fork, node stuck (not syncing), RPC 429 rate limited, RPC auth failures/unexpected bans, high memory usage, boot failure (won't start). Each section: symptoms, diagnose commands (CLI + MCP), step-by-step fix, prevention. Quick reference tables for all environment variables and key events with severity.
 
-12. **Architecture diagrams** — `docs/ARCHITECTURE_DIAGRAMS.md` with mermaid diagrams: boot sequence, P2P flow, block validation pipeline, wallet tx lifecycle, MCP routing.
+12. ~~**Architecture diagrams**~~ — **DONE.** `docs/ARCHITECTURE_DIAGRAMS.md`. 5 Mermaid diagrams: boot sequence (full flow from CLI parse through DB open, UTXO import, chain validation, recovery policy, service startup to NODE_READY), P2P network flow (discovery, handshake, sync with FlyClient/snapshot paths, steady-state relay, bandwidth control, peer scoring), block validation pipeline (structure checks, contextual checks, connect_block with script/Groth16/turnstile verification, UTXO checkpoint, flush, reorg path), wallet transaction lifecycle (coin selection, transparent vs shielded build, sign, mempool, block inclusion, wallet scan with trial decryption), MCP request routing (stdio parse, middleware auth/rate-limit chain, router dispatch with validation, handler domains, RPC layer, observability hooks), onion service architecture (embedded Tor, dynhost, direct C function calls).
 
 ### Features
 
