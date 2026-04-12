@@ -1209,33 +1209,80 @@ static int resolve_orphan_pprev_from_disk(struct main_state *ms,
         fprintf(stderr, "resolve_orphan_pprev: %d disk read errors\n",
                 read_errors);
 
-    /* Phase 2: propagate heights from genesis outward.
-     * Each pass resolves entries whose parent's height is already known.
-     * Converges in O(max_chain_depth_of_initially_unresolved) passes.
-     * For blocks in mostly-sequential files, this is typically 1-3 passes. */
+    /* Phase 2: propagate heights from pprev chains.
+     *
+     * Old approach used 40 fixed passes in hash order — only 40 levels
+     * deep from any correct ancestor.  After an LDB UTXO import the flat
+     * file covers ~500K entries but the block-file scan adds ~2.5M more
+     * whose pprev chains extend far past the flat-file entries.  40
+     * passes can't reach them.
+     *
+     * New approach: for each block whose height != pprev->height+1, walk
+     * UP the pprev chain collecting ancestors that also need fixing, then
+     * propagate back DOWN.  Each block is visited at most twice (once up,
+     * once down) so total work is O(n).  After a block is fixed the
+     * height check short-circuits, so shared chain prefixes aren't
+     * re-walked. */
     int total_height_fixed = 0;
-    for (int pass = 0; pass < 40; pass++) {
-        int fixed = 0;
+    {
+        /* Preallocate a stack for the deepest chain we might encounter.
+         * 3M entries × 8 bytes = 24 MB — fine on any machine running a
+         * full node (9+ GB RSS typical). */
+        size_t stack_cap = 4096;
+        struct block_index **stack = malloc(stack_cap * sizeof(*stack));
+        if (!stack) {
+            fprintf(stderr, "resolve_orphan_pprev: stack alloc failed\n");
+            goto skip_height;
+        }
+
         size_t iter = 0;
         struct block_index *bi;
         while (block_map_next(&ms->map_block_index, &iter, NULL, &bi)) {
             if (!bi || !bi->pprev) continue;
-            int expected = bi->pprev->nHeight + 1;
-            if (bi->nHeight != expected) {
-                bi->nHeight = expected;
-                block_index_build_skip(bi);
-                struct arith_uint256 proof = GetBlockProof(bi);
-                arith_uint256_add(&bi->nChainWork,
-                                  &bi->pprev->nChainWork, &proof);
-                fixed++;
+            if (bi->nHeight == bi->pprev->nHeight + 1) continue;
+
+            /* Walk UP pprev chain to first correct ancestor */
+            int depth = 0;
+            struct block_index *cur = bi;
+            while (cur->pprev &&
+                   cur->nHeight != cur->pprev->nHeight + 1) {
+                if ((size_t)depth >= stack_cap) {
+                    stack_cap *= 2;
+                    struct block_index **tmp = realloc(
+                        stack, stack_cap * sizeof(*stack));
+                    if (!tmp) break;
+                    stack = tmp;
+                }
+                stack[depth++] = cur;
+                cur = cur->pprev;
+            }
+
+            /* cur is now correct (or genesis with pprev==NULL).
+             * Fix cur itself first if needed, then propagate down. */
+            if (cur->pprev && cur->nHeight != cur->pprev->nHeight + 1) {
+                cur->nHeight = cur->pprev->nHeight + 1;
+                block_index_build_skip(cur);
+                struct arith_uint256 proof = GetBlockProof(cur);
+                arith_uint256_add(&cur->nChainWork,
+                                  &cur->pprev->nChainWork, &proof);
+                total_height_fixed++;
+            }
+
+            /* Propagate DOWN the stack (deepest ancestor first) */
+            for (int i = depth - 1; i >= 0; i--) {
+                struct block_index *fix = stack[i];
+                fix->nHeight = fix->pprev->nHeight + 1;
+                block_index_build_skip(fix);
+                struct arith_uint256 proof = GetBlockProof(fix);
+                arith_uint256_add(&fix->nChainWork,
+                                  &fix->pprev->nChainWork, &proof);
+                total_height_fixed++;
             }
         }
-        total_height_fixed += fixed;
-        if (fixed == 0) break;
-        if (pass == 39)
-            fprintf(stderr, "WARNING: height propagation did not converge "
-                    "in 40 passes (%d still pending)\n", fixed);
+
+        free(stack);
     }
+skip_height:
 
     if (total_height_fixed > 0)
         printf("  heights resolved for %d blocks\n", total_height_fixed);
