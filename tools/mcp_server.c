@@ -23,6 +23,7 @@
 #include "mcp/router.h"
 #include "mcp/middleware.h"
 #include "mcp/metrics.h"
+#include "mcp/replay.h"
 #include "mcp/controllers.h"
 #include "mcp/rpc_client.h"
 
@@ -153,6 +154,7 @@ int mcp_server_main(const char *datadir, int rpc_port)
     mcp_middleware_init(&g_middleware);
     mcp_middleware_load_from_env(&g_middleware);
     mcp_metrics_init();
+    mcp_replay_init();
 
     char line[65536];
     while (fgets(line, sizeof(line), stdin)) {

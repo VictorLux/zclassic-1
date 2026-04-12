@@ -8,6 +8,7 @@
 #include "../controllers.h"
 #include "../router.h"
 #include "../rpc_client.h"
+#include "../replay.h"
 
 #include "json/json.h"
 
@@ -347,7 +348,88 @@ static int h_zcl_profile(const struct mcp_request *req,
     return 0;
 }
 
+/* ── Replay recorder handlers ───────────────────────────────── */
+
+static int h_zcl_replay_dump(const struct mcp_request *req,
+                               struct mcp_response *res)
+{
+    const struct json_value *cnt = json_get(req->args, "count");
+    size_t count = cnt ? (size_t)json_get_int(cnt) : 0;
+    char *out = mcp_replay_dump(count);
+    if (!out) return -1;
+    res->body = out;
+    return 0;
+}
+
+static int h_zcl_replay_exec(const struct mcp_request *req,
+                               struct mcp_response *res)
+{
+    const struct json_value *idx_v = json_get(req->args, "index");
+    if (!idx_v) {
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "index is required");
+        res->error = MCP_ERR_MISSING_PARAM;
+        return -1;
+    }
+    int64_t idx = json_get_int(idx_v);
+    size_t total = mcp_replay_count();
+    if (idx < 0 || (size_t)idx >= total) {
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "index %lld out of range [0, %zu)",
+                 (long long)idx, total);
+        res->error = MCP_ERR_OUT_OF_RANGE;
+        return -1;
+    }
+
+    /* Dump to get the entry, parse tool name, then re-dispatch. */
+    char *dump = mcp_replay_dump(0);
+    if (!dump) return -1;
+
+    struct json_value arr;
+    if (!json_read(&arr, dump, strlen(dump)) || arr.type != JSON_ARR ||
+        (size_t)idx >= arr.num_children) {
+        free(dump);
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "replay parse failed");
+        res->error = MCP_ERR_INTERNAL;
+        return -1;
+    }
+
+    const struct json_value *entry = &arr.children[idx];
+    const struct json_value *tv = json_get(entry, "tool");
+    const char *tool = tv ? json_get_str(tv) : NULL;
+    if (!tool || !tool[0]) {
+        json_free(&arr);
+        free(dump);
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "entry has no tool name");
+        res->error = MCP_ERR_INTERNAL;
+        return -1;
+    }
+
+    /* Re-dispatch with no args (the original args are stored as escaped
+     * JSON string, not structured — just re-call the tool fresh). */
+    char *result = mcp_router_dispatch(tool, NULL);
+    json_free(&arr);
+    free(dump);
+
+    if (!result) return -1;
+    res->body = result;
+    return 0;
+}
+
 /* ── Route table ─────────────────────────────────────────────── */
+
+static const struct mcp_param_spec p_replay_dump[] = {
+    { "count", MCP_PARAM_INT, false,
+      "Number of most recent entries to return (0 = all)",
+      0, MCP_REPLAY_RING_SIZE, 0, 0, NULL, "0" },
+};
+static const struct mcp_param_spec p_replay_exec[] = {
+    { "index", MCP_PARAM_INT, true,
+      "Index into the replay buffer (0 = oldest)",
+      0, MCP_REPLAY_RING_SIZE - 1, 0, 0, NULL, NULL },
+};
 
 static const struct mcp_param_spec p_events[] = {
     { "count", MCP_PARAM_INT, false, "Number of events",
@@ -413,6 +495,16 @@ static const struct mcp_tool_route k_routes[] = {
       "with name, user_ms, sys_ms, cpu_pct. For diagnosing slow "
       "nodes without attaching gdb.",
       p_profile, sizeof(p_profile) / sizeof(p_profile[0]), h_zcl_profile },
+    { "zcl_replay_dump", "ops",
+      "Dump the MCP request/response replay buffer (last 100 calls). "
+      "Shows tool name, args, response, timestamp, duration, error status.",
+      p_replay_dump, sizeof(p_replay_dump) / sizeof(p_replay_dump[0]),
+      h_zcl_replay_dump },
+    { "zcl_replay_exec", "ops",
+      "Re-execute a previously recorded MCP request by index from the "
+      "replay buffer. Useful for debugging and regression testing.",
+      p_replay_exec, sizeof(p_replay_exec) / sizeof(p_replay_exec[0]),
+      h_zcl_replay_exec },
 };
 
 void mcp_register_ops(void)

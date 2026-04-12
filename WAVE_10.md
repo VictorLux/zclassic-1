@@ -100,7 +100,7 @@ Work in order. `./test_zcl` green on every push.
 
 13. ~~**Watch-only address support**~~ — **DONE.** `importaddress` RPC + `zcl_importaddress` MCP tool. Full stack: `keystore_add_watch_only_id()` for address-only import (no pubkey needed), `wallet_is_mine()` now checks watch-only keys, `wallet_is_watch_only()` distinguishes watch-only from spendable. New `wallet_watch_only` SQLite table with persistence via `wallet_sqlite_write_watch_only()`/`wallet_sqlite_read_watch_only()`. Loaded at boot and rescan. Instant UTXO indexing (same as `importprivkey`). Returns `{address, watch_only, utxos, balance}`. Rejects if private key already in wallet. 9 tests in `test_watch_only.c`: add_by_id, dedup, add_by_pubkey, remove, wallet_is_mine_watch_only, wallet_is_watch_only_false_for_full_key, unknown_address, sqlite_round_trip, sqlite_overwrite.
 
-14. **MCP replay recorder** — `tools/mcp/replay.{h,c}` — ring buffer of last 100 requests+responses. `zcl_replay_dump` + `zcl_replay_exec` tools.
+14. ~~**MCP replay recorder**~~ — **DONE.** `tools/mcp/replay.{h,c}` — 100-slot ring buffer recording every MCP request/response pair with timestamp, duration, error status. Hooked into `mcp_router_dispatch()` — zero-config, automatic recording. Self-referential calls (`zcl_replay_*`) excluded to prevent recursion. Args serialized via `json_write()`, responses truncated at 4KB. `mcp_replay_init()` called at MCP server startup. `zcl_replay_dump(count)` returns oldest-to-newest JSON array. `zcl_replay_exec(index)` re-dispatches a recorded tool by name. Both registered as ops-domain MCP tools.
 
 15. **Transaction coin selection audit** — review BnB vs knapsack algorithm in wallet send path. Add tests with adversarial UTXO distributions (dust, many small, few large).
 

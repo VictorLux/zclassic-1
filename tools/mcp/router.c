@@ -3,6 +3,7 @@
  * MCP router implementation.  See router.h for the public API. */
 
 #include "router.h"
+#include "replay.h"
 
 #include "event/event.h"
 #include "json/json.h"
@@ -494,6 +495,26 @@ static char *envelope_strdup(enum mcp_error_code code, const char *tool,
     return out;
 }
 
+/* Skip recording replay-related tools to avoid recursion. */
+static bool is_replay_tool(const char *name)
+{
+    return name && (strncmp(name, "zcl_replay_", 11) == 0);
+}
+
+static void replay_record_if_enabled(const char *tool,
+                                       const struct json_value *args,
+                                       const char *response,
+                                       uint64_t dur_us, bool is_error)
+{
+    if (is_replay_tool(tool)) return;
+    char args_buf[1024];
+    if (args)
+        json_write(args, args_buf, sizeof(args_buf));
+    else
+        args_buf[0] = '\0';
+    mcp_replay_record(tool, args_buf, response, dur_us, is_error);
+}
+
 char *mcp_router_dispatch(const char *tool_name,
                           const struct json_value *args)
 {
@@ -508,10 +529,12 @@ char *mcp_router_dispatch(const char *tool_name,
                  tool_name ? tool_name : "(null)");
         char *out = envelope_strdup(MCP_ERR_UNKNOWN_TOOL,
                                      tool_name ? tool_name : "", NULL, msg);
+        uint64_t dur = now_us() - t0;
         event_emitf(EV_MCP_REQUEST, 0,
                     "tool=%s code=UNKNOWN_TOOL dur_us=%lld",
                     tool_name ? tool_name : "-",
-                    (long long)(now_us() - t0));
+                    (long long)dur);
+        replay_record_if_enabled(tool_name, args, out, dur, true);
         trace_set_status(span, TRACE_STATUS_ERROR);
         trace_attr_str(span, "error", "unknown_tool");
         trace_end(span);
@@ -526,11 +549,13 @@ char *mcp_router_dispatch(const char *tool_name,
     if (vcode != MCP_OK) {
         char *out = envelope_strdup(vcode, tool_name,
                                      err_param[0] ? err_param : NULL, err_msg);
+        uint64_t dur = now_us() - t0;
         event_emitf(EV_MCP_REQUEST, 0,
                     "tool=%s code=%s param=%s dur_us=%lld",
                     tool_name, mcp_error_code_name(vcode),
                     err_param[0] ? err_param : "-",
-                    (long long)(now_us() - t0));
+                    (long long)dur);
+        replay_record_if_enabled(tool_name, args, out, dur, true);
         trace_set_status(span, TRACE_STATUS_ERROR);
         trace_attr_str(span, "error", mcp_error_code_name(vcode));
         trace_end(span);
@@ -552,6 +577,7 @@ char *mcp_router_dispatch(const char *tool_name,
         event_emitf(EV_MCP_REQUEST, 0,
                     "tool=%s code=%s dur_us=%lld",
                     tool_name, mcp_error_code_name(ec), (long long)dur);
+        replay_record_if_enabled(tool_name, args, out, dur, true);
         trace_set_status(span, TRACE_STATUS_ERROR);
         trace_attr_str(span, "error", mcp_error_code_name(ec));
         trace_end(span);
@@ -561,6 +587,7 @@ char *mcp_router_dispatch(const char *tool_name,
     event_emitf(EV_MCP_REQUEST, 0,
                 "tool=%s code=OK dur_us=%lld",
                 tool_name, (long long)dur);
+    replay_record_if_enabled(tool_name, args, res.body, dur, false);
     trace_attr_int(span, "dur_us", (int64_t)dur);
     trace_end(span);
     return res.body;
