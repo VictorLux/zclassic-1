@@ -5,6 +5,7 @@
 #include "rpc/httpserver.h"
 #include "rpc/http_middleware.h"
 #include "rpc/rpc_timeout.h"
+#include "net/ws_events.h"
 #include "json/json.h"
 #include "rpc/protocol.h"
 #include "core/random.h"
@@ -287,6 +288,48 @@ static void handle_client(int client_fd)
             buf, n);
         free(buf);
         goto done;
+    }
+
+    /* Wave 10 #1: WebSocket event stream at GET /events.
+     * Check for WebSocket upgrade request before rejecting non-POST.
+     * The path may include a query string: /events?domain=chain,peer */
+    if (strcmp(method, "GET") == 0 &&
+        (strncmp(path, "/events", 7) == 0 &&
+         (path[7] == '\0' || path[7] == '?'))) {
+        /* Read headers looking for WebSocket upgrade fields */
+        char ws_key[128] = {0};
+        bool is_upgrade = false;
+        while (read_line(client_fd, line, sizeof(line))) {
+            if (line[0] == '\0') break;
+            if (strncasecmp(line, "Upgrade:", 8) == 0 &&
+                strstr(line + 8, "websocket"))
+                is_upgrade = true;
+            if (strncasecmp(line, "Sec-WebSocket-Key:", 18) == 0) {
+                const char *p = line + 18;
+                while (*p == ' ') p++;
+                snprintf(ws_key, sizeof(ws_key), "%s", p);
+                /* Trim trailing whitespace */
+                size_t kl = strlen(ws_key);
+                while (kl > 0 && (ws_key[kl-1] == '\r' ||
+                       ws_key[kl-1] == '\n' || ws_key[kl-1] == ' '))
+                    ws_key[--kl] = '\0';
+            }
+        }
+        if (is_upgrade && ws_key[0]) {
+            const char *query = strchr(path, '?');
+            if (ws_events_upgrade(client_fd, path, ws_key, query)) {
+                /* fd is now owned by ws_events — do NOT close it */
+                if (tmo_slot >= 0)
+                    rpc_timeout_unregister(&g_rpc_timeout, tmo_slot);
+                return;  /* skip done: label which closes fd */
+            }
+            /* Upgrade failed — fall through to 503 */
+            const char *msg = "{\"error\":\"WebSocket capacity full (max 100)\"}";
+            send_response(client_fd, 503, "Service Unavailable",
+                          msg, strlen(msg));
+            goto done;
+        }
+        /* Not a WebSocket upgrade — fall through to reject */
     }
 
     /* No blog over clearnet. Blog is Tor-only via dynhost.

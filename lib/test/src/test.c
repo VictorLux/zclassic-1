@@ -99,6 +99,7 @@ int main(void)
     failures += test_consensus_reject_index();
     failures += test_chain_rollback();
     failures += test_alerts();
+    failures += test_ws_events();
     failures += test_phgr13_fix();
 
     /* Spec-based user story tests */

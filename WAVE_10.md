@@ -66,7 +66,7 @@ Work in order. `./test_zcl` green on every push.
 
 ### Observability & networking
 
-1. **WebSocket event stream** — `lib/net/ws_events.{h,c}` with `/events?domain=…` filter, per-client ring buffer, heartbeat, max 100 subscribers. Subscribe via `event_subscribe()`.
+1. ~~**WebSocket event stream**~~ — **DONE.** `lib/net/{include/net/ws_events.h,src/ws_events.c}` — RFC 6455 WebSocket endpoint at `GET /events?domain=chain,peer`. Internal 4096-slot lock-free event queue fed by per-type observers. Background pump thread writes JSON text frames at 100ms intervals. Per-client domain prefix filter, heartbeat ping every 30s, idle timeout 90s, max 100 subscribers. `ws_events_upgrade()` handles the full handshake (SHA-1 + base64 Sec-WebSocket-Accept). Hooked into `httpserver.c` — detects `Upgrade: websocket` header on `GET /events`. 5 tests in `test_ws_events.c`.
 
 2. **OpenTelemetry-compat tracing** — `lib/util/trace.{h,c}` W3C Trace Context format. Migrate 5 hot paths: MCP dispatch, HTTP RPC dispatch, `connect_tip`, `csr_commit_tip`, `snapsync_begin_receive`.
 
