@@ -1844,8 +1844,42 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
             struct stat bfst;
             if (stat(bfp, &bfst) == 0 && bfst.st_size > 0) {
                 printf("P2P trigger: scanning block files for HAVE_DATA...\n");
+                /* Remember coins tip before scan — the scan may pick a wrong
+                 * "most work" chain due to incomplete nChainTx propagation. */
+                int pre_scan_coins_h = 0;
+                struct uint256 pre_scan_coins_hash;
+                uint256_set_null(&pre_scan_coins_hash);
+                if (mp->coins_tip) {
+                    coins_view_cache_get_best_block(mp->coins_tip,
+                                                     &pre_scan_coins_hash);
+                    struct block_index *coins_bi = block_map_find(
+                        &mp->main_state->map_block_index, &pre_scan_coins_hash);
+                    if (coins_bi) pre_scan_coins_h = coins_bi->nHeight;
+                }
+
                 int scan_m = scan_block_files_mark_data(
                     mp->main_state, mp->datadir, mp->params);
+
+                /* Restore coins-based chain tip if the scan picked a wrong
+                 * short fork.  This happens when nChainTx propagation has
+                 * a gap (broken pprev chain at h=1) and find_most_work_chain
+                 * selects a fork with ~2K blocks instead of the 2M+ main chain
+                 * whose UTXO state is already loaded. */
+                int post_scan_h = active_chain_height(
+                    &mp->main_state->chain_active);
+                if (pre_scan_coins_h > 100000 && post_scan_h < 100000) {
+                    struct block_index *coins_bi = block_map_find(
+                        &mp->main_state->map_block_index, &pre_scan_coins_hash);
+                    if (coins_bi) {
+                        printf("Post-scan: restoring coins tip h=%d "
+                               "(scan picked h=%d)\n",
+                               coins_bi->nHeight, post_scan_h);
+                        active_chain_set_tip(&mp->main_state->chain_active,
+                                              coins_bi);
+                        mp->main_state->pindex_best_header = coins_bi;
+                    }
+                }
+
                 struct sync_chain_activation activation = {0};
                 syncsvc_build_block_file_scan_activation(&activation, scan_m);
                 if (activation.should_activate && !g_shutdown_requested) {
