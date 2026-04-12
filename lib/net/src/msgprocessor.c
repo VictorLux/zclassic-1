@@ -1869,15 +1869,21 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                         ACTIVATION_SRC_BLOCK_FILE_SCAN, NULL, &ao);
                 }
 
-                /* Restore coins-based chain tip if activation picked a
-                 * wrong fork.  This check must run AFTER activation (which
-                 * calls activate_best_chain and may set tip=2340 due to
-                 * incomplete nChainTx propagation).  If the coins tip is
-                 * at a much higher height, fix heights from the anchor
-                 * and restore. */
+                /* Fix block_map heights from the coins anchor.
+                 *
+                 * The scan assigns heights that are internally consistent
+                 * (each = pprev+1) but globally wrong — they trace back
+                 * to a genesis-area fork.  The coins tip (from LDB UTXO
+                 * import) is the source of truth for the anchor height.
+                 * Fix heights from that anchor down AND up so that
+                 * contextual_check_block sees correct Overwinter/Sapling
+                 * activation heights.
+                 *
+                 * Also restore the active chain tip if activation picked
+                 * a wrong short fork. */
                 int post_act_h = active_chain_height(
                     &mp->main_state->chain_active);
-                if (pre_scan_coins_h > 100000 && post_act_h < pre_scan_coins_h) {
+                if (pre_scan_coins_h > 100000) {
                     struct block_index *coins_bi = block_map_find(
                         &mp->main_state->map_block_index, &pre_scan_coins_hash);
                     if (coins_bi) {
@@ -1930,12 +1936,14 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                                 printf("Post-activation: re-propagated "
                                        "%d heights\n", total);
                         }
-                        printf("Post-activation: restoring coins tip "
-                               "h=%d (activation picked h=%d)\n",
-                               pre_scan_coins_h, post_act_h);
-                        active_chain_set_tip(&mp->main_state->chain_active,
-                                              coins_bi);
-                        mp->main_state->pindex_best_header = coins_bi;
+                        if (post_act_h < pre_scan_coins_h) {
+                            printf("Post-activation: restoring coins tip "
+                                   "h=%d (activation picked h=%d)\n",
+                                   pre_scan_coins_h, post_act_h);
+                            active_chain_set_tip(&mp->main_state->chain_active,
+                                                  coins_bi);
+                            mp->main_state->pindex_best_header = coins_bi;
+                        }
                     }
                 }
             }
