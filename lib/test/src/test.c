@@ -117,6 +117,7 @@ int main(void)
     failures += test_utxo_recovery_service();
     failures += test_rpc_error_envelope();
     failures += test_tx_property();
+    failures += test_workpool();
 
     /* Spec-based user story tests */
     failures += spec_wallet_dashboard();

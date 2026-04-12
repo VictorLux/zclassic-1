@@ -270,6 +270,7 @@ int test_znam(void);
 int test_htlc(void);
 int test_file_market(void);
 int test_strong_params(void);
+int test_workpool(void);
 
 /* Spec-based user story tests (one per feature area) */
 int spec_wallet_dashboard(void);

@@ -29,6 +29,49 @@
 #include "validation/main_constants.h"
 #include "sapling/incremental_merkle_tree.h"
 #include "event/event.h"
+#include "util/workpool.h"
+#include "util/util.h"
+
+/* ── Parallel script verification ────────────────────────── */
+
+/* Work item for one input's script verification */
+struct script_check {
+    const struct script *script_sig;
+    const struct script *script_pub_key;
+    uint32_t flags;
+    uint32_t branch_id;
+    struct tx_sig_checker tsc;
+    struct precomputed_tx_data *txdata; /* shared per-tx, read-only */
+};
+
+static bool script_check_fn(void *item)
+{
+    struct script_check *sc = (struct script_check *)item;
+    struct sig_checker checker = tx_make_sig_checker(&sc->tsc);
+    ScriptError serror = SCRIPT_ERR_OK;
+    return verify_script(sc->script_sig, sc->script_pub_key,
+                         sc->flags, &checker, sc->branch_id, &serror);
+}
+
+/* Lazy-initialized global workpool for script verification.
+ * Workers persist across blocks to avoid thread create/destroy overhead. */
+static struct workpool g_script_pool;
+static bool g_script_pool_ready = false;
+
+static struct workpool *get_script_pool(void)
+{
+    if (!g_script_pool_ready) {
+        int ncores = GetNumCores();
+        if (ncores < 2) ncores = 2;
+        if (ncores > 16) ncores = 16;
+        /* Queue capacity: large enough for biggest blocks (~5000 inputs) */
+        if (workpool_init(&g_script_pool, ncores, 8192, script_check_fn))
+            g_script_pool_ready = true;
+        else
+            return NULL;
+    }
+    return &g_script_pool;
+}
 
 /* Global Sapling tree pointer — set by process_block's connect_tip
  * before calling connect_block. NULL during just_check mode. */
@@ -201,6 +244,18 @@ bool connect_block(const struct block *block,
     int64_t fees = 0;
     unsigned int sig_ops = 0;
 
+    /* ── Parallel script verification: collection arrays ─── *
+     * Phase 1 (in the loop below): gather all script checks.
+     * Phase 2 (after the loop): dispatch to workpool.
+     * txdatas[] holds precomputed tx data that outlives the loop. */
+    struct script_check *checks = NULL;
+    void **check_ptrs = NULL;
+    size_t num_checks = 0;
+    size_t checks_cap = 0;
+    struct precomputed_tx_data *txdatas = NULL;
+    size_t num_txdatas = 0;
+    size_t txdatas_cap = 0;
+
     for (size_t i = 0; i < block->num_vtx; i++) {
         const struct transaction *tx = &block->vtx[i];
 
@@ -208,7 +263,8 @@ bool connect_block(const struct block *block,
         sig_ops += (unsigned int)get_legacy_sig_op_count(tx, flags);
         REJECT_IF_CLEANUP(sig_ops > MAX_BLOCK_SIGOPS,
                           state, 100, "bad-blk-sigops",
-                          block_undo_free(&blockundo));
+                          (free(checks), free(check_ptrs), free(txdatas),
+                           block_undo_free(&blockundo)));
 
         if (!transaction_is_coinbase(tx)) {
             /* ── Coinbase maturity (100 blocks) ───────── */
@@ -220,6 +276,7 @@ bool connect_block(const struct block *block,
                     if (prev_coins.is_coinbase &&
                         pindex->nHeight - prev_coins.height < COINBASE_MATURITY) {
                         coins_free(&prev_coins);
+                        free(checks); free(check_ptrs); free(txdatas);
                         block_undo_free(&blockundo);
                         return validation_state_dos(state, 100, false,
                             REJECT_INVALID,
@@ -249,6 +306,7 @@ bool connect_block(const struct block *block,
                         break;
                     }
                 }
+                free(checks); free(check_ptrs); free(txdatas);
                 block_undo_free(&blockundo);
                 return validation_state_dos(state, 100, false, REJECT_INVALID,
                     "bad-txns-inputs-missingorspent", false, NULL);
@@ -256,6 +314,7 @@ bool connect_block(const struct block *block,
 
             /* ── JoinSplit anchor requirements ─────────── */
             if (!coins_view_cache_have_joinsplit_requirements(view, tx)) {
+                free(checks); free(check_ptrs); free(txdatas);
                 block_undo_free(&blockundo);
                 return validation_state_dos(state, 100, false, REJECT_INVALID,
                     "bad-txns-joinsplit-requirements-not-met", false, NULL);
@@ -271,27 +330,32 @@ bool connect_block(const struct block *block,
              * This catches corrupted coins before they propagate. */
             REJECT_IF_CLEANUP(value_in < 0,
                               state, 100, "bad-txns-inputvalues-outofrange",
-                              block_undo_free(&blockundo));
+                              (free(checks), free(check_ptrs), free(txdatas),
+                               block_undo_free(&blockundo)));
 
             /* Per-input value range check (zclassicd CheckTxInputs:2075) */
             REJECT_IF_CLEANUP(!MoneyRange(value_in),
                               state, 100, "bad-txns-inputvalues-outofrange",
-                              block_undo_free(&blockundo));
+                              (free(checks), free(check_ptrs), free(txdatas),
+                               block_undo_free(&blockundo)));
 
             /* Inputs must cover outputs (no money creation) */
             REJECT_IF_CLEANUP(value_in < value_out,
                               state, 100, "bad-txns-in-belowout",
-                              block_undo_free(&blockundo));
+                              (free(checks), free(check_ptrs), free(txdatas),
+                               block_undo_free(&blockundo)));
 
             int64_t tx_fee = value_in - value_out;
 
             /* Fee sanity: non-negative and no overflow */
             REJECT_IF_CLEANUP(tx_fee < 0,
                               state, 100, "bad-txns-fee-negative",
-                              block_undo_free(&blockundo));
+                              (free(checks), free(check_ptrs), free(txdatas),
+                               block_undo_free(&blockundo)));
             REJECT_IF_CLEANUP(!MoneyRange(fees + tx_fee),
                               state, 100, "bad-txns-fee-outofrange",
-                              block_undo_free(&blockundo));
+                              (free(checks), free(check_ptrs), free(txdatas),
+                               block_undo_free(&blockundo)));
             fees += tx_fee;
 
             event_emitf(EV_TX_INPUTS_CHECKED, 0,
@@ -299,15 +363,23 @@ bool connect_block(const struct block *block,
                         pindex->nHeight, i,
                         (long long)value_in, (long long)tx_fee);
 
-            /* ── Script verification ─────────────────── */
+            /* ── Script verification (Phase 1: collect) ─── */
             if (expensive_checks) {
-                struct precomputed_tx_data txdata;
-                precompute_tx_data(tx, &txdata);
+                if (num_txdatas >= txdatas_cap) {
+                    txdatas_cap = txdatas_cap ? txdatas_cap * 2 : 64;
+                    txdatas = realloc(txdatas,
+                                      txdatas_cap * sizeof(*txdatas));
+                }
+                precompute_tx_data(tx, &txdatas[num_txdatas]);
+                num_txdatas++;
 
                 for (size_t j = 0; j < tx->num_vin; j++) {
                     const struct tx_out *prev_out =
                         coins_view_cache_get_output_for(view, &tx->vin[j]);
                     if (!prev_out) {
+                        free(checks);
+                        free(check_ptrs);
+                        free(txdatas);
                         block_undo_free(&blockundo);
                         return validation_state_dos(state, 100, false,
                             REJECT_INVALID, "bad-txns-inputs-missingorspent",
@@ -315,31 +387,37 @@ bool connect_block(const struct block *block,
                     }
 
                     /* Per-input value in valid range */
-                    REJECT_IF_CLEANUP(!MoneyRange(prev_out->value),
-                                      state, 100,
-                                      "bad-txns-inputvalues-outofrange",
-                                      block_undo_free(&blockundo));
-
-                    struct tx_sig_checker tsc;
-                    tx_sig_checker_init(&tsc, tx, (unsigned int)j,
-                                        prev_out->value, branch_id, &txdata);
-                    struct sig_checker checker = tx_make_sig_checker(&tsc);
-
-                    ScriptError serror = SCRIPT_ERR_OK;
-                    if (!verify_script(&tx->vin[j].script_sig,
-                                       &prev_out->script_pub_key,
-                                       flags, &checker,
-                                       branch_id, &serror)) {
+                    if (!MoneyRange(prev_out->value)) {
+                        free(checks);
+                        free(check_ptrs);
+                        free(txdatas);
                         block_undo_free(&blockundo);
                         return validation_state_dos(state, 100, false,
                             REJECT_INVALID,
-                            "mandatory-script-verify-flag-failed",
+                            "bad-txns-inputvalues-outofrange",
                             false, NULL);
                     }
+
+                    if (num_checks >= checks_cap) {
+                        checks_cap = checks_cap ? checks_cap * 2 : 256;
+                        checks = realloc(checks,
+                                         checks_cap * sizeof(*checks));
+                        check_ptrs = realloc(check_ptrs,
+                                             checks_cap * sizeof(*check_ptrs));
+                    }
+
+                    struct script_check *sc = &checks[num_checks];
+                    sc->script_sig = &tx->vin[j].script_sig;
+                    sc->script_pub_key = &prev_out->script_pub_key;
+                    sc->flags = flags;
+                    sc->branch_id = branch_id;
+                    sc->txdata = &txdatas[num_txdatas - 1];
+                    tx_sig_checker_init(&sc->tsc, tx, (unsigned int)j,
+                                        prev_out->value, branch_id,
+                                        sc->txdata);
+                    check_ptrs[num_checks] = sc;
+                    num_checks++;
                 }
-                event_emitf(EV_SCRIPT_VERIFIED, 0,
-                            "h=%d tx=%zu inputs=%zu",
-                            pindex->nHeight, i, tx->num_vin);
             }
         }
 
@@ -347,6 +425,7 @@ bool connect_block(const struct block *block,
         if (i > 0) {
             if (!update_coins_with_undo(tx, view, &blockundo.vtxundo[i - 1],
                                         pindex->nHeight)) {
+                free(checks); free(check_ptrs); free(txdatas);
                 block_undo_free(&blockundo);
                 return validation_state_dos(state, 100, false, REJECT_INVALID,
                     "bad-txns-utxo-update-failed", true, NULL);
@@ -358,11 +437,51 @@ bool connect_block(const struct block *block,
                                               pindex->nHeight);
             tx_undo_free(&dummy);
             if (!ok) {
+                free(checks); free(check_ptrs); free(txdatas);
                 block_undo_free(&blockundo);
                 return validation_state_dos(state, 100, false, REJECT_INVALID,
                     "bad-txns-utxo-update-failed", true, NULL);
             }
         }
+    }
+
+    /* ── Script verification (Phase 2: parallel dispatch) ─── *
+     * All inputs have been collected into checks[]. Now verify them
+     * in parallel via the workpool. UTXO updates above are already
+     * complete, so the coins view is not accessed by workers. */
+    if (num_checks > 0) {
+        struct workpool *pool = get_script_pool();
+        bool scripts_ok;
+
+        if (pool && num_checks >= 4) {
+            /* Parallel path: dispatch to worker threads */
+            scripts_ok = workpool_run(pool, check_ptrs, num_checks);
+        } else {
+            /* Sequential fallback: < 4 inputs or pool init failed */
+            scripts_ok = true;
+            for (size_t c = 0; c < num_checks && scripts_ok; c++)
+                scripts_ok = script_check_fn(check_ptrs[c]);
+        }
+
+        free(checks);
+        free(check_ptrs);
+        free(txdatas);
+
+        if (!scripts_ok) {
+            block_undo_free(&blockundo);
+            return validation_state_dos(state, 100, false,
+                REJECT_INVALID, "mandatory-script-verify-flag-failed",
+                false, NULL);
+        }
+
+        event_emitf(EV_SCRIPT_VERIFIED, 0,
+                    "h=%d inputs=%zu parallel=%s",
+                    pindex->nHeight, num_checks,
+                    (pool && num_checks >= 4) ? "yes" : "no");
+    } else {
+        free(checks);
+        free(check_ptrs);
+        free(txdatas);
     }
 
     /* ── Sapling commitment tree root verification ─────────── *

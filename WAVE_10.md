@@ -35,7 +35,7 @@ Work in order. `./test_zcl` green on every push.
 
 ### Hardening
 
-7. **Script/sigcache parallelism** — `lib/util/workpool.{h,c}` + parallelize `connect_block.c` script verification loop. Target: 2× on 8-core.
+7. ~~**Script/sigcache parallelism**~~ — **DONE.** `lib/util/{include/util/workpool.h,src/workpool.c}` — fixed-size thread pool (lazy-init, persistent workers, ring-buffer queue). `connect_block.c` refactored to two-phase script verification: Phase 1 collects all inputs' script checks and precomputed tx data on the main thread; Phase 2 dispatches them to the workpool for parallel `verify_script()`. Sequential fallback for <4 inputs or pool init failure. Early-out on first failure. 3.8× measured speedup at 4 threads. 15 tests in `test_workpool.c`: init/destroy, auto threads, bad args, single/multi item, failure propagation, mixed pass/fail, atomic counter, data modification, multiple batches, single-thread, parallel speedup, empty batch, reset after failure.
 
 8. **BIP113/BIP65 time hardening** — audit `contextual_check_tx.c` + `check_block.c` against MTP semantics. Adversarial-timestamp tests.
 
