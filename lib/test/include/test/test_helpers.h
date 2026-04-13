@@ -275,6 +275,7 @@ int test_bip113_bip65(void);
 int test_mempool_orphan(void);
 int test_fee_estimation(void);
 int test_header_sync(void);
+int test_hd_keychain(void);
 
 /* Spec-based user story tests (one per feature area) */
 int spec_wallet_dashboard(void);

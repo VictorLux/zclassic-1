@@ -121,6 +121,7 @@ int main(void)
     failures += test_mempool_orphan();
     failures += test_fee_estimation();
     failures += test_header_sync();
+    failures += test_hd_keychain();
 
     /* Spec-based user story tests */
     failures += spec_wallet_dashboard();
