@@ -821,6 +821,7 @@ static const bool g_sync_transitions[SYNC_NUM_STATES][SYNC_NUM_STATES] = {
     [SYNC_HEADERS_DOWNLOAD][SYNC_CONNECTING_BLOCKS]  = true,
     [SYNC_HEADERS_DOWNLOAD][SYNC_AT_TIP]             = true,
     [SYNC_HEADERS_DOWNLOAD][SYNC_IDLE]               = true,
+    [SYNC_HEADERS_DOWNLOAD][SYNC_FINDING_PEERS]      = true,  /* watchdog recovery */
     [SYNC_HEADERS_DOWNLOAD][SYNC_FAILED]             = true,
     [SYNC_HEADERS_DOWNLOAD][SYNC_SNAPSHOT_RECEIVE]   = true,
 
@@ -872,6 +873,13 @@ enum sync_state sync_get_state(void)
     return (enum sync_state)atomic_load(&g_sync_state);
 }
 
+static sync_state_change_cb g_sync_state_change_cb = NULL;
+
+void sync_set_state_change_callback(sync_state_change_cb cb)
+{
+    g_sync_state_change_cb = cb;
+}
+
 bool sync_set_state(enum sync_state new_state, const char *reason)
 {
     enum sync_state old = (enum sync_state)atomic_load(&g_sync_state);
@@ -892,6 +900,10 @@ bool sync_set_state(enum sync_state new_state, const char *reason)
     }
 
     atomic_store(&g_sync_state, (int)new_state);
+
+    /* Notify watchdog of state change */
+    if (g_sync_state_change_cb)
+        g_sync_state_change_cb(new_state, 0);
 
     char buf[EVENT_PAYLOAD_SIZE];
     int n = snprintf(buf, sizeof(buf), "%s->%s: %s",

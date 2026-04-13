@@ -366,4 +366,9 @@ enum sync_state sync_get_state(void);
 bool sync_set_state(enum sync_state new_state, const char *reason);
 const char *sync_state_name(enum sync_state state);
 
+/* Optional callback invoked on successful sync state change.
+ * Set by sync_watchdog_init() to track state timestamps. */
+typedef void (*sync_state_change_cb)(enum sync_state new_state, int height);
+void sync_set_state_change_callback(sync_state_change_cb cb);
+
 #endif /* ZCL_EVENT_H */

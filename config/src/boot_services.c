@@ -65,6 +65,7 @@
 #include "services/wallet_backup_service.h"
 #include "services/disk_monitor.h"
 #include "services/ibd_throttle.h"
+#include "services/sync_watchdog_service.h"
 
 extern int g_assume_valid_height;
 
@@ -1122,6 +1123,9 @@ bool app_init_services(struct app_context *ctx,
     /* Game platform RPC — latency measurement, game types */
     rpc_game_set_connman(svc->connman);
     register_game_rpc_commands(svc->rpc_table);
+
+    /* Sync watchdog — automatic stall detection and recovery */
+    sync_watchdog_init();
 
     /* Service health and sync detail RPCs */
     rpc_health_set_state(svc->state, &svc->bg_validation,

@@ -133,6 +133,7 @@ int main(void)
     failures += test_multisig();
     failures += test_mcp_fuzz();
     failures += test_rpc_auth_hardening();
+    failures += test_sync_watchdog();
 
     /* Spec-based user story tests */
     failures += spec_wallet_dashboard();

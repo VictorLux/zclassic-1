@@ -287,6 +287,7 @@ int test_schema_migration(void);
 int test_multisig(void);
 int test_mcp_fuzz(void);
 int test_rpc_auth_hardening(void);
+int test_sync_watchdog(void);
 
 /* Spec-based user story tests (one per feature area) */
 int spec_wallet_dashboard(void);

@@ -4,6 +4,7 @@
 
 #include "controllers/health_controller.h"
 #include "controllers/strong_params.h"
+#include "services/sync_watchdog_service.h"
 #include "validation/chainstate.h"
 #include "net/p2p_game.h"
 #include "json/json.h"
@@ -206,6 +207,38 @@ static bool rpc_getservicehealth(const struct json_value *params, bool help,
     return true;
 }
 
+/* ── RPC: getsyncwatchdog ───────────────────────────────────── */
+
+static bool rpc_getsyncwatchdog(const struct json_value *params, bool help,
+                                struct json_value *result)
+{
+    (void)params;
+    RPC_HELP(help, result,
+        "getsyncwatchdog\n"
+        "\nReturn sync watchdog status including recovery history.\n"
+        "\nResult: object with watchdog state, checks_run, recoveries, etc.");
+
+    struct sync_watchdog_status ws;
+    sync_watchdog_get_status(&ws);
+
+    json_set_object(result);
+    json_push_kv_bool(result, "enabled", ws.enabled);
+    json_push_kv_int(result, "checks_run", (int64_t)ws.checks_run);
+    json_push_kv_int(result, "recoveries_triggered",
+                     (int64_t)ws.recoveries_triggered);
+    json_push_kv_int(result, "last_recovery_time", ws.last_recovery_time);
+    json_push_kv_str(result, "last_recovery_type",
+                     watchdog_recovery_type_name(ws.last_recovery_type));
+    json_push_kv_str(result, "current_state",
+                     sync_state_name(ws.current_state));
+    json_push_kv_int(result, "current_state_duration_secs",
+                     ws.current_state_duration_secs);
+    json_push_kv_int(result, "current_state_entry_height",
+                     (int64_t)ws.current_state_entry_height);
+
+    return true;
+}
+
 /* ── REST API helpers ─────────────────────────────────────────── */
 
 bool api_getsyncdetail(struct json_value *result)
@@ -223,8 +256,9 @@ bool api_getservicehealth(struct json_value *result)
 void register_health_rpc_commands(struct rpc_table *t)
 {
     struct rpc_command cmds[] = {
-        { "control", "getsyncdetail",    rpc_getsyncdetail,    true },
-        { "control", "getservicehealth", rpc_getservicehealth, true },
+        { "control", "getsyncdetail",     rpc_getsyncdetail,     true },
+        { "control", "getservicehealth",  rpc_getservicehealth,  true },
+        { "control", "getsyncwatchdog",   rpc_getsyncwatchdog,   true },
     };
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++)
         rpc_table_append(t, &cmds[i]);
