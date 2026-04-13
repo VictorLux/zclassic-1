@@ -560,18 +560,18 @@ static size_t embed_or_null(const char *body, char *dst, size_t cap)
  * a full parser here because we only read counters we emit ourselves. */
 static long long scan_int_field(const char *body, const char *key)
 {
-    if (!body || !key) return -1;
+    if (!body || !key) return -1;  // raw-return-ok: sentinel
     char needle[64];
     int n = snprintf(needle, sizeof(needle), "\"%s\":", key);
-    if (n <= 0 || (size_t)n >= sizeof(needle)) return -1;
+    if (n <= 0 || (size_t)n >= sizeof(needle)) return -1;  // raw-return-ok: sentinel
     const char *p = strstr(body, needle);
-    if (!p) return -1;
+    if (!p) return -1;  // raw-return-ok: sentinel
     p += (size_t)n;
     while (*p == ' ') p++;
-    if (*p == '\0') return -1;
+    if (*p == '\0') return -1;  // raw-return-ok: sentinel
     char *end = NULL;
     long long v = strtoll(p, &end, 10);
-    if (end == p) return -1;
+    if (end == p) return -1;  // raw-return-ok: sentinel
     return v;
 }
 

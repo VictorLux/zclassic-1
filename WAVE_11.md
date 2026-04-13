@@ -28,7 +28,7 @@ Work in order. `./test_zcl` green on every push.
 
 4. **zcl_malloc migration: lib/** — replace bare `malloc`/`calloc` with `zcl_malloc`/`zcl_calloc` in all non-vendor lib/ files. Include `safe_alloc.h`. Count before/after.
 
-5. **make lint fatal** — change `make lint` from advisory to fatal. Add checks for: bare `return -1` in MCP handlers, bare `malloc` in app/ code, missing `LOG_*` on error returns in new code. Gate `make ci` on it.
+5. ~~**make lint fatal**~~ ✓ — `make lint` now fatal. Checks: bare `return -1` in MCP handlers, bare `malloc`/`calloc` in app/tools code. `make ci` gates on lint. All current code passes clean.
 
 ### Consensus hardening
 

@@ -464,12 +464,31 @@ docs-mcp-check: zclassic23
 #   make ci SKIP_FUZZ=1     # skip the fuzz stage (faster)
 #   make ci SKIP_COV=1      # skip coverage (faster)
 lint:
-	@echo "══ LINT: silent error returns ══"
-	@! grep -rn 'return -1;' tools/mcp/controllers/ --include='*.c' \
-	    | grep -v 'LOG_ERR\|log_json\|fprintf\|// silent-ok' \
-	    | head -5 \
-	    || true
-	@echo "══ LINT: done (advisory — will become fatal) ══"
+	@echo "══ LINT: bare return -1 in MCP handlers ══"
+	@HITS=$$(grep -rn 'return -1;' tools/mcp/controllers/ --include='*.c' \
+	    | grep -v 'LOG_ERR\|log_json\|fprintf\|// silent-ok\|// raw-return-ok'); \
+	if [ -n "$$HITS" ]; then \
+	    echo "$$HITS"; \
+	    echo "FAIL: bare return -1 in MCP handlers (use LOG_ERR or mark // raw-return-ok)"; \
+	    exit 1; \
+	fi
+	@echo "══ LINT: bare malloc in app/ code ══"
+	@HITS=$$(grep -rn '[^_]malloc\s*(' app/ tools/ --include='*.c' \
+	    | grep -v 'zcl_malloc\|zcl_calloc\|zcl_realloc\|// raw-alloc-ok\|safe_alloc\|".*malloc\|LOG_\|fprintf'); \
+	if [ -n "$$HITS" ]; then \
+	    echo "$$HITS"; \
+	    echo "FAIL: bare malloc in app/tools code (use zcl_malloc or mark // raw-alloc-ok)"; \
+	    exit 1; \
+	fi
+	@echo "══ LINT: bare calloc in app/ code ══"
+	@HITS=$$(grep -rn '[^_]calloc\s*(' app/ tools/ --include='*.c' \
+	    | grep -v 'zcl_calloc\|// raw-alloc-ok\|safe_alloc\|".*calloc\|LOG_\|fprintf'); \
+	if [ -n "$$HITS" ]; then \
+	    echo "$$HITS"; \
+	    echo "FAIL: bare calloc in app/tools code (use zcl_calloc or mark // raw-alloc-ok)"; \
+	    exit 1; \
+	fi
+	@echo "══ LINT: passed (fatal) ══"
 
 ci: lint zclassic23 test_zcl
 	@echo "══ CI: test ══"
