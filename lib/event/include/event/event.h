@@ -159,6 +159,9 @@ enum event_type {
     /* ── HTTP RPC request timeout (wave 6 #1) ──────── */
     EV_RPC_TIMEOUT,              /* payload: "method=NAME elapsed_ms=N ip=A.B.C.D" */
 
+    /* ── Block pruning ────────────────────────────────── */
+    EV_BLOCK_PRUNING_DONE,       /* payload: "file=N max_height=N freed=N blocks=N" */
+
     EV_NUM_TYPES                 /* sentinel — must be last */
 };
 

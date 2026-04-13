@@ -383,6 +383,7 @@ const char *event_type_name(enum event_type type)
         [EV_CONSENSUS_REJECT_TX]     = "consensus.reject_tx",
         [EV_CONSENSUS_REJECT_BLOCK]  = "consensus.reject_block",
         [EV_RPC_TIMEOUT]             = "rpc.timeout",
+        [EV_BLOCK_PRUNING_DONE]      = "block.pruning_done",
     };
     if (type >= 0 && type < EV_NUM_TYPES && names[type])
         return names[type];

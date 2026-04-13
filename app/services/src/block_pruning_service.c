@@ -1,0 +1,346 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * Block Pruning Service — see header for design rationale.
+ *
+ * Implementation
+ * --------------
+ * Each pruning pass walks the active chain from height 0 upward,
+ * collecting which blk*.dat file numbers contain only blocks that
+ * are deep enough to prune (deeper than chain_height - keep_blocks).
+ *
+ * A file is prunable when the highest block it contains is below
+ * the prune cutoff. We scan the chain to find the maximum height
+ * stored in each file number, then delete files whose max height
+ * is below the cutoff.
+ *
+ * After deleting a file, we walk the chain again and clear
+ * BLOCK_HAVE_DATA / BLOCK_HAVE_UNDO on every block_index that
+ * referenced the deleted file.
+ */
+
+#include "services/block_pruning_service.h"
+
+#include "chain/chain.h"
+#include "event/event.h"
+#include "storage/disk_block_io.h"
+#include "util/log_macros.h"
+#include "util/safe_alloc.h"
+
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <time.h>
+
+/* ── Global instance pointer ───────────────────────────────── */
+
+struct block_pruning_service *g_block_pruning = NULL;
+
+/* ── Helpers ───────────────────────────────────────────────── */
+
+/* Get the current sync state to avoid pruning during IBD. */
+extern enum sync_state sync_get_state(void);
+
+/* Maximum file number we'll ever scan. blk files are 0..99998,
+ * and 255 is the special sync file (never pruned). */
+#define MAX_FILE_NUM 100000
+
+/* Track the max height stored in each blk file. We use a
+ * dynamically allocated array sized to the highest file number
+ * actually seen. */
+struct file_height_map {
+    int *max_height;   /* max_height[file_num] = highest block height in that file */
+    int  capacity;     /* number of slots allocated */
+};
+
+static bool file_height_map_init(struct file_height_map *m, int cap)
+{
+    if (cap <= 0) cap = 64;
+    m->max_height = zcl_malloc((size_t)cap * sizeof(int), "prune_file_map");
+    if (!m->max_height)
+        return false;
+    m->capacity = cap;
+    for (int i = 0; i < cap; i++)
+        m->max_height[i] = -1;
+    return true;
+}
+
+static bool file_height_map_ensure(struct file_height_map *m, int file_num)
+{
+    if (file_num < m->capacity)
+        return true;
+    int new_cap = m->capacity * 2;
+    if (new_cap <= file_num) new_cap = file_num + 16;
+    int *p = zcl_realloc(m->max_height, (size_t)new_cap * sizeof(int), "prune_file_map");
+    if (!p)
+        return false;
+    for (int i = m->capacity; i < new_cap; i++)
+        p[i] = -1;
+    m->max_height = p;
+    m->capacity = new_cap;
+    return true;
+}
+
+static void file_height_map_free(struct file_height_map *m)
+{
+    free(m->max_height);
+    m->max_height = NULL;
+    m->capacity = 0;
+}
+
+static void file_height_map_record(struct file_height_map *m,
+                                   int file_num, int height)
+{
+    if (file_num < 0 || file_num >= MAX_FILE_NUM) return;
+    if (!file_height_map_ensure(m, file_num)) return;
+    if (height > m->max_height[file_num])
+        m->max_height[file_num] = height;
+}
+
+/* Get file size, returns 0 on error. */
+static int64_t file_size_or_zero(const char *path)
+{
+    struct stat st;
+    if (stat(path, &st) != 0) return 0;
+    return (int64_t)st.st_size;
+}
+
+/* ── Core pruning logic ────────────────────────────────────── */
+
+int block_pruning_run_once(struct block_pruning_service *svc)
+{
+    if (!svc || !svc->ms || !svc->datadir)
+        return 0;
+
+    int chain_height = active_chain_height(&svc->ms->chain_active);
+    atomic_store(&svc->lowest_have_data, chain_height);
+    if (chain_height < svc->keep_blocks)
+        return 0;  /* chain too short to prune anything */
+
+    int prune_below = chain_height - svc->keep_blocks;
+
+    /* Phase 1: Build map of file_num → max block height. */
+    struct file_height_map fmap;
+    if (!file_height_map_init(&fmap, 64))
+        return 0;
+
+    int lowest_have = chain_height;
+    for (int h = 0; h <= chain_height; h++) {
+        struct block_index *bi = active_chain_at(&svc->ms->chain_active, h);
+        if (!bi) continue;
+        if (!(bi->nStatus & BLOCK_HAVE_DATA)) continue;
+
+        int fn = bi->nFile;
+        if (fn == 255) continue;  /* never prune sync file */
+        if (fn == 0)   continue;  /* never prune file 0 (genesis) */
+
+        file_height_map_record(&fmap, fn, h);
+        if (h < lowest_have) lowest_have = h;
+    }
+    atomic_store(&svc->lowest_have_data, lowest_have);
+
+    /* Phase 2: Delete files where max_height < prune_below. */
+    int files_pruned_this_pass = 0;
+    for (int fn = 1; fn < fmap.capacity; fn++) {
+        if (fmap.max_height[fn] < 0)   continue;  /* no blocks in this file */
+        if (fmap.max_height[fn] >= prune_below) continue;  /* too recent */
+
+        /* Delete blk file */
+        char blk_path[512], rev_path[512];
+        struct disk_block_pos pos = { .nFile = fn, .nPos = 0 };
+        get_block_pos_filename(blk_path, sizeof(blk_path), svc->datadir, &pos, "blk");
+        get_block_pos_filename(rev_path, sizeof(rev_path), svc->datadir, &pos, "rev");
+
+        int64_t blk_sz = file_size_or_zero(blk_path);
+        int64_t rev_sz = file_size_or_zero(rev_path);
+
+        /* Invalidate the file cache if it's caching this file */
+        disk_block_io_lock();
+        /* Close and reopen to flush — we just need the lock to
+         * prevent concurrent reads while we delete. */
+        disk_block_io_unlock();
+
+        bool blk_ok = (unlink(blk_path) == 0 || errno == ENOENT);
+        bool rev_ok = (unlink(rev_path) == 0 || errno == ENOENT);
+
+        if (!blk_ok) {
+            fprintf(stderr, "[prune] failed to delete %s: %s\n",
+                    blk_path, strerror(errno));
+            continue;
+        }
+
+        int64_t freed = blk_sz + (rev_ok ? rev_sz : 0);
+        files_pruned_this_pass++;
+        atomic_fetch_add(&svc->files_pruned, rev_ok ? 2 : 1);
+        atomic_fetch_add(&svc->bytes_reclaimed, freed);
+
+        /* Phase 3: Clear BLOCK_HAVE_DATA/UNDO flags on affected blocks. */
+        int blocks_cleared = 0;
+        for (int h = 0; h <= chain_height; h++) {
+            struct block_index *bi = active_chain_at(&svc->ms->chain_active, h);
+            if (!bi) continue;
+            if (bi->nFile != fn) continue;
+            if (bi->nStatus & BLOCK_HAVE_DATA) {
+                bi->nStatus &= ~(unsigned int)BLOCK_HAVE_DATA;
+                blocks_cleared++;
+            }
+            if (bi->nStatus & BLOCK_HAVE_UNDO)
+                bi->nStatus &= ~(unsigned int)BLOCK_HAVE_UNDO;
+        }
+        atomic_fetch_add(&svc->blocks_pruned, blocks_cleared);
+
+        event_emitf(EV_BLOCK_PRUNING_DONE, 0,
+                    "file=%d max_height=%d freed=%lld blocks=%d",
+                    fn, fmap.max_height[fn], (long long)freed, blocks_cleared);
+        printf("[prune] deleted blk%05d.dat (max_h=%d, freed=%lld bytes, %d blocks)\n",
+               fn, fmap.max_height[fn], (long long)freed, blocks_cleared);
+    }
+
+    /* Update lowest_have_data after pruning */
+    lowest_have = chain_height;
+    for (int h = 0; h <= chain_height; h++) {
+        struct block_index *bi = active_chain_at(&svc->ms->chain_active, h);
+        if (!bi) continue;
+        if (bi->nStatus & BLOCK_HAVE_DATA) {
+            lowest_have = h;
+            break;
+        }
+    }
+    atomic_store(&svc->lowest_have_data, lowest_have);
+
+    file_height_map_free(&fmap);
+    return files_pruned_this_pass;
+}
+
+/* ── Background thread ─────────────────────────────────────── */
+
+static void prune_sleep_ms(int ms)
+{
+    struct timespec ts = { .tv_sec = ms / 1000, .tv_nsec = (ms % 1000) * 1000000L };
+    nanosleep(&ts, NULL);
+}
+
+static void *block_pruning_thread(void *arg)
+{
+    struct block_pruning_service *svc = arg;
+    atomic_store(&svc->state, BLOCK_PRUNING_RUNNING);
+
+    /* Signal the starter that we're live. */
+    pthread_mutex_lock(&svc->ready_mutex);
+    svc->ready = true;
+    pthread_cond_signal(&svc->ready_cond);
+    pthread_mutex_unlock(&svc->ready_mutex);
+
+    while (!atomic_load(&svc->stop_requested)) {
+        /* Only prune when fully synced */
+        enum sync_state ss = sync_get_state();
+        if (ss == SYNC_AT_TIP) {
+            block_pruning_run_once(svc);
+        }
+
+        /* Interruptible sleep: 500ms ticks */
+        int total_ms = svc->tick_seconds * 1000;
+        int slept = 0;
+        while (slept < total_ms) {
+            if (atomic_load(&svc->stop_requested)) break;
+            prune_sleep_ms(500);
+            slept += 500;
+        }
+    }
+
+    atomic_store(&svc->state, BLOCK_PRUNING_STOPPED);
+    return NULL;
+}
+
+/* ── Public API ────────────────────────────────────────────── */
+
+void block_pruning_init(struct block_pruning_service *svc,
+                        struct main_state *ms,
+                        const char *datadir)
+{
+    memset(svc, 0, sizeof(*svc));
+    svc->ms = ms;
+    svc->datadir = datadir;
+    svc->thread_started = false;
+    svc->ready = false;
+    pthread_mutex_init(&svc->ready_mutex, NULL);
+    pthread_cond_init(&svc->ready_cond, NULL);
+    atomic_store(&svc->stop_requested, false);
+    atomic_store(&svc->state, BLOCK_PRUNING_IDLE);
+    atomic_store(&svc->files_pruned, 0);
+    atomic_store(&svc->blocks_pruned, 0);
+    atomic_store(&svc->bytes_reclaimed, 0);
+    atomic_store(&svc->lowest_have_data, 0);
+
+    /* Read retention depth from env */
+    int keep = BLOCK_PRUNING_DEFAULT_KEEP_BLOCKS;
+    const char *env = getenv("ZCL_PRUNE_KEEP_BLOCKS");
+    if (env) {
+        int v = atoi(env);
+        if (v >= BLOCK_PRUNING_MIN_KEEP_BLOCKS)
+            keep = v;
+        else
+            fprintf(stderr, "[prune] ZCL_PRUNE_KEEP_BLOCKS=%s too low "
+                    "(min %d), using default %d\n",
+                    env, BLOCK_PRUNING_MIN_KEEP_BLOCKS,
+                    BLOCK_PRUNING_DEFAULT_KEEP_BLOCKS);
+    }
+    svc->keep_blocks = keep;
+
+    /* Tick interval — default 5 min */
+    svc->tick_seconds = BLOCK_PRUNING_DEFAULT_TICK_SECONDS;
+}
+
+bool block_pruning_start(struct block_pruning_service *svc)
+{
+    if (!svc || !svc->ms || !svc->datadir)
+        LOG_FAIL("block_pruning", "start: null svc, ms, or datadir");
+    if (svc->thread_started)
+        LOG_FAIL("block_pruning", "start: thread already running");
+
+    atomic_store(&svc->stop_requested, false);
+    svc->ready = false;
+    if (pthread_create(&svc->thread, NULL, block_pruning_thread, svc) != 0) {
+        fprintf(stderr, "[prune] failed to create thread: %s\n", strerror(errno));
+        return false;
+    }
+    svc->thread_started = true;
+
+    /* Wait for thread to confirm it's running — no sleeps, no races. */
+    pthread_mutex_lock(&svc->ready_mutex);
+    while (!svc->ready)
+        pthread_cond_wait(&svc->ready_cond, &svc->ready_mutex);
+    pthread_mutex_unlock(&svc->ready_mutex);
+
+    printf("[prune] started — keep_blocks=%d tick=%ds\n",
+           svc->keep_blocks, svc->tick_seconds);
+    return true;
+}
+
+void block_pruning_stop(struct block_pruning_service *svc)
+{
+    if (!svc || !svc->thread_started) return;
+    atomic_store(&svc->stop_requested, true);
+    pthread_join(svc->thread, NULL);
+    svc->thread_started = false;
+    pthread_mutex_destroy(&svc->ready_mutex);
+    pthread_cond_destroy(&svc->ready_cond);
+    printf("[prune] stopped\n");
+}
+
+void block_pruning_get_status(const struct block_pruning_service *svc,
+                              struct block_pruning_status *out)
+{
+    memset(out, 0, sizeof(*out));
+    if (!svc) return;
+    out->state           = atomic_load(&svc->state);
+    out->files_pruned    = atomic_load(&svc->files_pruned);
+    out->blocks_pruned   = atomic_load(&svc->blocks_pruned);
+    out->bytes_reclaimed = atomic_load(&svc->bytes_reclaimed);
+    out->lowest_have_data = atomic_load(&svc->lowest_have_data);
+    out->keep_blocks     = svc->keep_blocks;
+    if (svc->ms)
+        out->chain_height = active_chain_height(&svc->ms->chain_active);
+}
