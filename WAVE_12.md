@@ -58,9 +58,9 @@ Work in order. `./test_zcl` green on every push.
 
 ### Defensive depth
 
-1. **MCP input fuzzing** — fuzz every MCP tool with randomized/malformed inputs. Assert: no crashes, no panics, proper error envelopes on all bad input.
+1. ~~**MCP input fuzzing**~~ ✓ — 17 tests in `test_mcp_fuzz.c`. Fuzzes all 79 MCP tools with NULL args, empty objects, wrong types, missing required params, overlong/empty strings, INT64 boundaries, bad enums, extra params, deep nesting, JSON injection, adversarial tool names, rapid-fire dispatch. Zero crashes, proper error envelopes.
 
-2. **RPC authentication hardening** — brute-force test: 1000 bad passwords, assert lockout. Timing attack test: assert constant-time comparison. Test cookie file permissions (0600).
+2. ~~**RPC authentication hardening**~~ ✓ — 10 tests in `test_rpc_auth_hardening.c`. Brute-force lockout (1000 bad pw), threshold-exact (4 ok, 5 ban), success-resets-counter, localhost-never-banned, multi-IP, constant-time comparison, cookie 0600 perms, overflow stability. **Fixed**: `check_auth()` now uses constant-time comparison (was `strcmp`); `.cookie` now `chmod(0600)` (was default umask).
 
 3. **Memory leak audit** — valgrind full test suite. Fix any definite leaks. Document suppressions for vendor code. Target: zero leaks in zclassic23 code.
 
