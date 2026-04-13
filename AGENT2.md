@@ -5,7 +5,7 @@
 **Coordinator:** AGENT1 (main `~/zclassic23`)
 **Peer:** AGENT3 (`~/zclassic23-3`) — RPC/wallet encryption/tracing, different files
 
-> **⇒ Active plan: [`WAVE_11.md`](./WAVE_11.md).** Wave 10 COMPLETE (13/13). Wave 11 theme: defensive migration + production hardening. Priority: (1) LOG_FAIL migration across validation/consensus/storage layers, (2) zcl_malloc migration, (3) make lint fatal, (4) compact blocks BIP152, (5) block pruning. **Rule 10: migrate on touch** — every file you modify gets its bare returns and mallocs migrated. Read `DEFENSIVE_CODING.md`.
+> **⇒ Active plan: [`WAVE_12.md`](./WAVE_12.md).** Wave 11 has 3 carry-over items (coverage 55%, fuzzer CI, snapshot automation) — do those first. Then wave 12: chaos fault injection, load testing, eclipse/time-warp/deep reorg adversarial tests, UTXO cache optimization. Prove the node is battle-tested.
 
 ---
 
