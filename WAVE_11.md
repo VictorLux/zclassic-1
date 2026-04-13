@@ -88,7 +88,7 @@ Work in order. `./test_zcl` green on every push.
 
 ### Tooling & ops
 
-12. **Release builder** — `tools/release.sh`. Tagged binary + SHA3-256 hash + detached signature. Reproducible build verification.
+12. ~~**Release builder**~~ ✓ — `tools/release.sh`. Clean build → stripped binaries → tar.gz archive → SHA3-256 hash → optional GPG detached signature. Auto-detects version from `clientversion.h`, creates git tag, records BUILDINFO (compiler, git rev, platform, binary sizes). `--verify` mode checks SHA3 hash + GPG sig. `make release` convenience target.
 
 13. **MCP tool reference generator** — auto-generate `docs/MCP_REFERENCE.md` from router metadata. Run as `make docs`.
 

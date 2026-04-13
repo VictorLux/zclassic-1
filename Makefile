@@ -57,7 +57,7 @@ LIBS = -Lvendor/lib -lsecp256k1 -lleveldb \
 	-lssl -lcrypto -lz
 
 .PHONY: all test test-e2e clean deploy check-restart-follow \
-        coverage coverage-clean docs-mcp docs-mcp-check ci audit
+        coverage coverage-clean docs-mcp docs-mcp-check ci audit release
 
 CLI_SRCS = lib/rpc/src/client.c lib/json/src/json.c
 all: test_zcl zclassic23 zclassic-cli
@@ -299,6 +299,9 @@ deploy: zclassic23
 	@systemctl --user daemon-reload
 	systemctl --user restart zclassic23
 	@sleep 2 && systemctl --user is-active zclassic23 && echo "Deployed."
+
+release:
+	@./tools/release.sh
 
 clean:
 	rm -f test_zcl zclassic23 zclassic-cli $(ALL_OBJS)
