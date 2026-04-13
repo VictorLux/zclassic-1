@@ -122,6 +122,7 @@ int main(void)
     failures += test_fee_estimation();
     failures += test_header_sync();
     failures += test_hd_keychain();
+    failures += test_mnemonic();
     failures += test_compact_blocks();
     failures += test_dandelion();
     failures += test_addrman_rebalance();

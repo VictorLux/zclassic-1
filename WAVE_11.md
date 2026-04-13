@@ -80,7 +80,7 @@ Work in order. `./test_zcl` green on every push.
 
 8. ~~**HD wallet Phase A (BIP32)**~~ ✓ — hierarchical deterministic key derivation. `lib/wallet/src/hd_keychain.{h,c}`. Master seed → account → change → address chain. Seed generation, path parsing ("m/44'/147'/0'/0/5"), private + public child derivation, xpub/xprv base58check serialization, BIP32 test vector 1 compliance. 20 tests.
 
-9. **HD wallet Phase B (BIP39)** — mnemonic seed phrases. 12/24 word generation + validation. `lib/wallet/src/mnemonic.{h,c}`. 8+ tests.
+9. ~~**HD wallet Phase B (BIP39)**~~ ✓ — mnemonic seed phrases. `lib/wallet/src/mnemonic.{h,c}` + `lib/crypto/src/pbkdf2_sha512.{h,c}`. 12/15/18/21/24-word generation from entropy, BIP39 English wordlist (2048 words, binary search), SHA256 checksum validation, PBKDF2-HMAC-SHA512 seed derivation (2048 iterations). BIP39 test vectors verified. 18 tests.
 
 10. **HD wallet Phase C (BIP44)** — derivation paths `m/44'/147'/0'/change/index`. Wire into `getnewaddress` when HD wallet exists. 6+ tests.
 
