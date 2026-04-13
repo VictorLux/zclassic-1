@@ -1,82 +1,89 @@
-# Agent 3 Task: Built-in Sync Watchdog & Self-Healing
+# Agent 3 Task: Wave 13 — Split msgprocessor.c & Defensive Coding Enforcement
+
+## Previous work (DONE)
+Wave 12: Sync watchdog service — auto-detect and recover from sync stalls. All merged.
 
 ## Problem
 
-The node has no built-in self-healing for sync stalls. The external `zcl-watchdog.c` only logs alerts but takes no corrective action. When the node gets stuck (currently stuck at height 2,015,124 while peers are at 3,077,062 in `headers_download` state), it stays stuck forever until manually restarted.
+`msgprocessor.c` is 4,604 lines with 139 functions, including a 779-line function (`handle_zcl23_sync`) and a 543-line function (`msg_send_messages`). It has zero tests. It handles ALL P2P message types in one file. This makes it fragile, hard to test, and hard to reason about.
+
+Additionally, there are 156 bare `return -1` without logging across the codebase, violating DEFENSIVE_CODING.md.
 
 ## Files to read first
 
 - `CLAUDE.md` and `DEFENSIVE_CODING.md` — mandatory coding rules
-- `app/services/src/node_health_service.c` — existing health check pattern
-- `app/services/src/block_sync_service.c` — stall recovery (block download only)
-- `lib/net/src/msgprocessor.c` lines 4194-4290 (current stall detection + tip stale watchdog)
-- `config/src/boot_services.c` — how services are wired up
-- `lib/net/include/net/net.h` — sync states, p2p_node struct
+- `lib/net/src/msgprocessor.c` — the file to split
+- `lib/net/include/net/msgprocessor.h` — current header
+- `Makefile` — how source files are compiled (add new .c files here)
 
 ## Tasks
 
-### 1. Create sync watchdog service
+### 1. Split msgprocessor.c into focused files
 
-Create `app/services/src/sync_watchdog_service.c` and `app/services/include/services/sync_watchdog_service.h`.
+Create these new files in `lib/net/src/`, moving the relevant functions:
 
-The watchdog runs from the message processing loop (same place as current stall detection, ~every 30s). It checks:
+**a. `msg_version.c`** — Version/verack handshake
+- `process_version()` (~136 lines)
+- `process_verack()`
+- Version-related helpers
 
-**a. HEADER_STALL**: If `SYNC_HEADERS_DOWNLOAD` for >300s with `pindex_best_header` not advancing:
-- Disconnect ALL outbound peers (force fresh connections)
-- Reset sync state to `SYNC_FINDING_PEERS`
-- Log: `"[watchdog] HEADER_STALL recovery: disconnected %d peers, resetting sync"`
+**b. `msg_headers.c`** — Header sync messages
+- `process_headers()` (~368 lines)
+- `process_getheaders()`
+- `push_getheaders()`, `push_getheaders_from()`
+- `exec_getheaders_action()`
+- Header stall tracking globals
 
-**b. BLOCK_STALL**: If `SYNC_BLOCKS_DOWNLOAD` for >300s with chain height not advancing:
-- Call `dl_reset()` on download manager (you may need to add this — clear all in-flight, re-queue)
-- Re-request headers from all outbound peers
-- Log: `"[watchdog] BLOCK_STALL recovery: reset download manager, re-queued blocks"`
+**c. `msg_blocks.c`** — Block handling
+- `process_block_msg()` (~260 lines)
+- `process_getdata()` (~102 lines)
+- `process_getblocks()`
+- Block-related helpers
 
-**c. STATE_STUCK**: If ANY sync state unchanged for >600s (except `SYNC_AT_TIP`):
-- Force transition to `SYNC_HEADERS_DOWNLOAD`
-- Log: `"[watchdog] STATE_STUCK: %s for %llds, forcing header re-sync"`
+**d. `msg_tx.c`** — Transaction relay
+- `process_tx_msg()` (~114 lines)
+- `process_inv()`
+- `process_mempool()`
+- Dandelion++ state and helpers
 
-**d. REPEATED_RESTART**: If the watchdog has triggered recovery >3 times in 30 minutes:
-- Stop trying automatic recovery
-- Log: `"[watchdog] REPEATED failures — manual intervention needed"`
+**e. `msg_compact.c`** — Compact blocks (BIP152)
+- `process_cmpctblock()` (~118 lines)
+- `process_blocktxn()`
+- `process_getblocktxn()`
 
-### 2. Sync state timestamps
+Keep in `msgprocessor.c`:
+- `msg_process_messages()` — the dispatcher (~104 lines)
+- `msg_send_messages()` — the send loop (stays here for now, it touches everything)
+- The message dispatch table
+- Shared state and init functions
 
-Add to the sync state tracking (wherever `sync_set_state()` is defined):
-- `int64_t sync_state_entered_time` — when current state began
-- `int sync_state_entry_height` — chain height when state was entered
-- Expose via: `int64_t sync_get_state_duration(void)` and `int sync_get_state_entry_height(void)`
+### 2. Create shared header for split files
 
-### 3. RPC command: getsyncwatchdog
+Create `lib/net/include/net/msg_internal.h` with:
+- Forward declarations shared between the split files
+- Access to `msg_processor` struct, `msg_get_height()`, etc.
+- The split files include this instead of duplicating declarations
 
-Add RPC method `getsyncwatchdog` returning JSON:
-```json
-{
-  "enabled": true,
-  "checks_run": 142,
-  "recoveries_triggered": 2,
-  "last_recovery_time": 1776117000,
-  "last_recovery_type": "HEADER_STALL",
-  "current_state": "headers_download",
-  "current_state_duration_secs": 450,
-  "current_state_entry_height": 2015124
-}
-```
+### 3. Update Makefile
 
-Wire it into the RPC dispatch table following existing patterns (look at how `getsyncdetail` is registered).
+Add the new .c files to the build. Search for `msgprocessor.c` in the Makefile and add the new files alongside it.
 
-### 4. Tests
+### 4. Migrate bare return -1 in MCP handlers
 
-Write tests in `lib/test/src/test_sync_watchdog.c`:
-- Test header stall detection triggers after 300s
-- Test block stall detection triggers after 300s
-- Test state stuck detection triggers after 600s
-- Test repeated restart circuit breaker (>3 in 30min)
-- Test that SYNC_AT_TIP is exempt from stuck detection
-- Register tests in `lib/test/src/test.c`
+In `tools/mcp/controllers/*.c`, find all bare `return -1;` without `LOG_ERR` and replace with `LOG_ERR("mcp", "description of what failed")`. These are the MCP handlers that agents interact with — errors should be visible.
+
+Count before starting (should be ~20-30 across the MCP controller files).
+
+### 5. Verify
+
+- `make -j$(nproc)` must succeed with zero new warnings
+- `make test` must pass with zero new failures
+- The split should be pure refactoring — no behavior changes
 
 ## Rules
 
 - Follow `DEFENSIVE_CODING.md`: use `LOG_FAIL()`, `zcl_malloc()`, `log_macros.h`
-- Run `make test` before committing — all tests must pass
+- Do NOT change any logic — this is purely a file reorganization + error logging migration
+- Each split file gets the same copyright header as msgprocessor.c
 - Commit with descriptive messages
 - Do NOT touch files unrelated to this task

@@ -1,56 +1,60 @@
-# Agent 2 Task: Header Sync Stall Detection & Recovery
+# Agent 2 Task: Wave 13 — Thread Safety & Crash Fixes
+
+## Previous work (DONE)
+Wave 12: Header sync stall detection — per-peer tracking, stall recovery, inbound fallback. All merged.
 
 ## Problem
 
-The node gets stuck in `headers_download` state indefinitely. Right now it's stuck at height 2,015,124 while peers are at 3,077,062. The stall recovery code in `block_sync_service.c` only handles block download stalls. There is NO detection or recovery for header sync stalls.
+Two disabled features crash under concurrent access (CHECKLIST.md items):
+1. **SIGSEGV in bg_hash_verify fread** — crashes at h=20000 when P2P is running. `g_cached_file` mutex doesn't cover all fread paths.
+2. **Multi-threaded bg_validation** — crashes with >1 worker (same file I/O thread safety issue).
 
-Peers receive 1GB+ of data but headers don't advance — responses are silently rejected or peers never respond to `getheaders`.
+The root cause is that `disk_block_io.c` uses a shared file handle cache (`g_cached_file`) that isn't protected across all access paths. Multiple threads (bg_validation, P2P block processing, catchup) call `read_block_from_disk()` concurrently.
 
 ## Files to read first
 
 - `CLAUDE.md` and `DEFENSIVE_CODING.md` — mandatory coding rules
-- `app/services/src/header_sync_service.c` — header sync logic, getheaders interval/backoff
-- `app/services/src/block_sync_service.c` — stall recovery pattern to follow
-- `lib/net/src/msgprocessor.c` lines 4109-4146 (periodic getheaders) and 1764-1963 (process_headers)
-- `lib/net/include/net/download.h` — timeout constants
-- `lib/net/include/net/net.h` — p2p_node struct fields
+- `CHECKLIST.md` — items 2.10, remaining items at bottom
+- `lib/storage/src/disk_block_io.c` — file handle cache, the crash site
+- `app/services/src/bg_validation_service.c` — background validation workers
+- `app/services/src/bg_hash_verification_service.c` — hash verify (DISABLED due to crash)
+- `lib/net/src/msgprocessor.c` — P2P block reads in `process_block_msg()`
 
 ## Tasks
 
-### 1. Per-peer header response tracking
+### 1. Migrate disk_block_io.c to pread()
 
-Add fields to `struct p2p_node` (in `lib/net/include/net/net.h`):
-- `int64_t last_useful_headers_time` — last time this peer delivered accepted headers
-- `uint64_t total_headers_delivered` — lifetime count of accepted headers from this peer
+Replace all `fopen/fseek/fread/fclose` in `disk_block_io.c` with `open/pread/close`. `pread()` is thread-safe — multiple threads can read the same file descriptor at different offsets without races.
 
-Update `process_headers()` in msgprocessor.c to set these when `accepted > 0`.
+- Replace the file handle cache (`g_cached_file`, `g_cached_file_num`) with a simple `open()` per read or a thread-local fd cache
+- Remove the disk I/O mutex (`g_disk_io_mutex`) if pread makes it unnecessary
+- Ensure all callers still work: `read_block_from_disk()`, `read_raw_block()`, `read_undo_data()`
 
-When a peer hasn't delivered useful headers in 120s during IBD (`syncsvc_is_initial_block_download` returns true), disconnect it with a log message. Check this in the periodic send loop (~line 4109).
+### 2. Re-enable bg_hash_verification_service
 
-### 2. Header sync stall detection
+In `config/src/boot_services.c`, the bg_hash_verify service is disabled. After fixing the thread safety:
+- Re-enable it
+- Run with P2P active to verify no crash at h=20000+
+- If it still crashes, add ASAN build and investigate
 
-In the periodic send loop (msgprocessor.c ~4109), add:
-- Track `pindex_best_header->nHeight` and a timestamp of last advance
-- If `sync_state == SYNC_HEADERS_DOWNLOAD` and `pindex_best_header` hasn't advanced in 120s:
-  - Log: `"HEADER STALL: best_header stuck at %d for %llds, disconnecting worst peer"`
-  - Find the outbound peer with lowest `total_headers_delivered` and disconnect it
-  - This makes room for a new outbound connection that might work better
+### 3. Enable multi-threaded bg_validation
 
-### 3. Header request from inbound peers as fallback
+In `bg_validation_service.c`, change the worker count from 1 to `nproc/2` (capped at 4). Test under load.
 
-Currently `syncsvc_should_request_headers()` skips inbound peers (`if (node->inbound) return false`). During a header stall (no advance in 120s), allow requesting headers from inbound peers too. Add a parameter or check sync state to enable this fallback.
+### 4. Migrate bare malloc in disk_block_io.c
 
-### 4. Tests
+`disk_block_io.c` has bare `malloc` calls. Replace with `zcl_malloc()` per DEFENSIVE_CODING.md.
 
-Write tests in `lib/test/src/test_header_sync_stall.c` following `test_header_sync.c` and `test_sync_service.c` patterns:
-- Test that `last_useful_headers_time` is updated on accepted headers
-- Test that stall detection fires after 120s with no advance
-- Test that inbound fallback activates during stall
-- Register tests in `lib/test/src/test.c`
+### 5. Tests
+
+- Add thread safety test: spawn 4 threads reading different blocks concurrently, verify no crash
+- Add test for pread correctness: read known block, verify hash matches
+- Put tests in `lib/test/src/test_disk_block_io.c`
+- Register in `lib/test/src/test.c`
 
 ## Rules
 
 - Follow `DEFENSIVE_CODING.md`: use `LOG_FAIL()`, `zcl_malloc()`, `log_macros.h`
-- Run `make test` before committing — all tests must pass
+- Run `make test` before committing — zero new failures
 - Commit with descriptive messages
 - Do NOT touch files unrelated to this task
