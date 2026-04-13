@@ -72,7 +72,7 @@ Work in order. `./test_zcl` green on every push.
 
 ### Security
 
-6. **TLS for HTTP RPC** — optional TLS listener for non-loopback RPC. Env `ZCL_RPC_TLS_CERT` + `ZCL_RPC_TLS_KEY`. Reuse OpenSSL already linked.
+6. ~~**TLS for HTTP RPC**~~ ✓ — Optional TLS listener on 0.0.0.0:rpcport+1. Env `ZCL_RPC_TLS_CERT` + `ZCL_RPC_TLS_KEY` + optional `ZCL_RPC_TLS_PORT`. TLS 1.2+ via OpenSSL. Plain loopback listener unchanged. 3 tests.
 
 7. **Bloom filter (BIP37) audit** — audit `lib/bloom/`. Either deprecate (privacy leak) or gate behind `ZCL_ENABLE_BIP37=1` env var. Default off.
 

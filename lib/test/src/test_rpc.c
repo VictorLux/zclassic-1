@@ -1,6 +1,15 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "test/test_helpers.h"
+#include "rpc/httpserver.h"
+#include <openssl/err.h>
+#include <openssl/pem.h>
+#include <openssl/ssl.h>
+#include <openssl/x509.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 int test_rpc(void) {
     int failures = 0;
@@ -584,6 +593,179 @@ int test_rpc(void) {
             failures++;
         }
         async_queue_free(&q);
+    }
+
+    /* ── Wave 11 #6: RPC TLS tests ─────────────────────────────────── */
+
+    printf("rpc_http_tls_active when no TLS configured... ");
+    {
+        /* Without TLS env vars, tls_active should be false */
+        unsetenv("ZCL_RPC_TLS_CERT");
+        unsetenv("ZCL_RPC_TLS_KEY");
+        bool active = rpc_http_tls_active();
+        if (!active)
+            printf("OK\n");
+        else {
+            printf("FAIL (expected false)\n");
+            failures++;
+        }
+    }
+
+    printf("rpc TLS start with self-signed cert... ");
+    {
+        /* Generate a self-signed cert+key in temp files */
+        char cert_path[] = "/tmp/zcl_test_cert_XXXXXX";
+        char key_path[] = "/tmp/zcl_test_key_XXXXXX";
+        int cfd = mkstemp(cert_path);
+        int kfd = mkstemp(key_path);
+        bool ok = false;
+
+        if (cfd >= 0 && kfd >= 0) {
+            /* Generate RSA key + self-signed cert via OpenSSL */
+            EVP_PKEY *pkey = EVP_PKEY_new();
+            EVP_PKEY_CTX *kctx = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, NULL);
+            if (kctx && EVP_PKEY_keygen_init(kctx) > 0) {
+                EVP_PKEY_CTX_set_rsa_keygen_bits(kctx, 2048);
+                EVP_PKEY_keygen(kctx, &pkey);
+            }
+            if (kctx) EVP_PKEY_CTX_free(kctx);
+
+            X509 *x509 = X509_new();
+            if (x509 && pkey) {
+                X509_set_version(x509, 2);
+                ASN1_INTEGER_set(X509_get_serialNumber(x509), 1);
+                X509_gmtime_adj(X509_getm_notBefore(x509), 0);
+                X509_gmtime_adj(X509_getm_notAfter(x509), 3600);
+                X509_set_pubkey(x509, pkey);
+                X509_NAME *name = X509_get_subject_name(x509);
+                X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC,
+                    (const unsigned char *)"localhost", -1, -1, 0);
+                X509_set_issuer_name(x509, name);
+                X509_sign(x509, pkey, EVP_sha256());
+
+                /* Write cert */
+                FILE *cf = fdopen(cfd, "w");
+                if (cf) {
+                    PEM_write_X509(cf, x509);
+                    fclose(cf);
+                    cfd = -1;  /* fdopen took ownership */
+                }
+                /* Write key */
+                FILE *kf = fdopen(kfd, "w");
+                if (kf) {
+                    PEM_write_PrivateKey(kf, pkey, NULL, NULL, 0, NULL, NULL);
+                    fclose(kf);
+                    kfd = -1;
+                }
+
+                /* Set env vars and start RPC with TLS */
+                setenv("ZCL_RPC_TLS_CERT", cert_path, 1);
+                setenv("ZCL_RPC_TLS_KEY", key_path, 1);
+                setenv("ZCL_RPC_TLS_PORT", "19444", 1);
+
+                /* Create a minimal RPC table */
+                struct rpc_table tbl;
+                rpc_table_init(&tbl);
+
+                bool started = rpc_http_start(&tbl, 19443, NULL, NULL,
+                                               "/tmp");
+                if (started) {
+                    ok = rpc_http_tls_active();
+
+                    /* Try connecting with TLS */
+                    if (ok) {
+                        SSL_CTX *cctx = SSL_CTX_new(TLS_client_method());
+                        if (cctx) {
+                            int sock = socket(AF_INET, SOCK_STREAM, 0);
+                            struct sockaddr_in sa;
+                            memset(&sa, 0, sizeof(sa));
+                            sa.sin_family = AF_INET;
+                            sa.sin_port = htons(19444);
+                            sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+                            if (connect(sock, (struct sockaddr *)&sa,
+                                        sizeof(sa)) == 0) {
+                                SSL *ssl = SSL_new(cctx);
+                                SSL_set_fd(ssl, sock);
+                                if (SSL_connect(ssl) == 1) {
+                                    /* Send a minimal JSON-RPC request */
+                                    const char *req =
+                                        "POST / HTTP/1.1\r\n"
+                                        "Content-Length: 44\r\n"
+                                        "\r\n"
+                                        "{\"method\":\"getblockcount\","
+                                        "\"params\":[],\"id\":1}";
+                                    SSL_write(ssl, req, (int)strlen(req));
+
+                                    char rbuf[4096];
+                                    int n = SSL_read(ssl, rbuf,
+                                                     (int)sizeof(rbuf) - 1);
+                                    if (n > 0) {
+                                        rbuf[n] = '\0';
+                                        /* Should get HTTP 200 back */
+                                        ok = ok && (strstr(rbuf,
+                                                    "HTTP/1.1 200") != NULL ||
+                                                    strstr(rbuf,
+                                                    "HTTP/1.1 401") != NULL);
+                                    } else {
+                                        ok = false;
+                                    }
+                                } else {
+                                    ok = false;
+                                }
+                                SSL_shutdown(ssl);
+                                SSL_free(ssl);
+                            }
+                            close(sock);
+                            SSL_CTX_free(cctx);
+                        }
+                    }
+
+                    rpc_http_stop();
+                    (void)tbl;
+                } else {
+                    ok = false;
+                    (void)tbl;
+                }
+
+                X509_free(x509);
+            }
+            if (pkey) EVP_PKEY_free(pkey);
+        }
+        if (cfd >= 0) close(cfd);
+        if (kfd >= 0) close(kfd);
+        unlink(cert_path);
+        unlink(key_path);
+        unsetenv("ZCL_RPC_TLS_CERT");
+        unsetenv("ZCL_RPC_TLS_KEY");
+        unsetenv("ZCL_RPC_TLS_PORT");
+        /* Clean up cookie file */
+        unlink("/tmp/.cookie");
+
+        if (ok)
+            printf("OK\n");
+        else {
+            printf("FAIL\n");
+            failures++;
+        }
+    }
+
+    printf("rpc TLS not started without env vars... ");
+    {
+        unsetenv("ZCL_RPC_TLS_CERT");
+        unsetenv("ZCL_RPC_TLS_KEY");
+        struct rpc_table tbl;
+        rpc_table_init(&tbl);
+        bool started = rpc_http_start(&tbl, 19445, NULL, NULL, "/tmp");
+        bool tls = rpc_http_tls_active();
+        if (started) rpc_http_stop();
+        (void)tbl;
+        unlink("/tmp/.cookie");
+        if (started && !tls)
+            printf("OK\n");
+        else {
+            printf("FAIL (started=%d tls=%d)\n", started, tls);
+            failures++;
+        }
     }
 
     return failures;

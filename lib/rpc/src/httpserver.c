@@ -12,10 +12,13 @@
 #include "encoding/utilstrencodings.h"
 #include "mcp/metrics.h"
 #include "support/cleanse.h"
+#include "util/log_macros.h"
 #include "util/trace.h"
 #include <arpa/inet.h>
 #include <errno.h>
 #include <netinet/in.h>
+#include <openssl/err.h>
+#include <openssl/ssl.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,6 +30,13 @@
 
 #define RPC_HTTP_WORKERS 4
 #define RPC_HTTP_QUEUE_CAP 64
+
+/* ── Connection abstraction for plain + TLS ───────────────────────── */
+
+struct rpc_conn {
+    int   fd;
+    SSL  *ssl;  /* NULL for plain-text connections */
+};
 
 static int g_listen_fd = -1;
 static const struct rpc_table *g_table = NULL;
@@ -56,12 +66,19 @@ static int g_cookie_rotate_sec = 86400; /* default 24h, env ZCL_RPC_COOKIE_ROTAT
 static bool g_metrics_http_enable = false;
 static pthread_t g_worker_threads[RPC_HTTP_WORKERS];
 static size_t g_workers_started = 0;
-static int g_client_queue[RPC_HTTP_QUEUE_CAP];
+static struct rpc_conn g_client_queue[RPC_HTTP_QUEUE_CAP];
 static size_t g_client_queue_head = 0;
 static size_t g_client_queue_tail = 0;
 static size_t g_client_queue_count = 0;
 static pthread_mutex_t g_client_queue_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_client_queue_cond = PTHREAD_COND_INITIALIZER;
+
+/* ── TLS state ────────────────────────────────────────────────────── */
+static SSL_CTX *g_tls_ctx = NULL;
+static int g_tls_listen_fd = -1;
+static pthread_t g_tls_listen_thread;
+static bool g_tls_listen_thread_started = false;
+static uint16_t g_tls_port = 0;
 
 static const char base64_chars[] =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -122,37 +139,53 @@ static bool check_auth(const char *auth_header)
     return ok;
 }
 
-static bool read_line(int fd, char *buf, size_t buflen)
+/* ── I/O wrappers: plain fd or SSL ─────────────────────────────── */
+
+static ssize_t conn_read(const struct rpc_conn *c, void *buf, size_t len)
+{
+    if (c->ssl)
+        return SSL_read(c->ssl, buf, (int)len);
+    return read(c->fd, buf, len);
+}
+
+static ssize_t conn_write(const struct rpc_conn *c, const void *buf, size_t len)
+{
+    if (c->ssl)
+        return SSL_write(c->ssl, buf, (int)len);
+    return write(c->fd, buf, len);
+}
+
+static bool read_line(const struct rpc_conn *c, char *buf, size_t buflen)
 {
     size_t pos = 0;
     while (pos < buflen - 1) {
-        char c;
-        ssize_t r = read(fd, &c, 1);
+        char ch;
+        ssize_t r = conn_read(c, &ch, 1);
         if (r <= 0) return false;
-        if (c == '\n') {
+        if (ch == '\n') {
             if (pos > 0 && buf[pos - 1] == '\r')
                 pos--;
             buf[pos] = '\0';
             return true;
         }
-        buf[pos++] = c;
+        buf[pos++] = ch;
     }
     buf[pos] = '\0';
     return true;
 }
 
-static bool read_exact(int fd, char *buf, size_t len)
+static bool read_exact(const struct rpc_conn *c, char *buf, size_t len)
 {
     size_t total = 0;
     while (total < len) {
-        ssize_t r = read(fd, buf + total, len - total);
+        ssize_t r = conn_read(c, buf + total, len - total);
         if (r <= 0) return false;
         total += (size_t)r;
     }
     return true;
 }
 
-static void send_response_with_type(int fd, int status_code,
+static void send_response_with_type(const struct rpc_conn *c, int status_code,
                                      const char *status_text,
                                      const char *content_type,
                                      const char *body, size_t body_len)
@@ -165,25 +198,26 @@ static void send_response_with_type(int fd, int status_code,
         "Connection: close\r\n"
         "\r\n",
         status_code, status_text, content_type, body_len);
-    (void)write(fd, header, (size_t)hlen);
+    (void)conn_write(c, header, (size_t)hlen);
     if (body_len > 0)
-        (void)write(fd, body, body_len);
+        (void)conn_write(c, body, body_len);
 }
 
-static void send_response(int fd, int status_code, const char *status_text,
+static void send_response(const struct rpc_conn *c, int status_code,
+                            const char *status_text,
                             const char *body, size_t body_len)
 {
-    send_response_with_type(fd, status_code, status_text,
+    send_response_with_type(c, status_code, status_text,
                             "application/json", body, body_len);
 }
 
-static bool enqueue_client_fd(int client_fd)
+static bool enqueue_client(struct rpc_conn conn)
 {
     bool ok = false;
 
     pthread_mutex_lock(&g_client_queue_mutex);
     if (g_client_queue_count < RPC_HTTP_QUEUE_CAP) {
-        g_client_queue[g_client_queue_tail] = client_fd;
+        g_client_queue[g_client_queue_tail] = conn;
         g_client_queue_tail =
             (g_client_queue_tail + 1) % RPC_HTTP_QUEUE_CAP;
         g_client_queue_count++;
@@ -195,28 +229,42 @@ static bool enqueue_client_fd(int client_fd)
     return ok;
 }
 
-static int dequeue_client_fd(void)
+static struct rpc_conn dequeue_client(void)
 {
-    int client_fd = -1;
+    struct rpc_conn conn = { .fd = -1, .ssl = NULL };
 
     pthread_mutex_lock(&g_client_queue_mutex);
     while (g_client_queue_count == 0 && g_running)
         pthread_cond_wait(&g_client_queue_cond, &g_client_queue_mutex);
 
     if (g_client_queue_count > 0) {
-        client_fd = g_client_queue[g_client_queue_head];
+        conn = g_client_queue[g_client_queue_head];
         g_client_queue_head =
             (g_client_queue_head + 1) % RPC_HTTP_QUEUE_CAP;
         g_client_queue_count--;
     }
     pthread_mutex_unlock(&g_client_queue_mutex);
 
-    return client_fd;
+    return conn;
 }
 
-static void handle_client(int client_fd)
+static void conn_close(struct rpc_conn *c)
+{
+    if (c->ssl) {
+        SSL_shutdown(c->ssl);
+        SSL_free(c->ssl);
+        c->ssl = NULL;
+    }
+    if (c->fd >= 0) {
+        close(c->fd);
+        c->fd = -1;
+    }
+}
+
+static void handle_client(struct rpc_conn conn)
 {
     struct trace_span *rpc_span = trace_start("rpc.dispatch");
+    int client_fd = conn.fd;
 
     /* Set socket timeout to prevent slowloris attacks.
      * 5 seconds to send complete request — generous for local RPC,
@@ -257,7 +305,7 @@ static void handle_client(int client_fd)
             char errbuf[256];
             size_t elen = json_rpc_error_response(errbuf, sizeof(errbuf),
                 -32003, "IP banned", NULL, NULL);
-            send_response(client_fd, 403, "Forbidden", errbuf, elen);
+            send_response(&conn, 403, "Forbidden", errbuf, elen);
             goto done;
         }
         if (d == RPC_HTTP_RATE_LIMITED_GLOBAL ||
@@ -265,7 +313,7 @@ static void handle_client(int client_fd)
             char errbuf[256];
             size_t elen = json_rpc_error_response(errbuf, sizeof(errbuf),
                 -32005, "Rate limit exceeded", NULL, NULL);
-            send_response(client_fd, 429, "Too Many Requests",
+            send_response(&conn, 429, "Too Many Requests",
                           errbuf, elen);
             goto done;
         }
@@ -275,7 +323,7 @@ static void handle_client(int client_fd)
     char path[256];
     char line[4096];
 
-    if (!read_line(client_fd, line, sizeof(line)))
+    if (!read_line(&conn, line, sizeof(line)))
         goto done;
 
     if (sscanf(line, "%15s %255s", method, path) != 2)
@@ -290,25 +338,25 @@ static void handle_client(int client_fd)
         if (!g_metrics_http_enable) {
             const char *msg = "metrics endpoint disabled "
                               "(set ZCL_METRICS_HTTP_ENABLE=1)";
-            send_response_with_type(client_fd, 404, "Not Found",
+            send_response_with_type(&conn, 404, "Not Found",
                                     "text/plain; charset=utf-8",
                                     msg, strlen(msg));
             goto done;
         }
-        while (read_line(client_fd, line, sizeof(line)))
+        while (read_line(&conn, line, sizeof(line)))
             if (line[0] == '\0') break;
         size_t cap = 131072;
-        char *buf = malloc(cap);
+        char *buf = malloc(cap); // raw-alloc-ok
         if (!buf) {
             const char *oom = "out of memory";
-            send_response_with_type(client_fd, 500, "Internal Server Error",
+            send_response_with_type(&conn, 500, "Internal Server Error",
                                     "text/plain; charset=utf-8",
                                     oom, strlen(oom));
             goto done;
         }
         size_t n = mcp_metrics_render_prometheus(buf, cap);
         /* Prometheus exposition format 0.0.4 */
-        send_response_with_type(client_fd, 200, "OK",
+        send_response_with_type(&conn, 200, "OK",
             "text/plain; version=0.0.4; charset=utf-8",
             buf, n);
         free(buf);
@@ -324,7 +372,7 @@ static void handle_client(int client_fd)
         /* Read headers looking for WebSocket upgrade fields */
         char ws_key[128] = {0};
         bool is_upgrade = false;
-        while (read_line(client_fd, line, sizeof(line))) {
+        while (read_line(&conn, line, sizeof(line))) {
             if (line[0] == '\0') break;
             if (strncasecmp(line, "Upgrade:", 8) == 0 &&
                 strstr(line + 8, "websocket"))
@@ -352,7 +400,7 @@ static void handle_client(int client_fd)
             char errbuf[256];
             size_t elen = json_rpc_error_response(errbuf, sizeof(errbuf),
                 -32006, "WebSocket capacity full (max 100)", NULL, NULL);
-            send_response(client_fd, 503, "Service Unavailable",
+            send_response(&conn, 503, "Service Unavailable",
                           errbuf, elen);
             goto done;
         }
@@ -365,13 +413,13 @@ static void handle_client(int client_fd)
         char errbuf[256];
         size_t elen = json_rpc_error_response(errbuf, sizeof(errbuf),
             RPC_INVALID_REQUEST, "Method not allowed", NULL, NULL);
-        send_response(client_fd, 405, "Method Not Allowed", errbuf, elen);
+        send_response(&conn, 405, "Method Not Allowed", errbuf, elen);
         goto done;
     }
 
     size_t content_length = 0;
     char auth_value[512] = {0};
-    while (read_line(client_fd, line, sizeof(line))) {
+    while (read_line(&conn, line, sizeof(line))) {
         if (line[0] == '\0') break;
         if (strncasecmp(line, "Content-Length:", 15) == 0) {
             char *endp = NULL;
@@ -391,7 +439,7 @@ static void handle_client(int client_fd)
         char errbuf[256];
         size_t elen = json_rpc_error_response(errbuf, sizeof(errbuf),
             HTTP_UNAUTHORIZED, "Unauthorized", NULL, NULL);
-        send_response(client_fd, 401, "Unauthorized", errbuf, elen);
+        send_response(&conn, 401, "Unauthorized", errbuf, elen);
         goto done;
     }
     if (g_middleware_active)
@@ -402,15 +450,15 @@ static void handle_client(int client_fd)
             char errbuf[256];
             size_t elen = json_rpc_error_response(errbuf, sizeof(errbuf),
                 RPC_INVALID_REQUEST, "Request body too large", NULL, NULL);
-            send_response(client_fd, 413, "Payload Too Large", errbuf, elen);
+            send_response(&conn, 413, "Payload Too Large", errbuf, elen);
         }
         goto done;
     }
 
-    char *body = malloc(content_length + 1);
+    char *body = malloc(content_length + 1); // raw-alloc-ok
     if (!body) goto done;
 
-    if (!read_exact(client_fd, body, content_length)) {
+    if (!read_exact(&conn, body, content_length)) {
         free(body);
         goto done;
     }
@@ -424,7 +472,7 @@ static void handle_client(int client_fd)
         char errbuf[256];
         size_t elen = json_rpc_error_response(errbuf, sizeof(errbuf),
             RPC_PARSE_ERROR, "Parse error", NULL, NULL);
-        send_response(client_fd, 200, "OK", errbuf, elen);
+        send_response(&conn, 200, "OK", errbuf, elen);
         goto done;
     }
     free(body);
@@ -437,7 +485,7 @@ static void handle_client(int client_fd)
         char errbuf[256];
         size_t elen = json_rpc_error_response(errbuf, sizeof(errbuf),
             RPC_INVALID_REQUEST, "Invalid request", NULL, NULL);
-        send_response(client_fd, 200, "OK", errbuf, elen);
+        send_response(&conn, 200, "OK", errbuf, elen);
         goto done;
     }
     json_free(&request);
@@ -481,17 +529,17 @@ static void handle_client(int client_fd)
 
     json_push_kv(&response, "id", &req.id);
 
-    char *resp_buf = malloc(4 * 1024 * 1024);
+    char *resp_buf = malloc(4 * 1024 * 1024); // raw-alloc-ok
     if (resp_buf) {
         size_t resp_len = json_write(&response, resp_buf, 4 * 1024 * 1024);
-        send_response(client_fd, 200, "OK", resp_buf, resp_len);
+        send_response(&conn, 200, "OK", resp_buf, resp_len);
         free(resp_buf);
     } else {
         char errbuf[256];
         size_t elen = json_rpc_error_response(errbuf, sizeof(errbuf),
             RPC_OUT_OF_MEMORY, "Internal error: out of memory",
             req.method, NULL);
-        send_response(client_fd, 500, "Internal Server Error",
+        send_response(&conn, 500, "Internal Server Error",
                       errbuf, elen);
     }
 
@@ -504,7 +552,7 @@ done:
         rpc_timeout_unregister(&g_rpc_timeout, tmo_slot);
     }
     trace_end(rpc_span);
-    close(client_fd);
+    conn_close(&conn);
 }
 
 static void *rpc_worker_thread_fn(void *arg)
@@ -512,10 +560,10 @@ static void *rpc_worker_thread_fn(void *arg)
     (void)arg;
 
     while (g_running) {
-        int client_fd = dequeue_client_fd();
-        if (client_fd < 0)
+        struct rpc_conn conn = dequeue_client();
+        if (conn.fd < 0)
             continue;
-        handle_client(client_fd);
+        handle_client(conn);
     }
 
     return NULL;
@@ -534,16 +582,96 @@ static void *listen_thread_fn(void *arg)
                 perror("accept");
             continue;
         }
-        if (!enqueue_client_fd(client_fd)) {
+        struct rpc_conn conn = { .fd = client_fd, .ssl = NULL };
+        if (!enqueue_client(conn)) {
+            struct rpc_conn tmp = { .fd = client_fd, .ssl = NULL };
             char errbuf[256];
             size_t elen = json_rpc_error_response(errbuf, sizeof(errbuf),
                 RPC_INTERNAL_ERROR, "RPC server busy", NULL, NULL);
-            send_response(client_fd, 503, "Service Unavailable",
+            send_response(&tmp, 503, "Service Unavailable",
                           errbuf, elen);
             close(client_fd);
         }
     }
     return NULL;
+}
+
+/* ── TLS listener thread ──────────────────────────────────────────── */
+
+static void *tls_listen_thread_fn(void *arg)
+{
+    (void)arg;
+    while (g_running) {
+        struct sockaddr_in client_addr;
+        socklen_t addr_len = sizeof(client_addr);
+        int client_fd = accept(g_tls_listen_fd,
+                                (struct sockaddr *)&client_addr, &addr_len);
+        if (client_fd < 0) {
+            if (g_running)
+                perror("tls accept");
+            continue;
+        }
+
+        /* Perform TLS handshake */
+        SSL *ssl = SSL_new(g_tls_ctx);
+        if (!ssl) {
+            fprintf(stderr, "RPC TLS: SSL_new failed\n");
+            close(client_fd);
+            continue;
+        }
+        SSL_set_fd(ssl, client_fd);
+        if (SSL_accept(ssl) <= 0) {
+            /* TLS handshake failure — drop silently (common with
+             * port scanners and misconfigured clients) */
+            SSL_free(ssl);
+            close(client_fd);
+            continue;
+        }
+
+        struct rpc_conn conn = { .fd = client_fd, .ssl = ssl };
+        if (!enqueue_client(conn)) {
+            char errbuf[256];
+            size_t elen = json_rpc_error_response(errbuf, sizeof(errbuf),
+                RPC_INTERNAL_ERROR, "RPC server busy", NULL, NULL);
+            send_response(&conn, 503, "Service Unavailable",
+                          errbuf, elen);
+            conn_close(&conn);
+        }
+    }
+    return NULL;
+}
+
+/* ── TLS initialization ───────────────────────────────────────────── */
+
+static SSL_CTX *tls_init(const char *cert_path, const char *key_path)
+{
+    SSL_CTX *ctx = SSL_CTX_new(TLS_server_method());
+    if (!ctx) {
+        fprintf(stderr, "RPC TLS: SSL_CTX_new failed\n");
+        return NULL;
+    }
+
+    SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
+
+    if (SSL_CTX_use_certificate_chain_file(ctx, cert_path) != 1) {
+        fprintf(stderr, "RPC TLS: failed to load certificate: %s\n",
+                cert_path);
+        SSL_CTX_free(ctx);
+        return NULL;
+    }
+    if (SSL_CTX_use_PrivateKey_file(ctx, key_path, SSL_FILETYPE_PEM) != 1) {
+        fprintf(stderr, "RPC TLS: failed to load private key: %s\n",
+                key_path);
+        SSL_CTX_free(ctx);
+        return NULL;
+    }
+    if (SSL_CTX_check_private_key(ctx) != 1) {
+        fprintf(stderr, "RPC TLS: cert/key mismatch\n");
+        SSL_CTX_free(ctx);
+        return NULL;
+    }
+
+    return ctx;
 }
 
 /* ── Cookie rotation ────────────────────────────────────────────── */
@@ -724,8 +852,71 @@ bool rpc_http_start(const struct rpc_table *table, uint16_t port,
         /* Thread created after g_running is set (below) */
     }
 
+    /* Wave 11 #6: optional TLS listener for non-loopback RPC.
+     * Set ZCL_RPC_TLS_CERT and ZCL_RPC_TLS_KEY to PEM file paths.
+     * TLS listener binds to 0.0.0.0 on rpcport+1 (or ZCL_RPC_TLS_PORT).
+     * Plain-text listener stays on 127.0.0.1 for local tools. */
+    g_tls_ctx = NULL;
+    g_tls_listen_fd = -1;
+    g_tls_listen_thread_started = false;
+    g_tls_port = 0;
+    {
+        const char *cert = getenv("ZCL_RPC_TLS_CERT");
+        const char *key  = getenv("ZCL_RPC_TLS_KEY");
+        if (cert && cert[0] && key && key[0]) {
+            g_tls_ctx = tls_init(cert, key);
+            if (g_tls_ctx) {
+                /* Determine TLS port */
+                g_tls_port = port + 1;
+                const char *tp = getenv("ZCL_RPC_TLS_PORT");
+                if (tp && *tp) {
+                    int v = atoi(tp);
+                    if (v > 0 && v < 65536)
+                        g_tls_port = (uint16_t)v;
+                }
+
+                /* Create TLS listen socket on all interfaces */
+                g_tls_listen_fd = socket(AF_INET, SOCK_STREAM, 0);
+                if (g_tls_listen_fd >= 0) {
+                    int topt = 1;
+                    setsockopt(g_tls_listen_fd, SOL_SOCKET, SO_REUSEADDR,
+                               &topt, sizeof(topt));
+
+                    struct sockaddr_in taddr;
+                    memset(&taddr, 0, sizeof(taddr));
+                    taddr.sin_family = AF_INET;
+                    taddr.sin_addr.s_addr = htonl(INADDR_ANY);
+                    taddr.sin_port = htons(g_tls_port);
+
+                    if (bind(g_tls_listen_fd, (struct sockaddr *)&taddr,
+                             sizeof(taddr)) < 0) {
+                        fprintf(stderr, "RPC TLS: bind port %u failed: %s\n",
+                                g_tls_port, strerror(errno));
+                        close(g_tls_listen_fd);
+                        g_tls_listen_fd = -1;
+                    } else if (listen(g_tls_listen_fd, 8) < 0) {
+                        fprintf(stderr, "RPC TLS: listen failed: %s\n",
+                                strerror(errno));
+                        close(g_tls_listen_fd);
+                        g_tls_listen_fd = -1;
+                    }
+                }
+
+                if (g_tls_listen_fd < 0) {
+                    /* TLS socket failed — clean up ctx but continue
+                     * with plain-text listener only */
+                    SSL_CTX_free(g_tls_ctx);
+                    g_tls_ctx = NULL;
+                    fprintf(stderr, "RPC TLS: disabled (socket failed)\n");
+                }
+            }
+        }
+    }
+
     g_running = true;
     printf("RPC server listening on 127.0.0.1:%u\n", port);
+    if (g_tls_ctx)
+        printf("RPC TLS server listening on 0.0.0.0:%u\n", g_tls_port);
 
     for (size_t i = 0; i < RPC_HTTP_WORKERS; i++) {
         if (pthread_create(&g_worker_threads[i], NULL,
@@ -761,6 +952,20 @@ bool rpc_http_start(const struct rpc_table *table, uint16_t port,
     }
     g_listen_thread_started = true;
 
+    /* Start TLS listener thread if configured */
+    if (g_tls_ctx && g_tls_listen_fd >= 0) {
+        if (pthread_create(&g_tls_listen_thread, NULL,
+                           tls_listen_thread_fn, NULL) == 0) {
+            g_tls_listen_thread_started = true;
+        } else {
+            fprintf(stderr, "RPC TLS: listener thread start failed\n");
+            close(g_tls_listen_fd);
+            g_tls_listen_fd = -1;
+            SSL_CTX_free(g_tls_ctx);
+            g_tls_ctx = NULL;
+        }
+    }
+
     /* Start cookie rotation background thread */
     if (g_cookie_mode && g_cookie_rotate_sec > 0) {
         if (pthread_create(&g_cookie_rotate_thread, NULL,
@@ -782,12 +987,21 @@ void rpc_http_stop(void)
         close(g_listen_fd);
         g_listen_fd = -1;
     }
+    if (g_tls_listen_fd >= 0) {
+        shutdown(g_tls_listen_fd, SHUT_RDWR);
+        close(g_tls_listen_fd);
+        g_tls_listen_fd = -1;
+    }
     pthread_mutex_lock(&g_client_queue_mutex);
     pthread_cond_broadcast(&g_client_queue_cond);
     pthread_mutex_unlock(&g_client_queue_mutex);
     if (g_listen_thread_started) {
         pthread_join(g_listen_thread, NULL);
         g_listen_thread_started = false;
+    }
+    if (g_tls_listen_thread_started) {
+        pthread_join(g_tls_listen_thread, NULL);
+        g_tls_listen_thread_started = false;
     }
     if (g_workers_started > 0) {
         for (size_t i = 0; i < g_workers_started; i++)
@@ -797,11 +1011,11 @@ void rpc_http_stop(void)
 
     pthread_mutex_lock(&g_client_queue_mutex);
     while (g_client_queue_count > 0) {
-        int client_fd = g_client_queue[g_client_queue_head];
+        struct rpc_conn c = g_client_queue[g_client_queue_head];
         g_client_queue_head =
             (g_client_queue_head + 1) % RPC_HTTP_QUEUE_CAP;
         g_client_queue_count--;
-        close(client_fd);
+        conn_close(&c);
     }
     g_client_queue_head = 0;
     g_client_queue_tail = 0;
@@ -833,10 +1047,19 @@ void rpc_http_stop(void)
         rpc_http_middleware_destroy(&g_middleware);
         g_middleware_active = false;
     }
+    if (g_tls_ctx) {
+        SSL_CTX_free(g_tls_ctx);
+        g_tls_ctx = NULL;
+    }
     printf("RPC server stopped.\n");
 }
 
 bool rpc_http_is_running(void)
 {
     return g_running;
+}
+
+bool rpc_http_tls_active(void)
+{
+    return g_tls_ctx != NULL && g_running;
 }
