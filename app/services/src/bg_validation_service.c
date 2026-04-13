@@ -673,7 +673,16 @@ void bg_validation_init(struct bg_validation_service *svc,
     svc->thread_started = false;
     atomic_store(&svc->stop_requested, false);
 
-    svc->num_workers = 1;
+    /* Use nproc/2 workers for parallel script verification, capped at 4.
+     * pread()-based disk I/O is fully thread-safe, so multiple workers
+     * can read blocks concurrently without the old FILE* cache races. */
+    {
+        long nproc = sysconf(_SC_NPROCESSORS_ONLN);
+        int workers = (nproc > 0) ? (int)(nproc / 2) : 1;
+        if (workers < 1) workers = 1;
+        if (workers > 4) workers = 4;
+        svc->num_workers = workers;
+    }
 
     /* Auto-detect memory constraints.  On machines with <8GB, cap
      * the per-block script batch to reduce peak RSS. Each item is

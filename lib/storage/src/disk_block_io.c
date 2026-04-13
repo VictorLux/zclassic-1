@@ -225,148 +225,18 @@ bool write_block_to_disk(struct block *b, struct disk_block_pos *pos,
 bool read_block_from_disk(struct block *b, const struct disk_block_pos *pos,
                           const char *datadir)
 {
-    block_init(b);
-
-    pthread_mutex_lock(&g_file_cache_mutex);
-    FILE *file = open_block_file(datadir, pos, true);
-    if (!file) {
-        pthread_mutex_unlock(&g_file_cache_mutex);
-        LOG_FAIL("disk_block_io", "read_block: open_block_file failed for file=%d pos=%u",
-                 pos->nFile, pos->nPos);
-    }
-
-    /* Read magic + block size from the 8-byte header preceding block data.
-     * Block file format: [magic(4)][size(4)][block_data(size)]
-     * open_block_file seeks to nPos which points to block_data start. */
-    size_t bufsize = 0;
-    long cur = ftell(file);
-    if (cur >= 8) {
-        /* Seek back to magic number (8 bytes before block data) */
-        if (fseek(file, cur - 8, SEEK_SET) == 0) {
-            uint8_t magic[4] = {0};
-            uint32_t block_size = 0;
-            if (fread(magic, 1, 4, file) == 4 &&
-                fread(&block_size, 4, 1, file) == 1) {
-                /* Validate magic bytes match ZClassic mainnet/testnet.
-                 * This catches file corruption and wrong-file reads. */
-                bool magic_ok = (magic[0] == 0x24 && magic[1] == 0xe9 &&
-                                 magic[2] == 0x27 && magic[3] == 0x64) ||
-                                /* testnet magic */
-                                (magic[0] == 0xfa && magic[1] == 0x1a &&
-                                 magic[2] == 0xf9 && magic[3] == 0xbf) ||
-                                /* regtest magic */
-                                (magic[0] == 0xaa && magic[1] == 0xe8 &&
-                                 magic[2] == 0x3f && magic[3] == 0x5f);
-                if (!magic_ok) {
-                    fprintf(stderr, "read_block: BAD MAGIC at file=%d pos=%u "
-                            "got=%02x%02x%02x%02x\n",
-                            pos->nFile, pos->nPos,
-                            magic[0], magic[1], magic[2], magic[3]);
-                }
-                if (magic_ok && block_size > 0 && block_size <= 2000000) {
-                    bufsize = block_size;
-                }
-            }
-        }
-        /* Seek back to block data start */
-        fseek(file, cur, SEEK_SET);
-    } else if (cur >= 4) {
-        /* Fallback: read just the size field */
-        if (fseek(file, cur - 4, SEEK_SET) == 0) {
-            uint32_t block_size = 0;
-            if (fread(&block_size, 4, 1, file) == 1 &&
-                block_size > 0 && block_size <= 2000000) {
-                bufsize = block_size;
-            }
-        }
-        fseek(file, cur, SEEK_SET);
-    }
-
-    /* If we couldn't read the size header, use a safe default.
-     * Cap at MAX_BLOCK_SIZE (2MB) not 32MB — prevents reading garbage. */
-    if (bufsize == 0)
-        bufsize = 2000000;
-
-    unsigned char *buf = zcl_malloc(bufsize, "read_block_buf");
-    if (!buf) {
-        fprintf(stderr, "read_block_from_disk: malloc(%zu) failed\n", bufsize);
-        if (file != g_cached_file) fclose(file);
-        pthread_mutex_unlock(&g_file_cache_mutex);
-        return false;
-    }
-
-    size_t nread = fread(buf, 1, bufsize, file);
-    /* Don't close cached file handles — they'll be reused */
-    if (file != g_cached_file)
-        fclose(file);
-    pthread_mutex_unlock(&g_file_cache_mutex);
-
-    if (nread == 0) {
-        fprintf(stderr, "read_block_from_disk: 0 bytes read (file=%d pos=%u "
-                "bufsize=%zu)\n", pos->nFile, pos->nPos, bufsize);
-        free(buf);
-        return false;
-    }
-
-    struct byte_stream s;
-    stream_init_from_data(&s, buf, nread);
-    bool ok = block_deserialize(b, &s);
-    stream_free(&s);
-    free(buf);
-
-    return ok;
+    /* Delegate to pread()-based implementation — thread-safe without
+     * the shared FILE* cache or mutex. All callers automatically
+     * benefit from concurrent-safe reads. */
+    return read_block_from_disk_pread(b, pos, datadir);
 }
 
 bool read_block_from_disk_index(struct block *b,
                                 const struct block_index *pindex,
                                 const char *datadir)
 {
-    if (!pindex)
-        LOG_FAIL("disk_block_io", "read_block_from_disk_index: pindex is NULL");
-    struct disk_block_pos pos;
-    disk_block_pos_init(&pos);
-    if (pindex->nStatus & BLOCK_HAVE_DATA) {
-        pos.nFile = pindex->nFile;
-        pos.nPos = pindex->nDataPos;
-    }
-
-    if (!read_block_from_disk(b, &pos, datadir)) {
-        fprintf(stderr, "read_block_fail: h=%d file=%d pos=%u status=0x%x "
-                "have_data=%d\n", pindex->nHeight, pos.nFile, pos.nPos,
-                pindex->nStatus, !!(pindex->nStatus & BLOCK_HAVE_DATA));
-        return false;
-    }
-
-    struct uint256 block_hash;
-    block_get_hash(b, &block_hash);
-    if (pindex->phashBlock &&
-        uint256_cmp(&block_hash, pindex->phashBlock) != 0) {
-        /* Hash mismatch: the block_index may have a corrupt hash
-         * from a stale LevelDB. Check if the disk block has valid PoW
-         * (leading zeros). If so, accept it — the disk data is correct. */
-        bool disk_has_pow = (block_hash.data[31] == 0 && block_hash.data[30] == 0);
-        if (disk_has_pow) {
-            char got[65], want[65];
-            uint256_get_hex(&block_hash, got);
-            uint256_get_hex(pindex->phashBlock, want);
-            fprintf(stderr, "read_block_hash_repair: h=%d disk=%.16s index=%.16s "
-                    "— using disk\n", pindex->nHeight, got, want);
-            /* Update the block_index to use the disk block's hash.
-             * This is safe because the block has valid proof-of-work. */
-            struct block_index *mut = (struct block_index *)pindex;
-            (void)mut; /* The phashBlock points into the block_map, not easy to update.
-                        * Just accept the block — connect_block will verify it fully. */
-            return true;
-        }
-        char got[65], want[65];
-        uint256_get_hex(&block_hash, got);
-        uint256_get_hex(pindex->phashBlock, want);
-        fprintf(stderr, "read_block_hash_mismatch: h=%d got=%.16s want=%.16s\n",
-                pindex->nHeight, got, want);
-        block_free(b);
-        return false;
-    }
-    return true;
+    /* Delegate to pread()-based implementation — thread-safe. */
+    return read_block_from_disk_index_pread(b, pindex, datadir);
 }
 
 /* ── Thread-safe pread()-based I/O ───────────────────────────────
