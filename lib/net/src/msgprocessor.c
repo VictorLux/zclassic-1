@@ -128,6 +128,10 @@ static void msg_download_mgr_init_once(void)
     g_download_mgr_init = true;
 }
 
+/* ── Header sync stall tracking ───────────────────────────────── */
+static int g_header_stall_last_height = 0;
+static int64_t g_header_stall_last_advance = 0;
+
 /* ── Dandelion++ tx propagation ────────────────────────────────── */
 static struct dandelion_state g_dandelion;
 static bool g_dandelion_init = false;
@@ -4113,11 +4117,85 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
 
         int our_height = msg_get_height(mp);
         bool in_ibd = syncsvc_is_initial_block_download(node, our_height);
+        int64_t now_send = (int64_t)time(NULL);
+
+        /* ── Track pindex_best_header advance for stall detection ── */
+        {
+            int best_h = mp->main_state->pindex_best_header
+                       ? mp->main_state->pindex_best_header->nHeight : 0;
+            if (best_h > g_header_stall_last_height) {
+                g_header_stall_last_height = best_h;
+                g_header_stall_last_advance = now_send;
+            }
+            if (g_header_stall_last_advance == 0)
+                g_header_stall_last_advance = now_send;
+        }
+
+        bool header_stall = syncsvc_is_header_sync_stalled(
+            sync_get_state(), g_header_stall_last_height,
+            g_header_stall_last_advance, now_send);
+
+        /* ── Per-peer stale header disconnect (IBD only) ───────── */
+        if (syncsvc_should_disconnect_stale_header_peer(node, our_height,
+                                                         now_send)) {
+            printf("HEADER STALL: peer %s delivered 0 useful headers in "
+                   "%llds (total_delivered=%llu), disconnecting\n",
+                   node->addr_name,
+                   (long long)(now_send - (node->last_useful_headers_time
+                       ? node->last_useful_headers_time
+                       : node->time_connected)),
+                   (unsigned long long)node->total_headers_delivered);
+            node->disconnect = true;
+            return true;
+        }
+
+        /* ── Header sync stall: disconnect worst outbound peer ─── */
+        if (header_stall && !node->inbound &&
+            node->state >= PEER_SYNCING_HEADERS) {
+            /* Log stall once per detection cycle */
+            static int64_t last_stall_log = 0;
+            if (now_send - last_stall_log >= 30) {
+                last_stall_log = now_send;
+                printf("HEADER STALL: best_header stuck at %d for %llds, "
+                       "disconnecting worst peer\n",
+                       g_header_stall_last_height,
+                       (long long)(now_send - g_header_stall_last_advance));
+            }
+            /* Find if this peer is the worst outbound by headers delivered.
+             * We disconnect the current peer only if it has the minimum
+             * total_headers_delivered. This is an approximation since we
+             * see one peer at a time in send_messages — the first worst
+             * peer we encounter gets disconnected. */
+            static uint64_t worst_delivered = UINT64_MAX;
+            static int64_t worst_check_time = 0;
+            if (now_send != worst_check_time) {
+                worst_delivered = UINT64_MAX;
+                worst_check_time = now_send;
+            }
+            if (node->total_headers_delivered <= worst_delivered) {
+                worst_delivered = node->total_headers_delivered;
+                printf("HEADER STALL: disconnecting %s "
+                       "(total_headers_delivered=%llu)\n",
+                       node->addr_name,
+                       (unsigned long long)node->total_headers_delivered);
+                node->disconnect = true;
+                return true;
+            }
+        }
 
         /* Re-request headers aggressively during IBD (10s), slower at tip (60s).
          * This is critical: legacy zclassicd sends at most 2000 headers per
          * getheaders response — for a 3M block chain, we need ~1500 rounds. */
-        int64_t now_send = (int64_t)time(NULL);
+
+        /* Use fallback (inbound peers) during header stall */
+        if (header_stall) {
+            bool ok = syncsvc_should_request_headers_with_fallback(
+                node, our_height, now_send, true);
+            if (ok && !snapshot_active) {
+                should_sync = true;
+                syncsvc_note_headers_requested(node, now_send);
+            }
+        }
         syncsvc_plan_periodic_getheaders(&periodic, node, our_height, now_send);
         if (periodic.should_send && !snapshot_active) {
             should_sync = true;

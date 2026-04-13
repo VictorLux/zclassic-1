@@ -307,10 +307,13 @@ void syncsvc_note_headers_received(struct p2p_node *node,
                                    size_t accepted)
 {
     if (!node) return;
-    if (accepted > 0)
+    if (accepted > 0) {
         node->getheaders_stale_count = 0;
-    else
+        node->last_useful_headers_time = (int64_t)time(NULL);
+        node->total_headers_delivered += (uint64_t)accepted;
+    } else {
         node->getheaders_stale_count++;
+    }
 }
 
 bool syncsvc_should_scan_block_files_after_headers(size_t accepted,
@@ -503,4 +506,61 @@ void syncsvc_collect_needed_blocks(struct sync_needed_blocks *result,
     }
 
     result->should_activate_chain = (result->count == 0);
+}
+
+/* ── Header sync stall detection ──────────────────────────── */
+
+bool syncsvc_should_disconnect_stale_header_peer(const struct p2p_node *node,
+                                                  int our_height,
+                                                  int64_t now_seconds)
+{
+    if (!node) return false;
+    if (!syncsvc_is_initial_block_download(node, our_height))
+        return false;
+    if (node->state < PEER_SYNCING_HEADERS)
+        return false;
+
+    /* If peer has never delivered useful headers, use connection time. */
+    int64_t ref_time = node->last_useful_headers_time;
+    if (ref_time == 0)
+        ref_time = node->time_connected;
+
+    return (now_seconds - ref_time) >= HEADER_STALL_TIMEOUT_SECS;
+}
+
+bool syncsvc_is_header_sync_stalled(enum sync_state state,
+                                    int best_header_height,
+                                    int64_t last_advance_time,
+                                    int64_t now_seconds)
+{
+    (void)best_header_height; /* used by caller for logging */
+    if (state != SYNC_HEADERS_DOWNLOAD)
+        return false;
+    if (last_advance_time == 0)
+        return false;
+    return (now_seconds - last_advance_time) >= HEADER_STALL_TIMEOUT_SECS;
+}
+
+bool syncsvc_should_request_headers_with_fallback(const struct p2p_node *node,
+                                                   int our_height,
+                                                   int64_t now_seconds,
+                                                   bool header_stall_active)
+{
+    if (!node) return false;
+    /* During stall, allow inbound peers as fallback */
+    if (node->inbound && !header_stall_active) return false;
+    if (node->state < PEER_SYNCING_HEADERS) {
+        /* For inbound peers during stall, only require PEER_ACTIVE or better */
+        if (node->inbound && header_stall_active && node->state >= PEER_ACTIVE)
+            ; /* allow */
+        else
+            return false;
+    }
+
+    int64_t interval;
+    if (syncsvc_is_initial_block_download(node, our_height))
+        interval = 10;
+    else
+        interval = 30; /* tighter during stall */
+    return (now_seconds - node->last_getheaders_time) > interval;
 }

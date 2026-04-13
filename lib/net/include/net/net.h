@@ -191,6 +191,10 @@ struct p2p_node {
     int64_t last_getheaders_time;
     int     getheaders_stale_count;   /* consecutive empty header batches */
 
+    /* Per-peer header delivery tracking (stall detection) */
+    int64_t  last_useful_headers_time;  /* last time peer delivered accepted headers */
+    uint64_t total_headers_delivered;   /* lifetime count of accepted headers from peer */
+
     _Atomic int misbehavior;  /* cumulative misbehavior score; banned at 100 */
     /* Monotonic timestamp (ms since UNIX epoch) of last accepted / valid
      * message from this peer. Used by peer_scoring.c to decay `misbehavior`

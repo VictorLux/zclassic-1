@@ -121,6 +121,7 @@ int main(void)
     failures += test_mempool_orphan();
     failures += test_fee_estimation();
     failures += test_header_sync();
+    failures += test_header_sync_stall();
     failures += test_hd_keychain();
     failures += test_mnemonic();
     failures += test_bip44();

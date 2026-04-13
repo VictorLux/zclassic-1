@@ -140,4 +140,28 @@ bool syncsvc_build_getheaders_locator(struct block_locator *loc,
                                       const struct block_index *from,
                                       const struct uint256 *genesis_hash);
 
+/* ── Header sync stall detection ──────────────────────────── */
+
+#define HEADER_STALL_TIMEOUT_SECS 120  /* disconnect/fallback after this */
+
+/* Check if a peer should be disconnected for not delivering useful headers
+ * during IBD. Returns true if peer should be disconnected. */
+bool syncsvc_should_disconnect_stale_header_peer(const struct p2p_node *node,
+                                                  int our_height,
+                                                  int64_t now_seconds);
+
+/* Check if header sync is stalled (best_header hasn't advanced).
+ * Caller provides current best_header height and the tracked last-advance
+ * timestamp. Returns true if stalled. */
+bool syncsvc_is_header_sync_stalled(enum sync_state state,
+                                    int best_header_height,
+                                    int64_t last_advance_time,
+                                    int64_t now_seconds);
+
+/* Like syncsvc_should_request_headers but allows inbound peers during stall. */
+bool syncsvc_should_request_headers_with_fallback(const struct p2p_node *node,
+                                                   int our_height,
+                                                   int64_t now_seconds,
+                                                   bool header_stall_active);
+
 #endif
