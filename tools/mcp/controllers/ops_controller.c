@@ -63,7 +63,6 @@ static int h_zcl_status(const struct mcp_request *req, struct mcp_response *res)
         snprintf(res->error_message, sizeof(res->error_message),
                  "malloc failed for status response");
         LOG_ERR("mcp.ops", "malloc failed for status body (32768 bytes)");
-        return -1;
     }
     snprintf(out, 32768,
              "{\"height\":%s,\"peers\":%d,\"sync\":%s,"
@@ -166,7 +165,6 @@ static int h_zcl_kpi(const struct mcp_request *req, struct mcp_response *res)
         snprintf(res->error_message, sizeof(res->error_message),
                  "malloc failed for KPI response");
         LOG_ERR("mcp.ops", "malloc failed for kpi body (%zu bytes)", cap);
-        return -1;
     }
 
     snprintf(out, cap,
@@ -375,7 +373,6 @@ static int h_zcl_profile(const struct mcp_request *req,
         snprintf(res->error_message, sizeof(res->error_message),
                  "malloc failed for profile response");
         LOG_ERR("mcp.ops", "malloc failed for profile body (%zu bytes)", cap);
-        return -1;
     }
     size_t pos = 0;
     pos += (size_t)snprintf(out + pos, cap - pos,

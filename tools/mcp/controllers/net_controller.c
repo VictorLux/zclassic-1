@@ -94,7 +94,6 @@ static int h_zcl_peer_report(const struct mcp_request *req,
         snprintf(res->error_message, sizeof(res->error_message),
                  "strdup failed for peer report");
         LOG_ERR("mcp.net", "strdup failed for peer report (%zu bytes)", n);
-        return -1;
     }
     return 0;
 }
@@ -128,7 +127,6 @@ static int h_zcl_onion_health(const struct mcp_request *req,
         snprintf(res->error_message, sizeof(res->error_message),
                  "malloc failed for onion health response");
         LOG_ERR("mcp.net", "malloc failed for onion_health body (512 bytes)");
-        return -1;
     }
 
     if (!addr) {
