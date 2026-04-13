@@ -3,6 +3,7 @@
  * P2P game engine — tic-tac-toe for latency testing. */
 
 #include "net/p2p_game.h"
+#include "util/log_macros.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>

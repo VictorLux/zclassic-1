@@ -6,6 +6,7 @@
 #include "net/peer_scoring.h"
 #include "net/net.h"
 #include "event/event.h"
+#include "util/log_macros.h"
 
 #include <stdatomic.h>
 #include <stdio.h>

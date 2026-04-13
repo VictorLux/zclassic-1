@@ -9,6 +9,7 @@
 #include "core/arith_uint256.h"
 #include "crypto/sha3.h"
 #include "event/event.h"
+#include "util/log_macros.h"
 #include <string.h>
 #include <stdio.h>
 #include <math.h>

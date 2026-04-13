@@ -16,6 +16,7 @@
 #include <time.h>
 #include <sqlite3.h>
 #include <pthread.h>
+#include "util/log_macros.h"
 
 /* Cached UTXO root: the O(n) rolling SHA-256 is computed once at startup.
  * The incremental XOR commitment (maintained per-block) can verify the
@@ -29,7 +30,7 @@ static pthread_mutex_t g_utxo_root_cache_mutex = PTHREAD_MUTEX_INITIALIZER;
 bool fast_sync_publish_utxo_root_cache(const uint8_t root[32], uint64_t count)
 {
     if (!root || count == 0)
-        return false;
+        LOG_FAIL("fast_sync", "publish_utxo_root_cache: null root or zero count");
 
     pthread_mutex_lock(&g_utxo_root_cache_mutex);
     memcpy(g_cached_utxo_root, root, sizeof(g_cached_utxo_root));
@@ -53,12 +54,12 @@ void fast_sync_reset_utxo_root_cache(void)
 bool fast_sync_get_utxo_root_cache(uint8_t out[32], uint64_t *count)
 {
     if (!out)
-        return false;
+        LOG_FAIL("fast_sync", "get_utxo_root_cache: null output buffer");
 
     pthread_mutex_lock(&g_utxo_root_cache_mutex);
     if (!g_cached_root_valid) {
         pthread_mutex_unlock(&g_utxo_root_cache_mutex);
-        return false;
+        LOG_FAIL("fast_sync", "get_utxo_root_cache: cached root not valid");
     }
     memcpy(out, g_cached_utxo_root, sizeof(g_cached_utxo_root));
     if (count)
@@ -78,7 +79,7 @@ uint64_t fast_sync_utxo_root_cache_version(void)
 bool fast_sync_build_offer(const char *datadir,
                             struct snapshot_offer *offer)
 {
-    if (!offer) return false;
+    if (!offer) LOG_FAIL("fast_sync", "build_offer: null offer pointer");
     memset(offer, 0, sizeof(*offer));
 
     char db_path[1024];
@@ -86,7 +87,7 @@ bool fast_sync_build_offer(const char *datadir,
 
     sqlite3 *db = NULL;
     if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK)
-        return false;
+        LOG_FAIL("fast_sync", "build_offer: failed to open db %s", db_path);
 
     /* Get tip height and hash */
     sqlite3_stmt *s = NULL;
@@ -136,7 +137,8 @@ bool fast_sync_build_offer(const char *datadir,
         if (!fast_sync_publish_utxo_root_cache(offer->utxo_root,
                                                offer->num_utxos)) {
             sqlite3_close(db);
-            return false;
+            LOG_FAIL("fast_sync", "build_offer: failed to publish utxo root cache (%zu utxos)",
+                     (size_t)offer->num_utxos);
         }
     }
 
@@ -162,7 +164,7 @@ bool fast_sync_compute_utxo_root(const char *datadir,
 
     sqlite3 *db = NULL;
     if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK)
-        return false;
+        LOG_FAIL("fast_sync", "compute_utxo_root: failed to open db %s", db_path);
 
     fast_sync_compute_utxo_root_db(db, root_out);
     sqlite3_close(db);
@@ -193,7 +195,8 @@ bool fast_sync_publish_snapshot_cache(uint8_t *snapshot_buf, int64_t size,
                                       uint64_t count)
 {
     if (!snapshot_buf || size <= 0 || !sha3 || count == 0) {
-        return false;
+        LOG_FAIL("fast_sync", "publish_snapshot_cache: invalid args (buf=%p, size=%lld, count=%zu)",
+                 (void *)snapshot_buf, (long long)size, (size_t)count);
     }
 
     pthread_mutex_lock(&g_snapshot_cache_mutex);
@@ -234,7 +237,7 @@ bool fast_sync_get_snapshot_sha3(uint8_t out[32], uint64_t *count)
     pthread_mutex_lock(&g_snapshot_cache_mutex);
     if (!g_snapshot_sha3_valid) {
         pthread_mutex_unlock(&g_snapshot_cache_mutex);
-        return false;
+        LOG_FAIL("fast_sync", "get_snapshot_sha3: snapshot SHA3 cache not valid");
     }
     memcpy(out, g_snapshot_sha3, 32);
     if (count) *count = g_snapshot_count;
@@ -316,7 +319,7 @@ bool fast_sync_serve_snapshot(const char *datadir,
 
     sqlite3 *db = NULL;
     if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK)
-        return false;
+        LOG_FAIL("fast_sync", "serve_snapshot: failed to open db %s", db_path);
 
     sqlite3_stmt *s = NULL;
     sqlite3_prepare_v2(db,
@@ -325,7 +328,7 @@ bool fast_sync_serve_snapshot(const char *datadir,
         -1, &s, NULL);
 
     struct utxo_chunk *chunk = calloc(1, sizeof(struct utxo_chunk));
-    if (!chunk) { sqlite3_finalize(s); sqlite3_close(db); return false; }
+    if (!chunk) { sqlite3_finalize(s); sqlite3_close(db); LOG_FAIL("fast_sync", "serve_snapshot: failed to allocate utxo_chunk"); }
 
     (void)from_height;
     while (sqlite3_step(s) == SQLITE_ROW) {
@@ -365,12 +368,13 @@ bool fast_sync_serve_snapshot(const char *datadir,
 
 bool fast_sync_verify_pow(const struct fast_sync_pow *pow)
 {
-    if (!pow) return false;
+    if (!pow) LOG_FAIL("fast_sync", "verify_pow: null pow pointer");
 
     /* Timestamp must be within 5 minutes */
     int64_t now = (int64_t)time(NULL);
     if (pow->timestamp < now - 300 || pow->timestamp > now + 60)
-        return false;
+        LOG_FAIL("fast_sync", "verify_pow: timestamp %lld out of range (now=%lld)",
+                 (long long)pow->timestamp, (long long)now);
 
     /* SHA3-256(peer_id || timestamp || nonce) must have leading zeros.
      * ZCL23-only protocol — SHA3 for hash diversity from consensus layer. */
@@ -385,17 +389,17 @@ bool fast_sync_verify_pow(const struct fast_sync_pow *pow)
     /* Check leading zero bits */
     int bits = FAST_SYNC_POW_BITS;
     for (int i = 0; i < bits / 8; i++)
-        if (hash[i] != 0) return false;
+        if (hash[i] != 0) LOG_FAIL("fast_sync", "verify_pow: leading zero check failed at byte %d", i);
     if (bits % 8 > 0) {
         uint8_t mask = (uint8_t)(0xFF << (8 - bits % 8));
-        if (hash[bits / 8] & mask) return false;
+        if (hash[bits / 8] & mask) LOG_FAIL("fast_sync", "verify_pow: partial byte check failed at bit %d", bits);
     }
     return true;
 }
 
 bool fast_sync_solve_pow(const uint8_t peer_id[32], struct fast_sync_pow *pow)
 {
-    if (!pow) return false;
+    if (!pow) LOG_FAIL("fast_sync", "solve_pow: null pow pointer");
     memcpy(pow->peer_id, peer_id, 32);
     pow->timestamp = (int64_t)time(NULL);
     pow->nonce = 0;
@@ -405,7 +409,7 @@ bool fast_sync_solve_pow(const uint8_t peer_id[32], struct fast_sync_pow *pow)
             return true;
         pow->nonce++;
     }
-    return false;
+    LOG_FAIL("fast_sync", "solve_pow: exhausted all nonces without finding solution");
 }
 
 /* ── Rate limiting ───────────────────────────────────────── */
@@ -421,7 +425,8 @@ bool fast_sync_rate_check(struct fast_sync_rate_limiter *rl,
         rl->global_chunks_sent = 0;
     }
     if (rl->global_chunks_sent >= FAST_SYNC_MAX_GLOBAL_CHUNKS_PER_HOUR)
-        return false;
+        LOG_FAIL("fast_sync", "rate_check: global rate limit exceeded (%zu chunks/hour)",
+                 (size_t)rl->global_chunks_sent);
 
     /* Per-IP rate limit */
     for (size_t i = 0; i < rl->num_entries; i++) {
@@ -431,7 +436,8 @@ bool fast_sync_rate_check(struct fast_sync_rate_limiter *rl,
                 rl->entries[i].chunks_sent = 0;
             }
             if (rl->entries[i].chunks_sent >= FAST_SYNC_MAX_CHUNKS_PER_HOUR)
-                return false;
+                LOG_FAIL("fast_sync", "rate_check: per-IP rate limit exceeded (%zu chunks/hour)",
+                         (size_t)rl->entries[i].chunks_sent);
             rl->entries[i].chunks_sent++;
             rl->global_chunks_sent++;
             return true;
@@ -469,7 +475,7 @@ bool fast_sync_apply_chunk(const char *datadir,
 
     sqlite3 *db = NULL;
     if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READWRITE, NULL) != SQLITE_OK)
-        return false;
+        LOG_FAIL("fast_sync", "apply_chunk: failed to open db %s", db_path);
 
     if (sqlite3_exec(db, "BEGIN", NULL, NULL, NULL) != SQLITE_OK) {
         fprintf(stderr, "fast_sync_apply_chunk: BEGIN failed: %s\n",
@@ -556,7 +562,7 @@ void fast_sync_chunk_hash(const struct utxo_chunk *chunk,
 bool fast_sync_verify_chunk(const struct utxo_chunk *chunk,
                              const uint8_t expected_hash[32])
 {
-    if (!chunk || !expected_hash) return false;
+    if (!chunk || !expected_hash) LOG_FAIL("fast_sync", "verify_chunk: null chunk or expected_hash");
     uint8_t actual[32];
     fast_sync_chunk_hash(chunk, actual);
     return memcmp(actual, expected_hash, 32) == 0;
@@ -681,7 +687,7 @@ bool fast_sync_verify_chunk_proof(uint32_t chunk_index,
                                    uint32_t proof_len,
                                    const uint8_t merkle_root[32])
 {
-    if (!chunk_hash || !merkle_root) return false;
+    if (!chunk_hash || !merkle_root) LOG_FAIL("fast_sync", "verify_chunk_proof: null chunk_hash or merkle_root");
 
     uint8_t current[32];
     memcpy(current, chunk_hash, 32);
@@ -704,7 +710,7 @@ bool fast_sync_serve_chunk_db(sqlite3 *db, uint32_t chunk_index,
                                uint32_t chunk_size,
                                struct utxo_chunk *out)
 {
-    if (!db || !out) return false;
+    if (!db || !out) LOG_FAIL("fast_sync", "serve_chunk_db: null db or output");
     memset(out, 0, sizeof(*out));
     out->chunk_index = chunk_index;
 
@@ -718,7 +724,7 @@ bool fast_sync_serve_chunk_db(sqlite3 *db, uint32_t chunk_index,
         const char *sql = "SELECT txid, vout, value, script, height "
                           "FROM utxos ORDER BY txid, vout LIMIT ?";
         if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) != SQLITE_OK)
-            return false;
+            LOG_FAIL("fast_sync", "serve_chunk_db: prepare failed for chunk %u", chunk_index);
         sqlite3_bind_int(s, 1, (int)chunk_size);
     } else {
         /* Keyset seek: find the cursor position of the last row of the
@@ -738,7 +744,7 @@ bool fast_sync_serve_chunk_db(sqlite3 *db, uint32_t chunk_index,
                      "FROM utxos ORDER BY txid, vout LIMIT %u OFFSET %u",
                      chunk_size, chunk_index * chunk_size);
             if (sqlite3_prepare_v2(db, fallback, -1, &s, NULL) != SQLITE_OK)
-                return false;
+                LOG_FAIL("fast_sync", "serve_chunk_db: fallback prepare failed for chunk %u", chunk_index);
         } else {
             sqlite3_bind_int(s, 1, (int)(chunk_index * chunk_size - 1));
             sqlite3_bind_int(s, 2, (int)chunk_size);
@@ -774,7 +780,7 @@ bool fast_sync_serve_chunk(const char *datadir, uint32_t chunk_index,
 
     sqlite3 *db = NULL;
     if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK)
-        return false;
+        LOG_FAIL("fast_sync", "serve_chunk: failed to open db %s", db_path);
 
     bool ok = fast_sync_serve_chunk_db(db, chunk_index, SYNC_CHUNK_SIZE, out);
     sqlite3_close(db);
@@ -783,7 +789,7 @@ bool fast_sync_serve_chunk(const char *datadir, uint32_t chunk_index,
 
 bool fast_sync_build_manifest_db(sqlite3 *db, struct sync_manifest *out)
 {
-    if (!db || !out) return false;
+    if (!db || !out) LOG_FAIL("fast_sync", "build_manifest_db: null db or output");
     memset(out, 0, sizeof(*out));
     out->chunk_size = SYNC_CHUNK_SIZE;
 
@@ -822,7 +828,7 @@ bool fast_sync_build_manifest_db(sqlite3 *db, struct sync_manifest *out)
         out->num_utxos = (uint64_t)sqlite3_column_int64(s, 0);
     sqlite3_finalize(s);
 
-    if (out->num_utxos == 0) return false;
+    if (out->num_utxos == 0) LOG_FAIL("fast_sync", "build_manifest_db: no utxos in database");
 
     /* Calculate chunk count: ceil(num_utxos / chunk_size) */
     out->num_chunks = (uint32_t)((out->num_utxos + out->chunk_size - 1)
@@ -830,11 +836,11 @@ bool fast_sync_build_manifest_db(sqlite3 *db, struct sync_manifest *out)
 
     /* Allocate chunk hashes array */
     out->chunk_hashes = calloc(out->num_chunks, 32);
-    if (!out->chunk_hashes) return false;
+    if (!out->chunk_hashes) LOG_FAIL("fast_sync", "build_manifest_db: failed to allocate %u chunk hashes", out->num_chunks);
 
     /* Compute hash for each chunk */
     struct utxo_chunk *chunk = calloc(1, sizeof(struct utxo_chunk));
-    if (!chunk) { free(out->chunk_hashes); out->chunk_hashes = NULL; return false; }
+    if (!chunk) { free(out->chunk_hashes); out->chunk_hashes = NULL; LOG_FAIL("fast_sync", "build_manifest_db: failed to allocate utxo_chunk"); }
 
     for (uint32_t ci = 0; ci < out->num_chunks; ci++) {
         if (!fast_sync_serve_chunk_db(db, ci, out->chunk_size, chunk)) {
@@ -862,7 +868,7 @@ bool fast_sync_build_manifest(const char *datadir,
 
     sqlite3 *db = NULL;
     if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK)
-        return false;
+        LOG_FAIL("fast_sync", "build_manifest: failed to open db %s", db_path);
 
     bool ok = fast_sync_build_manifest_db(db, out);
     sqlite3_close(db);
@@ -882,7 +888,7 @@ void sync_manifest_free(struct sync_manifest *m)
 bool swarm_sync_init(struct swarm_sync *ss, const struct sync_manifest *manifest,
                       const char *datadir)
 {
-    if (!ss || !manifest || manifest->num_chunks == 0) return false;
+    if (!ss || !manifest || manifest->num_chunks == 0) LOG_FAIL("fast_sync", "swarm_sync_init: null args or zero chunks");
     memset(ss, 0, sizeof(*ss));
 
     uint32_t n = manifest->num_chunks;
@@ -890,7 +896,7 @@ bool swarm_sync_init(struct swarm_sync *ss, const struct sync_manifest *manifest
     /* Deep-copy manifest */
     ss->manifest = *manifest;
     ss->manifest.chunk_hashes = calloc(n, 32);
-    if (!ss->manifest.chunk_hashes) return false;
+    if (!ss->manifest.chunk_hashes) LOG_FAIL("fast_sync", "swarm_sync_init: failed to allocate %u chunk hashes", n);
     if (manifest->chunk_hashes)
         memcpy(ss->manifest.chunk_hashes, manifest->chunk_hashes, (size_t)n * 32);
 
@@ -902,7 +908,7 @@ bool swarm_sync_init(struct swarm_sync *ss, const struct sync_manifest *manifest
     if (!ss->chunk_states || !ss->chunk_peer || !ss->chunk_request_time
         || !ss->chunk_retries) {
         swarm_sync_free(ss);
-        return false;
+        LOG_FAIL("fast_sync", "swarm_sync_init: failed to allocate chunk tracking arrays for %u chunks", n);
     }
 
     /* All chunks start as NEEDED (calloc zeroes = CHUNK_NEEDED) */
@@ -930,7 +936,7 @@ void swarm_sync_free(struct swarm_sync *ss)
 
 int32_t swarm_sync_assign_chunk(struct swarm_sync *ss, int peer_id)
 {
-    if (!ss || !ss->chunk_states) return -1;
+    if (!ss || !ss->chunk_states) LOG_ERR("fast_sync", "swarm_sync_assign_chunk: null swarm state");
 
     for (uint32_t i = 0; i < ss->manifest.num_chunks; i++) {
         if (ss->chunk_states[i] == CHUNK_NEEDED) {
@@ -948,10 +954,11 @@ bool swarm_sync_receive_chunk(struct swarm_sync *ss,
                                 const struct utxo_chunk *chunk,
                                 int peer_id)
 {
-    if (!ss || !chunk) return false;
+    if (!ss || !chunk) LOG_FAIL("fast_sync", "swarm_sync_receive_chunk: null swarm state or chunk");
 
     uint32_t idx = chunk->chunk_index;
-    if (idx >= ss->manifest.num_chunks) return false;
+    if (idx >= ss->manifest.num_chunks) LOG_FAIL("fast_sync", "swarm_sync_receive_chunk: chunk index %u >= num_chunks %u",
+                 idx, ss->manifest.num_chunks);
 
     /* Verify chunk hash against manifest */
     if (ss->manifest.chunk_hashes) {
@@ -1005,7 +1012,7 @@ bool swarm_sync_receive_chunk(struct swarm_sync *ss,
 
 bool swarm_sync_is_complete(const struct swarm_sync *ss)
 {
-    if (!ss) return false;
+    if (!ss) LOG_FAIL("fast_sync", "swarm_sync_is_complete: null swarm state");
     return ss->chunks_complete == ss->manifest.num_chunks;
 }
 
@@ -1058,7 +1065,8 @@ bool block_piece_manifest_build(const char *datadir,
                                  int32_t start_height, int32_t end_height,
                                  struct block_piece_manifest *out)
 {
-    if (!out || end_height < start_height) return false;
+    if (!out || end_height < start_height) LOG_FAIL("fast_sync", "block_piece_manifest_build: invalid args (out=%p, start=%d, end=%d)",
+                 (void *)out, start_height, end_height);
     memset(out, 0, sizeof(*out));
 
     char db_path[1024];
@@ -1066,7 +1074,7 @@ bool block_piece_manifest_build(const char *datadir,
 
     sqlite3 *db = NULL;
     if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK)
-        return false;
+        LOG_FAIL("fast_sync", "block_piece_manifest_build: failed to open db %s", db_path);
 
     /* Verify the blocks table has data in the requested range.
      * During IBD the SQLite index may lag behind the chain tip. */
@@ -1077,7 +1085,7 @@ bool block_piece_manifest_build(const char *datadir,
             -1, &cnt, NULL);
         if (rc != SQLITE_OK || !cnt) {
             sqlite3_close(db);
-            return false;
+            LOG_FAIL("fast_sync", "block_piece_manifest_build: failed to prepare block count query");
         }
         sqlite3_bind_int(cnt, 1, start_height);
         sqlite3_bind_int(cnt, 2, end_height);
@@ -1090,7 +1098,8 @@ bool block_piece_manifest_build(const char *datadir,
         int64_t expected = end_height - start_height + 1;
         if (block_count < expected * 9 / 10) {
             sqlite3_close(db);
-            return false;
+            LOG_FAIL("fast_sync", "block_piece_manifest_build: insufficient block coverage (%lld/%lld) for range %d-%d",
+                     (long long)block_count, (long long)expected, start_height, end_height);
         }
     }
 
@@ -1104,7 +1113,7 @@ bool block_piece_manifest_build(const char *datadir,
     sqlite3_stmt *s = NULL;
     int rc = sqlite3_prepare_v2(db,
         "SELECT hash FROM blocks WHERE height = ?", -1, &s, NULL);
-    if (rc != SQLITE_OK || !s) { sqlite3_close(db); return false; }
+    if (rc != SQLITE_OK || !s) { sqlite3_close(db); LOG_FAIL("fast_sync", "block_piece_manifest_build: failed to prepare tip hash query"); }
     sqlite3_bind_int(s, 1, end_height);
     if (sqlite3_step(s) == SQLITE_ROW) {
         const void *h = sqlite3_column_blob(s, 0);
@@ -1115,7 +1124,7 @@ bool block_piece_manifest_build(const char *datadir,
 
     /* Allocate piece hashes */
     out->piece_hashes = calloc(out->num_pieces, 32);
-    if (!out->piece_hashes) { sqlite3_close(db); return false; }
+    if (!out->piece_hashes) { sqlite3_close(db); LOG_FAIL("fast_sync", "block_piece_manifest_build: failed to allocate %u piece hashes", out->num_pieces); }
 
     /* Fetch all block hashes in range, compute piece hashes */
     s = NULL;
@@ -1126,7 +1135,8 @@ bool block_piece_manifest_build(const char *datadir,
         sqlite3_close(db);
         free(out->piece_hashes);
         out->piece_hashes = NULL;
-        return false;
+        LOG_FAIL("fast_sync", "block_piece_manifest_build: failed to prepare block hash query for range %d-%d",
+                 start_height, end_height);
     }
     sqlite3_bind_int(s, 1, start_height);
     sqlite3_bind_int(s, 2, end_height);
@@ -1137,7 +1147,8 @@ bool block_piece_manifest_build(const char *datadir,
         sqlite3_close(db);
         free(out->piece_hashes);
         out->piece_hashes = NULL;
-        return false;
+        LOG_FAIL("fast_sync", "block_piece_manifest_build: failed to allocate piece_block_hashes (%d blocks/piece)",
+                 BLOCKS_PER_PIECE);
     }
 
     uint32_t piece_idx = 0;
@@ -1182,7 +1193,7 @@ bool block_swarm_init(struct block_swarm *bs,
                       const struct block_piece_manifest *manifest,
                       const char *datadir)
 {
-    if (!bs || !manifest || manifest->num_pieces == 0) return false;
+    if (!bs || !manifest || manifest->num_pieces == 0) LOG_FAIL("fast_sync", "block_swarm_init: null args or zero pieces");
     memset(bs, 0, sizeof(*bs));
 
     uint32_t n = manifest->num_pieces;
@@ -1190,7 +1201,7 @@ bool block_swarm_init(struct block_swarm *bs,
     /* Deep-copy manifest */
     bs->manifest = *manifest;
     bs->manifest.piece_hashes = calloc(n, 32);
-    if (!bs->manifest.piece_hashes) return false;
+    if (!bs->manifest.piece_hashes) LOG_FAIL("fast_sync", "block_swarm_init: failed to allocate %u piece hashes", n);
     if (manifest->piece_hashes)
         memcpy(bs->manifest.piece_hashes, manifest->piece_hashes,
                (size_t)n * 32);
@@ -1203,7 +1214,7 @@ bool block_swarm_init(struct block_swarm *bs,
     if (!bs->piece_states || !bs->piece_peer ||
         !bs->piece_request_time || !bs->piece_availability) {
         block_swarm_free(bs);
-        return false;
+        LOG_FAIL("fast_sync", "block_swarm_init: failed to allocate piece tracking arrays for %u pieces", n);
     }
 
     for (uint32_t i = 0; i < n; i++)
@@ -1234,7 +1245,7 @@ void block_swarm_free(struct block_swarm *bs)
 int32_t block_swarm_assign_piece(struct block_swarm *bs, int peer_id,
                                   const uint8_t *peer_bitmap)
 {
-    if (!bs || !bs->piece_states) return -1;
+    if (!bs || !bs->piece_states) LOG_ERR("fast_sync", "block_swarm_assign_piece: null swarm state");
 
     /* Endgame mode: if few pieces remain, use broadcast strategy.
      * Caller should request all remaining from all peers. */
@@ -1283,7 +1294,8 @@ int32_t block_swarm_assign_piece(struct block_swarm *bs, int peer_id,
 bool block_swarm_receive_piece(struct block_swarm *bs,
                                 uint32_t piece_index, int peer_id)
 {
-    if (!bs || piece_index >= bs->manifest.num_pieces) return false;
+    if (!bs || piece_index >= bs->manifest.num_pieces) LOG_FAIL("fast_sync", "block_swarm_receive_piece: invalid args (bs=%p, piece=%u)",
+                 (void *)bs, piece_index);
     (void)peer_id;
 
     bs->piece_states[piece_index] = CHUNK_COMPLETE;
@@ -1308,7 +1320,7 @@ void block_swarm_fail_piece(struct block_swarm *bs, uint32_t piece_index)
 
 bool block_swarm_is_complete(const struct block_swarm *bs)
 {
-    if (!bs) return false;
+    if (!bs) LOG_FAIL("fast_sync", "block_swarm_is_complete: null swarm state");
     return bs->pieces_complete == bs->manifest.num_pieces;
 }
 

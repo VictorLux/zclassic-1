@@ -6,6 +6,7 @@
 
 #include "net/peer_bandwidth.h"
 #include "event/event.h"
+#include "util/log_macros.h"
 
 #include <stdio.h>
 #include <stdlib.h>

@@ -5,6 +5,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "net/netaddr.h"
+#include "util/log_macros.h"
 #include <stdio.h>
 
 bool net_addr_is_rfc1918(const struct net_addr *a)

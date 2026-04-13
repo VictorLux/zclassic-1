@@ -43,6 +43,7 @@ extern volatile sig_atomic_t g_shutdown_requested;
 #include "event/event.h"
 #include "net/download.h"
 #include "util/sync.h"
+#include "util/log_macros.h"
 #include "config/boot_internal.h"
 #include <pthread.h>
 #include <stdio.h>
@@ -697,7 +698,7 @@ static bool process_version(struct msg_processor *mp, struct p2p_node *node,
     struct version_message ver;
     version_message_init(&ver);
     if (!version_message_deserialize(&ver, s))
-        return false;
+        LOG_FAIL("msgproc", "version deserialize failed from %s", node->addr_name);
 
     if (ver.protocol_version < MIN_PEER_PROTO_VERSION) {
         event_emitf(EV_PEER_MISBEHAVE, (uint32_t)node->id,
@@ -888,7 +889,7 @@ static bool process_ping(struct msg_processor *mp, struct p2p_node *node,
     uint64_t nonce = 0;
     if (node->version >= BIP0031_VERSION) {
         if (!stream_read_u64_le(s, &nonce))
-            return false;
+            LOG_FAIL("msgproc", "ping: failed to read nonce from %s", node->addr_name);
     }
 
     if (node->version >= BIP0031_VERSION) {
@@ -908,7 +909,7 @@ static bool process_pong(struct p2p_node *node, struct byte_stream *s)
 {
     uint64_t nonce = 0;
     if (!stream_read_u64_le(s, &nonce))
-        return false;
+        LOG_FAIL("msgproc", "pong: failed to read nonce from %s", node->addr_name);
 
     if (node->ping_nonce_sent != 0 && nonce == node->ping_nonce_sent) {
         int64_t now = (int64_t)time(NULL) * 1000000;
@@ -934,7 +935,7 @@ static bool process_addr(struct msg_processor *mp, struct p2p_node *node,
 {
     uint64_t count;
     if (!stream_read_compact_size(s, &count))
-        return false;
+        LOG_FAIL("msgproc", "addr: failed to read count from %s", node->addr_name);
 
     if (count > MAX_ADDR_TO_SEND) {
         printf("Peer %s: addr message too large (%llu)\n",
@@ -951,7 +952,8 @@ static bool process_addr(struct msg_processor *mp, struct p2p_node *node,
         struct net_address addr;
         net_address_init(&addr);
         if (!net_address_deserialize(&addr, s, true))
-            return false;
+            LOG_FAIL("msgproc", "addr: failed to deserialize address %llu/%llu from %s",
+                     (unsigned long long)i, (unsigned long long)count, node->addr_name);
 
         if (mp->net_mgr)
             addrman_add(&mp->net_mgr->addrman, &addr, &source, 0);
@@ -966,13 +968,13 @@ static bool process_getblocks(struct msg_processor *mp, struct p2p_node *node,
     block_locator_init(&locator);
     if (!block_locator_deserialize(&locator, s)) {
         block_locator_free(&locator);
-        return false;
+        LOG_FAIL("msgproc", "getblocks: failed to deserialize locator from %s", node->addr_name);
     }
 
     struct uint256 hash_stop;
     if (!stream_read(s, hash_stop.data, 32)) {
         block_locator_free(&locator);
-        return false;
+        LOG_FAIL("msgproc", "getblocks: failed to read hash_stop from %s", node->addr_name);
     }
 
     struct block_index *pindex = NULL;
@@ -1024,13 +1026,13 @@ static bool process_getheaders(struct msg_processor *mp, struct p2p_node *node,
     block_locator_init(&locator);
     if (!block_locator_deserialize(&locator, s)) {
         block_locator_free(&locator);
-        return false;
+        LOG_FAIL("msgproc", "getheaders: failed to deserialize locator from %s", node->addr_name);
     }
 
     struct uint256 hash_stop;
     if (!stream_read(s, hash_stop.data, 32)) {
         block_locator_free(&locator);
-        return false;
+        LOG_FAIL("msgproc", "getheaders: failed to read hash_stop from %s", node->addr_name);
     }
 
     struct active_chain *chain = &mp->main_state->chain_active;
@@ -1119,7 +1121,7 @@ static bool process_inv(struct msg_processor *mp, struct p2p_node *node,
 {
     uint64_t count;
     if (!stream_read_compact_size(s, &count))
-        return false;
+        LOG_FAIL("msgproc", "inv: failed to read count from %s", node->addr_name);
 
     if (count > MAX_INV_SZ) {
         event_emitf(EV_PEER_MISBEHAVE, (uint32_t)node->id,
@@ -1139,7 +1141,8 @@ static bool process_inv(struct msg_processor *mp, struct p2p_node *node,
         struct inv_item inv;
         if (!inv_item_deserialize(&inv, s)) {
             stream_free(&getdata);
-            return false;
+            LOG_FAIL("msgproc", "inv: failed to deserialize item %llu/%llu from %s",
+                     (unsigned long long)i, (unsigned long long)count, node->addr_name);
         }
 
         p2p_node_add_inventory_known(node, &inv);
@@ -1210,11 +1213,12 @@ static bool process_getdata(struct msg_processor *mp, struct p2p_node *node,
 {
     uint64_t count;
     if (!stream_read_compact_size(s, &count))
-        return false;
+        LOG_FAIL("msgproc", "getdata: failed to read count from %s", node->addr_name);
 
     if (count > MAX_INV_SZ) {
         node->disconnect = true;
-        return false;
+        LOG_FAIL("msgproc", "getdata: count %llu exceeds MAX_INV_SZ from %s",
+                 (unsigned long long)count, node->addr_name);
     }
 
     struct inv_item not_found[64];
@@ -1223,7 +1227,8 @@ static bool process_getdata(struct msg_processor *mp, struct p2p_node *node,
     for (uint64_t i = 0; i < count; i++) {
         struct inv_item inv;
         if (!inv_item_deserialize(&inv, s))
-            return false;
+            LOG_FAIL("msgproc", "getdata: failed to deserialize item %llu/%llu from %s",
+                     (unsigned long long)i, (unsigned long long)count, node->addr_name);
 
         bool sent = false;
         if (inv.type == MSG_BLOCK) {
@@ -1656,7 +1661,7 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
 
     uint64_t count;
     if (!stream_read_compact_size(s, &count))
-        return false;
+        LOG_FAIL("msgproc", "headers: failed to read count from %s", node->addr_name);
 
     if (count > 2000) {
         event_emitf(EV_PEER_MISBEHAVE, (uint32_t)node->id,
@@ -2071,7 +2076,7 @@ static bool process_feefilter(struct p2p_node *node, struct byte_stream *s)
 {
     uint64_t fee_rate = 0;
     if (!stream_read_u64_le(s, &fee_rate))
-        return false;
+        LOG_FAIL("msgproc", "feefilter: failed to read fee rate from %s", node->addr_name);
     (void)fee_rate;
     (void)node;
     return true;
@@ -2081,13 +2086,14 @@ static bool process_notfound(struct p2p_node *node, struct byte_stream *s)
 {
     uint64_t count;
     if (!stream_read_compact_size(s, &count))
-        return false;
+        LOG_FAIL("msgproc", "notfound: failed to read count from %s", node->addr_name);
 
     struct download_manager *dm = get_download_mgr();
     for (uint64_t i = 0; i < count; i++) {
         struct inv_item inv;
         if (!inv_item_deserialize(&inv, s))
-            return false;
+            LOG_FAIL("msgproc", "notfound: failed to deserialize item %llu/%llu from %s",
+                     (unsigned long long)i, (unsigned long long)count, node->addr_name);
         if (inv.type == MSG_BLOCK) {
             char hex[65];
             uint256_get_hex(&inv.hash, hex);

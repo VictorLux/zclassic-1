@@ -7,6 +7,7 @@
 #include "net/net.h"
 #include "net/peer_scoring.h"
 #include "util/log_json.h"
+#include "util/log_macros.h"
 #include "core/hash.h"
 #include "core/random.h"
 #include "core/utiltime.h"
@@ -82,10 +83,10 @@ int net_message_read_header(struct net_message *msg,
     /* Validate message start magic and size */
     if (memcmp(msg->hdr.pchMessageStart, msg->expected_msgstart,
                MESSAGE_START_SIZE) != 0)
-        return -1;
+        LOG_ERR("net", "message start magic mismatch");
 
     if (msg->hdr.nMessageSize > MAX_SIZE)
-        return -1;
+        LOG_ERR("net", "message size %u exceeds MAX_SIZE", msg->hdr.nMessageSize);
 
     msg->in_data = true;
     return (int)copy;
@@ -100,13 +101,14 @@ int net_message_read_data(struct net_message *msg,
     /* Reject oversized messages BEFORE allocating.
      * MAX_PROTOCOL_MESSAGE_LENGTH = 2MB. An attacker sending a crafted
      * header with nMessageSize=2GB would cause OOM without this check. */
-    if (msg->hdr.nMessageSize > 2 * 1024 * 1024) return -1;
+    if (msg->hdr.nMessageSize > 2 * 1024 * 1024)
+        LOG_ERR("net", "message size %u exceeds 2MB limit", msg->hdr.nMessageSize);
 
     size_t needed = msg->data_pos + copy;
     if (msg->recv_alloc < needed) {
         size_t alloc = msg->hdr.nMessageSize;
         uint8_t *tmp = realloc(msg->recv_data, alloc);
-        if (!tmp) return -1;
+        if (!tmp) LOG_ERR("net", "realloc failed for recv_data, needed %zu bytes", alloc);
         msg->recv_data = tmp;
         msg->recv_alloc = alloc;
     }
@@ -121,9 +123,9 @@ int net_message_read_data(struct net_message *msg,
 static struct send_segment *send_segment_create(const uint8_t *data, size_t size)
 {
     struct send_segment *seg = malloc(sizeof(*seg));
-    if (!seg) return NULL;
+    if (!seg) LOG_NULL("net", "malloc failed for send_segment (%zu bytes)", size);
     seg->data = malloc(size);
-    if (!seg->data) { free(seg); return NULL; }
+    if (!seg->data) { free(seg); LOG_NULL("net", "malloc failed for send_segment data (%zu bytes)", size); }
     memcpy(seg->data, data, size);
     seg->size = size;
     seg->next = NULL;
@@ -143,7 +145,7 @@ struct p2p_node *p2p_node_create(struct net_manager *nm, zcl_socket_t sock,
                                   const char *name, bool inbound)
 {
     struct p2p_node *node = calloc(1, sizeof(*node));
-    if (!node) return NULL;
+    if (!node) LOG_NULL("net", "calloc failed for p2p_node");
 
     node->socket = sock;
     node->addr = *addr;
@@ -272,7 +274,7 @@ bool p2p_node_receive_bytes(struct p2p_node *node, const char *data,
     int msg_idx = 0;
     while (nbytes > 0) {
         if (node->recv_msg_count >= MAX_RECV_MESSAGES)
-            return false;
+            LOG_FAIL("net", "recv queue full (%zu msgs) for peer %s", node->recv_msg_count, node->addr_name);
         if (node->recv_msg_count == 0 ||
             net_message_complete(&node->recv_msgs[node->recv_msg_count - 1])) {
             /* Enforce message queue limit — prevents OOM from fast senders */
@@ -286,7 +288,7 @@ bool p2p_node_receive_bytes(struct p2p_node *node, const char *data,
                 if (newcap > MAX_RECV_MESSAGES) newcap = MAX_RECV_MESSAGES;
                 struct net_message *tmp = realloc(node->recv_msgs,
                                                    newcap * sizeof(*tmp));
-                if (!tmp) return false;
+                if (!tmp) LOG_FAIL("net", "realloc failed for recv_msgs, newcap=%zu", newcap);
                 node->recv_msgs = tmp;
                 node->recv_msg_cap = newcap;
             }
@@ -488,7 +490,7 @@ bool p2p_node_end_message(struct p2p_node *node)
 {
     if (!tls_msg_active) {
         zcl_mutex_unlock(&node->cs_send);
-        return false;
+        LOG_FAIL("net", "end_message called without active message for peer %s", node->addr_name);
     }
 
     size_t total = tls_msg_stream.size;
@@ -496,7 +498,7 @@ bool p2p_node_end_message(struct p2p_node *node)
         stream_free(&tls_msg_stream);
         tls_msg_active = false;
         zcl_mutex_unlock(&node->cs_send);
-        return false;
+        LOG_FAIL("net", "message stream empty or error for peer %s", node->addr_name);
     }
 
     uint8_t *buf = tls_msg_stream.data;
@@ -529,7 +531,7 @@ bool p2p_node_end_message(struct p2p_node *node)
 
     if (!seg) {
         zcl_mutex_unlock(&node->cs_send);
-        return false;
+        LOG_FAIL("net", "send_segment_create failed for peer %s, size=%zu", node->addr_name, total);
     }
 
     if (node->send_tail) {
@@ -679,7 +681,7 @@ static bool nm_add_node(struct net_manager *nm, struct p2p_node *node)
     if (nm->num_nodes >= nm->nodes_cap) {
         size_t newcap = nm->nodes_cap ? nm->nodes_cap * 2 : 32;
         struct p2p_node **tmp = realloc(nm->nodes, newcap * sizeof(*tmp));
-        if (!tmp) return false;
+        if (!tmp) LOG_FAIL("net", "realloc failed for nodes array, newcap=%zu", newcap);
         nm->nodes = tmp;
         nm->nodes_cap = newcap;
     }
@@ -694,7 +696,7 @@ struct p2p_node *connect_node(struct net_manager *nm,
                                const char *dest)
 {
     if (!dest && is_local(nm, &addr_connect->svc))
-        return NULL;
+        LOG_NULL("net", "refusing connect to local address");
 
     /* Always dedupe by remote service, even for addnode/localhost connects.
      * The dest override exists to skip the localhost rejection, not to allow
@@ -723,7 +725,7 @@ struct p2p_node *connect_node(struct net_manager *nm,
                                              dest ? dest : "", false);
     if (!node) {
         close_socket(&sock);
-        return NULL;
+        LOG_NULL("net", "p2p_node_create failed for %s", dest ? dest : "");
     }
     p2p_node_add_ref(node);
 
@@ -882,17 +884,17 @@ static int find_local_host(struct net_manager *nm, const struct net_addr *addr)
 bool add_local(struct net_manager *nm, const struct net_service *addr, int score)
 {
     if (!net_addr_is_routable(&addr->addr))
-        return false;
+        LOG_FAIL("net", "add_local: address not routable");
 
     if (!nm->discover && score < LOCAL_MANUAL)
-        return false;
+        LOG_FAIL("net", "add_local: discovery disabled and score %d < LOCAL_MANUAL", score);
 
     zcl_mutex_lock(&nm->cs_local_host);
 
     enum zcl_network net = net_addr_get_network(&addr->addr);
     if (nm->limited[net]) {
         zcl_mutex_unlock(&nm->cs_local_host);
-        return false;
+        LOG_FAIL("net", "add_local: network %d is limited", (int)net);
     }
 
     int idx = find_local_host(nm, &addr->addr);
@@ -909,7 +911,7 @@ bool add_local(struct net_manager *nm, const struct net_service *addr, int score
                                                       newcap * sizeof(*hi));
             if (!ha || !hi) {
                 zcl_mutex_unlock(&nm->cs_local_host);
-                return false;
+                LOG_FAIL("net", "realloc failed for local_hosts, newcap=%zu", newcap);
             }
             nm->local_hosts = ha;
             nm->local_host_info = hi;
@@ -995,7 +997,7 @@ bool bind_listen_port(struct net_manager *nm, const struct net_service *addr,
     zcl_socket_t sock = socket(((struct sockaddr *)&ss)->sa_family,
                                 SOCK_STREAM, IPPROTO_TCP);
     if (sock == ZCL_INVALID_SOCKET)
-        return false;
+        LOG_FAIL("net", "socket() failed for bind_listen_port, port=%u", addr->port);
 
     int one = 1;
 #ifndef _WIN32
@@ -1011,7 +1013,7 @@ bool bind_listen_port(struct net_manager *nm, const struct net_service *addr,
 
     if (!set_socket_nonblocking(sock, true)) {
         close_socket(&sock);
-        return false;
+        LOG_FAIL("net", "set_socket_nonblocking failed for port=%u", addr->port);
     }
 
     if (!net_addr_is_ipv4(&addr->addr)) {
@@ -1022,18 +1024,18 @@ bool bind_listen_port(struct net_manager *nm, const struct net_service *addr,
 
     if (bind(sock, (struct sockaddr *)&ss, sslen) == ZCL_SOCKET_ERROR) {
         close_socket(&sock);
-        return false;
+        LOG_FAIL("net", "bind() failed for port=%u", addr->port);
     }
 
     if (listen(sock, SOMAXCONN) == ZCL_SOCKET_ERROR) {
         close_socket(&sock);
-        return false;
+        LOG_FAIL("net", "listen() failed for port=%u", addr->port);
     }
 
     if (nm->num_listen_sockets >= nm->listen_sockets_cap) {
         size_t newcap = nm->listen_sockets_cap ? nm->listen_sockets_cap * 2 : 4;
         struct listen_socket *tmp = realloc(nm->listen_sockets, newcap * sizeof(*tmp));
-        if (!tmp) { close_socket(&sock); return false; }
+        if (!tmp) { close_socket(&sock); LOG_FAIL("net", "realloc failed for listen_sockets, newcap=%zu", newcap); }
         nm->listen_sockets = tmp;
         nm->listen_sockets_cap = newcap;
     }
@@ -1056,7 +1058,7 @@ bool accept_connection(struct net_manager *nm, const struct listen_socket *ls)
     zcl_socket_t sock = accept(ls->socket, (struct sockaddr *)&ss, &sslen);
 
     if (sock == ZCL_INVALID_SOCKET)
-        return false;
+        LOG_FAIL("net", "accept() failed on listen socket");
 
     struct net_address addr;
     net_address_init(&addr);
@@ -1077,7 +1079,7 @@ bool accept_connection(struct net_manager *nm, const struct listen_socket *ls)
 
     if (is_banned(nm, &addr.svc.addr) && !is_whitelisted) {
         close_socket(&sock);
-        return false;
+        LOG_FAIL("net", "rejected banned peer on accept");
     }
 
     /* Per-IP inbound limit: max 3 connections from same IP.
@@ -1097,12 +1099,12 @@ bool accept_connection(struct net_manager *nm, const struct listen_socket *ls)
 
     if (!is_whitelisted && same_ip_count >= 3) {
         close_socket(&sock);
-        return false;
+        LOG_FAIL("net", "per-IP inbound limit reached: same_ip_count=%d", same_ip_count);
     }
 
     if (inbound_count >= max_inbound) {
         close_socket(&sock);
-        return false;
+        LOG_FAIL("net", "max inbound connections reached: %d >= %d", inbound_count, max_inbound);
     }
 
     int one = 1;
@@ -1111,7 +1113,7 @@ bool accept_connection(struct net_manager *nm, const struct listen_socket *ls)
     struct p2p_node *node = p2p_node_create(nm, sock, &addr, "", true);
     if (!node) {
         close_socket(&sock);
-        return false;
+        LOG_FAIL("net", "p2p_node_create failed for inbound connection");
     }
     p2p_node_add_ref(node);
     node->whitelisted = is_whitelisted;
@@ -1328,7 +1330,7 @@ bool addr_db_write(const struct net_manager *nm, const char *datadir)
 
     if (!addrman_serialize(&nm->addrman, &s)) {
         stream_free(&s);
-        return false;
+        LOG_FAIL("net", "addrman_serialize failed for %s", path);
     }
 
     struct uint256 hash;
@@ -1336,7 +1338,7 @@ bool addr_db_write(const struct net_manager *nm, const char *datadir)
     stream_write(&s, hash.data, 32);
 
     FILE *f = fopen(path, "wb");
-    if (!f) { stream_free(&s); return false; }
+    if (!f) { stream_free(&s); LOG_FAIL("net", "fopen failed for %s", path); }
     size_t written = fwrite(s.data, 1, s.size, f);
     fclose(f);
     stream_free(&s);
@@ -1350,7 +1352,7 @@ bool addr_db_read(struct net_manager *nm, const char *datadir)
     snprintf(path, sizeof(path), "%s/peers.dat", datadir);
 
     FILE *f = fopen(path, "rb");
-    if (!f) return false;
+    if (!f) LOG_FAIL("net", "fopen failed for %s", path);
 
     fseek(f, 0, SEEK_END);
     long file_size = ftell(f);
@@ -1358,15 +1360,15 @@ bool addr_db_read(struct net_manager *nm, const char *datadir)
 
     if (file_size < (long)(MESSAGE_START_SIZE + 32)) {
         fclose(f);
-        return false;
+        LOG_FAIL("net", "peers.dat too small: %ld bytes", file_size);
     }
 
     uint8_t *buf = malloc((size_t)file_size);
-    if (!buf) { fclose(f); return false; }
+    if (!buf) { fclose(f); LOG_FAIL("net", "malloc failed for peers.dat, size=%ld", file_size); }
     if (fread(buf, 1, (size_t)file_size, f) != (size_t)file_size) {
         free(buf);
         fclose(f);
-        return false;
+        LOG_FAIL("net", "fread failed for peers.dat, expected %ld bytes", file_size);
     }
     fclose(f);
 
@@ -1379,12 +1381,12 @@ bool addr_db_read(struct net_manager *nm, const char *datadir)
 
     if (!uint256_eq(&stored_hash, &computed_hash)) {
         free(buf);
-        return false;
+        LOG_FAIL("net", "peers.dat hash mismatch — file corrupted");
     }
 
     if (memcmp(buf, nm->message_start, MESSAGE_START_SIZE) != 0) {
         free(buf);
-        return false;
+        LOG_FAIL("net", "peers.dat message start magic mismatch");
     }
 
     struct byte_stream s;

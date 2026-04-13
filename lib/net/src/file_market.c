@@ -12,6 +12,7 @@
 #include <time.h>
 #include <stdio.h>
 #include <pthread.h>
+#include "util/log_macros.h"
 
 /* ── In-Memory Offer Cache ──────────────────────────────────────── */
 
@@ -53,7 +54,7 @@ bool file_offer_deserialize(struct file_offer *offer,
 
     uint8_t namelen = 0;
     ok &= stream_read_u8(s, &namelen);
-    if (!ok) return false;
+    if (!ok) LOG_FAIL("file_market", "file_offer_deserialize: stream read failed at name length");
     ok &= stream_read(s, offer->filename, namelen);
     offer->filename[namelen] = '\0';
 
@@ -136,8 +137,11 @@ bool file_payment_deserialize(struct file_payment *pay,
 
 bool file_market_add_offer(const struct file_offer *offer)
 {
-    if (!offer || offer->ttl == 0 || offer->num_chunks == 0)
-        return false;
+    if (!offer)
+        LOG_FAIL("file_market", "add_offer: null offer");
+    if (offer->ttl == 0 || offer->num_chunks == 0)
+        LOG_FAIL("file_market", "add_offer: invalid offer ttl=%u chunks=%u",
+                 offer->ttl, offer->num_chunks);
 
     pthread_mutex_lock(&g_market_mutex);
 
@@ -235,12 +239,12 @@ int file_market_start_download(const uint8_t root_hash[32],
 {
     struct file_offer offer;
     if (!file_market_find_offer(root_hash, &offer))
-        return -1;
+        LOG_ERR("file_market", "start_download: offer not found for root_hash");
 
     pthread_mutex_lock(&g_market_mutex);
     if (g_download_count >= MAX_DOWNLOADS) {
         pthread_mutex_unlock(&g_market_mutex);
-        return -1;
+        LOG_ERR("file_market", "start_download: max downloads reached (%d)", MAX_DOWNLOADS);
     }
 
     int idx = g_download_count++;
@@ -274,7 +278,7 @@ bool file_market_get_download(const uint8_t root_hash[32],
 bool db_file_offer_save(struct node_db *ndb,
                         const struct file_offer *offer)
 {
-    if (!ndb || !ndb->open) return false;
+    if (!ndb || !ndb->open) LOG_FAIL("file_market", "db_file_offer_save: db not open");
 
     const char *sql =
         "INSERT OR REPLACE INTO file_offers"
@@ -284,7 +288,7 @@ bool db_file_offer_save(struct node_db *ndb,
 
     sqlite3_stmt *s = NULL;
     int rc = sqlite3_prepare_v2(ndb->db, sql, -1, &s, NULL);
-    if (rc != SQLITE_OK) return false;
+    if (rc != SQLITE_OK) LOG_FAIL("file_market", "db_file_offer_save: prepare failed: %s", sqlite3_errmsg(ndb->db));
 
     sqlite3_bind_blob(s, 1, offer->root_hash, 32, SQLITE_STATIC);
     sqlite3_bind_text(s, 2, offer->filename, -1, SQLITE_STATIC);
@@ -354,7 +358,7 @@ bool db_file_offer_find(struct node_db *ndb,
                         const uint8_t root_hash[32],
                         struct file_offer *out)
 {
-    if (!ndb || !ndb->open) return false;
+    if (!ndb || !ndb->open) LOG_FAIL("file_market", "db_file_offer_find: db not open");
 
     const char *sql =
         "SELECT root_hash,filename,size_bytes,num_chunks,price_per_mb,"
@@ -363,7 +367,7 @@ bool db_file_offer_find(struct node_db *ndb,
 
     sqlite3_stmt *s = NULL;
     int rc = sqlite3_prepare_v2(ndb->db, sql, -1, &s, NULL);
-    if (rc != SQLITE_OK) return false;
+    if (rc != SQLITE_OK) LOG_FAIL("file_market", "db_file_offer_find: prepare failed: %s", sqlite3_errmsg(ndb->db));
 
     sqlite3_bind_blob(s, 1, root_hash, 32, SQLITE_STATIC);
     bool found = false;

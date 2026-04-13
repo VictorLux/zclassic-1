@@ -6,6 +6,7 @@
 #include "net/onion_service.h"
 #include "net/tor_integration.h"
 #include "util/log_json.h"
+#include "util/log_macros.h"
 #include "controllers/blog_controller.h"
 #include "views/format_helpers.h"
 #include "util/template.h"

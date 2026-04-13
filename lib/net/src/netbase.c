@@ -6,6 +6,7 @@
 
 #include "net/netbase.h"
 #include "encoding/utilstrencodings.h"
+#include "util/log_macros.h"
 #include <string.h>
 #include <stdio.h>
 

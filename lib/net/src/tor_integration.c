@@ -13,6 +13,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include "util/log_macros.h"
 
 static pthread_t g_tor_thread;
 static pthread_t g_monitor_thread;
@@ -50,7 +51,7 @@ static bool write_torrc(const char *datadir)
     snprintf(torrc_path, sizeof(torrc_path), "%s/torrc", datadir);
 
     FILE *f = fopen(torrc_path, "w");
-    if (!f) return false;
+    if (!f) LOG_FAIL("tor", "cannot write torrc at %s", torrc_path);
 
     /* SocksPort on localhost-only high port — gives Tor a reason to
      * build circuits. Without at least one listener or hidden service,
@@ -77,12 +78,12 @@ static bool read_onion_from_hostname_file(const char *datadir)
              "%s/tor_data/onion_service/hostname", datadir);
 
     FILE *f = fopen(path, "r");
-    if (!f) return false;
+    if (!f) LOG_FAIL("tor", "cannot open hostname file: %s", path);
 
     char line[128];
     if (!fgets(line, sizeof(line), f)) {
         fclose(f);
-        return false;
+        LOG_FAIL("tor", "hostname file empty: %s", path);
     }
     fclose(f);
 
@@ -93,7 +94,7 @@ static bool read_onion_from_hostname_file(const char *datadir)
         line[--len] = '\0';
 
     if (len == 0 || len >= sizeof(g_onion_address))
-        return false;
+        LOG_FAIL("tor", "invalid onion address length %zu from %s", len, path);
 
     memcpy(g_onion_address, line, len + 1);
     ensure_onion_suffix();
@@ -109,7 +110,7 @@ static bool read_onion_address(const char *datadir)
 
     for (int attempt = 0; attempt < 120; attempt++) {
         if (!atomic_load(&g_tor_running))
-            return false;
+            LOG_FAIL("tor", "tor stopped while waiting for .onion address");
 
         /* Persistent key: Tor writes hostname file after bootstrap */
         if (read_onion_from_hostname_file(datadir))
@@ -141,7 +142,7 @@ static bool read_onion_address(const char *datadir)
         }
         sleep(1);
     }
-    return false;
+    LOG_FAIL("tor", "timed out after 120s waiting for .onion address in %s", datadir);
 }
 
 /* Tor embedding API */
@@ -263,7 +264,7 @@ bool tor_integration_start(const char *datadir, uint16_t p2p_port)
 
     if (pthread_create(&g_tor_thread, NULL, tor_thread_fn, NULL) != 0) {
         atomic_store(&g_tor_running, false);
-        return false;
+        LOG_FAIL("tor", "pthread_create for tor thread failed");
     }
     atomic_store(&g_tor_started, true);
     return true;
@@ -324,9 +325,9 @@ int tor_integration_fetch_onion(const char *onion_address,
                                  int timeout_secs)
 {
     if (!dynhost_client_fetch)
-        return -1; /* stub linked, no Tor */
+        LOG_ERR("tor", "fetch_onion: dynhost_client_fetch not linked (stub build)");
     if (!atomic_load(&g_tor_running))
-        return -1; /* Tor not started */
+        LOG_ERR("tor", "fetch_onion: tor not running for %s%s", onion_address, path);
 
     return dynhost_client_fetch(onion_address, 80, path,
         (void (*)(int, const uint8_t *, size_t, void *))callback,
@@ -355,7 +356,7 @@ int tor_integration_fetch_onion_blocking(const char *onion_address,
                                           struct onion_fetch_result *result,
                                           int timeout_secs)
 {
-    if (!result) return -1;
+    if (!result) LOG_ERR("tor", "fetch_onion_blocking: result pointer is NULL");
     memset(result, 0, sizeof(*result));
 
     int rc = tor_integration_fetch_onion(onion_address, path,
@@ -363,7 +364,7 @@ int tor_integration_fetch_onion_blocking(const char *onion_address,
                                           timeout_secs);
     if (rc < 0) {
         atomic_store(&result->complete, -1);
-        return -1;
+        LOG_ERR("tor", "fetch_onion_blocking: async fetch failed for %s%s", onion_address, path);
     }
 
     /* Poll for completion */
@@ -376,5 +377,5 @@ int tor_integration_fetch_onion_blocking(const char *onion_address,
 
     /* Timeout */
     atomic_store(&result->complete, -1);
-    return -1;
+    LOG_ERR("tor", "fetch_onion_blocking: timed out after %ds for %s%s", timeout_secs > 0 ? timeout_secs : 60, onion_address, path);
 }

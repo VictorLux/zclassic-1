@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include "util/log_macros.h"
 
 /* ── WebSocket frame helpers (RFC 6455 minimal) ──────────────── */
 
@@ -363,7 +364,7 @@ bool ws_events_start(void)
 
     if (pthread_create(&g_pump_thread, NULL, pump_thread_fn, NULL) != 0) {
         atomic_store(&g_started, false);
-        return false;
+        LOG_FAIL("ws_events", "failed to create pump thread");
     }
     return true;
 }
@@ -396,7 +397,7 @@ void ws_events_stop(void)
 bool ws_events_accept(int fd, const char *domain_filter)
 {
     if (atomic_load(&g_client_count) >= WS_MAX_CLIENTS)
-        return false;
+        LOG_FAIL("ws_events", "max clients reached (%d)", WS_MAX_CLIENTS);
 
     /* Set non-blocking so write() in pump thread doesn't stall */
     int flags = fcntl(fd, F_GETFL, 0);
@@ -410,7 +411,7 @@ bool ws_events_accept(int fd, const char *domain_filter)
     }
     if (slot < 0) {
         pthread_mutex_unlock(&g_lock);
-        return false;
+        LOG_FAIL("ws_events", "no free client slot (fd=%d)", fd);
     }
 
     struct ws_client *c = &g_clients[slot];
@@ -475,19 +476,23 @@ size_t ws_events_status_json(char *buf, size_t cap)
 bool ws_events_upgrade(int fd, const char *path,
                         const char *ws_key, const char *query)
 {
-    if (!ws_key || !*ws_key) return false;
+    if (!ws_key || !*ws_key)
+        LOG_FAIL("ws_events", "upgrade: missing Sec-WebSocket-Key");
 
     /* Ensure the pump thread is running */
-    if (!ws_events_start()) return false;
+    if (!ws_events_start())
+        LOG_FAIL("ws_events", "upgrade: pump thread not running");
 
     /* Check client capacity before doing the handshake */
-    if (atomic_load(&g_client_count) >= WS_MAX_CLIENTS) return false;
+    if (atomic_load(&g_client_count) >= WS_MAX_CLIENTS)
+        LOG_FAIL("ws_events", "upgrade: max clients reached (%d)", WS_MAX_CLIENTS);
 
     /* Compute Sec-WebSocket-Accept */
     char concat[256];
     int clen = snprintf(concat, sizeof(concat), "%s%s", ws_key,
                         "258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
-    if (clen < 0 || (size_t)clen >= sizeof(concat)) return false;
+    if (clen < 0 || (size_t)clen >= sizeof(concat))
+        LOG_FAIL("ws_events", "upgrade: Sec-WebSocket-Key concat overflow");
 
     struct sha1_ctx sha;
     sha1_init(&sha);
@@ -520,9 +525,11 @@ bool ws_events_upgrade(int fd, const char *path,
         "Sec-WebSocket-Accept: %s\r\n"
         "\r\n",
         accept_b64);
-    if (rlen < 0) return false;
+    if (rlen < 0)
+        LOG_FAIL("ws_events", "upgrade: response format error");
     ssize_t w = write(fd, resp, (size_t)rlen);
-    if (w < 0) return false;
+    if (w < 0)
+        LOG_FAIL("ws_events", "upgrade: write failed (fd=%d)", fd);
 
     /* Hand the fd to the event pump */
     (void)path;  /* reserved for future path-based dispatch */

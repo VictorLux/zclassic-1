@@ -12,6 +12,7 @@
 #include <string.h>
 #include <time.h>
 #include <sqlite3.h>
+#include "util/log_macros.h"
 
 /* ── Replica discovery from blockchain ───────────────────── */
 
@@ -204,7 +205,8 @@ bool site_announce_replica(const char *datadir,
                             uint32_t capacity,
                             uint32_t content_version)
 {
-    if (!datadir || !token_id || !onion_addr) return false;
+    if (!datadir || !token_id || !onion_addr)
+        LOG_FAIL("load_bal", "site_announce_replica: missing required params");
 
     /* Build the ZSLP SEND OP_RETURN with replica metadata appended.
      * Format: [SLP SEND fields] [1 onion_len] [onion] [4 capacity LE] [4 version LE] */
@@ -218,11 +220,13 @@ bool site_announce_replica(const char *datadir,
     uint8_t script[256];
     uint64_t qty = 1;
     size_t slp_len = slp_build_send(script, sizeof(script), &tid, &qty, 1);
-    if (slp_len == 0) return false;
+    if (slp_len == 0)
+        LOG_FAIL("load_bal", "site_announce_replica: SLP SEND build failed for token %s", token_id);
 
     /* Append replica metadata */
     size_t olen = strlen(onion_addr);
-    if (slp_len + 1 + olen + 8 > sizeof(script)) return false;
+    if (slp_len + 1 + olen + 8 > sizeof(script))
+        LOG_FAIL("load_bal", "site_announce_replica: script overflow (slp=%zu + onion=%zu)", slp_len, olen);
 
     script[slp_len] = (uint8_t)olen;
     memcpy(script + slp_len + 1, onion_addr, olen);
@@ -258,7 +262,8 @@ bool site_connect_best(const char *datadir, const char *token_id,
 {
     struct site_replica replicas[32];
     int count = site_discover_replicas(datadir, token_id, replicas, 32);
-    if (count == 0) return false;
+    if (count == 0)
+        LOG_FAIL("load_bal", "site_connect_best: no replicas found for token %s", token_id);
 
     /* Probe top candidates (up to 5) */
     int to_probe = count < 5 ? count : 5;
@@ -266,7 +271,8 @@ bool site_connect_best(const char *datadir, const char *token_id,
         site_probe_replica(&replicas[i]);
 
     int best = site_select_replica(replicas, count);
-    if (best < 0 || !replicas[best].reachable) return false;
+    if (best < 0 || !replicas[best].reachable)
+        LOG_FAIL("load_bal", "site_connect_best: no reachable replica (count=%d)", count);
 
     snprintf(out_onion, out_max, "%s", replicas[best].onion);
     printf("Selected replica: %s (latency=%lldus, capacity=%u)\n",

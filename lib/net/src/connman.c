@@ -30,6 +30,7 @@
 #include <time.h>
 #include <unistd.h>
 #include "core/utiltime.h"
+#include "util/log_macros.h"
 
 /* -connect mode: only connect to specified peers, no seeds */
 bool g_connect_only = false;
@@ -792,7 +793,7 @@ bool connman_init(struct connman *cm, const struct chain_params *params,
 bool connman_start(struct connman *cm)
 {
     if (!cm)
-        return false;
+        LOG_FAIL("connman", "connman_start: cm is NULL");
     if (cm->started)
         return true;
 

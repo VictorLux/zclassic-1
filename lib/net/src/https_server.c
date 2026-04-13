@@ -24,6 +24,7 @@
 #include <signal.h>
 #include <stdatomic.h>
 #include <sys/time.h>
+#include "util/log_macros.h"
 
 static SSL_CTX *g_ssl_ctx = NULL;
 static int g_https_fd = -1;

@@ -5,6 +5,7 @@
 
 #include "net/download.h"
 #include "event/event.h"
+#include "util/log_macros.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>

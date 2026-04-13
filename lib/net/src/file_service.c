@@ -10,6 +10,7 @@
 #include "crypto/sha3.h"
 #include "core/random.h"
 #include "controllers/file_controller.h"
+#include "util/log_macros.h"
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -61,7 +62,7 @@ static bool send_all(int fd, const uint8_t *buf, size_t len)
         ssize_t n = send(fd, buf + sent, len - sent, MSG_NOSIGNAL);
         if (n <= 0) {
             if (n < 0 && errno == EINTR) continue;
-            return false;
+            LOG_FAIL("file_svc", "send_all failed: fd=%d, sent=%zu/%zu", fd, sent, len);
         }
         sent += (size_t)n;
     }
@@ -75,7 +76,7 @@ static bool recv_all(int fd, uint8_t *buf, size_t len)
         ssize_t n = recv(fd, buf + got, len - got, 0);
         if (n <= 0) {
             if (n < 0 && errno == EINTR) continue;
-            return false;
+            LOG_FAIL("file_svc", "recv_all failed: fd=%d, got=%zu/%zu", fd, got, len);
         }
         got += (size_t)n;
     }
@@ -89,7 +90,7 @@ static bool encrypt_frame(const struct fs_session *s, uint8_t type,
                             const uint8_t *payload, uint32_t payload_len,
                             uint8_t out[FS_FRAME_SIZE], uint64_t counter)
 {
-    if (payload_len > FS_MAX_PAYLOAD) return false;
+    if (payload_len > FS_MAX_PAYLOAD) LOG_FAIL("file_svc", "encrypt_frame: payload_len %u exceeds max %u", payload_len, (uint32_t)FS_MAX_PAYLOAD);
 
     /* Build plaintext frame: [type][len][payload][random padding] */
     uint8_t plain[FS_FRAME_SIZE - FS_MAC_SIZE];
@@ -167,7 +168,7 @@ static bool decrypt_frame(const struct fs_session *s,
     uint8_t diff = 0;
     for (int i = 0; i < 32; i++)
         diff |= in[ct_len + i] ^ expected_mac[i];
-    if (diff != 0) return false;
+    if (diff != 0) LOG_FAIL("file_svc", "decrypt_frame: MAC verification failed at counter %llu", (unsigned long long)counter);
 
     /* Decrypt using AVX-512 4-way parallel SHA3 */
     uint8_t plain[FS_FRAME_SIZE - FS_MAC_SIZE];
@@ -198,7 +199,7 @@ static bool decrypt_frame(const struct fs_session *s,
                     ((uint32_t)plain[6] << 16) |
                     ((uint32_t)plain[7] << 24);
 
-    if (plen > FS_MAX_PAYLOAD) return false;
+    if (plen > FS_MAX_PAYLOAD) LOG_FAIL("file_svc", "decrypt_frame: payload len %u exceeds max", plen);
     *payload_len_out = plen;
     if (plen > 0)
         memcpy(payload_buf, plain + FS_HEADER_SIZE, plen);
@@ -214,7 +215,7 @@ bool fs_send_frame(struct fs_session *s, uint8_t type,
     uint8_t frame[FS_FRAME_SIZE];
     if (!encrypt_frame(s, type, payload, payload_len,
                         frame, s->send_counter))
-        return false;
+        LOG_FAIL("file_svc", "fs_send_frame: encrypt failed type=%u len=%u", type, payload_len);
     s->send_counter++;
     s->bytes_sent += FS_FRAME_SIZE;
     return send_all(s->fd, frame, FS_FRAME_SIZE);
@@ -224,14 +225,14 @@ bool fs_recv_frame(struct fs_session *s, uint8_t *type_out,
                     const uint8_t **payload_out, uint32_t *payload_len_out)
 {
     uint8_t frame[FS_FRAME_SIZE];
-    if (!s) return false;
+    if (!s) LOG_FAIL("file_svc", "fs_recv_frame: null session");
     if (!recv_all(s->fd, frame, FS_FRAME_SIZE))
-        return false;
+        LOG_FAIL("file_svc", "fs_recv_frame: recv_all failed fd=%d", s->fd);
     s->bytes_received += FS_FRAME_SIZE;
 
     if (!decrypt_frame(s, frame, type_out, s->recv_payload,
                         payload_len_out, s->recv_counter))
-        return false;
+        LOG_FAIL("file_svc", "fs_recv_frame: decrypt failed fd=%d counter=%llu", s->fd, (unsigned long long)s->recv_counter);
     s->recv_counter++;
     *payload_out = s->recv_payload;
     return true;
@@ -247,14 +248,14 @@ bool fs_handshake(struct fs_session *s, const uint8_t utxo_root[32],
 
     if (is_initiator) {
         /* Send our nonce in cleartext (pre-key) */
-        if (!send_all(s->fd, s->our_nonce, 32)) return false;
+        if (!send_all(s->fd, s->our_nonce, 32)) LOG_FAIL("file_svc", "handshake: send nonce failed fd=%d", s->fd);
         /* Receive peer nonce */
-        if (!recv_all(s->fd, s->peer_nonce, 32)) return false;
+        if (!recv_all(s->fd, s->peer_nonce, 32)) LOG_FAIL("file_svc", "handshake: recv peer nonce failed fd=%d", s->fd);
     } else {
         /* Receive peer nonce first */
-        if (!recv_all(s->fd, s->peer_nonce, 32)) return false;
+        if (!recv_all(s->fd, s->peer_nonce, 32)) LOG_FAIL("file_svc", "handshake: recv peer nonce failed fd=%d", s->fd);
         /* Send our nonce */
-        if (!send_all(s->fd, s->our_nonce, 32)) return false;
+        if (!send_all(s->fd, s->our_nonce, 32)) LOG_FAIL("file_svc", "handshake: send nonce failed fd=%d", s->fd);
     }
 
     /* Derive shared key from UTXO root + both nonces */
@@ -269,9 +270,9 @@ bool fs_handshake(struct fs_session *s, const uint8_t utxo_root[32],
     sha3_256_write(&vctx, (const unsigned char *)"verify", 6);
     sha3_256_finalize(&vctx, verify);
 
-    if (!send_all(s->fd, verify, 32)) return false;
+    if (!send_all(s->fd, verify, 32)) LOG_FAIL("file_svc", "handshake: send verify failed fd=%d", s->fd);
     uint8_t peer_verify[32];
-    if (!recv_all(s->fd, peer_verify, 32)) return false;
+    if (!recv_all(s->fd, peer_verify, 32)) LOG_FAIL("file_svc", "handshake: recv verify failed fd=%d", s->fd);
 
     if (memcmp(verify, peer_verify, 32) != 0) {
         fprintf(stderr, "fs_handshake: key verification FAILED "
@@ -304,10 +305,10 @@ bool fs_send_chunk_fast(struct fs_session *s, const uint8_t *data,
     hdr[1] = (uint8_t)(size >> 8);
     hdr[2] = (uint8_t)(size >> 16);
     hdr[3] = (uint8_t)(size >> 24);
-    if (!send_all(s->fd, hdr, 4)) return false;
+    if (!send_all(s->fd, hdr, 4)) LOG_FAIL("file_svc", "send_chunk_fast: header send failed fd=%d", s->fd);
 
     /* Send raw data — zero copy overhead */
-    if (!send_all(s->fd, data, size)) return false;
+    if (!send_all(s->fd, data, size)) LOG_FAIL("file_svc", "send_chunk_fast: data send failed fd=%d size=%u", s->fd, size);
 
     /* SHA3 MAC: authenticates data + binds to session + prevents replay */
     uint8_t mac[32];
@@ -319,7 +320,7 @@ bool fs_send_chunk_fast(struct fs_session *s, const uint8_t *data,
     sha3_256_write(&mctx, data, size);
     sha3_256_finalize(&mctx, mac);
 
-    if (!send_all(s->fd, mac, 32)) return false;
+    if (!send_all(s->fd, mac, 32)) LOG_FAIL("file_svc", "send_chunk_fast: MAC send failed fd=%d", s->fd);
 
     s->bytes_sent += 4 + size + 32;
     s->send_counter++;
@@ -332,19 +333,19 @@ static bool fs_recv_chunk_fast(struct fs_session *s, uint8_t **out,
 {
     /* Read size */
     uint8_t hdr[4];
-    if (!recv_all(s->fd, hdr, 4)) return false;
+    if (!recv_all(s->fd, hdr, 4)) LOG_FAIL("file_svc", "recv_chunk_fast: header recv failed fd=%d", s->fd);
     uint32_t size = (uint32_t)hdr[0] | ((uint32_t)hdr[1] << 8) |
                     ((uint32_t)hdr[2] << 16) | ((uint32_t)hdr[3] << 24);
-    if (size == 0 || size > 60 * 1024 * 1024) return false;
+    if (size == 0 || size > 60 * 1024 * 1024) LOG_FAIL("file_svc", "recv_chunk_fast: invalid size %u", size);
 
     /* Read data */
     uint8_t *buf = malloc(size);
-    if (!buf) return false;
-    if (!recv_all(s->fd, buf, size)) { free(buf); return false; }
+    if (!buf) LOG_FAIL("file_svc", "recv_chunk_fast: malloc(%u) failed", size);
+    if (!recv_all(s->fd, buf, size)) { free(buf); LOG_FAIL("file_svc", "recv_chunk_fast: data recv failed fd=%d size=%u", s->fd, size); }
 
     /* Read and verify SHA3 MAC */
     uint8_t mac_wire[32];
-    if (!recv_all(s->fd, mac_wire, 32)) { free(buf); return false; }
+    if (!recv_all(s->fd, mac_wire, 32)) { free(buf); LOG_FAIL("file_svc", "recv_chunk_fast: MAC recv failed fd=%d", s->fd); }
 
     uint8_t mac_expected[32];
     struct sha3_256_ctx mctx;
@@ -454,7 +455,7 @@ bool fs_server_refresh_manifest(void)
     bool ok;
 
     if (!g_fs_datadir)
-        return false;
+        LOG_FAIL("file_svc", "refresh_manifest: no datadir configured");
 
     ok = fs_server_rebuild_manifest_locked(&next);
     pthread_mutex_lock(&g_manifest_mutex);
@@ -925,7 +926,7 @@ bool fs_client_sync(const char *peer_addr, uint16_t port,
     }
 
     int fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
-    if (fd < 0) { freeaddrinfo(res); return false; }
+    if (fd < 0) { freeaddrinfo(res); LOG_FAIL("file_svc", "client_sync: socket() failed for %s:%d", peer_addr, port); }
 
     /* Non-blocking connect with 10s timeout — don't block boot on
      * unreachable file service peers. */
@@ -972,7 +973,7 @@ bool fs_client_sync(const char *peer_addr, uint16_t port,
 
     if (!fs_handshake(&session, utxo_root, true)) {
         close(fd);
-        return false;
+        LOG_FAIL("file_svc", "client_sync: handshake failed with %s:%d", peer_addr, port);
     }
 
     printf("file_service: connected, requesting manifest...\n");

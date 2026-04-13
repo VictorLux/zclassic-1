@@ -10,6 +10,7 @@
 
 #include <string.h>
 #include <stdio.h>
+#include "util/log_macros.h"
 
 const char *peer_transport_name(enum peer_transport t)
 {
@@ -28,7 +29,7 @@ bool peer_strategy_discover_self(struct node_profile *profile,
                                  uint16_t listen_port)
 {
     if (!profile)
-        return false;
+        LOG_FAIL("peer_strategy", "discover_self: profile is NULL");
 
     memset(profile, 0, sizeof(*profile));
     profile->public_port = listen_port;

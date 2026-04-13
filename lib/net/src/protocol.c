@@ -9,6 +9,7 @@
 #include "util/util.h"
 #include <string.h>
 #include <stdio.h>
+#include "util/log_macros.h"
 
 static const char *ppszTypeName[] = {
     "ERROR",
@@ -100,7 +101,7 @@ int inv_item_init_by_name(struct inv_item *inv, const char *type_name,
             return 0;
         }
     }
-    return -1;
+    LOG_ERR("protocol", "unknown inv type name: %s", type_name);
 }
 
 bool inv_item_is_known_type(const struct inv_item *inv)

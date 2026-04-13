@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <time.h>
 #include <pthread.h>
+#include "util/log_macros.h"
 
 /* ── Serialization ──────────────────────────────────────────────── */
 
@@ -150,7 +151,8 @@ int zmsg_store_count(void)
 
 bool db_zmsg_save(struct node_db *ndb, const struct zmsg_message *msg)
 {
-    if (!ndb || !ndb->open) return false;
+    if (!ndb || !ndb->open)
+        LOG_FAIL("zmsg", "db_zmsg_save: database not open");
 
     const char *sql =
         "INSERT OR IGNORE INTO zmsg_messages"
@@ -160,7 +162,8 @@ bool db_zmsg_save(struct node_db *ndb, const struct zmsg_message *msg)
 
     sqlite3_stmt *s = NULL;
     int rc = sqlite3_prepare_v2(ndb->db, sql, -1, &s, NULL);
-    if (rc != SQLITE_OK) return false;
+    if (rc != SQLITE_OK)
+        LOG_FAIL("zmsg", "db_zmsg_save: prepare failed: %s", sqlite3_errmsg(ndb->db));
 
     sqlite3_bind_blob(s, 1, msg->msg_id, 32, SQLITE_STATIC);
     sqlite3_bind_int(s, 2, msg->direction);
@@ -239,12 +242,14 @@ int db_zmsg_list(struct node_db *ndb, struct zmsg_message *out,
 
 bool db_zmsg_mark_read(struct node_db *ndb, const uint8_t msg_id[32])
 {
-    if (!ndb || !ndb->open) return false;
+    if (!ndb || !ndb->open)
+        LOG_FAIL("zmsg", "db_zmsg_mark_read: database not open");
 
     const char *sql = "UPDATE zmsg_messages SET read=1 WHERE msg_id=?";
     sqlite3_stmt *s = NULL;
     int rc = sqlite3_prepare_v2(ndb->db, sql, -1, &s, NULL);
-    if (rc != SQLITE_OK) return false;
+    if (rc != SQLITE_OK)
+        LOG_FAIL("zmsg", "db_zmsg_mark_read: prepare failed: %s", sqlite3_errmsg(ndb->db));
 
     sqlite3_bind_blob(s, 1, msg_id, 32, SQLITE_STATIC);
     bool ok = sqlite3_step(s) == SQLITE_DONE;
