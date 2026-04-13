@@ -1,60 +1,68 @@
-# Agent 2 Task: Wave 13 — Thread Safety & Crash Fixes
+# Agent 2 Task: Wave 13 — Fix the Sync Stall (URGENT)
 
-## Previous work (DONE)
-Wave 12: Header sync stall detection — per-peer tracking, stall recovery, inbound fallback. All merged.
+## CRITICAL: Node stuck at height 2,015,124
 
-## Problem
+The node is stuck in `headers_download` at height 2,015,124 while peers report height 3,077,062. It has 17 peers, the stall detection code from wave 12 is deployed, and yet the node STILL won't advance. This means headers are being received but rejected.
 
-Two disabled features crash under concurrent access (CHECKLIST.md items):
-1. **SIGSEGV in bg_hash_verify fread** — crashes at h=20000 when P2P is running. `g_cached_file` mutex doesn't cover all fread paths.
-2. **Multi-threaded bg_validation** — crashes with >1 worker (same file I/O thread safety issue).
+## Diagnosis needed
 
-The root cause is that `disk_block_io.c` uses a shared file handle cache (`g_cached_file`) that isn't protected across all access paths. Multiple threads (bg_validation, P2P block processing, catchup) call `read_block_from_disk()` concurrently.
+The stall detection disconnects peers, but the problem isn't the peers — it's that `accept_block_header()` is rejecting valid headers. The node has been stuck for 30+ minutes across restarts.
 
 ## Files to read first
 
 - `CLAUDE.md` and `DEFENSIVE_CODING.md` — mandatory coding rules
-- `CHECKLIST.md` — items 2.10, remaining items at bottom
-- `lib/storage/src/disk_block_io.c` — file handle cache, the crash site
-- `app/services/src/bg_validation_service.c` — background validation workers
-- `app/services/src/bg_hash_verification_service.c` — hash verify (DISABLED due to crash)
-- `lib/net/src/msgprocessor.c` — P2P block reads in `process_block_msg()`
+- `lib/validation/src/process_block.c` — `accept_block_header()` function
+- `lib/net/src/msgprocessor.c` lines 1764-1841 — `process_headers()`, especially the reject logging
+- `lib/chain/src/pow.c` — difficulty checking
+- `CHECKLIST.md` — validation item 4.2 (difficulty), 4.31 (checkpoints)
+- `lib/chain/src/checkpoints.c` — checkpoint enforcement
 
 ## Tasks
 
-### 1. Migrate disk_block_io.c to pread()
+### 1. Diagnose why headers are rejected
 
-Replace all `fopen/fseek/fread/fclose` in `disk_block_io.c` with `open/pread/close`. `pread()` is thread-safe — multiple threads can read the same file descriptor at different offsets without races.
+Add diagnostic logging to `accept_block_header()` in `process_block.c`:
+- Log the FIRST rejected header each batch: hash, height, prev hash, and the exact reject reason
+- Log the state of the block index: does `hashPrevBlock` exist in our index? What height does it have?
+- This is the critical question: are we rejecting because the prev block isn't in our index (orphan headers), or because validation fails (bad PoW, bad timestamp, checkpoint mismatch)?
 
-- Replace the file handle cache (`g_cached_file`, `g_cached_file_num`) with a simple `open()` per read or a thread-local fd cache
-- Remove the disk I/O mutex (`g_disk_io_mutex`) if pread makes it unnecessary
-- Ensure all callers still work: `read_block_from_disk()`, `read_raw_block()`, `read_undo_data()`
+### 2. Check for block index corruption
 
-### 2. Re-enable bg_hash_verification_service
+The node was synced to 2,015,124 via snapshot. The block index was loaded from `block_index.bin`. Headers from peers start at the peer's view of our chain (from our locator). If our locator sends stale/wrong hashes, peers send headers we already have, and they get rejected as duplicates.
 
-In `config/src/boot_services.c`, the bg_hash_verify service is disabled. After fixing the thread safety:
-- Re-enable it
-- Run with P2P active to verify no crash at h=20000+
-- If it still crashes, add ASAN build and investigate
+Check `syncsvc_build_getheaders_locator()` in `header_sync_service.c`:
+- Is the locator built correctly from our chain tip?
+- Does it include heights up to 2,015,124?
+- Could the locator be sending hashes from a fork?
 
-### 3. Enable multi-threaded bg_validation
+### 3. Check the getheaders→headers round-trip
 
-In `bg_validation_service.c`, change the worker count from 1 to `nproc/2` (capped at 4). Test under load.
+Add a counter: how many `getheaders` messages sent vs `headers` responses received? If we're sending but getting no responses, peers don't understand our locator. If we're getting responses but all are rejected, the rejection reason tells us what to fix.
 
-### 4. Migrate bare malloc in disk_block_io.c
+Add to `msg_send_messages()` at the periodic getheaders section:
+```c
+static uint64_t getheaders_sent = 0, headers_responses = 0;
+// Log every 60s: "getheaders stats: sent=%llu responses=%llu"
+```
 
-`disk_block_io.c` has bare `malloc` calls. Replace with `zcl_malloc()` per DEFENSIVE_CODING.md.
+### 4. Fix whatever the diagnosis reveals
 
-### 5. Tests
+Based on the diagnostic logging, fix the root cause. Common possibilities:
+- Locator hashes don't match any block the peer knows → fix locator construction
+- Headers rejected as duplicate (already in index) → skip duplicates silently, request next batch
+- Headers rejected due to checkpoint mismatch → check checkpoint heights
+- Headers rejected due to missing prev → we have a gap in our index
 
-- Add thread safety test: spawn 4 threads reading different blocks concurrently, verify no crash
-- Add test for pread correctness: read known block, verify hash matches
-- Put tests in `lib/test/src/test_disk_block_io.c`
-- Register in `lib/test/src/test.c`
+### 5. Thread safety (secondary, after sync is fixed)
+
+Migrate `disk_block_io.c` from `fseek/fread` to `pread()` for thread safety:
+- Replace `g_cached_file` file handle cache with `open/pread/close`
+- This fixes the SIGSEGV in bg_hash_verify (CHECKLIST item)
+- Add test in `lib/test/src/test_disk_block_io.c`
 
 ## Rules
 
 - Follow `DEFENSIVE_CODING.md`: use `LOG_FAIL()`, `zcl_malloc()`, `log_macros.h`
-- Run `make test` before committing — zero new failures
+- Run `make test` before committing
+- Deploy with `make deploy` after fixing the sync stall so we can verify on the live node
 - Commit with descriptive messages
-- Do NOT touch files unrelated to this task
