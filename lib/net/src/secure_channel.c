@@ -30,7 +30,7 @@ bool secure_channel_init(struct secure_channel *ch)
     /* Compute public key: pubkey = privkey * basepoint */
     if (!curve25519_scalarmult_base(ch->local_pubkey, privkey)) {
         memory_cleanse(privkey, 32);
-        LOG_FAIL("secure_chan", "curve25519 base scalarmult failed");
+        LOG_FAIL("net", "secure_channel_init: curve25519 base scalarmult failed");
     }
 
     /* Store private key temporarily in mac_key (will be overwritten
@@ -58,7 +58,7 @@ bool secure_channel_establish(struct secure_channel *ch,
     if (!curve25519_scalarmult(shared_secret, privkey, remote_pubkey)) {
         memory_cleanse(privkey, 32);
         memory_cleanse(shared_secret, 32);
-        LOG_FAIL("secure_chan", "curve25519 DH scalarmult failed");
+        LOG_FAIL("net", "secure_channel_establish: DH scalarmult failed");
     }
     memory_cleanse(privkey, 32);
 
@@ -108,8 +108,7 @@ bool secure_channel_encrypt(struct secure_channel *ch,
                             const uint8_t *plaintext, size_t len,
                             uint8_t *out, size_t *out_len)
 {
-    if (!ch->established)
-        LOG_FAIL("secure_chan", "encrypt: channel not established");
+    if (!ch->established) LOG_FAIL("net", "secure_channel_encrypt: channel not established");
 
     /* Layout: [64-byte HMAC][16-byte poly1305 tag + ciphertext] */
     uint8_t *aead_out = out + 64; /* space for HMAC prefix */
@@ -122,7 +121,7 @@ bool secure_channel_encrypt(struct secure_channel *ch,
                                   NULL, 0, /* no AAD */
                                   nonce, ch->enc_key,
                                   aead_out)) {
-        LOG_FAIL("secure_chan", "chacha20poly1305 encrypt failed (len=%zu)", len);
+        LOG_FAIL("net", "secure_channel_encrypt: chacha20poly1305 encrypt failed (len=%zu)", len);
     }
     size_t aead_len = len + 16; /* ciphertext + tag */
 
@@ -135,8 +134,7 @@ bool secure_channel_encrypt(struct secure_channel *ch,
     uint8_t hmac[64];
     uint8_t hmac_data[12 + 65536];
     size_t hmac_data_len = 12 + aead_len;
-    if (hmac_data_len > sizeof(hmac_data))
-        LOG_FAIL("secure_chan", "encrypt: HMAC data overflow (%zu > %zu)", hmac_data_len, sizeof(hmac_data));
+    if (hmac_data_len > sizeof(hmac_data)) LOG_FAIL("net", "secure_channel_encrypt: HMAC data exceeds buffer (%zu > %zu)", hmac_data_len, sizeof(hmac_data));
     memcpy(hmac_data, nonce, 12);
     memcpy(hmac_data + 12, aead_out, aead_len);
     hmac_sha3_512(ch->mac_key, 64, hmac_data, hmac_data_len, hmac);
@@ -152,10 +150,8 @@ bool secure_channel_decrypt(struct secure_channel *ch,
                             const uint8_t *data, size_t len,
                             uint8_t *out, size_t *out_len)
 {
-    if (!ch->established)
-        LOG_FAIL("secure_chan", "decrypt: channel not established");
-    if (len < SECURE_OVERHEAD)
-        LOG_FAIL("secure_chan", "decrypt: data too short (%zu < %d)", len, SECURE_OVERHEAD);
+    if (!ch->established) LOG_FAIL("net", "secure_channel_decrypt: channel not established");
+    if (len < SECURE_OVERHEAD) LOG_FAIL("net", "secure_channel_decrypt: data too short (%zu < %d)", len, SECURE_OVERHEAD);
 
     const uint8_t *received_hmac = data;
     const uint8_t *aead_data = data + 64;
@@ -168,8 +164,7 @@ bool secure_channel_decrypt(struct secure_channel *ch,
     uint8_t expected_hmac[64];
     uint8_t hmac_data[12 + 65536];
     size_t hmac_data_len = 12 + aead_len;
-    if (hmac_data_len > sizeof(hmac_data))
-        LOG_FAIL("secure_chan", "decrypt: HMAC data overflow (%zu > %zu)", hmac_data_len, sizeof(hmac_data));
+    if (hmac_data_len > sizeof(hmac_data)) LOG_FAIL("net", "secure_channel_decrypt: HMAC data exceeds buffer (%zu > %zu)", hmac_data_len, sizeof(hmac_data));
     memcpy(hmac_data, nonce, 12);
     memcpy(hmac_data + 12, aead_data, aead_len);
     hmac_sha3_512(ch->mac_key, 64, hmac_data, hmac_data_len, expected_hmac);
@@ -178,15 +173,14 @@ bool secure_channel_decrypt(struct secure_channel *ch,
     uint8_t diff = 0;
     for (int i = 0; i < 64; i++)
         diff |= received_hmac[i] ^ expected_hmac[i];
-    if (diff != 0)
-        LOG_FAIL("secure_chan", "decrypt: HMAC verification failed (counter=%llu)", (unsigned long long)ch->recv_counter);
+    if (diff != 0) LOG_FAIL("net", "secure_channel_decrypt: HMAC verification failed");
 
     /* HMAC verified — now decrypt AEAD */
     if (!chacha20poly1305_decrypt(aead_data, aead_len,
                                   NULL, 0,
                                   nonce, ch->enc_key,
                                   out)) {
-        LOG_FAIL("secure_chan", "chacha20poly1305 decrypt failed (len=%zu)", aead_len);
+        LOG_FAIL("net", "secure_channel_decrypt: AEAD decryption failed (len=%zu)", aead_len);
     }
 
     ch->recv_counter++;

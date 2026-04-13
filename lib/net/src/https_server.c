@@ -26,6 +26,7 @@
 #include <sys/time.h>
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
+#include "util/log_macros.h"
 
 static SSL_CTX *g_ssl_ctx = NULL;
 static int g_https_fd = -1;
@@ -404,7 +405,7 @@ static void *https_worker_fn(void *arg)
 static int bind_port(uint16_t port, bool any_addr)
 {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) { perror("socket"); return -1; }
+    if (fd < 0) LOG_ERR("https", "socket() failed: %s", strerror(errno));
 
     int opt = 1;
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
@@ -416,14 +417,12 @@ static int bind_port(uint16_t port, bool any_addr)
     addr.sin_port = htons(port);
 
     if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        fprintf(stderr, "HTTPS: bind port %u: %s\n", port, strerror(errno));
         close(fd);
-        return -1;
+        LOG_ERR("https", "bind port %u failed: %s", port, strerror(errno));
     }
     if (listen(fd, 32) < 0) {
-        perror("listen");
         close(fd);
-        return -1;
+        LOG_ERR("https", "listen on port %u failed: %s", port, strerror(errno));
     }
     return fd;
 }
@@ -454,47 +453,42 @@ bool https_server_start_on_port(const char *cert_path, const char *key_path,
     const SSL_METHOD *method = TLS_server_method();
     g_ssl_ctx = SSL_CTX_new(method);
     if (!g_ssl_ctx) {
-        fprintf(stderr, "HTTPS: SSL_CTX_new failed\n");
         ERR_print_errors_fp(stderr);
         pthread_mutex_unlock(&g_https_state_mutex);
-        return false;
+        LOG_FAIL("https", "SSL_CTX_new failed");
     }
 
     /* Set minimum TLS 1.2 */
     SSL_CTX_set_min_proto_version(g_ssl_ctx, TLS1_2_VERSION);
 
     if (SSL_CTX_use_certificate_chain_file(g_ssl_ctx, cert_path) <= 0) {
-        fprintf(stderr, "HTTPS: failed to load cert: %s\n", cert_path);
         ERR_print_errors_fp(stderr);
         SSL_CTX_free(g_ssl_ctx);
         g_ssl_ctx = NULL;
         pthread_mutex_unlock(&g_https_state_mutex);
-        return false;
+        LOG_FAIL("https", "failed to load cert: %s", cert_path);
     }
     if (SSL_CTX_use_PrivateKey_file(g_ssl_ctx, key_path, SSL_FILETYPE_PEM) <= 0) {
-        fprintf(stderr, "HTTPS: failed to load key: %s\n", key_path);
         ERR_print_errors_fp(stderr);
         SSL_CTX_free(g_ssl_ctx);
         g_ssl_ctx = NULL;
         pthread_mutex_unlock(&g_https_state_mutex);
-        return false;
+        LOG_FAIL("https", "failed to load private key: %s", key_path);
     }
     if (!SSL_CTX_check_private_key(g_ssl_ctx)) {
-        fprintf(stderr, "HTTPS: cert/key mismatch\n");
         SSL_CTX_free(g_ssl_ctx);
         g_ssl_ctx = NULL;
         pthread_mutex_unlock(&g_https_state_mutex);
-        return false;
+        LOG_FAIL("https", "cert/key mismatch: cert=%s key=%s", cert_path, key_path);
     }
 
     /* Bind HTTPS port (iptables redirects 443→default 8443) */
     g_https_fd = bind_port(https_port, true);
     if (g_https_fd < 0) {
-        fprintf(stderr, "HTTPS: cannot bind port %d\n", https_port);
         SSL_CTX_free(g_ssl_ctx);
         g_ssl_ctx = NULL;
         pthread_mutex_unlock(&g_https_state_mutex);
-        return false;
+        LOG_FAIL("https", "cannot bind HTTPS port %d", https_port);
     }
 
     /* Bind HTTP port for redirect */
@@ -533,11 +527,10 @@ bool https_server_start_on_port(const char *cert_path, const char *key_path,
             g_ssl_ctx = NULL;
         }
         pthread_mutex_unlock(&g_https_state_mutex);
-        return false;
+        LOG_FAIL("https", "no worker threads could be started");
     }
 
     if (pthread_create(&g_https_thread, NULL, https_listen_fn, NULL) != 0) {
-        perror("HTTPS: pthread_create");
         close(g_https_fd);
         g_https_fd = -1;
         atomic_store(&g_running, false);
@@ -550,7 +543,7 @@ bool https_server_start_on_port(const char *cert_path, const char *key_path,
             SSL_CTX_free(g_ssl_ctx);
             g_ssl_ctx = NULL;
         }
-        return false;
+        LOG_FAIL("https", "pthread_create failed for HTTPS listen thread");
     }
     g_https_thread_started = true;
 

@@ -12,6 +12,7 @@
 #include <string.h>
 #include <math.h>
 #include "util/safe_alloc.h"
+#include "util/log_macros.h"
 
 int addr_info_get_tried_bucket(const struct addr_info *info,
                                const struct uint256 *nKey)
@@ -214,7 +215,7 @@ static struct addr_info *find_addr(struct addr_man *am,
             return &am->entries[i];
         }
     }
-    return NULL;
+    LOG_NULL("addrman", "address not found in table");
 }
 
 static struct addr_info *create_entry(struct addr_man *am,
@@ -226,10 +227,10 @@ static struct addr_info *create_entry(struct addr_man *am,
     if ((size_t)id >= am->entries_cap) {
         size_t new_cap = am->entries_cap * 2;
         if (new_cap > ADDRMAN_MAX_ENTRIES) new_cap = ADDRMAN_MAX_ENTRIES;
-        if ((size_t)id >= new_cap) return NULL;
+        if ((size_t)id >= new_cap) LOG_NULL("addrman", "entry id=%d exceeds max capacity=%zu", id, new_cap);
         struct addr_info *p = zcl_realloc(am->entries,
                                        new_cap * sizeof(struct addr_info), "addr_entries");
-        if (!p) return NULL;
+        if (!p) LOG_NULL("addrman", "realloc failed for entries new_cap=%zu", new_cap);
         memset(p + am->entries_cap, 0,
                (new_cap - am->entries_cap) * sizeof(struct addr_info));
         am->entries = p;
@@ -324,7 +325,7 @@ bool addrman_add(struct addr_man *am, const struct net_address *addr,
                  const struct net_addr *source, int64_t time_penalty)
 {
     if (!net_addr_is_routable(&addr->svc.addr))
-        return false;
+        LOG_FAIL("addrman", "address not routable");
 
     zcl_mutex_lock(&am->cs);
 
@@ -348,15 +349,15 @@ bool addrman_add(struct addr_man *am, const struct net_address *addr,
 
         if (!addr->nTime || (pinfo->addr.nTime && addr->nTime <= pinfo->addr.nTime)) {
             zcl_mutex_unlock(&am->cs);
-            return false;
+            LOG_FAIL("addrman", "add skipped: stale timestamp for existing entry");
         }
         if (pinfo->in_tried) {
             zcl_mutex_unlock(&am->cs);
-            return false;
+            LOG_FAIL("addrman", "add skipped: address already in tried table");
         }
         if (pinfo->ref_count == ADDRMAN_NEW_BUCKETS_PER_ADDRESS) {
             zcl_mutex_unlock(&am->cs);
-            return false;
+            LOG_FAIL("addrman", "add skipped: ref_count at max=%d", ADDRMAN_NEW_BUCKETS_PER_ADDRESS);
         }
 
         int nFactor = 1;
@@ -364,13 +365,13 @@ bool addrman_add(struct addr_man *am, const struct net_address *addr,
             nFactor *= 2;
         if (nFactor > 1 && (GetRandInt(nFactor) != 0)) {
             zcl_mutex_unlock(&am->cs);
-            return false;
+            LOG_FAIL("addrman", "add skipped: random rejection factor=%d", nFactor);
         }
     } else {
         pinfo = create_entry(am, addr, source, &nId);
         if (!pinfo) {
             zcl_mutex_unlock(&am->cs);
-            return false;
+            LOG_FAIL("addrman", "create_entry failed for new address");
         }
         int64_t t = (int64_t)pinfo->addr.nTime - time_penalty;
         pinfo->addr.nTime = (uint32_t)(t > 0 ? t : 0);
@@ -471,11 +472,11 @@ bool addrman_select(struct addr_man *am, bool new_only,
 
     if (am->random_size == 0) {
         zcl_mutex_unlock(&am->cs);
-        return false;
+        LOG_FAIL("addrman", "select failed: address table is empty");
     }
     if (new_only && am->new_count == 0) {
         zcl_mutex_unlock(&am->cs);
-        return false;
+        LOG_FAIL("addrman", "select failed: no new addresses available");
     }
 
     int64_t nNow = GetAdjustedTime();
@@ -493,7 +494,7 @@ bool addrman_select(struct addr_man *am, bool new_only,
                               ADDRMAN_BUCKET_SIZE;
                 if (++i >= 200000) {
                     zcl_mutex_unlock(&am->cs);
-                    return false;
+                    LOG_FAIL("addrman", "select exhausted tried bucket search after 200k iterations");
                 }
             }
             int nId = am->vvTried[nKBucket][nKBucketPos];
@@ -523,7 +524,7 @@ bool addrman_select(struct addr_man *am, bool new_only,
                               ADDRMAN_BUCKET_SIZE;
                 if (++i >= 200000) {
                     zcl_mutex_unlock(&am->cs);
-                    return false;
+                    LOG_FAIL("addrman", "select exhausted new bucket search after 200k iterations");
                 }
             }
             int nId = am->vvNew[nUBucket][nUBucketPos];
@@ -564,7 +565,7 @@ bool addrman_select(struct addr_man *am, bool new_only,
     }
 
     zcl_mutex_unlock(&am->cs);
-    return false;
+    LOG_FAIL("addrman", "select failed: no eligible address found after full scan");
 }
 
 void addrman_connected(struct addr_man *am, const struct net_service *addr,
@@ -609,41 +610,41 @@ size_t addrman_get_addr(struct addr_man *am, struct net_address *out,
 
 bool addrman_serialize(const struct addr_man *am, struct byte_stream *s)
 {
-    if (!stream_write_u8(s, 1)) return false;
-    if (!stream_write_u8(s, 32)) return false;
-    if (!stream_write_bytes(s, am->nKey.data, 32)) return false;
-    if (!stream_write_i32_le(s, am->new_count)) return false;
-    if (!stream_write_i32_le(s, am->tried_count)) return false;
+    if (!stream_write_u8(s, 1)) LOG_FAIL("addrman", "serialize: failed to write version");
+    if (!stream_write_u8(s, 32)) LOG_FAIL("addrman", "serialize: failed to write key size");
+    if (!stream_write_bytes(s, am->nKey.data, 32)) LOG_FAIL("addrman", "serialize: failed to write nKey");
+    if (!stream_write_i32_le(s, am->new_count)) LOG_FAIL("addrman", "serialize: failed to write new_count");
+    if (!stream_write_i32_le(s, am->tried_count)) LOG_FAIL("addrman", "serialize: failed to write tried_count");
 
     int nUBuckets = ADDRMAN_NEW_BUCKET_COUNT ^ (1 << 30);
-    if (!stream_write_i32_le(s, nUBuckets)) return false;
+    if (!stream_write_i32_le(s, nUBuckets)) LOG_FAIL("addrman", "serialize: failed to write bucket count");
 
     int *mapUnkIds = zcl_calloc((size_t)am->id_count > 0 ? (size_t)am->id_count : 1, sizeof(int), "addr_unk_ids");
-    if (!mapUnkIds) return false;
+    if (!mapUnkIds) LOG_FAIL("addrman", "serialize: alloc failed for mapUnkIds");
 
     int nIds = 0;
     for (int i = 0; i < am->id_count; i++) {
         if (am->entries[i].used && am->entries[i].ref_count > 0) {
             mapUnkIds[i] = nIds;
-            if (!stream_write_bytes(s, am->entries[i].addr.svc.addr.ip, 16)) { free(mapUnkIds); return false; }
-            if (!stream_write_u16_le(s, am->entries[i].addr.svc.port)) { free(mapUnkIds); return false; }
-            if (!stream_write_u64_le(s, am->entries[i].addr.nServices)) { free(mapUnkIds); return false; }
-            if (!stream_write_u32_le(s, am->entries[i].addr.nTime)) { free(mapUnkIds); return false; }
-            if (!stream_write_bytes(s, am->entries[i].source.ip, 16)) { free(mapUnkIds); return false; }
-            if (!stream_write_i64_le(s, am->entries[i].last_success)) { free(mapUnkIds); return false; }
-            if (!stream_write_i32_le(s, am->entries[i].attempts)) { free(mapUnkIds); return false; }
+            if (!stream_write_bytes(s, am->entries[i].addr.svc.addr.ip, 16)) { free(mapUnkIds); LOG_FAIL("addrman", "serialize: failed to write new entry ip i=%d", i); }
+            if (!stream_write_u16_le(s, am->entries[i].addr.svc.port)) { free(mapUnkIds); LOG_FAIL("addrman", "serialize: failed to write new entry port i=%d", i); }
+            if (!stream_write_u64_le(s, am->entries[i].addr.nServices)) { free(mapUnkIds); LOG_FAIL("addrman", "serialize: failed to write new entry services i=%d", i); }
+            if (!stream_write_u32_le(s, am->entries[i].addr.nTime)) { free(mapUnkIds); LOG_FAIL("addrman", "serialize: failed to write new entry time i=%d", i); }
+            if (!stream_write_bytes(s, am->entries[i].source.ip, 16)) { free(mapUnkIds); LOG_FAIL("addrman", "serialize: failed to write new entry source i=%d", i); }
+            if (!stream_write_i64_le(s, am->entries[i].last_success)) { free(mapUnkIds); LOG_FAIL("addrman", "serialize: failed to write new entry last_success i=%d", i); }
+            if (!stream_write_i32_le(s, am->entries[i].attempts)) { free(mapUnkIds); LOG_FAIL("addrman", "serialize: failed to write new entry attempts i=%d", i); }
             nIds++;
         }
     }
     for (int i = 0; i < am->id_count; i++) {
         if (am->entries[i].used && am->entries[i].in_tried) {
-            if (!stream_write_bytes(s, am->entries[i].addr.svc.addr.ip, 16)) { free(mapUnkIds); return false; }
-            if (!stream_write_u16_le(s, am->entries[i].addr.svc.port)) { free(mapUnkIds); return false; }
-            if (!stream_write_u64_le(s, am->entries[i].addr.nServices)) { free(mapUnkIds); return false; }
-            if (!stream_write_u32_le(s, am->entries[i].addr.nTime)) { free(mapUnkIds); return false; }
-            if (!stream_write_bytes(s, am->entries[i].source.ip, 16)) { free(mapUnkIds); return false; }
-            if (!stream_write_i64_le(s, am->entries[i].last_success)) { free(mapUnkIds); return false; }
-            if (!stream_write_i32_le(s, am->entries[i].attempts)) { free(mapUnkIds); return false; }
+            if (!stream_write_bytes(s, am->entries[i].addr.svc.addr.ip, 16)) { free(mapUnkIds); LOG_FAIL("addrman", "serialize: failed to write tried entry ip i=%d", i); }
+            if (!stream_write_u16_le(s, am->entries[i].addr.svc.port)) { free(mapUnkIds); LOG_FAIL("addrman", "serialize: failed to write tried entry port i=%d", i); }
+            if (!stream_write_u64_le(s, am->entries[i].addr.nServices)) { free(mapUnkIds); LOG_FAIL("addrman", "serialize: failed to write tried entry services i=%d", i); }
+            if (!stream_write_u32_le(s, am->entries[i].addr.nTime)) { free(mapUnkIds); LOG_FAIL("addrman", "serialize: failed to write tried entry time i=%d", i); }
+            if (!stream_write_bytes(s, am->entries[i].source.ip, 16)) { free(mapUnkIds); LOG_FAIL("addrman", "serialize: failed to write tried entry source i=%d", i); }
+            if (!stream_write_i64_le(s, am->entries[i].last_success)) { free(mapUnkIds); LOG_FAIL("addrman", "serialize: failed to write tried entry last_success i=%d", i); }
+            if (!stream_write_i32_le(s, am->entries[i].attempts)) { free(mapUnkIds); LOG_FAIL("addrman", "serialize: failed to write tried entry attempts i=%d", i); }
         }
     }
 
@@ -651,11 +652,11 @@ bool addrman_serialize(const struct addr_man *am, struct byte_stream *s)
         int nSize = 0;
         for (int i = 0; i < ADDRMAN_BUCKET_SIZE; i++)
             if (am->vvNew[bucket][i] != -1) nSize++;
-        if (!stream_write_i32_le(s, nSize)) { free(mapUnkIds); return false; }
+        if (!stream_write_i32_le(s, nSize)) { free(mapUnkIds); LOG_FAIL("addrman", "serialize: failed to write bucket size bucket=%d", bucket); }
         for (int i = 0; i < ADDRMAN_BUCKET_SIZE; i++) {
             if (am->vvNew[bucket][i] != -1) {
                 int nIndex = mapUnkIds[am->vvNew[bucket][i]];
-                if (!stream_write_i32_le(s, nIndex)) { free(mapUnkIds); return false; }
+                if (!stream_write_i32_le(s, nIndex)) { free(mapUnkIds); LOG_FAIL("addrman", "serialize: failed to write bucket index bucket=%d i=%d", bucket, i); }
             }
         }
     }
@@ -669,28 +670,28 @@ bool addrman_deserialize(struct addr_man *am, struct byte_stream *s)
     addrman_clear(am);
 
     uint8_t nVersion;
-    if (!stream_read_u8(s, &nVersion)) return false;
+    if (!stream_read_u8(s, &nVersion)) LOG_FAIL("addrman", "deserialize: failed to read version");
     uint8_t nKeySize;
-    if (!stream_read_u8(s, &nKeySize)) return false;
-    if (nKeySize != 32) return false;
-    if (!stream_read_bytes(s, am->nKey.data, 32)) return false;
+    if (!stream_read_u8(s, &nKeySize)) LOG_FAIL("addrman", "deserialize: failed to read key size");
+    if (nKeySize != 32) LOG_FAIL("addrman", "deserialize: invalid key size=%u expected 32", nKeySize);
+    if (!stream_read_bytes(s, am->nKey.data, 32)) LOG_FAIL("addrman", "deserialize: failed to read nKey");
 
     int32_t nNew, nTried;
-    if (!stream_read_i32_le(s, &nNew)) return false;
-    if (!stream_read_i32_le(s, &nTried)) return false;
+    if (!stream_read_i32_le(s, &nNew)) LOG_FAIL("addrman", "deserialize: failed to read new count");
+    if (!stream_read_i32_le(s, &nTried)) LOG_FAIL("addrman", "deserialize: failed to read tried count");
 
     int32_t nUBuckets;
-    if (!stream_read_i32_le(s, &nUBuckets)) return false;
+    if (!stream_read_i32_le(s, &nUBuckets)) LOG_FAIL("addrman", "deserialize: failed to read bucket count");
     if (nVersion != 0) nUBuckets ^= (1 << 30);
 
-    if (nNew > ADDRMAN_NEW_BUCKET_COUNT * ADDRMAN_BUCKET_SIZE) return false;
-    if (nTried > ADDRMAN_TRIED_BUCKET_COUNT * ADDRMAN_BUCKET_SIZE) return false;
+    if (nNew > ADDRMAN_NEW_BUCKET_COUNT * ADDRMAN_BUCKET_SIZE) LOG_FAIL("addrman", "deserialize: nNew=%d exceeds max", nNew);
+    if (nTried > ADDRMAN_TRIED_BUCKET_COUNT * ADDRMAN_BUCKET_SIZE) LOG_FAIL("addrman", "deserialize: nTried=%d exceeds max", nTried);
 
     size_t need = (size_t)(nNew + nTried);
     if (need > am->entries_cap) {
         struct addr_info *p = zcl_realloc(am->entries,
                                        need * sizeof(struct addr_info), "addr_entries");
-        if (!p) return false;
+        if (!p) LOG_FAIL("addrman", "deserialize: realloc failed for entries need=%zu", need);
         memset(p + am->entries_cap, 0,
                (need - am->entries_cap) * sizeof(struct addr_info));
         am->entries = p;
@@ -702,14 +703,14 @@ bool addrman_deserialize(struct addr_man *am, struct byte_stream *s)
         memset(info, 0, sizeof(*info));
         info->used = true;
 
-        if (!stream_read_bytes(s, info->addr.svc.addr.ip, 16)) return false;
-        if (!stream_read_u16_le(s, &info->addr.svc.port)) return false;
-        if (!stream_read_u64_le(s, &info->addr.nServices)) return false;
-        if (!stream_read_u32_le(s, &info->addr.nTime)) return false;
-        if (!stream_read_bytes(s, info->source.ip, 16)) return false;
-        if (!stream_read_i64_le(s, &info->last_success)) return false;
+        if (!stream_read_bytes(s, info->addr.svc.addr.ip, 16)) LOG_FAIL("addrman", "deserialize: failed to read new entry ip n=%d", n);
+        if (!stream_read_u16_le(s, &info->addr.svc.port)) LOG_FAIL("addrman", "deserialize: failed to read new entry port n=%d", n);
+        if (!stream_read_u64_le(s, &info->addr.nServices)) LOG_FAIL("addrman", "deserialize: failed to read new entry services n=%d", n);
+        if (!stream_read_u32_le(s, &info->addr.nTime)) LOG_FAIL("addrman", "deserialize: failed to read new entry time n=%d", n);
+        if (!stream_read_bytes(s, info->source.ip, 16)) LOG_FAIL("addrman", "deserialize: failed to read new entry source n=%d", n);
+        if (!stream_read_i64_le(s, &info->last_success)) LOG_FAIL("addrman", "deserialize: failed to read new entry last_success n=%d", n);
         int32_t attempts;
-        if (!stream_read_i32_le(s, &attempts)) return false;
+        if (!stream_read_i32_le(s, &attempts)) LOG_FAIL("addrman", "deserialize: failed to read new entry attempts n=%d", n);
         info->attempts = attempts;
 
         info->random_pos = (int)am->random_size;
@@ -735,14 +736,14 @@ bool addrman_deserialize(struct addr_man *am, struct byte_stream *s)
         memset(&info, 0, sizeof(info));
         info.used = true;
 
-        if (!stream_read_bytes(s, info.addr.svc.addr.ip, 16)) return false;
-        if (!stream_read_u16_le(s, &info.addr.svc.port)) return false;
-        if (!stream_read_u64_le(s, &info.addr.nServices)) return false;
-        if (!stream_read_u32_le(s, &info.addr.nTime)) return false;
-        if (!stream_read_bytes(s, info.source.ip, 16)) return false;
-        if (!stream_read_i64_le(s, &info.last_success)) return false;
+        if (!stream_read_bytes(s, info.addr.svc.addr.ip, 16)) LOG_FAIL("addrman", "deserialize: failed to read tried entry ip n=%d", n);
+        if (!stream_read_u16_le(s, &info.addr.svc.port)) LOG_FAIL("addrman", "deserialize: failed to read tried entry port n=%d", n);
+        if (!stream_read_u64_le(s, &info.addr.nServices)) LOG_FAIL("addrman", "deserialize: failed to read tried entry services n=%d", n);
+        if (!stream_read_u32_le(s, &info.addr.nTime)) LOG_FAIL("addrman", "deserialize: failed to read tried entry time n=%d", n);
+        if (!stream_read_bytes(s, info.source.ip, 16)) LOG_FAIL("addrman", "deserialize: failed to read tried entry source n=%d", n);
+        if (!stream_read_i64_le(s, &info.last_success)) LOG_FAIL("addrman", "deserialize: failed to read tried entry last_success n=%d", n);
         int32_t attempts;
-        if (!stream_read_i32_le(s, &attempts)) return false;
+        if (!stream_read_i32_le(s, &attempts)) LOG_FAIL("addrman", "deserialize: failed to read tried entry attempts n=%d", n);
         info.attempts = attempts;
 
         int nKBucket = addr_info_get_tried_bucket(&info, &am->nKey);
@@ -774,10 +775,10 @@ bool addrman_deserialize(struct addr_man *am, struct byte_stream *s)
 
     for (int bucket = 0; bucket < nUBuckets; bucket++) {
         int32_t nSize;
-        if (!stream_read_i32_le(s, &nSize)) return false;
+        if (!stream_read_i32_le(s, &nSize)) LOG_FAIL("addrman", "deserialize: failed to read bucket size bucket=%d", bucket);
         for (int n = 0; n < nSize; n++) {
             int32_t nIndex;
-            if (!stream_read_i32_le(s, &nIndex)) return false;
+            if (!stream_read_i32_le(s, &nIndex)) LOG_FAIL("addrman", "deserialize: failed to read bucket index bucket=%d n=%d", bucket, n);
             if (nIndex >= 0 && nIndex < nNew && bucket < ADDRMAN_NEW_BUCKET_COUNT
                 && (size_t)nIndex < am->entries_cap) {
                 struct addr_info *info = &am->entries[nIndex];

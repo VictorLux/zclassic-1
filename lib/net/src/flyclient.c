@@ -25,7 +25,8 @@ static bool fc_check_pow(const uint8_t block_hash[32], uint32_t nBits)
     arith_uint256_set_compact(&target, nBits, &fNegative, &fOverflow);
 
     if (fNegative || arith_uint256_is_zero(&target) || fOverflow)
-        return false;
+        LOG_FAIL("flyclient", "fc_check_pow: invalid nBits=0x%08x (neg=%d, zero=%d, overflow=%d)",
+                 nBits, fNegative, arith_uint256_is_zero(&target), fOverflow);
 
     struct uint256 hash;
     memcpy(hash.data, block_hash, 32);
@@ -131,7 +132,7 @@ void fc_generate_indices(const uint8_t seed[32], uint64_t chain_length,
 bool fc_verify_sample(const struct fc_sample *sample,
                       const uint8_t mmb_root[32])
 {
-    if (!sample || !mmb_root) return false;
+    if (!sample || !mmb_root) LOG_FAIL("flyclient", "fc_verify_sample: null sample or mmb_root");
 
     /* Step 1: Reconstruct leaf hash from the rich leaf data */
     uint8_t computed_leaf_hash[32];
@@ -139,25 +140,21 @@ bool fc_verify_sample(const struct fc_sample *sample,
 
     /* Step 2: Verify the leaf hash matches what's in the proof */
     if (memcmp(computed_leaf_hash, sample->proof.leaf_hash, 32) != 0) {
-        fprintf(stderr, "FlyClient: leaf %llu hash mismatch "
-                "(h=%u, siblings=%u, peaks=%u)\n",
-                (unsigned long long)sample->proof.leaf_index,
-                sample->leaf.height,
-                sample->proof.num_siblings,
-                sample->proof.num_peaks);
-        return false;
+        LOG_FAIL("flyclient", "fc_verify_sample: leaf %llu hash mismatch (h=%u, siblings=%u, peaks=%u)",
+                 (unsigned long long)sample->proof.leaf_index,
+                 sample->leaf.height,
+                 sample->proof.num_siblings,
+                 sample->proof.num_peaks);
     }
 
     /* Step 3: Verify MMB inclusion proof against offered root */
     if (!mmb_verify(&sample->proof, mmb_root)) {
-        fprintf(stderr, "FlyClient: leaf %llu proof_invalid "
-                "(h=%u, siblings=%u, peaks=%u, mmb_size=%llu)\n",
-                (unsigned long long)sample->proof.leaf_index,
-                sample->leaf.height,
-                sample->proof.num_siblings,
-                sample->proof.num_peaks,
-                (unsigned long long)sample->proof.mmb_size);
-        return false;
+        LOG_FAIL("flyclient", "fc_verify_sample: leaf %llu proof invalid (h=%u, siblings=%u, peaks=%u, mmb_size=%llu)",
+                 (unsigned long long)sample->proof.leaf_index,
+                 sample->leaf.height,
+                 sample->proof.num_siblings,
+                 sample->proof.num_peaks,
+                 (unsigned long long)sample->proof.mmb_size);
     }
 
     event_emitf(EV_MMB_PROOF_VERIFIED, 0,
@@ -171,8 +168,8 @@ bool fc_verify_sample(const struct fc_sample *sample,
 bool fc_verify_response(const struct fc_response *resp,
                         const struct fc_challenge *challenge)
 {
-    if (!resp || !challenge) return false;
-    if (resp->num_samples == 0) return false;
+    if (!resp || !challenge) LOG_FAIL("flyclient", "fc_verify_response: null response or challenge");
+    if (resp->num_samples == 0) LOG_FAIL("flyclient", "fc_verify_response: empty response (0 samples)");
 
     /* Regenerate expected indices from the challenge seed */
     uint64_t expected_indices[FC_MAX_SAMPLES];
@@ -184,7 +181,8 @@ bool fc_verify_response(const struct fc_response *resp,
         event_emitf(EV_FC_CHAIN_VERIFIED, 0,
                     "samples=%u expected=%u all_valid=false reason=count_mismatch",
                     resp->num_samples, expected_count);
-        return false;
+        LOG_FAIL("flyclient", "fc_verify_response: sample count mismatch (got=%u, expected=%u)",
+                 resp->num_samples, expected_count);
     }
 
     /* Verify each sample */
@@ -271,7 +269,9 @@ bool fc_build_response(const struct fc_challenge *challenge,
                        struct fc_response *resp)
 {
     if (!challenge || !mmb || !all_leaves || !all_leaf_hashes || !resp)
-        return false;
+        LOG_FAIL("flyclient", "fc_build_response: null argument (challenge=%p mmb=%p leaves=%p hashes=%p resp=%p)",
+                 (const void *)challenge, (const void *)mmb, (const void *)all_leaves,
+                 (const void *)all_leaf_hashes, (void *)resp);
 
     memset(resp, 0, sizeof(*resp));
 
@@ -286,10 +286,9 @@ bool fc_build_response(const struct fc_challenge *challenge,
     for (uint32_t i = 0; i < count; i++) {
         uint64_t idx = indices[i];
         if (idx >= mmb->num_leaves) {
-            fprintf(stderr, "fc_build_response: index %llu >= num_leaves %llu\n",
-                    (unsigned long long)idx,
-                    (unsigned long long)mmb->num_leaves);
-            return false;
+            LOG_FAIL("flyclient", "fc_build_response: index %llu >= num_leaves %llu",
+                     (unsigned long long)idx,
+                     (unsigned long long)mmb->num_leaves);
         }
 
         /* Copy the rich leaf data */
@@ -298,9 +297,8 @@ bool fc_build_response(const struct fc_challenge *challenge,
         /* Generate MMB inclusion proof */
         if (!mmb_prove(all_leaf_hashes, mmb->num_leaves, idx,
                        &resp->samples[i].proof)) {
-            fprintf(stderr, "fc_build_response: proof generation failed "
-                    "for index %llu\n", (unsigned long long)idx);
-            return false;
+            LOG_FAIL("flyclient", "fc_build_response: proof generation failed for index %llu",
+                     (unsigned long long)idx);
         }
     }
 

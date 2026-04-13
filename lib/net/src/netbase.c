@@ -102,7 +102,7 @@ bool lookup_host(const char *name, struct net_addr *results,
     struct addrinfo *res = NULL;
     int err = getaddrinfo(name, NULL, &hints, &res);
     if (err != 0)
-        return false;
+        LOG_FAIL("net", "getaddrinfo failed for '%s': error %d", name, err);
 
     for (struct addrinfo *ai = res;
          ai && *num_results < max_results;
@@ -137,7 +137,7 @@ bool lookup_numeric(const char *name, struct net_service *result,
     struct net_addr addrs[1];
     size_t n = 0;
     if (!lookup_host(host, addrs, 1, &n, false))
-        return false;
+        LOG_FAIL("net", "lookup_numeric: host '%s' not resolvable", host);
     result->addr = addrs[0];
     result->port = (uint16_t)port;
     return true;
@@ -182,12 +182,12 @@ bool connect_socket_directly(const struct net_service *addr,
     struct sockaddr_storage ss;
     socklen_t len = sizeof(ss);
     if (!net_service_get_sockaddr(addr, &ss, &len))
-        return false;
+        LOG_FAIL("net", "connect_socket_directly: failed to get sockaddr");
 
     zcl_socket_t sock = socket(((struct sockaddr *)&ss)->sa_family,
                                SOCK_STREAM, IPPROTO_TCP);
     if (sock == ZCL_INVALID_SOCKET)
-        return false;
+        LOG_FAIL("net", "connect_socket_directly: socket() creation failed, errno=%d", errno);
 
     int set = 1;
 #ifdef SO_NOSIGPIPE
@@ -197,7 +197,7 @@ bool connect_socket_directly(const struct net_service *addr,
 
     if (!set_socket_nonblocking(sock, true)) {
         close_socket(&sock);
-        return false;
+        LOG_FAIL("net", "connect_socket_directly: set_socket_nonblocking failed");
     }
 
     if (connect(sock, (struct sockaddr *)&ss, len) == ZCL_SOCKET_ERROR) {
@@ -210,18 +210,18 @@ bool connect_socket_directly(const struct net_service *addr,
             int nRet = select(sock + 1, NULL, &fdset, NULL, &tv);
             if (nRet <= 0) {
                 close_socket(&sock);
-                return false;
+                LOG_FAIL("net", "connect_socket_directly: select timeout/error (ret=%d, timeout=%dms)", nRet, timeout_ms);
             }
             int so_err = 0;
             socklen_t so_len = sizeof(so_err);
             if (getsockopt(sock, SOL_SOCKET, SO_ERROR, &so_err, &so_len) < 0 ||
                 so_err != 0) {
                 close_socket(&sock);
-                return false;
+                LOG_FAIL("net", "connect_socket_directly: connect failed after select (so_err=%d)", so_err);
             }
         } else {
             close_socket(&sock);
-            return false;
+            LOG_FAIL("net", "connect_socket_directly: connect failed (errno=%d)", err);
         }
     }
 
@@ -249,7 +249,7 @@ bool zcl_set_socket_nonblocking(zcl_socket_t sock, bool nonblocking)
     return ioctlsocket(sock, FIONBIO, &mode) != ZCL_SOCKET_ERROR;
 #else
     int flags = fcntl(sock, F_GETFL, 0);
-    if (flags < 0) return false;
+    if (flags < 0) LOG_FAIL("net", "fcntl F_GETFL failed for socket %d", sock);
     if (nonblocking)
         flags |= O_NONBLOCK;
     else

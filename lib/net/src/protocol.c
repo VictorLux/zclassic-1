@@ -6,10 +6,10 @@
 
 #include "net/protocol.h"
 #include "core/serialize.h"
+#include "util/log_macros.h"
 #include "util/util.h"
 #include <string.h>
 #include <stdio.h>
-#include "util/log_macros.h"
 
 static const char *ppszTypeName[] = {
     "ERROR",
@@ -54,25 +54,23 @@ bool msg_header_is_valid(const struct msg_header *h,
                          const unsigned char msgstart[MESSAGE_START_SIZE])
 {
     if (memcmp(h->pchMessageStart, msgstart, MESSAGE_START_SIZE) != 0)
-        return false;
+        LOG_FAIL("proto", "message start magic mismatch");
 
     for (const char *p = h->pchCommand; p < h->pchCommand + COMMAND_SIZE; p++) {
         if (*p == 0) {
             for (; p < h->pchCommand + COMMAND_SIZE; p++)
                 if (*p != 0)
-                    return false;
+                    LOG_FAIL("proto", "non-zero byte after null in command");
             break;
         }
         if (*p < ' ' || *p > 0x7E)
-            return false;
+            LOG_FAIL("proto", "invalid char 0x%02x in command", (unsigned char)*p);
     }
 
     if (h->nMessageSize > MAX_SIZE) {
         char cmd[COMMAND_SIZE + 1];
         msg_header_get_command(h, cmd, sizeof(cmd));
-        LogPrintf("msg_header_is_valid: (%s, %u bytes) nMessageSize > MAX_SIZE\n",
-                  cmd, h->nMessageSize);
-        return false;
+        LOG_FAIL("proto", "(%s, %u bytes) nMessageSize > MAX_SIZE", cmd, h->nMessageSize);
     }
 
     return true;
@@ -101,7 +99,7 @@ int inv_item_init_by_name(struct inv_item *inv, const char *type_name,
             return 0;
         }
     }
-    LOG_ERR("protocol", "unknown inv type name: %s", type_name);
+    LOG_ERR("proto", "unknown inv type name: %s", type_name);
 }
 
 bool inv_item_is_known_type(const struct inv_item *inv)
@@ -135,12 +133,12 @@ bool net_address_serialize(const struct net_address *a, struct byte_stream *s,
                            bool include_time)
 {
     if (include_time) {
-        if (!stream_write_u32_le(s, a->nTime)) return false;
+        if (!stream_write_u32_le(s, a->nTime)) LOG_FAIL("proto", "net_address: write nTime failed");
     }
-    if (!stream_write_u64_le(s, a->nServices)) return false;
-    if (!stream_write_bytes(s, a->svc.addr.ip, 16)) return false;
+    if (!stream_write_u64_le(s, a->nServices)) LOG_FAIL("proto", "net_address: write nServices failed");
+    if (!stream_write_bytes(s, a->svc.addr.ip, 16)) LOG_FAIL("proto", "net_address: write ip failed");
     uint16_t port_be = (uint16_t)((a->svc.port >> 8) | (a->svc.port << 8));
-    if (!stream_write_bytes(s, (const unsigned char *)&port_be, 2)) return false;
+    if (!stream_write_bytes(s, (const unsigned char *)&port_be, 2)) LOG_FAIL("proto", "net_address: write port failed");
     return true;
 }
 
@@ -148,26 +146,26 @@ bool net_address_deserialize(struct net_address *a, struct byte_stream *s,
                              bool include_time)
 {
     if (include_time) {
-        if (!stream_read_u32_le(s, &a->nTime)) return false;
+        if (!stream_read_u32_le(s, &a->nTime)) LOG_FAIL("proto", "net_address: read nTime failed");
     }
-    if (!stream_read_u64_le(s, &a->nServices)) return false;
-    if (!stream_read_bytes(s, a->svc.addr.ip, 16)) return false;
+    if (!stream_read_u64_le(s, &a->nServices)) LOG_FAIL("proto", "net_address: read nServices failed");
+    if (!stream_read_bytes(s, a->svc.addr.ip, 16)) LOG_FAIL("proto", "net_address: read ip failed");
     uint16_t port_be;
-    if (!stream_read_bytes(s, (unsigned char *)&port_be, 2)) return false;
+    if (!stream_read_bytes(s, (unsigned char *)&port_be, 2)) LOG_FAIL("proto", "net_address: read port failed");
     a->svc.port = (uint16_t)((port_be >> 8) | (port_be << 8));
     return true;
 }
 
 bool inv_item_serialize(const struct inv_item *inv, struct byte_stream *s)
 {
-    if (!stream_write_u32_le(s, (uint32_t)inv->type)) return false;
+    if (!stream_write_u32_le(s, (uint32_t)inv->type)) LOG_FAIL("proto", "inv_item: write type failed");
     return stream_write_bytes(s, inv->hash.data, 32);
 }
 
 bool inv_item_deserialize(struct inv_item *inv, struct byte_stream *s)
 {
     uint32_t t;
-    if (!stream_read_u32_le(s, &t)) return false;
+    if (!stream_read_u32_le(s, &t)) LOG_FAIL("proto", "inv_item: read type failed");
     inv->type = (int)t;
     return stream_read_bytes(s, inv->hash.data, 32);
 }

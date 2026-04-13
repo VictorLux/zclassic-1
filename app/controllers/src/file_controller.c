@@ -816,7 +816,7 @@ static bool rpc_getfilemanifest(const struct json_value *params, bool help,
     struct json_value chunks_arr;
     json_set_array(&chunks_arr);
     for (uint32_t i = 0; i < manifest.num_chunks; i++) {
-        struct json_value chunk_obj;
+        struct json_value chunk_obj = {0};
         json_set_object(&chunk_obj);
 
         char hex[65];

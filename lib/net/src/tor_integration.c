@@ -13,8 +13,8 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#include "util/log_macros.h"
 #include "util/safe_alloc.h"
+#include "util/log_macros.h"
 
 static pthread_t g_tor_thread;
 static pthread_t g_monitor_thread;
@@ -52,7 +52,7 @@ static bool write_torrc(const char *datadir)
     snprintf(torrc_path, sizeof(torrc_path), "%s/torrc", datadir);
 
     FILE *f = fopen(torrc_path, "w");
-    if (!f) LOG_FAIL("tor", "cannot write torrc at %s", torrc_path);
+    if (!f) LOG_FAIL("tor", "failed to open torrc for writing: %s", torrc_path);
 
     /* SocksPort on localhost-only high port — gives Tor a reason to
      * build circuits. Without at least one listener or hidden service,
@@ -79,7 +79,7 @@ static bool read_onion_from_hostname_file(const char *datadir)
              "%s/tor_data/onion_service/hostname", datadir);
 
     FILE *f = fopen(path, "r");
-    if (!f) LOG_FAIL("tor", "cannot open hostname file: %s", path);
+    if (!f) return false;  /* not yet available — normal during bootstrap */
 
     char line[128];
     if (!fgets(line, sizeof(line), f)) {
@@ -95,7 +95,7 @@ static bool read_onion_from_hostname_file(const char *datadir)
         line[--len] = '\0';
 
     if (len == 0 || len >= sizeof(g_onion_address))
-        LOG_FAIL("tor", "invalid onion address length %zu from %s", len, path);
+        LOG_FAIL("tor", "hostname file has invalid length: %zu", len);
 
     memcpy(g_onion_address, line, len + 1);
     ensure_onion_suffix();
@@ -111,7 +111,7 @@ static bool read_onion_address(const char *datadir)
 
     for (int attempt = 0; attempt < 120; attempt++) {
         if (!atomic_load(&g_tor_running))
-            LOG_FAIL("tor", "tor stopped while waiting for .onion address");
+            return false;
 
         /* Persistent key: Tor writes hostname file after bootstrap */
         if (read_onion_from_hostname_file(datadir))
@@ -143,7 +143,7 @@ static bool read_onion_address(const char *datadir)
         }
         sleep(1);
     }
-    LOG_FAIL("tor", "timed out after 120s waiting for .onion address in %s", datadir);
+    LOG_FAIL("tor", "timed out waiting for .onion address after 120 attempts");
 }
 
 /* Tor embedding API */
@@ -246,10 +246,8 @@ bool tor_integration_start(const char *datadir, uint16_t p2p_port)
     snprintf(path, sizeof(path), "%s/tor_data/onion_service", datadir);
     mkdir(path, 0700);
 
-    if (!write_torrc(datadir)) {
-        fprintf(stderr, "Tor: failed to write torrc\n");
-        return false;
-    }
+    if (!write_torrc(datadir))
+        LOG_FAIL("tor", "failed to write torrc to %s", datadir);
 
     /* Register our handler with Tor's dynhost before starting.
      * All .onion HTTP requests will route through dynhost_bridge →
@@ -265,7 +263,7 @@ bool tor_integration_start(const char *datadir, uint16_t p2p_port)
 
     if (pthread_create(&g_tor_thread, NULL, tor_thread_fn, NULL) != 0) {
         atomic_store(&g_tor_running, false);
-        LOG_FAIL("tor", "pthread_create for tor thread failed");
+        LOG_FAIL("tor", "pthread_create failed for tor thread");
     }
     atomic_store(&g_tor_started, true);
     return true;
@@ -295,7 +293,7 @@ void tor_integration_stop(void)
 const char *tor_integration_get_onion_address(void)
 {
     if (!atomic_load(&g_tor_ready))
-        return NULL;
+        return NULL;  /* not ready yet — normal during startup */
     return g_onion_address;
 }
 
@@ -326,9 +324,9 @@ int tor_integration_fetch_onion(const char *onion_address,
                                  int timeout_secs)
 {
     if (!dynhost_client_fetch)
-        LOG_ERR("tor", "fetch_onion: dynhost_client_fetch not linked (stub build)");
+        LOG_ERR("tor", "dynhost_client_fetch not linked (stub build)");
     if (!atomic_load(&g_tor_running))
-        LOG_ERR("tor", "fetch_onion: tor not running for %s%s", onion_address, path);
+        LOG_ERR("tor", "fetch_onion called but Tor not running");
 
     return dynhost_client_fetch(onion_address, 80, path,
         (void (*)(int, const uint8_t *, size_t, void *))callback,
@@ -357,7 +355,7 @@ int tor_integration_fetch_onion_blocking(const char *onion_address,
                                           struct onion_fetch_result *result,
                                           int timeout_secs)
 {
-    if (!result) LOG_ERR("tor", "fetch_onion_blocking: result pointer is NULL");
+    if (!result) LOG_ERR("tor", "fetch_onion_blocking called with NULL result");
     memset(result, 0, sizeof(*result));
 
     int rc = tor_integration_fetch_onion(onion_address, path,
@@ -365,7 +363,7 @@ int tor_integration_fetch_onion_blocking(const char *onion_address,
                                           timeout_secs);
     if (rc < 0) {
         atomic_store(&result->complete, -1);
-        LOG_ERR("tor", "fetch_onion_blocking: async fetch failed for %s%s", onion_address, path);
+        LOG_ERR("tor", "fetch_onion failed for %s%s", onion_address, path);
     }
 
     /* Poll for completion */
@@ -378,5 +376,6 @@ int tor_integration_fetch_onion_blocking(const char *onion_address,
 
     /* Timeout */
     atomic_store(&result->complete, -1);
-    LOG_ERR("tor", "fetch_onion_blocking: timed out after %ds for %s%s", timeout_secs > 0 ? timeout_secs : 60, onion_address, path);
+    LOG_ERR("tor", "fetch_onion_blocking timed out after %ds for %s%s",
+            timeout_secs > 0 ? timeout_secs : 60, onion_address, path);
 }

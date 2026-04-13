@@ -30,8 +30,8 @@
 #include <time.h>
 #include <unistd.h>
 #include "core/utiltime.h"
-#include "util/log_macros.h"
 #include "util/safe_alloc.h"
+#include "util/log_macros.h"
 
 /* -connect mode: only connect to specified peers, no seeds */
 bool g_connect_only = false;
@@ -794,7 +794,7 @@ bool connman_init(struct connman *cm, const struct chain_params *params,
 bool connman_start(struct connman *cm)
 {
     if (!cm)
-        LOG_FAIL("connman", "connman_start: cm is NULL");
+        LOG_FAIL("net", "connman_start called with NULL connman");
     if (cm->started)
         return true;
 
@@ -810,7 +810,7 @@ bool connman_start(struct connman *cm)
     if (pthread_create(&g_thread_dns_seed, NULL, thread_dns_seed, cm) != 0) {
         perror("connman: pthread_create dns_seed");
         g_stop = true;
-        return false;
+        LOG_FAIL("net", "pthread_create failed for dns_seed thread");
     }
     cm->dns_seed_thread_started = true;
 
@@ -819,7 +819,7 @@ bool connman_start(struct connman *cm)
         g_stop = true;
         pthread_join(g_thread_dns_seed, NULL);
         cm->dns_seed_thread_started = false;
-        return false;
+        LOG_FAIL("net", "pthread_create failed for socket_handler thread");
     }
     cm->socket_thread_started = true;
 
@@ -830,7 +830,7 @@ bool connman_start(struct connman *cm)
         pthread_join(g_thread_dns_seed, NULL);
         cm->socket_thread_started = false;
         cm->dns_seed_thread_started = false;
-        return false;
+        LOG_FAIL("net", "pthread_create failed for open_connections thread");
     }
     cm->open_thread_started = true;
 
@@ -843,7 +843,7 @@ bool connman_start(struct connman *cm)
         cm->open_thread_started = false;
         cm->socket_thread_started = false;
         cm->dns_seed_thread_started = false;
-        return false;
+        LOG_FAIL("net", "pthread_create failed for message_handler thread");
     }
     cm->message_thread_started = true;
 

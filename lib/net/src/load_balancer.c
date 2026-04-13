@@ -7,12 +7,12 @@
 #include "core/uint256.h"
 #include "core/serialize.h"
 #include "primitives/transaction.h"
+#include "util/log_macros.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <sqlite3.h>
-#include "util/log_macros.h"
 
 /* ── Replica discovery from blockchain ───────────────────── */
 
@@ -135,7 +135,7 @@ int site_discover_replicas(const char *datadir, const char *token_id,
 
 int site_select_replica(struct site_replica *replicas, int count)
 {
-    if (!replicas || count <= 0) return -1;
+    if (!replicas || count <= 0) LOG_ERR("net", "site_select_replica: null replicas or count=%d", count);
 
     int best = -1;
     int64_t best_score = -1;
@@ -170,7 +170,7 @@ int site_select_replica(struct site_replica *replicas, int count)
 
 bool site_probe_replica(struct site_replica *replica)
 {
-    if (!replica || !replica->onion[0]) return false;
+    if (!replica || !replica->onion[0]) LOG_FAIL("net", "site_probe_replica: null replica or empty onion address");
 
     /* Measure time to establish connection.
      * In production: connect via Tor circuit, send HTTP HEAD, measure RTT.
@@ -205,8 +205,8 @@ bool site_announce_replica(const char *datadir,
                             uint32_t capacity,
                             uint32_t content_version)
 {
-    if (!datadir || !token_id || !onion_addr)
-        LOG_FAIL("load_bal", "site_announce_replica: missing required params");
+    if (!datadir || !token_id || !onion_addr) LOG_FAIL("net", "site_announce_replica: null argument (datadir=%p, token_id=%p, onion=%p)",
+                 (const void *)datadir, (const void *)token_id, (const void *)onion_addr);
 
     /* Build the ZSLP SEND OP_RETURN with replica metadata appended.
      * Format: [SLP SEND fields] [1 onion_len] [onion] [4 capacity LE] [4 version LE] */
@@ -220,13 +220,12 @@ bool site_announce_replica(const char *datadir,
     uint8_t script[256];
     uint64_t qty = 1;
     size_t slp_len = slp_build_send(script, sizeof(script), &tid, &qty, 1);
-    if (slp_len == 0)
-        LOG_FAIL("load_bal", "site_announce_replica: SLP SEND build failed for token %s", token_id);
+    if (slp_len == 0) LOG_FAIL("net", "site_announce_replica: slp_build_send failed for token %s", token_id);
 
     /* Append replica metadata */
     size_t olen = strlen(onion_addr);
-    if (slp_len + 1 + olen + 8 > sizeof(script))
-        LOG_FAIL("load_bal", "site_announce_replica: script overflow (slp=%zu + onion=%zu)", slp_len, olen);
+    if (slp_len + 1 + olen + 8 > sizeof(script)) LOG_FAIL("net", "site_announce_replica: script buffer overflow (need %zu, have %zu)",
+                 slp_len + 1 + olen + 8, sizeof(script));
 
     script[slp_len] = (uint8_t)olen;
     memcpy(script + slp_len + 1, onion_addr, olen);
@@ -251,8 +250,7 @@ bool site_announce_replica(const char *datadir,
     /* Not yet implemented: needs wallet integration to create,
      * sign, and broadcast a transaction with this OP_RETURN. */
     (void)datadir;
-    fprintf(stderr, "load_balancer: site_build_replica_announcement not implemented\n");
-    return false;
+    LOG_FAIL("net", "site_announce_replica: wallet integration not yet implemented");
 }
 
 /* ── Connect to best replica ─────────────────────────────── */
@@ -262,8 +260,7 @@ bool site_connect_best(const char *datadir, const char *token_id,
 {
     struct site_replica replicas[32];
     int count = site_discover_replicas(datadir, token_id, replicas, 32);
-    if (count == 0)
-        LOG_FAIL("load_bal", "site_connect_best: no replicas found for token %s", token_id);
+    if (count == 0) LOG_FAIL("net", "site_connect_best: no replicas found for token %s", token_id);
 
     /* Probe top candidates (up to 5) */
     int to_probe = count < 5 ? count : 5;
@@ -271,8 +268,7 @@ bool site_connect_best(const char *datadir, const char *token_id,
         site_probe_replica(&replicas[i]);
 
     int best = site_select_replica(replicas, count);
-    if (best < 0 || !replicas[best].reachable)
-        LOG_FAIL("load_bal", "site_connect_best: no reachable replica (count=%d)", count);
+    if (best < 0 || !replicas[best].reachable) LOG_FAIL("net", "site_connect_best: no reachable replica found (best=%d, count=%d)", best, count);
 
     snprintf(out_onion, out_max, "%s", replicas[best].onion);
     printf("Selected replica: %s (latency=%lldus, capacity=%u)\n",

@@ -28,8 +28,8 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <errno.h>
-#include "util/log_macros.h"
 #include "util/safe_alloc.h"
+#include "util/log_macros.h"
 
 /* ════════════════════════════════════════════════════════════════
  *  Gateway discovery via /proc/net/route
@@ -92,7 +92,7 @@ static bool natpmp_send_recv(const uint8_t gw[4], const void *req, size_t req_le
                               void *resp, size_t resp_max, size_t *resp_len)
 {
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
-    if (sock < 0) LOG_FAIL("nat", "socket(SOCK_DGRAM) failed: %s", strerror(errno));
+    if (sock < 0) LOG_FAIL("nat", "UDP socket creation failed: %s", strerror(errno));
 
     /* Non-blocking with timeout */
     struct timeval tv = { .tv_sec = 2, .tv_usec = 0 };
@@ -128,7 +128,7 @@ static bool natpmp_get_public_ip(const uint8_t gw[4], uint8_t ip_out[4])
     if (!natpmp_send_recv(gw, req, 2, &resp, sizeof(resp), &resp_len))
         LOG_FAIL("nat", "NAT-PMP get-public-ip request failed");
 
-    if (resp.opcode != 128) LOG_FAIL("nat", "NAT-PMP unexpected opcode %u (expected 128)", resp.opcode);
+    if (resp.opcode != 128) LOG_FAIL("nat", "NAT-PMP unexpected opcode: %u (expected 128)", resp.opcode);
     memcpy(ip_out, resp.external_ip, 4);
     log_jsonf(LOG_JSON_INFO, "nat_public_ip",
               "\"protocol\":\"natpmp\",\"ip\":\"%d.%d.%d.%d\"",
@@ -151,7 +151,8 @@ static bool natpmp_map_port(const uint8_t gw[4], uint16_t internal, uint16_t ext
     size_t resp_len;
 
     if (!natpmp_send_recv(gw, &req, sizeof(req), &resp, sizeof(resp), &resp_len))
-        LOG_FAIL("nat", "NAT-PMP map port %u->%u (%s) failed", internal, external, tcp ? "TCP" : "UDP");
+        LOG_FAIL("nat", "NAT-PMP port mapping request failed: internal=%u external=%u",
+                 (unsigned)internal, (unsigned)external);
 
     uint16_t mapped = ntohs(resp.mapping.mapped_port);
     uint32_t granted = ntohl(resp.mapping.lifetime);
@@ -185,7 +186,7 @@ static bool ssdp_extract_location(const char *resp, char *url, size_t url_max)
     const char *end = strstr(loc, "\r\n");
     if (!end) end = loc + strlen(loc);
     size_t len = (size_t)(end - loc);
-    if (len >= url_max) LOG_FAIL("nat", "SSDP LOCATION too long: %zu >= %zu", len, url_max);
+    if (len >= url_max) LOG_FAIL("nat", "SSDP LOCATION URL too long: %zu >= %zu", len, url_max);
     memcpy(url, loc, len);
     url[len] = 0;
     return true;
@@ -197,7 +198,7 @@ static char *http_request(const char *host, uint16_t port, const char *method,
                            const char *content_type)
 {
     int sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (sock < 0) LOG_NULL("nat", "socket(SOCK_STREAM) failed: %s", strerror(errno));
+    if (sock < 0) LOG_NULL("nat", "TCP socket creation failed: %s", strerror(errno));
 
     struct timeval tv = { .tv_sec = 3, .tv_usec = 0 };
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
@@ -236,7 +237,7 @@ static char *http_request(const char *host, uint16_t port, const char *method,
 
     size_t cap = 8192, len = 0;
     char *buf = zcl_malloc(cap, "nat_recv_buf");
-    if (!buf) { close(sock); LOG_NULL("nat", "malloc failed for HTTP response buffer (%zu bytes)", cap); }
+    if (!buf) { close(sock); LOG_NULL("nat", "malloc failed for HTTP recv buffer: %zu bytes", cap); }
     for (;;) {
         ssize_t n = recv(sock, buf + len, cap - len - 1, 0);
         if (n <= 0) break;
@@ -244,7 +245,7 @@ static char *http_request(const char *host, uint16_t port, const char *method,
         if (len + 1024 > cap) {
             cap *= 2;
             char *nb = zcl_realloc(buf, cap, "nat_recv_buf");
-            if (!nb) { free(buf); LOG_NULL("nat", "realloc failed for HTTP response (%zu bytes)", cap); }
+            if (!nb) { free(buf); LOG_NULL("nat", "realloc failed for HTTP response: cap=%zu", cap); }
             buf = nb;
         }
     }
@@ -305,10 +306,10 @@ static bool upnp_find_control_url(const char *xml, const char *base_host,
     if (!ctrl) LOG_FAIL("nat", "UPnP XML missing <controlURL> element");
     ctrl += 12;
     const char *end = strstr(ctrl, "</controlURL>");
-    if (!end) LOG_FAIL("nat", "UPnP XML missing </controlURL> closing tag");
+    if (!end) LOG_FAIL("nat", "UPnP XML: unterminated <controlURL>");
 
     size_t len = (size_t)(end - ctrl);
-    if (len >= ctrl_max) LOG_FAIL("nat", "UPnP control URL too long: %zu >= %zu", len, ctrl_max);
+    if (len >= ctrl_max) LOG_FAIL("nat", "UPnP controlURL too long: %zu >= %zu", len, ctrl_max);
 
     if (ctrl[0] == '/') {
         snprintf(ctrl_url, ctrl_max, "http://%s:%d%.*s",
@@ -327,7 +328,7 @@ static bool upnp_add_mapping(const char *ctrl_url, uint16_t external,
     char host[256], path[512];
     uint16_t port;
     if (!parse_url(ctrl_url, host, sizeof(host), &port, path, sizeof(path)))
-        LOG_FAIL("nat", "failed to parse UPnP control URL: %s", ctrl_url);
+        LOG_FAIL("nat", "UPnP: failed to parse control URL");
 
     /* Get local IP for this connection */
     char local_ip[32] = "0.0.0.0";
@@ -369,7 +370,7 @@ static bool upnp_add_mapping(const char *ctrl_url, uint16_t external,
 
     char *resp = http_request(host, port, "POST", path, soap, (size_t)slen,
         "text/xml; charset=\"utf-8\"");
-    if (!resp) LOG_FAIL("nat", "UPnP SOAP request to %s:%u failed", host, port);
+    if (!resp) LOG_FAIL("nat", "UPnP SOAP request failed: host=%s port=%u", host, port);
 
     bool ok = (strstr(resp, "AddPortMappingResponse") != NULL) ||
               (strstr(resp, "200 OK") != NULL);
@@ -398,7 +399,7 @@ static bool upnp_discover_and_map(uint16_t external, uint16_t internal,
 {
     /* SSDP M-SEARCH via multicast */
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
-    if (sock < 0) LOG_FAIL("nat", "UPnP SSDP socket failed: %s", strerror(errno));
+    if (sock < 0) LOG_FAIL("nat", "SSDP socket creation failed: %s", strerror(errno));
 
     struct timeval tv = { .tv_sec = 3, .tv_usec = 0 };
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
@@ -415,29 +416,29 @@ static bool upnp_discover_and_map(uint16_t external, uint16_t internal,
     char buf[4096];
     ssize_t n = recvfrom(sock, buf, sizeof(buf) - 1, 0, NULL, NULL);
     close(sock);
-    if (n <= 0) LOG_FAIL("nat", "UPnP SSDP no response (recvfrom returned %zd)", n);
+    if (n <= 0) LOG_FAIL("nat", "SSDP M-SEARCH got no response");
     buf[n] = 0;
 
     /* Extract LOCATION */
     char location[512];
     if (!ssdp_extract_location(buf, location, sizeof(location)))
-        LOG_FAIL("nat", "UPnP SSDP response missing LOCATION");
+        LOG_FAIL("nat", "SSDP response has no valid LOCATION");
     printf("UPnP: found gateway at %s\n", location);
 
     /* Fetch device XML */
     char host[256], path[512];
     uint16_t port;
     if (!parse_url(location, host, sizeof(host), &port, path, sizeof(path)))
-        LOG_FAIL("nat", "failed to parse UPnP LOCATION URL: %s", location);
+        LOG_FAIL("nat", "UPnP: failed to parse LOCATION URL: %s", location);
 
     char *xml = http_request(host, port, "GET", path, NULL, 0, NULL);
-    if (!xml) LOG_FAIL("nat", "UPnP HTTP GET device XML from %s:%u failed", host, port);
+    if (!xml) LOG_FAIL("nat", "UPnP: failed to fetch device XML from %s:%u", host, port);
 
     /* Find control URL */
     char ctrl_url[512];
     bool found = upnp_find_control_url(xml, host, port, ctrl_url, sizeof(ctrl_url));
     free(xml);
-    if (!found) LOG_FAIL("nat", "UPnP device XML has no WANIPConnection control URL");
+    if (!found) LOG_FAIL("nat", "UPnP: no WAN control URL found in device XML");
 
     printf("UPnP: control URL %s\n", ctrl_url);
     return upnp_add_mapping(ctrl_url, external, internal, lifetime, protocol);
@@ -453,7 +454,8 @@ bool nat_add_port_mapping(uint16_t external_port, uint16_t internal_port,
 {
     uint8_t gw[4];
     if (!nat_get_gateway(gw))
-        LOG_FAIL("nat", "no gateway for port mapping %u->%u", external_port, internal_port);
+        LOG_FAIL("nat", "no gateway for port mapping: ext=%u int=%u",
+                 (unsigned)external_port, (unsigned)internal_port);
 
     bool tcp = (strcmp(protocol, "TCP") == 0);
 
@@ -474,15 +476,15 @@ bool nat_add_port_mapping(uint16_t external_port, uint16_t internal_port,
         return true;
     }
 
-    printf("NAT: all traversal methods failed\n");
-    return false;
+    LOG_FAIL("nat", "all traversal methods failed: ext=%u int=%u proto=%s",
+             (unsigned)external_port, (unsigned)internal_port, protocol);
 }
 
 bool nat_remove_port_mapping(uint16_t external_port, const char *protocol)
 {
     uint8_t gw[4];
     if (!nat_get_gateway(gw))
-        LOG_FAIL("nat", "no gateway for port unmapping %u/%s", external_port, protocol);
+        LOG_FAIL("nat", "no gateway for port unmapping: ext=%u", (unsigned)external_port);
 
     bool tcp = (strcmp(protocol, "TCP") == 0);
     /* NAT-PMP: lifetime=0 means delete */

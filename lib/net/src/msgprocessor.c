@@ -43,13 +43,13 @@ extern volatile sig_atomic_t g_shutdown_requested;
 #include "event/event.h"
 #include "net/download.h"
 #include "util/sync.h"
-#include "util/log_macros.h"
 #include "config/boot_internal.h"
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "util/safe_alloc.h"
+#include "util/log_macros.h"
 #include <time.h>
 #include <sys/time.h>
 #include <sys/stat.h>
@@ -144,13 +144,13 @@ static void msg_block_manifest_reset(struct block_piece_manifest *manifest)
 static bool msg_manifest_is_reasonable(const struct sync_manifest *manifest)
 {
     if (!manifest)
-        return false;
+        LOG_FAIL("net", "manifest is NULL");
     if (manifest->num_chunks == 0)
-        return false;
+        LOG_FAIL("net", "manifest has zero chunks");
     if (manifest->chunk_size == 0)
-        return false;
+        LOG_FAIL("net", "manifest has zero chunk_size");
     if (!manifest->chunk_hashes)
-        return false;
+        LOG_FAIL("net", "manifest chunk_hashes is NULL");
     return true;
 }
 
@@ -158,20 +158,21 @@ static bool msg_block_manifest_is_reasonable(
     const struct block_piece_manifest *manifest)
 {
     if (!manifest)
-        return false;
+        LOG_FAIL("net", "block manifest is NULL");
     if (manifest->num_pieces == 0)
-        return false;
+        LOG_FAIL("net", "block manifest has zero pieces");
     if (manifest->start_height > manifest->end_height)
-        return false;
+        LOG_FAIL("net", "block manifest start_height %d > end_height %d",
+                 manifest->start_height, manifest->end_height);
     if (!manifest->piece_hashes)
-        return false;
+        LOG_FAIL("net", "block manifest piece_hashes is NULL");
     return true;
 }
 
 static struct node_db *msg_node_db(const struct msg_processor *mp)
 {
     if (!mp || !mp->runtime)
-        return NULL;
+        LOG_NULL("net", "mp or mp->runtime is NULL");
     return db_service_node_db(mp->runtime->db_service);
 }
 
@@ -182,7 +183,7 @@ static struct snapshot_sync_service *msg_snapshot_sync(
         return mp->runtime->snapshot_sync;
     if (snapsync_global_initialized())
         return snapsync_global();
-    return NULL;
+    LOG_NULL("net", "no snapshot sync service available");
 }
 
 static struct snapshot_sync_service *msg_snapshot_sync_ensure(
@@ -195,7 +196,7 @@ static struct snapshot_sync_service *msg_snapshot_sync_ensure(
         return svc;
     ndb = msg_node_db(mp);
     if (!ndb)
-        return NULL;
+        LOG_NULL("net", "node_db unavailable for snapshot sync init");
     snapsync_global_ensure_init(ndb);
     return snapsync_global();
 }
@@ -203,7 +204,7 @@ static struct snapshot_sync_service *msg_snapshot_sync_ensure(
 static struct wallet *msg_wallet(const struct msg_processor *mp)
 {
     if (!mp || !mp->runtime)
-        return NULL;
+        LOG_NULL("net", "mp or mp->runtime is NULL in msg_wallet");
     return mp->runtime->wallet;
 }
 
@@ -230,7 +231,7 @@ void msg_processor_update_offer(const struct snapshot_offer *offer)
 bool msg_processor_get_offer(struct snapshot_offer *offer)
 {
     if (!offer)
-        return false;
+        LOG_FAIL("net", "offer output pointer is NULL");
 
     pthread_mutex_lock(&g_offer_mutex);
     bool ok = atomic_load(&g_cached_offer_valid);
@@ -262,7 +263,7 @@ uint64_t msg_processor_offer_cache_version(void)
 bool msg_processor_publish_manifest(struct sync_manifest *manifest)
 {
     if (!msg_manifest_is_reasonable(manifest))
-        return false;
+        LOG_FAIL("net", "cannot publish unreasonable manifest");
 
     pthread_mutex_lock(&g_manifest_mutex);
     if (atomic_load(&g_cached_manifest_valid))
@@ -296,7 +297,7 @@ uint64_t msg_processor_manifest_cache_version(void)
 bool msg_processor_get_manifest_header(struct sync_manifest *out)
 {
     if (!out)
-        return false;
+        LOG_FAIL("net", "manifest output pointer is NULL");
 
     pthread_mutex_lock(&g_manifest_mutex);
     bool ok = atomic_load(&g_cached_manifest_valid);
@@ -314,7 +315,7 @@ bool msg_processor_publish_block_manifest(struct block_piece_manifest *manifest,
                                          int32_t built_at_height)
 {
     if (!msg_block_manifest_is_reasonable(manifest))
-        return false;
+        LOG_FAIL("net", "cannot publish unreasonable block manifest");
 
     pthread_mutex_lock(&g_block_manifest_mutex);
     if (atomic_load(&g_cached_block_manifest_valid))
@@ -351,7 +352,7 @@ bool msg_processor_get_block_manifest_header(struct block_piece_manifest *out,
                                             int32_t *built_at_height)
 {
     if (!out)
-        return false;
+        LOG_FAIL("net", "block manifest output pointer is NULL");
 
     pthread_mutex_lock(&g_block_manifest_mutex);
     bool ok = atomic_load(&g_cached_block_manifest_valid);
@@ -482,11 +483,11 @@ void msgprocessor_test_block_mark_seen(const struct uint256 *hash) {
 bool msgprocessor_test_accept_block_for_processing(const struct uint256 *hash,
                                                    bool snapshot_active) {
     if (!hash)
-        return false;
+        LOG_FAIL("net", "hash is NULL in accept_block_for_processing");
     if (snapshot_active)
-        return false;
+        LOG_FAIL("net", "block rejected: snapshot sync is active");
     if (block_already_seen(hash))
-        return false;
+        LOG_FAIL("net", "block rejected: already seen");
     block_mark_seen(hash);
     return true;
 }
@@ -693,13 +694,14 @@ static bool process_version(struct msg_processor *mp, struct p2p_node *node,
     if (node->version != 0) {
         event_emitf(EV_PEER_MISBEHAVE, (uint32_t)node->id,
                     "duplicate version from %s", node->addr_name);
-        return false;
+        LOG_FAIL("net", "duplicate version from peer %s", node->addr_name);
     }
 
     struct version_message ver;
     version_message_init(&ver);
     if (!version_message_deserialize(&ver, s))
-        LOG_FAIL("msgproc", "version deserialize failed from %s", node->addr_name);
+        LOG_FAIL("net", "failed to deserialize version message from %s",
+                 node->addr_name);
 
     if (ver.protocol_version < MIN_PEER_PROTO_VERSION) {
         event_emitf(EV_PEER_MISBEHAVE, (uint32_t)node->id,
@@ -707,7 +709,9 @@ static bool process_version(struct msg_processor *mp, struct p2p_node *node,
                     ver.protocol_version, MIN_PEER_PROTO_VERSION,
                     node->addr_name);
         node->disconnect = true;
-        return false;
+        LOG_FAIL("net", "proto version %d too old (min %d) from %s",
+                 ver.protocol_version, MIN_PEER_PROTO_VERSION,
+                 node->addr_name);
     }
 
     /* Self-connection detection: if the peer's nonce matches our own
@@ -717,7 +721,7 @@ static bool process_version(struct msg_processor *mp, struct p2p_node *node,
         event_emitf(EV_TCP_DISCONNECTED, (uint32_t)node->id,
                     "self-connection %s", node->addr_name);
         node->disconnect = true;
-        return false;
+        LOG_FAIL("net", "self-connection detected for %s", node->addr_name);
     }
 
     node->version = ver.protocol_version;
@@ -890,7 +894,8 @@ static bool process_ping(struct msg_processor *mp, struct p2p_node *node,
     uint64_t nonce = 0;
     if (node->version >= BIP0031_VERSION) {
         if (!stream_read_u64_le(s, &nonce))
-            LOG_FAIL("msgproc", "ping: failed to read nonce from %s", node->addr_name);
+            LOG_FAIL("net", "failed to read ping nonce from %s",
+                     node->addr_name);
     }
 
     if (node->version >= BIP0031_VERSION) {
@@ -910,7 +915,8 @@ static bool process_pong(struct p2p_node *node, struct byte_stream *s)
 {
     uint64_t nonce = 0;
     if (!stream_read_u64_le(s, &nonce))
-        LOG_FAIL("msgproc", "pong: failed to read nonce from %s", node->addr_name);
+        LOG_FAIL("net", "failed to read pong nonce from %s",
+                 node->addr_name);
 
     if (node->ping_nonce_sent != 0 && nonce == node->ping_nonce_sent) {
         int64_t now = (int64_t)time(NULL) * 1000000;
@@ -936,13 +942,15 @@ static bool process_addr(struct msg_processor *mp, struct p2p_node *node,
 {
     uint64_t count;
     if (!stream_read_compact_size(s, &count))
-        LOG_FAIL("msgproc", "addr: failed to read count from %s", node->addr_name);
+        LOG_FAIL("net", "failed to read addr count from %s",
+                 node->addr_name);
 
     if (count > MAX_ADDR_TO_SEND) {
         printf("Peer %s: addr message too large (%llu)\n",
                node->addr_name, (unsigned long long)count);
         node->disconnect = true;
-        return false;
+        LOG_FAIL("net", "addr count %llu exceeds max from %s",
+                 (unsigned long long)count, node->addr_name);
     }
 
     struct net_addr source;
@@ -953,8 +961,8 @@ static bool process_addr(struct msg_processor *mp, struct p2p_node *node,
         struct net_address addr;
         net_address_init(&addr);
         if (!net_address_deserialize(&addr, s, true))
-            LOG_FAIL("msgproc", "addr: failed to deserialize address %llu/%llu from %s",
-                     (unsigned long long)i, (unsigned long long)count, node->addr_name);
+            LOG_FAIL("net", "failed to deserialize addr[%llu] from %s",
+                     (unsigned long long)i, node->addr_name);
 
         if (mp->net_mgr)
             addrman_add(&mp->net_mgr->addrman, &addr, &source, 0);
@@ -969,13 +977,15 @@ static bool process_getblocks(struct msg_processor *mp, struct p2p_node *node,
     block_locator_init(&locator);
     if (!block_locator_deserialize(&locator, s)) {
         block_locator_free(&locator);
-        LOG_FAIL("msgproc", "getblocks: failed to deserialize locator from %s", node->addr_name);
+        LOG_FAIL("net", "failed to deserialize getblocks locator from %s",
+                 node->addr_name);
     }
 
     struct uint256 hash_stop;
     if (!stream_read(s, hash_stop.data, 32)) {
         block_locator_free(&locator);
-        LOG_FAIL("msgproc", "getblocks: failed to read hash_stop from %s", node->addr_name);
+        LOG_FAIL("net", "failed to read getblocks hash_stop from %s",
+                 node->addr_name);
     }
 
     struct block_index *pindex = NULL;
@@ -1027,13 +1037,15 @@ static bool process_getheaders(struct msg_processor *mp, struct p2p_node *node,
     block_locator_init(&locator);
     if (!block_locator_deserialize(&locator, s)) {
         block_locator_free(&locator);
-        LOG_FAIL("msgproc", "getheaders: failed to deserialize locator from %s", node->addr_name);
+        LOG_FAIL("net", "failed to deserialize getheaders locator from %s",
+                 node->addr_name);
     }
 
     struct uint256 hash_stop;
     if (!stream_read(s, hash_stop.data, 32)) {
         block_locator_free(&locator);
-        LOG_FAIL("msgproc", "getheaders: failed to read hash_stop from %s", node->addr_name);
+        LOG_FAIL("net", "failed to read getheaders hash_stop from %s",
+                 node->addr_name);
     }
 
     struct active_chain *chain = &mp->main_state->chain_active;
@@ -1122,7 +1134,8 @@ static bool process_inv(struct msg_processor *mp, struct p2p_node *node,
 {
     uint64_t count;
     if (!stream_read_compact_size(s, &count))
-        LOG_FAIL("msgproc", "inv: failed to read count from %s", node->addr_name);
+        LOG_FAIL("net", "failed to read inv count from %s",
+                 node->addr_name);
 
     if (count > MAX_INV_SZ) {
         event_emitf(EV_PEER_MISBEHAVE, (uint32_t)node->id,
@@ -1131,7 +1144,8 @@ static bool process_inv(struct msg_processor *mp, struct p2p_node *node,
         printf("Peer %s: inv message too large (%llu)\n",
                node->addr_name, (unsigned long long)count);
         node->disconnect = true;
-        return false;
+        LOG_FAIL("net", "inv count %llu exceeds MAX_INV_SZ from %s",
+                 (unsigned long long)count, node->addr_name);
     }
 
     struct byte_stream getdata;
@@ -1142,8 +1156,8 @@ static bool process_inv(struct msg_processor *mp, struct p2p_node *node,
         struct inv_item inv;
         if (!inv_item_deserialize(&inv, s)) {
             stream_free(&getdata);
-            LOG_FAIL("msgproc", "inv: failed to deserialize item %llu/%llu from %s",
-                     (unsigned long long)i, (unsigned long long)count, node->addr_name);
+            LOG_FAIL("net", "failed to deserialize inv[%llu] from %s",
+                     (unsigned long long)i, node->addr_name);
         }
 
         p2p_node_add_inventory_known(node, &inv);
@@ -1214,11 +1228,12 @@ static bool process_getdata(struct msg_processor *mp, struct p2p_node *node,
 {
     uint64_t count;
     if (!stream_read_compact_size(s, &count))
-        LOG_FAIL("msgproc", "getdata: failed to read count from %s", node->addr_name);
+        LOG_FAIL("net", "failed to read getdata count from %s",
+                 node->addr_name);
 
     if (count > MAX_INV_SZ) {
         node->disconnect = true;
-        LOG_FAIL("msgproc", "getdata: count %llu exceeds MAX_INV_SZ from %s",
+        LOG_FAIL("net", "getdata count %llu exceeds MAX_INV_SZ from %s",
                  (unsigned long long)count, node->addr_name);
     }
 
@@ -1228,8 +1243,8 @@ static bool process_getdata(struct msg_processor *mp, struct p2p_node *node,
     for (uint64_t i = 0; i < count; i++) {
         struct inv_item inv;
         if (!inv_item_deserialize(&inv, s))
-            LOG_FAIL("msgproc", "getdata: failed to deserialize item %llu/%llu from %s",
-                     (unsigned long long)i, (unsigned long long)count, node->addr_name);
+            LOG_FAIL("net", "failed to deserialize getdata inv[%llu] from %s",
+                     (unsigned long long)i, node->addr_name);
 
         bool sent = false;
         if (inv.type == MSG_BLOCK) {
@@ -1322,7 +1337,8 @@ static bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
                     "oversized block msg %zu bytes", s->size);
         peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_INVALID_BLOCK,
                             "oversized block msg");
-        return false;
+        LOG_FAIL("net", "oversized block msg %zu bytes from %s",
+                 s->size, node->addr_name);
     }
 
     struct block blk;
@@ -1332,7 +1348,8 @@ static bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
         peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_FLOOD,
                             "malformed block");
         block_free(&blk);
-        return false;
+        LOG_FAIL("net", "failed to deserialize block from %s",
+                 node->addr_name);
     }
 
     struct uint256 hash;
@@ -1558,14 +1575,14 @@ static bool accept_to_mempool(struct msg_processor *mp,
     validation_state_init(&state);
 
     if (!check_transaction(tx, &state))
-        return false;
+        LOG_FAIL("net", "transaction failed check_transaction");
 
     struct uint256 hash;
     transaction_compute_hash((struct transaction *)tx);
     hash = tx->hash;
 
     if (tx_mempool_exists(mp->mempool, &hash))
-        return false;
+        LOG_FAIL("net", "transaction already exists in mempool");
 
     int tip_height = active_chain_height(&mp->main_state->chain_active);
     uint32_t branch_id = consensus_current_epoch_branch_id(
@@ -1598,7 +1615,8 @@ static bool process_tx_msg(struct msg_processor *mp, struct p2p_node *node,
         peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_INVALID_MESSAGE,
                             "malformed tx");
         transaction_free(&tx);
-        return false;
+        LOG_FAIL("net", "failed to deserialize tx from %s",
+                 node->addr_name);
     }
 
     struct uint256 hash;
@@ -1662,7 +1680,8 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
 
     uint64_t count;
     if (!stream_read_compact_size(s, &count))
-        LOG_FAIL("msgproc", "headers: failed to read count from %s", node->addr_name);
+        LOG_FAIL("net", "failed to read headers count from %s",
+                 node->addr_name);
 
     if (count > 2000) {
         event_emitf(EV_PEER_MISBEHAVE, (uint32_t)node->id,
@@ -1671,7 +1690,8 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
         peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_FLOOD,
                             "too many headers");
         node->disconnect = true;
-        return false;
+        LOG_FAIL("net", "headers count %llu exceeds 2000 from %s",
+                 (unsigned long long)count, node->addr_name);
     }
 
     struct uint256 last_hash;
@@ -1689,14 +1709,16 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                         (unsigned long long)i, node->addr_name);
             peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_FLOOD,
                                 "malformed header");
-            return false;
+            LOG_FAIL("net", "malformed header[%llu] from %s",
+                     (unsigned long long)i, node->addr_name);
         }
 
         uint64_t dummy;
         if (!stream_read_compact_size(s, &dummy)) {
             peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_FLOOD,
                                 "truncated header tx count");
-            return false;
+            LOG_FAIL("net", "truncated header tx count at header[%llu] from %s",
+                     (unsigned long long)i, node->addr_name);
         }
 
         struct validation_state state;
@@ -2077,7 +2099,8 @@ static bool process_feefilter(struct p2p_node *node, struct byte_stream *s)
 {
     uint64_t fee_rate = 0;
     if (!stream_read_u64_le(s, &fee_rate))
-        LOG_FAIL("msgproc", "feefilter: failed to read fee rate from %s", node->addr_name);
+        LOG_FAIL("net", "failed to read feefilter rate from %s",
+                 node->addr_name);
     (void)fee_rate;
     (void)node;
     return true;
@@ -2087,14 +2110,15 @@ static bool process_notfound(struct p2p_node *node, struct byte_stream *s)
 {
     uint64_t count;
     if (!stream_read_compact_size(s, &count))
-        LOG_FAIL("msgproc", "notfound: failed to read count from %s", node->addr_name);
+        LOG_FAIL("net", "failed to read notfound count from %s",
+                 node->addr_name);
 
     struct download_manager *dm = get_download_mgr();
     for (uint64_t i = 0; i < count; i++) {
         struct inv_item inv;
         if (!inv_item_deserialize(&inv, s))
-            LOG_FAIL("msgproc", "notfound: failed to deserialize item %llu/%llu from %s",
-                     (unsigned long long)i, (unsigned long long)count, node->addr_name);
+            LOG_FAIL("net", "failed to deserialize notfound inv[%llu] from %s",
+                     (unsigned long long)i, node->addr_name);
         if (inv.type == MSG_BLOCK) {
             char hex[65];
             uint256_get_hex(&inv.hash, hex);

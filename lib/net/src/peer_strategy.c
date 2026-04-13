@@ -7,10 +7,10 @@
 #include "net/peer_strategy.h"
 #include "net/nat.h"
 #include "net/tor_integration.h"
+#include "util/log_macros.h"
 
 #include <string.h>
 #include <stdio.h>
-#include "util/log_macros.h"
 
 const char *peer_transport_name(enum peer_transport t)
 {
@@ -29,7 +29,7 @@ bool peer_strategy_discover_self(struct node_profile *profile,
                                  uint16_t listen_port)
 {
     if (!profile)
-        LOG_FAIL("peer_strategy", "discover_self: profile is NULL");
+        LOG_FAIL("net", "peer_strategy_discover_self: null profile");
 
     memset(profile, 0, sizeof(*profile));
     profile->public_port = listen_port;

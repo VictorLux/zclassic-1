@@ -55,7 +55,7 @@ void dl_free(struct download_manager *dm)
 /* Expand queue capacity. Returns true on success. Caller holds mutex. */
 static bool dl_queue_grow(struct download_manager *dm)
 {
-    if (dm->queue_cap >= 65536) return false;
+    if (dm->queue_cap >= 65536) LOG_FAIL("net", "dl_queue_grow: queue at max capacity (65536)");
     size_t new_cap = dm->queue_cap * 2;
     struct uint256 *nq = zcl_realloc(dm->queue, new_cap * sizeof(struct uint256), "dl_queue");
     int32_t *nh = zcl_realloc(dm->queue_heights, new_cap * sizeof(int32_t), "dl_queue_heights");
@@ -63,7 +63,7 @@ static bool dl_queue_grow(struct download_manager *dm)
         /* If one succeeded, keep the old pointer valid */
         if (nq) dm->queue = nq;
         if (nh) dm->queue_heights = nh;
-        return false;
+        LOG_FAIL("net", "dl_queue_grow: realloc failed for new_cap=%zu", new_cap);
     }
     dm->queue = nq;
     dm->queue_heights = nh;
@@ -76,7 +76,7 @@ static bool dl_queue_push(struct download_manager *dm,
                            const struct uint256 *hash, int32_t height)
 {
     if (dm->queue_len >= dm->queue_cap && !dl_queue_grow(dm))
-        return false;
+        LOG_FAIL("net", "dl_queue_push: queue full and grow failed (len=%zu, cap=%zu)", dm->queue_len, dm->queue_cap);
     dm->queue[dm->queue_len] = *hash;
     dm->queue_heights[dm->queue_len] = height;
     dm->queue_len++;
@@ -215,7 +215,8 @@ bool dl_mark_requested(struct download_manager *dm,
     struct dl_in_flight *slot = find_slot(dm, hash, true);
     if (!slot) {
         zcl_mutex_unlock(&dm->cs);
-        return false;
+        LOG_FAIL("net", "dl_mark_requested: no empty slot in hash table (active=%zu, slots=%zu)",
+                 dm->num_active, dm->num_slots);
     }
 
     slot->hash = *hash;

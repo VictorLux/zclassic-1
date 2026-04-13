@@ -68,7 +68,7 @@ Work in order. `./test_zcl` green on every push.
 
 4. ~~**zcl_malloc migration: app/ + tools/**~~ ✓ — 130 bare malloc/calloc → zcl_malloc/zcl_calloc across 45 files. 0 bare malloc remaining in app/ or tools/. All files include `safe_alloc.h`.
 
-5. ~~**LOG_FAIL migration: net layer**~~ ✓ — 24 files (all except addrman.c which is AGENT2 territory). ~190 bare returns → LOG_FAIL/LOG_ERR/LOG_NULL. Priority files: fast_sync.c (42), net.c (37), file_service.c (26), nat.c (27), p2p_message.c (26), msgprocessor.c (18).
+5. ~~**LOG_FAIL migration: net layer**~~ ✓ — 427 bare returns → LOG_FAIL/LOG_ERR/LOG_NULL/GUARD across all 21 `lib/net/src/*.c` files. Priority files: msgprocessor.c (51), fast_sync.c (59), net.c (44), addrman.c (63), file_service.c (46). All files now include `log_macros.h`. 64 intentional control-flow returns left unchanged.
 
 ### Security
 
