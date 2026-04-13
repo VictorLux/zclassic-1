@@ -518,6 +518,44 @@ bool accept_block_header(const struct block_header *header,
     if (pindex) {
         if (ppindex)
             *ppindex = pindex;
+        /* Fix scrambled heights from LDB import.  After snapshot sync,
+         * block_map entries above the coins tip may have nHeight=0 or
+         * wrong values because the flat-file/LDB import didn't walk
+         * pprev chains for blocks it couldn't fully validate.  Walk UP
+         * the pprev chain to find the first correct ancestor, then
+         * propagate heights DOWN — same algorithm as boot_index.c.
+         * Without this, the getheaders loop stalls forever because
+         * pindex_best_header never advances past the wrong height. */
+        if (pindex->pprev &&
+            pindex->nHeight != pindex->pprev->nHeight + 1) {
+            /* Walk up to find first correct ancestor */
+            struct block_index *stack[2048];
+            int depth = 0;
+            struct block_index *cur = pindex;
+            while (cur->pprev &&
+                   cur->nHeight != cur->pprev->nHeight + 1 &&
+                   depth < 2048) {
+                stack[depth++] = cur;
+                cur = cur->pprev;
+            }
+            /* Fix cur if needed */
+            if (cur->pprev && cur->nHeight != cur->pprev->nHeight + 1) {
+                cur->nHeight = cur->pprev->nHeight + 1;
+                struct arith_uint256 proof = GetBlockProof(cur);
+                arith_uint256_add(&cur->nChainWork,
+                                  &cur->pprev->nChainWork, &proof);
+            }
+            /* Propagate down the stack */
+            for (int i = depth - 1; i >= 0; i--) {
+                struct block_index *fix = stack[i];
+                if (fix->pprev) {
+                    fix->nHeight = fix->pprev->nHeight + 1;
+                    struct arith_uint256 proof = GetBlockProof(fix);
+                    arith_uint256_add(&fix->nChainWork,
+                                      &fix->pprev->nChainWork, &proof);
+                }
+            }
+        }
         if (pindex->nStatus & BLOCK_FAILED_MASK) {
             /* Clear FAILED for blocks near the chain tip — these are new
              * blocks that may have failed due to transient issues (tree

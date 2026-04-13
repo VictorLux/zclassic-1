@@ -1875,13 +1875,27 @@ static bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                         accepted, (unsigned long long)count,
                         pindex_last ? pindex_last->nHeight : -1);
 
-            if (syncsvc_should_log_accepted_headers(node, pindex_last))
+            if (syncsvc_should_log_accepted_headers(node, pindex_last)) {
+                int chain_h = active_chain_height(&mp->main_state->chain_active);
                 printf("Peer %s: accepted %zu/%llu headers "
                        "(header tip=%d, chain tip=%d, peer=%d)\n",
                        node->addr_name, accepted, (unsigned long long)count,
                        pindex_last ? pindex_last->nHeight : -1,
-                       active_chain_height(&mp->main_state->chain_active),
-                       node->starting_height);
+                       chain_h, node->starting_height);
+                /* Stall detection: if we accepted headers but the tip
+                 * didn't advance past chain height, something is wrong
+                 * with the block index heights. Log loudly. */
+                if (pindex_last && accepted > 0 &&
+                    pindex_last->nHeight < chain_h &&
+                    node->starting_height > chain_h + 100) {
+                    fprintf(stderr,
+                        "[sync] STALL DETECTED: accepted %zu headers but "
+                        "header tip=%d < chain tip=%d (peer at %d). "
+                        "Block index heights may be corrupted.\n",
+                        accepted, pindex_last->nHeight, chain_h,
+                        node->starting_height);
+                }
+            }
         }
 
         /* Update pindex_best_header if we received headers ahead of it.
