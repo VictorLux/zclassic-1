@@ -29,6 +29,7 @@ extern volatile sig_atomic_t g_shutdown_requested;
 #include "core/serialize.h"
 #include "bloom/bloom.h"
 #include "net/compact_blocks.h"
+#include "net/dandelion.h"
 #include "services/snapshot_sync_service.h"
 #include "controllers/blockchain_controller.h"
 #include "models/mmb_leaf_store.h"
@@ -126,6 +127,10 @@ static void msg_download_mgr_init_once(void)
     dl_init(&g_download_mgr);
     g_download_mgr_init = true;
 }
+
+/* ── Dandelion++ tx propagation ────────────────────────────────── */
+static struct dandelion_state g_dandelion;
+static bool g_dandelion_init = false;
 
 static void msg_manifest_reset(struct sync_manifest *manifest)
 {
@@ -538,6 +543,12 @@ void msg_processor_init(struct msg_processor *mp,
 
     /* Initialize download manager once (before threads start) */
     msg_get_download_mgr();
+
+    /* Initialize Dandelion++ tx propagation */
+    if (!g_dandelion_init) {
+        dandelion_init(&g_dandelion);
+        g_dandelion_init = true;
+    }
 
     /* Build initial block piece manifest for swarm sync.
      * This enables serving block pieces to peers immediately. */
@@ -1202,6 +1213,11 @@ static bool process_inv(struct msg_processor *mp, struct p2p_node *node,
                 node->hash_continue = inv.hash;
             }
         } else if (inv.type == MSG_TX) {
+            /* Dandelion: seeing a tx via inv means it's been fluffed.
+             * Remove from stempool so we don't re-fluff on embargo. */
+            if (g_dandelion_init)
+                dandelion_stempool_remove(&g_dandelion, &inv.hash);
+
             if (tx_already_seen(&inv.hash))
                 continue;
             if (!tx_mempool_exists(mp->mempool, &inv.hash)) {
@@ -1660,17 +1676,69 @@ static bool process_tx_msg(struct msg_processor *mp, struct p2p_node *node,
         inv_item_init_typed(&inv, MSG_TX, &hash);
         p2p_node_add_inventory_known(node, &inv);
 
-        /* Relay accepted tx to all connected peers */
+        /* Dandelion++ tx relay: stem (1 peer) or fluff (all peers) */
         if (mp->net_mgr) {
-            zcl_mutex_lock(&mp->net_mgr->cs_nodes);
-            for (size_t pi = 0; pi < mp->net_mgr->num_nodes; pi++) {
-                struct p2p_node *peer = mp->net_mgr->nodes[pi];
-                if (peer->id != node->id &&
-                    peer->state >= PEER_HANDSHAKE_COMPLETE &&
-                    !peer->disconnect && peer->relay_txes)
-                    p2p_node_push_inventory(peer, &inv);
+            bool stemmed = false;
+
+            if (g_dandelion_init) {
+                dandelion_maybe_rotate_epoch(&g_dandelion, mp->net_mgr);
+
+                if (dandelion_should_stem(&g_dandelion, node->id)) {
+                    node_id_t stem_id = dandelion_get_stem_peer(
+                        &g_dandelion, node->id);
+                    if (stem_id != DANDELION_NODE_ID_NONE) {
+                        /* Send full tx to stem peer (not inv) */
+                        zcl_mutex_lock(&mp->net_mgr->cs_nodes);
+                        for (size_t pi = 0; pi < mp->net_mgr->num_nodes; pi++) {
+                            struct p2p_node *sp = mp->net_mgr->nodes[pi];
+                            if (sp->id == stem_id &&
+                                sp->state >= PEER_HANDSHAKE_COMPLETE &&
+                                !sp->disconnect) {
+                                struct byte_stream bs;
+                                stream_init(&bs, 512);
+                                if (transaction_serialize(&tx, &bs)) {
+                                    p2p_node_begin_message(
+                                        sp, "tx",
+                                        mp->params->pchMessageStart);
+                                    p2p_node_write_message_data(
+                                        sp, bs.data, bs.size);
+                                    p2p_node_end_message(sp);
+                                    p2p_node_add_inventory_known(sp, &inv);
+                                    stemmed = true;
+                                    g_dandelion.stat_stem_sent++;
+                                }
+                                stream_free(&bs);
+                                break;
+                            }
+                        }
+                        zcl_mutex_unlock(&mp->net_mgr->cs_nodes);
+
+                        if (stemmed) {
+                            dandelion_stempool_add(&g_dandelion, &hash,
+                                                   node->id);
+                        }
+                    }
+                }
             }
-            zcl_mutex_unlock(&mp->net_mgr->cs_nodes);
+
+            /* Fluff: broadcast inv to all peers (normal relay) */
+            if (!stemmed) {
+                if (g_dandelion_init)
+                    g_dandelion.stat_fluffed++;
+                zcl_mutex_lock(&mp->net_mgr->cs_nodes);
+                for (size_t pi = 0; pi < mp->net_mgr->num_nodes; pi++) {
+                    struct p2p_node *peer = mp->net_mgr->nodes[pi];
+                    if (peer->id != node->id &&
+                        peer->state >= PEER_HANDSHAKE_COMPLETE &&
+                        !peer->disconnect && peer->relay_txes)
+                        p2p_node_push_inventory(peer, &inv);
+                }
+                zcl_mutex_unlock(&mp->net_mgr->cs_nodes);
+
+                /* If this tx was in the stem pool, remove it (it's now fluffed) */
+                if (g_dandelion_init)
+                    dandelion_stempool_remove(&g_dandelion, &hash);
+            }
         }
 
         {
@@ -4442,6 +4510,27 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
                    endgame ? " [endgame]" : "");
         } else {
             pthread_mutex_unlock(&g_block_swarm_mutex);
+        }
+    }
+
+    /* Dandelion++ embargo check: fluff any stemmed txs whose embargo expired.
+     * Done once per trickle cycle (not per-peer) via a static timer guard. */
+    if (send_trickle && g_dandelion_init && g_dandelion.stempool_count > 0) {
+        struct uint256 expired[32];
+        int nexp = dandelion_stempool_check_embargo(&g_dandelion, expired, 32);
+        if (nexp > 0 && mp->net_mgr) {
+            zcl_mutex_lock(&mp->net_mgr->cs_nodes);
+            for (int ei = 0; ei < nexp; ei++) {
+                struct inv_item einv;
+                inv_item_init_typed(&einv, MSG_TX, &expired[ei]);
+                for (size_t pi = 0; pi < mp->net_mgr->num_nodes; pi++) {
+                    struct p2p_node *peer = mp->net_mgr->nodes[pi];
+                    if (peer->state >= PEER_HANDSHAKE_COMPLETE &&
+                        !peer->disconnect && peer->relay_txes)
+                        p2p_node_push_inventory(peer, &einv);
+                }
+            }
+            zcl_mutex_unlock(&mp->net_mgr->cs_nodes);
         }
     }
 

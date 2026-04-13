@@ -123,6 +123,7 @@ int main(void)
     failures += test_header_sync();
     failures += test_hd_keychain();
     failures += test_compact_blocks();
+    failures += test_dandelion();
 
     /* Spec-based user story tests */
     failures += spec_wallet_dashboard();

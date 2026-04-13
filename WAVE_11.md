@@ -34,7 +34,7 @@ Work in order. `./test_zcl` green on every push.
 
 6. ~~**Compact blocks (BIP152)**~~ ✓ — `lib/net/src/compact_blocks.{h,c}`. SipHash-2-4 short txid relay, sendcmpct/cmpctblock/getblocktxn/blocktxn messages. Block relay uses compact blocks for opted-in peers. 14 tests.
 
-7. **Dandelion tx propagation** — `lib/net/src/dandelion.{h,c}`. Stem phase (1 peer) + fluff phase (normal relay). Privacy upgrade for tx origin hiding.
+7. ~~**Dandelion tx propagation**~~ ✓ — `lib/net/src/dandelion.{h,c}`. Dandelion++ stem/fluff phases for tx origin privacy. Epoch-based stem peer rotation (~10 min), 10% per-hop fluff probability, 30s embargo timeout with auto-fluff fail-safe, stempool dedup + eviction. Integrated into msgprocessor tx relay + inv handling. 14 tests.
 
 8. **Addrman bucket rebalancing** — audit `lib/net/src/addrman.c`. Ensure proper new/tried bucket distribution, eviction on collision, test with adversarial peer sets.
 

@@ -197,6 +197,7 @@ int test_wallet(void);
 int test_primitives(void);
 int test_bloom(void);
 int test_compact_blocks(void);
+int test_dandelion(void);
 int test_coins(void);
 int test_tor(void);
 int test_load_balancer(void);
