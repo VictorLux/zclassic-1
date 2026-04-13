@@ -42,7 +42,7 @@ Work in order. `./test_zcl` green on every push.
 
 9. ~~**Block pruning service**~~ ✓ — `app/services/src/block_pruning_service.{h,c}`. File-granularity pruning: deletes blkXXXXX.dat + revXXXXX.dat when all blocks in the file are deeper than `ZCL_PRUNE_KEEP_BLOCKS` (default 1000, min 288). Clears BLOCK_HAVE_DATA/UNDO flags, preserves headers. Never prunes file 0 (genesis) or blk_sync.dat (file 255). Background thread with condvar-based startup sync, only prunes at SYNC_AT_TIP. `EV_BLOCK_PRUNING_DONE` events. 32 tests.
 
-10. **Database schema migration framework** — `lib/storage/src/schema_migration.{h,c}`. Versioned migrations table, up/down functions, boot-time auto-migrate. No more ad-hoc ALTER TABLE.
+10. ~~**Database schema migration framework**~~ ✓ — `lib/storage/src/schema_migration.{h,c}`. Registry of versioned migrations with up/down function pointers. Auto-runs pending migrations at boot (version > current). Each migration wrapped in BEGIN/COMMIT with rollback on failure. Backward-compatible with existing v1-v18 if/else chain (framework handles v19+). Registration API, rollback support, sorted execution. 39 tests.
 
 ### Testing
 

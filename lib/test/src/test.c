@@ -128,6 +128,7 @@ int main(void)
     failures += test_dandelion();
     failures += test_addrman_rebalance();
     failures += test_block_pruning();
+    failures += test_schema_migration();
 
     /* Spec-based user story tests */
     failures += spec_wallet_dashboard();
