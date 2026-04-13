@@ -1,0 +1,260 @@
+/* Copyright (c) 2009-2010 Satoshi Nakamoto
+ * Copyright (c) 2009-2014 The Bitcoin Core developers
+ * Copyright 2026 Rhett Creighton - Apache License 2.0
+ * Distributed under the MIT software license, see the accompanying
+ * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
+
+/* msg_version.c — Version/verack handshake processing.
+ * Split from msgprocessor.c for maintainability. */
+
+#include "net/msg_internal.h"
+#include "net/addrman.h"
+#include "net/version.h"
+#include "net/p2p_message.h"
+#include "net/file_service.h"
+#include "net/peer_scoring.h"
+#include "net/fast_sync.h"
+#include "models/peer.h"
+#include "models/database.h"
+#include "core/serialize.h"
+#include "services/header_sync_service.h"
+#include "util/timedata.h"
+#include "event/event.h"
+#include "util/log_macros.h"
+#include "util/safe_alloc.h"
+#include <stdio.h>
+#include <string.h>
+#include <time.h>
+
+void push_version(struct msg_processor *mp, struct p2p_node *node)
+{
+    struct version_message ver;
+    version_message_init(&ver);
+    ver.protocol_version = PROTOCOL_VERSION;
+    ver.services = NODE_NETWORK;
+    if (bip37_enabled())
+        ver.services |= NODE_BLOOM;
+    ver.timestamp = (int64_t)time(NULL);
+    ver.addr_recv = node->addr;
+    ver.nonce = mp->net_mgr->local_host_nonce;
+    snprintf(ver.sub_version, sizeof(ver.sub_version),
+             "/ZClassic-C23:1.0.0/");
+    ver.start_height = active_chain_height(&mp->main_state->chain_active);
+    ver.relay = true;
+
+    struct byte_stream s;
+    stream_init(&s, 256);
+    version_message_serialize(&ver, &s);
+
+    p2p_node_begin_message(node, "version", mp->params->pchMessageStart);
+    p2p_node_write_message_data(node, s.data, s.size);
+    p2p_node_end_message(node);
+
+    stream_free(&s);
+}
+
+void push_verack(struct msg_processor *mp, struct p2p_node *node)
+{
+    p2p_node_begin_message(node, "verack", mp->params->pchMessageStart);
+    p2p_node_end_message(node);
+}
+
+bool process_version(struct msg_processor *mp, struct p2p_node *node,
+                     struct byte_stream *s)
+{
+    if (node->version != 0) {
+        event_emitf(EV_PEER_MISBEHAVE, (uint32_t)node->id,
+                    "duplicate version from %s", node->addr_name);
+        LOG_FAIL("net", "duplicate version from peer %s", node->addr_name);
+    }
+
+    struct version_message ver;
+    version_message_init(&ver);
+    if (!version_message_deserialize(&ver, s))
+        LOG_FAIL("net", "failed to deserialize version message from %s",
+                 node->addr_name);
+
+    if (ver.protocol_version < MIN_PEER_PROTO_VERSION) {
+        event_emitf(EV_PEER_MISBEHAVE, (uint32_t)node->id,
+                    "proto %d too old (min %d) %s",
+                    ver.protocol_version, MIN_PEER_PROTO_VERSION,
+                    node->addr_name);
+        node->disconnect = true;
+        LOG_FAIL("net", "proto version %d too old (min %d) from %s",
+                 ver.protocol_version, MIN_PEER_PROTO_VERSION,
+                 node->addr_name);
+    }
+
+    /* Self-connection detection: if the peer's nonce matches our own
+     * local_host_nonce, we are connecting to ourselves. Disconnect. */
+    if (ver.nonce == mp->net_mgr->local_host_nonce &&
+        mp->net_mgr->local_host_nonce != 0) {
+        event_emitf(EV_TCP_DISCONNECTED, (uint32_t)node->id,
+                    "self-connection %s", node->addr_name);
+        node->disconnect = true;
+        LOG_FAIL("net", "self-connection detected for %s", node->addr_name);
+    }
+
+    node->version = ver.protocol_version;
+    node->services = ver.services;
+    strncpy(node->sub_ver, ver.sub_version, MAX_SUBVERSION_LENGTH - 1);
+    node->sub_ver[MAX_SUBVERSION_LENGTH - 1] = '\0';
+    strncpy(node->clean_sub_ver, ver.sub_version, MAX_SUBVERSION_LENGTH - 1);
+    node->clean_sub_ver[MAX_SUBVERSION_LENGTH - 1] = '\0';
+    node->starting_height = ver.start_height;
+    node->time_offset = ver.timestamp - (int64_t)time(NULL);
+    node->relay_txes = ver.relay;
+
+    event_emitf(EV_PEER_VERSION, (uint32_t)node->id,
+                "proto=%d h=%d %s", ver.protocol_version,
+                ver.start_height, ver.sub_version);
+
+    /* Ignore duplicate version messages from peers already past handshake */
+    if (node->state >= PEER_HANDSHAKE_COMPLETE) {
+        printf("Peer %s: ignoring duplicate version (already %s)\n",
+               node->addr_name, peer_state_name(node->state));
+        return true;
+    }
+    peer_set_state_checked((uint32_t)node->id, &node->state,
+                           PEER_VERSION_RECEIVED, "version msg received");
+
+    if (!node->inbound) {
+        AddTimeData((const unsigned char *)node->addr_name,
+                    (int)strlen(node->addr_name), node->time_offset);
+    }
+
+    push_verack(mp, node);
+
+    if (node->inbound)
+        push_version(mp, node);
+
+    /* For outbound connections, we already sent version; now we received
+     * their version and sent verack. Mark connected once we also get their
+     * verack (handled in process_verack). For inbound, the peer initiated,
+     * so mark connected after we send our version+verack. */
+    if (node->inbound) {
+        peer_set_state_checked((uint32_t)node->id, &node->state,
+                               PEER_HANDSHAKE_COMPLETE, "inbound version+verack");
+    }
+
+    /* Ask outbound peers for their address list */
+    if (!node->inbound && !node->get_addr) {
+        p2p_node_begin_message(node, "getaddr", mp->params->pchMessageStart);
+        p2p_node_end_message(node);
+        node->get_addr = true;
+    }
+
+    /* Send sendheaders — tells peer we prefer headers announcements
+     * over inv. Critical for headers-first sync with legacy zclassicd. */
+    p2p_node_begin_message(node, "sendheaders", mp->params->pchMessageStart);
+    p2p_node_end_message(node);
+
+    event_emitf(EV_PEER_VERSION, (uint32_t)node->id,
+                "%s v=%d h=%d %s%s",
+                node->addr_name, node->version, node->starting_height,
+                node->sub_ver,
+                peer_supports_fast_sync(node->services) ? " [ZCL23]" : "");
+
+    /* Detect zclassic23 peers via subversion string.
+     * Service bit detection is secondary — some peers filter unknown bits. */
+    bool is_zcl23 = peer_supports_fast_sync(node->services) ||
+                    strstr(node->sub_ver, "ZClassic-C23") != NULL;
+    if (is_zcl23) {
+        node->services |= NODE_ZCL23; /* mark for fast sync */
+        node->swarm_inflight_chunk = -1;
+        for (int pi = 0; pi < 4; pi++)
+            node->blk_pipeline[pi].piece_index = -1;
+        printf("Peer %s: supports zclassic23 fast sync [ZCL23]\n",
+               node->addr_name);
+
+        /* Exchange UTXO manifests — both peers announce what they have. */
+        push_manifest(mp, node);
+
+        /* Exchange block piece manifests for parallel block sync. */
+        push_block_manifest(mp, node);
+
+        /* Advertise file service port. The peer knows our IP from the
+         * TCP connection — we just tell them which port to connect to
+         * for the fast file service. They cache it in SQLite for
+         * sticky reconnection across restarts.
+         * Message: "zfileaddr" with [2-byte port]. */
+        {
+            uint8_t faddr[2];
+            uint16_t fport = fs_server_get_port();
+            memcpy(faddr, &fport, 2);
+
+            struct byte_stream fs_msg;
+            stream_init(&fs_msg, 4);
+            stream_write_bytes(&fs_msg, faddr, 2);
+            p2p_node_begin_message(node, "zfileaddr",
+                                    mp->params->pchMessageStart);
+            p2p_node_write_message_data(node, fs_msg.data, fs_msg.size);
+            p2p_node_end_message(node);
+            stream_free(&fs_msg);
+        }
+    }
+
+    return true;
+}
+
+bool process_verack(struct msg_processor *mp, struct p2p_node *node)
+{
+    node->recv_version = PROTOCOL_VERSION;
+
+    /* Outbound: handshake complete (we sent version, got version+verack).
+     * Inbound: already marked in process_version. */
+    if (!node->inbound && node->state < PEER_HANDSHAKE_COMPLETE) {
+        peer_set_state_checked((uint32_t)node->id, &node->state,
+                               PEER_HANDSHAKE_COMPLETE, "verack received");
+        printf("Peer %s: handshake complete (outbound)\n", node->addr_name);
+    } else if (node->state < PEER_HANDSHAKE_COMPLETE) {
+        peer_set_state_checked((uint32_t)node->id, &node->state,
+                               PEER_HANDSHAKE_COMPLETE, "verack received");
+        printf("Peer %s: verack received\n", node->addr_name);
+    }
+
+    /* Mark peer as good in addrman — increases selection priority */
+    if (mp->net_mgr) {
+        addrman_good(&mp->net_mgr->addrman, &node->addr.svc,
+                      (int64_t)time(NULL));
+        addrman_connected(&mp->net_mgr->addrman, &node->addr.svc,
+                           (int64_t)time(NULL));
+    }
+
+    /* Aggressive peer exchange with ZCL23 nodes — don't wait for getaddr.
+     * Push all known addresses immediately so both nodes build their
+     * address books fast. This is the key to low-friction peer discovery:
+     * every ZCL23 handshake floods addresses in both directions. */
+    if (peer_supports_fast_sync(node->services) && mp->net_mgr) {
+        struct net_address addrs[2500];
+        size_t num = addrman_get_addr(&mp->net_mgr->addrman, addrs, 2500);
+        if (num > 0) {
+            struct byte_stream addr_msg;
+            stream_init(&addr_msg, num * 30 + 8);
+            stream_write_compact_size(&addr_msg, num);
+            for (size_t i = 0; i < num; i++)
+                net_address_serialize(&addrs[i], &addr_msg, true);
+            p2p_node_begin_message(node, "addr",
+                                    mp->params->pchMessageStart);
+            p2p_node_write_message_data(node, addr_msg.data, addr_msg.size);
+            p2p_node_end_message(node);
+            stream_free(&addr_msg);
+            printf("Peer %s: pushed %zu addresses (ZCL23 peer exchange)\n",
+                   node->addr_name, num);
+        }
+    }
+
+    /* Save peer via ActiveRecord model */
+    struct node_db *ndb = msg_node_db(mp);
+    if (ndb && ndb->open) {
+        struct db_peer peer;
+        memset(&peer, 0, sizeof(peer));
+        memcpy(peer.ip, node->addr.svc.addr.ip, 16);
+        peer.port = node->addr.svc.port;
+        peer.services = node->services;
+        peer.last_seen = (int64_t)time(NULL);
+        peer.is_zcl23 = peer_supports_fast_sync(node->services);
+        db_peer_save(ndb, &peer);
+    }
+    return true;
+}

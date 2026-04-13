@@ -1,0 +1,459 @@
+/* Copyright (c) 2009-2010 Satoshi Nakamoto
+ * Copyright (c) 2009-2014 The Bitcoin Core developers
+ * Copyright 2026 Rhett Creighton - Apache License 2.0
+ * Distributed under the MIT software license, see the accompanying
+ * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
+
+/* msg_blocks.c — Block message processing.
+ * Split from msgprocessor.c for maintainability. */
+
+#include "net/msg_internal.h"
+#include "net/peer_scoring.h"
+#include "net/compact_blocks.h"
+#include "storage/disk_block_io.h"
+#include "services/block_sync_service.h"
+#include "services/snapshot_sync_service.h"
+#include "services/header_sync_service.h"
+#include "validation/process_block.h"
+#include "consensus/validation.h"
+#include "controllers/sync_controller.h"
+#include "net/download.h"
+#include "event/event.h"
+#include "wallet/wallet.h"
+#include "models/database.h"
+#include "util/log_macros.h"
+#include "util/safe_alloc.h"
+#include "util/sync.h"
+#include <stdio.h>
+#include <string.h>
+#include <time.h>
+#include <stdatomic.h>
+
+/* Rebuild manifest when chain grows this many blocks beyond the cached one. */
+#define MANIFEST_REFRESH_BLOCKS 1000
+
+bool process_getblocks(struct msg_processor *mp, struct p2p_node *node,
+                       struct byte_stream *s)
+{
+    struct block_locator locator;
+    block_locator_init(&locator);
+    if (!block_locator_deserialize(&locator, s)) {
+        block_locator_free(&locator);
+        LOG_FAIL("net", "failed to deserialize getblocks locator from %s",
+                 node->addr_name);
+    }
+
+    struct uint256 hash_stop;
+    if (!stream_read(s, hash_stop.data, 32)) {
+        block_locator_free(&locator);
+        LOG_FAIL("net", "failed to read getblocks hash_stop from %s",
+                 node->addr_name);
+    }
+
+    struct block_index *pindex = NULL;
+    struct active_chain *chain = &mp->main_state->chain_active;
+
+    for (size_t i = 0; i < locator.num_hashes; i++) {
+        struct block_index *found = block_map_find(
+            &mp->main_state->map_block_index, &locator.vhave[i]);
+        if (found && active_chain_contains(chain, found)) {
+            pindex = found;
+            break;
+        }
+    }
+    block_locator_free(&locator);
+
+    if (!pindex)
+        pindex = active_chain_at(chain, 0);
+
+    int limit = 500;
+    struct block_index *tip = active_chain_tip(chain);
+
+    if (pindex)
+        pindex = active_chain_at(chain, pindex->nHeight + 1);
+
+    for (; pindex && limit > 0; pindex = active_chain_at(chain, pindex->nHeight + 1)) {
+        if (!pindex || !pindex->phashBlock)
+            break;
+
+        struct inv_item inv;
+        inv_item_init_typed(&inv, MSG_BLOCK, pindex->phashBlock);
+        p2p_node_push_inventory(node, &inv);
+        limit--;
+
+        if (!uint256_is_null(&hash_stop) &&
+            uint256_eq(pindex->phashBlock, &hash_stop))
+            break;
+
+        if (pindex == tip)
+            break;
+    }
+
+    return true;
+}
+
+bool process_getdata(struct msg_processor *mp, struct p2p_node *node,
+                     struct byte_stream *s)
+{
+    uint64_t count;
+    if (!stream_read_compact_size(s, &count))
+        LOG_FAIL("net", "failed to read getdata count from %s",
+                 node->addr_name);
+
+    if (count > MAX_INV_SZ) {
+        node->disconnect = true;
+        LOG_FAIL("net", "getdata count %llu exceeds MAX_INV_SZ from %s",
+                 (unsigned long long)count, node->addr_name);
+    }
+
+    struct inv_item not_found[64];
+    size_t not_found_count = 0;
+
+    for (uint64_t i = 0; i < count; i++) {
+        struct inv_item inv;
+        if (!inv_item_deserialize(&inv, s))
+            LOG_FAIL("net", "failed to deserialize getdata inv[%llu] from %s",
+                     (unsigned long long)i, node->addr_name);
+
+        bool sent = false;
+        if (inv.type == MSG_BLOCK) {
+            struct block_index *bi = block_map_find(
+                &mp->main_state->map_block_index, &inv.hash);
+            if (bi && (bi->nStatus & BLOCK_HAVE_DATA)) {
+                struct block blk;
+                block_init(&blk);
+
+                if (read_block_from_disk_index(&blk, bi, mp->datadir)) {
+                    /* Verify block hash before serving — never send
+                     * corrupted data that would get us banned */
+                    struct uint256 disk_hash;
+                    block_get_hash(&blk, &disk_hash);
+                    if (uint256_cmp(&disk_hash, &inv.hash) != 0) {
+                        char exp[65], got[65];
+                        uint256_get_hex(&inv.hash, exp);
+                        uint256_get_hex(&disk_hash, got);
+                        fprintf(stderr, "SAFETY: refusing to serve block "
+                                "h=%d — hash mismatch!\n"
+                                "  requested: %s\n  disk:      %s\n",
+                                bi->nHeight, exp, got);
+                        block_free(&blk);
+                        goto skip_block_serve;
+                    }
+
+                    struct byte_stream blk_data;
+                    stream_init(&blk_data, 1024 * 1024);
+                    if (block_serialize(&blk, &blk_data)) {
+                        p2p_node_begin_message(node, "block",
+                                               mp->params->pchMessageStart);
+                        p2p_node_write_message_data(node, blk_data.data,
+                                                    blk_data.size);
+                        p2p_node_end_message(node);
+                        sent = true;
+                    }
+                    stream_free(&blk_data);
+                }
+                block_free(&blk);
+            }
+            skip_block_serve:
+            (void)0;
+        } else if (inv.type == MSG_TX) {
+            struct transaction tx;
+            transaction_init(&tx);
+            if (tx_mempool_lookup(mp->mempool, &inv.hash, &tx)) {
+                struct byte_stream tx_data;
+                stream_init(&tx_data, 512);
+                transaction_serialize(&tx, &tx_data);
+
+                p2p_node_begin_message(node, "tx",
+                                       mp->params->pchMessageStart);
+                p2p_node_write_message_data(node, tx_data.data, tx_data.size);
+                p2p_node_end_message(node);
+                stream_free(&tx_data);
+                sent = true;
+            }
+            transaction_free(&tx);
+        }
+
+        if (!sent && not_found_count < 64)
+            not_found[not_found_count++] = inv;
+    }
+
+    /* Send notfound for items we couldn't serve */
+    if (not_found_count > 0) {
+        struct byte_stream nf;
+        stream_init(&nf, not_found_count * 36 + 8);
+        stream_write_compact_size(&nf, not_found_count);
+        for (size_t i = 0; i < not_found_count; i++)
+            inv_item_serialize(&not_found[i], &nf);
+
+        p2p_node_begin_message(node, "notfound",
+                               mp->params->pchMessageStart);
+        p2p_node_write_message_data(node, nf.data, nf.size);
+        p2p_node_end_message(node);
+        stream_free(&nf);
+    }
+
+    return true;
+}
+
+bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
+                       struct byte_stream *s)
+{
+    /* Pre-check: reject oversized block messages before deserialization.
+     * Prevents allocation DoS from crafted messages. */
+    if (s->size > 2000000) {
+        event_emitf(EV_PEER_MISBEHAVE, (uint32_t)node->id,
+                    "oversized block msg %zu bytes", s->size);
+        peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_INVALID_BLOCK,
+                            "oversized block msg");
+        LOG_FAIL("net", "oversized block msg %zu bytes from %s",
+                 s->size, node->addr_name);
+    }
+
+    struct block blk;
+    block_init(&blk);
+    if (!block_deserialize(&blk, s)) {
+        event_emitf(EV_MSG_DESERIALIZATION_FAIL, (uint32_t)node->id, "block");
+        peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_FLOOD,
+                            "malformed block");
+        block_free(&blk);
+        LOG_FAIL("net", "failed to deserialize block from %s",
+                 node->addr_name);
+    }
+
+    struct uint256 hash;
+    block_get_hash(&blk, &hash);
+
+    /* Mark received in download manager (removes from in-flight) */
+    struct download_manager *dm = get_download_mgr();
+    dl_mark_received(dm, &hash);
+
+    /* Track block bytes for MB/s throughput reporting */
+    dl_add_bytes_received(dm, s->size);
+
+    /* Defer block processing while snapshot sync is active (any state).
+     * During NEGOTIATING: blocks fail at height 0, accumulate dos points.
+     * During RECEIVING: starves P2P socket reads.
+     * During VERIFYING: SHA3 computation needs uncontested SQLite. */
+    if (snapsync_is_active()) {
+        block_free(&blk);
+        return true;
+    }
+
+    if (block_already_seen(&hash)) {
+        block_free(&blk);
+        return true;
+    }
+    block_mark_seen(&hash);
+
+    struct validation_state state;
+    validation_state_init(&state);
+    process_new_block(&state, mp->main_state, mp->coins_tip,
+                      mp->params, &blk, false, mp->datadir);
+
+    if (!validation_state_is_valid(&state)) {
+        char hex[65];
+        uint256_get_hex(&hash, hex);
+        event_emitf(EV_BLOCK_REJECTED, (uint32_t)node->id,
+                    "hash=%s reason=%s", hex,
+                    state.reject_reason[0] ? state.reject_reason : "unknown");
+
+        /* When a block fails validation during IBD (likely a fork block),
+         * re-request headers from this peer starting at our current tip.
+         * This forces the peer to send us the correct chain of headers,
+         * which will include the valid block at the failed height. */
+        {
+            struct sync_getheaders_action action = {0};
+            syncsvc_plan_invalid_block_getheaders(&action, sync_get_state());
+            exec_getheaders_action(mp, node, &action);
+        }
+    }
+
+    if (validation_state_is_valid(&state)) {
+        /* Block accepted — give the peer a decay tick. Peers that mostly
+         * behave can work off earlier strikes; peers that only feed valid
+         * blocks stay at score 0 forever. Safe on trusted peers. */
+        peer_scoring_on_good_interaction(node, peer_scoring_now_ms());
+
+        struct block_index *new_tip = active_chain_tip(
+            &mp->main_state->chain_active);
+        if (new_tip) {
+            struct sync_block_acceptance acceptance;
+            node->last_block_time = (int64_t)time(NULL);
+            node->blocks_received++;
+            syncsvc_note_valid_block(&acceptance, node, sync_get_state(),
+                                     new_tip->nHeight,
+                                     mp->main_state->pindex_best_header
+                                         ? mp->main_state->pindex_best_header->nHeight
+                                         : new_tip->nHeight,
+                                     new_tip->nTime);
+            event_emitf(EV_BLOCK_CONNECTED, (uint32_t)node->id,
+                        "h=%d", new_tip->nHeight);
+
+            if (acceptance.reached_peer_tip) {
+                if (acceptance.should_set_sync_state) {
+                    sync_set_state(acceptance.next_sync_state,
+                                   "caught up to peer");
+                }
+                if (acceptance.should_set_flush_policy)
+                    set_flush_policy(3600, 500000, 100);
+                if (acceptance.should_update_peer_state) {
+                    peer_set_state_checked((uint32_t)node->id, &node->state,
+                                           acceptance.next_peer_state,
+                                           "chain caught up");
+                }
+                /* Start deferred HTTPS server now that it's safe */
+                extern void https_deferred_check(void);
+                https_deferred_check();
+                if (acceptance.should_emit_tip_updated)
+                    event_emitf(EV_TIP_UPDATED, 0,
+                                "AT_TIP height=%d",
+                                new_tip->nHeight);
+            }
+
+            /* Progress logged by IBD progress timer (every 30s) */
+
+            /* Refresh block manifest when chain grows beyond cached range.
+             * Only at tip — during IBD, SQLite is still catching up and
+             * manifest build can crash on partial data. We're a client
+             * during IBD, not serving pieces to peers. */
+            bool should_refresh_manifest = false;
+            if (sync_get_state() == SYNC_AT_TIP && new_tip->nHeight > 1000) {
+                struct block_piece_manifest header;
+                int32_t built_at = 0;
+                bool has_manifest =
+                    msg_processor_get_block_manifest_header(&header,
+                                                            &built_at);
+                should_refresh_manifest =
+                    !has_manifest ||
+                    new_tip->nHeight - built_at >= MANIFEST_REFRESH_BLOCKS;
+            }
+            if (should_refresh_manifest) {
+                /* Rebuild in a detached thread to avoid blocking message processing */
+                static _Atomic bool g_manifest_rebuilding = false;
+                if (!atomic_exchange(&g_manifest_rebuilding, true)) {
+                    struct block_piece_manifest new_m;
+                    memset(&new_m, 0, sizeof(new_m));
+                    if (block_piece_manifest_build(mp->datadir, 1,
+                            new_tip->nHeight, &new_m)) {
+                        uint32_t num_pieces = new_m.num_pieces;
+                        msg_processor_publish_block_manifest(
+                            &new_m, new_tip->nHeight);
+                        event_emitf(EV_SYNC_STATE_CHANGE, 0, "manifest refreshed to h=%d (%u pieces)",
+                                    new_tip->nHeight, num_pieces);
+                    }
+                    atomic_store(&g_manifest_rebuilding, false);
+                }
+            }
+
+            /* Relay accepted block to all connected peers (not during IBD).
+             * At the tip, we act as a full relay node. During IBD, relaying
+             * would flood peers with old blocks they already have.
+             * BIP 130: peers that sent "sendheaders" get a direct headers
+             * message (saves an inv→getheaders round-trip at the tip). */
+            if (sync_get_state() == SYNC_AT_TIP && new_tip->phashBlock) {
+                struct inv_item blk_inv;
+                inv_item_init_typed(&blk_inv, MSG_BLOCK, new_tip->phashBlock);
+                if (mp->net_mgr) {
+                    zcl_mutex_lock(&mp->net_mgr->cs_nodes);
+                    for (size_t pi = 0; pi < mp->net_mgr->num_nodes; pi++) {
+                        struct p2p_node *peer = mp->net_mgr->nodes[pi];
+                        if (peer->id != node->id &&
+                            peer->state >= PEER_HANDSHAKE_COMPLETE &&
+                            !peer->disconnect) {
+                            if (peer->send_compact) {
+                                /* BIP 152: send compact block directly */
+                                struct block blk_cmp;
+                                block_init(&blk_cmp);
+                                if (read_block_from_disk_index(&blk_cmp, new_tip, mp->datadir)) {
+                                    struct compact_block_msg cb;
+                                    uint64_t nonce = (uint64_t)time(NULL) ^ (uint64_t)peer->id;
+                                    if (compact_block_from_block(&cb, &blk_cmp, nonce)) {
+                                        struct byte_stream cs;
+                                        stream_init(&cs, 4096);
+                                        if (compact_block_msg_serialize(&cb, &cs)) {
+                                            p2p_node_begin_message(peer, "cmpctblock",
+                                                                   mp->params->pchMessageStart);
+                                            p2p_node_write_message_data(peer, cs.data, cs.size);
+                                            p2p_node_end_message(peer);
+                                        }
+                                        stream_free(&cs);
+                                        compact_block_msg_free(&cb);
+                                    }
+                                    block_free(&blk_cmp);
+                                }
+                            } else if (peer->prefer_headers) {
+                                /* BIP 130: send headers directly */
+                                struct block_header hdr;
+                                block_header_init(&hdr);
+                                hdr.nVersion = new_tip->nVersion;
+                                if (new_tip->pprev && new_tip->pprev->phashBlock)
+                                    hdr.hashPrevBlock = *new_tip->pprev->phashBlock;
+                                hdr.hashMerkleRoot = new_tip->hashMerkleRoot;
+                                hdr.hashFinalSaplingRoot = new_tip->hashFinalSaplingRoot;
+                                hdr.nTime = new_tip->nTime;
+                                hdr.nBits = new_tip->nBits;
+                                hdr.nNonce = new_tip->nNonce;
+                                if (new_tip->nSolution && new_tip->nSolutionSize > 0) {
+                                    memcpy(hdr.nSolution, new_tip->nSolution, new_tip->nSolutionSize);
+                                    hdr.nSolutionSize = new_tip->nSolutionSize;
+                                } else {
+                                    struct block blk_tip;
+                                    if (read_block_from_disk_index(&blk_tip, new_tip, mp->datadir)) {
+                                        memcpy(hdr.nSolution, blk_tip.header.nSolution, blk_tip.header.nSolutionSize);
+                                        hdr.nSolutionSize = blk_tip.header.nSolutionSize;
+                                        block_free(&blk_tip);
+                                    }
+                                }
+
+                                struct byte_stream hs;
+                                stream_init(&hs, 2048);
+                                stream_write_compact_size(&hs, 1);
+                                block_header_serialize(&hdr, &hs);
+                                stream_write_compact_size(&hs, 0); /* tx count */
+                                p2p_node_begin_message(peer, "headers",
+                                                       mp->params->pchMessageStart);
+                                p2p_node_write_message_data(peer, hs.data, hs.size);
+                                p2p_node_end_message(peer);
+                                stream_free(&hs);
+                            } else {
+                                p2p_node_push_inventory(peer, &blk_inv);
+                            }
+                        }
+                    }
+                    zcl_mutex_unlock(&mp->net_mgr->cs_nodes);
+                }
+            }
+        }
+    } else {
+        int dos = 0;
+        if (validation_state_get_dos(&state, &dos) && dos > 0) {
+            event_emitf(EV_BLOCK_REJECTED, (uint32_t)node->id,
+                        "dos=%d %s", dos, state.reject_reason);
+            printf("Peer %s: invalid block (dos=%d): %s\n",
+                   node->addr_name, dos, state.reject_reason);
+            /* DoS from validation is graded: treat the common [50, 100]
+             * range as the two typed categories so the enum values
+             * drive the score increment. Anything else falls through to
+             * the raw peer_misbehaving() path so we still honour the
+             * caller's intent without losing precision. */
+            const char *rr = state.reject_reason[0] ? state.reject_reason
+                                                    : "invalid block";
+            if (dos >= 100) {
+                peer_scoring_record(mp->net_mgr, node,
+                                    PEER_OFFENCE_INVALID_BLOCK, rr);
+            } else if (dos >= 50) {
+                peer_scoring_record(mp->net_mgr, node,
+                                    PEER_OFFENCE_INVALID_HEADER, rr);
+            } else {
+                peer_misbehaving(mp->net_mgr, node, dos, rr);
+            }
+        } else if (!validation_state_is_valid(&state)) {
+            /* DoS=0 but invalid: orphan block or parent-failed.
+             * Don't penalize peer — this is normal during sync. */
+        }
+    }
+
+    block_free(&blk);
+    return true;
+}

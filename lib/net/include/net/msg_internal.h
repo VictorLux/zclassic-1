@@ -1,0 +1,95 @@
+/* Copyright (c) 2009-2010 Satoshi Nakamoto
+ * Copyright (c) 2009-2014 The Bitcoin Core developers
+ * Copyright 2026 Rhett Creighton - Apache License 2.0
+ * Distributed under the MIT software license, see the accompanying
+ * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
+
+/* Internal header shared between the msgprocessor split files.
+ * NOT part of the public API — only included by msg_*.c files. */
+
+#ifndef ZCL_NET_MSG_INTERNAL_H
+#define ZCL_NET_MSG_INTERNAL_H
+
+#include "net/msgprocessor.h"
+#include "net/net.h"
+#include "core/serialize.h"
+#include "services/header_sync_service.h"
+
+/* ── Forward declarations for split message handlers ──────────── */
+
+/* msg_version.c — version/verack handshake */
+void push_version(struct msg_processor *mp, struct p2p_node *node);
+void push_verack(struct msg_processor *mp, struct p2p_node *node);
+bool process_version(struct msg_processor *mp, struct p2p_node *node,
+                     struct byte_stream *s);
+bool process_verack(struct msg_processor *mp, struct p2p_node *node);
+
+/* msg_headers.c — header sync messages */
+bool process_getheaders(struct msg_processor *mp, struct p2p_node *node,
+                        struct byte_stream *s);
+bool process_headers(struct msg_processor *mp, struct p2p_node *node,
+                     struct byte_stream *s);
+void push_getheaders(struct msg_processor *mp, struct p2p_node *node);
+void push_getheaders_from(struct msg_processor *mp,
+                          struct p2p_node *node,
+                          struct block_index *from);
+void exec_getheaders_action(struct msg_processor *mp,
+                            struct p2p_node *node,
+                            const struct sync_getheaders_action *action);
+
+/* msg_blocks.c — block handling */
+bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
+                       struct byte_stream *s);
+bool process_getdata(struct msg_processor *mp, struct p2p_node *node,
+                     struct byte_stream *s);
+bool process_getblocks(struct msg_processor *mp, struct p2p_node *node,
+                       struct byte_stream *s);
+
+/* msg_tx.c — transaction relay */
+bool process_tx_msg(struct msg_processor *mp, struct p2p_node *node,
+                    struct byte_stream *s);
+bool process_inv(struct msg_processor *mp, struct p2p_node *node,
+                 struct byte_stream *s);
+bool process_mempool(struct msg_processor *mp, struct p2p_node *node);
+
+/* msg_compact.c — compact blocks (BIP152) */
+bool process_sendcmpct(struct p2p_node *node, struct byte_stream *s);
+bool process_cmpctblock(struct msg_processor *mp, struct p2p_node *node,
+                        struct byte_stream *s);
+bool process_getblocktxn(struct msg_processor *mp, struct p2p_node *node,
+                         struct byte_stream *s);
+bool process_blocktxn(struct msg_processor *mp, struct p2p_node *node,
+                      struct byte_stream *s);
+
+/* ── Shared helpers (remain in msgprocessor.c) ────────────────── */
+
+/* Access the download manager singleton. */
+struct download_manager *msg_get_download_mgr(void);
+#define get_download_mgr() msg_get_download_mgr()
+
+/* Access the cached snapshot offer/manifest. */
+void send_snapshot_offer_msg(struct p2p_node *node,
+                             const struct snapshot_offer *offer,
+                             const unsigned char *msg_start);
+void push_manifest(struct msg_processor *mp, struct p2p_node *node);
+void push_block_manifest(struct msg_processor *mp, struct p2p_node *node);
+
+/* Block/tx dedup ring buffers. */
+bool block_already_seen(const struct uint256 *hash);
+void block_mark_seen(const struct uint256 *hash);
+void block_clear_seen(const struct uint256 *hash);
+bool tx_already_seen(const struct uint256 *hash);
+void tx_mark_seen(const struct uint256 *hash);
+
+/* Shared accessors. */
+struct node_db *msg_node_db(const struct msg_processor *mp);
+struct snapshot_sync_service *msg_snapshot_sync(const struct msg_processor *mp);
+struct snapshot_sync_service *msg_snapshot_sync_ensure(const struct msg_processor *mp);
+struct wallet *msg_wallet(const struct msg_processor *mp);
+
+/* Dandelion state (in msg_tx.c). */
+struct dandelion_state;
+extern struct dandelion_state g_dandelion;
+extern bool g_dandelion_init;
+
+#endif /* ZCL_NET_MSG_INTERNAL_H */
