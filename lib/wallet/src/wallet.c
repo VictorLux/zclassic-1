@@ -5,6 +5,8 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "wallet/wallet.h"
+#include "wallet/bip44.h"
+#include "wallet/mnemonic.h"
 #include "chain/chainparams.h"
 #include "consensus/upgrades.h"
 #include "core/random.h"
@@ -122,7 +124,9 @@ void wallet_init(struct wallet *w)
     w->oldest_key_pool_time = 0;
     w->time_first_key = 0;
     w->has_master_key = false;
-    w->hd_chain_counter = 0;
+    w->hd_external_counter = 0;
+    w->hd_internal_counter = 0;
+    w->hd_account = 0;
     w->default_fee = 10000;
     w->min_fee = 1000;
     w->spend_zero_conf_change = true;
@@ -208,8 +212,44 @@ void wallet_free(struct wallet *w)
     zcl_mutex_destroy(&w->cs);
 }
 
+static bool wallet_generate_hd_key(struct wallet *w, uint32_t change,
+                                   struct pubkey *pk_out)
+{
+    uint32_t *counter = (change == BIP44_INTERNAL)
+                        ? &w->hd_internal_counter
+                        : &w->hd_external_counter;
+    uint32_t index = *counter;
+
+    struct privkey priv;
+    struct pubkey pub;
+    privkey_init(&priv);
+
+    if (!bip44_derive_keypair(&w->master_key, &priv, &pub,
+                              w->hd_account, change, index)) {
+        memory_cleanse(priv.vch, 32);
+        return false;
+    }
+
+    zcl_mutex_lock(&w->cs);
+    bool ok = keystore_add_key(&w->keystore, &priv);
+    if (ok)
+        (*counter)++;
+    zcl_mutex_unlock(&w->cs);
+
+    memory_cleanse(priv.vch, 32);
+
+    if (ok && pk_out)
+        *pk_out = pub;
+    return ok;
+}
+
 bool wallet_generate_new_key(struct wallet *w, struct pubkey *pk_out)
 {
+    /* If HD wallet is initialized, derive from BIP44 external chain */
+    if (w->has_master_key)
+        return wallet_generate_hd_key(w, BIP44_EXTERNAL, pk_out);
+
+    /* Fallback: random key generation (legacy wallet) */
     struct privkey key;
     privkey_init(&key);
     privkey_make_new(&key, true);
@@ -234,11 +274,96 @@ bool wallet_generate_new_key(struct wallet *w, struct pubkey *pk_out)
     return ok;
 }
 
+bool wallet_init_hd(struct wallet *w, const unsigned char *seed, size_t seed_len)
+{
+    if (!seed || seed_len < HD_SEED_MIN_BYTES || seed_len > HD_SEED_MAX_BYTES)
+        return false;
+
+    struct ext_key master;
+    if (!hd_master_from_seed(&master, seed, seed_len)) {
+        memory_cleanse(&master, sizeof(master));
+        return false;
+    }
+
+    zcl_mutex_lock(&w->cs);
+    w->master_key = master;
+    w->has_master_key = true;
+    w->hd_external_counter = 0;
+    w->hd_internal_counter = 0;
+    w->hd_account = 0;
+    zcl_mutex_unlock(&w->cs);
+
+    memory_cleanse(&master, sizeof(master));
+    return true;
+}
+
+bool wallet_init_hd_from_mnemonic(struct wallet *w, const char *mnemonic,
+                                   const char *passphrase)
+{
+    if (!mnemonic)
+        return false;
+    if (!mnemonic_validate(mnemonic))
+        return false;
+
+    uint8_t seed[MNEMONIC_SEED_SIZE];
+    if (!mnemonic_to_seed(mnemonic, passphrase, seed)) {
+        memory_cleanse(seed, sizeof(seed));
+        return false;
+    }
+
+    bool ok = wallet_init_hd(w, seed, sizeof(seed));
+    memory_cleanse(seed, sizeof(seed));
+    return ok;
+}
+
+bool wallet_has_hd(const struct wallet *w)
+{
+    return w && w->has_master_key;
+}
+
+bool wallet_get_new_change_address(struct wallet *w, char *addr_out,
+                                    size_t addr_size)
+{
+    struct pubkey pk;
+
+    if (w->has_master_key) {
+        if (!wallet_generate_hd_key(w, BIP44_INTERNAL, &pk))
+            return false;
+    } else {
+        /* Legacy: change addresses are just regular addresses */
+        if (!wallet_generate_new_key(w, &pk))
+            return false;
+    }
+
+    struct key_id kid = pubkey_get_id(&pk);
+    struct tx_destination dest;
+    dest.type = DEST_KEY_ID;
+    dest.id.key = kid;
+
+    const struct chain_params *cp = chain_params_get();
+    size_t pk_pfx_len, sc_pfx_len;
+    const unsigned char *pk_pfx = chain_params_base58_prefix(
+        cp, B58_PUBKEY_ADDRESS, &pk_pfx_len);
+    const unsigned char *sc_pfx = chain_params_base58_prefix(
+        cp, B58_SCRIPT_ADDRESS, &sc_pfx_len);
+
+    return encode_destination(&dest, pk_pfx, pk_pfx_len,
+                              sc_pfx, sc_pfx_len, addr_out, addr_size);
+}
+
 bool wallet_get_new_address(struct wallet *w, char *addr_out, size_t addr_size)
 {
     struct pubkey pk;
-    if (!wallet_get_key_from_pool(w, &pk))
-        return false;
+
+    if (w->has_master_key) {
+        /* HD wallet: derive directly from BIP44 external chain */
+        if (!wallet_generate_hd_key(w, BIP44_EXTERNAL, &pk))
+            return false;
+    } else {
+        /* Legacy wallet: use key pool */
+        if (!wallet_get_key_from_pool(w, &pk))
+            return false;
+    }
 
     struct key_id kid = pubkey_get_id(&pk);
     struct tx_destination dest;

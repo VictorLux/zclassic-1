@@ -280,6 +280,7 @@ int test_fee_estimation(void);
 int test_header_sync(void);
 int test_hd_keychain(void);
 int test_mnemonic(void);
+int test_bip44(void);
 
 /* Spec-based user story tests (one per feature area) */
 int spec_wallet_dashboard(void);

@@ -8,6 +8,7 @@
 #define ZCL_WALLET_WALLET_H
 
 #include "wallet/keystore.h"
+#include "wallet/hd_keychain.h"
 #include "wallet/sapling_keys.h"
 #include "primitives/transaction.h"
 #include "chain/chain.h"
@@ -105,7 +106,9 @@ struct wallet {
 
     struct ext_key master_key;
     bool has_master_key;
-    uint32_t hd_chain_counter;
+    uint32_t hd_external_counter;  /* next external (receiving) address index */
+    uint32_t hd_internal_counter;  /* next internal (change) address index */
+    uint32_t hd_account;           /* BIP44 account number (default 0) */
 
     int64_t default_fee;
     int64_t min_fee;
@@ -183,6 +186,14 @@ bool wallet_commit_transaction(struct wallet *w, struct wallet_tx *wtx,
 
 void wallet_sync_transaction(struct wallet *w, const struct transaction *tx,
                               const struct block_index *pindex);
+
+/* HD wallet initialization */
+bool wallet_init_hd(struct wallet *w, const unsigned char *seed, size_t seed_len);
+bool wallet_init_hd_from_mnemonic(struct wallet *w, const char *mnemonic,
+                                   const char *passphrase);
+bool wallet_has_hd(const struct wallet *w);
+bool wallet_get_new_change_address(struct wallet *w, char *addr_out,
+                                    size_t addr_size);
 
 bool wallet_import_key(struct wallet *w, const struct privkey *key);
 bool wallet_dump_key(const struct wallet *w, const struct key_id *keyid,

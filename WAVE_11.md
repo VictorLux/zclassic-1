@@ -82,7 +82,7 @@ Work in order. `./test_zcl` green on every push.
 
 9. ~~**HD wallet Phase B (BIP39)**~~ ✓ — mnemonic seed phrases. `lib/wallet/src/mnemonic.{h,c}` + `lib/crypto/src/pbkdf2_sha512.{h,c}`. 12/15/18/21/24-word generation from entropy, BIP39 English wordlist (2048 words, binary search), SHA256 checksum validation, PBKDF2-HMAC-SHA512 seed derivation (2048 iterations). BIP39 test vectors verified. 18 tests.
 
-10. **HD wallet Phase C (BIP44)** — derivation paths `m/44'/147'/0'/change/index`. Wire into `getnewaddress` when HD wallet exists. 6+ tests.
+10. ~~**HD wallet Phase C (BIP44)**~~ ✓ — derivation paths `m/44'/147'/0'/change/index`. `lib/wallet/src/bip44.{h,c}`. Account/chain/address derivation, path formatting. `getnewaddress` uses BIP44 external chain when HD wallet initialized; `wallet_get_new_change_address` uses internal chain. `wallet_init_hd` from seed, `wallet_init_hd_from_mnemonic` from BIP39 phrase. 18 tests.
 
 11. **Multisig P2SH support** — `createmultisig`, `addmultisigaddress` RPC. Script building + signing. 8+ tests.
 
