@@ -84,7 +84,7 @@ Work in order. `./test_zcl` green on every push.
 
 10. ~~**HD wallet Phase C (BIP44)**~~ ✓ — derivation paths `m/44'/147'/0'/change/index`. `lib/wallet/src/bip44.{h,c}`. Account/chain/address derivation, path formatting. `getnewaddress` uses BIP44 external chain when HD wallet initialized; `wallet_get_new_change_address` uses internal chain. `wallet_init_hd` from seed, `wallet_init_hd_from_mnemonic` from BIP39 phrase. 18 tests.
 
-11. **Multisig P2SH support** — `createmultisig`, `addmultisigaddress` RPC. Script building + signing. 8+ tests.
+11. ~~**Multisig P2SH support**~~ ✓ — `createmultisig` + `addmultisigaddress` RPCs (already implemented in wallet_controller.c). `script_for_multisig()` builds OP_m..OP_n..OP_CHECKMULTISIG. `sign_one_input()` handles P2SH-wrapped multisig signing. Keystore stores/retrieves redeem scripts. `test_multisig.c`: 10 tests covering script layout (2-of-3, 1-of-1), solver detection, P2SH address roundtrip, keystore cscript CRUD, 2-of-2 signing, 1-of-2 partial signing, determinism, key ordering, and 3-of-3 nrequired extraction.
 
 ### Tooling & ops
 
