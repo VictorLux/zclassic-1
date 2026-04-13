@@ -32,7 +32,7 @@ Work in order. `./test_zcl` green on every push.
 
 ### Consensus hardening
 
-6. **Compact blocks (BIP152)** — `lib/net/src/compact_blocks.{h,c}`. Short txid relay, getblocktxn/blocktxn messages. Bandwidth reduction for connected miners/peers.
+6. ~~**Compact blocks (BIP152)**~~ ✓ — `lib/net/src/compact_blocks.{h,c}`. SipHash-2-4 short txid relay, sendcmpct/cmpctblock/getblocktxn/blocktxn messages. Block relay uses compact blocks for opted-in peers. 14 tests.
 
 7. **Dandelion tx propagation** — `lib/net/src/dandelion.{h,c}`. Stem phase (1 peer) + fluff phase (normal relay). Privacy upgrade for tx origin hiding.
 

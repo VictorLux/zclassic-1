@@ -122,6 +122,7 @@ int main(void)
     failures += test_fee_estimation();
     failures += test_header_sync();
     failures += test_hd_keychain();
+    failures += test_compact_blocks();
 
     /* Spec-based user story tests */
     failures += spec_wallet_dashboard();
