@@ -4,6 +4,7 @@
 
 #include "rpc/httpserver.h"
 #include "rpc/http_middleware.h"
+#include <sys/stat.h>
 #include "rpc/rpc_timeout.h"
 #include "net/ws_events.h"
 #include "json/json.h"
@@ -108,6 +109,18 @@ static size_t base64_decode(const char *in, size_t inlen,
     return olen;
 }
 
+/* Constant-time comparison to prevent timing attacks on RPC credentials.
+ * Always compares all bytes of the shorter string; returns 0 on match. */
+static int constant_time_strcmp(const char *a, size_t alen,
+                                 const char *b, size_t blen)
+{
+    unsigned int diff = (unsigned int)(alen ^ blen);
+    size_t n = alen < blen ? alen : blen;
+    for (size_t i = 0; i < n; i++)
+        diff |= (unsigned int)((unsigned char)a[i] ^ (unsigned char)b[i]);
+    return diff == 0 ? 0 : 1;
+}
+
 static bool check_auth(const char *auth_header)
 {
     if (!g_auth_required) return true;
@@ -125,13 +138,17 @@ static bool check_auth(const char *auth_header)
     char expected[512];
     pthread_mutex_lock(&g_cookie_mutex);
     snprintf(expected, sizeof(expected), "%s:%s", g_rpc_user, g_rpc_password);
-    bool ok = (strcmp((const char *)decoded, expected) == 0);
+    size_t elen = strlen(expected);
+    bool ok = (constant_time_strcmp((const char *)decoded, dlen,
+                                    expected, elen) == 0);
 
     /* Accept previous cookie during rotation transition window */
     if (!ok && g_cookie_mode && g_rpc_password_prev[0]) {
         snprintf(expected, sizeof(expected), "%s:%s",
                  g_rpc_user, g_rpc_password_prev);
-        ok = (strcmp((const char *)decoded, expected) == 0);
+        elen = strlen(expected);
+        ok = (constant_time_strcmp((const char *)decoded, dlen,
+                                   expected, elen) == 0);
     }
     pthread_mutex_unlock(&g_cookie_mutex);
 
@@ -702,6 +719,7 @@ void rpc_http_cookie_rotate(void)
         if (f) {
             fprintf(f, "%s:%s", g_rpc_user, g_rpc_password);
             fclose(f);
+            chmod(g_cookie_file, 0600);
         }
     }
     pthread_mutex_unlock(&g_cookie_mutex);
@@ -765,6 +783,9 @@ bool rpc_http_start(const struct rpc_table *table, uint16_t port,
         if (f) {
             fprintf(f, "%s:%s", g_rpc_user, g_rpc_password);
             fclose(f);
+            /* Restrict cookie file to owner-only access (0600) to prevent
+             * other users on the system from reading RPC credentials. */
+            chmod(g_cookie_file, 0600);
             printf("RPC cookie written to %s\n", g_cookie_file);
         }
     }

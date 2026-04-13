@@ -130,6 +130,8 @@ int main(void)
     failures += test_block_pruning();
     failures += test_schema_migration();
     failures += test_multisig();
+    failures += test_mcp_fuzz();
+    failures += test_rpc_auth_hardening();
 
     /* Spec-based user story tests */
     failures += spec_wallet_dashboard();
