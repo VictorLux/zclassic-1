@@ -27,6 +27,7 @@ extern volatile sig_atomic_t g_shutdown_requested;
 #include "core/hash.h"
 #include "core/random.h"
 #include "core/serialize.h"
+#include "bloom/bloom.h"
 #include "services/snapshot_sync_service.h"
 #include "controllers/blockchain_controller.h"
 #include "models/mmb_leaf_store.h"
@@ -661,8 +662,9 @@ static void push_version(struct msg_processor *mp, struct p2p_node *node)
     struct version_message ver;
     version_message_init(&ver);
     ver.protocol_version = PROTOCOL_VERSION;
-    /* Match zclassicd services exactly: NODE_NETWORK | NODE_BLOOM */
-    ver.services = NODE_NETWORK | NODE_BLOOM;
+    ver.services = NODE_NETWORK;
+    if (bip37_enabled())
+        ver.services |= NODE_BLOOM;
     ver.timestamp = (int64_t)time(NULL);
     ver.addr_recv = node->addr;
     ver.nonce = mp->net_mgr->local_host_nonce;
@@ -2250,6 +2252,53 @@ static bool handle_notfound(struct msg_processor *mp, struct p2p_node *node,
     return process_notfound(node, s);
 }
 
+/* ── BIP37 bloom filter handlers ─────────────────────────────────
+ * BIP37 is a known privacy leak: a peer can probe which addresses a
+ * node owns by watching false-positive rates across crafted filters.
+ * Default OFF — enable only with ZCL_ENABLE_BIP37=1. When disabled,
+ * filterload/filteradd/filterclear score the peer as misbehaving. */
+
+static bool handle_filterload(struct msg_processor *mp, struct p2p_node *node,
+                               struct byte_stream *s)
+{
+    (void)s;
+    if (!bip37_enabled()) {
+        peer_misbehaving(mp->net_mgr, node, 100,
+                         "filterload rejected: BIP37 disabled");
+        LOG_FAIL("bip37", "filterload from %s — BIP37 disabled, disconnecting",
+                 node->addr_name);
+    }
+    /* Full BIP37 filter loading not implemented — reject even when enabled
+     * until a use case justifies it. */
+    return true;
+}
+
+static bool handle_filteradd(struct msg_processor *mp, struct p2p_node *node,
+                              struct byte_stream *s)
+{
+    (void)s;
+    if (!bip37_enabled()) {
+        peer_misbehaving(mp->net_mgr, node, 100,
+                         "filteradd rejected: BIP37 disabled");
+        LOG_FAIL("bip37", "filteradd from %s — BIP37 disabled, disconnecting",
+                 node->addr_name);
+    }
+    return true;
+}
+
+static bool handle_filterclear(struct msg_processor *mp, struct p2p_node *node,
+                                struct byte_stream *s)
+{
+    (void)s;
+    if (!bip37_enabled()) {
+        peer_misbehaving(mp->net_mgr, node, 100,
+                         "filterclear rejected: BIP37 disabled");
+        LOG_FAIL("bip37", "filterclear from %s — BIP37 disabled, disconnecting",
+                 node->addr_name);
+    }
+    return true;
+}
+
 /* ── ZCL Messaging handlers ───────────────────────────────────── */
 
 #include "net/zmsg.h"
@@ -2594,6 +2643,10 @@ static const struct msg_dispatch_entry g_msg_dispatch[] = {
     { "reject",       handle_reject,       true,  false, "p2p" },
     { "feefilter",    handle_feefilter,    true,  false, "mempool" },
     { "notfound",     handle_notfound,     true,  false, "sync" },
+    /* ── BIP37 bloom filters (gated by ZCL_ENABLE_BIP37) ── */
+    { "filterload",   handle_filterload,   true,  false, "bloom" },
+    { "filteradd",    handle_filteradd,    true,  false, "bloom" },
+    { "filterclear",  handle_filterclear,  true,  false, "bloom" },
     /* ── ZCL23 File Service ── */
     { "zfileaddr",    handle_zfileaddr,    true,  true,  "filesvc" },
     /* ── ZCL Messaging ── */

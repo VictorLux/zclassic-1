@@ -74,7 +74,7 @@ Work in order. `./test_zcl` green on every push.
 
 6. ~~**TLS for HTTP RPC**~~ ✓ — Optional TLS listener on 0.0.0.0:rpcport+1. Env `ZCL_RPC_TLS_CERT` + `ZCL_RPC_TLS_KEY` + optional `ZCL_RPC_TLS_PORT`. TLS 1.2+ via OpenSSL. Plain loopback listener unchanged. 3 tests.
 
-7. **Bloom filter (BIP37) audit** — audit `lib/bloom/`. Either deprecate (privacy leak) or gate behind `ZCL_ENABLE_BIP37=1` env var. Default off.
+7. ~~**Bloom filter (BIP37) audit**~~ ✓ — BIP37 gated behind `ZCL_ENABLE_BIP37=1`, default OFF. NODE_BLOOM no longer advertised unless enabled. filterload/filteradd/filterclear handlers reject with misbehavior(100) when off. Per-peer pfilter not allocated when off. rolling_bloom (addr_known) kept as-is — internal, not BIP37. 10 tests.
 
 ### Wallet
 

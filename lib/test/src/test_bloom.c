@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "test/test_helpers.h"
+#include "net/msgprocessor.h"
 
 int test_bloom(void)
 {
@@ -274,6 +275,118 @@ int test_bloom(void)
         merkle_hash_pair(&a, &b, &out_ab);
         merkle_hash_pair(&b, &a, &out_ba);
         if (!uint256_eq(&out_ab, &out_ba))
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ── BIP37 gating tests ─────────────────────────────────────── */
+
+    printf("bip37_enabled default off... ");
+    {
+        unsetenv("ZCL_ENABLE_BIP37");
+        if (!bip37_enabled())
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("bip37_enabled with ZCL_ENABLE_BIP37=1... ");
+    {
+        setenv("ZCL_ENABLE_BIP37", "1", 1);
+        if (bip37_enabled())
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+        unsetenv("ZCL_ENABLE_BIP37");
+    }
+
+    printf("bip37_enabled rejects ZCL_ENABLE_BIP37=0... ");
+    {
+        setenv("ZCL_ENABLE_BIP37", "0", 1);
+        if (!bip37_enabled())
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+        unsetenv("ZCL_ENABLE_BIP37");
+    }
+
+    printf("bip37_enabled rejects ZCL_ENABLE_BIP37=yes... ");
+    {
+        setenv("ZCL_ENABLE_BIP37", "yes", 1);
+        if (!bip37_enabled())
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+        unsetenv("ZCL_ENABLE_BIP37");
+    }
+
+    printf("bip37_enabled rejects ZCL_ENABLE_BIP37=10... ");
+    {
+        setenv("ZCL_ENABLE_BIP37", "10", 1);
+        if (!bip37_enabled())
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+        unsetenv("ZCL_ENABLE_BIP37");
+    }
+
+    printf("NODE_BLOOM not in services when BIP37 off... ");
+    {
+        unsetenv("ZCL_ENABLE_BIP37");
+        uint64_t svc = NODE_NETWORK;
+        if (bip37_enabled()) svc |= NODE_BLOOM;
+        if (!(svc & NODE_BLOOM))
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("NODE_BLOOM in services when BIP37 on... ");
+    {
+        setenv("ZCL_ENABLE_BIP37", "1", 1);
+        uint64_t svc = NODE_NETWORK;
+        if (bip37_enabled()) svc |= NODE_BLOOM;
+        if (svc & NODE_BLOOM)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+        unsetenv("ZCL_ENABLE_BIP37");
+    }
+
+    printf("dispatch table has filterload entry... ");
+    {
+        const struct msg_dispatch_entry *table = msg_get_dispatch_table();
+        bool found = false;
+        for (const struct msg_dispatch_entry *e = table; e->handler; e++) {
+            if (strcmp(e->command, "filterload") == 0) {
+                found = true;
+                break;
+            }
+        }
+        if (found)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("dispatch table has filteradd entry... ");
+    {
+        const struct msg_dispatch_entry *table = msg_get_dispatch_table();
+        bool found = false;
+        for (const struct msg_dispatch_entry *e = table; e->handler; e++) {
+            if (strcmp(e->command, "filteradd") == 0) {
+                found = true;
+                break;
+            }
+        }
+        if (found)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("dispatch table has filterclear entry... ");
+    {
+        const struct msg_dispatch_entry *table = msg_get_dispatch_table();
+        bool found = false;
+        for (const struct msg_dispatch_entry *e = table; e->handler; e++) {
+            if (strcmp(e->command, "filterclear") == 0) {
+                found = true;
+                break;
+            }
+        }
+        if (found)
             printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }

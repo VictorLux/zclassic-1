@@ -173,9 +173,13 @@ struct p2p_node *p2p_node_create(struct net_manager *nm, zcl_socket_t sock,
 
     rolling_bloom_init(&node->addr_known, 5000, 0.001);
 
-    node->pfilter = zcl_calloc(1, sizeof(*node->pfilter), "bloom_filter");
-    if (node->pfilter)
-        bloom_filter_init(node->pfilter, 1, 0.0001, 0, BLOOM_UPDATE_NONE);
+    if (bip37_enabled()) {
+        node->pfilter = zcl_calloc(1, sizeof(*node->pfilter), "bloom_filter");
+        if (node->pfilter)
+            bloom_filter_init(node->pfilter, 1, 0.0001, 0, BLOOM_UPDATE_NONE);
+    } else {
+        node->pfilter = NULL;
+    }
 
     node->min_ping_usec_time = INT64_MAX;
 

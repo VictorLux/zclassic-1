@@ -18,6 +18,7 @@
 #include "core/serialize.h"
 #include "net/netbase.h"
 #include "net/version.h"
+#include "bloom/bloom.h"
 #include "config/runtime.h"
 #include <netdb.h>
 #include <pthread.h>
@@ -783,7 +784,9 @@ bool connman_init(struct connman *cm, const struct chain_params *params,
     memcpy(cm->manager.message_start, params->pchMessageStart,
            MESSAGE_START_SIZE);
     cm->manager.default_port = (uint16_t)params->nDefaultPort;
-    cm->manager.local_services = NODE_NETWORK | NODE_BLOOM;
+    cm->manager.local_services = NODE_NETWORK;
+    if (bip37_enabled())
+        cm->manager.local_services |= NODE_BLOOM;
     cm->manager.local_host_nonce = GetRand(UINT64_MAX);
     snprintf(cm->manager.sub_version, MAX_SUBVERSION_LENGTH,
              "/ZClassic-C23:1.0.0/");

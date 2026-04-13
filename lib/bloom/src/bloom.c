@@ -6,10 +6,11 @@
 #include "bloom/bloom.h"
 #include "core/hash.h"
 #include "core/random.h"
+#include "util/log_macros.h"
+#include "util/safe_alloc.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
-#include "util/safe_alloc.h"
 
 #define LN2SQUARED 0.4804530139182014246671025263266649717305529515945455
 #define LN2 0.6931471805599453094172321214581765680755001343602552
@@ -36,8 +37,9 @@ static bool bloom_filter_init_internal(struct bloom_filter *f, unsigned int num_
 
     f->data_size = filter_bits / 8;
     if (f->data_size == 0) f->data_size = 1;
-    f->data = zcl_calloc(f->data_size, 1, "bloom_data");
-    if (!f->data) return false;
+    f->data = zcl_calloc(f->data_size, 1, "bloom_filter_data");
+    if (!f->data)
+        LOG_FAIL("bloom", "bloom_filter_init: alloc failed for %u elements", num_elements);
 
     f->is_full = false;
     f->is_empty = true;
@@ -133,10 +135,10 @@ bool rolling_bloom_init(struct rolling_bloom_filter *f, unsigned int num_element
 {
     unsigned int tweak = (unsigned int)GetRand(UINT32_MAX);
     if (!bloom_filter_init_internal(&f->b1, num_elements * 2, fp_rate, tweak, BLOOM_UPDATE_NONE, false))
-        return false;
+        LOG_FAIL("bloom", "rolling_bloom_init: b1 alloc failed for %u elements", num_elements);
     if (!bloom_filter_init_internal(&f->b2, num_elements * 2, fp_rate, tweak, BLOOM_UPDATE_NONE, false)) {
         bloom_filter_free(&f->b1);
-        return false;
+        LOG_FAIL("bloom", "rolling_bloom_init: b2 alloc failed for %u elements", num_elements);
     }
     f->bloom_size = num_elements * 2;
     f->insertions = 0;
@@ -175,4 +177,10 @@ void rolling_bloom_reset(struct rolling_bloom_filter *f)
     bloom_filter_reset(&f->b1, tweak);
     bloom_filter_reset(&f->b2, tweak);
     f->insertions = 0;
+}
+
+bool bip37_enabled(void)
+{
+    const char *v = getenv("ZCL_ENABLE_BIP37");
+    return v && v[0] == '1' && v[1] == '\0';
 }
