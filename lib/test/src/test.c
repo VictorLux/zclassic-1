@@ -124,6 +124,7 @@ int main(void)
     failures += test_hd_keychain();
     failures += test_compact_blocks();
     failures += test_dandelion();
+    failures += test_addrman_rebalance();
 
     /* Spec-based user story tests */
     failures += spec_wallet_dashboard();

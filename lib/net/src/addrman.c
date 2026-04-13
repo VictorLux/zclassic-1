@@ -309,6 +309,47 @@ static void make_tried(struct addr_man *am, struct addr_info *info, int nId)
             int nUBucket = addr_info_get_new_bucket(old, &am->nKey, &old->source);
             int nUBucketPos = addr_info_get_bucket_position(old, &am->nKey, true,
                                                              nUBucket);
+            /* Eclipse attack mitigation: only evict the occupant of the
+             * new bucket slot if it's "terrible" (stale/failed) or if
+             * the evicted tried entry has fewer references. This prevents
+             * an attacker from cascading evictions through tried→new to
+             * purge legitimate addresses from the new table. */
+            int existing_new_id = am->vvNew[nUBucket][nUBucketPos];
+            if (existing_new_id != -1 &&
+                existing_new_id >= 0 &&
+                (size_t)existing_new_id < am->entries_cap) {
+                struct addr_info *occupant = &am->entries[existing_new_id];
+                if (occupant->used &&
+                    !addr_info_is_terrible(occupant, GetAdjustedTime()) &&
+                    occupant->ref_count <= 1) {
+                    /* Occupant is still good — don't evict. Place the
+                     * tried-evicted entry in a different new bucket. */
+                    bool placed = false;
+                    for (int attempt = 1; attempt < 8 && !placed; attempt++) {
+                        unsigned char salt[4];
+                        memcpy(salt, &attempt, 4);
+                        /* Try alternative buckets derived from source */
+                        int alt_bucket = (nUBucket + attempt * 97) %
+                                         ADDRMAN_NEW_BUCKET_COUNT;
+                        int alt_pos = addr_info_get_bucket_position(
+                            old, &am->nKey, true, alt_bucket);
+                        if (am->vvNew[alt_bucket][alt_pos] == -1) {
+                            old->ref_count = 1;
+                            am->vvNew[alt_bucket][alt_pos] = nIdEvict;
+                            am->new_count++;
+                            placed = true;
+                        }
+                    }
+                    if (!placed) {
+                        /* Last resort: evict the occupant anyway */
+                        clear_new(am, nUBucket, nUBucketPos);
+                        old->ref_count = 1;
+                        am->vvNew[nUBucket][nUBucketPos] = nIdEvict;
+                        am->new_count++;
+                    }
+                    goto place_tried;
+                }
+            }
             clear_new(am, nUBucket, nUBucketPos);
             old->ref_count = 1;
             am->vvNew[nUBucket][nUBucketPos] = nIdEvict;
@@ -316,6 +357,7 @@ static void make_tried(struct addr_man *am, struct addr_info *info, int nId)
         }
     }
 
+place_tried:
     am->vvTried[nKBucket][nKBucketPos] = nId;
     am->tried_count++;
     info->in_tried = true;
@@ -606,6 +648,118 @@ size_t addrman_get_addr(struct addr_man *am, struct net_address *out,
 
     zcl_mutex_unlock(&am->cs);
     return count;
+}
+
+int addrman_consistency_check(const struct addr_man *am,
+                              char *err_buf, size_t err_cap)
+{
+#define CC_ERR(fmt, ...) do { \
+    if (err_buf && err_cap > 0) \
+        snprintf(err_buf, err_cap, fmt, ##__VA_ARGS__); \
+    return -1; \
+} while (0)
+
+    /* 1. Verify new table: every non-(-1) slot points to a valid, used,
+     *    non-tried entry with ref_count > 0. */
+    int new_refs = 0;
+    for (int b = 0; b < ADDRMAN_NEW_BUCKET_COUNT; b++) {
+        for (int p = 0; p < ADDRMAN_BUCKET_SIZE; p++) {
+            int id = am->vvNew[b][p];
+            if (id == -1) continue;
+            if (id < 0 || (size_t)id >= am->entries_cap)
+                CC_ERR("new[%d][%d]: id=%d out of range (cap=%zu)",
+                       b, p, id, am->entries_cap);
+            const struct addr_info *info = &am->entries[id];
+            if (!info->used)
+                CC_ERR("new[%d][%d]: id=%d not used", b, p, id);
+            if (info->in_tried)
+                CC_ERR("new[%d][%d]: id=%d is in tried table", b, p, id);
+            if (info->ref_count <= 0)
+                CC_ERR("new[%d][%d]: id=%d ref_count=%d <= 0",
+                       b, p, id, info->ref_count);
+            new_refs++;
+        }
+    }
+
+    /* 2. Verify tried table: every non-(-1) slot points to a valid, used,
+     *    in_tried entry. */
+    int tried_refs = 0;
+    for (int b = 0; b < ADDRMAN_TRIED_BUCKET_COUNT; b++) {
+        for (int p = 0; p < ADDRMAN_BUCKET_SIZE; p++) {
+            int id = am->vvTried[b][p];
+            if (id == -1) continue;
+            if (id < 0 || (size_t)id >= am->entries_cap)
+                CC_ERR("tried[%d][%d]: id=%d out of range", b, p, id);
+            const struct addr_info *info = &am->entries[id];
+            if (!info->used)
+                CC_ERR("tried[%d][%d]: id=%d not used", b, p, id);
+            if (!info->in_tried)
+                CC_ERR("tried[%d][%d]: id=%d not marked in_tried",
+                       b, p, id);
+            tried_refs++;
+        }
+    }
+
+    /* 3. Verify counts match. */
+    if (tried_refs != am->tried_count)
+        CC_ERR("tried_count mismatch: table has %d, tracked %d",
+               tried_refs, am->tried_count);
+
+    /* 4. Verify ref_count sums: each new-table entry's ref_count should
+     *    equal the number of new bucket slots pointing to it. */
+    for (int i = 0; i < am->id_count; i++) {
+        const struct addr_info *info = &am->entries[i];
+        if (!info->used || info->in_tried) continue;
+        int actual_refs = 0;
+        for (int b = 0; b < ADDRMAN_NEW_BUCKET_COUNT; b++)
+            for (int p = 0; p < ADDRMAN_BUCKET_SIZE; p++)
+                if (am->vvNew[b][p] == i)
+                    actual_refs++;
+        if (actual_refs != info->ref_count)
+            CC_ERR("entry %d: ref_count=%d but %d bucket refs",
+                   i, info->ref_count, actual_refs);
+    }
+
+    /* 5. Verify no duplicate entries in buckets. */
+    for (int b = 0; b < ADDRMAN_TRIED_BUCKET_COUNT; b++) {
+        for (int p1 = 0; p1 < ADDRMAN_BUCKET_SIZE; p1++) {
+            if (am->vvTried[b][p1] == -1) continue;
+            for (int p2 = p1 + 1; p2 < ADDRMAN_BUCKET_SIZE; p2++) {
+                if (am->vvTried[b][p1] == am->vvTried[b][p2])
+                    CC_ERR("tried[%d]: duplicate id=%d at pos %d and %d",
+                           b, am->vvTried[b][p1], p1, p2);
+            }
+        }
+    }
+
+#undef CC_ERR
+    return 0;
+}
+
+void addrman_get_bucket_stats(const struct addr_man *am,
+                              struct addrman_bucket_stats *stats)
+{
+    memset(stats, 0, sizeof(*stats));
+
+    for (int b = 0; b < ADDRMAN_NEW_BUCKET_COUNT; b++) {
+        int fill = 0;
+        for (int p = 0; p < ADDRMAN_BUCKET_SIZE; p++)
+            if (am->vvNew[b][p] != -1) fill++;
+        stats->new_occupied += fill;
+        if (fill > 0) stats->new_buckets_nonempty++;
+        if (fill > stats->max_new_bucket_fill)
+            stats->max_new_bucket_fill = fill;
+    }
+
+    for (int b = 0; b < ADDRMAN_TRIED_BUCKET_COUNT; b++) {
+        int fill = 0;
+        for (int p = 0; p < ADDRMAN_BUCKET_SIZE; p++)
+            if (am->vvTried[b][p] != -1) fill++;
+        stats->tried_occupied += fill;
+        if (fill > 0) stats->tried_buckets_nonempty++;
+        if (fill > stats->max_tried_bucket_fill)
+            stats->max_tried_bucket_fill = fill;
+    }
 }
 
 bool addrman_serialize(const struct addr_man *am, struct byte_stream *s)

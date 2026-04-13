@@ -95,6 +95,25 @@ int addr_info_get_bucket_position(const struct addr_info *info,
 bool addr_info_is_terrible(const struct addr_info *info, int64_t nNow);
 double addr_info_get_chance(const struct addr_info *info, int64_t nNow);
 
+/* Verify internal consistency of bucket tables.
+ * Returns 0 on success, negative on error.
+ * err_buf (if non-NULL) receives a description of the first error found. */
+int addrman_consistency_check(const struct addr_man *am,
+                              char *err_buf, size_t err_cap);
+
+/* Bucket distribution stats for monitoring/debugging. */
+struct addrman_bucket_stats {
+    int new_occupied;           /* total occupied slots in new table */
+    int tried_occupied;         /* total occupied slots in tried table */
+    int new_buckets_nonempty;   /* buckets with >= 1 entry */
+    int tried_buckets_nonempty;
+    int max_new_bucket_fill;    /* most-full new bucket */
+    int max_tried_bucket_fill;  /* most-full tried bucket */
+};
+
+void addrman_get_bucket_stats(const struct addr_man *am,
+                              struct addrman_bucket_stats *stats);
+
 struct byte_stream;
 bool addrman_serialize(const struct addr_man *am, struct byte_stream *s);
 bool addrman_deserialize(struct addr_man *am, struct byte_stream *s);

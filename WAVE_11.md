@@ -36,7 +36,7 @@ Work in order. `./test_zcl` green on every push.
 
 7. ~~**Dandelion tx propagation**~~ ✓ — `lib/net/src/dandelion.{h,c}`. Dandelion++ stem/fluff phases for tx origin privacy. Epoch-based stem peer rotation (~10 min), 10% per-hop fluff probability, 30s embargo timeout with auto-fluff fail-safe, stempool dedup + eviction. Integrated into msgprocessor tx relay + inv handling. 14 tests.
 
-8. **Addrman bucket rebalancing** — audit `lib/net/src/addrman.c`. Ensure proper new/tried bucket distribution, eviction on collision, test with adversarial peer sets.
+8. ~~**Addrman bucket rebalancing**~~ ✓ — audited `lib/net/src/addrman.c`. Eclipse attack mitigation in `make_tried()`: tried→new eviction now checks if new-bucket occupant is still good before evicting, tries alternative buckets first. Added `addrman_consistency_check()` (5-point invariant verifier) and `addrman_get_bucket_stats()` for monitoring. 12 tests: empty/add/promotion consistency, bucket stats, single-source flood resistance, diverse-source distribution, tried collision consistency, select, attempt tracking, get_addr pct limit, terrible eviction, bucket determinism.
 
 ### Storage
 
