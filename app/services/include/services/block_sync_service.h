@@ -85,7 +85,8 @@ void syncsvc_note_valid_block(struct sync_block_acceptance *result,
                               enum sync_state sync_state,
                               int new_tip_height,
                               int best_header_height,
-                              uint32_t new_tip_time);
+                              uint32_t new_tip_time,
+                              int max_peer_height);
 void syncsvc_collect_progress(struct sync_progress_snapshot *snapshot,
                               struct download_manager *dm,
                               enum sync_state sync_state,

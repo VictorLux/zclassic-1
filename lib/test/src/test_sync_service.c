@@ -829,7 +829,7 @@ static int test_sync_service_valid_block_transition(void)
         node.state = PEER_SYNCING_BLOCKS;
         node.starting_height = 100;
 
-        syncsvc_note_valid_block(&result, &node, SYNC_BLOCKS_DOWNLOAD, 100, 100, 0);
+        syncsvc_note_valid_block(&result, &node, SYNC_BLOCKS_DOWNLOAD, 100, 100, 0, 0);
         ASSERT(result.reached_peer_tip);
         ASSERT(result.should_emit_tip_updated);
         ASSERT(result.should_set_sync_state);
@@ -857,7 +857,7 @@ static int test_sync_service_valid_block_waits_for_headers(void)
         node.state = PEER_SYNCING_BLOCKS;
         node.starting_height = 100;
 
-        syncsvc_note_valid_block(&result, &node, SYNC_BLOCKS_DOWNLOAD, 100, 125, 0);
+        syncsvc_note_valid_block(&result, &node, SYNC_BLOCKS_DOWNLOAD, 100, 125, 0, 0);
         ASSERT(result.reached_peer_tip);
         ASSERT(!result.should_set_sync_state);
         ASSERT(!result.should_emit_tip_updated);

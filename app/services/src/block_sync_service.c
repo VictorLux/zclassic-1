@@ -81,7 +81,8 @@ void syncsvc_note_valid_block(struct sync_block_acceptance *result,
                               enum sync_state sync_state,
                               int new_tip_height,
                               int best_header_height,
-                              uint32_t new_tip_time)
+                              uint32_t new_tip_time,
+                              int max_peer_height)
 {
     struct sync_block_acceptance empty = {0};
     bool headers_caught_up = false;
@@ -102,6 +103,12 @@ void syncsvc_note_valid_block(struct sync_block_acceptance *result,
         (int64_t)new_tip_time > (int64_t)time(NULL) - 75 * 2);
     bool reached_peer = (node->starting_height > 0 &&
                          new_tip_height >= node->starting_height);
+    /* Guard against stale starting_height: if peers have advanced
+     * 144+ blocks beyond this node's starting_height, don't use it
+     * for at-tip detection — it would trigger false AT_TIP. */
+    if (reached_peer && max_peer_height > 0 &&
+        max_peer_height > node->starting_height + 144)
+        reached_peer = false;
 
     if (!reached_peer && !tip_is_recent)
         return;
