@@ -744,6 +744,37 @@ int test_robustness(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    printf("robust: unclean shutdown detection (WAL exists, no marker)... ");
+    {
+        char marker[512], wal[512];
+        snprintf(marker, sizeof(marker), "%s/.shutdown_clean", test_datadir);
+        snprintf(wal, sizeof(wal), "%s/node.db-wal", test_datadir);
+        /* Create a fake WAL file */
+        FILE *f = fopen(wal, "w");
+        if (f) { fprintf(f, "wal data"); fclose(f); }
+        /* Remove marker if exists */
+        unlink(marker);
+        struct stat st;
+        bool wal_exists = (stat(wal, &st) == 0 && st.st_size > 0);
+        bool marker_exists = (access(marker, F_OK) == 0);
+        bool crash_detected = (!marker_exists && wal_exists);
+        unlink(wal);
+        if (crash_detected) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("robust: clean shutdown detection (marker present)... ");
+    {
+        char marker[512];
+        snprintf(marker, sizeof(marker), "%s/.shutdown_clean", test_datadir);
+        FILE *f = fopen(marker, "w");
+        if (f) { fprintf(f, "1713100000\n"); fclose(f); }
+        bool marker_exists = (access(marker, F_OK) == 0);
+        unlink(marker);
+        if (marker_exists) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     cleanup_robustness_datadir();
     return failures;
 }

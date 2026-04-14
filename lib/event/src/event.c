@@ -361,6 +361,8 @@ const char *event_type_name(enum event_type type)
         [EV_NODE_READY]              = "sys.ready",
         [EV_NODE_SHUTDOWN]           = "sys.shutdown",
         [EV_CRASH]                   = "sys.crash",
+        [EV_CRASH_RECOVERY_START]    = "sys.crash_recovery_start",
+        [EV_CRASH_RECOVERY_COMPLETE] = "sys.crash_recovery_complete",
         [EV_DB_ERROR]                = "sys.db_error",
         [EV_MMB_APPEND]              = "mmb.append",
         [EV_MMB_PROOF_VERIFIED]      = "mmb.proof_verified",

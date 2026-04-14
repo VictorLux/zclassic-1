@@ -333,6 +333,38 @@ bool app_init(struct app_context *ctx)
     if (!acquire_datadir_lock(ctx->datadir))
         return false;
 
+    /* Crash recovery detection: check for unclean shutdown.
+     * A clean shutdown writes .shutdown_clean marker. If it's missing
+     * and a WAL file exists, the previous run crashed. */
+    {
+        char marker_path[1024], wal_path[1024];
+        snprintf(marker_path, sizeof(marker_path), "%s/.shutdown_clean",
+                 ctx->datadir);
+        snprintf(wal_path, sizeof(wal_path), "%s/node.db-wal",
+                 ctx->datadir);
+
+        struct stat wal_st;
+        bool wal_exists = (stat(wal_path, &wal_st) == 0 && wal_st.st_size > 0);
+        bool marker_exists = (access(marker_path, F_OK) == 0);
+
+        if (!marker_exists && wal_exists) {
+            printf("[boot] Unclean shutdown detected (WAL=%lldB, "
+                   "clean marker missing)\n",
+                   (long long)wal_st.st_size);
+            event_emitf(EV_CRASH_RECOVERY_START, 0,
+                "wal_size=%lld clean_marker=missing",
+                (long long)wal_st.st_size);
+        } else if (!marker_exists) {
+            /* First boot or marker was never written — not a crash */
+            printf("[boot] First boot or marker absent (no WAL)\n");
+        } else {
+            printf("[boot] Clean shutdown marker present\n");
+        }
+
+        /* Remove marker at boot — will be re-created on clean shutdown */
+        unlink(marker_path);
+    }
+
     /* Disk monitor — armed before first SQLite open so the
      * refuse-when-critical flag blocks writes before damage. */
     disk_monitor_config_defaults(&g_disk_monitor_cfg);
@@ -1971,11 +2003,37 @@ bool app_init(struct app_context *ctx)
     }
     /* g_svc is stored so app_shutdown can access it */
     g_svc = svc;
+
+    /* Emit crash recovery complete if boot succeeded */
+    {
+        int chain_h = active_chain_height(&g_state.chain_active);
+        event_emitf(EV_CRASH_RECOVERY_COMPLETE, 0,
+            "chain_height=%d", chain_h);
+    }
+
     return app_init_services(ctx, params, &g_svc);
 }
 
+/* Write clean shutdown marker before shutting down */
+static void write_clean_shutdown_marker(void)
+{
+    if (!g_datadir) return;
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/.shutdown_clean", g_datadir);
+    FILE *f = fopen(path, "w");
+    if (f) {
+        fprintf(f, "%ld\n", (long)time(NULL));
+        fclose(f);
+    }
+}
+
 /* app_shutdown delegates to boot_services.c */
-void app_shutdown(void) { app_shutdown_svc(&g_svc); release_datadir_lock(); }
+void app_shutdown(void)
+{
+    write_clean_shutdown_marker();
+    app_shutdown_svc(&g_svc);
+    release_datadir_lock();
+}
 bool app_is_running(void) { return atomic_load(&g_running); }
 
 /* app_add_node, app_start_metrics, app_stop_metrics: boot_services.c */

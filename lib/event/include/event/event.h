@@ -109,6 +109,8 @@ enum event_type {
     EV_NODE_READY,               /* payload: height(i32) + peers(u32) */
     EV_NODE_SHUTDOWN,            /* payload: reason string */
     EV_CRASH,                    /* payload: signal(i32) */
+    EV_CRASH_RECOVERY_START,     /* payload: "wal_size=N clean_marker=missing" */
+    EV_CRASH_RECOVERY_COMPLETE,  /* payload: "actions_taken=N chain_height=N" */
     EV_DB_ERROR,                 /* payload: operation + errmsg */
 
     /* ── MMB / FlyClient ───────────────────────────── */
