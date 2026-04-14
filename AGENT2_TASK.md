@@ -1,45 +1,59 @@
-# Agent 2 Task: Wave 14b — Sync Speed & Block File Discovery
+# Agent 2 Task: Wave 15 — Make activate_best_chain work after LDB reimport
 
-## Previous work (DONE)
-- Sync stall FIXED (broken pprev heights, contextual check skip)
-- Dynamic IBD download limits (4096 in-flight, 15s timeout)
-- Address backfill SIGSEGV fixed
-- pread() migration for thread safety
+## CRITICAL PROBLEM
 
-## Current state
-Node is at ~2,019,335. Peers are at ~3,077,000. Syncing via P2P. We copied block files from zclassicd but the node didn't discover all the new block data in them — only a few thousand blocks were found.
+We have 3,328,077 blocks with `BLOCK_HAVE_DATA` in the block index. The chain tip is stuck at 2,016,355. `rescanblockfiles` found 150,114 blocks above the tip and triggered `activation_request_connect`, but the chain tip didn't advance.
 
-## Files to read first
+The block at height 2,016,356 exists in the index with `BLOCK_HAVE_DATA` but `activate_best_chain` won't connect it.
+
+## Likely causes (investigate in this order)
+
+1. **nChainTx == 0**: `find_most_work_chain` requires `nChainTx > 0` to consider a block for activation. LDB-imported blocks may not have `nChainTx` set. Previous commit `80cf863ae` tried to fix this but may not cover all cases.
+
+2. **UTXO mismatch**: The coins tip hash might not match `block.hashPrevBlock` for block 2,016,356. The LDB reimport set `coins_best_block` but it may not match the block at our tip.
+
+3. **pprev chain broken**: The block at 2,016,356 may have a broken `pprev` that doesn't point to our tip, so it's not on the "best chain" from activate's perspective.
+
+## Files to read
 
 - `CLAUDE.md` and `DEFENSIVE_CODING.md`
-- `config/src/boot_index.c` — block file scanning, `scan_block_files_mark_data()`
-- `lib/net/src/msg_headers.c` — block file scan trigger after headers arrive
-- `lib/storage/src/disk_block_io.c` — reading blocks from blk*.dat files
+- `lib/validation/src/process_block.c` — `activate_best_chain()`, `find_most_work_chain()`
+- `lib/validation/src/connect_block.c` — `connect_tip()`, the actual block connection
+- `config/src/boot_index.c` — where nChainTx is propagated at boot
+- `app/controllers/src/repair_controller.c` — the `rescanblockfiles` RPC that triggers activation
+- `~/.zclassic-c23/node.log` — look for any error from `activate_best_chain`
 
 ## Tasks
 
-### 1. Improve block file scan to find all blocks
+### 1. Diagnose why activate_best_chain doesn't advance
 
-The block file scan (`scan_block_files_mark_data`) runs once after first headers arrive. It scans blk*.dat files and marks matching block index entries with `BLOCK_HAVE_DATA`. But it may miss blocks if:
-- The block hash doesn't match any entry in the block index (height mismatch)
-- The scan stops too early
+Add diagnostic logging to `activate_best_chain` and `find_most_work_chain`:
+- Log the candidate block (hash, height, nChainWork, nChainTx, nStatus)
+- If no candidate found, log why
+- If candidate found but connect_tip fails, log the failure reason
+- Deploy and trigger with `rescanblockfiles` RPC, check log
 
-Review and fix: scan ALL blk*.dat files thoroughly, match blocks by hash, and set `BLOCK_HAVE_DATA` + file position info for every match. Log how many blocks were found vs how many block index entries exist.
+### 2. Fix nChainTx propagation
 
-### 2. Add reindex-from-block-files RPC
+In `boot_index.c`, after the block index is loaded, propagate `nChainTx` for all blocks with `BLOCK_HAVE_DATA`:
+```c
+/* For LDB-imported blocks, if nChainTx is 0 but BLOCK_HAVE_DATA,
+ * set nChainTx = nTx (or 1 if nTx unknown). Without this,
+ * find_most_work_chain skips them. */
+```
+This may need multiple passes since nChainTx = pprev->nChainTx + nTx.
 
-Add RPC command `rescanblockfiles` that triggers a full re-scan of all blk*.dat files, matching them against the block index and setting BLOCK_HAVE_DATA. This is useful after copying block files from zclassicd.
+### 3. Verify coins_best_block matches tip
 
-### 3. Monitor sync speed
+At boot after LDB import, check that `coins_best_block` hash resolves to a block in the index and matches the active chain tip. If not, fix it.
 
-Add logging every 60s during blocks_download showing:
-- Blocks/second throughput
-- Estimated time to tip
-- Current download pipeline stats (in-flight, queued, timed out)
+### 4. Suppress checkpoint log spam
 
-### 4. Verify bg_hash_verify is working
+`checkpoints_hash_at_height()` logs for EVERY height without a checkpoint. Fix it to only log when a checkpoint EXISTS and the hash doesn't match (i.e., log violations, not non-events).
 
-Check if bg_hash_verification_service is enabled after the pread() migration. If disabled, re-enable in `boot_services.c` and verify no crash.
+### 5. Deploy and verify
+
+After fixing: `make deploy`, trigger `rescanblockfiles` via RPC, verify height advances past 2,016,355.
 
 ## Rules
 
