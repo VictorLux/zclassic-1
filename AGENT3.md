@@ -1,4 +1,4 @@
-# AGENT3 — Wave 20: Fix False At-Tip & Sync Observability
+# AGENT3 — Wave 20: Fix Reporting Lies & Add Observability
 
 **Working directory:** `~/zclassic23-3`
 **Coordinator:** Agent1 (~/zclassic23)
@@ -7,120 +7,145 @@
 
 ---
 
-## Context
+## Context: What Agent1 Fixed & What's Still Broken
 
-The node is stuck at height 2,016,354 while the network tip is ~3,078,009 (1M blocks behind). Root cause: the node falsely enters `SYNC_AT_TIP` state because `getblockchaininfo` reports hardcoded `verificationprogress=1.0`, headers count reports block height (not actual best header), and the `headers_caught_up` check compares headers against local blocks instead of peer heights. Once at tip, getheaders requests drop to 120s intervals and the watchdog doesn't monitor `SYNC_AT_TIP` for being behind peers.
+Agent1 fixed the chain activation deadlock (blocks never connected after LDB import) and added batching to prevent OOM. The node IS connecting blocks now, advancing 500 at a time.
 
-Agent2 owns the sync services. Agent3 fixes the RPC/observability side and adds test coverage for the false-tip scenario.
+**Still broken:** the RPC and MCP endpoints LIE about sync state. `getblockchaininfo` reports `headers: 2016354` (same as blocks) when the actual best_header is at 3M+. `verificationprogress` is hardcoded to 1.0. Operators and AI agents can't tell the node is behind.
 
 ---
 
-## Task 1: Fix getblockchaininfo to Report Real Sync State
-
-The RPC lies about sync status. Fix it.
+## Task 1: Fix getblockchaininfo to Report Real Headers Height
 
 ### File: `app/controllers/src/blockchain_controller.c`
 
-**Fix 1: headers field** (line ~291)
+Find the `getblockchaininfo` handler and fix:
+
+**Fix 1: headers field**
 Currently both `blocks` and `headers` use `active_chain_tip()->nHeight`. The `headers` field must report `pindex_best_header->nHeight`:
 ```c
-// BEFORE (wrong):
-json_push_kv_int(result, "headers", tip ? tip->nHeight : 0);
-
-// AFTER (correct):
-struct block_index *best_hdr = ctx->main_state->pindex_best_header;
+// Find where headers is set and change to:
+struct block_index *best_hdr = ms->pindex_best_header;  // or however main_state is accessed
 int header_height = best_hdr ? best_hdr->nHeight : (tip ? tip->nHeight : 0);
 json_push_kv_int(result, "headers", header_height);
 ```
 
-**Fix 2: verificationprogress** (line ~300)
-Currently hardcoded to `1.0`. Calculate it relative to the max peer starting_height:
+**Fix 2: verificationprogress**
+Currently hardcoded to 1.0. Calculate real progress:
 ```c
-// BEFORE (wrong):
-json_push_kv_real(result, "verificationprogress", 1.0);
-
-// AFTER (correct):
-int max_peer_h = connman_max_peer_height(ctx->connman);
-int our_h = tip ? tip->nHeight : 0;
+int max_peer_h = connman_max_peer_height(connman);
 double progress = 1.0;
 if (max_peer_h > 0 && our_h < max_peer_h)
     progress = (double)our_h / (double)max_peer_h;
 json_push_kv_real(result, "verificationprogress", progress);
 ```
 
-You'll need access to `connman` through the controller context. Check how other controllers (e.g. `network_controller.c`) access `connman` and follow the same pattern. If `connman_max_peer_height()` doesn't exist yet, Agent1 is adding it — pull first.
+You'll need access to `main_state` and `connman`. Look at how `network_controller.c` accesses these — follow the same pattern via the controller context struct.
 
-**Fix 3: Add `best_header_height` field**
-Add a new field so operators can see the real header tip:
-```c
-json_push_kv_int(result, "best_header_height", header_height);
+---
+
+## Task 2: Add Download Pipeline Stats to MCP zcl_status
+
+### File: wherever `zcl_status` MCP tool is implemented (likely `tools/mcp/controllers/ops_controller.c`)
+
+Add download pipeline visibility to the status output:
+```json
+{
+    "download": {
+        "queue_size": 0,
+        "in_flight": 0,
+        "total_requested": 500,
+        "total_received": 498,
+        "total_timed_out": 2
+    },
+    "header_height": 3078000,
+    "max_peer_height": 3078009,
+    "memory_rss_mb": 2048,
+    "uptime_secs": 1260
+}
 ```
 
-### Test:
-- Verify `make test` still passes (the test for getblockchaininfo, if any, may need updating)
-- The fix is mostly about correctness of reported values — no behavioral change
+Implementation:
+1. Call `dl_get_stats()` for download pipeline numbers
+2. Read `pindex_best_header->nHeight` for header height
+3. Call `connman_max_peer_height()` for peer max (check if this function exists — if not, scan peer list)
+4. Get RSS from `/proc/self/status` VmRSS line
+5. Track boot time with `static time_t boot_time = 0; if (!boot_time) boot_time = time(NULL);`
 
 ---
 
-## Task 2: Fix MCP zcl_status to Expose Header vs Block Gap
+## Task 3: Add Tests for False AT_TIP Detection
 
-### File: `tools/mcp/controllers/ops_controller.c` (or wherever `zcl_status` lives)
+### File: `lib/test/src/test_sync_service.c`
 
-The MCP status endpoint should clearly show when headers are behind peers:
-1. Find where `zcl_status` is implemented
-2. Add fields:
-   - `header_height`: from `pindex_best_header->nHeight`
-   - `max_peer_height`: highest `startingheight` among connected peers
-   - `header_gap`: `max_peer_height - header_height` (0 when caught up)
-   - `sync_behind`: true if header_gap > 144
+Test `syncsvc_note_valid_block()` edge cases:
 
-This makes it trivial for AI agents or monitoring to detect the stall.
+**Test 1: Should NOT transition to AT_TIP when 1M blocks behind**
+```c
+// node.starting_height = 2016354 (stale — peer was at same height at handshake)
+// new_tip_height = 2016354, best_header_height = 2016354
+// But network is at 3078000!
+// Result: should NOT set AT_TIP because starting_height is stale
+```
 
----
+**Test 2: Should transition to AT_TIP with recent tip time**
+```c
+// new_tip_time = now - 60 (block is fresh)
+// new_tip_height = 3078000
+// Result: SHOULD set AT_TIP via tip_is_recent path
+```
 
-## Task 3: Add Tests for False At-Tip Detection
-
-### File: `lib/test/src/test_sync_service.c` (or create if needed)
-
-Test the `syncsvc_evaluate_block_acceptance()` function from `block_sync_service.c`. This is where the false at-tip bug lives.
-
-**Test cases:**
-1. `headers_caught_up should be false when best_header == block_height but peer is 1M ahead`
-   - Call with `new_tip_height=2016354, best_header_height=2016354, node.starting_height=3078009`
-   - Assert `should_set_sync_state` is false (should NOT transition to AT_TIP)
-   - **NOTE: This test will FAIL with current code.** That's expected — it documents the bug. Add a comment: `/* BUG: headers_caught_up only checks local state, not peer height — see wave 20 task for Agent2 */`
-
-2. `headers_caught_up should be true when genuinely at tip`
-   - Call with `new_tip_height=3078000, best_header_height=3078001, node.starting_height=3078009`
-   - Assert `should_set_sync_state` is true and `next_sync_state == SYNC_AT_TIP`
-
-3. `tip_is_recent bypasses headers_caught_up correctly`
-   - Call with recent `new_tip_time` (now - 60), low `best_header_height`
-   - Assert AT_TIP transition happens (the recent-tip path is correct)
-
-**Important:** You can test `syncsvc_evaluate_block_acceptance()` directly since it's a pure function. Read the header file for the signature.
+**Test 3: headers_caught_up should require headers near peer max**
+```c
+// best_header_height = 2016354, new_tip_height = 2016354
+// node.starting_height = 2016354
+// This currently passes headers_caught_up — document the bug
+```
 
 ---
 
-## Task 4: Add getheaders Diagnostic Logging
+## Task 4: Add Structured Boot Timing Log
 
-### File: `app/services/src/header_sync_service.c`
+### File: `config/src/boot.c`
 
-Add logging to make header sync behavior visible:
+Add timing around each boot phase:
+```c
+struct timespec phase_start;
+clock_gettime(CLOCK_MONOTONIC, &phase_start);
+// ... phase code ...
+int64_t ms = elapsed_ms_since(&phase_start);
+printf("[boot] %-30s %lldms\n", "load_block_index", ms);
+```
 
-1. In `syncsvc_plan_periodic_getheaders()`: when a getheaders is planned, log:
-   ```c
-   printf("[headers] getheaders planned: peer=%d our_h=%d peer_start_h=%d interval=%llds\n",
-          node->id, our_height, node->starting_height, interval);
-   ```
+Phases: SQLite open, block index load, height repair, UTXO load, wallet load, P2P start, total.
 
-2. In `syncsvc_getheaders_interval()`: when interval is > 60s, log (once per change):
-   ```c
-   printf("[headers] interval=%llds for peer %d (stale_count=%d)\n",
-          base, node->id, stale);
-   ```
+---
 
-This helps diagnose WHY headers stop: is the interval too long? Are getheaders not being sent?
+## Task 5: Add Memory RSS to Health Check
+
+### File: `app/services/src/node_health_service.c`
+
+Add RSS monitoring so the health check can warn about high memory:
+```c
+static int64_t get_rss_kb(void) {
+    FILE *f = fopen("/proc/self/status", "r");
+    if (!f) return -1;
+    char line[256];
+    while (fgets(line, sizeof(line), f)) {
+        if (strncmp(line, "VmRSS:", 6) == 0) {
+            int64_t kb = 0;
+            sscanf(line + 6, " %lld", (long long *)&kb);
+            fclose(f);
+            return kb;
+        }
+    }
+    fclose(f);
+    return -1;
+}
+```
+
+Add to health output: `"memory_rss_mb": rss_kb / 1024`
+Add health check: if RSS > 4096 MB, set `degraded_reason = "high_memory_usage"`.
 
 ---
 
@@ -139,7 +164,7 @@ git push origin master
 ## Boundary: Files You MUST NOT Touch
 - `app/services/src/sync_watchdog_service.c` (Agent2)
 - `app/services/src/block_sync_service.c` (Agent2)
-- `app/services/src/block_index_integrity.c` (Agent2)
+- `lib/net/src/msg_headers.c` (Agent1)
+- `lib/validation/src/process_block.c` (Agent1)
 - `lib/net/src/download.c` (Agent2)
-- `lib/net/src/connman.c` (Agent1)
 - `lib/net/src/msgprocessor.c` (Agent1)
