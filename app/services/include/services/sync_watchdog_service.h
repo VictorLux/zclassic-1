@@ -57,6 +57,12 @@ void sync_watchdog_get_status(struct sync_watchdog_status *out);
 /* Return human-readable name for a recovery type. */
 const char *watchdog_recovery_type_name(enum watchdog_recovery_type type);
 
+/* Get how long the current sync state has been active (seconds). */
+int64_t sync_get_state_duration(void);
+
+/* Get the height at which the current sync state was entered. */
+int sync_get_state_entry_height(void);
+
 /* Called internally when sync state changes to update timestamps.
  * Registered as callback via sync_set_state_change_callback(). */
 void sync_watchdog_on_state_change(enum sync_state new_state, int height);

@@ -107,4 +107,16 @@ bool msgprocessor_test_should_ignore_snapshot_offer(
 void msgprocessor_test_reset_recent_blocks(void);
 int msgprocessor_test_get_recent_block_count(void);
 
+/* ── Header sync diagnostic counters (msg_headers.c) ─────────── */
+
+struct msg_headers_stats {
+    uint64_t batches_received;
+    uint64_t total_accepted;
+    uint64_t total_rejected;
+    uint64_t newly_added;
+    uint64_t already_known;
+};
+
+void msg_headers_get_stats(struct msg_headers_stats *out);
+
 #endif

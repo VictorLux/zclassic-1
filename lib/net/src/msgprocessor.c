@@ -54,6 +54,8 @@ extern volatile sig_atomic_t g_shutdown_requested;
 #include <string.h>
 #include "util/safe_alloc.h"
 #include "util/log_macros.h"
+#include "services/sync_watchdog_service.h"
+#include "net/connman.h"
 #include <time.h>
 #include <sys/time.h>
 #include <sys/stat.h>
@@ -2619,6 +2621,15 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
                            node->addr_name);
                     exec_getheaders_action(mp, node, &stale);
                 }
+            }
+
+            /* Sync watchdog: detect and recover from sync stalls.
+             * Runs once per 30s cycle on the progress peer only. */
+            if (is_progress_peer) {
+                struct connman *cm =
+                    (struct connman *)mp->net_mgr; /* manager is first field */
+                struct download_manager *dm_wd = get_download_mgr();
+                sync_watchdog_check(cm, dm_wd, mp->main_state);
             }
         }
     }

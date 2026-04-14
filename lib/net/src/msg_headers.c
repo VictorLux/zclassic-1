@@ -34,6 +34,26 @@ extern volatile sig_atomic_t g_shutdown_requested;
 /* Header sync stall tracking state is in msg_send_messages (msgprocessor.c).
  * This file handles the receive-side header processing. */
 
+#include <stdatomic.h>
+
+/* ── Sync diagnostic counters ──────────────────────────────────── */
+
+static _Atomic uint64_t g_headers_batches_received = 0;
+static _Atomic uint64_t g_headers_total_accepted = 0;
+static _Atomic uint64_t g_headers_total_rejected = 0;
+static _Atomic uint64_t g_headers_newly_added = 0;
+static _Atomic uint64_t g_headers_already_known = 0;
+
+void msg_headers_get_stats(struct msg_headers_stats *out)
+{
+    if (!out) return;
+    out->batches_received = atomic_load(&g_headers_batches_received);
+    out->total_accepted   = atomic_load(&g_headers_total_accepted);
+    out->total_rejected   = atomic_load(&g_headers_total_rejected);
+    out->newly_added      = atomic_load(&g_headers_newly_added);
+    out->already_known    = atomic_load(&g_headers_already_known);
+}
+
 bool process_getheaders(struct msg_processor *mp, struct p2p_node *node,
                         struct byte_stream *s)
 {
@@ -220,6 +240,13 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                                                : "unknown");
         }
     }
+
+    /* Update diagnostic counters */
+    atomic_fetch_add(&g_headers_batches_received, 1);
+    atomic_fetch_add(&g_headers_total_accepted, accepted);
+    atomic_fetch_add(&g_headers_total_rejected, count - accepted);
+    atomic_fetch_add(&g_headers_newly_added, newly_added);
+    atomic_fetch_add(&g_headers_already_known, accepted - newly_added);
 
     {
         struct block_index *tip = active_chain_tip(&mp->main_state->chain_active);

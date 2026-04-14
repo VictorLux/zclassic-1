@@ -7,6 +7,7 @@
 #include "services/sync_watchdog_service.h"
 #include "validation/chainstate.h"
 #include "net/p2p_game.h"
+#include "net/msgprocessor.h"
 #include "json/json.h"
 #include <string.h>
 #include <time.h>
@@ -239,6 +240,73 @@ static bool rpc_getsyncwatchdog(const struct json_value *params, bool help,
     return true;
 }
 
+/* ── RPC: getsyncdiag ────────────────────────────────────────── */
+
+static bool rpc_getsyncdiag(const struct json_value *params, bool help,
+                            struct json_value *result)
+{
+    (void)params;
+    RPC_HELP(help, result,
+        "getsyncdiag\n"
+        "\nReturn combined sync diagnostics: watchdog, header counters, sync state.\n"
+        "\nResult: object with watchdog, headers, sync_state, chain_height, "
+        "best_header_height.");
+
+    json_set_object(result);
+
+    /* Watchdog status */
+    {
+        struct sync_watchdog_status ws;
+        sync_watchdog_get_status(&ws);
+
+        struct json_value wd;
+        json_set_object(&wd);
+        json_push_kv_bool(&wd, "enabled", ws.enabled);
+        json_push_kv_int(&wd, "checks_run", (int64_t)ws.checks_run);
+        json_push_kv_int(&wd, "recoveries", (int64_t)ws.recoveries_triggered);
+        json_push_kv_int(&wd, "last_recovery_time", ws.last_recovery_time);
+        json_push_kv_str(&wd, "last_recovery_type",
+                         watchdog_recovery_type_name(ws.last_recovery_type));
+        json_push_kv(result, "watchdog", &wd);
+    }
+
+    /* Header sync counters */
+    {
+        struct msg_headers_stats hs;
+        msg_headers_get_stats(&hs);
+
+        struct json_value hdr;
+        json_set_object(&hdr);
+        json_push_kv_int(&hdr, "batches_received", (int64_t)hs.batches_received);
+        json_push_kv_int(&hdr, "total_accepted", (int64_t)hs.total_accepted);
+        json_push_kv_int(&hdr, "total_rejected", (int64_t)hs.total_rejected);
+        json_push_kv_int(&hdr, "newly_added", (int64_t)hs.newly_added);
+        json_push_kv_int(&hdr, "already_known", (int64_t)hs.already_known);
+        json_push_kv(result, "headers", &hdr);
+    }
+
+    /* Sync state */
+    enum sync_state ss = sync_get_state();
+    json_push_kv_str(result, "sync_state", sync_state_name(ss));
+    json_push_kv_int(result, "sync_state_duration_secs",
+                     sync_get_state_duration());
+
+    /* Chain and header heights */
+    int chain_h = 0;
+    int best_header_h = 0;
+    if (g_health_ctx.main_state) {
+        chain_h = active_chain_height(
+            &g_health_ctx.main_state->chain_active);
+        if (g_health_ctx.main_state->pindex_best_header)
+            best_header_h =
+                g_health_ctx.main_state->pindex_best_header->nHeight;
+    }
+    json_push_kv_int(result, "chain_height", (int64_t)chain_h);
+    json_push_kv_int(result, "best_header_height", (int64_t)best_header_h);
+
+    return true;
+}
+
 /* ── REST API helpers ─────────────────────────────────────────── */
 
 bool api_getsyncdetail(struct json_value *result)
@@ -259,6 +327,7 @@ void register_health_rpc_commands(struct rpc_table *t)
         { "control", "getsyncdetail",     rpc_getsyncdetail,     true },
         { "control", "getservicehealth",  rpc_getservicehealth,  true },
         { "control", "getsyncwatchdog",   rpc_getsyncwatchdog,   true },
+        { "control", "getsyncdiag",       rpc_getsyncdiag,       true },
     };
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++)
         rpc_table_append(t, &cmds[i]);
