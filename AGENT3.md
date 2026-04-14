@@ -1,4 +1,4 @@
-# AGENT3 — Wave 23b: Sapling Persistence + Multi-threaded Validation
+# AGENT3 — Wave 23c: Fallback Sync Path + Reliability
 
 **Working directory:** `~/zclassic23-3`
 **Coordinator:** Agent1 (~/zclassic23)
@@ -9,56 +9,56 @@
 
 ## Context
 
-Wave 23 progress:
-- Block download pipeline fixed (Agent1 + Agent3)
-- Node at 2,016,355 with headers at 3,078,027 — UTXO reimport in progress
-- Two remaining reliability items from the checklist need investigation
+Node stuck at 2,016,355 due to UTXO/chain tip mismatch. Agent2 is fixing the primary path (set chain tip to UTXO height after LDB import). Your job: build the fallback path and improve resilience.
 
 ---
 
-## Task 1 (HIGH): Sapling Tree Persistence After Crash
+## Task 1 (HIGH): Implement UTXO Wipe + Replay Fallback
 
-### Problem
-SIGKILL loses WAL → forces 5-minute Sapling tree rebuild on next boot. The tree has 1M Pedersen hash commitments that must be recomputed by mmap-scanning all blocks.
+If the coins_best_block can't be resolved in the block_index (hash not found), the node currently stalls. Add a fallback:
 
-### Investigation
-1. Find the Sapling tree save code — likely in `lib/sapling/src/incremental_merkle_tree.c` or `config/src/boot.c`
-2. How is the tree persisted? SQLite table? Flat file?
-3. When is it flushed? Only on clean shutdown? Or periodically?
-4. Can we add a periodic WAL checkpoint after Sapling tree updates? Similar to the "WAL checkpoint after bulk catchup" pattern in `sync_controller.c:1909`
+### File: `config/src/boot.c`
 
-### Fix
-If the tree is only saved on clean shutdown, add periodic persistence (every 1000 blocks or every 60 seconds). Use `sqlite3_wal_checkpoint_v2` if it's in SQLite.
+When `coins_best_block` hash is not found in the block_index:
+1. Log: `[boot] WARNING: coins_best_block not in block index — wiping UTXOs and replaying from genesis`
+2. Delete all UTXOs from SQLite: `DELETE FROM utxos`
+3. Set `coins_best_block` to genesis hash
+4. Set chain tip to genesis
+5. The node will replay all blocks from genesis, rebuilding the UTXO set
 
----
+This is the nuclear option but it's better than being stuck forever. The node has all block data on disk — replaying ~3M blocks takes a few hours but produces a correct UTXO set.
 
-## Task 2 (MEDIUM): Investigate Multi-threaded bg_validation Crash
-
-### Problem
-bg_validation crashes with >1 worker thread. Wave 22b fixed the file I/O (pread is safe), but the crash persists.
-
-### Investigation (from wave 22b audit)
-The likely cause is in `verify_scripts_parallel` — worker_ctx structs hold raw `const struct transaction *tx` pointers into `blk.vtx[]`, which is allocated on the `bg_validation_thread` stack. If multiple workers access the same transaction's script interpreter state simultaneously, that's the race.
-
-1. Read `app/services/src/bg_validation_service.c` — find `verify_scripts_parallel`
-2. Check if the script interpreter (`lib/script/src/interpreter.c`) has any global/static state
-3. Check if `secp256k1_context` is shared across threads
-4. Does each worker get its own secp256k1 context or share one?
-
-Report findings. If the fix is clear (e.g., per-thread secp256k1 context), implement it. Otherwise document what you found.
+### Safety Guard
+Before wiping, check UTXO count. If > 1,000,000, log a WARNING and require a flag file (`~/.zclassic-c23/force_utxo_wipe`) to proceed. This prevents accidental wipes.
 
 ---
 
-## Task 3 (LOW): PHGR13 Sprout VK Format Investigation
+## Task 2 (MEDIUM): Improve activate_best_chain Error Recovery
 
-### Problem
-PHGR13 proof verification is wired but the verification key (VK) parsing fails. Code is in place but VK format needs investigation.
+### File: `lib/validation/src/process_block.c`
 
-1. Find the PHGR13 VK loading code — likely in `lib/sapling/src/sprout.c`
-2. What format does it expect? What format does the VK file actually have?
-3. Is this blocking anything? PHGR13 is only for Sprout proofs at heights < 581876 — those are old and bg_validation skips them
+When `connect_tip` fails with `bad-txns-inputs-missingorspent`:
+1. Currently marks the block as BLOCK_FAILED after self-heal fails
+2. After 3 failures, writes `needs_reimport` flag
+3. But the reimport from the same stale LDB just reproduces the same mismatch
 
-If this is non-blocking (old Sprout proofs, no new blocks affected), document it as low-priority and move on.
+Add: after 5 consecutive failures at the same height, try disconnecting the tip (if possible) and retrying. If disconnect isn't possible (no undo data), log a clear message:
+```
+[recovery] UTXO mismatch at h=N: inputs missing. Chain tip and UTXO set are out of sync.
+[recovery] Restart with -reimport-utxos or delete chainstate/ to force fresh import.
+```
+
+---
+
+## Task 3 (LOW): Update CHECKLIST.md
+
+Mark these as FIXED:
+- Block download stalling after P2P catchup — FIXED wave 23 (HAVE_DATA in chain selection + state gate + AT_TIP check)
+- SIGSEGV in bg_hash_verify — FIXED wave 22b
+- SIGSEGV in address backfill — FIXED wave 22b
+
+Add new remaining item:
+- UTXO/chain tip mismatch after LDB import — coins at h=3M, chain at h=2M, connect fails
 
 ---
 
@@ -69,11 +69,11 @@ After EACH task:
 git pull origin master
 make -j$(nproc) 2>&1 | tail -20
 make test 2>&1 | tail -10
-git add <specific files> && git commit -m "wave 23b task N: description"
+git add <specific files> && git commit -m "wave 23c task N: description"
 git push origin master
 ```
 
 ## Boundary: Files You MUST NOT Touch
-- `lib/validation/src/process_block.c` (Agent1/Agent2)
+- `lib/storage/src/coins_db.c` (Agent2)
+- `lib/coins/src/coins_view_sqlite.c` (Agent2)
 - `app/services/src/header_sync_service.c` (Agent1)
-- `config/src/boot_index.c` scan functions (Agent2)
