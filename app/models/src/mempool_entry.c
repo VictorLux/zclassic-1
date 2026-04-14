@@ -18,6 +18,33 @@
 
 DEFINE_MODEL_CALLBACKS(mempool)
 
+/* before_save: validate txid present and fee non-negative */
+static bool mempool_before_save(void *record, void *ctx)
+{
+    (void)ctx;
+    const struct db_mempool_entry *e = record;
+    static const uint8_t zero[32] = {0};
+    if (memcmp(e->txid, zero, 32) == 0) {
+        fprintf(stderr, "[mempool] before_save REJECTED: null txid\n");
+        return false;
+    }
+    if (e->fee < 0) {
+        fprintf(stderr, "[mempool] before_save REJECTED: negative fee %lld\n",
+                (long long)e->fee);
+        return false;
+    }
+    return true;
+}
+
+static void mempool_init_hooks(void)
+{
+    static bool done = false;
+    if (done) return;
+    struct ar_callbacks *cbs = db_mempool_callbacks();
+    ar_register_before_save(cbs, mempool_before_save);
+    done = true;
+}
+
 /* ── Validation ────────────────────────────────────────────────── */
 
 bool db_mempool_validate(const struct db_mempool_entry *e,
@@ -47,6 +74,7 @@ bool db_mempool_save(struct node_db *ndb, const struct db_mempool_entry *e)
     if (e->time_added == 0)
         ((struct db_mempool_entry *)e)->time_added = (int64_t)time(NULL);
 
+    mempool_init_hooks();
     struct ar_callbacks *cbs = db_mempool_callbacks();
     AR_BEGIN_SAVE(cbs, "mempool_entry", e, db_mempool_validate);
 

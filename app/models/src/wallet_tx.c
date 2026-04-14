@@ -83,6 +83,28 @@ DEFINE_MODEL_CALLBACKS(wallet_tx)
 DEFINE_MODEL_CALLBACKS(wallet_utxo)
 DEFINE_MODEL_CALLBACKS(sapling_note)
 
+/* before_save: validate wallet_tx txid is non-null */
+static bool wallet_tx_before_save(void *record, void *ctx)
+{
+    (void)ctx;
+    const struct db_wallet_tx *t = record;
+    static const uint8_t zero[32] = {0};
+    if (memcmp(t->txid, zero, 32) == 0) {
+        fprintf(stderr, "[wallet_tx] before_save REJECTED: null txid\n");
+        return false;
+    }
+    return true;
+}
+
+static void wallet_tx_init_hooks(void)
+{
+    static bool done = false;
+    if (done) return;
+    struct ar_callbacks *cbs = db_wallet_tx_callbacks();
+    ar_register_before_save(cbs, wallet_tx_before_save);
+    done = true;
+}
+
 /* before_save: validate txid not null, vout >= 0, value >= 0 */
 static bool wallet_utxo_before_save(void *record, void *ctx)
 {
@@ -325,6 +347,7 @@ bool db_wallet_tx_save(struct node_db *ndb, const struct db_wallet_tx *t)
     if (t->time_received == 0)
         ((struct db_wallet_tx *)t)->time_received = (int64_t)time(NULL);
 
+    wallet_tx_init_hooks();
     struct ar_callbacks *cbs = db_wallet_tx_callbacks();
     sqlite3_stmt *s = NULL;
     AR_ADHOC_SAVE(ndb, s,

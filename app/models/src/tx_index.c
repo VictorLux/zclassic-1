@@ -15,6 +15,38 @@
 
 DEFINE_MODEL_CALLBACKS(tx)
 
+/* before_save: validate txid non-null, height/file_number non-negative */
+static bool tx_index_before_save(void *record, void *ctx)
+{
+    (void)ctx;
+    const struct db_tx_index *t = record;
+    static const uint8_t zero[32] = {0};
+    if (memcmp(t->txid, zero, 32) == 0) {
+        fprintf(stderr, "[tx_index] before_save REJECTED: null txid\n");
+        return false;
+    }
+    if (t->block_height < 0) {
+        fprintf(stderr, "[tx_index] before_save REJECTED: negative height %d\n",
+                t->block_height);
+        return false;
+    }
+    if (t->file_num < 0) {
+        fprintf(stderr, "[tx_index] before_save REJECTED: negative file_num %d\n",
+                t->file_num);
+        return false;
+    }
+    return true;
+}
+
+static void tx_index_init_hooks(void)
+{
+    static bool done = false;
+    if (done) return;
+    struct ar_callbacks *cbs = db_tx_callbacks();
+    ar_register_before_save(cbs, tx_index_before_save);
+    done = true;
+}
+
 /* ── Validation ────────────────────────────────────────────────── */
 
 bool db_tx_validate(const struct db_tx_index *t, struct ar_errors *errors)
@@ -35,6 +67,7 @@ bool db_tx_save(struct node_db *ndb, const struct db_tx_index *t)
 {
     if (!ndb->open) return false;
 
+    tx_index_init_hooks();
     struct ar_callbacks *cbs = db_tx_callbacks();
     AR_BEGIN_SAVE(cbs, "tx_index", t, db_tx_validate);
 
