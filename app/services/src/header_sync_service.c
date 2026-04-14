@@ -16,9 +16,13 @@ static bool g_block_file_scan_triggered = false;
 
 bool syncsvc_begin_peer_sync(struct p2p_node *node)
 {
-    if (!node || node->inbound || node->state != PEER_ACTIVE)
-        LOG_FAIL("header_sync", "begin_peer_sync: invalid node (null=%d inbound=%d state=%d)",
-                 !node, node ? node->inbound : 0, node ? (int)node->state : -1);
+    if (!node)
+        LOG_FAIL("header_sync", "begin_peer_sync: null node");
+    /* Inbound peers are not eligible for initiating header sync —
+     * return false silently. This is expected on every tick for every
+     * inbound peer, not an error worth logging. */
+    if (node->inbound || node->state != PEER_ACTIVE)
+        return false;
 
     peer_set_state_checked((uint32_t)node->id, &node->state,
                            PEER_SYNCING_HEADERS, "IBD start");

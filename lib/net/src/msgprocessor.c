@@ -2393,6 +2393,37 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
             sync_get_state(), g_header_stall_last_height,
             g_header_stall_last_advance, now_send);
 
+        /* ── Zero-outbound recovery ──────────────────────────────
+         * If we have ONLY inbound peers and are behind, the normal
+         * sync path never fires (syncsvc_begin_peer_sync rejects
+         * inbound peers) and sync state never reaches
+         * SYNC_HEADERS_DOWNLOAD, so stall detection never triggers.
+         * Fix: when all peers are inbound and we're behind, force
+         * the sync state transition and treat it as a stall so
+         * inbound peers can serve headers. */
+        if (!header_stall && node->inbound &&
+            node->starting_height > our_height + 144) {
+            bool have_outbound = false;
+            zcl_mutex_lock(&mp->net_mgr->cs_nodes);
+            for (size_t pi = 0; pi < mp->net_mgr->num_nodes; pi++) {
+                if (!mp->net_mgr->nodes[pi]->inbound &&
+                    !mp->net_mgr->nodes[pi]->disconnect) {
+                    have_outbound = true;
+                    break;
+                }
+            }
+            zcl_mutex_unlock(&mp->net_mgr->cs_nodes);
+
+            if (!have_outbound) {
+                enum sync_state ss = sync_get_state();
+                if (ss == SYNC_IDLE || ss == SYNC_FINDING_PEERS) {
+                    sync_set_state(SYNC_HEADERS_DOWNLOAD,
+                                   "no outbound peers, using inbound");
+                }
+                header_stall = true;
+            }
+        }
+
         /* ── Per-peer stale header disconnect (IBD only) ───────── */
         if (syncsvc_should_disconnect_stale_header_peer(node, our_height,
                                                          now_send)) {

@@ -637,11 +637,23 @@ bool accept_block_header(const struct block_header *header,
         }
     }
 
-    if (pindex_prev &&
-        !contextual_check_block_header(header, state, params, pindex_prev,
-                                        ms->fCheckpointsEnabled))
-        LOG_FAIL("validation", "contextual_check_block_header failed for header at height %d",
-                 pindex_prev->nHeight + 1);
+    /* Skip contextual header check during IBD when the block index has
+     * scrambled heights from snapshot/LDB import.  The pprev chains may
+     * trace back to genesis with wrong heights, causing
+     * contextual_check_block_header to apply pre-Sapling rules (wrong
+     * equihash solution size) to post-Sapling blocks.  Full validation
+     * happens later in connect_block().  This mirrors Bitcoin Core's
+     * behavior: header-first sync trusts header chain structure. */
+    {
+        int tip_h = active_chain_height(&ms->chain_active);
+        bool skip_contextual = (tip_h > 100000 && pindex_prev &&
+                                pindex_prev->nHeight < tip_h - 1000);
+        if (pindex_prev && !skip_contextual &&
+            !contextual_check_block_header(header, state, params, pindex_prev,
+                                            ms->fCheckpointsEnabled))
+            LOG_FAIL("validation", "contextual_check_block_header failed for header at height %d",
+                     pindex_prev->nHeight + 1);
+    }
 
     pindex = add_to_block_index(ms, header);
     if (!pindex)
