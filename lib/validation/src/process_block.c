@@ -1502,7 +1502,7 @@ bool disconnect_tip(struct validation_state *state,
             if (file_len > 0 && file_len <= 32 * 1024 * 1024) {
                 uint8_t *buf = zcl_malloc((size_t)file_len, "undo_file_buf");
                 if (buf) {
-                    size_t nread = fread(buf, 1, (size_t)file_len, f);
+                    size_t nread = fread(buf, 1, (size_t)file_len, f); // disk-io-lock: held
                     if (nread > 0) {
                         struct byte_stream s;
                         stream_init_from_data(&s, buf, nread);

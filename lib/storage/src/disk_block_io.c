@@ -178,7 +178,7 @@ bool write_block_to_disk(struct block *b, struct disk_block_pos *pos,
         LOG_FAIL("disk_block_io", "write_block: ftell failed");
     }
 
-    if (fwrite(message_start, 1, 4, file) != 4 ||
+    if (fwrite(message_start, 1, 4, file) != 4 || // disk-io-lock: held (internal)
         fwrite(&nSize, sizeof(nSize), 1, file) != 1) {
         fclose(file);
         pthread_mutex_unlock(&g_file_cache_mutex);
@@ -194,7 +194,7 @@ bool write_block_to_disk(struct block *b, struct disk_block_pos *pos,
         LOG_FAIL("disk_block_io", "write_block: data position out of range (pos=%ld)", data_pos);
     }
 
-    if (fwrite(s.data, 1, s.size, file) != s.size) {
+    if (fwrite(s.data, 1, s.size, file) != s.size) { // disk-io-lock: held (internal)
         fclose(file);
         pthread_mutex_unlock(&g_file_cache_mutex);
         stream_free(&s);

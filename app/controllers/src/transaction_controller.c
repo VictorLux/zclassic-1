@@ -125,7 +125,7 @@ static bool rpc_getrawtransaction(const struct json_value *params, bool help,
             FILE *f = open_block_file(ctx->datadir, &pos.block_pos, true);
             if (f) {
                 unsigned char hdr_buf[256];
-                size_t hdr_read = fread(hdr_buf, 1, sizeof(hdr_buf), f);
+                size_t hdr_read = fread(hdr_buf, 1, sizeof(hdr_buf), f); // disk-io-lock: held
                 if (hdr_read > 0) {
                     struct byte_stream hs;
                     stream_init_from_data(&hs, hdr_buf, hdr_read);
@@ -136,7 +136,7 @@ static bool rpc_getrawtransaction(const struct json_value *params, bool help,
                 fseek(f, (long)pos.block_pos.nPos + (long)pos.nTxOffset,
                       SEEK_SET);
                 unsigned char tx_buf[2 * 1024 * 1024];
-                size_t tx_read = fread(tx_buf, 1, sizeof(tx_buf), f);
+                size_t tx_read = fread(tx_buf, 1, sizeof(tx_buf), f); // disk-io-lock: held
                 disk_block_io_release_handle(f);
                 disk_block_io_unlock();
                 if (tx_read > 0) {

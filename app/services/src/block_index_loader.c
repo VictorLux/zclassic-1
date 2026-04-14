@@ -93,7 +93,7 @@ void save_block_index_flat(const char *datadir, struct main_state *ms)
     }
 
     uint32_t magic = 0x5A434C49; /* "ZCLI" */
-    if (fwrite(&magic, 4, 1, f) != 1 ||
+    if (fwrite(&magic, 4, 1, f) != 1 || // disk-io-lock: private-fd (block index flat file)
         fwrite(&(uint32_t){(uint32_t)count}, 4, 1, f) != 1) {
         fprintf(stderr, "save_block_index_flat: header write failed\n");
         fclose(f); free(sorted); return;
@@ -119,7 +119,7 @@ void save_block_index_flat(const char *datadir, struct main_state *ms)
         memcpy(entry.chain_work, sorted[i]->nChainWork.pn, 32);
         entry.n_cached_branch_id = (uint32_t)sorted[i]->nCachedBranchId;
         memcpy(entry.sapling_root, sorted[i]->hashFinalSaplingRoot.data, 32);
-        if (fwrite(&entry, sizeof(entry), 1, f) != 1) {
+        if (fwrite(&entry, sizeof(entry), 1, f) != 1) { // disk-io-lock: private-fd
             fprintf(stderr, "save_block_index_flat: write failed at entry "
                     "%zu/%zu: %s\n", i, count, strerror(errno));
             fclose(f); free(sorted); return;

@@ -522,7 +522,7 @@ static int scan_one_block_file(struct main_state *ms,
     while (pos + 8 + 140 <= file_size) {
         /* Block file format: [4-byte magic][4-byte size][block data] */
         uint8_t frame[8];
-        if (fread(frame, 1, 8, f) != 8) break;
+        if (fread(frame, 1, 8, f) != 8) break; // disk-io-lock: held
 
         uint32_t magic = (uint32_t)frame[0] | ((uint32_t)frame[1] << 8) |
                          ((uint32_t)frame[2] << 16) | ((uint32_t)frame[3] << 24);
@@ -538,7 +538,7 @@ static int scan_one_block_file(struct main_state *ms,
             bool found = false;
             while (scan_pos + 8 + 140 <= file_size) {
                 fseek(f, scan_pos, SEEK_SET);
-                size_t got = fread(scan_buf, 1, sizeof(scan_buf), f);
+                size_t got = fread(scan_buf, 1, sizeof(scan_buf), f); // disk-io-lock: held
                 if (got < 4) break;
                 for (size_t si = 0; si + 3 < got; si++) {
                     if (scan_buf[si] == magic_bytes[0] &&
@@ -571,7 +571,7 @@ static int scan_one_block_file(struct main_state *ms,
          * Read 1600 bytes to also capture the tx count compact_size. */
         size_t read_sz = (blk_size < BLOCK_HEADER_READ_SIZE) ? blk_size : BLOCK_HEADER_READ_SIZE;
         uint8_t buf[BLOCK_HEADER_READ_SIZE];
-        if (fread(buf, 1, read_sz, f) != read_sz) break;
+        if (fread(buf, 1, read_sz, f) != read_sz) break; // disk-io-lock: held
 
         /* Parse the block header using proper deserializer */
         struct block_header bhdr;
@@ -725,7 +725,7 @@ static int resolve_orphan_pprev_from_disk(struct main_state *ms,
                 continue;
             }
             struct uint256 prev_hash;
-            if (fread(prev_hash.data, 1, 32, f) != 32) {
+            if (fread(prev_hash.data, 1, 32, f) != 32) { // disk-io-lock: held
                 read_errors++;
                 continue;
             }
