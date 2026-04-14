@@ -90,6 +90,7 @@
 #include <pthread.h>
 #include <malloc.h>
 #include <errno.h>
+#include <sys/sysinfo.h>
 #include <sqlite3.h>
 
 static struct main_state g_state;
@@ -119,6 +120,16 @@ static _Atomic bool g_running = false;
 static struct wallet_backup_config g_wallet_backup_cfg;
 static struct disk_monitor_config g_disk_monitor_cfg;
 static struct ibd_throttle_config g_ibd_throttle_cfg;
+
+/* ── System RAM query ────────────────────────────────────────── */
+
+static size_t get_system_ram(void)
+{
+    struct sysinfo si;
+    if (sysinfo(&si) != 0)
+        return 0;
+    return (size_t)si.totalram * (size_t)si.mem_unit;
+}
 
 /* ── PID lock file for data directory ─────────────────────────── */
 
@@ -903,6 +914,35 @@ bool app_init(struct app_context *ctx)
     /* Block index is now cached in SQLite (load_block_index_sqlite).
      * The full index is saved on shutdown/save, enabling instant restart
      * without the 10-15s LevelDB scan. */
+
+    /* OOM protection: estimate block index memory before loading.
+     * Warn if it would exceed 50% of system RAM. */
+    {
+        size_t sys_ram = get_system_ram();
+        if (sys_ram > 0) {
+            /* Estimate from SQLite or flat file entry count */
+            int64_t est_count = 0;
+            if (g_node_db.open)
+                est_count = db_block_max_height(&g_node_db);
+            if (est_count <= 0)
+                est_count = 3000000; /* conservative default */
+            size_t est_mem = (size_t)est_count * sizeof(struct block_index)
+                           + (size_t)est_count * 2 * sizeof(struct block_map_entry);
+            if (est_mem > sys_ram / 2) {
+                fprintf(stderr,
+                    "[boot] WARNING: block index estimated at %zuMB "
+                    "(%lld entries x %zu bytes + hash map)\n"
+                    "[boot] System has %zuMB RAM. This may cause OOM.\n",
+                    est_mem / (1024 * 1024), (long long)est_count,
+                    sizeof(struct block_index),
+                    sys_ram / (1024 * 1024));
+            }
+            printf("[boot] system_ram=%zuMB block_index_estimate=%zuMB "
+                   "(%lld entries)\n",
+                   sys_ram / (1024 * 1024), est_mem / (1024 * 1024),
+                   (long long)est_count);
+        }
+    }
 
     /* Block index load: flat file first (mmap, <2s), then SQLite, then LevelDB.
      * Jeff Dean rule: use the fastest data structure available. */

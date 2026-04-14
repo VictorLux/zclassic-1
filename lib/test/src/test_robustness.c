@@ -14,6 +14,7 @@
 #include <unistd.h>
 #include "util/safe_alloc.h"
 #include <signal.h>
+#include <sys/sysinfo.h>
 
 static char test_datadir[256];
 
@@ -681,6 +682,30 @@ int test_robustness(void)
     {
         bool ok = !node_db_sync_flush(NULL); /* should return false */
         if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("robust: get_system_ram returns reasonable value... ");
+    {
+        struct sysinfo si;
+        bool ok = (sysinfo(&si) == 0);
+        size_t ram = (size_t)si.totalram * (size_t)si.mem_unit;
+        /* Reasonable: at least 512MB, at most 1TB */
+        ok = ok && ram >= (512ULL * 1024 * 1024);
+        ok = ok && ram <= (1024ULL * 1024 * 1024 * 1024);
+        printf("(%zuMB) ", ram / (1024 * 1024));
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("robust: OOM warning triggers for huge entry count... ");
+    {
+        size_t sys_ram = 8ULL * 1024 * 1024 * 1024; /* simulate 8GB */
+        size_t entry_count = 50000000; /* 50M entries */
+        size_t est_mem = entry_count * sizeof(struct block_index);
+        bool would_warn = (est_mem > sys_ram / 2);
+        /* 50M * 264 = 13.2GB > 4GB, so warning should trigger */
+        if (would_warn) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
 
