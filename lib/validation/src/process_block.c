@@ -337,7 +337,7 @@ static struct block_index *find_most_work_chain(struct main_state *ms)
     int skipped_no_chaintx = 0;
     int skipped_failed = 0;
     int skipped_invalid = 0;
-    int highest_have_data_no_chaintx = -1;
+
 
     size_t iter = 0;
     struct block_index *pindex;
@@ -357,17 +357,17 @@ static struct block_index *find_most_work_chain(struct main_state *ms)
             continue;
         }
 
-        /* Only consider chains where every block from genesis has data.
-         * nChainTx > 0 means the cumulative tx count is set, which only
-         * happens when a block's data is received AND all its ancestors
-         * have data. Orphan blocks in the block index have nChainTx == 0
-         * and must not be selected as chain tip. This matches Bitcoin
-         * Core's chain_has_all_data / CBlockIndex::HaveTxsDownloaded(). */
-        if (pindex->nChainTx == 0) {
+        /* Only consider chains where the candidate block has data available.
+         * Prefer nChainTx > 0 (cumulative tx count — means block AND all
+         * ancestors have data), but also accept BLOCK_HAVE_DATA (block
+         * data exists on disk from zclassicd import / scan, even if
+         * nChainTx wasn't propagated yet). connect_block will fully
+         * validate before committing. Without the HAVE_DATA fallback,
+         * imported blocks with data but nChainTx==0 are invisible to
+         * chain selection, causing sync stalls. */
+        if (pindex->nChainTx == 0 &&
+            !(pindex->nStatus & BLOCK_HAVE_DATA)) {
             skipped_no_chaintx++;
-            if ((pindex->nStatus & BLOCK_HAVE_DATA) &&
-                pindex->nHeight > highest_have_data_no_chaintx)
-                highest_have_data_no_chaintx = pindex->nHeight;
             continue;
         }
 
@@ -399,13 +399,9 @@ static struct block_index *find_most_work_chain(struct main_state *ms)
         }
     }
 
-    /* Diagnostic: if blocks with data are being skipped due to nChainTx,
-     * log it so we can diagnose chain activation failures. */
-    if (highest_have_data_no_chaintx > (best ? best->nHeight : -1)) {
-        printf("find_most_work_chain: WARNING: %d blocks skipped (nChainTx==0), "
-               "highest HAVE_DATA without nChainTx: h=%d (tip=%d)\n",
-               skipped_no_chaintx, highest_have_data_no_chaintx,
-               best ? best->nHeight : -1);
+    if (skipped_no_chaintx > 0 && !best) {
+        printf("find_most_work_chain: WARNING: %d blocks skipped "
+               "(no data, nChainTx==0)\n", skipped_no_chaintx);
     }
 
     return best;

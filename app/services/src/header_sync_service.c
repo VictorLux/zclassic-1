@@ -437,7 +437,8 @@ bool syncsvc_should_begin_blocks_download(enum sync_state sync_state,
                                           int our_height)
 {
     return candidate && candidate->nHeight > our_height &&
-           sync_state == SYNC_HEADERS_DOWNLOAD;
+           (sync_state == SYNC_HEADERS_DOWNLOAD ||
+            sync_state == SYNC_BLOCKS_DOWNLOAD);
 }
 
 bool syncsvc_headers_chain_from_tip(const struct block_index *candidate,
@@ -508,11 +509,19 @@ void syncsvc_collect_needed_blocks(struct sync_needed_blocks *result,
 
     result->chains_from_tip =
         syncsvc_headers_chain_from_tip(candidate, tip, our_height);
-    if (!result->chains_from_tip)
-        return;
+    if (!result->chains_from_tip) {
+        /* Still collect blocks even if chain doesn't link back to tip —
+         * after snapshot sync or LDB import, pprev gaps are expected.
+         * The blocks will be fully validated by connect_block anyway. */
+        if (candidate->nHeight > our_height) {
+            result->chains_from_tip = true; /* override — allow download */
+        } else {
+            return;
+        }
+    }
 
     walk = (struct block_index *)candidate;
-    while (walk && walk->pprev && walk->nHeight > our_height &&
+    while (walk && walk->nHeight > our_height &&
            result->count < max_collect && walk_steps < 2048) {
         if (!(walk->nStatus & BLOCK_HAVE_DATA) &&
             !(walk->nStatus & BLOCK_FAILED_MASK) &&
@@ -521,7 +530,11 @@ void syncsvc_collect_needed_blocks(struct sync_needed_blocks *result,
             heights[result->count] = walk->nHeight;
             result->count++;
         }
-        walk = walk->pprev;
+        if (walk->pprev) {
+            walk = walk->pprev;
+        } else {
+            break; /* pprev gap — collected what we could */
+        }
         walk_steps++;
     }
 
