@@ -3,6 +3,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "services/node_health_service.h"
+#include "services/sync_watchdog_service.h"
 #include "config/runtime.h"
 #include "controllers/sync_controller.h"
 #include "controllers/network_controller.h"
@@ -283,4 +284,19 @@ void node_health_collect(struct node_health_snapshot *snapshot,
                         snapshot->header_height <= snapshot->tip_height + 1 &&
                         !snapshot->tip_stale &&
                         snapshot->tip_lag <= 1;
+
+    /* Watchdog stats */
+    {
+        struct watchdog_stats wd;
+        sync_watchdog_get_stats(&wd);
+        snapshot->wd_checks_run = wd.checks_run;
+        snapshot->wd_recoveries = wd.recoveries_total;
+        snapshot->wd_blocks_per_sec = wd.blocks_per_sec;
+        snapshot->wd_escalation_level = wd.escalation_level;
+        snapshot->wd_last_recovery_time = wd.last_recovery_time;
+        snapshot->wd_last_recovery_type = (int)wd.last_recovery;
+        snprintf(snapshot->wd_last_recovery_name,
+                 sizeof(snapshot->wd_last_recovery_name),
+                 "%s", watchdog_recovery_type_name(wd.last_recovery));
+    }
 }

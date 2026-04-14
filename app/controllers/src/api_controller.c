@@ -1797,6 +1797,14 @@ size_t api_handle_request(const char *method, const char *path,
               "\"total\":%d,"
               "\"last\":%s%s%s"
             "},"
+            "\"watchdog\":{"
+              "\"checks_run\":%d,"
+              "\"recoveries\":%d,"
+              "\"blocks_per_sec\":%.1f,"
+              "\"escalation_level\":%d,"
+              "\"last_recovery\":\"%s\","
+              "\"last_recovery_ago_secs\":%lld"
+            "},"
             "\"status\":{"
               "\"degraded_reason\":%s%s%s"
             "}"
@@ -1829,6 +1837,14 @@ size_t api_handle_request(const char *method, const char *path,
             health.last_error[0] ? "\"" : "null",
             health.last_error,
             health.last_error[0] ? "\"" : "",
+            health.wd_checks_run,
+            health.wd_recoveries,
+            health.wd_blocks_per_sec,
+            health.wd_escalation_level,
+            health.wd_last_recovery_name,
+            health.wd_last_recovery_time > 0
+                ? (long long)((int64_t)time(NULL) - health.wd_last_recovery_time)
+                : 0LL,
             health.degraded_reason[0] ? "\"" : "null",
             health.degraded_reason,
             health.degraded_reason[0] ? "\"" : "");

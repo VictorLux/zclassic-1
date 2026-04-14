@@ -60,6 +60,15 @@ struct node_health_snapshot {
     uint64_t blocks_timed_out;
     uint64_t in_flight;
     uint64_t queued;
+
+    /* Watchdog stats */
+    int      wd_checks_run;
+    int      wd_recoveries;
+    double   wd_blocks_per_sec;
+    int      wd_escalation_level;
+    int64_t  wd_last_recovery_time;
+    int      wd_last_recovery_type;       /* enum watchdog_recovery_type */
+    char     wd_last_recovery_name[32];
 };
 
 void node_health_collect(struct node_health_snapshot *snapshot,
