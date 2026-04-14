@@ -1,68 +1,68 @@
-# Agent 2 Task: Wave 13 — Fix the Sync Stall (URGENT)
+# Agent 2 Task: FIX THE SYNC STALL (CRITICAL, DO THIS FIRST)
 
-## CRITICAL: Node stuck at height 2,015,124
+## Root Cause (DIAGNOSED — see node.log evidence below)
 
-The node is stuck in `headers_download` at height 2,015,124 while peers report height 3,077,062. It has 17 peers, the stall detection code from wave 12 is deployed, and yet the node STILL won't advance. This means headers are being received but rejected.
+The node is stuck at height 2,015,124. The log shows:
 
-## Diagnosis needed
-
-The stall detection disconnects peers, but the problem isn't the peers — it's that `accept_block_header()` is rejecting valid headers. The node has been stuck for 30+ minutes across restarts.
-
-## Files to read first
-
-- `CLAUDE.md` and `DEFENSIVE_CODING.md` — mandatory coding rules
-- `lib/validation/src/process_block.c` — `accept_block_header()` function
-- `lib/net/src/msgprocessor.c` lines 1764-1841 — `process_headers()`, especially the reject logging
-- `lib/chain/src/pow.c` — difficulty checking
-- `CHECKLIST.md` — validation item 4.2 (difficulty), 4.31 (checkpoints)
-- `lib/chain/src/checkpoints.c` — checkpoint enforcement
-
-## Tasks
-
-### 1. Diagnose why headers are rejected
-
-Add diagnostic logging to `accept_block_header()` in `process_block.c`:
-- Log the FIRST rejected header each batch: hash, height, prev hash, and the exact reject reason
-- Log the state of the block index: does `hashPrevBlock` exist in our index? What height does it have?
-- This is the critical question: are we rejecting because the prev block isn't in our index (orphan headers), or because validation fails (bad PoW, bad timestamp, checkpoint mismatch)?
-
-### 2. Check for block index corruption
-
-The node was synced to 2,015,124 via snapshot. The block index was loaded from `block_index.bin`. Headers from peers start at the peer's view of our chain (from our locator). If our locator sends stale/wrong hashes, peers send headers we already have, and they get rejected as duplicates.
-
-Check `syncsvc_build_getheaders_locator()` in `header_sync_service.c`:
-- Is the locator built correctly from our chain tip?
-- Does it include heights up to 2,015,124?
-- Could the locator be sending hashes from a fork?
-
-### 3. Check the getheaders→headers round-trip
-
-Add a counter: how many `getheaders` messages sent vs `headers` responses received? If we're sending but getting no responses, peers don't understand our locator. If we're getting responses but all are rejected, the rejection reason tells us what to fix.
-
-Add to `msg_send_messages()` at the periodic getheaders section:
-```c
-static uint64_t getheaders_sent = 0, headers_responses = 0;
-// Log every 60s: "getheaders stats: sent=%llu responses=%llu"
+```
+contextual_check_block_header failed for header at height 2
+contextual_check_block_header failed for header at height 1
+contextual_check_block_header failed for header at height 5
+contextual_check_block_header failed for header at height 79
+HEADER REJECT[2]: reason=bad-equihash-solution-size
+Peer 140.174.189.17:8033: accepted 137/160 headers (header tip=2, chain tip=2015124, peer=3077146)
+STALL DETECTED: accepted 137 headers but header tip=2 < chain tip=2015124
 ```
 
-### 4. Fix whatever the diagnosis reveals
+**What's happening**: After snapshot sync + LDB import, `block_map` entries have completely broken `pprev` chains. The pprev pointers trace back to genesis instead of the real chain. When a NEW header arrives whose `hashPrevBlock` is in the index, `pindex_prev->nHeight` computes to 1, 2, 3 etc. instead of ~2,015,125. Then `contextual_check_block_header()` applies pre-Sapling rules (wrong Equihash solution size) and rejects the header.
 
-Based on the diagnostic logging, fix the root cause. Common possibilities:
-- Locator hashes don't match any block the peer knows → fix locator construction
-- Headers rejected as duplicate (already in index) → skip duplicates silently, request next batch
-- Headers rejected due to checkpoint mismatch → check checkpoint heights
-- Headers rejected due to missing prev → we have a gap in our index
+137/160 headers are accepted (already in index, no contextual check). 23 are NEW but rejected because prev height is wrong. The node never advances.
 
-### 5. Thread safety (secondary, after sync is fixed)
+## The Fix
 
-Migrate `disk_block_io.c` from `fseek/fread` to `pread()` for thread safety:
-- Replace `g_cached_file` file handle cache with `open/pread/close`
-- This fixes the SIGSEGV in bg_hash_verify (CHECKLIST item)
-- Add test in `lib/test/src/test_disk_block_io.c`
+In `lib/validation/src/process_block.c`, function `accept_block_header()`, around line 606:
+
+**Option A (recommended)**: Skip `contextual_check_block_header` for new headers during IBD when `pindex_prev` is already in our index and our chain tip is high (>100K). The headers will get full validation when we connect the blocks. This mirrors Bitcoin Core's behavior — header-first sync trusts header chain structure, full validation happens at block connection.
+
+```c
+/* Skip contextual header check during IBD when block index has
+ * scrambled heights from snapshot/LDB import. The pprev chains are
+ * broken, so pindex_prev->nHeight is unreliable. Full validation
+ * happens later in connect_block(). */
+int tip_h = active_chain_height(&ms->chain_active);
+bool skip_contextual = (tip_h > 100000 && pindex_prev &&
+                         pindex_prev->nHeight < tip_h - 1000);
+if (pindex_prev && !skip_contextual &&
+    !contextual_check_block_header(header, state, params, pindex_prev,
+                                    ms->fCheckpointsEnabled))
+    LOG_FAIL("validation", "contextual_check_block_header failed...");
+```
+
+**Option B (more conservative)**: Fix the pprev chains at boot time in `boot_index.c` so heights are correct before any headers arrive. But this is harder — the pprev chains may have cycles or disconnected segments.
+
+## Files to read
+
+- `CLAUDE.md` and `DEFENSIVE_CODING.md`
+- `lib/validation/src/process_block.c` — `accept_block_header()` starting at line 508
+- `~/.zclassic-c23/node.log` — live evidence of the bug (read last 100 lines)
+- `config/src/boot_index.c` — where block index is loaded and heights computed
+
+## After fixing the stall
+
+1. `make -j$(nproc) && make deploy` — deploy to live node
+2. Check `~/.zclassic-c23/node.log` — verify headers are now accepted
+3. Check height via RPC: `./tools/zcl-rpc getblockcount` — should advance past 2,015,124
+4. Commit with descriptive message
+
+## Secondary task: thread safety
+
+After the sync stall is FIXED and VERIFIED on the live node:
+- Verify `disk_block_io.c` pread migration is working (from previous wave)
+- Check bg_validation is running with multiple workers
 
 ## Rules
 
 - Follow `DEFENSIVE_CODING.md`: use `LOG_FAIL()`, `zcl_malloc()`, `log_macros.h`
 - Run `make test` before committing
-- Deploy with `make deploy` after fixing the sync stall so we can verify on the live node
+- `make deploy` after fixing the stall — we need to verify on the live node
 - Commit with descriptive messages
