@@ -1,58 +1,49 @@
-# Agent 2 Task: Wave 14 — Sync Speed & Remaining Crashes
+# Agent 2 Task: Wave 14b — Sync Speed & Block File Discovery
 
 ## Previous work (DONE)
-- Wave 12: Header sync stall detection (per-peer tracking, inbound fallback)
-- Wave 13: pread() migration for thread safety, sync stall fix (skip contextual check for broken pprev heights)
-- Sync stall is FIXED — node advanced from 2,015,124 to 2,015,588 and is actively syncing
+- Sync stall FIXED (broken pprev heights, contextual check skip)
+- Dynamic IBD download limits (4096 in-flight, 15s timeout)
+- Address backfill SIGSEGV fixed
+- pread() migration for thread safety
 
 ## Current state
-Node is syncing blocks. It needs to reach ~3,077,000 (1M blocks to go). Speed matters now.
+Node is at ~2,019,335. Peers are at ~3,077,000. Syncing via P2P. We copied block files from zclassicd but the node didn't discover all the new block data in them — only a few thousand blocks were found.
 
 ## Files to read first
 
 - `CLAUDE.md` and `DEFENSIVE_CODING.md`
-- `CHECKLIST.md` — remaining items at bottom
-- `lib/net/src/msg_blocks.c` — block download processing
-- `app/services/src/block_sync_service.c` — block sync coordination
-- `lib/net/include/net/download.h` — download manager constants
-- `app/controllers/src/sync_controller.c` — connect_block, wallet scanning
+- `config/src/boot_index.c` — block file scanning, `scan_block_files_mark_data()`
+- `lib/net/src/msg_headers.c` — block file scan trigger after headers arrive
+- `lib/storage/src/disk_block_io.c` — reading blocks from blk*.dat files
 
 ## Tasks
 
-### 1. Optimize block download speed
+### 1. Improve block file scan to find all blocks
 
-Current constants in `download.h`:
-- `DL_MAX_IN_FLIGHT_PER_PEER 128`
-- `DL_MAX_IN_FLIGHT_TOTAL 1024`
-- `DL_REQUEST_TIMEOUT_SECS 30`
+The block file scan (`scan_block_files_mark_data`) runs once after first headers arrive. It scans blk*.dat files and marks matching block index entries with `BLOCK_HAVE_DATA`. But it may miss blocks if:
+- The block hash doesn't match any entry in the block index (height mismatch)
+- The scan stops too early
 
-Review these for catch-up sync. During IBD, we should be aggressive:
-- Increase `DL_MAX_IN_FLIGHT_TOTAL` to 4096 during IBD
-- Reduce `DL_REQUEST_TIMEOUT_SECS` to 15 during IBD
-- Make these dynamic based on sync state (aggressive during IBD, conservative at tip)
+Review and fix: scan ALL blk*.dat files thoroughly, match blocks by hash, and set `BLOCK_HAVE_DATA` + file position info for every match. Log how many blocks were found vs how many block index entries exist.
 
-### 2. Fix SIGSEGV in address backfill (CHECKLIST item)
+### 2. Add reindex-from-block-files RPC
 
-From CHECKLIST.md: "SIGSEGV in address backfill — DISABLED: crashes after ~64K addresses. Needs ASAN investigation."
+Add RPC command `rescanblockfiles` that triggers a full re-scan of all blk*.dat files, matching them against the block index and setting BLOCK_HAVE_DATA. This is useful after copying block files from zclassicd.
 
-- Build with `-fsanitize=address` to find the bug
-- Look in wallet scanning code (`sync_controller.c`, `wallet_scan.c`)
-- Fix the buffer overflow / out-of-bounds access
+### 3. Monitor sync speed
 
-### 3. Verify bg_hash_verify works with pread()
+Add logging every 60s during blocks_download showing:
+- Blocks/second throughput
+- Estimated time to tip
+- Current download pipeline stats (in-flight, queued, timed out)
 
-The pread() migration was done in wave 13. Verify bg_hash_verification_service works now:
-- Check if it's enabled in `boot_services.c`
-- If disabled, re-enable it
-- Monitor for crashes in the node log after deploy
+### 4. Verify bg_hash_verify is working
 
-### 4. Parallel block validation during IBD
-
-During IBD, blocks can be validated in parallel since they don't depend on each other for script checks (assume-valid). Check if `bg_validation_service.c` worker count was increased from 1 and verify it runs stably.
+Check if bg_hash_verification_service is enabled after the pread() migration. If disabled, re-enable in `boot_services.c` and verify no crash.
 
 ## Rules
 
 - Follow `DEFENSIVE_CODING.md`: use `LOG_FAIL()`, `zcl_malloc()`, `log_macros.h`
 - Run `make test` before committing
-- `make deploy` after changes — verify on live node
+- `make deploy` to verify on live node
 - Commit with descriptive messages

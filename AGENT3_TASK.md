@@ -1,61 +1,56 @@
-# Agent 3 Task: Wave 14 — Test Coverage & Defensive Coding
+# Agent 3 Task: Wave 14b — Fix Pre-existing Test Failures + Defensive Coding
 
 ## Previous work (DONE)
-- Wave 12: Sync watchdog service (auto-recovery, circuit breaker)
-- Wave 13: msgprocessor.c split (4604→2938 lines), watchdog wiring, diagnostic counters, getsyncdiag RPC, watchdog escalation
+- Sync watchdog service + wiring into msg loop
+- Diagnostic counters + getsyncdiag RPC
+- Watchdog escalation for persistent header stalls
+- msgprocessor.c split (4604→2938 lines)
 
 ## Current state
-Sync stall is FIXED. Node is actively syncing. Time to harden the codebase.
+12 pre-existing test failures. Node is syncing. Time to harden.
 
 ## Files to read first
 
 - `CLAUDE.md` and `DEFENSIVE_CODING.md`
 - `lib/test/src/test.c` — test registration
-- `Makefile` — build rules, lint targets
+- Run `make test 2>&1 | grep FAIL` to see failures
 
 ## Tasks
 
-### 1. Fix the 12 pre-existing test failures
+### 1. Fix MCP tool count test failures (5 failures)
 
-Run `make test` and find the 12 failures. They fall into two categories:
+Run `make test` and find the test that checks tool counts. It expects 76 tools but we now have 79 (new tools added in recent waves). Update the expected counts:
+- Total: find current count via `grep -c 'tool' ...` or reading the test
+- Per-domain counts (ops, wallet) also need updating
 
-**a. MCP tool count mismatch (5 failures)**: Tests expect 76 tools but we now have 79 (new tools were added). Find the test in `lib/test/src/` that checks tool counts and update the expected values.
+These are in `lib/test/src/test_mcp_*.c` — find the exact file and fix.
 
-**b. wallet_sqlite_open failures (7 failures)**: These crash with `FAIL (wallet_sqlite_open(&ws, db))`. Investigate why — likely the test database setup is missing a schema migration or table creation step. Fix the test setup.
+### 2. Fix wallet_sqlite_open test failures (7 failures)
 
-### 2. Migrate bare `return -1` in critical paths
+Tests fail with `FAIL (wallet_sqlite_open(&ws, db))`. This means the wallet SQLite layer can't open. Investigate:
+- Is the schema wrong? Missing table? Wrong migration?
+- Does the test create its own database or use a shared one?
+- Fix the test setup or the schema
 
-There are 156 bare `return -1` without logging. Focus on the most critical files first:
+### 3. Migrate bare return -1 in critical paths
 
-- `lib/validation/src/process_block.c` — replace bare `return -1` and `return false` with `LOG_FAIL()`
-- `lib/net/src/connman.c` — network connection errors should be logged
+Focus on these files (highest impact):
+- `lib/validation/src/process_block.c` — replace bare `return false` with `LOG_FAIL()`
+- `lib/net/src/connman.c` — network errors should be logged
 - `config/src/boot.c` — boot failures must be visible
 
-Count them before and after. Target: reduce from 156 to under 100.
+Target: reduce bare returns by 30+.
 
-### 3. Add tests for the split message handler files
+### 4. Wire make lint
 
-The new files from the msgprocessor split have no tests:
-- `lib/net/src/msg_version.c`
-- `lib/net/src/msg_headers.c`
-- `lib/net/src/msg_blocks.c`
-- `lib/net/src/msg_tx.c`
-- `lib/net/src/msg_compact.c`
-
-Add `lib/test/src/test_msg_handlers.c` with tests for any pure/testable functions in these files. Even basic smoke tests that call the public functions with NULL args to verify they don't crash.
-
-### 4. Wire `make lint` to enforce DEFENSIVE_CODING.md
-
-Check the Makefile for existing lint targets. Ensure `make lint` checks:
-- No bare `malloc` outside vendor/test (use `zcl_malloc`)
-- No bare `return -1` in `tools/mcp/` (use `LOG_ERR`)
-- Report violations with file:line
-
-If rules exist but aren't wired, wire them. If missing, add them.
+Ensure `make lint` runs these checks:
+- No bare `malloc` outside vendor/test
+- No bare `return -1` in MCP handlers
+Add missing rules if needed.
 
 ## Rules
 
 - Follow `DEFENSIVE_CODING.md`: use `LOG_FAIL()`, `zcl_malloc()`, `log_macros.h`
-- Run `make test` before AND after — verify failure count goes DOWN
+- Run `make test` before AND after — failure count must go DOWN
 - Commit with descriptive messages
-- Do NOT touch sync/validation code — that's Agent 2's domain
+- Do NOT touch sync/validation code
