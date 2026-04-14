@@ -5,6 +5,7 @@
  */
 
 #include "controllers/repair_controller.h"
+#include "services/chain_activation_controller.h"
 #include "controllers/strong_params.h"
 #include "coins/coins.h"
 #include "coins/coins_view.h"
@@ -668,6 +669,33 @@ static bool rpc_rescanblockfiles(const struct json_value *params, bool help,
     printf("RPC rescanblockfiles: %d marked, %zu/%zu have data (%llds)\n",
            marked, have_data_entries, total_entries, (long long)elapsed);
     fflush(stdout);
+
+    /* If we have blocks with data above our tip, trigger chain activation
+     * to connect them immediately instead of waiting for header sync. */
+    {
+        int tip_h = active_chain_height(&ctx->main_state->chain_active);
+        size_t above_tip = 0;
+        size_t si2 = 0;
+        struct block_index *sb2;
+        while (block_map_next(&ctx->main_state->map_block_index,
+                               &si2, NULL, &sb2)) {
+            if (sb2 && (sb2->nStatus & BLOCK_HAVE_DATA) &&
+                sb2->nHeight > tip_h && sb2->nChainTx > 0)
+                above_tip++;
+        }
+        if (above_tip > 0) {
+            printf("RPC rescanblockfiles: %zu blocks with data above tip "
+                   "h=%d — triggering chain activation\n",
+                   above_tip, tip_h);
+            fflush(stdout);
+            struct activation_exec_outcome ao;
+            activation_request_connect(boot_activation_controller(),
+                ACTIVATION_SRC_BLOCK_FILE_SCAN, NULL, &ao);
+            json_push_kv_int(result, "activated_above_tip",
+                              (int64_t)above_tip);
+        }
+    }
+
     return true;
 }
 
