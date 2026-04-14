@@ -1710,9 +1710,14 @@ bool app_init(struct app_context *ctx)
                  *       (scan picked a wrong short fork). */
                 struct uint256 post_scan_best;
                 coins_view_cache_get_best_block(&g_coins_tip, &post_scan_best);
-                int scan_chain_h = active_chain_height(&g_state.chain_active);
-                if (!uint256_is_null(&post_scan_best) &&
-                    (scan_chain_h <= 0 || scan_chain_h < 100000)) {
+                /* Restore chain tip to match UTXO snapshot height when
+                 * the active chain is far below the coins tip. This happens
+                 * after LDB import: the UTXO set is at 3M+ but block files
+                 * only cover up to ~2M, so activate_best_chain sets a low
+                 * tip. Without this fix, the node tries to re-connect
+                 * blocks that are already reflected in the UTXO set, causing
+                 * bad-txns-inputs-missingorspent failures. */
+                if (!uint256_is_null(&post_scan_best)) {
                     /* Look up correct height from SQLite */
                     int target_h = -1;
                     if (g_node_db.open && g_node_db.db) {
