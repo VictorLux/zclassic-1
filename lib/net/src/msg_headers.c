@@ -24,6 +24,7 @@
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 #include "services/sync_watchdog_service.h"
+#include "services/block_index_integrity.h"
 #include "coins/coins_view.h"
 #include <signal.h>
 extern volatile sig_atomic_t g_shutdown_requested;
@@ -44,6 +45,9 @@ static _Atomic uint64_t g_headers_total_accepted = 0;
 static _Atomic uint64_t g_headers_total_rejected = 0;
 static _Atomic uint64_t g_headers_newly_added = 0;
 static _Atomic uint64_t g_headers_already_known = 0;
+
+/* Per-peer header advancement tracking (simplified: tracks last peer). */
+static _Atomic int g_last_header_tip_height = 0;
 
 void msg_headers_get_stats(struct msg_headers_stats *out)
 {
@@ -541,14 +545,25 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
      * If some headers were new, use pindex_last — the peer will continue
      * from right after it. */
     if (header_plan.batch.should_request_more_headers) {
-        /* Always advance from pindex_last — the actual last header the
-         * peer sent.  The old skip-ahead to pindex_best_header caused an
-         * infinite loop after snapshot/LDB import: best_header was at
-         * 2015124, peer sent 160 known headers after it, but their
-         * nHeight was scrambled (2, 3, etc.), so the skip-ahead looped
-         * back to 2015124 every time.  By advancing from pindex_last,
-         * we walk forward through the known headers 160 at a time until
-         * we reach truly new ones. */
+        /* Track header advancement rate.  If a full batch of headers
+         * didn't advance the tip by at least 100, something may be
+         * wrong (e.g., heights still scrambled, bouncing locators). */
+        if (pindex_last && accepted >= 100) {
+            int prev_tip = atomic_load(&g_last_header_tip_height);
+            int cur_tip = pindex_last->nHeight;
+            if (prev_tip > 0 && cur_tip - prev_tip < 100 &&
+                cur_tip > 0 && prev_tip > 0) {
+                fprintf(stderr,
+                    "[headers] SLOW ADVANCE: peer %s sent %zu headers "
+                    "but tip only moved from %d to %d\n",
+                    node->addr_name, accepted, prev_tip, cur_tip);
+            }
+            atomic_store(&g_last_header_tip_height, cur_tip);
+        }
+
+        /* Advance from pindex_last — the actual last header the peer
+         * sent.  Using pindex_best_header caused infinite loops after
+         * snapshot/LDB import when heights were scrambled. */
         push_getheaders_from(mp, node, pindex_last);
     }
 
@@ -565,14 +580,39 @@ void push_getheaders_from(struct msg_processor *mp,
     if (snapsync_is_active())
         return;
 
-    /* Build a minimal 2-hash locator: [from_hash, genesis].
-     * The full pprev-walking locator is broken after snapshot sync because
-     * block index entries imported from LDB have scrambled heights/pprev.
-     * A 2-hash locator always works — peers find our hash and respond
-     * with headers starting right after it. */
+    /* Build locator for getheaders request.
+     * After bulk height repair, heights are trustworthy — use a proper
+     * Bitcoin-style exponential locator for better branch identification.
+     * Before repair, fall back to the safe 2-hash locator. */
     struct block_locator loc;
     block_locator_init(&loc);
-    if (from && from->phashBlock) {
+    if (from && from->phashBlock && block_index_heights_repaired()) {
+        /* Exponential locator: tip, tip-1, tip-2, tip-4, tip-8, ... genesis.
+         * Walk pprev chain with exponentially increasing steps. */
+        int max_hashes = 32;
+        struct uint256 *tmp = zcl_malloc((size_t)max_hashes * sizeof(struct uint256),
+                                         "exp_locator");
+        if (!tmp) return;
+        int nh = 0;
+        struct block_index *walk = from;
+        int step = 1;
+        while (walk && nh < max_hashes - 1) {
+            if (walk->phashBlock)
+                tmp[nh++] = *walk->phashBlock;
+            /* Walk back 'step' blocks via pprev */
+            for (int s = 0; s < step && walk->pprev; s++)
+                walk = walk->pprev;
+            if (walk == from) break;  /* safety: avoid infinite loop */
+            if (nh >= 10)
+                step *= 2;  /* exponential after first 10 entries */
+        }
+        /* Always end with genesis */
+        if (nh > 0 && nh < max_hashes)
+            tmp[nh++] = mp->params->consensus.hashGenesisBlock;
+        loc.vhave = tmp;
+        loc.num_hashes = (size_t)nh;
+    } else if (from && from->phashBlock) {
+        /* Pre-repair: safe 2-hash locator */
         loc.vhave = zcl_malloc(2 * sizeof(struct uint256), "block_locator");
         if (!loc.vhave) return;
         loc.vhave[0] = *from->phashBlock;
