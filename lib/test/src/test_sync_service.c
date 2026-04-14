@@ -1148,7 +1148,7 @@ static int test_sync_service_false_at_tip_peer_far_ahead(void)
         node.starting_height = 3078009;
 
         syncsvc_note_valid_block(&result, &node, SYNC_BLOCKS_DOWNLOAD,
-                                 2016354, 2016354, 0);
+                                 2016354, 2016354, 0, 3078009);
         /* Node hasn't reached peer starting_height, so reached_peer_tip
          * should be false and no AT_TIP transition should happen. */
         ASSERT(!result.reached_peer_tip);
@@ -1174,7 +1174,7 @@ static int test_sync_service_genuinely_at_tip(void)
         node.starting_height = 3078009;
 
         syncsvc_note_valid_block(&result, &node, SYNC_BLOCKS_DOWNLOAD,
-                                 3078009, 3078010, 0);
+                                 3078009, 3078010, 0, 3078009);
         ASSERT(result.reached_peer_tip);
         ASSERT(result.should_set_sync_state);
         ASSERT(result.next_sync_state == SYNC_AT_TIP);
@@ -1201,7 +1201,7 @@ static int test_sync_service_recent_tip_bypasses_headers(void)
         /* Tip time is 60 seconds ago — recent enough to bypass header check */
         uint32_t recent_time = (uint32_t)(time(NULL) - 60);
         syncsvc_note_valid_block(&result, &node, SYNC_BLOCKS_DOWNLOAD,
-                                 3078000, 1000, recent_time);
+                                 3078000, 1000, recent_time, 3078009);
         ASSERT(result.should_set_sync_state);
         ASSERT(result.next_sync_state == SYNC_AT_TIP);
         PASS();

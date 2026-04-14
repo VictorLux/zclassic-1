@@ -270,6 +270,17 @@ static int64_t syncsvc_getheaders_interval(const struct p2p_node *node,
     if (base > 600)
         base = 600;
 
+    if (base > 60) {
+        static int last_logged_peer = -1;
+        static int64_t last_logged_base = 0;
+        if (node->id != last_logged_peer || base != last_logged_base) {
+            printf("[headers] interval=%llds for peer %d (stale_count=%d)\n",
+                   (long long)base, node->id, stale);
+            last_logged_peer = node->id;
+            last_logged_base = base;
+        }
+    }
+
     return base;
 }
 
@@ -300,6 +311,10 @@ void syncsvc_plan_periodic_getheaders(struct sync_getheaders_action *action,
     action->should_send = true;
     action->anchor = SYNC_HEADER_REQUEST_TIP;
     action->should_log = true;
+
+    int64_t interval = syncsvc_getheaders_interval(node, our_height);
+    printf("[headers] getheaders planned: peer=%d our_h=%d peer_start_h=%d interval=%llds\n",
+           node->id, our_height, node->starting_height, (long long)interval);
 }
 
 void syncsvc_note_headers_requested(struct p2p_node *node,
