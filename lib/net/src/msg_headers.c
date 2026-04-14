@@ -517,18 +517,21 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                                 "queued=%zu total_needed=%zu",
                                 queued, header_plan.queue_count);
             }
+        }
 
-            {
-                struct sync_chain_activation activation = {0};
-                syncsvc_build_header_processing_activation(&activation,
-                                                          &header_plan);
-                if (activation.should_activate && !g_shutdown_requested) {
-                /* All blocks already have data — trigger chain activation
-                 * via controller (single authority). */
+        /* Chain activation: if all blocks already have data (e.g. after
+         * LDB import with symlinked blk files), needed_blocks.count is 0
+         * but should_activate_chain is true.  This MUST run outside the
+         * should_queue_needed_blocks guard — that gate requires count>0,
+         * which is the opposite of the activation condition. */
+        if (header_plan.should_activate_chain) {
+            struct sync_chain_activation activation = {0};
+            syncsvc_build_header_processing_activation(&activation,
+                                                      &header_plan);
+            if (activation.should_activate && !g_shutdown_requested) {
                 struct activation_exec_outcome ao;
                 activation_request_connect(boot_activation_controller(),
                     ACTIVATION_SRC_HEADERS_ALL_DATA, NULL, &ao);
-                }
             }
         }
         free(hashes);
