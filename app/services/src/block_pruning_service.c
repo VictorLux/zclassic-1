@@ -156,18 +156,17 @@ int block_pruning_run_once(struct block_pruning_service *svc)
         int64_t blk_sz = file_size_or_zero(blk_path);
         int64_t rev_sz = file_size_or_zero(rev_path);
 
-        /* Invalidate the file cache if it's caching this file */
+        /* Invalidate the file cache and delete under lock to prevent
+         * concurrent readers from hitting a deleted file → SIGSEGV. */
         disk_block_io_lock();
-        /* Close and reopen to flush — we just need the lock to
-         * prevent concurrent reads while we delete. */
-        disk_block_io_unlock();
-
+        disk_block_io_close_cache();
         bool blk_ok = (unlink(blk_path) == 0 || errno == ENOENT);
         bool rev_ok = (unlink(rev_path) == 0 || errno == ENOENT);
+        disk_block_io_unlock();
 
         if (!blk_ok) {
-            fprintf(stderr, "[prune] failed to delete %s: %s\n",
-                    blk_path, strerror(errno));
+            fprintf(stderr, "[prune] %s:%d %s(): failed to delete %s: %s\n",
+                    __FILE__, __LINE__, __func__, blk_path, strerror(errno));
             continue;
         }
 
