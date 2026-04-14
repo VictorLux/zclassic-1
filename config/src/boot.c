@@ -1328,6 +1328,13 @@ bool app_init(struct app_context *ctx)
                total_bytes / (1024 * 1024));
     }
 
+    /* Bulk height repair: fix scrambled nHeight values from LDB import.
+     * This must run AFTER block index is loaded but BEFORE header sync.
+     * Without this, header processing fixes heights 160-at-a-time which
+     * is far too slow for 3M+ entries with wrong heights. */
+    if (g_state.map_block_index.size > 100)
+        block_index_repair_heights(&g_state);
+
     /* Block index integrity — verify sidecar SHA3 after all loads.
      * Refuse to boot on mismatch unless ZCL_ALLOW_CORRUPT_INDEX=1. */
     {

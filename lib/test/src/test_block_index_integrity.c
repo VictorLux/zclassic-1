@@ -12,6 +12,8 @@
 #include "test/test_helpers.h"
 
 #include "services/block_index_integrity.h"
+#include "validation/main_state.h"
+#include "chain/pow.h"
 #include "models/database.h"
 #include "event/event.h"
 
@@ -410,6 +412,84 @@ static int t_verdict_names(void)
     return failures;
 }
 
+/* ── 12. Bulk height repair fixes scrambled heights ──────────── */
+
+static int t_height_repair(void)
+{
+    int failures = 0;
+
+    /* Build a small block index with a chain of 10 blocks.
+     * Scramble the heights, then call repair and verify. */
+    struct main_state ms;
+    main_state_init(&ms);
+
+    enum { CHAIN_LEN = 10 };
+    struct block_index blocks[CHAIN_LEN];
+    struct uint256 hashes[CHAIN_LEN];
+
+    for (int i = 0; i < CHAIN_LEN; i++) {
+        memset(&blocks[i], 0, sizeof(blocks[i]));
+        memset(&hashes[i], 0, sizeof(hashes[i]));
+        hashes[i].data[0] = (uint8_t)(i + 1);
+        blocks[i].phashBlock = &hashes[i];
+        blocks[i].pprev = (i > 0) ? &blocks[i - 1] : NULL;
+        /* Scramble heights: give wrong values */
+        blocks[i].nHeight = (i * 37) % 100;
+        blocks[i].nBits = 0x2007ffff;  /* valid difficulty for GetBlockProof */
+        block_map_insert(&ms.map_block_index, &hashes[i], &blocks[i]);
+    }
+
+    /* Genesis should have height 0 but we scrambled it */
+    blocks[0].nHeight = 42;
+
+    int repaired = block_index_repair_heights(&ms);
+
+    /* Verify all heights are correct */
+    bool heights_ok = true;
+    for (int i = 0; i < CHAIN_LEN; i++) {
+        if (blocks[i].nHeight != i) {
+            fprintf(stderr, "  height[%d] = %d (expected %d)\n",
+                    i, blocks[i].nHeight, i);
+            heights_ok = false;
+        }
+    }
+
+    /* Verify chain work is monotonically increasing */
+    bool work_ok = true;
+    for (int i = 1; i < CHAIN_LEN; i++) {
+        if (arith_uint256_compare(&blocks[i].nChainWork,
+                                   &blocks[i-1].nChainWork) <= 0) {
+            fprintf(stderr, "  chain_work[%d] not > chain_work[%d]\n", i, i-1);
+            work_ok = false;
+        }
+    }
+
+    bool flag_ok = block_index_heights_repaired();
+
+    BII_RUN("bii: height repair fixes scrambled heights",
+            heights_ok && repaired > 0);
+    BII_RUN("bii: height repair recomputes chain work", work_ok);
+    BII_RUN("bii: heights_repaired flag is set after repair", flag_ok);
+
+    main_state_free(&ms);
+    return failures;
+}
+
+/* ── 13. Height repair on empty block map is a no-op ─────────── */
+
+static int t_height_repair_empty(void)
+{
+    int failures = 0;
+    struct main_state ms;
+    main_state_init(&ms);
+
+    int repaired = block_index_repair_heights(&ms);
+    BII_RUN("bii: height repair on empty map returns 0", repaired == 0);
+
+    main_state_free(&ms);
+    return failures;
+}
+
 /* ── Aggregator ─────────────────────────────────────────────── */
 
 int test_block_index_integrity(void)
@@ -427,5 +507,7 @@ int test_block_index_integrity(void)
     failures += t_quarantine_renames();
     failures += t_quarantine_missing_is_noop();
     failures += t_verdict_names();
+    failures += t_height_repair();
+    failures += t_height_repair_empty();
     return failures;
 }

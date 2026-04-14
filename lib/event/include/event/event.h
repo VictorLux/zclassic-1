@@ -132,6 +132,7 @@ enum event_type {
 
     /* ── Block index integrity ─────────────────────── */
     EV_BLOCK_INDEX_CORRUPT,      /* payload: "verdict=NAME body_size=N ..." */
+    EV_BLOCK_INDEX_REPAIR,       /* payload: "repaired=N elapsed_ms=N" */
 
     /* ── Wallet backup service ─────────────────────── */
     EV_WALLET_BACKUP,            /* payload: "path=... bytes=N keys=N" */

@@ -31,6 +31,8 @@
 #include "util/safe_alloc.h"
 #include "event/event.h"
 #include "core/uint256.h"
+#include "validation/main_state.h"
+#include "chain/pow.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -377,4 +379,132 @@ void bii_quarantine_corrupt(const char *datadir, enum bii_verdict v)
     event_emitf(EV_BLOCK_INDEX_CORRUPT, 0,
                 "verdict=%s ts=%lld",
                 bii_verdict_name(v), (long long)ts);
+}
+
+/* ── Bulk block index height repair ────────────────────────── */
+
+static _Atomic bool g_heights_repaired = false;
+
+bool block_index_heights_repaired(void)
+{
+    return atomic_load(&g_heights_repaired);
+}
+
+/* Comparator for sorting block_index pointers by height (ascending). */
+static int bii_cmp_height(const void *a, const void *b)
+{
+    const struct block_index *pa = *(const struct block_index *const *)a;
+    const struct block_index *pb = *(const struct block_index *const *)b;
+    return (pa->nHeight > pb->nHeight) - (pa->nHeight < pb->nHeight);
+}
+
+int block_index_repair_heights(struct main_state *ms)
+{
+    if (!ms) return 0;
+
+    struct timespec t0;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+
+    size_t n = ms->map_block_index.size;
+    if (n == 0) {
+        atomic_store(&g_heights_repaired, true);
+        return 0;
+    }
+
+    /* Pass 1: count entries with wrong heights. */
+    int wrong = 0;
+    {
+        size_t iter = 0;
+        struct block_index *pi;
+        while (block_map_next(&ms->map_block_index, &iter, NULL, &pi)) {
+            if (!pi) continue;
+            if (pi->pprev && pi->nHeight != pi->pprev->nHeight + 1)
+                wrong++;
+        }
+    }
+
+    if (wrong == 0) {
+        printf("[height-repair] all %zu block index heights correct\n", n);
+        fflush(stdout);
+        atomic_store(&g_heights_repaired, true);
+        return 0;
+    }
+
+    printf("[height-repair] found %d/%zu entries with wrong heights, repairing...\n",
+           wrong, n);
+    fflush(stdout);
+
+    /* Collect all entries into an array for sorting. */
+    struct block_index **arr = zcl_malloc(n * sizeof(*arr), "height_repair_arr");
+    if (!arr) {
+        fprintf(stderr, "[height-repair] malloc failed for %zu entries\n", n);
+        return 0;
+    }
+
+    size_t iter = 0, idx = 0;
+    struct block_index *pi;
+    while (block_map_next(&ms->map_block_index, &iter, NULL, &pi)) {
+        if (pi && idx < n)
+            arr[idx++] = pi;
+    }
+    n = idx;
+
+    /* Pass 2: Fix heights via multi-pass forward propagation.
+     * Each pass sets height = pprev->height + 1 for entries where pprev
+     * already has the correct height.  Converges in O(max_depth) passes
+     * but typically 1-3 for a well-linked chain. */
+    int repaired = 0;
+    for (int pass = 0; pass < 20; pass++) {
+        int fixed_this_pass = 0;
+        for (size_t i = 0; i < n; i++) {
+            struct block_index *b = arr[i];
+            if (!b->pprev) {
+                /* Genesis: height must be 0 */
+                if (b->nHeight != 0) {
+                    b->nHeight = 0;
+                    fixed_this_pass++;
+                }
+                continue;
+            }
+            int expected = b->pprev->nHeight + 1;
+            if (b->nHeight != expected) {
+                b->nHeight = expected;
+                fixed_this_pass++;
+            }
+        }
+        repaired += fixed_this_pass;
+        if (fixed_this_pass == 0)
+            break;
+    }
+
+    /* Pass 3: Recompute nChainWork now that heights are correct.
+     * Must sort by height first for correct forward propagation. */
+    qsort(arr, n, sizeof(*arr), bii_cmp_height);
+
+    for (size_t i = 0; i < n; i++) {
+        struct block_index *b = arr[i];
+        struct arith_uint256 proof = GetBlockProof(b);
+        if (b->pprev)
+            arith_uint256_add(&b->nChainWork, &b->pprev->nChainWork, &proof);
+        else
+            b->nChainWork = proof;
+    }
+
+    free(arr);
+
+    struct timespec t1;
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    int64_t elapsed_ms = (t1.tv_sec - t0.tv_sec) * 1000
+                       + (t1.tv_nsec - t0.tv_nsec) / 1000000;
+
+    printf("[height-repair] repaired %d heights in %lld ms\n",
+           repaired, (long long)elapsed_ms);
+    fflush(stdout);
+
+    event_emitf(EV_BLOCK_INDEX_REPAIR, 0,
+                "repaired=%d elapsed_ms=%lld",
+                repaired, (long long)elapsed_ms);
+
+    atomic_store(&g_heights_repaired, true);
+    return repaired;
 }

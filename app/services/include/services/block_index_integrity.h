@@ -124,4 +124,23 @@ bool bii_write_sidecar(const char *datadir);
  * are silently ignored (already-gone is fine). */
 void bii_quarantine_corrupt(const char *datadir, enum bii_verdict v);
 
+/* ── Bulk height repair ──────────────────────────────────────
+ * After LDB import, block index entries may have scrambled nHeight
+ * values.  This function walks the entire block map, finds entries
+ * where nHeight != pprev->nHeight + 1, and fixes them all in O(n)
+ * using a BFS-style forward propagation from roots (genesis or
+ * first correct ancestors).  Also recomputes nChainWork.
+ *
+ * Returns the number of entries repaired (0 = nothing to fix).
+ * Sets the global "heights repaired" flag on success so that
+ * other subsystems (e.g. getheaders locator) can trust heights.
+ *
+ * Must be called AFTER block index is loaded, BEFORE header sync. */
+struct main_state;
+int block_index_repair_heights(struct main_state *ms);
+
+/* Returns true if block_index_repair_heights() has been called
+ * (even if it repaired 0 entries — the scan itself is the signal). */
+bool block_index_heights_repaired(void);
+
 #endif /* ZCL_SERVICES_BLOCK_INDEX_INTEGRITY_H */
