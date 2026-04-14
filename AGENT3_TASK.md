@@ -1,87 +1,61 @@
-# Agent 3 Task: Wire Watchdog + Sync Diagnostics
+# Agent 3 Task: Wave 14 — Test Coverage & Defensive Coding
 
-## Context
+## Previous work (DONE)
+- Wave 12: Sync watchdog service (auto-recovery, circuit breaker)
+- Wave 13: msgprocessor.c split (4604→2938 lines), watchdog wiring, diagnostic counters, getsyncdiag RPC, watchdog escalation
 
-Agent 2 is fixing the sync stall root cause (broken pprev heights causing contextual_check_block_header to reject headers). Your job is to make sure this class of bug is observable and self-healing in the future.
+## Current state
+Sync stall is FIXED. Node is actively syncing. Time to harden the codebase.
 
 ## Files to read first
 
 - `CLAUDE.md` and `DEFENSIVE_CODING.md`
-- `app/services/src/sync_watchdog_service.c` — your previous work
-- `lib/net/src/msgprocessor.c` — the send loop where watchdog should be called
-- `config/src/boot_services.c` — service startup
-- `~/.zclassic-c23/node.log` — live evidence of the current stall
+- `lib/test/src/test.c` — test registration
+- `Makefile` — build rules, lint targets
 
 ## Tasks
 
-### 1. Wire sync_watchdog_check() into the message loop
+### 1. Fix the 12 pre-existing test failures
 
-Check if `sync_watchdog_check()` is actually being called. Look in `msgprocessor.c` `msg_send_messages()` around the ~30s periodic section. If NOT wired:
+Run `make test` and find the 12 failures. They fall into two categories:
 
-```c
-/* In the periodic check section of msg_send_messages, after stall detection */
-{
-    struct connman *cm = get_connman();  /* or however connman is accessed */
-    struct download_manager *dm = get_download_mgr();
-    sync_watchdog_check(cm, dm, mp->main_state);
-}
-```
+**a. MCP tool count mismatch (5 failures)**: Tests expect 76 tools but we now have 79 (new tools were added). Find the test in `lib/test/src/` that checks tool counts and update the expected values.
 
-Also verify `sync_watchdog_init()` is called in `boot_services.c`.
+**b. wallet_sqlite_open failures (7 failures)**: These crash with `FAIL (wallet_sqlite_open(&ws, db))`. Investigate why — likely the test database setup is missing a schema migration or table creation step. Fix the test setup.
 
-### 2. Add sync diagnostic counters
+### 2. Migrate bare `return -1` in critical paths
 
-Add counters to track the header sync pipeline. Put them in `msg_headers.c`:
+There are 156 bare `return -1` without logging. Focus on the most critical files first:
 
-```c
-static _Atomic uint64_t g_headers_batches_received = 0;
-static _Atomic uint64_t g_headers_total_accepted = 0;
-static _Atomic uint64_t g_headers_total_rejected = 0;
-static _Atomic uint64_t g_headers_newly_added = 0;
-static _Atomic uint64_t g_headers_already_known = 0;
-```
+- `lib/validation/src/process_block.c` — replace bare `return -1` and `return false` with `LOG_FAIL()`
+- `lib/net/src/connman.c` — network connection errors should be logged
+- `config/src/boot.c` — boot failures must be visible
 
-Update `process_headers()` to increment these. Expose them via a function `msg_headers_get_stats()` that the RPC/MCP layer can call.
+Count them before and after. Target: reduce from 156 to under 100.
 
-### 3. Add getsyncdiag RPC
+### 3. Add tests for the split message handler files
 
-Add RPC method `getsyncdiag` that returns:
-```json
-{
-  "watchdog": { "enabled": true, "checks_run": 42, "recoveries": 1, ... },
-  "headers": {
-    "batches_received": 150,
-    "total_accepted": 23000,
-    "total_rejected": 345,
-    "newly_added": 22000,
-    "already_known": 1000
-  },
-  "sync_state": "headers_download",
-  "sync_state_duration_secs": 120,
-  "chain_height": 2015124,
-  "best_header_height": 2015200
-}
-```
+The new files from the msgprocessor split have no tests:
+- `lib/net/src/msg_version.c`
+- `lib/net/src/msg_headers.c`
+- `lib/net/src/msg_blocks.c`
+- `lib/net/src/msg_tx.c`
+- `lib/net/src/msg_compact.c`
 
-Wire it into the RPC dispatch. Look at how existing RPC methods like `getsyncdetail` are registered.
+Add `lib/test/src/test_msg_handlers.c` with tests for any pure/testable functions in these files. Even basic smoke tests that call the public functions with NULL args to verify they don't crash.
 
-### 4. Watchdog escalation for persistent header stalls
+### 4. Wire `make lint` to enforce DEFENSIVE_CODING.md
 
-If the watchdog detects HEADER_STALL and peer rotation doesn't fix it after 2 cycles (600s total), escalate:
-- Log the reject reason from the last rejected header
-- If reject reason contains "equihash" or "solution-size", log: `"[watchdog] ESCALATION: height corruption detected, headers rejected with wrong-era validation rules"`
-- This gives operators clear diagnostic info
+Check the Makefile for existing lint targets. Ensure `make lint` checks:
+- No bare `malloc` outside vendor/test (use `zcl_malloc`)
+- No bare `return -1` in `tools/mcp/` (use `LOG_ERR`)
+- Report violations with file:line
 
-### 5. Tests
-
-Add tests for:
-- Diagnostic counter increments
-- Watchdog wiring verification (init called, check produces results)
-- Put in `lib/test/src/test_sync_watchdog.c` (extend existing)
+If rules exist but aren't wired, wire them. If missing, add them.
 
 ## Rules
 
 - Follow `DEFENSIVE_CODING.md`: use `LOG_FAIL()`, `zcl_malloc()`, `log_macros.h`
-- Run `make test` before committing
+- Run `make test` before AND after — verify failure count goes DOWN
 - Commit with descriptive messages
-- Do NOT touch `process_block.c` or the header acceptance logic — that's Agent 2's job
+- Do NOT touch sync/validation code — that's Agent 2's domain
