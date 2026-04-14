@@ -535,18 +535,15 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
      * If some headers were new, use pindex_last — the peer will continue
      * from right after it. */
     if (header_plan.batch.should_request_more_headers) {
-        if (newly_added == 0 && mp->main_state->pindex_best_header &&
-            pindex_last &&
-            mp->main_state->pindex_best_header->nHeight > pindex_last->nHeight) {
-            printf("Headers: all %zu known, skipping ahead from h=%d to "
-                   "best_header h=%d\n",
-                   accepted, pindex_last->nHeight,
-                   mp->main_state->pindex_best_header->nHeight);
-            push_getheaders_from(mp, node,
-                                 mp->main_state->pindex_best_header);
-        } else {
-            push_getheaders_from(mp, node, pindex_last);
-        }
+        /* Always advance from pindex_last — the actual last header the
+         * peer sent.  The old skip-ahead to pindex_best_header caused an
+         * infinite loop after snapshot/LDB import: best_header was at
+         * 2015124, peer sent 160 known headers after it, but their
+         * nHeight was scrambled (2, 3, etc.), so the skip-ahead looped
+         * back to 2015124 every time.  By advancing from pindex_last,
+         * we walk forward through the known headers 160 at a time until
+         * we reach truly new ones. */
+        push_getheaders_from(mp, node, pindex_last);
     }
 
     return true;
