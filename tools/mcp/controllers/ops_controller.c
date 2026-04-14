@@ -52,24 +52,59 @@ static int h_zcl_status(const struct mcp_request *req, struct mcp_response *res)
     char *s  = mcp_node_rpc("syncstate", NULL);
     char *v  = mcp_node_rpc("validationstatus", NULL);
     char *hc = mcp_node_rpc("healthcheck", NULL);
+    char *ci = mcp_node_rpc("getblockchaininfo", NULL);
 
     int pc = 0;
     if (p) { for (char *c = p; *c; c++) if (*c == '{') pc++; }
 
+    /* Extract header_height from getblockchaininfo best_header_height */
+    int header_height = 0;
+    if (ci) {
+        const char *bhh = strstr(ci, "\"best_header_height\"");
+        if (bhh) {
+            bhh += strlen("\"best_header_height\"");
+            while (*bhh == ' ' || *bhh == ':') bhh++;
+            header_height = atoi(bhh);
+        }
+    }
+
+    /* Extract max peer starting_height from getpeerinfo */
+    int max_peer_height = 0;
+    if (p) {
+        const char *sp = p;
+        while ((sp = strstr(sp, "\"startingheight\"")) != NULL) {
+            sp += strlen("\"startingheight\"");
+            while (*sp == ' ' || *sp == ':') sp++;
+            int sh = atoi(sp);
+            if (sh > max_peer_height) max_peer_height = sh;
+        }
+    }
+
+    int block_height = h ? atoi(h) : 0;
+    int header_gap = max_peer_height - header_height;
+    if (header_gap < 0) header_gap = 0;
+    bool sync_behind = header_gap > 144;
+
     char *out = zcl_malloc(32768, "status_body");
     if (!out) {
-        free(h); free(p); free(s); free(v); free(hc);
+        free(h); free(p); free(s); free(v); free(hc); free(ci);
         res->error = MCP_ERR_INTERNAL;
         snprintf(res->error_message, sizeof(res->error_message),
                  "malloc failed for status response");
         LOG_ERR("mcp.ops", "malloc failed for status body (32768 bytes)");
     }
     snprintf(out, 32768,
-             "{\"height\":%s,\"peers\":%d,\"sync\":%s,"
+             "{\"height\":%d,\"header_height\":%d,"
+             "\"max_peer_height\":%d,\"header_gap\":%d,"
+             "\"sync_behind\":%s,"
+             "\"peers\":%d,\"sync\":%s,"
              "\"validation\":%s,\"health\":%s}",
-             h ? h : "null", pc, s ? s : "null",
+             block_height, header_height,
+             max_peer_height, header_gap,
+             sync_behind ? "true" : "false",
+             pc, s ? s : "null",
              v ? v : "null", hc ? hc : "null");
-    free(h); free(p); free(s); free(v); free(hc);
+    free(h); free(p); free(s); free(v); free(hc); free(ci);
     res->body = out;
     return 0;
 }
