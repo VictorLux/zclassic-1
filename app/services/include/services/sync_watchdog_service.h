@@ -63,6 +63,9 @@ int64_t sync_get_state_duration(void);
 /* Get the height at which the current sync state was entered. */
 int sync_get_state_entry_height(void);
 
+/* Record the last header rejection reason for escalation diagnostics. */
+void sync_watchdog_set_last_reject_reason(const char *reason);
+
 /* Called internally when sync state changes to update timestamps.
  * Registered as callback via sync_set_state_change_callback(). */
 void sync_watchdog_on_state_change(enum sync_state new_state, int height);

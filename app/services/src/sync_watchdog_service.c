@@ -71,7 +71,24 @@ static struct {
     /* Circuit breaker: timestamps of recent recoveries */
     int64_t  recovery_times[REPEATED_MAX + 1];
     int      recovery_count;
+
+    /* Header stall escalation: consecutive HEADER_STALL recoveries */
+    int      header_stall_consecutive;
+    bool     header_stall_escalated;
 } g_watchdog;
+
+/* Last header reject reason (updated by msg_headers.c via setter) */
+static char g_last_header_reject_reason[256] = {0};
+
+void sync_watchdog_set_last_reject_reason(const char *reason)
+{
+    if (reason) {
+        strncpy(g_last_header_reject_reason, reason,
+                sizeof(g_last_header_reject_reason) - 1);
+        g_last_header_reject_reason[sizeof(g_last_header_reject_reason) - 1]
+            = '\0';
+    }
+}
 
 /* ── Public API ──────────────────────────────────────────── */
 
@@ -202,12 +219,34 @@ enum watchdog_recovery_type sync_watchdog_check(
                    "resetting sync\n", ndisconnected);
             record_recovery(now, WATCHDOG_HEADER_STALL);
             g_watchdog.last_header_height = -1;
+
+            /* Escalation: if peer rotation hasn't fixed it after 2 cycles */
+            g_watchdog.header_stall_consecutive++;
+            if (g_watchdog.header_stall_consecutive >= 2 &&
+                !g_watchdog.header_stall_escalated) {
+                g_watchdog.header_stall_escalated = true;
+                printf("[watchdog] ESCALATION: persistent header stall "
+                       "(%d consecutive recoveries)\n",
+                       g_watchdog.header_stall_consecutive);
+                if (g_last_header_reject_reason[0]) {
+                    printf("[watchdog] ESCALATION: last reject reason: %s\n",
+                           g_last_header_reject_reason);
+                    if (strstr(g_last_header_reject_reason, "equihash") ||
+                        strstr(g_last_header_reject_reason, "solution-size"))
+                        printf("[watchdog] ESCALATION: height corruption "
+                               "detected, headers rejected with wrong-era "
+                               "validation rules\n");
+                }
+            }
+
             return WATCHDOG_HEADER_STALL;
         }
         g_watchdog.last_header_height = current_header_height;
     } else if (state != SYNC_HEADERS_DOWNLOAD) {
         /* Reset tracking when not in header download */
         g_watchdog.last_header_height = -1;
+        g_watchdog.header_stall_consecutive = 0;
+        g_watchdog.header_stall_escalated = false;
     }
 
     /* b. BLOCK_STALL: blocks_download >300s with no chain height progress */

@@ -23,6 +23,7 @@
 #include "event/event.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
+#include "services/sync_watchdog_service.h"
 #include "coins/coins_view.h"
 #include <signal.h>
 extern volatile sig_atomic_t g_shutdown_requested;
@@ -223,21 +224,26 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
             pindex_last = pindex;
             if (pindex && pindex->phashBlock)
                 last_hash = *pindex->phashBlock;
-        } else if (i < 3) {
-            char hex[65], prevhex[65];
-            struct uint256 hh;
-            block_header_get_hash(&hdr, &hh);
-            uint256_get_hex(&hh, hex);
-            uint256_get_hex(&hdr.hashPrevBlock, prevhex);
-            printf("HEADER REJECT[%llu]: hash=%s prev=%s reason=%s\n",
-                   (unsigned long long)i, hex, prevhex,
-                   state.reject_reason[0] ? state.reject_reason
-                                          : "unknown");
-            event_emitf(EV_HEADERS_REJECTED, (uint32_t)node->id,
-                        "header[%llu] %s reason=%s",
-                        (unsigned long long)i, hex,
-                        state.reject_reason[0] ? state.reject_reason
-                                               : "unknown");
+        } else {
+            /* Record reject reason for watchdog escalation */
+            if (state.reject_reason[0])
+                sync_watchdog_set_last_reject_reason(state.reject_reason);
+            if (i < 3) {
+                char hex[65], prevhex[65];
+                struct uint256 hh;
+                block_header_get_hash(&hdr, &hh);
+                uint256_get_hex(&hh, hex);
+                uint256_get_hex(&hdr.hashPrevBlock, prevhex);
+                printf("HEADER REJECT[%llu]: hash=%s prev=%s reason=%s\n",
+                       (unsigned long long)i, hex, prevhex,
+                       state.reject_reason[0] ? state.reject_reason
+                                              : "unknown");
+                event_emitf(EV_HEADERS_REJECTED, (uint32_t)node->id,
+                            "header[%llu] %s reason=%s",
+                            (unsigned long long)i, hex,
+                            state.reject_reason[0] ? state.reject_reason
+                                                   : "unknown");
+            }
         }
     }
 

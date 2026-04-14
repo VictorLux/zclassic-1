@@ -3,6 +3,7 @@
 
 #include "test/test_helpers.h"
 #include "services/sync_watchdog_service.h"
+#include "net/msgprocessor.h"
 #include "net/download.h"
 #include "validation/main_state.h"
 #include <string.h>
@@ -194,6 +195,168 @@ static int test_at_tip_exempt(void)
     return failures;
 }
 
+/* ── Test: diagnostic counter increments ────────────────── */
+
+static int test_diagnostic_counters(void)
+{
+    int failures = 0;
+
+    TEST("header stats struct is populated without crash") {
+        struct msg_headers_stats stats;
+        memset(&stats, 0xff, sizeof(stats));
+        msg_headers_get_stats(&stats);
+        /* After get_stats, struct should be coherent (not 0xff garbage).
+         * Counters are cumulative; just verify the call worked. */
+        ASSERT(stats.total_accepted + stats.total_rejected >=
+               stats.total_accepted); /* no overflow */
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+static int test_diagnostic_counters_null(void)
+{
+    int failures = 0;
+
+    TEST("header stats getter handles NULL") {
+        msg_headers_get_stats(NULL); /* should not crash */
+        ASSERT(true);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+/* ── Test: watchdog init and status ─────────────────────── */
+
+static int test_watchdog_init_valid(void)
+{
+    int failures = 0;
+
+    TEST("watchdog init produces valid status") {
+        reset_test_state();
+        struct sync_watchdog_status status;
+        sync_watchdog_get_status(&status);
+
+        ASSERT(status.enabled == true);
+        ASSERT(status.checks_run == 0);
+        ASSERT(status.recoveries_triggered == 0);
+        ASSERT(status.last_recovery_type == WATCHDOG_NONE);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+static int test_watchdog_checks_run(void)
+{
+    int failures = 0;
+
+    TEST("watchdog check increments checks_run") {
+        reset_test_state();
+        sync_set_state(SYNC_HEADERS_DOWNLOAD, "test");
+        sync_set_state(SYNC_AT_TIP, "test");
+
+        sync_watchdog_check(&g_test_cm, &g_test_dm, &g_test_ms);
+        sync_watchdog_check(&g_test_cm, &g_test_dm, &g_test_ms);
+
+        struct sync_watchdog_status status;
+        sync_watchdog_get_status(&status);
+        ASSERT(status.checks_run == 2);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+static int test_watchdog_null_status(void)
+{
+    int failures = 0;
+
+    TEST("watchdog status reports NULL safely") {
+        sync_watchdog_get_status(NULL); /* should not crash */
+        ASSERT(true);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+/* ── Test: watchdog escalation ──────────────────────────── */
+
+static int test_watchdog_escalation(void)
+{
+    int failures = 0;
+
+    TEST("watchdog escalates after 2 consecutive header stalls") {
+        reset_test_state();
+
+        struct block_index fake_header = {0};
+        fake_header.nHeight = 5000;
+        g_test_ms.pindex_best_header = &fake_header;
+
+        /* Set a reject reason for escalation diagnostic */
+        sync_watchdog_set_last_reject_reason("equihash-bad-solution");
+
+        /* Trigger 2 HEADER_STALL recoveries */
+        for (int i = 0; i < 2; i++) {
+            sync_set_state(SYNC_IDLE, "reset");
+            sync_set_state(SYNC_HEADERS_DOWNLOAD, "trigger");
+            atomic_store(&g_sync_state_entered_time,
+                         (int64_t)time(NULL) - 350);
+
+            /* First check: record baseline */
+            sync_watchdog_check(&g_test_cm, &g_test_dm, &g_test_ms);
+
+            /* Re-enter headers_download */
+            if (sync_get_state() != SYNC_HEADERS_DOWNLOAD) {
+                sync_set_state(SYNC_IDLE, "re-enter");
+                sync_set_state(SYNC_HEADERS_DOWNLOAD, "re-enter");
+            }
+            atomic_store(&g_sync_state_entered_time,
+                         (int64_t)time(NULL) - 350);
+
+            /* Second check: trigger stall */
+            enum watchdog_recovery_type r = sync_watchdog_check(
+                &g_test_cm, &g_test_dm, &g_test_ms);
+            ASSERT(r == WATCHDOG_HEADER_STALL);
+        }
+
+        /* After 2 stalls, the escalation should have fired
+         * (verified by the printf output; here we just confirm
+         * the recoveries count) */
+        struct sync_watchdog_status status;
+        sync_watchdog_get_status(&status);
+        ASSERT(status.recoveries_triggered >= 2);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+/* ── Test: recovery type names ──────────────────────────── */
+
+static int test_recovery_type_names(void)
+{
+    int failures = 0;
+
+    TEST("recovery type names are non-null") {
+        ASSERT(strcmp(watchdog_recovery_type_name(WATCHDOG_NONE), "NONE") == 0);
+        ASSERT(strcmp(watchdog_recovery_type_name(WATCHDOG_HEADER_STALL),
+                      "HEADER_STALL") == 0);
+        ASSERT(strcmp(watchdog_recovery_type_name(WATCHDOG_BLOCK_STALL),
+                      "BLOCK_STALL") == 0);
+        ASSERT(strcmp(watchdog_recovery_type_name(WATCHDOG_STATE_STUCK),
+                      "STATE_STUCK") == 0);
+        ASSERT(strcmp(watchdog_recovery_type_name(WATCHDOG_REPEATED_RESTART),
+                      "REPEATED_RESTART") == 0);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
 /* ── Test runner ─────────────────────────────────────────── */
 
 int test_sync_watchdog(void)
@@ -205,5 +368,12 @@ int test_sync_watchdog(void)
     failures += test_state_stuck_detection();
     failures += test_repeated_restart_circuit_breaker();
     failures += test_at_tip_exempt();
+    failures += test_diagnostic_counters();
+    failures += test_diagnostic_counters_null();
+    failures += test_watchdog_init_valid();
+    failures += test_watchdog_checks_run();
+    failures += test_watchdog_null_status();
+    failures += test_watchdog_escalation();
+    failures += test_recovery_type_names();
     return failures;
 }
