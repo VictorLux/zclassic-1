@@ -114,6 +114,7 @@ static enum csr_result csr_validate_locked(
 
     struct block_index *new_tip = commit->new_tip;
     if (!new_tip->phashBlock) return CSR_REJECTED_NULL_INPUT;
+    if (new_tip->nHeight < 0) return CSR_REJECTED_NULL_INPUT;
 
     /* Step 1: the proposed coins_best_block must equal the tip hash.
      * If they disagree, the caller has a bug — refuse rather than
@@ -338,6 +339,9 @@ enum csr_result csr_commit_tip(struct chain_state_repository *csr,
                 (commit && commit->reason) ? commit->reason : "");
         return rc;
     }
+
+    printf("[csr] commit_tip h=%d reason=%s\n",
+           commit->new_tip->nHeight, commit->reason);
 
     /* Atomic update sequence. The only call that can fail is
      * active_chain_set_tip (realloc OOM); we attempt it first so a

@@ -890,6 +890,21 @@ int test_chain_state_repo(void)
     failures += t_singleton_uninitialized_rejects();
     failures += t_singleton_init_wires_fixture();
 
+    /* Negative height rejection */
+    {
+        printf("csr: negative height returns NULL_INPUT... ");
+        struct chain_state_repository csr;
+        struct csr_fixture f; csr_fix_init(&f);
+        csr_init(&csr, &f.bm, &f.chain, &f.header_tip, &f.coins_tip, NULL, NULL);
+        struct block_index *b = csr_fix_add(&f, 0xF1);
+        b->nHeight = -1; /* force negative height */
+        struct chain_state_commit c = csr_make_commit(b, "negative height test");
+        bool ok = csr_commit_tip(&csr, &c) == CSR_REJECTED_NULL_INPUT;
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+        csr_free(&csr);
+        csr_fix_free(&f);
+    }
+
     /* Reset observers so we don't interfere with the rest of the suite. */
     event_clear_observers(EV_CHAIN_TIP_COMMIT);
     event_clear_observers(EV_CHAIN_TIP_REJECTED);
