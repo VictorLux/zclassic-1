@@ -42,6 +42,19 @@ struct sync_watchdog_status {
     int      escalation_level;
 };
 
+/* Extended watchdog stats (for MCP health) */
+struct watchdog_stats {
+    int      checks_run;
+    int      recoveries_total;
+    int      escalation_level;
+    double   blocks_per_sec;
+    int64_t  last_recovery_time;
+    enum watchdog_recovery_type last_recovery;
+};
+
+/* Get extended watchdog stats for MCP health endpoint. */
+void sync_watchdog_get_stats(struct watchdog_stats *out);
+
 /* Initialize watchdog state and register state-change callback.
  * Call once at startup. */
 void sync_watchdog_init(void);

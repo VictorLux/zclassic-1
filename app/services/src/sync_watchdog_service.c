@@ -97,6 +97,12 @@ static struct {
     int64_t  l1_window_start;
     int      l2_failures;          /* L2 failures within l2_window_start */
     int64_t  l2_window_start;
+
+    /* Progress rate tracking (Task 4) */
+    struct { int height; int64_t timestamp; } progress[5];
+    int      progress_count;
+    int      progress_index;       /* circular index into progress[] */
+    double   blocks_per_sec;
 } g_watchdog;
 
 /* Last header reject reason (updated by msg_headers.c via setter) */
@@ -151,6 +157,19 @@ void sync_watchdog_get_status(struct sync_watchdog_status *out)
     out->current_state_duration_secs = sync_get_state_duration();
     out->current_state_entry_height = sync_get_state_entry_height();
     out->escalation_level = g_watchdog.escalation_level;
+}
+
+void sync_watchdog_get_stats(struct watchdog_stats *out)
+{
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+
+    out->checks_run = (int)g_watchdog.checks_run;
+    out->recoveries_total = (int)g_watchdog.recoveries_triggered;
+    out->escalation_level = g_watchdog.escalation_level;
+    out->blocks_per_sec = g_watchdog.blocks_per_sec;
+    out->last_recovery_time = g_watchdog.last_recovery_time;
+    out->last_recovery = g_watchdog.last_recovery_type;
 }
 
 /* Forward declarations */
@@ -309,6 +328,47 @@ enum watchdog_recovery_type sync_watchdog_check(
     int64_t now = (int64_t)time(NULL);
     enum sync_state state = sync_get_state();
     int64_t duration = sync_get_state_duration();
+
+    /* Progress rate tracking: record {height, timestamp} each cycle */
+    {
+        int current_height = -1;
+        if (ms)
+            current_height = active_chain_height(&ms->chain_active);
+
+        if (current_height >= 0) {
+            int idx = g_watchdog.progress_index % 5;
+            g_watchdog.progress[idx].height = current_height;
+            g_watchdog.progress[idx].timestamp = now;
+            g_watchdog.progress_index++;
+            if (g_watchdog.progress_count < 5)
+                g_watchdog.progress_count++;
+
+            /* Compute blocks/sec over the window */
+            if (g_watchdog.progress_count >= 2) {
+                int oldest = (g_watchdog.progress_index - g_watchdog.progress_count) % 5;
+                if (oldest < 0) oldest += 5;
+                int newest = (g_watchdog.progress_index - 1) % 5;
+                int64_t dt = g_watchdog.progress[newest].timestamp -
+                             g_watchdog.progress[oldest].timestamp;
+                int dh = g_watchdog.progress[newest].height -
+                         g_watchdog.progress[oldest].height;
+                if (dt > 0)
+                    g_watchdog.blocks_per_sec = (double)dh / (double)dt;
+                else
+                    g_watchdog.blocks_per_sec = 0.0;
+
+                /* SLOW_PROGRESS warning during IBD with peers */
+                if (g_watchdog.blocks_per_sec < 0.5 &&
+                    state != SYNC_AT_TIP &&
+                    state != SYNC_IDLE &&
+                    connman_get_node_count(cm) > 0) {
+                    printf("[watchdog] SLOW_PROGRESS: %.2f blocks/sec "
+                           "(height %d)\n",
+                           g_watchdog.blocks_per_sec, current_height);
+                }
+            }
+        }
+    }
 
     /* d. Escalation: instead of giving up, escalate recovery */
     {
