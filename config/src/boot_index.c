@@ -303,10 +303,14 @@ void *backfill_addresses_thread(void *arg)
         return NULL;
     }
 
-    /* Use conservative mmap — large mmap caused SIGSEGV on some systems
-     * when the address space layout conflicts with heap allocations
-     * during the large GROUP BY sort buffer. 64MB is plenty. */
-    sqlite3_exec(db, "PRAGMA mmap_size=67108864", NULL, NULL, NULL);
+    /* Disable mmap entirely for this background thread.
+     * The previous mmap_size=64MB caused SIGSEGV after ~64K addresses:
+     * when the main thread writes via WAL, the kernel may invalidate
+     * mmap pages that this thread's sort cursor is scanning, triggering
+     * a fault in SQLite's mmap read path. With mmap_size=0, SQLite
+     * falls back to read() which is safe under concurrent WAL writes.
+     * Performance is irrelevant — this is a one-time background job. */
+    sqlite3_exec(db, "PRAGMA mmap_size=0", NULL, NULL, NULL);
     sqlite3_busy_timeout(db, 60000);
     /* Reduce temp store pressure — force temp tables to disk */
     sqlite3_exec(db, "PRAGMA temp_store=FILE", NULL, NULL, NULL);
