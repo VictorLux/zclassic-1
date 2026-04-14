@@ -498,8 +498,10 @@ static int scan_one_block_file(struct main_state *ms,
                                 int *created_out)
 {
     int marked = 0, created = 0, consec_errors = 0, skipped = 0;
+    disk_block_io_lock();
     FILE *f = fopen(filepath, "rb");
     if (!f) {
+        disk_block_io_unlock();
         fprintf(stderr, "scan: cannot open %s: %s\n", filepath, strerror(errno));
         return 0;
     }
@@ -663,6 +665,7 @@ static int scan_one_block_file(struct main_state *ms,
     }
 
     fclose(f);
+    disk_block_io_unlock();
     if (created_out) *created_out += created;
     if (marked > 0 || created > 0)
         printf("  blk%05d.dat: %d marked, %d created, %d skipped (%ld MB)\n",
@@ -698,6 +701,7 @@ static int resolve_orphan_pprev_from_disk(struct main_state *ms,
                  datadir, file_idx);
         FILE *f = NULL;
 
+        disk_block_io_lock();
         size_t iter = 0;
         struct block_index *bi;
         while (block_map_next(&ms->map_block_index, &iter, NULL, &bi)) {
@@ -734,6 +738,7 @@ static int resolve_orphan_pprev_from_disk(struct main_state *ms,
             }
         }
         if (f) fclose(f);
+        disk_block_io_unlock();
     }
 
     if (read_errors > 0)
