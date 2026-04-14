@@ -2612,7 +2612,7 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
         bool is_watchdog_peer = !node->inbound;
 
         if ((is_progress_peer || is_watchdog_peer) &&
-            now_prog - last_progress_log >= 30) {
+            now_prog - last_progress_log >= 60) {
             if (is_progress_peer)
                 last_progress_log = now_prog;
             struct download_manager *dm2 = get_download_mgr();
@@ -2624,13 +2624,28 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
                                      h, header_tip, node->last_block_time,
                                      now_prog);
             if (is_progress_peer && progress.should_log_progress) {
-                printf("IBD: chain=%d headers=%d sync=%s "
-                       "dl[req=%llu recv=%llu flight=%llu queue=%llu "
-                       "timeout=%llu] %.2f GB @ %.1f MB/s\n",
+                /* Compute blocks/sec and ETA */
+                static int64_t ibd_speed_last_time = 0;
+                static int     ibd_speed_last_height = 0;
+                double blk_per_sec = 0;
+                int remaining = progress.header_height - progress.chain_height;
+                int eta_seconds = 0;
+                if (ibd_speed_last_time > 0) {
+                    int64_t dt = now_prog - ibd_speed_last_time;
+                    int dh = progress.chain_height - ibd_speed_last_height;
+                    if (dt > 0 && dh > 0)
+                        blk_per_sec = (double)dh / (double)dt;
+                    if (blk_per_sec > 0 && remaining > 0)
+                        eta_seconds = (int)((double)remaining / blk_per_sec);
+                }
+                ibd_speed_last_time = now_prog;
+                ibd_speed_last_height = progress.chain_height;
+
+                printf("IBD: h=%d/%d  %.1f blk/s  ETA %dm%ds  "
+                       "dl[flight=%llu queue=%llu timeout=%llu]  "
+                       "%.2f GB @ %.1f MB/s\n",
                        progress.chain_height, progress.header_height,
-                       sync_state_name(progress.sync_state),
-                       (unsigned long long)progress.requested,
-                       (unsigned long long)progress.received,
+                       blk_per_sec, eta_seconds / 60, eta_seconds % 60,
                        (unsigned long long)progress.in_flight,
                        (unsigned long long)progress.queued,
                        (unsigned long long)progress.timed_out,
