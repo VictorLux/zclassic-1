@@ -875,9 +875,8 @@ int snapsync_apply_chunk(struct snapshot_sync_service *svc,
         snapsync_set_state(SNAPSYNC_FAILED, "snapshot chunk apply failed");
         snapsync_service_unlock();
         if (restore_turbo && !snapsync_exit_turbo_mode(svc))
-            fprintf(stderr, "snapshot apply: failed to restore normal mode\n");
-        fprintf(stderr, "[snapsync] %s: chunk apply failed\n", __func__);
-        return -1;
+            fprintf(stderr, "[snapsync] %s: failed to restore normal mode\n", __func__);
+        LOG_ERR("snapsync", "chunk apply failed");
     }
     free(ctx.chunk_data);
     return ctx.applied;

@@ -499,15 +499,12 @@ out:
 
 static int load_progress(struct node_db *ndb)
 {
-    if (!ndb || !ndb->open) {
-        fprintf(stderr, "[bgv] %s: ndb not available\n", __func__);
-        return -1;
-    }
+    if (!ndb || !ndb->open)
+        LOG_ERR("bgv", "ndb not available");
     int64_t val = -1;
     if (node_db_state_get_int(ndb, BG_VALID_KEY, &val))
         return (int)val;
-    fprintf(stderr, "[bgv] %s: no saved progress found\n", __func__);
-    return -1;
+    LOG_ERR("bgv", "no saved progress found");
 }
 
 static void save_progress(struct node_db *ndb, int height)
@@ -741,10 +738,8 @@ bool bg_validation_start(struct bg_validation_service *svc)
     }
 
     atomic_store(&svc->stop_requested, false);
-    if (pthread_create(&svc->thread, NULL, bg_validation_thread, svc) != 0) {
-        fprintf(stderr, "[bg-valid] Failed to create thread\n");
-        return false;
-    }
+    if (pthread_create(&svc->thread, NULL, bg_validation_thread, svc) != 0)
+        LOG_FAIL("bg-valid", "failed to create thread");
     svc->thread_started = true;
     return true;
 }

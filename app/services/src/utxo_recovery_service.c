@@ -872,6 +872,5 @@ int utxo_recovery_backfill_shielded(struct node_db *ndb,
         return bctx.updated;
     }
 
-    fprintf(stderr, "Backfill: failed to update shielded values\n");
-    return -1;
+    LOG_ERR("recovery", "backfill: failed to update shielded values");
 }
