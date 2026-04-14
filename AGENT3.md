@@ -1,143 +1,136 @@
-# AGENT3 — Wave 19: Service Hardening + Operational Depth
+# AGENT3 — Wave 19: Testing, P2P Hardening & Observability
 
-**Worktree:** `~/zclassic23-3`
-**Workflow:** push directly to `master` after `./test_zcl` passes
-**Coordinator:** AGENT1 (main `~/zclassic23`)
-**Peer:** AGENT2 (`~/zclassic23-2`) — sync pipeline fix, different files
+**Working directory:** `~/zclassic23-3`
+**Coordinator:** Agent1 (~/zclassic23)
+**Workflow:** `git pull origin master` before starting, `git push origin master` when done with each task.
+**Run `make -j$(nproc) && make test && make lint` before every push.**
 
 ---
 
 ## Context
 
-Agent3's infrastructure layers are mature: wallet encryption, RPC timeout, peer bandwidth, tracing, WebSocket events, MCP surface (76 tools). Wave 19 shifts to hardening what exists and closing remaining lint/safety gaps across the codebase.
-
-The node is stuck at 2,016,354 (AGENT2 is fixing the sync pipeline). Agent3's work is orthogonal — improve code quality, close defensive coding gaps, and add operational tools.
+The node has a pattern of getting "stuck" during sync — sitting in `blocks_download` state without downloading any blocks. Wave 19 Agent2 is fixing the root cause (broken pprev chain walks after snapshot sync, empty download queue). Agent3 focuses on testing, hardening, and observability to catch these issues faster.
 
 ---
 
-## Task 1: Eliminate Raw `sqlite3_step()` in Service Layer
+## Task 1: Test Coverage for Sync Stall Scenarios
 
-`make lint` reports 18 raw `sqlite3_step()` calls in service code. These should use `AR_STEP_ROW`/`AR_STEP_DONE` wrappers or be marked `// raw-sql-ok` with justification.
-
-### Files to fix:
-- `app/services/src/block_index_loader.c` — 4 violations
-- `app/services/src/utxo_recovery_service.c` — 7 violations
-- `app/services/src/chain_state_repository.c` — 2 violations
-- `app/services/src/node_health_service.c` — 2 violations
-- `app/services/src/snapshot_sync_service.c` — 3 violations
-
-### Rules:
-- Read `DEFENSIVE_CODING.md` for the AR_STEP pattern
-- If the `sqlite3_step` genuinely cannot use the wrapper (e.g., it's inside a low-level helper that IS the wrapper), mark it `// raw-sql-ok` with a one-line reason
-- If it can use the wrapper, switch it
-- After fixing, `make lint` should show ZERO service-layer violations
-
-### Test:
-- `make test` must still pass
-- `make lint` must be cleaner
-
----
-
-## Task 2: RPC Cookie Rotation Service
-
-The RPC cookie file is generated once at boot and never changes. A long-running node uses the same cookie for weeks. Add automatic rotation.
+The sync pipeline has multiple paths that can silently fail, leaving the node stuck. Add tests that reproduce these scenarios.
 
 ### Files to create/modify:
-- `lib/rpc/src/cookie_rotation.c` (new) — rotation logic
-- `lib/rpc/include/rpc/cookie_rotation.h` (new) — public API
-- `lib/rpc/src/httpserver.c` — wire rotation into the auth path
+- `lib/test/src/test_sync_service.c` — Add stall scenario tests
 
-### What to implement:
+### Test scenarios to add:
 
-```c
-// cookie_rotation_start(const char *datadir, int interval_s)
-//   - Default interval: 3600 (1 hour), env: ZCL_COOKIE_ROTATE_S
-//   - Background thread regenerates .cookie file atomically (write tmp, rename)
-//   - Old cookie valid for grace_period_s (default 60) after rotation
-//   - Event: EV_RPC_COOKIE_ROTATED
-//
-// cookie_rotation_stop()
-// bool cookie_rotation_check(const char *cookie)
-//   - Returns true if cookie matches current OR grace-period-old cookie
-```
+**a) Empty download queue in blocks_download state:**
+Set up a scenario where `sync_state == SYNC_BLOCKS_DOWNLOAD`, the download queue is empty, in-flight is zero, but `chain_height < peer_starting_height`. Verify that `syncsvc_build_stall_recovery()` returns `should_recover=true` and populates `alt_hashes`.
 
-### Test:
-- Test rotation creates new cookie
-- Test old cookie still valid during grace period
-- Test old cookie rejected after grace period
-- Test atomic file replacement
+**b) `chains_from_tip` with broken pprev chain:**
+Create block_index entries where the pprev chain stops at a non-tip block (simulating post-snapshot state). Verify `syncsvc_headers_chain_from_tip()` handles this correctly — currently it returns false, which is the bug. Your test should document the expected behavior.
+
+**c) Watchdog BLOCK_STALL with zero queue:**
+Set sync state to `SYNC_BLOCKS_DOWNLOAD`, wait past `BLOCK_STALL_SECS`, verify the watchdog fires `WATCHDOG_BLOCK_STALL`. Then verify that after recovery, blocks are actually queued (once Agent2's fix lands).
+
+**d) Tip detection with stale peer starting_height:**
+Test `syncsvc_note_valid_block()` where `node->starting_height` is stale (peer advanced while we synced) but `tip_is_recent` is true. Verify `should_set_sync_state` transitions to `SYNC_AT_TIP`.
+
+### Target: 4 new test functions.
 
 ---
 
-## Task 3: Sapling Key Material Scrubbing
+## Task 2: P2P Message Fuzzing Hardening
 
-After wallet encryption wraps keys, the plaintext copies in memory should be scrubbed.
+Malformed P2P messages shouldn't crash the node. Harden the message handlers.
+
+### Files to investigate:
+- `lib/net/src/msg_headers.c` — process_headers()
+- `lib/net/src/msg_blocks.c` — process_block()
+- `lib/net/src/msg_version.c` — process_version()
+- `lib/net/src/msg_tx.c` — process_tx()
+
+### What to check and fix for each handler:
+1. Does it validate stream length before reading? (prevent buffer over-read)
+2. Does it handle truncated messages gracefully? (return false, don't crash)
+3. Does it disconnect on malformed input rather than crashing?
+4. Are all error paths logged?
+
+### Test:
+Add fuzz-style tests in `lib/test/src/test_msg_handlers.c` (create if needed) that feed truncated/garbage data to each handler and verify no crash + clean error return.
+
+---
+
+## Task 3: MCP Health Endpoint — Add Sync Pipeline Visibility
+
+The `zcl_health` and `zcl_status` MCP tools need to surface the download pipeline state so operators (and AI agents) can see WHY the node is stuck.
 
 ### Files to modify:
-- `lib/wallet/src/wallet_sqlite.c` — after `wallet_encrypt_blob()`, scrub the plaintext buffer
-- `lib/wallet/src/keystore.c` — scrub key material after use in signing operations
-- `lib/support/src/cleanse.c` — verify `memory_cleanse()` uses volatile writes
+- `app/services/src/node_health_service.c` — Add download stats to health
+- `tools/mcp/controllers/ops_controller.c` or wherever `zcl_status` is implemented
 
-### What to implement:
-
-```c
-// After every wallet_encrypt_blob() call:
-//   memory_cleanse(plaintext_buf, plaintext_len);
-//
-// After every signing operation that materializes a private key:
-//   memory_cleanse(&privkey, sizeof(privkey));
-//
-// Audit: grep for stack-allocated uint8_t[32] near private key operations
-// and add scrubbing at function exit.
+### What to add to `zcl_status` output:
+```json
+{
+    "download": {
+        "queue_size": 0,
+        "in_flight": 0,
+        "total_requested": 0,
+        "total_received": 0,
+        "total_timed_out": 0,
+        "throughput_mbps": 0.0
+    },
+    "memory_rss_mb": 2048,
+    "uptime_secs": 1260
+}
 ```
 
-### Test:
-- Test that memory_cleanse actually zeroes memory (read back after scrub)
-- Verify no compiler optimization eliminates the scrub (volatile)
+### Implementation:
+1. Add `get_rss_kb()` using `/proc/self/status` VmRSS
+2. Track boot time with a static `time(NULL)` at init
+3. Call `dl_get_stats()` and `dl_get_throughput()` from the status handler
+4. Expose in the JSON output
+
+### Note: Agent2 is adding a separate `zcl_syncdiag` tool. Your additions go into the existing `zcl_status` tool so the one-call diagnostic is complete.
 
 ---
 
-## Task 4: MCP Tool Gap Audit + Backfill
+## Task 4: Rate-Limit Peer Misbehavior Scoring
 
-CLAUDE.md documents 85+ RPC methods. Current MCP surface is 76 tools. Audit the gap and backfill the most useful missing tools.
+### Files to investigate:
+- `lib/net/src/peer_scoring.c` — Current scoring implementation
+- `lib/net/include/net/peer_scoring.h` — Score types and thresholds
 
-### What to do:
-1. List all RPC methods (check `lib/rpc/src/server.c` registration table)
-2. Compare against MCP tool registrations in `tools/mcp/controllers/*.c`
-3. For each gap, either:
-   - Add an MCP wrapper (if the method is useful for AI agents)
-   - Document why it's skipped (e.g., deprecated, dangerous, or covered by `zcl_rpc` passthrough)
-
-### Priority backfill targets:
-- `getmempoolentry` — useful for transaction debugging
-- `getblocktemplate` — useful for mining analysis
-- `z_listunspent` — useful for shielded balance details
-- `z_viewtransaction` — useful for transaction analysis
-- Any other methods that agents would commonly need
-
-### Test:
-- MCP tool count should increase
-- `test_mcp_controllers.c` EXPECTED_TOTAL/EXPECTED_OPS must be updated
-- `make docs-mcp` should regenerate cleanly
+### What to check and improve:
+1. Read the current scoring system
+2. Verify peers reaching ban threshold are actually disconnected
+3. Add rate limiting: if a peer sends >100 rejected messages in 60 seconds, disconnect immediately
+4. Add logging: `[scoring] peer %s banned: score %d, offences: %s`
 
 ---
 
-## Task 5: Harden Controller Error Paths
+## Task 5: Add Structured Boot Timing Log
 
-Several controllers have bare `return -1` without setting an error body for MCP. Audit and fix.
+### File: `config/src/boot.c`
 
-### What to do:
-1. `grep -rn 'return -1' app/controllers/src/*.c tools/mcp/controllers/*.c` 
-2. For each hit in an MCP-facing handler: ensure an error body is set before returning
-3. For each hit in an RPC handler: ensure the error is logged with context
+### What to implement:
+```c
+struct timespec boot_start;
+clock_gettime(CLOCK_MONOTONIC, &boot_start);
 
-### Rules from DEFENSIVE_CODING.md:
-- Every MCP handler must set an error body: never `return -1` without explaining why
-- Use `LOG_FAIL()`, `LOG_ERR()`, `LOG_NULL()` from `util/log_macros.h`
+// After each phase:
+int64_t phase_ms = elapsed_ms_since(&boot_start);
+printf("[boot] %-30s %lldms\n", "load_block_index", phase_ms);
+```
 
-### Test:
-- `make lint` should pass
-- `make test` should pass
+Phases to time:
+1. SQLite open + schema migration
+2. Block index load from cache
+3. Block index height repair
+4. UTXO set load / verification
+5. Wallet load
+6. P2P network start
+7. Total boot time
+
+Emit: `event_emitf(EV_BOOT_COMPLETE, 0, "total_ms=%lld", total_ms);`
 
 ---
 
@@ -149,25 +142,16 @@ git pull origin master
 make -j$(nproc) 2>&1 | tail -20
 make test 2>&1 | tail -10
 make lint 2>&1 | tail -10
-git add <specific files> && git commit -m "wave 19 task N: description"
+git add <specific files> && git commit -m "wave 19: description"
 git push origin master
 ```
 
 ## Boundary: Files You MUST NOT Touch
-- `lib/net/src/msg_headers.c` (Agent2)
-- `lib/validation/src/process_block.c` (Agent2)
 - `app/services/src/sync_watchdog_service.c` (Agent2)
-- `app/services/src/block_index_integrity.c` (Agent2)
-- `app/services/src/sync_service.c` (Agent2)
 - `app/services/src/block_sync_service.c` (Agent2)
-- `app/controllers/src/sync_controller.c` (Agent2)
-- `config/src/boot.c` (Agent2)
-- `config/src/boot_index.c` (Agent2)
-
----
-
-## Current Status
-
-*(Update each session. Keep it short.)*
-
-- **2026-04-14 wave 19 assigned** — 5 tasks: sqlite3_step cleanup, cookie rotation, key scrubbing, MCP backfill, controller error paths.
+- `app/services/src/header_sync_service.c` (Agent2)
+- `lib/net/src/msg_headers.c` (Agent2)
+- `lib/net/src/download.c` (Agent2)
+- `lib/net/src/connman.c` (Agent2)
+- `lib/net/src/compact_blocks.c` (Agent2)
+- `lib/net/src/msgprocessor.c` (Agent2)

@@ -1,4 +1,4 @@
-# AGENT2 — Wave 20: Fix Sync Stall Root Cause
+# AGENT2 — Wave 19: Sync Pipeline Fixes & Block Download Robustness
 
 **Working directory:** `~/zclassic23-2`
 **Coordinator:** Agent1 (~/zclassic23)
@@ -7,165 +7,207 @@
 
 ---
 
-## Context
+## Context: The "Stuck in blocks_download" Bug
 
-**CRITICAL BUG:** The node is stuck at height 2,016,354 while the network tip is ~3,078,009 (over 1M blocks behind). The node falsely enters `SYNC_AT_TIP` and stops aggressively requesting headers.
+The node boots from a UTXO snapshot at height ~2M, enters `blocks_download` state, and then **never downloads any blocks**. Event log shows continuous header fetching (tip advancing to 2017474) but zero `getdata` messages. The download queue stays empty.
 
-### Root Cause Chain:
-1. `syncsvc_evaluate_block_acceptance()` in `block_sync_service.c` declares `headers_caught_up = true` when `best_header_height <= new_tip_height + 1` — comparing headers against LOCAL blocks, not peer heights
-2. Once `headers_caught_up`, the node enters `SYNC_AT_TIP`
-3. At tip, `syncsvc_getheaders_interval()` returns 120s (slow polling)
-4. The watchdog only checks for stalls in `SYNC_HEADERS_DOWNLOAD` and `SYNC_BLOCKS_DOWNLOAD` — it has NO check for `SYNC_AT_TIP` being wrong
-5. `getblockchaininfo` reports `verificationprogress=1.0` (hardcoded) and `headers=blocks` (both use chain tip), masking the problem completely
+Root cause chain:
+1. `process_headers()` in `msg_headers.c` calls `syncsvc_plan_header_processing()` which calls `syncsvc_collect_needed_blocks()`
+2. `syncsvc_collect_needed_blocks()` calls `syncsvc_headers_chain_from_tip()` to verify the candidate chains back to our tip
+3. **This walk can fail** if pprev pointers are NULL (common after snapshot sync where block_index entries above the snapshot anchor don't have fully linked pprev chains)
+4. When `chains_from_tip` returns false, `needed_blocks.count` stays 0, so `should_queue_needed_blocks` is false
+5. No blocks ever get queued → download manager stays empty → stall recovery in msgprocessor finds nothing → node sits forever
 
----
-
-## Task 1: Fix False SYNC_AT_TIP Transition
-
-### File: `app/services/src/block_sync_service.c`
-
-The `headers_caught_up` check at line ~109 is wrong. It only compares headers to local blocks:
-```c
-// CURRENT (wrong):
-headers_caught_up =
-    (best_header_height >= 0 && best_header_height <= new_tip_height + 1);
-```
-
-Fix: also require that we're close to the peer's height:
-```c
-// FIXED:
-bool headers_near_blocks =
-    (best_header_height >= 0 && best_header_height <= new_tip_height + 1);
-bool near_peer_tip =
-    (node->starting_height <= 0 || new_tip_height >= node->starting_height - 10);
-headers_caught_up = headers_near_blocks && near_peer_tip;
-```
-
-This ensures `SYNC_AT_TIP` only fires when:
-- Headers are caught up to blocks (existing check), AND
-- Blocks are within 10 of the peer's advertised height (new check)
-
-The `-10` margin handles the edge where the peer's `starting_height` is slightly stale.
-
-### Test: Add to existing tests for `syncsvc_evaluate_block_acceptance`:
-```c
-// False at-tip: headers==blocks but far from peer
-syncsvc_evaluate_block_acceptance(&result, &node_3m, SYNC_BLOCKS_DOWNLOAD,
-    2016354, 2016354, old_time);
-assert(!result.should_set_sync_state); // Must NOT transition to AT_TIP
-
-// True at-tip: headers==blocks AND near peer
-syncsvc_evaluate_block_acceptance(&result, &node_3m, SYNC_BLOCKS_DOWNLOAD,
-    3078000, 3078001, 0);
-assert(result.next_sync_state == SYNC_AT_TIP);
-```
+The stall recovery in `msgprocessor.c:2561` DOES try to find blocks at tip+1, but it also requires `queued==0 && in_flight==0 && node->starting_height > our_h + 10` and scans block_map — which may also fail for the same pprev linking reasons.
 
 ---
 
-## Task 2: Watchdog — Detect Stale SYNC_AT_TIP
+## Task 1: Fix `syncsvc_headers_chain_from_tip` for Post-Snapshot Chains
+
+The core fix. After snapshot sync, the block index has entries above the snapshot height but their pprev chains may not link all the way back to the chain tip.
+
+### File: `app/services/src/header_sync_service.c`
+
+### Current code (line 426-463):
+```c
+bool syncsvc_headers_chain_from_tip(const struct block_index *candidate,
+                                    const struct block_index *tip,
+                                    int our_height)
+{
+    // Walks candidate->pprev until nHeight <= our_height
+    // Returns true only if the walk reaches `tip` exactly
+    // Returns false if pprev is NULL before reaching tip (post-snapshot!)
+}
+```
+
+### Fix:
+Add a fallback: if the pprev walk reaches a block at height <= our_height that is IN the active chain (not just == tip pointer), accept it. Also accept if the walk reaches a block whose hash matches the active chain at that height.
+
+```c
+// After the existing checks, before returning false:
+// Fallback: if walk stopped at a height within our chain, check if
+// that block is on the active chain by height lookup
+if (verify && verify->nHeight <= our_height && verify->nHeight >= 0) {
+    // The block at this height in the active chain should match
+    // This handles cases where tip pointer comparison fails but
+    // the chain is actually valid
+    return true;  // any block at or below our height that we walked
+                   // to through valid pprev links is acceptable
+}
+```
+
+BUT be careful — we can't just accept any block at our_height. We need to verify it's actually on our chain. Look at how `active_chain_at_height()` works and use it.
+
+### Test:
+Add a test in `lib/test/src/test_sync_service.c` that creates a scenario where pprev walk stops at a non-tip block at our_height (simulating post-snapshot state) and verify `chains_from_tip` returns true.
+
+---
+
+## Task 2: Watchdog BLOCK_STALL Should Force Block Queue Population
+
+When the watchdog detects BLOCK_STALL (5 minutes in blocks_download with no height progress), the current recovery just re-queues timed-out in-flight blocks. But if the queue was NEVER populated (the root cause), this does nothing.
 
 ### File: `app/services/src/sync_watchdog_service.c`
 
-Add a new check **after** the existing HEADER_STALL and HEADER_LAG checks (around line ~432):
+### Current code (line 464-498):
+The BLOCK_STALL handler only moves in-flight slots back to the queue. If there were never any in-flight blocks, this is a no-op.
+
+### Fix:
+After the existing BLOCK_STALL recovery, if the queue is STILL empty and in-flight is STILL zero, actively scan the block map and queue blocks that need downloading:
 
 ```c
-/* NEW: FALSE_TIP: in SYNC_AT_TIP but far behind peers */
-if (state == SYNC_AT_TIP && duration > 60) {
-    int max_peer_height = connman_max_peer_height(cm);
-    int our_height = -1;
-    if (ms) {
-        struct block_index *tip = active_chain_tip(&ms->chain_active);
-        if (tip) our_height = tip->nHeight;
-    }
-    
-    if (max_peer_height > 0 && our_height >= 0 &&
-        max_peer_height - our_height > 144) {
-        printf("[watchdog] FALSE_TIP: at_tip but %d blocks behind peers "
-               "(our=%d, peer_max=%d)\n",
-               max_peer_height - our_height, our_height, max_peer_height);
-        
-        /* Force back to SYNC_HEADERS_DOWNLOAD */
-        sync_set_state(SYNC_HEADERS_DOWNLOAD,
-                       "watchdog FALSE_TIP: behind peers");
-        record_recovery(now, WATCHDOG_STATE_STUCK);
-        return WATCHDOG_STATE_STUCK;
+// After existing BLOCK_STALL recovery at line 494:
+// If queue is still empty after re-queuing, actively find blocks to download
+{
+    uint64_t post_queued = 0, post_inflight = 0;
+    dl_get_stats(dm, NULL, NULL, NULL, &post_inflight, &post_queued);
+    if (post_queued == 0 && post_inflight == 0 && ms) {
+        // Scan block index for blocks at heights above chain tip
+        // that have headers but no block data
+        int chain_h = active_chain_height(&ms->chain_active);
+        struct uint256 scan_hashes[256];
+        int32_t scan_heights[256];
+        size_t scan_count = 0;
+        size_t iter = 0;
+        struct block_index *bi;
+        while (block_map_next(&ms->map_block_index, &iter, NULL, &bi)) {
+            if (!bi || scan_count >= 256) continue;
+            if (bi->nHeight <= chain_h) continue;
+            if (bi->nHeight > chain_h + 2048) continue;
+            if (bi->nStatus & BLOCK_HAVE_DATA) continue;
+            if (bi->nStatus & BLOCK_FAILED_MASK) continue;
+            if (!bi->phashBlock) continue;
+            scan_hashes[scan_count] = *bi->phashBlock;
+            scan_heights[scan_count] = bi->nHeight;
+            scan_count++;
+        }
+        if (scan_count > 0) {
+            dl_queue_blocks(dm, scan_hashes, scan_heights, scan_count);
+            printf("[watchdog] BLOCK_STALL: force-queued %zu blocks "
+                   "from block index scan\n", scan_count);
+        } else {
+            // No blocks to queue at all — headers may not have arrived yet
+            // Force transition back to HEADERS_DOWNLOAD
+            printf("[watchdog] BLOCK_STALL: no downloadable blocks found, "
+                   "reverting to HEADERS_DOWNLOAD\n");
+            sync_set_state(SYNC_HEADERS_DOWNLOAD,
+                           "watchdog BLOCK_STALL: no blocks available");
+        }
     }
 }
 ```
 
-This catches the scenario where the node is falsely at tip. Even after Task 1 fixes the root cause, this watchdog check prevents future regressions.
-
-### Test: Add to `test_sync_watchdog.c`:
-```c
-TEST("watchdog detects false SYNC_AT_TIP when far behind peers") {
-    sync_set_state(SYNC_AT_TIP, "test");
-    // Set peer starting_height to 3M, our height to 2M
-    // Assert watchdog fires WATCHDOG_STATE_STUCK
-}
-```
+### Include needed:
+You'll need `#include "validation/chainstate.h"` for `active_chain_height` and `block_map_next`.
 
 ---
 
-## Task 3: Force Aggressive Headers When Behind
+## Task 3: Add `zcl_syncdiag` MCP Tool for Deep Sync Diagnostics
 
-### File: `app/services/src/header_sync_service.c`
+The node needs a diagnostic endpoint that reveals exactly what's happening during sync — especially the download queue/in-flight state that's invisible from `zcl_status`.
 
-The interval logic in `syncsvc_getheaders_interval()` (line ~249) uses `our_height` (which is block height) to decide the interval. Even with Task 1's fix, we need the header sync to be aggressive when behind.
+### Files to modify:
+- `tools/mcp/controllers/ops_controller.c` (or wherever sync-related MCP tools live)
+- `tools/mcp/router.c` (register the new tool)
 
-**Fix:** Add a check for `best_header_height` vs `peer_starting_height`:
-```c
-static int64_t syncsvc_getheaders_interval(const struct p2p_node *node,
-                                           int our_height)
+### What to return (as JSON):
+```json
 {
-    int64_t base;
-    if (syncsvc_is_initial_block_download(node, our_height))
-        base = 10;
-    else if (node->starting_height > 0 && our_height < node->starting_height)
-        base = 30;
-    else
-        base = 120;
-    // ... existing backoff
-```
-
-The problem is `our_height` is block height, so once blocks catch up to headers (but both are 1M behind peers), `our_height < node->starting_height` is true and we get 30s. That's acceptable.
-
-BUT: there's still the case where `syncsvc_is_initial_block_download()` returns false because `our_height` (2M blocks) is within 144 of headers (2M headers), even though peer is at 3M. Fix `syncsvc_is_initial_block_download`:
-
-```c
-bool syncsvc_is_initial_block_download(const struct p2p_node *node,
-                                       int our_height)
-{
-    if (!node) return false;
-    return (node->starting_height > 0 &&
-            our_height < node->starting_height - 144);
+    "sync_state": "blocks_download",
+    "chain_height": 2016354,
+    "best_header_height": 2017474,
+    "peer_max_height": 3077839,
+    "header_gap": 1060365,
+    "blocks_indexed": 99524,
+    "download_queue_size": 0,
+    "download_in_flight": 0,
+    "download_total_requested": 0,
+    "download_total_received": 0,
+    "download_total_timed_out": 0,
+    "watchdog_checks": 42,
+    "watchdog_recoveries": 0,
+    "watchdog_escalation": 0,
+    "watchdog_blocks_per_sec": 0.0,
+    "stall_recovery_active": true,
+    "chain_tip_hash": "00000...",
+    "best_header_hash": "00000..."
 }
 ```
 
-This already compares against `node->starting_height`, so if `our_height=2M` and `starting_height=3M`, IBD=true, interval=10s. **Verify this is actually being called with block height, not header height.** Check the call site in `msgprocessor.c` line ~2376 where `our_height = msg_get_height(mp)` — this uses `active_chain_height()` which is block height. So the IBD check should already work when blocks are behind. 
-
-The real issue might be that when the node is at `SYNC_AT_TIP`, the periodic getheaders path at line ~2488 in `msgprocessor.c` is not reached. Trace the code flow:
-
-1. Check if the `should_sync` flag is set for AT_TIP peers
-2. If not, that's why no getheaders are being sent
-
-Look at `syncsvc_begin_peer_sync()` — does it return false when we're AT_TIP? If so, the periodic getheaders never fires.
-
-**The fix may be:** In msgprocessor.c's send loop, always call `syncsvc_plan_periodic_getheaders()` regardless of sync state, or ensure `should_sync` is true when we have outbound peers.
+Use: `sync_get_state()`, `active_chain_height()`, `ms->pindex_best_header->nHeight`, `connman_max_peer_height()`, `dl_get_stats()`, `sync_watchdog_get_stats()`.
 
 ---
 
-## Task 4: Reset Stale Counts on State Transition Out of AT_TIP
+## Task 4: Header Processing — Queue Blocks More Aggressively
+
+Currently `syncsvc_collect_needed_blocks()` walks backward from candidate through pprev, limited to 2048 steps. If the chain doesn't link back to tip, it returns empty.
 
 ### File: `app/services/src/header_sync_service.c`
 
-When the watchdog kicks the node out of `SYNC_AT_TIP` back to `SYNC_HEADERS_DOWNLOAD`, the `getheaders_stale_count` on peers may be high from the AT_TIP phase (where empty header responses are expected). This causes exponential backoff on the very peers we need.
+### Additional fix:
+In `syncsvc_collect_needed_blocks()` (line 464), add a forward-scan fallback when the backward pprev walk fails `chains_from_tip`:
 
-Add a function to reset stale counts:
 ```c
-void syncsvc_reset_peer_stale_counts(struct connman *cm);
+// After the existing chains_from_tip check (line 485):
+if (!result->chains_from_tip) {
+    // Fallback: forward scan from our_height+1 in block_map
+    // This handles post-snapshot where pprev links are broken
+    // but we have valid headers at heights just above our tip
+    // ... scan block_map for entries at heights our_height+1..our_height+2048
+    // that have phashBlock but not BLOCK_HAVE_DATA
+    return;  // existing behavior: return empty if chains_from_tip false
+}
 ```
 
-Call it from the watchdog when transitioning from AT_TIP to HEADERS_DOWNLOAD.
+But the REAL fix is Task 1 — making `chains_from_tip` return true for valid chains. This task is the belt-and-suspenders: even if chains_from_tip is wrong, the watchdog (Task 2) will catch it.
+
+---
+
+## Task 5: Add Periodic Block Queue Check to Message Processor
+
+The message processor loop runs every ~30s per peer. Currently it only assigns blocks from the queue to peers. But if the queue is empty and we're in blocks_download, nothing happens until stall recovery triggers (which has a 10s cooldown).
+
+### File: `lib/net/src/msgprocessor.c` (~line 2560)
+
+### Fix:
+After the stall recovery check, add a direct "kickstart" that queries the block index for needed blocks if the queue has been empty for >60 seconds:
+
+```c
+// After stall recovery block, add:
+static int64_t g_last_queue_empty_check = 0;
+if (dl_queued == 0 && dl_inflight == 0 && 
+    sync_get_state() == SYNC_BLOCKS_DOWNLOAD &&
+    now_dl - g_last_queue_empty_check > 60) {
+    g_last_queue_empty_check = now_dl;
+    // Send getheaders to refill the pipeline
+    struct sync_getheaders_action kickstart = {0};
+    kickstart.should_send = true;
+    kickstart.anchor = SYNC_HEADER_REQUEST_TIP;
+    exec_getheaders_action(mp, node, &kickstart);
+    printf("[sync] kickstart: empty queue in blocks_download, "
+           "re-requesting headers\n");
+}
+```
 
 ---
 
@@ -177,13 +219,13 @@ git pull origin master
 make -j$(nproc) 2>&1 | tail -20
 make test 2>&1 | tail -10
 make lint 2>&1 | tail -10
-git add <specific files> && git commit -m "wave 20 task N: description"
+git add <specific files> && git commit -m "wave 19: description"
 git push origin master
 ```
 
 ## Boundary: Files You MUST NOT Touch
-- `app/controllers/src/blockchain_controller.c` (Agent3)
-- `tools/mcp/controllers/ops_controller.c` (Agent3)
-- `app/services/src/block_index_integrity.c` (Agent1/Agent3)
-- `config/src/boot.c` (Agent3)
-- `Makefile` (Agent3)
+- `app/models/src/*` (Agent3)
+- `config/src/boot.c` (Agent3 — crash recovery)
+- `config/src/runtime.c` (Agent3)
+- `app/models/src/database.c` (Agent3)
+- `Makefile` lint targets (Agent3)
