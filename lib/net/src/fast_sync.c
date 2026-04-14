@@ -389,10 +389,10 @@ bool fast_sync_verify_pow(const struct fast_sync_pow *pow)
     /* Check leading zero bits */
     int bits = FAST_SYNC_POW_BITS;
     for (int i = 0; i < bits / 8; i++)
-        if (hash[i] != 0) LOG_FAIL("sync", "verify_pow: leading zero check failed at byte %d", i);
+        if (hash[i] != 0) return false;  /* normal during solve loop — not an error */
     if (bits % 8 > 0) {
         uint8_t mask = (uint8_t)(0xFF << (8 - bits % 8));
-        if (hash[bits / 8] & mask) LOG_FAIL("sync", "verify_pow: partial byte zero check failed at bit %d", bits);
+        if (hash[bits / 8] & mask) return false;  /* normal during solve loop — not an error */
     }
     return true;
 }
