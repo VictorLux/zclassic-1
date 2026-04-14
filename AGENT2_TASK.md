@@ -1,63 +1,60 @@
-# Agent 2 Task: Wave 15 — Make activate_best_chain work after LDB reimport
+# Agent 2 Task: Wave 16 — Fast Header Skip for Known Blocks
 
-## CRITICAL PROBLEM
+## Status
+- All tests pass (0 failures!)
+- Node is at 2,016,354, syncing headers toward 3,077,000
+- Headers advancing at 160 per round trip = ~6,250 rounds for 1M headers
+- At 10s per round that's ~17 hours — TOO SLOW
 
-We have 3,328,077 blocks with `BLOCK_HAVE_DATA` in the block index. The chain tip is stuck at 2,016,355. `rescanblockfiles` found 150,114 blocks above the tip and triggered `activation_request_connect`, but the chain tip didn't advance.
+## Problem
+The node has 3.3M block index entries with BLOCK_HAVE_DATA. It knows about all the blocks. But the header sync protocol crawls through them 160 at a time because accept_block_header processes each one individually.
 
-The block at height 2,016,356 exists in the index with `BLOCK_HAVE_DATA` but `activate_best_chain` won't connect it.
+## The fix: bulk-skip known headers
 
-## Likely causes (investigate in this order)
+When we receive a batch of 160 headers and ALL are already in our index, we should skip ahead to the HIGHEST block in our index that we haven't yet walked past, instead of going 160 at a time.
 
-1. **nChainTx == 0**: `find_most_work_chain` requires `nChainTx > 0` to consider a block for activation. LDB-imported blocks may not have `nChainTx` set. Previous commit `80cf863ae` tried to fix this but may not cover all cases.
-
-2. **UTXO mismatch**: The coins tip hash might not match `block.hashPrevBlock` for block 2,016,356. The LDB reimport set `coins_best_block` but it may not match the block at our tip.
-
-3. **pprev chain broken**: The block at 2,016,356 may have a broken `pprev` that doesn't point to our tip, so it's not on the "best chain" from activate's perspective.
-
-## Files to read
-
+## Files to read first
 - `CLAUDE.md` and `DEFENSIVE_CODING.md`
-- `lib/validation/src/process_block.c` — `activate_best_chain()`, `find_most_work_chain()`
-- `lib/validation/src/connect_block.c` — `connect_tip()`, the actual block connection
-- `config/src/boot_index.c` — where nChainTx is propagated at boot
-- `app/controllers/src/repair_controller.c` — the `rescanblockfiles` RPC that triggers activation
-- `~/.zclassic-c23/node.log` — look for any error from `activate_best_chain`
+- `lib/net/src/msg_headers.c` — `process_headers()`, the "request more" section at the end
+- `app/services/src/header_sync_service.c` — batch evaluation
+- `lib/validation/src/process_block.c` — `accept_block_header()`, `find_most_work_chain()`
 
 ## Tasks
 
-### 1. Diagnose why activate_best_chain doesn't advance
+### 1. Skip ahead when all headers are already known
 
-Add diagnostic logging to `activate_best_chain` and `find_most_work_chain`:
-- Log the candidate block (hash, height, nChainWork, nChainTx, nStatus)
-- If no candidate found, log why
-- If candidate found but connect_tip fails, log the failure reason
-- Deploy and trigger with `rescanblockfiles` RPC, check log
+In `process_headers()` in `msg_headers.c`, after processing the batch: if `newly_added == 0` (all headers already known) AND `pindex_last` is below the highest known header, jump ahead.
 
-### 2. Fix nChainTx propagation
+Find the highest block in the index with `BLOCK_HAVE_DATA` and a valid pprev chain. Send `getheaders` from THAT block instead of from `pindex_last`. This skips the entire known range in one jump.
 
-In `boot_index.c`, after the block index is loaded, propagate `nChainTx` for all blocks with `BLOCK_HAVE_DATA`:
 ```c
-/* For LDB-imported blocks, if nChainTx is 0 but BLOCK_HAVE_DATA,
- * set nChainTx = nTx (or 1 if nTx unknown). Without this,
- * find_most_work_chain skips them. */
+if (newly_added == 0 && accepted > 0) {
+    /* Find highest block with HAVE_DATA in the block index */
+    struct block_index *highest = NULL;
+    // ... scan block_map for highest HAVE_DATA entry ...
+    if (highest && highest->nHeight > pindex_last->nHeight + 1000) {
+        printf("Headers: skipping %d known blocks (h=%d → h=%d)\n",
+               highest->nHeight - pindex_last->nHeight,
+               pindex_last->nHeight, highest->nHeight);
+        push_getheaders_from(mp, node, highest);
+    }
+}
 ```
-This may need multiple passes since nChainTx = pprev->nChainTx + nTx.
 
-### 3. Verify coins_best_block matches tip
+### 2. Or: skip directly to header sync → block download transition
 
-At boot after LDB import, check that `coins_best_block` hash resolves to a block in the index and matches the active chain tip. If not, fix it.
+Even simpler: if we have BLOCK_HAVE_DATA for all heights up to some point, and our pindex_best_header covers them, skip straight to SYNC_BLOCKS_DOWNLOAD and start connecting blocks. The header validation already happened when the blocks were imported.
 
-### 4. Suppress checkpoint log spam
+### 3. Fix the getheaders locator stall
 
-`checkpoints_hash_at_height()` logs for EVERY height without a checkpoint. Fix it to only log when a checkpoint EXISTS and the hash doesn't match (i.e., log violations, not non-events).
+The log shows the same locator hash repeating many times before advancing. This means the peer keeps sending us the same 160 headers. The locator should use the LAST header we received (pindex_last), not a stale hash. Verify the locator advances correctly.
 
-### 5. Deploy and verify
+### 4. Deploy and verify
 
-After fixing: `make deploy`, trigger `rescanblockfiles` via RPC, verify height advances past 2,016,355.
+After fixing: `make deploy`, check that header sync jumps ahead and the node starts connecting blocks rapidly.
 
 ## Rules
-
 - Follow `DEFENSIVE_CODING.md`: use `LOG_FAIL()`, `zcl_malloc()`, `log_macros.h`
-- Run `make test` before committing
-- `make deploy` to verify on live node
+- Run `make test` — must stay at 0 failures
+- `make deploy` to verify
 - Commit with descriptive messages

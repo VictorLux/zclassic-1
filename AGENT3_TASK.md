@@ -1,50 +1,60 @@
-# Agent 3 Task: Wave 15 — Fix 12 Test Failures + Log Noise Reduction
+# Agent 3 Task: Wave 16 — Robustness Hardening
 
-## Current state
-Node is syncing (slowly). 12 pre-existing test failures need fixing. Log is being spammed with checkpoint and bg_validation noise.
-
-## Files to read first
-
-- `CLAUDE.md` and `DEFENSIVE_CODING.md`
-- Run `make test 2>&1 | grep -E 'FAIL|SOME TESTS'` to see the failures
+## Status
+- All tests pass (0 failures!)
+- make lint wired
+- Node is syncing (slowly)
 
 ## Tasks
 
-### 1. Fix MCP tool count test failures (5 failures)
+### 1. Suppress remaining log spam
 
-The test expects 76 tools but we now have more (new tools added). Find the test:
-```bash
-grep -rn 'EXPECTED_TOTAL\|expected_total\|76' lib/test/src/test_mcp*.c
+The bg_validation undo warning still floods the log:
 ```
-Update the expected counts to match the current tool surface.
-
-### 2. Fix wallet_sqlite_open test failures (7 failures)
-
-Tests fail with `FAIL (wallet_sqlite_open(&ws, db))`. Find the test:
-```bash
-grep -rn 'wallet_sqlite_open' lib/test/src/test_wallet*.c
+[bg_validation] read_block_undo: undo pos is 0 for file N
 ```
-Investigate why the open fails — likely missing schema table or migration. Fix the test setup.
+Fix `bg_validation_service.c:192` to NOT log when undo pos is 0 — this is normal for blocks without undo data. Either remove the LOG_FAIL or change it to only log once per file.
 
-### 3. Suppress bg_validation log spam
+### 2. Migrate bare malloc in remaining files
 
-`bg_validation_service.c:192` logs `read_block_undo: undo pos is 0 for file N` for every block without undo data. This floods the log. Fix:
-- Only log this ONCE per file, or only at debug level
-- Or skip the undo read entirely when undo pos is 0 (it means no undo data exists)
+8 files still have bare `malloc` instead of `zcl_malloc`. Fix these:
+```
+app/services/src/snapshot_sync_service.c
+app/services/src/block_index_integrity.c
+app/controllers/src/explorer_controller.c
+lib/validation/src/process_block.c
+lib/storage/src/disk_block_io.c
+config/src/boot.c
+config/src/boot_index.c
+config/src/boot_services.c
+```
+Replace `malloc(` with `zcl_malloc(size, "label")`, `calloc(` with `zcl_calloc(n, size, "label")`, `realloc(` with `zcl_realloc(ptr, size, "label")`.
 
-### 4. Suppress checkpoint log spam  
+### 3. Migrate bare return -1 in critical paths
 
-`checkpoints.c:71` logs `hash_at_height: no checkpoint at height N` for almost every height during bg_validation. Fix:
-- Remove the LOG_FAIL from `checkpoints_hash_at_height()` when no checkpoint exists at that height — this is normal, not an error
-- Only log when a checkpoint EXISTS and the hash DOESN'T MATCH (actual violation)
+Target the most important files:
+- `lib/validation/src/process_block.c` — replace bare `return false` with `LOG_FAIL()`
+- `config/src/boot.c` — boot failures must be visible
+- Count before and after
 
-### 5. Run make test — verify 0 failures
+### 4. Add Sapling tree persistence to avoid 5-minute rebuild
 
-After fixing tasks 1-4, run `make test` and verify all 12 failures are fixed. Report the final count.
+From CHECKLIST.md: "Sapling tree persistence after crash — SIGKILL loses WAL, forces 5-min rebuild on next boot"
+
+The Sapling tree rebuild takes ~5 minutes on every restart. Investigate:
+- Where is the Sapling tree stored? (likely in SQLite node.db)
+- Why does it need rebuilding every time? (WAL not checkpointed?)
+- Add a WAL checkpoint after Sapling tree operations complete
+- Or save the tree root hash + commitment count so the rebuild can be skipped when they match
+
+Look at `config/src/boot.c` around the Sapling tree load section and `app/controllers/src/sync_controller.c` for `sapling_tree_rebuild`.
+
+### 5. Run make test + make lint — verify clean
+
+Both must pass with 0 failures/violations.
 
 ## Rules
-
 - Follow `DEFENSIVE_CODING.md`: use `LOG_FAIL()`, `zcl_malloc()`, `log_macros.h`
-- Run `make test` — target is 0 failures
+- Run `make test` — must stay at 0 failures
 - Commit with descriptive messages
-- Do NOT touch sync/validation/activation code — that's Agent 2's domain
+- Do NOT touch sync/header/activation code
