@@ -44,6 +44,8 @@
 #include "models/tx_index.h"
 #include "models/utxo.h"
 #include "controllers/sync_controller.h"
+#include "controllers/network_controller.h"
+#include "net/connman.h"
 #include <stdint.h>
 #include <string.h>
 #include <math.h>
@@ -288,7 +290,10 @@ static bool rpc_getblockchaininfo(const struct json_value *params, bool help,
 
     struct block_index *tip = active_chain_tip(&ctx->main_state->chain_active);
     json_push_kv_int(result, "blocks", tip ? tip->nHeight : 0);
-    json_push_kv_int(result, "headers", tip ? tip->nHeight : 0);
+    struct block_index *best_hdr = ctx->main_state->pindex_best_header;
+    int header_height = best_hdr ? best_hdr->nHeight : (tip ? tip->nHeight : 0);
+    json_push_kv_int(result, "headers", header_height);
+    json_push_kv_int(result, "best_header_height", header_height);
 
     if (tip && tip->phashBlock) {
         char hex[65];
@@ -297,7 +302,13 @@ static bool rpc_getblockchaininfo(const struct json_value *params, bool help,
     }
 
     json_push_kv_real(result, "difficulty", get_difficulty(tip));
-    json_push_kv_real(result, "verificationprogress", 1.0);
+    struct connman *cm = rpc_net_get_connman();
+    int max_peer_h = cm ? connman_max_peer_height(cm) : 0;
+    int our_h = tip ? tip->nHeight : 0;
+    double progress = 1.0;
+    if (max_peer_h > 0 && our_h < max_peer_h)
+        progress = (double)our_h / (double)max_peer_h;
+    json_push_kv_real(result, "verificationprogress", progress);
 
     /* Upgrades */
     struct json_value upgrades = {0};
