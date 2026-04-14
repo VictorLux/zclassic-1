@@ -21,12 +21,20 @@
 #include <stdint.h>
 #include <stddef.h>
 
-/* Tuning constants */
+/* Tuning constants — conservative (at-tip) defaults.
+ * During IBD, use dl_get_*() functions which return aggressive values. */
 #define DL_MAX_IN_FLIGHT_PER_PEER 128    /* max concurrent block requests per peer */
-#define DL_MAX_IN_FLIGHT_TOTAL    1024   /* max total in-flight blocks */
-#define DL_REQUEST_TIMEOUT_SECS   30     /* reassign after this many seconds */
+#define DL_MAX_IN_FLIGHT_TOTAL    1024   /* max total in-flight blocks (at tip) */
+#define DL_MAX_IN_FLIGHT_TOTAL_IBD 4096  /* max total in-flight blocks (during IBD) */
+#define DL_REQUEST_TIMEOUT_SECS   30     /* reassign after this many seconds (at tip) */
+#define DL_REQUEST_TIMEOUT_SECS_IBD 15   /* reassign after this many seconds (during IBD) */
 #define DL_STALL_TIMEOUT_SECS     120    /* disconnect peer after this */
 #define DL_WINDOW_SIZE            512    /* blocks to request per batch */
+
+/* Dynamic limits — return aggressive values during IBD, conservative at tip.
+ * These check sync_get_state() internally. Thread-safe. */
+size_t dl_get_max_in_flight_total(void);
+int    dl_get_request_timeout_secs(void);
 
 /* Per-block in-flight entry */
 struct dl_in_flight {

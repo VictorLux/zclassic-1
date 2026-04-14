@@ -15,6 +15,28 @@
 #define INITIAL_SLOTS 2048
 #define INITIAL_QUEUE 4096
 
+/* ── Dynamic IBD-aware limits ─────────────────────────────────── */
+
+static bool dl_is_ibd(void)
+{
+    enum sync_state st = sync_get_state();
+    return st == SYNC_HEADERS_DOWNLOAD ||
+           st == SYNC_BLOCKS_DOWNLOAD ||
+           st == SYNC_CONNECTING_BLOCKS;
+}
+
+size_t dl_get_max_in_flight_total(void)
+{
+    return dl_is_ibd() ? DL_MAX_IN_FLIGHT_TOTAL_IBD
+                       : DL_MAX_IN_FLIGHT_TOTAL;
+}
+
+int dl_get_request_timeout_secs(void)
+{
+    return dl_is_ibd() ? DL_REQUEST_TIMEOUT_SECS_IBD
+                       : DL_REQUEST_TIMEOUT_SECS;
+}
+
 /* FNV-1a hash for uint256 → slot index */
 static size_t hash_slot(const struct uint256 *h, size_t mask)
 {
@@ -189,8 +211,8 @@ bool dl_mark_requested(struct download_manager *dm,
         return false;
     }
 
-    /* Check global limit */
-    if (dm->num_active >= DL_MAX_IN_FLIGHT_TOTAL) {
+    /* Check global limit (dynamic: aggressive during IBD) */
+    if (dm->num_active >= dl_get_max_in_flight_total()) {
         zcl_mutex_unlock(&dm->cs);
         return false;
     }
@@ -293,7 +315,7 @@ size_t dl_check_timeouts(struct download_manager *dm, int64_t now)
         if (!s->active) continue;
 
         int64_t age = now - s->request_time;
-        if (age < DL_REQUEST_TIMEOUT_SECS) continue;
+        if (age < dl_get_request_timeout_secs()) continue;
 
         /* Timed out — move back to queue for reassignment */
         event_emitf(EV_BLOCK_REQUESTED, s->peer_id,
@@ -463,9 +485,10 @@ size_t dl_assign_to_peer(struct download_manager *dm,
     if (available > max_assign) available = max_assign;
     if (available > dm->queue_len) available = dm->queue_len;
 
-    /* Also respect global limit */
-    if (dm->num_active + available > DL_MAX_IN_FLIGHT_TOTAL)
-        available = DL_MAX_IN_FLIGHT_TOTAL - dm->num_active;
+    /* Also respect global limit (dynamic: aggressive during IBD) */
+    size_t global_limit = dl_get_max_in_flight_total();
+    if (dm->num_active + available > global_limit)
+        available = global_limit - dm->num_active;
 
     /* Pop from front — batch the memmove after the loop (O(1) per pop) */
     size_t pop_count = 0;
