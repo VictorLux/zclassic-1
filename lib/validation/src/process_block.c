@@ -603,6 +603,40 @@ bool accept_block_header(const struct block_header *header,
         }
     }
 
+    /* Fix pindex_prev height if scrambled (same logic as the already-known
+     * path above).  After snapshot sync + LDB import, block_map entries
+     * may have nHeight=0 or wrong values because pprev chains weren't
+     * fully resolved.  Without this fix, contextual_check_block_header
+     * applies rules for the WRONG height (e.g. pre-Sapling equihash size
+     * check at computed height 2 for a block really at height 2M+). */
+    if (pindex_prev && pindex_prev->pprev &&
+        pindex_prev->nHeight != pindex_prev->pprev->nHeight + 1) {
+        struct block_index *stack[2048];
+        int depth = 0;
+        struct block_index *cur = pindex_prev;
+        while (cur->pprev &&
+               cur->nHeight != cur->pprev->nHeight + 1 &&
+               depth < 2048) {
+            stack[depth++] = cur;
+            cur = cur->pprev;
+        }
+        if (cur->pprev && cur->nHeight != cur->pprev->nHeight + 1) {
+            cur->nHeight = cur->pprev->nHeight + 1;
+            struct arith_uint256 proof = GetBlockProof(cur);
+            arith_uint256_add(&cur->nChainWork,
+                              &cur->pprev->nChainWork, &proof);
+        }
+        for (int i = depth - 1; i >= 0; i--) {
+            struct block_index *fix = stack[i];
+            if (fix->pprev) {
+                fix->nHeight = fix->pprev->nHeight + 1;
+                struct arith_uint256 proof = GetBlockProof(fix);
+                arith_uint256_add(&fix->nChainWork,
+                                  &fix->pprev->nChainWork, &proof);
+            }
+        }
+    }
+
     if (pindex_prev &&
         !contextual_check_block_header(header, state, params, pindex_prev,
                                         ms->fCheckpointsEnabled))

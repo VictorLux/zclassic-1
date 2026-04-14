@@ -163,6 +163,7 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
     struct block_index *pindex_last = NULL;
     struct sync_header_processing_plan header_plan = {0};
     size_t accepted = 0;
+    size_t newly_added = 0;  /* headers that were NOT already in block index */
 
     for (uint64_t i = 0; i < count; i++) {
         struct block_header hdr;
@@ -185,12 +186,20 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                      (unsigned long long)i, node->addr_name);
         }
 
+        /* Check if header already in index BEFORE accept_block_header */
+        struct uint256 hdr_hash;
+        block_header_get_hash(&hdr, &hdr_hash);
+        bool was_known = (block_map_find(&mp->main_state->map_block_index,
+                                          &hdr_hash) != NULL);
+
         struct validation_state state;
         validation_state_init(&state);
         struct block_index *pindex = NULL;
         if (accept_block_header(&hdr, &state, mp->main_state,
                                 mp->params, &pindex)) {
             accepted++;
+            if (!was_known)
+                newly_added++;
             pindex_last = pindex;
             if (pindex && pindex->phashBlock)
                 last_hash = *pindex->phashBlock;
@@ -490,14 +499,27 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
     }
 
     /* Request more headers if we accepted any.
-     * Use the chain tip instead of pindex_last when pindex_last is far
-     * behind (scrambled block index from snapshot sync). */
+     *
+     * If ALL headers in the batch were already known (newly_added == 0),
+     * skip ahead to pindex_best_header instead of crawling 160 at a time
+     * through millions of known headers.  This happens after snapshot sync
+     * when the block index has entries above the chain tip.
+     *
+     * If some headers were new, use pindex_last — the peer will continue
+     * from right after it. */
     if (header_plan.batch.should_request_more_headers) {
-        struct block_index *tip = active_chain_tip(&mp->main_state->chain_active);
-        if (pindex_last && tip && pindex_last->nHeight < tip->nHeight)
-            push_getheaders_from(mp, node, tip);
-        else
+        if (newly_added == 0 && mp->main_state->pindex_best_header &&
+            pindex_last &&
+            mp->main_state->pindex_best_header->nHeight > pindex_last->nHeight) {
+            printf("Headers: all %zu known, skipping ahead from h=%d to "
+                   "best_header h=%d\n",
+                   accepted, pindex_last->nHeight,
+                   mp->main_state->pindex_best_header->nHeight);
+            push_getheaders_from(mp, node,
+                                 mp->main_state->pindex_best_header);
+        } else {
             push_getheaders_from(mp, node, pindex_last);
+        }
     }
 
     return true;
