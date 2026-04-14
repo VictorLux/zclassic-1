@@ -487,6 +487,42 @@ enum watchdog_recovery_type sync_watchdog_check(
                 zcl_mutex_unlock(&dm->cs);
             }
 
+            /* After re-queuing timed-out blocks, check if queue is
+             * still empty — if so, force-populate from block index */
+            uint64_t post_queued = 0, post_inflight = 0;
+            dl_get_stats(dm, NULL, NULL, NULL, &post_inflight, &post_queued);
+            if (post_queued == 0 && post_inflight == 0 && ms) {
+                int chain_h = active_chain_height(&ms->chain_active);
+                struct uint256 scan_hashes[256];
+                int32_t scan_heights[256];
+                size_t scan_count = 0;
+                size_t iter = 0;
+                struct block_index *bi;
+                while (block_map_next(&ms->map_block_index, &iter,
+                                      NULL, &bi)) {
+                    if (!bi || scan_count >= 256) break;
+                    if (bi->nHeight <= chain_h) continue;
+                    if (bi->nHeight > chain_h + 2048) continue;
+                    if (bi->nStatus & BLOCK_HAVE_DATA) continue;
+                    if (bi->nStatus & BLOCK_FAILED_MASK) continue;
+                    if (!bi->phashBlock) continue;
+                    scan_hashes[scan_count] = *bi->phashBlock;
+                    scan_heights[scan_count] = bi->nHeight;
+                    scan_count++;
+                }
+                if (scan_count > 0) {
+                    dl_queue_blocks(dm, scan_hashes, scan_heights,
+                                    scan_count);
+                    printf("[watchdog] BLOCK_STALL: force-queued %zu "
+                           "blocks from index\n", scan_count);
+                } else {
+                    printf("[watchdog] BLOCK_STALL: no downloadable "
+                           "blocks, reverting to HEADERS_DOWNLOAD\n");
+                    sync_set_state(SYNC_HEADERS_DOWNLOAD,
+                                   "watchdog BLOCK_STALL: no blocks");
+                }
+            }
+
             printf("[watchdog] BLOCK_STALL recovery: reset download manager, "
                    "re-queued blocks\n");
             record_recovery(now, WATCHDOG_BLOCK_STALL);
