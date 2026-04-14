@@ -294,11 +294,26 @@ void activation_request_connect(struct chain_activation_controller *ctl,
         snprintf(out->reason, sizeof(out->reason),
                  "activate_best_chain failed at h=%d", tip_h);
     } else {
-        activation_set_state(ctl, ACTIVATION_AT_TIP, "at_tip");
-        out->result = ACTIVATION_EXEC_OK;
-        out->new_tip_height = tip_h;
-        out->reached_tip = true;
-        snprintf(out->reason, sizeof(out->reason), "tip=%d", tip_h);
+        /* Don't declare at_tip if we're far behind the best known
+         * header — blocks may not be downloaded yet (nChainTx==0
+         * hides them from find_most_work_chain). Stay in READY to
+         * keep the download pipeline active. */
+        int best_h = ctl->ms->pindex_best_header
+                   ? ctl->ms->pindex_best_header->nHeight : 0;
+        if (best_h > 0 && tip_h + 100 < best_h) {
+            activation_set_state(ctl, ACTIVATION_READY, "behind_peers");
+            out->result = ACTIVATION_EXEC_OK;
+            out->new_tip_height = tip_h;
+            out->reached_tip = false;
+            snprintf(out->reason, sizeof(out->reason),
+                     "tip=%d best_header=%d (behind)", tip_h, best_h);
+        } else {
+            activation_set_state(ctl, ACTIVATION_AT_TIP, "at_tip");
+            out->result = ACTIVATION_EXEC_OK;
+            out->new_tip_height = tip_h;
+            out->reached_tip = true;
+            snprintf(out->reason, sizeof(out->reason), "tip=%d", tip_h);
+        }
     }
 
     zcl_mutex_unlock(&ctl->mutex);
