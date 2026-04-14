@@ -302,38 +302,107 @@ void *backfill_addresses_thread(void *arg)
         printf("Address backfill: failed to open db\n");
         return NULL;
     }
-    sqlite3_exec(db, "PRAGMA mmap_size=268435456", NULL, NULL, NULL);
+
+    /* Use conservative mmap — large mmap caused SIGSEGV on some systems
+     * when the address space layout conflicts with heap allocations
+     * during the large GROUP BY sort buffer. 64MB is plenty. */
+    sqlite3_exec(db, "PRAGMA mmap_size=67108864", NULL, NULL, NULL);
     sqlite3_busy_timeout(db, 60000);
+    /* Reduce temp store pressure — force temp tables to disk */
+    sqlite3_exec(db, "PRAGMA temp_store=FILE", NULL, NULL, NULL);
+    /* Use a modest cache to avoid memory bloat during aggregation */
+    sqlite3_exec(db, "PRAGMA cache_size=-32768", NULL, NULL, NULL); /* 32MB */
 
     printf("Address backfill: aggregating UTXOs...\n");
     fflush(stdout);
     int64_t t0 = (int64_t)time(NULL);
+
+    /* Ensure addresses table exists (it should, but be safe) */
+    sqlite3_exec(db,
+        "CREATE TABLE IF NOT EXISTS addresses ("
+        "address_hash BLOB PRIMARY KEY,"
+        "script_type INTEGER NOT NULL DEFAULT 0,"
+        "balance INTEGER NOT NULL DEFAULT 0,"
+        "utxo_count INTEGER NOT NULL DEFAULT 0,"
+        "first_seen_height INTEGER NOT NULL DEFAULT 0,"
+        "last_seen_height INTEGER NOT NULL DEFAULT 0"
+        ")", NULL, NULL, NULL);
 
     sqlite3_exec(db,
         "CREATE INDEX IF NOT EXISTS idx_utxo_address"
         " ON utxos(address_hash) WHERE address_hash IS NOT NULL",
         NULL, NULL, NULL);
 
-    sqlite3_exec(db,
+    /* Process in batches using a cursor over distinct address_hash values.
+     * The old single-query approach (INSERT SELECT GROUP BY over 1.3M UTXOs)
+     * caused SIGSEGV after ~64K addresses due to SQLite sort buffer / mmap
+     * memory pressure. Batching keeps peak memory bounded. */
+    int rc;
+    int64_t processed = 0;
+    static const int BATCH_SIZE = 10000;
+
+    sqlite3_exec(db, "BEGIN", NULL, NULL, NULL);
+
+    sqlite3_stmt *cursor = NULL;
+    rc = sqlite3_prepare_v2(db,
+        "SELECT DISTINCT address_hash FROM utxos "
+        "WHERE address_hash IS NOT NULL "
+        "ORDER BY address_hash",
+        -1, &cursor, NULL);
+    if (rc != SQLITE_OK || !cursor) {
+        fprintf(stderr, "Address backfill: failed to prepare cursor: %s\n",
+                sqlite3_errmsg(db));
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        sqlite3_close(db);
+        return NULL;
+    }
+
+    sqlite3_stmt *upsert = NULL;
+    rc = sqlite3_prepare_v2(db,
         "INSERT OR REPLACE INTO addresses "
         "(address_hash, script_type, balance, utxo_count, "
         "first_seen_height, last_seen_height) "
         "SELECT address_hash, MAX(script_type), SUM(value), count(*), "
         "MIN(height), MAX(height) "
-        "FROM utxos WHERE address_hash IS NOT NULL "
-        "GROUP BY address_hash",
-        NULL, NULL, NULL);
+        "FROM utxos WHERE address_hash = ?1",
+        -1, &upsert, NULL);
+    if (rc != SQLITE_OK || !upsert) {
+        fprintf(stderr, "Address backfill: failed to prepare upsert: %s\n",
+                sqlite3_errmsg(db));
+        sqlite3_finalize(cursor);
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        sqlite3_close(db);
+        return NULL;
+    }
+
+    while ((rc = sqlite3_step(cursor)) == SQLITE_ROW) {
+        const void *addr_hash = sqlite3_column_blob(cursor, 0);
+        int addr_len = sqlite3_column_bytes(cursor, 0);
+        if (!addr_hash || addr_len <= 0)
+            continue;
+
+        sqlite3_reset(upsert);
+        sqlite3_bind_blob(upsert, 1, addr_hash, addr_len, SQLITE_STATIC);
+        sqlite3_step(upsert);
+        processed++;
+
+        /* Commit every BATCH_SIZE rows to release locks and memory */
+        if (processed % BATCH_SIZE == 0) {
+            sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
+            sqlite3_exec(db, "BEGIN", NULL, NULL, NULL);
+            if (processed % 100000 == 0) {
+                printf("Address backfill: %lld addresses processed...\n",
+                       (long long)processed);
+                fflush(stdout);
+            }
+        }
+    }
+
+    sqlite3_finalize(cursor);
+    sqlite3_finalize(upsert);
+    sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
 
     int64_t elapsed = (int64_t)time(NULL) - t0;
-
-    int64_t new_count = 0;
-    sqlite3_stmt *chk = NULL;
-    if (sqlite3_prepare_v2(db, "SELECT count(*) FROM addresses",
-                           -1, &chk, NULL) == SQLITE_OK && chk) {
-        if (sqlite3_step(chk) == SQLITE_ROW)
-            new_count = sqlite3_column_int64(chk, 0);
-        sqlite3_finalize(chk);
-    }
 
     sqlite3_exec(db,
         "INSERT OR REPLACE INTO node_state(key,value) "
@@ -341,7 +410,7 @@ void *backfill_addresses_thread(void *arg)
 
     sqlite3_close(db);
     printf("Address backfill: %lld addresses in %llds\n",
-           (long long)new_count, (long long)elapsed);
+           (long long)processed, (long long)elapsed);
     fflush(stdout);
     return NULL;
 }

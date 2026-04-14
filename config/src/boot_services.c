@@ -1341,12 +1341,10 @@ bool app_init_services(struct app_context *ctx,
     }
 
     if (svc->want_address_backfill) {
-        /* DISABLED: address backfill causes SIGSEGV after processing
-         * ~64K addresses. The crash corrupts P2P state and prevents
-         * block download. Needs ASAN investigation. */
-        printf("Address backfill: DISABLED (SIGSEGV bug — needs ASAN)\n");
-        svc->want_address_backfill = false;
-        if (false && boot_start_address_backfill_service(svc)) {
+        /* Re-enabled: SIGSEGV was caused by SQLite memory pressure from
+         * a single massive GROUP BY over 1.3M UTXOs with 256MB mmap.
+         * Fixed by batching per-address with bounded memory. */
+        if (boot_start_address_backfill_service(svc)) {
             printf("Address backfill: started in tracked background thread\n");
             fflush(stdout);
         } else {
