@@ -1,4 +1,4 @@
-# AGENT2 — Wave 22b: Thread Safety Fixes
+# AGENT2 — Wave 23: Fix Block Download Stall (CRITICAL)
 
 **Working directory:** `~/zclassic23-2`
 **Coordinator:** Agent1 (~/zclassic23)
@@ -9,92 +9,81 @@
 
 ## Context
 
-Agent3 completed their wave 22 tasks (LOG_FAIL fix, before_save hooks, fprintf→LOG_ERR). Tests pass.
+The node is STUCK at height 2,016,355. Headers arrive (tip 2025K+) but blocks are NEVER requested. The event log shows a 250ms tight loop:
 
-Two **critical thread safety bugs** remain — these are the root causes of the known SIGSEGV crashes. Fix them both.
+```
+boot.activate: tip=2016355 most_work=2016356
+connecting->at_tip: at_tip
+getheaders sent → 160 headers received
+at_tip->connecting: p2p_trigger
+(repeat)
+```
 
-Read `DEFENSIVE_CODING.md` first.
+Root cause analysis identified THREE compounding bugs. You fix Bug 1 and Bug 2 (the download pipeline). Agent3 fixes Bug 3 (activation controller).
 
 ---
 
-## Task 1 (CRITICAL): Fix block_pruning_service.c Lock Bug
+## Bug 1 (ROOT CAUSE): syncsvc_collect_needed_blocks Walk Terminates at pprev==NULL
 
-### File: `app/services/src/block_pruning_service.c`
+### File: `app/services/src/header_sync_service.c`, line ~515
 
-**Bug at lines 160-165:** Lock is acquired and immediately released BEFORE `unlink()`. A concurrent reader can enter `open_disk_file` with `g_cached_file` pointing to the file being deleted.
-
-Current code:
 ```c
-disk_block_io_lock();
-/* Close and reopen to flush — we just need the lock to
- * prevent concurrent reads while we delete. */
-disk_block_io_unlock();
-
-bool blk_ok = (unlink(blk_path) == 0 || errno == ENOENT);  // RACE HERE
-bool rev_ok = (unlink(rev_path) == 0 || errno == ENOENT);
+while (walk && walk->pprev && walk->nHeight > our_height &&
+       result->count < max_collect && walk_steps < 2048) {
 ```
 
-**Fix:** Hold the lock across the unlink, and invalidate the cache first:
+New headers have `pprev == NULL` because they're header-only entries not yet connected. The `walk->pprev` condition terminates the walk immediately, yielding `count == 0`. With count=0, `should_queue_needed_blocks = false` and no `getdata` is ever sent.
+
+### Fix:
+Remove the `walk->pprev` requirement from the walk condition. Instead, handle NULL pprev gracefully inside the loop — if `pprev` is NULL, try to look up the parent hash in the block map:
+
 ```c
-disk_block_io_lock();
-disk_block_io_close_cache();  // invalidate g_cached_file if it points to this file
-bool blk_ok = (unlink(blk_path) == 0 || errno == ENOENT);
-bool rev_ok = (unlink(rev_path) == 0 || errno == ENOENT);
-disk_block_io_unlock();
+while (walk && walk->nHeight > our_height &&
+       result->count < max_collect && walk_steps < 2048) {
+    // ... existing logic to check BLOCK_HAVE_DATA etc ...
+    
+    // Walk backwards — handle missing pprev
+    if (walk->pprev) {
+        walk = (struct block_index *)walk->pprev;
+    } else {
+        break;  // can't walk further — but we already collected what we could
+    }
+    walk_steps++;
+}
 ```
 
-Also replace the `fprintf(stderr, ...)` on line 169-170 with `LOG_ERR("prune", ...)`.
+The key insight: we should collect blocks ABOVE our_height that need data, walking DOWN from the candidate. Even if the walk stops early due to missing pprev, we should still have `count > 0` for the blocks we DID find. The current code breaks out with count=0 because `walk->pprev` is checked BEFORE the first iteration even runs.
+
+**Test:** After this fix, `needed_blocks.count` should be > 0 when headers are ahead of our tip. Add a test case that creates header-only block_index entries (pprev=NULL, nChainTx=0, no BLOCK_HAVE_DATA) and verifies `syncsvc_collect_needed_blocks` returns count > 0.
 
 ---
 
-## Task 2 (CRITICAL): Protect boot_index.c Scans from P2P Races
+## Bug 2: syncsvc_should_begin_blocks_download Requires SYNC_HEADERS_DOWNLOAD
 
-### File: `config/src/boot_index.c`
+### File: `app/services/src/header_sync_service.c`, line ~435
 
-**Bug:** `scan_one_block_file()` (line 491) opens its own `FILE *f = fopen(filepath, "rb")` and does `fread` calls without holding `g_file_cache_mutex`. This function is called from:
-- Boot (single-threaded — safe)
-- P2P thread via `msg_headers.c:412` — **RACE** with `write_block_to_disk` on the main thread
-
-Same issue in `resolve_orphan_pprev_from_disk()` (line ~680).
-
-**Fix:** Wrap the file I/O sections with the disk lock:
-
-For `scan_one_block_file`:
 ```c
-disk_block_io_lock();
-FILE *f = fopen(filepath, "rb");
-// ... all the fread/fseek work ...
-fclose(f);
-disk_block_io_unlock();
+bool syncsvc_should_begin_blocks_download(enum sync_state sync_state,
+                                          const struct block_index *candidate,
+                                          int our_height)
+{
+    return candidate && candidate->nHeight > our_height &&
+           sync_state == SYNC_HEADERS_DOWNLOAD;
+}
 ```
 
-For `resolve_orphan_pprev_from_disk`:
+Once the state transitions to `SYNC_BLOCKS_DOWNLOAD`, this function returns `false` for all subsequent header batches. No more blocks are ever queued.
+
+### Fix:
+Allow block queuing in BOTH header and block download states:
+
 ```c
-disk_block_io_lock();
-FILE *f = fopen(path, "rb");
-// ... fread ...
-fclose(f);
-disk_block_io_unlock();
+    return candidate && candidate->nHeight > our_height &&
+           (sync_state == SYNC_HEADERS_DOWNLOAD ||
+            sync_state == SYNC_BLOCKS_DOWNLOAD);
 ```
 
-You need to `#include "storage/disk_block_io.h"` in boot_index.c if not already present.
-
-**Note:** The lock prevents concurrent writes — the private FILE* doesn't touch `g_cached_file` but the lock ensures `write_block_to_disk` can't modify the file mid-read.
-
----
-
-## Task 3 (MEDIUM): Audit fread/fwrite Paths and Document Lock Coverage
-
-Search the whole codebase for `fread`/`fwrite` calls on block/undo files:
-
-```bash
-grep -rn 'fread\|fwrite' lib/storage/src/ lib/validation/src/ app/services/src/ config/src/ app/controllers/src/ --include='*.c' | grep -v test | grep -v vendor
-```
-
-For each site:
-- If inside `disk_block_io_lock()` region: add comment `// disk-io-lock: held`
-- If using own fd via `open()`+`pread()`: add comment `// disk-io-lock: private-fd (pread)`
-- If unprotected: fix it or flag it
+This is safe — the function's purpose is "should we queue blocks for download?" and the answer should be yes whenever we have a candidate above our height, regardless of which download phase we're in.
 
 ---
 
@@ -105,12 +94,10 @@ After EACH task:
 git pull origin master
 make -j$(nproc) 2>&1 | tail -20
 make test 2>&1 | tail -10
-git add <specific files> && git commit -m "wave 22 task N: description"
+git add <specific files> && git commit -m "wave 23 task N: description"
 git push origin master
 ```
 
 ## Boundary: Files You MUST NOT Touch
-- `lib/net/src/fast_sync.c` (Agent3 — done)
-- `app/models/src/mempool_entry.c` (Agent3 — done)
-- `app/models/src/tx_index.c` (Agent3 — done)
-- `app/models/src/wallet_tx.c` (Agent3 — done)
+- `app/services/src/chain_activation_controller.c` (Agent3)
+- `lib/validation/src/process_block.c` (Agent1 — coordinator)

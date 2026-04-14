@@ -1,4 +1,4 @@
-# AGENT3 — Wave 22b: Crash Recovery + Observability
+# AGENT3 — Wave 23: Fix Activation False AT_TIP + Enable Disabled Features
 
 **Working directory:** `~/zclassic23-3`
 **Coordinator:** Agent1 (~/zclassic23)
@@ -9,105 +9,85 @@
 
 ## Context
 
-Your wave 22 tasks are DONE (LOG_FAIL fix, before_save hooks, fprintf→LOG_ERR). Tests pass. Agent2 is fixing thread safety bugs.
-
-Now move to crash recovery and observability — preparing for wave 23 (reliability under stress).
+The node is STUCK at height 2,016,355. Headers arrive but blocks are never downloaded. Agent2 fixes the download pipeline (Bug 1 + Bug 2). You fix Bug 3 (false AT_TIP) and re-enable the features that were fixed in wave 22b.
 
 ---
 
-## Task 1 (HIGH): Add Memory RSS to Health Check
+## Task 1 (CRITICAL): Fix False AT_TIP in Activation Controller
 
-### File: `app/services/src/node_health_service.c`
+### File: `app/services/src/chain_activation_controller.c`, line ~297
 
-Add a function to read RSS from `/proc/self/status`:
 ```c
-static int64_t get_rss_kb(void) {
-    FILE *f = fopen("/proc/self/status", "r");
-    if (!f) return -1;
-    char line[256];
-    while (fgets(line, sizeof(line), f)) {
-        if (strncmp(line, "VmRSS:", 6) == 0) {
-            int64_t kb = 0;
-            sscanf(line + 6, " %lld", (long long *)&kb);
-            fclose(f);
-            return kb;
-        }
-    }
-    fclose(f);
-    return -1;
+if (!ok) {
+    activation_set_state(ctl, ACTIVATION_READY, "activation_failed");
+} else {
+    activation_set_state(ctl, ACTIVATION_AT_TIP, "at_tip");  // ← unconditional
 }
 ```
 
-Add to the health check output:
-- `memory_rss_mb` field (RSS in MB)
-- If RSS > 4096 MB, set `degraded_reason = "high_memory_usage"`
+`activate_best_chain` returns `true` after connecting one block (2016356), because `find_most_work_chain` only sees blocks with `nChainTx > 0`. The activation controller then declares AT_TIP even though the node is 1M blocks behind.
 
-### Also update MCP ops_controller.c
-In `zcl_status` output, add `memory_rss_mb` and `uptime_secs`.
-
----
-
-## Task 2 (HIGH): Structured Boot Timing
-
-### File: `config/src/boot.c`
-
-Add timing around each boot phase using `clock_gettime(CLOCK_MONOTONIC)`:
+### Fix:
+After `activate_best_chain` returns true, check if we're actually near the network tip before declaring AT_TIP. Compare the chain tip height against known peer heights:
 
 ```c
-struct timespec t0;
-clock_gettime(CLOCK_MONOTONIC, &t0);
-// ... phase code ...
-struct timespec t1;
-clock_gettime(CLOCK_MONOTONIC, &t1);
-int64_t ms = (t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000;
-printf("[boot] %-30s %lldms\n", "phase_name", (long long)ms);
+if (!ok) {
+    activation_set_state(ctl, ACTIVATION_READY, "activation_failed");
+} else {
+    /* Don't declare at_tip if we're far behind peers — blocks
+     * may not be downloaded yet (nChainTx==0 hides them from
+     * find_most_work_chain). Stay in CONNECTING to keep the
+     * download pipeline active. */
+    int tip_h = active_chain_height(&ms->chain_active);
+    int peer_h = connman_max_peer_height(ms->connman);
+    if (peer_h > 0 && tip_h + 100 < peer_h) {
+        activation_set_state(ctl, ACTIVATION_READY, "behind_peers");
+    } else {
+        activation_set_state(ctl, ACTIVATION_AT_TIP, "at_tip");
+    }
+}
 ```
 
-Phases to time:
-1. SQLite open + schema migration
-2. Block index load from cache/LDB
-3. UTXO set load/import
-4. Sapling tree load/rebuild
-5. Wallet load
-6. P2P network start
-7. Total boot time
-
-Print a summary line at end: `[boot] total: Xms`
+Check that `connman_max_peer_height` exists and works — it was added in wave 20. Use a margin of 100 blocks to avoid flapping when nearly synced.
 
 ---
 
-## Task 3 (MEDIUM): Investigate bg_hash_verify SIGSEGV
+## Task 2: Update CHECKLIST.md — Mark Fixed Items
 
-### File: `app/services/src/bg_hash_verification_service.c`
+The following items in CHECKLIST.md section 6 "Remaining" are now FIXED. Move them to "Completed":
 
-This feature is DISABLED because it crashes at h=20000 when P2P is running. The audit found that bg_hash_verify itself uses `pread()` (thread-safe) — so the crash is NOT from the file handle race.
+- **SIGSEGV in bg_hash_verify fread** — FIXED in wave 22b task 3 (cs_main lock added, snapshot block_index fields before pread)
+- **SIGSEGV in address backfill** — FIXED in wave 22b task 4 (disabled mmap for bg thread, PRAGMA mmap_size=0)
 
-Investigate:
-1. Read the bg_hash_verify thread function thoroughly
-2. What data structures does it access? Does it read `block_index` entries that could be modified by P2P?
-3. Does it access any shared state (block_map, chain tip, etc.) without locks?
-4. Check if `pindex->nFile` or `pindex->nDataPos` could change while bg_hash_verify is reading
-
-Report your findings. If you can identify the race, fix it. If not, document what you found for the next wave.
+Update the checklist to reflect current reality.
 
 ---
 
-## Task 4 (MEDIUM): Investigate Address Backfill SIGSEGV
+## Task 3: Re-enable bg_hash_verify
 
-### File: `config/src/boot_index.c`
+### File: Check where bg_hash_verify is disabled
 
-The `backfill_addresses_thread` crashes after ~64K addresses. The code comment says:
-> "The old single-query approach... caused SIGSEGV after ~64K addresses due to SQLite sort buffer / mmap memory pressure."
+The SIGSEGV was fixed in wave 22b (cs_main lock + field snapshotting). Find where the feature is disabled and re-enable it. It should start automatically after sync completes.
 
-The current batch-cursor approach uses `PRAGMA mmap_size=67108864` + `PRAGMA temp_store=FILE`.
+Search for:
+```bash
+grep -rn 'bg_hash_verify\|bg_hash_verification\|nobghash' app/ config/ lib/ --include='*.c' --include='*.h'
+```
 
-Investigate:
-1. Read the backfill thread code
-2. Is `mmap_size=67108864` (64MB) too aggressive for a background thread?
-3. Could reducing `mmap_size` or removing it fix the crash?
-4. Is the SQLite connection properly isolated from the main thread's connection?
+If it's disabled by a flag or a commented-out call, re-enable it. If it's gated by `-nobgvalidation`, that's fine — leave it as user-controlled.
 
-If the fix is simple (e.g., remove the mmap_size pragma), do it. Otherwise document findings.
+---
+
+## Task 4: Re-enable Address Backfill
+
+### File: Check where address backfill is disabled
+
+The SIGSEGV was fixed in wave 22b (mmap_size=0). Find where the backfill thread is disabled and re-enable it.
+
+Search for:
+```bash
+grep -rn 'backfill_address\|address_backfill\|nobackfill' app/ config/ lib/ --include='*.c' --include='*.h'
+```
 
 ---
 
@@ -118,12 +98,11 @@ After EACH task:
 git pull origin master
 make -j$(nproc) 2>&1 | tail -20
 make test 2>&1 | tail -10
-git add <specific files> && git commit -m "wave 22b task N: description"
+git add <specific files> && git commit -m "wave 23 task N: description"
 git push origin master
 ```
 
 ## Boundary: Files You MUST NOT Touch
-- `app/services/src/block_pruning_service.c` (Agent2)
-- `config/src/boot_index.c` scan/resolve functions (Agent2 — lines 491-733)
-- `lib/storage/src/disk_block_io.c` (Agent2)
-- Address backfill in `boot_index.c` is yours (lines 297-416) — Agent2 owns the scan functions
+- `app/services/src/header_sync_service.c` (Agent2)
+- `lib/net/src/msg_headers.c` (Agent2)
+- `lib/net/src/download.c` (Agent2)

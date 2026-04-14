@@ -1,30 +1,41 @@
-# AGENT — Wave 22b: Thread Safety + Observability (Coordinator)
+# AGENT — Wave 23: Fix Block Download Stall (Coordinator)
 
 ## Current Mission
 
-Harden `zclassic23` — fix crash-causing races, add observability, investigate disabled features.
-
-**Node syncing (2M → 3M+), 17 peers, tests pass.**
+Node is STUCK at height 2,016,355. Headers arrive (2025K+) but blocks are never downloaded. Fix the three compounding bugs.
 
 ---
 
 ## Status (2026-04-14)
 
-### Completed (Wave 22a — Agent3)
-- [x] LOG_FAIL spam removed from fast_sync PoW solve loop
-- [x] before_save hooks wired: mempool_entry, tx_index, wallet_tx
-- [x] fprintf→LOG_ERR migration: bg_validation, chain_state_repository, snapshot_sync, utxo_recovery
-- [x] Raw allocators in lib/validation/ already using zcl_* (was a false gap)
-- [x] Tests: ALL 95 STORIES PASSED, 0 failures
+### Completed (Wave 22)
+- [x] LOG_FAIL spam fix
+- [x] before_save hooks: mempool_entry, tx_index, wallet_tx
+- [x] fprintf→LOG_ERR migration
+- [x] block_pruning_service.c lock race fix
+- [x] boot_index.c scan race protection
+- [x] fread/fwrite audit + documentation
+- [x] Memory RSS health check + uptime
+- [x] Structured boot timing
+- [x] bg_hash_verify SIGSEGV fix (cs_main lock)
+- [x] Address backfill SIGSEGV fix (mmap_size=0)
+- [x] Tests: ALL 95 STORIES PASSED
 
-### In Progress (Wave 22b)
-- [ ] **Agent2**: block_pruning_service.c lock bug (CRITICAL)
-- [ ] **Agent2**: boot_index.c scan race protection (CRITICAL)
-- [ ] **Agent2**: fread/fwrite audit + documentation
-- [ ] **Agent3**: Memory RSS health check
-- [ ] **Agent3**: Structured boot timing
-- [ ] **Agent3**: bg_hash_verify SIGSEGV investigation
-- [ ] **Agent3**: Address backfill SIGSEGV investigation
+### In Progress (Wave 23)
+- [ ] **Agent2**: Bug 1 — collect_needed_blocks pprev==NULL walk termination
+- [ ] **Agent2**: Bug 2 — should_begin_blocks_download state gate
+- [ ] **Agent3**: Bug 3 — false AT_TIP in activation controller
+- [ ] **Agent3**: Re-enable bg_hash_verify + address backfill
+- [ ] **Agent3**: Update CHECKLIST.md
+
+---
+
+## Root Cause Analysis
+
+Headers arrive but blocks never queue because:
+1. `syncsvc_collect_needed_blocks` walk terminates at `pprev==NULL` → count=0 → no getdata
+2. `syncsvc_should_begin_blocks_download` requires `SYNC_HEADERS_DOWNLOAD` but state is already `SYNC_BLOCKS_DOWNLOAD`
+3. `activation_request_connect` declares AT_TIP unconditionally after activate_best_chain returns true
 
 ---
 
@@ -32,14 +43,5 @@ Harden `zclassic23` — fix crash-causing races, add observability, investigate 
 
 | Agent | Focus | Critical Files |
 |-------|-------|----------------|
-| Agent2 | Thread safety: fix 2 race conditions + audit | `block_pruning_service.c`, `boot_index.c` (scan fns), `disk_block_io.c` |
-| Agent3 | Observability + crash investigation | `node_health_service.c`, `boot.c`, `bg_hash_verification_service.c`, `boot_index.c` (backfill) |
-
----
-
-## Coordination Rules
-
-- Run `make -j$(nproc) && make test` before every push
-- Commit with `wave 22/22b task N:` prefix
-- `git pull origin master` before starting any task
-- File boundaries are strict — see each AGENT file
+| Agent2 | Download pipeline: collect_needed_blocks + state gate | `header_sync_service.c` |
+| Agent3 | Activation controller + re-enable fixed features | `chain_activation_controller.c`, CHECKLIST.md |
