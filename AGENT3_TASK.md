@@ -1,20 +1,19 @@
-# Agent 3 Task: Wave 22 — LOG_FAIL Spam + Before-Save Hooks + Logging
+# Agent 3 Task: Wave 22b — Crash Recovery + Observability
 
 ## Status
-- `make test` shows "1 failures" but real failure is hidden under ~1M LOG_FAIL lines from fast_sync PoW solve loop
-- 3 models missing before_save hooks
-- ~10 service error paths use bare `fprintf` instead of `LOG_ERR`
+- Your wave 22 tasks are DONE (LOG_FAIL fix, hooks, logging). Good work.
+- Now: crash recovery investigation + observability improvements.
 
 ## Priority Order
-1. **Task 1: Fix LOG_FAIL spam in fast_sync_verify_pow** — remove LOG_FAIL from normal nonce-fail path (DO FIRST)
-2. **Task 2: Wire before_save hooks** — mempool_entry, tx_index, wallet_tx
-3. **Task 3: fprintf→LOG_ERR migration** — 5 service files
-4. **Task 4: Find and fix the real test failure** — after Task 1 cleans output
+1. **Task 1: Add memory RSS to health check** — node_health_service.c + ops_controller.c
+2. **Task 2: Structured boot timing** — boot.c phase timing with [boot] log lines
+3. **Task 3: Investigate bg_hash_verify SIGSEGV** — uses pread (safe) so crash is elsewhere
+4. **Task 4: Investigate address backfill SIGSEGV** — SQLite mmap_size pressure?
 
 ## See AGENT3.md for full task details
 
 ## Rules
-- Follow `DEFENSIVE_CODING.md`: use `LOG_FAIL()`, `zcl_malloc()`, `log_macros.h`
-- Run `make -j$(nproc) && make test` — must stay at 0 test regressions
-- Commit with `wave 22 task N:` prefix
+- Follow `DEFENSIVE_CODING.md`
+- Run `make -j$(nproc) && make test` — 0 failures required
+- Commit with `wave 22b task N:` prefix
 - Do NOT touch Agent2 files (see boundary list in AGENT3.md)

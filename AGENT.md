@@ -1,56 +1,45 @@
-# AGENT — Wave 22: Defensive Hardening (Coordinator)
+# AGENT — Wave 22b: Thread Safety + Observability (Coordinator)
 
 ## Current Mission
 
-Harden `zclassic23` with Rails-way patterns, thread safety, and defensive coding.
+Harden `zclassic23` — fix crash-causing races, add observability, investigate disabled features.
 
-**Node is AT TIP and synced.** This wave is about reliability, not features.
+**Node syncing (2M → 3M+), 17 peers, tests pass.**
 
 ---
 
 ## Status (2026-04-14)
 
-- Node: running, 4GB RAM, synced to tip
-- Tests: 1 mystery failure (fast_sync PoW LOG_FAIL spam masks it)
-- Architecture audit complete — gaps identified, work assigned
+### Completed (Wave 22a — Agent3)
+- [x] LOG_FAIL spam removed from fast_sync PoW solve loop
+- [x] before_save hooks wired: mempool_entry, tx_index, wallet_tx
+- [x] fprintf→LOG_ERR migration: bg_validation, chain_state_repository, snapshot_sync, utxo_recovery
+- [x] Raw allocators in lib/validation/ already using zcl_* (was a false gap)
+- [x] Tests: ALL 95 STORIES PASSED, 0 failures
+
+### In Progress (Wave 22b)
+- [ ] **Agent2**: block_pruning_service.c lock bug (CRITICAL)
+- [ ] **Agent2**: boot_index.c scan race protection (CRITICAL)
+- [ ] **Agent2**: fread/fwrite audit + documentation
+- [ ] **Agent3**: Memory RSS health check
+- [ ] **Agent3**: Structured boot timing
+- [ ] **Agent3**: bg_hash_verify SIGSEGV investigation
+- [ ] **Agent3**: Address backfill SIGSEGV investigation
 
 ---
 
 ## Agent Assignments
 
-| Agent | Focus | Files |
-|-------|-------|-------|
-| Agent2 | Thread safety fixes + raw allocator cleanup | `disk_block_io.c`, `block_pruning_service.c`, `boot_index.c`, `connect_block.c`, `update_coins.c`, `process_block.c`, `msg_headers.c` |
-| Agent3 | LOG_FAIL spam fix + before_save hooks + fprintf→LOG_ERR migration | `fast_sync.c`, `mempool_entry.c`, `tx_index.c`, `wallet_tx.c`, services with bare fprintf |
-
----
-
-## Critical Findings from Audit
-
-### Thread Safety (Agent2 — CRITICAL)
-1. `block_pruning_service.c:160-165` — lock released BEFORE `unlink()`, g_cached_file can point to deleted file
-2. `boot_index.c` scan called from P2P thread (`msg_headers.c:412`) without file lock while writer active
-3. `open_disk_file` has no internal locking — relies entirely on caller discipline
-
-### LOG_FAIL Spam (Agent3 — HIGH)
-- `fast_sync_verify_pow()` calls LOG_FAIL on every failed nonce (~1M lines)
-- Masks real test failures in `make test` output
-
-### Missing Before-Save Hooks (Agent3 — MEDIUM)
-- `mempool_entry`, `tx_index`, `wallet_tx` go through AR lifecycle but no before_save guard
-
-### Raw Allocators (Agent2 — MEDIUM)
-- `connect_block.c:592`, `update_coins.c:51`, `process_block.c:822,1100`, `msg_headers.c:271`
-- Use raw `malloc`/`realloc` with bare `fprintf` instead of `zcl_*` + `LOG_ERR`
-
-### fprintf vs LOG_ERR (Agent3 — LOW)
-- ~10 service sites use `fprintf(stderr,...)` instead of structured `LOG_ERR`
+| Agent | Focus | Critical Files |
+|-------|-------|----------------|
+| Agent2 | Thread safety: fix 2 race conditions + audit | `block_pruning_service.c`, `boot_index.c` (scan fns), `disk_block_io.c` |
+| Agent3 | Observability + crash investigation | `node_health_service.c`, `boot.c`, `bg_hash_verification_service.c`, `boot_index.c` (backfill) |
 
 ---
 
 ## Coordination Rules
 
 - Run `make -j$(nproc) && make test` before every push
-- Commit with `wave 22 task N:` prefix
+- Commit with `wave 22/22b task N:` prefix
 - `git pull origin master` before starting any task
 - File boundaries are strict — see each AGENT file

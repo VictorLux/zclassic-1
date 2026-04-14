@@ -1,4 +1,4 @@
-# AGENT3 — Wave 22: LOG_FAIL Spam Fix + Before-Save Hooks + Logging Cleanup
+# AGENT3 — Wave 22b: Crash Recovery + Observability
 
 **Working directory:** `~/zclassic23-3`
 **Coordinator:** Agent1 (~/zclassic23)
@@ -9,90 +9,105 @@
 
 ## Context
 
-The `make test` output is broken — 1M lines of LOG_FAIL spam from the fast_sync PoW solve loop mask real test failures. Additionally, 3 models are missing before_save hooks, and ~10 service error paths use bare `fprintf` instead of the structured `LOG_ERR` macro.
+Your wave 22 tasks are DONE (LOG_FAIL fix, before_save hooks, fprintf→LOG_ERR). Tests pass. Agent2 is fixing thread safety bugs.
 
-Read `DEFENSIVE_CODING.md` first.
+Now move to crash recovery and observability — preparing for wave 23 (reliability under stress).
 
 ---
 
-## Task 1 (HIGH — DO FIRST): Fix LOG_FAIL Spam in fast_sync_verify_pow
+## Task 1 (HIGH): Add Memory RSS to Health Check
 
-### File: `lib/net/src/fast_sync.c`
+### File: `app/services/src/node_health_service.c`
 
-**Bug:** `fast_sync_verify_pow()` (line ~392) calls `LOG_FAIL()` on every failed nonce attempt. The solve loop in `fast_sync_solve_pow()` tries up to 2^20 nonces, producing ~1M stderr lines. This masks the real test failure in `make test`.
-
-**Fix:** The verify function should NOT log on normal verification failure — it's called in a tight loop. Remove or downgrade the LOG_FAIL to a simple `return false`:
-
+Add a function to read RSS from `/proc/self/status`:
 ```c
-// In fast_sync_verify_pow():
-// BEFORE:
-LOG_FAIL("sync", "verify_pow: leading zero check failed at byte %d", i);
-
-// AFTER: just return false — this is expected during solve loop
-return false;
+static int64_t get_rss_kb(void) {
+    FILE *f = fopen("/proc/self/status", "r");
+    if (!f) return -1;
+    char line[256];
+    while (fgets(line, sizeof(line), f)) {
+        if (strncmp(line, "VmRSS:", 6) == 0) {
+            int64_t kb = 0;
+            sscanf(line + 6, " %lld", (long long *)&kb);
+            fclose(f);
+            return kb;
+        }
+    }
+    fclose(f);
+    return -1;
+}
 ```
 
-Keep LOG_FAIL only for truly unexpected errors (NULL pointer, etc.), not for the normal "this nonce didn't work" path.
+Add to the health check output:
+- `memory_rss_mb` field (RSS in MB)
+- If RSS > 4096 MB, set `degraded_reason = "high_memory_usage"`
 
-**After this fix:** Re-run `make test` and identify which test suite is actually contributing the 1 failure.
-
----
-
-## Task 2 (MEDIUM): Wire before_save Hooks on 3 Missing Models
-
-These models go through `AR_BEGIN_SAVE` lifecycle but have no `before_save` guard registered:
-
-### 2a. `app/models/src/mempool_entry.c`
-Add `mempool_before_save`:
-- Validate txid is 64 hex chars (not blank)
-- Validate fee >= 0
-- Register with `ar_register_before_save`
-
-### 2b. `app/models/src/tx_index.c`
-Add `tx_index_before_save`:
-- Validate txid non-null
-- Validate height >= 0
-- Validate file_number >= 0
-- Register with `ar_register_before_save`
-
-### 2c. Look at `wallet_tx` save path
-Check if `wallet_tx` actually needs a before_save hook or if its validation is handled by `db_wallet_tx_validate`. If validate covers it, document why no hook is needed. If not, add one.
-
-Follow the pattern in `utxo.c` — look at how `utxo_before_save` is structured and registered.
+### Also update MCP ops_controller.c
+In `zcl_status` output, add `memory_rss_mb` and `uptime_secs`.
 
 ---
 
-## Task 3 (LOW): Migrate fprintf(stderr,...) to LOG_ERR in Services
+## Task 2 (HIGH): Structured Boot Timing
 
-Find service files that use bare `fprintf(stderr,...)` for error reporting instead of structured `LOG_ERR`. Convert them.
+### File: `config/src/boot.c`
 
-### Priority targets (from audit):
-1. `app/services/src/bg_validation_service.c:504` — `!ndb->open` check with no log
-2. `lib/validation/src/connect_block.c` — `realloc` failure path (Agent2 may get here first with allocator fix — coordinate)
-3. `app/services/src/chain_state_repository.c:47,100` — SQLite query helpers
-4. `app/services/src/snapshot_sync_service.c:880` — preceded by fprintf
-5. `app/services/src/utxo_recovery_service.c:876` — preceded by fprintf
+Add timing around each boot phase using `clock_gettime(CLOCK_MONOTONIC)`:
 
-### Pattern:
 ```c
-// BEFORE:
-fprintf(stderr, "UTXO import: failed to restore normal mode\n");
-return -1;
-
-// AFTER:
-LOG_ERR("sync", "UTXO import: failed to restore normal mode");
-return -1;
+struct timespec t0;
+clock_gettime(CLOCK_MONOTONIC, &t0);
+// ... phase code ...
+struct timespec t1;
+clock_gettime(CLOCK_MONOTONIC, &t1);
+int64_t ms = (t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000;
+printf("[boot] %-30s %lldms\n", "phase_name", (long long)ms);
 ```
 
-Make sure `#include "util/log_macros.h"` is present in each file.
+Phases to time:
+1. SQLite open + schema migration
+2. Block index load from cache/LDB
+3. UTXO set load/import
+4. Sapling tree load/rebuild
+5. Wallet load
+6. P2P network start
+7. Total boot time
+
+Print a summary line at end: `[boot] total: Xms`
 
 ---
 
-## Task 4: Find the Real Test Failure
+## Task 3 (MEDIUM): Investigate bg_hash_verify SIGSEGV
 
-After Task 1 removes the LOG_FAIL spam, re-run `make test`. The output should now be clean enough to see which of the 95 test suites is returning 1. Find it and fix it (or report back what it is).
+### File: `app/services/src/bg_hash_verification_service.c`
 
-Look at `lib/test/src/test.c` — it sums return values from all `test_*()` calls. One of them is returning 1.
+This feature is DISABLED because it crashes at h=20000 when P2P is running. The audit found that bg_hash_verify itself uses `pread()` (thread-safe) — so the crash is NOT from the file handle race.
+
+Investigate:
+1. Read the bg_hash_verify thread function thoroughly
+2. What data structures does it access? Does it read `block_index` entries that could be modified by P2P?
+3. Does it access any shared state (block_map, chain tip, etc.) without locks?
+4. Check if `pindex->nFile` or `pindex->nDataPos` could change while bg_hash_verify is reading
+
+Report your findings. If you can identify the race, fix it. If not, document what you found for the next wave.
+
+---
+
+## Task 4 (MEDIUM): Investigate Address Backfill SIGSEGV
+
+### File: `config/src/boot_index.c`
+
+The `backfill_addresses_thread` crashes after ~64K addresses. The code comment says:
+> "The old single-query approach... caused SIGSEGV after ~64K addresses due to SQLite sort buffer / mmap memory pressure."
+
+The current batch-cursor approach uses `PRAGMA mmap_size=67108864` + `PRAGMA temp_store=FILE`.
+
+Investigate:
+1. Read the backfill thread code
+2. Is `mmap_size=67108864` (64MB) too aggressive for a background thread?
+3. Could reducing `mmap_size` or removing it fix the crash?
+4. Is the SQLite connection properly isolated from the main thread's connection?
+
+If the fix is simple (e.g., remove the mmap_size pragma), do it. Otherwise document findings.
 
 ---
 
@@ -103,14 +118,12 @@ After EACH task:
 git pull origin master
 make -j$(nproc) 2>&1 | tail -20
 make test 2>&1 | tail -10
-git add <specific files> && git commit -m "wave 22 task N: description"
+git add <specific files> && git commit -m "wave 22b task N: description"
 git push origin master
 ```
 
 ## Boundary: Files You MUST NOT Touch
-- `lib/storage/src/disk_block_io.c` (Agent2)
 - `app/services/src/block_pruning_service.c` (Agent2)
-- `config/src/boot_index.c` (Agent2)
-- `lib/validation/src/process_block.c` (Agent2)
-- `lib/validation/src/connect_block.c` (Agent2 — allocator fix)
-- `lib/validation/src/update_coins.c` (Agent2)
+- `config/src/boot_index.c` scan/resolve functions (Agent2 — lines 491-733)
+- `lib/storage/src/disk_block_io.c` (Agent2)
+- Address backfill in `boot_index.c` is yours (lines 297-416) — Agent2 owns the scan functions
