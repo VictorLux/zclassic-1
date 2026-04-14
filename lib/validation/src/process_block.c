@@ -1844,6 +1844,12 @@ bool activate_best_chain(struct validation_state *state,
              w && w != current_tip; w = w->pprev)
             total_depth++;
 
+        printf("activate_best_chain: connect path depth=%d "
+               "(from h=%d to tip h=%d)\n",
+               total_depth, pindex_most_work->nHeight,
+               current_tip ? current_tip->nHeight : -1);
+        fflush(stdout);
+
         struct block_index **connect_path = zcl_malloc(
             (size_t)total_depth * sizeof(struct block_index *), "connect_path");
         if (!connect_path)
@@ -1856,6 +1862,13 @@ bool activate_best_chain(struct validation_state *state,
             connect_path[path_len++] = w;
 
         /* Connect in forward order (reverse of path) */
+        if (path_len > 0) {
+            printf("activate_best_chain: first connect h=%d last h=%d "
+                   "path_len=%d\n",
+                   connect_path[path_len - 1]->nHeight,
+                   connect_path[0]->nHeight, path_len);
+            fflush(stdout);
+        }
         for (int i = path_len - 1; i >= 0; i--) {
             /* Check for shutdown request (Ctrl-C during replay) */
             if (g_shutdown_requested) {

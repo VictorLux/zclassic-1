@@ -1,126 +1,143 @@
-# AGENT3 — Wave 20: Fix False At-Tip & Sync Observability
+# AGENT3 — Wave 19: Service Hardening + Operational Depth
 
-**Working directory:** `~/zclassic23-3`
-**Coordinator:** Agent1 (~/zclassic23)
-**Workflow:** `git pull origin master` before starting, `git push origin master` when done with each task.
-**Run `make -j$(nproc) && make test && make lint` before every push.**
+**Worktree:** `~/zclassic23-3`
+**Workflow:** push directly to `master` after `./test_zcl` passes
+**Coordinator:** AGENT1 (main `~/zclassic23`)
+**Peer:** AGENT2 (`~/zclassic23-2`) — sync pipeline fix, different files
 
 ---
 
 ## Context
 
-The node is stuck at height 2,016,354 while the network tip is ~3,078,009 (1M blocks behind). Root cause: the node falsely enters `SYNC_AT_TIP` state because `getblockchaininfo` reports hardcoded `verificationprogress=1.0`, headers count reports block height (not actual best header), and the `headers_caught_up` check compares headers against local blocks instead of peer heights. Once at tip, getheaders requests drop to 120s intervals and the watchdog doesn't monitor `SYNC_AT_TIP` for being behind peers.
+Agent3's infrastructure layers are mature: wallet encryption, RPC timeout, peer bandwidth, tracing, WebSocket events, MCP surface (76 tools). Wave 19 shifts to hardening what exists and closing remaining lint/safety gaps across the codebase.
 
-Agent2 owns the sync services. Agent3 fixes the RPC/observability side and adds test coverage for the false-tip scenario.
+The node is stuck at 2,016,354 (AGENT2 is fixing the sync pipeline). Agent3's work is orthogonal — improve code quality, close defensive coding gaps, and add operational tools.
 
 ---
 
-## Task 1: Fix getblockchaininfo to Report Real Sync State
+## Task 1: Eliminate Raw `sqlite3_step()` in Service Layer
 
-The RPC lies about sync status. Fix it.
+`make lint` reports 18 raw `sqlite3_step()` calls in service code. These should use `AR_STEP_ROW`/`AR_STEP_DONE` wrappers or be marked `// raw-sql-ok` with justification.
 
-### File: `app/controllers/src/blockchain_controller.c`
+### Files to fix:
+- `app/services/src/block_index_loader.c` — 4 violations
+- `app/services/src/utxo_recovery_service.c` — 7 violations
+- `app/services/src/chain_state_repository.c` — 2 violations
+- `app/services/src/node_health_service.c` — 2 violations
+- `app/services/src/snapshot_sync_service.c` — 3 violations
 
-**Fix 1: headers field** (line ~291)
-Currently both `blocks` and `headers` use `active_chain_tip()->nHeight`. The `headers` field must report `pindex_best_header->nHeight`:
+### Rules:
+- Read `DEFENSIVE_CODING.md` for the AR_STEP pattern
+- If the `sqlite3_step` genuinely cannot use the wrapper (e.g., it's inside a low-level helper that IS the wrapper), mark it `// raw-sql-ok` with a one-line reason
+- If it can use the wrapper, switch it
+- After fixing, `make lint` should show ZERO service-layer violations
+
+### Test:
+- `make test` must still pass
+- `make lint` must be cleaner
+
+---
+
+## Task 2: RPC Cookie Rotation Service
+
+The RPC cookie file is generated once at boot and never changes. A long-running node uses the same cookie for weeks. Add automatic rotation.
+
+### Files to create/modify:
+- `lib/rpc/src/cookie_rotation.c` (new) — rotation logic
+- `lib/rpc/include/rpc/cookie_rotation.h` (new) — public API
+- `lib/rpc/src/httpserver.c` — wire rotation into the auth path
+
+### What to implement:
+
 ```c
-// BEFORE (wrong):
-json_push_kv_int(result, "headers", tip ? tip->nHeight : 0);
-
-// AFTER (correct):
-struct block_index *best_hdr = ctx->main_state->pindex_best_header;
-int header_height = best_hdr ? best_hdr->nHeight : (tip ? tip->nHeight : 0);
-json_push_kv_int(result, "headers", header_height);
-```
-
-**Fix 2: verificationprogress** (line ~300)
-Currently hardcoded to `1.0`. Calculate it relative to the max peer starting_height:
-```c
-// BEFORE (wrong):
-json_push_kv_real(result, "verificationprogress", 1.0);
-
-// AFTER (correct):
-int max_peer_h = connman_max_peer_height(ctx->connman);
-int our_h = tip ? tip->nHeight : 0;
-double progress = 1.0;
-if (max_peer_h > 0 && our_h < max_peer_h)
-    progress = (double)our_h / (double)max_peer_h;
-json_push_kv_real(result, "verificationprogress", progress);
-```
-
-You'll need access to `connman` through the controller context. Check how other controllers (e.g. `network_controller.c`) access `connman` and follow the same pattern. If `connman_max_peer_height()` doesn't exist, look for the equivalent — it's used in `sync_watchdog_service.c`.
-
-**Fix 3: Add `best_header_height` field**
-Add a new field so operators can see the real header tip:
-```c
-json_push_kv_int(result, "best_header_height", header_height);
+// cookie_rotation_start(const char *datadir, int interval_s)
+//   - Default interval: 3600 (1 hour), env: ZCL_COOKIE_ROTATE_S
+//   - Background thread regenerates .cookie file atomically (write tmp, rename)
+//   - Old cookie valid for grace_period_s (default 60) after rotation
+//   - Event: EV_RPC_COOKIE_ROTATED
+//
+// cookie_rotation_stop()
+// bool cookie_rotation_check(const char *cookie)
+//   - Returns true if cookie matches current OR grace-period-old cookie
 ```
 
 ### Test:
-- Verify `make test` still passes (the test for getblockchaininfo, if any, may need updating)
-- The fix is mostly about correctness of reported values — no behavioral change
+- Test rotation creates new cookie
+- Test old cookie still valid during grace period
+- Test old cookie rejected after grace period
+- Test atomic file replacement
 
 ---
 
-## Task 2: Fix MCP zcl_status to Expose Header vs Block Gap
+## Task 3: Sapling Key Material Scrubbing
 
-### File: `tools/mcp/controllers/ops_controller.c` (or wherever `zcl_status` lives)
+After wallet encryption wraps keys, the plaintext copies in memory should be scrubbed.
 
-The MCP status endpoint should clearly show when headers are behind peers:
-1. Find where `zcl_status` is implemented
-2. Add fields:
-   - `header_height`: from `pindex_best_header->nHeight`
-   - `max_peer_height`: highest `startingheight` among connected peers
-   - `header_gap`: `max_peer_height - header_height` (0 when caught up)
-   - `sync_behind`: true if header_gap > 144
+### Files to modify:
+- `lib/wallet/src/wallet_sqlite.c` — after `wallet_encrypt_blob()`, scrub the plaintext buffer
+- `lib/wallet/src/keystore.c` — scrub key material after use in signing operations
+- `lib/support/src/cleanse.c` — verify `memory_cleanse()` uses volatile writes
 
-This makes it trivial for AI agents or monitoring to detect the stall.
+### What to implement:
 
----
+```c
+// After every wallet_encrypt_blob() call:
+//   memory_cleanse(plaintext_buf, plaintext_len);
+//
+// After every signing operation that materializes a private key:
+//   memory_cleanse(&privkey, sizeof(privkey));
+//
+// Audit: grep for stack-allocated uint8_t[32] near private key operations
+// and add scrubbing at function exit.
+```
 
-## Task 3: Add Tests for False At-Tip Detection
-
-### File: `lib/test/src/test_sync_service.c` (or create if needed)
-
-Test the `syncsvc_evaluate_block_acceptance()` function from `block_sync_service.c`. This is where the false at-tip bug lives.
-
-**Test cases:**
-1. `headers_caught_up should be false when best_header == block_height but peer is 1M ahead`
-   - Call with `new_tip_height=2016354, best_header_height=2016354, node.starting_height=3078009`
-   - Assert `should_set_sync_state` is false (should NOT transition to AT_TIP)
-   - **NOTE: This test will FAIL with current code.** That's expected — it documents the bug. Add a comment: `/* BUG: headers_caught_up only checks local state, not peer height — see wave 20 task for Agent2 */`
-
-2. `headers_caught_up should be true when genuinely at tip`
-   - Call with `new_tip_height=3078000, best_header_height=3078001, node.starting_height=3078009`
-   - Assert `should_set_sync_state` is true and `next_sync_state == SYNC_AT_TIP`
-
-3. `tip_is_recent bypasses headers_caught_up correctly`
-   - Call with recent `new_tip_time` (now - 60), low `best_header_height`
-   - Assert AT_TIP transition happens (the recent-tip path is correct)
-
-**Important:** You can test `syncsvc_evaluate_block_acceptance()` directly since it's a pure function. Read the header file for the signature.
+### Test:
+- Test that memory_cleanse actually zeroes memory (read back after scrub)
+- Verify no compiler optimization eliminates the scrub (volatile)
 
 ---
 
-## Task 4: Add getheaders Diagnostic Logging
+## Task 4: MCP Tool Gap Audit + Backfill
 
-### File: `app/services/src/header_sync_service.c`
+CLAUDE.md documents 85+ RPC methods. Current MCP surface is 76 tools. Audit the gap and backfill the most useful missing tools.
 
-Add logging to make header sync behavior visible:
+### What to do:
+1. List all RPC methods (check `lib/rpc/src/server.c` registration table)
+2. Compare against MCP tool registrations in `tools/mcp/controllers/*.c`
+3. For each gap, either:
+   - Add an MCP wrapper (if the method is useful for AI agents)
+   - Document why it's skipped (e.g., deprecated, dangerous, or covered by `zcl_rpc` passthrough)
 
-1. In `syncsvc_plan_periodic_getheaders()`: when a getheaders is planned, log:
-   ```c
-   printf("[headers] getheaders planned: peer=%d our_h=%d peer_start_h=%d interval=%llds\n",
-          node->id, our_height, node->starting_height, interval);
-   ```
+### Priority backfill targets:
+- `getmempoolentry` — useful for transaction debugging
+- `getblocktemplate` — useful for mining analysis
+- `z_listunspent` — useful for shielded balance details
+- `z_viewtransaction` — useful for transaction analysis
+- Any other methods that agents would commonly need
 
-2. In `syncsvc_getheaders_interval()`: when interval is > 60s, log (once per change):
-   ```c
-   printf("[headers] interval=%llds for peer %d (stale_count=%d)\n",
-          base, node->id, stale);
-   ```
+### Test:
+- MCP tool count should increase
+- `test_mcp_controllers.c` EXPECTED_TOTAL/EXPECTED_OPS must be updated
+- `make docs-mcp` should regenerate cleanly
 
-This helps diagnose WHY headers stop: is the interval too long? Are getheaders not being sent?
+---
+
+## Task 5: Harden Controller Error Paths
+
+Several controllers have bare `return -1` without setting an error body for MCP. Audit and fix.
+
+### What to do:
+1. `grep -rn 'return -1' app/controllers/src/*.c tools/mcp/controllers/*.c` 
+2. For each hit in an MCP-facing handler: ensure an error body is set before returning
+3. For each hit in an RPC handler: ensure the error is logged with context
+
+### Rules from DEFENSIVE_CODING.md:
+- Every MCP handler must set an error body: never `return -1` without explaining why
+- Use `LOG_FAIL()`, `LOG_ERR()`, `LOG_NULL()` from `util/log_macros.h`
+
+### Test:
+- `make lint` should pass
+- `make test` should pass
 
 ---
 
@@ -132,13 +149,25 @@ git pull origin master
 make -j$(nproc) 2>&1 | tail -20
 make test 2>&1 | tail -10
 make lint 2>&1 | tail -10
-git add <specific files> && git commit -m "wave 20 task N: description"
+git add <specific files> && git commit -m "wave 19 task N: description"
 git push origin master
 ```
 
 ## Boundary: Files You MUST NOT Touch
+- `lib/net/src/msg_headers.c` (Agent2)
+- `lib/validation/src/process_block.c` (Agent2)
 - `app/services/src/sync_watchdog_service.c` (Agent2)
-- `app/services/src/block_sync_service.c` (Agent2)
 - `app/services/src/block_index_integrity.c` (Agent2)
-- `lib/net/src/download.c` (Agent2)
-- `lib/net/src/connman.c` (Agent2)
+- `app/services/src/sync_service.c` (Agent2)
+- `app/services/src/block_sync_service.c` (Agent2)
+- `app/controllers/src/sync_controller.c` (Agent2)
+- `config/src/boot.c` (Agent2)
+- `config/src/boot_index.c` (Agent2)
+
+---
+
+## Current Status
+
+*(Update each session. Keep it short.)*
+
+- **2026-04-14 wave 19 assigned** — 5 tasks: sqlite3_step cleanup, cookie rotation, key scrubbing, MCP backfill, controller error paths.

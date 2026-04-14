@@ -706,16 +706,60 @@ static bool rpc_rescanblockfiles(const struct json_value *params, bool help,
                 sb2->nHeight > tip_h)
                 above_tip++;
         }
+        json_push_kv_int(result, "tip_height", (int64_t)tip_h);
+
+        /* Diagnostic: check next block after tip */
+        {
+            size_t di = 0;
+            struct block_index *db;
+            struct block_index *next_any = NULL;
+            while (block_map_next(&ctx->main_state->map_block_index,
+                                   &di, NULL, &db)) {
+                if (db && db->nHeight == tip_h + 1) {
+                    next_any = db;
+                    if (db->nStatus & BLOCK_HAVE_DATA) break;
+                }
+            }
+            if (next_any) {
+                json_push_kv_int(result, "next_nChainTx",
+                                  (int64_t)next_any->nChainTx);
+                json_push_kv_int(result, "next_have_data",
+                                  (next_any->nStatus & BLOCK_HAVE_DATA) ? 1 : 0);
+                json_push_kv_int(result, "next_has_pprev",
+                                  next_any->pprev ? 1 : 0);
+                json_push_kv_int(result, "next_status",
+                                  (int64_t)next_any->nStatus);
+                /* Compare chain work: does next block beat the tip? */
+                struct block_index *tip_bi = active_chain_tip(
+                    &ctx->main_state->chain_active);
+                if (tip_bi) {
+                    int cmp = arith_uint256_compare(&next_any->nChainWork,
+                                                     &tip_bi->nChainWork);
+                    json_push_kv_int(result, "next_vs_tip_chainwork", cmp);
+                    json_push_kv_int(result, "tip_nChainWork_zero",
+                        arith_uint256_is_zero(&tip_bi->nChainWork) ? 1 : 0);
+                    json_push_kv_int(result, "next_nChainWork_zero",
+                        arith_uint256_is_zero(&next_any->nChainWork) ? 1 : 0);
+                    /* Check block_index_is_valid for tip+1 */
+                    json_push_kv_int(result, "next_valid_tree",
+                        block_index_is_valid(next_any, BLOCK_VALID_TREE) ? 1 : 0);
+                }
+            }
+        }
+
         if (above_tip > 0) {
-            printf("RPC rescanblockfiles: %zu blocks with data above tip "
-                   "h=%d — triggering chain activation\n",
-                   above_tip, tip_h);
-            fflush(stdout);
             struct activation_exec_outcome ao;
             activation_request_connect(boot_activation_controller(),
                 ACTIVATION_SRC_BLOCK_FILE_SCAN, NULL, &ao);
             json_push_kv_int(result, "activated_above_tip",
                               (int64_t)above_tip);
+            json_push_kv_int(result, "activation_result",
+                              (int64_t)ao.result);
+            json_push_kv_str(result, "activation_reason", ao.reason);
+
+            /* Check new tip after activation */
+            int new_tip = active_chain_height(&ctx->main_state->chain_active);
+            json_push_kv_int(result, "new_tip", (int64_t)new_tip);
         }
     }
 
