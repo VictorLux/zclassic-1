@@ -9,6 +9,7 @@
 #include "net/download.h"
 #include "util/safe_alloc.h"
 #include <string.h>
+#include <time.h>
 
 static int test_sync_service_begin_sync(void)
 {
@@ -1127,6 +1128,88 @@ static int test_sync_service_recovery_header_anchor(void)
     return failures;
 }
 
+static int test_sync_service_false_at_tip_peer_far_ahead(void)
+{
+    int failures = 0;
+
+    TEST("BUG: headers_caught_up should be false when peer is 1M blocks ahead") {
+        /* Scenario: node at 2,016,354, peer starting_height 3,078,009.
+         * best_header == block_height, so headers_caught_up is true
+         * even though the peer is ~1M blocks ahead.
+         * BUG: headers_caught_up only checks local state, not peer height
+         * — see wave 20 task for Agent2 */
+        struct p2p_node node;
+        struct sync_block_acceptance result;
+
+        memset(&node, 0, sizeof(node));
+        memset(&result, 0, sizeof(result));
+        node.id = 20;
+        node.state = PEER_SYNCING_BLOCKS;
+        node.starting_height = 3078009;
+
+        syncsvc_note_valid_block(&result, &node, SYNC_BLOCKS_DOWNLOAD,
+                                 2016354, 2016354, 0);
+        /* Node hasn't reached peer starting_height, so reached_peer_tip
+         * should be false and no AT_TIP transition should happen. */
+        ASSERT(!result.reached_peer_tip);
+        ASSERT(!result.should_set_sync_state);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+static int test_sync_service_genuinely_at_tip(void)
+{
+    int failures = 0;
+
+    TEST("sync_service transitions to at-tip when genuinely caught up with peer") {
+        struct p2p_node node;
+        struct sync_block_acceptance result;
+
+        memset(&node, 0, sizeof(node));
+        memset(&result, 0, sizeof(result));
+        node.id = 21;
+        node.state = PEER_SYNCING_BLOCKS;
+        node.starting_height = 3078009;
+
+        syncsvc_note_valid_block(&result, &node, SYNC_BLOCKS_DOWNLOAD,
+                                 3078009, 3078010, 0);
+        ASSERT(result.reached_peer_tip);
+        ASSERT(result.should_set_sync_state);
+        ASSERT(result.next_sync_state == SYNC_AT_TIP);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+static int test_sync_service_recent_tip_bypasses_headers(void)
+{
+    int failures = 0;
+
+    TEST("sync_service transitions to at-tip when tip time is recent") {
+        struct p2p_node node;
+        struct sync_block_acceptance result;
+
+        memset(&node, 0, sizeof(node));
+        memset(&result, 0, sizeof(result));
+        node.id = 22;
+        node.state = PEER_SYNCING_BLOCKS;
+        node.starting_height = 3078009;
+
+        /* Tip time is 60 seconds ago — recent enough to bypass header check */
+        uint32_t recent_time = (uint32_t)(time(NULL) - 60);
+        syncsvc_note_valid_block(&result, &node, SYNC_BLOCKS_DOWNLOAD,
+                                 3078000, 1000, recent_time);
+        ASSERT(result.should_set_sync_state);
+        ASSERT(result.next_sync_state == SYNC_AT_TIP);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
 int test_sync_service(void)
 {
     int failures = 0;
@@ -1163,6 +1246,9 @@ int test_sync_service(void)
     failures += test_sync_service_applies_alt_recovery();
     failures += test_sync_service_applies_reset_recovery();
     failures += test_sync_service_recovery_header_anchor();
+    failures += test_sync_service_false_at_tip_peer_far_ahead();
+    failures += test_sync_service_genuinely_at_tip();
+    failures += test_sync_service_recent_tip_bypasses_headers();
     sync_set_state(SYNC_IDLE, "done");
     return failures;
 }
