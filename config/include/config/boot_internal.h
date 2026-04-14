@@ -60,6 +60,11 @@ void *backfill_addresses_thread(void *arg);
 int scan_block_files_mark_data(struct main_state *ms, const char *datadir,
                                 const struct chain_params *params);
 
+/* Propagate nChainTx and nChainWork for all blocks in the index.
+ * Call after scan_block_files_mark_data or any operation that sets
+ * BLOCK_HAVE_DATA. Returns count of blocks updated. */
+int propagate_nchaintx(struct main_state *ms);
+
 /* ── boot_services.c ────────────────────────────────────────── */
 
 struct boot_svc_ctx {

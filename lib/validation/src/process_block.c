@@ -334,6 +334,10 @@ static struct block_index *add_to_block_index(struct main_state *ms,
 static struct block_index *find_most_work_chain(struct main_state *ms)
 {
     struct block_index *best = active_chain_tip(&ms->chain_active);
+    int skipped_no_chaintx = 0;
+    int skipped_failed = 0;
+    int skipped_invalid = 0;
+    int highest_have_data_no_chaintx = -1;
 
     size_t iter = 0;
     struct block_index *pindex;
@@ -342,12 +346,16 @@ static struct block_index *find_most_work_chain(struct main_state *ms)
             continue;
 
         /* Skip failed blocks and their children */
-        if (pindex->nStatus & BLOCK_FAILED_MASK)
+        if (pindex->nStatus & BLOCK_FAILED_MASK) {
+            skipped_failed++;
             continue;
+        }
 
         /* Must have at least header validation */
-        if (!block_index_is_valid(pindex, BLOCK_VALID_TREE))
+        if (!block_index_is_valid(pindex, BLOCK_VALID_TREE)) {
+            skipped_invalid++;
             continue;
+        }
 
         /* Only consider chains where every block from genesis has data.
          * nChainTx > 0 means the cumulative tx count is set, which only
@@ -355,8 +363,13 @@ static struct block_index *find_most_work_chain(struct main_state *ms)
          * have data. Orphan blocks in the block index have nChainTx == 0
          * and must not be selected as chain tip. This matches Bitcoin
          * Core's chain_has_all_data / CBlockIndex::HaveTxsDownloaded(). */
-        if (pindex->nChainTx == 0)
+        if (pindex->nChainTx == 0) {
+            skipped_no_chaintx++;
+            if ((pindex->nStatus & BLOCK_HAVE_DATA) &&
+                pindex->nHeight > highest_have_data_no_chaintx)
+                highest_have_data_no_chaintx = pindex->nHeight;
             continue;
+        }
 
         if (!best || arith_uint256_compare(&pindex->nChainWork,
                                             &best->nChainWork) > 0) {
@@ -374,6 +387,15 @@ static struct block_index *find_most_work_chain(struct main_state *ms)
             if (chain_ok)
                 best = pindex;
         }
+    }
+
+    /* Diagnostic: if blocks with data are being skipped due to nChainTx,
+     * log it so we can diagnose chain activation failures. */
+    if (highest_have_data_no_chaintx > (best ? best->nHeight : -1)) {
+        printf("find_most_work_chain: WARNING: %d blocks skipped (nChainTx==0), "
+               "highest HAVE_DATA without nChainTx: h=%d (tip=%d)\n",
+               skipped_no_chaintx, highest_have_data_no_chaintx,
+               best ? best->nHeight : -1);
     }
 
     return best;

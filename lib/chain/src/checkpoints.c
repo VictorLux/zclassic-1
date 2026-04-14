@@ -68,7 +68,9 @@ bool checkpoints_hash_at_height(const struct checkpoint_data *data,
             return true;
         }
     }
-    LOG_FAIL("checkpoints", "hash_at_height: no checkpoint at height %d", height);
+    /* No checkpoint at this height — this is normal for 99.99% of heights.
+     * Only checkpoint violations (hash mismatch) are worth logging. */
+    return false;
 }
 
 int checkpoints_last_height(const struct checkpoint_data *data)

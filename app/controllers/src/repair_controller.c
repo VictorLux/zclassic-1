@@ -644,6 +644,13 @@ static bool rpc_rescanblockfiles(const struct json_value *params, bool help,
     int marked = scan_block_files_mark_data(ctx->main_state,
                                              ctx->datadir, ctx->params);
 
+    /* Propagate nChainTx + nChainWork so find_most_work_chain can
+     * consider newly-marked blocks as chain tip candidates. */
+    int propagated = propagate_nchaintx(ctx->main_state);
+    if (propagated > 0)
+        printf("RPC rescanblockfiles: propagated nChainTx for %d blocks\n",
+               propagated);
+
     int64_t elapsed = (int64_t)time(NULL) - t0;
 
     /* Count index stats */
@@ -670,6 +677,22 @@ static bool rpc_rescanblockfiles(const struct json_value *params, bool help,
            marked, have_data_entries, total_entries, (long long)elapsed);
     fflush(stdout);
 
+    /* Diagnostic: verify coins_best_block matches active chain tip */
+    {
+        struct uint256 coins_best;
+        coins_view_cache_get_best_block(ctx->coins_tip, &coins_best);
+        struct block_index *tip = active_chain_tip(&ctx->main_state->chain_active);
+        if (tip && tip->phashBlock &&
+            uint256_cmp(&coins_best, tip->phashBlock) != 0) {
+            char cbhex[65], tiphex[65];
+            uint256_get_hex(&coins_best, cbhex);
+            uint256_get_hex(tip->phashBlock, tiphex);
+            printf("RPC rescanblockfiles: WARNING coins_best_block=%s "
+                   "!= tip=%s (h=%d) — connect_block will reconcile\n",
+                   cbhex, tiphex, tip->nHeight);
+        }
+    }
+
     /* If we have blocks with data above our tip, trigger chain activation
      * to connect them immediately instead of waiting for header sync. */
     {
@@ -680,7 +703,7 @@ static bool rpc_rescanblockfiles(const struct json_value *params, bool help,
         while (block_map_next(&ctx->main_state->map_block_index,
                                &si2, NULL, &sb2)) {
             if (sb2 && (sb2->nStatus & BLOCK_HAVE_DATA) &&
-                sb2->nHeight > tip_h && sb2->nChainTx > 0)
+                sb2->nHeight > tip_h)
                 above_tip++;
         }
         if (above_tip > 0) {

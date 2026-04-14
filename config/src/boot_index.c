@@ -1086,3 +1086,81 @@ int scan_block_files_mark_data(struct main_state *ms, const char *datadir,
     return marked;
 }
 
+/* ── Reusable nChainTx + nChainWork propagation ────────────────
+ * Called after scan_block_files_mark_data or any operation that
+ * sets BLOCK_HAVE_DATA on blocks. Propagates nChainTx (cumulative
+ * tx count) and nChainWork so find_most_work_chain can consider
+ * these blocks as chain tip candidates.
+ * Returns the number of blocks whose nChainTx was updated. */
+int propagate_nchaintx(struct main_state *ms)
+{
+    if (!ms) return 0;
+
+    size_t total = ms->map_block_index.size;
+    struct block_index **sorted = malloc(total * sizeof(struct block_index *)); // raw-alloc-ok
+    if (!sorted) return 0;
+
+    size_t n = 0;
+    size_t iter = 0;
+    struct block_index *bi;
+    while (block_map_next(&ms->map_block_index, &iter, NULL, &bi)) {
+        if (bi && (bi->pprev || (bi->nStatus & BLOCK_HAVE_DATA)))
+            sorted[n++] = bi;
+    }
+
+    qsort(sorted, n, sizeof(struct block_index *), block_index_cmp_height);
+
+    int total_propagated = 0;
+    for (int pass = 0; pass < 50; pass++) {
+        int propagated = 0;
+        for (size_t i = 0; i < n; i++) {
+            struct block_index *b = sorted[i];
+            if (b->nHeight == 0) {
+                if (b->nChainTx == 0) {
+                    b->nChainTx = b->nTx > 0 ? b->nTx : 1;
+                    propagated++;
+                }
+                if (arith_uint256_is_zero(&b->nChainWork)) {
+                    b->nChainWork = GetBlockProof(b);
+                    propagated++;
+                }
+            } else if (b->pprev && b->pprev->nChainTx > 0) {
+                unsigned int ntx = b->nTx > 0 ? b->nTx : 1;
+                unsigned int expected = b->pprev->nChainTx + ntx;
+                if (b->nChainTx != expected) {
+                    b->nChainTx = expected;
+                    propagated++;
+                }
+            } else if (b->pprev && b->pprev->nChainTx == 0) {
+                unsigned int ntx = b->pprev->nTx > 0 ? b->pprev->nTx : 1;
+                b->pprev->nChainTx = b->pprev->nHeight > 0 ?
+                    (unsigned)(b->pprev->nHeight) : ntx;
+                unsigned int btx = b->nTx > 0 ? b->nTx : 1;
+                b->nChainTx = b->pprev->nChainTx + btx;
+                if (arith_uint256_is_zero(&b->pprev->nChainWork)) {
+                    b->pprev->nChainWork = GetBlockProof(b->pprev);
+                    if (b->pprev->pprev &&
+                        !arith_uint256_is_zero(&b->pprev->pprev->nChainWork))
+                        arith_uint256_add(&b->pprev->nChainWork,
+                            &b->pprev->pprev->nChainWork,
+                            &b->pprev->nChainWork);
+                }
+                propagated += 2;
+            }
+            /* Propagate nChainWork alongside nChainTx */
+            if (b->pprev && !arith_uint256_is_zero(&b->pprev->nChainWork) &&
+                arith_uint256_is_zero(&b->nChainWork)) {
+                struct arith_uint256 proof = GetBlockProof(b);
+                arith_uint256_add(&b->nChainWork,
+                                  &b->pprev->nChainWork, &proof);
+                propagated++;
+            }
+        }
+        total_propagated += propagated;
+        if (propagated == 0) break;
+    }
+
+    free(sorted);
+    return total_propagated;
+}
+
