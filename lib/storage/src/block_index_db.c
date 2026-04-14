@@ -277,7 +277,7 @@ bool block_tree_db_load_block_index_guts(struct block_tree_db *btdb,
         if (dbi.nFile == 0 && dbi.nDataPos > 0 && dbi.nHeight > 0)
             pindex->nDataPos += 1703;
         pindex->nUndoPos = dbi.nUndoPos;
-        pindex->hashSproutAnchor = dbi.hashSproutAnchor;
+        /* hashSproutAnchor not stored in block_index (Sprout deprecated) */
         pindex->nVersion = dbi.nVersion;
         pindex->hashMerkleRoot = dbi.hashMerkleRoot;
         pindex->hashFinalSaplingRoot = dbi.hashFinalSaplingRoot;

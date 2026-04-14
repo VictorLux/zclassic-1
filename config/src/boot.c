@@ -1173,6 +1173,21 @@ bool app_init(struct app_context *ctx)
         }
     }
 
+    /* Log block index memory usage */
+    {
+        size_t entry_count = g_state.map_block_index.size;
+        size_t entry_bytes = entry_count * sizeof(struct block_index);
+        size_t map_bytes = g_state.map_block_index.capacity *
+                           sizeof(struct block_map_entry);
+        size_t total_bytes = entry_bytes + map_bytes;
+        printf("[boot] block_index: %zu entries, %zu bytes/entry, "
+               "index=%zuMB map=%zuMB total=%zuMB\n",
+               entry_count, sizeof(struct block_index),
+               entry_bytes / (1024 * 1024),
+               map_bytes / (1024 * 1024),
+               total_bytes / (1024 * 1024));
+    }
+
     /* Block index integrity — verify sidecar SHA3 after all loads.
      * Refuse to boot on mismatch unless ZCL_ALLOW_CORRUPT_INDEX=1. */
     {

@@ -54,39 +54,45 @@ static inline void disk_block_pos_init(struct disk_block_pos *p)
 #define OPTIONAL_NONE (-1)
 
 struct block_index {
+    /* --- 8-byte aligned pointers first --- */
     const struct uint256 *phashBlock;
     struct block_index *pprev;
     struct block_index *pskip;
+
+    /* --- 32-byte fields --- */
+    struct arith_uint256 nChainWork;
+    struct uint256 hashMerkleRoot;
+    struct uint256 hashFinalSaplingRoot;
+    struct uint256 nNonce;
+
+    /* --- 8-byte fields --- */
+    int64_t nCachedBranchId;
+    int64_t nSproutValue;
+    int64_t nChainSproutValue;
+    int64_t nSaplingValue;
+    int64_t nChainSaplingValue;
+    uint64_t nTimeReceived;
+    unsigned char *nSolution;      /* heap-allocated, NULL if not loaded */
+    size_t nSolutionSize;
+
+    /* --- 4-byte fields --- */
     int nHeight;
     int nFile;
     unsigned int nDataPos;
     unsigned int nUndoPos;
-    struct arith_uint256 nChainWork;
     unsigned int nTx;
     unsigned int nChainTx;
     unsigned int nStatus;
-    int64_t nCachedBranchId;
-    struct uint256 hashSproutAnchor;
-    struct uint256 hashFinalSproutRoot;
-    int64_t nSproutValue;
-    bool has_sprout_value;
-    int64_t nChainSproutValue;
-    bool has_chain_sprout_value;
-    int64_t nSaplingValue;
-    int64_t nChainSaplingValue;
-    bool has_chain_sapling_value;
-
     int32_t nVersion;
-    struct uint256 hashMerkleRoot;
-    struct uint256 hashFinalSaplingRoot;
     uint32_t nTime;
     uint32_t nBits;
-    struct uint256 nNonce;
-    unsigned char *nSolution;      /* heap-allocated, NULL if not loaded */
-    size_t nSolutionSize;
-
     uint32_t nSequenceId;
-    uint64_t nTimeReceived;
+
+    /* --- 1-byte fields (packed together to avoid padding) --- */
+    bool has_sprout_value;
+    bool has_chain_sprout_value;
+    bool has_chain_sapling_value;
+    /* 5 bytes padding to 8-byte boundary — struct ends here */
 };
 
 static inline void block_index_init(struct block_index *bi)

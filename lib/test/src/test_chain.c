@@ -1748,5 +1748,22 @@ int test_chain(void)
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
+    printf("block_index sizeof and memory audit... ");
+    {
+        size_t sz = sizeof(struct block_index);
+        printf("(%zu bytes) ", sz);
+        /* Struct should be <=296 bytes after removing Sprout anchor/root
+         * and reordering fields to eliminate padding. If someone adds a
+         * large field without realizing the memory cost, this will catch
+         * it: 3M entries * 296 = 888MB which is acceptable. */
+        bool ok = (sz <= 296);
+        /* Verify nSolution pointer is NULL after init */
+        struct block_index bi;
+        block_index_init(&bi);
+        ok = ok && (bi.nSolution == NULL);
+        ok = ok && (bi.nSolutionSize == 0);
+        if (ok) printf("OK\n"); else { printf("FAIL (sz=%zu)\n", sz); failures++; }
+    }
+
     return failures;
 }
