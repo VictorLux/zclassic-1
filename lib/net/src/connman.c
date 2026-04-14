@@ -1139,6 +1139,20 @@ size_t connman_get_node_count(const struct connman *cm)
     return cm->manager.num_nodes;
 }
 
+int connman_max_peer_height(struct connman *cm)
+{
+    if (!cm) return -1;
+    int max_height = -1;
+    zcl_mutex_lock(&cm->manager.cs_nodes);
+    for (size_t i = 0; i < cm->manager.num_nodes; i++) {
+        const struct p2p_node *node = cm->manager.nodes[i];
+        if (node && node->starting_height > max_height)
+            max_height = node->starting_height;
+    }
+    zcl_mutex_unlock(&cm->manager.cs_nodes);
+    return max_height;
+}
+
 struct peer_bandwidth *connman_peer_bandwidth(void)
 {
     return g_peer_bw_active ? &g_peer_bw : NULL;

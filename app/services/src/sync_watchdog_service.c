@@ -109,6 +109,7 @@ const char *watchdog_recovery_type_name(enum watchdog_recovery_type type)
     case WATCHDOG_HEADER_STALL:     return "HEADER_STALL";
     case WATCHDOG_BLOCK_STALL:      return "BLOCK_STALL";
     case WATCHDOG_STATE_STUCK:      return "STATE_STUCK";
+    case WATCHDOG_HEADER_LAG:       return "HEADER_LAG";
     case WATCHDOG_REPEATED_RESTART: return "REPEATED_RESTART";
     }
     return "UNKNOWN";
@@ -247,6 +248,36 @@ enum watchdog_recovery_type sync_watchdog_check(
         g_watchdog.last_header_height = -1;
         g_watchdog.header_stall_consecutive = 0;
         g_watchdog.header_stall_escalated = false;
+    }
+
+    /* a2. HEADER_LAG: in blocks_download but headers are far behind peers */
+    if (state == SYNC_BLOCKS_DOWNLOAD && duration > 60) {
+        int current_header_height = -1;
+        if (ms && ms->pindex_best_header)
+            current_header_height = ms->pindex_best_header->nHeight;
+
+        int max_peer_height = connman_max_peer_height(cm);
+
+        if (current_header_height >= 0 && max_peer_height >= 0 &&
+            current_header_height < (max_peer_height - 500)) {
+            printf("[watchdog] HEADER_LAG: headers at %d, peers at %d "
+                   "(gap %d), transitioning to SYNC_HEADERS_DOWNLOAD\n",
+                   current_header_height, max_peer_height,
+                   max_peer_height - current_header_height);
+            event_emitf(EV_SYNC_STATE_CHANGE, 0,
+                        "watchdog HEADER_LAG: headers=%d peers=%d gap=%d",
+                        current_header_height, max_peer_height,
+                        max_peer_height - current_header_height);
+
+            if (!sync_set_state(SYNC_HEADERS_DOWNLOAD,
+                                "watchdog HEADER_LAG recovery")) {
+                sync_set_state(SYNC_IDLE, "watchdog HEADER_LAG via idle");
+                sync_set_state(SYNC_HEADERS_DOWNLOAD,
+                               "watchdog HEADER_LAG recovery");
+            }
+            record_recovery(now, WATCHDOG_HEADER_LAG);
+            return WATCHDOG_HEADER_LAG;
+        }
     }
 
     /* b. BLOCK_STALL: blocks_download >300s with no chain height progress */

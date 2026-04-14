@@ -335,6 +335,80 @@ static int test_watchdog_escalation(void)
     return failures;
 }
 
+/* ── Test: header lag detection ─────────────────────────── */
+
+static int test_header_lag_detection(void)
+{
+    int failures = 0;
+
+    TEST("watchdog detects header lag during block download") {
+        reset_test_state();
+
+        sync_set_state(SYNC_HEADERS_DOWNLOAD, "setup");
+        sync_set_state(SYNC_BLOCKS_DOWNLOAD, "test");
+
+        /* Backdate state entry >60s */
+        atomic_store(&g_sync_state_entered_time,
+                     (int64_t)time(NULL) - 90);
+
+        /* Headers at 2000, but set up a fake peer at 3000 */
+        struct block_index fake_header = {0};
+        fake_header.nHeight = 2000;
+        g_test_ms.pindex_best_header = &fake_header;
+
+        /* Add a fake peer with starting_height 3000 */
+        struct p2p_node fake_peer = {0};
+        fake_peer.starting_height = 3000;
+        struct p2p_node *peer_ptrs[1] = { &fake_peer };
+        g_test_cm.manager.nodes = peer_ptrs;
+        g_test_cm.manager.num_nodes = 1;
+
+        enum watchdog_recovery_type r = sync_watchdog_check(
+            &g_test_cm, &g_test_dm, &g_test_ms);
+        ASSERT(r == WATCHDOG_HEADER_LAG);
+
+        g_test_cm.manager.nodes = NULL;
+        g_test_cm.manager.num_nodes = 0;
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+static int test_header_lag_small_gap(void)
+{
+    int failures = 0;
+
+    TEST("watchdog does NOT detect header lag when gap < 500") {
+        reset_test_state();
+
+        sync_set_state(SYNC_HEADERS_DOWNLOAD, "setup");
+        sync_set_state(SYNC_BLOCKS_DOWNLOAD, "test");
+        atomic_store(&g_sync_state_entered_time,
+                     (int64_t)time(NULL) - 90);
+
+        struct block_index fake_header = {0};
+        fake_header.nHeight = 2800;
+        g_test_ms.pindex_best_header = &fake_header;
+
+        struct p2p_node fake_peer = {0};
+        fake_peer.starting_height = 3000;
+        struct p2p_node *peer_ptrs[1] = { &fake_peer };
+        g_test_cm.manager.nodes = peer_ptrs;
+        g_test_cm.manager.num_nodes = 1;
+
+        enum watchdog_recovery_type r = sync_watchdog_check(
+            &g_test_cm, &g_test_dm, &g_test_ms);
+        ASSERT(r == WATCHDOG_NONE);
+
+        g_test_cm.manager.nodes = NULL;
+        g_test_cm.manager.num_nodes = 0;
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
 /* ── Test: recovery type names ──────────────────────────── */
 
 static int test_recovery_type_names(void)
@@ -345,6 +419,8 @@ static int test_recovery_type_names(void)
         ASSERT(strcmp(watchdog_recovery_type_name(WATCHDOG_NONE), "NONE") == 0);
         ASSERT(strcmp(watchdog_recovery_type_name(WATCHDOG_HEADER_STALL),
                       "HEADER_STALL") == 0);
+        ASSERT(strcmp(watchdog_recovery_type_name(WATCHDOG_HEADER_LAG),
+                      "HEADER_LAG") == 0);
         ASSERT(strcmp(watchdog_recovery_type_name(WATCHDOG_BLOCK_STALL),
                       "BLOCK_STALL") == 0);
         ASSERT(strcmp(watchdog_recovery_type_name(WATCHDOG_STATE_STUCK),
@@ -374,6 +450,8 @@ int test_sync_watchdog(void)
     failures += test_watchdog_checks_run();
     failures += test_watchdog_null_status();
     failures += test_watchdog_escalation();
+    failures += test_header_lag_detection();
+    failures += test_header_lag_small_gap();
     failures += test_recovery_type_names();
     return failures;
 }
