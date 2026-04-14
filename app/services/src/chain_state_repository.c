@@ -42,7 +42,10 @@ const char *csr_result_name(enum csr_result r)
 
 static int64_t csr_sqlite_max_block_height(struct node_db *ndb)
 {
-    if (!ndb || !ndb->open || !ndb->db) return -1;
+    if (!ndb || !ndb->open || !ndb->db) {
+        fprintf(stderr, "[csr] %s: ndb not available (null or closed)\n", __func__);
+        return -1;
+    }
     sqlite3_stmt *st = NULL;
     int64_t result = -1;
     if (sqlite3_prepare_v2(ndb->db,
@@ -64,11 +67,17 @@ static int csr_sqlite_block_height(struct node_db *ndb,
                                     const struct uint256 *hash,
                                     int64_t *out_height)
 {
-    if (!ndb || !ndb->open || !ndb->db || !hash || !out_height) return -1;
+    if (!ndb || !ndb->open || !ndb->db || !hash || !out_height) {
+        fprintf(stderr, "[csr] %s: invalid args (ndb=%p hash=%p out=%p)\n",
+                __func__, (void *)ndb, (void *)hash, (void *)out_height);
+        return -1;
+    }
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(ndb->db,
             "SELECT height FROM blocks WHERE hash=? LIMIT 1",
             -1, &st, NULL) != SQLITE_OK) {
+        fprintf(stderr, "[csr] %s: sqlite3_prepare_v2 failed: %s\n",
+                __func__, sqlite3_errmsg(ndb->db));
         return -1;
     }
     sqlite3_bind_blob(st, 1, hash->data, 32, SQLITE_STATIC);
@@ -86,7 +95,10 @@ static int csr_sqlite_block_height(struct node_db *ndb,
 
 static int64_t csr_sqlite_utxo_count(struct node_db *ndb)
 {
-    if (!ndb || !ndb->open) return -1;
+    if (!ndb || !ndb->open) {
+        fprintf(stderr, "[csr] %s: ndb not available\n", __func__);
+        return -1;
+    }
     return node_db_utxo_count(ndb);
 }
 

@@ -71,9 +71,16 @@ void disk_monitor_config_defaults(struct disk_monitor_config *cfg)
 
 int64_t disk_monitor_free_bytes(const char *path)
 {
-    if (!path || !*path) return -1;
+    if (!path || !*path) {
+        fprintf(stderr, "[disk] %s: path is NULL or empty\n", __func__);
+        return -1;
+    }
     struct statvfs st;
-    if (statvfs(path, &st) != 0) return -1;
+    if (statvfs(path, &st) != 0) {
+        fprintf(stderr, "[disk] %s: statvfs failed for '%s': %s\n",
+                __func__, path, strerror(errno));
+        return -1;
+    }
     /* `f_bavail` is the blocks available to unprivileged users —
      * the right number to compare against a "should I keep
      * writing?" threshold. Multiplied by `f_frsize` which is the

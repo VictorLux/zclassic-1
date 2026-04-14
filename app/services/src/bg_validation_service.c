@@ -499,11 +499,14 @@ out:
 
 static int load_progress(struct node_db *ndb)
 {
-    if (!ndb || !ndb->open)
+    if (!ndb || !ndb->open) {
+        fprintf(stderr, "[bgv] %s: ndb not available\n", __func__);
         return -1;
+    }
     int64_t val = -1;
     if (node_db_state_get_int(ndb, BG_VALID_KEY, &val))
         return (int)val;
+    fprintf(stderr, "[bgv] %s: no saved progress found\n", __func__);
     return -1;
 }
 
