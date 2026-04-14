@@ -26,6 +26,42 @@
 
 DEFINE_MODEL_CALLBACKS(block)
 
+/* before_save: validate height and hash presence */
+static bool block_before_save(void *record, void *ctx)
+{
+    (void)ctx;
+    const struct db_block *b = record;
+    if (b->height < 0) {
+        fprintf(stderr, "[block] before_save REJECTED: negative height %d\n", b->height);
+        return false;
+    }
+    /* Check hash is not all zeros */
+    static const uint8_t zero[32] = {0};
+    if (memcmp(b->hash, zero, 32) == 0) {
+        fprintf(stderr, "[block] before_save REJECTED: null hash\n");
+        return false;
+    }
+    return true;
+}
+
+/* after_save: emit model-specific event */
+static void block_after_save(void *record, void *ctx)
+{
+    (void)ctx;
+    const struct db_block *b = record;
+    event_emitf(EV_BLOCK_SAVED, 0, "height=%d ntx=%d", b->height, b->num_tx);
+}
+
+static void block_init_hooks(void)
+{
+    static bool done = false;
+    if (done) return;
+    struct ar_callbacks *cbs = db_block_callbacks();
+    ar_register_before_save(cbs, block_before_save);
+    ar_register_after_save(cbs, block_after_save);
+    done = true;
+}
+
 /* ── Validation ────────────────────────────────────────────────── */
 
 bool db_block_validate(const struct db_block *b, struct ar_errors *errors)
@@ -70,6 +106,7 @@ bool db_block_save(struct node_db *ndb, const struct db_block *b)
 {
     if (!ndb->open) return false;
 
+    block_init_hooks();
     struct ar_callbacks *cbs = db_block_callbacks();
     AR_BEGIN_SAVE(cbs, "block", b, db_block_validate);
 

@@ -58,6 +58,47 @@ enum script_type utxo_classify_script(const uint8_t *script, size_t len,
 
 DEFINE_MODEL_CALLBACKS(utxo)
 
+/* before_save: validate money range + script coherence */
+static bool utxo_before_save(void *record, void *ctx)
+{
+    (void)ctx;
+    const struct db_utxo *u = record;
+    if (u->value < 0 || u->value > 2100000000000000LL) {
+        fprintf(stderr, "[utxo] before_save REJECTED: value %lld out of money range\n",
+                (long long)u->value);
+        return false;
+    }
+    if (u->height < 0) {
+        fprintf(stderr, "[utxo] before_save REJECTED: negative height %d\n", u->height);
+        return false;
+    }
+    if (u->script_len > 0 && !u->script) {
+        fprintf(stderr, "[utxo] before_save REJECTED: script_len=%zu but script is NULL\n",
+                u->script_len);
+        return false;
+    }
+    return true;
+}
+
+/* after_save: emit model-specific event */
+static void utxo_after_save(void *record, void *ctx)
+{
+    (void)ctx;
+    const struct db_utxo *u = record;
+    event_emitf(EV_UTXO_SAVED, 0, "height=%d value=%lld",
+                u->height, (long long)u->value);
+}
+
+static void utxo_init_hooks(void)
+{
+    static bool done = false;
+    if (done) return;
+    struct ar_callbacks *cbs = db_utxo_callbacks();
+    ar_register_before_save(cbs, utxo_before_save);
+    ar_register_after_save(cbs, utxo_after_save);
+    done = true;
+}
+
 /* ── Validation ────────────────────────────────────────────────── */
 
 bool db_utxo_validate(const struct db_utxo *u, struct ar_errors *errors)
@@ -91,6 +132,7 @@ bool db_utxo_save(struct node_db *ndb, const struct db_utxo *u)
 {
     if (!ndb->open) return false;
 
+    utxo_init_hooks();
     struct ar_callbacks *cbs = db_utxo_callbacks();
     AR_BEGIN_SAVE(cbs, "utxo", u, db_utxo_validate);
 

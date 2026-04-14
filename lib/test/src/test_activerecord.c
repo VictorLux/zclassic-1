@@ -1658,5 +1658,93 @@ int test_activerecord(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    /* ── Production before_save hooks ──────────────────────────── */
+
+    /* UTXO before_save rejects value > MAX_MONEY */
+    {
+        printf("UTXO before_save rejects over MAX_MONEY... ");
+        struct node_db ndb;
+        bool ok = node_db_open(&ndb, ":memory:");
+
+        uint8_t dummy_script[] = {0x76, 0xa9, 0x14,
+            0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+            0x88, 0xac}; /* P2PKH */
+        struct db_utxo u;
+        memset(&u, 0, sizeof(u));
+        memset(u.txid, 0xAA, 32);
+        u.vout = 0;
+        u.value = 2100000000000001LL; /* MAX_MONEY + 1 */
+        u.height = 100;
+        u.script_type = SCRIPT_P2PKH;
+        u.script = dummy_script;
+        u.script_len = sizeof(dummy_script);
+
+        ok = ok && !db_utxo_save(&ndb, &u);
+
+        /* Valid value should succeed */
+        u.value = 100000;
+        ok = ok && db_utxo_save(&ndb, &u);
+
+        node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* UTXO before_save rejects negative height */
+    {
+        printf("UTXO before_save rejects negative height... ");
+        struct node_db ndb;
+        bool ok = node_db_open(&ndb, ":memory:");
+
+        uint8_t dummy_script[] = {0x76, 0xa9, 0x14,
+            0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+            0x88, 0xac};
+        struct db_utxo u;
+        memset(&u, 0, sizeof(u));
+        memset(u.txid, 0xBB, 32);
+        u.vout = 0;
+        u.value = 50000;
+        u.height = -1;
+        u.script_type = SCRIPT_P2PKH;
+        u.script = dummy_script;
+        u.script_len = sizeof(dummy_script);
+
+        ok = ok && !db_utxo_save(&ndb, &u);
+
+        node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* Block before_save rejects null hash */
+    {
+        printf("Block before_save rejects null hash... ");
+        struct node_db ndb;
+        bool ok = node_db_open(&ndb, ":memory:");
+
+        uint8_t sol[] = {0x01};
+        struct db_block blk;
+        memset(&blk, 0, sizeof(blk));
+        /* hash is all zeros (null) */
+        memset(blk.prev_hash, 0xBB, 32);
+        memset(blk.merkle_root, 0xCC, 32);
+        blk.time = 1700000000;
+        blk.bits = 0x1d00ffff;
+        blk.status = 3;
+        blk.solution = sol;
+        blk.solution_len = 1;
+        blk.height = 1;
+
+        ok = ok && !db_block_save(&ndb, &blk);
+
+        /* Non-null hash should succeed */
+        memset(blk.hash, 0xAA, 32);
+        ok = ok && db_block_save(&ndb, &blk);
+
+        node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     return failures;
 }

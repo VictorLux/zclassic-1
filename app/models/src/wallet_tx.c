@@ -23,6 +23,7 @@
 #include "models/wallet_key.h"
 #include "wallet/sapling_keys.h"
 #include "chain/chainparams.h"
+#include "event/event.h"
 #include "util/safe_alloc.h"
 #include <string.h>
 #include <stdlib.h>
@@ -81,6 +82,43 @@ static int db_wallet_query_max_height(struct node_db *ndb, const char *sql)
 DEFINE_MODEL_CALLBACKS(wallet_tx)
 DEFINE_MODEL_CALLBACKS(wallet_utxo)
 DEFINE_MODEL_CALLBACKS(sapling_note)
+
+/* before_save: validate txid not null, vout >= 0, value >= 0 */
+static bool wallet_utxo_before_save(void *record, void *ctx)
+{
+    (void)ctx;
+    const struct db_wallet_utxo *u = record;
+    static const uint8_t zero[32] = {0};
+    if (memcmp(u->txid, zero, 32) == 0) {
+        fprintf(stderr, "[wallet_utxo] before_save REJECTED: null txid\n");
+        return false;
+    }
+    if (u->value < 0 || u->value > 2100000000000000LL) {
+        fprintf(stderr, "[wallet_utxo] before_save REJECTED: value %lld out of range\n",
+                (long long)u->value);
+        return false;
+    }
+    return true;
+}
+
+/* after_save: emit model-specific event */
+static void wallet_utxo_after_save(void *record, void *ctx)
+{
+    (void)ctx;
+    const struct db_wallet_utxo *u = record;
+    event_emitf(EV_WALLET_UTXO_SAVED, 0, "vout=%u value=%lld",
+                u->vout, (long long)u->value);
+}
+
+static void wallet_utxo_init_hooks(void)
+{
+    static bool done = false;
+    if (done) return;
+    struct ar_callbacks *cbs = db_wallet_utxo_callbacks();
+    ar_register_before_save(cbs, wallet_utxo_before_save);
+    ar_register_after_save(cbs, wallet_utxo_after_save);
+    done = true;
+}
 
 /* ── Validation ────────────────────────────────────────────────── */
 
@@ -475,6 +513,7 @@ int db_wallet_tx_at_height(struct node_db *ndb, int height,
 bool db_wallet_utxo_save(struct node_db *ndb, const struct db_wallet_utxo *u)
 {
     if (!ndb->open) return false;
+    wallet_utxo_init_hooks();
     struct ar_callbacks *cbs = db_wallet_utxo_callbacks();
     AR_BEGIN_SAVE(cbs, "wallet_utxo", u, db_wallet_utxo_validate);
 
