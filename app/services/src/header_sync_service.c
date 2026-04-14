@@ -57,7 +57,7 @@ static void syncsvc_build_locator_from_chain(struct block_locator *loc,
     walk = (struct block_index *)tip;
     while (walk && walk->phashBlock) {
         if (idx == alloc) {
-            struct uint256 *nv = realloc(loc->vhave,
+            struct uint256 *nv = realloc(loc->vhave, // raw-alloc-ok
                                          alloc * 2 * sizeof(struct uint256));
             if (!nv)
                 break;
@@ -97,7 +97,7 @@ static void syncsvc_build_locator_from_index(struct block_locator *loc,
 
     while (walk && walk->phashBlock) {
         if (idx == alloc) {
-            struct uint256 *nv = realloc(loc->vhave,
+            struct uint256 *nv = realloc(loc->vhave, // raw-alloc-ok
                                          alloc * 2 * sizeof(struct uint256));
             if (!nv)
                 break;
@@ -369,7 +369,7 @@ bool syncsvc_build_getheaders_locator(struct block_locator *loc,
     }
 
     if (!has_genesis) {
-        struct uint256 *new_vhave = realloc(loc->vhave,
+        struct uint256 *new_vhave = realloc(loc->vhave, // raw-alloc-ok
             (loc->num_hashes + 1) * sizeof(struct uint256));
         if (!new_vhave) {
             block_locator_free(loc);

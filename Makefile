@@ -57,7 +57,8 @@ LIBS = -Lvendor/lib -lsecp256k1 -lleveldb \
 	-lssl -lcrypto -lz
 
 .PHONY: all test test-e2e clean deploy check-restart-follow \
-        coverage coverage-clean docs-mcp docs-mcp-check ci audit release
+        coverage coverage-clean docs-mcp docs-mcp-check ci audit release \
+        lint check-malloc check-silent-errors check-raw-sqlite
 
 CLI_SRCS = lib/rpc/src/client.c lib/json/src/json.c
 all: test_zcl zclassic23 zclassic-cli
@@ -466,7 +467,32 @@ docs-mcp-check: zclassic23
 #   make ci                 # full pipeline
 #   make ci SKIP_FUZZ=1     # skip the fuzz stage (faster)
 #   make ci SKIP_COV=1      # skip coverage (faster)
-lint:
+check-malloc:
+	@echo "══ LINT: bare malloc/calloc/realloc in app/tools code ══"
+	@HITS=$$(grep -rn '[^_]malloc\s*(' app/ tools/ --include='*.c' \
+	    | grep -v 'zcl_malloc\|zcl_calloc\|zcl_realloc\|raw-alloc-ok\|safe_alloc\|".*malloc\|LOG_\|fprintf'); \
+	if [ -n "$$HITS" ]; then \
+	    echo "$$HITS"; \
+	    echo "FAIL: bare malloc in app/tools code (use zcl_malloc or mark // raw-alloc-ok)"; \
+	    exit 1; \
+	fi
+	@HITS=$$(grep -rn '[^_]calloc\s*(' app/ tools/ --include='*.c' \
+	    | grep -v 'zcl_calloc\|raw-alloc-ok\|safe_alloc\|".*calloc\|LOG_\|fprintf'); \
+	if [ -n "$$HITS" ]; then \
+	    echo "$$HITS"; \
+	    echo "FAIL: bare calloc in app/tools code (use zcl_calloc or mark // raw-alloc-ok)"; \
+	    exit 1; \
+	fi
+	@HITS=$$(grep -rn '[^_]realloc\s*(' app/ tools/ --include='*.c' \
+	    | grep -v 'zcl_realloc\|raw-alloc-ok\|safe_alloc\|".*realloc\|LOG_\|fprintf'); \
+	if [ -n "$$HITS" ]; then \
+	    echo "$$HITS"; \
+	    echo "FAIL: bare realloc in app/tools code (use zcl_realloc or mark // raw-alloc-ok)"; \
+	    exit 1; \
+	fi
+	@echo "  OK: no raw allocations"
+
+check-silent-errors:
 	@echo "══ LINT: bare return -1 in MCP handlers ══"
 	@HITS=$$(grep -rn 'return -1;' tools/mcp/controllers/ --include='*.c' \
 	    | grep -v 'LOG_ERR\|log_json\|fprintf\|// silent-ok\|// raw-return-ok'); \
@@ -475,23 +501,20 @@ lint:
 	    echo "FAIL: bare return -1 in MCP handlers (use LOG_ERR or mark // raw-return-ok)"; \
 	    exit 1; \
 	fi
-	@echo "══ LINT: bare malloc in app/ code ══"
-	@HITS=$$(grep -rn '[^_]malloc\s*(' app/ tools/ --include='*.c' \
-	    | grep -v 'zcl_malloc\|zcl_calloc\|zcl_realloc\|// raw-alloc-ok\|safe_alloc\|".*malloc\|LOG_\|fprintf'); \
+	@echo "  OK: all MCP error returns logged"
+
+check-raw-sqlite:
+	@echo "══ LINT: raw sqlite3_step in app code ══"
+	@HITS=$$(grep -rn 'sqlite3_step\s*(' app/ tools/ --include='*.c' \
+	    | grep -v 'vendor/\|test/\|// raw-sql-ok\|AR_STEP\|safe_alloc\|".*sqlite3_step'); \
 	if [ -n "$$HITS" ]; then \
 	    echo "$$HITS"; \
-	    echo "FAIL: bare malloc in app/tools code (use zcl_malloc or mark // raw-alloc-ok)"; \
-	    exit 1; \
+	    echo "WARNING: raw sqlite3_step in app code (prefer AR_STEP_ROW/AR_STEP_DONE or mark // raw-sql-ok)"; \
 	fi
-	@echo "══ LINT: bare calloc in app/ code ══"
-	@HITS=$$(grep -rn '[^_]calloc\s*(' app/ tools/ --include='*.c' \
-	    | grep -v 'zcl_calloc\|// raw-alloc-ok\|safe_alloc\|".*calloc\|LOG_\|fprintf'); \
-	if [ -n "$$HITS" ]; then \
-	    echo "$$HITS"; \
-	    echo "FAIL: bare calloc in app/tools code (use zcl_calloc or mark // raw-alloc-ok)"; \
-	    exit 1; \
-	fi
-	@echo "══ LINT: passed (fatal) ══"
+	@echo "  OK: sqlite3_step check complete"
+
+lint: check-malloc check-silent-errors check-raw-sqlite
+	@echo "══ LINT: all checks passed ══"
 
 ci: lint zclassic23 test_zcl
 	@echo "══ CI: test ══"

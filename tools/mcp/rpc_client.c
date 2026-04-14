@@ -123,7 +123,7 @@ char *mcp_node_rpc(const char *method, const char *params_json)
     char *buf = zcl_malloc(cap, "mcp rpc response buf");
     if (!buf) { close(sock); return NULL; }
     for (;;) {
-        if (len + 4096 > cap) { cap *= 2; buf = realloc(buf, cap); }
+        if (len + 4096 > cap) { cap *= 2; buf = realloc(buf, cap); } // raw-alloc-ok
         ssize_t n = recv(sock, buf + len, cap - len - 1, 0);
         if (n <= 0) break;
         len += (size_t)n;
