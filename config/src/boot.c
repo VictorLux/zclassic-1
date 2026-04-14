@@ -1335,6 +1335,12 @@ bool app_init(struct app_context *ctx)
     if (g_state.map_block_index.size > 100)
         block_index_repair_heights(&g_state);
 
+    /* pprev chain repair: fix corrupted pprev pointers from LDB import.
+     * Reads hashPrevBlock from block data on disk and corrects pprev.
+     * Must run after height repair (needs correct heights for sort). */
+    if (g_state.map_block_index.size > 100)
+        block_index_repair_pprev(&g_state, ctx->datadir);
+
     /* Block index integrity — verify sidecar SHA3 after all loads.
      * Refuse to boot on mismatch unless ZCL_ALLOW_CORRUPT_INDEX=1. */
     {

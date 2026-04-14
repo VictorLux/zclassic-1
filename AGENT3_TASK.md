@@ -1,12 +1,11 @@
 # Agent 3 Task: Wave 19 — Service Hardening + Operational Depth
 
 ## Status
-- All tests pass (0 failures)
-- Core infrastructure mature (76 MCP tools, wallet encryption, tracing, bandwidth quotas)
-- 18 raw sqlite3_step violations remain in service layer
+- Node stuck at 2,016,354 — Agent1 + Agent2 are fixing sync blockers
+- Agent3 continues hardening tasks (orthogonal to sync)
 
 ## Priority Order
-1. **Task 1: sqlite3_step cleanup** — close lint gap
+1. **Task 1: sqlite3_step cleanup** — close lint gap (18 violations)
 2. **Task 5: Controller error paths** — defensive coding compliance
 3. **Task 2: Cookie rotation** — security improvement
 4. **Task 3: Key scrubbing** — memory safety for wallet keys

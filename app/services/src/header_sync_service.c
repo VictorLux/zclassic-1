@@ -6,6 +6,8 @@
 #include "services/snapshot_sync_service.h"
 #include "net/net.h"
 #include "validation/chainstate.h"
+#include "core/arith_uint256.h"
+#include "chain/chain.h"
 #include <stdlib.h>
 #include <time.h>
 #include "util/log_macros.h"
@@ -458,6 +460,15 @@ bool syncsvc_headers_chain_from_tip(const struct block_index *candidate,
         if (check == anchor)
             return true;
     }
+
+    /* Chainwork fallback: if pprev walk failed (broken links from LDB
+     * import) but the candidate has strictly more chain work than our
+     * tip, accept it. Block download + connect_block will still fully
+     * validate everything — this check is just a sanity gate. */
+    if (candidate && tip &&
+        candidate->nHeight > our_height &&
+        arith_uint256_compare(&candidate->nChainWork, &tip->nChainWork) > 0)
+        return true;
 
     return false;
 }

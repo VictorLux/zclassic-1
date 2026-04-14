@@ -143,4 +143,12 @@ int block_index_repair_heights(struct main_state *ms);
  * (even if it repaired 0 entries — the scan itself is the signal). */
 bool block_index_heights_repaired(void);
 
+/* ── pprev chain repair ────────────────────────────────────────
+ * Reads hashPrevBlock from block data on disk for every entry with
+ * BLOCK_HAVE_DATA and fixes pprev if it points to the wrong parent.
+ * Also recomputes nChainWork and nChainTx after repair.
+ *
+ * Must be called AFTER block_index_repair_heights(), BEFORE header sync. */
+int block_index_repair_pprev(struct main_state *ms, const char *datadir);
+
 #endif /* ZCL_SERVICES_BLOCK_INDEX_INTEGRITY_H */

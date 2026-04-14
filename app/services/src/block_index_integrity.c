@@ -33,6 +33,7 @@
 #include "core/uint256.h"
 #include "validation/main_state.h"
 #include "chain/pow.h"
+#include "storage/disk_block_io.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -508,5 +509,141 @@ int block_index_repair_heights(struct main_state *ms)
                 repaired, (long long)elapsed_ms);
 
     atomic_store(&g_heights_repaired, true);
+    return repaired;
+}
+
+/* ── pprev chain repair ────────────────────────────────────────
+ * After LDB import, the flat file may store wrong prev_hash values
+ * (copied from pprev->phashBlock when pprev was already corrupted).
+ * This function reads hashPrevBlock directly from block data on disk
+ * for every entry with BLOCK_HAVE_DATA and fixes pprev if it points
+ * to the wrong parent.
+ *
+ * Call AFTER block_index_repair_heights() so heights are correct.
+ * After pprev repair, recomputes nChainWork and nChainTx. */
+int block_index_repair_pprev(struct main_state *ms, const char *datadir)
+{
+    if (!ms || !datadir) return 0;
+
+    struct timespec t0;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+
+    size_t n = ms->map_block_index.size;
+    if (n == 0) return 0;
+
+    /* Collect entries with BLOCK_HAVE_DATA into an array sorted by
+     * (nFile, nDataPos) so we read each block file sequentially. */
+    struct block_index **arr = zcl_malloc(n * sizeof(*arr), "pprev_repair_arr");
+    if (!arr) {
+        fprintf(stderr, "[pprev-repair] malloc failed for %zu entries\n", n);
+        return 0;
+    }
+
+    size_t iter = 0, count = 0;
+    struct block_index *pi;
+    while (block_map_next(&ms->map_block_index, &iter, NULL, &pi)) {
+        if (pi && pi->nHeight > 0 && (pi->nStatus & BLOCK_HAVE_DATA) &&
+            pi->nFile >= 0 && pi->nDataPos > 0)
+            arr[count++] = pi;
+    }
+
+    int repaired = 0, read_errors = 0;
+
+    for (size_t i = 0; i < count; i++) {
+        struct block_index *bi = arr[i];
+
+        /* Read just nVersion (4 bytes) + hashPrevBlock (32 bytes) = 36 bytes
+         * from the start of block data on disk. This is much faster than
+         * deserializing the entire block. */
+        uint8_t hdr_buf[36];
+        struct disk_block_pos pos = {
+            .nFile = bi->nFile,
+            .nPos = bi->nDataPos
+        };
+        ssize_t nr = disk_block_pread(datadir, &pos, "blk", hdr_buf, 36);
+        if (nr < 36) {
+            read_errors++;
+            continue;
+        }
+
+        /* hashPrevBlock is at offset 4 (after nVersion) in little-endian */
+        struct uint256 prev_hash;
+        memcpy(prev_hash.data, hdr_buf + 4, 32);
+
+        /* Look up the correct parent in the block map */
+        struct block_index *correct_pprev =
+            block_map_find(&ms->map_block_index, &prev_hash);
+
+        if (!correct_pprev)
+            continue; /* parent not in index — can't fix */
+
+        if (bi->pprev != correct_pprev) {
+            bi->pprev = correct_pprev;
+            repaired++;
+        }
+    }
+
+    /* After fixing pprev, recompute nChainWork and nChainTx.
+     * Sort all entries by height for forward propagation. */
+    if (repaired > 0) {
+        /* Re-collect ALL entries (not just HAVE_DATA) for chain recomputation */
+        size_t all_count = 0;
+        struct block_index **all = zcl_malloc(n * sizeof(*all), "pprev_repair_all");
+        if (all) {
+            iter = 0;
+            while (block_map_next(&ms->map_block_index, &iter, NULL, &pi)) {
+                if (pi && all_count < n)
+                    all[all_count++] = pi;
+            }
+            qsort(all, all_count, sizeof(*all), bii_cmp_height);
+
+            int fixed_work = 0, fixed_tx = 0;
+            for (size_t i = 0; i < all_count; i++) {
+                struct block_index *b = all[i];
+                struct arith_uint256 proof = GetBlockProof(b);
+                struct arith_uint256 expected;
+
+                if (b->pprev) {
+                    arith_uint256_add(&expected, &b->pprev->nChainWork, &proof);
+                    if (arith_uint256_compare(&expected, &b->nChainWork) != 0) {
+                        b->nChainWork = expected;
+                        fixed_work++;
+                    }
+                    if (b->nTx > 0 && b->pprev->nChainTx > 0) {
+                        uint32_t expected_ctx = b->pprev->nChainTx + b->nTx;
+                        if (b->nChainTx != expected_ctx) {
+                            b->nChainTx = expected_ctx;
+                            fixed_tx++;
+                        }
+                    }
+                } else {
+                    b->nChainWork = proof;
+                }
+            }
+            free(all);
+
+            if (fixed_work > 0 || fixed_tx > 0)
+                printf("[pprev-repair] recomputed: %d chain_work, %d chain_tx\n",
+                       fixed_work, fixed_tx);
+        }
+    }
+
+    free(arr);
+
+    struct timespec t1;
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    int64_t elapsed_ms = (t1.tv_sec - t0.tv_sec) * 1000
+                       + (t1.tv_nsec - t0.tv_nsec) / 1000000;
+
+    printf("[pprev-repair] fixed %d pprev links (%d read errors) "
+           "from %zu blocks with data in %lld ms\n",
+           repaired, read_errors, count, (long long)elapsed_ms);
+    fflush(stdout);
+
+    if (repaired > 0)
+        event_emitf(EV_BLOCK_INDEX_REPAIR, 0,
+                    "pprev_repaired=%d read_errors=%d elapsed_ms=%lld",
+                    repaired, read_errors, (long long)elapsed_ms);
+
     return repaired;
 }

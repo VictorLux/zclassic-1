@@ -432,8 +432,7 @@ static int h_zcl_syncdiag(const struct mcp_request *req,
         res->error = MCP_ERR_INTERNAL;
         snprintf(res->error_message, sizeof(res->error_message),
                  "malloc failed for syncdiag response");
-        LOG_ERR("mcp.ops", "malloc failed for syncdiag body (%zu bytes)", cap);
-        return -1;
+        LOG_ERR("mcp.ops", "malloc failed for syncdiag body (%zu bytes)", cap); return -1;
     }
 
     /* Merge diag object with download stats and peer_max_height.

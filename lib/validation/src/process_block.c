@@ -382,6 +382,12 @@ static struct block_index *find_most_work_chain(struct main_state *ms)
                     chain_ok = false;
                     break;
                 }
+                if (!check->pprev && check->nHeight > 0) {
+                    /* Broken pprev chain — skip this candidate
+                     * instead of dereferencing NULL */
+                    chain_ok = false;
+                    break;
+                }
                 check = check->pprev;
             }
             if (chain_ok)
@@ -1766,10 +1772,15 @@ bool activate_best_chain(struct validation_state *state,
             while (walk && walk->pprev &&
                    walk->nHeight > fork->nHeight)
                 walk = walk->pprev;
-            while (fork && walk && fork != walk) {
+            while (fork && walk && fork != walk &&
+                   fork->pprev && walk->pprev) {
                 fork = fork->pprev;
                 walk = walk->pprev;
             }
+            /* If we ran out of pprev without finding a common ancestor,
+             * treat as no fork found (fork == NULL triggers genesis reset) */
+            if (fork != walk)
+                fork = NULL;
 
             /* During IBD, allow deep reorgs — fork blocks received in
              * parallel can cause the wrong chain to be connected initially.
