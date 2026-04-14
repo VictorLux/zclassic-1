@@ -1,17 +1,18 @@
-# Agent 2 Task: Wave 23 — Fix Block Download Stall (CRITICAL)
+# Agent 2 Task: Wave 23b — Sync Recovery + Re-enable Features
 
 ## Status
-- Node STUCK at height 2,016,355 — headers arrive but blocks never requested
-- Root cause: two bugs in header_sync_service.c prevent block queuing
+- Block download pipeline FIXED (Agent1). Node hitting UTXO mismatch — auto-reimport triggered.
+- bg_hash_verify and address backfill SIGSEGVs FIXED in wave 22b but features still disabled.
 
 ## Priority Order
-1. **Bug 1: collect_needed_blocks walk dies at pprev==NULL** — header_sync_service.c:515, count=0 → no getdata
-2. **Bug 2: should_begin_blocks_download requires SYNC_HEADERS_DOWNLOAD** — header_sync_service.c:435, blocks not queued in SYNC_BLOCKS_DOWNLOAD state
+1. **Task 1: Improve self-heal logging** — add event_emitf for UTXO recovery, clean up needs_reimport flag
+2. **Task 2: Re-enable bg_hash_verify** — find where disabled, turn on
+3. **Task 3: Re-enable address backfill** — find where disabled, turn on
+4. **Task 4: Update CHECKLIST.md** — mark 3 items as fixed
 
-## See AGENT2.md for full details with line numbers and exact fixes
+## See AGENT2.md for full details
 
 ## Rules
 - Follow `DEFENSIVE_CODING.md`
 - Run `make -j$(nproc) && make test` — 0 failures required
-- Commit with `wave 23 task N:` prefix
-- Do NOT touch chain_activation_controller.c (Agent3) or process_block.c (Agent1)
+- Commit with `wave 23b task N:` prefix

@@ -1,4 +1,4 @@
-# AGENT3 — Wave 23: Fix Activation False AT_TIP + Enable Disabled Features
+# AGENT3 — Wave 23b: Sapling Persistence + Multi-threaded Validation
 
 **Working directory:** `~/zclassic23-3`
 **Coordinator:** Agent1 (~/zclassic23)
@@ -9,85 +9,56 @@
 
 ## Context
 
-The node is STUCK at height 2,016,355. Headers arrive but blocks are never downloaded. Agent2 fixes the download pipeline (Bug 1 + Bug 2). You fix Bug 3 (false AT_TIP) and re-enable the features that were fixed in wave 22b.
+Wave 23 progress:
+- Block download pipeline fixed (Agent1 + Agent3)
+- Node at 2,016,355 with headers at 3,078,027 — UTXO reimport in progress
+- Two remaining reliability items from the checklist need investigation
 
 ---
 
-## Task 1 (CRITICAL): Fix False AT_TIP in Activation Controller
+## Task 1 (HIGH): Sapling Tree Persistence After Crash
 
-### File: `app/services/src/chain_activation_controller.c`, line ~297
+### Problem
+SIGKILL loses WAL → forces 5-minute Sapling tree rebuild on next boot. The tree has 1M Pedersen hash commitments that must be recomputed by mmap-scanning all blocks.
 
-```c
-if (!ok) {
-    activation_set_state(ctl, ACTIVATION_READY, "activation_failed");
-} else {
-    activation_set_state(ctl, ACTIVATION_AT_TIP, "at_tip");  // ← unconditional
-}
-```
+### Investigation
+1. Find the Sapling tree save code — likely in `lib/sapling/src/incremental_merkle_tree.c` or `config/src/boot.c`
+2. How is the tree persisted? SQLite table? Flat file?
+3. When is it flushed? Only on clean shutdown? Or periodically?
+4. Can we add a periodic WAL checkpoint after Sapling tree updates? Similar to the "WAL checkpoint after bulk catchup" pattern in `sync_controller.c:1909`
 
-`activate_best_chain` returns `true` after connecting one block (2016356), because `find_most_work_chain` only sees blocks with `nChainTx > 0`. The activation controller then declares AT_TIP even though the node is 1M blocks behind.
-
-### Fix:
-After `activate_best_chain` returns true, check if we're actually near the network tip before declaring AT_TIP. Compare the chain tip height against known peer heights:
-
-```c
-if (!ok) {
-    activation_set_state(ctl, ACTIVATION_READY, "activation_failed");
-} else {
-    /* Don't declare at_tip if we're far behind peers — blocks
-     * may not be downloaded yet (nChainTx==0 hides them from
-     * find_most_work_chain). Stay in CONNECTING to keep the
-     * download pipeline active. */
-    int tip_h = active_chain_height(&ms->chain_active);
-    int peer_h = connman_max_peer_height(ms->connman);
-    if (peer_h > 0 && tip_h + 100 < peer_h) {
-        activation_set_state(ctl, ACTIVATION_READY, "behind_peers");
-    } else {
-        activation_set_state(ctl, ACTIVATION_AT_TIP, "at_tip");
-    }
-}
-```
-
-Check that `connman_max_peer_height` exists and works — it was added in wave 20. Use a margin of 100 blocks to avoid flapping when nearly synced.
+### Fix
+If the tree is only saved on clean shutdown, add periodic persistence (every 1000 blocks or every 60 seconds). Use `sqlite3_wal_checkpoint_v2` if it's in SQLite.
 
 ---
 
-## Task 2: Update CHECKLIST.md — Mark Fixed Items
+## Task 2 (MEDIUM): Investigate Multi-threaded bg_validation Crash
 
-The following items in CHECKLIST.md section 6 "Remaining" are now FIXED. Move them to "Completed":
+### Problem
+bg_validation crashes with >1 worker thread. Wave 22b fixed the file I/O (pread is safe), but the crash persists.
 
-- **SIGSEGV in bg_hash_verify fread** — FIXED in wave 22b task 3 (cs_main lock added, snapshot block_index fields before pread)
-- **SIGSEGV in address backfill** — FIXED in wave 22b task 4 (disabled mmap for bg thread, PRAGMA mmap_size=0)
+### Investigation (from wave 22b audit)
+The likely cause is in `verify_scripts_parallel` — worker_ctx structs hold raw `const struct transaction *tx` pointers into `blk.vtx[]`, which is allocated on the `bg_validation_thread` stack. If multiple workers access the same transaction's script interpreter state simultaneously, that's the race.
 
-Update the checklist to reflect current reality.
+1. Read `app/services/src/bg_validation_service.c` — find `verify_scripts_parallel`
+2. Check if the script interpreter (`lib/script/src/interpreter.c`) has any global/static state
+3. Check if `secp256k1_context` is shared across threads
+4. Does each worker get its own secp256k1 context or share one?
 
----
-
-## Task 3: Re-enable bg_hash_verify
-
-### File: Check where bg_hash_verify is disabled
-
-The SIGSEGV was fixed in wave 22b (cs_main lock + field snapshotting). Find where the feature is disabled and re-enable it. It should start automatically after sync completes.
-
-Search for:
-```bash
-grep -rn 'bg_hash_verify\|bg_hash_verification\|nobghash' app/ config/ lib/ --include='*.c' --include='*.h'
-```
-
-If it's disabled by a flag or a commented-out call, re-enable it. If it's gated by `-nobgvalidation`, that's fine — leave it as user-controlled.
+Report findings. If the fix is clear (e.g., per-thread secp256k1 context), implement it. Otherwise document what you found.
 
 ---
 
-## Task 4: Re-enable Address Backfill
+## Task 3 (LOW): PHGR13 Sprout VK Format Investigation
 
-### File: Check where address backfill is disabled
+### Problem
+PHGR13 proof verification is wired but the verification key (VK) parsing fails. Code is in place but VK format needs investigation.
 
-The SIGSEGV was fixed in wave 22b (mmap_size=0). Find where the backfill thread is disabled and re-enable it.
+1. Find the PHGR13 VK loading code — likely in `lib/sapling/src/sprout.c`
+2. What format does it expect? What format does the VK file actually have?
+3. Is this blocking anything? PHGR13 is only for Sprout proofs at heights < 581876 — those are old and bg_validation skips them
 
-Search for:
-```bash
-grep -rn 'backfill_address\|address_backfill\|nobackfill' app/ config/ lib/ --include='*.c' --include='*.h'
-```
+If this is non-blocking (old Sprout proofs, no new blocks affected), document it as low-priority and move on.
 
 ---
 
@@ -98,11 +69,11 @@ After EACH task:
 git pull origin master
 make -j$(nproc) 2>&1 | tail -20
 make test 2>&1 | tail -10
-git add <specific files> && git commit -m "wave 23 task N: description"
+git add <specific files> && git commit -m "wave 23b task N: description"
 git push origin master
 ```
 
 ## Boundary: Files You MUST NOT Touch
-- `app/services/src/header_sync_service.c` (Agent2)
-- `lib/net/src/msg_headers.c` (Agent2)
-- `lib/net/src/download.c` (Agent2)
+- `lib/validation/src/process_block.c` (Agent1/Agent2)
+- `app/services/src/header_sync_service.c` (Agent1)
+- `config/src/boot_index.c` scan functions (Agent2)

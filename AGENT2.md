@@ -1,4 +1,4 @@
-# AGENT2 — Wave 23: Fix Block Download Stall (CRITICAL)
+# AGENT2 — Wave 23b: Sync Pipeline + Reliability
 
 **Working directory:** `~/zclassic23-2`
 **Coordinator:** Agent1 (~/zclassic23)
@@ -9,81 +9,63 @@
 
 ## Context
 
-The node is STUCK at height 2,016,355. Headers arrive (tip 2025K+) but blocks are NEVER requested. The event log shows a 250ms tight loop:
+Wave 23 progress:
+- Agent1 fixed `find_most_work_chain` (accept BLOCK_HAVE_DATA with nChainTx==0) and `syncsvc_should_begin_blocks_download` (allow in BLOCKS_DOWNLOAD state)
+- Agent3 fixed false AT_TIP in activation controller
+- Node now sends getdata but hits `bad-txns-inputs-missingorspent` at h=2016356 — UTXO reimport triggered
+- Headers fully synced to 3,078,027. Blocks stuck at 2,016,355 pending UTXO fix.
 
-```
-boot.activate: tip=2016355 most_work=2016356
-connecting->at_tip: at_tip
-getheaders sent → 160 headers received
-at_tip->connecting: p2p_trigger
-(repeat)
-```
-
-Root cause analysis identified THREE compounding bugs. You fix Bug 1 and Bug 2 (the download pipeline). Agent3 fixes Bug 3 (activation controller).
+Your job: harden the sync pipeline so it recovers from UTXO mismatches without manual intervention, and enable the two features fixed in wave 22b.
 
 ---
 
-## Bug 1 (ROOT CAUSE): syncsvc_collect_needed_blocks Walk Terminates at pprev==NULL
+## Task 1: Improve Self-Heal for bad-txns-inputs-missingorspent
 
-### File: `app/services/src/header_sync_service.c`, line ~515
+### File: `lib/validation/src/process_block.c` (lines ~985-1065)
 
-```c
-while (walk && walk->pprev && walk->nHeight > our_height &&
-       result->count < max_collect && walk_steps < 2048) {
-```
+The self-heal mechanism tries to recover missing UTXOs from the tx index. But it currently requires `g_active_block_tree != NULL` (LevelDB tx index). Check:
 
-New headers have `pprev == NULL` because they're header-only entries not yet connected. The `walk->pprev` condition terminates the walk immediately, yielding `count == 0`. With count=0, `should_queue_needed_blocks = false` and no `getdata` is ever sent.
-
-### Fix:
-Remove the `walk->pprev` requirement from the walk condition. Instead, handle NULL pprev gracefully inside the loop — if `pprev` is NULL, try to look up the parent hash in the block map:
-
-```c
-while (walk && walk->nHeight > our_height &&
-       result->count < max_collect && walk_steps < 2048) {
-    // ... existing logic to check BLOCK_HAVE_DATA etc ...
-    
-    // Walk backwards — handle missing pprev
-    if (walk->pprev) {
-        walk = (struct block_index *)walk->pprev;
-    } else {
-        break;  // can't walk further — but we already collected what we could
-    }
-    walk_steps++;
-}
-```
-
-The key insight: we should collect blocks ABOVE our_height that need data, walking DOWN from the candidate. Even if the walk stops early due to missing pprev, we should still have `count > 0` for the blocks we DID find. The current code breaks out with count=0 because `walk->pprev` is checked BEFORE the first iteration even runs.
-
-**Test:** After this fix, `needed_blocks.count` should be > 0 when headers are ahead of our tip. Add a test case that creates header-only block_index entries (pprev=NULL, nChainTx=0, no BLOCK_HAVE_DATA) and verifies `syncsvc_collect_needed_blocks` returns count > 0.
+1. Is `g_active_block_tree` set when `-txindex` is enabled? Verify in boot.c
+2. If self-heal fails, it marks the block as BLOCK_FAILED. After 3 failures, writes `needs_reimport`. This is too slow — it takes 3 activation cycles. Add a log line when self-heal fires: `event_emitf(EV_SELF_HEAL, ...)` so we can see it in the event log
+3. After successful UTXO reimport (boot.c reads `needs_reimport`), delete the flag file
 
 ---
 
-## Bug 2: syncsvc_should_begin_blocks_download Requires SYNC_HEADERS_DOWNLOAD
+## Task 2: Re-enable bg_hash_verify
 
-### File: `app/services/src/header_sync_service.c`, line ~435
+The SIGSEGV was fixed in wave 22b (cs_main lock + field snapshotting in `bg_hash_verification_service.c`).
 
-```c
-bool syncsvc_should_begin_blocks_download(enum sync_state sync_state,
-                                          const struct block_index *candidate,
-                                          int our_height)
-{
-    return candidate && candidate->nHeight > our_height &&
-           sync_state == SYNC_HEADERS_DOWNLOAD;
-}
+Search for where bg_hash_verify is disabled:
+```bash
+grep -rn 'bg_hash_verify\|bg_hash_verification\|nobghash' app/ config/ lib/ --include='*.c' --include='*.h'
 ```
 
-Once the state transitions to `SYNC_BLOCKS_DOWNLOAD`, this function returns `false` for all subsequent header batches. No more blocks are ever queued.
+If it's disabled by a commented-out call or a hardcoded flag, re-enable it. If gated by `-nobgvalidation`, leave it user-controlled.
 
-### Fix:
-Allow block queuing in BOTH header and block download states:
+---
 
-```c
-    return candidate && candidate->nHeight > our_height &&
-           (sync_state == SYNC_HEADERS_DOWNLOAD ||
-            sync_state == SYNC_BLOCKS_DOWNLOAD);
+## Task 3: Re-enable Address Backfill
+
+The SIGSEGV was fixed in wave 22b (mmap_size=0 in `boot_index.c`).
+
+Search for where backfill is disabled:
+```bash
+grep -rn 'backfill_address\|address_backfill\|nobackfill' app/ config/ lib/ --include='*.c' --include='*.h'
 ```
 
-This is safe — the function's purpose is "should we queue blocks for download?" and the answer should be yes whenever we have a candidate above our height, regardless of which download phase we're in.
+Re-enable it if disabled.
+
+---
+
+## Task 4: Update CHECKLIST.md
+
+Mark these items as FIXED in section 6 "Remaining":
+- SIGSEGV in bg_hash_verify — FIXED wave 22b (cs_main lock)
+- SIGSEGV in address backfill — FIXED wave 22b (mmap_size=0)
+- Block download stalling — FIXED wave 23 (HAVE_DATA in chain selection + state gate)
+
+Add new remaining item:
+- bad-txns-inputs-missingorspent at h=2016356 — UTXO snapshot mismatch after restart, auto-reimport triggered
 
 ---
 
@@ -94,10 +76,10 @@ After EACH task:
 git pull origin master
 make -j$(nproc) 2>&1 | tail -20
 make test 2>&1 | tail -10
-git add <specific files> && git commit -m "wave 23 task N: description"
+git add <specific files> && git commit -m "wave 23b task N: description"
 git push origin master
 ```
 
 ## Boundary: Files You MUST NOT Touch
+- `app/services/src/header_sync_service.c` (Agent1)
 - `app/services/src/chain_activation_controller.c` (Agent3)
-- `lib/validation/src/process_block.c` (Agent1 — coordinator)
