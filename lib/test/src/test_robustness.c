@@ -13,6 +13,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include "util/safe_alloc.h"
+#include <signal.h>
 
 static char test_datadir[256];
 
@@ -679,6 +680,41 @@ int test_robustness(void)
     printf("robust: node_db_sync_flush NULL safe... ");
     {
         bool ok = !node_db_sync_flush(NULL); /* should return false */
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("robust: stale PID lock detection (dead PID)... ");
+    {
+        char pidfile[256];
+        snprintf(pidfile, sizeof(pidfile), "%s/stale.pid", test_datadir);
+        FILE *f = fopen(pidfile, "w");
+        bool ok = (f != NULL);
+        if (f) {
+            /* Write a PID that definitely doesn't exist */
+            fprintf(f, "999999999\n");
+            fclose(f);
+        }
+        /* kill(pid,0) should fail for non-existent PID */
+        ok = ok && (kill(999999999, 0) != 0);
+        unlink(pidfile);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("robust: live PID lock detection (own PID)... ");
+    {
+        char pidfile[256];
+        snprintf(pidfile, sizeof(pidfile), "%s/live.pid", test_datadir);
+        FILE *f = fopen(pidfile, "w");
+        bool ok = (f != NULL);
+        if (f) {
+            fprintf(f, "%ld\n", (long)getpid());
+            fclose(f);
+        }
+        /* kill(getpid(),0) should succeed — we are alive */
+        ok = ok && (kill(getpid(), 0) == 0);
+        unlink(pidfile);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }

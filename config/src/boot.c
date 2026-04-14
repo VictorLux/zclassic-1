@@ -120,6 +120,56 @@ static struct wallet_backup_config g_wallet_backup_cfg;
 static struct disk_monitor_config g_disk_monitor_cfg;
 static struct ibd_throttle_config g_ibd_throttle_cfg;
 
+/* ── PID lock file for data directory ─────────────────────────── */
+
+static char g_pidfile_path[1024];
+
+/* Acquire data directory lock. Returns true if lock acquired,
+ * false if another instance is running. */
+static bool acquire_datadir_lock(const char *datadir)
+{
+    snprintf(g_pidfile_path, sizeof(g_pidfile_path), "%s/zclassic23.pid",
+             datadir);
+
+    /* Check existing PID file */
+    FILE *f = fopen(g_pidfile_path, "r");
+    if (f) {
+        char buf[32] = {0};
+        size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+        fclose(f);
+        if (n > 0) {
+            long old_pid = strtol(buf, NULL, 10);
+            if (old_pid > 0) {
+                if (kill((pid_t)old_pid, 0) == 0) {
+                    fprintf(stderr,
+                        "[boot] Data directory locked by PID %ld (running). "
+                        "Cannot start.\n", old_pid);
+                    return false;
+                }
+                printf("[boot] Stale lock detected (PID %ld is not running). "
+                       "Removing lock file.\n", old_pid);
+            }
+        }
+    }
+
+    /* Write our PID */
+    f = fopen(g_pidfile_path, "w");
+    if (!f) {
+        fprintf(stderr, "[boot] Cannot create PID file %s: %s\n",
+                g_pidfile_path, strerror(errno));
+        return true; /* non-fatal — proceed without lock */
+    }
+    fprintf(f, "%ld\n", (long)getpid());
+    fclose(f);
+    return true;
+}
+
+static void release_datadir_lock(void)
+{
+    if (g_pidfile_path[0])
+        unlink(g_pidfile_path);
+}
+
 static struct db_service *boot_runtime_db_service(void)
 {
     return db_service_is_started(&g_db_service) ? &g_db_service : NULL;
@@ -266,6 +316,11 @@ bool app_init(struct app_context *ctx)
             printf("Created data directory: %s\n", ctx->datadir);
         }
     }
+
+    /* Acquire data directory lock — prevents two instances from
+     * corrupting SQLite / LevelDB by writing concurrently. */
+    if (!acquire_datadir_lock(ctx->datadir))
+        return false;
 
     /* Disk monitor — armed before first SQLite open so the
      * refuse-when-critical flag blocks writes before damage. */
@@ -1880,7 +1935,7 @@ bool app_init(struct app_context *ctx)
 }
 
 /* app_shutdown delegates to boot_services.c */
-void app_shutdown(void) { app_shutdown_svc(&g_svc); }
+void app_shutdown(void) { app_shutdown_svc(&g_svc); release_datadir_lock(); }
 bool app_is_running(void) { return atomic_load(&g_running); }
 
 /* app_add_node, app_start_metrics, app_stop_metrics: boot_services.c */
