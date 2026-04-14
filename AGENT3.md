@@ -1,4 +1,4 @@
-# AGENT3 — Wave 19: Testing Depth, P2P Hardening & Observability
+# AGENT3 — Wave 20: Fix False At-Tip & Sync Observability
 
 **Working directory:** `~/zclassic23-3`
 **Coordinator:** Agent1 (~/zclassic23)
@@ -9,139 +9,118 @@
 
 ## Context
 
-Wave 18 is done (memory reduction, WAL checkpoint, PID lock, OOM protection, crash recovery events). Wave 19 focuses on test coverage for the new robustness code, P2P message hardening, and making the node's observability production-grade.
+The node is stuck at height 2,016,354 while the network tip is ~3,078,009 (1M blocks behind). Root cause: the node falsely enters `SYNC_AT_TIP` state because `getblockchaininfo` reports hardcoded `verificationprogress=1.0`, headers count reports block height (not actual best header), and the `headers_caught_up` check compares headers against local blocks instead of peer heights. Once at tip, getheaders requests drop to 120s intervals and the watchdog doesn't monitor `SYNC_AT_TIP` for being behind peers.
+
+Agent2 owns the sync services. Agent3 fixes the RPC/observability side and adds test coverage for the false-tip scenario.
 
 ---
 
-## Task 1: Test Coverage for Wave 17-18 Robustness Features
+## Task 1: Fix getblockchaininfo to Report Real Sync State
 
-Many new features were added across waves 17-18 but some may have thin test coverage. Audit and fill gaps.
+The RPC lies about sync status. Fix it.
 
-### Files to audit:
-- `lib/test/src/test_sync_watchdog.c` — Does it test HEADER_LAG detection? Escalating recovery? Progress rate tracking?
-- `lib/test/src/test_block_index_integrity.c` — Does it test bulk height repair with realistic scrambled heights?
-- `lib/test/src/test_robustness.c` — Does it test PID lock, OOM protection, crash detection?
-- `lib/test/src/test_activerecord.c` — Does it test the before_save hooks on utxo/block/wallet_tx?
+### File: `app/controllers/src/blockchain_controller.c`
 
-### What to do:
-1. Read each test file
-2. For each feature added in waves 17-18, verify there's a test that exercises it
-3. Add missing tests. Focus on:
-   - Edge cases: what happens when height repair encounters a cycle in pprev?
-   - Boundary: watchdog with exactly 0 peers, exactly at timeout boundary
-   - Failure modes: before_save hook that rejects, after_save event emission
-4. Target: at least 2 new tests per file where gaps exist
-
----
-
-## Task 2: P2P Message Fuzzing Hardening
-
-Malformed P2P messages shouldn't crash the node. Harden the message handlers.
-
-### Files to investigate:
-- `lib/net/src/msg_headers.c` — process_headers()
-- `lib/net/src/msg_blocks.c` — process_block() 
-- `lib/net/src/msg_version.c` — process_version()
-- `lib/net/src/msg_tx.c` — process_tx()
-
-### What to check and fix for each handler:
-1. Does it validate stream length before reading? (prevent buffer over-read)
-2. Does it handle truncated messages gracefully? (return false, don't crash)
-3. Does it disconnect on malformed input rather than crashing?
-4. Are all error paths logged?
-
-### Test:
-- Add fuzz-style tests in `lib/test/src/test_msg_handlers.c` that feed truncated/garbage data to each handler and verify no crash + clean error
-
----
-
-## Task 3: MCP Health Endpoint Completeness
-
-The `zcl_health` and `zcl_status` MCP tools should be a one-stop diagnostic.
-
-### Files to investigate:
-- `tools/mcp/controllers/ops_controller.c` or wherever `zcl_health` and `zcl_status` are implemented
-- `app/services/src/node_health_service.c`
-
-### What to add to health output:
-1. **Memory usage**: RSS from `/proc/self/status` (VmRSS line)
-2. **Uptime**: seconds since boot
-3. **Block index size**: entry count + estimated MB
-4. **WAL file size**: size of `node.db-wal` if it exists
-5. **Disk free**: available space on datadir partition
-
-### Implementation:
+**Fix 1: headers field** (line ~291)
+Currently both `blocks` and `headers` use `active_chain_tip()->nHeight`. The `headers` field must report `pindex_best_header->nHeight`:
 ```c
-// RSS from /proc/self/status
-static int64_t get_rss_kb(void) {
-    FILE *f = fopen("/proc/self/status", "r");
-    if (!f) return -1;
-    char line[256];
-    while (fgets(line, sizeof(line), f)) {
-        if (strncmp(line, "VmRSS:", 6) == 0) {
-            int64_t kb = 0;
-            sscanf(line + 6, " %lld", (long long *)&kb);
-            fclose(f);
-            return kb;
-        }
-    }
-    fclose(f);
-    return -1;
-}
+// BEFORE (wrong):
+json_push_kv_int(result, "headers", tip ? tip->nHeight : 0);
+
+// AFTER (correct):
+struct block_index *best_hdr = ctx->main_state->pindex_best_header;
+int header_height = best_hdr ? best_hdr->nHeight : (tip ? tip->nHeight : 0);
+json_push_kv_int(result, "headers", header_height);
 ```
 
----
-
-## Task 4: Rate-Limit Peer Misbehavior Scoring
-
-The peer scoring system should prevent a single misbehaving peer from consuming resources.
-
-### Files to investigate:
-- `lib/net/src/peer_scoring.c` — Current scoring implementation
-- `lib/net/include/net/peer_scoring.h` — Score types and thresholds
-
-### What to check and improve:
-1. Read the current scoring system
-2. Verify that peers reaching the ban threshold are actually disconnected
-3. Add rate limiting: if a peer sends >100 rejected messages in 60 seconds, disconnect immediately (don't wait for score threshold)
-4. Add logging: `[scoring] peer %s banned: score %d, offences: %s`
-
-### Test:
-- Test that rapid-fire offences trigger disconnect before the normal threshold
-
----
-
-## Task 5: Add Structured Boot Timing Log
-
-The boot sequence should log timing for each phase so we can identify slow spots.
-
-### Files to modify:
-- `config/src/boot.c` — Add timing around each boot phase
-
-### What to implement:
+**Fix 2: verificationprogress** (line ~300)
+Currently hardcoded to `1.0`. Calculate it relative to the max peer starting_height:
 ```c
-// At start of boot:
-struct timespec boot_start;
-clock_gettime(CLOCK_MONOTONIC, &boot_start);
+// BEFORE (wrong):
+json_push_kv_real(result, "verificationprogress", 1.0);
 
-// After each phase:
-int64_t phase_ms = elapsed_ms_since(&boot_start);
-printf("[boot] %-30s %lldms\n", "load_block_index", phase_ms);
-// Reset for next phase
-
-// At end of boot:
-printf("[boot] total boot time: %lldms\n", total_ms);
-event_emitf(EV_BOOT_COMPLETE, 0, "total_ms=%lld phases=%d", total_ms, num_phases);
+// AFTER (correct):
+int max_peer_h = connman_max_peer_height(ctx->connman);
+int our_h = tip ? tip->nHeight : 0;
+double progress = 1.0;
+if (max_peer_h > 0 && our_h < max_peer_h)
+    progress = (double)our_h / (double)max_peer_h;
+json_push_kv_real(result, "verificationprogress", progress);
 ```
 
-Phases to time:
-1. SQLite open + schema migration
-2. Block index load from cache
-3. Block index height repair
-4. UTXO set load / verification
-5. Wallet load
-6. P2P network start
-7. Total boot time
+You'll need access to `connman` through the controller context. Check how other controllers (e.g. `network_controller.c`) access `connman` and follow the same pattern. If `connman_max_peer_height()` doesn't exist, look for the equivalent — it's used in `sync_watchdog_service.c`.
+
+**Fix 3: Add `best_header_height` field**
+Add a new field so operators can see the real header tip:
+```c
+json_push_kv_int(result, "best_header_height", header_height);
+```
+
+### Test:
+- Verify `make test` still passes (the test for getblockchaininfo, if any, may need updating)
+- The fix is mostly about correctness of reported values — no behavioral change
+
+---
+
+## Task 2: Fix MCP zcl_status to Expose Header vs Block Gap
+
+### File: `tools/mcp/controllers/ops_controller.c` (or wherever `zcl_status` lives)
+
+The MCP status endpoint should clearly show when headers are behind peers:
+1. Find where `zcl_status` is implemented
+2. Add fields:
+   - `header_height`: from `pindex_best_header->nHeight`
+   - `max_peer_height`: highest `startingheight` among connected peers
+   - `header_gap`: `max_peer_height - header_height` (0 when caught up)
+   - `sync_behind`: true if header_gap > 144
+
+This makes it trivial for AI agents or monitoring to detect the stall.
+
+---
+
+## Task 3: Add Tests for False At-Tip Detection
+
+### File: `lib/test/src/test_sync_service.c` (or create if needed)
+
+Test the `syncsvc_evaluate_block_acceptance()` function from `block_sync_service.c`. This is where the false at-tip bug lives.
+
+**Test cases:**
+1. `headers_caught_up should be false when best_header == block_height but peer is 1M ahead`
+   - Call with `new_tip_height=2016354, best_header_height=2016354, node.starting_height=3078009`
+   - Assert `should_set_sync_state` is false (should NOT transition to AT_TIP)
+   - **NOTE: This test will FAIL with current code.** That's expected — it documents the bug. Add a comment: `/* BUG: headers_caught_up only checks local state, not peer height — see wave 20 task for Agent2 */`
+
+2. `headers_caught_up should be true when genuinely at tip`
+   - Call with `new_tip_height=3078000, best_header_height=3078001, node.starting_height=3078009`
+   - Assert `should_set_sync_state` is true and `next_sync_state == SYNC_AT_TIP`
+
+3. `tip_is_recent bypasses headers_caught_up correctly`
+   - Call with recent `new_tip_time` (now - 60), low `best_header_height`
+   - Assert AT_TIP transition happens (the recent-tip path is correct)
+
+**Important:** You can test `syncsvc_evaluate_block_acceptance()` directly since it's a pure function. Read the header file for the signature.
+
+---
+
+## Task 4: Add getheaders Diagnostic Logging
+
+### File: `app/services/src/header_sync_service.c`
+
+Add logging to make header sync behavior visible:
+
+1. In `syncsvc_plan_periodic_getheaders()`: when a getheaders is planned, log:
+   ```c
+   printf("[headers] getheaders planned: peer=%d our_h=%d peer_start_h=%d interval=%llds\n",
+          node->id, our_height, node->starting_height, interval);
+   ```
+
+2. In `syncsvc_getheaders_interval()`: when interval is > 60s, log (once per change):
+   ```c
+   printf("[headers] interval=%llds for peer %d (stale_count=%d)\n",
+          base, node->id, stale);
+   ```
+
+This helps diagnose WHY headers stop: is the interval too long? Are getheaders not being sent?
 
 ---
 
@@ -153,7 +132,7 @@ git pull origin master
 make -j$(nproc) 2>&1 | tail -20
 make test 2>&1 | tail -10
 make lint 2>&1 | tail -10
-git add <specific files> && git commit -m "wave 19: description"
+git add <specific files> && git commit -m "wave 20 task N: description"
 git push origin master
 ```
 
@@ -161,7 +140,5 @@ git push origin master
 - `app/services/src/sync_watchdog_service.c` (Agent2)
 - `app/services/src/block_sync_service.c` (Agent2)
 - `app/services/src/block_index_integrity.c` (Agent2)
-- `lib/net/src/msg_headers.c` (Agent2)
 - `lib/net/src/download.c` (Agent2)
 - `lib/net/src/connman.c` (Agent2)
-- `lib/net/src/compact_blocks.c` (Agent2)
