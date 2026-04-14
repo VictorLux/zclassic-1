@@ -684,8 +684,18 @@ bool accept_block(struct block *block,
         *ppindex = pindex;
 
     bool already_have = (pindex->nStatus & BLOCK_HAVE_DATA) != 0;
-    if (already_have)
+    if (already_have) {
+        /* Blocks from LDB import may have BLOCK_HAVE_DATA but nChainTx==0.
+         * Without nChainTx, find_most_work_chain skips them and the chain
+         * never advances.  Fix: set nChainTx for already-have blocks that
+         * are missing it.  Use nTx if set, otherwise default to 1 (the
+         * block exists so it has at least one tx — the coinbase). */
+        if (pindex->nChainTx == 0) {
+            unsigned int ntx = pindex->nTx > 0 ? pindex->nTx : 1;
+            pindex->nChainTx = (pindex->pprev ? pindex->pprev->nChainTx : 0) + ntx;
+        }
         return true;
+    }
 
     struct block_index *tip = active_chain_tip(&ms->chain_active);
     bool has_more_work = tip ?
