@@ -15,6 +15,7 @@
 #include "services/wallet_backup_service.h"
 #include "services/disk_monitor.h"
 #include "services/ibd_throttle.h"
+#include "services/db_maintenance.h"
 #include "controllers/wallet_scan.h"
 #include "util/sync.h"
 #include "net/msgprocessor.h"
@@ -443,6 +444,18 @@ bool app_init(struct app_context *ctx)
         printf("Wallet backup started (interval=%ds max=%d)\n",
                g_wallet_backup_cfg.interval_seconds,
                g_wallet_backup_cfg.max_versions);
+
+    /* DB maintenance — periodic WAL checkpoint, ANALYZE, VACUUM.
+     * Keeps WAL file bounded and query plans fresh. */
+    if (g_node_db.open) {
+        struct db_maintenance_schedule dbm_sched;
+        db_maintenance_schedule_defaults(&dbm_sched);
+        dbm_sched.wal_checkpoint_minutes = 5; /* checkpoint every 5 min */
+        if (db_maintenance_start(&g_node_db, &dbm_sched))
+            printf("DB maintenance started (wal=%dmin analyze=%dh)\n",
+                   dbm_sched.wal_checkpoint_minutes,
+                   dbm_sched.analyze_hours);
+    }
 
     /* Pre-flight: check for stale lock files from crashed processes */
     {

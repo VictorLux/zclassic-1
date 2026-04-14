@@ -252,6 +252,21 @@ int test_db_maintenance(void)
         dbm_fixture_destroy(&f);
     }
 
+    /* ── 7. node_db_wal_checkpoint succeeds on open DB ── */
+    {
+        struct dbm_fixture f;
+        dbm_fixture_init(&f, "walcp");
+        bool ok = node_db_wal_checkpoint(&f.ndb);
+        DBM_CHECK("dbm: node_db_wal_checkpoint succeeds on open db", ok);
+        dbm_fixture_destroy(&f);
+    }
+
+    /* ── 8. node_db_wal_checkpoint handles NULL gracefully ── */
+    {
+        bool ok = !node_db_wal_checkpoint(NULL);
+        DBM_CHECK("dbm: node_db_wal_checkpoint(NULL) returns false", ok);
+    }
+
     event_clear_observers(EV_DB_MAINTENANCE_START);
     event_clear_observers(EV_DB_MAINTENANCE_DONE);
     event_clear_observers(EV_DB_MAINTENANCE_FAILED);

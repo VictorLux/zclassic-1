@@ -66,6 +66,7 @@
 #include "services/disk_monitor.h"
 #include "services/ibd_throttle.h"
 #include "services/sync_watchdog_service.h"
+#include "services/db_maintenance.h"
 
 extern int g_assume_valid_height;
 
@@ -1502,6 +1503,7 @@ static void shutdown_persist_runtime_state(struct boot_svc_ctx *svc)
     wallet_backup_stop();
     disk_monitor_stop();
     ibd_throttle_stop();
+    db_maintenance_stop();
 
     bg_validation_stop(&svc->bg_validation);
     bg_hash_verify_stop(&svc->bg_hash_verify);
@@ -1526,6 +1528,12 @@ static void shutdown_persist_runtime_state(struct boot_svc_ctx *svc)
     if (svc->node_db->open) {
         db_service_flush_write(svc->db_service);
         node_db_sync_mempool_save(svc->node_db, svc->mempool);
+        /* Checkpoint WAL before closing — prevents WAL corruption on
+         * unclean restart and keeps the WAL file small. */
+        if (node_db_wal_checkpoint(svc->node_db))
+            printf("[shutdown] WAL checkpoint complete\n");
+        else
+            fprintf(stderr, "[shutdown] WAL checkpoint failed\n");
         db_service_close_write(svc->db_service);
     }
     if (svc->db_service)
