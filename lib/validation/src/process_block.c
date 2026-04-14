@@ -1837,27 +1837,45 @@ bool activate_best_chain(struct validation_state *state,
         }
 
         /* Connect blocks from fork to most-work tip.
-         * Count total depth, then allocate dynamically. */
+         * Count total depth, then allocate dynamically.
+         * Cap at 500 blocks per batch to prevent OOM when connecting
+         * 1M+ blocks (e.g. after LDB import with symlinked blk files).
+         * The outer do-while loop re-finds most_work and continues. */
+        #define CONNECT_BATCH_MAX 500
+
         struct block_index *current_tip = active_chain_tip(&ms->chain_active);
         int total_depth = 0;
         for (struct block_index *w = pindex_most_work;
              w && w != current_tip; w = w->pprev)
             total_depth++;
 
+        int batch_depth = total_depth > CONNECT_BATCH_MAX
+                        ? CONNECT_BATCH_MAX : total_depth;
+
         printf("activate_best_chain: connect path depth=%d "
-               "(from h=%d to tip h=%d)\n",
+               "(from h=%d to tip h=%d)%s\n",
                total_depth, pindex_most_work->nHeight,
-               current_tip ? current_tip->nHeight : -1);
+               current_tip ? current_tip->nHeight : -1,
+               total_depth > CONNECT_BATCH_MAX ? " [batched]" : "");
         fflush(stdout);
 
+        /* Walk backward from most_work but only collect batch_depth
+         * entries. For batched connects, we start from the OLDEST
+         * needed block (closest to current tip), not from most_work. */
         struct block_index **connect_path = zcl_malloc(
-            (size_t)total_depth * sizeof(struct block_index *), "connect_path");
+            (size_t)batch_depth * sizeof(struct block_index *), "connect_path");
         if (!connect_path)
-            LOG_FAIL("validation", "malloc failed for connect_path (%d entries)", total_depth);
+            LOG_FAIL("validation", "malloc failed for connect_path (%d entries)", batch_depth);
 
+        /* Walk all the way back to build the path from tip to most_work,
+         * but only keep the last batch_depth entries (closest to tip). */
         int path_len = 0;
-        for (struct block_index *w = pindex_most_work;
-             w && w != current_tip && path_len < total_depth;
+        struct block_index *w = pindex_most_work;
+        /* Skip entries beyond our batch window */
+        int skip = total_depth - batch_depth;
+        for (int s = 0; s < skip && w && w != current_tip; s++)
+            w = w->pprev;
+        for (; w && w != current_tip && path_len < batch_depth;
              w = w->pprev)
             connect_path[path_len++] = w;
 
@@ -1970,6 +1988,16 @@ bool activate_best_chain(struct validation_state *state,
                 free(connect_path);
                 return false;
             }
+        }
+        /* Flush coins after each batch to bound memory usage.
+         * The outer do-while loop re-finds most_work and connects
+         * the next batch until we reach the tip. */
+        if (total_depth > CONNECT_BATCH_MAX) {
+            flush_coins_if_needed(coins_tip, true);
+            printf("activate_best_chain: batch done, flushed at h=%d "
+                   "(%d remaining)\n",
+                   active_chain_height(&ms->chain_active),
+                   total_depth - batch_depth);
         }
         free(connect_path);
 
