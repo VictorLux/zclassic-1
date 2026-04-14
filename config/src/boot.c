@@ -284,8 +284,19 @@ void app_context_defaults(struct app_context *ctx)
 }
 
 
+/* Boot timing helper */
+static int64_t boot_clock_ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
 bool app_init(struct app_context *ctx)
 {
+    int64_t t_boot_start = boot_clock_ms();
+    int64_t t_phase;
+
     db_service_init(&g_db_service);
 
     /* Initialize event log first — everything after this is observable */
@@ -446,6 +457,7 @@ bool app_init(struct app_context *ctx)
     }
 
     /* Initialize wallet (before block index — needed for -importlegacy) */
+    t_phase = boot_clock_ms();
     wallet_init(&g_wallet);
 
     /* Load wallet from SQLite (node.db wallet_* tables) */
@@ -534,6 +546,8 @@ bool app_init(struct app_context *ctx)
         printf("New wallet created.\n");
     }
     printf("Wallet has %zu keys.\n", g_wallet.keystore.num_keys);
+    printf("[boot] %-30s %lldms\n", "wallet_load",
+           (long long)(boot_clock_ms() - t_phase));
 
     /* Wallet backup service — hourly backup rotation after wallet is loaded.
      * Default: ~/wallet_backups, interval=3600s, max_versions=168. */
@@ -612,6 +626,7 @@ bool app_init(struct app_context *ctx)
     }
 
     /* Open SQLite node database */
+    t_phase = boot_clock_ms();
     if (node_db_sync_init(&g_node_db, ctx->datadir)) {
         node_db_migrate(&g_node_db, ctx->datadir);
         int db_tip = node_db_sync_get_tip_height(&g_node_db);
@@ -625,6 +640,8 @@ bool app_init(struct app_context *ctx)
         event_emitf(EV_DB_ERROR, 0, "SQLite open failed at %s/node.db",
                     ctx->datadir);
     }
+    printf("[boot] %-30s %lldms\n", "sqlite_open_migrate",
+           (long long)(boot_clock_ms() - t_phase));
 
     /* Fast path: -importlegacy imports wallet data from legacy block files
      * and exits. No block index, no P2P, no RPC needed. */
@@ -978,6 +995,7 @@ bool app_init(struct app_context *ctx)
 
     /* Block index load: flat file first (mmap, <2s), then SQLite, then LevelDB.
      * Jeff Dean rule: use the fastest data structure available. */
+    t_phase = boot_clock_ms();
     {
         bool loaded = false;
         loaded = load_block_index_flat(ctx->datadir, &g_state);
@@ -1313,6 +1331,9 @@ bool app_init(struct app_context *ctx)
         }
     }
 
+    printf("[boot] %-30s %lldms\n", "block_index_load",
+           (long long)(boot_clock_ms() - t_phase));
+
     /* Log block index memory usage */
     {
         size_t entry_count = g_state.map_block_index.size;
@@ -1369,6 +1390,7 @@ bool app_init(struct app_context *ctx)
     }
 
     /* ── LDB UTXO import (runs AFTER block index load) ── */
+    t_phase = boot_clock_ms();
     {
         struct utxo_recovery_ctx uctx = {
             .state = &g_state,
@@ -1387,6 +1409,9 @@ bool app_init(struct app_context *ctx)
                                               ir.anchor_reason);
         }
     }
+
+    printf("[boot] %-30s %lldms\n", "utxo_import",
+           (long long)(boot_clock_ms() - t_phase));
 
     /* Resolve -assumevalid=<hash> now that block index is loaded */
     if (ctx->assume_valid && strcmp(ctx->assume_valid, "0") != 0) {
@@ -1776,6 +1801,7 @@ bool app_init(struct app_context *ctx)
         }
     }
 
+    t_phase = boot_clock_ms();
     /* Load Sapling commitment tree from persistent storage.
      * This tree is maintained by connect_block and verified against
      * hashFinalSaplingRoot in each block header. */
@@ -1854,6 +1880,9 @@ bool app_init(struct app_context *ctx)
             }
         }
     }
+
+    printf("[boot] %-30s %lldms\n", "sapling_tree_load",
+           (long long)(boot_clock_ms() - t_phase));
 
     /* Clear BLOCK_FAILED flags above the chain tip on boot.
      * After a UTXO repair or crash recovery, blocks may be marked
@@ -2029,7 +2058,13 @@ bool app_init(struct app_context *ctx)
             "chain_height=%d", chain_h);
     }
 
-    return app_init_services(ctx, params, &g_svc);
+    t_phase = boot_clock_ms();
+    bool svc_ok = app_init_services(ctx, params, &g_svc);
+    printf("[boot] %-30s %lldms\n", "p2p_services_start",
+           (long long)(boot_clock_ms() - t_phase));
+    printf("[boot] %-30s %lldms\n", "total",
+           (long long)(boot_clock_ms() - t_boot_start));
+    return svc_ok;
 }
 
 /* Write clean shutdown marker before shutting down */
