@@ -1093,7 +1093,8 @@ bool app_init_services(struct app_context *ctx,
                         ctx->datadir);
     register_hodl_rpc_commands(svc->rpc_table);
 
-    rpc_repair_set_state(svc->state, svc->coins_tip, boot_node_db());
+    rpc_repair_set_state(svc->state, svc->coins_tip, boot_node_db(),
+                         ctx->datadir, params);
     register_repair_rpc_commands(svc->rpc_table);
 
     rpc_chain_inspect_set_state(svc->state, ctx->datadir,

@@ -14,6 +14,7 @@
 #include "rpc/client.h"
 #include "script/script.h"
 #include "validation/main_state.h"
+#include "config/boot_internal.h"
 #include <inttypes.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -26,6 +27,8 @@ struct repair_context {
     struct main_state *main_state;
     struct coins_view_cache *coins_tip;
     struct node_db *node_db;
+    const char *datadir;
+    const struct chain_params *params;
 };
 
 static struct repair_context g_repair_ctx = {0};
@@ -37,12 +40,16 @@ static struct repair_context *repair_ctx(void)
 
 void rpc_repair_set_state(struct main_state *ms,
                            struct coins_view_cache *coins_tip,
-                           struct node_db *ndb)
+                           struct node_db *ndb,
+                           const char *datadir,
+                           const struct chain_params *params)
 {
     struct repair_context *ctx = repair_ctx();
     ctx->main_state = ms;
     ctx->coins_tip = coins_tip;
     ctx->node_db = ndb;
+    ctx->datadir = datadir;
+    ctx->params = params;
 }
 
 /* ── JSON helpers for parsing zclassicd responses ──────────────── */
@@ -604,11 +611,72 @@ static bool rpc_repairheights(const struct json_value *params, bool help,
     return true;
 }
 
+/* ── rescanblockfiles — re-scan all blk*.dat files ────────────── */
+
+static bool rpc_rescanblockfiles(const struct json_value *params, bool help,
+                                  struct json_value *result)
+{
+    struct repair_context *ctx = repair_ctx();
+    RPC_HELP(help, result,
+        "rescanblockfiles\n"
+        "\nRe-scan all blk*.dat block files, matching them against the block\n"
+        "index and setting BLOCK_HAVE_DATA for every match. Useful after\n"
+        "copying block files from zclassicd.\n"
+        "\nResult:\n"
+        "  {\n"
+        "    \"marked\": n,      (numeric) blocks newly marked with BLOCK_HAVE_DATA\n"
+        "    \"total_index\": n, (numeric) total block index entries\n"
+        "    \"have_data\": n,   (numeric) entries with BLOCK_HAVE_DATA\n"
+        "    \"elapsed_s\": n    (numeric) scan time in seconds\n"
+        "  }\n");
+    (void)params;
+
+    if (!ctx->main_state || !ctx->datadir || !ctx->params) {
+        json_set_str(result, "node not ready");
+        return false;
+    }
+
+    int64_t t0 = (int64_t)time(NULL);
+    printf("RPC rescanblockfiles: starting full block file scan...\n");
+    fflush(stdout);
+
+    int marked = scan_block_files_mark_data(ctx->main_state,
+                                             ctx->datadir, ctx->params);
+
+    int64_t elapsed = (int64_t)time(NULL) - t0;
+
+    /* Count index stats */
+    size_t total_entries = 0, have_data_entries = 0;
+    {
+        size_t si = 0;
+        struct block_index *sb;
+        while (block_map_next(&ctx->main_state->map_block_index,
+                               &si, NULL, &sb)) {
+            if (!sb) continue;
+            total_entries++;
+            if (sb->nStatus & BLOCK_HAVE_DATA)
+                have_data_entries++;
+        }
+    }
+
+    json_set_object(result);
+    json_push_kv_int(result, "marked", marked);
+    json_push_kv_int(result, "total_index", (int64_t)total_entries);
+    json_push_kv_int(result, "have_data", (int64_t)have_data_entries);
+    json_push_kv_int(result, "elapsed_s", elapsed);
+
+    printf("RPC rescanblockfiles: %d marked, %zu/%zu have data (%llds)\n",
+           marked, have_data_entries, total_entries, (long long)elapsed);
+    fflush(stdout);
+    return true;
+}
+
 void register_repair_rpc_commands(struct rpc_table *t)
 {
     struct rpc_command cmds[] = {
         { "blockchain", "repairutxos", rpc_repairutxos, false },
         { "blockchain", "repairheights", rpc_repairheights, false },
+        { "blockchain", "rescanblockfiles", rpc_rescanblockfiles, false },
     };
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++)
         rpc_table_append(t, &cmds[i]);
