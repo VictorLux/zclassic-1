@@ -498,6 +498,30 @@ enum watchdog_recovery_type sync_watchdog_check(
         g_watchdog.last_chain_height = -1;
     }
 
+    /* e. STALE_TIP: at_tip but peers are far ahead */
+    if (state == SYNC_AT_TIP && duration > 120) {
+        int our_height = -1;
+        if (ms)
+            our_height = active_chain_height(&ms->chain_active);
+        int max_peer = connman_max_peer_height(cm);
+        if (max_peer > 0 && our_height >= 0 && max_peer > our_height + 144) {
+            printf("[watchdog] STALE_TIP: at_tip h=%d but peers at %d "
+                   "(gap %d), reverting to HEADERS_DOWNLOAD\n",
+                   our_height, max_peer, max_peer - our_height);
+            event_emitf(EV_SYNC_STATE_CHANGE, 0,
+                        "watchdog STALE_TIP: h=%d peers=%d gap=%d",
+                        our_height, max_peer, max_peer - our_height);
+            if (!sync_set_state(SYNC_HEADERS_DOWNLOAD,
+                                "watchdog STALE_TIP recovery")) {
+                sync_set_state(SYNC_IDLE, "watchdog STALE_TIP via idle");
+                sync_set_state(SYNC_HEADERS_DOWNLOAD,
+                               "watchdog STALE_TIP recovery");
+            }
+            record_recovery(now, WATCHDOG_STATE_STUCK);
+            return WATCHDOG_STATE_STUCK;
+        }
+    }
+
     /* c. STATE_STUCK: any state (except at_tip) exceeded per-state timeout */
     if (state != SYNC_AT_TIP && duration > state_stuck_timeout(state)) {
         printf("[watchdog] STATE_STUCK: %s for %llds (timeout %llds), "
