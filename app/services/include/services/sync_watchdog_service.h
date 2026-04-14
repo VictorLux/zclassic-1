@@ -39,6 +39,7 @@ struct sync_watchdog_status {
     enum sync_state current_state;
     int64_t  current_state_duration_secs;
     int      current_state_entry_height;
+    int      escalation_level;
 };
 
 /* Initialize watchdog state and register state-change callback.

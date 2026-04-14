@@ -140,11 +140,11 @@ static int test_repeated_restart_circuit_breaker(void)
 {
     int failures = 0;
 
-    TEST("watchdog stops after >3 recoveries in 30min") {
+    TEST("watchdog escalates after repeated recoveries") {
         reset_test_state();
 
-        /* Trigger 4 recoveries via STATE_STUCK */
-        for (int i = 0; i < 4; i++) {
+        /* Trigger 3 L1 recoveries via STATE_STUCK */
+        for (int i = 0; i < 3; i++) {
             sync_set_state(SYNC_IDLE, "reset");
             sync_set_state(SYNC_FINDING_PEERS, "trigger");
             atomic_store(&g_sync_state_entered_time,
@@ -152,17 +152,18 @@ static int test_repeated_restart_circuit_breaker(void)
             sync_watchdog_check(&g_test_cm, &g_test_dm, &g_test_ms);
         }
 
-        /* Now try to trigger another — should be blocked */
+        /* 4th recovery should trigger L2 escalation */
         sync_set_state(SYNC_IDLE, "reset");
-        sync_set_state(SYNC_FINDING_PEERS, "trigger again");
+        sync_set_state(SYNC_FINDING_PEERS, "trigger L2");
         atomic_store(&g_sync_state_entered_time,
                      (int64_t)time(NULL) - 650);
         enum watchdog_recovery_type r = sync_watchdog_check(
             &g_test_cm, &g_test_dm, &g_test_ms);
-        ASSERT(r == WATCHDOG_NONE);
+        ASSERT(r == WATCHDOG_REPEATED_RESTART);
 
         struct sync_watchdog_status status;
         sync_watchdog_get_status(&status);
+        ASSERT(status.escalation_level >= 2);
         ASSERT(status.recoveries_triggered >= 3);
 
         PASS();

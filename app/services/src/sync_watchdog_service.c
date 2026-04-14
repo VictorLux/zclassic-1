@@ -90,6 +90,13 @@ static struct {
     /* Header stall escalation: consecutive HEADER_STALL recoveries */
     int      header_stall_consecutive;
     bool     header_stall_escalated;
+
+    /* Escalation levels (Task 3): never give up */
+    int      escalation_level;     /* 0=none, 1=default, 2=deep reset, 3=full reload */
+    int      l1_failures;          /* L1 failures within l1_window_start */
+    int64_t  l1_window_start;
+    int      l2_failures;          /* L2 failures within l2_window_start */
+    int64_t  l2_window_start;
 } g_watchdog;
 
 /* Last header reject reason (updated by msg_headers.c via setter) */
@@ -143,19 +150,40 @@ void sync_watchdog_get_status(struct sync_watchdog_status *out)
     out->current_state = sync_get_state();
     out->current_state_duration_secs = sync_get_state_duration();
     out->current_state_entry_height = sync_get_state_entry_height();
+    out->escalation_level = g_watchdog.escalation_level;
 }
 
-/* ── Circuit breaker check ───────────────────────────────── */
+/* Forward declarations */
+static int disconnect_outbound_peers(struct connman *cm);
 
-static bool check_repeated_restart(int64_t now)
+/* ── Escalation check (replaces circuit breaker) ────────── */
+
+#define ESCALATION_WINDOW_SECS 1800  /* 30 minutes */
+#define ESCALATION_THRESHOLD   3     /* failures before escalating */
+
+static int check_escalation_level(int64_t now)
 {
-    /* Count recoveries within the window */
-    int recent = 0;
-    for (int i = 0; i < g_watchdog.recovery_count; i++) {
-        if (now - g_watchdog.recovery_times[i] < REPEATED_WINDOW_SECS)
-            recent++;
+    /* Check L2→L3: 3 L2 failures in 30min */
+    if (g_watchdog.escalation_level >= 2) {
+        if (now - g_watchdog.l2_window_start > ESCALATION_WINDOW_SECS) {
+            g_watchdog.l2_failures = 0;
+            g_watchdog.l2_window_start = now;
+        }
+        if (g_watchdog.l2_failures >= ESCALATION_THRESHOLD)
+            return 3;
     }
-    return (recent >= REPEATED_MAX);
+
+    /* Check L1→L2: 3 L1 failures in 30min */
+    if (g_watchdog.escalation_level >= 1) {
+        if (now - g_watchdog.l1_window_start > ESCALATION_WINDOW_SECS) {
+            g_watchdog.l1_failures = 0;
+            g_watchdog.l1_window_start = now;
+        }
+        if (g_watchdog.l1_failures >= ESCALATION_THRESHOLD)
+            return 2;
+    }
+
+    return g_watchdog.escalation_level > 0 ? g_watchdog.escalation_level : 1;
 }
 
 static void record_recovery(int64_t now, enum watchdog_recovery_type type)
@@ -163,6 +191,19 @@ static void record_recovery(int64_t now, enum watchdog_recovery_type type)
     g_watchdog.recoveries_triggered++;
     g_watchdog.last_recovery_time = now;
     g_watchdog.last_recovery_type = type;
+
+    /* Track failures per escalation level */
+    int level = g_watchdog.escalation_level;
+    if (level <= 1) {
+        if (g_watchdog.l1_window_start == 0)
+            g_watchdog.l1_window_start = now;
+        g_watchdog.l1_failures++;
+        g_watchdog.escalation_level = 1;
+    } else if (level == 2) {
+        if (g_watchdog.l2_window_start == 0)
+            g_watchdog.l2_window_start = now;
+        g_watchdog.l2_failures++;
+    }
 
     /* Shift old timestamps if full */
     if (g_watchdog.recovery_count >= REPEATED_MAX + 1) {
@@ -172,6 +213,65 @@ static void record_recovery(int64_t now, enum watchdog_recovery_type type)
         g_watchdog.recovery_count = REPEATED_MAX;
     }
     g_watchdog.recovery_times[g_watchdog.recovery_count++] = now;
+}
+
+/* L2 recovery: clear download state, force header re-sync from genesis */
+static void escalation_l2(struct connman *cm, struct download_manager *dm)
+{
+    printf("[watchdog] ESCALATION L2: clearing download state, "
+           "restarting header sync from genesis\n");
+    event_emitf(EV_SYNC_STATE_CHANGE, 0,
+                "watchdog ESCALATION L2: deep header reset");
+
+    /* Clear download manager completely */
+    if (dm) {
+        zcl_mutex_lock(&dm->cs);
+        for (size_t i = 0; i < dm->num_slots; i++) {
+            dm->slots[i].active = false;
+        }
+        dm->num_active = 0;
+        dm->queue_len = 0;
+        zcl_mutex_unlock(&dm->cs);
+    }
+
+    disconnect_outbound_peers(cm);
+
+    if (!sync_set_state(SYNC_HEADERS_DOWNLOAD,
+                        "watchdog L2: header resync from genesis")) {
+        sync_set_state(SYNC_IDLE, "watchdog L2 via idle");
+        sync_set_state(SYNC_HEADERS_DOWNLOAD,
+                       "watchdog L2: header resync from genesis");
+    }
+    g_watchdog.escalation_level = 2;
+}
+
+/* L3 recovery: full state reset — reload block index, restart from IDLE */
+static void escalation_l3(struct connman *cm, struct download_manager *dm)
+{
+    printf("[watchdog] ESCALATION L3: full state reset, "
+           "reloading block index\n");
+    event_emitf(EV_SYNC_STATE_CHANGE, 0,
+                "watchdog ESCALATION L3: full state reset");
+
+    /* Clear download manager */
+    if (dm) {
+        zcl_mutex_lock(&dm->cs);
+        for (size_t i = 0; i < dm->num_slots; i++) {
+            dm->slots[i].active = false;
+        }
+        dm->num_active = 0;
+        dm->queue_len = 0;
+        zcl_mutex_unlock(&dm->cs);
+    }
+
+    disconnect_outbound_peers(cm);
+
+    /* Reset to IDLE to force full re-initialization */
+    sync_set_state(SYNC_IDLE, "watchdog L3: full state reset");
+    g_watchdog.escalation_level = 3;
+    /* Reset L2/L3 failure counters to give the new level a chance */
+    g_watchdog.l2_failures = 0;
+    g_watchdog.l2_window_start = 0;
 }
 
 /* ── Disconnect all outbound peers ───────────────────────── */
@@ -210,14 +310,19 @@ enum watchdog_recovery_type sync_watchdog_check(
     enum sync_state state = sync_get_state();
     int64_t duration = sync_get_state_duration();
 
-    /* d. REPEATED_RESTART circuit breaker */
-    if (check_repeated_restart(now)) {
-        /* Already logged — don't spam */
-        if (g_watchdog.last_recovery_type != WATCHDOG_REPEATED_RESTART) {
-            printf("[watchdog] REPEATED failures — manual intervention needed\n");
-            g_watchdog.last_recovery_type = WATCHDOG_REPEATED_RESTART;
+    /* d. Escalation: instead of giving up, escalate recovery */
+    {
+        int level = check_escalation_level(now);
+        if (level >= 3 && g_watchdog.escalation_level < 3) {
+            escalation_l3(cm, dm);
+            record_recovery(now, WATCHDOG_REPEATED_RESTART);
+            return WATCHDOG_REPEATED_RESTART;
         }
-        return WATCHDOG_NONE;
+        if (level >= 2 && g_watchdog.escalation_level < 2) {
+            escalation_l2(cm, dm);
+            record_recovery(now, WATCHDOG_REPEATED_RESTART);
+            return WATCHDOG_REPEATED_RESTART;
+        }
     }
 
     /* a. HEADER_STALL: headers_download >300s with no header progress */
