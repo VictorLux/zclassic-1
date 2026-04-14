@@ -490,6 +490,75 @@ static int t_height_repair_empty(void)
     return failures;
 }
 
+/* ── 14. Height repair with pprev cycle does not infinite loop ──── */
+
+static int t_height_repair_cycle(void)
+{
+    int failures = 0;
+    struct main_state ms;
+    main_state_init(&ms);
+
+    /* Build 5 blocks, then create a cycle: block[4].pprev = block[1],
+     * block[1].pprev = block[4]. The repair must not loop forever. */
+    enum { N = 5 };
+    struct block_index blocks[N];
+    struct uint256 hashes[N];
+
+    for (int i = 0; i < N; i++) {
+        memset(&blocks[i], 0, sizeof(blocks[i]));
+        memset(&hashes[i], 0, sizeof(hashes[i]));
+        hashes[i].data[0] = (uint8_t)(i + 10);
+        blocks[i].phashBlock = &hashes[i];
+        blocks[i].pprev = (i > 0) ? &blocks[i - 1] : NULL;
+        blocks[i].nHeight = i * 5; /* wrong heights */
+        blocks[i].nBits = 0x2007ffff;
+        block_map_insert(&ms.map_block_index, &hashes[i], &blocks[i]);
+    }
+
+    /* Create cycle: block[4]->block[3]->block[2]->block[1]->block[4] */
+    blocks[1].pprev = &blocks[4];
+
+    /* This should terminate without hanging. The repair function
+     * should handle the cycle gracefully (visited set or depth limit). */
+    int repaired = block_index_repair_heights(&ms);
+
+    /* We don't assert specific heights because a cycle makes them
+     * undefined. We just assert it terminated and didn't crash. */
+    BII_RUN("bii: height repair with pprev cycle terminates safely",
+            repaired >= 0);
+
+    main_state_free(&ms);
+    return failures;
+}
+
+/* ── 15. Height repair on single genesis block ─────────────────── */
+
+static int t_height_repair_single(void)
+{
+    int failures = 0;
+    struct main_state ms;
+    main_state_init(&ms);
+
+    struct block_index genesis;
+    struct uint256 hash;
+    memset(&genesis, 0, sizeof(genesis));
+    memset(&hash, 0, sizeof(hash));
+    hash.data[0] = 0x01;
+    genesis.phashBlock = &hash;
+    genesis.pprev = NULL;
+    genesis.nHeight = 99; /* wrong */
+    genesis.nBits = 0x2007ffff;
+    block_map_insert(&ms.map_block_index, &hash, &genesis);
+
+    int repaired = block_index_repair_heights(&ms);
+
+    BII_RUN("bii: single genesis block repaired to height 0",
+            genesis.nHeight == 0 && repaired >= 0);
+
+    main_state_free(&ms);
+    return failures;
+}
+
 /* ── Aggregator ─────────────────────────────────────────────── */
 
 int test_block_index_integrity(void)
@@ -509,5 +578,7 @@ int test_block_index_integrity(void)
     failures += t_verdict_names();
     failures += t_height_repair();
     failures += t_height_repair_empty();
+    failures += t_height_repair_cycle();
+    failures += t_height_repair_single();
     return failures;
 }

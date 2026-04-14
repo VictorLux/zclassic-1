@@ -420,6 +420,8 @@ int block_index_repair_heights(struct main_state *ms)
             if (!pi) continue;
             if (pi->pprev && pi->nHeight != pi->pprev->nHeight + 1)
                 wrong++;
+            else if (!pi->pprev && pi->nHeight != 0)
+                wrong++;
         }
     }
 

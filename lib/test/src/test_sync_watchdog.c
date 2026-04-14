@@ -434,6 +434,91 @@ static int test_recovery_type_names(void)
     return failures;
 }
 
+/* ── Test: zero peers triggers state stuck ──────────────── */
+
+static int test_zero_peers_stuck(void)
+{
+    int failures = 0;
+
+    TEST("watchdog with 0 peers in FINDING_PEERS triggers STATE_STUCK") {
+        reset_test_state();
+
+        /* Zero peers: num_nodes = 0, nodes = NULL */
+        g_test_cm.manager.num_nodes = 0;
+        g_test_cm.manager.nodes = NULL;
+
+        sync_set_state(SYNC_FINDING_PEERS, "test 0 peers");
+        atomic_store(&g_sync_state_entered_time,
+                     (int64_t)time(NULL) - 650);
+
+        enum watchdog_recovery_type r = sync_watchdog_check(
+            &g_test_cm, &g_test_dm, &g_test_ms);
+        ASSERT(r == WATCHDOG_STATE_STUCK);
+
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+/* ── Test: exactly at timeout boundary (not past) ───────── */
+
+static int test_timeout_boundary_exact(void)
+{
+    int failures = 0;
+
+    TEST("watchdog does NOT trigger at exactly 300s (boundary)") {
+        reset_test_state();
+
+        sync_set_state(SYNC_HEADERS_DOWNLOAD, "boundary test");
+
+        struct block_index fake_header = {0};
+        fake_header.nHeight = 5000;
+        g_test_ms.pindex_best_header = &fake_header;
+
+        /* Set exactly 300s — should record baseline, not trigger */
+        atomic_store(&g_sync_state_entered_time,
+                     (int64_t)time(NULL) - 300);
+
+        enum watchdog_recovery_type r = sync_watchdog_check(
+            &g_test_cm, &g_test_dm, &g_test_ms);
+        /* First check records baseline — should not be a stall */
+        ASSERT(r == WATCHDOG_NONE);
+
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+/* ── Test: progress rate tracking via status ────────────── */
+
+static int test_progress_rate_tracking(void)
+{
+    int failures = 0;
+
+    TEST("watchdog stats track blocks_per_sec after checks") {
+        reset_test_state();
+
+        sync_set_state(SYNC_HEADERS_DOWNLOAD, "setup");
+        sync_set_state(SYNC_AT_TIP, "at tip");
+
+        /* Run several checks at tip */
+        for (int i = 0; i < 5; i++)
+            sync_watchdog_check(&g_test_cm, &g_test_dm, &g_test_ms);
+
+        struct watchdog_stats wstats;
+        sync_watchdog_get_stats(&wstats);
+        ASSERT(wstats.checks_run >= 5);
+        /* blocks_per_sec at tip with no height change should be >= 0 */
+        ASSERT(wstats.blocks_per_sec >= 0.0);
+
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
 /* ── Test runner ─────────────────────────────────────────── */
 
 int test_sync_watchdog(void)
@@ -454,5 +539,8 @@ int test_sync_watchdog(void)
     failures += test_header_lag_detection();
     failures += test_header_lag_small_gap();
     failures += test_recovery_type_names();
+    failures += test_zero_peers_stuck();
+    failures += test_timeout_boundary_exact();
+    failures += test_progress_rate_tracking();
     return failures;
 }
