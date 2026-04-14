@@ -61,6 +61,9 @@ struct node_health_snapshot {
     uint64_t in_flight;
     uint64_t queued;
 
+    /* Memory */
+    int64_t memory_rss_mb;
+
     /* Watchdog stats */
     int      wd_checks_run;
     int      wd_recoveries;

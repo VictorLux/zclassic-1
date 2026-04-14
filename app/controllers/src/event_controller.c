@@ -112,6 +112,8 @@ static bool rpc_healthcheck(const struct json_value *params, bool help,
         json_push_kv_str(&checks, "onion_address", health.onion_address);
     if (health.degraded_reason[0])
         json_push_kv_str(&checks, "degraded_reason", health.degraded_reason);
+    json_push_kv_int(&checks, "memory_rss_mb", health.memory_rss_mb);
+    json_push_kv_int(&checks, "uptime_seconds", health.uptime_seconds);
 
     json_push_kv_bool(result, "healthy", health.healthy);
     json_push_kv(result, "checks", &checks);

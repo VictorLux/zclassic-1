@@ -24,6 +24,23 @@
 #include "util/log_macros.h"
 
 static int64_t g_health_start_time = 0;
+
+static int64_t get_rss_kb(void)
+{
+    FILE *f = fopen("/proc/self/status", "r");
+    if (!f) return -1;
+    char line[256];
+    while (fgets(line, sizeof(line), f)) {
+        if (strncmp(line, "VmRSS:", 6) == 0) {
+            int64_t kb = 0;
+            sscanf(line + 6, " %lld", (long long *)&kb);
+            fclose(f);
+            return kb;
+        }
+    }
+    fclose(f);
+    return -1;
+}
 static const int64_t HEALTH_JOB_STALL_SECONDS = 120;
 
 static bool health_query_int(sqlite3 *db, const char *sql, int *out)
@@ -234,6 +251,11 @@ void node_health_collect(struct node_health_snapshot *snapshot,
         g_health_start_time = (int64_t)time(NULL);
     snapshot->uptime_seconds = (int64_t)time(NULL) - g_health_start_time;
 
+    {
+        int64_t rss_kb = get_rss_kb();
+        snapshot->memory_rss_mb = (rss_kb > 0) ? rss_kb / 1024 : -1;
+    }
+
     if (!snapshot->has_peers) {
         snprintf(snapshot->degraded_reason, sizeof(snapshot->degraded_reason),
                  "no_peers");
@@ -277,6 +299,9 @@ void node_health_collect(struct node_health_snapshot *snapshot,
     } else if (snapshot->error_total > 0 && snapshot->last_error[0]) {
         snprintf(snapshot->degraded_reason, sizeof(snapshot->degraded_reason),
                  "recent_error");
+    } else if (snapshot->memory_rss_mb > 4096) {
+        snprintf(snapshot->degraded_reason, sizeof(snapshot->degraded_reason),
+                 "high_memory_usage");
     }
 
     snapshot->healthy = snapshot->synced &&

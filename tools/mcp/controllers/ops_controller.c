@@ -93,16 +93,38 @@ static int h_zcl_status(const struct mcp_request *req, struct mcp_response *res)
                  "malloc failed for status response");
         LOG_ERR("mcp.ops", "malloc failed for status body (32768 bytes)");
     }
+    /* Extract memory_rss_mb and uptime_seconds from healthcheck response */
+    int64_t memory_rss_mb = -1;
+    int64_t uptime_secs = 0;
+    if (hc) {
+        const char *rss = strstr(hc, "\"memory_rss_mb\"");
+        if (rss) {
+            rss += strlen("\"memory_rss_mb\"");
+            while (*rss == ' ' || *rss == ':') rss++;
+            memory_rss_mb = atoll(rss);
+        }
+        const char *ut = strstr(hc, "\"uptime_seconds\"");
+        if (ut) {
+            ut += strlen("\"uptime_seconds\"");
+            while (*ut == ' ' || *ut == ':') ut++;
+            uptime_secs = atoll(ut);
+        }
+    }
+
     snprintf(out, 32768,
              "{\"height\":%d,\"header_height\":%d,"
              "\"max_peer_height\":%d,\"header_gap\":%d,"
              "\"sync_behind\":%s,"
-             "\"peers\":%d,\"sync\":%s,"
+             "\"peers\":%d,"
+             "\"memory_rss_mb\":%lld,\"uptime_secs\":%lld,"
+             "\"sync\":%s,"
              "\"validation\":%s,\"health\":%s}",
              block_height, header_height,
              max_peer_height, header_gap,
              sync_behind ? "true" : "false",
-             pc, s ? s : "null",
+             pc,
+             (long long)memory_rss_mb, (long long)uptime_secs,
+             s ? s : "null",
              v ? v : "null", hc ? hc : "null");
     free(h); free(p); free(s); free(v); free(hc); free(ci);
     res->body = out;
