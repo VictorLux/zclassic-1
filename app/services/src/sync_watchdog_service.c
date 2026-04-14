@@ -23,9 +23,24 @@
 
 #define HEADER_STALL_SECS    300   /* 5 minutes */
 #define BLOCK_STALL_SECS     300   /* 5 minutes */
-#define STATE_STUCK_SECS     600   /* 10 minutes */
 #define REPEATED_WINDOW_SECS 1800  /* 30 minutes */
 #define REPEATED_MAX         3     /* max recoveries before giving up */
+
+/* Per-state stuck timeouts (replaces single STATE_STUCK_SECS=600).
+ * HEADERS_DOWNLOAD and BLOCKS_DOWNLOAD keep longer timeouts because
+ * they have dedicated stall checks (HEADER_STALL, HEADER_LAG, BLOCK_STALL)
+ * that fire first — STATE_STUCK is their last-resort backup. */
+static int64_t state_stuck_timeout(enum sync_state state)
+{
+    switch (state) {
+    case SYNC_FINDING_PEERS:      return 120;
+    case SYNC_HEADERS_DOWNLOAD:   return 600;  /* backup for HEADER_STALL */
+    case SYNC_BLOCKS_DOWNLOAD:    return 600;  /* backup for BLOCK_STALL */
+    case SYNC_CONNECTING_BLOCKS:  return 180;
+    case SYNC_REORG:              return 60;
+    default:                      return 300;
+    }
+}
 
 /* ── Sync state timestamps (Task 2) ─────────────────────── */
 
@@ -318,11 +333,12 @@ enum watchdog_recovery_type sync_watchdog_check(
         g_watchdog.last_chain_height = -1;
     }
 
-    /* c. STATE_STUCK: any state (except at_tip) unchanged >600s */
-    if (state != SYNC_AT_TIP && duration > STATE_STUCK_SECS) {
-        printf("[watchdog] STATE_STUCK: %s for %llds, "
+    /* c. STATE_STUCK: any state (except at_tip) exceeded per-state timeout */
+    if (state != SYNC_AT_TIP && duration > state_stuck_timeout(state)) {
+        printf("[watchdog] STATE_STUCK: %s for %llds (timeout %llds), "
                "forcing header re-sync\n",
-               sync_state_name(state), (long long)duration);
+               sync_state_name(state), (long long)duration,
+               (long long)state_stuck_timeout(state));
 
         /* Try direct transition; if not allowed, go through IDLE first */
         if (!sync_set_state(SYNC_HEADERS_DOWNLOAD,
