@@ -493,7 +493,7 @@ static int scan_one_block_file(struct main_state *ms,
                                 const struct chain_params *params,
                                 int *created_out)
 {
-    int marked = 0, created = 0, consec_errors = 0;
+    int marked = 0, created = 0, consec_errors = 0, skipped = 0;
     FILE *f = fopen(filepath, "rb");
     if (!f) {
         fprintf(stderr, "scan: cannot open %s: %s\n", filepath, strerror(errno));
@@ -503,6 +503,14 @@ static int scan_one_block_file(struct main_state *ms,
     fseek(f, 0, SEEK_END);
     long file_size = ftell(f);
     fseek(f, 0, SEEK_SET);
+
+    /* Magic bytes for fast scan (little-endian ZCL_BLOCK_MAGIC) */
+    const uint8_t magic_bytes[4] = {
+        ZCL_BLOCK_MAGIC & 0xFF,
+        (ZCL_BLOCK_MAGIC >> 8) & 0xFF,
+        (ZCL_BLOCK_MAGIC >> 16) & 0xFF,
+        (ZCL_BLOCK_MAGIC >> 24) & 0xFF
+    };
 
     long pos = 0;
     while (pos + 8 + 140 <= file_size) {
@@ -517,8 +525,31 @@ static int scan_one_block_file(struct main_state *ms,
 
         /* Validate magic (mainnet: 24e92764) */
         if (magic != ZCL_BLOCK_MAGIC) {
-            pos += 1;
-            fseek(f, pos, SEEK_SET);
+            /* Fast-scan forward for next magic instead of byte-by-byte.
+             * Read a 4KB chunk and search for the magic pattern. */
+            uint8_t scan_buf[4096];
+            long scan_pos = pos + 1;
+            bool found = false;
+            while (scan_pos + 8 + 140 <= file_size) {
+                fseek(f, scan_pos, SEEK_SET);
+                size_t got = fread(scan_buf, 1, sizeof(scan_buf), f);
+                if (got < 4) break;
+                for (size_t si = 0; si + 3 < got; si++) {
+                    if (scan_buf[si] == magic_bytes[0] &&
+                        scan_buf[si+1] == magic_bytes[1] &&
+                        scan_buf[si+2] == magic_bytes[2] &&
+                        scan_buf[si+3] == magic_bytes[3]) {
+                        pos = scan_pos + (long)si;
+                        fseek(f, pos, SEEK_SET);
+                        found = true;
+                        break;
+                    }
+                }
+                if (found) break;
+                scan_pos += (long)(got - 3); /* overlap by 3 for boundary */
+            }
+            if (!found) break;
+            skipped++;
             continue;
         }
 
@@ -629,6 +660,10 @@ static int scan_one_block_file(struct main_state *ms,
 
     fclose(f);
     if (created_out) *created_out += created;
+    if (marked > 0 || created > 0)
+        printf("  blk%05d.dat: %d marked, %d created, %d skipped (%ld MB)\n",
+               file_idx, marked, created, skipped,
+               file_size / (1024 * 1024));
     return marked;
 }
 
@@ -812,10 +847,6 @@ int scan_block_files_mark_data(struct main_state *ms, const char *datadir,
 
         int m = scan_one_block_file(ms, path, file_idx, params, &created);
         marked += m;
-
-        if ((file_idx % 20 == 0) && (marked > 0 || created > 0))
-            printf("  blk%05d.dat: %d marked, %d created so far\n",
-                   file_idx, marked, created);
     }
 
     /* Also scan blk_sync.dat when it exists.
@@ -1033,9 +1064,24 @@ int scan_block_files_mark_data(struct main_state *ms, const char *datadir,
     }
 
     int64_t elapsed = (int64_t)time(NULL) - t0;
-    if (marked > 0 || created > 0)
-        printf("Block file scan: %d blocks marked, %d created in %llds\n",
-               marked, created, (long long)elapsed);
+
+    /* Summary stats: how many index entries have BLOCK_HAVE_DATA vs total */
+    size_t total_entries = 0, have_data_entries = 0;
+    {
+        size_t si = 0;
+        struct block_index *sb;
+        while (block_map_next(&ms->map_block_index, &si, NULL, &sb)) {
+            if (!sb) continue;
+            total_entries++;
+            if (sb->nStatus & BLOCK_HAVE_DATA)
+                have_data_entries++;
+        }
+    }
+
+    printf("Block file scan: %d marked, %d created in %llds  "
+           "[index: %zu entries, %zu have data]\n",
+           marked, created, (long long)elapsed,
+           total_entries, have_data_entries);
 
     return marked;
 }
