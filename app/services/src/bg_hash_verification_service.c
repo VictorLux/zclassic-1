@@ -63,7 +63,9 @@ static void *bg_hash_verify_thread(void *arg)
     int start_height = load_progress(svc->ndb);
     if (start_height < 1) start_height = 1; /* skip genesis (no block file) */
 
+    zcl_mutex_lock(&ms->cs_main);
     int chain_height = active_chain_height(&ms->chain_active);
+    zcl_mutex_unlock(&ms->cs_main);
     atomic_store(&svc->progress.chain_height, chain_height);
 
     if (start_height > chain_height) {
@@ -86,17 +88,36 @@ static void *bg_hash_verify_thread(void *arg)
     for (int h = start_height; h <= chain_height; h++) {
         if (atomic_load(&svc->stop_requested)) break;
 
-        const struct block_index *pindex =
-            active_chain_at(&ms->chain_active, h);
-        if (!pindex || !pindex->phashBlock) continue;
+        /* Take cs_main briefly to snapshot block_index fields.
+         * Without this lock, active_chain_set_tip() can realloc the
+         * chain array or swap entries during reorgs, causing SIGSEGV
+         * when we read stale/freed pointers. See wave 22b task 3. */
+        struct disk_block_pos snap_pos;
+        struct uint256 snap_hash;
+        bool have_data = false;
+        disk_block_pos_init(&snap_pos);
 
-        /* Skip blocks without data on disk */
-        if (!(pindex->nStatus & BLOCK_HAVE_DATA)) continue;
+        zcl_mutex_lock(&ms->cs_main);
+        {
+            const struct block_index *pindex =
+                active_chain_at(&ms->chain_active, h);
+            if (pindex && pindex->phashBlock &&
+                (pindex->nStatus & BLOCK_HAVE_DATA)) {
+                snap_pos.nFile = pindex->nFile;
+                snap_pos.nPos = pindex->nDataPos;
+                snap_hash = *pindex->phashBlock;
+                have_data = true;
+            }
+        }
+        zcl_mutex_unlock(&ms->cs_main);
 
-        /* Read block from disk (pread — thread-safe, no FILE* cache) */
+        if (!have_data) continue;
+
+        /* Read block from disk (pread — thread-safe, no FILE* cache).
+         * All disk I/O happens OUTSIDE cs_main to avoid blocking P2P. */
         struct block blk;
         block_init(&blk);
-        if (!read_block_from_disk_index_pread(&blk, pindex, svc->datadir)) {
+        if (!read_block_from_disk_pread(&blk, &snap_pos, svc->datadir)) {
             block_free(&blk);
             continue; /* block file may be missing — not a hash error */
         }
@@ -106,10 +127,10 @@ static void *bg_hash_verify_thread(void *arg)
         block_header_get_hash(&blk.header, &computed);
         block_free(&blk);
 
-        /* Compare against stored hash */
-        if (uint256_cmp(&computed, pindex->phashBlock) != 0) {
+        /* Compare against stored hash (snapshot — no lock needed) */
+        if (uint256_cmp(&computed, &snap_hash) != 0) {
             char exp[65], got[65];
-            uint256_get_hex(pindex->phashBlock, exp);
+            uint256_get_hex(&snap_hash, exp);
             uint256_get_hex(&computed, got);
             fprintf(stderr, "[bg-hash-verify] MISMATCH at h=%d!\n"
                     "  stored:   %s\n  computed: %s\n", h, exp, got);
@@ -135,7 +156,9 @@ static void *bg_hash_verify_thread(void *arg)
 
         /* Update chain height periodically (chain may grow) */
         if (h % SAVE_INTERVAL == 0) {
+            zcl_mutex_lock(&ms->cs_main);
             int new_tip = active_chain_height(&ms->chain_active);
+            zcl_mutex_unlock(&ms->cs_main);
             if (new_tip > chain_height) chain_height = new_tip;
             atomic_store(&svc->progress.chain_height, chain_height);
         }
