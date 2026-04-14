@@ -159,10 +159,10 @@ static int ml_fpb_cmp(const void *a, const void *b)
      * floating point:  (a.fee * b.size) vs (b.fee * a.size). */
     int64_t lhs = av->fee * (int64_t)(bv->tx_size ? bv->tx_size : 1);
     int64_t rhs = bv->fee * (int64_t)(av->tx_size ? av->tx_size : 1);
-    if (lhs < rhs) return -1;
+    if (lhs < rhs) return -1; // raw-return-ok (qsort comparator)
     if (lhs > rhs) return  1;
     /* Tie-break: older first (earlier `time` ⇒ evict sooner). */
-    if (av->time < bv->time) return -1;
+    if (av->time < bv->time) return -1; // raw-return-ok (qsort comparator)
     if (av->time > bv->time) return  1;
     return 0;
 }

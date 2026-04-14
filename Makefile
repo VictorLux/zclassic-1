@@ -513,7 +513,34 @@ check-raw-sqlite:
 	fi
 	@echo "  OK: sqlite3_step check complete"
 
-lint: check-malloc check-silent-errors check-raw-sqlite
+check-silent-errors-services:
+	@echo "══ LINT: silent error returns in services ══"
+	@HITS=$$(grep -rn -B1 'return -1;' app/services/src/ --include='*.c' \
+	    | grep 'return -1;' \
+	    | grep -v 'LOG_ERR\|LOG_FAIL\|log_json\|fprintf\|printf\|raw-return-ok' \
+	    | while read -r line; do \
+	        file=$$(echo "$$line" | cut -d: -f1); \
+	        lnum=$$(echo "$$line" | cut -d: -f2); \
+	        prev=$$((lnum - 1)); \
+	        prev_line=$$(sed -n "$${prev}p" "$$file"); \
+	        echo "$$prev_line" | grep -qE 'fprintf|LOG_ERR|LOG_FAIL|log_json|printf' || echo "$$line"; \
+	    done); \
+	if [ -n "$$HITS" ]; then \
+	    echo "$$HITS"; \
+	    echo "FAIL: silent error returns found in services"; \
+	    exit 1; \
+	fi
+	@echo "  OK: all service error returns logged"
+
+check-before-save-hooks:
+	@echo "══ LINT: critical models wire before_save hooks ══"
+	@for model in utxo block; do \
+	    grep -q 'before_save' app/models/src/$$model.c \
+	    || (echo "FAIL: app/models/src/$$model.c missing before_save hook" && exit 1); \
+	done
+	@echo "  OK: critical models have before_save hooks"
+
+lint: check-malloc check-silent-errors check-raw-sqlite check-silent-errors-services check-before-save-hooks
 	@echo "══ LINT: all checks passed ══"
 
 ci: lint zclassic23 test_zcl

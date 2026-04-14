@@ -70,7 +70,7 @@ static int csr_sqlite_block_height(struct node_db *ndb,
     if (!ndb || !ndb->open || !ndb->db || !hash || !out_height) {
         fprintf(stderr, "[csr] %s: invalid args (ndb=%p hash=%p out=%p)\n",
                 __func__, (void *)ndb, (void *)hash, (void *)out_height);
-        return -1;
+        return -1; // raw-return-ok (logged above)
     }
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(ndb->db,
@@ -78,7 +78,7 @@ static int csr_sqlite_block_height(struct node_db *ndb,
             -1, &st, NULL) != SQLITE_OK) {
         fprintf(stderr, "[csr] %s: sqlite3_prepare_v2 failed: %s\n",
                 __func__, sqlite3_errmsg(ndb->db));
-        return -1;
+        return -1; // raw-return-ok (logged above)
     }
     sqlite3_bind_blob(st, 1, hash->data, 32, SQLITE_STATIC);
     int rc = sqlite3_step(st);

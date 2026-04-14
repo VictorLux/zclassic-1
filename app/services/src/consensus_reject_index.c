@@ -63,7 +63,7 @@ static int hex_nibble(char c)
     if (c >= '0' && c <= '9') return c - '0';
     if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
     if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
-    return -1;
+    return -1; // raw-return-ok (hex parser sentinel)
 }
 
 /* Parse exactly 64 hex chars into out[32]. Matches the encoding
