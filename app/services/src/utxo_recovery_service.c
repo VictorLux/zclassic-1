@@ -60,6 +60,8 @@ bool utxo_recovery_wipe(struct node_db *ndb, const char *reason)
                 policy_decision_name(d), (long long)(proposed + 1));
         return false;
     }
+    event_emitf(EV_RECOVERY_ACTION, 0,
+        "action=utxo_wipe reason=%s rows=%lld", reason, (long long)proposed);
     node_db_wipe_utxos(ndb);
     return true;
 }
@@ -718,6 +720,9 @@ int utxo_recovery_clean_above_tip(struct node_db *ndb,
     }
 
     if (would_wipe > 0) {
+        event_emitf(EV_RECOVERY_ACTION, 0,
+            "action=utxo_prune_above_tip height=%d count=%lld",
+            tip_h, (long long)would_wipe);
         char sql[128];
         snprintf(sql, sizeof(sql),
                  "DELETE FROM utxos WHERE height > %d", tip_h);

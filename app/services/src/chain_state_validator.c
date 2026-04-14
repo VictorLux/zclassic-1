@@ -53,6 +53,9 @@ struct boot_validation_result validate_coins_chain_agreement(
             if (coins_block && coins_block->nHeight > 0) {
                 printf("Chain at genesis but coins at h=%d — "
                        "restoring chain tip\n", coins_block->nHeight);
+                event_emitf(EV_RECOVERY_ACTION, 0,
+                    "action=reset_chain reason=coins_ahead_of_chain coins_h=%d",
+                    coins_block->nHeight);
                 r.action = BOOT_RECOVER_RESET_CHAIN;
                 r.coins_height = coins_block->nHeight;
                 memcpy(&r.coins_hash, &coins_best, sizeof(r.coins_hash));
@@ -66,6 +69,9 @@ struct boot_validation_result validate_coins_chain_agreement(
                 if (walk_h > 0) {
                     printf("Post-import: coins_best_block resolved to h=%d "
                            "via pprev walk — restoring chain tip\n", walk_h);
+                    event_emitf(EV_RECOVERY_ACTION, 0,
+                        "action=reset_chain_pprev_walk reason=post_import coins_h=%d",
+                        walk_h);
                     coins_block->nHeight = walk_h;
                     r.action = BOOT_RECOVER_RESET_CHAIN;
                     r.coins_height = walk_h;
@@ -83,6 +89,9 @@ struct boot_validation_result validate_coins_chain_agreement(
                  * has a stale best_block that's not in the current index. */
                 printf("Chain at genesis, coins_best_block not in index "
                        "— resetting to null for clean sync\n");
+                event_emitf(EV_RECOVERY_ACTION, 0,
+                    "action=reset_coins_best_to_null reason=coins_not_in_index chain_h=%d",
+                    chain_tip ? chain_tip->nHeight : 0);
                 struct uint256 null_hash;
                 uint256_set_null(&null_hash);
                 coins_view_cache_set_best_block(cvtip, &null_hash);
