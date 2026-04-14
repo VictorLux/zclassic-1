@@ -383,9 +383,13 @@ static struct block_index *find_most_work_chain(struct main_state *ms)
                     break;
                 }
                 if (!check->pprev && check->nHeight > 0) {
-                    /* Broken pprev chain — skip this candidate
-                     * instead of dereferencing NULL */
-                    chain_ok = false;
+                    /* pprev not linked — stop walking ancestry.
+                     * This is normal after LDB import where block_index
+                     * entries have nChainTx set (from the import) but
+                     * pprev pointers aren't fully resolved yet. The
+                     * nChainTx > 0 check above already ensures data
+                     * availability — don't reject the chain just
+                     * because we can't walk pprev to genesis. */
                     break;
                 }
                 check = check->pprev;
@@ -1777,10 +1781,12 @@ bool activate_best_chain(struct validation_state *state,
                 fork = fork->pprev;
                 walk = walk->pprev;
             }
-            /* If we ran out of pprev without finding a common ancestor,
-             * treat as no fork found (fork == NULL triggers genesis reset) */
+            /* If pprev walk couldn't find a common ancestor (broken
+             * links after LDB import), assume we're extending the
+             * current chain — use tip as the fork point.  Do NOT
+             * set fork=NULL which triggers a destructive genesis reset. */
             if (fork != walk)
-                fork = NULL;
+                fork = tip;
 
             /* During IBD, allow deep reorgs — fork blocks received in
              * parallel can cause the wrong chain to be connected initially.
