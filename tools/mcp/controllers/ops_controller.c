@@ -399,6 +399,72 @@ static int h_zcl_profile(const struct mcp_request *req,
     return 0;
 }
 
+/* ── zcl_syncdiag — deep sync diagnostics ─────────────────────
+ *
+ * Combines getsyncdiag (watchdog, header counters, chain/header heights)
+ * with download queue stats and peer max height into a single response
+ * for diagnosing sync issues without multiple tool calls. */
+static int h_zcl_syncdiag(const struct mcp_request *req,
+                           struct mcp_response *res)
+{
+    (void)req;
+    char *diag = mcp_node_rpc("getsyncdiag", NULL);
+    char *dl   = mcp_node_rpc("downloadstats", NULL);
+    char *pi   = mcp_node_rpc("getpeerinfo", NULL);
+
+    /* Extract peer_max_height from getpeerinfo (max starting_height) */
+    int peer_max_height = 0;
+    if (pi) {
+        /* Scan for "startingheight": N — take the maximum */
+        const char *p = pi;
+        while ((p = strstr(p, "\"startingheight\"")) != NULL) {
+            p += strlen("\"startingheight\"");
+            while (*p == ' ' || *p == ':') p++;
+            int h = atoi(p);
+            if (h > peer_max_height) peer_max_height = h;
+        }
+    }
+
+    size_t cap = 16384;
+    char *out = zcl_malloc(cap, "syncdiag_body");
+    if (!out) {
+        free(diag); free(dl); free(pi);
+        res->error = MCP_ERR_INTERNAL;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "malloc failed for syncdiag response");
+        LOG_ERR("mcp.ops", "malloc failed for syncdiag body (%zu bytes)", cap);
+        return -1;
+    }
+
+    /* Merge diag object with download stats and peer_max_height.
+     * diag is a JSON object like {...} — strip the trailing '}',
+     * append the extra fields, re-close. */
+    if (diag) {
+        size_t dlen = strlen(diag);
+        /* Find last '}' */
+        while (dlen > 0 && diag[dlen - 1] != '}') dlen--;
+        if (dlen > 0) diag[dlen - 1] = '\0';  /* strip trailing } */
+
+        snprintf(out, cap,
+            "%s,\"peer_max_height\":%d,"
+            "\"download\":%s}",
+            diag,
+            peer_max_height,
+            dl ? dl : "null");
+    } else {
+        snprintf(out, cap,
+            "{\"error\":\"getsyncdiag RPC failed\","
+            "\"peer_max_height\":%d,"
+            "\"download\":%s}",
+            peer_max_height,
+            dl ? dl : "null");
+    }
+
+    free(diag); free(dl); free(pi);
+    res->body = out;
+    return 0;
+}
+
 /* ── Replay recorder handlers ───────────────────────────────── */
 
 static int h_zcl_replay_dump(const struct mcp_request *req,
@@ -564,6 +630,12 @@ static const struct mcp_tool_route k_routes[] = {
       "with name, user_ms, sys_ms, cpu_pct. For diagnosing slow "
       "nodes without attaching gdb.",
       p_profile, sizeof(p_profile) / sizeof(p_profile[0]), h_zcl_profile },
+    { "zcl_syncdiag", "ops",
+      "Deep sync diagnostics: sync state, chain height, best header "
+      "height, peer max height, header gap, watchdog status and "
+      "escalation level, header batch counters, download queue size "
+      "and in-flight count. The single tool for diagnosing sync stalls.",
+      NULL, 0, h_zcl_syncdiag },
     { "zcl_replay_dump", "ops",
       "Dump the MCP request/response replay buffer (last 100 calls). "
       "Shows tool name, args, response, timestamp, duration, error status.",
