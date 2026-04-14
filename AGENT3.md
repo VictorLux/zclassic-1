@@ -1,132 +1,98 @@
-# AGENT3 — Wave 21: Testing Infrastructure & Observability
+# AGENT3 — Wave 22: LOG_FAIL Spam Fix + Before-Save Hooks + Logging Cleanup
 
 **Working directory:** `~/zclassic23-3`
 **Coordinator:** Agent1 (~/zclassic23)
 **Workflow:** `git pull origin master` before starting, `git push origin master` when done with each task.
-**Run `make -j$(nproc) && make test && make lint` before every push.**
+**Run `make -j$(nproc) && make test` before every push.**
 
 ---
 
 ## Context
 
-The sync pipeline has been the source of multiple stuck-node bugs. Agent1 is fixing the activation and chain selection code. Your focus is on **test coverage** that catches these classes of bugs, **observability** so we can diagnose them faster, and **defensive patterns** that prevent them.
+The `make test` output is broken — 1M lines of LOG_FAIL spam from the fast_sync PoW solve loop mask real test failures. Additionally, 3 models are missing before_save hooks, and ~10 service error paths use bare `fprintf` instead of the structured `LOG_ERR` macro.
 
 Read `DEFENSIVE_CODING.md` first.
 
 ---
 
-## Task 1: Test Suite for Chain Activation Edge Cases
+## Task 1 (HIGH — DO FIRST): Fix LOG_FAIL Spam in fast_sync_verify_pow
 
-The chain activation path (`activate_best_chain` in process_block.c) has had 3 bugs in the last 24 hours. Add tests that would have caught them.
+### File: `lib/net/src/fast_sync.c`
 
-### File: `lib/test/src/test_chain_activation_controller.c` (or similar)
+**Bug:** `fast_sync_verify_pow()` (line ~392) calls `LOG_FAIL()` on every failed nonce attempt. The solve loop in `fast_sync_solve_pow()` tries up to 2^20 nonces, producing ~1M stderr lines. This masks the real test failure in `make test`.
 
-**Test cases to add:**
-
-a) **Batched activation**: Create a chain with 1000+ blocks to connect. Verify `activate_best_chain` connects in batches (not all at once) and flushes between batches.
-
-b) **Broken pprev doesn't reject chain**: Create block_index entries where pprev is NULL above height 0 but nChainTx > 0. Verify `find_most_work_chain` still selects them (this was the regression from Agent2's guard).
-
-c) **Fork point with broken pprev**: When fork-finding can't walk pprev to find common ancestor, verify it uses tip as fork point (not NULL which causes genesis reset).
-
-d) **BLOCK_HAVE_DATA but file missing**: Set BLOCK_HAVE_DATA on a block whose blk file doesn't exist. Verify `connect_tip` clears the flag and returns a meaningful error.
-
----
-
-## Task 2: Add Memory RSS to Health Check + zcl_status
-
-### File: `app/services/src/node_health_service.c`
+**Fix:** The verify function should NOT log on normal verification failure — it's called in a tight loop. Remove or downgrade the LOG_FAIL to a simple `return false`:
 
 ```c
-static int64_t get_rss_kb(void) {
-    FILE *f = fopen("/proc/self/status", "r");
-    if (!f) return -1;
-    char line[256];
-    while (fgets(line, sizeof(line), f)) {
-        if (strncmp(line, "VmRSS:", 6) == 0) {
-            int64_t kb = 0;
-            sscanf(line + 6, " %lld", (long long *)&kb);
-            fclose(f);
-            return kb;
-        }
-    }
-    fclose(f);
-    return -1;
-}
+// In fast_sync_verify_pow():
+// BEFORE:
+LOG_FAIL("sync", "verify_pow: leading zero check failed at byte %d", i);
+
+// AFTER: just return false — this is expected during solve loop
+return false;
 ```
 
-Add to health output:
-- `memory_rss_mb`: RSS in MB
-- Health check: if RSS > 4096 MB, set `degraded_reason = "high_memory_usage"`
+Keep LOG_FAIL only for truly unexpected errors (NULL pointer, etc.), not for the normal "this nonce didn't work" path.
 
-Also add to MCP `zcl_status` output (in ops_controller.c):
-- `memory_rss_mb`
-- `uptime_secs` (track with `static time_t boot_time`)
+**After this fix:** Re-run `make test` and identify which test suite is actually contributing the 1 failure.
 
 ---
 
-## Task 3: Structured Boot Timing Log
+## Task 2 (MEDIUM): Wire before_save Hooks on 3 Missing Models
 
-### File: `config/src/boot.c`
+These models go through `AR_BEGIN_SAVE` lifecycle but have no `before_save` guard registered:
 
-Add timing around each boot phase using `clock_gettime(CLOCK_MONOTONIC)`:
+### 2a. `app/models/src/mempool_entry.c`
+Add `mempool_before_save`:
+- Validate txid is 64 hex chars (not blank)
+- Validate fee >= 0
+- Register with `ar_register_before_save`
 
+### 2b. `app/models/src/tx_index.c`
+Add `tx_index_before_save`:
+- Validate txid non-null
+- Validate height >= 0
+- Validate file_number >= 0
+- Register with `ar_register_before_save`
+
+### 2c. Look at `wallet_tx` save path
+Check if `wallet_tx` actually needs a before_save hook or if its validation is handled by `db_wallet_tx_validate`. If validate covers it, document why no hook is needed. If not, add one.
+
+Follow the pattern in `utxo.c` — look at how `utxo_before_save` is structured and registered.
+
+---
+
+## Task 3 (LOW): Migrate fprintf(stderr,...) to LOG_ERR in Services
+
+Find service files that use bare `fprintf(stderr,...)` for error reporting instead of structured `LOG_ERR`. Convert them.
+
+### Priority targets (from audit):
+1. `app/services/src/bg_validation_service.c:504` — `!ndb->open` check with no log
+2. `lib/validation/src/connect_block.c` — `realloc` failure path (Agent2 may get here first with allocator fix — coordinate)
+3. `app/services/src/chain_state_repository.c:47,100` — SQLite query helpers
+4. `app/services/src/snapshot_sync_service.c:880` — preceded by fprintf
+5. `app/services/src/utxo_recovery_service.c:876` — preceded by fprintf
+
+### Pattern:
 ```c
-struct timespec phase_start;
-clock_gettime(CLOCK_MONOTONIC, &phase_start);
-// ... phase code ...
-int64_t ms = /* elapsed since phase_start */;
-printf("[boot] %-30s %lldms\n", "load_block_index", (long long)ms);
+// BEFORE:
+fprintf(stderr, "UTXO import: failed to restore normal mode\n");
+return -1;
+
+// AFTER:
+LOG_ERR("sync", "UTXO import: failed to restore normal mode");
+return -1;
 ```
 
-Phases to time:
-1. SQLite open + schema migration
-2. Block index load from cache/LDB
-3. Height repair
-4. UTXO set load
-5. Wallet load
-6. P2P network start
-7. Total boot time
-
-Emit at end: `event_emitf(EV_BOOT_COMPLETE, 0, "total_ms=%lld", total_ms);`
+Make sure `#include "util/log_macros.h"` is present in each file.
 
 ---
 
-## Task 4: Add Test Helpers for Sync Pipeline Testing
+## Task 4: Find the Real Test Failure
 
-Create reusable test helpers that make it easy to set up sync scenarios.
+After Task 1 removes the LOG_FAIL spam, re-run `make test`. The output should now be clean enough to see which of the 95 test suites is returning 1. Find it and fix it (or report back what it is).
 
-### File: `lib/test/include/test/test_sync_helpers.h` (new)
-
-```c
-/* Create a mock block_index chain of given length with proper pprev links */
-struct block_index *test_create_chain(int length, struct block_map *map);
-
-/* Create a block_index entry with BLOCK_HAVE_DATA set */
-struct block_index *test_create_block_with_data(int height, struct block_map *map);
-
-/* Create a block_index entry WITHOUT pprev (simulating LDB import) */
-struct block_index *test_create_orphan_block(int height, struct block_map *map);
-
-/* Set up a download_manager with N queued blocks */
-void test_setup_download_queue(struct download_manager *dm, int count);
-
-/* Create a minimal main_state for testing activation */
-struct main_state *test_create_main_state(int tip_height);
-```
-
-These helpers eliminate the boilerplate that makes sync tests hard to write, which is why we have so few of them.
-
----
-
-## Task 5: Verify and Fix make lint Coverage
-
-Run `make lint` and check what it actually catches. Add missing rules from DEFENSIVE_CODING.md:
-
-1. `check-raw-sqlite`: verify it catches all raw `sqlite3_step` in app/ code
-2. `check-silent-errors`: verify it catches bare `return -1;` without logging
-3. `check-malloc`: verify it catches raw malloc/calloc without zcl_ prefix
-4. Add `check-before-save`: verify all model files have `DEFINE_MODEL_CALLBACKS` (new rule)
+Look at `lib/test/src/test.c` — it sums return values from all `test_*()` calls. One of them is returning 1.
 
 ---
 
@@ -137,16 +103,14 @@ After EACH task:
 git pull origin master
 make -j$(nproc) 2>&1 | tail -20
 make test 2>&1 | tail -10
-make lint 2>&1 | tail -10
-git add <specific files> && git commit -m "wave 21 task N: description"
+git add <specific files> && git commit -m "wave 22 task N: description"
 git push origin master
 ```
 
 ## Boundary: Files You MUST NOT Touch
-- `lib/validation/src/process_block.c` (Agent1)
-- `app/services/src/sync_watchdog_service.c` (Agent2)
-- `app/services/src/block_sync_service.c` (Agent2)
-- `app/services/src/header_sync_service.c` (Agent2)
-- `lib/net/src/msg_headers.c` (Agent1)
-- `lib/net/src/download.c` (Agent2)
-- `app/models/src/*.c` (Agent2 — hooks)
+- `lib/storage/src/disk_block_io.c` (Agent2)
+- `app/services/src/block_pruning_service.c` (Agent2)
+- `config/src/boot_index.c` (Agent2)
+- `lib/validation/src/process_block.c` (Agent2)
+- `lib/validation/src/connect_block.c` (Agent2 — allocator fix)
+- `lib/validation/src/update_coins.c` (Agent2)

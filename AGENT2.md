@@ -1,125 +1,88 @@
-# AGENT2 — Wave 21: Defensive Coding & Rails-Way Hardening
+# AGENT2 — Wave 22: Thread Safety & Allocator Hardening
 
 **Working directory:** `~/zclassic23-2`
 **Coordinator:** Agent1 (~/zclassic23)
 **Workflow:** `git pull origin master` before starting, `git push origin master` when done with each task.
-**Run `make -j$(nproc) && make test && make lint` before every push.**
+**Run `make -j$(nproc) && make test` before every push.**
 
 ---
 
 ## Context
 
-The sync pipeline bugs are being fixed by Agent1 (activation, batching, pprev walks). Your focus now shifts to **defensive coding** — making the codebase more robust so bugs like these are caught earlier or can't happen.
+Audit found 3 thread safety bugs and 5 files using raw allocators. These are the root causes of the known SIGSEGVs (bg_hash_verify, address backfill, multi-threaded bg_validation). Fix them.
 
-Read `DEFENSIVE_CODING.md` first. It defines the patterns we want enforced everywhere.
-
-**CRITICAL: Do NOT modify `lib/validation/src/process_block.c` — Agent1 owns this file. Pulling your pprev NULL guard change caused a regression (rejected all deep chains after LDB import). Agent1 has fixed it.**
+Read `DEFENSIVE_CODING.md` first.
 
 ---
 
-## Task 1: Wire before_save / after_save Hooks on ALL Models
+## Task 1 (CRITICAL): Fix block_pruning_service.c Lock Bug
 
-Only 3 of 13 models have hooks wired: utxo, block, wallet_tx. Add hooks to the remaining 10.
+### File: `app/services/src/block_pruning_service.c`
 
-### Models to wire (in `app/models/src/`):
+**Bug:** Lines 160-165 — lock acquired and immediately released BEFORE `unlink()`. A concurrent reader can enter `open_disk_file` with `g_cached_file` pointing to the file being deleted → SIGSEGV.
 
-| Model | before_save | after_save |
-|-------|-------------|------------|
-| `wallet_key.c` | Validate key length, check addr format | Emit `EV_WALLET_KEY_SAVED` |
-| `peer.c` | Validate IP format, port range | Emit `EV_PEER_SAVED` |
-| `store.c` | Validate price >= 0, name non-empty | Emit `EV_MODEL_SAVED` |
-| `contact.c` | Validate name non-empty | Emit `EV_MODEL_SAVED` |
-| `zslp.c` | Validate token_id format, amount >= 0 | Emit `EV_MODEL_SAVED` |
-| `mempool_entry.c` | Validate txid format, fee >= 0 | Emit `EV_MODEL_SAVED` |
-| `tx_index.c` | Validate txid non-null, height >= 0 | Emit `EV_MODEL_SAVED` |
-| `file_service.c` | Validate hash non-null, size > 0 | Emit `EV_MODEL_SAVED` |
-| `onion_announcement.c` | Validate onion addr format | Emit `EV_MODEL_SAVED` |
-| `mmb_leaf_store.c` | Validate height >= 0 | Emit `EV_MODEL_SAVED` |
-
-Follow the pattern in `utxo.c`:
-1. `DEFINE_MODEL_CALLBACKS(name)` macro
-2. `static bool name_before_save(void *record, void *ctx)` — validate fields
-3. `static void name_after_save(void *record, void *ctx)` — emit event
-4. `ar_register_before_save(cbs, name_before_save)` in init function
-
-### Test:
-For each model, verify the existing tests still pass and add at least one test that confirms before_save rejects invalid data.
-
----
-
-## Task 2: Replace Raw sqlite3_step in Controllers with Model Methods
-
-102 raw `sqlite3_step()` calls exist in `app/controllers/src/`. These bypass ActiveRecord validations.
-
-### Priority files (most raw calls):
-1. `explorer_stats.c` (21 calls) — convert to model queries
-2. `explorer_factoids.c` (17 calls) — convert to model queries
-3. `blockchain_controller.c` (12 calls) — convert to model queries
-4. `sync_controller.c` (9 calls) — convert to model queries
-5. `explorer_controller.c` (10 calls) — convert to model queries
-
-### Pattern:
-```c
-// BEFORE (bad — bypasses AR):
-sqlite3_prepare_v2(db, "SELECT * FROM utxos WHERE height=?", ...);
-sqlite3_bind_int(stmt, 1, height);
-while (sqlite3_step(stmt) == SQLITE_ROW) { ... }
-
-// AFTER (good — goes through model):
-// Add to utxo.h:
-struct db_utxo *utxo_find_by_height(sqlite3 *db, int height, size_t *count);
-// Then in controller:
-size_t count;
-struct db_utxo *utxos = utxo_find_by_height(db, height, &count);
-```
-
-For read-only queries (SELECT), you can add `// raw-sql-ok: read-only query` to suppress lint. But writes MUST go through AR.
-
----
-
-## Task 3: Implement struct zcl_result for Service Functions
-
-Implement the `struct zcl_result` pattern from `DEFENSIVE_CODING.md`.
-
-### Step 1: Create `lib/util/include/util/result.h`
-Use the definition from DEFENSIVE_CODING.md section 2.
-
-### Step 2: Migrate 3 key service functions to use it:
-1. `sync_watchdog_check()` — currently returns `enum watchdog_recovery_type`
-2. `syncsvc_build_stall_recovery()` — currently returns `bool`
-3. `activation_request_connect()` — currently returns void with out param
-
-For now, just add `struct zcl_result` as an ADDITIONAL out param so callers can log the reason. Don't change the return type of existing functions yet — that's too disruptive.
+**Fix:**
+1. Move `unlink()` INSIDE the lock
+2. Call `disk_block_io_close_cache()` under the lock to invalidate `g_cached_file` before deleting
+3. Then `unlink()` while still holding the lock
+4. Release lock after unlink
 
 ```c
-// Example: add result param to existing function
-bool syncsvc_build_stall_recovery(struct sync_stall_recovery *recovery,
-                                  const struct main_state *ms,
-                                  ...,
-                                  struct zcl_result *result);  // NEW
+disk_block_io_lock();
+disk_block_io_close_cache();  // invalidate cached handle
+bool blk_ok = (unlink(blk_path) == 0 || errno == ENOENT);
+disk_block_io_unlock();
 ```
 
 ---
 
-## Task 4: Add log_json to Critical Error Paths
+## Task 2 (CRITICAL): Protect boot_index.c Scans from P2P Races
 
-Only 69 `log_json` calls exist (mostly in net/). Add structured logging to the 10 most critical error paths in the sync/validation pipeline.
+### File: `config/src/boot_index.c`
 
-### Files to add log_json calls:
-1. `app/services/src/chain_activation_controller.c` — on activation failure
-2. `app/services/src/sync_watchdog_service.c` — on every recovery action
-3. `app/services/src/header_sync_service.c` — on chains_from_tip failure
-4. `config/src/boot.c` — on UTXO load failure, block index load failure
-5. `lib/storage/src/coins_view_sqlite.c` — on flush failure
+**Bug:** `scan_one_block_file()` (line 497) and `resolve_orphan_pprev_from_disk()` (line 680) open private FILE* handles on blk*.dat without any mutex. Called from P2P thread (`msg_headers.c:412`) and RPC thread (`repair_controller.c:644`) while `write_block_to_disk` may be writing to the same files.
 
-### Pattern:
+**Fix:** Wrap both functions' file I/O with `disk_block_io_lock()` / `disk_block_io_unlock()`:
+
 ```c
-log_json("error", "activation_failed",
-         "height", tip_h,
-         "reason", state->reject_reason,
-         "file", __FILE__,
-         "line", __LINE__);
+// In scan_one_block_file:
+disk_block_io_lock();
+FILE *f = fopen(filepath, "rb");
+// ... all fread calls ...
+fclose(f);
+disk_block_io_unlock();
 ```
+
+Same for `resolve_orphan_pprev_from_disk`.
+
+**Note:** These functions do their own `fopen`/`fclose` (don't use `g_cached_file`), but the lock prevents concurrent writes from corrupting the file mid-read.
+
+---
+
+## Task 3 (MEDIUM): Replace Raw Allocators in lib/validation/
+
+### Files:
+- `lib/validation/src/connect_block.c:592` — `realloc` → `zcl_realloc`
+- `lib/validation/src/update_coins.c:51` — `realloc` → `zcl_realloc`
+- `lib/validation/src/process_block.c:822,1100` — `malloc(4096)` → `zcl_malloc(4096, "process_block")`
+- `lib/net/src/msg_headers.c:271` — `malloc` → `zcl_malloc`
+
+For each:
+1. Replace raw call with `zcl_*` equivalent
+2. Replace bare `fprintf(stderr,...)` on failure with `LOG_ERR` or `LOG_NULL`
+3. Include `util/safe_alloc.h` if not already included
+
+---
+
+## Task 4 (MEDIUM): Audit All fread/fwrite Paths for Lock Coverage
+
+Search the entire codebase for `fread` and `fwrite` calls on block/undo files. For each, verify the call is inside a `disk_block_io_lock()` region. Document any unprotected paths.
+
+```bash
+grep -rn 'fread\|fwrite' lib/storage/src/ lib/validation/src/ app/services/src/ config/src/ --include='*.c' | grep -v test | grep -v vendor
+```
+
+Add `// disk-io-lock: held` comments to protected paths and `// disk-io-lock: private-fd` to paths using their own file descriptors (pread-based, safe).
 
 ---
 
@@ -130,13 +93,13 @@ After EACH task:
 git pull origin master
 make -j$(nproc) 2>&1 | tail -20
 make test 2>&1 | tail -10
-make lint 2>&1 | tail -10
-git add <specific files> && git commit -m "wave 21 task N: description"
+git add <specific files> && git commit -m "wave 22 task N: description"
 git push origin master
 ```
 
 ## Boundary: Files You MUST NOT Touch
-- `lib/validation/src/process_block.c` (Agent1 — DO NOT TOUCH)
-- `lib/net/src/msg_headers.c` (Agent1)
-- `lib/net/src/msgprocessor.c` (Agent1)
-- `lib/net/src/download.c` (Agent1)
+- `lib/net/src/fast_sync.c` (Agent3)
+- `app/models/src/mempool_entry.c` (Agent3)
+- `app/models/src/tx_index.c` (Agent3)
+- `app/models/src/wallet_tx.c` (Agent3)
+- Any file in `app/services/src/` that Agent3 is modifying for fprintf→LOG_ERR
