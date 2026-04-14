@@ -135,6 +135,7 @@ int main(void)
     failures += test_rpc_auth_hardening();
     failures += test_sync_watchdog();
     failures += test_disk_block_io();
+    failures += test_msg_handlers();
 
     /* Spec-based user story tests */
     failures += spec_wallet_dashboard();

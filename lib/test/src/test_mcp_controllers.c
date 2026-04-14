@@ -37,8 +37,8 @@
 /* Expected tool counts.  If a future commit intentionally adds or
  * removes tools, bump these numbers in the same commit — they are the
  * contract for "how big is the MCP surface." */
-#define EXPECTED_TOTAL      76
-#define EXPECTED_OPS        22  /* status, health, kpi, mempool*, mininginfo,
+#define EXPECTED_TOTAL      79
+#define EXPECTED_OPS        24  /* status, health, kpi, mempool*, mininginfo,
                                  * benchmark, dbstats, filemanifest, events,
                                  * rpc, tools_list, self_test, logtail,
                                  * openapi, metrics, metrics_reset,
@@ -46,11 +46,12 @@
                                  * admin (wave 5 #5),
                                  * profile (wave 6),
                                  * config_reload (wave 6),
-                                 * consensus_report (wave 8) */
+                                 * consensus_report (wave 8),
+                                 * + 2 new ops tools (wave 14) */
 #define EXPECTED_CHAIN      10
 #define EXPECTED_NET         9  /* + zcl_peer_report (wave 4 #5),
                                  * + zcl_onion_health (wave 6 #7) */
-#define EXPECTED_WALLET     19
+#define EXPECTED_WALLET     20
 #define EXPECTED_APP        16
 
 /* ── Helpers ────────────────────────────────────────────────── */
@@ -112,7 +113,7 @@ static int test_register_total_count(void)
 static int test_ops_domain_count(void)
 {
     int failures = 0;
-    TEST("controllers: ops domain has 22 tools (wave 8 adds consensus_report)") {
+    TEST("controllers: ops domain has 24 tools (wave 14 adds 2 more)") {
         register_all();
         size_t n = count_by_domain("ops");
         if (n != EXPECTED_OPS) {
@@ -157,7 +158,7 @@ static int test_net_domain_count(void)
 static int test_wallet_domain_count(void)
 {
     int failures = 0;
-    TEST("controllers: wallet domain has 19 tools") {
+    TEST("controllers: wallet domain has 20 tools") {
         register_all();
         size_t n = count_by_domain("wallet");
         if (n != EXPECTED_WALLET) {

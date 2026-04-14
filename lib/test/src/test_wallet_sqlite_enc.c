@@ -42,6 +42,8 @@ static const char k_schema[] =
     "block_height INT,time_received INT,from_me INT,fee INT);"
     "CREATE TABLE wallet_scripts("
     "script_hash BLOB PRIMARY KEY,redeem_script BLOB);"
+    "CREATE TABLE wallet_watch_only("
+    "address_hash BLOB PRIMARY KEY,address TEXT,created_at INT);"
     "CREATE TABLE node_state(key TEXT PRIMARY KEY,value BLOB);";
 
 static sqlite3 *open_mem_db(void)
