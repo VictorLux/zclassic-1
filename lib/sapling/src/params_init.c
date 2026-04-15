@@ -7,6 +7,7 @@
 #include "sapling/bn254.h"
 #include "sapling/sapling.h"
 #include "sapling/sprout.h"
+#include "chain/chainparams.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -86,17 +87,40 @@ bool sapling_init_params(const char *params_dir)
         snprintf(phgr_path, sizeof(phgr_path),
                  "%s/sprout-verifying.key", params_dir);
         uint8_t *phgr_data = read_file(phgr_path, &len);
+        bool phgr_ok = false;
         if (phgr_data) {
             if (ppzksnark_vk_read(&phgr_vk, phgr_data, len)) {
                 sprout_phgr_set_vk(&phgr_vk);
                 printf("Loaded Sprout PHGR13 verification key: %zu bytes "
                        "(%zu IC points)\n", len, phgr_vk.ic_len);
+                phgr_ok = true;
             } else {
-                fprintf(stderr, "WARNING: Failed to parse sprout-verifying.key\n");
+                fprintf(stderr,
+                    "ERROR: Failed to parse sprout-verifying.key\n");
             }
             free(phgr_data);
+        } else {
+            fprintf(stderr,
+                "ERROR: sprout-verifying.key not found at %s\n", phgr_path);
         }
-        /* Non-fatal if missing — PHGR13 proofs just won't be verified */
+
+        /* Hard-fail on mainnet — PHGR13 proofs are consensus-critical for
+         * pre-Sapling blocks. The silent non-fatal path let this bug survive
+         * for months (see PHGR13_INVESTIGATION.md). */
+        if (!phgr_ok) {
+            const struct chain_params *cp = chain_params_get();
+            if (cp && strcmp(cp->strNetworkID, "main") == 0) {
+                fprintf(stderr,
+                    "FATAL: Sprout PHGR13 verification key failed to load.\n"
+                    "Mainnet requires this key to validate pre-Sapling blocks.\n"
+                    "Ensure sprout-verifying.key exists in: %s\n", params_dir);
+                free(spend_vk.ic); free(output_vk.ic);
+                free(sprout_groth16_vk.ic);
+                return false;
+            }
+            fprintf(stderr,
+                "WARNING: PHGR13 VK not loaded (non-mainnet, continuing)\n");
+        }
     }
 
     /* Keep raw PK data for proving (VK is a subset of PK data) */
