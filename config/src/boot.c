@@ -1795,6 +1795,61 @@ bool app_init(struct app_context *ctx)
                                target_h);
                         active_chain_set_tip(&g_state.chain_active, post_found);
                         g_state.pindex_best_header = post_found;
+                    } else if (!post_found) {
+                        /* coins_best_block hash not found in block index.
+                         * The UTXO set references a block we don't know
+                         * about — wipe UTXOs and replay from genesis. */
+                        char hex[65];
+                        uint256_get_hex(&post_scan_best, hex);
+                        fprintf(stderr,
+                            "[boot] WARNING: coins_best_block %s not in "
+                            "block index — wiping UTXOs and replaying "
+                            "from genesis\n", hex);
+
+                        /* Safety guard: if >1M UTXOs, require flag file */
+                        int64_t utxo_count = node_db_utxo_count(&g_node_db);
+                        bool allow_wipe = true;
+                        if (utxo_count > 1000000) {
+                            char wipe_flag[576];
+                            snprintf(wipe_flag, sizeof(wipe_flag),
+                                     "%s/force_utxo_wipe", ctx->datadir);
+                            struct stat wf_st;
+                            if (stat(wipe_flag, &wf_st) != 0) {
+                                fprintf(stderr,
+                                    "[boot] WARNING: %lld UTXOs would be "
+                                    "wiped. Create %s to confirm.\n",
+                                    (long long)utxo_count, wipe_flag);
+                                allow_wipe = false;
+                            } else {
+                                remove(wipe_flag);
+                                printf("[boot] force_utxo_wipe flag found "
+                                       "— proceeding with wipe of %lld "
+                                       "UTXOs\n", (long long)utxo_count);
+                            }
+                        }
+
+                        if (allow_wipe) {
+                            utxo_recovery_wipe(&g_node_db,
+                                "boot.coins_best_block_not_found");
+
+                            /* Reset coins_best_block to genesis */
+                            coins_view_cache_set_best_block(&g_coins_tip,
+                                &params->consensus.hashGenesisBlock);
+                            node_db_state_set(&g_node_db, "coins_best_block",
+                                params->consensus.hashGenesisBlock.data, 32);
+
+                            /* Set chain tip to genesis */
+                            struct block_index *genesis = block_map_find(
+                                &g_state.map_block_index,
+                                &params->consensus.hashGenesisBlock);
+                            if (genesis) {
+                                active_chain_set_tip(
+                                    &g_state.chain_active, genesis);
+                                g_state.pindex_best_header = genesis;
+                            }
+                            printf("[boot] UTXO set wiped — will replay "
+                                   "from genesis\n");
+                        }
                     }
                 }
             }
