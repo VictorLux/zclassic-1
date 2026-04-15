@@ -286,9 +286,9 @@ static bool verify_shielded_proofs(const struct transaction *tx,
                     (uint64_t)js->vpub_old, (uint64_t)js->vpub_new)) {
                 /* Non-fatal when VK not loaded — sprout_verify_phgr13
                  * returns false when phgr_vk==NULL. */
-                static int phgr_warn = 0;
-                if (phgr_warn < 3) {
-                    phgr_warn++;
+                static _Atomic int phgr_warn = 0;
+                if (atomic_load(&phgr_warn) < 3) {
+                    atomic_fetch_add(&phgr_warn, 1);
                     fprintf(stderr, "[bg-valid] Sprout PHGR13 proof "
                             "SKIPPED h=%d tx=%zu js=%zu (VK not "
                             "loaded)\n", height, tx_idx, j);
@@ -679,7 +679,7 @@ void bg_validation_init(struct bg_validation_service *svc,
     {
         long nproc = sysconf(_SC_NPROCESSORS_ONLN);
         int workers = (nproc > 0) ? (int)(nproc / 2) : 1;
-        if (workers < 1) workers = 1;
+        if (workers < 2) workers = 2;
         if (workers > 4) workers = 4;
         svc->num_workers = workers;
     }

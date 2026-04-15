@@ -26,6 +26,7 @@
 #include <ifaddrs.h>
 #include <net/if.h>
 #include "util/safe_alloc.h"
+#include "net/file_market.h"
 #ifndef MSG_NOSIGNAL
 #define MSG_NOSIGNAL 0
 #endif
@@ -1144,6 +1145,9 @@ void net_socket_handler_step(struct net_manager *nm)
             nm->num_nodes--;
 
             p2p_node_close_socket(node);
+
+            /* Release any file market chunks assigned to this peer */
+            file_market_release_peer_chunks((int)node->id);
 
             if (node->network_node || node->inbound)
                 p2p_node_release(node);

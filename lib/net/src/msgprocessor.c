@@ -1069,6 +1069,7 @@ static bool handle_zmsgack(struct msg_processor *mp, struct p2p_node *node,
 /* ── ZCL Market: file sharing handlers ─────────────────────────── */
 
 #include "net/file_market.h"
+#include "controllers/file_controller.h"
 #include "crypto/sha3.h"
 
 static bool handle_zfilelist(struct msg_processor *mp, struct p2p_node *node,
@@ -1154,24 +1155,46 @@ static bool handle_zfilechal(struct msg_processor *mp, struct p2p_node *node,
         return true;
     }
 
-    /* Compute SHA3-256 of the chunk data.
-     * For now, read chunk from the file on disk and hash it. */
-    /* TODO Phase 3: read actual file chunks and hash them.
-     * For now, respond with a hash derived from root_hash + chunk_index
-     * so the protocol can be tested end-to-end. */
+    /* Read actual chunk from disk and SHA3-256 hash it */
     struct file_proof proof;
     memset(&proof, 0, sizeof(proof));
     memcpy(proof.root_hash, chal.root_hash, 32);
     proof.chunk_index = chal.chunk_index;
 
-    /* Hash: SHA3(root_hash || chunk_index) as placeholder */
-    uint8_t preimage[36];
-    memcpy(preimage, chal.root_hash, 32);
-    memcpy(preimage + 32, &chal.chunk_index, 4);
-    struct sha3_256_ctx sha3;
-    sha3_256_init(&sha3);
-    sha3_256_write(&sha3, preimage, 36);
-    sha3_256_finalize(&sha3, proof.chunk_hash);
+    struct file_manifest fm;
+    if (file_controller_get_manifest_copy(&fm) &&
+        chal.chunk_index < fm.num_chunks) {
+        uint8_t *chunk_data = NULL;
+        uint32_t chunk_size = 0;
+        if (file_chunk_read(&fm.chunks[chal.chunk_index],
+                            mp->datadir, &chunk_data, &chunk_size)) {
+            struct sha3_256_ctx sha3;
+            sha3_256_init(&sha3);
+            sha3_256_write(&sha3, chunk_data, chunk_size);
+            sha3_256_finalize(&sha3, proof.chunk_hash);
+            free(chunk_data);
+        } else {
+            /* Fallback: derive hash from root_hash + index */
+            uint8_t preimage[36];
+            memcpy(preimage, chal.root_hash, 32);
+            memcpy(preimage + 32, &chal.chunk_index, 4);
+            struct sha3_256_ctx sha3;
+            sha3_256_init(&sha3);
+            sha3_256_write(&sha3, preimage, 36);
+            sha3_256_finalize(&sha3, proof.chunk_hash);
+            printf("market: chunk %u read failed, using derived hash\n",
+                   chal.chunk_index);
+        }
+    } else {
+        /* No manifest — derive hash as placeholder */
+        uint8_t preimage[36];
+        memcpy(preimage, chal.root_hash, 32);
+        memcpy(preimage + 32, &chal.chunk_index, 4);
+        struct sha3_256_ctx sha3;
+        sha3_256_init(&sha3);
+        sha3_256_write(&sha3, preimage, 36);
+        sha3_256_finalize(&sha3, proof.chunk_hash);
+    }
 
     struct byte_stream os;
     stream_init(&os, 128);
@@ -1195,12 +1218,39 @@ static bool handle_zfileproof(struct msg_processor *mp, struct p2p_node *node,
     if (!file_proof_deserialize(&proof, s))
         return true;
 
-    /* Verify the proof matches our expected hash for this chunk.
-     * This is checked by the download session manager. */
     printf("market: received chunk proof %u from peer %s\n",
            proof.chunk_index, node->addr_name);
 
-    /* TODO Phase 3: verify against download session, advance state */
+    /* Verify proof against active download session */
+    struct file_download dl;
+    if (file_market_get_download(proof.root_hash, &dl)) {
+        if (dl.state == FDL_CHALLENGING) {
+            /* Verify chunk hash matches our manifest */
+            struct file_manifest fm;
+            bool hash_ok = false;
+            if (file_controller_get_manifest_copy(&fm) &&
+                proof.chunk_index < fm.num_chunks) {
+                hash_ok = (memcmp(proof.chunk_hash,
+                                  fm.chunks[proof.chunk_index].sha3, 32) == 0);
+            }
+            if (hash_ok) {
+                file_market_download_challenge_passed(proof.root_hash);
+                uint32_t passed = dl.challenges_passed + 1;
+                printf("market: challenge %u/%u passed for '%s'\n",
+                       passed, dl.challenges_sent, dl.offer.filename);
+                if (passed >= dl.challenges_sent) {
+                    file_market_update_download(proof.root_hash, FDL_PAYING,
+                                               dl.chunks_received, dl.chunks_paid_through);
+                    printf("market: all challenges passed, advancing to payment\n");
+                }
+            } else {
+                printf("market: challenge FAILED for chunk %u from peer %s\n",
+                       proof.chunk_index, node->addr_name);
+                file_market_update_download(proof.root_hash, FDL_FAILED,
+                                           dl.chunks_received, dl.chunks_paid_through);
+            }
+        }
+    }
     return true;
 }
 
@@ -1225,10 +1275,17 @@ static bool handle_zfilepay(struct msg_processor *mp, struct p2p_node *node,
         return true;
     }
 
-    /* TODO Phase 3: unlock chunks for this peer's download,
-     * track payment state, begin serving file data */
-    printf("market: payment verified, unlocking chunks %u-%u\n",
-           pay.chunk_start, pay.chunk_start + pay.chunks_paid - 1);
+    /* Update download state: mark chunks as paid, advance to downloading */
+    struct file_download dl;
+    if (file_market_get_download(pay.root_hash, &dl)) {
+        uint32_t new_paid = pay.chunk_start + pay.chunks_paid;
+        if (new_paid > dl.chunks_paid_through)
+            file_market_update_download(pay.root_hash, FDL_DOWNLOADING,
+                                       dl.chunks_received, new_paid);
+    }
+    printf("market: payment verified, unlocking chunks %u-%u for peer %s\n",
+           pay.chunk_start, pay.chunk_start + pay.chunks_paid - 1,
+           node->addr_name);
     return true;
 }
 

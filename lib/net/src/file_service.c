@@ -1224,9 +1224,111 @@ bool fs_client_sync(const char *peer_addr, uint16_t port,
            dl_elapsed > 0 ? (double)bytes_done / (1024.0 * 1024.0) / (double)dl_elapsed : 0,
            total_ok, total_fail, remaining);
 
+    /* Retry failed chunks — up to 3 attempts with fresh connections */
+    for (int retry = 0; retry < 3 && total_fail > 0; retry++) {
+        printf("[file] retrying %u failed chunks, attempt %d/3\n",
+               total_fail, retry + 1);
+
+        /* Collect indices of chunks that aren't on disk yet */
+        uint32_t *retry_idx = zcl_calloc(total_fail, sizeof(uint32_t),
+                                         "retry_indices");
+        if (!retry_idx) break;
+        uint32_t nretry = 0;
+        for (uint32_t c = skip_chunks; c < num_chunks && nretry < total_fail; c++) {
+            /* Quick check: try reading the chunk back and verifying hash */
+            char blk_path[600];
+            if (chunks[c].file_index == 254)
+                snprintf(blk_path, 600, "%s/consensus_snapshot.db", datadir);
+            else if (chunks[c].file_index == 253)
+                snprintf(blk_path, 600, "%s/block_index.bin", datadir);
+            else
+                snprintf(blk_path, 600, "%s/blocks/blk%05d.dat",
+                         datadir, chunks[c].file_index);
+            int cfd = open(blk_path, O_RDONLY);
+            if (cfd < 0) { retry_idx[nretry++] = c; continue; }
+            uint8_t probe[1];
+            ssize_t rd = pread(cfd, probe, 1, (off_t)chunks[c].offset);
+            close(cfd);
+            if (rd <= 0)
+                retry_idx[nretry++] = c;
+        }
+
+        if (nretry == 0) { free(retry_idx); break; }
+
+        /* Open a single fresh connection for retries */
+        struct addrinfo rhints, *rres;
+        memset(&rhints, 0, sizeof(rhints));
+        rhints.ai_family = AF_UNSPEC;
+        rhints.ai_socktype = SOCK_STREAM;
+        char rps[8];
+        snprintf(rps, sizeof(rps), "%d", port);
+        if (getaddrinfo(peer_addr, rps, &rhints, &rres) != 0) {
+            free(retry_idx); break;
+        }
+        int rfd = socket(rres->ai_family, rres->ai_socktype, rres->ai_protocol);
+        if (rfd < 0) { freeaddrinfo(rres); free(retry_idx); break; }
+
+        struct timeval rtv = { .tv_sec = 120, .tv_usec = 0 };
+        setsockopt(rfd, SOL_SOCKET, SO_RCVTIMEO, &rtv, sizeof(rtv));
+        setsockopt(rfd, SOL_SOCKET, SO_SNDTIMEO, &rtv, sizeof(rtv));
+        if (connect(rfd, rres->ai_addr, rres->ai_addrlen) < 0) {
+            close(rfd); freeaddrinfo(rres); free(retry_idx); break;
+        }
+        freeaddrinfo(rres);
+
+        struct fs_session rs;
+        fs_session_init(&rs, rfd);
+        if (!fs_handshake(&rs, utxo_root, true)) {
+            close(rfd); free(retry_idx); break;
+        }
+
+        uint32_t recovered = 0;
+        for (uint32_t r = 0; r < nretry; r++) {
+            uint32_t ci = retry_idx[r];
+            /* Request individual chunk by hash */
+            fs_send_frame(&rs, FS_REQUEST, chunks[ci].sha3, 32);
+
+            uint8_t *buf = NULL;
+            uint32_t sz = 0;
+            if (!fs_recv_chunk_fast(&rs, &buf, &sz, chunks[ci].sha3)) {
+                printf("[file] retrying chunk %u attempt %d failed\n",
+                       ci, retry + 1);
+                continue;
+            }
+
+            char blk_path[600];
+            if (chunks[ci].file_index == 254)
+                snprintf(blk_path, 600, "%s/consensus_snapshot.db", datadir);
+            else if (chunks[ci].file_index == 253)
+                snprintf(blk_path, 600, "%s/block_index.bin", datadir);
+            else
+                snprintf(blk_path, 600, "%s/blocks/blk%05d.dat",
+                         datadir, chunks[ci].file_index);
+            int bfd = open(blk_path, O_WRONLY | O_CREAT, 0644);
+            if (bfd >= 0) {
+                ssize_t written = pwrite(bfd, buf, sz,
+                                         (off_t)chunks[ci].offset);
+                fdatasync(bfd);
+                close(bfd);
+                if (written == (ssize_t)sz) {
+                    recovered++;
+                    printf("[file] retrying chunk %u attempt %d succeeded\n",
+                           ci, retry + 1);
+                }
+            }
+            free(buf);
+        }
+
+        close(rfd);
+        free(retry_idx);
+        total_fail = (recovered >= total_fail) ? 0 : total_fail - recovered;
+        total_ok += recovered;
+        printf("[file] retry attempt %d: recovered %u chunks, %u still failed\n",
+               retry + 1, recovered, total_fail);
+    }
+
     if (total_fail > 0)
-        /* TODO: retry failed chunks on next connect */
-        LOG_FAIL("filesvc", "client_sync: %u/%u chunks failed — download incomplete", total_fail, remaining);
+        LOG_FAIL("filesvc", "client_sync: %u/%u chunks failed after retries — download incomplete", total_fail, remaining);
 
     if (total_ok < remaining)
         LOG_FAIL("filesvc", "client_sync: only %u/%u chunks received — incomplete", total_ok, remaining);

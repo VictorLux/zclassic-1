@@ -142,6 +142,18 @@ int file_market_start_download(const uint8_t root_hash[32],
 bool file_market_get_download(const uint8_t root_hash[32],
                               struct file_download *out);
 
+/* Update download state. Returns false if not found. */
+bool file_market_update_download(const uint8_t root_hash[32],
+                                 enum file_download_state state,
+                                 uint32_t chunks_received,
+                                 uint32_t chunks_paid_through);
+
+/* Increment challenges_passed for a download. */
+bool file_market_download_challenge_passed(const uint8_t root_hash[32]);
+
+/* Release chunks assigned to a disconnected peer. */
+bool file_market_release_peer_chunks(int peer_id);
+
 /* ── SQLite Persistence ─────────────────────────────────────────── */
 
 struct node_db;
