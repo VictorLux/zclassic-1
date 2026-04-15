@@ -1,17 +1,11 @@
-# Agent 3 Task: Wave 23c — Fallback Sync + Error Recovery
+# Agent 3 Task: Wave 24 — Sapling Persistence + Validation
 
 ## Status
-- Node stuck: UTXO at h=3M, chain at h=2M. Agent2 fixing primary path.
-- Need fallback path if coins_best_block can't be resolved.
+- UTXO wipe+replay running. Work on reliability items while it proceeds.
 
 ## Priority Order
-1. **Task 1: UTXO wipe + replay fallback** — if coins_best_block not found, wipe and replay from genesis
-2. **Task 2: Improve activate_best_chain error recovery** — better messages + disconnect-tip fallback
-3. **Task 3: Update CHECKLIST.md** — mark fixed items, add new remaining
+1. **Task 1: Sapling tree persistence** — add periodic checkpoint to prevent 5-min rebuild after SIGKILL
+2. **Task 2: Multi-threaded bg_validation** — investigate script interpreter thread safety
+3. **Task 3: Boot timing completeness** — verify all phases are timed
 
 ## See AGENT3.md for full details
-
-## Rules
-- Follow `DEFENSIVE_CODING.md`
-- Run `make -j$(nproc) && make test` — 0 failures required
-- Commit with `wave 23c task N:` prefix

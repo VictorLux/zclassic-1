@@ -1,4 +1,4 @@
-# AGENT2 — Wave 23c: Fix UTXO/Chain Tip Mismatch (CRITICAL BLOCKER)
+# AGENT2 — Wave 24: Boot Resilience + Feature Re-enable
 
 **Working directory:** `~/zclassic23-2`
 **Coordinator:** Agent1 (~/zclassic23)
@@ -9,63 +9,56 @@
 
 ## Context
 
-**THE NODE IS STUCK.** Block download pipeline is now fixed (getdata sends, blocks arrive), but `connect_block` fails at h=2016356 with `bad-txns-inputs-missingorspent`.
+The UTXO/chain mismatch is being resolved via force_utxo_wipe + replay from genesis. The wipe+replay fallback from your wave 23c code is running now.
 
-**Root cause:** The UTXO set was imported from zclassicd's LevelDB chainstate, which is at height ~3,078,241. But our chain tip is 2,016,355. Block 2016356 tries to spend UTXOs that existed at height 2016355 — but those UTXOs were SPENT long ago in the zclassicd chain (between heights 2016356 and 3M). They no longer exist in the UTXO set.
-
-**The mismatch:** UTXO set = height ~3M, chain tip = height ~2M. We can't connect block 2016356 because its inputs are missing from a UTXO set that's 1M blocks ahead.
+Your focus: make the boot sequence more resilient so this class of bug doesn't recur, and re-enable features fixed in wave 22b.
 
 ---
 
-## Task 1 (CRITICAL): Set Chain Tip to Match UTXO Set Height
+## Task 1 (HIGH): Fix coins_best_block Resolution After LDB Import
 
-### The Fix
+### Problem
+After importing UTXOs from zclassicd LevelDB, the `coins_best_block` hash from the `'B'` key often can't be found in our block_index. This is because zclassicd's tip block hasn't been received as a header yet. The current code falls through silently and leaves chain tip wrong.
 
-After LDB UTXO import, the `coins_best_block` hash from LevelDB corresponds to the zclassicd tip (~3M). Our boot code should:
+### Fix in `config/src/boot.c`
+After LDB import sets `coins_best_block`, if the hash can't be found in block_map:
 
-1. Read `coins_best_block` from the LDB chainstate (the `'B'` key in LevelDB)
-2. Find that hash in our block_index
-3. Set our `chain_active` tip to that block_index entry
-4. The node then only needs to connect blocks from ~3M to current tip (~3,078K) — a few thousand blocks
+1. Query the LDB chainstate for the best block height (read the height from the block header stored alongside the `'B'` key, or look up by iterating)
+2. If we can't get the height from LDB either, find the highest block in our block_index that has `BLOCK_HAVE_DATA` — that's our best guess for where the UTXO set is valid
+3. Set chain tip to that block
+4. Log clearly: `[boot] coins_best_block hash not in index — setting tip to highest HAVE_DATA block at h=N`
 
-### Investigation Steps
-
-1. Read `config/src/boot.c` — find where `coins_best_block` is handled after LDB import
-2. Read `lib/storage/src/coins_db.c` — find `coins_db_read_best_block` or similar
-3. Check: after LDB import, what is `coins_best_block` set to? Is it the LDB's best block hash, or is it being overridden to our chain tip?
-4. Find where `active_chain_set_tip` is called during boot — is it using the coins_best_block height or the block_index tip?
-
-### Key Files
-- `config/src/boot.c` — boot sequence, UTXO import, chain tip selection
-- `lib/storage/src/coins_db.c` — LevelDB UTXO reader
-- `lib/coins/src/coins_view_sqlite.c` — SQLite coins storage
-- `config/src/boot_index.c` — block index loading
-
-### What Success Looks Like
-After your fix: node boots, imports UTXOs from LDB at height ~3M, sets chain tip to ~3M, connects ~50 blocks to reach network tip. No `bad-txns-inputs-missingorspent`.
+The key insight: even if we can't find the exact hash, the UTXO set is valid for some height range. The highest HAVE_DATA block is a safe conservative choice because all blocks up to that point have been written to disk (from zclassicd).
 
 ---
 
-## Task 2: Add Diagnostic Logging for UTXO/Chain Mismatch
+## Task 2 (MEDIUM): Re-enable bg_hash_verify
 
-After the LDB import, add a log line:
-```c
-printf("[boot] UTXO import: coins_best_block at h=%d, chain tip at h=%d%s\n",
-       coins_h, tip_h, coins_h != tip_h ? " (MISMATCH — adjusting tip)" : "");
-```
+The SIGSEGV was fixed in wave 22b (cs_main lock + field snapshotting).
 
-Also add logging when `coins_best_block` is resolved to a block_index entry vs. when it can't be found.
+Search: `grep -rn 'bg_hash_verify\|bg_hash_verification\|nobghash' app/ config/ lib/ --include='*.c' --include='*.h'`
+
+Find where it's disabled. If it's gated by a hardcoded bool or commented-out call, re-enable it. If gated by `-nobgvalidation`, leave it user-controlled.
+
+---
+
+## Task 3 (MEDIUM): Re-enable Address Backfill
+
+The SIGSEGV was fixed in wave 22b (mmap_size=0).
+
+Search: `grep -rn 'backfill_address\|address_backfill\|nobackfill' app/ config/ lib/ --include='*.c' --include='*.h'`
+
+Find and re-enable.
 
 ---
 
 ## Build & Test
 
-After EACH task:
 ```bash
 git pull origin master
 make -j$(nproc) 2>&1 | tail -20
 make test 2>&1 | tail -10
-git add <specific files> && git commit -m "wave 23c task N: description"
+git add <specific files> && git commit -m "wave 24 task N: description"
 git push origin master
 ```
 

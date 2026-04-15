@@ -1,17 +1,12 @@
-# Agent 2 Task: Wave 23c — Fix UTXO/Chain Tip Mismatch (CRITICAL)
+# Agent 2 Task: Wave 24 — Boot Resilience + Re-enable Features
 
 ## Status
-- Node STUCK at 2,016,355. Blocks download but can't connect — `bad-txns-inputs-missingorspent`
-- Root cause: UTXO set imported from zclassicd at h=3M, but chain tip is h=2M
-- Block 2016356's inputs were spent in zclassicd's chain — they don't exist in the 3M UTXO set
+- UTXO wipe+replay running (your wave 23c fallback code triggered)
+- Need to fix the primary path so future LDB imports don't hit this
 
 ## Priority Order
-1. **Task 1: Set chain tip to match UTXO height** — read coins_best_block from LDB, find in block_index, set tip
-2. **Task 2: Add diagnostic logging** — log UTXO height vs chain tip after import
+1. **Task 1: Fix coins_best_block resolution** — when hash not in index, use highest HAVE_DATA block
+2. **Task 2: Re-enable bg_hash_verify** — SIGSEGV fixed wave 22b, find and re-enable
+3. **Task 3: Re-enable address backfill** — SIGSEGV fixed wave 22b, find and re-enable
 
 ## See AGENT2.md for full details
-
-## Rules
-- Follow `DEFENSIVE_CODING.md`
-- Run `make -j$(nproc) && make test` — 0 failures required
-- Commit with `wave 23c task N:` prefix
