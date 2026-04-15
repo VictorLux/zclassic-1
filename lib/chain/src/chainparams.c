@@ -97,14 +97,20 @@ static void init_main_params(void)
     p->vSeeds[2] = (struct dns_seed){ "zclassic.org", "mainnet.zclassic.org" };
     p->nSeeds = 3;
 
-    /* Hardcoded seed nodes — known-good as of 2026-03 */
+    /* Hardcoded seed nodes — known-good as of 2026-04 */
     p->nFixedSeeds = 0;
     static const uint8_t fixed_ip4[][4] = {
         { 74, 50, 74,102},  /* rhett.dev */
         {205,209,104,118},  /* MagicBean */
         {140,174,189,  3},  /* MagicBean */
+        {140,174,189, 17},  /* MagicBean */
         {157,173,195,203},  /* MagicBean */
         { 85,239,232, 93},  /* MagicBean */
+        { 37,187, 76, 79},  /* MagicBean — Zelcore explorer peer */
+        {162, 55, 92, 62},  /* MagicBean — Zelcore explorer peer */
+        {157, 90,223,151},  /* MagicBean — Zelcore explorer peer */
+        {154, 38,178,121},  /* MagicBean — Zelcore explorer peer */
+        { 51,178,179, 75},  /* MagicBean — Zelcore explorer peer */
     };
     for (size_t i = 0; i < sizeof(fixed_ip4)/sizeof(fixed_ip4[0]); i++) {
         if (p->nFixedSeeds + 2 > MAX_FIXED_SEEDS) break;
