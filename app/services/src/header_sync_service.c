@@ -510,10 +510,19 @@ void syncsvc_collect_needed_blocks(struct sync_needed_blocks *result,
     result->chains_from_tip =
         syncsvc_headers_chain_from_tip(candidate, tip, our_height);
     if (!result->chains_from_tip) {
-        /* Still collect blocks even if chain doesn't link back to tip —
-         * after snapshot sync or LDB import, pprev gaps are expected.
-         * The blocks will be fully validated by connect_block anyway. */
+        /* After snapshot sync or LDB import, pprev gaps are expected —
+         * the chain walk hits NULL before reaching our_height.
+         * Allow download in that case since connect_block validates fully.
+         * But if the walk reached a real block at/below our_height that
+         * isn't the tip, this is a genuine fork — reject it. */
+        bool has_pprev_gap = false;
         if (candidate->nHeight > our_height) {
+            const struct block_index *w = candidate;
+            while (w && w->nHeight > our_height)
+                w = w->pprev;
+            has_pprev_gap = (w == NULL);
+        }
+        if (has_pprev_gap) {
             result->chains_from_tip = true; /* override — allow download */
         } else {
             return;
