@@ -1257,6 +1257,13 @@ retry_connect:
             memcpy(dbi.nSolution, pindex_new->nSolution, pindex_new->nSolutionSize);
         dbi.nSolutionSize = pindex_new->nSolutionSize;
         block_tree_db_write_block_index(g_active_block_tree, &dbi);
+
+        /* Free nSolution after persisting to disk — saves 1344B per block
+         * (4GB total for 3M entries). Serving code in msg_headers.c and
+         * msg_blocks.c falls back to reading from disk when NULL. */
+        free(pindex_new->nSolution);
+        pindex_new->nSolution = NULL;
+        pindex_new->nSolutionSize = 0;
     }
 
     /* Write transaction index if enabled */

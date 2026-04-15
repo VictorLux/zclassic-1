@@ -245,7 +245,50 @@ bool zslp_mint(const char *datadir,
         return false;
     }
 
-    /* TODO: build and broadcast ZSLP SEND transaction on-chain */
+    /* Build and broadcast ZSLP MINT transaction on-chain */
+    struct wallet *wallet = zslp_wallet();
+    struct tx_mempool *mempool = zslp_mempool();
+    if (!wallet || !mempool) {
+        /* No wallet (test mode) — balances already updated above */
+        return true;
+    }
+
+    struct uint256 token_id;
+    uint256_set_hex(&token_id, token_id_hex);
+    if (uint256_is_null(&token_id)) {
+        fprintf(stderr, "zslp: invalid token_id for mint broadcast\n");
+        return false;
+    }
+
+    uint8_t op_script[256];
+    size_t slen = slp_build_mint(op_script, sizeof(op_script),
+        &token_id, 0, amount);
+    if (slen == 0) {
+        fprintf(stderr, "zslp: failed to build MINT script\n");
+        return false;
+    }
+
+    struct wallet_tx wtx;
+    int64_t fee_paid = 0;
+    const char *tx_error = NULL;
+    if (!zslp_command_build_send_base_tx(wallet, recipient_addr, &wtx,
+                                         &fee_paid, &tx_error)) {
+        fprintf(stderr, "zslp: mint tx build failed: %s\n",
+                tx_error ? tx_error : "unknown");
+        return false;
+    }
+
+    if (!zslp_command_commit_with_op_return(wallet, mempool, &wtx,
+                                            op_script, slen)) {
+        fprintf(stderr, "zslp: mint commit failed\n");
+        transaction_free(&wtx.tx);
+        return false;
+    }
+
+    char txid[65];
+    uint256_get_hex(&wtx.tx.hash, txid);
+    printf("ZSLP MINT broadcast: token=%s amount=%llu to=%s txid=%s\n",
+           token_id_hex, (unsigned long long)amount, recipient_addr, txid);
     return true;
 }
 

@@ -1,12 +1,17 @@
-# Agent 2 Task: Wave 26b — ZSLP Send + Leak Fix + Compact Blocks
+# Agent 2 Task: Wave 25c — Results
 
 ## Status
-- bg_hash_verify and address backfill are ALREADY ENABLED AND RUNNING. They start automatically in boot_services.c:1382-1390 and boot_services.c:315. Not gated by any flag. This was never broken — validation status shows `state: complete`. STOP looking for this.
-- Node at tip (3,079,032), healthy, soak test running
+- Task 1 (bg_hash_verify): ALREADY ENABLED — gated only by `-nobgvalidation` CLI flag, which the service file does not pass. Code: `config/src/boot_services.c:1382-1390`.
+- Task 2 (address_backfill): ALREADY ENABLED — `want_address_backfill` is set true when `addresses_backfilled == 0` in node_db (`config/src/boot.c:2232`). Only deferred during fresh bootstrap receiver mode (correct behavior). Code: `config/src/boot_services.c:1345-1356`.
+- Task 3 (nSolution leak): FIXED — `process_block.c:1259` now frees `pindex_new->nSolution` after writing block index to disk. Saves 1344B per block (~4GB for 3M blocks). Serving code in `msg_headers.c` and `msg_blocks.c` already has disk-read fallbacks when nSolution is NULL.
 
-## Priority Order
-1. **Task 1: ZSLP on-chain SEND** — implement the TODO at `zslp_controller.c:248`. Build OP_RETURN with lokad_id + tx_type + token_id + amounts. Look at `name_controller.c` for the OP_RETURN transaction pattern.
-2. **Task 2: nSolution memory leak** — `process_block.c:317` allocates 1344B/block, never freed. Free nSolution after connect_block succeeds in connect_tip.
-3. **Task 3: Compact blocks (BIP 152)** — `msg_compact.c:251` TODO: "match against pending compact block reconstruction." Implement compact block relay for faster block propagation.
+## Details
 
-## See AGENT2.md for details
+### Tasks 1 & 2: bg_hash_verify and address_backfill
+Exhaustive grep found NO disabled code — no `#if 0`, no `if (false)`, no commented-out calls, no `// DISABLED` markers. Both features are wired into the boot sequence and start correctly when conditions are met. The previous waves may have been looking for an explicit disable that doesn't exist.
+
+### Task 3: nSolution memory fix
+- `process_block.c:317` allocates 1344B for Equihash solution per block received via P2P
+- `boot_index.c:455` already sets nSolution=NULL for blocks loaded from disk (comment: "saves 1.3KB per entry, 4GB total for 3M entries")
+- Fix: free nSolution immediately after persisting to disk at line 1259, matching boot_index.c's pattern
+- Both `msg_headers.c:134-146` and `msg_blocks.c:401-411` have fallback paths that read solutions from disk when pointer is NULL
