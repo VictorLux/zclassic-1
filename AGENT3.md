@@ -1,4 +1,4 @@
-# AGENT3 — Wave 25: Resilience Testing + Validation
+# AGENT3 — Wave 26: Stress Testing + File Protocol
 
 **Working directory:** `~/zclassic23-3`
 **Coordinator:** Agent1 (~/zclassic23)
@@ -9,69 +9,59 @@
 
 ## Context
 
-**NODE IS AT TIP (h=3,078,918) AND HEALTHY.** Your Sapling checkpoint code is merged. Time to test resilience and fix the last validation gap.
+Node at tip, healthy. Your soak script and SIGKILL recovery fix are merged. Now: stress test the node and implement the file protocol Phase 3.
 
 ---
 
-## Task 1: SIGKILL Recovery Test
+## Task 1: Start the Soak Test
 
-Test that SIGKILL recovery works correctly:
-
-1. Note the current block height
-2. `kill -9 $(pidof zclassic23)` — hard kill, no clean shutdown
-3. `systemctl --user start zclassic23` — restart
-4. Wait for RPC, check height — should be at or near where it was
-5. Check Sapling tree rebuild time — your periodic checkpoint should make this seconds, not 5 minutes
-6. Report: recovery time, blocks lost, Sapling rebuild time
-
-If recovery takes >30 seconds or the Sapling rebuild takes >1 minute, investigate why.
-
----
-
-## Task 2: Multi-threaded bg_validation Fix
-
-Your wave 24 investigation found the issue. Apply the fix:
-
-Based on your findings, either:
-- Create per-thread `secp256k1_context` instances
-- Or add proper locking around shared interpreter state
-- Or whatever the correct fix is from your investigation
-
-If the fix is applied, test with 2 workers: change the worker count from 1 to 2 and verify no crash during bg_validation.
-
----
-
-## Task 3: Reorg Safety Test
-
-Test that the node handles a chain reorganization correctly:
-
-1. Read `lib/test/src/test_reorg_safety.c` — what scenarios are tested?
-2. Are there tests for disconnect_tip with undo data?
-3. Add a test: create a 3-block chain, connect all 3, then disconnect the tip. Verify UTXO set is restored correctly (spent outputs reappear, created outputs disappear).
-
----
-
-## Task 4: Write Soak Test Script
-
-Create `tools/soak_test.sh` that monitors the node for 72 hours:
-
+Run the soak test script you wrote:
 ```bash
-#!/bin/bash
-# Soak test: monitor node health every 5 minutes for 72 hours
-# Checks: height advancing, RSS stable, peers connected, no crashes
-# Logs to: soak_test.log
-
-DURATION_HOURS=72
-INTERVAL_SECS=300
+nohup tools/soak_test.sh > soak_test.log 2>&1 &
 ```
 
-The script should:
-- Log height, RSS, peer count, sync state every 5 minutes
-- Alert if height stops advancing for 30 minutes
-- Alert if RSS exceeds 4GB
-- Alert if peer count drops to 0
-- Alert if the process dies (restart it)
-- Write a summary at the end: uptime, blocks processed, max RSS, restarts
+Let it run. Check back periodically. If it catches issues, report them.
+
+---
+
+## Task 2: Re-test Multi-threaded bg_validation with 2 Workers
+
+Your investigation concluded the script interpreter is thread-safe and the crash might be fixed by the cs_main locking from wave 22b.
+
+1. Find where the worker count is set (likely `bg_validation_service.c`, look for `num_workers` or `MAX_WORKERS`)
+2. Change it from 1 to 2
+3. Build and deploy
+4. Monitor for 5 minutes — check for crashes via `systemctl --user status zclassic23`
+5. If stable, commit. If it crashes, revert and report the crash details.
+
+---
+
+## Task 3: Implement File Service Retry (ZCL Market)
+
+### File: `lib/net/src/file_service.c`, line 1228
+
+TODO: "retry failed chunks on next connect"
+
+When a file chunk download fails, the current code gives up. Add retry logic:
+
+1. Track failed chunks in a retry queue (chunk_hash + peer_id + attempt_count)
+2. On peer connect, check if any failed chunks can be retried from the new peer
+3. Max 3 retries per chunk, then mark as permanently failed
+4. Log retries: `printf("[file] retrying chunk %s attempt %d\n", ...)`
+
+---
+
+## Task 4: P2P File Protocol Phase 3
+
+### File: `lib/net/src/msgprocessor.c`, lines 1159, 1203, 1228
+
+Three TODOs for the file chunk protocol:
+
+1. **Line 1159:** "read actual file chunks and hash them" — when receiving a `zfile_chunk` message, verify the chunk data against the manifest hash
+2. **Line 1203:** "verify against download session, advance state" — match received chunk to the active download, mark as complete
+3. **Line 1228:** "unlock chunks for this peer's download" — when a peer disconnects, release any chunks assigned to it so other peers can download them
+
+Read the surrounding code to understand the wire format and data structures, then implement.
 
 ---
 
@@ -79,8 +69,7 @@ The script should:
 
 ```bash
 git pull origin master
-make -j$(nproc) 2>&1 | tail -20
-make test 2>&1 | tail -10
-git add <specific files> && git commit -m "wave 25 task N: description"
+make -j$(nproc) && make test
+git add <files> && git commit -m "wave 26 task N: description"
 git push origin master
 ```

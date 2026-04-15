@@ -1,12 +1,12 @@
-# Agent 3 Task: Wave 25c — Start Soak Test + Validation Fix
+# Agent 3 Task: Wave 26 — Stress Test + File Protocol
 
 ## Status
-- Your soak script, reorg test, and SIGKILL recovery fix are merged. Good work.
-- Node at tip, healthy. Time to start the soak test and fix bg_validation.
+- Node at tip, healthy. Soak script ready.
 
 ## Priority Order
-1. **Task 1: Start the soak test** — run `tools/soak_test.sh` in the background. Let it go.
-2. **Task 2: Multi-threaded bg_validation fix** — apply the fix from your wave 24 investigation. Enable 2 workers and test.
-3. **Task 3: Update CHECKLIST.md** — comprehensive update: mark everything fixed, list what's remaining, update status date to 2026-04-15
+1. **Task 1: Start soak test** — `nohup tools/soak_test.sh &`
+2. **Task 2: Re-test bg_validation with 2 workers** — change count, deploy, monitor
+3. **Task 3: File service retry** — file_service.c:1228 TODO
+4. **Task 4: P2P file protocol Phase 3** — msgprocessor.c:1159,1203,1228 TODOs
 
 ## See AGENT3.md for details
