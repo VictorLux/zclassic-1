@@ -1,13 +1,13 @@
-# Agent 3 Task: Wave 26b — Monitor Soak + Prometheus + Tor
+# Agent 3 Task: Wave 27 — Soak Results + Tor + Log Rotation + Fast Sync Test
 
 ## Status
-- Your wave 26 delivery was excellent — all 4 tasks done. bg_validation now runs 2 workers.
-- Soak test running. Node at tip.
+- Your wave 26 was excellent — bg_validation 2 workers, file protocol Phase 3, soak running
+- Node at tip, healthy
 
 ## Priority Order
-1. **Task 1: Check soak test** — `tail -20 soak_test.log`. Is it running? Any alerts? Report status.
-2. **Task 2: Prometheus /metrics endpoint** — Add a `/metrics` HTTP endpoint that outputs Prometheus-format metrics. Key metrics: `zcl_block_height`, `zcl_peer_count`, `zcl_rss_mb`, `zcl_utxo_count`, `zcl_sync_state`, `zcl_uptime_seconds`. Wire it into the existing HTTPS server or REST API.
-3. **Task 3: Enable Tor on main instance** — Add `-tor` to the systemd service file at `~/.config/systemd/user/zclassic23.service`. Verify the node gets a .onion address after restart.
-4. **Task 4: Log rotation** — stdout goes to `~/.zclassic-c23/node.log` which grows forever. Add either logrotate config or built-in rotation (rename + reopen when >100MB).
+1. **Task 1: Soak test status** — `tail -50 soak_test.log`. Report: how long has it been running, any alerts, height progression, RSS trend, peer count stability. If it's not running, restart it.
+2. **Task 2: Enable Tor on main instance** — edit `~/.config/systemd/user/zclassic23.service`, add `-tor` flag. `systemctl --user daemon-reload && systemctl --user restart zclassic23`. Verify .onion address appears in `zcl_status` after ~30s.
+3. **Task 3: Log rotation** — `~/.zclassic-c23/node.log` grows forever. Either add a logrotate config file at `/home/rhett/.config/logrotate/zclassic23.conf` or implement built-in rotation in the node (rename + reopen when >100MB).
+4. **Task 4: P2P fast sync end-to-end test** — The test instance at port 8035 can be used as a peer. Test: can a fresh zclassic23 node sync from the test instance via FlyClient + SHA3 UTXO snapshot? Use `-fastsync -addnode=127.0.0.1:8033`.
 
 ## See AGENT3.md for details
