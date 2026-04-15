@@ -1,14 +1,21 @@
-# Agent 2 Task: Wave 25b — Features + nSolution Leak
+# Agent 2 Task: Wave 25c — Re-enable Features (STILL TODO)
 
 ## Status
-- NODE AT TIP, healthy. MALLOC_ARENA_MAX=2 applied to service file — expecting ~800MB RSS.
-- Your memory diagnosis was spot-on. Tor health check fix merged.
-- bg_hash_verify and address backfill still need re-enabling (tasks 1-2 from wave 25)
+- Node at tip (3,078,979), 5 peers, RSS 2.1GB
+- Memory diagnosis done, Tor health fix done
+- bg_hash_verify and address backfill STILL NEED RE-ENABLING — 3 cycles assigned, not done yet
 
-## Priority Order
-1. **Task 1: Re-enable bg_hash_verify** — STILL TODO from wave 25. Find where disabled, turn on.
-2. **Task 2: Re-enable address backfill** — STILL TODO from wave 25. Find where disabled, turn on.
-3. **Task 3: Fix nSolution leak** — your diagnosis found it: `process_block.c:317` allocates 1344 bytes per block but never frees. Add cleanup for blocks that have been validated.
-4. **Task 4: Verify RSS after MALLOC_ARENA_MAX=2** — once node boots, check RSS via `zcl_health`. Report the before/after.
+## Priority Order — DO THESE
+1. **Task 1: Re-enable bg_hash_verify** — grep for where it's disabled, turn it on. This has been assigned for 3 waves now.
+2. **Task 2: Re-enable address backfill** — grep for where it's disabled, turn it on. Same — 3 waves overdue.
+3. **Task 3: Fix nSolution leak** — process_block.c:317 allocates 1344B/block, never freed. Free after validation.
+
+## How to find disabled features
+```bash
+grep -rn 'bg_hash_verify\|bg_hash_verification\|hash_verify' app/ config/ --include='*.c'
+grep -rn 'backfill_address\|address_backfill\|backfill' app/ config/ --include='*.c'
+```
+
+Look for: commented-out function calls, `if (false)` guards, `#if 0` blocks, `// DISABLED` comments, or missing function calls in boot sequence.
 
 ## See AGENT2.md for context
