@@ -94,6 +94,12 @@ static struct flush_policy g_flush_policy = {
 static _Atomic int64_t g_last_coins_flush = 0;
 static _Atomic int64_t g_blocks_since_flush = 0;
 
+/* Sapling tree checkpoint — persist every N blocks so SIGKILL only
+ * loses ~N blocks of tree state (seconds to rebuild) instead of the
+ * full tree (5+ minutes). */
+#define SAPLING_TREE_CHECKPOINT_INTERVAL 1000
+static _Atomic int64_t g_blocks_since_sapling_save = 0;
+
 static struct node_db *process_block_node_db(void)
 {
     return app_runtime_node_db();
@@ -127,14 +133,36 @@ static bool flush_coins_if_needed(struct coins_view_cache *coins_tip,
         g_last_coins_flush = now;
 
     g_blocks_since_flush++;
+    g_blocks_since_sapling_save++;
 
     bool time_flush = (now - g_last_coins_flush) > g_flush_policy.interval_secs;
     bool size_flush = coins_tip->cache_coins.size > g_flush_policy.max_entries;
     bool block_flush = g_flush_policy.block_interval > 0 &&
                        g_blocks_since_flush >= g_flush_policy.block_interval;
 
-    if (!force && !time_flush && !size_flush && !block_flush)
+    if (!force && !time_flush && !size_flush && !block_flush) {
+        /* Even without a full coins flush, periodically persist the
+         * Sapling commitment tree so SIGKILL only loses ~1000 blocks
+         * of tree state (seconds to rebuild) instead of all of it. */
+        if (g_sapling_tree_for_flush &&
+            g_blocks_since_sapling_save >= SAPLING_TREE_CHECKPOINT_INTERVAL) {
+            struct node_db *sap_ndb = process_block_node_db();
+            if (sap_ndb && sap_ndb->open) {
+                struct byte_stream ts;
+                stream_init(&ts, 4096);
+                if (incremental_tree_serialize(g_sapling_tree_for_flush, &ts)) {
+                    if (node_db_state_set(sap_ndb, "sapling_tree",
+                                          ts.data, ts.size)) {
+                        g_blocks_since_sapling_save = 0;
+                        sqlite3_wal_checkpoint_v2(sap_ndb->db, NULL,
+                            SQLITE_CHECKPOINT_PASSIVE, NULL, NULL);
+                    }
+                }
+                stream_free(&ts);
+            }
+        }
         return true;
+    }
 
 
     /* Flush node_db batch first — coins_flush needs the write lock. */
@@ -182,6 +210,7 @@ static bool flush_coins_if_needed(struct coins_view_cache *coins_tip,
                     fprintf(stderr, "flush_coins: sapling_tree persist failed\n");
             }
             stream_free(&ts);
+            g_blocks_since_sapling_save = 0;
         }
 
         const char *trigger = force ? "forced" : time_flush ? "periodic" :
