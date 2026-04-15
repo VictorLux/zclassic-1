@@ -472,6 +472,8 @@ static bool advance_wallet_witnesses(struct node_db *ndb,
         incremental_tree_serialize(tree, &ts);
         if (!node_db_state_set(ndb, "sapling_tree", ts.data, ts.size))
             ok = false;
+        node_db_state_set_int(ndb, "sapling_tree_rebuild_height",
+                              (int64_t)height);
         stream_free(&ts);
     }
 
@@ -806,11 +808,14 @@ static bool node_db_sync_disconnect_block_local(struct node_db *ndb,
         if (tq_rc == SQLITE_ROW) {
             int tlen = sqlite3_column_bytes(tq, 0);
             const void *tdata = sqlite3_column_blob(tq, 0);
-            if (tdata && tlen > 0)
+            if (tdata && tlen > 0) {
                 if (!node_db_state_set(ndb, "sapling_tree", tdata, (size_t)tlen)) {
                     sqlite3_finalize(tq);
                     goto fail;
                 }
+                node_db_state_set_int(ndb, "sapling_tree_rebuild_height",
+                                      (int64_t)pindex->pprev->nHeight);
+            }
         } else if (tq_rc != SQLITE_DONE) {
             sqlite3_finalize(tq);
             goto fail;
@@ -827,6 +832,7 @@ static bool node_db_sync_disconnect_block_local(struct node_db *ndb,
             stream_free(&es);
             goto fail;
         }
+        node_db_state_set_int(ndb, "sapling_tree_rebuild_height", 0);
         stream_free(&es);
     }
 
@@ -1499,21 +1505,77 @@ int sapling_tree_rebuild(struct node_db *ndb,
     int sapling_height = 476969; /* ZClassic Sapling activation */
     if (chain_tip < sapling_height) return 0;
 
-    fprintf(stderr, "sapling_tree_rebuild: replaying h=%d..%d\n",
-            sapling_height, chain_tip);
-    fflush(stderr);
-
     struct incremental_merkle_tree tree;
     sapling_tree_init(&tree);
     int total_commitments = 0;
     int mismatches = 0;
+    int start_height = sapling_height;
+
+    /* Try to resume from a persisted checkpoint to avoid replaying
+     * 2.6M blocks on every crash recovery. The checkpoint height and
+     * tree state are saved together every 100K blocks. */
+    int64_t ckpt_h = 0;
+    if (node_db_state_get_int(ndb, "sapling_tree_rebuild_height", &ckpt_h)
+        && ckpt_h > sapling_height && ckpt_h <= chain_tip) {
+        uint8_t tbuf[8192];
+        size_t tlen = 0;
+        if (node_db_state_get(ndb, "sapling_tree", tbuf, sizeof(tbuf), &tlen)
+            && tlen > 0) {
+            struct byte_stream ts;
+            stream_init_from_data(&ts, tbuf, tlen);
+            if (incremental_tree_deserialize(&tree, &ts)) {
+                /* Verify checkpoint root against the block at that height */
+                const struct block_index *ckpt_bi =
+                    active_chain_at(chain, (int)ckpt_h);
+                if (ckpt_bi &&
+                    memcmp(ckpt_bi->hashFinalSaplingRoot.data,
+                           (uint8_t[32]){0}, 32) != 0) {
+                    struct uint256 ckpt_root;
+                    incremental_tree_root(&tree, &ckpt_root);
+                    if (memcmp(ckpt_root.data,
+                               ckpt_bi->hashFinalSaplingRoot.data,
+                               32) == 0) {
+                        start_height = (int)ckpt_h + 1;
+                        total_commitments =
+                            (int)incremental_tree_size(&tree);
+                        fprintf(stderr, "sapling_tree_rebuild: resuming "
+                            "from checkpoint h=%d (%d commitments)\n",
+                            (int)ckpt_h, total_commitments);
+                        fflush(stderr);
+                    } else {
+                        /* Checkpoint root doesn't match — start fresh */
+                        sapling_tree_init(&tree);
+                    }
+                } else {
+                    /* Can't verify — trust the checkpoint if height
+                     * is on a 100K boundary (our checkpoint interval) */
+                    if ((ckpt_h - sapling_height) % 100000 == 0) {
+                        start_height = (int)ckpt_h + 1;
+                        total_commitments =
+                            (int)incremental_tree_size(&tree);
+                        fprintf(stderr, "sapling_tree_rebuild: resuming "
+                            "from unverified checkpoint h=%d "
+                            "(%d commitments)\n",
+                            (int)ckpt_h, total_commitments);
+                        fflush(stderr);
+                    } else {
+                        sapling_tree_init(&tree);
+                    }
+                }
+            }
+        }
+    }
+
+    fprintf(stderr, "sapling_tree_rebuild: replaying h=%d..%d\n",
+            start_height, chain_tip);
+    fflush(stderr);
 
     /* mmap cache — local, thread-safe */
     int cached_file = -1;
     uint8_t *cached_data = NULL;
     size_t cached_size = 0;
 
-    for (int h = sapling_height; h <= chain_tip; h++) {
+    for (int h = start_height; h <= chain_tip; h++) {
         const struct block_index *bi = active_chain_at(chain, h);
         if (!bi) continue;
         if (!(bi->nStatus & BLOCK_HAVE_DATA)) continue;
@@ -1575,6 +1637,8 @@ int sapling_tree_rebuild(struct node_db *ndb,
             stream_init(&ts, 4096);
             incremental_tree_serialize(&tree, &ts);
             node_db_state_set(ndb, "sapling_tree", ts.data, ts.size);
+            node_db_state_set_int(ndb, "sapling_tree_rebuild_height",
+                                  (int64_t)h);
             stream_free(&ts);
         }
     }
@@ -1587,6 +1651,8 @@ int sapling_tree_rebuild(struct node_db *ndb,
         stream_init(&ts, 4096);
         incremental_tree_serialize(&tree, &ts);
         node_db_state_set(ndb, "sapling_tree", ts.data, ts.size);
+        node_db_state_set_int(ndb, "sapling_tree_rebuild_height",
+                              (int64_t)chain_tip);
         stream_free(&ts);
     }
 

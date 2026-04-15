@@ -616,6 +616,71 @@ int test_reorg_safety(void)
         coins_view_cache_free(&pc);
     }
 
+    /* ── 15. 3-block chain: disconnect tip restores UTXO set ─ */
+
+    {
+        struct coins_view_cache tc;
+        struct coins_view tnv;
+        memset(&tnv, 0, sizeof(tnv));
+        coins_view_cache_init(&tc, &tnv);
+
+        /* Build 3-block chain: genesis → blk1 → blk2 */
+        struct block tblks[3];
+        struct uint256 thash[3];
+        struct block_index tidx[3];
+
+        for (int h = 0; h < 3; h++) {
+            const struct uint256 *prev = h ? &thash[h - 1] : NULL;
+            make_block_seeded(&tblks[h], h, prev, 0xDD);
+            block_header_get_hash(&tblks[h].header, &thash[h]);
+            block_index_init(&tidx[h]);
+            tidx[h].nHeight = h;
+            tidx[h].phashBlock = &thash[h];
+            tidx[h].pprev = h ? &tidx[h - 1] : NULL;
+            tidx[h].nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+            tidx[h].nTx = 1;
+            tidx[h].nChainTx = (uint32_t)(h + 1);
+            arith_uint256_set_u64(&tidx[h].nChainWork, (uint64_t)(h + 1));
+            update_coins(&tblks[h].vtx[0], &tc, h);
+        }
+
+        /* All 3 coinbases exist */
+        bool ok = true;
+        for (int h = 0; h < 3; h++)
+            ok = ok && coins_view_cache_have_coins(&tc, &tblks[h].vtx[0].hash);
+        RG_CHECK("reorg: 3-block chain has all 3 coinbase UTXOs", ok);
+
+        /* Disconnect tip (blk2) */
+        struct block_undo bu2;
+        block_undo_init(&bu2);
+        struct validation_state vs2;
+        validation_state_init(&vs2);
+        ok = disconnect_block(&tblks[2], &vs2, &tidx[2], &tc, &bu2);
+        block_undo_free(&bu2);
+        RG_CHECK("reorg: disconnect tip of 3-block chain succeeds", ok);
+
+        /* blk2 coinbase gone, blk0 and blk1 coinbases remain */
+        ok = !coins_view_cache_have_coins(&tc, &tblks[2].vtx[0].hash);
+        ok = ok && coins_view_cache_have_coins(&tc, &tblks[0].vtx[0].hash);
+        ok = ok && coins_view_cache_have_coins(&tc, &tblks[1].vtx[0].hash);
+        RG_CHECK("reorg: after disconnect tip, created outputs gone, prior UTXOs remain", ok);
+
+        /* Disconnect blk1 */
+        struct block_undo bu1;
+        block_undo_init(&bu1);
+        struct validation_state vs1;
+        validation_state_init(&vs1);
+        ok = disconnect_block(&tblks[1], &vs1, &tidx[1], &tc, &bu1);
+        block_undo_free(&bu1);
+        ok = ok && !coins_view_cache_have_coins(&tc, &tblks[1].vtx[0].hash);
+        ok = ok && coins_view_cache_have_coins(&tc, &tblks[0].vtx[0].hash);
+        RG_CHECK("reorg: after 2 disconnects, only genesis UTXO remains", ok);
+
+        for (int h = 0; h < 3; h++)
+            free_block(&tblks[h]);
+        coins_view_cache_free(&tc);
+    }
+
     /* ── Cleanup ─────────────────────────────────────────── */
 
     coins_view_cache_free(&cache);
