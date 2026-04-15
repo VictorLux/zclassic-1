@@ -46,7 +46,7 @@ void tor_integration_set_handler(tor_request_handler_fn handler, void *ctx)
 
 /* Write torrc — SocksPort 0 (no ports). Dynhost handles everything.
  * HiddenServiceDir persists the .onion key across restarts. */
-static bool write_torrc(const char *datadir)
+static bool write_torrc(const char *datadir, uint16_t p2p_port)
 {
     char torrc_path[1024];
     snprintf(torrc_path, sizeof(torrc_path), "%s/torrc", datadir);
@@ -59,12 +59,14 @@ static bool write_torrc(const char *datadir)
      * Tor won't bootstrap. The dynhost ephemeral service is created
      * AFTER bootstrap, so we need this to get to that point.
      * No HiddenServiceDir — it causes key validation assertion
-     * failures that prevent scheduler_init from running. */
+     * failures that prevent scheduler_init from running.
+     * Derive port from p2p_port to avoid collisions between instances. */
+    uint16_t socks_port = (uint16_t)(p2p_port + 11966);  /* 8033 → 19999 */
     fprintf(f,
-        "SocksPort 127.0.0.1:19999\n"
+        "SocksPort 127.0.0.1:%u\n"
         "DataDirectory %s/tor_data\n"
         "Log notice file %s/tor.log\n",
-        datadir, datadir);
+        socks_port, datadir, datadir);
 
     fclose(f);
     return true;
@@ -232,8 +234,6 @@ static void *tor_onion_monitor(void *arg)
 
 bool tor_integration_start(const char *datadir, uint16_t p2p_port)
 {
-    (void)p2p_port;
-
     if (atomic_load(&g_tor_running))
         return true;
 
@@ -246,7 +246,7 @@ bool tor_integration_start(const char *datadir, uint16_t p2p_port)
     snprintf(path, sizeof(path), "%s/tor_data/onion_service", datadir);
     mkdir(path, 0700);
 
-    if (!write_torrc(datadir))
+    if (!write_torrc(datadir, p2p_port))
         LOG_FAIL("tor", "failed to write torrc to %s", datadir);
 
     /* Register our handler with Tor's dynhost before starting.
