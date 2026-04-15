@@ -90,6 +90,7 @@ void node_health_collect(struct node_health_snapshot *snapshot,
     snapshot->tip_height = -1;
     snapshot->header_height = -1;
     snapshot->peer_best_height = -1;
+    snapshot->tor_enabled = tor_integration_is_enabled();
     snapshot->tor_ready = tor_integration_is_ready();
     snapshot->onion_service_ready = false;
 

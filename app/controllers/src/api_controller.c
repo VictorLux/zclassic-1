@@ -1780,6 +1780,7 @@ size_t api_handle_request(const char *method, const char *path,
               "\"tip_stale_seconds\":%lld"
             "},"
             "\"services\":{"
+              "\"tor_enabled\":%s,"
               "\"tor_ready\":%s,"
               "\"onion_service_ready\":%s,"
               "\"onion_address\":%s%s%s"
@@ -1821,6 +1822,7 @@ size_t api_handle_request(const char *method, const char *path,
             health.has_peers ? "true" : "false",
             health.tip_stale ? "true" : "false",
             (long long)health.tip_stale_seconds,
+            health.tor_enabled ? "true" : "false",
             health.tor_ready ? "true" : "false",
             health.onion_service_ready ? "true" : "false",
             health.onion_address[0] ? "\"" : "null",

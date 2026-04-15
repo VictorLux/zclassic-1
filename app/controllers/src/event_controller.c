@@ -101,6 +101,7 @@ static bool rpc_healthcheck(const struct json_value *params, bool help,
 
     json_push_kv_bool(&checks, "synced", health.synced);
     json_push_kv_bool(&checks, "has_peers", health.has_peers);
+    json_push_kv_bool(&checks, "tor_enabled", health.tor_enabled);
     json_push_kv_bool(&checks, "tor_ready", health.tor_ready);
     json_push_kv_bool(&checks, "onion_service_ready",
                       health.onion_service_ready);

@@ -18,6 +18,7 @@ struct node_health_snapshot {
     bool healthy;
     bool synced;
     bool has_peers;
+    bool tor_enabled;
     bool tor_ready;
     bool onion_service_ready;
     bool tip_stale;
