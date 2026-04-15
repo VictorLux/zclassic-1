@@ -424,6 +424,149 @@ int test_htlc(void)
         }
     }
 
+    /* ── Cross-chain P2SH addresses ─────────────────────────────── */
+
+    printf("htlc_p2sh_address: BTC address starts with '3'... ");
+    {
+        struct htlc_params params = {0};
+        memset(params.secret_hash, 0xAA, 32);
+        memset(params.recipient_pkh, 0xBB, 20);
+        memset(params.refunder_pkh, 0xCC, 20);
+        params.locktime = 100000;
+
+        uint8_t script[128];
+        size_t slen = htlc_build_script(&params, script, sizeof(script));
+
+        char addr[64] = {0};
+        bool ok = htlc_p2sh_address(script, slen, SWAP_CHAIN_BTC,
+                                    addr, sizeof(addr));
+        if (ok && strlen(addr) > 0 && addr[0] == '3')
+            printf("OK (%s)\n", addr);
+        else { printf("FAIL (ok=%d addr=%s)\n", ok, addr); failures++; }
+    }
+
+    printf("htlc_p2sh_address: LTC address... ");
+    {
+        struct htlc_params params = {0};
+        memset(params.secret_hash, 0xAA, 32);
+        memset(params.recipient_pkh, 0xBB, 20);
+        memset(params.refunder_pkh, 0xCC, 20);
+        params.locktime = 100000;
+
+        uint8_t script[128];
+        size_t slen = htlc_build_script(&params, script, sizeof(script));
+
+        char addr[64] = {0};
+        bool ok = htlc_p2sh_address(script, slen, SWAP_CHAIN_LTC,
+                                    addr, sizeof(addr));
+        if (ok && strlen(addr) > 0)
+            printf("OK (%s)\n", addr);
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("htlc_p2sh_address: DOGE address... ");
+    {
+        struct htlc_params params = {0};
+        memset(params.secret_hash, 0xAA, 32);
+        memset(params.recipient_pkh, 0xBB, 20);
+        memset(params.refunder_pkh, 0xCC, 20);
+        params.locktime = 100000;
+
+        uint8_t script[128];
+        size_t slen = htlc_build_script(&params, script, sizeof(script));
+
+        char addr[64] = {0};
+        bool ok = htlc_p2sh_address(script, slen, SWAP_CHAIN_DOGE,
+                                    addr, sizeof(addr));
+        if (ok && strlen(addr) > 0)
+            printf("OK (%s)\n", addr);
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ── Same contract → same P2SH across rebuilds ────────────── */
+
+    printf("htlc_p2sh_address: deterministic output... ");
+    {
+        struct htlc_params params = {0};
+        memset(params.secret_hash, 0xDE, 32);
+        memset(params.recipient_pkh, 0xAD, 20);
+        memset(params.refunder_pkh, 0xBE, 20);
+        params.locktime = 500000;
+
+        uint8_t s1[128], s2[128];
+        size_t l1 = htlc_build_script(&params, s1, sizeof(s1));
+        size_t l2 = htlc_build_script(&params, s2, sizeof(s2));
+
+        char a1[64] = {0}, a2[64] = {0};
+        htlc_p2sh_address(s1, l1, SWAP_CHAIN_ZCL, a1, sizeof(a1));
+        htlc_p2sh_address(s2, l2, SWAP_CHAIN_ZCL, a2, sizeof(a2));
+
+        if (l1 == l2 && memcmp(s1, s2, l1) == 0 && strcmp(a1, a2) == 0)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ── Full swap simulation: initiate → participate → redeem → extract ── */
+
+    printf("htlc full swap: end-to-end secret exchange... ");
+    {
+        /* Initiator generates secret */
+        uint8_t secret[32], secret_hash[32];
+        htlc_generate_secret(secret, secret_hash);
+
+        /* Both sides use the same secret_hash */
+        struct htlc_params init_params = {0};
+        memcpy(init_params.secret_hash, secret_hash, 32);
+        memset(init_params.recipient_pkh, 0x11, 20); /* participant claims */
+        memset(init_params.refunder_pkh, 0x22, 20);  /* initiator refunds */
+        init_params.locktime = 960; /* initiator: ~20 hours */
+
+        struct htlc_params part_params = {0};
+        memcpy(part_params.secret_hash, secret_hash, 32);
+        memset(part_params.recipient_pkh, 0x22, 20); /* initiator claims */
+        memset(part_params.refunder_pkh, 0x11, 20);  /* participant refunds */
+        part_params.locktime = 384; /* participant: ~8 hours */
+
+        uint8_t init_script[128], part_script[128];
+        size_t init_len = htlc_build_script(&init_params, init_script, sizeof(init_script));
+        size_t part_len = htlc_build_script(&part_params, part_script, sizeof(part_script));
+
+        /* Both produce 97-byte dcrdex-compatible scripts */
+        bool ok = (init_len == 97 && part_len == 97);
+
+        /* Same secret_hash at offset 7 in both */
+        ok = ok && memcmp(init_script + 7, secret_hash, 32) == 0;
+        ok = ok && memcmp(part_script + 7, secret_hash, 32) == 0;
+
+        /* Initiator redeems participant's contract (reveals secret) */
+        uint8_t fake_sig[72], fake_pk[33];
+        memset(fake_sig, 0xAA, 72);
+        memset(fake_pk, 0xBB, 33);
+
+        uint8_t redeem_sig[512];
+        size_t redeem_len = htlc_build_redeem_scriptsig(
+            redeem_sig, sizeof(redeem_sig),
+            fake_sig, 72, fake_pk, 33,
+            secret, part_script, part_len);
+        ok = ok && (redeem_len > 0);
+
+        /* Participant extracts secret from initiator's redeem tx */
+        uint8_t extracted[32];
+        bool extracted_ok = htlc_extract_secret(redeem_sig, redeem_len, extracted);
+        ok = ok && extracted_ok && memcmp(extracted, secret, 32) == 0;
+
+        /* Participant can now verify: SHA256(extracted) == secret_hash */
+        struct sha256_ctx ctx;
+        sha256_init(&ctx);
+        sha256_write(&ctx, extracted, 32);
+        uint8_t verify_hash[32];
+        sha256_finalize(&ctx, verify_hash);
+        ok = ok && memcmp(verify_hash, secret_hash, 32) == 0;
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     printf("\n%d HTLC test(s) failed\n", failures);
     return failures;
 }
