@@ -1811,48 +1811,118 @@ bool app_init(struct app_context *ctx)
                         g_state.pindex_best_header = post_found;
                     } else if (!post_found) {
                         /* coins_best_block hash not found in block index.
-                         * The UTXO set references a block we don't know
-                         * about — wipe UTXOs and replay from genesis. */
+                         * Instead of wiping UTXOs, find the highest UTXO
+                         * height and set chain tip there.  The UTXO data
+                         * is valid — only the metadata label is wrong. */
                         char hex[65];
                         uint256_get_hex(&post_scan_best, hex);
-                        fprintf(stderr,
-                            "[boot] WARNING: coins_best_block %s not in "
-                            "block index — wiping UTXOs and replaying "
-                            "from genesis\n", hex);
+                        printf("[boot] coins_best_block %s not in "
+                               "block index — resolving from UTXO "
+                               "heights\n", hex);
 
-                        /* Safety guard: if >1M UTXOs, require flag file */
-                        int64_t utxo_count = node_db_utxo_count(&g_node_db);
-                        bool allow_wipe = true;
-                        if (utxo_count > 1000000) {
-                            char wipe_flag[576];
-                            snprintf(wipe_flag, sizeof(wipe_flag),
-                                     "%s/force_utxo_wipe", ctx->datadir);
-                            struct stat wf_st;
-                            if (stat(wipe_flag, &wf_st) != 0) {
-                                fprintf(stderr,
-                                    "[boot] WARNING: %lld UTXOs would be "
-                                    "wiped. Create %s to confirm.\n",
-                                    (long long)utxo_count, wipe_flag);
-                                allow_wipe = false;
-                            } else {
-                                remove(wipe_flag);
-                                printf("[boot] force_utxo_wipe flag found "
-                                       "— proceeding with wipe of %lld "
-                                       "UTXOs\n", (long long)utxo_count);
+                        int utxo_max_h = 0;
+                        {
+                            sqlite3_stmt *hst = NULL;
+                            if (sqlite3_prepare_v2(g_node_db.db,
+                                "SELECT MAX(height) FROM utxos",
+                                -1, &hst, NULL) == SQLITE_OK && hst) {
+                                if (sqlite3_step(hst) == SQLITE_ROW)
+                                    utxo_max_h = sqlite3_column_int(hst, 0);
+                                sqlite3_finalize(hst);
                             }
                         }
 
-                        if (allow_wipe) {
-                            utxo_recovery_wipe(&g_node_db,
-                                "boot.coins_best_block_not_found");
+                        if (utxo_max_h > 0) {
+                            /* Find highest HAVE_DATA block at or below
+                             * the UTXO height — conservative but safe. */
+                            struct block_index *best_have = NULL;
+                            size_t bi = 0;
+                            struct block_index *bp;
+                            while (block_map_next(
+                                &g_state.map_block_index,
+                                &bi, NULL, &bp)) {
+                                if (!bp) continue;
+                                if (bp->nHeight <= utxo_max_h &&
+                                    (bp->nStatus & BLOCK_HAVE_DATA) &&
+                                    (!best_have ||
+                                     bp->nHeight > best_have->nHeight))
+                                    best_have = bp;
+                            }
 
-                            /* Reset coins_best_block to genesis */
+                            if (best_have && best_have->nHeight > 0) {
+                                active_chain_set_tip(
+                                    &g_state.chain_active, best_have);
+                                g_state.pindex_best_header = best_have;
+                                /* Update coins_best_block to match */
+                                if (best_have->phashBlock) {
+                                    coins_view_cache_set_best_block(
+                                        &g_coins_tip,
+                                        best_have->phashBlock);
+                                    node_db_state_set(&g_node_db,
+                                        "coins_best_block",
+                                        best_have->phashBlock->data, 32);
+                                }
+                                printf("[boot] coins_best_block hash not "
+                                       "in index — setting tip to highest "
+                                       "HAVE_DATA block at h=%d\n",
+                                       best_have->nHeight);
+                            } else {
+                                /* No HAVE_DATA blocks — create anchor
+                                 * at UTXO height (same as import_ldb) */
+                                struct block_index *anchor = zcl_calloc(1,
+                                    sizeof(struct block_index),
+                                    "boot coins_best_block anchor");
+                                if (anchor) {
+                                    block_index_init(anchor);
+                                    anchor->nHeight = utxo_max_h;
+                                    anchor->nStatus = BLOCK_VALID_TREE
+                                        | BLOCK_HAVE_DATA;
+                                    anchor->nChainTx = 1;
+                                    anchor->nTx = 1;
+                                    struct arith_uint256 max_w;
+                                    arith_uint256_set_u64(&max_w, 0);
+                                    size_t wi = 0;
+                                    struct block_index *wp;
+                                    while (block_map_next(
+                                        &g_state.map_block_index,
+                                        &wi, NULL, &wp)) {
+                                        if (!wp) continue;
+                                        if (arith_uint256_compare(
+                                            &wp->nChainWork,
+                                            &max_w) > 0)
+                                            max_w = wp->nChainWork;
+                                    }
+                                    struct arith_uint256 margin;
+                                    arith_uint256_set_u64(&margin,
+                                        4096ULL * (uint64_t)utxo_max_h);
+                                    arith_uint256_add(&anchor->nChainWork,
+                                        &max_w, &margin);
+
+                                    block_map_insert(
+                                        &g_state.map_block_index,
+                                        &post_scan_best, anchor);
+                                    anchor->phashBlock = block_map_find_hash(
+                                        &g_state.map_block_index,
+                                        &post_scan_best);
+
+                                    snapsync_set_anchor(anchor);
+                                    active_chain_set_tip(
+                                        &g_state.chain_active, anchor);
+                                    g_state.pindex_best_header = anchor;
+
+                                    printf("[boot] coins_best_block hash "
+                                           "not in index — anchor at "
+                                           "h=%d\n", utxo_max_h);
+                                }
+                            }
+                        } else {
+                            /* No UTXOs at all — safe to reset to genesis */
+                            printf("[boot] No UTXOs found — resetting to "
+                                   "genesis\n");
                             coins_view_cache_set_best_block(&g_coins_tip,
                                 &params->consensus.hashGenesisBlock);
                             node_db_state_set(&g_node_db, "coins_best_block",
                                 params->consensus.hashGenesisBlock.data, 32);
-
-                            /* Set chain tip to genesis */
                             struct block_index *genesis = block_map_find(
                                 &g_state.map_block_index,
                                 &params->consensus.hashGenesisBlock);
@@ -1861,8 +1931,6 @@ bool app_init(struct app_context *ctx)
                                     &g_state.chain_active, genesis);
                                 g_state.pindex_best_header = genesis;
                             }
-                            printf("[boot] UTXO set wiped — will replay "
-                                   "from genesis\n");
                         }
                     }
                 }
