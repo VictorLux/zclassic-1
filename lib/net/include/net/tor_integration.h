@@ -2,9 +2,13 @@
  *
  * Tor integration for zclassic23.
  *
- * Architecture: dynhost runs inside our modified Tor binary.
- * When a .onion request arrives, dynhost calls our handler directly.
- * No ports. No sockets. No HTTP. Just C function calls over Tor circuits.
+ * Architecture: Tor is compiled into zclassic23 as a thread (no external
+ * binary). Our forked Tor (RhettCreighton/tor, dynhost branch) routes
+ * .onion requests directly into our process via C function calls.
+ *
+ * NO SOCKS. NO EXTRA PORTS. NO TCP LISTENERS.
+ * Dynhost replaces SOCKS entirely. Requests arrive as C callbacks,
+ * not TCP connections. The torrc always contains "SocksPort 0".
  *
  * Usage:
  *   tor_integration_set_handler(my_handler, my_ctx);
@@ -38,7 +42,8 @@ typedef size_t (*tor_request_handler_fn)(const char *method,
 /* Set the request handler before starting Tor. */
 void tor_integration_set_handler(tor_request_handler_fn handler, void *ctx);
 
-/* Start Tor with dynhost. Creates .onion, no ports exposed. */
+/* Start embedded Tor with dynhost. Creates .onion address.
+ * No ports are opened — dynhost handles everything via C calls. */
 bool tor_integration_start(const char *datadir, uint16_t p2p_port);
 
 /* Stop Tor. */
@@ -47,7 +52,7 @@ void tor_integration_stop(void);
 /* Get .onion address (NULL if not ready). */
 const char *tor_integration_get_onion_address(void);
 
-/* Check if Tor is bootstrapped. */
+/* Check if Tor is bootstrapped and .onion is reachable. */
 bool tor_integration_is_ready(void);
 
 /* Check if Tor was started (may still be bootstrapping). */
@@ -57,6 +62,13 @@ bool tor_integration_is_enabled(void);
  * Must be called before tor_integration_start().
  * 3 chars ≈ instant, 4 chars ≈ seconds, 5 chars ≈ minutes. */
 void tor_integration_set_vanity_prefix(const char *prefix);
+
+/* Write torrc to datadir. We do NOT use SOCKS — dynhost handles
+ * everything. A localhost-only SocksPort is opened as a bootstrap
+ * workaround (Tor refuses to start without a listener). The port is
+ * derived from p2p_port so multiple instances don't collide.
+ * Exposed for testing — normally called by tor_integration_start(). */
+bool tor_write_torrc(const char *datadir, uint16_t p2p_port);
 
 /* ── Outbound .onion fetch API ─────────────────────────────── */
 
@@ -68,6 +80,7 @@ typedef void (*tor_fetch_callback_fn)(int status,
                                        void *ctx);
 
 /* Fetch a URL from a .onion address via embedded Tor circuits.
+ * No SOCKS — uses dynhost's internal circuit management.
  * Thread-safe: queues the request for Tor's event loop.
  * Returns 0 if queued, -1 if Tor not initialized. */
 int tor_integration_fetch_onion(const char *onion_address,

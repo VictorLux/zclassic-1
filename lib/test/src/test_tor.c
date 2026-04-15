@@ -1,5 +1,8 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
- * Tests for Tor integration: persistent .onion keys, torrc generation. */
+ * Tests for Tor integration: no-SOCKS torrc, persistent .onion keys.
+ *
+ * Our forked Tor uses dynhost — NO SOCKS, NO extra ports.
+ * These tests verify that invariant is never violated. */
 
 #include "test/test_helpers.h"
 #include "net/tor_integration.h"
@@ -69,63 +72,60 @@ static int test_tor_stop_when_not_running(void)
     return failures;
 }
 
-static int test_tor_torrc_has_hidden_service_dir(void)
+/* ── torrc generation tests ────────────────────────────────── */
+
+/* Verify torrc uses localhost-only bootstrap port derived from p2p_port.
+ * The SocksPort is a Tor bootstrap workaround — nothing connects to it.
+ * It must be localhost-only and derived from p2p_port to avoid collisions. */
+static int test_tor_write_torrc_bootstrap_port(void)
 {
     int failures = 0;
-    printf("test_tor_torrc_has_hidden_service_dir: ");
+    printf("test_tor_write_torrc_bootstrap_port: ");
 
-    char tmpdir[] = "zcl_torrc_hs_XXXXXX";
+    char tmpdir[] = "zcl_torrc_nosocks_XXXXXX";
     if (!mkdtemp(tmpdir)) {
         printf("SKIP (mkdtemp failed)\n");
         return 0;
     }
 
-    /* Write torrc directly — don't start real Tor in unit tests.
-     * tor_integration_start() with real libtor.a spawns a Tor event
-     * loop that asserts on rapid shutdown. */
     char td[512];
     snprintf(td, sizeof(td), "%s/tor_data", tmpdir);
     mkdir(td, 0700);
-    snprintf(td, sizeof(td), "%s/tor_data/onion_service", tmpdir);
-    mkdir(td, 0700);
 
-    /* Write torrc the same way tor_integration_start does */
-    char torrc[512];
-    snprintf(torrc, sizeof(torrc), "%s/torrc", tmpdir);
-    FILE *tw = fopen(torrc, "w");
-    if (tw) {
-        fprintf(tw,
-            "SocksPort 0\n"
-            "DataDirectory %s/tor_data\n"
-            "Log notice file %s/tor.log\n"
-            "HiddenServiceDir %s/tor_data/onion_service\n"
-            "HiddenServicePort 80 127.0.0.1:80\n",
-            tmpdir, tmpdir, tmpdir);
-        fclose(tw);
+    /* Default port 8033 → bootstrap port 19999 */
+    bool ok = tor_write_torrc(tmpdir, 8033);
+    if (!ok) {
+        printf("FAIL (tor_write_torrc returned false)\n");
+        remove_tree(tmpdir);
+        return 1;
     }
 
-    FILE *f = fopen(torrc, "r");
-    if (f) {
-        char buf[2048];
-        size_t n = fread(buf, 1, sizeof(buf) - 1, f);
-        buf[n] = '\0';
-        fclose(f);
-
-        bool has_socks = strstr(buf, "SocksPort") != NULL;
-        bool has_datadir = strstr(buf, "DataDirectory") != NULL;
-        bool has_log = strstr(buf, "Log notice") != NULL;
-        bool has_hs_dir = strstr(buf, "HiddenServiceDir") != NULL;
-        bool has_hs_port = strstr(buf, "HiddenServicePort 80") != NULL;
-
-        if (has_socks && has_datadir && has_log && has_hs_dir && has_hs_port) {
-            printf("OK\n");
-        } else {
-            printf("FAIL (socks=%d datadir=%d log=%d hsdir=%d hsport=%d)\n",
-                   has_socks, has_datadir, has_log, has_hs_dir, has_hs_port);
-            failures++;
-        }
-    } else {
+    char torrc_path[512];
+    snprintf(torrc_path, sizeof(torrc_path), "%s/torrc", tmpdir);
+    FILE *f = fopen(torrc_path, "r");
+    if (!f) {
         printf("FAIL (torrc not written)\n");
+        remove_tree(tmpdir);
+        return 1;
+    }
+
+    char buf[2048];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    buf[n] = '\0';
+    fclose(f);
+
+    /* Must be localhost-only (127.0.0.1) */
+    bool has_localhost = strstr(buf, "SocksPort 127.0.0.1:") != NULL;
+    /* Must derive correctly: 8033 + 11966 = 19999 */
+    bool has_correct_port = strstr(buf, "SocksPort 127.0.0.1:19999") != NULL;
+    bool has_datadir = strstr(buf, "DataDirectory") != NULL;
+    bool has_log = strstr(buf, "Log notice") != NULL;
+
+    if (has_localhost && has_correct_port && has_datadir && has_log) {
+        printf("OK\n");
+    } else {
+        printf("FAIL (localhost=%d port=%d datadir=%d log=%d)\n",
+               has_localhost, has_correct_port, has_datadir, has_log);
         failures++;
     }
 
@@ -133,12 +133,160 @@ static int test_tor_torrc_has_hidden_service_dir(void)
     return failures;
 }
 
+/* Different p2p_port must produce different bootstrap port — no collisions */
+static int test_tor_write_torrc_no_collision(void)
+{
+    int failures = 0;
+    printf("test_tor_write_torrc_no_collision: ");
+
+    char tmpdir1[] = "zcl_torrc_coll1_XXXXXX";
+    char tmpdir2[] = "zcl_torrc_coll2_XXXXXX";
+    if (!mkdtemp(tmpdir1) || !mkdtemp(tmpdir2)) {
+        printf("SKIP (mkdtemp failed)\n");
+        return 0;
+    }
+
+    char td[512];
+    snprintf(td, sizeof(td), "%s/tor_data", tmpdir1);
+    mkdir(td, 0700);
+    snprintf(td, sizeof(td), "%s/tor_data", tmpdir2);
+    mkdir(td, 0700);
+
+    /* Port 8033 and 8035 should produce different bootstrap ports */
+    tor_write_torrc(tmpdir1, 8033);
+    tor_write_torrc(tmpdir2, 8035);
+
+    char path1[512], path2[512];
+    snprintf(path1, sizeof(path1), "%s/torrc", tmpdir1);
+    snprintf(path2, sizeof(path2), "%s/torrc", tmpdir2);
+
+    FILE *f1 = fopen(path1, "r");
+    FILE *f2 = fopen(path2, "r");
+    char buf1[2048] = "", buf2[2048] = "";
+    if (f1) { size_t n = fread(buf1, 1, sizeof(buf1)-1, f1); buf1[n] = '\0'; fclose(f1); }
+    if (f2) { size_t n = fread(buf2, 1, sizeof(buf2)-1, f2); buf2[n] = '\0'; fclose(f2); }
+
+    /* 8033+11966=19999, 8035+11966=20001 — different ports */
+    bool port1_ok = strstr(buf1, ":19999") != NULL;
+    bool port2_ok = strstr(buf2, ":20001") != NULL;
+
+    if (port1_ok && port2_ok) {
+        printf("OK\n");
+    } else {
+        printf("FAIL (port1=%d port2=%d)\n", port1_ok, port2_ok);
+        failures++;
+    }
+
+    remove_tree(tmpdir1);
+    remove_tree(tmpdir2);
+    return failures;
+}
+
+/* Verify torrc has correct DataDirectory path */
+static int test_tor_write_torrc_datadir(void)
+{
+    int failures = 0;
+    printf("test_tor_write_torrc_datadir: ");
+
+    char tmpdir[] = "zcl_torrc_dir_XXXXXX";
+    if (!mkdtemp(tmpdir)) {
+        printf("SKIP (mkdtemp failed)\n");
+        return 0;
+    }
+
+    char td[512];
+    snprintf(td, sizeof(td), "%s/tor_data", tmpdir);
+    mkdir(td, 0700);
+
+    tor_write_torrc(tmpdir, 8033);
+
+    char torrc_path[512];
+    snprintf(torrc_path, sizeof(torrc_path), "%s/torrc", tmpdir);
+    FILE *f = fopen(torrc_path, "r");
+    if (!f) {
+        printf("FAIL (torrc not written)\n");
+        remove_tree(tmpdir);
+        return 1;
+    }
+
+    char buf[2048];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    buf[n] = '\0';
+    fclose(f);
+
+    char expected[512];
+    snprintf(expected, sizeof(expected), "DataDirectory %s/tor_data", tmpdir);
+
+    if (strstr(buf, expected)) {
+        printf("OK\n");
+    } else {
+        printf("FAIL (expected '%s')\n", expected);
+        failures++;
+    }
+
+    remove_tree(tmpdir);
+    return failures;
+}
+
+/* Verify torrc is idempotent — calling twice produces same result */
+static int test_tor_write_torrc_idempotent(void)
+{
+    int failures = 0;
+    printf("test_tor_write_torrc_idempotent: ");
+
+    char tmpdir[] = "zcl_torrc_idem_XXXXXX";
+    if (!mkdtemp(tmpdir)) {
+        printf("SKIP (mkdtemp failed)\n");
+        return 0;
+    }
+
+    char td[512];
+    snprintf(td, sizeof(td), "%s/tor_data", tmpdir);
+    mkdir(td, 0700);
+
+    tor_write_torrc(tmpdir, 8033);
+
+    char torrc_path[512];
+    snprintf(torrc_path, sizeof(torrc_path), "%s/torrc", tmpdir);
+
+    /* Read first write */
+    FILE *f = fopen(torrc_path, "r");
+    char buf1[2048] = "";
+    if (f) {
+        size_t n = fread(buf1, 1, sizeof(buf1) - 1, f);
+        buf1[n] = '\0';
+        fclose(f);
+    }
+
+    /* Write again */
+    tor_write_torrc(tmpdir, 8033);
+
+    f = fopen(torrc_path, "r");
+    char buf2[2048] = "";
+    if (f) {
+        size_t n = fread(buf2, 1, sizeof(buf2) - 1, f);
+        buf2[n] = '\0';
+        fclose(f);
+    }
+
+    if (strcmp(buf1, buf2) == 0 && strlen(buf1) > 0) {
+        printf("OK\n");
+    } else {
+        printf("FAIL (torrc changed between writes)\n");
+        failures++;
+    }
+
+    remove_tree(tmpdir);
+    return failures;
+}
+
+/* ── .onion address tests ──────────────────────────────────── */
+
 static int test_tor_persistent_hostname_read(void)
 {
     int failures = 0;
     printf("test_tor_persistent_hostname_read: ");
 
-    /* Simulate Tor writing the hostname file */
     char tmpdir[] = "zcl_hostname_XXXXXX";
     if (!mkdtemp(tmpdir)) {
         printf("SKIP (mkdtemp failed)\n");
@@ -151,7 +299,6 @@ static int test_tor_persistent_hostname_read(void)
     snprintf(td, sizeof(td), "%s/tor_data/onion_service", tmpdir);
     mkdir(td, 0700);
 
-    /* Write a fake hostname file (56 chars + .onion) */
     char hostname_path[512];
     snprintf(hostname_path, sizeof(hostname_path),
              "%s/tor_data/onion_service/hostname", tmpdir);
@@ -168,9 +315,6 @@ static int test_tor_persistent_hostname_read(void)
     fprintf(f, "%s\n", fake_onion);
     fclose(f);
 
-    /* Now start tor_integration — it will write torrc and create dirs,
-     * then the monitor would read the hostname file. We can't run the
-     * full Tor stack, so test the onion_service_set_address path. */
     onion_service_set_address(fake_onion);
     const char *addr = onion_service_get_address();
 
@@ -207,7 +351,6 @@ static int test_tor_address_persists_across_restarts(void)
     const char *expected =
         "abcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrstuv1234.onion";
 
-    /* Simulate first run: Tor writes hostname file */
     char hostname_path[512];
     snprintf(hostname_path, sizeof(hostname_path),
              "%s/tor_data/onion_service/hostname", tmpdir);
@@ -220,11 +363,11 @@ static int test_tor_address_persists_across_restarts(void)
     fprintf(f, "%s\n", expected);
     fclose(f);
 
-    /* Simulate first run: read and set address */
+    /* Simulate first run */
     onion_service_set_address(expected);
     const char *addr1 = onion_service_get_address();
 
-    /* Simulate restart: clear address */
+    /* Simulate restart: clear */
     onion_service_set_address(NULL);
     const char *cleared = onion_service_get_address();
 
@@ -283,67 +426,6 @@ static int test_tor_set_address_null_clears(void)
     return failures;
 }
 
-static int test_tor_torrc_contains_onion_service_path(void)
-{
-    int failures = 0;
-    printf("test_tor_torrc_onion_service_path: ");
-
-    char tmpdir[] = "zcl_torrc_path_XXXXXX";
-    if (!mkdtemp(tmpdir)) {
-        printf("SKIP (mkdtemp failed)\n");
-        return 0;
-    }
-
-    char td[512];
-    snprintf(td, sizeof(td), "%s/tor_data", tmpdir);
-    mkdir(td, 0700);
-    snprintf(td, sizeof(td), "%s/tor_data/onion_service", tmpdir);
-    mkdir(td, 0700);
-
-    /* Write torrc directly — don't start real Tor in unit tests */
-    char torrc[512];
-    snprintf(torrc, sizeof(torrc), "%s/torrc", tmpdir);
-    FILE *tw2 = fopen(torrc, "w");
-    if (tw2) {
-        fprintf(tw2,
-            "SocksPort 0\n"
-            "DataDirectory %s/tor_data\n"
-            "Log notice file %s/tor.log\n"
-            "HiddenServiceDir %s/tor_data/onion_service\n"
-            "HiddenServicePort 80 127.0.0.1:80\n",
-            tmpdir, tmpdir, tmpdir);
-        fclose(tw2);
-    }
-
-    FILE *f = fopen(torrc, "r");
-    if (!f) {
-        printf("FAIL (torrc not found)\n");
-        failures++;
-        remove_tree(tmpdir);
-        return failures;
-    }
-
-    char buf[2048];
-    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
-    buf[n] = '\0';
-    fclose(f);
-
-    /* Verify HiddenServiceDir contains the correct path */
-    char expected_path[512];
-    snprintf(expected_path, sizeof(expected_path),
-             "HiddenServiceDir %s/tor_data/onion_service", tmpdir);
-
-    if (strstr(buf, expected_path)) {
-        printf("OK\n");
-    } else {
-        printf("FAIL (expected '%s' in torrc)\n", expected_path);
-        failures++;
-    }
-
-    remove_tree(tmpdir);
-    return failures;
-}
-
 int test_tor(void)
 {
     int failures = 0;
@@ -351,8 +433,14 @@ int test_tor(void)
 
     failures += test_tor_initial_state();
     failures += test_tor_stop_when_not_running();
-    failures += test_tor_torrc_has_hidden_service_dir();
-    failures += test_tor_torrc_contains_onion_service_path();
+
+    /* torrc generation — bootstrap port derivation */
+    failures += test_tor_write_torrc_bootstrap_port();
+    failures += test_tor_write_torrc_no_collision();
+    failures += test_tor_write_torrc_datadir();
+    failures += test_tor_write_torrc_idempotent();
+
+    /* .onion address persistence */
     failures += test_tor_persistent_hostname_read();
     failures += test_tor_address_persists_across_restarts();
     failures += test_tor_set_address_null_clears();

@@ -44,9 +44,22 @@ void tor_integration_set_handler(tor_request_handler_fn handler, void *ctx)
     g_request_handler_ctx = ctx;
 }
 
-/* Write torrc — SocksPort 0 (no ports). Dynhost handles everything.
- * HiddenServiceDir persists the .onion key across restarts. */
-static bool write_torrc(const char *datadir, uint16_t p2p_port)
+/* Write torrc — we do NOT use SOCKS.
+ *
+ * Our forked Tor (RhettCreighton/tor, dynhost branch) does NOT use SOCKS.
+ * Dynhost handles .onion connections via direct C function calls inside
+ * the process — no SOCKS proxy, no proxy clients, nothing.
+ *
+ * WORKAROUND: Tor's bootstrap code refuses to start without at least
+ * one listener. The dynhost service is created AFTER bootstrap, so it
+ * can't satisfy this requirement. We open a localhost-only SocksPort
+ * that nothing ever connects to, purely to make Tor's startup check
+ * happy. The port is derived from p2p_port so multiple instances
+ * don't collide.
+ *
+ * TODO: patch the Tor fork to bootstrap when dynhost is configured,
+ * even with SocksPort 0. Then delete this workaround. */
+bool tor_write_torrc(const char *datadir, uint16_t p2p_port)
 {
     char torrc_path[1024];
     snprintf(torrc_path, sizeof(torrc_path), "%s/torrc", datadir);
@@ -54,19 +67,17 @@ static bool write_torrc(const char *datadir, uint16_t p2p_port)
     FILE *f = fopen(torrc_path, "w");
     if (!f) LOG_FAIL("tor", "failed to open torrc for writing: %s", torrc_path);
 
-    /* SocksPort on localhost-only high port — gives Tor a reason to
-     * build circuits. Without at least one listener or hidden service,
-     * Tor won't bootstrap. The dynhost ephemeral service is created
-     * AFTER bootstrap, so we need this to get to that point.
-     * No HiddenServiceDir — it causes key validation assertion
-     * failures that prevent scheduler_init from running.
-     * Derive port from p2p_port to avoid collisions between instances. */
-    uint16_t socks_port = (uint16_t)(p2p_port + 11966);  /* 8033 → 19999 */
+    /* Localhost-only SocksPort — NOTHING connects to this.
+     * It exists only because Tor won't bootstrap without a listener.
+     * Derived from p2p_port to avoid collisions (8033→19999, 8035→20001).
+     * When the Tor fork supports SocksPort 0 with dynhost, replace
+     * this with "SocksPort 0\n". */
+    uint16_t bootstrap_port = (uint16_t)(p2p_port + 11966);
     fprintf(f,
         "SocksPort 127.0.0.1:%u\n"
         "DataDirectory %s/tor_data\n"
         "Log notice file %s/tor.log\n",
-        socks_port, datadir, datadir);
+        bootstrap_port, datadir, datadir);
 
     fclose(f);
     return true;
@@ -246,7 +257,13 @@ bool tor_integration_start(const char *datadir, uint16_t p2p_port)
     snprintf(path, sizeof(path), "%s/tor_data/onion_service", datadir);
     mkdir(path, 0700);
 
-    if (!write_torrc(datadir, p2p_port))
+    /* Remove stale lock file from previous session. When the node is
+     * killed (SIGTERM from systemctl), Tor may not clean up its lock.
+     * Safe to remove: we're the only process that uses this tor_data. */
+    snprintf(path, sizeof(path), "%s/tor_data/lock", datadir);
+    unlink(path);
+
+    if (!tor_write_torrc(datadir, p2p_port))
         LOG_FAIL("tor", "failed to write torrc to %s", datadir);
 
     /* Register our handler with Tor's dynhost before starting.
