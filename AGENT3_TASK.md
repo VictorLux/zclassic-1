@@ -1,13 +1,16 @@
-# Agent 3 Task: Wave 28 — Soak Results + Fast Sync + Name Registry
+# Agent 3 Task: Wave 28b — Soak + Tor Verify + Fast Sync + Names
 
 ## Status
-- Soak test should have been running. Tor just enabled on main instance.
-- Node deployed fresh — check everything.
+- Your Prometheus + log rotation + Tor flag merged. Node redeployed.
+- Soak test should be running. Tor should be bootstrapping.
 
 ## Priority Order
-1. **Task 1: Soak test results** — check `soak_test.log` or restart if not running. Report: uptime, height progression, RSS trend, any crashes or stalls.
-2. **Task 2: Verify Tor** — node was just restarted with `-tor`. Check `zcl_status` for onion_address. If Tor bootstrapped, the .onion should be visible. Report the address.
-3. **Task 3: P2P fast sync test** — test fresh sync from the main instance. Create a temp datadir, run `./zclassic23 -datadir=/tmp/zcl-fastsync-test -fastsync -addnode=127.0.0.1:8033 -noconnect` (only connect to our own node). Does it get UTXO snapshot? How long to sync?
-4. **Task 4: ZCL Names end-to-end** — test name registration flow: `zcl_name_register(name="test-agent3")` → check `zcl_name_resolve(name="test-agent3")` → verify it resolves. If registration requires on-chain tx, build and broadcast it.
+1. **Task 1: Check soak test** — `tail -50 soak_test.log` or `cat soak_test.log | tail -50`. Is it running? Report height progression, RSS trend, any alerts. If dead, restart with `nohup tools/soak_test.sh >> soak_test.log 2>&1 &`.
+2. **Task 2: Verify Tor onion address** — node just restarted with `-tor`. Check `zcl_status` or `zcl_onion_status` for the .onion address. If `tor_enabled: false` still, check if `-tor` is actually being parsed — grep for the flag parsing in `main.c` or `config/`.
+3. **Task 3: Fast sync test** — create `/tmp/zcl-test-fastsync/`, run `./zclassic23 -datadir=/tmp/zcl-test-fastsync -port=18999 -rpcport=18998 -fastsync -addnode=127.0.0.1:8033` for 2 minutes, check if it receives UTXO snapshot. Kill after test. Report what happened.
+4. **Task 4: ZCL Names test** — call `zcl_name_list` to see registered names. Call `zcl_name_resolve(name="zclassic")` to test resolution. Report what works.
 
-## See AGENT3.md for details
+## Rules
+- `git pull origin master` before starting
+- `make -j$(nproc) && make test` before every push
+- Commit with `wave 28 task N:` prefix

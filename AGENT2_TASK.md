@@ -1,13 +1,15 @@
-# Agent 2 Task: Wave 28 — PHGR13 + Atomic Swaps + Store Checkout
+# Agent 2 Task: Wave 28b — PHGR13 + Swap Tests + Store
 
 ## Status
-- Compact blocks (BIP 152) and Prometheus metrics DONE
-- Node deployed with -tor and Prometheus enabled
-- At tip (3,079,098), healthy, 5 peers
+- Prometheus metrics, compact blocks, log rotation all merged
+- Node redeployed with latest code. At tip (3,079,099).
 
 ## Priority Order
-1. **Task 1: PHGR13 Sprout VK format** — last validation gap. `lib/sapling/src/sprout.c` has verification code wired but VK parsing fails. Investigate: what format does the code expect vs what zcash params provide? For Sprout proofs at h<581876.
-2. **Task 2: Atomic swap end-to-end test** — ZSWP is wired for ZCL/BTC/LTC/DOGE. Use `zcl_swap_initiate` and `zcl_swap_participate` MCP tools to create test HTLC contracts. Verify the script matches dcrdex format (97-byte P2SH). Write a test if one doesn't exist.
-3. **Task 3: Store checkout with shielded payment** — the e-commerce store exists but needs end-to-end checkout: browse products → add to cart → generate z-addr invoice → detect payment → mark paid. Check `app/controllers/src/store_controller.c` for what's implemented vs stubbed.
+1. **Task 1: PHGR13 Sprout VK format** — last validation gap. Read `lib/sapling/src/sprout.c`, find the VK loading code. Compare expected format against zcash params files. The VK data may need byte-swapping or field reordering. For Sprout proofs at h<581876. Even a "this is what's wrong and how to fix it" report is valuable.
+2. **Task 2: Atomic swap test** — write a test in `lib/test/src/` that creates an HTLC contract script, verifies it matches the 97-byte dcrdex format, and tests secret extraction from a redeem transaction. Use the existing swap code in `lib/script/src/htlc.c`.
+3. **Task 3: Store checkout flow** — read `app/controllers/src/store_controller.c`. What's implemented vs stubbed? Is there a payment detection callback? Can a z-addr invoice be generated? Report what exists and what's missing.
 
-## See AGENT2.md for context
+## Rules
+- `git pull origin master` before starting
+- `make -j$(nproc) && make test` before every push
+- Commit with `wave 28 task N:` prefix
