@@ -104,6 +104,10 @@ static uint64_t                  g_reject_overflow_block;
 static pthread_mutex_t      g_lock = PTHREAD_MUTEX_INITIALIZER;
 static bool                 g_observer_installed = false;
 
+/* Wave 26b: sync state gauge (set atomically alongside node gauges) */
+static _Atomic int          g_node_sync_state;
+static const char          *g_node_sync_state_name = "unknown";
+
 /* ── Parsers ────────────────────────────────────────────────── */
 
 /* Extract a field value from a "key=value ..." payload.  Writes up to
@@ -451,6 +455,12 @@ static void mcp_consensus_observer(enum event_type type, uint32_t peer_id,
     mcp_metrics_record_consensus_reject(kind, reason);
 }
 
+void mcp_metrics_set_sync_state(int state, const char *name)
+{
+    atomic_store(&g_node_sync_state, state);
+    g_node_sync_state_name = name ? name : "unknown";
+}
+
 void mcp_metrics_init(void)
 {
     pthread_mutex_lock(&g_lock);
@@ -659,6 +669,8 @@ size_t mcp_metrics_render_prometheus(char *buf, size_t cap)
     int64_t rss100 = atomic_load(&g_node_rss_mb_x100);
     int64_t uc = atomic_load(&g_node_utxo_count);
     int64_t up = atomic_load(&g_node_uptime_seconds);
+    int ss = atomic_load(&g_node_sync_state);
+    const char *ssn = g_node_sync_state_name;
 
     pos = append(buf, cap, pos,
         "# HELP zcl_block_height Current best chain height\n"
@@ -683,6 +695,12 @@ size_t mcp_metrics_render_prometheus(char *buf, size_t cap)
         "# TYPE zcl_utxo_count gauge\n"
         "zcl_utxo_count %lld\n",
         (long long)uc);
+
+    pos = append(buf, cap, pos,
+        "# HELP zcl_sync_state Sync state (0=idle, 5=at_tip)\n"
+        "# TYPE zcl_sync_state gauge\n"
+        "zcl_sync_state{name=\"%s\"} %d\n",
+        ssn ? ssn : "unknown", ss);
 
     pos = append(buf, cap, pos,
         "# HELP zcl_uptime_seconds Node uptime in seconds\n"

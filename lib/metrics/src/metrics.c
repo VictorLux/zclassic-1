@@ -11,6 +11,9 @@
 #include "consensus/params.h"
 #include "core/utiltime.h"
 #include "util/timedata.h"
+#include "event/event.h"
+#include "config/runtime.h"
+#include "models/database.h"
 #include <pthread.h>
 #include <stdio.h>
 #include <string.h>
@@ -350,7 +353,16 @@ static void *metrics_thread_fn(void *arg)
                 fclose(sf);
             }
 
-            mcp_metrics_set_node_gauges(gh, gpc, grss, 0, gup);
+            /* UTXO count from database */
+            int64_t gutxo = 0;
+            struct node_db *gndb = app_runtime_node_db();
+            if (gndb) gutxo = node_db_utxo_count(gndb);
+
+            mcp_metrics_set_node_gauges(gh, gpc, grss, gutxo, gup);
+
+            /* Sync state */
+            enum sync_state gss = sync_get_state();
+            mcp_metrics_set_sync_state((int)gss, sync_state_name(gss));
         }
 
         if (is_tty) {

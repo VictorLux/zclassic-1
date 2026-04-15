@@ -26,7 +26,7 @@
 #include <sys/time.h>
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
-#include "util/log_macros.h"
+#include "mcp/metrics.h"
 
 static SSL_CTX *g_ssl_ctx = NULL;
 static int g_https_fd = -1;
@@ -181,6 +181,31 @@ static void handle_https_client(SSL *ssl)
             "Location: /explorer\r\n"
             "Connection: close\r\n\r\n";
         SSL_write(ssl, resp, (int)strlen(resp));
+        return;
+    }
+
+    /* Wave 26b: Prometheus /metrics endpoint on HTTPS */
+    if (strcmp(path, "/metrics") == 0) {
+        size_t cap = 131072;
+        char *mbuf = zcl_malloc(cap, "https_metrics_buf");
+        if (!mbuf) return;
+        size_t n = mcp_metrics_render_prometheus(mbuf, cap);
+        char hdr[256];
+        int hlen = snprintf(hdr, sizeof(hdr),
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Type: text/plain; version=0.0.4; charset=utf-8\r\n"
+            "Connection: close\r\n"
+            "Content-Length: %zu\r\n\r\n", n);
+        SSL_write(ssl, hdr, hlen);
+        size_t written = 0;
+        while (written < n) {
+            size_t chunk = n - written;
+            if (chunk > 16384) chunk = 16384;
+            int w = SSL_write(ssl, mbuf + written, (int)chunk);
+            if (w <= 0) break;
+            written += (size_t)w;
+        }
+        free(mbuf);
         return;
     }
 

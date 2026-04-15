@@ -183,12 +183,16 @@ size_t mcp_metrics_consensus_report_json(char *buf, size_t cap);
  *   zcl_peer_count        <count>
  *   zcl_rss_mb            <mb>
  *   zcl_utxo_count        <count>
+ *   zcl_sync_state        <state>
  *   zcl_uptime_seconds    <seconds>
  */
 
 void mcp_metrics_set_node_gauges(int64_t block_height, int64_t peer_count,
                                  double rss_mb, int64_t utxo_count,
                                  int64_t uptime_seconds);
+
+/* Set the sync state gauge separately (name is a static string). */
+void mcp_metrics_set_sync_state(int state, const char *name);
 
 #ifdef __cplusplus
 }

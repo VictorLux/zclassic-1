@@ -67,6 +67,7 @@
 #include "services/ibd_throttle.h"
 #include "services/sync_watchdog_service.h"
 #include "services/db_maintenance.h"
+#include "mcp/metrics.h"
 
 extern int g_assume_valid_height;
 
@@ -1188,6 +1189,9 @@ bool app_init_services(struct app_context *ctx,
                     "WARNING: failed to start tracked snapshot-offer thread\n");
         }
     }
+
+    /* Wave 26b: initialize metrics observers for Prometheus /metrics */
+    mcp_metrics_init();
 
     /* Start RPC HTTP server */
     set_rpc_warmup_finished();
