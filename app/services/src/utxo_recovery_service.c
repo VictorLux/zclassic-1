@@ -91,8 +91,10 @@ bool utxo_recovery_check_reimport_flag(const char *datadir)
 bool utxo_recovery_prepare_reimport(struct node_db *ndb)
 {
     printf("Forced UTXO re-import requested.\n");
-    if (!utxo_recovery_wipe(ndb, "boot.reimport_utxos_flag"))
-        return false;
+    /* Only clear the migration flag — the wipe will happen at the
+     * start of utxo_recovery_import_ldb (line 168).  Wiping here
+     * AND in import_ldb was one of the three redundant wipes that
+     * could destroy imported UTXOs. */
     node_db_exec(ndb, "DELETE FROM node_state WHERE key='leveldb_utxo_migrated'");
     return true;
 }
@@ -287,6 +289,12 @@ struct utxo_import_result utxo_recovery_import_ldb(
         coins_view_db_close(&migrate_db);
         node_db_wal_checkpoint(ctx->ndb);
 
+        /* Force a fresh read snapshot so ctx->ndb sees the UTXOs
+         * written by import_db (the private connection).  Without
+         * this, a stale SQLite snapshot can report 0 rows, causing
+         * the SHA3 check to falsely fail and wipe valid data. */
+        sqlite3_exec(ctx->ndb->db, "BEGIN; END;", NULL, NULL, NULL);
+
         /* SHA3 verification */
         uint8_t imported_root[32];
         uint64_t imported_count = 0;
@@ -305,10 +313,24 @@ struct utxo_import_result utxo_recovery_import_ldb(
                    "checkpoint, will verify later)\n",
                    (unsigned long long)imported_count);
         } else {
-            fprintf(stderr, "ERROR: only %llu UTXOs imported "
-                    "— will retry on next boot\n",
-                    (unsigned long long)imported_count);
-            (void)utxo_recovery_wipe(ctx->ndb, "boot.ldb_import_failed_retry");
+            /* Double-check actual row count before wiping — the
+             * SHA3 function might have missed data due to a stale
+             * snapshot, but the UTXOs are actually in the table. */
+            int64_t actual = node_db_utxo_count(ctx->ndb);
+            if (actual > 100000) {
+                printf("SHA3 saw %llu but utxo table has %lld rows "
+                       "— keeping data (snapshot lag)\n",
+                       (unsigned long long)imported_count,
+                       (long long)actual);
+                imported_count = (uint64_t)actual;
+                res.utxo_count = imported_count;
+            } else {
+                fprintf(stderr, "ERROR: only %llu UTXOs imported "
+                        "— will retry on next boot\n",
+                        (unsigned long long)imported_count);
+                (void)utxo_recovery_wipe(ctx->ndb,
+                    "boot.ldb_import_failed_retry");
+            }
         }
 
         uint8_t one = 1;

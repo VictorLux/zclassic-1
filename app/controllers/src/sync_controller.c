@@ -3033,45 +3033,51 @@ int node_db_sync_import_utxos(struct node_db *ndb,
      * mid-wipe crash or early-return rolls back cleanly: the pipeline
      * below starts from a fully-wiped-and-committed table, not a
      * half-deleted one. */
-    struct recovery_policy rp;
-    policy_load_from_env(&rp);
+    /* Skip the wipe if the table is already empty — the caller
+     * (utxo_recovery_import_ldb) already wiped at service line 168.
+     * This was the third redundant wipe that destroyed data. */
     int64_t existing = node_db_utxo_count(ndb);
     if (existing < 0) existing = 0;
-    enum policy_decision pd = policy_check_utxo_wipe(
-        &rp, existing, "sync_controller.import_utxos_reimport");
-    if (pd != POLICY_ALLOW) {
-        fprintf(stderr,
-                "UTXO import: recovery_policy refused wipe (code=%s, rows=%lld)\n",
-                policy_decision_name(pd), (long long)existing);
-        if (!sync_db_turbo_scope_end(&turbo_mode))
-            fprintf(stderr, "UTXO import: failed to restore normal mode after policy refusal\n");
-        sync_job_import_finish(0);
-        return -1;
-    }
 
-    {
-        DB_TXN_SCOPE(txn, ndb, "sync_controller.import_utxos_reimport");
-        if (!txn) {
-            fprintf(stderr, "UTXO import: failed to open db_txn for wipe\n");
+    if (existing > 0) {
+        struct recovery_policy rp;
+        policy_load_from_env(&rp);
+        enum policy_decision pd = policy_check_utxo_wipe(
+            &rp, existing, "sync_controller.import_utxos_reimport");
+        if (pd != POLICY_ALLOW) {
+            fprintf(stderr,
+                    "UTXO import: recovery_policy refused wipe (code=%s, rows=%lld)\n",
+                    policy_decision_name(pd), (long long)existing);
             if (!sync_db_turbo_scope_end(&turbo_mode))
-                fprintf(stderr, "UTXO import: failed to restore normal mode after db_txn failure\n");
+                fprintf(stderr, "UTXO import: failed to restore normal mode after policy refusal\n");
             sync_job_import_finish(0);
             return -1;
         }
-        if (!node_db_wipe_utxos(ndb)) {
-            fprintf(stderr, "UTXO import: failed to wipe utxos table\n");
-            /* leave scope → auto-rollback */
-            if (!sync_db_turbo_scope_end(&turbo_mode))
-                fprintf(stderr, "UTXO import: failed to restore normal mode after wipe failure\n");
-            sync_job_import_finish(0);
-            return -1;
-        }
-        if (!db_txn_commit(txn)) {
-            fprintf(stderr, "UTXO import: commit of wipe failed\n");
-            if (!sync_db_turbo_scope_end(&turbo_mode))
-                fprintf(stderr, "UTXO import: failed to restore normal mode after commit failure\n");
-            sync_job_import_finish(0);
-            return -1;
+
+        {
+            DB_TXN_SCOPE(txn, ndb, "sync_controller.import_utxos_reimport");
+            if (!txn) {
+                fprintf(stderr, "UTXO import: failed to open db_txn for wipe\n");
+                if (!sync_db_turbo_scope_end(&turbo_mode))
+                    fprintf(stderr, "UTXO import: failed to restore normal mode after db_txn failure\n");
+                sync_job_import_finish(0);
+                return -1;
+            }
+            if (!node_db_wipe_utxos(ndb)) {
+                fprintf(stderr, "UTXO import: failed to wipe utxos table\n");
+                /* leave scope → auto-rollback */
+                if (!sync_db_turbo_scope_end(&turbo_mode))
+                    fprintf(stderr, "UTXO import: failed to restore normal mode after wipe failure\n");
+                sync_job_import_finish(0);
+                return -1;
+            }
+            if (!db_txn_commit(txn)) {
+                fprintf(stderr, "UTXO import: commit of wipe failed\n");
+                if (!sync_db_turbo_scope_end(&turbo_mode))
+                    fprintf(stderr, "UTXO import: failed to restore normal mode after commit failure\n");
+                sync_job_import_finish(0);
+                return -1;
+            }
         }
     }
 

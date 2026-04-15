@@ -203,18 +203,19 @@ int test_utxo_recovery_service(void)
                 node_db_exec(&ndb, sql);
             }
 
-            setenv("ZCL_MAX_UTXO_WIPE_ROWS", "100", 1);
             bool ok = utxo_recovery_prepare_reimport(&ndb);
-            unsetenv("ZCL_MAX_UTXO_WIPE_ROWS");
 
+            /* prepare_reimport no longer wipes UTXOs (the wipe happens
+             * at the start of import_ldb instead).  It only clears the
+             * migration flag so import_ldb will re-run. */
             int64_t utxos = node_db_utxo_count(&ndb);
             uint8_t buf[8];
             size_t len = 0;
             bool flag = node_db_state_get(&ndb, "leveldb_utxo_migrated",
                                            buf, sizeof(buf), &len);
 
-            URS_CHECK("urs: prepare reimport: wipe + clear flag",
-                      ok && utxos == 0 && !flag);
+            URS_CHECK("urs: prepare reimport: clear flag, keep UTXOs",
+                      ok && utxos == 3 && !flag);
 
             node_db_close(&ndb);
         } else {
