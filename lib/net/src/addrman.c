@@ -537,6 +537,7 @@ bool addrman_select(struct addr_man *am, bool new_only,
                 if (++i >= 200000) {
                     zcl_mutex_unlock(&am->cs);
                     LOG_FAIL("addrman", "select exhausted tried bucket search after 200k iterations");
+                    return false;
                 }
             }
             int nId = am->vvTried[nKBucket][nKBucketPos];
@@ -567,6 +568,7 @@ bool addrman_select(struct addr_man *am, bool new_only,
                 if (++i >= 200000) {
                     zcl_mutex_unlock(&am->cs);
                     LOG_FAIL("addrman", "select exhausted new bucket search after 200k iterations");
+                    return false;
                 }
             }
             int nId = am->vvNew[nUBucket][nUBucketPos];

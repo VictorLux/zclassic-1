@@ -2106,7 +2106,7 @@ bool app_init(struct app_context *ctx)
     if (activation_get_state(&g_activation_ctl) == ACTIVATION_ANCHOR_ACTIVE) {
         struct block_index *tip = active_chain_tip(&g_state.chain_active);
         struct block_index *anc = snapsync_get_anchor();
-        if (tip && anc && tip->nHeight > anc->nHeight) {
+        if (tip && anc && tip->nHeight >= anc->nHeight) {
             printf("Anchor at h=%d below chain tip h=%d — clearing\n",
                    anc->nHeight, tip->nHeight);
             snapsync_set_anchor(NULL);
