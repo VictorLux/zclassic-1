@@ -1967,6 +1967,33 @@ bool app_init(struct app_context *ctx)
     /* Clean up UTXOs above chain tip (utxo_recovery_service) */
     utxo_recovery_clean_above_tip(&g_node_db, &g_state);
 
+    /* Safety: verify chain tip matches UTXO set height.
+     * After LDB import, the UTXO set is at ~3M but the chain tip may be
+     * lower (~2M) if previous boots failed to set the anchor.  If the
+     * coins tip is far above the chain tip, correct it now and set the
+     * anchor to prevent activate_best_chain from reorganizing below. */
+    {
+        struct uint256 coins_hash;
+        coins_view_cache_get_best_block(&g_coins_tip, &coins_hash);
+        if (!uint256_is_null(&coins_hash)) {
+            struct block_index *coins_bi = block_map_find(
+                &g_state.map_block_index, &coins_hash);
+            int chain_h = active_chain_height(&g_state.chain_active);
+            if (coins_bi && coins_bi->nHeight > chain_h + 1000) {
+                printf("[boot] UTXO/chain mismatch: coins at h=%d, "
+                       "chain tip at h=%d — correcting\n",
+                       coins_bi->nHeight, chain_h);
+                active_chain_set_tip(&g_state.chain_active, coins_bi);
+                g_state.pindex_best_header = coins_bi;
+                snapsync_set_anchor(coins_bi);
+                activation_set_anchor_active(&g_activation_ctl,
+                                              "boot_utxo_chain_mismatch");
+                printf("[boot] Chain tip corrected to h=%d, anchor set\n",
+                       coins_bi->nHeight);
+            }
+        }
+    }
+
     /* Activate best chain via controller (single authority).
      * The controller checks: anchor state, shutdown, UTXO availability.
      * Replaces the old skip_activate boolean with state machine. */

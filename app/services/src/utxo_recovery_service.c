@@ -319,6 +319,17 @@ struct utxo_import_result utxo_recovery_import_ldb(
         /* Re-init coins cache after import */
         coins_view_cache_init(ctx->coins_tip, &ctx->coins_sqlite->view);
         set_coins_sqlite_for_commitment(ctx->coins_sqlite);
+
+        /* Diagnostic: log UTXO height vs chain tip after import */
+        {
+            int tip_h = active_chain_height(&ctx->state->chain_active);
+            printf("[boot] UTXO import: coins_best_block at h=%d, "
+                   "chain tip at h=%d%s\n",
+                   ldb_height, tip_h,
+                   ldb_height != tip_h
+                       ? " (MISMATCH — adjusting tip)" : "");
+        }
+
         printf("UTXO migration complete.\n");
         fflush(stdout);
         res.imported = true;
@@ -372,6 +383,19 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
     struct block_index *best = block_map_find(
         &ctx->state->map_block_index, &best_hash);
 
+    /* Diagnostic: log whether coins_best_block was found in block_index */
+    {
+        char hex[65];
+        uint256_get_hex(&best_hash, hex);
+        if (best)
+            printf("[boot] coins_best_block %s found in block_index "
+                   "at h=%d\n", hex, best->nHeight);
+        else
+            printf("[boot] coins_best_block %s NOT found in block_index "
+                   "(map size=%zu)\n", hex,
+                   ctx->state->map_block_index.size);
+    }
+
     /* SQLite fallback: if block_map maps the hash to height 0
      * but it's not actually the genesis block */
     if (best && best->nHeight == 0 &&
@@ -404,6 +428,22 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
                best->nHeight);
         event_emitf(EV_BOOT_CHAIN_RESTORED, 0, "height=%d", best->nHeight);
         res.restored = true;
+
+        /* If the coins tip is at a high height (from LDB/snapshot import),
+         * set the anchor to prevent activate_best_chain from reorganizing
+         * below the UTXO set height.  Without this, second-boot scenarios
+         * lose the anchor that the first-boot import established, and
+         * activate_best_chain drops the tip to wherever block files exist
+         * (~2M), causing bad-txns-inputs-missingorspent failures. */
+        if (best->nHeight > 100000) {
+            snapsync_set_anchor(best);
+            res.skip_activate = true;
+            snprintf(res.anchor_reason, sizeof(res.anchor_reason),
+                     "restore_chain_tip_anchor");
+            printf("Restored anchor at h=%d to protect UTXO set\n",
+                   best->nHeight);
+        }
+
         return res;
     }
 
