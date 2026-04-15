@@ -898,23 +898,37 @@ bool app_init(struct app_context *ctx)
      * may be incomplete. Check for migration flag in node_state. */
     if (g_node_db.open && g_coins_sqlite.db) {
         /* Seed coins_best_block from tip_hash if not yet set.
-         * Only do this if UTXOs actually exist in SQLite — otherwise
-         * the coins DB is empty and should stay at null (triggers replay). */
+         * Only do this if UTXOs exist AND no LDB chainstate is available.
+         * If chainstate/ exists, the LDB import will set coins_best_block
+         * correctly — seeding from tip_hash would create a mismatch
+         * (UTXO data from LDB height ~3M labeled as chain tip ~2M). */
         struct uint256 coins_check;
         memset(&coins_check, 0, sizeof(coins_check));
         if (!coins_view_sqlite_get_best_block(&g_coins_sqlite, &coins_check)
             || uint256_is_null(&coins_check)) {
-            /* Check if UTXOs exist */
-            int64_t utxo_count = node_db_utxo_count(&g_node_db);
-            if (utxo_count > 0) {
-                uint8_t tip_buf[32];
-                size_t tip_len = 0;
-                if (node_db_state_get(&g_node_db, "tip_hash",
-                                       tip_buf, 32, &tip_len) && tip_len == 32) {
-                    node_db_state_set(&g_node_db, "coins_best_block",
-                                      tip_buf, 32);
-                    printf("Migrated coins_best_block from tip_hash "
-                           "(%lld UTXOs)\n", (long long)utxo_count);
+            /* Check if LDB chainstate exists — if so, skip the seed
+             * and let LDB import set coins_best_block properly. */
+            char cs_path[576];
+            snprintf(cs_path, sizeof(cs_path), "%s/chainstate", ctx->datadir);
+            struct stat cs_st;
+            bool has_chainstate = (stat(cs_path, &cs_st) == 0 &&
+                                    S_ISDIR(cs_st.st_mode));
+            if (has_chainstate) {
+                printf("[boot] chainstate/ exists — skipping "
+                       "coins_best_block seed (LDB import will set it)\n");
+            } else {
+                int64_t utxo_count = node_db_utxo_count(&g_node_db);
+                if (utxo_count > 0) {
+                    uint8_t tip_buf[32];
+                    size_t tip_len = 0;
+                    if (node_db_state_get(&g_node_db, "tip_hash",
+                                           tip_buf, 32, &tip_len) &&
+                        tip_len == 32) {
+                        node_db_state_set(&g_node_db, "coins_best_block",
+                                          tip_buf, 32);
+                        printf("Migrated coins_best_block from tip_hash "
+                               "(%lld UTXOs)\n", (long long)utxo_count);
+                    }
                 }
             }
         }
@@ -1970,26 +1984,45 @@ bool app_init(struct app_context *ctx)
     /* Safety: verify chain tip matches UTXO set height.
      * After LDB import, the UTXO set is at ~3M but the chain tip may be
      * lower (~2M) if previous boots failed to set the anchor.  If the
-     * coins tip is far above the chain tip, correct it now and set the
-     * anchor to prevent activate_best_chain from reorganizing below. */
+     * coins tip is far above the chain tip, correct it now. */
     {
         struct uint256 coins_hash;
         coins_view_cache_get_best_block(&g_coins_tip, &coins_hash);
-        if (!uint256_is_null(&coins_hash)) {
-            struct block_index *coins_bi = block_map_find(
-                &g_state.map_block_index, &coins_hash);
-            int chain_h = active_chain_height(&g_state.chain_active);
-            if (coins_bi && coins_bi->nHeight > chain_h + 1000) {
-                printf("[boot] UTXO/chain mismatch: coins at h=%d, "
-                       "chain tip at h=%d — correcting\n",
-                       coins_bi->nHeight, chain_h);
-                active_chain_set_tip(&g_state.chain_active, coins_bi);
-                g_state.pindex_best_header = coins_bi;
-                snapsync_set_anchor(coins_bi);
-                activation_set_anchor_active(&g_activation_ctl,
-                                              "boot_utxo_chain_mismatch");
-                printf("[boot] Chain tip corrected to h=%d, anchor set\n",
-                       coins_bi->nHeight);
+        int chain_h = active_chain_height(&g_state.chain_active);
+        struct block_index *coins_bi = NULL;
+
+        if (!uint256_is_null(&coins_hash))
+            coins_bi = block_map_find(&g_state.map_block_index, &coins_hash);
+
+        if (coins_bi && coins_bi->nHeight > chain_h + 100) {
+            printf("[boot] UTXO/chain mismatch: coins at h=%d, "
+                   "chain tip at h=%d — correcting\n",
+                   coins_bi->nHeight, chain_h);
+            active_chain_set_tip(&g_state.chain_active, coins_bi);
+            g_state.pindex_best_header = coins_bi;
+            printf("[boot] Chain tip corrected to h=%d\n",
+                   coins_bi->nHeight);
+        } else if (!coins_bi && !uint256_is_null(&coins_hash)) {
+            /* coins_best_block hash not in block index. Find the highest
+             * block with BLOCK_HAVE_DATA as our best anchor point. The
+             * UTXO set should be valid somewhere near that height. */
+            struct block_index *best_have_data = NULL;
+            size_t iter = 0;
+            struct block_index *bi;
+            while (block_map_next(&g_state.map_block_index, &iter,
+                                   NULL, &bi)) {
+                if (!bi) continue;
+                if (!(bi->nStatus & BLOCK_HAVE_DATA)) continue;
+                if (!best_have_data ||
+                    bi->nHeight > best_have_data->nHeight)
+                    best_have_data = bi;
+            }
+            if (best_have_data && best_have_data->nHeight > chain_h + 100) {
+                printf("[boot] coins_best_block not in index — "
+                       "using highest HAVE_DATA block at h=%d\n",
+                       best_have_data->nHeight);
+                active_chain_set_tip(&g_state.chain_active, best_have_data);
+                g_state.pindex_best_header = best_have_data;
             }
         }
     }
