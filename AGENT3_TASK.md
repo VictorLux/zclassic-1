@@ -1,12 +1,17 @@
-# Agent 3 Task: Wave 24 — Sapling Persistence + Validation
+# Agent 3 Task: Wave 24b — Continue Reliability Work
 
 ## Status
-- LDB import works but post-import wipes destroy the data (Agent2 fixing)
-- Work on reliability items while Agent2 fixes the import
+- Your Sapling checkpoint + bg_validation investigation + boot timing are merged
+- Agent2's triple-wipe fix being tested — node should be at tip soon
 
 ## Priority Order
-1. **Task 1: Sapling tree persistence** — add periodic checkpoint to prevent 5-min rebuild after SIGKILL
-2. **Task 2: Multi-threaded bg_validation** — investigate script interpreter thread safety
-3. **Task 3: Boot timing completeness** — verify all phases are timed
+1. **Task 1: Apply bg_validation fix** — your investigation found the issue (shared secp256k1 context or script interpreter state). Implement the fix if clear.
+2. **Task 2: Test Sapling tree checkpoint** — verify the periodic checkpoint survives SIGKILL (kill -9 the node, restart, measure rebuild time)
+3. **Task 3: Add integration test for LDB import** — test that reimport doesn't wipe data (test the bug Agent2 fixed)
 
-## See AGENT3.md for full details
+## See AGENT3.md for details
+
+## Rules
+- `git pull origin master` before starting
+- `make -j$(nproc) && make test` before every push
+- Commit with `wave 24b task N:` prefix
