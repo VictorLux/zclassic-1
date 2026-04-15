@@ -1971,6 +1971,43 @@ bool activate_best_chain(struct validation_state *state,
                         s_utxo_fail_height = connect_path[i]->nHeight;
                         s_utxo_fail_count = 1;
                     }
+                    if (s_utxo_fail_count >= 5) {
+                        /* After 5 failures at the same height, try
+                         * disconnecting the tip to back up one block.
+                         * If undo data exists, this lets us retry from
+                         * a clean UTXO state one block earlier. */
+                        struct block_index *tip =
+                            active_chain_tip(&ms->chain_active);
+                        if (tip && tip->pprev && tip->nUndoPos > 0) {
+                            fprintf(stderr,
+                                "[recovery] %d UTXO failures at h=%d — "
+                                "disconnecting tip h=%d to retry\n",
+                                s_utxo_fail_count,
+                                connect_path[i]->nHeight,
+                                tip->nHeight);
+                            struct validation_state ds;
+                            validation_state_init(&ds);
+                            if (disconnect_tip(&ds, ms, coins_tip,
+                                               datadir)) {
+                                s_utxo_fail_count = 0;
+                                s_utxo_fail_height = -1;
+                                fprintf(stderr,
+                                    "[recovery] Disconnected tip — "
+                                    "retrying from h=%d\n",
+                                    active_chain_height(
+                                        &ms->chain_active));
+                            }
+                        } else {
+                            fprintf(stderr,
+                                "[recovery] UTXO mismatch at h=%d: "
+                                "inputs missing. Chain tip and UTXO set "
+                                "are out of sync.\n"
+                                "[recovery] Restart with -reimport-utxos "
+                                "or delete chainstate/ to force fresh "
+                                "import.\n",
+                                connect_path[i]->nHeight);
+                        }
+                    }
                     if (s_utxo_fail_count >= 3 && datadir) {
                         char flag_path[512];
                         snprintf(flag_path, sizeof(flag_path),
