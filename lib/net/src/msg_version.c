@@ -25,6 +25,23 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include <arpa/inet.h>
+
+/* External IP for addr advertisement — set by boot from -externalip= */
+static uint8_t g_external_ip[4];
+static uint16_t g_external_port;
+static bool g_has_external_ip = false;
+
+void msg_version_set_external_ip(const char *ip_str, uint16_t port)
+{
+    struct in_addr addr;
+    if (inet_pton(AF_INET, ip_str, &addr) == 1) {
+        memcpy(g_external_ip, &addr, 4);
+        g_external_port = port;
+        g_has_external_ip = true;
+        printf("External IP configured: %s:%u\n", ip_str, port);
+    }
+}
 
 void push_version(struct msg_processor *mp, struct p2p_node *node)
 {
@@ -36,6 +53,15 @@ void push_version(struct msg_processor *mp, struct p2p_node *node)
         ver.services |= NODE_BLOOM;
     ver.timestamp = (int64_t)time(NULL);
     ver.addr_recv = node->addr;
+    if (g_has_external_ip) {
+        ver.addr_from.nServices = NODE_NETWORK;
+        ver.addr_from.nTime = (uint32_t)time(NULL);
+        memset(ver.addr_from.svc.addr.ip, 0, 10);
+        ver.addr_from.svc.addr.ip[10] = 0xff;
+        ver.addr_from.svc.addr.ip[11] = 0xff;
+        memcpy(ver.addr_from.svc.addr.ip + 12, g_external_ip, 4);
+        ver.addr_from.svc.port = g_external_port;
+    }
     ver.nonce = mp->net_mgr->local_host_nonce;
     snprintf(ver.sub_version, sizeof(ver.sub_version),
              "/ZClassic-C23:1.0.0/");
@@ -148,6 +174,20 @@ bool process_version(struct msg_processor *mp, struct p2p_node *node,
      * over inv. Critical for headers-first sync with legacy zclassicd. */
     p2p_node_begin_message(node, "sendheaders", mp->params->pchMessageStart);
     p2p_node_end_message(node);
+
+    /* Advertise our external address to this peer so it can relay us */
+    if (g_has_external_ip) {
+        struct net_address self;
+        memset(&self, 0, sizeof(self));
+        self.nServices = NODE_NETWORK;
+        self.nTime = (uint32_t)time(NULL);
+        memset(self.svc.addr.ip, 0, 10);
+        self.svc.addr.ip[10] = 0xff;
+        self.svc.addr.ip[11] = 0xff;
+        memcpy(self.svc.addr.ip + 12, g_external_ip, 4);
+        self.svc.port = g_external_port;
+        p2p_node_push_address(node, &self);
+    }
 
     event_emitf(EV_PEER_VERSION, (uint32_t)node->id,
                 "%s v=%d h=%d %s%s",

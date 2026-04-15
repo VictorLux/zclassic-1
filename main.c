@@ -794,6 +794,7 @@ int main(int argc, char **argv)
         else if (strncmp(argv[i], "-fileservice=", 13) == 0) ctx.file_service_peer = argv[i]+13;
         else if (strcmp(argv[i], "-nofilesync") == 0) ctx.no_file_sync = true;
         else if (strcmp(argv[i], "-nobgvalidation") == 0) ctx.no_bg_validation = true;
+        else if (strncmp(argv[i], "-externalip=", 12) == 0) ctx.external_ip = argv[i] + 12;
         else if (strcmp(argv[i], "-daemon") == 0) { /* legacy compat */ }
         else if (strcmp(argv[i], "-help") == 0 || strcmp(argv[i], "--help") == 0) {
             print_usage(argv[0]); return 0;

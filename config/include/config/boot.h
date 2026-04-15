@@ -40,6 +40,7 @@ struct app_context {
     bool connect_only;         /* -connect= mode: only connect to addnodes, no seeds */
     bool no_file_sync;         /* -nofilesync : skip file service download, use P2P only */
     bool no_bg_validation;     /* -nobgvalidation : skip background proof verification */
+    const char *external_ip;   /* -externalip=IP : advertise this address to peers */
 };
 
 void app_context_defaults(struct app_context *ctx);
