@@ -1,7 +1,8 @@
 # Agent 3 Task: Wave 24 — Sapling Persistence + Validation
 
 ## Status
-- UTXO wipe+replay running. Work on reliability items while it proceeds.
+- LDB import works but post-import wipes destroy the data (Agent2 fixing)
+- Work on reliability items while Agent2 fixes the import
 
 ## Priority Order
 1. **Task 1: Sapling tree persistence** — add periodic checkpoint to prevent 5-min rebuild after SIGKILL
