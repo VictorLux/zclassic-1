@@ -1,4 +1,4 @@
-# AGENT3 — Wave 24: Sapling Persistence + Multi-threaded Validation
+# AGENT3 — Wave 25: Resilience Testing + Validation
 
 **Working directory:** `~/zclassic23-3`
 **Coordinator:** Agent1 (~/zclassic23)
@@ -9,49 +9,69 @@
 
 ## Context
 
-UTXO wipe+replay is running. While that proceeds, work on the remaining reliability items from the checklist.
+**NODE IS AT TIP (h=3,078,918) AND HEALTHY.** Your Sapling checkpoint code is merged. Time to test resilience and fix the last validation gap.
 
 ---
 
-## Task 1 (HIGH): Sapling Tree Persistence After Crash
+## Task 1: SIGKILL Recovery Test
 
-SIGKILL loses WAL → 5-minute Sapling tree rebuild on next boot. Fix this.
+Test that SIGKILL recovery works correctly:
 
-### Investigation
-1. Find Sapling tree persistence code — look in `lib/sapling/src/incremental_merkle_tree.c`, `config/src/boot.c`, `app/services/src/sync_service.c`
-2. How is the tree stored? SQLite table? What table schema?
-3. When is it flushed? Only on clean shutdown? Or after each block?
-4. Can we add a periodic checkpoint? After Sapling tree updates, call `sqlite3_wal_checkpoint_v2(db, NULL, SQLITE_CHECKPOINT_PASSIVE, NULL, NULL)` every 1000 blocks
+1. Note the current block height
+2. `kill -9 $(pidof zclassic23)` — hard kill, no clean shutdown
+3. `systemctl --user start zclassic23` — restart
+4. Wait for RPC, check height — should be at or near where it was
+5. Check Sapling tree rebuild time — your periodic checkpoint should make this seconds, not 5 minutes
+6. Report: recovery time, blocks lost, Sapling rebuild time
 
-### Fix
-Add periodic Sapling tree persistence so SIGKILL only loses ~1000 blocks of tree state, not all of it. The rebuild from 1000 blocks takes seconds, not 5 minutes.
-
----
-
-## Task 2 (MEDIUM): Investigate Multi-threaded bg_validation Crash
-
-bg_validation crashes with >1 worker. The file I/O is safe (pread) and block_index access is now locked (cs_main). The remaining suspect is the script interpreter.
-
-### Investigation
-1. Read `app/services/src/bg_validation_service.c` — find `verify_scripts_parallel` or equivalent
-2. Check `lib/script/src/interpreter.c` for global/static state
-3. Check if `secp256k1_context` is shared or per-thread
-4. Look for any `static` variables in the script verification path
-
-Report findings. If the fix is clear, implement it.
+If recovery takes >30 seconds or the Sapling rebuild takes >1 minute, investigate why.
 
 ---
 
-## Task 3 (LOW): Improve Boot Timing Output
+## Task 2: Multi-threaded bg_validation Fix
 
-The boot timing from wave 22b adds `[boot]` lines. Check that all phases are covered:
-1. SQLite open + schema migration
-2. Block index load
-3. UTXO set load/import
-4. Sapling tree load/rebuild
-5. Total boot time
+Your wave 24 investigation found the issue. Apply the fix:
 
-If any phases are missing timing, add them.
+Based on your findings, either:
+- Create per-thread `secp256k1_context` instances
+- Or add proper locking around shared interpreter state
+- Or whatever the correct fix is from your investigation
+
+If the fix is applied, test with 2 workers: change the worker count from 1 to 2 and verify no crash during bg_validation.
+
+---
+
+## Task 3: Reorg Safety Test
+
+Test that the node handles a chain reorganization correctly:
+
+1. Read `lib/test/src/test_reorg_safety.c` — what scenarios are tested?
+2. Are there tests for disconnect_tip with undo data?
+3. Add a test: create a 3-block chain, connect all 3, then disconnect the tip. Verify UTXO set is restored correctly (spent outputs reappear, created outputs disappear).
+
+---
+
+## Task 4: Write Soak Test Script
+
+Create `tools/soak_test.sh` that monitors the node for 72 hours:
+
+```bash
+#!/bin/bash
+# Soak test: monitor node health every 5 minutes for 72 hours
+# Checks: height advancing, RSS stable, peers connected, no crashes
+# Logs to: soak_test.log
+
+DURATION_HOURS=72
+INTERVAL_SECS=300
+```
+
+The script should:
+- Log height, RSS, peer count, sync state every 5 minutes
+- Alert if height stops advancing for 30 minutes
+- Alert if RSS exceeds 4GB
+- Alert if peer count drops to 0
+- Alert if the process dies (restart it)
+- Write a summary at the end: uptime, blocks processed, max RSS, restarts
 
 ---
 
@@ -61,10 +81,6 @@ If any phases are missing timing, add them.
 git pull origin master
 make -j$(nproc) 2>&1 | tail -20
 make test 2>&1 | tail -10
-git add <specific files> && git commit -m "wave 24 task N: description"
+git add <specific files> && git commit -m "wave 25 task N: description"
 git push origin master
 ```
-
-## Boundary: Files You MUST NOT Touch
-- `config/src/boot.c` UTXO import section (Agent2)
-- `lib/storage/src/coins_db.c` (Agent2)
