@@ -174,6 +174,22 @@ uint64_t mcp_metrics_consensus_rejects_tracked_reasons(void);
  * too-small buffers just like the other JSON snapshots. */
 size_t mcp_metrics_consensus_report_json(char *buf, size_t cap);
 
+/* ── Node-level gauges ────────────────────────────────────────────
+ *
+ * These are updated periodically by the caller (e.g. the metrics
+ * thread) and rendered in the Prometheus dump as:
+ *
+ *   zcl_block_height      <height>
+ *   zcl_peer_count        <count>
+ *   zcl_rss_mb            <mb>
+ *   zcl_utxo_count        <count>
+ *   zcl_uptime_seconds    <seconds>
+ */
+
+void mcp_metrics_set_node_gauges(int64_t block_height, int64_t peer_count,
+                                 double rss_mb, int64_t utxo_count,
+                                 int64_t uptime_seconds);
+
 #ifdef __cplusplus
 }
 #endif

@@ -11,12 +11,69 @@
 #include "net/compact_blocks.h"
 #include "net/peer_scoring.h"
 #include "storage/disk_block_io.h"
+#include "validation/process_block.h"
+#include "consensus/validation.h"
 #include "event/event.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+
+/* ── Helper: discard any pending compact block state for a peer ── */
+
+static void compact_pending_clear(struct p2p_node *node)
+{
+    if (node->compact_pending_block) {
+        block_free(node->compact_pending_block);
+        free(node->compact_pending_block);
+        node->compact_pending_block = NULL;
+    }
+    free(node->compact_missing_indices);
+    node->compact_missing_indices = NULL;
+    node->compact_num_missing = 0;
+    node->compact_request_time = 0;
+    memset(&node->compact_pending_hash, 0, sizeof(node->compact_pending_hash));
+}
+
+/* ── Helper: feed a completed block into normal validation ─────── */
+
+static void compact_submit_block(struct msg_processor *mp,
+                                 struct p2p_node *node,
+                                 struct block *blk)
+{
+    struct uint256 hash;
+    block_header_get_hash(&blk->header, &hash);
+
+    if (block_already_seen(&hash)) {
+        char hex[65];
+        uint256_get_hex(&hash, hex);
+        fprintf(stderr, "Peer %s: compact block %s already seen, skipping\n",
+                node->addr_name, hex);
+        return;
+    }
+    block_mark_seen(&hash);
+
+    struct validation_state state;
+    validation_state_init(&state);
+    process_new_block(&state, mp->main_state, mp->coins_tip,
+                      mp->params, blk, false, mp->datadir);
+
+    if (!validation_state_is_valid(&state)) {
+        char hex[65];
+        uint256_get_hex(&hash, hex);
+        fprintf(stderr, "Peer %s: compact block %s rejected: %s\n",
+                node->addr_name, hex,
+                state.reject_reason[0] ? state.reject_reason : "unknown");
+        event_emitf(EV_BLOCK_REJECTED, (uint32_t)node->id,
+                    "compact hash=%s reason=%s", hex,
+                    state.reject_reason[0] ? state.reject_reason : "unknown");
+    } else {
+        peer_scoring_on_good_interaction(node, peer_scoring_now_ms());
+        node->last_block_time = (int64_t)time(NULL);
+        node->blocks_received++;
+    }
+}
 
 bool process_sendcmpct(struct p2p_node *node, struct byte_stream *s)
 {
@@ -52,6 +109,9 @@ bool process_cmpctblock(struct msg_processor *mp, struct p2p_node *node,
     uint256_get_hex(&block_hash, hex);
     fprintf(stderr, "Peer %s: cmpctblock %s (%zu short txids, %zu prefilled)\n",
             node->addr_name, hex, cb.num_short_txids, cb.num_prefilled);
+
+    /* Discard any prior pending compact block for this peer */
+    compact_pending_clear(node);
 
     /* Collect mempool transactions for reconstruction */
     struct uint256 *mp_hashes = NULL;
@@ -93,37 +153,32 @@ bool process_cmpctblock(struct msg_processor *mp, struct p2p_node *node,
     if (complete) {
         fprintf(stderr, "Peer %s: compact block fully reconstructed from mempool\n",
                 node->addr_name);
-        /* Feed the reconstructed block into normal block processing */
-        struct byte_stream bs;
-        stream_init(&bs, 1024 * 1024);
-        block_serialize(&out_block, &bs);
-        bs.read_pos = 0;
-        /* Reuse the existing block handler path */
-        struct block full_blk;
-        block_init(&full_blk);
-        if (block_deserialize(&full_blk, &bs)) {
-            /* Process like a normal block message — serialize and re-enter */
-            struct byte_stream bs2;
-            stream_init_from_data(&bs2, bs.data, bs.size);
-            /* We already have the deserialized block; the process_block_msg
-             * handler also deserializes, so just push the serialized data. */
-            stream_free(&bs);
-            stream_init(&bs, 1024 * 1024);
-            block_serialize(&out_block, &bs);
-            bs.read_pos = 0;
-        }
-        block_free(&full_blk);
-        stream_free(&bs);
+        compact_submit_block(mp, node, &out_block);
         block_free(&out_block);
     } else if (num_missing > 0) {
         fprintf(stderr, "Peer %s: compact block missing %zu txs, sending getblocktxn\n",
                 node->addr_name, num_missing);
 
+        /* Stash the partial block in per-peer state for blocktxn completion */
+        node->compact_pending_block = zcl_malloc(sizeof(struct block),
+                                                  "compact_pending_block");
+        if (node->compact_pending_block) {
+            *node->compact_pending_block = out_block; /* move ownership */
+            node->compact_pending_hash = block_hash;
+            node->compact_missing_indices = missing_indices;
+            node->compact_num_missing = num_missing;
+            node->compact_request_time = (int64_t)time(NULL);
+            missing_indices = NULL; /* ownership transferred */
+        } else {
+            /* Alloc failed — fall back to just freeing */
+            block_free(&out_block);
+        }
+
         /* Send getblocktxn for missing transactions */
         struct block_txn_request req;
         block_txn_request_init(&req);
         req.block_hash = block_hash;
-        req.indices = missing_indices;
+        req.indices = node->compact_missing_indices;
         req.num_indices = num_missing;
 
         struct byte_stream rs;
@@ -134,11 +189,7 @@ bool process_cmpctblock(struct msg_processor *mp, struct p2p_node *node,
             p2p_node_end_message(node);
         }
         stream_free(&rs);
-
-        /* Don't free missing_indices — it was set to req.indices, and we
-         * need it alive for the blocktxn response. For now, just free it;
-         * a production implementation would stash it in per-peer state. */
-        block_free(&out_block);
+        /* Don't free req — indices are owned by node->compact_missing_indices */
     } else {
         block_free(&out_block);
     }
@@ -236,7 +287,6 @@ bool process_getblocktxn(struct msg_processor *mp, struct p2p_node *node,
 bool process_blocktxn(struct msg_processor *mp, struct p2p_node *node,
                       struct byte_stream *s)
 {
-    (void)mp;
     struct block_txn_response resp;
     if (!block_txn_response_deserialize(&resp, s)) {
         peer_misbehaving(mp->net_mgr, node, 20, "invalid blocktxn");
@@ -248,10 +298,46 @@ bool process_blocktxn(struct msg_processor *mp, struct p2p_node *node,
     fprintf(stderr, "Peer %s: blocktxn %s (%zu txs)\n",
             node->addr_name, hex, resp.num_txs);
 
-    /* TODO: match against pending compact block reconstruction and
-     * complete block assembly. For now, just log and free. A full
-     * implementation would stash partial blocks in per-peer state. */
+    /* Match against pending compact block reconstruction */
+    if (!node->compact_pending_block ||
+        memcmp(&resp.block_hash, &node->compact_pending_hash,
+               sizeof(struct uint256)) != 0) {
+        fprintf(stderr, "Peer %s: blocktxn %s — no matching pending compact block\n",
+                node->addr_name, hex);
+        block_txn_response_free(&resp);
+        return true;
+    }
 
+    /* Timeout check: reject stale responses (>30 seconds) */
+    int64_t age = (int64_t)time(NULL) - node->compact_request_time;
+    if (age > 30) {
+        fprintf(stderr, "Peer %s: blocktxn %s — stale response (%lld sec), discarding\n",
+                node->addr_name, hex, (long long)age);
+        compact_pending_clear(node);
+        block_txn_response_free(&resp);
+        return true;
+    }
+
+    /* Fill in missing transactions */
+    if (!compact_block_fill_missing(node->compact_pending_block, &resp,
+                                    node->compact_missing_indices,
+                                    node->compact_num_missing)) {
+        fprintf(stderr, "Peer %s: blocktxn %s — fill_missing failed\n",
+                node->addr_name, hex);
+        peer_misbehaving(mp->net_mgr, node, 10, "bad blocktxn response");
+        compact_pending_clear(node);
+        block_txn_response_free(&resp);
+        return true;
+    }
+
+    fprintf(stderr, "Peer %s: compact block %s fully assembled from blocktxn\n",
+            node->addr_name, hex);
+
+    /* Submit the completed block for validation */
+    compact_submit_block(mp, node, node->compact_pending_block);
+
+    /* Clean up — block_free is called inside compact_pending_clear */
+    compact_pending_clear(node);
     block_txn_response_free(&resp);
     return true;
 }

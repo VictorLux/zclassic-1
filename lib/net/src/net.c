@@ -6,6 +6,7 @@
 
 #include "net/net.h"
 #include "net/peer_scoring.h"
+#include "primitives/block.h"
 #include "util/log_json.h"
 #include "util/log_macros.h"
 #include "core/hash.h"
@@ -237,6 +238,15 @@ void p2p_node_free(struct p2p_node *node)
     }
 
     rolling_bloom_free(&node->addr_known);
+
+    /* BIP152: free any pending compact block reconstruction */
+    if (node->compact_pending_block) {
+        block_free(node->compact_pending_block);
+        free(node->compact_pending_block);
+        node->compact_pending_block = NULL;
+    }
+    free(node->compact_missing_indices);
+    node->compact_missing_indices = NULL;
 
     free(node->blk_bitmap);
     node->blk_bitmap = NULL;

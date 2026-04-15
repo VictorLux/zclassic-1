@@ -36,6 +36,8 @@
 
 typedef int32_t node_id_t;
 
+struct block;  /* forward decl for BIP152 pending compact block state */
+
 enum local_addr_score {
     LOCAL_NONE = 0,
     LOCAL_IF,
@@ -188,6 +190,14 @@ struct p2p_node {
     bool ping_queued;
     bool prefer_headers;
     bool send_compact;
+
+    /* BIP152: pending compact block reconstruction (at most one per peer) */
+    struct block *compact_pending_block;       /* partial block from cmpctblock */
+    struct uint256 compact_pending_hash;       /* block hash we're waiting for */
+    uint64_t *compact_missing_indices;         /* which tx slots are empty */
+    size_t compact_num_missing;                /* count of missing indices */
+    int64_t compact_request_time;              /* when getblocktxn was sent (timeout) */
+
     int64_t last_getheaders_time;
     int     getheaders_stale_count;   /* consecutive empty header batches */
 

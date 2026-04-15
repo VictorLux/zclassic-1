@@ -4,6 +4,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "metrics/metrics.h"
+#include "mcp/metrics.h"
 #include "validation/main_state.h"
 #include "net/connman.h"
 #include "chain/chainparams.h"
@@ -323,6 +324,34 @@ static void *metrics_thread_fn(void *arg)
         lines += print_stats(ctx);
         lines += print_mining_status(ctx->mining);
         lines += print_metrics(ctx->mining);
+
+        /* Update Prometheus node-level gauges */
+        {
+            zcl_mutex_lock(&ctx->ms->cs_main);
+            struct block_index *gtip = active_chain_tip(&ctx->ms->chain_active);
+            int64_t gh = gtip ? (int64_t)gtip->nHeight : 0;
+            zcl_mutex_unlock(&ctx->ms->cs_main);
+
+            int64_t gpc = (int64_t)connman_get_node_count(ctx->cm);
+            int64_t gup = GetTime() - g_start_time;
+
+            /* RSS from /proc/self/status (Linux) */
+            double grss = 0.0;
+            FILE *sf = fopen("/proc/self/status", "r");
+            if (sf) {
+                char ln[256];
+                while (fgets(ln, sizeof(ln), sf)) {
+                    long kb;
+                    if (sscanf(ln, "VmRSS: %ld kB", &kb) == 1) {
+                        grss = (double)kb / 1024.0;
+                        break;
+                    }
+                }
+                fclose(sf);
+            }
+
+            mcp_metrics_set_node_gauges(gh, gpc, grss, 0, gup);
+        }
 
         if (is_tty) {
             printf("[Press Ctrl+C to exit] "

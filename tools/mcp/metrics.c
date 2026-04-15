@@ -75,6 +75,13 @@ static uint64_t             g_peer_offences[MCP_METRICS_PEER_KINDS];
 static uint64_t             g_peer_offences_total;
 static uint64_t             g_peer_bans_total;
 
+/* ── Node-level gauges (set by caller, read by prometheus render) ── */
+static _Atomic int64_t  g_node_block_height;
+static _Atomic int64_t  g_node_peer_count;
+static _Atomic int64_t  g_node_rss_mb_x100;   /* fixed-point: RSS_MB * 100 */
+static _Atomic int64_t  g_node_utxo_count;
+static _Atomic int64_t  g_node_uptime_seconds;
+
 /* Consensus reject registry — bounded (kind, reason) → count table.
  * `kind` is "tx" or "block"; reason is a kebab-case string emitted by
  * the REJECT_IF/UNLESS macros in lib/validation/src/check_*.c.  Beyond
@@ -221,6 +228,19 @@ void mcp_metrics_reset(void)
     g_reject_overflow_tx = 0;
     g_reject_overflow_block = 0;
     pthread_mutex_unlock(&g_lock);
+}
+
+/* ── Node-level gauge setter ────────────────────────────────── */
+
+void mcp_metrics_set_node_gauges(int64_t block_height, int64_t peer_count,
+                                 double rss_mb, int64_t utxo_count,
+                                 int64_t uptime_seconds)
+{
+    atomic_store(&g_node_block_height, block_height);
+    atomic_store(&g_node_peer_count, peer_count);
+    atomic_store(&g_node_rss_mb_x100, (int64_t)(rss_mb * 100.0));
+    atomic_store(&g_node_utxo_count, utxo_count);
+    atomic_store(&g_node_uptime_seconds, uptime_seconds);
 }
 
 /* ── Peer scoring counters ──────────────────────────────────── */
@@ -632,6 +652,43 @@ size_t mcp_metrics_render_prometheus(char *buf, size_t cap)
         (unsigned long long)g_reject_total_tx,
         (unsigned long long)g_reject_total_block,
         (unsigned long long)(g_reject_total_tx + g_reject_total_block));
+
+    /* ── Node-level gauges ───────────────────────────────────── */
+    int64_t bh = atomic_load(&g_node_block_height);
+    int64_t pc = atomic_load(&g_node_peer_count);
+    int64_t rss100 = atomic_load(&g_node_rss_mb_x100);
+    int64_t uc = atomic_load(&g_node_utxo_count);
+    int64_t up = atomic_load(&g_node_uptime_seconds);
+
+    pos = append(buf, cap, pos,
+        "# HELP zcl_block_height Current best chain height\n"
+        "# TYPE zcl_block_height gauge\n"
+        "zcl_block_height %lld\n",
+        (long long)bh);
+
+    pos = append(buf, cap, pos,
+        "# HELP zcl_peer_count Connected P2P peers\n"
+        "# TYPE zcl_peer_count gauge\n"
+        "zcl_peer_count %lld\n",
+        (long long)pc);
+
+    pos = append(buf, cap, pos,
+        "# HELP zcl_rss_mb Resident set size in megabytes\n"
+        "# TYPE zcl_rss_mb gauge\n"
+        "zcl_rss_mb %.2f\n",
+        (double)rss100 / 100.0);
+
+    pos = append(buf, cap, pos,
+        "# HELP zcl_utxo_count Number of unspent transaction outputs\n"
+        "# TYPE zcl_utxo_count gauge\n"
+        "zcl_utxo_count %lld\n",
+        (long long)uc);
+
+    pos = append(buf, cap, pos,
+        "# HELP zcl_uptime_seconds Node uptime in seconds\n"
+        "# TYPE zcl_uptime_seconds gauge\n"
+        "zcl_uptime_seconds %lld\n",
+        (long long)up);
 
     if (pos < cap) buf[pos] = '\0';
     pthread_mutex_unlock(&g_lock);
