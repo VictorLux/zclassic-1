@@ -9,6 +9,7 @@
 #include "json/json.h"
 #include "net/connman.h"
 #include "net/version.h"
+extern bool msg_version_get_external_ip(char *buf, size_t buflen, uint16_t *port);
 #include "util/clientversion.h"
 #include <arpa/inet.h>
 #include <netdb.h>
@@ -64,6 +65,17 @@ static bool rpc_getnetworkinfo(const struct json_value *params, bool help,
 
     struct json_value localaddrs = {0};
     json_set_array(&localaddrs);
+    char ext_ip[INET_ADDRSTRLEN];
+    uint16_t ext_port = 0;
+    if (msg_version_get_external_ip(ext_ip, sizeof(ext_ip), &ext_port)) {
+        struct json_value entry = {0};
+        json_set_object(&entry);
+        json_push_kv_str(&entry, "address", ext_ip);
+        json_push_kv_int(&entry, "port", ext_port);
+        json_push_kv_int(&entry, "score", 1);
+        json_push_back(&localaddrs, &entry);
+        json_free(&entry);
+    }
     json_push_kv(result, "localaddresses", &localaddrs);
     json_free(&localaddrs);
 

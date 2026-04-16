@@ -43,6 +43,16 @@ void msg_version_set_external_ip(const char *ip_str, uint16_t port)
     }
 }
 
+bool msg_version_get_external_ip(char *buf, size_t buflen, uint16_t *port)
+{
+    if (!g_has_external_ip) return false;
+    struct in_addr addr;
+    memcpy(&addr, g_external_ip, 4);
+    if (!inet_ntop(AF_INET, &addr, buf, (socklen_t)buflen)) return false;
+    if (port) *port = g_external_port;
+    return true;
+}
+
 void push_version(struct msg_processor *mp, struct p2p_node *node)
 {
     struct version_message ver;
