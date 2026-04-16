@@ -396,14 +396,17 @@ static void *thread_open_connections(void *arg)
         }
 
         /* Reconnect persistent addnodes that dropped.
-         * 30-second cooldown per addnode to prevent reconnect storms
-         * that cause use-after-free crashes from rapid node churn. */
+         * Exponential backoff per addnode: 120s → 240s → ... → 1800s max.
+         * Resets to 0 on successful connection. */
         {
             static int64_t s_addnode_last_attempt[MAX_ADDNODES] = {0};
+            static int     s_addnode_backoff_sec[MAX_ADDNODES]  = {0};
             int64_t now_an = (int64_t)time(NULL);
             for (int ai = 0; ai < cm->num_addnodes && !g_stop; ai++) {
-                if (now_an - s_addnode_last_attempt[ai] < 30)
-                    continue; /* cooldown */
+                int cooldown = s_addnode_backoff_sec[ai] > 0
+                             ? s_addnode_backoff_sec[ai] : 30;
+                if (now_an - s_addnode_last_attempt[ai] < cooldown)
+                    continue;
                 bool connected = false;
                 zcl_mutex_lock(&cm->manager.cs_nodes);
                 for (size_t ni = 0; ni < cm->manager.num_nodes; ni++) {
@@ -417,11 +420,23 @@ static void *thread_open_connections(void *arg)
                 }
                 zcl_mutex_unlock(&cm->manager.cs_nodes);
 
-                if (!connected) {
+                if (connected) {
+                    /* Peer is up — reset backoff */
+                    s_addnode_backoff_sec[ai] = 0;
+                } else {
                     s_addnode_last_attempt[ai] = now_an;
                     char dest[64];
                     net_service_to_string(&cm->addnodes[ai].svc, dest, sizeof(dest));
                     connect_node(&cm->manager, &cm->addnodes[ai], dest);
+                    /* Exponential backoff: 120 → 240 → 480 → ... → 1800 max */
+                    if (s_addnode_backoff_sec[ai] == 0)
+                        s_addnode_backoff_sec[ai] = 120;
+                    else if (s_addnode_backoff_sec[ai] < 1800)
+                        s_addnode_backoff_sec[ai] *= 2;
+                    if (s_addnode_backoff_sec[ai] > 1800)
+                        s_addnode_backoff_sec[ai] = 1800;
+                    printf("Peer %s: backing off %ds after failed connect\n",
+                           dest, s_addnode_backoff_sec[ai]);
                 }
             }
         }
