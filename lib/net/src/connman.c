@@ -395,15 +395,20 @@ static void *thread_open_connections(void *arg)
             if (is_addnode)
                 continue;
 
-            /* Skip already-connected peers */
+            /* Skip already-connected peers (compare IP only, not port —
+             * inbound peers connect from ephemeral ports) */
             bool already_connected = false;
             zcl_mutex_lock(&cm->manager.cs_nodes);
             for (size_t ni = 0; ni < cm->manager.num_nodes; ni++) {
                 struct p2p_node *n = cm->manager.nodes[ni];
                 if (!n->disconnect &&
-                    net_addr_eq(&n->addr.svc.addr, &info.addr.svc.addr) &&
-                    n->addr.svc.port == info.addr.svc.port) {
+                    net_addr_eq(&n->addr.svc.addr, &info.addr.svc.addr)) {
                     already_connected = true;
+                    if (n->addr.svc.port != info.addr.svc.port) {
+                        char skip_buf[64];
+                        net_addr_to_string(&info.addr.svc.addr, skip_buf, sizeof(skip_buf));
+                        printf("Skipping %s — already connected inbound\n", skip_buf);
+                    }
                     break;
                 }
             }
@@ -456,9 +461,14 @@ static void *thread_open_connections(void *arg)
                 for (size_t ni = 0; ni < cm->manager.num_nodes; ni++) {
                     struct p2p_node *n = cm->manager.nodes[ni];
                     if (n->disconnect) continue;
-                    if (net_addr_eq(&n->addr.svc.addr, &cm->addnodes[ai].svc.addr) &&
-                        n->addr.svc.port == cm->addnodes[ai].svc.port) {
+                    /* Compare IP only — inbound peers use ephemeral ports */
+                    if (net_addr_eq(&n->addr.svc.addr, &cm->addnodes[ai].svc.addr)) {
                         connected = true;
+                        if (n->addr.svc.port != cm->addnodes[ai].svc.port) {
+                            char skip_buf[64];
+                            net_addr_to_string(&cm->addnodes[ai].svc.addr, skip_buf, sizeof(skip_buf));
+                            printf("Skipping %s — already connected inbound\n", skip_buf);
+                        }
                         break;
                     }
                 }
