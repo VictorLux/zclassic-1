@@ -65,8 +65,49 @@ The C++ zclassicd at 74.50.74.102:8034 IS connected to these Zelcore peers. Its 
 - Cookie: ~/.zclassic/.cookie
 - User agent: /MagicBean:2.1.1-10/
 
+## Investigation Results (2026-04-15)
+
+### Root Cause: MagicBean DoS protection + maxconnections
+
+The RST is **not** caused by our version message format, user agent, service flags, or protocol version. Every Zelcore peer RSTs connections from 74.50.74.102 — including raw Python scripts sending identical MagicBean version messages.
+
+**Key evidence:**
+
+1. **Python script with exact MagicBean UA/services gets RST from ALL Zelcore peers** — rules out anything specific to our C node's version message format.
+
+2. **51.178.179.75 connected to us INBOUND** (port 54746→8033) — proving MagicBean nodes CAN talk to our C23 node. The wire protocol is compatible.
+
+3. **After disconnecting the C++ node from 37.187.76.79 via `disconnectnode` RPC, even the C++ node could NOT reconnect.** This proves the rejection is IP-based banning after disconnect, not version-message rejection.
+
+4. **The C++ node (74.50.74.102) has 5 stable outbound connections to Zelcore peers that were established at boot** — the ones connected since `conntime=1776189382` (hours ago). It's the *reconnection* that fails.
+
+### What's happening:
+
+MagicBean (zcashd fork) has DoS protection that temporarily bans IPs that disconnect and reconnect repeatedly. Our `-addnode` list includes all Zelcore peers, so connman retries every ~60 seconds. Each retry:
+- TCP connects (SYN/SYN-ACK)
+- We send version
+- Peer sees us as banned/over-limit → RST
+- We retry 60s later → refreshes the ban timer
+
+The addnode retry loop keeps the ban alive indefinitely.
+
+### Fixes implemented:
+
+1. **`-externalip=205.209.104.118`** — Added to service file and wired up in `boot_services.c`. Our version messages now include our real IP in `addr_from`, and we push an `addr` message to every peer after handshake. This lets the C++ node relay our address to the Zelcore network, so peers can connect to us inbound.
+
+2. **Removed self-addnode** — Removed `205.209.104.118` from addnode list (was connecting to ourselves).
+
+3. **Kept Zelcore addnodes** — They're still useful for initial peer discovery on fresh start. Once connected, the ban timer won't trigger because the connection stays up.
+
+### Strategy going forward:
+
+- **Rely on inbound connections** from Zelcore peers (already working: 51.178.179.75 connected to us).
+- **Address relay** via C++ node will propagate our IP to more peers.
+- If addnode hammering causes persistent bans, consider adding backoff logic to connman (exponential backoff on failed outbound attempts).
+
 ## Deliverables
 
-- Document what you find (update this file with findings)
-- If you find a fix, implement it
-- If it's maxconnections, propose a strategy (e.g., periodic connection attempts with backoff)
+- [x] Document what you find (update this file with findings)
+- [x] Implement -externalip wiring: `msg_version_set_external_ip()` called in `boot_services.c` after connman starts
+- [x] Update `deploy/zclassic23.service` with `-externalip=205.209.104.118`
+- [x] Remove self-connection addnode

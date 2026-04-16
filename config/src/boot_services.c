@@ -48,6 +48,9 @@
 #include "script/standard.h"
 #include "sapling/params_init.h"
 #include <netdb.h>
+
+/* msg_version.c — external IP advertisement to peers */
+extern void msg_version_set_external_ip(const char *ip_str, uint16_t port);
 #include <stdatomic.h>
 #include <time.h>
 #include <stdio.h>
@@ -1022,6 +1025,11 @@ bool app_init_services(struct app_context *ctx,
         return false;
     }
     sync_set_state(SYNC_FINDING_PEERS, "P2P started");
+
+    /* Advertise our external IP in version messages so peers relay us */
+    if (ctx->external_ip)
+        msg_version_set_external_ip(ctx->external_ip,
+                                    (uint16_t)ctx->p2p_port);
 
     /* Initialize RPC */
     rpc_table_init(svc->rpc_table);
