@@ -298,12 +298,15 @@ static void *thread_open_connections(void *arg)
 {
     struct connman *cm = (struct connman *)arg;
 
+    static int64_t s_last_addrman_attempt = 0;
+
     while (!g_stop) {
-        /* Aggressive: try up to 3 connections per second when we have few peers */
+        /* Count non-disconnecting outbound peers */
         size_t outbound = 0;
         zcl_mutex_lock(&cm->manager.cs_nodes);
         for (size_t i = 0; i < cm->manager.num_nodes; i++) {
-            if (!cm->manager.nodes[i]->inbound)
+            if (!cm->manager.nodes[i]->inbound &&
+                !cm->manager.nodes[i]->disconnect)
                 outbound++;
         }
         zcl_mutex_unlock(&cm->manager.cs_nodes);
@@ -359,8 +362,14 @@ static void *thread_open_connections(void *arg)
             }
         }
 
-        /* Try more peers per tick when connections are low */
-        int attempts = (outbound == 0) ? 3 : (tried_zcl23 ? 0 : 1);
+        /* Rate-limited addrman outbound: 1 attempt per 10s to avoid flooding.
+         * When we have 0 outbound, try up to 3 per tick more aggressively. */
+        int64_t now_oc = (int64_t)time(NULL);
+        bool rate_ok = (outbound == 0) || (now_oc - s_last_addrman_attempt >= 10);
+        int attempts = 0;
+        if (rate_ok && !tried_zcl23) {
+            attempts = (outbound == 0) ? 3 : 1;
+        }
         for (int a = 0; a < attempts && !g_stop; a++) {
             struct addr_info info;
             memset(&info, 0, sizeof(info));
@@ -374,6 +383,34 @@ static void *thread_open_connections(void *arg)
                 port != 9033 && port != 20022)
                 continue;
 
+            /* Skip addnode addresses — handled by dedicated reconnect below */
+            bool is_addnode = false;
+            for (int ai = 0; ai < cm->num_addnodes; ai++) {
+                if (net_addr_eq(&info.addr.svc.addr, &cm->addnodes[ai].svc.addr) &&
+                    info.addr.svc.port == cm->addnodes[ai].svc.port) {
+                    is_addnode = true;
+                    break;
+                }
+            }
+            if (is_addnode)
+                continue;
+
+            /* Skip already-connected peers */
+            bool already_connected = false;
+            zcl_mutex_lock(&cm->manager.cs_nodes);
+            for (size_t ni = 0; ni < cm->manager.num_nodes; ni++) {
+                struct p2p_node *n = cm->manager.nodes[ni];
+                if (!n->disconnect &&
+                    net_addr_eq(&n->addr.svc.addr, &info.addr.svc.addr) &&
+                    n->addr.svc.port == info.addr.svc.port) {
+                    already_connected = true;
+                    break;
+                }
+            }
+            zcl_mutex_unlock(&cm->manager.cs_nodes);
+            if (already_connected)
+                continue;
+
             /* Eclipse attack defense: limit outbound peers per /16 subnet */
             if (net_addr_is_ipv4(&info.addr.svc.addr)) {
                 uint16_t group = ipv4_group16(info.addr.svc.addr.ip);
@@ -384,6 +421,7 @@ static void *thread_open_connections(void *arg)
                     continue;
             }
 
+            s_last_addrman_attempt = now_oc;
             struct p2p_node *node = connect_node(&cm->manager, &info.addr, NULL);
             if (!node) {
                 addrman_attempt(&cm->manager.addrman, &info.addr.svc,
@@ -392,6 +430,12 @@ static void *thread_open_connections(void *arg)
                 net_addr_to_string(&info.addr.svc.addr, ipbuf, sizeof(ipbuf));
                 event_emitf(EV_TCP_CONNECT_FAILED, 0,
                             "%s:%u", ipbuf, info.addr.svc.port);
+            } else {
+                char ipbuf[64];
+                net_addr_to_string(&info.addr.svc.addr, ipbuf, sizeof(ipbuf));
+                printf("Outbound diversity: connected to %s:%u (%zu/%d outbound)\n",
+                       ipbuf, info.addr.svc.port, outbound + 1,
+                       MAX_OUTBOUND_CONNECTIONS);
             }
         }
 
@@ -441,11 +485,16 @@ static void *thread_open_connections(void *arg)
             }
         }
 
-        /* Sleep less when desperate for peers */
+        /* Sleep based on outbound count:
+         * 0 outbound: 200ms (desperate)
+         * below target: 1s (addnode checks still run each tick)
+         * at target: 10s (just monitoring) */
         if (outbound == 0)
             usleep(200000); /* 200ms */
-        else
+        else if (outbound < MAX_OUTBOUND_CONNECTIONS)
             sleep(1);
+        else
+            sleep(10);
     }
     return NULL;
 }
