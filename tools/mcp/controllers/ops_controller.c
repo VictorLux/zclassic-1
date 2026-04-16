@@ -54,8 +54,32 @@ static int h_zcl_status(const struct mcp_request *req, struct mcp_response *res)
     char *hc = mcp_node_rpc("healthcheck", NULL);
     char *ci = mcp_node_rpc("getblockchaininfo", NULL);
 
-    int pc = 0;
-    if (p) { for (char *c = p; *c; c++) if (*c == '{') pc++; }
+    int pc = 0, inbound = 0, outbound = 0, zcl23_cnt = 0, magicbean_cnt = 0;
+    if (p) {
+        for (char *c = p; *c; c++) if (*c == '{') pc++;
+        /* Count inbound vs outbound */
+        const char *sp = p;
+        while ((sp = strstr(sp, "\"inbound\"")) != NULL) {
+            sp += strlen("\"inbound\"");
+            while (*sp == ' ' || *sp == ':') sp++;
+            if (strncmp(sp, "true", 4) == 0)
+                inbound++;
+            else
+                outbound++;
+        }
+        /* Count by client type via subver */
+        sp = p;
+        while ((sp = strstr(sp, "\"subver\"")) != NULL) {
+            sp += strlen("\"subver\"");
+            while (*sp == ' ' || *sp == ':' || *sp == '"') sp++;
+            if (strstr(sp, "ZClassic-C23") != NULL &&
+                (strchr(sp, '"') == NULL || strstr(sp, "ZClassic-C23") < strchr(sp, '"')))
+                zcl23_cnt++;
+            else if (strstr(sp, "MagicBean") != NULL &&
+                     (strchr(sp, '"') == NULL || strstr(sp, "MagicBean") < strchr(sp, '"')))
+                magicbean_cnt++;
+        }
+    }
 
     /* Extract header_height from getblockchaininfo best_header_height */
     int header_height = 0;
@@ -116,6 +140,8 @@ static int h_zcl_status(const struct mcp_request *req, struct mcp_response *res)
              "\"max_peer_height\":%d,\"header_gap\":%d,"
              "\"sync_behind\":%s,"
              "\"peers\":%d,"
+             "\"connections\":{\"total\":%d,\"inbound\":%d,"
+             "\"outbound\":%d,\"zcl23\":%d,\"magicbean\":%d},"
              "\"memory_rss_mb\":%lld,\"uptime_secs\":%lld,"
              "\"sync\":%s,"
              "\"validation\":%s,\"health\":%s}",
@@ -123,6 +149,7 @@ static int h_zcl_status(const struct mcp_request *req, struct mcp_response *res)
              max_peer_height, header_gap,
              sync_behind ? "true" : "false",
              pc,
+             pc, inbound, outbound, zcl23_cnt, magicbean_cnt,
              (long long)memory_rss_mb, (long long)uptime_secs,
              s ? s : "null",
              v ? v : "null", hc ? hc : "null");

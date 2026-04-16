@@ -20,10 +20,50 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "util/log_macros.h"
 
-static int64_t g_health_start_time = 0;
+/* Read process start time from /proc/self/stat (field 22, starttime in
+ * clock ticks since boot).  Combined with /proc/uptime this gives the
+ * true process age even on the very first healthcheck call. */
+static int64_t proc_uptime_seconds(void)
+{
+    /* System uptime */
+    double sys_up = 0;
+    FILE *f = fopen("/proc/uptime", "r");
+    if (!f) return 0;
+    if (fscanf(f, "%lf", &sys_up) != 1) { fclose(f); return 0; }
+    fclose(f);
+
+    /* Process start time (field 22 of /proc/self/stat) */
+    f = fopen("/proc/self/stat", "r");
+    if (!f) return 0;
+    char buf[1024];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    if (n == 0) return 0;
+    buf[n] = '\0';
+
+    /* Skip past comm field (contains parens, may have spaces) */
+    const char *p = strrchr(buf, ')');
+    if (!p) return 0;
+    p++;
+    /* Fields after ')': state(3)..starttime(22) — skip 19 fields */
+    for (int i = 0; i < 19; i++) {
+        while (*p == ' ') p++;
+        while (*p && *p != ' ') p++;
+    }
+    while (*p == ' ') p++;
+    long long starttime = 0;
+    if (sscanf(p, "%lld", &starttime) != 1) return 0;
+
+    long clk = sysconf(_SC_CLK_TCK);
+    if (clk <= 0) clk = 100;
+    double proc_start_sec = (double)starttime / (double)clk;
+    double age = sys_up - proc_start_sec;
+    return age > 0 ? (int64_t)age : 0;
+}
 
 static int64_t get_rss_kb(void)
 {
@@ -248,9 +288,7 @@ void node_health_collect(struct node_health_snapshot *snapshot,
         }
     }
 
-    if (g_health_start_time == 0)
-        g_health_start_time = (int64_t)time(NULL);
-    snapshot->uptime_seconds = (int64_t)time(NULL) - g_health_start_time;
+    snapshot->uptime_seconds = proc_uptime_seconds();
 
     {
         int64_t rss_kb = get_rss_kb();
