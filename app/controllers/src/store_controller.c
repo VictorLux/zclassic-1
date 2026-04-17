@@ -8,6 +8,8 @@
 #include "models/database.h"
 #include "models/store.h"
 #include "services/zslp_service.h"
+#include "script/standard.h"
+#include "wallet/sapling_keys.h"
 #include "util/template.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -659,14 +661,18 @@ static bool route_is_order_create(const char *method, const char *path)
             path_has_prefix(path, "/store/buy/"));
 }
 
-/* Validate address: must be a valid ZClassic t-address or z-address.
- * Also prevents XSS via customer_addr in HTML output. */
+/* Validate address: must be a valid ZClassic t-address or z-address,
+ * with the Base58Check / Bech32 *checksum* verified — not just a
+ * syntactically-plausible prefix.  A one-character typo in a t-addr
+ * passes the old shape check but decodes to a random 20-byte hash
+ * whose payments are unspendable: funds sent to such an order are
+ * burned.  Also prevents XSS via customer_addr in HTML output. */
 static bool validate_address(const char *addr)
 {
     if (!addr || !addr[0]) return false;
     size_t len = strlen(addr);
 
-    /* Alphanumeric check (XSS prevention) */
+    /* Alphanumeric gate (XSS + cheap reject before decode). */
     for (size_t i = 0; addr[i]; i++) {
         char c = addr[i];
         if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
@@ -674,14 +680,21 @@ static bool validate_address(const char *addr)
         return false;
     }
 
-    /* t-address: t1... or t3..., length 34-35 */
-    if ((addr[0] == 't' && (addr[1] == '1' || addr[1] == '3')) &&
-        len >= 34 && len <= 35)
-        return true;
+    /* t-address: route through Base58Check via the shared service
+     * helper — fails on bad checksum or unknown prefix. */
+    if (addr[0] == 't' && (addr[1] == '1' || addr[1] == '3') &&
+        len >= 34 && len <= 36) {
+        struct tx_destination dest;
+        return zslp_service_decode_transparent_destination(addr, &dest);
+    }
 
-    /* z-address (Sapling): zs1..., length 78+ */
-    if (len >= 78 && addr[0] == 'z' && addr[1] == 's' && addr[2] == '1')
-        return true;
+    /* z-address (Sapling): Bech32 with HRP "zs" — checksum is part of
+     * bech32_decode inside sapling_decode_payment_address. */
+    if (len >= 78 && addr[0] == 'z' && addr[1] == 's' && addr[2] == '1') {
+        uint8_t d[ZC_DIVERSIFIER_SIZE];
+        uint8_t pk_d[32];
+        return sapling_decode_payment_address(addr, d, pk_d);
+    }
 
     return false;
 }

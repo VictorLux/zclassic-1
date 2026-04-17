@@ -118,14 +118,14 @@ int test_store(void)
 
     printf("store: POST /store/buy/1 creates order... ");
     {
-        const char *body = "customer_addr=t1TestAddr1234567890abcdefghijklmn";
+        const char *body = "customer_addr=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn";
         size_t n = store_handle_request("POST", "/store/buy/1",
                                          (const uint8_t *)body, strlen(body),
                                          resp, sizeof(resp), test_datadir);
         bool ok = (n > 0);
         ok = ok && (strstr((char *)resp, "200 OK") != NULL);
         ok = ok && (strstr((char *)resp, "Order #") != NULL);
-        ok = ok && (strstr((char *)resp, "t1TestAddr1234567890abcdefghijklmn") != NULL);
+        ok = ok && (strstr((char *)resp, "t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn") != NULL);
         ok = ok && (strstr((char *)resp, "0.01") != NULL);
         if (ok) printf("OK (%zu bytes)\n", n);
         else { printf("FAIL\n"); failures++; }
@@ -134,25 +134,63 @@ int test_store(void)
     printf("store: POST /store/orders REST create works... ");
     {
         const char *body =
-            "product_id=1&customer_addr=t1TestAddr1234567890abcdefghijklmn";
+            "product_id=1&customer_addr=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn";
         size_t n = store_handle_request("POST", "/store/orders",
                                          (const uint8_t *)body, strlen(body),
                                          resp, sizeof(resp), test_datadir);
         bool ok = (n > 0);
         ok = ok && (strstr((char *)resp, "200 OK") != NULL);
         ok = ok && (strstr((char *)resp, "Order #") != NULL);
-        ok = ok && (strstr((char *)resp, "t1TestAddr1234567890abcdefghijklmn") != NULL);
+        ok = ok && (strstr((char *)resp, "t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn") != NULL);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
 
     printf("store: POST /store/buy/999 returns 404... ");
     {
-        const char *body = "customer_addr=t1TestAddr1234567890abcdefghijklmn";
+        const char *body = "customer_addr=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn";
         size_t n = store_handle_request("POST", "/store/buy/999",
                                          (const uint8_t *)body, strlen(body),
                                          resp, sizeof(resp), test_datadir);
         bool ok = (n > 0) && (strstr((char *)resp, "404") != NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* P3.4: reject t-addr with bad Base58Check. Before the fix the
+     * store only checked shape (t1 + length) and happily wrote the
+     * order row — funds sent to such an address are unspendable. */
+    printf("store: POST /store/buy rejects t-addr with bad checksum... ");
+    {
+        /* Same shape as the canonical address but last char flipped —
+         * passes prefix+alphanumeric+length, fails the checksum. */
+        const char *body = "customer_addr=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXAA";
+        size_t n = store_handle_request("POST", "/store/buy/1",
+                                         (const uint8_t *)body, strlen(body),
+                                         resp, sizeof(resp), test_datadir);
+        bool ok = (n > 0) && (strstr((char *)resp, "400") != NULL);
+        ok = ok && (strstr((char *)resp, "Invalid address") != NULL);
+        /* The typo'd address must NOT have produced an Order # — no
+         * row should have been written. */
+        ok = ok && (strstr((char *)resp, "Order #") == NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("store: POST /store/orders rejects z-addr with bad bech32... ");
+    {
+        /* Length ≥78 starting with zs1, alphanumeric — but the bech32
+         * checksum is invalid. Before P3.4 this wrote an order row. */
+        const char *body =
+            "product_id=1&customer_addr=zs1" /* 3 char prefix */
+            /* 78 chars of bogus body = 81 total */
+            "qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq";
+        size_t n = store_handle_request("POST", "/store/orders",
+                                         (const uint8_t *)body, strlen(body),
+                                         resp, sizeof(resp), test_datadir);
+        bool ok = (n > 0) && (strstr((char *)resp, "400") != NULL);
+        ok = ok && (strstr((char *)resp, "Invalid address") != NULL);
+        ok = ok && (strstr((char *)resp, "Order #") == NULL);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
@@ -501,14 +539,14 @@ int test_store(void)
 
     printf("store: e2e: POST /store/buy/1 creates order with z-addr... ");
     {
-        const char *body = "customer_addr=t1TestAddr1234567890abcdefghijklmn";
+        const char *body = "customer_addr=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn";
         size_t n = store_handle_request("POST", "/store/buy/1",
                                          (const uint8_t *)body, strlen(body),
                                          resp, sizeof(resp), test_datadir);
         bool ok = (n > 0);
         ok = ok && (strstr((char *)resp, "200 OK") != NULL);
         ok = ok && (strstr((char *)resp, "Order #") != NULL);
-        ok = ok && (strstr((char *)resp, "t1TestAddr") != NULL);
+        ok = ok && (strstr((char *)resp, "t1YRBXKYLhrb") != NULL);
         ok = ok && (strstr((char *)resp, "zs1") != NULL);
         if (ok) printf("OK (z-address generated)\n");
         else { printf("FAIL\n"); failures++; }
@@ -832,7 +870,7 @@ int test_store(void)
     {
         uint8_t resp[4096];
         size_t n = store_handle_request("POST", "/store/buy/1",
-            (const uint8_t *)"customer_addr=t1TestAddr1234567890abcdefghijklmn", 48,
+            (const uint8_t *)"customer_addr=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn", 48,
             resp, sizeof(resp), test_datadir);
         resp[n < sizeof(resp) ? n : sizeof(resp) - 1] = '\0';
         /* Should either show a real z-address (if ZK loaded) or 503.
