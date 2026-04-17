@@ -21,6 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 
@@ -562,7 +563,7 @@ static bool rpc_repairheights(const struct json_value *params, bool help,
     sqlite3_prepare_v2(ctx->node_db->db,
         "SELECT COUNT(*) FROM utxos WHERE height = 0 AND value > 0",
         -1, &s, NULL);
-    if (s && sqlite3_step(s) == SQLITE_ROW)  // raw-sql-ok: a3
+    if (s && AR_STEP_ROW_READONLY(s) == SQLITE_ROW)
         before = sqlite3_column_int64(s, 0);
     sqlite3_finalize(s);
 
@@ -595,7 +596,7 @@ static bool rpc_repairheights(const struct json_value *params, bool help,
     sqlite3_prepare_v2(ctx->node_db->db,
         "SELECT COUNT(*) FROM utxos WHERE height = 0 AND value > 0",
         -1, &s, NULL);
-    if (s && sqlite3_step(s) == SQLITE_ROW)  // raw-sql-ok: a3
+    if (s && AR_STEP_ROW_READONLY(s) == SQLITE_ROW)
         after = sqlite3_column_int64(s, 0);
     sqlite3_finalize(s);
 
