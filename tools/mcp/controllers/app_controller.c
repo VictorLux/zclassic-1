@@ -6,6 +6,7 @@
 #include "../controllers.h"
 #include "../router.h"
 #include "../rpc_client.h"
+#include "../rpc_params.h"
 
 #include "json/json.h"
 #include "util/log_macros.h"
@@ -40,9 +41,12 @@ DEFINE_PT(h_zcl_name_list, "name_list")
 static int h_zcl_name_resolve(const struct mcp_request *req, struct mcp_response *res)
 {
     const char *n = json_get_str(json_get(req->args, "name"));
-    char params[256];
-    snprintf(params, sizeof(params), "[\"%s\"]", n);
-    char *out = mcp_node_rpc("name_resolve", params);
+    struct mcp_params p;
+    mcp_params_init(&p);
+    mcp_params_push_str(&p, n);
+    char *params = mcp_params_to_json(&p);
+    char *out = params ? mcp_node_rpc("name_resolve", params) : NULL;
+    free(params);
     if (!out) {
         res->error = MCP_ERR_HANDLER_FAILED;
         snprintf(res->error_message, sizeof(res->error_message),
@@ -58,9 +62,14 @@ static int h_zcl_name_register(const struct mcp_request *req, struct mcp_respons
     const char *n = json_get_str(json_get(req->args, "name"));
     const char *t = json_get_str(json_get(req->args, "type"));
     const char *v = json_get_str(json_get(req->args, "value"));
-    char params[1024];
-    snprintf(params, sizeof(params), "[\"%s\", \"%s\", \"%s\"]", n, t, v);
-    char *out = mcp_node_rpc("name_register", params);
+    struct mcp_params p;
+    mcp_params_init(&p);
+    mcp_params_push_str(&p, n);
+    mcp_params_push_str(&p, t);
+    mcp_params_push_str(&p, v);
+    char *params = mcp_params_to_json(&p);
+    char *out = params ? mcp_node_rpc("name_register", params) : NULL;
+    free(params);
     if (!out) {
         res->error = MCP_ERR_HANDLER_FAILED;
         snprintf(res->error_message, sizeof(res->error_message),
@@ -77,9 +86,13 @@ static int h_zcl_msg_send_named(const struct mcp_request *req, struct mcp_respon
 {
     const char *n = json_get_str(json_get(req->args, "name"));
     const char *m = json_get_str(json_get(req->args, "message"));
-    char params[4200];
-    snprintf(params, sizeof(params), "[\"%s\", \"%s\"]", n, m);
-    char *out = mcp_node_rpc("msg_send_named", params);
+    struct mcp_params p;
+    mcp_params_init(&p);
+    mcp_params_push_str(&p, n);
+    mcp_params_push_str(&p, m);
+    char *params = mcp_params_to_json(&p);
+    char *out = params ? mcp_node_rpc("msg_send_named", params) : NULL;
+    free(params);
     if (!out) {
         res->error = MCP_ERR_HANDLER_FAILED;
         snprintf(res->error_message, sizeof(res->error_message),
@@ -94,9 +107,13 @@ static int h_zcl_msg_send(const struct mcp_request *req, struct mcp_response *re
 {
     int64_t pid = json_get_int(json_get(req->args, "peer_id"));
     const char *m = json_get_str(json_get(req->args, "message"));
-    char params[4200];
-    snprintf(params, sizeof(params), "[%lld, \"%s\"]", (long long)pid, m);
-    char *out = mcp_node_rpc("msg_send", params);
+    struct mcp_params p;
+    mcp_params_init(&p);
+    mcp_params_push_int(&p, pid);
+    mcp_params_push_str(&p, m);
+    char *params = mcp_params_to_json(&p);
+    char *out = params ? mcp_node_rpc("msg_send", params) : NULL;
+    free(params);
     if (!out) {
         res->error = MCP_ERR_HANDLER_FAILED;
         snprintf(res->error_message, sizeof(res->error_message),
@@ -126,9 +143,12 @@ static int h_zcl_msg_inbox(const struct mcp_request *req, struct mcp_response *r
 static int h_zcl_msg_read(const struct mcp_request *req, struct mcp_response *res)
 {
     const char *mid = json_get_str(json_get(req->args, "msg_id"));
-    char params[128];
-    snprintf(params, sizeof(params), "[\"%s\"]", mid);
-    char *out = mcp_node_rpc("msg_read", params);
+    struct mcp_params p;
+    mcp_params_init(&p);
+    mcp_params_push_str(&p, mid);
+    char *params = mcp_params_to_json(&p);
+    char *out = params ? mcp_node_rpc("msg_read", params) : NULL;
+    free(params);
     if (!out) {
         res->error = MCP_ERR_HANDLER_FAILED;
         snprintf(res->error_message, sizeof(res->error_message),
@@ -148,9 +168,13 @@ static int h_zcl_market_offer(const struct mcp_request *req, struct mcp_response
 {
     const char *fp = json_get_str(json_get(req->args, "filepath"));
     int64_t price  = json_get_int(json_get(req->args, "price_per_mb_zat"));
-    char params[1024];
-    snprintf(params, sizeof(params), "[\"%s\", %lld]", fp, (long long)price);
-    char *out = mcp_node_rpc("zmarket_offer", params);
+    struct mcp_params p;
+    mcp_params_init(&p);
+    mcp_params_push_str(&p, fp);
+    mcp_params_push_int(&p, price);
+    char *params = mcp_params_to_json(&p);
+    char *out = params ? mcp_node_rpc("zmarket_offer", params) : NULL;
+    free(params);
     if (!out) {
         res->error = MCP_ERR_HANDLER_FAILED;
         snprintf(res->error_message, sizeof(res->error_message),
@@ -164,9 +188,12 @@ static int h_zcl_market_offer(const struct mcp_request *req, struct mcp_response
 static int h_zcl_market_buy(const struct mcp_request *req, struct mcp_response *res)
 {
     const char *rh = json_get_str(json_get(req->args, "root_hash"));
-    char params[128];
-    snprintf(params, sizeof(params), "[\"%s\"]", rh);
-    char *out = mcp_node_rpc("zmarket_buy", params);
+    struct mcp_params p;
+    mcp_params_init(&p);
+    mcp_params_push_str(&p, rh);
+    char *params = mcp_params_to_json(&p);
+    char *out = params ? mcp_node_rpc("zmarket_buy", params) : NULL;
+    free(params);
     if (!out) {
         res->error = MCP_ERR_HANDLER_FAILED;
         snprintf(res->error_message, sizeof(res->error_message),
@@ -189,14 +216,16 @@ static int h_zcl_swap_initiate(const struct mcp_request *req, struct mcp_respons
     int64_t locktime = json_get_int(json_get(req->args, "locktime_blocks"));
     const struct json_value *chain_v = json_get(req->args, "chain");
     const char *chain = chain_v ? json_get_str(chain_v) : NULL;
-    char params[1024];
-    if (chain)
-        snprintf(params, sizeof(params), "[\"%s\",\"%s\",%lld,%lld,\"%s\"]",
-                 ma, ca, (long long)amount, (long long)locktime, chain);
-    else
-        snprintf(params, sizeof(params), "[\"%s\",\"%s\",%lld,%lld]",
-                 ma, ca, (long long)amount, (long long)locktime);
-    char *out = mcp_node_rpc("swap_initiate", params);
+    struct mcp_params p;
+    mcp_params_init(&p);
+    mcp_params_push_str(&p, ma);
+    mcp_params_push_str(&p, ca);
+    mcp_params_push_int(&p, amount);
+    mcp_params_push_int(&p, locktime);
+    if (chain) mcp_params_push_str(&p, chain);
+    char *params = mcp_params_to_json(&p);
+    char *out = params ? mcp_node_rpc("swap_initiate", params) : NULL;
+    free(params);
     if (!out) {
         res->error = MCP_ERR_HANDLER_FAILED;
         snprintf(res->error_message, sizeof(res->error_message),
@@ -216,16 +245,17 @@ static int h_zcl_swap_participate(const struct mcp_request *req, struct mcp_resp
     const char *sh = json_get_str(json_get(req->args, "secret_hash"));
     const struct json_value *chain_v = json_get(req->args, "chain");
     const char *chain = chain_v ? json_get_str(chain_v) : NULL;
-    char params[1024];
-    if (chain)
-        snprintf(params, sizeof(params),
-                 "[\"%s\",\"%s\",%lld,%lld,\"%s\",\"%s\"]",
-                 ma, ca, (long long)amount, (long long)locktime, sh, chain);
-    else
-        snprintf(params, sizeof(params),
-                 "[\"%s\",\"%s\",%lld,%lld,\"%s\"]",
-                 ma, ca, (long long)amount, (long long)locktime, sh);
-    char *out = mcp_node_rpc("swap_participate", params);
+    struct mcp_params p;
+    mcp_params_init(&p);
+    mcp_params_push_str(&p, ma);
+    mcp_params_push_str(&p, ca);
+    mcp_params_push_int(&p, amount);
+    mcp_params_push_int(&p, locktime);
+    mcp_params_push_str(&p, sh);
+    if (chain) mcp_params_push_str(&p, chain);
+    char *params = mcp_params_to_json(&p);
+    char *out = params ? mcp_node_rpc("swap_participate", params) : NULL;
+    free(params);
     if (!out) {
         res->error = MCP_ERR_HANDLER_FAILED;
         snprintf(res->error_message, sizeof(res->error_message),
@@ -241,9 +271,12 @@ static int h_zcl_swap_list(const struct mcp_request *req, struct mcp_response *r
     const struct json_value *st = json_get(req->args, "state");
     char *out;
     if (st) {
-        char params[64];
-        snprintf(params, sizeof(params), "[\"%s\"]", json_get_str(st));
-        out = mcp_node_rpc("swap_list", params);
+        struct mcp_params p;
+        mcp_params_init(&p);
+        mcp_params_push_str(&p, json_get_str(st));
+        char *params = mcp_params_to_json(&p);
+        out = params ? mcp_node_rpc("swap_list", params) : NULL;
+        free(params);
     } else {
         out = mcp_node_rpc("swap_list", NULL);
     }

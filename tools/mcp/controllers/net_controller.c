@@ -5,6 +5,7 @@
 #include "../controllers.h"
 #include "../router.h"
 #include "../rpc_client.h"
+#include "../rpc_params.h"
 
 #include "json/json.h"
 #include "mcp/metrics.h"
@@ -42,10 +43,13 @@ static int h_zcl_addnode(const struct mcp_request *req, struct mcp_response *res
 {
     const char *addr = json_get_str(json_get(req->args, "addr"));
     const struct json_value *act = json_get(req->args, "action");
-    char params[256];
-    snprintf(params, sizeof(params), "[\"%s\",\"%s\"]",
-             addr, act ? json_get_str(act) : "onetry");
-    char *out = mcp_node_rpc("addnode", params);
+    struct mcp_params p;
+    mcp_params_init(&p);
+    mcp_params_push_str(&p, addr);
+    mcp_params_push_str(&p, act ? json_get_str(act) : "onetry");
+    char *params = mcp_params_to_json(&p);
+    char *out = params ? mcp_node_rpc("addnode", params) : NULL;
+    free(params);
     if (!out) {
         res->error = MCP_ERR_HANDLER_FAILED;
         snprintf(res->error_message, sizeof(res->error_message),

@@ -25,6 +25,7 @@
 #include "test/test_helpers.h"
 #include "mcp/router.h"
 #include "mcp/controllers.h"
+#include "mcp/rpc_params.h"
 #include "event/event.h"
 #include "json/json.h"
 
@@ -711,6 +712,154 @@ static int test_zcl_profile_clamps(void)
     return failures;
 }
 
+/* ── P3.1 / P3.2: JSON injection in wallet RPC payloads ────── */
+
+/* Before the fix, both handlers snprintf'd user-controlled strings
+ * directly into their params_json:
+ *
+ *     snprintf(params, sizeof(params),
+ *              "[\"%s\",[{\"address\":\"%s\",\"amount\":%.8f}]]",
+ *              from, to, amount);
+ *
+ * A caller sending `from = "ztest","params":["attacker_addr"] //`
+ * would punch through the string context and rewrite the params
+ * array — redirecting funds to `attacker_addr`. Both handlers now
+ * route user strings through mcp_params_* which escape the dangerous
+ * characters via the JSON encoder.
+ *
+ * These tests exercise the builder with the exact shapes the handlers
+ * produce, then parse the output back and assert that the attacker's
+ * string is preserved as a single literal string — not interpreted as
+ * structure. */
+
+static int test_zcl_send_escapes_json_injection(void)
+{
+    int failures = 0;
+    TEST("controllers: zcl_send escapes JSON injection in from/to (P3.1)") {
+        /* Classic payload: close the "from" string, re-open params,
+         * and point funds at an attacker-controlled address. */
+        const char *attacker = "ztest\",[{\"address\":\"attacker\",\"amount\":1.0}]] //";
+
+        struct mcp_params p;
+        mcp_params_init(&p);
+        mcp_params_push_str(&p, attacker);
+
+        struct json_value recip, recip_arr;
+        json_init(&recip);     json_set_object(&recip);
+        json_push_kv_str (&recip, "address", attacker);
+        json_push_kv_real(&recip, "amount",  0.5);
+        json_init(&recip_arr); json_set_array(&recip_arr);
+        json_push_back(&recip_arr, &recip);
+        mcp_params_push_value(&p, &recip_arr);
+        json_free(&recip);
+        json_free(&recip_arr);
+
+        char *params = mcp_params_to_json(&p);
+        ASSERT(params != NULL);
+
+        /* Shape: params must be exactly [string, array-of-one-object]. */
+        struct json_value root;
+        ASSERT(json_read(&root, params, strlen(params)));
+        ASSERT(root.type == JSON_ARR);
+        ASSERT(root.num_children == 2);
+
+        const struct json_value *from_v = json_at(&root, 0);
+        ASSERT(from_v != NULL);
+        ASSERT(from_v->type == JSON_STR);
+        ASSERT_STR_EQ(from_v->val.s, attacker);
+
+        const struct json_value *recips = json_at(&root, 1);
+        ASSERT(recips != NULL);
+        ASSERT(recips->type == JSON_ARR);
+        ASSERT(recips->num_children == 1);
+
+        const struct json_value *r0 = json_at(recips, 0);
+        ASSERT(r0 != NULL);
+        ASSERT(r0->type == JSON_OBJ);
+        const struct json_value *addr_v = json_get(r0, "address");
+        ASSERT(addr_v != NULL);
+        ASSERT(addr_v->type == JSON_STR);
+        ASSERT_STR_EQ(addr_v->val.s, attacker);
+
+        /* The raw serialized payload must contain escaped quotes —
+         * belt-and-suspenders check on the escape itself. */
+        ASSERT(strstr(params, "\\\"") != NULL);
+
+        free(params);
+        json_free(&root);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_zcl_sendtoaddress_escapes_json_injection(void)
+{
+    int failures = 0;
+    TEST("controllers: zcl_sendtoaddress escapes JSON injection in address (P3.2)") {
+        /* Punch through the address string, bloat amount to drain the
+         * wallet, and append a bogus second recipient. */
+        const char *attacker = "zaddr\",999999999,\"extra\":[\"attacker\"]";
+
+        struct mcp_params p;
+        mcp_params_init(&p);
+        mcp_params_push_str (&p, attacker);
+        mcp_params_push_real(&p, 0.01);
+        char *params = mcp_params_to_json(&p);
+        ASSERT(params != NULL);
+
+        struct json_value root;
+        ASSERT(json_read(&root, params, strlen(params)));
+        ASSERT(root.type == JSON_ARR);
+        /* Exactly two — the injection did NOT add a third element. */
+        ASSERT(root.num_children == 2);
+
+        const struct json_value *addr_v = json_at(&root, 0);
+        ASSERT(addr_v != NULL);
+        ASSERT(addr_v->type == JSON_STR);
+        ASSERT_STR_EQ(addr_v->val.s, attacker);
+
+        const struct json_value *amt_v = json_at(&root, 1);
+        ASSERT(amt_v != NULL);
+        ASSERT(amt_v->type == JSON_REAL);
+        /* The amount is the number we pushed, not the injected 999999999. */
+        ASSERT(amt_v->val.d < 1.0);
+
+        ASSERT(strstr(params, "\\\"") != NULL);
+
+        free(params);
+        json_free(&root);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_mcp_params_escapes_backslash_and_control(void)
+{
+    int failures = 0;
+    TEST("controllers: mcp_params escapes backslash, newline, and control chars") {
+        const char *s = "a\\b\"c\nd\te";
+        struct mcp_params p;
+        mcp_params_init(&p);
+        mcp_params_push_str(&p, s);
+        char *params = mcp_params_to_json(&p);
+        ASSERT(params != NULL);
+
+        struct json_value root;
+        ASSERT(json_read(&root, params, strlen(params)));
+        ASSERT(root.type == JSON_ARR);
+        ASSERT(root.num_children == 1);
+        const struct json_value *s_v = json_at(&root, 0);
+        ASSERT(s_v != NULL);
+        ASSERT(s_v->type == JSON_STR);
+        ASSERT_STR_EQ(s_v->val.s, s);
+
+        free(params);
+        json_free(&root);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_final_reset_leaves_clean_table(void)
 {
     int failures = 0;
@@ -759,6 +908,9 @@ int test_mcp_controllers(void)
     failures += test_zcl_admin_graceful_never_propagates_error();
     failures += test_zcl_profile_shape();
     failures += test_zcl_profile_clamps();
+    failures += test_zcl_send_escapes_json_injection();
+    failures += test_zcl_sendtoaddress_escapes_json_injection();
+    failures += test_mcp_params_escapes_backslash_and_control();
     failures += test_final_reset_leaves_clean_table();
 
     return failures;

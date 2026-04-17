@@ -5,6 +5,7 @@
 #include "../controllers.h"
 #include "../router.h"
 #include "../rpc_client.h"
+#include "../rpc_params.h"
 
 #include "json/json.h"
 #include "util/log_macros.h"
@@ -49,11 +50,26 @@ static int h_zcl_send(const struct mcp_request *req, struct mcp_response *res)
     const struct json_value *amt = json_get(req->args, "amount");
     double amount = (amt && amt->type == JSON_REAL) ? json_get_real(amt)
                                                     : (double)json_get_int(amt);
-    char params[512];
-    snprintf(params, sizeof(params),
-             "[\"%s\",[{\"address\":\"%s\",\"amount\":%.8f}]]",
-             from, to, amount);
-    char *out = mcp_node_rpc("z_sendmany", params);
+
+    /* Build [from, [{address: to, amount}]] via the JSON encoder — a
+     * quote in `from` or `to` would otherwise rewrite the params array. */
+    struct mcp_params p;
+    mcp_params_init(&p);
+    mcp_params_push_str(&p, from);
+
+    struct json_value recip, recip_arr;
+    json_init(&recip);     json_set_object(&recip);
+    json_push_kv_str (&recip, "address", to ? to : "");
+    json_push_kv_real(&recip, "amount",  amount);
+    json_init(&recip_arr); json_set_array(&recip_arr);
+    json_push_back(&recip_arr, &recip);
+    mcp_params_push_value(&p, &recip_arr);
+    json_free(&recip);
+    json_free(&recip_arr);
+
+    char *params = mcp_params_to_json(&p);
+    char *out = params ? mcp_node_rpc("z_sendmany", params) : NULL;
+    free(params);
     if (!out) {
         res->error = MCP_ERR_HANDLER_FAILED;
         snprintf(res->error_message, sizeof(res->error_message),
@@ -72,10 +88,14 @@ static int h_zcl_sendtoaddress(const struct mcp_request *req,
     const struct json_value *amt = json_get(req->args, "amount");
     double amount = (amt && amt->type == JSON_REAL) ? json_get_real(amt)
                                                     : (double)json_get_int(amt);
-    char params[512];
-    snprintf(params, sizeof(params), "[\"%s\",%.8f]",
-             addr ? addr : "", amount);
-    char *out = mcp_node_rpc("sendtoaddress", params);
+
+    struct mcp_params p;
+    mcp_params_init(&p);
+    mcp_params_push_str (&p, addr);
+    mcp_params_push_real(&p, amount);
+    char *params = mcp_params_to_json(&p);
+    char *out = params ? mcp_node_rpc("sendtoaddress", params) : NULL;
+    free(params);
     if (!out) {
         res->error = MCP_ERR_HANDLER_FAILED;
         snprintf(res->error_message, sizeof(res->error_message),
@@ -131,9 +151,12 @@ static int h_zcl_gettransaction(const struct mcp_request *req,
                                   struct mcp_response *res)
 {
     const char *txid = json_get_str(json_get(req->args, "txid"));
-    char params[256];
-    snprintf(params, sizeof(params), "[\"%s\"]", txid ? txid : "");
-    char *out = mcp_node_rpc("gettransaction", params);
+    struct mcp_params p;
+    mcp_params_init(&p);
+    mcp_params_push_str(&p, txid);
+    char *params = mcp_params_to_json(&p);
+    char *out = params ? mcp_node_rpc("gettransaction", params) : NULL;
+    free(params);
     if (!out) {
         res->error = MCP_ERR_HANDLER_FAILED;
         snprintf(res->error_message, sizeof(res->error_message),
@@ -220,9 +243,12 @@ static int h_zcl_dumpprivkey(const struct mcp_request *req,
                                struct mcp_response *res)
 {
     const char *addr = json_get_str(json_get(req->args, "address"));
-    char params[256];
-    snprintf(params, sizeof(params), "[\"%s\"]", addr ? addr : "");
-    char *out = mcp_node_rpc("dumpprivkey", params);
+    struct mcp_params p;
+    mcp_params_init(&p);
+    mcp_params_push_str(&p, addr);
+    char *params = mcp_params_to_json(&p);
+    char *out = params ? mcp_node_rpc("dumpprivkey", params) : NULL;
+    free(params);
     if (!out) {
         res->error = MCP_ERR_HANDLER_FAILED;
         snprintf(res->error_message, sizeof(res->error_message),
@@ -240,11 +266,14 @@ static int h_zcl_importprivkey(const struct mcp_request *req,
     const char *label = json_get_str(json_get(req->args, "label"));
     const struct json_value *rs = json_get(req->args, "rescan");
     bool rescan = rs ? json_get_bool(rs) : false;
-    char params[512];
-    snprintf(params, sizeof(params), "[\"%s\",\"%s\",%s]",
-             wif ? wif : "", label ? label : "",
-             rescan ? "true" : "false");
-    char *out = mcp_node_rpc("importprivkey", params);
+    struct mcp_params p;
+    mcp_params_init(&p);
+    mcp_params_push_str (&p, wif);
+    mcp_params_push_str (&p, label);
+    mcp_params_push_bool(&p, rescan);
+    char *params = mcp_params_to_json(&p);
+    char *out = params ? mcp_node_rpc("importprivkey", params) : NULL;
+    free(params);
     if (!out) {
         res->error = MCP_ERR_HANDLER_FAILED;
         snprintf(res->error_message, sizeof(res->error_message),
@@ -259,9 +288,12 @@ static int h_zcl_importaddress(const struct mcp_request *req,
                                  struct mcp_response *res)
 {
     const char *addr = json_get_str(json_get(req->args, "address"));
-    char params[256];
-    snprintf(params, sizeof(params), "[\"%s\"]", addr ? addr : "");
-    char *out = mcp_node_rpc("importaddress", params);
+    struct mcp_params p;
+    mcp_params_init(&p);
+    mcp_params_push_str(&p, addr);
+    char *params = mcp_params_to_json(&p);
+    char *out = params ? mcp_node_rpc("importaddress", params) : NULL;
+    free(params);
     if (!out) {
         res->error = MCP_ERR_HANDLER_FAILED;
         snprintf(res->error_message, sizeof(res->error_message),
@@ -295,11 +327,13 @@ static int h_zcl_z_getbalance(const struct mcp_request *req,
 {
     const char *addr = json_get_str(json_get(req->args, "address"));
     const struct json_value *mc = json_get(req->args, "minconf");
-    char params[256];
-    snprintf(params, sizeof(params), "[\"%s\",%lld]",
-             addr ? addr : "",
-             mc ? (long long)json_get_int(mc) : 1LL);
-    char *out = mcp_node_rpc("z_getbalance", params);
+    struct mcp_params p;
+    mcp_params_init(&p);
+    mcp_params_push_str(&p, addr);
+    mcp_params_push_int(&p, mc ? json_get_int(mc) : 1LL);
+    char *params = mcp_params_to_json(&p);
+    char *out = params ? mcp_node_rpc("z_getbalance", params) : NULL;
+    free(params);
     if (!out) {
         res->error = MCP_ERR_HANDLER_FAILED;
         snprintf(res->error_message, sizeof(res->error_message),

@@ -6,6 +6,7 @@
 #include "../controllers.h"
 #include "../router.h"
 #include "../rpc_client.h"
+#include "../rpc_params.h"
 
 #include "json/json.h"
 #include "util/log_macros.h"
@@ -49,9 +50,13 @@ static int h_zcl_getrawtransaction(const struct mcp_request *req,
     const char *txid = json_get_str(json_get(req->args, "txid"));
     const struct json_value *verb = json_get(req->args, "verbose");
     int verbose = verb ? (int)json_get_int(verb) : 1;
-    char params[256];
-    snprintf(params, sizeof(params), "[\"%s\",%d]", txid ? txid : "", verbose);
-    char *out = mcp_node_rpc("getrawtransaction", params);
+    struct mcp_params p;
+    mcp_params_init(&p);
+    mcp_params_push_str(&p, txid);
+    mcp_params_push_int(&p, verbose);
+    char *params = mcp_params_to_json(&p);
+    char *out = params ? mcp_node_rpc("getrawtransaction", params) : NULL;
+    free(params);
     if (!out) {
         res->error = MCP_ERR_HANDLER_FAILED;
         snprintf(res->error_message, sizeof(res->error_message),
@@ -72,27 +77,36 @@ static int h_zcl_getblock(const struct mcp_request *req, struct mcp_response *re
     for (const char *c = id_str; is_num && *c; c++)
         if (*c < '0' || *c > '9') is_num = false;
 
-    char params[256];
+    char clean[128] = {0};
+    const char *hash_str = id_str;
     if (is_num) {
-        snprintf(params, sizeof(params), "[%s]", id_str);
-        char *hash = mcp_node_rpc("getblockhash", params);
+        struct mcp_params ph;
+        mcp_params_init(&ph);
+        mcp_params_push_int(&ph, id_str ? atoll(id_str) : 0);
+        char *php = mcp_params_to_json(&ph);
+        char *hash = php ? mcp_node_rpc("getblockhash", php) : NULL;
+        free(php);
         if (!hash) {
             res->error = MCP_ERR_HANDLER_FAILED;
             snprintf(res->error_message, sizeof(res->error_message),
                      "RPC getblockhash failed: height=%s", id_str);
             LOG_ERR("mcp.chain", "getblockhash failed: height=%s", id_str);
         }
-        char clean[128];
         size_t ci = 0;
         for (size_t i = 0; hash[i] && ci < 127; i++)
             if (hash[i] != '"' && hash[i] != '\n') clean[ci++] = hash[i];
         clean[ci] = 0;
         free(hash);
-        snprintf(params, sizeof(params), "[\"%s\",%d]", clean, verbosity);
-    } else {
-        snprintf(params, sizeof(params), "[\"%s\",%d]", id_str, verbosity);
+        hash_str = clean;
     }
-    char *out = mcp_node_rpc("getblock", params);
+
+    struct mcp_params p;
+    mcp_params_init(&p);
+    mcp_params_push_str(&p, hash_str);
+    mcp_params_push_int(&p, verbosity);
+    char *params = mcp_params_to_json(&p);
+    char *out = params ? mcp_node_rpc("getblock", params) : NULL;
+    free(params);
     if (!out) {
         res->error = MCP_ERR_HANDLER_FAILED;
         snprintf(res->error_message, sizeof(res->error_message),
