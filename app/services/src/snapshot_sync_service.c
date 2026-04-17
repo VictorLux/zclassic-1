@@ -33,6 +33,7 @@
 #include "event/event.h"
 #include "config/runtime.h"
 #include "util/trace.h"
+#include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 #include "validation/main_state.h"
@@ -723,7 +724,7 @@ bool snapsync_accept_offer(struct snapshot_sync_service *svc,
         if (sqlite3_prepare_v2(svc->ndb->db,
                 "SELECT COUNT(*) FROM utxos", -1, &sc, NULL) == SQLITE_OK
             && sc) {
-            if (sqlite3_step(sc) == SQLITE_ROW)  // raw-sql-ok: a3
+            if (AR_STEP_ROW_READONLY(sc) == SQLITE_ROW)
                 utxo_count = sqlite3_column_int64(sc, 0);
             sqlite3_finalize(sc);
         }
@@ -964,7 +965,7 @@ bool snapsync_awaiting_utxos(void)
                 if (sqlite3_prepare_v2(ndb->db,
                         "SELECT COUNT(*) FROM utxos", -1, &sc, NULL)
                     == SQLITE_OK && sc) {
-                    if (sqlite3_step(sc) == SQLITE_ROW)  // raw-sql-ok: a3
+                    if (AR_STEP_ROW_READONLY(sc) == SQLITE_ROW)
                         utxo_count = sqlite3_column_int64(sc, 0);
                     sqlite3_finalize(sc);
                 }
@@ -1002,7 +1003,7 @@ bool snapsync_awaiting_utxos(void)
             if (sqlite3_prepare_v2(svc->ndb->db,
                     "SELECT COUNT(*) FROM utxos", -1, &sc, NULL) == SQLITE_OK
                 && sc) {
-                if (sqlite3_step(sc) == SQLITE_ROW)  // raw-sql-ok: a3
+                if (AR_STEP_ROW_READONLY(sc) == SQLITE_ROW)
                     utxo_count = sqlite3_column_int64(sc, 0);
                 sqlite3_finalize(sc);
             }

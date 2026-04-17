@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 
 /* ── Default tunables ───────────────────────────────────────── */
@@ -48,7 +49,7 @@ static int64_t csr_sqlite_max_block_height(struct node_db *ndb)
     int64_t result = -1;
     if (sqlite3_prepare_v2(ndb->db,
             "SELECT MAX(height) FROM blocks", -1, &st, NULL) == SQLITE_OK) {
-        if (sqlite3_step(st) == SQLITE_ROW &&  // raw-sql-ok: a3
+        if (AR_STEP_ROW_READONLY(st) == SQLITE_ROW &&
             sqlite3_column_type(st, 0) != SQLITE_NULL) {
             result = sqlite3_column_int64(st, 0);
         }
@@ -75,7 +76,7 @@ static int csr_sqlite_block_height(struct node_db *ndb,
         LOG_ERR("csr", "sqlite3_prepare_v2 failed: %s", sqlite3_errmsg(ndb->db));
     }
     sqlite3_bind_blob(st, 1, hash->data, 32, SQLITE_STATIC);
-    int rc = sqlite3_step(st);  // raw-sql-ok: a3
+    int rc = AR_STEP_ROW_READONLY(st);
     int result;
     if (rc == SQLITE_ROW) {
         *out_height = sqlite3_column_int64(st, 0);

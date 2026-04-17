@@ -54,6 +54,7 @@
 
 #include <sqlite3.h>
 
+#include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 
@@ -195,7 +196,7 @@ static int64_t wbs_count_rows(sqlite3 *db, const char *table)
     sqlite3_stmt *st = NULL;
     int64_t n = -1;
     if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) == SQLITE_OK) {
-        if (sqlite3_step(st) == SQLITE_ROW)  // raw-sql-ok: a3
+        if (AR_STEP_ROW_READONLY(st) == SQLITE_ROW)
             n = sqlite3_column_int64(st, 0);
         sqlite3_finalize(st);
     }
@@ -266,7 +267,7 @@ bool wallet_backup_run_once(const char *backup_dir,
             return false;
         }
         sqlite3_bind_text(att, 1, src_path, -1, SQLITE_STATIC);
-        if (sqlite3_step(att) != SQLITE_DONE) {  // raw-sql-ok: a3
+        if (AR_STEP_ROW_READONLY(att) != SQLITE_DONE) {
             if (err_out) snprintf(err_out, err_cap,
                     "step ATTACH: %s", sqlite3_errmsg(dst));
             sqlite3_finalize(att);
@@ -293,7 +294,7 @@ bool wallet_backup_run_once(const char *backup_dir,
         sqlite3_stmt *chk = NULL;
         bool src_has = false;
         if (sqlite3_prepare_v2(dst, exists_sql, -1, &chk, NULL) == SQLITE_OK) {
-            src_has = sqlite3_step(chk) == SQLITE_ROW;  // raw-sql-ok: a3
+            src_has = AR_STEP_ROW_READONLY(chk) == SQLITE_ROW;
             sqlite3_finalize(chk);
         }
         if (!src_has) continue;

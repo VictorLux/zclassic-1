@@ -27,6 +27,7 @@
 #include <errno.h>
 #include <sqlite3.h>
 
+#include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 
@@ -389,7 +390,7 @@ void save_block_index_recent(struct node_db *ndb, struct main_state *ms)
             sqlite3_bind_blob(ins, 12, p->nChainWork.pn, 32, SQLITE_STATIC) != SQLITE_OK ||
             sqlite3_bind_int(ins, 13, (int)p->nCachedBranchId) != SQLITE_OK ||
             sqlite3_bind_int(ins, 14, (int)p->nChainTx) != SQLITE_OK ||
-            sqlite3_step(ins) != SQLITE_DONE)  // raw-sql-ok: a3
+            AR_STEP_ROW_READONLY(ins) != SQLITE_DONE)
             goto fail;
         count++;
 
@@ -435,7 +436,7 @@ bool load_block_index_sqlite(struct node_db *ndb, struct main_state *ms)
     sqlite3_stmt *cnt = NULL;
     if (sqlite3_prepare_v2(ndb->db,
             "SELECT COUNT(*) FROM block_index_cache", -1, &cnt, NULL) == SQLITE_OK && cnt) {
-        if (sqlite3_step(cnt) == SQLITE_ROW)  // raw-sql-ok: a3
+        if (AR_STEP_ROW_READONLY(cnt) == SQLITE_ROW)
             cached_count = sqlite3_column_int64(cnt, 0);
         sqlite3_finalize(cnt);
     }
@@ -455,7 +456,7 @@ bool load_block_index_sqlite(struct node_db *ndb, struct main_state *ms)
         LOG_FAIL("block_index", "failed to prepare SQLite SELECT for block_index_cache");
 
     size_t loaded = 0;
-    while (sqlite3_step(sel) == SQLITE_ROW) {  // raw-sql-ok: a3
+    while (AR_STEP_ROW_READONLY(sel) == SQLITE_ROW) {
         const void *hash_blob = sqlite3_column_blob(sel, 0);
         if (!hash_blob || sqlite3_column_bytes(sel, 0) < 32) continue;
 
@@ -491,7 +492,7 @@ bool load_block_index_sqlite(struct node_db *ndb, struct main_state *ms)
             "SELECT hash,prev_hash FROM block_index_cache "
             "WHERE prev_hash != X'0000000000000000000000000000000000000000000000000000000000000000'",
             -1, &sel, NULL) == SQLITE_OK && sel) {
-        while (sqlite3_step(sel) == SQLITE_ROW) {  // raw-sql-ok: a3
+        while (AR_STEP_ROW_READONLY(sel) == SQLITE_ROW) {
             const void *h = sqlite3_column_blob(sel, 0);
             const void *ph = sqlite3_column_blob(sel, 1);
             if (!h || !ph) continue;
