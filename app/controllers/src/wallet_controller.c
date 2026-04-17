@@ -203,6 +203,35 @@ static bool rpc_getwalletinfo(const struct json_value *params, bool help,
     json_push_kv_int(result, "txcount", (int64_t)wallet_history_count());
     json_push_kv_int(result, "keypoolsize", (int64_t)ctx->wallet->key_pool_size);
     json_push_kv_real(result, "paytxfee", strtod(fee, NULL));
+
+    /* Persistence health block (plan §6). Aggregates the canary
+     * status + a live count query so operators and tooling can see
+     * at a glance whether the wallet storage is trustworthy.
+     *
+     *   healthy = open && canary_ok && !mismatch
+     *
+     * A false value here is the signal that D/E/F abort paths would
+     * have fired on the next restart — surface it before the user
+     * sends funds to an address that won't survive reboot. */
+    sqlite3 *wallet_sqlite_handle = (ctx->wallet_db && ctx->wallet_db->open)
+                                      ? ctx->wallet_db->db
+                                      : NULL;
+    struct wallet_persistence_health h = wallet_persistence_get_health(
+        wallet_sqlite_handle, (int)ctx->wallet->keystore.num_keys);
+
+    struct json_value persistence = {0};
+    json_init(&persistence);
+    json_set_object(&persistence);
+    json_push_kv_bool(&persistence, "healthy",
+                       h.open && h.canary_ok && !h.mismatch);
+    json_push_kv_bool(&persistence, "open",              h.open);
+    json_push_kv_bool(&persistence, "canary_ok",         h.canary_ok);
+    json_push_kv_int (&persistence, "canary_last_ok_ts", h.canary_last_ok_ts);
+    json_push_kv_int (&persistence, "row_count",         h.row_count);
+    json_push_kv_int (&persistence, "keystore_count",    h.keystore_count);
+    json_push_kv_bool(&persistence, "mismatch",          h.mismatch);
+    json_push_kv_str (&persistence, "last_error",        h.last_error);
+    json_push_kv(result, "persistence", &persistence);
     return true;
 }
 
