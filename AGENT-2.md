@@ -291,3 +291,23 @@ sites migrated across 17 files (commits 50d25b2d8, d8246b85e, f6ee6a4c6,
 36b5eafaf, 9dd2faf83, fa55e8dd7, 794f758d5, 2544d044d, 2a59ac938). Five
 state-kv / rollback opt-outs retained with `// raw-sql-ok:` annotations
 describing why they're intentionally unchecked — all correct.
+
+**2026-04-17 — P3 group closed (third wave).** Five commits:
+b0134339b (P3.1/P3.2 MCP JSON injection + class sweep across all MCP
+controllers), f0e8d31d3 (P3.5 rpc_client realloc leak), 64a4afffc
+(P3.4 store Base58Check/Bech32 checksum), efa211811 (P3.6 URL-decode
++ HMAC-bound form token). P3 table in AGENT.md fully marked done for
+Agent-2's rows.
+
+**P3.6 scope flag for Rhett — classical per-session CSRF still
+pending.** The form-token is HMAC(per-process-random, product_id), so
+it blocks the common threat (malicious third-party page crafting a
+`<form action>` to our .onion — same-origin policy keeps JS from
+reading the token). It does NOT protect against a server-side
+attacker who can `curl` the product page to scrape the token before
+triggering the victim browser. Closing that gap requires binding the
+token to a session cookie, which needs plumbing cookies through
+`lib/net/src/onion_service.c → store_handle_request` (today the
+handler receives only `method/path/body`, not headers). Flagging
+rather than expanding scope — this touches Rhett's lane
+(`lib/net/`).
