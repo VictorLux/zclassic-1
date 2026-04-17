@@ -4,6 +4,27 @@ Derived from the full code review of 2026-04-17. Supersedes earlier wave plans.
 
 Owner: Rhett (primary). Delegates: Agent-2 (see `AGENT-2.md`), Agent-3 (see `AGENT-3.md`).
 
+---
+
+## Progress — last update 2026-04-17
+
+**Overall: 28 / 50 rows closed (56%) | SWRC 59%**
+
+| Tier | Closed / Total | % | Open rows |
+|---|---|---|---|
+| **CRITICAL** | 7 / 9 | **78%** | P2.1, P2.2 |
+| **HIGH** | 10 / 20 | **50%** | P1.6, P1.7, P2.3–P2.6, P4.1, P4.2, P5.2, P5.3 |
+| **MED** | 6 / 15 | **40%** | P2.7, P2.8, P3.7, P4.3–P4.5, P5.4, P5.5, P5.6 |
+| **LOW** | 1 / 2 | **50%** | P5.7 |
+
+**Open by owner:** Rhett 15 · Agent-2 7 (3 active P5, 3 queued P4, 1 infra) · Agent-3 3 (Wave 2: curve25519 + ed25519 CT + RNG hygiene)
+
+**Top remaining risks:** the two open CRITs are both in the network lane (P2.1 mempool tx accept, P2.2 stack overflow in msg handler) — chain-split risk on deploy is close to eliminated, DoS-on-deploy is now the headline.
+
+**SWRC formula:** CRIT=4, HIGH=2, MED=1, LOW=0.5. Total weighted capacity = 92. Update this block every time a row closes.
+
+---
+
 **Ground rules for every agent**
 - zclassic23 is the next-gen product. zclassicd is a legacy bootstrap peer only.
 - Read `CLAUDE.md` and `DEFENSIVE_CODING.md` before touching code.
