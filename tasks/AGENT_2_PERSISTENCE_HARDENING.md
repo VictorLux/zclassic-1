@@ -1,11 +1,17 @@
 # Agent 2 — Persistence Hardening (follow-up to wallet_sqlite migration)
 
+**STATUS: PARTIALLY MERGED** — D2–D6 shipped in `7a955c0dd` (+ bonus node_health_service silent-return-1 fix that unblocked A3's D8). **D1 is still open.** A3's boot state machine (`8c54d100e`) is now on master, so D1 is unblocked — hook into the same `exit(1)` + structured-diagnostic pattern A3 used in `config/src/boot.c:515-527`. No named halt primitive exists; inline the print-and-exit, then when A2+A3 want a shared primitive that's a separate scope.
+
+**Next after D1 ships:** [`AGENT_2_CONSENSUS_ATOMICITY.md`](./AGENT_2_CONSENSUS_ATOMICITY.md) (I will prep it when D1 lands).
+
+**Directive: keep pushing to master.** Do not stand down between assignments.
+
 **Read first:** [`WALLET_PERSISTENCE_PLAN.md`](../WALLET_PERSISTENCE_PLAN.md), [`HARDENING_CHECKLIST.md`](../HARDENING_CHECKLIST.md) §P2.1–P2.3, §R2.1, §R2.5, §R2.10, plus your own prior PR (merged as `52480abef..ccf0a6a11`).
 
 **Worktree:** `~/zclassic23-2` (same one you just shipped from)
-**Branch:** `a2/persistence-hardening`
+**Branch:** `a2/database-halt-on-corruption` (fresh branch for D1; the old `a2/persistence-hardening` is merged)
 **Base:** `origin/master`
-**Parallel peer:** Agent 3 still in flight on `a3/wallet-controller-guardrails`. You are not blocked on them for most of this scope — ordering notes below.
+**Parallel peer:** Agent 3 has just merged `a3/wallet-controller-guardrails` and is picking up `a3/build-ci-deploy-hardening`. You are not blocked on them.
 
 ---
 
@@ -55,7 +61,7 @@ If your PR is too large for a single review, split at your discretion — but ea
 
 ## Deliverables
 
-### D1 (P0, PHASE 2). Kill silent full-DB wipe in `database.c:533-542`
+### D1 (P0, **ONLY REMAINING DELIVERABLE**). Kill silent full-DB wipe in `database.c:533-542`
 
 Current code:
 ```c
@@ -73,12 +79,12 @@ New behavior:
 1. Return a `struct zcl_result` with `code = DB_ERR_CORRUPT` (add to a new enum) from `node_db_open_r` — a rich-error open similar to your `wallet_sqlite_open_r`.
 2. **Do not** quarantine or open fresh schema automatically.
 3. Before returning, best-effort dump any readable rows of `wallet_keys` to `$datadir/wallet_keys.recovery.json` (same format `dumpprivkey` produces). This is a cheap insurance against edge-case corruption that only touches some tables.
-4. `boot.c` must route this into Agent 3's state machine as a STATE_D-style abort. Use whatever `node_state_halt` / abort primitive A3 introduced; do not invent your own.
+4. `boot.c` must route this into the same abort pattern A3 uses for STATE_D/E/F at `config/src/boot.c:515-527` — structured diagnostic with code/message/source, then `exit(1)`. A3 did not introduce a named `node_state_halt` primitive; follow their inline pattern. If you want to factor a shared helper, do that in a separate PR.
 5. New flag `-rebuild-fresh-db`: the only opt-in path that produces an empty schema in place of a corrupt one. Print a large banner warning when active; preserve the `.corrupt-<ts>` copy.
 
 **Regression test** (`test_db_quarantine_halt.c`): create a small sqlite DB with known rows, flip random bytes to induce quick_check failure, open with `node_db_open_r`, assert `DB_ERR_CORRUPT` without file moves; assert `wallet_keys.recovery.json` exists when `wallet_keys` was readable pre-corruption.
 
-### D2. Migrate `database.c` unchecked `sqlite3_exec` / `node_db_exec` sites
+### D2. Migrate `database.c` unchecked `sqlite3_exec` / `node_db_exec` sites — DONE (`7a955c0dd`)
 
 Line references may shift as you edit; confirm each before committing.
 
@@ -104,11 +110,11 @@ static int db_exec_checked(sqlite3 *db, const char *sql, const char *where) {
 
 Also remove the `strstr(... "ALTER TABLE") || strstr(... "CREATE INDEX")` suppression around line 268-276; migrate the affected schemas to versioned migration blocks.
 
-### D3. `utxo_commitment.c` silent false returns
+### D3. `utxo_commitment.c` silent false returns — DONE (`7a955c0dd`)
 
 Lines 195, 211, 307, 322 — `if (sqlite3_prepare_v2(...) != SQLITE_OK) return false;` with no log. Replace each with `LOG_FAIL("utxo_cmt", "prepare %s: %s", sql, sqlite3_errmsg(db))`. Pattern is mechanical.
 
-### D4. `coins_view_sqlite` flush atomicity (R2.5)
+### D4. `coins_view_sqlite` flush atomicity (R2.5) — DONE (`7a955c0dd`)
 
 `lib/storage/src/coins_view_sqlite.c` — the batch-write path wraps UTXO writes in a `SAVEPOINT` but the `coins_best_block` pointer is updated after `RELEASE SAVEPOINT`.
 
@@ -118,11 +124,11 @@ Lines 195, 211, 307, 322 — `if (sqlite3_prepare_v2(...) != SQLITE_OK) return f
 
 **Regression test** (`test_coins_view_atomicity.c`): under `#ifdef ZCL_TESTING`, expose a `ZCL_COINS_VIEW_KILL_AFTER_SAVEPOINT` env hook that forces a `_exit(137)` between savepoint release and best-block update in a child process. Parent forks, child kills itself mid-write, parent reopens the DB and asserts `DB_ERR_TIP_MISMATCH` (not silent continuation, not wipe).
 
-### D5. LevelDB checksums on by default
+### D5. LevelDB checksums on by default — DONE (`7a955c0dd`)
 
 `lib/storage/src/dbwrapper.c:73-78` — `leveldb_readoptions_set_verify_checksums(opts, 0)`. Flip to `1`. Expose `-leveldb-no-verify-checksums` flag for performance experiments; emit a one-time WARN when set.
 
-### D6. Your own two observability nits
+### D6. Your own two observability nits — DONE (`7a955c0dd`)
 
 From the review of your merged PR:
 

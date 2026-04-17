@@ -1,6 +1,14 @@
 # Agent 3 — Wallet Controller Guardrails, Canary, Boot State Machine
 
-**Directive: keep pushing to master.** When this PR merges, pull and move straight to [`AGENT_3_BUILD_CI_DEPLOY.md`](./AGENT_3_BUILD_CI_DEPLOY.md). Do not stand down between assignments.
+**STATUS: MERGED** — all 5 deliverables landed in commits `93ad65502..e4649ebbb` (canary table + self-test, backup service on_key_change trigger, controller rollback on persistence failure, boot state machine with STATE_D/E/F aborts, getwalletinfo persistence health block, test_wallet_canary + test_wallet_persistence_cycle).
+
+**Your next task is [`AGENT_3_BUILD_CI_DEPLOY.md`](./AGENT_3_BUILD_CI_DEPLOY.md).** Note: **D8 was already fixed by Agent 2** as a bonus on their persistence-hardening PR (`7a955c0dd`). Skip D8. The rest of D1–D9 is still yours.
+
+**Directive: keep pushing to master.** When that PR merges, request the next assignment — do not stand down.
+
+---
+
+## Original brief (below, kept for history)
 
 **Read first:** [`WALLET_PERSISTENCE_PLAN.md`](../WALLET_PERSISTENCE_PLAN.md). This doc assumes you have.
 

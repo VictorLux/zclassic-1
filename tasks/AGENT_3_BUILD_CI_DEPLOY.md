@@ -1,6 +1,8 @@
 # Agent 3 — Build, CI, Deploy Hardening (next after wallet guardrails)
 
-**Pick up when:** your `a3/wallet-controller-guardrails` PR has merged to master and you've pulled. If it's merged already, go now.
+**Pick up when:** your `a3/wallet-controller-guardrails` PR has merged to master and you've pulled. **It's merged — `93ad65502..e4649ebbb` are on master. Go now.**
+
+**D8 is DONE.** Agent 2 fixed `node_health_service.c` `get_rss_kb` silent `return -1` as a bonus on their persistence-hardening PR (`7a955c0dd`). Verify with `grep -n 'return -1' app/services/src/node_health_service.c` — should be empty. Strike D8 from your plan. Do the other 8.
 
 **Read first:** [`HARDENING_CHECKLIST.md`](../HARDENING_CHECKLIST.md) §P1.1–P1.4, §P3 systemd, §P3.4 tests, §R2.11.
 
@@ -94,11 +96,9 @@ The current systemd unit restart-loops against a manual zclassicd instance. Add 
 
 `tools/crash_recovery_test.c` only runs when `ZCL_CRASH_DATADIR` is set. Add a `test-crash` Makefile target that seeds a throwaway datadir, runs the test, tears down. Make `ci:` depend on `test-crash`.
 
-### D8. Fix the two silent `return -1` lines on master
+### D8. ~~Fix the two silent `return -1` lines on master~~ — DONE BY A2
 
-`app/services/src/node_health_service.c:71, 82` — `get_rss_kb` reads `/proc/self/status` and silently returns `-1` on fopen failure or VmRSS miss. Replace with `LOG_ERR("health", "read /proc/self/status: %s", strerror(errno));` on fopen failure; return `-1` explicitly after logging for the VmRSS-miss case. `make lint` must exit 0 after this commit.
-
-Do this in **one of your earliest commits** so the lint gate you're building in D1/D2 doesn't blow up on an unrelated line.
+Shipped in `7a955c0dd` as a bonus on Agent 2's persistence-hardening PR. `make lint` is already green.
 
 ### D9. Self-test the lint gate
 
