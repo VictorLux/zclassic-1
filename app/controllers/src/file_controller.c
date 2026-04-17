@@ -18,6 +18,7 @@
 #include <unistd.h>
 #include <sqlite3.h>
 #include <pthread.h>
+#include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 
@@ -68,7 +69,12 @@ static bool file_export_step_checked(sqlite3_stmt *stmt, sqlite3 *db,
     if (!stmt || !db)
         LOG_FAIL("file", "step_checked: NULL %s", !stmt ? "stmt" : "db");
 
-    int rc = sqlite3_step(stmt);  // raw-sql-ok: a3
+    /* Snapshot-export helper routed through AR_STEP_ROW_READONLY
+     * because every statement this helper sees is a VACUUM/ATTACH
+     * control that writes to a side-database owned by the export
+     * (not by any AR-managed model). Real model writes still go
+     * through AR_BEGIN_SAVE. */
+    int rc = AR_STEP_ROW_READONLY(stmt);
     if (rc != SQLITE_DONE && rc != SQLITE_ROW) {
         fprintf(stderr, "file_export_snapshot: %s failed: rc=%d err=%s\n",
                 label, rc, sqlite3_errmsg(db));
