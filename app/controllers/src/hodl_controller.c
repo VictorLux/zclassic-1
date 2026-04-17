@@ -23,6 +23,7 @@
 #include <time.h>
 #include <inttypes.h>
 #include <sqlite3.h>
+#include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 
@@ -139,7 +140,7 @@ static bool rpc_gethodlwave(const struct json_value *params, bool help,
         "SELECT height, value FROM utxos",
         -1, &hodl_s, NULL);
 
-    while (hodl_s && sqlite3_step(hodl_s) == SQLITE_ROW) {  // raw-sql-ok: a3
+    while (hodl_s && AR_STEP_ROW_READONLY(hodl_s) == SQLITE_ROW) {
         int height = sqlite3_column_int(hodl_s, 0);
         int64_t value = sqlite3_column_int64(hodl_s, 1);
 
