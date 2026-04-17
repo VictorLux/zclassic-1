@@ -209,3 +209,27 @@ make every caller check. Log the OOM via `LOG_FAIL`.
   previous failure mode is now caught.
 - No new files created outside `lib/wallet/`, `lib/storage/`, `lib/coins/`,
   `lib/test/`.
+
+## Notes from Agent-2
+
+**2026-04-17 — P1.1/P1.2/P1.5/P6.1–P6.6 landed via four commits**
+(dc60b7e7b, 767d9d3e7, 152603fdc, 8608820e7; AGENT.md status update
+af247faf0). All pushed to origin/main.
+`ZCL_TEST_ONLY=persistence ./test_zcl` passes with 0 failures, covering
+the wallet-sqlite open/write/flush round-trips, the canary, the new
+`test_wallet_flush_rollback` regression suite, and the lint-gate
+self-test. `make lint` is green. The flush-rollback test injects a
+SQLite trigger that aborts `wallet_transactions` INSERTs and asserts
+the whole transaction rolls back — that's the exact silent-partial-
+state path that lost 0.4 ZCL on 2026-04-12.
+
+**Out-of-scope observation — `test_block_pruning` hangs on current main.**
+After "prune: fixture init (basic)... OK" the process sits in
+`futex_wait_queue` / `hrtimer_nanosleep` at 6–17% CPU indefinitely;
+it reproduces against a clean merge of origin/main with and without
+Agent-2 changes, so it isn't a regression from this workstream.
+Flagging for Rhett because `app/services/src/block_pruning_service.c`
+is outside Agent-2's lane. Worth checking whether Agent-3's new
+`test_make_lint_gates` (which shells out to `make` and may linger in
+`system()`) interacts with an earlier test's background thread —
+haven't bisected.
