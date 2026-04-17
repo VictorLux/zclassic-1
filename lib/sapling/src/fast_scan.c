@@ -5,7 +5,16 @@
  * scanning a block with 8000 inputs take microseconds instead of 100ms. */
 
 #include "sapling/fast_scan.h"
+#include "util/log_macros.h"
+#include <inttypes.h>
 #include <string.h>
+
+/* The ~40 inner `return -1;` sites inside scan_tx() below are "malformed
+ * transaction — stop parsing" signals. They fire once per bad tx the
+ * wallet sees, and logging each would flood stderr during IBD on any
+ * block that happens to have junk. All of them propagate up to
+ * fast_scan_sapling_commitments() where we log once — see the LOG_ERR
+ * calls in that function for the diagnostic entrypoints. */
 
 /* Read Bitcoin compact size varint. Returns 0 on error. */
 static int read_compact(const uint8_t *d, size_t len, size_t *pos, uint64_t *val)
@@ -158,19 +167,38 @@ int fast_scan_sapling_commitments(const uint8_t *block_data, size_t block_len,
 
     /* Block header: version(4) + prev(32) + merkle(32) + sapling(32) +
      * time(4) + bits(4) + nonce(32) + solution(varint+data) */
-    if (!skip(&pos, block_len, 4 + 32 + 32 + 32 + 4 + 4 + 32)) return -1;
+    if (!skip(&pos, block_len, 4 + 32 + 32 + 32 + 4 + 4 + 32))
+        LOG_ERR("fast_scan",
+                "block header parse: truncated at fixed header (block_len=%zu)",
+                block_len);
     uint64_t sol_size;
-    if (!read_compact(block_data, block_len, &pos, &sol_size)) return -1;
-    if (!skip(&pos, block_len, (size_t)sol_size)) return -1;
+    if (!read_compact(block_data, block_len, &pos, &sol_size))
+        LOG_ERR("fast_scan",
+                "block header parse: bad solution-size compact at pos=%zu",
+                pos);
+    if (!skip(&pos, block_len, (size_t)sol_size))
+        LOG_ERR("fast_scan",
+                "block header parse: short solution body (sol_size=%" PRIu64 " pos=%zu len=%zu)",
+                sol_size, pos, block_len);
 
     /* Number of transactions */
     uint64_t num_tx;
-    if (!read_compact(block_data, block_len, &pos, &num_tx)) return -1;
+    if (!read_compact(block_data, block_len, &pos, &num_tx))
+        LOG_ERR("fast_scan",
+                "block parse: bad num_tx compact at pos=%zu", pos);
 
     int total = 0;
     for (uint64_t i = 0; i < num_tx; i++) {
         int r = scan_tx(block_data, block_len, &pos, cms, max_cms, &total);
-        if (r < 0) return total > 0 ? total : -1; /* partial success OK */
+        if (r < 0) {
+            /* Bad tx inside block. Return partial success if we've found any
+             * cms already, otherwise log so the caller's "no cms" isn't mute. */
+            if (total > 0)
+                return total;
+            LOG_ERR("fast_scan",
+                    "scan_tx returned -1 for tx index %" PRIu64 "/%" PRIu64 " at pos=%zu (block_len=%zu)",
+                    i, num_tx, pos, block_len);
+        }
     }
     return total;
 }
