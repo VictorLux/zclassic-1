@@ -55,6 +55,7 @@
 #include "controllers/zslp_controller.h"
 #include "wallet/wallet.h"
 #include "wallet/wallet_sqlite.h"
+#include "wallet/wallet_canary.h"
 #include "wallet/wallet_db.h"
 #include "sapling/params_init.h"
 #include "metrics/metrics.h"
@@ -456,33 +457,87 @@ bool app_init(struct app_context *ctx)
                     "WARNING: failed to start ZK params loader thread\n");
     }
 
-    /* Initialize wallet (before block index — needed for -importlegacy) */
+    /* Initialize wallet (before block index — needed for -importlegacy).
+     *
+     * Wallet persistence boot state machine (per WALLET_PERSISTENCE_PLAN.md §7).
+     *
+     *   STATE A — node.db absent:          generate keypool, flush.
+     *   STATE B — wallet_keys missing:     CREATE (done at DB open), flush.
+     *   STATE C — wallet_keys non-empty, open OK:  load, canary, verify count.
+     *   STATE D — wallet_keys non-empty, open FAILS: ABORT.
+     *   STATE E — canary self-test fails on existing wallet:       ABORT.
+     *   STATE F — loaded keystore count != on-disk row count:      ABORT.
+     *
+     * D/E/F are the paths the pre-fix code took silently, overwriting
+     * the user's wallet with a fresh keypool. Refuse to do that here. */
     t_phase = boot_clock_ms();
     wallet_init(&g_wallet);
 
-    /* Load wallet from SQLite (node.db wallet_* tables).
-     *
-     * Use the rich-error open so any prepare failure carries a
-     * specific WSQL_* code + message + source location instead of
-     * the legacy silent `false`.  That legacy silence caused the
-     * 0.4 ZCL loss of 2026-04-12 — see WALLET_PERSISTENCE_PLAN §2.
-     *
-     * The old fallthrough (regenerate keypool on a node with
-     * pre-existing rows) is preserved here for merge compatibility
-     * with Agent 3's boot state machine; that rewrite replaces this
-     * flat `if` with an explicit STATE_D abort on open failure. */
-    struct zcl_result wsql_open_r = {0};
+    /* Determine the on-disk wallet_keys row count BEFORE attempting to
+     * open the wallet_sqlite subsystem. Used below for the abort
+     * decisions — we only refuse to proceed when there's something to
+     * lose. */
+    int64_t pre_open_key_rows = 0;          /* 0 = empty; -1 = cannot determine */
     if (g_node_db.open) {
-        wsql_open_r = wallet_sqlite_open_r(&g_wallet_sqlite, g_node_db.db);
-        if (!wsql_open_r.ok) {
-            fprintf(stderr,
-                "wallet_sqlite_open failed: code=%d %s (%s:%d)\n",
-                wsql_open_r.code, wsql_open_r.message,
-                wsql_open_r.source_file, wsql_open_r.source_line);
+        sqlite3_stmt *wk_count = NULL;
+        if (sqlite3_prepare_v2(g_node_db.db,
+                "SELECT count(*) FROM wallet_keys",
+                -1, &wk_count, NULL) == SQLITE_OK && wk_count) {
+            if (sqlite3_step(wk_count) == SQLITE_ROW)
+                pre_open_key_rows = sqlite3_column_int64(wk_count, 0);
+            sqlite3_finalize(wk_count);
+        } else {
+            /* wallet_keys table absent — fell through to STATE B. */
+            pre_open_key_rows = -1;
         }
     }
-    if (wsql_open_r.ok) {
-        wallet_sqlite_read_keys(&g_wallet_sqlite, &g_wallet);
+
+    /* Attempt to open — use the rich-error *_r API (Agent 2) so any
+     * prepare failure carries a WSQL_* code + message + source
+     * location we can surface in the abort diagnostic. */
+    struct zcl_result wsql_open_r = {0};
+    bool sqlite_open = false;
+    if (g_node_db.open) {
+        wsql_open_r = wallet_sqlite_open_r(&g_wallet_sqlite, g_node_db.db);
+        sqlite_open = wsql_open_r.ok;
+    }
+
+    if (!sqlite_open && pre_open_key_rows > 0) {
+        /* STATE D: wallet has user keys on disk but we cannot open the
+         * persistence layer. The ONLY safe action is to refuse the
+         * boot and preserve the datadir for the operator to
+         * investigate. Silently generating a fresh keypool here is
+         * what caused 0.4 ZCL to become unspendable. */
+        fprintf(stderr,
+            "\nFATAL: wallet persistence initialisation failed.\n"
+            "       code=%d\n"
+            "       message=%s\n"
+            "       source=%s:%d\n"
+            "       node.db contains %lld existing wallet_keys rows —"
+            " REFUSING to regenerate.\n"
+            "       To recover: see WALLET_PERSISTENCE_RECOVERY.md\n\n",
+            wsql_open_r.code,
+            wsql_open_r.message[0] ? wsql_open_r.message
+                                   : "wallet_sqlite_open_r returned !ok",
+            wsql_open_r.source_file ? wsql_open_r.source_file
+                                    : "config/src/boot.c",
+            wsql_open_r.source_line,
+            (long long)pre_open_key_rows);
+        exit(1);
+    }
+
+    /* STATE C: load everything. */
+    if (sqlite_open) {
+        {
+            struct zcl_result _r = wallet_sqlite_read_keys_r(
+                &g_wallet_sqlite, &g_wallet);
+            if (!_r.ok) {
+                fprintf(stderr,
+                    "wallet_sqlite_read_keys failed: code=%d %s (%s:%d)\n",
+                    _r.code, _r.message,
+                    _r.source_file ? _r.source_file : "?", _r.source_line);
+            }
+        }
         wallet_sqlite_read_txs(&g_wallet_sqlite, &g_wallet);
         wallet_rebuild_spent_set(&g_wallet);
         wallet_sqlite_read_sapling_keys(&g_wallet_sqlite, &g_wallet);
@@ -499,12 +554,57 @@ bool app_init(struct app_context *ctx)
                g_wallet.keystore.num_watching,
                g_wallet.num_wallet_tx,
                g_wallet.best_block_height);
+
+        /* STATE E: canary self-test. Writes then reads a fresh random
+         * probe through the same sqlite handle the node will use for
+         * user RPCs. A failure here is STATE E — if keys exist on
+         * disk, abort rather than risk a silent overwrite. */
+        struct wallet_canary_status cs;
+        int crc = wallet_canary_run(g_node_db.db, &cs);
+        if (crc != WALLET_CANARY_OK) {
+            if (pre_open_key_rows > 0) {
+                fprintf(stderr,
+                    "\nFATAL: wallet canary self-test failed.\n"
+                    "       code=%d\n"
+                    "       message=%s\n"
+                    "       source=lib/wallet/src/wallet_canary.c\n"
+                    "       node.db contains %lld existing wallet_keys rows —"
+                    " REFUSING to proceed.\n"
+                    "       To recover: see WALLET_PERSISTENCE_RECOVERY.md\n\n",
+                    crc, cs.error, (long long)pre_open_key_rows);
+                exit(1);
+            }
+            fprintf(stderr,
+                "WARNING: wallet canary failed (code=%d): %s —"
+                " continuing on empty wallet.\n", crc, cs.error);
+        }
+
+        /* STATE F: invariant — the keystore count loaded from disk
+         * must equal the row count we observed before opening. A
+         * mismatch means read_keys dropped rows or the table changed
+         * under us. Either is a bug that would become silent data
+         * loss on the next flush. */
+        if (pre_open_key_rows > 0 &&
+            (int64_t)g_wallet.keystore.num_keys != pre_open_key_rows) {
+            fprintf(stderr,
+                "\nFATAL: wallet keystore count mismatch.\n"
+                "       wallet_keys rows=%lld\n"
+                "       loaded keystore=%zu\n"
+                "       source=config/src/boot.c\n"
+                "       REFUSING to proceed — in-memory and on-disk diverged.\n"
+                "       To recover: see WALLET_PERSISTENCE_RECOVERY.md\n\n",
+                (long long)pre_open_key_rows, g_wallet.keystore.num_keys);
+            exit(1);
+        }
     } else {
+        /* STATE A/B: new datadir, no user keys at risk. */
         printf("New wallet created.\n");
     }
 
     /* One-time wallet migration: if SQLite wallet is empty but LevelDB
-     * wallet/ directory exists, import keys/txs from LevelDB. */
+     * wallet/ directory exists, import keys/txs from LevelDB. Only
+     * runs when pre_open_key_rows <= 0 (no existing user keys), so no
+     * conflict with the state machine. */
     if (g_wallet.keystore.num_keys == 0) {
         char wallet_path[1024];
         snprintf(wallet_path, sizeof(wallet_path), "%s/wallet", ctx->datadir);
@@ -523,9 +623,24 @@ bool app_init(struct app_context *ctx)
                     g_wallet.best_block_height = saved_height;
                 wallet_db_close(&legacy_wdb);
 
-                /* Save to SQLite */
-                if (g_wallet_sqlite.open)
-                    wallet_sqlite_flush(&g_wallet_sqlite, &g_wallet);
+                /* Persist to SQLite. Unlike the old code, we check
+                 * the result — a silent failure here is the exact
+                 * bug the state machine defends against. */
+                if (g_wallet_sqlite.open) {
+                    struct zcl_result _r = wallet_sqlite_flush_r(
+                        &g_wallet_sqlite, &g_wallet);
+                    if (!_r.ok) {
+                        fprintf(stderr,
+                            "\nFATAL: LevelDB wallet migration flush failed.\n"
+                            "       code=%d message=%s\n"
+                            "       source=%s:%d\n"
+                            "       REFUSING to proceed — keys would be RAM-only.\n\n",
+                            _r.code, _r.message,
+                            _r.source_file ? _r.source_file : "?",
+                            _r.source_line);
+                        exit(1);
+                    }
+                }
 
                 printf("Wallet migrated: %zu keys, %zu sapling keys\n",
                        g_wallet.keystore.num_keys,
@@ -535,32 +650,24 @@ bool app_init(struct app_context *ctx)
     }
 
     if (g_wallet.keystore.num_keys == 0) {
-        /* Safety check: if wallet_keys table exists but is empty, this
-         * might be WAL corruption (keys were in WAL, WAL was deleted).
-         * Log a prominent warning but still create keys — the node
-         * needs a wallet to function. The lost keys are unrecoverable
-         * but we must not silently pretend nothing happened. */
-        if (g_node_db.open) {
-            sqlite3_stmt *wk_check = NULL;
-            if (sqlite3_prepare_v2(g_node_db.db,
-                    "SELECT COUNT(*) FROM sqlite_master "
-                    "WHERE type='table' AND name='wallet_keys'",
-                    -1, &wk_check, NULL) == SQLITE_OK && wk_check) {
-                if (sqlite3_step(wk_check) == SQLITE_ROW &&
-                    sqlite3_column_int(wk_check, 0) > 0) {
-                    fprintf(stderr,
-                        "WARNING: wallet_keys table exists but has 0 keys.\n"
-                        "  This may indicate key loss from WAL/SHM deletion.\n"
-                        "  Generating fresh keys — old addresses are LOST.\n");
-                }
-                sqlite3_finalize(wk_check);
+        /* Genuinely empty wallet — generate the initial keypool and
+         * flush. This is STATE A/B's terminal action. */
+        wallet_top_up_key_pool(&g_wallet, DEFAULT_KEYPOOL_SIZE);
+        if (g_wallet_sqlite.open) {
+            struct zcl_result _r = wallet_sqlite_flush_r(
+                &g_wallet_sqlite, &g_wallet);
+            if (!_r.ok) {
+                fprintf(stderr,
+                    "\nFATAL: initial keypool flush failed.\n"
+                    "       code=%d message=%s\n"
+                    "       source=%s:%d\n"
+                    "       REFUSING to proceed — fresh keys would be RAM-only.\n\n",
+                    _r.code, _r.message,
+                    _r.source_file ? _r.source_file : "?",
+                    _r.source_line);
+                exit(1);
             }
         }
-        wallet_top_up_key_pool(&g_wallet, DEFAULT_KEYPOOL_SIZE);
-        /* Persist keys to SQLite immediately — do NOT leave in WAL only.
-         * WAL deletion (crash, manual cleanup) would destroy private keys. */
-        if (g_wallet_sqlite.open)
-            wallet_sqlite_flush(&g_wallet_sqlite, &g_wallet);
         if (g_node_db.open)
             node_db_wal_checkpoint(&g_node_db);
         printf("New wallet created.\n");
