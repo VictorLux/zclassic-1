@@ -29,12 +29,51 @@ Good work. Now on to the next pile.
 
 ---
 
-## NEXT UP — P3.4 + P3.5 + P3.6 store/rpc_client hardening
+## NEXT UP — close the P3 group (P3.1 + P3.2 + P3.4 + P3.5 + P3.6)
 
 P3.3 landed cleanly (2a59ac938 + siblings, ~115 sites migrated across 17
 files; 5 state-kv / rollback opt-outs retained with descriptive
-annotations — those are correct and stay). Now close the three adjacent
-rows in the P3 group that sit in your expanded scope.
+annotations — those are correct and stay). Now close the full P3 group
+in your expanded scope. P3.1 and P3.2 are **CRITICAL severity** — do
+those FIRST.
+
+### Step PRE-A — P3.1: MCP `zcl_send` JSON injection via `from`/`to`
+File: `tools/mcp/controllers/wallet_controller.c:53-55`
+
+**Bug:** The MCP handler for `zcl_send` substitutes the `from` and `to`
+fields directly into the JSON-RPC payload it forwards to the wallet:
+```c
+snprintf(payload, sizeof(payload),
+         "{\"method\":\"z_sendmany\",\"params\":[\"%s\",...,\"%s\"]}",
+         from, to);
+```
+An MCP client that sends `from` = `ztest","params":["attacker_addr"]//`
+can punch through and rewrite the `params` array, redirecting funds.
+
+**Fix:** Use the project's JSON encoder (`lib/json/src/json.c`'s
+`json_object_build` / `json_string_escape`, or whatever the project
+uses — grep `tools/mcp/` for the canonical pattern). Build the payload
+as a structured object and serialize it, never `snprintf` user input
+into JSON. Before/after: every field that came from the MCP caller
+must be `%s`-substituted only after running through `json_escape_string`
+or equivalent.
+
+**Acceptance:** add a test in `lib/test/src/test_mcp_controllers.c` that
+posts `from = "x\",\"params\":[\"attacker\""` and asserts the backing
+RPC call receives the literal string, not a redirected params array.
+
+### Step PRE-B — P3.2: MCP `zcl_sendtoaddress` JSON injection via `address`
+File: `tools/mcp/controllers/wallet_controller.c:76-77`
+
+Same class of bug, different handler. Same fix pattern. Same test
+required. Can land in the same commit as P3.1 if the fix is a single
+helper (`mcp_build_rpc_payload_safe` or similar) both handlers call.
+
+While you're in the file, grep the whole `tools/mcp/controllers/` dir
+for any other `snprintf(payload, ..., "%s", user_input)` patterns —
+this class of bug tends to cluster.
+
+### Step A — P3.4: store_controller address checksum validation
 
 ### Step A — P3.4: store_controller address checksum validation
 File: `app/controllers/src/store_controller.c:663-685`

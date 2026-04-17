@@ -78,12 +78,64 @@ branch; only merge when the constant-time property is verified.
 
 Update AGENT.md row P1.12 to `done <SHA>` when merged.
 
-**If you finish P1.12 early** — come talk to Rhett. Likely candidates:
-(a) constant-time audit of `lib/crypto/src/curve25519.c` and
-    `lib/crypto/src/ed25519.c` for the same cache-timing class
-(b) help close P3 with Agent-2 on JSON-injection / URL-decode fixes
-(c) a `lib/sapling/src/fr_avx512.c` constant-time parity pass if the
-    AVX path ends up diverging in timing behavior.
+---
+
+## THEN (pre-authorized) — Wave 2 constant-time + RNG hygiene
+
+Don't wait for a check-in — these are in your lane and Rhett is
+pre-authorizing them. Tackle in order.
+
+### Step H — Constant-time audit: `lib/crypto/src/curve25519.c`
+
+This is the same class of hazard as P1.12, one layer down. The file
+implements Curve25519 scalar mult and is on paths that touch secret
+material (X25519 DH, ephemeral-key derivation for message encryption).
+Audit every table lookup and every `if (bit)` / `if (nibble)` for
+secret-dependent branching.
+
+Reference constant-time implementations: `curve25519-donna`,
+`ref10/`, and `tweetnacl` — all commonly-studied and easy to diff
+against. For any branch/lookup that is secret-dependent, replace with
+the constant-time pattern you just proved out in P1.12.
+
+Add the same diff test + timing test harness you built for P1.12,
+scoped to the curve25519 functions you touch.
+
+### Step I — Constant-time audit: `lib/crypto/src/ed25519.c`
+
+You already touched this in P1.8 (S<L canonicality) and P1.11 (LOG_FAIL
+on verify mismatch). Now the full constant-time pass:
+
+- `ed25519_sign`: secret key `a` must never influence timing
+- `ed25519_sign_open` (the verify path): not as critical — public keys
+  only — but audit anyway for belt-and-suspenders
+- Any internal `ge_scalarmult_base` call — Ed25519 base-point mult has
+  a well-known constant-time pattern; the vendored `donna` and `ref10`
+  are both CT. Verify the project's vendored copy is one of those and
+  not a rolled-own variant.
+
+### Step J — RNG hygiene audit across lib/crypto/ + lib/sapling/
+
+Grep `lib/crypto/ lib/sapling/` for:
+- `rand()`, `random()`, `drand48()`, `srand*()` — non-crypto PRNGs; must
+  not appear on any code path that touches secrets
+- `getrandom(...)` — check every call has a fallback to `/dev/urandom`
+  OR asserts on failure (never silently continues with zero bytes)
+- `arc4random` — should be absent on Linux targets; if present, flag
+- Weak seed sources: time(), pid, jitter-alone — shouldn't be in
+  consensus or secret-generation paths
+
+For every hit that isn't clearly justified, file it as a small commit
+with a LOG_FAIL upgrade or an outright fix. Never log the random bytes
+themselves.
+
+### Stopping point
+
+After P1.12 + H + I + J are all on main, ping Rhett. Likely next pile:
+one of (a) audit of `lib/sapling/src/prf.c` for timing-side-channel in
+the nullifier path, (b) formal verification scaffolding for
+`sapling_check_spend` / `sapling_check_output`, or (c) joining Rhett
+on P2 DoS hardening once the current wave lands.
 
 ---
 
