@@ -319,17 +319,63 @@ void jub_double(struct jub_point *r, const struct jub_point *a)
     fr_mul(&r->z, &F, &G);
 }
 
-/* FIXME(timing): jub_scalar_mul is NOT constant-time over secret scalars.
- * The nibble-indexed table lookup (`table[nibble]`) leaks via cache timing,
- * and the `if (nibble)` branch leaks via CPU branch prediction. This
- * matters because callers pass secret scalars: ask, nsk, ivk, esk, bsk.
- * Fix (tracked in AGENT.md): switch to branchless conditional-select with
- * masked table walks. Out of scope for the consensus/fail-open hardening
- * wave (2026-04-17 code review). See AGENT-3.md Step 7. */
+/* Constant-time conditional copy: if mask == all-ones, dst = src;
+ * if mask == 0, dst unchanged. No branches, no secret-dependent memory
+ * access pattern. */
+static inline void fr_cmov(struct fr *dst, const struct fr *src, uint64_t mask)
+{
+    for (int i = 0; i < 4; i++)
+        dst->d[i] = (dst->d[i] & ~mask) | (src->d[i] & mask);
+}
+
+static inline void jub_cmov(struct jub_point *dst, const struct jub_point *src,
+                            uint64_t mask)
+{
+    fr_cmov(&dst->x, &src->x, mask);
+    fr_cmov(&dst->y, &src->y, mask);
+    fr_cmov(&dst->z, &src->z, mask);
+    fr_cmov(&dst->t, &src->t, mask);
+}
+
+/* Branchless nibble equality: returns 0xFF..FF if a == b (low 4 bits), else 0. */
+static inline uint64_t ct_nibble_eq_mask(uint32_t a, uint32_t b)
+{
+    uint32_t x = (a ^ b) & 0xFu;          /* 0 iff equal */
+    uint32_t nonzero = (x | (0u - x)) >> 31; /* 0 iff x == 0, else 1 */
+    return (uint64_t)0 - (uint64_t)(1u - nonzero);
+}
+
+/* Constant-time lookup: copy table[idx] into *out by scanning every entry.
+ * No secret-dependent branch or memory access. */
+static void jub_ct_lookup(struct jub_point *out,
+                          const struct jub_point table[16],
+                          uint32_t idx)
+{
+    jub_identity(out);
+    for (uint32_t i = 0; i < 16u; i++) {
+        uint64_t mask = ct_nibble_eq_mask(i, idx);
+        jub_cmov(out, &table[i], mask);
+    }
+}
+
+/* Constant-time 4-bit windowed scalar multiplication.
+ *
+ * Threat model: callers pass secret scalars (ask, nsk, ivk, esk, bsk for
+ * Sapling; ed25519/x25519 secrets elsewhere indirectly). A co-resident
+ * attacker must not learn scalar bits from timing or cache-line probes.
+ *
+ * CT properties of this implementation:
+ *   - Table lookup is a masked linear scan over all 16 entries — no
+ *     secret-indexed load.
+ *   - Per-nibble work is fixed: always 4 doubles and 1 add, regardless
+ *     of the nibble value. Since table[0] = identity, the nibble-0 path
+ *     adds identity, which is a mathematical no-op (the complete
+ *     twisted-Edwards formula handles this branch-free in jub_add).
+ *
+ * Any future reviewer: do not reintroduce `if (nibble)` or indexed
+ * `table[nibble]` without revisiting the side-channel threat model. */
 void jub_scalar_mul(struct jub_point *r, const struct jub_point *p, const uint8_t scalar[32])
 {
-    /* 4-bit windowed scalar multiplication.
-     * Precompute table[0..15] = i*P, then process 4 bits at a time. */
     struct jub_point table[16];
     jub_identity(&table[0]);
     table[1] = *p;
@@ -339,17 +385,17 @@ void jub_scalar_mul(struct jub_point *r, const struct jub_point *p, const uint8_
     struct jub_point acc;
     jub_identity(&acc);
 
-    /* Process from most significant nibble down */
+    /* Process from most significant nibble down. 32 bytes × 2 nibbles. */
     for (int i = 63; i >= 0; i--) {
-        /* Double 4 times */
         jub_double(&acc, &acc);
         jub_double(&acc, &acc);
         jub_double(&acc, &acc);
         jub_double(&acc, &acc);
 
-        int nibble = (scalar[i / 2] >> ((i & 1) * 4)) & 0xF;
-        if (nibble)
-            jub_add(&acc, &acc, &table[nibble]);
+        uint32_t nibble = (uint32_t)((scalar[i / 2] >> ((i & 1) * 4)) & 0xFu);
+        struct jub_point selected;
+        jub_ct_lookup(&selected, table, nibble);
+        jub_add(&acc, &acc, &selected);
     }
     *r = acc;
 }
