@@ -4,15 +4,7 @@
 
 Branch `a2/wallet-sqlite-result-types` was reviewed and merged. Master has your 6 commits `52480abef..ccf0a6a11`. Root cause (wave-10 `wallet_watch_only` missing from `SCHEMA[]`) found and fixed.
 
-### Follow-up for next A2 session (after Agent 3 merges)
-
-1. Drop the `_r` suffix from the rich-error API; remove the `ZCL_DEPRECATED` bool wrappers. Migrate every remaining caller in one pass. New branch name: `a2/wallet-sqlite-drop-suffix`.
-2. `lib/wallet/src/wallet_sqlite.c::wallet_sqlite_read_keys_r` — the `continue` on malformed row (line ~520) should emit a WARN log including the `pubkey_hash` hex prefix. Silent skip loses observability.
-3. Same function `wallet_sqlite_flush_r` — when `n_key_fail > 0`, emit a WARN per failed key (not just the aggregate) so operators can count and identify.
-
-Neither is a blocker. Do these in the same PR that drops the `_r` suffix.
-
-Until then: **stand down**. No open work.
+**Next task:** [`AGENT_2_PERSISTENCE_HARDENING.md`](./AGENT_2_PERSISTENCE_HARDENING.md). Persistence silent-error cleanup across `database.c`, `utxo_commitment.c`, `coins_view_sqlite.c`, `dbwrapper.c` + the two observability nits from this PR's review. Same bug class you just fixed, wider blast radius. Mostly independent of Agent 3; one deliverable (kill silent full-DB wipe) waits on A3's state-halt primitive.
 
 ---
 
