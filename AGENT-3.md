@@ -13,7 +13,7 @@ checklist and coordinating plan).
 
 ## Status — 2026-04-17
 
-First pass merged into main:
+First pass is **merged into main** (as of `bcab984fd`):
 
 - ✅ P1.3 — NULL VK fail-open fixed (3b4b08ba9)
 - ✅ P1.4 — Sapling params integrity check (785db18b1)
@@ -23,9 +23,45 @@ First pass merged into main:
 - ✅ Step 7 — FIXME comment on jub_scalar_mul timing (ecd24894e)
 - ✅ Regression tests (ebc470342)
 
-**NEXT UP — start here:** Step 4 below (P1.11) is the large remaining item.
-Do it in small commits (one file per commit). Then Step 8 (nonce hygiene) if
-time permits. The rest of this file is unchanged from your initial brief.
+**NEXT UP — P1.11 LOG_FAIL audit. Start here.**
+
+This is the large remaining item. Every error return under `lib/crypto/` and
+`lib/sapling/` currently returns bare `false` with no diagnostic — a direct
+violation of `DEFENSIVE_CODING.md` §4. Fix the whole tree. Rules:
+
+1. **One file per commit.** "sapling: LOG_FAIL on groth16 pairing failure"
+   is a good commit. A 20-file bomb is not.
+2. Audit every `return false`, every `return NULL`, every early-return from
+   a bool/pointer function. If the reason isn't already obvious from a
+   caller-visible error code, add `LOG_FAIL` / `LOG_ERR` / `LOG_NULL` with
+   enough context to locate the failure post-mortem (function name, which
+   check failed, relevant non-secret inputs).
+3. **Never log secret material.** No secret keys, no nonces, no plaintext,
+   no notes. Hashes and public values only.
+4. After each commit, `make -j$(nproc) && ./test_zcl` must pass. Push
+   incrementally — don't accumulate.
+
+Suggested order (smallest → largest):
+
+- `lib/crypto/src/chacha20poly1305.c` — AEAD decrypt failures
+- `lib/crypto/src/ed25519.c` — verify + decoding failures (you already
+  touched this in P1.8; round it out)
+- `lib/crypto/src/curve25519.c`, `hmac_*.c`, `pbkdf2_*.c`
+- `lib/sapling/src/note_encryption.c` — KDF/AEAD failures
+- `lib/sapling/src/redjubjub.c`-equivalent paths inside `sapling.c` —
+  round out the non-canonical-S work from P1.9
+- `lib/sapling/src/groth16_prover.c` — all Groth16 verify/decoding failures
+- Everything else under `lib/sapling/` you haven't touched yet
+
+When P1.11 is done, move on to **Step 8** in this file (nonce hygiene
+debug assertion for note encryption). That one is quick.
+
+Update AGENT.md row P1.11 status as you go:
+  `Agent 3 — in-progress (<file list>)` → `Agent 3 — done <SHA>`.
+
+The rest of this file is unchanged from your initial brief — preflight, file
+scope rules, commit protocol, and the original 8-step ordering are still
+valid. You already did Steps 1/2/3/5/6/7. Step 4 is what's left.
 
 ---
 
