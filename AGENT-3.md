@@ -1,427 +1,236 @@
 # AGENT-3 — Cryptography & Sapling Hardening
 
-**Derived from:** the 2026-04-17 full code review (see `AGENT.md` for the full
-checklist and coordinating plan).
+**Derived from:** the 2026-04-17 full code review. See `AGENT.md` for the
+cross-agent priority table. Last brief rewrite: 2026-04-17.
 
-**Working directory:** `~/zclassic23-3` (separate git clone; pulls/pushes to `origin/main`).
-
-**Coordinator:** Rhett (~/zclassic23).
-
-**Agent-2 lane (do not touch):** `lib/wallet/`, `lib/storage/`, `lib/coins/`.
+**Working directory:** `~/zclassic23-3` (separate git clone; pushes to `origin/main`).
+**Coordinator:** Rhett (`~/zclassic23`).
+**Sibling:** Agent-2 (`~/zclassic23-2`), in the wallet / storage / app-layer lane.
 
 ---
 
-## Status — 2026-04-17
+## Lane — what you may edit
 
-First pass is **merged into main** (as of `bcab984fd`):
+**Full edit access:**
+- `lib/crypto/`
+- `lib/sapling/`
+- `lib/keys/`
+- `lib/test/` — only to add/modify tests covering your changes
 
-- ✅ P1.3 — NULL VK fail-open fixed (3b4b08ba9)
-- ✅ P1.4 — Sapling params integrity check (785db18b1)
-- ✅ P1.8 — Ed25519 S<L canonicality (c510c7335)
-- ✅ P1.9 — RedJubjub S<Fs canonicality (8440cd864)
-- ✅ P1.10 — find_group_hash abort-on-fail (e221e0212)
-- ✅ Step 7 — FIXME comment on jub_scalar_mul timing (ecd24894e)
-- ✅ Regression tests (ebc470342)
+**Read-only / off-limits:**
+- `lib/wallet/`, `lib/storage/`, `lib/coins/` — Agent-2's lane
+- `app/controllers/`, `app/services/`, `app/models/`, `app/views/` — Agent-2's lane
+- `tools/mcp/` — Agent-2's lane (MCP JSON-injection fixes are at P3.1/P3.2)
+- `lib/rpc/`, `lib/validation/`, `lib/consensus/`, `lib/net/`,
+  `lib/script/` — Rhett's lane
+- `vendor/` — Rhett (submodule pins, CVE cherry-picks) — you may *read*
+  constant-time reference implementations under `vendor/tor/src/ext/ed25519/`
 
-## P1.11 + Step 8 — DONE
+---
 
-Shipped since last brief update:
+## Current status — 2026-04-17
 
-- incremental_merkle_tree (9bf4b63fd)
-- fast_scan (752088d79)
-- Groth16/PHGR13 pairing-check + key-read (0c1b29ba4)
-- **Step 8 — esk nonce-reuse sanity guard (909636215)**
-- equihash PoW rejects + hash primitive misuse (ca139a5ad)
-- bls12_381 + bn254 + sha256 (via note_encryption rollup)
+**Done and on main:**
 
-Remaining bare-false in `fr.c`, `fr_avx512.c`, `equihash_solver.c`,
-`sha3_avx512.c` are internal scalar-field / hash helpers whose failure
-mode is "out-of-range input" by design — per the filter rule you've
-been applying, leave them un-logged. P1.11 is closed.
+| Row | What | SHA |
+|---|---|---|
+| P1.3 | Sapling verify fail-open on NULL VK | 3b4b08ba9 |
+| P1.4 | Sapling params SHA-512 integrity check | 785db18b1 |
+| P1.8 | Ed25519 S<L canonicality | c510c7335 |
+| P1.9 | RedJubjub S<Fs canonicality | 8440cd864 |
+| P1.10 | find_group_hash abort-on-fail (fixed generators) | e221e0212 |
+| P1.11 | LOG_FAIL audit across lib/crypto + lib/sapling | ca139a5ad (+ 8 predecessors) |
+| P1.11b | esk nonce-reuse sanity guard (Step 8) | 909636215 |
+| — | Regression tests for P1.3/P1.4/P1.8/P1.9 rejection paths | ebc470342 |
+| — | FIXME comment flagging jub_scalar_mul as not-constant-time | ecd24894e (to be removed by P1.12) |
 
-## NEXT UP — P1.12: constant-time `jub_scalar_mul`
+P1.11 scope note: `fr.c`, `fr_avx512.c`, `equihash_solver.c`,
+`sha3_avx512.c` internal math helpers intentionally left un-logged —
+their `return false` is "out-of-range input" by algorithmic design, not
+a security event. See `fr.c` header for the rationale.
 
-File: `lib/sapling/src/fr.c:307-333`
+**Now working on:** P1.12 — constant-time `jub_scalar_mul`. See NOW below.
+**Queued:** Wave 2 CT + RNG hygiene — see NEXT below.
 
-Original brief scoped this out of the first wave ("genuinely hard —
-constant-time windowed scalar mult requires a branchless conditional
-select and masked table walks"). Now that P1.11 is landing, this is the
-right next step. Side-channel leakage of `ask`, `nsk`, `ivk`, `esk`,
-`bsk` via cache timing is a real threat on shared hosts.
+---
 
-**Plan:**
+## NOW — P1.12: constant-time `jub_scalar_mul`
 
-1. Read the existing 4-bit-window implementation carefully. Write
-   down the two secret-dependent behaviors (table lookup by nibble,
-   conditional add by nibble nonzero).
-2. Replace the table lookup with a masked linear scan: load every
-   table entry, select via constant-time conditional move. Reference
-   implementation pattern: `curve25519-donna`, `ref10` ed25519 — both
-   vendored under `vendor/tor/src/ext/ed25519/`; look at how they do
-   it.
+File: `lib/sapling/src/fr.c:307-333` (the function your FIXME at
+ecd24894e flagged).
+
+**Threat model.** `jub_scalar_mul` runs with secret scalars — `ask`,
+`nsk`, `ivk`, `esk`, `bsk`. Current impl uses 4-bit windowed scalar
+mult with:
+- secret-dependent table lookups (`table[nibble]`)
+- secret-dependent branches (`if (nibble)`)
+
+On a shared host, a co-resident attacker in the same NUMA domain can
+recover bits of these scalars via L1 / LLC cache timing. Consequences:
+`ask` / `nsk` leak → total wallet loss; `ivk` leak → view-key
+confidentiality gone; `esk` leak → note binding broken.
+
+**Plan (slow wave — iterate on a branch, merge only when verified).**
+
+1. Read the existing 4-bit-window impl end-to-end. Write down both
+   secret-dependent behaviors.
+2. Replace the table lookup with a masked linear scan — load every
+   table entry, select via constant-time conditional-move (CMOV or
+   subtract-and-mask). Reference implementations vendored under
+   `vendor/tor/src/ext/ed25519/`:
+   - `ref10/ge_scalarmult_base.c` — RFC 7748 constant-time select pattern
+   - `donna/ed25519-donna-64bit-tables.h` + `ed25519_fe_select` helper
 3. Replace the `if (nibble) add` with an unconditional add of a
-   masked point (masked by `nibble != 0` as a constant-time bool).
-4. Keep the signed-window optimization if feasible — it's standard
-   practice and doesn't regress security.
-5. **Test aggressively.** Add a diff test: generate 10k random
-   scalar-base-point pairs, multiply with both old and new; outputs
-   must match bit-for-bit. Then a timing test: measure mean + stddev
-   of multiplication time over 1k samples with two very different
-   scalars (all-zero, all-one nibbles); stddev must not correlate
-   with scalar weight.
-6. Remove the FIXME comment you added in ecd24894e.
+   point masked by `nibble != 0` as a constant-time boolean.
+4. Keep the signed-window optimization if feasible — standard CT ECC
+   practice, doesn't regress security.
+5. Remove the FIXME comment from ecd24894e.
 
-This is legitimately hard and you should take it slow — this is the
-only wave where "one commit per logical step with extensive testing
-before the next" beats "push frequently". Draft, review, iterate on a
-branch; only merge when the constant-time property is verified.
+**Required tests (both must pass before merge).**
 
-Update AGENT.md row P1.12 to `done <SHA>` when merged.
+- **Diff test** (correctness): generate 10k random (scalar, point) pairs,
+  multiply with both the old and new implementations, assert bit-for-bit
+  match. Make this permanent in `lib/test/src/test_sapling_crypto.c`.
+- **Timing test** (the actual goal): 1k samples of multiplication time
+  with an all-zero-nibble scalar vs. an all-nonzero-nibble scalar.
+  Mean/stddev must not correlate with scalar weight. If the timing test
+  detects a correlation, the fix is incomplete — keep iterating.
+
+**Scope boundary.** `lib/sapling/src/fr.c` and `fr_avx512.c` (confirm
+and fix both if the AVX path has the same hazard). `lib/test/src/
+test_sapling_crypto.c` for tests. Nothing else.
+
+Update `AGENT.md` row P1.12 to `done <SHA>` when merged.
 
 ---
 
-## THEN (pre-authorized) — Wave 2 constant-time + RNG hygiene
+## NEXT — Wave 2 constant-time + RNG hygiene (pre-authorized)
 
-Don't wait for a check-in — these are in your lane and Rhett is
-pre-authorizing them. Tackle in order.
+Start these as soon as P1.12 lands. No check-in needed.
 
-### Step H — Constant-time audit: `lib/crypto/src/curve25519.c`
+### Step H — `lib/crypto/src/curve25519.c` constant-time audit
 
-This is the same class of hazard as P1.12, one layer down. The file
-implements Curve25519 scalar mult and is on paths that touch secret
-material (X25519 DH, ephemeral-key derivation for message encryption).
-Audit every table lookup and every `if (bit)` / `if (nibble)` for
-secret-dependent branching.
+Same hazard class as P1.12, one layer down. This file implements
+Curve25519 scalar mult on paths that touch secret material (X25519 DH,
+ephemeral-key derivation for message encryption). Audit every table
+lookup and every `if (bit)` / `if (nibble)` for secret-dependent
+branching.
 
-Reference constant-time implementations: `curve25519-donna`,
-`ref10/`, and `tweetnacl` — all commonly-studied and easy to diff
-against. For any branch/lookup that is secret-dependent, replace with
-the constant-time pattern you just proved out in P1.12.
+Reference CT implementations: `curve25519-donna`, `ref10/`, `tweetnacl`
+— all well-studied and easy to diff against.
 
-Add the same diff test + timing test harness you built for P1.12,
-scoped to the curve25519 functions you touch.
+Reuse the diff-test + timing-test harness you built for P1.12, scoped
+to the curve25519 functions you change.
 
-### Step I — Constant-time audit: `lib/crypto/src/ed25519.c`
+### Step I — `lib/crypto/src/ed25519.c` full constant-time pass
 
-You already touched this in P1.8 (S<L canonicality) and P1.11 (LOG_FAIL
-on verify mismatch). Now the full constant-time pass:
+You already touched this file for P1.8 (S<L canonicality) and P1.11
+(LOG_FAIL on verify mismatch). Now the systematic timing audit:
 
-- `ed25519_sign`: secret key `a` must never influence timing
-- `ed25519_sign_open` (the verify path): not as critical — public keys
-  only — but audit anyway for belt-and-suspenders
-- Any internal `ge_scalarmult_base` call — Ed25519 base-point mult has
-  a well-known constant-time pattern; the vendored `donna` and `ref10`
-  are both CT. Verify the project's vendored copy is one of those and
-  not a rolled-own variant.
+- `ed25519_sign`: secret key `a` must not influence timing
+- `ed25519_sign_open` (verify): public keys only, lower priority —
+  audit for belt-and-suspenders
+- Any internal `ge_scalarmult_base` call: Ed25519 base-point mult has
+  a well-known CT pattern; confirm the project's vendored copy is
+  one of `donna` / `ref10` (both CT) and not a rolled-own variant
 
-### Step J — RNG hygiene audit across lib/crypto/ + lib/sapling/
+### Step J — RNG hygiene grep across lib/crypto/ + lib/sapling/
 
-Grep `lib/crypto/ lib/sapling/` for:
-- `rand()`, `random()`, `drand48()`, `srand*()` — non-crypto PRNGs; must
-  not appear on any code path that touches secrets
-- `getrandom(...)` — check every call has a fallback to `/dev/urandom`
-  OR asserts on failure (never silently continues with zero bytes)
-- `arc4random` — should be absent on Linux targets; if present, flag
-- Weak seed sources: time(), pid, jitter-alone — shouldn't be in
+Grep both trees for:
+
+- `rand()`, `random()`, `drand48()`, `srand*()` — non-crypto PRNGs
+  must not appear on any path touching secrets
+- `getrandom(...)` — every call must have a fallback to `/dev/urandom`
+  OR assert on failure; never silently continue with zero bytes
+- `arc4random` — should be absent on Linux targets
+- Weak seed sources: `time()`, pid-only, jitter-alone — not on
   consensus or secret-generation paths
 
-For every hit that isn't clearly justified, file it as a small commit
-with a LOG_FAIL upgrade or an outright fix. Never log the random bytes
-themselves.
+For every hit that isn't clearly justified, commit a fix or a LOG_FAIL
+upgrade. Never log the random bytes themselves.
 
 ### Stopping point
 
-After P1.12 + H + I + J are all on main, ping Rhett. Likely next pile:
-one of (a) audit of `lib/sapling/src/prf.c` for timing-side-channel in
-the nullifier path, (b) formal verification scaffolding for
-`sapling_check_spend` / `sapling_check_output`, or (c) joining Rhett
-on P2 DoS hardening once the current wave lands.
+After P1.12 + H + I + J are all on main, ping Rhett. Likely next:
+(a) audit `lib/sapling/src/prf.c` for timing leaks in the nullifier path,
+(b) formal-verification scaffolding for `sapling_check_spend` /
+`sapling_check_output`, or (c) join Rhett on P2 DoS hardening.
 
 ---
 
-## Previous NEXT UP (completed) — P1.11 LOG_FAIL audit
-
----
-
-## Preflight — run verbatim, do not ask questions
-
-Execute the block below top to bottom. Each command is defensive and idempotent.
-Do NOT pause to ask about branch state, stash, or divergence — the block handles
-all of it. Only stop if `make` or `./test_zcl` fails (broken baseline — tell Rhett).
+## Preflight — run verbatim when re-bootstrapping a stale clone
 
 ```bash
 cd ~/zclassic23-3
 
-# 1. Preserve any local-only work to its current branch so nothing is stranded
+# 1. Preserve any local-only work
 git add -A
 git diff --staged --quiet || git commit -m "a3: wip checkpoint before AGENT-3.md workstream"
 
-# 2. If on a feature branch, push it as backup, then move to main
+# 2. If on a feature branch, back it up, then move to main
 CURRENT=$(git branch --show-current)
 if [ "$CURRENT" != "main" ]; then
-    git push origin "$CURRENT" 2>/dev/null || true   # backup; ok if no perms
+    git push origin "$CURRENT" 2>/dev/null || true
     git checkout main
 fi
 
-# 3. Sync main
+# 3. Sync
 git pull origin main --rebase=false
 
 # 4. Confirm clean baseline
 git status
-git branch --show-current            # must print "main"
+git branch --show-current   # must print "main"
 
 # 5. Read the rules and the checklist
 cat CLAUDE.md
 cat DEFENSIVE_CODING.md
-cat AGENT.md                          # your rows: P1.3, P1.4, P1.8, P1.9, P1.10, P1.11
+cat AGENT.md
 
-# 6. Confirm green baseline — STOP and report if either fails
+# 6. Confirm green baseline (STOP + report if either fails)
 make -j"$(nproc)"
 ./test_zcl
 ```
-
-Once that all passes, start Step 1 below. Commit/push after each logical fix.
-
----
-
-## Your mission
-
-Close the fail-open paths and observability gaps in the crypto and shielded-tx
-subsystems so that:
-1. No verification path ever silently succeeds when a precondition is missing
-   (NULL verification key, failed setup, missing parameter file).
-2. Every cryptographic failure emits a `LOG_FAIL` with enough context to
-   diagnose post-mortem — silent crypto failure = invisible consensus split.
-3. Ed25519 and RedJubjub signatures enforce canonical-S, matching the Zcash
-   consensus rules that the legacy zclassicd checks.
-4. Sapling parameter files are integrity-checked at load time against the
-   baked-in SHA-512 constants.
-
-These findings are consensus-critical: any of them can make zclassic23 accept
-blocks the legacy peer rejects (or vice versa), splitting the chain on deploy.
-
----
-
-## Files you own
-
-You may edit anything under:
-- `lib/crypto/`
-- `lib/sapling/`
-- `lib/keys/`
-- `lib/test/` — but only to add tests that cover your changes
-
-You may read anything else, but do not edit outside these trees.
-
----
-
-## Workstream (do in this order)
-
-### Step 1 — P1.3: Sapling verify fail-open on NULL VK
-File: `lib/sapling/src/sapling.c:505, 559`
-
-**Bug:** `sapling_check_spend` and `sapling_check_output` silently return `true`
-when `sapling_spend_vk` / `sapling_output_vk` is NULL. Any code path that
-skips or frees params early makes shielded txs trivially forgeable.
-
-**Fix:** If the relevant VK is NULL, return `false` AND call `LOG_FAIL` with
-the specific VK name. Callers of `sapling_check_*` must treat `false` as
-"reject the transaction" — verify every caller already does this and add a
-test for the NULL-VK case.
-
-### Step 2 — P1.4: Sapling params loaded without integrity check
-File: `lib/sapling/src/params_init.c:47-167` (SHA-512 constants at `:158-162`)
-
-**Bug:** Parameter files (`sapling-spend.params`, `sapling-output.params`,
-`sprout-groth16.params`) are memory-mapped / read and passed to the prover.
-The baked-in SHA-512 constants are only consulted by the prover, never
-compared against the file contents.
-
-**Fix:** After reading each params file, compute SHA-512 of the file bytes
-and compare (constant-time) against the baked-in constant. On mismatch:
-`LOG_FAIL` with the file path and expected/actual hashes, then fail node
-startup — do NOT continue running with unknown params.
-
-**Acceptance:** add a test that writes a tampered params file to a temp dir,
-points the loader at it, and asserts startup fails.
-
-### Step 3 — P1.10: find_group_hash returns ignored
-File: `lib/sapling/src/sapling.c:81-110` (`ensure_fixed_generators`)
-
-**Bug:** Six `find_group_hash()` calls whose returns are ignored. On failure
-the generator is zero-initialized memory and every subsequent scalar mul
-produces garbage with no error signal.
-
-**Fix:** Capture every return; if any failure, `LOG_FAIL` with the generator
-name and abort node startup. These are fixed generators — failure means
-something is very wrong and running is unsafe.
-
-### Step 4 — P1.11: Zero LOG_FAIL across crypto/sapling
-Files: everything under `lib/crypto/` and `lib/sapling/`
-
-**Bug:** Direct violation of DEFENSIVE_CODING.md §4: no `LOG_FAIL`/`LOG_ERR`/
-`LOG_NULL` calls anywhere in these modules. Every Groth16, RedJubjub, KDF,
-AEAD, ECDSA, Ed25519 failure returns bare `false` with no diagnostic.
-
-**Fix:** Audit every error return and add `LOG_FAIL` / `LOG_ERR` with enough
-context to locate the failure (function name, which check failed, relevant
-non-secret parameters). Do NOT log secret material (keys, nonces, plaintext).
-
-Do this in small commits — one file per commit is fine.
-
-### Step 5 — P1.8: Ed25519 missing S<L canonicality
-File: `lib/crypto/src/ed25519.c:300-355` (`ed25519_verify`)
-
-**Bug:** No `S < L` check in `ed25519_verify`. Zcash JoinSplit consensus
-requires canonical S; malleable sigs may diverge from zclassicd.
-
-**Fix:** Add a constant-time scalar-bound check (`S` as 32 little-endian bytes
-< group order `L` as 32 little-endian bytes). On failure, `LOG_FAIL` and
-return false. Reference test vectors: RFC 8032 + Zcash test vectors.
-
-### Step 6 — P1.9: RedJubjub missing S<r canonicality
-File: `lib/sapling/src/sapling.c:386` (`redjubjub_verify`)
-
-**Bug:** Comment notes "Check S < Fs order (optional, Rust checks via
-from_repr)" but no check performed; `sig_sbar` is fed straight into
-`jub_scalar_mul`.
-
-**Fix:** Add the `S < r` scalar-bound check using the Sapling `Fs` order
-constants already in the file. Mirror the same pattern as Ed25519.
-
-### Step 7 — P1.(additional) — Side-channel audit of jub_scalar_mul
-File: `lib/sapling/src/fr.c:307-333`
-
-**Context:** This function uses 4-bit windowed scalar mult with
-secret-dependent table lookups (`table[nibble]`) and secret-dependent
-branches (`if (nibble)`). Called with secret scalars (`ask`, `nsk`, `ivk`,
-`esk`, `bsk`). Leaks spending/viewing keys to co-resident attackers via
-cache timing.
-
-**Fix scope:** This is genuinely hard — constant-time windowed scalar mult
-requires a branchless conditional select and masked table walks. Out of
-scope for a first pass.
-
-**Action:** Do NOT attempt a crypto rewrite. Instead:
-- Add a `FIXME(timing): jub_scalar_mul is not constant-time over secret scalars`
-  comment at the function header citing this review item.
-- Open a follow-up note in your commit message so Rhett can triage a dedicated
-  wave for constant-time scalar mult.
-
-### Step 8 (if time) — P1.(additional) — Note encryption nonce hygiene
-File: `lib/sapling/src/note_encryption.c:14, 124, 149, 159, 167, 175, 183`
-
-**Context:** All AEAD calls use a constant `zero_nonce[12]`. Safe only because
-the key is unique per message, derived from `epk`. If `epk` ever repeats
-(RNG failure), two-time pad.
-
-**Fix:** Add a runtime debug assertion (under `#ifndef NDEBUG` or a new
-`ZCL_CRYPTO_SANITY` flag) that tracks the last few `esk` values per process
-and aborts on repeat. Document the hazard at the file header.
 
 ---
 
 ## Commit protocol
 
-- One logical fix per commit. Good: "sapling: return false on NULL VK".
-  Bad: "sapling hardening".
+- One logical fix per commit. Good: `sapling: LOG_FAIL on groth16
+  pairing failure`. Bad: `sapling hardening`.
 - Every commit: `make test` must pass. Every push: `make ci` must pass.
 - Commit message format:
+
   ```
-  sapling|crypto|keys: <one-line summary>
+  <subsystem>: <one-line summary>
 
   <why — cite file:line from AGENT.md>
 
-  Fixes P1.3 (AGENT.md checklist).
+  Fixes P1.X (AGENT.md checklist).
   ```
-- After each push, update the corresponding row in `AGENT.md`:
-  `open` → `in-progress` → `done (SHA abc1234)`.
-- Push frequently so Rhett can review incrementally.
+
+- After each push, update the row in `AGENT.md`:
+  `open` → `in-progress` → `done <SHA>`.
+- Push frequently — **except for P1.12**, where the rule is invert:
+  draft, review, iterate on a branch; merge only once both the diff
+  test and the timing test pass.
 - Never `--amend` a pushed commit. Never `--force-push`.
+- **Never log secret material.** No secret keys, no nonces, no plaintext
+  notes. Hashes and public values only.
 
 ---
 
-## Coordination with Agent-2 and Rhett
+## Coordination rules
 
-- Agent-2 is in the wallet/storage lane. You should not see their files in
-  your diffs, and they should not see yours.
-- Do NOT modify `lib/rpc/`, `lib/validation/`, `lib/consensus/`, `lib/net/`,
-  `lib/script/` — those are Rhett's.
-- Surprising discoveries → add a paragraph under `## Notes from Agent-3` at
-  the end of this file rather than expanding scope silently.
-
-## Done criteria
-
-- All P1.3, P1.4, P1.8, P1.9, P1.10, P1.11 rows in `AGENT.md` show `done <SHA>`.
-- `make ci` green on the final pushed commit.
-- At least one new test in `lib/test/` per bug class (NULL-VK reject, bad-params
-  reject, non-canonical-S reject).
-- No new files created outside `lib/crypto/`, `lib/sapling/`, `lib/keys/`,
-  `lib/test/`.
-- No secret material appears in any `LOG_*` call.
+- Agent-2 is in wallet / storage / app / tools/mcp. You should not see
+  their files in your diff. If you do, stop and check.
+- If you need something Rhett owns (validation fix, vendor update), note
+  it in your commit message and wait — don't front-run.
+- Surprising out-of-scope discoveries → append to the "Notes from
+  Agent-3" section at the end of this file. Do not expand scope silently.
 
 ---
 
 ## Notes from Agent-3
 
-### 2026-04-17: P1.11 close-out + Step 8 landed
-
-Second pass (beyond the 2026-04-17 first pass that merged P1.3/1.4/1.8/
-1.9/1.10 as `bcab984fd`) is now fully merged into `main`:
-
-- **P1.11** — done `ca139a5ad`. LOG_FAIL/LOG_ERR/LOG_NULL added across
-  the crypto and sapling trees where silent returns could mask a
-  consensus-level reject or a params-load failure. Covered in commit
-  order: `chacha20poly1305.c`, `ed25519.c`, `note_encryption.c`,
-  `sapling.c` (~30 sites), `groth16_prover.c` (29 sites),
-  `params_init.c` / `zip32.c` / `sprout.c` / `note.c`,
-  `sapling_circuit.c` / `sapling_prover_c23.c`,
-  `incremental_merkle_tree.c` (34 sites), `fast_scan.c` (outer-boundary
-  log only, inner tx-parse loop left bare intentionally),
-  `bls12_381.c` + `bn254.c` (Groth16/PHGR13 verify + VK read),
-  `equihash.c` + `sha256.c` + `blake2b.c` + `blake2s.c`.
-- **Step 8** — done `909636215`. Opt-in esk nonce-reuse sanity guard
-  under `-DZCL_CRYPTO_SANITY=1` in `note_encryption.c`. Default-off so
-  existing known-answer test fixtures that reuse fixed encryption keys
-  keep passing. Abort-on-repeat to prevent two-time-pad leakage if
-  the RNG ever hands us the same esk twice.
-
-### Non-obvious coverage decisions
-
-- **`group_hash()` in sapling.c**: its inner `return false` is a
-  probabilistic hash-to-curve retry signal, NOT an error. Logging
-  each would flood stderr at startup while fixed generators derive.
-  The outer `find_group_hash()` gets LOG_FAIL only on full 256-counter
-  exhaustion or tag-buffer precondition — the real error paths.
-- **`fast_scan.c`**: the inner tx-parse loop has ~40 `return -1;`
-  sites that fire once per malformed tx. Only the outer
-  `fast_scan_sapling_commitments` boundary logs, which gives one line
-  per bad block instead of one per bad varint. File header documents
-  this so the next auditor doesn't "helpfully" wrap them.
-- **`fr.c` / `fr_avx512.c` / `jubjub.c`**: every `return false` in
-  these is an algorithmic outcome (fr_gte comparison result, fr_sqrt
-  non-QR, fr_from_bytes on bad coord bytes in retry loops). Wrapping
-  them would fire hundreds of times per block verification. `fr.c`
-  now carries a file-header comment documenting the rationale.
-- **`incremental_tree_is_complete`**: three `return false;` paths are
-  "tree not yet complete" signals used by the witness append loop, not
-  errors. Documented inline.
-- **`msm_parallel.c`**: `return NULL;` in pthread window functions is
-  the normal thread exit, not an error. Not wrapped.
-- **`curve25519.c` / `hmac_sha256.c` / `hmac_sha512.c` / `pbkdf2_*.c`**:
-  no bare error returns at all — nothing to wrap.
-
-### Test status
-
-`make test` passes the crypto and sapling suites end-to-end on every
-commit. `test_block_pruning` hangs on current `main` (flagged in
-Agent-2's notes on commit `64ed2e3c7`) and is downstream of all
-Agent-3 tests, so the full-suite exit never reaches `0`. The hang is
-in `app/services/src/block_pruning_service.c` (Rhett's lane) and is
-orthogonal to anything in this workstream.
-
-### What's still open in Agent-3's lane
-
-- **P1.12** — `jub_scalar_mul` constant-time rewrite (originally
-  Step 7's FIXME; queued by Rhett on commit `1fb56a564`). Genuinely
-  hard — needs a branchless conditional-select and masked table walks.
-  Not yet started.
+_(append new observations here as work proceeds — keep dated, short,
+and flag the owner of anything out of lane.)_
