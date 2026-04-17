@@ -29,8 +29,14 @@ void coins_free(struct coins *c)
 bool coins_alloc(struct coins *c, size_t num_outputs)
 {
     c->vout = zcl_calloc(num_outputs, sizeof(struct tx_out), "coins_vout");
-    if (num_outputs && !c->vout)
+    if (num_outputs && !c->vout) {
+        /* Leave num_vout=0 so the caller can distinguish the zero-
+         * request case from the OOM case via the return value. */
+        fprintf(stderr, "[coins] %s:%d %s(): zcl_calloc failed for "
+                "num_outputs=%zu\n",
+                __FILE__, __LINE__, __func__, num_outputs);
         return false;
+    }
     c->num_vout = num_outputs;
     for (size_t i = 0; i < num_outputs; i++)
         tx_out_set_null(&c->vout[i]);
@@ -51,8 +57,18 @@ void coins_from_transaction(struct coins *c, const struct transaction *tx, int h
                 "at h=%d\n", tx->num_vout, height);
         return;
     }
-    if (!coins_alloc(c, tx->num_vout))
+    if (!coins_alloc(c, tx->num_vout)) {
+        /* coins_alloc already logged the OOM.  The caller now sees
+         * num_vout == 0 which used to be interpreted as "all outputs
+         * pruned" — an IBD dead-end we can't quietly accept.  The
+         * extra line here names the construction site so an operator
+         * staring at the log can correlate the allocation failure
+         * with a specific tx height. */
+        fprintf(stderr, "[coins] %s:%d %s(): coins_from_transaction "
+                "dropped tx with num_vout=%zu at height=%d due to OOM\n",
+                __FILE__, __LINE__, __func__, tx->num_vout, height);
         return;
+    }
 
     for (size_t i = 0; i < tx->num_vout; i++) {
         /* Skip provably unspendable outputs (OP_RETURN).
@@ -104,10 +120,19 @@ void coins_copy(struct coins *dst, const struct coins *src)
     dst->num_vout = src->num_vout;
     if (src->num_vout > 0 && src->vout) {
         dst->vout = zcl_malloc(src->num_vout * sizeof(struct tx_out), "coins_vout_copy");
-        if (dst->vout)
+        if (dst->vout) {
             memcpy(dst->vout, src->vout, src->num_vout * sizeof(struct tx_out));
-        else
+        } else {
+            /* OOM: dst becomes an empty-coins sentinel.  The failure
+             * was silent in the old code — a caller that trusted
+             * dst->num_vout would act on zero outputs and treat the
+             * record as fully spent.  Log so operators can correlate
+             * a cache miss with an allocation failure. */
+            fprintf(stderr, "[coins] %s:%d %s(): zcl_malloc failed for "
+                    "%zu-vout copy; dst reset to empty\n",
+                    __FILE__, __LINE__, __func__, src->num_vout);
             dst->num_vout = 0;
+        }
     } else {
         dst->vout = NULL;
         dst->num_vout = 0;
