@@ -584,6 +584,20 @@ bool disconnect_block(const struct block *block,
                 }
 
                 if (tx->vin[j].prevout.n >= entry->coins.num_vout) {
+                    /* Clamp prevout.n against MAX_BLOCK_SIZE before
+                     * extending the vout array. A valid funding tx
+                     * cannot encode more than MAX_BLOCK_SIZE / ~30
+                     * outputs (each tx_out is at least 8-byte value +
+                     * minimal scriptPubKey), so anything beyond that
+                     * ceiling is either corrupted block data or an
+                     * attacker-controlled value crafted to force a
+                     * ~128 GB realloc (prevout.n = UINT32_MAX =>
+                     * 2**32 * sizeof(tx_out) ≈ 128 GB). */
+                    if (tx->vin[j].prevout.n >= MAX_BLOCK_SIZE) {
+                        LOG_FAIL("disconnect",
+                                 "prevout.n out of range h=%d tx=%zu vin=%zu n=%u",
+                                 pindex->nHeight, i, j, tx->vin[j].prevout.n);
+                    }
                     size_t new_size = tx->vin[j].prevout.n + 1;
                     struct tx_out *new_vout =
                         zcl_realloc(entry->coins.vout,

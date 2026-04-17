@@ -1046,6 +1046,69 @@ int test_validation(void)
     }
 
     /* ================================================================
+     * P4.4 — disconnect_block: rejects pathological prevout.n
+     *
+     * Without the clamp, prevout.n = UINT32_MAX triggers a realloc of
+     * (2^32) * sizeof(tx_out) ≈ 128 GB. The clamp rejects any
+     * prevout.n ≥ MAX_BLOCK_SIZE (~2 MB of output slots, an order of
+     * magnitude above anything a valid funding tx can encode).
+     * ================================================================ */
+    printf("disconnect_block: rejects prevout.n ≥ MAX_BLOCK_SIZE... ");
+    {
+        struct block blk;
+        block_init(&blk);
+        blk.num_vtx = 2; /* coinbase + 1 tx */
+        blk.vtx = zcl_calloc(2, sizeof(struct transaction), "test_blk_vtx");
+        for (int i = 0; i < 2; i++) transaction_init(&blk.vtx[i]);
+
+        /* The one non-coinbase tx has a single vin with a pathological
+         * prevout.n. Everything else is minimal. */
+        struct transaction *tx = &blk.vtx[1];
+        tx->num_vin = 1;
+        tx->vin = zcl_calloc(1, sizeof(struct tx_in), "test_tx_vin");
+        memset(tx->vin[0].prevout.hash.data, 0x42, 32);
+        tx->vin[0].prevout.n = UINT32_MAX;   /* attacker value */
+
+        struct block_undo bu;
+        block_undo_init(&bu);
+        bu.num_txundo = 1;
+        bu.vtxundo = zcl_calloc(1, sizeof(struct tx_undo), "test_bu_vtxundo");
+        bu.vtxundo[0].num_prevout = 1;
+        bu.vtxundo[0].vprevout =
+            zcl_calloc(1, sizeof(struct tx_in_undo), "test_bu_vprevout");
+
+        struct validation_state vs;
+        validation_state_init(&vs);
+        struct block_index bi;
+        memset(&bi, 0, sizeof(bi));
+        bi.nHeight = 12345;
+
+        /* Seed the coins cache with a 1-output entry matching the
+         * prevout hash. prevout.n (UINT32_MAX) is ≥ num_vout (1) so
+         * disconnect_block enters the realloc path — where the bounds
+         * check now fires. */
+        struct coins_view_cache cvc;
+        memset(&cvc, 0, sizeof(cvc));
+        coins_map_init(&cvc.cache_coins);
+        struct coins_cache_entry *e =
+            coins_map_insert(&cvc.cache_coins, &tx->vin[0].prevout.hash);
+        coins_alloc(&e->coins, 1);
+        e->coins.height = 100;
+        e->coins.version = 1;
+        e->flags = COINS_CACHE_DIRTY;
+
+        bool ok = !disconnect_block(&blk, &vs, &bi, &cvc, &bu);
+
+        coins_map_free(&cvc.cache_coins);
+        free(bu.vtxundo[0].vprevout);
+        free(bu.vtxundo);
+        for (int i = 0; i < 2; i++) transaction_free(&blk.vtx[i]);
+        free(blk.vtx);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ================================================================
      * connect_block: sigops limit
      * ================================================================ */
     printf("MAX_BLOCK_SIGOPS = 20000... ");
