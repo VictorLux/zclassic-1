@@ -32,7 +32,7 @@ size_t serve_coins(uint8_t *r, size_t max) {
         "WHERE wu.spent_txid IS NULL "
         "ORDER BY wu.value DESC";
     if (sqlite3_prepare_v2(db, coins_sql, -1, &s, NULL) == SQLITE_OK) {
-        while (sqlite3_step(s) == SQLITE_ROW && ur + 500 < sizeof(utxo_rows)) {
+        while (sqlite3_step(s) == SQLITE_ROW && ur + 500 < sizeof(utxo_rows)) {  // raw-sql-ok: a3
             const char *txid = (const char *)sqlite3_column_text(s, 0);
             int vout = sqlite3_column_int(s, 1);
             int64_t val = sqlite3_column_int64(s, 2);
@@ -97,7 +97,7 @@ size_t serve_coins(uint8_t *r, size_t max) {
                 " GROUP BY n.value, n.address"
                 " ORDER BY n.value DESC",
                 -1, &s, NULL) == SQLITE_OK) {
-            while (sqlite3_step(s) == SQLITE_ROW && nr + 400 < sizeof(note_rows)) {
+            while (sqlite3_step(s) == SQLITE_ROW && nr + 400 < sizeof(note_rows)) {  // raw-sql-ok: a3
                 int64_t val = sqlite3_column_int64(s, 0);
                 const char *addr = (const char *)sqlite3_column_text(s, 1);
                 int cnt = sqlite3_column_int(s, 2);
@@ -173,7 +173,7 @@ size_t serve_coins(uint8_t *r, size_t max) {
                 "HAVING balance > 0 "
                 "ORDER BY balance DESC LIMIT 50",
                 -1, &tok, NULL) == SQLITE_OK) {
-            while (sqlite3_step(tok) == SQLITE_ROW) {
+            while (sqlite3_step(tok) == SQLITE_ROW) {  // raw-sql-ok: a3
                 const char *ticker = (const char *)sqlite3_column_text(tok, 1);
                 const char *name = (const char *)sqlite3_column_text(tok, 2);
                 int decimals = sqlite3_column_int(tok, 3);

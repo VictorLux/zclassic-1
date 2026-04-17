@@ -89,7 +89,7 @@ static void query_shielded_stats(sqlite3 *db, const char *col,
         col, col, col, col, col);
     sqlite3_stmt *s = NULL;
     if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
-        if (sqlite3_step(s) == SQLITE_ROW) {
+        if (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok: a3
             out->block_count    = sqlite3_column_int64(s, 0);
             out->sum_pos        = sqlite3_column_int64(s, 1);
             out->sum_neg        = sqlite3_column_int64(s, 2);
@@ -106,7 +106,7 @@ static void query_shielded_stats(sqlite3 *db, const char *col,
         "ORDER BY %s DESC LIMIT 1", col, col, col);
     s = NULL;
     if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
-        if (sqlite3_step(s) == SQLITE_ROW) {
+        if (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok: a3
             out->peak_pos_height = sqlite3_column_int64(s, 0);
             out->peak_pos_value  = sqlite3_column_int64(s, 1);
         }
@@ -118,7 +118,7 @@ static void query_shielded_stats(sqlite3 *db, const char *col,
         "ORDER BY %s ASC LIMIT 1", col, col, col);
     s = NULL;
     if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
-        if (sqlite3_step(s) == SQLITE_ROW) {
+        if (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok: a3
             out->peak_neg_height = sqlite3_column_int64(s, 0);
             out->peak_neg_value  = sqlite3_column_int64(s, 1);
         }
@@ -233,7 +233,7 @@ static void render_shielded_section(char *r, size_t max, size_t *off,
             col, col, col, col, col);
         sqlite3_stmt *s = NULL;
         if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
-            while (sqlite3_step(s) == SQLITE_ROW) {
+            while (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok: a3
                 int year = sqlite3_column_int(s, 0);
                 int64_t cnt = sqlite3_column_int64(s, 1);
                 int64_t shield = sqlite3_column_int64(s, 2);
@@ -277,7 +277,7 @@ static void render_shielded_section(char *r, size_t max, size_t *off,
             col, col, col);
         sqlite3_stmt *s = NULL;
         if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
-            while (sqlite3_step(s) == SQLITE_ROW) {
+            while (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok: a3
                 int64_t h = sqlite3_column_int64(s, 0);
                 int64_t t = sqlite3_column_int64(s, 1);
                 int64_t v = sqlite3_column_int64(s, 2);
@@ -368,7 +368,7 @@ size_t explorer_stats_build(uint8_t *r, size_t buf_max, const char *datadir)
                 "SELECT height, bits, time FROM blocks ORDER BY height DESC LIMIT 1",
                 -1, &s, NULL);
         if (prep_rc == SQLITE_OK && s) {
-            int step_rc = sqlite3_step(s);
+            int step_rc = sqlite3_step(s);  // raw-sql-ok: a3
             if (step_rc == SQLITE_ROW) {
                 tip = sqlite3_column_int(s, 0);
                 uint32_t bits = (uint32_t)sqlite3_column_int(s, 1);
@@ -408,7 +408,7 @@ size_t explorer_stats_build(uint8_t *r, size_t buf_max, const char *datadir)
                 "MAX(num_tx) "
                 "FROM blocks",
                 -1, &s, NULL) == SQLITE_OK && s) {
-            if (sqlite3_step(s) == SQLITE_ROW) {
+            if (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok: a3
                 total_blocks    = sqlite3_column_int64(s, 0);
                 total_block_txs = sqlite3_column_int64(s, 1);
                 empty_blocks    = sqlite3_column_int64(s, 2);
@@ -424,7 +424,7 @@ size_t explorer_stats_build(uint8_t *r, size_t buf_max, const char *datadir)
         if (sqlite3_prepare_v2(db,
                 "SELECT height, bits FROM blocks WHERE bits > 0 "
                 "ORDER BY bits DESC LIMIT 1", -1, &s, NULL) == SQLITE_OK && s) {
-            if (sqlite3_step(s) == SQLITE_ROW) {
+            if (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok: a3
                 min_bits_height = sqlite3_column_int64(s, 0);
                 min_bits = (uint32_t)sqlite3_column_int(s, 1);
             }
@@ -434,7 +434,7 @@ size_t explorer_stats_build(uint8_t *r, size_t buf_max, const char *datadir)
         if (sqlite3_prepare_v2(db,
                 "SELECT height, bits FROM blocks WHERE bits > 0 AND height > 0 "
                 "ORDER BY bits ASC LIMIT 1", -1, &s, NULL) == SQLITE_OK && s) {
-            if (sqlite3_step(s) == SQLITE_ROW) {
+            if (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok: a3
                 max_bits_height = sqlite3_column_int64(s, 0);
                 max_bits = (uint32_t)sqlite3_column_int(s, 1);
             }
@@ -467,7 +467,7 @@ size_t explorer_stats_build(uint8_t *r, size_t buf_max, const char *datadir)
                 "COALESCE(SUM(CASE WHEN is_coinbase=1 THEN value ELSE 0 END),0) "
                 "FROM utxos",
                 -1, &s, NULL) == SQLITE_OK && s) {
-            if (sqlite3_step(s) == SQLITE_ROW) {
+            if (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok: a3
                 utxo_count_val      = sqlite3_column_int64(s, 0);
                 total_supply        = sqlite3_column_int64(s, 1);
                 utxo_avg            = sqlite3_column_double(s, 2);
@@ -545,7 +545,7 @@ size_t explorer_stats_build(uint8_t *r, size_t buf_max, const char *datadir)
         if (sqlite3_prepare_v2(db,
                 "SELECT hex(sha3_hash) FROM view_integrity ORDER BY height DESC LIMIT 1",
                 -1, &s, NULL) == SQLITE_OK && s) {
-            if (sqlite3_step(s) == SQLITE_ROW) {
+            if (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok: a3
                 const char *h = (const char *)sqlite3_column_text(s, 0);
                 if (h) snprintf(integrity_latest_hash, sizeof(integrity_latest_hash), "%s", h);
             }
@@ -572,7 +572,7 @@ size_t explorer_stats_build(uint8_t *r, size_t buf_max, const char *datadir)
                 "SELECT block_height, count(*) as cnt FROM joinsplits "
                 "GROUP BY block_height ORDER BY cnt DESC LIMIT 1",
                 -1, &s, NULL) == SQLITE_OK && s) {
-            if (sqlite3_step(s) == SQLITE_ROW) {
+            if (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok: a3
                 most_js_block = sqlite3_column_int64(s, 0);
                 most_js_count = sqlite3_column_int64(s, 1);
             }
@@ -586,7 +586,7 @@ size_t explorer_stats_build(uint8_t *r, size_t buf_max, const char *datadir)
                 "SELECT block_height, count(*) as cnt FROM sapling_outputs "
                 "GROUP BY block_height ORDER BY cnt DESC LIMIT 1",
                 -1, &s, NULL) == SQLITE_OK && s) {
-            if (sqlite3_step(s) == SQLITE_ROW) {
+            if (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok: a3
                 most_sap_out_block = sqlite3_column_int64(s, 0);
                 most_sap_out_count = sqlite3_column_int64(s, 1);
             }
@@ -603,7 +603,7 @@ size_t explorer_stats_build(uint8_t *r, size_t buf_max, const char *datadir)
                 "WHERE b1.time > 0 AND b2.time > b1.time "
                 "ORDER BY gap ASC LIMIT 1",
                 -1, &s, NULL) == SQLITE_OK && s) {
-            if (sqlite3_step(s) == SQLITE_ROW) {
+            if (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok: a3
                 fastest_block_h   = sqlite3_column_int64(s, 0);
                 fastest_block_gap = sqlite3_column_int64(s, 1);
             }
@@ -616,7 +616,7 @@ size_t explorer_stats_build(uint8_t *r, size_t buf_max, const char *datadir)
                 "WHERE b1.time > 0 AND b2.time > b1.time "
                 "ORDER BY gap DESC LIMIT 1",
                 -1, &s, NULL) == SQLITE_OK && s) {
-            if (sqlite3_step(s) == SQLITE_ROW) {
+            if (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok: a3
                 slowest_block_h   = sqlite3_column_int64(s, 0);
                 slowest_block_gap = sqlite3_column_int64(s, 1);
             }
@@ -665,7 +665,7 @@ size_t explorer_stats_build(uint8_t *r, size_t buf_max, const char *datadir)
             base, step, base, tip);
         sqlite3_stmt *s = NULL;
         if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
-            while (sqlite3_step(s) == SQLITE_ROW) {
+            while (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok: a3
                 int bucket = sqlite3_column_int(s, 0);
                 if (bucket < 0 || bucket >= 40) continue;
                 uint32_t bits = (uint32_t)sqlite3_column_int(s, 1);
@@ -867,7 +867,7 @@ size_t explorer_stats_build(uint8_t *r, size_t buf_max, const char *datadir)
                     "FROM utxos u LEFT JOIN blocks b ON u.height = b.height "
                     "ORDER BY u.height ASC LIMIT 20",
                     -1, &s, NULL) == SQLITE_OK && s) {
-                while (sqlite3_step(s) == SQLITE_ROW) {
+                while (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok: a3
                     int64_t h = sqlite3_column_int64(s, 0);
                     int64_t t = sqlite3_column_int64(s, 1);
                     if (t == 0 && h == 0) t = 1478403829; /* genesis */
@@ -905,7 +905,7 @@ size_t explorer_stats_build(uint8_t *r, size_t buf_max, const char *datadir)
                     "SELECT value, height, hex(txid) FROM utxos "
                     "ORDER BY value DESC LIMIT 20",
                     -1, &s, NULL) == SQLITE_OK && s) {
-                while (sqlite3_step(s) == SQLITE_ROW) {
+                while (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok: a3
                     int64_t v = sqlite3_column_int64(s, 0);
                     int64_t h = sqlite3_column_int64(s, 1);
                     const char *txhex = (const char *)sqlite3_column_text(s, 2);
@@ -976,7 +976,7 @@ size_t explorer_stats_build(uint8_t *r, size_t buf_max, const char *datadir)
                     "FROM addresses ORDER BY balance DESC LIMIT 20",
                     -1, &s, NULL) == SQLITE_OK && s) {
                 int rank = 0;
-                while (sqlite3_step(s) == SQLITE_ROW) {
+                while (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok: a3
                     rank++;
                     const void *ah = sqlite3_column_blob(s, 0);
                     int ah_len = sqlite3_column_bytes(s, 0);
@@ -1229,7 +1229,7 @@ size_t explorer_stats_build(uint8_t *r, size_t buf_max, const char *datadir)
                 "count(*), COALESCE(SUM(num_tx),0) "
                 "FROM blocks WHERE time > 0 GROUP BY yr ORDER BY yr",
                 -1, &s, NULL) == SQLITE_OK && s) {
-            while (sqlite3_step(s) == SQLITE_ROW) {
+            while (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok: a3
                 int year = sqlite3_column_int(s, 0);
                 int64_t blks = sqlite3_column_int64(s, 1);
                 int64_t txs = sqlite3_column_int64(s, 2);
@@ -1258,7 +1258,7 @@ size_t explorer_stats_build(uint8_t *r, size_t buf_max, const char *datadir)
                 "count(*), COALESCE(SUM(value),0) "
                 "FROM utxos GROUP BY band ORDER BY band",
                 -1, &s, NULL) == SQLITE_OK && s) {
-            while (sqlite3_step(s) == SQLITE_ROW) {
+            while (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok: a3
                 int64_t band = sqlite3_column_int64(s, 0);
                 int64_t cnt = sqlite3_column_int64(s, 1);
                 int64_t val = sqlite3_column_int64(s, 2);

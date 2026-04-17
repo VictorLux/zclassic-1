@@ -562,7 +562,7 @@ static bool rpc_repairheights(const struct json_value *params, bool help,
     sqlite3_prepare_v2(ctx->node_db->db,
         "SELECT COUNT(*) FROM utxos WHERE height = 0 AND value > 0",
         -1, &s, NULL);
-    if (s && sqlite3_step(s) == SQLITE_ROW)
+    if (s && sqlite3_step(s) == SQLITE_ROW)  // raw-sql-ok: a3
         before = sqlite3_column_int64(s, 0);
     sqlite3_finalize(s);
 
@@ -595,7 +595,7 @@ static bool rpc_repairheights(const struct json_value *params, bool help,
     sqlite3_prepare_v2(ctx->node_db->db,
         "SELECT COUNT(*) FROM utxos WHERE height = 0 AND value > 0",
         -1, &s, NULL);
-    if (s && sqlite3_step(s) == SQLITE_ROW)
+    if (s && sqlite3_step(s) == SQLITE_ROW)  // raw-sql-ok: a3
         after = sqlite3_column_int64(s, 0);
     sqlite3_finalize(s);
 

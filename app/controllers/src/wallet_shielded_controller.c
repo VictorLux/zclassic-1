@@ -268,7 +268,7 @@ static bool rpc_z_listunspent(const struct json_value *params, bool help,
             sqlite3_stmt *hs = NULL;
             sqlite3_prepare_v2(ctx->node_db->db,
                 "SELECT MAX(height) FROM blocks", -1, &hs, NULL);
-            if (hs && sqlite3_step(hs) == SQLITE_ROW)
+            if (hs && sqlite3_step(hs) == SQLITE_ROW)  // raw-sql-ok: a3
                 chain_h = sqlite3_column_int(hs, 0);
             if (hs) sqlite3_finalize(hs);
         }

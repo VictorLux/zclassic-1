@@ -155,6 +155,7 @@ int main(void)
     failures += test_schema_migration();
     failures += test_db_migration_idempotent();
     failures += test_coins_view_atomicity();
+    failures += test_make_lint_gates();
     failures += test_multisig();
     failures += test_mcp_fuzz();
     failures += test_rpc_auth_hardening();
