@@ -6,18 +6,18 @@ Owner: Rhett (primary). Delegates: Agent-2 (see `AGENT-2.md`), Agent-3 (see `AGE
 
 ---
 
-## Progress — last update 2026-04-17
+## Progress — last update 2026-04-18
 
-**Overall: 31 / 50 rows closed (62%) | SWRC 63%**
+**Overall: 37 / 50 rows closed (74%) | SWRC 71%**
 
 | Tier | Closed / Total | % | Open rows |
 |---|---|---|---|
 | **CRITICAL** | 7 / 9 | **78%** | P2.1, P2.2 |
-| **HIGH** | 11 / 20 | **55%** | P1.6, P1.7, P2.3–P2.6, P4.1, P4.2, P5.2 |
-| **MED** | 7 / 15 | **47%** | P2.7, P2.8, P3.7, P4.3–P4.5, P5.5, P5.6 |
+| **HIGH** | 13 / 20 | **65%** | P1.6, P1.7, P2.3–P2.6, P4.1, P4.2, P5.2 |
+| **MED** | 11 / 15 | **73%** | P2.7, P2.8, P3.7, P5.5, P5.6 |
 | **LOW** | 2 / 2 | **100%** | — |
 
-**Open by owner:** Rhett 15 · Agent-2 4 (3 queued P4, 1 infra) · Agent-3 3 (Wave 2: curve25519 + ed25519 CT + RNG hygiene)
+**Open by owner:** Rhett 15 · Agent-2 1 (parallel-test-runner infra) · Agent-3 0 (Wave 2 shipped — curve25519 + ed25519 CT + RNG hygiene all done)
 
 **Top remaining risks:** the two open CRITs are both in the network lane (P2.1 mempool tx accept, P2.2 stack overflow in msg handler) — chain-split risk on deploy is close to eliminated, DoS-on-deploy is now the headline.
 
@@ -109,9 +109,9 @@ regression test locks the gates in place.
 |---|---|---|---|---|
 | P4.1 | 520 KB `script_stack` passed by value, on-stack | `lib/script/include/script/interpreter.h:22-30`, `interpreter.c:619-652` | HIGH | Rhett (needs careful interpreter refactor) |
 | P4.2 | Silent `stack_push` failures corrupt later stack assumptions | `lib/script/src/interpreter.c:619-620` | HIGH | Rhett (tied to P4.1) |
-| P4.3 | `script_num_serialize` lacks outsize bounds check | `lib/script/include/script/script.h:239-258` | MED | Agent 2 — queued (narrow scope expansion) |
-| P4.4 | `disconnect_block` unbounded realloc on `vin.prevout.n` | `lib/validation/src/connect_block.c:586-607` | MED | Agent 2 — queued (narrow scope expansion) |
-| P4.5 | `sigencoding` strict-DER bound inconsistency vs Bitcoin | `lib/script/src/sigencoding.c:11-56` | MED | Agent 2 — queued (narrow scope expansion) |
+| P4.3 | `script_num_serialize` lacks outsize bounds check | `lib/script/include/script/script.h:239-258` | MED | Agent 2 — done 61104d06d (precompute required length + reject-if-short instead of silent-truncate; 6 boundary assertions in test_script.c) |
+| P4.4 | `disconnect_block` unbounded realloc on `vin.prevout.n` | `lib/validation/src/connect_block.c:586-607` | MED | Agent 2 — done f69956cab (clamp prevout.n ≥ MAX_BLOCK_SIZE → LOG_FAIL + reject; regression test in test_validation.c uses UINT32_MAX to exercise the previously-~128 GB realloc path) |
+| P4.5 | `sigencoding` strict-DER bound inconsistency vs Bitcoin | `lib/script/src/sigencoding.c:11-56` | MED | Agent 2 — done 28fe53112 (byte-for-byte parity audit vs zclassic-cpp sigencoding.cpp: no divergence — "off-by-one" was a false positive from the brief; 16-vector BIP66-style parity table added to test_script.c locks the canonical boundary behavior in place) |
 
 ---
 

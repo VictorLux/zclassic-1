@@ -326,6 +326,24 @@ archive — 41 → 18 root `.md`, two stale binaries untracked),
 `test_no_hardcoded_home.c`), `0f33d3fc1` (P5.4 purge
 `verify_restart_follow.sh`).
 
+**2026-04-17 — P4 narrow-scope-expansion wave closed (fifth wave).**
+Three commits: `61104d06d` (P4.3 `script_num_serialize` bounds
+check — precompute required length and return 0 for short buffers
+instead of silent truncate; 6 assertions covering the 1-byte
+rejection path, INT64 extremes, value == 0), `f69956cab` (P4.4
+`disconnect_block` clamp — reject `prevout.n ≥ MAX_BLOCK_SIZE` to
+close the ~128 GB realloc DoS; regression test constructs a minimal
+block with `prevout.n = UINT32_MAX`), `28fe53112` (P4.5 sigencoding
+parity — byte-for-byte audit found NO divergence from upstream
+Zcash; 16-vector BIP66 parity table locks the canonical behavior in
+place). The "off-by-one vs Bitcoin" described in the brief was a
+false positive — see commit message for the full audit trail.
+
+**NOW + NEXT are both empty for Agent-2.** Only the parallel test
+runner infrastructure item remains. All P5 operator-hygiene and P4
+narrow-scope-expansion rows are shipped. Pinging Rhett before
+starting anything outside the committed lane.
+
 **P5.4 audit — flag for Rhett, not a full purge.** Only one of the
 eight `tools/*.sh` scripts had a clean 1:1 replacement
 (`verify_restart_follow.sh` ⇒ `zcl-nodectl verify-follow`). The other
