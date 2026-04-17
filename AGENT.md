@@ -8,16 +8,16 @@ Owner: Rhett (primary). Delegates: Agent-2 (see `AGENT-2.md`), Agent-3 (see `AGE
 
 ## Progress — last update 2026-04-17
 
-**Overall: 28 / 50 rows closed (56%) | SWRC 59%**
+**Overall: 30 / 50 rows closed (60%) | SWRC 62%**
 
 | Tier | Closed / Total | % | Open rows |
 |---|---|---|---|
 | **CRITICAL** | 7 / 9 | **78%** | P2.1, P2.2 |
-| **HIGH** | 10 / 20 | **50%** | P1.6, P1.7, P2.3–P2.6, P4.1, P4.2, P5.2, P5.3 |
+| **HIGH** | 11 / 20 | **55%** | P1.6, P1.7, P2.3–P2.6, P4.1, P4.2, P5.2 |
 | **MED** | 6 / 15 | **40%** | P2.7, P2.8, P3.7, P4.3–P4.5, P5.4, P5.5, P5.6 |
-| **LOW** | 1 / 2 | **50%** | P5.7 |
+| **LOW** | 2 / 2 | **100%** | — |
 
-**Open by owner:** Rhett 15 · Agent-2 7 (3 active P5, 3 queued P4, 1 infra) · Agent-3 3 (Wave 2: curve25519 + ed25519 CT + RNG hygiene)
+**Open by owner:** Rhett 15 · Agent-2 5 (P5.4 active, 3 queued P4, 1 infra) · Agent-3 3 (Wave 2: curve25519 + ed25519 CT + RNG hygiene)
 
 **Top remaining risks:** the two open CRITs are both in the network lane (P2.1 mempool tx accept, P2.2 stack overflow in msg handler) — chain-split risk on deploy is close to eliminated, DoS-on-deploy is now the headline.
 
