@@ -78,33 +78,55 @@ enum {
 static struct jub_point fixed_generators[GEN_MAX];
 static bool fixed_generators_loaded = false;
 
+/* Derive a single fixed generator or abort: these are hard-coded inputs with
+ * hard-coded personalizations; failure means the Jubjub group_hash machinery
+ * is broken and every subsequent scalar mul would silently produce garbage. */
+static void derive_fixed_generator(int idx, const char *name,
+                                    const uint8_t *m, size_t m_len,
+                                    const uint8_t personalization[8])
+{
+    if (!find_group_hash(&fixed_generators[idx], m, m_len, personalization)) {
+        fprintf(stderr, "[sapling] %s:%d %s(): "
+                "find_group_hash failed for fixed generator '%s' — "
+                "refusing to run with zero-initialized generator\n",
+                __FILE__, __LINE__, __func__, name);
+        abort();
+    }
+}
+
 static void ensure_fixed_generators(void)
 {
     if (fixed_generators_loaded) return;
 
-    find_group_hash(&fixed_generators[GEN_PROOF_GENERATION_KEY],
-                    (const uint8_t *)"", 0,
-                    (const uint8_t *)"Zcash_H_");
+    derive_fixed_generator(GEN_PROOF_GENERATION_KEY,
+                           "ProofGenerationKey",
+                           (const uint8_t *)"", 0,
+                           (const uint8_t *)"Zcash_H_");
 
-    find_group_hash(&fixed_generators[GEN_NOTE_COMMITMENT_RANDOMNESS],
-                    (const uint8_t *)"r", 1,
-                    (const uint8_t *)"Zcash_PH");
+    derive_fixed_generator(GEN_NOTE_COMMITMENT_RANDOMNESS,
+                           "NoteCommitmentRandomness",
+                           (const uint8_t *)"r", 1,
+                           (const uint8_t *)"Zcash_PH");
 
-    find_group_hash(&fixed_generators[GEN_NULLIFIER_POSITION],
-                    (const uint8_t *)"", 0,
-                    (const uint8_t *)"Zcash_J_");
+    derive_fixed_generator(GEN_NULLIFIER_POSITION,
+                           "NullifierPosition",
+                           (const uint8_t *)"", 0,
+                           (const uint8_t *)"Zcash_J_");
 
-    find_group_hash(&fixed_generators[GEN_VALUE_COMMITMENT_VALUE],
-                    (const uint8_t *)"v", 1,
-                    (const uint8_t *)"Zcash_cv");
+    derive_fixed_generator(GEN_VALUE_COMMITMENT_VALUE,
+                           "ValueCommitmentValue",
+                           (const uint8_t *)"v", 1,
+                           (const uint8_t *)"Zcash_cv");
 
-    find_group_hash(&fixed_generators[GEN_VALUE_COMMITMENT_RANDOMNESS],
-                    (const uint8_t *)"r", 1,
-                    (const uint8_t *)"Zcash_cv");
+    derive_fixed_generator(GEN_VALUE_COMMITMENT_RANDOMNESS,
+                           "ValueCommitmentRandomness",
+                           (const uint8_t *)"r", 1,
+                           (const uint8_t *)"Zcash_cv");
 
-    find_group_hash(&fixed_generators[GEN_SPENDING_KEY],
-                    (const uint8_t *)"", 0,
-                    (const uint8_t *)"Zcash_G_");
+    derive_fixed_generator(GEN_SPENDING_KEY,
+                           "SpendingKey",
+                           (const uint8_t *)"", 0,
+                           (const uint8_t *)"Zcash_G_");
 
     fixed_generators_loaded = true;
 }
