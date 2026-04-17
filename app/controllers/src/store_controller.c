@@ -10,6 +10,8 @@
 #include "services/zslp_service.h"
 #include "script/standard.h"
 #include "wallet/sapling_keys.h"
+#include "crypto/hmac_sha256.h"
+#include "core/random.h"
 #include "util/template.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,6 +26,9 @@ static size_t serve_gated_content(sqlite3 *db, const char *customer_addr,
                                    const char *token_id, uint64_t required,
                                    const char *datadir,
                                    uint8_t *resp, size_t max);
+static void store_csrf_token(const char *context, char out[33]);
+static void store_csrf_context(char *out, size_t outmax, int64_t product_id);
+static bool store_csrf_verify(const char *context, const char *provided);
 static const char *store_order_status_text(int status);
 static const char *store_order_status_class(int status);
 static bool store_parse_access_query(const char *path,
@@ -414,6 +419,10 @@ static size_t serve_product_detail(sqlite3 *db, int64_t product_id,
     char detail_price[32];
     format_zcl_price(detail_price, sizeof(detail_price), product.price_zatoshi);
 
+    char csrf_ctx[64], csrf_tok[33];
+    store_csrf_context(csrf_ctx, sizeof(csrf_ctx), product_id);
+    store_csrf_token(csrf_ctx, csrf_tok);
+
     n = snprintf(body + off, sizeof(body) - off,
         "<div class='product'>"
         "<h2>%s</h2>"
@@ -423,6 +432,7 @@ static size_t serve_product_detail(sqlite3 *db, int64_t product_id,
         "<h3>Purchase</h3>"
         "<form method='post' action='/store/orders'>"
         "<input type='hidden' name='product_id' value='%lld'>"
+        "<input type='hidden' name='csrf_token' value='%s'>"
         "<label>Your t-address (to receive tokens):</label>"
         "<input type='text' name='customer_addr' placeholder='t1...' required>"
         "<br><br>"
@@ -436,7 +446,8 @@ static size_t serve_product_detail(sqlite3 *db, int64_t product_id,
         detail_price,
         (long long)product.tokens_per_purchase,
         safe_token,
-        (long long)product_id);
+        (long long)product_id,
+        csrf_tok);
     if (n > 0) off += (size_t)n;
 
     return store_html_response(body, off, resp, max);
@@ -813,7 +824,101 @@ static const char *store_order_status_class(int status)
     }
 }
 
-/* Parse POST body for customer_addr=value */
+/* ── CSRF form token (P3.6) ─────────────────────────────────────
+ *
+ * Without a token, a malicious third-party page can `<form action=
+ * 'http://<onion>/store/orders'>` and trick any visiting browser into
+ * silently POSTing an unwanted order.  The store has no login/session
+ * cookie to bind to, so classical per-session CSRF isn't reachable
+ * without plumbing cookies through onion_service.c.  Instead, sign a
+ * small context string (order form scope + product-id) with a
+ * per-process random HMAC key and embed it as a hidden field.  The
+ * browser's same-origin policy prevents JS on a third-party page from
+ * reading our GET response body, so it cannot learn the signed token.
+ * A server-side attacker with their own curl can, but that's the same
+ * capability as direct submission — no amplification from the victim
+ * browser. */
+static unsigned char s_csrf_key[32];
+static bool s_csrf_key_ready = false;
+
+static void store_csrf_init(void)
+{
+    if (s_csrf_key_ready) return;
+    GetRandBytes(s_csrf_key, sizeof(s_csrf_key));
+    s_csrf_key_ready = true;
+}
+
+/* Write 32-char lowercase-hex token for `context` into out (33 bytes incl NUL). */
+static void store_csrf_token(const char *context, char out[33])
+{
+    store_csrf_init();
+    struct hmac_sha256_ctx ctx;
+    unsigned char mac[HMAC_SHA256_OUTPUT_SIZE];
+    hmac_sha256_init(&ctx, s_csrf_key, sizeof(s_csrf_key));
+    hmac_sha256_write(&ctx, (const unsigned char *)context, strlen(context));
+    hmac_sha256_finalize(&ctx, mac);
+    static const char hex[] = "0123456789abcdef";
+    for (size_t i = 0; i < 16; i++) {
+        out[i * 2]     = hex[(mac[i] >> 4) & 0x0f];
+        out[i * 2 + 1] = hex[mac[i] & 0x0f];
+    }
+    out[32] = '\0';
+}
+
+/* Constant-time check: does `provided` match the token for `context`? */
+static bool store_csrf_verify(const char *context, const char *provided)
+{
+    if (!context || !provided) return false;
+    if (strlen(provided) != 32) return false;
+    char expected[33];
+    store_csrf_token(context, expected);
+    unsigned char diff = 0;
+    for (size_t i = 0; i < 32; i++)
+        diff |= (unsigned char)(expected[i] ^ provided[i]);
+    return diff == 0;
+}
+
+/* Context string — the token is bound to the specific order form so a
+ * leaked token from one product page can't be replayed to another.
+ * Format: "store:order:<product_id>".  Writes into a caller buffer. */
+static void store_csrf_context(char *out, size_t outmax, int64_t product_id)
+{
+    snprintf(out, outmax, "store:order:%lld", (long long)product_id);
+}
+
+/* Decode `%XX` and `+` escapes in an x-www-form-urlencoded value.
+ * Ported from app/controllers/src/wallet_view_helpers.c (P3.6).  Without
+ * this, "a%20b" in a form field is stored literally as the four bytes
+ * '%','2','0','b' in the DB and rendered back to the user unchanged —
+ * breaking display, search, and anything downstream that interprets
+ * the stored value. */
+static void store_url_decode(char *dst, size_t dstmax, const char *src, size_t srclen)
+{
+    size_t di = 0;
+    if (!dstmax) return;
+    for (size_t si = 0; si < srclen && di < dstmax - 1; si++) {
+        char c = src[si];
+        if (c == '%' && si + 2 < srclen) {
+            char h1 = src[si + 1], h2 = src[si + 2];
+            int hi = (h1 >= '0' && h1 <= '9') ? h1 - '0' :
+                     (h1 >= 'a' && h1 <= 'f') ? h1 - 'a' + 10 :
+                     (h1 >= 'A' && h1 <= 'F') ? h1 - 'A' + 10 : -1;
+            int lo = (h2 >= '0' && h2 <= '9') ? h2 - '0' :
+                     (h2 >= 'a' && h2 <= 'f') ? h2 - 'a' + 10 :
+                     (h2 >= 'A' && h2 <= 'F') ? h2 - 'A' + 10 : -1;
+            if (hi >= 0 && lo >= 0) {
+                dst[di++] = (char)((hi << 4) | lo);
+                si += 2;
+                continue;
+            }
+        }
+        dst[di++] = (c == '+') ? ' ' : c;
+    }
+    dst[di] = '\0';
+}
+
+/* Parse x-www-form-urlencoded body for `field=value` and URL-decode
+ * the value into `out`. */
 static const char *parse_form_field(const char *body, size_t len,
                                      const char *field, char *out, size_t outmax)
 {
@@ -825,14 +930,12 @@ static const char *parse_form_field(const char *body, size_t len,
     const char *p = strstr(body, search);
     if (!p) return NULL;
     p += strlen(search);
-    /* Compute remaining bytes in body from current position */
+    /* Value ends at &, space, or end of body. */
     size_t remaining = len - (size_t)(p - body);
-    size_t i = 0;
-    while (i < outmax - 1 && i < remaining && p[i] && p[i] != '&' && p[i] != ' ') {
-        out[i] = p[i];
-        i++;
-    }
-    out[i] = '\0';
+    size_t vlen = 0;
+    while (vlen < remaining && p[vlen] && p[vlen] != '&' && p[vlen] != ' ')
+        vlen++;
+    store_url_decode(out, outmax, p, vlen);
     return out;
 }
 
@@ -895,9 +998,13 @@ size_t store_handle_request(const char *method, const char *path,
     } else if (route_is_order_create(method, path)) {
         int64_t id = -1;
         char addr[128] = "";
-        if (body && body_len > 0)
+        char csrf[64] = "";
+        if (body && body_len > 0) {
             parse_form_field((const char *)body, body_len,
                              "customer_addr", addr, sizeof(addr));
+            parse_form_field((const char *)body, body_len,
+                             "csrf_token", csrf, sizeof(csrf));
+        }
         if (path_has_prefix(path, "/store/buy/")) {
             if (!parse_positive_path_id(path, &id))
                 id = -1;
@@ -905,6 +1012,18 @@ size_t store_handle_request(const char *method, const char *path,
                                            "product_id", &id)) {
             const char *err_body = "<h1>Invalid product</h1>"
                 "<p>product_id must be a positive integer.</p>"
+                "<p><a href='/store/products'>&larr; Back to store</a></p>";
+            result = store_error_response("400 Bad Request",
+                err_body, strlen(err_body), response, response_max);
+            node_db_close(&ndb);
+            return result;
+        }
+        char csrf_ctx[64];
+        store_csrf_context(csrf_ctx, sizeof(csrf_ctx), id);
+        if (!store_csrf_verify(csrf_ctx, csrf)) {
+            const char *err_body = "<h1>Invalid CSRF token</h1>"
+                "<p>Form token missing or did not verify. "
+                "Please reload the product page and resubmit.</p>"
                 "<p><a href='/store/products'>&larr; Back to store</a></p>";
             result = store_error_response("400 Bad Request",
                 err_body, strlen(err_body), response, response_max);

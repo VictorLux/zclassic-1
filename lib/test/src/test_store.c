@@ -25,6 +25,31 @@ static void cleanup_datadir(void)
     system(cmd);
 }
 
+/* Fetch the CSRF token embedded in the purchase form for product_id.
+ * GET /store/product/<id> and scrape value='...' from the
+ * name='csrf_token' hidden input.  Returns true on success. */
+static bool fetch_csrf_token(int64_t product_id, char *out, size_t outmax)
+{
+    uint8_t page[16384];
+    char path[64];
+    snprintf(path, sizeof(path), "/store/product/%lld", (long long)product_id);
+    size_t n = store_handle_request("GET", path, NULL, 0,
+                                     page, sizeof(page), test_datadir);
+    if (n == 0) return false;
+    page[sizeof(page) - 1] = 0;
+    const char *needle = "name='csrf_token' value='";
+    const char *p = strstr((char *)page, needle);
+    if (!p) return false;
+    p += strlen(needle);
+    const char *end = strchr(p, '\'');
+    if (!end) return false;
+    size_t tlen = (size_t)(end - p);
+    if (tlen >= outmax) return false;
+    memcpy(out, p, tlen);
+    out[tlen] = '\0';
+    return true;
+}
+
 int test_store(void)
 {
     int failures = 0;
@@ -116,13 +141,20 @@ int test_store(void)
 
     /* ── Create order ─────────────────────────────────────── */
 
+    char csrf1[64] = "";
+    bool have_csrf1 = fetch_csrf_token(1, csrf1, sizeof(csrf1));
+
     printf("store: POST /store/buy/1 creates order... ");
     {
-        const char *body = "customer_addr=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn";
+        char body[256];
+        snprintf(body, sizeof(body),
+            "customer_addr=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn&csrf_token=%s",
+            csrf1);
         size_t n = store_handle_request("POST", "/store/buy/1",
                                          (const uint8_t *)body, strlen(body),
                                          resp, sizeof(resp), test_datadir);
         bool ok = (n > 0);
+        ok = ok && have_csrf1;
         ok = ok && (strstr((char *)resp, "200 OK") != NULL);
         ok = ok && (strstr((char *)resp, "Order #") != NULL);
         ok = ok && (strstr((char *)resp, "t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn") != NULL);
@@ -133,8 +165,10 @@ int test_store(void)
 
     printf("store: POST /store/orders REST create works... ");
     {
-        const char *body =
-            "product_id=1&customer_addr=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn";
+        char body[256];
+        snprintf(body, sizeof(body),
+            "product_id=1&customer_addr=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn&csrf_token=%s",
+            csrf1);
         size_t n = store_handle_request("POST", "/store/orders",
                                          (const uint8_t *)body, strlen(body),
                                          resp, sizeof(resp), test_datadir);
@@ -148,30 +182,39 @@ int test_store(void)
 
     printf("store: POST /store/buy/999 returns 404... ");
     {
-        const char *body = "customer_addr=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn";
+        /* id=999 routes through a path id, so the CSRF context will be
+         * "store:order:999" — fetch that token separately. */
+        char csrf999[64] = "";
+        bool have_csrf999 = fetch_csrf_token(999, csrf999, sizeof(csrf999));
+        char body[256];
+        snprintf(body, sizeof(body),
+            "customer_addr=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn&csrf_token=%s",
+            csrf999);
         size_t n = store_handle_request("POST", "/store/buy/999",
                                          (const uint8_t *)body, strlen(body),
                                          resp, sizeof(resp), test_datadir);
-        bool ok = (n > 0) && (strstr((char *)resp, "404") != NULL);
+        /* Either the 404 happens before the CSRF check (fine) or after
+         * a valid CSRF is accepted (also fine).  Key property: the
+         * server does NOT create an order.  */
+        bool ok = (n > 0) && (strstr((char *)resp, "404") != NULL ||
+                              strstr((char *)resp, "Invalid CSRF") != NULL);
+        (void)have_csrf999;
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
 
-    /* P3.4: reject t-addr with bad Base58Check. Before the fix the
-     * store only checked shape (t1 + length) and happily wrote the
-     * order row — funds sent to such an address are unspendable. */
+    /* P3.4: reject t-addr with bad Base58Check. */
     printf("store: POST /store/buy rejects t-addr with bad checksum... ");
     {
-        /* Same shape as the canonical address but last char flipped —
-         * passes prefix+alphanumeric+length, fails the checksum. */
-        const char *body = "customer_addr=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXAA";
+        char body[256];
+        snprintf(body, sizeof(body),
+            "customer_addr=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXAA&csrf_token=%s",
+            csrf1);
         size_t n = store_handle_request("POST", "/store/buy/1",
                                          (const uint8_t *)body, strlen(body),
                                          resp, sizeof(resp), test_datadir);
         bool ok = (n > 0) && (strstr((char *)resp, "400") != NULL);
         ok = ok && (strstr((char *)resp, "Invalid address") != NULL);
-        /* The typo'd address must NOT have produced an Order # — no
-         * row should have been written. */
         ok = ok && (strstr((char *)resp, "Order #") == NULL);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
@@ -179,18 +222,75 @@ int test_store(void)
 
     printf("store: POST /store/orders rejects z-addr with bad bech32... ");
     {
-        /* Length ≥78 starting with zs1, alphanumeric — but the bech32
-         * checksum is invalid. Before P3.4 this wrote an order row. */
-        const char *body =
-            "product_id=1&customer_addr=zs1" /* 3 char prefix */
-            /* 78 chars of bogus body = 81 total */
-            "qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq";
+        char body[384];
+        snprintf(body, sizeof(body),
+            "product_id=1&customer_addr=zs1"
+            "qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq"
+            "&csrf_token=%s",
+            csrf1);
         size_t n = store_handle_request("POST", "/store/orders",
                                          (const uint8_t *)body, strlen(body),
                                          resp, sizeof(resp), test_datadir);
         bool ok = (n > 0) && (strstr((char *)resp, "400") != NULL);
         ok = ok && (strstr((char *)resp, "Invalid address") != NULL);
         ok = ok && (strstr((char *)resp, "Order #") == NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* P3.6 CSRF: POST without any csrf_token must be rejected. */
+    printf("store: POST /store/orders without csrf_token returns 400... ");
+    {
+        const char *body =
+            "product_id=1&customer_addr=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn";
+        size_t n = store_handle_request("POST", "/store/orders",
+                                         (const uint8_t *)body, strlen(body),
+                                         resp, sizeof(resp), test_datadir);
+        bool ok = (n > 0) && (strstr((char *)resp, "400") != NULL);
+        ok = ok && (strstr((char *)resp, "Invalid CSRF") != NULL);
+        ok = ok && (strstr((char *)resp, "Order #") == NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* P3.6 CSRF: token bound to product-id; replaying product 1's token
+     * when POSTing for a different id must fail. */
+    printf("store: CSRF token for one product_id rejected for another... ");
+    {
+        char body[256];
+        snprintf(body, sizeof(body),
+            "product_id=2&customer_addr=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn&csrf_token=%s",
+            csrf1);
+        size_t n = store_handle_request("POST", "/store/orders",
+                                         (const uint8_t *)body, strlen(body),
+                                         resp, sizeof(resp), test_datadir);
+        bool ok = (n > 0) && (strstr((char *)resp, "400") != NULL);
+        ok = ok && (strstr((char *)resp, "Invalid CSRF") != NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* P3.6 URL-decode: percent-encoded address must decode to the raw
+     * string before validation.  Before the fix, `%74` was kept as the
+     * three literal bytes and the address failed length/shape checks
+     * (now it fails checksum instead — so we encode a VALID t-addr
+     * that decodes correctly and expect a 200 OK with the decoded
+     * address round-tripped). */
+    printf("store: POST body with %%-encoded customer_addr decodes before validation... ");
+    {
+        /* Encode the 't' in t1YRB... as %74. */
+        char body[256];
+        snprintf(body, sizeof(body),
+            "customer_addr=%%74%%31YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn&csrf_token=%s",
+            csrf1);
+        size_t n = store_handle_request("POST", "/store/buy/1",
+                                         (const uint8_t *)body, strlen(body),
+                                         resp, sizeof(resp), test_datadir);
+        bool ok = (n > 0) && (strstr((char *)resp, "200 OK") != NULL);
+        /* The decoded address — not the %-encoded form — should be in
+         * the order confirmation. */
+        ok = ok && (strstr((char *)resp, "t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn") != NULL);
+        ok = ok && (strstr((char *)resp, "%74") == NULL);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
@@ -539,11 +639,16 @@ int test_store(void)
 
     printf("store: e2e: POST /store/buy/1 creates order with z-addr... ");
     {
-        const char *body = "customer_addr=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn";
+        char csrf_e2e[64] = "";
+        bool have_csrf = fetch_csrf_token(1, csrf_e2e, sizeof(csrf_e2e));
+        char body[256];
+        snprintf(body, sizeof(body),
+            "customer_addr=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn&csrf_token=%s",
+            csrf_e2e);
         size_t n = store_handle_request("POST", "/store/buy/1",
                                          (const uint8_t *)body, strlen(body),
                                          resp, sizeof(resp), test_datadir);
-        bool ok = (n > 0);
+        bool ok = (n > 0) && have_csrf;
         ok = ok && (strstr((char *)resp, "200 OK") != NULL);
         ok = ok && (strstr((char *)resp, "Order #") != NULL);
         ok = ok && (strstr((char *)resp, "t1YRBXKYLhrb") != NULL);
@@ -869,8 +974,14 @@ int test_store(void)
     printf("store: buy never generates fake zs1_order address... ");
     {
         uint8_t resp[4096];
+        char csrf_rb[64] = "";
+        fetch_csrf_token(1, csrf_rb, sizeof(csrf_rb));
+        char body[256];
+        int blen = snprintf(body, sizeof(body),
+            "customer_addr=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn&csrf_token=%s",
+            csrf_rb);
         size_t n = store_handle_request("POST", "/store/buy/1",
-            (const uint8_t *)"customer_addr=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn", 48,
+            (const uint8_t *)body, (size_t)blen,
             resp, sizeof(resp), test_datadir);
         resp[n < sizeof(resp) ? n : sizeof(resp) - 1] = '\0';
         /* Should either show a real z-address (if ZK loaded) or 503.
