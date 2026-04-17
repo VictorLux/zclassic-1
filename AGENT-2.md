@@ -29,7 +29,74 @@ Good work. Now on to the next pile.
 
 ---
 
-## NEXT UP — P3.3 raw `sqlite3_step` migration in app/
+## NEXT UP — P3.4 + P3.5 + P3.6 store/rpc_client hardening
+
+P3.3 landed cleanly (2a59ac938 + siblings, ~115 sites migrated across 17
+files; 5 state-kv / rollback opt-outs retained with descriptive
+annotations — those are correct and stay). Now close the three adjacent
+rows in the P3 group that sit in your expanded scope.
+
+### Step A — P3.4: store_controller address checksum validation
+File: `app/controllers/src/store_controller.c:663-685`
+
+**Bug:** The checkout handler accepts addresses as strings and does not
+verify the Base58Check or Bech32 checksum before writing them to the order
+record. A customer who typos a character gets their ZCL burned on a
+syntactically-valid-but-checksum-invalid address.
+
+**Fix:** Route every incoming address through the project's existing
+decode helpers (`key_io.h`'s `decode_destination`, or whatever the
+existing wallet code uses for t-addr and z-addr validation). On invalid
+checksum: return a 400 with a specific error message and don't write the
+order. Add a test that posts a typo'd address and asserts rejection.
+
+### Step B — P3.5: rpc_client.c realloc overwrite w/ no NULL check
+File: `tools/mcp/rpc_client.c:126`
+
+**Bug:** `buf = realloc(buf, new_size)` — classic memory-leak-on-failure
+pattern. If realloc returns NULL, the old pointer is overwritten and lost.
+Under memory pressure the MCP client leaks the accumulating response
+buffer on every failed call.
+
+**Fix:** Use a `void *tmp = realloc(buf, new_size); if (!tmp) { LOG_FAIL;
+free(buf); return -1; } buf = tmp;` pattern. Search the file (and
+`tools/mcp/`) for any other `X = realloc(X, ...)` sites and fix them all.
+
+### Step C — P3.6: parse_form_field URL-decode + CSRF token
+File: `app/controllers/src/store_controller.c:803-823`
+
+**Bug:** `parse_form_field` treats raw URL-encoded bytes as-is. A customer
+whose order note contains `%20` sees literal `%20` stored. Worse, there's
+no CSRF token on the order form, so any logged-in session can be
+cross-site-tricked into placing orders.
+
+**Fix (URL-decode):** Port in the project's existing URL-decode helper
+(grep for `url_decode` / `percent_decode` in `lib/net/src/` or
+`app/controllers/`). Apply to every field before use.
+
+**Fix (CSRF):** Generate a per-session random token on the checkout-page
+GET, include it as a hidden form field, verify on POST. Pattern: look for
+how the wallet-send form handles it (Rhett's done this before in
+`wallet_view_send.c`).
+
+**Acceptance for Step C:** add a test that (a) posts a form without a
+token and asserts rejection, (b) posts with an invalid token and asserts
+rejection, (c) posts with a valid token and asserts success.
+
+### Commit rules
+
+Same as always — one logical fix per commit, `make test && make lint`
+green before each, push frequently, no amends on pushed commits.
+
+When P3.4/P3.5/P3.6 all show `done <SHA>` in `AGENT.md`, ping Rhett for
+the next pile. Likely candidates after this are the medium P5 operator
+hygiene items (P5.1 git-tracked binary cleanup, P5.3 hardcoded
+`/home/rhett` paths, P5.4 tool-script purge) — but wait for Rhett's call
+before starting those; they touch deploy/repo state.
+
+---
+
+## Previous NEXT UP (now done) — P3.3 raw `sqlite3_step` migration in app/
 
 **Scope:** ~80 raw `sqlite3_step()` call sites across `app/controllers/` and
 `app/services/`. These are the exact pattern you just migrated in

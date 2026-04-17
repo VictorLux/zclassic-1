@@ -23,45 +23,109 @@ First pass is **merged into main** (as of `bcab984fd`):
 - ✅ Step 7 — FIXME comment on jub_scalar_mul timing (ecd24894e)
 - ✅ Regression tests (ebc470342)
 
-**NEXT UP — P1.11 LOG_FAIL audit. Start here.**
+## P1.11 — LOG_FAIL audit, PROGRESS (~75% done)
 
-This is the large remaining item. Every error return under `lib/crypto/` and
-`lib/sapling/` currently returns bare `false` with no diagnostic — a direct
-violation of `DEFENSIVE_CODING.md` §4. Fix the whole tree. Rules:
+You've already landed:
 
-1. **One file per commit.** "sapling: LOG_FAIL on groth16 pairing failure"
-   is a good commit. A 20-file bomb is not.
-2. Audit every `return false`, every `return NULL`, every early-return from
-   a bool/pointer function. If the reason isn't already obvious from a
-   caller-visible error code, add `LOG_FAIL` / `LOG_ERR` / `LOG_NULL` with
-   enough context to locate the failure post-mortem (function name, which
-   check failed, relevant non-secret inputs).
-3. **Never log secret material.** No secret keys, no nonces, no plaintext,
-   no notes. Hashes and public values only.
-4. After each commit, `make -j$(nproc) && ./test_zcl` must pass. Push
-   incrementally — don't accumulate.
+- chacha20poly1305 AEAD (6b98134a0)
+- ed25519 verify mismatch (44899d30b)
+- note_encryption KDF/PRF init + sprout nonce budget (cc884ebfe)
+- sapling.c ~30 bare-false paths (ae7cfe44c)
+- groth16_prover + key-parse (ca63b931f)
+- params/zip32/sprout/note silent returns (9702e2566)
+- sapling_prover_c23 + sapling_circuit (9054ac748)
 
-Suggested order (smallest → largest):
+## NEXT UP — finish P1.11, then Step 8, then Step 7 (constant-time)
 
-- `lib/crypto/src/chacha20poly1305.c` — AEAD decrypt failures
-- `lib/crypto/src/ed25519.c` — verify + decoding failures (you already
-  touched this in P1.8; round it out)
-- `lib/crypto/src/curve25519.c`, `hmac_*.c`, `pbkdf2_*.c`
-- `lib/sapling/src/note_encryption.c` — KDF/AEAD failures
-- `lib/sapling/src/redjubjub.c`-equivalent paths inside `sapling.c` —
-  round out the non-canonical-S work from P1.9
-- `lib/sapling/src/groth16_prover.c` — all Groth16 verify/decoding failures
-- Everything else under `lib/sapling/` you haven't touched yet
+### A. Close P1.11 — remaining bare-false paths
 
-When P1.11 is done, move on to **Step 8** in this file (nonce hygiene
-debug assertion for note encryption). That one is quick.
+Audit, one file per commit (same rules: no secrets in logs, test must
+pass each commit):
 
-Update AGENT.md row P1.11 status as you go:
-  `Agent 3 — in-progress (<file list>)` → `Agent 3 — done <SHA>`.
+- `lib/sapling/src/bls12_381.c` — curve arithmetic; most returns are pure
+  math "out of range" — only add LOG_FAIL where it indicates corruption
+  or an attacker-controlled input, not for normal subgroup rejects
+- `lib/sapling/src/bn254.c` — BN254 curve (Sprout); same principle
+- `lib/sapling/src/fr.c` and `fr_avx512.c` — scalar field arithmetic;
+  apply the "meaningful failure" filter strictly — don't LOG_FAIL on
+  internal helpers that return false on every out-of-range input
+- `lib/sapling/src/incremental_merkle_tree.c` — Merkle-tree ops; depth
+  overflow or full-tree paths deserve a log
+- `lib/crypto/src/equihash.c` + `equihash_solver.c` — PoW paths; solver
+  is verify-time, not attacker-controlled at consensus level — just the
+  decoding / bounds checks
+- `lib/crypto/src/sha256.c`, `sha3_avx512.c` — mostly pure compute;
+  audit for any length/bounds returns
 
-The rest of this file is unchanged from your initial brief — preflight, file
-scope rules, commit protocol, and the original 8-step ordering are still
-valid. You already did Steps 1/2/3/5/6/7. Step 4 is what's left.
+**Filter rule:** If a `return false` means "bad input from external
+source → reject this tx/block", LOG_FAIL it. If it means "internal
+helper, caller already knows this can fail, logging is just noise" —
+skip. Judgment call; err toward logging when touching consensus paths.
+
+When no bare-false remains in a file worth logging, update AGENT.md row
+P1.11 to `done <final SHA>` and add a one-line note: "bls12_381 +
+bn254 + fr internal math returns intentionally left un-logged —
+compute-only helpers with no external-input-reachable failure modes."
+
+### B. Step 8 — Nonce hygiene debug assertion (quick)
+
+File: `lib/sapling/src/note_encryption.c` (header comment + init path)
+
+This is the original brief's Step 8, deferred until P1.11 wrapped. Add
+a per-process repeat-esk detector under `#ifndef NDEBUG` (or a new
+`ZCL_CRYPTO_SANITY` flag wired into the `-ggdb`/debug build):
+
+- Keep a ring buffer of the last N=256 `esk` values seen
+  (hash them first — never store raw secret scalars in memory beyond
+  what the encryption path requires)
+- On each encrypt, check for collision; if found, abort with a
+  LOG_FAIL that names the file header's "RNG failure would yield
+  two-time pad" hazard
+- Document the hazard at the top of the file
+
+### C. Step 7 redux — Constant-time `jub_scalar_mul`
+
+File: `lib/sapling/src/fr.c:307-333`
+
+Original brief scoped this out of the first wave ("genuinely hard —
+constant-time windowed scalar mult requires a branchless conditional
+select and masked table walks"). Now that P1.11 is landing, this is the
+right next step. Side-channel leakage of `ask`, `nsk`, `ivk`, `esk`,
+`bsk` via cache timing is a real threat on shared hosts.
+
+**Plan:**
+
+1. Read the existing 4-bit-window implementation carefully. Write
+   down the two secret-dependent behaviors (table lookup by nibble,
+   conditional add by nibble nonzero).
+2. Replace the table lookup with a masked linear scan: load every
+   table entry, select via constant-time conditional move. Reference
+   implementation pattern: `curve25519-donna`, `ref10` ed25519 — both
+   vendored under `vendor/tor/src/ext/ed25519/`; look at how they do
+   it.
+3. Replace the `if (nibble) add` with an unconditional add of a
+   masked point (masked by `nibble != 0` as a constant-time bool).
+4. Keep the signed-window optimization if feasible — it's standard
+   practice and doesn't regress security.
+5. **Test aggressively.** Add a diff test: generate 10k random
+   scalar-base-point pairs, multiply with both old and new; outputs
+   must match bit-for-bit. Then a timing test: measure mean + stddev
+   of multiplication time over 1k samples with two very different
+   scalars (all-zero, all-one nibbles); stddev must not correlate
+   with scalar weight.
+6. Remove the FIXME comment you added in ecd24894e.
+
+This is legitimately hard and you should take it slow — this is the
+only wave where "one commit per logical step with extensive testing
+before the next" beats "push frequently". Draft, review, iterate on a
+branch; only merge when the constant-time property is verified.
+
+Update AGENT.md row P1.11 and (new) row P1.12 (add it under P1) as you
+go.
+
+---
+
+## Previous NEXT UP (in progress) — P1.11 LOG_FAIL audit
 
 ---
 
