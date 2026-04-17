@@ -14,11 +14,17 @@
 
 #include "models/wallet_key.h"
 #include "models/wallet_tx.h"
+#include "keys/key.h"
+#include "keys/pubkey.h"
 #include "support/cleanse.h"
+#include "util/result.h"
 #include <string.h>
 #include <stdlib.h>
 #include <time.h>
 #include "util/safe_alloc.h"
+
+/* WSQL_* error codes used by the rich-error save. */
+#include "wallet/wallet_sqlite.h"
 
 /* ── Callbacks ─────────────────────────────────────────────────── */
 
@@ -92,6 +98,54 @@ bool db_wallet_key_save(struct node_db *ndb, const struct db_wallet_key *k)
         AR_BIND_BLOB(s, 3, k->privkey, 32);
         AR_BIND_INT(s, 4, k->compressed ? 1 : 0);
         AR_BIND_INT(s, 5, k->created_at));
+}
+
+struct zcl_result db_wallet_key_save_r(struct node_db *ndb,
+                                        const struct pubkey *pk,
+                                        const struct privkey *key)
+{
+    if (!ndb)
+        return ZCL_ERR(WSQL_NULL_ARG, "node_db pointer is NULL");
+    if (!pk)
+        return ZCL_ERR(WSQL_INVARIANT_PUBKEY, "pubkey pointer is NULL");
+    if (!key)
+        return ZCL_ERR(WSQL_INVARIANT_PRIVKEY, "privkey pointer is NULL");
+    if (!ndb->open)
+        return ZCL_ERR(WSQL_DB_NOT_OPEN, "node_db is not open");
+
+    /* Plan §5.4: pubkey_hash must equal hash160(pubkey).  The
+     * legacy save path trusted the caller; this one does not. */
+    if (pk->size != 33 && pk->size != 65)
+        return ZCL_ERR(WSQL_INVARIANT_PUBKEY,
+            "pubkey size %u is not 33 or 65", pk->size);
+    if (!key->fValid)
+        return ZCL_ERR(WSQL_INVARIANT_PRIVKEY, "privkey->fValid is false");
+    static const uint8_t zero32[32] = {0};
+    if (memcmp(key->vch, zero32, 32) == 0)
+        return ZCL_ERR(WSQL_INVARIANT_PRIVKEY, "privkey is all zero");
+
+    struct key_id kid = pubkey_get_id(pk);
+
+    struct db_wallet_key dbk;
+    memset(&dbk, 0, sizeof(dbk));
+    memcpy(dbk.pubkey_hash, kid.id.data, 20);
+    memcpy(dbk.pubkey, pk->vch, pk->size);
+    dbk.pubkey_len = pk->size;
+    memcpy(dbk.privkey, key->vch, 32);
+    dbk.compressed = key->fCompressed;
+    dbk.created_at = (int64_t)time(NULL);
+
+    bool ok = db_wallet_key_save(ndb, &dbk);
+
+    /* Don't leave key material on the stack. */
+    memory_cleanse(dbk.privkey, sizeof(dbk.privkey));
+
+    if (!ok)
+        return ZCL_ERR(WSQL_WRITE_FAIL,
+            "db_wallet_key_save failed: last_op=%s last_sqlite_rc=%d",
+            ndb->last_op[0] ? ndb->last_op : "(none)",
+            ndb->last_sqlite_rc);
+    return ZCL_OK;
 }
 
 bool db_wallet_key_find(struct node_db *ndb, const uint8_t pubkey_hash[20],

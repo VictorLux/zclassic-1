@@ -7,8 +7,12 @@
 
 #include "models/database.h"
 #include "models/activerecord.h"
+#include "util/result.h"
 #include <stdbool.h>
 #include <stdint.h>
+
+struct pubkey;
+struct privkey;
 
 struct db_wallet_key {
     uint8_t pubkey_hash[20];
@@ -27,6 +31,15 @@ bool db_wallet_key_validate(const struct db_wallet_key *k,
                             struct ar_errors *errors);
 
 bool db_wallet_key_save(struct node_db *ndb, const struct db_wallet_key *k);
+
+/* Rich-error convenience save.  Builds a db_wallet_key from the
+ * pubkey/privkey pair (validating pubkey/hash consistency) and
+ * routes the write through the same AR_BEGIN_SAVE lifecycle as the
+ * legacy save.  Prefer this over wallet_sqlite_write_key_r in new
+ * code so before_save / after_save hooks fire (plan §5.4). */
+struct zcl_result db_wallet_key_save_r(struct node_db *ndb,
+                                        const struct pubkey *pk,
+                                        const struct privkey *key);
 bool db_wallet_key_find(struct node_db *ndb, const uint8_t pubkey_hash[20],
                         struct db_wallet_key *out);
 bool db_wallet_key_delete(struct node_db *ndb, const uint8_t pubkey_hash[20]);
