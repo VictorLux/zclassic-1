@@ -15,6 +15,7 @@
 #include "crypto/blake2b.h"
 #include "core/random.h"
 #include "support/cleanse.h"
+#include "util/log_macros.h"
 #include <string.h>
 #include <stdlib.h>
 
@@ -523,18 +524,23 @@ bool sapling_check_spend(struct sapling_verification_ctx *ctx,
                            GEN_SPENDING_KEY))
         return false;
 
-    /* Groth16 proof verification (7 public inputs) */
-    if (sapling_spend_vk) {
+    /* Groth16 proof verification (7 public inputs).
+     * Fail-closed: a NULL spend VK means sapling_init_params never ran (or
+     * was torn down) — continuing would silently accept every zkproof. */
+    if (!sapling_spend_vk)
+        LOG_FAIL("sapling", "sapling_spend_vk is NULL (params not loaded)");
+
+    {
         struct groth16_proof proof;
         if (!groth16_proof_read(&proof, zkproof))
-            return false;
+            LOG_FAIL("sapling", "groth16_proof_read(spend) failed");
 
         /* Public inputs: rk.x, rk.y, cv.x, cv.y, anchor, nullifier_pack[0..1] */
         uint64_t public_input[7][4];
 
         struct jub_point rk_point;
         if (!jub_from_bytes(&rk_point, rk))
-            return false;
+            LOG_FAIL("sapling", "jub_from_bytes(rk) failed for spend proof");
         jub_to_affine_raw(public_input[0], public_input[1], &rk_point);
         jub_to_affine_raw(public_input[2], public_input[3], &cv_point);
         bytes_le_to_fr_raw(public_input[4], anchor);
@@ -544,10 +550,8 @@ bool sapling_check_spend(struct sapling_verification_ctx *ctx,
         multipack_bytes_to_fr((uint64_t (*)[4])&public_input[5], &n_packed,
                                nullifier, 32);
 
-        if (!groth16_verify(sapling_spend_vk, &proof, public_input, 7)) {
-            fprintf(stderr, "[sapling] groth16 spend proof verification failed\n");
-            return false;
-        }
+        if (!groth16_verify(sapling_spend_vk, &proof, public_input, 7))
+            LOG_FAIL("sapling", "groth16_verify(spend) rejected proof");
     }
 
     return true;
@@ -577,11 +581,16 @@ bool sapling_check_output(struct sapling_verification_ctx *ctx,
     if (is_small_order(epk))
         return false;
 
-    /* Groth16 proof verification (5 public inputs) */
-    if (sapling_output_vk) {
+    /* Groth16 proof verification (5 public inputs).
+     * Fail-closed: a NULL output VK means sapling_init_params never ran —
+     * continuing would silently accept every zkproof. */
+    if (!sapling_output_vk)
+        LOG_FAIL("sapling", "sapling_output_vk is NULL (params not loaded)");
+
+    {
         struct groth16_proof proof;
         if (!groth16_proof_read(&proof, zkproof))
-            return false;
+            LOG_FAIL("sapling", "groth16_proof_read(output) failed");
 
         /* Public inputs: cv.x, cv.y, epk.x, epk.y, cm */
         uint64_t public_input[5][4];
@@ -590,13 +599,13 @@ bool sapling_check_output(struct sapling_verification_ctx *ctx,
 
         struct jub_point epk_point;
         if (!jub_from_bytes(&epk_point, epk))
-            return false;
+            LOG_FAIL("sapling", "jub_from_bytes(epk) failed for output proof");
         jub_to_affine_raw(public_input[2], public_input[3], &epk_point);
 
         bytes_le_to_fr_raw(public_input[4], cm);
 
         if (!groth16_verify(sapling_output_vk, &proof, public_input, 5))
-            return false;
+            LOG_FAIL("sapling", "groth16_verify(output) rejected proof");
     }
 
     return true;
