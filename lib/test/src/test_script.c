@@ -392,6 +392,132 @@ int test_script(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    /* P4.5 — strict-DER parity with canonical Zcash / Bitcoin encoding.
+     *
+     * The is_valid_signature_encoding routine is BIP66 consensus-critical:
+     * any divergence from the upstream rules forks the network. These
+     * vectors pin the boundary behavior so a future refactor can't
+     * silently drift off the canonical interpretation.
+     *
+     * Each vector is a *data signature* (no trailing sighash byte). The
+     * DER bytes run from sig[0] to sig[len-1]. Expectations are written
+     * against check_data_signature_encoding, which calls
+     * is_valid_signature_encoding directly. */
+    printf("sigencoding strict-DER parity vectors... ");
+    {
+        struct vec { const unsigned char *bytes; size_t len; bool valid;
+                     const char *label; };
+
+        /* Minimum-size valid signature: 8-byte DER, 1-byte R=1, 1-byte
+         * S=1. Anything shorter must be rejected. */
+        static const unsigned char v_min_valid[] = {
+            0x30, 0x06, 0x02, 0x01, 0x01, 0x02, 0x01, 0x01
+        };
+        static const unsigned char v_too_short[] = {
+            0x30, 0x05, 0x02, 0x01, 0x01, 0x02, 0x01
+        };
+        static const unsigned char v_bad_compound[] = {
+            0x31, 0x06, 0x02, 0x01, 0x01, 0x02, 0x01, 0x01
+        };
+        static const unsigned char v_wrong_total_len[] = {
+            0x30, 0x07, 0x02, 0x01, 0x01, 0x02, 0x01, 0x01
+        };
+        static const unsigned char v_r_not_int[] = {
+            0x30, 0x06, 0x03, 0x01, 0x01, 0x02, 0x01, 0x01
+        };
+        static const unsigned char v_r_negative[] = {
+            0x30, 0x06, 0x02, 0x01, 0x80, 0x02, 0x01, 0x01
+        };
+        /* lenR=2, R=[00, 05]: null-padded but next byte is not negative,
+         * so the padding is excessive — must reject. */
+        static const unsigned char v_r_null_pad_bad[] = {
+            0x30, 0x07, 0x02, 0x02, 0x00, 0x05, 0x02, 0x01, 0x01
+        };
+        /* Same shape but next byte has its high bit set — padding is
+         * mandatory here, must accept. */
+        static const unsigned char v_r_null_pad_ok[] = {
+            0x30, 0x07, 0x02, 0x02, 0x00, 0x80, 0x02, 0x01, 0x01
+        };
+        /* lenR=0 — always rejected. */
+        static const unsigned char v_r_zero_len[] = {
+            0x30, 0x06, 0x02, 0x00, 0x02, 0x02, 0x01, 0x01
+        };
+        /* lenR larger than fits in signature: 3 > len - 7 = 1. */
+        static const unsigned char v_r_too_long[] = {
+            0x30, 0x06, 0x02, 0x03, 0x01, 0x01, 0x02, 0x01
+        };
+        /* lenS=0 — always rejected. */
+        static const unsigned char v_s_zero_len[] = {
+            0x30, 0x06, 0x02, 0x01, 0x01, 0x02, 0x00, 0x01
+        };
+        /* S negative. */
+        static const unsigned char v_s_negative[] = {
+            0x30, 0x06, 0x02, 0x01, 0x01, 0x02, 0x01, 0x80
+        };
+        /* S null-padded but not needed — reject. */
+        static const unsigned char v_s_null_pad_bad[] = {
+            0x30, 0x07, 0x02, 0x01, 0x01, 0x02, 0x02, 0x00, 0x05
+        };
+        /* S null-padded, next byte negative — accept. */
+        static const unsigned char v_s_null_pad_ok[] = {
+            0x30, 0x07, 0x02, 0x01, 0x01, 0x02, 0x02, 0x00, 0x80
+        };
+        /* 72-byte DER at the upper boundary. Structure:
+         *   [30] [70] [02] [33] [33-byte R with leading 0x00 null-pad]
+         *              [02] [33] [33-byte S with leading 0x00 null-pad]
+         * The null-pad is mandatory because the first real byte has its
+         * high bit set, so lenR = lenS = 33 is the canonical form. */
+        static unsigned char v_max_valid[72];
+        v_max_valid[0] = 0x30; v_max_valid[1] = 70;
+        v_max_valid[2] = 0x02; v_max_valid[3] = 33;
+        v_max_valid[4] = 0x00;
+        for (int k = 0; k < 32; k++) v_max_valid[5 + k] = 0x80 + (k & 0x7f);
+        v_max_valid[37] = 0x02; v_max_valid[38] = 33;
+        v_max_valid[39] = 0x00;
+        for (int k = 0; k < 32; k++) v_max_valid[40 + k] = 0x80 + (k & 0x7f);
+        /* 73-byte signature — exceeds the max bound. Content is the
+         * valid 72-byte form with a trailing junk byte. */
+        static unsigned char v_too_long[73];
+        memcpy(v_too_long, v_max_valid, 72);
+        v_too_long[72] = 0xff;
+        /* Not a real total-length anymore; adjust so the check that
+         * triggers is len > 72 (the size bound) rather than something
+         * structural. */
+
+        struct vec vectors[] = {
+            {v_min_valid,        sizeof(v_min_valid),      true,  "min valid"},
+            {v_too_short,        sizeof(v_too_short),      false, "too short (<8)"},
+            {v_bad_compound,     sizeof(v_bad_compound),   false, "bad compound type"},
+            {v_wrong_total_len,  sizeof(v_wrong_total_len),false, "wrong total-length"},
+            {v_r_not_int,        sizeof(v_r_not_int),      false, "R not int"},
+            {v_r_negative,       sizeof(v_r_negative),     false, "R negative"},
+            {v_r_null_pad_bad,   sizeof(v_r_null_pad_bad), false, "R null-pad excessive"},
+            {v_r_null_pad_ok,    sizeof(v_r_null_pad_ok),  true,  "R null-pad mandatory"},
+            {v_r_zero_len,       sizeof(v_r_zero_len),     false, "R zero length"},
+            {v_r_too_long,       sizeof(v_r_too_long),     false, "R too long"},
+            {v_s_zero_len,       sizeof(v_s_zero_len),     false, "S zero length"},
+            {v_s_negative,       sizeof(v_s_negative),     false, "S negative"},
+            {v_s_null_pad_bad,   sizeof(v_s_null_pad_bad), false, "S null-pad excessive"},
+            {v_s_null_pad_ok,    sizeof(v_s_null_pad_ok),  true,  "S null-pad mandatory"},
+            {v_max_valid,        sizeof(v_max_valid),      true,  "max valid (72 bytes)"},
+            {v_too_long,         sizeof(v_too_long),       false, "too long (>72)"},
+        };
+
+        bool ok = true;
+        for (size_t vi = 0; vi < sizeof(vectors) / sizeof(vectors[0]); vi++) {
+            struct vec *v = &vectors[vi];
+            ScriptError err = SCRIPT_ERR_OK;
+            bool got = check_data_signature_encoding(v->bytes, v->len, 0, &err);
+            if (got != v->valid) {
+                printf("\n  [%s] expected=%d got=%d err=%d",
+                       v->label, v->valid, got, err);
+                ok = false;
+            }
+        }
+        if (ok) printf("OK\n");
+        else { printf("\nFAIL\n"); failures++; }
+    }
+
     printf("check_pubkey_encoding... ");
     {
         unsigned char compressed[33] = {0x02};
