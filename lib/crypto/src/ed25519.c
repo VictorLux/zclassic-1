@@ -381,5 +381,9 @@ bool ed25519_verify(const uint8_t sig[64],
     for (int i = 0; i < 32; i++)
         diff |= t[i] ^ sig[i];
 
-    return diff == 0;
+    if (diff != 0)
+        LOG_FAIL("ed25519",
+                 "signature verify: [S]B - [h]A != R (signature mismatch, msg_len=%zu)",
+                 msg_len);
+    return true;
 }
