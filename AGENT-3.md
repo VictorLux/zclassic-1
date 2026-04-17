@@ -23,67 +23,23 @@ First pass is **merged into main** (as of `bcab984fd`):
 - ✅ Step 7 — FIXME comment on jub_scalar_mul timing (ecd24894e)
 - ✅ Regression tests (ebc470342)
 
-## P1.11 — LOG_FAIL audit, PROGRESS (~75% done)
+## P1.11 + Step 8 — DONE
 
-You've already landed:
+Shipped since last brief update:
 
-- chacha20poly1305 AEAD (6b98134a0)
-- ed25519 verify mismatch (44899d30b)
-- note_encryption KDF/PRF init + sprout nonce budget (cc884ebfe)
-- sapling.c ~30 bare-false paths (ae7cfe44c)
-- groth16_prover + key-parse (ca63b931f)
-- params/zip32/sprout/note silent returns (9702e2566)
-- sapling_prover_c23 + sapling_circuit (9054ac748)
+- incremental_merkle_tree (9bf4b63fd)
+- fast_scan (752088d79)
+- Groth16/PHGR13 pairing-check + key-read (0c1b29ba4)
+- **Step 8 — esk nonce-reuse sanity guard (909636215)**
+- equihash PoW rejects + hash primitive misuse (ca139a5ad)
+- bls12_381 + bn254 + sha256 (via note_encryption rollup)
 
-## NEXT UP — finish P1.11, then Step 8, then Step 7 (constant-time)
+Remaining bare-false in `fr.c`, `fr_avx512.c`, `equihash_solver.c`,
+`sha3_avx512.c` are internal scalar-field / hash helpers whose failure
+mode is "out-of-range input" by design — per the filter rule you've
+been applying, leave them un-logged. P1.11 is closed.
 
-### A. Close P1.11 — remaining bare-false paths
-
-Audit, one file per commit (same rules: no secrets in logs, test must
-pass each commit):
-
-- `lib/sapling/src/bls12_381.c` — curve arithmetic; most returns are pure
-  math "out of range" — only add LOG_FAIL where it indicates corruption
-  or an attacker-controlled input, not for normal subgroup rejects
-- `lib/sapling/src/bn254.c` — BN254 curve (Sprout); same principle
-- `lib/sapling/src/fr.c` and `fr_avx512.c` — scalar field arithmetic;
-  apply the "meaningful failure" filter strictly — don't LOG_FAIL on
-  internal helpers that return false on every out-of-range input
-- `lib/sapling/src/incremental_merkle_tree.c` — Merkle-tree ops; depth
-  overflow or full-tree paths deserve a log
-- `lib/crypto/src/equihash.c` + `equihash_solver.c` — PoW paths; solver
-  is verify-time, not attacker-controlled at consensus level — just the
-  decoding / bounds checks
-- `lib/crypto/src/sha256.c`, `sha3_avx512.c` — mostly pure compute;
-  audit for any length/bounds returns
-
-**Filter rule:** If a `return false` means "bad input from external
-source → reject this tx/block", LOG_FAIL it. If it means "internal
-helper, caller already knows this can fail, logging is just noise" —
-skip. Judgment call; err toward logging when touching consensus paths.
-
-When no bare-false remains in a file worth logging, update AGENT.md row
-P1.11 to `done <final SHA>` and add a one-line note: "bls12_381 +
-bn254 + fr internal math returns intentionally left un-logged —
-compute-only helpers with no external-input-reachable failure modes."
-
-### B. Step 8 — Nonce hygiene debug assertion (quick)
-
-File: `lib/sapling/src/note_encryption.c` (header comment + init path)
-
-This is the original brief's Step 8, deferred until P1.11 wrapped. Add
-a per-process repeat-esk detector under `#ifndef NDEBUG` (or a new
-`ZCL_CRYPTO_SANITY` flag wired into the `-ggdb`/debug build):
-
-- Keep a ring buffer of the last N=256 `esk` values seen
-  (hash them first — never store raw secret scalars in memory beyond
-  what the encryption path requires)
-- On each encrypt, check for collision; if found, abort with a
-  LOG_FAIL that names the file header's "RNG failure would yield
-  two-time pad" hazard
-- Document the hazard at the top of the file
-
-### C. Step 7 redux — Constant-time `jub_scalar_mul`
+## NEXT UP — P1.12: constant-time `jub_scalar_mul`
 
 File: `lib/sapling/src/fr.c:307-333`
 
@@ -120,12 +76,18 @@ only wave where "one commit per logical step with extensive testing
 before the next" beats "push frequently". Draft, review, iterate on a
 branch; only merge when the constant-time property is verified.
 
-Update AGENT.md row P1.11 and (new) row P1.12 (add it under P1) as you
-go.
+Update AGENT.md row P1.12 to `done <SHA>` when merged.
+
+**If you finish P1.12 early** — come talk to Rhett. Likely candidates:
+(a) constant-time audit of `lib/crypto/src/curve25519.c` and
+    `lib/crypto/src/ed25519.c` for the same cache-timing class
+(b) help close P3 with Agent-2 on JSON-injection / URL-decode fixes
+(c) a `lib/sapling/src/fr_avx512.c` constant-time parity pass if the
+    AVX path ends up diverging in timing behavior.
 
 ---
 
-## Previous NEXT UP (in progress) — P1.11 LOG_FAIL audit
+## Previous NEXT UP (completed) — P1.11 LOG_FAIL audit
 
 ---
 

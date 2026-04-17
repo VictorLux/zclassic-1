@@ -45,8 +45,9 @@ and Agent 3 fix violations in their lanes; Rhett fixes the rest.
 | P1.8 | Ed25519 missing `S<L` canonicality | `lib/crypto/src/ed25519.c:300-355` | HIGH | Agent 3 — done c510c7335 (branch, not main) |
 | P1.9 | RedJubjub missing `S<r` canonicality | `lib/sapling/src/sapling.c:386` | HIGH | Agent 3 — done 8440cd864 (branch, not main) |
 | P1.10 | `find_group_hash` returns ignored → silent zero generators | `lib/sapling/src/sapling.c:81-110` | HIGH | Agent 3 — done e221e0212 (branch, not main) |
-| P1.11 | Zero `LOG_FAIL` usage across crypto/sapling | `lib/crypto/*`, `lib/sapling/*` | HIGH | Agent 3 — in-progress ~75% (9054ac748; remaining: bls12_381, bn254, fr, incremental_merkle_tree, equihash, sha256/3) |
-| P1.12 | `jub_scalar_mul` constant-time rewrite (side-channel on secret keys) | `lib/sapling/src/fr.c:307-333` | HIGH | Agent 3 — queued (after P1.11 closes) |
+| P1.11 | Zero `LOG_FAIL` usage across crypto/sapling | `lib/crypto/*`, `lib/sapling/*` | HIGH | Agent 3 — done ca139a5ad (all consensus-reachable paths tagged; fr.c/fr_avx512.c/equihash_solver.c/sha3_avx512.c internal math helpers intentionally left un-logged per filter rule) |
+| P1.11b | Note-encryption esk nonce-reuse sanity guard (Step 8 of A3 brief) | `lib/sapling/src/note_encryption.c` | MED | Agent 3 — done 909636215 |
+| P1.12 | `jub_scalar_mul` constant-time rewrite (side-channel on secret keys) | `lib/sapling/src/fr.c:307-333` | HIGH | Agent 3 — next (PRIMARY) |
 
 ---
 
@@ -91,17 +92,17 @@ and Agent 3 fix violations in their lanes; Rhett fixes the rest.
 
 ---
 
-## Priority 5 — Operator / deploy hygiene (Owner: Rhett)
+## Priority 5 — Operator / deploy hygiene
 
-| # | Task | Severity |
-|---|---|---|
-| P5.1 | `export_snapshot` (1.1 MB ELF) tracked in git despite `.gitignore` | HIGH |
-| P5.2 | `deploy/zclassic23.service:21` hardcodes Rhett's externalip + 9 addnodes | HIGH |
-| P5.3 | Hardcoded `/home/rhett` in `tools/export_snapshot.c:15`, `tools/zcl-nodectl.c:628-637` | HIGH |
-| P5.4 | 10 shell scripts in `tools/` duplicating MCP — purge | MED |
-| P5.5 | `vendor/tor` submodule ahead of pinned commit | MED |
-| P5.6 | Vendored `sqlite3.h` is 3.49.0 — newer CVE-class fixes unpicked | MED |
-| P5.7 | Repo-root clutter: 40+ .md, `node.db` untracked at repo root | LOW |
+| # | Task | Severity | Owner |
+|---|---|---|---|
+| P5.1 | `export_snapshot` (1.1 MB ELF) tracked in git despite `.gitignore` | HIGH | Agent 2 — queued (after P3.4/5/6) |
+| P5.2 | `deploy/zclassic23.service:21` hardcodes Rhett's externalip + 9 addnodes | HIGH | Rhett |
+| P5.3 | Hardcoded `/home/rhett` in `tools/export_snapshot.c:15`, `tools/zcl-nodectl.c:628-637` | HIGH | Agent 2 — queued (after P3.4/5/6) |
+| P5.4 | 10 shell scripts in `tools/` duplicating MCP — purge | MED | Agent 2 — queued (after P3.4/5/6) |
+| P5.5 | `vendor/tor` submodule ahead of pinned commit | MED | Rhett |
+| P5.6 | Vendored `sqlite3.h` is 3.49.0 — newer CVE-class fixes unpicked | MED | Rhett |
+| P5.7 | Repo-root clutter: 40+ .md, `node.db` untracked at repo root | LOW | Agent 2 — queued (after P3.4/5/6) |
 
 ---
 

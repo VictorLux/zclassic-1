@@ -88,11 +88,75 @@ rejection, (c) posts with a valid token and asserts success.
 Same as always — one logical fix per commit, `make test && make lint`
 green before each, push frequently, no amends on pushed commits.
 
-When P3.4/P3.5/P3.6 all show `done <SHA>` in `AGENT.md`, ping Rhett for
-the next pile. Likely candidates after this are the medium P5 operator
-hygiene items (P5.1 git-tracked binary cleanup, P5.3 hardcoded
-`/home/rhett` paths, P5.4 tool-script purge) — but wait for Rhett's call
-before starting those; they touch deploy/repo state.
+---
+
+## THEN — P5 operator hygiene queue (do not wait; start as soon as P3 closes)
+
+Rhett is pre-authorizing these so you don't stall waiting on a check-in.
+Knock them out in order, smallest first.
+
+### Step D — P5.1: `export_snapshot` ELF is tracked in git despite `.gitignore`
+
+The 1.1 MB `export_snapshot` binary is checked into the repo root (see
+`git ls-files | grep export_snapshot`). `.gitignore` lists it but git
+already has it cached. Fix:
+
+```bash
+git rm --cached export_snapshot
+echo "# (export_snapshot already in .gitignore; removing cached copy)" \
+  >> /dev/null
+```
+
+Then verify `.gitignore` actually covers it (it should). One commit:
+`build: remove tracked export_snapshot ELF from repo`.
+
+### Step E — P5.7: repo-root clutter
+
+`git status` shows 40+ `.md` files, `node.db`, various untracked
+artifacts at repo root. Audit what's tracked vs. untracked. For
+tracked `.md` files that are stale / superseded by the new AGENT* /
+CLAUDE.md / DEFENSIVE_CODING.md system: move them to `docs/archive/`
+or delete after confirming they're not referenced. For `node.db` and
+similar runtime artifacts: add to `.gitignore`. Commit per logical
+group — "docs: archive superseded hardening notes", "build: ignore
+runtime node.db artifacts", etc.
+
+### Step F — P5.3: hardcoded `/home/rhett` paths
+
+Files: `tools/export_snapshot.c:15` and `tools/zcl-nodectl.c:628-637`
+(and anywhere else grep finds them — `grep -rn "/home/rhett"
+tools/ app/ lib/ config/`).
+
+Replace literal `/home/rhett` with:
+- `getenv("HOME")` for runtime paths
+- the project's datadir resolution (`zcl_datadir()` / whatever exists
+  in `config/src/`) for data paths
+- a compile-time `CMAKE_INSTALL_PREFIX`-style default otherwise
+
+Don't introduce new config; use what's already there. Add a test that
+exercises a non-`/home/rhett` $HOME to prevent regression.
+
+### Step G — P5.4: purge 10 shell scripts in `tools/` duplicating MCP
+
+List them first: `ls tools/*.sh`. For each:
+1. Identify the MCP tool that replaces it (most are named similarly;
+   `tools/zcl-balance.sh` → `zcl_balance`, etc.).
+2. If the MCP tool exists and covers the shell script's behavior:
+   remove the shell script in one commit per script, commit message
+   `tools: purge zcl-FOO.sh (superseded by MCP tool zcl_FOO)`.
+3. If functionality is missing from MCP: open a TODO comment, flag
+   Rhett, don't remove.
+
+This is the project rule from `feedback_no_external_tools.md` — no
+standalone shell scripts, everything in the binary.
+
+### Stopping point
+
+After all of P3.4/5/6 and P5.1/5.3/5.4/5.7 are on main, ping Rhett.
+Next pile will likely be either (a) helping Agent-3 with any leftover
+audit work, or (b) joining Rhett on the medium P3/P4 items. Don't
+start P5.2 / P5.5 / P5.6 on your own — those need Rhett's coordination
+(service files, vendor submodules, CVE cherry-picks).
 
 ---
 
