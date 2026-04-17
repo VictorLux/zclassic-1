@@ -7,6 +7,7 @@
 #include "crypto/chacha20poly1305.h"
 #include "crypto/curve25519.h"
 #include "core/random.h"
+#include "util/log_macros.h"
 #include <string.h>
 
 #define BLAKE2B_PERSONALBYTES 16
@@ -33,7 +34,8 @@ bool sprout_kdf(uint8_t key[32],
 
     struct blake2b_ctx ctx;
     if (blake2b_init_salt_personal(&ctx, 32, NULL, 0, NULL, personal) != 0)
-        return false;
+        LOG_FAIL("sapling", "sprout_kdf: blake2b_init_salt_personal failed (nonce=%u)",
+                 (unsigned)nonce);
     blake2b_update(&ctx, block, 128);
     blake2b_final(&ctx, key, 32);
     return true;
@@ -52,7 +54,7 @@ bool sapling_kdf(uint8_t key[32],
 
     struct blake2b_ctx ctx;
     if (blake2b_init_salt_personal(&ctx, 32, NULL, 0, NULL, personal) != 0)
-        return false;
+        LOG_FAIL("sapling", "sapling_kdf: blake2b_init_salt_personal failed");
     blake2b_update(&ctx, block, 64);
     blake2b_final(&ctx, key, 32);
     return true;
@@ -75,7 +77,7 @@ bool sapling_prf_ock(uint8_t key[32],
 
     struct blake2b_ctx ctx;
     if (blake2b_init_salt_personal(&ctx, 32, NULL, 0, NULL, personal) != 0)
-        return false;
+        LOG_FAIL("sapling", "sapling_prf_ock: blake2b_init_salt_personal failed");
     blake2b_update(&ctx, block, 128);
     blake2b_final(&ctx, key, 32);
     return true;
@@ -110,14 +112,19 @@ bool sprout_note_encrypt(struct sprout_note_encryption *ctx,
                          uint8_t *ciphertext)
 {
     if (ctx->nonce > 254)
-        return false;
+        LOG_FAIL("sapling",
+                 "sprout_note_encrypt: per-tx nonce budget exhausted (nonce=%u > 254)",
+                 (unsigned)ctx->nonce);
 
     uint8_t dhsecret[32];
     curve25519_scalarmult(dhsecret, ctx->esk, pk_enc);
 
     uint8_t key[32];
-    if (!sprout_kdf(key, hsig, dhsecret, ctx->epk, pk_enc, ctx->nonce))
-        return false;
+    if (!sprout_kdf(key, hsig, dhsecret, ctx->epk, pk_enc, ctx->nonce)) {
+        memset(dhsecret, 0, 32);
+        LOG_FAIL("sapling", "sprout_note_encrypt: sprout_kdf failed (nonce=%u)",
+                 (unsigned)ctx->nonce);
+    }
 
     ctx->nonce++;
 
@@ -142,7 +149,8 @@ bool sprout_note_decrypt(const uint8_t sk_enc[32],
     uint8_t key[32];
     if (!sprout_kdf(key, hsig, dhsecret, epk, pk_enc, nonce)) {
         memset(dhsecret, 0, 32);
-        return false;
+        LOG_FAIL("sapling", "sprout_note_decrypt: sprout_kdf failed (nonce=%u)",
+                 (unsigned)nonce);
     }
 
     bool ok = chacha20poly1305_decrypt(ciphertext, clen, NULL, 0,
