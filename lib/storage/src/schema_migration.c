@@ -128,14 +128,21 @@ int schema_migration_run_pending(struct node_db *ndb)
     if (!ndb || !ndb->open)
         return -1;
 
-    /* Ensure schema_migrations table exists (idempotent). The old
-     * migration system also creates this, but we do it here too
-     * so the framework works standalone. */
-    node_db_exec(ndb,
-        "CREATE TABLE IF NOT EXISTS schema_migrations ("
-        "  version TEXT PRIMARY KEY,"
-        "  applied_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))"
-        ")");
+    /* Ensure schema_migrations table exists (idempotent).  The old
+     * migration system also creates this, but we do it here too so
+     * the framework works standalone.  If this CREATE fails we have
+     * no durable way to record which migrations ran — refuse to
+     * proceed rather than silently advance. */
+    if (!node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS schema_migrations ("
+            "  version TEXT PRIMARY KEY,"
+            "  applied_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))"
+            ")")) {
+        fprintf(stderr,
+            "[migrate] CREATE schema_migrations FAILED — refusing to "
+            "apply any migrations (bookkeeping table unavailable)\n");
+        return -1;
+    }
 
     int current_ver = schema_migration_current_version(ndb);
     int applied = 0;
@@ -161,16 +168,34 @@ int schema_migration_run_pending(struct node_db *ndb)
             return applied > 0 ? applied : -1;
         }
 
-        /* Record in schema_migrations table */
+        /* Record in schema_migrations table.  If this INSERT fails
+         * we CANNOT commit — the migration body already ran but
+         * would not be recorded, so next boot would replay it and
+         * either crash on CREATE IF NOT EXISTS drift or duplicate
+         * the change.  Roll back the whole migration atomically. */
         char sql[256];
         snprintf(sql, sizeof(sql),
                  "INSERT OR IGNORE INTO schema_migrations(version) VALUES('%03d')",
                  m->version);
-        node_db_exec(ndb, sql);
+        if (!node_db_exec(ndb, sql)) {
+            fprintf(stderr,
+                "[migrate] v%d: INSERT schema_migrations FAILED — "
+                "rolling back the migration body too\n", m->version);
+            node_db_rollback(ndb);
+            return applied > 0 ? applied : -1;
+        }
 
-        /* Bump schema_version in node_state */
+        /* Bump schema_version in node_state — same invariant as
+         * above: without this the version pointer lies and the next
+         * boot re-applies the migration. */
         int32_t ver32 = (int32_t)m->version;
-        node_db_state_set(ndb, "schema_version", &ver32, sizeof(ver32));
+        if (!node_db_state_set(ndb, "schema_version", &ver32, sizeof(ver32))) {
+            fprintf(stderr,
+                "[migrate] v%d: node_state schema_version UPDATE FAILED — "
+                "rolling back\n", m->version);
+            node_db_rollback(ndb);
+            return applied > 0 ? applied : -1;
+        }
 
         if (!node_db_commit(ndb)) {
             fprintf(stderr, "[migrate] v%d: COMMIT failed\n", m->version);
@@ -222,12 +247,23 @@ bool schema_migration_rollback_last(struct node_db *ndb)
         return false;
     }
 
-    /* Remove from schema_migrations table */
+    /* Remove from schema_migrations table.  The rollback body ran
+     * already; if we can't record the rollback we'd have a node_state
+     * pointer that says "current version is N" but a
+     * schema_migrations row that says N was applied — internally
+     * inconsistent and a trap for any future migration.  Treat any
+     * failure as a hard bail. */
     char sql[256];
     snprintf(sql, sizeof(sql),
              "DELETE FROM schema_migrations WHERE version = '%03d'",
              m->version);
-    node_db_exec(ndb, sql);
+    if (!node_db_exec(ndb, sql)) {
+        fprintf(stderr,
+            "[migrate] rollback v%d: DELETE schema_migrations FAILED — "
+            "aborting rollback\n", m->version);
+        node_db_rollback(ndb);
+        return false;
+    }
 
     /* Find previous version and set it */
     int prev_ver = 0;
@@ -242,7 +278,13 @@ bool schema_migration_rollback_last(struct node_db *ndb)
         prev_ver = m->version - 1;
 
     int32_t ver32 = (int32_t)prev_ver;
-    node_db_state_set(ndb, "schema_version", &ver32, sizeof(ver32));
+    if (!node_db_state_set(ndb, "schema_version", &ver32, sizeof(ver32))) {
+        fprintf(stderr,
+            "[migrate] rollback v%d: node_state schema_version UPDATE "
+            "FAILED — aborting rollback\n", m->version);
+        node_db_rollback(ndb);
+        return false;
+    }
 
     if (!node_db_commit(ndb)) {
         fprintf(stderr, "[migrate] rollback v%d: COMMIT failed\n", m->version);
