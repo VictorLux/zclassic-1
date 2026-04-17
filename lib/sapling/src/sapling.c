@@ -4,6 +4,7 @@
  * group_hash, key derivation, commitment, nullifier, RedJubjub, verification context. */
 
 #include <stdio.h>
+#include <inttypes.h>
 #include "sapling/sapling.h"
 #include "sapling/sapling_circuit.h"
 #include "sapling/params_init.h"
@@ -39,6 +40,10 @@ bool group_hash(struct jub_point *result,
     blake2s_update(&ctx, tag, tag_len);
     blake2s_final(&ctx, hash, 32);
 
+    /* group_hash is probabilistic: ~50% of tags fail to decode. Callers
+     * (find_group_hash) drive the retry loop — bare `false` here is the
+     * "miss, try next counter" signal and is NOT an error. Logging every
+     * miss would generate hundreds of spurious entries at startup. */
     if (!jub_from_bytes(result, hash))
         return false;
 
@@ -53,16 +58,23 @@ static bool find_group_hash(struct jub_point *result,
                              const uint8_t personalization[8])
 {
     uint8_t tag[256];
-    if (m_len + 1 > sizeof(tag)) return false;
+    if (m_len + 1 > sizeof(tag))
+        LOG_FAIL("sapling",
+                 "find_group_hash: tag buffer too small: m_len=%zu max=%zu",
+                 m_len, sizeof(tag) - 1);
     memcpy(tag, m, m_len);
     tag[m_len] = 0;
 
     for (int i = 0; i < 256; i++) {
         tag[m_len] = (uint8_t)i;
+        /* group_hash is allowed to miss — bit-string to curve is probabilistic.
+         * Only the full exhaustion of all 256 counters is an error worth logging. */
         if (group_hash(result, tag, m_len + 1, personalization))
             return true;
     }
-    return false;
+    LOG_FAIL("sapling",
+             "find_group_hash: exhausted all 256 counters (personalization '%.8s')",
+             (const char *)personalization);
 }
 
 /* Fixed generators, lazily computed */
@@ -166,7 +178,8 @@ bool sapling_compute_rk(const uint8_t ak[32], const uint8_t ar[32],
 {
     ensure_fixed_generators();
     struct jub_point ak_pt;
-    if (!jub_from_bytes(&ak_pt, ak)) return false;
+    if (!jub_from_bytes(&ak_pt, ak))
+        LOG_FAIL("sapling", "compute_rk: jub_from_bytes(ak) failed");
     struct jub_point ar_G;
     jub_scalar_mul(&ar_G, &fixed_generators[GEN_SPENDING_KEY], ar);
     struct jub_point rk_pt;
@@ -191,7 +204,7 @@ bool sapling_ivk_to_pkd(const uint8_t ivk[32], const uint8_t diversifier[11],
 {
     struct jub_point g_d;
     if (!sapling_diversifier_to_gd(&g_d, diversifier))
-        return false;
+        LOG_FAIL("sapling", "ivk_to_pkd: diversifier_to_gd failed (invalid d)");
 
     struct jub_point result;
     jub_scalar_mul(&result, &g_d, ivk);
@@ -203,7 +216,7 @@ bool sapling_ka_agree(const uint8_t p[32], const uint8_t sk[32], uint8_t result[
 {
     struct jub_point point;
     if (!jub_from_bytes(&point, p))
-        return false;
+        LOG_FAIL("sapling", "ka_agree: jub_from_bytes(peer point) failed");
 
     /* Multiply by cofactor 8 first */
     jub_mul_by_cofactor(&point, &point);
@@ -221,7 +234,7 @@ bool sapling_ka_derivepublic(const uint8_t diversifier[11], const uint8_t esk[32
 {
     struct jub_point g_d;
     if (!sapling_diversifier_to_gd(&g_d, diversifier))
-        return false;
+        LOG_FAIL("sapling", "ka_derivepublic: diversifier_to_gd failed (invalid d)");
 
     struct jub_point out;
     jub_scalar_mul(&out, &g_d, esk);
@@ -281,7 +294,7 @@ bool sapling_compute_cm(const uint8_t diversifier[11], const uint8_t pk_d[32],
     /* g_d = compressed point from diversifier */
     struct jub_point g_d;
     if (!sapling_diversifier_to_gd(&g_d, diversifier))
-        return false;
+        LOG_FAIL("sapling", "compute_cm: diversifier_to_gd failed (invalid d)");
     jub_to_bytes(note_contents + 8, &g_d);
 
     /* pk_d */
@@ -318,7 +331,7 @@ bool sapling_compute_nf(const uint8_t diversifier[11], const uint8_t pk_d[32],
 
     struct jub_point g_d;
     if (!sapling_diversifier_to_gd(&g_d, diversifier))
-        return false;
+        LOG_FAIL("sapling", "compute_nf: diversifier_to_gd failed (invalid d)");
     jub_to_bytes(note_contents + 8, &g_d);
     memcpy(note_contents + 40, pk_d, 32);
 
@@ -512,24 +525,24 @@ bool sapling_check_spend(struct sapling_verification_ctx *ctx,
     /* Deserialize cv */
     struct jub_point cv_point;
     if (!jub_from_bytes(&cv_point, cv))
-        return false;
+        LOG_FAIL("sapling", "check_spend: jub_from_bytes(cv) failed");
 
     /* Small order check */
     if (is_small_order(cv))
-        return false;
+        LOG_FAIL("sapling", "check_spend: cv is small-order (attack or malformed tx)");
 
     /* Accumulate cv into bvk */
     jub_add(&ctx->bvk, &ctx->bvk, &cv_point);
 
     /* Small order check on rk */
     if (is_small_order(rk))
-        return false;
+        LOG_FAIL("sapling", "check_spend: rk is small-order (attack or malformed tx)");
 
     /* Verify spend_auth_sig over sighash with rk as verification key */
     if (!redjubjub_verify(rk, sighash, 32,
                            spend_auth_sig, spend_auth_sig + 32,
                            GEN_SPENDING_KEY))
-        return false;
+        LOG_FAIL("sapling", "check_spend: redjubjub_verify(spend_auth_sig) rejected");
 
     /* Groth16 proof verification (7 public inputs).
      * Fail-closed: a NULL spend VK means sapling_init_params never ran (or
@@ -573,11 +586,11 @@ bool sapling_check_output(struct sapling_verification_ctx *ctx,
     /* Deserialize cv */
     struct jub_point cv_point;
     if (!jub_from_bytes(&cv_point, cv))
-        return false;
+        LOG_FAIL("sapling", "check_output: jub_from_bytes(cv) failed");
 
     /* Small order check */
     if (is_small_order(cv))
-        return false;
+        LOG_FAIL("sapling", "check_output: cv is small-order (attack or malformed tx)");
 
     /* Subtract cv from bvk (outputs are negative) */
     struct jub_point neg_cv;
@@ -586,7 +599,7 @@ bool sapling_check_output(struct sapling_verification_ctx *ctx,
 
     /* Small order check on epk */
     if (is_small_order(epk))
-        return false;
+        LOG_FAIL("sapling", "check_output: epk is small-order (attack or malformed tx)");
 
     /* Groth16 proof verification (5 public inputs).
      * Fail-closed: a NULL output VK means sapling_init_params never ran —
@@ -632,7 +645,8 @@ bool sapling_final_check(struct sapling_verification_ctx *ctx,
     } else {
         /* Rust uses checked_abs() which fails for INT64_MIN */
         if (value_balance == INT64_MIN)
-            return false;
+            LOG_FAIL("sapling",
+                     "final_check: value_balance == INT64_MIN (rejected to match Rust checked_abs)");
         uint64_t abs_val;
         bool negate;
         if (value_balance > 0) {
@@ -773,26 +787,27 @@ bool sapling_build_output_description(
 
     /* Compute note commitment: cm */
     if (!sapling_compute_cm(to_d, to_pk_d, value, rcm, od_cm))
-        return false;
+        LOG_FAIL("sapling", "build_output_description: sapling_compute_cm failed");
 
     /* Compute value commitment: cv = value*G_v + rcv*G_rcv */
     if (!sapling_value_commit(value, rcv, od_cv))
-        return false;
+        LOG_FAIL("sapling", "build_output_description: sapling_value_commit failed (value=%" PRIu64 ")",
+                 value);
 
     /* Compute ephemeral public key: epk = esk * g_d(diversifier) */
     if (!sapling_ka_derivepublic(to_d, esk, od_epk))
-        return false;
+        LOG_FAIL("sapling", "build_output_description: sapling_ka_derivepublic failed");
 
     /* Encrypt note for recipient */
     /* 1. DH agreement: dhsecret = esk * pk_d */
     uint8_t dhsecret[32];
     if (!sapling_ka_agree(to_pk_d, esk, dhsecret))
-        return false;
+        LOG_FAIL("sapling", "build_output_description: sapling_ka_agree failed");
 
     /* 2. KDF: key = BLAKE2b("Zcash_SaplingKDF", dhsecret || epk) */
     uint8_t enc_key[32];
     if (!sapling_kdf(enc_key, dhsecret, od_epk))
-        return false;
+        LOG_FAIL("sapling", "build_output_description: sapling_kdf failed");
 
     /* 3. Build note plaintext: d(11) + value(8) + rcm(32) + memo(512) = 563 bytes
      * With leading byte 0x01 (Sapling) = 564 bytes */
@@ -809,7 +824,7 @@ bool sapling_build_output_description(
 
     /* 4. Encrypt: enc_ciphertext = AEAD(key, plaintext) → 580 bytes */
     if (!sapling_note_encrypt(enc_key, plaintext, 564, od_enc))
-        return false;
+        LOG_FAIL("sapling", "build_output_description: sapling_note_encrypt failed");
 
     /* Encrypt outgoing plaintext (for sender recovery via ovk) */
     /* 1. Outgoing plaintext: pk_d(32) + esk(32) = 64 bytes */
@@ -820,11 +835,11 @@ bool sapling_build_output_description(
     /* 2. OCK: ock = PRF(ovk || cv || cm || epk) */
     uint8_t ock[32];
     if (!sapling_prf_ock(ock, ovk, od_cv, od_cm, od_epk))
-        return false;
+        LOG_FAIL("sapling", "build_output_description: sapling_prf_ock failed");
 
     /* 3. Encrypt outgoing: out_ciphertext = AEAD(ock, out_plaintext) → 80 bytes */
     if (!sapling_out_encrypt(ock, out_plaintext, 64, od_out))
-        return false;
+        LOG_FAIL("sapling", "build_output_description: sapling_out_encrypt failed");
 
     /* Generate Groth16 output proof */
     {
@@ -850,7 +865,9 @@ bool sapling_build_output_description(
                 memset(rcm, 0, 32);
                 memset(rcv, 0, 32);
                 memset(esk, 0, 32);
-                return false;
+                LOG_FAIL("sapling",
+                         "build_output_description: sapling_create_output_proof failed (pk_len=%zu)",
+                         pk_len);
             }
             memory_cleanse(&wit, sizeof(wit));
         } else {
@@ -899,7 +916,7 @@ bool sapling_build_spend_with_ctx(
     /* Compute nullifier */
     if (!sapling_compute_nf(diversifier, pk_d, value, rcm,
                              ak, nk, position, sd_nullifier))
-        return false;
+        LOG_FAIL("sapling", "build_spend_with_ctx: sapling_compute_nf failed");
 
     /* Call native C23 prover for spend proof (cv, rk, zkproof) */
     extern bool zclassic_sapling_spend_proof(
@@ -913,7 +930,9 @@ bool sapling_build_spend_with_ctx(
             proving_ctx, ak, nsk, diversifier, rcm, ar_out,
             value, anchor, witness_path, sd_cv, sd_rk, sd_zkproof)) {
         memset(ar_out, 0, 32);
-        return false;
+        LOG_FAIL("sapling",
+                 "build_spend_with_ctx: zclassic_sapling_spend_proof failed (value=%" PRIu64 " position=%" PRIu64 ")",
+                 value, position);
     }
 
     return true;
@@ -944,21 +963,23 @@ bool sapling_build_output_with_ctx(
                                             rcm, value, od_cv, od_proof)) {
         memset(rcm, 0, 32);
         memset(esk, 0, 32);
-        return false;
+        LOG_FAIL("sapling",
+                 "build_output_with_ctx: zclassic_sapling_output_proof failed (value=%" PRIu64 ")",
+                 value);
     }
 
     /* Compute note commitment: cm (our C23 implementation) */
     if (!sapling_compute_cm(to_d, to_pk_d, value, rcm, od_cm)) {
         memset(rcm, 0, 32);
         memset(esk, 0, 32);
-        return false;
+        LOG_FAIL("sapling", "build_output_with_ctx: sapling_compute_cm failed");
     }
 
     /* Compute ephemeral public key: epk = esk * g_d(diversifier) */
     if (!sapling_ka_derivepublic(to_d, esk, od_epk)) {
         memset(rcm, 0, 32);
         memset(esk, 0, 32);
-        return false;
+        LOG_FAIL("sapling", "build_output_with_ctx: sapling_ka_derivepublic failed");
     }
 
     /* Encrypt note for recipient */
@@ -966,7 +987,7 @@ bool sapling_build_output_with_ctx(
     if (!sapling_ka_agree(to_pk_d, esk, dhsecret)) {
         memset(rcm, 0, 32);
         memset(esk, 0, 32);
-        return false;
+        LOG_FAIL("sapling", "build_output_with_ctx: sapling_ka_agree failed");
     }
 
     uint8_t enc_key[32];
@@ -974,7 +995,7 @@ bool sapling_build_output_with_ctx(
         memset(rcm, 0, 32);
         memset(esk, 0, 32);
         memset(dhsecret, 0, 32);
-        return false;
+        LOG_FAIL("sapling", "build_output_with_ctx: sapling_kdf failed");
     }
 
     /* Build note plaintext */
@@ -993,7 +1014,7 @@ bool sapling_build_output_with_ctx(
         memset(rcm, 0, 32);
         memset(esk, 0, 32);
         memset(plaintext, 0, 564);
-        return false;
+        LOG_FAIL("sapling", "build_output_with_ctx: sapling_note_encrypt failed");
     }
 
     /* Encrypt outgoing plaintext */
@@ -1006,14 +1027,14 @@ bool sapling_build_output_with_ctx(
         memset(rcm, 0, 32);
         memset(esk, 0, 32);
         memset(plaintext, 0, 564);
-        return false;
+        LOG_FAIL("sapling", "build_output_with_ctx: sapling_prf_ock failed");
     }
 
     if (!sapling_out_encrypt(ock, out_plaintext, 64, od_out)) {
         memset(rcm, 0, 32);
         memset(esk, 0, 32);
         memset(plaintext, 0, 564);
-        return false;
+        LOG_FAIL("sapling", "build_output_with_ctx: sapling_out_encrypt failed");
     }
 
     /* Cleanse secrets */

@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "util/safe_alloc.h"
+#include "util/log_macros.h"
 
 /* ── R1CS Constraint System ─────────────────────────────────────── */
 
@@ -421,7 +422,10 @@ struct pk_reader {
 
 static bool pkr_read(struct pk_reader *r, void *out, size_t n)
 {
-    if (r->pos + n > r->len) return false;
+    if (r->pos + n > r->len)
+        LOG_FAIL("groth16_pk",
+                 "pkr_read: out of bounds: pos=%zu+need=%zu > len=%zu",
+                 r->pos, n, r->len);
     memcpy(out, r->data + r->pos, n);
     r->pos += n;
     return true;
@@ -430,7 +434,8 @@ static bool pkr_read(struct pk_reader *r, void *out, size_t n)
 static bool pkr_u32_be(struct pk_reader *r, uint32_t *out)
 {
     uint8_t buf[4];
-    if (!pkr_read(r, buf, 4)) return false;
+    if (!pkr_read(r, buf, 4))
+        LOG_FAIL("groth16_pk", "pkr_u32_be: underlying pkr_read failed");
     *out = ((uint32_t)buf[0] << 24) | ((uint32_t)buf[1] << 16) |
            ((uint32_t)buf[2] << 8) | buf[3];
     return true;
@@ -438,7 +443,10 @@ static bool pkr_u32_be(struct pk_reader *r, uint32_t *out)
 
 static bool pkr_g1(struct pk_reader *r, struct g1_point *p)
 {
-    if (r->pos + 96 > r->len) return false;
+    if (r->pos + 96 > r->len)
+        LOG_FAIL("groth16_pk",
+                 "pkr_g1: out of bounds: pos=%zu need=96 len=%zu",
+                 r->pos, r->len);
     bool ok = g1_from_uncompressed(p, r->data + r->pos);
     r->pos += 96;
     return ok;
@@ -446,7 +454,10 @@ static bool pkr_g1(struct pk_reader *r, struct g1_point *p)
 
 static bool pkr_g2(struct pk_reader *r, struct g2_point *p)
 {
-    if (r->pos + 192 > r->len) return false;
+    if (r->pos + 192 > r->len)
+        LOG_FAIL("groth16_pk",
+                 "pkr_g2: out of bounds: pos=%zu need=192 len=%zu",
+                 r->pos, r->len);
     bool ok = g2_from_uncompressed(p, r->data + r->pos);
     r->pos += 192;
     return ok;
@@ -455,9 +466,14 @@ static bool pkr_g2(struct pk_reader *r, struct g2_point *p)
 static struct g1_point *pkr_g1_array(struct pk_reader *r, uint32_t count)
 {
     struct g1_point *arr = zcl_calloc(count, sizeof(struct g1_point), "pk_g1_array");
-    if (!arr) return NULL;
+    if (!arr)
+        LOG_NULL("groth16_pk", "pkr_g1_array: zcl_calloc failed (count=%u)", count);
     for (uint32_t i = 0; i < count; i++) {
-        if (!pkr_g1(r, &arr[i])) { free(arr); return NULL; }
+        if (!pkr_g1(r, &arr[i])) {
+            free(arr);
+            LOG_NULL("groth16_pk",
+                     "pkr_g1_array: pkr_g1 failed at index %u/%u", i, count);
+        }
     }
     return arr;
 }
@@ -465,9 +481,14 @@ static struct g1_point *pkr_g1_array(struct pk_reader *r, uint32_t count)
 static struct g2_point *pkr_g2_array(struct pk_reader *r, uint32_t count)
 {
     struct g2_point *arr = zcl_calloc(count, sizeof(struct g2_point), "pk_g2_array");
-    if (!arr) return NULL;
+    if (!arr)
+        LOG_NULL("groth16_pk", "pkr_g2_array: zcl_calloc failed (count=%u)", count);
     for (uint32_t i = 0; i < count; i++) {
-        if (!pkr_g2(r, &arr[i])) { free(arr); return NULL; }
+        if (!pkr_g2(r, &arr[i])) {
+            free(arr);
+            LOG_NULL("groth16_pk",
+                     "pkr_g2_array: pkr_g2 failed at index %u/%u", i, count);
+        }
     }
     return arr;
 }
@@ -478,12 +499,18 @@ bool groth16_pk_read(struct groth16_pk *pk, const uint8_t *data, size_t len)
     struct pk_reader r = { data, len, 0 };
 
     /* Read VK */
-    if (!pkr_g1(&r, &pk->alpha_g1)) return false;
-    if (!pkr_g1(&r, &pk->beta_g1)) return false;
-    if (!pkr_g2(&r, &pk->beta_g2)) return false;
-    if (!pkr_g2(&r, &pk->gamma_g2)) return false;
-    if (!pkr_g1(&r, &pk->delta_g1)) return false;
-    if (!pkr_g2(&r, &pk->delta_g2)) return false;
+    if (!pkr_g1(&r, &pk->alpha_g1))
+        LOG_FAIL("groth16_pk", "pk_read: alpha_g1 parse failed");
+    if (!pkr_g1(&r, &pk->beta_g1))
+        LOG_FAIL("groth16_pk", "pk_read: beta_g1 parse failed");
+    if (!pkr_g2(&r, &pk->beta_g2))
+        LOG_FAIL("groth16_pk", "pk_read: beta_g2 parse failed");
+    if (!pkr_g2(&r, &pk->gamma_g2))
+        LOG_FAIL("groth16_pk", "pk_read: gamma_g2 parse failed");
+    if (!pkr_g1(&r, &pk->delta_g1))
+        LOG_FAIL("groth16_pk", "pk_read: delta_g1 parse failed");
+    if (!pkr_g2(&r, &pk->delta_g2))
+        LOG_FAIL("groth16_pk", "pk_read: delta_g2 parse failed");
 
     /* Copy to VK struct for verification */
     pk->vk.alpha_g1 = pk->alpha_g1;
@@ -493,51 +520,85 @@ bool groth16_pk_read(struct groth16_pk *pk, const uint8_t *data, size_t len)
 
     /* IC points */
     uint32_t ic_len;
-    if (!pkr_u32_be(&r, &ic_len)) return false;
+    if (!pkr_u32_be(&r, &ic_len))
+        LOG_FAIL("groth16_pk", "pk_read: ic_len u32 parse failed");
     pk->vk.ic_len = ic_len;
     pk->num_inputs = ic_len - 1;
     pk->vk.ic = pkr_g1_array(&r, ic_len);
-    if (!pk->vk.ic) { groth16_pk_free(pk); return false; }
+    if (!pk->vk.ic) {
+        groth16_pk_free(pk);
+        LOG_FAIL("groth16_pk", "pk_read: ic[] parse failed (ic_len=%u)", ic_len);
+    }
 
     /* H query */
     uint32_t h_len;
-    if (!pkr_u32_be(&r, &h_len)) { groth16_pk_free(pk); return false; }
+    if (!pkr_u32_be(&r, &h_len)) {
+        groth16_pk_free(pk);
+        LOG_FAIL("groth16_pk", "pk_read: h_len u32 parse failed");
+    }
     pk->h_len = h_len;
     pk->h_g1 = pkr_g1_array(&r, h_len);
-    if (!pk->h_g1) { groth16_pk_free(pk); return false; }
+    if (!pk->h_g1) {
+        groth16_pk_free(pk);
+        LOG_FAIL("groth16_pk", "pk_read: h_g1[] parse failed (h_len=%u)", h_len);
+    }
 
     /* L query */
     uint32_t l_len;
-    if (!pkr_u32_be(&r, &l_len)) { groth16_pk_free(pk); return false; }
+    if (!pkr_u32_be(&r, &l_len)) {
+        groth16_pk_free(pk);
+        LOG_FAIL("groth16_pk", "pk_read: l_len u32 parse failed");
+    }
     pk->l_len = l_len;
     pk->l_g1 = pkr_g1_array(&r, l_len);
-    if (!pk->l_g1) { groth16_pk_free(pk); return false; }
+    if (!pk->l_g1) {
+        groth16_pk_free(pk);
+        LOG_FAIL("groth16_pk", "pk_read: l_g1[] parse failed (l_len=%u)", l_len);
+    }
 
     /* A query */
     uint32_t a_len;
-    if (!pkr_u32_be(&r, &a_len)) { groth16_pk_free(pk); return false; }
+    if (!pkr_u32_be(&r, &a_len)) {
+        groth16_pk_free(pk);
+        LOG_FAIL("groth16_pk", "pk_read: a_len u32 parse failed");
+    }
     pk->a_len = a_len;
     pk->a_g1 = pkr_g1_array(&r, a_len);
-    if (!pk->a_g1) { groth16_pk_free(pk); return false; }
+    if (!pk->a_g1) {
+        groth16_pk_free(pk);
+        LOG_FAIL("groth16_pk", "pk_read: a_g1[] parse failed (a_len=%u)", a_len);
+    }
 
     /* B G1 query */
     uint32_t b_g1_len;
-    if (!pkr_u32_be(&r, &b_g1_len)) { groth16_pk_free(pk); return false; }
+    if (!pkr_u32_be(&r, &b_g1_len)) {
+        groth16_pk_free(pk);
+        LOG_FAIL("groth16_pk", "pk_read: b_g1_len u32 parse failed");
+    }
     pk->b_len = b_g1_len;
     pk->b_g1 = pkr_g1_array(&r, b_g1_len);
-    if (!pk->b_g1) { groth16_pk_free(pk); return false; }
+    if (!pk->b_g1) {
+        groth16_pk_free(pk);
+        LOG_FAIL("groth16_pk", "pk_read: b_g1[] parse failed (b_g1_len=%u)", b_g1_len);
+    }
 
     /* B G2 query */
     uint32_t b_g2_len;
-    if (!pkr_u32_be(&r, &b_g2_len)) { groth16_pk_free(pk); return false; }
-    if (b_g2_len != b_g1_len) {
-        printf("groth16_pk_read: b_g1_len=%u != b_g2_len=%u\n",
-               b_g1_len, b_g2_len);
+    if (!pkr_u32_be(&r, &b_g2_len)) {
         groth16_pk_free(pk);
-        return false;
+        LOG_FAIL("groth16_pk", "pk_read: b_g2_len u32 parse failed");
+    }
+    if (b_g2_len != b_g1_len) {
+        groth16_pk_free(pk);
+        LOG_FAIL("groth16_pk",
+                 "pk_read: b_g1_len=%u != b_g2_len=%u (malformed key)",
+                 b_g1_len, b_g2_len);
     }
     pk->b_g2 = pkr_g2_array(&r, b_g2_len);
-    if (!pk->b_g2) { groth16_pk_free(pk); return false; }
+    if (!pk->b_g2) {
+        groth16_pk_free(pk);
+        LOG_FAIL("groth16_pk", "pk_read: b_g2[] parse failed (b_g2_len=%u)", b_g2_len);
+    }
 
     printf("Proving key loaded: h=%zu l=%zu a=%zu b=%zu inputs=%zu\n",
            pk->h_len, pk->l_len, pk->a_len, pk->b_len, pk->num_inputs);
@@ -604,7 +665,9 @@ bool groth16_prove(const struct groth16_pk *pk,
     struct fr *c_eval = zcl_calloc(domain, sizeof(struct fr), "groth16_c_eval");
     if (!a_eval || !b_eval || !c_eval) {
         free(a_eval); free(b_eval); free(c_eval);
-        return false;
+        LOG_FAIL("groth16",
+                 "prove: OOM allocating a/b/c eval buffers (domain=%zu x 3 x %zu)",
+                 domain, sizeof(struct fr));
     }
 
     for (size_t i = 0; i < n_con; i++) {
@@ -646,7 +709,9 @@ bool groth16_prove(const struct groth16_pk *pk,
     struct fr *h_eval = zcl_calloc(domain, sizeof(struct fr), "groth16_h_eval");
     if (!h_eval) {
         free(a_eval); free(b_eval); free(c_eval);
-        return false;
+        LOG_FAIL("groth16",
+                 "prove: OOM allocating h eval buffer (domain=%zu x %zu)",
+                 domain, sizeof(struct fr));
     }
 
     for (size_t i = 0; i < domain; i++) {
