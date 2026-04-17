@@ -148,7 +148,8 @@ bool zclassic_sapling_spend_proof(
 
     /* Generate rcv for value commitment */
     uint8_t rcv[32];
-    sapling_generate_r(rcv);
+    if (!sapling_generate_r(rcv))
+        LOG_FAIL("sapling_prover", "spend_proof: sapling_generate_r(rcv) failed (RNG hygiene)");
 
     /* cv = value_commit(value, rcv) */
     if (!sapling_value_commit(value, rcv, cv))
@@ -234,7 +235,8 @@ bool zclassic_sapling_output_proof(
                  "output_proof: ensure_output_pk failed (params_dir=%s)", g_params_dir);
 
     uint8_t rcv[32];
-    sapling_generate_r(rcv);
+    if (!sapling_generate_r(rcv))
+        LOG_FAIL("sapling_prover", "output_proof: sapling_generate_r(rcv) failed (RNG hygiene)");
 
     if (!sapling_value_commit(value, rcv, cv))
         LOG_FAIL("sapling_prover", "output_proof: sapling_value_commit failed");

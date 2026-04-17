@@ -7,6 +7,7 @@
 
 #include "sapling/groth16_prover.h"
 #include "core/random.h"
+#include "crypto/random_secret.h"
 #include "support/cleanse.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -652,9 +653,13 @@ bool groth16_prove(const struct groth16_pk *pk,
     struct fr r_blind, s_blind;
     {
         uint8_t rb[32];
-        GetRandBytes(rb, 32);
+        if (!zcl_random_secret_bytes(rb, 32, "groth16_r_blind"))
+            return false;
         fr_from_bytes(&r_blind, rb);
-        GetRandBytes(rb, 32);
+        if (!zcl_random_secret_bytes(rb, 32, "groth16_s_blind")) {
+            memory_cleanse(rb, 32);
+            return false;
+        }
         fr_from_bytes(&s_blind, rb);
         memory_cleanse(rb, 32);
     }

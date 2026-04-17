@@ -5,6 +5,7 @@
 
 #include "crypto/sha3_crypt.h"
 #include "crypto/sha3.h"
+#include "crypto/random_secret.h"
 #include "core/random.h"
 #include <string.h>
 
@@ -67,9 +68,12 @@ size_t sha3_crypt_encrypt(const uint8_t key[32],
         /* Still produce nonce + tag for empty messages */
     }
 
-    /* Generate random nonce */
+    /* Generate random nonce. AEAD security collapses if the nonce is
+     * a known constant (e.g. all-zero from a failed RNG), so signal
+     * failure rather than encrypt under a predictable nonce. */
     uint8_t nonce[32];
-    GetRandBytes(nonce, 32);
+    if (!zcl_random_secret_bytes(nonce, 32, "sha3_crypt_nonce"))
+        return 0;
 
     /* Write nonce */
     memcpy(out, nonce, 32);

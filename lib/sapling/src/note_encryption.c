@@ -21,6 +21,7 @@
 #include "crypto/blake2b.h"
 #include "crypto/chacha20poly1305.h"
 #include "crypto/curve25519.h"
+#include "crypto/random_secret.h"
 #include "core/random.h"
 #include "util/log_macros.h"
 #include <pthread.h>
@@ -155,7 +156,8 @@ bool sapling_prf_ock(uint8_t key[32],
 
 bool sprout_note_encryption_init(struct sprout_note_encryption *ctx)
 {
-    GetRandBytes(ctx->esk, 32);
+    if (!zcl_random_secret_bytes(ctx->esk, 32, "sprout_esk"))
+        return false;
     ctx->esk[0] &= 248;
     ctx->esk[31] &= 127;
     ctx->esk[31] |= 64;

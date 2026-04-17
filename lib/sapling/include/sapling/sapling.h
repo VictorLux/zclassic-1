@@ -59,8 +59,11 @@ bool sapling_compute_nf(const uint8_t diversifier[11], const uint8_t pk_d[32],
                          const uint8_t ak[32], const uint8_t nk[32],
                          uint64_t position, uint8_t nf[32]);
 
-/* Generate a random Fs scalar (for commitment/note randomness) */
-void sapling_generate_r(uint8_t result[32]);
+/* Generate a random Fs scalar (for commitment/note randomness).
+ * Returns false on RNG failure (see crypto/random_secret.h); on success
+ * `result` holds 32 bytes of a uniformly-sampled Fs element. Test paths
+ * may discard the return value; production callers must propagate. */
+bool sapling_generate_r(uint8_t result[32]);
 
 /* RedJubjub signature verification.
  * msg/msg_len: message bytes (32 for sighash in spend_auth/binding)

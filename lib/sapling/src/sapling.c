@@ -14,6 +14,7 @@
 #include "sapling/bls12_381.h"
 #include "crypto/blake2s.h"
 #include "crypto/blake2b.h"
+#include "crypto/random_secret.h"
 #include "core/random.h"
 #include "support/cleanse.h"
 #include "util/log_macros.h"
@@ -502,13 +503,18 @@ static void bytes_le_to_fr_raw(uint64_t out[4], const uint8_t bytes[32])
 void sapling_set_spend_vk(struct groth16_vk *vk) { sapling_spend_vk = vk; }
 void sapling_set_output_vk(struct groth16_vk *vk) { sapling_output_vk = vk; }
 
-void sapling_generate_r(uint8_t result[32])
+bool sapling_generate_r(uint8_t result[32])
 {
     uint8_t buf[64];
-    GetRandBytes(buf, 64);
+    if (!zcl_random_secret_bytes(buf, 64, "sapling_r")) {
+        memset(result, 0, 32);
+        return false;
+    }
     struct fs r;
     fs_to_uniform(&r, buf);
     fs_to_bytes(result, &r);
+    memory_cleanse(buf, 64);
+    return true;
 }
 
 bool sapling_check_spend(struct sapling_verification_ctx *ctx,
@@ -689,9 +695,12 @@ bool redjubjub_sign(const uint8_t sk[32],
 {
     ensure_fixed_generators();
 
-    /* T = random 80 bytes */
+    /* T = random 80 bytes — fed straight into BLAKE2b for the
+     * deterministic-style RedJubjub nonce; an all-zero T from a failed
+     * RNG would make r predictable and leak the signing key. */
     uint8_t T[80];
-    GetRandBytes(T, sizeof(T));
+    if (!zcl_random_secret_bytes(T, sizeof(T), "redjubjub_T"))
+        return false;
 
     /* r = H*(T || vk || msg) where vk = sk * G */
     struct jub_point vk_point;
@@ -781,9 +790,9 @@ bool sapling_build_output_description(
 {
     /* Generate random scalars */
     uint8_t rcm[32], rcv[32], esk[32];
-    sapling_generate_r(rcm);
-    sapling_generate_r(rcv);
-    sapling_generate_r(esk);
+    if (!sapling_generate_r(rcm) || !sapling_generate_r(rcv) ||
+        !sapling_generate_r(esk))
+        LOG_FAIL("sapling", "build_output_description: sapling_generate_r failed (RNG hygiene)");
 
     /* Compute note commitment: cm */
     if (!sapling_compute_cm(to_d, to_pk_d, value, rcm, od_cm))
@@ -906,7 +915,8 @@ bool sapling_build_spend_with_ctx(
     uint8_t ar_out[32])
 {
     /* Generate randomness ar for re-randomized verification key */
-    sapling_generate_r(ar_out);
+    if (!sapling_generate_r(ar_out))
+        LOG_FAIL("sapling", "build_spend_with_ctx: sapling_generate_r(ar) failed (RNG hygiene)");
 
     /* Derive ak and nk from ask and nsk */
     uint8_t ak[32], nk[32];
@@ -950,8 +960,8 @@ bool sapling_build_output_with_ctx(
 {
     /* Generate random scalars */
     uint8_t rcm[32], esk[32];
-    sapling_generate_r(rcm);
-    sapling_generate_r(esk);
+    if (!sapling_generate_r(rcm) || !sapling_generate_r(esk))
+        LOG_FAIL("sapling", "build_output_with_ctx: sapling_generate_r failed (RNG hygiene)");
 
     /* Use native C23 prover to generate cv and zkproof (with internal rcv) */
     extern bool zclassic_sapling_output_proof(
