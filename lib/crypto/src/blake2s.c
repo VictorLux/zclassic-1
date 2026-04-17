@@ -4,6 +4,7 @@
  * RFC 7693 compliant, 32-bit variant. */
 
 #include "crypto/blake2s.h"
+#include "util/log_macros.h"
 #include <string.h>
 
 static const uint32_t blake2s_IV[8] = {
@@ -87,7 +88,9 @@ static void blake2s_increment_counter(struct blake2s_ctx *ctx, uint32_t inc)
 
 int blake2s_init(struct blake2s_ctx *ctx, size_t outlen)
 {
-    if (outlen == 0 || outlen > BLAKE2S_OUTBYTES) return -1;
+    if (outlen == 0 || outlen > BLAKE2S_OUTBYTES)
+        LOG_ERR("blake2s",
+                "init: outlen=%zu out of range [1,%d]", outlen, BLAKE2S_OUTBYTES);
 
     memset(ctx, 0, sizeof(*ctx));
     for (int i = 0; i < 8; i++) ctx->h[i] = blake2s_IV[i];
@@ -99,7 +102,10 @@ int blake2s_init(struct blake2s_ctx *ctx, size_t outlen)
 int blake2s_init_personal(struct blake2s_ctx *ctx, size_t outlen,
                            const uint8_t personal[BLAKE2S_PERSONALBYTES])
 {
-    if (outlen == 0 || outlen > BLAKE2S_OUTBYTES) return -1;
+    if (outlen == 0 || outlen > BLAKE2S_OUTBYTES)
+        LOG_ERR("blake2s",
+                "init_personal: outlen=%zu out of range [1,%d]",
+                outlen, BLAKE2S_OUTBYTES);
 
     /* Build parameter block */
     uint8_t P[32];
@@ -142,7 +148,10 @@ int blake2s_update(struct blake2s_ctx *ctx, const void *in, size_t inlen)
 
 int blake2s_final(struct blake2s_ctx *ctx, void *out, size_t outlen)
 {
-    if (outlen > ctx->outlen) return -1;
+    if (outlen > ctx->outlen)
+        LOG_ERR("blake2s",
+                "final: requested outlen=%zu > ctx->outlen=%zu",
+                outlen, (size_t)ctx->outlen);
 
     blake2s_increment_counter(ctx, (uint32_t)ctx->buflen);
     ctx->f[0] = 0xFFFFFFFF;
@@ -164,7 +173,8 @@ int blake2s_final(struct blake2s_ctx *ctx, void *out, size_t outlen)
 int blake2s(void *out, size_t outlen, const void *in, size_t inlen)
 {
     struct blake2s_ctx ctx;
-    if (blake2s_init(&ctx, outlen) != 0) return -1;
+    if (blake2s_init(&ctx, outlen) != 0)
+        LOG_ERR("blake2s", "one-shot: blake2s_init failed");
     blake2s_update(&ctx, in, inlen);
     return blake2s_final(&ctx, out, outlen);
 }

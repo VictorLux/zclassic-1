@@ -8,6 +8,7 @@
 
 #include "crypto/sha256.h"
 #include "crypto/common.h"
+#include "util/log_macros.h"
 #include <string.h>
 
 /* --- SHA-NI accelerated transform (Intel Goldmont+, AMD Zen) --- */
@@ -425,7 +426,9 @@ bool sha256_selftest(void)
     /* Compare */
     if (memcmp(s_port, s_shani, 32) != 0) {
         sha_ni_available = 0; /* Disable — results don't match */
-        return false;
+        LOG_FAIL("sha256",
+                 "sha_ni_selftest: portable vs SHA-NI mismatch — CPU reports SHA-NI "
+                 "but test vectors disagree; falling back to portable implementation");
     }
     return true;
 #else
@@ -491,7 +494,9 @@ int sha256_finalize_no_padding(struct sha256_ctx *ctx, unsigned char hash[SHA256
                                int enforce_compression)
 {
     if (enforce_compression && ctx->bytes != 64)
-        return -1;
+        LOG_ERR("sha256",
+                "finalize_no_padding: enforce_compression with ctx->bytes=%zu != 64",
+                ctx->bytes);
 
     WriteBE32(hash, ctx->s[0]);
     WriteBE32(hash + 4, ctx->s[1]);

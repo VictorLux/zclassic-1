@@ -3,6 +3,7 @@
  * Based on RFC 7693 and the BLAKE2 reference implementation. */
 
 #include "crypto/blake2b.h"
+#include "util/log_macros.h"
 #include <string.h>
 
 static const uint64_t blake2b_IV[8] = {
@@ -112,7 +113,8 @@ int blake2b_init_param(struct blake2b_ctx *ctx, const struct blake2b_param *p)
 int blake2b_init(struct blake2b_ctx *ctx, size_t outlen)
 {
     if (outlen == 0 || outlen > BLAKE2B_OUTBYTES)
-        return -1;
+        LOG_ERR("blake2b",
+                "init: outlen=%zu out of range [1,%d]", outlen, BLAKE2B_OUTBYTES);
 
     struct blake2b_param p;
     memset(&p, 0, sizeof(p));
@@ -127,9 +129,11 @@ int blake2b_init_key(struct blake2b_ctx *ctx, size_t outlen,
                      const void *key, size_t keylen)
 {
     if (outlen == 0 || outlen > BLAKE2B_OUTBYTES)
-        return -1;
+        LOG_ERR("blake2b",
+                "init_key: outlen=%zu out of range [1,%d]", outlen, BLAKE2B_OUTBYTES);
     if (keylen == 0 || keylen > BLAKE2B_KEYBYTES)
-        return -1;
+        LOG_ERR("blake2b",
+                "init_key: keylen=%zu out of range [1,%d]", keylen, BLAKE2B_KEYBYTES);
 
     struct blake2b_param p;
     memset(&p, 0, sizeof(p));
@@ -139,7 +143,7 @@ int blake2b_init_key(struct blake2b_ctx *ctx, size_t outlen,
     p.depth = 1;
 
     if (blake2b_init_param(ctx, &p) < 0)
-        return -1;
+        LOG_ERR("blake2b", "init_key: blake2b_init_param failed");
 
     uint8_t block[BLAKE2B_BLOCKBYTES];
     memset(block, 0, BLAKE2B_BLOCKBYTES);
@@ -168,7 +172,7 @@ int blake2b_init_salt_personal(struct blake2b_ctx *ctx, size_t outlen,
         memcpy(p.personal, personal, BLAKE2B_PERSONALBYTES);
 
     if (blake2b_init_param(ctx, &p) < 0)
-        return -1;
+        LOG_ERR("blake2b", "init_salt_personal: blake2b_init_param failed");
 
     if (key && keylen > 0) {
         uint8_t block[BLAKE2B_BLOCKBYTES];
@@ -215,7 +219,9 @@ int blake2b_update(struct blake2b_ctx *ctx, const void *in, size_t inlen)
 int blake2b_final(struct blake2b_ctx *ctx, void *out, size_t outlen)
 {
     if (out == NULL || outlen < ctx->outlen)
-        return -1;
+        LOG_ERR("blake2b",
+                "final: out=%p outlen=%zu ctx->outlen=%zu",
+                out, outlen, (size_t)ctx->outlen);
 
     blake2b_increment_counter(ctx, ctx->buflen);
     ctx->f[0] = (uint64_t)-1;

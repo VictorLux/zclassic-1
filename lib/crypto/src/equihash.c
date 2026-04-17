@@ -11,6 +11,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include "util/safe_alloc.h"
+#include "util/log_macros.h"
 
 void equihash_params_init(struct equihash_params *p,
                           unsigned int N, unsigned int K)
@@ -297,26 +298,38 @@ bool equihash_is_valid_solution(const struct equihash_params *p,
                                 const unsigned char *soln, size_t soln_len)
 {
     if (soln_len != p->solution_width)
-        return false;
+        LOG_FAIL("equihash",
+                 "is_valid_solution: soln_len=%zu != expected %zu (N=%u K=%u)",
+                 soln_len, p->solution_width, p->N, p->K);
 
     size_t num_indices = (size_t)1 << p->K;
     eh_index *indices = zcl_malloc(num_indices * sizeof(eh_index), "equihash_indices");
-    if (!indices) return false;
+    if (!indices)
+        LOG_FAIL("equihash",
+                 "is_valid_solution: zcl_malloc for %zu indices failed", num_indices);
 
     size_t got = eh_get_indices_from_minimal(soln, soln_len,
                                              p->collision_bit_length,
                                              indices, num_indices);
     if (got != num_indices) {
         free(indices);
-        return false;
+        LOG_FAIL("equihash",
+                 "is_valid_solution: unpacked %zu indices, expected %zu",
+                 got, num_indices);
     }
 
     size_t width = p->final_full_width;
     struct eh_row *X = zcl_malloc(num_indices * sizeof(struct eh_row), "equihash_rows");
-    if (!X) { free(indices); return false; }
+    if (!X) {
+        free(indices);
+        LOG_FAIL("equihash", "is_valid_solution: zcl_malloc for rows failed");
+    }
 
     unsigned char *tmp_hash = zcl_malloc(p->hash_output * 8, "equihash_tmp_hash");
-    if (!tmp_hash) { free(indices); free(X); return false; }
+    if (!tmp_hash) {
+        free(indices); free(X);
+        LOG_FAIL("equihash", "is_valid_solution: zcl_malloc for tmp_hash failed");
+    }
     unsigned char *th0 = tmp_hash;
     unsigned char *th1 = tmp_hash + p->hash_output;
     unsigned char *th2 = tmp_hash + p->hash_output * 2;
@@ -344,7 +357,9 @@ bool equihash_is_valid_solution(const struct equihash_params *p,
             if (!X[i+k].data) {
                 for (size_t j = 0; j < i+k; j++) free(X[j].data);
                 free(X); free(indices); free(tmp_hash);
-                return false;
+                LOG_FAIL("equihash",
+                         "is_valid_solution: eh_row_from_hash alloc failed (batch8 i=%zu)",
+                         i + (size_t)k);
             }
         }
     }
@@ -366,7 +381,9 @@ bool equihash_is_valid_solution(const struct equihash_params *p,
             if (!X[i+k].data) {
                 for (size_t j = 0; j < i+k; j++) free(X[j].data);
                 free(X); free(indices); free(tmp_hash);
-                return false;
+                LOG_FAIL("equihash",
+                         "is_valid_solution: eh_row_from_hash alloc failed (batch4 i=%zu)",
+                         i + (size_t)k);
             }
         }
     }
@@ -379,7 +396,9 @@ bool equihash_is_valid_solution(const struct equihash_params *p,
         if (!X[i].data) {
             for (size_t j = 0; j < i; j++) free(X[j].data);
             free(X); free(indices); free(tmp_hash);
-            return false;
+            LOG_FAIL("equihash",
+                     "is_valid_solution: eh_row_from_hash alloc failed (scalar i=%zu)",
+                     i);
         }
     }
     free(tmp_hash);
@@ -394,7 +413,9 @@ bool equihash_is_valid_solution(const struct equihash_params *p,
         if (!Xc) {
             for (size_t i = 0; i < count; i++) free(X[i].data);
             free(X);
-            return false;
+            LOG_FAIL("equihash",
+                     "is_valid_solution: zcl_malloc for collision rows failed (count=%zu)",
+                     count);
         }
 
         for (size_t i = 0; i < count; i += 2) {
@@ -402,19 +423,22 @@ bool equihash_is_valid_solution(const struct equihash_params *p,
                                       p->collision_byte_length)) {
                 for (size_t j = 0; j < count; j++) free(X[j].data);
                 free(X); free(Xc);
-                return false;
+                LOG_FAIL("equihash",
+                         "is_valid_solution: expected collision at i=%zu (PoW reject)", i);
             }
             if (eh_row_indices_before(&X[i + 1], &X[i],
                                        hash_len, len_indices)) {
                 for (size_t j = 0; j < count; j++) free(X[j].data);
                 free(X); free(Xc);
-                return false;
+                LOG_FAIL("equihash",
+                         "is_valid_solution: indices out of order at i=%zu (PoW reject)", i);
             }
             if (!eh_row_distinct_indices(&X[i], &X[i + 1],
                                           hash_len, len_indices)) {
                 for (size_t j = 0; j < count; j++) free(X[j].data);
                 free(X); free(Xc);
-                return false;
+                LOG_FAIL("equihash",
+                         "is_valid_solution: non-distinct indices at i=%zu (PoW reject)", i);
             }
             eh_row_xor_merge(&Xc[i / 2], &X[i], &X[i + 1],
                               hash_len, len_indices,
@@ -423,7 +447,9 @@ bool equihash_is_valid_solution(const struct equihash_params *p,
                 for (size_t j = 0; j < count; j++) free(X[j].data);
                 for (size_t j = 0; j < i / 2; j++) free(Xc[j].data);
                 free(X); free(Xc);
-                return false;
+                LOG_FAIL("equihash",
+                         "is_valid_solution: eh_row_xor_merge alloc failed at i=%zu",
+                         i);
             }
         }
 
