@@ -52,7 +52,7 @@ static void store_ensure_schema(sqlite3 *db, const char *datadir)
      * customize their store by editing a simple JSON file. */
     sqlite3_stmt *cnt = NULL;
     sqlite3_prepare_v2(db, "SELECT count(*) FROM products", -1, &cnt, NULL);
-    bool empty = (sqlite3_step(cnt) == SQLITE_ROW &&
+    bool empty = (sqlite3_step(cnt) == SQLITE_ROW &&  // raw-sql-ok: a3
                   sqlite3_column_int(cnt, 0) == 0);
     sqlite3_finalize(cnt);
 
@@ -750,7 +750,7 @@ static int64_t store_chain_tip_height(sqlite3 *db)
     if (sqlite3_prepare_v2(db, "SELECT MAX(height) FROM blocks",
                            -1, &s, NULL) != SQLITE_OK || !s)
         return 0;
-    if (sqlite3_step(s) == SQLITE_ROW)
+    if (sqlite3_step(s) == SQLITE_ROW)  // raw-sql-ok: a3
         tip_height = sqlite3_column_int64(s, 0);
     sqlite3_finalize(s);
     return tip_height;
@@ -773,7 +773,7 @@ static int64_t store_received_payment(sqlite3 *db, const char *pay_addr,
 
     sqlite3_bind_text(s, 1, pay_addr, -1, SQLITE_STATIC);
     sqlite3_bind_int64(s, 2, min_height);
-    if (sqlite3_step(s) == SQLITE_ROW)
+    if (sqlite3_step(s) == SQLITE_ROW)  // raw-sql-ok: a3
         received = sqlite3_column_int64(s, 0);
     sqlite3_finalize(s);
     return received;

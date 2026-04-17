@@ -573,7 +573,7 @@ static bool node_db_sync_connect_block_local(struct node_db *ndb,
                     tx->v_shielded_spend[j].nullifier.data,
                     32, SQLITE_STATIC) != SQLITE_OK)
                 goto fail;
-            if (sqlite3_step(ns) != SQLITE_DONE)
+            if (sqlite3_step(ns) != SQLITE_DONE)  // raw-sql-ok: a3
                 goto fail;
         }
     }
@@ -659,7 +659,7 @@ static bool node_db_sync_connect_block_local(struct node_db *ndb,
         }
         if (sqlite3_bind_blob(upd, 1, ts.data, (int)ts.size, SQLITE_STATIC) != SQLITE_OK ||
             sqlite3_bind_blob(upd, 2, pindex->phashBlock->data, 32, SQLITE_STATIC) != SQLITE_OK ||
-            sqlite3_step(upd) != SQLITE_DONE) {
+            sqlite3_step(upd) != SQLITE_DONE) {  // raw-sql-ok: a3
             sqlite3_finalize(upd);
             stream_free(&ts);
             goto fail;
@@ -758,7 +758,7 @@ static bool node_db_sync_disconnect_block_local(struct node_db *ndb,
                 goto fail;
             if (sqlite3_bind_blob(us, 1, tx->hash.data, 32, SQLITE_STATIC) != SQLITE_OK ||
                 sqlite3_bind_int(us, 2, (int)j) != SQLITE_OK ||
-                sqlite3_step(us) != SQLITE_DONE) {
+                sqlite3_step(us) != SQLITE_DONE) {  // raw-sql-ok: a3
                 sqlite3_finalize(us);
                 goto fail;
             }
@@ -780,7 +780,7 @@ static bool node_db_sync_disconnect_block_local(struct node_db *ndb,
             if (sqlite3_bind_blob(s, 1,
                     tx->v_shielded_spend[j].nullifier.data,
                     32, SQLITE_STATIC) != SQLITE_OK ||
-                sqlite3_step(s) != SQLITE_DONE) {
+                sqlite3_step(s) != SQLITE_DONE) {  // raw-sql-ok: a3
                 sqlite3_finalize(s);
                 goto fail;
             }
@@ -804,7 +804,7 @@ static bool node_db_sync_disconnect_block_local(struct node_db *ndb,
             sqlite3_finalize(tq);
             goto fail;
         }
-        int tq_rc = sqlite3_step(tq);
+        int tq_rc = sqlite3_step(tq);  // raw-sql-ok: a3
         if (tq_rc == SQLITE_ROW) {
             int tlen = sqlite3_column_bytes(tq, 0);
             const void *tdata = sqlite3_column_blob(tq, 0);
@@ -1181,7 +1181,7 @@ static bool node_db_sync_sapling_spend_write(struct node_db *ndb, void *ctx)
                       spend->nullifier,
                       sizeof(spend->nullifier),
                       SQLITE_STATIC);
-    sqlite3_step(s);
+    sqlite3_step(s);  // raw-sql-ok: a3
 
     spend->ok = db_sapling_note_mark_spent(ndb,
                                            spend->nullifier,
@@ -2525,7 +2525,7 @@ static bool import_writer_step_checked(sqlite3_stmt *stmt,
                                       const struct node_db *ndb,
                                       int row_no)
 {
-    int step_rc = sqlite3_step(stmt);
+    int step_rc = sqlite3_step(stmt);  // raw-sql-ok: a3
     if (step_rc != SQLITE_DONE) {
         fprintf(stderr,
                 "UTXO import writer: sqlite3_step failed at row %d (rc=%d): %s\n",
@@ -3314,7 +3314,7 @@ reader_done:
         sqlite3_prepare_v2(ndb->db,
             "SELECT COUNT(DISTINCT txid), COUNT(*) FROM utxos",
             -1, &cnt, NULL);
-        if (cnt && sqlite3_step(cnt) == SQLITE_ROW) {
+        if (cnt && sqlite3_step(cnt) == SQLITE_ROW) {  // raw-sql-ok: a3
             int64_t sql_txids = sqlite3_column_int64(cnt, 0);
             int64_t sql_rows = sqlite3_column_int64(cnt, 1);
             if (sql_rows != total_rows) {

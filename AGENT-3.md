@@ -13,7 +13,7 @@ checklist and coordinating plan).
 
 ## Status — 2026-04-17
 
-First pass landed on `origin/a3/build-ci-deploy-hardening`:
+First pass merged into main:
 
 - ✅ P1.3 — NULL VK fail-open fixed (3b4b08ba9)
 - ✅ P1.4 — Sapling params integrity check (785db18b1)
@@ -23,25 +23,9 @@ First pass landed on `origin/a3/build-ci-deploy-hardening`:
 - ✅ Step 7 — FIXME comment on jub_scalar_mul timing (ecd24894e)
 - ✅ Regression tests (ebc470342)
 
-**NEXT UP — start here:** Step 4 (P1.11) is the large remaining item. Do it in
-small commits (one file per commit). Then Step 8 if time permits. Refresh your
-tree before starting:
-
-```bash
-cd ~/zclassic23-3
-git fetch origin
-git checkout main
-git pull origin main --rebase=false
-git merge --ff-only origin/a3/build-ci-deploy-hardening || \
-  git merge --no-ff origin/a3/build-ci-deploy-hardening \
-    -m "merge a3/build-ci-deploy-hardening (P1.3/4/8/9/10 + fixes)"
-git push origin main
-```
-
-If the merge conflicts, stop and tell Rhett — do NOT resolve speculatively.
-
-After the merge lands, continue with Step 4 below (P1.11 audit) and Step 8
-(nonce hygiene). The rest of this file is unchanged from your initial brief.
+**NEXT UP — start here:** Step 4 below (P1.11) is the large remaining item.
+Do it in small commits (one file per commit). Then Step 8 (nonce hygiene) if
+time permits. The rest of this file is unchanged from your initial brief.
 
 ---
 

@@ -15,6 +15,7 @@
 #include "crypto/blake2b.h"
 #include "core/random.h"
 #include "support/cleanse.h"
+#include "util/log_macros.h"
 #include <string.h>
 #include <stdlib.h>
 
@@ -78,33 +79,55 @@ enum {
 static struct jub_point fixed_generators[GEN_MAX];
 static bool fixed_generators_loaded = false;
 
+/* Derive a single fixed generator or abort: these are hard-coded inputs with
+ * hard-coded personalizations; failure means the Jubjub group_hash machinery
+ * is broken and every subsequent scalar mul would silently produce garbage. */
+static void derive_fixed_generator(int idx, const char *name,
+                                    const uint8_t *m, size_t m_len,
+                                    const uint8_t personalization[8])
+{
+    if (!find_group_hash(&fixed_generators[idx], m, m_len, personalization)) {
+        fprintf(stderr, "[sapling] %s:%d %s(): "
+                "find_group_hash failed for fixed generator '%s' — "
+                "refusing to run with zero-initialized generator\n",
+                __FILE__, __LINE__, __func__, name);
+        abort();
+    }
+}
+
 static void ensure_fixed_generators(void)
 {
     if (fixed_generators_loaded) return;
 
-    find_group_hash(&fixed_generators[GEN_PROOF_GENERATION_KEY],
-                    (const uint8_t *)"", 0,
-                    (const uint8_t *)"Zcash_H_");
+    derive_fixed_generator(GEN_PROOF_GENERATION_KEY,
+                           "ProofGenerationKey",
+                           (const uint8_t *)"", 0,
+                           (const uint8_t *)"Zcash_H_");
 
-    find_group_hash(&fixed_generators[GEN_NOTE_COMMITMENT_RANDOMNESS],
-                    (const uint8_t *)"r", 1,
-                    (const uint8_t *)"Zcash_PH");
+    derive_fixed_generator(GEN_NOTE_COMMITMENT_RANDOMNESS,
+                           "NoteCommitmentRandomness",
+                           (const uint8_t *)"r", 1,
+                           (const uint8_t *)"Zcash_PH");
 
-    find_group_hash(&fixed_generators[GEN_NULLIFIER_POSITION],
-                    (const uint8_t *)"", 0,
-                    (const uint8_t *)"Zcash_J_");
+    derive_fixed_generator(GEN_NULLIFIER_POSITION,
+                           "NullifierPosition",
+                           (const uint8_t *)"", 0,
+                           (const uint8_t *)"Zcash_J_");
 
-    find_group_hash(&fixed_generators[GEN_VALUE_COMMITMENT_VALUE],
-                    (const uint8_t *)"v", 1,
-                    (const uint8_t *)"Zcash_cv");
+    derive_fixed_generator(GEN_VALUE_COMMITMENT_VALUE,
+                           "ValueCommitmentValue",
+                           (const uint8_t *)"v", 1,
+                           (const uint8_t *)"Zcash_cv");
 
-    find_group_hash(&fixed_generators[GEN_VALUE_COMMITMENT_RANDOMNESS],
-                    (const uint8_t *)"r", 1,
-                    (const uint8_t *)"Zcash_cv");
+    derive_fixed_generator(GEN_VALUE_COMMITMENT_RANDOMNESS,
+                           "ValueCommitmentRandomness",
+                           (const uint8_t *)"r", 1,
+                           (const uint8_t *)"Zcash_cv");
 
-    find_group_hash(&fixed_generators[GEN_SPENDING_KEY],
-                    (const uint8_t *)"", 0,
-                    (const uint8_t *)"Zcash_G_");
+    derive_fixed_generator(GEN_SPENDING_KEY,
+                           "SpendingKey",
+                           (const uint8_t *)"", 0,
+                           (const uint8_t *)"Zcash_G_");
 
     fixed_generators_loaded = true;
 }
@@ -371,19 +394,26 @@ bool redjubjub_verify(const uint8_t vk_bytes[32],
     /* Deserialize vk */
     struct jub_point vk;
     if (!jub_from_bytes(&vk, vk_bytes))
-        return false;
+        LOG_FAIL("redjubjub", "jub_from_bytes(vk) failed");
 
     /* Deserialize R */
     struct jub_point R;
     if (!jub_from_bytes(&R, sig_rbar))
-        return false;
+        LOG_FAIL("redjubjub", "jub_from_bytes(R) failed");
 
     /* c = H*(Rbar || vk_bytes || msg) per Zcash spec §5.4.7 */
     uint8_t c_scalar[32];
     h_star(sig_rbar, 32, vk_bytes, 32, msg, msg_len, c_scalar);
 
-    /* S as scalar bytes */
-    /* Check S < Fs order (optional, Rust checks via from_repr) */
+    /* Canonical-S check: S must be < Fs (Jubjub subgroup order). Zcash
+     * consensus mirrors the Rust implementation's Fs::from_repr check;
+     * non-canonical S otherwise round-trips but would make the sig
+     * malleable and could split consensus with zcashd. */
+    {
+        struct fs s_canon;
+        if (!fs_from_bytes(&s_canon, sig_sbar))
+            LOG_FAIL("redjubjub", "S >= Fs order (non-canonical signature)");
+    }
 
     /* Verify: [8] * (R + c*vk - S*G) == 0
      * Equivalently: [8] * (-S*G + R + c*vk) == 0 */
@@ -501,18 +531,23 @@ bool sapling_check_spend(struct sapling_verification_ctx *ctx,
                            GEN_SPENDING_KEY))
         return false;
 
-    /* Groth16 proof verification (7 public inputs) */
-    if (sapling_spend_vk) {
+    /* Groth16 proof verification (7 public inputs).
+     * Fail-closed: a NULL spend VK means sapling_init_params never ran (or
+     * was torn down) — continuing would silently accept every zkproof. */
+    if (!sapling_spend_vk)
+        LOG_FAIL("sapling", "sapling_spend_vk is NULL (params not loaded)");
+
+    {
         struct groth16_proof proof;
         if (!groth16_proof_read(&proof, zkproof))
-            return false;
+            LOG_FAIL("sapling", "groth16_proof_read(spend) failed");
 
         /* Public inputs: rk.x, rk.y, cv.x, cv.y, anchor, nullifier_pack[0..1] */
         uint64_t public_input[7][4];
 
         struct jub_point rk_point;
         if (!jub_from_bytes(&rk_point, rk))
-            return false;
+            LOG_FAIL("sapling", "jub_from_bytes(rk) failed for spend proof");
         jub_to_affine_raw(public_input[0], public_input[1], &rk_point);
         jub_to_affine_raw(public_input[2], public_input[3], &cv_point);
         bytes_le_to_fr_raw(public_input[4], anchor);
@@ -522,10 +557,8 @@ bool sapling_check_spend(struct sapling_verification_ctx *ctx,
         multipack_bytes_to_fr((uint64_t (*)[4])&public_input[5], &n_packed,
                                nullifier, 32);
 
-        if (!groth16_verify(sapling_spend_vk, &proof, public_input, 7)) {
-            fprintf(stderr, "[sapling] groth16 spend proof verification failed\n");
-            return false;
-        }
+        if (!groth16_verify(sapling_spend_vk, &proof, public_input, 7))
+            LOG_FAIL("sapling", "groth16_verify(spend) rejected proof");
     }
 
     return true;
@@ -555,11 +588,16 @@ bool sapling_check_output(struct sapling_verification_ctx *ctx,
     if (is_small_order(epk))
         return false;
 
-    /* Groth16 proof verification (5 public inputs) */
-    if (sapling_output_vk) {
+    /* Groth16 proof verification (5 public inputs).
+     * Fail-closed: a NULL output VK means sapling_init_params never ran —
+     * continuing would silently accept every zkproof. */
+    if (!sapling_output_vk)
+        LOG_FAIL("sapling", "sapling_output_vk is NULL (params not loaded)");
+
+    {
         struct groth16_proof proof;
         if (!groth16_proof_read(&proof, zkproof))
-            return false;
+            LOG_FAIL("sapling", "groth16_proof_read(output) failed");
 
         /* Public inputs: cv.x, cv.y, epk.x, epk.y, cm */
         uint64_t public_input[5][4];
@@ -568,13 +606,13 @@ bool sapling_check_output(struct sapling_verification_ctx *ctx,
 
         struct jub_point epk_point;
         if (!jub_from_bytes(&epk_point, epk))
-            return false;
+            LOG_FAIL("sapling", "jub_from_bytes(epk) failed for output proof");
         jub_to_affine_raw(public_input[2], public_input[3], &epk_point);
 
         bytes_le_to_fr_raw(public_input[4], cm);
 
         if (!groth16_verify(sapling_output_vk, &proof, public_input, 5))
-            return false;
+            LOG_FAIL("sapling", "groth16_verify(output) rejected proof");
     }
 
     return true;

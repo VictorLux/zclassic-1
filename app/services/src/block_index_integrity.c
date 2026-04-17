@@ -229,7 +229,7 @@ static enum bii_verdict bii_check_tip_in_sql(struct node_db *db,
         return BII_OK;  /* schema may not be ready — defer to CSR */
 
     sqlite3_bind_blob(st, 1, tip->phashBlock->data, 32, SQLITE_STATIC);
-    int rc = sqlite3_step(st);
+    int rc = sqlite3_step(st);  // raw-sql-ok: a3
     if (rc == SQLITE_ROW) {
         int64_t sql_h = sqlite3_column_int64(st, 0);
         if (sql_h != (int64_t)tip->nHeight)

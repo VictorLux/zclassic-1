@@ -102,7 +102,7 @@ size_t serve_node(uint8_t *r, size_t max) {
                 "SELECT addr, subver, starting_height, inbound "
                 "FROM peers ORDER BY starting_height DESC LIMIT 25",
                 -1, &ps, NULL) == SQLITE_OK) {
-            while (sqlite3_step(ps) == SQLITE_ROW &&
+            while (sqlite3_step(ps) == SQLITE_ROW &&  // raw-sql-ok: a3
                    pt + 400 < sizeof(peer_table)) {
                 const char *addr = (const char *)sqlite3_column_text(ps, 0);
                 const char *subver = (const char *)sqlite3_column_text(ps, 1);

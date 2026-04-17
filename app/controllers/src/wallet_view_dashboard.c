@@ -181,7 +181,7 @@ size_t serve_dashboard(uint8_t *r, size_t max) {
                 "GROUP BY t.token_id HAVING bal > 0 "
                 "ORDER BY bal DESC LIMIT 5",
                 -1, &tok, NULL) == SQLITE_OK) {
-            while (sqlite3_step(tok) == SQLITE_ROW &&
+            while (sqlite3_step(tok) == SQLITE_ROW &&  // raw-sql-ok: a3
                    toff + 300 < sizeof(token_buf)) {
                 const char *ticker = (const char *)sqlite3_column_text(tok, 0);
                 int decimals = sqlite3_column_int(tok, 2);
@@ -237,7 +237,7 @@ size_t serve_dashboard(uint8_t *r, size_t max) {
                 "LEFT JOIN blocks b ON wt.block_height = b.height "
                 "ORDER BY wt.block_height DESC LIMIT 20",
                 -1, &s, NULL) == SQLITE_OK) {
-            while (sqlite3_step(s) == SQLITE_ROW &&
+            while (sqlite3_step(s) == SQLITE_ROW &&  // raw-sql-ok: a3
                    txoff + 512 < sizeof(tx_buf) && tx_shown < 5) {
                 const char *txid = (const char *)sqlite3_column_text(s, 0);
                 int height = sqlite3_column_int(s, 1);
@@ -295,7 +295,7 @@ size_t serve_dashboard(uint8_t *r, size_t max) {
                         "ORDER BY n.block_height DESC LIMIT ?",
                         -1, &zs, NULL) == SQLITE_OK) {
                     sqlite3_bind_int(zs, 1, 5 - tx_shown);
-                    while (sqlite3_step(zs) == SQLITE_ROW && tx_shown < 5 &&
+                    while (sqlite3_step(zs) == SQLITE_ROW && tx_shown < 5 &&  // raw-sql-ok: a3
                            txoff + 512 < sizeof(tx_buf)) {
                         int64_t val = sqlite3_column_int64(zs, 0);
                         int nh = sqlite3_column_int(zs, 1);

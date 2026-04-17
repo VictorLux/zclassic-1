@@ -304,6 +304,13 @@ void jub_double(struct jub_point *r, const struct jub_point *a)
     fr_mul(&r->z, &F, &G);
 }
 
+/* FIXME(timing): jub_scalar_mul is NOT constant-time over secret scalars.
+ * The nibble-indexed table lookup (`table[nibble]`) leaks via cache timing,
+ * and the `if (nibble)` branch leaks via CPU branch prediction. This
+ * matters because callers pass secret scalars: ask, nsk, ivk, esk, bsk.
+ * Fix (tracked in AGENT.md): switch to branchless conditional-select with
+ * masked table walks. Out of scope for the consensus/fail-open hardening
+ * wave (2026-04-17 code review). See AGENT-3.md Step 7. */
 void jub_scalar_mul(struct jub_point *r, const struct jub_point *p, const uint8_t scalar[32])
 {
     /* 4-bit windowed scalar multiplication.

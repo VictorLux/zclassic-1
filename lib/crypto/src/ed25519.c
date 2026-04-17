@@ -6,6 +6,7 @@
 
 #include "crypto/ed25519.h"
 #include "crypto/sha512.h"
+#include "util/log_macros.h"
 #include <string.h>
 
 typedef int64_t gf[16];
@@ -297,6 +298,29 @@ static void reduce(uint8_t r[64])
     modL(r, x);
 }
 
+/* Constant-time check that S (sig[32..63], 32 LE bytes) is canonical:
+ *   S < L, where L is the Ed25519 group order. Required by RFC 8032
+ *   §5.1.7 and by Zcash consensus (malleable S-values split consensus
+ *   from zcashd). Compare from most-significant byte down; accumulate
+ *   "less-than" only on bytes where all higher bytes are still equal. */
+static bool ed25519_S_is_canonical(const uint8_t S[32])
+{
+    uint32_t lt = 0;
+    uint32_t eq = 1;
+    for (int i = 31; i >= 0; i--) {
+        uint32_t sb = S[i];
+        uint32_t lb = (uint32_t)L[i]; /* L[i] fits in one byte */
+        /* sb < lb  iff  (sb - lb) underflows to a value with bit 31 set */
+        uint32_t is_lt = ((sb - lb) >> 31) & 1u;
+        /* sb == lb iff  (sb ^ lb) == 0 */
+        uint32_t is_eq = (((sb ^ lb) - 1u) >> 31) & 1u;
+        lt |= eq & is_lt;
+        eq &= is_eq;
+    }
+    (void)eq;
+    return lt != 0u;
+}
+
 bool ed25519_verify(const uint8_t sig[64],
                     const uint8_t *msg, size_t msg_len,
                     const uint8_t pk[32])
@@ -307,12 +331,18 @@ bool ed25519_verify(const uint8_t sig[64],
     {
         uint8_t zero[32] = {0};
         if (memcmp(pk, zero, 32) == 0)
-            return false;
+            LOG_FAIL("ed25519", "pk is identity (all zero)");
     }
+
+    /* Canonical-S check (RFC 8032 §5.1.7, Zcash consensus). Must happen
+     * BEFORE the scalar mul so malleable signatures are rejected even if
+     * the decompression/point math would otherwise accept them. */
+    if (!ed25519_S_is_canonical(sig + 32))
+        LOG_FAIL("ed25519", "S >= L (non-canonical signature scalar)");
 
     /* Decompress -A from public key */
     if (unpackneg(q, pk) != 0)
-        return false;
+        LOG_FAIL("ed25519", "pubkey decompression (unpackneg) failed");
 
     /* h = SHA-512(R || pk || msg) mod L */
     uint8_t h[64];
@@ -329,7 +359,7 @@ bool ed25519_verify(const uint8_t sig[64],
     {
         gep bp;
         if (unpackneg(bp, BASE_POINT) != 0)
-            return false;
+            LOG_FAIL("ed25519", "base point decompression failed");
         Z(bp[0], gf0, bp[0]);
         Z(bp[3], gf0, bp[3]);
         scalarmult(sb, bp, sig + 32);

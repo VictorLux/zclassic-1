@@ -24,6 +24,7 @@
 #include <unistd.h>
 
 #include "util/log_macros.h"
+#include "util/ar_step_readonly.h"
 
 /* Read process start time from /proc/self/stat (field 22, starttime in
  * clock ticks since boot).  Combined with /proc/uptime this gives the
@@ -97,7 +98,7 @@ static bool health_query_int(sqlite3 *db, const char *sql, int *out)
         return false;
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK)
         return false;
-    if (sqlite3_step(stmt) == SQLITE_ROW) {
+    if (AR_STEP_ROW_READONLY(stmt) == SQLITE_ROW) {
         *out = sqlite3_column_int(stmt, 0);
         ok = true;
     }
@@ -114,7 +115,7 @@ static bool health_query_int64(sqlite3 *db, const char *sql, int64_t *out)
         return false;
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK)
         return false;
-    if (sqlite3_step(stmt) == SQLITE_ROW) {
+    if (AR_STEP_ROW_READONLY(stmt) == SQLITE_ROW) {
         *out = sqlite3_column_int64(stmt, 0);
         ok = true;
     }

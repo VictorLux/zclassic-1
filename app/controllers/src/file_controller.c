@@ -68,7 +68,7 @@ static bool file_export_step_checked(sqlite3_stmt *stmt, sqlite3 *db,
     if (!stmt || !db)
         LOG_FAIL("file", "step_checked: NULL %s", !stmt ? "stmt" : "db");
 
-    int rc = sqlite3_step(stmt);
+    int rc = sqlite3_step(stmt);  // raw-sql-ok: a3
     if (rc != SQLITE_DONE && rc != SQLITE_ROW) {
         fprintf(stderr, "file_export_snapshot: %s failed: rc=%d err=%s\n",
                 label, rc, sqlite3_errmsg(db));

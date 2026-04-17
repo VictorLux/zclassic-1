@@ -60,7 +60,7 @@ static int history_query_count(sqlite3 *db, enum history_filter_mode mode,
     if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) != SQLITE_OK || !s)
         return 0;
     history_bind_filter_params(s, 1, mode, search_hex);
-    if (sqlite3_step(s) == SQLITE_ROW)
+    if (sqlite3_step(s) == SQLITE_ROW)  // raw-sql-ok: a3
         count = sqlite3_column_int(s, 0);
     sqlite3_finalize(s);
     return count;
@@ -177,7 +177,7 @@ size_t serve_history(uint8_t *r, size_t max, int page,
         history_bind_filter_params(s, 1, filter_mode, safe_search);
         sqlite3_bind_int(s, 4, per_page);
         sqlite3_bind_int(s, 5, page * per_page);
-        while (sqlite3_step(s) == SQLITE_ROW && off + 600 < max) {
+        while (sqlite3_step(s) == SQLITE_ROW && off + 600 < max) {  // raw-sql-ok: a3
             const char *txid = (const char *)sqlite3_column_text(s, 0);
             int h = sqlite3_column_int(s, 1);
             int64_t btime = sqlite3_column_int64(s, 2);
@@ -308,7 +308,7 @@ size_t serve_history(uint8_t *r, size_t max, int page,
                 -1, &ns, NULL) == SQLITE_OK) {
 
             bool header_shown = false;
-            while (sqlite3_step(ns) == SQLITE_ROW && off + 600 < max) {
+            while (sqlite3_step(ns) == SQLITE_ROW && off + 600 < max) {  // raw-sql-ok: a3
                 int64_t val = sqlite3_column_int64(ns, 0);
                 (void)sqlite3_column_int(ns, 1); /* block height */
                 const char *addr = (const char *)sqlite3_column_text(ns, 2);
@@ -440,7 +440,7 @@ size_t serve_tx_detail(uint8_t *r, size_t max, const char *txid_hex) {
     bool found = false;
     if (sqlite3_prepare_v2(db, tx_lookup_sql, -1, &s, NULL) == SQLITE_OK) {
         sqlite3_bind_text(s, 1, upper_txid, -1, SQLITE_STATIC);
-        if (sqlite3_step(s) == SQLITE_ROW) {
+        if (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok: a3
             block_height = sqlite3_column_int(s, 0);
             from_me = sqlite3_column_int(s, 1);
             fee = sqlite3_column_int64(s, 2);
@@ -490,7 +490,7 @@ size_t serve_tx_detail(uint8_t *r, size_t max, const char *txid_hex) {
             -1, &s, NULL) == SQLITE_OK) {
         sqlite3_bind_text(s, 1, upper_txid, -1, SQLITE_STATIC);
         bool header_shown = false;
-        while (sqlite3_step(s) == SQLITE_ROW && os + 300 < sizeof(outputs_section)) {
+        while (sqlite3_step(s) == SQLITE_ROW && os + 300 < sizeof(outputs_section)) {  // raw-sql-ok: a3
             if (!header_shown) {
                 int n = snprintf(outputs_section + os,
                     sizeof(outputs_section) - os,
