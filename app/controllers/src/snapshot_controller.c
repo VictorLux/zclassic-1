@@ -41,6 +41,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <pthread.h>
+#include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 
 /* ZCL_MAGIC used in legacy_import.c, not needed here. */
@@ -946,7 +947,9 @@ static void *build_tx_index_thread(void *arg)
     tx_open = true;
     ok = true;
 
-    for (rc = sqlite3_step(query); rc == SQLITE_ROW; rc = sqlite3_step(query)) {  // raw-sql-ok: a3
+    for (rc = AR_STEP_ROW_READONLY(query);
+         rc == SQLITE_ROW;
+         rc = AR_STEP_ROW_READONLY(query)) {
         const uint8_t *block_hash = sqlite3_column_blob(query, 0);
         int height = sqlite3_column_int(query, 1);
         int file_num = sqlite3_column_int(query, 2);
