@@ -26,7 +26,7 @@ Follow this order in model source files:
 
 ## Macro Guide
 
-The shared macros live in [activerecord.h](/home/rhett/zclassic23/app/models/include/models/activerecord.h).
+The shared macros live in [activerecord.h](include/models/activerecord.h).
 
 Use these by default:
 

@@ -5,6 +5,7 @@
 #include <sqlite3.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <sys/stat.h>
@@ -12,7 +13,12 @@
 
 int main(int argc, char *argv[])
 {
-    const char *datadir = "/home/rhett/.zclassic-c23";
+    char default_dd[256] = "./.zclassic-c23";
+    const char *home = getenv("HOME");
+    if (home && *home) {
+        snprintf(default_dd, sizeof(default_dd), "%s/.zclassic-c23", home);
+    }
+    const char *datadir = default_dd;
     if (argc >= 2) datadir = argv[1];
 
     char src_path[576], dst_path[576];
@@ -40,7 +46,7 @@ int main(int argc, char *argv[])
     sqlite3_exec(dst, "PRAGMA synchronous=OFF", NULL, NULL, NULL);
     sqlite3_exec(dst, "PRAGMA cache_size=-262144", NULL, NULL, NULL);
 
-    char attach[600];
+    char attach[sizeof(src_path) + 64];
     snprintf(attach, sizeof(attach), "ATTACH DATABASE '%s' AS src", src_path);
     if (sqlite3_exec(dst, attach, NULL, NULL, NULL) != SQLITE_OK) {
         fprintf(stderr, "ATTACH failed: %s\n", sqlite3_errmsg(dst));

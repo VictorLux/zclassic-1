@@ -26,4 +26,4 @@ Current services in progress:
 - `sync_service` (compatibility umbrella)
 - `snapshot_sync_service`
 
-Primary architecture reference: [ARCHITECTURE.md](/home/rhett/zclassic23/ARCHITECTURE.md)
+Primary architecture reference: [ARCHITECTURE.md](../../ARCHITECTURE.md)

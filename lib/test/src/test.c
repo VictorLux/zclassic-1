@@ -142,6 +142,8 @@ int main(void)
     failures += test_ws_events();
     failures += test_trace();
     failures += test_phgr13_fix();
+    { extern int test_no_hardcoded_home(void);
+      failures += test_no_hardcoded_home(); }
     failures += test_cookie_rotation();
     failures += test_reorg_safety();
     failures += test_key_scrub();

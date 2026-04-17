@@ -18,6 +18,8 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "util/rpc_paths.h"
+
 enum { MAX_BUF = 1024 * 1024, SMALL_BUF = 4096 };
 
 struct rpc_auth {
@@ -623,18 +625,29 @@ static void usage(void)
 
 int main(int argc, char **argv)
 {
+    static char legacy_dd[512], legacy_conf[512], legacy_cookie[512];
+    static char c23_dd[512], c23_conf[512], c23_cookie[512];
+    zcl_nodectl_build_default_paths(
+        getenv("HOME"),
+        legacy_dd, sizeof(legacy_dd),
+        legacy_conf, sizeof(legacy_conf),
+        legacy_cookie, sizeof(legacy_cookie),
+        c23_dd, sizeof(c23_dd),
+        c23_conf, sizeof(c23_conf),
+        c23_cookie, sizeof(c23_cookie));
+
     struct rpc_target legacy = {
         .name = "legacy",
-        .datadir = env_or_default("LEGACY_DATADIR", "/home/rhett/.zclassic"),
-        .conf_path = env_or_default("LEGACY_CONF", "/home/rhett/.zclassic/zclassic.conf"),
-        .cookie_path = env_or_default("LEGACY_COOKIE", "/home/rhett/.zclassic/.cookie"),
+        .datadir = env_or_default("LEGACY_DATADIR", legacy_dd),
+        .conf_path = env_or_default("LEGACY_CONF", legacy_conf),
+        .cookie_path = env_or_default("LEGACY_COOKIE", legacy_cookie),
         .port = atoi(env_or_default("LEGACY_RPC_PORT", "8232"))
     };
     struct rpc_target c23 = {
         .name = "zclassic23",
-        .datadir = env_or_default("C23_DATADIR", "/home/rhett/.zclassic-c23"),
-        .conf_path = env_or_default("C23_CONF", "/home/rhett/.zclassic-c23/zclassic.conf"),
-        .cookie_path = env_or_default("C23_COOKIE", "/home/rhett/.zclassic-c23/.cookie"),
+        .datadir = env_or_default("C23_DATADIR", c23_dd),
+        .conf_path = env_or_default("C23_CONF", c23_conf),
+        .cookie_path = env_or_default("C23_COOKIE", c23_cookie),
         .port = atoi(env_or_default("C23_RPC_PORT", "18232"))
     };
     struct verify_opts opts = {

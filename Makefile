@@ -137,8 +137,11 @@ speedrun: $(TMPL_GEN) tools/speedrun.c $(ALL_SRCS)
 zcl-rpc: tools/zcl-rpc.c
 	$(CC) -std=c23 -O2 -Wall -o $@ $<
 
-zcl-nodectl: tools/zcl-nodectl.c
-	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -o $@ $<
+zcl-nodectl: tools/zcl-nodectl.c lib/util/include/util/rpc_paths.h
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -Ilib/util/include -o $@ $<
+
+export_snapshot: tools/export_snapshot.c
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -Ivendor/include -o $@ $< -Lvendor/lib -l:libsqlite3.a -lpthread
 
 zcl-browser: tools/zcl-browser.c $(ALL_SRCS)
 	$(CC) $(CFLAGS) -Wno-deprecated-declarations $$(pkg-config --cflags webkit2gtk-4.1) -o $@ $^ $(TOR_LIBS) $(LIBS) $$(pkg-config --libs webkit2gtk-4.1)

@@ -92,8 +92,12 @@ int test_phgr13_fix(void)
 
     /* ── 1. Parse sprout-verifying.key ─────────────────────── */
     size_t len = 0;
-    uint8_t *data = read_file_raw(
-        "/home/rhett/.zcash-params/sprout-verifying.key", &len);
+    char vk_path[512];
+    const char *home = getenv("HOME");
+    snprintf(vk_path, sizeof(vk_path),
+             "%s/.zcash-params/sprout-verifying.key",
+             (home && *home) ? home : ".");
+    uint8_t *data = read_file_raw(vk_path, &len);
 
     if (!data) {
         printf("phgr13: sprout-verifying.key not found — SKIPPING\n");
