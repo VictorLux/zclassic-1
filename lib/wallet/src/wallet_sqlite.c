@@ -518,8 +518,13 @@ struct zcl_result wallet_sqlite_read_keys_r(struct wallet_sqlite *ws,
         const void *priv_data = sqlite3_column_blob(s, 2);
         int compressed = sqlite3_column_int(s, 3);
 
-        if (!pk_data || pk_len < 33 || !priv_data || priv_len < 32)
+        if (!pk_data || pk_len < 33 || !priv_data || priv_len < 32) {
+            fprintf(stderr,
+                "[wallet_sqlite] read_keys: skipping malformed row "
+                "pk_data=%p pk_len=%d priv_data=%p priv_len=%d\n",
+                pk_data, pk_len, priv_data, priv_len);
             continue;
+        }
 
         struct pubkey pk;
         pubkey_set(&pk, pk_data, (unsigned int)pk_len);
@@ -1037,6 +1042,10 @@ struct zcl_result wallet_sqlite_flush_r(struct wallet_sqlite *ws,
         struct zcl_result kr = wallet_sqlite_write_key_r(ws, &pk,
                                     &w->keystore.keys[i].key);
         if (!kr.ok) {
+            fprintf(stderr,
+                "[wallet_sqlite] flush: key slot %zu write failed: "
+                "code=%d (%s:%d) %s\n",
+                i, kr.code, kr.source_file, kr.source_line, kr.message);
             if (first_fail.ok) first_fail = kr;
             n_key_fail++;
         }

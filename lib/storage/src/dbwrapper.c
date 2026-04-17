@@ -70,12 +70,33 @@ bool db_wrapper_open(struct db_wrapper *w, const char *path,
 
     w->read_options = leveldb_readoptions_create();
     w->iter_options = leveldb_readoptions_create();
-    /* Do NOT verify checksums during iteration — a corrupt LevelDB block
-     * causes the iterator to silently stop early, dropping all remaining
-     * entries. This caused 219 missing UTXOs during import from a
-     * zclassicd chainstate copy. Data integrity is verified through
-     * consensus (block validation) instead. */
-    leveldb_readoptions_set_verify_checksums(w->iter_options, 0);
+    /* Default: verify checksums on both point reads and iteration.  A
+     * corrupt LevelDB block now surfaces as a halt (caller-handled)
+     * rather than silently truncating the iterator mid-scan — the
+     * previous default caused a 219-UTXO silent drop during a
+     * chainstate import.  The performance/correctness trade-off is
+     * now explicit: opt out via `-leveldb-no-verify-checksums` (which
+     * sets ZCL_LEVELDB_NO_VERIFY_CHECKSUMS=1) only when an operator
+     * is actively troubleshooting suspected corruption.  We emit one
+     * WARN per process when the off-path is selected so it shows up
+     * in logs. */
+    const char *skip = getenv("ZCL_LEVELDB_NO_VERIFY_CHECKSUMS");
+    bool verify_on = !(skip && (skip[0] == '1' || skip[0] == 'y' ||
+                                skip[0] == 'Y' || skip[0] == 't' ||
+                                skip[0] == 'T'));
+    leveldb_readoptions_set_verify_checksums(w->read_options, verify_on ? 1 : 0);
+    leveldb_readoptions_set_verify_checksums(w->iter_options, verify_on ? 1 : 0);
+    if (!verify_on) {
+        static bool warned_once = false;
+        if (!warned_once) {
+            fprintf(stderr,
+                "[leveldb] WARN: verify_checksums=OFF "
+                "(ZCL_LEVELDB_NO_VERIFY_CHECKSUMS set) — silent block "
+                "corruption will truncate iterators.  Use only for "
+                "performance experiments or recovery debugging.\n");
+            warned_once = true;
+        }
+    }
     leveldb_readoptions_set_fill_cache(w->read_options, 1);
     leveldb_readoptions_set_fill_cache(w->iter_options, 0);
 

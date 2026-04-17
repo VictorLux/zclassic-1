@@ -13,11 +13,19 @@
 #include "coins/utxo_commitment.h"
 #include "crypto/sha256.h"
 #include "crypto/sha3.h"
+#include "util/log_macros.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdatomic.h>
-#include <stdio.h>
 #include <sqlite3.h>
+
+/* Log helper for non-bool paths in this file.  `return false` /
+ * `return` paths already use LOG_FAIL / bare logging; these void
+ * helpers need a log-and-return pattern that LOG_FAIL doesn't fit. */
+#define UTXO_CMT_LOG_PREPARE(db, sql) \
+    fprintf(stderr, "[utxo_cmt] %s:%d %s(): prepare failed: %s " \
+            "(sql=%s)\n", __FILE__, __LINE__, __func__, \
+            sqlite3_errmsg(db), (sql))
 
 _Atomic bool g_utxo_commitment_skip = false;
 
@@ -127,10 +135,13 @@ void utxo_commitment_compute_db(sqlite3 *db, struct utxo_commitment *out)
     if (!db) return;
 
     sqlite3_stmt *s = NULL;
-    if (sqlite3_prepare_v2(db,
-            "SELECT txid, vout, value, height FROM utxos "
-            "ORDER BY txid, vout", -1, &s, NULL) != SQLITE_OK)
+    const char *sql_iter =
+        "SELECT txid, vout, value, height FROM utxos "
+        "ORDER BY txid, vout";
+    if (sqlite3_prepare_v2(db, sql_iter, -1, &s, NULL) != SQLITE_OK) {
+        UTXO_CMT_LOG_PREPARE(db, sql_iter);
         return;
+    }
 
     while (sqlite3_step(s) == SQLITE_ROW) {
         const uint8_t *txid = (const uint8_t *)sqlite3_column_blob(s, 0);
@@ -190,14 +201,19 @@ bool utxo_commitment_save_checkpoint(sqlite3 *db,
     utxo_commitment_serialize(uc, buf);
 
     sqlite3_stmt *s = NULL;
-    if (sqlite3_prepare_v2(db,
-            "INSERT OR REPLACE INTO node_state(key,value) "
-            "VALUES('utxo_commitment',?)", -1, &s, NULL) != SQLITE_OK)
-        return false;
+    const char *sql_save =
+        "INSERT OR REPLACE INTO node_state(key,value) "
+        "VALUES('utxo_commitment',?)";
+    if (sqlite3_prepare_v2(db, sql_save, -1, &s, NULL) != SQLITE_OK)
+        LOG_FAIL("utxo_cmt", "prepare %s: %s",
+                 sql_save, sqlite3_errmsg(db));
     sqlite3_bind_blob(s, 1, buf, UTXO_COMMITMENT_SERIALIZED_SIZE, SQLITE_STATIC);
-    bool ok = sqlite3_step(s) == SQLITE_DONE;
+    int rc = sqlite3_step(s);
     sqlite3_finalize(s);
-    return ok;
+    if (rc != SQLITE_DONE)
+        LOG_FAIL("utxo_cmt", "step utxo_commitment save rc=%d: %s",
+                 rc, sqlite3_errmsg(db));
+    return true;
 }
 
 bool utxo_commitment_load_checkpoint(sqlite3 *db,
@@ -205,10 +221,11 @@ bool utxo_commitment_load_checkpoint(sqlite3 *db,
 {
     if (!db || !uc) return false;
     sqlite3_stmt *s = NULL;
-    if (sqlite3_prepare_v2(db,
-            "SELECT value FROM node_state WHERE key='utxo_commitment'",
-            -1, &s, NULL) != SQLITE_OK)
-        return false;
+    const char *sql_load =
+        "SELECT value FROM node_state WHERE key='utxo_commitment'";
+    if (sqlite3_prepare_v2(db, sql_load, -1, &s, NULL) != SQLITE_OK)
+        LOG_FAIL("utxo_cmt", "prepare %s: %s",
+                 sql_load, sqlite3_errmsg(db));
 
     bool ok = false;
     if (sqlite3_step(s) == SQLITE_ROW) {
@@ -231,11 +248,13 @@ void utxo_commitment_sha3_compute(sqlite3 *db, uint8_t out[32],
     if (!db) return;
 
     sqlite3_stmt *s = NULL;
-    if (sqlite3_prepare_v2(db,
-            "SELECT txid, vout, value, script, height, is_coinbase"
-            " FROM utxos ORDER BY txid, vout",
-            -1, &s, NULL) != SQLITE_OK)
+    const char *sql_sha3 =
+        "SELECT txid, vout, value, script, height, is_coinbase"
+        " FROM utxos ORDER BY txid, vout";
+    if (sqlite3_prepare_v2(db, sql_sha3, -1, &s, NULL) != SQLITE_OK) {
+        UTXO_CMT_LOG_PREPARE(db, sql_sha3);
         return;
+    }
 
     struct sha3_256_ctx ctx;
     sha3_256_init(&ctx);
@@ -301,14 +320,19 @@ bool utxo_commitment_sha3_save(sqlite3 *db, const uint8_t hash[32],
     for (int i = 0; i < 8; i++) buf[36 + i] = (uint8_t)(count >> (8 * i));
 
     sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db,
-            "INSERT OR REPLACE INTO node_state(key,value) "
-            "VALUES('utxo_sha3',?)", -1, &st, NULL) != SQLITE_OK)
-        return false;
+    const char *sql_sha3_save =
+        "INSERT OR REPLACE INTO node_state(key,value) "
+        "VALUES('utxo_sha3',?)";
+    if (sqlite3_prepare_v2(db, sql_sha3_save, -1, &st, NULL) != SQLITE_OK)
+        LOG_FAIL("utxo_cmt", "prepare %s: %s",
+                 sql_sha3_save, sqlite3_errmsg(db));
     sqlite3_bind_blob(st, 1, buf, 44, SQLITE_STATIC);
-    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    int rc = sqlite3_step(st);
     sqlite3_finalize(st);
-    return ok;
+    if (rc != SQLITE_DONE)
+        LOG_FAIL("utxo_cmt", "step utxo_sha3 save rc=%d: %s",
+                 rc, sqlite3_errmsg(db));
+    return true;
 }
 
 bool utxo_commitment_sha3_load(sqlite3 *db, uint8_t hash[32],
@@ -316,10 +340,11 @@ bool utxo_commitment_sha3_load(sqlite3 *db, uint8_t hash[32],
 {
     if (!db) return false;
     sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db,
-            "SELECT value FROM node_state WHERE key='utxo_sha3'",
-            -1, &st, NULL) != SQLITE_OK)
-        return false;
+    const char *sql_sha3_load =
+        "SELECT value FROM node_state WHERE key='utxo_sha3'";
+    if (sqlite3_prepare_v2(db, sql_sha3_load, -1, &st, NULL) != SQLITE_OK)
+        LOG_FAIL("utxo_cmt", "prepare %s: %s",
+                 sql_sha3_load, sqlite3_errmsg(db));
 
     bool ok = false;
     if (sqlite3_step(st) == SQLITE_ROW) {
@@ -353,6 +378,7 @@ static void hash_table(sqlite3 *db, const char *sql, uint8_t out[32])
 
     sqlite3_stmt *s = NULL;
     if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) != SQLITE_OK) {
+        UTXO_CMT_LOG_PREPARE(db, sql);
         sha3_256_finalize(&ctx, out);
         return;
     }

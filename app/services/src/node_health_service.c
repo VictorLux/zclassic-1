@@ -17,6 +17,7 @@
 #include "net/tor_integration.h"
 #include <sqlite3.h>
 #include <stdio.h>
+#include <errno.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
@@ -68,7 +69,10 @@ static int64_t proc_uptime_seconds(void)
 static int64_t get_rss_kb(void)
 {
     FILE *f = fopen("/proc/self/status", "r");
-    if (!f) return -1;
+    if (!f)
+        LOG_RETURN((int64_t)-1, "health",
+                   "get_rss_kb: fopen /proc/self/status failed: %s",
+                   strerror(errno));
     char line[256];
     while (fgets(line, sizeof(line), f)) {
         if (strncmp(line, "VmRSS:", 6) == 0) {
@@ -79,7 +83,8 @@ static int64_t get_rss_kb(void)
         }
     }
     fclose(f);
-    return -1;
+    LOG_RETURN((int64_t)-1, "health",
+               "get_rss_kb: VmRSS line not found in /proc/self/status");
 }
 static const int64_t HEALTH_JOB_STALL_SECONDS = 120;
 

@@ -17,6 +17,23 @@ int main(void)
     ecc_start();
     ecc_verify_init();
 
+    /* Developer-only fast loop: ZCL_TEST_ONLY=persistence runs only the
+     * persistence-layer regression tests (agent-2 scope) so an iteration
+     * doesn't have to wait for the entire 1500-test suite.  Unset or
+     * unknown value runs the full suite unchanged. */
+    const char *only = getenv("ZCL_TEST_ONLY");
+    if (only && strcmp(only, "persistence") == 0) {
+        printf("[test] ZCL_TEST_ONLY=persistence — running persistence subset\n");
+        failures += test_schema_migration();
+        failures += test_db_migration_idempotent();
+        failures += test_coins_view_atomicity();
+        failures += test_wallet_sqlite_enc();
+        failures += test_wallet_keystore();
+        printf("\n=== Persistence subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
+
     failures += test_load_balancer();
     failures += test_game();
     failures += test_crypto();
@@ -136,6 +153,8 @@ int main(void)
     failures += test_addrman_rebalance();
     failures += test_block_pruning();
     failures += test_schema_migration();
+    failures += test_db_migration_idempotent();
+    failures += test_coins_view_atomicity();
     failures += test_multisig();
     failures += test_mcp_fuzz();
     failures += test_rpc_auth_hardening();

@@ -52,6 +52,106 @@ static struct coins_view_vtable cvs_vtable = {
     .get_stats     = NULL,
 };
 
+/* Boot-time integrity check: the UTXO set (`utxos` table) must not be
+ * strictly ahead of the coins-flush anchor (`coins_best_block`).  This
+ * guards against the class of crash-mid-flush corruption where UTXOs
+ * landed but the tip pointer didn't — a silent heal here would
+ * de-sync the node from consensus and potentially double-spend on
+ * restart.  Returns true on OK, false on detected mismatch; the
+ * operator is expected to halt + investigate on false.
+ *
+ * Semantics:
+ *   (a) no UTXOs, no tip                 → fresh/clean
+ *   (b) UTXOs present, no tip            → MISMATCH (orphan UTXOs)
+ *   (c) tip set, no UTXOs                → benign (post-wipe anchor)
+ *   (d) tip hash not yet in blocks table → soft WARN (block index lag)
+ *   (e) max_utxo_height > tip_height     → MISMATCH (UTXOs ahead)
+ */
+static bool coins_view_sqlite_check_tip_consistency(sqlite3 *db)
+{
+    int64_t max_height = -1;
+    bool have_utxos = false;
+
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT MAX(height), COUNT(*) FROM utxos",
+            -1, &s, NULL) == SQLITE_OK) {
+        if (sqlite3_step(s) == SQLITE_ROW) {
+            if (sqlite3_column_type(s, 0) == SQLITE_INTEGER)
+                max_height = sqlite3_column_int64(s, 0);
+            have_utxos = sqlite3_column_int64(s, 1) > 0;
+        }
+        sqlite3_finalize(s);
+    }
+
+    uint8_t tip_hash[32];
+    bool tip_set = false;
+    s = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT value FROM node_state WHERE key='coins_best_block'",
+            -1, &s, NULL) == SQLITE_OK) {
+        if (sqlite3_step(s) == SQLITE_ROW) {
+            int len = sqlite3_column_bytes(s, 0);
+            const void *data = sqlite3_column_blob(s, 0);
+            if (data && len == 32) {
+                memcpy(tip_hash, data, 32);
+                tip_set = true;
+            }
+        }
+        sqlite3_finalize(s);
+    }
+
+    if (!have_utxos && !tip_set) {
+        printf("[coins] tip check: fresh DB (no utxos, no tip)\n");
+        return true;
+    }
+    if (have_utxos && !tip_set) {
+        fprintf(stderr,
+            "[coins] DB_ERR_TIP_MISMATCH: utxos present "
+            "(max_height=%lld) but coins_best_block is unset — "
+            "probable crash between UTXO flush and tip update. "
+            "Halt and investigate; do not auto-heal.\n",
+            (long long)max_height);
+        return false;
+    }
+    if (!have_utxos && tip_set) {
+        printf("[coins] tip check: coins_best_block set, utxos empty — "
+               "post-wipe or pre-import anchor, continuing\n");
+        return true;
+    }
+
+    int64_t tip_height = -1;
+    s = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT height FROM blocks WHERE hash=? AND status>=3",
+            -1, &s, NULL) == SQLITE_OK) {
+        sqlite3_bind_blob(s, 1, tip_hash, 32, SQLITE_STATIC);
+        if (sqlite3_step(s) == SQLITE_ROW)
+            tip_height = sqlite3_column_int64(s, 0);
+        sqlite3_finalize(s);
+    }
+
+    if (tip_height < 0) {
+        fprintf(stderr,
+            "[coins] tip check WARN: utxos max_height=%lld, "
+            "coins_best_block hash not resolvable in blocks table "
+            "(status>=3) — block index load may reconcile, continuing\n",
+            (long long)max_height);
+        return true;
+    }
+    if (max_height > tip_height) {
+        fprintf(stderr,
+            "[coins] DB_ERR_TIP_MISMATCH: utxos max_height=%lld > "
+            "tip_height=%lld (UTXOs ahead of tip) — halt and "
+            "investigate; do not auto-heal.\n",
+            (long long)max_height, (long long)tip_height);
+        return false;
+    }
+    printf("[coins] tip check OK: max_utxo_height=%lld tip_height=%lld\n",
+           (long long)max_height, (long long)tip_height);
+    return true;
+}
+
 /* ── Open / Close ──────────────────────────────────────────────── */
 
 bool coins_view_sqlite_open(struct coins_view_sqlite *cvs, sqlite3 *db)
@@ -123,6 +223,13 @@ bool coins_view_sqlite_open(struct coins_view_sqlite *cvs, sqlite3 *db)
         " VALUES('utxo_commitment',?)",
         -1, &cvs->stmt_commit_set, NULL);
     if (rc != SQLITE_OK) goto fail;
+
+    /* Boot-time integrity check — refuses to open on detected
+     * UTXO/tip mismatch.  Caller decides how to halt. */
+    if (!coins_view_sqlite_check_tip_consistency(cvs->db)) {
+        coins_view_sqlite_close(cvs);
+        return false;
+    }
 
     return true;
 
@@ -496,6 +603,29 @@ bool coins_view_sqlite_batch_write_ex(struct coins_view_sqlite *cvs,
         }
     }
     sqlite3_busy_timeout(cvs->db, 10000); /* restore default */
+
+    /* Post-commit observability: both sides of the invariant we
+     * enforce at boot.  Cheap to compute (MAX + COUNT on a single
+     * table) and invaluable when triaging an IBD divergence. */
+    {
+        sqlite3_stmt *s = NULL;
+        if (sqlite3_prepare_v2(cvs->db,
+                "SELECT IFNULL(MAX(height), -1), COUNT(*) FROM utxos",
+                -1, &s, NULL) == SQLITE_OK) {
+            if (sqlite3_step(s) == SQLITE_ROW) {
+                int64_t max_h = sqlite3_column_int64(s, 0);
+                int64_t count = sqlite3_column_int64(s, 1);
+                int tip_h = (hash_block && !uint256_is_null(hash_block))
+                          ? 1 : 0; /* presence flag; hash itself not resolved here */
+                printf("[coins] flush ok: max_height=%lld utxos=%lld "
+                       "tip_written=%d wrote=%zu deleted=%zu\n",
+                       (long long)max_h, (long long)count, tip_h,
+                       entries_written, entries_deleted);
+            }
+            sqlite3_finalize(s);
+        }
+    }
+
     pthread_mutex_unlock(&cvs->mutex);
     return true;
 }

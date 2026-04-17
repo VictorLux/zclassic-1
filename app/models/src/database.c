@@ -36,6 +36,44 @@ static void node_db_state_destroy(struct node_db *ndb)
     ndb->state_mutex_init = false;
 }
 
+/* Execute `sql`, logging any error with `where` context.  Returns the
+ * sqlite3 rc so callers can make tolerance decisions.  Replaces the
+ * prior pattern where `sqlite3_exec(db, sql, ...)` was called with its
+ * return value discarded — the class of silent failures fixed here
+ * was previously hiding schema-migration and turbo-mode regressions. */
+static int db_exec_checked(sqlite3 *db, const char *sql, const char *where)
+{
+    char *err = NULL;
+    int rc = sqlite3_exec(db, sql, NULL, NULL, &err);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "[db] %s failed: %s (sql=%s)\n",
+                where, err ? err : "(no errmsg)", sql);
+    }
+    sqlite3_free(err);
+    return rc;
+}
+
+/* Like db_exec_checked but tolerates a known-benign error substring
+ * (e.g. "duplicate column name" when re-applying idempotent ALTERs).
+ * Returns SQLITE_OK on tolerated failure so callers can treat it as
+ * success; returns the original rc otherwise. */
+static int db_exec_tolerant(sqlite3 *db, const char *sql, const char *where,
+                            const char *tolerable_substr)
+{
+    char *err = NULL;
+    int rc = sqlite3_exec(db, sql, NULL, NULL, &err);
+    if (rc != SQLITE_OK) {
+        if (tolerable_substr && err && strstr(err, tolerable_substr)) {
+            sqlite3_free(err);
+            return SQLITE_OK;
+        }
+        fprintf(stderr, "[db] %s failed: %s (sql=%s)\n",
+                where, err ? err : "(no errmsg)", sql);
+    }
+    sqlite3_free(err);
+    return rc;
+}
+
 static void node_db_note_activity(struct node_db *ndb, const char *op, int rc)
 {
     if (!ndb || !ndb->state_mutex_init)
@@ -282,20 +320,16 @@ static const char *SCHEMA[] = {
 
 static bool create_schema(struct node_db *ndb)
 {
+    /* Every statement in SCHEMA[] is either CREATE TABLE IF NOT EXISTS,
+     * CREATE INDEX IF NOT EXISTS, or INSERT OR IGNORE — all idempotent.
+     * ALTER TABLE statements belong in versioned migration blocks in
+     * node_db_migrate(), not here.  Any failure at this layer is a real
+     * schema regression and must halt boot. */
     for (int i = 0; SCHEMA[i] != NULL; i++) {
-        char *err = NULL;
-        int rc = sqlite3_exec(ndb->db, SCHEMA[i], NULL, NULL, &err);
-        if (rc != SQLITE_OK) {
-            /* Non-fatal for index/alter on pre-existing tables */
-            if (strstr(SCHEMA[i], "CREATE INDEX") ||
-                strstr(SCHEMA[i], "ALTER TABLE")) {
-                sqlite3_free(err);
-                continue;
-            }
-            fprintf(stderr, "db: schema[%d] failed: %s\n", i, err);
-            sqlite3_free(err);
+        char buf[48];
+        snprintf(buf, sizeof(buf), "schema[%d]", i);
+        if (db_exec_checked(ndb->db, SCHEMA[i], buf) != SQLITE_OK)
             return false;
-        }
     }
     return true;
 }
@@ -729,19 +763,36 @@ int node_db_schema_version(struct node_db *ndb)
     return ver;
 }
 
+/* Persist the schema_version counter; halt migration on failure so
+ * we don't silently re-apply the same migration on next boot. */
+#define DB_MIGRATE_PERSIST_VERSION(ndb, ver) do { \
+    int32_t _v = (int32_t)(ver); \
+    if (!node_db_state_set((ndb), "schema_version", &_v, sizeof(_v))) { \
+        fprintf(stderr, "[db] migrate: failed to persist " \
+                "schema_version=%d; aborting migration to prevent " \
+                "loop on next boot\n", (int)_v); \
+        return -1; \
+    } \
+} while (0)
+
 int node_db_migrate(struct node_db *ndb, const char *datadir)
 {
     (void)datadir;
     if (!ndb->open) return -1;
 
-    /* Ensure schema_migrations table exists */
-    node_db_exec(ndb,
+    /* Ensure schema_migrations table exists.  If this fails,
+     * node_db_schema_version() will return 0 and every migration will
+     * re-apply next boot — silent data corruption risk.  Halt now. */
+    if (!node_db_exec(ndb,
         "CREATE TABLE IF NOT EXISTS schema_migrations ("
         "  version TEXT PRIMARY KEY,"
         "  applied_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))"
         ");"
-        "INSERT OR IGNORE INTO schema_migrations(version) VALUES('001');"
-    );
+        "INSERT OR IGNORE INTO schema_migrations(version) VALUES('001');")) {
+        fprintf(stderr, "[db] migrate: schema_migrations bootstrap failed; "
+                "aborting to avoid re-applying migrations on next boot\n");
+        return -1;
+    }
 
     int applied = 0;
     int current_ver = node_db_schema_version(ndb);
@@ -764,8 +815,7 @@ int node_db_migrate(struct node_db *ndb, const char *datadir)
     if (current_ver < 2) {
         node_db_exec(ndb,
             "INSERT OR IGNORE INTO schema_migrations(version) VALUES('002')");
-        int32_t v = 2;
-        node_db_state_set(ndb, "schema_version", &v, sizeof(v));
+        DB_MIGRATE_PERSIST_VERSION(ndb, 2);
         current_ver = 2;
         applied++;
     }
@@ -780,8 +830,7 @@ int node_db_migrate(struct node_db *ndb, const char *datadir)
             "ALTER TABLE wallet_sapling_notes ADD COLUMN witness_height INTEGER DEFAULT 0");
         node_db_exec(ndb,
             "INSERT OR IGNORE INTO schema_migrations(version) VALUES('003')");
-        int32_t v = 3;
-        node_db_state_set(ndb, "schema_version", &v, sizeof(v));
+        DB_MIGRATE_PERSIST_VERSION(ndb, 3);
         current_ver = 3;
         applied++;
     }
@@ -816,8 +865,7 @@ int node_db_migrate(struct node_db *ndb, const char *datadir)
             " ON block_index_cache(height)");
         node_db_exec(ndb,
             "INSERT OR IGNORE INTO schema_migrations(version) VALUES('004')");
-        int32_t v = 4;
-        node_db_state_set(ndb, "schema_version", &v, sizeof(v));
+        DB_MIGRATE_PERSIST_VERSION(ndb, 4);
         current_ver = 4;
         applied++;
     }
@@ -887,27 +935,27 @@ int node_db_migrate(struct node_db *ndb, const char *datadir)
 
         node_db_exec(ndb,
             "INSERT OR IGNORE INTO schema_migrations(version) VALUES('005')");
-        int32_t v = 5;
-        node_db_state_set(ndb, "schema_version", &v, sizeof(v));
+        DB_MIGRATE_PERSIST_VERSION(ndb, 5);
         current_ver = 5;
         applied++;
     }
 
     if (current_ver < 6) {
         /* v6: Add address column to wallet_sapling_notes for per-order
-         * payment matching. Ignore errors — column may already exist
-         * or table may not exist yet. */
-        sqlite3_exec(ndb->db,
+         * payment matching.  Tolerate "duplicate column name" on
+         * re-apply; any other error (disk full, corruption) is now
+         * logged instead of silently swallowed. */
+        db_exec_tolerant(ndb->db,
             "ALTER TABLE wallet_sapling_notes ADD COLUMN address TEXT",
-            NULL, NULL, NULL);
-        sqlite3_exec(ndb->db,
+            "v6: add wallet_sapling_notes.address",
+            "duplicate column name");
+        db_exec_checked(ndb->db,
             "CREATE INDEX IF NOT EXISTS idx_snote_address"
             " ON wallet_sapling_notes(address) WHERE spent_txid IS NULL",
-            NULL, NULL, NULL);
+            "v6: idx_snote_address");
         node_db_exec(ndb,
             "INSERT OR IGNORE INTO schema_migrations(version) VALUES('006')");
-        int32_t v = 6;
-        node_db_state_set(ndb, "schema_version", &v, sizeof(v));
+        DB_MIGRATE_PERSIST_VERSION(ndb, 6);
         current_ver = 6;
         applied++;
     }
@@ -956,8 +1004,7 @@ int node_db_migrate(struct node_db *ndb, const char *datadir)
 
         node_db_exec(ndb,
             "INSERT OR IGNORE INTO schema_migrations(version) VALUES('007')");
-        int32_t v = 7;
-        node_db_state_set(ndb, "schema_version", &v, sizeof(v));
+        DB_MIGRATE_PERSIST_VERSION(ndb, 7);
         current_ver = 7;
         applied++;
     }
@@ -989,8 +1036,7 @@ int node_db_migrate(struct node_db *ndb, const char *datadir)
 
         node_db_exec(ndb,
             "INSERT OR IGNORE INTO schema_migrations(version) VALUES('008')");
-        int32_t v = 8;
-        node_db_state_set(ndb, "schema_version", &v, sizeof(v));
+        DB_MIGRATE_PERSIST_VERSION(ndb, 8);
         current_ver = 8;
         applied++;
     }
@@ -1083,8 +1129,7 @@ int node_db_migrate(struct node_db *ndb, const char *datadir)
 
         node_db_exec(ndb,
             "INSERT OR IGNORE INTO schema_migrations(version) VALUES('009')");
-        int32_t v = 9;
-        node_db_state_set(ndb, "schema_version", &v, sizeof(v));
+        DB_MIGRATE_PERSIST_VERSION(ndb, 9);
         current_ver = 9;
         applied++;
     }
@@ -1092,13 +1137,13 @@ int node_db_migrate(struct node_db *ndb, const char *datadir)
     if (current_ver < 10) {
         /* v10: Add n_chain_tx to block_index_cache for full restart from SQLite.
          * Needed so difficulty validation (17-ancestor walk) works without LevelDB. */
-        sqlite3_exec(ndb->db,
+        db_exec_tolerant(ndb->db,
             "ALTER TABLE block_index_cache ADD COLUMN n_chain_tx INTEGER NOT NULL DEFAULT 0",
-            NULL, NULL, NULL);
+            "v10: add block_index_cache.n_chain_tx",
+            "duplicate column name");
         node_db_exec(ndb,
             "INSERT OR IGNORE INTO schema_migrations(version) VALUES('010')");
-        int32_t v = 10;
-        node_db_state_set(ndb, "schema_version", &v, sizeof(v));
+        DB_MIGRATE_PERSIST_VERSION(ndb, 10);
         current_ver = 10;
         applied++;
     }
@@ -1107,20 +1152,21 @@ int node_db_migrate(struct node_db *ndb, const char *datadir)
         /* v11: Peer bandwidth scores + ZCL23 flag for fast reconnection.
          * New nodes should reconnect to fast ZCL23 peers first, enabling
          * instant swarm sync on subsequent starts. */
-        sqlite3_exec(ndb->db,
+        db_exec_tolerant(ndb->db,
             "ALTER TABLE peers ADD COLUMN bandwidth_score INTEGER NOT NULL DEFAULT 0",
-            NULL, NULL, NULL);
-        sqlite3_exec(ndb->db,
+            "v11: add peers.bandwidth_score",
+            "duplicate column name");
+        db_exec_tolerant(ndb->db,
             "ALTER TABLE peers ADD COLUMN is_zcl23 INTEGER NOT NULL DEFAULT 0",
-            NULL, NULL, NULL);
+            "v11: add peers.is_zcl23",
+            "duplicate column name");
         /* Index: prioritize fast ZCL23 peers for reconnection */
         node_db_exec(ndb,
             "CREATE INDEX IF NOT EXISTS idx_peers_zcl23_score "
             "ON peers(is_zcl23 DESC, bandwidth_score DESC)");
         node_db_exec(ndb,
             "INSERT OR IGNORE INTO schema_migrations(version) VALUES('011')");
-        int32_t v = 11;
-        node_db_state_set(ndb, "schema_version", &v, sizeof(v));
+        DB_MIGRATE_PERSIST_VERSION(ndb, 11);
         current_ver = 11;
         applied++;
     }
@@ -1144,8 +1190,7 @@ int node_db_migrate(struct node_db *ndb, const char *datadir)
 
         node_db_exec(ndb,
             "INSERT OR IGNORE INTO schema_migrations(version) VALUES('012')");
-        int32_t v = 12;
-        node_db_state_set(ndb, "schema_version", &v, sizeof(v));
+        DB_MIGRATE_PERSIST_VERSION(ndb, 12);
         current_ver = 12;
         applied++;
     }
@@ -1175,8 +1220,7 @@ int node_db_migrate(struct node_db *ndb, const char *datadir)
 
         node_db_exec(ndb,
             "INSERT OR IGNORE INTO schema_migrations(version) VALUES('013')");
-        int32_t v = 13;
-        node_db_state_set(ndb, "schema_version", &v, sizeof(v));
+        DB_MIGRATE_PERSIST_VERSION(ndb, 13);
         current_ver = 13;
         applied++;
     }
@@ -1212,8 +1256,7 @@ int node_db_migrate(struct node_db *ndb, const char *datadir)
 
         node_db_exec(ndb,
             "INSERT OR IGNORE INTO schema_migrations(version) VALUES('014')");
-        int32_t v = 14;
-        node_db_state_set(ndb, "schema_version", &v, sizeof(v));
+        DB_MIGRATE_PERSIST_VERSION(ndb, 14);
         current_ver = 14;
         applied++;
     }
@@ -1239,8 +1282,7 @@ int node_db_migrate(struct node_db *ndb, const char *datadir)
 
         node_db_exec(ndb,
             "INSERT OR IGNORE INTO schema_migrations(version) VALUES('015')");
-        int32_t v = 15;
-        node_db_state_set(ndb, "schema_version", &v, sizeof(v));
+        DB_MIGRATE_PERSIST_VERSION(ndb, 15);
         current_ver = 15;
         applied++;
     }
@@ -1279,8 +1321,7 @@ int node_db_migrate(struct node_db *ndb, const char *datadir)
 
         node_db_exec(ndb,
             "INSERT OR IGNORE INTO schema_migrations(version) VALUES('016')");
-        int32_t v = 16;
-        node_db_state_set(ndb, "schema_version", &v, sizeof(v));
+        DB_MIGRATE_PERSIST_VERSION(ndb, 16);
         current_ver = 16;
         applied++;
     }
@@ -1308,8 +1349,7 @@ int node_db_migrate(struct node_db *ndb, const char *datadir)
 
         node_db_exec(ndb,
             "INSERT OR IGNORE INTO schema_migrations(version) VALUES('017')");
-        int32_t v = 17;
-        node_db_state_set(ndb, "schema_version", &v, sizeof(v));
+        DB_MIGRATE_PERSIST_VERSION(ndb, 17);
         current_ver = 17;
         applied++;
     }
@@ -1341,8 +1381,7 @@ int node_db_migrate(struct node_db *ndb, const char *datadir)
 
         node_db_exec(ndb,
             "INSERT OR IGNORE INTO schema_migrations(version) VALUES('018')");
-        int32_t v = 18;
-        node_db_state_set(ndb, "schema_version", &v, sizeof(v));
+        DB_MIGRATE_PERSIST_VERSION(ndb, 18);
         current_ver = 18;
         applied++;
     }
@@ -1412,26 +1451,65 @@ static const char *const DB_CREATE_INDEXES[] = {
 bool node_db_drop_indexes(struct node_db *ndb)
 {
     if (!ndb || !ndb->open) return false;
-    for (size_t i = 0; i < NUM_DB_INDEXES; i++)
-        sqlite3_exec(ndb->db, DB_DROP_INDEXES[i], NULL, NULL, NULL);
-    return true;
+    bool all_ok = true;
+    for (size_t i = 0; i < NUM_DB_INDEXES; i++) {
+        if (db_exec_checked(ndb->db, DB_DROP_INDEXES[i],
+                            "drop_indexes") != SQLITE_OK)
+            all_ok = false;
+    }
+    return all_ok;
 }
 
 bool node_db_rebuild_indexes(struct node_db *ndb)
 {
     if (!ndb || !ndb->open) return false;
-    for (size_t i = 0; i < NUM_DB_INDEXES; i++)
-        sqlite3_exec(ndb->db, DB_CREATE_INDEXES[i], NULL, NULL, NULL);
-    return true;
+    bool all_ok = true;
+    for (size_t i = 0; i < NUM_DB_INDEXES; i++) {
+        if (db_exec_checked(ndb->db, DB_CREATE_INDEXES[i],
+                            "rebuild_indexes") != SQLITE_OK)
+            all_ok = false;
+    }
+    return all_ok;
 }
 
 bool node_db_ibd_turbo_mode(struct node_db *ndb)
 {
     if (!ndb || !ndb->open) return false;
-    sqlite3_exec(ndb->db, "PRAGMA synchronous=OFF", NULL, NULL, NULL);
-    sqlite3_exec(ndb->db, "PRAGMA cache_size=-524288", NULL, NULL, NULL);
-    sqlite3_exec(ndb->db, "PRAGMA wal_autocheckpoint=0", NULL, NULL, NULL);
+    /* Turbo-mode PRAGMAs are performance optimisations, not integrity
+     * invariants — if any of them fail, fall back to the safe
+     * defaults and carry on.  The previous silent path left the DB in
+     * a partial-turbo state (e.g. synchronous=OFF succeeded but
+     * wal_autocheckpoint=0 did not, so WAL grew unbounded). */
+    static const char *const turbo_pragmas[] = {
+        "PRAGMA synchronous=OFF",
+        "PRAGMA cache_size=-524288",
+        "PRAGMA wal_autocheckpoint=0",
+        NULL,
+    };
+    bool turbo_ok = true;
+    for (int i = 0; turbo_pragmas[i]; i++) {
+        if (db_exec_checked(ndb->db, turbo_pragmas[i],
+                            "ibd_turbo_mode pragma") != SQLITE_OK)
+            turbo_ok = false;
+    }
     sqlite3_busy_timeout(ndb->db, 10000);
+
+    if (!turbo_ok) {
+        fprintf(stderr,
+                "[db] ibd_turbo_mode: one or more PRAGMAs failed; "
+                "falling back to safe defaults (IBD will be slower "
+                "but correct)\n");
+        db_exec_checked(ndb->db, "PRAGMA synchronous=NORMAL",
+                        "turbo_fallback synchronous");
+        db_exec_checked(ndb->db, "PRAGMA cache_size=-65536",
+                        "turbo_fallback cache_size");
+        db_exec_checked(ndb->db, "PRAGMA wal_autocheckpoint=1000",
+                        "turbo_fallback wal_autocheckpoint");
+        node_db_note_turbo_mode(ndb, false, "ibd_turbo_mode_fallback",
+                                SQLITE_ERROR);
+        return false;
+    }
+
     node_db_drop_indexes(ndb);
     node_db_note_turbo_mode(ndb, true, "ibd_turbo_mode", SQLITE_OK);
     printf("db: IBD turbo mode (synchronous=OFF, indexes dropped)\n");
@@ -1441,9 +1519,12 @@ bool node_db_ibd_turbo_mode(struct node_db *ndb)
 bool node_db_normal_mode(struct node_db *ndb)
 {
     if (!ndb || !ndb->open) return false;
-    sqlite3_exec(ndb->db, "PRAGMA synchronous=NORMAL", NULL, NULL, NULL);
-    sqlite3_exec(ndb->db, "PRAGMA cache_size=-65536", NULL, NULL, NULL);
-    sqlite3_exec(ndb->db, "PRAGMA wal_autocheckpoint=1000", NULL, NULL, NULL);
+    db_exec_checked(ndb->db, "PRAGMA synchronous=NORMAL",
+                    "normal_mode synchronous");
+    db_exec_checked(ndb->db, "PRAGMA cache_size=-65536",
+                    "normal_mode cache_size");
+    db_exec_checked(ndb->db, "PRAGMA wal_autocheckpoint=1000",
+                    "normal_mode wal_autocheckpoint");
     node_db_rebuild_indexes(ndb);
     node_db_wal_checkpoint(ndb);
     node_db_note_turbo_mode(ndb, false, "normal_mode", SQLITE_OK);
