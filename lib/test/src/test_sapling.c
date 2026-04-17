@@ -3,6 +3,14 @@
 
 #include "test/test_helpers.h"
 #include "util/safe_alloc.h"
+#include <time.h>
+
+static uint64_t curve25519_monotonic_ns(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+}
 
 int test_sapling(void)
 {
@@ -1117,6 +1125,76 @@ int test_sapling(void)
             printf("FAIL\n");
             failures++;
         }
+    }
+
+    /* Wave 2 / Step H regression: Hamming-weight timing test for
+     * curve25519_scalarmult. The Montgomery ladder is constant-time by
+     * construction; this test pins that property so a future
+     * "optimisation" (windowed precomputation, conditional point-adds)
+     * trips before it lands.
+     *
+     * Tolerance is generous to absorb CI scheduler noise. A regression
+     * that reintroduces secret-bit-dependent control flow would push
+     * the ratio well past 1.15. */
+    printf("curve25519_scalarmult timing vs scalar weight (Wave 2)... ");
+    {
+        /* Use the RFC 7748 Bob public key as the input point so the
+         * test exercises a real-world coordinate, not zero/one. */
+        uint8_t bob_pk[32];
+        uint8_t bob_sk[32] = {
+            0x5d,0xab,0x08,0x7e,0x62,0x4a,0x8a,0x4b,
+            0x79,0xe1,0x7f,0x8b,0x83,0x80,0x0e,0xe6,
+            0x6f,0x3b,0xb1,0x29,0x26,0x18,0xb6,0xfd,
+            0x1c,0x2f,0x8b,0x27,0xff,0x88,0xe0,0xeb
+        };
+        curve25519_scalarmult_base(bob_pk, bob_sk);
+
+        uint8_t lo_scalar[32];                       /* Hamming weight ≈ 1 */
+        memset(lo_scalar, 0, 32);
+        lo_scalar[0] = 0x08;                         /* clamp-compatible */
+        lo_scalar[31] = 0x40;                        /* clamp sets bit 254 */
+
+        uint8_t hi_scalar[32];                       /* Hamming weight ≈ 252 */
+        memset(hi_scalar, 0xFF, 32);
+        hi_scalar[0] &= 0xF8;                        /* clamp clears low 3 */
+        hi_scalar[31] &= 0x7F;                       /* clamp clears bit 255 */
+        hi_scalar[31] |= 0x40;                       /* clamp sets bit 254 */
+
+        uint8_t out[32];
+        const int WARMUP = 16;
+        const int ITERS = 100;
+        for (int i = 0; i < WARMUP; i++)
+            curve25519_scalarmult(out, lo_scalar, bob_pk);
+
+        /* Median-of-five per side to dampen scheduler noise. */
+        uint64_t lo_meds[5], hi_meds[5];
+        for (int batch = 0; batch < 5; batch++) {
+            uint64_t t0 = curve25519_monotonic_ns();
+            for (int i = 0; i < ITERS; i++)
+                curve25519_scalarmult(out, lo_scalar, bob_pk);
+            lo_meds[batch] = curve25519_monotonic_ns() - t0;
+
+            t0 = curve25519_monotonic_ns();
+            for (int i = 0; i < ITERS; i++)
+                curve25519_scalarmult(out, hi_scalar, bob_pk);
+            hi_meds[batch] = curve25519_monotonic_ns() - t0;
+        }
+        for (int a = 0; a < 5; a++)
+            for (int b = a + 1; b < 5; b++) {
+                if (lo_meds[b] < lo_meds[a]) {
+                    uint64_t t = lo_meds[a]; lo_meds[a] = lo_meds[b]; lo_meds[b] = t;
+                }
+                if (hi_meds[b] < hi_meds[a]) {
+                    uint64_t t = hi_meds[a]; hi_meds[a] = hi_meds[b]; hi_meds[b] = t;
+                }
+            }
+        uint64_t lo = lo_meds[2], hi = hi_meds[2];
+        double ratio = (double)hi / (double)lo;
+        bool ok = (ratio <= 1.15) && (ratio >= 0.85);
+        printf("(lo=%.2fms hi=%.2fms ratio=%.3f) ",
+               (double)lo / 1e6, (double)hi / 1e6, ratio);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
     }
 
     /* --- Sprout KDF --- */

@@ -2,7 +2,33 @@
  *
  * Curve25519 scalar multiplication — pure C23 implementation.
  * Montgomery ladder on y^2 = x^3 + 486662*x^2 + x over GF(2^255-19).
- * Based on the TweetNaCl pattern: 16 limbs of ~16 bits each. */
+ * Based on the TweetNaCl pattern: 16 limbs of ~16 bits each.
+ *
+ * ── Constant-time properties (Wave 2 / Step H audit, 2026-04-17) ──
+ *
+ * The Montgomery ladder below is constant-time **by construction**, and
+ * the rest of this file preserves that property. Three callers feed
+ * secret material in: secure_channel DH (ephemeral privkey), Sprout
+ * note encryption (esk, sk_enc), and Sapling note encryption — so a
+ * timing leak here would directly compromise wallet keys.
+ *
+ * Properties confirmed:
+ *   - sel25519: branchless mask `~(b - 1)` cswap; caller must pass b∈{0,1}
+ *   - scalar bit extraction: `(z[i>>3] >> (i&7)) & 1`, no branching
+ *   - Montgomery ladder body: every iteration runs the full A/Z/M/S
+ *     sequence and two cswaps; no `if (bit) ...` conditional adds
+ *   - inv25519: branches on the loop index for the FIXED inversion
+ *     exponent (p−2), which is public — not on data
+ *   - pack25519: deterministic 2-pass final reduction; the inner
+ *     sel25519 swaps based on the borrow bit of the final output, but
+ *     the output is the public DH result, not the secret scalar
+ *   - No precomputed table lookups (Montgomery doesn't need them)
+ *
+ * **Do not** "optimise" by adding windowed precomputation, signed-digit
+ * recoding, or `if (bit) point_add` shortcuts — those reintroduce
+ * cache-timing and branch-timing leaks on the secret scalar. If you
+ * want speed, swap the whole file for ref10/donna/fiat-crypto and run
+ * the regression in test_sapling.c (Hamming-weight timing test). */
 
 #include "crypto/curve25519.h"
 #include <string.h>
