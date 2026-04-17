@@ -8,8 +8,17 @@
 #include "sapling/incremental_merkle_tree.h"
 #include "sapling/pedersen_hash.h"
 #include "crypto/sha256.h"
+#include "util/log_macros.h"
 #include <assert.h>
+#include <inttypes.h>
 #include <string.h>
+
+/* Local shorthand for the (de)serialize/wfcheck error paths below. Each use
+ * logs function/file/line plus a field name so a corrupted tree on disk
+ * leaves a breadcrumb instead of a bare `false`. */
+#define IMT_FAIL(field) \
+    LOG_FAIL("incremental_merkle_tree", \
+             "%s: %s (truncated stream or malformed tree?)", __func__, (field))
 
 void sha256_compress_combine(const struct uint256 *a,
                               const struct uint256 *b,
@@ -234,6 +243,9 @@ size_t incremental_tree_size(const struct incremental_merkle_tree *t)
 
 bool incremental_tree_is_complete(const struct incremental_merkle_tree *t)
 {
+    /* These three return-false paths are the "tree not yet complete" signal
+     * used by the witness append loop. They are NOT errors — logging each
+     * would spam at every append. Left bare intentionally. */
     if (!t->has_left || !t->has_right)
         return false;
     if (t->num_parents != t->depth - 1)
@@ -250,29 +262,44 @@ bool incremental_tree_serialize(const struct incremental_merkle_tree *t,
                                  struct byte_stream *s)
 {
     /* left: discriminant + hash */
-    if (!stream_write_u8(s, t->has_left ? 1 : 0)) return false;
-    if (t->has_left && !stream_write(s, t->left.data, 32)) return false;
+    if (!stream_write_u8(s, t->has_left ? 1 : 0))
+        IMT_FAIL("write left discriminant");
+    if (t->has_left && !stream_write(s, t->left.data, 32))
+        IMT_FAIL("write left hash");
 
     /* right: discriminant + hash */
-    if (!stream_write_u8(s, t->has_right ? 1 : 0)) return false;
-    if (t->has_right && !stream_write(s, t->right.data, 32)) return false;
+    if (!stream_write_u8(s, t->has_right ? 1 : 0))
+        IMT_FAIL("write right discriminant");
+    if (t->has_right && !stream_write(s, t->right.data, 32))
+        IMT_FAIL("write right hash");
 
     /* parents: compact_size + array of optional<hash> */
-    if (!stream_write_compact_size(s, t->num_parents)) return false;
+    if (!stream_write_compact_size(s, t->num_parents))
+        IMT_FAIL("write num_parents compact_size");
     for (size_t i = 0; i < t->num_parents; i++) {
-        if (!stream_write_u8(s, t->has_parent[i] ? 1 : 0)) return false;
+        if (!stream_write_u8(s, t->has_parent[i] ? 1 : 0))
+            IMT_FAIL("write parent discriminant");
         if (t->has_parent[i] && !stream_write(s, t->parents[i].data, 32))
-            return false;
+            IMT_FAIL("write parent hash");
     }
     return true;
 }
 
 static bool wfcheck(const struct incremental_merkle_tree *t)
 {
-    if (t->num_parents >= t->depth) return false;
-    if (t->num_parents > 0 && !t->has_parent[t->num_parents - 1]) return false;
-    if (!t->has_left && t->has_right) return false;
-    if (!t->has_left && t->num_parents > 0) return false;
+    if (t->num_parents >= t->depth)
+        LOG_FAIL("incremental_merkle_tree",
+                 "wfcheck: num_parents=%zu >= depth=%zu",
+                 t->num_parents, t->depth);
+    if (t->num_parents > 0 && !t->has_parent[t->num_parents - 1])
+        LOG_FAIL("incremental_merkle_tree",
+                 "wfcheck: parent[num_parents-1] is not set (truncated or corrupt)");
+    if (!t->has_left && t->has_right)
+        LOG_FAIL("incremental_merkle_tree",
+                 "wfcheck: has_right without has_left (invariant violated)");
+    if (!t->has_left && t->num_parents > 0)
+        LOG_FAIL("incremental_merkle_tree",
+                 "wfcheck: num_parents>0 without has_left (invariant violated)");
     return true;
 }
 
@@ -282,35 +309,45 @@ bool incremental_tree_deserialize(struct incremental_merkle_tree *t,
     uint8_t disc;
 
     /* left */
-    if (!stream_read(s, &disc, 1)) return false;
+    if (!stream_read(s, &disc, 1))
+        IMT_FAIL("read left discriminant");
     t->has_left = (disc != 0);
     if (t->has_left) {
-        if (!stream_read(s, t->left.data, 32)) return false;
+        if (!stream_read(s, t->left.data, 32))
+            IMT_FAIL("read left hash");
     } else {
         memset(&t->left, 0, sizeof(struct uint256));
     }
 
     /* right */
-    if (!stream_read(s, &disc, 1)) return false;
+    if (!stream_read(s, &disc, 1))
+        IMT_FAIL("read right discriminant");
     t->has_right = (disc != 0);
     if (t->has_right) {
-        if (!stream_read(s, t->right.data, 32)) return false;
+        if (!stream_read(s, t->right.data, 32))
+            IMT_FAIL("read right hash");
     } else {
         memset(&t->right, 0, sizeof(struct uint256));
     }
 
     /* parents */
     uint64_t num;
-    if (!stream_read_compact_size(s, &num)) return false;
-    if (num > MAX_TREE_DEPTH) return false;
+    if (!stream_read_compact_size(s, &num))
+        IMT_FAIL("read num_parents compact_size");
+    if (num > MAX_TREE_DEPTH)
+        LOG_FAIL("incremental_merkle_tree",
+                 "deserialize: num_parents=%" PRIu64 " exceeds MAX_TREE_DEPTH=%d",
+                 num, MAX_TREE_DEPTH);
     t->num_parents = (size_t)num;
     memset(t->has_parent, 0, sizeof(t->has_parent));
     memset(t->parents, 0, sizeof(t->parents));
     for (size_t i = 0; i < t->num_parents; i++) {
-        if (!stream_read(s, &disc, 1)) return false;
+        if (!stream_read(s, &disc, 1))
+            IMT_FAIL("read parent discriminant");
         t->has_parent[i] = (disc != 0);
         if (t->has_parent[i]) {
-            if (!stream_read(s, t->parents[i].data, 32)) return false;
+            if (!stream_read(s, t->parents[i].data, 32))
+                IMT_FAIL("read parent hash");
         }
     }
 
@@ -442,18 +479,23 @@ void incremental_witness_root(const struct incremental_witness *w,
 bool incremental_witness_serialize(const struct incremental_witness *w,
                                     struct byte_stream *s)
 {
-    if (!incremental_tree_serialize(&w->tree, s)) return false;
+    if (!incremental_tree_serialize(&w->tree, s))
+        IMT_FAIL("write underlying tree");
 
     /* filled: vector<hash> */
-    if (!stream_write_compact_size(s, w->num_filled)) return false;
+    if (!stream_write_compact_size(s, w->num_filled))
+        IMT_FAIL("write num_filled compact_size");
     for (size_t i = 0; i < w->num_filled; i++) {
-        if (!stream_write(s, w->filled[i].data, 32)) return false;
+        if (!stream_write(s, w->filled[i].data, 32))
+            IMT_FAIL("write filled[i]");
     }
 
     /* cursor: optional<tree> */
-    if (!stream_write_u8(s, w->has_cursor ? 1 : 0)) return false;
+    if (!stream_write_u8(s, w->has_cursor ? 1 : 0))
+        IMT_FAIL("write cursor discriminant");
     if (w->has_cursor) {
-        if (!incremental_tree_serialize(&w->cursor, s)) return false;
+        if (!incremental_tree_serialize(&w->cursor, s))
+            IMT_FAIL("write cursor tree");
     }
 
     return true;
@@ -467,7 +509,9 @@ bool incremental_witness_merkle_path(const struct incremental_witness *w,
 
     /* Compute leaf position = tree_size - 1 */
     size_t tree_sz = incremental_tree_size(t);
-    if (tree_sz == 0) return false;
+    if (tree_sz == 0)
+        LOG_FAIL("incremental_merkle_tree",
+                 "merkle_path: tree is empty (no leaves to authenticate)");
     uint64_t position = tree_sz - 1;
 
     /* Build the authentication path by collecting siblings at each level.
@@ -554,26 +598,34 @@ bool incremental_witness_deserialize(struct incremental_witness *w,
     w->tree.combine = combine;
     w->tree.uncommitted = uncommitted;
 
-    if (!incremental_tree_deserialize(&w->tree, s)) return false;
+    if (!incremental_tree_deserialize(&w->tree, s))
+        IMT_FAIL("read underlying tree");
 
     /* filled */
     uint64_t num;
-    if (!stream_read_compact_size(s, &num)) return false;
-    if (num > MAX_WITNESS_FILLS) return false;
+    if (!stream_read_compact_size(s, &num))
+        IMT_FAIL("read num_filled compact_size");
+    if (num > MAX_WITNESS_FILLS)
+        LOG_FAIL("incremental_merkle_tree",
+                 "witness_deserialize: num_filled=%" PRIu64 " exceeds MAX_WITNESS_FILLS=%d",
+                 num, MAX_WITNESS_FILLS);
     w->num_filled = (size_t)num;
     for (size_t i = 0; i < w->num_filled; i++) {
-        if (!stream_read(s, w->filled[i].data, 32)) return false;
+        if (!stream_read(s, w->filled[i].data, 32))
+            IMT_FAIL("read filled[i]");
     }
 
     /* cursor */
     uint8_t disc;
-    if (!stream_read(s, &disc, 1)) return false;
+    if (!stream_read(s, &disc, 1))
+        IMT_FAIL("read cursor discriminant");
     w->has_cursor = (disc != 0);
     if (w->has_cursor) {
         w->cursor.depth = depth;
         w->cursor.combine = combine;
         w->cursor.uncommitted = uncommitted;
-        if (!incremental_tree_deserialize(&w->cursor, s)) return false;
+        if (!incremental_tree_deserialize(&w->cursor, s))
+            IMT_FAIL("read cursor tree");
     }
 
     w->cursor_depth = next_depth(&w->tree, w->num_filled);
