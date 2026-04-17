@@ -33,6 +33,8 @@
 #include "encoding/base58.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
+#include "wallet/wallet_canary.h"
+#include "services/wallet_backup_service.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -70,6 +72,27 @@ static bool wallet_ctx_db_ready(const struct wallet_rpc_context *ctx)
     return ctx->node_db && ctx->node_db->open;
 }
 
+/* Snapshot the tail key_id in the keystore. Used by rollback paths
+ * where we need to undo a keystore add that just happened: after a
+ * successful wallet_get_new_address(), the most recently inserted
+ * key is at keystore.keys[num_keys-1] (both keypool and HD paths
+ * append, never insert). */
+static bool wallet_last_key_id(const struct wallet *w, struct key_id *out)
+{
+    if (!w || !out) return false;
+    const struct basic_keystore *ks = &w->keystore;
+    if (ks->num_keys == 0) return false;
+    /* Scan backward for the first used slot — the array compacts on
+     * remove, but a prior rollback could have left a hole. */
+    for (size_t i = ks->num_keys; i > 0; i--) {
+        if (ks->keys[i - 1].used) {
+            *out = ks->keys[i - 1].keyid;
+            return true;
+        }
+    }
+    return false;
+}
+
 static bool rpc_getnewaddress(const struct json_value *params, bool help,
                                struct json_value *result)
 {
@@ -87,9 +110,29 @@ static bool rpc_getnewaddress(const struct json_value *params, bool help,
         LOG_FAIL("wallet", "getnewaddress: keypool ran out");
     }
 
-    /* Persist new key to wallet DB */
-    if (ctx->wallet_db)
-        wallet_sqlite_flush(ctx->wallet_db, ctx->wallet);
+    /* Persist the fresh key to wallet_keys BEFORE handing the address
+     * to the user. If the flush fails, roll back the keystore add
+     * (we capture the new key_id from the tail) so in-memory and
+     * on-disk agree. Returning an address we cannot persist is the
+     * exact "lost 0.4 ZCL" bug we're fixing. */
+    if (ctx->wallet_db) {
+        struct key_id new_kid;
+        bool have_kid = wallet_last_key_id(ctx->wallet, &new_kid);
+
+        if (!wallet_sqlite_flush(ctx->wallet_db, ctx->wallet)) {
+            if (have_kid) {
+                (void)wallet_remove_key(ctx->wallet, &new_kid);
+            }
+            json_set_str(result,
+                "Error: wallet persistence failed. New address NOT saved. "
+                "Check getwalletinfo.persistence and node.log.");
+            LOG_FAIL("wallet", "getnewaddress: wallet_sqlite_flush failed — "
+                                "rolled back keystore (had_kid=%d)", (int)have_kid);
+        }
+
+        /* Success: kick the JSON backup writer so the mirror follows. */
+        wallet_backup_service_on_key_change();
+    }
 
     json_set_str(result, addr);
     return true;
@@ -633,6 +676,40 @@ static bool rpc_dumpprivkey(const struct json_value *params, bool help,
     return true;
 }
 
+/* Verify that wallet_sqlite_write_key actually persisted the given
+ * key by round-tripping a read from wallet_keys. The existing
+ * wallet_sqlite module has no read-single-key entry point (Agent 2
+ * will add one in plan §5.2); in the interim we query directly.
+ *
+ * Returns true if the row was found AND the stored privkey matches
+ * the supplied one byte-for-byte. Returns false on any deviation. */
+static bool wallet_readback_key(sqlite3 *db,
+                                 const struct pubkey *pk,
+                                 const struct privkey *want)
+{
+    if (!db || !pk || !want) return false;
+    uint8_t pkh[20];
+    hash160(pk->vch, pk->size, pkh);
+
+    sqlite3_stmt *st = NULL;
+    int rc = sqlite3_prepare_v2(db,
+        "SELECT privkey FROM wallet_keys WHERE pubkey_hash=?1",
+        -1, &st, NULL);
+    if (rc != SQLITE_OK) return false;
+    sqlite3_bind_blob(st, 1, pkh, 20, SQLITE_STATIC);
+    rc = sqlite3_step(st);
+    bool ok = false;
+    if (rc == SQLITE_ROW) {
+        const void *blob = sqlite3_column_blob(st, 0);
+        int         n    = sqlite3_column_bytes(st, 0);
+        if (blob && n == 32 && memcmp(blob, want->vch, 32) == 0) {
+            ok = true;
+        }
+    }
+    sqlite3_finalize(st);
+    return ok;
+}
+
 static bool rpc_importprivkey(const struct json_value *params, bool help,
                                 struct json_value *result)
 {
@@ -662,24 +739,67 @@ static bool rpc_importprivkey(const struct json_value *params, bool help,
         LOG_FAIL("wallet", "importprivkey: invalid WIF encoding");
     }
 
-    if (!wallet_import_key(ctx->wallet, &key)) {
-        memory_cleanse(key.vch, 32);
-        json_set_str(result, "Error adding key to wallet");
-        LOG_FAIL("wallet", "importprivkey: failed to add key to wallet");
-    }
-
-    if (ctx->wallet->time_first_key == 0)
-        ctx->wallet->time_first_key = GetTime();
-
-    /* Persist key to wallet DB */
+    /* Derive pubkey FIRST so we can persist (and roll back) without
+     * touching the keystore on a bad input. */
     struct pubkey pk;
     if (!privkey_get_pubkey(&key, &pk)) {
         memory_cleanse(key.vch, 32);
         json_set_str(result, "Failed to derive public key");
         LOG_FAIL("wallet", "importprivkey: failed to derive pubkey from privkey");
     }
+
+    /* Plan §5.4: persist BEFORE mutating the keystore. If the write
+     * fails we have not touched wallet state — simply error out. */
+    if (ctx->wallet_db) {
+        if (!wallet_sqlite_write_key(ctx->wallet_db, &pk, &key)) {
+            memory_cleanse(key.vch, 32);
+            json_set_str(result,
+                "Error: wallet persistence failed. Key NOT imported. "
+                "Check getwalletinfo.persistence and node.log.");
+            LOG_FAIL("wallet", "importprivkey: wallet_sqlite_write_key failed");
+        }
+
+        /* Readback: prove the write hit disk with the bytes we asked
+         * for. A passing write + failing readback was the exact
+         * footgun behind the bug this change fixes. */
+        if (!wallet_readback_key(ctx->wallet_db->db, &pk, &key)) {
+            memory_cleanse(key.vch, 32);
+            json_set_str(result,
+                "Error: wallet persistence readback mismatch. Key NOT imported. "
+                "Check getwalletinfo.persistence and node.log.");
+            LOG_FAIL("wallet", "importprivkey: readback mismatch after write_key");
+        }
+    }
+
+    /* Persistence is verified — now it is safe to surface the key in
+     * the keystore. A failure here (keystore full) rolls back the
+     * just-persisted row so the two stay in sync. */
+    if (!wallet_import_key(ctx->wallet, &key)) {
+        if (ctx->wallet_db) {
+            /* Best-effort: delete the row we just wrote. Failure is
+             * tracked by the canary on next boot. */
+            uint8_t pkh[20];
+            hash160(pk.vch, pk.size, pkh);
+            sqlite3_stmt *st = NULL;
+            if (sqlite3_prepare_v2(ctx->wallet_db->db,
+                    "DELETE FROM wallet_keys WHERE pubkey_hash=?1",
+                    -1, &st, NULL) == SQLITE_OK) {
+                sqlite3_bind_blob(st, 1, pkh, 20, SQLITE_STATIC);
+                (void)sqlite3_step(st);
+                sqlite3_finalize(st);
+            }
+        }
+        memory_cleanse(key.vch, 32);
+        json_set_str(result, "Error adding key to wallet");
+        LOG_FAIL("wallet", "importprivkey: failed to add key to wallet (keystore full?)");
+    }
+
+    if (ctx->wallet->time_first_key == 0)
+        ctx->wallet->time_first_key = GetTime();
+
+    /* Trigger JSON backup of the fresh wallet state. */
     if (ctx->wallet_db)
-        wallet_sqlite_write_key(ctx->wallet_db, &pk, &key);
+        wallet_backup_service_on_key_change();
 
     memory_cleanse(key.vch, 32);
 
@@ -775,10 +895,22 @@ static bool rpc_importaddress(const struct json_value *params, bool help,
         LOG_FAIL("wallet", "importaddress: watch-only keystore full for %s", addr_str);
     }
 
-    /* Persist to wallet DB. */
-    if (ctx->wallet_db)
-        wallet_sqlite_write_watch_only(ctx->wallet_db,
-                                        dest.id.key.id.data, addr_str);
+    /* Persist to wallet DB. On failure, roll back the keystore add
+     * so user state doesn't diverge from disk. */
+    if (ctx->wallet_db) {
+        if (!wallet_sqlite_write_watch_only(ctx->wallet_db,
+                                             dest.id.key.id.data, addr_str)) {
+            zcl_mutex_lock(&ctx->wallet->cs);
+            (void)keystore_remove_watch_only(&ctx->wallet->keystore, &dest.id.key);
+            zcl_mutex_unlock(&ctx->wallet->cs);
+            json_set_str(result,
+                "Error: wallet persistence failed. Watch-only address NOT saved. "
+                "Check getwalletinfo.persistence and node.log.");
+            LOG_FAIL("wallet", "importaddress: wallet_sqlite_write_watch_only failed "
+                                "for %s — rolled back keystore", addr_str);
+        }
+        wallet_backup_service_on_key_change();
+    }
 
     /* Instant UTXO index lookup — same as importprivkey. */
     uint8_t addr_hash[20];
@@ -891,6 +1023,22 @@ static bool rpc_keypoolrefill(const struct json_value *params, bool help,
     if (!wallet_top_up_key_pool(ctx->wallet, new_size)) {
         json_set_str(result, "Error refilling keypool");
         LOG_FAIL("wallet", "keypoolrefill: failed to refill keypool (size=%u)", new_size);
+    }
+
+    /* Flush the fresh keypool entries. If persistence fails the
+     * keypool indices still point into the keystore, but the on-disk
+     * rows won't exist — on next restart the node would hand out a
+     * pre-existing address twice. Log and error; canary will flag
+     * the daemon as unhealthy and operator can intervene. */
+    if (ctx->wallet_db) {
+        if (!wallet_sqlite_flush(ctx->wallet_db, ctx->wallet)) {
+            json_set_str(result,
+                "Error: keypool refilled in memory but persistence flush failed. "
+                "Check getwalletinfo.persistence and node.log.");
+            LOG_FAIL("wallet", "keypoolrefill: wallet_sqlite_flush failed "
+                                "(new_size=%u)", new_size);
+        }
+        wallet_backup_service_on_keypool_topup();
     }
 
     json_set_null(result);

@@ -1214,6 +1214,15 @@ bool wallet_import_key(struct wallet *w, const struct privkey *key)
     return ok;
 }
 
+bool wallet_remove_key(struct wallet *w, const struct key_id *keyid)
+{
+    if (!w || !keyid) return false;
+    zcl_mutex_lock(&w->cs);
+    bool ok = keystore_remove_key(&w->keystore, keyid);
+    zcl_mutex_unlock(&w->cs);
+    return ok;
+}
+
 bool wallet_dump_key(const struct wallet *w, const struct key_id *keyid,
                       struct privkey *key_out)
 {

@@ -28,6 +28,7 @@
 #include "sapling/incremental_merkle_tree.h"
 #include "sapling/sapling_prover.h"
 #include "consensus/upgrades.h"
+#include "services/wallet_backup_service.h"
 #include "models/database.h"
 #include "models/block.h"
 #include "models/utxo.h"
@@ -87,15 +88,32 @@ static bool rpc_z_getnewaddress(const struct json_value *params, bool help,
                  cp->bech32HRPs[BECH32_SAPLING_PAYMENT_ADDRESS]);
     }
 
-    /* Persist sapling keys to wallet DB */
+    /* Persist sapling keys to wallet DB. Errors here are fatal to the
+     * RPC: the in-memory key is derivable from the seed + child_index
+     * but if either row fails to land on disk we are shipping a
+     * z-address the user cannot recover after restart. Report and
+     * let the persistence health block flag the daemon. */
     if (ctx->wallet_db) {
         struct sapling_keystore *sks = &ctx->wallet->sapling_keys;
-        if (sks->has_seed)
-            wallet_sqlite_write_sapling_seed(ctx->wallet_db, sks->seed);
-        if (sks->num_keys > 0)
-            wallet_sqlite_write_sapling_key(ctx->wallet_db,
-                sks->keys[sks->num_keys - 1].child_index,
-                &sks->keys[sks->num_keys - 1]);
+        if (sks->has_seed) {
+            if (!wallet_sqlite_write_sapling_seed(ctx->wallet_db, sks->seed)) {
+                json_set_str(result,
+                    "Error: failed to persist Sapling seed. Address NOT saved. "
+                    "Check getwalletinfo.persistence and node.log.");
+                LOG_FAIL("wallet_shielded", "z_getnewaddress: sapling_seed flush failed");
+            }
+        }
+        if (sks->num_keys > 0) {
+            if (!wallet_sqlite_write_sapling_key(ctx->wallet_db,
+                    sks->keys[sks->num_keys - 1].child_index,
+                    &sks->keys[sks->num_keys - 1])) {
+                json_set_str(result,
+                    "Error: failed to persist Sapling key. Address NOT saved. "
+                    "Check getwalletinfo.persistence and node.log.");
+                LOG_FAIL("wallet_shielded", "z_getnewaddress: sapling_key flush failed");
+            }
+        }
+        wallet_backup_service_on_key_change();
     }
 
     json_set_str(result, addr);
@@ -1353,14 +1371,28 @@ static bool rpc_z_importkey(const struct json_value *params, bool help,
     }
     memory_cleanse(&xsk, sizeof(xsk));
 
-    /* Persist to wallet DB */
+    /* Persist to wallet DB. A failed write on imported material leaves
+     * the spending key in memory but not on disk — user cannot recover
+     * after restart. Return the error so they know. */
     if (ctx->wallet_db) {
         struct sapling_keystore *sks = &ctx->wallet->sapling_keys;
-        if (sks->has_seed)
-            wallet_sqlite_write_sapling_seed(ctx->wallet_db, sks->seed);
-        wallet_sqlite_write_sapling_key(ctx->wallet_db,
-            sks->keys[sks->num_keys - 1].child_index,
-            &sks->keys[sks->num_keys - 1]);
+        if (sks->has_seed) {
+            if (!wallet_sqlite_write_sapling_seed(ctx->wallet_db, sks->seed)) {
+                json_set_str(result,
+                    "Error: failed to persist Sapling seed. Key NOT imported. "
+                    "Check getwalletinfo.persistence and node.log.");
+                LOG_FAIL("wallet_shielded", "z_importkey: sapling_seed flush failed");
+            }
+        }
+        if (!wallet_sqlite_write_sapling_key(ctx->wallet_db,
+                sks->keys[sks->num_keys - 1].child_index,
+                &sks->keys[sks->num_keys - 1])) {
+            json_set_str(result,
+                "Error: failed to persist Sapling key. Key NOT imported. "
+                "Check getwalletinfo.persistence and node.log.");
+            LOG_FAIL("wallet_shielded", "z_importkey: sapling_key flush failed");
+        }
+        wallet_backup_service_on_key_change();
     }
 
     if (do_rescan && ctx->main_state) {

@@ -71,6 +71,23 @@ bool keystore_add_key(struct basic_keystore *ks, const struct privkey *key)
     return true;
 }
 
+bool keystore_remove_key(struct basic_keystore *ks,
+                          const struct key_id *keyid)
+{
+    if (!ks || !keyid) return false;
+    zcl_mutex_lock(&ks->cs);
+    for (size_t i = 0; i < ks->num_keys; i++) {
+        if (ks->keys[i].used && key_id_eq(&ks->keys[i].keyid, keyid)) {
+            memory_cleanse(&ks->keys[i].key, sizeof(ks->keys[i].key));
+            ks->keys[i].used = false;
+            zcl_mutex_unlock(&ks->cs);
+            return true;
+        }
+    }
+    zcl_mutex_unlock(&ks->cs);
+    return false;
+}
+
 bool keystore_have_key(const struct basic_keystore *ks,
                         const struct key_id *keyid)
 {

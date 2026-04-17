@@ -54,6 +54,11 @@ void keystore_init(struct basic_keystore *ks);
 void keystore_free(struct basic_keystore *ks);
 
 bool keystore_add_key(struct basic_keystore *ks, const struct privkey *key);
+/* Remove a key by its key_id. Returns true if a matching entry was
+ * found and marked unused, false otherwise. Used by controller
+ * rollback when persistence fails after keystore mutation. */
+bool keystore_remove_key(struct basic_keystore *ks,
+                          const struct key_id *keyid);
 bool keystore_have_key(const struct basic_keystore *ks,
                         const struct key_id *keyid);
 bool keystore_get_key(const struct basic_keystore *ks,
