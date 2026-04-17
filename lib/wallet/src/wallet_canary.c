@@ -3,6 +3,7 @@
  * Wallet persistence canary — see wallet_canary.h for rationale. */
 
 #include "wallet/wallet_canary.h"
+#include "wallet/wallet_sqlite.h"
 
 #include "core/random.h"
 #include "util/log_macros.h"
@@ -151,6 +152,7 @@ wallet_persistence_get_health(sqlite3 *db, int keystore_count)
         .row_count      = -1,
         .keystore_count = keystore_count,
         .mismatch       = false,
+        .corrupt_rows   = wallet_sqlite_read_keys_corrupt_count(),
         .last_error     = { 0 },
     };
 

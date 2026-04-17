@@ -29,6 +29,14 @@ int main(void)
         failures += test_coins_view_atomicity();
         failures += test_wallet_sqlite_enc();
         failures += test_wallet_keystore();
+        { extern int test_wallet_persistence_cycle(void);
+          failures += test_wallet_persistence_cycle(); }
+        { extern int test_wallet_flush_rollback(void);
+          failures += test_wallet_flush_rollback(); }
+        { extern int test_wallet_sqlite_open_errors(void);
+          failures += test_wallet_sqlite_open_errors(); }
+        { extern int test_watch_only(void); failures += test_watch_only(); }
+        { extern int test_wallet_canary(void); failures += test_wallet_canary(); }
         printf("\n=== Persistence subset complete: %d failure(s) ===\n",
                failures);
         return failures ? 1 : 0;
@@ -109,6 +117,8 @@ int main(void)
     { extern int test_wallet_canary(void); failures += test_wallet_canary(); }
     { extern int test_wallet_persistence_cycle(void);
       failures += test_wallet_persistence_cycle(); }
+    { extern int test_wallet_flush_rollback(void);
+      failures += test_wallet_flush_rollback(); }
     failures += test_log_json();
     failures += test_http_middleware();
     failures += test_rpc_timeout();

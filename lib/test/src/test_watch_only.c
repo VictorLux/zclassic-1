@@ -252,7 +252,8 @@ static const char *k_schema =
     " diversifier BLOB NOT NULL, pk_d BLOB NOT NULL,"
     " child_index INTEGER NOT NULL, address TEXT NOT NULL DEFAULT '');"
     "CREATE TABLE wallet_scripts (script_hash BLOB PRIMARY KEY,"
-    " redeem_script BLOB NOT NULL);";
+    " redeem_script BLOB NOT NULL);"
+    "CREATE TABLE node_state (key TEXT PRIMARY KEY, value BLOB);";
 
 static int test_sqlite_round_trip(void)
 {

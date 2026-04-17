@@ -230,6 +230,7 @@ static bool rpc_getwalletinfo(const struct json_value *params, bool help,
     json_push_kv_int (&persistence, "row_count",         h.row_count);
     json_push_kv_int (&persistence, "keystore_count",    h.keystore_count);
     json_push_kv_bool(&persistence, "mismatch",          h.mismatch);
+    json_push_kv_int (&persistence, "corrupt_rows",      h.corrupt_rows);
     json_push_kv_str (&persistence, "last_error",        h.last_error);
     json_push_kv(result, "persistence", &persistence);
     return true;

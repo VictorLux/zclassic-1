@@ -92,6 +92,14 @@ struct wallet_sqlite {
     sqlite3_stmt *stmt_watch_write;
     sqlite3_stmt *stmt_watch_read;
 
+    /* Best-block and scan-height pointers live in node_state under
+     * fixed keys.  Cached so hot paths (every post-block flush,
+     * every rescan step) don't pay prepare+finalize per call. */
+    sqlite3_stmt *stmt_best_block_write;
+    sqlite3_stmt *stmt_best_block_read;
+    sqlite3_stmt *stmt_scan_height_write;
+    sqlite3_stmt *stmt_scan_height_read;
+
     /* Health bookkeeping. Updated by self-test and by every failed
      * public call.  Read by wallet_sqlite_get_health(). */
     bool    canary_ok;
@@ -100,6 +108,12 @@ struct wallet_sqlite {
 };
 
 /* ── Rich-error API (preferred) ─────────────────────────────────── */
+
+/* Rows dropped by wallet_sqlite_read_keys_r since process start.
+ * Surfaces in getwalletinfo.persistence.corrupt_rows so operators
+ * see decode/decrypt drift instead of learning about it when a
+ * spend fails.  Reset only by process restart. */
+int wallet_sqlite_read_keys_corrupt_count(void);
 
 struct zcl_result wallet_sqlite_open_r(struct wallet_sqlite *ws, sqlite3 *db);
 struct zcl_result wallet_sqlite_self_test(struct wallet_sqlite *ws);

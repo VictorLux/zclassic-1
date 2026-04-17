@@ -32,6 +32,18 @@
  * bytes on every self-test, so stale probes never pass. */
 #define WSQL_CANARY_KEY "wallet_sqlite_canary"
 
+/* Counts rows dropped by read_keys_r because decode/decrypt failed.
+ * Surfaced via wallet_sqlite_read_keys_corrupt_count() and, by
+ * extension, the getwalletinfo.persistence JSON block.  Boot is
+ * single-threaded so no synchronisation is needed; a reader sees a
+ * consistent value once boot finishes. */
+static int g_read_keys_corrupt_rows = 0;
+
+int wallet_sqlite_read_keys_corrupt_count(void)
+{
+    return g_read_keys_corrupt_rows;
+}
+
 /* ── Helpers ────────────────────────────────────────────────────── */
 
 /* Capture a failure into ws->last_error so wallet_sqlite_get_health
@@ -188,7 +200,7 @@ struct zcl_result wallet_sqlite_open_r(struct wallet_sqlite *ws, sqlite3 *db)
           " VALUES(?,?,?,?)",
           "wallet_keys", "key_write" },
         { &ws->stmt_key_read,
-          "SELECT pubkey_hash, pubkey, privkey, compressed"
+          "SELECT pubkey_hash, pubkey, privkey, compressed, rowid"
           " FROM wallet_keys",
           "wallet_keys", "key_read" },
         { &ws->stmt_key_read_one,
@@ -235,6 +247,20 @@ struct zcl_result wallet_sqlite_open_r(struct wallet_sqlite *ws, sqlite3 *db)
         { &ws->stmt_watch_read,
           "SELECT address_hash, address FROM wallet_watch_only",
           "wallet_watch_only", "watch_read" },
+        { &ws->stmt_best_block_write,
+          "INSERT OR REPLACE INTO node_state(key,value)"
+          " VALUES('wallet_best_block',?)",
+          "node_state", "best_block_write" },
+        { &ws->stmt_best_block_read,
+          "SELECT value FROM node_state WHERE key='wallet_best_block'",
+          "node_state", "best_block_read" },
+        { &ws->stmt_scan_height_write,
+          "INSERT OR REPLACE INTO node_state(key,value)"
+          " VALUES('wallet_scan_height',?)",
+          "node_state", "scan_height_write" },
+        { &ws->stmt_scan_height_read,
+          "SELECT value FROM node_state WHERE key='wallet_scan_height'",
+          "node_state", "scan_height_read" },
     };
 
     for (size_t i = 0; i < sizeof(preps) / sizeof(preps[0]); i++) {
@@ -253,10 +279,13 @@ struct zcl_result wallet_sqlite_open_r(struct wallet_sqlite *ws, sqlite3 *db)
 bool wallet_sqlite_open(struct wallet_sqlite *ws, sqlite3 *db)
 {
     struct zcl_result r = wallet_sqlite_open_r(ws, db);
-    if (!r.ok)
-        LOG_FAIL("wallet_sqlite", "code=%d (%s:%d) %s",
-                 r.code, r.source_file, r.source_line, r.message);
-    return true;
+    if (r.ok) return true;
+    fprintf(stderr, "[wallet_sqlite] %s:%d %s(): "
+            "code=%d (%s:%d) %s\n",
+            __FILE__, __LINE__, __func__,
+            r.code,
+            r.source_file ? r.source_file : "?", r.source_line, r.message);
+    return false;
 }
 
 void wallet_sqlite_close(struct wallet_sqlite *ws)
@@ -275,6 +304,10 @@ void wallet_sqlite_close(struct wallet_sqlite *ws)
     if (ws->stmt_script_read)  { sqlite3_finalize(ws->stmt_script_read);  ws->stmt_script_read = NULL; }
     if (ws->stmt_watch_write)  { sqlite3_finalize(ws->stmt_watch_write);  ws->stmt_watch_write = NULL; }
     if (ws->stmt_watch_read)   { sqlite3_finalize(ws->stmt_watch_read);   ws->stmt_watch_read = NULL; }
+    if (ws->stmt_best_block_write)  { sqlite3_finalize(ws->stmt_best_block_write);  ws->stmt_best_block_write = NULL; }
+    if (ws->stmt_best_block_read)   { sqlite3_finalize(ws->stmt_best_block_read);   ws->stmt_best_block_read = NULL; }
+    if (ws->stmt_scan_height_write) { sqlite3_finalize(ws->stmt_scan_height_write); ws->stmt_scan_height_write = NULL; }
+    if (ws->stmt_scan_height_read)  { sqlite3_finalize(ws->stmt_scan_height_read);  ws->stmt_scan_height_read = NULL; }
     ws->db = NULL;
     ws->open = false;
 }
@@ -433,10 +466,13 @@ bool wallet_sqlite_write_key(struct wallet_sqlite *ws, const struct pubkey *pk,
                               const struct privkey *key)
 {
     struct zcl_result r = wallet_sqlite_write_key_r(ws, pk, key);
-    if (!r.ok)
-        LOG_FAIL("wallet_sqlite", "code=%d (%s:%d) %s",
-                 r.code, r.source_file, r.source_line, r.message);
-    return true;
+    if (r.ok) return true;
+    fprintf(stderr, "[wallet_sqlite] %s:%d %s(): "
+            "code=%d (%s:%d) %s\n",
+            __FILE__, __LINE__, __func__,
+            r.code,
+            r.source_file ? r.source_file : "?", r.source_line, r.message);
+    return false;
 }
 
 struct zcl_result wallet_sqlite_read_single_key(struct wallet_sqlite *ws,
@@ -511,18 +547,30 @@ struct zcl_result wallet_sqlite_read_keys_r(struct wallet_sqlite *ws,
 
     int loaded = 0;
     int rc;
+    /* Silent row drops were the original data-loss path: a single
+     * malformed row used to vanish with a stderr line nobody read,
+     * so boot.c STATE F couldn't tell a corruption from an empty
+     * keystore.  Every drop now increments a counter surfaced via
+     * getwalletinfo.persistence so operators see drift instead of
+     * discovering it when funds fail to spend. */
     while ((rc = sqlite3_step(s)) == SQLITE_ROW) {
         int pk_len = sqlite3_column_bytes(s, 1);
         const void *pk_data = sqlite3_column_blob(s, 1);
         int priv_len = sqlite3_column_bytes(s, 2);
         const void *priv_data = sqlite3_column_blob(s, 2);
         int compressed = sqlite3_column_int(s, 3);
+        int64_t rowid = sqlite3_column_int64(s, 4);
 
         if (!pk_data || pk_len < 33 || !priv_data || priv_len < 32) {
             fprintf(stderr,
-                "[wallet_sqlite] read_keys: skipping malformed row "
-                "pk_data=%p pk_len=%d priv_data=%p priv_len=%d\n",
-                pk_data, pk_len, priv_data, priv_len);
+                "[wallet_sqlite] %s:%d %s(): read_keys: dropping "
+                "malformed row rowid=%lld "
+                "(pubkey col bytes=%d data=%s, privkey col bytes=%d data=%s)\n",
+                __FILE__, __LINE__, __func__,
+                (long long)rowid,
+                pk_len, pk_data ? "present" : "NULL",
+                priv_len, priv_data ? "present" : "NULL");
+            g_read_keys_corrupt_rows++;
             continue;
         }
 
@@ -539,6 +587,12 @@ struct zcl_result wallet_sqlite_read_keys_r(struct wallet_sqlite *ws,
                                      &plain, &plain_len) ||
                 plain_len < 32) {
                 if (plain) { memory_cleanse(plain, plain_len); free(plain); }
+                fprintf(stderr,
+                    "[wallet_sqlite] %s:%d %s(): read_keys: dropping "
+                    "row rowid=%lld — WKS1 decrypt failed "
+                    "(wrong passphrase or tampered envelope?)\n",
+                    __FILE__, __LINE__, __func__, (long long)rowid);
+                g_read_keys_corrupt_rows++;
                 continue;
             }
             memcpy(key.vch, plain, 32);
@@ -565,10 +619,13 @@ struct zcl_result wallet_sqlite_read_keys_r(struct wallet_sqlite *ws,
 bool wallet_sqlite_read_keys(struct wallet_sqlite *ws, struct wallet *w)
 {
     struct zcl_result r = wallet_sqlite_read_keys_r(ws, w);
-    if (!r.ok)
-        LOG_FAIL("wallet_sqlite", "code=%d (%s:%d) %s",
-                 r.code, r.source_file, r.source_line, r.message);
-    return true;
+    if (r.ok) return true;
+    fprintf(stderr, "[wallet_sqlite] %s:%d %s(): "
+            "code=%d (%s:%d) %s\n",
+            __FILE__, __LINE__, __func__,
+            r.code,
+            r.source_file ? r.source_file : "?", r.source_line, r.message);
+    return false;
 }
 
 /* ── Transactions ──────────────────────────────────────────────── */
@@ -644,17 +701,10 @@ bool wallet_sqlite_write_best_block(struct wallet_sqlite *ws,
 {
     if (!ws || !ws->open)
         LOG_FAIL("wallet_sqlite", "write_best_block: not open");
-    sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(ws->db,
-        "INSERT OR REPLACE INTO node_state(key,value)"
-        " VALUES('wallet_best_block',?)",
-        -1, &s, NULL);
-    if (!s)
-        LOG_FAIL("wallet_sqlite", "write_best_block: prepare failed: %s",
-                 sqlite3_errmsg(ws->db));
+    sqlite3_stmt *s = ws->stmt_best_block_write;
+    sqlite3_reset(s);
     sqlite3_bind_blob(s, 1, hash->data, 32, SQLITE_STATIC);
     bool ok = sqlite3_step(s) == SQLITE_DONE;
-    sqlite3_finalize(s);
     if (!ok)
         LOG_FAIL("wallet_sqlite", "write_best_block: step failed: %s",
                  sqlite3_errmsg(ws->db));
@@ -665,11 +715,8 @@ bool wallet_sqlite_read_best_block(struct wallet_sqlite *ws,
                                      struct uint256 *hash)
 {
     if (!ws || !ws->open) return false;
-    sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(ws->db,
-        "SELECT value FROM node_state WHERE key='wallet_best_block'",
-        -1, &s, NULL);
-    if (!s) return false;
+    sqlite3_stmt *s = ws->stmt_best_block_read;
+    sqlite3_reset(s);
     bool ok = false;
     if (sqlite3_step(s) == SQLITE_ROW) {
         const void *data = sqlite3_column_blob(s, 0);
@@ -678,7 +725,7 @@ bool wallet_sqlite_read_best_block(struct wallet_sqlite *ws,
             ok = true;
         }
     }
-    sqlite3_finalize(s);
+    sqlite3_reset(s);
     return ok;
 }
 
@@ -686,18 +733,11 @@ bool wallet_sqlite_write_scan_height(struct wallet_sqlite *ws, int height)
 {
     if (!ws || !ws->open)
         LOG_FAIL("wallet_sqlite", "write_scan_height: not open");
-    sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(ws->db,
-        "INSERT OR REPLACE INTO node_state(key,value)"
-        " VALUES('wallet_scan_height',?)",
-        -1, &s, NULL);
-    if (!s)
-        LOG_FAIL("wallet_sqlite", "write_scan_height: prepare failed: %s",
-                 sqlite3_errmsg(ws->db));
+    sqlite3_stmt *s = ws->stmt_scan_height_write;
+    sqlite3_reset(s);
     int32_t h = (int32_t)height;
-    sqlite3_bind_blob(s, 1, &h, 4, SQLITE_STATIC);
+    sqlite3_bind_blob(s, 1, &h, 4, SQLITE_TRANSIENT);
     bool ok = sqlite3_step(s) == SQLITE_DONE;
-    sqlite3_finalize(s);
     if (!ok)
         LOG_FAIL("wallet_sqlite", "write_scan_height: step failed: %s",
                  sqlite3_errmsg(ws->db));
@@ -707,11 +747,8 @@ bool wallet_sqlite_write_scan_height(struct wallet_sqlite *ws, int height)
 bool wallet_sqlite_read_scan_height(struct wallet_sqlite *ws, int *height)
 {
     if (!ws || !ws->open) return false;
-    sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(ws->db,
-        "SELECT value FROM node_state WHERE key='wallet_scan_height'",
-        -1, &s, NULL);
-    if (!s) return false;
+    sqlite3_stmt *s = ws->stmt_scan_height_read;
+    sqlite3_reset(s);
     bool ok = false;
     if (sqlite3_step(s) == SQLITE_ROW) {
         const void *data = sqlite3_column_blob(s, 0);
@@ -722,7 +759,7 @@ bool wallet_sqlite_read_scan_height(struct wallet_sqlite *ws, int *height)
             ok = true;
         }
     }
-    sqlite3_finalize(s);
+    sqlite3_reset(s);
     return ok;
 }
 
@@ -819,19 +856,45 @@ bool wallet_sqlite_write_sapling_key(struct wallet_sqlite *ws,
     bool ok = sqlite3_step(s) == SQLITE_DONE;
     if (enc_xsk) { memory_cleanse(enc_xsk, enc_xsk_len); free(enc_xsk); }
 
+    if (!ok)
+        LOG_FAIL("wallet_sqlite", "write_sapling_key: insert step failed: %s",
+                 sqlite3_errmsg(ws->db));
+
+    /* Bump next_child so future address derivation skips this index.
+     * The old code ignored every sqlite rc on this UPDATE: a single
+     * SQLITE_BUSY from a concurrent reader would leave next_child
+     * stale, and the very next derive_address() call would reuse the
+     * child index — producing two addresses bound to the same spend
+     * authority.  That collision voids receiver unlinkability, which
+     * is the entire point of per-key diversifiers.  Now every op has
+     * its rc observed and any failure propagates up. */
     sqlite3_stmt *upd = NULL;
-    sqlite3_prepare_v2(ws->db,
+    int prep_rc = sqlite3_prepare_v2(ws->db,
         "UPDATE wallet_seed SET next_child=MAX(next_child,?+1) WHERE id=1",
         -1, &upd, NULL);
-    if (upd) {
-        sqlite3_bind_int(upd, 1, (int)child_index);
-        sqlite3_step(upd);
-        sqlite3_finalize(upd);
+    if (prep_rc != SQLITE_OK || !upd) {
+        if (upd) sqlite3_finalize(upd);
+        LOG_FAIL("wallet_sqlite",
+                 "write_sapling_key: prepare next_child UPDATE rc=%d: %s",
+                 prep_rc, sqlite3_errmsg(ws->db));
     }
-
-    if (!ok)
-        LOG_FAIL("wallet_sqlite", "write_sapling_key: step failed: %s",
-                 sqlite3_errmsg(ws->db));
+    if (sqlite3_bind_int(upd, 1, (int)child_index) != SQLITE_OK) {
+        sqlite3_finalize(upd);
+        LOG_FAIL("wallet_sqlite",
+                 "write_sapling_key: bind next_child=%u failed: %s",
+                 child_index, sqlite3_errmsg(ws->db));
+    }
+    int step_rc = sqlite3_step(upd);
+    sqlite3_finalize(upd);
+    if (step_rc != SQLITE_DONE) {
+        /* SQLITE_BUSY, SQLITE_IOERR, etc. — the row either didn't
+         * advance or we lost the update against a concurrent writer.
+         * Either way, treat it as a hard failure so the caller (and
+         * the flusher) rollback the whole transaction. */
+        LOG_FAIL("wallet_sqlite",
+                 "write_sapling_key: next_child UPDATE step rc=%d child=%u: %s",
+                 step_rc, child_index, sqlite3_errmsg(ws->db));
+    }
     return true;
 }
 
@@ -1028,8 +1091,20 @@ struct zcl_result wallet_sqlite_flush_r(struct wallet_sqlite *ws,
 
     zcl_mutex_lock(&w->cs);
 
+    /* Invariant: if ANY writer fails, we must ROLLBACK the whole
+     * transaction rather than COMMIT a partial state.  The old code
+     * only tracked key-write failures AND still committed afterward —
+     * the exact class of silent-partial-state bug that lost 0.4 ZCL
+     * on 2026-04-12.  Now every writer's rc is observed; the first
+     * failure short-circuits the remaining work so we don't bloat
+     * the rolled-back txn with more doomed writes. */
     struct zcl_result first_fail = ZCL_OK;
     int n_key_fail = 0;
+    int n_tx_fail = 0;
+    int n_zseed_fail = 0;
+    int n_zkey_fail = 0;
+    int n_script_fail = 0;
+    int n_scanh_fail = 0;
 
     for (size_t i = 0; i < w->keystore.num_keys; i++) {
         if (!w->keystore.keys[i].used) continue;
@@ -1048,30 +1123,59 @@ struct zcl_result wallet_sqlite_flush_r(struct wallet_sqlite *ws,
                 i, kr.code, kr.source_file, kr.source_line, kr.message);
             if (first_fail.ok) first_fail = kr;
             n_key_fail++;
+            goto rollback;
         }
     }
 
     for (size_t i = 0; i < MAX_WALLET_TX; i++) {
         if (!w->map_wallet[i].used) continue;
-        wallet_sqlite_write_tx(ws, &w->map_wallet[i]);
+        if (!wallet_sqlite_write_tx(ws, &w->map_wallet[i])) {
+            n_tx_fail++;
+            if (first_fail.ok) first_fail = ZCL_ERR(WSQL_WRITE_FAIL,
+                "flush: write_tx slot %zu failed", i);
+            goto rollback;
+        }
     }
 
     struct sapling_keystore *sks = &w->sapling_keys;
-    if (sks->has_seed)
-        wallet_sqlite_write_sapling_seed(ws, sks->seed);
+    if (sks->has_seed) {
+        if (!wallet_sqlite_write_sapling_seed(ws, sks->seed)) {
+            n_zseed_fail++;
+            if (first_fail.ok) first_fail = ZCL_ERR(WSQL_WRITE_FAIL,
+                "flush: write_sapling_seed failed");
+            goto rollback;
+        }
+    }
     for (size_t i = 0; i < sks->num_keys; i++) {
-        if (sks->keys[i].used)
-            wallet_sqlite_write_sapling_key(ws, sks->keys[i].child_index,
-                                              &sks->keys[i]);
+        if (!sks->keys[i].used) continue;
+        if (!wallet_sqlite_write_sapling_key(ws, sks->keys[i].child_index,
+                                              &sks->keys[i])) {
+            n_zkey_fail++;
+            if (first_fail.ok) first_fail = ZCL_ERR(WSQL_WRITE_FAIL,
+                "flush: write_sapling_key child=%u failed",
+                sks->keys[i].child_index);
+            goto rollback;
+        }
     }
 
     for (size_t i = 0; i < w->keystore.num_scripts; i++) {
-        if (w->keystore.scripts[i].used)
-            wallet_sqlite_write_script(ws, &w->keystore.scripts[i].script_id,
-                                         &w->keystore.scripts[i].redeem_script);
+        if (!w->keystore.scripts[i].used) continue;
+        if (!wallet_sqlite_write_script(ws,
+                                         &w->keystore.scripts[i].script_id,
+                                         &w->keystore.scripts[i].redeem_script)) {
+            n_script_fail++;
+            if (first_fail.ok) first_fail = ZCL_ERR(WSQL_WRITE_FAIL,
+                "flush: write_script slot %zu failed", i);
+            goto rollback;
+        }
     }
 
-    wallet_sqlite_write_scan_height(ws, w->best_block_height);
+    if (!wallet_sqlite_write_scan_height(ws, w->best_block_height)) {
+        n_scanh_fail++;
+        if (first_fail.ok) first_fail = ZCL_ERR(WSQL_WRITE_FAIL,
+            "flush: write_scan_height failed");
+        goto rollback;
+    }
 
     zcl_mutex_unlock(&w->cs);
 
@@ -1086,21 +1190,40 @@ struct zcl_result wallet_sqlite_flush_r(struct wallet_sqlite *ws,
         return wsql_fail(ws, r);
     }
 
-    if (!first_fail.ok) {
-        return wsql_fail(ws, ZCL_ERR(WSQL_WRITE_FAIL,
-            "flush: %d key write(s) failed; first: [%d] %s",
-            n_key_fail, first_fail.code, first_fail.message));
-    }
     return ZCL_OK;
+
+rollback:
+    zcl_mutex_unlock(&w->cs);
+    {
+        char *rb_err = NULL;
+        int rb_rc = sqlite3_exec(ws->db, "ROLLBACK", NULL, NULL, &rb_err);
+        if (rb_rc != SQLITE_OK) {
+            fprintf(stderr,
+                "[wallet_sqlite] flush: ROLLBACK after write failure "
+                "also failed rc=%d: %s\n",
+                rb_rc, rb_err ? rb_err : "(unknown)");
+            if (rb_err) sqlite3_free(rb_err);
+        }
+    }
+    return wsql_fail(ws, ZCL_ERR(WSQL_WRITE_FAIL,
+        "flush: rolled back — keys=%d tx=%d zseed=%d zkey=%d script=%d "
+        "scanh=%d; first failure: [%d] %s",
+        n_key_fail, n_tx_fail, n_zseed_fail, n_zkey_fail, n_script_fail,
+        n_scanh_fail,
+        first_fail.ok ? 0 : first_fail.code,
+        first_fail.ok ? "(none captured)" : first_fail.message));
 }
 
 bool wallet_sqlite_flush(struct wallet_sqlite *ws, struct wallet *w)
 {
     struct zcl_result r = wallet_sqlite_flush_r(ws, w);
-    if (!r.ok)
-        LOG_FAIL("wallet_sqlite", "code=%d (%s:%d) %s",
-                 r.code, r.source_file, r.source_line, r.message);
-    return true;
+    if (r.ok) return true;
+    fprintf(stderr, "[wallet_sqlite] %s:%d %s(): "
+            "code=%d (%s:%d) %s\n",
+            __FILE__, __LINE__, __func__,
+            r.code,
+            r.source_file ? r.source_file : "?", r.source_line, r.message);
+    return false;
 }
 
 /* ── Health snapshot ───────────────────────────────────────────── */

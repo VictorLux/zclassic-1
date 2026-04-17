@@ -73,6 +73,7 @@ struct wallet_persistence_health {
     int     row_count;           /* SELECT count(*) FROM wallet_keys */
     int     keystore_count;      /* caller-supplied in-memory count */
     bool    mismatch;            /* row_count != keystore_count */
+    int     corrupt_rows;        /* rows dropped by read_keys since boot */
     char    last_error[256];     /* most recent canary error, empty if healthy */
 };
 
