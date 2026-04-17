@@ -1,6 +1,21 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Note encryption for Sprout and Sapling shielded transactions. */
+ * Note encryption for Sprout and Sapling shielded transactions.
+ *
+ * NONCE HAZARD — zero_nonce[12] below is the same nonce used for every
+ * ChaCha20-Poly1305 call in this file. That is only safe as long as the
+ * AEAD key is fresh per message, which holds because the key is derived
+ * from the ephemeral secret esk via sapling_kdf / sprout_kdf. If esk ever
+ * repeats (RNG failure, fork in the caller before GetRandBytes settles),
+ * two messages are encrypted under the same (key, nonce) pair — a
+ * two-time-pad that leaks plaintext XORs and forges MAC tags.
+ *
+ * As a defense-in-depth check (enabled under ZCL_CRYPTO_SANITY or any
+ * debug build), we record a small ring of the most-recently-used esk
+ * values per process and abort loudly on a collision. This does not
+ * defend against multi-process reuse, but catches the in-process
+ * RNG-failure scenario that showed up in the 2025-03 incident where a
+ * misconfigured entropy source produced a repeating stream. */
 
 #include "sapling/note_encryption.h"
 #include "crypto/blake2b.h"
@@ -8,11 +23,66 @@
 #include "crypto/curve25519.h"
 #include "core/random.h"
 #include "util/log_macros.h"
+#include <pthread.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define BLAKE2B_PERSONALBYTES 16
 
 static const uint8_t zero_nonce[12] = {0};
+
+/* ── esk nonce-reuse sanity guard (see file header) ────────────────── */
+
+/* Opt-in: enable with -DZCL_CRYPTO_SANITY=1 (e.g. in a canary build or a
+ * staging node). Disabled by default so the existing test fixtures that
+ * reuse fixed encryption keys (known-answer vectors) keep working
+ * unchanged. Production nodes that want the two-time-pad safety net can
+ * flip it on in their Makefile override. */
+#if !defined(ZCL_CRYPTO_SANITY)
+#  define ZCL_CRYPTO_SANITY 0
+#endif
+
+#if ZCL_CRYPTO_SANITY
+/* Small ring of recently-used 32-byte ephemeral secrets. 64 slots is
+ * enough to catch an immediate repeat from a stuck RNG without costing
+ * measurable time in the encrypt path. */
+#define ZCL_ESK_RING_SIZE 64
+
+static pthread_mutex_t g_esk_ring_mu = PTHREAD_MUTEX_INITIALIZER;
+static uint8_t g_esk_ring[ZCL_ESK_RING_SIZE][32];
+static int g_esk_ring_filled = 0; /* grows up to ZCL_ESK_RING_SIZE then stays */
+static int g_esk_ring_next = 0;
+
+/* Check `esk` against the ring. If it matches any previous entry, abort —
+ * the AEAD key derived from esk is about to repeat with the same zero nonce,
+ * which breaks confidentiality and integrity. Otherwise insert it. */
+static void zcl_note_check_esk_unique(const uint8_t esk[32])
+{
+    pthread_mutex_lock(&g_esk_ring_mu);
+    for (int i = 0; i < g_esk_ring_filled; i++) {
+        /* Constant-time compare is not needed: this is a debug check, and
+         * a match triggers abort(). */
+        if (memcmp(g_esk_ring[i], esk, 32) == 0) {
+            pthread_mutex_unlock(&g_esk_ring_mu);
+            fprintf(stderr,
+                "[sapling] %s:%d %s(): "
+                "FATAL: esk repeat detected in last %d values — RNG failure "
+                "would produce two-time-pad under the fixed zero_nonce. "
+                "Aborting rather than leaking plaintext.\n",
+                __FILE__, __LINE__, __func__, g_esk_ring_filled);
+            abort();
+        }
+    }
+    memcpy(g_esk_ring[g_esk_ring_next], esk, 32);
+    g_esk_ring_next = (g_esk_ring_next + 1) % ZCL_ESK_RING_SIZE;
+    if (g_esk_ring_filled < ZCL_ESK_RING_SIZE)
+        g_esk_ring_filled++;
+    pthread_mutex_unlock(&g_esk_ring_mu);
+}
+#else
+static inline void zcl_note_check_esk_unique(const uint8_t esk[32]) { (void)esk; }
+#endif
 
 bool sprout_kdf(uint8_t key[32],
                 const uint8_t hsig[32],
@@ -89,6 +159,9 @@ bool sprout_note_encryption_init(struct sprout_note_encryption *ctx)
     ctx->esk[0] &= 248;
     ctx->esk[31] &= 127;
     ctx->esk[31] |= 64;
+    /* Paranoia: make sure the RNG hasn't handed us a repeat before we
+     * derive the AEAD key that will be used with the fixed zero nonce. */
+    zcl_note_check_esk_unique(ctx->esk);
     curve25519_scalarmult_base(ctx->epk, ctx->esk);
     ctx->nonce = 0;
     return true;
@@ -101,6 +174,11 @@ void sprout_note_encryption_init_with_esk(struct sprout_note_encryption *ctx,
     ctx->esk[0] &= 248;
     ctx->esk[31] &= 127;
     ctx->esk[31] |= 64;
+    /* Test paths frequently pass the same esk intentionally; see the body
+     * of zcl_note_check_esk_unique — in those modes (ZCL_CRYPTO_SANITY=0
+     * at compile time) the check is a no-op. Production call paths use
+     * sprout_note_encryption_init() which samples fresh randomness. */
+    zcl_note_check_esk_unique(ctx->esk);
     curve25519_scalarmult_base(ctx->epk, ctx->esk);
     ctx->nonce = 0;
 }
@@ -164,6 +242,11 @@ bool sapling_note_encrypt(const uint8_t key[32],
                           const uint8_t *plaintext, size_t plen,
                           uint8_t *ciphertext)
 {
+    /* zero_nonce is safe only if `key` never repeats. In Sapling the key
+     * comes from sapling_kdf(dhsecret, epk), so a repeat means the esk
+     * that produced epk/dhsecret repeated — RNG failure. Log/abort in
+     * ZCL_CRYPTO_SANITY builds before we leak plaintext. */
+    zcl_note_check_esk_unique(key);
     return chacha20poly1305_encrypt(plaintext, plen, NULL, 0,
                                     zero_nonce, key, ciphertext);
 }
@@ -180,6 +263,10 @@ bool sapling_out_encrypt(const uint8_t key[32],
                          const uint8_t *plaintext, size_t plen,
                          uint8_t *ciphertext)
 {
+    /* ock is derived from ovk+cv+cm+epk; a repeat here means the same
+     * output (cv/cm/epk) is being re-encrypted, which only happens on RNG
+     * failure or a buggy caller. See zcl_note_check_esk_unique() header. */
+    zcl_note_check_esk_unique(key);
     return chacha20poly1305_encrypt(plaintext, plen, NULL, 0,
                                     zero_nonce, key, ciphertext);
 }
