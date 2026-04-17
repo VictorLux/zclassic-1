@@ -2,6 +2,31 @@
  * Fr/Fs field arithmetic, Jubjub, BLS12-381, PRF, FF1 tests. */
 
 #include "test/test_helpers.h"
+#include <time.h>
+
+/* Reference bit-by-bit double-and-add for Jubjub scalar multiplication.
+ * Deliberately NOT constant-time — used only as a correctness oracle for
+ * the P1.12 constant-time jub_scalar_mul implementation. */
+static void jub_scalar_mul_naive(struct jub_point *r,
+                                 const struct jub_point *p,
+                                 const uint8_t scalar[32])
+{
+    struct jub_point acc;
+    jub_identity(&acc);
+    for (int bit = 255; bit >= 0; bit--) {
+        jub_double(&acc, &acc);
+        if ((scalar[bit / 8] >> (bit % 8)) & 1)
+            jub_add(&acc, &acc, p);
+    }
+    *r = acc;
+}
+
+static uint64_t monotonic_ns_now(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+}
 
 int test_sapling_crypto(void)
 {
@@ -258,6 +283,103 @@ int test_sapling_crypto(void)
         jub_to_bytes(out1, &P);
         jub_to_bytes(out2, &result);
         bool ok = (memcmp(out1, out2, 32) == 0);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* P1.12 correctness: windowed CT jub_scalar_mul vs bit-by-bit oracle.
+     * Covers corner cases (zero scalar, small/large scalars, nibble
+     * transitions) plus random vectors across the scalar range. */
+    printf("Jubjub scalar mul matches naive double-and-add (P1.12)... ");
+    {
+        uint8_t seed[32] = {17};
+        uint8_t pt_bytes[32];
+        sapling_ask_to_ak(seed, pt_bytes);
+        struct jub_point P;
+        bool ok = jub_from_bytes(&P, pt_bytes);
+
+        /* Deterministic mismatch would fail below; fixed seed keeps the
+         * test reproducible without wasting time on 10k samples. */
+        const int N_SAMPLES = 64;
+        uint64_t rng = 0xc3a4e2b19a71f5d7ULL;
+        for (int i = 0; ok && i < N_SAMPLES; i++) {
+            uint8_t scalar[32];
+            for (int j = 0; j < 32; j++) {
+                rng = rng * 6364136223846793005ULL + 1442695040888963407ULL;
+                scalar[j] = (uint8_t)(rng >> 56);
+            }
+            /* Force coverage of several edge nibbles. */
+            if (i == 0) memset(scalar, 0x00, 32);
+            if (i == 1) memset(scalar, 0xFF, 32);
+            if (i == 2) { memset(scalar, 0, 32); scalar[0] = 1; }
+            if (i == 3) { memset(scalar, 0, 32); scalar[31] = 0x80; }
+
+            struct jub_point r_ct, r_ref;
+            jub_scalar_mul(&r_ct, &P, scalar);
+            jub_scalar_mul_naive(&r_ref, &P, scalar);
+            uint8_t out_ct[32], out_ref[32];
+            jub_to_bytes(out_ct, &r_ct);
+            jub_to_bytes(out_ref, &r_ref);
+            if (memcmp(out_ct, out_ref, 32) != 0) ok = false;
+        }
+        if (ok) printf("OK (%d vectors)\n", N_SAMPLES);
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* P1.12 timing sanity: low-Hamming-weight vs high-Hamming-weight
+     * scalars should not differ materially in runtime. Pre-fix, the
+     * `if (nibble)` branch skipped adds for zero nibbles, so zero-heavy
+     * scalars ran ~25% faster. The new CT implementation always runs
+     * one add per nibble, so both scalars do identical work.
+     *
+     * The tolerance is deliberately generous because CI hosts are noisy
+     * and the twisted-Edwards field math still has minor value-dependent
+     * timing inside fr_add/fr_sub. A regression that reintroduces the
+     * branch would push the ratio well past 1.15 and trip this test. */
+    printf("Jubjub scalar mul timing vs scalar weight (P1.12)... ");
+    {
+        uint8_t seed[32] = {23};
+        uint8_t pt_bytes[32];
+        sapling_ask_to_ak(seed, pt_bytes);
+        struct jub_point P;
+        jub_from_bytes(&P, pt_bytes);
+
+        uint8_t lo_scalar[32];                       /* Hamming weight 1 */
+        memset(lo_scalar, 0, 32);
+        lo_scalar[0] = 0x01;
+        uint8_t hi_scalar[32];                       /* Hamming weight ~254 */
+        memset(hi_scalar, 0xFF, 32);
+        hi_scalar[31] = 0x0E;                        /* keep inside Fs range */
+
+        struct jub_point R;
+        const int WARMUP = 8;
+        const int ITERS = 200;
+        for (int i = 0; i < WARMUP; i++) jub_scalar_mul(&R, &P, lo_scalar);
+
+        /* Median-of-five per side to dampen scheduler noise. */
+        uint64_t lo_meds[5], hi_meds[5];
+        for (int batch = 0; batch < 5; batch++) {
+            uint64_t t0 = monotonic_ns_now();
+            for (int i = 0; i < ITERS; i++) jub_scalar_mul(&R, &P, lo_scalar);
+            lo_meds[batch] = monotonic_ns_now() - t0;
+
+            t0 = monotonic_ns_now();
+            for (int i = 0; i < ITERS; i++) jub_scalar_mul(&R, &P, hi_scalar);
+            hi_meds[batch] = monotonic_ns_now() - t0;
+        }
+        /* Simple insertion sort — five elements. */
+        for (int a = 0; a < 5; a++)
+            for (int b = a + 1; b < 5; b++) {
+                if (lo_meds[b] < lo_meds[a]) { uint64_t t = lo_meds[a]; lo_meds[a] = lo_meds[b]; lo_meds[b] = t; }
+                if (hi_meds[b] < hi_meds[a]) { uint64_t t = hi_meds[a]; hi_meds[a] = hi_meds[b]; hi_meds[b] = t; }
+            }
+        uint64_t lo = lo_meds[2], hi = hi_meds[2];
+        double ratio = (double)hi / (double)lo;
+        /* Fix asserts: high-weight path must not take >15% longer than
+         * low-weight. Pre-fix delta was ~25%, so 1.15 is a decisive gate. */
+        bool ok = (ratio <= 1.15) && (ratio >= 0.85);
+        printf("(lo=%.2fms hi=%.2fms ratio=%.3f) ",
+               (double)lo / 1e6, (double)hi / 1e6, ratio);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
