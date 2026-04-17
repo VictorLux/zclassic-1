@@ -46,7 +46,9 @@ static bool hex_to_bytes64(const char *hex, uint8_t out[64])
         int lv = (lo >= '0' && lo <= '9') ? lo - '0'
                : (lo >= 'a' && lo <= 'f') ? lo - 'a' + 10
                : (lo >= 'A' && lo <= 'F') ? lo - 'A' + 10 : -1;
-        if (hv < 0 || lv < 0) return false;
+        if (hv < 0 || lv < 0)
+            LOG_FAIL("sapling_params",
+                     "hex_to_bytes64: non-hex char at offset %zu", 2 * i);
         out[i] = (uint8_t)((hv << 4) | lv);
     }
     return true;
@@ -105,20 +107,35 @@ static size_t output_pk_len = 0;
 static uint8_t *read_file(const char *path, size_t *len)
 {
     FILE *f = fopen(path, "rb");
-    if (!f) return NULL;
+    if (!f)
+        LOG_NULL("sapling_params", "read_file: fopen failed: path=%s", path);
 
     fseek(f, 0, SEEK_END);
     long sz = ftell(f);
-    if (sz <= 0) { fclose(f); return NULL; }
+    if (sz <= 0) {
+        fclose(f);
+        LOG_NULL("sapling_params",
+                 "read_file: ftell reported non-positive size: path=%s sz=%ld",
+                 path, sz);
+    }
     fseek(f, 0, SEEK_SET);
 
     uint8_t *buf = zcl_malloc((size_t)sz, "params_file_buf");
-    if (!buf) { fclose(f); return NULL; }
+    if (!buf) {
+        fclose(f);
+        LOG_NULL("sapling_params",
+                 "read_file: zcl_malloc failed: path=%s size=%ld", path, sz);
+    }
 
     size_t rd = fread(buf, 1, (size_t)sz, f);
     fclose(f);
 
-    if (rd != (size_t)sz) { free(buf); return NULL; }
+    if (rd != (size_t)sz) {
+        free(buf);
+        LOG_NULL("sapling_params",
+                 "read_file: short read: path=%s expected=%ld got=%zu",
+                 path, sz, rd);
+    }
     *len = (size_t)sz;
     return buf;
 }
@@ -134,36 +151,52 @@ bool sapling_init_params(const char *params_dir)
     /* Sapling spend VK */
     snprintf(path, sizeof(path), "%s/sapling-spend.params", params_dir);
     data = read_file(path, &len);
-    if (!data) return false;
+    if (!data)
+        LOG_FAIL("sapling_params", "init: read_file failed for sapling-spend.params");
     if (!params_sha512_matches(data, len, SAPLING_SPEND_PARAMS_SHA512, path)) {
         free(data);
-        return false;
+        LOG_FAIL("sapling_params", "init: SHA-512 mismatch on sapling-spend.params");
     }
     bool ok = groth16_vk_read(&spend_vk, data, len);
     free(data);
-    if (!ok) return false;
+    if (!ok)
+        LOG_FAIL("sapling_params", "init: groth16_vk_read failed for spend VK");
 
     /* Sapling output VK */
     snprintf(path, sizeof(path), "%s/sapling-output.params", params_dir);
     data = read_file(path, &len);
-    if (!data) { free(spend_vk.ic); return false; }
+    if (!data) {
+        free(spend_vk.ic);
+        LOG_FAIL("sapling_params", "init: read_file failed for sapling-output.params");
+    }
     if (!params_sha512_matches(data, len, SAPLING_OUTPUT_PARAMS_SHA512, path)) {
-        free(data); free(spend_vk.ic); return false;
+        free(data); free(spend_vk.ic);
+        LOG_FAIL("sapling_params", "init: SHA-512 mismatch on sapling-output.params");
     }
     ok = groth16_vk_read(&output_vk, data, len);
     free(data);
-    if (!ok) { free(spend_vk.ic); return false; }
+    if (!ok) {
+        free(spend_vk.ic);
+        LOG_FAIL("sapling_params", "init: groth16_vk_read failed for output VK");
+    }
 
     /* Sprout Groth16 VK */
     snprintf(path, sizeof(path), "%s/sprout-groth16.params", params_dir);
     data = read_file(path, &len);
-    if (!data) { free(spend_vk.ic); free(output_vk.ic); return false; }
+    if (!data) {
+        free(spend_vk.ic); free(output_vk.ic);
+        LOG_FAIL("sapling_params", "init: read_file failed for sprout-groth16.params");
+    }
     if (!params_sha512_matches(data, len, SPROUT_GROTH16_PARAMS_SHA512, path)) {
-        free(data); free(spend_vk.ic); free(output_vk.ic); return false;
+        free(data); free(spend_vk.ic); free(output_vk.ic);
+        LOG_FAIL("sapling_params", "init: SHA-512 mismatch on sprout-groth16.params");
     }
     ok = groth16_vk_read(&sprout_groth16_vk, data, len);
     free(data);
-    if (!ok) { free(spend_vk.ic); free(output_vk.ic); return false; }
+    if (!ok) {
+        free(spend_vk.ic); free(output_vk.ic);
+        LOG_FAIL("sapling_params", "init: groth16_vk_read failed for sprout-groth16 VK");
+    }
 
     sapling_set_spend_vk(&spend_vk);
     sapling_set_output_vk(&output_vk);
