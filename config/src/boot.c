@@ -460,8 +460,28 @@ bool app_init(struct app_context *ctx)
     t_phase = boot_clock_ms();
     wallet_init(&g_wallet);
 
-    /* Load wallet from SQLite (node.db wallet_* tables) */
-    if (g_node_db.open && wallet_sqlite_open(&g_wallet_sqlite, g_node_db.db)) {
+    /* Load wallet from SQLite (node.db wallet_* tables).
+     *
+     * Use the rich-error open so any prepare failure carries a
+     * specific WSQL_* code + message + source location instead of
+     * the legacy silent `false`.  That legacy silence caused the
+     * 0.4 ZCL loss of 2026-04-12 — see WALLET_PERSISTENCE_PLAN §2.
+     *
+     * The old fallthrough (regenerate keypool on a node with
+     * pre-existing rows) is preserved here for merge compatibility
+     * with Agent 3's boot state machine; that rewrite replaces this
+     * flat `if` with an explicit STATE_D abort on open failure. */
+    struct zcl_result wsql_open_r = {0};
+    if (g_node_db.open) {
+        wsql_open_r = wallet_sqlite_open_r(&g_wallet_sqlite, g_node_db.db);
+        if (!wsql_open_r.ok) {
+            fprintf(stderr,
+                "wallet_sqlite_open failed: code=%d %s (%s:%d)\n",
+                wsql_open_r.code, wsql_open_r.message,
+                wsql_open_r.source_file, wsql_open_r.source_line);
+        }
+    }
+    if (wsql_open_r.ok) {
         wallet_sqlite_read_keys(&g_wallet_sqlite, &g_wallet);
         wallet_sqlite_read_txs(&g_wallet_sqlite, &g_wallet);
         wallet_rebuild_spent_set(&g_wallet);
