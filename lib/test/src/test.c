@@ -94,6 +94,11 @@ int main(void)
     failures += test_rpc_timeout();
     failures += test_wallet_keystore();
     failures += test_wallet_sqlite_enc();
+    { extern int test_zcl_result(void); failures += test_zcl_result(); }
+    { extern int test_wallet_persistence_cycle(void);
+      failures += test_wallet_persistence_cycle(); }
+    { extern int test_wallet_sqlite_open_errors(void);
+      failures += test_wallet_sqlite_open_errors(); }
     { extern int test_watch_only(void); failures += test_watch_only(); }
     { extern int test_coin_selection(void); failures += test_coin_selection(); }
     failures += test_disk_monitor();
