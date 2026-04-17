@@ -4,6 +4,7 @@
  * Replaces libsodium crypto_aead_chacha20poly1305_ietf_encrypt/decrypt. */
 
 #include "crypto/chacha20poly1305.h"
+#include "util/log_macros.h"
 #include <string.h>
 
 static uint32_t rotl32(uint32_t v, int n)
@@ -264,7 +265,9 @@ bool chacha20poly1305_encrypt(const uint8_t *plaintext, size_t plen,
     /* Use stack for small messages, which covers all Zcash use cases */
     uint8_t mac_data[2048];
     if (mac_len > sizeof(mac_data))
-        return false;
+        LOG_FAIL("chacha20poly1305",
+                 "encrypt: MAC scratch too small: need=%zu have=%zu (plen=%zu aad_len=%zu)",
+                 mac_len, sizeof(mac_data), plen, aad_len);
 
     size_t pos = 0;
     if (aad_len > 0) {
@@ -289,7 +292,9 @@ bool chacha20poly1305_decrypt(const uint8_t *ciphertext, size_t clen,
                                 uint8_t *plaintext)
 {
     if (clen < POLY1305_TAG_SIZE)
-        return false;
+        LOG_FAIL("chacha20poly1305",
+                 "decrypt: ciphertext shorter than Poly1305 tag: clen=%zu tag=%d",
+                 clen, POLY1305_TAG_SIZE);
 
     size_t plen = clen - POLY1305_TAG_SIZE;
 
@@ -307,7 +312,9 @@ bool chacha20poly1305_decrypt(const uint8_t *ciphertext, size_t clen,
 
     uint8_t mac_data[2048];
     if (mac_len > sizeof(mac_data))
-        return false;
+        LOG_FAIL("chacha20poly1305",
+                 "decrypt: MAC scratch too small: need=%zu have=%zu (plen=%zu aad_len=%zu)",
+                 mac_len, sizeof(mac_data), plen, aad_len);
 
     size_t pos = 0;
     if (aad_len > 0) {
@@ -324,12 +331,15 @@ bool chacha20poly1305_decrypt(const uint8_t *ciphertext, size_t clen,
     uint8_t computed_tag[16];
     poly1305_mac(mac_data, pos, poly_key, computed_tag);
 
-    /* Constant-time comparison */
+    /* Constant-time comparison. Tag mismatch is the expected path when an
+     * attacker tampers with ciphertext — do not log the tag itself. */
     uint8_t diff = 0;
     for (int i = 0; i < 16; i++)
         diff |= computed_tag[i] ^ ciphertext[plen + i];
     if (diff != 0)
-        return false;
+        LOG_FAIL("chacha20poly1305",
+                 "decrypt: Poly1305 tag mismatch (authentication failed): clen=%zu aad_len=%zu",
+                 clen, aad_len);
 
     /* Decrypt */
     chacha20_encrypt(key, 1, nonce, ciphertext, plen, plaintext);

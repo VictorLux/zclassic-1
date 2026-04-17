@@ -286,6 +286,7 @@ int test_block_pruning(void);
 int test_schema_migration(void);
 int test_db_migration_idempotent(void);
 int test_coins_view_atomicity(void);
+int test_make_lint_gates(void);
 int test_multisig(void);
 int test_mcp_fuzz(void);
 int test_rpc_auth_hardening(void);

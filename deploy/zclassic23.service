@@ -2,6 +2,8 @@
 Description=ZClassic23 Full Node + Block Explorer
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=3
 
 [Service]
 Type=simple
@@ -26,6 +28,35 @@ ExecStart=%h/zclassic23/zclassic23 \
     -showmetrics=0
 Restart=on-failure
 RestartSec=10
+
+# Give WAL flush + Tor shutdown a realistic budget. SIGTERM arrives,
+# zclassic23 drains the WAL, Tor drains its circuits. 300s > observed
+# worst-case shutdown (~60s) with headroom for slow disks.
+TimeoutStopSec=300
+
+# control-group ensures the embedded Tor pthread (and any helper
+# processes) die with the parent instead of lingering.
+KillMode=control-group
+
+# Memory pressure — drop OOMScoreAdjust so the kernel evicts other user
+# processes first. MemoryHigh=6G soft-caps RSS without the kill-switch
+# behavior of MemoryMax.
+OOMScoreAdjust=-500
+MemoryHigh=6G
+
+# Sandboxing. ProtectSystem=strict makes / read-only except the explicit
+# ReadWritePaths below. Tor writes its state inside vendor/tor/etc and
+# the datadir; nothing else.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=%h/.zclassic-c23 %h/zclassic23/vendor/tor/etc
+
+# PrivateTmp=yes gives the unit a unit-private /tmp — safer than
+# sharing /tmp with other services. Tor currently does not use /tmp for
+# sockets in our embedded build (dynhost is in-process), so this is
+# safe. If Tor ever regresses to a /tmp unix socket, drop this.
+PrivateTmp=yes
+
 StandardOutput=append:%h/.zclassic-c23/node.log
 StandardError=append:%h/.zclassic-c23/node.log
 

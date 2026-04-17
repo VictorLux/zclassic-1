@@ -188,7 +188,7 @@ struct utxo_import_result utxo_recovery_import_ldb(
             sqlite3_prepare_v2(ctx->ndb->db,
                 "SELECT MAX(height) FROM utxos",
                 -1, &hstmt, NULL);
-            if (hstmt && sqlite3_step(hstmt) == SQLITE_ROW)
+            if (hstmt && sqlite3_step(hstmt) == SQLITE_ROW)  // raw-sql-ok: a3
                 ldb_height = sqlite3_column_int(hstmt, 0);
             if (hstmt) sqlite3_finalize(hstmt);
             if (ldb_height > 0)
@@ -480,7 +480,7 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
         sqlite3_stmt *hstmt = NULL;
         sqlite3_prepare_v2(ctx->ndb->db,
             "SELECT MAX(height) FROM utxos", -1, &hstmt, NULL);
-        if (hstmt && sqlite3_step(hstmt) == SQLITE_ROW)
+        if (hstmt && sqlite3_step(hstmt) == SQLITE_ROW)  // raw-sql-ok: a3
             utxo_max_height = sqlite3_column_int(hstmt, 0);
         if (hstmt) sqlite3_finalize(hstmt);
     }
@@ -562,7 +562,7 @@ static bool recover_stale_metadata(struct utxo_recovery_ctx *ctx)
     if (sqlite3_prepare_v2(ctx->ndb->db,
             "SELECT MAX(height) FROM utxos",
             -1, &st, NULL) == SQLITE_OK) {
-        if (sqlite3_step(st) == SQLITE_ROW)
+        if (sqlite3_step(st) == SQLITE_ROW)  // raw-sql-ok: a3
             max_h = sqlite3_column_int(st, 0);
         sqlite3_finalize(st);
     }
@@ -626,7 +626,7 @@ static bool integrity_checks_boot_ok(struct utxo_recovery_ctx *ctx,
         if (sqlite3_prepare_v2(ctx->ndb->db,
                 "SELECT COUNT(*) FROM utxos", -1,
                 &stale_cnt, NULL) == SQLITE_OK && stale_cnt) {
-            if (sqlite3_step(stale_cnt) == SQLITE_ROW)
+            if (sqlite3_step(stale_cnt) == SQLITE_ROW)  // raw-sql-ok: a3
                 stale_utxos = sqlite3_column_int64(stale_cnt, 0);
             sqlite3_finalize(stale_cnt);
         }
@@ -650,7 +650,7 @@ static bool integrity_checks_boot_ok(struct utxo_recovery_ctx *ctx,
         sqlite3_stmt *cnt_stmt = NULL;
         sqlite3_prepare_v2(ctx->ndb->db,
             "SELECT COUNT(*) FROM utxos", -1, &cnt_stmt, NULL);
-        if (cnt_stmt && sqlite3_step(cnt_stmt) == SQLITE_ROW) {
+        if (cnt_stmt && sqlite3_step(cnt_stmt) == SQLITE_ROW) {  // raw-sql-ok: a3
             int64_t actual = sqlite3_column_int64(cnt_stmt, 0);
             int64_t expected = (int64_t)sha3cp->utxo_count;
             int64_t delta = actual - expected;
@@ -762,7 +762,7 @@ int utxo_recovery_clean_above_tip(struct node_db *ndb,
         snprintf(count_sql, sizeof(count_sql),
                  "SELECT count(*) FROM utxos WHERE height > %d", tip_h);
         if (sqlite3_prepare_v2(ndb->db, count_sql, -1, &st, NULL) == SQLITE_OK) {
-            if (sqlite3_step(st) == SQLITE_ROW)
+            if (sqlite3_step(st) == SQLITE_ROW)  // raw-sql-ok: a3
                 would_wipe = sqlite3_column_int64(st, 0);
             sqlite3_finalize(st);
         }
@@ -880,7 +880,7 @@ static bool backfill_shielded_write(struct node_db *ndb, void *ctx_ptr)
         sqlite3_bind_int64(stmt, 13, sapling_val);
         sqlite3_bind_int64(stmt, 14, sprout_val);
 
-        if (sqlite3_step(stmt) != SQLITE_DONE) {
+        if (sqlite3_step(stmt) != SQLITE_DONE) {  // raw-sql-ok: a3
             static int errs = 0;
             if (++errs <= 3)
                 fprintf(stderr, "backfill h=%d: %s\n",

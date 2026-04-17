@@ -8,6 +8,96 @@ int test_sapling(void)
 {
     int failures = 0;
 
+    /* ── Fail-closed guards (2026-04-17 crypto hardening) ──
+     * These must run BEFORE the real sapling_init_params call below, so
+     * that sapling_spend_vk / sapling_output_vk are still NULL and so
+     * that params_loaded is still false. */
+
+    printf("sapling_check_spend rejects NULL spend_vk (AGENT-3 P1.3)... ");
+    {
+        /* VKs must be NULL at this point (no init has run yet). Any valid-
+         * looking spend payload would otherwise flow through and return
+         * true silently under the old fail-open path. */
+        sapling_set_spend_vk(NULL);
+        sapling_set_output_vk(NULL);
+
+        struct sapling_verification_ctx ctx;
+        sapling_verification_ctx_init(&ctx);
+
+        uint8_t cv[32], anchor[32], nullifier[32], rk[32];
+        uint8_t zkproof[192], spend_auth_sig[64], sighash[32];
+        memset(cv, 0x11, 32);
+        memset(anchor, 0x22, 32);
+        memset(nullifier, 0x33, 32);
+        memset(rk, 0x44, 32);
+        memset(zkproof, 0x55, 192);
+        memset(spend_auth_sig, 0x66, 64);
+        memset(sighash, 0x77, 32);
+
+        bool ok = !sapling_check_spend(&ctx, cv, anchor, nullifier, rk,
+                                        zkproof, spend_auth_sig, sighash);
+        if (ok) printf("OK\n");
+        else { printf("FAIL (accepted spend with NULL vk)\n"); failures++; }
+    }
+
+    printf("sapling_check_output rejects NULL output_vk (AGENT-3 P1.3)... ");
+    {
+        /* Same reasoning: output VK still NULL. */
+        struct sapling_verification_ctx ctx;
+        sapling_verification_ctx_init(&ctx);
+
+        uint8_t cv[32], cm[32], epk[32], zkproof[192];
+        memset(cv, 0x11, 32);
+        memset(cm, 0x22, 32);
+        memset(epk, 0x33, 32);
+        memset(zkproof, 0x44, 192);
+
+        bool ok = !sapling_check_output(&ctx, cv, cm, epk, zkproof);
+        if (ok) printf("OK\n");
+        else { printf("FAIL (accepted output with NULL vk)\n"); failures++; }
+    }
+
+    printf("sapling_init_params rejects tampered params (AGENT-3 P1.4)... ");
+    {
+        /* Build a temp dir with bogus params files; each file exists but
+         * its content hashes to a different SHA-512 than the baked-in
+         * constants. sapling_init_params must fail BEFORE attempting to
+         * parse groth16 structure. */
+        char tmpdir[] = "/tmp/zcl_tampered_params_XXXXXX";
+        const char *dir = mkdtemp(tmpdir);
+        bool ok = false;
+        if (dir) {
+            const char *files[] = {
+                "sapling-spend.params",
+                "sapling-output.params",
+                "sprout-groth16.params",
+                "sprout-verifying.key",
+            };
+            for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
+                char path[512];
+                snprintf(path, sizeof(path), "%s/%s", dir, files[i]);
+                FILE *f = fopen(path, "wb");
+                if (f) {
+                    const char junk[] = "tampered params file — not real Zcash data";
+                    fwrite(junk, 1, sizeof(junk) - 1, f);
+                    fclose(f);
+                }
+            }
+            bool got = sapling_init_params(dir);
+            ok = !got; /* must refuse tampered params */
+
+            /* Cleanup: unlink files, rmdir. */
+            for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
+                char path[512];
+                snprintf(path, sizeof(path), "%s/%s", dir, files[i]);
+                unlink(path);
+            }
+            rmdir(dir);
+        }
+        if (ok) printf("OK\n");
+        else { printf("FAIL (accepted tampered params)\n"); failures++; }
+    }
+
     printf("jubjub_to_scalar zero... ");
     {
         unsigned char input[64];
@@ -2060,6 +2150,26 @@ int test_sapling(void)
 
         if (ok && !bad_ok) printf("OK\n");
         else { printf("FAIL (valid=%d, tampered=%d)\n", ok, bad_ok); failures++; }
+
+        /* AGENT-3 P1.9: non-canonical S (S >= Fs order) must be rejected.
+         * Take the valid signature, overwrite S with the Fs order bytes
+         * themselves — numerically valid as 32 LE bytes, but not a
+         * canonical scalar. Old code would feed this into the point math
+         * and might accept it; new code rejects via fs_from_bytes. */
+        printf("redjubjub rejects non-canonical S >= Fs (P1.9)... ");
+        {
+            /* Fs = 0x0e7db4ea6533afa906673b0101343b00a6682093ccc81082d0970e5ed6f72cb7
+             * LE bytes = above byte sequence reversed. */
+            static const uint8_t FS_ORDER_LE[32] = {
+                0xb7, 0x2c, 0xf7, 0xd6, 0x5e, 0x0e, 0x97, 0xd0,
+                0x82, 0x10, 0xc8, 0xcc, 0x93, 0x20, 0x68, 0xa6,
+                0x00, 0x3b, 0x34, 0x01, 0x01, 0x3b, 0x67, 0x06,
+                0xa9, 0xaf, 0x33, 0x65, 0xea, 0xb4, 0x7d, 0x0e,
+            };
+            bool rejected = !redjubjub_verify(ak, msg, 64, rbar, FS_ORDER_LE, 5);
+            if (rejected) printf("OK\n");
+            else { printf("FAIL (accepted S == Fs order)\n"); failures++; }
+        }
     }
 
     /* --- BLS12-381 Fp field --- */

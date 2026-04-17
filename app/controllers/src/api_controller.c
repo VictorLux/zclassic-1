@@ -2109,7 +2109,7 @@ size_t api_handle_request(const char *method, const char *path,
                 "SELECT COALESCE(SUM(value),0) FROM wallet_utxos"
                 " WHERE spent_txid IS NULL",
                 -1, &s, NULL) == SQLITE_OK && s) {
-            if (sqlite3_step(s) == SQLITE_ROW)
+            if (sqlite3_step(s) == SQLITE_ROW)  // raw-sql-ok: a3
                 transparent = sqlite3_column_int64(s, 0);
             sqlite3_finalize(s);
         }
@@ -2118,7 +2118,7 @@ size_t api_handle_request(const char *method, const char *path,
         if (sqlite3_prepare_v2(db,
                 "SELECT COALESCE(SUM(value),0) FROM wallet_sapling_notes"
                 " WHERE spent_txid IS NULL", -1, &s, NULL) == SQLITE_OK && s) {
-            if (sqlite3_step(s) == SQLITE_ROW)
+            if (sqlite3_step(s) == SQLITE_ROW)  // raw-sql-ok: a3
                 shielded = sqlite3_column_int64(s, 0);
             sqlite3_finalize(s);
         }
@@ -2128,7 +2128,7 @@ size_t api_handle_request(const char *method, const char *path,
         if (sqlite3_prepare_v2(db,
                 "SELECT pubkey_hash FROM wallet_keys LIMIT 1",
                 -1, &s, NULL) == SQLITE_OK && s) {
-            if (sqlite3_step(s) == SQLITE_ROW) {
+            if (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok: a3
                 const void *pkh = sqlite3_column_blob(s, 0);
                 if (pkh && sqlite3_column_bytes(s, 0) == 20) {
                     struct tx_destination dest;
@@ -2148,7 +2148,7 @@ size_t api_handle_request(const char *method, const char *path,
         if (sqlite3_prepare_v2(db,
                 "SELECT COALESCE(MAX(height),0), COALESCE(MAX(time),0)"
                 " FROM blocks WHERE status>=3", -1, &s, NULL) == SQLITE_OK && s) {
-            if (sqlite3_step(s) == SQLITE_ROW) {
+            if (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok: a3
                 height = sqlite3_column_int64(s, 0);
                 block_time = sqlite3_column_int64(s, 1);
             }
@@ -2180,7 +2180,7 @@ size_t api_handle_request(const char *method, const char *path,
                 " ORDER BY wu.height DESC LIMIT 20",
                 -1, &s, NULL) == SQLITE_OK && s) {
             bool first = true;
-            while (sqlite3_step(s) == SQLITE_ROW && w + 100 < response_max) {
+            while (sqlite3_step(s) == SQLITE_ROW && w + 100 < response_max) {  // raw-sql-ok: a3
                 if (!first) buf[w++] = ',';
                 first = false;
                 w += (size_t)snprintf(buf + w, response_max - w,

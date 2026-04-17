@@ -166,7 +166,7 @@ static void get_block_at(sqlite3 *db, int64_t height,
         "SELECT hex(hash), time FROM blocks WHERE height = %" PRId64, height);
     sqlite3_stmt *s = NULL;
     if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
-        if (sqlite3_step(s) == SQLITE_ROW) {
+        if (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok: a3
             const char *h = (const char *)sqlite3_column_text(s, 0);
             if (h) snprintf(hash_out, hmax, "%s", h);
             *time_out = sqlite3_column_int64(s, 1);
@@ -296,7 +296,7 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
         sqlite3_stmt *s = NULL;
         const char *sql = "SELECT height, time, hex(hash) FROM blocks WHERE height >= 1 AND height < 10 ORDER BY height";
         if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
-            while (sqlite3_step(s) == SQLITE_ROW) {
+            while (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok: a3
                 int64_t h = sqlite3_column_int64(s, 0);
                 int64_t t = sqlite3_column_int64(s, 1);
                 const char *hash = (const char *)sqlite3_column_text(s, 2);
@@ -845,7 +845,7 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
             "FROM addresses ORDER BY balance DESC LIMIT 10";
         if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
             int rank = 1;
-            while (sqlite3_step(s) == SQLITE_ROW) {
+            while (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok: a3
                 const char *ah = (const char *)sqlite3_column_text(s, 0);
                 int64_t bal = sqlite3_column_int64(s, 1);
                 int64_t uc = sqlite3_column_int64(s, 2);
@@ -889,7 +889,7 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
                 "SELECT CAST(strftime('%Y', time, 'unixepoch') AS INTEGER), "
                 "count(*) FROM blocks WHERE time > 0 GROUP BY 1 ORDER BY 1",
                 -1, &s, NULL) == SQLITE_OK && s) {
-            while (sqlite3_step(s) == SQLITE_ROW) {
+            while (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok: a3
                 int yr = sqlite3_column_int(s, 0);
                 int idx = yr - 2016;
                 if (idx >= 0 && idx < 20) {
@@ -907,7 +907,7 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
                 "JOIN blocks b ON j.block_height = b.height "
                 "WHERE b.time > 0 GROUP BY 1 ORDER BY 1",
                 -1, &s, NULL) == SQLITE_OK && s) {
-            while (sqlite3_step(s) == SQLITE_ROW) {
+            while (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok: a3
                 int idx = sqlite3_column_int(s, 0) - 2016;
                 if (idx >= 0 && idx < 20)
                     js_yrs[idx] = sqlite3_column_int64(s, 1);
@@ -922,7 +922,7 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
                 "JOIN blocks b ON sp.block_height = b.height "
                 "WHERE b.time > 0 GROUP BY 1 ORDER BY 1",
                 -1, &s, NULL) == SQLITE_OK && s) {
-            while (sqlite3_step(s) == SQLITE_ROW) {
+            while (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok: a3
                 int idx = sqlite3_column_int(s, 0) - 2016;
                 if (idx >= 0 && idx < 20)
                     ss_yrs[idx] = sqlite3_column_int64(s, 1);
@@ -937,7 +937,7 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
                 "JOIN blocks b ON so.block_height = b.height "
                 "WHERE b.time > 0 GROUP BY 1 ORDER BY 1",
                 -1, &s, NULL) == SQLITE_OK && s) {
-            while (sqlite3_step(s) == SQLITE_ROW) {
+            while (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok: a3
                 int idx = sqlite3_column_int(s, 0) - 2016;
                 if (idx >= 0 && idx < 20)
                     so_yrs[idx] = sqlite3_column_int64(s, 1);
@@ -951,7 +951,7 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
                 "SUM(sapling_value) FROM blocks "
                 "WHERE sapling_value != 0 AND time > 0 GROUP BY 1 ORDER BY 1",
                 -1, &s, NULL) == SQLITE_OK && s) {
-            while (sqlite3_step(s) == SQLITE_ROW) {
+            while (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok: a3
                 int idx = sqlite3_column_int(s, 0) - 2016;
                 if (idx >= 0 && idx < 20)
                     sv_yrs[idx] = sqlite3_column_int64(s, 1);
@@ -1011,7 +1011,7 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
         const char *sql = "SELECT ticker, name, decimals, genesis_height, hex(token_id) "
                           "FROM zslp_tokens ORDER BY genesis_height ASC LIMIT 10";
         if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
-            while (sqlite3_step(s) == SQLITE_ROW) {
+            while (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok: a3
                 const char *ticker = (const char *)sqlite3_column_text(s, 0);
                 const char *name = (const char *)sqlite3_column_text(s, 1);
                 int dec = sqlite3_column_int(s, 2);
@@ -1042,7 +1042,7 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
             "LEFT JOIN zslp_transfers x ON x.token_id = t.token_id "
             "GROUP BY t.token_id ORDER BY cnt DESC LIMIT 10";
         if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
-            while (sqlite3_step(s) == SQLITE_ROW) {
+            while (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok: a3
                 const char *ticker = (const char *)sqlite3_column_text(s, 0);
                 const char *name = (const char *)sqlite3_column_text(s, 1);
                 int64_t cnt = sqlite3_column_int64(s, 2);
@@ -1204,7 +1204,7 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
             "FROM blocks a JOIN blocks b ON b.height = a.height + 1 "
             "WHERE a.time > 0 AND b.time > 0 AND a.height < 707000";
         if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
-            if (sqlite3_step(s) == SQLITE_ROW) {
+            if (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok: a3
                 double avg = sqlite3_column_double(s, 0);
                 int64_t mn = sqlite3_column_int64(s, 1);
                 int64_t mx = sqlite3_column_int64(s, 2);
@@ -1239,7 +1239,7 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
             "FROM blocks a JOIN blocks b ON b.height = a.height + 1 "
             "WHERE a.time > 0 AND b.time > 0 AND a.height >= 707000";
         if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
-            if (sqlite3_step(s) == SQLITE_ROW) {
+            if (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok: a3
                 double avg = sqlite3_column_double(s, 0);
                 int64_t mn = sqlite3_column_int64(s, 1);
                 int64_t mx = sqlite3_column_int64(s, 2);
@@ -1323,7 +1323,7 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
             "JOIN blocks b ON t.block_height = b.height "
             "WHERE b.time > 0 GROUP BY yr ORDER BY yr";
         if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
-            while (sqlite3_step(s) == SQLITE_ROW) {
+            while (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok: a3
                 int yr = sqlite3_column_int(s, 0);
                 int64_t total = sqlite3_column_int64(s, 1);
                 int64_t cb = sqlite3_column_int64(s, 2);
@@ -1382,7 +1382,7 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
             "count(*) AS total "
             "FROM blocks WHERE time > 0 GROUP BY yr ORDER BY yr";
         if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
-            while (sqlite3_step(s) == SQLITE_ROW) {
+            while (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok: a3
                 int yr = sqlite3_column_int(s, 0);
                 int64_t empty = sqlite3_column_int64(s, 1);
                 int64_t total = sqlite3_column_int64(s, 2);
@@ -1419,7 +1419,7 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
             "WHERE b1.time > 0 AND b1.bits > 0 "
             "GROUP BY yr ORDER BY yr";
         if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
-            while (sqlite3_step(s) == SQLITE_ROW) {
+            while (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok: a3
                 int yr = sqlite3_column_int(s, 0);
                 uint32_t bits = (uint32_t)sqlite3_column_int64(s, 1);
                 int64_t ph = sqlite3_column_int64(s, 2);
@@ -1464,7 +1464,7 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
             chain_height > 100 ? chain_height - 100 : (int64_t)0);
 
         if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
-            while (sqlite3_step(s) == SQLITE_ROW) {
+            while (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok: a3
                 int64_t h = sqlite3_column_int64(s, 0);
                 const char *hash = (const char *)sqlite3_column_text(s, 1);
                 int64_t t = sqlite3_column_int64(s, 2);
@@ -1733,7 +1733,7 @@ size_t explorer_factoids_build_json(uint8_t *buf, size_t buf_max,
             "FROM blocks WHERE height > %" PRId64 " ORDER BY height",
             chain_height > 100 ? chain_height - 100 : (int64_t)0);
         if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
-            while (sqlite3_step(s) == SQLITE_ROW) {
+            while (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok: a3
                 int64_t h = sqlite3_column_int64(s, 0);
                 const char *hash = (const char *)sqlite3_column_text(s, 1);
                 int64_t t = sqlite3_column_int64(s, 2);

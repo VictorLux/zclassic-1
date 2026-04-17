@@ -167,6 +167,34 @@ int test_crypto(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    /* AGENT-3 P1.8: non-canonical S (S >= L) must be rejected per
+     * RFC 8032 §5.1.7 and Zcash consensus. Take a valid RFC 8032 vector
+     * and overwrite S with the Ed25519 group order L itself — numerically
+     * valid 32-byte LE but out of canonical range. Old code skipped this
+     * and could split consensus with zcashd on malleable sigs. */
+    printf("Ed25519 verify rejects non-canonical S >= L (P1.8)... ");
+    {
+        uint8_t pk[32], sig[64];
+        test_hex_to_bytes("d75a980182b10ab7d54bfed3c964073a"
+                          "0ee172f3daa62325af021a68f707511a", pk, 32);
+        test_hex_to_bytes("e5564300c360ac729086e2cc806e828a"
+                          "84877f1eb8e5d974d873e06522490155"
+                          "5fb8821590a33bacc61e39701cf9b46b"
+                          "d25bf5f0595bbe24655141438e7a100b", sig, 64);
+
+        /* Replace S (sig[32..63]) with L (group order, 32 LE bytes). */
+        static const uint8_t L_LE[32] = {
+            0xed, 0xd3, 0xf5, 0x5c, 0x1a, 0x63, 0x12, 0x58,
+            0xd6, 0x9c, 0xf7, 0xa2, 0xde, 0xf9, 0xde, 0x14,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10,
+        };
+        memcpy(sig + 32, L_LE, 32);
+        bool ok = !ed25519_verify(sig, NULL, 0, pk);
+        if (ok) printf("OK\n");
+        else { printf("FAIL (accepted S == L)\n"); failures++; }
+    }
+
     /* PBKDF2-HMAC-SHA256 RFC 6070 test vectors. */
     printf("PBKDF2-HMAC-SHA256 RFC 6070 c=1 dkLen=32... ");
     {

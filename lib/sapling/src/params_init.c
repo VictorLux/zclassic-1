@@ -8,10 +8,89 @@
 #include "sapling/sapling.h"
 #include "sapling/sprout.h"
 #include "chain/chainparams.h"
+#include "crypto/sha512.h"
+#include "util/log_macros.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "util/safe_alloc.h"
+
+/* Expected SHA-512 digests of the full Zcash parameter files, as produced
+ * by Zcash's canonical fetch-params.sh distribution (MPC-ceremony output,
+ * deterministic across downloads — every correctly-fetched file has these
+ * hashes). Baked in here so the integrity check cannot be disabled at
+ * runtime; if they fail to match, the param files on disk were tampered
+ * with and the node refuses to start rather than feed unknown params into
+ * Groth16/PHGR13 verification. */
+#define SAPLING_SPEND_PARAMS_SHA512                                          \
+    "320fbb5754c8b3f4ecb3dd4c2e3dbe1d138c4b343f073c7e31612d26fe769cdb"       \
+    "a8edab426a7f2c42e317bebdb2ca6f73af1312affa1fcf599a31d499ad4cb4e5"
+#define SAPLING_OUTPUT_PARAMS_SHA512                                         \
+    "a7c87f52c0c1eb05b4da1e1e70d986bde95a2a74047b0679d0163ade7ced3cbf"       \
+    "93c1c7e3954416e5baacff614e1d0d5dfaed7b9b7d3141fa595259b23c32f152"
+#define SPROUT_GROTH16_PARAMS_SHA512                                         \
+    "20bc1f6bd89d0321b90a3f1b7e2050a7dafb427e86e7ef33b0b7a5c06077f5bf"       \
+    "5695846952eac2b6231222df633e258682e9b6e2545f732c30fd76ae230ac65d"
+
+/* Parse a 128-char lowercase hex string into 64 bytes. Returns false on
+ * any malformed input. Only used at startup on static strings, so no
+ * constant-time requirement. */
+static bool hex_to_bytes64(const char *hex, uint8_t out[64])
+{
+    for (size_t i = 0; i < 64; i++) {
+        int hi = hex[2 * i];
+        int lo = hex[2 * i + 1];
+        int hv = (hi >= '0' && hi <= '9') ? hi - '0'
+               : (hi >= 'a' && hi <= 'f') ? hi - 'a' + 10
+               : (hi >= 'A' && hi <= 'F') ? hi - 'A' + 10 : -1;
+        int lv = (lo >= '0' && lo <= '9') ? lo - '0'
+               : (lo >= 'a' && lo <= 'f') ? lo - 'a' + 10
+               : (lo >= 'A' && lo <= 'F') ? lo - 'A' + 10 : -1;
+        if (hv < 0 || lv < 0) return false;
+        out[i] = (uint8_t)((hv << 4) | lv);
+    }
+    return true;
+}
+
+/* Compute SHA-512 of a buffer and compare against the expected hex digest
+ * in constant time. On mismatch, print expected/actual and return false so
+ * startup fails loud — parameter-file tampering is consensus-critical. */
+static bool params_sha512_matches(const uint8_t *data, size_t len,
+                                   const char *expected_hex,
+                                   const char *path)
+{
+    uint8_t got[64];
+    struct sha512_ctx ctx;
+    sha512_init(&ctx);
+    sha512_write(&ctx, data, len);
+    sha512_finalize(&ctx, got);
+
+    uint8_t want[64];
+    if (!hex_to_bytes64(expected_hex, want)) {
+        fprintf(stderr, "[sapling] %s:%d %s(): "
+                "internal: malformed expected SHA-512 literal for %s\n",
+                __FILE__, __LINE__, __func__, path);
+        return false;
+    }
+
+    /* Constant-time comparison — not strictly needed here (no timing
+     * oracle on param files) but cheap insurance. */
+    uint32_t diff = 0;
+    for (int i = 0; i < 64; i++) diff |= (uint32_t)(got[i] ^ want[i]);
+    if (diff != 0) {
+        char got_hex[129], want_hex[129];
+        for (int i = 0; i < 64; i++) {
+            snprintf(got_hex + 2 * i, 3, "%02x", got[i]);
+            snprintf(want_hex + 2 * i, 3, "%02x", want[i]);
+        }
+        fprintf(stderr, "[sapling] %s:%d %s(): "
+                "params file SHA-512 mismatch: path=%s\n"
+                "  expected=%s\n  actual  =%s\n",
+                __FILE__, __LINE__, __func__, path, want_hex, got_hex);
+        return false;
+    }
+    return true;
+}
 
 static struct groth16_vk spend_vk;
 static struct groth16_vk output_vk;
@@ -56,6 +135,10 @@ bool sapling_init_params(const char *params_dir)
     snprintf(path, sizeof(path), "%s/sapling-spend.params", params_dir);
     data = read_file(path, &len);
     if (!data) return false;
+    if (!params_sha512_matches(data, len, SAPLING_SPEND_PARAMS_SHA512, path)) {
+        free(data);
+        return false;
+    }
     bool ok = groth16_vk_read(&spend_vk, data, len);
     free(data);
     if (!ok) return false;
@@ -64,6 +147,9 @@ bool sapling_init_params(const char *params_dir)
     snprintf(path, sizeof(path), "%s/sapling-output.params", params_dir);
     data = read_file(path, &len);
     if (!data) { free(spend_vk.ic); return false; }
+    if (!params_sha512_matches(data, len, SAPLING_OUTPUT_PARAMS_SHA512, path)) {
+        free(data); free(spend_vk.ic); return false;
+    }
     ok = groth16_vk_read(&output_vk, data, len);
     free(data);
     if (!ok) { free(spend_vk.ic); return false; }
@@ -72,6 +158,9 @@ bool sapling_init_params(const char *params_dir)
     snprintf(path, sizeof(path), "%s/sprout-groth16.params", params_dir);
     data = read_file(path, &len);
     if (!data) { free(spend_vk.ic); free(output_vk.ic); return false; }
+    if (!params_sha512_matches(data, len, SPROUT_GROTH16_PARAMS_SHA512, path)) {
+        free(data); free(spend_vk.ic); free(output_vk.ic); return false;
+    }
     ok = groth16_vk_read(&sprout_groth16_vk, data, len);
     free(data);
     if (!ok) { free(spend_vk.ic); free(output_vk.ic); return false; }
@@ -155,11 +244,11 @@ bool sapling_init_params(const char *params_dir)
 
         zclassic_init_zksnark_params(
             (const uint8_t *)spend_path, strlen(spend_path),
-            "8270785a1a0d0bc77196f000ee6d221c9c9894f55307bd9357c3f0105d31ca63991ab91324160d8f53e2bbd3c2633a6eb8bdf5205d822e7f3f73edac51b2b70c",
+            SAPLING_SPEND_PARAMS_SHA512,
             (const uint8_t *)output_path2, strlen(output_path2),
-            "657e3d38dbb5cb5e7dd2970e8b03d69b4787dd907285b5a7f0790dcc8072f60bf593b32cc2d1c030e00ff5ae64bf84c5c3beb84ddc841d48264b4a171744d028",
+            SAPLING_OUTPUT_PARAMS_SHA512,
             (const uint8_t *)sprout_path, strlen(sprout_path),
-            "e9b238411bd6c0ec4791e9d04245ec350c9c5744f5610dfcce4365d5ca49dfefd5054e371842b3f88fa1b9d7e8e075249b3ebabd167fa8b0f3161292d36c180a");
+            SPROUT_GROTH16_PARAMS_SHA512);
         printf("native C23 prover zkSNARK params initialized.\n");
     }
 

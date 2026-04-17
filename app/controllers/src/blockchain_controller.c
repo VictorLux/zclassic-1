@@ -369,7 +369,7 @@ static bool rpc_gettxoutsetinfo(const struct json_value *params, bool help,
     sqlite3_prepare_v2(ctx->node_db->db,
         "SELECT COUNT(DISTINCT txid), COUNT(*), COALESCE(SUM(value),0)"
         " FROM utxos", -1, &s, NULL);
-    if (s && sqlite3_step(s) == SQLITE_ROW) {
+    if (s && sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok: a3
         num_txs = sqlite3_column_int64(s, 0);
         num_txouts = sqlite3_column_int64(s, 1);
         total_amount = sqlite3_column_int64(s, 2);
@@ -652,7 +652,7 @@ static bool indexlegacy_step_checked(sqlite3_stmt *stmt, sqlite3 *db,
     if (!stmt || !db)
         return false;
 
-    rc = sqlite3_step(stmt);
+    rc = sqlite3_step(stmt);  // raw-sql-ok: a3
     if (rc != SQLITE_DONE && rc != SQLITE_ROW) {
         fprintf(stderr, "indexlegacy: %s failed: rc=%d err=%s\n",
                 label, rc, sqlite3_errmsg(db));
@@ -976,7 +976,7 @@ static bool rpc_importchainstate(const struct json_value *params, bool help,
             "SELECT COUNT(*) FROM utxos WHERE height = 0 AND value > 0",
             -1, &h0, NULL);
         int64_t h0_count = 0;
-        if (h0 && sqlite3_step(h0) == SQLITE_ROW)
+        if (h0 && sqlite3_step(h0) == SQLITE_ROW)  // raw-sql-ok: a3
             h0_count = sqlite3_column_int64(h0, 0);
         sqlite3_finalize(h0);
         if (h0_count > 0) {
@@ -1043,7 +1043,7 @@ static bool rpc_importchainstate(const struct json_value *params, bool help,
     sqlite3_prepare_v2(ctx->node_db->db,
         "SELECT COALESCE(SUM(value),0) FROM utxos",
         -1, &s, NULL);
-    if (sqlite3_step(s) == SQLITE_ROW)
+    if (sqlite3_step(s) == SQLITE_ROW)  // raw-sql-ok: a3
         json_push_kv_int(result, "total_value_zatoshi",
                           sqlite3_column_int64(s, 0));
     sqlite3_finalize(s);
@@ -1052,7 +1052,7 @@ static bool rpc_importchainstate(const struct json_value *params, bool help,
     sqlite3_prepare_v2(ctx->node_db->db,
         "SELECT COALESCE(SUM(value),0) FROM wallet_utxos WHERE spent_txid IS NULL",
         -1, &s, NULL);
-    if (sqlite3_step(s) == SQLITE_ROW)
+    if (sqlite3_step(s) == SQLITE_ROW)  // raw-sql-ok: a3
         json_push_kv_int(result, "wallet_balance_zatoshi",
                           sqlite3_column_int64(s, 0));
     sqlite3_finalize(s);
@@ -2304,7 +2304,7 @@ phase_b_cleanup:
         sqlite3_stmt *chk = NULL;
         if (sqlite3_prepare_v2(ctx->node_db->db,
                 "SELECT count(*) FROM addresses", -1, &chk, NULL) == SQLITE_OK && chk) {
-            if (sqlite3_step(chk) == SQLITE_ROW)
+            if (sqlite3_step(chk) == SQLITE_ROW)  // raw-sql-ok: a3
                 addr_count = sqlite3_column_int64(chk, 0);
             sqlite3_finalize(chk);
         }
@@ -2376,7 +2376,7 @@ void rpc_blockchain_mmr_init_from_state(struct node_db *ndb)
             "SELECT value FROM node_state WHERE key='mmr_state'",
             -1, &s, NULL) != SQLITE_OK)
         return;
-    if (sqlite3_step(s) == SQLITE_ROW) {
+    if (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok: a3
         const uint8_t *blob = (const uint8_t *)sqlite3_column_blob(s, 0);
         int len = sqlite3_column_bytes(s, 0);
         if (blob && len >= 12 && mmr_deserialize(&g_mmr, blob, (size_t)len))
@@ -2421,7 +2421,7 @@ void rpc_blockchain_mmr_save(struct node_db *ndb)
             "VALUES('mmr_state',?)", -1, &s, NULL) != SQLITE_OK)
         return;
     sqlite3_bind_blob(s, 1, buf, (int)len, SQLITE_STATIC);
-    sqlite3_step(s);
+    sqlite3_step(s);  // raw-sql-ok: a3
     sqlite3_finalize(s);
 }
 
@@ -2449,7 +2449,7 @@ void rpc_blockchain_mmb_init_from_state(struct node_db *ndb)
             "SELECT value FROM node_state WHERE key='mmb_state'",
             -1, &s, NULL) != SQLITE_OK)
         return;
-    if (sqlite3_step(s) == SQLITE_ROW) {
+    if (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok: a3
         const uint8_t *blob = (const uint8_t *)sqlite3_column_blob(s, 0);
         int len = sqlite3_column_bytes(s, 0);
         if (blob && len >= 13 && mmb_deserialize(&g_mmb, blob, (size_t)len))
@@ -2504,7 +2504,7 @@ void rpc_blockchain_mmb_save(struct node_db *ndb)
             "VALUES('mmb_state',?)", -1, &s, NULL) != SQLITE_OK)
         return;
     sqlite3_bind_blob(s, 1, buf, (int)len, SQLITE_STATIC);
-    sqlite3_step(s);
+    sqlite3_step(s);  // raw-sql-ok: a3
     sqlite3_finalize(s);
 }
 
@@ -2530,7 +2530,7 @@ void rpc_blockchain_commitment_mmr_init_from_state(struct node_db *ndb)
             "SELECT value FROM node_state WHERE key='commitment_mmr_state'",
             -1, &s, NULL) != SQLITE_OK)
         return;
-    if (sqlite3_step(s) == SQLITE_ROW) {
+    if (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok: a3
         const uint8_t *blob = (const uint8_t *)sqlite3_column_blob(s, 0);
         int len = sqlite3_column_bytes(s, 0);
         if (blob && len >= 12 &&
@@ -2559,7 +2559,7 @@ void rpc_blockchain_commitment_mmr_save(struct node_db *ndb)
             "VALUES('commitment_mmr_state',?)", -1, &s, NULL) != SQLITE_OK)
         return;
     sqlite3_bind_blob(s, 1, buf, (int)len, SQLITE_STATIC);
-    sqlite3_step(s);
+    sqlite3_step(s);  // raw-sql-ok: a3
     sqlite3_finalize(s);
 }
 

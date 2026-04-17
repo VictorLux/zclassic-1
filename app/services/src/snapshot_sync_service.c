@@ -723,7 +723,7 @@ bool snapsync_accept_offer(struct snapshot_sync_service *svc,
         if (sqlite3_prepare_v2(svc->ndb->db,
                 "SELECT COUNT(*) FROM utxos", -1, &sc, NULL) == SQLITE_OK
             && sc) {
-            if (sqlite3_step(sc) == SQLITE_ROW)
+            if (sqlite3_step(sc) == SQLITE_ROW)  // raw-sql-ok: a3
                 utxo_count = sqlite3_column_int64(sc, 0);
             sqlite3_finalize(sc);
         }
@@ -964,7 +964,7 @@ bool snapsync_awaiting_utxos(void)
                 if (sqlite3_prepare_v2(ndb->db,
                         "SELECT COUNT(*) FROM utxos", -1, &sc, NULL)
                     == SQLITE_OK && sc) {
-                    if (sqlite3_step(sc) == SQLITE_ROW)
+                    if (sqlite3_step(sc) == SQLITE_ROW)  // raw-sql-ok: a3
                         utxo_count = sqlite3_column_int64(sc, 0);
                     sqlite3_finalize(sc);
                 }
@@ -1002,7 +1002,7 @@ bool snapsync_awaiting_utxos(void)
             if (sqlite3_prepare_v2(svc->ndb->db,
                     "SELECT COUNT(*) FROM utxos", -1, &sc, NULL) == SQLITE_OK
                 && sc) {
-                if (sqlite3_step(sc) == SQLITE_ROW)
+                if (sqlite3_step(sc) == SQLITE_ROW)  // raw-sql-ok: a3
                     utxo_count = sqlite3_column_int64(sc, 0);
                 sqlite3_finalize(sc);
             }

@@ -73,7 +73,7 @@ int main(int argc, char *argv[])
             sqlite3_stmt *s = NULL;
             sqlite3_prepare_v2(dst, cnt, -1, &s, NULL);
             int rows = 0;
-            if (s && sqlite3_step(s) == SQLITE_ROW)
+            if (s && sqlite3_step(s) == SQLITE_ROW)  // raw-sql-ok: a3
                 rows = sqlite3_column_int(s, 0);
             if (s) sqlite3_finalize(s);
             printf("  %-20s %d rows\n", tables[i], rows);

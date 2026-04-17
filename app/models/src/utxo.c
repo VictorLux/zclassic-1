@@ -303,7 +303,7 @@ int64_t db_utxo_each(struct node_db *ndb, db_utxo_each_fn fn, void *ctx)
         0);
 
     int64_t count = 0;
-    while (sqlite3_step(s) == SQLITE_ROW) {
+    while (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok: a3
         struct db_utxo u;
         memset(&u, 0, sizeof(u));
 

@@ -38,7 +38,7 @@ CFLAGS = -std=c23 -O3 -march=native -flto -Wall -Wextra -Werror -pedantic \
 	-Wno-stringop-overflow -Wno-unused-result \
 	$(APP_INCLUDES) $(CONFIG_INCLUDES) $(LIB_INCLUDES) $(MCP_INCLUDES) \
 	-Ilib/test/include \
-	-D_POSIX_C_SOURCE=200809L -Ivendor/include $(GTK_DEF) $(GTK_CFLAGS) \
+	-D_POSIX_C_SOURCE=200809L -DZCL_AR_ENFORCE -Ivendor/include $(GTK_DEF) $(GTK_CFLAGS) \
 	$(WEBKIT_DEF) $(WEBKIT_CFLAGS)
 LDFLAGS = -pthread -flto -rdynamic
 # Use vendor/tor/libtor.a when Tor is built from source.
@@ -84,7 +84,7 @@ $(TMPL_GEN): $(TMPL_SRC) $(TMPL_TOOL)
 templates: $(TMPL_GEN)
 
 test_zcl: $(TMPL_GEN) $(TEST_SRCS) $(SPEC_SRCS) $(ALL_SRCS)
-	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o $@ $(filter-out $(TMPL_GEN),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)
+	$(CC) $(CFLAGS) -DZCL_TESTING -Wno-deprecated-declarations $(LDFLAGS) -o $@ $(filter-out $(TMPL_GEN),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)
 
 spec_zcl: $(TMPL_GEN) lib/test/spec_main.c $(SPEC_SRCS) lib/test/src/test_helpers.c $(ALL_SRCS)
 	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o $@ $(filter-out $(TMPL_GEN),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)
@@ -170,8 +170,24 @@ crash_recovery_test: tools/crash_recovery_test.c
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pthread -o $@ $<
 
 .PHONY: test-crash
+# CI entry point for the crash recovery harness.
+#
+# The harness skips (exit 0) when its datadir does NOT exist, and keeps
+# CI green on clean hosts. Don't pre-create the dir — an empty dir
+# makes the harness try to start the node on a blank chainstate, which
+# then reports "RPC never came up" as a harness error (false negative).
+#
+# When a fully seeded datadir is available (a CI worker with a pinned
+# snapshot), point ZCL_CRASH_DATADIR at it and this target runs the
+# full 10-iteration kill/restart cycle against real data. Otherwise
+# the target runs through to the SKIP path.
 test-crash: crash_recovery_test zclassic23 zcl-rpc
-	./crash_recovery_test
+	@set -eu; \
+	 dd="$${ZCL_CRASH_DATADIR:-/tmp/zcl-crashtest-ci.absent}"; \
+	 if [ -n "$${ZCL_CRASH_DATADIR:-}" ] && [ ! -d "$$dd" ]; then \
+	     echo "test-crash: ZCL_CRASH_DATADIR=$$dd does not exist — harness will SKIP"; \
+	 fi; \
+	 ZCL_CRASH_DATADIR="$$dd" ./crash_recovery_test --iterations=10
 
 # Always-fresh end-to-end MCP test.
 #
@@ -294,12 +310,29 @@ deploy-watchdog: zcl-watchdog
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-# Deploy: install service + restart (no setcap needed — iptables redirects 80/443)
-deploy: zclassic23
+# Deploy: lint → WAL checkpoint → install service → restart → RPC verify.
+#
+# `make deploy` used to print "Deployed." whenever systemd held the unit
+# active for >2s — false-positive friendly. The new target fails loudly on
+# three distinct paths:
+#   1. `lint` — untouched, but now actually FAILs on raw sqlite3_step.
+#   2. `wal_checkpoint` — truncate WAL before SIGTERM so SQLite doesn't
+#      recover a half-checkpointed journal on boot.
+#   3. `tools/deploy_verify.sh` — poll `zclassic-cli getblockcount` until the
+#      node answers or a 30s deadline elapses.
+#
+# The wal_checkpoint is the inline `PRAGMA wal_checkpoint(TRUNCATE)` form —
+# HARDENING_CHECKLIST §P4.1 flagged `tools/wal_checkpoint.c` as unsafe
+# (unguarded DELETE), so we skip the tool and talk to sqlite3 directly.
+deploy: lint zclassic23 zclassic-cli
+	@if [ -f $(HOME)/.zclassic-c23/node.db ]; then \
+	    sqlite3 $(HOME)/.zclassic-c23/node.db "PRAGMA wal_checkpoint(TRUNCATE);" \
+	        || { echo "WAL checkpoint failed"; exit 1; }; \
+	fi
 	@install -m 644 deploy/zclassic23.service $(HOME)/.config/systemd/user/zclassic23.service
 	@systemctl --user daemon-reload
 	systemctl --user restart zclassic23
-	@sleep 2 && systemctl --user is-active zclassic23 && echo "Deployed."
+	@./tools/deploy_verify.sh
 
 release:
 	@./tools/release.sh
@@ -506,12 +539,13 @@ check-silent-errors:
 check-raw-sqlite:
 	@echo "══ LINT: raw sqlite3_step in app code ══"
 	@HITS=$$(grep -rn 'sqlite3_step\s*(' app/ tools/ --include='*.c' \
-	    | grep -v 'vendor/\|test/\|// raw-sql-ok\|AR_STEP\|safe_alloc\|".*sqlite3_step'); \
+	    | grep -v 'vendor/\|test/\|// raw-sql-ok\|AR_STEP_ROW\|AR_STEP_DONE\|AR_STEP_ROW_READONLY\|safe_alloc\|".*sqlite3_step'); \
 	if [ -n "$$HITS" ]; then \
 	    echo "$$HITS"; \
-	    echo "WARNING: raw sqlite3_step in app code (prefer AR_STEP_ROW/AR_STEP_DONE or mark // raw-sql-ok)"; \
+	    echo "FAIL: raw sqlite3_step in app code (use AR_STEP_ROW/AR_STEP_DONE/AR_STEP_ROW_READONLY or mark // raw-sql-ok: <scope>)"; \
+	    exit 1; \
 	fi
-	@echo "  OK: sqlite3_step check complete"
+	@echo "  OK: no raw sqlite3_step"
 
 check-silent-errors-services:
 	@echo "══ LINT: silent error returns in services ══"
@@ -546,6 +580,9 @@ lint: check-malloc check-silent-errors check-raw-sqlite check-silent-errors-serv
 ci: lint zclassic23 test_zcl
 	@echo "══ CI: test ══"
 	ulimit -s unlimited && ./test_zcl
+	@echo ""
+	@echo "══ CI: test-crash ══"
+	$(MAKE) test-crash
 	@echo ""
 	@if [ "$(SKIP_FUZZ)" != "1" ]; then \
 		echo "══ CI: fuzz-ci ══"; \
