@@ -2,7 +2,17 @@
  *
  * SQLite-backed coins view: the canonical UTXO set lives in node.db.
  * Implements coins_view_vtable so coins_view_cache can flush here.
- * No LevelDB needed at runtime — LevelDB is import-only. */
+ * No LevelDB needed at runtime — LevelDB is import-only.
+ *
+ * Raw-SQL opt-out (DEFENSIVE_CODING.md §1).  This file is the UTXO
+ * persistence infrastructure — the very file §1 names as the
+ * motivating "we need AR enforcement" example.  Every raw
+ * sqlite3_step below is intentional: coins_view_sqlite does not own
+ * a `struct node_db` handle (it borrows the sqlite3* directly) and
+ * cannot use the AR_* helpers, which are model-side conveniences.
+ * Every writer rc is observed and turned into a ROLLBACK on the
+ * shared connection, which is what AR_STEP_DONE would do anyway. */
+#define ZCL_AR_RAW_SQL
 
 #include <time.h>
 #include "storage/coins_view_sqlite.h"
@@ -414,16 +424,25 @@ bool coins_view_sqlite_batch_write_ex(struct coins_view_sqlite *cvs,
 
     pthread_mutex_lock(&cvs->mutex);
 
-    /* Reset ALL prepared statements BEFORE starting the transaction.
-     * Without this, any reader thread that left a statement in
-     * SQLITE_ROW state prevents SAVEPOINT from opening (rc=5:
-     * "cannot open savepoint - SQL statements in progress").
-     * This was the root cause of the 6GB WAL / 15GB RAM death loop. */
-    {
-        sqlite3_stmt *stmt = NULL;
-        while ((stmt = sqlite3_next_stmt(cvs->db, stmt)) != NULL)
-            sqlite3_reset(stmt);
-    }
+    /* Reset only OUR prepared statements before the transaction
+     * opens.  The old code walked every prepared statement on the
+     * shared connection via sqlite3_next_stmt() and reset each —
+     * including readers owned by other subsystems (wallet_sqlite,
+     * block_index_db, ...) that may have been sitting on SQLITE_ROW
+     * mid-iteration.  Resetting someone else's stmt silently
+     * rewinds their iterator and skips rows.  Now we only reset
+     * statements we own; if an external subsystem is still holding
+     * a cursor open, SAVEPOINT will SQLITE_BUSY and we'll bail
+     * cleanly — the subsystem is expected to finalize its own
+     * iterators before racing with a UTXO flush. */
+    if (cvs->stmt_get)        sqlite3_reset(cvs->stmt_get);
+    if (cvs->stmt_have)       sqlite3_reset(cvs->stmt_have);
+    if (cvs->stmt_insert)     sqlite3_reset(cvs->stmt_insert);
+    if (cvs->stmt_delete_tx)  sqlite3_reset(cvs->stmt_delete_tx);
+    if (cvs->stmt_best_get)   sqlite3_reset(cvs->stmt_best_get);
+    if (cvs->stmt_best_set)   sqlite3_reset(cvs->stmt_best_set);
+    if (cvs->stmt_commit_get) sqlite3_reset(cvs->stmt_commit_get);
+    if (cvs->stmt_commit_set) sqlite3_reset(cvs->stmt_commit_set);
 
     /* Bump busy timeout for the flush — during IBD, WAL contention
      * from background readers/checkpointers makes SQLITE_BUSY common.
@@ -458,7 +477,7 @@ bool coins_view_sqlite_batch_write_ex(struct coins_view_sqlite *cvs,
             sqlite3_reset(cvs->stmt_delete_tx);
             sqlite3_bind_blob(cvs->stmt_delete_tx, 1,
                               e->txid.data, 32, SQLITE_STATIC);
-            int rc = sqlite3_step(cvs->stmt_delete_tx);
+            int rc = sqlite3_step(cvs->stmt_delete_tx); // raw-sql-ok: see top-of-file ZCL_AR_RAW_SQL rationale
             if (rc != SQLITE_DONE && rc != SQLITE_ROW) {
                 fprintf(stderr, "coins_flush: DELETE failed rc=%d: %s\n",
                         rc, sqlite3_errmsg(cvs->db));
@@ -471,7 +490,7 @@ bool coins_view_sqlite_batch_write_ex(struct coins_view_sqlite *cvs,
             sqlite3_reset(cvs->stmt_delete_tx);
             sqlite3_bind_blob(cvs->stmt_delete_tx, 1,
                               e->txid.data, 32, SQLITE_STATIC);
-            int rc = sqlite3_step(cvs->stmt_delete_tx);
+            int rc = sqlite3_step(cvs->stmt_delete_tx); // raw-sql-ok: see top-of-file ZCL_AR_RAW_SQL rationale
             if (rc != SQLITE_DONE && rc != SQLITE_ROW) {
                 fprintf(stderr, "coins_flush: pre-DELETE failed rc=%d: %s\n",
                         rc, sqlite3_errmsg(cvs->db));
@@ -506,7 +525,7 @@ bool coins_view_sqlite_batch_write_ex(struct coins_view_sqlite *cvs,
                     sqlite3_bind_null(ins, 6);
                 sqlite3_bind_int(ins, 7, cc->height);
                 sqlite3_bind_int(ins, 8, cc->is_coinbase ? 1 : 0);
-                rc = sqlite3_step(ins);
+                rc = sqlite3_step(ins); // raw-sql-ok: see top-of-file ZCL_AR_RAW_SQL rationale
                 if (rc != SQLITE_DONE && rc != SQLITE_ROW) {
                     fprintf(stderr, "coins_flush: INSERT failed rc=%d "
                             "h=%d vout=%zu: %s\n",
@@ -554,7 +573,7 @@ bool coins_view_sqlite_batch_write_ex(struct coins_view_sqlite *cvs,
         sqlite3_reset(cvs->stmt_best_set);
         sqlite3_bind_blob(cvs->stmt_best_set, 1,
                           hash_block->data, 32, SQLITE_STATIC);
-        int rc = sqlite3_step(cvs->stmt_best_set);
+        int rc = sqlite3_step(cvs->stmt_best_set); // raw-sql-ok: see top-of-file ZCL_AR_RAW_SQL rationale
         if (rc != SQLITE_DONE && rc != SQLITE_ROW) {
             fprintf(stderr, "coins_flush: best_block UPDATE failed rc=%d: "
                     "%s\n", rc, sqlite3_errmsg(cvs->db));
@@ -582,12 +601,16 @@ bool coins_view_sqlite_batch_write_ex(struct coins_view_sqlite *cvs,
         }
     }
 
-    /* Reset all prepared statements before COMMIT/RELEASE. */
-    {
-        sqlite3_stmt *stmt = NULL;
-        while ((stmt = sqlite3_next_stmt(cvs->db, stmt)) != NULL)
-            sqlite3_reset(stmt);
-    }
+    /* Reset only OUR statements before COMMIT/RELEASE (see the
+     * rationale on the pre-BEGIN reset above). */
+    if (cvs->stmt_get)        sqlite3_reset(cvs->stmt_get);
+    if (cvs->stmt_have)       sqlite3_reset(cvs->stmt_have);
+    if (cvs->stmt_insert)     sqlite3_reset(cvs->stmt_insert);
+    if (cvs->stmt_delete_tx)  sqlite3_reset(cvs->stmt_delete_tx);
+    if (cvs->stmt_best_get)   sqlite3_reset(cvs->stmt_best_get);
+    if (cvs->stmt_best_set)   sqlite3_reset(cvs->stmt_best_set);
+    if (cvs->stmt_commit_get) sqlite3_reset(cvs->stmt_commit_get);
+    if (cvs->stmt_commit_set) sqlite3_reset(cvs->stmt_commit_set);
 
     {
         char *errmsg = NULL;
