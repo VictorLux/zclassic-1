@@ -49,64 +49,26 @@ P1.11 scope note: `fr.c`, `fr_avx512.c`, `equihash_solver.c`,
 their `return false` is "out-of-range input" by algorithmic design, not
 a security event. See `fr.c` header for the rationale.
 
-**Now working on:** P1.12 — constant-time `jub_scalar_mul`. See NOW below.
-**Queued:** Wave 2 CT + RNG hygiene — see NEXT below.
+**Now working on:** Wave 2 — curve25519 + ed25519 CT audits + RNG hygiene (P1.12 done). See NOW below.
+**Queued:** Follow-on nullifier / prf timing audit — see NEXT below.
 
 ---
 
-## NOW — P1.12: constant-time `jub_scalar_mul`
+## P1.12 — DONE (2026-04-17)
 
-File: `lib/sapling/src/fr.c:307-333` (the function your FIXME at
-ecd24894e flagged).
-
-**Threat model.** `jub_scalar_mul` runs with secret scalars — `ask`,
-`nsk`, `ivk`, `esk`, `bsk`. Current impl uses 4-bit windowed scalar
-mult with:
-- secret-dependent table lookups (`table[nibble]`)
-- secret-dependent branches (`if (nibble)`)
-
-On a shared host, a co-resident attacker in the same NUMA domain can
-recover bits of these scalars via L1 / LLC cache timing. Consequences:
-`ask` / `nsk` leak → total wallet loss; `ivk` leak → view-key
-confidentiality gone; `esk` leak → note binding broken.
-
-**Plan (slow wave — iterate on a branch, merge only when verified).**
-
-1. Read the existing 4-bit-window impl end-to-end. Write down both
-   secret-dependent behaviors.
-2. Replace the table lookup with a masked linear scan — load every
-   table entry, select via constant-time conditional-move (CMOV or
-   subtract-and-mask). Reference implementations vendored under
-   `vendor/tor/src/ext/ed25519/`:
-   - `ref10/ge_scalarmult_base.c` — RFC 7748 constant-time select pattern
-   - `donna/ed25519-donna-64bit-tables.h` + `ed25519_fe_select` helper
-3. Replace the `if (nibble) add` with an unconditional add of a
-   point masked by `nibble != 0` as a constant-time boolean.
-4. Keep the signed-window optimization if feasible — standard CT ECC
-   practice, doesn't regress security.
-5. Remove the FIXME comment from ecd24894e.
-
-**Required tests (both must pass before merge).**
-
-- **Diff test** (correctness): generate 10k random (scalar, point) pairs,
-  multiply with both the old and new implementations, assert bit-for-bit
-  match. Make this permanent in `lib/test/src/test_sapling_crypto.c`.
-- **Timing test** (the actual goal): 1k samples of multiplication time
-  with an all-zero-nibble scalar vs. an all-nonzero-nibble scalar.
-  Mean/stddev must not correlate with scalar weight. If the timing test
-  detects a correlation, the fix is incomplete — keep iterating.
-
-**Scope boundary.** `lib/sapling/src/fr.c` and `fr_avx512.c` (confirm
-and fix both if the AVX path has the same hazard). `lib/test/src/
-test_sapling_crypto.c` for tests. Nothing else.
-
-Update `AGENT.md` row P1.12 to `done <SHA>` when merged.
+Shipped as `15218ba2f sapling: constant-time jub_scalar_mul (P1.12)`:
+masked linear-scan table select + unconditional-add-with-mask; diff
+test against the old implementation + scalar-weight timing test, both
+now permanent in `lib/test/src/test_sapling_crypto.c`. The FIXME
+comment at ecd24894e has been removed as part of the commit.
 
 ---
 
-## NEXT — Wave 2 constant-time + RNG hygiene (pre-authorized)
+## NOW — Wave 2: curve25519 + ed25519 constant-time + RNG hygiene
 
-Start these as soon as P1.12 lands. No check-in needed.
+Same iteration protocol as P1.12 — for CT audits, diff test +
+timing test are mandatory before merge. For RNG hygiene, small
+per-call-site commits are fine.
 
 ### Step H — `lib/crypto/src/curve25519.c` constant-time audit
 
@@ -151,10 +113,16 @@ upgrade. Never log the random bytes themselves.
 
 ### Stopping point
 
-After P1.12 + H + I + J are all on main, ping Rhett. Likely next:
-(a) audit `lib/sapling/src/prf.c` for timing leaks in the nullifier path,
+After H + I + J are all on main, ping Rhett. Likely next:
+(a) audit `lib/sapling/src/prf.c` for timing leaks in the nullifier
+    path (nullifiers are a correlation hazard — same key across many
+    notes, so any side channel on the nullifier derivation is much
+    more dangerous than it looks),
 (b) formal-verification scaffolding for `sapling_check_spend` /
-`sapling_check_output`, or (c) join Rhett on P2 DoS hardening.
+    `sapling_check_output` — there's a small-enough spec that a CBMC
+    / cppcheck style tool could exhaustively cover the decode/reject
+    paths,
+(c) join Rhett on P2 DoS hardening if the network-lane work is open.
 
 ---
 
