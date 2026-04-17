@@ -8,16 +8,16 @@ Owner: Rhett (primary). Delegates: Agent-2 (see `AGENT-2.md`), Agent-3 (see `AGE
 
 ## Progress — last update 2026-04-17
 
-**Overall: 30 / 50 rows closed (60%) | SWRC 62%**
+**Overall: 31 / 50 rows closed (62%) | SWRC 63%**
 
 | Tier | Closed / Total | % | Open rows |
 |---|---|---|---|
 | **CRITICAL** | 7 / 9 | **78%** | P2.1, P2.2 |
 | **HIGH** | 11 / 20 | **55%** | P1.6, P1.7, P2.3–P2.6, P4.1, P4.2, P5.2 |
-| **MED** | 6 / 15 | **40%** | P2.7, P2.8, P3.7, P4.3–P4.5, P5.4, P5.5, P5.6 |
+| **MED** | 7 / 15 | **47%** | P2.7, P2.8, P3.7, P4.3–P4.5, P5.5, P5.6 |
 | **LOW** | 2 / 2 | **100%** | — |
 
-**Open by owner:** Rhett 15 · Agent-2 5 (P5.4 active, 3 queued P4, 1 infra) · Agent-3 3 (Wave 2: curve25519 + ed25519 CT + RNG hygiene)
+**Open by owner:** Rhett 15 · Agent-2 4 (3 queued P4, 1 infra) · Agent-3 3 (Wave 2: curve25519 + ed25519 CT + RNG hygiene)
 
 **Top remaining risks:** the two open CRITs are both in the network lane (P2.1 mempool tx accept, P2.2 stack overflow in msg handler) — chain-split risk on deploy is close to eliminated, DoS-on-deploy is now the headline.
 
@@ -119,7 +119,7 @@ regression test locks the gates in place.
 | P5.1 | `export_snapshot` (1.1 MB ELF) tracked in git despite `.gitignore` | HIGH | Agent 2 — done a9ac382b7 |
 | P5.2 | `deploy/zclassic23.service:21` hardcodes Rhett's externalip + 9 addnodes | HIGH | Rhett |
 | P5.3 | Hardcoded `/home/rhett` in `tools/export_snapshot.c:15`, `tools/zcl-nodectl.c:628-637` | HIGH | Agent 2 — done 09e4fb15a (shared $HOME helper in lib/util/include/util/rpc_paths.h; also swept test_phgr13_fix.c sprout-VK path + two README absolute-path links; new test_no_hardcoded_home regression test scans every deployed binary for the literal and exercises the helper with alt/NULL HOME) |
-| P5.4 | 10 shell scripts in `tools/` duplicating MCP — purge | MED | Agent 2 — active (P3 closed) |
+| P5.4 | 10 shell scripts in `tools/` duplicating MCP — purge | MED | Agent 2 — done 0f33d3fc1 (audit found 1/8 actual MCP-duplicates: verify_restart_follow.sh ⇒ zcl-nodectl verify-follow; the other seven are build-time or multi-node orchestration with no MCP equivalent — per-script rationale in "Notes from Agent-2" in AGENT-2.md) |
 | P5.5 | `vendor/tor` submodule ahead of pinned commit | MED | Rhett |
 | P5.6 | Vendored `sqlite3.h` is 3.49.0 — newer CVE-class fixes unpicked | MED | Rhett |
 | P5.7 | Repo-root clutter: 40+ .md, `node.db` untracked at repo root | LOW | Agent 2 — done 611ae4281 + e7528c4f0 + 8902f9ae7 + d106192a4 (root-level .md cut 41→18; WAVE_6-12, AGENT2/3-era task docs, BOOT/REVIEW/CHECKLIST/MEMORY moved to docs/archive/; speedrun + zclassic23-asan binaries untracked) |

@@ -316,3 +316,44 @@ token to a session cookie, which needs plumbing cookies through
 handler receives only `method/path/body`, not headers). Flagging
 rather than expanding scope — this touches Rhett's lane
 (`lib/net/`).
+
+**2026-04-17 — P5 operator-hygiene sweep closed (fourth wave).**
+Five commits: `a9ac382b7` (P5.1 export_snapshot ELF untracked),
+`611ae4281 / e7528c4f0 / 8902f9ae7 / d106192a4` (P5.7 repo-root
+archive — 41 → 18 root `.md`, two stale binaries untracked),
+`09e4fb15a` (P5.3 hardcoded `/home/rhett` → `$HOME` via shared
+`lib/util/include/util/rpc_paths.h` helper + regression test
+`test_no_hardcoded_home.c`), `0f33d3fc1` (P5.4 purge
+`verify_restart_follow.sh`).
+
+**P5.4 audit — flag for Rhett, not a full purge.** Only one of the
+eight `tools/*.sh` scripts had a clean 1:1 replacement
+(`verify_restart_follow.sh` ⇒ `zcl-nodectl verify-follow`). The other
+seven don't match the "MCP tool with the same suffix" pattern the
+brief assumed:
+
+- `consensus_parity_audit.sh` — compares ZClassic23 RPC vs the C++
+  reference; MCP is single-node and can't observe both.
+- `dep_audit.sh` — build-time CVE scan over `vendor/`; no runtime
+  analogue possible.
+- `deploy_verify.sh` — post-`make deploy` poll-until-live probe.
+  Thin enough to move into `zcl-nodectl` as `deploy-verify` (new
+  subcommand would duplicate ~30 lines of `cmd_status`'s RPC
+  plumbing). Low priority — deploy_verify only runs from the
+  Makefile, not interactively.
+- `release.sh` — tarball + sha3 + GPG signing; build-time, not a
+  runtime surface.
+- `soak_test.sh` — 72-hour monitoring daemon. Could become a
+  `zcl-nodectl soak` subcommand that logs `zcl_status` every 5 min;
+  minor win over a shell loop.
+- `test_dual_node.sh` — integration test that *starts* the node and
+  asserts RPC comes up; binding this into a runtime tool would
+  require that tool to fork the node-under-test, which violates
+  single-responsibility.
+- `test_txn_checklist.sh` — parity check across two nodes, same
+  shape as `consensus_parity_audit`.
+
+Net result: one delete, seven left in place with the above
+rationale. If you want a stricter no-shell policy, the natural next
+step is a `zcl-nodectl deploy-verify` / `soak` refactor — estimate
+~80 LoC total, no scope boundary crossing.
