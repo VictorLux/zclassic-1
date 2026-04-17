@@ -394,19 +394,26 @@ bool redjubjub_verify(const uint8_t vk_bytes[32],
     /* Deserialize vk */
     struct jub_point vk;
     if (!jub_from_bytes(&vk, vk_bytes))
-        return false;
+        LOG_FAIL("redjubjub", "jub_from_bytes(vk) failed");
 
     /* Deserialize R */
     struct jub_point R;
     if (!jub_from_bytes(&R, sig_rbar))
-        return false;
+        LOG_FAIL("redjubjub", "jub_from_bytes(R) failed");
 
     /* c = H*(Rbar || vk_bytes || msg) per Zcash spec §5.4.7 */
     uint8_t c_scalar[32];
     h_star(sig_rbar, 32, vk_bytes, 32, msg, msg_len, c_scalar);
 
-    /* S as scalar bytes */
-    /* Check S < Fs order (optional, Rust checks via from_repr) */
+    /* Canonical-S check: S must be < Fs (Jubjub subgroup order). Zcash
+     * consensus mirrors the Rust implementation's Fs::from_repr check;
+     * non-canonical S otherwise round-trips but would make the sig
+     * malleable and could split consensus with zcashd. */
+    {
+        struct fs s_canon;
+        if (!fs_from_bytes(&s_canon, sig_sbar))
+            LOG_FAIL("redjubjub", "S >= Fs order (non-canonical signature)");
+    }
 
     /* Verify: [8] * (R + c*vk - S*G) == 0
      * Equivalently: [8] * (-S*G + R + c*vk) == 0 */
