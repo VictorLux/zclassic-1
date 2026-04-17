@@ -2,7 +2,37 @@
  *
  * Ed25519 signature verification — pure C23 implementation.
  * Twisted Edwards curve: -x^2 + y^2 = 1 + d*x^2*y^2
- * Field: GF(2^255-19), TweetNaCl-style 16-limb representation. */
+ * Field: GF(2^255-19), TweetNaCl-style 16-limb representation.
+ *
+ * ── Constant-time audit (Wave 2 / Step I, 2026-04-17) ──
+ *
+ * This file is **verify-only**. There is no `ed25519_sign` in the tree
+ * (consensus paths only need verify; JoinSplit/Sapling signing happens
+ * via RedJubjub in lib/sapling). All inputs to ed25519_verify are
+ * public — signature, message, public key — so the threat model that
+ * makes Curve25519 DH and jub_scalar_mul timing-critical does not
+ * apply here. The CT properties below are belt-and-suspenders.
+ *
+ * Properties confirmed:
+ *   - sel25519: branchless mask cswap (same as curve25519.c)
+ *   - scalarmult: cswap-driven Montgomery-like ladder; every iteration
+ *     runs the full point_add(q,p) + point_add(p,p) sequence, no
+ *     conditional adds keyed on bits
+ *   - Final compare: `diff |= t[i] ^ sig[i]` (XOR-OR accumulator), NOT
+ *     a memcmp early-exit
+ *   - S<L canonical-S check (P1.8): byte-walked accumulator with mask
+ *     selection; rejects malleable signatures pre-scalarmult
+ *
+ * Branches on data (acceptable, public values only):
+ *   - unpackneg: `if (neq25519(chk, num)) ...` — operates on the
+ *     decompressed public key; leak is OK (pubkey is public)
+ *   - LOG_FAIL early-returns: branches on verify outcomes (a public
+ *     signature is either valid or not — observable from the result)
+ *
+ * **If a sign function is ever added** it MUST keep the secret nonce
+ * out of timing: branch-free clamp, ladder/comb scalarmult, no
+ * data-dependent table lookups, ed25519-donna or ref10 patterns. See
+ * vendor/tor/src/ext/ed25519/{donna,ref10}/ for known-CT references. */
 
 #include "crypto/ed25519.h"
 #include "crypto/sha512.h"
