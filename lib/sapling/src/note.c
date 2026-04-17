@@ -9,6 +9,7 @@
 #include "sapling/prf.h"
 #include "crypto/sha256.h"
 #include "core/serialize.h"
+#include "util/log_macros.h"
 #include <string.h>
 
 void sprout_note_cm(const struct sprout_note *note, struct uint256 *out)
@@ -36,19 +37,28 @@ void sprout_note_nullifier(const struct sprout_note *note,
     prf_nf(a_sk->data, &note->rho, out);
 }
 
+/* Field-name enum used in LOG_FAIL messages from the (de)serializers below. */
+#define NOTE_IO_FAIL(domain, op, field) \
+    LOG_FAIL((domain), "%s: " op " %s failed (truncated stream?)", __func__, (field))
+
 bool sprout_note_plaintext_serialize(const struct sprout_note_plaintext *np,
                                       struct byte_stream *s)
 {
     unsigned char leading = 0x00;
-    if (!stream_write_bytes(s, &leading, 1)) return false;
+    if (!stream_write_bytes(s, &leading, 1))
+        NOTE_IO_FAIL("sprout_note", "write", "leading");
 
     unsigned char value_le[8];
     for (int i = 0; i < 8; i++)
         value_le[i] = (unsigned char)(np->value >> (8 * i));
-    if (!stream_write_bytes(s, value_le, 8)) return false;
-    if (!stream_write_bytes(s, np->rho.data, 32)) return false;
-    if (!stream_write_bytes(s, np->r.data, 32)) return false;
-    if (!stream_write_bytes(s, np->memo, ZC_MEMO_SIZE)) return false;
+    if (!stream_write_bytes(s, value_le, 8))
+        NOTE_IO_FAIL("sprout_note", "write", "value");
+    if (!stream_write_bytes(s, np->rho.data, 32))
+        NOTE_IO_FAIL("sprout_note", "write", "rho");
+    if (!stream_write_bytes(s, np->r.data, 32))
+        NOTE_IO_FAIL("sprout_note", "write", "r");
+    if (!stream_write_bytes(s, np->memo, ZC_MEMO_SIZE))
+        NOTE_IO_FAIL("sprout_note", "write", "memo");
     return true;
 }
 
@@ -56,17 +66,25 @@ bool sprout_note_plaintext_deserialize(struct sprout_note_plaintext *np,
                                         struct byte_stream *s)
 {
     unsigned char leading;
-    if (!stream_read_bytes(s, &leading, 1)) return false;
-    if (leading != 0x00) return false;
+    if (!stream_read_bytes(s, &leading, 1))
+        NOTE_IO_FAIL("sprout_note", "read", "leading");
+    if (leading != 0x00)
+        LOG_FAIL("sprout_note",
+                 "deserialize: wrong leading byte 0x%02x (expected 0x00 for Sprout)",
+                 leading);
 
     unsigned char value_le[8];
-    if (!stream_read_bytes(s, value_le, 8)) return false;
+    if (!stream_read_bytes(s, value_le, 8))
+        NOTE_IO_FAIL("sprout_note", "read", "value");
     np->value = 0;
     for (int i = 0; i < 8; i++)
         np->value |= (uint64_t)value_le[i] << (8 * i);
-    if (!stream_read_bytes(s, np->rho.data, 32)) return false;
-    if (!stream_read_bytes(s, np->r.data, 32)) return false;
-    if (!stream_read_bytes(s, np->memo, ZC_MEMO_SIZE)) return false;
+    if (!stream_read_bytes(s, np->rho.data, 32))
+        NOTE_IO_FAIL("sprout_note", "read", "rho");
+    if (!stream_read_bytes(s, np->r.data, 32))
+        NOTE_IO_FAIL("sprout_note", "read", "r");
+    if (!stream_read_bytes(s, np->memo, ZC_MEMO_SIZE))
+        NOTE_IO_FAIL("sprout_note", "read", "memo");
     return true;
 }
 
@@ -74,15 +92,20 @@ bool sapling_note_plaintext_serialize(const struct sapling_note_plaintext *np,
                                        struct byte_stream *s)
 {
     unsigned char leading = 0x01;
-    if (!stream_write_bytes(s, &leading, 1)) return false;
-    if (!stream_write_bytes(s, np->d, ZC_DIVERSIFIER_SIZE)) return false;
+    if (!stream_write_bytes(s, &leading, 1))
+        NOTE_IO_FAIL("sapling_note", "write", "leading");
+    if (!stream_write_bytes(s, np->d, ZC_DIVERSIFIER_SIZE))
+        NOTE_IO_FAIL("sapling_note", "write", "diversifier");
 
     unsigned char value_le[8];
     for (int i = 0; i < 8; i++)
         value_le[i] = (unsigned char)(np->value >> (8 * i));
-    if (!stream_write_bytes(s, value_le, 8)) return false;
-    if (!stream_write_bytes(s, np->rcm.data, 32)) return false;
-    if (!stream_write_bytes(s, np->memo, ZC_MEMO_SIZE)) return false;
+    if (!stream_write_bytes(s, value_le, 8))
+        NOTE_IO_FAIL("sapling_note", "write", "value");
+    if (!stream_write_bytes(s, np->rcm.data, 32))
+        NOTE_IO_FAIL("sapling_note", "write", "rcm");
+    if (!stream_write_bytes(s, np->memo, ZC_MEMO_SIZE))
+        NOTE_IO_FAIL("sapling_note", "write", "memo");
     return true;
 }
 
@@ -90,17 +113,25 @@ bool sapling_note_plaintext_deserialize(struct sapling_note_plaintext *np,
                                          struct byte_stream *s)
 {
     unsigned char leading;
-    if (!stream_read_bytes(s, &leading, 1)) return false;
-    if (leading != 0x01) return false;
+    if (!stream_read_bytes(s, &leading, 1))
+        NOTE_IO_FAIL("sapling_note", "read", "leading");
+    if (leading != 0x01)
+        LOG_FAIL("sapling_note",
+                 "deserialize: wrong leading byte 0x%02x (expected 0x01 for Sapling)",
+                 leading);
 
-    if (!stream_read_bytes(s, np->d, ZC_DIVERSIFIER_SIZE)) return false;
+    if (!stream_read_bytes(s, np->d, ZC_DIVERSIFIER_SIZE))
+        NOTE_IO_FAIL("sapling_note", "read", "diversifier");
 
     unsigned char value_le[8];
-    if (!stream_read_bytes(s, value_le, 8)) return false;
+    if (!stream_read_bytes(s, value_le, 8))
+        NOTE_IO_FAIL("sapling_note", "read", "value");
     np->value = 0;
     for (int i = 0; i < 8; i++)
         np->value |= (uint64_t)value_le[i] << (8 * i);
-    if (!stream_read_bytes(s, np->rcm.data, 32)) return false;
-    if (!stream_read_bytes(s, np->memo, ZC_MEMO_SIZE)) return false;
+    if (!stream_read_bytes(s, np->rcm.data, 32))
+        NOTE_IO_FAIL("sapling_note", "read", "rcm");
+    if (!stream_read_bytes(s, np->memo, ZC_MEMO_SIZE))
+        NOTE_IO_FAIL("sapling_note", "read", "memo");
     return true;
 }

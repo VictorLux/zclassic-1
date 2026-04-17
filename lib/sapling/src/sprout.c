@@ -5,6 +5,7 @@
 #include "sapling/sprout.h"
 #include "sapling/bls12_381.h"
 #include "crypto/blake2b.h"
+#include "util/log_macros.h"
 #include <string.h>
 
 static struct groth16_vk *sprout_vk = NULL;
@@ -46,11 +47,13 @@ bool sprout_verify_groth16(const uint8_t proof[192],
                            uint64_t vpub_new)
 {
     if (!sprout_vk)
-        return false;
+        LOG_FAIL("sprout",
+                 "verify_groth16: sprout_vk is NULL (params not loaded) — "
+                 "refusing to accept JoinSplit");
 
     struct groth16_proof gp;
     if (!groth16_proof_read(&gp, proof))
-        return false;
+        LOG_FAIL("sprout", "verify_groth16: groth16_proof_read failed");
 
     /* Construct input bytes: rt || h_sig || nf1 || mac1 || nf2 || mac2
      *                        || cm1 || cm2 || vpub_old_le || vpub_new_le */
@@ -75,7 +78,9 @@ bool sprout_verify_groth16(const uint8_t proof[192],
     multipack_bytes_to_fr_be(public_inputs, &n_inputs, input, 272);
 
     if (n_inputs != sprout_vk->ic_len - 1)
-        return false;
+        LOG_FAIL("sprout",
+                 "verify_groth16: public-input count mismatch: got=%zu expected=%zu",
+                 n_inputs, sprout_vk->ic_len - 1);
 
     return groth16_verify(sprout_vk, &gp, public_inputs, n_inputs);
 }

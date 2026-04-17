@@ -8,6 +8,7 @@
 #include "sapling/ff1.h"
 #include "crypto/blake2b.h"
 #include "support/cleanse.h"
+#include "util/log_macros.h"
 #include <string.h>
 
 static const uint8_t ZIP32_MASTER_PERSONAL[16] =
@@ -324,7 +325,9 @@ bool zip32_xfvk_derive(struct zip32_xfvk *child,
                         uint32_t i)
 {
     if (i >= ZIP32_HARDENED_KEY_LIMIT)
-        return false;
+        LOG_FAIL("zip32",
+                 "xfvk_derive: child index %u >= hardened limit %u",
+                 i, ZIP32_HARDENED_KEY_LIMIT);
 
     uint8_t fvk_bytes[96];
     fvk_to_bytes(fvk_bytes, &parent->fvk);
@@ -361,7 +364,8 @@ static bool diversifier_index_increment(uint8_t j[11])
         if (j[k] != 0)
             return true;
     }
-    return false;
+    LOG_FAIL("zip32",
+             "diversifier_index_increment: 2^88 diversifier space exhausted");
 }
 
 bool zip32_diversifier(const uint8_t dk[32],
@@ -377,7 +381,8 @@ bool zip32_diversifier(const uint8_t dk[32],
             return true;
 
         if (!diversifier_index_increment(j))
-            return false;
+            LOG_FAIL("zip32",
+                     "zip32_diversifier: no valid diversifier found in the whole index space");
     }
 }
 
@@ -391,7 +396,7 @@ bool zip32_xfvk_address(const struct zip32_xfvk *xfvk,
                          uint8_t diversifier[11], uint8_t pk_d[32])
 {
     if (!zip32_default_diversifier(xfvk->dk, diversifier))
-        return false;
+        LOG_FAIL("zip32", "xfvk_address: zip32_default_diversifier failed");
 
     /* Compute ivk from ak, nk */
     uint8_t ivk[32];
