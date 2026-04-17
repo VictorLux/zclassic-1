@@ -79,15 +79,15 @@ regression test locks the gates in place.
 
 ---
 
-## Priority 4 — Script / consensus memory safety (Owner: Rhett)
+## Priority 4 — Script / consensus memory safety
 
-| # | Task | File:line | Severity |
-|---|---|---|---|
-| P4.1 | 520 KB `script_stack` passed by value, on-stack | `lib/script/include/script/interpreter.h:22-30`, `interpreter.c:619-652` | HIGH |
-| P4.2 | Silent `stack_push` failures corrupt later stack assumptions | `lib/script/src/interpreter.c:619-620` | HIGH |
-| P4.3 | `script_num_serialize` lacks outsize bounds check | `lib/script/include/script/script.h:239-258` | MED |
-| P4.4 | `disconnect_block` unbounded realloc on `vin.prevout.n` | `lib/validation/src/connect_block.c:586-607` | MED |
-| P4.5 | `sigencoding` strict-DER bound inconsistency vs Bitcoin | `lib/script/src/sigencoding.c:11-56` | MED |
+| # | Task | File:line | Severity | Owner |
+|---|---|---|---|---|
+| P4.1 | 520 KB `script_stack` passed by value, on-stack | `lib/script/include/script/interpreter.h:22-30`, `interpreter.c:619-652` | HIGH | Rhett (needs careful interpreter refactor) |
+| P4.2 | Silent `stack_push` failures corrupt later stack assumptions | `lib/script/src/interpreter.c:619-620` | HIGH | Rhett (tied to P4.1) |
+| P4.3 | `script_num_serialize` lacks outsize bounds check | `lib/script/include/script/script.h:239-258` | MED | Agent 2 — queued (narrow scope expansion) |
+| P4.4 | `disconnect_block` unbounded realloc on `vin.prevout.n` | `lib/validation/src/connect_block.c:586-607` | MED | Agent 2 — queued (narrow scope expansion) |
+| P4.5 | `sigencoding` strict-DER bound inconsistency vs Bitcoin | `lib/script/src/sigencoding.c:11-56` | MED | Agent 2 — queued (narrow scope expansion) |
 
 ---
 
@@ -95,13 +95,13 @@ regression test locks the gates in place.
 
 | # | Task | Severity | Owner |
 |---|---|---|---|
-| P5.1 | `export_snapshot` (1.1 MB ELF) tracked in git despite `.gitignore` | HIGH | Agent 2 — queued (after P3.4/5/6) |
+| P5.1 | `export_snapshot` (1.1 MB ELF) tracked in git despite `.gitignore` | HIGH | Agent 2 — active (P3 closed) |
 | P5.2 | `deploy/zclassic23.service:21` hardcodes Rhett's externalip + 9 addnodes | HIGH | Rhett |
-| P5.3 | Hardcoded `/home/rhett` in `tools/export_snapshot.c:15`, `tools/zcl-nodectl.c:628-637` | HIGH | Agent 2 — queued (after P3.4/5/6) |
-| P5.4 | 10 shell scripts in `tools/` duplicating MCP — purge | MED | Agent 2 — queued (after P3.4/5/6) |
+| P5.3 | Hardcoded `/home/rhett` in `tools/export_snapshot.c:15`, `tools/zcl-nodectl.c:628-637` | HIGH | Agent 2 — active (P3 closed) |
+| P5.4 | 10 shell scripts in `tools/` duplicating MCP — purge | MED | Agent 2 — active (P3 closed) |
 | P5.5 | `vendor/tor` submodule ahead of pinned commit | MED | Rhett |
 | P5.6 | Vendored `sqlite3.h` is 3.49.0 — newer CVE-class fixes unpicked | MED | Rhett |
-| P5.7 | Repo-root clutter: 40+ .md, `node.db` untracked at repo root | LOW | Agent 2 — queued (after P3.4/5/6) |
+| P5.7 | Repo-root clutter: 40+ .md, `node.db` untracked at repo root | LOW | Agent 2 — active (P3 closed) |
 
 ---
 

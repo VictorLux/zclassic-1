@@ -36,7 +36,7 @@ cross-agent priority table. Last brief rewrite: 2026-04-17.
 
 | Row | What | SHA |
 |---|---|---|
-| P1.1 | Wallet wrapper silent-error (`return true` after `LOG_FAIL`) | 8608820e7 |
+| P1.1 | Wallet wrapper silent-error | 8608820e7 |
 | P1.2 | Flush commits partial state | 8608820e7 |
 | P1.5 | Raw sqlite3_step in UTXO batch writer | 152603fdc |
 | P6.1 | write_sapling_key UPDATE failure propagates | 8608820e7 |
@@ -46,110 +46,27 @@ cross-agent priority table. Last brief rewrite: 2026-04-17.
 | P6.5 | Hot-path prepare hoisted to init | 8608820e7 |
 | P6.6 | coins_alloc OOM logged | dc60b7e7b |
 | P3.3 | ~115 raw sqlite3_step sites across 17 files | 2a59ac938 + 8 siblings |
+| **P3.1** | **MCP `zcl_send` JSON injection closed** | **b0134339b** |
+| **P3.2** | **MCP `zcl_sendtoaddress` JSON injection closed** | **b0134339b** |
+| **P3.4** | **store address checksum validation** | **64a4afffc** |
+| **P3.5** | **rpc_client realloc leak closed** | **f0e8d31d3** |
+| **P3.6** | **URL-decode + HMAC form token** | **efa211811** |
 
-**Now working on:** P3 group closure — see NOW below.
-**Queued:** P5 operator hygiene — see NEXT below.
+Every CRITICAL/HIGH row in your original lane is now closed. The full
+P3 group is done except P3.7 (stays with Rhett — `lib/rpc/` is
+off-limits for you).
 
----
-
-## NOW — close the P3 group
-
-Do CRITICAL first (P3.1/P3.2), then HIGH (P3.4/P3.5), then MED (P3.6).
-Commit rules in every section of this file — one logical fix per commit,
-`make test && make lint` green, push frequently, no amends on pushed
-commits.
-
-### P3.1 + P3.2 — MCP JSON injection in wallet_controller (CRITICAL)
-
-Files:
-- `tools/mcp/controllers/wallet_controller.c:53-55` — `zcl_send` (P3.1)
-- `tools/mcp/controllers/wallet_controller.c:76-77` — `zcl_sendtoaddress` (P3.2)
-
-**Bug.** Both handlers substitute `from`/`to`/`address` directly into the
-JSON-RPC payload:
-
-```c
-snprintf(payload, sizeof(payload),
-         "{\"method\":\"z_sendmany\",\"params\":[\"%s\",...,\"%s\"]}",
-         from, to);
-```
-
-A caller sending `from = "ztest\",\"params\":[\"attacker_addr\"] //"`
-can punch through and rewrite the `params` array — redirecting funds.
-
-**Fix.** Use the project's JSON encoder (grep `tools/mcp/` for the
-existing pattern — likely `json_object_build` or `json_string_escape`
-from `lib/json/`). Build the payload as a structured object; never
-snprintf untrusted input into JSON. A single helper like
-`mcp_build_rpc_payload_safe(method, params)` can serve both handlers.
-
-While in the file, grep `tools/mcp/controllers/` for any other
-`snprintf(payload, ..., "%s", user_input)` — this class of bug clusters.
-
-**Acceptance.** In `lib/test/src/test_mcp_controllers.c`, add two
-injection tests (one per handler): pass an address containing
-`","params":["attacker"]//`, assert the backing RPC call receives the
-literal string, not a redirected params array.
-
-### P3.4 — store_controller address checksum validation (HIGH)
-
-File: `app/controllers/src/store_controller.c:663-685`
-
-**Bug.** Checkout handler writes `to_address` to the order row without
-verifying the Base58Check or Bech32 checksum. A typo in one character
-gets ZCL burned on a syntactically-valid-but-checksum-invalid address.
-
-**Fix.** Route every incoming address through `decode_destination` (in
-`lib/keys/include/keys/key_io.h`) or the equivalent t-addr / z-addr
-validator used by wallet code. On invalid checksum: 400 response with a
-specific error message; no row written.
-
-**Acceptance.** Test posts a typo'd address, asserts rejection.
-
-### P3.5 — rpc_client realloc overwrite (HIGH)
-
-File: `tools/mcp/rpc_client.c:126`
-
-**Bug.** `buf = realloc(buf, new_size);` — classic memory-leak-on-failure
-pattern. Under pressure, MCP client leaks the accumulating buffer on
-every failed call.
-
-**Fix.**
-
-```c
-void *tmp = realloc(buf, new_size);
-if (!tmp) { LOG_FAIL(...); free(buf); return -1; }
-buf = tmp;
-```
-
-Grep `tools/mcp/` for every other `X = realloc(X, ...)` site and fix
-them all in the same pass.
-
-### P3.6 — parse_form_field URL-decode + CSRF token (MED)
-
-File: `app/controllers/src/store_controller.c:803-823`
-
-**Bug (URL-decode).** Raw URL-encoded bytes are stored literally — `%20`
-in form input becomes the three characters `%`, `2`, `0` in the DB.
-
-**Bug (CSRF).** No token on the order form. Any logged-in session can be
-cross-site-tricked into placing orders.
-
-**Fix URL-decode.** Port the existing helper from `lib/net/src/` or
-`app/controllers/` (grep `url_decode` / `percent_decode`). Apply to
-every field before use.
-
-**Fix CSRF.** Per-session random token on the checkout-page GET; hidden
-form field; verify on POST. `wallet_view_send.c` has the pattern.
-
-**Acceptance.** Three tests: (a) post without token → reject; (b) post
-with invalid token → reject; (c) post with valid token → accept.
+**Now working on:** P5 operator hygiene — see NOW below.
+**Queued:** narrow expansion into `lib/script/` / `lib/validation/` for
+three small P4 rows, plus an infrastructure contribution (parallel test
+runner). See NEXT.
 
 ---
 
-## NEXT — P5 operator hygiene (pre-authorized; start without a check-in)
+## NOW — P5 operator hygiene (pre-authorized)
 
-Rhett pre-approves these so you don't stall. Do in order, smallest first.
+Do in order, smallest first. These were previously "queued"; now
+they're active.
 
 ### P5.1 — remove tracked export_snapshot ELF (HIGH)
 
@@ -192,6 +109,94 @@ For each `tools/*.sh`:
 
 Project rule: no standalone shell scripts — everything in the binary.
 See `feedback_no_external_tools.md` in Rhett's memory.
+
+---
+
+## NEXT — narrow P4 expansion + parallel test runner (pre-authorized)
+
+Rhett is formally expanding your lane to cover three small, well-bounded
+P4 rows. All three have sharp specs, are ≤100 LoC each, and don't
+touch the interpreter core (which P4.1/P4.2 own — those stay Rhett).
+
+**Expanded read/write scope for this wave:**
+- `lib/script/src/script.c` and `lib/script/include/script/script.h`
+  (P4.3 only)
+- `lib/script/src/sigencoding.c` (P4.5 only)
+- `lib/validation/src/connect_block.c` (P4.4 only)
+
+**Still off-limits:** `lib/script/src/interpreter.c`, all other
+`lib/validation/` files, `lib/consensus/`, `lib/net/`, `lib/rpc/`.
+
+### P4.3 — script_num_serialize outsize bounds check (MED)
+
+File: `lib/script/include/script/script.h:239-258`
+
+**Bug.** `script_num_serialize(out, outsize, v)` writes up to 9 bytes
+(max `CScriptNum`) but doesn't check `outsize`. If a caller passes a
+short buffer, it's a heap overflow.
+
+**Fix.** Return 0 / false if `outsize < required`. Update every caller
+to handle the rejection (compile error tells you where they are). Add a
+test that passes `outsize = 1, v = INT64_MAX` and asserts rejection
+without writing past the buffer.
+
+### P4.4 — disconnect_block unbounded realloc on vin.prevout.n (MED)
+
+File: `lib/validation/src/connect_block.c:586-607`
+
+**Bug.** The realloc size is derived from an attacker-controlled
+`vin.prevout.n` without an upper bound. A block with a malformed
+transaction (n = 2³²−1) makes us attempt a ~128 GiB alloc during
+disconnect.
+
+**Fix.** Clamp `n` to the actual vout count of the prevout's funding
+transaction (known at this point). If `n >= funding_tx.vout_count`,
+reject the block as `bad-txns-inputs-invalid` with a LOG_FAIL. Add a
+test that constructs a block with out-of-range prevout.n and asserts
+rejection.
+
+### P4.5 — sigencoding strict-DER bound inconsistency vs Bitcoin (MED)
+
+File: `lib/script/src/sigencoding.c:11-56`
+
+**Bug.** Our strict-DER check has an off-by-one vs. the Bitcoin /
+upstream Zcash implementation — we reject signatures with length ==
+`r_len + s_len + 6` that they accept, or vice versa. Consensus risk.
+
+**Fix.** Compare our code against
+`vendor/sources/zcashd/src/script/interpreter.cpp` (if vendored) or
+the current upstream Bitcoin Core `IsValidSignatureEncoding`. Align
+the bounds exactly. Add a regression test vector from the Bitcoin
+test suite.
+
+### Infrastructure — parallel test runner (no severity, high leverage)
+
+Rhett asked about this earlier. Current `test_zcl` is single-binary,
+single-threaded, and runs ~140 test groups in sequence. On a 32-core
+box we use ~3%. Tests take 8–15 minutes.
+
+Build a fork-parallel driver under `lib/test/src/test_parallel.c` that:
+
+1. Enumerates the test-group symbols (same list as `test.c:38-194`).
+2. `fork()`s one child per group, capped at `nproc` workers.
+3. Each child redirects stdout / stderr to a temp file, runs its group,
+   exits with 0 / 1.
+4. Parent waits on all children, collects pass/fail, prints the union
+   output in group order, returns 1 if any failed.
+5. Skip forking for groups that call `ecc_start()` / `ecc_verify_init()`
+   — those either need to be moved into each group's setup, or the
+   driver forks a fresh process per group (cleaner but slightly slower
+   — acceptable).
+
+Ship as a new `make test-parallel` target. Keep the sequential
+`./test_zcl` working as-is — the parallel runner is additive.
+
+**Acceptance.** On a 32-core box, `make test-parallel` should be ≥10×
+faster than `./test_zcl` with the same pass/fail outcome.
+
+This is pure infrastructure — touches only `lib/test/`, the Makefile,
+and a new `main()` in `test_parallel.c`. No consensus, no wallet, no
+crypto.
 
 ---
 
