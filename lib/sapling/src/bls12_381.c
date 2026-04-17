@@ -8,6 +8,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include "util/safe_alloc.h"
+#include "util/log_macros.h"
 
 /* Runtime-dispatched Montgomery multiply (CPUID → BMI2+ADX or portable) */
 extern void fp_mont_mul_accel(uint64_t r[6], const uint64_t a[6], const uint64_t b[6]);
@@ -1723,9 +1724,12 @@ void g1_scalar_mul(struct g1_point *r, const struct g1_point *p, const uint64_t 
 /* Groth16 proof deserialization: A (G1, 48B) + B (G2, 96B) + C (G1, 48B) = 192B */
 bool groth16_proof_read(struct groth16_proof *proof, const uint8_t data[192])
 {
-    if (!g1_from_compressed(&proof->a, data)) return false;
-    if (!g2_from_compressed(&proof->b, data + 48)) return false;
-    if (!g1_from_compressed(&proof->c, data + 144)) return false;
+    if (!g1_from_compressed(&proof->a, data))
+        LOG_FAIL("groth16", "proof_read: g1_from_compressed(A) failed");
+    if (!g2_from_compressed(&proof->b, data + 48))
+        LOG_FAIL("groth16", "proof_read: g2_from_compressed(B) failed");
+    if (!g1_from_compressed(&proof->c, data + 144))
+        LOG_FAIL("groth16", "proof_read: g1_from_compressed(C) failed");
     return true;
 }
 
@@ -1832,7 +1836,9 @@ bool groth16_verify(const struct groth16_vk *vk,
                     size_t n_inputs)
 {
     if (n_inputs + 1 != vk->ic_len)
-        return false;
+        LOG_FAIL("groth16",
+                 "verify: public input count mismatch: n_inputs=%zu ic_len=%zu (want %zu)",
+                 n_inputs, vk->ic_len, vk->ic_len - 1);
 
     /* Compute vk_x = IC[0] + sum(IC[i+1] * input[i]) */
     struct g1_point vk_x = vk->ic[0];
@@ -1867,8 +1873,11 @@ bool groth16_verify(const struct groth16_vk *vk,
 
 static bool read_g1_uncompressed(struct g1_point *p, const uint8_t **data, size_t *remaining)
 {
-    if (*remaining < 96) return false;
-    if (!g1_from_uncompressed(p, *data)) return false;
+    if (*remaining < 96)
+        LOG_FAIL("groth16_vk",
+                 "read_g1_uncompressed: short buffer (%zu < 96)", *remaining);
+    if (!g1_from_uncompressed(p, *data))
+        LOG_FAIL("groth16_vk", "read_g1_uncompressed: g1_from_uncompressed failed");
     *data += 96;
     *remaining -= 96;
     return true;
@@ -1876,8 +1885,11 @@ static bool read_g1_uncompressed(struct g1_point *p, const uint8_t **data, size_
 
 static bool read_g2_uncompressed(struct g2_point *p, const uint8_t **data, size_t *remaining)
 {
-    if (*remaining < 192) return false;
-    if (!g2_from_uncompressed(p, *data)) return false;
+    if (*remaining < 192)
+        LOG_FAIL("groth16_vk",
+                 "read_g2_uncompressed: short buffer (%zu < 192)", *remaining);
+    if (!g2_from_uncompressed(p, *data))
+        LOG_FAIL("groth16_vk", "read_g2_uncompressed: g2_from_uncompressed failed");
     *data += 192;
     *remaining -= 192;
     return true;
@@ -1897,30 +1909,47 @@ bool groth16_vk_read_raw(struct groth16_vk *vk, const uint8_t *data, size_t len)
     /* VK format: alpha_g1(96) beta_g1(96) beta_g2(192) gamma_g2(192)
      *            delta_g1(96) delta_g2(192) ic_len(4) ic[](96 each)
      * Minimum: 96+96+192+192+96+192+4 = 868 bytes */
-    if (len < 868) return false;
+    if (len < 868)
+        LOG_FAIL("groth16_vk",
+                 "vk_read_raw: buffer too small: len=%zu < 868 minimum", len);
 
     struct g1_point beta_g1, delta_g1;
-    if (!read_g1_uncompressed(&vk->alpha_g1, &data, &len)) return false;
-    if (!read_g1_uncompressed(&beta_g1, &data, &len)) return false;  /* beta_g1 unused */
-    if (!read_g2_uncompressed(&vk->beta_g2, &data, &len)) return false;
-    if (!read_g2_uncompressed(&vk->gamma_g2, &data, &len)) return false;
-    if (!read_g1_uncompressed(&delta_g1, &data, &len)) return false;  /* delta_g1 unused */
-    if (!read_g2_uncompressed(&vk->delta_g2, &data, &len)) return false;
+    if (!read_g1_uncompressed(&vk->alpha_g1, &data, &len))
+        LOG_FAIL("groth16_vk", "vk_read_raw: alpha_g1 parse failed");
+    if (!read_g1_uncompressed(&beta_g1, &data, &len))  /* beta_g1 unused */
+        LOG_FAIL("groth16_vk", "vk_read_raw: beta_g1 parse failed");
+    if (!read_g2_uncompressed(&vk->beta_g2, &data, &len))
+        LOG_FAIL("groth16_vk", "vk_read_raw: beta_g2 parse failed");
+    if (!read_g2_uncompressed(&vk->gamma_g2, &data, &len))
+        LOG_FAIL("groth16_vk", "vk_read_raw: gamma_g2 parse failed");
+    if (!read_g1_uncompressed(&delta_g1, &data, &len))  /* delta_g1 unused */
+        LOG_FAIL("groth16_vk", "vk_read_raw: delta_g1 parse failed");
+    if (!read_g2_uncompressed(&vk->delta_g2, &data, &len))
+        LOG_FAIL("groth16_vk", "vk_read_raw: delta_g2 parse failed");
 
-    if (len < 4) return false;
+    if (len < 4)
+        LOG_FAIL("groth16_vk", "vk_read_raw: no room for ic_len u32 (remaining=%zu)", len);
     uint32_t ic_len = read_be32(&data, &len);
-    if (ic_len > 1000000) return false;  /* sanity check */
-    if (len < (size_t)ic_len * 96) return false;
+    if (ic_len > 1000000)
+        LOG_FAIL("groth16_vk",
+                 "vk_read_raw: ic_len=%u exceeds 1M sanity cap", ic_len);
+    if (len < (size_t)ic_len * 96)
+        LOG_FAIL("groth16_vk",
+                 "vk_read_raw: short for ic array: remaining=%zu need=%u",
+                 len, ic_len * 96);
 
     vk->ic = zcl_malloc(ic_len * sizeof(struct g1_point), "groth16_vk_ic");
-    if (!vk->ic) return false;
+    if (!vk->ic)
+        LOG_FAIL("groth16_vk",
+                 "vk_read_raw: zcl_malloc failed for ic[] (ic_len=%u)", ic_len);
     vk->ic_len = ic_len;
 
     for (uint32_t i = 0; i < ic_len; i++) {
         if (!read_g1_uncompressed(&vk->ic[i], &data, &len)) {
             free(vk->ic);
             vk->ic = NULL;
-            return false;
+            LOG_FAIL("groth16_vk",
+                     "vk_read_raw: ic[%u] parse failed (of %u)", i, ic_len);
         }
     }
 

@@ -25,6 +25,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include "util/safe_alloc.h"
+#include "util/log_macros.h"
 
 /* ══════════════════════════════════════════════════════════════
  *  Fq: 254-bit prime field arithmetic (Montgomery form)
@@ -1747,14 +1748,30 @@ bool ppzksnark_proof_read(struct ppzksnark_proof *proof, const uint8_t data[296]
 {
     size_t off = 0;
     /* 8 elements: g_A(33), g_A'(33), g_B(65), g_B'(33), g_C(33), g_C'(33), g_K(33), g_H(33) */
-    if (!bn_g1_decompress(&proof->a, data + off)) { return false; } off += 33;
-    if (!bn_g1_decompress(&proof->a_prime, data + off)) { return false; } off += 33;
-    if (!bn_g2_decompress(&proof->b, data + off)) { return false; } off += 65;
-    if (!bn_g1_decompress(&proof->b_prime, data + off)) { return false; } off += 33;
-    if (!bn_g1_decompress(&proof->c, data + off)) { return false; } off += 33;
-    if (!bn_g1_decompress(&proof->c_prime, data + off)) { return false; } off += 33;
-    if (!bn_g1_decompress(&proof->k, data + off)) { return false; } off += 33;
-    if (!bn_g1_decompress(&proof->h, data + off)) { return false; } off += 33;
+    if (!bn_g1_decompress(&proof->a, data + off))
+        LOG_FAIL("phgr13", "proof_read: bn_g1_decompress(g_A) failed");
+    off += 33;
+    if (!bn_g1_decompress(&proof->a_prime, data + off))
+        LOG_FAIL("phgr13", "proof_read: bn_g1_decompress(g_A') failed");
+    off += 33;
+    if (!bn_g2_decompress(&proof->b, data + off))
+        LOG_FAIL("phgr13", "proof_read: bn_g2_decompress(g_B) failed");
+    off += 65;
+    if (!bn_g1_decompress(&proof->b_prime, data + off))
+        LOG_FAIL("phgr13", "proof_read: bn_g1_decompress(g_B') failed");
+    off += 33;
+    if (!bn_g1_decompress(&proof->c, data + off))
+        LOG_FAIL("phgr13", "proof_read: bn_g1_decompress(g_C) failed");
+    off += 33;
+    if (!bn_g1_decompress(&proof->c_prime, data + off))
+        LOG_FAIL("phgr13", "proof_read: bn_g1_decompress(g_C') failed");
+    off += 33;
+    if (!bn_g1_decompress(&proof->k, data + off))
+        LOG_FAIL("phgr13", "proof_read: bn_g1_decompress(g_K) failed");
+    off += 33;
+    if (!bn_g1_decompress(&proof->h, data + off))
+        LOG_FAIL("phgr13", "proof_read: bn_g1_decompress(g_H) failed");
+    off += 33;
     return (off == 296);
 }
 
@@ -1966,8 +1983,14 @@ bool ppzksnark_verify(const struct ppzksnark_vk *vk,
                       const uint64_t (*public_inputs)[4],
                       size_t n_inputs)
 {
-    if (!vk || !proof || n_inputs != vk->ic_len - 1)
-        return false;
+    if (!vk)
+        LOG_FAIL("phgr13", "verify: vk is NULL (params never loaded)");
+    if (!proof)
+        LOG_FAIL("phgr13", "verify: proof is NULL");
+    if (n_inputs != vk->ic_len - 1)
+        LOG_FAIL("phgr13",
+                 "verify: public input count mismatch: n_inputs=%zu ic_len=%zu (want %zu)",
+                 n_inputs, vk->ic_len, vk->ic_len - 1);
 
     /* Compute accumulator: acc = ic[0] + sum(input[i] * ic[i+1]) */
     struct bn_g1 acc = vk->ic[0];
@@ -2017,7 +2040,7 @@ bool ppzksnark_verify(const struct ppzksnark_vk *vk,
         struct bn_g1 pts1[2] = { proof->a, neg_ap };
         struct bn_g2 pts2[2] = { vk->alpha_a_g2, g2_gen };
         if (!bn254_multi_pairing_check(pts1, pts2, 2))
-            return false;
+            LOG_FAIL("phgr13", "verify: check 1 (knowledge of A) pairing rejected");
     }
 
     /* Check 2: Knowledge of B
@@ -2028,7 +2051,7 @@ bool ppzksnark_verify(const struct ppzksnark_vk *vk,
         struct bn_g1 pts1[2] = { vk->alpha_b_g1, neg_bp };
         struct bn_g2 pts2[2] = { proof->b, g2_gen };
         if (!bn254_multi_pairing_check(pts1, pts2, 2))
-            return false;
+            LOG_FAIL("phgr13", "verify: check 2 (knowledge of B) pairing rejected");
     }
 
     /* Check 3: Knowledge of C
@@ -2039,7 +2062,7 @@ bool ppzksnark_verify(const struct ppzksnark_vk *vk,
         struct bn_g1 pts1[2] = { proof->c, neg_cp };
         struct bn_g2 pts2[2] = { vk->alpha_c_g2, g2_gen };
         if (!bn254_multi_pairing_check(pts1, pts2, 2))
-            return false;
+            LOG_FAIL("phgr13", "verify: check 3 (knowledge of C) pairing rejected");
     }
 
     /* Check 4: QAP divisibility
@@ -2053,7 +2076,7 @@ bool ppzksnark_verify(const struct ppzksnark_vk *vk,
         struct bn_g1 pts1[3] = { a_acc, neg_h, neg_c };
         struct bn_g2 pts2[3] = { proof->b, vk->rc_z_g2, g2_gen };
         if (!bn254_multi_pairing_check(pts1, pts2, 3))
-            return false;
+            LOG_FAIL("phgr13", "verify: check 4 (QAP divisibility) pairing rejected");
     }
 
     /* Check 5: Consistency
@@ -2068,7 +2091,7 @@ bool ppzksnark_verify(const struct ppzksnark_vk *vk,
         struct bn_g1 pts1[3] = { proof->k, neg_aac, neg_gb1 };
         struct bn_g2 pts2[3] = { vk->gamma_g2, vk->gamma_beta_g2, proof->b };
         if (!bn254_multi_pairing_check(pts1, pts2, 3))
-            return false;
+            LOG_FAIL("phgr13", "verify: check 5 (consistency) pairing rejected");
     }
 
     return true;
@@ -2124,11 +2147,12 @@ bool sprout_verify_phgr13(const uint8_t proof[296],
                           uint64_t vpub_new)
 {
     if (!phgr_vk)
-        return false;
+        LOG_FAIL("phgr13",
+                 "sprout_verify_phgr13: phgr_vk is NULL (sprout-verifying.key not loaded)");
 
     struct ppzksnark_proof gp;
     if (!ppzksnark_proof_read(&gp, proof))
-        return false;
+        LOG_FAIL("phgr13", "sprout_verify_phgr13: ppzksnark_proof_read failed");
 
     /* Construct input bytes (same layout as Groth16):
      * rt || h_sig || nf1 || mac1 || nf2 || mac2 || cm1 || cm2 || vpub_old_le || vpub_new_le */
@@ -2151,7 +2175,9 @@ bool sprout_verify_phgr13(const uint8_t proof[296],
     bn254_multipack_be(public_inputs, &n_inputs, input, 272);
 
     if (n_inputs != phgr_vk->ic_len - 1)
-        return false;
+        LOG_FAIL("phgr13",
+                 "sprout_verify_phgr13: input count mismatch: got=%zu expected=%zu",
+                 n_inputs, phgr_vk->ic_len - 1);
 
     return ppzksnark_verify(phgr_vk, &gp, public_inputs, n_inputs);
 }
