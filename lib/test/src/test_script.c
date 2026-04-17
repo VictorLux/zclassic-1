@@ -252,6 +252,72 @@ int test_script(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    /* P4.3 — script_num_serialize rejects short buffers instead of
+     * silently truncating. Max output for any valid int64 magnitude is
+     * SCRIPT_NUM_MAX_SIZE (8 bytes). */
+    printf("script_num_serialize outsize bounds... ");
+    {
+        bool ok = true;
+
+        /* Guard sentinels around a 1-byte buffer. INT64_MAX needs 8
+         * bytes, so the call must return 0 and leave both sentinels
+         * untouched. The previous implementation silently wrote byte 0
+         * and reported len=1, producing malformed script. */
+        unsigned char guard[3] = { 0xAA, 0xAA, 0xAA };
+        unsigned char *buf = &guard[1];
+        struct script_num huge = script_num_from_int(INT64_MAX);
+        if (script_num_serialize(&huge, buf, 1) != 0) ok = false;
+        if (guard[0] != 0xAA || guard[1] != 0xAA || guard[2] != 0xAA)
+            ok = false;
+
+        /* Value 128 needs 2 bytes (0x80 magnitude + 0x00 sign byte).
+         * A 1-byte buffer must reject the request; a 2-byte buffer
+         * must accept it with both bytes written. */
+        struct script_num oneTwentyEight = script_num_from_int(128);
+        unsigned char one[1] = { 0xDD };
+        if (script_num_serialize(&oneTwentyEight, one, sizeof(one)) != 0) ok = false;
+        if (one[0] != 0xDD) ok = false;
+
+        unsigned char two[2];
+        size_t len = script_num_serialize(&oneTwentyEight, two, sizeof(two));
+        if (len != 2 || two[0] != 0x80 || two[1] != 0x00) ok = false;
+
+        /* Eight bytes is sufficient for INT64_MAX — round-trip. */
+        unsigned char eight[8];
+        len = script_num_serialize(&huge, eight, sizeof(eight));
+        if (len != 8) ok = false;
+        struct script_num back;
+        if (!script_num_from_bytes(&back, eight, len, true, sizeof(eight)) ||
+            back.value != INT64_MAX)
+            ok = false;
+
+        /* INT64_MIN + 1 is the most negative representable magnitude
+         * (INT64_MIN's absolute value overflows int64 negation). Eight
+         * bytes still suffices because the top magnitude byte (0x7f)
+         * leaves the sign bit free. */
+        struct script_num deep = script_num_from_int(INT64_MIN + 1);
+        unsigned char neg[8];
+        len = script_num_serialize(&deep, neg, sizeof(neg));
+        if (len != 8) ok = false;
+        if (!script_num_from_bytes(&back, neg, len, true, sizeof(neg)) ||
+            back.value != INT64_MIN + 1)
+            ok = false;
+
+        /* Value == 0 returns 0 without touching the buffer — the
+         * "short buffer" case is distinguishable by inspecting
+         * sn->value. */
+        unsigned char zbuf[8];
+        memset(zbuf, 0xCC, sizeof(zbuf));
+        struct script_num zero = script_num_from_int(0);
+        if (script_num_serialize(&zero, zbuf, sizeof(zbuf)) != 0) ok = false;
+        for (size_t i = 0; i < sizeof(zbuf); i++)
+            if (zbuf[i] != 0xCC) { ok = false; break; }
+
+        if (ok)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     printf("script_get_op... ");
     {
         struct script s;

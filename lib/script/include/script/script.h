@@ -236,6 +236,22 @@ static inline bool script_num_from_bytes(struct script_num *out,
     return true;
 }
 
+/* Serialize a script_num into a caller-supplied buffer.
+ *
+ * Returns the number of bytes written, or 0 if:
+ *   - value is 0 (no bytes needed — nothing written), OR
+ *   - the required byte length exceeds outsize (nothing written).
+ *
+ * The two "return 0" cases are distinguishable by the caller: if
+ * sn->value != 0 and the return is 0, the buffer was too small.
+ * Previously the implementation silently truncated the output on a
+ * short buffer, which produced malformed byte strings downstream.
+ *
+ * Max output length is SCRIPT_NUM_MAX_SIZE (8 bytes): the magnitude of
+ * a valid int64 never exceeds 2^63-1, whose top magnitude byte is 0x7f
+ * and therefore does not require a trailing sign byte. Callers whose
+ * values come from unvalidated sources should still pass the full
+ * SCRIPT_NUM_MAX_SIZE rather than something smaller. */
 static inline size_t script_num_serialize(const struct script_num *sn,
                                           unsigned char *out, size_t outsize)
 {
@@ -243,17 +259,29 @@ static inline size_t script_num_serialize(const struct script_num *sn,
     if (value == 0) return 0;
     bool neg = value < 0;
     uint64_t absval = neg ? (uint64_t)(-value) : (uint64_t)value;
+
+    /* Compute the required length by walking the magnitude without
+     * writing. This lets us reject a short buffer atomically. */
+    size_t req = 0;
+    uint64_t t = absval;
+    while (t) { req++; t >>= 8; }
+    /* If the top magnitude byte has its high bit set, a trailing sign
+     * byte is needed so the sign bit doesn't overlap the magnitude. */
+    unsigned char top = (unsigned char)((absval >> (8 * (req - 1))) & 0xff);
+    if (top & 0x80) req++;
+
+    if (req > outsize) return 0;
+
     size_t len = 0;
-    while (absval && len < outsize) {
+    while (absval) {
         out[len++] = (unsigned char)(absval & 0xff);
         absval >>= 8;
     }
-    if (len < outsize) {
-        if (out[len - 1] & 0x80)
-            out[len++] = neg ? 0x80 : 0x00;
-        else if (neg)
-            out[len - 1] |= 0x80;
-    }
+    if (out[len - 1] & 0x80)
+        out[len++] = neg ? 0x80 : 0x00;
+    else if (neg)
+        out[len - 1] |= 0x80;
+
     return len;
 }
 
