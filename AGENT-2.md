@@ -11,6 +11,92 @@ checklist and coordinating plan).
 
 ---
 
+## Status — 2026-04-17
+
+**Original brief complete.** All rows merged to main:
+
+- ✅ P1.1 Wallet wrapper silent-error fixed (8608820e7)
+- ✅ P1.2 Flush commits-partial-state fixed (8608820e7)
+- ✅ P1.5 Raw `sqlite3_step` in UTXO batch writer migrated (152603fdc)
+- ✅ P6.1 `write_sapling_key` UPDATE failure propagates (8608820e7)
+- ✅ P6.2 Flusher reset scoped to own stmts (152603fdc)
+- ✅ P6.3 `read_keys` LOG_ERR on malformed rows (8608820e7)
+- ✅ P6.4 Migration bookkeeping rc-checked (767d9d3e7)
+- ✅ P6.5 Hot-path prepare hoisted to init (8608820e7)
+- ✅ P6.6 `coins_alloc` OOM logged (dc60b7e7b)
+
+Good work. Now on to the next pile.
+
+---
+
+## NEXT UP — P3.3 raw `sqlite3_step` migration in app/
+
+**Scope:** ~80 raw `sqlite3_step()` call sites across `app/controllers/` and
+`app/services/`. These are the exact pattern you just migrated in
+`coins_view_sqlite.c` (P1.5) — hoist the prepare, route stepping through the
+project's activerecord helpers (`AR_STEP_ROW_READONLY` for SELECTs,
+`AR_BEGIN_SAVE` for writes). The infrastructure you need already exists:
+Agent-3's `a5511028d` landed `lib/util/include/util/ar_step_readonly.h` and
+flipped the lint gate (`check-raw-sqlite` is now fail-exit-1 under
+`-DZCL_AR_ENFORCE`).
+
+Many call sites in the merge are already wearing `// raw-sql-ok: a3`
+annotations Agent-3 added to make the lint pass. **Those annotations are
+a TODO list** — every one of them needs a proper migration. Your job is to
+convert them, one file at a time, removing the annotation as you go.
+
+**File ownership expanded for this task:** You may now edit:
+- `app/controllers/` (all files)
+- `app/services/` (all files)
+- `tools/mcp/controllers/` — only the raw-step sites (don't touch JSON
+  handling; Rhett owns the injection fixes at P3.1/P3.2)
+- previous scope: `lib/wallet/`, `lib/storage/`, `lib/coins/`, `lib/test/`
+
+Still off-limits: `lib/crypto/`, `lib/sapling/`, `lib/keys/` (Agent-3) and
+`lib/rpc/`, `lib/validation/`, `lib/consensus/`, `lib/net/`, `lib/script/`
+(Rhett).
+
+**How to find the work:**
+
+```bash
+# Every site that still needs migration:
+grep -rn "raw-sql-ok" app/controllers/ app/services/ tools/mcp/ | wc -l
+
+# Or target a single file:
+grep -n "raw-sql-ok\|sqlite3_step" app/controllers/src/explorer_controller.c
+```
+
+**Commit rules (same as before):**
+
+- One file per commit. "explorer_controller: migrate 7 raw steps to AR helpers".
+- Never bulk-rename. Never disable the lint.
+- After each commit: `make lint && make test` must pass.
+- Push frequently. The ~80-site pile is too big for one PR-class commit.
+
+**Suggested order (smallest files first to build momentum):**
+
+1. `app/controllers/src/file_controller.c`
+2. `app/controllers/src/hodl_controller.c`
+3. `app/controllers/src/snapshot_controller.c`
+4. `app/controllers/src/api_controller.c`
+5. `app/controllers/src/explorer_*.c` (3 files)
+6. `app/controllers/src/store_controller.c` (bigger — leave `parse_form_field`
+   and checksum gap for Rhett; you only migrate step sites)
+7. `app/controllers/src/wallet_*.c` (wallet_controller, wallet_rescan_controller,
+   wallet_shielded_controller, wallet_view_*.c — these touch your home turf)
+8. `app/services/src/*.c` — everything under services, smallest first
+
+Once the lint-grep returns zero, update AGENT.md row P3.3 to
+`done <last SHA>` and ping Rhett.
+
+---
+
+**Everything below this line is your original brief — unchanged for
+reference. The preflight block still works verbatim if you ever need to
+re-bootstrap a stale clone.**
+
+---
+
 ## Preflight — run verbatim, do not ask questions
 
 Execute the block below top to bottom. Each command is defensive and idempotent.
