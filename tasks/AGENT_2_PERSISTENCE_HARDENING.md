@@ -21,15 +21,13 @@ You just shipped `zcl_result` and the `wallet_sqlite` migration. You know where 
 
 ---
 
-## Ordering (important — read before coding)
+## Ordering — do not wait for A3
 
-Agent 3 is landing a boot state machine with an abort primitive (working name `node_state_halt` or similar). **D1 of this scope needs that primitive.** So:
+Directive: **keep pushing to master**. Don't stall on Agent 3.
 
-**Phase 1 (do now, no A3 dep):** D2, D3, D4, D5, D6. Push to `a2/persistence-hardening` after phase 1 so a first PR can be reviewed while A3 is finishing.
+Do D2, D3, D4, D5, D6 in the order below, then D1. One branch, one PR when ready. If A3's halt primitive (`node_state_halt` or equivalent) has landed by the time you get to D1, use it. If not, define a minimal local version (`static void db_halt(const char *reason) { fprintf(stderr, "DB HALT: %s\n", reason); _exit(2); }`) and let A3's fancier version supersede in a follow-up. Do not block.
 
-**Phase 2 (after A3 merges):** rebase onto master, then D1. Either extend the branch or open `a2/persistence-hardening-p2`. Your call based on diff size.
-
-If A3 merges before you start phase 1 — great, do it all in one branch.
+If your PR is too large for a single review, split at your discretion — but each PR you open should stand on its own and target master directly.
 
 ---
 
@@ -140,8 +138,7 @@ Bundle these two into a single "observability" commit. Trivial diff.
 
 - [ ] `make lint` green.
 - [ ] `make ci` green.
-- [ ] Phase 1 (D2–D6) is in one PR titled `a2: persistence silent-error cleanup + observability nits`.
-- [ ] Phase 2 (D1) is in a second PR (or rebased onto phase 1) titled `a2: kill silent full-DB wipe on corruption`.
+- [ ] One or more PRs targeting `master`, each self-contained. Don't wait on Agent 3 — stub their halt primitive locally if needed and let them supersede in a follow-up.
 - [ ] `db_quick_check_ok` failure no longer creates fresh schema; halt + `.recovery.json` dump instead.
 - [ ] `coins_best_block` is inside the savepoint; boot-time max-height check halts on mismatch.
 - [ ] LevelDB checksums on by default.
@@ -188,4 +185,4 @@ EOF
 )"
 ```
 
-Then phase 2 after A3 merges: new PR title `a2: kill silent full-DB wipe on corruption`.
+When this PR merges, pull master and request the next assignment — don't stand down.

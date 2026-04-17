@@ -1,5 +1,7 @@
 # Agent 3 — Wallet Controller Guardrails, Canary, Boot State Machine
 
+**Directive: keep pushing to master.** When this PR merges, pull and move straight to [`AGENT_3_BUILD_CI_DEPLOY.md`](./AGENT_3_BUILD_CI_DEPLOY.md). Do not stand down between assignments.
+
 **Read first:** [`WALLET_PERSISTENCE_PLAN.md`](../WALLET_PERSISTENCE_PLAN.md). This doc assumes you have.
 
 **Worktree:** `~/zclassic23-3`
