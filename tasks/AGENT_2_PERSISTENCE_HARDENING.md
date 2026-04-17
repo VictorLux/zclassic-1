@@ -2,7 +2,7 @@
 
 **STATUS: PARTIALLY MERGED** — D2–D6 shipped in `7a955c0dd` (+ bonus node_health_service silent-return-1 fix that unblocked A3's D8). **D1 is still open.** A3's boot state machine (`8c54d100e`) is now on master, so D1 is unblocked — hook into the same `exit(1)` + structured-diagnostic pattern A3 used in `config/src/boot.c:515-527`. No named halt primitive exists; inline the print-and-exit, then when A2+A3 want a shared primitive that's a separate scope.
 
-**Next after D1 ships:** [`AGENT_2_CONSENSUS_ATOMICITY.md`](./AGENT_2_CONSENSUS_ATOMICITY.md) (I will prep it when D1 lands).
+**Next after D1 ships:** [`AGENT_2_RAILS_VALIDATIONS.md`](./AGENT_2_RAILS_VALIDATIONS.md) — Track M of the Rails parity plan (model validations, uniqueness, format, lifecycle split, zcl_result rollout).
 
 **Directive: keep pushing to master.** Do not stand down between assignments.
 

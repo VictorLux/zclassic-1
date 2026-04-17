@@ -4,6 +4,8 @@
 
 **D8 is DONE.** Agent 2 fixed `node_health_service.c` `get_rss_kb` silent `return -1` as a bonus on their persistence-hardening PR (`7a955c0dd`). Verify with `grep -n 'return -1' app/services/src/node_health_service.c` — should be empty. Strike D8 from your plan. Do the other 8.
 
+**Next after this PR merges:** [`AGENT_3_RAILS_CONTROLLERS.md`](./AGENT_3_RAILS_CONTROLLERS.md) — Track C of the Rails parity plan (strong params everywhere, uniform error envelope, before_action filters, after_commit hooks, controller AR migration, OpenAPI from validators).
+
 **Read first:** [`HARDENING_CHECKLIST.md`](../HARDENING_CHECKLIST.md) §P1.1–P1.4, §P3 systemd, §P3.4 tests, §R2.11.
 
 **Worktree:** `~/zclassic23-3`
