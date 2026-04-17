@@ -2,7 +2,22 @@
  *
  * BLS12-381 scalar field (Fr) and Jubjub curve — pure C23 implementation.
  * Montgomery multiplication with R = 2^256 for field arithmetic.
- * Extended twisted Edwards coordinates for Jubjub point operations. */
+ * Extended twisted Edwards coordinates for Jubjub point operations.
+ *
+ * Note on `return false;` paths in this file: every one is an algorithmic
+ * outcome, not a silent error. Specifically:
+ *   - fr_gte-style helpers compare two field elements; `false` is "less
+ *     than" or "not equal", not a failure.
+ *   - fr_sqrt returns false when the input is not a quadratic residue,
+ *     which happens for ~50% of random inputs in hash-to-curve retry
+ *     loops (find_group_hash walks counters until a point decodes).
+ *   - fr_from_bytes returns false when bytes don't encode a valid field
+ *     element, also a routine miss during compressed-point parsing.
+ *
+ * Wrapping these with LOG_FAIL would flood stderr hundreds of times per
+ * block verification. Do NOT add logging here without understanding
+ * each call site's retry behavior. See P1.11 commit
+ * ca139a5ad for the crypto-side close-out of the logging audit. */
 
 #include "sapling/fr.h"
 #include <string.h>

@@ -344,3 +344,70 @@ and aborts on repeat. Document the hazard at the file header.
 - No new files created outside `lib/crypto/`, `lib/sapling/`, `lib/keys/`,
   `lib/test/`.
 - No secret material appears in any `LOG_*` call.
+
+---
+
+## Notes from Agent-3
+
+### 2026-04-17: P1.11 close-out + Step 8 landed
+
+Second pass (beyond the 2026-04-17 first pass that merged P1.3/1.4/1.8/
+1.9/1.10 as `bcab984fd`) is now fully merged into `main`:
+
+- **P1.11** — done `ca139a5ad`. LOG_FAIL/LOG_ERR/LOG_NULL added across
+  the crypto and sapling trees where silent returns could mask a
+  consensus-level reject or a params-load failure. Covered in commit
+  order: `chacha20poly1305.c`, `ed25519.c`, `note_encryption.c`,
+  `sapling.c` (~30 sites), `groth16_prover.c` (29 sites),
+  `params_init.c` / `zip32.c` / `sprout.c` / `note.c`,
+  `sapling_circuit.c` / `sapling_prover_c23.c`,
+  `incremental_merkle_tree.c` (34 sites), `fast_scan.c` (outer-boundary
+  log only, inner tx-parse loop left bare intentionally),
+  `bls12_381.c` + `bn254.c` (Groth16/PHGR13 verify + VK read),
+  `equihash.c` + `sha256.c` + `blake2b.c` + `blake2s.c`.
+- **Step 8** — done `909636215`. Opt-in esk nonce-reuse sanity guard
+  under `-DZCL_CRYPTO_SANITY=1` in `note_encryption.c`. Default-off so
+  existing known-answer test fixtures that reuse fixed encryption keys
+  keep passing. Abort-on-repeat to prevent two-time-pad leakage if
+  the RNG ever hands us the same esk twice.
+
+### Non-obvious coverage decisions
+
+- **`group_hash()` in sapling.c**: its inner `return false` is a
+  probabilistic hash-to-curve retry signal, NOT an error. Logging
+  each would flood stderr at startup while fixed generators derive.
+  The outer `find_group_hash()` gets LOG_FAIL only on full 256-counter
+  exhaustion or tag-buffer precondition — the real error paths.
+- **`fast_scan.c`**: the inner tx-parse loop has ~40 `return -1;`
+  sites that fire once per malformed tx. Only the outer
+  `fast_scan_sapling_commitments` boundary logs, which gives one line
+  per bad block instead of one per bad varint. File header documents
+  this so the next auditor doesn't "helpfully" wrap them.
+- **`fr.c` / `fr_avx512.c` / `jubjub.c`**: every `return false` in
+  these is an algorithmic outcome (fr_gte comparison result, fr_sqrt
+  non-QR, fr_from_bytes on bad coord bytes in retry loops). Wrapping
+  them would fire hundreds of times per block verification. `fr.c`
+  now carries a file-header comment documenting the rationale.
+- **`incremental_tree_is_complete`**: three `return false;` paths are
+  "tree not yet complete" signals used by the witness append loop, not
+  errors. Documented inline.
+- **`msm_parallel.c`**: `return NULL;` in pthread window functions is
+  the normal thread exit, not an error. Not wrapped.
+- **`curve25519.c` / `hmac_sha256.c` / `hmac_sha512.c` / `pbkdf2_*.c`**:
+  no bare error returns at all — nothing to wrap.
+
+### Test status
+
+`make test` passes the crypto and sapling suites end-to-end on every
+commit. `test_block_pruning` hangs on current `main` (flagged in
+Agent-2's notes on commit `64ed2e3c7`) and is downstream of all
+Agent-3 tests, so the full-suite exit never reaches `0`. The hang is
+in `app/services/src/block_pruning_service.c` (Rhett's lane) and is
+orthogonal to anything in this workstream.
+
+### What's still open in Agent-3's lane
+
+- **P1.12** — `jub_scalar_mul` constant-time rewrite (originally
+  Step 7's FIXME; queued by Rhett on commit `1fb56a564`). Genuinely
+  hard — needs a branchless conditional-select and masked table walks.
+  Not yet started.
