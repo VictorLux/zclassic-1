@@ -95,7 +95,7 @@ regression test locks the gates in place.
 
 | # | Task | Severity | Owner |
 |---|---|---|---|
-| P5.1 | `export_snapshot` (1.1 MB ELF) tracked in git despite `.gitignore` | HIGH | Agent 2 — active (P3 closed) |
+| P5.1 | `export_snapshot` (1.1 MB ELF) tracked in git despite `.gitignore` | HIGH | Agent 2 — done a9ac382b7 |
 | P5.2 | `deploy/zclassic23.service:21` hardcodes Rhett's externalip + 9 addnodes | HIGH | Rhett |
 | P5.3 | Hardcoded `/home/rhett` in `tools/export_snapshot.c:15`, `tools/zcl-nodectl.c:628-637` | HIGH | Agent 2 — active (P3 closed) |
 | P5.4 | 10 shell scripts in `tools/` duplicating MCP — purge | MED | Agent 2 — active (P3 closed) |
