@@ -2,6 +2,7 @@
 
 #include "controllers/wallet_view_internal.h"
 #include "controllers/wallet_controller.h"
+#include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 
 /* Shield: one-click fund securing. User confirms the amount. */
@@ -138,7 +139,7 @@ size_t serve_shield_confirm(uint8_t *r, size_t max,
                     "WHERE address IS NOT NULL AND length(address) > 0 "
                     "ORDER BY rowid LIMIT 1",
                     -1, &zs, NULL) == SQLITE_OK && zs) {
-                if (sqlite3_step(zs) == SQLITE_ROW) {  // raw-sql-ok: a3
+                if (AR_STEP_ROW_READONLY(zs) == SQLITE_ROW) {
                     const char *a = (const char *)sqlite3_column_text(zs, 0);
                     if (a) snprintf(z_dest, sizeof(z_dest), "%s", a);
                 }

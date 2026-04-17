@@ -45,6 +45,7 @@
 #include "coins/coins.h"
 #include "coins/coins_view.h"
 #include "views/wallet_view.h"
+#include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 #include <stdio.h>
@@ -480,7 +481,7 @@ static bool rpc_coinanalysis(const struct json_value *params, bool help,
         " diversifier, pk_d, witness_height"
         " FROM wallet_sapling_notes ORDER BY block_height",
         -1, &z_stmt, NULL);
-    while (z_stmt && sqlite3_step(z_stmt) == SQLITE_ROW) {  // raw-sql-ok: a3
+    while (z_stmt && AR_STEP_ROW_READONLY(z_stmt) == SQLITE_ROW) {
         const uint8_t *ntxid = sqlite3_column_blob(z_stmt, 0);
         int nidx = sqlite3_column_int(z_stmt, 1);
         int64_t nval = sqlite3_column_int64(z_stmt, 2);
@@ -549,7 +550,7 @@ static bool rpc_coinanalysis(const struct json_value *params, bool help,
     sqlite3_prepare_v2(ctx->node_db->db,
         "SELECT fee FROM wallet_transactions WHERE from_me = 1 AND fee > 0",
         -1, &fee_stmt, NULL);
-    while (fee_stmt && sqlite3_step(fee_stmt) == SQLITE_ROW) {  // raw-sql-ok: a3
+    while (fee_stmt && AR_STEP_ROW_READONLY(fee_stmt) == SQLITE_ROW) {
         total_fees += sqlite3_column_int64(fee_stmt, 0);
         tx_count++;
     }

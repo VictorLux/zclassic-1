@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "controllers/wallet_view_internal.h"
+#include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 
 int wv_list_receive_addresses(sqlite3 *db, struct wv_receive_address *out,
@@ -19,7 +20,7 @@ int wv_list_receive_addresses(sqlite3 *db, struct wv_receive_address *out,
             -1, &s, NULL) != SQLITE_OK || !s)
         return 0;
 
-    while (sqlite3_step(s) == SQLITE_ROW && count < max) {  // raw-sql-ok: a3
+    while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW && count < max) {
         const char *raw = (const char *)sqlite3_column_text(s, 0);
         if (!raw || !raw[0])
             continue;
@@ -49,7 +50,7 @@ int wv_list_held_tokens(sqlite3 *db, struct wv_held_token *out, size_t max)
             -1, &s, NULL) != SQLITE_OK || !s)
         return 0;
 
-    while (sqlite3_step(s) == SQLITE_ROW && count < max) {  // raw-sql-ok: a3
+    while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW && count < max) {
         const char *tid = (const char *)sqlite3_column_text(s, 0);
         const char *ticker = (const char *)sqlite3_column_text(s, 1);
         int decimals = sqlite3_column_int(s, 2);

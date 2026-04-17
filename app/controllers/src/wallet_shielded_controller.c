@@ -40,6 +40,7 @@
 #include "controllers/wallet_scan.h"
 #include "coins/coins.h"
 #include "coins/coins_view.h"
+#include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 #include <stdio.h>
@@ -268,7 +269,7 @@ static bool rpc_z_listunspent(const struct json_value *params, bool help,
             sqlite3_stmt *hs = NULL;
             sqlite3_prepare_v2(ctx->node_db->db,
                 "SELECT MAX(height) FROM blocks", -1, &hs, NULL);
-            if (hs && sqlite3_step(hs) == SQLITE_ROW)  // raw-sql-ok: a3
+            if (hs && AR_STEP_ROW_READONLY(hs) == SQLITE_ROW)
                 chain_h = sqlite3_column_int(hs, 0);
             if (hs) sqlite3_finalize(hs);
         }

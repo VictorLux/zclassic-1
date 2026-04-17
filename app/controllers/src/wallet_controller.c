@@ -31,6 +31,7 @@
 #include "coins/coins_view.h"
 #include "core/serialize.h"
 #include "encoding/base58.h"
+#include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 #include "wallet/wallet_canary.h"
@@ -543,7 +544,7 @@ bool wallet_direct_shield(const char *z_address, int64_t amount_sat,
         if (sqlite3_prepare_v2(ctx->node_db->db,
                 "SELECT pubkey_hash FROM wallet_keys ORDER BY rowid LIMIT 1",
                 -1, &s, NULL) == SQLITE_OK && s) {
-            if (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok: a3
+            if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
                 const unsigned char *hash = sqlite3_column_blob(s, 0);
                 int hash_len = sqlite3_column_bytes(s, 0);
                 if (hash && hash_len == 20) {
@@ -727,7 +728,7 @@ static bool wallet_readback_key(sqlite3 *db,
         -1, &st, NULL);
     if (rc != SQLITE_OK) return false;
     sqlite3_bind_blob(st, 1, pkh, 20, SQLITE_STATIC);
-    rc = sqlite3_step(st);  // raw-sql-ok: a3
+    rc = AR_STEP_ROW_READONLY(st);
     bool ok = false;
     if (rc == SQLITE_ROW) {
         const void *blob = sqlite3_column_blob(st, 0);
@@ -815,7 +816,11 @@ static bool rpc_importprivkey(const struct json_value *params, bool help,
                     "DELETE FROM wallet_keys WHERE pubkey_hash=?1",
                     -1, &st, NULL) == SQLITE_OK) {
                 sqlite3_bind_blob(st, 1, pkh, 20, SQLITE_STATIC);
-                (void)sqlite3_step(st);  // raw-sql-ok: a3
+                /* Best-effort DELETE rolling back the wallet_key row
+                 * we just wrote when the keystore-add failed.  rc is
+                 * intentionally discarded — the canary self-test on
+                 * next boot detects a lingering row. */
+                (void)sqlite3_step(st);  // raw-sql-ok: best-effort write-rollback path
                 sqlite3_finalize(st);
             }
         }

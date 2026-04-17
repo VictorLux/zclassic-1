@@ -2,6 +2,7 @@
 
 #include "controllers/wallet_view_internal.h"
 #include "controllers/wallet_controller.h"
+#include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 
 /* ── Node / Command Center (/wallet/node) ───────────────────── */
@@ -102,7 +103,7 @@ size_t serve_node(uint8_t *r, size_t max) {
                 "SELECT addr, subver, starting_height, inbound "
                 "FROM peers ORDER BY starting_height DESC LIMIT 25",
                 -1, &ps, NULL) == SQLITE_OK) {
-            while (sqlite3_step(ps) == SQLITE_ROW &&  // raw-sql-ok: a3
+            while (AR_STEP_ROW_READONLY(ps) == SQLITE_ROW &&
                    pt + 400 < sizeof(peer_table)) {
                 const char *addr = (const char *)sqlite3_column_text(ps, 0);
                 const char *subver = (const char *)sqlite3_column_text(ps, 1);
