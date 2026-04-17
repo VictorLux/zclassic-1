@@ -202,3 +202,54 @@ make -j"$(nproc)"
 
 _(append new observations here as work proceeds — keep dated, short,
 and flag the owner of anything out of lane.)_
+
+### 2026-04-17 — Wave 2 closeout
+
+- **Step H (curve25519)**: no implementation change required. The
+  TweetNaCl Montgomery ladder is constant-time by construction;
+  branchless `sel25519` cswap, no precomputed tables, deterministic
+  loop counts. Audit conclusion is captured as a header comment in
+  `lib/crypto/src/curve25519.c`, and a Hamming-weight regression
+  timing test was added to `lib/test/src/test_sapling.c` (lo-vs-hi
+  scalar weight ratio must stay within ±15%).
+- **Step I (ed25519)**: this file is verify-only. There is no
+  `ed25519_sign` in the tree (consensus paths only need verify;
+  signing is RedJubjub in `lib/sapling`). Verify operates on public
+  inputs only, but the existing impl already uses cswap-driven
+  scalarmult and an XOR-OR diff check — CT regardless. Audit comment
+  in `lib/crypto/src/ed25519.c` documents this and pre-warns about
+  future sign-side requirements.
+- **Step J (RNG hygiene)**: literal grep across `lib/crypto/` and
+  `lib/sapling/` for `rand`/`random`/`drand48`/`srand*`/`arc4random`
+  and weak seeds (`time(NULL)`, `getpid`) found **zero** hits — both
+  trees source secret bytes only via `GetRandBytes`. However see the
+  out-of-lane finding immediately below.
+
+### 2026-04-17 — Out-of-lane finding (FOR RHETT, lib/core/)
+
+`lib/core/src/random.c:13-27` (`GetRandBytes`) **silently zero-fills**
+the output buffer if `open("/dev/urandom")` fails. Every call site in
+`lib/sapling/` and `lib/crypto/` ultimately depends on this function —
+including ephemeral DH secrets (`secure_channel.c`), Sapling note
+randomness (`rcm`/`rcv`/`esk`/`ar`), Groth16 proof blinding factors,
+RedJubjub signing nonces, and AEAD nonces in `sha3_crypt`. A failed
+open() therefore turns into a same-key-everywhere catastrophe with no
+log line and no caller-visible signal.
+
+In-lane mitigation landed as Step J: a defensive
+`zcl_random_secret_bytes` wrapper (`lib/crypto/include/crypto/random_secret.h`)
+that detects the all-zero output, scrubs it, and `LOG_FAIL`s. All
+in-lane secret-generation call sites were migrated. This catches the
+failure mode but leaves callers in `lib/net/src/secure_channel.c`
+(your lane) still using raw `GetRandBytes`.
+
+Suggested upstream fix in `lib/core/src/random.c`:
+1. Try `getrandom(2)` first (works in chroots; no FD needed).
+2. Fall back to `/dev/urandom` if `getrandom` is unavailable.
+3. On total failure: `LOG_FAIL`-equivalent (the function is `void`
+   today; consider returning `bool` and propagating, or `abort()` in
+   the absolute worst case rather than handing out predictable bytes).
+4. Retry on `EINTR` rather than bailing on the first short read.
+
+`lib/core/` is shared infrastructure, so I am leaving the source
+unchanged and flagging here.
