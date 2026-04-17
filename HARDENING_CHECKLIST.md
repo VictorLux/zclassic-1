@@ -212,18 +212,11 @@ For `zclassicd-rhett.service` (currently in a restart loop due to manual-zclassi
 
 ---
 
-## Ownership / next-wave assignment proposal
+## Ownership
 
-When agents 2 and 3 land:
+Only agents 2 and 3 are active (wallet persistence, see `WALLET_PERSISTENCE_PLAN.md`). Everything else in this document is backlog: findings are recorded here with file:line references and fix sketches so that future work — done by Claude in-session, or handed to another agent when rhett chooses — can pick it up without re-doing the audit. No agents 4+ are dispatched.
 
-| Agent | Worktree | Scope |
-|---|---|---|
-| Agent 4 | `~/zclassic23-4` | **P1.1 – P1.4** (build/CI/deploy). ~200 LOC diff. Smallest, highest leverage. Do first. |
-| Agent 5 | `~/zclassic23-5` | **P2.1 – P2.3** (database.c + utxo_commitment silent errors). Must coordinate with agent 2's migrations. |
-| Agent 6 | `~/zclassic23-6` | **P2.4 – P2.7** (consensus atomicity). Invasive — bg-validation + CSR barrier. Requires the most care. |
-| Agent 7 | `~/zclassic23-7` | **P3.1 – P3.3** (network) + **P3/P4 systemd + tool safety**. |
-
-Each agent reads this file first, then its own `tasks/AGENT_N_*.md`. PR titles mirror the section IDs (`a4: P1.1-P1.4 build/CI/deploy hardening`).
+After agents 2/3 land, rhett will decide which P0/P1 items graduate to a follow-up agent and in what order.
 
 ---
 
@@ -387,16 +380,11 @@ These are mostly **reads**, which is safer than writes, but they still bypass th
 
 ---
 
-## Additional ownership proposal
+## Round 2 highlights for the backlog
 
-Adding to the agent 4-7 plan from round 1:
+**R2.1 is P0** — same tier as the wallet bug. Whoever picks up round-2 work must do it first.
 
-| Agent | Worktree | Scope (round 2) |
-|---|---|---|
-| Agent 5 | `~/zclassic23-5` | R2.1 (silent full-wipe) is now the **highest priority in this agent's bucket** — do it first. Also R2.5 (coins_view atomicity), R2.10 (LevelDB checksums). |
-| Agent 6 | `~/zclassic23-6` | Add R2.7 (block-file CRC). |
-| Agent 7 | `~/zclassic23-7` | Add R2.4, R2.6 (MCP). |
-| **Agent 8 (new)** | `~/zclassic23-8` | **Sapling hardening**: R2.2, R2.3, R2.8, R2.9. Adds proof-verification fuzz corpus to `lib/test/fuzz_seeds/sapling/`. Migrates verification functions to `zcl_result` once agent 2 lands `result.h`. |
+The other round-2 findings are P1 or below and can be prioritized when rhett dispatches follow-up work.
 
 ---
 
