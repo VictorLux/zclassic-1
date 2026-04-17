@@ -144,6 +144,35 @@ void wallet_backup_stop(void);
  * thread — serialised by the service mutex. */
 bool wallet_backup_now(void);
 
+/* ── Event triggers (debounced) ─────────────────────────────── */
+
+/* Minimum interval between trigger-driven backups. Triggers that
+ * arrive inside the window coalesce to one backup at the end of
+ * the window, protecting disk from e.g. a 1000-address import
+ * script that would otherwise cause 1000 JSON writes. */
+#define WALLET_BACKUP_TRIGGER_MIN_INTERVAL_SEC 30
+
+/* Signal the background thread that wallet key state changed and a
+ * fresh backup should run soon.
+ *
+ * Safe to call from any thread. No-op if the backup service is not
+ * running (e.g. tests, or before boot finishes). Non-blocking.
+ * Rate-limited: at most one backup per
+ * WALLET_BACKUP_TRIGGER_MIN_INTERVAL_SEC; later triggers coalesce
+ * into a single run.
+ *
+ * Called by the wallet controller after every successful key
+ * persist (importprivkey, getnewaddress, z_getnewaddress, etc.)
+ * so the JSON mirror never lags behind the SQLite store by more
+ * than the debounce interval. */
+void wallet_backup_service_on_key_change(void);
+
+/* Same as on_key_change, but semantically meant for bulk keypool
+ * top-ups that happen at boot or after drain. Distinct entry
+ * point so tests can count each kind independently; currently
+ * both share the same debounce and the same backup run. */
+void wallet_backup_service_on_keypool_topup(void);
+
 /* ── Low-level primitive (testable) ─────────────────────────── */
 
 /* Create one backup file in `backup_dir` reading from `db`. On

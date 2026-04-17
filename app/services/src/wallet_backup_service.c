@@ -91,6 +91,13 @@ struct wallet_backup_service_state {
     int64_t last_duration_ms;
     char    last_path[512];
     char    last_error[256];
+
+    /* Debounced event trigger (D4: plan §5.4).
+     * Set by wallet_backup_service_on_key_change; cleared by the
+     * thread after running a debounce-eligible backup. */
+    bool    key_change_pending;
+    int64_t total_triggers;     /* total on_key_change calls (all, incl. coalesced) */
+    int64_t total_trigger_runs; /* backups that actually ran due to a trigger */
 };
 
 static struct wallet_backup_service_state g_wbs = {
@@ -828,11 +835,15 @@ static void *wbs_thread_fn(void *arg)
     while (true) {
         pthread_mutex_lock(&g_wbs.lock);
         bool stop = g_wbs.stop_requested;
+        bool pending = g_wbs.key_change_pending;
+        int64_t last_ok = g_wbs.last_run_unix;
         pthread_mutex_unlock(&g_wbs.lock);
         if (stop) break;
 
+        bool ran_this_tick = false;
         if (wbs_now_ms() >= next_at_ms) {
             (void)wallet_backup_now();
+            ran_this_tick = true;
             /* Re-read interval in case config was updated. */
             pthread_mutex_lock(&g_wbs.lock);
             interval = g_wbs.cfg.interval_seconds > 0
@@ -840,7 +851,28 @@ static void *wbs_thread_fn(void *arg)
                 : WALLET_BACKUP_DEFAULT_INTERVAL_SEC;
             pthread_mutex_unlock(&g_wbs.lock);
             next_at_ms = wbs_now_ms() + (int64_t)interval * 1000;
+        } else if (pending) {
+            /* Debounced trigger path: fire if the last backup (of any
+             * kind) is older than WALLET_BACKUP_TRIGGER_MIN_INTERVAL_SEC.
+             * Multiple triggers that arrive inside the window collapse
+             * into this single run. */
+            int64_t now_s = wbs_now_unix();
+            if (last_ok == 0 ||
+                now_s >= last_ok + WALLET_BACKUP_TRIGGER_MIN_INTERVAL_SEC) {
+                (void)wallet_backup_now();
+                ran_this_tick = true;
+                pthread_mutex_lock(&g_wbs.lock);
+                g_wbs.total_trigger_runs++;
+                pthread_mutex_unlock(&g_wbs.lock);
+            }
         }
+
+        if (ran_this_tick) {
+            pthread_mutex_lock(&g_wbs.lock);
+            g_wbs.key_change_pending = false;
+            pthread_mutex_unlock(&g_wbs.lock);
+        }
+
         /* Sleep in small increments so stop_requested is honoured
          * without waiting up to `interval` seconds. */
         wbs_sleep_ms(200);
@@ -922,6 +954,28 @@ void wallet_backup_stop(void)
         g_wbs.thread_running = false;
         g_wbs.stop_requested = false;
         g_wbs.db = NULL;
+        g_wbs.key_change_pending = false;
         pthread_mutex_unlock(&g_wbs.lock);
     }
+}
+
+/* ── Event triggers (D4: plan §5.4) ─────────────────────────── */
+
+void wallet_backup_service_on_key_change(void)
+{
+    pthread_mutex_lock(&g_wbs.lock);
+    /* Count every call, even coalesced ones, for debugging /
+     * test visibility. Only set the pending flag if the thread is
+     * running — otherwise the next wallet_backup_start() will do a
+     * first-run immediately and pick up the state anyway. */
+    g_wbs.total_triggers++;
+    if (g_wbs.thread_running) {
+        g_wbs.key_change_pending = true;
+    }
+    pthread_mutex_unlock(&g_wbs.lock);
+}
+
+void wallet_backup_service_on_keypool_topup(void)
+{
+    wallet_backup_service_on_key_change();
 }
