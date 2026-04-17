@@ -224,6 +224,13 @@ static const char *SCHEMA[] = {
     "CREATE INDEX IF NOT EXISTS idx_snote_address"
     " ON wallet_sapling_notes(address) WHERE spent_txid IS NULL",
 
+    /* Wallet persistence canary (boot-time self-test; see
+     * lib/wallet/include/wallet/wallet_canary.h). */
+    "CREATE TABLE IF NOT EXISTS wallet_canary ("
+    "id INTEGER PRIMARY KEY CHECK (id=1),"
+    "probe BLOB NOT NULL,"
+    "ts INTEGER NOT NULL)",
+
     /* Mempool */
     "CREATE TABLE IF NOT EXISTS mempool ("
     "txid BLOB PRIMARY KEY,raw_tx BLOB NOT NULL,"
