@@ -249,3 +249,171 @@ The node is **not** rock-solid until all of these hold simultaneously:
 8. [ ] Every destructive `tools/*` requires a `--force` flag.
 
 Only after all eight boxes check do we route test funds through this node.
+
+---
+
+# Round 2 — Extended audit (2026-04-17, same day)
+
+Covers subsystems the first pass skipped: MCP server, Sapling crypto, block-file storage, crash-recovery paths, and what `make lint` actually catches *today*. All findings below have been line-verified by reading the code, not just trusting the audit summary. False positives recorded at the end.
+
+## R2.1 — CATASTROPHIC: silent full-DB wipe on SQLite corruption
+
+**File:** `app/models/src/database.c:533-542`
+```c
+if (!db_quick_check_ok(ndb->db)) {
+    fprintf(stderr, "db: %s is malformed; rebuilding fresh SQLite state\n", path);
+    sqlite3_close(ndb->db);
+    ndb->db = NULL;
+    db_quarantine_files(path);             // renames *.db → *.db-corrupt-<ts>
+    if (!db_open_raw(&ndb->db, path)) { …return false; }
+}
+/* falls through to create_schema(ndb) — empty DB */
+```
+This is the same class of bug as the wallet-persistence one: a silent "self-heal" that throws away everything. Violates the explicit memory rule: **NEVER wipe UTXOs above tip; reset tip first**. On an OOM-induced partial corruption it nukes:
+- `wallet_keys` (every unspent address, rerolls keypool)
+- `utxos` (UTXO set — triggers full resync)
+- `blocks`, `block_index`, `schema_migrations` (everything)
+
+**Priority:** P0 — same tier as the wallet bug. Fix must land before any node self-heals corruption.
+**Fix direction:**
+1. Split the response by what `quick_check` reports — table-level corruption vs global.
+2. Before quarantine, read out `wallet_keys` into a recovery file (encrypted-at-rest preserved).
+3. Never open a fresh schema in the same boot; prompt via an explicit `--rebuild-fresh-db` flag or halt STATE_D-style.
+4. Integration test: fuzz-flip bytes in `node.db`, restart, assert that `wallet_keys` survive OR that node halts (never silently wipes).
+
+## R2.2 — CRASH: Sapling witness buffer underread (attacker-controllable)
+
+**File:** `lib/sapling/src/sapling_prover_c23.c:167-171`
+```c
+uint8_t depth = witness[0];
+if (depth != 32) return false;
+for (int i = 0; i < 32; i++) {
+    memcpy(wit.auth_path[i], witness + 1 + i * 33, 32);
+    wit.auth_path_bits[i] = witness[1 + i * 33 + 32] != 0;
+}
+```
+`zclassic_sapling_spend_proof` has no `witness_len` parameter. If caller supplies a buffer shorter than 1057 bytes (1 + 32×33), this reads past the end. Inputs come from z_sendmany / receive parsing — network-reachable on the proving path, possibly attacker-reachable on the verifying side.
+**Priority:** P1. Add `size_t witness_len` parameter; check `witness_len >= 1 + depth * 33` before the loop. Add a regression test with a 100-byte witness.
+
+## R2.3 — CRYPTO_LEAK: compiler may optimize away secret zeroing
+
+**File:** `lib/sapling/src/note_encryption.c:126,127,150,151`
+```c
+memset(dhsecret, 0, 32);   // ← compiler may elide
+memset(key, 0, 32);        // ← compiler may elide
+```
+`dhsecret` and `key` are ECDH-derived shielded-note decryption keys. After use they must be scrubbed; plain `memset` on a soon-to-be-deallocated stack variable is a classic dead-store the optimizer removes. The codebase already has `memory_cleanse` (used correctly in `groth16_prover.c:598,788-789`).
+**Priority:** P1. 4-line mechanical fix: replace 4 `memset` calls. Grep `lib/sapling/` for `memset.*, 0, 32` to catch analogues.
+
+## R2.4 — CRASH: MCP net handler continues after failed malloc
+
+**File:** `tools/mcp/controllers/net_controller.c:124-139` (`h_zcl_onion_health`)
+```c
+char *body = zcl_malloc(512, "onion_health_body");
+if (!body) {
+    res->error = MCP_ERR_INTERNAL;
+    snprintf(res->error_message, sizeof(res->error_message), …);
+    LOG_ERR("mcp.net", "malloc failed for onion_health body (512 bytes)");
+}   // ← missing return
+if (!addr) {
+    snprintf(body, 512, …);   // ← body is NULL, crash
+```
+Verified: `LOG_ERR` expands to `return -1` in the macro set, but **the handler does not invoke the macro**; it manually calls `LOG_ERR` as a function-style log (line 130 is just `LOG_ERR(...)` without `do{…; return -1;}while(0)`). So control falls through to the NULL-deref.
+**Priority:** P1. Add `return -1;` after the log line. Then grep the rest of `tools/mcp/controllers/` for the same anti-pattern — this is likely not unique.
+
+## R2.5 — DATA_LOSS: coins_view_sqlite flush atomicity
+
+**File:** `lib/storage/src/coins_view_sqlite.c:283-501` (batch write path)
+
+The flush wraps UTXO writes in a `SAVEPOINT`, but the best-block pointer update happens *after* the savepoint release. SIGKILL in that window leaves UTXOs for block N+1 in the DB while `coins_best_block` still points to block N. On restart the node sees inconsistent state; there is no post-boot audit that compares max UTXO height to `coins_best_block`.
+
+This is the same bug class as the 2026-04-10 UTXO wipe, and the same class as the snapsync atomicity gap (R1/P2.6 above).
+
+**Priority:** P1. Move the `coins_best_block` write inside the savepoint. Add a boot-time integrity check: `SELECT MAX(height) FROM utxos` must equal `coins_best_block`. If off, halt with STATE_D reason `UTXO_TIP_MISMATCH`, do not self-heal.
+
+## R2.6 — HIGH: MCP handlers build RPC params with unbounded snprintf
+
+**Files:**
+- `tools/mcp/controllers/app_controller.c:44`
+- `tools/mcp/controllers/wallet_controller.c:76, 244`
+- `tools/mcp/controllers/ops_controller.c:75-95`
+
+Pattern: `snprintf(params, 256, "[\"%s\"]", user_string)` where `user_string` came from untrusted JSON. 256 bytes is tight for anything with an address or txid; bigger wallet params can truncate. Truncation isn't detected (`snprintf` return is ignored), so the RPC call silently fires with a malformed JSON array.
+**Priority:** P2. Introduce a helper `mcp_build_params(buf, buflen, "[%s]", …)` that: (a) returns error if truncated, (b) JSON-escapes the string properly. Migrate all DEFINE_PT handlers to it.
+
+## R2.7 — HIGH: block-file write lacks length-prefix + CRC wrapping
+
+**File:** `lib/storage/src/disk_block_io.c:181-213`
+
+Three separate `fwrite` calls (magic / size / data) then `fdatasync`. SIGKILL between #1 and #2 leaves a file that parses as "block with random size". Read path trusts the size field without CRC; deserialization may succeed into garbage, caught only by hash comparison one layer up.
+**Priority:** P2. Wrap the three writes in a single atomic-ish record: `[magic][size][crc32][data]`. Verify CRC on read; return `false` (and log) on mismatch.
+
+## R2.8 — MEDIUM: assertion-based input validation in Sapling Merkle tree
+
+**File:** `lib/sapling/src/incremental_merkle_tree.c:37`
+```c
+assert(depth <= MAX_TREE_DEPTH);
+```
+If any public deserializer reaches this with `depth` from the wire, a release build with `-DNDEBUG` silently continues; debug build crashes. Either way the validation is wrong. Replace with `if (depth > MAX_TREE_DEPTH) return false;`.
+
+## R2.9 — MEDIUM: Sapling verification functions return bare bool
+
+**File:** `lib/sapling/src/sapling.c:484-577` (multiple sites)
+
+`sapling_check_spend` / `sapling_check_output` return `false` for: malformed curve point, malformed proof, Groth16 mismatch — the caller cannot distinguish "hostile input" from "internal error." Log-only coverage is one `fprintf` in the whole file.
+**Priority:** P2. Migrate to `struct zcl_result` once agent 2 lands `lib/util/result.h`. Every `return false` gets a distinct `SAPLING_ERR_*` code.
+
+## R2.10 — MEDIUM: LevelDB reads skip checksum verification
+
+**File:** `lib/storage/src/dbwrapper.c:73-78`
+```c
+leveldb_readoptions_set_verify_checksums(g_read_options, 0);
+```
+Comment on the line attributes past missing-UTXO incidents to this setting. Performance tradeoff is real, but the default should be **verify on**; turn off only behind a boot-time flag while recovery is suspected.
+**Priority:** P2. Flip default. Hide the `off` behind a flag.
+
+## R2.11 — MEDIUM: `make lint` raw-sqlite warning has 70+ hits in app code
+
+Ran `make lint` right now. `check-raw-sqlite` target emits 70+ lines and then still exits 0 because it's WARNING-only. Most prolific offenders:
+- `app/controllers/src/explorer_factoids.c` (16 hits, line 169 onward)
+- `app/controllers/src/explorer_stats.c` (13 hits)
+- `app/controllers/src/blockchain_controller.c` (11 hits)
+- `app/models/src/database.c` (6 hits)
+- `app/models/src/utxo.c` (1 hit)
+
+These are mostly **reads**, which is safer than writes, but they still bypass the defensive layer. Incidentally, `make lint` *does* fail today on a different check: `app/services/src/node_health_service.c:71,82` — two `return -1` without logging in `get_rss_kb()` (reading `/proc/self/status`). Trivial 2-line fix but illustrates that lint-failing code is already on master.
+
+**Priority (for the sqlite3_step cleanup):** P2 — wire P1.3 first so new violations can't be added, then batch-migrate the existing ones to `AR_STEP_ROW` / `AR_STEP_DONE`. Reads can use a simpler `AR_STEP_ROW_READONLY` wrapper that skips the write-validation hooks.
+
+---
+
+## Additional ownership proposal
+
+Adding to the agent 4-7 plan from round 1:
+
+| Agent | Worktree | Scope (round 2) |
+|---|---|---|
+| Agent 5 | `~/zclassic23-5` | R2.1 (silent full-wipe) is now the **highest priority in this agent's bucket** — do it first. Also R2.5 (coins_view atomicity), R2.10 (LevelDB checksums). |
+| Agent 6 | `~/zclassic23-6` | Add R2.7 (block-file CRC). |
+| Agent 7 | `~/zclassic23-7` | Add R2.4, R2.6 (MCP). |
+| **Agent 8 (new)** | `~/zclassic23-8` | **Sapling hardening**: R2.2, R2.3, R2.8, R2.9. Adds proof-verification fuzz corpus to `lib/test/fuzz_seeds/sapling/`. Migrates verification functions to `zcl_result` once agent 2 lands `result.h`. |
+
+---
+
+## Extended acceptance gates (in addition to the 8 from round 1)
+
+9. [ ] No self-healing DB-quarantine path that deletes user data without explicit operator action.
+10. [ ] Sapling witness-parsing bounds checked; fuzz corpus lives in `lib/test/fuzz_seeds/sapling/`.
+11. [ ] All ECDH secret material scrubbed with `memory_cleanse`, verified by a grep-level lint rule.
+12. [ ] Every MCP handler returns immediately after `LOG_ERR` or `res->error = ...`.
+13. [ ] Block-file writes include a CRC that is verified on read.
+14. [ ] `make lint` exits 0 — no WARNING-only checks, no FAIL.
+
+---
+
+## Round 2 false positives (not bugs, recorded to avoid re-chasing)
+
+- `disk_block_io.c` **does** call `fdatasync` (line 206) before recording the block position, so `pread` at the recorded offset is safe from SIGKILL. Contrary to the R2 audit's initial framing.
+- `app/services/src/utxo_recovery_service.c:47-66` has a policy-gated wipe (`ZCL_MAX_UTXO_WIPE_ROWS` + operator-prompt callback) — *not* a silent wipe. Good example of the pattern R2.1 should adopt.
+- `note_encryption.c:109-111, 132-134` also zero scratch buffers; those locations are the exact set to convert (sprout_note_encrypt, sprout_note_decrypt, symmetric halves) — not just the sapling ones.
+
