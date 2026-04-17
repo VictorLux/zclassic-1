@@ -18,6 +18,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include "util/safe_alloc.h"
+#include "util/log_macros.h"
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wpedantic"
@@ -33,20 +34,30 @@ static char g_params_dir[512] = {0};
 static bool load_pk_file(const char *path, uint8_t **data, size_t *len)
 {
     int fd = open(path, O_RDONLY);
-    if (fd < 0) return false;
+    if (fd < 0)
+        LOG_FAIL("sapling_prover", "load_pk_file: open(%s) failed", path);
     struct stat st;
-    if (fstat(fd, &st) != 0) { close(fd); return false; }
+    if (fstat(fd, &st) != 0) {
+        close(fd);
+        LOG_FAIL("sapling_prover", "load_pk_file: fstat(%s) failed", path);
+    }
     *len = (size_t)st.st_size;
     *data = mmap(NULL, *len, PROT_READ, MAP_PRIVATE, fd, 0);
     close(fd);
-    if (*data == MAP_FAILED) { *data = NULL; return false; }
+    if (*data == MAP_FAILED) {
+        *data = NULL;
+        LOG_FAIL("sapling_prover",
+                 "load_pk_file: mmap(%s, %zu) failed", path, *len);
+    }
     return true;
 }
 
 static bool ensure_spend_pk(void)
 {
     if (g_spend_pk_data) return true;
-    if (!g_params_dir[0]) return false;
+    if (!g_params_dir[0])
+        LOG_FAIL("sapling_prover",
+                 "ensure_spend_pk: params_dir not configured (call zclassic_sapling_prover_init first)");
     char path[512];
     snprintf(path, sizeof(path), "%s/sapling-spend.params", g_params_dir);
     return load_pk_file(path, &g_spend_pk_data, &g_spend_pk_len);
@@ -55,7 +66,9 @@ static bool ensure_spend_pk(void)
 static bool ensure_output_pk(void)
 {
     if (g_output_pk_data) return true;
-    if (!g_params_dir[0]) return false;
+    if (!g_params_dir[0])
+        LOG_FAIL("sapling_prover",
+                 "ensure_output_pk: params_dir not configured (call zclassic_sapling_prover_init first)");
     char path[512];
     snprintf(path, sizeof(path), "%s/sapling-output.params", g_params_dir);
     return load_pk_file(path, &g_output_pk_data, &g_output_pk_len);
@@ -129,10 +142,9 @@ bool zclassic_sapling_spend_proof(
     unsigned char *rk,
     unsigned char *zkproof)
 {
-    if (!ensure_spend_pk()) {
-        fprintf(stderr, "C23 spend PK not loaded from %s\n", g_params_dir);
-        return false;
-    }
+    if (!ensure_spend_pk())
+        LOG_FAIL("sapling_prover",
+                 "spend_proof: ensure_spend_pk failed (params_dir=%s)", g_params_dir);
 
     /* Generate rcv for value commitment */
     uint8_t rcv[32];
@@ -140,11 +152,11 @@ bool zclassic_sapling_spend_proof(
 
     /* cv = value_commit(value, rcv) */
     if (!sapling_value_commit(value, rcv, cv))
-        return false;
+        LOG_FAIL("sapling_prover", "spend_proof: sapling_value_commit failed");
 
     /* rk = randomize(ak, ar) via spend auth generator */
     if (!sapling_compute_rk(ak, ar, rk))
-        return false;
+        LOG_FAIL("sapling_prover", "spend_proof: sapling_compute_rk failed");
 
     /* Parse Merkle path: depth(1) || 32×(sibling(32) || bit(1)) */
     struct sapling_spend_witness wit;
@@ -165,7 +177,10 @@ bool zclassic_sapling_spend_proof(
 
     /* witness format: depth(1) || depth × (hash(32) || bit(1)) */
     uint8_t depth = witness[0];
-    if (depth != 32) return false;
+    if (depth != 32)
+        LOG_FAIL("sapling_prover",
+                 "spend_proof: witness depth %u != 32 (malformed merkle path)",
+                 (unsigned)depth);
     for (int i = 0; i < 32; i++) {
         memcpy(wit.auth_path[i], witness + 1 + i * 33, 32);
         wit.auth_path_bits[i] = witness[1 + i * 33 + 32] != 0;
@@ -187,7 +202,8 @@ bool zclassic_sapling_spend_proof(
     /* Groth16 prove */
     if (!sapling_create_spend_proof(g_spend_pk_data, g_spend_pk_len,
                                      &wit, &pub, zkproof))
-        return false;
+        LOG_FAIL("sapling_prover",
+                 "spend_proof: sapling_create_spend_proof failed");
 
     /* Accumulate bsk: bsk += rcv (spends add) */
     struct zclassic_proving_ctx *pctx = ctx;
@@ -213,16 +229,15 @@ bool zclassic_sapling_output_proof(
     unsigned char *cv,
     unsigned char *zkproof)
 {
-    if (!ensure_output_pk()) {
-        fprintf(stderr, "C23 output PK not loaded from %s\n", g_params_dir);
-        return false;
-    }
+    if (!ensure_output_pk())
+        LOG_FAIL("sapling_prover",
+                 "output_proof: ensure_output_pk failed (params_dir=%s)", g_params_dir);
 
     uint8_t rcv[32];
     sapling_generate_r(rcv);
 
     if (!sapling_value_commit(value, rcv, cv))
-        return false;
+        LOG_FAIL("sapling_prover", "output_proof: sapling_value_commit failed");
 
     struct sapling_output_witness wit;
     wit.value = value;
@@ -239,7 +254,8 @@ bool zclassic_sapling_output_proof(
 
     if (!sapling_create_output_proof(g_output_pk_data, g_output_pk_len,
                                       &wit, &pub, zkproof))
-        return false;
+        LOG_FAIL("sapling_prover",
+                 "output_proof: sapling_create_output_proof failed");
 
     /* Accumulate bsk: bsk -= rcv (outputs subtract) */
     struct zclassic_proving_ctx *pctx = ctx;
@@ -262,7 +278,9 @@ bool zclassic_sapling_binding_sig(
 {
     (void)value_balance;
     const struct zclassic_proving_ctx *pctx = ctx;
-    if (!pctx || !pctx->has_bsk) return false;
+    if (!pctx || !pctx->has_bsk)
+        LOG_FAIL("sapling_prover",
+                 "binding_sig: proving ctx missing bsk (spend/output not called first?)");
     uint8_t bsk_bytes[32];
     fs_to_bytes(bsk_bytes, &pctx->bsk);
     /* generator_idx=1 for binding signature (uses value commitment generator) */

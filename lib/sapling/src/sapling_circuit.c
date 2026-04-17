@@ -19,6 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "util/safe_alloc.h"
+#include "util/log_macros.h"
 
 /* ── Helper: convert bytes to Fr ────────────────────────────────── */
 
@@ -33,7 +34,8 @@ static bool point_to_xy(struct fr *x, struct fr *y, const uint8_t compressed[32]
 {
     struct jub_point p;
     if (!jub_from_bytes(&p, compressed))
-        return false;
+        LOG_FAIL("sapling_circuit",
+                 "point_to_xy: jub_from_bytes failed on compressed input");
     jub_get_x(x, &p);
     jub_get_y(y, &p);
     return true;
@@ -106,14 +108,14 @@ bool sapling_spend_synthesize(struct constraint_system *cs,
     /* rk = ak + ar * G (randomized verification key) */
     struct fr rk_x, rk_y;
     if (!point_to_xy(&rk_x, &rk_y, pub->rk))
-        return false;
+        LOG_FAIL("sapling_circuit", "spend: point_to_xy(rk) failed");
     cs_alloc_input(cs, &rk_x);  /* input 1: rk.x */
     cs_alloc_input(cs, &rk_y);  /* input 2: rk.y */
 
     /* cv (value commitment) */
     struct fr cv_x, cv_y;
     if (!point_to_xy(&cv_x, &cv_y, pub->cv))
-        return false;
+        LOG_FAIL("sapling_circuit", "spend: point_to_xy(cv) failed");
     cs_alloc_input(cs, &cv_x);  /* input 3: cv.x */
     cs_alloc_input(cs, &cv_y);  /* input 4: cv.y */
 
@@ -141,7 +143,7 @@ bool sapling_spend_synthesize(struct constraint_system *cs,
     /* Spending key: ak (Jubjub point) */
     struct fr ak_x, ak_y;
     if (!point_to_xy(&ak_x, &ak_y, wit->ak))
-        return false;
+        LOG_FAIL("sapling_circuit", "spend: point_to_xy(ak) failed");
     size_t ak_x_var = cs_alloc_aux(cs, &ak_x);
     size_t ak_y_var = cs_alloc_aux(cs, &ak_y);
 
@@ -177,7 +179,7 @@ bool sapling_spend_synthesize(struct constraint_system *cs,
     /* Diversifier and pk_d */
     struct fr pkd_x, pkd_y;
     if (!point_to_xy(&pkd_x, &pkd_y, wit->pk_d))
-        return false;
+        LOG_FAIL("sapling_circuit", "output: point_to_xy(pk_d) failed");
     cs_alloc_aux(cs, &pkd_x);
     cs_alloc_aux(cs, &pkd_y);
 
@@ -285,7 +287,9 @@ bool sapling_output_synthesize(struct constraint_system *cs,
     /* note_contents accumulates boolean variable indices:
      * value(64) + g_d_repr(256) + pk_d_repr(256) = 576 bits */
     size_t *note_contents = zcl_malloc(576 * sizeof(size_t), "note_contents");
-    if (!note_contents) return false;
+    if (!note_contents)
+        LOG_FAIL("sapling_circuit",
+                 "note_contents: zcl_malloc(%zu) failed", 576 * sizeof(size_t));
     size_t nc_idx = 0;
 
     /* ════════════════════════════════════════════════════════
@@ -537,29 +541,28 @@ bool sapling_create_spend_proof(const uint8_t *pk_data, size_t pk_len,
 {
     /* Load proving key */
     struct groth16_pk pk;
-    if (!groth16_pk_read(&pk, pk_data, pk_len)) {
-        printf("Failed to load spend proving key\n");
-        return false;
-    }
+    if (!groth16_pk_read(&pk, pk_data, pk_len))
+        LOG_FAIL("sapling_circuit",
+                 "create_spend_proof: groth16_pk_read failed (pk_len=%zu)", pk_len);
 
     /* Synthesize circuit */
     struct constraint_system cs;
     cs_init(&cs);
 
     if (!sapling_spend_synthesize(&cs, wit, pub)) {
-        printf("Spend circuit synthesis failed\n");
         cs_free(&cs);
         groth16_pk_free(&pk);
-        return false;
+        LOG_FAIL("sapling_circuit",
+                 "create_spend_proof: sapling_spend_synthesize failed");
     }
 
     /* Generate proof */
     struct groth16_proof proof;
     if (!groth16_prove(&pk, &cs, &proof)) {
-        printf("Spend proof generation failed\n");
         cs_free(&cs);
         groth16_pk_free(&pk);
-        return false;
+        LOG_FAIL("sapling_circuit",
+                 "create_spend_proof: groth16_prove failed");
     }
 
     /* Serialize */
@@ -576,27 +579,26 @@ bool sapling_create_output_proof(const uint8_t *pk_data, size_t pk_len,
                                   uint8_t proof_out[192])
 {
     struct groth16_pk pk;
-    if (!groth16_pk_read(&pk, pk_data, pk_len)) {
-        printf("Failed to load output proving key\n");
-        return false;
-    }
+    if (!groth16_pk_read(&pk, pk_data, pk_len))
+        LOG_FAIL("sapling_circuit",
+                 "create_output_proof: groth16_pk_read failed (pk_len=%zu)", pk_len);
 
     struct constraint_system cs;
     cs_init(&cs);
 
     if (!sapling_output_synthesize(&cs, wit, pub)) {
-        printf("Output circuit synthesis failed\n");
         cs_free(&cs);
         groth16_pk_free(&pk);
-        return false;
+        LOG_FAIL("sapling_circuit",
+                 "create_output_proof: sapling_output_synthesize failed");
     }
 
     struct groth16_proof proof;
     if (!groth16_prove(&pk, &cs, &proof)) {
-        printf("Output proof generation failed\n");
         cs_free(&cs);
         groth16_pk_free(&pk);
-        return false;
+        LOG_FAIL("sapling_circuit",
+                 "create_output_proof: groth16_prove failed");
     }
 
     serialize_proof(proof_out, &proof);
