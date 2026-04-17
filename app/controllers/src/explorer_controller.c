@@ -42,6 +42,7 @@
 #include <sys/stat.h>
 #include <pthread.h>
 #include <math.h>
+#include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 
@@ -378,7 +379,7 @@ static int native_chain_height(void)
         int h = -1;
         if (sqlite3_prepare_v2(ctx->node_db->db,
                 "SELECT MAX(height) FROM blocks", -1, &s, NULL) == SQLITE_OK && s) {
-            if (sqlite3_step(s) == SQLITE_ROW)  // raw-sql-ok: a3
+            if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW)  
                 h = sqlite3_column_int(s, 0);
             sqlite3_finalize(s);
         }
@@ -1327,7 +1328,7 @@ static size_t serve_tx(const char *param, uint8_t *r, size_t max)
                         -1, &vs, NULL) == SQLITE_OK && vs) {
                     sqlite3_bind_blob(vs, 1, tx.vin[i].prevout.hash.data, 32, SQLITE_STATIC);
                     sqlite3_bind_int(vs, 2, (int)tx.vin[i].prevout.n);
-                    if (sqlite3_step(vs) == SQLITE_ROW) {  // raw-sql-ok: a3
+                    if (AR_STEP_ROW_READONLY(vs) == SQLITE_ROW) {
                         int64_t prev_val = sqlite3_column_int64(vs, 0);
                         format_zcl(in_val, sizeof(in_val), prev_val);
                     }
@@ -2006,7 +2007,7 @@ static void *tokens_compute_thread(void *arg)
                 "SELECT ticker, name, decimals, total_minted, genesis_height, hex(token_id)"
                 " FROM zslp_tokens ORDER BY genesis_height LIMIT 100",
                 -1, &s, NULL) == SQLITE_OK) {
-            while (sqlite3_step(s) == SQLITE_ROW && off + 512 < max) {  // raw-sql-ok: a3
+            while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW && off + 512 < max) {
                 const char *ticker = (const char *)sqlite3_column_text(s, 0);
                 const char *name = (const char *)sqlite3_column_text(s, 1);
                 int dec = sqlite3_column_int(s, 2);
@@ -2071,7 +2072,7 @@ static void *tokens_compute_thread(void *arg)
                 "LEFT JOIN zslp_tokens t ON x.token_id = t.token_id "
                 "ORDER BY x.block_height DESC LIMIT 50",
                 -1, &s, NULL) == SQLITE_OK) {
-            while (sqlite3_step(s) == SQLITE_ROW && off + 256 < max) {  // raw-sql-ok: a3
+            while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW && off + 256 < max) {
                 int height = sqlite3_column_int(s, 0);
                 int tx_type = sqlite3_column_int(s, 1);
                 int64_t amount = sqlite3_column_int64(s, 2);
@@ -2213,11 +2214,11 @@ static size_t serve_token_detail(const char *token_id_hex, uint8_t *r, size_t ma
                 "FROM zslp_tokens WHERE token_id = ?",
                 -1, &s, NULL) == SQLITE_OK) {
             sqlite3_bind_blob(s, 1, token_id, 32, SQLITE_STATIC);
-            if (sqlite3_step(s) != SQLITE_ROW) {  // raw-sql-ok: a3
+            if (AR_STEP_ROW_READONLY(s) != SQLITE_ROW) {
                 /* Try reversed */
                 sqlite3_reset(s);
                 sqlite3_bind_blob(s, 1, token_id_rev, 32, SQLITE_STATIC);
-                if (sqlite3_step(s) == SQLITE_ROW)  // raw-sql-ok: a3
+                if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW)  
                     lookup_id = token_id_rev;
             }
             if (sqlite3_column_text(s, 0)) {
@@ -2270,7 +2271,7 @@ static size_t serve_token_detail(const char *token_id_hex, uint8_t *r, size_t ma
                 "SELECT count(*) FROM zslp_transfers WHERE token_id = ?",
                 -1, &s, NULL) == SQLITE_OK) {
             sqlite3_bind_blob(s, 1, lookup_id, 32, SQLITE_STATIC);
-            if (sqlite3_step(s) == SQLITE_ROW)  // raw-sql-ok: a3
+            if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW)  
                 xfer_count = sqlite3_column_int64(s, 0);
             sqlite3_finalize(s);
         }
@@ -2321,7 +2322,7 @@ static size_t serve_token_detail(const char *token_id_hex, uint8_t *r, size_t ma
                 "ORDER BY block_height DESC LIMIT 100",
                 -1, &s, NULL) == SQLITE_OK) {
             sqlite3_bind_blob(s, 1, lookup_id, 32, SQLITE_STATIC);
-            while (sqlite3_step(s) == SQLITE_ROW && off + 512 < max) {  // raw-sql-ok: a3
+            while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW && off + 512 < max) {
                 int height = sqlite3_column_int(s, 0);
                 int tx_type = sqlite3_column_int(s, 1);
                 int64_t amount = sqlite3_column_int64(s, 2);
@@ -2447,7 +2448,7 @@ static void *hodl_compute_thread(void *arg)
         sqlite3_stmt *stmt = NULL;
         if (sqlite3_prepare_v2(db,
                 "SELECT MAX(height) FROM blocks", -1, &stmt, NULL) == SQLITE_OK) {
-            if (sqlite3_step(stmt) == SQLITE_ROW)  // raw-sql-ok: a3
+            if (AR_STEP_ROW_READONLY(stmt) == SQLITE_ROW)  
                 tip = sqlite3_column_int(stmt, 0);
             sqlite3_finalize(stmt);
         }
@@ -2546,7 +2547,7 @@ static void *hodl_compute_thread(void *arg)
             BUCKET_SIZE, BUCKET_SIZE, tip + 1000, BUCKET_SIZE);
 
         if (sqlite3_prepare_v2(db, sql_buf, -1, &stmt, NULL) == SQLITE_OK) {
-            while (sqlite3_step(stmt) == SQLITE_ROW) {  // raw-sql-ok: a3
+            while (AR_STEP_ROW_READONLY(stmt) == SQLITE_ROW) {
                 int bh = sqlite3_column_int(stmt, 0);
                 int64_t bv = sqlite3_column_int64(stmt, 1);
                 int idx = bh / BUCKET_SIZE;
