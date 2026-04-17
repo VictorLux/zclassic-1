@@ -11,19 +11,44 @@ checklist and coordinating plan).
 
 ---
 
-## Preflight — every session
+## Preflight — run verbatim, do not ask questions
+
+Execute the block below top to bottom. Each command is defensive and idempotent.
+Do NOT pause to ask about branch state, stash, or divergence — the block handles
+all of it. Only stop if `make` or `./test_zcl` fails (broken baseline — tell Rhett).
+
 ```bash
 cd ~/zclassic23-2
-git pull origin main
-# Read before coding:
-cat CLAUDE.md                     # project overview, MCP tools
-cat DEFENSIVE_CODING.md           # the rules that are about to be enforced
-cat AGENT.md                      # master checklist — your rows are P1.1, P1.2, P1.5, P6.*
-make -j$(nproc)                   # confirm clean build before changing anything
-./test_zcl                        # confirm tests pass before changing anything
+
+# 1. Preserve any local-only work to its current branch so nothing is stranded
+git add -A
+git diff --staged --quiet || git commit -m "a2: wip checkpoint before AGENT-2.md workstream"
+
+# 2. If on a feature branch, push it as backup, then move to main
+CURRENT=$(git branch --show-current)
+if [ "$CURRENT" != "main" ]; then
+    git push origin "$CURRENT" 2>/dev/null || true   # backup; ok if no perms
+    git checkout main
+fi
+
+# 3. Sync main
+git pull origin main --rebase=false
+
+# 4. Confirm clean baseline
+git status
+git branch --show-current            # must print "main"
+
+# 5. Read the rules and the checklist
+cat CLAUDE.md
+cat DEFENSIVE_CODING.md
+cat AGENT.md                          # your rows: P1.1, P1.2, P1.5, P6.1–P6.6
+
+# 6. Confirm green baseline — STOP and report if either fails
+make -j"$(nproc)"
+./test_zcl
 ```
 
-If any of the above fails before you've touched a line, STOP and tell Rhett.
+Once that all passes, start Step 1 below. Commit/push after each logical fix.
 
 ---
 
