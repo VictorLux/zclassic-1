@@ -283,9 +283,25 @@ bool process_tx_msg(struct msg_processor *mp, struct p2p_node *node,
     return true;
 }
 
+/* P2.2 test hook: when non-NULL, process_mempool calls this instead
+ * of zcl_malloc for the scratch buffer. Returning NULL simulates OOM.
+ * File-scope so the hook can only influence this one call site. */
+static void *(*g_process_mempool_alloc_hook)(size_t) = NULL;
+
+void msgprocessor_test_set_mempool_alloc_hook(void *(*hook)(size_t))
+{
+    g_process_mempool_alloc_hook = hook;
+}
+
 bool process_mempool(struct msg_processor *mp, struct p2p_node *node)
 {
-    struct uint256 hashes[MAX_INV_SZ];
+    size_t bytes = (size_t)MAX_INV_SZ * sizeof(struct uint256);
+    struct uint256 *hashes = g_process_mempool_alloc_hook
+        ? g_process_mempool_alloc_hook(bytes)
+        : zcl_malloc(bytes, "mempool_inv_hashes");
+    if (!hashes)
+        LOG_FAIL("net", "process_mempool: OOM (%zu bytes)", bytes);
+
     size_t num = 0;
     tx_mempool_query_hashes(mp->mempool, hashes, MAX_INV_SZ, &num);
 
@@ -294,5 +310,6 @@ bool process_mempool(struct msg_processor *mp, struct p2p_node *node)
         inv_item_init_typed(&inv, MSG_TX, &hashes[i]);
         p2p_node_push_inventory(node, &inv);
     }
+    free(hashes);
     return true;
 }

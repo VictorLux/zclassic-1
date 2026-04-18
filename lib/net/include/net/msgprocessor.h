@@ -125,6 +125,12 @@ bool msgprocessor_test_swarm_try_claim(void);
 void msgprocessor_test_swarm_release(void);
 bool msgprocessor_test_swarm_is_active(void);
 
+/* P2.2 test hook: swap the allocator process_mempool uses for its
+ * scratch hash buffer. Pass NULL to restore the default zcl_malloc
+ * path; pass a function that returns NULL to simulate OOM. Only
+ * influences process_mempool — no global malloc override. */
+void msgprocessor_test_set_mempool_alloc_hook(void *(*hook)(size_t));
+
 /* Test helpers for block relay deduplication. */
 bool msgprocessor_test_block_already_seen(const struct uint256 *hash);
 void msgprocessor_test_block_mark_seen(const struct uint256 *hash);

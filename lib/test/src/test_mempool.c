@@ -1,6 +1,17 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "test/test_helpers.h"
+#include "net/net.h"
+#include "net/msgprocessor.h"
+#include "net/msg_internal.h"
+#include "util/sync.h"
+
+/* P2.2 OOM hook: unconditionally fails the allocation. */
+static void *p22_force_null_alloc(size_t bytes)
+{
+    (void)bytes;
+    return NULL;
+}
 
 int test_mempool(void)
 {
@@ -552,6 +563,98 @@ int test_mempool(void)
         bool ok = true;
 
         block_policy_estimator_free(&est);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ================================================================
+     * P2.2: process_mempool happy path — all tx hashes flow into
+     * node->inventory_to_send via p2p_node_push_inventory, proving
+     * the heap-allocated scratch buffer carries the full result set
+     * end to end (previously a 1.6 MB stack alloc).
+     * ================================================================ */
+    printf("process_mempool: 100 tx happy path pushes all inv... ");
+    {
+        struct tx_mempool pool;
+        tx_mempool_init(&pool, 1000);
+
+        for (int i = 0; i < 100; i++) {
+            struct transaction tx;
+            transaction_init(&tx);
+            transaction_alloc(&tx, 1, 1);
+            memset(tx.vin[0].prevout.hash.data, 0, 32);
+            tx.vin[0].prevout.hash.data[0] = (unsigned char)(i & 0xFF);
+            tx.vin[0].prevout.hash.data[1] = (unsigned char)((i >> 8) & 0xFF);
+            tx.vin[0].prevout.n = 0;
+            tx.vin[0].sequence = 0xFFFFFFFF;
+            tx.vout[0].value = COIN_VALUE;
+            transaction_compute_hash(&tx);
+
+            struct mempool_entry entry;
+            mempool_entry_init(&entry, &tx, 1000, 1700000000, 1e6, 100,
+                               true, false, 0);
+            tx_mempool_add_unchecked(&pool, &tx.hash, &entry);
+            mempool_entry_free(&entry);
+            transaction_free(&tx);
+        }
+
+        struct msg_processor mp = {0};
+        mp.mempool = &pool;
+
+        struct p2p_node node;
+        memset(&node, 0, sizeof(node));
+        zcl_mutex_init(&node.cs_inventory);
+
+        bool ok = process_mempool(&mp, &node);
+        ok = ok && (node.inventory_to_send_count == 100);
+
+        free(node.inventory_to_send);
+        zcl_mutex_destroy(&node.cs_inventory);
+        tx_mempool_free(&pool);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ================================================================
+     * P2.2: process_mempool returns false on OOM and pushes no inv.
+     * Test hook forces the scratch allocation to fail; the caller
+     * observes false and node->inventory_to_send is never touched.
+     * ================================================================ */
+    printf("process_mempool: OOM returns false, no inv pushed... ");
+    {
+        struct tx_mempool pool;
+        tx_mempool_init(&pool, 1000);
+
+        struct transaction tx;
+        transaction_init(&tx);
+        transaction_alloc(&tx, 1, 1);
+        memset(tx.vin[0].prevout.hash.data, 0x42, 32);
+        tx.vin[0].prevout.n = 0;
+        tx.vin[0].sequence = 0xFFFFFFFF;
+        tx.vout[0].value = COIN_VALUE;
+        transaction_compute_hash(&tx);
+
+        struct mempool_entry entry;
+        mempool_entry_init(&entry, &tx, 1000, 1700000000, 1e6, 100,
+                           true, false, 0);
+        tx_mempool_add_unchecked(&pool, &tx.hash, &entry);
+        mempool_entry_free(&entry);
+        transaction_free(&tx);
+
+        struct msg_processor mp = {0};
+        mp.mempool = &pool;
+
+        struct p2p_node node;
+        memset(&node, 0, sizeof(node));
+        zcl_mutex_init(&node.cs_inventory);
+
+        msgprocessor_test_set_mempool_alloc_hook(p22_force_null_alloc);
+        bool ok = !process_mempool(&mp, &node);
+        msgprocessor_test_set_mempool_alloc_hook(NULL);
+
+        ok = ok && (node.inventory_to_send_count == 0);
+        ok = ok && (node.inventory_to_send == NULL);
+
+        zcl_mutex_destroy(&node.cs_inventory);
+        tx_mempool_free(&pool);
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
