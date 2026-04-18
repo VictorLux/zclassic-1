@@ -38,109 +38,30 @@ gap analysis. See `AGENT.md` for the cross-agent priority table.
 
 ---
 
-## Current status — 2026-04-19 (afternoon, P7.1 + P2.2 shipped)
+## Current status — 2026-04-19 (evening, P2.1 shipped)
 
-**Done and on main (32 rows + 1 infra):** P1.1, P1.2, P1.5, P6.1–P6.6,
+**Done and on main (33 rows + 2 infra):** P1.1, P1.2, P1.5, P6.1–P6.6,
 P3.1–P3.7, P5.1, P5.2, P5.3, P5.4, P5.6, P5.7, P4.3, P4.4, P4.5,
-P2.2 (`352a83167`), P2.3, P2.4, P2.5, P2.6, P2.7, P2.8, P7.1
-(`a6bedccad`), P7.2, P7.3, P7.5, P7.6, P7.7, P7.8. Plus parallel
-test runner infra (`df5de36c4`).
+P2.1 (`da318931d`), P2.2 (`352a83167`), P2.3, P2.4, P2.5, P2.6, P2.7,
+P2.8, P7.1 (`a6bedccad`), P7.2, P7.3, P7.5, P7.6, P7.7, P7.8. Plus
+parallel test runner infra (`df5de36c4`) + block_pruning self-deadlock
+fix uncovered while running P2.1 tests (`3979340c9`).
 
-P7.1 was the live-outage CRIT — the `update_tip` silent-drop that
-turned any csr commit rejection into an unrecoverable stuck-tip loop.
-Fix shipped; Rhett still needs to `make deploy` for production to
-pick it up.
+With P2.1 landed all P-tier CRIT rows are closed. Rhett still needs
+to `make deploy` for production to pick up the P7.1 fix — chain is
+still stuck at h=3,081,411.
 
-**Open queue (4 logical tasks):**
+**Open queue (3 logical tasks, all HIGH):**
 
 | Order | Row | Size | Severity |
 |---|---|---|---|
-| NOW | **P2.1** wire tx validation into `msg_tx` handler | medium | CRIT |
-| NEXT[1] | **P4.1 + P4.2** script interpreter stack refactor (paired) | large | HIGH |
-| NEXT[2] | **P7.4** backpressure watchdog under tip-stuck | medium | HIGH |
-| NEXT[3] | **P7.9 + P7.10** thread registry + shutdown audit (paired) | large | HIGH |
+| NOW | **P4.1 + P4.2** script interpreter stack refactor (paired) | large | HIGH |
+| NEXT[1] | **P7.4** backpressure watchdog under tip-stuck | medium | HIGH |
+| NEXT[2] | **P7.9 + P7.10** thread registry + shutdown audit (paired) | large | HIGH |
 
 ---
 
-## NOW — P2.1: wire tx validation into `msg_tx` handler
-
-File: `lib/net/src/msg_tx.c:34-69` (the handler that accepts incoming
-`tx` P2P messages). Now the last open P-tier CRIT. Same file you've
-touched for P2.2/P2.3/P2.4 — familiar territory.
-
-### Bug
-
-Incoming `tx` messages go straight into the mempool with no
-signature / UTXO / fee check. An attacker can flood the node with
-invalid, double-spending, or zero-fee transactions to exhaust memory
-or poison the mempool for other peers.
-
-### Fix
-
-Wire `check_transaction` (from `lib/validation/`) + mempool
-accept-policy (min-relay-fee, per-peer quota) INTO the handler before
-the `tx_mempool_add` call. Rough shape:
-
-```c
-/* Inside handle_tx_message */
-struct tx_validation_result r = check_transaction(&tx, &state);
-if (!r.ok) {
-    peer_score_decrement(peer, r.severity);   /* existing infra */
-    event_emit(EV_TX_REJECTED, peer->id, hash.data, 32);
-    return true;  /* consumed the message, just reject the tx */
-}
-if (tx_fee_below_min_relay(&tx, mempool)) {
-    /* rate-limit, not malicious — drop silently, no ban-score */
-    event_emit(EV_TX_BELOW_RELAY_FEE, peer->id, hash.data, 32);
-    return true;
-}
-if (tx_mempool_has_conflict(mempool, &tx)) {
-    peer_score_decrement(peer, SCORE_DOUBLE_SPEND);
-    event_emit(EV_TX_DOUBLE_SPEND, peer->id, hash.data, 32);
-    return true;
-}
-/* only now: insert into mempool */
-tx_mempool_add(mempool, &tx);
-```
-
-The specific function names above are suggestive — use whatever
-already exists in `lib/validation/` + `lib/policy/` + the mempool
-helpers. Don't invent a new validation pipeline.
-
-### Acceptance (3 regression tests in `lib/test/src/test_mempool.c`)
-
-1. **Invalid signature.** Forge a tx with a wrong scriptSig sig →
-   handler rejects, mempool size unchanged, peer ban-score
-   incremented.
-2. **Double-spend vs current mempool.** Two txs spending the same
-   UTXO → first accepted, second rejected, second peer's ban-score
-   incremented.
-3. **Below-relay-fee.** Tx at fee rate 0 → silently rejected, mempool
-   size unchanged, peer ban-score UNCHANGED (rate-limit, not
-   malicious).
-
-Also: the full `./test_zcl` must stay green. No deadlock under
-concurrent-peer stress (if you've wired new locks, add a pthread
-stress test).
-
-### Commit template
-
-```
-net: reject invalid / double-spend / below-fee txs at msg_tx handler (P2.1)
-
-Fixes P2.1 (AGENT.md). Before: any peer could flood the mempool
-with invalid txs — no sig check, no UTXO check, no fee check.
-After: check_transaction + mempool policy run before tx_mempool_add;
-malicious peers get ban-score, rate-limit violators drop silently.
-3 regression tests in test_mempool.c cover invalid-sig,
-double-spend, and below-relay-fee paths.
-```
-
----
-
-## NEXT — queue (pre-authorized, in order)
-
-### NEXT[1]: P4.1 + P4.2 — script interpreter stack refactor
+## NOW — P4.1 + P4.2: script interpreter stack refactor
 
 Files: `lib/script/include/script/interpreter.h:22-30`,
 `lib/script/src/interpreter.c:619-652`.
@@ -163,7 +84,11 @@ the set of accepted opcodes.
 test pushes 100 nested `OP_IF` frames and asserts graceful exit (no
 SIGSEGV, no memory growth past 10 MB for the interpreter frame).
 
-### NEXT[2]: P7.4 — backpressure watchdog under tip-stuck
+---
+
+## NEXT — queue (pre-authorized, in order)
+
+### NEXT[1]: P7.4 — backpressure watchdog under tip-stuck
 
 Files: `lib/net/src/msgprocessor.c`, `lib/net/src/download.c`.
 
@@ -179,7 +104,7 @@ emit `EV_BACKPRESSURE_ACTIVE`.
 fires + RSS stays bounded. Watchdog clears cleanly when the tip
 resumes advancing.
 
-### NEXT[3]: P7.9 + P7.10 — thread registry + shutdown flag audit
+### NEXT[2]: P7.9 + P7.10 — thread registry + shutdown flag audit
 
 Files: new `lib/util/src/thread_registry.c` + every `pthread_create`
 site (12+ known — grep for them).
@@ -241,25 +166,36 @@ If build or tests fail — STOP and report.
 
 _(Keep short — 1-3 recent entries.)_
 
-### 2026-04-19 (afternoon) — P7.1 + P2.2 landed
+### 2026-04-19 (evening) — P2.1 landed + out-of-scope deadlock fix
 
-**P7.1 (`a6bedccad`):** root cause was `update_tip` at
-`process_block.c:525` silently discarding the bool return from
-`process_block_commit_tip`. Any csr rejection (coins mismatch, tip
-not in index, OOM, etc.) converted into unrecoverable stuck-tip loop
-— `EV_TIP_UPDATED` fired with stale height, `active_chain_tip`
-never advanced, every inbound block re-triggered the same validation
-pass, download queue buffered to 6 GB OOM.
+**P2.1 (`da318931d`):** refactored `accept_to_mempool` into
+`msg_tx_classify` (pure) + `msg_tx_accept` (classify + peer scoring)
+returning `enum tx_accept_result` with 7 outcomes. Only INVALID and
+CONFLICT trigger `peer_scoring_record(PEER_OFFENCE_INVALID_MESSAGE)`;
+BELOW_FEE / MISSING_INPUTS / DUPLICATE / INTERNAL_ERROR drop
+silently because they're rate-limit / our-problem, not misbehaviour.
 
-Fix: `update_tip` now returns bool, `EV_TIP_UPDATED` only fires
-after commit succeeds, `connect_tip` records
-`validation_state_error("csr-tip-commit-rejected")` on rejection.
-Regression test in `test_chain_state_repo.c` fixtures a csr rejection
-and asserts the error propagates + chain_tip unchanged.
+Fee is computed from the coins tip (`coins_view_cache_get_value_in -
+transaction_get_value_out`), with a missing-inputs branch that
+returns MISSING_INPUTS for orphan txs. Added
+`tx_mempool_has_conflict` read-only probe to `lib/validation/` so
+double-spends can be attributed to the sending peer before
+`tx_mempool_add_unchecked` folds them into its generic failure bool.
 
-**P2.2 (`352a83167`):** heap-allocated `process_mempool` scratch
-(1.6 MB → `zcl_malloc`); 2 regression tests in `test_mempool.c`.
+3 regression tests in `test_mempool.c` — invalid vout (→ INVALID +
+ban), double-spend between two peers (first OK / second CONFLICT +
+ban), below-relay-fee (→ BELOW_FEE + no ban).
 
-**Rhett action item:** the P7.1 fix is on main but production is
-still stuck at h=3,081,411 because nothing redeployed. A `make
-deploy` will unstick the live chain.
+**Bonus (`3979340c9`):** uncovered a self-deadlock while running the
+full test suite end-to-end — `block_pruning_service:161-165`
+acquired `disk_block_io_lock()` then called
+`disk_block_io_close_cache()` which re-locks the same NORMAL mutex.
+The bug dates back to wave 22 `e7d96bf01` ("fix lock race — hold
+lock across unlink"). In production it would freeze the node on the
+first pruned file. Fixed by adding `_while_locked` variant; pruning
+service switched to it. Out-of-scope for P2.1 but in-lane (storage
++ app/services) and blocking the test-zcl run needed to validate
+P2.1.
+
+**Rhett action item (unchanged):** the P7.1 fix is still on main
+only — production at h=3,081,411. `make deploy` needed.
