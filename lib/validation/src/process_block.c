@@ -522,15 +522,28 @@ static bool process_block_commit_tip(struct main_state *ms,
     return false;
 }
 
-static void update_tip(struct main_state *ms, struct block_index *pindex_new)
+/* P7.1: propagate csr rejection to caller. Previously this function
+ * was void — if process_block_commit_tip returned false (csr refused
+ * the commit for coins_mismatch / tip_not_in_index / stale_index /
+ * etc.), the failure was silently discarded. connect_tip kept
+ * returning true while the in-memory chain tip stayed at the old
+ * height, so every inbound block re-emitted EV_BLOCK_CONNECTED for
+ * the same height forever. That is exactly the 2026-04-18 live
+ * outage at h=3,081,601 — 43+ `val.block_connected h=3081601`
+ * events per second until the download queue buffered the node to
+ * 6 GB RSS and SIGABRT. Returning false here lets activate_best_chain
+ * surface the failure so the caller stops treating the block as
+ * accepted. */
+static bool update_tip(struct main_state *ms, struct block_index *pindex_new)
 {
     if (pindex_new) {
         /* coins_tip is NULL here on purpose: the pre-migration
          * update_tip never set coins_best_block (connect_block had
          * already done it while building the new tip), and the
          * fallback path should preserve that behaviour. */
-        process_block_commit_tip(ms, NULL, pindex_new,
-                                 "process_block.update_tip", true);
+        if (!process_block_commit_tip(ms, NULL, pindex_new,
+                                      "process_block.update_tip", true))
+            return false;
     } else {
         /* Disconnect past genesis — empty the chain. No commit to
          * make; the active_chain primitive handles a NULL tip as
@@ -560,6 +573,19 @@ static void update_tip(struct main_state *ms, struct block_index *pindex_new)
         last_log_time = now_log;
         last_log_height = pindex_new->nHeight;
     }
+
+    return true;
+}
+
+/* P7.1 regression surface: exposes the post-refactor update_tip so a
+ * unit test can drive a real csr_instance through a rejecting input
+ * and assert the caller observes false. Production callers go through
+ * connect_tip / disconnect_tip; this wrapper must not grow any new
+ * behaviour. */
+bool process_block_test_update_tip(struct main_state *ms,
+                                    struct block_index *pindex_new)
+{
+    return update_tip(ms, pindex_new);
 }
 
 bool accept_block_header(const struct block_header *header,
@@ -1229,8 +1255,26 @@ retry_connect:
         }
     }
 
-    /* Update chain tip */
-    update_tip(ms, pindex_new);
+    /* Update chain tip. If csr rejects the commit (coins_mismatch,
+     * tip_not_in_index, stale_index, ...) we MUST NOT keep going —
+     * continuing would leave pindex_new marked BLOCK_VALID_SCRIPTS
+     * while active_chain_tip still points at the previous tip,
+     * which is the root cause of P7.1 (repeated `val.block_connected`
+     * at the same height forever). Surface it as a system error so
+     * activate_best_chain bubbles up to the caller. */
+    if (!update_tip(ms, pindex_new)) {
+        fprintf(stderr,
+                "connect_tip: update_tip rejected h=%d — csr refused "
+                "the commit (see `csr: REJECTED` above). Coins were "
+                "flushed to SQLite but the in-memory chain tip did "
+                "NOT advance; treating as system error.\n",
+                pindex_new->nHeight);
+        if (pblock == &local_block)
+            block_free(&local_block);
+        trace_set_status(ct_span, TRACE_STATUS_ERROR);
+        trace_end(ct_span);
+        return validation_state_error(state, "csr-tip-commit-rejected");
+    }
     pindex_new->nStatus = (pindex_new->nStatus & ~BLOCK_VALID_MASK) |
                            BLOCK_VALID_SCRIPTS;
 
@@ -1656,7 +1700,19 @@ bool disconnect_tip(struct validation_state *state,
                                           &block, pindex_delete);
     }
 
-    update_tip(ms, pindex_delete->pprev);
+    if (!update_tip(ms, pindex_delete->pprev)) {
+        fprintf(stderr,
+                "disconnect_tip: update_tip rejected at h=%d — csr "
+                "refused the rollback commit (see `csr: REJECTED` "
+                "above). Coins view rolled back but in-memory chain "
+                "tip did NOT rewind; caller must treat this as a "
+                "system error (reorg recovery will observe the "
+                "mismatch on next activate_best_chain pass).\n",
+                pindex_delete->pprev ? pindex_delete->pprev->nHeight : -1);
+        block_free(&block);
+        block_undo_free(&blockundo);
+        return validation_state_error(state, "csr-tip-rollback-rejected");
+    }
 
     block_free(&block);
     block_undo_free(&blockundo);

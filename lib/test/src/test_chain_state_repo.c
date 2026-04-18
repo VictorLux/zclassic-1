@@ -11,6 +11,8 @@
 #include "test/test_helpers.h"
 #include "services/chain_state_repository.h"
 #include "validation/chainstate.h"
+#include "validation/main_state.h"
+#include "validation/process_block.h"
 #include "coins/coins_view.h"
 #include "models/database.h"
 #include "event/event.h"
@@ -852,6 +854,73 @@ static int t_singleton_init_wires_fixture(void)
     return failures;
 }
 
+/* P7.1 live-outage regression — pre-patch, update_tip() was `static
+ * void` and silently discarded the bool return from
+ * process_block_commit_tip. When the csr refused a commit (any of
+ * CSR_REJECTED_COINS_MISMATCH / _TIP_NOT_IN_INDEX / _STALE_INDEX /
+ * ...), connect_tip still returned true, active_chain_tip kept
+ * pointing at the old block, and every inbound block re-emitted
+ * EV_BLOCK_CONNECTED for the same height. This is exactly the
+ * 2026-04-18 outage pattern: 43+ `val.block_connected h=3081601`
+ * events per second until the download queue buffered the node to
+ * 6 GB RSS and SIGABRT.
+ *
+ * The regression wires the csr singleton to an empty block_map,
+ * hands update_tip a block_index NOT in the map (so csr will
+ * respond CSR_REJECTED_TIP_NOT_IN_INDEX), and asserts the caller
+ * observes false. Without the patch the wrapper would silently
+ * return true. */
+static int t_p71_update_tip_propagates_csr_rejection(void)
+{
+    int failures = 0;
+    struct csr_fixture f; csr_fix_init(&f);
+    struct chain_state_repository *csr = csr_instance();
+    csr_init(csr, &f.bm, &f.chain, &f.header_tip, &f.coins_tip,
+             NULL, NULL);
+
+    int before_h = active_chain_height(&f.chain);
+    uint64_t before_rej = 0;
+    for (int i = 0; i < CSR_NUM_RESULTS; i++)
+        before_rej += csr->commits_rejected[i];
+
+    /* orphan block_index — not registered in f.bm, so csr must
+     * reject with CSR_REJECTED_TIP_NOT_IN_INDEX. */
+    struct uint256 h; memset(&h, 0xee, sizeof(h));
+    struct block_index orphan;
+    block_index_init(&orphan);
+    orphan.phashBlock = &h;
+    orphan.nHeight = 5;
+
+    /* update_tip only dereferences ms->chain_active on the NULL-tip
+     * disconnect branch (which we don't take); a zeroed main_state
+     * is safe for the rejection path. */
+    struct main_state ms;
+    memset(&ms, 0, sizeof(ms));
+
+    bool returned = process_block_test_update_tip(&ms, &orphan);
+
+    uint64_t after_rej = 0;
+    for (int i = 0; i < CSR_NUM_RESULTS; i++)
+        after_rej += csr->commits_rejected[i];
+
+    bool ok = (returned == false);
+    ok = ok && (active_chain_height(&f.chain) == before_h);
+    ok = ok && (after_rej == before_rej + 1);
+    CSR_RUN("csr/p7.1: update_tip propagates csr rejection (was silent)",
+            ok);
+
+    csr_free(csr);
+    csr->block_map = NULL;
+    csr->chain_active = NULL;
+    csr->pindex_best_hdr = NULL;
+    csr->coins_tip = NULL;
+    csr->ndb = NULL;
+    csr->wallet_scan_h = NULL;
+
+    csr_fix_free(&f);
+    return failures;
+}
+
 /* ── Test runner ─────────────────────────────────────────── */
 
 int test_chain_state_repo(void)
@@ -889,6 +958,7 @@ int test_chain_state_repo(void)
     failures += t_singleton_identity();
     failures += t_singleton_uninitialized_rejects();
     failures += t_singleton_init_wires_fixture();
+    failures += t_p71_update_tip_propagates_csr_rejection();
 
     /* Negative height rejection */
     {

@@ -77,4 +77,12 @@ bool test_block_validity(struct validation_state *state,
                          const struct block *block,
                          struct block_index *pindex_prev);
 
+/* P7.1 test-only surface: drives update_tip directly so a unit test
+ * can verify csr_commit_tip rejection propagates to the caller.
+ * Returns false if the csr refused the commit; returns true if the
+ * tip was advanced (or cleared, when pindex_new == NULL). Do NOT
+ * call from production code — go through connect_tip / disconnect_tip. */
+bool process_block_test_update_tip(struct main_state *ms,
+                                    struct block_index *pindex_new);
+
 #endif
