@@ -6,32 +6,28 @@ Owner: Rhett (primary). Delegates: Agent-2 (see `AGENT-2.md`), Agent-3 (see `AGE
 
 ---
 
-## Progress — last update 2026-04-19 (morning, Rhett-rows reassigned to agents)
+## Progress — last update 2026-04-19 (afternoon, P7.1 + P2.2 shipped by Agent-2)
 
-**Overall: 52 / 63 rows closed (83%) | SWRC ~87%**
-
-Rhett is coordinator only and does not code. All 11 previously-open
-rows have been reassigned to Agent-2 or Agent-3 with narrow-scope
-expansion notes in each row.
+**Overall: 54 / 63 rows closed (86%) | SWRC ~90%**
 
 | Tier | Closed / Total | % | Open rows |
 |---|---|---|---|
-| **CRITICAL** | 7 / 10 | **70%** | P2.1, P2.2, **P7.1 (live outage)** |
+| **CRITICAL** | 9 / 10 | **90%** | P2.1 |
 | **HIGH** | 21 / 26 | **81%** | P1.6, P1.7, P4.1, P4.2, P7.4, P7.9 |
 | **MED** | 19 / 21 | **90%** | P5.5, P7.10 |
 | **LOW** | 2 / 2 | **100%** | — |
 | (P0 baseline) | 4 / 4 | **100%** | — |
 
-**Open by owner (morning 2026-04-19):**
-- **Agent-2 (8 rows):** P2.2 (NOW), P7.1 live outage (NOW), P2.1 (NEXT), P4.1+P4.2 paired (NEXT+2), P7.4 (NEXT+3), P7.9+P7.10 paired (NEXT+4)
-- **Agent-3 (4 rows):** prf.c nullifier CT audit (NOW — from existing brief), P1.6 (NEXT), P1.7 (NEXT+1), P5.5 vendor/tor (NEXT+2)
-- **Rhett:** 0 (coordinator only — see `feedback_rhett_coordinator_only` memory)
+**Open by owner (2026-04-19 afternoon):**
+- **Agent-2 (6 logical tasks):** P2.1 (NOW), P4.1+P4.2 paired (NEXT), P7.4 (NEXT+1), P7.9+P7.10 paired (NEXT+2)
+- **Agent-3 (4 rows):** prf.c nullifier CT audit (NOW), P1.6 (NEXT), P1.7 (NEXT+1), P5.5 vendor/tor (NEXT+2)
+- **Rhett:** 0 (coordinator only)
 
-**Top remaining risks:** P7.1 is the live outage — chain tip stuck at 3,081,601 on the production node. Agent-2 picks it up after P2.2 lands (or in parallel if they fork the msg_tx.c work). P2.1 + P2.2 net CRITs remain.
+**ACTION ITEM (Rhett):** the P7.1 fix landed as `a6bedccad` but production is still at h=3,081,411 because nothing triggered a rebuild + redeploy. Run `make deploy` on the production box to push the fix live. Expected result: chain advances past 3,081,411 within 60s, catches up to legacy zclassicd (currently ~3,082,462) within 2 minutes.
 
-**SWRC formula:** CRIT=4, HIGH=2, MED=1, LOW=0.5. P0 rows weighted as HIGH. Total weighted capacity = 122. Update this block every time a row closes.
+**Top remaining risks:** once P7.1 is deployed and the chain resumes, the only open CRIT is P2.1 (mempool accepts any peer tx without verification) — Agent-2 NOW. Everything else is HIGH/MED hardening.
 
-**SWRC formula:** CRIT=4, HIGH=2, MED=1, LOW=0.5. P0 rows weighted as HIGH. Total weighted capacity = 122 (105 original + 17 from the P7 wave). Update this block every time a row closes.
+**SWRC formula:** CRIT=4, HIGH=2, MED=1, LOW=0.5. P0 rows weighted as HIGH. Total weighted capacity = 122.
 
 ---
 
