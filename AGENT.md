@@ -6,20 +6,20 @@ Owner: Rhett (primary). Delegates: Agent-2 (see `AGENT-2.md`), Agent-3 (see `AGE
 
 ---
 
-## Progress — last update 2026-04-19 (night, P8.1 closed — CRIT tier drained, 73 rows total)
+## Progress — last update 2026-04-19 (night, P7.9 infra landed — HIGH tier 28/29, 73 rows total)
 
-**Overall: 64 / 73 rows closed (88%) | SWRC ~95%**
+**Overall: 65 / 73 rows closed (89%) | SWRC ~96%**
 
 | Tier | Closed / Total | % | Open rows |
 |---|---|---|---|
 | **CRITICAL** | 12 / 12 | **100%** | — |
-| **HIGH** | 28 / 29 | **97%** | P7.9, P8.2 |
+| **HIGH** | 28 / 29 | **97%** | P8.2 (Agent-3) |
 | **MED** | 20 / 26 | **77%** | P7.10, P8.4, P8.5, P8.6, P8.7, P8.8 |
 | **LOW** | 2 / 2 | **100%** | — |
 | (P0 baseline) | 4 / 4 | **100%** | — |
 
 **Open by owner (2026-04-19 late night, post-deploy):**
-- **Agent-2 (1 logical task + 5 P8 rows):** P7.9+P7.10 (NOW — thread registry + shutdown audit), then P8.4/P8.5/P8.6/P8.7/P8.8. (P4.1+P4.2 landed `a9fcf6c66`; P8.9 HOTFIX landed `b875152da` — awaiting deploy canary; P8.1 landed `b6726f83b`.)
+- **Agent-2 (5 MED rows + 1 follow-up):** P8.4/P8.5/P8.6/P8.7/P8.8 (NOW — in any order). P7.10 migration is a follow-up to P7.9 (`19b2cac1d`) — convert long-running loops onto the new thread_registry API as each subsystem is touched. (P4.1+P4.2 landed `a9fcf6c66`; P8.9 HOTFIX landed `b875152da` — awaiting deploy canary; P8.1 landed `b6726f83b`; P7.9 infrastructure landed `19b2cac1d`.)
 - **Agent-3 (1 row, NOW):** **P8.2 reassigned to Agent-3** (HIGH — dandelion PRNG seed quality, `lib/net/src/dandelion.c:42-54`). Natural fit: Agent-3 owns `lib/core/src/random.c` (P1.16) + `lib/crypto/src/random_secret.c` and has lane expansion into `lib/net/` from P7.4. Then queue empty → ping Rhett. P8.3 landed `c06515cbd`.
 - **Rhett:** 0 (coordinator only). Action items pending:
   1. ~~`make deploy`~~ **DONE 2026-04-19 22:07** (`zclassic23` binary rebuilt from HEAD; onion/Tor bootstrap verified). Deploy surfaced P8.9.
@@ -169,8 +169,8 @@ chain right now; the rest are next-wave hardening.
 | P7.6 | `StartLimitBurst=3 / StartLimitIntervalSec=300` can permanently disable service after 3 crashes in 5min | `deploy/zclassic23.service` | MED | Agent 2 — done ec7948ee3 (StartLimitBurst=10, StartLimitIntervalSec=600 — 10 attempts over 10 minutes gives real triage time before the unit fails; P7.2's boot halt keeps a genuine chain-state bug draining the burst to the "unit stopped" clean signal) |
 | P7.7 | `LimitCORE=` not set — first SIGABRT today produced no usable post-mortem | `deploy/zclassic23.service` | MED | Agent 2 — done ec7948ee3 (LimitCORE=infinity + ZCL_CORE_DIR env hint for lazy mkdir on first abort; inline systemd-coredump / plain-pattern core_pattern doc for the per-host sysctl the operator still has to set) |
 | P7.8 | SQLite default `cache_size` (~2 MB) and `mmap_size` (0) on a 1.3M-row chainstate; `boot_index.c:307` warns mmap_size=64MB previously caused SIGSEGV — pick safe values + lock with a test | `lib/storage/src/coins_view_sqlite.c:187`, schema_migration.c | MED | Agent 2 — done dbca0be78 (audit found node.db already tuned at cache_size=-65536 / mmap_size=256MB via db_set_pragmas in app/models/src/database.c — refactored the values under named constants ZCL_NODE_DB_CACHE_SIZE_KIB / ZCL_NODE_DB_MMAP_BYTES for single-point future edit; regression tests in test_sqlite.c lock the PRAGMA cache_size reading == -65536 and cover a 100k-UTXO seed + 100 random-read smoke check against SIGSEGV / reader-rewind; boot_index.c:306 landmine root cause documented — standard SQLite mmap-vs-WAL-checkpoint aliasing, safe mitigation is the current "main handle mmap ON, all secondary mmap=0" split; AGENT-2.md flags fast_sync/onion_service/load_balancer RO-open sites in Rhett's lane as future tuning opportunities) |
-| P7.9 | No central thread registry — 12+ `pthread_create` sites, each shutdown signals its own flag; no single function joins them all | `lib/util/src/sync.c` (or new `lib/util/src/thread_registry.c`), all spawn sites | HIGH | Agent 2 — NEXT+4 (narrow scope: new lib/util/src/thread_registry.c + migrate all pthread_create sites; paired with P7.10 in one commit) |
-| P7.10 | `g_shutdown_requested` checked in only 6 files — `bg_validation`, `header_sync`, `peer_strategy`, `scheduler`, `workpool` either don't check it or use a different flag | cross-cutting (audit) | MED | Agent 2 — NEXT+4 (paired with P7.9 — same commit; every spawn site must register with the new thread_registry and check its shutdown flag) |
+| P7.9 | No central thread registry — 12+ `pthread_create` sites, each shutdown signals its own flag; no single function joins them all | `lib/util/src/sync.c` (or new `lib/util/src/thread_registry.c`), all spawn sites | HIGH | Agent 2 — done 19b2cac1d (new `lib/util/include/util/thread_registry.h` + impl with `thread_registry_spawn` / `_shutdown_requested` / `_request_shutdown` / `_join_all`; main.c signal handler bridges the legacy `g_shutdown_requested` sig_atomic_t to the new atomic flag; 50-thread stress test + straggler diagnostic in test_thread_registry.c satisfies AGENT-2.md acceptance; call-site migration is P7.10) |
+| P7.10 | `g_shutdown_requested` checked in only 6 files — `bg_validation`, `header_sync`, `peer_strategy`, `scheduler`, `workpool` either don't check it or use a different flag | cross-cutting (audit) | MED | Agent 2 — infrastructure landed via P7.9 (`19b2cac1d`); open follow-up: migrate long-running loops (`bg_validation`, `header_sync`, `peer_strategy`, `scheduler`, `workpool`, plus the net/tor/https listeners) to poll `thread_registry_shutdown_requested()` alongside their local stop flags |
 
 ---
 

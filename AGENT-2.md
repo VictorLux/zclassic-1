@@ -57,47 +57,37 @@ regression downstream of your P7.2 rewind → filed as **P8.9 HOTFIX**.
 
 | Order | Row | Size | Severity |
 |---|---|---|---|
-| **NOW** | **P7.9 + P7.10** thread registry + shutdown audit (paired) | large | HIGH |
-| NEXT | **P8.4** compact-block O(n·m) reconstruction → khash | medium | MED |
-| NEXT+2 | **P8.5** rolling_bloom missing MAX_BLOOM_HASH_FUNCS clamp | trivial | MED |
-| NEXT+3 | **P8.6** zslp_service short-key ambiguity | small | MED |
-| NEXT+4 | **P8.7** zmarket_offer size_bytes overflow | trivial | MED |
-| NEXT+5 | **P8.8** ZNAM builder vs parser type gate divergence | trivial | MED |
+| **NOW** | **P8.4** compact-block O(n·m) reconstruction → khash | medium | MED |
+| NEXT | **P8.5** rolling_bloom missing MAX_BLOOM_HASH_FUNCS clamp | trivial | MED |
+| NEXT+2 | **P8.6** zslp_service short-key ambiguity | small | MED |
+| NEXT+3 | **P8.7** zmarket_offer size_bytes overflow | trivial | MED |
+| NEXT+4 | **P8.8** ZNAM builder vs parser type gate divergence | trivial | MED |
+| follow-up | **P7.10** — migrate long-running loops onto `thread_registry_shutdown_requested()` (opportunistically as each subsystem is touched) | cross-cutting | MED |
 
 **P8.2 reassigned to Agent-3** — dandelion PRNG seed quality is a
-natural fit for their RNG/random_secret lane. Agent-3 already has
-lane expansion into `lib/net/` from P7.4.
+natural fit for their RNG/random_secret lane.
 
 **Recently landed:** P4.1+P4.2 (`a9fcf6c66`), P8.9 HOTFIX
-(`b875152da`), P8.1 (`b6726f83b`). P8.9 still needs Rhett to
-`make deploy` so the strengthened rewind can run against the live DB.
+(`b875152da`), P8.1 (`b6726f83b`), P7.9 infrastructure
+(`19b2cac1d`). P8.9 still needs Rhett to `make deploy` so the
+strengthened rewind can run against the live DB.
 
 Agent-3 just closed P8.3 (`c06515cbd`) — their queue is empty
 pending Rhett's next brief (P8.2 handoff).
 
 ---
 
-## NOW — P7.9 + P7.10: thread registry + shutdown flag audit
+## NOW — work through the P8 MED tier
 
-Files: new `lib/util/src/thread_registry.c` + every `pthread_create`
-site (12+ known — grep for them).
+Small, in-lane, independent. Each row has enough context in AGENT.md
+to land without round-tripping. Land in any order.
 
-**Bug (P7.9).** No central registry of spawned threads; SIGTERM
-shutdown hits the 5-min timeout because 12 independent flags aren't
-all checked.
-**Bug (P7.10).** `g_shutdown_requested` is read in only 6 files;
-`bg_validation`, `header_sync`, `peer_strategy`, `scheduler`,
-`workpool` either ignore it or check a different flag.
-
-**Fix.** New `thread_registry_spawn(name, fn, arg)` wraps
-pthread_create + records tid with a shutdown callback.
-`thread_registry_shutdown()` iterates, signals, joins with 10s
-per-thread timeout. Every long-running loop checks the registry's
-shutdown flag (single source of truth).
-
-**Acceptance:** `systemctl --user restart zclassic23` completes in
-<30s (not 5min). Stress test spawns 50 registered threads and asserts
-all join on shutdown signal.
+Reminder on the P7.10 follow-up: as each NOW row touches a file that
+spawns threads, opportunistically convert that subsystem's
+`pthread_create` to `thread_registry_spawn` and add a
+`thread_registry_shutdown_requested()` poll to its long-running
+loops. The P7.9 commit (`19b2cac1d`) shipped the infrastructure and
+signal-handler bridge — migrations can land one subsystem at a time.
 
 ---
 
@@ -289,6 +279,25 @@ If build or tests fail — STOP and report.
 ## Notes from Agent-2
 
 _(Keep short — 1-3 recent entries.)_
+
+### 2026-04-19 (late night) — P7.9 thread_registry infrastructure
+
+**P7.9 (`19b2cac1d`):** shipped `lib/util/{include,src}/thread_registry.{h,c}`
+with `thread_registry_spawn` / `_shutdown_requested` / `_request_shutdown`
+/ `_join_all`. Signal handler in `main.c` now mirrors SIGINT/SIGTERM
+to `thread_registry_request_shutdown()` alongside the legacy
+`g_shutdown_requested` atomic. Stress test spawns 50 workers, flips
+the flag, joins with a 10s budget, asserts zero stragglers — the
+AGENT-2.md acceptance path.
+
+**P7.10 follow-up:** call-site migration split out to keep the
+review surface manageable. Pattern for each subsystem:
+`pthread_create(&t, ..., fn, arg)` → `thread_registry_spawn("name",
+fn, arg)`, and the long-running loop polls
+`thread_registry_shutdown_requested()` alongside its local stop
+flag. Prioritize `bg_validation`, `header_sync`, `peer_strategy`,
+`scheduler`, `workpool`, `net/tor/https` listeners — the 12 flags
+the brief called out.
 
 ### 2026-04-19 (late night) — P8.1 landed; CRIT tier drained
 
