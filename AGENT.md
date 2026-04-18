@@ -26,9 +26,7 @@ several latent operability gaps. See P7 section below.)
 
 **Top remaining risks:** P7.1 (tip stuck at h=3,081,601 on the live node) is still the headline — the chain is dead in the water until it's fixed. P7.2's boot halt + auto-rewind now refuses to start against an inconsistent tip instead of continuing with a Warning, so the next live-node restart either recovers cleanly via the single-block auto-rewind guard (≤32 rows above tip) or surfaces a hard halt with a clear operator message; either outcome is an improvement over the pre-P7.2 "keep serving RPC against corrupted state" hole. P2.1 + P2.2 net CRITs remain. Outstanding P7 weight is entirely in Rhett's lane now (P7.1, P7.4, P7.9, P7.10).
 
-**SWRC formula:** CRIT=4, HIGH=2, MED=1, LOW=0.5. P0 rows weighted as HIGH. Total weighted capacity now 105 + 4+8+5 = 122. Update this block every time a row closes.
-
-**SWRC formula:** CRIT=4, HIGH=2, MED=1, LOW=0.5. P0 rows weighted as HIGH. Total weighted capacity = 105. Update this block every time a row closes.
+**SWRC formula:** CRIT=4, HIGH=2, MED=1, LOW=0.5. P0 rows weighted as HIGH. Total weighted capacity = 122 (105 original + 17 from the P7 wave). Update this block every time a row closes.
 
 ---
 
@@ -87,7 +85,7 @@ regression test locks the gates in place.
 | # | Task | File:line | Severity | Owner |
 |---|---|---|---|---|
 | P2.1 | Mempool accepts any peer tx — no sig/UTXO/fee check | `lib/net/src/msg_tx.c:34-69` | CRITICAL | Rhett |
-| P2.2 | 1.6 MB stack alloc in message handler | `lib/net/src/msg_tx.c:288` | CRITICAL | Rhett |
+| P2.2 | 1.6 MB stack alloc in message handler | `lib/net/src/msg_tx.c:288` | CRITICAL | Agent 2 — NOW (narrow scope: lib/net/src/msg_tx.c only — single function, heap-allocate the scratch buffer) |
 | P2.3 | fast_sync bypasses AR_BEGIN_SAVE | `lib/net/src/fast_sync.c:480-526` | HIGH | Agent 2 — done 9ef77899b (migrated bulk-insert loop to AR_BIND_* + AR_STEP_DONE; regression test builds a 2-entry chunk with CHECK-violating height and asserts BEGIN/COMMIT rollback atomicity) |
 | P2.4 | Swarm per-chunk hash verification effectively absent | `lib/net/src/fast_sync.c:892-895`, `msgprocessor.c:1968` | HIGH | Agent 2 — done 9e8cfbb27 (zmanifest carries per-chunk SHA3 hashes + merkle-root reconstruction check; swarm_sync_init requires chunk_hashes + bounds num_chunks at MANIFEST_MAX_CHUNKS; 3 regression tests prove bad chunk → 0 rows + retry, good chunk → 3 rows, init refuses NULL/oversized) |
 | P2.5 | connman deadlock risk: `cs_nodes` held across callback | `lib/net/src/connman.c:802-836` | HIGH | Agent 2 — done cd4b3c42f (thread_message_handler replaced with connman_run_message_cycle: snapshot+add_ref under cs_nodes, run callbacks with NO lock, re-acquire cs_nodes to drop refs; connman_run_deferred_free_sweep re-parks entries with ref_count>0 so in-flight snapshots can't be UAF'd; deferred_free cap bumped 64→256 via CONNMAN_DEFERRED_FREE_CAP; immediate-free path grows a ref-count safety belt; ZCL_STRESS_TESTS-guarded 50-peer × 1s test in test_net.c — 142M cycles, 1.9K callbacks, deferred_free drains clean) |

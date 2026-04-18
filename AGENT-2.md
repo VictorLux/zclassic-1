@@ -30,7 +30,7 @@ cross-agent priority table. Last brief rewrite: 2026-04-17.
 
 ---
 
-## Current status — 2026-04-18 (late evening, P7 Agent-2 queue drained)
+## Current status — 2026-04-18 (late evening, P7 drained + P2.2 assigned)
 
 **Done and on main (30 rows + 1 infra):** P1.1, P1.2, P1.5, P6.1–P6.6,
 P3.1, P3.2, P3.3, P3.4, P3.5, P3.6, P5.1, P5.3, P5.4, P5.7, P4.3, P4.4,
@@ -38,28 +38,73 @@ P4.5, P2.3, P2.8, P3.7, P2.4, P2.7, P2.6, P5.2, P2.5, P5.6, P7.2,
 P7.3, P7.5, P7.6, P7.7, P7.8, plus parallel test runner
 infrastructure (df5de36c4). AGENT.md shows SHAs.
 
-**NOW + NEXT are both empty for Agent-2 again.** All five P7 Agent-2
-rows landed: P7.2 `57e6ef391`, P7.3 `e9e79dda2`, P7.5/P7.6/P7.7
-`ec7948ee3`, P7.8 `dbca0be78`. Remaining open rows (P7.1 live
-outage + P7.4 backpressure + P7.9/P7.10 thread-registry audit) are
-all in Rhett's lane. P5.5 vendor/tor pin also Rhett's. Awaiting
-assignment.
+**Now working on:** P2.2 — 1.6 MB stack alloc in `process_mempool`.
+This is one of the two remaining P-tier CRITs; stays narrow scope to
+`lib/net/src/msg_tx.c` (single function, tiny diff, no validation-lane
+intrusion).
 
-**New context:** Rhett ran a live-node inspection after the original
-checklist drained. Found that the production zclassic23 chain tip is
-**stuck at h=3,081,601** (val.block_connected loops on the same height
-indefinitely; SIGABRT once memory hits the 6 GB cgroup ceiling). That
-gap-analysis added a P7 tier of 10 rows to AGENT.md — five of them
-are in your lane (chain-state-repository + lib/event/ crash handler +
-deploy unit hygiene + SQLite pragma tuning).
-
-**Now working on:** nothing — NOW + NEXT both drained.
-**Queued NEXT (pre-authorized):** none. All five assigned P7 rows
-landed plus P7.8 that was pre-authorized NEXT.
+**Queued NEXT (pre-authorized):** none. After P2.2 lands, the last
+open rows are P2.1 net CRIT (mempool tx accept — needs deep
+integration with check_transaction.c, Rhett's lane), P7.1 live outage
++ P7.4 backpressure + P7.9/P7.10 thread-registry audit (all Rhett),
+plus P1.6/P1.7 consensus + P4.1/P4.2 script + P5.5 vendor/tor. Ping
+Rhett when P2.2 lands.
 
 ---
 
-## NOW — P7.2 + P7.3 + P7.5/P7.6/P7.7 (deploy-unit batch)
+## NOW — P2.2: heap-allocate the 1.6 MB `hashes[]` in `process_mempool`
+
+File: `lib/net/src/msg_tx.c:286-298` (the `process_mempool` function).
+
+**Bug.** `struct uint256 hashes[MAX_INV_SZ]` on the stack; MAX_INV_SZ
+is 50000 and `uint256` is 32 bytes → 1.6 MB stack allocation on every
+call. Default Linux pthread stack is 2 MB (often 8 MB for the main
+thread, but the message-handler thread isn't necessarily the main).
+One recursive call or a deep framework call chain under this function
+and we're in stack-overflow territory — classic CVE-style DoS vector
+(an attacker who can trigger `process_mempool` N times in parallel
+threads and also push the stack via a sibling call chain can SIGSEGV
+the node with no auditable failure mode).
+
+**Fix.** Heap-allocate with `zcl_malloc(MAX_INV_SZ * sizeof(*hashes),
+"mempool_inv_hashes")`. Free on every return path. If allocation
+fails, `LOG_FAIL` + return false (the caller observes mempool push
+failure, retries on next tick).
+
+**Acceptance (1 test in `lib/test/src/test_mempool.c` — or wherever
+the net-layer mempool messaging tests live):**
+
+1. **Happy path:** call `process_mempool` against a 100-tx mempool,
+   assert all 100 inv items get pushed to the node (mock or capture
+   the p2p_node_push_inventory call).
+2. **OOM path:** wrap zcl_malloc via a test hook (or via
+   `ZCL_TEST_FORCE_MALLOC_FAIL` pattern), assert process_mempool
+   returns false AND no inv items were pushed.
+
+**Commit message format:**
+
+```
+net: heap-allocate process_mempool scratch to remove 1.6MB stack alloc
+
+Fixes P2.2 (AGENT.md). MAX_INV_SZ * sizeof(uint256) = 1.6MB on stack
+under default 2MB pthread stack size — near-guaranteed SIGSEGV under
+sibling frame pressure. Heap via zcl_malloc + LOG_FAIL on OOM; 2-test
+regression in test_mempool.c exercises happy path + forced-OOM.
+```
+
+**Lane note.** This is the first time your narrow-scope expansion has
+touched `lib/net/src/msg_tx.c` beyond the prior P2.3/P2.4 patches —
+same file, known well. Do NOT touch msg_tx.c's other handlers (accept,
+relay, etc.) in this commit; one logical fix per commit.
+
+After this lands, your queue is truly drained; the remaining open
+rows require either lib/validation/ ownership (P7.1, P2.1) or
+cross-cutting refactor (P7.9 thread registry) that lives in Rhett's
+lane.
+
+---
+
+## (Previous NOW — kept as reference) P7.2 + P7.3 + P7.5/P7.6/P7.7 (deploy-unit batch)
 
 These are independent and can land as separate commits.
 
