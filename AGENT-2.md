@@ -57,28 +57,51 @@ regression downstream of your P7.2 rewind → filed as **P8.9 HOTFIX**.
 
 | Order | Row | Size | Severity |
 |---|---|---|---|
-| **NOW** | **P8.1** zmsg_deserialize heap overflow (peer-reachable) | small | **CRIT** |
-| NEXT | **P7.9 + P7.10** thread registry + shutdown audit (paired) | large | HIGH |
-| NEXT+2 | **P8.4** compact-block O(n·m) reconstruction → khash | medium | MED |
-| NEXT+3 | **P8.5** rolling_bloom missing MAX_BLOOM_HASH_FUNCS clamp | trivial | MED |
-| NEXT+4 | **P8.6** zslp_service short-key ambiguity | small | MED |
-| NEXT+5 | **P8.7** zmarket_offer size_bytes overflow | trivial | MED |
-| NEXT+6 | **P8.8** ZNAM builder vs parser type gate divergence | trivial | MED |
+| **NOW** | **P7.9 + P7.10** thread registry + shutdown audit (paired) | large | HIGH |
+| NEXT | **P8.4** compact-block O(n·m) reconstruction → khash | medium | MED |
+| NEXT+2 | **P8.5** rolling_bloom missing MAX_BLOOM_HASH_FUNCS clamp | trivial | MED |
+| NEXT+3 | **P8.6** zslp_service short-key ambiguity | small | MED |
+| NEXT+4 | **P8.7** zmarket_offer size_bytes overflow | trivial | MED |
+| NEXT+5 | **P8.8** ZNAM builder vs parser type gate divergence | trivial | MED |
 
 **P8.2 reassigned to Agent-3** — dandelion PRNG seed quality is a
-natural fit for their RNG/random_secret lane. Removed from your
-queue. Agent-3 already has lane expansion into `lib/net/` from P7.4.
+natural fit for their RNG/random_secret lane. Agent-3 already has
+lane expansion into `lib/net/` from P7.4.
 
 **Recently landed:** P4.1+P4.2 (`a9fcf6c66`), P8.9 HOTFIX
-(`b875152da`). P8.9 needs Rhett to `make deploy` so the strengthened
-rewind can run against the live DB.
+(`b875152da`), P8.1 (`b6726f83b`). P8.9 still needs Rhett to
+`make deploy` so the strengthened rewind can run against the live DB.
 
-Agent-3 is working on **P8.3** (MMB height bound) in parallel — no
-file overlap.
+Agent-3 just closed P8.3 (`c06515cbd`) — their queue is empty
+pending Rhett's next brief (P8.2 handoff).
 
 ---
 
-## NOW — P8.9 (HOTFIX-CRIT): P7.2 rewind is incomplete, BIP30 false-positive stalling production
+## NOW — P7.9 + P7.10: thread registry + shutdown flag audit
+
+Files: new `lib/util/src/thread_registry.c` + every `pthread_create`
+site (12+ known — grep for them).
+
+**Bug (P7.9).** No central registry of spawned threads; SIGTERM
+shutdown hits the 5-min timeout because 12 independent flags aren't
+all checked.
+**Bug (P7.10).** `g_shutdown_requested` is read in only 6 files;
+`bg_validation`, `header_sync`, `peer_strategy`, `scheduler`,
+`workpool` either ignore it or check a different flag.
+
+**Fix.** New `thread_registry_spawn(name, fn, arg)` wraps
+pthread_create + records tid with a shutdown callback.
+`thread_registry_shutdown()` iterates, signals, joins with 10s
+per-thread timeout. Every long-running loop checks the registry's
+shutdown flag (single source of truth).
+
+**Acceptance:** `systemctl --user restart zclassic23` completes in
+<30s (not 5min). Stress test spawns 50 registered threads and asserts
+all join on shutdown signal.
+
+---
+
+## DONE — P8.9 (HOTFIX-CRIT, b875152da): P7.2 rewind is incomplete, BIP30 false-positive stalling production
 
 Files: `lib/coins/src/coins_view_sqlite.c` (the P7.2 rewind path) +
 `lib/validation/src/connect_block.c:212-233` (the BIP30 check).
@@ -201,54 +224,31 @@ Deploy canary: chain advanced past 3,081,407 within <fill>.
 
 ---
 
-## NEXT — P4.1 + P4.2: script interpreter stack refactor
+## NEXT — queue (pre-authorized, in priority order)
 
-Files: `lib/script/include/script/interpreter.h:22-30`,
-`lib/script/src/interpreter.c:619-652`.
+After P7.9+P7.10 ships, work through the P8 MED tier without pinging
+Rhett between rows — each is small enough to land independently.
 
-**Bug (P4.1).** `struct script_stack` is 520 KB passed BY VALUE into
-every recursive EVAL frame — on-stack.
-**Bug (P4.2).** `stack_push` can fail silently under pressure; later
-`OP_PICK` / `OP_ROLL` assume the stack shape is intact.
+- **P8.4** compact-block O(n·m) reconstruction →
+  promote to a one-pass khash short-txid table built before the slot
+  loop. File: `lib/net/src/compact_blocks.c:272-319`.
+- **P8.5** rolling_bloom missing `MAX_BLOOM_HASH_FUNCS` clamp — lift
+  `MIN(ideal, MAX)` out of the `constrained=true` branch so both
+  `bloom_filter_init` and `rolling_bloom_init` share it. File:
+  `lib/bloom/src/bloom.c:47-52`.
+- **P8.6** zslp_service short-key ambiguity — add a length floor that
+  distinguishes ticker-like names from truncated txid prefixes. File:
+  `app/services/src/zslp_service.c:62-72`.
+- **P8.7** zmarket_offer `size_bytes` overflow — one-line guard
+  `if (size_bytes > UINT64_MAX - CHUNK_SIZE) reject`. File:
+  `app/controllers/src/file_market_controller.c:140-142`.
+- **P8.8** ZNAM builder vs parser type gate divergence — lift the
+  literal-3 cap to `ZNAM_TYPE_CONTENT` in `znam_build_register` /
+  `znam_build_update` so REGISTER accepts the multi-coin types the
+  parser already round-trips. File: `lib/znam/src/znam.c:189-205`.
 
-**Fix.** Pair these in one commit. Convert `script_stack` to a
-pointer-owned heap buffer (the interpreter frame owns it, passes a
-pointer into child frames). Make `stack_push` return `bool` and
-propagate the failure up to `eval_script`. Every `stack_push` call
-site now checks the return.
-
-**STOP + ping Rhett:** any change to the serialized script format or
-the set of accepted opcodes.
-
-**Acceptance:** full `./test_zcl` + ASAN passes. New deep-recursion
-test pushes 100 nested `OP_IF` frames and asserts graceful exit (no
-SIGSEGV, no memory growth past 10 MB for the interpreter frame).
-
----
-
-## NEXT — queue (pre-authorized, in order)
-
-### NEXT: P7.9 + P7.10 — thread registry + shutdown flag audit
-
-Files: new `lib/util/src/thread_registry.c` + every `pthread_create`
-site (12+ known — grep for them).
-
-**Bug (P7.9).** No central registry of spawned threads; SIGTERM
-shutdown hits the 5-min timeout because 12 independent flags aren't
-all checked.
-**Bug (P7.10).** `g_shutdown_requested` is read in only 6 files;
-`bg_validation`, `header_sync`, `peer_strategy`, `scheduler`,
-`workpool` either ignore it or check a different flag.
-
-**Fix.** New `thread_registry_spawn(name, fn, arg)` wraps
-pthread_create + records tid with a shutdown callback.
-`thread_registry_shutdown()` iterates, signals, joins with 10s
-per-thread timeout. Every long-running loop checks the registry's
-shutdown flag (single source of truth).
-
-**Acceptance:** `systemctl --user restart zclassic23` completes in
-<30s (not 5min). Stress test spawns 50 registered threads and asserts
-all join on shutdown signal.
+When all six are done, Agent-2's queue is drained — ping Rhett for
+the next wave.
 
 ---
 
@@ -289,6 +289,20 @@ If build or tests fail — STOP and report.
 ## Notes from Agent-2
 
 _(Keep short — 1-3 recent entries.)_
+
+### 2026-04-19 (late night) — P8.1 landed; CRIT tier drained
+
+**P8.1 (`b6726f83b`):** bounds-checked all three peer-controlled length
+prefixes in `zmsg_deserialize` — slen/rlen ≥ ZMSG_MAX_ADDR and blen
+≥ ZMSG_MAX_BODY now LOG_FAIL + return false before the stream_read
+can overflow the fixed-size field. The blen check tightened from
+`>` to `>=` because the trailing NUL at body[ZMSG_MAX_BODY] was
+already one past the end. 3-case regression test in
+`test_protocols.c` exercises each overflow path.
+
+With P8.1 landed, the CRIT tier is fully drained (12/12). Agent-2's
+NOW pivots to P7.9+P7.10 (thread registry + shutdown flag audit,
+HIGH) which is the last HIGH row in my lane.
 
 ### 2026-04-19 (late night) — P8.9 HOTFIX landed
 
