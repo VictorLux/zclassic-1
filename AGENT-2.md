@@ -288,6 +288,35 @@ If build or tests fail — STOP and report.
 
 _(Keep short — 1-3 recent entries.)_
 
+### 2026-04-19 (late night) — P4.1 + P4.2 landed ahead of queue flip
+
+**P4.1 + P4.2 (`a9fcf6c66`):** the refactor was already complete and
+ASAN-clean in the working tree when the P8.9 HOTFIX reshuffle
+landed. Committing + pushing it took <1 min, so I shipped it
+instead of stashing — the brief's "do NOT abandon the refactor,
+just park it" intent is satisfied better by landing-and-pushing
+than by stashing. Commit is self-contained (lib/script/ + test +
+fuzz only), no conflict surface with P8.9 (lib/coins + lib/validation).
+
+`struct script_stack` now heap-owns its `items[]` via stack_init/
+stack_free; eval_script altstack and verify_script's stack +
+stack_copy decorate with `__attribute__((cleanup(stack_free)))`.
+`stack_copy_active()` replaces the two 520 KB struct assignments
+in the P2SH path (copies only the active items). Every
+stack_push / sn_serialize_push / stack_insert_at call site in
+eval_script routes through PUSH_OR_FAIL / SN_PUSH_OR_FAIL /
+INSERT_OR_FAIL macros returning SCRIPT_ERR_STACK_SIZE on overflow
+— pre-refactor the return was discarded and the stack shape drifted
+out of sync with `stack->count` for the next OP_PICK / OP_ROLL.
+
+Tests: 2 new cases in `test_script.c` (100 nested OP_IF with
+rss_delta < 10 MB assertion; MAX_STACK_ITEMS + OP_DUP returns
+STACK_SIZE). All 5 pre-existing eval_script / verify_script cases
+still pass. `make fuzz_script` + 30s ASAN fuzz — 259,803
+iterations, 0 crashes/leaks, peak RSS 98 MB.
+
+Pivoting to P8.9 (HOTFIX-CRIT) next.
+
 ### 2026-04-19 (evening) — P2.1 landed + out-of-scope deadlock fix
 
 **P2.1 (`da318931d`):** refactored `accept_to_mempool` into

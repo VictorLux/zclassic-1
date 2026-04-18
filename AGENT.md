@@ -8,18 +8,18 @@ Owner: Rhett (primary). Delegates: Agent-2 (see `AGENT-2.md`), Agent-3 (see `AGE
 
 ## Progress — last update 2026-04-19 (night, deploy shipped + P8.9 hotfix filed — 73 rows total)
 
-**Overall: 59 / 73 rows closed (81%) | SWRC ~86%**
+**Overall: 61 / 73 rows closed (84%) | SWRC ~89%**
 
 | Tier | Closed / Total | % | Open rows |
 |---|---|---|---|
 | **CRITICAL** | 10 / 12 | **83%** | **P8.9 (HOTFIX)**, P8.1 |
-| **HIGH** | 25 / 29 | **86%** | P4.1, P4.2, P7.9, P8.2, P8.3 |
+| **HIGH** | 27 / 29 | **93%** | P7.9, P8.2, P8.3 |
 | **MED** | 20 / 26 | **77%** | P7.10, P8.4, P8.5, P8.6, P8.7, P8.8 |
 | **LOW** | 2 / 2 | **100%** | — |
 | (P0 baseline) | 4 / 4 | **100%** | — |
 
 **Open by owner (2026-04-19 late night, post-deploy):**
-- **Agent-2 (4 logical tasks + 7 P8 rows):** **P8.9 (HOTFIX-CRIT, NOW)** — production stalled at h=3,081,407 with `bad-txns-BIP30` on every connect attempt; P7.2 rewind incomplete. Then resume P4.1+P4.2 (stash/rebase), then P8.1, then P7.9+P7.10, then P8.2/P8.4–P8.8.
+- **Agent-2 (3 logical tasks + 7 P8 rows):** **P8.9 (HOTFIX-CRIT, NOW)** — production stalled at h=3,081,407 with `bad-txns-BIP30` on every connect attempt; P7.2 rewind incomplete. Then P8.1, P7.9+P7.10, P8.2/P8.4–P8.8. (P4.1+P4.2 landed ahead of queue flip — `a9fcf6c66`.)
 - **Agent-3 (1 row, then queue empty):** **P8.3 (NOW)** — MMB unbounded mountain height on deserialize. P1.6/P1.7/P1.16b/P5.5/P7.4 + P8 audit all closed.
 - **Rhett:** 0 (coordinator only). Action items pending:
   1. ~~`make deploy`~~ **DONE 2026-04-19 22:07** (`zclassic23` binary rebuilt from HEAD; onion/Tor bootstrap verified). Deploy surfaced P8.9.
@@ -117,8 +117,8 @@ regression test locks the gates in place.
 
 | # | Task | File:line | Severity | Owner |
 |---|---|---|---|---|
-| P4.1 | 520 KB `script_stack` passed by value, on-stack | `lib/script/include/script/interpreter.h:22-30`, `interpreter.c:619-652` | HIGH | Agent 2 — NEXT+2 (narrow scope: lib/script/ only; pointer-conversion refactor + P4.2 together in one commit) |
-| P4.2 | Silent `stack_push` failures corrupt later stack assumptions | `lib/script/src/interpreter.c:619-620` | HIGH | Agent 2 — NEXT+2 (paired with P4.1 — same commit) |
+| P4.1 | 520 KB `script_stack` passed by value, on-stack | `lib/script/include/script/interpreter.h:22-30`, `interpreter.c:619-652` | HIGH | Agent 2 — done a9fcf6c66 (paired with P4.2; heap-owned items via stack_init/stack_free, cleanup attribute in eval_script + verify_script, stack_copy_active replaces 520 KB struct assignments) |
+| P4.2 | Silent `stack_push` failures corrupt later stack assumptions | `lib/script/src/interpreter.c:619-620` | HIGH | Agent 2 — done a9fcf6c66 (paired with P4.1; PUSH_OR_FAIL / SN_PUSH_OR_FAIL / INSERT_OR_FAIL propagate SCRIPT_ERR_STACK_SIZE to eval_script caller) |
 | P4.3 | `script_num_serialize` lacks outsize bounds check | `lib/script/include/script/script.h:239-258` | MED | Agent 2 — done 61104d06d (precompute required length + reject-if-short instead of silent-truncate; 6 boundary assertions in test_script.c) |
 | P4.4 | `disconnect_block` unbounded realloc on `vin.prevout.n` | `lib/validation/src/connect_block.c:586-607` | MED | Agent 2 — done f69956cab (clamp prevout.n ≥ MAX_BLOCK_SIZE → LOG_FAIL + reject; regression test in test_validation.c uses UINT32_MAX to exercise the previously-~128 GB realloc path) |
 | P4.5 | `sigencoding` strict-DER bound inconsistency vs Bitcoin | `lib/script/src/sigencoding.c:11-56` | MED | Agent 2 — done 28fe53112 (byte-for-byte parity audit vs zclassic-cpp sigencoding.cpp: no divergence — "off-by-one" was a false positive from the brief; 16-vector BIP66-style parity table added to test_script.c locks the canonical boundary behavior in place) |
