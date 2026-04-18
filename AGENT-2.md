@@ -322,6 +322,30 @@ reassigned these three rows to Agent-2. Now queued and scoped in
 AGENT-2.md NOW block. Starting with the smallest (P3.7, ~40 LoC)
 and working up.
 
+**2026-04-18 — P3.7 + P2.8 + P2.3 lane-expansion wave closed
+(seventh wave).** Three commits, in order:
+
+- `877d68218` P3.7 /metrics Basic-auth gate. Existing `check_auth`
+  helper reused verbatim; drains request headers, extracts
+  `Authorization:`, returns 401/200 just like the JSON-RPC path.
+  Regression test drives a real rpc_http_start on a reserved
+  loopback port and exercises no-auth / wrong-creds / cookie-auth.
+- `60bb08f58` P2.8 process-wide recv-queue byte budget. Atomic
+  counter in lib/net/src/net.c tracks the sum of every outstanding
+  msg->recv_alloc; over-cap reallocations roll back. Env-configurable
+  via `ZCL_MAX_RECVBUFFER_TOTAL_BYTES` (default 256 MiB). Regression
+  test with 16 KiB cap exhausts + recycles.
+- `9ef77899b` P2.3 fast_sync_apply_chunk AR-macro migration. Bulk
+  INSERT loop now uses AR_BIND_* / AR_STEP_DONE instead of raw
+  sqlite3_bind_*/sqlite3_step. Regression test constructs a mixed
+  chunk (entry 0 valid, entry 1 has height=-1) and asserts
+  BEGIN/COMMIT rollback leaves the utxos table empty — neither the
+  good row nor the bad one survives.
+
+**NOW + NEXT are both empty for Agent-2.** The parallel test runner
+shipped earlier is the only infrastructure item that stays "done
+and available." Awaiting new assignments from Rhett.
+
 **P5.4 audit — flag for Rhett, not a full purge.** Only one of the
 eight `tools/*.sh` scripts had a clean 1:1 replacement
 (`verify_restart_follow.sh` ⇒ `zcl-nodectl verify-follow`). The other

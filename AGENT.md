@@ -8,7 +8,7 @@ Owner: Rhett (primary). Delegates: Agent-2 (see `AGENT-2.md`), Agent-3 (see `AGE
 
 ## Progress — last update 2026-04-18
 
-**Overall: 37 / 53 rows closed (70%) | SWRC 70%**
+**Overall: 40 / 53 rows closed (75%) | SWRC 77%**
 
 (Denominator grew from 50 to 53 when Agent-3's Wave 2 opened three new
 rows — P1.13 curve25519 CT, P1.14 ed25519 CT, P1.15 RNG hygiene — and
@@ -17,12 +17,12 @@ closed all three in the same push.)
 | Tier | Closed / Total | % | Open rows |
 |---|---|---|---|
 | **CRITICAL** | 7 / 9 | **78%** | P2.1, P2.2 |
-| **HIGH** | 13 / 22 | **59%** | P1.6, P1.7, P2.3–P2.6, P4.1, P4.2, P5.2 |
-| **MED** | 11 / 16 | **69%** | P2.7, P2.8, P3.7, P5.5, P5.6 |
+| **HIGH** | 14 / 22 | **64%** | P1.6, P1.7, P2.4–P2.6, P4.1, P4.2, P5.2 |
+| **MED** | 13 / 16 | **81%** | P2.7, P5.5, P5.6 |
 | **LOW** | 2 / 2 | **100%** | — |
 | (P0 baseline) | 4 / 4 | **100%** | — |
 
-**Open by owner (after 2026-04-18 reassignment):** Rhett 12 · Agent-2 3 (P2.3 + P2.8 + P3.7; parallel-test-runner infra shipped df5de36c4) · Agent-3 2 (root-cause `lib/core/random.c` fail-open they flagged + prf.c nullifier-path timing audit)
+**Open by owner (after 2026-04-18 reassignment):** Rhett 11 · Agent-2 0 (P2.3 + P2.8 + P3.7 all shipped; parallel-test-runner infra shipped df5de36c4) · Agent-3 2 (root-cause `lib/core/random.c` fail-open they flagged + prf.c nullifier-path timing audit)
 
 **Top remaining risks:** the two open CRITs are both in the network lane (P2.1 mempool tx accept, P2.2 stack overflow in msg handler). Chain-split risk on deploy is essentially eliminated; DoS-on-deploy is now the headline. P1.6 + P1.7 are the last two HIGHs in the consensus tier and block Rhett.
 
@@ -86,12 +86,12 @@ regression test locks the gates in place.
 |---|---|---|---|---|
 | P2.1 | Mempool accepts any peer tx — no sig/UTXO/fee check | `lib/net/src/msg_tx.c:34-69` | CRITICAL | Rhett |
 | P2.2 | 1.6 MB stack alloc in message handler | `lib/net/src/msg_tx.c:288` | CRITICAL | Rhett |
-| P2.3 | fast_sync bypasses AR_BEGIN_SAVE | `lib/net/src/fast_sync.c:480-526` | HIGH | Agent 2 — queued (narrow scope: same migration pattern as P3.3) |
+| P2.3 | fast_sync bypasses AR_BEGIN_SAVE | `lib/net/src/fast_sync.c:480-526` | HIGH | Agent 2 — done 9ef77899b (migrated bulk-insert loop to AR_BIND_* + AR_STEP_DONE; regression test builds a 2-entry chunk with CHECK-violating height and asserts BEGIN/COMMIT rollback atomicity) |
 | P2.4 | Swarm per-chunk hash verification effectively absent | `lib/net/src/fast_sync.c:892-895`, `msgprocessor.c:1968` | HIGH | Rhett |
 | P2.5 | connman deadlock risk: `cs_nodes` held across callback | `lib/net/src/connman.c:802-836` | HIGH | Rhett (mutex discipline — careful) |
 | P2.6 | `g_swarm_active` TOCTOU → state leak | `lib/net/src/msgprocessor.c:1961-1981, 2040` | HIGH | Rhett |
 | P2.7 | FlyClient challenge amplification — no rate limit | `lib/net/src/msgprocessor.c:1864-1900` | MED | Rhett |
-| P2.8 | No global byte budget on recv queue | `lib/net/src/net.c:104-115` | MED | Agent 2 — queued (narrow scope: lib/net/src/net.c only) |
+| P2.8 | No global byte budget on recv queue | `lib/net/src/net.c:104-115` | MED | Agent 2 — done 60bb08f58 (atomic process-wide counter + env-configurable cap, default 256 MiB; regression test exhausts a 16 KiB cap and verifies rollback on over-cap alloc) |
 
 ---
 
@@ -105,7 +105,7 @@ regression test locks the gates in place.
 | P3.4 | `store_controller` accepts addresses without checksum | `app/controllers/src/store_controller.c:663-685` | HIGH | Agent 2 — done 64a4afffc (Base58Check + Bech32 verification; 400 on bad checksum; 2 regression tests) |
 | P3.5 | `rpc_client.c` realloc overwrite w/ no NULL check | `tools/mcp/rpc_client.c:126` | HIGH | Agent 2 — done f0e8d31d3 (zcl_realloc via tmp; only call-site) |
 | P3.6 | `parse_form_field` does not URL-decode; no CSRF token | `app/controllers/src/store_controller.c:803-823` | MED | Agent 2 — done efa211811 (URL-decode ported; HMAC-bound per-product-id form token; 3 regression tests) |
-| P3.7 | `/metrics` open on TLS listener with no auth | `lib/rpc/src/httpserver.c:355-381` | MED | Agent 2 — queued (narrow scope: lib/rpc/src/httpserver.c only) |
+| P3.7 | `/metrics` open on TLS listener with no auth | `lib/rpc/src/httpserver.c:355-381` | MED | Agent 2 — done 877d68218 (Basic-auth via check_auth; 401 on no/wrong creds, 200 on valid cookie; regression test drives all three paths over a loopback socket against a real rpc_http_start) |
 
 ---
 
