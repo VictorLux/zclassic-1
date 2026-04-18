@@ -30,40 +30,154 @@ cross-agent priority table. Last brief rewrite: 2026-04-17.
 
 ---
 
-## Current status — 2026-04-18 (late evening, post-P5.6)
+## Current status — 2026-04-18 (late evening, P7 wave opened)
 
 **Done and on main (25 rows + 1 infra):** P1.1, P1.2, P1.5, P6.1–P6.6,
 P3.1, P3.2, P3.3, P3.4, P3.5, P3.6, P5.1, P5.3, P5.4, P5.7, P4.3, P4.4,
 P4.5, P2.3, P2.8, P3.7, P2.4, P2.7, P2.6, P5.2, P2.5, P5.6, plus
 parallel test runner infrastructure (df5de36c4). AGENT.md shows SHAs.
 
-The entire P2 network-attack-surface tier is closed, plus all of P3
-(MCP/app), P4 (script memory safety), and P5 except vendor/tor (P5.5)
-which stays Rhett for .onion smoke-testing.
+**New context:** Rhett ran a live-node inspection after the original
+checklist drained. Found that the production zclassic23 chain tip is
+**stuck at h=3,081,601** (val.block_connected loops on the same height
+indefinitely; SIGABRT once memory hits the 6 GB cgroup ceiling). That
+gap-analysis added a P7 tier of 10 rows to AGENT.md — five of them
+are in your lane (chain-state-repository + lib/event/ crash handler +
+deploy unit hygiene + SQLite pragma tuning).
 
-**Now working on:** nothing — queue empty.
-**Queued NEXT:** nothing. Remaining open rows are pure-Rhett
-(P1.6/P1.7 consensus, P2.1/P2.2 net, P4.1/P4.2 script interpreter,
-P5.5 tor submodule) or in-flight on Agent-3 (P1.16, prf.c).
-
----
-
-## NOW — empty (queue drained after P5.6)
-
-Previous NOW block described P5.6 (vendored sqlite3.h CVE update) —
-landed as `30e6fbc2e`. See "Notes from Agent-2" entry
-"2026-04-18 (late evening) — P5.6 sqlite 3.49.0 → 3.53.0" for the
-full narrative. Remaining open rows are all Rhett-owned or
-Agent-3-in-flight (see AGENT.md Progress block).
+**Now working on:** P7.2 boot tip-mismatch halt + P7.3 crash handler
+stderr flush + P7.5/P7.6/P7.7 deploy-unit hygiene batch.
+**Queued NEXT (pre-authorized):** P7.8 SQLite cache_size + mmap_size
+tuning.
 
 ---
 
-## NEXT — empty (after P5.6, ping Rhett)
+## NOW — P7.2 + P7.3 + P7.5/P7.6/P7.7 (deploy-unit batch)
 
-P5.5 (vendor/tor submodule pin) stays Rhett because the pin update
-needs Tor-specific smoke testing (.onion bootstrap timing, hidden
-service descriptor publish) that lives in Rhett's lane. Don't touch
-vendor/tor.
+These are independent and can land as separate commits.
+
+### P7.2 — Boot tip-mismatch halt is advisory, must be fatal/auto-rewind
+
+File: `app/services/src/chain_state_repository.c` (audit). Boot log
+shows:
+
+```
+[coins] DB_ERR_TIP_MISMATCH: utxos max_height=3081408 > tip_height=3081407 (UTXOs ahead of tip) — halt and investigate; do not auto-heal.
+Warning: Could not open SQLite coins view
+```
+
+Despite the "halt and investigate" wording, the node continues
+booting and serving RPC. That defeats the safety belt: the
+mismatched chain state is what's almost certainly causing P7.1
+(tip stuck at h=3081601 on the live node). Either:
+
+(a) **Strict halt** — make `DB_ERR_TIP_MISMATCH` fatal at boot.
+    `LOG_FAIL` + structured event + `_exit(EXIT_FAILURE)`. The
+    operator (or systemd) must explicitly clear the marker before
+    the node will start again.
+(b) **Auto-rewind** (preferred if safe) — when `utxos.max_height ==
+    tip_height + 1`, treat as a single-block crash recovery:
+    delete UTXOs at `tip_height + 1` only (BEGIN/COMMIT-bracketed),
+    re-verify the resulting tip pointer, log loudly, continue.
+    Require count check FIRST: if more than 32 UTXOs above tip,
+    fall through to the strict-halt path (this is the scenario the
+    `feedback_utxo_wipe_safety` memory in Rhett's CLAUDE rules
+    forbids auto-healing because something else is very wrong).
+
+I (Rhett) lean (b) but only with the count guard. Pick one and write
+a regression test that:
+- creates a UTXO row at height N+1 with chain tip at N
+- boots the node
+- with strict-halt: asserts `_exit(EXIT_FAILURE)` (fork+wait+WTERMSIG)
+- with auto-rewind: asserts boot continues AND the high UTXO is gone
+
+**Acceptance:** `make test` covers both the strict-halt fatal exit
+and the auto-rewind safe path. Live node restart on Rhett's box
+either rewinds to a consistent tip OR refuses to start with a
+clear operator message.
+
+### P7.3 — Crash handler header + stack trace never reach node.log
+
+File: `lib/event/src/event.c:610-630` (the `crash_signal_handler`).
+
+When the live node SIGABRT'd today, only the `sys.crash signal 6`
+event survived to `node.log`. The `*** FATAL SIGNAL ***` header and
+`backtrace_symbols_fd` output are missing. Likely cause: the
+fprintf-buffered stderr never flushed before `_exit(128 + sig)`,
+and `backtrace_symbols_fd` writes to STDERR_FILENO directly but the
+fprintf buffer ahead of it owned the file position and got
+discarded.
+
+**Fix.**
+1. Replace the fprintf header with a `write(STDERR_FILENO, ...)`
+   on a small static buffer — async-signal-safe.
+2. Add `fflush(stderr); fsync(STDERR_FILENO);` between the
+   `event_dump_recent` call and `_exit`.
+3. The `event_dump_recent` itself uses fprintf internally — audit
+   it and either swap to write(2) or call `fflush(stderr)` at the
+   end. (Safe in practice on Linux glibc inside a SIGABRT handler;
+   the existing comment acknowledges this trade-off.)
+
+**Acceptance:** add a regression test that fork()s a child,
+installs the crash handler, raises SIGABRT, redirects child stderr
+to a temp file, then asserts the temp file contains "FATAL SIGNAL
+6" AND at least 3 frame addresses. Test is hostile to noisy stderr
+in the parent — dup2(/dev/null) before fork like the P1.16 test
+pattern Agent-3 used in test_core.c.
+
+### P7.5/P7.6/P7.7 — Deploy unit hygiene batch (one commit)
+
+File: `deploy/zclassic23.service` (you wrote this for P5.2; one
+follow-up commit covers all three).
+
+- **P7.5:** `TimeoutStopSec=300` → `TimeoutStopSec=90`. The 300s was
+  a "worst case with headroom" but live evidence shows hangs do
+  happen, and 5min is too long an outage. Comment update needed.
+- **P7.6:** `StartLimitBurst=3 StartLimitIntervalSec=300` → bump
+  burst window to allow more recovery attempts during operator
+  triage (e.g. burst=10, interval=600). Worse than restart-loop is
+  permanently-down-after-3-crashes. Document the trade-off.
+- **P7.7:** Add `LimitCORE=infinity` and create a directory hint:
+  `Environment="ZCL_CORE_DIR=%h/.zclassic-c23/cores"`. Do NOT add
+  `ExecStartPre=mkdir`; the binary should create it lazily on first
+  abort if the env var is set. (Or, simpler: set `kernel.core_pattern`
+  expectations in deploy README rather than in the unit.)
+
+**Acceptance:** `systemctl --user daemon-reload && systemctl --user
+restart zclassic23` succeeds. Verify `LimitCORE=` appears in
+`systemctl --user show zclassic23 | grep LimitCORE`.
+
+---
+
+## NEXT (pre-authorized) — P7.8 SQLite tuning
+
+After P7.2/P7.3/P7.5/P7.6/P7.7 land. File:
+`lib/storage/src/coins_view_sqlite.c:187` (and any other open-time
+PRAGMA site).
+
+Currently only `journal_size_limit = 104857600` is set. SQLite
+defaults give us ~2 MB page cache and `mmap_size=0`. With a 1.3M-row
+chainstate that's a lot of disk traffic. But: `boot_index.c:307`
+comment says `mmap_size=64MB previously caused SIGSEGV after ~64K
+addresses` — sleeping landmine, do not naively re-enable.
+
+**Plan.**
+1. Audit which sqlite handles in the binary need cache tuning
+   (chainstate, wallet, addrman, peer_scoring, etc).
+2. Pick safe `cache_size = -65536` (64 MB negative = bytes) for
+   the chainstate; leave wallet at default.
+3. **Skip mmap_size** unless you can identify the boot_index.c root
+   cause — flag for Rhett with the audit findings if you find it.
+4. Add a regression test that opens a 100k-row UTXO set, runs
+   100 random reads, and asserts no SIGSEGV / no reader-rewind bug.
+
+**Acceptance:** `./test_zcl` passes; ASAN build (`make asan`) passes
+with the new pragma values; ad-hoc benchmark via `tools/zcl-rpc
+getblockchaininfo` shows no regression.
+
+**Risk checkpoint.** If any test breaks under the new cache_size
+that isn't trivially explained, STOP and ping Rhett. Storage-tier
+breakage is expensive to debug.
 
 ---
 

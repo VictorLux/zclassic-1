@@ -6,21 +6,27 @@ Owner: Rhett (primary). Delegates: Agent-2 (see `AGENT-2.md`), Agent-3 (see `AGE
 
 ---
 
-## Progress — last update 2026-04-18 (evening, post-P2.5)
+## Progress — last update 2026-04-18 (late-evening, P5.6 landed + P7 wave opened)
 
-**Overall: 46 / 53 rows closed (87%) | SWRC ~87%**
+**Overall: 46 / 63 rows closed (73%) | SWRC ~74%**
+
+(Denominator grew 53 → 63 when the P7 fresh-review wave opened ten new
+rows from a live-node inspection that surfaced a tip-stuck outage and
+several latent operability gaps. See P7 section below.)
 
 | Tier | Closed / Total | % | Open rows |
 |---|---|---|---|
-| **CRITICAL** | 7 / 9 | **78%** | P2.1, P2.2 |
-| **HIGH** | 18 / 22 | **82%** | P1.6, P1.7, P1.16, P4.1, P4.2 |
-| **MED** | 15 / 16 | **94%** | P5.5 |
+| **CRITICAL** | 7 / 10 | **70%** | P2.1, P2.2, **P7.1 (live outage)** |
+| **HIGH** | 18 / 26 | **69%** | P1.6, P1.7, P1.16, P4.1, P4.2, **P7.2, P7.3, P7.4, P7.9** |
+| **MED** | 15 / 21 | **71%** | P5.5, **P7.5, P7.6, P7.7, P7.8, P7.10** |
 | **LOW** | 2 / 2 | **100%** | — |
 | (P0 baseline) | 4 / 4 | **100%** | — |
 
-**Open by owner (2026-04-18 late-evening after P5.6 landed):** Rhett 7 (P1.6, P1.7, P2.1, P2.2, P4.1, P4.2, P5.5 — consensus + script + vendor tor) · Agent-2 0 (queue empty — pinging Rhett; only open MED is P5.5 tor submodule pin, which requires .onion bootstrap smoke-testing in Rhett's lane) · Agent-3 1 (P1.16 in flight; prf.c nullifier still queued NEXT)
+**Open by owner (late-evening 2026-04-18 after P7 wave opened):** Rhett 11 (P1.6, P1.7, P2.1, P2.2, P4.1, P4.2, P5.5, **P7.1, P7.4, P7.9, P7.10**) · Agent-2 5 (**P7.2 boot tip-mismatch halt** + **P7.3 crash handler flush** + **P7.5/P7.6/P7.7 deploy-unit hygiene batch**, with **P7.8 SQLite tuning** queued NEXT) · Agent-3 1 (P1.16 in flight; prf.c nullifier still queued NEXT)
 
-**Top remaining risks:** the two open CRITs (P2.1 mempool tx accept, P2.2 stack overflow in msg handler) remain in Rhett's net-lane. P1.6 + P1.7 are the last two HIGHs blocking the consensus tier. Once P1.16 lands, the secret-RNG fail-open is fully closed — no more crypto CRITs in flight.
+**Top remaining risks:** P7.1 (tip stuck at h=3,081,601 on the live node) is the new headline — the chain is dead in the water until it's fixed. P2.1 + P2.2 net CRITs remain. The original 53-row review is 87% closed by SWRC; the new P7 wave drops aggregate SWRC because it adds 1 CRIT + 4 HIGH + 5 MED of fresh weight.
+
+**SWRC formula:** CRIT=4, HIGH=2, MED=1, LOW=0.5. P0 rows weighted as HIGH. Total weighted capacity now 105 + 4+8+5 = 122. Update this block every time a row closes.
 
 **SWRC formula:** CRIT=4, HIGH=2, MED=1, LOW=0.5. P0 rows weighted as HIGH. Total weighted capacity = 105. Update this block every time a row closes.
 
@@ -141,6 +147,28 @@ regression test locks the gates in place.
 | P6.4 | Migration framework unchecked bookkeeping writes | `lib/storage/src/schema_migration.c:134,169,230` | MED — done 767d9d3e7 |
 | P6.5 | `write_best_block`/`write_scan_height` re-prepare every call | `lib/wallet/src/wallet_sqlite.c:642-705` | MED — done 8608820e7 |
 | P6.6 | `coins_alloc` OOM silent (treated as "no outputs") | `lib/coins/src/coins.c:54-55,106-110` | LOW — done dc60b7e7b |
+
+---
+
+## Priority 7 — Live-node + post-AGENT.md fresh review (2026-04-18)
+
+Surfaced after the original 53-row checklist drained to ~85%. Live
+inspection of the running node + node.log revealed a hard outage and
+several latent operability gaps. P7.1 + P7.2 are blocking the live
+chain right now; the rest are next-wave hardening.
+
+| # | Task | File:line | Severity | Owner |
+|---|---|---|---|---|
+| P7.1 | Tip stuck at 3,081,601 — `val.block_connected` repeats for same height; `chain_height` never advances | `lib/validation/src/process_block.c`, `connect_block.c` | CRITICAL | Rhett — NOW (live outage) |
+| P7.2 | Boot logs `DB_ERR_TIP_MISMATCH ... halt and investigate` then keeps running — must be fatal or auto-rewind | `app/services/src/chain_state_repository.c` (audit + tighten the halt path) | HIGH | Agent 2 — NOW (narrow scope: chain_state_repository.c + new test) |
+| P7.3 | Crash handler runs but FATAL header + `backtrace_symbols_fd` output never reaches `node.log` (only `sys.crash` event survives) | `lib/event/src/event.c:610-630` | HIGH | Agent 2 — NOW (narrow scope: lib/event/src/event.c only — small isolated fix) |
+| P7.4 | Backpressure missing under tip-stuck loop — RSS climbs to 6.0G (cgroup MemoryHigh) accumulating block buffers when tip doesn't advance | `lib/net/src/msgprocessor.c`, `download.c` | HIGH | Rhett |
+| P7.5 | `deploy/zclassic23.service:34` `TimeoutStopSec=300` amplifies hangs into 5-min outages; trim to 60-90s + watchdog | `deploy/zclassic23.service` | MED | Agent 2 — NOW (small batch with N6+N7) |
+| P7.6 | `StartLimitBurst=3 / StartLimitIntervalSec=300` can permanently disable service after 3 crashes in 5min | `deploy/zclassic23.service` | MED | Agent 2 — NOW (with P7.5) |
+| P7.7 | `LimitCORE=` not set — first SIGABRT today produced no usable post-mortem | `deploy/zclassic23.service` | MED | Agent 2 — NOW (with P7.5) |
+| P7.8 | SQLite default `cache_size` (~2 MB) and `mmap_size` (0) on a 1.3M-row chainstate; `boot_index.c:307` warns mmap_size=64MB previously caused SIGSEGV — pick safe values + lock with a test | `lib/storage/src/coins_view_sqlite.c:187`, schema_migration.c | MED | Agent 2 — NEXT |
+| P7.9 | No central thread registry — 12+ `pthread_create` sites, each shutdown signals its own flag; no single function joins them all | `lib/util/src/sync.c` (or new `lib/util/src/thread_registry.c`), all spawn sites | HIGH | Rhett |
+| P7.10 | `g_shutdown_requested` checked in only 6 files — `bg_validation`, `header_sync`, `peer_strategy`, `scheduler`, `workpool` either don't check it or use a different flag | cross-cutting (audit) | MED | Rhett (companion to P7.9) |
 
 ---
 
