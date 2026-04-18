@@ -6,21 +6,21 @@ Owner: Rhett (primary). Delegates: Agent-2 (see `AGENT-2.md`), Agent-3 (see `AGE
 
 ---
 
-## Progress — last update 2026-04-19 (night, P7.4 shipped by Agent-3; Agent-3 queue now NEXT-only)
+## Progress — last update 2026-04-19 (night, P8 wave opened by Agent-3 — 8 new rows)
 
-**Overall: 59 / 64 rows closed (92%) | SWRC ~97%**
+**Overall: 59 / 72 rows closed (82%) | SWRC ~88%**
 
 | Tier | Closed / Total | % | Open rows |
 |---|---|---|---|
-| **CRITICAL** | 10 / 10 | **100%** | — |
-| **HIGH** | 25 / 27 | **93%** | P4.1, P4.2, P7.9 |
-| **MED** | 20 / 21 | **95%** | P7.10 |
+| **CRITICAL** | 10 / 11 | **91%** | P8.1 |
+| **HIGH** | 25 / 29 | **86%** | P4.1, P4.2, P7.9, P8.2, P8.3 |
+| **MED** | 20 / 26 | **77%** | P7.10, P8.4, P8.5, P8.6, P8.7, P8.8 |
 | **LOW** | 2 / 2 | **100%** | — |
 | (P0 baseline) | 4 / 4 | **100%** | — |
 
-**Open by owner (2026-04-19 night, after P7.4 landed):**
-- **Agent-2 (2 logical tasks):** P4.1+P4.2 paired (NOW), P7.9+P7.10 paired (NEXT). P2.1 closed (d8c5442d1).
-- **Agent-3 (1 audit task):** fresh code-review pass for the P8 wave (NEXT — no coding, AGENT.md-only deliverable). P1.6 (f6aa0b080), P1.7 (5ce252bb6), P1.16b (c841defd2), P5.5 (75576d7a0), P7.4 (f6474c77b) all closed.
+**Open by owner (2026-04-19 night, after P8 wave opened):**
+- **Agent-2 (3 logical tasks + 7 P8 rows):** P4.1+P4.2 paired (NOW), P7.9+P7.10 paired (NEXT), then P8.1 (CRIT — wire-format heap overflow on `lib/net/src/zmsg.c`) takes priority over the rest of the P8 queue. P2.1 closed (d8c5442d1).
+- **Agent-3 (1 row, then queue empty):** P8.3 (HIGH — MMB unbounded mountain height on deserialize, `lib/chain/src/mmb.c`) — adjacent to P5.5/FlyClient lane. P1.6 (f6aa0b080), P1.7 (5ce252bb6), P1.16b (c841defd2), P5.5 (75576d7a0), P7.4 (f6474c77b), and the P8 audit pass itself all closed.
 - **Rhett:** 0 (coordinator only). Action items pending:
   1. `make deploy` from `~/zclassic23` to push Agent-3's consensus fixes (P1.6 P2SH sigops, P1.7 strict difficulty, P5.5 tor pin) + Agent-2's P2.1 mempool validation onto the production node + verify `zcl_onion_status` bootstraps within 60s for the P5.5 smoke test.
   2. Decide whether MAX_P2SH_SIGOPS=15 per-input should land as a mempool-policy rule (Agent-2 lane) — see AGENT-3.md 2026-04-19 P1.6 note for context.
@@ -29,7 +29,7 @@ Owner: Rhett (primary). Delegates: Agent-2 (see `AGENT-2.md`), Agent-3 (see `AGE
 
 **Top remaining risks:** all P-tier CRIT rows are closed. The remaining queue is Agent-2 hardening work — script-interpreter stack refactor (P4.1+P4.2), tip-stuck backpressure watchdog (P7.4), thread-registry + shutdown audit (P7.9+P7.10). Agent-3 queue is empty.
 
-**SWRC formula:** CRIT=4, HIGH=2, MED=1, LOW=0.5. P0 rows weighted as HIGH. Total weighted capacity = 122.
+**SWRC formula:** CRIT=4, HIGH=2, MED=1, LOW=0.5. P0 rows weighted as HIGH. Total weighted capacity = 135 (was 122 pre-P8; +4 CRIT P8.1, +4 HIGH P8.2/P8.3, +5 MED P8.4–P8.8 = +13).
 
 ---
 
@@ -171,6 +171,44 @@ chain right now; the rest are next-wave hardening.
 | P7.8 | SQLite default `cache_size` (~2 MB) and `mmap_size` (0) on a 1.3M-row chainstate; `boot_index.c:307` warns mmap_size=64MB previously caused SIGSEGV — pick safe values + lock with a test | `lib/storage/src/coins_view_sqlite.c:187`, schema_migration.c | MED | Agent 2 — done dbca0be78 (audit found node.db already tuned at cache_size=-65536 / mmap_size=256MB via db_set_pragmas in app/models/src/database.c — refactored the values under named constants ZCL_NODE_DB_CACHE_SIZE_KIB / ZCL_NODE_DB_MMAP_BYTES for single-point future edit; regression tests in test_sqlite.c lock the PRAGMA cache_size reading == -65536 and cover a 100k-UTXO seed + 100 random-read smoke check against SIGSEGV / reader-rewind; boot_index.c:306 landmine root cause documented — standard SQLite mmap-vs-WAL-checkpoint aliasing, safe mitigation is the current "main handle mmap ON, all secondary mmap=0" split; AGENT-2.md flags fast_sync/onion_service/load_balancer RO-open sites in Rhett's lane as future tuning opportunities) |
 | P7.9 | No central thread registry — 12+ `pthread_create` sites, each shutdown signals its own flag; no single function joins them all | `lib/util/src/sync.c` (or new `lib/util/src/thread_registry.c`), all spawn sites | HIGH | Agent 2 — NEXT+4 (narrow scope: new lib/util/src/thread_registry.c + migrate all pthread_create sites; paired with P7.10 in one commit) |
 | P7.10 | `g_shutdown_requested` checked in only 6 files — `bg_validation`, `header_sync`, `peer_strategy`, `scheduler`, `workpool` either don't check it or use a different flag | cross-cutting (audit) | MED | Agent 2 — NEXT+4 (paired with P7.9 — same commit; every spawn site must register with the new thread_registry and check its shutdown flag) |
+
+---
+
+## Priority 8 — Fresh review wave (2026-04-19, post-P7 drain)
+
+Surfaced by Agent-3's audit pass after the P1–P7 closes. Focus areas
+were the subsystems the first two reviews skipped: P2P feature
+protocols (zmsg, dandelion, file_market, p2p_game), token/name
+protocols (zslp, znam), chain proofs (mmb, flyclient, compact_blocks,
+bloom), application controllers (swap, game, messaging, file_market,
+explorer), and mining. Subsystems re-audited and found clean: swap
+controller, game controller, messaging controller, explorer
+controller (XSS-escape and request-validation paths only), p2p_game
+wire, dandelion epoch lifecycle, mining loop, flyclient sample/index
+verification, znam parser bounds, store controller (post-P3.4/P3.6).
+
+| # | Task | File:line | Severity | Owner |
+|---|---|---|---|---|
+| P8.1 | `zmsg_deserialize` reads peer-controlled `uint8_t slen`/`rlen` (range 0-255) and copies that many bytes into `msg->sender[ZMSG_MAX_ADDR=128]` / `msg->recipient[128]` with no bounds check, then writes `'\0'` at `sender[slen]`. A peer sending `slen=255` corrupts ~127 bytes past the field into the adjacent `recipient`/`body` fields of the heap/stack-resident `struct zmsg_message`. Serialize side caps at 127; deserialize does not. Reachable from any handshake-complete peer that sends a `zmsg` P2P message — no auth, no rate limit on the parse layer. | `lib/net/src/zmsg.c:50-60` (struct in `lib/net/include/net/zmsg.h:43-53`) | CRITICAL | Agent 2 |
+| P8.2 | Dandelion stem-peer PRNG seeded with `(uint64_t)time(NULL) ^ 0xdeadbeefcafe1234ULL` — ~31 bits of effective entropy. The same seed drives the Fisher-Yates shuffle that selects this epoch's stem peers AND the per-tx fluff coin-flip. An attacker with rough boot-time + epoch-rotation timing can replay the xorshift64 state and predict (a) which 2 outbound peers the node uses for stem relay this 10-min epoch, and (b) the stem/fluff outcome of every transaction the node originates — defeating Dandelion's origin-privacy property. Note: callers all hold `ds->cs` so the data race the original review flagged is NOT real; the seed-quality issue is the actual bug. | `lib/net/src/dandelion.c:42-54` | HIGH | Agent 2 |
+| P8.3 | `mmb_deserialize` reads each mountain's `height` as a raw little-endian `uint32_t` from the input buffer with no upper-bound check (only `nm` is capped against `MMB_MAX_MOUNTAINS`). For any practical chain, `height` must be `≤ ⌈log2(num_leaves)⌉ ≤ 64`, but the code happily accepts `UINT32_MAX`. Downstream `mmb_merge_after_insert` (lines 100-115) increments `height` during merges — a deserialized state with `height` near `UINT32_MAX` triggers signed/unsigned wraparound on the next `mmb_append`, silently corrupting the FlyClient/snapshot trust root. Snapshot input may transit fast-sync/swarm before P2.4's hash check binds — defense-in-depth gap. | `lib/chain/src/mmb.c:254-261` | HIGH | Agent 3 |
+| P8.4 | Compact-block reconstruction does an O(slots × mempool) linear scan: for every unfilled slot, the reconstructor recomputes `compact_block_short_txid()` (siphash) over **every** mempool entry until it finds a 6-byte match. With a 5 000-tx block and a 25 000-tx mempool that is 125 M siphash + memcmp ops per inbound compact block. A peer can amplify by sending compact blocks whose short-txids are placed late in the mempool iteration order. Code already comments `Simple O(n*m) for now; sufficient for typical mempools.` — promote to a `khash` short-txid table built once before the slot loop. | `lib/net/src/compact_blocks.c:272-319` | MED | Agent 2 |
+| P8.5 | `bloom_filter_init_internal` only applies the `MAX_BLOOM_HASH_FUNCS` cap when `constrained=true` (the public `bloom_filter_init` path). The internal `rolling_bloom_init` path passes `constrained=false` and lets `num_hash_funcs = (data_size * 8 / num_elements * LN2)` grow without ceiling. Every subsequent `rolling_bloom_insert` / `contains` runs that many siphash iterations per call. Pathological tuning (small `num_elements`, large `data_size` from a tight `fp_rate`) produces hot-path CPU blow-up. Extract the `MIN(ideal, MAX_BLOOM_HASH_FUNCS)` clamp into both branches. | `lib/bloom/src/bloom.c:47-52` | MED | Agent 2 |
+| P8.6 | `zslp_service_validate_token_key` returns true for `is_alphanumeric(token_key, len)` with `len ∈ [1, ZSLP_MAX_TOKEN_KEY_LEN]` **OR** the 64-char hex case. Because the alphanumeric branch has no length floor that distinguishes ticker-like names from truncated txids, a 10-char alphanumeric "txid" prefix is accepted and later canonicalized via `snprintf` — different short/long inputs may collide on the same canonical form. RPC callers can then look up tokens by ambiguous short keys; SEND requests targeting an aliased key reach the wrong token's payment service. | `app/services/src/zslp_service.c:62-72` | MED | Agent 2 |
+| P8.7 | `zmarket_offer` computes `offer.num_chunks = (uint32_t)((size_bytes + FILE_MARKET_CHUNK_SIZE - 1) / FILE_MARKET_CHUNK_SIZE)` with no upper bound on `size_bytes`. `st.st_size` from `stat(2)` is operator-supplied (RPC argument is a path on the local filesystem), so a sparse file or a deliberately crafted manifest produces `size_bytes` near `UINT64_MAX`. The `+ FILE_MARKET_CHUNK_SIZE - 1` then wraps to a tiny value, making `num_chunks` underestimate the true chunk count. Downstream chunk-challenge / payment math operates on a wrong chunk count without ever logging the mismatch. Lower priority because the input is operator-controlled, but worth a one-line `if (size_bytes > UINT64_MAX - CHUNK_SIZE) reject` guard. | `app/controllers/src/file_market_controller.c:140-142` | MED | Agent 2 |
+| P8.8 | ZNAM builder gates diverge from the parser. `znam_build_register` and `znam_build_update` reject `target_type > 3` (literal — covers only ONION/ZADDR/TADDR), but `znam_parse` and `znam_build_set_record` accept up to `ZNAM_TYPE_CONTENT = 7` (BTC/LTC/DOGE/CONTENT). A user calling REGISTER with a BTC address gets a silent zero-bytes-written return and no logged reason. Either lift the literal-3 cap to `ZNAM_TYPE_CONTENT` (intentional design — REGISTER should support multi-coin per the ENS-inspired spec) or document the restriction with a `LOG_FAIL`. | `lib/znam/src/znam.c:189-205` (vs parser at `:125`) | MED | Agent 2 |
+
+**Triage notes for Rhett:**
+- P8.1 is a wire-format heap overflow reachable from any peer; promote
+  ahead of Agent-2's other queue items.
+- P8.3 is the only natural fit for Agent-3 — adjacent to the
+  P5.5/MMB/FlyClient lane Agent-3 already owns. Everything else falls
+  in Agent-2's net/app/zslp/znam/bloom lanes.
+- Subsystems re-audited and clean: swap controller, game controller,
+  messaging controller, explorer controller (request-parse + HTML-
+  escape paths), p2p_game wire, dandelion epoch lifecycle, mining
+  thread loop, flyclient sample/index verification, znam parser
+  bounds, store controller (post-P3.4/P3.6).
 
 ---
 
