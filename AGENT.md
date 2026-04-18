@@ -6,28 +6,28 @@ Owner: Rhett (primary). Delegates: Agent-2 (see `AGENT-2.md`), Agent-3 (see `AGE
 
 ---
 
-## Progress — last update 2026-04-19 (night, P5.5 shipped; Agent-3 queue empty)
+## Progress — last update 2026-04-19 (night, P2.1 shipped by Agent-2; P5.5 shipped by Agent-3; Agent-3 queue empty)
 
-**Overall: 58 / 64 rows closed (91%) | SWRC ~94%**
+**Overall: 58 / 64 rows closed (91%) | SWRC ~95%**
 
 | Tier | Closed / Total | % | Open rows |
 |---|---|---|---|
-| **CRITICAL** | 9 / 10 | **90%** | P2.1 |
+| **CRITICAL** | 10 / 10 | **100%** | — |
 | **HIGH** | 24 / 27 | **89%** | P4.1, P4.2, P7.4, P7.9 |
 | **MED** | 20 / 21 | **95%** | P7.10 |
 | **LOW** | 2 / 2 | **100%** | — |
 | (P0 baseline) | 4 / 4 | **100%** | — |
 
 **Open by owner (2026-04-19 night):**
-- **Agent-2 (6 logical tasks):** P2.1 (NOW), P4.1+P4.2 paired (NEXT), P7.4 (NEXT+1), P7.9+P7.10 paired (NEXT+2)
+- **Agent-2 (5 logical tasks):** P4.1+P4.2 paired (NOW), P7.4 (NEXT), P7.9+P7.10 paired (NEXT+1). P2.1 closed (da318931d).
 - **Agent-3 (0 rows):** queue is empty. P1.6 (f6aa0b080), P1.7 (5ce252bb6), P1.16b (c841defd2), P5.5 (75576d7a0) all closed. Standing by per AGENT-3.md "Stopping point" — ping Rhett for the next wave.
 - **Rhett:** 0 (coordinator only). Action items pending:
-  1. `make deploy` from `~/zclassic23` to push Agent-3's consensus fixes (P1.6 P2SH sigops, P1.7 strict difficulty, P5.5 tor pin) onto the production node + verify `zcl_onion_status` bootstraps within 60s for the P5.5 smoke test.
+  1. `make deploy` from `~/zclassic23` to push Agent-3's consensus fixes (P1.6 P2SH sigops, P1.7 strict difficulty, P5.5 tor pin) + Agent-2's P2.1 mempool validation onto the production node + verify `zcl_onion_status` bootstraps within 60s for the P5.5 smoke test.
   2. Decide whether MAX_P2SH_SIGOPS=15 per-input should land as a mempool-policy rule (Agent-2 lane) — see AGENT-3.md 2026-04-19 P1.6 note for context.
 
 **ACTION ITEM (Rhett):** the P7.1 fix landed as `a6bedccad` but production is still at h=3,081,411 because nothing triggered a rebuild + redeploy. Run `make deploy` on the production box to push the fix live. Expected result: chain advances past 3,081,411 within 60s, catches up to legacy zclassicd (currently ~3,082,462) within 2 minutes.
 
-**Top remaining risks:** once P7.1 is deployed and the chain resumes, the only open CRIT is P2.1 (mempool accepts any peer tx without verification) — Agent-2 NOW. Everything else is HIGH/MED hardening.
+**Top remaining risks:** all P-tier CRIT rows are closed. The remaining queue is Agent-2 hardening work — script-interpreter stack refactor (P4.1+P4.2), tip-stuck backpressure watchdog (P7.4), thread-registry + shutdown audit (P7.9+P7.10). Agent-3 queue is empty.
 
 **SWRC formula:** CRIT=4, HIGH=2, MED=1, LOW=0.5. P0 rows weighted as HIGH. Total weighted capacity = 122.
 
@@ -88,7 +88,7 @@ regression test locks the gates in place.
 
 | # | Task | File:line | Severity | Owner |
 |---|---|---|---|---|
-| P2.1 | Mempool accepts any peer tx — no sig/UTXO/fee check | `lib/net/src/msg_tx.c:34-69` | CRITICAL | Agent 2 — NEXT (narrow scope: same msg_tx.c as P2.2; wire `check_transaction` + mempool fee rules; 3-test regression covering invalid-sig, double-spend, zero-fee) |
+| P2.1 | Mempool accepts any peer tx — no sig/UTXO/fee check | `lib/net/src/msg_tx.c:34-69` | CRITICAL | Agent 2 — done da318931d (msg_tx_accept classifies every incoming `tx` into a 7-way enum — OK / INVALID / DUPLICATE / CONFLICT / BELOW_FEE / MISSING_INPUTS / INTERNAL_ERROR — and records PEER_OFFENCE_INVALID_MESSAGE for INVALID / CONFLICT only; orphan / duplicate / below-fee drop silently as rate-limit. Fee = coins_view_cache_get_value_in - transaction_get_value_out checked against pool->min_relay_fee. tx_mempool_has_conflict is a new read-only probe in lib/validation/ so conflicts are attributed before tx_mempool_add_unchecked folds them into its generic bool. 3 regression tests in test_mempool.c: invalid-vout → INVALID + ban 10; double-spend → CONFLICT + ban on second peer only; below-fee → BELOW_FEE + no ban. Bonus: uncovered + fixed a self-deadlock in disk_block_io_close_cache from block_pruning_service — see commit 3979340c9.) |
 | P2.2 | 1.6 MB stack alloc in message handler | `lib/net/src/msg_tx.c:288` | CRITICAL | Agent 2 — done 352a83167 (process_mempool scratch now heap-allocated via zcl_malloc; LOG_FAIL on OOM; file-scope test hook `msgprocessor_test_set_mempool_alloc_hook` drives the forced-OOM path; 2 regression tests in test_mempool.c — 100-tx happy path pushes all inv through p2p_node_push_inventory, forced-OOM returns false with inventory_to_send untouched) |
 | P2.3 | fast_sync bypasses AR_BEGIN_SAVE | `lib/net/src/fast_sync.c:480-526` | HIGH | Agent 2 — done 9ef77899b (migrated bulk-insert loop to AR_BIND_* + AR_STEP_DONE; regression test builds a 2-entry chunk with CHECK-violating height and asserts BEGIN/COMMIT rollback atomicity) |
 | P2.4 | Swarm per-chunk hash verification effectively absent | `lib/net/src/fast_sync.c:892-895`, `msgprocessor.c:1968` | HIGH | Agent 2 — done 9e8cfbb27 (zmanifest carries per-chunk SHA3 hashes + merkle-root reconstruction check; swarm_sync_init requires chunk_hashes + bounds num_chunks at MANIFEST_MAX_CHUNKS; 3 regression tests prove bad chunk → 0 rows + retry, good chunk → 3 rows, init refuses NULL/oversized) |
