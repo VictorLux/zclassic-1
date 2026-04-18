@@ -1016,7 +1016,22 @@ bool app_init(struct app_context *ctx)
      * its own BEGIN/COMMIT. One connection = no WAL lock contention. */
     if (g_node_db.open) {
         if (!coins_view_sqlite_open(&g_coins_sqlite, g_node_db.db)) {
-            fprintf(stderr, "Warning: Could not open SQLite coins view\n");
+            /* P7.2: the old "Warning" + keep-going path is how the
+             * live node was still serving RPC against a corrupted
+             * chain-state.  A boot-time tip mismatch that the check
+             * didn't auto-rewind is an operator-intervention event:
+             * emit a structured crash event so systemd/node.log
+             * preserves the reason, and refuse to start. */
+            fprintf(stderr,
+                "FATAL: coins view integrity check failed — the "
+                "UTXO set is inconsistent with the stored tip "
+                "anchor and the auto-rewind guard did not recover "
+                "it.  The node will not start.  Operator action: "
+                "restore ~/.zclassic-c23/node.db from a known-good "
+                "backup, OR delete it and allow a full resync.\n");
+            event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
+                        "coins_view tip mismatch exceeds auto-rewind guard");
+            _exit(EXIT_FAILURE);
         }
     }
 

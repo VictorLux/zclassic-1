@@ -190,6 +190,156 @@ static int t_utxos_above_tip_rejected(void)
     return failures;
 }
 
+/* P7.2: single-block overshoot with ≤ COINS_AUTO_REWIND_MAX_ROWS rows
+ * above tip is the crash-mid-flush shape.  Auto-rewind deletes the
+ * overshoot UTXOs + clears the stored commitment, and open() succeeds.
+ * Verify the high rows are gone, the tip-height row survives, and the
+ * commitment key is cleared. */
+static int t_utxos_one_ahead_auto_rewound(void)
+{
+    int failures = 0;
+    char dir[256]; cva_path(dir, sizeof(dir), "autorewind"); mkdir_p(dir);
+    char dbpath[512]; snprintf(dbpath, sizeof(dbpath), "%s/node.db", dir);
+
+    TEST("cva: UTXO overshoot by one block (≤32 rows) → auto-rewound") {
+        sqlite3 *db = NULL;
+        ASSERT(build_min_db(&db, dbpath));
+
+        /* Tip at height 100; a few UTXOs at 100 (retained) + three at
+         * 101 (overshoot, to be deleted). */
+        seed_utxo(db, 100, 0x10);
+        seed_utxo(db, 100, 0x11);
+        seed_utxo(db, 101, 0x20);
+        seed_utxo(db, 101, 0x21);
+        seed_utxo(db, 101, 0x22);
+        uint8_t tip[32]; memset(tip, 0xCC, 32);
+        seed_block(db, tip, 100);
+        set_tip(db, tip);
+
+        /* Seed a stale utxo_commitment that the rewind must purge. */
+        {
+            sqlite3_stmt *s = NULL;
+            sqlite3_prepare_v2(db,
+                "INSERT OR REPLACE INTO node_state(key,value) "
+                "VALUES('utxo_commitment',?)", -1, &s, NULL);
+            uint8_t stale[64];
+            memset(stale, 0xEE, sizeof(stale));
+            sqlite3_bind_blob(s, 1, stale, sizeof(stale), SQLITE_STATIC);
+            sqlite3_step(s);
+            sqlite3_finalize(s);
+        }
+
+        struct coins_view_sqlite cvs;
+        ASSERT(coins_view_sqlite_open(&cvs, db));  /* must heal and open */
+        coins_view_sqlite_close(&cvs);
+
+        /* No rows above tip. */
+        sqlite3_stmt *s = NULL;
+        sqlite3_prepare_v2(db,
+            "SELECT COUNT(*) FROM utxos WHERE height>100", -1, &s, NULL);
+        ASSERT(sqlite3_step(s) == SQLITE_ROW);
+        ASSERT_EQ(sqlite3_column_int(s, 0), 0);
+        sqlite3_finalize(s);
+
+        /* Tip-height rows survived. */
+        sqlite3_prepare_v2(db,
+            "SELECT COUNT(*) FROM utxos WHERE height=100", -1, &s, NULL);
+        ASSERT(sqlite3_step(s) == SQLITE_ROW);
+        ASSERT_EQ(sqlite3_column_int(s, 0), 2);
+        sqlite3_finalize(s);
+
+        /* utxo_commitment cleared — next connect_block recomputes. */
+        sqlite3_prepare_v2(db,
+            "SELECT COUNT(*) FROM node_state WHERE key='utxo_commitment'",
+            -1, &s, NULL);
+        ASSERT(sqlite3_step(s) == SQLITE_ROW);
+        ASSERT_EQ(sqlite3_column_int(s, 0), 0);
+        sqlite3_finalize(s);
+
+        sqlite3_close(db);
+        PASS();
+    } _test_next:;
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
+/* P7.2: single-block overshoot but with > COINS_AUTO_REWIND_MAX_ROWS
+ * (32) rows above tip.  The auto-rewind guard must refuse to auto-heal
+ * — the brief's count-first check.  UTXO set MUST remain untouched so
+ * the operator can investigate. */
+static int t_utxos_one_ahead_too_many_rejected(void)
+{
+    int failures = 0;
+    char dir[256]; cva_path(dir, sizeof(dir), "too_many"); mkdir_p(dir);
+    char dbpath[512]; snprintf(dbpath, sizeof(dbpath), "%s/node.db", dir);
+
+    TEST("cva: UTXO overshoot by one block but >32 rows → refused, no heal") {
+        sqlite3 *db = NULL;
+        ASSERT(build_min_db(&db, dbpath));
+
+        seed_utxo(db, 100, 0x40);
+        /* 33 rows at height 101 — exceeds the auto-rewind guard of 32. */
+        for (int i = 0; i < 33; i++)
+            seed_utxo(db, 101, (uint8_t)(0x80 + i));
+        uint8_t tip[32]; memset(tip, 0xDD, 32);
+        seed_block(db, tip, 100);
+        set_tip(db, tip);
+
+        struct coins_view_sqlite cvs;
+        ASSERT(!coins_view_sqlite_open(&cvs, db));  /* refused */
+
+        /* UTXO set untouched — still 33 rows above tip. */
+        sqlite3_stmt *s = NULL;
+        sqlite3_prepare_v2(db,
+            "SELECT COUNT(*) FROM utxos WHERE height>100", -1, &s, NULL);
+        ASSERT(sqlite3_step(s) == SQLITE_ROW);
+        ASSERT_EQ(sqlite3_column_int(s, 0), 33);
+        sqlite3_finalize(s);
+
+        sqlite3_close(db);
+        PASS();
+    } _test_next:;
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
+/* P7.2: multi-block overshoot (>1 block ahead).  Even with very few
+ * rows, this is never auto-healable — memory rule: never wipe above
+ * tip when the overshoot spans a block boundary we didn't crash
+ * mid-flush on.  Must refuse + leave the data alone. */
+static int t_utxos_two_ahead_rejected(void)
+{
+    int failures = 0;
+    char dir[256]; cva_path(dir, sizeof(dir), "two_ahead"); mkdir_p(dir);
+    char dbpath[512]; snprintf(dbpath, sizeof(dbpath), "%s/node.db", dir);
+
+    TEST("cva: UTXO overshoot by two blocks → refused regardless of row count") {
+        sqlite3 *db = NULL;
+        ASSERT(build_min_db(&db, dbpath));
+
+        seed_utxo(db, 100, 0x50);
+        seed_utxo(db, 102, 0x51);  /* two blocks ahead, single row */
+        uint8_t tip[32]; memset(tip, 0xEE, 32);
+        seed_block(db, tip, 100);
+        set_tip(db, tip);
+
+        struct coins_view_sqlite cvs;
+        ASSERT(!coins_view_sqlite_open(&cvs, db));
+
+        sqlite3_stmt *s = NULL;
+        sqlite3_prepare_v2(db,
+            "SELECT COUNT(*) FROM utxos WHERE height>100", -1, &s, NULL);
+        ASSERT(sqlite3_step(s) == SQLITE_ROW);
+        ASSERT_EQ(sqlite3_column_int(s, 0), 1);  /* row preserved */
+        sqlite3_finalize(s);
+
+        sqlite3_close(db);
+        PASS();
+    } _test_next:;
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
 int test_coins_view_atomicity(void);
 
 int test_coins_view_atomicity(void)
@@ -201,5 +351,8 @@ int test_coins_view_atomicity(void)
     failures += t_utxos_without_tip_rejected();
     failures += t_matching_tip_accepted();
     failures += t_utxos_above_tip_rejected();
+    failures += t_utxos_one_ahead_auto_rewound();
+    failures += t_utxos_one_ahead_too_many_rejected();
+    failures += t_utxos_two_ahead_rejected();
     return failures;
 }

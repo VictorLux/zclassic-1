@@ -62,20 +62,105 @@ static struct coins_view_vtable cvs_vtable = {
     .get_stats     = NULL,
 };
 
+/* P7.2: max UTXO rows above tip that auto-rewind will touch. A single
+ * block in practice commits on the order of 1-20 new UTXOs; 32 is a
+ * generous cap that still refuses anything resembling a multi-block
+ * drift (which should NEVER be auto-healed — memory rule: never wipe
+ * above tip without operator consent). */
+#define COINS_AUTO_REWIND_MAX_ROWS 32
+
+/* P7.2: helper — crash-recovery auto-rewind for a single-block UTXO
+ * overshoot.  Deletes UTXOs strictly above tip_height AND clears the
+ * stored `utxo_commitment` row (which may reflect the overshoot set
+ * that no longer exists — force recompute on the next connect_block).
+ * The guard is enforced at call-site.  Returns true on COMMIT, false
+ * on ROLLBACK.  Logs + emits an event in both paths. */
+static bool coins_view_sqlite_rewind_above_tip(sqlite3 *db,
+                                                int64_t tip_height)
+{
+    char *err = NULL;
+    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
+        fprintf(stderr,
+            "[coins] auto-rewind: BEGIN failed: %s\n", err ? err : "?");
+        sqlite3_free(err);
+        return false;
+    }
+
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(db,
+            "DELETE FROM utxos WHERE height > ?", -1, &s, NULL) != SQLITE_OK) {
+        fprintf(stderr,
+            "[coins] auto-rewind: prepare DELETE failed: %s\n",
+            sqlite3_errmsg(db));
+        goto rollback;
+    }
+    sqlite3_bind_int64(s, 1, tip_height);
+    if (sqlite3_step(s) != SQLITE_DONE) {
+        fprintf(stderr,
+            "[coins] auto-rewind: DELETE step failed: %s\n",
+            sqlite3_errmsg(db));
+        sqlite3_finalize(s);
+        goto rollback;
+    }
+    int deleted = sqlite3_changes(db);
+    sqlite3_finalize(s);
+
+    if (sqlite3_exec(db,
+            "DELETE FROM node_state WHERE key='utxo_commitment'",
+            NULL, NULL, &err) != SQLITE_OK) {
+        fprintf(stderr,
+            "[coins] auto-rewind: commitment purge failed: %s\n",
+            err ? err : "?");
+        sqlite3_free(err);
+        goto rollback;
+    }
+
+    if (sqlite3_exec(db, "COMMIT", NULL, NULL, &err) != SQLITE_OK) {
+        fprintf(stderr,
+            "[coins] auto-rewind: COMMIT failed: %s\n", err ? err : "?");
+        sqlite3_free(err);
+        goto rollback;
+    }
+
+    fprintf(stderr,
+        "[coins] auto-rewind: removed %d UTXO row(s) above "
+        "tip_height=%lld and cleared utxo_commitment — "
+        "continuing boot\n",
+        deleted, (long long)tip_height);
+    event_emitf(EV_DB_ERROR, 0,
+        "coins_auto_rewind deleted=%d tip_height=%lld",
+        deleted, (long long)tip_height);
+    return true;
+
+rollback:
+    sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+    event_emitf(EV_DB_ERROR, 0,
+        "coins_auto_rewind_failed tip_height=%lld",
+        (long long)tip_height);
+    return false;
+}
+
 /* Boot-time integrity check: the UTXO set (`utxos` table) must not be
  * strictly ahead of the coins-flush anchor (`coins_best_block`).  This
  * guards against the class of crash-mid-flush corruption where UTXOs
  * landed but the tip pointer didn't — a silent heal here would
  * de-sync the node from consensus and potentially double-spend on
- * restart.  Returns true on OK, false on detected mismatch; the
- * operator is expected to halt + investigate on false.
+ * restart.
+ *
+ * Returns true on OK (consistent OR successfully auto-rewound), false
+ * on unrecoverable mismatch; the caller must halt on false.
  *
  * Semantics:
  *   (a) no UTXOs, no tip                 → fresh/clean
  *   (b) UTXOs present, no tip            → MISMATCH (orphan UTXOs)
  *   (c) tip set, no UTXOs                → benign (post-wipe anchor)
  *   (d) tip hash not yet in blocks table → soft WARN (block index lag)
- *   (e) max_utxo_height > tip_height     → MISMATCH (UTXOs ahead)
+ *   (e) max_utxo_height == tip_height+1
+ *       AND count(height > tip_height) <= COINS_AUTO_REWIND_MAX_ROWS
+ *                                        → AUTO-REWIND + OK
+ *   (f) max_utxo_height > tip_height+1
+ *       OR count exceeds the auto-rewind guard
+ *                                        → MISMATCH (UTXOs ahead)
  */
 static bool coins_view_sqlite_check_tip_consistency(sqlite3 *db)
 {
@@ -150,11 +235,55 @@ static bool coins_view_sqlite_check_tip_consistency(sqlite3 *db)
         return true;
     }
     if (max_height > tip_height) {
+        /* P7.2: single-block overshoot with a bounded row count is the
+         * shape of a SIGKILL between the UTXO flush and the tip
+         * update.  Auto-rewind deletes the overshoot rows and clears
+         * the (possibly stale) utxo_commitment; the next connect_block
+         * then re-lands the deleted rows and recomputes the
+         * commitment.  Anything larger than a single-block overshoot
+         * or a bounded row delta gets the strict-halt treatment. */
+        if (max_height == tip_height + 1) {
+            int64_t above = 0;
+            sqlite3_stmt *cs = NULL;
+            if (sqlite3_prepare_v2(db,
+                    "SELECT COUNT(*) FROM utxos WHERE height>?",
+                    -1, &cs, NULL) == SQLITE_OK) {
+                sqlite3_bind_int64(cs, 1, tip_height);
+                if (sqlite3_step(cs) == SQLITE_ROW)
+                    above = sqlite3_column_int64(cs, 0);
+                sqlite3_finalize(cs);
+            }
+            if (above > 0 && above <= COINS_AUTO_REWIND_MAX_ROWS) {
+                fprintf(stderr,
+                    "[coins] DB_ERR_TIP_MISMATCH: utxos "
+                    "max_height=%lld = tip_height+1 "
+                    "(%lld rows above tip, ≤ %d guard) — "
+                    "attempting single-block auto-rewind\n",
+                    (long long)max_height, (long long)above,
+                    COINS_AUTO_REWIND_MAX_ROWS);
+                if (coins_view_sqlite_rewind_above_tip(db, tip_height))
+                    return true;
+                /* Rewind transaction failed — fall through to halt. */
+                fprintf(stderr,
+                    "[coins] DB_ERR_TIP_MISMATCH: auto-rewind "
+                    "transaction failed — halt and investigate.\n");
+                return false;
+            }
+            fprintf(stderr,
+                "[coins] DB_ERR_TIP_MISMATCH: utxos "
+                "max_height=%lld = tip_height+1 but %lld rows "
+                "above tip exceed the auto-rewind guard (%d) — "
+                "halt and investigate; do not auto-heal.\n",
+                (long long)max_height, (long long)above,
+                COINS_AUTO_REWIND_MAX_ROWS);
+            return false;
+        }
         fprintf(stderr,
             "[coins] DB_ERR_TIP_MISMATCH: utxos max_height=%lld > "
-            "tip_height=%lld (UTXOs ahead of tip) — halt and "
-            "investigate; do not auto-heal.\n",
-            (long long)max_height, (long long)tip_height);
+            "tip_height=%lld (UTXOs ahead of tip by %lld blocks) — "
+            "halt and investigate; do not auto-heal.\n",
+            (long long)max_height, (long long)tip_height,
+            (long long)(max_height - tip_height));
         return false;
     }
     printf("[coins] tip check OK: max_utxo_height=%lld tip_height=%lld\n",
