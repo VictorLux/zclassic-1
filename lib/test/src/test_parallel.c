@@ -1,0 +1,417 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * Fork-parallel driver for the zclassic23 test suite.
+ *
+ * The sequential runner (`./test_zcl`, `main()` in test.c) executes
+ * ~170 test groups back-to-back on a single CPU. On a 32-core box we
+ * barely use 3% of available compute and the suite takes 8-15 minutes.
+ *
+ * This binary runs the same groups concurrently. Every group gets its
+ * own child process via fork(), with output captured to a per-child
+ * temp file. The parent waits for all children and then replays their
+ * output in group order so a human sees a deterministic transcript.
+ *
+ * The in-process call pattern of the sequential runner — one
+ * ecc_start() for everything — doesn't translate directly to a
+ * parallel runner. Each child does its own `chain_params_select` +
+ * `ecc_start` + `ecc_verify_init` before running its group, then
+ * `ecc_verify_destroy` + `ecc_stop` before exit. The extra setup cost
+ * is paid once per group and is dwarfed by the per-group test time.
+ *
+ * Maintenance note: the registry below must stay in sync with the
+ * dispatch list in lib/test/src/test.c. Adding a test to test.c but
+ * not here means the parallel runner silently skips it. Adding it
+ * here but not test.c means the sequential path skips it. A
+ * lightweight source-level diff would catch drift, but the canonical
+ * registry is test_parallel.c — test.c is the legacy shape. */
+
+#define _POSIX_C_SOURCE 200809L
+
+#include "test/test_helpers.h"
+
+#include <errno.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <time.h>
+#include <unistd.h>
+
+/* Required by process_block.c (normally in main.c) */
+volatile sig_atomic_t g_shutdown_requested = 0;
+
+/* ── Test registry ─────────────────────────────────────────────────
+ *
+ * TEST_LIST and SPEC_LIST are X-macros expanded three times below:
+ *   DECL  — produces extern int test_<name>(void);
+ *   ENTRY — produces {"<name>", test_<name>} table rows
+ *
+ * Keep in sync with the dispatch list in lib/test/src/test.c.
+ */
+
+#define TEST_LIST(X) \
+    X(load_balancer) X(game) X(crypto) X(encoding) X(chain) X(keys) \
+    X(script) X(net) X(transaction) X(mempool) X(rpc) X(sqlite) \
+    X(activerecord) X(validation) X(sapling) X(sapling_crypto) \
+    X(bn254) X(merkle_tree) X(slp) X(models) X(core) X(znam) X(htlc) \
+    X(file_market) X(strong_params) X(json) X(robustness) X(wallet) \
+    X(primitives) X(bloom) X(coins) X(store) X(blog) X(api) \
+    X(explorer) X(mining) X(utxo_commitment) X(mmr) X(mmb) \
+    X(flyclient) X(scan_util) X(tor) X(event) X(download) X(consensus) \
+    X(policy) X(wallet_view) X(fast_sync) X(block_scan) \
+    X(node_health_service) X(chain_state_repo) X(recovery_policy) \
+    X(db_txn) X(sync_service) X(snapshot_sync_service) \
+    X(file_controller) X(file_ops) X(integrity) X(protocols) \
+    X(chain_restore_service) X(chain_activation_controller) \
+    X(mcp_router) X(mcp_controllers) X(mcp_middleware) X(mcp_metrics) \
+    X(mcp_e2e) X(db_validators) X(peer_scoring) X(peer_bandwidth) \
+    X(secrets_hygiene) X(block_index_integrity) X(wallet_backup) \
+    X(wallet_canary) X(wallet_persistence_cycle) \
+    X(wallet_flush_rollback) X(log_json) X(http_middleware) \
+    X(rpc_timeout) X(wallet_keystore) X(wallet_sqlite_enc) \
+    X(zcl_result) X(wallet_sqlite_open_errors) X(watch_only) \
+    X(coin_selection) X(disk_monitor) X(db_maintenance) \
+    X(mempool_limits) X(addrman_integrity) X(ibd_throttle) \
+    X(consensus_reject_events) X(consensus_reject_index) \
+    X(chain_rollback) X(alerts) X(ws_events) X(trace) X(phgr13_fix) \
+    X(no_hardcoded_home) X(cookie_rotation) X(reorg_safety) \
+    X(key_scrub) X(block_index_loader) X(chain_state_validator) \
+    X(utxo_recovery_service) X(rpc_error_envelope) X(tx_property) \
+    X(workpool) X(bip113_bip65) X(mempool_orphan) X(fee_estimation) \
+    X(header_sync) X(header_sync_stall) X(hd_keychain) X(mnemonic) \
+    X(bip44) X(compact_blocks) X(dandelion) X(addrman_rebalance) \
+    X(block_pruning) X(schema_migration) X(db_migration_idempotent) \
+    X(coins_view_atomicity) X(make_lint_gates) X(multisig) \
+    X(mcp_fuzz) X(rpc_auth_hardening) X(sync_watchdog) \
+    X(disk_block_io) X(msg_handlers)
+
+#define SPEC_LIST(X) \
+    X(wallet_dashboard) X(wallet_send) X(wallet_receive) \
+    X(wallet_shield) X(wallet_node) X(wallet_history) \
+    X(wallet_coins) X(wallet_pulse) X(wallet_tx_detail) \
+    X(wallet_navigation) X(wallet_errors) X(wallet_privacy) \
+    X(wallet_sovereignty) X(wallet_celebration) \
+    X(wallet_empowerment) X(wallet_flow) X(wallet_accessibility) \
+    X(data_hooks) X(event_observers) X(state_machine) \
+    X(ux_sierra) X(html_quality) X(user_journeys) X(e2e_wallet) \
+    X(render_audit) X(smoke) X(100_stories) X(consensus_compat)
+
+/* Forward declarations */
+#define DECL_TEST(name) extern int test_##name(void);
+TEST_LIST(DECL_TEST)
+#undef DECL_TEST
+
+#define DECL_SPEC(name) extern int spec_##name(void);
+SPEC_LIST(DECL_SPEC)
+#undef DECL_SPEC
+
+struct test_group {
+    const char *name;
+    int (*fn)(void);
+};
+
+static const struct test_group g_groups[] = {
+#define ROW_TEST(name) {"test_" #name, test_##name},
+    TEST_LIST(ROW_TEST)
+#undef ROW_TEST
+#define ROW_SPEC(name) {"spec_" #name, spec_##name},
+    SPEC_LIST(ROW_SPEC)
+#undef ROW_SPEC
+};
+
+static const size_t g_num_groups =
+    sizeof(g_groups) / sizeof(g_groups[0]);
+
+/* ── Parent-side worker pool ───────────────────────────────────────*/
+
+struct child_slot {
+    pid_t pid;           /* 0 if slot is free */
+    size_t group_idx;    /* index into g_groups for the running group */
+    char out_path[128];  /* tempfile path for this child's stdout+stderr */
+};
+
+struct group_result {
+    int status;          /* -1 if not yet run, else wait-status from waitpid */
+    int signaled;        /* 1 if killed by a signal */
+    int exit_code;       /* only valid if signaled == 0 */
+    double wall_seconds; /* 0 until measured */
+    time_t start;
+    char out_path[128];  /* owned by the slot; copied here on reap */
+};
+
+static int get_nproc(void)
+{
+    long n = sysconf(_SC_NPROCESSORS_ONLN);
+    if (n < 1) return 1;
+    if (n > 1024) return 1024;
+    return (int)n;
+}
+
+static void child_run(size_t idx, const char *out_path)
+{
+    /* Redirect stdout + stderr to our tempfile. */
+    int fd = open(out_path,
+                  O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) {
+        /* Can't redirect — run anyway; parent will see empty output. */
+        perror("test_parallel: open tempfile");
+    } else {
+        dup2(fd, STDOUT_FILENO);
+        dup2(fd, STDERR_FILENO);
+        close(fd);
+    }
+    setbuf(stdout, NULL);
+    setbuf(stderr, NULL);
+
+    chain_params_select(CHAIN_MAIN);
+    ecc_start();
+    ecc_verify_init();
+
+    int failures = g_groups[idx].fn();
+
+    ecc_verify_destroy();
+    ecc_stop();
+
+    fflush(stdout);
+    fflush(stderr);
+    _exit(failures ? 1 : 0);
+}
+
+static int find_slot_by_pid(struct child_slot *slots, int jobs, pid_t pid)
+{
+    for (int i = 0; i < jobs; i++)
+        if (slots[i].pid == pid) return i;
+    return -1;
+}
+
+static int find_free_slot(struct child_slot *slots, int jobs)
+{
+    for (int i = 0; i < jobs; i++)
+        if (slots[i].pid == 0) return i;
+    return -1;
+}
+
+static void make_tempfile_path(char *buf, size_t sz, size_t idx, pid_t parent)
+{
+    snprintf(buf, sz, "./test-tmp/test_parallel_%lld_%zu.log",
+             (long long)parent, idx);
+}
+
+static void ensure_tmp_dir(void)
+{
+    struct stat st;
+    if (stat("./test-tmp", &st) == 0) return;
+    if (mkdir("./test-tmp", 0755) != 0 && errno != EEXIST)
+        perror("test_parallel: mkdir ./test-tmp");
+}
+
+static void print_captured(const char *path)
+{
+    FILE *fp = fopen(path, "r");
+    if (!fp) {
+        printf("  (captured output missing at %s)\n", path);
+        return;
+    }
+    char line[4096];
+    while (fgets(line, sizeof(line), fp)) {
+        fputs(line, stdout);
+    }
+    fclose(fp);
+}
+
+int main(int argc, char **argv)
+{
+    int jobs = get_nproc();
+    int timeout_secs = 300; /* per-group; generous so slow groups like
+                             * test_merkle_tree (~110s standalone) don't
+                             * get cut off the first time a machine is
+                             * loaded. */
+    bool verbose = false;
+    bool list_only = false;
+
+    for (int i = 1; i < argc; i++) {
+        if (strncmp(argv[i], "--jobs=", 7) == 0) {
+            jobs = atoi(argv[i] + 7);
+            if (jobs < 1) jobs = 1;
+        } else if (strncmp(argv[i], "-j", 2) == 0 && argv[i][2]) {
+            jobs = atoi(argv[i] + 2);
+            if (jobs < 1) jobs = 1;
+        } else if (strncmp(argv[i], "--timeout=", 10) == 0) {
+            timeout_secs = atoi(argv[i] + 10);
+            if (timeout_secs < 1) timeout_secs = 1;
+        } else if (strcmp(argv[i], "--verbose") == 0 ||
+                   strcmp(argv[i], "-v") == 0) {
+            verbose = true;
+        } else if (strcmp(argv[i], "--list") == 0) {
+            list_only = true;
+        } else {
+            fprintf(stderr,
+                    "Usage: %s [--jobs=N] [--timeout=SECS] [--verbose] [--list]\n",
+                    argv[0]);
+            return 2;
+        }
+    }
+
+    if (list_only) {
+        for (size_t i = 0; i < g_num_groups; i++)
+            printf("%s\n", g_groups[i].name);
+        return 0;
+    }
+
+    ensure_tmp_dir();
+
+    setbuf(stdout, NULL);
+    printf("test_parallel: %zu groups, %d workers, %ds per-group timeout\n",
+           g_num_groups, jobs, timeout_secs);
+
+    struct group_result *results =
+        calloc(g_num_groups, sizeof(*results));
+    if (!results) {
+        fprintf(stderr, "test_parallel: calloc failed\n");
+        return 1;
+    }
+    for (size_t i = 0; i < g_num_groups; i++) {
+        results[i].status = -1;
+    }
+
+    struct child_slot *slots =
+        calloc((size_t)jobs, sizeof(*slots));
+    if (!slots) {
+        fprintf(stderr, "test_parallel: slot calloc failed\n");
+        free(results);
+        return 1;
+    }
+
+    struct timespec t_start;
+    clock_gettime(CLOCK_MONOTONIC, &t_start);
+
+    pid_t parent_pid = getpid();
+    size_t next_idx = 0;
+    size_t reaped = 0;
+
+    while (reaped < g_num_groups) {
+        /* Dispatch as many children as we have free slots and
+         * remaining groups. */
+        while (next_idx < g_num_groups) {
+            int slot = find_free_slot(slots, jobs);
+            if (slot < 0) break;
+
+            make_tempfile_path(slots[slot].out_path,
+                               sizeof(slots[slot].out_path),
+                               next_idx, parent_pid);
+            results[next_idx].start = time(NULL);
+
+            pid_t pid = fork();
+            if (pid < 0) {
+                perror("test_parallel: fork");
+                break;
+            }
+            if (pid == 0) {
+                child_run(next_idx, slots[slot].out_path);
+                _exit(2); /* unreachable */
+            }
+            slots[slot].pid = pid;
+            slots[slot].group_idx = next_idx;
+            if (verbose) {
+                printf("[dispatch] [%zu/%zu] pid=%d %s\n",
+                       next_idx + 1, g_num_groups, pid,
+                       g_groups[next_idx].name);
+            }
+            next_idx++;
+        }
+
+        /* Enforce the per-group timeout by SIGKILLing any slot whose
+         * child has been running longer than `timeout_secs`. The kill
+         * flows into the normal reap path below. */
+        time_t now_tick = time(NULL);
+        for (int i = 0; i < jobs; i++) {
+            if (slots[i].pid == 0) continue;
+            if (now_tick - results[slots[i].group_idx].start > timeout_secs) {
+                if (verbose) {
+                    printf("[timeout ] [%zu] %s (after %ds)\n",
+                           slots[i].group_idx,
+                           g_groups[slots[i].group_idx].name,
+                           timeout_secs);
+                }
+                kill(slots[i].pid, SIGKILL);
+            }
+        }
+
+        /* Wait for any child to finish, with a 1-second poll ceiling
+         * so the timeout sweep above runs on a regular cadence even
+         * when children are long-running. */
+        int status = 0;
+        pid_t done = waitpid(-1, &status, WNOHANG);
+        if (done == 0) {
+            struct timespec ts = {.tv_sec = 1, .tv_nsec = 0};
+            nanosleep(&ts, NULL);
+            continue;
+        }
+        if (done < 0) {
+            if (errno == EINTR) continue;
+            perror("test_parallel: waitpid");
+            break;
+        }
+        int slot = find_slot_by_pid(slots, jobs, done);
+        if (slot < 0) {
+            /* Unknown pid — ignore. */
+            continue;
+        }
+        size_t idx = slots[slot].group_idx;
+        results[idx].status = status;
+        if (WIFSIGNALED(status)) {
+            results[idx].signaled = 1;
+            results[idx].exit_code = WTERMSIG(status);
+        } else {
+            results[idx].signaled = 0;
+            results[idx].exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+        }
+        memcpy(results[idx].out_path, slots[slot].out_path,
+               sizeof(results[idx].out_path));
+        time_t now = time(NULL);
+        results[idx].wall_seconds = (double)(now - results[idx].start);
+
+        if (verbose) {
+            printf("[done    ] [%zu] %s (%s, %.0fs)\n",
+                   idx, g_groups[idx].name,
+                   results[idx].signaled ? "SIGNALED" :
+                   (results[idx].exit_code == 0 ? "PASS" : "FAIL"),
+                   results[idx].wall_seconds);
+        }
+
+        slots[slot].pid = 0;
+        reaped++;
+    }
+
+    /* All children reaped — replay their output in group order. */
+    struct timespec t_end;
+    clock_gettime(CLOCK_MONOTONIC, &t_end);
+    double wall =
+        (double)(t_end.tv_sec - t_start.tv_sec) +
+        (double)(t_end.tv_nsec - t_start.tv_nsec) / 1e9;
+
+    int failed_groups = 0;
+    for (size_t i = 0; i < g_num_groups; i++) {
+        bool pass =
+            !results[i].signaled && results[i].exit_code == 0;
+        printf("\n==================== %s (%s, %.0fs) ====================\n",
+               g_groups[i].name,
+               results[i].signaled ? "SIGNALED" : (pass ? "PASS" : "FAIL"),
+               results[i].wall_seconds);
+        print_captured(results[i].out_path);
+        if (!pass) failed_groups++;
+        if (results[i].out_path[0]) unlink(results[i].out_path);
+    }
+
+    printf("\n%s — %d/%zu groups failed (%.1fs wall, %d workers)\n",
+           failed_groups == 0 ? "ALL TESTS PASSED" : "SOME TESTS FAILED",
+           failed_groups, g_num_groups, wall, jobs);
+
+    free(slots);
+    free(results);
+    return failed_groups == 0 ? 0 : 1;
+}

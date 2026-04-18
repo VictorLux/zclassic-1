@@ -66,6 +66,11 @@ all: test_zcl zclassic23 zclassic-cli
 TEST_SRCS = $(wildcard lib/test/src/*.c)
 SPEC_SRCS = $(wildcard lib/test/spec/*.c)
 
+# test.c and test_parallel.c each own their own main() — never both in
+# one binary. test_parallel_zcl uses the latter + the same test/spec
+# helpers as sequential test_zcl.
+TEST_SRCS_NO_MAIN = $(filter-out lib/test/src/test.c lib/test/src/test_parallel.c, $(TEST_SRCS))
+
 # Generate templates from .chtml and .ccss files
 TMPL_GEN = app/views/include/views/wallet_templates_gen.h
 TMPL_SRC = $(wildcard app/views/templates/*.chtml) $(wildcard app/views/css/*.ccss)
@@ -83,8 +88,15 @@ $(TMPL_GEN): $(TMPL_SRC) $(TMPL_TOOL)
 .PHONY: templates
 templates: $(TMPL_GEN)
 
-test_zcl: $(TMPL_GEN) $(TEST_SRCS) $(SPEC_SRCS) $(ALL_SRCS)
+test_zcl: $(TMPL_GEN) $(TEST_SRCS_NO_MAIN) lib/test/src/test.c $(SPEC_SRCS) $(ALL_SRCS)
 	$(CC) $(CFLAGS) -DZCL_TESTING -Wno-deprecated-declarations $(LDFLAGS) -o $@ $(filter-out $(TMPL_GEN),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)
+
+test_parallel: $(TMPL_GEN) $(TEST_SRCS_NO_MAIN) lib/test/src/test_parallel.c $(SPEC_SRCS) $(ALL_SRCS)
+	$(CC) $(CFLAGS) -DZCL_TESTING -Wno-deprecated-declarations $(LDFLAGS) -o $@ $(filter-out $(TMPL_GEN),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)
+
+.PHONY: test-parallel
+test-parallel: test_parallel
+	ulimit -s unlimited && ./test_parallel
 
 spec_zcl: $(TMPL_GEN) lib/test/spec_main.c $(SPEC_SRCS) lib/test/src/test_helpers.c $(ALL_SRCS)
 	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o $@ $(filter-out $(TMPL_GEN),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)
