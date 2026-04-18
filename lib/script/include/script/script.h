@@ -297,6 +297,26 @@ const char *script_get_op_name(enum opcodetype opcode);
 uint32_t script_get_sig_op_count(const struct script *s, uint32_t flags,
                                   bool accurate);
 
+/* P2SH-aware sigop counter.  Mirrors zclassicd
+ * src/script/script.cpp::CScript::GetSigOpCount(flags, scriptSig).
+ *
+ * If `script_pub_key` is not P2SH, or the SCRIPT_VERIFY_P2SH flag is
+ * not set in `flags`, returns the accurate sigop count of
+ * `script_pub_key` itself (equivalent to the fAccurate=true counter).
+ *
+ * For a P2SH prevout: walks `script_sig`, rejects it (returns 0) if
+ * any opcode exceeds OP_16 (scriptSig must be push-only for P2SH
+ * spends), then counts sigops in the last pushed payload (the
+ * redeem script) with fAccurate=true.
+ *
+ * No per-input cap is applied here — the 15-sigop limit is policy
+ * (standardness), not consensus, and is enforced at mempool
+ * acceptance.  See lib/validation/src/sigops.c for the block-level
+ * aggregate that feeds into MAX_BLOCK_SIGOPS. */
+uint32_t script_get_sig_op_count_p2sh(const struct script *script_pub_key,
+                                       const struct script *script_sig,
+                                       uint32_t flags);
+
 static inline bool script_is_pay_to_script_hash(const struct script *s)
 {
     return s->size == 23 &&

@@ -1503,6 +1503,130 @@ int test_validation(void)
     }
 
     /* ================================================================
+     * P1.6: script_get_sig_op_count_p2sh — redeem-script sigop counter
+     *                                                                  *
+     * Byte-for-byte mirror of zclassicd
+     * src/script/script.cpp::CScript::GetSigOpCount(flags, scriptSig).
+     * The vectors below are what zclassicd returns for the same inputs
+     * (confirmed against src/script/script.cpp:202-228).              *
+     * ================================================================ */
+
+    /* Helper: build a P2SH scriptPubKey (OP_HASH160 <20-byte hash> OP_EQUAL)
+     * — contents of the hash do not matter for sigop counting. */
+    #define BUILD_P2SH(spk) do {                              \
+        uint8_t h[23];                                        \
+        h[0] = 0xa9; h[1] = 0x14;                             \
+        memset(h + 2, 0xAA, 20);                              \
+        h[22] = 0x87;                                         \
+        script_set(&(spk), h, sizeof(h));                     \
+    } while (0)
+
+    printf("script_get_sig_op_count_p2sh: non-P2SH falls back to accurate... ");
+    {
+        /* scriptPubKey = OP_CHECKSIG (not P2SH).  Redeem-script path should
+         * NOT run; counter returns 1 (the single OP_CHECKSIG). */
+        struct script spk, ssig;
+        uint8_t pk[] = {0xac};
+        script_set(&spk, pk, 1);
+        script_set(&ssig, pk, 0);
+        uint32_t n = script_get_sig_op_count_p2sh(&spk, &ssig,
+                                                   SCRIPT_VERIFY_P2SH);
+        bool ok = (n == 1);
+        if (ok) printf("OK (non-P2SH spk → %u)\n", n);
+        else { printf("FAIL (expected 1, got %u)\n", n); failures++; }
+    }
+
+    printf("script_get_sig_op_count_p2sh: P2SH with redeem=OP_CHECKSIG... ");
+    {
+        /* Redeem script = [OP_CHECKSIG] (1 byte).  scriptSig pushes 1 byte
+         * 0xAC.  Expected sigop count = 1. */
+        struct script spk, ssig;
+        BUILD_P2SH(spk);
+        uint8_t ss[] = {0x01, 0xac};  /* PUSH 1, 0xAC */
+        script_set(&ssig, ss, 2);
+        uint32_t n = script_get_sig_op_count_p2sh(&spk, &ssig,
+                                                   SCRIPT_VERIFY_P2SH);
+        bool ok = (n == 1);
+        if (ok) printf("OK\n");
+        else { printf("FAIL (expected 1, got %u)\n", n); failures++; }
+    }
+
+    printf("script_get_sig_op_count_p2sh: redeem with 16×OP_CHECKSIG = 16... ");
+    {
+        /* Exceeds the standardness MAX_P2SH_SIGOPS=15 cap — but this is
+         * POLICY, not consensus.  The raw counter must still return 16.
+         * Re-check once Rhett decides whether the 15-cap becomes consensus
+         * (brief regression test 2 implies yes, but zclassicd consensus
+         * does not cap per-input; see Agent-3 notes). */
+        struct script spk, ssig;
+        BUILD_P2SH(spk);
+        uint8_t redeem[16];
+        for (int i = 0; i < 16; i++) redeem[i] = 0xac;
+        uint8_t ss[2 + 16];
+        ss[0] = 0x10;                  /* push 16 bytes */
+        memcpy(ss + 1, redeem, 16);
+        script_set(&ssig, ss, 17);
+        uint32_t n = script_get_sig_op_count_p2sh(&spk, &ssig,
+                                                   SCRIPT_VERIFY_P2SH);
+        bool ok = (n == 16);
+        if (ok) printf("OK (16)\n");
+        else { printf("FAIL (expected 16, got %u)\n", n); failures++; }
+    }
+
+    printf("script_get_sig_op_count_p2sh: redeem CHECKMULTISIG accurate... ");
+    {
+        /* Redeem = OP_2 ... OP_3 OP_CHECKMULTISIG.  Accurate mode reads
+         * the preceding OP_N → expected sigops = 3. */
+        struct script spk, ssig;
+        BUILD_P2SH(spk);
+        /* Redeem script bytes: 0x52 (OP_2) 0x53 (OP_3) 0xae (OP_CHECKMULTISIG)
+         * (simplified — we only need the sigop-counter-visible bytes). */
+        uint8_t redeem[] = {0x52, 0x53, 0xae};
+        uint8_t ss[2 + sizeof(redeem)];
+        ss[0] = (uint8_t)sizeof(redeem);
+        memcpy(ss + 1, redeem, sizeof(redeem));
+        script_set(&ssig, ss, 1 + sizeof(redeem));
+        uint32_t n = script_get_sig_op_count_p2sh(&spk, &ssig,
+                                                   SCRIPT_VERIFY_P2SH);
+        /* accurate=true reads last OP_N before OP_CHECKMULTISIG → 3 */
+        bool ok = (n == 3);
+        if (ok) printf("OK (3)\n");
+        else { printf("FAIL (expected 3, got %u)\n", n); failures++; }
+    }
+
+    printf("script_get_sig_op_count_p2sh: non-push op in scriptSig → 0... ");
+    {
+        /* scriptSig containing OP_NOP (0x61 > OP_16) — zclassicd returns 0. */
+        struct script spk, ssig;
+        BUILD_P2SH(spk);
+        uint8_t ss[] = {0x61};          /* OP_NOP — not a push */
+        script_set(&ssig, ss, 1);
+        uint32_t n = script_get_sig_op_count_p2sh(&spk, &ssig,
+                                                   SCRIPT_VERIFY_P2SH);
+        bool ok = (n == 0);
+        if (ok) printf("OK\n");
+        else { printf("FAIL (expected 0, got %u)\n", n); failures++; }
+    }
+
+    printf("script_get_sig_op_count_p2sh: SCRIPT_VERIFY_P2SH off → spk count... ");
+    {
+        /* P2SH flag disabled: the counter must treat the scriptPubKey as
+         * opaque and return its own accurate sigop count — a bare P2SH
+         * scriptPubKey has zero OP_CHECKSIG bytes in its 23-byte body,
+         * so the expected count is 0. */
+        struct script spk, ssig;
+        BUILD_P2SH(spk);
+        uint8_t ss[] = {0x01, 0xac};
+        script_set(&ssig, ss, 2);
+        uint32_t n = script_get_sig_op_count_p2sh(&spk, &ssig, 0 /* no P2SH */);
+        bool ok = (n == 0);
+        if (ok) printf("OK\n");
+        else { printf("FAIL (expected 0, got %u)\n", n); failures++; }
+    }
+
+    #undef BUILD_P2SH
+
+    /* ================================================================
      * check_block_header: accepts valid version 4 header
      * ================================================================ */
     printf("check_block_header: accepts valid version 4 header (no PoW)... ");

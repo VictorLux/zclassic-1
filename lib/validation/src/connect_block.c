@@ -326,6 +326,19 @@ bool connect_block(const struct block *block,
                 return validation_state_dos(state, 100, false, REJECT_INVALID,
                     "bad-txns-joinsplit-requirements-not-met", false, NULL);
             }
+
+            /* ── P2SH sigops (P1.6) ────────────────────── *
+             * Add sigops done by pay-to-script-hash inputs; prevents a
+             * rogue miner from hiding an expensive-to-validate block
+             * inside a small scriptSig.  Mirrors zclassicd
+             * src/main.cpp::GetP2SHSigOpCount + the ConnectBlock check
+             * at main.cpp:2634-2637.  Must run AFTER have_inputs so the
+             * prevouts are guaranteed to be in the view cache. */
+            sig_ops += (unsigned int)get_p2sh_sig_op_count(tx, view, flags);
+            REJECT_IF_CLEANUP(sig_ops > MAX_BLOCK_SIGOPS,
+                              state, 100, "bad-blk-sigops",
+                              (free(checks), free(check_ptrs), free(txdatas),
+                               block_undo_free(&blockundo)));
         }
 
         /* ── Fee calculation with per-input MoneyRange ─── */

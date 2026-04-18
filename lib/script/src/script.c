@@ -5,6 +5,8 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "script/script.h"
+#include "script/script_flags.h"
+#include <string.h>
 
 const char *script_get_op_name(enum opcodetype opcode)
 {
@@ -122,4 +124,43 @@ uint32_t script_get_sig_op_count(const struct script *s, uint32_t flags,
         last_opcode = opcode;
     }
     return n;
+}
+
+uint32_t script_get_sig_op_count_p2sh(const struct script *script_pub_key,
+                                       const struct script *script_sig,
+                                       uint32_t flags)
+{
+    /* Non-P2SH (or P2SH verification disabled): accurate count of the
+     * scriptPubKey itself.  Matches zclassicd
+     * src/script/script.cpp:205-207. */
+    if ((flags & SCRIPT_VERIFY_P2SH) == 0 ||
+        !script_is_pay_to_script_hash(script_pub_key)) {
+        return script_get_sig_op_count(script_pub_key, flags, true);
+    }
+
+    /* P2SH: walk scriptSig; it must contain only push opcodes (opcode
+     * <= OP_16).  Any non-push op disqualifies the whole count (return 0).
+     * Remember the payload of the LAST successful push — that is the
+     * redeem script.  Mirrors zclassicd src/script/script.cpp:212-223. */
+    size_t pc = 0;
+    unsigned char last_push[MAX_SCRIPT_ELEMENT_SIZE];
+    size_t last_push_len = 0;
+    while (pc < script_sig->size) {
+        enum opcodetype opcode;
+        unsigned char data[MAX_SCRIPT_ELEMENT_SIZE];
+        size_t data_len = 0;
+        if (!script_get_op(script_sig, &pc, &opcode, data, &data_len))
+            return 0;
+        if (opcode > OP_16)
+            return 0;
+        if (data_len > sizeof(last_push))
+            return 0;
+        memcpy(last_push, data, data_len);
+        last_push_len = data_len;
+    }
+
+    /* Count sigops in the redeem script, accurate mode. */
+    struct script redeem;
+    script_set(&redeem, last_push, last_push_len);
+    return script_get_sig_op_count(&redeem, flags, true);
 }
