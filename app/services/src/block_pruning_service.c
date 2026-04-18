@@ -157,9 +157,12 @@ int block_pruning_run_once(struct block_pruning_service *svc)
         int64_t rev_sz = file_size_or_zero(rev_path);
 
         /* Invalidate the file cache and delete under lock to prevent
-         * concurrent readers from hitting a deleted file → SIGSEGV. */
+         * concurrent readers from hitting a deleted file → SIGSEGV.
+         * Uses the `_while_locked` variant because the public
+         * `disk_block_io_close_cache` re-enters the same NORMAL
+         * mutex and would self-deadlock. */
         disk_block_io_lock();
-        disk_block_io_close_cache();
+        disk_block_io_close_cache_while_locked();
         bool blk_ok = (unlink(blk_path) == 0 || errno == ENOENT);
         bool rev_ok = (unlink(rev_path) == 0 || errno == ENOENT);
         disk_block_io_unlock();

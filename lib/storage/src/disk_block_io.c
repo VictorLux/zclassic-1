@@ -69,15 +69,29 @@ void disk_block_io_release_handle(FILE *f)
         fclose(f);
 }
 
-void disk_block_io_close_cache(void)
+/* Caller-owned-lock variant: used from paths that already hold
+ * g_file_cache_mutex (e.g. block_pruning_service during the
+ * invalidate-then-unlink sequence, where re-entering the lock
+ * would self-deadlock on a NORMAL mutex). */
+static void disk_block_io_close_cache_locked(void)
 {
-    pthread_mutex_lock(&g_file_cache_mutex);
     if (g_cached_file) {
         fclose(g_cached_file);
         g_cached_file = NULL;
         g_cached_nfile = -1;
     }
+}
+
+void disk_block_io_close_cache(void)
+{
+    pthread_mutex_lock(&g_file_cache_mutex);
+    disk_block_io_close_cache_locked();
     pthread_mutex_unlock(&g_file_cache_mutex);
+}
+
+void disk_block_io_close_cache_while_locked(void)
+{
+    disk_block_io_close_cache_locked();
 }
 
 FILE *open_disk_file(const char *datadir,

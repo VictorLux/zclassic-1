@@ -49,6 +49,15 @@ bool read_block_from_disk_index(struct block *b,
 /* Close the read-only file handle cache (call on shutdown). */
 void disk_block_io_close_cache(void);
 
+/* Same as `disk_block_io_close_cache()` but assumes the caller
+ * already holds the lock acquired via `disk_block_io_lock()`.
+ * Use this when you need to invalidate the cache in the middle of
+ * a larger critical section (e.g. the invalidate-then-unlink
+ * sequence in block_pruning_service). Re-entering the public
+ * close_cache from inside the lock self-deadlocks on the NORMAL
+ * mutex. */
+void disk_block_io_close_cache_while_locked(void);
+
 /* ── Thread-safe pread()-based I/O for background threads ──────
  * These functions use POSIX open()/pread()/close() instead of the
  * shared FILE* cache. They are stateless and fully thread-safe
