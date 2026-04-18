@@ -10,8 +10,36 @@
 #include "crypto/sha1.h"
 #include "crypto/ripemd160.h"
 #include "core/hash.h"
+#include "util/safe_alloc.h"
 #include <assert.h>
+#include <stdlib.h>
 #include <string.h>
+
+bool stack_init(struct script_stack *s)
+{
+    s->count = 0;
+    s->items = zcl_calloc(MAX_STACK_ITEMS, sizeof(*s->items), "script_stack");
+    return s->items != NULL;
+}
+
+void stack_free(struct script_stack *s)
+{
+    if (!s) return;
+    free(s->items);
+    s->items = NULL;
+    s->count = 0;
+}
+
+bool stack_copy_active(struct script_stack *dst,
+                       const struct script_stack *src)
+{
+    if (!dst->items || !src->items) return false;
+    if (src->count > MAX_STACK_ITEMS) return false;
+    if (src->count > 0)
+        memcpy(dst->items, src->items, src->count * sizeof(*src->items));
+    dst->count = src->count;
+    return true;
+}
 
 static bool check_minimal_push(const unsigned char *data, size_t len,
                                 enum opcodetype opcode)
@@ -31,12 +59,12 @@ static bool check_minimal_push(const unsigned char *data, size_t len,
     return true;
 }
 
-static void sn_serialize_push(struct script_stack *stack,
+static bool sn_serialize_push(struct script_stack *stack,
                                const struct script_num *sn)
 {
     unsigned char buf[SCRIPT_NUM_MAX_SIZE];
     size_t len = script_num_serialize(sn, buf, sizeof(buf));
-    stack_push(stack, buf, len);
+    return stack_push(stack, buf, len);
 }
 
 #define SN_FROM_TOP(var, stk, idx, minimal) \
@@ -51,6 +79,27 @@ static void sn_serialize_push(struct script_stack *stack,
         stack_top(stk, idx)->size, minimal, maxsz)) \
         return set_script_error(serror, SCRIPT_ERR_UNKNOWN_ERROR)
 
+/* P4.2 — every stack mutation that can overflow MAX_STACK_ITEMS must be
+ * propagated as SCRIPT_ERR_STACK_SIZE. Without this, OP_PICK/OP_ROLL and
+ * other post-push reads could operate on an inconsistent stack shape. */
+#define PUSH_OR_FAIL(stk, data, len) \
+    do { \
+        if (!stack_push((stk), (data), (len))) \
+            return set_script_error(serror, SCRIPT_ERR_STACK_SIZE); \
+    } while (0)
+
+#define SN_PUSH_OR_FAIL(stk, sn_ptr) \
+    do { \
+        if (!sn_serialize_push((stk), (sn_ptr))) \
+            return set_script_error(serror, SCRIPT_ERR_STACK_SIZE); \
+    } while (0)
+
+#define INSERT_OR_FAIL(stk, idx, item_ptr) \
+    do { \
+        if (!stack_insert_at((stk), (idx), (item_ptr))) \
+            return set_script_error(serror, SCRIPT_ERR_STACK_SIZE); \
+    } while (0)
+
 bool eval_script(struct script_stack *stack,
                  const struct script *script,
                  unsigned int flags,
@@ -61,8 +110,13 @@ bool eval_script(struct script_stack *stack,
     static const unsigned char vch_true[] = {1};
     bool vf_exec[MAX_STACK_ITEMS];
     size_t vf_exec_count = 0;
-    struct script_stack altstack;
-    stack_init(&altstack);
+    /* P4.1 — altstack backing buffer on the heap (~520 KB). The cleanup
+     * attribute frees it on every return path, including early errors. */
+    struct script_stack altstack __attribute__((cleanup(stack_free))) = {0};
+    if (!stack_init(&altstack))
+        return set_script_error(serror, SCRIPT_ERR_STACK_SIZE);
+    if (!stack->items)
+        return set_script_error(serror, SCRIPT_ERR_STACK_SIZE);
 
     set_script_error(serror, SCRIPT_ERR_UNKNOWN_ERROR);
 
@@ -102,7 +156,7 @@ bool eval_script(struct script_stack *stack,
         if (fExec && opcode >= 0 && opcode <= OP_PUSHDATA4) {
             if (fRequireMinimal && !check_minimal_push(push_data, push_len, opcode))
                 return set_script_error(serror, SCRIPT_ERR_MINIMALDATA);
-            stack_push(stack, push_data, push_len);
+            PUSH_OR_FAIL(stack, push_data, push_len);
         } else if (fExec || (OP_IF <= opcode && opcode <= OP_ENDIF)) {
             switch (opcode) {
 
@@ -114,7 +168,7 @@ bool eval_script(struct script_stack *stack,
             {
                 struct script_num bn = script_num_from_int(
                     (int)opcode - (int)(OP_1 - 1));
-                sn_serialize_push(stack, &bn);
+                SN_PUSH_OR_FAIL(stack, &bn);
             } break;
 
             case OP_NOP:
@@ -188,16 +242,16 @@ bool eval_script(struct script_stack *stack,
             case OP_TOALTSTACK:
                 if (stack->count < 1)
                     return set_script_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
-                stack_push(&altstack, stack_top(stack, -1)->data,
-                           stack_top(stack, -1)->size);
+                PUSH_OR_FAIL(&altstack, stack_top(stack, -1)->data,
+                             stack_top(stack, -1)->size);
                 stack_pop(stack);
                 break;
 
             case OP_FROMALTSTACK:
                 if (altstack.count < 1)
                     return set_script_error(serror, SCRIPT_ERR_INVALID_ALTSTACK_OPERATION);
-                stack_push(stack, stack_top(&altstack, -1)->data,
-                           stack_top(&altstack, -1)->size);
+                PUSH_OR_FAIL(stack, stack_top(&altstack, -1)->data,
+                             stack_top(&altstack, -1)->size);
                 stack_pop(&altstack);
                 break;
 
@@ -213,8 +267,8 @@ bool eval_script(struct script_stack *stack,
                     return set_script_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
                 struct stack_item v1 = *stack_top(stack, -2);
                 struct stack_item v2 = *stack_top(stack, -1);
-                stack_push(stack, v1.data, v1.size);
-                stack_push(stack, v2.data, v2.size);
+                PUSH_OR_FAIL(stack, v1.data, v1.size);
+                PUSH_OR_FAIL(stack, v2.data, v2.size);
             } break;
 
             case OP_3DUP:
@@ -224,9 +278,9 @@ bool eval_script(struct script_stack *stack,
                 struct stack_item v1 = *stack_top(stack, -3);
                 struct stack_item v2 = *stack_top(stack, -2);
                 struct stack_item v3 = *stack_top(stack, -1);
-                stack_push(stack, v1.data, v1.size);
-                stack_push(stack, v2.data, v2.size);
-                stack_push(stack, v3.data, v3.size);
+                PUSH_OR_FAIL(stack, v1.data, v1.size);
+                PUSH_OR_FAIL(stack, v2.data, v2.size);
+                PUSH_OR_FAIL(stack, v3.data, v3.size);
             } break;
 
             case OP_2OVER:
@@ -235,8 +289,8 @@ bool eval_script(struct script_stack *stack,
                     return set_script_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
                 struct stack_item v1 = *stack_top(stack, -4);
                 struct stack_item v2 = *stack_top(stack, -3);
-                stack_push(stack, v1.data, v1.size);
-                stack_push(stack, v2.data, v2.size);
+                PUSH_OR_FAIL(stack, v1.data, v1.size);
+                PUSH_OR_FAIL(stack, v2.data, v2.size);
             } break;
 
             case OP_2ROT:
@@ -246,8 +300,8 @@ bool eval_script(struct script_stack *stack,
                 struct stack_item v1 = *stack_top(stack, -6);
                 struct stack_item v2 = *stack_top(stack, -5);
                 stack_erase_range(stack, stack->count - 6, stack->count - 4);
-                stack_push(stack, v1.data, v1.size);
-                stack_push(stack, v2.data, v2.size);
+                PUSH_OR_FAIL(stack, v1.data, v1.size);
+                PUSH_OR_FAIL(stack, v2.data, v2.size);
             } break;
 
             case OP_2SWAP:
@@ -262,14 +316,14 @@ bool eval_script(struct script_stack *stack,
                     return set_script_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
                 if (cast_to_bool(stack_top(stack, -1))) {
                     struct stack_item v = *stack_top(stack, -1);
-                    stack_push(stack, v.data, v.size);
+                    PUSH_OR_FAIL(stack, v.data, v.size);
                 }
                 break;
 
             case OP_DEPTH:
             {
                 struct script_num bn = script_num_from_int((int64_t)stack->count);
-                sn_serialize_push(stack, &bn);
+                SN_PUSH_OR_FAIL(stack, &bn);
             } break;
 
             case OP_DROP:
@@ -283,7 +337,7 @@ bool eval_script(struct script_stack *stack,
                 if (stack->count < 1)
                     return set_script_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
                 struct stack_item v = *stack_top(stack, -1);
-                stack_push(stack, v.data, v.size);
+                PUSH_OR_FAIL(stack, v.data, v.size);
             } break;
 
             case OP_NIP:
@@ -297,7 +351,7 @@ bool eval_script(struct script_stack *stack,
                 if (stack->count < 2)
                     return set_script_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
                 struct stack_item v = *stack_top(stack, -2);
-                stack_push(stack, v.data, v.size);
+                PUSH_OR_FAIL(stack, v.data, v.size);
             } break;
 
             case OP_PICK:
@@ -313,7 +367,7 @@ bool eval_script(struct script_stack *stack,
                 struct stack_item v = *stack_top(stack, -n - 1);
                 if (opcode == OP_ROLL)
                     stack_erase_at(stack, stack->count - n - 1);
-                stack_push(stack, v.data, v.size);
+                PUSH_OR_FAIL(stack, v.data, v.size);
             } break;
 
             case OP_ROT:
@@ -334,7 +388,7 @@ bool eval_script(struct script_stack *stack,
                 if (stack->count < 2)
                     return set_script_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
                 struct stack_item v = *stack_top(stack, -1);
-                stack_insert_at(stack, stack->count - 2, &v);
+                INSERT_OR_FAIL(stack, stack->count - 2, &v);
             } break;
 
             case OP_SIZE:
@@ -343,7 +397,7 @@ bool eval_script(struct script_stack *stack,
                     return set_script_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
                 struct script_num bn = script_num_from_int(
                     (int64_t)stack_top(stack, -1)->size);
-                sn_serialize_push(stack, &bn);
+                SN_PUSH_OR_FAIL(stack, &bn);
             } break;
 
             case OP_EQUAL:
@@ -357,8 +411,8 @@ bool eval_script(struct script_stack *stack,
                                (v1->size == 0 ||
                                 memcmp(v1->data, v2->data, v1->size) == 0));
                 stack_pop(stack); stack_pop(stack);
-                stack_push(stack, fEqual ? vch_true : NULL,
-                           fEqual ? 1 : 0);
+                PUSH_OR_FAIL(stack, fEqual ? vch_true : NULL,
+                             fEqual ? 1 : 0);
                 if (opcode == OP_EQUALVERIFY) {
                     if (fEqual) stack_pop(stack);
                     else return set_script_error(serror, SCRIPT_ERR_EQUALVERIFY);
@@ -381,7 +435,7 @@ bool eval_script(struct script_stack *stack,
                 default: break;
                 }
                 stack_pop(stack);
-                sn_serialize_push(stack, &bn);
+                SN_PUSH_OR_FAIL(stack, &bn);
             } break;
 
             case OP_ADD: case OP_SUB: case OP_BOOLAND: case OP_BOOLOR:
@@ -412,7 +466,7 @@ bool eval_script(struct script_stack *stack,
                 default: break;
                 }
                 stack_pop(stack); stack_pop(stack);
-                sn_serialize_push(stack, &bn);
+                SN_PUSH_OR_FAIL(stack, &bn);
                 if (opcode == OP_NUMEQUALVERIFY) {
                     if (cast_to_bool(stack_top(stack, -1)))
                         stack_pop(stack);
@@ -430,7 +484,7 @@ bool eval_script(struct script_stack *stack,
                 SN_FROM_TOP(bn3, stack, -1, fRequireMinimal);
                 bool fValue = (bn2.value <= bn1.value && bn1.value < bn3.value);
                 stack_pop(stack); stack_pop(stack); stack_pop(stack);
-                stack_push(stack, fValue ? vch_true : NULL, fValue ? 1 : 0);
+                PUSH_OR_FAIL(stack, fValue ? vch_true : NULL, fValue ? 1 : 0);
             } break;
 
             case OP_RIPEMD160:
@@ -470,7 +524,7 @@ bool eval_script(struct script_stack *stack,
                     hash_len = 32;
                 }
                 stack_pop(stack);
-                stack_push(stack, hash_out, hash_len);
+                PUSH_OR_FAIL(stack, hash_out, hash_len);
             } break;
 
             case OP_CHECKSIG:
@@ -495,8 +549,8 @@ bool eval_script(struct script_stack *stack,
                     sig_item->size > 0)
                     return set_script_error(serror, SCRIPT_ERR_SIG_NULLFAIL);
                 stack_pop(stack); stack_pop(stack);
-                stack_push(stack, fSuccess ? vch_true : NULL,
-                           fSuccess ? 1 : 0);
+                PUSH_OR_FAIL(stack, fSuccess ? vch_true : NULL,
+                             fSuccess ? 1 : 0);
                 if (opcode == OP_CHECKSIGVERIFY) {
                     if (fSuccess) stack_pop(stack);
                     else return set_script_error(serror, SCRIPT_ERR_CHECKSIGVERIFY);
@@ -533,8 +587,8 @@ bool eval_script(struct script_stack *stack,
                     sig_item->size > 0)
                     return set_script_error(serror, SCRIPT_ERR_SIG_NULLFAIL);
                 stack_pop(stack); stack_pop(stack); stack_pop(stack);
-                stack_push(stack, fSuccess ? vch_true : NULL,
-                           fSuccess ? 1 : 0);
+                PUSH_OR_FAIL(stack, fSuccess ? vch_true : NULL,
+                             fSuccess ? 1 : 0);
                 if (opcode == OP_CHECKDATASIGVERIFY) {
                     if (fSuccess) stack_pop(stack);
                     else return set_script_error(serror, SCRIPT_ERR_CHECKDATASIGVERIFY);
@@ -603,8 +657,8 @@ bool eval_script(struct script_stack *stack,
                     return set_script_error(serror, SCRIPT_ERR_SIG_NULLDUMMY);
                 stack_pop(stack);
 
-                stack_push(stack, fSuccess ? vch_true : NULL,
-                           fSuccess ? 1 : 0);
+                PUSH_OR_FAIL(stack, fSuccess ? vch_true : NULL,
+                             fSuccess ? 1 : 0);
                 if (opcode == OP_CHECKMULTISIGVERIFY) {
                     if (fSuccess) stack_pop(stack);
                     else return set_script_error(serror, SCRIPT_ERR_CHECKMULTISIGVERIFY);
@@ -639,17 +693,21 @@ bool verify_script(const struct script *script_sig,
         !script_is_push_only(script_sig))
         return set_script_error(serror, SCRIPT_ERR_SIG_PUSHONLY);
 
-    struct script_stack stack;
-    stack_init(&stack);
-    struct script_stack stack_copy;
-    stack_init(&stack_copy);
+    /* P4.1 — both stacks have their ~520 KB item buffer on the heap.
+     * cleanup(stack_free) frees them on every return path. */
+    struct script_stack stack __attribute__((cleanup(stack_free))) = {0};
+    struct script_stack stack_copy __attribute__((cleanup(stack_free))) = {0};
+    if (!stack_init(&stack) || !stack_init(&stack_copy))
+        return set_script_error(serror, SCRIPT_ERR_STACK_SIZE);
 
     if (!eval_script(&stack, script_sig, flags, checker,
                      consensus_branch_id, serror))
         return false;
 
-    if (flags & SCRIPT_VERIFY_P2SH)
-        stack_copy = stack;
+    if (flags & SCRIPT_VERIFY_P2SH) {
+        if (!stack_copy_active(&stack_copy, &stack))
+            return set_script_error(serror, SCRIPT_ERR_UNKNOWN_ERROR);
+    }
 
     if (!eval_script(&stack, script_pub_key, flags, checker,
                      consensus_branch_id, serror))
@@ -664,7 +722,8 @@ bool verify_script(const struct script *script_sig,
         script_is_p2sh(script_pub_key)) {
         if (!script_is_push_only(script_sig))
             return set_script_error(serror, SCRIPT_ERR_SIG_PUSHONLY);
-        stack = stack_copy;
+        if (!stack_copy_active(&stack, &stack_copy))
+            return set_script_error(serror, SCRIPT_ERR_UNKNOWN_ERROR);
         assert(stack.count > 0);
         struct stack_item *serialized = stack_top(&stack, -1);
         struct script pubkey2;

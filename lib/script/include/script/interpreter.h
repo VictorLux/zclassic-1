@@ -15,6 +15,7 @@
 #include "core/amount.h"
 #include <stdbool.h>
 #include <stdint.h>
+#include <string.h>
 
 #define MAX_STACK_ITEMS 1000
 #define MAX_STACK_ELEMENT_SIZE MAX_SCRIPT_ELEMENT_SIZE
@@ -24,16 +25,42 @@ struct stack_item {
     size_t size;
 };
 
+/* Heap-owned backing buffer for script execution stacks.
+ *
+ * The array of items (~520 KB at MAX_STACK_ITEMS=1000) is heap-allocated
+ * by stack_init() so the interpreter's C stack frame stays small — a
+ * nest of OP_IF frames, verify_script's two stacks, or parallel
+ * script-check workers can no longer blow the thread stack.
+ *
+ * Ownership rules:
+ *   - stack_init() allocates .items; every success pairs with stack_free()
+ *   - stack_free() tolerates all-zero or partially-initialized stacks,
+ *     so __attribute__((cleanup(stack_free))) is safe even if init failed
+ *   - stack_top/push/pop/etc. fail closed if .items is NULL */
 struct script_stack {
-    struct stack_item items[MAX_STACK_ITEMS];
+    struct stack_item *items;  /* heap-owned, capacity = MAX_STACK_ITEMS */
     size_t count;
 };
 
-static inline void stack_init(struct script_stack *s) { s->count = 0; }
+/* Allocate .items. Returns true on success, false on OOM (items stays NULL).
+ * Callers must either pair init with stack_free() or decorate the local
+ * with __attribute__((cleanup(stack_free))). */
+bool stack_init(struct script_stack *s);
+
+/* Free .items and zero the stack. Safe on all-zero or NULL-items stacks
+ * so it works as a cleanup handler without conditional guards. */
+void stack_free(struct script_stack *s);
+
+/* Deep-copy active items from src to dst. dst must already be stack_init'd
+ * (items non-NULL); returns false on internal inconsistency. Used by
+ * verify_script to snapshot/restore around P2SH rebuild. */
+bool stack_copy_active(struct script_stack *dst,
+                       const struct script_stack *src);
 
 static inline bool stack_push(struct script_stack *s,
                               const unsigned char *data, size_t len)
 {
+    if (!s->items) return false;
     if (s->count >= MAX_STACK_ITEMS || len > MAX_STACK_ELEMENT_SIZE)
         return false;
     if (len > 0) memcpy(s->items[s->count].data, data, len);
@@ -61,7 +88,7 @@ static inline bool stack_pop(struct script_stack *s)
 
 static inline bool stack_erase_at(struct script_stack *s, size_t idx)
 {
-    if (idx >= s->count) return false;
+    if (!s->items || idx >= s->count) return false;
     for (size_t i = idx; i < s->count - 1; i++)
         s->items[i] = s->items[i + 1];
     s->count--;
@@ -71,7 +98,7 @@ static inline bool stack_erase_at(struct script_stack *s, size_t idx)
 static inline bool stack_erase_range(struct script_stack *s,
                                      size_t from, size_t to)
 {
-    if (from > to || to > s->count) return false;
+    if (!s->items || from > to || to > s->count) return false;
     size_t n = to - from;
     for (size_t i = from; i < s->count - n; i++)
         s->items[i] = s->items[i + n];
@@ -82,7 +109,8 @@ static inline bool stack_erase_range(struct script_stack *s,
 static inline bool stack_insert_at(struct script_stack *s, size_t idx,
                                    const struct stack_item *item)
 {
-    if (s->count >= MAX_STACK_ITEMS || idx > s->count) return false;
+    if (!s->items || s->count >= MAX_STACK_ITEMS || idx > s->count)
+        return false;
     for (size_t i = s->count; i > idx; i--)
         s->items[i] = s->items[i - 1];
     s->items[idx] = *item;

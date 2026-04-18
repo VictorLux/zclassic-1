@@ -61,8 +61,9 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         if (data[0] & 0x20) flags |= SCRIPT_VERIFY_CLEANSTACK;
     }
 
-    struct script_stack stack;
-    stack_init(&stack);
+    struct script_stack stack __attribute__((cleanup(stack_free))) = {0};
+    if (!stack_init(&stack))
+        return 0;
 
     ScriptError serror = SCRIPT_ERR_OK;
     (void)eval_script(&stack, &script, flags, NULL, 0, &serror);

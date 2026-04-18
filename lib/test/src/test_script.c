@@ -1,6 +1,8 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "test/test_helpers.h"
+#include <sys/resource.h>
+#include <sys/time.h>
 
 int test_script(void)
 {
@@ -536,7 +538,7 @@ int test_script(void)
         struct script s;
         script_init(&s);
         script_push_op(&s, OP_TRUE);
-        struct script_stack stk;
+        struct script_stack stk __attribute__((cleanup(stack_free))) = {0};
         stack_init(&stk);
         ScriptError err;
         bool ok = eval_script(&stk, &s, 0, NULL, 0, &err);
@@ -552,7 +554,7 @@ int test_script(void)
         script_push_op(&s, OP_2);
         script_push_op(&s, OP_3);
         script_push_op(&s, OP_ADD);
-        struct script_stack stk;
+        struct script_stack stk __attribute__((cleanup(stack_free))) = {0};
         stack_init(&stk);
         ScriptError err;
         bool ok = eval_script(&stk, &s, 0, NULL, 0, &err);
@@ -573,7 +575,7 @@ int test_script(void)
         script_push_op(&s, OP_5);
         script_push_op(&s, OP_5);
         script_push_op(&s, OP_EQUAL);
-        struct script_stack stk;
+        struct script_stack stk __attribute__((cleanup(stack_free))) = {0};
         stack_init(&stk);
         ScriptError err;
         bool ok = eval_script(&stk, &s, 0, NULL, 0, &err);
@@ -590,7 +592,7 @@ int test_script(void)
         script_push_data(&s, data, 3);
         script_push_op(&s, OP_DUP);
         script_push_op(&s, OP_HASH160);
-        struct script_stack stk;
+        struct script_stack stk __attribute__((cleanup(stack_free))) = {0};
         stack_init(&stk);
         ScriptError err;
         bool ok = eval_script(&stk, &s, 0, NULL, 0, &err);
@@ -624,7 +626,7 @@ int test_script(void)
         script_push_op(&s, OP_ELSE);
         script_push_op(&s, OP_3);
         script_push_op(&s, OP_ENDIF);
-        struct script_stack stk;
+        struct script_stack stk __attribute__((cleanup(stack_free))) = {0};
         stack_init(&stk);
         ScriptError err;
         bool ok = eval_script(&stk, &s, 0, NULL, 0, &err);
@@ -1039,6 +1041,68 @@ int test_script(void)
         ok = ok && (script_sig_args_expected(TX_MULTISIG, solutions, solution_sizes, 1) == 3); /* m+1 = 2+1 */
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ================================================================
+     * P4.1 + P4.2 — script_stack on the heap, push failures propagate.
+     *
+     * Before the refactor, eval_script had a ~520 KB altstack on its C
+     * stack frame and verify_script added two more (~1 MB), so parallel
+     * script-check workers with P2SH recursion could push thread
+     * stacks past their default 8 MB cap. With items[] now
+     * heap-allocated the interpreter frame is small. Stack_push
+     * failures also used to be silently dropped, leaving the stack
+     * shape inconsistent for subsequent OP_PICK / OP_ROLL reads.
+     * ================================================================ */
+    printf("deep nested OP_IF — 100 frames succeed (P4.1)... ");
+    {
+        struct rusage before, after;
+        getrusage(RUSAGE_SELF, &before);
+
+        struct script s;
+        script_init(&s);
+        for (int i = 0; i < 100; i++) {
+            script_push_op(&s, OP_1);
+            script_push_op(&s, OP_IF);
+        }
+        script_push_op(&s, OP_1);
+        for (int i = 0; i < 100; i++) {
+            script_push_op(&s, OP_ENDIF);
+        }
+        struct script_stack stk __attribute__((cleanup(stack_free))) = {0};
+        stack_init(&stk);
+        ScriptError err;
+        bool ok = eval_script(&stk, &s, 0, NULL, 0, &err);
+
+        getrusage(RUSAGE_SELF, &after);
+        long ru_delta_kb = after.ru_maxrss - before.ru_maxrss;
+        bool memory_ok = ru_delta_kb < 10 * 1024;  /* <10 MB growth */
+
+        if (ok && stk.count == 1 && cast_to_bool(stack_top(&stk, -1)) &&
+            memory_ok)
+            printf("OK (rss_delta=%ld kB)\n", ru_delta_kb);
+        else { printf("FAIL (ok=%d, count=%zu, err=%d, rss_delta=%ld kB)\n",
+                      ok, stk.count, (int)err, ru_delta_kb); failures++; }
+    }
+
+    printf("stack_push overflow returns STACK_SIZE (P4.2)... ");
+    {
+        /* Fill the stack to MAX_STACK_ITEMS via OP_1 pushes, then OP_DUP
+         * must refuse with SCRIPT_ERR_STACK_SIZE. Pre-refactor the
+         * failed stack_push returned silently and subsequent reads
+         * operated on a stack shape out of sync with stack->count. */
+        struct script s;
+        script_init(&s);
+        for (int i = 0; i < MAX_STACK_ITEMS; i++)
+            script_push_op(&s, OP_1);
+        script_push_op(&s, OP_DUP);
+        struct script_stack stk __attribute__((cleanup(stack_free))) = {0};
+        stack_init(&stk);
+        ScriptError err = SCRIPT_ERR_OK;
+        bool ok = eval_script(&stk, &s, 0, NULL, 0, &err);
+        if (!ok && err == SCRIPT_ERR_STACK_SIZE)
+            printf("OK\n");
+        else { printf("FAIL (ok=%d, err=%d)\n", ok, (int)err); failures++; }
     }
 
     /* ================================================================
