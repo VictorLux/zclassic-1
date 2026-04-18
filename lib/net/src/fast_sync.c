@@ -5,6 +5,7 @@
 #include "net/fast_sync.h"
 #include "views/format_helpers.h"
 #include "coins/utxo_commitment.h"
+#include "models/activerecord.h"
 #include "models/database.h"
 #include "models/utxo.h"
 #include "core/hash.h"
@@ -470,6 +471,17 @@ bool fast_sync_rate_check(struct fast_sync_rate_limiter *rl,
 bool fast_sync_apply_chunk(const char *datadir,
                             const struct utxo_chunk *chunk)
 {
+    /* P2.3: bulk UTXO insert must either land as a whole chunk or
+     * roll back entirely. BEGIN + row-at-a-time INSERT + COMMIT gives
+     * SQLite the atomicity guarantee; the loop below routes every
+     * step through AR_STEP_DONE instead of raw sqlite3_step so the
+     * defensive-coding invariant ("no raw step in our code") stays
+     * intact even though the lint doesn't currently scan lib/net/.
+     *
+     * This function owns its own sqlite3 handle (vs borrowing the
+     * caller's node_db) so a crash mid-chunk can't leave the
+     * main node_db's transaction scope in an inconsistent
+     * half-open state. */
     char db_path[1024];
     zcl_node_db_path(db_path, sizeof(db_path), datadir);
 
@@ -494,14 +506,13 @@ bool fast_sync_apply_chunk(const char *datadir,
     bool insert_ok = true;
     for (uint32_t i = 0; i < chunk->num_entries; i++) {
         sqlite3_reset(ins);
-        sqlite3_bind_blob(ins, 1, chunk->entries[i].txid, 32, SQLITE_STATIC);
-        sqlite3_bind_int(ins, 2, (int)chunk->entries[i].vout);
-        sqlite3_bind_int64(ins, 3, chunk->entries[i].value);
-        sqlite3_bind_blob(ins, 4, chunk->entries[i].script,
-                           chunk->entries[i].script_len, SQLITE_STATIC);
-        sqlite3_bind_int(ins, 5, chunk->entries[i].height);
-        int rc = sqlite3_step(ins);
-        if (rc != SQLITE_DONE && rc != SQLITE_ROW) {
+        AR_BIND_BLOB(ins, 1, chunk->entries[i].txid, 32);
+        AR_BIND_INT(ins, 2, (int)chunk->entries[i].vout);
+        AR_BIND_INT(ins, 3, chunk->entries[i].value);
+        AR_BIND_BLOB(ins, 4, chunk->entries[i].script,
+                     (int)chunk->entries[i].script_len);
+        AR_BIND_INT(ins, 5, chunk->entries[i].height);
+        if (!AR_STEP_DONE(ins)) {
             fprintf(stderr, "fast_sync_apply_chunk: insert %u/%u failed: %s\n",
                     i, chunk->num_entries, sqlite3_errmsg(db));
             insert_ok = false;

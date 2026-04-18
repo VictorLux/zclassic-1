@@ -8,9 +8,13 @@
 #include "net/download.h"
 #include "coins/utxo_commitment.h"
 #include "crypto/sha3.h"
+#include <sqlite3.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <sys/stat.h>
 #include <time.h>
+#include <unistd.h>
 #include "util/safe_alloc.h"
 
 /* ── Merkle tree tests ─────────────────────────────────────── */
@@ -1053,6 +1057,104 @@ static int test_snapshot_offer_mmr_field(void)
     return failures;
 }
 
+/* ── P2.3 — fast_sync_apply_chunk atomicity ─────────────────
+ *
+ * A chunk that mixes a valid UTXO with an invalid one must leave no
+ * trace in the database. The CHECK(height >= 0) constraint on the
+ * utxos table triggers an insert failure for a negative height in
+ * the middle of the chunk; the surrounding BEGIN/COMMIT must roll
+ * back the entire chunk, including the valid first row.
+ * ─────────────────────────────────────────────────────────── */
+
+static int test_apply_chunk_rollback_on_mid_chunk_failure(void)
+{
+    int failures = 0;
+    TEST("fast_sync_apply_chunk: rolls back whole chunk on mid-chunk failure (P2.3)") {
+        char dir[128];
+        snprintf(dir, sizeof(dir),
+                 "./test-tmp/fast_sync_apply_%d_XXXXXX", (int)getpid());
+        mkdir("./test-tmp", 0755);
+        char *datadir = mkdtemp(dir);
+        ASSERT(datadir != NULL);
+
+        char db_path[256];
+        snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
+
+        /* Set up a minimal utxos schema matching app/models/src/database.c. */
+        sqlite3 *db = NULL;
+        ASSERT(sqlite3_open_v2(db_path, &db,
+                               SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE,
+                               NULL) == SQLITE_OK);
+        const char *schema =
+            "CREATE TABLE utxos ("
+            "txid BLOB NOT NULL,vout INTEGER NOT NULL,"
+            "value INTEGER NOT NULL CHECK(value >= 0 AND value <= 2100000000000000),"
+            "script BLOB NOT NULL,"
+            "script_type INTEGER NOT NULL DEFAULT 0,"
+            "address_hash BLOB,height INTEGER NOT NULL CHECK(height >= 0),"
+            "is_coinbase INTEGER NOT NULL DEFAULT 0,"
+            "PRIMARY KEY (txid,vout))";
+        char *err = NULL;
+        int rc = sqlite3_exec(db, schema, NULL, NULL, &err);
+        if (rc != SQLITE_OK) {
+            fprintf(stderr, "schema setup failed: %s\n", err ? err : "?");
+            if (err) sqlite3_free(err);
+        }
+        sqlite3_close(db);
+        ASSERT(rc == SQLITE_OK);
+
+        /* Build a chunk with two entries: first valid, second has
+         * height == -1 which violates the CHECK constraint. */
+        struct utxo_chunk chunk;
+        memset(&chunk, 0, sizeof(chunk));
+        chunk.num_entries = 2;
+        chunk.chunk_index = 0;
+
+        memset(chunk.entries[0].txid, 0x11, 32);
+        chunk.entries[0].vout = 0;
+        chunk.entries[0].value = 5000;
+        chunk.entries[0].script[0] = 0x51;
+        chunk.entries[0].script_len = 1;
+        chunk.entries[0].height = 100;
+
+        memset(chunk.entries[1].txid, 0x22, 32);
+        chunk.entries[1].vout = 0;
+        chunk.entries[1].value = 5000;
+        chunk.entries[1].script[0] = 0x51;
+        chunk.entries[1].script_len = 1;
+        chunk.entries[1].height = -1; /* triggers CHECK(height >= 0) */
+
+        bool applied = fast_sync_apply_chunk(datadir, &chunk);
+        ASSERT(!applied);
+
+        /* Rollback atomicity: COUNT(*) must be 0 — neither the valid
+         * first entry nor the rejected second one should persist. */
+        ASSERT(sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY,
+                               NULL) == SQLITE_OK);
+        sqlite3_stmt *s = NULL;
+        ASSERT(sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM utxos",
+                                  -1, &s, NULL) == SQLITE_OK);
+        int count = -1;
+        if (sqlite3_step(s) == SQLITE_ROW) // raw-sql-ok: test fixture verify
+            count = sqlite3_column_int(s, 0);
+        sqlite3_finalize(s);
+        sqlite3_close(db);
+        ASSERT(count == 0);
+
+        /* Cleanup. */
+        char wal[300], shm[300];
+        snprintf(wal, sizeof(wal), "%s-wal", db_path);
+        snprintf(shm, sizeof(shm), "%s-shm", db_path);
+        unlink(wal);
+        unlink(shm);
+        unlink(db_path);
+        rmdir(datadir);
+
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── Entry point ─────────────────────────────────────────── */
 
 int test_fast_sync(void)
@@ -1113,6 +1215,9 @@ int test_fast_sync(void)
 
     /* MMR-secured snapshot */
     failures += test_snapshot_offer_mmr_field();
+
+    /* P2.3: chunk apply atomicity */
+    failures += test_apply_chunk_rollback_on_mid_chunk_failure();
 
     return failures;
 }
