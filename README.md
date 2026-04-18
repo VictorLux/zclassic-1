@@ -186,6 +186,12 @@ make zcl-nodectl
 make check-restart-follow
 ```
 
+Operator-specific flags (`-externalip` and the seeded `-addnode` list)
+live in `~/.config/zclassic23/env`, not in the tracked systemd unit.
+Copy `deploy/zclassic23.env.example` to that path and edit for your
+deployment; a fresh clone without the env file starts cleanly against
+DNS seeds.
+
 ## Performance
 
 | Metric | Value |
