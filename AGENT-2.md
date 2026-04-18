@@ -30,15 +30,14 @@ cross-agent priority table. Last brief rewrite: 2026-04-17.
 
 ---
 
-## Current status — 2026-04-18 (afternoon)
+## Current status — 2026-04-18 (evening)
 
-**Done and on main (21 rows + 1 infra):** P1.1, P1.2, P1.5, P6.1–P6.6,
+**Done and on main (23 rows + 1 infra):** P1.1, P1.2, P1.5, P6.1–P6.6,
 P3.1, P3.2, P3.3, P3.4, P3.5, P3.6, P5.1, P5.3, P5.4, P5.7, P4.3, P4.4,
-P4.5, P2.3, P2.8, P3.7, P2.4, P2.7, plus parallel test runner
-infrastructure (df5de36c4). AGENT.md shows SHAs.
+P4.5, P2.3, P2.8, P3.7, P2.4, P2.7, P2.6, P5.2, plus parallel test
+runner infrastructure (df5de36c4). AGENT.md shows SHAs.
 
-**Now working on:** P2.6 (g_swarm_active TOCTOU — same file as P2.4)
-and P5.2 (deploy service hygiene).
+**Now working on:** nothing — NOW is empty.
 **Queued NEXT (pre-authorized):** P2.5 (connman deadlock).
 
 ---
@@ -422,4 +421,50 @@ code touched. The rate limiter is a drop-in side module — if you
 want it relocated (`lib/net/src/flyclient_rate.c`?) or folded into
 `peer_scoring.c`, happy to rework it.
 
-**NOW + NEXT are both empty for Agent-2.** Awaiting Rhett.
+**2026-04-18 (evening) — P2.6 + P5.2 lane closed (ninth wave).**
+Two commits:
+
+- `658b6fe5d` P2.6 `g_swarm_active` TOCTOU. The TOCTOU window was
+  `if (!g_swarm_active) { lock; init; g_swarm_active = true; unlock; }`
+  — two peers racing near-simultaneous zmanifest messages could both
+  observe false, both take g_swarm_mutex in sequence, both call
+  `swarm_sync_init`, second overwriting the first. Replaced the
+  check+claim with `atomic_compare_exchange_strong` on the already-
+  `_Atomic bool` global. CAS winner runs swarm_sync_init under mutex;
+  if init fails, the winner releases the claim so the next peer can
+  retry. CAS loser logs + drops the message. Reset site at 2376 uses
+  explicit `atomic_store` for symmetry. Added test hooks
+  `msgprocessor_test_swarm_{try_claim,release,is_active}` mirroring
+  the P2.7 pattern; three regression tests: no-race, pthread-barrier-
+  synchronized concurrent racers (exactly one wins), reset cycle
+  re-arms.
+
+- `ba450ea5c` P5.2 deploy service env-file hygiene. Moved the
+  hardcoded `-externalip=205.209.104.118` and 9 `-addnode=...` flags
+  out of `deploy/zclassic23.service` ExecStart into an optional
+  `EnvironmentFile=-%h/.config/zclassic23/env`. Used bare `$VAR` form
+  (not `${VAR}`) so systemd splits the `ZCL_ADDNODE_FLAGS` value on
+  whitespace into separate argv entries. `deploy/zclassic23.env.example`
+  ships the template with Rhett's current values for easy migration;
+  a fresh clone without the env file starts clean against DNS seeds.
+  README.md got a one-paragraph pointer. Smoke-tested on Rhett's box:
+  height advanced 3081407 → 3081408 across restart, 4 peers connected,
+  `getnetworkinfo.localaddresses` shows 205.209.104.118:8033 (proves
+  `$ZCL_EXTERNALIP_FLAG` expanded from env).
+
+**Out-of-scope flag for Rhett — sibling TOCTOU in the same file.**
+`g_block_swarm_active` at `msgprocessor.c:2439/2451` has the identical
+check-then-write pattern. Same atomic-CAS fix applies. Deliberately
+left out of the P2.6 commit to keep "one logical fix per commit" —
+please queue as a new P2.x row and I'll pick it up next rotation
+(~20 LoC + 3 tests, direct copy of the P2.6 recipe).
+
+**Test suite status.** test_zcl was killed in `test_block_pruning`
+(the known hang already documented earlier in this file — not a
+regression from this workstream). All 2773 prior tests including the
+three new `swarm_cas: ...` tests passed before the hang site. `make
+lint` is clean.
+
+**NOW is empty for Agent-2; P2.5 is queued as NEXT.** Waiting for
+Rhett to green-light starting on the connman deadlock, or for a new
+assignment.

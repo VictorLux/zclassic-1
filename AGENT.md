@@ -6,19 +6,19 @@ Owner: Rhett (primary). Delegates: Agent-2 (see `AGENT-2.md`), Agent-3 (see `AGE
 
 ---
 
-## Progress — last update 2026-04-18 (afternoon)
+## Progress — last update 2026-04-18 (evening)
 
-**Overall: 42 / 53 rows closed (79%) | SWRC ~80%**
+**Overall: 44 / 53 rows closed (83%) | SWRC ~84%**
 
 | Tier | Closed / Total | % | Open rows |
 |---|---|---|---|
 | **CRITICAL** | 7 / 9 | **78%** | P2.1, P2.2 |
-| **HIGH** | 15 / 22 | **68%** | P1.6, P1.7, P1.16, P2.5, P2.6, P4.1, P4.2, P5.2 |
+| **HIGH** | 17 / 22 | **77%** | P1.6, P1.7, P1.16, P2.5, P4.1, P4.2 |
 | **MED** | 14 / 16 | **88%** | P5.5, P5.6 |
 | **LOW** | 2 / 2 | **100%** | — |
 | (P0 baseline) | 4 / 4 | **100%** | — |
 
-**Open by owner (afternoon 2026-04-18 reassignment):** Rhett 7 (P1.6, P1.7, P2.1, P2.2, P4.1, P4.2, P5.5, P5.6 — wait, that's the consensus + script + vendor pile) · Agent-2 3 (P2.6 swarm TOCTOU + P5.2 deploy hygiene + P2.5 connman deadlock as NEXT) · Agent-3 1 (P1.16 in flight; prf.c nullifier still queued NEXT)
+**Open by owner (evening 2026-04-18 after P2.6 + P5.2 landed):** Rhett 6 (P1.6, P1.7, P2.1, P2.2, P4.1, P4.2, P5.5, P5.6 — consensus + script + vendor pile) · Agent-2 1 (P2.5 connman deadlock as NEXT) · Agent-3 1 (P1.16 in flight; prf.c nullifier still queued NEXT)
 
 **Top remaining risks:** the two open CRITs (P2.1 mempool tx accept, P2.2 stack overflow in msg handler) remain in Rhett's net-lane. P1.6 + P1.7 are the last two HIGHs blocking the consensus tier. Once P1.16 lands, the secret-RNG fail-open is fully closed — no more crypto CRITs in flight.
 
@@ -85,7 +85,7 @@ regression test locks the gates in place.
 | P2.3 | fast_sync bypasses AR_BEGIN_SAVE | `lib/net/src/fast_sync.c:480-526` | HIGH | Agent 2 — done 9ef77899b (migrated bulk-insert loop to AR_BIND_* + AR_STEP_DONE; regression test builds a 2-entry chunk with CHECK-violating height and asserts BEGIN/COMMIT rollback atomicity) |
 | P2.4 | Swarm per-chunk hash verification effectively absent | `lib/net/src/fast_sync.c:892-895`, `msgprocessor.c:1968` | HIGH | Agent 2 — done 9e8cfbb27 (zmanifest carries per-chunk SHA3 hashes + merkle-root reconstruction check; swarm_sync_init requires chunk_hashes + bounds num_chunks at MANIFEST_MAX_CHUNKS; 3 regression tests prove bad chunk → 0 rows + retry, good chunk → 3 rows, init refuses NULL/oversized) |
 | P2.5 | connman deadlock risk: `cs_nodes` held across callback | `lib/net/src/connman.c:802-836` | HIGH | Agent 2 — NEXT (narrow scope: lib/net/src/connman.c only; mutex discipline — careful) |
-| P2.6 | `g_swarm_active` TOCTOU → state leak | `lib/net/src/msgprocessor.c:1961-1981, 2040` | HIGH | Agent 2 — NOW (narrow scope: lib/net/src/msgprocessor.c — same file as P2.4) |
+| P2.6 | `g_swarm_active` TOCTOU → state leak | `lib/net/src/msgprocessor.c:1961-1981, 2040` | HIGH | Agent 2 — done 658b6fe5d (atomic_compare_exchange_strong flips the check+claim into one op; CAS winner runs swarm_sync_init under g_swarm_mutex, releases the claim on init failure; CAS loser drops the message; reset site uses explicit atomic_store; 3 regression tests: no-race, pthread-barrier-synchronized concurrent racers, reset cycle — also flagged sibling g_block_swarm_active TOCTOU at 2439/2451 as a separate P2.x row candidate) |
 | P2.7 | FlyClient challenge amplification — no rate limit | `lib/net/src/msgprocessor.c:1864-1900` | MED | Agent 2 — done a46410c50 (per-peer token bucket: burst 30, refill 10/sec, drop silently + PEER_OFFENCE_FLOOD once per episode; LRU side table so peer churn can't grow memory; 3 regression tests: flood caps near burst+rate, ban-score registers once, victim peer unimpeded) |
 | P2.8 | No global byte budget on recv queue | `lib/net/src/net.c:104-115` | MED | Agent 2 — done 60bb08f58 (atomic process-wide counter + env-configurable cap, default 256 MiB; regression test exhausts a 16 KiB cap and verifies rollback on over-cap alloc) |
 
@@ -122,7 +122,7 @@ regression test locks the gates in place.
 | # | Task | Severity | Owner |
 |---|---|---|---|
 | P5.1 | `export_snapshot` (1.1 MB ELF) tracked in git despite `.gitignore` | HIGH | Agent 2 — done a9ac382b7 |
-| P5.2 | `deploy/zclassic23.service:21` hardcodes Rhett's externalip + 9 addnodes | HIGH | Agent 2 — NOW (narrow scope: deploy/zclassic23.service + a small README note) |
+| P5.2 | `deploy/zclassic23.service:21` hardcodes Rhett's externalip + 9 addnodes | HIGH | Agent 2 — done ba450ea5c (operator flags moved to EnvironmentFile=-~/.config/zclassic23/env; $VAR form preserves whitespace-splitting for multi-flag ZCL_ADDNODE_FLAGS; fresh clone starts clean when env file absent; deploy/zclassic23.env.example ships the template with Rhett's current values; README gets a one-paragraph pointer; smoke-test on Rhett's box: height 3081407 → 3081408, 4 peers, 205.209.104.118:8033 advertised in getnetworkinfo.localaddresses) |
 | P5.3 | Hardcoded `/home/rhett` in `tools/export_snapshot.c:15`, `tools/zcl-nodectl.c:628-637` | HIGH | Agent 2 — done 09e4fb15a (shared $HOME helper in lib/util/include/util/rpc_paths.h; also swept test_phgr13_fix.c sprout-VK path + two README absolute-path links; new test_no_hardcoded_home regression test scans every deployed binary for the literal and exercises the helper with alt/NULL HOME) |
 | P5.4 | 10 shell scripts in `tools/` duplicating MCP — purge | MED | Agent 2 — done 0f33d3fc1 (audit found 1/8 actual MCP-duplicates: verify_restart_follow.sh ⇒ zcl-nodectl verify-follow; the other seven are build-time or multi-node orchestration with no MCP equivalent — per-script rationale in "Notes from Agent-2" in AGENT-2.md) |
 | P5.5 | `vendor/tor` submodule ahead of pinned commit | MED | Rhett |
